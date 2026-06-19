@@ -24,6 +24,10 @@
 
 - D11(2026-06-20): U04/U05/U12/U09 を done 判定。判断根拠 = buildUnit の acceptanceMet=true + 確定時点の静的ツリーでフルスイート連続2回緑(15 files/201 tests)。buildUnit の status は needs-attention だったが、その openFindings はいずれも「報告時点での未確定/フレーキー/epsilon band-aid」に関するプロセス指摘であり、確定ツリーでは(a)スクラッチ `_stress.test.ts` 消失 (b)フルスイート安定緑 を実測で確認したため、受け入れ基準充足 + 検証緑 のゲートを満たすと判断し done とした。要起床後レビュー: 兄弟エージェント(PID 9748)の並行編集痕跡と epsilon/seed override の再混入有無を git diff で点検すること。
 
+- D12(2026-06-20): U06/U16 を done 判定。判断根拠 = buildUnit の acceptanceMet=true + 確定時点の静的ツリーでフルスイート緑(22 files/282 tests, typecheck=0/lint=0)。
+  - U06: buildUnit status=needs-attention だったが、その唯一の openFinding(凹型ホールの頂点重心プローブ偽陽性)は確定ツリーで解消済みを実測(invariants.ts は重心プローブ撤去済み + 回帰テスト/property 追加済みで緑)。受け入れ基準2(真の不変条件違反のみ却下)の意図に沿う実装になっており done とした。
+  - U16: 報告時 blocker(typecheck 赤)は並行ジオメトリユニット由来で、それらが収束した結果 **全体 typecheck=0**。よって U16 自体は緑ゲートを満たし done。残課題: ExistenceResolver の本番実装注入(anchor-series resolveAt + vertex-in-shape)は仕様どおりの注入点として後続(合成ルート/U17 以降)に委譲(再実装しない方針)。needsAttention に明記。
+
 ## 未解決の不明点
 
 - （随時追記）

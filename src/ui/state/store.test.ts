@@ -1,0 +1,360 @@
+// U16 tests: thin Zustand store, domain bridge, time re-validation, settings
+// boundary, and the React-free Canvas subscription contract.
+//
+// All tests inject FAKE existence predicates (existence.ts) to prove this store
+// contains no independent time-resolution logic (受け入れ基準 3 / 5: 依存注入で
+// 再実装していないことを確認, 単一の真実源).
+
+import { describe, expect, it, vi } from 'vitest';
+
+import { createCommandResult } from '../../domain/command/result';
+import { asFeatureId, asVertexId } from '../../domain/ids';
+import { timePointYear } from '../../domain/time/time-point';
+
+import type { ExistenceResolver } from './existence';
+import {
+  APP_SETTING_KEYS,
+  PROJECT_SETTING_KEYS,
+  SETTINGS_SCOPE,
+  classifySettingKey,
+  DEFAULT_APP_SETTINGS,
+} from './settings';
+import { EDIT_MODE, asToolId } from './session';
+import {
+  TIME_CHANGE_SOURCE,
+  type TimeChangeSource,
+  createSessionStore,
+} from './store';
+
+// --- Test fixtures ----------------------------------------------------------
+
+// A trivial opaque domain-state root for the bridge tests (U03 owns the real
+// shape; the store treats S opaquely).
+interface TestDomain {
+  readonly tag: string;
+}
+
+const f = (s: string) => asFeatureId(s);
+const v = (s: string) => asVertexId(s);
+
+/** An existence resolver where a fixed set of features/vertices is "present". */
+function resolverWith(
+  presentFeatures: ReadonlySet<string>,
+  presentVertices: ReadonlySet<string>,
+): ExistenceResolver {
+  return {
+    featureExistsAt: (fid) => presentFeatures.has(fid),
+    vertexExistsAt: (_fid, vid) => presentVertices.has(vid),
+  };
+}
+
+function makeStore(
+  existence?: ExistenceResolver,
+  initial?: Parameters<typeof createSessionStore<TestDomain>>[0]['initial'],
+) {
+  return createSessionStore<TestDomain>({
+    initialDomain: { tag: 'd0' },
+    ...(existence ? { existence } : {}),
+    ...(initial ? { initial } : {}),
+  });
+}
+
+// --- 受け入れ基準 1: thin store holds session state -------------------------
+
+describe('受け入れ基準 1: UI/session state held thinly', () => {
+  it('holds selection, mode, tool, time, camera, centerLon', () => {
+    const store = makeStore();
+    const s = store.getState();
+    expect(s.activeFeature).toBeNull();
+    expect(s.vertexSelection).toBeNull();
+    expect(s.mode).toBe(EDIT_MODE.View);
+    expect(s.activeTool).toBeNull();
+    expect(s.currentTime).toBeDefined();
+    expect(s.camera.zoom).toBe(1);
+    expect(s.centerLon).toBe(0);
+  });
+
+  it('stores only a domain REFERENCE, not a copy of the truth', () => {
+    const domain = { tag: 'shared' };
+    const store = createSessionStore<TestDomain>({ initialDomain: domain });
+    // Same reference identity: the store did not clone the domain truth.
+    expect(store.getState().domain).toBe(domain);
+  });
+});
+
+// --- 受け入れ基準 2: bridge + single truth source ---------------------------
+
+describe('受け入れ基準 2: domain bridge via subscribe', () => {
+  it('subscribers observe a new domain state when it is swapped', () => {
+    const store = makeStore();
+    const observed: string[] = [];
+    store.subscribe((state) => observed.push(state.domain.tag));
+
+    store.getState().setDomainState({ tag: 'd1' });
+    store.getState().setDomainState({ tag: 'd2' });
+
+    expect(observed).toEqual(['d1', 'd2']);
+    expect(store.getState().domain.tag).toBe('d2');
+  });
+
+  it('re-resolves selection from a command result (NOT a blanket clear, 教訓 5.11)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
+    });
+
+    // A structure-changing command deletes v1 (and feature B which isn't selected),
+    // survives A and v2, creates C. Selection of A + v2 must survive.
+    const result = createCommandResult({
+      survived: [f('A'), v('v2')],
+      created: [f('C')],
+      deleted: [f('B'), v('v1')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+
+    const s = store.getState();
+    expect(s.domain.tag).toBe('d1');
+    expect(s.activeFeature).toBe(f('A')); // survived: kept, not cleared
+    expect(s.vertexSelection).not.toBeNull();
+    expect([...s.vertexSelection!.vertexIds]).toEqual([v('v2')]); // v1 dropped, v2 kept
+  });
+
+  it('drops the active feature when the command deletes it', () => {
+    const store = makeStore(undefined, { activeFeature: f('A') });
+    const result = createCommandResult({ deleted: [f('A')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+    expect(store.getState().activeFeature).toBeNull();
+  });
+
+  it('resolves the vertex context away when its owner feature is deleted', () => {
+    const store = makeStore(undefined, {
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+    });
+    const result = createCommandResult({ deleted: [f('A')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+    expect(store.getState().vertexSelection).toBeNull();
+  });
+});
+
+// --- 受け入れ基準 3: time re-validation (教訓 5.5 / 5.6) --------------------
+
+describe('受け入れ基準 3: time-change re-validation', () => {
+  const ALL_SOURCES: TimeChangeSource[] = [
+    TIME_CHANGE_SOURCE.Slider,
+    TIME_CHANGE_SOURCE.NumericJump,
+    TIME_CHANGE_SOURCE.AnchorSync,
+    TIME_CHANGE_SOURCE.Playback,
+  ];
+
+  it.each(ALL_SOURCES)(
+    'deselects an active feature absent at the new time via the %s path',
+    (source) => {
+      // Feature A does NOT exist at the new time.
+      const existence = resolverWith(new Set<string>(), new Set<string>());
+      const store = makeStore(existence, { activeFeature: f('A') });
+
+      store.getState().setCurrentTime(timePointYear(500), source);
+
+      expect(store.getState().activeFeature).toBeNull();
+      expect(store.getState().lastTimeChangeSource).toBe(source);
+    },
+  );
+
+  it.each(ALL_SOURCES)(
+    'keeps an active feature still present at the new time via the %s path',
+    (source) => {
+      const existence = resolverWith(new Set(['A']), new Set<string>());
+      const store = makeStore(existence, { activeFeature: f('A') });
+
+      store.getState().setCurrentTime(timePointYear(500), source);
+
+      expect(store.getState().activeFeature).toBe(f('A'));
+    },
+  );
+
+  it('removes vertices absent at the new time and resolves empty context away', () => {
+    // owner A present; only v1 present at the new time, v2 gone.
+    const existence = resolverWith(new Set(['A']), new Set(['v1']));
+    const store = makeStore(existence, {
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
+    });
+
+    store.getState().setCurrentTime(timePointYear(100), TIME_CHANGE_SOURCE.Slider);
+    const vs = store.getState().vertexSelection;
+    expect(vs).not.toBeNull();
+    expect([...vs!.vertexIds]).toEqual([v('v1')]);
+
+    // Now move to a time where no vertex exists -> context resolved away.
+    const store2 = makeStore(resolverWith(new Set(['A']), new Set<string>()), {
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+    });
+    store2.getState().setCurrentTime(timePointYear(100), TIME_CHANGE_SOURCE.Playback);
+    expect(store2.getState().vertexSelection).toBeNull();
+  });
+
+  it('delegates existence to the injected resolver (no re-implementation)', () => {
+    const featureExistsAt = vi.fn(() => false);
+    const vertexExistsAt = vi.fn(() => false);
+    const store = makeStore({ featureExistsAt, vertexExistsAt }, { activeFeature: f('A') });
+
+    store.getState().setCurrentTime(timePointYear(1), TIME_CHANGE_SOURCE.NumericJump);
+    // The store called the injected predicate rather than computing existence itself.
+    expect(featureExistsAt).toHaveBeenCalledWith(f('A'), timePointYear(1));
+  });
+});
+
+// --- 受け入れ基準 4: settings boundary --------------------------------------
+
+describe('受け入れ基準 4: settings boundary + immediate reflection', () => {
+  it('classifies every FR-109 key as project and every FR-110 key as app', () => {
+    for (const key of PROJECT_SETTING_KEYS) {
+      expect(classifySettingKey(key)).toBe(SETTINGS_SCOPE.Project);
+    }
+    for (const key of APP_SETTING_KEYS) {
+      expect(classifySettingKey(key)).toBe(SETTINGS_SCOPE.App);
+    }
+  });
+
+  it('project + app key sets are disjoint', () => {
+    const proj = new Set<string>(PROJECT_SETTING_KEYS);
+    for (const key of APP_SETTING_KEYS) expect(proj.has(key)).toBe(false);
+  });
+
+  it('a project-setting change marks the project dirty and notifies', () => {
+    const store = makeStore();
+    expect(store.getState().projectDirty).toBe(false);
+
+    const changes: string[] = [];
+    store.subscribe((s) => {
+      if (s.lastSettingsChange) changes.push(s.lastSettingsChange.key);
+    });
+
+    store.getState().updateProjectSetting('equatorLengthKm', 50000);
+
+    const s = store.getState();
+    expect(s.projectSettings.equatorLengthKm).toBe(50000);
+    expect(s.projectDirty).toBe(true);
+    expect(s.lastSettingsChange).toEqual({
+      scope: SETTINGS_SCOPE.Project,
+      key: 'equatorLengthKm',
+    });
+    expect(changes).toContain('equatorLengthKm');
+  });
+
+  it('an app-setting change does NOT mark the project dirty', () => {
+    const store = makeStore();
+    store.getState().updateAppSetting('snapDistancePx', 80);
+    const s = store.getState();
+    expect(s.appSettings.snapDistancePx).toBe(80);
+    expect(s.projectDirty).toBe(false);
+    expect(s.lastSettingsChange).toEqual({
+      scope: SETTINGS_SCOPE.App,
+      key: 'snapDistancePx',
+    });
+  });
+
+  it('applies FR-110 defaults (snap 50px, 60 FPS) and clamps FPS to [1,60]', () => {
+    const store = makeStore();
+    expect(DEFAULT_APP_SETTINGS.snapDistancePx).toBe(50);
+    expect(DEFAULT_APP_SETTINGS.renderFps).toBe(60);
+
+    store.getState().updateAppSetting('renderFps', 120);
+    expect(store.getState().appSettings.renderFps).toBe(60);
+    store.getState().updateAppSetting('renderFps', 0);
+    expect(store.getState().appSettings.renderFps).toBe(1);
+  });
+
+  it('markProjectSaved clears the dirty flag', () => {
+    const store = makeStore();
+    store.getState().updateProjectSetting('gridSpacingDeg', 5);
+    expect(store.getState().projectDirty).toBe(true);
+    store.getState().markProjectSaved();
+    expect(store.getState().projectDirty).toBe(false);
+  });
+});
+
+// --- 受け入れ基準 5: Canvas subscribes only (no React path) -----------------
+
+describe('受け入れ基準 5: Canvas-style subscriber receives updates', () => {
+  it('a plain subscriber observes camera / time / centerLon changes', () => {
+    const store = makeStore();
+    const frames: Array<{ zoom: number; lon: number }> = [];
+    store.subscribe((s) => frames.push({ zoom: s.camera.zoom, lon: s.centerLon }));
+
+    store.getState().updateCamera({ zoom: 4 });
+    store.getState().setCenterLon(120);
+
+    expect(frames).toEqual([
+      { zoom: 4, lon: 0 },
+      { zoom: 4, lon: 120 },
+    ]);
+  });
+
+  it('the store is framework-free (getState/setState/subscribe present)', () => {
+    const store = makeStore();
+    expect(typeof store.getState).toBe('function');
+    expect(typeof store.setState).toBe('function');
+    expect(typeof store.subscribe).toBe('function');
+  });
+});
+
+// --- mode/tool reset契約 (教訓 5.2) ----------------------------------------
+
+describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
+  it('setMode clears selection and active tool on every path', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+      activeTool: asToolId('pen'),
+    });
+    store.getState().setMode(EDIT_MODE.Edit);
+    const s = store.getState();
+    expect(s.mode).toBe(EDIT_MODE.Edit);
+    expect(s.activeFeature).toBeNull();
+    expect(s.vertexSelection).toBeNull();
+    expect(s.activeTool).toBeNull();
+  });
+
+  it('setActiveTool clears selection (select -> cancel -> recreate has no residue)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+    });
+    store.getState().setActiveTool(asToolId('rect'));
+    expect(store.getState().activeFeature).toBeNull();
+    expect(store.getState().activeTool).toBe(asToolId('rect'));
+  });
+});
+
+// --- vertex selection update rules (FR-80 / FR-81) --------------------------
+
+describe('vertex selection update rules (FR-80 / FR-81)', () => {
+  it('replace sets the whole selection set', () => {
+    const store = makeStore();
+    store.getState().replaceVertexSelection(f('A'), [v('v1'), v('v2')]);
+    expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1'), v('v2')]);
+  });
+
+  it('toggle adds then removes a vertex; emptying resolves the context away', () => {
+    const store = makeStore();
+    store.getState().toggleVertexSelection(f('A'), v('v1'));
+    expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1')]);
+    store.getState().toggleVertexSelection(f('A'), v('v1'));
+    expect(store.getState().vertexSelection).toBeNull();
+  });
+
+  it('add merges vertices into an existing same-owner context', () => {
+    const store = makeStore();
+    store.getState().replaceVertexSelection(f('A'), [v('v1')]);
+    store.getState().addVerticesToSelection(f('A'), [v('v2'), v('v3')]);
+    expect([...store.getState().vertexSelection!.vertexIds]).toEqual([v('v1'), v('v2'), v('v3')]);
+  });
+
+  it('switching owner starts a fresh context (FR-81: one owner)', () => {
+    const store = makeStore();
+    store.getState().replaceVertexSelection(f('A'), [v('v1')]);
+    store.getState().toggleVertexSelection(f('B'), v('v9'));
+    const vs = store.getState().vertexSelection!;
+    expect(vs.ownerFeatureId).toBe(f('B'));
+    expect([...vs.vertexIds]).toEqual([v('v9')]);
+  });
+});
