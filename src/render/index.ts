@@ -51,3 +51,15 @@ export {
 
 // The default Canvas 2D backend (the concrete implementation; swappable via R1).
 export { Canvas2DMapRenderer, type CanvasSurface } from './canvas2d-renderer';
+
+// U18: grid + base-map batch building (FR-03 / FR-06 / FR-07 / FR-13 / FR-17).
+// Pure: turns the U18 domain grid model + camera/viewport into declarative
+// primitives for the MapRenderer (no Canvas API here).
+export {
+  type GridStyle,
+  DEFAULT_GRID_STYLE,
+  withOpacity,
+  buildBaseMapPrimitive,
+  viewportLonSpan,
+  buildGridPrimitives,
+} from './grid-layer';

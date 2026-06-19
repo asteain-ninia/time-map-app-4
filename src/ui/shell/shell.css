@@ -1,0 +1,151 @@
+/* UI layer (U20 / shell): the root layout (FR-111 / FR-114).
+ *
+ * One place for the layout sizing logic (spec 実装方針: 寸法ロジックを一箇所に
+ * 集約し、ドリフトを生まない). The shell is a CSS grid: top menu / a 3-column
+ * main row (toolbar | map | sidebar) / bottom timeline / status bar. The map
+ * column is fluid (1fr); 周辺 panels follow. Min size 800×600 is enforced on the
+ * root, matching the Electron window minimum (window-config.ts, FR-114). The map
+ * input layer and front overlay layering (教訓 5.14) are expressed here. */
+
+.app-shell {
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  grid-template-columns: 1fr;
+  width: 100%;
+  height: 100%;
+  /* FR-114: full layout never collapses below 800×600. */
+  min-width: 800px;
+  min-height: 600px;
+  position: relative;
+  overflow: hidden;
+}
+
+.app-shell__menubar {
+  grid-row: 1;
+}
+
+.app-shell__main {
+  grid-row: 2;
+  display: grid;
+  /* left toolbar (fixed) | center map (fluid) | right sidebar (fixed). */
+  grid-template-columns: minmax(48px, auto) 1fr minmax(220px, auto);
+  min-height: 0;
+}
+
+.app-shell__toolbar {
+  grid-column: 1;
+  min-width: 48px;
+  overflow: auto;
+}
+
+.app-shell__map {
+  grid-column: 2;
+  min-width: 200px;
+  min-height: 0;
+  position: relative;
+}
+
+.app-shell__sidebar {
+  grid-column: 3;
+  min-width: 220px;
+  overflow: auto;
+}
+
+.app-shell__timeline {
+  grid-row: 3;
+  min-height: 0;
+}
+
+.app-shell__statusbar {
+  grid-row: 4;
+}
+
+/* The central map area: the canvas mount sits behind, the input layer in front
+ * (教訓 5.14). Front overlays sit above both via .app-shell__overlay. */
+.map-area {
+  position: absolute;
+  inset: 0;
+}
+
+.map-area__canvas-mount {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.map-area__input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
+/* The overlay layer is above the map but does NOT cover it unless it has
+ * content; pointer events fall through the empty overlay to the map input layer
+ * (教訓 5.14: 透明な背景層が背面の操作を奪わない). Individual panels/modals
+ * re-enable pointer events on themselves. */
+.app-shell__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.app-shell__overlay > * {
+  pointer-events: auto;
+}
+
+.draggable-panel {
+  background: #fff;
+  border: 1px solid #888;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  min-width: 160px;
+}
+
+.draggable-panel__header {
+  cursor: move;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  background: #eee;
+  user-select: none;
+}
+
+.draggable-panel__body {
+  padding: 8px;
+}
+
+/* Tooltip bubble: shown on hover/focus (FR-112). */
+.tooltip {
+  position: relative;
+  display: inline-block;
+}
+
+.tooltip__bubble {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  background: #333;
+  color: #fff;
+  padding: 2px 6px;
+  font-size: 12px;
+  white-space: nowrap;
+  border-radius: 3px;
+  z-index: 100;
+}
+
+.context-menu {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  background: #fff;
+  border: 1px solid #888;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  z-index: 50;
+}
+
+.context-menu__item:disabled,
+.menubar__item:disabled {
+  color: #aaa;
+  cursor: default;
+}

@@ -28,8 +28,14 @@ export default defineConfig({
       // arithmetic, speed->days conversion, marker model. These import only pure
       // `.ts` (never React/.tsx), so they run in node without a DOM.
       'src/ui/timeline/**/*.test.ts',
-      // U21 React component operation tests (jsdom; see environmentMatchGlobs):
-      // the EventMarkers add/edit/delete/jump UI path (FR-66, 受け入れ基準3).
+      // U20 shell pure-logic tests: mode/tool mapping, edit-permission gate,
+      // command registry, shortcut keymap/resolve/dispatch, drag reducer,
+      // z-order, resize throttle, menu↔keymap agreement, window-size contract.
+      // These import only pure `.ts` (never React/.tsx), so they run in node.
+      'src/ui/shell/**/*.test.ts',
+      // React component operation tests (jsdom; see environmentMatchGlobs):
+      // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
+      // mode toggle / view-only disabling / drag / tooltip / overlay layering.
       'src/ui/**/*.test.tsx',
     ],
     // Pin the fast-check seed once for the whole suite so property tests are

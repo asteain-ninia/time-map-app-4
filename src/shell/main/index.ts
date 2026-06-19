@@ -1,6 +1,8 @@
 import { join } from 'node:path';
 import { app, BrowserWindow } from 'electron';
 
+import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../../domain/window-constants';
+
 // Electron main process. Shell layer may import domain only (never ui/render).
 
 // Smoke-test mode (SMOKE_TEST=1): drive whenReady -> createWindow -> preload
@@ -63,8 +65,9 @@ function createWindow(): void {
   const window = new BrowserWindow({
     width: 1280,
     height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    // FR-114: 800×600 minimum, from the single shared constant (domain).
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),

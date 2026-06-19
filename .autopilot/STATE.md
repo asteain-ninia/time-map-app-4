@@ -25,6 +25,10 @@ IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / sc
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20: U18・U20・U10・U11 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 60 files・639 tests passed, exit 0)。4ユニットとも done。
+  - U18(converged,2r,acceptanceMet) / U20(converged,1r,acceptanceMet): blockerなし → done。
+  - U10(converged,1r,acceptanceMet): 報告 blocker は「フルスイートで src/domain/basemap/format.test.ts が並行ユニット由来で2件赤」だったが、確定ツリーでは**当該テスト含めフルスイート緑**(format/grid/preset 等 basemap 全緑)を実測。U10 スコープ外かつ解消済み → done。
+  - U11(needs-attention,2r,acceptanceMet): openFinding(high)「transferSharing が remap でコンテナの vertexId を新idへ付け替えるが、新id本体(coordinate)を store に保証せず dangling 参照になる(R6/§5.31違反)」を**確定ツリーで修正済みを実測確認**: shared-vertex.ts:740-749 で remap の各新id(newId!==oldId)に本体が無ければ original store の旧頂点座標を carry-forward して mint、merge-target 既存本体は温存。回帰テストも存在(shared-vertex.test.ts:354-372「transferSharing carries a shared relationship onto remapped (split) ids」が getVertex(moved.vertices, nA2) の存在と旧座標一致を assert)。よって finding 指摘の修正が単一真実源で実装済み・受け入れ基準充足・検証緑 → done。
 - 2026-06-20: U07・U08・U17・U21 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 36 files・443 tests passed, exit 0)。4ユニットとも done。
   - U07(buildUnit=needs-attention,2 rounds,acceptanceMet): openFinding(high×3)はいずれも「resolveRing が各リングを個別 unwrap し共通ワールドターンに揃えないため、頂点列が逆側 seam から始まる正当な cross-seam ホール/飛び地を ~360° ずれで誤判定する」R3 単一真実源バグ。**確定ツリーで修正済みを実測確認**: ring-hierarchy.ts に `alignRingTo`(U05 worldWrapReplicas に委譲、turns -2..+2 で基準に最近接のレプリカ選択)+ `resolveAlignedPair` を新設し、validateGeometry の包含(450行)・checkGroupPairsNonOverlap の兄弟/飛び地(511行)が比較直前にペアを共通ターンへ整合。回帰テストも存在(ring-hierarchy.test.ts:286「MISMATCHED anchors」block: 逆側 seam 始点の包含/飛び地重複/兄弟非重複ケース)。よって finding の指摘した修正が単一真実源(U05)で実装済み・受け入れ基準充足・検証緑 → done。
   - U07 報告の lint blocker(U08 hierarchy.property.test.ts:5 の GAP_AGGREGATE_ID/withGap 未使用 import で npm run lint exit 1)は**現状で解消済み**を確認: 当該 import は 80・87 行で実使用、`npm run lint` exit 0。報告の acceptanceMet は実質 true。
