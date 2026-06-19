@@ -28,6 +28,12 @@
   - U06: buildUnit status=needs-attention だったが、その唯一の openFinding(凹型ホールの頂点重心プローブ偽陽性)は確定ツリーで解消済みを実測(invariants.ts は重心プローブ撤去済み + 回帰テスト/property 追加済みで緑)。受け入れ基準2(真の不変条件違反のみ却下)の意図に沿う実装になっており done とした。
   - U16: 報告時 blocker(typecheck 赤)は並行ジオメトリユニット由来で、それらが収束した結果 **全体 typecheck=0**。よって U16 自体は緑ゲートを満たし done。残課題: ExistenceResolver の本番実装注入(anchor-series resolveAt + vertex-in-shape)は仕様どおりの注入点として後続(合成ルート/U17 以降)に委譲(再実装しない方針)。needsAttention に明記。
 
+- D13(2026-06-20): U07/U08/U17/U21 を done 判定。判断根拠 = 確定時点の静的ツリーで検証3点全緑(typecheck=0 / lint=0 / test: 36 files・443 tests passed, exit 0)。
+  - U07: buildUnit status=needs-attention(2 rounds) かつ openFindings(high×3) は全て「resolveRing の per-ring unwrap が比較対象リングを共通ワールドターンへ揃えず、頂点列が逆側 seam から始まる正当な cross-seam ホール/飛び地を ~360° ずれで誤判定する(R3 単一真実源の不完全利用)」という同一バグの指摘。**確定ツリーで修正済みを実測確認**: ring-hierarchy.ts に `alignRingTo`(U05 `worldWrapReplicas` に委譲し基準アンカーに最近接のレプリカを turns -2..+2 から選択)+ `resolveAlignedPair` を新設、validateGeometry 包含(450)・checkGroupPairsNonOverlap 兄弟/飛び地(511)が比較直前にペアを共通ターンへ整合。回帰テストも追加済み(ring-hierarchy.test.ts:286「MISMATCHED anchors」block で逆側 seam 始点の containment / enclave-overlap / sibling-non-overlap を網羅)。finding が要求した「比較前に共通 seam frame へ整合」「U05 単一真実源で ±360° を再発明しない」「3経路の回帰テスト」が全て満たされている。受け入れ基準充足 + 検証緑で done。
+  - U07 報告 blocker(U08 hierarchy.property.test.ts:5 の GAP_AGGREGATE_ID/withGap 未使用 import による npm run lint exit 1)は**現状で解消済み**を実測: 当該 import は 80・87 行で実使用、`npm run lint` exit 0。報告の acceptanceMet:false は古く実質 true。
+  - U08/U17/U21: いずれも deps が全て done、ファイル一式が存在し対応テスト群が緑、lint/typecheck も緑。受け入れゲート充足で done。
+  - 自律判断の性質: buildUnit の status よりも**確定ツリーの実測(git ワーキングツリー = 真実源)**を優先。報告は実装ラウンド時点のスナップショットで、後続/並行ユニットの収束で blocker が解消されたため確定時点の全緑をもって done と判定(D9/D11/D12 と同方針)。
+
 ## 未解決の不明点
 
 - （随時追記）

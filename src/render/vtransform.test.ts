@@ -1,0 +1,171 @@
+// VTransform unit tests (U17): fixed input → expected output for the pure
+// world↔screen math, fit-all zoom, cursor-anchored zoom, and seam wrap turns.
+
+import { describe, expect, it } from 'vitest';
+
+import { wrapLonDeg } from '../domain/geo/longitude';
+
+import type { Camera, Viewport } from './camera';
+import { DEFAULT_ZOOM_RANGE } from './camera';
+import {
+  fitWorldZoom,
+  initialCamera,
+  representativeCenterLon,
+  screenToWorld,
+  worldToScreen,
+  wrapTurnsForViewport,
+  zoomAtCursor,
+  zoomStepAtCursor,
+} from './vtransform';
+
+const VP: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
+const CAM: Camera = { centerLon: 0, centerLat: 0, zoom: 2 };
+
+describe('worldToScreen', () => {
+  it('maps the camera center to the viewport center', () => {
+    const s = worldToScreen({ lon: 0, lat: 0 }, CAM, VP);
+    expect(s).toEqual({ x: 400, y: 300 });
+  });
+
+  it('scales longitude east as +x and latitude north as -y (flip)', () => {
+    // +10° lon at zoom 2 = +20px x; +10° lat = -20px y (north is up).
+    const s = worldToScreen({ lon: 10, lat: 10 }, CAM, VP);
+    expect(s.x).toBeCloseTo(420);
+    expect(s.y).toBeCloseTo(280);
+  });
+
+  it('uses the raw continuous longitude difference (no ±360 fold)', () => {
+    // centerLon 350 (continuous), point at 360 = +10° east of center.
+    const cam: Camera = { centerLon: 350, centerLat: 0, zoom: 2 };
+    const s = worldToScreen({ lon: 360, lat: 0 }, cam, VP);
+    expect(s.x).toBeCloseTo(420);
+  });
+});
+
+describe('screenToWorld', () => {
+  it('is the algebraic inverse at the center', () => {
+    expect(screenToWorld({ x: 400, y: 300 }, CAM, VP)).toEqual({ lon: 0, lat: 0 });
+  });
+
+  it('round-trips a sample world point exactly enough', () => {
+    const w = { lon: 37.5, lat: -12.25 };
+    const back = screenToWorld(worldToScreen(w, CAM, VP), CAM, VP);
+    expect(back.lon).toBeCloseTo(w.lon, 9);
+    expect(back.lat).toBeCloseTo(w.lat, 9);
+  });
+});
+
+describe('fitWorldZoom (FR-11)', () => {
+  it('picks the latitude-limited zoom for a wide viewport', () => {
+    // 800/360 = 2.22 vs 600/180 = 3.33 → min = 2.22 (lon-limited here, wide-ish).
+    expect(fitWorldZoom(VP)).toBeCloseTo(800 / 360);
+  });
+
+  it('picks the longitude-limited zoom for a tall viewport', () => {
+    const tall: Viewport = { widthCss: 400, heightCss: 1200, devicePixelRatio: 1 };
+    // 400/360 = 1.11 vs 1200/180 = 6.67 → min = 1.11 (lon-limited).
+    expect(fitWorldZoom(tall)).toBeCloseTo(400 / 360);
+  });
+
+  it('is symmetric for a square viewport (lat is the tighter axis)', () => {
+    const sq: Viewport = { widthCss: 720, heightCss: 720, devicePixelRatio: 1 };
+    // 720/360 = 2 vs 720/180 = 4 → min = 2.
+    expect(fitWorldZoom(sq)).toBeCloseTo(2);
+  });
+
+  it('returns 0 for a degenerate (zero / non-finite) viewport', () => {
+    expect(fitWorldZoom({ widthCss: 0, heightCss: 600, devicePixelRatio: 1 })).toBe(0);
+    expect(fitWorldZoom({ widthCss: 800, heightCss: 0, devicePixelRatio: 1 })).toBe(0);
+    expect(
+      fitWorldZoom({ widthCss: Number.NaN, heightCss: 600, devicePixelRatio: 1 }),
+    ).toBe(0);
+  });
+
+  it('keeps the whole world inside the viewport at the fit zoom', () => {
+    const z = fitWorldZoom(VP);
+    expect(360 * z).toBeLessThanOrEqual(VP.widthCss + 1e-9);
+    expect(180 * z).toBeLessThanOrEqual(VP.heightCss + 1e-9);
+  });
+});
+
+describe('initialCamera (FR-11)', () => {
+  it('is centered at lon 0 / lat 0 with the fit-all zoom', () => {
+    const cam = initialCamera(VP);
+    expect(cam.centerLon).toBe(0);
+    expect(cam.centerLat).toBe(0);
+    expect(cam.zoom).toBeCloseTo(fitWorldZoom(VP));
+  });
+});
+
+describe('zoomAtCursor (FR-08 cursor-anchored)', () => {
+  it('keeps the world point under the cursor fixed on screen', () => {
+    const cursor = { x: 600, y: 200 };
+    const before = screenToWorld(cursor, CAM, VP);
+    const next = zoomAtCursor(CAM, VP, cursor, 10);
+    const after = worldToScreen(before, next, VP);
+    expect(after.x).toBeCloseTo(cursor.x, 6);
+    expect(after.y).toBeCloseTo(cursor.y, 6);
+  });
+
+  it('clamps the requested zoom into the supplied range', () => {
+    const tooBig = zoomAtCursor(CAM, VP, { x: 400, y: 300 }, 9999, DEFAULT_ZOOM_RANGE);
+    expect(tooBig.zoom).toBe(DEFAULT_ZOOM_RANGE.maxZoom);
+    const tooSmall = zoomAtCursor(CAM, VP, { x: 400, y: 300 }, 0.001, DEFAULT_ZOOM_RANGE);
+    expect(tooSmall.zoom).toBe(DEFAULT_ZOOM_RANGE.minZoom);
+  });
+
+  it('does not mutate the input camera (教訓 5.17)', () => {
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 2 };
+    zoomAtCursor(cam, VP, { x: 100, y: 100 }, 5);
+    expect(cam).toEqual({ centerLon: 0, centerLat: 0, zoom: 2 });
+  });
+});
+
+describe('zoomStepAtCursor', () => {
+  it('multiplies the current zoom by the factor (before clamp)', () => {
+    const next = zoomStepAtCursor(CAM, VP, { x: 400, y: 300 }, 1.5);
+    expect(next.zoom).toBeCloseTo(3);
+  });
+});
+
+describe('wrapTurnsForViewport (FR-07 seam tiling)', () => {
+  it('returns a single offset [0] when the viewport stays within one world turn', () => {
+    // zoom 2, width 800 → 400° wide... that DOES exceed 360. Use a tighter zoom.
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 10 };
+    // 800/10 = 80° wide, centered at 0 → covers [-40, 40], one turn.
+    expect(wrapTurnsForViewport(cam, VP)).toEqual([0]);
+  });
+
+  it('includes the +1 turn when the viewport crosses the +180 seam', () => {
+    const cam: Camera = { centerLon: 170, centerLat: 0, zoom: 10 };
+    // covers [130, 210] → crosses +180, needs turns 0 and +1.
+    expect(wrapTurnsForViewport(cam, VP)).toContain(0);
+    expect(wrapTurnsForViewport(cam, VP)).toContain(1);
+  });
+
+  it('enumerates several turns when zoomed out past one world width', () => {
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 0.5 };
+    // 800/0.5 = 1600° wide → > 4 turns; expect a contiguous integer range.
+    const turns = wrapTurnsForViewport(cam, VP);
+    expect(turns.length).toBeGreaterThanOrEqual(4);
+    for (let i = 1; i < turns.length; i += 1) {
+      expect(turns[i]! - turns[i - 1]!).toBe(1);
+    }
+  });
+
+  it('returns [0] for a degenerate viewport / zoom', () => {
+    expect(wrapTurnsForViewport(CAM, { ...VP, widthCss: 0 })).toEqual([0]);
+    expect(wrapTurnsForViewport({ ...CAM, zoom: 0 }, VP)).toEqual([0]);
+  });
+});
+
+describe('representativeCenterLon (FR-12, delegates to U05)', () => {
+  it('folds a continuous center into [-180, 180) via wrapLonDeg', () => {
+    expect(representativeCenterLon({ centerLon: 540, centerLat: 0, zoom: 1 })).toBe(
+      wrapLonDeg(540),
+    );
+    expect(representativeCenterLon({ centerLon: -190, centerLat: 0, zoom: 1 })).toBe(
+      wrapLonDeg(-190),
+    );
+  });
+});

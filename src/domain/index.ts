@@ -283,3 +283,65 @@ export {
   multiPolygonFromRing,
   multiPolygonFromPolygon,
 } from './geometry/index';
+
+// U07: ring-hierarchy invariants (FR-24 alternation), geometric validation
+// (FR-25 containment / sibling & enclave non-overlap), and deletion-time
+// reorganization — pure functions over the U06 ring model + vertex store.
+export {
+  childrenOf,
+  topLevelRings,
+  ringDepth,
+  RING_VIOLATION,
+  type RingViolationKind,
+  type RingViolation,
+  type RingValidationResult,
+  validateAlternation,
+  validateGeometry,
+  validateRingHierarchy,
+  deleteRingAndReorganize,
+} from './ring-hierarchy';
+
+// U08: feature tree hierarchy model + derived depth + invariant validation
+// (forest structure, top-level⇔no-parent, aggregate shape = union of children) —
+// pure, cycle-safe (教訓5.28). Boolean ops delegated to U06.
+export {
+  type Forest,
+  HIERARCHY_ROLE,
+  type HierarchyRole,
+  type ParentWalk,
+  buildForest,
+  directChildIds,
+  hasChildren,
+  hierarchyRole,
+  walkToRoot,
+  descendantIds,
+  asAggregate,
+  DEPTH_UNDEFINED,
+  derivedDepth,
+  derivedDepths,
+  isDepthUndefined,
+  maxDerivedDepth,
+  SHAPE_RESOLUTION_FAILURE,
+  type ShapeResolutionFailureKind,
+  type ShapeResolutionFailure,
+  type ShapeResolution,
+  resolveLeafShape,
+  resolveFeatureArea,
+  HIERARCHY_VIOLATION,
+  type HierarchyViolationKind,
+  type HierarchyViolation as FeatureHierarchyViolation,
+  type HierarchyValidation,
+  type TopLevelFlags,
+  NO_EXPLICIT_FLAGS,
+  AGGREGATE_CHILD_VERDICT,
+  type AggregateChildVerdict,
+  type ValidateOptions,
+  checkTopLevelEquivalence,
+  checkCycles,
+  checkDanglingParents,
+  checkAggregateShapes,
+  checkAggregateChildCounts,
+  aggregateChildVerdict,
+  areasEqualWithinTolerance,
+  validateHierarchy,
+} from './hierarchy/index';
