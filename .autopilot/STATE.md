@@ -25,6 +25,7 @@ IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / sc
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20: U02・U03 ラウンド確定。両ユニット buildUnit=converged(各1 round, acceptanceMet)。**全体検証3点 全緑**(typecheck=0 / lint=0 / test=0: 8 files・70 tests passed、property test含む)。U02 が記録していた blocker(並列実行中 U03 の編集ファイル src/domain/feature.ts unused-vars / type-guarantees.test-d.ts TS2578/TS2353)は U03 収束により**解消済み**を全体グリーンで確認。fast-check ^3.22.0 の devDependency 追加もロックファイル整合 OK(property test 実行成功)。units.json: U02→done, U03→done。次ready候補: U04・U05・U12(deps=U03)、U16(deps=U12,U02)等は上流待ち。
 - 2026-06-20: U01 ラウンド確定。buildUnit=converged(2 rounds, acceptanceMet, blockers無)。検証3点 **全緑**(typecheck=0/lint=0/test=0: 1 file・1 test passed)。units.json: U01→done。次ready候補: U02・U03(deps=U01 がdone)。
 - 2026-06-20: DESIGN完了・commit(8226b9c)。units.json作成。IMPL Round1(U01)起動。
 - 2026-06-20: autopilot起動・scaffold commit(06baa3c)。

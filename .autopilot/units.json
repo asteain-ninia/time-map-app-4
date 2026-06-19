@@ -2,8 +2,8 @@
   "note": "依存グラフ + ステータス。status: pending | building | done | needs-attention。ready = status==pending かつ deps が全て done。restart時はこれと git を突き合わせる(gitが真)。",
   "units": [
     {"id":"U01","deps":[],"size":"M","status":"done"},
-    {"id":"U02","deps":["U01"],"size":"M","status":"pending"},
-    {"id":"U03","deps":["U01"],"size":"M","status":"pending"},
+    {"id":"U02","deps":["U01"],"size":"M","status":"done"},
+    {"id":"U03","deps":["U01"],"size":"M","status":"done"},
     {"id":"U04","deps":["U03"],"size":"S","status":"pending"},
     {"id":"U05","deps":["U03"],"size":"M","status":"pending"},
     {"id":"U06","deps":["U05"],"size":"M","status":"pending"},

@@ -16,34 +16,35 @@
     "smoke": "node scripts/smoke-launch.mjs"
   },
   "dependencies": {
-    "immer": "^10.1.1",
-    "zustand": "^4.5.5",
-    "rbush": "^4.0.1",
-    "polygon-clipping": "^0.15.7",
-    "zod": "^3.23.8",
-    "markdown-it": "^14.1.0",
     "dompurify": "^3.1.7",
     "fflate": "^0.8.2",
+    "immer": "^10.1.1",
+    "markdown-it": "^14.1.0",
+    "polygon-clipping": "^0.15.7",
+    "rbush": "^4.0.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "zod": "^3.23.8",
+    "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@eslint/js": "^9.9.1",
+    "@types/markdown-it": "^14.1.2",
     "@types/node": "^20.16.5",
+    "@types/rbush": "^4.0.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
-    "@types/markdown-it": "^14.1.2",
-    "@types/rbush": "^4.0.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "electron": "^31.4.0",
     "electron-vite": "^2.3.0",
-    "vite": "^5.4.3",
-    "@vitejs/plugin-react": "^4.3.1",
-    "typescript": "^5.5.4",
-    "vitest": "^2.0.5",
     "eslint": "^9.9.1",
-    "typescript-eslint": "^8.4.0",
-    "@eslint/js": "^9.9.1",
-    "eslint-plugin-import": "^2.30.0",
     "eslint-import-resolver-typescript": "^3.6.3",
-    "globals": "^15.9.0"
+    "eslint-plugin-import": "^2.30.0",
+    "fast-check": "^3.23.2",
+    "globals": "^15.9.0",
+    "typescript": "^5.5.4",
+    "typescript-eslint": "^8.4.0",
+    "vite": "^5.4.3",
+    "vitest": "^2.0.5"
   }
 }
