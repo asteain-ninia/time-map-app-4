@@ -1,0 +1,663 @@
+// U19 feature drawing layer (FR-17 / FR-21 / FR-71 / FR-86, NFR 5.1 / 5.2).
+//
+// Render layer, PURE: turns the SELECTED-TIME evaluated feature state + a
+// camera/viewport into declarative `DrawPrimitive`s for the `MapRenderer`
+// (技術方針 2.4 / 2.5). There is NO Canvas API here — the actual painting lives in
+// `canvas2d-renderer`; this module only decides WHAT to draw and WITH WHICH style,
+// so the whole decision surface is Vitest-checkable without a Canvas (教訓 5.41 /
+// NFR 5.8). Import direction is render → domain only (lint-enforced).
+//
+// RESPONSIBILITY (spec §やること): consume already-evaluated state and an
+// already-resolved derived shape (U08) and an already-narrowed view-clipping
+// candidate set (U10) and draw them. This module does NOT evaluate anchors (U16),
+// does NOT compute aggregate union shapes (U08), does NOT build/maintain the
+// spatial index (U10), does NOT own the camera (U17), does NOT fold longitude
+// (U05), does NOT decide colors (FR-100/101) — it consumes those outputs (spec
+// §やらないこと / §依存).
+//
+// KEY INVARIANTS encoded here:
+//   - SINGLE size source (教訓 §4 / 5.30): point radius, line width and label font
+//     are all screen-space constants carried on ONE `ScreenSizes` value, so a
+//     point, a line and a label can never invent divergent zoom-dependent sizes
+//     (FR-17). Areas (fills) scale with the map; only their OUTLINE width is
+//     screen-fixed (開発ガイド §5.25: do not widen FR-17 past its named targets).
+//   - HOLE TRANSPARENCY / ENCLAVE INDEPENDENCE (FR-21): an area is emitted as ONE
+//     `PolygonShapePrimitive` carrying every piece (territory + holes + enclaves);
+//     the renderer's even-odd fill makes holes透過 and enclaves independent with a
+//     SINGLE fill color and NO connector line. The SELECTED state changes ONLY the
+//     fill/stroke COLOR (selectedColor), never the ring structure (教訓 5.25): the
+//     same shape resolution drives恒常 and ハイライト alike (教訓 5.29).
+//   - SINGLE shape source (教訓 5.29): the `GeoMultiPolygon` handed in (whether a
+//     leaf's own shape or U08's derived aggregate union) is the SAME geometry used
+//     for the fill, the outline AND the label anchor/occupancy — drawing,
+//     hit-test and label position can never drift apart.
+//   - PURITY (受け入れ基準 6): every function is pure; inputs are never mutated and
+//     the same input yields the same primitives.
+
+import type { GeoMultiPolygon, GeoPolygon, GeoRing } from '../domain/geometry/types';
+
+import type { Camera, Viewport } from './camera';
+import type {
+  DrawPrimitive,
+  LabelPrimitive,
+  LinePrimitive,
+  PointPrimitive,
+  PolygonShapePrimitive,
+} from './map-renderer';
+import type { ScreenPoint, WorldPoint } from './vtransform';
+import { screenToWorld, worldToScreen } from './vtransform';
+
+// --- single screen-size source (FR-17 / 教訓 5.30) ---------------------------
+
+/**
+ * The ONE place every screen-fixed size lives (FR-17 単一真実源). The renderer
+ * keeps these constant across zoom: a point's radius, a polyline's / outline's
+ * stroke width, and every label's font are all in CSS px, never multiplied by
+ * `camera.zoom`. Sharing one value forbids per-type drift (教訓 5.30 過少共有の戒め).
+ */
+export interface ScreenSizes {
+  /** Point marker radius in CSS px (FR-17 / FR-18). */
+  readonly pointRadiusPx: number;
+  /** Polyline + area outline stroke width in CSS px (FR-17 / FR-19). */
+  readonly strokeWidthPx: number;
+  /** Label font size in CSS px (FR-17 / FR-86). */
+  readonly labelFontPx: number;
+}
+
+export const DEFAULT_SCREEN_SIZES: ScreenSizes = {
+  pointRadiusPx: 5,
+  strokeWidthPx: 1.5,
+  labelFontPx: 12,
+};
+
+// --- per-type label visibility thresholds (FR-86) ---------------------------
+//
+// Label VISIBILITY is deliberately NOT a single shared predicate: the三種別
+// conditions are本質的に異なる (点=最小ズーム倍率, 線=可視長, 面=リング占有率,
+// FR-86) so we keep three separate predicates (教訓 5.30 過剰共有の戒め). Only the
+// SIZE is shared (above), not the visibility rule.
+
+/**
+ * The thresholds that gate label drawing, all from project settings (FR-86 /
+ * FR-109). Each is the INCLUSIVE lower bound: a value `>=` threshold shows the
+ * label, `<` hides it (受け入れ基準 4 boundary-inclusive).
+ */
+export interface LabelThresholds {
+  /** Point label appears when `camera.zoom >= pointMinZoom` (FR-86 点=最小ズーム倍率). */
+  readonly pointMinZoom: number;
+  /** Line label appears when its screen-projected length px `>=` this (FR-86 線=可視長). */
+  readonly lineMinVisibleLengthPx: number;
+  /**
+   * Area-ring label appears when the ring's screen-projected occupancy
+   * (ring screen area ÷ viewport area) `>=` this (FR-86 / FR-109 面占有率閾値).
+   */
+  readonly areaMinOccupancy: number;
+}
+
+export const DEFAULT_LABEL_THRESHOLDS: LabelThresholds = {
+  pointMinZoom: 2,
+  lineMinVisibleLengthPx: 40,
+  areaMinOccupancy: 0.01,
+};
+
+// --- evaluated input (renderer-independent contract, 教訓 5.33) --------------
+//
+// The render layer must not reach into U16's feature internals; it receives an
+// already-evaluated, already-styled DRAW ITEM per existing feature. Time
+// evaluation (which anchor is active / does it exist) happened upstream (U16); a
+// feature that does NOT exist at the selected time is simply NOT in this list
+// (受け入れ基準 1: 非存在は描画コマンドに現れない). The derived shape of an aggregate
+// was resolved upstream by U08's single resolution (教訓 5.29) and arrives here as
+// a plain `GeoMultiPolygon` — this module never unions anything.
+
+/** Resolved visual style for one feature (colors already decided by FR-100/101). */
+export interface FeatureStyle {
+  /** Normal fill / point / outline base color. */
+  readonly fill: string;
+  /** Outline (border) color for areas and the stroke for lines/points outline. */
+  readonly stroke: string;
+  /** The color to use INSTEAD when selected (FR-82). Structure never changes. */
+  readonly selectedColor: string;
+}
+
+/** An evaluated point feature at the selected time (FR-18). */
+export interface EvaluatedPoint {
+  readonly kind: 'point';
+  readonly id: string;
+  readonly at: WorldPoint;
+  readonly style: FeatureStyle;
+  /** Label text; empty string ⇒ no label even when the threshold passes. */
+  readonly label: string;
+  readonly selected: boolean;
+}
+
+/** An evaluated line feature at the selected time (FR-19). */
+export interface EvaluatedLine {
+  readonly kind: 'line';
+  readonly id: string;
+  /** World-space vertices (U05 wrap-展開 already applied upstream). */
+  readonly points: readonly WorldPoint[];
+  readonly style: FeatureStyle;
+  readonly label: string;
+  readonly selected: boolean;
+}
+
+/**
+ * An evaluated area feature (leaf OR aggregate) at the selected time (FR-20 /
+ * FR-35). `shape` is the SINGLE resolved geometry (教訓 5.29): for a leaf it is its
+ * own rings; for an aggregate it is U08's derived union (which may be MULTIPLE
+ * disjoint pieces — 教訓 5.1 — all carried here, none dropped). Each piece is
+ * [territory, ...holes]; an enclave is its own piece (a separate territory ring).
+ */
+export interface EvaluatedArea {
+  readonly kind: 'area';
+  readonly id: string;
+  readonly shape: GeoMultiPolygon;
+  readonly style: FeatureStyle;
+  readonly label: string;
+  readonly selected: boolean;
+}
+
+export type EvaluatedFeature = EvaluatedPoint | EvaluatedLine | EvaluatedArea;
+
+// --- viewport ↔ world rectangle (view clipping, NFR 5.1) --------------------
+
+/** An axis-aligned world rectangle (continuous-scalar lon on X, lat on Y). */
+export interface WorldRect {
+  readonly minLon: number;
+  readonly minLat: number;
+  readonly maxLon: number;
+  readonly maxLat: number;
+}
+
+/**
+ * The world rectangle currently covered by the viewport, via the shared transform
+ * (so what we clip against is exactly what is on screen, 教訓 5.29). The four
+ * screen corners map back to world; we take the min/max. A degenerate viewport /
+ * camera yields the whole world so a not-yet-measured frame still draws.
+ *
+ * NOTE: this is the SINGLE-replica rectangle in continuous longitude. Seam-wrap
+ * (±360°) replicas are handled by the renderer's draw loop AND by widening the
+ * U10 query upstream (spec §視野外クリッピング: ラップ複製も問い合わせ対象); this
+ * module clips against the literal covered span and the renderer tiles the rest.
+ */
+export function viewportWorldRect(camera: Camera, viewport: Viewport): WorldRect {
+  if (
+    !Number.isFinite(viewport.widthCss) ||
+    !Number.isFinite(viewport.heightCss) ||
+    viewport.widthCss <= 0 ||
+    viewport.heightCss <= 0 ||
+    !Number.isFinite(camera.zoom) ||
+    camera.zoom <= 0
+  ) {
+    return { minLon: -180, minLat: -90, maxLon: 180, maxLat: 90 };
+  }
+  const tl = screenToWorld({ x: 0, y: 0 }, camera, viewport);
+  const br = screenToWorld({ x: viewport.widthCss, y: viewport.heightCss }, camera, viewport);
+  return {
+    minLon: Math.min(tl.lon, br.lon),
+    maxLon: Math.max(tl.lon, br.lon),
+    minLat: Math.min(tl.lat, br.lat),
+    maxLat: Math.max(tl.lat, br.lat),
+  };
+}
+
+/** True iff `a` and `b` overlap or touch (inclusive). */
+export function worldRectsIntersect(a: WorldRect, b: WorldRect): boolean {
+  return a.minLon <= b.maxLon && a.maxLon >= b.minLon && a.minLat <= b.maxLat && a.maxLat >= b.minLat;
+}
+
+/** Bounding world rect of a point (degenerate, used for uniform clipping). */
+export function pointRect(at: WorldPoint): WorldRect {
+  return { minLon: at.lon, maxLon: at.lon, minLat: at.lat, maxLat: at.lat };
+}
+
+/** Bounding world rect of a vertex list, or undefined when empty (教訓 5.18). */
+export function pointsRect(points: readonly WorldPoint[]): WorldRect | undefined {
+  let r: WorldRect | undefined;
+  for (const p of points) {
+    r =
+      r === undefined
+        ? { minLon: p.lon, maxLon: p.lon, minLat: p.lat, maxLat: p.lat }
+        : {
+            minLon: Math.min(r.minLon, p.lon),
+            maxLon: Math.max(r.maxLon, p.lon),
+            minLat: Math.min(r.minLat, p.lat),
+            maxLat: Math.max(r.maxLat, p.lat),
+          };
+  }
+  return r;
+}
+
+/** Bounding world rect of a multi-polygon (every ring), or undefined when empty. */
+export function shapeRect(shape: GeoMultiPolygon): WorldRect | undefined {
+  let r: WorldRect | undefined;
+  for (const piece of shape) {
+    for (const ring of piece) {
+      for (const c of ring) {
+        r =
+          r === undefined
+            ? { minLon: c.lon, maxLon: c.lon, minLat: c.lat, maxLat: c.lat }
+            : {
+                minLon: Math.min(r.minLon, c.lon),
+                maxLon: Math.max(r.maxLon, c.lon),
+                minLat: Math.min(r.minLat, c.lat),
+                maxLat: Math.max(r.maxLat, c.lat),
+              };
+      }
+    }
+  }
+  return r;
+}
+
+/**
+ * Whether an evaluated feature's geometry intersects the viewport rect (view
+ * clipping, 受け入れ基準 5 / 教訓 5.3 操作対象は表示状態に限定). A feature with no
+ * geometry (empty line / empty area) is NOT visible (教訓 5.18: absence, not a
+ * crash). The aggregate's derived shape is clipped by ITS resolved bbox (spec
+ * §視野外クリッピング: 集約は U08 解決後の bbox).
+ */
+export function featureIntersectsViewport(feature: EvaluatedFeature, view: WorldRect): boolean {
+  switch (feature.kind) {
+    case 'point':
+      return worldRectsIntersect(pointRect(feature.at), view);
+    case 'line': {
+      const r = pointsRect(feature.points);
+      return r !== undefined && worldRectsIntersect(r, view);
+    }
+    case 'area': {
+      const r = shapeRect(feature.shape);
+      return r !== undefined && worldRectsIntersect(r, view);
+    }
+    default:
+      return assertNeverFeature(feature);
+  }
+}
+
+// --- LOD (詳細度制御, NFR 5.1 / R1) -----------------------------------------
+
+/**
+ * The LOD level for a zoom. Higher = more detail. The level only changes the
+ * SIMPLIFICATION tolerance, never the topology: holes stay holes, enclaves stay
+ * separate pieces, aggregate pieces are never merged (spec §LOD: 正しさを壊さない).
+ */
+export const LOD_LEVEL = {
+  Coarse: 0,
+  Medium: 1,
+  Full: 2,
+} as const;
+
+export type LodLevel = (typeof LOD_LEVEL)[keyof typeof LOD_LEVEL];
+
+/**
+ * Decide the LOD level from zoom (CSS px per degree). Zoomed-out (small zoom) ⇒
+ * coarser. Thresholds are deliberately simple constants; the harness measures the
+ * cost difference between levels (受け入れ基準 5). Pure.
+ */
+export function lodLevelForZoom(zoom: number): LodLevel {
+  if (!Number.isFinite(zoom) || zoom <= 2) return LOD_LEVEL.Coarse;
+  if (zoom <= 16) return LOD_LEVEL.Medium;
+  return LOD_LEVEL.Full;
+}
+
+/**
+ * The vertex-simplification tolerance (in DEGREES) for a LOD level. Vertices
+ * closer together than the tolerance collapse at coarse zoom (頂点列簡略化). 0 at
+ * Full means no simplification. Pure.
+ */
+export function lodToleranceDeg(level: LodLevel): number {
+  switch (level) {
+    case LOD_LEVEL.Coarse:
+      return 2;
+    case LOD_LEVEL.Medium:
+      return 0.25;
+    case LOD_LEVEL.Full:
+      return 0;
+    default:
+      return 0;
+  }
+}
+
+/**
+ * Simplify a ring by dropping consecutive vertices nearer than `toleranceDeg`
+ * (a cheap radial-distance decimation, NOT Douglas-Peucker — this stays linear
+ * and topology-safe). The FIRST and LAST kept vertices are always preserved so a
+ * ring never collapses below 3 points unless it truly has < 3 input points. A
+ * tolerance of 0 returns the input ring unchanged (Full LOD). Pure: returns a new
+ * array, never mutates the input (受け入れ基準 6).
+ */
+export function simplifyRing(ring: GeoRing, toleranceDeg: number): GeoRing {
+  if (toleranceDeg <= 0 || ring.length <= 3) return ring;
+  const tol2 = toleranceDeg * toleranceDeg;
+  const first = ring[0]!;
+  const kept: GeoRing[number][] = [first];
+  let anchor = first;
+  for (let i = 1; i < ring.length; i += 1) {
+    const c = ring[i]!;
+    const dlon = c.lon - anchor.lon;
+    const dlat = c.lat - anchor.lat;
+    if (dlon * dlon + dlat * dlat >= tol2) {
+      kept.push(c);
+      anchor = c;
+    }
+  }
+  // Keep at least a triangle if the input had one: re-pad from the tail.
+  if (kept.length < 3 && ring.length >= 3) {
+    return ring;
+  }
+  return kept;
+}
+
+/** Simplify every ring of a piece at the given tolerance (holes included). */
+function simplifyPiece(piece: GeoPolygon, toleranceDeg: number): GeoPolygon {
+  if (toleranceDeg <= 0) return piece;
+  return piece.map((ring) => simplifyRing(ring, toleranceDeg));
+}
+
+/** Simplify every piece of a shape (LOD); never drops a piece (教訓 5.1). */
+export function simplifyShape(shape: GeoMultiPolygon, toleranceDeg: number): GeoMultiPolygon {
+  if (toleranceDeg <= 0) return shape;
+  return shape.map((piece) => simplifyPiece(piece, toleranceDeg));
+}
+
+// --- label visibility predicates (per-type, FR-86) --------------------------
+
+/** Point label shows iff zoom is at/above the configured minimum (FR-86, 境界含む). */
+export function pointLabelVisible(zoom: number, thresholds: LabelThresholds): boolean {
+  return zoom >= thresholds.pointMinZoom;
+}
+
+/**
+ * The on-screen projected length (CSS px) of a polyline at the current camera
+ * (FR-86 線=可視長). Sums segment lengths in screen space. Pure.
+ */
+export function projectedLengthPx(
+  points: readonly WorldPoint[],
+  camera: Camera,
+  viewport: Viewport,
+): number {
+  if (points.length < 2) return 0;
+  let total = 0;
+  let prev = worldToScreen(points[0]!, camera, viewport);
+  for (let i = 1; i < points.length; i += 1) {
+    const cur = worldToScreen(points[i]!, camera, viewport);
+    const dx = cur.x - prev.x;
+    const dy = cur.y - prev.y;
+    total += Math.sqrt(dx * dx + dy * dy);
+    prev = cur;
+  }
+  return total;
+}
+
+/** Line label shows iff its projected length reaches the threshold (FR-86, 境界含む). */
+export function lineLabelVisible(
+  points: readonly WorldPoint[],
+  camera: Camera,
+  viewport: Viewport,
+  thresholds: LabelThresholds,
+): boolean {
+  return projectedLengthPx(points, camera, viewport) >= thresholds.lineMinVisibleLengthPx;
+}
+
+/**
+ * The screen-space area (CSS px²) of a ring at the current camera, via the shoelace
+ * formula on projected vertices (FR-86 面=画面占有率). Absolute value (orientation-
+ * independent). Pure.
+ */
+export function projectedRingAreaPx(
+  ring: GeoRing,
+  camera: Camera,
+  viewport: Viewport,
+): number {
+  if (ring.length < 3) return 0;
+  const pts: ScreenPoint[] = ring.map((c) => worldToScreen(c, camera, viewport));
+  let twice = 0;
+  for (let i = 0; i < pts.length; i += 1) {
+    const a = pts[i]!;
+    const b = pts[(i + 1) % pts.length]!;
+    twice += a.x * b.y - b.x * a.y;
+  }
+  return Math.abs(twice) / 2;
+}
+
+/**
+ * A ring's screen-occupancy = its projected area ÷ the viewport area (FR-86 / FR-
+ * 109). 0 when the viewport has no area. Pure.
+ */
+export function ringOccupancy(
+  ring: GeoRing,
+  camera: Camera,
+  viewport: Viewport,
+): number {
+  const vpArea = viewport.widthCss * viewport.heightCss;
+  if (!Number.isFinite(vpArea) || vpArea <= 0) return 0;
+  return projectedRingAreaPx(ring, camera, viewport) / vpArea;
+}
+
+/** Area-ring label shows iff its occupancy reaches the threshold (FR-86, 境界含む). */
+export function areaRingLabelVisible(
+  ring: GeoRing,
+  camera: Camera,
+  viewport: Viewport,
+  thresholds: LabelThresholds,
+): boolean {
+  return ringOccupancy(ring, camera, viewport) >= thresholds.areaMinOccupancy;
+}
+
+// --- label anchor (centroid) ------------------------------------------------
+
+/** The world centroid of a ring (vertex average; finite-safe). Used as label anchor. */
+export function ringCentroid(ring: GeoRing): WorldPoint {
+  if (ring.length === 0) return { lon: 0, lat: 0 };
+  let lon = 0;
+  let lat = 0;
+  for (const c of ring) {
+    lon += c.lon;
+    lat += c.lat;
+  }
+  return { lon: lon / ring.length, lat: lat / ring.length };
+}
+
+// --- the batch builder (the single entry point) -----------------------------
+
+/** Options bundling the shared, per-frame inputs for {@link buildFeaturePrimitives}. */
+export interface BuildOptions {
+  readonly camera: Camera;
+  readonly viewport: Viewport;
+  readonly sizes: ScreenSizes;
+  readonly thresholds: LabelThresholds;
+  /**
+   * When true, restrict drawing to features whose geometry intersects the viewport
+   * (view clipping ON). When false, draw every supplied feature (clipping OFF) so
+   * the harness can measure the cost difference (受け入れ基準 5). Default ON.
+   */
+  readonly clip?: boolean;
+  /**
+   * When true, apply LOD vertex simplification by zoom. When false, draw full
+   * detail (LOD OFF) for the harness comparison (受け入れ基準 5). Default ON.
+   */
+  readonly lod?: boolean;
+}
+
+/** The active color for a feature: selectedColor when selected, else fill (FR-82). */
+function activeColor(style: FeatureStyle, selected: boolean): string {
+  return selected ? style.selectedColor : style.fill;
+}
+
+/**
+ * Build the draw primitives for ONE point feature: the marker + (conditionally)
+ * its label. Order: marker then label (label on top). The label is added only
+ * when text is non-empty AND the point-label threshold passes (FR-86, 受け入れ基準 4).
+ */
+function buildPointPrimitives(
+  f: EvaluatedPoint,
+  opts: BuildOptions,
+): DrawPrimitive[] {
+  const fill = activeColor(f.style, f.selected);
+  const marker: PointPrimitive = {
+    kind: 'point',
+    at: f.at,
+    radiusPx: opts.sizes.pointRadiusPx,
+    fill,
+  };
+  const out: DrawPrimitive[] = [marker];
+  if (f.label !== '' && pointLabelVisible(opts.camera.zoom, opts.thresholds)) {
+    out.push({
+      kind: 'label',
+      at: f.at,
+      text: f.label,
+      fontPx: opts.sizes.labelFontPx,
+      fill,
+    } satisfies LabelPrimitive);
+  }
+  return out;
+}
+
+/** Build the draw primitives for ONE line feature: the polyline + (conditional) label. */
+function buildLinePrimitives(f: EvaluatedLine, opts: BuildOptions): DrawPrimitive[] {
+  if (f.points.length < 2) return [];
+  const stroke = activeColor(f.style, f.selected);
+  const line: LinePrimitive = {
+    kind: 'line',
+    points: f.points,
+    widthPx: opts.sizes.strokeWidthPx,
+    stroke,
+  };
+  const out: DrawPrimitive[] = [line];
+  if (
+    f.label !== '' &&
+    lineLabelVisible(f.points, opts.camera, opts.viewport, opts.thresholds)
+  ) {
+    // Anchor the line label at its midpoint vertex.
+    const mid = f.points[Math.floor(f.points.length / 2)]!;
+    out.push({
+      kind: 'label',
+      at: mid,
+      text: f.label,
+      fontPx: opts.sizes.labelFontPx,
+      fill: stroke,
+    } satisfies LabelPrimitive);
+  }
+  return out;
+}
+
+/**
+ * Convert a domain `GeoRing` (WorldCoordinate[]) into the renderer's `WorldPoint[]`.
+ * Same field names; this is a typed pass-through so the renderer never imports the
+ * domain coordinate type (教訓 5.33 偶然の構造一致に頼らない — make the bridge explicit).
+ */
+function ringToWorldPoints(ring: GeoRing): WorldPoint[] {
+  return ring.map((c) => ({ lon: c.lon, lat: c.lat }));
+}
+
+/**
+ * Build the draw primitives for ONE area feature (FR-20 / FR-21 / FR-86). The
+ * ENTIRE shape (every territory + every hole + every enclave) becomes ONE
+ * `PolygonShapePrimitive` with a SINGLE fill/stroke color, so the renderer's
+ * even-odd fill gives hole透過 + enclave independence with no per-ring color and
+ * no connector line — identical for恒常 and selected (only the COLOR differs,
+ * 教訓 5.25 / 5.29). Then, PER TERRITORY RING (外周 + 各飛び地), a label is added iff
+ * its screen-occupancy passes the threshold (FR-86 リング単位). Hole rings never get
+ * a label (they are negative space). `lod` simplifies vertices first (topology-safe).
+ */
+function buildAreaPrimitives(f: EvaluatedArea, opts: BuildOptions): DrawPrimitive[] {
+  const useLod = opts.lod ?? true;
+  const tol = useLod ? lodToleranceDeg(lodLevelForZoom(opts.camera.zoom)) : 0;
+  const shape = simplifyShape(f.shape, tol);
+  if (shape.length === 0) return [];
+
+  const color = activeColor(f.style, f.selected);
+  const pieces: WorldPoint[][][] = shape.map((piece) =>
+    piece.map((ring) => ringToWorldPoints(ring)),
+  );
+  // Drop pieces that have no drawable territory (every ring < 3) — never the
+  // non-empty pieces (教訓 5.1 片落とし禁止: we keep all real pieces).
+  const drawable = pieces.filter((piece) => piece.some((ring) => ring.length >= 3));
+  if (drawable.length === 0) return [];
+
+  const shapePrim: PolygonShapePrimitive = {
+    kind: 'shape',
+    pieces: drawable,
+    fill: color,
+    stroke: f.style.stroke,
+    strokeWidthPx: opts.sizes.strokeWidthPx,
+  };
+  const out: DrawPrimitive[] = [shapePrim];
+
+  if (f.label !== '') {
+    // Per TERRITORY ring (index 0 of each piece): a飛び地 is its own piece, so this
+    // naturally labels外周 AND each飛び地 separately (FR-86 リング単位, 受け入れ基準 4).
+    for (const piece of shape) {
+      const territory = piece[0];
+      if (territory === undefined || territory.length < 3) continue;
+      if (areaRingLabelVisible(territory, opts.camera, opts.viewport, opts.thresholds)) {
+        out.push({
+          kind: 'label',
+          at: ringCentroid(territory),
+          text: f.label,
+          fontPx: opts.sizes.labelFontPx,
+          fill: color,
+        } satisfies LabelPrimitive);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The single entry point (spec §1 / 受け入れ基準 1): turn the selected-time
+ * evaluated feature list into a flat primitive array for `MapRenderer.drawBatch`.
+ *
+ * Draw ORDER follows the layer契約 (spec §層をまたぐ契約 重なり順): AREAS first, then
+ * LINES, then POINTS, then all LABELS on top — so labels are never hidden under a
+ * later fill and points sit above areas (教訓 5.14 を描画順へ適用). View clipping
+ * (when `clip`) drops features outside the viewport BEFORE building primitives
+ * (教訓 5.3 操作対象は表示状態に限定); the harness flips `clip`/`lod` to measure cost
+ * (受け入れ基準 5). Pure: the input array and features are never mutated (受け入れ基準 6).
+ */
+export function buildFeaturePrimitives(
+  features: readonly EvaluatedFeature[],
+  opts: BuildOptions,
+): DrawPrimitive[] {
+  const clip = opts.clip ?? true;
+  const view = viewportWorldRect(opts.camera, opts.viewport);
+
+  const visible = clip
+    ? features.filter((f) => featureIntersectsViewport(f, view))
+    : features;
+
+  // Build per-band so we can interleave by draw order without re-sorting strings.
+  const areas: DrawPrimitive[] = [];
+  const lines: DrawPrimitive[] = [];
+  const points: DrawPrimitive[] = [];
+  const labels: DrawPrimitive[] = [];
+
+  for (const f of visible) {
+    switch (f.kind) {
+      case 'area': {
+        const prims = buildAreaPrimitives(f, opts);
+        for (const p of prims) (p.kind === 'label' ? labels : areas).push(p);
+        break;
+      }
+      case 'line': {
+        const prims = buildLinePrimitives(f, opts);
+        for (const p of prims) (p.kind === 'label' ? labels : lines).push(p);
+        break;
+      }
+      case 'point': {
+        const prims = buildPointPrimitives(f, opts);
+        for (const p of prims) (p.kind === 'label' ? labels : points).push(p);
+        break;
+      }
+      default:
+        assertNeverFeature(f);
+    }
+  }
+
+  return [...areas, ...lines, ...points, ...labels];
+}
+
+/** Compile-time exhaustiveness guard for the evaluated-feature union. */
+function assertNeverFeature(value: never): never {
+  throw new Error(`feature-layer: unhandled feature ${JSON.stringify(value)}`);
+}

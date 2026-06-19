@@ -33,6 +33,7 @@ import type {
   MapRenderer,
   PointPrimitive,
   PolygonPrimitive,
+  PolygonShapePrimitive,
   RenderBatch,
 } from './map-renderer';
 import type { ScreenPoint, WorldPoint } from './vtransform';
@@ -162,6 +163,9 @@ export class Canvas2DMapRenderer implements MapRenderer {
       case 'polygon':
         this.drawPolygon(primitive, lonOffset);
         return;
+      case 'shape':
+        this.drawShape(primitive, lonOffset);
+        return;
       case 'line':
         this.drawLine(primitive, lonOffset);
         return;
@@ -229,6 +233,39 @@ export class Canvas2DMapRenderer implements MapRenderer {
     ctx.fill();
     if (p.stroke !== undefined && p.strokeWidthPx !== undefined) {
       ctx.lineWidth = p.strokeWidthPx; // screen-fixed even for fills.
+      ctx.strokeStyle = p.stroke;
+      ctx.stroke();
+    }
+  }
+
+  /**
+   * Draw a面情報 with holes/enclaves (FR-20 / FR-21). Every ring of every piece is
+   * traced into ONE path, then filled with the EVEN-ODD rule: territory rings add
+   * area, holes punched inside them cancel it (透過), enclaves inside a hole add it
+   * back — the FR-24交互 alternation with a SINGLE fill color (no per-ring color,
+   * no connector line). The outline, when present, strokes each ring at a
+   * screen-fixed width (FR-17). Hole rings are stroked the same as territory rings
+   * (the hole边界 is a real边界), but never filled separately — there is no second
+   * fill style anywhere, which is what keeps飛び地 same-colored as本土 (FR-101).
+   */
+  private drawShape(p: PolygonShapePrimitive, lonOffset: number): void {
+    const ctx = this.ctx;
+    let any = false;
+    ctx.beginPath();
+    for (const piece of p.pieces) {
+      for (const ring of piece) {
+        if (ring.length < 3) continue;
+        this.tracePath(ring, lonOffset);
+        ctx.closePath();
+        any = true;
+      }
+    }
+    if (!any) return;
+    ctx.fillStyle = p.fill;
+    // even-odd: holes (odd nesting) are透過, enclaves (even nesting) refill (FR-21).
+    ctx.fill('evenodd');
+    if (p.stroke !== undefined && p.strokeWidthPx !== undefined) {
+      ctx.lineWidth = p.strokeWidthPx; // screen-fixed (FR-17).
       ctx.strokeStyle = p.stroke;
       ctx.stroke();
     }

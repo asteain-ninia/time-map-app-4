@@ -142,6 +142,76 @@ describe('empty batch (教訓 5.18)', () => {
   });
 });
 
+describe('FR-21: shape primitive fills holes透過 via even-odd, single fill', () => {
+  it('traces outer + hole into one path and fills evenodd once (hole透過)', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 10 });
+    r.drawBatch({
+      primitives: [
+        {
+          kind: 'shape',
+          pieces: [
+            [
+              [
+                { lon: -5, lat: -5 },
+                { lon: 5, lat: -5 },
+                { lon: 5, lat: 5 },
+                { lon: -5, lat: 5 },
+              ],
+              [
+                { lon: -1, lat: -1 },
+                { lon: 1, lat: -1 },
+                { lon: 1, lat: 1 },
+                { lon: -1, lat: 1 },
+              ],
+            ],
+          ],
+          fill: '#3366cc',
+          stroke: '#123456',
+          strokeWidthPx: 2,
+        },
+      ],
+    });
+    // exactly one even-odd fill (hole透過), with the single feature fill color.
+    expect(surface.ctx.fills.length).toBe(1);
+    expect(surface.ctx.fills[0]).toEqual({ style: '#3366cc', rule: 'evenodd' });
+    // two rings closed (outer + hole) in the one path.
+    expect(surface.ctx.closePaths).toBe(2);
+  });
+
+  it('draws飛び地 pieces with the SAME fill (no per-ring recolor, FR-101)', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 10 });
+    r.drawBatch({
+      primitives: [
+        {
+          kind: 'shape',
+          pieces: [
+            [
+              [
+                { lon: -10, lat: -2 },
+                { lon: -6, lat: -2 },
+                { lon: -6, lat: 2 },
+                { lon: -10, lat: 2 },
+              ],
+            ],
+            [
+              [
+                { lon: 6, lat: -2 },
+                { lon: 10, lat: -2 },
+                { lon: 10, lat: 2 },
+                { lon: 6, lat: 2 },
+              ],
+            ],
+          ],
+          fill: '#3366cc',
+        },
+      ],
+    });
+    // one even-odd fill for the whole feature, single color (飛び地 not recolored).
+    expect(surface.ctx.fills.length).toBe(1);
+    expect(surface.ctx.fills[0]!.style).toBe('#3366cc');
+  });
+});
+
 describe('constructor', () => {
   it('throws when the 2D context is unavailable', () => {
     const badSurface = {

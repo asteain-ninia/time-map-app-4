@@ -24,6 +24,11 @@ export class FakeContext2D {
   fillTexts: { text: string; x: number; y: number }[] = [];
   moveTos: { x: number; y: number }[] = [];
   lineTos: { x: number; y: number }[] = [];
+  /** Each fill call records (fillStyle, fill-rule) so even-odd hole透過 is testable. */
+  fills: { style: string; rule: string }[] = [];
+  /** Each stroke call records its strokeStyle (paired with lineWidths by index). */
+  strokes: string[] = [];
+  closePaths = 0;
   drawImages: { x: number; y: number; w: number; h: number }[] = [];
   clearRects = 0;
   setTransforms: number[][] = [];
@@ -39,7 +44,9 @@ export class FakeContext2D {
     this.clearRects += 1;
   }
   beginPath(): void {}
-  closePath(): void {}
+  closePath(): void {
+    this.closePaths += 1;
+  }
   moveTo(x: number, y: number): void {
     this.moveTos.push({ x, y });
   }
@@ -49,9 +56,12 @@ export class FakeContext2D {
   arc(x: number, y: number, r: number): void {
     this.arcs.push({ x, y, r });
   }
-  fill(): void {}
+  fill(rule?: string): void {
+    this.fills.push({ style: this.fillStyle, rule: rule ?? 'nonzero' });
+  }
   stroke(): void {
     this.lineWidths.push(this.lineWidth);
+    this.strokes.push(this.strokeStyle);
   }
   fillText(text: string, x: number, y: number): void {
     this.fonts.push(this.font);

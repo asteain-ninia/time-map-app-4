@@ -68,6 +68,31 @@ export interface PolygonPrimitive {
   readonly strokeWidthPx?: number;
 }
 
+/**
+ * A filled polygon WITH holes and enclaves (FR-20 / FR-21). This is the primitive
+ * the feature layer (U19) emits for面情報: a list of CLOSED rings where index 0 of
+ * every piece is a territory (filled) ring and the rest are holes (cut out).
+ *
+ * The renderer fills with the EVEN-ODD rule so a hole punched inside a territory
+ * is透過 (no fill) and a territory nested inside a hole (an enclave) is filled
+ * again — exactly the交互 alternation FR-24 fixes, achieved by the fill rule, with
+ * NO per-ring color difference and NO artificial connector line (FR-21). All
+ * territory rings of one面情報 share one `fill`/`stroke` so a飛び地 is never
+ * recolored (FR-101). Stroke width is screen-fixed like a line (FR-17).
+ *
+ * `pieces` mirrors the domain `GeoMultiPolygon` shape (piece = [outer, ...holes])
+ * but is held as plain `WorldPoint` rings so the renderer stays domain-agnostic.
+ */
+export interface PolygonShapePrimitive {
+  readonly kind: 'shape';
+  /** Each piece: index 0 = territory outer ring, indices 1.. = hole rings. */
+  readonly pieces: readonly (readonly (readonly WorldPoint[])[])[];
+  readonly fill: string;
+  /** Optional outline; screen-fixed width in CSS px when present. */
+  readonly stroke?: string;
+  readonly strokeWidthPx?: number;
+}
+
 /** A grid line (lat/lon graticule) drawn at a constant on-screen width. */
 export interface GridLinePrimitive {
   readonly kind: 'gridline';
@@ -108,6 +133,7 @@ export type DrawPrimitive =
   | PointPrimitive
   | LinePrimitive
   | PolygonPrimitive
+  | PolygonShapePrimitive
   | GridLinePrimitive
   | LabelPrimitive
   | BaseMapPrimitive;

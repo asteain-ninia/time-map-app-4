@@ -33,6 +33,10 @@ export default defineConfig({
       // z-order, resize throttle, menu↔keymap agreement, window-size contract.
       // These import only pure `.ts` (never React/.tsx), so they run in node.
       'src/ui/shell/**/*.test.ts',
+      // U37 survey mode pure-logic tests: render-batch builder + distance/string
+      // formatting. These import only pure `.ts` (domain survey + render primitive
+      // types), so they run in node without a DOM.
+      'src/ui/survey/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
       // mode toggle / view-only disabling / drag / tooltip / overlay layering.

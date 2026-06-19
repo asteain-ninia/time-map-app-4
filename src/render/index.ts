@@ -43,6 +43,7 @@ export {
   type PointPrimitive,
   type LinePrimitive,
   type PolygonPrimitive,
+  type PolygonShapePrimitive,
   type GridLinePrimitive,
   type LabelPrimitive,
   type BaseMapPrimitive,
@@ -63,3 +64,58 @@ export {
   viewportLonSpan,
   buildGridPrimitives,
 } from './grid-layer';
+
+// U19: feature drawing (点/線/面・穴透過・飛び地独立・派生集約形状・ラベル・LOD・
+// 視野クリッピング). Pure: evaluated state + camera/viewport → declarative primitives
+// (FR-17 / FR-21 / FR-71 / FR-86, NFR 5.1 / 5.2). No Canvas API here.
+export {
+  type ScreenSizes,
+  type LabelThresholds,
+  type FeatureStyle,
+  type EvaluatedPoint,
+  type EvaluatedLine,
+  type EvaluatedArea,
+  type EvaluatedFeature,
+  type WorldRect,
+  type BuildOptions,
+  type LodLevel,
+  DEFAULT_SCREEN_SIZES,
+  DEFAULT_LABEL_THRESHOLDS,
+  LOD_LEVEL,
+  viewportWorldRect,
+  worldRectsIntersect,
+  pointRect,
+  pointsRect,
+  shapeRect,
+  featureIntersectsViewport,
+  lodLevelForZoom,
+  lodToleranceDeg,
+  simplifyRing,
+  simplifyShape,
+  pointLabelVisible,
+  projectedLengthPx,
+  lineLabelVisible,
+  projectedRingAreaPx,
+  ringOccupancy,
+  areaRingLabelVisible,
+  ringCentroid,
+  buildFeaturePrimitives,
+} from './feature-layer';
+
+// U19: single-rAF redraw throttling (FR-71 / FR-110, 受け入れ基準 5).
+export {
+  type FrameSchedulerOptions,
+  type ScheduleFrame,
+  type CancelFrame,
+  FrameScheduler,
+  clampFps,
+} from './frame-scheduler';
+
+// U19: synthetic-data FPS / cost harness (NFR 5.1 / 5.2, 受け入れ基準 5).
+export {
+  type FrameMeasurement,
+  type BenchmarkReport,
+  generateSyntheticFeatures,
+  measureFrame,
+  runBenchmark,
+} from './feature-benchmark';

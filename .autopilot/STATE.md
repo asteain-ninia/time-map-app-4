@@ -25,6 +25,14 @@ IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / sc
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20: U13・U14・U19・U37 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 75 files・798 tests passed, exit 0)。4ユニットとも done。
+  - U13(converged,1r,acceptanceMet): 報告 blocker は「並行ユニット由来の survey(great-circle-path.ts 型エラー3件)/persistence(schema.test.ts lint 1件)で repo-wide typecheck/lint が赤、U13 スコープ外」。確定ツリーでは**当該含め全緑**を実測(typecheck=0/lint=0)。U13 自身は緑。→ done。
+  - U14(needs-attention,2r,acceptanceMet): openFindings 2件を確定ツリーで**解消確認**。
+    - critical(probe 残置で tsc exit 2): `src/ui/__probe__/` は**消失済み**(PowerShell/Bash で不在確認)、`npm run typecheck` exit 0 を実測。受け入れ基準2/9(domain層 tsc 単独成立)の前提が満たされた。
+    - high(lint 検知の証跡欠落): 永続テスト `src/domain/persistence/lint-boundary.test.ts`(7 tests, pass)が新設され「FIRES when an outside consumer imports deserialize from the serialize module(受け入れ基準8 / R8)」を再現可能に固定。probe 依存の一過性検証から恒久テストへ置換済み。→ finding の fix どおり実装され done。
+  - U19(converged,1r,acceptanceMet): 報告 blocker は schema.test.ts:24 '_omitted' unused(担当外の未追跡ファイル)で全体 lint exit 1。確定ツリーでは `npm run lint` exit 0。U19 の render 層も緑。→ done。
+  - U37(converged,2r,acceptanceMet): blocker(Finding#2 U20 shell wiring の E2E)は fix text 自体が U20 へ委譲を明記。U37 の domain+batch 契約(FR-16 dual-format display path)は完成・緑。shell/session-store/input-layer が揃った後 U20 ユニットで Playwright E2E(AC-1/3/5)を扱う。→ U37 スコープは充足で done。
+  - units.json: U13→done, U14→done, U19→done, U37→done。
 - 2026-06-20: U18・U20・U10・U11 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 60 files・639 tests passed, exit 0)。4ユニットとも done。
   - U18(converged,2r,acceptanceMet) / U20(converged,1r,acceptanceMet): blockerなし → done。
   - U10(converged,1r,acceptanceMet): 報告 blocker は「フルスイートで src/domain/basemap/format.test.ts が並行ユニット由来で2件赤」だったが、確定ツリーでは**当該テスト含めフルスイート緑**(format/grid/preset 等 basemap 全緑)を実測。U10 スコープ外かつ解消済み → done。

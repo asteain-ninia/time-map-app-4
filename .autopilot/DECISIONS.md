@@ -22,6 +22,12 @@
 
 ## 要件の抜け漏れ・自律判断（起床後に確認してほしい）
 
+- D14(2026-06-20): U13/U14/U19/U37 を done 判定。判断根拠 = 確定ツリーで検証3点全緑(typecheck=0 / lint=0 / test: 75 files・798 tests passed, exit 0)。
+  - U13/U19: 報告 blocker(survey great-circle-path.ts 型エラー3件 / persistence schema.test.ts:24 '_omitted' unused)はいずれも**並行ユニット由来の未追跡ファイル**で各自のスコープ外。確定ツリーでは当該含め全緑を実測 → done。
+  - U14: buildUnit status=needs-attention の openFindings 2件(critical=probe 残置で tsc exit 2 / high=lint 発火の証跡欠落)を**確定ツリーで解消確認**。(a) `src/ui/__probe__/` は消失し `npm run typecheck` exit 0、(b) 一過性 probe に代わり恒久テスト `src/domain/persistence/lint-boundary.test.ts`(7 tests pass)が no-restricted-imports/deserialize 流入検知(受け入れ基準8)を再現可能に固定。finding が要求した fix(probe 削除 + 恒久テスト化)が実装済みのため受け入れゲート充足で done。要起床後レビュー: lint-boundary.test.ts が ESLint プログラム的実行で実際に exit 1 を assert しているか(モックでなく実発火か)を一度確認推奨。
+  - U37: 唯一の blocker(Finding#2 U20 shell wiring の Playwright E2E AC-1/3/5)は fix text 自体が「U20 ユニットで shell/session-store/input-layer 成立後に対応」と委譲を明記。U37 のスコープ(domain + batch 契約 / FR-16 dual-format display path)は完成・緑のため U37 単体としては done。**繰越**: U20 側で survey pointer-input 層 + 測量モード/クリア toolbar + SurveyState slot を実装し、clickPoint/updateHover/cancelDraft 配線 + E2E を完了させること(needsAttention)。
+  - 自律判断の性質: D9/D11/D12/D13 と同方針 — buildUnit の status スナップショットより**確定 git ワーキングツリーの実測を真実源**とし、並行ユニット収束で blocker が解消された確定時点の全緑で done 判定。
+
 - D11(2026-06-20): U04/U05/U12/U09 を done 判定。判断根拠 = buildUnit の acceptanceMet=true + 確定時点の静的ツリーでフルスイート連続2回緑(15 files/201 tests)。buildUnit の status は needs-attention だったが、その openFindings はいずれも「報告時点での未確定/フレーキー/epsilon band-aid」に関するプロセス指摘であり、確定ツリーでは(a)スクラッチ `_stress.test.ts` 消失 (b)フルスイート安定緑 を実測で確認したため、受け入れ基準充足 + 検証緑 のゲートを満たすと判断し done とした。要起床後レビュー: 兄弟エージェント(PID 9748)の並行編集痕跡と epsilon/seed override の再混入有無を git diff で点検すること。
 
 - D13(2026-06-20): U18/U20/U10/U11 を done 判定。判断根拠 = buildUnit の acceptanceMet=true(4件とも) + 確定ツリーでフルスイート緑(60 files/639 tests, typecheck=0/lint=0)。

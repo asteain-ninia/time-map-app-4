@@ -475,3 +475,46 @@ export {
   representativeCenterLon,
   formatCenterLonDisplay,
 } from './basemap/index';
+
+// U13: consistency-maintenance orchestration (fixed-order pipeline FR-61).
+// Pure domain調停役 over injected ports for U09 (time) / U10 (spatial) / U06
+// (boolean difference) / U12 (single undo unit). Surfaces structured conflicts
+// (FR-62), enforces full resolution before commit (FR-63), and commits as one
+// indivisible undo unit (FR-73 / FR-94); rejections carry a machine code + a
+// Japanese message (FR-115).
+export {
+  CONFLICT_KIND,
+  type ConflictKind,
+  type ConflictTime,
+  type ConflictParticipant,
+  type Conflict,
+  type EditProposal,
+  createEditProposal,
+  type Resolution as ConsistencyResolution,
+  PROCESS_STATUS,
+  type ProcessStatus,
+  REJECTION_KIND,
+  type RejectionKind,
+  type TimeRejectionReason,
+  type CommittedResult,
+  type ConflictsPendingResult,
+  type RejectedResult,
+  type ProcessResult,
+  type TimeCheckResult,
+  type SpatialCheckResult,
+  type ConsistencyPorts,
+  DEFAULT_MAX_CONVERGENCE_ROUNDS,
+  type ProcessOptions,
+  startProcess,
+  applyResolutions,
+  type DisplayNameLookup,
+  type ConflictTimeLookup,
+  conflictIdFor,
+  conflictFromOverlapPair,
+  conflictsFromOverlapPairs,
+  MSG_TIME_VALIDATION_FAILED,
+  MSG_CONSTRAINT_VIOLATION,
+  MSG_CONVERGENCE_FAILED,
+  MSG_INTERNAL_ERROR,
+  timeRejectionMessage,
+} from './consistency/index';
