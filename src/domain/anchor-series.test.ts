@@ -1,0 +1,449 @@
+// Domain layer (U09): unit + property tests for the anchor series (AC-1〜AC-9).
+
+import { describe, expect, it } from 'vitest';
+import fc from 'fast-check';
+
+import { createAnchor, createAnchorSnapshot, type Anchor } from './anchor';
+import {
+  applyPastEdit,
+  changeStart,
+  createAnchorEntry,
+  deleteAnchor,
+  normalizeSeries,
+  resolveAt,
+  setEnd,
+  validateSeries,
+  withEntrySnapshot,
+  type AnchorEntry,
+  type AnchorSeries,
+  type Resolution,
+} from './anchor-series';
+import {
+  anchorSeriesArb,
+  makeAnchor,
+  makeSnapshot,
+} from './anchor-series.arbitraries';
+import { createBasicAttributes, createColorInfo } from './attributes';
+import { createCoordinate } from './coordinate';
+import { createPointFeature } from './feature';
+import { getCalendar } from './time/calendar';
+import { asAnchorId, asFeatureId, asVertexId } from './ids';
+import { timePointYear } from './time/time-point';
+import { createVertex, createVertexStore } from './vertex';
+
+const cal = getCalendar('gregorian');
+
+// --- helpers ----------------------------------------------------------------
+
+function entry(idSeed: number, startYear: number, endYear: number | null): AnchorEntry {
+  return createAnchorEntry(
+    makeAnchor(idSeed, `-${idSeed}`),
+    timePointYear(startYear),
+    endYear === null ? null : timePointYear(endYear),
+  );
+}
+
+function series(...entries: AnchorEntry[]): AnchorSeries {
+  return normalizeSeries(entries, cal);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value !== null && typeof value === 'object') {
+    Object.values(value as Record<string, unknown>).forEach(deepFreeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+function present(r: Resolution): AnchorEntry {
+  if (r.kind !== 'present') throw new Error('expected present');
+  return r.entry;
+}
+
+// --- AC-2 / §5.8 resolution -------------------------------------------------
+
+describe('resolveAt (AC-2, FR-54)', () => {
+  it('is absent before the first start', () => {
+    const s = series(entry(1, 100, null));
+    expect(resolveAt(s, timePointYear(99), cal).kind).toBe('absent');
+  });
+
+  it('resolves the active anchor inside its interval; start is inclusive', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, null));
+    expect(present(resolveAt(s, timePointYear(100), cal)).start).toEqual(timePointYear(100));
+    expect(present(resolveAt(s, timePointYear(150), cal)).anchor.id).toBe(
+      s.entries[0]!.anchor.id,
+    );
+    // At the next start, the next anchor becomes active.
+    expect(present(resolveAt(s, timePointYear(200), cal)).anchor.id).toBe(
+      s.entries[1]!.anchor.id,
+    );
+  });
+
+  it('returns absent at and after a set end (end is exclusive)', () => {
+    const s = series(entry(1, 100, 150));
+    expect(present(resolveAt(s, timePointYear(149), cal)).anchor.id).toBe(
+      s.entries[0]!.anchor.id,
+    );
+    expect(resolveAt(s, timePointYear(150), cal).kind).toBe('absent'); // boundary
+    expect(resolveAt(s, timePointYear(151), cal).kind).toBe('absent');
+  });
+
+  it('returns absent inside a temporal enclave (gap) between anchors', () => {
+    const s = series(entry(1, 100, 120), entry(2, 200, null));
+    expect(resolveAt(s, timePointYear(130), cal).kind).toBe('absent');
+    expect(present(resolveAt(s, timePointYear(200), cal)).anchor.id).toBe(
+      s.entries[1]!.anchor.id,
+    );
+  });
+});
+
+// --- AC-1 / §4.4 invariants -------------------------------------------------
+
+describe('validateSeries (AC-1, §4.4)', () => {
+  it('accepts an ascending, non-overlapping series with a gap (INV-4)', () => {
+    const s = series(entry(1, 100, 120), entry(2, 200, null));
+    expect(validateSeries(s, cal).ok).toBe(true);
+  });
+
+  it('accepts end == next start (gapless adjacency)', () => {
+    const s = series(entry(1, 100, 200), entry(2, 200, null));
+    expect(validateSeries(s, cal).ok).toBe(true);
+  });
+
+  it('flags a manually-built out-of-order / overlapping series', () => {
+    // Bypass normalization to build an invalid series directly.
+    const bad: AnchorSeries = {
+      entries: [entry(1, 100, 250), entry(2, 200, null)],
+    };
+    const res = validateSeries(bad, cal);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.violations.some((v) => v.invariant === 'INV-2')).toBe(true);
+    }
+  });
+
+  it('flags a zero/negative-span end (INV-3)', () => {
+    const bad: AnchorSeries = { entries: [entry(1, 100, 100)] };
+    const res = validateSeries(bad, cal);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.violations.some((v) => v.invariant === 'INV-3')).toBe(true);
+    }
+  });
+
+  it('flags an empty series (INV-5)', () => {
+    const res = validateSeries({ entries: [] }, cal);
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.violations[0]!.invariant).toBe('INV-5');
+    }
+  });
+});
+
+// --- AC-3 / §4.5 / §5.6 reorganization --------------------------------------
+
+describe('setEnd (AC-3, FR-58, §4.5)', () => {
+  it('rejects an end not strictly after start (INV-3)', () => {
+    const s = series(entry(1, 100, null));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(100), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endNotAfterStart');
+  });
+
+  it('rejects an end beyond the next future anchor end', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, 250));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(260), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endBeyondNextEnd');
+  });
+
+  it('shortens an overrun into the next start by auto-reorg (not rejection)', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, null));
+    // Try to set first end past the second start; reorg clamps it to 200.
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(250), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+      expect(r.series.entries[0]!.end).toEqual(timePointYear(200));
+    }
+  });
+
+  it('clears an end (open-ended) — the inverse operation', () => {
+    const s = series(entry(1, 100, 150));
+    const r = setEnd(s, s.entries[0]!.anchor.id, null, cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.series.entries[0]!.end).toBeNull();
+  });
+
+  it('allows the last anchor to set an end (existence stop)', () => {
+    const s = series(entry(1, 100, null));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(150), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(resolveAt(r.series, timePointYear(150), cal).kind).toBe('absent');
+    }
+  });
+});
+
+describe('changeStart (AC-3, FR-58)', () => {
+  it('re-sorts and keeps invariants after moving an anchor earlier', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, null), entry(3, 300, null));
+    const r = changeStart(s, s.entries[2]!.anchor.id, timePointYear(50), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+      expect(r.series.entries[0]!.anchor.id).toBe(s.entries[2]!.anchor.id);
+    }
+  });
+
+  it('shortens an earlier overrun when an anchor is moved between two others', () => {
+    const s = series(entry(1, 100, 400), entry(2, 500, null));
+    // Move the second anchor to 200, landing inside the first's [100,400) span.
+    const r = changeStart(s, s.entries[1]!.anchor.id, timePointYear(200), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+      // First anchor's end shortened to 200 (no overlap).
+      const first = r.series.entries[0]!;
+      expect(first.end).toEqual(timePointYear(200));
+    }
+  });
+
+  it('rejects an unknown anchor id', () => {
+    const s = series(entry(1, 100, null));
+    const r = changeStart(s, asAnchorId('nope'), timePointYear(50), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('anchorNotFound');
+  });
+});
+
+describe('deleteAnchor (AC-3, INV-5, §9.2 pair concept)', () => {
+  it('deletes a middle anchor and opens a valid gap', () => {
+    const s = series(entry(1, 100, 150), entry(2, 200, 250), entry(3, 300, null));
+    const r = deleteAnchor(s, s.entries[1]!.anchor.id, cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.series.entries).toHaveLength(2);
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+    }
+  });
+
+  it('rejects deleting the last remaining anchor (0-count guard)', () => {
+    const s = series(entry(1, 100, null));
+    const r = deleteAnchor(s, s.entries[0]!.anchor.id, cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('wouldBeEmpty');
+  });
+});
+
+// --- AC-4 / §5.7 past edit --------------------------------------------------
+
+describe('applyPastEdit (AC-4, FR-55/FR-57)', () => {
+  it('updates in place when an anchor starts exactly at the base time', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, null));
+    const before = s.entries.length;
+    const replacementSnapshot = makeSnapshot(999);
+    const next = applyPastEdit(
+      s,
+      timePointYear(100),
+      () => createAnchor(s.entries[0]!.anchor.id, replacementSnapshot),
+      cal,
+    );
+    expect(next.entries).toHaveLength(before); // count unchanged
+    expect(next.entries[0]!.anchor.snapshot).toBe(replacementSnapshot);
+  });
+
+  it('inserts a new anchor at the base time, inheriting the effective state', () => {
+    const s = series(entry(1, 100, null), entry(2, 300, null));
+    let inherited: Resolution | undefined;
+    const next = applyPastEdit(
+      s,
+      timePointYear(200),
+      (effective) => {
+        inherited = effective;
+        return makeAnchor(200, '-new');
+      },
+      cal,
+    );
+    expect(next.entries).toHaveLength(3);
+    // The factory was handed the entry effective at 200 (the first anchor).
+    expect(inherited!.kind).toBe('present');
+    if (inherited!.kind === 'present') {
+      expect(inherited!.entry.anchor.id).toBe(s.entries[0]!.anchor.id);
+    }
+    expect(validateSeries(next, cal).ok).toBe(true);
+  });
+
+  it('hands an absent inheritance inside a temporal enclave', () => {
+    const s = series(entry(1, 100, 150), entry(2, 300, null));
+    let inherited: Resolution | undefined;
+    applyPastEdit(
+      s,
+      timePointYear(200),
+      (effective) => {
+        inherited = effective;
+        return makeAnchor(200, '-new');
+      },
+      cal,
+    );
+    expect(inherited!.kind).toBe('absent');
+  });
+
+  it('does not rewrite future anchors (start and snapshot unchanged)', () => {
+    const s = series(entry(1, 100, null), entry(2, 300, null));
+    const futureBefore = s.entries[1]!;
+    const next = applyPastEdit(
+      s,
+      timePointYear(200),
+      () => makeAnchor(200, '-new'),
+      cal,
+    );
+    const futureAfter = next.entries.find(
+      (e) => e.anchor.id === futureBefore.anchor.id,
+    )!;
+    expect(futureAfter.start).toEqual(futureBefore.start);
+    expect(futureAfter.anchor.snapshot).toBe(futureBefore.anchor.snapshot);
+  });
+});
+
+// --- AC-6 / FR-59 full-state unitary update ---------------------------------
+
+describe('withEntrySnapshot (AC-6, FR-59)', () => {
+  it('replaces the whole snapshot as one unit, preserving shape + parent refs', () => {
+    const vid = asVertexId('v-x');
+    const fid = asFeatureId('f-x');
+    const feature = createPointFeature(
+      fid,
+      createBasicAttributes('orig', 0, 1),
+      createColorInfo(true, '#000000', '#111111', '#222222'),
+      vid,
+      { parentId: asFeatureId('parent-1') },
+    );
+    const snap = createAnchorSnapshot(
+      [feature],
+      createVertexStore([createVertex(vid, createCoordinate(10, 20))]),
+    );
+    const anchor: Anchor = createAnchor(asAnchorId('a-x'), snap);
+    const e = createAnchorEntry(anchor, timePointYear(0), null);
+
+    // An "attribute-only" edit still goes through a full snapshot replacement.
+    const newFeature = createPointFeature(
+      fid,
+      createBasicAttributes('renamed', 0, 1),
+      feature.color,
+      vid,
+      { parentId: asFeatureId('parent-1') },
+    );
+    const newSnap = createAnchorSnapshot(
+      [newFeature],
+      createVertexStore([createVertex(vid, createCoordinate(10, 20))]),
+    );
+    const updated = withEntrySnapshot(e, newSnap);
+    const f = updated.anchor.snapshot.features[0]!;
+    expect(f.kind).toBe('point'); // shape/kind retained
+    expect(f.parentId).toBe(asFeatureId('parent-1')); // parent retained
+    expect(updated.anchor.snapshot.vertices.byId.size).toBe(1); // vertices retained
+  });
+});
+
+// --- AC-8 purity / AC-9 determinism -----------------------------------------
+
+describe('purity and determinism (AC-8, AC-9)', () => {
+  it('does not mutate a deep-frozen input series', () => {
+    const s = deepFreeze(series(entry(1, 100, null), entry(2, 200, null)));
+    expect(() => resolveAt(s, timePointYear(150), cal)).not.toThrow();
+    expect(() => setEnd(s, s.entries[0]!.anchor.id, timePointYear(150), cal)).not.toThrow();
+    expect(() => changeStart(s, s.entries[1]!.anchor.id, timePointYear(50), cal)).not.toThrow();
+    expect(() => deleteAnchor(s, s.entries[0]!.anchor.id, cal)).not.toThrow();
+    expect(() =>
+      applyPastEdit(s, timePointYear(250), () => makeAnchor(250, '-z'), cal),
+    ).not.toThrow();
+  });
+
+  it('returns identical output for identical input (normalize)', () => {
+    const input = [entry(2, 200, null), entry(1, 100, 300), entry(3, 300, null)];
+    const a = normalizeSeries(input, cal);
+    const b = normalizeSeries(input, cal);
+    expect(a).toEqual(b);
+  });
+});
+
+// --- AC-1 / AC-5 property tests ---------------------------------------------
+
+describe('property: invariants hold after any reorg (AC-5, FR-56/FR-72)', () => {
+  it('generated series are always valid', () => {
+    fc.assert(
+      fc.property(anchorSeriesArb(cal), (s) => {
+        expect(s.entries.length).toBeGreaterThanOrEqual(1);
+        expect(validateSeries(s, cal).ok).toBe(true);
+      }),
+    );
+  });
+
+  it('a sequence of random reorg operations preserves invariants every step', () => {
+    const opArb = fc.oneof(
+      fc.record({ kind: fc.constant('changeStart' as const), year: fc.integer({ min: -500, max: 500 }) }),
+      fc.record({
+        kind: fc.constant('setEnd' as const),
+        end: fc.option(fc.integer({ min: -500, max: 500 }), { nil: null }),
+      }),
+      fc.record({ kind: fc.constant('delete' as const) }),
+      fc.record({ kind: fc.constant('pastEdit' as const), year: fc.integer({ min: -500, max: 500 }) }),
+      fc.record({ kind: fc.constant('resolve' as const), year: fc.integer({ min: -500, max: 500 }) }),
+    );
+
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(fc.tuple(opArb, fc.nat()), { maxLength: 12 }),
+        (initial, ops) => {
+          let s = initial;
+          for (const [op, idx] of ops) {
+            const target = s.entries[idx % s.entries.length]!.anchor.id;
+            if (op.kind === 'changeStart') {
+              const r = changeStart(s, target, timePointYear(op.year), cal);
+              if (r.ok) s = r.series;
+            } else if (op.kind === 'setEnd') {
+              const r = setEnd(
+                s,
+                target,
+                op.end === null ? null : timePointYear(op.end),
+                cal,
+              );
+              if (r.ok) s = r.series;
+            } else if (op.kind === 'delete') {
+              const r = deleteAnchor(s, target, cal);
+              if (r.ok) s = r.series;
+            } else if (op.kind === 'pastEdit') {
+              s = applyPastEdit(s, timePointYear(op.year), () => makeAnchor(op.year, '-pe'), cal);
+            } else {
+              resolveAt(s, timePointYear(op.year), cal);
+            }
+            // Every step: non-empty + all invariants.
+            expect(s.entries.length).toBeGreaterThanOrEqual(1);
+            expect(validateSeries(s, cal).ok).toBe(true);
+          }
+        },
+      ),
+    );
+  });
+});
+
+// --- AC-7 time comparison routed through U02 (mock-swap sanity) --------------
+
+describe('time routing (AC-7, FR-72)', () => {
+  it('ordering is consistent under a different but valid calendar instance', () => {
+    // Using the same comparison path (compare over TimePoint+Calendar) means
+    // swapping the calendar object still yields a coherent ordering: a series
+    // valid under the gregorian calendar resolves consistently.
+    const s = series(entry(1, -50, 0), entry(2, 50, null));
+    expect(present(resolveAt(s, timePointYear(-50), cal)).anchor.id).toBe(
+      s.entries[0]!.anchor.id,
+    );
+    expect(present(resolveAt(s, timePointYear(60), cal)).anchor.id).toBe(
+      s.entries[1]!.anchor.id,
+    );
+    expect(validateSeries(s, cal).ok).toBe(true);
+  });
+});

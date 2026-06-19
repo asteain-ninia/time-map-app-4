@@ -124,6 +124,30 @@ export {
   createAnchor,
 } from './anchor';
 
+// U09: history-anchor series (temporal-axis logic) — pure functions.
+export {
+  type AnchorEntry,
+  type AnchorSeries,
+  type Resolution,
+  type RejectReason,
+  type SeriesResult,
+  type InvariantId,
+  type InvariantViolation,
+  type ValidationResult,
+  createAnchorEntry,
+  withEntryStart,
+  withEntryEnd,
+  withEntrySnapshot,
+  validateSeries,
+  isValidSeries,
+  normalizeSeries,
+  resolveAt,
+  applyPastEdit,
+  changeStart,
+  setEnd,
+  deleteAnchor,
+} from './anchor-series';
+
 // U02: time model (normalization) and calendar settings — pure logic.
 export {
   type CalendarId,
@@ -157,3 +181,61 @@ export {
   validate,
   isValid,
 } from './time/index';
+
+// U12: pure command infrastructure + dual-stack undo/redo.
+export {
+  type CommandResult,
+  EMPTY_COMMAND_RESULT,
+  createCommandResult,
+  mergeCommandResults,
+  type Command,
+  type CommandOutcome,
+  type CommandKind,
+  defineCommandKind,
+  COMPOSITE_COMMAND_KIND,
+  createCompositeCommand,
+  isCompositeCommand,
+  type History,
+  type HistoryStep,
+  DEFAULT_HISTORY_LIMIT,
+  createHistory,
+  canUndo,
+  canRedo,
+  execute,
+  undo,
+  redo,
+  clearRedo,
+  withLimit,
+  executeIfChanged,
+} from './command/index';
+
+// U04: geodesy (equirectangular / great-circle distance, length, area) — pure.
+export {
+  type GeoParams,
+  type GeoScalars,
+  createGeoParams,
+  deriveScalars,
+  wrapLonDeg,
+  shortestLonDeltaDeg,
+  unwrapLonSequence,
+  DISTANCE_MEASURE,
+  type DistanceMeasure,
+  equirectangularDistanceKm,
+  greatCircleDistanceKm,
+  lineLengthKm,
+  ringAreaKm2,
+  polygonAreaKm2,
+  shapeAreaKm2,
+  // U05: periodic-seam ring continuation / inverse normalization / ±360°
+  // world-wrap replication (tech policy R3, FR-07 / FR-12).
+  LONGITUDE_PERIOD,
+  type WrapReplica,
+  normalizeCoordinate,
+  isRepresentativeRing,
+  unwrapRing,
+  rewrapRing,
+  maxAdjacentLonGap,
+  worldWrapReplicas,
+  rewrapReplicas,
+  ringsShareVertexAcrossSeam,
+} from './geo/index';

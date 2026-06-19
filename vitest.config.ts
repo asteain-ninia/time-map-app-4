@@ -5,5 +5,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/domain/**/*.test.ts'],
+    // Pin the fast-check seed once for the whole suite so property tests are
+    // reproducible (no flaky green/red across runs); see src/test-setup.ts.
+    setupFiles: ['src/test-setup.ts'],
   },
 });

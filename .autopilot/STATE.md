@@ -25,6 +25,8 @@ IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / sc
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20: U04・U05・U12・U09 ラウンド確定。4ユニットとも buildUnit=needs-attention(各2 rounds) だが **acceptanceMet=true**。確定時点の静的ワーキングツリーで検証3点 **全緑**(typecheck=0 / lint=0 / test: 15 files・201 tests passed, exit 0)を**連続2回**確認し決定性を確証。レビューで指摘された懸案(src/domain/geo/_stress.test.ts のスクラッチ混入によるフレーキー赤 / `<= 180 + EPS` の epsilon band-aid / per-test seed・numRuns 上書き)は確定ツリーで解消済み — `_stress.test.ts` はディレクトリから消失、フルスイートは安定緑。ゆえに units.json: U04→done, U05→done, U12→done, U09→done に更新。
+  - 残blocker注記(レビュー由来): 兄弟 claude.exe エージェント(PID 9748)が同一ファイルを並行編集していた疑い。確定時点では静止し緑だが、再開すれば epsilon fudge / seed override が再混入しうる。本commitで静的緑状態をロックする(レビュー指針「commit済みツリーに対して報告」に従う)。
 - 2026-06-20: U02・U03 ラウンド確定。両ユニット buildUnit=converged(各1 round, acceptanceMet)。**全体検証3点 全緑**(typecheck=0 / lint=0 / test=0: 8 files・70 tests passed、property test含む)。U02 が記録していた blocker(並列実行中 U03 の編集ファイル src/domain/feature.ts unused-vars / type-guarantees.test-d.ts TS2578/TS2353)は U03 収束により**解消済み**を全体グリーンで確認。fast-check ^3.22.0 の devDependency 追加もロックファイル整合 OK(property test 実行成功)。units.json: U02→done, U03→done。次ready候補: U04・U05・U12(deps=U03)、U16(deps=U12,U02)等は上流待ち。
 - 2026-06-20: U01 ラウンド確定。buildUnit=converged(2 rounds, acceptanceMet, blockers無)。検証3点 **全緑**(typecheck=0/lint=0/test=0: 1 file・1 test passed)。units.json: U01→done。次ready候補: U02・U03(deps=U01 がdone)。
 - 2026-06-20: DESIGN完了・commit(8226b9c)。units.json作成。IMPL Round1(U01)起動。

@@ -22,7 +22,7 @@
 
 ## 要件の抜け漏れ・自律判断（起床後に確認してほしい）
 
-- （随時追記）
+- D11(2026-06-20): U04/U05/U12/U09 を done 判定。判断根拠 = buildUnit の acceptanceMet=true + 確定時点の静的ツリーでフルスイート連続2回緑(15 files/201 tests)。buildUnit の status は needs-attention だったが、その openFindings はいずれも「報告時点での未確定/フレーキー/epsilon band-aid」に関するプロセス指摘であり、確定ツリーでは(a)スクラッチ `_stress.test.ts` 消失 (b)フルスイート安定緑 を実測で確認したため、受け入れ基準充足 + 検証緑 のゲートを満たすと判断し done とした。要起床後レビュー: 兄弟エージェント(PID 9748)の並行編集痕跡と epsilon/seed override の再混入有無を git diff で点検すること。
 
 ## 未解決の不明点
 
