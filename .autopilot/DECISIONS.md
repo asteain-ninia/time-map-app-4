@@ -4,6 +4,10 @@
 
 ## 確定した運用上の決定
 
+- D30(2026-06-20・QUALITY 最終検証＝フェーズ完了確定): 「QUALITY フェーズを 4点全緑・skip 0・スクショ両再生成で完了とする」を確定。判断根拠 = 作業ルート time-map-app-4・Bash 非対話/GUI起動なしで再実測した全体検証4点が **全緑（skip 0）**: typecheck=exit 0[node+web+e2e] / lint=exit 0[eslint . clean] / test=**201 files・2051 tests passed, exit 0**（前 D29 計測 200/1992 から +1 file/+59 tests・回帰なし） / `npm run test:e2e`=electron-vite build → playwright **14 passed・exit 0（skip 0）**。
+  - **スクショ検証**: e2e 実行前に `screenshots/app-shell.png`・`with-feature.png` を削除→ `npm run test:e2e` 後に **両方再生成を確認**（共に再生成タイムスタンプ・app-shell=269943B / with-feature=259585B）。`e2e/screenshot.spec.ts` の2テスト緑。
+  - **コミット**: doc 更新（STATE/DECISIONS/現状）+ untracked の `.autopilot/BUGHUNT.md`・`.autopilot/HUMAN-BUGS.md`（次フェーズ計画文書）を `git add -A` → `chore(quality): finalize quality pass`（ローカルのみ・push せず）。
+  - **要起床後レビュー / 残課題（QUALITY 完了時点の繰越）**: (1) **HUMAN-BUGS（HB-1〜4: 実機 dev で報告予定のパン/ズーム未結線・"Mod" 表記・サイドバー空/無スタイル・ツールバーグレーアウト）** = オフスクリーン E2E の死角。次フェーズ最優先で behavioral E2E を添えて根本修正。(2) **BUGHUNT（未知バグの能動炙り出し工程）** 未実行。(3) add フル round-trip E2E（保存→読込実機）未実装（D7/D23）。(4) 競合を実発火経由する E2E 未追加。
 - D29(2026-06-20・QUALITY: 地物描画の視覚確認 + 競合確定後の選択維持): 「地物が実際に地図へ描画されることを視覚確認し軽微UXを直す」を確定。判断根拠 = 全体検証3点全緑（typecheck=0[node+web+e2e] / lint=0 / test: **200 files・1992 tests passed, exit 0**）+ E2E 実機 `npm run test:e2e`=**14 passed・exit 0**（skip 0）+ スクショ目視確認。
   - **(1) スクショ拡張**: `e2e/screenshot.spec.ts` を2テスト化し `e2e/helpers.ts commitOneFace(page)`（LIVE add 経路: 追加モード→面ツール→4隅→完了→保存、`app-active-feature` 非空待ち）で1地物を実発火確定。`screenshots/app-shell.png`（起動）+ **`screenshots/with-feature.png`（橙の面が地図へ実描画）**を非対話・オフスクリーン保存。with-feature は committed face が確かに描画されることを目視確認。
   - **(2) 軽微UX（reArmActiveTool 選択維持）**: `ui/App.tsx` の `reArmActiveTool` が activeTool null→prev トグルでツールドラフトを破棄する際、store の `setActiveTool` reset契約が選択も毎回クリアするため、直前 `onConflictCommitted` が昇格した確定地物の選択まで消えていた（教訓5.11 違反）。修正 = トグル前に `s.selection` 捕捉→再アーム後 `restoreSelection(selection)` で復元。**ツールドラフトのみ破棄・選択保持**。新規 store アクション `restoreSelection` は `set(selectionPatch(selection))` で U22 SelectionState を verbatim 再適用（規則の再実装なし・技術方針2.5）。
