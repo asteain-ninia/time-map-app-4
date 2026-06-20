@@ -68,6 +68,11 @@
   background: rgba(255, 255, 255, 0.95);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  /* .knife-tool is pointer-events:none (a transparent grid scaffold over the map);
+     the floating controls MUST re-enable input or the 確定 / 取消 buttons are
+     unclickable (教訓 5.14: only the interactive children take input). Mirrors the
+     add-tool controls in shell.css. */
+  pointer-events: auto;
 }
 
 /* 継承先選択モーダル — centered over a full-surface backdrop (FR-93 / 教訓 5.14). */
@@ -78,6 +83,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  /* Re-enable input: the modal is a child of the pointer-events:none .knife-tool
+     scaffold, so without this the choices / 確定 buttons inherit `none` and the
+     backdrop + dialog are unclickable for real users (教訓 5.14). */
+  pointer-events: auto;
 }
 .knife-backdrop {
   position: absolute;
@@ -159,4 +168,25 @@
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  /* 非継承側プロパティ入力フォーム — re-enable input over the pointer-events:none
+     scaffold so 保存 / 取消 are clickable (教訓 5.14). */
+  pointer-events: auto;
+}
+
+/* The conflict-paused notice + the rejected panel (with its 取消 dismiss button)
+   are direct children of the pointer-events:none scaffold; re-enable input so the
+   dismiss button is clickable, mirroring the add-tool's rejected panel in
+   shell.css (教訓 5.14). */
+.knife-tool > [data-testid='knife-conflict-paused'],
+.knife-tool > [data-testid='knife-rejected'] {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  padding: 16px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  pointer-events: auto;
 }

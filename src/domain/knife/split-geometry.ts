@@ -165,6 +165,51 @@ function multiPolygonAreaKm2(mp: GeoMultiPolygon, geo: GeoParams): number {
 }
 
 /**
+ * Snap every cut-line vertex onto U06's integer quantization grid, dropping the
+ * zero-length edges the snap can create (two distinct screen points collapsing
+ * onto one grid node). This is the seam-sliver root fix (技術方針 R2 / 単一真実源):
+ * the cut line — the ONLY non-grid input to the split — is brought onto the grid
+ * BEFORE the clip is built, so the seam crossing both halves derive is computed
+ * from grid-aligned segments and the two halves coincide to the quantum. We reuse
+ * `quantizeCoordinate` (the single tolerance source) rather than re-deriving a
+ * grid here. The array is never mutated; consecutive duplicates that snapping
+ * produces are removed so the clip never carries a zero-length seam edge.
+ *
+ * `closed` mirrors `quantizeRing`'s convention: a CLOSED line's closing edge is
+ * implicit, so a trailing vertex that snapped onto the FIRST one is a zero-length
+ * closing edge and must be removed too — otherwise a degenerate closed cut like
+ * `[A, B, A']` (A' collapsing onto A) would survive the post-snap minimum check
+ * (the count would read 3 while only 2 distinct nodes remain — review P2).
+ */
+function snapCutLine(
+  line: readonly WorldCoordinate[],
+  closed: boolean,
+): WorldCoordinate[] {
+  const out: WorldCoordinate[] = [];
+  for (const p of line) {
+    if (p === undefined) continue;
+    const q = quantizeCoordinate(p);
+    const prev = out[out.length - 1];
+    if (prev !== undefined && prev.lon === q.lon && prev.lat === q.lat) continue;
+    out.push(q);
+  }
+  // For a CLOSED line the closing edge (last → first) is implicit; drop a trailing
+  // vertex equal to the first so first === last cannot masquerade as an extra node.
+  if (closed) {
+    while (out.length >= 2) {
+      const first = out[0];
+      const last = out[out.length - 1];
+      if (first !== undefined && last !== undefined && first.lon === last.lon && first.lat === last.lat) {
+        out.pop();
+      } else {
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Build the CLOSED clip polygon for an open knife line by extruding the polyline
  * far to one side, forming a half-region whose boundary is the polyline. The
  * extrusion offset is large relative to the target's bounding box so the clip
@@ -351,8 +396,33 @@ export function checkSplittable(
     return rejection(SPLIT_REJECT.Unresolvable);
   }
 
-  // Seam-unwrap the cut line into a single continuous run before geometry (R3).
-  const linePts = unwrapRing([...line.points]);
+  // Seam-unwrap the cut line into a single continuous run before geometry (R3),
+  // then SNAP every cut vertex onto the same integer grid U06 quantizes to
+  // (技術方針 R2 / 単一真実源). WHY this is the seam-sliver root fix: a cut drawn from
+  // SCREEN pixels (screen→world) carries sub-grid float residue. If the clip is
+  // built from those raw floats, U06 quantizes the clip and the target
+  // INDEPENDENTLY inside intersection() and difference(), and the seam crossing
+  // the kernel computes can land a sub-grid distance apart between the two halves
+  // — U10 then sees a thin positive-area SEAM SLIVER and U06's difference cannot
+  // converge within the round cap (ConvergenceFailure). Snapping the cut line to
+  // the grid HERE makes the clip's seam edge grid-aligned, so both halves derive
+  // their shared seam vertices from the identical grid-aligned segments and the
+  // two halves coincide to the quantum (proven for screen-derived non-integer
+  // cuts in split-geometry.seam.test.ts). The snap is the SAME grid the proposal
+  // layer mints vertices on (quantizeCoordinate), so no second tolerance is born.
+  const linePts = snapCutLine(
+    unwrapRing([...line.points]),
+    line.kind === KNIFE_LINE_KIND.Closed,
+  );
+
+  // Re-check the minimum AFTER the snap: distinct screen points can collapse onto
+  // one grid node (an open line whose two clicks landed within one grid cell, or a
+  // closed line whose first/last fold together), leaving too few unique vertices to
+  // form a cut. Without this the degenerate input would mis-report as 貫通せず /
+  // 不正形状 instead of the honest 分断線の点が足りません (FR-115 / 教訓5.26).
+  if (linePts.length < minPoints) {
+    return rejection(SPLIT_REJECT.DegenerateLine);
+  }
 
   let clip: GeoMultiPolygon;
   if (line.kind === KNIFE_LINE_KIND.Closed) {
@@ -454,11 +524,20 @@ function computeEdgeCuts(
       const startV = getVertex(store, startId);
       const endV = getVertex(store, endId);
       if (startV === undefined || endV === undefined) continue;
+      // Quantize the target edge endpoints onto the SAME grid the split boolean op
+      // works on (U06 quantizes its inputs) before computing the crossing. WHY:
+      // the cut line is grid-snapped (snapCutLine) but the stored target coords
+      // can be sub-grid; intersecting the snapped line against RAW edge endpoints
+      // can quantize to a DIFFERENT grid node than the seam the split actually
+      // produced — FR-95 would then insert a mismatched node on the共有相手 edge.
+      // Quantizing both sides keeps the共有辺途中切断点 on the split's exact seam node.
+      const startC = quantizeCoordinate(startV.coordinate);
+      const endC = quantizeCoordinate(endV.coordinate);
       for (let i = 0; i + 1 < linePts.length; i += 1) {
         const a = linePts[i];
         const b = linePts[i + 1];
         if (a === undefined || b === undefined) continue;
-        const hit = segmentsIntersect(a, b, startV.coordinate, endV.coordinate);
+        const hit = segmentsIntersect(a, b, startC, endC);
         if (hit.relation !== SEGMENT_RELATION.Proper || hit.point === undefined) continue;
         const coordinate = quantizeCoordinate(hit.point);
         const key = `${ring.id}:${j}:${coordinate.lon},${coordinate.lat}`;
@@ -495,7 +574,7 @@ export function executeSplit(
   // seam-unwrap the line first so the crossing is computed in one continuous run).
   const edgeCuts =
     target.kind === FEATURE_KIND.Leaf && line.kind === KNIFE_LINE_KIND.Open
-      ? computeEdgeCuts(target, store, unwrapRing([...line.points]))
+      ? computeEdgeCuts(target, store, snapCutLine(unwrapRing([...line.points]), false))
       : [];
   return { sideA: check.sideA, sideB: check.sideB, edgeCuts };
 }

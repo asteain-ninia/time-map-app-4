@@ -205,12 +205,90 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
   // tests (src/ui/live-lookup.test.tsx). Activating this E2E needs seam-vertex
   // quantisation consistency in the split assembler (a domain fix), out of scope for
   // the composition-root wiring done here.
-  test.skip('分割後に選択が結果から再解決され維持される (依存: 分割継ぎ目の量子化整合 — domain)', () => {
-    // SKELETON of the now-live flow (see KnifeToolController + createKnifeBootstrap):
-    //   enterAddMode → tool-add.area → click 4 corners → add-complete → add-save
-    //   → enterEditMode → tool-edit.knife → click face (live featureAtPoint)
-    //   → draw piercing cut → knife-confirm-cut → knife-choose-a
-    //   → knife-confirm-inheritor → add-save → assert app-active-feature non-empty.
-    // Blocked only by the seam-sliver convergence noted above (domain geometry).
+  // NOW ACTIVE: the seam-vertex quantization fix (domain/knife split-geometry
+  // snapCutLine) lands the cut line on U06's integer grid BEFORE the clip is
+  // built, so a SCREEN-derived (screen→world, non-integer) cut yields two halves
+  // whose seam vertices coincide to the quantum — no positive-area seam sliver,
+  // U06's difference converges, and the split commits without a conflict pause.
+  // Regression-pinned at the unit layer in
+  // src/domain/knife/split-geometry.seam.test.ts (screen-derived cuts: seam
+  // coincidence + area preservation + empty overlap). This E2E drives the FULL
+  // built composite through that path with REAL pixel coordinates.
+  test('分割後に選択が結果から再解決され維持される (分割継ぎ目の量子化整合)', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // 1. Add a 面 (face): 4 corners of a square well inside the viewport, then
+      //    complete + save. The corners come from SCREEN pixels (screen→world), so
+      //    the committed face carries non-integer world coordinates — exactly the
+      //    input class that used to produce a seam sliver on split.
+      await enterAddMode(page);
+      await page.getByTestId('tool-add.area').click();
+      const addLayer = page.getByTestId('add-input-layer');
+      await expect(addLayer).toBeVisible();
+      const ab = await addLayer.boundingBox();
+      expect(ab).not.toBeNull();
+      const a = ab!;
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      // A square ~240×240 px centred in the layer (odd offsets ⇒ non-integer world).
+      const corners: ReadonlyArray<readonly [number, number]> = [
+        [cx - 123, cy - 117],
+        [cx + 121, cy - 119],
+        [cx + 119, cy + 121],
+        [cx - 117, cy + 123],
+      ];
+      for (const [px, py] of corners) await page.mouse.click(px, py);
+      const complete = page.getByTestId('add-complete');
+      await expect(complete).toBeEnabled();
+      await complete.click();
+      await page.getByTestId('add-save').click();
+
+      // The add committed and selection re-resolved to the new face (教訓 5.11).
+      const active = page.getByTestId('app-active-feature');
+      await expect(async () => {
+        expect(((await active.textContent()) ?? '').trim()).not.toBe('');
+      }).toPass();
+
+      // 2. Enter 編集モード → ナイフ. Select the face by clicking its centre (live
+      //    featureAtPoint), then draw a piercing cut from OUTSIDE the face (above)
+      //    to OUTSIDE (below) through its middle — a SCREEN-pixel vertical cut.
+      const editMode = page.getByTestId('mode-edit');
+      await expect(editMode).toBeEnabled();
+      await editMode.click();
+      await page.getByTestId('tool-edit.knife').click();
+
+      const knifeLayer = page.getByTestId('knife-input-layer');
+      await expect(knifeLayer).toBeVisible();
+      // Select the target face (click its centre — inside the drawn square).
+      await page.mouse.click(cx, cy);
+      // Draw the cut: two points, both OUTSIDE the face, the segment piercing it.
+      // Slightly skewed x so the world coordinates are non-integer (screen-derived).
+      await page.mouse.click(cx + 2, cy - 180);
+      await page.mouse.click(cx - 3, cy + 180);
+      await expect(page.getByTestId('knife-cut-count')).toHaveText('2');
+
+      // 3. 確定 the cut → choose side A as inheritor → confirm → save the非継承側.
+      //    These float ABOVE the map with pointer-events re-enabled (knife.css), so
+      //    a REAL user click reaches them — we click them as a user would (教訓 5.7
+      //    完了トリガー; no overlay bypass).
+      await page.getByTestId('knife-confirm-cut').click();
+      await expect(page.getByTestId('knife-choose-a')).toBeVisible();
+      await page.getByTestId('knife-choose-a').click();
+      await page.getByTestId('knife-confirm-inheritor').click();
+      // 非継承側プロパティ入力 (re-used U23 form) — save commits the split.
+      await expect(page.getByTestId('add-save')).toBeVisible();
+      await page.getByTestId('add-save').click();
+
+      // 4. The split committed WITHOUT pausing on a seam-sliver conflict, and the
+      //    selection re-resolved from the result (教訓 5.11 / FR-94): the active
+      //    feature marker is non-empty and the knife session was discarded.
+      await expect(page.getByTestId('knife-conflict-paused')).toHaveCount(0);
+      await expect(async () => {
+        expect(((await active.textContent()) ?? '').trim()).not.toBe('');
+      }).toPass();
+      await expect(page.getByTestId('knife-tool')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
   });
 });
