@@ -154,7 +154,7 @@ function runBooleanOp(
   if (subjectLib.length === 0) {
     // Union with empty subject == clip; difference/intersection == empty.
     if (op === BOOLEAN_OP.Union) {
-      return finalizeOk(op, libMultiPolygonToGeo(safeUnion([], clipLib)));
+      return finalizeOk(op, libMultiPolygonToGeo(normalizeUnion(clipLib)));
     }
     return { status: BOOLEAN_OP_STATUS.Ok, result: EMPTY_MULTI_POLYGON };
   }
@@ -176,14 +176,33 @@ function runBooleanOp(
   return finalizeOk(op, libMultiPolygonToGeo(raw));
 }
 
-/** union() of a possibly-empty subject; isolated so the empty-subject branch is exact. */
-function safeUnion(subject: LibMultiPolygon, clip: LibMultiPolygon): LibMultiPolygon {
+/**
+ * Normalize a single (clip) multi-polygon through the kernel for the empty-subject
+ * union branch. A single-argument `union(clip)` is the kernel's idempotent
+ * normalize path; passing the same polygon twice (`union(clip, clip)`) only
+ * inflates the sweep-line event count and memory for no behavioural gain, so we
+ * call it with one argument (Codex perf指摘). An empty clip needs no kernel call.
+ */
+function normalizeUnion(clip: LibMultiPolygon): LibMultiPolygon {
   if (clip.length === 0) return [];
-  return polygonClipping.union(subject.length === 0 ? clip : subject, clip);
+  return polygonClipping.union(clip);
 }
 
-/** 3 + 4: re-check invariants; ok or rejected. */
-function finalizeOk(op: BooleanOp, result: GeoMultiPolygon): BooleanOpResult {
+/**
+ * 3 + 4: re-quantize the kernel output back onto the shared grid, then re-check
+ * invariants; ok or rejected.
+ *
+ * Re-quantization (Codex指摘) closes the single-truth-source hole: the kernel can
+ * return non-grid coordinates (e.g. an oblique intersection point at
+ * 0.8888888…), so without re-snapping the stored geometry would drift off the
+ * grid and a later op (even `union(result, EMPTY)`) would change shared-vertex
+ * identity and the result by op-history order. Snapping the output makes the
+ * pipeline idempotent on the grid. A ring that collapses below 3 vertices after
+ * re-snapping is a genuine degeneracy and is surfaced by the invariant check as a
+ * rejection (TooFewVertices), not silently dropped.
+ */
+function finalizeOk(op: BooleanOp, raw: GeoMultiPolygon): BooleanOpResult {
+  const result: GeoMultiPolygon = quantizeMultiPolygon(raw);
   const violations = checkMultiPolygonInvariants(result);
   if (violations.length > 0) {
     return { status: BOOLEAN_OP_STATUS.Rejected, op, violations };

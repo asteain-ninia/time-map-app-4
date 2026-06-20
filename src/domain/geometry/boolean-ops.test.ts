@@ -11,7 +11,12 @@ import {
   union,
 } from './boolean-ops';
 import { POINT_LOCATION, pointInPolygon } from './predicates';
-import { countRings, isMultiPolygonEmpty, type GeoMultiPolygon } from './types';
+import {
+  countRings,
+  EMPTY_MULTI_POLYGON,
+  isMultiPolygonEmpty,
+  type GeoMultiPolygon,
+} from './types';
 
 const c = createCoordinate;
 
@@ -96,6 +101,46 @@ describe('boolean-ops: defense layer (R2, acceptance criterion 2 & 4)', () => {
       expect(r.result.every((poly) => poly.every((ring) => ring.length >= 3 || ring.length === 0)));
     } else {
       expect(r.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+    }
+  });
+});
+
+describe('boolean-ops: output is re-quantized onto the grid (单一真实源)', () => {
+  // The kernel returns non-grid coordinates for oblique intersection points
+  // (e.g. 0.8888888…). Without re-snapping, the stored geometry drifts off the
+  // grid and a later op (even union with EMPTY) changes coordinates by op-history
+  // order, breaking shared-vertex identity.
+  const onGrid = (n: number): boolean => Math.abs(n * 1e7 - Math.round(n * 1e7)) < 1e-6;
+
+  it('intersection result coordinates all land on the quantization grid', () => {
+    const tri1 = multiPolygonFromRing([c(0, 0), c(9, 1), c(1, 9)]);
+    const tri2 = multiPolygonFromRing([c(2, 0), c(10, 8), c(0, 8)]);
+    const r = intersection(tri1, tri2);
+    if (isOk(r)) {
+      for (const poly of r.result) {
+        for (const ring of poly) {
+          for (const v of ring) {
+            expect(onGrid(v.lon)).toBe(true);
+            expect(onGrid(v.lat)).toBe(true);
+          }
+        }
+      }
+    }
+  });
+
+  it('union(result, EMPTY) is idempotent on the grid (does not move vertices)', () => {
+    const tri1 = multiPolygonFromRing([c(0, 0), c(9, 1), c(1, 9)]);
+    const tri2 = multiPolygonFromRing([c(2, 0), c(10, 8), c(0, 8)]);
+    const r = intersection(tri1, tri2);
+    if (isOk(r)) {
+      const r2 = union(r.result, EMPTY_MULTI_POLYGON);
+      expect(isOk(r2)).toBe(true);
+      if (isOk(r2)) {
+        // Re-running through the pipeline must return the SAME grid coordinates.
+        const before = JSON.stringify(r.result);
+        const after = JSON.stringify(r2.result);
+        expect(after).toBe(before);
+      }
     }
   });
 });

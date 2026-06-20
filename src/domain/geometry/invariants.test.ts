@@ -129,6 +129,66 @@ describe('invariants (R2 back-half, acceptance criterion 2)', () => {
     expect(isMultiPolygonValid([[outer, hole]])).toBe(true);
   });
 
+  it('flags a hole whose edge sweeps out through a notch MOUTH between two on-boundary vertices', () => {
+    // Concave outer with a re-entrant notch: the tip is the single vertex (20,20)
+    // and the notch mouth (x>20, y in (18,22)) is OUTSIDE the solid. A hole with
+    // two vertices ON the outer boundary edges ((30,19) and (30,21)) and the edge
+    // between them running across the notch mouth at (30,20) — which is Outside.
+    // Every hole vertex is inside/on-boundary and NO hole edge Proper-crosses an
+    // outer edge (contacts are endpoint-only), so the old Proper-only test passed
+    // it as valid. The sub-segment midpoint test must now reject it.
+    const outer = [
+      c(0, 0),
+      c(40, 0),
+      c(40, 18),
+      c(20, 20),
+      c(40, 22),
+      c(40, 40),
+      c(0, 40),
+    ];
+    const hole = [c(10, 19.5), c(30, 19), c(30, 21), c(10, 20.5)];
+    const v = checkMultiPolygonInvariants([[outer, hole]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.HoleNotContained)).toBe(true);
+  });
+
+  it('flags two polygon pieces whose solids overlap (disjoint-piece契约)', () => {
+    const a = rect(0, 0, 10, 10);
+    const b = rect(5, 5, 10, 10);
+    const v = checkMultiPolygonInvariants([[a], [b]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+  });
+
+  it('accepts two disjoint polygon pieces', () => {
+    const a = rect(0, 0, 10, 10);
+    const b = rect(50, 50, 10, 10);
+    expect(isMultiPolygonValid([[a], [b]])).toBe(true);
+  });
+
+  it('accepts a legal ENCLAVE: a piece nested inside another piece HOLE (飛び地)', () => {
+    // piece0 = big outer with a central hole; piece1 = an island whose outer ring
+    // sits entirely inside that hole. Solids do not overlap, so it is valid — the
+    // overlap check must be hole-aware and NOT reject this.
+    const outer = rect(0, 0, 100, 100);
+    const hole = rect(30, 30, 40, 40);
+    const island = rect(40, 40, 20, 20);
+    expect(isMultiPolygonValid([[outer, hole], [island]])).toBe(true);
+  });
+
+  it('flags two overlapping holes within one polygon (disjoint-hole契约)', () => {
+    const outer = rect(0, 0, 100, 100);
+    const h1 = rect(10, 10, 30, 30);
+    const h2 = rect(25, 25, 30, 30);
+    const v = checkMultiPolygonInvariants([[outer, h1, h2]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+  });
+
+  it('accepts two disjoint holes within one polygon', () => {
+    const outer = rect(0, 0, 100, 100);
+    const h1 = rect(10, 10, 20, 20);
+    const h2 = rect(60, 60, 20, 20);
+    expect(isMultiPolygonValid([[outer, h1, h2]])).toBe(true);
+  });
+
   it('property: a hole built strictly inside a concave (notched) outer is always valid', () => {
     // Concave outer: a 40x40 square with a right-side rectangular notch removed
     // at y in [yLo, yHi], cut inward to xNotch. A hole built strictly within the

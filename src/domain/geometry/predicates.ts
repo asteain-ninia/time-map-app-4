@@ -15,6 +15,8 @@
 // upstream so these predicates operate on a single continuous coordinate system
 // (单一真实源). All functions are pure.
 
+import { orient2d } from 'robust-predicates';
+
 import { coordinatesEqual, type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from './quantize';
 import type { GeoPolygon, GeoRing } from './types';
@@ -29,9 +31,25 @@ export const POINT_LOCATION = {
 
 export type PointLocation = (typeof POINT_LOCATION)[keyof typeof POINT_LOCATION];
 
-/** 2D cross product of (b - a) × (c - a). Sign gives orientation of a→b→c. */
+/**
+ * 2D orientation of a→b→c: the SIGN of the cross product (b - a) × (c - a),
+ * computed with `robust-predicates`' adaptive `orient2d`. The naive float
+ * expression `(bx-ax)(cy-ay) - (by-ay)(cx-ax)` is NOT sign-exact: for a point
+ * that lies on the line through a,b the residual can be a tiny non-zero float
+ * (e.g. ~1e-18) AND its sign flips when a,b are swapped, which makes every
+ * predicate built on it (`pointOnSegment`, `segmentsIntersect`, self-intersection,
+ * hole containment) orientation-dependent and wrong on collinear grid points
+ * (Codex反例: 点 (.2,.4) on (.1,.1)-(.3,.7)). orient2d returns a value whose
+ * SIGN is exact and orientation-symmetric, so collinearity is detected as exactly
+ * 0 regardless of vertex order. A fixed epsilon would be coordinate-scale
+ * dependent and is therefore deliberately NOT used (单一真实源: one robust sign
+ * shared by every predicate below).
+ *
+ * Only the sign is contractually meaningful; callers compare against 0 / use the
+ * returned magnitude solely as that sign.
+ */
 function cross(a: WorldCoordinate, b: WorldCoordinate, c: WorldCoordinate): number {
-  return (b.lon - a.lon) * (c.lat - a.lat) - (b.lat - a.lat) * (c.lon - a.lon);
+  return orient2d(a.lon, a.lat, b.lon, b.lat, c.lon, c.lat);
 }
 
 /** True iff point p lies on the closed segment [a, b] (collinear and within). */
@@ -242,6 +260,12 @@ function collinearSharedEndpointOnly(
  *
  * O(n²) over edges — exact, no spatial index (that pre-filtering is the upper
  * layer's job, spec §やらないこと). Rings with < 3 edges cannot self-intersect.
+ *
+ * A cheap per-edge AABB reject runs before the (now robust, hence costlier)
+ * `segmentsIntersect` call: two edges whose bounding boxes do not overlap cannot
+ * intersect, so the expensive exact predicate is skipped. This is a constant-
+ * factor optimization only — it builds NO index and keeps the O(n²) contract — so
+ * it stays within the spec boundary while cutting the dominant cost on large rings.
  */
 export function ringSelfIntersects(ring: GeoRing): boolean {
   const n = ring.length;
@@ -250,6 +274,10 @@ export function ringSelfIntersects(ring: GeoRing): boolean {
     const a1 = ring[i];
     const a2 = ring[(i + 1) % n];
     if (a1 === undefined || a2 === undefined) continue;
+    const aMinLon = a1.lon < a2.lon ? a1.lon : a2.lon;
+    const aMaxLon = a1.lon > a2.lon ? a1.lon : a2.lon;
+    const aMinLat = a1.lat < a2.lat ? a1.lat : a2.lat;
+    const aMaxLat = a1.lat > a2.lat ? a1.lat : a2.lat;
     for (let j = i + 1; j < n; j += 1) {
       // Skip edges that share a vertex (adjacent edges, and the wrap-around pair
       // joining the last edge to the first).
@@ -257,6 +285,19 @@ export function ringSelfIntersects(ring: GeoRing): boolean {
       const b1 = ring[j];
       const b2 = ring[(j + 1) % n];
       if (b1 === undefined || b2 === undefined) continue;
+      // AABB reject: non-overlapping edge boxes cannot intersect. Adjacent edges
+      // (handled specially below) always share a vertex so their boxes touch —
+      // never skipped here.
+      if (!adjacent) {
+        if (
+          (b1.lon < b2.lon ? b1.lon : b2.lon) > aMaxLon ||
+          (b1.lon > b2.lon ? b1.lon : b2.lon) < aMinLon ||
+          (b1.lat < b2.lat ? b1.lat : b2.lat) > aMaxLat ||
+          (b1.lat > b2.lat ? b1.lat : b2.lat) < aMinLat
+        ) {
+          continue;
+        }
+      }
       const rel = segmentsIntersect(a1, a2, b1, b2).relation;
       if (adjacent) {
         // Adjacent edges legitimately meet at the shared vertex (endpoint). Only

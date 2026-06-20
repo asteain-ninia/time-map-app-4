@@ -45,6 +45,26 @@ describe('pointInPolygon (acceptance criterion 3, holes + boundary)', () => {
   });
 });
 
+describe('predicates are robust against float residue / vertex order (Codex反例)', () => {
+  // (.2,.4) is exactly on the segment (.1,.1)-(.3,.7); the naive float cross
+  // product returns ~6.9e-18 (not 0) AND flips sign when a,b are swapped, which
+  // made the result orientation-dependent. With the robust orientation it must be
+  // boundary for BOTH vertex orders of a ring sharing that edge.
+  it('a collinear grid point is classified boundary regardless of ring winding', () => {
+    const ringCCW = [c(0.1, 0.1), c(0.3, 0.7), c(0.0, 0.7)];
+    const ringCW = [c(0.0, 0.7), c(0.3, 0.7), c(0.1, 0.1)];
+    const p = c(0.2, 0.4);
+    expect(pointInPolygon(p, [ringCCW])).toBe(POINT_LOCATION.Boundary);
+    expect(pointInPolygon(p, [ringCW])).toBe(POINT_LOCATION.Boundary);
+  });
+
+  it('a segment passing through (.2,.4) on (.1,.1)-(.3,.7) is not reported disjoint', () => {
+    // A short segment that touches the line exactly at the on-line point.
+    const r = segmentsIntersect(c(0.2, 0.4), c(0.5, 0.4), c(0.1, 0.1), c(0.3, 0.7));
+    expect(r.relation).not.toBe(SEGMENT_RELATION.Disjoint);
+  });
+});
+
 describe('segmentsIntersect (acceptance criterion 3 / FR-26 / 教訓5.38)', () => {
   it('proper crossing reports a point', () => {
     const r = segmentsIntersect(c(0, 0), c(10, 10), c(0, 10), c(10, 0));
