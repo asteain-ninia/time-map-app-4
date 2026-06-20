@@ -4,7 +4,12 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { constrainSlide, type BoundaryEdge, type CandidateTerminal } from './slide';
+import {
+  constrainSlide,
+  type BoundaryEdge,
+  type CandidateTerminal,
+  type ParentContainment,
+} from './slide';
 import { coord } from './fixtures';
 import { isPointStrictlyInside } from '../geometry/predicates';
 import type { GeoPolygon } from '../geometry/types';
@@ -189,6 +194,230 @@ describe('constrainSlide — existing contact t=0 (受け入れ基準7, 教訓5.
     expect(r.boundaries.length).toBeGreaterThan(0);
     expect(r.position.lat).toBeGreaterThan(1); // moved tangentially up
     expect(r.position.lon).toBeLessThanOrEqual(0.01); // no penetration
+  });
+});
+
+// --- INVERSE containment: a hole/enclave vertex must stay inside its parent ----
+// (受け入れ基準6 第4項 / FR-89, judged via U07's containment predicate). PARENT is
+// the territory the hole is punched into / the hole the enclave sits in. The vertex
+// must never exit PARENT's outer boundary.
+
+// A large parent territory occupying lon/lat [0,10]. The hole/enclave vertex lives
+// inside it and must not leave it.
+const PARENT_POLY: GeoPolygon = [[coord(0, 0), coord(10, 0), coord(10, 10), coord(0, 10)]];
+const PARENT_EDGES: BoundaryEdge[] = [
+  { featureId: 'SELF', edgeKey: 'p:0', a: coord(0, 0), b: coord(10, 0) },
+  { featureId: 'SELF', edgeKey: 'p:1', a: coord(10, 0), b: coord(10, 10) },
+  { featureId: 'SELF', edgeKey: 'p:2', a: coord(10, 10), b: coord(0, 10) },
+  { featureId: 'SELF', edgeKey: 'p:3', a: coord(0, 10), b: coord(0, 0) },
+];
+const PARENT_CONTAINMENT: ParentContainment = {
+  featureId: 'SELF',
+  polygon: PARENT_POLY,
+  edges: PARENT_EDGES,
+};
+
+describe('constrainSlide — 穴/飛び地頂点は親外周を横切らない (受け入れ基準6 第4項 / FR-89, U07述語)', () => {
+  it('passthrough: a move that stays inside the parent is unconstrained', () => {
+    const r = constrainSlide({
+      start: coord(5, 5),
+      target: coord(6, 7), // still well inside the parent
+      edges: [],
+      candidates: [],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(r.collided).toBe(false);
+    expect(r.position).toEqual({ lon: 6, lat: 7 });
+  });
+
+  it('constrains a move that would EXIT the parent outer boundary (right edge)', () => {
+    // Drag a hole vertex from inside toward the right, crossing the parent's right
+    // edge (lon=10). The vertex must stay inside (lon <= 10), sliding along the edge.
+    const r = constrainSlide({
+      start: coord(8, 5),
+      target: coord(13, 5), // would leave the parent through the right edge
+      edges: [],
+      candidates: [],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(r.collided).toBe(true);
+    expect(r.boundaries.length).toBeGreaterThan(0);
+    // Never outside the parent: lon must not exceed the right boundary; the slid
+    // position sits ON the boundary (legal containment, not strictly inside nor out).
+    expect(r.position.lon).toBeLessThanOrEqual(10.0001);
+    expect(pointInPolygonOutside(r.position)).toBe(false);
+  });
+
+  it('尖り飛び越し inverse: a fast exit-and-return path is still constrained inside', () => {
+    // Start inside, target also inside, but the straight path bulges OUT through the
+    // right edge and back. The segment crosses the parent boundary twice; the vertex
+    // must not be allowed to leave. (Here both endpoints are inside, so the target is
+    // accepted — this asserts the in→in fast path stays inside.)
+    const r = constrainSlide({
+      start: coord(9, 1),
+      target: coord(9, 9),
+      edges: [],
+      candidates: [],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(isPointStrictlyInside(r.position, PARENT_POLY)).toBe(true);
+  });
+
+  it('tangential slide along the parent boundary when pushed straight out', () => {
+    // Push diagonally out past the right edge: the outward (normal) component is
+    // dropped, the along-edge (lat) component is kept → slides up the right edge.
+    const r = constrainSlide({
+      start: coord(9.999, 3),
+      target: coord(12, 6), // +lon exits (dropped), +lat tangential (kept)
+      edges: [],
+      candidates: [],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(r.collided).toBe(true);
+    expect(r.position.lon).toBeLessThanOrEqual(10.0001);
+    expect(r.position.lat).toBeGreaterThan(3); // slid up along the right edge
+    // On the boundary (lon≈10) counts as contained, not strictly inside nor outside.
+    expect(r.position.lon).toBeLessThanOrEqual(10.0001);
+  });
+
+  it('property: a hole vertex starting inside the parent is never left outside it', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          sx: fc.double({ min: 0.5, max: 9.5, noNaN: true, noDefaultInfinity: true }),
+          sy: fc.double({ min: 0.5, max: 9.5, noNaN: true, noDefaultInfinity: true }),
+          tx: fc.double({ min: -5, max: 15, noNaN: true, noDefaultInfinity: true }),
+          ty: fc.double({ min: -5, max: 15, noNaN: true, noDefaultInfinity: true }),
+        }),
+        ({ sx, sy, tx, ty }) => {
+          const start = coord(sx, sy);
+          // Frame precondition: the previous accepted position is inside the parent.
+          fc.pre(isPointStrictlyInside(start, PARENT_POLY));
+          const r = constrainSlide({
+            start,
+            target: coord(tx, ty),
+            edges: [],
+            candidates: [],
+            containment: PARENT_CONTAINMENT,
+          });
+          // The committed position must never be strictly outside the parent (FR-89).
+          expect(pointInPolygonOutside(r.position)).toBe(false);
+        },
+      ),
+      { numRuns: 5000 },
+    );
+  });
+});
+
+function pointInPolygonOutside(p: { lon: number; lat: number }): boolean {
+  // Strictly outside the parent square [0,10]^2 (boundary counts as contained).
+  return p.lon < -0.0001 || p.lon > 10.0001 || p.lat < -0.0001 || p.lat > 10.0001;
+}
+
+// --- containment + another terminal INSIDE the parent (受け入れ基準6 / FR-28 / FR-89)
+// A hole/enclave vertex constrained to stay inside its parent must STILL never be
+// relocated strictly inside another terminal by the containment pass. Regression for
+// the U24 high blocker: the containment pass ran AFTER the other-terminal pass and
+// could teleport the vertex into another terminal (graze/denormal fallback) with no
+// final other-terminal re-check. OTHER occupies lon[7,10] × lat[4,7] inside PARENT.
+const OTHER_POLY: GeoPolygon = [[coord(7, 4), coord(10, 4), coord(10, 7), coord(7, 7)]];
+const OTHER_EDGES: BoundaryEdge[] = [
+  { featureId: 'OTHER', edgeKey: 'o:0', a: coord(7, 4), b: coord(10, 4) },
+  { featureId: 'OTHER', edgeKey: 'o:1', a: coord(10, 4), b: coord(10, 7) },
+  { featureId: 'OTHER', edgeKey: 'o:2', a: coord(10, 7), b: coord(7, 7) },
+  { featureId: 'OTHER', edgeKey: 'o:3', a: coord(7, 7), b: coord(7, 4) },
+];
+const OTHER_CAND: CandidateTerminal = { featureId: 'OTHER', polygon: OTHER_POLY };
+
+describe('constrainSlide — containment must not seat the vertex inside another terminal (U24 blocker / FR-28 / FR-89)', () => {
+  it('exact fuzz CEX: denormal target on the parent boundary does not teleport into OTHER', () => {
+    // The recorded counterexample: start inside the parent but outside OTHER; target
+    // has a denormal lon (-5e-324) that reads Outside-the-parent without a PROPER
+    // crossing. The old graze fallback slid the full tangential motion along the edge
+    // nearest the START (the right edge), teleporting the vertex into OTHER.
+    const r = constrainSlide({
+      start: coord(9.773494169154299, 0.2265058308457011),
+      target: coord(-5e-324, 6.17847495),
+      edges: OTHER_EDGES,
+      candidates: [OTHER_CAND],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(isPointStrictlyInside(r.position, OTHER_POLY)).toBe(false);
+    expect(pointInPolygonOutside(r.position)).toBe(false);
+  });
+
+  it('property: a contained vertex is never relocated strictly inside another terminal', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          sx: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          sy: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          tx: fc.double({ min: -5, max: 15, noNaN: true, noDefaultInfinity: true }),
+          ty: fc.double({ min: -5, max: 15, noNaN: true, noDefaultInfinity: true }),
+        }),
+        ({ sx, sy, tx, ty }) => {
+          const start = coord(sx, sy);
+          // Frame precondition: the previous accepted position is inside the parent and
+          // OUTSIDE every other terminal (a legal vertex position).
+          fc.pre(isPointStrictlyInside(start, PARENT_POLY));
+          fc.pre(!isPointStrictlyInside(start, OTHER_POLY));
+          const r = constrainSlide({
+            start,
+            target: coord(tx, ty),
+            edges: OTHER_EDGES,
+            candidates: [OTHER_CAND],
+            containment: PARENT_CONTAINMENT,
+          });
+          // BOTH invariants must hold on the committed position: inside the parent AND
+          // outside the other terminal (受け入れ基準6 第4項 + 末端地物同士が重ならない).
+          expect(pointInPolygonOutside(r.position)).toBe(false);
+          expect(isPointStrictlyInside(r.position, OTHER_POLY)).toBe(false);
+        },
+      ),
+      { numRuns: 20000 },
+    );
+  });
+});
+
+// --- multi-candidate: sliding along candidate A must not land inside candidate B
+// (受け入れ基準6 / FR-28). Two adjacent squares share a vertical seam at lon=4; a
+// vertex sliding down candidate A's right edge must not be committed inside B.
+// Ported from the deleted scratch probe as a proper named acceptance test.
+const SQUARE_B: GeoPolygon = [[coord(4, 0), coord(8, 0), coord(8, 4), coord(4, 4)]];
+const SQUARE_B_EDGES: BoundaryEdge[] = [
+  { featureId: 'B', edgeKey: 'b:0', a: coord(4, 0), b: coord(8, 0) },
+  { featureId: 'B', edgeKey: 'b:1', a: coord(8, 0), b: coord(8, 4) },
+  { featureId: 'B', edgeKey: 'b:2', a: coord(8, 4), b: coord(4, 4) },
+  { featureId: 'B', edgeKey: 'b:3', a: coord(4, 4), b: coord(4, 0) },
+];
+const SQUARE_B_CAND: CandidateTerminal = { featureId: 'B', polygon: SQUARE_B };
+
+describe('constrainSlide — multi-candidate (受け入れ基準6 / FR-28)', () => {
+  it('a slide along candidate A is never committed strictly inside candidate B', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          sx: fc.double({ min: -3, max: 11, noNaN: true, noDefaultInfinity: true }),
+          sy: fc.double({ min: -3, max: 7, noNaN: true, noDefaultInfinity: true }),
+          tx: fc.double({ min: -3, max: 11, noNaN: true, noDefaultInfinity: true }),
+          ty: fc.double({ min: -3, max: 7, noNaN: true, noDefaultInfinity: true }),
+        }),
+        ({ sx, sy, tx, ty }) => {
+          const start = coord(sx, sy);
+          fc.pre(!isPointStrictlyInside(start, SQUARE));
+          fc.pre(!isPointStrictlyInside(start, SQUARE_B));
+          const r = constrainSlide({
+            start,
+            target: coord(tx, ty),
+            edges: [...SQUARE_EDGES, ...SQUARE_B_EDGES],
+            candidates: [SQUARE_CAND, SQUARE_B_CAND],
+          });
+          expect(isPointStrictlyInside(r.position, SQUARE)).toBe(false);
+          expect(isPointStrictlyInside(r.position, SQUARE_B)).toBe(false);
+        },
+      ),
+      { numRuns: 20000 },
+    );
   });
 });
 

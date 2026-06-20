@@ -81,6 +81,12 @@ export default defineConfig({
       // (receiver handlers + preload exposure). These import only pure `.ts`
       // (no Electron runtime), so they run in node without a DOM.
       'src/shell/**/*.test.ts',
+      // U41 discovery pure-logic tests: filter axes / display-state resolution /
+      // search over the visible母集合 / sanitize入口 / validation / error→message
+      // conversion / diagnostic log / global error handlers. These import only
+      // pure `.ts` (domain ids + zod), so they run in node without a DOM. The
+      // ErrorBoundary component test is `.test.tsx` (jsdom; .tsx glob below).
+      'src/ui/discovery/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
       // mode toggle / view-only disabling / drag / tooltip / overlay layering.

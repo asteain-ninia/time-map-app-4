@@ -23,8 +23,12 @@ export const COMMAND_ID = {
   ViewZoomIn: 'view.zoomIn',
   ViewZoomOut: 'view.zoomOut',
   ToolsSettings: 'tools.settings',
+  /** Open the feature search UI (U41 / FR-113). Registered by the discovery unit. */
+  ToolsSearch: 'tools.search',
   HelpAbout: 'help.about',
   HelpShortcuts: 'help.shortcuts',
+  /** Show the diagnostics info view (U41 / FR-117). Registered by discovery. */
+  HelpDiagnostics: 'help.diagnostics',
 } as const;
 
 export type CommandId = (typeof COMMAND_ID)[keyof typeof COMMAND_ID];

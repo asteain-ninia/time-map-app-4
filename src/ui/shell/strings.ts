@@ -39,8 +39,10 @@ export const MENU_ITEM_LABELS = {
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
   'tools.settings': '設定',
+  'tools.search': '地物を検索',
   'help.about': 'バージョン情報',
   'help.shortcuts': 'ショートカット一覧',
+  'help.diagnostics': '診断情報',
 } as const;
 
 /** Mode toggle labels (FR-75). */
@@ -111,8 +113,10 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'view.zoomIn': '地図を拡大します',
   'view.zoomOut': '地図を縮小します',
   'tools.settings': 'プロジェクト設定を開きます',
+  'tools.search': '名前・説明・属性で表示中の地物を検索します',
   'help.about': 'アプリの情報を表示します',
   'help.shortcuts': 'キーボードショートカットの一覧を表示します',
+  'help.diagnostics': 'エラーログとアプリ概況の診断情報を表示します',
   'add.point': '地図上に点地物を追加します',
   'add.line': '地図上に線地物を追加します',
   'add.area': '地図上に面地物を追加します',

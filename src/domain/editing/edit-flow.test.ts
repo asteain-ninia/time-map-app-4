@@ -167,6 +167,27 @@ describe('decideSharePairAtRelease — snap survives to release (受け入れ基
     expect(decideSharePairAtRelease(session)).toBeUndefined();
   });
 
+  it('edge-add: a vertex GENERATED on an edge becomes a share pair when its snap survives (FR-89 / 受け入れ基準6 最終項)', () => {
+    // The reserved id of the to-be-created vertex is the dragged vertex; a snap that
+    // survives to release promotes it to a share pair, so an edge-handle-generated
+    // vertex can be shared just like a moved one (the previously impossible case).
+    let session = beginDrag(
+      {
+        tool: EDIT_TOOL.EdgeAdd,
+        featureId: fid('L'),
+        startVertexId: vid('a'),
+        endVertexId: vid('b'),
+        newVertexId: vid('gen'),
+      },
+      coord(1, 1),
+    );
+    session = updateDrag(session, {
+      preview: coord(5, 5),
+      snap: { vertexId: vid('target'), screenDistance: 2 },
+    });
+    expect(decideSharePairAtRelease(session)).toEqual({ dragged: vid('gen'), target: vid('target') });
+  });
+
   it('confirmRelease includes the decided share pair in the proposal snapshot', () => {
     const log: PortLog = { applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 };
     let session = beginDrag(vertexTarget, coord(1, 1));

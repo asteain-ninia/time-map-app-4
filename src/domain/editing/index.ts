@@ -19,6 +19,7 @@ export {
 export {
   type BoundaryEdge,
   type CandidateTerminal,
+  type ParentContainment,
   type SlideBoundary,
   type SlideResult,
   type SlideInput,

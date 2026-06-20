@@ -81,11 +81,20 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
   {
     key: MENU_KEY.Tools,
     title: MENU_TITLES.tools,
-    items: [item(COMMAND_ID.ToolsSettings)],
+    items: [
+      item(COMMAND_ID.ToolsSettings),
+      // U41 (FR-113): feature search, registered through the same基盤 (教訓 5.30).
+      item(COMMAND_ID.ToolsSearch, { key: 'f', ctrlOrMeta: true }),
+    ],
   },
   {
     key: MENU_KEY.Help,
     title: MENU_TITLES.help,
-    items: [item(COMMAND_ID.HelpAbout), item(COMMAND_ID.HelpShortcuts)],
+    items: [
+      item(COMMAND_ID.HelpAbout),
+      item(COMMAND_ID.HelpShortcuts),
+      // U41 (FR-117): diagnostics info view.
+      item(COMMAND_ID.HelpDiagnostics),
+    ],
   },
 ];

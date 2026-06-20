@@ -59,6 +59,17 @@ export type DragTarget =
       readonly startVertexId: VertexId;
       readonly endVertexId: VertexId;
       readonly ringId?: RingId;
+      /**
+       * The id RESERVED at press for the vertex this edge-add gesture creates (FR-87
+       * / FR-89 / 受け入れ基準6 最終項). The new vertex is materialised on the edge at
+       * confirm time ({@link addVertexToLine} / {@link addVertexToLeafRing} take this
+       * same id), but its identity is fixed here so the in-flight drag can treat it as
+       * the dragged vertex — enabling snap / 共有化候補 just like a vertex-move. Without
+       * a reserved id the generated vertex could never become a share pair (it had no
+       * id until release, so {@link DragSession.draggedVertexId} stayed undefined and
+       * `decideSharePairAtRelease` always returned undefined).
+       */
+      readonly newVertexId: VertexId;
     };
 
 /** The transient slide state carried during a drag (面 vertex/edge editing). */
@@ -101,10 +112,17 @@ export function beginDrag(target: DragTarget, pressAt: WorldCoordinate): DragSes
     slide: NO_SLIDE,
     snap: null as SnapDecision | null,
   };
-  // Carry the dragged vertex id for vertex-move (the edge-add vertex is minted at
-  // release, so it has none yet — its identity is the new vertex U24 creates then).
+  // Carry the dragged vertex id. For a vertex-move it is the moved vertex. For an
+  // edge-add it is the id RESERVED for the vertex this gesture creates (minted on
+  // the edge at confirm time with the SAME id): fixing it here lets the in-flight
+  // edge-add vertex participate in snap / 共有化候補 exactly like a vertex-move, so
+  // decideSharePairAtRelease can promote a surviving snap to a share pair (受け入れ
+  // 基準6 最終項 / FR-89). Feature-move has no single dragged vertex (undefined).
   if (target.tool === EDIT_TOOL.VertexMove) {
     return { ...base, draggedVertexId: target.vertexId };
+  }
+  if (target.tool === EDIT_TOOL.EdgeAdd) {
+    return { ...base, draggedVertexId: target.newVertexId };
   }
   return base;
 }

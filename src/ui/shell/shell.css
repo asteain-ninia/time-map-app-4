@@ -149,3 +149,95 @@
   color: #aaa;
   cursor: default;
 }
+
+/* --- U23 add-tool overlay (FR-76 / FR-78, 教訓 5.14 / 5.29) ------------------
+ *
+ * The add-tool controller is mounted inside .app-shell__overlay, which spans the
+ * WHOLE shell (inset:0). The provisional map-input bridge (.add-tool__input) must
+ * cover ONLY the central map area and share the canvas' exact client rect, so that
+ * "clicked here ⇒ placed here" cannot diverge (教訓 5.29: host-ports.screenToWorld
+ * converts against the canvas rect). We get that for free by giving .add-tool the
+ * SAME CSS grid as .app-shell and placing the input bridge on the map cell — its
+ * client rect then equals .app-shell__map (and therefore the canvas) to the pixel,
+ * with no JS measurement.
+ *
+ * .add-tool itself carries no pointer-events of its own (it is a transparent grid
+ * scaffold over the map); only its interactive children (.add-tool__input while
+ * drawing, and .add-tool__controls / form) take input (教訓 5.14: 透明な層が背面の
+ * 操作を奪わない). */
+.add-tool {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  /* The map cell's vertical extent is the shell's main row (row 2); its
+   * horizontal extent is the 3-column split that lives INSIDE .app-shell__main
+   * (toolbar | map | sidebar). So the rows mirror .app-shell and the columns
+   * mirror .app-shell__main — together they reproduce .app-shell__map's box. */
+  grid-template-rows: auto 1fr auto auto;
+  grid-template-columns: minmax(48px, auto) 1fr minmax(220px, auto);
+  pointer-events: none;
+}
+
+/* The transparent pointer bridge: covers the central map cell exactly (row 2,
+ * col 2 = .app-shell__map), so every map click hits it and is forwarded to the
+ * add hook (placeAt / preview). touch-action:none keeps drawing strokes from
+ * being swallowed by the browser's default pan/zoom gestures. */
+.add-tool__input {
+  grid-row: 2;
+  grid-column: 2;
+  /* Fill the map cell; min-height:0 lets the 1fr track size it correctly. */
+  min-height: 0;
+  pointer-events: auto;
+  touch-action: none;
+  /* The bridge is invisible; it exists only to receive pointer events. */
+  background: transparent;
+  cursor: crosshair;
+}
+
+/* The add chrome (complete / undo / cancel / grid-snap) floats at the top-left
+ * of the map cell while drawing; it must take input itself (sits over the bridge). */
+.add-tool__controls {
+  grid-row: 2;
+  grid-column: 2;
+  align-self: start;
+  justify-self: start;
+  margin: 8px;
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: #fff;
+  border: 1px solid #888;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+.add-tool__grid {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
+}
+
+.add-tool__message {
+  margin: 0;
+  flex-basis: 100%;
+  color: #b00;
+}
+
+/* The property form / conflict / rejected chrome centres over the map cell and
+ * takes input (it is the SAVE trigger surface — 教訓 5.7). */
+.add-tool > .add-property-form,
+.add-tool > [data-testid='add-conflict-paused'],
+.add-tool > [data-testid='add-rejected'] {
+  grid-row: 2;
+  grid-column: 2;
+  align-self: center;
+  justify-self: center;
+  pointer-events: auto;
+  background: #fff;
+  border: 1px solid #888;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  padding: 12px;
+}
