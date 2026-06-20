@@ -16,6 +16,7 @@ import { createBasicAttributes, createColorInfo } from '../../domain/attributes'
 import {
   createAggregateFeature,
   createLeafFeature,
+  createLineFeature,
   createPointFeature,
   withParentId,
   type Feature,
@@ -84,6 +85,24 @@ function pointFeature(
     vertex.id,
   );
   return { feature, vertices: [vertex] };
+}
+
+/** A polyline through the given (lon,lat) world points. */
+function lineFeature(
+  idRaw: string,
+  vPrefix: string,
+  pts: readonly (readonly [number, number])[],
+): { feature: Feature; vertices: Vertex[] } {
+  const vertices = pts.map((p, i) =>
+    createVertex(asVertexId(`${vPrefix}-${i}`), { lon: p[0]!, lat: p[1]! }),
+  );
+  const feature = createLineFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes(idRaw, 0, 0),
+    color,
+    vertices.map((v) => v.id),
+  );
+  return { feature, vertices };
 }
 
 function commit(
@@ -161,6 +180,55 @@ describe('liveHitTestAt', () => {
     // A point's own vertex is the nearest vertex → vertex hit on its owner.
     expect(hit.kind).toBe(HIT_KIND.Vertex);
     if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(p.feature.id);
+  });
+
+  // --- bughunt: 日付変更線を跨ぐ line の描画位置と hit-test を一致させる ----------
+  //
+  // A line whose stored vertices straddle the antimeridian ([179, -179]) is DRAWN by
+  // committed-features after U04 `unwrapLonSequence` → [179, 181] (a short ~2° run near
+  // the seam). The line body hit-test must project that SAME unwrapped geometry. Before
+  // the fix it projected the raw stored lon (-179), making the body a ~358° segment that
+  // crossed the screen centre: a click on the drawn seam segment missed, and a click far
+  // away (mid-screen) false-hit the line. These two assertions pin both halves.
+  describe('antimeridian-straddling line (seam unwrap parity with the renderer)', () => {
+    // Camera centred on the seam so the unwrapped run [179,181] sits on screen.
+    const seamCamera = { centerLon: 180, centerLat: 0, zoom: 10 } as const;
+    const seamToScreen = (w: { lon: number; lat: number }) =>
+      worldToScreen(w, seamCamera, viewport);
+
+    it('grabs the line where it is DRAWN (at the unwrapped seam position)', () => {
+      const ln = lineFeature('f-seam', 'vseam', [
+        [179, 0],
+        [-179, 0], // stored representative; drawn unwrapped at lon 181
+      ]);
+      const root = commit(emptyProject(), ln, 1000);
+      // The midpoint of the DRAWN segment is lon 180 (between 179 and 181), lat 0.
+      const drawnMid = { lon: 180, lat: 0 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen: seamToScreen, point: seamToScreen(drawnMid) },
+        drawnMid,
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(ln.feature.id);
+    });
+
+    it('does NOT false-hit the line far from where it is drawn', () => {
+      const ln = lineFeature('f-seam', 'vseam', [
+        [179, 0],
+        [-179, 0],
+      ]);
+      const root = commit(emptyProject(), ln, 1000);
+      // lon 175 is ~4° (40 px at zoom 10) from the drawn run [179,181] — well outside the
+      // 8 px grab radius, and far from either drawn endpoint. With the WRONGLY-unwrapped
+      // ~358° body [179,-179] this point sits squarely ON the giant segment (a false hit,
+      // the bug's symptom). With the correctly drawn geometry it is empty space.
+      const away = { lon: 175, lat: 0 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen: seamToScreen, point: seamToScreen(away) },
+        away,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
   });
 
   // --- Codex #2: 集約表示中は描画(集約形状)と hit-test を一致させる ----------------

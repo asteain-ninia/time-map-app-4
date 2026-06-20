@@ -51,6 +51,7 @@ import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex } from '../../domain/vertex';
+import { unwrapLonSequence } from '../../domain/geo/longitude';
 import {
   EMPTY_HIT,
   featureBodyHit,
@@ -299,20 +300,43 @@ export function liveHitTestAt(
       // A line BODY is its SEGMENTS (not just its endpoints — Codex P1): test the
       // screen distance from the cursor to each segment so a click on the middle of a
       // long segment selects the line.
-      let prev: ScreenPoint | null = null;
-      for (const vid of f.vertexIds) {
-        const v = getVertex(vertices, vid);
-        if (v === undefined) {
-          prev = null; // a gap (unresolvable vertex) breaks the run.
+      //
+      // SEAM 単一真実源 (bughunt): the renderer (committed-features) does NOT project
+      // each vertex's raw stored longitude — it first runs U04's `unwrapLonSequence`
+      // so a line straddling the antimeridian draws as ONE continuous run (e.g. the
+      // stored representatives [179, -179] become [179, 181], a short ~2° segment).
+      // The hit-test MUST project the SAME unwrapped geometry; projecting the raw
+      // stored lon (-179) instead makes the body a ~358° segment crossing the screen
+      // centre, so the click misses the drawn seam segment and false-hits mid-screen.
+      // We delegate to the SAME unwrap rule the renderer uses (never re-derive it).
+      //
+      // Resolve the line's vertices into a per-vertex {coord | gap} list, then unwrap
+      // the longitudes of each CONTIGUOUS resolvable run independently (a gap breaks
+      // the run, matching the segment-break below). Latitude is never wrapped.
+      const resolved = f.vertexIds.map((vid) => getVertex(vertices, vid));
+      let runStart = 0;
+      while (runStart < resolved.length) {
+        if (resolved[runStart] === undefined) {
+          runStart += 1;
           continue;
         }
-        const cur = toScreen(v.coordinate);
-        const d = prev === null ? distSq(cur, point) : distToSegmentSq(point, prev, cur);
-        if (d <= bestDistSq) {
-          bestDistSq = d;
-          bestBody = f.id;
+        let runEnd = runStart;
+        while (runEnd < resolved.length && resolved[runEnd] !== undefined) {
+          runEnd += 1;
         }
-        prev = cur;
+        const run = resolved.slice(runStart, runEnd).map((v) => v!.coordinate);
+        const unwrappedLons = unwrapLonSequence(run.map((c) => c.lon));
+        let prev: ScreenPoint | null = null;
+        run.forEach((c, i) => {
+          const cur = toScreen({ lon: unwrappedLons[i]!, lat: c.lat });
+          const d = prev === null ? distSq(cur, point) : distToSegmentSq(point, prev, cur);
+          if (d <= bestDistSq) {
+            bestDistSq = d;
+            bestBody = f.id;
+          }
+          prev = cur;
+        });
+        runStart = runEnd;
       }
     }
   }
