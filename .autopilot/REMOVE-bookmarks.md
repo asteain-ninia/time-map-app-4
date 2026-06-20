@@ -1,5 +1,7 @@
 # 撤去タスク: タイムラインの「時刻ブックマーク」機能（ユーザー決定 2026-06-21）
 
+> **[完了] 2026-06-21** — 時刻ブックマーク（イベントマーカー）撤去を完了。対応コミット `d33d92c chore(remove): drop the timeline time-bookmark feature (FR-66 descoped per user)`。検証: EventMarkers/markers/addMarker/editMarker/removeMarker/positionMarkers/時刻ブックマーク/timeline-markers への dangling 参照を `src` 全体 grep で 0 件確認。全ゲート緑（typecheck=exit 0 / lint=exit 0 / test=204 files・2106 tests passed・skip 0 / test:e2e=46 passed・skip 0）。E2E `ux-cluster.spec.ts` の HB-12「the time-bookmark UI is gone (FR-66 descoped per user)」が栞 UI 不在を回帰ロック。`screenshots/app-shell.png`・`with-feature.png` を再生成し UI からブックマーク UI が消えていることを確認。FR-66 ディスコープは DECISIONS.md D32 に記録済。
+
 ユーザー判断: 時刻ブックマーク（揮発的な栞）は不要 → **撤去**。HB-15 完了後・バグハント前に実行。Codexレビュー不要だが、削除後の全ゲート緑（typecheck/lint/test/test:e2e、skip 0、デグレなし）必須。commit はローカルのみ。
 
 ## 撤去する（= 時刻ブックマークだけ）
