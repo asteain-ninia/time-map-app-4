@@ -48,4 +48,11 @@ export const PROPERTY_STRINGS = {
   // -- decision messages (教訓 5.12) -----------------------------------------
   dismissMessage: '閉じる',
   saveFailedPrefix: '保存に失敗しました: ',
+  /**
+   * Shown when a property edit is confirmed but no live edit-apply binding is
+   * wired yet (the U13/属性編集 apply seam is unassigned new-domain work). The
+   * save surfaces this honest error rather than reporting a silent success, so
+   * the user is never told an edit landed when it did not (HB-3 Codex P1).
+   */
+  editNotWired: '属性編集の保存はこのビルドでは未対応です。',
 } as const;

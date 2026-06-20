@@ -1,0 +1,254 @@
+/* UI layer (U32 / property panel): the property-panel chrome (HB-3 styling fix).
+ *
+ * Before HB-3 the property unit shipped NO CSS, so when it was finally mounted in
+ * the sidebar its content rendered as unstyled white boxes (the "無スタイルで並ぶ"
+ * symptom). This sheet gives the panel + its sub-sections (基本情報フォーム / 錨
+ * セクション / スタイルセクション / 詳細パネル) a flat, business-like look matching the
+ * shell tokens (技術方針 5.5; 過剰演出はしない). It reads the same :root palette /
+ * spacing tokens defined in shell.css so the chrome stays consistent (寸法ロジック
+ * を一箇所に集約). */
+
+.property-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.property-panel__guidance {
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.property-panel__actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.property-panel__actions button,
+.basic-info__save,
+.anchor-section__switch button {
+  font: inherit;
+  padding: 5px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.property-panel__actions button:hover:not(:disabled),
+.basic-info__save:hover:not(:disabled),
+.anchor-section__switch button:hover:not(:disabled) {
+  border-color: var(--c-accent);
+}
+
+.basic-info__save {
+  align-self: flex-start;
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.basic-info__save:disabled {
+  background: var(--c-panel);
+  color: var(--c-text-muted);
+  border-color: var(--c-border);
+  cursor: default;
+}
+
+/* --- 基本情報フォーム ------------------------------------------------------- */
+.basic-info {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.basic-info__field,
+.style-section__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.basic-info__field input,
+.basic-info__field textarea,
+.style-section__field input,
+.style-section__field select {
+  font: inherit;
+  padding: 4px 6px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+
+.basic-info__colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.basic-info__message,
+.style-section__notice,
+.basic-info__notice {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+/* --- スタイルセクション ----------------------------------------------------- */
+.style-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+}
+
+.style-section__color,
+.style-section__opacity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- 錨（アンカー）セクション ---------------------------------------------- */
+.anchor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+}
+
+.anchor-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.anchor-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anchor-list__item {
+  list-style: none;
+}
+
+/* The actual selectable row is the button (.anchor-list__row); the selected
+ * state is .anchor-list__row--selected (AnchorList.tsx uses class variants, not
+ * aria-pressed). */
+.anchor-list__row {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 4px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.anchor-list__row:hover {
+  border-color: var(--c-accent);
+}
+
+.anchor-list__row--selected {
+  background: var(--c-accent-weak);
+  border-color: var(--c-accent);
+}
+
+.anchor-list__time {
+  font-variant-numeric: tabular-nums;
+}
+
+.anchor-list__sep {
+  color: var(--c-text-muted);
+}
+
+.anchor-list__badge {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--c-accent);
+}
+
+.anchor-list__empty,
+.anchor-timebar__empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+/* --- 時間バー（アンカーをタイムライン上に帯で表示, FR-60） ------------------ */
+.anchor-timebar__edges {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.anchor-timebar__axis {
+  position: relative;
+  height: 22px;
+  margin: 4px 0;
+  background: var(--c-panel);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.anchor-timebar__bar {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  font: inherit;
+  font-size: 10px;
+  color: #fff;
+  background: var(--c-accent);
+  border: 0;
+  border-right: 1px solid var(--c-surface);
+  cursor: pointer;
+  padding: 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.anchor-timebar__bar--selected {
+  background: var(--c-chrome);
+}
+
+.anchor-timebar__label {
+  font-size: 10px;
+}
+
+/* --- 詳細パネル（フローティング） ----------------------------------------- */
+.detail-panel {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  border-radius: var(--radius);
+}
+
+.detail-panel__attributes {
+  padding: 8px;
+}
+
+.detail-panel__document {
+  padding: 8px;
+  border-top: 1px solid var(--c-border);
+}

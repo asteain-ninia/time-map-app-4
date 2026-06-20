@@ -80,6 +80,16 @@ export const STATUS_STRINGS = {
 } as const;
 
 /**
+ * Sidebar list content strings (HB-3): empty-state guidance for the 地物一覧 /
+ * イベント一覧 sections when the project has no features / anchors yet. Centralised
+ * here (FR-115); no inline literals (教訓 5.19).
+ */
+export const SIDEBAR_CONTENT_STRINGS = {
+  featuresEmpty: '地物がありません。地図に地物を追加すると一覧に表示されます。',
+  eventsEmpty: 'イベントがありません。地物の履歴がここに表示されます。',
+} as const;
+
+/**
  * Display-control text (階層深度の集約表示・個別フォーカス, FR-42 / FR-43 / U34).
  * All Japanese, centralised here (FR-115); no inline literals (教訓 5.19).
  */

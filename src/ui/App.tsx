@@ -20,9 +20,11 @@ import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
 import { AppShell } from './shell';
+import { buildSidebarContent } from './shell/SidebarContent';
 import { Timeline } from './timeline/Timeline';
 import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
+import './property/property.css';
 import './file-ops/file-ops.css';
 
 import { getCalendar } from '../domain/time/calendar';
@@ -640,6 +642,25 @@ export function App(): JSX.Element {
   // domain change via a store subscription mirrored into React state.
   const knifeTargetShape = useKnifeTargetShape(store);
 
+  // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
+  // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
+  // never passed to AppShell, so the sidebar rendered empty and the U32
+  // PropertyPanel was never mounted. The content binds to the LIVE store + domain
+  // root at the current time (single truth source, 教訓 5.29); selecting a 地物一覧
+  // row promotes it through the SAME store.setActiveFeature path the map uses, so
+  // the property panel re-resolves to it automatically. The slot closures read the
+  // domain / time fresh per call (never a stale capture, 教訓 5.6).
+  const sidebar = useMemo(
+    () =>
+      buildSidebarContent<DomainRoot>({
+        store,
+        getRoot: () => store.getState().domain,
+        getTime: () => store.getState().currentTime,
+        calendar,
+      }),
+    [store, calendar],
+  );
+
   return (
     <div
       id="app-shell"
@@ -649,6 +670,7 @@ export function App(): JSX.Element {
       <AppShell
         store={store}
         registry={registry}
+        sidebar={sidebar}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
         overlay={

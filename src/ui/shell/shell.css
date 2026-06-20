@@ -284,6 +284,49 @@ body {
 .sidebar__panel {
   padding: 10px;
   overflow: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Sidebar list sections (HB-3): 地物一覧 / イベント一覧 rows. A flat, scrollable
+ * list of selectable rows; the active row reads as a filled accent chip so the
+ * current selection is visible at a glance (技術方針 5.5 flat / 過剰演出はしない). */
+.sidebar-list__items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-list__item {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  padding: 5px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.sidebar-list__item:hover {
+  border-color: var(--c-accent);
+}
+
+.sidebar-list__item[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.sidebar-list__empty {
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 /* Status bar: a thin bottom strip. */
