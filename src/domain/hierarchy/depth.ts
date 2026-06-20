@@ -66,6 +66,15 @@ export function derivedDepths(forest: Forest): Map<FeatureId, number> {
       }
       const known = memo.get(current);
       if (known !== undefined) {
+        // A memoized DEPTH_UNDEFINED is the cycle sentinel, NOT a real base depth.
+        // Anything hanging off an unresolved node has no derivable root either, so
+        // propagate the sentinel up the whole walked path instead of treating -1
+        // as "root parent = -1" (which would hand out bogus finite depths and
+        // disagree with the single-source derivedDepth/walkToRoot).
+        if (known === DEPTH_UNDEFINED) {
+          for (const p of path) memo.set(p, DEPTH_UNDEFINED);
+          return DEPTH_UNDEFINED;
+        }
         base = known;
         break;
       }

@@ -524,6 +524,38 @@ describe('cycle resilience (教訓5.28)', () => {
     expect(() => resolveFeatureArea(forest, store, asFeatureId('a'))).not.toThrow();
   });
 
+  it('derivedDepths: a chain hanging off a cycle is undefined and order-independent (matches derivedDepth)', () => {
+    // A↔B form a cycle; C→D→E→A dangle off the cycle. None of C/D/E has a
+    // derivable root, so all must be DEPTH_UNDEFINED — exactly what the singular
+    // derivedDepth (via walkToRoot) returns. The plural memoized path must NOT
+    // treat the cycle's -1 sentinel as a legitimate "root parent = -1" base.
+    const a = withParentId(agg('a', []), asFeatureId('b'));
+    const b = withParentId(agg('b', []), asFeatureId('a'));
+    const c = withParentId(agg('c', []), asFeatureId('d'));
+    const d = withParentId(agg('d', []), asFeatureId('e'));
+    const e = withParentId(agg('e', []), asFeatureId('a'));
+
+    // Build the forest with the CYCLE members first (the order that previously
+    // poisoned the memo and handed C/D/E bogus finite depths 2/1/0).
+    const forest = buildForest([a, b, c, d, e]);
+    const depths = derivedDepths(forest);
+    for (const id of ['a', 'b', 'c', 'd', 'e'] as const) {
+      expect(depths.get(asFeatureId(id))).toBe(DEPTH_UNDEFINED);
+      // Plural result must agree with the single source of truth.
+      expect(depths.get(asFeatureId(id))).toBe(derivedDepth(forest, asFeatureId(id)));
+    }
+    // And the global max must not be inflated by the dangling chain.
+    expect(maxDerivedDepth(forest)).toBe(0);
+
+    // Order-independence: a forest where the dangling chain is processed first
+    // must give the identical result.
+    const reordered = buildForest([e, d, c, b, a]);
+    const depthsReordered = derivedDepths(reordered);
+    for (const id of ['a', 'b', 'c', 'd', 'e'] as const) {
+      expect(depthsReordered.get(asFeatureId(id))).toBe(DEPTH_UNDEFINED);
+    }
+  });
+
   it('healthy trees in a forest with a cycle still validate (partial soundness)', () => {
     const cyclicA = withParentId(agg('a', []), asFeatureId('b'));
     const cyclicB = withParentId(agg('b', []), asFeatureId('a'));
