@@ -41,6 +41,7 @@ import { createVertexStore, type Vertex, type VertexStore } from '../vertex';
 import type { EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
 import type { SplitSnapshot } from '../knife/proposal';
+import type { FeatureSnapshot } from './edit-flow';
 import type { DomainProject, FeatureHistory } from '../persistence/serialize';
 
 // --- deterministic anchor id (repeatable purity) ----------------------------
@@ -273,6 +274,115 @@ function applyInheritorShape(feature: Feature, snapshot: SplitSnapshot): LeafFea
     throw new Error('U44: split inheritor must be a leaf feature (FR-44)');
   }
   return withLeafShape(feature, snapshot.inheritorShape);
+}
+
+// --- edit slice (U24 FeatureSnapshot → in-place anchor rewrite / deletion) ---
+
+/**
+ * Apply a vertex/feature-move (or programmatic) edit proposal: rewrite the touched
+ * feature's anchor snapshot AT the proposal's anchor time so ONLY that feature's
+ * geometry changes, while carrying the edit's moved vertex bodies into the merged
+ * vertex store (FR-59 一体編集 / FR-55 過去編集). This is the keystone the live U13
+ * binding's `applyProposal` port consumes for the U24 edit-session completion
+ * trigger (`confirmRelease` → U13), parallel to {@link applyAddProposal} /
+ * {@link applySplitProposal}.
+ *
+ * Like the split write-back it uses {@link applyPastEdit}, so editing at year 200
+ * UPDATES an anchor that already starts exactly at 200, or INSERTS a new anchor at
+ * 200 inheriting the effective state otherwise — earlier slots are untouched
+ * (temporal-correctness: a year-100 anchor still effective at 200 is never
+ * overwritten). The feature may live INSIDE a multi-feature snapshot (an aggregate's
+ * child leaf), so it is resolved by snapshot containment, not only history.featureId,
+ * and rewritten in place while preserving siblings (shares the U44 containment
+ * lookup so apply-proposal and the U06 resolution write-back agree).
+ *
+ * A deletion snapshot ({@link FeatureSnapshot.deletedFeatureId}, no surviving
+ * feature) removes the feature from its containing anchor snapshot at the anchor
+ * time; if it was the sole feature of its OWN history the history is dropped
+ * entirely (片落とし禁止 — the one indivisible proposal includes the deletion).
+ *
+ * Purity (技術方針 R9 / 教訓 5.22): returns a NEW project, never mutates `root`. The
+ * AnchorId is derived deterministically so a redo replays the same identity.
+ */
+export function applyEditProposal(
+  root: DomainProject,
+  proposal: EditProposal<FeatureSnapshot>,
+  calendar: Calendar,
+): DomainProject {
+  const { snapshot, featureId, anchorTime } = proposal;
+  const movedVertices: readonly Vertex[] = snapshot.vertices;
+
+  const found = findHistoryContaining(root, featureId, anchorTime, calendar);
+  if (found === undefined) {
+    // No history carries the feature at this time (stale/repaired data). The
+    // orchestrator's checkTime gate normally rejects this; return root unchanged
+    // so the op never throws on a degenerate root (教訓 5.18).
+    return root;
+  }
+  const { index, history } = found;
+
+  const updatedSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      const base =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : createAnchorSnapshot([], createVertexStore([]));
+      // Swap (or drop) the touched feature in the effective snapshot; siblings
+      // (an aggregate's other children) are preserved as one unit (FR-59).
+      const features = computeEditedFeatures(base.features, featureId, snapshot.feature);
+      // Merge the moved vertex bodies over the inherited store (a moved id replaces
+      // its old body; untouched vertices ride along). createVertexStore keeps the
+      // LAST body for a duplicate key, so the moved bodies (appended after) win.
+      const mergedVertices = createVertexStore([
+        ...base.vertices.byId.values(),
+        ...movedVertices,
+      ]);
+      return anchorFor(features, mergedVertices, featureId, anchorTime);
+    },
+    calendar,
+  );
+
+  // If the rewrite emptied the OWN history (the feature was its sole occupant and
+  // it was deleted), drop the whole history rather than keep an empty snapshot.
+  if (
+    snapshot.deletedFeatureId !== undefined &&
+    history.featureId === featureId &&
+    seriesHasNoFeatures(updatedSeries)
+  ) {
+    const histories = root.histories.filter((_, i) => i !== index);
+    return withHistories(root, histories);
+  }
+
+  const newHistory: FeatureHistory = { featureId: history.featureId, series: updatedSeries };
+  const histories = root.histories.map((h, i) => (i === index ? newHistory : h));
+  return withHistories(root, histories);
+}
+
+/**
+ * Build the effective snapshot's feature list after an edit: replace the touched
+ * feature with its after-state when present; remove it when the snapshot is a
+ * deletion (no surviving feature); append it when (defensively) the base snapshot
+ * did not already contain it. Pure — returns a new array.
+ */
+function computeEditedFeatures(
+  baseFeatures: readonly Feature[],
+  featureId: FeatureId,
+  after: Feature | undefined,
+): readonly Feature[] {
+  if (after === undefined) {
+    // Deletion: drop the touched feature, keep every sibling.
+    return baseFeatures.filter((f) => f.id !== featureId);
+  }
+  return baseFeatures.some((f) => f.id === featureId)
+    ? baseFeatures.map((f) => (f.id === featureId ? after : f))
+    : [...baseFeatures, after];
+}
+
+/** True iff every entry's snapshot carries no features (a wholly-emptied series). */
+function seriesHasNoFeatures(series: AnchorSeries): boolean {
+  return series.entries.every((e) => e.anchor.snapshot.features.length === 0);
 }
 
 /** Defensive leaf synthesis when no inheritor history exists (should not occur). */

@@ -93,6 +93,12 @@ import {
 } from './map/index';
 import { liveHitTestAt } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
+import { createEditSessionPort } from './map/edit-session-adapter';
+import {
+  buildEditSnapshot,
+  ringIdForLeafVertex,
+} from './map/edit-session-snapshot';
+import { RELEASE_OUTCOME } from '../domain/editing/index';
 import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
@@ -156,6 +162,15 @@ export function App(): JSX.Element {
   // a React re-render. Until the map mounts the ports degrade gracefully (no-op
   // draw / identity transform), so the wiring is real and never crashes pre-mount.
   const rendererRef = useRef<AddHostPorts | null>(null);
+
+  // The latest U12 commit handler, held behind a ref so the imperatively-created
+  // edit-session port (built in `onMapMount`, which runs once per map mount) always
+  // calls the CURRENT `recordCommit` without re-mounting the map on every render
+  // (技術方針 2.3: the live input path stays off React re-render). Assigned by an
+  // effect below once `recordCommit` exists; read by the edit-session `onReleased`.
+  const recordCommitRef = useRef<
+    ((result: ProcessResult<DomainRoot>, preference?: { readonly featureId: FeatureId }) => void) | null
+  >(null);
 
   // The latest zoom CLAMP range (FR-10). The file-ops controller pushes it on
   // every settings change; we cache it so a range set BEFORE the map mounts is
@@ -356,11 +371,71 @@ export function App(): JSX.Element {
       },
       surfaceToWorld,
     );
+    // ROOT FIX (bughunt: 実アプリで頂点/地物のドラッグ編集が PointerDispatcher に未結線 —
+    // confirmRelease 到達不能, 教訓5.7「ロジックがあっても UI から呼ばれず機能しない状態を
+    // 作らない」). The U24 drag-session adapter (createEditSessionPort) + its U13 binding
+    // (createLiveEditBinding) existed and were unit-tested, but the dispatcher was built
+    // WITHOUT an `editSession`, so an edit-mode left drag went only to U22 selection —
+    // and selection EXCLUDES a drag (live-selection-port: wasDrag ⇒ no select) — while
+    // the confirm trigger (confirmRelease → U13 → U12 undo unit) was never reached. We
+    // now WIRE the edit session: a vertex / active-feature-body handle drag runs U24's
+    // confirmRelease on release, commits ONE undo unit through the SAME recordCommit
+    // path adds / knives / conflict-resolutions use (教訓5.11), and re-resolves selection.
+    //
+    // The binding reads the LIVE root at process-start (getRoot, never a stale capture —
+    // 教訓5.6) and the after-state snapshot is built against the SAME committed root +
+    // current time the renderer / hit-test resolve against (単一真実源, 教訓5.29). The
+    // slide/snap LIGHT PATH deps are intentionally omitted here: with them absent the
+    // adapter does a preview-only move (受け入れ基準6/12 share-pair stays off until U10's
+    // live near-candidate query is wired), never silently claiming a slide/snap it cannot
+    // compute. The move + confirm path is fully reachable today.
+    const editBinding = createLiveEditBinding({
+      getRoot: () => store.getState().domain,
+    });
+    const editSnapshotCtx = {
+      getRoot: () => store.getState().domain,
+      getTime: () => store.getState().currentTime,
+    };
+    const editSession = createEditSessionPort<DomainRoot>({
+      // The dragged handle world position uses the SAME renderer inverse the hit-test
+      // and selection use, so the press / preview / release resolve against one camera.
+      screenToWorld: surfaceToWorld,
+      // The ring a dragged LEAF vertex belongs to (undefined for point / line), from
+      // the live feature at the current time (shared rule, edit-session-snapshot).
+      ringIdForVertex: (hit) =>
+        ringIdForLeafVertex(editSnapshotCtx, hit.featureId, hit.vertexId),
+      // A feature-body hit begins a WHOLE-FEATURE move (受け入れ基準2 / FR-88) ONLY when
+      // the body is the currently-selected active feature (a body click on a NON-active
+      // feature stays plain U22 selection — first click selects, a later drag moves).
+      featureMoveAllowed: (hit) =>
+        store.getState().selection.activeFeature === hit.featureId,
+      anchorTime: () => store.getState().currentTime,
+      currentState: () => store.getState().domain,
+      ports: editBinding.ports,
+      // Assemble the complete after-state snapshot from the live session (moved vertex
+      // bodies against the committed feature record / vertex store, 単一真実源).
+      buildSnapshot: (session) => buildEditSnapshot(editSnapshotCtx, session),
+      // On a processed release, record the committed edit as ONE U12 undo unit and
+      // re-resolve selection to the edited feature (教訓5.11). A NoOp (zero-move / no
+      // change) records nothing; a rejection / conflict surfaces no commit here (the
+      // edit-session path has no conflict modal yet — detectSpatial returns none — so a
+      // rejection is simply not committed rather than silently corrupting state).
+      onReleased: (outcome) => {
+        if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
+        if (outcome.result.status !== PROCESS_STATUS.Committed) return;
+        const featureId =
+          outcome.proposal.snapshot.feature?.id ??
+          outcome.proposal.snapshot.deletedFeatureId;
+        const preference = featureId !== undefined ? { featureId } : undefined;
+        recordCommitRef.current?.(outcome.result, preference);
+      },
+    });
     const dispatcher = new PointerDispatcher({
       getMode: () => store.getState().mode,
       camera: cameraPort,
       hitTester,
       selection: selectionPort,
+      editSession,
       add: NOOP_ADD_PORT,
       contextMenu: NOOP_CONTEXT_MENU_PORT,
       // FR-10 即時反映 / Codex medium #6: clamp the wheel zoom against the LIVE
@@ -609,6 +684,9 @@ export function App(): JSX.Element {
     },
     [store, refreshUndoRedoEnabled],
   );
+
+  // Keep the edit-session's commit-handler ref pointed at the current recordCommit.
+  recordCommitRef.current = recordCommit;
 
   // Register the U12 undo / redo commands on the SAME registry the menu + shortcuts
   // dispatch (single truth source, 教訓 5.13). Each applies the history step back
@@ -1213,6 +1291,7 @@ import type { TimePoint } from '../domain/time/time-point';
 // expose the `startProcess` closure the controllers consume (./consistency-binding.ts).
 import {
   createLiveAddBinding,
+  createLiveEditBinding,
   createLiveKnifeBinding,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';

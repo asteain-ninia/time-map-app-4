@@ -42,8 +42,10 @@ import type { DomainId, FeatureId, RingId, VertexId } from '../domain/ids';
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
 import type { AddSnapshot } from '../domain/add/index';
 import type { SplitSnapshot } from '../domain/knife/index';
+import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
+  applyEditProposal,
   applySplitProposal,
   deriveAnchorId,
   findHistoryContaining,
@@ -113,6 +115,10 @@ export type CreateLiveAddBinding = (
 export type CreateLiveKnifeBinding = (
   access: DomainRootAccess,
 ) => LiveConsistencyBinding<SplitSnapshot>;
+
+export type CreateLiveEditBinding = (
+  access: DomainRootAccess,
+) => LiveConsistencyBinding<FeatureSnapshot>;
 
 export type MakeSingleUndoCommand = (
   baseline: DomainRoot,
@@ -566,6 +572,41 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
       void resultState;
       return [];
     },
+    applyResolution: () => undefined,
+    makeCommand,
+  };
+  return {
+    ports,
+    startProcess: (proposal) =>
+      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
+    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
+  };
+};
+
+/**
+ * Build the live EDIT binding (U24 vertex-move / feature-move → U13). This is the
+ * binding the composition root hands the {@link createEditSessionPort} adapter so a
+ * real edit-mode handle drag's `confirmRelease` reaches the SAME fixed-order U13
+ * pipeline an add / split goes through (受け入れ基準9 / 教訓5.7「ロジックがあっても UI
+ * から呼ばれず機能しない状態を作らない」).
+ *
+ * `applyProposal` is U44's pure {@link applyEditProposal} (in-place anchor rewrite /
+ * deletion over the live root); the temporal gate is {@link checkTimeOverExisting}
+ * (the edited feature must be EFFECTIVE at the anchor time — editing it where it does
+ * not exist is a typed TIME rejection, never a generic internal error); the spatial
+ * detection / U06 difference write-back / U12 single-undo ports are the SAME shared
+ * adapters the add / split bindings use, bound per-proposal so a confirm and any
+ * later apply-resolutions over the same proposal see identical detection (no 二重
+ * 真実源). The binding reads the current root via getRoot at process-start (never a
+ * stale capture, 教訓 5.6) and never writes the store — the host's onCommitted owns
+ * the single store-write path.
+ */
+export const createLiveEditBinding: CreateLiveEditBinding = (access) => {
+  const ports: ConsistencyPorts<DomainRoot, FeatureSnapshot> = {
+    applyProposal: (current, proposal) => applyEditProposal(current, proposal, calendar),
+    checkTime: checkTimeOverExisting,
+    checkConstraints,
+    detectSpatial: () => [],
     applyResolution: () => undefined,
     makeCommand,
   };

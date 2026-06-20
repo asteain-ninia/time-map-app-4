@@ -439,3 +439,207 @@ describe('makeCommand finding5 — split created set includes the new feature', 
     root = result.state;
   });
 });
+
+// REGRESSION (bughunt: 実アプリで頂点/地物のドラッグ編集が PointerDispatcher に未結線 —
+// confirmRelease 到達不能, 教訓5.7). The pure U24 adapter + the new live EDIT binding
+// must, when assembled exactly as App.tsx assembles them, turn a real edit-mode vertex
+// drag — routed through the PointerDispatcher — into a COMMITTED geometry change. Before
+// the fix the dispatcher had no `editSession`, so a drag reached only U22 selection
+// (which excludes a drag) and the committed shape never changed (repro: 頂点をドラッグ
+// しても形状が変化しない). This drives the WHOLE wired path and asserts the move lands.
+describe('wired edit-session: an edit-mode vertex drag commits a real geometry change (教訓5.7)', () => {
+  it('dragging a committed leaf vertex through the dispatcher moves it in the committed state', async () => {
+    const { PointerDispatcher } = await import('./map/PointerDispatcher');
+    const { POINTER_BUTTON } = await import('./map/dispatch');
+    const { createEditSessionPort } = await import('./map/edit-session-adapter');
+    const { buildEditSnapshot, ringIdForLeafVertex } = await import('./map/edit-session-snapshot');
+    const { createLiveEditBinding } = await import('./consistency-binding');
+    const { RELEASE_OUTCOME } = await import('../domain/editing/index');
+    const { NO_MODIFIERS } = await import('./map/ports');
+    const { vertexHit } = await import('../domain/selection');
+    const { verticesAt, featureByIdAt } = await import('./live-lookup');
+    const { resolveLeafShape } = await import('../domain/hierarchy/resolve-shape');
+    const { EDIT_MODE } = await import('./state/session');
+
+    // Seed one committed leaf at year 1000 (the live root the binding reads).
+    const seed = squareLeaf('f-1', 'v1', 0, 0); // corners (0,0)(2,0)(2,2)(0,2)
+    let root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const time = timePointYear(1000);
+    const draggedVertexId = seed.vertices[0]!.id; // the (0,0) corner
+
+    // 1:1 screen↔world so a screen drag is a world drag of the same magnitude.
+    const screenToWorld = (p: { x: number; y: number }) => ({ lon: p.x, lat: p.y });
+
+    const editBinding = createLiveEditBinding({ getRoot: () => root });
+    const ctx = { getRoot: () => root, getTime: () => time };
+    let lastOutcomeKind = '';
+    const editSession = createEditSessionPort<DomainRoot>({
+      screenToWorld,
+      ringIdForVertex: (hit) => ringIdForLeafVertex(ctx, hit.featureId, hit.vertexId),
+      featureMoveAllowed: () => false,
+      anchorTime: () => time,
+      currentState: () => root,
+      ports: editBinding.ports,
+      buildSnapshot: (session) => buildEditSnapshot(ctx, session),
+      onReleased: (outcome) => {
+        lastOutcomeKind = outcome.kind;
+        if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
+        if (outcome.result.status !== PROCESS_STATUS.Committed) return;
+        // Mimic the store write App's recordCommit performs (single write path).
+        root = outcome.result.command.execute(root).state;
+      },
+    });
+
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      camera: {
+        read: () => ({
+          camera: { centerLon: 0, centerLat: 0, zoom: 1 },
+          viewport: { widthCss: 800, heightCss: 600, devicePixelRatio: 1 },
+        }),
+        write: () => {},
+      },
+      // The hit-test resolves the dragged corner vertex (vertex-first priority).
+      hitTester: { hitTest: () => vertexHit(seed.feature.id, draggedVertexId) },
+      selection: { start: () => {}, move: () => {}, end: () => {}, cancel: () => {} },
+      editSession,
+      add: { press: () => {} },
+      contextMenu: { request: () => {} },
+    });
+
+    // The committed (0,0) corner before the drag (sanity: the seed is in place).
+    expect(verticesAt(root, time).byId.get(draggedVertexId)!.coordinate).toEqual({
+      lon: 0,
+      lat: 0,
+    });
+
+    // Press on the corner, drag it well past the 4px threshold to (5,5), release.
+    const ptr = (x: number, y: number) => ({
+      pointerId: 1,
+      x,
+      y,
+      button: POINTER_BUTTON.Left,
+      modifiers: NO_MODIFIERS,
+    });
+    dispatcher.pointerDown(ptr(0, 0));
+    dispatcher.pointerMove({ ...ptr(5, 5), button: POINTER_BUTTON.Left });
+    dispatcher.pointerUp(ptr(5, 5));
+
+    // THE proof: the confirm trigger ran AND the committed geometry actually moved
+    // (was unreachable before the dispatcher was given an editSession).
+    expect(lastOutcomeKind).toBe(RELEASE_OUTCOME.Processed);
+    const movedVertex = verticesAt(root, time).byId.get(draggedVertexId);
+    expect(movedVertex).toBeDefined();
+    expect(movedVertex!.coordinate).toEqual({ lon: 5, lat: 5 });
+    // The leaf's resolved shape reflects the moved corner (single truth source).
+    const leaf = featureByIdAt(root, time, seed.feature.id)!;
+    expect(leaf.kind).toBe('leaf');
+    if (leaf.kind === 'leaf') {
+      const after = resolveLeafShape(leaf.shape, verticesAt(root, time))!;
+      expect(after[0]![0]).toContainEqual({ lon: 5, lat: 5 });
+    }
+  });
+
+  it('a zero-move click on a vertex commits nothing (no ghost edit — wasDrag guard)', async () => {
+    const { PointerDispatcher } = await import('./map/PointerDispatcher');
+    const { POINTER_BUTTON } = await import('./map/dispatch');
+    const { createEditSessionPort } = await import('./map/edit-session-adapter');
+    const { buildEditSnapshot } = await import('./map/edit-session-snapshot');
+    const { createLiveEditBinding } = await import('./consistency-binding');
+    const { NO_MODIFIERS } = await import('./map/ports');
+    const { vertexHit } = await import('../domain/selection');
+    const { EDIT_MODE } = await import('./state/session');
+
+    const seed = squareLeaf('f-1', 'v1', 0, 0);
+    // `root` is never reassigned here: a click must NOT trigger a commit, so the
+    // onReleased write path (which would reassign in a real drag) is never reached.
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const time = timePointYear(1000);
+    const editBinding = createLiveEditBinding({ getRoot: () => root });
+    const ctx = { getRoot: () => root, getTime: () => time };
+    let outcomes = 0;
+    const editSession = createEditSessionPort<DomainRoot>({
+      screenToWorld: (p) => ({ lon: p.x, lat: p.y }),
+      anchorTime: () => time,
+      currentState: () => root,
+      ports: editBinding.ports,
+      buildSnapshot: (session) => buildEditSnapshot(ctx, session),
+      // A click should never reach this (the wasDrag guard discards it). If it did,
+      // this counter would catch the ghost edit / ghost undo (受け入れ基準9 / 教訓5.24).
+      onReleased: () => {
+        outcomes += 1;
+      },
+    });
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      camera: {
+        read: () => ({
+          camera: { centerLon: 0, centerLat: 0, zoom: 1 },
+          viewport: { widthCss: 800, heightCss: 600, devicePixelRatio: 1 },
+        }),
+        write: () => {},
+      },
+      hitTester: { hitTest: () => vertexHit(seed.feature.id, seed.vertices[0]!.id) },
+      selection: { start: () => {}, move: () => {}, end: () => {}, cancel: () => {} },
+      editSession,
+      add: { press: () => {} },
+      contextMenu: { request: () => {} },
+    });
+    const ptr = (x: number, y: number) => ({
+      pointerId: 1,
+      x,
+      y,
+      button: POINTER_BUTTON.Left,
+      modifiers: NO_MODIFIERS,
+    });
+    dispatcher.pointerDown(ptr(0, 0));
+    dispatcher.pointerUp(ptr(0, 0)); // same position → click, not a drag
+
+    expect(outcomes).toBe(0); // no confirm, no commit, no ghost undo.
+    // The committed corner is untouched (no ghost geometry edit on a click).
+    const { verticesAt } = await import('./live-lookup');
+    expect(verticesAt(root, time).byId.get(seed.vertices[0]!.id)!.coordinate).toEqual({
+      lon: 0,
+      lat: 0,
+    });
+  });
+});
+
+describe('applyEditProposal (U44 — FeatureSnapshot in-place anchor rewrite / deletion)', () => {
+  it('a deletion snapshot removes the feature from the committed state', async () => {
+    const { applyEditProposal } = await import('../domain/editing/apply-proposal');
+    const { buildSnapshot } = await import('../domain/editing/edit-flow');
+    const { getCalendar } = await import('../domain/time/calendar');
+    const { featureByIdAt } = await import('./live-lookup');
+
+    const seed = squareLeaf('f-del', 'vd', 0, 0);
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const time = timePointYear(1000);
+    expect(featureByIdAt(root, time, seed.feature.id)).toBeDefined();
+
+    const deleted = applyEditProposal(
+      root,
+      createEditProposal(
+        seed.feature.id,
+        time,
+        buildSnapshot({ vertices: [], deletedFeatureId: seed.feature.id }),
+      ),
+      getCalendar('gregorian'),
+    );
+    // The feature is gone AND the original root is unmutated (purity).
+    expect(featureByIdAt(deleted, time, seed.feature.id)).toBeUndefined();
+    expect(featureByIdAt(root, time, seed.feature.id)).toBeDefined();
+  });
+});
