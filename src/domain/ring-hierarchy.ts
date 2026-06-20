@@ -580,12 +580,51 @@ export function deleteRingAndReorganize(shape: Shape, targetId: RingId): Shape {
 
   switch (target.kind) {
     case RING_KIND.Hole:
-      return deleteHole(shape, target);
+      return sanitizeForest(deleteHole(shape, target));
     case RING_KIND.Territory:
-      return deleteTerritory(shape, target);
+      return sanitizeForest(deleteTerritory(shape, target));
     default:
       return assertNever(target);
   }
+}
+
+/**
+ * Final referential-integrity pass over a reorganized forest (教訓5.21).
+ *
+ * The per-kind reorganizers ({@link deleteHole} / {@link deleteTerritory}) only
+ * re-link rings within the DELETED ring's subtree. They cannot — and must not —
+ * touch rings unrelated to the deletion. But malformed *input* may already carry
+ * a parent reference that is dangling (points at a ring never present), SELF-
+ * referential (a self-loop), or part of a longer cycle on a ring the deletion
+ * never visited. The function's documented post-condition is that the RESULT is
+ * always a referentially-integral, acyclic forest regardless of how broken the
+ * input was, so we repair any such residual ring here by demoting it to a valid
+ * top-level attachment (a hole cannot be top-level, so it becomes a territory).
+ *
+ * This pass is a NO-OP on an already-valid forest: it only rewrites a ring whose
+ * parent reference is missing or whose parent chain revisits a ring. Well-formed
+ * deletions are therefore unaffected.
+ */
+function sanitizeForest(shape: Shape): Shape {
+  const byId = indexById(shape);
+
+  const parentInvalid = (ring: Ring): boolean => {
+    const parentId = parentIdOf(ring);
+    if (parentId === undefined) return false; // top-level: fine
+    if (!byId.has(parentId)) return true; // dangling
+    return hasCycle(byId, ring.id); // self-loop or longer cycle
+  };
+
+  if (!shape.rings.some(parentInvalid)) return shape; // common case: nothing to fix
+
+  const out: Ring[] = shape.rings.map((ring) =>
+    parentInvalid(ring)
+      ? // Re-root the ring: a parentless hole is impossible, so demote holes to
+        // territories; territories simply become top-level.
+        createTerritoryRing(ring.id, ring.vertexIds)
+      : ring,
+  );
+  return createShape(out);
 }
 
 /**
@@ -608,7 +647,11 @@ export function deleteRingAndReorganize(shape: Shape, targetId: RingId): Shape {
  */
 function deleteHole(shape: Shape, hole: HoleRing): Shape {
   const parentId = hole.parentRingId; // a territory id (well-formed), or stale
-  const parentExists = shape.rings.some((r) => r.id === parentId);
+  // A self-looping hole (parentId === hole.id, only reachable from corrupted /
+  // hand-edited input) must NOT be treated as its own grandparent: the ring is
+  // about to be dropped, so lifting a child onto it would leave a dangling
+  // reference (教訓5.21). Exclude the deleted ring from the grandparent check.
+  const parentExists = parentId !== hole.id && shape.rings.some((r) => r.id === parentId);
   const liftTarget = parentExists ? parentId : undefined;
 
   // Direct children of the deleted hole are removed (enclaves absorbed into the
@@ -679,8 +722,14 @@ function liftChildOfAbsorbedEnclave(ring: Ring, liftTarget: RingId | undefined):
  */
 function deleteTerritory(shape: Shape, territory: TerritoryRing): Shape {
   const grandParentId = territory.parentRingId; // a hole id, or undefined
+  // A self-looping territory (grandParentId === territory.id, only reachable
+  // from corrupted / hand-edited input) must NOT be treated as its own
+  // grandparent: the ring is about to be dropped, so lifting a child onto it
+  // would leave a dangling reference (教訓5.21). Exclude the deleted ring.
   const grandParentExists =
-    grandParentId !== undefined && shape.rings.some((r) => r.id === grandParentId);
+    grandParentId !== undefined &&
+    grandParentId !== territory.id &&
+    shape.rings.some((r) => r.id === grandParentId);
   const liftTarget = grandParentExists ? grandParentId : undefined;
 
   // Holes directly under the deleted territory are themselves removed; their
