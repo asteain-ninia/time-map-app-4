@@ -181,6 +181,30 @@ export function App(): JSX.Element {
       hookTarget.dataset['panX'] = String(camera.centerLon);
       hookTarget.dataset['panY'] = String(camera.centerLat);
       hookTarget.dataset['zoom'] = String(camera.zoom);
+      // ROOT FIX (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) — mirror
+      // EVERY live render-camera change into the U16 store camera truth (技術方針 2.5:
+      // camera STATE is owned by the session store). This is the SINGLE mirror path
+      // for ALL camera changes — the FR-11 fit-all on first paint, the zero-size→
+      // measured re-fit, AND every pan/wheel through writeCamera — so subscribers that
+      // bind to store.camera (the U26 knife 固定円半径 / 閉線判定 zoom prop) always see
+      // the renderer's TRUE zoom, never the DEFAULT_CAMERA.zoom=1 placeholder that
+      // diverges from the actual fit zoom until the first interaction (二重真実源を
+      // 作らない, 教訓 5.29). Only the three transform fields the render camera carries
+      // are patched (the store Camera additionally has panX/panY).
+      const s = store.getState();
+      const cur = s.camera;
+      if (
+        cur.zoom !== camera.zoom ||
+        cur.centerLon !== camera.centerLon ||
+        cur.centerLat !== camera.centerLat
+      ) {
+        s.updateCamera({
+          zoom: camera.zoom,
+          centerLon: camera.centerLon,
+          centerLat: camera.centerLat,
+        });
+      }
+      if (s.centerLon !== camera.centerLon) s.setCenterLon(camera.centerLon);
     };
 
     /**
@@ -261,23 +285,16 @@ export function App(): JSX.Element {
     const cameraPort: CameraPort = {
       read: () => ports.readCamera(),
       write: (camera) => {
-        // The renderer is the camera the DRAW uses; write it first so the pan/zoom
-        // is visible at once (its onCameraChange mirrors the observation hooks).
+        // The renderer is the camera the DRAW uses; writing it fires the host's
+        // onCameraChange (publishCameraHooks), which is the SINGLE place that mirrors
+        // the live render camera into the U16 store truth (技術方針 2.5: camera STATE
+        // is owned by the session store) AND the observation hooks. Routing the store
+        // mirror through onCameraChange — rather than duplicating it here — means the
+        // FR-11 fit-all initial camera and the zero-size re-fit also reach the store,
+        // not only pan/wheel, so subscribers (FR-12 中心経度 / FR-13 grid / U26 knife
+        // 固定円 zoom) never see the stale DEFAULT_CAMERA placeholder (二重真実源を
+        // 作らない, 教訓 5.29).
         ports.writeCamera(camera);
-        // Mirror the live render camera into the U16 store truth (技術方針 2.5: the
-        // camera STATE is owned by the session store). Nothing on the live draw path
-        // reads it today, but the FR-12 中心経度 control / FR-13 grid panel bind to
-        // store.centerLon — keeping it in sync means a later panel wiring sees the
-        // real camera, not a stale 0, and there is never a second diverging truth
-        // (二重真実源を作らない, 教訓 5.29). The render camera is a subset of the store
-        // Camera (no panX/panY), so we patch only the三 transform fields.
-        const s = store.getState();
-        s.updateCamera({
-          zoom: camera.zoom,
-          centerLon: camera.centerLon,
-          centerLat: camera.centerLat,
-        });
-        s.setCenterLon(camera.centerLon);
       },
     };
     // HB-15 ROOT FIX — wire the LIVE map click hit-test + selection so an edit-mode
@@ -494,6 +511,18 @@ export function App(): JSX.Element {
     }),
     [],
   );
+
+  // ROOT FIX (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) — SUBSCRIBE to
+  // the live store camera zoom so the U26 knife controller's 固定円 world-radius
+  // (circleRadiusPx / zoom) and 閉線スナップ判定 track the CURRENT zoom. Reading
+  // rendererRef.current?.zoom() at render time captured the zoom ONCE and never
+  // updated: the App does not otherwise re-render on a pan/wheel (the live draw path
+  // bypasses React, 技術方針 2.3), so the zoom prop stayed at the first-render value
+  // and the固定円 半径 / 閉線距離 drifted after every zoom. publishCameraHooks now
+  // mirrors EVERY render-camera change into store.camera (including the FR-11 fit-all
+  // initial camera), so this subscription delivers the renderer's TRUE zoom — fit at
+  // mount, then live on each wheel notch — and re-renders the controller's zoom prop.
+  const cameraZoom = useStore(store, (s) => s.camera.zoom);
 
   // The add host ports (id minting / ring ids / the U13 process-start adapter).
   //
@@ -893,7 +922,7 @@ export function App(): JSX.Element {
               featureAtPoint={knifeBootstrap.featureAtPoint}
               targetShape={knifeTargetShape}
               drawSink={knifeDrawSink}
-              zoom={rendererRef.current?.zoom() ?? 1}
+              zoom={cameraZoom}
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}

@@ -24,6 +24,7 @@
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
@@ -300,6 +301,155 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
       fireEvent.keyDown(window, { key: 'Escape' });
     });
     expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    h.unmount();
+  });
+});
+
+// --- REGRESSION (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) ----------
+//
+// ROOT BUG: App.tsx passed `zoom={rendererRef.current?.zoom() ?? 1}` to this
+// controller — read ONCE at React render time. The App does not re-render on a
+// pan/wheel (the live draw path bypasses React, 技術方針 2.3), so after the user
+// zoomed, the固定円 world radius (circleRadiusPx / zoom) and the閉線スナップ判定 stayed
+// frozen at the first-render zoom and drifted from what the user sees. ROOT FIX:
+// App subscribes to store.camera.zoom (useStore) and the live render camera is
+// mirrored into store.camera on EVERY change, so the zoom prop tracks the true zoom.
+//
+// This test reproduces the App wiring (a wrapper that feeds the controller
+// `useStore(store, s => s.camera.zoom)`, exactly as App does) and proves the固定円
+// 閉線判定 follows the LIVE store zoom: a fixed click distance from the first point
+// CLOSES at low zoom (large world radius) but is treated as a頂点追加 at high zoom
+// (small world radius) — i.e. the same gesture changes verdict purely because the
+// store zoom changed, with NO re-mount.
+describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store camera zoom (回帰)', () => {
+  // A wrapper mirroring App.tsx's wiring: the zoom prop is DERIVED from the live
+  // store camera via useStore, so a store camera change re-renders the controller
+  // with the new zoom (the exact contract the bug broke).
+  function ZoomWiredKnife(props: {
+    readonly store: StoreApi<SessionStore<S>>;
+    readonly startProcess: ReturnType<typeof vi.fn>;
+    readonly resolveFeature: (fid: typeof TARGET_ID) => Feature | undefined;
+    readonly resolveStore: () => VertexStore;
+    readonly featureAtPoint: FeatureAtPoint;
+    readonly drawSink: KnifeDrawSink;
+  }): JSX.Element {
+    const zoom = useStore(props.store, (s) => s.camera.zoom);
+    return (
+      <KnifeToolController<S>
+        store={props.store}
+        startProcess={props.startProcess}
+        ids={ids()}
+        resolveFeature={props.resolveFeature}
+        resolveStore={props.resolveStore}
+        anchorTime={() => ANCHOR}
+        screenToWorld={screenToWorld}
+        featureAtPoint={props.featureAtPoint}
+        targetShape={undefined}
+        drawSink={props.drawSink}
+        zoom={zoom}
+        defaultColor={DEFAULT_COLOR}
+      />
+    );
+  }
+
+  function mountZoomWired(initialZoom: number): Harness {
+    const { feature, store: vstore } = targetLeaf();
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeTool: null,
+        camera: {
+          zoom: initialZoom,
+          centerLon: 0,
+          centerLat: 0,
+          panX: 0,
+          panY: 0,
+        },
+      },
+    });
+    const startProcess = vi.fn((): ProcessResult<S> => committed);
+    const batches: number[] = [];
+    const drawSink: KnifeDrawSink & { batches: number[] } = {
+      batches,
+      drawKnife(prims) {
+        batches.push(prims.length);
+      },
+    };
+    const resolveFeature = (fid: typeof TARGET_ID): Feature | undefined =>
+      fid === TARGET_ID ? feature : undefined;
+    const resolveStore = (): VertexStore => vstore;
+    const featureAtPoint: FeatureAtPoint = (p) =>
+      p.lon >= 0 && p.lon <= 10 && p.lat >= 0 && p.lat <= 10 ? TARGET_ID : null;
+
+    const utils = render(
+      <ZoomWiredKnife
+        store={store}
+        startProcess={startProcess}
+        resolveFeature={resolveFeature}
+        resolveStore={resolveStore}
+        featureAtPoint={featureAtPoint}
+        drawSink={drawSink}
+      />,
+    );
+    return { store, startProcess, drawSink, unmount: utils.unmount };
+  }
+
+  // The固定円 world radius is DEFAULT_KNIFE_STYLE.circleRadiusPx / zoom. We click a
+  // fixed CLOSE_GAP degrees from the first point; it lands INSIDE the circle iff
+  // CLOSE_GAP <= circleRadiusPx / zoom. With circleRadiusPx = 28 and CLOSE_GAP = 5:
+  //   zoom = 1  → radius 28 ≥ 5 → INSIDE  → closes (cut-count stays 3)
+  //   zoom = 20 → radius 1.4 < 5 → OUTSIDE → 頂点追加 (cut-count becomes 4)
+  const CLOSE_GAP = 5;
+  const FIRST = { lon: 5, lat: -2 };
+
+  /** Select the target then place exactly 3 cut points (closeable count). */
+  function drawThreePoints(): void {
+    clickInput(5, 5); // select target (inside the square)
+    clickInput(FIRST.lon, FIRST.lat); // first cut point
+    clickInput(5, 12); // pierces upward
+    clickInput(6, 12); // third point — now ≥ MIN_POINTS_TO_CLOSE
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('3');
+  }
+
+  it('at low zoom a near-first click CLOSES the line (no extra vertex)', () => {
+    const h = mountZoomWired(1);
+    activateKnife(h.store);
+    drawThreePoints();
+    // Click CLOSE_GAP degrees from the first point → inside the (radius 28) circle.
+    clickInput(FIRST.lon, FIRST.lat + CLOSE_GAP);
+    // Closed: the line did NOT gain a vertex (count stays 3).
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('3');
+    h.unmount();
+  });
+
+  it('at high zoom the SAME click is OUTSIDE the circle → 頂点追加 (not a close)', () => {
+    const h = mountZoomWired(20);
+    activateKnife(h.store);
+    drawThreePoints();
+    // Same gesture, but radius is now 1.4 deg → the click is outside → vertex add.
+    clickInput(FIRST.lon, FIRST.lat + CLOSE_GAP);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('4');
+    h.unmount();
+  });
+
+  it('changing the LIVE store zoom mid-session flips the verdict (the stale-zoom bug)', () => {
+    // Start zoomed OUT (radius 28): the gesture would close. Then zoom IN via the
+    // store (camera mirror) — WITHOUT re-mounting — and the SAME gesture must now be
+    // a頂点追加. Before the fix the controller held the first-render zoom and the
+    // verdict never changed (the stale固定円).
+    const h = mountZoomWired(1);
+    activateKnife(h.store);
+    drawThreePoints();
+
+    // Zoom in on the LIVE store (the path the render-camera mirror drives in App).
+    act(() => {
+      h.store.getState().updateCamera({ zoom: 20 });
+    });
+
+    // The near-first click is now OUTSIDE the (radius 1.4) circle → vertex add.
+    clickInput(FIRST.lon, FIRST.lat + CLOSE_GAP);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('4');
     h.unmount();
   });
 });
