@@ -21,6 +21,7 @@ import {
   buildBaseMapPrimitive,
   buildGridPrimitives,
   DEFAULT_GRID_STYLE,
+  type GridStyle,
 } from '../../render/grid-layer';
 import {
   buildFeaturePrimitives,
@@ -55,6 +56,17 @@ export interface CreateAddHostPortsOptions {
    * {@link DEFAULT_LABEL_THRESHOLDS} when absent.
    */
   readonly labelThresholds?: () => LabelThresholds;
+  /**
+   * Return the CURRENT graticule style (FR-13 / FR-109 間隔・色・不透明度・表示). Read
+   * on every composite so a project-setting change to the grid spacing / color /
+   * opacity reflects at once when the host redraws (教訓 5.35, the SAME即時反映
+   * mechanism as {@link labelThresholds}). The composition root derives this from
+   * `projectSettings.gridSpacingDeg / gridColor / gridOpacity` (settings.ts) so the
+   * GridSettingsPanel truth reaches the draw — without it the grid drew with a fixed
+   * {@link DEFAULT_GRID_STYLE} and panel changes were invisible. Defaults to
+   * {@link DEFAULT_GRID_STYLE} when absent (legacy callers / pre-mount).
+   */
+  readonly gridStyle?: () => GridStyle;
   /**
    * Notified after every live camera change (pan / wheel zoom, HB-1). The
    * composition root uses it to mirror the live pan offset + zoom into DOM
@@ -152,6 +164,12 @@ export interface FrameInputs {
   readonly viewport: Viewport;
   /** Label-visibility thresholds (FR-86); defaults to {@link DEFAULT_LABEL_THRESHOLDS}. */
   readonly thresholds?: LabelThresholds;
+  /**
+   * Graticule style (FR-13 / FR-109 間隔・色・不透明度); defaults to
+   * {@link DEFAULT_GRID_STYLE}. The composition root supplies the live project
+   * setting so a panel change reflects in the draw (単一真実源, 教訓 5.29).
+   */
+  readonly grid?: GridStyle;
 }
 
 /**
@@ -168,7 +186,12 @@ export function composeFrame(inputs: FrameInputs): DrawPrimitive[] {
     primitives.push(buildBaseMapPrimitive(inputs.baseImage, PRESET_BASEMAP_META));
   }
   primitives.push(
-    ...buildGridPrimitives(true, DEFAULT_GRID_STYLE, inputs.camera, inputs.viewport),
+    ...buildGridPrimitives(
+      true,
+      inputs.grid ?? DEFAULT_GRID_STYLE,
+      inputs.camera,
+      inputs.viewport,
+    ),
   );
   if (inputs.committed.length > 0) {
     primitives.push(
@@ -252,6 +275,7 @@ export function createAddHostPorts(
       camera,
       viewport,
       thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
+      grid: options.gridStyle?.() ?? DEFAULT_GRID_STYLE,
     });
     renderer.drawBatch({ primitives });
     // HB-14 観測フック: publish how many committed features survived the period-aware

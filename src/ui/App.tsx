@@ -101,6 +101,8 @@ import {
 import type { Camera as RenderCamera } from '../render/camera';
 import type { WorldCoordinate } from '../domain/coordinate';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
+import { DEFAULT_GRID_STYLE, type GridStyle } from '../render/grid-layer';
+import { coerceGridSpacing } from '../domain/basemap/index';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
 
 // The domain truth root is U14's persistence {@link DomainProject} (histories +
@@ -217,6 +219,24 @@ export function App(): JSX.Element {
         areaMinOccupancy:
           store.getState().projectSettings.areaLabelOccupancyThreshold,
       }),
+      // FR-13 / FR-109 グリッド即時反映: derive the LIVE graticule style from the
+      // project settings (gridSpacingDeg / gridColor / gridOpacity) so a
+      // GridSettingsPanel change reflects on the next redraw. The host hard-coded
+      // DEFAULT_GRID_STYLE before, so the panel truth never reached the draw
+      // (bughunt: グリッド設定が地図描画に反映されない). The emphasis/width/label-font
+      // fields stay at the DEFAULT (not user-settable, 受け入れ基準 8); only the three
+      // user settings are overlaid. Spacing is coerced to an allowed value so a stale
+      // setting can never produce an off-list spacing (教訓 5.18, 単一の coerce規則).
+      // Read live per composite — never a stale capture (教訓 5.6).
+      gridStyle: (): GridStyle => {
+        const ps = store.getState().projectSettings;
+        return {
+          ...DEFAULT_GRID_STYLE,
+          spacing: coerceGridSpacing(ps.gridSpacingDeg),
+          color: ps.gridColor,
+          opacity: ps.gridOpacity,
+        };
+      },
       // HB-1 観測フック: mirror the LIVE camera into DOM data-* attributes on the
       // map input layer so a behavioural E2E can read the pan offset + zoom and
       // assert they actually changed (既存 app-active-feature マーカーと同方式). The
@@ -396,14 +416,27 @@ export function App(): JSX.Element {
     let prevDisplay = store.getState().displayControl;
     let prevAreaThreshold =
       store.getState().projectSettings.areaLabelOccupancyThreshold;
+    // FR-13 / FR-109 グリッド即時反映: the grid spacing / color / opacity project
+    // settings feed the host's gridStyle getter, so a change MUST trigger a redraw
+    // too — otherwise the getter is never re-read and the panel change is invisible
+    // (bughunt root: the subscription watched only the threshold among settings keys).
+    let prevGridSpacing = store.getState().projectSettings.gridSpacingDeg;
+    let prevGridColor = store.getState().projectSettings.gridColor;
+    let prevGridOpacity = store.getState().projectSettings.gridOpacity;
     const unsubscribe = store.subscribe((s) => {
       const areaThreshold = s.projectSettings.areaLabelOccupancyThreshold;
+      const gridSpacing = s.projectSettings.gridSpacingDeg;
+      const gridColor = s.projectSettings.gridColor;
+      const gridOpacity = s.projectSettings.gridOpacity;
       if (
         s.domain === prevDomain &&
         s.currentTime === prevTime &&
         s.activeFeature === prevActive &&
         s.displayControl === prevDisplay &&
-        areaThreshold === prevAreaThreshold
+        areaThreshold === prevAreaThreshold &&
+        gridSpacing === prevGridSpacing &&
+        gridColor === prevGridColor &&
+        gridOpacity === prevGridOpacity
       ) {
         return;
       }
@@ -412,6 +445,9 @@ export function App(): JSX.Element {
       prevActive = s.activeFeature;
       prevDisplay = s.displayControl;
       prevAreaThreshold = areaThreshold;
+      prevGridSpacing = gridSpacing;
+      prevGridColor = gridColor;
+      prevGridOpacity = gridOpacity;
       ports.redraw();
     });
     return () => {

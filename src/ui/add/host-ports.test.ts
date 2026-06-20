@@ -11,6 +11,9 @@ import type { Camera, Viewport } from '../../render/camera';
 import type { DrawPrimitive } from '../../render/map-renderer';
 import type { EvaluatedFeature, FeatureStyle } from '../../render/feature-layer';
 
+import type { GridStyle } from '../../render/grid-layer';
+import { DEFAULT_GRID_STYLE, withOpacity } from '../../render/grid-layer';
+
 import { composeFrame } from './host-ports';
 
 const VIEWPORT: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
@@ -68,6 +71,79 @@ describe('composeFrame', () => {
     });
     expect(kinds(prims)).toContain('gridline');
     expect(prims.every((p) => p.kind !== 'point')).toBe(true);
+  });
+
+  // 回帰: グリッド設定(間隔/色/不透明度)が地図描画に反映される (bughunt)。
+  // 以前は composeFrame が buildGridPrimitives(true, DEFAULT_GRID_STYLE, ...) と
+  // 固定値を渡しており、projectSettings の grid 設定を無視していた。
+  describe('grid style is honored (FR-13 / FR-109 即時反映 — bughunt regression)', () => {
+    const gridLines = (prims: readonly DrawPrimitive[]) =>
+      prims.filter(
+        (p): p is Extract<DrawPrimitive, { kind: 'gridline' }> => p.kind === 'gridline',
+      );
+
+    it('a wider SPACING yields fewer graticule lines than the default', () => {
+      const dense = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        grid: { ...DEFAULT_GRID_STYLE, spacing: 5 },
+      });
+      const sparse = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        grid: { ...DEFAULT_GRID_STYLE, spacing: 30 },
+      });
+      expect(gridLines(dense).length).toBeGreaterThan(gridLines(sparse).length);
+    });
+
+    it('the live COLOR + OPACITY reach the normal gridline stroke', () => {
+      const style: GridStyle = {
+        ...DEFAULT_GRID_STYLE,
+        color: '#123456',
+        opacity: 0.25,
+      };
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        grid: style,
+      });
+      const expectedStroke = withOpacity(style.color, style.opacity);
+      // A normal (non-emphasized) gridline must carry the folded rgba() stroke; a
+      // change to the project color/opacity therefore changes what is drawn.
+      const normalLines = gridLines(prims).filter((l) => l.stroke === expectedStroke);
+      expect(normalLines.length).toBeGreaterThan(0);
+      // The default style produced a DIFFERENT stroke, proving the override took.
+      const defaultStroke = withOpacity(
+        DEFAULT_GRID_STYLE.color,
+        DEFAULT_GRID_STYLE.opacity,
+      );
+      expect(expectedStroke).not.toBe(defaultStroke);
+      expect(gridLines(prims).some((l) => l.stroke === defaultStroke)).toBe(false);
+    });
+
+    it('falls back to DEFAULT_GRID_STYLE when no live grid is supplied', () => {
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+      });
+      const defaultStroke = withOpacity(
+        DEFAULT_GRID_STYLE.color,
+        DEFAULT_GRID_STYLE.opacity,
+      );
+      expect(gridLines(prims).some((l) => l.stroke === defaultStroke)).toBe(true);
+    });
   });
 
   it('reflects a CHANGED committed set in the batch (time-change reflection)', () => {
