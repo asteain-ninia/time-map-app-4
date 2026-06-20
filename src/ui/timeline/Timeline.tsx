@@ -1,29 +1,20 @@
 // UI layer (U21 / timeline): the bottom timeline panel (FR-64〜FR-69).
 //
 // Composes the slider, numeric range/current display, direct-jump field, ticks,
-// event markers, step controls, and playback controls. EVERY time-change path
-// funnels through the timeline binding -> store.setCurrentTime (single truth
-// source); the map (U16) follows by subscription. This component holds only
-// transient UI state (the marker list); it stores NO map-draw state in React
+// step controls, and playback controls. EVERY time-change path funnels through
+// the timeline binding -> store.setCurrentTime (single truth source); the map
+// (U16) follows by subscription. This component holds no map-draw state in React
 // (技術方針 2.3, 受け入れ基準 6).
 
-import { useId, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { SessionStore } from '../state/store';
 
-import { EventMarkers } from './EventMarkers';
 import { PlaybackControls } from './PlaybackControls';
 import { StepControls } from './StepControls';
 import { YearMonthDayInput } from './YearMonthDayInput';
-import type { EventMarker } from './markers';
-import { addMarker, editMarker, removeMarker } from './markers';
-import {
-  formatTimePoint,
-  formatYear,
-  generateTicks,
-  toNormalizedRange,
-} from './time-display';
+import { formatTimePoint, formatYear, generateTicks } from './time-display';
 import { useTimeline } from './useTimeline';
 import { usePlayback } from './usePlayback';
 
@@ -33,24 +24,10 @@ export interface TimelineProps<S> {
   readonly targetTicks?: number;
 }
 
-let markerSeq = 0;
-function nextMarkerId(prefix: string): string {
-  markerSeq += 1;
-  return `${prefix}-${markerSeq}`;
-}
-
 export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   const { store, targetTicks = 10 } = props;
   const t = useTimeline(store);
   const playback = usePlayback(store, t.calendar);
-  const markerIdPrefix = useId();
-
-  const [markers, setMarkers] = useState<readonly EventMarker[]>([]);
-
-  const range = useMemo(
-    () => toNormalizedRange(t.timelineMin, t.timelineMax, t.calendar),
-    [t.timelineMin, t.timelineMax, t.calendar],
-  );
 
   const ticks = useMemo(
     () => generateTicks(t.timelineMin.year, t.timelineMax.year, t.calendar, targetTicks),
@@ -106,23 +83,6 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           );
         })}
       </div>
-
-      <EventMarkers
-        markers={markers}
-        range={range}
-        calendar={t.calendar}
-        defaultTime={t.currentTime}
-        onJump={(time) => t.jumpToTime(time)}
-        onAdd={(label, time) =>
-          setMarkers((prev) =>
-            addMarker(prev, { id: nextMarkerId(markerIdPrefix), label, time }),
-          )
-        }
-        onEdit={(id, label, time) =>
-          setMarkers((prev) => editMarker(prev, id, { label, time }))
-        }
-        onRemove={(id) => setMarkers((prev) => removeMarker(prev, id))}
-      />
 
       <div className="timeline__controls">
         <StepControls onStep={(unit, direction) => t.step(unit, direction)} />

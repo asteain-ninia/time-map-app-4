@@ -162,18 +162,19 @@ test.describe('HB-11 / HB-12 / HB-13 — タイムライン可読性 (labels + v
     }
   });
 
-  test('HB-12: the 時刻ブックマーク section explains what it is', async () => {
+  test('HB-12: the time-bookmark UI is gone (FR-66 descoped per user)', async () => {
+    // 時刻ブックマーク機能は撤去済み (ユーザー決定 2026-06-21)。タイムラインは
+    // 表示され、栞専用 UI (track / 見出し / 「ブックマーク」ボタン) が一切残って
+    // いないことを軽く回帰で固定する。
     const { app, page } = await launchApp();
     try {
-      const markers = page.getByTestId('timeline-markers');
-      await expect(markers).toBeVisible();
-      await expect(markers.locator('.timeline-markers__title')).toHaveText('時刻ブックマーク');
-      // The hint explains it is a named time bookmark (not feature creation).
-      await expect(page.getByTestId('timeline-markers-hint')).toHaveText(/ブックマーク|時刻/);
-      // The add button is clearly labelled (消さない — the control survives, renamed).
+      await expect(page.getByTestId('timeline')).toBeVisible();
+      await expect(page.getByTestId('timeline-markers')).toHaveCount(0);
+      await expect(page.getByTestId('timeline-markers-hint')).toHaveCount(0);
+      await expect(page.locator('.timeline-markers')).toHaveCount(0);
       await expect(
         page.getByRole('button', { name: 'この時刻をブックマーク' }),
-      ).toBeVisible();
+      ).toHaveCount(0);
     } finally {
       await app.close();
     }

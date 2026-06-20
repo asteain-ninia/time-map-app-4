@@ -2,7 +2,7 @@
 //
 // Components for the bottom timeline panel and the SHARED year/month/day input
 // (reused by the property panel's 存在期間 input, FR-70). Pure mapping/step/
-// playback/marker logic is exported too so U32 can reuse the same U02-backed
+// playback logic is exported too so U32 can reuse the same U02-backed
 // time↔position and 紀元前 transforms for its 時間バー表示 (spec FR-60 公開).
 
 // React components
@@ -13,7 +13,6 @@ export {
 } from './YearMonthDayInput';
 export { StepControls, type StepControlsProps } from './StepControls';
 export { PlaybackControls, type PlaybackControlsProps } from './PlaybackControls';
-export { EventMarkers, type EventMarkersProps } from './EventMarkers';
 
 // Hooks
 export { useTimeline, type TimelineBinding } from './useTimeline';
@@ -64,16 +63,6 @@ export {
   daysPerSecond,
   advancePlayback,
 } from './playback';
-
-// Event markers (pure model)
-export {
-  type EventMarker,
-  type PositionedMarker,
-  addMarker,
-  editMarker,
-  removeMarker,
-  positionMarkers,
-} from './markers';
 
 // Shared draft logic for the year/month/day input
 export {

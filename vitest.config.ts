@@ -114,8 +114,8 @@ export default defineConfig({
       // run in node without a DOM.
       'src/ui/file-ops/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
-      // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
-      // mode toggle / view-only disabling / drag / tooltip / overlay layering.
+      // U20 shell layout / mode toggle / view-only disabling / drag / tooltip /
+      // overlay layering, etc.
       'src/ui/**/*.test.tsx',
     ],
     // Pin the fast-check seed once for the whole suite so property tests are
