@@ -337,3 +337,129 @@ export function ringHasZeroLengthEdge(ring: GeoRing): boolean {
   }
   return false;
 }
+
+/**
+ * True iff `inner` ring lies strictly inside `outer` ring — i.e. `inner` has real
+ * interior inside `outer` and no part of `inner`'s boundary runs outside `outer`.
+ * Both rings are implicitly closed (last → first edge included).
+ *
+ * This is the robust, boundary-aware containment used both for the U06 hole↔outer
+ * hierarchy invariant and for U26 split re-parenting (knife/proposal). A single
+ * vertex probe is fragile after quantization: a shared/seam vertex frequently
+ * lands exactly ON the other ring's boundary, where `pointInPolygon` returns
+ * Boundary (not Inside), so a lone `inner[0]` probe would wrongly report "not
+ * contained" for a genuinely nested ring. We therefore test three conditions
+ * (单一真实源 — both call sites share this one predicate):
+ *
+ *   1. No `inner` vertex is strictly OUTSIDE `outer`.
+ *   2. No stretch of any `inner` edge runs strictly OUTSIDE `outer` (catches both
+ *      a Proper crossing through a slot AND a sweep out through a notch-mouth
+ *      vertex). Reuses {@link segmentsIntersect} rather than re-deriving crossing.
+ *   3. `inner` has some real interior strictly inside `outer` (a degenerate ring
+ *      lying entirely ON the `outer` boundary has zero real interior and is NOT
+ *      contained).
+ *
+ * Deliberately AVOIDS any centroid probe: for a concave `inner` the centroid can
+ * fall in `inner`'s own empty region, which for a ring hugging a notched `outer`
+ * can be `outer`'s Outside space, wrongly rejecting a valid containment.
+ */
+export function ringStrictlyContains(outer: GeoRing, inner: GeoRing): boolean {
+  if (inner.length < 3 || outer.length < 3) return false;
+  const outerPoly: GeoPolygon = [outer];
+  // (1) No inner vertex may be strictly outside the outer ring.
+  for (const v of inner) {
+    if (pointInPolygon(v, outerPoly) === POINT_LOCATION.Outside) return false;
+  }
+  // (2) No stretch of any inner edge may run outside the outer ring.
+  if (innerEdgeExitsOuter(inner, outer, outerPoly)) return false;
+  // (3) The inner ring must have real interior inside the outer ring.
+  return innerHasInteriorInsideOuter(inner, outerPoly);
+}
+
+/**
+ * True iff `inner` has some point strictly inside `outer` — real interior, not
+ * merely boundary contact. An inner vertex strictly Inside is the direct witness;
+ * when every inner vertex sits on the outer boundary, an inner-edge midpoint
+ * strictly Inside witnesses interior that runs through the outer ring.
+ */
+function innerHasInteriorInsideOuter(inner: GeoRing, outerPoly: GeoPolygon): boolean {
+  for (const v of inner) {
+    if (pointInPolygon(v, outerPoly) === POINT_LOCATION.Inside) return true;
+  }
+  const n = inner.length;
+  for (let i = 0; i < n; i += 1) {
+    const a = inner[i];
+    const b = inner[(i + 1) % n];
+    if (a === undefined || b === undefined) continue;
+    const mid = { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };
+    if (pointInPolygon(mid, outerPoly) === POINT_LOCATION.Inside) return true;
+  }
+  return false;
+}
+
+/**
+ * True iff any stretch of an `inner` edge runs strictly OUTSIDE `outer`.
+ *
+ * For each inner edge [i1,i2] we collect the parameter t∈[0,1] of every point
+ * where the edge meets the outer ring (Proper crossing OR Endpoint touch). With
+ * the edge split at those parameters (plus 0 and 1), each consecutive sub-interval
+ * lies wholly Inside, wholly Outside, or wholly on the Boundary of the outer ring
+ * (it cannot change side without meeting the boundary, which would be another
+ * split point). We sample each sub-interval at its midpoint: any midpoint strictly
+ * Outside means that stretch of the inner boundary leaves the outer ring.
+ *
+ * O(innerEdges × outerEdges), exact, reusing {@link segmentsIntersect}. Both
+ * rings are implicitly closed.
+ */
+function innerEdgeExitsOuter(inner: GeoRing, outer: GeoRing, outerPoly: GeoPolygon): boolean {
+  const hn = inner.length;
+  const on = outer.length;
+  for (let i = 0; i < hn; i += 1) {
+    const h1 = inner[i];
+    const h2 = inner[(i + 1) % hn];
+    if (h1 === undefined || h2 === undefined) continue;
+    const ts: number[] = [0, 1];
+    for (let j = 0; j < on; j += 1) {
+      const o1 = outer[j];
+      const o2 = outer[(j + 1) % on];
+      if (o1 === undefined || o2 === undefined) continue;
+      const rel = segmentsIntersect(h1, h2, o1, o2);
+      if (rel.point !== undefined) {
+        const t = paramOnSegment(h1, h2, rel.point);
+        if (t !== undefined) ts.push(t);
+      }
+    }
+    ts.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < ts.length; k += 1) {
+      const lo = ts[k]!;
+      const hi = ts[k + 1]!;
+      if (hi - lo < 1e-12) continue; // zero-width sub-interval, nothing to sample
+      const tm = (lo + hi) / 2;
+      const mid = { lon: h1.lon + tm * (h2.lon - h1.lon), lat: h1.lat + tm * (h2.lat - h1.lat) };
+      if (pointInPolygon(mid, outerPoly) === POINT_LOCATION.Outside) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Parameter t∈[0,1] of point p along the segment [a,b], or undefined if the
+ * segment is degenerate. p is assumed (by construction) to lie on the segment;
+ * the dominant axis is used to avoid division by a near-zero component.
+ */
+function paramOnSegment(
+  a: WorldCoordinate,
+  b: WorldCoordinate,
+  p: WorldCoordinate,
+): number | undefined {
+  const dLon = b.lon - a.lon;
+  const dLat = b.lat - a.lat;
+  if (Math.abs(dLon) >= Math.abs(dLat)) {
+    if (dLon === 0) return undefined;
+    return (p.lon - a.lon) / dLon;
+  }
+  if (dLat === 0) return undefined;
+  return (p.lat - a.lat) / dLat;
+}

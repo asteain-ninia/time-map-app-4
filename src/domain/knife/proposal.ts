@@ -29,7 +29,7 @@ import {
   type LeafFeature,
 } from '../feature';
 import { createEditProposal, type EditProposal } from '../consistency/index';
-import { pointInPolygon, POINT_LOCATION } from '../geometry/index';
+import { ringStrictlyContains } from '../geometry/index';
 import type { TimePoint } from '../time/time-point';
 import type { FeatureId, RingId, VertexId } from '../ids';
 import {
@@ -216,15 +216,25 @@ function ringAreaAbs(ring: GeoMultiPolygon[number][number]): number {
   return Math.abs(sum) / 2;
 }
 
-/** True iff `inner`'s representative point lies strictly inside `outer`. */
+/**
+ * True iff `inner` ring lies strictly inside `outer` ring.
+ *
+ * Delegates to the shared {@link ringStrictlyContains} predicate (单一真实源,
+ * same logic that backs U06's hole↔outer invariant). A lone `inner[0]` vertex
+ * probe was fragile: after a split, ring vertices are quantized and an
+ * enclave/hole's first vertex frequently lands exactly ON a shared seam boundary
+ * of the candidate outer/hole, where `pointInPolygon` returns Boundary (not
+ * Inside) — so the old probe reported "not contained" for a genuinely nested
+ * ring, and {@link reparentByContainment} would wrongly promote/demote it to a
+ * top-level territory (mis-classifying an untouched enclave/hole, FR-91). The
+ * robust predicate tests no-vertex-outside + no-edge-stretch-outside + has-real-
+ * interior-inside, so an on-boundary seam vertex no longer fools it.
+ */
 function ringContains(
   outer: GeoMultiPolygon[number][number],
   inner: GeoMultiPolygon[number][number],
 ): boolean {
-  const probe = inner[0];
-  if (probe === undefined) return false;
-  // A single-ring polygon: pointInPolygon over [outer].
-  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
+  return ringStrictlyContains(outer, inner);
 }
 
 /**

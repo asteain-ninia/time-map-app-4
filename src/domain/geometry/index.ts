@@ -34,6 +34,7 @@ export {
   segmentsIntersect,
   ringSelfIntersects,
   ringHasZeroLengthEdge,
+  ringStrictlyContains,
 } from './predicates';
 
 export {

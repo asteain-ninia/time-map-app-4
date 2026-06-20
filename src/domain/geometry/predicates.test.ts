@@ -8,6 +8,7 @@ import {
   pointInPolygon,
   ringHasZeroLengthEdge,
   ringSelfIntersects,
+  ringStrictlyContains,
   segmentsIntersect,
 } from './predicates';
 import type { GeoPolygon } from './types';
@@ -124,5 +125,62 @@ describe('ringHasZeroLengthEdge (acceptance criterion 3, shared quantization)', 
   it('true when the implicit closing edge is zero length (first == last)', () => {
     const ring = [c(0, 0), c(10, 0), c(10, 10), c(0 + 1e-12, 0 - 1e-12)];
     expect(ringHasZeroLengthEdge(ring)).toBe(true);
+  });
+});
+
+describe('ringStrictlyContains (boundary-robust nesting — U06 holes / U26 re-parenting)', () => {
+  const outer = rect(0, 0, 20, 20);
+
+  it('a fully-interior inner ring is contained', () => {
+    expect(ringStrictlyContains(outer, rect(5, 5, 10, 10))).toBe(true);
+  });
+
+  it('an inner ring whose vertices are all outside is not contained', () => {
+    expect(ringStrictlyContains(outer, rect(30, 30, 5, 5))).toBe(false);
+  });
+
+  // Regression for the split re-parenting bug: a probe over only inner[0] is
+  // fragile because, after a split, a seam vertex of a genuinely-nested enclave/
+  // hole frequently lands exactly ON the candidate's shared boundary, where
+  // pointInPolygon returns Boundary (not Inside). A lone inner[0] probe would
+  // then report "not contained" and reparentByContainment would mis-promote the
+  // ring to a top-level territory (FR-91). The robust predicate must still see
+  // the ring as contained because it has real interior strictly inside.
+  it('an inner ring nested but with its FIRST vertex ON the outer boundary is contained', () => {
+    // inner[0] == (0,5) sits exactly on the outer's left edge (a seam vertex);
+    // the rest of the ring lies strictly inside the outer. pointInPolygon(inner[0])
+    // is Boundary, so the old inner[0]-only probe wrongly returned false.
+    const inner = [c(0, 5), c(10, 5), c(10, 15), c(0, 15)];
+    expect(pointInPolygon(inner[0]!, [outer])).toBe(POINT_LOCATION.Boundary);
+    expect(ringStrictlyContains(outer, inner)).toBe(true);
+  });
+
+  it('an inner ring sharing an entire edge with the outer (all-on-boundary-on-one-side) is still contained', () => {
+    // Two vertices ride the outer's left edge; the ring still has real interior
+    // strictly inside, so it is contained despite the shared seam edge.
+    const inner = [c(0, 4), c(0, 16), c(8, 16), c(8, 4)];
+    expect(ringStrictlyContains(outer, inner)).toBe(true);
+  });
+
+  it('a degenerate ring lying entirely ON the outer boundary is NOT contained (no real interior)', () => {
+    // A sliver collapsed onto the outer's left edge has zero interior inside.
+    const degenerate = [c(0, 4), c(0, 8), c(0, 12)];
+    expect(ringStrictlyContains(outer, degenerate)).toBe(false);
+  });
+
+  it('an inner ring that dips out through a concave notch is NOT contained', () => {
+    // C-shaped (concave) outer with a notch cut into its right side; an inner ring
+    // straddles the notch mouth so an edge stretch runs outside the outer solid.
+    const notched = [
+      c(0, 0),
+      c(20, 0),
+      c(20, 8),
+      c(12, 10),
+      c(20, 12),
+      c(20, 20),
+      c(0, 20),
+    ];
+    const straddling = rect(10, 9, 6, 2); // crosses the notch mouth into empty space
+    expect(ringStrictlyContains(notched, straddling)).toBe(false);
   });
 });

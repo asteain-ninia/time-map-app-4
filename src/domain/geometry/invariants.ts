@@ -16,12 +16,12 @@
 //
 // Pure: no mutation, no side effects.
 
-import type { WorldCoordinate } from '../coordinate';
 import {
   pointInPolygon,
   POINT_LOCATION,
   ringHasZeroLengthEdge,
   ringSelfIntersects,
+  ringStrictlyContains,
   segmentsIntersect,
   SEGMENT_RELATION,
 } from './predicates';
@@ -74,160 +74,17 @@ function checkRing(ring: GeoRing): InvariantViolationKind | undefined {
 /**
  * True iff the hole ring is genuinely contained within the outer ring.
  *
- * Vertex-only containment is UNSOUND for concave outers (slot/notch shapes that
- * polygon-clipping or hand edits can produce): every hole vertex can land in
- * solid material while a hole EDGE crosses out through a notch into space that is
- * outside the outer ring. So this combines three checks:
- *
- *   1. No hole vertex is strictly Outside the outer ring.
- *   2. No hole EDGE properly crosses an outer EDGE. A proper crossing means the
- *      hole boundary leaves and re-enters the outer ring (it dips through a notch
- *      / slot), so the hole is not contained even though its vertices sit inside.
- *      We reuse the existing `segmentsIntersect` predicate (单一真实源) rather
- *      than re-deriving a crossing test.
- *   3. The hole has some real interior inside the outer ring (a degenerate hole
- *      laid entirely ON the outer edge, sharing only boundary, has zero real
- *      interior and is not a real hole).
- *
- * On check (3): once (1) and (2) hold, no part of the hole boundary lies outside
- * the outer ring (no vertex outside, no edge dipping out through a notch), so the
- * hole IS contained — *unless* it is the degenerate all-on-boundary case. We must
- * NOT probe the hole's vertex-centroid for this: for a CONCAVE hole the centroid
- * can fall in the hole's own empty region, which for a hole hugging a notched
- * outer can be the outer's Outside space, wrongly rejecting a valid containment.
- * Instead we look for any witness of real interior: a hole vertex strictly Inside
- * the outer, or (when every vertex sits on the outer boundary) a hole-edge
- * midpoint strictly Inside the outer. Only when NO such witness exists is the
- * hole degenerate-on-boundary and rejected.
- *
- * Endpoint/collinear contacts that merely TOUCH the outer boundary do not on
- * their own exit the outer ring — but a hole edge can leave the solid through a
- * concave VERTEX (a notch mouth) while only ever touching the outer ring at
- * endpoints (never a Proper crossing). The old Proper-only test missed that
- * (Codex反例: a hole edge between two on-boundary vertices sweeping across a notch
- * mouth). So check (2) is now a SUB-SEGMENT test: split each hole edge at every
- * point where it meets the outer ring (Proper or Endpoint) and require every
- * sub-segment midpoint to be Inside or on the Boundary — never strictly Outside.
- * A midpoint that is Outside means that stretch of the hole boundary runs through
- * empty space outside the outer ring, so the hole is not contained.
+ * Delegates to the shared {@link ringStrictlyContains} predicate (单一真实源):
+ * vertex-only containment is UNSOUND for concave outers (slot/notch shapes
+ * polygon-clipping or hand edits produce) — every hole vertex can sit in solid
+ * material while a hole EDGE crosses out through a notch — and a single on-boundary
+ * vertex probe yields Boundary, not Inside. The predicate combines three robust
+ * checks (no vertex strictly outside; no edge stretch outside; some real interior
+ * strictly inside), avoiding any centroid probe. The same predicate backs U26
+ * split re-parenting so both call sites agree on containment.
  */
 function holeContainedInOuter(hole: GeoRing, outer: GeoRing): boolean {
-  const outerPoly: GeoPolygon = [outer];
-  // (1) No hole vertex may be strictly outside the outer ring.
-  for (const v of hole) {
-    if (pointInPolygon(v, outerPoly) === POINT_LOCATION.Outside) return false;
-  }
-  // (2) No stretch of any hole edge may run outside the outer ring (catches both
-  // a Proper crossing through a slot AND a sweep out through a notch-mouth vertex).
-  // Both rings are treated as implicitly closed (last → first edge included).
-  if (holeEdgeExitsOuter(hole, outer, outerPoly)) return false;
-  // (3) Reject only the degenerate hole that lies entirely ON the outer boundary
-  // (zero real interior). After (1) and (2), the hole is contained iff it has any
-  // real interior inside the outer; witness it with a point strictly Inside.
-  return holeHasInteriorInsideOuter(hole, outerPoly);
-}
-
-/**
- * True iff the hole has some point strictly inside the outer ring — i.e. real
- * interior, not merely boundary contact. A hole vertex strictly Inside is the
- * direct witness; when every hole vertex sits on the outer boundary, a hole-edge
- * midpoint strictly Inside witnesses interior that runs through the outer ring.
- * If neither exists the hole lies entirely on the outer boundary (degenerate).
- *
- * This deliberately AVOIDS any vertex-centroid probe: for a concave hole the
- * centroid is not guaranteed to lie inside the hole and can land in the outer's
- * Outside region (e.g. a hole hugging a notched outer), which would wrongly
- * reject a genuinely-contained hole.
- */
-function holeHasInteriorInsideOuter(hole: GeoRing, outerPoly: GeoPolygon): boolean {
-  for (const v of hole) {
-    if (pointInPolygon(v, outerPoly) === POINT_LOCATION.Inside) return true;
-  }
-  // No vertex strictly inside: every vertex is on the outer boundary (vertices
-  // outside were already rejected in check (1)). Probe edge midpoints, which for
-  // a hole with real interior cut a chord through the outer's interior.
-  const n = hole.length;
-  for (let i = 0; i < n; i += 1) {
-    const a = hole[i];
-    const b = hole[(i + 1) % n];
-    if (a === undefined || b === undefined) continue;
-    const mid = { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };
-    if (pointInPolygon(mid, outerPoly) === POINT_LOCATION.Inside) return true;
-  }
-  return false;
-}
-
-/**
- * True iff any stretch of a hole edge runs strictly OUTSIDE the outer ring.
- *
- * For each hole edge [h1,h2] we collect the parameter t∈[0,1] of every point
- * where the edge meets the outer ring — both Proper crossings and Endpoint
- * touches (a touch at a notch-mouth vertex is exactly the case the old
- * Proper-only test missed). With the edge split at those parameters (plus the
- * endpoints 0 and 1), each consecutive sub-interval lies wholly Inside, wholly
- * Outside, or wholly on the Boundary of the outer ring (it cannot change side
- * without meeting the boundary, which would be another split point). We sample
- * each sub-interval at its midpoint: if any midpoint is strictly Outside, that
- * stretch of the hole boundary leaves the outer ring and the hole is NOT
- * contained.
- *
- * O(holeEdges × outerEdges), exact, reusing `segmentsIntersect` so the crossing
- * convention matches the rest of the geometry layer. Both rings are implicitly
- * closed.
- */
-function holeEdgeExitsOuter(hole: GeoRing, outer: GeoRing, outerPoly: GeoPolygon): boolean {
-  const hn = hole.length;
-  const on = outer.length;
-  for (let i = 0; i < hn; i += 1) {
-    const h1 = hole[i];
-    const h2 = hole[(i + 1) % hn];
-    if (h1 === undefined || h2 === undefined) continue;
-    // Parameters along [h1,h2] at which it meets the outer ring. Endpoints (0,1)
-    // are always present so the whole edge is covered by sub-intervals.
-    const ts: number[] = [0, 1];
-    for (let j = 0; j < on; j += 1) {
-      const o1 = outer[j];
-      const o2 = outer[(j + 1) % on];
-      if (o1 === undefined || o2 === undefined) continue;
-      const rel = segmentsIntersect(h1, h2, o1, o2);
-      if (rel.point !== undefined) {
-        const t = paramOnSegment(h1, h2, rel.point);
-        if (t !== undefined) ts.push(t);
-      }
-    }
-    ts.sort((a, b) => a - b);
-    for (let k = 0; k + 1 < ts.length; k += 1) {
-      const lo = ts[k]!;
-      const hi = ts[k + 1]!;
-      if (hi - lo < 1e-12) continue; // zero-width sub-interval, nothing to sample
-      const tm = (lo + hi) / 2;
-      const mid = { lon: h1.lon + tm * (h2.lon - h1.lon), lat: h1.lat + tm * (h2.lat - h1.lat) };
-      if (pointInPolygon(mid, outerPoly) === POINT_LOCATION.Outside) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-/**
- * Parameter t∈[0,1] of point p along the segment [a,b], or undefined if the
- * segment is degenerate. p is assumed (by construction) to lie on the segment;
- * the dominant axis is used to avoid division by a near-zero component.
- */
-function paramOnSegment(
-  a: WorldCoordinate,
-  b: WorldCoordinate,
-  p: WorldCoordinate,
-): number | undefined {
-  const dLon = b.lon - a.lon;
-  const dLat = b.lat - a.lat;
-  if (Math.abs(dLon) >= Math.abs(dLat)) {
-    if (dLon === 0) return undefined;
-    return (p.lon - a.lon) / dLon;
-  }
-  if (dLat === 0) return undefined;
-  return (p.lat - a.lat) / dLat;
+  return ringStrictlyContains(outer, hole);
 }
 
 // --- ring overlap (piece-vs-piece, hole-vs-hole) ----------------------------
