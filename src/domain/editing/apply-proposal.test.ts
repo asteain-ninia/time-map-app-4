@@ -9,10 +9,12 @@ import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 import { createBasicAttributes } from '../attributes';
 import { createColorInfo } from '../attributes';
-import { createLeafFeature, type LeafFeature } from '../feature';
+import { createAggregateFeature, createLeafFeature, type Feature, type LeafFeature } from '../feature';
 import { createShape, createTerritoryRing } from '../ring';
-import { createVertex } from '../vertex';
-import { asFeatureId, asRingId, asVertexId } from '../ids';
+import { createVertex, createVertexStore } from '../vertex';
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { isValidSeries } from '../anchor-series';
 import type { AddSnapshot } from '../add/proposal';
 import type { SplitSnapshot } from '../knife/proposal';
@@ -172,5 +174,69 @@ describe('applySplitProposal', () => {
     expect(newHistory.series.entries).toHaveLength(1);
     expect(newHistory.series.entries[0]!.start.year).toBe(500);
     expect(isValidSeries(newHistory.series, calendar)).toBe(true);
+  });
+
+  it('splits a child leaf living INSIDE an aggregate snapshot without duplicating it (FR-44 / containment)', () => {
+    // An aggregate's history snapshot carries [child, agg] under the AGGREGATE id —
+    // the child leaf has NO history of its own. Splitting that child must rewrite it
+    // inside the owning snapshot, preserving the aggregate + sibling, never appending
+    // a duplicate same-id history (the bug findHistory-by-featureId would cause).
+    const child = squareLeaf('child', ['c0', 'c1', 'c2'], [0, 1, 2]);
+    const childWithParent = { ...child.feature, parentId: asFeatureId('agg') } as Feature;
+    const agg = createAggregateFeature(
+      asFeatureId('agg'),
+      createBasicAttributes('連邦', 0, 100),
+      color,
+      [asFeatureId('child')],
+    );
+    const aggSnapshot = createAnchorSnapshot(
+      [childWithParent, agg],
+      createVertexStore(child.vertices),
+    );
+    const aggHistory: FeatureHistory = {
+      featureId: asFeatureId('agg'),
+      series: normalizeSeries(
+        [createAnchorEntry(createAnchor(asAnchorId('agg-anc'), aggSnapshot), timePointYear(0), null)],
+        calendar,
+      ),
+    };
+    const root: DomainProject = { ...emptyProject(), histories: [aggHistory] };
+
+    const newSide = squareLeaf('child-new', ['n0', 'n1', 'n2'], [10, 11, 12]);
+    const newShape = createShape([
+      createTerritoryRing(asRingId('r-child-2'), ['c0', 'c1'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: asFeatureId('child'),
+      inheritorShape: newShape,
+      newFeature: newSide.feature,
+      vertices: [...child.vertices, ...newSide.vertices],
+      vertexRemap: new Map(),
+      sharedEdgeCuts: [],
+      touchedFeatureIds: [asFeatureId('child'), newSide.feature.id],
+    };
+    const proposal = createEditProposal(asFeatureId('child'), timePointYear(50), snapshot);
+
+    const next = applySplitProposal(root, proposal, calendar);
+
+    // No duplicate 'child' history was appended — the aggregate history was rewritten
+    // in place, and only the new (non-inherited) feature was added.
+    expect(next.histories.filter((h) => h.featureId === asFeatureId('child'))).toHaveLength(0);
+    expect(next.histories).toHaveLength(2); // aggregate + new feature.
+
+    const aggAfter = next.histories.find((h) => h.featureId === asFeatureId('agg'))!;
+    const at50 = resolveAt(aggAfter.series, timePointYear(50), calendar);
+    expect(at50.kind).toBe('present');
+    if (at50.kind !== 'present') return;
+    const features = at50.entry.anchor.snapshot.features;
+    // The aggregate sibling is preserved.
+    expect(features.some((f) => f.id === asFeatureId('agg'))).toBe(true);
+    // The child's shape was swapped to the split inheritor shape.
+    const childAfter = features.find((f) => f.id === asFeatureId('child'));
+    expect(childAfter?.kind).toBe('leaf');
+    if (childAfter?.kind === 'leaf') expect(childAfter.shape).toBe(newShape);
+    // The original year-0 anchor still has the child's original shape (identity continuity).
+    const at0 = resolveAt(aggAfter.series, timePointYear(0), calendar);
+    expect(at0.kind).toBe('present');
   });
 });

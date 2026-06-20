@@ -132,14 +132,13 @@ describe('createLiveAddBinding', () => {
     }
   });
 
-  it('converts an unexpected applyProposal throw into a Rejected internal-error result', () => {
-    // A split whose inheritor history EXISTS but is ABSENT at the (earlier)
-    // anchor time drives applySplitProposal down applyPastEdit's insert branch,
-    // where effectiveInheritorFeature THROWS (only reachable from stale time
-    // selection on real data). The live seam must surface that as the documented
-    // internal-error Rejected result rather than letting the throw escape into the
-    // controller's save() before its discriminated-result switch (error-path
-    // honesty — useAddTool.ts has no try/catch around startProcess).
+  it('rejects a split whose inheritor is not effective at the anchor time as a TIME violation', () => {
+    // A split whose inheritor history EXISTS but is ABSENT at the (earlier) anchor
+    // time used to drive applySplitProposal into a throw ('inheritor feature not
+    // found') that the live seam surfaced as a generic Internal error. The U09
+    // checkTime gate now verifies the inheritor IS effective at the anchor time and
+    // returns a typed TIME violation, so the user sees a time-domain reason rather
+    // than a generic internal error (Codex U44 error-path true-positive).
     const inheritor = squareLeaf('f-inh', 'vi', 0, 0);
     const root: DomainRoot = applyAddProposal(emptyProject(), {
       featureId: inheritor.feature.id,
@@ -170,8 +169,7 @@ describe('createLiveAddBinding', () => {
 
     expect(result.status).toBe(PROCESS_STATUS.Rejected);
     if (result.status === PROCESS_STATUS.Rejected) {
-      expect(result.kind).toBe(REJECTION_KIND.Internal);
-      expect(result.detail).toContain('inheritor feature not found');
+      expect(result.kind).toBe(REJECTION_KIND.TimeViolation);
     }
   });
 

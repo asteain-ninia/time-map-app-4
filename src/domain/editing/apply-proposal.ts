@@ -30,6 +30,7 @@ import {
 import {
   createAnchorEntry,
   applyPastEdit,
+  resolveAt,
   type AnchorSeries,
 } from '../anchor-series';
 import type { Calendar } from '../time/calendar';
@@ -95,6 +96,38 @@ function findHistory(
   const history = root.histories[index];
   if (history === undefined) return undefined;
   return { index, history };
+}
+
+/**
+ * Locate the history whose snapshot effective at `anchorTime` CONTAINS `featureId`,
+ * even when that is not the history's own `featureId`. A single anchor snapshot can
+ * carry multiple features (an aggregate's children live inside the aggregate's
+ * history snapshot — see persistence fixtures `[...children, agg]`), so keying only
+ * on `history.featureId` misses a child leaf that is a valid split / adjust target.
+ * Resolving by containment lets the op rewrite that child IN PLACE within its owning
+ * snapshot, preserving siblings (Codex U44 true-positive: otherwise a duplicate
+ * same-id history is appended). Returns the first containing history (ids are unique
+ * across the effective slice, so there is at most one). Pure.
+ */
+export function findHistoryContaining(
+  root: DomainProject,
+  featureId: FeatureId,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): { readonly index: number; readonly history: FeatureHistory } | undefined {
+  // Prefer the history keyed by the id itself (the common single-feature case).
+  const own = findHistory(root, featureId);
+  if (own !== undefined) return own;
+  for (let index = 0; index < root.histories.length; index += 1) {
+    const history = root.histories[index];
+    if (history === undefined) continue;
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') continue;
+    if (resolution.entry.anchor.snapshot.features.some((f) => f.id === featureId)) {
+      return { index, history };
+    }
+  }
+  return undefined;
 }
 
 function withHistories(
@@ -165,9 +198,12 @@ export function applySplitProposal(
   const vertices: readonly Vertex[] = snapshot.vertices;
   const vertexStore = createVertexStore(vertices);
 
-  // 1. Inheritor: update its shape at the anchor time (identity continues).
+  // 1. Inheritor: update its shape at the anchor time (identity continues). The
+  // inheritor leaf may live INSIDE a multi-feature snapshot (e.g. an aggregate's
+  // child), so resolve by snapshot containment, not only by history.featureId, and
+  // rewrite that one feature while preserving siblings + the existing vertex store.
   const inheritorId = snapshot.inheritorFeatureId;
-  const existing = findHistory(root, inheritorId);
+  const existing = findHistoryContaining(root, inheritorId, anchorTime, calendar);
 
   let histories: FeatureHistory[];
   if (existing === undefined) {
@@ -180,17 +216,37 @@ export function applySplitProposal(
       existing.history.series,
       anchorTime,
       (effective) => {
-        // Build the new anchor snapshot: take the feature effective at the base
-        // time (the inheritor leaf), swap only its shape, and carry the split's
-        // vertices. The whole snapshot is replaced as one unit (FR-59).
-        const baseFeature = effectiveInheritorFeature(effective, inheritorId);
+        // Build the new anchor snapshot from the state effective at the base time:
+        // swap ONLY the inheritor leaf's shape, keep every sibling feature, and
+        // carry the split's vertices alongside the inherited store. The whole
+        // snapshot is replaced as one unit (FR-59); siblings are never dropped.
+        const base =
+          effective.kind === 'present'
+            ? effective.entry.anchor.snapshot
+            : createAnchorSnapshot([], createVertexStore([]));
+        const baseFeature = base.features.find((f) => f.id === inheritorId);
+        if (baseFeature === undefined) {
+          // Defensive: the containing history no longer holds the inheritor at this
+          // time (stale/repaired data). Fall back to a synthesised leaf carrier so
+          // the op never throws — the orchestrator's checkTime gate already rejects
+          // editing a feature that is not effective at the anchor time.
+          const synthesised = synthesiseInheritorLeaf(inheritorId, snapshot);
+          return anchorFor([synthesised], vertexStore, inheritorId, anchorTime);
+        }
         const updatedFeature = applyInheritorShape(baseFeature, snapshot);
-        return anchorFor([updatedFeature], vertexStore, inheritorId, anchorTime);
+        const features = base.features.map((f) =>
+          f.id === inheritorId ? updatedFeature : f,
+        );
+        const mergedVertices = createVertexStore([
+          ...base.vertices.byId.values(),
+          ...vertices,
+        ]);
+        return anchorFor(features, mergedVertices, inheritorId, anchorTime);
       },
       calendar,
     );
     histories = root.histories.map((h, i) =>
-      i === existing.index ? { featureId: inheritorId, series: updatedSeries } : h,
+      i === existing.index ? { featureId: existing.history.featureId, series: updatedSeries } : h,
     );
   }
 
@@ -209,21 +265,6 @@ export function applySplitProposal(
       : [...histories, newHistory];
 
   return withHistories(root, histories);
-}
-
-/** The feature effective at the base time, or a synthesised leaf when absent. */
-function effectiveInheritorFeature(
-  effective: import('../anchor-series').Resolution,
-  inheritorId: FeatureId,
-): Feature {
-  if (effective.kind === 'present') {
-    const found = effective.entry.anchor.snapshot.features.find((f) => f.id === inheritorId);
-    if (found !== undefined) return found;
-  }
-  // Absent / not found: caller's applyInheritorShape will replace the shape; we
-  // only need a leaf carrier. This branch is defensive (a present inheritor
-  // always carries its feature).
-  throw new Error('U44: inheritor feature not found in effective snapshot');
 }
 
 /** Swap the inheritor's shape; throws if the inheritor is not a leaf (FR-44). */

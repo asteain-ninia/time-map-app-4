@@ -30,13 +30,13 @@ describe('line vertex add / delete (受け入れ基準4)', () => {
   });
 
   it('deletes a vertex, line survives when ≥2 remain', () => {
-    const r = deleteLineVertex(line('L', ['a', 'b', 'c']), vid('b'));
+    const r = deleteLineVertex(line('L', ['a', 'b', 'c']), vid('b'))!;
     expect(r.kind).toBe('feature');
     expect((r as { feature: LineFeature }).feature.vertexIds).toEqual([vid('a'), vid('c')]);
   });
 
   it('deletes the LINE feature itself when fewer than 2 vertices remain', () => {
-    const r = deleteLineVertex(line('L', ['a', 'b']), vid('b'));
+    const r = deleteLineVertex(line('L', ['a', 'b']), vid('b'))!;
     expect(r.kind).toBe('delete-feature');
     expect((r as { featureId: ReturnType<typeof fid> }).featureId).toBe(fid('L'));
   });
@@ -60,7 +60,7 @@ describe('leaf vertex add / delete (受け入れ基準5)', () => {
       territory('r0', ['a', 'b', 'c', 'd']),
       hole('r1', ['h0', 'h1', 'h2'], 'r0'),
     ]);
-    const r = deleteLeafVertex(f, rid('r1'), vid('h2'));
+    const r = deleteLeafVertex(f, rid('r1'), vid('h2'))!;
     expect(r.kind).toBe('feature');
     const nf = (r as { feature: LeafFeature }).feature;
     expect(nf.shape.rings.some((x) => x.id === rid('r1'))).toBe(false);
@@ -70,7 +70,7 @@ describe('leaf vertex add / delete (受け入れ基準5)', () => {
   it('deletes the LEAF feature when no territory ring remains', () => {
     // The single territory ring drops below 3 → removed → no territory → leaf gone.
     const f = leaf('F', [territory('r0', ['a', 'b', 'c'])]);
-    const r = deleteLeafVertex(f, rid('r0'), vid('c'));
+    const r = deleteLeafVertex(f, rid('r0'), vid('c'))!;
     expect(r.kind).toBe('delete-feature');
   });
 });
@@ -79,8 +79,42 @@ describe('leaf vertex add / delete (受け入れ基準5)', () => {
 
 describe('point vertex delete (受け入れ基準3)', () => {
   it('deleting the point vertex deletes the point feature', () => {
-    const r = deletePointVertex(point('P', 'p0'));
+    const r = deletePointVertex(point('P', 'p0'))!;
     expect(r.kind).toBe('delete-feature');
+  });
+});
+
+// --- stale-target guards (no ghost edit on a vertex/ring no longer present) ---
+
+describe('stale vertex target guards (no ghost history)', () => {
+  it('deleteLineVertex returns undefined for a vertex the line does not reference', () => {
+    expect(deleteLineVertex(line('L', ['a', 'b', 'c']), vid('zzz'))).toBeUndefined();
+  });
+
+  it('deleteLeafVertex returns undefined for a vertex not in the named ring', () => {
+    const f = leaf('F', [territory('r0', ['a', 'b', 'c', 'd'])]);
+    // The ring exists but does not reference 'zzz'.
+    expect(deleteLeafVertex(f, rid('r0'), vid('zzz'))).toBeUndefined();
+    // The ring id is unknown.
+    expect(deleteLeafVertex(f, rid('nope'), vid('a'))).toBeUndefined();
+  });
+
+  it('deletePointVertex returns undefined when the passed vertex id does not match', () => {
+    expect(deletePointVertex(point('P', 'p0'), vid('other'))).toBeUndefined();
+    // Matching id still deletes.
+    expect(deletePointVertex(point('P', 'p0'), vid('p0'))!.kind).toBe('delete-feature');
+  });
+
+  it('deleteVertex dispatch drops a stale point/line/leaf target', () => {
+    expect(deleteVertex({ feature: point('P', 'p0'), vertexId: vid('other') })).toBeUndefined();
+    expect(deleteVertex({ feature: line('L', ['a', 'b', 'c']), vertexId: vid('zzz') })).toBeUndefined();
+    expect(
+      deleteVertex({
+        feature: leaf('F', [territory('r0', ['a', 'b', 'c', 'd'])]),
+        vertexId: vid('zzz'),
+        ringId: rid('r0'),
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -146,9 +180,9 @@ describe('selection re-resolution after structural edits (受け入れ基準11 /
       new Set([vid('h0'), vid('h1'), vid('a')]),
     );
 
-    const r = deleteLeafVertex(f, rid('r1'), vid('h2'));
+    const r = deleteLeafVertex(f, rid('r1'), vid('h2'))!;
     expect(r.kind).toBe('feature');
-    expect(r.selection.removedRingId).toBe(rid('r1'));
+    expect(r.selection.removedRingIds).toContain(rid('r1'));
     // The whole hole ring's surviving vertices drop out (h0, h1), plus the deleted h2.
     expect(new Set(r.selection.removedVertexIds)).toEqual(
       new Set([vid('h0'), vid('h1'), vid('h2')]),
@@ -168,7 +202,7 @@ describe('selection re-resolution after structural edits (受け入れ基準11 /
       fid('F'),
       new Set([vid('a')]),
     );
-    const r = deleteLeafVertex(f, rid('r0'), vid('c'));
+    const r = deleteLeafVertex(f, rid('r0'), vid('c'))!;
     expect(r.kind).toBe('delete-feature');
     expect(r.selection.deletedFeatureId).toBe(fid('F'));
 
@@ -180,7 +214,7 @@ describe('selection re-resolution after structural edits (受け入れ基準11 /
   });
 
   it('line deletion (<2 pts): every vertex of the line drops out', () => {
-    const r = deleteLineVertex(line('L', ['a', 'b']), vid('b'));
+    const r = deleteLineVertex(line('L', ['a', 'b']), vid('b'))!;
     expect(r.kind).toBe('delete-feature');
     expect(new Set(r.selection.removedVertexIds)).toEqual(new Set([vid('a'), vid('b')]));
     const result = commandResultFromEditResult(r);
@@ -190,7 +224,7 @@ describe('selection re-resolution after structural edits (受け入れ基準11 /
   });
 
   it('point deletion: the point vertex and feature drop out', () => {
-    const r = deletePointVertex(point('P', 'p0'));
+    const r = deletePointVertex(point('P', 'p0'))!;
     expect(r.selection.removedVertexIds).toEqual([vid('p0')]);
     expect(r.selection.deletedFeatureId).toBe(fid('P'));
   });

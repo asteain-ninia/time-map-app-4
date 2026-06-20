@@ -46,6 +46,7 @@ import {
   applyAddProposal,
   applySplitProposal,
   deriveAnchorId,
+  findHistoryContaining,
 } from '../domain/editing/apply-proposal';
 import { createAnchor, createAnchorSnapshot, type Anchor } from '../domain/anchor';
 import { applyPastEdit } from '../domain/anchor-series';
@@ -173,6 +174,35 @@ function checkTimeOver<Snapshot>(
 ): TimeCheckResult {
   const v = validateTimePoint(proposal.anchorTime, calendar);
   return v.ok ? { ok: true } : { ok: false, reason: v.error };
+}
+
+/**
+ * Like {@link checkTimeOver} but ALSO requires the proposal's existing feature to be
+ * EFFECTIVE at the anchor time (for an edit/split on a feature that already exists).
+ *
+ * WHY (error-path honesty, Codex U44 true-positive): editing / splitting a feature
+ * at a time where it is not effective (before its first anchor, past a set end, or
+ * inside a temporal enclave) passes the calendar-validity check, then U44's
+ * `applyProposal` cannot find the inheritor in the effective snapshot. Without this
+ * gate that surfaced as a generic Internal-error rejection; here we reject it as a
+ * typed TIME violation so the user sees a time-domain reason. The feature may live
+ * inside a multi-feature snapshot (an aggregate's child), so we test the union of
+ * features effective at the time, not just same-id histories.
+ */
+function checkTimeOverExisting<Snapshot>(
+  current: DomainRoot,
+  proposal: EditProposal<Snapshot>,
+): TimeCheckResult {
+  const base = checkTimeOver(current, proposal);
+  if (!base.ok) return base;
+  const effective = featuresAt(current, proposal.anchorTime).some(
+    (f) => f.id === proposal.featureId,
+  );
+  if (effective) return { ok: true };
+  return {
+    ok: false,
+    reason: { code: 'featureNotEffectiveAtTime', featureId: String(proposal.featureId) },
+  };
 }
 
 /** A display-name lookup over the trial state at the anchor time (FR-62). */
@@ -397,10 +427,14 @@ function rewriteFeatureAtTime(
   feature: Feature,
   newVertices: readonly Vertex[],
 ): DomainRoot | undefined {
-  const index = state.histories.findIndex((h) => h.featureId === featureId);
-  if (index < 0) return undefined;
-  const history = state.histories[index];
-  if (history === undefined) return undefined;
+  // The adjust feature may live INSIDE a multi-feature snapshot (e.g. an
+  // aggregate's child leaf), so resolve by snapshot containment, not only by
+  // history.featureId — otherwise a resolvable spatial conflict on such a leaf
+  // would fall through to an internal rejection instead of being trimmed (shares
+  // the U44 containment lookup so apply-proposal and the U06 write-back agree).
+  const found = findHistoryContaining(state, featureId, anchorTime, calendar);
+  if (found === undefined) return undefined;
+  const { index, history } = found;
 
   const newSeries = applyPastEdit(
     history.series,
@@ -425,7 +459,9 @@ function rewriteFeatureAtTime(
     calendar,
   );
 
-  const newHistory: FeatureHistory = { featureId, series: newSeries };
+  // Preserve the OWNING history's id (it may be an aggregate that carries the
+  // adjust leaf as a child); only the feature inside the snapshot was trimmed.
+  const newHistory: FeatureHistory = { featureId: history.featureId, series: newSeries };
   const histories = state.histories.map((h, i) => (i === index ? newHistory : h));
   return { histories, settings: state.settings, baseMap: state.baseMap };
 }
@@ -549,7 +585,7 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
 export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, SplitSnapshot> = {
     applyProposal: (current, proposal) => applySplitProposal(current, proposal, calendar),
-    checkTime: checkTimeOver,
+    checkTime: checkTimeOverExisting,
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,

@@ -121,6 +121,23 @@ describe('live-lookup', () => {
     expect(leafAtPoint(root, timePointYear(500), { lon: 1, lat: 1 })).toBeNull();
   });
 
+  it('leafAtPoint hits a leaf via a ±360° longitude replica (antimeridian wrap)', () => {
+    // A leaf placed near +180 (covers [179,181]×[0,2]). The renderer draws a −179°
+    // replica too; a click that lands on that replica (lon ≈ −179.5) must still hit
+    // the leaf, matching what the user sees (Codex antimeridian true-positive).
+    const a = squareLeaf('f-wrap', 'vw', 179, 0); // covers [179,181]×[0,2]
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    // Canonical frame hit.
+    expect(leafAtPoint(root, timePointYear(1000), { lon: 180, lat: 1 })).toBe(a.feature.id);
+    // The −360° replica of the click (−180 ≡ +180) must also hit.
+    expect(leafAtPoint(root, timePointYear(1000), { lon: -180, lat: 1 })).toBe(a.feature.id);
+    // A point on the wrapped replica of the eastern edge (−179.5 ≡ +180.5) hits.
+    expect(leafAtPoint(root, timePointYear(1000), { lon: -179.5, lat: 1 })).toBe(a.feature.id);
+    // Far from any replica → still null.
+    expect(leafAtPoint(root, timePointYear(1000), { lon: 0, lat: 1 })).toBeNull();
+  });
+
   it('leafShapeAt returns the resolved multipolygon of the leaf, undefined when absent', () => {
     const a = squareLeaf('f-a', 'va', 0, 0);
     const root = withLeaf(emptyProject(), a, 1000);

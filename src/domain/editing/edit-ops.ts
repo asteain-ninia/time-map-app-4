@@ -50,8 +50,13 @@ export interface SelectionDelta {
   readonly removedVertexIds: readonly VertexId[];
   /** Vertex ids newly created by the edit (a new vertex on an edge handle). */
   readonly addedVertexIds: readonly VertexId[];
-  /** Set when a ring was removed (3点未満 → U07 reorganization). */
-  readonly removedRingId?: RingId;
+  /**
+   * Ring ids removed by the edit (3点未満 → U07 reorganization). Deleting a vertex
+   * can absorb MORE than one ring at once: removing a hole can re-organize away its
+   * child enclaves too, so this is the full before/after ring-set difference, not a
+   * single id (otherwise a multi-ring removal left stale ring ids in the selection).
+   */
+  readonly removedRingIds: readonly RingId[];
   /** Set when the feature itself was deleted (line<2 / leaf no-territory / point). */
   readonly deletedFeatureId?: FeatureId;
 }
@@ -94,8 +99,7 @@ function deleteFeature(featureId: FeatureId, selection: SelectionDelta): Feature
  */
 export function commandResultFromEditResult(result: FeatureEditResult): CommandResult {
   const { selection } = result;
-  const deleted: DomainId[] = [...selection.removedVertexIds];
-  if (selection.removedRingId !== undefined) deleted.push(selection.removedRingId);
+  const deleted: DomainId[] = [...selection.removedVertexIds, ...selection.removedRingIds];
   if (selection.deletedFeatureId !== undefined) deleted.push(selection.deletedFeatureId);
 
   const created: DomainId[] = [...selection.addedVertexIds];
@@ -140,6 +144,7 @@ export function addVertexToLine(
   return survives(withLineVertexIds(feature, next), {
     removedVertexIds: [],
     addedVertexIds: [newVertexId],
+    removedRingIds: [],
   });
 }
 
@@ -166,6 +171,7 @@ export function addVertexToLeafRing(
   return survives(withLeafShape(feature, { rings }), {
     removedVertexIds: [],
     addedVertexIds: [newVertexId],
+    removedRingIds: [],
   });
 }
 
@@ -184,22 +190,39 @@ function rewriteRingVertexIds(ring: Ring, vertexIds: readonly VertexId[]): Ring 
 
 // --- vertex delete (FR-88 thresholds) ---------------------------------------
 
-/** Delete a vertex from a point feature → the point feature itself is deleted. */
-export function deletePointVertex(feature: PointFeature): FeatureEditResult {
+/**
+ * Delete a vertex from a point feature → the point feature itself is deleted.
+ * When `vertexId` is supplied it MUST match the point's own vertex; a mismatch is a
+ * stale target (the selection referenced a vertex no longer on this feature) and
+ * returns `undefined` so the caller produces no ghost deletion (5.11 / 教訓5.24).
+ */
+export function deletePointVertex(
+  feature: PointFeature,
+  vertexId?: VertexId,
+): FeatureEditResult | undefined {
+  if (vertexId !== undefined && vertexId !== feature.vertexId) return undefined;
   // 点情報の頂点削除は点情報自体の削除 (a point with no vertex cannot exist). The
   // point's single vertex and the feature both drop out of the selection (5.11).
   return deleteFeature(feature.id, {
     removedVertexIds: [feature.vertexId],
     addedVertexIds: [],
+    removedRingIds: [],
     deletedFeatureId: feature.id,
   });
 }
 
 /**
  * Delete a vertex from a line. If the remaining vertex count is < 2 the LINE
- * itself is deleted (spec §スコープ 線情報の2点未満削除).
+ * itself is deleted (spec §スコープ 線情報の2点未満削除). A `vertexId` that the line
+ * does not reference is a stale target → `undefined` (no ghost edit): filtering an
+ * absent id would otherwise return an unchanged 'surviving' line and a no-op
+ * history entry (Codex true-positive).
  */
-export function deleteLineVertex(feature: LineFeature, vertexId: VertexId): FeatureEditResult {
+export function deleteLineVertex(
+  feature: LineFeature,
+  vertexId: VertexId,
+): FeatureEditResult | undefined {
+  if (!feature.vertexIds.includes(vertexId)) return undefined;
   const remaining = feature.vertexIds.filter((id) => id !== vertexId);
   if (remaining.length < 2) {
     // The line is deleted: ALL its vertices drop out, not just the one deleted
@@ -207,12 +230,14 @@ export function deleteLineVertex(feature: LineFeature, vertexId: VertexId): Feat
     return deleteFeature(feature.id, {
       removedVertexIds: feature.vertexIds.slice(),
       addedVertexIds: [],
+      removedRingIds: [],
       deletedFeatureId: feature.id,
     });
   }
   return survives(withLineVertexIds(feature, remaining), {
     removedVertexIds: [vertexId],
     addedVertexIds: [],
+    removedRingIds: [],
   });
 }
 
@@ -226,7 +251,13 @@ export function deleteLeafVertex(
   feature: LeafFeature,
   ringId: RingId,
   vertexId: VertexId,
-): FeatureEditResult {
+): FeatureEditResult | undefined {
+  // Stale-target guard: the named ring must exist on this leaf AND must reference
+  // the vertex. Otherwise filtering an absent id returns an unchanged shape and a
+  // no-op 'surviving' result → a ghost history entry (Codex true-positive).
+  const targetRing = feature.shape.rings.find((r) => r.id === ringId);
+  if (targetRing === undefined || !targetRing.vertexIds.includes(vertexId)) return undefined;
+
   const rings: Ring[] = [];
   let droppedBelow3 = false;
   for (const ring of feature.shape.rings) {
@@ -258,10 +289,10 @@ export function deleteLeafVertex(
   for (const vid of collectShapeVertexIds(feature.shape)) {
     if (!afterVertexIds.has(vid)) removedVertexIds.push(vid);
   }
-  const removedRingId = ringDroppedFrom(feature.shape, shape);
+  const removedRingIds = ringsDroppedFrom(feature.shape, shape);
 
   // If no territory ring remains, the leaf cannot define any area → delete it. The
-  // delta still reports the removed vertices / ring AND the deleted feature so the
+  // delta still reports the removed vertices / rings AND the deleted feature so the
   // selection re-resolution is driven by the full result (教訓5.18: not just the
   // feature id).
   const hasTerritory = shape.rings.some((r) => r.kind === RING_KIND.Territory);
@@ -269,14 +300,14 @@ export function deleteLeafVertex(
     return deleteFeature(feature.id, {
       removedVertexIds,
       addedVertexIds: [],
-      ...(removedRingId !== undefined ? { removedRingId } : {}),
+      removedRingIds,
       deletedFeatureId: feature.id,
     });
   }
   return survives(withLeafShape(feature, shape), {
     removedVertexIds,
     addedVertexIds: [],
-    ...(removedRingId !== undefined ? { removedRingId } : {}),
+    removedRingIds,
   });
 }
 
@@ -288,16 +319,16 @@ function collectShapeVertexIds(shape: Shape): Set<VertexId> {
 }
 
 /**
- * The single ring id present in `before` but absent from `after`, if exactly one
- * ring was removed (the 3点未満 case + its U07 reorganization removes the dropped
- * ring). Returns undefined when no ring was removed. Reorganization may re-parent
- * survivors but does not remove additional rings here; if more than one were gone
- * we report none (the per-vertex delta still covers the dropped vertices).
+ * Every ring id present in `before` but absent from `after`. Deleting a vertex can
+ * absorb MORE than one ring at once (the 3点未満 case + U07 reorganization can remove
+ * a hole AND its child enclaves), so we report the FULL before/after ring-set
+ * difference. Reporting only a single id (the old behaviour) left the other removed
+ * ring ids stale in the selection while their vertices correctly dropped. Returns an
+ * empty list when no ring was removed.
  */
-function ringDroppedFrom(before: Shape, after: Shape): RingId | undefined {
+function ringsDroppedFrom(before: Shape, after: Shape): RingId[] {
   const afterIds = new Set<RingId>(after.rings.map((r) => r.id));
-  const gone = before.rings.filter((r) => !afterIds.has(r.id)).map((r) => r.id);
-  return gone.length === 1 ? gone[0] : undefined;
+  return before.rings.filter((r) => !afterIds.has(r.id)).map((r) => r.id);
 }
 
 // --- a uniform dispatch the session uses for "delete the selected vertex" ----
@@ -317,7 +348,7 @@ export function deleteVertex(target: VertexDeleteTarget): FeatureEditResult | un
   const { feature } = target;
   switch (feature.kind) {
     case FEATURE_KIND.Point:
-      return deletePointVertex(feature);
+      return deletePointVertex(feature, target.vertexId);
     case FEATURE_KIND.Line:
       return deleteLineVertex(feature, target.vertexId);
     case FEATURE_KIND.Leaf:

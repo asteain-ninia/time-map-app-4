@@ -373,7 +373,12 @@ export function deleteRingVertex(
   vertexId: VertexId,
   store: VertexStore,
 ): RingVertexDeleteOutcome {
-  const edit: FeatureEditResult = deleteLeafVertex(feature, ringId, vertexId);
+  const edit: FeatureEditResult | undefined = deleteLeafVertex(feature, ringId, vertexId);
+  if (edit === undefined) {
+    // Stale target: the ring no longer holds that vertex on this leaf (the selection
+    // referenced a vertex that was removed) — reject rather than produce a ghost edit.
+    return { kind: RING_DELETE_OUTCOME.Rejected, reason: RING_REJECT.TargetNotFound };
+  }
   if (edit.kind === 'delete-feature') {
     return { kind: RING_DELETE_OUTCOME.FeatureDeleted, featureId: edit.featureId };
   }
@@ -385,13 +390,11 @@ export function deleteRingVertex(
   if (!validation.valid) {
     return { kind: RING_DELETE_OUTCOME.Rejected, reason: RING_REJECT.HierarchyInvalid, validation };
   }
-  return edit.selection.removedRingId === undefined
-    ? { kind: RING_DELETE_OUTCOME.FeatureSurvives, feature: leaf }
-    : {
-        kind: RING_DELETE_OUTCOME.FeatureSurvives,
-        feature: leaf,
-        removedRingId: edit.selection.removedRingId,
-      };
+  return {
+    kind: RING_DELETE_OUTCOME.FeatureSurvives,
+    feature: leaf,
+    removedRingIds: edit.selection.removedRingIds,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,7 +417,8 @@ export type RingVertexDeleteOutcome =
   | {
       readonly kind: typeof RING_DELETE_OUTCOME.FeatureSurvives;
       readonly feature: LeafFeature;
-      readonly removedRingId?: RingId;
+      /** All ring ids removed by the deletion (full before/after difference). */
+      readonly removedRingIds: readonly RingId[];
     }
   | {
       readonly kind: typeof RING_DELETE_OUTCOME.FeatureDeleted;

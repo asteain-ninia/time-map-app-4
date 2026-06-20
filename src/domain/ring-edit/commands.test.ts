@@ -144,7 +144,7 @@ describe('edit — move / add / delete vertex on hole/enclave rings (FR-25 / FR-
     const after2 = deleteRingVertex(after1.feature, rid('H0'), vid('h1'), vertices);
     expect(after2.kind).toBe(RING_DELETE_OUTCOME.FeatureSurvives);
     if (after2.kind !== RING_DELETE_OUTCOME.FeatureSurvives) return;
-    expect(after2.removedRingId).toBe(rid('H0'));
+    expect(after2.removedRingIds).toContain(rid('H0'));
     expect(after2.feature.shape.rings.some((r) => r.id === rid('H0'))).toBe(false);
     // The leaf still has its territory.
     expect(after2.feature.shape.rings.some((r) => r.kind === RING_KIND.Territory)).toBe(true);

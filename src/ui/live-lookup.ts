@@ -83,16 +83,25 @@ export function leafAtPoint(
   const leaves: LeafFeature[] = featuresAt(root, time).filter(
     (f): f is LeafFeature => f.kind === FEATURE_KIND.Leaf,
   );
+  // The renderer draws each polygon at its canonical longitude AND at ±360°
+  // replicas (a polygon spanning the antimeridian, e.g. 179..181, is shown wrapped
+  // as a −179.5 replica). The hit-test must agree with what the user sees, so we
+  // probe the click point in each ±360° longitude frame as well as the canonical
+  // one. Testing the POINT at ±360 (rather than re-wrapping every polygon) covers
+  // every replica with the same containment rule (穴透過 honoured). 単一真実源.
+  const probes: WorldCoordinate[] = [
+    point,
+    { lon: point.lon + 360, lat: point.lat },
+    { lon: point.lon - 360, lat: point.lat },
+  ];
   let hit: FeatureId | null = null;
   for (const leaf of leaves) {
     const shape = resolveLeafShape(leaf.shape, vertices);
     if (shape === undefined) continue;
-    for (const polygon of shape) {
-      if (pointInPolygon(point, polygon) === POINT_LOCATION.Inside) {
-        hit = leaf.id; // keep scanning; a later leaf on top wins
-        break;
-      }
-    }
+    const inside = shape.some((polygon) =>
+      probes.some((p) => pointInPolygon(p, polygon) === POINT_LOCATION.Inside),
+    );
+    if (inside) hit = leaf.id; // keep scanning; a later leaf on top wins
   }
   return hit;
 }
