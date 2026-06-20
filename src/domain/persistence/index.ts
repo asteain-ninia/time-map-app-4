@@ -50,6 +50,12 @@ export {
   type PersistedProjectSettings,
   type PersistedAppSettings,
   type PersistedSettings,
+  uiProjectSettingsSchema,
+  uiAppSettingsSchema,
+  uiSettingsSchema,
+  type PersistedUiProjectSettings,
+  type PersistedUiAppSettings,
+  type PersistedUiSettings,
   type PersistedEquirectangularMeta,
   type PersistedBaseMapReference,
   type ManifestV1,
@@ -82,6 +88,7 @@ export {
 // `./serialize` directly, which is exempt as a persistence-module file).
 export {
   type ProjectSettings,
+  type UiSettings,
   type BaseMapReference,
   type FeatureHistory,
   type DomainProject,

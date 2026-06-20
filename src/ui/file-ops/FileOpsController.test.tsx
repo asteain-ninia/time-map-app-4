@@ -371,6 +371,129 @@ describe('ズーム制限を U17 へ供給 (FR-10 / 受け入れ基準 5)', () =
   });
 });
 
+describe('プロジェクト設定の永続化 + ロード時反映 (二重真実源 回帰)', () => {
+  // Regression for the split-truth settings bug: the settings panel writes the U16
+  // store's projectSettings/appSettings, but the only thing persistence serialized
+  // was the narrow domain.settings — so (1) a settings change was DROPPED on save,
+  // and (2) a load never hydrated the store, leaving a previous project's settings
+  // lingering. The fix folds the live store settings into the saved manifest's `ui`
+  // block and hydrates the store from a loaded project's `ui` block.
+
+  it('a settings-panel change is SERIALIZED into the saved manifest (save の取りこぼし防止)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let savedManifest: Manifest | null = null;
+    const saveAs = vi.fn(async (req: SaveRequest): Promise<SaveResponse> => {
+      savedManifest = req.manifest;
+      return { ok: true, path: '/tmp/p.tmap' };
+    });
+    const api = makeApi({ saveAs });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // The user changes grid spacing, zoom limit and the area-label threshold via the
+    // panel (these write ONLY the store's projectSettings — not domain.settings).
+    act(() => {
+      store.getState().updateProjectSetting('gridSpacingDeg', 30);
+      store.getState().updateProjectSetting('zoomMax', 25);
+      store.getState().updateProjectSetting('areaLabelOccupancyThreshold', 0.5);
+    });
+
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileSave); // fresh project → saveAs
+    });
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+
+    // The serialized manifest carries the user's settings in the `ui` block — NOT
+    // the defaults, and NOT just the narrow domain.settings subset.
+    expect(savedManifest).not.toBeNull();
+    expect(savedManifest!.ui?.project.gridSpacingDeg).toBe(30);
+    expect(savedManifest!.ui?.project.zoomMax).toBe(25);
+    expect(savedManifest!.ui?.project.areaLabelOccupancyThreshold).toBe(0.5);
+  });
+
+  it('saved settings ROUND-TRIP through a re-load into the store (load 反映)', async () => {
+    // First store: change settings and capture the saved manifest.
+    const storeA = makeStore();
+    const registryA = new CommandRegistry();
+    let savedManifest: Manifest | null = null;
+    const apiA = makeApi({
+      saveAs: vi.fn(async (req: SaveRequest) => {
+        savedManifest = req.manifest;
+        return { ok: true as const, path: '/tmp/p.tmap' };
+      }),
+    });
+    render(<FileOpsController store={storeA} registry={registryA} api={apiA} calendar={CAL} />);
+    act(() => {
+      storeA.getState().updateProjectSetting('zoomMax', 25);
+      storeA.getState().updateAppSetting('renderFps', 30);
+    });
+    await act(async () => registryA.dispatch(COMMAND_ID.FileSave));
+    await waitFor(() => expect(savedManifest).not.toBeNull());
+    cleanup();
+
+    // Second store (a fresh app): load the saved manifest. The store must hydrate
+    // to the SAVED values, not the defaults (default zoomMax 50, renderFps 60).
+    const storeB = makeStore();
+    const registryB = new CommandRegistry();
+    expect(storeB.getState().projectSettings.zoomMax).toBe(50); // default before load
+    expect(storeB.getState().appSettings.renderFps).toBe(60);
+    const apiB = makeApi({
+      load: vi.fn(async () => ({
+        ok: true as const,
+        path: '/tmp/p.tmap',
+        manifest: savedManifest!,
+        baseMapImage: new Uint8Array(),
+        attachments: [],
+      })),
+    });
+    render(<FileOpsController store={storeB} registry={registryB} api={apiB} calendar={CAL} />);
+
+    await act(async () => registryB.dispatch(COMMAND_ID.FileOpen));
+    await waitFor(() => expect(storeB.getState().projectSettings.zoomMax).toBe(25));
+    expect(storeB.getState().appSettings.renderFps).toBe(30);
+    // A fresh load is a CLEAN baseline (hydrate clears dirty alongside resetToDomain).
+    expect(storeB.getState().projectDirty).toBe(false);
+  });
+
+  it('loading another project REPLACES the previous project settings (持ち越し防止)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    // The user first changes a setting in the CURRENT project (not yet relevant to
+    // disk — we just want a non-default live value the load must overwrite).
+    act(() => {
+      store.getState().updateProjectSetting('zoomMax', 9999);
+      // Treat it as already saved so Open proceeds without the unsaved warning —
+      // this test is about settings REPLACEMENT on load, not the dirty guard.
+      store.getState().markProjectSaved();
+    });
+    expect(store.getState().projectSettings.zoomMax).toBe(9999);
+
+    // Build a loaded project whose persisted settings differ (zoomMax 12).
+    const loaded = buildEmptyProject();
+    const loadedWithUi: DomainProject = {
+      ...loaded,
+      uiSettings: {
+        project: { ...loaded.uiSettings!.project, zoomMax: 12 },
+        app: { ...loaded.uiSettings!.app },
+      },
+    };
+    const api = makeApi({
+      load: vi.fn(async () => ({
+        ok: true as const,
+        path: '/tmp/other.tmap',
+        manifest: serialize(loadedWithUi),
+        baseMapImage: new Uint8Array(),
+        attachments: [],
+      })),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => registry.dispatch(COMMAND_ID.FileOpen));
+    // The loaded project's setting REPLACES the previous one — it does not linger.
+    await waitFor(() => expect(store.getState().projectSettings.zoomMax).toBe(12));
+  });
+});
+
 describe('終了確認ガード (FR-107)', () => {
   it('registers a window-close quit guard runner', () => {
     const store = makeStore();

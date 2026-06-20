@@ -250,6 +250,22 @@ export interface SessionStoreActions<S> {
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
+  /**
+   * Hydrate BOTH settings slices wholesale from a loaded / new project's persisted
+   * settings (LOAD / NEW path). This is the missing half of the二重真実源 fix
+   * (教訓 5.30 / 5.36): a load reflects the domain via {@link resetToDomain}, but the
+   * UI settings live in THIS store, so without this call a loaded project's
+   * zoom/timeline/grid/label settings never reach the UI and a previous project's
+   * settings linger. Replaces the whole `projectSettings` / `appSettings` value
+   * atomically and marks the project CLEAN (a load/new is the save baseline, not an
+   * edit), so it must run in the SAME transition family as `resetToDomain`. Passing
+   * `undefined` for either slice leaves that slice at its current (default) value —
+   * the correct behaviour for a pre-`ui` manifest that carried no UI settings.
+   */
+  hydrateSettings(settings: {
+    readonly projectSettings?: ProjectSettings;
+    readonly appSettings?: AppSettings;
+  }): void;
   /** Clear the project-dirty flag (called after a save by the persistence unit). */
   markProjectSaved(): void;
 }
@@ -548,6 +564,24 @@ export function createSessionStore<S>(
       set({
         appSettings: clamped,
         lastSettingsChange: { scope, key },
+      });
+    },
+
+    hydrateSettings(settings) {
+      // Whole-slice replacement from a loaded / new project (教訓 5.36 同時初期化).
+      // A load / new is a clean baseline, so projectDirty is cleared in the SAME
+      // transition (mirrors resetToDomain). We do NOT emit a lastSettingsChange:
+      // this is a baseline hydrate, not a user edit, so subscribers (renderer /
+      // zoom supply) re-read the new values via their own domain/settings
+      // subscription rather than treating it as a discrete change event.
+      set({
+        projectDirty: false,
+        ...(settings.projectSettings !== undefined
+          ? { projectSettings: settings.projectSettings }
+          : {}),
+        ...(settings.appSettings !== undefined
+          ? { appSettings: settings.appSettings }
+          : {}),
       });
     },
 

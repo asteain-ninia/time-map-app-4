@@ -31,6 +31,10 @@ import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
 
 import { buildFileCommandPorts, cameraZoomRange, type FileOpsHost } from './bridge';
 import {
+  fromPersistedUiSettings,
+  toPersistedUiSettings,
+} from './ui-settings-bridge';
+import {
   openCommand,
   newProjectCommand,
   saveCommand,
@@ -176,16 +180,31 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const host: FileOpsHost | null = useMemo(() => {
     if (api === null) return null;
     const buildSaveRequest = (): SaveRequest => {
-      // Capture the EXACT domain reference being serialized so onSaved can tell
-      // whether an edit landed during the async write (lost-edit guard, finding 2).
-      const domain = store.getState().domain;
+      // Capture the EXACT domain reference the lost-edit guard (finding 2) compares
+      // against: it is the LIVE store domain, so onSaved can tell whether an edit
+      // landed during the async write by reference identity. We do NOT mutate it.
+      const state = store.getState();
+      const domain = state.domain;
       savedDomainRef.current = domain;
+      // 二重真実源 fix: the user settings live in the U16 store, NOT in
+      // domain.settings, so serialize(domain) alone would drop every settings-panel
+      // change (zoom / timeline / grid / label / palette …). Fold the LIVE store
+      // settings into the domain as `uiSettings` for THIS save so they persist; the
+      // merge is a fresh object (the store domain reference is untouched, so the
+      // lost-edit guard's identity comparison still holds).
+      const domainToSave: DomainProject = {
+        ...domain,
+        uiSettings: toPersistedUiSettings({
+          projectSettings: state.projectSettings,
+          appSettings: state.appSettings,
+        }),
+      };
       return {
         // The manifest is serialized from the current domain (U14 serialize). Asset
         // bytes (base-map / attachments) are owned by the render/asset units; until
         // those are live-bound the request ships none — the SAVE path is fully wired
         // and reaches U15 (受け入れ基準 1), the asset payload activates when bound.
-        manifest: serialize(domain),
+        manifest: serialize(domainToSave),
         baseMapImage: new Uint8Array(),
         attachments: [],
       };
@@ -234,6 +253,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // A stale selection or focus from the previous project would otherwise
         // dangle against the new domain (finding 4).
         store.getState().resetToDomain(project);
+        // 二重真実源 fix (the load half): hydrate the U16 store settings from the
+        // loaded project's persisted UI settings so the panel / zoom clamp / label
+        // threshold reflect THIS project, and a previous project's settings do not
+        // linger. A pre-`ui` manifest carries none → the store keeps its defaults
+        // (hydrateSettings with an empty patch resets dirty to the clean baseline,
+        // matching resetToDomain). Runs right after resetToDomain so both halves of
+        // the load are reflected together (教訓 5.36 同時初期化).
+        store.getState().hydrateSettings(
+          project.uiSettings === undefined
+            ? {}
+            : fromPersistedUiSettings(project.uiSettings),
+        );
         applyContext(
           contextForLoadedFile({
             path,
@@ -264,7 +295,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       // baseline + new save context (教訓 5.36 / 受け入れ基準 4: 同時初期化, 取り残さない,
       // 教訓 5.2 全経路で破棄). resetToDomain clears selection / tool / mode / focus so
       // nothing from the previous project survives into the empty one (finding 4).
-      store.getState().resetToDomain(buildEmptyProject());
+      const empty = buildEmptyProject();
+      store.getState().resetToDomain(empty);
+      // 二重真実源 fix (the new-project half): reset the store settings to the new
+      // project's defaults so a 新規 after editing settings clears the panel back to
+      // defaults rather than carrying the previous project's settings (教訓 5.2 全経路で
+      // 破棄). buildEmptyProject always carries default uiSettings, so this is defined.
+      if (empty.uiSettings !== undefined) {
+        store.getState().hydrateSettings(fromPersistedUiSettings(empty.uiSettings));
+      }
       applyContext(buildNewProjectContext());
     };
     registry.register(COMMAND_ID.FileNew, {

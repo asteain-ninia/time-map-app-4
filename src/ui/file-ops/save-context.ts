@@ -16,6 +16,8 @@
 import { PRESET_BASEMAP_ID, FULL_WORLD_META } from '../../domain/basemap/preset';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import type { DomainProject, ProjectSettings } from '../../domain/persistence/index';
+import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
+import { toPersistedUiSettings } from './ui-settings-bridge';
 
 /**
  * Project-level metadata that is part of the save context (spec §D メタdata). Kept
@@ -152,5 +154,13 @@ export function buildEmptyProject(): DomainProject {
     histories: [],
     settings: NEW_PROJECT_SETTINGS,
     baseMap: { source: PRESET_BASEMAP_ID, meta: FULL_WORLD_META },
+    // A new project starts at the DEFAULT UI settings (FR-109 / FR-110 既定値). Folding
+    // them in here means a new project SERIALIZES its settings (a save right after 新規
+    // round-trips the defaults) AND the new-project path can hydrate the store from a
+    // single source — the same defaults the store itself initialises with (単一の真実源).
+    uiSettings: toPersistedUiSettings({
+      projectSettings: DEFAULT_PROJECT_SETTINGS,
+      appSettings: DEFAULT_APP_SETTINGS,
+    }),
   };
 }

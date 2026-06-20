@@ -313,6 +313,67 @@ export const settingsSchema = z
   })
   .strict();
 
+// --- UI settings (FR-109 / FR-110: the FULL session-settings surface) --------
+//
+// The legacy `settings` block above carries only the narrow geodesy/grid/snap
+// subset the early domain modelled. The actual user-facing settings panel (U38)
+// owns a much richer PROJECT/APP settings surface (zoom limits, timeline bounds,
+// grid color/opacity, area-label threshold, palette, project name/description …)
+// that lives in the U16 store. Those were previously NOT persisted at all — a
+// save dropped them and a load never restored them (二重真実源: store vs.
+// domain.settings, never synced). This `ui` block is the persisted home for that
+// full surface so a save round-trips it and a load hydrates the store from it.
+//
+// STRUCTURAL CONTRACT (技術方針 2.13 layering): the domain layer must not import
+// the UI's `ProjectSettings` / `AppSettings` types. Instead this schema declares
+// the persisted SHAPE structurally; the UI types are assignable to/from it by
+// structural typing (the UI bridge passes the live store slice directly and
+// hydrates it back). Keep these fields in lock-step with `ui/state/settings.ts`.
+//
+// BACK-COMPAT (FR-104 / .optional() discipline): the whole `ui` block is OPTIONAL
+// so a manifest written before it existed still parses; on such a load the store
+// keeps its defaults (the same as a brand-new project), which is the correct
+// "no stored UI settings" behaviour.
+
+const colorHexSchema = z.string();
+
+export const uiProjectSettingsSchema = z
+  .object({
+    projectName: z.string(),
+    projectDescription: z.string(),
+    equatorLengthKm: finiteNumber,
+    flattening: finiteNumber,
+    timelineMinYear: yearSchema,
+    timelineMaxYear: yearSchema,
+    gridSpacingDeg: finiteNumber,
+    gridColor: colorHexSchema,
+    gridOpacity: finiteNumber,
+    baseMapId: z.string(),
+    areaLabelOccupancyThreshold: finiteNumber,
+    newAreaAutoColorDefault: z.boolean(),
+    defaultPaletteTheme: z.string(),
+    customPalette: z.array(colorHexSchema),
+    zoomMin: finiteNumber,
+    zoomMax: finiteNumber,
+  })
+  .strict();
+
+export const uiAppSettingsSchema = z
+  .object({
+    snapDistancePx: finiteNumber,
+    renderFps: finiteNumber,
+    vertexMarkerCap: finiteNumber,
+    showConflictGuide: z.boolean(),
+  })
+  .strict();
+
+export const uiSettingsSchema = z
+  .object({
+    project: uiProjectSettingsSchema,
+    app: uiAppSettingsSchema,
+  })
+  .strict();
+
 // --- base-map reference (FR-103 / FR-104: ベースマップ参照 + メタ) -----------
 //
 // The schema carries a REFERENCE (a relative path / id into the ZIP container)
@@ -344,6 +405,9 @@ const manifestV1Body = {
   histories: z.array(featureHistorySchema),
   settings: settingsSchema,
   baseMap: baseMapReferenceSchema,
+  // The FULL UI session-settings surface (FR-109 / FR-110). Optional for
+  // back-compat: a pre-`ui` manifest omits it and the store keeps its defaults.
+  ui: uiSettingsSchema.optional(),
 };
 
 export const manifestV1Schema = z
@@ -380,6 +444,9 @@ export type PersistedGeoParams = z.infer<typeof geoParamsSchema>;
 export type PersistedProjectSettings = z.infer<typeof projectSettingsSchema>;
 export type PersistedAppSettings = z.infer<typeof appSettingsSchema>;
 export type PersistedSettings = z.infer<typeof settingsSchema>;
+export type PersistedUiProjectSettings = z.infer<typeof uiProjectSettingsSchema>;
+export type PersistedUiAppSettings = z.infer<typeof uiAppSettingsSchema>;
+export type PersistedUiSettings = z.infer<typeof uiSettingsSchema>;
 export type PersistedEquirectangularMeta = z.infer<typeof equirectangularMetaSchema>;
 export type PersistedBaseMapReference = z.infer<typeof baseMapReferenceSchema>;
 export type ManifestV1 = z.infer<typeof manifestV1Schema>;

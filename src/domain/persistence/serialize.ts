@@ -81,6 +81,7 @@ import {
   type PersistedSettings,
   type PersistedShape,
   type PersistedTimePoint,
+  type PersistedUiSettings,
   type PersistedVertex,
 } from './schema';
 
@@ -94,6 +95,17 @@ export interface ProjectSettings {
   readonly snapDistancePx: number;
   readonly autoColorDefault: boolean;
 }
+
+/**
+ * The FULL UI session-settings surface as it round-trips through persistence
+ * (FR-109 / FR-110). This is the plain, layering-safe SHAPE the domain persists;
+ * the UI's `ProjectSettings` / `AppSettings` (ui/state/settings.ts) are assignable
+ * to/from it by structural typing, so the UI bridge can write the live store slice
+ * here on save and hydrate the store from it on load (二重真実源 を解消する単一の
+ * 永続化先). Structurally identical to {@link PersistedUiSettings}; re-exported under
+ * a domain name so callers depend on the domain layer, not the Zod inference.
+ */
+export type UiSettings = PersistedUiSettings;
 
 /** Base-map reference (source path/id + equirectangular meta). */
 export interface BaseMapReference {
@@ -121,6 +133,15 @@ export interface DomainProject {
   readonly histories: readonly FeatureHistory[];
   readonly settings: ProjectSettings;
   readonly baseMap: BaseMapReference;
+  /**
+   * The FULL UI session-settings surface (FR-109 / FR-110), when present. The U16
+   * store is the live truth for these; on save the file-ops bridge copies the
+   * store slice in here so `serialize` persists it, and on load it hydrates the
+   * store from it. Optional: a project built without it (or loaded from a
+   * pre-`ui` manifest) simply has the store keep its defaults — the same as a new
+   * project. Carried as PLAIN data so the domain layer never imports UI types.
+   */
+  readonly uiSettings?: UiSettings;
 }
 
 // ============================================================================
@@ -274,6 +295,26 @@ function serializeSettings(settings: ProjectSettings): PersistedSettings {
   };
 }
 
+/**
+ * Serialize the full UI settings surface to plain persisted data. It is already
+ * plain data structurally; we rebuild fresh objects (and a fresh palette array)
+ * so the manifest never aliases the live store value (教訓 5.20 新規インスタンス).
+ */
+function serializeUiSettings(ui: UiSettings): PersistedUiSettings {
+  return {
+    project: { ...ui.project, customPalette: [...ui.project.customPalette] },
+    app: { ...ui.app },
+  };
+}
+
+/** Deserialize the persisted UI settings into a fresh value (教訓 5.20). */
+function deserializeUiSettings(ui: PersistedUiSettings): UiSettings {
+  return {
+    project: { ...ui.project, customPalette: [...ui.project.customPalette] },
+    app: { ...ui.app },
+  };
+}
+
 function serializeBaseMap(baseMap: BaseMapReference): PersistedBaseMapReference {
   return {
     source: baseMap.source,
@@ -293,12 +334,18 @@ function serializeBaseMap(baseMap: BaseMapReference): PersistedBaseMapReference 
  * the parse boundary validates and `deserialize` restores the original state.
  */
 export function serialize(project: DomainProject): Manifest {
-  return {
+  const base = {
     version: SCHEMA_VERSION,
     histories: project.histories.map(serializeHistory),
     settings: serializeSettings(project.settings),
     baseMap: serializeBaseMap(project.baseMap),
   };
+  // exactOptionalPropertyTypes: only attach `ui` when the project carries the
+  // full UI settings, so a project without them serializes to a pre-`ui` manifest
+  // (round-trips back to no uiSettings) rather than writing `ui: undefined`.
+  return project.uiSettings === undefined
+    ? base
+    : { ...base, ui: serializeUiSettings(project.uiSettings) };
 }
 
 // ============================================================================
@@ -465,11 +512,17 @@ function deserializeBaseMap(baseMap: PersistedBaseMapReference): BaseMapReferenc
  * this function never re-validates structure — that is the boundary's job.
  */
 export function deserialize(manifest: Manifest): DomainProject {
-  return {
+  const base = {
     histories: manifest.histories.map(deserializeHistory),
     settings: deserializeSettings(manifest.settings),
     baseMap: deserializeBaseMap(manifest.baseMap),
   };
+  // exactOptionalPropertyTypes: only attach uiSettings when the manifest carried
+  // a `ui` block, so a pre-`ui` manifest restores to a project WITHOUT uiSettings
+  // (the load path then leaves the store at its defaults).
+  return manifest.ui === undefined
+    ? base
+    : { ...base, uiSettings: deserializeUiSettings(manifest.ui) };
 }
 
 /**
@@ -608,6 +661,44 @@ function settingsEqual(a: ProjectSettings, b: ProjectSettings): boolean {
   );
 }
 
+/** Structural equality of the full UI settings surface (present-or-absent aware). */
+function uiSettingsEqual(a: UiSettings | undefined, b: UiSettings | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  const pa = a.project;
+  const pb = b.project;
+  if (
+    pa.projectName !== pb.projectName ||
+    pa.projectDescription !== pb.projectDescription ||
+    pa.equatorLengthKm !== pb.equatorLengthKm ||
+    pa.flattening !== pb.flattening ||
+    pa.timelineMinYear !== pb.timelineMinYear ||
+    pa.timelineMaxYear !== pb.timelineMaxYear ||
+    pa.gridSpacingDeg !== pb.gridSpacingDeg ||
+    pa.gridColor !== pb.gridColor ||
+    pa.gridOpacity !== pb.gridOpacity ||
+    pa.baseMapId !== pb.baseMapId ||
+    pa.areaLabelOccupancyThreshold !== pb.areaLabelOccupancyThreshold ||
+    pa.newAreaAutoColorDefault !== pb.newAreaAutoColorDefault ||
+    pa.defaultPaletteTheme !== pb.defaultPaletteTheme ||
+    pa.zoomMin !== pb.zoomMin ||
+    pa.zoomMax !== pb.zoomMax
+  ) {
+    return false;
+  }
+  if (pa.customPalette.length !== pb.customPalette.length) return false;
+  for (let i = 0; i < pa.customPalette.length; i += 1) {
+    if (pa.customPalette[i] !== pb.customPalette[i]) return false;
+  }
+  const aa = a.app;
+  const ab = b.app;
+  return (
+    aa.snapDistancePx === ab.snapDistancePx &&
+    aa.renderFps === ab.renderFps &&
+    aa.vertexMarkerCap === ab.vertexMarkerCap &&
+    aa.showConflictGuide === ab.showConflictGuide
+  );
+}
+
 function baseMapsEqual(a: BaseMapReference, b: BaseMapReference): boolean {
   return (
     a.source === b.source &&
@@ -632,5 +723,9 @@ export function projectsEqual(a: DomainProject, b: DomainProject): boolean {
     if (ha === undefined || hb === undefined) return false;
     if (!historiesEqual(ha, hb)) return false;
   }
-  return settingsEqual(a.settings, b.settings) && baseMapsEqual(a.baseMap, b.baseMap);
+  return (
+    settingsEqual(a.settings, b.settings) &&
+    baseMapsEqual(a.baseMap, b.baseMap) &&
+    uiSettingsEqual(a.uiSettings, b.uiSettings)
+  );
 }
