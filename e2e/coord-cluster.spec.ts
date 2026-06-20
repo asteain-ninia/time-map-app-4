@@ -16,13 +16,11 @@
 //           to the viewport centre, which is the bug's signature).
 //
 // NOTE on HB-15 (編集モードで頂点が選択できない): the root screen→world写像 is the
-// SAME one HB-7 exercises here, and it is correct. But live map-CLICK hit-test /
-// selection is NOT yet wired in the composition root (App.tsx uses
-// EMPTY_HIT_TESTER / NOOP_SELECTION_PORT for the map pointer dispatcher — selection
-// is re-resolved through the add/commit path, not a map click). So HB-15's
-// end-to-end "click a vertex → it selects"導線 is NOT lockable here yet; see
-// HUMAN-BUGS-2.md for the honest status. We deliberately do NOT assert it to avoid
-// a false-positive lock.
+// SAME one HB-7 exercises here, and it is correct. As of HB-15 the live map-CLICK
+// hit-test + selection ARE now wired in the composition root (App.tsx backs the map
+// pointer dispatcher with a real HitTester + SelectionPort over live-lookup), so the
+// end-to-end "click a vertex → it selects"導線 is locked in its OWN spec
+// (e2e/edit-select.spec.ts) — this cluster keeps its HB-6/HB-7 scope.
 
 import { test, expect } from '@playwright/test';
 

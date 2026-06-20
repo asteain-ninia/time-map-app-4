@@ -80,13 +80,20 @@ import { buildCommittedFeatures } from './map/committed-features';
 import {
   PointerDispatcher,
   DISPATCH_TARGET,
-  EMPTY_HIT_TESTER,
-  NOOP_SELECTION_PORT,
   NOOP_ADD_PORT,
   NOOP_CONTEXT_MENU_PORT,
   type CameraPort,
+  type HitTester,
 } from './map/index';
+import { liveHitTestAt } from './map/live-hit-test';
+import { createLiveSelectionPort } from './map/live-selection-port';
+import {
+  worldToScreen as projectWorldToScreen,
+  screenToWorld as unprojectScreenToWorld,
+  type ScreenPoint,
+} from '../render';
 import type { Camera as RenderCamera } from '../render/camera';
+import type { WorldCoordinate } from '../domain/coordinate';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
 
@@ -247,11 +254,59 @@ export function App(): JSX.Element {
         s.setCenterLon(camera.centerLon);
       },
     };
+    // HB-15 ROOT FIX — wire the LIVE map click hit-test + selection so an edit-mode
+    // click on a vertex / feature actually selects (教訓 5.7 合成ルートの結線漏れ). The
+    // hit-test reuses the renderer's box-corrected screen↔world (HB-7) AND
+    // live-lookup's featuresAt / verticesAt / leafAtPoint (the SAME resolution the
+    // U13 binding + U26 knife ports use — 二重真実源を作らない, 教訓 5.29).
+    //
+    // Surface screen point → world (renderer inverse against the live camera/viewport
+    // the frame drew with). Shared by the hit-test and the selection port so a click
+    // resolves and finalizes against the SAME coordinate (単一の真実源, 教訓 5.29).
+    const surfaceToWorld = (point: ScreenPoint): WorldCoordinate => {
+      const { camera, viewport } = ports.readCamera();
+      return unprojectScreenToWorld(point, camera, viewport);
+    };
+    // The hit-test resolves a surface-relative screen point to a U22 HitResult:
+    // nearest committed vertex within a screen-px grab radius (頂点優先), else the leaf
+    // body under the cursor (world containment, 穴透過), else a point/line near the
+    // cursor, else empty.
+    const hitTester: HitTester = {
+      hitTest: (point) => {
+        const s = store.getState();
+        const { camera, viewport } = ports.readCamera();
+        return liveHitTestAt(
+          {
+            root: s.domain,
+            time: s.currentTime,
+            // Forward projector for the screen-px vertex / point / line proximity,
+            // from the SAME camera/viewport the frame drew with (単一真実源).
+            toScreen: (w) => projectWorldToScreen(w, camera, viewport),
+            point,
+          },
+          // World coordinate of the click (renderer inverse) for the world-space leaf
+          // containment.
+          surfaceToWorld(point),
+        );
+      },
+    };
+    // The LIVE SelectionPort drives U22's OWN reducer over the store selection truth
+    // (restoreSelection) — so a body click promotes the feature AND clears the vertex
+    // set, a vertex click replaces / Shift-toggles, empty clears, exactly per U22
+    // (Codex P1: a setActiveFeature-only path wrongly left a stale vertex set). It
+    // re-implements no selection rule.
+    const selectionPort = createLiveSelectionPort(
+      {
+        getSelection: () => store.getState().selection,
+        restoreSelection: (sel) => store.getState().restoreSelection(sel),
+      },
+      surfaceToWorld,
+    );
     const dispatcher = new PointerDispatcher({
       getMode: () => store.getState().mode,
       camera: cameraPort,
-      hitTester: EMPTY_HIT_TESTER,
-      selection: NOOP_SELECTION_PORT,
+      hitTester,
+      selection: selectionPort,
       add: NOOP_ADD_PORT,
       contextMenu: NOOP_CONTEXT_MENU_PORT,
       // FR-10 即時反映 / Codex medium #6: clamp the wheel zoom against the LIVE
@@ -826,10 +881,31 @@ function ActiveFeatureMarker(props: {
   readonly store: ReturnType<typeof createSessionStore<DomainRoot>>;
 }): JSX.Element {
   const active = useStore(props.store, (s) => s.selection.activeFeature);
+  // HB-15 観測フック: mirror the live vertex-selection truth (the first selected
+  // vertex id + its owner feature) into hidden data-testid markers so a behavioural
+  // E2E can assert an edit-mode click on a known vertex actually selected THAT vertex
+  // (既存 app-active-feature 方式). Pure mirrors of the U22 selection state — no truth
+  // lives here (技術方針 2.5). Empty string when no vertex is selected.
+  const vertexId = useStore(props.store, (s) => {
+    const it = s.selection.vertexIds.values().next();
+    return it.done === true ? '' : (it.value as unknown as string);
+  });
+  const vertexOwner = useStore(
+    props.store,
+    (s) => (s.selection.vertexOwner ?? '') as unknown as string,
+  );
   return (
-    <span data-testid="app-active-feature" hidden>
-      {active ?? ''}
-    </span>
+    <>
+      <span data-testid="app-active-feature" hidden>
+        {active ?? ''}
+      </span>
+      <span data-testid="app-active-vertex" hidden>
+        {vertexId}
+      </span>
+      <span data-testid="app-active-vertex-owner" hidden>
+        {vertexOwner}
+      </span>
+    </>
   );
 }
 
