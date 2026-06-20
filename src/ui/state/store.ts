@@ -34,7 +34,9 @@ import {
   toggleVertex,
   withActiveFeature,
 } from '../../domain/selection';
-import type { TimePoint } from '../../domain/time/time-point';
+import { getCalendar, type Calendar } from '../../domain/time/calendar';
+import { compareNormalized, normalize } from '../../domain/time/normalized';
+import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
@@ -314,6 +316,27 @@ function existenceAtTime(
   };
 }
 
+/**
+ * Clamp a candidate {@link TimePoint} into the inclusive [min, max] range using
+ * U02 normalized (whole-day) comparison ONLY — the store does no calendar math of
+ * its own, it defers to the injected/default calendar's normalize. Used when a
+ * LOAD / NEW installs a new timeline range so a `currentTime` left over from the
+ * previous project cannot dangle outside the new range (it would otherwise resolve
+ * the domain at an out-of-range time and show nothing). Returns the candidate when
+ * it is already inside, else the nearer bound.
+ */
+function clampTimeToRange(
+  candidate: TimePoint,
+  min: TimePoint,
+  max: TimePoint,
+  calendar: Calendar,
+): TimePoint {
+  const c = normalize(candidate, calendar);
+  if (compareNormalized(c, normalize(min, calendar)) < 0) return min;
+  if (compareNormalized(c, normalize(max, calendar)) > 0) return max;
+  return candidate;
+}
+
 // --- Store factory ----------------------------------------------------------
 
 export interface CreateSessionStoreOptions<S> {
@@ -321,6 +344,12 @@ export interface CreateSessionStoreOptions<S> {
   readonly initialDomain: S;
   /** Injected time-existence predicates (单一真实源; defaults to always-present). */
   readonly existence?: ExistenceResolver;
+  /**
+   * Calendar used ONLY to clamp `currentTime` into the timeline range on a
+   * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
+   * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
+   */
+  readonly calendar?: Calendar;
   /** Initial session overrides (mostly for tests). */
   readonly initial?: Partial<
     Pick<
@@ -348,6 +377,7 @@ export function createSessionStore<S>(
   options: CreateSessionStoreOptions<S>,
 ): StoreApi<SessionStore<S>> {
   const existence = options.existence ?? ALWAYS_PRESENT_RESOLVER;
+  const calendar = options.calendar ?? getCalendar('gregorian');
   const init = options.initial ?? {};
 
   // Build the initial selection TRUTH (U22 SelectionState) from the test/init
@@ -574,14 +604,46 @@ export function createSessionStore<S>(
       // this is a baseline hydrate, not a user edit, so subscribers (renderer /
       // zoom supply) re-read the new values via their own domain/settings
       // subscription rather than treating it as a discrete change event.
+      //
+      // PROJECT-DEPENDENT TIME STATE (finding): the timeline RANGE shown by the
+      // slider (timelineMin/timelineMax, TimePoints) is a derived mirror of the
+      // authoritative projectSettings.timelineMin/MaxYear — there is no second
+      // truth source. So whenever the project settings are hydrated we re-derive
+      // the range from the EFFECTIVE settings (the incoming slice, or the kept
+      // current one for a pre-`ui` manifest), re-clamp currentTime into that new
+      // range, and run the clamped time through U22's revalidateForTime so any
+      // time-dependent state is re-validated against the (already-swapped) new
+      // domain. Without this a previous project's range / out-of-range currentTime
+      // would survive a LOAD / NEW and the domain would resolve at a time outside
+      // the new range (空表示). This runs in the SAME set() as the slice swap so
+      // settings and the derived range/time can never drift apart.
+      const effectiveProject =
+        settings.projectSettings ?? get().projectSettings;
+      const timelineMin = timePointYear(effectiveProject.timelineMinYear);
+      const timelineMax = timePointYear(effectiveProject.timelineMaxYear);
+      const clampedTime = clampTimeToRange(
+        get().currentTime,
+        timelineMin,
+        timelineMax,
+        calendar,
+      );
+      const revalidated = revalidateForTime(
+        get().selection,
+        clampedTime,
+        existenceAtTime(existence),
+      );
       set({
         projectDirty: false,
+        timelineMin,
+        timelineMax,
+        currentTime: clampedTime,
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }
           : {}),
         ...(settings.appSettings !== undefined
           ? { appSettings: settings.appSettings }
           : {}),
+        ...selectionPatch(revalidated),
       });
     },
 

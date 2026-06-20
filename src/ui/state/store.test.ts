@@ -18,6 +18,7 @@ import {
   SETTINGS_SCOPE,
   classifySettingKey,
   DEFAULT_APP_SETTINGS,
+  DEFAULT_PROJECT_SETTINGS,
 } from './settings';
 import { EDIT_MODE, asToolId } from './session';
 import {
@@ -347,6 +348,71 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(store.getState().projectDirty).toBe(true);
     store.getState().markProjectSaved();
     expect(store.getState().projectDirty).toBe(false);
+  });
+
+  // 回帰 (finding): hydrateSettings is the LOAD / NEW project-settings half. The
+  // timeline RANGE the slider reads (timelineMin/timelineMax) is a derived mirror
+  // of projectSettings.timelineMin/MaxYear, and currentTime must be re-clamped into
+  // the new range — otherwise a previous project's wide range and an out-of-range
+  // currentTime survive a LOAD / NEW and the domain resolves at a time outside the
+  // new range (空表示). Pre-fix, hydrateSettings replaced only the settings slice
+  // and left timelineMin/Max/currentTime untouched.
+  it('hydrateSettings re-derives the timeline range and clamps currentTime into it (finding)', () => {
+    // Default range is 0..10000. Slide near the right end of the OLD range.
+    const store = makeStore();
+    store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().currentTime).toEqual(timePointYear(9000));
+
+    // Load a NEW project whose timeline is a NARROW, shifted range 0..100.
+    store.getState().hydrateSettings({
+      projectSettings: {
+        ...DEFAULT_PROJECT_SETTINGS,
+        timelineMinYear: 0,
+        timelineMaxYear: 100,
+      },
+    });
+
+    const s = store.getState();
+    // The slider range now reflects the NEW project, not the previous 0..10000.
+    expect(s.timelineMin).toEqual(timePointYear(0));
+    expect(s.timelineMax).toEqual(timePointYear(100));
+    // currentTime (9000) was outside the new range and was clamped to the max bound.
+    expect(s.currentTime).toEqual(timePointYear(100));
+    // A LOAD / NEW is a clean baseline.
+    expect(s.projectDirty).toBe(false);
+  });
+
+  it('hydrateSettings keeps an in-range currentTime unchanged', () => {
+    const store = makeStore();
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+    store.getState().hydrateSettings({
+      projectSettings: {
+        ...DEFAULT_PROJECT_SETTINGS,
+        timelineMinYear: 0,
+        timelineMaxYear: 100,
+      },
+    });
+    expect(store.getState().currentTime).toEqual(timePointYear(50));
+  });
+
+  it('hydrateSettings with no project slice derives the range from the kept settings (pre-`ui` manifest)', () => {
+    // Start from a project with a narrow range, then move current time inside it.
+    const store = makeStore();
+    store.getState().hydrateSettings({
+      projectSettings: {
+        ...DEFAULT_PROJECT_SETTINGS,
+        timelineMinYear: 0,
+        timelineMaxYear: 100,
+      },
+    });
+    store.getState().setCurrentTime(timePointYear(80), TIME_CHANGE_SOURCE.Slider);
+    // A pre-`ui` manifest carries no settings: the kept settings still drive the
+    // derived range, and an in-range currentTime is preserved.
+    store.getState().hydrateSettings({});
+    const s = store.getState();
+    expect(s.timelineMin).toEqual(timePointYear(0));
+    expect(s.timelineMax).toEqual(timePointYear(100));
+    expect(s.currentTime).toEqual(timePointYear(80));
   });
 });
 
