@@ -31,6 +31,7 @@ import {
   type LabelThresholds,
 } from '../../render/feature-layer';
 import type { Camera, Viewport } from '../../render/camera';
+import { initialCamera } from '../../render/vtransform';
 import { loadPresetBaseMap, PRESET_BASEMAP_META } from '../map/base-map-asset';
 
 /**
@@ -118,6 +119,22 @@ export interface AddHostPorts {
    * renderer draws with (HB-1 / FR-10, 単一真実源 — no second clamp source).
    */
   effectiveZoomRange(): ZoomRange;
+  /**
+   * Re-sync the renderer VIEWPORT (CSS width/height + device-pixel-ratio) to the
+   * canvas's LIVE on-screen box and re-composite at once (P1 リサイズ座標ズレ root
+   * fix). The viewport is otherwise fixed at mount, so after a window / layout
+   * resize the renderer's screen↔world transform AND every hit-test still used the
+   * STALE mount-time box — a click at a known screen position then resolved to the
+   * wrong world point (add / select 両経路の同根). This reads the canvas box (the
+   * SAME box `screenToWorld` subtracts for the client→surface offset) so the
+   * transform and the hit-test always match the live canvas (単一真実源 — the
+   * renderer viewport is the only size truth, re-derived from the live box, never a
+   * second cached dimension). The camera (center + zoom) is PRESERVED — only the
+   * viewport box changes — so the same world point stays under the surface centre.
+   * Idempotent: a no-op when the box is unchanged, so it is cheap to call on every
+   * ResizeObserver tick.
+   */
+  resyncViewport(): void;
   /** Tear down the renderer + canvas on unmount. */
   dispose(): void;
 }
@@ -186,9 +203,12 @@ export function createAddHostPorts(
   canvas.style.height = '100%';
   mount.appendChild(canvas);
 
-  const rect = mount.getBoundingClientRect();
-  const widthCss = rect.width || mount.clientWidth || 0;
-  const heightCss = rect.height || mount.clientHeight || 0;
+  // Size the renderer from the CANVAS box (not the mount box) so the construction
+  // viewport, the resync viewport, and the `screenToWorld` client→surface offset all
+  // measure the SAME element — one size truth, no mount-vs-canvas mismatch.
+  const initialRect = canvas.getBoundingClientRect();
+  const widthCss = initialRect.width || canvas.clientWidth || mount.clientWidth || 0;
+  const heightCss = initialRect.height || canvas.clientHeight || mount.clientHeight || 0;
   const dpr = mount.ownerDocument.defaultView?.devicePixelRatio ?? 1;
 
   const renderer = new Canvas2DMapRenderer(canvas, {
@@ -248,6 +268,75 @@ export function createAddHostPorts(
       options.onVisibleFeatureCount(visible.length);
     }
   };
+  /**
+   * Measure the canvas's LIVE on-screen box as a {@link Viewport}. This is the
+   * SAME `getBoundingClientRect()` the `screenToWorld` offset uses, so the
+   * transform/hit-test and the renderer viewport are derived from one source and
+   * cannot drift after a resize (P1 root fix, 単一真実源). dpr is read live so a
+   * window move between monitors of different density re-scales the backing buffer.
+   */
+  const measureViewport = (): Viewport => {
+    const box = canvas.getBoundingClientRect();
+    return {
+      widthCss: box.width || canvas.clientWidth || 0,
+      heightCss: box.height || canvas.clientHeight || 0,
+      devicePixelRatio: mount.ownerDocument.defaultView?.devicePixelRatio ?? 1,
+    };
+  };
+
+  /**
+   * Re-sync the renderer viewport to the live canvas box and re-composite, but
+   * ONLY when the box actually changed (idempotent — cheap on every observer tick).
+   * The camera is preserved; `setViewport` re-sizes the backing buffer (dpr-aware)
+   * and the next paint redraws through the SAME transform the hit-test reads.
+   */
+  const resyncViewport = (): void => {
+    if (disposed) return;
+    const next = measureViewport();
+    const cur = renderer.getViewport();
+    if (
+      next.widthCss === cur.widthCss &&
+      next.heightCss === cur.heightCss &&
+      next.devicePixelRatio === cur.devicePixelRatio
+    ) {
+      return;
+    }
+    // Zero-size recovery: if the canvas first mounted UNMEASURED (0×0 — layout not
+    // yet settled), the initial camera fit-zoom was 0 and `screenToWorld` would
+    // divide by zero forever (病的入力). On the FIRST transition to a positive-size
+    // box, re-seed the FR-11 fit-all camera for the real viewport so the transform
+    // is well-defined. A user pan/zoom only happens after a measured mount, so this
+    // cannot clobber a deliberate camera (the unmeasured camera is never interacted
+    // with). Ordinary resizes (already-measured → measured) keep the camera (Codex:
+    // do NOT re-fit on every resize — FR-11 fits at startup only).
+    const wasUnmeasured = cur.widthCss <= 0 || cur.heightCss <= 0;
+    const nowMeasured = next.widthCss > 0 && next.heightCss > 0;
+    renderer.setViewport(next);
+    if (wasUnmeasured && nowMeasured) {
+      renderer.setCamera(initialCamera(next));
+      options.onCameraChange?.(renderer.getCamera());
+    }
+    paintWith(lastOverlay);
+  };
+
+  // P1 ROOT FIX — keep the renderer viewport synced to the LIVE canvas box. The
+  // viewport was set ONCE at mount, so any later window / layout resize left the
+  // screen↔world transform AND every hit-test resolving against the STALE box: a
+  // click at a known screen position then mapped to the wrong world point (add /
+  // select 両経路の同根). A ResizeObserver on the canvas re-syncs on every box change
+  // (the SAME signal U20's MapContainer already throttles for layout); a window
+  // `resize` listener additionally catches a device-pixel-ratio change (monitor
+  // move) that does not alter the CSS box. Both funnel through the idempotent
+  // `resyncViewport` so there is ONE size-truth path (no double management).
+  const view = mount.ownerDocument.defaultView;
+  let resizeObserver: ResizeObserver | null = null;
+  if (typeof view?.ResizeObserver === 'function') {
+    resizeObserver = new view.ResizeObserver(() => resyncViewport());
+    resizeObserver.observe(canvas);
+  }
+  const onWindowResize = (): void => resyncViewport();
+  view?.addEventListener('resize', onWindowResize);
+
   // Initial paint: the graticule + any committed features are visible immediately.
   paintWith([]);
   // Seed the observation hooks with the initial camera so data-pan-x/y/zoom exist
@@ -297,8 +386,13 @@ export function createAddHostPorts(
     effectiveZoomRange(): ZoomRange {
       return renderer.effectiveZoomRange();
     },
+    resyncViewport(): void {
+      resyncViewport();
+    },
     dispose(): void {
       disposed = true;
+      resizeObserver?.disconnect();
+      view?.removeEventListener('resize', onWindowResize);
       canvas.remove();
     },
   };
