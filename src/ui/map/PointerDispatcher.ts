@@ -35,6 +35,7 @@ import type {
   AddPort,
   CameraPort,
   ContextMenuPort,
+  EditSessionPort,
   HitTester,
   PointerModifiers,
   SelectionPort,
@@ -71,6 +72,14 @@ export interface PointerDispatcherOptions {
   readonly camera: CameraPort;
   readonly hitTester: HitTester;
   readonly selection: SelectionPort;
+  /**
+   * The U24 edit-session completion-trigger port (受け入れ基準9 / 教訓5.7). Optional:
+   * when present, an edit-mode left press drives a U24 handle-drag session and the
+   * release runs the confirm trigger (`confirmRelease` → U13). When absent, edit-
+   * mode left is U22 selection only (the legacy behaviour) — the dispatcher never
+   * silently swallows the confirm path, it simply has no session to drive.
+   */
+  readonly editSession?: EditSessionPort;
   readonly add: AddPort;
   readonly contextMenu: ContextMenuPort;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
@@ -96,6 +105,12 @@ interface ActivePointer {
   readonly panRef: PanReference | null;
   /** Whether movement has crossed the drag threshold yet (click vs drag). */
   dragged: boolean;
+  /**
+   * For a SelectEdit pointer: whether a U24 edit-session was started on press (a
+   * handle drag). When true the release MUST fire the U24 completion trigger
+   * (受け入れ基準9 / 教訓5.7); when false the gesture is U22 selection only.
+   */
+  editing: boolean;
 }
 
 const DEFAULT_WHEEL_FACTOR = 1.1;
@@ -145,10 +160,18 @@ export class PointerDispatcher {
           originY: p.y,
           panRef: { camera, viewport, origin: point },
           dragged: false,
+          editing: false,
         });
         break;
       }
       case DISPATCH_TARGET.SelectEdit: {
+        this.opts.selection.start(hit, point, p.modifiers);
+        // Drive the U24 edit-session completion trigger when a handle was hit
+        // (受け入れ基準9 / 教訓5.7). `begin` returns true iff this press started a
+        // handle-drag session whose release must run `confirmRelease` → U13.
+        const editing =
+          this.opts.editSession !== undefined &&
+          this.opts.editSession.begin(hit, point, p.modifiers);
         this.active.set(p.pointerId, {
           kind: DISPATCH_TARGET.SelectEdit,
           button: p.button,
@@ -156,8 +179,8 @@ export class PointerDispatcher {
           originY: p.y,
           panRef: null,
           dragged: false,
+          editing,
         });
-        this.opts.selection.start(hit, point, p.modifiers);
         break;
       }
       case DISPATCH_TARGET.Add: {
@@ -171,6 +194,7 @@ export class PointerDispatcher {
           originY: p.y,
           panRef: null,
           dragged: false,
+          editing: false,
         });
         this.opts.add.press(point, hit, p.modifiers);
         break;
@@ -207,6 +231,11 @@ export class PointerDispatcher {
       }
     } else if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.move(point);
+      // Feed the same move to the live U24 edit session (transient preview / slide
+      // / snap light path) when this press started one (受け入れ基準8 軽量更新).
+      if (rec.editing && this.opts.editSession !== undefined) {
+        this.opts.editSession.update(point);
+      }
     }
     // Add has no move behavior here (placement fired on press).
   }
@@ -233,6 +262,13 @@ export class PointerDispatcher {
       }
     } else if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.end(point, rec.dragged);
+      // Run the U24 COMPLETION TRIGGER on release for a handle drag (受け入れ基準9 /
+      // 教訓5.7): the confirm-time integrity run is reached from real pointer input.
+      // ALWAYS runs for both drag and click (教訓5.8); the no-op guard inside U24's
+      // confirmRelease (教訓5.24) drops a zero-move click.
+      if (rec.editing && this.opts.editSession !== undefined) {
+        this.opts.editSession.release(point, rec.dragged);
+      }
     }
     // Add: nothing to finalize on release.
   }
@@ -248,6 +284,9 @@ export class PointerDispatcher {
     this.active.delete(pointerId);
     if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.cancel();
+      if (rec.editing && this.opts.editSession !== undefined) {
+        this.opts.editSession.cancel();
+      }
     }
   }
 
@@ -287,11 +326,19 @@ export class PointerDispatcher {
   /** Drop EVERY live pointer's transient (the shared全経路破棄 helper, 教訓 5.2). */
   private abortAll(): void {
     let hadSelectEdit = false;
+    let hadEditSession = false;
     for (const rec of this.active.values()) {
-      if (rec.kind === DISPATCH_TARGET.SelectEdit) hadSelectEdit = true;
+      if (rec.kind === DISPATCH_TARGET.SelectEdit) {
+        hadSelectEdit = true;
+        if (rec.editing) hadEditSession = true;
+      }
     }
     this.active.clear();
     if (hadSelectEdit) this.opts.selection.cancel();
+    // Discard any live U24 edit-session transient too (教訓5.2 全経路破棄).
+    if (hadEditSession && this.opts.editSession !== undefined) {
+      this.opts.editSession.cancel();
+    }
   }
 
   /** Build a {@link NormalizedPointer} from a DOM PointerEvent (接着層 helper). */

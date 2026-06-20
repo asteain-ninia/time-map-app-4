@@ -43,6 +43,7 @@ export {
   type CameraPort,
   type HitTester,
   type SelectionPort,
+  type EditSessionPort,
   type AddPort,
   type ContextMenuPort,
   type PointerModifiers,
@@ -56,3 +57,11 @@ export {
   PointerDispatcher,
   buttonFromButtonsMask,
 } from './PointerDispatcher';
+
+// U24 completion-trigger wiring: the concrete EditSessionPort that drives U24's
+// drag-session (beginDrag/updateDrag/confirmRelease) from pointer input so the
+// confirm path is reached from the UI (受け入れ基準9 / 教訓5.7).
+export {
+  type EditSessionAdapterDeps,
+  createEditSessionPort,
+} from './edit-session-adapter';

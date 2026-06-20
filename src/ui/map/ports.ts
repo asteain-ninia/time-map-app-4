@@ -57,6 +57,44 @@ export interface SelectionPort {
   cancel(): void;
 }
 
+/**
+ * Edit-session port (U24): the press→move→release COMPLETION TRIGGER for an
+ * edit-mode handle drag (vertex move / edge-add / feature move). This is the
+ * wiring the spec's 受け入れ基準9 / 教訓5.7 require — "UI からの呼び出しで確定が
+ * 実際に走る": the dispatcher drives a U24 drag session through these three calls
+ * so the confirm-time integrity run (`confirmRelease` → U13) is reached from real
+ * pointer input, not only from the domain barrel (教訓5.7「ロジックがあっても UI
+ * から呼ばれず機能しない状態を作らない」).
+ *
+ * The dispatcher only SEQUENCES the gesture (it guarantees `release` always runs
+ * for both drag and click, 教訓5.8 / 5.2). The adapter behind this port owns the
+ * domain detail: it builds the U24 {@link DragSession} from the hit on `begin`
+ * (`beginDrag`), updates the transient preview on `update` (`updateDrag` + the
+ * slide / snap light path), and on `release` assembles the snapshot and calls
+ * U24's `confirmRelease` (the completion trigger). On `cancel` it discards the
+ * transient (`discardDrag`). When `begin` returns false (the hit was a plain
+ * selection, not a handle drag) the dispatcher leaves the gesture to U22 only.
+ */
+export interface EditSessionPort {
+  /**
+   * Edit-mode left-button press at a hit. Returns true iff this press started a
+   * U24 handle-drag session (a vertex / edge / feature-move handle was hit), so a
+   * matching `release` must fire the completion trigger; false for a plain
+   * selection press (U22-only — no edit session to confirm).
+   */
+  begin(hit: HitResult, point: ScreenPoint, modifiers: PointerModifiers): boolean;
+  /** Pointer moved during a live edit session (transient preview / slide / snap). */
+  update(point: ScreenPoint): void;
+  /**
+   * Edit session ended → run the COMPLETION TRIGGER (U24 `confirmRelease` → U13).
+   * `wasDrag` distinguishes a real drag from a click so the no-op guard
+   * (教訓5.24) is honoured. Only called when `begin` returned true.
+   */
+  release(point: ScreenPoint, wasDrag: boolean): void;
+  /** Session abandoned (cancel / mode switch): discard the transient (教訓5.2). */
+  cancel(): void;
+}
+
 /** Add-feature port (add-unit): an add-mode left-button operation at a point. */
 export interface AddPort {
   /** Left-button press in add mode (e.g. place a vertex). */

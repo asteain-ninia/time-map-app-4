@@ -73,10 +73,24 @@ export function App(): JSX.Element {
   );
 
   // The add host ports (id minting / ring ids / the U13 process-start adapter).
-  // The U13 adapter is the documented dependency seam (spec §依存 U13): until the
-  // consistency host unit is wired it returns a deterministic rejection so a save
-  // surfaces a Japanese message instead of silently doing nothing — the COMPLETE
-  // and SAVE triggers are fully配線 either way (教訓 5.7).
+  //
+  // DEPENDENCY SEAM — U13 NOT YET LIVE-BOUND (spec §依存 U13; DECISIONS D16-D19):
+  // `startProcess` below is a deterministic-rejection STUB, not the real U13
+  // orchestrator. As a result the live synthesis CANNOT yet reach the committed
+  // outcome: 受け入れ基準1(現在時刻錨として確定), 基準2(確定済み分岐), and 基準9
+  // (完了後の選択再解決) hold ONLY against an injected U13 in the U23 unit tests
+  // (AddToolController.test.tsx / useAddTool.test.tsx) — in the shipped composite
+  // a SAVE always ends in the Japanese rejection message. This is intentional and
+  // honestly scoped: the COMPLETE and SAVE triggers are fully配線 (教訓 5.7) and
+  // observable, but the CONFIRM path is deliberately left open until U42 binds the
+  // real orchestrator. The controller takes `startProcess` as a contract
+  // (StartAddProcess<S>), so U42 connects the live U13 by REPLACING this single
+  // closure with `consistency/orchestrator.ts#startProcess` bound over the live
+  // domain root — no change to AddToolController / useAddTool (教訓 5.33 契約越し).
+  //
+  // U42 BINDING POINT (see createAddBootstrap below): swap the stub for
+  //   (proposal) => startConsistencyProcess(liveDomainRoot, toEditProposal(proposal), livePorts)
+  // and feed the Committed/ConflictsPending/Rejected result back unchanged.
   const hostBootstrap = useMemo(() => createAddBootstrap<DomainRoot>(), []);
 
   return (
@@ -141,8 +155,16 @@ function createAddBootstrap<S>(): AddBootstrap<S> {
   // The U13 dependency seam (spec §依存: 依存ユニットが未実装の場合は契約に沿って
   // 実装し、後で差し替える). Returns a deterministic rejection so the SAVE trigger
   // is observably wired (a Japanese message appears) until the consistency host
-  // is connected. Replacing this closure connects the real U13 orchestrator with
-  // no change to the controller (教訓 5.33 契約越し).
+  // is connected.
+  //
+  // U42 BINDING POINT: replace this closure with the real U13 orchestrator —
+  //   import { startProcess as startConsistencyProcess } from '../domain/consistency/index';
+  //   const startProcess: StartAddProcess<S> = (proposal) =>
+  //     startConsistencyProcess(liveDomainRoot, toEditProposal(proposal), liveConsistencyPorts);
+  // The controller consumes StartAddProcess<S> as a contract, so this is the only
+  // line U42 must change to make 基準1/2-Committed/9 reachable in the live
+  // composite (教訓 5.33 契約越し). Until then the CONFIRM path is open by design
+  // (DECISIONS D16-D19; U23 acceptanceMet=false 部分充足).
   const startProcess: StartAddProcess<S> = (): ProcessResult<S> => ({
     status: PROCESS_STATUS.Rejected,
     kind: REJECTION_KIND.Internal,

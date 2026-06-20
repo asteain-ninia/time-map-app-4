@@ -52,6 +52,7 @@ export {
 
 export {
   type FeatureEditResult,
+  type SelectionDelta,
   type VertexDeleteTarget,
   addVertexToLine,
   addVertexToLeafRing,
@@ -59,6 +60,7 @@ export {
   deleteLineVertex,
   deleteLeafVertex,
   deleteVertex,
+  commandResultFromEditResult,
 } from './edit-ops';
 
 export {
