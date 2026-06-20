@@ -26,7 +26,7 @@ import { createVertex, type Vertex } from '../../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import type { AddSnapshot } from '../../domain/add/index';
-import { worldToScreen } from '../../render';
+import { worldToScreen, screenToWorld } from '../../render';
 import type { Camera, Viewport } from '../../render';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -57,6 +57,33 @@ function squareLeaf(
     [4, 0],
     [4, 4],
     [0, 4],
+  ];
+  const vertices = corners.map((c, i) =>
+    createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]! + ox, lat: c[1]! + oy }),
+  );
+  const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
+  const feature = createLeafFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes(idRaw, 0, 0),
+    color,
+    createShape([ring]),
+  );
+  return { feature, vertices };
+}
+
+/** A `size`×`size` square leaf with origin offset; corners at (ox,oy)…(ox+size,oy+size). */
+function bigSquareLeaf(
+  idRaw: string,
+  vPrefix: string,
+  ox: number,
+  oy: number,
+  size: number,
+): { feature: Feature; vertices: Vertex[] } {
+  const corners = [
+    [0, 0],
+    [size, 0],
+    [size, size],
+    [0, size],
   ];
   const vertices = corners.map((c, i) =>
     createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]! + ox, lat: c[1]! + oy }),
@@ -386,4 +413,129 @@ describe('liveHitTestAt', () => {
       if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(agg2Id);
     });
   });
+
+  // --- bughunt: ±360°ラップ複製で表示される点/頂点/線/面が掴めない -----------------
+  //
+  // The renderer draws every primitive once per ±360° turn its continuous-longitude
+  // span overlaps the viewport (canvas2d-renderer drawBatch → wrapTurnsForLonSpan). A
+  // feature whose CANONICAL longitude is off-screen but whose wrap REPLICA is on-screen
+  // is therefore visible. Before the fix the hit-test projected ONLY the canonical
+  // longitude for vertex/point/line proximity (and probed the area body at a fixed ±1
+  // turn only), so a click on the visible replica resolved to nothing — 見えているのに
+  // 掴めない. With `wrap` carrying the frame's camera/viewport the hit-test enumerates
+  // the SAME turns the renderer drew (clip ⊇ draw ⊇ hit), so the replica is grabbable.
+  //
+  // Setup: camera centred a FULL world turn east (centerLon 360), so the on-screen lon
+  // window is [350, 370]. A feature stored at canonical lon ~0–4 is OFF this window, but
+  // its +360° replica lands at lon 360–364 — squarely on screen. Every assertion clicks
+  // the REPLICA's screen position and expects the feature to be hit.
+  describe('±360° wrap-replica is grabbable (renderer/hit-test wrap parity)', () => {
+    // centerLon = 360 (one turn east); view window lon ∈ [350, 370] at zoom 10, w=200.
+    const wrapCamera: Camera = { centerLon: 360, centerLat: 2, zoom: 10 };
+    const wrapViewport: Viewport = viewport;
+    const wrapToScreen = (w: { lon: number; lat: number }) =>
+      worldToScreen(w, wrapCamera, wrapViewport);
+    const wrap = { camera: wrapCamera, viewport: wrapViewport };
+
+    it('grabs a VERTEX shown only as a +360° replica', () => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // canonical corner at lon 0; replica at 360
+      const root = commit(emptyProject(), a, 1000);
+      // The (0,0) corner's REPLICA is at lon 360, lat 0 — on screen under wrapCamera.
+      const replicaCorner = wrapToScreen({ lon: 360, lat: 0 });
+      const hit = liveHitTestAt(
+        { root, time, toScreen: wrapToScreen, wrap, point: { x: replicaCorner.x + 1, y: replicaCorner.y - 1 } },
+        // World coordinate of the click (canonical, off-window): screenToWorld returns
+        // ~lon 360 here, but the body/vertex math wraps it — the click lands on the replica.
+        screenToWorldFor({ x: replicaCorner.x + 1, y: replicaCorner.y - 1 }),
+      );
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) {
+        expect(hit.featureId).toBe(a.feature.id);
+        expect(hit.vertexId).toBe(asVertexId('va-0'));
+      }
+    });
+
+    it('grabs an AREA BODY shown only as a +360° replica', () => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // covers canonical [0,4]²; replica [360,364]²
+      const root = commit(emptyProject(), a, 1000);
+      // Centre of the replica body (lon 362, lat 2), away from any vertex.
+      const replicaCentre = { lon: 362, lat: 2 };
+      const screen = wrapToScreen(replicaCentre);
+      const hit = liveHitTestAt(
+        { root, time, toScreen: wrapToScreen, wrap, point: screen },
+        screenToWorldFor(screen),
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+    });
+
+    it('grabs a POINT shown only as a +360° replica', () => {
+      const p = pointFeature('f-p', 'vp', 3, 3); // canonical lon 3; replica lon 363
+      const root = commit(emptyProject(), p, 1000);
+      const at = { lon: 363, lat: 3 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen: wrapToScreen, wrap, point: wrapToScreen(at) },
+        screenToWorldFor(wrapToScreen(at)),
+      );
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(p.feature.id);
+    });
+
+    it('grabs a LINE BODY (mid-segment) shown only as a +360° replica', () => {
+      const ln = lineFeature('f-l', 'vl', [
+        [0, 2],
+        [4, 2],
+      ]); // canonical horizontal seg lon 0→4; replica lon 360→364
+      const root = commit(emptyProject(), ln, 1000);
+      // Mid of the replica segment (lon 362, lat 2) — not near an endpoint.
+      const mid = { lon: 362, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen: wrapToScreen, wrap, point: wrapToScreen(mid) },
+        screenToWorldFor(wrapToScreen(mid)),
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(ln.feature.id);
+    });
+
+    it('grabs a deep zoom-out replica AREA BODY at +720° (turns are span-derived, not fixed ±1)', () => {
+      // Zoom far OUT so the viewport spans more than two world turns: the area body must
+      // be probed at the +2 turn, which the OLD fixed ±1 probe missed (lon=720 取りこぼし).
+      // A WIDE square (200° across) so its replica centre is well clear of any corner
+      // vertex in screen px — a genuine body hit, not a vertex hit.
+      const big = bigSquareLeaf('f-big', 'vbig', 0, -100, 200); // canonical [0,200]×[-100,100]
+      const root = commit(emptyProject(), big, 1000);
+      const wideCamera: Camera = { centerLon: 820, centerLat: 0, zoom: 0.2 }; // view spans ~1000° (>2 turns)
+      const wideToScreen = (w: { lon: number; lat: number }) =>
+        worldToScreen(w, wideCamera, wrapViewport);
+      const wideWrap = { camera: wideCamera, viewport: wrapViewport };
+      // Centre of the +720° replica body (canonical centre lon 100 → replica lon 820).
+      const replicaCentre = { lon: 820, lat: 0 };
+      const screen = wideToScreen(replicaCentre);
+      const hit = liveHitTestAt(
+        { root, time, toScreen: wideToScreen, wrap: wideWrap, point: screen },
+        worldToScreen2(screen, wideCamera),
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(big.feature.id);
+    });
+  });
 });
+
+/** screenToWorld against the wrap test camera (centerLon 360). */
+function screenToWorldFor(s: { x: number; y: number }): { lon: number; lat: number } {
+  const w = screenToWorld(s, { centerLon: 360, centerLat: 2, zoom: 10 }, {
+    widthCss: 200,
+    heightCss: 200,
+    devicePixelRatio: 1,
+  });
+  return { lon: w.lon, lat: w.lat };
+}
+
+/** screenToWorld against an arbitrary camera (for the wide zoom-out case). */
+function worldToScreen2(
+  s: { x: number; y: number },
+  cam: Camera,
+): { lon: number; lat: number } {
+  const w = screenToWorld(s, cam, { widthCss: 200, heightCss: 200, devicePixelRatio: 1 });
+  return { lon: w.lon, lat: w.lat };
+}

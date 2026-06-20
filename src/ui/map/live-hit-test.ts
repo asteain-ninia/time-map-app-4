@@ -71,6 +71,8 @@ import {
   resolveDisplayControl,
   type DisplayControlInput,
 } from '../../render/display-pipeline';
+import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
+import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 
 /** Project a world coordinate to surface-relative screen px (U17 forward transform). */
 export type ProjectToScreen = (world: WorldCoordinate) => ScreenPoint;
@@ -89,6 +91,25 @@ export interface LiveHitTestInput {
   readonly displayControl?: DisplayControlInput;
   /** World → surface screen px (the SAME transform the renderer drew with). */
   readonly toScreen: ProjectToScreen;
+  /**
+   * The camera + viewport THIS frame drew with. Supplied so the hit-test can derive
+   * the EXACT set of ±360° wrap turns the renderer painted each drawable at
+   * (`wrapTurnsForLonSpan` — the SAME helper the Canvas renderer uses, 単一真実源).
+   *
+   * WHY (bughunt — ラップ複製で表示される点/頂点/線が掴めない): the renderer draws every
+   * primitive once per ±360° turn its continuous longitude span overlaps the view
+   * (canvas2d-renderer drawBatch). A point/vertex/line whose CANONICAL longitude is
+   * off-screen but whose wrap REPLICA is on-screen is therefore visible — yet the
+   * screen-px proximity test, projecting only the canonical longitude, could never
+   * reach it. With `wrap` present the proximity test projects each drawable at every
+   * drawn turn, and the area body probe enumerates the same per-shape turns (not a
+   * fixed ±1), so『見えている＝掴める』holds at any pan/zoom (clip ⊇ draw ⊇ hit).
+   *
+   * When omitted (legacy callers / unit tests that draw a single non-wrapped frame),
+   * the hit-test falls back to the canonical projection plus a ±1 turn area probe —
+   * the previous behaviour, unchanged.
+   */
+  readonly wrap?: { readonly camera: Camera; readonly viewport: Viewport };
   /** The click point in surface-relative screen px (box-offset already removed). */
   readonly point: ScreenPoint;
   /** The grab radius in SCREEN px for a vertex / point / line hit (default 8). */
@@ -147,6 +168,29 @@ export function vertexOwners(
   return owners;
 }
 
+/**
+ * The MINIMUM squared screen distance from `point` to a single world coordinate as the
+ * renderer drew it — i.e. across every ±360° wrap replica its longitude was painted at
+ * (bughunt: a vertex / point whose canonical lon is off-screen but whose replica is
+ * on-screen must still be grabbable). The replica longitude is `coord.lon + offset`;
+ * latitude is never wrapped. With no `wrap` frame `drawnLonOffsets` yields the
+ * canonical ±1 set, so the canonical projection is always among the probes.
+ */
+function nearestDrawnDistSq(
+  coord: WorldCoordinate,
+  point: ScreenPoint,
+  toScreen: ProjectToScreen,
+  wrap: WrapFrame,
+): number {
+  const offsets = drawnLonOffsets(coord.lon, coord.lon, wrap);
+  let best = Infinity;
+  for (const off of offsets) {
+    const d = distSq(toScreen({ lon: coord.lon + off, lat: coord.lat }), point);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 /** Squared screen distance between two points (sqrt-free hot-path compare). */
 function distSq(a: ScreenPoint, b: ScreenPoint): number {
   const dx = a.x - b.x;
@@ -168,6 +212,27 @@ function distToSegmentSq(p: ScreenPoint, a: ScreenPoint, b: ScreenPoint): number
   t = t < 0 ? 0 : t > 1 ? 1 : t;
   const foot: ScreenPoint = { x: a.x + t * vx, y: a.y + t * vy };
   return distSq(p, foot);
+}
+
+/** The wrap configuration the hit-test resolves turns against (see LiveHitTestInput.wrap). */
+type WrapFrame = { readonly camera: Camera; readonly viewport: Viewport } | undefined;
+
+/**
+ * The ±360° world-turn offsets (in DEGREES) at which the renderer drew a drawable
+ * whose continuous-longitude content spans `[lonMin, lonMax]` (bughunt 単一真実源).
+ *
+ * With a `wrap` frame this delegates to the SAME `wrapTurnsForLonSpan` the Canvas
+ * renderer uses, so the proximity/containment tests consider EXACTLY the replicas the
+ * renderer painted (clip ⊇ draw ⊇ hit). Without one (legacy / single-frame tests) it
+ * returns the canonical turn plus ±1 — the previous fixed probe — so behaviour is
+ * unchanged for callers that did not draw wrap replicas.
+ */
+function drawnLonOffsets(lonMin: number, lonMax: number, wrap: WrapFrame): number[] {
+  if (wrap === undefined) {
+    return [0, LONGITUDE_PERIOD, -LONGITUDE_PERIOD];
+  }
+  const turns = wrapTurnsForLonSpan(lonMin, lonMax, wrap.camera, wrap.viewport);
+  return turns.map((t) => t * LONGITUDE_PERIOD);
 }
 
 /**
@@ -196,28 +261,52 @@ function drawnAreas(
  * `pointInPolygon` predicate (single containment rule); a point on / inside a hole is
  * not a hit. Later drawables (drawn on top) win on overlap, matching the paint order.
  *
- * The renderer draws each polygon at its canonical longitude AND at ±360° replicas
- * (a polygon spanning the antimeridian is shown wrapped); the hit-test must agree, so
- * we probe the click point in each ±360° longitude frame (same rule as
- * live-lookup.leafAtPoint — 単一真実源 of the wrap probe).
+ * The renderer draws each polygon at its canonical longitude AND at every ±360°
+ * replica its span overlaps the view; the hit-test must agree. A replica drawn at
+ * `+offset°` covers the world `polygon.lon + offset`, so `worldPoint` lands inside it
+ * iff `worldPoint.lon − offset` lands inside the canonical polygon. We therefore probe
+ * the click at `worldPoint.lon − offset` for every offset the renderer drew THIS area
+ * at (`drawnLonOffsets` — the SAME `wrapTurnsForLonSpan` the renderer uses, per the
+ * area's OWN lon span, so a deep zoom-out replica at ±720° is not missed). Without a
+ * `wrap` frame this falls back to the previous fixed ±1 probe.
  */
 function drawnAreaAtPoint(
   areas: readonly ResolvedDisplayShape[],
   worldPoint: WorldCoordinate,
+  wrap: WrapFrame,
 ): FeatureId | null {
-  const probes: WorldCoordinate[] = [
-    worldPoint,
-    { lon: worldPoint.lon + 360, lat: worldPoint.lat },
-    { lon: worldPoint.lon - 360, lat: worldPoint.lat },
-  ];
   let hit: FeatureId | null = null;
   for (const area of areas) {
+    const span = multiPolygonLonSpan(area.shape);
+    const offsets =
+      span === undefined ? [0] : drawnLonOffsets(span.min, span.max, wrap);
+    const probes: WorldCoordinate[] = offsets.map((off) => ({
+      lon: worldPoint.lon - off,
+      lat: worldPoint.lat,
+    }));
     const inside = area.shape.some((polygon) =>
       probes.some((p) => pointInPolygon(p, polygon) === POINT_LOCATION.Inside),
     );
     if (inside) hit = area.featureId; // keep scanning; a later (top) area wins
   }
   return hit;
+}
+
+/** The canonical-longitude span `[min, max]` over every ring of a multi-polygon, or undefined when empty. */
+function multiPolygonLonSpan(
+  shape: ResolvedDisplayShape['shape'],
+): { min: number; max: number } | undefined {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const polygon of shape) {
+    for (const ring of polygon) {
+      for (const c of ring) {
+        if (c.lon < min) min = c.lon;
+        if (c.lon > max) max = c.lon;
+      }
+    }
+  }
+  return min === Infinity ? undefined : { min, max };
 }
 
 /**
@@ -233,7 +322,7 @@ export function liveHitTestAt(
   input: LiveHitTestInput,
   worldPoint: WorldCoordinate,
 ): HitResult {
-  const { root, time, toScreen, point } = input;
+  const { root, time, toScreen, point, wrap } = input;
   const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
   const radius = input.radiusPx ?? DEFAULT_HIT_RADIUS_PX;
   const radiusSq = radius * radius;
@@ -266,7 +355,7 @@ export function liveHitTestAt(
   for (const [vertexId, featureId] of owners) {
     const v = getVertex(vertices, vertexId);
     if (v === undefined) continue;
-    const d = distSq(toScreen(v.coordinate), point);
+    const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
     if (d <= bestDistSq) {
       bestDistSq = d;
       bestVertex = { featureId, vertexId };
@@ -279,7 +368,7 @@ export function liveHitTestAt(
   // 2. Topmost DRAWN AREA body under the cursor (resolved-shape containment, 穴透過).
   //    For an aggregate this is the AGGREGATE's 集約形状 → the aggregate is selected,
   //    never a hidden child leaf.
-  const area = drawnAreaAtPoint(areas, worldPoint);
+  const area = drawnAreaAtPoint(areas, worldPoint, wrap);
   if (area !== null) return featureBodyHit(area);
 
   // 3. A POINT / LINE feature near the cursor (screen-px proximity — no fillable
@@ -291,7 +380,7 @@ export function liveHitTestAt(
     if (f.kind === FEATURE_KIND.Point) {
       const v = getVertex(vertices, f.vertexId);
       if (v === undefined) continue;
-      const d = distSq(toScreen(v.coordinate), point);
+      const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
       if (d <= bestDistSq) {
         bestDistSq = d;
         bestBody = f.id;
@@ -314,6 +403,8 @@ export function liveHitTestAt(
       // the longitudes of each CONTIGUOUS resolvable run independently (a gap breaks
       // the run, matching the segment-break below). Latitude is never wrapped.
       const resolved = f.vertexIds.map((vid) => getVertex(vertices, vid));
+      // Per-run unwrapped runs (each a list of {lon (unwrapped), lat}).
+      const runs: { lon: number; lat: number }[][] = [];
       let runStart = 0;
       while (runStart < resolved.length) {
         if (resolved[runStart] === undefined) {
@@ -326,17 +417,38 @@ export function liveHitTestAt(
         }
         const run = resolved.slice(runStart, runEnd).map((v) => v!.coordinate);
         const unwrappedLons = unwrapLonSequence(run.map((c) => c.lon));
-        let prev: ScreenPoint | null = null;
-        run.forEach((c, i) => {
-          const cur = toScreen({ lon: unwrappedLons[i]!, lat: c.lat });
-          const d = prev === null ? distSq(cur, point) : distToSegmentSq(point, prev, cur);
-          if (d <= bestDistSq) {
-            bestDistSq = d;
-            bestBody = f.id;
-          }
-          prev = cur;
-        });
+        runs.push(run.map((c, i) => ({ lon: unwrappedLons[i]!, lat: c.lat })));
         runStart = runEnd;
+      }
+      // WRAP 単一真実源 (bughunt): the renderer draws the WHOLE line primitive once per
+      // ±360° turn its (unwrapped) longitude span overlaps the view — a seam line whose
+      // canonical run is off-screen still shows its replica, so the body hit must test
+      // every drawn replica. Derive the turns from the line's full unwrapped lon span
+      // (the SAME span the renderer's `primitiveLonSpan` feeds `wrapTurnsForLonSpan`),
+      // then offset every run's longitudes by each turn before projecting.
+      let lonMin = Infinity;
+      let lonMax = -Infinity;
+      for (const run of runs) {
+        for (const c of run) {
+          if (c.lon < lonMin) lonMin = c.lon;
+          if (c.lon > lonMax) lonMax = c.lon;
+        }
+      }
+      const offsets =
+        lonMin === Infinity ? [0] : drawnLonOffsets(lonMin, lonMax, wrap);
+      for (const off of offsets) {
+        for (const run of runs) {
+          let prev: ScreenPoint | null = null;
+          for (const c of run) {
+            const cur = toScreen({ lon: c.lon + off, lat: c.lat });
+            const d = prev === null ? distSq(cur, point) : distToSegmentSq(point, prev, cur);
+            if (d <= bestDistSq) {
+              bestDistSq = d;
+              bestBody = f.id;
+            }
+            prev = cur;
+          }
+        }
       }
     }
   }

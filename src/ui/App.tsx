@@ -294,6 +294,11 @@ export function App(): JSX.Element {
             // Forward projector for the screen-px vertex / point / line proximity,
             // from the SAME camera/viewport the frame drew with (単一真実源).
             toScreen: (w) => projectWorldToScreen(w, camera, viewport),
+            // The camera + viewport let the hit-test enumerate the EXACT ±360° wrap
+            // turns the renderer painted each drawable at (`wrapTurnsForLonSpan`), so a
+            // point/vertex/line/area shown only as a wrap replica is still grabbable
+            // (bughunt: 描画と hit-test の wrap 一致 — clip ⊇ draw ⊇ hit).
+            wrap: { camera, viewport },
             point,
           },
           // World coordinate of the click (renderer inverse) for the world-space leaf
