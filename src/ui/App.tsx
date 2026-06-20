@@ -1081,20 +1081,53 @@ function shapeForConflictParticipant(
  * knife target emphasis (FR-92). Recomputed on selection / time / domain change
  * via a store subscription (技術方針 2.5: React 外のストアを subscribe で監視), so the
  * highlight tracks the live truth without a parallel selection source (教訓 5.29).
+ *
+ * IMPORTANT (技術方針 2.3「camera は React 描画パスに乗せない」, bughunt 再発防止):
+ * the bare store subscription fires on EVERY set(), and a pan / wheel emits two
+ * camera set()s per frame (updateCamera + setCenterLon, App.tsx cameraPort.write).
+ * `leafShapeAt` allocates a fresh GeoMultiPolygon every call, so an unconditional
+ * `setShape(compute())` handed React a NEW reference each camera frame and forced
+ * a per-frame re-render of App + KnifeToolController while a leaf was selected —
+ * putting camera changes on the React render path. We therefore GUARD on the only
+ * inputs `leafShapeAt` reads (activeFeature / currentTime / domain) and skip the
+ * recompute when none of them changed, so a camera-only set() is a no-op here.
  */
-function useKnifeTargetShape(
+export function useKnifeTargetShape(
   store: ReturnType<typeof createSessionStore<DomainRoot>>,
 ): GeoMultiPolygon | undefined {
   const [shape, setShape] = useState<GeoMultiPolygon | undefined>(undefined);
   useEffect(() => {
-    const compute = (): GeoMultiPolygon | undefined => {
-      const s = store.getState();
-      const fid = s.activeFeature;
+    /** The leaf-shape inputs; identity-compared to gate the recompute. */
+    const inputsOf = (
+      s: ReturnType<typeof store.getState>,
+    ): { fid: FeatureId | null; time: TimePoint; domain: DomainRoot } => ({
+      fid: s.activeFeature,
+      time: s.currentTime,
+      domain: s.domain,
+    });
+    const compute = (
+      fid: FeatureId | null,
+      time: TimePoint,
+    ): GeoMultiPolygon | undefined => {
       if (fid === null) return undefined;
-      return leafShapeAt(s.domain, s.currentTime, fid) ?? undefined;
+      return leafShapeAt(store.getState().domain, time, fid) ?? undefined;
     };
-    setShape(compute());
-    return store.subscribe(() => setShape(compute()));
+    let prev = inputsOf(store.getState());
+    setShape(compute(prev.fid, prev.time));
+    return store.subscribe(() => {
+      const next = inputsOf(store.getState());
+      // Camera-only set()s leave fid/time/domain identical — skip the recompute
+      // (and the re-render it would cause) so pan/zoom stays off the render path.
+      if (
+        next.fid === prev.fid &&
+        next.time === prev.time &&
+        next.domain === prev.domain
+      ) {
+        return;
+      }
+      prev = next;
+      setShape(compute(next.fid, next.time));
+    });
   }, [store]);
   return shape;
 }
