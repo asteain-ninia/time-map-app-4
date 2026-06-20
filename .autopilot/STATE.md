@@ -5,6 +5,15 @@
 方針: ユーザーが起きるまで停止しない。各マイルストーンでgit commit（ローカルのみ、pushしない）。
 
 ## 進捗ログ（新しい順・先頭追記）
+- 2026-06-21: **HUMAN-BUGS 第2ラウンド確定処理（HB-5..HB-15）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0・デグレなし）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**204 files・2098 tests passed, exit 0**（前回 HB-1..4 確定の 202/2069 から +2 files/+29 tests・回帰なし＝HB-5..15 の修正/E2E ハーネス追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **43 passed・exit 0（skip 0）**（前回 24 → +19＝HB-5..15 の behavioral/visual E2E 追加 + 本ラウンド `e2e/coord-cluster.spec.ts` の2件）。
+  - **スクショ再生成確認**: `npm run test:e2e` 前に `screenshots/app-shell.png` と `with-feature.png` を削除→ e2e 実行後に **両方が再生成されたことを確認**（共に 04:08 タイムスタンプ、app-shell.png=264073B / with-feature.png=260145B）。
+  - **HB-5..HB-14 = 解決済（対応コミットは既存：`a4edd8d`=HB-14 / `d1bb17f`=HB-8,9 / `ea78e6a`=HB-5,10,11,12,13、座標クラスタ根本=`a4edd8d`+`4ad603c`）**。詳細・対応コミット・追加E2E は `.autopilot/HUMAN-BUGS-2.md` に [解決] で追記。
+    - 座標クラスタ(HB-6/7/14/15) は単一 screen↔world 真実源 `src/render/vtransform.ts`（厳密逆写像 + `zoomAtCursor`/`zoomStepAtCursor` + `wrapTurnsForLonSpan`）+ 箱オフセット補正 `src/ui/add/host-ports.ts` で根本修正。再発防止プロパティ `vtransform.test.ts`/`feature-cull.property.test.ts`。
+    - 本ラウンド追加: `e2e/coord-cluster.spec.ts`（**HB-6** カーソル不動点ズーム ≤2px / **HB-7** 4つの相異なるオフセンタ・クリックで非退化な面確定＝中心 collapse しない）。
+  - **HB-15 = 部分解決（正直な残課題）**: 同根の screen→world 写像は修正済み（HB-7 と同一・緑でロック）だが、**合成ルート `src/ui/App.tsx` の地図ポインタ・ディスパッチャが `EMPTY_HIT_TESTER`/`NOOP_SELECTION_PORT`（`src/ui/map/ports.ts`）のままで、地図上の実クリックによる頂点/地物選択導線がライブ UI に未結線**。「既知頂点を実クリック→選択」E2E は実 HitTester/SelectionPort 結線まで成立しないため**偽陽性ロック回避のため意図的に未記述**。残作業: App.tsx で両ポートを実装へ差し替え→クリック選択結線→E2E 追加。
+  - **HB-12 永続要否**: タイムライン時刻ブックマークの永続（save/load 往復）要否は仕様未確定。`.autopilot/DECISIONS.md` **D24** に確認事項として記載（永続実装は判断待ちで保留・ラベル/説明明確化自体は完了・E2E 緑）。
+  - **未コミット差分**: 本確定処理の追加 E2E（`e2e/coord-cluster.spec.ts`）+ doc 更新（HUMAN-BUGS-2 の [解決] 追記 / STATE/DECISIONS/現状）+ `screenshots/with-feature.png` 再生成差分。緑につき `chore(humanbugs2): finalize HB-5..HB-15 — mark resolved, regen screenshots` でローカルコミット（push せず）。
+  - **HUMAN-BUGS 第2ラウンド判定**: 4点全緑・skip 0・スクショ両再生成・HB-5..HB-14 解決＋各 behavioral/visual E2E を満たす。**HB-15 のライブ・クリック選択結線のみ繰越**。
 - 2026-06-21: **HUMAN-BUGS 修正の確定処理（HB-1..HB-4 すべて [解決]）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0・デグレなし）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**202 files・2069 tests passed, exit 0**（前回 QUALITY 計測 201/2051 から +1 file/+18 tests・回帰なし＝HB 修正に伴う behavioral E2E ハーネス/単体追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **24 passed・exit 0（skip 0）**（前回 14 → +10＝HB-1..HB-4 の behavioral E2E 追加）。
   - **スクショ再生成確認**: `npm run test:e2e` 前に `screenshots/app-shell.png` と `with-feature.png` を削除→ e2e 実行後に **両方が再生成されたことを確認**（共に 01:56 タイムスタンプ、app-shell.png=272149B / with-feature.png=266875B）。
   - **HB-1..HB-4 = すべて解決済（合成ルートの結線/プラットフォーム解決漏れ系を根本修正・各 behavioral E2E で回帰ロック）**:
