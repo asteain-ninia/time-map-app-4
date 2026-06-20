@@ -17,6 +17,7 @@ import { Canvas2DMapRenderer } from '../../render/canvas2d-renderer';
 import type { DrawPrimitive } from '../../render/map-renderer';
 import type { ZoomRange } from '../../render/camera';
 import type { WorldCoordinate } from '../../domain/coordinate';
+import { buildGridPrimitives, DEFAULT_GRID_STYLE } from '../../render/grid-layer';
 
 export interface AddHostPorts {
   /** Pointer client coords → world coordinate (U17 transform). */
@@ -63,6 +64,27 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
     viewport: { widthCss, heightCss, devicePixelRatio: dpr },
   });
 
+  // The base layer (出界図 / グリッド): the FR-03 background drawn under everything.
+  // `drawBatch` clears the surface every call (canvas2d-renderer), so the add /
+  // knife provisional draws would otherwise WIPE the map to blank between frames.
+  // We hold the base primitives here and re-composite them UNDER every overlay
+  // draw (single base source, 教訓 §4), and paint them once on mount so the central
+  // map area is never empty. The graticule is fully synchronous (no async image
+  // decode), satisfying「base-map 相当 or グリッド」without an offline asset fetch.
+  const paintWith = (overlay: readonly DrawPrimitive[]): void => {
+    // Rebuild the grid for the CURRENT camera/viewport so a resize / future pan
+    // re-tiles correctly; the base stays under the overlay primitives.
+    const base = buildGridPrimitives(
+      true,
+      DEFAULT_GRID_STYLE,
+      renderer.getCamera(),
+      renderer.getViewport(),
+    );
+    renderer.drawBatch({ primitives: [...base, ...overlay] });
+  };
+  // Initial paint: the base map is visible immediately on mount (no blank area).
+  paintWith([]);
+
   return {
     screenToWorld(clientX, clientY): WorldCoordinate {
       const box = canvas.getBoundingClientRect();
@@ -70,10 +92,10 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
       return { lon: world.lon, lat: world.lat };
     },
     drawAdd(primitives): void {
-      renderer.drawBatch({ primitives });
+      paintWith(primitives);
     },
     drawKnife(primitives): void {
-      renderer.drawBatch({ primitives });
+      paintWith(primitives);
     },
     zoom(): number {
       return renderer.getCamera().zoom;

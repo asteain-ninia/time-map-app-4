@@ -31,11 +31,8 @@ test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成�
     const { app, page } = await launchApp();
     try {
       const current = page.getByTestId('timeline-current');
-      // Skeleton-skip if the live shell has not mounted the timeline yet.
-      if ((await current.count()) === 0) {
-        test.skip(true, 'Timeline 未配線 (依存: live composition-root binding)');
-        return;
-      }
+      // The live shell now mounts the Timeline into the bottom slot (U21 配線),
+      // so the current-time readout is present and the step controls are live.
       await expect(current).toBeVisible();
       const before = (await current.textContent())?.trim() ?? '';
 
@@ -59,10 +56,7 @@ test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成�
     try {
       await expect(page.getByTestId('map-canvas-mount')).toBeAttached();
       const forward = page.getByRole('button', { name: '前進' });
-      if ((await forward.count()) === 0) {
-        test.skip(true, 'Timeline 未配線 (依存: live composition-root binding)');
-        return;
-      }
+      await expect(forward).toBeVisible();
       await forward.click();
       // The Canvas mount survives the re-render driven by the time move (the draw
       // path is subscription-based, not React-remounted): still attached.
@@ -115,23 +109,96 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
 // binding. Held NOW by the pure unit lenses in src/domain/perf (一時状態破棄 /
 // 選択維持 の判定は U23/U24/U26/U28/U30/U35 の単体で固定済み; ここは E2E 化の枠).
 
+// Enter 追加モード from the default View state: the toolbar's 表示専用 toggle is the
+// live導線 OUT of display-only (it lands in 編集モード), then 追加モード selects add.
+async function enterAddMode(page: import('@playwright/test').Page): Promise<void> {
+  const viewToggle = page.getByTestId('mode-view');
+  await expect(viewToggle).toBeVisible();
+  // In View the add/edit toggles are disabled; leaving View enables them.
+  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
+    await viewToggle.click();
+  }
+  const addMode = page.getByTestId('mode-add');
+  await expect(addMode).toBeEnabled();
+  await addMode.click();
+  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
+}
+
+// Place one vertex by clicking the transient add-input layer (the overlay layer
+// the controller mounts above the map while drawing — 教訓 5.14).
+async function placeOneVertex(page: import('@playwright/test').Page): Promise<void> {
+  const inputLayer = page.getByTestId('add-input-layer');
+  await expect(inputLayer).toBeVisible();
+  const box = await inputLayer.boundingBox();
+  expect(box).not.toBeNull();
+  const b = box!;
+  await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+}
+
 test.describe('回帰観点 — 一時状態の破棄 (教訓 5.2 / FR-78)', () => {
-  test.skip('選択→キャンセル→再作成 でドラフト値が引き継がれない (依存: live edit binding)', () => {
-    // SKELETON: enter 追加 mode → start a shape → キャンセル → start again, then
-    // assert the add-form / preview carries NO value from the cancelled draft
-    // (add-name empty, add-vertex-count reset). Requires editing mode enabled by
-    // the live consistency-apply binding (docs/現状.md 未割当).
+  test('選択→キャンセル→再作成 でドラフト値が引き継がれない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await enterAddMode(page);
+      // Start a 線 draft and place a vertex (draft now carries 1 vertex).
+      await page.getByTestId('tool-add.line').click();
+      await placeOneVertex(page);
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('1');
+
+      // キャンセル discards the draft (教訓 5.2 全経路で破棄).
+      await page.getByTestId('add-cancel').click();
+
+      // Re-create: the add tool stays selected, so a FRESH empty session re-arms
+      // (受け入れ基準 6). The new draft must carry NO vertex from the cancelled one.
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('0');
+    } finally {
+      await app.close();
+    }
   });
 
-  test.skip('ツール/モード切替でも一時プレビューが破棄される (依存: live edit binding)', () => {
-    // SKELETON: start a draft, switch tool/mode, assert preview cleared.
+  test('ツール/モード切替でも一時プレビューが破棄される', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await enterAddMode(page);
+      await page.getByTestId('tool-add.line').click();
+      await placeOneVertex(page);
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('1');
+
+      // Switch the active tool (線 → 面): the kind transition funnels through the
+      // controller's reset/start, discarding the in-progress preview (教訓 5.2 (d)).
+      await page.getByTestId('tool-add.area').click();
+      // The fresh 面 session has zero vertices — no preview leaked across the switch.
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('0');
+
+      // Now place a vertex again, then leave 追加モード entirely (back to View):
+      // the session is discarded, so the add chrome disappears (no 残存 preview).
+      await placeOneVertex(page);
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('1');
+      await page.getByTestId('mode-add').click(); // toggle 追加モード off → View
+      await expect(page.getByTestId('add-tool')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
   });
 });
 
 test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR-94)', () => {
-  test.skip('分割後に選択が結果から再解決され維持される (依存: live knife binding)', () => {
-    // SKELETON: select a leaf → ナイフで2分割 → 継承先選択 → assert the selection
-    // is re-resolved from the command result (the inheritor stays selected), not
-    // a blanket clear. Requires the live split→consistency binding.
+  // STILL SKELETON-SKIPPED (honest 依存ゲート). The split→commit→re-resolve path is
+  // FULLY wired: createLiveKnifeBinding (U44) is the live U13 split binding, and
+  // App.tsx's onKnifeCommitted runs the single store-write that promotes the
+  // inheritor (touchedFeatureIds[0]) so selection re-resolves to it (教訓 5.11).
+  // What is NOT yet live is the START of the flow: the knife bootstrap's
+  // domain-lookup ports (resolveFeature / resolveStore / featureAtPoint in
+  // App.tsx createKnifeBootstrap) are honest stubs over the empty scaffold root —
+  // no feature resolves, so対象面選択 finds nothing and the cut can never assemble
+  // end-to-end through the GUI. Driving this E2E needs a live load+selection unit
+  // that seeds a leaf feature AND backs featureAtPoint with real hit-testing
+  // (NEW domain/integration work, NOT U42 verification — 開発ガイド §1.8). The
+  // 教訓 5.11 re-resolution rule itself is unit-fixed (domain/selection
+  // reresolveAfterStructureChange + consistency-binding.test.tsx). Activates the
+  // moment those lookup ports go live.
+  test.skip('分割後に選択が結果から再解決され維持される (依存: live 選択/ヒットテスト ports)', () => {
+    // SKELETON: select a leaf → ナイフで2分割 → 継承先選択 → assert the inheritor
+    // stays selected (re-resolved from the command result, not blanket-cleared).
   });
 });

@@ -19,6 +19,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { createSessionStore } from './state/store';
 import { AppShell } from './shell';
+import { Timeline } from './timeline/Timeline';
 import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
 import './file-ops/file-ops.css';
@@ -174,7 +175,10 @@ export function App(): JSX.Element {
   // exposes. It is new domain work, so it cannot belong to U42 (U42「やらないこと」=
   // 新規ドメイン機能の実装 — U42 is verification-only). Recorded as an unassigned
   // open item requiring a planned unit in docs/現状.md.
-  const hostBootstrap = useMemo(() => createAddBootstrap<DomainRoot>(), []);
+  const hostBootstrap = useMemo(
+    () => createAddBootstrap<DomainRoot>(() => store.getState().domain),
+    [store],
+  );
 
   // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
   // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
@@ -188,7 +192,28 @@ export function App(): JSX.Element {
   // featureAtPoint) are honest stubs over the empty scaffold root until a load +
   // selection unit supplies the live domain — the WIRING is real and observable; the
   // geometry path activates when those ports do.
-  const knifeBootstrap = useMemo(() => createKnifeBootstrap<DomainRoot>(), []);
+  const knifeBootstrap = useMemo(
+    () => createKnifeBootstrap<DomainRoot>(() => store.getState().domain),
+    [store],
+  );
+
+  // KNIFE COMMIT (C3 — 教訓 5.11): KnifeToolController defaults onCommitted to a
+  // NOOP, so its committed result was previously DROPPED. Wire it to the single
+  // store-write path: replay the U12 command against the pre-commit domain to
+  // derive the CommandResult, swap in the committed DomainProject, and promote the
+  // inheritor (SplitSnapshot.touchedFeatureIds[0]) so selection re-resolves to it
+  // rather than blanket-clearing (FR-94 / split-after selection retention).
+  const onKnifeCommitted = useCallback(
+    (result: ProcessResult<DomainRoot>, snapshot: SplitSnapshot) => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      const commandResult = result.command.execute(store.getState().domain).result;
+      const inheritorId = snapshot.touchedFeatureIds[0] ?? snapshot.inheritorFeatureId;
+      store.getState().applyCommandResult(result.state, commandResult, {
+        featureId: inheritorId,
+      });
+    },
+    [store],
+  );
 
   return (
     <div
@@ -200,6 +225,7 @@ export function App(): JSX.Element {
         store={store}
         registry={registry}
         onMapMount={onMapMount}
+        timeline={<Timeline store={store} />}
         overlay={
           <>
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
@@ -238,6 +264,7 @@ export function App(): JSX.Element {
               drawSink={knifeDrawSink}
               zoom={rendererRef.current?.zoom() ?? 1}
               defaultColor={KNIFE_DEFAULT_COLOR}
+              onCommitted={onKnifeCommitted}
             />
           </>
         }
@@ -259,28 +286,23 @@ import {
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
 import {
   PROCESS_STATUS,
-  REJECTION_KIND,
   type ProcessResult,
 } from '../domain/consistency/index';
-// The live-U13 binding contract (型骨格): the factory shapes a future planned unit
-// must satisfy to replace the stubs below. Imported as a type so the contract is
-// part of this module's type graph and the binding cost is documented, not hidden
-// behind a「1行差し替え」comment (integration-lens correction; ./consistency-binding.ts).
-import type {
-  CreateLiveAddBinding,
-  CreateLiveKnifeBinding,
+// U44 — the LIVE U13 binding factories (no longer a 型骨格): these build the real
+// ConsistencyPorts<DomainRoot, Snapshot> adapter over the live domain root and
+// expose the `startProcess` closure the controllers consume (./consistency-binding.ts).
+import {
+  createLiveAddBinding,
+  createLiveKnifeBinding,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';
 
-// Pin, at the type level, that a future planned unit's live binding factories
-// produce exactly the `startProcess` contract the stub bootstraps below expose, so
-// the eventual swap is provably contract-clean (教訓 5.33) while the binding BODY
-// remains the recorded unassigned work (./consistency-binding.ts, docs/現状.md).
-// These aliases keep the imported factory contracts referenced (no orphan import)
-// and double as the seam's documentation.
-export type LiveAddBindingFactory = CreateLiveAddBinding;
-export type LiveKnifeBindingFactory = CreateLiveKnifeBinding;
+// Pin, at the type level, the live binding factory contracts (教訓 5.33 契約越し):
+// the composition-root swap is contract-clean — the controllers consume only the
+// produced `startProcess`, so the binding body is the only thing that changed.
+export type LiveAddBindingFactory = typeof createLiveAddBinding;
+export type LiveKnifeBindingFactory = typeof createLiveKnifeBinding;
 
 interface AddBootstrap<S> {
   readonly ids: AddIdPorts;
@@ -288,7 +310,7 @@ interface AddBootstrap<S> {
   readonly startProcess: StartAddProcess<S>;
 }
 
-function createAddBootstrap<S>(): AddBootstrap<S> {
+function createAddBootstrap<S>(getRoot: () => S): AddBootstrap<S> {
   // A monotonic id generator seeded from a stable counter (deterministic; the
   // real host swaps in U03's nextRawId over the live state). The time source is
   // injected as a monotonic counter so ids never collide within a tick (教訓 5.37).
@@ -305,26 +327,20 @@ function createAddBootstrap<S>(): AddBootstrap<S> {
   };
   const nextRingId = (): ReturnType<typeof asRingId> => asRingId(mint('r'));
 
-  // The U13 dependency seam (spec §依存: 依存ユニットが未実装の場合は契約に沿って
-  // 実装し、後で差し替える). Returns a deterministic rejection so the SAVE trigger
-  // is observably wired (a Japanese message appears) until the consistency host
-  // is connected.
-  //
-  // LIVE BINDING (NOT a single line — see ./consistency-binding.ts):
-  //   const live = createLiveAddBinding({ getRoot });  // builds ConsistencyPorts<DomainRoot, AddSnapshot>
-  //   const startProcess: StartAddProcess<S> = live.startProcess;
-  // The controller consumes StartAddProcess<S> as a contract (教訓 5.33 契約越し),
-  // so the COMPOSITION ROOT swap is contract-clean — but `createLiveAddBinding`
-  // itself is the real work: it must implement `applyProposal` (snapshot → history
-  // anchor) + the U09/U10/U06/U12 ports over the live root. That `applyProposal`
-  // is a new domain op no shipped unit provides — recorded as an UNASSIGNED open
-  // item in docs/現状.md (NOT U42; U42 is verification-only). Until then the
-  // CONFIRM path is open by design (DECISIONS D16-D19; U23 acceptanceMet=false 部分充足).
-  const startProcess: StartAddProcess<S> = (): ProcessResult<S> => ({
-    status: PROCESS_STATUS.Rejected,
-    kind: REJECTION_KIND.Internal,
-    message: '整合性維持プロセスがまだ接続されていません。',
+  // U44 — the LIVE U13 binding. `createLiveAddBinding` builds the full
+  // ConsistencyPorts<DomainRoot, AddSnapshot> adapter (applyProposal = U44's
+  // applyAddProposal; U09 time / U10 spatial / U06 difference / U12 single-undo)
+  // over the live root read at process-start (getRoot, never a stale capture —
+  // 教訓 5.6). The controller consumes StartAddProcess<S> as a contract (教訓 5.33);
+  // the swap is contract-clean. The bootstrap's id ports back the U06 resolution
+  // write-back ring/vertex minting. The binding is generic over the domain root S
+  // (here always DomainProject), matching the controller's StartAddProcess<S>.
+  const live = createLiveAddBinding({
+    getRoot: getRoot as unknown as () => DomainRoot,
+    nextVertexId: ids.nextVertexId,
+    nextRingId,
   });
+  const startProcess = live.startProcess as unknown as StartAddProcess<S>;
 
   return { ids, nextRingId, startProcess };
 }
@@ -340,7 +356,7 @@ import type {
   StartSplitProcess,
   FeatureAtPoint,
 } from './knife/index';
-import type { SplitIdPorts } from '../domain/knife/index';
+import type { SplitIdPorts, SplitSnapshot } from '../domain/knife/index';
 
 interface KnifeBootstrap<S> {
   readonly ids: SplitIdPorts;
@@ -350,7 +366,7 @@ interface KnifeBootstrap<S> {
   readonly startProcess: StartSplitProcess<S>;
 }
 
-function createKnifeBootstrap<S>(): KnifeBootstrap<S> {
+function createKnifeBootstrap<S>(getRoot: () => S): KnifeBootstrap<S> {
   // Deterministic monotonic id minting (same discipline as the add bootstrap;
   // 教訓 5.37). U03's nextRawId over the live state replaces this in the live host.
   let state: IdGeneratorState = createIdGeneratorState();
@@ -375,21 +391,20 @@ function createKnifeBootstrap<S>(): KnifeBootstrap<S> {
   const resolveStore: ResolveVertexStore = (): VertexStore => emptyStore;
   const featureAtPoint: FeatureAtPoint = (): FeatureId | null => null;
 
-  // The U13 dependency seam — same deterministic rejection as the add seam.
-  //
-  // LIVE BINDING (NOT a single line — see ./consistency-binding.ts):
-  //   const live = createLiveKnifeBinding({ getRoot });  // ConsistencyPorts<DomainRoot, SplitSnapshot>
-  //   const startProcess: StartSplitProcess<S> = live.startProcess;
-  // The proposal is ALREADY a U13 EditProposal<SplitSnapshot> (toEditProposal ran in
-  // the hook), so the composition-root swap is contract-clean — but the binding's
-  // `applyProposal` (split snapshot → updated inheritor history + new non-inherited
-  // history) is the SAME unassigned new-domain blocker as the add seam (NOT U42;
-  // docs/現状.md).
-  const startProcess: StartSplitProcess<S> = (): ProcessResult<S> => ({
-    status: PROCESS_STATUS.Rejected,
-    kind: REJECTION_KIND.Internal,
-    message: '整合性維持プロセスがまだ接続されていません。',
+  // U44 — the LIVE U13 binding for split. `createLiveKnifeBinding` builds the full
+  // ConsistencyPorts<DomainRoot, SplitSnapshot> adapter (applyProposal = U44's
+  // applySplitProposal: inheritor shape past-edit + non-inherited new history; +
+  // U09/U10/U06/U12) over the live root read at process-start (getRoot). The
+  // proposal is ALREADY a U13 EditProposal<SplitSnapshot> (toEditProposal ran in
+  // the hook), so the swap is contract-clean. The domain-lookup ports above
+  // (resolveFeature / resolveStore / featureAtPoint) still need a live selection
+  // unit before対象面選択 finds geometry; the CONFIRM path is wired regardless.
+  const live = createLiveKnifeBinding({
+    getRoot: getRoot as unknown as () => DomainRoot,
+    nextVertexId: ids.nextVertexId,
+    nextRingId: ids.nextRingId,
   });
+  const startProcess = live.startProcess as unknown as StartSplitProcess<S>;
 
   return { ids, resolveFeature, resolveStore, featureAtPoint, startProcess };
 }

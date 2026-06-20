@@ -8,6 +8,14 @@
  * input layer and front overlay layering (教訓 5.14) are expressed here. */
 
 .app-shell {
+  /* Fixed side-column widths shared by the main row AND the add-tool overlay grid
+   * so the overlay's central cell (the input bridge) aligns EXACTLY with the map
+   * cell — its empty side cells must collapse to the SAME width as the real
+   * toolbar / sidebar, or the bridge spills over the toolbar and steals its clicks
+   * (寸法ロジックを一箇所に集約し、ドリフトを生まない). z-order is left untouched so
+   * blocking modals inside the overlay still cover everything (教訓 5.14). */
+  --shell-toolbar-w: 120px;
+  --shell-sidebar-w: 220px;
   display: grid;
   grid-template-rows: auto 1fr auto auto;
   grid-template-columns: 1fr;
@@ -28,7 +36,7 @@
   grid-row: 2;
   display: grid;
   /* left toolbar (fixed) | center map (fluid) | right sidebar (fixed). */
-  grid-template-columns: minmax(48px, auto) 1fr minmax(220px, auto);
+  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
   min-height: 0;
 }
 
@@ -174,7 +182,9 @@
    * (toolbar | map | sidebar). So the rows mirror .app-shell and the columns
    * mirror .app-shell__main — together they reproduce .app-shell__map's box. */
   grid-template-rows: auto 1fr auto auto;
-  grid-template-columns: minmax(48px, auto) 1fr minmax(220px, auto);
+  /* Mirror .app-shell__main's FIXED side widths so the col-2 bridge equals the
+   * real map cell to the pixel (no spill over the toolbar / sidebar). */
+  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
   pointer-events: none;
 }
 

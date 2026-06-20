@@ -28,6 +28,20 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
   return (
     <nav className="toolbar" aria-label="ツールバー" data-testid="toolbar">
       <div className="toolbar__modes" role="group" aria-label="モード切替">
+        {/* 表示専用 ↔ 編集 の出入り口 (FR-75 / 教訓 5.13): View mode disables the
+            add/edit toggles, so this single control is the live導線 in/out of the
+            display-only state. In View it enables editing (lands in 編集モード via
+            setViewOnly(false)); in an editing mode it returns to View. */}
+        <Tooltip text={TOOLTIPS['view.toggleViewMode'] ?? MODE_LABELS.view}>
+          <button
+            type="button"
+            data-testid="mode-view"
+            aria-pressed={shell.mode === EDIT_MODE.View}
+            onClick={() => shell.setViewOnly(shell.mode !== EDIT_MODE.View)}
+          >
+            {MODE_LABELS.view}
+          </button>
+        </Tooltip>
         <Tooltip text={TOOLTIPS['mode.add'] ?? MODE_LABELS.add}>
           <button
             type="button"

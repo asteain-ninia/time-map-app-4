@@ -16,7 +16,16 @@
 // non-overlapping intersection) is a successful empty multi-polygon, NOT a
 // rejection (教訓5.18).
 
-import * as polygonClipping from 'polygon-clipping';
+// `polygon-clipping`'s ESM build has ONLY a default export — an object carrying
+// `.union` / `.difference` / `.intersection` / `.xor` — and ships NO named
+// exports. Pulling the kernels in by name (`import { union } ...`) or reaching
+// for them on a namespace import (`import * as pc` then `pc.union`) builds to a
+// runtime `undefined` and triggers Rollup/Vite "X is not exported" warnings; the
+// default import is the only shape that resolves at runtime. Under our
+// esModuleInterop config TypeScript already types this synthesized default as the
+// module namespace ({ union, difference, intersection, xor } with the correct
+// signatures), so no extra typing or cast is needed.
+import polygonClipping from 'polygon-clipping';
 
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import {
