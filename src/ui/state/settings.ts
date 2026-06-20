@@ -86,6 +86,14 @@ export interface AppSettings {
   readonly renderFps: number;
   /** Upper bound on simultaneously rendered vertex markers (FR-110). */
   readonly vertexMarkerCap: number;
+  /**
+   * Whether the first-time guide for the conflict-resolution modal is shown
+   * (FR-118). This is an APP-wide user-experience preference, NOT project data
+   * (教訓 5.36: the guide-shown/suppressed state belongs to app settings, with a
+   * single save/reflect home). `true` ⇒ show the guide; the user can suppress it
+   * (set to `false`) and re-enable it later (set back to `true`).
+   */
+  readonly showConflictGuide: boolean;
 }
 
 // --- Keys + per-key classification (single source of truth) -----------------
@@ -119,6 +127,7 @@ export const APP_SETTING_KEYS = [
   'snapDistancePx',
   'renderFps',
   'vertexMarkerCap',
+  'showConflictGuide',
 ] as const satisfies readonly AppSettingKey[];
 
 const PROJECT_KEY_SET: ReadonlySet<string> = new Set(PROJECT_SETTING_KEYS);
@@ -147,6 +156,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   snapDistancePx: 50,
   renderFps: 60,
   vertexMarkerCap: 2000,
+  // FR-118: the conflict-resolution guide is shown by default on first use.
+  showConflictGuide: true,
 };
 
 /** Inclusive FPS bounds (FR-110: 1〜60 FPS). */

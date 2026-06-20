@@ -25,6 +25,12 @@ IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / sc
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20: U15・U22・U34・U35 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 95 files・991 tests passed, exit 0)。4ユニットとも done。
+  - U15(buildUnit=needs-attention,2r,acceptanceMet=true): openFindings(high×2)はいずれも「実装報告のコマンド結果スナップショットが陳腐化(報告は full suite green を主張するが、報告時点では兄弟UIユニット src/ui/state/store.ts の ReferenceError で 8〜48 件赤)」という**プロセス指摘**。確定ツリーでは兄弟 store.ts が収束し `npx vitest run` exit 0(95 files/991 tests)を**実測**。U15 自体(src/shell)は元から全緑で受け入れ無影響 → done。
+  - U22(buildUnit=needs-attention,2r,acceptanceMet=true): openFinding(high)は「domain/selection と ui/state/store.ts(U16) の二重真実源(選択ロジック重複)」という統合上の技術負債。U22 自体の契約(domain/selection の単一真実源確立)は完成・緑で**受け入れ基準達成**。store(U16) を薄いミラーへ寄せる統合は後続(合成ルート/U23以降)で扱う設計上の繰越。受け入れゲート充足 → done。**繰越**: store側 reresolve が教訓5.11 の次対象再解決を満たさない退化版である点を技術負債として DECISIONS に記録。
+  - U34(buildUnit=needs-attention,2r,acceptanceMet=false→確定ツリーで充足): 唯一の high finding(受け入れ基準5『U34 が丸めた集約形状 == U19/U08 が描く形状(単一由来)』未達)を**確定ツリーで解消済みを実測確認**。`src/domain/display/resolve-display-shapes.ts` が契約シーム(全Aggregate決定の幾何 = U08 `resolveFeatureArea(rollUpTargetId)`、飛び地全片保持)を閉じ、`src/render/display-bridge.ts` がその幾何を U19 `EvaluatedArea` へ verbatim 受け渡し。両側契約テスト `resolve-display-shapes.test.ts`(7)+`display-bridge.test.ts`(5) で「U34 の丸め先 == U08 解決源 == U19 描画形状」「複数片片落とし無し」を固定。display(31 tests)+render(113 tests)全緑。finding が要求した修正そのものが単一真実源で実装済み → 受け入れ基準5 充足で done。
+  - U35(buildUnit 結果はプロンプトで切れていたが): src/ui/conflict/(ConflictResolutionModal.tsx / model.ts / conflict.css)一式が存在し、ConflictResolutionModal.test.tsx(12)+model.test.ts が緑。受け入れ基準(競合リスト全件表示・方針選択・全件解決まで確定抑止・一時状態破棄・入力層)に対応するテスト群が pass。deps(U13/U20/U19)全 done。受け入れゲート充足 → done。
+  - units.json: U15→done, U22→done, U34→done, U35→done。次ready候補: U23(U22,U13,U11,U21)・U24(U22,U13,U11,U10,U07)・U31(U22,U12,U08)・U32(U22,U21,U16)・U40(U17,U20,U22)・U41(U20,U32,U16)。
 - 2026-06-20: U13・U14・U19・U37 ラウンド確定。**全体検証3点 全緑**(typecheck=0 / lint=0 / test: 75 files・798 tests passed, exit 0)。4ユニットとも done。
   - U13(converged,1r,acceptanceMet): 報告 blocker は「並行ユニット由来の survey(great-circle-path.ts 型エラー3件)/persistence(schema.test.ts lint 1件)で repo-wide typecheck/lint が赤、U13 スコープ外」。確定ツリーでは**当該含め全緑**を実測(typecheck=0/lint=0)。U13 自身は緑。→ done。
   - U14(needs-attention,2r,acceptanceMet): openFindings 2件を確定ツリーで**解消確認**。

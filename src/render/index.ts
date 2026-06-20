@@ -102,6 +102,27 @@ export {
   buildFeaturePrimitives,
 } from './feature-layer';
 
+// U34 → U19 render-boundary bridge: feeds U34's U08-resolved 集約/実形状
+// (`ResolvedDisplayShape.shape`) verbatim into U19's `EvaluatedArea.shape`, so the
+// shape U19 fills / hit-tests / labels is byte-for-byte the one U34 resolved
+// (受け入れ基準 5, 教訓 5.29 / 5.1 / 5.33). Dependency direction render → domain.
+export {
+  type DisplayPresentation,
+  type PresentationFor,
+  toEvaluatedArea,
+  toEvaluatedAreas,
+  evaluatedAreaId,
+} from './display-bridge';
+
+// U34 display pipeline: turns the store's display-control inputs (global depth N /
+// individual focus M) into the U19 `EvaluatedArea[]` draw batch, so a slider change
+// re-generates the draw instructions end to end (FR-42 / FR-43, 教訓 5.5 / 5.29).
+export {
+  type DisplayControlInput,
+  resolveDisplayControl,
+  buildDisplayAreas,
+} from './display-pipeline';
+
 // U19: single-rAF redraw throttling (FR-71 / FR-110, 受け入れ基準 5).
 export {
   type FrameSchedulerOptions,

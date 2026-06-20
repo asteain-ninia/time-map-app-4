@@ -36,6 +36,31 @@ if (typeof (globalThis as { PointerEvent?: unknown }).PointerEvent === 'undefine
   (globalThis as { PointerEvent?: unknown }).PointerEvent = globalThis.MouseEvent;
 }
 
+// jsdom does not implement HTMLCanvasElement.getContext and, worse, its default
+// throws AND logs a noisy "Not implemented" error to the virtual console for
+// every call. Components that mount a Canvas for an IMPERATIVE paint (e.g. the
+// minimap preview) probe getContext and bail when no 2D context exists — that
+// "no context ⇒ no-op" path is the behaviour to exercise under jsdom. Stub
+// getContext to return null so the probe takes the bail path cleanly, without the
+// console noise. The actual draw-command BUILD is unit-tested DOM-free against the
+// render layer's primitive列 (教訓 5.41), so the stub only needs to report "no 2D".
+if (typeof globalThis.HTMLCanvasElement !== 'undefined') {
+  const proto = globalThis.HTMLCanvasElement.prototype as {
+    getContext?: (contextId: string) => unknown;
+  };
+  // Only replace the default (throwing) implementation; never clobber a real
+  // context stub a test/unit may have installed (guarded probe, like the others).
+  let throws = false;
+  try {
+    proto.getContext?.('2d');
+  } catch {
+    throws = true;
+  }
+  if (throws) {
+    proto.getContext = (): null => null;
+  }
+}
+
 afterEach(() => {
   cleanup();
 });

@@ -77,6 +77,27 @@ export const STATUS_STRINGS = {
   ready: '準備完了',
 } as const;
 
+/**
+ * Display-control text (階層深度の集約表示・個別フォーカス, FR-42 / FR-43 / U34).
+ * All Japanese, centralised here (FR-115); no inline literals (教訓 5.19).
+ */
+export const DISPLAY_CONTROL_STRINGS = {
+  /** Section title for the depth-focus controls in the sidebar/view menu. */
+  sectionTitle: '階層深度表示',
+  /** Global depth slider label (FR-42). */
+  globalDepthLabel: '階層深度',
+  /** Hint shown beside the global depth slider. */
+  globalDepthHint: '指定した階層深度までを実形状で表示し、それより下位は集約形状に丸めます',
+  /** Individual focus toggle / section label (FR-43). */
+  focusLabel: '個別フォーカス',
+  /** Per-focus depth slider label (FR-43). */
+  focusDepthLabel: 'フォーカス深度',
+  /** Emphasis toggle label (FR-43 / FR-82). */
+  emphasizeLabel: '縦方向領域を強調',
+  /** Clear-focus action label (教訓 5.2). */
+  clearFocusLabel: 'フォーカス解除',
+} as const;
+
 /** Tooltip text (操作ガイド, FR-112 / FR-115), keyed by command/tool id. */
 export const TOOLTIPS: Readonly<Record<string, string>> = {
   'file.new': '新しいプロジェクトを作成します',

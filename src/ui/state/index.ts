@@ -21,9 +21,14 @@ export {
   type Camera,
   type EditMode,
   type ToolId,
+  type DisplayControl,
+  type DisplayFocus,
   EDIT_MODE,
   DEFAULT_CAMERA,
+  DEFAULT_DISPLAY_CONTROL,
+  NO_DISPLAY_FOCUS,
   asToolId,
+  vertexSelectionContextOf,
 } from './session';
 
 export {

@@ -21,7 +21,19 @@
 import { createStore, type StoreApi } from 'zustand/vanilla';
 
 import type { CommandResult } from '../../domain/command/result';
-import type { DomainId, FeatureId, VertexId } from '../../domain/ids';
+import type { FeatureId, VertexId } from '../../domain/ids';
+import {
+  EMPTY_SELECTION,
+  type ExistenceAtTime,
+  type NextTargetPreference,
+  type SelectionState,
+  addVertices,
+  replaceVertices,
+  reresolveAfterStructureChange,
+  revalidateForTime,
+  toggleVertex,
+  withActiveFeature,
+} from '../../domain/selection';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import type { ExistenceResolver } from './existence';
@@ -43,11 +55,16 @@ import {
 import {
   type ActiveFeature,
   type Camera,
+  type DisplayControl,
+  type DisplayFocus,
   type EditMode,
   type ToolId,
   type VertexSelectionContext,
   DEFAULT_CAMERA,
+  DEFAULT_DISPLAY_CONTROL,
   EDIT_MODE,
+  NO_DISPLAY_FOCUS,
+  vertexSelectionContextOf,
 } from './session';
 
 // --- Time-change provenance (for回帰テスト, NOT for gating) ------------------
@@ -99,7 +116,17 @@ export interface SessionStoreState<S> {
   readonly domain: S;
 
   // -- selection (FR-79 / FR-80 / FR-81) -------------------------------------
+  //
+  // The selection TRUTH is U22's `SelectionState` (domain/selection): the store
+  // holds it whole and mirrors the reducer / re-resolution output (技術方針 2.5,
+  // 教訓 5.29). It NEVER re-implements selection logic. `activeFeature` and
+  // `vertexSelection` are READ-ONLY mirrors derived from `selection` so existing
+  // subscribers (panels / Canvas) keep their shape without a parallel truth.
+  /** The single selection truth (U22). All selection mutation flows through it. */
+  readonly selection: SelectionState;
+  /** Derived mirror of `selection.activeFeature` (FR-79). Do not set directly. */
   readonly activeFeature: ActiveFeature;
+  /** Derived mirror of `selection`'s vertex set/owner (FR-80/81). Do not set directly. */
   readonly vertexSelection: VertexSelectionContext | null;
 
   // -- mode / tool (FR-75) ---------------------------------------------------
@@ -116,6 +143,16 @@ export interface SessionStoreState<S> {
   readonly camera: Camera;
   /** Current center longitude for the longitude shift (continuous scalar, FR-12). */
   readonly centerLon: number;
+
+  // -- display control: hierarchy depth focus (FR-42 / FR-43, U34) -----------
+  /**
+   * The display-control slice (global depth N + individual focus M). A SEPARATE
+   * AXIS from mode/tool/selection (FR-42 非干渉): the mode/tool/selection setters
+   * NEVER write here, and these setters NEVER write mode/tool/selection, so a
+   * display change cannot disturb an in-progress edit and a mode switch cannot
+   * destroy the display state (受け入れ基準 2, 教訓 5.13).
+   */
+  readonly displayControl: DisplayControl;
 
   // -- settings (FR-109 / FR-110) --------------------------------------------
   readonly projectSettings: ProjectSettings;
@@ -135,8 +172,18 @@ export interface SessionStoreState<S> {
 /** The typed action surface (薄いセッター + 派生). */
 export interface SessionStoreActions<S> {
   // bridge
-  /** Replace the domain-state reference and re-resolve selection from the result. */
-  applyCommandResult(nextDomain: S, result: CommandResult): void;
+  /**
+   * Replace the domain-state reference and re-resolve selection from the result
+   * via U22's {@link reresolveAfterStructureChange} (教訓 5.11). The optional
+   * `preference` promotes the operation's "next element to operate on" (the
+   * merged feature, a kept split half, …); only the command's owning unit knows
+   * it, so it is passed through rather than reinvented here.
+   */
+  applyCommandResult(
+    nextDomain: S,
+    result: CommandResult,
+    preference?: NextTargetPreference,
+  ): void;
   /** Replace the domain-state reference without a command result (e.g. load). */
   setDomainState(nextDomain: S): void;
 
@@ -164,6 +211,23 @@ export interface SessionStoreActions<S> {
   updateCamera(patch: Partial<Camera>): void;
   setCenterLon(centerLon: number): void;
 
+  // display control (FR-42 / FR-43) — independent axis, no mode/selection writes
+  /** Set the global hierarchy-depth threshold N (FR-42). */
+  setGlobalDepth(depth: number): void;
+  /**
+   * Set the individual focus origin (FR-43). Passing null clears the focus
+   * (deep-dive + emphasis revert to global N only). Other focus fields are kept.
+   */
+  setFocusOrigin(originId: FeatureId | null): void;
+  /** Set the per-focus depth threshold M (FR-43). */
+  setFocusDepth(depth: number): void;
+  /** Toggle/replace the focus emphasis flag (FR-43 / FR-82). */
+  setFocusEmphasize(emphasize: boolean): void;
+  /** Replace the whole focus value (FR-43). */
+  setDisplayFocus(focus: DisplayFocus): void;
+  /** Clear the individual focus entirely (revert to global N only, 教訓 5.2). */
+  clearDisplayFocus(): void;
+
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
@@ -173,91 +237,46 @@ export interface SessionStoreActions<S> {
 
 export type SessionStore<S> = SessionStoreState<S> & SessionStoreActions<S>;
 
-// --- Re-validation (教訓 5.5 / 5.6: result-state, all paths) -----------------
+// --- Selection mirroring (技術方針 2.5: the store MIRRORS U22's truth) -------
 //
-// Given the post-change session state, recompute the time-dependent selection.
-// This is invoked by EVERY time-changing path (no per-path gate). It returns the
-// selection slice only, so callers merge it back atomically.
+// The store does NOT re-implement re-validation (教訓 5.5/5.6) or re-resolution
+// (教訓 5.11). Those rules live ONCE in U22 (domain/selection: revalidateForTime
+// / reresolveAfterStructureChange). The store keeps the whole `SelectionState`
+// and, on every change, re-derives the read-only mirrors subscribers consume.
+// A single helper builds the patch so `selection` and its mirrors are written
+// atomically and can never drift (二重の真実源 を作らない).
 
-interface SelectionSlice {
+interface SelectionPatch {
+  readonly selection: SelectionState;
   readonly activeFeature: ActiveFeature;
   readonly vertexSelection: VertexSelectionContext | null;
 }
 
-function revalidateSelectionForTime(
-  selection: SelectionSlice,
-  time: TimePoint,
+/** Build the atomic store patch (truth + derived mirrors) from a SelectionState. */
+function selectionPatch(selection: SelectionState): SelectionPatch {
+  return {
+    selection,
+    activeFeature: selection.activeFeature,
+    vertexSelection: vertexSelectionContextOf(selection),
+  };
+}
+
+/**
+ * Adapt the store's injected {@link ExistenceResolver} to U22's
+ * {@link revalidateForTime} existence port (教訓 5.34: the two layers meet at a
+ * fixed contract, not by accident). The store still resolves NOTHING itself —
+ * it just re-shapes the same injected predicates U22 calls with the time U22
+ * passes in.
+ */
+function existenceAtTime(
   existence: ExistenceResolver,
-): SelectionSlice {
-  // Active feature: drop it if it no longer exists at the new time (FR-71).
-  let activeFeature = selection.activeFeature;
-  if (activeFeature !== null && !existence.featureExistsAt(activeFeature, time)) {
-    activeFeature = null;
-  }
-
-  // Vertex selection: drop vertices that no longer exist; resolve the context
-  // away if it becomes empty (or its owner feature is gone).
-  let vertexSelection = selection.vertexSelection;
-  if (vertexSelection !== null) {
-    const owner = vertexSelection.ownerFeatureId;
-    if (!existence.featureExistsAt(owner, time)) {
-      vertexSelection = null;
-    } else {
-      const kept = new Set<VertexId>();
-      for (const vid of vertexSelection.vertexIds) {
-        if (existence.vertexExistsAt(owner, vid, time)) kept.add(vid);
-      }
-      vertexSelection = kept.size === 0 ? null : { ownerFeatureId: owner, vertexIds: kept };
-    }
-  }
-
-  return { activeFeature, vertexSelection };
-}
-
-// --- Selection re-resolution from a command result (教訓 5.11) --------------
-//
-// After a structure-changing command, do NOT blanket-clear. Use the result's
-// deleted/survived/created sets to re-resolve selection: drop selections of
-// deleted IDs, keep the rest.
-
-function reresolveSelectionForCommand(
-  selection: SelectionSlice,
-  result: CommandResult,
-): SelectionSlice {
-  const deleted: ReadonlySet<DomainId> = result.deleted;
-
-  let activeFeature = selection.activeFeature;
-  if (activeFeature !== null && deleted.has(activeFeature)) {
-    activeFeature = null;
-  }
-
-  let vertexSelection = selection.vertexSelection;
-  if (vertexSelection !== null) {
-    if (deleted.has(vertexSelection.ownerFeatureId)) {
-      vertexSelection = null;
-    } else {
-      const kept = new Set<VertexId>();
-      for (const vid of vertexSelection.vertexIds) {
-        if (!deleted.has(vid)) kept.add(vid);
-      }
-      vertexSelection =
-        kept.size === 0
-          ? null
-          : { ownerFeatureId: vertexSelection.ownerFeatureId, vertexIds: kept };
-    }
-  }
-
-  return { activeFeature, vertexSelection };
-}
-
-// --- Reset契約 (教訓 5.2: discard temporary UI state on all paths) ----------
-//
-// The store does not hold the actual draft/preview values (those live in the
-// edit-tool unit). It holds the session selection it CAN clear, and exposes the
-// reset as the single entry every mode/tool/selection-clear path runs through.
-
-function clearedSelectionSlice(): SelectionSlice {
-  return { activeFeature: null, vertexSelection: null };
+): ExistenceAtTime<TimePoint> {
+  return {
+    featureExistsAt: (featureId, time) =>
+      existence.featureExistsAt(featureId, time),
+    vertexExistsAt: (ownerFeatureId, vertexId, time) =>
+      existence.vertexExistsAt(ownerFeatureId, vertexId, time),
+  };
 }
 
 // --- Store factory ----------------------------------------------------------
@@ -278,6 +297,7 @@ export interface CreateSessionStoreOptions<S> {
       | 'currentTime'
       | 'camera'
       | 'centerLon'
+      | 'displayControl'
       | 'projectSettings'
       | 'appSettings'
     >
@@ -295,11 +315,27 @@ export function createSessionStore<S>(
   const existence = options.existence ?? ALWAYS_PRESENT_RESOLVER;
   const init = options.initial ?? {};
 
+  // Build the initial selection TRUTH (U22 SelectionState) from the test/init
+  // overrides, then derive the mirrors from it — there is no second source.
+  let initialSelection: SelectionState = EMPTY_SELECTION;
+  if (init.activeFeature != null) {
+    initialSelection = withActiveFeature(initialSelection, init.activeFeature);
+  }
+  if (init.vertexSelection != null) {
+    initialSelection = replaceVertices(
+      initialSelection,
+      init.vertexSelection.ownerFeatureId,
+      new Set(init.vertexSelection.vertexIds),
+    );
+  }
+  const initialPatch = selectionPatch(initialSelection);
+
   return createStore<SessionStore<S>>((set, get) => ({
     // -- initial state -------------------------------------------------------
     domain: options.initialDomain,
-    activeFeature: init.activeFeature ?? null,
-    vertexSelection: init.vertexSelection ?? null,
+    selection: initialPatch.selection,
+    activeFeature: initialPatch.activeFeature,
+    vertexSelection: initialPatch.vertexSelection,
     mode: init.mode ?? EDIT_MODE.View,
     activeTool: init.activeTool ?? null,
     currentTime: init.currentTime ?? DEFAULT_TIMELINE_MIN,
@@ -308,98 +344,79 @@ export function createSessionStore<S>(
     timelineMax: DEFAULT_TIMELINE_MAX,
     camera: init.camera ?? DEFAULT_CAMERA,
     centerLon: init.centerLon ?? 0,
+    displayControl: init.displayControl ?? DEFAULT_DISPLAY_CONTROL,
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
     lastSettingsChange: null,
 
     // -- bridge --------------------------------------------------------------
-    applyCommandResult(nextDomain, result) {
-      const s = get();
-      const reresolved = reresolveSelectionForCommand(
-        { activeFeature: s.activeFeature, vertexSelection: s.vertexSelection },
+    applyCommandResult(nextDomain, result, preference) {
+      // 教訓 5.11: re-resolve via U22 — drop deleted IDs, promote the caller's
+      // next-target preference. The store does NOT re-implement this rule.
+      const next = reresolveAfterStructureChange(
+        get().selection,
         result,
+        preference,
       );
-      set({
-        domain: nextDomain,
-        activeFeature: reresolved.activeFeature,
-        vertexSelection: reresolved.vertexSelection,
-      });
+      set({ domain: nextDomain, ...selectionPatch(next) });
     },
 
     setDomainState(nextDomain) {
       set({ domain: nextDomain });
     },
 
-    // -- selection -----------------------------------------------------------
+    // -- selection (every mutation flows through U22's truth + builders) ------
     setActiveFeature(featureId) {
-      set({ activeFeature: featureId });
+      set(selectionPatch(withActiveFeature(get().selection, featureId)));
     },
 
     replaceVertexSelection(ownerFeatureId, vertexIds) {
-      const ids = new Set(vertexIds);
-      set({
-        vertexSelection:
-          ids.size === 0 ? null : { ownerFeatureId, vertexIds: ids },
-      });
+      set(
+        selectionPatch(
+          replaceVertices(get().selection, ownerFeatureId, new Set(vertexIds)),
+        ),
+      );
     },
 
     toggleVertexSelection(ownerFeatureId, vertexId) {
-      const current = get().vertexSelection;
-      // A toggle that changes owner starts a fresh context (FR-81: one owner).
-      const base =
-        current !== null && current.ownerFeatureId === ownerFeatureId
-          ? new Set(current.vertexIds)
-          : new Set<VertexId>();
-      if (base.has(vertexId)) base.delete(vertexId);
-      else base.add(vertexId);
-      set({
-        vertexSelection:
-          base.size === 0 ? null : { ownerFeatureId, vertexIds: base },
-      });
+      set(selectionPatch(toggleVertex(get().selection, ownerFeatureId, vertexId)));
     },
 
     addVerticesToSelection(ownerFeatureId, vertexIds) {
-      const current = get().vertexSelection;
-      const base =
-        current !== null && current.ownerFeatureId === ownerFeatureId
-          ? new Set(current.vertexIds)
-          : new Set<VertexId>();
-      for (const vid of vertexIds) base.add(vid);
-      set({
-        vertexSelection:
-          base.size === 0 ? null : { ownerFeatureId, vertexIds: base },
-      });
+      set(
+        selectionPatch(addVertices(get().selection, ownerFeatureId, vertexIds)),
+      );
     },
 
     clearSelection() {
-      set(clearedSelectionSlice());
+      set(selectionPatch(EMPTY_SELECTION));
     },
 
     // -- mode / tool (reset契約 on every path, 教訓 5.2) --------------------
     setMode(mode) {
       // Mode switch discards transient selection (教訓 5.2 全経路で破棄).
-      set({ mode, activeTool: null, ...clearedSelectionSlice() });
+      set({ mode, activeTool: null, ...selectionPatch(EMPTY_SELECTION) });
     },
 
     setActiveTool(tool) {
       // Tool switch also runs the reset契約.
-      set({ activeTool: tool, ...clearedSelectionSlice() });
+      set({ activeTool: tool, ...selectionPatch(EMPTY_SELECTION) });
     },
 
     // -- time (single re-validation funnel, 教訓 5.5 / 5.6) -----------------
     setCurrentTime(time, source) {
-      const s = get();
-      const revalidated = revalidateSelectionForTime(
-        { activeFeature: s.activeFeature, vertexSelection: s.vertexSelection },
+      // 教訓 5.5/5.6: re-validate via U22 against the injected existence port.
+      // The store resolves no time itself; every path funnels through here.
+      const next = revalidateForTime(
+        get().selection,
         time,
-        existence,
+        existenceAtTime(existence),
       );
       set({
         currentTime: time,
         lastTimeChangeSource: source,
-        activeFeature: revalidated.activeFeature,
-        vertexSelection: revalidated.vertexSelection,
+        ...selectionPatch(next),
       });
     },
 
@@ -418,6 +435,40 @@ export function createSessionStore<S>(
 
     setCenterLon(centerLon) {
       set({ centerLon });
+    },
+
+    // -- display control (FR-42 / FR-43): INDEPENDENT AXIS ------------------
+    // Every setter writes ONLY `displayControl`. It never touches mode / tool /
+    // selection / domain, so a depth or focus change cannot disturb an
+    // in-progress edit (FR-42 非干渉, 受け入れ基準 2). The reverse — mode/tool
+    // setters never write displayControl — is structurally true above.
+    setGlobalDepth(depth) {
+      set({ displayControl: { ...get().displayControl, globalDepth: depth } });
+    },
+
+    setFocusOrigin(originId) {
+      const dc = get().displayControl;
+      set({ displayControl: { ...dc, focus: { ...dc.focus, originId } } });
+    },
+
+    setFocusDepth(depth) {
+      const dc = get().displayControl;
+      set({ displayControl: { ...dc, focus: { ...dc.focus, depth } } });
+    },
+
+    setFocusEmphasize(emphasize) {
+      const dc = get().displayControl;
+      set({ displayControl: { ...dc, focus: { ...dc.focus, emphasize } } });
+    },
+
+    setDisplayFocus(focus) {
+      set({ displayControl: { ...get().displayControl, focus } });
+    },
+
+    clearDisplayFocus() {
+      // Revert focus to global-N-only; the global depth itself is untouched
+      // (教訓 5.2: discard the transient focus on the clear path).
+      set({ displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS } });
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

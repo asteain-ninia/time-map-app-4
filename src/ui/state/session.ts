@@ -5,7 +5,8 @@
 // session (spec §目的). They live in Zustand, never in the domain core, so the
 // domain stays React/Zustand/Canvas-free (技術方針 2.5 / 2.13).
 
-import type { FeatureId, VertexId } from '../../domain/ids';
+import type { FeatureId } from '../../domain/ids';
+import type { ActiveFeature, SelectionState } from '../../domain/selection';
 
 // --- Mode + tool (FR-75) -----------------------------------------------------
 
@@ -38,25 +39,98 @@ export function asToolId(raw: string): ToolId {
 }
 
 // --- Selection (FR-79 / FR-80 / FR-81) --------------------------------------
+//
+// The selection TRUTH is owned by U22 (domain/selection): its `SelectionState`
+// is the single source for "what is selected" (spec §目的, 教訓 5.29 / 5.30).
+// This UI layer must NOT re-declare a parallel selection type — that is the
+// "二重の真実源" the lens flagged. We therefore re-export U22's `ActiveFeature`
+// and DERIVE the read-only `VertexSelectionContext` view directly from U22's
+// `SelectionState` (`vertexOwner` + `vertexIds`), so the layer-crossing contract
+// is fixed in the type system (教訓 5.33 / 5.34) and the two cannot drift.
 
 /**
- * The active feature (FR-79): always 0 or 1. Modeled as `FeatureId | null` so
- * "nothing selected" is explicit and a multi-active state is unrepresentable.
+ * The active feature (FR-79): always 0 or 1. Re-exported from U22 so the UI and
+ * domain share ONE type (no parallel definition).
  */
-export type ActiveFeature = FeatureId | null;
+export type { ActiveFeature };
 
 /**
- * The vertex-selection context (FR-81): the set of selected vertex IDs plus the
- * feature that OWNS them (derived from the selection, 教訓 5.3 — derived from
- * display state, not by scanning the whole data source). When the set becomes
- * empty the context is resolved away (the whole value becomes `null`).
+ * The vertex-selection context (FR-81): the read-only view the UI/panels consume
+ * — the owning feature plus its selected vertex IDs. It is DERIVED from U22's
+ * {@link SelectionState} (`vertexOwner` + `vertexIds`), never an independent
+ * value, so it is `null` exactly when the selection has no vertices. The store
+ * mirrors this from the reducer's output (技術方針 2.5).
  */
 export interface VertexSelectionContext {
-  /** The feature whose vertices are selected (the derived owner, FR-81). */
+  /** The feature whose vertices are selected (= SelectionState.vertexOwner). */
   readonly ownerFeatureId: FeatureId;
-  /** The selected vertex IDs (FR-80). Non-empty whenever the context exists. */
-  readonly vertexIds: ReadonlySet<VertexId>;
+  /** The selected vertex IDs (= SelectionState.vertexIds). Non-empty here. */
+  readonly vertexIds: SelectionState['vertexIds'];
 }
+
+/**
+ * Derive the read-only {@link VertexSelectionContext} view from U22's selection
+ * truth. Returns `null` exactly when no vertices are selected (the U22 invariant
+ * keeps `vertexOwner` non-null iff `vertexIds` is non-empty), so the UI's
+ * "context resolved away" state maps directly from the domain value (教訓 5.18).
+ */
+export function vertexSelectionContextOf(
+  selection: SelectionState,
+): VertexSelectionContext | null {
+  if (selection.vertexOwner === null || selection.vertexIds.size === 0) {
+    return null;
+  }
+  return {
+    ownerFeatureId: selection.vertexOwner,
+    vertexIds: selection.vertexIds,
+  };
+}
+
+// --- Display control: hierarchy depth focus (FR-42 / FR-43, U34) ------------
+//
+// This is a SEPARATE AXIS from mode/tool/selection (教訓 5.13 / FR-42 非干渉):
+// changing the global depth or the individual focus must not touch edit/add mode
+// or any in-progress draft, and switching mode must not destroy this state. It
+// lives in its own slice so the two axes can never share a key.
+
+/**
+ * The individual focus (FR-43): a focus ORIGIN (a selected feature id) whose
+ * vertical region (上位領域すべて＋自身＋下位領域すべて) is deep-dived at depth `M`
+ * and emphasized. `originId` null ⇒ no focus (global depth only). This holds only
+ * the CONTROL inputs; the vertical region itself is derived by the domain
+ * (U34 `verticalRegion`) — never stored here (教訓 5.3).
+ */
+export interface DisplayFocus {
+  /** The focus origin feature id, or null when no individual focus is active. */
+  readonly originId: FeatureId | null;
+  /** The per-focus depth threshold M (applied inside the vertical region). */
+  readonly depth: number;
+  /** Whether to emphasize the vertical-region features (FR-43 / FR-82). */
+  readonly emphasize: boolean;
+}
+
+export const NO_DISPLAY_FOCUS: DisplayFocus = {
+  originId: null,
+  depth: 0,
+  emphasize: false,
+};
+
+/**
+ * The full display-control slice (FR-42 / FR-43): the one global depth threshold
+ * `N` plus the individual focus. Default = N at 0 (everything rolled up to its
+ * top-level aggregate) and no focus.
+ */
+export interface DisplayControl {
+  /** The global hierarchy-depth threshold N (FR-42). Clamped at the UI boundary. */
+  readonly globalDepth: number;
+  /** The individual focus (FR-43), or {@link NO_DISPLAY_FOCUS}. */
+  readonly focus: DisplayFocus;
+}
+
+export const DEFAULT_DISPLAY_CONTROL: DisplayControl = {
+  globalDepth: 0,
+  focus: NO_DISPLAY_FOCUS,
+};
 
 // --- Camera + longitude shift (FR-12) ---------------------------------------
 

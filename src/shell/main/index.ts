@@ -1,7 +1,19 @@
-import { join } from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { copyFileSync, readdirSync, rmSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../../domain/window-constants';
+import {
+  createAutoSaveScheduler,
+  DEFAULT_AUTO_SAVE_INTERVAL_MS,
+  DEFAULT_MAX_GENERATIONS,
+  nodeFsOps,
+} from '../io';
+import type { SaveEnv } from '../io';
+import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
+import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
 // Electron main process. Shell layer may import domain only (never ui/render).
 
@@ -99,7 +111,96 @@ function createWindow(): void {
   }
 }
 
+// --- typed IPC wiring (U15) -------------------------------------------------
+//
+// Bind the shared-contract handlers to the real Electron collaborators: the
+// dialogs, fs read, the atomic-save fs port (node:fs), the backup fs port, the
+// real clock + unique token, and an auto-save scheduler. The receiver LOGIC is
+// in ./ipc-handlers (Electron-free, unit-tested); this only supplies the live
+// bindings (開発ガイド §5.41).
+let currentDocumentPath: string | undefined;
+
+function buildSaveEnv(): SaveEnv {
+  return {
+    atomicFs: nodeFsOps,
+    backupFs: {
+      listDir: (dir) => readdirSync(dir),
+      copyFile: (sourcePath, destPath) => {
+        copyFileSync(sourcePath, destPath);
+      },
+      remove: (path) => {
+        rmSync(path, { force: true });
+      },
+    },
+    now: () => Date.now(),
+    token: () => randomUUID(),
+    splitPath: (fullPath) => ({ dir: dirname(fullPath), name: basename(fullPath) }),
+    joinPath: (dir, name) => join(dir, name),
+  };
+}
+
+function wireIpc(): void {
+  const currentPath: CurrentPathRef = {
+    get: () => currentDocumentPath,
+    set: (path) => {
+      currentDocumentPath = path;
+    },
+  };
+
+  // The auto-save scheduler drives the renderer to perform a save through the
+  // same typed channel (the renderer owns the live manifest/asset bytes). Its
+  // interval comes from settings (既定 5 分); only the default lives in code.
+  const scheduler = createAutoSaveScheduler(() => {
+    const target = BrowserWindow.getAllWindows()[0];
+    if (target !== undefined) {
+      // Channel name from the single-source contract (NOT a hardcoded string):
+      // the preload subscriber (onAutoSaveTick) listens on this same constant.
+      target.webContents.send(IPC_CHANNEL.AutoSaveTick);
+    }
+  });
+  scheduler.reconfigure(DEFAULT_AUTO_SAVE_INTERVAL_MS);
+
+  let maxGenerations = DEFAULT_MAX_GENERATIONS;
+
+  const applyAutoSaveConfig = (config: AutoSaveConfig): void => {
+    scheduler.reconfigure(config.intervalMs);
+    maxGenerations = config.maxGenerations;
+  };
+
+  const deps: IpcDeps = {
+    registrar: (channel, handler) => {
+      // The contract handler is typed structurally (...never[]); Electron's
+      // ipcMain.handle wants (event, ...any[]). They are call-compatible at
+      // runtime; bridge the variance here at the single wiring point.
+      ipcMain.handle(channel, handler as Parameters<typeof ipcMain.handle>[1]);
+    },
+    dialog: {
+      showSaveDialog: async () => {
+        const result = await dialog.showSaveDialog({ filters: [{ name: 'tmap', extensions: ['tmap'] }] });
+        return result.canceled ? undefined : result.filePath;
+      },
+      showOpenDialog: async () => {
+        const result = await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'tmap', extensions: ['tmap'] }],
+        });
+        return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
+      },
+    },
+    readFile: { readFile: (path) => readFile(path) },
+    saveEnv: buildSaveEnv(),
+    currentPath,
+    applyAutoSaveConfig,
+    get maxGenerations(): number {
+      return maxGenerations;
+    },
+  };
+
+  registerIpcHandlers(deps);
+}
+
 app.whenReady().then(() => {
+  wireIpc();
   createWindow();
 
   app.on('activate', () => {

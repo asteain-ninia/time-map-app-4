@@ -134,6 +134,52 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     store.getState().applyCommandResult({ tag: 'd1' }, result);
     expect(store.getState().vertexSelection).toBeNull();
   });
+
+  // 二重の真実源 回帰 (U22 integration): the store re-resolves via U22's
+  // reresolveAfterStructureChange, so 教訓 5.11's NEXT-TARGET promotion works —
+  // the previous store-local re-implementation only pruned deleted IDs and could
+  // NOT promote the operation's result element. This test fails on that退化版.
+  it('promotes the command preference as the next active feature (教訓 5.11 次対象昇格)', () => {
+    // Nothing was selected before a merge; the merge creates feature M and the
+    // caller prefers M as the next active feature. A prune-only re-resolution
+    // would leave activeFeature null; U22 promotes M.
+    const store = makeStore(undefined, { activeFeature: null });
+    const result = createCommandResult({
+      deleted: [f('A'), f('B')],
+      created: [f('M')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result, {
+      featureId: f('M'),
+    });
+    expect(store.getState().activeFeature).toBe(f('M'));
+  });
+
+  it('promotes a preferred created vertex set (教訓 5.11), keying off created/touched', () => {
+    const store = makeStore(undefined, { activeFeature: null });
+    // A split creates new vertices nv1/nv2 on the surviving feature S.
+    const result = createCommandResult({
+      survived: [f('S')],
+      created: [v('nv1'), v('nv2')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result, {
+      vertexSelection: { ownerFeatureId: f('S'), vertexIds: new Set([v('nv1'), v('nv2')]) },
+    });
+    const vs = store.getState().vertexSelection!;
+    expect(vs.ownerFeatureId).toBe(f('S'));
+    expect([...vs.vertexIds]).toEqual([v('nv1'), v('nv2')]);
+  });
+
+  it('keeps the stored SelectionState in lockstep with the derived mirrors (single truth)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
+    });
+    const s = store.getState();
+    // The mirrors are DERIVED from the one SelectionState truth.
+    expect(s.selection.activeFeature).toBe(s.activeFeature);
+    expect(s.selection.vertexOwner).toBe(s.vertexSelection!.ownerFeatureId);
+    expect([...s.selection.vertexIds]).toEqual([...s.vertexSelection!.vertexIds]);
+  });
 });
 
 // --- 受け入れ基準 3: time re-validation (教訓 5.5 / 5.6) --------------------
@@ -356,5 +402,75 @@ describe('vertex selection update rules (FR-80 / FR-81)', () => {
     const vs = store.getState().vertexSelection!;
     expect(vs.ownerFeatureId).toBe(f('B'));
     expect([...vs.vertexIds]).toEqual([v('v9')]);
+  });
+});
+
+// =============================================================================
+// Display control: hierarchy depth focus, independent axis (FR-42 / FR-43, U34)
+// =============================================================================
+describe('display control — independent axis (FR-42 非干渉, U34)', () => {
+  it('defaults to global depth 0 and no focus', () => {
+    const dc = makeStore().getState().displayControl;
+    expect(dc.globalDepth).toBe(0);
+    expect(dc.focus.originId).toBeNull();
+  });
+
+  it('global depth + focus setters never touch mode / tool / selection (受け入れ基準 2)', () => {
+    const store = makeStore();
+    // Put the session into an edit-in-progress shape first.
+    store.getState().setMode(EDIT_MODE.Edit);
+    store.getState().setActiveTool(asToolId('edit.vertex'));
+    store.getState().setActiveFeature(f('A'));
+    const before = store.getState();
+
+    store.getState().setGlobalDepth(3);
+    store.getState().setFocusOrigin(f('B'));
+    store.getState().setFocusDepth(5);
+    store.getState().setFocusEmphasize(true);
+
+    const after = store.getState();
+    // Display control changed...
+    expect(after.displayControl.globalDepth).toBe(3);
+    expect(after.displayControl.focus).toEqual({
+      originId: f('B'),
+      depth: 5,
+      emphasize: true,
+    });
+    // ...but mode / tool / selection are untouched (no interference).
+    expect(after.mode).toBe(before.mode);
+    expect(after.activeTool).toBe(before.activeTool);
+    expect(after.activeFeature).toBe(before.activeFeature);
+    expect(after.domain).toBe(before.domain);
+  });
+
+  it('switching mode does NOT destroy the display-control state (受け入れ基準 2)', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    store.getState().setDisplayFocus({ originId: f('X'), depth: 4, emphasize: true });
+    const dcBefore = store.getState().displayControl;
+
+    store.getState().setMode(EDIT_MODE.Add);
+    store.getState().setActiveTool(asToolId('add.point'));
+
+    expect(store.getState().displayControl).toEqual(dcBefore);
+  });
+
+  it('clearDisplayFocus reverts focus to none but keeps global depth (教訓 5.2)', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    store.getState().setDisplayFocus({ originId: f('X'), depth: 4, emphasize: true });
+    store.getState().clearDisplayFocus();
+    const dc = store.getState().displayControl;
+    expect(dc.globalDepth).toBe(2);
+    expect(dc.focus.originId).toBeNull();
+  });
+
+  it('setFocusOrigin(null) clears just the origin', () => {
+    const store = makeStore();
+    store.getState().setDisplayFocus({ originId: f('X'), depth: 4, emphasize: true });
+    store.getState().setFocusOrigin(null);
+    expect(store.getState().displayControl.focus.originId).toBeNull();
+    // depth / emphasize preserved.
+    expect(store.getState().displayControl.focus.depth).toBe(4);
   });
 });

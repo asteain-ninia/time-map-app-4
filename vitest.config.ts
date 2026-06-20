@@ -37,6 +37,18 @@ export default defineConfig({
       // formatting. These import only pure `.ts` (domain survey + render primitive
       // types), so they run in node without a DOM.
       'src/ui/survey/**/*.test.ts',
+      // U35 conflict-resolution pure-logic tests: the resolution-draft model
+      // (全件指定済み判定・時間表示・drafts→Resolution 写像) and the minimap
+      // preview build (U19 描画コマンド列の再利用). These import only pure `.ts`
+      // (domain consistency/geometry + render feature-layer), so they run in node.
+      'src/ui/conflict/**/*.test.ts',
+      // U15 shell IO + typed-IPC pure-logic tests: .tmap ZIP build/read,
+      // atomic write (temp→fsync→rename) with an injected fs port, generation
+      // backup naming/selection, auto-save scheduler with a fake clock, the
+      // load Zod-boundary adapter, the save pipeline, and the両側 IPC contract
+      // (receiver handlers + preload exposure). These import only pure `.ts`
+      // (no Electron runtime), so they run in node without a DOM.
+      'src/shell/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
       // mode toggle / view-only disabling / drag / tooltip / overlay layering.

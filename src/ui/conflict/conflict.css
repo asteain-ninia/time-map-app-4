@@ -1,0 +1,191 @@
+/* UI layer (U35 / conflict): conflict-resolution modal styles.
+ *
+ * The layering here ENCODES the input-layer design (教訓 5.14): the backdrop is a
+ * full-surface capturing layer beneath the dialog; the row-highlight overlay is
+ * `pointer-events: none` so it never steals input from the controls under it.
+ */
+
+.conflict-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+/* Backdrop: under the dialog, captures input, blocks背面 operations. */
+.conflict-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1;
+}
+
+.conflict-dialog {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2; /* above the backdrop */
+  max-width: 880px;
+  width: 90%;
+  max-height: 88vh;
+  overflow: auto;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: 16px 20px;
+}
+
+.conflict-dialog__title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.conflict-dialog__paused {
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+}
+
+.conflict-guide {
+  background: #e7f1ff;
+  border: 1px solid #b6d4fe;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+
+.conflict-guide__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.conflict-guide__reshow {
+  margin: 0 0 12px;
+}
+
+.conflict-dialog__error {
+  background: #f8d7da;
+  border: 1px solid #f1aeb5;
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 0 0 12px;
+  white-space: pre-line;
+}
+
+.conflict-dialog__body {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.conflict-list {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.conflict-list__heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.conflict-list__rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.conflict-row {
+  position: relative;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  margin-bottom: 8px;
+  padding: 8px;
+}
+
+.conflict-row--focused {
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.2);
+}
+
+.conflict-row--resolved {
+  background: #f0fff4;
+}
+
+.conflict-row--unresolved {
+  background: #fffafa;
+}
+
+.conflict-row__select {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr auto;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.conflict-row__state {
+  font-weight: 600;
+}
+
+.conflict-row__policy {
+  border: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+.policy-choice {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.conflict-row__adjust-note {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #555;
+}
+
+.conflict-preview {
+  flex: 0 0 auto;
+}
+
+.conflict-preview__canvas {
+  display: block;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #f7f7f7;
+}
+
+.conflict-preview__legend {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.conflict-dialog__footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 12px;
+  border-top: 1px solid #eee;
+  padding-top: 12px;
+}
+
+.conflict-dialog__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.conflict-dialog__apply:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
