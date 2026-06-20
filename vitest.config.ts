@@ -10,6 +10,13 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   // `@vitejs/plugin-react` provides the JSX/TSX transform for the .test.tsx files.
   plugins: [react()],
+  // Mirror the renderer build's `__APP_VERSION__` define (electron.vite.config.ts)
+  // so the バージョン情報 view + its component test read the SAME constant under
+  // vitest as in the shipped bundle (HB-9). A fixed test value is sufficient here —
+  // the build injects the real package.json version.
+  define: {
+    __APP_VERSION__: JSON.stringify('0.0.0-test'),
+  },
   test: {
     environment: 'node',
     // Per-file environment: component tests need a DOM; domain/logic tests do not.

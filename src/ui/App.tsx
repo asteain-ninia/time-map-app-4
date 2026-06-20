@@ -27,6 +27,7 @@ import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
 import './property/property.css';
 import './file-ops/file-ops.css';
+import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
 import type { DomainProject } from '../domain/persistence/index';
@@ -50,6 +51,7 @@ import {
   KnifeToolController,
   type KnifeDrawSink,
 } from './knife/index';
+import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
 import { createColorInfo } from '../domain/attributes';
 import {
@@ -741,6 +743,15 @@ export function App(): JSX.Element {
               registerWindowClose={registerWindowClose}
               registerDropTarget={registerDropTarget}
             />
+            {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
+                (設定 / 検索) と ヘルプ (バージョン情報 / ショートカット一覧 / 診断情報)
+                command handlers on the SAME registry the menu + shortcuts dispatch,
+                and render the views they open. Before this the five ids were
+                未登録==無効 — the menu items rendered permanently grayed (HB-4 class
+                of dead command). The handlers are torn down on unmount (useEffect
+                cleanup unregister). 設定 reuses the U38 dialog bound to the live
+                store; the rest are minimal views over existing pure logic. */}
+            <HelpToolsController store={store} registry={registry} />
             <AddToolController<DomainRoot>
               store={store}
               startProcess={hostBootstrap.startProcess}

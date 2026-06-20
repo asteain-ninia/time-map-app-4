@@ -140,6 +140,32 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'mode.edit': '編集モードに切り替えます',
 } as const;
 
+/**
+ * バージョン情報 (HB-9 / FR-111 ヘルプ). The version VALUE is injected at build time
+ * (`__APP_VERSION__` from package.json) — only the static labels live here (FR-115;
+ * no inline literals, 教訓 5.19).
+ */
+export const ABOUT_STRINGS = {
+  title: 'バージョン情報',
+  appName: 'time-map-app',
+  versionLabel: 'バージョン',
+  description: '時系列地図アプリケーション（オフライン完結）。',
+  close: '閉じる',
+} as const;
+
+/**
+ * ショートカット一覧 (HB-9 / FR-111 ヘルプ). The actual key labels are derived from
+ * the SAME STANDARD_MENUS accelerators via formatShortcut (§4 単一の真実源) — this
+ * holds only the static chrome text (FR-115).
+ */
+export const SHORTCUTS_STRINGS = {
+  title: 'ショートカット一覧',
+  commandColumn: '操作',
+  keyColumn: 'ショートカット',
+  empty: 'ショートカットはありません。',
+  close: '閉じる',
+} as const;
+
 /** User-facing error message helpers (FR-115 / FR-117, 日本語). */
 export const ERROR_STRINGS = {
   /** Generic UI error wrapper; appends the report hint (FR-117). */

@@ -8,3 +8,8 @@ declare module '*.svg?url' {
   const url: string;
   export default url;
 }
+
+// Build-time application version (HB-9 バージョン情報). Injected by Vite `define`
+// from package.json `version`; the same constant is defined in the vitest config
+// so the バージョン情報 view + its tests read ONE source of truth (§4 単一の真実源).
+declare const __APP_VERSION__: string;

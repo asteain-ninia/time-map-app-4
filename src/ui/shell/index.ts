@@ -70,6 +70,8 @@ export {
   type MenuKey,
   type MenuDef,
   type MenuItemDef,
+  type ShortcutListEntry,
+  listShortcutEntries,
 } from './menu';
 export { TOOL_ID, toolsForMode, toolBelongsToMode } from './tools';
 export * from './strings';

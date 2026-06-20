@@ -98,3 +98,28 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
     ],
   },
 ];
+
+/** One row for the ショートカット一覧 view (HB-9): a command's label + its accelerator. */
+export interface ShortcutListEntry {
+  readonly commandId: CommandId;
+  readonly label: string;
+  readonly shortcut: Shortcut;
+}
+
+/**
+ * Every menu item that declares an accelerator, flattened in menu order (HB-9
+ * ショートカット一覧). Derived from the SAME STANDARD_MENUS source the menu bar +
+ * default keymap read, so the help list can never drift from the live bindings
+ * (§4 単一の真実源 / 教訓 5.33). Items without a shortcut are omitted.
+ */
+export function listShortcutEntries(): readonly ShortcutListEntry[] {
+  const rows: ShortcutListEntry[] = [];
+  for (const menu of STANDARD_MENUS) {
+    for (const it of menu.items) {
+      if (it.shortcut !== undefined) {
+        rows.push({ commandId: it.commandId, label: it.label, shortcut: it.shortcut });
+      }
+    }
+  }
+  return rows;
+}

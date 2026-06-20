@@ -1,0 +1,251 @@
+/* UI layer (HB-8 / HB-9): styles for the ツール / ヘルプ command views.
+ *
+ * The layering follows the modal convention used by the conflict modal (教訓 5.14):
+ * a full-surface backdrop that captures input, with the dialog above it. These
+ * views live in the App overlay layer. This file ALSO carries the U38 settings
+ * dialog styles: that dialog (settings/SettingsDialog.tsx) was never mounted before
+ * HB-8, so its classes had no stylesheet — mounting it via 設定 needs them.
+ */
+
+/* --- shared help/tools modal frame ---------------------------------------- */
+
+.help-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.help-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1;
+}
+
+.help-dialog {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2; /* above the backdrop */
+  max-width: 640px;
+  width: 90%;
+  max-height: 88vh;
+  overflow: auto;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: 16px 20px;
+}
+
+.help-dialog__title {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.help-dialog__hint {
+  font-size: 13px;
+  color: #555;
+  margin: 0 0 12px;
+}
+
+.help-dialog__footer {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.help-dialog__close {
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+/* --- search view ---------------------------------------------------------- */
+
+.search-panel__input-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.search-panel__input-row input {
+  flex: 1 1 200px;
+  padding: 4px 8px;
+}
+
+.search-panel__error {
+  margin: 8px 0 0;
+  color: #842029;
+  font-size: 13px;
+}
+
+.search-panel__results {
+  margin-top: 16px;
+}
+
+.search-panel__results ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.search-panel__results li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid #eee;
+}
+
+.search-panel__hit-fields {
+  font-size: 12px;
+  color: #777;
+}
+
+/* --- about / shortcuts / diagnostics -------------------------------------- */
+
+.about-panel__name {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.shortcuts-panel__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcuts-panel__table th,
+.shortcuts-panel__table td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.shortcuts-panel__table td:last-child {
+  font-family: monospace;
+  white-space: nowrap;
+}
+
+.diagnostics-panel__overview dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 8px 0 16px;
+}
+
+.diagnostics-panel__overview dt {
+  font-weight: 600;
+}
+
+.diagnostics-panel__overview dd {
+  margin: 0;
+}
+
+.diagnostics-panel__privacy {
+  margin-top: 16px;
+  font-size: 12px;
+  color: #777;
+}
+
+/* --- U38 settings dialog (mounted via 設定; classes from SettingsDialog) --- */
+
+.settings-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.settings-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1;
+}
+
+.settings-dialog {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 2;
+  max-width: 720px;
+  width: 92%;
+  max-height: 90vh;
+  overflow: auto;
+  background: #ffffff;
+  color: #1a1a1a;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+  padding: 16px 20px;
+}
+
+.settings-dialog__title {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.settings-tabs [role='tab'] {
+  padding: 6px 14px;
+  cursor: pointer;
+}
+
+.settings-tabs [role='tab'][aria-selected='true'] {
+  font-weight: 600;
+  border-bottom: 2px solid #0d47a1;
+}
+
+.settings-dialog__errors {
+  background: #fdecea;
+  border: 1px solid #f5c6cb;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+  list-style: none;
+  color: #842029;
+}
+
+.settings-section label {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.settings-section__hint {
+  font-size: 13px;
+  color: #555;
+  margin: 0 0 12px;
+}
+
+.settings-dialog__footer {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-dialog__cancel,
+.settings-dialog__save {
+  padding: 6px 16px;
+  cursor: pointer;
+}
+
+.settings-palette__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.settings-palette__item {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 6px;
+}

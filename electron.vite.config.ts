@@ -1,6 +1,14 @@
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
 import react from '@vitejs/plugin-react';
+
+// The application version shown in ヘルプ → バージョン情報 (HB-9). Read from
+// package.json at build time so the version label has ONE source of truth and can
+// never drift from the published package (§4 単一の真実源). Injected into the
+// renderer bundle as the `__APP_VERSION__` global via Vite `define`.
+const require = createRequire(import.meta.url);
+const pkg = require('./package.json') as { readonly version: string };
 
 // Three explicit targets for Electron: main / preload / renderer.
 // Kept intentionally thin so the build is readable in one pass.
@@ -42,6 +50,11 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'src/ui'),
+    // Inject the package version as a compile-time constant the バージョン情報 view
+    // reads (HB-9). `JSON.stringify` so it is replaced as a string literal.
+    define: {
+      __APP_VERSION__: JSON.stringify(pkg.version),
+    },
     build: {
       outDir: 'out/renderer',
       rollupOptions: {
