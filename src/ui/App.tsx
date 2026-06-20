@@ -19,6 +19,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
+import { EDIT_MODE } from './state/session';
 import { AppShell } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { Timeline } from './timeline/Timeline';
@@ -492,6 +493,31 @@ export function App(): JSX.Element {
     };
   }, [registry, store, refreshUndoRedoEnabled]);
 
+  // HB-4 ROOT FIX — register the 表示専用モード切替 (ViewToggleViewMode) command on the
+  // SAME registry the 表示 menu + shortcuts dispatch (教訓 5.13 単一の権限/真実源).
+  // The id was declared and placed in the 表示 menu (menu.ts) but NO unit ever
+  // registered a handler, so the menu導線 was permanently 未登録==無効 (the named
+  // 導線 in HB-4) — only the toolbar's 表示専用 button worked, via a direct
+  // setViewOnly. Registering it here makes the MENU command live too, and BOTH
+  // surfaces flip the SAME store mode value (one truth source — they can never
+  // drift). View → Edit (a sensible editable default); any editing mode → View.
+  // This is always runnable (a view-axis command, not an editing command), so it
+  // stays enabled even in display-only mode (permissions.ts: not in EDITING_COMMANDS).
+  useEffect(() => {
+    registry.register(COMMAND_ID.ViewToggleViewMode, {
+      run: () => {
+        const s = store.getState();
+        // Leaving View lands in Edit; in any editing mode return to View. This is
+        // the SAME transition the toolbar's mode-view button drives (useShell
+        // setViewOnly), so the two导线 are one behaviour (教訓 5.30 同判定同実装).
+        s.setMode(s.mode === EDIT_MODE.View ? EDIT_MODE.Edit : EDIT_MODE.View);
+      },
+    });
+    return () => {
+      registry.unregister(COMMAND_ID.ViewToggleViewMode);
+    };
+  }, [registry, store]);
+
   // Reset the history on an EXTERNAL whole-state swap (file load / new). A subscribe
   // bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live domain
   // to the last domain we committed; a mismatch we did not author is a load/new, so
@@ -680,6 +706,13 @@ export function App(): JSX.Element {
                 inheritor stays selected after a split (教訓 5.11). Hidden; it holds
                 NO truth — it只 reflects the store (技術方針 2.5). */}
             <ActiveFeatureMarker store={store} />
+            {/* HB-4 観測フック (回帰観点 E2E): mirror the live session mode + active
+                tool truth (store.mode / store.activeTool) into hidden data-testid
+                markers so a behavioural test can assert the 表示専用→編集 transition
+                actually flips the mode and activates the edit tools (既存
+                app-active-feature マーカーと同方式). They hold NO truth — pure mirrors
+                of the store (技術方針 2.5). */}
+            <SessionModeMarker store={store} />
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
                 the ファイル menu / shortcut commands on the SAME registry the shell
                 dispatches, drives the FR-107 unsaved warning + FR-106 repair modals,
@@ -761,6 +794,32 @@ function ActiveFeatureMarker(props: {
     <span data-testid="app-active-feature" hidden>
       {active ?? ''}
     </span>
+  );
+}
+
+/**
+ * HB-4 observability marker: mirrors the live session mode + active tool ids for
+ * the回帰観点 E2E (the 表示専用→編集 transition + edit-tool activation). Pure
+ * mirrors of the store truth — no state lives here (技術方針 2.5). Empty string
+ * for "no active tool". The toolbar buttons already expose their `disabled`
+ * state for the test; this surfaces the underlying mode/tool the gate derives
+ * from, so a regression can pin the cause (mode flipped) as well as the effect
+ * (buttons enabled).
+ */
+function SessionModeMarker(props: {
+  readonly store: ReturnType<typeof createSessionStore<DomainRoot>>;
+}): JSX.Element {
+  const mode = useStore(props.store, (s) => s.mode);
+  const activeTool = useStore(props.store, (s) => s.activeTool);
+  return (
+    <>
+      <span data-testid="app-mode" hidden>
+        {mode}
+      </span>
+      <span data-testid="app-active-tool" hidden>
+        {activeTool ?? ''}
+      </span>
+    </>
   );
 }
 
