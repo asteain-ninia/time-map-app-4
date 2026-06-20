@@ -170,6 +170,19 @@ export class PointerDispatcher {
   }
 
   /**
+   * Whether a select/edit gesture is already in flight on any pointer. Selection
+   * and edit are single-pointer gestures backed by a single shared transient in
+   * the SelectionPort / EditSessionPort, so a second concurrent select/edit press
+   * is gated out (see the SelectEdit branch in {@link pointerDown}).
+   */
+  private hasActiveSelectEdit(): boolean {
+    for (const p of this.active.values()) {
+      if (p.kind === DISPATCH_TARGET.SelectEdit) return true;
+    }
+    return false;
+  }
+
+  /**
    * Handle a pointer press. Decides the single行き先 from (mode × button × hit)
    * and starts the matching sequence. A right-button press goes straight to the
    * context-menu port and starts no tracked sequence (no teardown needed).
@@ -195,6 +208,21 @@ export class PointerDispatcher {
         break;
       }
       case DISPATCH_TARGET.SelectEdit: {
+        // SINGLE-POINTER GATE (Codex multi-pointer finding, 教訓 5.2 / 5.9):
+        // selection / edit is a single-pointer gesture. The SelectionPort and the
+        // EditSessionPort each hold ONE press/session transient (a single `pressed`
+        // / `session` variable) and take no pointerId. A SECOND simultaneous
+        // edit-mode left press would overwrite the first's transient via
+        // `selection.start` / `editSession.begin`, and then EITHER pointer's up /
+        // cancel would consume the shared transient — finalizing or discarding the
+        // wrong gesture (誤確定 / 取りこぼし). So while a select/edit gesture is
+        // already in flight, a second one is IGNORED at the source: no port call,
+        // no tracked record, so the first pointer's transient stays intact and only
+        // its OWN release/cancel touches it. (A concurrent pan is fine — pan is
+        // per-pointer and never shares the selection/edit transient.)
+        if (this.hasActiveSelectEdit()) {
+          return DISPATCH_TARGET.Ignore;
+        }
         this.opts.selection.start(hit, point, p.modifiers);
         // Drive the U24 edit-session completion trigger when a handle was hit
         // (受け入れ基準9 / 教訓5.7). `begin` returns true iff this press started a

@@ -244,6 +244,72 @@ describe('multi-pointer tracking (受け入れ基準 3 末項)', () => {
   });
 });
 
+describe('multi-pointer select/edit gate (Codex multi-pointer finding, 教訓 5.2 / 5.9)', () => {
+  // The SelectionPort / EditSessionPort each hold ONE press/session transient and
+  // take no pointerId. A second simultaneous edit-mode left press must NOT start a
+  // second select/edit gesture (which would overwrite the first's transient and let
+  // either pointer's up/cancel consume the wrong one). It is ignored at the source.
+  it('a second simultaneous edit-mode left press is ignored (no second start)', () => {
+    const { selection, dispatcher } = setup(EDIT_MODE.Edit);
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.SelectEdit,
+    );
+    // Second finger / device presses while the first select/edit is live.
+    expect(dispatcher.pointerDown(ptr(2, 200, 200, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.Ignore,
+    );
+    // Only ONE select/edit start happened; the second pointer is not tracked.
+    expect(selection.events).toEqual(['start:empty']);
+    expect(dispatcher.activeCount).toBe(1);
+  });
+
+  it("the second pointer's release/cancel cannot finalize the first's selection", () => {
+    const { selection, dispatcher } = setup(EDIT_MODE.Edit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left)); // first gesture
+    dispatcher.pointerDown(ptr(2, 200, 200, POINTER_BUTTON.Left)); // ignored
+    // Releasing the (untracked) second pointer must be a no-op: it does not touch
+    // the shared selection transient, so no spurious end/cancel is emitted.
+    dispatcher.pointerUp(ptr(2, 200, 200, POINTER_BUTTON.Left));
+    dispatcher.pointerCancel(2);
+    expect(selection.events).toEqual(['start:empty']); // still only the first start
+    expect(dispatcher.activeCount).toBe(1); // the first gesture is still live
+    // The FIRST pointer's own release finalizes its own gesture exactly once.
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual(['start:empty', 'end:click@100,100']);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('after the first select/edit ends, a fresh edit press is accepted again', () => {
+    const { selection, dispatcher } = setup(EDIT_MODE.Edit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    // The gate is released once the gesture finishes; a later press is not blocked.
+    expect(dispatcher.pointerDown(ptr(2, 300, 300, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.SelectEdit,
+    );
+    expect(selection.events).toEqual([
+      'start:empty',
+      'end:click@100,100',
+      'start:empty',
+    ]);
+  });
+
+  it('a concurrent middle-button pan is NOT blocked by an active select/edit', () => {
+    const { camera, selection, dispatcher } = setup(EDIT_MODE.Edit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left)); // select/edit
+    // A second pointer panning (middle) coexists — pan is per-pointer, never shares
+    // the selection transient, so it is allowed alongside the live select/edit.
+    expect(dispatcher.pointerDown(ptr(2, 400, 300, POINTER_BUTTON.Middle))).toBe(
+      DISPATCH_TARGET.Pan,
+    );
+    dispatcher.pointerMove(ptr(2, 480, 300, POINTER_BUTTON.Middle));
+    dispatcher.pointerUp(ptr(2, 480, 300, POINTER_BUTTON.Middle));
+    expect(camera.writes.length).toBeGreaterThan(0);
+    expect(selection.events).toEqual(['start:empty']); // first gesture untouched
+    expect(dispatcher.activeCount).toBe(1);
+  });
+});
+
 describe('wheel → U17 cursor-anchored zoom (受け入れ基準 2)', () => {
   it('scroll up zooms IN; the cursor world point stays under the cursor', () => {
     const { camera, dispatcher } = setup(EDIT_MODE.View);
