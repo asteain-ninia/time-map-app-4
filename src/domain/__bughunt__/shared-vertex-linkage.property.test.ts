@@ -47,6 +47,7 @@ import {
   transferSharing,
   unshareReference,
   zeroLengthEdgeValidator,
+  REJECT_REASON,
   SHARED_VERTEX_OUTCOME,
   type ContainerEntry,
   type ShapeContainer,
@@ -54,8 +55,8 @@ import {
 } from '../shared-vertex';
 import { createVertex, createVertexStore, getVertex, type Vertex } from '../vertex';
 
-const SEED = 3001;
-const NUM_RUNS = 500;
+const SEED = 3002;
+const NUM_RUNS = 600;
 
 // A monotonic injected time source (deterministic). Each call advances by 1.
 function makeClock(start = 1): () => number {
@@ -525,6 +526,109 @@ describe('shared-vertex-linkage stateful invariants (bughunt)', () => {
     );
   });
 
+  // REGRESSION (real bug): insertSharedEdgeCut never validated `edgeStart`.
+  // `insertAfter` is `splice`, which silently CLAMPS an out-of-range index and
+  // APPENDS instead of erroring — so a malformed / out-of-bounds edgeStart was
+  // accepted and the cut vertex was inserted into the WRONG edge, corrupting the
+  // geometry. Because the reverse index stayed internally consistent, the
+  // structural invariants above did NOT catch it. The fix rejects a malformed
+  // edge (REJECT_REASON.NotFound) instead of applying a clamped insertion.
+  //
+  // A real edge is identified by its START position: a closed ring of n vertices
+  // has edges 0..n-1 (n-1↔0 closing edge is real); an open line has edges 0..n-2.
+  // Anything else (out of range, negative, non-integer) must be rejected, and the
+  // input state must be untouched.
+  it('insertSharedEdgeCut rejects an out-of-range edgeStart (no clamped append)', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.nat(2),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, partnerPick, lon, lat) => {
+          const state = buildState(seed);
+          const entries = [...state.containers.values()];
+          if (entries.length < 2) return; // need a distinct primary + partner
+          const primary = entries[0];
+          const partner = entries[(1 + partnerPick) % entries.length] ?? entries[1];
+          if (primary === undefined || partner === undefined) return;
+          const primaryKey = containerKey(primary.container);
+          const partnerKey = containerKey(partner.container);
+          if (primaryKey === partnerKey) return; // same-container is a separate law
+
+          const before = canonical(state);
+          // A primary edgeStart guaranteed past the last real edge of a ring/line.
+          const oob = primary.vertexIds.length + 5;
+          const out = insertSharedEdgeCut(
+            state,
+            {
+              primary: { containerKey: primaryKey, edgeStart: oob },
+              partner: { containerKey: partnerKey, edgeStart: 0 },
+              cutCoordinate: createCoordinate(lon + 0.5, lat + 0.5),
+            },
+            createIdGeneratorState(0, 0),
+            makeClock(),
+            { validators: [zeroLengthEdgeValidator] },
+          );
+
+          // Must be REJECTED as malformed input — never a clamped/append apply.
+          expect(out.result.status).toBe(SHARED_VERTEX_OUTCOME.Rejected);
+          if (out.result.status === SHARED_VERTEX_OUTCOME.Rejected) {
+            expect(out.result.reason).toBe(REJECT_REASON.NotFound);
+          }
+          // The id-generator state must NOT have advanced on rejection.
+          expect(out.idState.counter).toBe(0);
+          // No cut vertex minted, input untouched (immutability + full rollback).
+          expect(out.cutVertexId).toBeUndefined();
+          expect(canonical(state)).toEqual(before);
+        },
+      ),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
+  // REGRESSION (companion): a VALID closing-edge edgeStart (n-1 on a ring) is the
+  // boundary that must still be ACCEPTED — the guard must reject only true
+  // out-of-range edges, not the legitimate n-1↔0 closing edge of a ring.
+  it('insertSharedEdgeCut accepts the ring closing edge (edgeStart = n-1)', () => {
+    fc.assert(
+      fc.property(seedArb, (seed) => {
+        const state = buildState(seed);
+        const rings = [...state.containers.values()].filter((e) => e.container.kind === 'ring');
+        const lines = [...state.containers.values()].filter((e) => e.container.kind === 'line');
+        const primary = rings[0];
+        // Pick any OTHER container as partner.
+        const partner =
+          [...state.containers.values()].find(
+            (e) => primary !== undefined && containerKey(e.container) !== containerKey(primary.container),
+          ) ?? lines[0];
+        if (primary === undefined || partner === undefined) return;
+        const out = insertSharedEdgeCut(
+          state,
+          {
+            primary: { containerKey: containerKey(primary.container), edgeStart: primary.vertexIds.length - 1 },
+            partner: { containerKey: containerKey(partner.container), edgeStart: 0 },
+            // Far from every existing vertex to avoid an incidental zero-length edge.
+            cutCoordinate: createCoordinate(123.5, 67.5),
+          },
+          createIdGeneratorState(0, 0),
+          makeClock(),
+          { validators: [zeroLengthEdgeValidator] },
+        );
+        // Either it applies (closing edge accepted) or it is rejected for a
+        // *different* reason than a malformed edge — never NotFound-for-edge here.
+        if (out.result.status === SHARED_VERTEX_OUTCOME.Rejected) {
+          // Only legitimate rejections (participation / result-invalid) allowed.
+          expect(out.result.reason).not.toBe(REJECT_REASON.NotFound);
+        } else {
+          checkInvariants(out.result.state, 'closing-edge cut');
+          checkParticipationOfShared(out.result.state, 'closing-edge cut');
+        }
+      }),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
   // Targeted: transferSharing with a real (non-identity) MERGE remap — fold the
   // last cited id onto the first. The continuity transfer is pure (no
   // participation gate by design), but it MUST keep the single-source-of-truth
@@ -549,6 +653,51 @@ describe('shared-vertex-linkage stateful invariants (bughunt)', () => {
             expect(id).not.toBe(from);
           }
         }
+      }),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
+  // Metamorphic op∘逆op = identity for the unshare / re-share pair. Unshare
+  // splits ONE reference of a shared vertex onto a freshly minted same-coordinate
+  // id; re-sharing that minted id back onto the original (candidate = newId,
+  // target = original) repoints the split reference back and prunes the minted
+  // body, restoring the canonical content of the original state. (Any rejection
+  // — e.g. participation — short-circuits; we only assert the law when both legs
+  // actually apply.)
+  it('reshare∘unshare = identity (split a reference, then merge it back)', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(opArb, { minLength: 0, maxLength: 12 }), fc.nat(20), (seed, ops, idx) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp(ctx, op);
+        const base = ctx.state;
+        const baseCanon = canonical(base);
+        const shared = sharedVertexIds(base);
+        const vid = pick(shared, idx);
+        if (vid === undefined) return;
+        const refs = referencesOf(base, vid);
+        const ref = refs[idx % refs.length];
+        if (ref === undefined) return;
+        const split = unshareReference(base, vid, ref, ctx.idState, ctx.clock, {
+          validators: [zeroLengthEdgeValidator],
+        });
+        if (split.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        const newId = split.newVertexId;
+        if (newId === undefined) return;
+        // Re-share: merge the freshly split id back onto the original vertex.
+        const back = shareVertices(split.result.state, newId, vid, {
+          validators: [zeroLengthEdgeValidator],
+        });
+        if (back.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        checkInvariants(back.state, 'after reshare∘unshare');
+        checkParticipationOfShared(back.state, 'after reshare∘unshare');
+        // The content must be byte-identical to the pre-unshare state: the split
+        // body is pruned and the reference points back at the original id.
+        expect(canonical(back.state)).toEqual(baseCanon);
       }),
       { seed: SEED, numRuns: NUM_RUNS },
     );

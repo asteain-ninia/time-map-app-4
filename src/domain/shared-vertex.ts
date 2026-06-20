@@ -800,6 +800,37 @@ export function insertSharedEdgeCut(
     };
   }
 
+  // Reject a malformed edgeStart that does not name a real edge of its container
+  // (不正状態を表現不能に / REJECT_REASON.NotFound). `insertAfter` is `splice`,
+  // which silently CLAMPS an out-of-range index and appends — so without this
+  // guard an out-of-bounds edgeStart would not error but would insert the cut
+  // vertex into the WRONG edge, corrupting the geometry while leaving the
+  // reverse index internally consistent (so structural invariants miss it).
+  // Valid edges: a closed ring has edges 0..n-1 (the n-1↔0 closing edge is real);
+  // an open line has edges 0..n-2. For the same-container case the two cuts are
+  // checked against the ORIGINAL length here; the same-ring participation check
+  // below still rejects them, so positions never matter in that branch.
+  const primaryEdgeError = edgeStartError(primary, spec.primary.edgeStart);
+  if (primaryEdgeError !== undefined) {
+    return {
+      result: rejected(
+        REJECT_REASON.NotFound,
+        `shared-edge cut: primary ${spec.primary.containerKey} ${primaryEdgeError}`,
+      ),
+      idState,
+    };
+  }
+  const partnerEdgeError = edgeStartError(partner, spec.partner.edgeStart);
+  if (partnerEdgeError !== undefined) {
+    return {
+      result: rejected(
+        REJECT_REASON.NotFound,
+        `shared-edge cut: partner ${spec.partner.containerKey} ${partnerEdgeError}`,
+      ),
+      idState,
+    };
+  }
+
   // Mint ONE shared vertex (single id cited by both inserted positions — that is
   // exactly the share by ID reference; §4.1 / FR-95 同座標頂点を共有関係に入れる).
   const existing = new Set<string>();
@@ -865,6 +896,26 @@ export function insertSharedEdgeCut(
     cutVertexId: cutId,
     idState: generated.state,
   };
+}
+
+/**
+ * Validate that `edgeStart` names a real edge of `entry`'s container, returning
+ * an error reason string when it does not (and `undefined` when valid). An edge
+ * is identified by its START position. A closed ring of n vertices has edges
+ * 0..n-1 (the n-1↔0 closing edge is real); an open line of n vertices has edges
+ * 0..n-2. `edgeStart` must additionally be a non-negative integer.
+ */
+function edgeStartError(entry: ContainerEntry, edgeStart: number): string | undefined {
+  if (!Number.isInteger(edgeStart) || edgeStart < 0) {
+    return `edgeStart ${edgeStart} is not a non-negative integer`;
+  }
+  const n = entry.vertexIds.length;
+  const closed = entry.container.kind === 'ring';
+  const maxEdgeStart = closed ? n - 1 : n - 2;
+  if (n < 2 || edgeStart > maxEdgeStart) {
+    return `edgeStart ${edgeStart} is out of range (container has ${n} vertices, max edge start ${maxEdgeStart})`;
+  }
+  return undefined;
 }
 
 /** Insert `id` immediately AFTER position `edgeStart` (within the edge). */
