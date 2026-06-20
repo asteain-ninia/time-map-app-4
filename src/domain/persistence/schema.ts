@@ -69,12 +69,26 @@ export const basicAttributesSchema = z
   })
   .strict();
 
+/** A透過度（アルファ）leaf: a finite number in [0,1] (U33 spec 行23-26 / AC1). */
+const opacitySchema = z.number().min(0).max(1);
+
 export const colorInfoSchema = z
   .object({
     autoColorEnabled: z.boolean(),
     fillColor: z.string(),
+    // 通常表示色の透過度（アルファ）— part of the persisted style attribute (U33
+    // spec 行23-26 / AC1). Optional (key-absent) so a manifest written before this
+    // field existed still parses; the deserializer fills the default (DEFAULT_OPACITY).
+    fillOpacity: opacitySchema.optional(),
     selectedColor: z.string(),
+    // 選択表示色の透過度（アルファ）— part of the persisted style attribute (U33
+    // spec 行23-26 / AC1). Optional + default-filled on restore, same as above.
+    selectedOpacity: opacitySchema.optional(),
     borderColor: z.string(),
+    // 使用パレット（テーマ名）— part of the persisted style attribute (FR-100 /
+    // U33 AC1). Optional (key-absent) so a manifest written before this field
+    // existed still parses; the deserializer fills the default theme (FR-109).
+    paletteTheme: z.string().optional(),
   })
   .strict();
 

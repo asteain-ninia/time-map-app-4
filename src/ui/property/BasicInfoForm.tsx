@@ -19,9 +19,13 @@ import type { Feature } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 
+import type { PaletteThemeId } from '../../domain/coloring';
+
 import type { PropertyEditValues } from './contracts';
 import { isNoOpEdit, valuesFromFeature } from './edit-intent';
 import { PROPERTY_STRINGS } from './messages';
+import { StyleSection } from './StyleSection';
+import { type StyleValues } from './style-section';
 
 export interface BasicInfoFormProps {
   /** The feature whose基本情報 is shown/edited (the resolved edit target). */
@@ -31,6 +35,12 @@ export interface BasicInfoFormProps {
   /** The edit time = current edit-target anchor's start time (教訓 5.15). */
   readonly editTime: TimePoint | null;
   /**
+   * Available palette themes for the U33「スタイル」section dropdown (FR-109).
+   * Defaults to the current feature's theme alone when a host has not wired the
+   * settings-provided list, so the section still mounts and round-trips.
+   */
+  readonly paletteThemes?: readonly PaletteThemeId[];
+  /**
    * Save handler. Receives the new values + edit time; returns an error message
    * to display, or null on success. The PARENT owns dispatch so this component
    * stays a thin form (the no-op guard runs here before calling).
@@ -38,8 +48,33 @@ export interface BasicInfoFormProps {
   readonly onSave: (values: PropertyEditValues, editTime: TimePoint) => string | null;
 }
 
+/**
+ * Project the form draft into the U33 style-section values (FR-102). EVERY style
+ * attribute — autoColor / palette / fill / selected AND their透過度（アルファ,
+ * U33 spec 行23-26 / AC1・AC5) — is bound to the SAME draft, so a style edit
+ * (including a transparency slider drag) lands on the single anchor edit + undo
+ * unit and is persisted (U33 AC1 / FR-59). There is no longer a section-local /
+ * hardcoded opacity: the slider value is the persisted attribute.
+ */
+function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
+  return {
+    autoColorEnabled: draft.autoColorEnabled,
+    paletteTheme: draft.paletteTheme,
+    fillColor: draft.fillColor,
+    fillOpacity: draft.fillOpacity,
+    selectedColor: draft.selectedColor,
+    selectedOpacity: draft.selectedOpacity,
+  };
+}
+
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
   const { feature, editable, editTime, onSave } = props;
+  // Default the palette dropdown to the feature's current theme alone so the
+  // section mounts even when the host has not wired the settings-provided list.
+  const paletteThemes = useMemo(
+    () => props.paletteThemes ?? [feature.color.paletteTheme],
+    [props.paletteThemes, feature.color.paletteTheme],
+  );
 
   // The form syncs to the feature (the single baseline source, 教訓 5.24). A new
   // feature / a changed feature re-syncs the draft.
@@ -129,41 +164,31 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         />
       </label>
 
+      {/*
+        U33「スタイル」section (FR-102): owns 自動配色許可・使用パレット・通常表示色・
+        選択表示色 as the single permission-gated section (教訓 5.13). It binds to the
+        SAME draft as the rest of the form, so a style change (incl. palette) lands
+        on the single anchor edit + undo unit (U33 AC1 / FR-59). The sole basic-color
+        attribute it does NOT own — 境界色 (FR-97) — stays in the 色情報 fieldset below.
+      */}
+      <StyleSection
+        values={styleValuesFromDraft(draft)}
+        paletteThemes={paletteThemes}
+        sectionEnabled={editable}
+        onChange={(next) =>
+          patch({
+            autoColorEnabled: next.autoColorEnabled,
+            paletteTheme: next.paletteTheme,
+            fillColor: next.fillColor,
+            fillOpacity: next.fillOpacity,
+            selectedColor: next.selectedColor,
+            selectedOpacity: next.selectedOpacity,
+          })
+        }
+      />
+
       <fieldset className="basic-info__colors" disabled={!editable}>
         <legend>{PROPERTY_STRINGS.colorSectionTitle}</legend>
-
-        <label className="basic-info__field">
-          <span>{PROPERTY_STRINGS.autoColorLabel}</span>
-          <input
-            type="checkbox"
-            aria-label={PROPERTY_STRINGS.autoColorLabel}
-            checked={draft.autoColorEnabled}
-            disabled={!editable}
-            onChange={(e) => patch({ autoColorEnabled: e.target.checked })}
-          />
-        </label>
-
-        <label className="basic-info__field">
-          <span>{PROPERTY_STRINGS.fillColorLabel}</span>
-          <input
-            type="text"
-            aria-label={PROPERTY_STRINGS.fillColorLabel}
-            value={draft.fillColor}
-            disabled={!editable}
-            onChange={(e) => patch({ fillColor: e.target.value })}
-          />
-        </label>
-
-        <label className="basic-info__field">
-          <span>{PROPERTY_STRINGS.selectedColorLabel}</span>
-          <input
-            type="text"
-            aria-label={PROPERTY_STRINGS.selectedColorLabel}
-            value={draft.selectedColor}
-            disabled={!editable}
-            onChange={(e) => patch({ selectedColor: e.target.value })}
-          />
-        </label>
 
         <label className="basic-info__field">
           <span>{PROPERTY_STRINGS.borderColorLabel}</span>

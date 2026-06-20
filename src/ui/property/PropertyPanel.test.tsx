@@ -38,6 +38,7 @@ import type {
 } from './contracts';
 import { PropertyPanel } from './PropertyPanel';
 import { PROPERTY_STRINGS } from './messages';
+import { STYLE_STRINGS } from './style-section';
 
 const cal = getCalendar('gregorian');
 const color = createColorInfo(true, '#111111', '#222222', '#333333');
@@ -176,7 +177,12 @@ describe('PropertyPanel — view-only mode (FR-99前段, 教訓 5.13)', () => {
   it('disables every edit input and hides the save button in view mode', () => {
     renderPanel(makeStore({ active: true, mode: 'view' }));
     expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toBeDisabled();
-    expect(screen.getByLabelText(PROPERTY_STRINGS.fillColorLabel)).toBeDisabled();
+    expect(screen.getByLabelText(PROPERTY_STRINGS.borderColorLabel)).toBeDisabled();
+    // U33 style section is part of the U32 panel; view mode disables it whole
+    // (sectionEnabled=false) — the palette dropdown and fill picker are disabled
+    // even though the palette is normally operable in edit mode (教訓 5.13).
+    expect(screen.getByLabelText(STYLE_STRINGS.paletteLabel)).toBeDisabled();
+    expect(screen.getByLabelText(STYLE_STRINGS.fillColorLabel)).toBeDisabled();
     expect(screen.queryByTestId('save-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('view-only-notice')).toBeInTheDocument();
   });
@@ -276,6 +282,85 @@ describe('PropertyPanel — context-feature anchor select (FR-84, 教訓 5.2 / 5
     // vertex Set). The held message must survive (教訓 5.12).
     fireEvent.click(screen.getByTestId('anchor-row-a1'));
     expect(screen.getByTestId('save-message')).toBeInTheDocument();
+  });
+});
+
+describe('PropertyPanel — U33 style section integration (FR-100 / FR-102, AC1)', () => {
+  it('mounts the StyleSection inside the panel (palette dropdown + fill picker present)', () => {
+    renderPanel(makeStore({ active: true }));
+    expect(screen.getByTestId('style-section')).toBeInTheDocument();
+    expect(screen.getByLabelText(STYLE_STRINGS.paletteLabel)).toBeInTheDocument();
+    expect(screen.getByLabelText(STYLE_STRINGS.fillColorLabel)).toBeInTheDocument();
+  });
+
+  it('a palette change saves as part of the SAME single anchor edit intent (AC1)', () => {
+    const intents: PropertyEditIntent[] = [];
+    const store = makeStore({ active: true });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: (i) => intents.push(i) }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        paletteThemes={['default', 'warm', 'cool']}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('anchor-row-a2')); // edit target = a2 (1573)
+    // Change the palette theme through the real StyleSection dropdown.
+    fireEvent.change(screen.getByLabelText(STYLE_STRINGS.paletteLabel), {
+      target: { value: 'warm' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    // ONE intent (one undo unit) that carries the new palette theme (AC1).
+    expect(intents[0]!.attributes.paletteTheme).toBe('warm');
+    expect(intents[0]!.editTime.year).toBe(1573);
+  });
+
+  it('a 透過度（アルファ）slider edit saves as part of the single anchor edit intent (AC1・AC5)', () => {
+    const intents: PropertyEditIntent[] = [];
+    const store = makeStore({ active: true });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: (i) => intents.push(i) }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        paletteThemes={['default', 'warm', 'cool']}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('anchor-row-a2')); // edit target = a2 (1573)
+    // Auto-color is ON for featureA, so the slider is read-only; release it first.
+    fireEvent.click(screen.getByLabelText(STYLE_STRINGS.autoColorLabel)); // ON -> OFF
+    // Drag the fill透過 slider to a non-default value through the real StyleSection.
+    fireEvent.change(
+      screen.getByLabelText(`${STYLE_STRINGS.fillColorLabel}${STYLE_STRINGS.opacityLabel}`),
+      { target: { value: '0.4' } },
+    );
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    // ONE intent (one undo unit) that carries the new透過度 (AC1・AC5), proving the
+    // slider is bound to the persisted edit draft, not a view-only presentation value.
+    expect(intents[0]!.attributes.fillOpacity).toBe(0.4);
+    expect(intents[0]!.attributes.autoColorEnabled).toBe(false);
+    expect(intents[0]!.editTime.year).toBe(1573);
+  });
+
+  it('turning auto-color OFF in the section releases the fill picker (FR-102)', () => {
+    // featureA has autoColorEnabled=true (color fixture). The section shows the
+    // pickers read-only until auto-color is toggled OFF — one permission gate.
+    renderPanel(makeStore({ active: true }));
+    expect(screen.getByLabelText(STYLE_STRINGS.fillColorLabel)).toBeDisabled();
+    fireEvent.click(screen.getByLabelText(STYLE_STRINGS.autoColorLabel)); // ON -> OFF
+    expect(screen.getByLabelText(STYLE_STRINGS.fillColorLabel)).toBeEnabled();
   });
 });
 

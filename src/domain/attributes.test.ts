@@ -4,12 +4,17 @@ import {
   colorInfoEqual,
   createBasicAttributes,
   createColorInfo,
+  DEFAULT_OPACITY,
+  DEFAULT_PALETTE_THEME_ID,
   withAutoColorEnabled,
   withBorderColor,
   withEndYear,
   withFillColor,
+  withFillOpacity,
   withName,
+  withPaletteTheme,
   withSelectedColor,
+  withSelectedOpacity,
   withStartYear,
 } from './attributes';
 
@@ -43,8 +48,66 @@ describe('color info (FR-97)', () => {
   it('withXxx covers every attribute immutably', () => {
     expect(withAutoColorEnabled(c, false).autoColorEnabled).toBe(false);
     expect(withFillColor(c, '#abcdef').fillColor).toBe('#abcdef');
+    expect(withFillOpacity(c, 0.4).fillOpacity).toBe(0.4);
     expect(withSelectedColor(c, '#abcdef').selectedColor).toBe('#abcdef');
+    expect(withSelectedOpacity(c, 0.6).selectedOpacity).toBe(0.6);
     expect(withBorderColor(c, '#abcdef').borderColor).toBe('#abcdef');
+    expect(withPaletteTheme(c, 'warm').paletteTheme).toBe('warm');
     expect(c.fillColor).toBe('#111111');
+  });
+
+  it('透過度（アルファ）is a persisted style attribute (U33 spec 行23-26 / AC1・AC5)', () => {
+    // 既定は不透明（1）。明示指定はそのまま保持される。
+    const def = createColorInfo(true, '#111', '#222', '#333');
+    expect(def.fillOpacity).toBe(DEFAULT_OPACITY);
+    expect(def.selectedOpacity).toBe(DEFAULT_OPACITY);
+    const explicit = createColorInfo(true, '#111', '#222', '#333', 'default', 0.3, 0.7);
+    expect(explicit.fillOpacity).toBe(0.3);
+    expect(explicit.selectedOpacity).toBe(0.7);
+    // equality は透過度の差にも反応する（透過のみの編集が no-op にならない）。
+    expect(
+      colorInfoEqual(
+        createColorInfo(true, '#111', '#222', '#333', 'default', 0.3, 1),
+        createColorInfo(true, '#111', '#222', '#333', 'default', 1, 1),
+      ),
+    ).toBe(false);
+    expect(
+      colorInfoEqual(
+        createColorInfo(true, '#111', '#222', '#333', 'default', 1, 0.3),
+        createColorInfo(true, '#111', '#222', '#333', 'default', 1, 1),
+      ),
+    ).toBe(false);
+  });
+
+  it('paletteTheme is a persisted style attribute (U33 AC1)', () => {
+    // 使用パレット（テーマ名）defaults to既定 when not supplied; explicit value sticks.
+    expect(createColorInfo(true, '#111', '#222', '#333').paletteTheme).toBe(
+      DEFAULT_PALETTE_THEME_ID,
+    );
+    expect(createColorInfo(true, '#111', '#222', '#333', 'warm').paletteTheme).toBe('warm');
+    // equality is sensitive to the palette theme (so a palette-only edit is not no-op).
+    expect(
+      colorInfoEqual(
+        createColorInfo(true, '#111', '#222', '#333', 'warm'),
+        createColorInfo(true, '#111', '#222', '#333', 'cool'),
+      ),
+    ).toBe(false);
+  });
+
+  it('every withXxx PRESERVES the palette theme AND both opacities (no withXxx silently drops a style attribute)', () => {
+    const themed = createColorInfo(true, '#111111', '#222222', '#333333', 'warm', 0.3, 0.7);
+    expect(withAutoColorEnabled(themed, false).paletteTheme).toBe('warm');
+    expect(withFillColor(themed, '#abcdef').paletteTheme).toBe('warm');
+    expect(withSelectedColor(themed, '#abcdef').paletteTheme).toBe('warm');
+    expect(withBorderColor(themed, '#abcdef').paletteTheme).toBe('warm');
+    // 透過度（アルファ）も同様に全 withXxx で保持される（教訓 5.17 全網羅）。
+    expect(withAutoColorEnabled(themed, false).fillOpacity).toBe(0.3);
+    expect(withFillColor(themed, '#abcdef').selectedOpacity).toBe(0.7);
+    expect(withPaletteTheme(themed, 'cool').fillOpacity).toBe(0.3);
+    expect(withBorderColor(themed, '#abcdef').selectedOpacity).toBe(0.7);
+    // and the opacity-setters preserve everything else, including the palette.
+    expect(withFillOpacity(themed, 0.9).paletteTheme).toBe('warm');
+    expect(withFillOpacity(themed, 0.9).selectedOpacity).toBe(0.7);
+    expect(withSelectedOpacity(themed, 0.1).fillOpacity).toBe(0.3);
   });
 });

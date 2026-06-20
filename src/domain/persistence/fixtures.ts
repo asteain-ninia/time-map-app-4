@@ -33,7 +33,9 @@ import type {
 
 export const CAL = getCalendar('gregorian');
 
-const COLOR = createColorInfo(true, '#102030', '#405060', '#708090');
+// Non-default透過度（アルファ）so the round-trip test proves alpha is persisted
+// and restored verbatim (U33 spec 行23-26 / AC1・AC5), not silently reset to 1.
+const COLOR = createColorInfo(true, '#102030', '#405060', '#708090', 'default', 0.5, 0.75);
 
 /** A square territory ring (4 vertices) placed at (ox, oy) with the given size. */
 export function squareVertices(prefix: string, ox: number, oy: number, size: number) {

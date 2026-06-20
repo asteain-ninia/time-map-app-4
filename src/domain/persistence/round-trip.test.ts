@@ -50,6 +50,43 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
     expect(serialize(richValidProject()).version).toBe('tmap/1');
   });
 
+  it('persists 透過度（アルファ）verbatim through the JSON boundary (U33 AC1・AC5)', () => {
+    const manifest = serialize(richValidProject());
+    const json = JSON.parse(JSON.stringify(manifest));
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome === PARSE_OUTCOME.Ok) {
+      const restored = deserialize(parsed.manifest);
+      // The rich fixture colors carry non-default opacities (0.5 / 0.75); they must
+      // survive the round trip, never be reset to fully-opaque.
+      const someFeature = restored.histories[0]!.series.entries[0]!.anchor.snapshot.features[0]!;
+      expect(someFeature.color.fillOpacity).toBe(0.5);
+      expect(someFeature.color.selectedOpacity).toBe(0.75);
+    }
+  });
+
+  it('restores a pre-alpha manifest (opacity keys absent) to fully opaque (後方互換 + 既定値)', () => {
+    const manifest = serialize(richValidProject());
+    const json = JSON.parse(JSON.stringify(manifest)) as {
+      histories: { entries: { anchor: { snapshot: { features: { color: Record<string, unknown> }[] } } }[] }[];
+    };
+    // Simulate an older manifest: strip every opacity key from every color.
+    for (const h of json.histories)
+      for (const e of h.entries)
+        for (const f of e.anchor.snapshot.features) {
+          delete f.color['fillOpacity'];
+          delete f.color['selectedOpacity'];
+        }
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome === PARSE_OUTCOME.Ok) {
+      const restored = deserialize(parsed.manifest);
+      const someFeature = restored.histories[0]!.series.entries[0]!.anchor.snapshot.features[0]!;
+      expect(someFeature.color.fillOpacity).toBe(1);
+      expect(someFeature.color.selectedOpacity).toBe(1);
+    }
+  });
+
   it('property: round-trip identity for any generated valid project', () => {
     fc.assert(
       fc.property(projectArb(), (project) => {

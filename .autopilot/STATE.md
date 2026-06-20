@@ -4,6 +4,13 @@
 作業ルート: c:\!WORKSPACE\time-map-app\time-map-app-4 （!WORKSPACEセッションから絶対パスで駆動）
 方針: ユーザーが起きるまで停止しない。各マイルストーンでgit commit（ローカルのみ、pushしない）。
 
+## 進捗ログ（新しい順・先頭追記）
+- 2026-06-20: U33・U36 ラウンド確定。**両ユニット done（D20 緩和ゲート適用）**。全体検証3点 全緑（`npm run typecheck`=exit 0 / `npm run lint`=exit 0/eslint . clean / `npm run test`=173 files・1754 tests passed, exit 0）。
+  - **U33(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: openFinding(high)『透過度（アルファ）が永続スタイル属性として未実装。ColorInfo に alpha 無し / BasicInfoForm が fillOpacity:1・selectedOpacity:1 をハードコード / onChange で opacity を draft に戻さない=スライダーが見た目だけ』。**確定ツリーで finding 推奨 fix が完全実装済みを実測**: ① domain attributes.ts に `fillOpacity`/`selectedOpacity`(Opacity=0..1)+ 単一真実源 `DEFAULT_OPACITY=1`（73行）を追加。② persistence schema.ts に `opacitySchema`(L72)+ `fillOpacity/selectedOpacity` を後方互換 optional で追加(L82,86)。③ serialize.ts が alpha を verbatim 直列化/復元(L149,151,333,334)。④ BasicInfoForm.styleValuesFromDraft がドラフトの opacity にバインド（L59-68、ハードコード撤去）+ onChange で fillOpacity/selectedOpacity を draft に書き戻し(L178-186)。⑤ 回帰テスト round-trip.test.ts:『透過度（アルファ）verbatim 永続(U33 AC1・AC5)』(L53-64) + 『pre-alpha manifest を fully opaque に復元(後方互換+既定値)』(L68-86) 緑。よって AC1/AC5 の透過度要件は確定ツリーで充足。残部（透過スライダーの実 DOM 発火→描画反映）は描画ユニット+合成結線+E2E 依存で U43(統合)へ集約 → done。
+  - U33 finding を解消したのは U36 報告の blocker と同根の coloring/style WIP リファクタ（attributes.ts / persistence/* / ui/property/contracts.ts / StyleSection*）が完了したため。
+  - **U36(buildUnit=converged,1r,acceptanceMet=true)→done**: 報告 blocker『npm run typecheck が兄弟未完成ユニット由来の PRE-EXISTING エラー edit-intent.ts(33) paletteTheme missing で RED』は**確定ツリーで解消済みを実測**: 当該 WIP（paletteTheme を PropertyEditValues に追加）が完了し全体 typecheck=exit 0。U36 自スコープは両 tsconfig クリーン・lint 緑・全テスト緑 → done。
+  - units.json: U33→done, U36→done。次 ready 候補: U38(deps=U16,U18,U33,U11,U19 — U33 done で前進)・U34/U35/U37/U40/U41 等は done 済み・残 pending は U38/U39/U43/U42。
+
 ## 採用スタック（docs/技術方針.md）
 TypeScript strict + Electron + React18(UIシェル限定) + 自前Canvas2D(MapRenderer i/f, WebGL退避路) + Zustand + 純粋ドメインコア + Immerコマンド履歴 + RBush + polygon-clipping + Zod + .tmap(ZIP/fflate) + Vite/electron-vite + Vitest/fast-check/Playwright。
 

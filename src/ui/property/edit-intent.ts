@@ -36,8 +36,11 @@ export function valuesFromFeature(feature: Feature): PropertyEditValues {
     endYear: feature.attributes.endYear,
     autoColorEnabled: feature.color.autoColorEnabled,
     fillColor: feature.color.fillColor,
+    fillOpacity: feature.color.fillOpacity,
     selectedColor: feature.color.selectedColor,
+    selectedOpacity: feature.color.selectedOpacity,
     borderColor: feature.color.borderColor,
+    paletteTheme: feature.color.paletteTheme,
   };
 }
 
@@ -54,6 +57,9 @@ export function isNoOpEdit(feature: Feature, next: PropertyEditValues): boolean 
     next.fillColor,
     next.selectedColor,
     next.borderColor,
+    next.paletteTheme,
+    next.fillOpacity,
+    next.selectedOpacity,
   );
   return (
     basicAttributesEqual(feature.attributes, nextAttrs) &&

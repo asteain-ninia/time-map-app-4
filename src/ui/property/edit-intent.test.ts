@@ -30,8 +30,15 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
       endYear: 1582,
       autoColorEnabled: true,
       fillColor: '#111111',
+      // 透過度（アルファ）は錨保存スタイル属性 (U33 spec 行23-26 / AC1・AC5)。明示
+      // 指定なしの面は既定（不透明=1）。valuesFromFeature はこれも射影する。
+      fillOpacity: 1,
       selectedColor: '#222222',
+      selectedOpacity: 1,
       borderColor: '#333333',
+      // 使用パレット（テーマ名）は錨保存スタイル属性 (U33 AC1)。明示指定なしの面は
+      // 既定テーマ。valuesFromFeature はこれも射影する。
+      paletteTheme: 'default',
     });
   });
 
@@ -47,6 +54,18 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
   it('isNoOpEdit is false when a color field changed', () => {
     const changed = { ...valuesFromFeature(feature), fillColor: '#ffffff' };
     expect(isNoOpEdit(feature, changed)).toBe(false);
+  });
+
+  it('isNoOpEdit is false when the palette theme changed (U33 AC1: palette is a saved style attribute)', () => {
+    const changed = { ...valuesFromFeature(feature), paletteTheme: 'warm' };
+    expect(isNoOpEdit(feature, changed)).toBe(false);
+  });
+
+  it('isNoOpEdit is false when an opacity changed (U33 AC1・AC5: 透過度 is a saved style attribute)', () => {
+    expect(isNoOpEdit(feature, { ...valuesFromFeature(feature), fillOpacity: 0.5 })).toBe(false);
+    expect(isNoOpEdit(feature, { ...valuesFromFeature(feature), selectedOpacity: 0.25 })).toBe(
+      false,
+    );
   });
 
   it('buildEditIntent uses the passed edit time (context上の時刻, never a clock)', () => {

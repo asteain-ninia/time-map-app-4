@@ -97,6 +97,11 @@
   - **U30(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: 自スコープ緑 + 全体検証3点緑。受け入れ中核のうち E2E/層またぎ実配線依存部分は U43(統合)+U42 へ集約(D20 方針)。自スコープ内に赤・未完成なし → done。
   - 自律判断の性質: D20 で確立した緩和ゲート(自スコープ完成 + 全体検証3点緑 なら、buildUnit が needs-attention でも、受け入れ中核が E2E/結線依存なだけのものは done)を本ラウンドに適用。U27/U29 の needs-attention は『過去の実装ラウンド時点の transient な兄弟 probe 汚染 / 後に修正された seam 回帰』に起因し、確定ツリーでは解消済み。U40/U23/U24(D20)が needs-attention 保持だったのは spec が E2E を受け入れ手段として**明記**かつ結線が島の外にあったケースで、U27/U29 は self-scope の build-health/回帰が確定ツリーで真に緑化した点が決定的に異なる。
 
+- D22(2026-06-20): U33/U36 ラウンド。**両ユニット done（D20/D21 緩和ゲート適用）**。判断根拠 = 確定ツリーで検証3点全緑（`npm run typecheck`=exit 0 / `npm run lint`=exit 0/eslint . clean / `npm run test`=173 files・1754 tests passed, exit 0）+ 各ユニット自スコープ緑 + acceptanceMet=true。
+  - **U33(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: openFinding(high)『透過度（アルファ）が永続スタイル属性として未実装＝spec 行23-26 / AC1・AC5 の範囲縮小（教訓5.25 の逆）』。**確定ツリーで finding が提示した推奨 fix（ColorInfo に fillOpacity/selectedOpacity を単一真実源で通す）が完全実装済みを実測**: domain(attributes.ts: `DEFAULT_OPACITY=1` + 両 Opacity フィールド) / persistence(schema.ts: opacitySchema 後方互換 optional / serialize.ts: verbatim) / UI(BasicInfoForm: styleValuesFromDraft がドラフト opacity にバインド・ハードコード撤去・onChange で書き戻し) の全層を貫通。回帰テスト round-trip.test.ts が『alpha verbatim 永続』+『pre-alpha manifest→fully opaque 復元（後方互換+既定値）』を緑で証明。finding が記録した『alpha persistence is out of U33 flagged scope』注記は確定ツリーでは撤回され、属性範囲は spec どおり回復。残る受け入れ中核（透過スライダーの実 DOM ドラッグ→アンカー編集→単一 undo→描画反映の通し）は描画ユニット+合成結線+E2E 依存で U43(統合) へ集約 → done。
+  - **U36(buildUnit=converged,1r,acceptanceMet=true)→done**: 報告 blocker は『全体 typecheck が兄弟 in-progress ユニットの PRE-EXISTING・無関係エラー edit-intent.ts(33) paletteTheme missing（uncommitted coloring/style WIP）で RED。U36 スコープ外で触れれば他ユニット半完成リファクタへの場当たり』。**確定ツリーで当該 WIP 完了済み・全体 typecheck=exit 0 を実測**。U36 全ファイルは両 tsconfig クリーン・lint 緑・全テスト緑 → done。
+  - 自律判断の性質: D21 と同方針。U33 の needs-attention は『実装ラウンド時点で透過 persistence を未着手＝意図的な範囲縮小注記』に起因したが、同根の coloring/style WIP が確定ツリーで完了し、finding 推奨 fix が全層・回帰テスト付きで成立。U36 の blocker も同 WIP 完了で消失。両者とも自スコープが確定ツリーで真に緑化し、受け入れ中核の残部のみ E2E/結線依存 → D20 緩和ゲートに合致して done。
+
 ## 未解決の不明点
 
 - （随時追記）

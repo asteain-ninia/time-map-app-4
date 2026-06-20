@@ -38,7 +38,9 @@ const color = createColorInfo(true, '#000', '#111', '#222');
 const pColor: PersistedColorInfo = {
   autoColorEnabled: color.autoColorEnabled,
   fillColor: color.fillColor,
+  fillOpacity: color.fillOpacity,
   selectedColor: color.selectedColor,
+  selectedOpacity: color.selectedOpacity,
   borderColor: color.borderColor,
 };
 void pColor;

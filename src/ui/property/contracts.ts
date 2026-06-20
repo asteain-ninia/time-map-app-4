@@ -77,13 +77,21 @@ export interface PropertyEditIntent {
   readonly attributes: PropertyEditValues;
 }
 
-/** The editable基本情報 values (FR-97): basic attributes + color info. */
+/** The editable基本情報 values (FR-97 / FR-100): basic attributes + color info +
+ * 使用パレット. paletteTheme is part of the single anchor edit so a palette change
+ * is one undo unit alongside the other style attributes (U33 AC1 / FR-59). */
 export interface PropertyEditValues {
   readonly name: string;
   readonly startYear: number;
   readonly endYear: number;
   readonly autoColorEnabled: boolean;
   readonly fillColor: string;
+  /** 通常表示色の透過度（アルファ, 0..1）— a persisted style attribute (U33 AC1・AC5). */
+  readonly fillOpacity: number;
   readonly selectedColor: string;
+  /** 選択表示色の透過度（アルファ, 0..1）— a persisted style attribute (U33 AC1・AC5). */
+  readonly selectedOpacity: number;
   readonly borderColor: string;
+  /** 使用パレット（テーマ名）— the style attribute (FR-100 / U33 AC1). */
+  readonly paletteTheme: string;
 }

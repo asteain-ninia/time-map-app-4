@@ -143,8 +143,14 @@ function serializeColor(c: ColorInfo): PersistedColorInfo {
   return {
     autoColorEnabled: c.autoColorEnabled,
     fillColor: c.fillColor,
+    // Always written: the domain fields are always present (createColorInfo
+    // defaults them), so persistence carries 透過度（アルファ）+ 使用パレット as
+    // part of the anchor style state (FR-100 / U33 spec 行23-26 / AC1).
+    fillOpacity: c.fillOpacity,
     selectedColor: c.selectedColor,
+    selectedOpacity: c.selectedOpacity,
     borderColor: c.borderColor,
+    paletteTheme: c.paletteTheme,
   };
 }
 
@@ -312,7 +318,21 @@ function deserializeAttributes(a: PersistedBasicAttributes): BasicAttributes {
 }
 
 function deserializeColor(c: PersistedColorInfo): ColorInfo {
-  return createColorInfo(c.autoColorEnabled, c.fillColor, c.selectedColor, c.borderColor);
+  // paletteTheme / fillOpacity / selectedOpacity are optional in older manifests;
+  // createColorInfo supplies their defaults (既定パレットテーマ FR-109 /
+  // DEFAULT_OPACITY U33) when a key is absent, so an older project restores to the
+  // same fully-opaque, default-themed look it had before these were persisted.
+  // Passing `undefined` for an absent optional re-selects the factory default
+  // (single source of the 既定値 rule, 教訓 5.30).
+  return createColorInfo(
+    c.autoColorEnabled,
+    c.fillColor,
+    c.selectedColor,
+    c.borderColor,
+    c.paletteTheme,
+    c.fillOpacity,
+    c.selectedOpacity,
+  );
 }
 
 function deserializeRing(ring: PersistedRing): Ring {

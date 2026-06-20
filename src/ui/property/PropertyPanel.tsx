@@ -19,6 +19,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { AnchorEntry } from '../../domain/anchor-series';
+import type { PaletteThemeId } from '../../domain/coloring';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
@@ -57,6 +58,12 @@ export interface PropertyPanelProps<S> {
   readonly ownerLookup?: VertexOwnerLookup;
   /** Open a detail panel for the feature (FR-99後段). */
   readonly onOpenDetail?: (featureId: FeatureId) => void;
+  /**
+   * Palette themes for the U33「スタイル」section dropdown (from settings, FR-109).
+   * Forwarded to the basic-info form's StyleSection. When omitted the form falls
+   * back to the feature's own theme so the section still renders.
+   */
+  readonly paletteThemes?: readonly PaletteThemeId[];
 }
 
 export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
@@ -169,6 +176,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             feature={feature}
             editable={decision.editable && mode !== EDIT_MODE.View}
             editTime={selectedEntry !== null ? selectedEntry.start : null}
+            {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
             onSave={(values) => handleSave(values)}
           />
 
