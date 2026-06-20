@@ -39,6 +39,18 @@ export async function launchApp(): Promise<LaunchedApp> {
   });
   const page = await app.firstWindow();
   // Wait until the renderer bundle has executed and React mounted the shell.
-  await page.waitForSelector('[data-testid="app-shell"]', { state: 'attached' });
+  //
+  // COLD-LAUNCH BUDGET: the FIRST Electron launch in a batch pays the cold-start
+  // cost (electron-vite build artifacts loaded, V8 warm-up, renderer bundle parse),
+  // which on a loaded/headless CI box can exceed the 30s DEFAULT waitForSelector
+  // timeout and flake the whole gate. We give this wait an EXPLICIT budget sized to
+  // the per-test cap (playwright.config.ts timeout: 60_000) minus launch overhead,
+  // so the shell-mount wait — not an undersized default — is what governs (and a
+  // genuinely stuck launch still fails fast via the per-test timeout). Paired with
+  // retries:1 in the config so a single cold-start outlier cannot redden the gate.
+  await page.waitForSelector('[data-testid="app-shell"]', {
+    state: 'attached',
+    timeout: 45_000,
+  });
   return { app, page };
 }

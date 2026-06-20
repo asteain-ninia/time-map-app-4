@@ -4,6 +4,9 @@
 
 ## 確定した運用上の決定
 
+- D26(2026-06-20 ~16:30・U42 ラウンド): U42(検証専任ユニット=全 FR 受け入れ検証の集約点。新規ドメイン/UI 実装は「やらないこと」)を **D20 緩和ゲートで done 判定**。判断根拠 = buildUnit=converged(2r,acceptanceMet=true,blockers無) + 全体検証3点全緑を実測(typecheck=0[node+web+e2e 3構成] / lint=0[eslint . clean] / test: **194 files・1946 tests passed, exit 0**、前ラウンド 185/1889 から +9 files/+57 tests・回帰なし) + 自スコープ(検証スイート/契約・単体テスト)赤無し。
+  - **これで units.json の全 43 ユニットが done**(残 pending=なし)。次フェーズ=CONVERGE。
+  - **要起床後レビュー / 必須フォロー(D25 から継続・最重要)**: U42 は検証専任のため done だが、**D25 で記録した「未割当ライブ U13 結線(新規ドメインユニット=`applyProposal`: snapshot→錨/履歴)」は依然 units.json に未起票**。これが無いと「地物追加→保存→読込」round-trip と確定時整合性が実機で永久に到達不能で、U42 が集約する受け入れ検証のうち round-trip/モード別 E2E は緑化できない。**CONVERGE に入る前に必ず新規ユニットとして起票・実装すること**(docs/現状.md に記録済)。U42 を done にしたのは自スコープ(検証コード+単体/契約テスト)が緑かつ全体3点緑のためで、この未割当ブロッカーは U42 自スコープの赤ではない。
 - D25(2026-06-20 ~15:50・U43 ラウンド): U43(統合ユニット=合成ルート/入力層実配線/E2Eハーネス)を **D20 緩和ゲートで done 判定**。判断根拠 = 全体検証3点全緑(typecheck=0[node+web+e2e 3構成] / lint=0 / test: 185 files・1889 tests passed, exit 0) + **E2E ハーネス実機緑**(`npm run test:e2e` = electron-vite build → playwright **6 passed・exit 0**、非対話・オフスクリーン E2E_TEST=1・console-clean) + 自スコープ(`src/ui/App.tsx`/store セッションスライス/入力層実配線/`e2e/`+`playwright.config.ts`+`tsconfig.e2e.json`/型骨格 `src/ui/consistency-binding.ts`)完成。
   - **buildUnit=needs-attention(2r,acceptanceMet=true) の openFinding 4件(high) を確定ツリーで照合**:
     - **finding①②(build-health 証跡ギャップ)**: 実装報告 commandsRun に E2E 実行が無く基準2「ハーネス非対話緑」の根拠が報告内に欠落していた。**本ラウンドで `npm run test:e2e` を実機実行=6 passed・exit 0 を確証**(レビュー指摘どおり緑は実在)。報告の証跡欠落は事実だが緑は確認済みで致命ではない。**STATE に E2E 実行結果を明記して証跡を補完済み**。
