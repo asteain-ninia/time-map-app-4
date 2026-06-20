@@ -203,7 +203,12 @@ export function wrapTurnsForViewport(camera: Camera, viewport: Viewport): number
     !Number.isFinite(viewport.widthCss) ||
     viewport.widthCss <= 0 ||
     !Number.isFinite(camera.zoom) ||
-    camera.zoom <= 0
+    camera.zoom <= 0 ||
+    // centerLon is a CONTINUOUS scalar (never folded — FR-07), but it must still be
+    // FINITE: a non-finite center makes leftLon/rightLon — and hence minTurn/maxTurn —
+    // non-finite, and the `t += 1` loop below would then never advance past an
+    // infinite `maxTurn`, hanging the render/hit-test frame (病的入力の安全性).
+    !Number.isFinite(camera.centerLon)
   ) {
     return [0];
   }
@@ -270,6 +275,9 @@ export function wrapTurnsForLonSpan(
     viewport.widthCss <= 0 ||
     !Number.isFinite(camera.zoom) ||
     camera.zoom <= 0 ||
+    // See {@link wrapTurnsForViewport}: a non-finite centerLon makes the edge
+    // longitudes and the turn bounds non-finite, hanging the enumeration loop.
+    !Number.isFinite(camera.centerLon) ||
     !Number.isFinite(lonMin) ||
     !Number.isFinite(lonMax) ||
     lonMin > lonMax

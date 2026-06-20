@@ -158,6 +158,16 @@ describe('wrapTurnsForViewport (FR-07 seam tiling)', () => {
     expect(wrapTurnsForViewport(CAM, { ...VP, widthCss: 0 })).toEqual([0]);
     expect(wrapTurnsForViewport({ ...CAM, zoom: 0 }, VP)).toEqual([0]);
   });
+
+  it('returns [0] (does not hang) for a non-finite centerLon', () => {
+    // Regression: a non-finite center makes leftLon/rightLon — and hence
+    // minTurn/maxTurn — non-finite, and the `t += 1` loop would never advance past
+    // an infinite maxTurn, hanging the frame. The guard must short-circuit to [0].
+    // The 1s vitest timeout fails (rather than hangs the suite) if the guard regresses.
+    for (const bad of [Infinity, -Infinity, NaN]) {
+      expect(wrapTurnsForViewport({ ...CAM, centerLon: bad }, VP)).toEqual([0]);
+    }
+  }, 1000);
 });
 
 describe('wrapTurnsForLonSpan (HB-14 — per-primitive turns for continuous longitude)', () => {
@@ -198,6 +208,15 @@ describe('wrapTurnsForLonSpan (HB-14 — per-primitive turns for continuous long
     expect(wrapTurnsForLonSpan(0, 0, { ...cam, zoom: 0 }, VP800)).toEqual([0]);
     expect(wrapTurnsForLonSpan(10, -10, cam, VP800)).toEqual([0]); // min > max
   });
+
+  it('returns [0] (does not hang) for a non-finite centerLon', () => {
+    // Regression: same hang vector as wrapTurnsForViewport — a non-finite center
+    // yields non-finite turn bounds and the enumeration loop would never terminate.
+    for (const bad of [Infinity, -Infinity, NaN]) {
+      const cam: Camera = { centerLon: bad, centerLat: 0, zoom: 10 };
+      expect(wrapTurnsForLonSpan(0, 0, cam, VP800)).toEqual([0]);
+    }
+  }, 1000);
 });
 
 describe('representativeCenterLon (FR-12, delegates to U05)', () => {
