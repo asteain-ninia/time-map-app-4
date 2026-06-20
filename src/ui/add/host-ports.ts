@@ -22,7 +22,38 @@ import {
   buildGridPrimitives,
   DEFAULT_GRID_STYLE,
 } from '../../render/grid-layer';
+import {
+  buildFeaturePrimitives,
+  DEFAULT_LABEL_THRESHOLDS,
+  DEFAULT_SCREEN_SIZES,
+  type EvaluatedFeature,
+  type LabelThresholds,
+} from '../../render/feature-layer';
+import type { Camera, Viewport } from '../../render/camera';
 import { loadPresetBaseMap, PRESET_BASEMAP_META } from '../map/base-map-asset';
+
+/**
+ * Inputs the host needs to composite the COMMITTED feature layer (P0-A): a getter
+ * for the U19 `EvaluatedFeature[]` effective at the current timeline instant. The
+ * host reads it on EVERY paint, so the latest committed truth is always drawn
+ * (single truth source — the host never caches a stale copy, 教訓 5.6). When absent
+ * the host behaves exactly as before (base + grid + overlay only).
+ */
+export interface CreateAddHostPortsOptions {
+  /**
+   * Return the committed features to draw THIS frame, resolved at the current time
+   * with the current selection (FR-82). Called on every composite; a domain / time
+   * / selection change is reflected by calling {@link AddHostPorts.redraw}.
+   */
+  readonly committedFeatures?: () => readonly EvaluatedFeature[];
+  /**
+   * Return the CURRENT label-visibility thresholds (FR-86 / FR-109). Read on every
+   * composite so a project-setting change (e.g. `areaLabelOccupancyThreshold`)
+   * reflects at once when the host redraws (教訓 5.35). Defaults to
+   * {@link DEFAULT_LABEL_THRESHOLDS} when absent.
+   */
+  readonly labelThresholds?: () => LabelThresholds;
+}
 
 export interface AddHostPorts {
   /** Pointer client coords → world coordinate (U17 transform). */
@@ -31,6 +62,13 @@ export interface AddHostPorts {
   drawAdd(primitives: readonly DrawPrimitive[]): void;
   /** Paint the provisional knife layer (U26: overlay / 対象面強調 / 分断線 / 固定円). */
   drawKnife(primitives: readonly DrawPrimitive[]): void;
+  /**
+   * Re-composite the whole frame (base + grid + COMMITTED features + the last tool
+   * overlay) from the CURRENT inputs. Called by the composition root whenever the
+   * committed domain / current time / selection changes so an added / edited /
+   * split feature draws at once (P0-A / 教訓 5.5).
+   */
+  redraw(): void;
   /** The current camera zoom (CSS px per degree) — the固定円 radius input (FR-17). */
   zoom(): number;
   /**
@@ -44,6 +82,51 @@ export interface AddHostPorts {
   dispose(): void;
 }
 
+/** The inputs to {@link composeFrame} for ONE frame's primitive composition. */
+export interface FrameInputs {
+  /** The decoded base-map image, or null until decoded / on decode failure. */
+  readonly baseImage: CanvasImageSource | null;
+  /** The committed features effective at the current time (P0-A). */
+  readonly committed: readonly EvaluatedFeature[];
+  /** The current tool-overlay primitives (FR-78 provisional add / knife). */
+  readonly overlay: readonly DrawPrimitive[];
+  /** The camera + viewport the grid / committed features are projected with. */
+  readonly camera: Camera;
+  readonly viewport: Viewport;
+  /** Label-visibility thresholds (FR-86); defaults to {@link DEFAULT_LABEL_THRESHOLDS}. */
+  readonly thresholds?: LabelThresholds;
+}
+
+/**
+ * Compose ONE frame's draw primitives in back-to-front order (P0-A / 教訓 §4 single
+ * base source): base map → graticule → COMMITTED features → tool overlay. Pure, so
+ * the layer ORDER and the committed-feature inclusion are unit-testable without a
+ * DOM / Canvas; the host below delegates to it on every paint. The committed
+ * features go through U19's `buildFeaturePrimitives` (view-clip + LOD ON), so what
+ * draws is exactly what U19 decides (single truth source, 教訓 5.29).
+ */
+export function composeFrame(inputs: FrameInputs): DrawPrimitive[] {
+  const primitives: DrawPrimitive[] = [];
+  if (inputs.baseImage !== null) {
+    primitives.push(buildBaseMapPrimitive(inputs.baseImage, PRESET_BASEMAP_META));
+  }
+  primitives.push(
+    ...buildGridPrimitives(true, DEFAULT_GRID_STYLE, inputs.camera, inputs.viewport),
+  );
+  if (inputs.committed.length > 0) {
+    primitives.push(
+      ...buildFeaturePrimitives(inputs.committed, {
+        camera: inputs.camera,
+        viewport: inputs.viewport,
+        sizes: DEFAULT_SCREEN_SIZES,
+        thresholds: inputs.thresholds ?? DEFAULT_LABEL_THRESHOLDS,
+      }),
+    );
+  }
+  primitives.push(...inputs.overlay);
+  return primitives;
+}
+
 /**
  * Create the live add host ports for a mount element. A `<canvas>` is inserted
  * into `mount`, sized to its client box, and driven by a {@link Canvas2DMapRenderer}.
@@ -54,7 +137,10 @@ export interface AddHostPorts {
  * renderer construction throws; callers that may run there should guard. The app
  * always runs in Electron's Chromium where a 2D context is available.
  */
-export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
+export function createAddHostPorts(
+  mount: HTMLElement,
+  options: CreateAddHostPortsOptions = {},
+): AddHostPorts {
   const canvas = mount.ownerDocument.createElement('canvas');
   canvas.style.width = '100%';
   canvas.style.height = '100%';
@@ -84,32 +170,34 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
   // グリッド維持), no console noise.
   let baseImage: CanvasImageSource | null = null;
   let disposed = false;
+  // The last tool-overlay primitives (FR-78 provisional add / knife). Held so a
+  // committed-feature redraw or the async base-map decode re-composites with the
+  // overlay still on top, never wiping an in-progress tool draft (教訓 5.6).
+  let lastOverlay: readonly DrawPrimitive[] = [];
+
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
-    // Rebuild the grid for the CURRENT camera/viewport so a resize / future pan
-    // re-tiles correctly; the base map (if loaded) stays UNDER the grid, and both
-    // stay under the overlay primitives.
-    const primitives: DrawPrimitive[] = [];
-    if (baseImage !== null) {
-      primitives.push(buildBaseMapPrimitive(baseImage, PRESET_BASEMAP_META));
-    }
-    primitives.push(
-      ...buildGridPrimitives(
-        true,
-        DEFAULT_GRID_STYLE,
-        renderer.getCamera(),
-        renderer.getViewport(),
-      ),
-    );
-    primitives.push(...overlay);
+    lastOverlay = overlay;
+    // Compose the frame (base → grid → COMMITTED features → overlay) for the
+    // CURRENT camera/viewport, reading the committed getter fresh so the latest
+    // domain / time / selection truth is drawn (single truth source, 教訓 5.6).
+    const primitives = composeFrame({
+      baseImage,
+      committed: options.committedFeatures?.() ?? [],
+      overlay,
+      camera: renderer.getCamera(),
+      viewport: renderer.getViewport(),
+      thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
+    });
     renderer.drawBatch({ primitives });
   };
-  // Initial paint: the graticule is visible immediately on mount (no blank area).
+  // Initial paint: the graticule + any committed features are visible immediately.
   paintWith([]);
-  // Kick off the base-map decode; re-composite when it lands (unless disposed).
+  // Kick off the base-map decode; re-composite when it lands (unless disposed),
+  // keeping the last overlay so an in-progress tool draft is not wiped.
   void loadPresetBaseMap(mount.ownerDocument).then((img) => {
     if (disposed || img === null) return;
     baseImage = img;
-    paintWith([]);
+    paintWith(lastOverlay);
   });
 
   return {
@@ -123,6 +211,10 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
     },
     drawKnife(primitives): void {
       paintWith(primitives);
+    },
+    redraw(): void {
+      // Re-composite with the latest committed features + the last tool overlay.
+      paintWith(lastOverlay);
     },
     zoom(): number {
       return renderer.getCamera().zoom;

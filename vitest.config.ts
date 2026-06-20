@@ -74,6 +74,12 @@ export default defineConfig({
       // faked ports. These import only pure `.ts` (domain selection + render
       // transform), so they run in node without a DOM.
       'src/ui/map/**/*.test.ts',
+      // U23 add-host pure-logic test: the host frame composition (composeFrame)
+      // that places COMMITTED features into the draw batch under the tool overlay
+      // (P0-A). Imports only pure `.ts` (render feature-layer + primitive types),
+      // so it runs in node without a DOM. The add-tool React operation tests are
+      // `.test.tsx` (jsdom; covered by the .tsx glob below).
+      'src/ui/add/**/*.test.ts',
       // U15 shell IO + typed-IPC pure-logic tests: .tmap ZIP build/read,
       // atomic write (temp→fsync→rename) with an injected fs port, generation
       // backup naming/selection, auto-save scheduler with a fake clock, the

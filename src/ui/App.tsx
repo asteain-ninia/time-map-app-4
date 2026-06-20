@@ -71,6 +71,8 @@ import {
 } from '../domain/command/history';
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafAtPoint, leafShapeAt } from './live-lookup';
+import { buildCommittedFeatures } from './map/committed-features';
+import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
 
 // The domain truth root is U14's persistence {@link DomainProject} (histories +
@@ -131,15 +133,71 @@ export function App(): JSX.Element {
   const zoomRangeRef = useRef<ZoomRange | null>(null);
 
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
-    const ports = createAddHostPorts(el);
+    // P0-A — feed the LIVE committed features into the renderer. The host reads
+    // this getter on every composite, so the latest committed domain resolved at
+    // the current time (with the live selection for FR-82) is what draws (single
+    // truth source — no copy of the domain in the renderer, 教訓 5.29 / 5.6).
+    const ports = createAddHostPorts(el, {
+      committedFeatures: () => {
+        const s = store.getState();
+        // Areas flow through U34 (集約 / depth / focus); points / lines directly
+        // (P0-A). The display-control comes from the store so the slider re-derives
+        // the batch on the next redraw (FR-42 / FR-43, 教訓 5.5).
+        return buildCommittedFeatures(
+          s.domain,
+          s.currentTime,
+          s.activeFeature,
+          s.displayControl,
+        );
+      },
+      // FR-86 / FR-109: the area-label occupancy threshold is a project setting; the
+      // point/line label thresholds are not user-settable (DEFAULT applies). Read
+      // live so a settings change reflects on the next redraw (教訓 5.35).
+      labelThresholds: () => ({
+        ...DEFAULT_LABEL_THRESHOLDS,
+        areaMinOccupancy:
+          store.getState().projectSettings.areaLabelOccupancyThreshold,
+      }),
+    });
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).
     if (zoomRangeRef.current !== null) ports.setZoomRange(zoomRangeRef.current);
+    // Re-composite whenever the committed domain / current time / selection /
+    // display-control / label-threshold setting changes so an added / edited /
+    // split feature (or a slider / setting change) draws at once (P0-A / 教訓 5.5).
+    // The Canvas subscribes to the store directly, OFF the React render path
+    // (技術方針 2.3 / 2.5). A redraw after a tool overlay draw is idempotent (it
+    // re-composites with the same last overlay), so there is no double-source risk.
+    let prevDomain = store.getState().domain;
+    let prevTime = store.getState().currentTime;
+    let prevActive = store.getState().activeFeature;
+    let prevDisplay = store.getState().displayControl;
+    let prevAreaThreshold =
+      store.getState().projectSettings.areaLabelOccupancyThreshold;
+    const unsubscribe = store.subscribe((s) => {
+      const areaThreshold = s.projectSettings.areaLabelOccupancyThreshold;
+      if (
+        s.domain === prevDomain &&
+        s.currentTime === prevTime &&
+        s.activeFeature === prevActive &&
+        s.displayControl === prevDisplay &&
+        areaThreshold === prevAreaThreshold
+      ) {
+        return;
+      }
+      prevDomain = s.domain;
+      prevTime = s.currentTime;
+      prevActive = s.activeFeature;
+      prevDisplay = s.displayControl;
+      prevAreaThreshold = areaThreshold;
+      ports.redraw();
+    });
     return () => {
+      unsubscribe();
       ports.dispose();
       rendererRef.current = null;
     };
-  }, []);
+  }, [store]);
 
   // Supply the camera clamp range to U17 (FR-10 / FR-109 即時反映). Caches the
   // value and forwards it to the live renderer when one is mounted.
