@@ -14,8 +14,10 @@ import { createEditProposal } from '../../domain/consistency/index';
 import { timePointYear } from '../../domain/time/time-point';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import {
+  createAggregateFeature,
   createLeafFeature,
   createPointFeature,
+  withParentId,
   type Feature,
 } from '../../domain/feature';
 import { createShape, createTerritoryRing } from '../../domain/ring';
@@ -159,5 +161,161 @@ describe('liveHitTestAt', () => {
     // A point's own vertex is the nearest vertex → vertex hit on its owner.
     expect(hit.kind).toBe(HIT_KIND.Vertex);
     if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(p.feature.id);
+  });
+
+  // --- Codex #2: 集約表示中は描画(集約形状)と hit-test を一致させる ----------------
+  //
+  // An aggregate parent over two child leaves, displayed at N=0 (the default): the
+  // renderer draws the parent's 集約形状 and OMITS the children. The hit-test must
+  // resolve the SAME set — a body click selects the AGGREGATE, and a hidden child's
+  // vertex is NOT pickable (描画されていないものはクリックで選ばれない).
+  describe('aggregate display (displayControl honoured)', () => {
+    /** An aggregate `agg` over two child leaves at [0,4]² and [6,10]² (parented). */
+    function aggregateHierarchy(): {
+      root: DomainRoot;
+      aggId: Feature['id'];
+      childAId: Feature['id'];
+      childBId: Feature['id'];
+    } {
+      const childA = squareLeaf('f-childA', 'vca', 0, 0); // [0,4]×[0,4]
+      const childB = squareLeaf('f-childB', 'vcb', 6, 0); // [6,10]×[0,4]
+      const aggId = asFeatureId('f-agg');
+      // The display forest links parent↔child via parentId; set it on each child.
+      const childAp = {
+        feature: withParentId(childA.feature, aggId),
+        vertices: childA.vertices,
+      };
+      const childBp = {
+        feature: withParentId(childB.feature, aggId),
+        vertices: childB.vertices,
+      };
+      const agg = createAggregateFeature(
+        aggId,
+        createBasicAttributes('f-agg', 0, 0),
+        color,
+        [childAp.feature.id, childBp.feature.id],
+      );
+      let root = commit(emptyProject(), { feature: agg, vertices: [] }, 1000);
+      root = commit(root, childAp, 1000);
+      root = commit(root, childBp, 1000);
+      return { root, aggId, childAId: childAp.feature.id, childBId: childBp.feature.id };
+    }
+
+    const aggregatedControl = {
+      globalDepth: 0,
+      focus: { originId: null, depth: 0, emphasize: false },
+    };
+
+    it('a click on a hidden child body selects the AGGREGATE, not the child leaf', () => {
+      const { root, aggId } = aggregateHierarchy();
+      const inChildA = { lon: 2, lat: 2 }; // inside child A's drawn-as-aggregate area
+      const hit = liveHitTestAt(
+        { root, time, displayControl: aggregatedControl, toScreen, point: toScreen(inChildA) },
+        inChildA,
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(aggId);
+    });
+
+    it('a click on a hidden child VERTEX does NOT select the vertex (falls to the aggregate body)', () => {
+      const { root, aggId } = aggregateHierarchy();
+      // Just INSIDE child A's (4,4) corner vertex (within the screen-px grab radius of
+      // it): if that vertex were drawn it would win as a vertex hit. But the child is
+      // OMITTED, so its vertex is not drawn / not grabbable, and the cursor sits inside
+      // the aggregate body → it resolves to the aggregate, never a vertex hit.
+      const corner = { lon: 3.9, lat: 3.9 };
+      const hit = liveHitTestAt(
+        { root, time, displayControl: aggregatedControl, toScreen, point: toScreen(corner) },
+        corner,
+      );
+      expect(hit.kind).not.toBe(HIT_KIND.Vertex);
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(aggId);
+    });
+
+    it('expanded (N high enough) restores child vertex + child body selection', () => {
+      const { root, childAId } = aggregateHierarchy();
+      const expandedControl = {
+        globalDepth: 5, // deeper than the children → they draw their OWN shape
+        focus: { originId: null, depth: 0, emphasize: false },
+      };
+      // Now child A draws its own shape: its (4,4) vertex is grabbable again, so a
+      // click within the grab radius of it returns a vertex hit on the child.
+      const corner = { lon: 3.9, lat: 3.9 };
+      const hit = liveHitTestAt(
+        { root, time, displayControl: expandedControl, toScreen, point: toScreen(corner) },
+        corner,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(childAId);
+    });
+
+    it('a FOCUS on the aggregate (depth M) expands its children → child body + vertex selectable', () => {
+      const { root, childAId } = aggregateHierarchy();
+      const aggId = asFeatureId('f-agg');
+      // N stays 0 (everything else rolled up), but the focus vertical region of the
+      // aggregate follows M=5, so its children expand to their OWN real shape.
+      const focusedControl = {
+        globalDepth: 0,
+        focus: { originId: aggId, depth: 5, emphasize: false },
+      };
+      // Child A body (centre, away from its vertices) → the now-Real child is selected.
+      const inChildA = { lon: 2, lat: 2 };
+      const bodyHit = liveHitTestAt(
+        { root, time, displayControl: focusedControl, toScreen, point: toScreen(inChildA) },
+        inChildA,
+      );
+      expect(bodyHit.kind).toBe(HIT_KIND.FeatureBody);
+      if (bodyHit.kind === HIT_KIND.FeatureBody) expect(bodyHit.featureId).toBe(childAId);
+      // And its (4,4) vertex is grabbable again under the focus.
+      const corner = { lon: 3.9, lat: 3.9 };
+      const vertHit = liveHitTestAt(
+        { root, time, displayControl: focusedControl, toScreen, point: toScreen(corner) },
+        corner,
+      );
+      expect(vertHit.kind).toBe(HIT_KIND.Vertex);
+      if (vertHit.kind === HIT_KIND.Vertex) expect(vertHit.featureId).toBe(childAId);
+    });
+
+    it('a FOCUS on ONE tree leaves an UNFOCUSED tree still aggregated (its child not pickable)', () => {
+      // Two independent aggregate trees: agg1{child1A,child1B} and agg2{child2}.
+      const child1A = squareLeaf('f-c1a', 'v1a', 0, 0); // [0,4]²
+      const child1B = squareLeaf('f-c1b', 'v1b', 6, 0); // [6,10]²
+      const child2 = squareLeaf('f-c2', 'v2', 0, 20); // [0,4]×[20,24] (far away)
+      const agg1Id = asFeatureId('f-agg1');
+      const agg2Id = asFeatureId('f-agg2');
+      const agg1 = createAggregateFeature(
+        agg1Id,
+        createBasicAttributes('f-agg1', 0, 0),
+        color,
+        [child1A.feature.id, child1B.feature.id],
+      );
+      const agg2 = createAggregateFeature(
+        agg2Id,
+        createBasicAttributes('f-agg2', 0, 0),
+        color,
+        [child2.feature.id],
+      );
+      let root = commit(emptyProject(), { feature: agg1, vertices: [] }, 1000);
+      root = commit(root, { feature: agg2, vertices: [] }, 1000);
+      root = commit(root, { feature: withParentId(child1A.feature, agg1Id), vertices: child1A.vertices }, 1000);
+      root = commit(root, { feature: withParentId(child1B.feature, agg1Id), vertices: child1B.vertices }, 1000);
+      root = commit(root, { feature: withParentId(child2.feature, agg2Id), vertices: child2.vertices }, 1000);
+
+      // Focus agg1 (expand its subtree). agg2's subtree is OUTSIDE the focus region, so
+      // it stays at global N=0 → agg2 aggregated, child2 omitted.
+      const focusAgg1 = {
+        globalDepth: 0,
+        focus: { originId: agg1Id, depth: 5, emphasize: false },
+      };
+      // A click in agg2's child2 footprint selects the AGGREGATE agg2, never child2.
+      const inChild2 = { lon: 2, lat: 22 };
+      const hit = liveHitTestAt(
+        { root, time, displayControl: focusAgg1, toScreen, point: toScreen(inChild2) },
+        inChild2,
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(agg2Id);
+    });
   });
 });

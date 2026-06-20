@@ -43,9 +43,15 @@ import type { ZoomRange } from '../render/camera';
 
 import {
   AddToolController,
+  type AddToolControllerProps,
   type AddDrawSink,
   type ScreenToWorld,
 } from './add/AddToolController';
+import {
+  isFaceFeature,
+  parentCandidates as buildParentCandidates,
+  type ParentCandidate,
+} from '../domain/add/index';
 import { createAddHostPorts, type AddHostPorts } from './add/host-ports';
 import {
   KnifeToolController,
@@ -279,6 +285,12 @@ export function App(): JSX.Element {
           {
             root: s.domain,
             time: s.currentTime,
+            // Codex #2: resolve the SAME display set the renderer drew (集約/実形状),
+            // so a click on an aggregate body selects the aggregate and a hidden
+            // child leaf / non-drawn vertex is never picked (単一真実源 — what is
+            // drawn == what is hit). The display-control comes from the store, the
+            // same slice committed-features feeds buildDisplayAreas with.
+            displayControl: s.displayControl,
             // Forward projector for the screen-px vertex / point / line proximity,
             // from the SAME camera/viewport the frame drew with (単一真実源).
             toScreen: (w) => projectWorldToScreen(w, camera, viewport),
@@ -819,7 +831,7 @@ export function App(): JSX.Element {
                 cleanup unregister). 設定 reuses the U38 dialog bound to the live
                 store; the rest are minimal views over existing pure logic. */}
             <HelpToolsController store={store} registry={registry} />
-            <AddToolController<DomainRoot>
+            <AddToolControllerWithParents
               store={store}
               startProcess={hostBootstrap.startProcess}
               ids={hostBootstrap.ids}
@@ -871,6 +883,32 @@ export function App(): JSX.Element {
 
 /** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
 const KNIFE_DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+
+/**
+ * Mount {@link AddToolController} with the live FACE parent candidates (FR-77 親面).
+ * The candidate list is the FACES present at the current timeline instant — derived
+ * from the SAME `featuresAt` resolution the renderer / hit-test use (単一真実源, 教訓
+ * 5.3 / 5.29), so the 親選択 offers exactly the faces the user currently sees. It is
+ * recomputed reactively on every domain / time change (a time change can drop a
+ * covering parent — the controller's `revalidateParentSelection` then clears a stale
+ * choice, 教訓 5.5). Without this wiring the 親選択 dropdown only ever showed 親なし
+ * and no hierarchy (=集約表示) could ever be built through the live UI.
+ */
+function AddToolControllerWithParents(
+  props: Omit<AddToolControllerProps<DomainRoot>, 'parentCandidates'>,
+): JSX.Element {
+  const domain = useStore(props.store, (s) => s.domain);
+  const currentTime = useStore(props.store, (s) => s.currentTime);
+  // The faces present at the current time, as 親候補 (FR-77). `featuresAt` is the
+  // already-present-at-time set, so the existence predicate is simply membership —
+  // never re-resolved here (the domain `parentCandidates` filters to face kind).
+  const candidates: readonly ParentCandidate[] = useMemo(() => {
+    const present = featuresAt(domain, currentTime);
+    const presentIds = new Set(present.filter(isFaceFeature).map((f) => f.id));
+    return buildParentCandidates(present, (id) => presentIds.has(id));
+  }, [domain, currentTime]);
+  return <AddToolController<DomainRoot> {...props} parentCandidates={candidates} />;
+}
 
 /**
  * A hidden marker reflecting the live selection's active feature id for回帰観点
