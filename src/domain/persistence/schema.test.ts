@@ -42,6 +42,44 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
     expect(manifestSchema.safeParse(polluted).success).toBe(false);
   });
 
+  it('rejects an out-of-range persisted time point (month/day range, leap-aware)', () => {
+    const manifest = serialize(richValidProject());
+    // Corrupt an anchor entry's start to an out-of-range month (13) — structurally
+    // an integer but semantically invalid. The schema must reject it so it never
+    // aliases on normalize or crashes daysInMonth at load time.
+    const clone = structuredClone(manifest) as unknown as {
+      histories: { entries: { start: Record<string, unknown> }[] }[];
+    };
+    clone.histories[0]!.entries[0]!.start = { granularity: 'yearMonth', year: 2024, month: 13 };
+    expect(manifestSchema.safeParse(clone).success).toBe(false);
+
+    // A day beyond the month length (Feb 30) is likewise rejected.
+    const clone2 = structuredClone(manifest) as unknown as {
+      histories: { entries: { start: Record<string, unknown> }[] }[];
+    };
+    clone2.histories[0]!.entries[0]!.start = {
+      granularity: 'yearMonthDay',
+      year: 2023,
+      month: 2,
+      day: 30,
+    };
+    expect(manifestSchema.safeParse(clone2).success).toBe(false);
+
+    // A month >= 14 (which would throw RangeError in daysInMonth) is rejected, not
+    // crashed: the refinement runs validate() which range-checks the month first.
+    const clone3 = structuredClone(manifest) as unknown as {
+      histories: { entries: { start: Record<string, unknown> }[] }[];
+    };
+    clone3.histories[0]!.entries[0]!.start = {
+      granularity: 'yearMonthDay',
+      year: 2023,
+      month: 14,
+      day: 1,
+    };
+    expect(() => manifestSchema.safeParse(clone3)).not.toThrow();
+    expect(manifestSchema.safeParse(clone3).success).toBe(false);
+  });
+
   it('forbids representing an aggregate with a shape field (不正状態を表現不能)', () => {
     const manifest = serialize(richValidProject());
     const clone = structuredClone(manifest);

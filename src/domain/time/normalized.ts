@@ -34,13 +34,56 @@ export type Normalized = number & { readonly [normalizedBrand]: 'Normalized' };
 export type Ordering = -1 | 0 | 1;
 
 /**
+ * Number of LEAP years in the half-open year range [0, n) under the standard
+ * Gregorian rule (divisible by 4, except centuries unless by 400), in O(1).
+ * For n < 0 the count of leap years in [n, 0) is returned as a NEGATIVE number,
+ * so the sign convention matches "leap days accumulated from epoch to year n".
+ *
+ * Derivation: leaps in [0, n) = ⌊(n-1)/4⌋ - ⌊(n-1)/100⌋ + ⌊(n-1)/400⌋ + 1
+ * counting year 0 (a leap year) for n >= 1. We express it via a helper g(k) =
+ * leap years in [0, k] (inclusive) and difference, using floored division that
+ * is correct for negative operands too.
+ */
+function floorDiv(a: number, b: number): number {
+  return Math.floor(a / b);
+}
+
+/** Inclusive count of Gregorian leap years in [0, k] for k >= 0. */
+function gregorianLeapsThrough(k: number): number {
+  // Years 0..k that are divisible by 4, minus centuries, plus 400-multiples.
+  return floorDiv(k, 4) - floorDiv(k, 100) + floorDiv(k, 400) + 1;
+}
+
+/** Gregorian leap years in [0, year) (negative for year < 0), O(1). */
+function gregorianLeapsToYearStart(year: number): number {
+  if (year > 0) return gregorianLeapsThrough(year - 1);
+  if (year === 0) return 0;
+  // Negative: leap years in [year, 0), returned negated to match the epoch
+  // accumulation sign. Count leaps in [year, -1] = through(-1) - through(year-1),
+  // where through(k) for k<0 is the inclusive count using the same floor formula.
+  return -(gregorianLeapsThrough(-1) - gregorianLeapsThrough(year - 1));
+}
+
+/**
  * Days from the epoch (year 0, Jan 1) to (year, Jan 1). Counts whole years,
  * each contributing its own length (so leap years are accounted for exactly).
  * Integer arithmetic only.
+ *
+ * For the Gregorian calendar this is O(1): every year is `commonLen` days plus
+ * exactly one extra day per leap year (the calendar adds a single day to its
+ * leap month in a leap year — see {@link daysInYear}), and the Gregorian leap
+ * count over a range has a closed form. Any other (future custom) calendar with
+ * an opaque leap rule falls back to the exact per-year loop.
  */
 function daysToYearStart(calendar: Calendar, year: number): number {
+  if (year === 0) return 0;
+  if (calendar.id === 'gregorian') {
+    const commonLen = calendar.commonMonthDays.reduce((sum, d) => sum + d, 0);
+    return commonLen * year + gregorianLeapsToYearStart(year);
+  }
+  // General fallback: sum each year's own length (custom calendars, O(|year|)).
   let days = 0;
-  if (year >= 0) {
+  if (year > 0) {
     for (let y = 0; y < year; y++) {
       days += daysInYear(calendar, y);
     }

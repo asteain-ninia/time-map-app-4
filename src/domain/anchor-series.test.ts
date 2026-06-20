@@ -216,6 +216,55 @@ describe('changeStart (AC-3, FR-58)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason.code).toBe('anchorNotFound');
   });
+
+  it('rejects a move that would push the start at/past its own bounded end (no silent resurrection)', () => {
+    // [100,150) moved to start 200 must NOT become open-ended [200,inf): the
+    // feature was meant to stop existing at 150 (regression for the bounded→open
+    // clamp). The move is rejected; the bounded existence is preserved.
+    const s = series(entry(1, 100, 150), entry(2, 300, null));
+    const r = changeStart(s, s.entries[0]!.anchor.id, timePointYear(200), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('startNotBeforeEnd');
+    // The original series is untouched and the entry's end is still bounded.
+    expect(s.entries[0]!.end).toEqual(timePointYear(150));
+  });
+
+  it('rejects a move to exactly the entry end (non-positive span)', () => {
+    const s = series(entry(1, 100, 150));
+    const r = changeStart(s, s.entries[0]!.anchor.id, timePointYear(150), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('startNotBeforeEnd');
+  });
+
+  it('still allows moving a bounded entry to a start strictly before its end', () => {
+    const s = series(entry(1, 100, 150), entry(2, 300, null));
+    const r = changeStart(s, s.entries[0]!.anchor.id, timePointYear(120), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+      const moved = r.series.entries.find((e) => e.anchor.id === s.entries[0]!.anchor.id)!;
+      expect(moved.end).toEqual(timePointYear(150));
+    }
+  });
+});
+
+// --- resolveAt binary-search correctness over a deep series ----------------
+
+describe('resolveAt deep-series correctness (binary search)', () => {
+  it('resolves the correct entry across a long ascending series', () => {
+    const entries: AnchorEntry[] = [];
+    for (let i = 0; i < 200; i++) entries.push(entry(i + 1, i * 10, null));
+    const s = normalizeSeries(entries, cal);
+    // Spot-check several queries against the expected effective entry.
+    expect(present(resolveAt(s, timePointYear(0), cal)).anchor.id).toBe(s.entries[0]!.anchor.id);
+    expect(present(resolveAt(s, timePointYear(995), cal)).anchor.id).toBe(
+      s.entries[99]!.anchor.id, // start 990, next 1000
+    );
+    expect(present(resolveAt(s, timePointYear(1990), cal)).anchor.id).toBe(
+      s.entries[199]!.anchor.id,
+    );
+    expect(resolveAt(s, timePointYear(-1), cal).kind).toBe('absent');
+  });
 });
 
 describe('deleteAnchor (AC-3, INV-5, §9.2 pair concept)', () => {

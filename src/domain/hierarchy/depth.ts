@@ -34,14 +34,71 @@ export function isDepthUndefined(depth: number): boolean {
 }
 
 /**
- * Derived depth for every feature in the forest, as a map. Each entry is
- * computed independently through the cycle-safe walk; cyclic features map to
- * {@link DEPTH_UNDEFINED}. Pure and finite even on broken input.
+ * Derived depth for every feature in the forest, as a map. Cyclic features map
+ * to {@link DEPTH_UNDEFINED}. Pure and finite even on broken input.
+ *
+ * Computed in ~O(n) via memoization: each feature's depth is parent.depth + 1,
+ * resolved by a single DFS up the parent chain that MEMOIZES every depth it
+ * settles on the way. Re-walking the shared upper chain for each node (the old
+ * O(n·depth) ~ O(n²) behaviour on a chain-shaped forest) is avoided — once an
+ * ancestor's depth is known, every descendant reuses it in O(1). A `path` set
+ * detects cycles (every id on an unresolved cycle is marked undefined).
  */
 export function derivedDepths(forest: Forest): Map<FeatureId, number> {
+  const memo = new Map<FeatureId, number>();
+
+  function depthOf(id: FeatureId): number {
+    const cached = memo.get(id);
+    if (cached !== undefined) return cached;
+
+    // Climb to the nearest ancestor with a known (memoized) depth or a root,
+    // recording the path so we can detect a cycle and fill the chain in O(len).
+    const path: FeatureId[] = [];
+    const onPath = new Set<FeatureId>();
+    let current: FeatureId | undefined = id;
+    let base = -1; // depth of the resolved anchor (root parent = -1 => root is 0).
+    let cyclic = false;
+
+    for (;;) {
+      if (current === undefined) {
+        base = -1; // ran off a (dangling) parent: treat as root.
+        break;
+      }
+      const known = memo.get(current);
+      if (known !== undefined) {
+        base = known;
+        break;
+      }
+      if (onPath.has(current)) {
+        cyclic = true;
+        break;
+      }
+      onPath.add(current);
+      path.push(current);
+      const f = forest.byId.get(current);
+      const parentId = f?.parentId;
+      current = parentId !== undefined && forest.byId.has(parentId) ? parentId : undefined;
+    }
+
+    if (cyclic) {
+      // Every id walked from `id` to the cycle (inclusive) has no derivable depth.
+      for (const p of path) memo.set(p, DEPTH_UNDEFINED);
+      return DEPTH_UNDEFINED;
+    }
+
+    // Fill depths from the resolved anchor downward: the last pushed id sits just
+    // above `base`, so assign increasing depths walking the path in reverse.
+    let d = base + path.length;
+    for (const p of path) {
+      memo.set(p, d);
+      d -= 1;
+    }
+    return memo.get(id)!;
+  }
+
   const out = new Map<FeatureId, number>();
   for (const id of forest.orderedIds) {
-    out.set(id, derivedDepth(forest, id));
+    out.set(id, depthOf(id));
   }
   return out;
 }
@@ -51,11 +108,11 @@ export function derivedDepths(forest: Forest): Map<FeatureId, number> {
  * Returns 0 for an empty / all-roots forest. Each TREE may have a different max
  * depth (FR-38: 最大深度はツリーごとに異なってよい); this is the global maximum
  * over all derivable features, exposed for callers that need a single bound.
+ * Reuses the memoized {@link derivedDepths} pass (~O(n)).
  */
 export function maxDerivedDepth(forest: Forest): number {
   let max = 0;
-  for (const id of forest.orderedIds) {
-    const d = derivedDepth(forest, id);
+  for (const d of derivedDepths(forest).values()) {
     if (!isDepthUndefined(d) && d > max) max = d;
   }
   return max;

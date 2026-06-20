@@ -48,6 +48,7 @@ export {
   checkTopLevelEquivalence,
   checkCycles,
   checkDanglingParents,
+  checkDuplicateIds,
   checkAggregateShapes,
   checkAggregateChildCounts,
   aggregateChildVerdict,

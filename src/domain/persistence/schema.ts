@@ -25,6 +25,10 @@
 
 import { z } from 'zod';
 
+import { getCalendar } from '../time/calendar';
+import { timePointYear, timePointYearMonth, timePointYearMonthDay } from '../time/time-point';
+import { validate as validateTimePoint } from '../time/validate';
+
 /**
  * The one schema version this build understands (FR-104). A manifest whose
  * `version` is not exactly this value is treated as INCOMPATIBLE by the parse
@@ -187,7 +191,14 @@ export const featureSchema = z.discriminatedUnion('kind', [
 // Mirrors the domain TimePoint discriminated union on `granularity` so the
 // "unspecified month/day" state is structural, never a stray undefined.
 
-export const timePointSchema = z.discriminatedUnion('granularity', [
+// The integer/strict structural shape. The semantic RANGE of month/day (1..12,
+// 1..daysInMonth honouring leap years) is NOT expressible structurally without
+// duplicating the calendar table, so it is enforced as a refinement that routes
+// through the SAME domain `validate` the in-memory constructors use (単一真実源).
+// This closes the load-time hole where an out-of-range persisted date (e.g.
+// month 13, or month >= 14 which `daysInMonth` throws RangeError on) would either
+// silently alias to a different day after normalize, or crash the loader.
+const timePointStructuralSchema = z.discriminatedUnion('granularity', [
   z.object({ granularity: z.literal('year'), year: yearSchema }).strict(),
   z
     .object({ granularity: z.literal('yearMonth'), year: yearSchema, month: z.number().int() })
@@ -201,6 +212,27 @@ export const timePointSchema = z.discriminatedUnion('granularity', [
     })
     .strict(),
 ]);
+
+// Only the Gregorian calendar is persistable today (projectSettings.calendarId is
+// the `gregorian` literal); range-validate against it. A future multi-calendar
+// build would thread the manifest's calendar id in here.
+const GREGORIAN_CALENDAR = getCalendar('gregorian');
+
+export const timePointSchema = timePointStructuralSchema.superRefine((tp, ctx) => {
+  const point =
+    tp.granularity === 'year'
+      ? timePointYear(tp.year)
+      : tp.granularity === 'yearMonth'
+        ? timePointYearMonth(tp.year, tp.month)
+        : timePointYearMonthDay(tp.year, tp.month, tp.day);
+  const result = validateTimePoint(point, GREGORIAN_CALENDAR);
+  if (!result.ok) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `time point out of range for calendar: ${result.error}`,
+    });
+  }
+});
 
 // --- anchor + anchor series (FR-54〜59: 各地物の歴史の錨) --------------------
 //

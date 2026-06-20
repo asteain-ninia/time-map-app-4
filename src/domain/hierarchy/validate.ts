@@ -39,7 +39,7 @@ import { isMultiPolygonEmpty, type GeoMultiPolygon, type GeoPolygon } from '../g
 import type { FeatureId } from '../ids';
 import type { VertexStore } from '../vertex';
 import { buildForest, directChildIds, walkToRoot, type Forest } from './forest';
-import { resolveFeatureArea } from './resolve-shape';
+import { resolveFeatureArea, type ShapeResolution } from './resolve-shape';
 
 export const HIERARCHY_VIOLATION = {
   /** Explicit top-level flag disagrees with "has no parent" (FR-39). */
@@ -52,6 +52,8 @@ export const HIERARCHY_VIOLATION = {
   AggregateShapeMismatch: 'aggregate-shape-mismatch',
   /** A shape could not be resolved (missing vertex/child, or union rejected). */
   ShapeUnresolved: 'shape-unresolved',
+  /** Two or more features share the same FeatureId in the input set. */
+  DuplicateId: 'duplicate-id',
 } as const;
 
 export type HierarchyViolationKind =
@@ -116,13 +118,45 @@ export function checkTopLevelEquivalence(
 export function checkCycles(forest: Forest): HierarchyViolation[] {
   const out: HierarchyViolation[] = [];
   const reported = new Set<string>();
+  // Ids PROVEN acyclic (their chain reaches a root). Once known, any descendant
+  // reaching such an id can stop immediately — so the shared upper chain of a
+  // chain-shaped forest is walked once, not once per node (was O(n·depth)).
+  const acyclic = new Set<FeatureId>();
   for (const id of forest.orderedIds) {
+    if (acyclic.has(id)) continue;
     const walk = walkToRoot(forest, id);
-    if (!walk.cyclic) continue;
+    if (!walk.cyclic) {
+      // The whole clean chain (id..root) is acyclic; cache every node on it.
+      for (const node of walk.chain) acyclic.add(node);
+      continue;
+    }
     const key = [...walk.cycle].sort().join('|');
     if (reported.has(key)) continue;
     reported.add(key);
     out.push({ kind: HIERARCHY_VIOLATION.Cycle, featureIds: walk.cycle });
+  }
+  return out;
+}
+
+/**
+ * Detect FeatureIds that appear more than once in the raw input set. The forest
+ * de-duplicates ids (last-write-wins) so it cannot see this on its own; the raw
+ * feature list is the only place the collision is observable. Each duplicated id
+ * is reported ONCE so a UI / repair can ask which copy to keep.
+ */
+export function checkDuplicateIds(features: readonly Feature[]): HierarchyViolation[] {
+  const seen = new Set<FeatureId>();
+  const reported = new Set<FeatureId>();
+  const out: HierarchyViolation[] = [];
+  for (const f of features) {
+    if (seen.has(f.id)) {
+      if (!reported.has(f.id)) {
+        reported.add(f.id);
+        out.push({ kind: HIERARCHY_VIOLATION.DuplicateId, featureIds: [f.id] });
+      }
+    } else {
+      seen.add(f.id);
+    }
   }
   return out;
 }
@@ -187,6 +221,12 @@ export function checkAggregateShapes(
   store: VertexStore,
 ): HierarchyViolation[] {
   const out: HierarchyViolation[] = [];
+  // Cache resolved areas by FeatureId for the whole pass: an aggregate's derived
+  // area is the union of its children's areas, so a child's sub-tree is otherwise
+  // re-resolved (and re-unioned) once per ancestor aggregate (was super-linear on
+  // nested forests). The forest + store are constant here, so a FeatureId's area
+  // is invariant across the pass — memoizing it is sound.
+  const areaCache = new Map<FeatureId, ShapeResolution>();
   for (const id of forest.orderedIds) {
     const childIds = directChildIds(forest, id);
     if (childIds.length === 0) continue; // not an aggregate (by result state).
@@ -196,7 +236,7 @@ export function checkAggregateShapes(
     // keeping the per-child areas so a child's OWN holes can be distinguished from
     // an inter-child gap. The union of these is the aggregate's derived area; we
     // inspect it for gaps rather than comparing it against itself.
-    const childAreas = resolveChildAreas(forest, store, childIds);
+    const childAreas = resolveChildAreas(forest, store, childIds, areaCache);
     if (childAreas === undefined) {
       out.push({ kind: HIERARCHY_VIOLATION.ShapeUnresolved, featureIds: [id] });
       continue;
@@ -223,10 +263,15 @@ function resolveChildAreas(
   forest: Forest,
   store: VertexStore,
   childIds: readonly FeatureId[],
+  cache: Map<FeatureId, ShapeResolution>,
 ): GeoMultiPolygon[] | undefined {
   const areas: GeoMultiPolygon[] = [];
   for (const childId of childIds) {
-    const childArea = resolveFeatureArea(forest, store, childId);
+    let childArea = cache.get(childId);
+    if (childArea === undefined) {
+      childArea = resolveFeatureArea(forest, store, childId);
+      cache.set(childId, childArea);
+    }
     if (childArea.status === 'failed') return undefined;
     areas.push(childArea.area);
   }
@@ -392,6 +437,7 @@ export function validateHierarchy(
   const flagEmpty = options.flagEmptyAggregates ?? true;
 
   const violations: HierarchyViolation[] = [
+    ...checkDuplicateIds(features),
     ...checkTopLevelEquivalence(forest, flags),
     ...checkCycles(forest),
     ...checkDanglingParents(forest),

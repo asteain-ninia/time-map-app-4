@@ -135,32 +135,95 @@ export function resolveFeatureArea(
   store: VertexStore,
   featureId: FeatureId,
 ): ShapeResolution {
-  return resolveAreaInner(forest, store, featureId, new Set<FeatureId>());
-}
+  // EXPLICIT-STACK post-order traversal (children first, then union at the
+  // parent), so resolution depth is bounded by the heap, NOT the call stack: a
+  // deep but valid (non-cyclic) chain — the spec's 5,000-object scale can nest
+  // deeply — can no longer overflow the call stack (was mutually-recursive
+  // resolveAreaInner ⇄ resolveAggregateArea). Cycle handling is preserved exactly
+  // (教訓5.28): an id re-entered while already on the DFS contributes EMPTY rather
+  // than recursing, via the shared `visited` set added in pre-order.
+  const visited = new Set<FeatureId>();
 
-function resolveAreaInner(
-  forest: Forest,
-  store: VertexStore,
-  featureId: FeatureId,
-  visited: Set<FeatureId>,
-): ShapeResolution {
-  if (visited.has(featureId)) {
-    // Re-entry on a cycle: contribute no area rather than recurse forever.
-    return ok(EMPTY_MULTI_POLYGON);
+  interface Frame {
+    readonly featureId: FeatureId;
+    readonly childIds: readonly FeatureId[];
+    childIndex: number;
+    acc: GeoMultiPolygon;
   }
-  visited.add(featureId);
 
-  const feature = forest.byId.get(featureId);
-  if (feature === undefined) {
+  const feature0 = forest.byId.get(featureId);
+  if (feature0 === undefined) {
     return failed({ kind: SHAPE_RESOLUTION_FAILURE.MissingChild, featureId });
   }
-
-  const childIds = directChildIds(forest, featureId);
-  // RESULT-STATE branch (教訓5.6): children present => aggregate area = union.
-  if (childIds.length > 0) {
-    return resolveAggregateArea(forest, store, featureId, childIds, visited);
+  visited.add(featureId);
+  const root0Children = directChildIds(forest, featureId);
+  if (root0Children.length === 0) {
+    return resolveOwnLeafArea(feature0, store);
   }
-  return resolveOwnLeafArea(feature, store);
+
+  const stack: Frame[] = [
+    { featureId, childIds: root0Children, childIndex: 0, acc: EMPTY_MULTI_POLYGON },
+  ];
+  // The area a just-completed child frame contributes to its parent's union.
+  let completedArea: GeoMultiPolygon | undefined;
+
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1]!;
+
+    // Fold a child's completed area into this frame's running union (片落とし禁止).
+    if (completedArea !== undefined) {
+      const merged = union(frame.acc, completedArea);
+      completedArea = undefined;
+      if (merged.status === BOOLEAN_OP_STATUS.Rejected) {
+        return failed({
+          kind: SHAPE_RESOLUTION_FAILURE.UnionRejected,
+          featureId: frame.featureId,
+          violations: merged.violations,
+        });
+      }
+      frame.acc = merged.result;
+    }
+
+    if (frame.childIndex >= frame.childIds.length) {
+      // All children unioned: this frame's area is done; hand it to the parent.
+      stack.pop();
+      completedArea = frame.acc;
+      continue;
+    }
+
+    const childId = frame.childIds[frame.childIndex]!;
+    frame.childIndex += 1;
+
+    if (visited.has(childId)) {
+      // Re-entry on a cycle: contribute no area rather than recurse forever.
+      completedArea = EMPTY_MULTI_POLYGON;
+      continue;
+    }
+    const childFeature = forest.byId.get(childId);
+    if (childFeature === undefined) {
+      return failed({ kind: SHAPE_RESOLUTION_FAILURE.MissingChild, featureId: childId });
+    }
+    visited.add(childId);
+
+    const grandChildren = directChildIds(forest, childId);
+    if (grandChildren.length > 0) {
+      // Aggregate child: push a frame; its area unions its own children.
+      stack.push({
+        featureId: childId,
+        childIds: grandChildren,
+        childIndex: 0,
+        acc: EMPTY_MULTI_POLYGON,
+      });
+      continue;
+    }
+    // Leaf child: resolve its own area immediately (no further descent).
+    const leafRes = resolveOwnLeafArea(childFeature, store);
+    if (leafRes.status === 'failed') return leafRes;
+    completedArea = leafRes.area;
+  }
+
+  // The root frame's accumulated area is the final result.
+  return ok(completedArea ?? EMPTY_MULTI_POLYGON);
 }
 
 /** Resolve a childless feature's own area (only a leaf carries an explicit shape). */
@@ -174,29 +237,4 @@ function resolveOwnLeafArea(feature: Feature, store: VertexStore): ShapeResoluti
   }
   // Point / line / a childless aggregate contribute no area to the 形状=和 set.
   return ok(EMPTY_MULTI_POLYGON);
-}
-
-/** Union the direct children's resolved areas via U06 (片落とし禁止, 教訓5.1). */
-function resolveAggregateArea(
-  forest: Forest,
-  store: VertexStore,
-  featureId: FeatureId,
-  childIds: readonly FeatureId[],
-  visited: Set<FeatureId>,
-): ShapeResolution {
-  let acc: GeoMultiPolygon = EMPTY_MULTI_POLYGON;
-  for (const childId of childIds) {
-    const childRes = resolveAreaInner(forest, store, childId, visited);
-    if (childRes.status === 'failed') return childRes;
-    const merged = union(acc, childRes.area);
-    if (merged.status === BOOLEAN_OP_STATUS.Rejected) {
-      return failed({
-        kind: SHAPE_RESOLUTION_FAILURE.UnionRejected,
-        featureId,
-        violations: merged.violations,
-      });
-    }
-    acc = merged.result;
-  }
-  return ok(acc);
 }

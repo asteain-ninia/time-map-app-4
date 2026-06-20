@@ -44,8 +44,14 @@ export function buildForest(features: readonly Feature[]): Forest {
   const byId = new Map<FeatureId, Feature>();
   const orderedIds: FeatureId[] = [];
   for (const f of features) {
+    // Duplicate ids are LAST-WRITE-WINS for the byId lookup; `orderedIds` keeps
+    // each id ONCE (first occurrence position) so downstream passes — children
+    // bucketing, depth, validation — process every feature a single time. Without
+    // this dedup, a duplicate id would be appended to its parent's children bucket
+    // more than once and unioned / validated twice, corrupting results silently.
+    // The duplicate itself is a domain violation surfaced by checkDuplicateIds.
+    if (!byId.has(f.id)) orderedIds.push(f.id);
     byId.set(f.id, f);
-    orderedIds.push(f.id);
   }
 
   const childrenOf = new Map<FeatureId, FeatureId[]>();

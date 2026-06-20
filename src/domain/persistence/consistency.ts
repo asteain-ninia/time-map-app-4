@@ -35,7 +35,7 @@
 
 import type { Feature } from '../feature';
 import type { Calendar } from '../time/calendar';
-import { compare } from '../time/normalized';
+import { compare, normalize } from '../time/normalized';
 import type { TimePoint } from '../time/time-point';
 import { buildForest, directChildIds } from '../hierarchy/forest';
 import { checkAggregateShapes, HIERARCHY_VIOLATION, validateHierarchy } from '../hierarchy/validate';
@@ -294,25 +294,42 @@ function detectTimeConflicts(history: FeatureHistory, calendar: Calendar): Incon
 
 // --- the anchor-time sweep --------------------------------------------------
 //
-// Spatial / hierarchy checks are per-TIME-SLICE: at each distinct anchor start
-// across all features we resolve every feature's effective state (U09 resolveAt)
-// and run the snapshot-scoped checks on that combined state. We start from each
-// anchor's OWN snapshot features (the full-state at that anchor) rather than
-// trying to merge multiple series, because each anchor snapshot already carries
-// the complete feature+vertex state at that time (U03 AnchorSnapshot).
+// Spatial / hierarchy checks are per-TIME-SLICE: at each distinct interval
+// BOUNDARY across all features we resolve every feature's effective state (U09
+// resolveAt) and run the snapshot-scoped checks on that combined state. We start
+// from each anchor's OWN snapshot features (the full-state at that anchor) rather
+// than trying to merge multiple series, because each anchor snapshot already
+// carries the complete feature+vertex state at that time (U03 AnchorSnapshot).
+//
+// BOTH ends of every interval are event points: an anchor START introduces a
+// state and an anchor END removes it. Collecting starts ONLY would never inspect
+// the window AFTER a parent's end while a child continues — leaving a dangling
+// parent / topology violation that only exists post-end undetected. So each
+// non-null end is also a slice boundary (the state at `end` is the NEXT window,
+// since end is exclusive and resolveAt returns the entry effective AT `end`).
 
-/** Collect every distinct anchor start time across all feature histories. */
+/**
+ * Collect every distinct interval-boundary time across all feature histories:
+ * each entry's start AND its end (when bounded). Dedup is O(1) per time via a
+ * Map keyed by the normalized integer (the single time-ordering truth), instead
+ * of a linear membership scan, so the whole pass is ~O(A) not O(A²).
+ */
 function distinctAnchorTimes(
   histories: readonly FeatureHistory[],
   calendar: Calendar,
 ): TimePoint[] {
-  const times: TimePoint[] = [];
+  const byKey = new Map<number, TimePoint>();
   for (const h of histories) {
     for (const e of h.series.entries) {
-      if (!times.some((t) => compare(t, e.start, calendar) === 0)) times.push(e.start);
+      const startKey = normalize(e.start, calendar) as unknown as number;
+      if (!byKey.has(startKey)) byKey.set(startKey, e.start);
+      if (e.end !== null) {
+        const endKey = normalize(e.end, calendar) as unknown as number;
+        if (!byKey.has(endKey)) byKey.set(endKey, e.end);
+      }
     }
   }
-  return times.sort((a, b) => compare(a, b, calendar));
+  return [...byKey.values()].sort((a, b) => compare(a, b, calendar));
 }
 
 /**

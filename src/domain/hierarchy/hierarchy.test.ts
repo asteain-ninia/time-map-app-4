@@ -36,6 +36,7 @@ import {
   checkAggregateShapes,
   checkCycles,
   checkDanglingParents,
+  checkDuplicateIds,
   checkTopLevelEquivalence,
   HIERARCHY_VIOLATION,
   validateHierarchy,
@@ -607,6 +608,77 @@ describe('purity and non-relevance (regression)', () => {
     const depths = derivedDepths(forest);
     const elapsed = Date.now() - start;
     expect(depths.size).toBe(features.length);
+    expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+// =============================================================================
+// Regression: duplicate FeatureIds, deep-chain depth & shape resolution
+// =============================================================================
+describe('duplicate FeatureIds (regression)', () => {
+  it('detects a duplicate id and does not double-process it in the forest', () => {
+    const a = agg('dup', ['kid']);
+    const aDup = agg('dup', ['kid']); // same id, appears twice in the input.
+    const kid = leafFromRect('kid', 0, 0, 1, 1, 'dup').feature;
+    const features = [a, aDup, kid];
+
+    const dups = checkDuplicateIds(features);
+    expect(dups).toHaveLength(1);
+    expect(dups[0]?.kind).toBe(HIERARCHY_VIOLATION.DuplicateId);
+    expect(dups[0]?.featureIds).toEqual([asFeatureId('dup')]);
+
+    // The forest must list 'kid' under 'dup' exactly ONCE despite the duplicate.
+    const forest = buildForest(features);
+    expect(directChildIds(forest, asFeatureId('dup'))).toEqual([asFeatureId('kid')]);
+    // orderedIds carries each id once.
+    expect(forest.orderedIds.filter((id) => id === asFeatureId('dup'))).toHaveLength(1);
+  });
+
+  it('validateHierarchy surfaces the duplicate as a DuplicateId violation', () => {
+    const a = leafFromRect('x', 0, 0, 1, 1).feature;
+    const b = leafFromRect('x', 0, 0, 1, 1).feature; // duplicate id 'x'
+    const result = validateHierarchy([a, b]);
+    expect(result.ok).toBe(false);
+    expect(result.violations.some((v) => v.kind === HIERARCHY_VIOLATION.DuplicateId)).toBe(true);
+  });
+});
+
+describe('deep chain resolution (stack & depth, regression)', () => {
+  /** A straight aggregate chain root→...→leaf of `n` aggregates over one leaf. */
+  function deepChain(n: number): { features: Feature[]; store: VertexStore; rootId: FeatureId } {
+    const features: Feature[] = [];
+    for (let i = 0; i < n; i++) {
+      const childId = i + 1 < n ? `agg-${i + 1}` : 'tip-leaf';
+      const parentId = i === 0 ? undefined : `agg-${i - 1}`;
+      features.push(agg(`agg-${i}`, [childId], parentId));
+    }
+    const tip = leafFromRect('tip-leaf', 0, 0, 1, 1, `agg-${n - 1}`);
+    features.push(tip.feature);
+    const store = createVertexStore(tip.vertices);
+    return { features, store, rootId: asFeatureId('agg-0') };
+  }
+
+  it('resolveFeatureArea does not overflow the call stack on a deep chain', () => {
+    const { features, store, rootId } = deepChain(8000);
+    const forest = buildForest(features);
+    const res = resolveFeatureArea(forest, store, rootId);
+    expect(res.status).toBe('ok');
+    if (res.status === 'ok') {
+      // The root aggregate's area is the tip leaf's 1×1 square, unioned up.
+      expect(res.area.length).toBe(1);
+    }
+  });
+
+  it('derivedDepths is correct and fast on a deep chain (memoized, ~O(n))', () => {
+    const { features } = deepChain(5000);
+    const forest = buildForest(features);
+    const start = Date.now();
+    const depths = derivedDepths(forest);
+    const elapsed = Date.now() - start;
+    expect(depths.get(asFeatureId('agg-0'))).toBe(0);
+    expect(depths.get(asFeatureId('agg-4999'))).toBe(4999);
+    expect(depths.get(asFeatureId('tip-leaf'))).toBe(5000);
+    expect(maxDerivedDepth(forest)).toBe(5000);
     expect(elapsed).toBeLessThan(2000);
   });
 });

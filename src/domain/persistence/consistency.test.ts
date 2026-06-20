@@ -376,6 +376,62 @@ describe('(e) aggregate sum mismatch (受け入れ基準4 / 5)', () => {
   });
 });
 
+// --- interval-END time slices (regression) ----------------------------------
+
+describe('time-slice sweep inspects interval ENDs, not only starts (regression)', () => {
+  /**
+   * A parent leaf that exists in [0,150) and a child leaf that exists in [0,300)
+   * naming the parent as its parentId. AFTER t=150 the parent is gone but the
+   * child remains, so the child has a DANGLING parent in the [150,300) window —
+   * a topology violation that only manifests at/after the parent's END. The old
+   * sweep collected only START times (0) and never inspected the post-end window.
+   */
+  function projectWithPostEndDanglingParent(): DomainProject {
+    const parent = squareLeaf('pe-parent', '親', 0, 0, 10);
+    const childBase = squareLeaf('pe-child', '子', 50, 50, 10);
+    const child = { ...childBase.feature, parentId: asFeatureId('pe-parent') } as Feature;
+
+    const parentVerts = createVertexStore(parent.vertices);
+    const childVerts = createVertexStore(childBase.vertices);
+
+    const parentAnchor = createAnchor(
+      asAnchorId('pe-parent-anc'),
+      createAnchorSnapshot([parent.feature], parentVerts),
+    );
+    const childAnchor = createAnchor(
+      asAnchorId('pe-child-anc'),
+      createAnchorSnapshot([child], childVerts),
+    );
+
+    return {
+      histories: [
+        {
+          featureId: asFeatureId('pe-parent'),
+          // Parent existence STOPS at 150 (bounded end).
+          series: { entries: [createAnchorEntry(parentAnchor, timePointYear(0), timePointYear(150))] },
+        },
+        {
+          featureId: asFeatureId('pe-child'),
+          // Child continues past 150 (open-ended).
+          series: { entries: [createAnchorEntry(childAnchor, timePointYear(0), null)] },
+        },
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+  }
+
+  it('detects a dangling-parent state that only exists after the parent end time', () => {
+    const report = checkConsistency(projectWithPostEndDanglingParent(), CAL);
+    const dangling = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.TreeTopology && i.detail === 'dangling-parent',
+    );
+    expect(dangling).toBeDefined();
+    // It is observed at the parent's END boundary (150), not only at start 0.
+    expect(dangling!.atTime).toEqual(timePointYear(150));
+  });
+});
+
 // --- (f) time conflict ------------------------------------------------------
 
 describe('(f) time conflict', () => {

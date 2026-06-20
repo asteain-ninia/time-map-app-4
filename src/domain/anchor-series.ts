@@ -24,7 +24,7 @@ import type { Anchor, AnchorSnapshot } from './anchor';
 import type { AnchorId } from './ids';
 import type { Calendar } from './time/calendar';
 import type { TimePoint } from './time/time-point';
-import { compare } from './time/normalized';
+import { compare, compareNormalized, normalize, type Normalized } from './time/normalized';
 
 // --- Core value types -------------------------------------------------------
 
@@ -115,7 +115,14 @@ export type RejectReason =
   /** A requested end time is not strictly after its own start (INV-3). */
   | { readonly code: 'endNotAfterStart' }
   /** A requested end time would exceed the next future anchor's end. */
-  | { readonly code: 'endBeyondNextEnd' };
+  | { readonly code: 'endBeyondNextEnd' }
+  /**
+   * A start-time change would move the entry's start to or past its OWN bounded
+   * end (newStart >= end), which would silently turn a finite existence interval
+   * into an open-ended one. Rejected rather than clamped so a feature meant to
+   * stop existing is never resurrected indefinitely (INV-3, FR-56).
+   */
+  | { readonly code: 'startNotBeforeEnd' };
 
 /** Outcome of a mutating operation: a new series, or a rejection reason. */
 export type SeriesResult =
@@ -272,16 +279,29 @@ export function resolveAt(
   time: TimePoint,
   calendar: Calendar,
 ): Resolution {
-  let candidate: AnchorEntry | undefined;
-  for (const entry of series.entries) {
-    if (compare(entry.start, time, calendar) <= 0) {
-      candidate = entry; // entries are ascending, so this keeps the latest <= time
+  const entries = series.entries;
+  // INV-1 guarantees strictly ascending starts, so the entry effective at `time`
+  // is the last one whose start <= time — found by binary search (O(log n)) over
+  // the ascending starts. `time` is normalized exactly once. Series that are not
+  // yet normalized (built by hand) still resolve correctly via the same <=
+  // ordering the linear scan used; binary search only assumes ascending starts,
+  // which every series produced by this unit's operations satisfies.
+  const t: Normalized = normalize(time, calendar);
+  let lo = 0;
+  let hi = entries.length - 1;
+  let idx = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (compareNormalized(normalize(entries[mid]!.start, calendar), t) <= 0) {
+      idx = mid; // start <= time: a candidate; search right for a later one.
+      lo = mid + 1;
     } else {
-      break;
+      hi = mid - 1;
     }
   }
-  if (candidate === undefined) return ABSENT;
-  if (candidate.end !== null && compare(time, candidate.end, calendar) >= 0) {
+  if (idx < 0) return ABSENT;
+  const candidate = entries[idx]!;
+  if (candidate.end !== null && compareNormalized(t, normalize(candidate.end, calendar)) >= 0) {
     return ABSENT;
   }
   return { kind: 'present', entry: candidate };
@@ -352,7 +372,17 @@ export function changeStart(
   const index = indexOfAnchor(series, id);
   if (index < 0) return reject({ code: 'anchorNotFound', id });
 
-  const moved = withEntryStart(series.entries[index]!, newStart);
+  const target = series.entries[index]!;
+  // Guard the silent bounded→open-ended degeneration: if the entry has its OWN
+  // end and the new start would land at or past it, normalization would clear
+  // the (now non-positive) end to null and the feature would exist forever.
+  // Reject instead so a bounded existence is never silently resurrected (§5.6 /
+  // INV-3): the caller must move the end too, or drop the anchor explicitly.
+  if (target.end !== null && compare(newStart, target.end, calendar) >= 0) {
+    return reject({ code: 'startNotBeforeEnd' });
+  }
+
+  const moved = withEntryStart(target, newStart);
   // Build the new array with all other entries first and the moved entry last,
   // so dedup (keep-last) lets the explicitly-moved entry win on a start tie.
   const others = series.entries.filter((_, i) => i !== index);
