@@ -45,6 +45,9 @@ export const PROJECT_FIELD_STRINGS = {
   newAreaAutoColorDefault: '新規面の自動配色を既定で有効にする',
   defaultPaletteTheme: '既定パレットテーマ',
   customPalette: 'カスタムパレット',
+  // FR-10 zoom-limit inputs (provided by U39; range 0.1×..10000×, min ≤ max).
+  zoomMin: '最小ズーム倍率',
+  zoomMax: '最大ズーム倍率',
 } as const;
 
 /** Base-map controls (FR-109; replacement itself is delegated to U18). */

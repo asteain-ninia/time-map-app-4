@@ -93,6 +93,13 @@ export default defineConfig({
       // DOM. The dialog component/hook operation test is `.test.tsx` (jsdom; .tsx
       // glob below).
       'src/ui/settings/**/*.test.ts',
+      // U39 file-ops pure-logic tests: zoom-limit validation + ZoomRange supply
+      // (FR-10), the unsaved-changes guard branch logic (FR-107), the save-context
+      // / new-project initialisation (教訓 5.36 / FR-03), the load-flow classifier
+      // (FR-104/106), and the load-time auto-repair flow over U14 (FR-106). These
+      // import only pure `.ts` (domain persistence/basemap + U16 settings), so they
+      // run in node without a DOM.
+      'src/ui/file-ops/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
       // mode toggle / view-only disabling / drag / tooltip / overlay layering.

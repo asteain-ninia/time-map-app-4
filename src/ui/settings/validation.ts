@@ -22,6 +22,11 @@ import {
   MAX_RENDER_FPS,
   MIN_RENDER_FPS,
 } from '../state/settings';
+// U39 owns the FR-10 zoom-limit validation (range 0.1×..10000× + min ≤ max). The
+// project-settings confirm path runs it BEFORE writing the store (確定前検証,
+// 教訓 5.26), so an out-of-range / reversed zoom limit can never be saved — even on
+// a non-UI confirm. Single source: the rule lives once in U39 (単一の真実源).
+import { validateZoomLimits } from '../file-ops/zoom-limit';
 
 // --- Defaults factory (新規プロジェクト初期化の入口, 受け入れ基準 5) ----------
 
@@ -142,6 +147,16 @@ export function validateProjectSettings(
     draft.areaLabelOccupancyThreshold > OCCUPANCY_MAX
   ) {
     errors.push({ field: 'areaLabelOccupancyThreshold', message: REJECTION.occupancyRange });
+  }
+
+  // FR-10 zoom-limit validation, delegated to U39 (range 0.1×..10000× + min ≤ max,
+  // 単一の真実源). Map U39's field codes onto the settings error shape so the dialog
+  // can place them inline next to the zoom inputs (教訓 5.26 通知と戻り値の両方).
+  const zoom = validateZoomLimits(draft.zoomMin, draft.zoomMax);
+  if (!zoom.ok) {
+    for (const e of zoom.errors) {
+      errors.push({ field: e.field, message: e.message });
+    }
   }
 
   return errors.length === 0 ? ok(draft) : err(errors);

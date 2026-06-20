@@ -122,6 +122,21 @@ describe('validateProjectSettings (FR-109, 受け入れ基準 7 / 8)', () => {
     expect(validateProjectSettings(projectOf({ areaLabelOccupancyThreshold: 0.5 })).ok).toBe(true);
   });
 
+  it('rejects an out-of-range zoom limit (FR-10, U39 integration)', () => {
+    // Below the 0.1× floor → rejected inline at the zoomMin field.
+    expect(errorFields(validateProjectSettings(projectOf({ zoomMin: 0.05 })))).toContain('zoomMin');
+    // Above the 10000× ceiling → rejected at zoomMax.
+    expect(errorFields(validateProjectSettings(projectOf({ zoomMax: 20000 })))).toContain('zoomMax');
+  });
+
+  it('rejects zoom min > max (FR-10 reversed input)', () => {
+    expect(errorFields(validateProjectSettings(projectOf({ zoomMin: 60, zoomMax: 10 })))).toContain('zoomMin');
+  });
+
+  it('accepts an in-range zoom limit pair', () => {
+    expect(validateProjectSettings(projectOf({ zoomMin: 0.5, zoomMax: 500 })).ok).toBe(true);
+  });
+
   it('collects multiple errors at once', () => {
     const r = validateProjectSettings(
       projectOf({ equatorLengthKm: -1, timelineMinYear: 9, timelineMaxYear: 1 }),

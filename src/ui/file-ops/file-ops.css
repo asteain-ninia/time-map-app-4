@@ -1,0 +1,60 @@
+/* U39 file-operation UI styling.
+ *
+ * The controller's wrapper lives in the front overlay layer (pointer-events:none,
+ * 教訓 5.14) so it never steals click / pan / zoom from the map behind it. Because
+ * it is pointer-events:none it CANNOT be the real D&D drop target in a browser
+ * hit-test — a `drop` would never land on it. The D&D drop entry (FR-105 ドラッグ＆
+ * ドロップ読み込み) is therefore the controller's exposed `onDragOver` / `onDrop`
+ * handlers (FileDropHandlers), which the host binds onto the pointer-active app-shell
+ * ROOT (an ancestor of the map area): a real drop over the map bubbles up to that
+ * root and reaches the load flow (see App.tsx `registerDropTarget` wiring). The modal
+ * bodies sit on U20's DraggablePanel vessel, positioned absolutely within the overlay. */
+
+.file-ops-dropzone {
+  position: absolute;
+  inset: 0;
+  /* Front-overlay container: let every pointer (click / pan / zoom) pass through to
+   * the map. The drop target is NOT this element — it is the app-shell root (above). */
+  pointer-events: none;
+}
+
+/* The dialogs (on the DraggablePanel vessel) re-capture pointer input so their
+ * buttons are interactive (FR-106 / FR-107). */
+.unsaved-modal-root,
+.repair-modal-root {
+  pointer-events: auto;
+}
+
+.unsaved-dialog,
+.repair-dialog {
+  max-width: 520px;
+}
+
+.unsaved-dialog__choices,
+.repair-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.repair-dialog__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.repair-row {
+  border-bottom: 1px solid #ddd;
+  padding: 6px 0;
+}
+
+.repair-row__summary {
+  font-weight: 600;
+}
+
+.repair-dialog__unresolved {
+  color: #b00020;
+}

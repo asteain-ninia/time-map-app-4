@@ -71,6 +71,16 @@ export interface ProjectSettings {
   readonly defaultPaletteTheme: PaletteThemeId;
   /** Custom palette colors (FR-109). */
   readonly customPalette: readonly ColorHex[];
+  /**
+   * The currently-effective minimum zoom magnification (FR-10). Supplied to the
+   * camera (U17) as the lower clamp bound. Default {@link DEFAULT_ZOOM_MIN}; the
+   * user-settable allowed range is [{@link ZOOM_LIMIT_FLOOR}, {@link ZOOM_LIMIT_CEIL}].
+   * A project-scoped setting so a change marks the project dirty and reflects
+   * immediately (FR-109). Always kept zoomMin ≤ zoomMax (validated at the boundary).
+   */
+  readonly zoomMin: number;
+  /** The currently-effective maximum zoom magnification (FR-10). Default {@link DEFAULT_ZOOM_MAX}. */
+  readonly zoomMax: number;
 }
 
 // --- App-wide settings (FR-110) ---------------------------------------------
@@ -121,6 +131,8 @@ export const PROJECT_SETTING_KEYS = [
   'newAreaAutoColorDefault',
   'defaultPaletteTheme',
   'customPalette',
+  'zoomMin',
+  'zoomMax',
 ] as const satisfies readonly ProjectSettingKey[];
 
 export const APP_SETTING_KEYS = [
@@ -164,6 +176,24 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 export const MIN_RENDER_FPS = 1;
 export const MAX_RENDER_FPS = 60;
 
+// --- Zoom-limit single source of truth (FR-10, U39) -------------------------
+//
+// The FR-10 default zoom clamp (最小 1 倍〜最大 50 倍) and the user-settable
+// allowed boundary (最小 0.1 倍〜最大 10000 倍) live here ONCE so neither the
+// default nor the input bounds are ever re-declared at a call site (単一の真実源,
+// 教訓 5.19 / spec §E 設定値のハードコード禁止). The render layer's
+// `DEFAULT_ZOOM_RANGE` (= 1×..50×) mirrors this default by spec contract; the
+// ui-wiring bridge supplies the live values from the store so they agree.
+
+/** FR-10 default minimum zoom magnification (1×). */
+export const DEFAULT_ZOOM_MIN = 1;
+/** FR-10 default maximum zoom magnification (50×). */
+export const DEFAULT_ZOOM_MAX = 50;
+/** FR-10 lowest value the user may set for the minimum zoom (0.1×). */
+export const ZOOM_LIMIT_FLOOR = 0.1;
+/** FR-10 highest value the user may set for the maximum zoom (10000×). */
+export const ZOOM_LIMIT_CEIL = 10000;
+
 /**
  * Default timeline range as TimePoints (year granularity; 教訓 5.16 完全値).
  * FR-66 規定の既定値「0 年〜10000 年」を単一の真実源として供給する。
@@ -188,6 +218,9 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   newAreaAutoColorDefault: true,
   defaultPaletteTheme: 'default',
   customPalette: [],
+  // FR-10 既定のズーム制限: 最小 1 倍〜最大 50 倍 (単一の真実源)。
+  zoomMin: DEFAULT_ZOOM_MIN,
+  zoomMax: DEFAULT_ZOOM_MAX,
 };
 
 /** Clamp FPS to the FR-110 range. Single place the range rule is applied. */

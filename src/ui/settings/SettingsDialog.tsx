@@ -273,6 +273,29 @@ function ProjectTab(props: {
         />
       </label>
 
+      {/* FR-10 zoom-limit inputs (provided by U39; range 0.1×..10000×, min ≤ max). */}
+      <label>
+        {PROJECT_FIELD_STRINGS.zoomMin}
+        <input
+          type="number"
+          step="0.1"
+          aria-label={PROJECT_FIELD_STRINGS.zoomMin}
+          value={d.zoomMin}
+          onChange={(e) => setNum('zoomMin', e.target.value)}
+        />
+      </label>
+
+      <label>
+        {PROJECT_FIELD_STRINGS.zoomMax}
+        <input
+          type="number"
+          step="0.1"
+          aria-label={PROJECT_FIELD_STRINGS.zoomMax}
+          value={d.zoomMax}
+          onChange={(e) => setNum('zoomMax', e.target.value)}
+        />
+      </label>
+
       <label>
         {PROJECT_FIELD_STRINGS.gridSpacingDeg}
         <select

@@ -15,6 +15,7 @@
 
 import { Canvas2DMapRenderer } from '../../render/canvas2d-renderer';
 import type { DrawPrimitive } from '../../render/map-renderer';
+import type { ZoomRange } from '../../render/camera';
 import type { WorldCoordinate } from '../../domain/coordinate';
 
 export interface AddHostPorts {
@@ -26,6 +27,13 @@ export interface AddHostPorts {
   drawKnife(primitives: readonly DrawPrimitive[]): void;
   /** The current camera zoom (CSS px per degree) — the固定円 radius input (FR-17). */
   zoom(): number;
+  /**
+   * Supply the currently-effective zoom CLAMP range to U17 (FR-10 / U39). The
+   * camera applies the clamp; this only hands it the {minZoom, maxZoom} value so
+   * a settings change takes effect at once (FR-109 即時反映). U39's `zoomRangeOf`
+   * derives the value; the bridge calls this on every settings change.
+   */
+  setZoomRange(range: ZoomRange): void;
   /** Tear down the renderer + canvas on unmount. */
   dispose(): void;
 }
@@ -69,6 +77,9 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
     },
     zoom(): number {
       return renderer.getCamera().zoom;
+    },
+    setZoomRange(range: ZoomRange): void {
+      renderer.setZoomRange(range);
     },
     dispose(): void {
       canvas.remove();

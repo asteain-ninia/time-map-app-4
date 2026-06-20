@@ -15,11 +15,25 @@
 // imperatively on map mount (技術方針 2.3) and its `screenToWorld` / `drawBatch`
 // back the controller's ports.
 
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { createSessionStore } from './state/store';
 import { AppShell } from './shell';
+import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
+import './file-ops/file-ops.css';
+
+import { getCalendar } from '../domain/time/calendar';
+import type { DomainProject } from '../domain/persistence/index';
+import {
+  FileOpsController,
+  buildEmptyProject,
+  type SupplyZoomRange,
+  type WindowCloseHook,
+  type DropTargetHook,
+  type FileDropHandlers,
+} from './file-ops/index';
+import type { ZoomRange } from '../render/camera';
 
 import {
   AddToolController,
@@ -34,17 +48,51 @@ import {
 import type { DrawPrimitive } from '../render/map-renderer';
 import { createColorInfo } from '../domain/attributes';
 
-/** The scaffold domain root: an opaque empty record until a load unit supplies one. */
-type DomainRoot = Record<string, never>;
+// The domain truth root is U14's persistence {@link DomainProject} (histories +
+// settings + base-map). U39 wires file-ops to load / save / repair it; the shell
+// and the add / knife controllers stay generic over it and never reach inside
+// (spec 依存: ルート状態を不変に受け渡す).
+type DomainRoot = DomainProject;
 
 export function App(): JSX.Element {
-  // The domain truth root is owned by the domain/persistence units; the shell is
-  // generic over it and never reaches inside (spec 依存: ルート状態を不変に受け
-  // 渡す). Bootstrap with an empty opaque root until a load unit supplies one.
+  // Bootstrap with an empty NEW project (地物 0 件 + 出界図 preset background,
+  // FR-03 / spec §D). The file-ops controller re-initialises this atomically on
+  // 新規プロジェクト and replaces it wholesale on 読み込み (教訓 5.22 / 5.36).
   const store = useMemo(
-    () => createSessionStore<DomainRoot>({ initialDomain: {} }),
+    () => createSessionStore<DomainRoot>({ initialDomain: buildEmptyProject() }),
     [],
   );
+
+  // The U20 command registry: the ファイル menu / shortcuts dispatch through it.
+  // Created here and shared with BOTH the shell (so the menu binds it) and the
+  // file-ops controller (so it registers the save/open/new commands, 教訓 5.13).
+  const registry = useMemo(() => new CommandRegistry(), []);
+
+  // The active calendar for U14 load-time consistency checks (FR-106).
+  const calendar = useMemo(() => getCalendar('gregorian'), []);
+
+  // Window-close interception (FR-107 終了確認ガード): the controller registers the
+  // quit guard; the host stores it so a later shell-side close event can await it.
+  // Until the Electron close event is bridged (shell seam), the runner is held
+  // here so the contract is real and the guard logic is observable / testable.
+  const quitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
+  const registerWindowClose: WindowCloseHook = useCallback((runGuard) => {
+    quitGuardRef.current = runGuard;
+    return () => {
+      quitGuardRef.current = null;
+    };
+  }, []);
+
+  // D&D 読み込み (FR-105): the file-ops controller exposes the drop handlers; we bind
+  // them on the app-shell ROOT, which is pointer-active and an ancestor of the map
+  // area, so a real-browser drop (Electron Chromium) over the map bubbles up here
+  // and reaches the load flow. The controller's own overlay container is
+  // pointer-events:none (教訓 5.14) and therefore cannot be the real drop target.
+  const [dropHandlers, setDropHandlers] = useState<FileDropHandlers | null>(null);
+  const registerDropTarget: DropTargetHook = useCallback((handlers) => {
+    setDropHandlers(handlers);
+    return () => setDropHandlers(null);
+  }, []);
 
   // The live renderer is created imperatively on map mount (技術方針 2.3); we hold
   // it behind a ref so the add-tool ports read the current renderer without riding
@@ -52,13 +100,27 @@ export function App(): JSX.Element {
   // draw / identity transform), so the wiring is real and never crashes pre-mount.
   const rendererRef = useRef<AddHostPorts | null>(null);
 
+  // The latest zoom CLAMP range (FR-10). The file-ops controller pushes it on
+  // every settings change; we cache it so a range set BEFORE the map mounts is
+  // applied as soon as the renderer exists (no lost update, 教訓 5.22).
+  const zoomRangeRef = useRef<ZoomRange | null>(null);
+
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
     const ports = createAddHostPorts(el);
     rendererRef.current = ports;
+    // Apply any clamp range supplied before mount (FR-10 即時反映).
+    if (zoomRangeRef.current !== null) ports.setZoomRange(zoomRangeRef.current);
     return () => {
       ports.dispose();
       rendererRef.current = null;
     };
+  }, []);
+
+  // Supply the camera clamp range to U17 (FR-10 / FR-109 即時反映). Caches the
+  // value and forwards it to the live renderer when one is mounted.
+  const supplyZoomRange: SupplyZoomRange = useCallback((range) => {
+    zoomRangeRef.current = range;
+    rendererRef.current?.setZoomRange(range);
   }, []);
 
   // Stable port closures the controller depends on; each reads the current
@@ -118,12 +180,32 @@ export function App(): JSX.Element {
   const knifeBootstrap = useMemo(() => createKnifeBootstrap<DomainRoot>(), []);
 
   return (
-    <div id="app-shell">
+    <div
+      id="app-shell"
+      onDragOver={dropHandlers?.onDragOver}
+      onDrop={dropHandlers?.onDrop}
+    >
       <AppShell
         store={store}
+        registry={registry}
         onMapMount={onMapMount}
         overlay={
           <>
+            {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
+                the ファイル menu / shortcut commands on the SAME registry the shell
+                dispatches, drives the FR-107 unsaved warning + FR-106 repair modals,
+                reflects loaded / repaired projects into the store, supplies the
+                FR-10 zoom clamp range to U17, and intercepts window-close with the
+                quit guard. All file I/O routes through U15's typed IPC
+                (window.timeMapApi); the renderer never touches fs (FR-02). */}
+            <FileOpsController
+              store={store}
+              registry={registry}
+              calendar={calendar}
+              supplyZoomRange={supplyZoomRange}
+              registerWindowClose={registerWindowClose}
+              registerDropTarget={registerDropTarget}
+            />
             <AddToolController<DomainRoot>
               store={store}
               startProcess={hostBootstrap.startProcess}

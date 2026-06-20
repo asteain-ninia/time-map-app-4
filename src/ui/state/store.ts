@@ -359,11 +359,18 @@ export function createSessionStore<S>(
         result,
         preference,
       );
-      set({ domain: nextDomain, ...selectionPatch(next) });
+      // A domain edit marks the project dirty (spec §B dirty 単一基準 / 教訓 5.36):
+      // this is the SAME projectDirty a setting change sets, so the U39 unsaved
+      // guard sees BOTH edit kinds through one flag (no second truth source).
+      set({ domain: nextDomain, projectDirty: true, ...selectionPatch(next) });
     },
 
     setDomainState(nextDomain) {
-      set({ domain: nextDomain });
+      // A domain swap (any edit path) marks the project dirty (spec §B 単一基準).
+      // A LOAD / NEW also swaps the domain but is a clean baseline; those paths
+      // clear the flag with markProjectSaved() in the SAME transition (教訓 5.36),
+      // so a clean load/new ends with projectDirty=false while an edit leaves it true.
+      set({ domain: nextDomain, projectDirty: true });
     },
 
     // -- selection (every mutation flows through U22's truth + builders) ------

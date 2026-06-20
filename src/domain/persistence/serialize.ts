@@ -472,6 +472,20 @@ export function deserialize(manifest: Manifest): DomainProject {
   };
 }
 
+/**
+ * Public reconstruction entry: turn an ALREADY-VALIDATED {@link Manifest} (the
+ * `parseManifest` Ok payload, or a U15 load result that main has Zod-validated)
+ * into a fresh {@link DomainProject}. This is the sanctioned way for a UI bridge
+ * to obtain the domain project from a load result WITHOUT importing the raw
+ * `deserialize` (which the lint boundary forbids outside this module, R8): the
+ * input here is a typed `Manifest`, so the Zod boundary has already run and this
+ * is a pure reconstruction, not a re-validation hole. Identical behaviour to
+ * {@link deserialize}; exposed under a name the boundary rule allows.
+ */
+export function manifestToProject(manifest: Manifest): DomainProject {
+  return deserialize(manifest);
+}
+
 // ============================================================================
 // round-trip equality (for tests / callers; structural value equality)
 // ============================================================================

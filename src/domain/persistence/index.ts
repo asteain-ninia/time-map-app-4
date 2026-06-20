@@ -86,6 +86,7 @@ export {
   type FeatureHistory,
   type DomainProject,
   serialize,
+  manifestToProject,
   projectsEqual,
 } from './serialize';
 
