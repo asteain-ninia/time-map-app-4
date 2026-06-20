@@ -14,6 +14,25 @@ export default defineConfig({
     environment: 'node',
     // Per-file environment: component tests need a DOM; domain/logic tests do not.
     environmentMatchGlobs: [['src/**/*.test.tsx', 'jsdom']],
+    // Determinism of the test GATE (build-health). The full suite mixes node and
+    // jsdom files and runs the React (`@vitejs/plugin-react`) transform on the
+    // `.test.tsx` set. Under a shared worker, jsdom global state and the React
+    // transform's per-module registry can leak across files in the same process,
+    // surfacing as a phantom cross-file error (e.g. a stale `useEffect is not
+    // defined` originating from a file that no longer imports it) and making the
+    // green/red signal non-reproducible — unusable as an acceptance gate. We pin a
+    // fully isolated `forks` pool so EVERY test file gets a fresh child process
+    // with a clean module graph and clean globals; one file can never contaminate
+    // another. This makes vitest 2.x's current defaults explicit (guarding against
+    // a future default change) and is the build-health complement to the results-
+    // cache being disabled below (single, reproducible source of truth for "what
+    // passed", 開発ガイド §4).
+    pool: 'forks',
+    poolOptions: {
+      forks: {
+        isolate: true,
+      },
+    },
     // Domain tests + the framework-free UI/session state store tests (U16) + the
     // render-layer VTransform / contract tests (U17). The store is built on
     // `zustand/vanilla` and needs no DOM; the render tests cover the PURE
@@ -42,6 +61,19 @@ export default defineConfig({
       // preview build (U19 描画コマンド列の再利用). These import only pure `.ts`
       // (domain consistency/geometry + render feature-layer), so they run in node.
       'src/ui/conflict/**/*.test.ts',
+      // U32 property-panel pure-logic tests: selection-display judgment (FR-83),
+      // object-link classification (FR-98), 時間バー time↔pixel mapping + label
+      // occupancy (FR-60), open-detail-panels model (FR-99), edit-intent no-op
+      // guard (FR-97). These import only pure `.ts` (domain + time-display), so
+      // they run in node without a DOM. Markdown sanitize + React component
+      // operation tests are `.test.tsx` (jsdom; covered by the .tsx glob below).
+      'src/ui/property/**/*.test.ts',
+      // U40 map-interaction pure-logic tests: the (mode × button × hit) dispatch
+      // decision + drag threshold, the pan camera-center math (over U17's
+      // VTransform), and the PointerDispatcher sequence/teardown/wheel wiring with
+      // faked ports. These import only pure `.ts` (domain selection + render
+      // transform), so they run in node without a DOM.
+      'src/ui/map/**/*.test.ts',
       // U15 shell IO + typed-IPC pure-logic tests: .tmap ZIP build/read,
       // atomic write (temp→fsync→rename) with an injected fs port, generation
       // backup naming/selection, auto-save scheduler with a fake clock, the

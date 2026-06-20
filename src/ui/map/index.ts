@@ -15,3 +15,44 @@ export {
   type GridSettings,
   type GridSettingsPanelProps,
 } from './GridSettingsPanel';
+
+// U40: mode-aware pointer dispatch + pan/zoom for the central map (FR-09).
+//
+// The pure decision/threshold logic (decideDispatch / drag threshold / pan
+// table), the pure pan math, the dependency PORTS, and the imperative
+// PointerDispatcher接着層. Camera/zoom math is delegated to U17 and the camera
+// truth to U16 — this barrel exposes the dispatch discipline, not a second
+// source of either (受け入れ基準 7 / 8).
+export {
+  POINTER_BUTTON,
+  type PointerButton,
+  pointerButtonFromCode,
+  panStartsFor,
+  DISPATCH_TARGET,
+  type DispatchTarget,
+  type DispatchInput,
+  decideDispatch,
+  DRAG_THRESHOLD_PX,
+  screenDistanceSq,
+  exceedsDragThreshold,
+} from './dispatch';
+
+export { type PanReference, panCameraTo } from './pan';
+
+export {
+  type CameraPort,
+  type HitTester,
+  type SelectionPort,
+  type AddPort,
+  type ContextMenuPort,
+  type PointerModifiers,
+  NO_MODIFIERS,
+} from './ports';
+
+export {
+  type NormalizedPointer,
+  type NormalizedWheel,
+  type PointerDispatcherOptions,
+  PointerDispatcher,
+  buttonFromButtonsMask,
+} from './PointerDispatcher';

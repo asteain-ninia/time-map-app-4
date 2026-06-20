@@ -140,3 +140,12 @@ export {
   measureFrame,
   runBenchmark,
 } from './feature-benchmark';
+
+// U23: provisional add-session drawing (FR-78 仮表示 / 面クロージング線半透明 /
+// FR-17 一定サイズ). Pure: turns the U23 add-session domain state into declarative
+// provisional primitives, distinct from confirmed features. No Canvas API here.
+export {
+  type AddStyle,
+  DEFAULT_ADD_STYLE,
+  buildAddPrimitives,
+} from './add-batch';
