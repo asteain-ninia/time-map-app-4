@@ -59,12 +59,32 @@ export interface NormalizedPointer {
   readonly modifiers: PointerModifiers;
 }
 
-/** A normalized wheel sample. `deltaY` < 0 = zoom in (scroll up), > 0 = zoom out. */
+/**
+ * A normalized wheel sample. `deltaY` < 0 = zoom in (scroll up), > 0 = zoom out,
+ * 0 = no-op. `deltaMode` is the DOM `WheelEvent.deltaMode` (0 = pixel, 1 = line,
+ * 2 = page); it lets the dispatcher convert line/page deltas to a comparable pixel
+ * magnitude so a trackpad (many tiny pixel deltas) and a notched mouse wheel
+ * (large line deltas) zoom at a comparable, magnitude-proportional rate.
+ */
 export interface NormalizedWheel {
   readonly x: number;
   readonly y: number;
   readonly deltaY: number;
+  /** DOM WheelEvent.deltaMode (0 pixel / 1 line / 2 page). Defaults to 0 (pixel). */
+  readonly deltaMode?: number;
 }
+
+/** Approx CSS px per wheel "line" / "page" for deltaMode normalization. */
+const WHEEL_LINE_PX = 16;
+const WHEEL_PAGE_PX = 800;
+
+/**
+ * The wheel zoom sensitivity: CSS px of (normalized) deltaY that corresponds to one
+ * `wheelFactor` notch. A typical notched mouse wheel emits ~100px per notch, so
+ * `factor = wheelFactor ** (-normalizedPx / WHEEL_NOTCH_PX)` reproduces the old
+ * one-notch-per-event feel for a 100px event while scaling smoothly for trackpads.
+ */
+const WHEEL_NOTCH_PX = 100;
 
 export interface PointerDispatcherOptions {
   /** Reads the current mode from U20 (called per event — mode is live). */
@@ -315,9 +335,24 @@ export class PointerDispatcher {
    * U16 — no zoom/clamp math here (受け入れ基準 2).
    */
   wheel(w: NormalizedWheel): void {
+    // A zero (or non-finite) delta is NOT a zoom: some trackpads/devices fire
+    // deltaY === 0 events, and the old sign-only branch treated those as zoom-OUT
+    // (Codex medium #5). No-op so an idle wheel event never moves the camera.
+    if (!Number.isFinite(w.deltaY) || w.deltaY === 0) return;
+
+    // Normalize line/page deltas to a comparable pixel magnitude (deltaMode) so the
+    // zoom rate is device-consistent; then scale the factor by the magnitude instead
+    // of applying a constant step, so tiny trackpad deltas zoom slowly and a single
+    // big notch is not amplified into a redraw storm (Codex medium #5).
+    const pxPerUnit =
+      w.deltaMode === 1 ? WHEEL_LINE_PX : w.deltaMode === 2 ? WHEEL_PAGE_PX : 1;
+    const normalizedPx = w.deltaY * pxPerUnit;
+    // deltaY < 0 (scroll up) → zoom IN (factor > 1); > 0 → zoom OUT (factor < 1).
+    // `wheelFactor ** (-normalizedPx / NOTCH)` ⇒ a ~100px notch reproduces the old
+    // one-step feel, smaller deltas a proportionally smaller step.
+    const factor = Math.pow(this.wheelFactor, -normalizedPx / WHEEL_NOTCH_PX);
+
     const { camera, viewport } = this.opts.camera.read();
-    // deltaY < 0 (scroll up) → zoom IN (factor > 1); deltaY > 0 → zoom OUT.
-    const factor = w.deltaY < 0 ? this.wheelFactor : 1 / this.wheelFactor;
     const cursor: ScreenPoint = { x: w.x, y: w.y };
     const next = zoomStepAtCursor(camera, viewport, cursor, factor, this.opts.zoomRange);
     this.opts.camera.write(next);

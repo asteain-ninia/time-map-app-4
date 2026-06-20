@@ -363,6 +363,45 @@ describe('受け入れ基準 5: view clipping drops off-screen features', () => 
       ),
     ).toBe(false);
   });
+
+  it('keeps a feature whose ±360° replica is on screen after panning past one turn (Codex high #1)', () => {
+    // Pan east past a whole world period: centerLon 360 ⇒ view span ~[320, 400].
+    // A feature at lon=0 is NOT in [320,400] raw, but its +360° replica (lon=360)
+    // IS — and the renderer draws that replica. Period-aware clipping must KEEP it.
+    const panned: Camera = { centerLon: 360, centerLat: 0, zoom: 10 };
+    const view = viewportWorldRect(panned, VP);
+    const atZero = {
+      kind: 'point' as const,
+      id: 'p',
+      at: { lon: 0, lat: 0 },
+      style: STYLE,
+      label: '',
+      selected: false,
+    };
+    expect(featureIntersectsViewport(atZero, view)).toBe(true);
+    // And it survives the full build pipeline (clip ON) so it actually draws.
+    const prims = buildFeaturePrimitives([atZero], opts({ camera: panned }));
+    expect(points(prims).length).toBe(1);
+    // A feature with no visible replica (lon=180, half a turn from any edge) is dropped.
+    const atFar = { ...atZero, id: 'far', at: { lon: 180, lat: 0 } };
+    expect(featureIntersectsViewport(atFar, view)).toBe(false);
+  });
+
+  it('keeps an edge-straddling point whose radius pokes into view (Codex medium #4)', () => {
+    // A point a few px outside the bare viewport span but within pointRadiusPx of
+    // the edge is still partly visible ⇒ must NOT be clipped (inflated clip rect).
+    // View is ±40°; place the point just past the edge by less than radius/zoom.
+    const marginDeg = DEFAULT_SCREEN_SIZES.pointRadiusPx / CAM.zoom; // 5/10 = 0.5°
+    const justOutside = {
+      kind: 'point' as const,
+      id: 'edge',
+      at: { lon: 40 + marginDeg / 2, lat: 0 },
+      style: STYLE,
+      label: '',
+      selected: false,
+    };
+    expect(points(buildFeaturePrimitives([justOutside], opts())).length).toBe(1);
+  });
 });
 
 describe('受け入れ基準 5: LOD reduces vertex count but preserves topology', () => {
@@ -377,6 +416,23 @@ describe('受け入れ基準 5: LOD reduces vertex count but preserves topology'
     const simplified = simplifyRing(ring, 1);
     expect(simplified.length).toBeLessThan(ring.length);
     expect(simplified.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('simplifyRing force-keeps BOTH the first and last vertex (Codex medium #3)', () => {
+    // A long run of near-anchor vertices then a far tail: the radial test would, at
+    // the previous impl, only keep the tail if it passed against the running anchor.
+    // The contract now force-keeps ring[last] so the closing edge is preserved.
+    const ring = [
+      { lon: 0, lat: 0 }, // first (force-kept)
+      { lon: 0.01, lat: 0 },
+      { lon: 0.02, lat: 0 },
+      { lon: 10, lat: 0 },
+      { lon: 10, lat: 10 },
+      { lon: 9.99, lat: 9.99 }, // last: very close to previous ⇒ fails distance test
+    ];
+    const simplified = simplifyRing(ring, 2);
+    expect(simplified[0]).toEqual(ring[0]);
+    expect(simplified[simplified.length - 1]).toEqual(ring[ring.length - 1]);
   });
 
   it('simplifyShape never drops a piece (穴/飛び地の正しさ維持, 教訓 5.1)', () => {

@@ -267,6 +267,35 @@ describe('wheel → U17 cursor-anchored zoom (受け入れ基準 2)', () => {
       expect(camera.writes.length).toBe(1);
     }
   });
+
+  it('deltaY === 0 is a no-op (never zooms out, Codex medium #5)', () => {
+    const { camera, dispatcher } = setup(EDIT_MODE.View);
+    const before = camera.camera.zoom;
+    dispatcher.wheel({ x: 200, y: 150, deltaY: 0 });
+    expect(camera.writes.length).toBe(0);
+    expect(camera.camera.zoom).toBe(before);
+  });
+
+  it('a smaller delta zooms LESS than a full notch (magnitude-scaled)', () => {
+    const big = setup(EDIT_MODE.View);
+    const small = setup(EDIT_MODE.View);
+    const start = big.camera.camera.zoom;
+    big.dispatcher.wheel({ x: 200, y: 150, deltaY: -100 });
+    small.dispatcher.wheel({ x: 200, y: 150, deltaY: -10 });
+    // Both zoom in, but the 10px delta moves zoom less than the 100px notch.
+    expect(small.camera.camera.zoom).toBeGreaterThan(start);
+    expect(small.camera.camera.zoom).toBeLessThan(big.camera.camera.zoom);
+  });
+
+  it('deltaMode line (1) is normalized to a comparable pixel magnitude', () => {
+    const px = setup(EDIT_MODE.View);
+    const line = setup(EDIT_MODE.View);
+    // 100px and ~6.25 lines (×16px) should land at a comparable zoom, NOT wildly
+    // different — without normalization a deltaY of 100 "lines" would be enormous.
+    px.dispatcher.wheel({ x: 200, y: 150, deltaY: -100, deltaMode: 0 });
+    line.dispatcher.wheel({ x: 200, y: 150, deltaY: -100 / 16, deltaMode: 1 });
+    expect(line.camera.camera.zoom).toBeCloseTo(px.camera.camera.zoom, 5);
+  });
 });
 
 describe('buttonFromButtonsMask', () => {

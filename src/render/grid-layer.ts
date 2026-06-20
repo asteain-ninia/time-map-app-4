@@ -194,6 +194,9 @@ export function buildGridPrimitives(
       ],
       widthPx,
       stroke,
+      // Already spans the full continuous viewport span — the renderer must NOT
+      // re-tile it across turns (would compound translucent alpha, Codex high #2).
+      wrap: false,
     };
     out.push(line);
     // Parallel label, anchored near the left edge so it stays visible while panning.
@@ -203,6 +206,7 @@ export function buildGridPrimitives(
       text: formatLatitudeLabel(lat),
       fontPx: style.labelFontPx,
       fill: labelColorFor(emphasis, style),
+      wrap: false,
     };
     out.push(label);
   }
@@ -219,6 +223,9 @@ export function buildGridPrimitives(
       ],
       widthPx,
       stroke,
+      // Meridians are enumerated across the full continuous span (below), so they
+      // are already seam-tiled: opt out of the renderer turn-loop (Codex high #2).
+      wrap: false,
     };
     out.push(line);
     // Meridian label anchored at the equator; the TEXT is U05-normalized so it
@@ -229,6 +236,7 @@ export function buildGridPrimitives(
       text: formatLongitudeLabel(lon),
       fontPx: style.labelFontPx,
       fill: labelColorFor(emphasis, style),
+      wrap: false,
     };
     out.push(label);
   }

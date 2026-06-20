@@ -50,6 +50,38 @@ describe('LongitudeShiftControl', () => {
     expect(onShift).toHaveBeenCalledWith(3);
   });
 
+  it('a continuous drag reports INCREMENTAL deltas, not summed absolutes (Codex medium #8)', () => {
+    const onShift = vi.fn();
+    render(
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+    );
+    const slider = screen.getByLabelText('経度シフト');
+    // A native drag emits several change events with ABSOLUTE thumb positions.
+    fireEvent.change(slider, { target: { value: '2' } });
+    fireEvent.change(slider, { target: { value: '5' } });
+    fireEvent.change(slider, { target: { value: '4' } });
+    // Each is reported as the delta from the previous thumb, so they telescope to
+    // the net movement (4) — NOT 2+5+4 = 11 (the old double-applying behaviour).
+    expect(onShift).toHaveBeenNthCalledWith(1, 2);
+    expect(onShift).toHaveBeenNthCalledWith(2, 3);
+    expect(onShift).toHaveBeenNthCalledWith(3, -1);
+    const total = onShift.mock.calls.reduce((s, [d]) => s + (d as number), 0);
+    expect(total).toBe(4);
+  });
+
+  it('snaps the thumb back to 0 when the gesture ends (受け入れ基準 14)', () => {
+    const onShift = vi.fn();
+    render(
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+    );
+    const slider = screen.getByLabelText('経度シフト') as HTMLInputElement;
+    fireEvent.change(slider, { target: { value: '6' } });
+    expect(slider.value).toBe('6');
+    fireEvent.pointerUp(slider);
+    // The momentary control returns to center so the truth stays the center lon.
+    expect(slider.value).toBe('0');
+  });
+
   it('preset buttons fire onPreset with the named preset', async () => {
     const onPreset = vi.fn();
     const user = userEvent.setup();

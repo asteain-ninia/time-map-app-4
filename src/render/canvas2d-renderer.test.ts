@@ -131,6 +131,51 @@ describe('FR-07: seam wrap replicates primitives per turn', () => {
     });
     expect(surface.ctx.clearRects).toBe(1);
   });
+
+  it('does NOT re-tile a wrap:false gridline across turns (Codex high #2)', () => {
+    // Zoomed out across several turns: a wrapping point replicates, but a wrap:false
+    // gridline (already continuous-tiled by grid-layer) is drawn exactly ONCE — so
+    // its translucent stroke is not painted N× over the same pixels (no alpha
+    // compounding) and the path work stays O(turns), not O(turns²).
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 0.5 });
+    r.drawBatch({
+      primitives: [
+        { kind: 'point', at: { lon: 0, lat: 0 }, radiusPx: 3, fill: '#000' },
+        {
+          kind: 'gridline',
+          points: [
+            { lon: -180, lat: 0 },
+            { lon: 180, lat: 0 },
+          ],
+          widthPx: 1,
+          stroke: 'rgba(0,0,0,0.5)',
+          wrap: false,
+        },
+      ],
+    });
+    const turns = surface.ctx.arcs.length; // == number of replicated point passes
+    expect(turns).toBeGreaterThanOrEqual(4);
+    // The gridline stroke is issued once total, NOT once per turn.
+    expect(surface.ctx.strokes.length).toBe(1);
+  });
+
+  it('still tiles a gridline WITHOUT wrap:false (default wraps)', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 0.5 });
+    r.drawBatch({
+      primitives: [
+        {
+          kind: 'gridline',
+          points: [
+            { lon: -180, lat: 0 },
+            { lon: 180, lat: 0 },
+          ],
+          widthPx: 1,
+          stroke: '#000',
+        },
+      ],
+    });
+    expect(surface.ctx.strokes.length).toBeGreaterThanOrEqual(4);
+  });
 });
 
 describe('empty batch (教訓 5.18)', () => {
@@ -139,6 +184,41 @@ describe('empty batch (教訓 5.18)', () => {
     r.drawBatch({ primitives: [] });
     expect(surface.ctx.clearRects).toBe(1);
     expect(surface.ctx.arcs.length).toBe(0);
+  });
+});
+
+describe('wheel zoom range honors the fit-all floor (Codex medium #6)', () => {
+  it('a first zoom-OUT from a sub-1 fit zoom does NOT clamp UP (no inversion)', () => {
+    // Small/short viewport: fitWorldZoom = min(300/360, 100/180) = 100/180 ≈ 0.556,
+    // which is BELOW the configured min (1). The OLD clamp (min 1) would push a
+    // first zoom-OUT UP to 1 — i.e. zoom IN, an inversion. The effective floor is now
+    // the fit zoom, so zoom-out from the fit-zoomed initial state stays AT the floor
+    // (it cannot go below fit-all), and crucially never jumps up to 1.
+    const small: Viewport = { widthCss: 300, heightCss: 100, devicePixelRatio: 1 };
+    const surface = new FakeCanvasSurface();
+    const r = new Canvas2DMapRenderer(surface, { viewport: small });
+    const before = r.getCamera().zoom;
+    expect(before).toBeLessThan(1); // fit zoom is sub-1 for this viewport
+    const next = r.cameraForWheelZoom({ x: 150, y: 50 }, 1 / 1.1); // zoom out
+    expect(next.zoom).toBeLessThanOrEqual(before); // never inverts to a zoom-IN
+    expect(next.zoom).toBeLessThan(1);
+  });
+
+  it('a zoom-IN from a sub-1 fit zoom still increases (toward the configured max)', () => {
+    const small: Viewport = { widthCss: 300, heightCss: 100, devicePixelRatio: 1 };
+    const surface = new FakeCanvasSurface();
+    const r = new Canvas2DMapRenderer(surface, { viewport: small });
+    const before = r.getCamera().zoom;
+    const next = r.cameraForWheelZoom({ x: 150, y: 50 }, 1.1); // zoom in
+    expect(next.zoom).toBeGreaterThan(before);
+  });
+
+  it('still clamps to the configured min for a normal viewport', () => {
+    // A large viewport's fit zoom exceeds the configured min, so the floor is the
+    // configured min (1): zooming out far enough pins at 1, never below.
+    const { r } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 1.05 });
+    const next = r.cameraForWheelZoom({ x: 400, y: 300 }, 1 / 2);
+    expect(next.zoom).toBe(1);
   });
 });
 

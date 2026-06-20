@@ -93,12 +93,24 @@ export interface PolygonShapePrimitive {
   readonly strokeWidthPx?: number;
 }
 
-/** A grid line (lat/lon graticule) drawn at a constant on-screen width. */
+/**
+ * A grid line (lat/lon graticule) drawn at a constant on-screen width.
+ *
+ * `wrap` opts OUT of the renderer's ±360° turn-loop (FR-07): the grid layer already
+ * enumerates meridians across the FULL continuous viewport span (so the graticule
+ * is self-tiled across the seam). Re-tiling it would re-issue every line/label once
+ * per world turn — O(turns²) path work at deep zoom-out AND, because grid strokes
+ * are translucent (FR-109 opacity), drawing the same pixels N times COMPOUNDS the
+ * alpha and darkens the grid (Codex high #2). `wrap === false` ⇒ draw exactly once
+ * at offset 0; omitted/`true` ⇒ the renderer tiles it like a feature primitive.
+ */
 export interface GridLinePrimitive {
   readonly kind: 'gridline';
   readonly points: readonly WorldPoint[];
   readonly widthPx: number;
   readonly stroke: string;
+  /** Opt out of the seam turn-loop when the primitive is already continuous-tiled. */
+  readonly wrap?: boolean;
 }
 
 /** A text label anchored at a world point, drawn at a constant on-screen font px (FR-17). */
@@ -109,6 +121,12 @@ export interface LabelPrimitive {
   /** Constant on-screen font size in CSS pixels (NOT derived from zoom). */
   readonly fontPx: number;
   readonly fill: string;
+  /**
+   * Opt out of the seam turn-loop (see {@link GridLinePrimitive.wrap}). Grid labels
+   * are anchored at continuous-span longitudes already, so re-tiling would stack
+   * duplicate text and (for translucent labels) compound alpha (Codex high #2).
+   */
+  readonly wrap?: boolean;
 }
 
 /**

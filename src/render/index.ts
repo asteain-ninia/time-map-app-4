@@ -84,6 +84,8 @@ export {
   LOD_LEVEL,
   viewportWorldRect,
   worldRectsIntersect,
+  worldRectIntersectsViewWrapped,
+  inflateViewRect,
   pointRect,
   pointsRect,
   shapeRect,

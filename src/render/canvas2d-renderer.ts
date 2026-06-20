@@ -38,6 +38,7 @@ import type {
 } from './map-renderer';
 import type { ScreenPoint, WorldPoint } from './vtransform';
 import {
+  fitWorldZoom,
   initialCamera,
   screenToWorld,
   worldToScreen,
@@ -131,7 +132,28 @@ export class Canvas2DMapRenderer implements MapRenderer {
   }
 
   cameraForWheelZoom(cursor: ScreenPoint, factor: number): Camera {
-    return zoomStepAtCursor(this.camera, this.viewport, cursor, factor, this.zoomRange);
+    return zoomStepAtCursor(this.camera, this.viewport, cursor, factor, this.effectiveZoomRange());
+  }
+
+  /**
+   * The zoom clamp actually applied to wheel zoom, with the floor lowered to the
+   * fit-all zoom when that is smaller than the configured minimum (Codex medium #6).
+   *
+   * The initial camera is FR-11 fit-all (`initialCamera` → `fitWorldZoom`), which for
+   * a small/short viewport (e.g. 300×100) can be BELOW `zoomRange.minZoom` (1). If
+   * the clamp kept the configured min, the user's very first "zoom out" wheel notch
+   * would clamp UP — i.e. zoom IN — a jarring inversion. Deriving the effective min
+   * from the SAME fit policy as the initial camera keeps the fit-zoomed initial state
+   * inside the allowed range, so the first zoom-out behaves as a zoom-out. The
+   * configured max is untouched. When the fit zoom is degenerate (0, not-yet-
+   * measured) the configured range is used unchanged.
+   */
+  private effectiveZoomRange(): ZoomRange {
+    const fit = fitWorldZoom(this.viewport);
+    if (!Number.isFinite(fit) || fit <= 0 || fit >= this.zoomRange.minZoom) {
+      return this.zoomRange;
+    }
+    return { minZoom: fit, maxZoom: this.zoomRange.maxZoom };
   }
 
   // -- draw -------------------------------------------------------------------
@@ -147,10 +169,20 @@ export class Canvas2DMapRenderer implements MapRenderer {
     // The ±360° offsets needed to tile the viewport across the seam (U05 period).
     const turns = wrapTurnsForViewport(this.camera, this.viewport);
 
-    for (const turn of turns) {
-      const lonOffset = turn * LONGITUDE_PERIOD;
-      for (const primitive of batch.primitives) {
-        this.drawPrimitive(primitive, lonOffset);
+    // Iterate PRIMITIVES outer so a `wrap === false` primitive (one that is already
+    // tiled across the continuous viewport span — e.g. the graticule, grid-layer)
+    // is drawn EXACTLY ONCE instead of re-issued per turn. Re-tiling an already-
+    // tiled, translucent primitive both wastes path work (~O(turns²) at zoom-out)
+    // and COMPOUNDS its alpha over the same pixels (Codex high #2). Wrapping
+    // primitives (features / base map) still draw once per turn so their single
+    // world-copy tiles across the seam (FR-07).
+    for (const primitive of batch.primitives) {
+      if (primitiveWraps(primitive)) {
+        for (const turn of turns) {
+          this.drawPrimitive(primitive, turn * LONGITUDE_PERIOD);
+        }
+      } else {
+        this.drawPrimitive(primitive, 0);
       }
     }
   }
@@ -302,6 +334,20 @@ export class Canvas2DMapRenderer implements MapRenderer {
       }
     }
   }
+}
+
+/**
+ * Whether a primitive should be replicated by the seam turn-loop (FR-07). Only the
+ * gridline/label primitives carry an explicit `wrap` opt-out (they may already be
+ * tiled across the continuous viewport span by grid-layer); everything else wraps.
+ * Default is `true` (wrap) so an omitted flag preserves the original tiling
+ * behaviour (教訓 5.18: a missing flag is a named default, not a silent skip).
+ */
+function primitiveWraps(primitive: DrawPrimitive): boolean {
+  if (primitive.kind === 'gridline' || primitive.kind === 'label') {
+    return primitive.wrap ?? true;
+  }
+  return true;
 }
 
 /** Compile-time exhaustiveness guard for the primitive union. */

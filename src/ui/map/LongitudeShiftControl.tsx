@@ -9,6 +9,8 @@
 // ONE place (教訓 5.16 倍率の二重適用防止). This widget never sees zoom, so it
 // cannot double-apply it.
 
+import { useState } from 'react';
+
 import {
   CENTER_LON_PRESET,
   type CenterLonPreset,
@@ -38,6 +40,19 @@ const PRESET_LABELS: Readonly<Record<CenterLonPreset, string>> = {
 export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.Element {
   const { centerLon, onShift, onPreset } = props;
 
+  // The slider is a MOMENTARY control whose truth is the center longitude, not the
+  // thumb. A native range drag fires many `change` events with ABSOLUTE thumb
+  // positions; if each were forwarded as a fresh relative shift they would SUM and
+  // over-shift (Codex medium #8). We instead remember the last thumb position and
+  // report only the DELTA since the previous event, so a continuous drag's reported
+  // shifts telescope to exactly the net thumb movement. The thumb snaps back to 0
+  // when the gesture ends (pointer up / blur) so the next drag starts from center.
+  const [thumb, setThumb] = useState(0);
+
+  const reset = (): void => {
+    if (thumb !== 0) setThumb(0);
+  };
+
   return (
     <div className="longitude-shift" data-testid="longitude-shift">
       <div className="longitude-shift__readout" data-testid="center-lon-readout">
@@ -50,13 +65,18 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
         min={-SHIFT_SLIDER_RANGE}
         max={SHIFT_SLIDER_RANGE}
         step={0.1}
-        // The slider is a momentary control: it reports the shift amount then
-        // recenters to 0 (the truth is the center longitude, not the slider).
-        value={0}
+        value={thumb}
         onChange={(e) => {
-          const shift = Number(e.target.value);
-          if (shift !== 0) onShift(shift);
+          const next = Number(e.target.value);
+          const delta = next - thumb;
+          setThumb(next);
+          if (delta !== 0) onShift(delta);
         }}
+        // End of gesture: snap the momentary thumb back to center so the truth stays
+        // the center longitude and the next drag is measured from 0 (受け入れ基準 14).
+        onPointerUp={reset}
+        onPointerCancel={reset}
+        onBlur={reset}
       />
 
       <div className="longitude-shift__buttons">

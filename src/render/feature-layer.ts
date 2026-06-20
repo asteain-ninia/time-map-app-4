@@ -34,6 +34,7 @@
 //   - PURITY (受け入れ基準 6): every function is pure; inputs are never mutated and
 //     the same input yields the same primitives.
 
+import { LONGITUDE_PERIOD } from '../domain/geo/seam';
 import type { GeoMultiPolygon, GeoPolygon, GeoRing } from '../domain/geometry/types';
 
 import type { Camera, Viewport } from './camera';
@@ -207,6 +208,34 @@ export function worldRectsIntersect(a: WorldRect, b: WorldRect): boolean {
   return a.minLon <= b.maxLon && a.maxLon >= b.minLon && a.minLat <= b.maxLat && a.maxLat >= b.minLat;
 }
 
+/**
+ * Period-aware rect intersection (FR-07 端ラップ表示). Latitude is tested exactly;
+ * longitude is tested against EVERY ±360° replica of `a` that could fall inside the
+ * `view` span, mirroring the renderer's `wrapTurnsForViewport` turn-loop
+ * (canvas2d-renderer): the renderer draws a feature's +360°·k replica wherever it
+ * lands on screen, so the clip must KEEP a feature whose replica is visible even
+ * when its raw bbox (lon=0) sits outside a view that has been panned past one world
+ * period (e.g. view lon-span [180, 540]). Without this, panning more than one world
+ * turn made on-screen features vanish (Codex high #1).
+ *
+ * Implemented in closed form (no per-turn loop, so no float累積 — same discipline as
+ * `wrapTurnsForViewport`): the replica `[a.minLon + k·360, a.maxLon + k·360]`
+ * overlaps `[view.minLon, view.maxLon]` for some integer k iff the smallest such
+ * shifted interval that can reach the view does so. We compute the minimal k that
+ * pushes `a.maxLon` to or past `view.minLon` and check that shifted `a.minLon` does
+ * not overshoot `view.maxLon`. Pure.
+ */
+export function worldRectIntersectsViewWrapped(a: WorldRect, view: WorldRect): boolean {
+  // Latitude is never wrapped: a quick reject keeps the common case cheap.
+  if (a.minLat > view.maxLat || a.maxLat < view.minLat) return false;
+  // Smallest integer k with (a.maxLon + k·360) >= view.minLon: the first replica
+  // whose right edge reaches the view's left edge.
+  const k = Math.ceil((view.minLon - a.maxLon) / LONGITUDE_PERIOD);
+  const shiftedMinLon = a.minLon + k * LONGITUDE_PERIOD;
+  // That replica overlaps iff its left edge does not run past the view's right edge.
+  return shiftedMinLon <= view.maxLon;
+}
+
 /** Bounding world rect of a point (degenerate, used for uniform clipping). */
 export function pointRect(at: WorldPoint): WorldRect {
   return { minLon: at.lon, maxLon: at.lon, minLat: at.lat, maxLat: at.lat };
@@ -260,18 +289,52 @@ export function shapeRect(shape: GeoMultiPolygon): WorldRect | undefined {
 export function featureIntersectsViewport(feature: EvaluatedFeature, view: WorldRect): boolean {
   switch (feature.kind) {
     case 'point':
-      return worldRectsIntersect(pointRect(feature.at), view);
+      return worldRectIntersectsViewWrapped(pointRect(feature.at), view);
     case 'line': {
       const r = pointsRect(feature.points);
-      return r !== undefined && worldRectsIntersect(r, view);
+      return r !== undefined && worldRectIntersectsViewWrapped(r, view);
     }
     case 'area': {
       const r = shapeRect(feature.shape);
-      return r !== undefined && worldRectsIntersect(r, view);
+      return r !== undefined && worldRectIntersectsViewWrapped(r, view);
     }
     default:
       return assertNeverFeature(feature);
   }
+}
+
+/**
+ * Inflate a clip `WorldRect` by a screen-space MARGIN converted to world degrees at
+ * the current zoom (Codex medium #4). The bare viewport rect is the exact span of
+ * pixel CENTERS; a point with `pointRadiusPx`, a stroke of `strokeWidthPx`, or a
+ * label drawn a few px outside that span is still partly visible yet would clip and
+ * pop. We widen the rect by the largest screen-fixed half-extent (point radius,
+ * stroke half-width, plus a small label allowance) ÷ zoom so a feature straddling
+ * the edge keeps drawing until it is fully off-screen. Pure; `zoom <= 0` returns
+ * the rect unchanged (degenerate frame, handled upstream).
+ */
+export function inflateViewRect(
+  view: WorldRect,
+  sizes: ScreenSizes,
+  zoom: number,
+): WorldRect {
+  if (!Number.isFinite(zoom) || zoom <= 0) return view;
+  // The widest screen-fixed half-extent any feature can paint past its anchor:
+  // point radius, half the stroke width, and a coarse label bound allowance so a
+  // label anchored just off-screen is not dropped (FR-86 ラベル境界).
+  const LABEL_BOUND_PX = 64;
+  const marginPx = Math.max(
+    sizes.pointRadiusPx,
+    sizes.strokeWidthPx / 2,
+    LABEL_BOUND_PX,
+  );
+  const marginDeg = marginPx / zoom;
+  return {
+    minLon: view.minLon - marginDeg,
+    maxLon: view.maxLon + marginDeg,
+    minLat: view.minLat - marginDeg,
+    maxLat: view.maxLat + marginDeg,
+  };
 }
 
 // --- LOD (詳細度制御, NFR 5.1 / R1) -----------------------------------------
@@ -320,19 +383,37 @@ export function lodToleranceDeg(level: LodLevel): number {
 
 /**
  * Simplify a ring by dropping consecutive vertices nearer than `toleranceDeg`
- * (a cheap radial-distance decimation, NOT Douglas-Peucker — this stays linear
- * and topology-safe). The FIRST and LAST kept vertices are always preserved so a
- * ring never collapses below 3 points unless it truly has < 3 input points. A
- * tolerance of 0 returns the input ring unchanged (Full LOD). Pure: returns a new
+ * (a cheap radial-distance decimation, NOT Douglas-Peucker — this stays linear).
+ *
+ * CONTRACT (corrected per Codex medium #3): the FIRST vertex (`ring[0]`) AND the
+ * LAST vertex (`ring[ring.length - 1]`) are ALWAYS force-kept, so the ring's start
+ * and closing edge are preserved regardless of where the distance test happens to
+ * fall. Without the explicit last-vertex keep, the tail survived only if it passed
+ * the distance test against the running anchor, which could shift the closing edge.
+ * A ring never collapses below 3 points unless it truly has < 3 input points.
+ *
+ * SCOPE / LIMITATION (Codex medium #3): this is per-ring radial decimation, NOT a
+ * topology-preserving simplifier. It does not guarantee that a heavily simplified
+ * concave/holed polygon stays self-intersection-free at Coarse tolerance; outer
+ * ring and holes are simplified independently. That trade-off is deliberate — the
+ * coarse level is only used at far zoom-out where such artefacts are sub-pixel — and
+ * is bounded by the small tolerances in {@link lodToleranceDeg}. A full
+ * topology-preserving simplifier is out of scope (would change the LOD design).
+ *
+ * A tolerance of 0 returns the input ring unchanged (Full LOD). Pure: returns a new
  * array, never mutates the input (受け入れ基準 6).
  */
 export function simplifyRing(ring: GeoRing, toleranceDeg: number): GeoRing {
   if (toleranceDeg <= 0 || ring.length <= 3) return ring;
   const tol2 = toleranceDeg * toleranceDeg;
   const first = ring[0]!;
+  const lastIndex = ring.length - 1;
+  const last = ring[lastIndex]!;
   const kept: GeoRing[number][] = [first];
   let anchor = first;
-  for (let i = 1; i < ring.length; i += 1) {
+  // Iterate the INTERIOR only; the last vertex is force-appended below so the
+  // closing edge is always preserved (contract above).
+  for (let i = 1; i < lastIndex; i += 1) {
     const c = ring[i]!;
     const dlon = c.lon - anchor.lon;
     const dlat = c.lat - anchor.lat;
@@ -341,7 +422,8 @@ export function simplifyRing(ring: GeoRing, toleranceDeg: number): GeoRing {
       anchor = c;
     }
   }
-  // Keep at least a triangle if the input had one: re-pad from the tail.
+  kept.push(last);
+  // Keep at least a triangle if the input had one: re-pad from the original ring.
   if (kept.length < 3 && ring.length >= 3) {
     return ring;
   }
@@ -620,7 +702,13 @@ export function buildFeaturePrimitives(
   opts: BuildOptions,
 ): DrawPrimitive[] {
   const clip = opts.clip ?? true;
-  const view = viewportWorldRect(opts.camera, opts.viewport);
+  // Inflate by screen-fixed half-extents so edge-straddling features do not pop
+  // (Codex medium #4); intersection itself is period-aware (Codex high #1).
+  const view = inflateViewRect(
+    viewportWorldRect(opts.camera, opts.viewport),
+    opts.sizes,
+    opts.camera.zoom,
+  );
 
   const visible = clip
     ? features.filter((f) => featureIntersectsViewport(f, view))
