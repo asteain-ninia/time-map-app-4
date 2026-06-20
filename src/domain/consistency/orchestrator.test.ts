@@ -22,6 +22,7 @@ import {
   startProcess,
   applyResolutions,
   conflictIdFor,
+  DEFAULT_MAX_CONVERGENCE_ROUNDS,
   MSG_TIME_VALIDATION_FAILED,
   MSG_CONSTRAINT_VIOLATION,
   MSG_CONVERGENCE_FAILED,
@@ -413,6 +414,66 @@ describe('受け入れ基準7: 差分調整後の再検出と収束 (FR-61)', ()
     expect(result.message).toBe(MSG_CONVERGENCE_FAILED);
     // bounded: initial detect + one per round (3) = 4, not unbounded.
     expect(detectCalls).toBeLessThanOrEqual(4);
+  });
+
+  it('maxRounds:Infinity は停止性を壊さず既定上限にクランプされる (無限ループ防止)', () => {
+    // A non-finite cap must NOT defeat termination (the for-loop bound). The
+    // orchestrator clamps Infinity / NaN to the default cap and still rejects with
+    // a convergence failure instead of spinning forever.
+    const c = conflict(conflictIdFor(FA, FB), FA, FB);
+    let detectCalls = 0;
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, {
+      detectSpatial() {
+        detectCalls += 1;
+        return [c]; // never converges.
+      },
+    });
+    const result = applyResolutions(
+      EMPTY_STATE,
+      proposalFor(FA, 'a'),
+      [resolutionFor(c, FA, FB)],
+      ports,
+      { maxRounds: Number.POSITIVE_INFINITY },
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(result.kind).toBe(REJECTION_KIND.ConvergenceFailure);
+    // Bounded by the DEFAULT cap: initial detect + one per round = cap + 1.
+    expect(detectCalls).toBeLessThanOrEqual(DEFAULT_MAX_CONVERGENCE_ROUNDS + 1);
+  });
+
+  it('差分調整後の状態が制約違反なら、空間競合ゼロでも確定しない (FR-61 制約再検証)', () => {
+    // A resolution can produce a constraint-invalid state that has zero spatial
+    // overlap; the post-resolution checkConstraints must catch it before commit.
+    const c = conflict(conflictIdFor(FA, FB), FA, FB);
+    let detectCalls = 0;
+    let constraintCalls = 0;
+    const log: SpyLog = { calls: [] };
+    const ports = makePorts(log, {
+      detectSpatial() {
+        detectCalls += 1;
+        // First detect (pre-resolution) finds the conflict; after the adjustment
+        // the re-detect is CLEAN — so only the constraint check can refuse.
+        return detectCalls === 1 ? [c] : [];
+      },
+      checkConstraints() {
+        constraintCalls += 1;
+        // Pre-commit pipeline check passes (call 1); the post-resolution check
+        // (call 2) reports a violation the trimmed shape introduced.
+        return constraintCalls >= 2 ? [{ kind: 'self-intersection' }] : [];
+      },
+    });
+    const result = applyResolutions(
+      EMPTY_STATE,
+      proposalFor(FA, 'a'),
+      [resolutionFor(c, FA, FB)],
+      ports,
+    );
+    expect(result.status).toBe(PROCESS_STATUS.Rejected);
+    if (result.status !== PROCESS_STATUS.Rejected) return;
+    expect(result.kind).toBe(REJECTION_KIND.ConstraintViolation);
+    expect(log.calls).not.toContain('makeCommand');
   });
 
   it('U06 差分が rejected (undefined) を返したら確定せず拒否する', () => {

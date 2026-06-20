@@ -29,3 +29,15 @@ export const KNIFE_STRINGS = {
   /** ConflictPaused status (FR-62). */
   conflictPaused: '空間競合の解決待ちです。',
 } as const;
+
+/** The developer-report hint appended to internal-error messages (FR-117). */
+export const KNIFE_REPORT_HINT = 'お手数ですが開発者へ報告してください。';
+
+/**
+ * Ensure the「開発者へ報告」hint is present exactly once on an internal-error
+ * message (FR-115 / FR-117). Mirrors add/conflict so a guarded internal error on
+ * the knife save path is surfaced with the SAME guidance, not a raw message.
+ */
+export function withReportHint(message: string): string {
+  return message.includes('開発者へ報告') ? message : `${message}\n${KNIFE_REPORT_HINT}`;
+}

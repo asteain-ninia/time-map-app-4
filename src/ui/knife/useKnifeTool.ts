@@ -21,7 +21,12 @@ import { useCallback, useMemo, useState } from 'react';
 
 import type { BasicAttributes, ColorInfo } from '../../domain/attributes';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import { PROCESS_STATUS, type EditProposal, type ProcessResult } from '../../domain/consistency/index';
+import {
+  PROCESS_STATUS,
+  REJECTION_KIND,
+  type EditProposal,
+  type ProcessResult,
+} from '../../domain/consistency/index';
 import type { Feature, LeafFeature } from '../../domain/feature';
 import { FEATURE_KIND } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
@@ -56,6 +61,8 @@ import {
   type SplitIdPorts,
   type SplitSnapshot,
 } from '../../domain/knife/index';
+
+import { withReportHint } from './strings';
 
 // --- Layer-crossing ports (the contracts; 教訓 5.33 / 5.34) ------------------
 
@@ -289,8 +296,15 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
             setMessage(null);
             return s;
           case PROCESS_STATUS.Rejected:
+            // FR-115 / 117: an internal-error (e.g. a guarded applyProposal throw on
+            // a stale inheritor) carries the「開発者へ報告」hint, matching add/conflict
+            // — never surface the raw internal message without the guidance.
             setRejected(true);
-            setMessage(outcome.message);
+            setMessage(
+              outcome.kind === REJECTION_KIND.Internal
+                ? withReportHint(outcome.message)
+                : outcome.message,
+            );
             return s;
         }
       });

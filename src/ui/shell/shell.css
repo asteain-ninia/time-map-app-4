@@ -7,6 +7,50 @@
  * root, matching the Electron window minimum (window-config.ts, FR-114). The map
  * input layer and front overlay layering (教訓 5.14) are expressed here. */
 
+/* --- Theme tokens + global reset ------------------------------------------
+ *
+ * One palette/spacing source so chrome reads consistently and the wireframe
+ * (unstyled white boxes) look is gone (技術方針 5.5: React UI シェル + CSS, 過剰
+ * 演出はしない — flat, neutral, business-like). Colors stay calm so the map (the
+ * subject) leads. Sizing tokens keep the layout logic in one place (寸法ロジック
+ * を一箇所に集約). */
+:root {
+  --c-bg: #f4f5f7;
+  --c-surface: #ffffff;
+  --c-chrome: #2f3a4a; /* menubar / dark chrome */
+  --c-chrome-text: #eef1f5;
+  --c-panel: #eceef1; /* toolbar / sidebar header bands */
+  --c-border: #c7ccd4;
+  --c-border-strong: #aab1bd;
+  --c-text: #1f2733;
+  --c-text-muted: #5b6573;
+  --c-accent: #2f6fb5;
+  --c-accent-weak: #dceaf7;
+  --radius: 4px;
+}
+
+/* The renderer mounts inside an Electron BrowserWindow; the layout must fill it.
+ * Without this the shell's height:100% had no measured parent and the map row
+ * collapsed (the wireframe screenshot showed a tiny map band). */
+html,
+body,
+#root,
+#app-shell {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--c-bg);
+  color: var(--c-text);
+  font-family: 'Segoe UI', Meiryo, 'Meiryo UI', system-ui, sans-serif;
+  font-size: 13px;
+}
+
+#app-shell {
+  width: 100%;
+}
+
 .app-shell {
   /* Fixed side-column widths shared by the main row AND the add-tool overlay grid
    * so the overlay's central cell (the input bridge) aligns EXACTLY with the map
@@ -66,6 +110,222 @@
 
 .app-shell__statusbar {
   grid-row: 4;
+}
+
+/* --- Region chrome: menubar / toolbar / sidebar / statusbar ----------------
+ *
+ * Backgrounds + borders give each region a clear edge so the layout reads as
+ * distinct panels instead of free-floating controls on white (ワイヤーフレーム
+ * 感の解消). Kept flat (no gradients / shadows beyond the existing floating
+ * panels) per 過剰演出はしない. */
+.app-shell__toolbar {
+  background: var(--c-panel);
+  border-right: 1px solid var(--c-border);
+}
+
+.app-shell__sidebar {
+  background: var(--c-surface);
+  border-left: 1px solid var(--c-border);
+}
+
+.app-shell__timeline {
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-border);
+}
+
+/* Menu bar: a single horizontal dark band (FR-111). The five menus sit in a row
+ * (the wireframe stacked them vertically because the items had no flex row). */
+.menubar {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 2px;
+  background: var(--c-chrome);
+  color: var(--c-chrome-text);
+  padding: 0 4px;
+  user-select: none;
+}
+
+.menubar__menu {
+  position: relative;
+}
+
+.menubar__menu > button {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  padding: 6px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.menubar__menu > button:hover,
+.menubar__menu > button[aria-expanded='true'] {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* The dropdown list: a floating surface under its menu button. */
+.menubar__items {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  min-width: 180px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  z-index: 60;
+}
+
+.menubar__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.menubar__item:not(:disabled):hover {
+  background: var(--c-accent-weak);
+}
+
+.menubar__item-accel {
+  color: var(--c-text-muted);
+  font-size: 11px;
+}
+
+/* Toolbar: a vertical stack of mode toggles + tool buttons (left rail). */
+.toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 8px 6px;
+}
+
+.toolbar__modes,
+.toolbar__tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolbar__tools {
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+}
+
+.toolbar button {
+  font: inherit;
+  padding: 6px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.toolbar button:hover:not(:disabled) {
+  border-color: var(--c-accent);
+}
+
+.toolbar button[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.toolbar button:disabled {
+  color: var(--c-text-muted);
+  background: var(--c-panel);
+  cursor: default;
+}
+
+/* Sidebar: tab strip + the active panel body. */
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.sidebar__tabs {
+  display: flex;
+  flex-direction: row;
+  background: var(--c-panel);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.sidebar__tabs button {
+  flex: 1;
+  font: inherit;
+  padding: 7px 4px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--c-text-muted);
+  cursor: pointer;
+}
+
+.sidebar__tabs button[aria-selected='true'] {
+  color: var(--c-accent);
+  border-bottom-color: var(--c-accent);
+  background: var(--c-surface);
+}
+
+.sidebar__panel {
+  padding: 10px;
+  overflow: auto;
+}
+
+/* Status bar: a thin bottom strip. */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 3px 10px;
+  background: var(--c-chrome);
+  color: var(--c-chrome-text);
+  font-size: 12px;
+  min-height: 22px;
+}
+
+/* Timeline: pad the panel so its controls do not sit flush against the edge. */
+.timeline {
+  padding: 8px 12px;
+}
+
+.timeline__readout {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-muted);
+}
+
+.timeline__current {
+  color: var(--c-text);
+  font-weight: 600;
+}
+
+.timeline__slider {
+  width: 100%;
+  margin: 4px 0;
+}
+
+.timeline__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
 }
 
 /* The central map area: the canvas mount sits behind, the input layer in front

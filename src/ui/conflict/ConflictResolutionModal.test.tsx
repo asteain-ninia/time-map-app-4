@@ -197,6 +197,47 @@ describe('再競合とエラー提示 (受け入れ基準 6)', () => {
     expect(banner).toHaveTextContent('内部処理で想定外の問題');
     expect(banner).toHaveTextContent('開発者へ報告してください');
   });
+
+  it('拒否後は下書きを破棄し、同じ方針での再適用を抑止する (教訓 5.2 全経路で破棄)', async () => {
+    const user = userEvent.setup();
+    const apply = vi.fn(
+      (): ProcessResult<unknown> => ({
+        status: PROCESS_STATUS.Rejected,
+        kind: REJECTION_KIND.Internal,
+        message: '内部処理で想定外の問題が発生しました。',
+      }),
+    );
+    renderModal([conflict('c1', FA, FB)], { applyResolutions: apply });
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+    expect(apply).toHaveBeenCalledTimes(1);
+    // 全経路で破棄: the spent draft is cleared (the radio is no longer checked) and
+    // the Rejected modal is NOT immediately re-applicable with the same policy.
+    expect(screen.getByTestId(`policy-c1-${String(FA)}`)).not.toBeChecked();
+    const applyBtn = screen.getByTestId('conflict-apply');
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
+    expect(apply).toHaveBeenCalledTimes(1); // no re-fire from the rejected phase.
+  });
+
+  it('再競合では生き残る競合の選択を保持する (pruneDrafts; 教訓 5.5)', async () => {
+    const user = userEvent.setup();
+    // First apply (c1 chosen) → re-conflict surfacing c1 (survives) + c2 (new).
+    const apply = vi.fn(
+      (): ProcessResult<unknown> => ({
+        status: PROCESS_STATUS.ConflictsPending,
+        conflicts: [conflict('c1', FA, FB), conflict('c2', FC, FD)],
+        unresolvedConflictIds: ['c2'],
+      }),
+    );
+    renderModal([conflict('c1', FA, FB)], { applyResolutions: apply });
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+    // c1 still present AND its earlier choice is retained (pruned, not discarded),
+    // so only the genuinely-new c2 still needs a policy.
+    expect(screen.getByTestId(`policy-c1-${String(FA)}`)).toBeChecked();
+    expect(screen.getByTestId('conflict-row-c2')).toHaveAttribute('data-state', 'unresolved');
+  });
 });
 
 describe('キャンセルと一時状態の破棄 (受け入れ基準 7, 教訓 5.2)', () => {

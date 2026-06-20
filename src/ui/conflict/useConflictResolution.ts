@@ -26,6 +26,7 @@ import {
   EMPTY_DRAFTS,
   allConflictsResolved,
   buildConflictListVM,
+  pruneDrafts,
   setDraftPriority,
   toResolutions,
   unresolvedConflictIds,
@@ -134,7 +135,10 @@ export function useConflictResolution<S>(
   }, [onCancel]);
 
   const apply = useCallback(() => {
-    // Hard gate: never split the apply; only fire when全件 resolved (受け入れ基準 5).
+    // Hard gate: never split the apply; only fire while RESOLVING and when全件
+    // resolved (受け入れ基準 5). Gating on phase stops a re-apply after the modal has
+    // already committed / been rejected (the drafts are spent — 教訓 5.2).
+    if (phase !== MODAL_PHASE.Resolving) return;
     if (!allConflictsResolved(conflicts, drafts) || conflicts.length === 0) return;
     const resolutions = toResolutions(conflicts, drafts);
     const result = applyResolutions(resolutions);
@@ -147,15 +151,23 @@ export function useConflictResolution<S>(
         onCommitted?.(result);
         break;
       case PROCESS_STATUS.ConflictsPending:
-        // 再競合: re-構成 with the updated list and discard ALL prior drafts so a
-        // departed conflict's choice cannot leak and a surviving conflict is
-        // re-chosen against the new geometry (教訓 5.2 / 5.5 / 受け入れ基準 7).
+        // 再競合: re-構成 with the updated list, PRUNING drafts to the surviving
+        // conflicts (教訓 5.2 / 5.5 / 受け入れ基準 7). A departed conflict's choice is
+        // dropped (it cannot leak), but a STILL-PRESENT conflict keeps its chosen
+        // priority so the user only picks policies for the genuinely-new conflicts.
+        // This matches the live adapter, which ACCUMULATES policies by conflict id
+        // across rounds (consistency-binding.createAccumulatingApply): discarding a
+        // surviving choice here would force a needless re-pick and could oscillate.
         setConflicts(result.conflicts);
-        setDrafts(EMPTY_DRAFTS);
+        setDrafts((d) => pruneDrafts(d, result.conflicts));
         setRejectionMessage(null);
         setPhase(MODAL_PHASE.Resolving);
         break;
       case PROCESS_STATUS.Rejected:
+        // Discard the transient drafts on rejection too (教訓 5.2 全経路で破棄): the
+        // policy set that produced the rejection is spent, so the Rejected modal
+        // must not stay immediately re-applicable with the same (rejected) choices.
+        setDrafts(EMPTY_DRAFTS);
         setRejectionMessage(
           result.kind === 'internal-error'
             ? withReportHint(result.message)
@@ -164,14 +176,19 @@ export function useConflictResolution<S>(
         setPhase(MODAL_PHASE.Rejected);
         break;
     }
-  }, [conflicts, drafts, applyResolutions, onCommitted]);
+  }, [phase, conflicts, drafts, applyResolutions, onCommitted]);
 
   const listVM = useMemo(() => buildConflictListVM(conflicts, drafts), [conflicts, drafts]);
   const unresolved = useMemo(
     () => unresolvedConflictIds(conflicts, drafts),
     [conflicts, drafts],
   );
-  const canApply = conflicts.length > 0 && allConflictsResolved(conflicts, drafts);
+  // Apply-enable mirror of the `apply` gate: only while resolving, and全件揃ったとき
+  // (受け入れ基準 5). A committed / rejected modal is never re-applicable (教訓 5.2).
+  const canApply =
+    phase === MODAL_PHASE.Resolving &&
+    conflicts.length > 0 &&
+    allConflictsResolved(conflicts, drafts);
 
   return {
     phase,

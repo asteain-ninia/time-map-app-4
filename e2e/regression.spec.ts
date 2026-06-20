@@ -183,22 +183,34 @@ test.describe('回帰観点 — 一時状態の破棄 (教訓 5.2 / FR-78)', () 
 });
 
 test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR-94)', () => {
-  // STILL SKELETON-SKIPPED (honest 依存ゲート). The split→commit→re-resolve path is
-  // FULLY wired: createLiveKnifeBinding (U44) is the live U13 split binding, and
-  // App.tsx's onKnifeCommitted runs the single store-write that promotes the
-  // inheritor (touchedFeatureIds[0]) so selection re-resolves to it (教訓 5.11).
-  // What is NOT yet live is the START of the flow: the knife bootstrap's
-  // domain-lookup ports (resolveFeature / resolveStore / featureAtPoint in
-  // App.tsx createKnifeBootstrap) are honest stubs over the empty scaffold root —
-  // no feature resolves, so対象面選択 finds nothing and the cut can never assemble
-  // end-to-end through the GUI. Driving this E2E needs a live load+selection unit
-  // that seeds a leaf feature AND backs featureAtPoint with real hit-testing
-  // (NEW domain/integration work, NOT U42 verification — 開発ガイド §1.8). The
-  // 教訓 5.11 re-resolution rule itself is unit-fixed (domain/selection
-  // reresolveAfterStructureChange + consistency-binding.test.tsx). Activates the
-  // moment those lookup ports go live.
-  test.skip('分割後に選択が結果から再解決され維持される (依存: live 選択/ヒットテスト ports)', () => {
-    // SKELETON: select a leaf → ナイフで2分割 → 継承先選択 → assert the inheritor
-    // stays selected (re-resolved from the command result, not blanket-cleared).
+  // The START of the split flow is NOW LIVE (P0-B / U35 / U12 配線完了): App.tsx
+  // createKnifeBootstrap supplies live domain-lookup ports (resolveFeature /
+  // resolveStore / featureAtPoint over the committed root via live-lookup.ts), the
+  // U35 conflict modal is mounted, and the U12 history records commits. The whole
+  // GUI flow was driven through those live seams during development — add a 面 (live
+  // add commit, selection re-resolves to it), 編集→ナイフ, hit-test the face (live
+  // featureAtPoint), draw a piercing cut, 確定, choose the inheritor, save — every
+  // step UP TO the final commit fires live (the inheritor modal opens, the U35
+  // conflict modal mounts on seam overlap).
+  //
+  // FINAL COMMIT REMAINS GATED on a domain geometry-precision issue, NOT a wiring
+  // gap: a split driven by SCREEN pixel coordinates (screen→world→quantise) yields
+  // two halves whose seam vertices do not coincide to the quantum, so U10 detects a
+  // thin positive-area SEAM SLIVER and pauses on the conflict modal; U06's boolean
+  // difference over that sliver does not converge within the round cap (rejection
+  // ConvergenceFailure). A split with EXACT integer coords commits cleanly with NO
+  // conflict — PROVEN at the unit layer in src/ui/consistency-binding.test.tsx
+  // ("a clean axis-aligned split commits without conflict") together with the
+  // 教訓 5.11 re-resolution + finding5 created-set fix and the live-lookup hit-test
+  // tests (src/ui/live-lookup.test.tsx). Activating this E2E needs seam-vertex
+  // quantisation consistency in the split assembler (a domain fix), out of scope for
+  // the composition-root wiring done here.
+  test.skip('分割後に選択が結果から再解決され維持される (依存: 分割継ぎ目の量子化整合 — domain)', () => {
+    // SKELETON of the now-live flow (see KnifeToolController + createKnifeBootstrap):
+    //   enterAddMode → tool-add.area → click 4 corners → add-complete → add-save
+    //   → enterEditMode → tool-edit.knife → click face (live featureAtPoint)
+    //   → draw piercing cut → knife-confirm-cut → knife-choose-a
+    //   → knife-confirm-inheritor → add-save → assert app-active-feature non-empty.
+    // Blocked only by the seam-sliver convergence noted above (domain geometry).
   });
 });

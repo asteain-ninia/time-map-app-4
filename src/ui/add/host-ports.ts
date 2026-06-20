@@ -17,7 +17,12 @@ import { Canvas2DMapRenderer } from '../../render/canvas2d-renderer';
 import type { DrawPrimitive } from '../../render/map-renderer';
 import type { ZoomRange } from '../../render/camera';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import { buildGridPrimitives, DEFAULT_GRID_STYLE } from '../../render/grid-layer';
+import {
+  buildBaseMapPrimitive,
+  buildGridPrimitives,
+  DEFAULT_GRID_STYLE,
+} from '../../render/grid-layer';
+import { loadPresetBaseMap, PRESET_BASEMAP_META } from '../map/base-map-asset';
 
 export interface AddHostPorts {
   /** Pointer client coords → world coordinate (U17 transform). */
@@ -69,21 +74,43 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
   // knife provisional draws would otherwise WIPE the map to blank between frames.
   // We hold the base primitives here and re-composite them UNDER every overlay
   // draw (single base source, 教訓 §4), and paint them once on mount so the central
-  // map area is never empty. The graticule is fully synchronous (no async image
-  // decode), satisfying「base-map 相当 or グリッド」without an offline asset fetch.
+  // map area is never empty.
+  //
+  // BASE MAP IMAGE (FR-03 陸地輪郭): the bundled preset 出界図 (land-only
+  // equirectangular SVG) is decoded asynchronously; until it is ready we paint the
+  // graticule alone, and once `loadPresetBaseMap` resolves we store the decoded
+  // image and re-composite so the land appears UNDER the grid (背景 → 最背面). A
+  // decode failure leaves `baseImage` null → graticule-only fallback (読込失敗 →
+  // グリッド維持), no console noise.
+  let baseImage: CanvasImageSource | null = null;
+  let disposed = false;
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
     // Rebuild the grid for the CURRENT camera/viewport so a resize / future pan
-    // re-tiles correctly; the base stays under the overlay primitives.
-    const base = buildGridPrimitives(
-      true,
-      DEFAULT_GRID_STYLE,
-      renderer.getCamera(),
-      renderer.getViewport(),
+    // re-tiles correctly; the base map (if loaded) stays UNDER the grid, and both
+    // stay under the overlay primitives.
+    const primitives: DrawPrimitive[] = [];
+    if (baseImage !== null) {
+      primitives.push(buildBaseMapPrimitive(baseImage, PRESET_BASEMAP_META));
+    }
+    primitives.push(
+      ...buildGridPrimitives(
+        true,
+        DEFAULT_GRID_STYLE,
+        renderer.getCamera(),
+        renderer.getViewport(),
+      ),
     );
-    renderer.drawBatch({ primitives: [...base, ...overlay] });
+    primitives.push(...overlay);
+    renderer.drawBatch({ primitives });
   };
-  // Initial paint: the base map is visible immediately on mount (no blank area).
+  // Initial paint: the graticule is visible immediately on mount (no blank area).
   paintWith([]);
+  // Kick off the base-map decode; re-composite when it lands (unless disposed).
+  void loadPresetBaseMap(mount.ownerDocument).then((img) => {
+    if (disposed || img === null) return;
+    baseImage = img;
+    paintWith([]);
+  });
 
   return {
     screenToWorld(clientX, clientY): WorldCoordinate {
@@ -104,6 +131,7 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
       renderer.setZoomRange(range);
     },
     dispose(): void {
+      disposed = true;
       canvas.remove();
     },
   };

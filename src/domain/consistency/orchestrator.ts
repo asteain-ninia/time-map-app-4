@@ -200,7 +200,14 @@ export function applyResolutions<S, Snapshot>(
   ports: ConsistencyPorts<S, Snapshot>,
   options: ProcessOptions = {},
 ): ProcessResult<S> {
-  const maxRounds = Math.max(1, Math.floor(options.maxRounds ?? DEFAULT_MAX_CONVERGENCE_ROUNDS));
+  // Stopping property (spec §収束の上限): the cap MUST be a finite positive
+  // integer or the for-loop below loses its bound. A caller passing Infinity /
+  // NaN (e.g. an "unbounded" intent) would defeat termination — clamp those to
+  // the default cap rather than spin forever (受け入れ基準7 / 教訓 5.22).
+  const requested = options.maxRounds ?? DEFAULT_MAX_CONVERGENCE_ROUNDS;
+  const maxRounds = Number.isFinite(requested)
+    ? Math.max(1, Math.floor(requested))
+    : DEFAULT_MAX_CONVERGENCE_ROUNDS;
 
   // Re-run the fixed-order pipeline first (FR-61: 確定前に必ず U09 → U10 を通す,
   // even from a direct call / undo-redo path — 教訓5.26).
@@ -253,6 +260,16 @@ export function applyResolutions<S, Snapshot>(
       }
       workState = next;
       appliedResolutions.push(resolution);
+    }
+
+    // Editing-constraint re-validation over the ADJUSTED state (FR-61 / 教訓5.26):
+    // a U06 difference can produce a constraint-invalid shape (e.g. a degenerate
+    // ring) that carries zero spatial overlap. Re-running checkConstraints here —
+    // the SAME order as the pre-commit pipeline — stops such a state committing
+    // (受け入れ基準5: 確定前に必ず制約再検証).
+    const residualViolations = ports.checkConstraints(workState);
+    if (residualViolations.length > 0) {
+      return reject(REJECTION_KIND.ConstraintViolation, MSG_CONSTRAINT_VIOLATION, residualViolations);
     }
 
     // Step 3 again — re-detect over the adjusted state (FR-61 order preserved).

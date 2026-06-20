@@ -17,6 +17,7 @@
 
 import {
   startProcess as orchestratorStart,
+  applyResolutions as orchestratorApplyResolutions,
   PROCESS_STATUS,
   REJECTION_KIND,
   MSG_INTERNAL_ERROR,
@@ -44,10 +45,13 @@ import type { SplitSnapshot } from '../domain/knife/index';
 import {
   applyAddProposal,
   applySplitProposal,
+  deriveAnchorId,
 } from '../domain/editing/apply-proposal';
+import { createAnchor, createAnchorSnapshot, type Anchor } from '../domain/anchor';
+import { applyPastEdit } from '../domain/anchor-series';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
-import { resolveAt, type AnchorSeries } from '../domain/anchor-series';
+import { featuresAt, verticesAt } from './live-lookup';
 import { buildForest } from '../domain/hierarchy/forest';
 import { extractTerminalShapes } from '../domain/spatial/index';
 import { detectTerminalOverlaps } from '../domain/spatial/index';
@@ -60,8 +64,8 @@ import {
   type Feature,
   type LeafFeature,
 } from '../domain/feature';
-import { createShape, createTerritoryRing } from '../domain/ring';
-import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../domain/vertex';
+import { createHoleRing, createShape, createTerritoryRing, type Ring } from '../domain/ring';
+import { createVertex, createVertexStore, type Vertex } from '../domain/vertex';
 import type { TimePoint } from '../domain/time/time-point';
 
 /** The live domain truth root the binding threads through every port (U14). */
@@ -86,6 +90,19 @@ export interface DomainRootAccess {
 export interface LiveConsistencyBinding<Snapshot> {
   readonly ports: ConsistencyPorts<DomainRoot, Snapshot>;
   readonly startProcess: (proposal: EditProposal<Snapshot>) => ProcessResult<DomainRoot>;
+  /**
+   * Build the U35 `applyResolutions` adapter for ONE paused proposal (FR-62 /
+   * 受け入れ基準 5). The conflict-resolution modal collects policies and calls the
+   * returned closure ONCE with all of them; it re-runs U13's fixed-order pipeline
+   * + U06 differences over the LIVE root (read at call time, never a stale
+   * capture — 教訓 5.6) bound to the SAME per-process ports `startProcess` uses
+   * (detectSpatial / applyResolution rebound to the proposal time), so the public
+   * no-op ports are never exercised. Returns a {@link ProcessResult}; it never
+   * writes the store (the modal's onCommitted owns the single write).
+   */
+  readonly applyResolutionsFor: (
+    proposal: EditProposal<Snapshot>,
+  ) => (resolutions: readonly Resolution[]) => ProcessResult<DomainRoot>;
 }
 
 export type CreateLiveAddBinding = (
@@ -158,28 +175,6 @@ function checkTimeOver<Snapshot>(
   return v.ok ? { ok: true } : { ok: false, reason: v.error };
 }
 
-/** Resolve every feature effective at `time` across all histories (U09 resolveAt). */
-function featuresAt(root: DomainRoot, time: TimePoint): Feature[] {
-  const out: Feature[] = [];
-  for (const history of root.histories) {
-    const resolution = resolveAt(history.series, time, calendar);
-    if (resolution.kind !== 'present') continue;
-    for (const f of resolution.entry.anchor.snapshot.features) out.push(f);
-  }
-  return out;
-}
-
-/** The vertex store effective at `time` (union of every present anchor's store). */
-function verticesAt(root: DomainRoot, time: TimePoint): VertexStore {
-  const all: Vertex[] = [];
-  for (const history of root.histories) {
-    const resolution = resolveAt(history.series, time, calendar);
-    if (resolution.kind !== 'present') continue;
-    for (const v of resolution.entry.anchor.snapshot.vertices.byId.values()) all.push(v);
-  }
-  return createVertexStore(all);
-}
-
 /** A display-name lookup over the trial state at the anchor time (FR-62). */
 function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => string {
   const byId = new Map<FeatureId, string>();
@@ -234,14 +229,30 @@ function makeCommand(
   finalState: DomainRoot,
   touched: readonly FeatureId[],
 ): Command<DomainRoot> {
-  const touchedSet: ReadonlySet<DomainId> = new Set<DomainId>(touched);
   const baselineIds = new Set<FeatureId>(baseline.histories.map((h) => h.featureId));
+  const finalIds = new Set<FeatureId>(finalState.histories.map((h) => h.featureId));
   const created = new Set<DomainId>();
   const survived = new Set<DomainId>();
-  for (const id of touched) {
+  // finding5 — derive created/survived from the ACTUAL history-id delta, not only
+  // the orchestrator-supplied `touched`. For a split, the inheritor is the
+  // proposal.featureId (in `touched`) but the NON-inherited new feature is born
+  // INSIDE applyProposal and never appears in `touched` (touchedFeatureIds only
+  // unions the proposal id + resolution participants). Diffing baseline↔final
+  // histories captures that new feature as `created`, so undo/redo's selection
+  // re-resolution promotes / drops it correctly (教訓 5.11 / FR-94). The supplied
+  // `touched` is unioned in so resolution-participant edits stay accounted for.
+  for (const id of finalIds) {
     if (baselineIds.has(id)) survived.add(id);
     else created.add(id);
   }
+  for (const id of touched) {
+    if (!created.has(id) && finalIds.has(id)) survived.add(id);
+  }
+  // The full touched set = every id that participated (the delta + the supplied).
+  const touchedSet: ReadonlySet<DomainId> = new Set<DomainId>([
+    ...created,
+    ...survived,
+  ]);
   const forward: CommandResult = createCommandResult({ created, survived, touched: touchedSet });
   const backward: CommandResult = createCommandResult({
     deleted: created,
@@ -283,19 +294,39 @@ function shapeFromMultiPolygon(
   nextRingId: () => RingId,
 ): { shape: ReturnType<typeof createShape>; vertices: Vertex[] } | undefined {
   const vertices: Vertex[] = [];
-  const rings = [];
-  for (const poly of mp) {
-    // Use the outer ring (index 0) of each piece; holes are uncommon for a
-    // difference trim and would need the full re-parent (handled by U26's path).
-    const outer = poly[0];
-    if (outer === undefined) continue;
+  const rings: Ring[] = [];
+
+  // Materialise ONE GeoJSON ring into a fresh vertex run + its ids. Returns
+  // undefined for a degenerate ring (<3 vertices) so the caller can skip it.
+  const buildRing = (coords: GeoMultiPolygon[number][number]): VertexId[] | undefined => {
     const vertexIds: VertexId[] = [];
-    for (const c of outer) {
+    for (const c of coords) {
       const v = createVertex(nextVertexId(), quantizeCoordinate(c));
       vertices.push(v);
       vertexIds.push(v.id);
     }
-    if (vertexIds.length >= 3) rings.push(createTerritoryRing(nextRingId(), vertexIds));
+    return vertexIds.length >= 3 ? vertexIds : undefined;
+  };
+
+  for (const poly of mp) {
+    // poly[0] is the outer ring; poly[1..] are HOLES (a difference can carve a
+    // priority feature out of the interior of the adjust feature, yielding an
+    // outer ring + hole). Dropping the holes would re-create the very overlap the
+    // resolution removed, so U13 would re-detect it and never converge — carry
+    // every hole, parented to this piece's outer ring (FR-26 / 教訓 5.20).
+    const outer = poly[0];
+    if (outer === undefined) continue;
+    const outerIds = buildRing(outer);
+    if (outerIds === undefined) continue;
+    const outerRingId = nextRingId();
+    rings.push(createTerritoryRing(outerRingId, outerIds));
+    for (let h = 1; h < poly.length; h += 1) {
+      const holeCoords = poly[h];
+      if (holeCoords === undefined) continue;
+      const holeIds = buildRing(holeCoords);
+      if (holeIds === undefined) continue;
+      rings.push(createHoleRing(nextRingId(), holeIds, outerRingId));
+    }
   }
   if (rings.length === 0) return undefined;
   return { shape: createShape(rings), vertices };
@@ -345,9 +376,19 @@ function applyResolutionAt(
 }
 
 /**
- * Replace the feature `featureId`'s snapshot at the anchor time with `feature`
- * (carrying its new vertices), rebuilding only that history's effective anchor.
- * Pure: returns a new project.
+ * Write the trimmed `feature` (carrying its new vertices) into `featureId`'s
+ * history AT the resolution `anchorTime`, returning a new project.
+ *
+ * WHY applyPastEdit, NOT an in-place effective-entry swap (temporal-correctness
+ * fix): a resolution at year 200 must change the adjust feature only FROM year
+ * 200 onward. The previous in-place rewrite replaced the entry effective at the
+ * conflict time, so a feature anchored at year 100 (still effective at 200) had
+ * its year-100 anchor overwritten — silently mutating its shape for years
+ * 100–199 too. `applyPastEdit` instead UPDATES the anchor when one already starts
+ * exactly at `anchorTime`, or INSERTS a new anchor at `anchorTime` inheriting the
+ * effective state otherwise (U09 §5.7), so earlier slots are untouched (FR-55).
+ * The anchor id is derived deterministically (deriveAnchorId) so a redo replays
+ * the same identity (教訓 5.20), consistent with apply-proposal.ts.
  */
 function rewriteFeatureAtTime(
   state: DomainRoot,
@@ -360,30 +401,117 @@ function rewriteFeatureAtTime(
   if (index < 0) return undefined;
   const history = state.histories[index];
   if (history === undefined) return undefined;
-  const resolution = resolveAt(history.series, anchorTime, calendar);
-  if (resolution.kind !== 'present') return undefined;
-  const entry = resolution.entry;
-  const snapshotVertices = createVertexStore([
-    ...entry.anchor.snapshot.vertices.byId.values(),
-    ...newVertices,
-  ]);
-  const features = entry.anchor.snapshot.features.map((f) => (f.id === featureId ? feature : f));
-  const newEntry = {
-    anchor: {
-      id: entry.anchor.id,
-      snapshot: { features, vertices: snapshotVertices },
+
+  const newSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      // Base the new anchor on the state effective at anchorTime: swap only the
+      // adjust feature for its trimmed form and carry the difference's new
+      // vertices alongside the inherited ones (the whole snapshot is one unit).
+      const base =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : { features: [feature] as readonly Feature[], vertices: createVertexStore([]) };
+      const features = base.features.some((f) => f.id === featureId)
+        ? base.features.map((f) => (f.id === featureId ? feature : f))
+        : [...base.features, feature];
+      const vertices = createVertexStore([...base.vertices.byId.values(), ...newVertices]);
+      return createAnchor(
+        deriveAnchorId(featureId, anchorTime),
+        createAnchorSnapshot(features, vertices),
+      );
     },
-    start: entry.start,
-    end: entry.end,
-  };
-  const entries = history.series.entries.map((e) => (e === entry ? newEntry : e));
-  const newSeries: AnchorSeries = { entries };
+    calendar,
+  );
+
   const newHistory: FeatureHistory = { featureId, series: newSeries };
   const histories = state.histories.map((h, i) => (i === index ? newHistory : h));
   return { histories, settings: state.settings, baseMap: state.baseMap };
 }
 
 // --- factories --------------------------------------------------------------
+
+/**
+ * Rebind the base ports to ONE proposal: detectSpatial / applyResolution need the
+ * proposal's anchor time, which the orchestrator does not thread through (it only
+ * passes the result state). Every confirm path (startProcess) AND every resolution
+ * path (applyResolutionsFor) uses the SAME bound set so a confirm and a later
+ * apply-resolutions over the same proposal see identical spatial detection (no
+ * 二重真実源). The public `applyResolution` no-op is thus never reached.
+ */
+function bindPortsToProposal<Snapshot>(
+  access: DomainRootAccess,
+  base: ConsistencyPorts<DomainRoot, Snapshot>,
+  proposal: EditProposal<Snapshot>,
+): ConsistencyPorts<DomainRoot, Snapshot> {
+  return {
+    ...base,
+    detectSpatial: detectSpatialAt(proposal),
+    applyResolution: applyResolutionAt(access, proposal.anchorTime),
+  };
+}
+
+/**
+ * Run U13's `applyResolutions` over the live root + the proposal-bound ports,
+ * converting an unexpected port throw into a typed internal-error rejection
+ * (same guard discipline as {@link runGuarded}; 教訓 5.26).
+ */
+function runResolutionsGuarded<Snapshot>(
+  access: DomainRootAccess,
+  base: ConsistencyPorts<DomainRoot, Snapshot>,
+  proposal: EditProposal<Snapshot>,
+  resolutions: readonly Resolution[],
+): ProcessResult<DomainRoot> {
+  try {
+    return orchestratorApplyResolutions(
+      access.getRoot(),
+      proposal,
+      resolutions,
+      bindPortsToProposal(access, base, proposal),
+    );
+  } catch (error) {
+    const rejection: RejectedResult = {
+      status: PROCESS_STATUS.Rejected,
+      kind: REJECTION_KIND.Internal,
+      message: MSG_INTERNAL_ERROR,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+    return rejection;
+  }
+}
+
+/**
+ * Build the per-proposal `applyResolutions` closure that ACCUMULATES policies by
+ * conflict id across successive modal rounds (the stopping-property fix, 教訓 5.2 /
+ * 5.5 / 受け入れ基準 7).
+ *
+ * WHY (re-競合 oscillation): the U13 orchestrator re-runs the WHOLE fixed-order
+ * pipeline from the LIVE baseline on every `applyResolutions` call (nothing is
+ * committed mid-flow — 教訓 5.22). If resolving c1 introduces a new conflict c2,
+ * the modal's next apply sends ONLY c2's policy; the orchestrator re-applies the
+ * proposal to the baseline, re-detects c1 (unchanged baseline geometry), and —
+ * with no policy for c1 — returns c1 as still-unresolved AGAIN. The two rounds
+ * would then oscillate (c1 ⇄ c2) without ever converging.
+ *
+ * The fix is to remember every policy the user has chosen for THIS paused
+ * proposal and pass the CUMULATIVE set on each retry, so an earlier-resolved
+ * conflict stays resolved while the new round adds the fresh policy. A later
+ * choice for the same conflict id replaces the earlier one (選び直し, FR-63). The
+ * accumulator is private to one paused proposal and is dropped with the closure
+ * when the modal commits / cancels (no cross-edit leak).
+ */
+function createAccumulatingApply<Snapshot>(
+  access: DomainRootAccess,
+  ports: ConsistencyPorts<DomainRoot, Snapshot>,
+  proposal: EditProposal<Snapshot>,
+): (resolutions: readonly Resolution[]) => ProcessResult<DomainRoot> {
+  const accumulated = new Map<string, Resolution>();
+  return (resolutions) => {
+    for (const r of resolutions) accumulated.set(r.conflictId, r);
+    return runResolutionsGuarded(access, ports, proposal, [...accumulated.values()]);
+  };
+}
 
 /**
  * Build the live add binding (U23 → U13). The `applyProposal` port is U44's pure
@@ -407,15 +535,9 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
   };
   return {
     ports,
-    startProcess: (proposal) => {
-      const root = access.getRoot();
-      const boundPorts: ConsistencyPorts<DomainRoot, AddSnapshot> = {
-        ...ports,
-        detectSpatial: detectSpatialAt(proposal),
-        applyResolution: applyResolutionAt(access, proposal.anchorTime),
-      };
-      return runGuarded(root, proposal, boundPorts);
-    },
+    startProcess: (proposal) =>
+      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
+    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
   };
 };
 
@@ -435,14 +557,8 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
   };
   return {
     ports,
-    startProcess: (proposal) => {
-      const root = access.getRoot();
-      const boundPorts: ConsistencyPorts<DomainRoot, SplitSnapshot> = {
-        ...ports,
-        detectSpatial: detectSpatialAt(proposal),
-        applyResolution: applyResolutionAt(access, proposal.anchorTime),
-      };
-      return runGuarded(root, proposal, boundPorts);
-    },
+    startProcess: (proposal) =>
+      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
+    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
   };
 };
