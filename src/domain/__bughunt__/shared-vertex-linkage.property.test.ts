@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import { createIdGeneratorState, type IdGeneratorState } from '../id-generator';
-import { asFeatureId, asVertexId, type FeatureId, type VertexId } from '../ids';
+import { asFeatureId, asVertexId, type VertexId } from '../ids';
 import {
   buildReverseIndex,
   checkParticipation,

@@ -87,8 +87,8 @@ const COLOR = createColorInfo(true, '#102030', '#405060', '#708090');
 // ---------------------------------------------------------------------------
 
 interface ModelState {
-  readonly features: Feature[];
-  readonly vertices: Vertex[];
+  features: Feature[];
+  vertices: Vertex[];
   nextId: number;
 }
 
@@ -128,19 +128,6 @@ function makeLeaf(
           parentId: asFeatureId(parentId),
         });
   s.features.push(feature);
-  return fid;
-}
-
-/** Build an aggregate over already-present children (children keep their parentId). */
-function makeAggregate(s: ModelState, childIds: FeatureId[], parentId?: string): FeatureId {
-  const suffix = freshId(s, 'agg');
-  const fid = asFeatureId(`f-${suffix}`);
-  const attrs = createBasicAttributes(suffix, 0, 1);
-  const agg =
-    parentId === undefined
-      ? createAggregateFeature(fid, attrs, COLOR, childIds)
-      : createAggregateFeature(fid, attrs, COLOR, childIds, { parentId: asFeatureId(parentId) });
-  s.features.push(agg);
   return fid;
 }
 
@@ -520,7 +507,6 @@ function pruneVertices(s: ModelState): void {
       for (const r of f.shape.rings) for (const vid of r.vertexIds) used.add(vid);
     }
   }
-  s.features = s.features; // noop, keep type
   s.vertices = s.vertices.filter((v) => used.has(v.id));
 }
 

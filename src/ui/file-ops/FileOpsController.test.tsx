@@ -17,7 +17,7 @@ import {
   type Manifest,
 } from '../../domain/persistence/index';
 import type { DomainProject } from '../../domain/persistence/index';
-import type { LoadResponse, SaveResponse, TimeMapApi } from '../../shell/ipc/contract';
+import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../shell/ipc/contract';
 
 import { createSessionStore, type SessionStore } from '../state/store';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';

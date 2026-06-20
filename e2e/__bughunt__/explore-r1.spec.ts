@@ -34,7 +34,7 @@ interface Anomaly {
 const anomalies: Anomaly[] = [];
 function record(kind: string, detail: string): void {
   anomalies.push({ kind, detail });
-  // eslint-disable-next-line no-console
+   
   console.log(`BUGHUNT:${kind}: ${detail}`);
 }
 
@@ -73,7 +73,7 @@ function attachListeners(page: Page): void {
   // hook the raw window event for completeness.
   void page.addInitScript(() => {
     window.addEventListener('unhandledrejection', (ev) => {
-      // eslint-disable-next-line no-console
+       
       console.error(`UNHANDLED_REJECTION: ${String((ev as PromiseRejectionEvent).reason)}`);
     });
   });
@@ -325,7 +325,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
 
       // --- Split (knife) a face: full live flow ----------------------------------
       // Re-add a fresh face to split (state may have been mutated by undo/redo).
-      const splitTarget = await commitFace(page, cx, cy - 30, 90);
+      await commitFace(page, cx, cy - 30, 90);
       await shot(page, 'split-target-added');
       const editMode = page.getByTestId('mode-edit');
       await leaveView(page);
@@ -403,7 +403,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       await activeFeature(page);
 
       // Emit a machine-scrapeable summary of all anomalies.
-      // eslint-disable-next-line no-console
+       
       console.log(`BUGHUNT_SUMMARY: ${JSON.stringify(anomalies)}`);
 
       // The exploration itself must have reached the end with the shell intact.

@@ -129,6 +129,16 @@ export function resolveLeafShape(shape: Shape, store: VertexStore): GeoMultiPoly
  * aggregate (anything with children, by result state) → the U06 union of its
  * direct children's resolved areas. Cycle-safe and finite via a `visited` set
  * (教訓5.28): a child that loops back is skipped, never re-entered.
+ *
+ * A feature that BOTH owns an explicit shape (a declared leaf) AND has children —
+ * the「末端→集約」transition state the add / affiliation flow can leave behind when
+ * a child is attached to an existing leaf (FR-35 末端→集約 is owned by another unit
+ * and need not have run) — is NOT treated as a pure aggregate that throws away its
+ * own footprint. Its derived area is the union of its OWN leaf shape with its
+ * children's areas, so a parent that gained a child never silently loses its own
+ * territory on the map / in hit-test (one resolution drives both — 教訓5.29; pieces
+ * intact — 教訓5.1). A pure aggregate (kind === Aggregate, no shape field — FR-35)
+ * has no own area, so its derived area stays exactly the union of children.
  */
 export function resolveFeatureArea(
   forest: Forest,
@@ -161,8 +171,15 @@ export function resolveFeatureArea(
     return resolveOwnLeafArea(feature0, store);
   }
 
+  // A declared leaf that has children still owns its footprint: seed the union
+  // with its own area so the parent's territory is not dropped (FR-35 末端→集約
+  // transition state). A pure aggregate seeds EMPTY (resolveOwnLeafArea returns
+  // EMPTY for it), so the union of children is unchanged.
+  const root0Own = resolveOwnLeafArea(feature0, store);
+  if (root0Own.status === 'failed') return root0Own;
+
   const stack: Frame[] = [
-    { featureId, childIds: root0Children, childIndex: 0, acc: EMPTY_MULTI_POLYGON },
+    { featureId, childIds: root0Children, childIndex: 0, acc: root0Own.area },
   ];
   // The area a just-completed child frame contributes to its parent's union.
   let completedArea: GeoMultiPolygon | undefined;
@@ -207,12 +224,17 @@ export function resolveFeatureArea(
 
     const grandChildren = directChildIds(forest, childId);
     if (grandChildren.length > 0) {
-      // Aggregate child: push a frame; its area unions its own children.
+      // Aggregate child: push a frame; its area unions its own children. A
+      // declared leaf that has children seeds its own footprint into the union
+      // too (same 末端→集約 transition rule as the root above); a pure aggregate
+      // seeds EMPTY.
+      const childOwn = resolveOwnLeafArea(childFeature, store);
+      if (childOwn.status === 'failed') return childOwn;
       stack.push({
         featureId: childId,
         childIds: grandChildren,
         childIndex: 0,
-        acc: EMPTY_MULTI_POLYGON,
+        acc: childOwn.area,
       });
       continue;
     }

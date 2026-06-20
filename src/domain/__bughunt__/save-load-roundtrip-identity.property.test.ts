@@ -61,6 +61,12 @@ import {
   type ProjectSettings,
   type BaseMapReference,
 } from '../persistence/serialize';
+// deserialize is persistence-internal (R8 / 受け入れ基準8): it must not run on
+// unvalidated EXTERNAL input. This metamorphic round-trip test calls it only on
+// manifests it serialized itself (trusted, internally-produced data) — the same
+// legitimate use as src/domain/persistence/round-trip.test.ts — so the R8 import
+// restriction is scoped-disabled here with that justification.
+// eslint-disable-next-line no-restricted-imports
 import { deserialize } from '../persistence/serialize';
 import { parseManifest, PARSE_OUTCOME } from '../persistence';
 
@@ -136,23 +142,6 @@ function lineFeature(id: string): { feature: Feature; vertices: Vertex[] } {
 
 type FeatureKindTag = 'leaf' | 'point' | 'line';
 
-/** Build a single-anchor history for a feature snapshot at year `startYear`. */
-function singleAnchorHistory(
-  id: string,
-  features: readonly Feature[],
-  vertices: readonly Vertex[],
-  startYear: number,
-): FeatureHistory {
-  const anchor = createAnchor(
-    asAnchorId(`${id}-anc-0`),
-    createAnchorSnapshot(features, createVertexStore([...vertices])),
-  );
-  return {
-    featureId: asFeatureId(id),
-    series: normalizeSeries([createAnchorEntry(anchor, timePointYear(startYear), null)], CAL),
-  };
-}
-
 /** A history with N anchors (distinct years), each carrying the same snapshot. */
 function multiAnchorHistory(
   id: string,
@@ -199,7 +188,7 @@ function projectArb(): fc.Arbitrary<DomainProject> {
           const { feature, vertex } = pointFeature(id, ox, 0);
           return multiAnchorHistory(id, [feature], [vertex], spec.years);
         }
-        const { feature, vertices } = lineFeature(id);
+        const { vertices } = lineFeature(id);
         // shift line vertices apart per index to avoid coincidence
         const shifted = vertices.map((v) =>
           createVertex(v.id, createCoordinate(v.coordinate.lon + ox, v.coordinate.lat)),
