@@ -38,6 +38,7 @@ import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex } from '../../domain/vertex';
+import { unwrapLonSequence } from '../../domain/geo/longitude';
 import { buildForest } from '../../domain/hierarchy/forest';
 
 import {
@@ -159,7 +160,7 @@ export function buildCommittedFeatures(
         break;
       }
       case FEATURE_KIND.Line: {
-        const points: { lon: number; lat: number }[] = [];
+        const raw: { lon: number; lat: number }[] = [];
         let resolvable = true;
         for (const id of feature.vertexIds) {
           const v = getVertex(vertices, id);
@@ -167,9 +168,19 @@ export function buildCommittedFeatures(
             resolvable = false;
             break;
           }
-          points.push({ lon: v.coordinate.lon, lat: v.coordinate.lat });
+          raw.push({ lon: v.coordinate.lon, lat: v.coordinate.lat });
         }
-        if (!resolvable || points.length === 0) break;
+        if (!resolvable || raw.length === 0) break;
+        // HB-14 / FR-07: a line whose vertices straddle the antimeridian must be a
+        // CONTINUOUS run, not two stored representatives [179, -179] (which the render
+        // layer's continuous-longitude contract — feature-layer EvaluatedLine.points —
+        // requires "U05 wrap-展開 already applied"). Without this the polyline's bbox
+        // spans ~358° and its segment is drawn the long way round, and near-seam
+        // zoom-in dropped/misdrew it. U04's `unwrapLonSequence` is the single source
+        // of ±360° turn-counting unwrap (技術方針 R3 単一真実源) — we delegate, never
+        // re-derive the rule. Latitude is never wrapped.
+        const unwrappedLons = unwrapLonSequence(raw.map((p) => p.lon));
+        const points = raw.map((p, i) => ({ lon: unwrappedLons[i]!, lat: p.lat }));
         const line: EvaluatedLine = {
           kind: 'line',
           id: feature.id as string,

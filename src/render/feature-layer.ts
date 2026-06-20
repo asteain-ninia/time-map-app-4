@@ -687,6 +687,44 @@ function buildAreaPrimitives(f: EvaluatedArea, opts: BuildOptions): DrawPrimitiv
 }
 
 /**
+ * The clip rect ACTUALLY used to narrow the per-frame feature set: the viewport's
+ * covered world span inflated by the screen-fixed half-extents a feature can paint
+ * past its anchor (Codex medium #4). Exposed as the SINGLE source of "what world
+ * span survives clipping" so the visible-set selector below, the renderer's draw,
+ * and the HB-14 regression property all agree on one rectangle (教訓 5.29). Pure.
+ */
+export function clipViewRect(camera: Camera, viewport: Viewport, sizes: ScreenSizes): WorldRect {
+  return inflateViewRect(viewportWorldRect(camera, viewport), sizes, camera.zoom);
+}
+
+/**
+ * Narrow an evaluated feature list to the ones whose geometry survives the
+ * period-aware view clip for this camera (HB-14 — 拡大すると地物が消える 再発防止の
+ * 単一真実源). `buildFeaturePrimitives` builds primitives from EXACTLY this list, and
+ * the composition root publishes `selectVisibleFeatures(...).length` into the
+ * `data-visible-feature-count` observation hook, so a behavioural E2E can assert
+ * the count never falls to 0 while a committed feature is still on screen during a
+ * zoom-in (既存 app-active-feature 方式).
+ *
+ * CONTRACT (the metamorphic invariant the HB-14 property pins): the returned set is
+ * a SUPERSET of every feature actually visible on screen — clipping may KEEP a
+ * marginally-offscreen feature (the inflate margin) but must NEVER DROP one whose
+ * geometry, after ±360° wrap, lands inside the viewport. When `clip` is false the
+ * input is returned unchanged. Pure: never mutates the input.
+ */
+export function selectVisibleFeatures(
+  features: readonly EvaluatedFeature[],
+  camera: Camera,
+  viewport: Viewport,
+  sizes: ScreenSizes,
+  clip = true,
+): readonly EvaluatedFeature[] {
+  if (!clip) return features;
+  const view = clipViewRect(camera, viewport, sizes);
+  return features.filter((f) => featureIntersectsViewport(f, view));
+}
+
+/**
  * The single entry point (spec §1 / 受け入れ基準 1): turn the selected-time
  * evaluated feature list into a flat primitive array for `MapRenderer.drawBatch`.
  *
@@ -702,17 +740,17 @@ export function buildFeaturePrimitives(
   opts: BuildOptions,
 ): DrawPrimitive[] {
   const clip = opts.clip ?? true;
-  // Inflate by screen-fixed half-extents so edge-straddling features do not pop
-  // (Codex medium #4); intersection itself is period-aware (Codex high #1).
-  const view = inflateViewRect(
-    viewportWorldRect(opts.camera, opts.viewport),
+  // Narrow to the period-aware, inflated view clip via the SINGLE selector the
+  // observation hook + HB-14 property also use (教訓 5.29 — one truth source for
+  // "what survives clipping"); intersection itself is period-aware (Codex high #1)
+  // and inflated by screen-fixed half-extents so edge-straddlers do not pop (#4).
+  const visible = selectVisibleFeatures(
+    features,
+    opts.camera,
+    opts.viewport,
     opts.sizes,
-    opts.camera.zoom,
+    clip,
   );
-
-  const visible = clip
-    ? features.filter((f) => featureIntersectsViewport(f, view))
-    : features;
 
   // Build per-band so we can interleave by draw order without re-sorting strings.
   const areas: DrawPrimitive[] = [];

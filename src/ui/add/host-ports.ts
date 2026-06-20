@@ -24,6 +24,7 @@ import {
 } from '../../render/grid-layer';
 import {
   buildFeaturePrimitives,
+  selectVisibleFeatures,
   DEFAULT_LABEL_THRESHOLDS,
   DEFAULT_SCREEN_SIZES,
   type EvaluatedFeature,
@@ -60,6 +61,17 @@ export interface CreateAddHostPortsOptions {
    * can assert the camera actually moved (既存 app-active-feature マーカーと同方式).
    */
   readonly onCameraChange?: (camera: Camera) => void;
+  /**
+   * Notified after every composite with the number of committed features that
+   * SURVIVED the period-aware view clip this frame (HB-14 — 拡大すると地物が消える).
+   * The composition root mirrors it into the `data-visible-feature-count`
+   * observation hook so a behavioural E2E can assert the clipped/candidate set
+   * never falls to 0 while a committed feature is still on screen during zoom-in
+   * (既存 app-active-feature 方式). It reflects EXACTLY the set
+   * {@link composeFrame} drew (the same {@link selectVisibleFeatures} call), never
+   * a recomputed estimate, so the hook and the draw cannot drift (教訓 5.29).
+   */
+  readonly onVisibleFeatureCount?: (count: number) => void;
 }
 
 export interface AddHostPorts {
@@ -205,18 +217,36 @@ export function createAddHostPorts(
 
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
     lastOverlay = overlay;
+    // Read the committed getter fresh so the latest domain / time / selection truth
+    // is drawn (single truth source, 教訓 5.6). Capture it ONCE so the
+    // visible-count hook below reports the SAME list the frame composes (no drift).
+    const committed = options.committedFeatures?.() ?? [];
+    const camera = renderer.getCamera();
+    const viewport = renderer.getViewport();
     // Compose the frame (base → grid → COMMITTED features → overlay) for the
-    // CURRENT camera/viewport, reading the committed getter fresh so the latest
-    // domain / time / selection truth is drawn (single truth source, 教訓 5.6).
+    // CURRENT camera/viewport.
     const primitives = composeFrame({
       baseImage,
-      committed: options.committedFeatures?.() ?? [],
+      committed,
       overlay,
-      camera: renderer.getCamera(),
-      viewport: renderer.getViewport(),
+      camera,
+      viewport,
       thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
     });
     renderer.drawBatch({ primitives });
+    // HB-14 観測フック: publish how many committed features survived the period-aware
+    // view clip THIS frame (the SAME selector `buildFeaturePrimitives` uses), so a
+    // zoom-in E2E can assert the candidate/clip set never wrongly drops to 0 while a
+    // feature is still on screen (再発防止, 既存 app-active-feature 方式).
+    if (options.onVisibleFeatureCount !== undefined) {
+      const visible = selectVisibleFeatures(
+        committed,
+        camera,
+        viewport,
+        DEFAULT_SCREEN_SIZES,
+      );
+      options.onVisibleFeatureCount(visible.length);
+    }
   };
   // Initial paint: the graticule + any committed features are visible immediately.
   paintWith([]);

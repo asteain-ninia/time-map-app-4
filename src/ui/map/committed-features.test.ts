@@ -21,7 +21,10 @@ import {
 } from '../../domain/persistence/fixtures';
 import { createAnchor, createAnchorSnapshot } from '../../domain/anchor';
 import { createAnchorEntry, normalizeSeries } from '../../domain/anchor-series';
-import { createAggregateFeature } from '../../domain/feature';
+import { createAggregateFeature, createLineFeature } from '../../domain/feature';
+import { createCoordinate } from '../../domain/coordinate';
+import { createVertex } from '../../domain/vertex';
+import { asVertexId } from '../../domain/ids';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { asAnchorId, asFeatureId } from '../../domain/ids';
 import type { Feature } from '../../domain/feature';
@@ -124,6 +127,37 @@ describe('buildCommittedFeatures', () => {
       expect(aggArea.style.fill).toBe('#abcdef'); // the aggregate's own color
       // The union carries BOTH leaves' pieces (教訓 5.1 全片保持).
       expect(aggArea.shape.length).toBe(2);
+    }
+  });
+
+  it('HB-14/FR-07: unwraps a seam-crossing line into a continuous run [179,181]', () => {
+    // A line whose two vertices are stored as representatives either side of the
+    // antimeridian (lon 179 and lon -179, a 2° hop across +180). The render layer's
+    // EvaluatedLine.points contract requires CONTINUOUS longitudes; buildCommittedFeatures
+    // must unwrap them so the polyline is one short segment, not a 358° span drawn the
+    // long way round (which made it vanish / misdraw on near-seam zoom-in).
+    const va = createVertex(asVertexId('seam-a'), createCoordinate(179, 0));
+    const vb = createVertex(asVertexId('seam-b'), createCoordinate(-179, 0));
+    const lf = createLineFeature(
+      asFeatureId('seam-line'),
+      createBasicAttributes('日付変更線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [va.id, vb.id],
+    );
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory('seam-line', [lf], createVertexStore([va, vb]), 0),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const features = buildCommittedFeatures(root, timePointYear(10), null, DISPLAY);
+    const line = features.find((f) => f.id === 'seam-line');
+    expect(line?.kind).toBe('line');
+    if (line && line.kind === 'line') {
+      // First vertex kept as-is; second unwrapped to +181 (the short way), not -179.
+      expect(line.points.map((p) => p.lon)).toEqual([179, 181]);
+      expect(line.points.map((p) => p.lat)).toEqual([0, 0]);
     }
   });
 

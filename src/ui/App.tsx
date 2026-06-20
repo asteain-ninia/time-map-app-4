@@ -166,6 +166,17 @@ export function App(): JSX.Element {
       hookTarget.dataset['zoom'] = String(camera.zoom);
     };
 
+    /**
+     * HB-14 観測フック: mirror the count of committed features that SURVIVED the
+     * period-aware view clip on the latest composite into `data-visible-feature-count`
+     * (既存 app-active-feature 方式). A behavioural E2E commits one area, then zooms in
+     * step by step and asserts this count never wrongly drops to 0 while the feature
+     * is still on screen (拡大すると地物が消える 再発防止). Holds NO truth — pure mirror.
+     */
+    const publishVisibleCountHook = (count: number): void => {
+      hookTarget.dataset['visibleFeatureCount'] = String(count);
+    };
+
     // P0-A — feed the LIVE committed features into the renderer. The host reads
     // this getter on every composite, so the latest committed domain resolved at
     // the current time (with the live selection for FR-82) is what draws (single
@@ -196,6 +207,8 @@ export function App(): JSX.Element {
       // assert they actually changed (既存 app-active-feature マーカーと同方式). The
       // attributes hold NO truth — they只 reflect the renderer camera (技術方針 2.5).
       onCameraChange: (camera) => publishCameraHooks(camera),
+      // HB-14 観測フック: how many committed features survived this frame's clip.
+      onVisibleFeatureCount: (count) => publishVisibleCountHook(count),
     });
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).

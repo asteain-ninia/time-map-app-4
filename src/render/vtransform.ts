@@ -228,6 +228,64 @@ export function wrapTurnsForViewport(camera: Camera, viewport: Viewport): number
 }
 
 /**
+ * The set of ±360° turn offsets at which a primitive whose CONTENT spans the
+ * continuous longitudes `[lonMin, lonMax]` must be drawn so every on-screen replica
+ * is painted (HB-14 ROOT FIX — 拡大すると地物が消える).
+ *
+ * WHY THIS EXISTS (the recurring classic): {@link wrapTurnsForViewport} assumes a
+ * primitive's content lives in the base range `[-180, 180)` and enumerates the turns
+ * that tile THAT base across the seam. But feature primitives carry CONTINUOUS-scalar
+ * longitudes (U03 never folds them, and `committed-features` passes them through
+ * verbatim — a point can sit at lon = 360, a seam-crossing line at lon ∈ [179, 181]).
+ * For such content the base-range turn list is WRONG: at a zoomed-in camera whose view
+ * span is a single turn, `wrapTurnsForViewport` collapses to `[0]`, so a feature at
+ * lon = 360 was drawn at screen x = (360 − centerLon)·zoom — far off-screen — and
+ * VANISHED on zoom-in even though the view-clip (which checks every replica) kept it.
+ * Clip ⊇ draw was violated: the candidate set kept the feature but the renderer never
+ * painted the turn that would land it on screen.
+ *
+ * This helper makes the turn enumeration RELATIVE TO THE PRIMITIVE'S OWN longitude
+ * span, so the replica `[lonMin + k·360, lonMax + k·360]` is enumerated for exactly
+ * the integers k where it can intersect the covered view span `[leftLon, rightLon]`.
+ * The result therefore covers any continuous longitude, and — crucially — AGREES with
+ * the period-aware view clip (which keeps a feature iff some replica intersects), so
+ * "kept by clip ⇒ painted by renderer" holds at every zoom (教訓 5.29 単一真実源).
+ *
+ * Closed form (no per-turn float累積, same discipline as {@link wrapTurnsForViewport}):
+ *   minTurn = ceil((leftLon  − lonMax) / period)   // first replica reaching the left edge
+ *   maxTurn = floor((rightLon − lonMin) / period)  // last replica still touching the right edge
+ * The inclusive integer range [minTurn, maxTurn] is exactly the overlapping replicas.
+ * A degenerate viewport/camera, or a non-finite span, yields `[0]` (a frame always
+ * draws at least the identity turn — 教訓 5.18). When the span is empty (lonMin >
+ * lonMax, which cannot arise from a min/max bbox) the identity turn is returned.
+ */
+export function wrapTurnsForLonSpan(
+  lonMin: number,
+  lonMax: number,
+  camera: Camera,
+  viewport: Viewport,
+): number[] {
+  if (
+    !Number.isFinite(viewport.widthCss) ||
+    viewport.widthCss <= 0 ||
+    !Number.isFinite(camera.zoom) ||
+    camera.zoom <= 0 ||
+    !Number.isFinite(lonMin) ||
+    !Number.isFinite(lonMax) ||
+    lonMin > lonMax
+  ) {
+    return [0];
+  }
+  const leftLon = screenToWorld({ x: 0, y: 0 }, camera, viewport).lon;
+  const rightLon = screenToWorld({ x: viewport.widthCss, y: 0 }, camera, viewport).lon;
+  const minTurn = Math.ceil((leftLon - lonMax) / LONGITUDE_PERIOD);
+  const maxTurn = Math.floor((rightLon - lonMin) / LONGITUDE_PERIOD);
+  const turns: number[] = [];
+  for (let t = minTurn; t <= maxTurn; t += 1) turns.push(t);
+  return turns.length === 0 ? [0] : turns;
+}
+
+/**
  * The display-time representative center longitude (FR-12): fold the continuous
  * scalar center into [-180, +180) via U05's `wrapLonDeg`. The render layer does
  * NOT decide the representative interval itself — it delegates entirely to U05 so

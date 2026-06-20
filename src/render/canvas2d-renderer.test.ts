@@ -159,6 +159,51 @@ describe('FR-07: seam wrap replicates primitives per turn', () => {
     expect(surface.ctx.strokes.length).toBe(1);
   });
 
+  it('HB-14: draws a CONTINUOUS-longitude point ON SCREEN when zoomed in (no vanish)', () => {
+    // The recurring classic: a feature carries a continuous-scalar longitude (U03
+    // never folds; committed-features passes it verbatim). A point at lon=360 with the
+    // camera centred at lon=0 must paint at screen centre (its −1 turn replica lands
+    // there). The old base-[-180,180) turn list collapsed to [0] at this zoom and drew
+    // the point at x=4000 (off-screen) ⇒ it disappeared. Per-primitive turns fix it.
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 10 });
+    r.drawBatch({
+      primitives: [{ kind: 'point', at: { lon: 360, lat: 0 }, radiusPx: 3, fill: '#000' }],
+    });
+    // At least one drawn arc lands inside the 800×600 viewport (the −1 turn replica).
+    const onScreen = surface.ctx.arcs.filter(
+      (a) => a.x >= 0 && a.x <= VP.widthCss && a.y >= 0 && a.y <= VP.heightCss,
+    );
+    expect(onScreen.length).toBeGreaterThanOrEqual(1);
+    expect(onScreen[0]!.x).toBeCloseTo(VP.widthCss / 2, 5);
+  });
+
+  it('HB-14: draws a seam-crossing line (continuous lon∈[179,181]) when zoomed in near +180', () => {
+    // An antimeridian-crossing line whose vertices are unwrapped to a continuous run
+    // [179, 181] (lat 0). Camera centred at lon=180, zoomed in. The renderer must
+    // trace the segment across the viewport centre — it must NOT be skipped because
+    // its longitudes lie outside [-180,180).
+    const { r, surface } = makeRenderer({ centerLon: 180, centerLat: 0, zoom: 50 });
+    r.drawBatch({
+      primitives: [
+        {
+          kind: 'line',
+          points: [
+            { lon: 179, lat: 0 },
+            { lon: 181, lat: 0 },
+          ],
+          widthPx: 2,
+          stroke: '#000',
+        },
+      ],
+    });
+    // The polyline was traced (moveTo+lineTo) and stroked at least once on screen.
+    expect(surface.ctx.strokes.length).toBeGreaterThanOrEqual(1);
+    const onScreenMoves = surface.ctx.moveTos.filter(
+      (m) => m.x >= -100 && m.x <= VP.widthCss + 100,
+    );
+    expect(onScreenMoves.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still tiles a gridline WITHOUT wrap:false (default wraps)', () => {
     const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 0.5 });
     r.drawBatch({

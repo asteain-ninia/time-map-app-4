@@ -14,6 +14,7 @@ import {
   screenToWorld,
   worldToScreen,
   wrapTurnsForViewport,
+  wrapTurnsForLonSpan,
   zoomAtCursor,
   zoomStepAtCursor,
 } from './vtransform';
@@ -156,6 +157,46 @@ describe('wrapTurnsForViewport (FR-07 seam tiling)', () => {
   it('returns [0] for a degenerate viewport / zoom', () => {
     expect(wrapTurnsForViewport(CAM, { ...VP, widthCss: 0 })).toEqual([0]);
     expect(wrapTurnsForViewport({ ...CAM, zoom: 0 }, VP)).toEqual([0]);
+  });
+});
+
+describe('wrapTurnsForLonSpan (HB-14 — per-primitive turns for continuous longitude)', () => {
+  const VP800: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
+
+  it('picks the −1 turn for a feature at lon=360 viewed from centerLon=0 when zoomed in', () => {
+    // The recurring vanish: at zoom 10 the view spans one turn, so the base-range turn
+    // list collapses to [0] and a continuous lon=360 feature draws off-screen. The
+    // per-primitive span turns must include −1 (replica 360−360=0 lands at screen centre).
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 10 };
+    expect(wrapTurnsForLonSpan(360, 360, cam, VP800)).toContain(-1);
+  });
+
+  it('agrees with the identity turn for in-view base-range content', () => {
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 10 };
+    expect(wrapTurnsForLonSpan(0, 0, cam, VP800)).toContain(0);
+  });
+
+  it('covers a seam-crossing continuous span [179,181] viewed near +180', () => {
+    const cam: Camera = { centerLon: 180, centerLat: 0, zoom: 50 };
+    const turns = wrapTurnsForLonSpan(179, 181, cam, VP800);
+    // Some turn t makes [179+360t, 181+360t] overlap the view span centred at 180 ⇒ t=0.
+    expect(turns).toContain(0);
+  });
+
+  it('returns a contiguous integer range, zoomed out across several turns', () => {
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 0.5 };
+    const turns = wrapTurnsForLonSpan(0, 0, cam, VP800);
+    expect(turns.length).toBeGreaterThanOrEqual(4);
+    for (let i = 1; i < turns.length; i += 1) {
+      expect(turns[i]! - turns[i - 1]!).toBe(1);
+    }
+  });
+
+  it('returns [0] for degenerate viewport / zoom / span', () => {
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 10 };
+    expect(wrapTurnsForLonSpan(0, 0, cam, { ...VP800, widthCss: 0 })).toEqual([0]);
+    expect(wrapTurnsForLonSpan(0, 0, { ...cam, zoom: 0 }, VP800)).toEqual([0]);
+    expect(wrapTurnsForLonSpan(10, -10, cam, VP800)).toEqual([0]); // min > max
   });
 });
 

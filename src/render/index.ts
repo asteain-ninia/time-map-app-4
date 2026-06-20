@@ -32,6 +32,7 @@ export {
   zoomAtCursor,
   zoomStepAtCursor,
   wrapTurnsForViewport,
+  wrapTurnsForLonSpan,
   representativeCenterLon,
 } from './vtransform';
 
@@ -90,6 +91,8 @@ export {
   pointsRect,
   shapeRect,
   featureIntersectsViewport,
+  clipViewRect,
+  selectVisibleFeatures,
   lodLevelForZoom,
   lodToleranceDeg,
   simplifyRing,

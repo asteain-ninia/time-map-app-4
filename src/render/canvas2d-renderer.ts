@@ -42,7 +42,7 @@ import {
   initialCamera,
   screenToWorld,
   worldToScreen,
-  wrapTurnsForViewport,
+  wrapTurnsForLonSpan,
   zoomStepAtCursor,
 } from './vtransform';
 
@@ -166,18 +166,30 @@ export class Canvas2DMapRenderer implements MapRenderer {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, this.viewport.widthCss, this.viewport.heightCss);
 
-    // The ±360° offsets needed to tile the viewport across the seam (U05 period).
-    const turns = wrapTurnsForViewport(this.camera, this.viewport);
-
     // Iterate PRIMITIVES outer so a `wrap === false` primitive (one that is already
     // tiled across the continuous viewport span — e.g. the graticule, grid-layer)
     // is drawn EXACTLY ONCE instead of re-issued per turn. Re-tiling an already-
     // tiled, translucent primitive both wastes path work (~O(turns²) at zoom-out)
     // and COMPOUNDS its alpha over the same pixels (Codex high #2). Wrapping
-    // primitives (features / base map) still draw once per turn so their single
-    // world-copy tiles across the seam (FR-07).
+    // primitives (features / base map) draw once per turn so every on-screen replica
+    // tiles across the seam (FR-07).
+    //
+    // HB-14 ROOT FIX (拡大すると地物が消える): the per-primitive turn set is computed
+    // from the primitive's OWN continuous longitude span via `wrapTurnsForLonSpan`,
+    // not from the base-[-180,180) world span. A feature carries continuous-scalar
+    // longitudes (U03 never folds them; `committed-features` passes them verbatim) —
+    // e.g. a point at lon 360 or a seam-crossing line at lon∈[179,181]. With the old
+    // base-range turn list, a zoomed-in single-turn view collapsed to `[0]` and such a
+    // feature was painted far off-screen and VANISHED, even though the period-aware
+    // view-clip (which checks every replica) kept it. Per-primitive turns make the
+    // renderer paint exactly the replicas the clip keeps, so kept ⇒ drawn at any zoom.
     for (const primitive of batch.primitives) {
       if (primitiveWraps(primitive)) {
+        const span = primitiveLonSpan(primitive);
+        const turns =
+          span === undefined
+            ? [0]
+            : wrapTurnsForLonSpan(span.min, span.max, this.camera, this.viewport);
         for (const turn of turns) {
           this.drawPrimitive(primitive, turn * LONGITUDE_PERIOD);
         }
@@ -350,7 +362,72 @@ function primitiveWraps(primitive: DrawPrimitive): boolean {
   return true;
 }
 
+/**
+ * The continuous-longitude extent `[min, max]` a wrapping primitive's CONTENT spans,
+ * or undefined when it has no positional extent (an empty geometry). Used to pick the
+ * exact ±360° turns at which the primitive must be drawn so every on-screen replica is
+ * painted regardless of how many turns its continuous longitude is wound (HB-14).
+ *
+ * A label / point is a single anchor (min === max). A line is its vertex span; a
+ * polygon / shape is the span over every ring of every piece; a base map is its
+ * declared lon edges. An empty point list / empty shape yields undefined ⇒ the caller
+ * falls back to the identity turn (教訓 5.18: absence, not a crash).
+ */
+function primitiveLonSpan(p: DrawPrimitive): { min: number; max: number } | undefined {
+  switch (p.kind) {
+    case 'point':
+    case 'label':
+      return { min: p.at.lon, max: p.at.lon };
+    case 'line':
+    case 'gridline':
+      return lonSpanOfPoints(p.points);
+    case 'polygon':
+      return lonSpanOfPoints(p.ring);
+    case 'shape': {
+      let span: { min: number; max: number } | undefined;
+      for (const piece of p.pieces) {
+        for (const ring of piece) {
+          span = mergeSpan(span, lonSpanOfPoints(ring));
+        }
+      }
+      return span;
+    }
+    case 'basemap':
+      return { min: Math.min(p.lonWest, p.lonEast), max: Math.max(p.lonWest, p.lonEast) };
+    default:
+      return assertNeverPrimitiveSpan(p);
+  }
+}
+
+/** Longitude span of a vertex list, or undefined when empty. */
+function lonSpanOfPoints(
+  points: readonly WorldPoint[],
+): { min: number; max: number } | undefined {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const pt of points) {
+    if (pt.lon < min) min = pt.lon;
+    if (pt.lon > max) max = pt.lon;
+  }
+  return min === Infinity ? undefined : { min, max };
+}
+
+/** Union of two optional longitude spans (either may be undefined). */
+function mergeSpan(
+  a: { min: number; max: number } | undefined,
+  b: { min: number; max: number } | undefined,
+): { min: number; max: number } | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return { min: Math.min(a.min, b.min), max: Math.max(a.max, b.max) };
+}
+
 /** Compile-time exhaustiveness guard for the primitive union. */
 function assertNeverPrimitive(value: never): void {
   throw new Error(`Canvas2DMapRenderer: unhandled primitive ${JSON.stringify(value)}`);
+}
+
+/** Exhaustiveness guard for {@link primitiveLonSpan}. */
+function assertNeverPrimitiveSpan(value: never): undefined {
+  throw new Error(`Canvas2DMapRenderer: unhandled primitive span ${JSON.stringify(value)}`);
 }

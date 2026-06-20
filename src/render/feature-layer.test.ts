@@ -17,7 +17,9 @@ import {
   DEFAULT_SCREEN_SIZES,
   areaRingLabelVisible,
   buildFeaturePrimitives,
+  clipViewRect,
   featureIntersectsViewport,
+  selectVisibleFeatures,
   lineLabelVisible,
   lodLevelForZoom,
   pointLabelVisible,
@@ -401,6 +403,50 @@ describe('受け入れ基準 5: view clipping drops off-screen features', () => 
       selected: false,
     };
     expect(points(buildFeaturePrimitives([justOutside], opts())).length).toBe(1);
+  });
+});
+
+describe('HB-14: selectVisibleFeatures is the single clip source + survives zoom-in', () => {
+  it('selectVisibleFeatures returns exactly the features buildFeaturePrimitives draws', () => {
+    const inView: EvaluatedFeature = {
+      kind: 'point', id: 'in', at: { lon: 0, lat: 0 }, style: STYLE, label: '', selected: false,
+    };
+    const outView: EvaluatedFeature = {
+      kind: 'point', id: 'out', at: { lon: 170, lat: 0 }, style: STYLE, label: '', selected: false,
+    };
+    const visible = selectVisibleFeatures([inView, outView], CAM, VP, DEFAULT_SCREEN_SIZES);
+    expect(visible.map((f) => f.id)).toEqual(['in']);
+    // The pipeline draws exactly those — one point primitive.
+    expect(points(buildFeaturePrimitives([inView, outView], opts())).length).toBe(visible.length);
+  });
+
+  it('clip OFF returns the input unchanged (harness parity)', () => {
+    const f: EvaluatedFeature = {
+      kind: 'point', id: 'p', at: { lon: 170, lat: 0 }, style: STYLE, label: '', selected: false,
+    };
+    expect(selectVisibleFeatures([f], CAM, VP, DEFAULT_SCREEN_SIZES, false)).toEqual([f]);
+  });
+
+  it('clipViewRect widens the bare viewport rect by the inflate margin', () => {
+    const bare = viewportWorldRect(CAM, VP);
+    const clip = clipViewRect(CAM, VP, DEFAULT_SCREEN_SIZES);
+    expect(clip.minLon).toBeLessThan(bare.minLon);
+    expect(clip.maxLon).toBeGreaterThan(bare.maxLon);
+  });
+
+  it('a centred feature stays in the clip set across progressive zoom-in (HB-14 core)', () => {
+    const at = { lon: 12, lat: -7 };
+    const feature: EvaluatedFeature = {
+      kind: 'point', id: 'c', at, style: STYLE, label: '', selected: false,
+    };
+    let lastZoom = 0;
+    for (const zoom of [1, 2, 5, 10, 25, 60, 150, 400, 1000]) {
+      const camera: Camera = { centerLon: at.lon, centerLat: at.lat, zoom };
+      const kept = selectVisibleFeatures([feature], camera, VP, DEFAULT_SCREEN_SIZES);
+      expect(kept).toHaveLength(1); // never culled while centred — no "消える"
+      expect(zoom).toBeGreaterThan(lastZoom);
+      lastZoom = zoom;
+    }
   });
 });
 
