@@ -1,37 +1,48 @@
-// Bug-hunt characterization: non-finite coordinate save→load asymmetry.
+// Bug-hunt regression: non-finite coordinate save→load asymmetry (NOW FIXED).
 //
-// FINDING (captured, not faked green): the domain value factories accept
-// non-finite numbers WITHOUT a guard — createCoordinate / moveVertexTo+shift
-// (src/domain/editing/move.ts) / the geo + base-map setters all do raw
-// arithmetic. But the persistence boundary cannot carry them:
+// FINDING (original defect): the domain value factories accepted non-finite
+// numbers WITHOUT a guard — createCoordinate / moveVertexTo+shift
+// (src/domain/editing/move.ts) all did raw arithmetic. But the persistence
+// boundary cannot carry them:
 //   - JSON.stringify(Infinity | NaN)  ===  "null"   (JSON has no Inf/NaN)
 //   - the Zod schema's finiteNumber (.finite()) then REJECTS null
-//     → parseManifest returns the Invalid outcome (the WHOLE file fails to load).
+//     → parseManifest returned the Invalid outcome (the WHOLE file failed to load).
 //
 // So a project containing a non-finite coordinate (reachable upstream via a
-// divide-by-zero in a projection / drag computation, or a corrupted import) is
-// NOT round-trip-safe: it either differs in memory (NaN !== NaN) or silently
-// corrupts to null on save and then makes the ENTIRE manifest un-loadable.
+// divide-by-zero in a projection / drag computation, or a corrupted import) was
+// NOT round-trip-safe: it either differed in memory (NaN !== NaN) or silently
+// corrupted to null on save and then made the ENTIRE manifest un-loadable —
+// total data loss for that project, with no targeted error.
 //
-// These tests ASSERT THE CURRENT BEHAVIOUR (the defect) so they stay green and
-// document the gap. If the domain later adds a finite-guard at the value seam
-// (or the boundary repairs non-finite to a sentinel), update these to the fixed
-// expectation — they are the regression anchor for that decision.
+// FIX (root cause, single construction seam): `createCoordinate` now throws a
+// RangeError on a non-finite scalar — the same fail-loud stance the downstream
+// `quantizeCoordinate` already takes — so the bad value can never be born,
+// persisted, or silently differ from itself. `editing/move.ts#shift` routes
+// through that same seam, so a non-finite delta also fails at birth.
+//
+// These tests now ASSERT THE FIXED BEHAVIOUR and are the regression anchor.
 
 import { describe, expect, it } from 'vitest';
 
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry, normalizeSeries } from '../anchor-series';
 import { createBasicAttributes, createColorInfo } from '../attributes';
-import { createCoordinate } from '../coordinate';
+import { createCoordinate, withLat, withLon } from '../coordinate';
 import { createPointFeature } from '../feature';
 import { createGeoParams } from '../geo/geo-params';
 import { asAnchorId, asFeatureId, asVertexId } from '../ids';
 import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 import { createVertex, createVertexStore } from '../vertex';
-import { deserialize, projectsEqual, serialize, type DomainProject } from '../persistence/serialize';
-import { PARSE_OUTCOME, parseManifest } from '../persistence';
+import { moveVertexSet } from '../editing/move';
+import {
+  PARSE_OUTCOME,
+  manifestToProject,
+  parseManifest,
+  projectsEqual,
+  serialize,
+  type DomainProject,
+} from '../persistence';
 
 const CAL = getCalendar('gregorian');
 const COLOR = createColorInfo(true, '#1', '#2', '#3');
@@ -58,40 +69,48 @@ function projectWithCoord(lon: number, lat: number): DomainProject {
   };
 }
 
-describe('non-finite coordinate save→load asymmetry (captured defect)', () => {
-  it('the domain factories accept a NaN / Infinity coordinate with no guard', () => {
-    // No throw — the defect's root cause: there is no finite-guard at the seam.
-    expect(() => projectWithCoord(NaN, 0)).not.toThrow();
-    expect(() => projectWithCoord(Infinity, 0)).not.toThrow();
-    const lon = projectWithCoord(Infinity, 0)
-      .histories[0]!.series.entries[0]!.anchor.snapshot.vertices.byId.get(asVertexId('v'))!.coordinate
-      .lon;
-    expect(lon).toBe(Infinity);
+describe('non-finite coordinate save→load asymmetry (fixed: finite-guard at the seam)', () => {
+  it('createCoordinate rejects a NaN scalar at construction (fail loud, not silent)', () => {
+    expect(() => createCoordinate(NaN, 0)).toThrow(RangeError);
+    expect(() => createCoordinate(0, NaN)).toThrow(RangeError);
   });
 
-  it('NaN coordinate: even the in-memory mirror round-trip is NOT the identity (NaN !== NaN)', () => {
-    const p = projectWithCoord(NaN, 0);
-    // deserialize(serialize(p)) rebuilds the NaN, but projectsEqual uses === so a
-    // NaN field is never equal to itself: the round-trip "identity" silently fails.
-    expect(projectsEqual(p, deserialize(serialize(p)))).toBe(false);
+  it('createCoordinate rejects a ±Infinity scalar at construction', () => {
+    expect(() => createCoordinate(Infinity, 0)).toThrow(RangeError);
+    expect(() => createCoordinate(0, -Infinity)).toThrow(RangeError);
   });
 
-  it('Infinity coordinate: in-memory mirror passes, but the JSON+Zod boundary rejects the WHOLE file', () => {
-    const p = projectWithCoord(Infinity, 0);
-    // The persistence-internal mirror (no JSON, no Zod) is happy: Infinity === Infinity.
-    expect(projectsEqual(p, deserialize(serialize(p)))).toBe(true);
-    // But a REAL save (JSON) turns Infinity into null...
-    // The persisted manifest flattens history → { featureId, entries } (no `series`).
-    const json = JSON.parse(JSON.stringify(serialize(p))) as {
-      histories: {
-        entries: {
-          anchor: { snapshot: { vertices: { coordinate: { lon: number | null } }[] } };
-        }[];
-      }[];
-    };
-    expect(json.histories[0]!.entries[0]!.anchor.snapshot.vertices[0]!.coordinate.lon).toBeNull();
-    // ...and load then REJECTS the entire manifest (data loss, not a partial repair).
+  it('the withXxx mutators inherit the guard (same seam)', () => {
+    const base = createCoordinate(1, 2);
+    expect(() => withLon(base, Infinity)).toThrow(RangeError);
+    expect(() => withLat(base, NaN)).toThrow(RangeError);
+  });
+
+  it('a move delta that drives a vertex non-finite fails loudly (shift routes through the seam)', () => {
+    const v = createVertex(asVertexId('v'), createCoordinate(0, 0));
+    const store = createVertexStore([v]);
+    // An Infinity dLon (e.g. from an upstream divide-by-zero) must not silently
+    // produce a poisoned vertex body.
+    expect(() => moveVertexSet([v.id], store, { dLon: Infinity, dLat: 0 })).toThrow(RangeError);
+    expect(() => moveVertexSet([v.id], store, { dLon: NaN, dLat: 0 })).toThrow(RangeError);
+  });
+
+  it('a project can never be built with a non-finite coordinate, so the save→load identity always holds', () => {
+    // Construction is now impossible — the data-loss scenario is unreachable.
+    expect(() => projectWithCoord(NaN, 0)).toThrow(RangeError);
+    expect(() => projectWithCoord(Infinity, 0)).toThrow(RangeError);
+  });
+
+  it('a finite project still round-trips through the real JSON+Zod boundary (the identity)', () => {
+    const p = projectWithCoord(123.456, -7.89);
+    // real save (JSON) then load through the Zod parse boundary (R8) succeeds and
+    // reconstructs the identical project — the data-loss path is gone for finite
+    // coords and unreachable for non-finite ones (they cannot be constructed).
+    const json = JSON.parse(JSON.stringify(serialize(p))) as unknown;
     const parsed = parseManifest(json);
-    expect(parsed.outcome).toBe(PARSE_OUTCOME.Invalid);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome === PARSE_OUTCOME.Ok) {
+      expect(projectsEqual(p, manifestToProject(parsed.manifest))).toBe(true);
+    }
   });
 });

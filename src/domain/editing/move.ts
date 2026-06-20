@@ -15,11 +15,16 @@ import {
   type PointFeature,
 } from '../feature';
 import type { VertexId } from '../ids';
-import type { WorldCoordinate } from '../coordinate';
+import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import type { VertexMoveDelta } from '../selection/contracts';
 
+// Route through `createCoordinate` (not a raw literal) so the move shares the
+// single construction seam: it gets the -0 normalization AND the finite-guard,
+// so a delta that drives a vertex to NaN / ±Infinity (e.g. an Infinity dLon from
+// an upstream divide-by-zero) fails loudly here instead of silently producing a
+// coordinate that later corrupts the save→load round-trip.
 function shift(coord: WorldCoordinate, delta: VertexMoveDelta): WorldCoordinate {
-  return { lon: coord.lon + delta.dLon, lat: coord.lat + delta.dLat };
+  return createCoordinate(coord.lon + delta.dLon, coord.lat + delta.dLat);
 }
 
 /** The distinct vertex ids a feature owns (point / line / every ring of a leaf). */

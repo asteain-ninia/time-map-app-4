@@ -9,6 +9,18 @@
 // Immutable value object: equality is by attribute value, mutation returns a
 // new instance via `withXxx` (lesson 5.17). Plain shape so it maps directly
 // to/from persisted data (lesson 5.20 / 5.31).
+//
+// FINITE GUARD (不正状態を表現不能に, 技術方針 2.10): a coordinate's scalars MUST
+// be finite. NaN / ±Infinity is NOT a representable geographic point and — fatal
+// for persistence — cannot survive the JSON boundary: `JSON.stringify(NaN)` and
+// `JSON.stringify(Infinity)` are both `'null'`, so a save→load round-trip would
+// corrupt the scalar to `null`, which the schema's `finiteNumber` (.finite())
+// then rejects, failing the WHOLE manifest (total data loss for that project).
+// A non-finite scalar can arise from upstream arithmetic (a divide-by-zero in a
+// projection / drag computation) or a corrupted import; we fail loudly at the
+// SINGLE construction seam — the same fail-loud stance `quantizeCoordinate`
+// already takes downstream — so the bad value can never be born, persisted, or
+// silently differ from itself (NaN !== NaN) in an identity check.
 
 export interface WorldCoordinate {
   /** Continuous longitude scalar (degrees); may lie outside [-180, 180). */
@@ -37,6 +49,14 @@ function normalizeZero(n: number): number {
 }
 
 export function createCoordinate(lon: number, lat: number): WorldCoordinate {
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    // Fail loudly: a NaN / ±Infinity coordinate is not a representable point and
+    // would silently corrupt to `null` across the JSON+Zod persistence boundary,
+    // making the entire manifest un-loadable. Reject it at birth (see header).
+    throw new RangeError(
+      `createCoordinate: coordinates must be finite, got (${lon}, ${lat})`,
+    );
+  }
   return { lon: normalizeZero(lon), lat: normalizeZero(lat) };
 }
 
