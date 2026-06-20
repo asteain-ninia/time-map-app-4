@@ -5,6 +5,16 @@
 方針: ユーザーが起きるまで停止しない。各マイルストーンでgit commit（ローカルのみ、pushしない）。
 
 ## 進捗ログ（新しい順・先頭追記）
+- 2026-06-21: **HUMAN-BUGS 修正の確定処理（HB-1..HB-4 すべて [解決]）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0・デグレなし）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**202 files・2069 tests passed, exit 0**（前回 QUALITY 計測 201/2051 から +1 file/+18 tests・回帰なし＝HB 修正に伴う behavioral E2E ハーネス/単体追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **24 passed・exit 0（skip 0）**（前回 14 → +10＝HB-1..HB-4 の behavioral E2E 追加）。
+  - **スクショ再生成確認**: `npm run test:e2e` 前に `screenshots/app-shell.png` と `with-feature.png` を削除→ e2e 実行後に **両方が再生成されたことを確認**（共に 01:56 タイムスタンプ、app-shell.png=272149B / with-feature.png=266875B）。
+  - **HB-1..HB-4 = すべて解決済（合成ルートの結線/プラットフォーム解決漏れ系を根本修正・各 behavioral E2E で回帰ロック）**:
+    - **HB-1（パン/ズーム未結線）**: ポインタドラッグの pan とホイール ViewZoomIn/Out を live カメラ(VTransform)へ結線。`data-pan-x/y`・`data-zoom` 観測フック露出。commit `4ad603c` / E2E `e2e/map-pan-zoom.spec.ts`（実ドラッグでパン量変化・実ホイールでズーム倍率変化）2 passed。
+    - **HB-2（ショートカット "Mod" 表記）**: ラベル整形で `ctrlOrMeta` を OS フラグで解決（Windows→"Ctrl"、dispatch は不変）。commit `fe9b958` / E2E `e2e/shortcut-labels.spec.ts`（"Ctrl" 含む・"Mod" 一切なし）2 passed。
+    - **HB-3（サイドバー空/無スタイル）**: AppShell サイドバースロットへ PropertyPanel/地物一覧/イベント一覧を結線・CSS 適用（`SidebarContent`）。commit `0f84b3c` / E2E `e2e/sidebar-property.spec.ts`（3パネル存在・選択でフィールド可視・ビジュアル回帰2件）4 passed。
+    - **HB-4（ツールバーグレーアウト）**: 表示専用トグル（ツールバー/`表示`メニュー `ViewToggleViewMode`）を機能させモード遷移で編集系活性化。commit `a4e0732` / E2E `e2e/view-mode.spec.ts`（表示専用解除→追加モード活性→実UIで面追加 / メニュー導線でモード反転）2 passed。
+  - **未コミット差分**: 本確定処理の doc 更新（HUMAN-BUGS の [解決] 追記 / STATE/DECISIONS/現状）のみ。緑につき `chore(humanbugs): finalize — mark HB-1..HB-4 resolved, regen screenshots` でローカルコミット（push せず）。HB-1..HB-4 のコード修正は既に 4ad603c/0f84b3c/fe9b958/a4e0732 でコミット済。
+  - **HUMAN-BUGS フェーズ判定**: 4点全緑・skip 0・スクショ両再生成・HB-1..HB-4 全解決＋各 behavioral E2E を満たし **HUMAN-BUGS 完了**。
+  - **残課題（繰越）**: (1) **BUGHUNT（未知バグの能動炙り出し: UIファズ/メタモルフィック/ビジュアル回帰/厳格エラーゲート）** は `.autopilot/BUGHUNT.md` に手法定義済・**未実行**＝次フェーズ最優先。(2) add フル round-trip E2E（追加→確定→保存→**読込実機通し**）は native dialog 回避のため未実装（D7/D23）。(3) 競合解決を実発火で経由する E2E は未追加。
 - 2026-06-20: **QUALITY 最終検証（フェーズ完了確定）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**201 files・2051 tests passed, exit 0**（前回 D29 計測 200/1992 から +1 file/+59 tests・回帰なし＝計測差/付随追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **14 passed・exit 0（skip 0）**。
   - **スクショ再生成確認**: `npm run test:e2e` 前に `screenshots/app-shell.png` と `with-feature.png` を削除→ e2e 実行後に **両方が再生成されたことを確認**（共に 22:52 タイムスタンプ、app-shell.png=269943B / with-feature.png=259585B）。`e2e/screenshot.spec.ts` の2テスト（起動・空状態 / committed face 描画）がいずれも緑。
   - **未コミット差分**: `.autopilot/BUGHUNT.md` と `.autopilot/HUMAN-BUGS.md`（次フェーズの計画文書＝バグハント工程 / 人間実機テストで報告予定の HB-1〜4）が untracked。本検証の doc 更新（STATE/DECISIONS/現状）と併せて `chore(quality): finalize quality pass` でローカルコミット（push せず）。
