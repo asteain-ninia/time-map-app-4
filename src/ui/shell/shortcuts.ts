@@ -40,6 +40,69 @@ export function chordOf(s: Shortcut): string {
   return parts.join('+');
 }
 
+/**
+ * HB-2 — platform解決. The keymap stays platform-neutral (`ctrlOrMeta`), but the
+ * DISPLAYED accelerator must read in the user's OS idiom: "Ctrl" on Windows/Linux,
+ * "⌘" on macOS (教訓 5.19: no per-platform literal branching IN the keymap — the
+ * branch lives ONLY in the display formatter). `chordOf` produces the lookup chord
+ * ("mod+s") and must NEVER be shown to the user; `formatShortcut` is the单一の
+ * 表示整形 (§4 単一の真実源 for the human-facing label).
+ */
+export type Platform = 'mac' | 'other';
+
+/**
+ * Detect the renderer platform from the DOM. macOS reports "Mac" in
+ * `navigator.platform` (and `userAgentData.platform === 'macOS'` on newer engines);
+ * everything else (Windows, Linux) resolves to 'other' → "Ctrl". Kept tiny and DOM-
+ * isolated so the rest of the module stays unit-testable (教訓 5.41); the pure
+ * `formatShortcut(shortcut, platform)` takes the resolved value so tests need no DOM.
+ */
+export function detectPlatform(): Platform {
+  if (typeof navigator === 'undefined') return 'other';
+  const uaPlatform = (
+    navigator as unknown as { userAgentData?: { platform?: string } }
+  ).userAgentData?.platform;
+  const probe = `${uaPlatform ?? ''} ${navigator.platform ?? ''} ${navigator.userAgent ?? ''}`;
+  return /mac/i.test(probe) ? 'mac' : 'other';
+}
+
+/**
+ * Per-platform label for each modifier / key part. The chord-key tokens
+ * (lower-cased letters, named keys) are normalised back into a human label here.
+ */
+const KEY_DISPLAY: Readonly<Record<string, string>> = {
+  '=': '+',
+  arrowleft: '←',
+  arrowright: '→',
+  arrowup: '↑',
+  arrowdown: '↓',
+};
+
+function displayKey(key: string): string {
+  const lower = key.toLowerCase();
+  if (KEY_DISPLAY[lower] !== undefined) return KEY_DISPLAY[lower]!;
+  // Single letters render upper-case ("S", not "s"); named keys keep their name.
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
+/**
+ * Format a Shortcut into the OS-idiomatic accelerator label shown in menus / the
+ * shortcut help (HB-2 根本対応). `ctrlOrMeta` resolves to the PLATFORM key —
+ * "Ctrl" on Windows/Linux, "⌘" on macOS — never the placeholder "Mod". The
+ * dispatch-side key判定 (chordOf / Keymap) is untouched: only the displayed text
+ * changes. Pure (platform is a parameter) so it is unit-tested without a DOM.
+ */
+export function formatShortcut(shortcut: Shortcut, platform: Platform): string {
+  const mod = platform === 'mac' ? '⌘' : 'Ctrl';
+  const sep = platform === 'mac' ? '' : '+';
+  const parts: string[] = [];
+  if (shortcut.ctrlOrMeta === true) parts.push(mod);
+  if (shortcut.alt === true) parts.push(platform === 'mac' ? '⌥' : 'Alt');
+  if (shortcut.shift === true) parts.push(platform === 'mac' ? '⇧' : 'Shift');
+  parts.push(displayKey(shortcut.key));
+  return parts.join(sep);
+}
+
 /** A minimal keyboard-event shape (so resolution is testable without the DOM). */
 export interface KeyChord {
   readonly key: string;

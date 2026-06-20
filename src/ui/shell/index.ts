@@ -44,6 +44,7 @@ export {
   type Shortcut,
   type KeyChord,
   type DispatchResult,
+  type Platform,
   DISPATCH_RESULT,
   Keymap,
   buildKeymap,
@@ -51,6 +52,8 @@ export {
   chordOfEvent,
   keyChordFromEvent,
   dispatchChord,
+  detectPlatform,
+  formatShortcut,
 } from './shortcuts';
 export { buildDefaultKeymap } from './default-keymap';
 export {

@@ -8,7 +8,7 @@
 // item shows a Japanese tooltip (FR-112). Item实处理 is registered by later
 // units; this bar only dispatches the command id.
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import type { CommandRegistry } from './commands';
 import { resolveCommandEnabled } from './permissions';
@@ -16,19 +16,32 @@ import type { EditMode } from '../state/session';
 import { STANDARD_MENUS } from './menu';
 import { Tooltip } from './Tooltip';
 import { TOOLTIPS } from './strings';
-import { chordOf } from './shortcuts';
+import { detectPlatform, formatShortcut, type Platform } from './shortcuts';
 
 export interface MenuBarProps {
   readonly registry: CommandRegistry;
   readonly mode: EditMode;
+  /**
+   * The OS the accelerator labels render for. Defaults to the detected renderer
+   * platform; injectable so tests pin a platform without a DOM (HB-2 根本対応).
+   */
+  readonly platform?: Platform;
 }
 
 export function MenuBar(props: MenuBarProps): JSX.Element {
   const { registry, mode } = props;
+  // Resolve once per mount: "Ctrl" on Windows/Linux, "⌘" on macOS — never "Mod".
+  const platform = useMemo(() => props.platform ?? detectPlatform(), [props.platform]);
   const [openKey, setOpenKey] = useState<string | null>(null);
 
   return (
-    <div className="menubar" role="menubar" aria-label="メニューバー" data-testid="menubar">
+    <div
+      className="menubar"
+      role="menubar"
+      aria-label="メニューバー"
+      data-testid="menubar"
+      data-platform={platform}
+    >
       {STANDARD_MENUS.map((menu) => (
         <div key={menu.key} className="menubar__menu" role="none">
           <button
@@ -67,7 +80,12 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
                       >
                         <span className="menubar__item-label">{it.label}</span>
                         {it.shortcut !== undefined && (
-                          <span className="menubar__item-accel">{chordOf(it.shortcut)}</span>
+                          <span
+                            className="menubar__item-accel"
+                            data-testid={`menu-accel-${it.commandId}`}
+                          >
+                            {formatShortcut(it.shortcut, platform)}
+                          </span>
                         )}
                       </button>
                     </Tooltip>
