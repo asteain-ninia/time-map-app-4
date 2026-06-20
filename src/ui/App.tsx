@@ -27,7 +27,12 @@ import {
   type ScreenToWorld,
 } from './add/AddToolController';
 import { createAddHostPorts, type AddHostPorts } from './add/host-ports';
+import {
+  KnifeToolController,
+  type KnifeDrawSink,
+} from './knife/index';
 import type { DrawPrimitive } from '../render/map-renderer';
+import { createColorInfo } from '../domain/attributes';
 
 /** The scaffold domain root: an opaque empty record until a load unit supplies one. */
 type DomainRoot = Record<string, never>;
@@ -71,6 +76,14 @@ export function App(): JSX.Element {
     }),
     [],
   );
+  const knifeDrawSink: KnifeDrawSink = useMemo(
+    () => ({
+      drawKnife(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawKnife(primitives);
+      },
+    }),
+    [],
+  );
 
   // The add host ports (id minting / ring ids / the U13 process-start adapter).
   //
@@ -93,25 +106,55 @@ export function App(): JSX.Element {
   // and feed the Committed/ConflictsPending/Rejected result back unchanged.
   const hostBootstrap = useMemo(() => createAddBootstrap<DomainRoot>(), []);
 
+  // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
+  // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
+  // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
+  // U23 form re-use drive継承先選択 / 非継承側プロパティ入力, and 確定 hands a split
+  // EditProposal to the U13 seam. Like the add seam, U13 is a deterministic stub
+  // until U42 binds the live orchestrator (教訓 5.33 契約越し). The domain-lookup
+  // ports (resolveFeature / resolveStore / featureAtPoint) are honest stubs over the
+  // empty scaffold root until a load + selection unit supplies the live domain — the
+  // WIRING is real and observable; the geometry path activates when those ports do.
+  const knifeBootstrap = useMemo(() => createKnifeBootstrap<DomainRoot>(), []);
+
   return (
     <div id="app-shell">
       <AppShell
         store={store}
         onMapMount={onMapMount}
         overlay={
-          <AddToolController<DomainRoot>
-            store={store}
-            startProcess={hostBootstrap.startProcess}
-            ids={hostBootstrap.ids}
-            nextRingId={hostBootstrap.nextRingId}
-            screenToWorld={screenToWorld}
-            drawSink={drawSink}
-          />
+          <>
+            <AddToolController<DomainRoot>
+              store={store}
+              startProcess={hostBootstrap.startProcess}
+              ids={hostBootstrap.ids}
+              nextRingId={hostBootstrap.nextRingId}
+              screenToWorld={screenToWorld}
+              drawSink={drawSink}
+            />
+            <KnifeToolController<DomainRoot>
+              store={store}
+              startProcess={knifeBootstrap.startProcess}
+              ids={knifeBootstrap.ids}
+              resolveFeature={knifeBootstrap.resolveFeature}
+              resolveStore={knifeBootstrap.resolveStore}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={knifeBootstrap.featureAtPoint}
+              targetShape={undefined}
+              drawSink={knifeDrawSink}
+              zoom={rendererRef.current?.zoom() ?? 1}
+              defaultColor={KNIFE_DEFAULT_COLOR}
+            />
+          </>
         }
       />
     </div>
   );
 }
+
+/** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
+const KNIFE_DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
 // --- The add bootstrap (id ports + the U13 seam) ----------------------------
 
@@ -172,4 +215,66 @@ function createAddBootstrap<S>(): AddBootstrap<S> {
   });
 
   return { ids, nextRingId, startProcess };
+}
+
+// --- The knife bootstrap (id ports + domain-lookup stubs + the U13 seam) -----
+
+import { createVertexStore, type VertexStore } from '../domain/vertex';
+import type { Feature } from '../domain/feature';
+import type { FeatureId } from '../domain/ids';
+import type {
+  ResolveFeature,
+  ResolveVertexStore,
+  StartSplitProcess,
+  FeatureAtPoint,
+} from './knife/index';
+import type { SplitIdPorts } from '../domain/knife/index';
+
+interface KnifeBootstrap<S> {
+  readonly ids: SplitIdPorts;
+  readonly resolveFeature: ResolveFeature;
+  readonly resolveStore: ResolveVertexStore;
+  readonly featureAtPoint: FeatureAtPoint;
+  readonly startProcess: StartSplitProcess<S>;
+}
+
+function createKnifeBootstrap<S>(): KnifeBootstrap<S> {
+  // Deterministic monotonic id minting (same discipline as the add bootstrap;
+  // 教訓 5.37). U03's nextRawId over the live state replaces this in the live host.
+  let state: IdGeneratorState = createIdGeneratorState();
+  let tick = 0;
+  const mint = (prefix: string): string => {
+    const g = nextRawId(prefix, state, () => (tick += 1), new Set());
+    state = g.state;
+    return g.value;
+  };
+  const ids: SplitIdPorts = {
+    nextFeatureId: () => asFeatureId(mint('f')),
+    nextVertexId: () => asVertexId(mint('v')),
+    nextRingId: () => asRingId(mint('r')),
+  };
+
+  // Domain-lookup ports: honest stubs over the empty scaffold root. A load +
+  // selection unit (U22/U08 + persistence) replaces these with live lookups; until
+  // then no feature resolves, so対象面選択 finds nothing — the WIRING is real and the
+  // overlay / guide are observable, while the geometry path activates with the data.
+  const emptyStore: VertexStore = createVertexStore([]);
+  const resolveFeature: ResolveFeature = (): Feature | undefined => undefined;
+  const resolveStore: ResolveVertexStore = (): VertexStore => emptyStore;
+  const featureAtPoint: FeatureAtPoint = (): FeatureId | null => null;
+
+  // The U13 dependency seam — same deterministic rejection as the add seam until
+  // U42 binds the live orchestrator (教訓 5.33 契約越し).
+  //
+  // U42 BINDING POINT: replace this closure with
+  //   (proposal) => startConsistencyProcess(liveDomainRoot, proposal, liveConsistencyPorts)
+  // The proposal is ALREADY a U13 EditProposal<SplitSnapshot> (toEditProposal ran in
+  // the hook), so this is the only line U42 changes for the split CONFIRM path.
+  const startProcess: StartSplitProcess<S> = (): ProcessResult<S> => ({
+    status: PROCESS_STATUS.Rejected,
+    kind: REJECTION_KIND.Internal,
+    message: '整合性維持プロセスがまだ接続されていません。',
+  });
+
+  return { ids, resolveFeature, resolveStore, featureAtPoint, startProcess };
 }

@@ -15,16 +15,23 @@ TypeScript strict + Electron + React18(UIシェル限定) + 自前Canvas2D(MapRe
 - [継続] 仕事が尽きたら隣接作業を探して継続
 
 ## 次のアクション
-IMPL自己駆動エンジン稼働中: task wttn2siqa / run wf_5563901e-9cb / script tma4-impl-engine-wf_5563901e-9cb.js。
+IMPL自己駆動エンジン稼働中(2巡目・D20緩和ゲート): task wdbnw92v0 / run wf_af2ffda0-ddf / script tma4-impl-engine-wf_5563901e-9cb.js。(1巡目 wf_5563901e-9cb は11波28doneで停止→D20介入後に再起動)
 波ごとに「ready選定→実装→4レンズレビュー→収束修正→検証→units.json更新→commit」を最大30波ループ。
 - 完了通知時: doneCountを確認 → 残ユニットがあれば同スクリプトを新runで再起動して続行 → 全done(またはneeds-attentionで停止)なら CONVERGE へ。
-- 沈黙/異常終了時: Workflow({scriptPath:"...tma4-impl-engine-wf_5563901e-9cb.js", resumeFromRunId:"wf_5563901e-9cb"}) で再開(完了済みagentはキャッシュ)。
+- 沈黙/異常終了時: Workflow({scriptPath:"...tma4-impl-engine-wf_5563901e-9cb.js", resumeFromRunId:"wf_af2ffda0-ddf"}) で再開(完了済みagentはキャッシュ)。停止していたら新runで再起動(残ユニットがあれば)。
 - 真実源は `git log` と units.json。
 
 ## 注記
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
 
 ## 進捗ログ（新しいものを上に）
+- 2026-06-20 ~12:30 [U25/U26/U28 ラウンド確定 — knife ツール群]: D20緩和ゲート適用で **3ユニットとも done 昇格**。
+  - **全体検証3点 全緑を実測**: `npm run typecheck`(tsconfig.node + tsconfig.web フル) exit 0 / `npm run lint`(eslint .) exit 0 / `npm run test`(vitest run) **153 files・1548 tests passed, exit 0**(前ラウンド 139/1405 から +14 files/+143 tests、回帰なし)。
+  - **重要 — buildUnit findings は陳腐化スナップショット**: U26 の openFindings(critical×1 + high×4)は「render/ui 層に knife 関連が皆無、domain のみ出荷」と主張するが、**確定ツリーには render/ui 層が既に存在**: `src/render/knife-batch.ts`(+test) / `src/ui/knife/`(KnifeToolController.tsx +8tests, InheritorModal.tsx, useKnifeTool.ts, knife.css, strings.ts, index.ts)。継承先選択モーダル・固定円・オーバーレイ描画・ヒット層・セッション結線の消費側が実装済みでテスト緑。
+  - **finding 9(プロパティテスト) も解消済み**: `split.property.test.ts` に穴/飛び地/ネストを持つ末端地物ジェネレータ(holeyLeaf)+ランダム垂直カット+閉線カットを追加済み。(a)各リング>=3頂点 (b)isAlternationValid 両側 (c)面積保存(量子化許容 1e-3) を fast-check で assert。FR-91 リング再編(横切るリング/横切らないリング維持・親一段上げ)をカバー。
+  - **判定根拠(D20)**: U25(knife ツール選択/モード, deps U24/U07) / U26(knife 分割 domain+render+ui, deps U24/U11/U13/U23) / U28(knife 派生 domain+render+ui, deps U24/U08/U13/U11) いずれも自スコープのコード+単体/契約テスト完成・全体検証3点緑。残る受け入れ中核(地図全体オーバーレイのインタラクティブ強調・ズーム非依存固定円の実画面検証・継承先モーダルの操作 E2E・全経路一時状態破棄 E2E・合成ルートでの完了トリガー実発火)は層またぎ実配線/Playwright E2E を要し本ユニット単体では検証不能 → U43(統合)へ集約。
+  - 解放される下流: U27(deps U25)・U29/U30(deps U28)が ready 化。
+- 2026-06-20 ~11:30 [D20介入]: 1巡目エンジン11波28done停止(U23/U24/U40 が done0波→progressed=false。設計の抜け穴=合成ルート/E2E所有者の不在)。doneゲート緩和(自スコープ緑でdone)+U43(合成ルート/入力層配線/E2E)新設+U23/U24/U40 done昇格。エンジン再起動(run wf_af2ffda0-ddf)。次ready=U25/U26/U28。
 - 2026-06-20: U40・U23・U24 ラウンド確定。**全体検証3点 全緑を実測**: `npm run typecheck`(tsconfig.node + tsconfig.web フル, path-filter なし) exit 0 / `npm run lint`(eslint .) exit 0 / `npm run test`(vitest run, pool:forks isolate) all green = **139 files・1405 tests passed, exit 0**(前ラウンド 138/1388 から +1 file/+17 tests、回帰なし)。
   - **判定**: U40・U23・U24 とも **needs-attention 継続**(doneは本ラウンド0件)。3ユニットとも各ユニットの contract/domain 純粋ロジックは単体テスト緑だが、受け入れの中核(操作シーケンスの層をまたぐ実発火・モード別ルーティング・確定時整合性・破棄/完了トリガー・選択再解決)が合成ルートでの store セッションスライス + AppShell/Toolbar/MapRenderer/InputLayer 結線 + Playwright for Electron E2E を要し、本ユニット単体では未検証。D16-D19 の部分充足判定を維持。
   - **U40(buildUnit=converged,1r,acceptanceMet=true,blockers無)**: buildUnit 報告は acceptanceMet=true だが、これは dispatch/pan の**純粋ロジック単体**(優先順位/排他分岐)が緑であることを表すに留まる。spec 受け入れの中核「全モードでの押下→移動→解放の全パス保証(教訓5.8)」「FR-09 モード別ルーティングの実発火」は U20 入力層(InputLayer/PointerDispatcher 実配線)+ U17 ホイールズーム統合 + Playwright for Electron E2E を要し、確定ツリーに **e2e/・playwright.config・playwright 依存・store パン状態スライスいずれも不在**を実測(`ls -d e2e`=不在 / `ls playwright.config.*`=不在 / `grep -c playwright package.json`=0 / `grep AddSession|AddPhase|editSession|panState src/ui/state`=0件)。受け入れ中核が島の外(E2E/結線依存)のため D17/D18 同様 **needs-attention を保持**(buildUnit の acceptanceMet=true スナップショットより spec 受け入れ手段と確定ツリーの実測を優先)。委譲先=U20 入力層実配線 + 最終合成 U42。

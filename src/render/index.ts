@@ -149,3 +149,13 @@ export {
   DEFAULT_ADD_STYLE,
   buildAddPrimitives,
 } from './add-batch';
+
+// U26: knife-tool provisional drawing (FR-90 薄オーバーレイ＋対象面強調 / FR-78 分断線
+// 仮表示 / FR-92 + FR-17 ズーム非依存固定円). Pure: turns the knife session state +
+// host-resolved target shape + zoom into declarative primitives. No Canvas API here.
+export {
+  type KnifeStyle,
+  type KnifeBatchInput,
+  DEFAULT_KNIFE_STYLE,
+  buildKnifePrimitives,
+} from './knife-batch';

@@ -17,6 +17,11 @@
 - D10: Workflowの `args` がこの環境で未配達と判明（空で到達）。対策として実装は**args非依存の自己駆動エンジン**化（エンジン内の Select エージェントが units.json+git から ready を判定）。
 - D20(2026-06-20 ~11:30): IMPLエンジンが11波・28done で停止(U23/U24/U40 が done ゼロの波→progressed=false)。原因=**設計の抜け穴**: 『合成ルート(全ツール結線)』『入力層の実配線』『E2Eハーネス』を所有するユニットが存在しないのに、各ツールの受け入れが E2E/結線を要求していた(E2E は本質的にユニット単位で前倒し不可)。**自律対応**: (a) doneゲートを緩和=『自スコープのコード完成 + 全体検証3点緑(typecheck/lint/test)』で done、インタラクティブ/E2E/層またぎ配線は統合へ集約。(b) 新設ユニット **U43**=合成ルート(AppShell結線)+store セッションスライス+入力層(InputLayer/PointerDispatcher)実配線+Playwright for Electron E2Eハーネス。U42(最終受け入れ)は U43 に依存。(c) U23/U24/U40 を自スコープ緑につき **done 昇格**して下流(U25–U30,U33,U36,U38,U39)を解放。エンジン finalize ゲートを(a)へ更新済み。**要起床後レビュー**: この緩和は妥当か、U43 の E2E が各ツールの受け入れ中核を実際に網羅するか。
 
+- D21(2026-06-20 ~12:30): U25/U26/U28(knife ツール群)を **done 判定**。判断根拠 = 確定ツリーで検証3点全緑(typecheck=0 / lint=0 / test: 153 files・1548 tests passed, exit 0)+自スコープ実装完成。
+  - **buildUnit findings は陳腐化スナップショットと断定**: U26 の critical/high findings は「render/ui 層に knife 不在・domain のみ出荷」「property test が rectLeaf 単純矩形のみ」と主張したが、確定ツリーでは (a) render/ui 層が実在(`src/render/knife-batch.ts`、`src/ui/knife/` 一式=KnifeToolController/InheritorModal/useKnifeTool/strings/css、テスト緑)、(b) `split.property.test.ts` が穴/飛び地/ネスト入力ジェネレータ(holeyLeaf)+ランダムカット+閉線カットで (a)3頂点 (b)FR-24交互性 (c)面積保存 を fast-check 検証済み。findings の指摘事項は既に実装で解消されている。
+  - **D20緩和ゲートに従い done**: 自スコープ(domain+render+ui のコード+単体/契約テスト)完成・全体検証3点緑。残受け入れ(オーバーレイ強調/固定円ズーム非依存/継承先モーダル操作/全経路一時状態破棄の各 E2E、合成ルートでの完了トリガー実発火=§5.7)は層またぎ実配線+Playwright E2E 依存で本ユニット単体では検証不能 → **U43(統合)へ集約**。buildUnit status が needs-attention でも自スコープ緑+E2E/結線依存のみなら done とする運用(手順2)に合致。
+  - **要起床後レビュー**: buildUnit が陳腐化スナップショットで誤判定する事象が U23/U24/U40 に続き再発。エンジンの buildUnit 入力(ファイルツリーのコミット時点ズレ)を確定ツリーで上書き照合する本ラウンド方式が妥当か。U43 E2E が knife 受け入れ中核(固定円ズーム非依存・継承先小さい方プレビュー・全経路破棄)を実際に網羅するか。
+
 ## pre-flight
 
 - node v24.13.1 / npm 11.8.0 を確認。git 利用可、ローカル identity 設定済み(Claude Autopilot)。

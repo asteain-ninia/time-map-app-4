@@ -1,0 +1,140 @@
+/* U26 — knife-tool chrome styles (FR-90 / FR-92 / FR-93, 教訓 5.14 input layers). */
+
+/* The transparent map-input bridge: sits ABOVE the map while selecting / drawing
+   and captures pointer events, forwarding them to the hook. It is removed the
+   moment the session ends, so it never steals input outside a knife op (教訓 5.14). */
+.knife-tool__input {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  cursor: crosshair;
+  background: transparent;
+}
+
+/* The per-phase guide + message float over the map (FR-92). */
+.knife-tool__guide,
+.knife-tool__message {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  pointer-events: none;
+}
+.knife-tool__guide {
+  top: 12px;
+  background: rgba(20, 24, 33, 0.8);
+  color: #fff;
+}
+.knife-tool__message {
+  top: 48px;
+  background: #b71c1c;
+  color: #fff;
+}
+
+.knife-tool__controls {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+/* 継承先選択モーダル — centered over a full-surface backdrop (FR-93 / 教訓 5.14). */
+.knife-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.knife-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.knife-dialog {
+  position: relative;
+  z-index: 1;
+  min-width: 320px;
+  max-width: 90vw;
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.knife-dialog__title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.knife-dialog__hint {
+  margin: 0 0 12px;
+  color: #555;
+  font-size: 13px;
+}
+.knife-preview {
+  display: block;
+  margin: 0 auto 16px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  background: #fafafa;
+}
+.knife-dialog__choices {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.knife-choice {
+  flex: 1;
+  padding: 10px;
+  border: 2px solid #cfd8dc;
+  border-radius: 8px;
+  background: #eceff1;
+  cursor: pointer;
+}
+.knife-choice--selected {
+  border-color: #ffc107;
+  background: #fff8e1;
+  font-weight: 600;
+}
+.knife-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.knife-dialog__confirm {
+  padding: 8px 16px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.knife-dialog__cancel {
+  padding: 8px 16px;
+  background: #eceff1;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.knife-tool__props {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1000;
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}

@@ -22,6 +22,10 @@ export interface AddHostPorts {
   screenToWorld(clientX: number, clientY: number): WorldCoordinate;
   /** Paint the provisional add layer (FR-78). */
   drawAdd(primitives: readonly DrawPrimitive[]): void;
+  /** Paint the provisional knife layer (U26: overlay / 対象面強調 / 分断線 / 固定円). */
+  drawKnife(primitives: readonly DrawPrimitive[]): void;
+  /** The current camera zoom (CSS px per degree) — the固定円 radius input (FR-17). */
+  zoom(): number;
   /** Tear down the renderer + canvas on unmount. */
   dispose(): void;
 }
@@ -59,6 +63,12 @@ export function createAddHostPorts(mount: HTMLElement): AddHostPorts {
     },
     drawAdd(primitives): void {
       renderer.drawBatch({ primitives });
+    },
+    drawKnife(primitives): void {
+      renderer.drawBatch({ primitives });
+    },
+    zoom(): number {
+      return renderer.getCamera().zoom;
     },
     dispose(): void {
       canvas.remove();
