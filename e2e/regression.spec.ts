@@ -52,6 +52,37 @@ test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成�
     }
   });
 
+  test('stepping forward then back returns to the SAME displayed current time (BUGHUNT:time-roundtrip)', async () => {
+    // Regression: the initial currentTime renders at year granularity ("0年").
+    // Stepping 1年次へ進む then 1年前へ戻る returns to the same instant; the
+    // DISPLAY must also be identical — it used to come back as "0年1月1日" because
+    // a step promoted the TimePoint granularity year -> yearMonthDay permanently.
+    const { app, page } = await launchApp();
+    try {
+      const current = page.getByTestId('timeline-current');
+      await expect(current).toBeVisible();
+      const t0 = (await current.textContent())?.trim() ?? '';
+      expect(t0).not.toBe('');
+
+      const forward = page.getByRole('button', { name: '1年次へ進む' });
+      await forward.click();
+      // The forward step genuinely moved the time (sanity: not a no-op).
+      await expect(async () => {
+        const t1 = (await current.textContent())?.trim() ?? '';
+        expect(t1).not.toBe(t0);
+      }).toPass();
+
+      await page.getByRole('button', { name: '1年前へ戻る' }).click();
+      // op∘逆op = 恒等 at the display level: back to the exact original string.
+      await expect(async () => {
+        const t2 = (await current.textContent())?.trim() ?? '';
+        expect(t2).toBe(t0);
+      }).toPass();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('the map canvas mount stays present across a time move (即時再描画の土台 FR-71)', async () => {
     const { app, page } = await launchApp();
     try {
