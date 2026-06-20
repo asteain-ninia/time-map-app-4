@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    // The E2E specs run under @playwright/test (Node host) but also use DOM lib
+    // types inside `page.evaluate(() => …)` callbacks (those run in the renderer,
+    // so `globalThis`/`window` shapes must type-check). Include both libs.
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    // @playwright/test provides its own `test`/`expect`; `playwright` provides the
+    // `_electron` driver used by the launch helper. Node types back the helper's
+    // process.env / node:url / node:path usage.
+    "types": ["node", "@playwright/test"]
+  },
+  // U43 build-health fix: the E2E harness (e2e/**) and the Playwright config were
+  // previously OUTSIDE every typecheck config, so a TypeScript regression in the
+  // integration layer slipped past `npm run typecheck` (it was only transpiled by
+  // esbuild at Playwright run time). They are now first-class typecheck inputs so
+  // the integration layer's type gate is real.
+  "include": [
+    "e2e/**/*.ts",
+    "playwright.config.ts"
+  ]
+}

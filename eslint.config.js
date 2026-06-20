@@ -113,7 +113,7 @@ export default tseslint.config(
     settings: {
       'import/resolver': {
         typescript: {
-          project: ['./tsconfig.node.json', './tsconfig.web.json'],
+          project: ['./tsconfig.node.json', './tsconfig.web.json', './tsconfig.e2e.json'],
         },
         node: true,
       },
@@ -134,6 +134,18 @@ export default tseslint.config(
       ecmaVersion: 2022,
       sourceType: 'module',
       globals: { ...globals.node },
+    },
+  },
+  {
+    // U43 E2E harness (Playwright for Electron). Runs in Node (the test runner)
+    // and evaluates snippets in the renderer (browser), so both global sets apply.
+    // These files are NOT part of the app layers, so the layer-boundary import
+    // rules above (scoped to src/**) do not constrain them.
+    files: ['e2e/**/*.ts'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser },
     },
   },
 );

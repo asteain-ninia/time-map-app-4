@@ -25,6 +25,13 @@ import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 const SMOKE_TEST = process.env['SMOKE_TEST'] === '1';
 const SMOKE_TIMEOUT_MS = 30_000;
 
+// E2E mode (E2E_TEST=1): Playwright for Electron drives the REAL composition root
+// headless. Like SMOKE_TEST it renders the window OFFSCREEN (no display needed),
+// but UNLIKE smoke it does NOT auto-exit on did-finish-load — the app must stay
+// alive so the test can interact with the renderer (U43 / 技術方針 2.14). No
+// security flag is relaxed (sandbox / contextIsolation / nodeIntegration unchanged).
+const E2E_TEST = process.env['E2E_TEST'] === '1';
+
 function smokeFail(reason: string): void {
   console.error(`[smoke] FAIL: ${reason}`);
   app.exit(1);
@@ -87,9 +94,10 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      // In smoke mode render offscreen so the launch path can be verified
-      // without a display/compositor. This does not relax any security flag.
-      ...(SMOKE_TEST ? { offscreen: true } : {}),
+      // In smoke / E2E mode render offscreen so the launch + interaction path can
+      // be verified without a display/compositor. This does not relax any security
+      // flag (sandbox / contextIsolation / nodeIntegration stay as above).
+      ...(SMOKE_TEST || E2E_TEST ? { offscreen: true } : {}),
     },
   });
 

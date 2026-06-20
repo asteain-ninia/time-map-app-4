@@ -4,6 +4,14 @@
 
 ## 確定した運用上の決定
 
+- D25(2026-06-20 ~15:50・U43 ラウンド): U43(統合ユニット=合成ルート/入力層実配線/E2Eハーネス)を **D20 緩和ゲートで done 判定**。判断根拠 = 全体検証3点全緑(typecheck=0[node+web+e2e 3構成] / lint=0 / test: 185 files・1889 tests passed, exit 0) + **E2E ハーネス実機緑**(`npm run test:e2e` = electron-vite build → playwright **6 passed・exit 0**、非対話・オフスクリーン E2E_TEST=1・console-clean) + 自スコープ(`src/ui/App.tsx`/store セッションスライス/入力層実配線/`e2e/`+`playwright.config.ts`+`tsconfig.e2e.json`/型骨格 `src/ui/consistency-binding.ts`)完成。
+  - **buildUnit=needs-attention(2r,acceptanceMet=true) の openFinding 4件(high) を確定ツリーで照合**:
+    - **finding①②(build-health 証跡ギャップ)**: 実装報告 commandsRun に E2E 実行が無く基準2「ハーネス非対話緑」の根拠が報告内に欠落していた。**本ラウンドで `npm run test:e2e` を実機実行=6 passed・exit 0 を確証**(レビュー指摘どおり緑は実在)。報告の証跡欠落は事実だが緑は確認済みで致命ではない。**STATE に E2E 実行結果を明記して証跡を補完済み**。
+    - **finding③(orphaned responsibility / 層境界)**: U43 が自スコープと明記した「確定時整合性の結線(各編集確定→U13)」を U42 へ繰越とした旧記述は誤り。U42 は検証専任(「やらないこと」=新規ドメイン/UI 実装)で結線責務を受け取れず、両ユニットの隙間に責務が落ちる。**正当**な指摘。
+    - **finding④(「1行差し替え」過小評価)**: App.tsx の startProcess 結線は ConsistencyPorts(U09/U10/U06/U12)アダプタ + applyProposal を要し「1行」ではない。**正当**。
+  - **対応(spec/コード側で既に反映済みを確認)**: (a) App.tsx コメントは「1行差し替え」を撤回し実態(ConsistencyPorts アダプタ+root 受け渡し)へ訂正済、(b) ライブ U13 結線契約の **型骨格** `src/ui/consistency-binding.ts`(LiveConsistencyBinding/CreateLiveAddBinding/CreateLiveKnifeBinding) を設置済、(c) ライブ U13 結線(`applyProposal`: snapshot→錨/履歴 = 出荷済みどのユニットも未公開の **新規ドメイン責務**)は U42 に属さず **未割当・要計画**として `docs/現状.md` に記録済(開発ガイド §1.8)。specs/U43.md の充足状況も honest に訂正済(基準1 完全 / 基準2-4 部分)。
+  - **D20 適用判断**: 自スコープ赤無し + 全体検証3点緑 + E2E ハーネス実機緑。残ギャップ(ライブ U13 確定経路の round-trip / add・edit・knife のモード別ルーティング実 E2E)は U43 内で完結不能な **未割当の新規ドメインユニット**ブロッカーであり、U43 自スコープの赤ではない → done。
+  - **要起床後レビュー / 必須フォロー**: (1) **未割当ブロッカー(ライブ U13 結線 = 新規ドメインユニット)を CONVERGE 前に必ず起票**すること(docs/現状.md に記録済だが units.json には未起票)。これが無いと「地物追加→保存→読込」round-trip と確定時整合性が実機で永久に到達不能。(2) U42(検証専任)は U43 done で全 deps done だが、上記ライブ結線が未完のため U42 の round-trip/モード別 E2E は緑化できない＝新規ユニット計画が U42 より先。(3) build は polygon-clipping 名前付き export 警告を出す(boolean-ops.ts L111-115,173)が build 成功・E2E 緑。QUALITY で named import の解消を検討。
 - D1: Codex CLI 未導入かつ認証不可のため、クロスモデルレビューは今夜は不可。レビューは **Claude 複数エージェントの多視点収束**（correctness / 要件適合 / 統合 / build-health のレンズ）で代替。Codex導入後に差し替え可能。
 - D2: 計画変更により、-4専用スレッドではなく**現セッション(!WORKSPACE)から-4を絶対パスで駆動**。
 - D3: 設計完了後、**承認を待たず実装へ移行**（ユーザーによる事前承認）。

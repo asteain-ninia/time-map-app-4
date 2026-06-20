@@ -155,28 +155,39 @@ export function App(): JSX.Element {
   // outcome: 受け入れ基準1(現在時刻錨として確定), 基準2(確定済み分岐), and 基準9
   // (完了後の選択再解決) hold ONLY against an injected U13 in the U23 unit tests
   // (AddToolController.test.tsx / useAddTool.test.tsx) — in the shipped composite
-  // a SAVE always ends in the Japanese rejection message. This is intentional and
-  // honestly scoped: the COMPLETE and SAVE triggers are fully配線 (教訓 5.7) and
-  // observable, but the CONFIRM path is deliberately left open until U42 binds the
-  // real orchestrator. The controller takes `startProcess` as a contract
-  // (StartAddProcess<S>), so U42 connects the live U13 by REPLACING this single
-  // closure with `consistency/orchestrator.ts#startProcess` bound over the live
-  // domain root — no change to AddToolController / useAddTool (教訓 5.33 契約越し).
+  // a SAVE always ends in the Japanese rejection message. The COMPLETE and SAVE
+  // triggers are fully配線 (教訓 5.7) and observable; only the CONFIRM path is open.
   //
-  // U42 BINDING POINT (see createAddBootstrap below): swap the stub for
-  //   (proposal) => startConsistencyProcess(liveDomainRoot, toEditProposal(proposal), livePorts)
-  // and feed the Committed/ConflictsPending/Rejected result back unchanged.
+  // BINDING COST — NOT a「1行差し替え」(integration-lens correction): connecting the
+  // live U13 is NOT swapping this one closure. It requires building a full
+  // `ConsistencyPorts<DomainRoot, AddSnapshot>` adapter (U09 time / U10 spatial /
+  // U06 difference / U12 single-undo) bound over the live domain root, PLUS an
+  // `applyProposal` that materialises an AddSnapshot into a `DomainProject` history
+  // anchor. The factory shape + per-port duties are pinned in
+  // `./consistency-binding.ts` (LiveConsistencyBinding / CreateLiveAddBinding); the
+  // controller consumes `StartAddProcess<S>` as a contract (教訓 5.33 契約越し), so
+  // ONCE that binding exists App.tsx replaces the stub with
+  // `createLiveAddBinding({ getRoot }).startProcess` — no change to the controller.
+  //
+  // OWNERSHIP — UNASSIGNED, NOT U42 (開発ガイド §1.8): `applyProposal` is a NEW
+  // domain operation (snapshot → anchor → history insert) that no shipped unit
+  // exposes. It is new domain work, so it cannot belong to U42 (U42「やらないこと」=
+  // 新規ドメイン機能の実装 — U42 is verification-only). Recorded as an unassigned
+  // open item requiring a planned unit in docs/現状.md.
   const hostBootstrap = useMemo(() => createAddBootstrap<DomainRoot>(), []);
 
   // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
   // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
   // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
   // U23 form re-use drive継承先選択 / 非継承側プロパティ入力, and 確定 hands a split
-  // EditProposal to the U13 seam. Like the add seam, U13 is a deterministic stub
-  // until U42 binds the live orchestrator (教訓 5.33 契約越し). The domain-lookup
-  // ports (resolveFeature / resolveStore / featureAtPoint) are honest stubs over the
-  // empty scaffold root until a load + selection unit supplies the live domain — the
-  // WIRING is real and observable; the geometry path activates when those ports do.
+  // EditProposal to the U13 seam. Like the add seam, U13 is a deterministic stub;
+  // the live binding (`CreateLiveKnifeBinding` in ./consistency-binding.ts) is the
+  // SAME non-trivial `ConsistencyPorts<DomainRoot, SplitSnapshot>` adapter cost, and
+  // its `applyProposal` is the SAME unassigned new-domain blocker (NOT U42; 開発ガイド
+  // §1.8, docs/現状.md). The domain-lookup ports (resolveFeature / resolveStore /
+  // featureAtPoint) are honest stubs over the empty scaffold root until a load +
+  // selection unit supplies the live domain — the WIRING is real and observable; the
+  // geometry path activates when those ports do.
   const knifeBootstrap = useMemo(() => createKnifeBootstrap<DomainRoot>(), []);
 
   return (
@@ -251,8 +262,25 @@ import {
   REJECTION_KIND,
   type ProcessResult,
 } from '../domain/consistency/index';
+// The live-U13 binding contract (型骨格): the factory shapes a future planned unit
+// must satisfy to replace the stubs below. Imported as a type so the contract is
+// part of this module's type graph and the binding cost is documented, not hidden
+// behind a「1行差し替え」comment (integration-lens correction; ./consistency-binding.ts).
+import type {
+  CreateLiveAddBinding,
+  CreateLiveKnifeBinding,
+} from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';
+
+// Pin, at the type level, that a future planned unit's live binding factories
+// produce exactly the `startProcess` contract the stub bootstraps below expose, so
+// the eventual swap is provably contract-clean (教訓 5.33) while the binding BODY
+// remains the recorded unassigned work (./consistency-binding.ts, docs/現状.md).
+// These aliases keep the imported factory contracts referenced (no orphan import)
+// and double as the seam's documentation.
+export type LiveAddBindingFactory = CreateLiveAddBinding;
+export type LiveKnifeBindingFactory = CreateLiveKnifeBinding;
 
 interface AddBootstrap<S> {
   readonly ids: AddIdPorts;
@@ -282,14 +310,16 @@ function createAddBootstrap<S>(): AddBootstrap<S> {
   // is observably wired (a Japanese message appears) until the consistency host
   // is connected.
   //
-  // U42 BINDING POINT: replace this closure with the real U13 orchestrator —
-  //   import { startProcess as startConsistencyProcess } from '../domain/consistency/index';
-  //   const startProcess: StartAddProcess<S> = (proposal) =>
-  //     startConsistencyProcess(liveDomainRoot, toEditProposal(proposal), liveConsistencyPorts);
-  // The controller consumes StartAddProcess<S> as a contract, so this is the only
-  // line U42 must change to make 基準1/2-Committed/9 reachable in the live
-  // composite (教訓 5.33 契約越し). Until then the CONFIRM path is open by design
-  // (DECISIONS D16-D19; U23 acceptanceMet=false 部分充足).
+  // LIVE BINDING (NOT a single line — see ./consistency-binding.ts):
+  //   const live = createLiveAddBinding({ getRoot });  // builds ConsistencyPorts<DomainRoot, AddSnapshot>
+  //   const startProcess: StartAddProcess<S> = live.startProcess;
+  // The controller consumes StartAddProcess<S> as a contract (教訓 5.33 契約越し),
+  // so the COMPOSITION ROOT swap is contract-clean — but `createLiveAddBinding`
+  // itself is the real work: it must implement `applyProposal` (snapshot → history
+  // anchor) + the U09/U10/U06/U12 ports over the live root. That `applyProposal`
+  // is a new domain op no shipped unit provides — recorded as an UNASSIGNED open
+  // item in docs/現状.md (NOT U42; U42 is verification-only). Until then the
+  // CONFIRM path is open by design (DECISIONS D16-D19; U23 acceptanceMet=false 部分充足).
   const startProcess: StartAddProcess<S> = (): ProcessResult<S> => ({
     status: PROCESS_STATUS.Rejected,
     kind: REJECTION_KIND.Internal,
@@ -345,13 +375,16 @@ function createKnifeBootstrap<S>(): KnifeBootstrap<S> {
   const resolveStore: ResolveVertexStore = (): VertexStore => emptyStore;
   const featureAtPoint: FeatureAtPoint = (): FeatureId | null => null;
 
-  // The U13 dependency seam — same deterministic rejection as the add seam until
-  // U42 binds the live orchestrator (教訓 5.33 契約越し).
+  // The U13 dependency seam — same deterministic rejection as the add seam.
   //
-  // U42 BINDING POINT: replace this closure with
-  //   (proposal) => startConsistencyProcess(liveDomainRoot, proposal, liveConsistencyPorts)
+  // LIVE BINDING (NOT a single line — see ./consistency-binding.ts):
+  //   const live = createLiveKnifeBinding({ getRoot });  // ConsistencyPorts<DomainRoot, SplitSnapshot>
+  //   const startProcess: StartSplitProcess<S> = live.startProcess;
   // The proposal is ALREADY a U13 EditProposal<SplitSnapshot> (toEditProposal ran in
-  // the hook), so this is the only line U42 changes for the split CONFIRM path.
+  // the hook), so the composition-root swap is contract-clean — but the binding's
+  // `applyProposal` (split snapshot → updated inheritor history + new non-inherited
+  // history) is the SAME unassigned new-domain blocker as the add seam (NOT U42;
+  // docs/現状.md).
   const startProcess: StartSplitProcess<S> = (): ProcessResult<S> => ({
     status: PROCESS_STATUS.Rejected,
     kind: REJECTION_KIND.Internal,
