@@ -721,6 +721,18 @@ export function App(): JSX.Element {
                 inheritor stays selected after a split (教訓 5.11). Hidden; it holds
                 NO truth — it只 reflects the store (技術方針 2.5). */}
             <ActiveFeatureMarker store={store} />
+            {/* HB-10 観測フック (Ctrl+Y redo の挙動 E2E): mirror the live undo/redo
+                stack availability into hidden markers (既存 app-active-feature 方式).
+                A behavioural test commits→undo→Ctrl+Y redo and asserts these flip,
+                proving Ctrl+Y truly runs redo. The App re-renders on every history
+                change (setHistoryVersion), so these read historyRef live; they hold
+                NO truth — pure mirrors (技術方針 2.5). */}
+            <span data-testid="app-can-undo" hidden>
+              {historyCanUndo(historyRef.current) ? '1' : '0'}
+            </span>
+            <span data-testid="app-can-redo" hidden>
+              {historyCanRedo(historyRef.current) ? '1' : '0'}
+            </span>
             {/* HB-4 観測フック (回帰観点 E2E): mirror the live session mode + active
                 tool truth (store.mode / store.activeTool) into hidden data-testid
                 markers so a behavioural test can assert the 表示専用→編集 transition

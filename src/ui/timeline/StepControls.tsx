@@ -26,38 +26,52 @@ export function StepControls(props: StepControlsProps): JSX.Element {
   const back = useLongPress(() => onStep(unit, -1));
   const forward = useLongPress(() => onStep(unit, 1));
 
+  // HB-13: ボタンに可視ラベルを付け、最小サイズとツールチップを与える。アイコン
+  // だけだと意味が伝わらないため「◀ 前へ」「次へ ▶」のようにテキストを併記する。
+  const unitLabel = UNIT_LABELS[unit];
+
   return (
     <div className="timeline-step" data-testid="timeline-step">
       <button
         type="button"
-        aria-label="後退"
+        className="timeline-step__button"
+        aria-label={`1${unitLabel}前へ戻る`}
+        title={`1${unitLabel}前へ戻る`}
         onPointerDown={back.onPointerDown}
         onPointerUp={back.onPointerUp}
         onPointerLeave={back.onPointerLeave}
       >
-        ◀
+        <span aria-hidden="true">◀</span>
+        <span className="timeline-step__label">前へ</span>
       </button>
 
-      <select
-        aria-label="ステップ単位"
-        value={unit}
-        onChange={(e) => setUnit(e.target.value as StepUnit)}
-      >
-        {Object.values(STEP_UNIT).map((u) => (
-          <option key={u} value={u}>
-            {UNIT_LABELS[u]}
-          </option>
-        ))}
-      </select>
+      <label className="timeline-step__unit">
+        <span className="timeline-step__unit-caption">ステップ単位</span>
+        <select
+          aria-label="ステップ単位"
+          title="前へ/次へ で動かす時間の単位"
+          value={unit}
+          onChange={(e) => setUnit(e.target.value as StepUnit)}
+        >
+          {Object.values(STEP_UNIT).map((u) => (
+            <option key={u} value={u}>
+              {UNIT_LABELS[u]}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <button
         type="button"
-        aria-label="前進"
+        className="timeline-step__button"
+        aria-label={`1${unitLabel}次へ進む`}
+        title={`1${unitLabel}次へ進む`}
         onPointerDown={forward.onPointerDown}
         onPointerUp={forward.onPointerUp}
         onPointerLeave={forward.onPointerLeave}
       >
-        ▶
+        <span className="timeline-step__label">次へ</span>
+        <span aria-hidden="true">▶</span>
       </button>
     </div>
   );

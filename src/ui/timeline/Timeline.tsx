@@ -20,6 +20,7 @@ import type { EventMarker } from './markers';
 import { addMarker, editMarker, removeMarker } from './markers';
 import {
   formatTimePoint,
+  formatYear,
   generateTicks,
   toNormalizedRange,
 } from './time-display';
@@ -77,16 +78,33 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         onChange={(e) => t.jumpToFraction(Number(e.target.value))}
       />
 
+      {/* HB-11: 時間バー下の年目盛。単位(年)を明示し、各目盛は刻み線+ラベルで
+          構成。ラベルは中央寄せ(translateX -50%)し、両端は枠外にはみ出さないよう
+          CSS で寄せる。間引きは generateTicks(目標本数)が担当する。 */}
       <div className="timeline__ticks" data-testid="timeline-ticks">
-        {ticks.map((tick) => (
-          <span
-            key={tick.year}
-            className="timeline__tick"
-            style={{ left: `${tick.fraction * 100}%` }}
-          >
-            {tick.year}
-          </span>
-        ))}
+        <span className="timeline__ticks-unit" aria-hidden="true">
+          単位: 年
+        </span>
+        {ticks.map((tick) => {
+          // Edge ticks (≈0% / ≈100%) align their label inward instead of centring
+          // it, so a year/BCE label at the very ends is not clipped by the track's
+          // overflow:hidden (Codex HB-11 観点 / 枠外はみ出し回避).
+          const edge =
+            tick.fraction <= 0.02 ? ' timeline__tick--start'
+            : tick.fraction >= 0.98 ? ' timeline__tick--end'
+            : '';
+          return (
+            <span
+              key={tick.year}
+              className={`timeline__tick${edge}`}
+              style={{ left: `${tick.fraction * 100}%` }}
+              data-tick-year={tick.year}
+            >
+              <span className="timeline__tick-mark" aria-hidden="true" />
+              <span className="timeline__tick-label">{formatYear(tick.year)}</span>
+            </span>
+          );
+        })}
       </div>
 
       <EventMarkers

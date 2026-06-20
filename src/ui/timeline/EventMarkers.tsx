@@ -39,6 +39,20 @@ export function EventMarkers(props: EventMarkersProps): JSX.Element {
 
   return (
     <div className="timeline-markers" data-testid="timeline-markers">
+      {/* HB-12: 「イベント追加」が何かを明示する。これはタイムライン上の名前付き
+          時刻ブックマーク(よく使う年へワンクリックで戻るための栞)であって、地物の
+          追加ではない。見出し+簡潔な説明+ツールチップで意味を伝える。 */}
+      <div className="timeline-markers__header">
+        <span className="timeline-markers__title">時刻ブックマーク</span>
+        <span
+          className="timeline-markers__hint"
+          data-testid="timeline-markers-hint"
+          title="名前を付けてタイムライン上の時刻を保存し、ピンをクリックでその時刻へジャンプします"
+        >
+          タイムライン上の時刻に名前を付けて保存し、後でワンクリックで戻れます
+        </span>
+      </div>
+
       <div className="timeline-markers__track">
         {positioned.map((m) => (
           <button
@@ -56,15 +70,17 @@ export function EventMarkers(props: EventMarkersProps): JSX.Element {
       <div className="timeline-markers__editor">
         <input
           type="text"
-          aria-label="イベント名"
+          aria-label="ブックマーク名"
+          placeholder="ブックマーク名(例: 関ヶ原の戦い)"
+          title="このブックマークに付ける名前"
           value={draftLabel}
           onChange={(e) => setDraftLabel(e.target.value)}
         />
         <YearMonthDayInput
-          title="イベント時刻"
+          title="ブックマークする時刻"
           calendar={calendar}
           initialValue={defaultTime}
-          confirmLabel="イベント追加"
+          confirmLabel="この時刻をブックマーク"
           onConfirm={(time) => {
             onAdd(draftLabel, time);
             setDraftLabel('');

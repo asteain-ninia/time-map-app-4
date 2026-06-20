@@ -368,14 +368,28 @@ function ShortcutsView(props: {
             </tr>
           </thead>
           <tbody>
-            {entries.map((entry) => (
-              <tr key={entry.commandId} data-testid="shortcuts-panel-row">
-                <td>{entry.label}</td>
-                <td data-testid={`shortcuts-panel-key-${entry.commandId}`}>
-                  {formatShortcut(entry.shortcut, platform)}
-                </td>
-              </tr>
-            ))}
+            {(() => {
+              // HB-10: a command may list MORE THAN ONE accelerator (redo's Ctrl+Y
+              // と Ctrl+Shift+Z). The FIRST (primary) row keeps the stable
+              // per-command testid (shortcuts-panel-key-<id>); alias rows get a
+              // chord-suffixed testid so every key cell is uniquely addressable and
+              // no two share a data-testid (strict getByTestId stays unambiguous).
+              const seen = new Set<string>();
+              return entries.map((entry) => {
+                const chordLabel = formatShortcut(entry.shortcut, platform);
+                const isPrimary = !seen.has(entry.commandId);
+                seen.add(entry.commandId);
+                const keyTestid = isPrimary
+                  ? `shortcuts-panel-key-${entry.commandId}`
+                  : `shortcuts-panel-key-${entry.commandId}-${chordLabel}`;
+                return (
+                  <tr key={`${entry.commandId}:${chordLabel}`} data-testid="shortcuts-panel-row">
+                    <td>{entry.label}</td>
+                    <td data-testid={keyTestid}>{chordLabel}</td>
+                  </tr>
+                );
+              });
+            })()}
           </tbody>
         </table>
       )}

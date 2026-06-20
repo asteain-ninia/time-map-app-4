@@ -87,7 +87,11 @@ body {
 .app-shell__toolbar {
   grid-column: 1;
   min-width: 48px;
-  overflow: auto;
+  /* HB-5: scroll ONLY when the content truly overflows vertically, and never
+   * horizontally (a 1px sub-pixel rounding used to force a permanent horizontal
+   * scrollbar). overflow-x:hidden + overflow-y:auto removes the spurious bars. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .app-shell__map {
@@ -100,12 +104,21 @@ body {
 .app-shell__sidebar {
   grid-column: 3;
   min-width: 220px;
-  overflow: auto;
+  /* HB-5: same as the toolbar — vertical scroll on demand only, no horizontal bar. */
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .app-shell__timeline {
   grid-row: 3;
+  /* HB-5: the timeline row is `auto`-sized; if its content (esp. the marker list)
+   * grows it must scroll WITHIN the panel rather than push the shell and spawn a
+   * page-level scrollbar. A bounded max-height + internal overflow keeps the
+   * outer shell exactly viewport-sized. */
   min-height: 0;
+  max-height: 40vh;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .app-shell__statusbar {
@@ -369,6 +382,186 @@ body {
   align-items: center;
   gap: 12px;
   margin-top: 6px;
+}
+
+/* HB-11: 年目盛トラック。各目盛は刻み線+ラベルで構成し、ラベルは目盛位置を中心に
+ * 寄せる。トラック自体は相対配置で、目盛は left:% で絶対配置する。単位キャプション
+ * を右上に小さく添えて「数列=年」と分かるようにする。 */
+.timeline__ticks {
+  position: relative;
+  height: 30px;
+  margin: 2px 0 4px;
+  /* Ticks are absolutely positioned by %; clip anything reaching past the edge so
+   * a near-100% label cannot create a horizontal scrollbar (HB-5). */
+  overflow: hidden;
+}
+
+.timeline__ticks-unit {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 10px;
+  color: var(--c-text-muted);
+}
+
+.timeline__tick {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* Centre the label on the tick position. */
+  transform: translateX(-50%);
+  /* Keep edge labels from overflowing the track horizontally. */
+  white-space: nowrap;
+}
+
+/* HB-11: at the extreme ends, align the label inward (left-/right-justified)
+ * so it is not clipped by the track's overflow:hidden. The mark stays on the
+ * tick position; only the label box shifts. */
+.timeline__tick--start {
+  transform: none;
+  align-items: flex-start;
+}
+
+.timeline__tick--end {
+  transform: translateX(-100%);
+  align-items: flex-end;
+}
+
+.timeline__tick-mark {
+  width: 1px;
+  height: 6px;
+  background: var(--c-border-strong);
+}
+
+.timeline__tick-label {
+  margin-top: 2px;
+  font-size: 10px;
+  color: var(--c-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* HB-12: 時刻ブックマーク(旧「イベント追加」)。見出し+説明で意味を明示する。 */
+.timeline-markers {
+  margin-top: 4px;
+}
+
+.timeline-markers__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.timeline-markers__title {
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.timeline-markers__hint {
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+.timeline-markers__track {
+  position: relative;
+  height: 14px;
+  margin: 2px 0;
+}
+
+.timeline-markers__pin {
+  position: absolute;
+  top: 0;
+  width: 10px;
+  height: 14px;
+  transform: translateX(-50%);
+  padding: 0;
+  border: 1px solid var(--c-accent);
+  border-radius: 2px;
+  background: var(--c-accent-weak);
+  cursor: pointer;
+}
+
+.timeline-markers__editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+/* HB-5: the saved-bookmark list is the only timeline element that grows without
+ * bound; cap it and scroll INSIDE so it never inflates the timeline panel. */
+.timeline-markers__list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 96px;
+  overflow-y: auto;
+  width: 100%;
+}
+
+.timeline-markers__list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 0;
+}
+
+/* HB-13: 時間バー操作ボタン(前へ/次へ・再生)に可視ラベルと最小サイズを与える。
+ * アイコン+テキストを横並びにし、十分なクリック領域(最小 32px 高 / 64px 幅)を確保。 */
+.timeline-step,
+.timeline-playback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-step__button,
+.timeline-playback__button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 32px;
+  min-width: 64px;
+  padding: 4px 10px;
+  font: inherit;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.timeline-step__button:hover,
+.timeline-playback__button:hover {
+  border-color: var(--c-accent);
+}
+
+.timeline-playback__button[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.timeline-step__unit,
+.timeline-playback__speed {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.timeline-step__unit-caption,
+.timeline-playback__speed-caption {
+  font-size: 10px;
+  color: var(--c-text-muted);
+}
+
+.timeline-step select,
+.timeline-playback select {
+  min-height: 30px;
+  font: inherit;
 }
 
 /* The central map area: the canvas mount sits behind, the input layer in front

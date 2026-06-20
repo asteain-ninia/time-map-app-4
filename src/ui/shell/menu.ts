@@ -25,8 +25,19 @@ export type MenuKey = (typeof MENU_KEY)[keyof typeof MENU_KEY];
 export interface MenuItemDef {
   readonly commandId: CommandId;
   readonly label: string;
-  /** Optional accelerator; the SAME shortcut is registered in the keymap. */
+  /**
+   * The PRIMARY accelerator; the SAME shortcut is registered in the keymap and
+   * is the one rendered next to the menu label. This is the canonical chord a
+   * user learns from the menu (HB-10: やり直し = Ctrl+Y).
+   */
   readonly shortcut?: Shortcut;
+  /**
+   * Additional accelerators that ALSO dispatch this command but are NOT the one
+   * shown in the menu label (HB-10: keep Ctrl+Shift+Z working as a redo alias
+   * while the menu advertises Ctrl+Y). Each is registered in the default keymap
+   * exactly like {@link shortcut}, so a key判定 is single-sourced (教訓 5.33).
+   */
+  readonly extraShortcuts?: readonly Shortcut[];
 }
 
 /** A top-level menu (title + ordered items). */
@@ -39,10 +50,17 @@ export interface MenuDef {
 // Accelerators are declared here AND mirrored in the default keymap (shortcuts.ts)
 // so the menu accelerator label and the dispatched shortcut never diverge
 // (教訓 5.33 / §4 単一の真実源). Both sides reference COMMAND_ID, not literals.
-function item(commandId: CommandId, shortcut?: Shortcut): MenuItemDef {
-  return shortcut === undefined
-    ? { commandId, label: MENU_ITEM_LABELS[commandId] }
-    : { commandId, label: MENU_ITEM_LABELS[commandId], shortcut };
+function item(
+  commandId: CommandId,
+  shortcut?: Shortcut,
+  extraShortcuts?: readonly Shortcut[],
+): MenuItemDef {
+  const base = { commandId, label: MENU_ITEM_LABELS[commandId] };
+  if (shortcut === undefined) return base;
+  if (extraShortcuts === undefined || extraShortcuts.length === 0) {
+    return { ...base, shortcut };
+  }
+  return { ...base, shortcut, extraShortcuts };
 }
 
 /**
@@ -65,7 +83,13 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
     title: MENU_TITLES.edit,
     items: [
       item(COMMAND_ID.EditUndo, { key: 'z', ctrlOrMeta: true }),
-      item(COMMAND_ID.EditRedo, { key: 'z', ctrlOrMeta: true, shift: true }),
+      // HB-10: やり直しのデフォルトを Ctrl+Y に。メニュー表示は Ctrl+Y、従来の
+      // Ctrl+Shift+Z は別名アクセラレータとして併存させる(どちらも redo を起動)。
+      item(
+        COMMAND_ID.EditRedo,
+        { key: 'y', ctrlOrMeta: true },
+        [{ key: 'z', ctrlOrMeta: true, shift: true }],
+      ),
       item(COMMAND_ID.EditDelete, { key: 'Delete' }),
     ],
   },
@@ -118,6 +142,12 @@ export function listShortcutEntries(): readonly ShortcutListEntry[] {
     for (const it of menu.items) {
       if (it.shortcut !== undefined) {
         rows.push({ commandId: it.commandId, label: it.label, shortcut: it.shortcut });
+        // HB-10: alias accelerators (e.g. やり直し の Ctrl+Shift+Z) are also valid
+        // bindings, so the help一覧 lists them too — derived from the SAME source
+        // as the keymap so the list can never drift from the live bindings.
+        for (const extra of it.extraShortcuts ?? []) {
+          rows.push({ commandId: it.commandId, label: it.label, shortcut: extra });
+        }
       }
     }
   }

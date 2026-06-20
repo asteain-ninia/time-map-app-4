@@ -16,6 +16,12 @@ export function buildDefaultKeymap(): Keymap {
     for (const item of menu.items) {
       if (item.shortcut !== undefined) {
         bindings.push({ shortcut: item.shortcut, commandId: item.commandId });
+        // HB-10: bind every alias accelerator (e.g. redo's Ctrl+Shift+Z) to the
+        // SAME command id, so both the displayed chord and its aliases dispatch
+        // identically (single key判定 source, 教訓 5.33).
+        for (const extra of item.extraShortcuts ?? []) {
+          bindings.push({ shortcut: extra, commandId: item.commandId });
+        }
       }
     }
   }

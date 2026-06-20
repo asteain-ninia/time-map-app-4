@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { EDIT_MODE } from '../state/session';
-import { COMMAND_ID, CommandRegistry } from './commands';
+import { COMMAND_ID, CommandRegistry, type CommandId } from './commands';
 import { STANDARD_MENUS } from './menu';
 import { buildDefaultKeymap } from './default-keymap';
 import {
@@ -146,6 +146,72 @@ describe('default keymap mirrors the menu accelerators (教訓 5.33)', () => {
         expect(km.resolve(c)).toBe(item.commandId);
       }
     }
+  });
+});
+
+describe('no chord is bound to two different commands (HB-10 alias safety)', () => {
+  it('every primary AND alias accelerator across the standard menus is collision-free', () => {
+    const km = buildDefaultKeymap();
+    const byChord = new Map<string, CommandId>();
+    for (const menu of STANDARD_MENUS) {
+      for (const it of menu.items) {
+        const shortcuts = [
+          ...(it.shortcut !== undefined ? [it.shortcut] : []),
+          ...(it.extraShortcuts ?? []),
+        ];
+        for (const s of shortcuts) {
+          const c: KeyChord = {
+            key: s.key,
+            ctrlOrMeta: s.ctrlOrMeta ?? false,
+            shift: s.shift ?? false,
+            alt: s.alt ?? false,
+          };
+          // The keymap resolves this chord back to THIS command (not silently
+          // overridden by a later binding for the same chord).
+          expect(km.resolve(c)).toBe(it.commandId);
+          const chordKey = chordOf(s);
+          const existing = byChord.get(chordKey);
+          // Each chord maps to exactly one command id across the whole menu set.
+          if (existing !== undefined) expect(existing).toBe(it.commandId);
+          byChord.set(chordKey, it.commandId);
+        }
+      }
+    }
+  });
+});
+
+describe('redo accelerators (HB-10): Ctrl+Y is the default, Ctrl+Shift+Z is an alias', () => {
+  it('Ctrl+Y resolves to edit.redo', () => {
+    const km = buildDefaultKeymap();
+    expect(km.resolve(chord({ key: 'y', ctrlOrMeta: true }))).toBe(COMMAND_ID.EditRedo);
+  });
+
+  it('Ctrl+Shift+Z still resolves to edit.redo (alias kept)', () => {
+    const km = buildDefaultKeymap();
+    expect(km.resolve(chord({ key: 'z', ctrlOrMeta: true, shift: true }))).toBe(
+      COMMAND_ID.EditRedo,
+    );
+  });
+
+  it('the redo menu item advertises Ctrl+Y as its primary accelerator', () => {
+    const edit = STANDARD_MENUS.find((m) => m.key === 'edit');
+    const redo = edit?.items.find((it) => it.commandId === COMMAND_ID.EditRedo);
+    expect(redo?.shortcut).toEqual({ key: 'y', ctrlOrMeta: true });
+    expect(formatShortcut(redo!.shortcut!, 'other')).toBe('Ctrl+Y');
+  });
+
+  it('both redo accelerators dispatch the registered redo handler (Ran)', () => {
+    const km = buildDefaultKeymap();
+    const r = new CommandRegistry();
+    const run = vi.fn();
+    r.register(COMMAND_ID.EditRedo, { run });
+    expect(
+      dispatchChord(chord({ key: 'y', ctrlOrMeta: true }), km, r, EDIT_MODE.Edit),
+    ).toBe(DISPATCH_RESULT.Ran);
+    expect(
+      dispatchChord(chord({ key: 'z', ctrlOrMeta: true, shift: true }), km, r, EDIT_MODE.Edit),
+    ).toBe(DISPATCH_RESULT.Ran);
+    expect(run).toHaveBeenCalledTimes(2);
   });
 });
 

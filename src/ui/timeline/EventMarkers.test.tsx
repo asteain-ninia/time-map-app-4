@@ -72,8 +72,8 @@ describe('EventMarkers UI path (FR-66)', () => {
     const user = userEvent.setup();
     const { onAdd } = renderMarkers();
 
-    await user.type(screen.getByLabelText('イベント名'), '遷都');
-    await user.click(screen.getByRole('button', { name: 'イベント追加' }));
+    await user.type(screen.getByLabelText('ブックマーク名'), '遷都');
+    await user.click(screen.getByRole('button', { name: 'この時刻をブックマーク' }));
 
     expect(onAdd).toHaveBeenCalledTimes(1);
     // The confirmed time is the COMPLETE TimePoint seeded from defaultTime (1500),

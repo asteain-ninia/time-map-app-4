@@ -37,8 +37,9 @@ test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成�
       const before = (await current.textContent())?.trim() ?? '';
 
       // Step forward by 1 年 (the default step unit). The forward button is the
-      // ▶ control (aria-label 前進); a press→release fires one step (FR-68).
-      await page.getByRole('button', { name: '前進' }).click();
+      // ▶ control (aria-label「1年次へ進む」, HB-13 visible label); a press→release
+      // fires one step (FR-68).
+      await page.getByRole('button', { name: '1年次へ進む' }).click();
 
       // The current time advanced — the time axis genuinely moved through the
       // live binding (not a no-op).
@@ -55,7 +56,7 @@ test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成�
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('map-canvas-mount')).toBeAttached();
-      const forward = page.getByRole('button', { name: '前進' });
+      const forward = page.getByRole('button', { name: '1年次へ進む' });
       await expect(forward).toBeVisible();
       await forward.click();
       // The Canvas mount survives the re-render driven by the time move (the draw
@@ -93,7 +94,7 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
         await page.mouse.up();
       }
       // Move the time axis too if the timeline is wired (any lazy egress fires).
-      const forward = page.getByRole('button', { name: '前進' });
+      const forward = page.getByRole('button', { name: '1年次へ進む' });
       if ((await forward.count()) > 0) await forward.click();
       await page.waitForTimeout(300);
       expect(external).toEqual([]);
