@@ -95,6 +95,27 @@ describe('assembleSplitProposal (FR-44 / FR-93 / FR-94)', () => {
     }
   });
 
+  it('seam vertices get the SAME id on BOTH sides (Codex H2; ID-based sharing)', () => {
+    const { proposal } = setup();
+    // The cut seam endpoints belong to BOTH the inheritor and the new feature. If
+    // each side minted its own id for a seam coordinate, U11's ID-based sharing /
+    // transferSharing would break (moving the seam on one feature would not move it
+    // on the other). With a shared vertex pool the seam ids are identical, so the
+    // two sides' vertexId sets intersect on the seam nodes.
+    const inhIds = new Set(proposal.inheritorShape.rings.flatMap((r) => r.vertexIds));
+    const newIds = new Set(proposal.newFeature.shape.rings.flatMap((r) => r.vertexIds));
+    const shared = [...inhIds].filter((id) => newIds.has(id));
+    // A convex vertical cut shares its two seam endpoints.
+    expect(shared.length).toBeGreaterThanOrEqual(2);
+    // The bundled vertices carry no duplicate ids (each minted once across sides).
+    const allIds = proposal.vertices.map((v) => v.id);
+    expect(allIds.length).toBe(new Set(allIds).size);
+    // Every shared seam id has exactly one bundled vertex body.
+    for (const id of shared) {
+      expect(allIds.filter((v) => v === id).length).toBe(1);
+    }
+  });
+
   it('produces an old→new vertex remap for U11 continuity (FR-95)', () => {
     const { feature, proposal } = setup();
     // The original square corner (0,0) survives on the inheritor (left) side;

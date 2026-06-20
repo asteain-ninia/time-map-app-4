@@ -13,7 +13,7 @@ import {
   createClosedKnifeLine,
   createOpenKnifeLine,
 } from './knife-line';
-import { aggregate, squareWithHole, squareWithHoleEnclave, unitSquare } from './fixtures';
+import { aggregate, squareLeaf, squareWithHole, squareWithHoleEnclave, unitSquare } from './fixtures';
 
 const c = (lon: number, lat: number) => createCoordinate(lon, lat);
 
@@ -104,6 +104,86 @@ describe('checkSplittable — rejection cases (受け入れ基準4)', () => {
     for (const kind of Object.values(SPLIT_REJECT)) {
       expect(SPLIT_REJECT_MESSAGE[kind].length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('checkSplittable — OPEN cut must transit outside→outside (FR-90; Codex H1)', () => {
+  it('rejects a cut wholly INSIDE the face (no boundary transit)', () => {
+    const { feature, store } = unitSquare();
+    // [2,5]→[8,5] lives entirely inside [0,10]²: it has interior points but never
+    // crosses the boundary, so it cannot divide the face. The old interior-contact
+    // gate accepted it and manufactured a split along the extrusion edges.
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(2, 5), c(8, 5)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
+    if (res.status === SPLIT_CHECK_STATUS.NotSplittable) {
+      expect(res.reason).toBe(SPLIT_REJECT.DoesNotPierce);
+    }
+  });
+
+  it('rejects a cut DANGLING inside (one endpoint inside, only one transit)', () => {
+    const { feature, store } = unitSquare();
+    // [2,5]→[15,5]: starts inside, exits once. A "T into the face" does not bisect.
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(2, 5), c(15, 5)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
+    if (res.status === SPLIT_CHECK_STATUS.NotSplittable) {
+      expect(res.reason).toBe(SPLIT_REJECT.DoesNotPierce);
+    }
+  });
+
+  it('still accepts a genuine outside→outside vertical cut', () => {
+    const { feature, store } = unitSquare();
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(5, -5), c(5, 15)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+  });
+});
+
+describe('checkSplittable — antimeridian seam alignment (R3; Codex seam-mismatch)', () => {
+  it('splits a seam-crossing target (stored 170°..−170°) with a cut drawn at +180°', () => {
+    // A thin box crossing the world seam, stored in representative form: its outer
+    // ring jumps 170° → −170°. The cut is drawn on the +180° replica. Before the
+    // fix the target kept its stored branch while only the line was unwrapped, so
+    // the two were ~360° apart and the boolean ops saw no overlap → false 貫通せず.
+    const { feature, store } = squareLeaf('seam', [
+      c(170, 0),
+      c(-170, 0),
+      c(-170, 10),
+      c(170, 10),
+    ]);
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(180, -5), c(180, 15)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.sideA.areaKm2).toBeGreaterThan(0);
+      expect(res.sideB.areaKm2).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe('executeSplit — mid-edge ENDPOINT contact is a 共有辺途中切断点 (FR-95; Codex M1)', () => {
+  it('records a cut where a cut-line VERTEX lands partway along an existing edge', () => {
+    const { feature, store } = unitSquare();
+    // A "V" whose middle vertex (5,0) lands exactly mid-way on the bottom edge
+    // (0,0)-(10,0). That contact is an Endpoint (not Proper) and was dropped; it is
+    // a real mid-edge cut node a 共有相手 edge would need.
+    const result = executeSplit(feature, store, createOpenKnifeLine([c(3, 15), c(5, 0), c(7, 15)]));
+    expect(result).toBeDefined();
+    if (!result) return;
+    const bottomCut = result.edgeCuts.find(
+      (e) => e.coordinate.lon === 5 && e.coordinate.lat === 0,
+    );
+    expect(bottomCut).toBeDefined();
+  });
+
+  it('does NOT record a cut where the line passes through an existing corner', () => {
+    const { feature, store } = unitSquare();
+    // Diagonal through corner (0,0): the corner contact is an Endpoint AT an existing
+    // vertex — no new node needed, so (0,0) must not appear as an edge cut.
+    const result = executeSplit(feature, store, createOpenKnifeLine([c(-5, -5), c(8, 15)]));
+    expect(result).toBeDefined();
+    if (!result) return;
+    const cornerCut = result.edgeCuts.find(
+      (e) => e.coordinate.lon === 0 && e.coordinate.lat === 0,
+    );
+    expect(cornerCut).toBeUndefined();
   });
 });
 

@@ -100,7 +100,6 @@ export interface SplitIdPorts {
 
 interface BuiltShape {
   readonly shape: Shape;
-  readonly vertices: readonly Vertex[];
   /** Coordinate (quantized) → minted vertex id, for old→new remap matching. */
   readonly byCoord: ReadonlyMap<string, VertexId>;
 }
@@ -142,21 +141,45 @@ interface RawRing {
  * Re-parenting uses U06 `pointInPolygon` (delegated containment; 教訓5.30) and is
  * finite: each ring's parent is the SMALLEST-area ring of the opposite kind that
  * strictly contains it, so the chain alternates territory/hole and cannot loop.
+ *
+ * Vertex IDs are minted from a SHARED `pool` (a coordKey→VertexId registry common
+ * to BOTH sides) so a coordinate lying on the shared cut SEAM resolves to the SAME
+ * minted VertexId on the inheritor side and the new-feature side (Codex H2: a
+ * per-side registry minted two different ids for one physical seam node, which
+ * silently breaks U11 ID-based共有/transferSharing — moving the seam vertex on one
+ * feature would not move it on the other, opening gaps/overlaps on later edits).
+ * Each Vertex value is materialised exactly once (the first side to reach a key
+ * pushes it into the shared `pool.vertices`; 片落とし禁止 教訓5.1, no duplicates). The
+ * returned per-side `byCoord` records which seam/ring keys this side referenced,
+ * for the old→new remap match — ids in it are the shared pool's ids.
  */
-function buildShapeFromSide(side: SplitSide, ids: SplitIdPorts): BuiltShape {
-  const vertices: Vertex[] = [];
+interface VertexPool {
+  /** coordKey → minted VertexId, shared across both split sides (seam identity). */
+  readonly byKey: Map<string, VertexId>;
+  /** Every minted Vertex, each materialised once across both sides. */
+  readonly vertices: Vertex[];
+}
+
+function createVertexPool(): VertexPool {
+  return { byKey: new Map(), vertices: [] };
+}
+
+function buildShapeFromSide(side: SplitSide, ids: SplitIdPorts, pool: VertexPool): BuiltShape {
+  // Keys this side referenced → their (shared-pool) ids, for old→new remap match.
   const byCoord = new Map<string, VertexId>();
 
   const mintRingVertices = (ring: GeoMultiPolygon[number][number]): VertexId[] => {
     const out: VertexId[] = [];
     for (const c of ring) {
       const key = coordKey(c);
-      let vid = byCoord.get(key);
+      let vid = pool.byKey.get(key);
       if (vid === undefined) {
+        // First time this physical coordinate is seen on EITHER side: mint once.
         vid = ids.nextVertexId();
-        byCoord.set(key, vid);
-        vertices.push(createVertex(vid, quantizeCoordinate(c)));
+        pool.byKey.set(key, vid);
+        pool.vertices.push(createVertex(vid, quantizeCoordinate(c)));
       }
+      byCoord.set(key, vid);
       out.push(vid);
     }
     return out;
@@ -177,7 +200,7 @@ function buildShapeFromSide(side: SplitSide, ids: SplitIdPorts): BuiltShape {
 
   // 2. Re-parent by containment into the alternating hierarchy (FR-24 / FR-91).
   const rings = reparentByContainment(raws);
-  return { shape: createShape(rings), vertices, byCoord };
+  return { shape: createShape(rings), byCoord };
 }
 
 /** Signed-area magnitude of a coordinate ring (for "smallest enclosing" choice). */
@@ -381,8 +404,13 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
   const inheritSide = choice.inherit === INHERITANCE_SIDE.A ? result.sideA : result.sideB;
   const newSide = choice.inherit === INHERITANCE_SIDE.A ? result.sideB : result.sideA;
 
-  const builtInherit = buildShapeFromSide(inheritSide, ids);
-  const builtNew = buildShapeFromSide(newSide, ids);
+  // ONE shared vertex pool across both sides so a shared-seam coordinate resolves
+  // to the SAME minted VertexId on both the inheritor and the new feature (FR-95 /
+  // Codex H2). Build the inheritor side first so the seam ids it mints are reused
+  // (not re-minted) by the new side.
+  const pool = createVertexPool();
+  const builtInherit = buildShapeFromSide(inheritSide, ids, pool);
+  const builtNew = buildShapeFromSide(newSide, ids, pool);
 
   // 継承先: keep the original feature, swap only its shape (form change; FR-44).
   const inheritorShape = builtInherit.shape;
@@ -423,7 +451,7 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
     inheritorFeatureId: target.id,
     inheritorShape,
     newFeature,
-    vertices: [...builtInherit.vertices, ...builtNew.vertices],
+    vertices: pool.vertices,
     vertexRemap,
     sharedEdgeCuts,
     touchedFeatureIds: [target.id, newFeatureId],

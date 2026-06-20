@@ -22,8 +22,8 @@
 // 頂点対応写像の素材, 切断点) and consumed by U11 via the proposal layer; this unit
 // generates the material, U11 owns the continuation rules (spec §依存 U11).
 
-import { type WorldCoordinate } from '../coordinate';
-import { unwrapRing } from '../geo/index';
+import { coordinatesEqual, createCoordinate, type WorldCoordinate } from '../coordinate';
+import { LONGITUDE_PERIOD, unwrapRing } from '../geo/index';
 import {
   difference,
   intersection,
@@ -247,6 +247,57 @@ function openLineToClip(
   return [...forward, ...back];
 }
 
+// ---------------------------------------------------------------------------
+// Seam alignment (R3: U05 owns ±360° unwrap; we anchor BOTH inputs to one branch)
+// ---------------------------------------------------------------------------
+
+/**
+ * Shift `lon` by a whole number of ±360° turns so it lies within (ref-180, ref+180]
+ * — i.e. on the SAME longitude branch as `ref`. Pure; the turn count is chosen so
+ * the anchored value is the representative of `lon` closest to `ref`.
+ */
+function anchorLon(lon: number, ref: number): number {
+  const turns = Math.round((ref - lon) / LONGITUDE_PERIOD);
+  return lon + turns * LONGITUDE_PERIOD;
+}
+
+/**
+ * Make a ring self-continuous (U05 `unwrapRing`, R3 single source of truth) and
+ * then shift the WHOLE ring by whole ±360° turns so its first vertex sits on the
+ * branch of `ref`. This anchors every ring/line of the split onto ONE common
+ * longitude branch (Codex M-antimeridian): `checkSplittable` previously unwrapped
+ * only the cut line while the target kept its stored branch, so a target near
+ * −180° and a cut drawn on the +180° replica were ~360° apart and the boolean ops
+ * saw no overlap → a false 貫通せず / malformed result. Anchoring both to the same
+ * reference lets intersection/difference operate in one continuous system. For
+ * inputs already in a single representative branch (the common, non-seam case) the
+ * unwrap is the identity and the anchor adds 0 turns, so behaviour is unchanged.
+ */
+function unwrapAnchoredRing(ring: readonly WorldCoordinate[], ref: number): WorldCoordinate[] {
+  const continuous = unwrapRing([...ring]);
+  const first = continuous[0];
+  if (first === undefined) return continuous;
+  const shift = anchorLon(first.lon, ref) - first.lon;
+  if (shift === 0) return continuous;
+  return continuous.map((cc) => createCoordinate(cc.lon + shift, cc.lat));
+}
+
+/**
+ * The reference longitude every input is anchored to: the first outer-ring vertex
+ * of the target, made self-continuous. Defaults to 0 for an empty target.
+ */
+function targetReferenceLon(mp: GeoMultiPolygon): number {
+  const outer = mp[0]?.[0];
+  if (outer === undefined || outer.length === 0) return 0;
+  const continuous = unwrapRing([...outer]);
+  return continuous[0]?.lon ?? 0;
+}
+
+/** Anchor every ring of a multi-polygon to a common reference branch (R3). */
+function anchorMultiPolygon(mp: GeoMultiPolygon, ref: number): GeoMultiPolygon {
+  return mp.map((poly) => poly.map((ring) => unwrapAnchoredRing(ring, ref)));
+}
+
 /** Horizontal+vertical span of a multi-polygon's outer extent (for offset sizing). */
 function multiPolygonSpan(mp: GeoMultiPolygon): number {
   let minLon = Number.POSITIVE_INFINITY;
@@ -273,60 +324,53 @@ function multiPolygonSpan(mp: GeoMultiPolygon): number {
 
 /**
  * Decide whether the OPEN cut polyline pierces the target face — i.e. whether it
- * enters the face interior at all and so could divide it into two pieces.
+ * truly transits FROM outside the face, THROUGH its interior, BACK to outside,
+ * which is the only way an open polyline can divide a single face into two pieces
+ * (FR-90「外から外へ抜けて初めて 2 分割しうる」).
  *
- * 教訓5.38: the判定 is by線分交差, not point-in-polygon alone. BUT a Proper-only
- * crossing parity is over-strict: a cut that enters or exits through an EXISTING
- * polygon vertex (FR-77 grid-snap makes this a common, realistic input — the cut
- * endpoint lands on a grid node that is also a polygon corner) classifies as an
- * Endpoint contact, never Proper, so a corner-to-corner diagonal or a
- * corner-entry/edge-exit cut would be wrongly rejected as 貫通せず even though it
- * geometrically bisects the face. We therefore detect pierce by interior contact:
- * the line pierces iff ANY of its segments has a point strictly inside the face.
- * The authoritative 2-piece gate is the post-op sideA/sideB non-empty check
- * (`checkSplittable` :=> both intersection() and difference() non-empty); this
- * pre-check only short-circuits obviously non-piercing lines (e.g. a line fully
- * outside the face) with the correct 貫通せず message.
+ * The gate is a HARD outside→outside transit, not mere interior contact:
+ *   (1) BOTH endpoints of the polyline must be STRICTLY OUTSIDE the filled face
+ *       (not inside, not on the boundary). A cut wholly inside the face, or with
+ *       one endpoint dangling inside (a "T" that does not exit), never bisects the
+ *       面 — yet such a line has interior points, so an interior-contact test would
+ *       wrongly accept it and the openLineToClip extrusion would then manufacture a
+ *       split along edges the user never drew (Codex H1: OPEN cut over-acceptance).
+ *   (2) The line must cross the outer boundary at ≥2 distinct boundary positions
+ *       (`countBoundaryTransits`). 教訓5.38: judged by線分交差, and a transit through
+ *       an EXISTING polygon vertex (FR-77 grid-snap: a corner-to-corner diagonal or
+ *       a corner-entry/edge-exit cut) classifies as an Endpoint contact, never
+ *       Proper — `countBoundaryTransits` counts BOTH so those真の貫通 are accepted.
  *
- * "Strictly inside" is sampled at each segment's midpoint AND endpoints, and a
- * proper/endpoint crossing of any boundary edge also counts as a pierce (the line
- * touches the boundary on its way through). A line that only grazes the boundary
- * without any interior contact is NOT a pierce.
+ * Both conditions are required: (1) alone would accept a line that merely touches
+ * the boundary twice without spanning it from outside to outside; (2) alone would
+ * accept a line that starts inside and only exits once. Together they pin the
+ * outside→through→outside transit FR-90 mandates. The post-op sideA/sideB
+ * non-empty check remains as defense-in-depth, but is no longer the sole gate.
  */
 function linePiercesFace(line: readonly WorldCoordinate[], mp: GeoMultiPolygon): boolean {
-  // 1. Any vertex of the polyline strictly inside the face → it pierces.
-  for (const p of line) {
-    if (p !== undefined && pointStrictlyInsideFace(p, mp)) return true;
+  const first = line[0];
+  const last = line[line.length - 1];
+  if (first === undefined || last === undefined) return false;
+  // (1) Both endpoints strictly OUTSIDE the face — a true outside→outside cut.
+  if (!pointStrictlyOutsideFace(first, mp) || !pointStrictlyOutsideFace(last, mp)) {
+    return false;
   }
-  // 2. Any segment whose midpoint is strictly inside the face → it pierces.
-  //    This catches a chord that enters and exits through boundary vertices
-  //    (corner-to-corner diagonal) where every polyline vertex sits ON the
-  //    boundary, not strictly inside (so step 1 alone would miss it).
-  for (let i = 0; i + 1 < line.length; i += 1) {
-    const a = line[i];
-    const b = line[i + 1];
-    if (a === undefined || b === undefined) continue;
-    const mid = { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };
-    if (pointStrictlyInsideFace(mid, mp)) return true;
-  }
-  // 3. Count distinct boundary crossings (Proper OR vertex-transit). A line that
-  //    enters and exits through boundary vertices may have NO interior midpoint
-  //    when the chord runs exactly along the boundary, but a transit through two
-  //    distinct boundary points still pierces. Two or more boundary contacts on
-  //    one outer ring means it entered and left the interior.
+  // (2) ≥2 distinct boundary transits (Proper OR through-vertex): the line spans
+  //     the boundary, entering and leaving the interior.
   return countBoundaryTransits(line, mp) >= 2;
 }
 
 /**
- * Point strictly inside the multi-polygon's filled area (inside an outer ring and
- * not inside any of that piece's holes), excluding the boundary. 教訓5.1: every
- * piece is considered (no 片落とし).
+ * Point strictly OUTSIDE the multi-polygon's filled area: outside every piece's
+ * filled region AND not lying on any ring boundary. Used to assert a cut endpoint
+ * begins/ends clear of the面 (FR-90 外から外へ). 教訓5.1: every piece is considered.
  */
-function pointStrictlyInsideFace(p: WorldCoordinate, mp: GeoMultiPolygon): boolean {
+function pointStrictlyOutsideFace(p: WorldCoordinate, mp: GeoMultiPolygon): boolean {
   for (const poly of mp as readonly GeoPolygon[]) {
-    if (pointInPolygon(p, poly) === POINT_LOCATION.Inside) return true;
+    // Inside a filled piece OR on its boundary → not strictly outside the face.
+    if (pointInPolygon(p, poly) !== POINT_LOCATION.Outside) return false;
   }
-  return false;
+  return true;
 }
 
 /**
@@ -391,10 +435,19 @@ export function checkSplittable(
   }
 
   const leaf: LeafFeature = target;
-  const targetMp = resolveLeafShape(leaf.shape, store);
-  if (targetMp === undefined) {
+  const resolvedMp = resolveLeafShape(leaf.shape, store);
+  if (resolvedMp === undefined) {
     return rejection(SPLIT_REJECT.Unresolvable);
   }
+
+  // R3 seam alignment: anchor BOTH the target rings AND the cut line onto ONE
+  // common longitude branch (the target's outer-ring reference) before any
+  // geometry. The resolved target keeps its stored ±360° branch; if the cut was
+  // drawn on a different replica (target near −180°, cut near +180°) the two would
+  // be ~360° apart and the boolean ops would see no overlap. Anchoring removes that
+  // mismatch; for single-branch (non-seam) inputs it is the identity.
+  const refLon = targetReferenceLon(resolvedMp);
+  const targetMp = anchorMultiPolygon(resolvedMp, refLon);
 
   // Seam-unwrap the cut line into a single continuous run before geometry (R3),
   // then SNAP every cut vertex onto the same integer grid U06 quantizes to
@@ -411,7 +464,7 @@ export function checkSplittable(
   // cuts in split-geometry.seam.test.ts). The snap is the SAME grid the proposal
   // layer mints vertices on (quantizeCoordinate), so no second tolerance is born.
   const linePts = snapCutLine(
-    unwrapRing([...line.points]),
+    unwrapAnchoredRing([...line.points], refLon),
     line.kind === KNIFE_LINE_KIND.Closed,
   );
 
@@ -501,17 +554,23 @@ export interface SplitResult {
 
 /**
  * Compute every mid-edge crossing of the OPEN cut line against the target leaf's
- * existing edges (FR-95 / 教訓5.38: 線分交差で判定). For each ring edge the cut line
- * crosses Properly (interior crossing, not an endpoint touch — an endpoint touch
- * lands on an existing vertex and needs no new vertex), record the ring id, the
- * edge's start index, the two edge vertex ids, and the quantize-aligned crossing
- * coordinate. The proposal layer maps these to {@link SharedEdgeCutSpec}s when the
- * crossed edge is a共有辺 (shared with a partner feature). Pure.
+ * existing edges (FR-95 / 教訓5.38: 線分交差で判定). A mid-edge cut is recorded when:
+ *   - the cut line crosses the edge PROPERLY (interiors cross), OR
+ *   - the cut line TOUCHES the edge at an Endpoint contact whose point lands PARTWAY
+ *     along the edge — i.e. a cut-line vertex lands mid-edge (not on an existing
+ *     target vertex). Codex M1: this Endpoint case is also a真の共有辺途中切断点 — the
+ *     共有相手 edge still needs a same-coordinate node there (FR-95). Only an Endpoint
+ *     contact that coincides with an existing edge ENDPOINT (an existing target
+ *     vertex) needs no new node and is skipped.
+ * For each recorded cut we store the ring id, the edge's start index, the two edge
+ * vertex ids, and the quantize-aligned cut coordinate. The proposal layer maps
+ * these to {@link SharedEdgeCutSpec}s when the crossed edge is a共有辺. Pure.
  */
 function computeEdgeCuts(
   target: LeafFeature,
   store: VertexStore,
   linePts: readonly WorldCoordinate[],
+  refLon: number,
 ): EdgeCutPoint[] {
   const cuts: EdgeCutPoint[] = [];
   const seen = new Set<string>();
@@ -531,14 +590,29 @@ function computeEdgeCuts(
       // can quantize to a DIFFERENT grid node than the seam the split actually
       // produced — FR-95 would then insert a mismatched node on the共有相手 edge.
       // Quantizing both sides keeps the共有辺途中切断点 on the split's exact seam node.
-      const startC = quantizeCoordinate(startV.coordinate);
-      const endC = quantizeCoordinate(endV.coordinate);
+      // Anchor both endpoints onto the cut line's longitude branch (refLon) first
+      // so a seam-crossing edge (e.g. 170° → −170°) is compared against the line in
+      // ONE continuous system (R3), matching the checkSplittable boolean op.
+      const startA = createCoordinate(anchorLon(startV.coordinate.lon, refLon), startV.coordinate.lat);
+      const endA = createCoordinate(anchorLon(endV.coordinate.lon, startA.lon), endV.coordinate.lat);
+      const startC = quantizeCoordinate(startA);
+      const endC = quantizeCoordinate(endA);
       for (let i = 0; i + 1 < linePts.length; i += 1) {
         const a = linePts[i];
         const b = linePts[i + 1];
         if (a === undefined || b === undefined) continue;
         const hit = segmentsIntersect(a, b, startC, endC);
-        if (hit.relation !== SEGMENT_RELATION.Proper || hit.point === undefined) continue;
+        // A Proper crossing is always a mid-edge cut. An Endpoint contact is a
+        // mid-edge cut ONLY when its point falls strictly between the edge's
+        // endpoints (a cut-line vertex landing partway along the edge); an Endpoint
+        // at an existing edge vertex needs no new node (Codex M1).
+        const isMidEdge =
+          hit.point !== undefined &&
+          (hit.relation === SEGMENT_RELATION.Proper ||
+            (hit.relation === SEGMENT_RELATION.Endpoint &&
+              !coordinatesEqual(quantizeCoordinate(hit.point), startC) &&
+              !coordinatesEqual(quantizeCoordinate(hit.point), endC)));
+        if (!isMidEdge || hit.point === undefined) continue;
         const coordinate = quantizeCoordinate(hit.point);
         const key = `${ring.id}:${j}:${coordinate.lon},${coordinate.lat}`;
         if (seen.has(key)) continue;
@@ -570,12 +644,17 @@ export function executeSplit(
 ): SplitResult | undefined {
   const check = checkSplittable(target, store, line);
   if (check.status !== SPLIT_CHECK_STATUS.Splittable) return undefined;
-  // Mid-edge cut points only arise for an OPEN cut crossing existing edges (R3:
-  // seam-unwrap the line first so the crossing is computed in one continuous run).
-  const edgeCuts =
-    target.kind === FEATURE_KIND.Leaf && line.kind === KNIFE_LINE_KIND.Open
-      ? computeEdgeCuts(target, store, snapCutLine(unwrapRing([...line.points]), false))
-      : [];
+  // Mid-edge cut points only arise for an OPEN cut crossing existing edges. Compute
+  // them in the SAME seam-anchored system checkSplittable used (R3): the reference
+  // is the target's outer-ring branch, and the cut line + target edges are anchored
+  // to it before the line-segment crossing test.
+  let edgeCuts: readonly EdgeCutPoint[] = [];
+  if (target.kind === FEATURE_KIND.Leaf && line.kind === KNIFE_LINE_KIND.Open) {
+    const resolvedMp = resolveLeafShape(target.shape, store);
+    const refLon = resolvedMp === undefined ? 0 : targetReferenceLon(resolvedMp);
+    const anchoredLine = snapCutLine(unwrapAnchoredRing([...line.points], refLon), false);
+    edgeCuts = computeEdgeCuts(target, store, anchoredLine, refLon);
+  }
   return { sideA: check.sideA, sideB: check.sideB, edgeCuts };
 }
 

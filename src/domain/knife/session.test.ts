@@ -102,6 +102,41 @@ describe('closed-line via fixed circle (FR-92 / 受け入れ基準3)', () => {
   });
 });
 
+describe('a CLOSED line is terminal — no inconsistent KnifeLine (技術方針2.1; Codex M-state)', () => {
+  function closedLine() {
+    let s = selectTarget(startKnife(), tid);
+    s = placeCutPoint(s, c(0, 0));
+    s = placeCutPoint(s, c(5, 0));
+    s = placeCutPoint(s, c(5, 5));
+    return clickInsideCircle(s, c(1, 1), true); // closes (≥3 points + inside)
+  }
+
+  it('placeCutPoint on a closed line is a no-op (no tail vertex appended)', () => {
+    const closed = closedLine();
+    if (closed.phase === KNIFE_PHASE.DrawingCut) {
+      expect(closed.line.kind).toBe(KNIFE_LINE_KIND.Closed);
+    }
+    const after = placeCutPoint(closed, c(9, 9));
+    expect(after).toEqual(closed);
+  });
+
+  it('clickInsideCircle on a closed line is a no-op (neither re-close nor append)', () => {
+    const closed = closedLine();
+    expect(clickInsideCircle(closed, c(9, 9), false)).toEqual(closed);
+    expect(clickInsideCircle(closed, c(1, 1), true)).toEqual(closed);
+  });
+
+  it('undo dropping a closed line below 3 points reverts it to OPEN', () => {
+    const closed = closedLine();
+    const undone = undoLastCutPoint(closed); // 3 → 2 points
+    if (undone.phase === KNIFE_PHASE.DrawingCut) {
+      expect(undone.line.points).toHaveLength(2);
+      // A 'closed' polygon with <3 vertices is unrepresentable → reverted to open.
+      expect(undone.line.kind).toBe(KNIFE_LINE_KIND.Open);
+    }
+  });
+});
+
 describe('一時状態の全経路破棄 (教訓5.2 / 受け入れ基準8)', () => {
   it('cancel from any phase returns to inactive with no残留', () => {
     const drawing = placeCutPoint(selectTarget(startKnife(), tid), c(5, 5));

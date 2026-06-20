@@ -16,6 +16,8 @@
 
 import type { FeatureId } from '../ids';
 import {
+  KNIFE_LINE_KIND,
+  MIN_POINTS_TO_CLOSE,
   createOpenKnifeLine,
   shouldCloseOnCircleClick,
   withAppendedPoint,
@@ -122,16 +124,35 @@ export function selectTarget(state: KnifeState, targetId: FeatureId): KnifeState
 
 // --- DrawingCut transitions -------------------------------------------------
 
-/** クリックで分断線頂点を追加 (FR-90). No-op unless in DrawingCut. */
+/**
+ * クリックで分断線頂点を追加 (FR-90). No-op unless in DrawingCut. A CLOSED line is
+ * already complete (FR-92): appending to it would yield a 'closed' polygon with an
+ * extra tail vertex — an inconsistent KnifeLine the geometry layer would have to
+ * defensively reject — so closing is terminal here and this is a no-op (技術方針2.1
+ * 不正状態を表現不能に).
+ */
 export function placeCutPoint(state: KnifeState, point: WorldCoordinate): KnifeState {
   if (state.phase !== KNIFE_PHASE.DrawingCut) return state;
+  if (state.line.kind === KNIFE_LINE_KIND.Closed) return state;
   return { ...state, line: withAppendedPoint(state.line, point) };
 }
 
-/** 最後に置いた頂点を 1 つ取り消す (FR-78 共通機能). No-op unless in DrawingCut. */
+/**
+ * 最後に置いた頂点を 1 つ取り消す (FR-78 共通機能). No-op unless in DrawingCut. If undo
+ * drops a CLOSED line below the minimum needed to be closed (MIN_POINTS_TO_CLOSE),
+ * the polygon can no longer exist, so the line reverts to OPEN — a 'closed' line
+ * with <3 vertices is an unrepresentable inconsistent state (技術方針2.1).
+ */
 export function undoLastCutPoint(state: KnifeState): KnifeState {
   if (state.phase !== KNIFE_PHASE.DrawingCut) return state;
-  return { ...state, line: withoutLastPoint(state.line) };
+  const reduced = withoutLastPoint(state.line);
+  if (
+    reduced.kind === KNIFE_LINE_KIND.Closed &&
+    reduced.points.length < MIN_POINTS_TO_CLOSE
+  ) {
+    return { ...state, line: createOpenKnifeLine(reduced.points) };
+  }
+  return { ...state, line: reduced };
 }
 
 /**
@@ -146,8 +167,11 @@ export function clickInsideCircle(
   insideCircle: boolean,
 ): KnifeState {
   if (state.phase !== KNIFE_PHASE.DrawingCut) return state;
+  // An already-CLOSED line is terminal (FR-92): neither re-close nor append (技術
+  // 方針2.1 — no tail vertex on a closed polygon).
+  if (state.line.kind === KNIFE_LINE_KIND.Closed) return state;
   if (shouldCloseOnCircleClick(state.line.points.length, insideCircle)) {
-    return { ...state, line: { kind: 'closed', points: state.line.points } };
+    return { ...state, line: { kind: KNIFE_LINE_KIND.Closed, points: state.line.points } };
   }
   // Not closeable (or outside the circle): a normal vertex placement.
   return { ...state, line: withAppendedPoint(state.line, point) };
