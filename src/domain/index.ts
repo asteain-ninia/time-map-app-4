@@ -863,3 +863,121 @@ export {
   MSG_AFFILIATION_INTERNAL,
   affiliationRejectMessage,
 } from './affiliation/index';
+
+// U29: 末端→集約遷移 と 直轄領自動生成・集約地物の自動消滅 (FR-35 / FR-36 / FR-37 /
+// FR-39 / FR-41 / FR-94)。U28 が「末端地物が下位領域を獲得する」結果を渡したとき起動する
+// 遷移変換: 同一性保持・属性引き継ぎ・形状破棄 (判別共用体で型保証), 元形状−下位領域の和の
+// 差分から直轄領を自動生成 (U06 委譲, 複数領土リング=飛び地), 既定名称「<元名> 直轄領」+
+// ダイアログ上書き合成, 全下位領域喪失による自動消滅 (結果状態判定 教訓 5.6, 参照掃除は
+// U31 委譲), 不可分変換 + 確定前 U08 検証 + 構造化結果 (選択再解決 教訓 5.11)。全て pure。
+export {
+  DIRECT_DOMAIN_NAME_SUFFIX,
+  defaultDirectDomainName,
+  directDomainName,
+  type DirectDomainIdPorts,
+  type BuiltDirectDomainShape,
+  buildDirectDomainShape,
+  PROMOTION_STATUS,
+  type PromotionStatus,
+  PROMOTION_REJECT,
+  type PromotionRejectKind,
+  type PromotionOutcome,
+  type PromotionCommitted,
+  type PromotionNoOp,
+  type PromotionRejected,
+  type PromotionResult,
+  type PromoteToAggregateInput,
+  promoteLeafToAggregate,
+  promoteFeature,
+  emptiedAggregateIds as emptiedAggregateIdsForPromotion,
+  syncAggregateChildIds as syncAggregateChildIdsForPromotion,
+} from './promotion/index';
+
+// U27: 穴あけによる新地物生成 (FR-45)。末端地物内部の指定領域を新しい独立した末端地物
+// として生成し、同時に元末端地物へ対応する穴を形成する純粋コマンド。妥当性検証 + U06 差
+// 演算による穴形成 + 新地物生成 + 上位領域の初期継承 + U13 への不可分編集案受け渡し。集約
+// 地物は対象外 (FR-35 / 教訓5.25)、必ず新地物を 1 つ生成し対概念の形状編集 (U25) と別経路
+// (FR-23 / 教訓2.10)。全て pure domain (技術方針 2.13)。
+export {
+  DRILL_REJECT,
+  type DrillRejectKind,
+  MIN_REGION_VERTICES,
+  DRILL_CHECK_STATUS,
+  type DrillCheckStatus,
+  type DrillGeometry,
+  type DrillCheckResult,
+  checkDrillable,
+  executeDrill,
+  DRILL_REJECT_MESSAGE,
+  drillRejectMessage,
+  type NewFeatureProperties as DrillNewFeatureProperties,
+  type DrillIdPorts,
+  type DrillEditProposal,
+  type AssembleDrillInput,
+  assembleDrillProposal,
+  holedOriginalFeature,
+  type DrillSnapshot,
+  toDrillSnapshot,
+  toEditProposal as toDrillEditProposal,
+  type DrillInput,
+  DRILL_STATUS,
+  type DrillStatus,
+  type DrillSucceeded,
+  type DrillRejected,
+  type DrillResult,
+  drillRegion,
+} from './drill/index';
+
+// U30: 合体 (結合) 機能 (FR-50 / FR-51 / FR-52 / FR-94 / FR-95)。種別ごとの統合処理
+// (末端のみ=形状論理和で 1 末端・非隣接は飛び地を持つ単一末端 / 集約のみ=下位平坦化
+// 統合した 1 集約 / 混在=集約下位に末端を加えた 1 集約で末端は同一性継続), 結合後の
+// 上位領域 (U28 同型サブフロー再利用) ・プロパティ決定の候補集合と適用, 開始前・確定前
+// 同一事前条件検証 (2 件以上・対象時間に存在・互いに上位下位関係にない, 教訓5.27/5.26/
+// 5.28), 不可分の単一アンドゥ単位コマンド (教訓5.20/5.23), 確定後整合性維持 (U13) への
+// 編集案供給, 共有頂点継続 (U11) の旧→新写像供給。上位領域決定の共通型 (PARENT_DECISION
+// 等) は U28 から再公開済みのため重複公開しない (教訓5.30)。全て pure。
+export {
+  MERGE_REJECT,
+  type MergeRejectKind,
+  type MergeVerdict,
+  existsAtTime,
+  isVerticallyRelated,
+  validateMergePreconditions,
+  PROPERTY_DECISION,
+  type PropertyDecisionKind,
+  type MergedProperties,
+  type PropertyDecision,
+  propertyInherit,
+  propertyNew,
+  isTopLevelDecision,
+  type MergeCandidate,
+  allowedMergeParentCandidates,
+  propertyInheritCandidates,
+  type MergeIdPorts,
+  MERGE_KIND,
+  type MergeKind,
+  classifyMerge,
+  MERGE_STATUS,
+  type MergeStatus,
+  type MergeProposal,
+  type MergeRejected,
+  type MergeProposalResult,
+  type BuildMergeProposalInput,
+  buildMergeProposal,
+  type MergeSnapshot,
+  toMergeSnapshot,
+  toMergeEditProposal,
+  type MergeState,
+  MERGE_COMMAND_KIND,
+  MERGE_COMMAND_LABEL,
+  createMergeCommand,
+  MSG_MERGE_TOO_FEW,
+  MSG_MERGE_TARGET_MISSING,
+  MSG_MERGE_NOT_PRESENT,
+  MSG_MERGE_VERTICAL,
+  MSG_MERGE_UNION_REJECTED,
+  MSG_MERGE_INHERIT_SOURCE,
+  MSG_MERGE_HIERARCHY,
+  MSG_MERGE_INTERNAL,
+  mergeRejectMessage,
+} from './merge/index';

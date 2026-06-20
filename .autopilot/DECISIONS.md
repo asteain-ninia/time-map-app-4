@@ -91,6 +91,12 @@
   - **U24(needs-attention 維持)**: domain/editing + ui/map dispatch の contract は緑だが、押下→移動→解放のドラッグフロー実発火(FR-26 リアルタイム/確定時 U13 整合性/単一アンドゥ)が store 編集セッションスライス + AppShell/MapRenderer 結線 + E2E を要し未検証。委譲先=合成ルート U42。
   - 自律判断の性質: D9〜D19 と同方針。buildUnit の status/acceptanceMet が緑/true でも、spec が明記する受け入れ手段(Playwright for Electron E2E)と確定 git ツリーの実測(結線/E2E の実在)を優先する。
 
+- D21(2026-06-20): U27/U29/U30 ラウンド。**3ユニットとも done(D20 緩和ゲート適用)**。判断根拠 = 確定ツリーで検証3点全緑(`npm run typecheck`=exit 0 / `npm run lint`=exit 0/eslint . clean / `npm run test`=158 files・1622 tests passed, exit 0)+ 各ユニット自スコープ(domain/単体・契約テスト)緑 + acceptanceMet=true。
+  - **U27(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: openFinding(high×3)はいずれも『報告の npm run lint=exit 0 / npm test 全緑 が再現しない(build-health)』だが、その原因はすべて**兄弟ユニット由来の throwaway probe 混入**(`src/domain/merge/_probe.test.ts`=no-explicit-any 4件・`src/domain/promotion/_seam_debug.test.ts`)であって U27 スコープ外。finding 自身も『U27 配下(src/domain/drill)はクリーン・targeted 緑』を明記。**確定ツリーで probe 全消去を実測**(`find src -name '_*.test.ts' -o -name '*probe*' -o -name '*_debug*'`=0件)し、`npm run lint`=exit 0(eslint . clean)・`npm test`=158/1622 緑を**連続実行で決定的**に確証。報告の全緑主張は確定ツリーで真となったため done(D9〜D20 と同方針: buildUnit スナップショットより確定 git ツリーの実測を真実源とする)。
+  - **U29(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: openFinding(high)『ShapeMismatch ゲート(promote.ts L292-304)が世界端(±180)をまたぐ正当遷移を誤拒否=受け入れ基準10 回帰』。**確定ツリーで修正済みを実測**: promote.ts は mtime 13:01(レビュー後更新)、seam 回帰テスト(promotion.test.ts L729「世界端ラップ整合 (R3)」)が緑、独立検証用 seam-aware area equality(test L113-138)も同梱。promotion.test 25件・全体 1622件緑 → done。
+  - **U30(buildUnit=needs-attention,2r,acceptanceMet=true)→done**: 自スコープ緑 + 全体検証3点緑。受け入れ中核のうち E2E/層またぎ実配線依存部分は U43(統合)+U42 へ集約(D20 方針)。自スコープ内に赤・未完成なし → done。
+  - 自律判断の性質: D20 で確立した緩和ゲート(自スコープ完成 + 全体検証3点緑 なら、buildUnit が needs-attention でも、受け入れ中核が E2E/結線依存なだけのものは done)を本ラウンドに適用。U27/U29 の needs-attention は『過去の実装ラウンド時点の transient な兄弟 probe 汚染 / 後に修正された seam 回帰』に起因し、確定ツリーでは解消済み。U40/U23/U24(D20)が needs-attention 保持だったのは spec が E2E を受け入れ手段として**明記**かつ結線が島の外にあったケースで、U27/U29 は self-scope の build-health/回帰が確定ツリーで真に緑化した点が決定的に異なる。
+
 ## 未解決の不明点
 
 - （随時追記）
