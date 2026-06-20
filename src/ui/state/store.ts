@@ -186,6 +186,17 @@ export interface SessionStoreActions<S> {
   ): void;
   /** Replace the domain-state reference without a command result (e.g. load). */
   setDomainState(nextDomain: S): void;
+  /**
+   * Whole-state replacement for a LOAD / NEW (教訓 5.2 全経路で破棄 / 5.22 確定後のみ).
+   * Swaps the domain AND atomically discards every piece of session state tied to
+   * the OLD project — selection (active feature + vertex set), active tool, and the
+   * individual display-control focus — in ONE transition, and marks the project
+   * CLEAN (this is a fresh baseline, not an edit). Without this, a stale selection
+   * pointing at a feature/vertex id that does not exist in the NEW domain, or a
+   * focus origin from the old project, would survive the swap. Mode is reset to
+   * View so no half-armed editing mode straddles the swap.
+   */
+  resetToDomain(nextDomain: S): void;
 
   // selection
   setActiveFeature(featureId: FeatureId | null): void;
@@ -379,6 +390,25 @@ export function createSessionStore<S>(
       // clear the flag with markProjectSaved() in the SAME transition (教訓 5.36),
       // so a clean load/new ends with projectDirty=false while an edit leaves it true.
       set({ domain: nextDomain, projectDirty: true });
+    },
+
+    resetToDomain(nextDomain) {
+      // Atomic whole-state swap for LOAD / NEW: new domain + discarded session
+      // state + clean baseline, in ONE set() (教訓 5.2 全経路で破棄, 受け入れ基準 4
+      // 同時初期化). selection/tool/mode/focus from the OLD project cannot survive:
+      // a stale id selected against the NEW domain, or a stale focus origin, would
+      // otherwise dangle. The display-control GLOBAL depth N is project-independent
+      // UI state and is intentionally preserved; only the individual focus M
+      // (originId / depth / emphasize) — which references a specific feature — is
+      // cleared (FR-42 / FR-43, 教訓 5.13: focus is the per-feature part).
+      set({
+        domain: nextDomain,
+        projectDirty: false,
+        mode: EDIT_MODE.View,
+        activeTool: null,
+        displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS },
+        ...selectionPatch(EMPTY_SELECTION),
+      });
     },
 
     // -- selection (every mutation flows through U22's truth + builders) ------

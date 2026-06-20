@@ -97,6 +97,37 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     expect(store.getState().domain.tag).toBe('d2');
   });
 
+  it('resetToDomain swaps domain AND discards old session state atomically (finding 4)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+      mode: EDIT_MODE.Edit,
+      activeTool: asToolId('add'),
+      displayControl: {
+        globalDepth: 3,
+        focus: { originId: f('A'), depth: 2, emphasize: true },
+      },
+    });
+    // Dirty the project first so we can prove the swap clears it.
+    store.getState().updateProjectSetting('gridSpacingDeg', 7);
+    expect(store.getState().projectDirty).toBe(true);
+
+    store.getState().resetToDomain({ tag: 'loaded' });
+
+    const s = store.getState();
+    expect(s.domain.tag).toBe('loaded');
+    // The stale selection / tool / mode / focus from the old project are gone.
+    expect(s.activeFeature).toBeNull();
+    expect(s.vertexSelection).toBeNull();
+    expect(s.activeTool).toBeNull();
+    expect(s.mode).toBe(EDIT_MODE.View);
+    expect(s.displayControl.focus.originId).toBeNull();
+    // The project-independent global depth N is preserved (教訓 5.13).
+    expect(s.displayControl.globalDepth).toBe(3);
+    // A load / new is a CLEAN baseline.
+    expect(s.projectDirty).toBe(false);
+  });
+
   it('re-resolves selection from a command result (NOT a blanket clear, 教訓 5.11)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),

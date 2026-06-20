@@ -87,12 +87,62 @@ describe('保存 reaches U15 typed IPC (受け入れ基準 1 / FR-105)', () => {
   });
 });
 
+describe('保存中の編集は dirty を失わない (finding 2: lost-edit guard)', () => {
+  it('an edit landing DURING the async save keeps projectDirty after onSaved', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    // A deferred saveAs we resolve manually, so we can edit mid-write.
+    let resolveSave!: (r: SaveResponse) => void;
+    const saveAs = vi.fn(
+      () => new Promise<SaveResponse>((resolve) => { resolveSave = resolve; }),
+    );
+    const api = makeApi({ saveAs });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Mark dirty (a domain edit) so a save has something to clear.
+    act(() => { store.getState().setDomainState(buildEmptyProject()); });
+    expect(store.getState().projectDirty).toBe(true);
+
+    // Start the save (fresh project → Save As). It serializes the CURRENT domain.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+
+    // The user edits DURING the in-flight write: swap to a NEW domain reference.
+    act(() => { store.getState().setDomainState(buildEmptyProject()); });
+
+    // Now the IPC write completes.
+    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.tmap' }); });
+
+    // The post-write state contains the mid-save edit, which is NOT on disk, so
+    // dirty MUST stay set — the edit is not silently marked saved.
+    await waitFor(() => expect(store.getState().projectDirty).toBe(true));
+  });
+
+  it('a save with NO concurrent edit clears dirty (normal path)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi();
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    act(() => { store.getState().setDomainState(buildEmptyProject()); });
+    expect(store.getState().projectDirty).toBe(true);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+    // No edit during the (immediate) write ⇒ dirty cleared.
+    await waitFor(() => expect(store.getState().projectDirty).toBe(false));
+  });
+});
+
 describe('読み込み: same flow, reflects into the U16 store (受け入れ基準 1/3 / 教訓 5.6)', () => {
   it('a clean Open reaches U15 load and reflects the project (no warning)', async () => {
     const store = makeStore();
     const registry = new CommandRegistry();
     const api = makeApi({ load: vi.fn(async () => okLoad()) });
-    const setDomain = vi.spyOn(store.getState(), 'setDomainState');
+    // A clean Open now reflects via the atomic whole-state swap resetToDomain
+    // (finding 4): it discards stale selection/tool/focus AND clears dirty in one
+    // transition, rather than the bare setDomainState (which left them dangling).
+    const resetDomain = vi.spyOn(store.getState(), 'resetToDomain');
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
     await act(async () => {
@@ -100,7 +150,9 @@ describe('読み込み: same flow, reflects into the U16 store (受け入れ基�
     });
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
     // Empty-project manifest ⇒ empty consistency report ⇒ ReflectDirect (no modal).
-    await waitFor(() => expect(setDomain).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(resetDomain).toHaveBeenCalledTimes(1));
+    // A fresh load is a CLEAN baseline (resetToDomain clears dirty).
+    expect(store.getState().projectDirty).toBe(false);
     expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument();
   });
 });
@@ -238,7 +290,7 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     const registry = new CommandRegistry();
     const loadDropped = vi.fn(async () => okLoad());
     const api = makeApi({ loadDropped });
-    const setDomain = vi.spyOn(store.getState(), 'setDomainState');
+    const resetDomain = vi.spyOn(store.getState(), 'resetToDomain');
 
     let handlers: FileDropHandlers | null = null;
     const registerDropTarget: DropTargetHook = (h) => {
@@ -269,8 +321,8 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     // The drop is a valid drop target (preventDefault) and routes through loadDropped.
     expect(dropEvent.preventDefault).toHaveBeenCalled();
     await waitFor(() => expect(loadDropped).toHaveBeenCalledWith('/abs/p.tmap'));
-    // D&D goes through the SAME reflect path as the menu load (no separate flow).
-    await waitFor(() => expect(setDomain).toHaveBeenCalledTimes(1));
+    // D&D goes through the SAME reflect path as the menu load (resetToDomain).
+    await waitFor(() => expect(resetDomain).toHaveBeenCalledTimes(1));
   });
 });
 

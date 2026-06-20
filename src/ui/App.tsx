@@ -257,9 +257,17 @@ export function App(): JSX.Element {
   // exposes. It is new domain work, so it cannot belong to U42 (U42「やらないこと」=
   // 新規ドメイン機能の実装 — U42 is verification-only). Recorded as an unassigned
   // open item requiring a planned unit in docs/現状.md.
-  const hostBootstrap = useMemo(
-    () => createAddBootstrap<DomainRoot>(() => store.getState().domain),
+  // The SINGLE shared id minter (finding 3): one generator + a project-wide
+  // reservation set, owned here and handed to BOTH the add and knife bootstraps so
+  // their ids share one series and never collide with each other or loaded data.
+  const sharedMint = useMemo(
+    () => createSharedIdMint(() => store.getState().domain),
     [store],
+  );
+
+  const hostBootstrap = useMemo(
+    () => createAddBootstrap<DomainRoot>(() => store.getState().domain, sharedMint),
+    [store, sharedMint],
   );
 
   // U12 — the LIVE undo/redo history (FR-73 / FR-74 / FR-94). The composition root
@@ -373,8 +381,9 @@ export function App(): JSX.Element {
       createKnifeBootstrap(
         () => store.getState().domain,
         () => store.getState().currentTime,
+        sharedMint,
       ),
-    [store],
+    [store, sharedMint],
   );
 
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
@@ -658,6 +667,67 @@ import {
   type IdGeneratorState,
 } from '../domain/id-generator';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
+
+// --- shared id minter (finding 3: single generator + reservation set) --------
+//
+// Add and Knife must NOT mint ids from independent generators seeded at the same
+// (time:0, counter:0): two empty generators produce identical first ids (v-0-0,
+// f-0-0, …) and collide, and neither generator knew about ids already in the
+// LOADED project. A collision silently last-wins in the VertexStore Map (座標/地物
+// が無通知で失われる). So the composition root owns ONE minter, shared by both
+// tools, that on every mint passes the CURRENT full set of project ids PLUS the
+// ids it has already issued this session as the `existing` set nextRawId skips.
+
+/** Collect every raw feature / vertex / ring id present anywhere in the project. */
+export function collectProjectRawIds(root: DomainProject): Set<string> {
+  const ids = new Set<string>();
+  for (const history of root.histories) {
+    ids.add(history.featureId as unknown as string);
+    for (const entry of history.series.entries) {
+      const snap = entry.anchor.snapshot;
+      for (const v of snap.vertices.byId.keys()) ids.add(v as unknown as string);
+      for (const f of snap.features) {
+        ids.add(f.id as unknown as string);
+        if (f.kind === 'point') ids.add(f.vertexId as unknown as string);
+        else if (f.kind === 'line') {
+          for (const vid of f.vertexIds) ids.add(vid as unknown as string);
+        } else if (f.kind === 'leaf') {
+          for (const ring of f.shape.rings) {
+            ids.add(ring.id as unknown as string);
+            for (const vid of ring.vertexIds) ids.add(vid as unknown as string);
+          }
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+/** A shared `mint(prefix)` over one generator state + a live-project reservation. */
+export type SharedIdMint = (prefix: string) => string;
+
+/**
+ * Build the single shared minter the composition root hands to BOTH tool
+ * bootstraps. State (counter / time) is private and monotonic; on each mint the
+ * `existing` set is the union of (a) every id currently in the live project and
+ * (b) every id this minter has already issued this session — so a freshly minted
+ * id can collide with neither stored data nor another tool's earlier output
+ * (教訓 5.37 重複チェック). The time source is a monotonic tick so same-tick mints
+ * still differ by counter.
+ */
+export function createSharedIdMint(getRoot: () => DomainProject): SharedIdMint {
+  let state: IdGeneratorState = createIdGeneratorState();
+  let tick = 0;
+  const issued = new Set<string>();
+  return (prefix: string): string => {
+    const existing = collectProjectRawIds(getRoot());
+    for (const id of issued) existing.add(id);
+    const g = nextRawId(prefix, state, () => (tick += 1), existing);
+    state = g.state;
+    issued.add(g.value);
+    return g.value;
+  };
+}
 import {
   PROCESS_STATUS,
   type ProcessResult,
@@ -691,17 +761,10 @@ interface AddBootstrap<S> {
   ) => ApplyResolutions<S>;
 }
 
-function createAddBootstrap<S>(getRoot: () => S): AddBootstrap<S> {
-  // A monotonic id generator seeded from a stable counter (deterministic; the
-  // real host swaps in U03's nextRawId over the live state). The time source is
-  // injected as a monotonic counter so ids never collide within a tick (教訓 5.37).
-  let state: IdGeneratorState = createIdGeneratorState();
-  let tick = 0;
-  const mint = (prefix: string): string => {
-    const g = nextRawId(prefix, state, () => (tick += 1), new Set());
-    state = g.state;
-    return g.value;
-  };
+function createAddBootstrap<S>(getRoot: () => S, mint: SharedIdMint): AddBootstrap<S> {
+  // Ids are minted through the SHARED minter (finding 3): one generator + a live
+  // reservation set over the whole project, shared with the knife bootstrap, so
+  // Add/Knife/loaded ids can never collide (教訓 5.37 重複チェック).
   const ids: AddIdPorts = {
     nextFeatureId: () => asFeatureId(mint('f')),
     nextVertexId: () => asVertexId(mint('v')),
@@ -756,16 +819,11 @@ interface KnifeBootstrap<S> {
 function createKnifeBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
+  mint: SharedIdMint,
 ): KnifeBootstrap<DomainRoot> {
-  // Deterministic monotonic id minting (same discipline as the add bootstrap;
-  // 教訓 5.37). U03's nextRawId over the live state replaces this in the live host.
-  let state: IdGeneratorState = createIdGeneratorState();
-  let tick = 0;
-  const mint = (prefix: string): string => {
-    const g = nextRawId(prefix, state, () => (tick += 1), new Set());
-    state = g.state;
-    return g.value;
-  };
+  // Ids are minted through the SAME shared minter the add bootstrap uses (finding
+  // 3): a single generator + a project-wide reservation set, so a knife-minted id
+  // can collide with neither an add-minted id nor a loaded id (教訓 5.37).
   const ids: SplitIdPorts = {
     nextFeatureId: () => asFeatureId(mint('f')),
     nextVertexId: () => asVertexId(mint('v')),

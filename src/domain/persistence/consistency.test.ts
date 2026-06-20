@@ -8,6 +8,7 @@ import {
   checkConsistency,
   repairOptionsFor,
   type DomainProject,
+  type FeatureHistory,
   type Inconsistency,
 } from './index';
 import {
@@ -473,6 +474,67 @@ describe('(f) time conflict', () => {
     for (const h of applied.project.histories) {
       expect(h.series.entries.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// --- orphan / zombie history (owner feature absent from all snapshots) ------
+
+describe('orphan history (zombie series, FR-106 拡張)', () => {
+  // A history whose owner featureId is NOT carried by any of its snapshots.
+  function projectWithOrphanHistory(): DomainProject {
+    const leaf = squareLeaf('oh-real', '実在国', 0, 0);
+    const real = singleAnchorHistory('oh-real', [leaf.feature], createVertexStore(leaf.vertices));
+    // The orphan history's snapshot carries the REAL leaf, but its featureId is a
+    // ghost that owns nothing in any snapshot — a zombie timeline.
+    const orphanSnap = createAnchorSnapshot([leaf.feature], createVertexStore(leaf.vertices));
+    const orphan: FeatureHistory = {
+      featureId: asFeatureId('oh-ghost'),
+      series: { entries: [createAnchorEntry(createAnchor(asAnchorId('oh-anc'), orphanSnap), timePointYear(0), null)] },
+    };
+    return { histories: [real, orphan], settings: DEFAULT_SETTINGS, baseMap: DEFAULT_BASEMAP };
+  }
+
+  it('detects a history whose owner feature is in no snapshot', () => {
+    const inc = find(checkConsistency(projectWithOrphanHistory(), CAL), INCONSISTENCY.OrphanHistory);
+    expect(inc).toBeDefined();
+    expect(inc!.featureIds).toContain('oh-ghost');
+    expect(inc!.detail).toBe('owner-feature-absent');
+  });
+
+  it('repair (drop orphan history) resolves it and re-validates clean', () => {
+    const project = projectWithOrphanHistory();
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.OrphanHistory)!;
+    const options = repairOptionsFor(inc);
+    expect(options.length).toBeGreaterThan(0);
+    const applied = applyRepairChecked(project, inc, options[0]!.id, CAL);
+    expect(applied.resolved).toBe(true);
+    expect(applied.remaining.ok).toBe(true);
+    // The real history survives; only the ghost is gone.
+    expect(applied.project.histories.map((h) => h.featureId)).toEqual(['oh-real']);
+  });
+
+  it('dropping a feature also drops its owning history (no zombie left behind)', () => {
+    // Two independent leaves, each its own history. Dropping leaf-a's feature must
+    // also remove leaf-a's history so no orphan history is manufactured.
+    const a = squareLeaf('dz-a', 'A国', 0, 0);
+    const b = squareLeaf('dz-b', 'B国', 40, 0);
+    const project: DomainProject = {
+      histories: [
+        singleAnchorHistory('dz-a', [a.feature], createVertexStore(a.vertices)),
+        singleAnchorHistory('dz-b', [b.feature], createVertexStore(b.vertices)),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const inc: Inconsistency = {
+      kind: INCONSISTENCY.MissingVertexReference,
+      featureIds: [asFeatureId('dz-a')],
+      featureNames: ['A国'],
+    };
+    const applied = applyRepairChecked(project, inc, 'drop-feature-missing-vertex', CAL);
+    // The owning history is removed too — no orphan/zombie history remains.
+    expect(applied.project.histories.map((h) => h.featureId)).toEqual(['dz-b']);
+    expect(find(applied.remaining, INCONSISTENCY.OrphanHistory)).toBeUndefined();
   });
 });
 

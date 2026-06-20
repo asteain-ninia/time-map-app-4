@@ -46,6 +46,8 @@ export const REPAIR_OPTION = {
   DropAggregateFeature: 'drop-aggregate-feature',
   /** 時間矛盾 → 錨列を昇順に整列・重複解消（U09 normalizeSeries）。 */
   NormalizeSeries: 'normalize-series',
+  /** 孤立した歴史（所有地物が全スナップショットに不在）→ 当該歴史を除外する。 */
+  DropOrphanHistory: 'drop-orphan-history',
 } as const;
 
 export type RepairOptionId = (typeof REPAIR_OPTION)[keyof typeof REPAIR_OPTION];
@@ -67,6 +69,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
   [REPAIR_OPTION.DropAggregateFeature]: '下位領域と一致しない集約地物を除外し、下位を最上位化します。',
   [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
+  [REPAIR_OPTION.DropOrphanHistory]:
+    '所有する地物が存在しない歴史（空のタイムライン）を読み込みから除外します。',
 };
 
 /**
@@ -93,6 +97,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.DropAggregateFeature)];
     case INCONSISTENCY.TimeConflict:
       return [opt(REPAIR_OPTION.NormalizeSeries)];
+    case INCONSISTENCY.OrphanHistory:
+      return [opt(REPAIR_OPTION.DropOrphanHistory)];
   }
 }
 
@@ -122,10 +128,22 @@ function mapSnapshotFeatures(
   return { histories, settings: project.settings, baseMap: project.baseMap };
 }
 
-/** Remove the given feature ids from every snapshot. */
+/**
+ * Remove the given feature ids from every snapshot AND drop any FeatureHistory
+ * those ids own. Dropping the snapshot occurrences alone would leave the owning
+ * history (project.histories keyed by featureId) behind as a zombie/orphan series
+ * whose snapshots no longer contain their owner feature — which the consistency
+ * check `detectOrphanHistories` flags. Both must be removed atomically so a repair
+ * cannot manufacture a new inconsistency (受け入れ基準5 適用後に新たな不整合を作らない).
+ */
 function dropFeatures(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const drop = new Set<FeatureId>(ids);
-  return mapSnapshotFeatures(project, (features) => features.filter((f) => !drop.has(f.id)));
+  const filtered = mapSnapshotFeatures(project, (features) =>
+    features.filter((f) => !drop.has(f.id)),
+  );
+  // Drop the histories owned by a removed feature (zombie-history prevention).
+  const histories = filtered.histories.filter((h) => !drop.has(h.featureId));
+  return { histories, settings: filtered.settings, baseMap: filtered.baseMap };
 }
 
 /** Detach the given feature ids to top-level (clear parentId) in every snapshot. */
@@ -159,6 +177,16 @@ function normalizeHistories(
       : h,
   );
   return { histories, settings: project.settings, baseMap: project.baseMap };
+}
+
+/** Remove the FeatureHistory entries owned by the given ids (orphan-history repair). */
+function dropHistories(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
+  const drop = new Set<FeatureId>(ids);
+  return {
+    histories: project.histories.filter((h) => !drop.has(h.featureId)),
+    settings: project.settings,
+    baseMap: project.baseMap,
+  };
 }
 
 /** Drop the FIRST of the overlapping pair (deterministic: the lower-ordered id). */
@@ -197,6 +225,8 @@ export function applyRepair(
     }
     case REPAIR_OPTION.NormalizeSeries:
       return normalizeHistories(project, inc.featureIds, calendar);
+    case REPAIR_OPTION.DropOrphanHistory:
+      return dropHistories(project, inc.featureIds);
   }
 }
 

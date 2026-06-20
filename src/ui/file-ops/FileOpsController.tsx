@@ -151,8 +151,20 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     contextRef.current = next;
   }, []);
 
-  // Clear the single dirty source after a save / new / load (the new baseline).
+  // The domain reference that was SERIALIZED into the in-flight save request. A
+  // save serializes the domain at save START (buildSaveRequest); the IPC write is
+  // async. If the user edits DURING the wait, applyCommandResult swaps in a new
+  // domain reference and re-arms projectDirty — but that edit is NOT on disk. So
+  // onSaved must clear dirty ONLY when the live domain is still the exact reference
+  // we wrote; otherwise the post-save state is genuinely unsaved and the flag must
+  // stay set (教訓 5.36 単一基準: 保存済み扱いはディスク内容と一致する時だけ).
+  const savedDomainRef = useRef<DomainProject | null>(null);
+
+  // Clear the single dirty source ONLY if no edit landed during the save's async
+  // write. The save path records the serialized domain in savedDomainRef; here we
+  // compare it by reference identity (the store swaps the whole domain on any edit).
   const markClean = useCallback(() => {
+    if (savedDomainRef.current !== store.getState().domain) return;
     store.getState().markProjectSaved();
   }, [store]);
 
@@ -163,22 +175,32 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // --- the live host capabilities (each is a dependency-unit API) -----------
   const host: FileOpsHost | null = useMemo(() => {
     if (api === null) return null;
-    const buildSaveRequest = (): SaveRequest => ({
-      // The manifest is serialized from the current domain (U14 serialize). Asset
-      // bytes (base-map / attachments) are owned by the render/asset units; until
-      // those are live-bound the request ships none — the SAVE path is fully wired
-      // and reaches U15 (受け入れ基準 1), the asset payload activates when bound.
-      manifest: serialize(store.getState().domain),
-      baseMapImage: new Uint8Array(),
-      attachments: [],
-    });
+    const buildSaveRequest = (): SaveRequest => {
+      // Capture the EXACT domain reference being serialized so onSaved can tell
+      // whether an edit landed during the async write (lost-edit guard, finding 2).
+      const domain = store.getState().domain;
+      savedDomainRef.current = domain;
+      return {
+        // The manifest is serialized from the current domain (U14 serialize). Asset
+        // bytes (base-map / attachments) are owned by the render/asset units; until
+        // those are live-bound the request ships none — the SAVE path is fully wired
+        // and reaches U15 (受け入れ基準 1), the asset payload activates when bound.
+        manifest: serialize(domain),
+        baseMapImage: new Uint8Array(),
+        attachments: [],
+      };
+    };
     return {
       api,
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
       onSaved: (path: string) => {
+        // Path / backupTarget update ALWAYS happens (it is independent of dirty):
+        // a successful write established this file as the save target regardless of
+        // whether a later edit re-dirtied the document (finding 2 切り離し).
         applyContext(contextAfterSave(contextRef.current, path));
-        // The save is the new baseline: clear the single dirty source (教訓 5.24).
+        // Clear dirty ONLY if no edit landed during the async write (lost-edit
+        // guard): markClean compares the live domain to the serialized reference.
         markClean();
       },
       // The SINGLE dirty basis (spec §B): the store's projectDirty, set by BOTH
@@ -206,9 +228,12 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           });
         }),
       reflectProject: (project: DomainProject, path: string) => {
-        // 確定後のみ反映 (教訓 5.22): swap the domain AND adopt the load save context
-        // in one transition (受け入れ基準 4 同時初期化 applies to load too, spec §D).
-        store.getState().setDomainState(project);
+        // 確定後のみ反映 (教訓 5.22): swap the domain, DISCARD the old project's
+        // selection / tool / mode / focus, and clear dirty — all in ONE store
+        // transition via resetToDomain (受け入れ基準 4 同時初期化, 教訓 5.2 全経路で破棄).
+        // A stale selection or focus from the previous project would otherwise
+        // dangle against the new domain (finding 4).
+        store.getState().resetToDomain(project);
         applyContext(
           contextForLoadedFile({
             path,
@@ -216,10 +241,6 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             baseMapId: project.baseMap.source,
           }),
         );
-        // The load is the new save baseline: setDomainState above set projectDirty
-        // (any swap does); clearing it here makes a fresh load CLEAN in one
-        // transition (教訓 5.36 同時初期化), so the next genuine edit re-arms it.
-        store.getState().markProjectSaved();
       },
       notify: (message: string) => {
         // FR-115: a Japanese notice. Surfaced through the host's alert hook; the
@@ -239,13 +260,12 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   useEffect(() => {
     if (ports === null) return undefined;
     const initialiseNewProject = (): void => {
-      // Atomic new-project init: empty domain + the new save context in ONE
-      // transition (教訓 5.36 / 受け入れ基準 4: 同時初期化, 取り残さない).
-      store.getState().setDomainState(buildEmptyProject());
+      // Atomic new-project init: empty domain + discarded session state + clean
+      // baseline + new save context (教訓 5.36 / 受け入れ基準 4: 同時初期化, 取り残さない,
+      // 教訓 5.2 全経路で破棄). resetToDomain clears selection / tool / mode / focus so
+      // nothing from the previous project survives into the empty one (finding 4).
+      store.getState().resetToDomain(buildEmptyProject());
       applyContext(buildNewProjectContext());
-      // setDomainState set projectDirty (any swap does); the fresh init is a clean
-      // baseline, so clear it in the SAME transition (教訓 5.36 同時初期化).
-      store.getState().markProjectSaved();
     };
     registry.register(COMMAND_ID.FileNew, {
       run: () => void newProjectCommand(ports, initialiseNewProject),

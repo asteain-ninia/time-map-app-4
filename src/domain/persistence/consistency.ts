@@ -58,6 +58,14 @@ export const INCONSISTENCY = {
   AggregateSumMismatch: 'aggregate-sum-mismatch',
   TimeConflict: 'time-conflict',
   AnchorSpatialOverlap: 'anchor-spatial-overlap',
+  /**
+   * A FeatureHistory whose owner feature (history.featureId) is absent from EVERY
+   * one of its own anchor snapshots: a zombie/orphan series carrying no actual
+   * feature state. This arises when a feature is dropped from snapshots but its
+   * history is left behind, and is detected so a load / repair never silently
+   * keeps an empty timeline (FR-106 拡張).
+   */
+  OrphanHistory: 'orphan-history',
 } as const;
 
 export type InconsistencyKind = (typeof INCONSISTENCY)[keyof typeof INCONSISTENCY];
@@ -206,16 +214,28 @@ function detectShapePreservation(features: readonly Feature[], atTime: TimePoint
   return out;
 }
 
-// --- (d) terminal exclusion (delegated to U10) ------------------------------
+// --- (d)+(g) terminal/anchor spatial overlap (delegated to U10) -------------
+//
+// (d) 末端排他 and (g) 異なる地物の同時刻状態の競合 are detected from the SAME U10
+// overlap set over the SAME terminal shapes at this time slice (单一真实源). The
+// overlap pairs are therefore computed ONCE here and expanded into the two report
+// kinds, instead of running extractTerminalShapes + detectTerminalOverlaps twice
+// over identical input (避: 同一 overlap 計算の二重実行).
 
-function detectTerminalExclusion(
+function detectTerminalOverlapPairs(
   features: readonly Feature[],
   vertices: VertexStore,
-  atTime: TimePoint,
-): Inconsistency[] {
+): OverlapPair[] {
   const forest = buildForest(features);
   const shapes = extractTerminalShapes(forest, vertices);
-  const overlaps = detectTerminalOverlaps(shapes);
+  return detectTerminalOverlaps(shapes);
+}
+
+function terminalExclusionsFrom(
+  overlaps: readonly OverlapPair[],
+  features: readonly Feature[],
+  atTime: TimePoint,
+): Inconsistency[] {
   return overlaps.map((pair: OverlapPair) => ({
     kind: INCONSISTENCY.TerminalExclusion,
     featureIds: [pair.a, pair.b],
@@ -258,14 +278,11 @@ function detectAggregateSum(
 // (FR-106 d). They are detected from the same overlap set but reported as two
 // kinds so a UI / repair can offer the right options per FR wording.
 
-function detectAnchorSpatialOverlap(
+function anchorSpatialOverlapsFrom(
+  overlaps: readonly OverlapPair[],
   features: readonly Feature[],
-  vertices: VertexStore,
   atTime: TimePoint,
 ): Inconsistency[] {
-  const forest = buildForest(features);
-  const shapes = extractTerminalShapes(forest, vertices);
-  const overlaps = detectTerminalOverlaps(shapes);
   return overlaps.map((pair: OverlapPair) => ({
     kind: INCONSISTENCY.AnchorSpatialOverlap,
     featureIds: [pair.a, pair.b],
@@ -288,6 +305,34 @@ function detectTimeConflicts(history: FeatureHistory, calendar: Calendar): Incon
       featureNames: [idToString(history.featureId)],
       detail: v.invariant,
     });
+  }
+  return out;
+}
+
+// --- orphan / zombie history (owner feature missing from all snapshots) -----
+//
+// Each FeatureHistory is keyed by the stable id of the feature it OWNS. A valid
+// history must carry that owner feature as a feature in at least one of its anchor
+// snapshots (the snapshots are the feature's full state through time). A history
+// whose owner appears in NONE of its snapshots is a zombie series — it contributes
+// no feature state yet still occupies the timeline and would be persisted as-is.
+// This is the counterpart guard to the drop-feature repair (which must remove the
+// owning history too); detecting it here also catches a hand-edited / corrupt file.
+
+function detectOrphanHistories(histories: readonly FeatureHistory[]): Inconsistency[] {
+  const out: Inconsistency[] = [];
+  for (const h of histories) {
+    const ownerPresent = h.series.entries.some((e) =>
+      e.anchor.snapshot.features.some((f) => f.id === h.featureId),
+    );
+    if (!ownerPresent) {
+      out.push({
+        kind: INCONSISTENCY.OrphanHistory,
+        featureIds: [h.featureId],
+        featureNames: [idToString(h.featureId)],
+        detail: 'owner-feature-absent',
+      });
+    }
   }
   return out;
 }
@@ -353,13 +398,17 @@ function checkTimeSlice(
   }
   const vertices: VertexStore = createVertexStore(allVertices);
 
+  // (d)+(g) share ONE overlap computation over the same terminal shapes; expand
+  // into both report kinds (避: 同一 overlap 計算の二重実行).
+  const overlaps = detectTerminalOverlapPairs(features, vertices);
+
   return [
     ...detectMissingVertices(features, vertices, atTime),
     ...detectTreeTopology(features, atTime),
     ...detectShapePreservation(features, atTime),
-    ...detectTerminalExclusion(features, vertices, atTime),
+    ...terminalExclusionsFrom(overlaps, features, atTime),
     ...detectAggregateSum(features, vertices, atTime),
-    ...detectAnchorSpatialOverlap(features, vertices, atTime),
+    ...anchorSpatialOverlapsFrom(overlaps, features, atTime),
   ];
 }
 
@@ -379,6 +428,9 @@ export function checkConsistency(project: DomainProject, calendar: Calendar): Co
   for (const h of project.histories) {
     inconsistencies.push(...detectTimeConflicts(h, calendar));
   }
+
+  // Orphan / zombie histories: owner feature absent from all its snapshots.
+  inconsistencies.push(...detectOrphanHistories(project.histories));
 
   // (a)(b)(c)(d)(e)(g): per distinct anchor time-slice over the combined state.
   for (const atTime of distinctAnchorTimes(project.histories, calendar)) {
