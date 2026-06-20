@@ -38,7 +38,7 @@
     {"id":"U35","deps":["U13","U20","U19"],"size":"M","status":"done"},
     {"id":"U36","deps":["U26","U28","U30","U31","U11"],"size":"S","status":"done"},
     {"id":"U37","deps":["U17","U04","U20"],"size":"M","status":"done"},
-    {"id":"U38","deps":["U16","U18","U33","U11","U19"],"size":"M","status":"pending"},
+    {"id":"U38","deps":["U16","U18","U33","U11","U19"],"size":"M","status":"done"},
     {"id":"U39","deps":["U15","U14","U20","U38","U17"],"size":"M","status":"pending"},
     {"id":"U40","deps":["U17","U20","U22"],"size":"S","status":"done"},
     {"id":"U41","deps":["U20","U32","U16"],"size":"M","status":"done"},

@@ -164,9 +164,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 export const MIN_RENDER_FPS = 1;
 export const MAX_RENDER_FPS = 60;
 
-/** Default timeline range as TimePoints (year granularity; 教訓 5.16 完全値). */
-export const DEFAULT_TIMELINE_MIN: TimePoint = timePointYear(-3000);
-export const DEFAULT_TIMELINE_MAX: TimePoint = timePointYear(3000);
+/**
+ * Default timeline range as TimePoints (year granularity; 教訓 5.16 完全値).
+ * FR-66 規定の既定値「0 年〜10000 年」を単一の真実源として供給する。
+ */
+export const DEFAULT_TIMELINE_MIN: TimePoint = timePointYear(0);
+export const DEFAULT_TIMELINE_MAX: TimePoint = timePointYear(10000);
 
 /** FR-109 defaults. Equator length ~Earth; flattening 0 (true sphere, 技術方針 2.9). */
 export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
@@ -174,8 +177,9 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   projectDescription: '',
   equatorLengthKm: 40075,
   flattening: 0,
-  timelineMinYear: -3000,
-  timelineMaxYear: 3000,
+  // FR-66 / U38 受け入れ基準 4・5: タイムライン既定範囲は 0 年〜10000 年。
+  timelineMinYear: 0,
+  timelineMaxYear: 10000,
   gridSpacingDeg: 10,
   gridColor: '#888888',
   gridOpacity: 0.5,

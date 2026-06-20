@@ -87,6 +87,12 @@ export default defineConfig({
       // pure `.ts` (domain ids + zod), so they run in node without a DOM. The
       // ErrorBoundary component test is `.test.tsx` (jsdom; .tsx glob below).
       'src/ui/discovery/**/*.test.ts',
+      // U38 settings pure-logic tests: validation (range/boundary), defaults
+      // factory, draft→commit diff (no-op guard). These import only pure `.ts`
+      // (U16 settings types + U18 grid predicate), so they run in node without a
+      // DOM. The dialog component/hook operation test is `.test.tsx` (jsdom; .tsx
+      // glob below).
+      'src/ui/settings/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U21 EventMarkers add/edit/delete/jump (FR-66) AND U20 shell layout /
       // mode toggle / view-only disabling / drag / tooltip / overlay layering.
