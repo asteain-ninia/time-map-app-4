@@ -406,13 +406,27 @@ export function App(): JSX.Element {
   const [conflictState, setConflictState] = useState<ConflictPending | null>(null);
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
-  // transient tool draft (教訓 5.2 全経路で破棄). Toggling the tool null→prev funnels
-  // both controllers through resetForSwitch (discard) then start (fresh session).
+  // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
+  // selection. Toggling the tool null→prev funnels both controllers through
+  // resetForSwitch (discard) then start (fresh session). BUT the store's
+  // setActiveTool runs the reset契約 and clears selection (store.ts), which would
+  // wipe the feature a conflict commit JUST promoted (教訓 5.11 — selection must
+  // survive a structure-change commit). So we capture the selection truth before
+  // the toggle and restore it after the re-arm: only the TOOL DRAFT is discarded,
+  // the selection is preserved (軽微UX).
   const reArmActiveTool = useCallback(() => {
     const s = store.getState();
     const tool = s.activeTool;
+    const retained = s.selection;
     s.setActiveTool(null);
-    queueMicrotask(() => store.getState().setActiveTool(tool));
+    queueMicrotask(() => {
+      const next = store.getState();
+      next.setActiveTool(tool);
+      // Restore the selection the tool re-arm just cleared (active feature +
+      // vertex context). Re-apply through the SAME truth-preserving setters so the
+      // U22 selection state and its derived mirrors stay consistent (技術方針 2.5).
+      next.restoreSelection(retained);
+    });
   }, [store]);
 
   // Build the per-conflict shapes lookup for the preview: the two participants'

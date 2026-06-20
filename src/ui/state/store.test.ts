@@ -369,6 +369,26 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     expect(store.getState().activeFeature).toBeNull();
     expect(store.getState().activeTool).toBe(asToolId('rect'));
   });
+
+  it('restoreSelection re-applies a captured selection across a tool re-arm (教訓 5.11 retain)', () => {
+    // Simulate the post-conflict-commit re-arm: a feature is selected with a tool
+    // armed, then the re-arm toggle null→prev clears the selection;
+    // restoreSelection brings it back so only the tool DRAFT is discarded while the
+    // committed selection survives (the 軽微UX fix in App.reArmActiveTool).
+    const store = makeStore(undefined, { activeFeature: f('A') });
+    store.getState().setActiveTool(asToolId('rect'));
+    store.getState().setActiveFeature(f('A'));
+    const retained = store.getState().selection; // captured before the re-arm
+
+    store.getState().setActiveTool(null); // re-arm step 1: clears selection
+    expect(store.getState().activeFeature).toBeNull();
+    store.getState().setActiveTool(asToolId('rect')); // re-arm step 2: still cleared
+    expect(store.getState().activeFeature).toBeNull();
+
+    store.getState().restoreSelection(retained); // retain the committed selection
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().activeTool).toBe(asToolId('rect'));
+  });
 });
 
 // --- vertex selection update rules (FR-80 / FR-81) --------------------------

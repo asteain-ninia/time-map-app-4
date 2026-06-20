@@ -197,6 +197,14 @@ export interface SessionStoreActions<S> {
   addVerticesToSelection(ownerFeatureId: FeatureId, vertexIds: Iterable<VertexId>): void;
   /** Clear all selection (active feature + vertex context). Runs the reset契約. */
   clearSelection(): void;
+  /**
+   * Restore a whole {@link SelectionState} verbatim (truth + derived mirrors).
+   * Used to retain the committed selection across a tool re-arm whose
+   * {@link setActiveTool} reset契約 would otherwise clear it (教訓 5.11 — a
+   * structure-change commit's selection must survive the post-commit re-arm).
+   * It re-applies U22's existing selection value; it re-implements no rule.
+   */
+  restoreSelection(selection: SelectionState): void;
 
   // mode / tool
   setMode(mode: EditMode): void;
@@ -398,6 +406,10 @@ export function createSessionStore<S>(
 
     clearSelection() {
       set(selectionPatch(EMPTY_SELECTION));
+    },
+
+    restoreSelection(selection) {
+      set(selectionPatch(selection));
     },
 
     // -- mode / tool (reset契約 on every path, 教訓 5.2) --------------------
