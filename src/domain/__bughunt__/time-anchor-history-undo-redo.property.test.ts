@@ -155,18 +155,11 @@ interface SerializedSeries {
   readonly entries: readonly SerializedEntry[];
 }
 
-/**
- * Normalize signed zero to +0. A JSON-based persistence layer collapses -0 to 0
- * (`JSON.stringify(-0) === '0'`); since a coordinate of -0 and +0 denote the
- * identical geographic point (`-0 === 0`), the save/load model treats them as
- * equal. (See the bug-hunt note: the arbitrary fixture can mint a -0 longitude/
- * latitude, which a strict `Object.is`-based comparison would otherwise flag.)
- */
-function nz(n: number): number {
-  return n === 0 ? 0 : n;
-}
-
 function serializeSeries(s: AnchorSeries): SerializedSeries {
+  // No signed-zero workaround here: `createCoordinate` (the single construction
+  // seam) now normalizes -0 -> +0, so the in-memory form is already byte-
+  // identical to the JSON-persisted form and a strict structural round-trip
+  // (Object.is on zeros) holds. The serialized coordinates are emitted verbatim.
   return {
     entries: s.entries.map((e) => ({
       anchorId: e.anchor.id,
@@ -175,8 +168,8 @@ function serializeSeries(s: AnchorSeries): SerializedSeries {
       features: e.anchor.snapshot.features,
       vertices: [...e.anchor.snapshot.vertices.byId.values()].map((v) => ({
         id: v.id,
-        lon: nz(v.coordinate.lon),
-        lat: nz(v.coordinate.lat),
+        lon: v.coordinate.lon,
+        lat: v.coordinate.lat,
       })),
     })),
   };
