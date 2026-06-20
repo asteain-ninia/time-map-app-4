@@ -104,6 +104,16 @@ export interface PointerDispatcherOptions {
   readonly contextMenu: ContextMenuPort;
   /** Zoom clamp range (U16 settings); falls through to U17's FR-10 default. */
   readonly zoomRange?: ZoomRange;
+  /**
+   * A LIVE zoom-clamp range read on EVERY wheel notch (HB-1 / FR-10). The static
+   * {@link zoomRange} above is fixed at construction, so a project-setting change
+   * (U39 `supplyZoomRange`) — and the renderer's fit-world floor (`effectiveZoomRange`,
+   * Codex medium #6) — would NOT reach the wheel path. When present this getter is
+   * preferred so the wheel always clamps against the SAME effective range the
+   * renderer draws with (単一の真実源, 教訓 5.29). Returning undefined falls back to
+   * the static range, then U17's FR-10 default.
+   */
+  readonly getZoomRange?: () => ZoomRange | undefined;
   /** Multiplicative zoom factor per wheel notch. Default 1.1 (zoom in on up). */
   readonly wheelZoomFactor?: number;
 }
@@ -354,7 +364,11 @@ export class PointerDispatcher {
 
     const { camera, viewport } = this.opts.camera.read();
     const cursor: ScreenPoint = { x: w.x, y: w.y };
-    const next = zoomStepAtCursor(camera, viewport, cursor, factor, this.opts.zoomRange);
+    // Prefer the LIVE effective range (project-setting clamp + renderer fit-world
+    // floor) so a settings change / fit floor reaches the wheel; fall back to the
+    // static option, then U17's FR-10 default (受け入れ基準 2, 単一の真実源).
+    const range = this.opts.getZoomRange?.() ?? this.opts.zoomRange;
+    const next = zoomStepAtCursor(camera, viewport, cursor, factor, range);
     this.opts.camera.write(next);
   }
 

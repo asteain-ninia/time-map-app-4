@@ -53,6 +53,13 @@ export interface CreateAddHostPortsOptions {
    * {@link DEFAULT_LABEL_THRESHOLDS} when absent.
    */
   readonly labelThresholds?: () => LabelThresholds;
+  /**
+   * Notified after every live camera change (pan / wheel zoom, HB-1). The
+   * composition root uses it to mirror the live pan offset + zoom into DOM
+   * observation hooks (data-pan-x / data-pan-y / data-zoom) so a behavioural E2E
+   * can assert the camera actually moved (既存 app-active-feature マーカーと同方式).
+   */
+  readonly onCameraChange?: (camera: Camera) => void;
 }
 
 export interface AddHostPorts {
@@ -72,12 +79,33 @@ export interface AddHostPorts {
   /** The current camera zoom (CSS px per degree) — the固定円 radius input (FR-17). */
   zoom(): number;
   /**
+   * Read the LIVE camera + viewport the renderer is drawing with (HB-1 pan/zoom
+   * wiring). The U40 {@link CameraPort} reads this on each pan press so a drag
+   * computes against a fresh viewport, and the wheel reads it for the cursor-anchored
+   * zoom — the renderer owns the only camera the draw uses (単一の真実源, 教訓 5.29).
+   */
+  readCamera(): { readonly camera: Camera; readonly viewport: Viewport };
+  /**
+   * Write a new camera and re-composite at once (HB-1). The U40 pan/wheel path calls
+   * this on every move/notch; it sets the renderer camera, re-paints the frame with
+   * the last overlay, and notifies {@link CreateAddHostPortsOptions.onCameraChange}
+   * so the composition root can mirror the live pan/zoom into observation hooks.
+   */
+  writeCamera(camera: Camera): void;
+  /**
    * Supply the currently-effective zoom CLAMP range to U17 (FR-10 / U39). The
    * camera applies the clamp; this only hands it the {minZoom, maxZoom} value so
    * a settings change takes effect at once (FR-109 即時反映). U39's `zoomRangeOf`
    * derives the value; the bridge calls this on every settings change.
    */
   setZoomRange(range: ZoomRange): void;
+  /**
+   * The zoom clamp ACTUALLY in effect (the U16-supplied range with the fit-world
+   * floor applied). The U40 wheel path reads this live on every notch so a settings
+   * change AND the fit floor reach the wheel zoom against the SAME range the
+   * renderer draws with (HB-1 / FR-10, 単一真実源 — no second clamp source).
+   */
+  effectiveZoomRange(): ZoomRange;
   /** Tear down the renderer + canvas on unmount. */
   dispose(): void;
 }
@@ -192,6 +220,9 @@ export function createAddHostPorts(
   };
   // Initial paint: the graticule + any committed features are visible immediately.
   paintWith([]);
+  // Seed the observation hooks with the initial camera so data-pan-x/y/zoom exist
+  // from first mount (a behavioural E2E reads a baseline before it pans, HB-1).
+  options.onCameraChange?.(renderer.getCamera());
   // Kick off the base-map decode; re-composite when it lands (unless disposed),
   // keeping the last overlay so an in-progress tool draft is not wiped.
   void loadPresetBaseMap(mount.ownerDocument).then((img) => {
@@ -219,8 +250,22 @@ export function createAddHostPorts(
     zoom(): number {
       return renderer.getCamera().zoom;
     },
+    readCamera(): { readonly camera: Camera; readonly viewport: Viewport } {
+      return { camera: renderer.getCamera(), viewport: renderer.getViewport() };
+    },
+    writeCamera(camera: Camera): void {
+      // Mirror the new camera into the renderer (the single camera the draw uses),
+      // re-composite with the last overlay so the pan/zoom is visible at once, and
+      // notify the host so it can reflect the live pan/zoom into observation hooks.
+      renderer.setCamera(camera);
+      paintWith(lastOverlay);
+      options.onCameraChange?.(camera);
+    },
     setZoomRange(range: ZoomRange): void {
       renderer.setZoomRange(range);
+    },
+    effectiveZoomRange(): ZoomRange {
+      return renderer.effectiveZoomRange();
     },
     dispose(): void {
       disposed = true;

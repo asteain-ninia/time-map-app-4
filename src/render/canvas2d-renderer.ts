@@ -148,7 +148,7 @@ export class Canvas2DMapRenderer implements MapRenderer {
    * configured max is untouched. When the fit zoom is degenerate (0, not-yet-
    * measured) the configured range is used unchanged.
    */
-  private effectiveZoomRange(): ZoomRange {
+  effectiveZoomRange(): ZoomRange {
     const fit = fitWorldZoom(this.viewport);
     if (!Number.isFinite(fit) || fit <= 0 || fit >= this.zoomRange.minZoom) {
       return this.zoomRange;

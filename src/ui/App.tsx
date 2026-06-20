@@ -72,6 +72,16 @@ import {
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafAtPoint, leafShapeAt } from './live-lookup';
 import { buildCommittedFeatures } from './map/committed-features';
+import {
+  PointerDispatcher,
+  DISPATCH_TARGET,
+  EMPTY_HIT_TESTER,
+  NOOP_SELECTION_PORT,
+  NOOP_ADD_PORT,
+  NOOP_CONTEXT_MENU_PORT,
+  type CameraPort,
+} from './map/index';
+import type { Camera as RenderCamera } from '../render/camera';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
 
@@ -133,6 +143,26 @@ export function App(): JSX.Element {
   const zoomRangeRef = useRef<ZoomRange | null>(null);
 
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
+    // HB-1 観測フック target. Resolved BEFORE the renderer is created because
+    // `createAddHostPorts` fires `onCameraChange` synchronously on its initial paint
+    // (to seed the hooks) — referencing `hookTarget` from inside that callback before
+    // it exists would be a temporal-dead-zone ReferenceError that crashes the mount.
+    // The pointer/wheel listeners attach to the map INPUT layer (教訓 5.14); if it is
+    // not present yet (defensive) we fall back to the canvas mount element.
+    const inputLayer = el.parentElement?.querySelector<HTMLElement>(
+      '[data-testid="map-input-layer"]',
+    );
+    const hookTarget: HTMLElement = inputLayer ?? el;
+
+    /** Reflect the live camera into the observation hooks (pan offset + zoom). */
+    const publishCameraHooks = (camera: RenderCamera): void => {
+      // Pan offset is the camera center displacement from the FR-11 origin (0,0);
+      // a drag changes it, so the E2E reads a before/after delta. Zoom is verbatim.
+      hookTarget.dataset['panX'] = String(camera.centerLon);
+      hookTarget.dataset['panY'] = String(camera.centerLat);
+      hookTarget.dataset['zoom'] = String(camera.zoom);
+    };
+
     // P0-A — feed the LIVE committed features into the renderer. The host reads
     // this getter on every composite, so the latest committed domain resolved at
     // the current time (with the live selection for FR-82) is what draws (single
@@ -158,10 +188,112 @@ export function App(): JSX.Element {
         areaMinOccupancy:
           store.getState().projectSettings.areaLabelOccupancyThreshold,
       }),
+      // HB-1 観測フック: mirror the LIVE camera into DOM data-* attributes on the
+      // map input layer so a behavioural E2E can read the pan offset + zoom and
+      // assert they actually changed (既存 app-active-feature マーカーと同方式). The
+      // attributes hold NO truth — they只 reflect the renderer camera (技術方針 2.5).
+      onCameraChange: (camera) => publishCameraHooks(camera),
     });
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).
     if (zoomRangeRef.current !== null) ports.setZoomRange(zoomRangeRef.current);
+
+    // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
+    // pure dispatcher + pan/zoom math existed (PointerDispatcher / pan / VTransform)
+    // but the composition root never CONNECTED them to the real viewport, so a drag
+    // or wheel moved nothing (教訓 5.7「ロジックがあっても UI から呼ばれず機能しない」).
+    // We back the U40 CameraPort with the renderer's live camera (read/write through
+    // the host ports — the single camera the draw uses, 教訓 5.29) and attach the DOM
+    // listeners to the map INPUT layer (教訓 5.14). View-mode left/middle drag pans;
+    // the wheel does cursor-anchored zoom in EVERY mode. Selection / add are owned by
+    // their own input controllers, so those ports are honest no-ops here.
+    const cameraPort: CameraPort = {
+      read: () => ports.readCamera(),
+      write: (camera) => {
+        // The renderer is the camera the DRAW uses; write it first so the pan/zoom
+        // is visible at once (its onCameraChange mirrors the observation hooks).
+        ports.writeCamera(camera);
+        // Mirror the live render camera into the U16 store truth (技術方針 2.5: the
+        // camera STATE is owned by the session store). Nothing on the live draw path
+        // reads it today, but the FR-12 中心経度 control / FR-13 grid panel bind to
+        // store.centerLon — keeping it in sync means a later panel wiring sees the
+        // real camera, not a stale 0, and there is never a second diverging truth
+        // (二重真実源を作らない, 教訓 5.29). The render camera is a subset of the store
+        // Camera (no panX/panY), so we patch only the三 transform fields.
+        const s = store.getState();
+        s.updateCamera({
+          zoom: camera.zoom,
+          centerLon: camera.centerLon,
+          centerLat: camera.centerLat,
+        });
+        s.setCenterLon(camera.centerLon);
+      },
+    };
+    const dispatcher = new PointerDispatcher({
+      getMode: () => store.getState().mode,
+      camera: cameraPort,
+      hitTester: EMPTY_HIT_TESTER,
+      selection: NOOP_SELECTION_PORT,
+      add: NOOP_ADD_PORT,
+      contextMenu: NOOP_CONTEXT_MENU_PORT,
+      // FR-10 即時反映 / Codex medium #6: clamp the wheel zoom against the LIVE
+      // effective range (project-setting min/max + the renderer fit-world floor),
+      // read fresh per notch so a settings change reaches the wheel and the floor
+      // keeps the FR-11 fit-all initial camera in range (単一真実源 — the renderer's
+      // own clamp, not a second copy here).
+      getZoomRange: () => ports.effectiveZoomRange(),
+    });
+
+    // Convert a DOM event's client coords to surface-relative CSS px (the dispatcher
+    // works in surface space, matching the renderer transform — 教訓 5.29).
+    const toSurface = (clientX: number, clientY: number): { x: number; y: number } => {
+      const box = hookTarget.getBoundingClientRect();
+      return { x: clientX - box.left, y: clientY - box.top };
+    };
+
+    const onPointerDown = (e: PointerEvent): void => {
+      const { x, y } = toSurface(e.clientX, e.clientY);
+      const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
+      // Capture the pointer for a pan so the drag keeps tracking even if the cursor
+      // leaves the layer mid-drag (受け入れ基準 3 押下→移動→解放の連続保証).
+      if (target === DISPATCH_TARGET.Pan) hookTarget.setPointerCapture?.(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent): void => {
+      const { x, y } = toSurface(e.clientX, e.clientY);
+      dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+    };
+    const onPointerUp = (e: PointerEvent): void => {
+      const { x, y } = toSurface(e.clientX, e.clientY);
+      dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
+      hookTarget.releasePointerCapture?.(e.pointerId);
+    };
+    const onPointerCancel = (e: PointerEvent): void => {
+      dispatcher.pointerCancel(e.pointerId);
+    };
+    const onPointerLeave = (): void => dispatcher.pointerLeave();
+    const onWheel = (e: WheelEvent): void => {
+      // Prevent the page from scrolling so a notch becomes a zoom, not a scroll.
+      e.preventDefault();
+      const { x, y } = toSurface(e.clientX, e.clientY);
+      dispatcher.wheel({ x, y, deltaY: e.deltaY, deltaMode: e.deltaMode });
+    };
+
+    hookTarget.addEventListener('pointerdown', onPointerDown);
+    hookTarget.addEventListener('pointermove', onPointerMove);
+    hookTarget.addEventListener('pointerup', onPointerUp);
+    hookTarget.addEventListener('pointercancel', onPointerCancel);
+    hookTarget.addEventListener('pointerleave', onPointerLeave);
+    // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
+    hookTarget.addEventListener('wheel', onWheel, { passive: false });
+
+    // Abort any in-progress pan/selection on a mode change so a stale reference from
+    // the previous mode cannot bleed into the next (教訓 5.2, 受け入れ基準 6).
+    let prevMode = store.getState().mode;
+    const unsubscribeMode = store.subscribe((s) => {
+      if (s.mode === prevMode) return;
+      prevMode = s.mode;
+      dispatcher.onModeChange();
+    });
     // Re-composite whenever the committed domain / current time / selection /
     // display-control / label-threshold setting changes so an added / edited /
     // split feature (or a slider / setting change) draws at once (P0-A / 教訓 5.5).
@@ -194,6 +326,13 @@ export function App(): JSX.Element {
     });
     return () => {
       unsubscribe();
+      unsubscribeMode();
+      hookTarget.removeEventListener('pointerdown', onPointerDown);
+      hookTarget.removeEventListener('pointermove', onPointerMove);
+      hookTarget.removeEventListener('pointerup', onPointerUp);
+      hookTarget.removeEventListener('pointercancel', onPointerCancel);
+      hookTarget.removeEventListener('pointerleave', onPointerLeave);
+      hookTarget.removeEventListener('wheel', onWheel);
       ports.dispose();
       rendererRef.current = null;
     };

@@ -48,6 +48,10 @@ export {
   type ContextMenuPort,
   type PointerModifiers,
   NO_MODIFIERS,
+  EMPTY_HIT_TESTER,
+  NOOP_SELECTION_PORT,
+  NOOP_ADD_PORT,
+  NOOP_CONTEXT_MENU_PORT,
 } from './ports';
 
 export {

@@ -20,7 +20,7 @@
 //     owning units perform.
 
 import type { Camera, ScreenPoint, Viewport } from '../../render';
-import type { HitResult } from '../../domain/selection';
+import { EMPTY_HIT, type HitResult } from '../../domain/selection';
 
 /**
  * Camera read/write port (U16 store + U17 viewport source). `read` returns the
@@ -119,4 +119,40 @@ export const NO_MODIFIERS: PointerModifiers = {
   ctrl: false,
   alt: false,
   meta: false,
+};
+
+// --- Neutral ports for the pan/zoom-only composition (HB-1) ------------------
+//
+// The composition root drives the LIVE pan + wheel-zoom path through the
+// {@link PointerDispatcher} backed by the renderer's camera. Selection / add /
+// context-menu in 編集/追加 modes are owned by their OWN input controllers
+// (AddToolController / KnifeToolController) and overlays that sit ABOVE the map
+// (教訓 5.14), so the pan/zoom dispatcher only needs the CameraPort to be real;
+// the other ports are honest no-ops. They are exported here (single truth source)
+// so the wiring and tests share one neutral implementation rather than re-inlining
+// empty closures (教訓 5.30 過少共有の戒め).
+
+/** A hit-tester that always reports an empty hit (pan/zoom never needs a feature hit). */
+export const EMPTY_HIT_TESTER: HitTester = {
+  hitTest(): HitResult {
+    return EMPTY_HIT;
+  },
+};
+
+/** A selection port that does nothing (selection is owned elsewhere, 教訓 5.14). */
+export const NOOP_SELECTION_PORT: SelectionPort = {
+  start(): void {},
+  move(): void {},
+  end(): void {},
+  cancel(): void {},
+};
+
+/** An add port that does nothing (add input is owned by AddToolController). */
+export const NOOP_ADD_PORT: AddPort = {
+  press(): void {},
+};
+
+/** A context-menu port that does nothing (no context menu wired here yet). */
+export const NOOP_CONTEXT_MENU_PORT: ContextMenuPort = {
+  request(): void {},
 };

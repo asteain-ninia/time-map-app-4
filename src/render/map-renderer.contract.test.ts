@@ -63,6 +63,9 @@ class MockMapRenderer implements MapRenderer {
   cameraForWheelZoom(cursor: ScreenPoint, factor: number): Camera {
     return zoomStepAtCursor(this.camera, this.viewport, cursor, factor, this.zoomRange);
   }
+  effectiveZoomRange(): ZoomRange {
+    return this.zoomRange;
+  }
 }
 
 function makeBackends(camera: Camera, viewport: Viewport): { name: string; r: MapRenderer }[] {

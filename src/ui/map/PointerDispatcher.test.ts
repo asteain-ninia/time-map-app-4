@@ -296,6 +296,45 @@ describe('wheel → U17 cursor-anchored zoom (受け入れ基準 2)', () => {
     line.dispatcher.wheel({ x: 200, y: 150, deltaY: -100 / 16, deltaMode: 1 });
     expect(line.camera.camera.zoom).toBeCloseTo(px.camera.camera.zoom, 5);
   });
+
+  // HB-1 / Codex finding #2: the LIVE getZoomRange clamp must reach the wheel path
+  // (a project-setting change / fit-world floor), and take precedence over the
+  // static option, so the wheel never zooms past the effective range.
+  it('getZoomRange clamps the wheel zoom against the LIVE range', () => {
+    const camera = new FakeCamera();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.View,
+      camera,
+      hitTester: { hitTest: () => EMPTY_HIT },
+      selection: new FakeSelection(),
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+      // A tight live max BELOW the start zoom (4): any zoom-in is clamped to 5,
+      // proving the live range reached zoomStepAtCursor.
+      getZoomRange: () => ({ minZoom: 1, maxZoom: 5 }),
+    });
+    // Many strong zoom-IN notches; without the clamp the zoom would exceed 5.
+    for (let i = 0; i < 20; i += 1) dispatcher.wheel({ x: 200, y: 150, deltaY: -100 });
+    expect(camera.camera.zoom).toBeLessThanOrEqual(5);
+    expect(camera.camera.zoom).toBeCloseTo(5, 6);
+  });
+
+  it('getZoomRange (live) takes precedence over the static zoomRange option', () => {
+    const camera = new FakeCamera();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.View,
+      camera,
+      hitTester: { hitTest: () => EMPTY_HIT },
+      selection: new FakeSelection(),
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+      // The static range would allow zooming to 50, but the LIVE getter caps at 5.
+      zoomRange: { minZoom: 1, maxZoom: 50 },
+      getZoomRange: () => ({ minZoom: 1, maxZoom: 5 }),
+    });
+    for (let i = 0; i < 20; i += 1) dispatcher.wheel({ x: 200, y: 150, deltaY: -100 });
+    expect(camera.camera.zoom).toBeCloseTo(5, 6);
+  });
 });
 
 describe('buttonFromButtonsMask', () => {

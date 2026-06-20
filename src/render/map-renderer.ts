@@ -225,4 +225,12 @@ export interface MapRenderer {
    * layer does not own camera state — 単一真実源). Pure w.r.t. renderer state.
    */
   cameraForWheelZoom(cursor: ScreenPoint, factor: number): Camera;
+  /**
+   * The zoom clamp ACTUALLY applied to cursor-zoom: the U16-supplied range with the
+   * floor lowered to the fit-world zoom when that is smaller than the configured
+   * minimum (so the FR-11 fit-all initial camera stays in range). Exposed so an
+   * external wheel path (U40 dispatcher, HB-1) clamps against the SAME effective
+   * range the renderer uses — no second clamp source (単一真実源, 教訓 5.29).
+   */
+  effectiveZoomRange(): ZoomRange;
 }
