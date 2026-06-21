@@ -170,12 +170,33 @@ export function detectTerminalOverlaps(
   index.bulkLoad(entries);
 
   // 3. For each identity placement, query its bbox and test only candidates.
-  //    We anchor queries on identity placements (turns 0) so each unordered pair
-  //    is reached from a canonical side; the candidate may be any placement
-  //    (identity or replica) of the *other* feature.
-  const reported = new Map<string, OverlapPair>();
+  //    We anchor queries on the CANONICAL-side identity placement (turns 0, and
+  //    a.id is the smaller id of the pair) so each unordered pair is reached from
+  //    exactly one direction; the candidate may be ANY placement (identity or
+  //    replica) of the *other* feature.
+  //
+  //    Anchoring on the canonical side matters for two reasons:
+  //    - It is the SAME test family the naïve reference runs (A-identity against
+  //      every ±360° turn of B), so the indexed and naïve overlap geometries agree
+  //      piece-for-piece (narrowing-correctness invariant). A-identity∩B+1 is the
+  //      same intersection as A−1∩B-identity one turn over, so testing A-identity
+  //      against every B turn captures the whole pair without anchoring A's
+  //      replicas too.
+  //    - It prevents DOUBLE counting: A-identity∩B-identity and B-identity∩
+  //      A-identity are the same geometric piece; anchoring on only the smaller id
+  //      records it once.
+  //
+  //    A given unordered pair (A,B) can be reachable through MULTIPLE placements
+  //    of B — B's identity AND B's ±360° replica — when A is wide enough to span
+  //    both world turns. We must NOT short-circuit on "pair already seen" and keep
+  //    only the first piece: that drops the other seam turn's overlap (片落とし禁止,
+  //    教訓5.1). Instead we ACCUMULATE every non-empty intersection piece across
+  //    all placements of the same pair, mirroring the naïve accumulation, and emit
+  //    each pair once with the full overlap area (受け入れ基準3「取りこぼさない」).
+  const accumulated = new Map<string, OverlapPair>();
   for (const a of placements) {
     if (a.turns !== 0) continue; // anchor on identity placements only.
+    const aKey = idToString(a.id);
     const candidates = index.search(a.bbox);
     for (const cand of candidates) {
       const b = placements[cand.ref];
@@ -183,21 +204,32 @@ export function detectTerminalOverlaps(
       // Skip self (same feature id): a feature never overlaps itself, and its own
       // ±360° replica is the same feature one turn away (排他検証から自己複製を除外).
       if (b.id === a.id) continue;
+      // Canonical direction only: process each unordered pair from its smaller-id
+      // anchor (mirrors the naïve i<j ordering; avoids counting A∩B twice and
+      // matches the naïve test family A-identity × B-turns).
+      if (aKey > idToString(b.id)) continue;
       // Cheap reject: bbox must actually intersect (search is inclusive; this also
       // mirrors the touch boundary, but the real decision is the area test below).
       if (!bboxesIntersect(a.bbox, b.bbox)) continue;
 
-      const key = pairKey(a.id, b.id);
-      if (reported.has(key)) continue; // pair already decided (no double count).
-
       if (counter !== undefined) counter.count += 1;
-      const overlap = overlapArea(a.shape, b.shape);
-      if (overlap === undefined) continue; // boundary contact / disjoint: not overlap.
-      reported.set(key, makePair(a.id, b.id, overlap));
+      const piece = overlapArea(a.shape, b.shape);
+      if (piece === undefined) continue; // boundary contact / disjoint: not overlap.
+
+      // Accumulate this placement's piece into the pair's running overlap. Each
+      // distinct B placement (identity / replica) contributes its own geometry;
+      // none is dropped (full overlap area per 受け入れ基準3).
+      const key = pairKey(a.id, b.id);
+      const prior = accumulated.get(key);
+      if (prior === undefined) {
+        accumulated.set(key, makePair(a.id, b.id, piece));
+      } else {
+        accumulated.set(key, { ...prior, overlap: [...prior.overlap, ...piece] });
+      }
     }
   }
 
-  return [...reported.values()];
+  return [...accumulated.values()];
 }
 
 /**

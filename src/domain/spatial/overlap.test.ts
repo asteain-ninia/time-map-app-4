@@ -158,6 +158,53 @@ describe('criterion 3: candidate narrowing avoids O(n^2) and loses nothing', () 
       { numRuns: 200 },
     );
   });
+
+  // Stronger invariant (bughunt2): the indexed detector must match the naïve
+  // reference in OVERLAP GEOMETRY, not merely in which pairs exist — and it must
+  // hold WITH the ±360° seam machinery on, where a pair can overlap at more than
+  // one turn. Multi-piece features scattered around the globe (incl. both seams)
+  // generate exactly the multi-turn-per-pair case the per-pair short-circuit used
+  // to drop. We compare total overlap vertex counts per pair (a piece dropped =>
+  // fewer vertices), the property the old pairKeys/NO_SEAM test could not see.
+  it('indexed overlap GEOMETRY matches the naive reference with seams on (property)', () => {
+    // Sum of all ring vertex counts across a multi-polygon.
+    const vtx = (mp: GeoMultiPolygon): number => {
+      let n = 0;
+      for (const poly of mp) for (const ring of poly) n += ring.length;
+      return n;
+    };
+    const piece = fc.record({
+      x: fc.integer({ min: -200, max: 200 }),
+      y: fc.integer({ min: 0, max: 40 }),
+      w: fc.integer({ min: 1, max: 40 }),
+      h: fc.integer({ min: 1, max: 40 }),
+    });
+    const feature = fc.array(piece, { minLength: 1, maxLength: 3 });
+    fc.assert(
+      fc.property(fc.array(feature, { minLength: 0, maxLength: 5 }), (feats) => {
+        const terminals = feats.map((pcs, i) =>
+          term(
+            `T${i}`,
+            // One feature = several rectangle pieces (one multi-polygon).
+            pcs.map((p) => rect(p.x, p.y, p.x + p.w, p.y + p.h)[0]!),
+          ),
+        );
+        // Default seam turns ({-1,0,+1}) — exercise the ±360° replica path.
+        const indexed = detectTerminalOverlaps(terminals);
+        const naive = detectTerminalOverlapsNaive(terminals);
+        const indexedByKey = new Map(indexed.map((p) => [`${p.a}|${p.b}`, p]));
+        const naiveByKey = new Map(naive.map((p) => [`${p.a}|${p.b}`, p]));
+        // Same set of pairs.
+        expect([...indexedByKey.keys()].sort()).toEqual([...naiveByKey.keys()].sort());
+        // Same overlap area per pair (every seam-turn piece present, no 片落とし).
+        for (const [key, naivePair] of naiveByKey) {
+          const indexedPair = indexedByKey.get(key)!;
+          expect(vtx(indexedPair.overlap)).toBe(vtx(naivePair.overlap));
+        }
+      }),
+      { numRuns: 400 },
+    );
+  });
 });
 
 // --- criterion 4: world-seam crossing pairs ---------------------------------
@@ -283,6 +330,76 @@ describe('criterion 7: multiple overlaps and multiple pieces (教訓5.1)', () =>
     expect(pairKeys(pairs)).toEqual(new Set(['A|B']));
     // The overlap must carry BOTH pieces, not just the first (片落とし禁止).
     expect(pairs[0]!.overlap.length).toBe(2);
+  });
+});
+
+// --- criterion 3 (geometry): seam multi-turn overlap accumulates every piece -
+//
+// Regression (bughunt2): a single unordered pair (A,B) can genuinely overlap at
+// TWO DIFFERENT seam turns at once when each feature owns several pieces scattered
+// across the globe — e.g. A's piece near lon 0 overlaps B's piece near lon 0 at
+// turn 0, while A's piece near lon −90 overlaps a far-east piece of B at turn +1
+// (−90 + 360 = 270). Seam-continuity alignment keeps those pieces a full world
+// turn apart, so BOTH turns produce positive area for the same pair.
+//
+// The indexed detector previously short-circuited per pair on the FIRST found
+// piece (`if (reported.has(key)) continue;` then `reported.set(...)` once) and
+// never revisited the pair, dropping the other turn's piece (片落とし). Its
+// OverlapPair.overlap was therefore MISSING area relative to the naïve reference,
+// which loops every seamTurn and ACCUMULATES all pieces (受け入れ基準3「取りこぼさ
+// ない」/ 教訓5.1, and the documented contract overlap.ts:50-58 that a reported
+// pair carries the FULL overlap area). The fix accumulates pieces across all
+// placements of the pair, so indexed geometry now equals the naïve reference —
+// not just the same pair KEY, the same area.
+
+describe('criterion 3 (geometry): a pair overlapping at two seam turns keeps both pieces', () => {
+  // Sum of all ring vertex counts (a stable proxy for "all pieces are present":
+  // dropping a seam piece drops its ring's vertices).
+  function totalVertices(mp: GeoMultiPolygon): number {
+    let n = 0;
+    for (const poly of mp) for (const ring of poly) n += ring.length;
+    return n;
+  }
+
+  /** Multi-polygon from explicit pieces, each a [x0,y0,x1,y1] rectangle. */
+  function pieces(...boxes: readonly [number, number, number, number][]): GeoMultiPolygon {
+    return boxes.map(([x0, y0, x1, y1]) => rect(x0, y0, x1, y1)[0]!);
+  }
+
+  it('indexed overlap geometry equals the naive reference when a pair overlaps at two turns', () => {
+    // Minimal counterexample (shrunk from the seam geometry property below) that
+    // reliably defeated the pre-fix per-pair short-circuit:
+    //   A: a piece near lon −90 and a piece near the prime meridian.
+    //   B: a wide piece near lon 70..86, a piece near the prime meridian, and a
+    //      piece near lon −115..−89.
+    // A's [0,1] piece overlaps B's [0,1] piece at turn 0; A's [−90,−89] piece
+    // overlaps B's [−115,−89] piece one world turn over (the seam-replica path).
+    // Two distinct turns => two distinct overlap pieces for the single pair (A,B).
+    const a = pieces([-90, 0, -89, 1], [0, 0, 1, 1]);
+    const b = pieces([70, 0, 86, 1], [0, 0, 1, 1], [-115, 0, -89, 1]);
+    const terminals = [term('A', a), term('B', b)];
+
+    const indexed = detectTerminalOverlaps(terminals);
+    const naive = detectTerminalOverlapsNaive(terminals);
+
+    // Both detect the single unordered pair.
+    expect(pairKeys(indexed)).toEqual(new Set(['A|B']));
+    expect(pairKeys(naive)).toEqual(pairKeys(indexed));
+
+    const indexedPair = indexed[0]!;
+    const naivePair = naive[0]!;
+
+    // Guard: the naïve reference must actually produce TWO pieces here, proving
+    // this input exercises the multi-turn path. If alignment ever collapses it to
+    // one piece, this test would otherwise pass vacuously.
+    expect(naivePair.overlap.length).toBe(2);
+
+    // The fix: the indexed detector carries the SAME pieces and the SAME total
+    // geometry as the naïve accumulation — no 片落とし. (Pre-fix this was 1 piece /
+    // 4 vertices vs the naïve 2 pieces / 8 vertices.)
+    expect(indexedPair.overlap.length).toBe(naivePair.overlap.length);
+    expect(totalVertices(indexedPair.overlap)).toBe(totalVertices(naivePair.overlap));
+    expect(totalVertices(indexedPair.overlap)).toBe(8);
   });
 });
 
