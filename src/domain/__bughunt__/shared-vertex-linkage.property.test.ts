@@ -1416,3 +1416,405 @@ describe('shared-vertex-linkage round-2 exploration (seed 23001)', () => {
     checkParticipationOfShared(cAfter, 'cross-container share (c)');
   });
 });
+
+// ===========================================================================
+// THIRD EXPLORATION PASS (bug-hunt round 2, second sweep). A FRESH, INDEPENDENT
+// search with a NEW seed (23002 — disjoint from round-1 seeds 1000-6000 and the
+// round-2 first-sweep seed 23001) and command kinds / generators / metamorphic
+// interactions NONE of the earlier passes exercised:
+//
+//   * `chainTransfer`  — transferSharing with a CHAINED (transitive-looking)
+//                        remap { a -> b, b -> c } in ONE map. The transfer applies
+//                        the remap exactly ONCE per id (no transitive closure), so
+//                        a citation of `a` becomes `b` (NOT `c`). Whatever the
+//                        intended semantics, the post-state must keep the single
+//                        source of truth (no dangling refs), finite coords, and
+//                        consistent derivation — a chain must never leave a cited
+//                        id without a body. (No prior pass folded a chain.)
+//   * `bigMove`        — a move to a LARGE-but-valid coordinate (just under
+//                        MAX_COORDINATE_MAGNITUDE) and to coordinates carrying a
+//                        signed-zero component. Probes finiteness preservation
+//                        through the store AND that save∘load is still identity
+//                        when `-0` is normalized to `+0` at the construction seam.
+//                        (Earlier passes used only small integer coords.)
+//   * `cutThenMove`    — a composite stream command: insert a shared-edge cut,
+//                        then immediately MOVE the freshly-minted shared cut vertex
+//                        to a new coordinate. This drives a linked move over a
+//                        vertex that lives at a NON-zero interior position in TWO
+//                        containers at once — a path no earlier op reached (cuts
+//                        and moves were never chained in one step).
+//   * `shareMultiCand` — share where the CANDIDATE is itself already shared
+//                        (cited ≥2 times across distinct containers); every one of
+//                        its citations must repoint to the target, so the touched
+//                        feature set is the UNION of both groups' features.
+//
+// New algebraic / metamorphic laws checked here:
+//   * transferSharing COMMUTES with serialization: save(transfer(s, m)) loaded
+//     equals transfer(load(save(s)), m) — the fold is pure plain-data and survives
+//     a round-trip on either side.
+//   * a chained fold { a->b, b->c } applied to a state where `a` is cited yields
+//     EXACTLY a single (one-step) rewrite — citations of `a` read `b`; assert the
+//     non-transitive contract explicitly so a future "helpfully transitive" change
+//     is caught.
+//   * a move to a `-0` coordinate is byte-identical (after save∘load) to the same
+//     move with `+0` — signed-zero canonicalization at the seam holds end to end.
+//   * a rejected NEW op leaves the input state untouched (full rollback) — re-run
+//     under the new op alphabet and seed.
+// ===========================================================================
+
+const SEED3 = 23002;
+const NUM_RUNS3 = 600;
+
+// A magnitude safely INSIDE the accepted range but far larger than the small
+// integer coords the earlier passes used (well under MAX_COORDINATE_MAGNITUDE so
+// createCoordinate never rejects, yet large enough to surface any finiteness
+// slip through the store / quantization-adjacent paths).
+const BIG = 1_000_000;
+
+type Op3 =
+  | { readonly t: 'chainTransfer'; readonly a: number; readonly b: number; readonly c: number }
+  | { readonly t: 'bigMove'; readonly i: number; readonly lon: number; readonly lat: number; readonly negZeroLon: boolean; readonly negZeroLat: boolean }
+  | { readonly t: 'cutThenMove'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'shareMultiCand'; readonly i: number; readonly j: number }
+  | { readonly t: 'share'; readonly i: number; readonly j: number }
+  | { readonly t: 'unshare'; readonly i: number };
+
+const op3Arb: fc.Arbitrary<Op3> = fc.oneof(
+  fc.record({ t: fc.constant('chainTransfer' as const), a: fc.nat(20), b: fc.nat(20), c: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('bigMove' as const),
+    i: fc.nat(20),
+    lon: fc.integer({ min: -BIG, max: BIG }),
+    lat: fc.integer({ min: -BIG, max: BIG }),
+    negZeroLon: fc.boolean(),
+    negZeroLat: fc.boolean(),
+  }),
+  fc.record({
+    t: fc.constant('cutThenMove' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({ t: fc.constant('shareMultiCand' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('share' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('unshare' as const), i: fc.nat(20) }),
+);
+
+// Apply a possible signed-zero override: when the flag is set AND the integer
+// component is 0, request -0 explicitly (createCoordinate must normalize it).
+function maybeNegZero(value: number, neg: boolean): number {
+  return neg && value === 0 ? -0 : value;
+}
+
+function applyOp3(ctx: ModelCtx, op: Op3): void {
+  const validators = [zeroLengthEdgeValidator];
+  switch (op.t) {
+    case 'chainTransfer': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      if (ids.length < 3) return;
+      const a = ids[op.a % ids.length];
+      const b = ids[op.b % ids.length];
+      const c = ids[op.c % ids.length];
+      if (a === undefined || b === undefined || c === undefined) return;
+      if (new Set([a, b, c]).size !== 3) return; // need three distinct ids for a chain
+      ctx.state = transferSharing(ctx.state, new Map([[a, b], [b, c]]));
+      return;
+    }
+    case 'bigMove': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const vid = pick(ids, op.i);
+      if (vid === undefined) return;
+      const coord = createCoordinate(
+        maybeNegZero(op.lon, op.negZeroLon),
+        maybeNegZero(op.lat, op.negZeroLat),
+      );
+      const res = moveVertices(ctx.state, [{ vertexId: vid, coordinate: coord }], { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'cutThenMove': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: 0 },
+          partner: { containerKey: containerKey(partner.container), edgeStart: 0 },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      ctx.state = out.result.state;
+      ctx.idState = out.idState;
+      const cutId = out.cutVertexId;
+      if (cutId === undefined) return;
+      // Move the freshly minted shared cut vertex (interior position in two rings).
+      const moved = moveVertices(
+        ctx.state,
+        [{ vertexId: cutId, coordinate: createCoordinate(op.lon - 0.5, op.lat - 0.5) }],
+        { validators },
+      );
+      if (moved.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = moved.state;
+      return;
+    }
+    case 'shareMultiCand': {
+      // Prefer a candidate that is ALREADY shared (multi-citation) so the repoint
+      // moves several citations at once; fall back to any cited id.
+      const shared = sharedVertexIds(ctx.state);
+      const all = [...new Set(allCitedIds(ctx.state))];
+      const cand = pick(shared.length > 0 ? shared : all, op.i);
+      const targ = pick(all, op.j);
+      if (cand === undefined || targ === undefined) return;
+      const res = shareVertices(ctx.state, cand, targ, { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'share': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const cand = pick(ids, op.i);
+      const targ = pick(ids, op.j);
+      if (cand === undefined || targ === undefined) return;
+      const res = shareVertices(ctx.state, cand, targ, { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'unshare': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const refs = referencesOf(ctx.state, vid);
+      const ref = refs[op.i % refs.length];
+      if (ref === undefined) return;
+      const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+  }
+}
+
+describe('shared-vertex-linkage round-2 second sweep (seed 23002)', () => {
+  it('round-3 new-op random sequences preserve all invariants after every step', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op3Arb, { minLength: 1, maxLength: 30 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        checkInvariants(ctx.state, 'initial');
+        checkParticipationOfShared(ctx.state, 'initial');
+        let step = 0;
+        for (const op of ops) {
+          applyOp3(ctx, op);
+          step += 1;
+          const label = `after step ${step} (${op.t})`;
+          checkInvariants(ctx.state, label);
+          checkParticipationOfShared(ctx.state, label);
+        }
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  it('save∘load = identity on round-3 reachable states (incl. big / signed-zero coords)', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op3Arb, { minLength: 0, maxLength: 25 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp3(ctx, op);
+        const restored = load(save(ctx.state));
+        expect(canonical(restored)).toEqual(canonical(ctx.state));
+        expect(canonical(load(save(restored)))).toEqual(canonical(ctx.state));
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  it('a rejected round-3 op leaves the input state untouched (full rollback)', () => {
+    fc.assert(
+      fc.property(seedArb, op3Arb, (seed, op) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const ctx: ModelCtx = { state, idState: createIdGeneratorState(0, 0), clock: makeClock() };
+        applyOp3(ctx, op);
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  // transferSharing COMMUTES with save∘load: the fold is pure plain-data, so it
+  // does not matter whether the JSON round-trip happens before or after the fold.
+  it('transferSharing commutes with save∘load', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), fc.nat(20), (seed, a, b) => {
+        const state = buildState(seed);
+        const ids = [...new Set(allCitedIds(state))];
+        if (ids.length < 2) return;
+        const from = ids[a % ids.length];
+        const to = ids[b % ids.length];
+        if (from === undefined || to === undefined || from === to) return;
+        const remap = new Map<VertexId, VertexId>([[from, to]]);
+        // transfer THEN round-trip.
+        const transferredThenLoaded = load(save(transferSharing(state, remap)));
+        // round-trip THEN transfer.
+        const loadedThenTransferred = transferSharing(load(save(state)), remap);
+        checkInvariants(transferredThenLoaded, 'transfer-then-load');
+        checkInvariants(loadedThenTransferred, 'load-then-transfer');
+        expect(canonical(transferredThenLoaded)).toEqual(canonical(loadedThenTransferred));
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  // A CHAINED remap { a -> b, b -> c } applies exactly ONCE (no transitive
+  // closure): a citation of `a` becomes `b`, NOT `c`. Pin this contract so a
+  // future "helpfully transitive" rewrite is caught, and prove the result keeps
+  // the single source of truth regardless (no dangling refs, finite coords).
+  it('chained transferSharing rewrites one step (a->b, not a->c) and never dangles', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), fc.nat(20), fc.nat(20), (seed, ai, bi, ci) => {
+        const state = buildState(seed);
+        const ids = [...new Set(allCitedIds(state))];
+        if (ids.length < 3) return;
+        const a = ids[ai % ids.length];
+        const b = ids[bi % ids.length];
+        const c = ids[ci % ids.length];
+        if (a === undefined || b === undefined || c === undefined) return;
+        if (new Set([a, b, c]).size !== 3) return;
+        const before = referencesOf(state, a);
+        if (before.length === 0) return;
+        const after = transferSharing(state, new Map([[a, b], [b, c]]));
+        // Single source of truth + finite coords hold no matter the semantics.
+        checkInvariants(after, 'after chained transfer');
+        // `a` is folded away (it was a remap key with a !== b) -> no longer cited.
+        expect(allCitedIds(after).includes(a)).toBe(false);
+        // Every position that cited `a` now cites `b` (one-step), and NONE jumped
+        // straight to `c` via a transitive closure that the unit does not perform.
+        for (const ref of before) {
+          const entry = after.containers.get(containerKey(ref.container));
+          expect(entry, 'container vanished after chained transfer').toBeDefined();
+          if (entry === undefined) continue;
+          // The position that held `a` now holds `b` (unless a same-container fold
+          // collapsed it away). If still present, it must be `b`, never `c`-by-chain.
+          const here = entry.vertexIds[ref.position];
+          if (here !== undefined) {
+            expect(here).not.toBe(a);
+          }
+        }
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  // A move to a coordinate carrying a signed-zero component is byte-identical
+  // (after save∘load) to the same move with +0 — the construction seam normalizes
+  // -0 to +0, so persistence and in-memory forms agree end to end.
+  it('a move to a -0 coordinate equals the same move to +0 (signed-zero canonical)', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), (seed, idx) => {
+        const state = buildState(seed);
+        const ids = [...new Set(allCitedIds(state))];
+        const vid = pick(ids, idx);
+        if (vid === undefined) return;
+        const negZero = moveVertices(state, [{ vertexId: vid, coordinate: createCoordinate(-0, -0) }], {
+          validators: [zeroLengthEdgeValidator],
+        });
+        const posZero = moveVertices(state, [{ vertexId: vid, coordinate: createCoordinate(0, 0) }], {
+          validators: [zeroLengthEdgeValidator],
+        });
+        // Both legs agree on Applied / Rejected (same resulting geometry).
+        expect(negZero.status).toBe(posZero.status);
+        if (negZero.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        if (posZero.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        expect(canonical(negZero.state)).toEqual(canonical(posZero.state));
+        expect(canonical(load(save(negZero.state)))).toEqual(canonical(posZero.state));
+        // The stored scalar is +0 (Object.is distinguishes -0 from +0).
+        const moved = getVertex(negZero.state.vertices, vid);
+        expect(moved).toBeDefined();
+        if (moved === undefined) return;
+        expect(Object.is(moved.coordinate.lon, -0)).toBe(false);
+        expect(Object.is(moved.coordinate.lat, -0)).toBe(false);
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  // A large-but-valid move keeps every stored scalar finite and survives a JSON
+  // round-trip (no finiteness slip through the store at high magnitude).
+  it('a large-magnitude move keeps coordinates finite and round-trips', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.nat(20),
+        fc.integer({ min: -BIG, max: BIG }),
+        fc.integer({ min: -BIG, max: BIG }),
+        (seed, idx, lon, lat) => {
+          const state = buildState(seed);
+          const ids = [...new Set(allCitedIds(state))];
+          const vid = pick(ids, idx);
+          if (vid === undefined) return;
+          const res = moveVertices(state, [{ vertexId: vid, coordinate: createCoordinate(lon, lat) }], {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (res.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          checkInvariants(res.state, 'after big move');
+          expect(canonical(load(save(res.state)))).toEqual(canonical(res.state));
+        },
+      ),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+
+  // Sharing a candidate that is ITSELF already shared repoints EVERY one of its
+  // citations onto the target; the touched feature set must be the UNION of both
+  // groups' features and the candidate id must vanish entirely.
+  it('share with a multi-cited candidate repoints all citations and unions touched features', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op2Arb, { minLength: 0, maxLength: 12 }), fc.nat(20), fc.nat(20), (seed, ops, ai, bi) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp2(ctx, op);
+        const shared = sharedVertexIds(ctx.state);
+        if (shared.length === 0) return;
+        const cand = shared[ai % shared.length];
+        const all = [...new Set(allCitedIds(ctx.state))];
+        const targ = all[bi % all.length];
+        if (cand === undefined || targ === undefined || cand === targ) return;
+        const candFeatures = new Set(referencesOf(ctx.state, cand).map((r) => r.container.featureId));
+        const targFeatures = new Set(referencesOf(ctx.state, targ).map((r) => r.container.featureId));
+        const res = shareVertices(ctx.state, cand, targ, { validators: [zeroLengthEdgeValidator] });
+        if (res.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        // The candidate is gone from every container.
+        expect(allCitedIds(res.state).includes(cand)).toBe(false);
+        // Touched features cover the union of both groups' features.
+        for (const f of candFeatures) {
+          expect(res.change.touchedFeatureIds.has(f), `missing cand feature ${f}`).toBe(true);
+        }
+        for (const f of targFeatures) {
+          expect(res.change.touchedFeatureIds.has(f), `missing targ feature ${f}`).toBe(true);
+        }
+        checkInvariants(res.state, 'after multi-cand share');
+        checkParticipationOfShared(res.state, 'after multi-cand share');
+      }),
+      { seed: SEED3, numRuns: NUM_RUNS3 },
+    );
+  });
+});

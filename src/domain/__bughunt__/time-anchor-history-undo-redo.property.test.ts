@@ -51,12 +51,18 @@ import {
 } from '../command/command';
 import { createCommandResult } from '../command/result';
 import {
+  canRedo,
+  canUndo,
+  clearRedo,
   createHistory,
   execute,
+  executeIfChanged,
   redo,
   undo,
+  withLimit,
   type History,
 } from '../command/history';
+import { createCompositeCommand } from '../command/command';
 import { getCalendar } from '../time/calendar';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import {
@@ -671,6 +677,352 @@ describe('time-anchor + history undo/redo — seed 4002 expansion', () => {
 
 // keep normalizeSeries import used even if a branch above is pruned
 void normalizeSeries;
+
+// ===========================================================================
+// SEED 24002 expansion suite — BOUNDED-LIMIT history + reference-model driver +
+// composite undo units. A NEW exploration distinct from the 4001/4002/4004/
+// 24001 passes (different seed, different command-space + interactions).
+//
+// Structural gaps the prior suites leave open:
+//
+//   1. EVERY prior suite gives the history a limit big enough that the undo
+//      stack is NEVER trimmed (createHistory(initial, 50|100|200) over <=30
+//      actions). So FR-74's "上限到達時は最古の操作から破棄する" — trimUndoStack
+//      dropping the OLDEST entries — and its interaction with the
+//      "full-undo returns to root" law are completely unexercised. A trim bug
+//      (off-by-one window, wrong end trimmed, redo not clearing on overflow,
+//      withLimit retroactively corrupting the stack) cannot be caught by the
+//      existing "undo all == root" tests because those never overflow. This
+//      suite drives a SMALL limit (1..4) so trimming is the common case, and
+//      verifies the history against an explicit REFERENCE MODEL of the expected
+//      undo/redo state stacks after every action (stateful / model-based).
+//
+//   2. executeIfChanged / clearRedo / withLimit are never touched by any prior
+//      suite. executeIfChanged must NOT push a ghost entry when the baseline is
+//      unchanged (教訓 5.24); clearRedo must drop only the redo branch; withLimit
+//      must retroactively trim the oldest undo entries. All three are folded
+//      into the action space here and checked against the reference model.
+//
+//   3. Composite commands (createCompositeCommand) as a SINGLE indivisible undo
+//      unit (FR-73/FR-94) over a CHAIN of real series edits are never exercised
+//      on the time axis. A composite that bundles N accepted edits must undo as
+//      ONE step back to the pre-composite series and redo as ONE step forward to
+//      the post-chain series — never landing on an intermediate sub-edit state.
+//
+// All series invariants (INV-1..3,5,6 via validateSeries), no NaN/Infinity,
+// forest validity, selection validity, and save∘load==identity are re-asserted
+// after every reachable state, so this suite also re-covers the core contract
+// under the new (bounded, trimming) history regime.
+//
+// Determinism: pinned seed 24002, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_24002 = 24002;
+const NUM_RUNS_24002 = 500;
+
+// --- reference model of a bounded dual-stack history ------------------------
+//
+// The model mirrors execute/undo/redo/withLimit/clearRedo over PLAIN state
+// VALUES (the serialized series view), independent of the production History
+// implementation, so a divergence between the two is a real bug. The model
+// stores the undo stack as the sequence of (before -> after) state pairs and the
+// current pointer, trimming the oldest pair when the undo depth exceeds `limit`.
+
+interface ModelEntry {
+  readonly before: unknown; // viewSeries(before)
+  readonly after: unknown; //  viewSeries(after)
+}
+
+interface Model {
+  readonly current: unknown; // viewSeries(currentState)
+  readonly undo: readonly ModelEntry[]; // oldest -> newest applied
+  readonly redo: readonly ModelEntry[]; // newest-undone at the END (top)
+  readonly limit: number;
+}
+
+function modelExecute(m: Model, before: unknown, after: unknown): Model {
+  const undo = [...m.undo, { before, after }];
+  // FR-74: trim oldest undo entries past the limit.
+  const trimmed = undo.length > m.limit ? undo.slice(undo.length - m.limit) : undo;
+  return { current: after, undo: trimmed, redo: [], limit: m.limit };
+}
+
+function modelUndo(m: Model): Model {
+  const top = m.undo[m.undo.length - 1];
+  if (top === undefined) return m; // no-op
+  return {
+    current: top.before,
+    undo: m.undo.slice(0, -1),
+    redo: [...m.redo, top],
+    limit: m.limit,
+  };
+}
+
+function modelRedo(m: Model): Model {
+  const top = m.redo[m.redo.length - 1];
+  if (top === undefined) return m; // no-op
+  const undo = [...m.undo, top];
+  const trimmed = undo.length > m.limit ? undo.slice(undo.length - m.limit) : undo;
+  return {
+    current: top.after,
+    undo: trimmed,
+    redo: m.redo.slice(0, -1),
+    limit: m.limit,
+  };
+}
+
+function modelWithLimit(m: Model, limit: number): Model {
+  const clamped = Math.max(1, Math.floor(limit));
+  const undo =
+    m.undo.length > clamped ? m.undo.slice(m.undo.length - clamped) : m.undo;
+  return { ...m, limit: clamped, undo };
+}
+
+function modelClearRedo(m: Model): Model {
+  return { ...m, redo: [] };
+}
+
+/** Assert the production history agrees with the model on the observable state,
+ * the undo/redo depths, and the canUndo/canRedo gates. */
+function expectHistoryMatchesModel(h: History<AnchorSeries>, m: Model): void {
+  expect(viewSeries(h.state)).toEqual(m.current);
+  expect(h.undoStack.length).toBe(m.undo.length);
+  expect(h.redoStack.length).toBe(m.redo.length);
+  expect(canUndo(h)).toBe(m.undo.length > 0);
+  expect(canRedo(h)).toBe(m.redo.length > 0);
+  expect(h.limit).toBe(m.limit);
+}
+
+// Action space for the bounded-history stateful driver.
+type BoundedAction =
+  | { readonly t: 'edit'; readonly op: EditOp }
+  | { readonly t: 'editIfChanged'; readonly op: EditOp }
+  | { readonly t: 'undo' }
+  | { readonly t: 'redo' }
+  | { readonly t: 'clearRedo' }
+  | { readonly t: 'setLimit'; readonly limit: number };
+
+const boundedActionArb: fc.Arbitrary<BoundedAction> = fc.oneof(
+  editOpArb.map((op) => ({ t: 'edit' as const, op })),
+  editOpArb.map((op) => ({ t: 'editIfChanged' as const, op })),
+  fc.constant({ t: 'undo' as const }),
+  fc.constant({ t: 'undo' as const }), // weight undo/redo higher to drain stacks
+  fc.constant({ t: 'redo' as const }),
+  fc.constant({ t: 'redo' as const }),
+  fc.constant({ t: 'clearRedo' as const }),
+  fc.record({ t: fc.constant('setLimit' as const), limit: fc.integer({ min: 1, max: 5 }) }),
+);
+
+describe('time-anchor + history undo/redo — seed 24002 bounded-limit + model', () => {
+  it('bounded history agrees with a reference model under random edit/undo/redo/limit streams', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.integer({ min: 1, max: 4 }), // SMALL limit so trimming is common
+        fc.array(boundedActionArb, { maxLength: 40 }),
+        (initial, limit, actions) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          // The clamped limit the production history actually uses.
+          expectHistoryMatchesModel(history, model);
+
+          for (const action of actions) {
+            if (action.t === 'edit' || action.t === 'editIfChanged') {
+              const before = history.state;
+              const after = applyEdit(before, action.op);
+              if (after === undefined) {
+                // No-op / rejected. For editIfChanged we still call the real
+                // API with an always-true isNoOp so the ghost-suppression path
+                // (教訓 5.24) is exercised and must leave history untouched.
+                if (action.t === 'editIfChanged') {
+                  const step = executeIfChanged(
+                    history,
+                    makeSeriesCommand(action.op.kind, before, before),
+                    () => true,
+                  );
+                  history = step.history;
+                }
+                continue;
+              }
+              const cmd = makeSeriesCommand(action.op.kind, before, after);
+              if (action.t === 'edit') {
+                history = execute(history, cmd).history;
+              } else {
+                // Real change ⇒ isNoOp false ⇒ behaves exactly like execute.
+                history = executeIfChanged(history, cmd, () => false).history;
+              }
+              model = modelExecute(model, viewSeries(before), viewSeries(after));
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+              model = modelUndo(model);
+            } else if (action.t === 'redo') {
+              history = redo(history).history;
+              model = modelRedo(model);
+            } else if (action.t === 'clearRedo') {
+              history = clearRedo(history);
+              model = modelClearRedo(model);
+            } else {
+              history = withLimit(history, action.limit);
+              model = modelWithLimit(model, action.limit);
+            }
+            // Production history and reference model must agree at every step…
+            expectHistoryMatchesModel(history, model);
+            // …and the reachable series must satisfy the whole contract.
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_24002, numRuns: NUM_RUNS_24002 },
+    );
+  });
+
+  it('FR-74: after overflowing the limit, undoing the WHOLE retained stack lands on the oldest retained pre-state', () => {
+    // When more edits are executed than the limit allows, the oldest undo units
+    // are dropped, so "undo everything possible" must NOT return to the original
+    // root — it must return to the `before` state of the OLDEST RETAINED edit.
+    // The reference model computes that target independently; a trim bug (wrong
+    // end trimmed, off-by-one) would make the two disagree.
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.integer({ min: 1, max: 3 }),
+        fc.array(editOpArb, { minLength: 1, maxLength: 16 }),
+        (initial, limit, ops) => {
+          let history = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(history, makeSeriesCommand(op.kind, before, after)).history;
+            model = modelExecute(model, viewSeries(before), viewSeries(after));
+          }
+          const retained = model.undo.length;
+          // Drain the entire retained undo stack.
+          for (let i = 0; i < retained; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+          }
+          expectHistoryMatchesModel(history, model);
+          assertStepInvariants(history.state);
+          // After draining, the model's current is the `before` of the oldest
+          // retained edit (or the root if nothing was ever pushed).
+          const expectedFloor =
+            model.undo.length === 0 && retained === 0
+              ? viewSeries(initial)
+              : model.current;
+          expect(viewSeries(history.state)).toEqual(expectedFloor);
+          // A further undo is a no-op (stack is empty).
+          const extra = undo(history).history;
+          expect(viewSeries(extra.state)).toEqual(viewSeries(history.state));
+          expect(extra.undoStack.length).toBe(history.undoStack.length);
+        },
+      ),
+      { seed: SEED_24002, numRuns: NUM_RUNS_24002 },
+    );
+  });
+
+  it('composite command of an edit-chain is ONE indivisible undo unit (FR-73/FR-94)', () => {
+    // Bundle a chain of accepted edits into a single composite. Executing it must
+    // move the series to the post-chain state in ONE history entry; undo must
+    // jump back to the pre-composite series in ONE step (never an intermediate
+    // sub-edit), and redo must restore the post-chain series in ONE step.
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { minLength: 1, maxLength: 6 }),
+        (initial, ops) => {
+          // Build the chain of sub-commands by folding the edits, skipping
+          // rejected / no-op ones so every sub-command is a real change.
+          const subCommands: Command<AnchorSeries>[] = [];
+          let cursor = initial;
+          for (const op of ops) {
+            const after = applyEdit(cursor, op);
+            if (after === undefined) continue;
+            subCommands.push(makeSeriesCommand(op.kind, cursor, after));
+            cursor = after;
+          }
+          if (subCommands.length === 0) return; // nothing to bundle
+          const postChain = cursor;
+
+          const composite = createCompositeCommand('bughunt/edit-chain', subCommands);
+          let history = createHistory(initial, 10);
+
+          history = execute(history, composite).history;
+          // ONE undo unit for the whole chain.
+          expect(history.undoStack.length).toBe(1);
+          expect(viewSeries(history.state)).toEqual(viewSeries(postChain));
+          assertStepInvariants(history.state);
+
+          // Undo: ONE step back to the exact pre-composite series.
+          const undone = undo(history).history;
+          expect(undone.undoStack.length).toBe(0);
+          expect(undone.redoStack.length).toBe(1);
+          expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+          assertStepInvariants(undone.state);
+
+          // Redo: ONE step forward to the exact post-chain series.
+          const redone = redo(undone).history;
+          expect(viewSeries(redone.state)).toEqual(viewSeries(postChain));
+          assertStepInvariants(redone.state);
+        },
+      ),
+      { seed: SEED_24002, numRuns: NUM_RUNS_24002 },
+    );
+  });
+
+  it('clearRedo drops only the redo branch and never resurrects on redo (seed 24002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { minLength: 1, maxLength: 10 }),
+        (initial, ops) => {
+          let history = createHistory(initial, 20);
+          const pushedStates: AnchorSeries[] = [];
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(history, makeSeriesCommand(op.kind, before, after)).history;
+            pushedStates.push(after);
+          }
+          if (pushedStates.length === 0) return;
+          // Undo a few to populate the redo stack.
+          const undos = Math.min(pushedStates.length, 3);
+          for (let i = 0; i < undos; i += 1) history = undo(history).history;
+          expect(history.redoStack.length).toBe(undos);
+          const stateBeforeClear = history.state;
+          const undoDepth = history.undoStack.length;
+
+          history = clearRedo(history);
+          // Redo branch gone, undo branch + state untouched.
+          expect(history.redoStack.length).toBe(0);
+          expect(history.undoStack.length).toBe(undoDepth);
+          expect(viewSeries(history.state)).toEqual(viewSeries(stateBeforeClear));
+
+          // A redo now is a no-op — the cleared redo can never resurrect.
+          const afterRedo = redo(history).history;
+          expect(viewSeries(afterRedo.state)).toEqual(viewSeries(stateBeforeClear));
+          expect(afterRedo.redoStack.length).toBe(0);
+          assertStepInvariants(afterRedo.state);
+        },
+      ),
+      { seed: SEED_24002, numRuns: NUM_RUNS_24002 },
+    );
+  });
+});
 
 // ===========================================================================
 // SEED 4004 expansion suite — RICH snapshots (rings + hierarchy forest).

@@ -184,6 +184,76 @@ describe('setEnd (AC-3, FR-58, §4.5)', () => {
       expect(resolveAt(r.series, timePointYear(150), cal).kind).toBe('absent');
     }
   });
+
+  // --- regression (bughunt2): setEnd must edit the FIRST occurrence of a
+  // duplicate AnchorId and keep that edit, not silently drop it in favour of the
+  // unedited later occurrence. A duplicate-id series (INV-6 violation) is only
+  // reachable from corrupt / legacy / hand-edited persistence loaded BEFORE the
+  // consistency repair runs, but on such a series setEnd must not lose the edit.
+  // Previously setEnd kept the edited entry at the FIRST occurrence's position
+  // and normalizeSeries' keep-last dedup then dropped it, retaining the UNEDITED
+  // later entry and reporting ok:true — the edit was silently lost.
+  it('keeps the edited entry on a duplicate-AnchorId series (does not drop it)', () => {
+    // Build a RAW series with two entries sharing one AnchorId — bypass the
+    // series() helper, which normalizes (and would collapse the duplicate).
+    const dup: AnchorSeries = {
+      entries: [entry(1, 0, null), entry(1, 100, null)],
+    };
+    const sharedId = dup.entries[0]!.anchor.id;
+    expect(dup.entries[1]!.anchor.id).toBe(sharedId); // precondition: same id.
+
+    const r = setEnd(dup, sharedId, timePointYear(50), cal);
+
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      // The dedup collapses to a single entry (unique id, INV-6 restored)...
+      expect(r.series.entries).toHaveLength(1);
+      // ...and the surviving entry MUST be the edited one: start=0 with end=50,
+      // NOT the unedited start=100 entry.
+      const survivor = r.series.entries[0]!;
+      expect(survivor.start).toEqual(timePointYear(0));
+      expect(survivor.end).toEqual(timePointYear(50));
+      expect(validateSeries(r.series, cal).ok).toBe(true);
+    }
+  });
+
+  it('applyPastEdit keeps the in-place edit on a duplicate-AnchorId series', () => {
+    // Two entries share an id but DIFFER in start and snapshot. The in-place
+    // update branch fires on the FIRST occurrence (start=0); its snapshot must be
+    // the one applyPastEdit just replaced, not the unedited later duplicate's.
+    // (Decouple id from snapshot: createAnchor lets a shared id carry distinct
+    // snapshots, which makeAnchor — id tied to seed — cannot express.)
+    const sharedId = asAnchorId('a-dup');
+    const first = createAnchorEntry(
+      createAnchor(sharedId, makeSnapshot(1)),
+      timePointYear(0),
+      null,
+    );
+    const later = createAnchorEntry(
+      createAnchor(sharedId, makeSnapshot(2)),
+      timePointYear(100),
+      null,
+    );
+    const dup: AnchorSeries = { entries: [first, later] };
+
+    // The edit replaces the start=0 entry's snapshot with a fresh, distinct one.
+    const editedSnapshot = makeSnapshot(99);
+    const edited = applyPastEdit(
+      dup,
+      timePointYear(0),
+      () => createAnchor(sharedId, editedSnapshot),
+      cal,
+    );
+
+    // Dedup restores INV-6 (single id). The survivor MUST be the edited start=0
+    // entry carrying the new snapshot — not the unedited start=100 duplicate.
+    expect(edited.entries).toHaveLength(1);
+    const survivor = edited.entries[0]!;
+    expect(survivor.anchor.id).toBe(sharedId);
+    expect(survivor.start).toEqual(timePointYear(0));
+    expect(survivor.anchor.snapshot).toEqual(editedSnapshot);
+    expect(validateSeries(edited, cal).ok).toBe(true);
+  });
 });
 
 describe('changeStart (AC-3, FR-58)', () => {

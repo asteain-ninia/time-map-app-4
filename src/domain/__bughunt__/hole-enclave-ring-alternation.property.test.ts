@@ -1325,3 +1325,323 @@ describe('alternation (seed=22001): stateful edit-command stream + metamorphic l
     );
   });
 });
+
+// ===========================================================================
+// 9. FIFTH CAMPAIGN (seed=22002) — NEW exploration: a richer stateful edit
+//    stream that exercises interactions NONE of campaigns 1-4 reach.
+//
+// Prior campaigns translated ONLY top-level subtrees (campaign 22001) and only
+// ever DELETED or rigidly moved a top band. This campaign adds three genuinely
+// new command/interaction classes, then asserts the full focal invariant bundle
+// after EVERY operation plus the metamorphic laws (undo∘op = identity,
+// op∘inverse = identity, save∘load = identity):
+//
+//   (a) TRANSLATE-ANY-SUBTREE within a tiny clearance: move an ARBITRARY ring's
+//       subtree (an enclave or even a single hole — not just a top band) by an
+//       offset small enough to stay inside the parent's gutter. The rich
+//       generator leaves a known clearance (hole half-W = 0.3*cell, parent inner
+//       half-W = parent.halfW-margin), so a sub-degree rigid nudge can never push
+//       an enclave out of its hole nor make two siblings touch. A correct system
+//       MUST keep validateGeometry clean; any violation is a real re-link/contain
+//       defect — NOT a generator artifact.
+//   (b) EXTRACT-SUBTREE (a "promote to its own feature" structural move): lift a
+//       chosen ring to top-level by clearing its parent link and dropping every
+//       ring NOT in its subtree, re-rooting the chosen ring. The closure law
+//       under test: a subtree of a valid alternating forest, re-rooted, is itself
+//       a valid alternating forest with consistent depths — and if the chosen
+//       root was a HOLE (alternation would break at top level), the system's
+//       validators must FLAG it rather than silently accept it. This is the
+//       sub-shape closure / role-at-root interaction no prior campaign probed.
+//   (c) DELETE-DESCENDANTS-FIRST ordering vs. DELETE-ANCESTOR-FIRST: deleting a
+//       whole subtree leaf-up must reach the same surviving forest as deleting
+//       its root once (a confluence/metamorphic law on overlapping ancestry,
+//       complementing campaign 2004's DISJOINT-subtree order independence).
+//
+// Determinism: seed fixed to 22002, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED5 = 22002;
+const RUNS5 = 400;
+const cfg5 = { seed: SEED5, numRuns: RUNS5 } as const;
+
+/** Rigidly translate an ARBITRARY ring's subtree (mirror of translateSubtree but
+ * accepting any ring id, used to nudge enclaves/holes, not only top bands). */
+function translateAnySubtree(
+  state: EditState,
+  ringId: RingId,
+  dLon: number,
+  dLat: number,
+): VertexStore {
+  return translateSubtree(state, ringId, dLon, dLat);
+}
+
+/**
+ * Extract a TERRITORY `rootId`'s subtree into a standalone shape: keep only rings
+ * in the subtree, and re-root the chosen territory by clearing its parent link.
+ *
+ * This is the "promote an enclave/territory to its own feature" operation. It is
+ * only well-defined for a TERRITORY root: a territory's children are holes, and a
+ * top-level territory with those same hole children is still a valid alternating
+ * forest (the role at the new root — territory — is exactly what a top-level ring
+ * must be). Re-rooting a HOLE would instead require dropping it and lifting its
+ * (territory) children, which is the DELETION operation, not extraction — so this
+ * helper is intentionally restricted to territory roots and callers must pass one.
+ */
+function extractTerritorySubtree(shape: Shape, rootId: RingId): Shape {
+  const ids = subtreeRingIds(shape, rootId);
+  const out: Ring[] = [];
+  for (const r of shape.rings) {
+    if (!ids.has(r.id)) continue;
+    if (r.id === rootId) {
+      // Re-root the territory: drop its parent link, keep its vertices. (Caller
+      // guarantees r is a territory, so this preserves the kind and alternation.)
+      out.push(createTerritoryRing(r.id, r.vertexIds, undefined));
+      continue;
+    }
+    out.push(r);
+  }
+  return createShape(out);
+}
+
+/** Pick a TERRITORY ring id from a shape via a [0,1) selector; undefined if the
+ * shape has no territory (only possible for an empty / all-hole malformed shape;
+ * a valid forest always has at least the top-level territories). */
+function pickTerritory(shape: Shape, sel: number): RingId | undefined {
+  const territories = shape.rings.filter((r) => r.kind === RING_KIND.Territory);
+  if (territories.length === 0) return undefined;
+  const idx = Math.min(territories.length - 1, Math.floor(sel * territories.length));
+  return territories[idx]?.id;
+}
+
+/** All ring IDs reachable as descendants of `rootId` (excluding the root),
+ * ordered leaf-first (deepest first) for ancestor-safe deletion. */
+function descendantsLeafFirst(shape: Shape, rootId: RingId): readonly RingId[] {
+  const ids = [...subtreeRingIds(shape, rootId)].filter((id) => id !== rootId);
+  // Sort by depth descending so deeper rings are deleted before their parents.
+  return ids
+    .map((id) => ({ id, d: ringDepth(shape, id) ?? -1 }))
+    .sort((a, b) => b.d - a.d)
+    .map((x) => x.id);
+}
+
+/** The clearance the rich generator leaves around a hole/enclave inside its cell.
+ * A child's half-W is 0.3*cellWidth and it sits at the cell center, so the gap to
+ * the nearest cell edge is 0.2*cellWidth on each side. The smallest cellWidth in
+ * the generator (territory halfW>=10, margin 0.15, up to 3 holes) is
+ * 2*(10-1.5)/3 ≈ 5.67, gap ≈ 1.13. A nudge bounded well under that can never push
+ * a subtree out of its cell nor make siblings touch. We use a conservative cap. */
+const SAFE_NUDGE = 0.4;
+
+/** A fifth-campaign edit command. */
+type EditCommand5 =
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | {
+      readonly tag: 'nudge-any';
+      readonly sel: number;
+      readonly dLon: number;
+      readonly dLat: number;
+    }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand5Arb(): fc.Arbitrary<EditCommand5> {
+  const nudge = (): fc.Arbitrary<number> =>
+    fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true });
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({
+      tag: fc.constant('nudge-any' as const),
+      sel: sel(),
+      dLon: nudge(),
+      dLat: nudge(),
+    }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=22002): subtree-nudge + extract + leaf-first deletion', () => {
+  it('nudging ANY subtree by a sub-clearance offset keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              dLon: fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true }),
+              dLat: fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickAny(shape, op.sel);
+          if (targetId === undefined) return;
+          const state: EditState = { shape, store };
+          const moved = translateAnySubtree(state, targetId, op.dLon, op.dLat);
+          // A rigid nudge within the cell clearance keeps EVERY focal invariant:
+          // containment, sibling/enclave non-overlap, simplicity, finiteness.
+          assertFullBundle({ shape, store: moved });
+          // op∘inverse: nudge back by the negated offset restores coordinates
+          // (float add-then-subtract, so within a tight epsilon, not bit-exact).
+          const back = translateAnySubtree({ shape, store: moved }, targetId, -op.dLon, -op.dLat);
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+          }
+        },
+      ),
+      cfg5,
+    );
+  });
+
+  it('extract-territory closure: a re-rooted territory subtree is a valid alternating forest with consistent depths', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true })
+            .map((sel) => ({ shape, store, rootId: pickTerritory(shape, sel) })),
+        ),
+        ({ shape, store, rootId }) => {
+          if (rootId === undefined) return; // no territory to extract (vacuous)
+          const extracted = extractTerritorySubtree(shape, rootId);
+          // The extracted shape contains exactly the subtree's rings.
+          const subtreeIds = subtreeRingIds(shape, rootId);
+          expect(new Set(extracted.rings.map((r) => r.id))).toEqual(subtreeIds);
+          // Closure: re-rooted territory subtree is a valid alternating forest.
+          assertStructurallyValid(extracted);
+          expect(depthsConsistent(extracted)).toBe(true);
+          // Geometry of the surviving rings is unchanged (store untouched). A
+          // territory subtree is self-contained: holes still inside their territory,
+          // enclaves still inside their hole, and the re-rooted territory is now the
+          // single top-level band so it has no enclave-overlap partner. The
+          // extracted shape must therefore validate clean against the SAME store.
+          expect(validateGeometry(extracted, store).violations).toEqual([]);
+          // The re-rooted ring is a top-level territory with no parent link.
+          const newRoot = extracted.rings.find((r) => r.id === rootId);
+          expect(newRoot?.kind).toBe(RING_KIND.Territory);
+          expect(newRoot?.parentRingId).toBeUndefined();
+        },
+      ),
+      cfg5,
+    );
+  });
+
+  it('confluence: deleting a subtree leaf-first reaches the same forest as deleting its root once', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((rootId) => ({ shape, store, rootId })),
+        ),
+        ({ shape, store, rootId }) => {
+          // Path A: delete every descendant leaf-first, THEN the root.
+          let leafUp = shape;
+          for (const id of descendantsLeafFirst(shape, rootId)) {
+            leafUp = deleteRingAndReorganize(leafUp, id);
+            // Invariant holds after every single leaf-first deletion too.
+            assertStructurallyValid(leafUp);
+            expect(validateGeometry(leafUp, store).violations).toEqual([]);
+          }
+          leafUp = deleteRingAndReorganize(leafUp, rootId);
+
+          // Path B: delete the root once (reorganization absorbs the subtree).
+          const rootOnce = deleteRingAndReorganize(shape, rootId);
+
+          // Both paths remove the entire subtree's rings and keep the rest valid.
+          assertStructurallyValid(leafUp);
+          assertStructurallyValid(rootOnce);
+          const subtreeIds = subtreeRingIds(shape, rootId);
+          for (const id of subtreeIds) {
+            expect(leafUp.rings.some((r) => r.id === id)).toBe(false);
+          }
+          // Confluence on the SURVIVING ring set: the rings OUTSIDE the deleted
+          // subtree are identical (same ids, kinds, parents) in both paths. (The
+          // forests can differ only in absorbed-descendant handling within the
+          // subtree, which both paths remove entirely.)
+          const survivors = (s: Shape): string =>
+            JSON.stringify(
+              [...s.rings]
+                .filter((r) => !subtreeIds.has(r.id))
+                .map((r) => ({ id: r.id, kind: r.kind, parent: r.parentRingId ?? null }))
+                .sort((x, y) => x.id.localeCompare(y.id)),
+            );
+          expect(survivors(leafUp)).toBe(survivors(rootOnce));
+        },
+      ),
+      cfg5,
+    );
+  });
+
+  it('stateful: interleaved delete / sub-clearance nudge / save-load keeps the full bundle at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand5Arb(), { minLength: 4, maxLength: shape.rings.length + 10 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: EditState = { shape, store };
+          assertFullBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-22002'))).toEqual(
+              state.shape,
+            );
+            switch (cmd.tag) {
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.shape.rings.length;
+                state = {
+                  shape: deleteRingAndReorganize(state.shape, targetId),
+                  store: state.store,
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertFullBundle(state);
+                break;
+              }
+              case 'nudge-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const beforeStore = state.store;
+                const moved = translateAnySubtree(state, targetId, cmd.dLon, cmd.dLat);
+                state = { shape: state.shape, store: moved };
+                assertFullBundle(state);
+                // UNDO∘op: nudge back restores prior coordinates (tight epsilon).
+                const back = translateAnySubtree(state, targetId, -cmd.dLon, -cmd.dLat);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+                }
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                state = reloaded;
+                assertFullBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-22002'));
+                expect(next).toEqual(state.shape);
+                state = { shape: next, store: state.store };
+                assertFullBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+          }
+        },
+      ),
+      cfg5,
+    );
+  });
+});

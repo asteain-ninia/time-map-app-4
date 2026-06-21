@@ -95,8 +95,11 @@ import { createAffiliationCommand } from '../affiliation/command';
 import { createIdGeneratorState } from '../id-generator';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import {
+  changeStart,
   createAnchorEntry,
+  deleteAnchor,
   normalizeSeries,
+  setEnd,
   validateSeries,
   type AnchorSeries,
 } from '../anchor-series';
@@ -104,6 +107,9 @@ import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 
 const SEED = 25001;
+// Second bug-hunt pass: a NEW, deliberately-disjoint exploration that does not
+// re-walk seed 25001's runs. Used by every §5..§8 block below.
+const SEED2 = 25002;
 const COLOR = createColorInfo(true, '#0a141e', '#283c50', '#5a6e82');
 const CAL = getCalendar('gregorian');
 
@@ -802,6 +808,479 @@ describe(`affiliation — existence-period guard coherence (seed=${SEED})`, () =
         },
       ),
       { seed: SEED, numRuns: 500 },
+    );
+  });
+});
+
+// ===========================================================================
+// ===========================================================================
+//  SECOND BUG-HUNT PASS (seed = 25002, disjoint from seed 25001 above).
+//
+//  New exploration axes (none re-walk the seed-25001 generators verbatim):
+//    §5  HETEROGENEOUS per-leaf existence periods (the §0 forest gives every
+//        leaf under a root the SAME period; here each leaf gets its OWN period
+//        inside the root's envelope). This drives the create→existing
+//        existence-period guard with mixed-period sub-trees, plus two NEW
+//        commands: createDeepUnderExisting (create→create→existing, a 2-level
+//        後付け挿入 ON TOP of an existing root) and federate4 (4-way 連邦化).
+//    §6  INTERLEAVED affiliation + anchor-series MUTATING edits. The seed-25001
+//        anchor block only ever APPENDS anchors; this one also drives the
+//        guarded changeStart / setEnd / deleteAnchor ops between commits and
+//        asserts the series stays INV-1/INV-5/INV-6 and never empties.
+//    §7  FULL public-command metamorphic round-trips on the heterogeneous model
+//        (undo∘op==id, op∘undo∘redo==op via createAffiliationCommand) and the
+//        none∘existing inverse pair driven THROUGH the command pipeline.
+//    §8  save∘load JSON identity over the heterogeneous-period committed set.
+// ===========================================================================
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// §5 model: a root whose children each carry an INDEPENDENT period drawn from
+// inside the root envelope. The aggregate's own period spans the full envelope
+// (so it can contain every child); children differ, so re-parenting a leaf
+// under a foreign root genuinely trips / passes the existence guard per pair.
+// ---------------------------------------------------------------------------
+
+interface HetRootSpec {
+  /** independent [start,end] period per child (length == childCount, >=1). */
+  readonly childPeriods: readonly { readonly start: number; readonly end: number }[];
+}
+
+function buildHetForest(specs: readonly HetRootSpec[]): ModelState {
+  const s = emptyState();
+  let n = 0;
+  specs.forEach((spec, rootIdx) => {
+    const baseY = rootIdx * 1000;
+    const childIds: FeatureId[] = [];
+    n += 1;
+    const aggId = asFeatureId(`h-agg-${n}`);
+    let envStart = Number.POSITIVE_INFINITY;
+    let envEnd = Number.NEGATIVE_INFINITY;
+    spec.childPeriods.forEach((p, c) => {
+      n += 1;
+      const suffix = `h-leaf-${n}`;
+      const x = c * 10;
+      const corners = [
+        createCoordinate(x, baseY),
+        createCoordinate(x + 10, baseY),
+        createCoordinate(x + 10, baseY + 10),
+        createCoordinate(x, baseY + 10),
+      ];
+      const verts = corners.map((cc, i) => createVertex(asVertexId(`hv-${suffix}-${i}`), cc));
+      s.vertices.push(...verts);
+      const ring = createTerritoryRing(
+        asRingId(`hr-${suffix}`),
+        verts.map((v) => v.id),
+      );
+      const fid = asFeatureId(`hf-${suffix}`);
+      childIds.push(fid);
+      envStart = Math.min(envStart, p.start);
+      envEnd = Math.max(envEnd, p.end);
+      s.features.push(
+        createLeafFeature(
+          fid,
+          createBasicAttributes(suffix, p.start, p.end),
+          COLOR,
+          createShape([ring]),
+          { parentId: aggId },
+        ),
+      );
+    });
+    s.features.push(
+      createAggregateFeature(
+        aggId,
+        createBasicAttributes(`h-agg-${n}`, envStart, envEnd),
+        COLOR,
+        childIds,
+      ),
+    );
+  });
+  return s;
+}
+
+const hetChildPeriodArb: fc.Arbitrary<{ start: number; end: number }> = fc
+  .record({ start: fc.integer({ min: -80, max: 80 }), span: fc.integer({ min: 1, max: 40 }) })
+  .map(({ start, span }) => ({ start, end: start + span }));
+
+const hetRootSpecArb: fc.Arbitrary<HetRootSpec> = fc
+  .array(hetChildPeriodArb, { minLength: 1, maxLength: 4 })
+  .map((childPeriods) => ({ childPeriods }));
+
+function hetForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(hetRootSpecArb, { minLength: 1, maxLength: 4 })
+    .map((specs) => buildHetForest(specs));
+}
+
+// New command spec for §5 (superset interactions on top of AffCmd).
+type AffCmd2 =
+  | AffCmd
+  | { readonly t: 'createDeepUnderExisting'; readonly targetWhich: number; readonly topWhich: number }
+  | {
+      readonly t: 'federate4';
+      readonly aWhich: number;
+      readonly bWhich: number;
+      readonly cWhich: number;
+      readonly dWhich: number;
+    };
+
+const affCmd2Arb: fc.Arbitrary<AffCmd2> = fc.oneof(
+  affCmdArb,
+  fc.record({
+    t: fc.constant<'createDeepUnderExisting'>('createDeepUnderExisting'),
+    targetWhich: fc.nat(),
+    topWhich: fc.nat(),
+  }),
+  fc.record({
+    t: fc.constant<'federate4'>('federate4'),
+    aWhich: fc.nat(),
+    bWhich: fc.nat(),
+    cWhich: fc.nat(),
+    dWhich: fc.nat(),
+  }),
+);
+
+/** Like applyAffCmd but also handles the two §5-only commands. */
+function applyAffCmd2(
+  st: AffState,
+  cmd: AffCmd2,
+): { next: AffState; proposal: AffiliationProposal; baseline: readonly Feature[] } | undefined {
+  if (cmd.t === 'createDeepUnderExisting') {
+    const features = st.features;
+    const allIds = features.map((f) => f.id);
+    const target = pick(allIds, cmd.targetWhich);
+    const top = pick(allIds, cmd.topWhich);
+    if (target === undefined || top === undefined) return undefined;
+    const idState = createIdGeneratorState(0, st.idCounter);
+    const decision: ParentDecision = parentCreate(
+      { name: 'deep-low' },
+      parentCreate({ name: 'deep-high' }, parentExisting(top)),
+    );
+    const result = buildAffiliationProposal(features, target, decision, {
+      idState,
+      now: makeNow(st.idCounter * 100 + 1),
+      vertexStore: st.store,
+    });
+    if (result.status !== 'proposal') return undefined;
+    const proposal = result.proposal;
+    return {
+      next: { features: proposal.nextFeatures, store: st.store, idCounter: proposal.idState.counter + 1 },
+      proposal,
+      baseline: features,
+    };
+  }
+  if (cmd.t === 'federate4') {
+    const features = st.features;
+    const allIds = features.map((f) => f.id);
+    const targets = [
+      ...new Set(
+        [cmd.aWhich, cmd.bWhich, cmd.cWhich, cmd.dWhich]
+          .map((w) => pick(allIds, w))
+          .filter((x): x is FeatureId => x !== undefined),
+      ),
+    ];
+    if (targets.length < 2) return undefined;
+    const idState = createIdGeneratorState(0, st.idCounter);
+    const result = buildAffiliationProposalForTargets(
+      features,
+      targets,
+      parentCreate({ name: 'federation4' }, parentNone),
+      { idState, now: makeNow(st.idCounter * 100 + 1), vertexStore: st.store },
+    );
+    if (result.status !== 'proposal') return undefined;
+    const proposal = result.proposal;
+    return {
+      next: { features: proposal.nextFeatures, store: st.store, idCounter: proposal.idState.counter + 1 },
+      proposal,
+      baseline: features,
+    };
+  }
+  return applyAffCmd(st, cmd);
+}
+
+// ===========================================================================
+// §5. Heterogeneous-period stateful drive: every invariant after every commit.
+// ===========================================================================
+
+describe(`affiliation — heterogeneous-period invariants after every commit (seed=${SEED2})`, () => {
+  it('forest validity / depth / 派生集約=子の和 / childIds sync / coord-finite / selection', () => {
+    fc.assert(
+      fc.property(
+        hetForestArb(),
+        fc.array(affCmd2Arb, { minLength: 0, maxLength: 14 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 1000,
+          };
+          assertFeatureSetInvariants(st.features, st.store);
+
+          for (const cmd of cmds) {
+            const applied = applyAffCmd2(st, cmd);
+            if (applied === undefined) continue;
+            assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+            const present = new Set(applied.next.features.map((f) => f.id));
+            for (const id of applied.proposal.survivedTouchedIds) {
+              expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.createdIds) {
+              expect(present.has(id), `created ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.deletedIds) {
+              expect(present.has(id), `deleted ${id} still present`).toBe(false);
+            }
+            const baselineIds = new Set(st.features.map((f) => f.id));
+            for (const id of applied.proposal.createdIds) {
+              expect(baselineIds.has(id), `created ${id} collides with existing`).toBe(false);
+            }
+            // created ∩ deleted must be empty (a freshly minted id is never also pruned).
+            const del = new Set(applied.proposal.deletedIds);
+            for (const id of applied.proposal.createdIds) {
+              expect(del.has(id), `created ${id} also in deletedIds`).toBe(false);
+            }
+            st = applied.next;
+          }
+        },
+      ),
+      { seed: SEED2, numRuns: 600 },
+    );
+  });
+});
+
+// ===========================================================================
+// §6. INTERLEAVED affiliation commits + anchor-series MUTATING edits.
+//
+// Between affiliation commits we append the new committed snapshot AND randomly
+// drive a guarded series op (changeStart / setEnd / deleteAnchor). After every
+// op the series must stay INV-1 ascending + INV-6 unique (assertAscendingUnique)
+// and INV-5 non-empty. Guarded ops that reject (e.g. would-be-empty) are a
+// legitimate no-op, not a bug; only an op that REPORTS ok but yields an invalid
+// series is a finding.
+// ===========================================================================
+
+type SeriesOp =
+  | { readonly t: 'append' }
+  | { readonly t: 'changeStart'; readonly which: number; readonly year: number }
+  | { readonly t: 'setEnd'; readonly which: number; readonly year: number | null }
+  | { readonly t: 'delete'; readonly which: number };
+
+const seriesOpArb: fc.Arbitrary<SeriesOp> = fc.oneof(
+  fc.record({ t: fc.constant<'append'>('append') }),
+  fc.record({ t: fc.constant<'changeStart'>('changeStart'), which: fc.nat(), year: fc.integer({ min: -500, max: 500 }) }),
+  fc.record({
+    t: fc.constant<'setEnd'>('setEnd'),
+    which: fc.nat(),
+    year: fc.option(fc.integer({ min: -500, max: 500 }), { nil: null }),
+  }),
+  fc.record({ t: fc.constant<'delete'>('delete'), which: fc.nat() }),
+);
+
+describe(`affiliation — interleaved commits + guarded anchor-series edits (seed=${SEED2})`, () => {
+  it('series stays INV-1/INV-5/INV-6 across append + changeStart/setEnd/delete', () => {
+    fc.assert(
+      fc.property(
+        hetForestArb(),
+        fc.array(fc.tuple(affCmd2Arb, seriesOpArb), { minLength: 0, maxLength: 10 }),
+        (initial, steps) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 2000,
+          };
+          let series: AnchorSeries = normalizeSeries(
+            [snapshotEntry(st.features, st.store, 0)],
+            CAL,
+          );
+          assertAscendingUnique(series);
+          let idx = 1;
+
+          for (const [cmd, op] of steps) {
+            const applied = applyAffCmd2(st, cmd);
+            if (applied !== undefined) {
+              st = applied.next;
+              assertFeatureSetInvariants(st.features, st.store);
+            }
+
+            switch (op.t) {
+              case 'append': {
+                const entries = [...series.entries, snapshotEntry(st.features, st.store, idx)];
+                idx += 1;
+                series = normalizeSeries(entries, CAL);
+                break;
+              }
+              case 'changeStart': {
+                const target = pick(series.entries, op.which);
+                if (target === undefined) break;
+                const r = changeStart(series, target.anchor.id, timePointYear(op.year), CAL);
+                if (r.ok) series = r.series;
+                break;
+              }
+              case 'setEnd': {
+                const target = pick(series.entries, op.which);
+                if (target === undefined) break;
+                const end = op.year === null ? null : timePointYear(op.year);
+                const r = setEnd(series, target.anchor.id, end, CAL);
+                if (r.ok) series = r.series;
+                break;
+              }
+              case 'delete': {
+                const target = pick(series.entries, op.which);
+                if (target === undefined) break;
+                const r = deleteAnchor(series, target.anchor.id, CAL);
+                if (r.ok) series = r.series;
+                break;
+              }
+            }
+
+            // INV-5 non-empty + INV-1/INV-6 after EVERY series op outcome.
+            expect(series.entries.length, 'series became empty (INV-5)').toBeGreaterThan(0);
+            assertAscendingUnique(series);
+          }
+        },
+      ),
+      { seed: SEED2, numRuns: 500 },
+    );
+  });
+});
+
+// ===========================================================================
+// §7. FULL public-command metamorphic identities on the heterogeneous model.
+// ===========================================================================
+
+describe(`affiliation — heterogeneous metamorphic identities (seed=${SEED2})`, () => {
+  it('undo ∘ op == identity; op ∘ undo ∘ redo == op (createAffiliationCommand)', () => {
+    fc.assert(
+      fc.property(hetForestArb(), affCmd2Arb, (initial, cmd) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 3000,
+        };
+        const applied = applyAffCmd2(st, cmd);
+        if (applied === undefined) return;
+
+        const baseline = applied.baseline;
+        const command = createAffiliationCommand(baseline, applied.proposal);
+        const afterExec = command.execute(baseline);
+        expect(
+          featuresEqual(afterExec.state, applied.proposal.nextFeatures),
+          'execute != proposal.nextFeatures',
+        ).toBe(true);
+        const afterUndo = command.undo(afterExec.state);
+        expect(featuresEqual(afterUndo.state, baseline), 'undo != baseline').toBe(true);
+        // op ∘ undo ∘ redo == op: redoing after an undo reproduces the committed set
+        // WITHOUT re-minting ids (教訓 5.20) — created ids stay byte-identical.
+        const afterRedo = command.redo(afterUndo.state);
+        expect(
+          featuresEqual(afterRedo.state, applied.proposal.nextFeatures),
+          'op∘undo∘redo != op',
+        ).toBe(true);
+        const reCreated = afterRedo.state.filter((f) => !baseline.some((b) => b.id === f.id));
+        const origCreated = applied.proposal.nextFeatures.filter(
+          (f) => !baseline.some((b) => b.id === f.id),
+        );
+        expect(reCreated.map((f) => f.id).sort()).toEqual(origCreated.map((f) => f.id).sort());
+      }),
+      { seed: SEED2, numRuns: 500 },
+    );
+  });
+
+  it('op ∘ 逆op == identity THROUGH the command: existing then back restores parentId', () => {
+    fc.assert(
+      fc.property(hetForestArb(), fc.nat(), (initial, leafWhich) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 3500,
+        };
+        const forest0 = buildForest(st.features);
+        const leaves = st.features.filter((f) => directChildIds(forest0, f.id).length === 0);
+        const aggs = st.features.filter((f) => f.kind === 'aggregate');
+        if (leaves.length === 0 || aggs.length === 0) return;
+        const leaf = leaves[leafWhich % leaves.length]!;
+        const originalParent = leaf.parentId;
+        if (originalParent === undefined) return;
+        const otherAgg = aggs.find(
+          (a) =>
+            a.id !== originalParent &&
+            a.attributes.startYear <= leaf.attributes.endYear &&
+            leaf.attributes.startYear <= a.attributes.endYear,
+        );
+        if (otherAgg === undefined) return;
+
+        // op: move under otherAgg, driven THROUGH the command (execute).
+        const moved = applyAffCmd2(st, {
+          t: 'existing',
+          targetWhich: st.features.indexOf(leaf),
+          parentWhich: st.features.indexOf(otherAgg),
+        });
+        if (moved === undefined) return;
+        const cmdFwd = createAffiliationCommand(moved.baseline, moved.proposal);
+        const execFwd = cmdFwd.execute(moved.baseline);
+        const movedLeaf = execFwd.state.find((f) => f.id === leaf.id);
+        expect(movedLeaf?.parentId).toBe(otherAgg.id);
+
+        // 逆op: move back to the original parent, again THROUGH the command.
+        const afterMove: AffState = {
+          features: execFwd.state,
+          store: st.store,
+          idCounter: moved.next.idCounter,
+        };
+        const back = applyAffCmd2(afterMove, {
+          t: 'existing',
+          targetWhich: afterMove.features.findIndex((f) => f.id === leaf.id),
+          parentWhich: afterMove.features.findIndex((f) => f.id === originalParent),
+        });
+        if (back === undefined) return;
+        const cmdBack = createAffiliationCommand(back.baseline, back.proposal);
+        const execBack = cmdBack.execute(back.baseline);
+        const restored = execBack.state.find((f) => f.id === leaf.id);
+        expect(restored?.parentId, 'op∘逆op did not restore parentId').toBe(originalParent);
+        assertFeatureSetInvariants(execBack.state, st.store);
+      }),
+      { seed: SEED2, numRuns: 400 },
+    );
+  });
+});
+
+// ===========================================================================
+// §8. save ∘ load JSON identity over the heterogeneous-period committed set.
+// ===========================================================================
+
+describe(`affiliation — heterogeneous save∘load identity (seed=${SEED2})`, () => {
+  it('JSON round-trip preserves features AND derived areas everywhere', () => {
+    fc.assert(
+      fc.property(
+        hetForestArb(),
+        fc.array(affCmd2Arb, { minLength: 0, maxLength: 10 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 4000,
+          };
+          for (const cmd of cmds) {
+            const applied = applyAffCmd2(st, cmd);
+            if (applied !== undefined) st = applied.next;
+          }
+          const parsed = JSON.parse(JSON.stringify(st.features)) as Feature[];
+          expect(featuresEqual(parsed, st.features)).toBe(true);
+
+          const f0 = buildForest(st.features);
+          const f1 = buildForest(parsed);
+          for (const f of st.features) {
+            const a = resolveFeatureArea(f0, st.store, f.id);
+            const b = resolveFeatureArea(f1, st.store, f.id);
+            expect(a.status).toBe(b.status);
+            if (a.status === 'ok' && b.status === 'ok') {
+              expect(areasEqualWithinTolerance(a.area, b.area)).toBe(true);
+            }
+          }
+        },
+      ),
+      { seed: SEED2, numRuns: 300 },
     );
   });
 });

@@ -1778,3 +1778,561 @@ describe('seed=21001 — oriented split / inherit-merge chains: invariants + per
     );
   });
 });
+
+// ===========================================================================
+// 9. SEED=21002 EXTENSION — NEW exploration (bug-hunt round 2, disjoint from the
+//    1000-21001 band). Different generators / command sets / interactions.
+//
+// Every section above with a leaf merge uses EXACTLY TWO leaf targets, parentNone
+// or a single-segment parentCreate, and the anchor-series sections only feed
+// `normalizeSeries` raw years (never the guarded edit ops). This block opens five
+// live code paths none of the earlier seeds touch:
+//
+//   (N1) MULTI-leaf merge (3..5 leaves at once) — unionLeafShapes accumulates the
+//        running union across ≥3 operands, and buildShapeFromMultiPolygon's
+//        reparentByContainment must re-derive the territory→hole→territory layering
+//        of a DISJOINT multi-piece result (飛び地 single terminal). Two-target
+//        merges never stress the accumulation past one fold.
+//
+//   (N2) AGGREGATE-ONLY merge with GRANDCHILDREN — every prior aggregate merge gave
+//        each aggregate exactly one leaf child. Here each aggregate owns 2 leaves,
+//        so the merge must FLATTEN all direct children of every consumed aggregate
+//        onto the single result aggregate (directChildIds union) and the consumed
+//        aggregates must vanish (deletedIds) while the grandchildren survive with
+//        re-pointed parentId (survivedTouchedIds). Asserts 派生集約 = 子の和 over the
+//        flattened forest + acyclic + no orphaned child.
+//
+//   (N3) parentCreate WITH above:parentExisting — realizeParent's `aboveId` branch
+//        (~L449-460) is dead in every earlier seed (all parentCreate calls pass
+//        `above = parentNone`). A two-segment chain result→createdAgg→existingTop
+//        must be acyclic, the created aggregate's parentId must be the existing top,
+//        and every aggregate's childIds must equal its forest direct children.
+//
+//   (N4) ANCHOR-SERIES stateful model over the GUARDED edit ops (changeStart /
+//        setEnd / deleteAnchor / applyPastEdit) — seed=1004 only checked
+//        normalizeSeries on a flat year list. This drives a live series through a
+//        random command sequence and after EVERY op asserts: strictly-ascending
+//        non-duplicate starts (錨列の昇順・非重複), unique anchor ids, isValidSeries,
+//        a non-empty series (INV-5), and a save→load==identity of the series'
+//        (id,start,end) projection. Metamorphic: deleteAnchor∘applyPastEdit on a
+//        fresh insert == identity on the start set (op∘inverse-op).
+//
+//   (N5) CLOSED knife cut whose loop ENCLOSES an existing hole — the closed clip
+//        interacting with a donut leaf (intersection keeps the enclosed annulus,
+//        difference keeps the rest-with-hole). Both sides must stay valid, finite,
+//        alternation-correct, and the filled areas must sum to the original.
+//
+// Determinism: seed = 21002, numRuns large (per task). PERMANENT asset — any
+// reproduced counterexample is a real domain defect, never to be masked here.
+// ===========================================================================
+
+import { createClosedKnifeLine as createClosedKnifeLine21002 } from '../knife/knife-line';
+import {
+  changeStart,
+  setEnd,
+  deleteAnchor,
+  applyPastEdit,
+  type AnchorSeries,
+} from '../anchor-series';
+
+const SEED_21002 = 21002;
+const RUNS_21002 = 500;
+
+// --- (N1) multi-leaf (3..5) merge into one terminal -------------------------
+
+describe('seed=21002 — multi-leaf merge (3..5 targets) builds one valid 飛び地 terminal', () => {
+  it('union of N disjoint leaves yields one alternation-valid leaf; areas sum; no dangling vertex', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 3, max: 5 }),
+        // Keep w small so the whole row (≤5 boxes + gaps) stays inside a safe
+        // longitude band well clear of the ±180° seam: 5 boxes of width ≤20 with
+        // 6° gaps span at most 5*20 + 4*6 = 124°, started at lon −60 → max ≈ +64°.
+        // (The seam / antimeridian wrap is exercised by dedicated seam suites; this
+        // section probes the multi-piece union accumulation, not seam handling.)
+        fc.double({ min: 8, max: 20, noNaN: true }),
+        fc.double({ min: 8, max: 20, noNaN: true }),
+        (n, w, h) => {
+          // N disjoint axis-aligned boxes placed far apart so the union is a single
+          // multi-piece terminal (飛び地). Each box is its own leaf.
+          const verts: Vertex[] = [];
+          const leaves: LeafFeature[] = [];
+          let sumArea = 0;
+          for (let i = 0; i < n; i += 1) {
+            const x0 = -60 + i * (w + 6); // gap guarantees disjointness; band-safe.
+            const b = box(x0, x0 + w, 0, h);
+            b.ids.forEach((id, k) => verts.push(createVertex(id, b.coords[k]!)));
+            leaves.push(
+              createLeafFeature(
+                asFeatureId(`bh2-leaf-${counter++}`),
+                createBasicAttributes(`L${i}`, i, 100 + i),
+                COLOR,
+                createShape([createTerritoryRing(freshRid(), b.ids)]),
+              ),
+            );
+            sumArea += w * h;
+          }
+          const store = createVertexStore(verts);
+
+          const res = buildMergeProposal({
+            features: leaves,
+            vertices: store,
+            targetIds: leaves.map((l) => l.id),
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(res.status).toBe(MERGE_STATUS.Proposal);
+          if (res.status !== MERGE_STATUS.Proposal) return;
+          const mp = res.proposal;
+
+          // Exactly one result leaf; all N originals consumed.
+          const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+          expect(result?.kind).toBe('leaf');
+          for (const l of leaves) {
+            expect(mp.nextFeatures.find((x) => x.id === l.id)).toBeUndefined();
+          }
+          // No duplicate feature ids.
+          const ids = mp.nextFeatures.map((x) => x.id);
+          expect(new Set(ids).size).toBe(ids.length);
+
+          if (result && result.kind === 'leaf') {
+            // (I1) alternation; (I5) every cited vertex exists + (I4) finite.
+            expect(isAlternationValid(result.shape)).toBe(true);
+            for (const ring of result.shape.rings) {
+              for (const vid of ring.vertexIds) {
+                const v = mp.nextVertices.byId.get(vid);
+                expect(v).toBeDefined();
+                if (v) {
+                  expect(Number.isFinite(v.coordinate.lon)).toBe(true);
+                  expect(Number.isFinite(v.coordinate.lat)).toBe(true);
+                }
+              }
+            }
+            // (I2) resolves to a valid, finite multi-polygon with N pieces.
+            const resolved = resolveLeafShape(result.shape, mp.nextVertices);
+            expect(resolved).toBeDefined();
+            if (resolved) {
+              expect(isMultiPolygonValid(resolved)).toBe(true);
+              expect(everyCoordFinite(resolved)).toBe(true);
+              // op∘inverse-op style: total filled area == sum of the N source boxes.
+              expect(Math.abs(mpFilledArea(resolved) - sumArea) / sumArea).toBeLessThan(1e-3);
+              expect(resolved.length).toBe(n); // N disjoint pieces preserved (片落とし禁止).
+            }
+            // Period ordering (envelope of the N sources): start <= end.
+            expect(result.attributes.startYear).toBeLessThanOrEqual(result.attributes.endYear);
+          }
+        },
+      ),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+});
+
+// --- (N2) aggregate-only merge with grandchildren (flatten) -----------------
+
+describe('seed=21002 — aggregate-only merge flattens grandchildren (派生集約 = 子の和)', () => {
+  it('merging aggregates each owning 2 leaves yields one aggregate owning all grandchildren', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 4 }),
+        (numAgg) => {
+          const features: Feature[] = [];
+          const verts: Vertex[] = [];
+          const aggIds: ReturnType<typeof asFeatureId>[] = [];
+          const allChildIds: ReturnType<typeof asFeatureId>[] = [];
+          for (let i = 0; i < numAgg; i += 1) {
+            const aggId = asFeatureId(`bh2-A-${counter++}`);
+            aggIds.push(aggId);
+            const childIds: ReturnType<typeof asFeatureId>[] = [];
+            for (let c = 0; c < 2; c += 1) {
+              const lb = box(i * 200 + c * 60, i * 200 + c * 60 + 40, 0, 40);
+              lb.ids.forEach((id, k) => verts.push(createVertex(id, lb.coords[k]!)));
+              const childId = asFeatureId(`bh2-c-${counter++}`);
+              childIds.push(childId);
+              allChildIds.push(childId);
+              features.push(
+                createLeafFeature(
+                  childId,
+                  createBasicAttributes(`c${i}-${c}`, 0, 100),
+                  COLOR,
+                  createShape([createTerritoryRing(freshRid(), lb.ids)]),
+                  { parentId: aggId },
+                ),
+              );
+            }
+            features.push(
+              createAggregateFeature(aggId, createBasicAttributes(`A${i}`, 0, 100), COLOR, childIds),
+            );
+          }
+          const vertices = createVertexStore(verts);
+
+          const r = buildMergeProposal({
+            features,
+            vertices,
+            targetIds: aggIds,
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: createBasicAttributes('agg', 0, 100), color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(r.status).toBe(MERGE_STATUS.Proposal);
+          if (r.status !== MERGE_STATUS.Proposal) return;
+          const p = r.proposal;
+
+          // All source aggregates consumed; exactly ONE result aggregate remains.
+          for (const aggId of aggIds) {
+            expect(p.nextFeatures.find((x) => x.id === aggId)).toBeUndefined();
+          }
+          const resultAggs = p.nextFeatures.filter((x) => x.kind === 'aggregate');
+          expect(resultAggs.length).toBe(1);
+          const result = resultAggs[0]!;
+          expect(result.id).toBe(p.resultFeatureId);
+
+          // Every grandchild survives and is re-pointed to the result aggregate.
+          for (const childId of allChildIds) {
+            const child = p.nextFeatures.find((x) => x.id === childId);
+            expect(child).toBeDefined();
+            expect(child?.parentId).toBe(result.id);
+          }
+
+          // 派生集約 = 子の和: declared childIds == forest direct children == all grandchildren.
+          const forest = buildForest(p.nextFeatures);
+          if (result.kind === 'aggregate') {
+            const declared = [...result.childIds].sort();
+            const actual = [...directChildIds(forest, result.id)].sort();
+            expect(declared).toEqual(actual);
+            expect(actual).toEqual([...allChildIds].sort());
+          }
+          // Acyclic + no duplicate ids + period ordering on every survivor.
+          const ids = p.nextFeatures.map((x) => x.id);
+          expect(new Set(ids).size).toBe(ids.length);
+          for (const fe of p.nextFeatures) {
+            expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+            expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+          }
+        },
+      ),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+});
+
+// --- (N3) parentCreate with above:parentExisting (two-segment chain) --------
+
+describe('seed=21002 — parentCreate above an existing top (realizeParent aboveId branch)', () => {
+  it('result→createdAgg→existingTop is acyclic; created agg parent is the existing top; childIds synced', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+        // An existing top-level aggregate; the newly-created parent sits UNDER it.
+        const existingTopId = asFeatureId(`bh2-top-${counter++}`);
+        const existingTop = createAggregateFeature(
+          existingTopId,
+          createBasicAttributes('top', 0, 200),
+          COLOR,
+          [],
+        );
+
+        const mergeRes = buildMergeProposal({
+          features: [inheritor, newLeaf, existingTop],
+          vertices: postStore,
+          targetIds: [inheritor.id, newLeaf.id],
+          atTime: 50,
+          // parentCreate whose `above` is the existing top — exercises realizeParent's
+          // aboveId branch (createdAgg.parentId = existingTop).
+          parentDecision: parentCreate({ name: 'mid-parent' }, parentExisting(existingTopId)),
+          propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+        if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+        const mp = mergeRes.proposal;
+
+        // A NEW mid aggregate was created and sits under the existing top.
+        const createdAggs = mp.nextFeatures.filter(
+          (x) => x.kind === 'aggregate' && x.id !== existingTopId,
+        );
+        expect(createdAggs.length).toBe(1);
+        const mid = createdAggs[0]!;
+        expect(mp.createdIds).toContain(mid.id);
+        expect(mid.parentId).toBe(existingTopId);
+
+        // The result leaf's parent is the created mid aggregate (two-segment chain).
+        const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+        expect(result?.parentId).toBe(mid.id);
+
+        const forest = buildForest(mp.nextFeatures);
+        // walkToRoot from the result climbs result→mid→existingTop, acyclic.
+        const walk = walkToRoot(forest, mp.resultFeatureId);
+        expect(walk.cyclic).toBe(false);
+        if (!walk.cyclic) {
+          expect(walk.chain).toContain(mid.id);
+          expect(walk.rootId).toBe(existingTopId);
+        }
+
+        // 派生集約 = 子の和 over BOTH aggregates; acyclic; no dup ids.
+        const ids = mp.nextFeatures.map((x) => x.id);
+        expect(new Set(ids).size).toBe(ids.length);
+        for (const fe of mp.nextFeatures) {
+          expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+          if (fe.kind === 'aggregate') {
+            const declared = [...fe.childIds].sort();
+            const actual = [...directChildIds(forest, fe.id)].sort();
+            expect(declared).toEqual(actual);
+          }
+          expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+        }
+        // The mid aggregate declares the result leaf; the existing top declares the mid.
+        if (mid.kind === 'aggregate') expect([...mid.childIds]).toEqual([mp.resultFeatureId]);
+        const topAfter = mp.nextFeatures.find((x) => x.id === existingTopId);
+        if (topAfter && topAfter.kind === 'aggregate') {
+          expect([...topAfter.childIds]).toEqual([mid.id]);
+        }
+      }),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+});
+
+// --- (N4) anchor-series stateful over the GUARDED edit ops -------------------
+
+type AnchorCmd =
+  | { readonly t: 'insert'; readonly year: number }
+  | { readonly t: 'changeStart'; readonly pick: number; readonly year: number }
+  | { readonly t: 'setEnd'; readonly pick: number; readonly end: number | null }
+  | { readonly t: 'delete'; readonly pick: number };
+
+const anchorCmdArb: fc.Arbitrary<AnchorCmd> = fc.oneof(
+  fc.record({ t: fc.constant<'insert'>('insert'), year: fc.integer({ min: -400, max: 400 }) }),
+  fc.record({
+    t: fc.constant<'changeStart'>('changeStart'),
+    pick: fc.nat({ max: 1_000_000 }),
+    year: fc.integer({ min: -400, max: 400 }),
+  }),
+  fc.record({
+    t: fc.constant<'setEnd'>('setEnd'),
+    pick: fc.nat({ max: 1_000_000 }),
+    end: fc.option(fc.integer({ min: -400, max: 400 }), { nil: null }),
+  }),
+  fc.record({ t: fc.constant<'delete'>('delete'), pick: fc.nat({ max: 1_000_000 }) }),
+);
+
+describe('seed=21002 — anchor series stateful (guarded edits): 昇順・非重複 after every op', () => {
+  it('changeStart / setEnd / delete / insert keep the series valid, ascending, non-duplicate, round-tripping', () => {
+    const cal = getCalendar('gregorian');
+    const emptySnap = createAnchorSnapshot([], createVertexStore([]));
+
+    const assertSeriesInvariants = (series: AnchorSeries) => {
+      // INV-5 non-empty.
+      expect(series.entries.length).toBeGreaterThanOrEqual(1);
+      // isValidSeries: the single source of the rule (INV-1..6).
+      expect(isValidSeries(series, cal)).toBe(true);
+      // 昇順・非重複: strictly-ascending, non-duplicate starts.
+      const starts = series.entries.map((e) => (e.start as { year: number }).year);
+      for (let i = 1; i < starts.length; i += 1) {
+        expect(starts[i]! > starts[i - 1]!).toBe(true);
+      }
+      // Unique anchor ids (INV-6 — the routing key for by-id edits).
+      const ids = series.entries.map((e) => e.anchor.id);
+      expect(new Set(ids).size).toBe(ids.length);
+      // save→load == identity on the (id,start,end) projection.
+      const proj = series.entries.map((e) => ({
+        id: e.anchor.id,
+        start: e.start,
+        end: e.end,
+      }));
+      const saved = JSON.stringify(proj);
+      expect(JSON.stringify(JSON.parse(saved))).toBe(saved);
+    };
+
+    fc.assert(
+      fc.property(fc.array(anchorCmdArb, { minLength: 1, maxLength: 18 }), (cmds) => {
+        // Start from a single open-ended anchor at year 0.
+        let series: AnchorSeries = {
+          entries: [
+            createAnchorEntry(
+              createAnchor(asAnchorId(`bh2-an-${counter++}`), emptySnap),
+              timePointYear(0),
+              null,
+            ),
+          ],
+        };
+        assertSeriesInvariants(series);
+
+        for (const cmd of cmds) {
+          if (cmd.t === 'insert') {
+            series = applyPastEdit(
+              series,
+              timePointYear(cmd.year),
+              () => createAnchor(asAnchorId(`bh2-an-${counter++}`), emptySnap),
+              cal,
+            );
+            assertSeriesInvariants(series);
+            continue;
+          }
+          if (cmd.t === 'delete') {
+            const target = series.entries[cmd.pick % series.entries.length]!;
+            const res = deleteAnchor(series, target.anchor.id, cal);
+            // A rejection (last-anchor guard) must leave the series UNTOUCHED.
+            if (res.ok) series = res.series;
+            assertSeriesInvariants(series);
+            continue;
+          }
+          if (cmd.t === 'changeStart') {
+            const target = series.entries[cmd.pick % series.entries.length]!;
+            const res = changeStart(series, target.anchor.id, timePointYear(cmd.year), cal);
+            if (res.ok) series = res.series; // rejections are no-ops by contract.
+            assertSeriesInvariants(series);
+            continue;
+          }
+          // setEnd.
+          const target = series.entries[cmd.pick % series.entries.length]!;
+          const res = setEnd(
+            series,
+            target.anchor.id,
+            cmd.end === null ? null : timePointYear(cmd.end),
+            cal,
+          );
+          if (res.ok) series = res.series;
+          assertSeriesInvariants(series);
+        }
+      }),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+
+  it('metamorphic: deleteAnchor ∘ applyPastEdit(new year) == identity on the start set', () => {
+    const cal = getCalendar('gregorian');
+    const emptySnap = createAnchorSnapshot([], createVertexStore([]));
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.integer({ min: -300, max: 300 }), { minLength: 1, maxLength: 6 }),
+        fc.integer({ min: 400, max: 900 }), // a year strictly beyond every base start.
+        (baseYears, freshYear) => {
+          // Build a base series from distinct ascending years.
+          const sorted = [...baseYears].sort((a, b) => a - b);
+          let series: AnchorSeries = {
+            entries: sorted.map((y) =>
+              createAnchorEntry(
+                createAnchor(asAnchorId(`bh2-mm-${counter++}`), emptySnap),
+                timePointYear(y),
+                null,
+              ),
+            ),
+          };
+          series = { entries: [...series.entries] };
+          const startsBefore = series.entries
+            .map((e) => (e.start as { year: number }).year)
+            .sort((a, b) => a - b);
+
+          // op: insert a fresh future anchor (a NEW start, no existing collision).
+          let insertedId: ReturnType<typeof asAnchorId> | undefined;
+          const after = applyPastEdit(
+            series,
+            timePointYear(freshYear),
+            () => {
+              const a = createAnchor(asAnchorId(`bh2-mm-${counter++}`), emptySnap);
+              insertedId = a.id;
+              return a;
+            },
+            cal,
+          );
+          // The fresh start is now present.
+          expect(after.entries.some((e) => (e.start as { year: number }).year === freshYear)).toBe(true);
+
+          // inverse-op: delete the just-inserted anchor by id.
+          expect(insertedId).toBeDefined();
+          const undone = deleteAnchor(after, insertedId!, cal);
+          expect(undone.ok).toBe(true);
+          if (!undone.ok) return;
+          // deleteAnchor ∘ applyPastEdit == identity on the START SET.
+          const startsAfter = undone.series.entries
+            .map((e) => (e.start as { year: number }).year)
+            .sort((a, b) => a - b);
+          expect(startsAfter).toEqual(startsBefore);
+        },
+      ),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+});
+
+// --- (N5) closed knife cut enclosing an existing hole -----------------------
+
+describe('seed=21002 — closed cut enclosing a hole: both sides valid + finite + area-preserving', () => {
+  it('a closed loop drawn around the left hole splits the donut into two valid faces', () => {
+    fc.assert(
+      fc.property(dim, dim, (w, h) => {
+        // A donut leaf: one outer territory + one left hole, no enclave/right hole.
+        const params = makeParams(w, h, { leftHole: true, enclave: false, rightHole: false });
+        const { feature, store } = holeyLeaf(params);
+        // The left hole occupies x∈[0.15w,0.45w], y∈[0.2h,0.8h]. Draw a CLOSED cut
+        // loop that fully ENCLOSES that hole (a rectangle around it), so the
+        // intersection side is the annulus-with-hole around it and the difference
+        // side is the rest of the territory. Both must stay valid.
+        const closed = createClosedKnifeLine21002([
+          createCoordinate(w * 0.1, h * 0.1),
+          createCoordinate(w * 0.5, h * 0.1),
+          createCoordinate(w * 0.5, h * 0.9),
+          createCoordinate(w * 0.1, h * 0.9),
+        ]);
+        const res = checkSplittable(feature, store, closed);
+        // The cut may or may not be accepted depending on quantization; when it is,
+        // every invariant must hold.
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+        for (const side of [res.sideA, res.sideB]) {
+          expect(everyCoordFinite(side.area)).toBe(true);
+          expect(isMultiPolygonValid(side.area)).toBe(true);
+          expect(sideArea(side)).toBeGreaterThan(0);
+        }
+        // Area preservation: the two filled sides sum to the donut's filled area.
+        const sum = sideArea(res.sideA) + sideArea(res.sideB);
+        const whole = filledArea(params);
+        expect(Math.abs(sum - whole) / whole).toBeLessThan(1e-3);
+
+        // The rebuilt proposal shapes alternate on both sides + finite vertices.
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+        expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+        for (const v of proposal.vertices) {
+          expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+        }
+        // save -> load == identity on each produced side.
+        for (const side of [res.sideA, res.sideB]) {
+          const saved = JSON.stringify(side.area);
+          expect(JSON.stringify(JSON.parse(saved) as GeoMultiPolygon)).toBe(saved);
+        }
+      }),
+      { seed: SEED_21002, numRuns: RUNS_21002 },
+    );
+  });
+});

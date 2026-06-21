@@ -463,8 +463,14 @@ export function applyPastEdit(
     const target = series.entries[existingIndex]!;
     const replacement = makeAnchor({ kind: 'present', entry: target });
     const updated = withEntrySnapshot(target, replacement.snapshot);
-    const entries = series.entries.map((e, i) => (i === existingIndex ? updated : e));
-    return normalizeSeries(entries, calendar);
+    // Place the explicitly-edited entry LAST so the duplicate-id dedup in
+    // normalizeSeries (keep-last) lets it win, matching changeStart / setEnd. On
+    // a duplicate-AnchorId series (reachable only from corrupt / legacy / hand-
+    // edited persistence, INV-6) the in-place `map` form would keep the edited
+    // entry at the FIRST occurrence and the keep-last dedup would drop it,
+    // silently retaining the UNEDITED later occurrence (bughunt2).
+    const others = series.entries.filter((_, i) => i !== existingIndex);
+    return normalizeSeries([...others, updated], calendar);
   }
 
   // Insert a new anchor; inherit the state effective at baseTime.
@@ -568,8 +574,16 @@ export function setEnd(
   }
 
   const updated = withEntryEnd(target, newEnd);
-  const entries = series.entries.map((e, i) => (i === index ? updated : e));
-  const next = normalizeSeries(entries, calendar);
+  // Build the new array with all other entries first and the explicitly-edited
+  // entry LAST, so the duplicate-id dedup in normalizeSeries (keep-last) lets the
+  // edited entry win. A duplicate-AnchorId series is only reachable from corrupt /
+  // legacy / hand-edited persistence (INV-6), but on such a series the in-place
+  // `map` form would keep the edited entry at the FIRST occurrence's position and
+  // the keep-last dedup would then drop it, silently retaining the UNEDITED later
+  // occurrence. Appending last mirrors changeStart and keeps the two guarded edit
+  // paths consistent (bughunt2).
+  const others = series.entries.filter((_, i) => i !== index);
+  const next = normalizeSeries([...others, updated], calendar);
   if (next.entries.length === 0) return reject({ code: 'wouldBeEmpty' });
   return ok(next);
 }

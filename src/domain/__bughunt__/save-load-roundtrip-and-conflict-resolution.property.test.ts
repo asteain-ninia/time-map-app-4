@@ -58,10 +58,15 @@ import { createCoordinate } from '../coordinate';
 import {
   createAggregateFeature,
   createLeafFeature,
+  createLineFeature,
   createPointFeature,
+  withAggregateChildIds,
   withColor,
   withParentId,
+  type AggregateFeature,
   type Feature,
+  type LeafFeature,
+  type LineFeature,
 } from '../feature';
 import { createGeoParams } from '../geo/geo-params';
 import { buildForest } from '../hierarchy/forest';
@@ -72,7 +77,24 @@ import {
   createShape,
   createTerritoryRing,
   isAlternationValid,
+  RING_KIND,
+  withHoleRingParent,
+  type Ring,
 } from '../ring';
+import {
+  addVertexToLeafRing,
+  deleteLeafVertex,
+  deleteLineVertex,
+  commandResultFromEditResult,
+  type FeatureEditResult,
+} from '../editing/edit-ops';
+import {
+  EMPTY_SELECTION,
+  withActiveFeature,
+  withVertexSet,
+  type SelectionState,
+} from '../selection/state';
+import { reresolveAfterStructureChange } from '../selection/reresolve';
 import { validateRingHierarchy } from '../ring-hierarchy';
 import { createHistory, execute, redo, undo } from '../command/history';
 import { defineCommandKind, type Command } from '../command/command';
@@ -1207,6 +1229,469 @@ describe('metamorphic undo/redo + inverse-op (via U12 history)', () => {
         },
       ),
       { seed: SEED, numRuns: 500 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 4 — NEW EXPLORATION (seed 26002, disjoint from SEED=26001 above and
+// from the identity suite's 1000–6004). This section adds command kinds /
+// generators / interactions the earlier sections never reach:
+//
+//   (a) STRUCTURAL edits via the REAL U24 edit-ops (addVertexToLeafRing,
+//       deleteLeafVertex, deleteLineVertex) — these CHANGE the vertex/ring
+//       topology (not just coordinates), then we assert the full per-edit
+//       invariant battery + the in-memory AND JSON+Zod round-trip after each.
+//       The earlier walk only moved/recoloured/retimed; it never inserts or
+//       removes a vertex, so the persistence layer was never exercised against a
+//       changed ring/line cardinality + the U22 selection delta.
+//
+//   (b) SELECTION-VALIDITY law (選択が常に有効): after each structural edit we feed
+//       the edit's CommandResult through the REAL U22
+//       reresolveAfterStructureChange and assert the surviving selection refers
+//       ONLY to ids that still exist in the post-edit snapshot (no dangling
+//       active feature / vertex). This is the brief's "selection always valid"
+//       invariant, exercised through the production re-resolution path.
+//
+//   (c) A NEW corruption class for the conflict-resolution surface:
+//       RingHierarchyInvalid (a holed leaf whose hole's parentRingId is rewritten
+//       to a non-existent territory ring — structurally representable, so the Zod
+//       schema accepts it, but U07 validateRingHierarchy rejects it). We drive the
+//       same metamorphic repair laws (detected / honest / converges / round-trips
+//       after resolution) the earlier corruption catalogue uses.
+// ============================================================================
+
+const SEED2 = 26002;
+
+/** A 3-point line feature + its vertices (for the deleteLineVertex structural edit). */
+function lineFeature(id: string, ox: number, oy: number): { feature: Feature; vertices: Vertex[] } {
+  const verts = [
+    createVertex(asVertexId(`${id}-l0`), createCoordinate(ox, oy)),
+    createVertex(asVertexId(`${id}-l1`), createCoordinate(ox + 5, oy + 5)),
+    createVertex(asVertexId(`${id}-l2`), createCoordinate(ox + 10, oy)),
+  ];
+  const feature = createLineFeature(
+    asFeatureId(id),
+    createBasicAttributes(`線${id}`, 0, 80),
+    COLOR,
+    verts.map((v) => v.id),
+  );
+  return { feature, vertices: verts };
+}
+
+type FeatureKindTag2 = 'leaf' | 'point' | 'hole' | 'line' | 'aggregate';
+
+/** Like projectArb() but ALSO mints line features (so deleteLineVertex applies). */
+function projectArb2(): fc.Arbitrary<DomainProject> {
+  const kindArb: fc.Arbitrary<FeatureKindTag2> = fc.constantFrom(
+    'leaf',
+    'point',
+    'hole',
+    'line',
+    'aggregate',
+  );
+  return fc
+    .array(
+      fc.record({
+        kind: kindArb,
+        years: fc
+          .uniqueArray(fc.integer({ min: -200, max: 200 }), { minLength: 1, maxLength: 3 })
+          .map((ys) => [...ys].sort((a, b) => a - b)),
+      }),
+      { minLength: 1, maxLength: 5 },
+    )
+    .map((specs) => {
+      const histories: FeatureHistory[] = specs.map((spec, i) => {
+        const id = `g${i}`;
+        const ox = 1000 + i * 300;
+        if (spec.kind === 'leaf') {
+          const { feature, vertices } = squareLeaf(id, ox, 0, 10);
+          return multiAnchorHistory(id, id, [feature], vertices, spec.years);
+        }
+        if (spec.kind === 'point') {
+          const { feature, vertex } = pointFeature(id, ox, 0);
+          return multiAnchorHistory(id, id, [feature], [vertex], spec.years);
+        }
+        if (spec.kind === 'hole') {
+          const { feature, vertices } = holedLeaf(id, ox, 0);
+          return multiAnchorHistory(id, id, [feature], vertices, spec.years);
+        }
+        if (spec.kind === 'line') {
+          const { feature, vertices } = lineFeature(id, ox, 0);
+          return multiAnchorHistory(id, id, [feature], vertices, spec.years);
+        }
+        const { features, vertices } = aggregateWithChildren(id, ox);
+        return multiAnchorHistory(`${id}-agg`, id, features, vertices, spec.years);
+      });
+      return { histories, settings: SETTINGS, baseMap: BASEMAP };
+    });
+}
+
+// --- structural-edit command surface (REAL U24 edit-ops) --------------------
+
+type StructCmd =
+  | { tag: 'addLeafVertex'; hi: number; pick: number }
+  | { tag: 'delLeafVertex'; hi: number; pick: number }
+  | { tag: 'delLineVertex'; hi: number; pick: number };
+
+function structCmdArb(): fc.Arbitrary<StructCmd> {
+  return fc.oneof(
+    fc.record({ tag: fc.constant('addLeafVertex' as const), hi: fc.nat(), pick: fc.nat() }),
+    fc.record({ tag: fc.constant('delLeafVertex' as const), hi: fc.nat(), pick: fc.nat() }),
+    fc.record({ tag: fc.constant('delLineVertex' as const), hi: fc.nat(), pick: fc.nat() }),
+  );
+}
+
+/**
+ * Apply ONE structural edit-op to the FIRST anchor of the chosen history, threading
+ * the new vertex (for an add) into that anchor's store and rebuilding the feature
+ * from the op result. Returns the new project AND the edit-ops result (so the
+ * caller can drive U22 selection re-resolution). Inapplicable picks no-op.
+ */
+function applyStructCmd(
+  project: DomainProject,
+  cmd: StructCmd,
+): { project: DomainProject; result: FeatureEditResult | null } {
+  const histories = [...project.histories];
+  const n = histories.length;
+  if (n === 0) return { project, result: null };
+  const hi = cmd.hi % n;
+  const history = histories[hi]!;
+  const entries = history.series.entries;
+  if (entries.length === 0) return { project, result: null };
+  const e0 = entries[0]!;
+  const features = e0.anchor.snapshot.features;
+  const store = e0.anchor.snapshot.vertices;
+
+  // Mirror U31 deletion: removing a feature also DROPS it from any aggregate's
+  // childIds (an aggregate that still lists a now-deleted child would otherwise be a
+  // hierarchy-topology inconsistency). This is the parent-reconciliation the
+  // production deletion command performs; the naive snapshot filter alone left a
+  // dangling childId (caught by the hierarchy-topology invariant — a genuine harness
+  // modeling gap, not a domain defect, since the real delete path reconciles here).
+  const removeFeature = (features0: readonly Feature[], removeId: string): Feature[] =>
+    features0
+      .filter((f) => f.id !== removeId)
+      .map((f) =>
+        f.kind === 'aggregate' && f.childIds.includes(removeId as AggregateFeature['childIds'][number])
+          ? withAggregateChildIds(f, f.childIds.filter((c) => c !== removeId))
+          : f,
+      );
+
+  const commit = (
+    newFeatures: readonly Feature[],
+    newStore = store,
+  ): { project: DomainProject; result: FeatureEditResult | null } => {
+    const newEntries = entries.map((e, i) =>
+      i === 0
+        ? {
+            anchor: createAnchor(e.anchor.id, createAnchorSnapshot(newFeatures, newStore)),
+            start: e.start,
+            end: e.end,
+          }
+        : e,
+    );
+    histories[hi] = { featureId: history.featureId, series: { entries: newEntries } };
+    return { project: { ...project, histories }, result: null };
+  };
+
+  switch (cmd.tag) {
+    case 'addLeafVertex': {
+      const leaves = features.filter((f): f is LeafFeature => f.kind === 'leaf');
+      if (leaves.length === 0) return { project, result: null };
+      const leaf = leaves[cmd.pick % leaves.length]!;
+      const ring = leaf.shape.rings[cmd.pick % leaf.shape.rings.length]!;
+      if (ring.vertexIds.length < 2) return { project, result: null };
+      const si = cmd.pick % ring.vertexIds.length;
+      const startV = ring.vertexIds[si]!;
+      const endV = ring.vertexIds[(si + 1) % ring.vertexIds.length]!;
+      const sCoord = getVertex(store, startV)!.coordinate;
+      const eCoord = getVertex(store, endV)!.coordinate;
+      const newId = asVertexId(`${leaf.id}-add-${ring.id}-${si}`);
+      // Idempotency / id-collision guard: a re-add on the same edge would mint a
+      // duplicate vertex id; skip if it already exists (the op would still splice,
+      // creating a degenerate duplicate-id ring the store cannot represent).
+      if (store.byId.has(newId)) return { project, result: null };
+      const res = addVertexToLeafRing(leaf, ring.id, startV, endV, newId);
+      if (res === undefined || res.kind !== 'feature') return { project, result: null };
+      const mid = createVertex(
+        newId,
+        createCoordinate((sCoord.lon + eCoord.lon) / 2, (sCoord.lat + eCoord.lat) / 2),
+      );
+      const newStore = setVertex(store, mid);
+      const newFeatures = features.map((f) => (f.id === leaf.id ? res.feature : f));
+      const out = commit(newFeatures, newStore);
+      return { project: out.project, result: res };
+    }
+    case 'delLeafVertex': {
+      const leaves = features.filter((f): f is LeafFeature => f.kind === 'leaf');
+      if (leaves.length === 0) return { project, result: null };
+      const leaf = leaves[cmd.pick % leaves.length]!;
+      const ring = leaf.shape.rings[cmd.pick % leaf.shape.rings.length]!;
+      if (ring.vertexIds.length === 0) return { project, result: null };
+      const victim = ring.vertexIds[cmd.pick % ring.vertexIds.length]!;
+      const res = deleteLeafVertex(leaf, ring.id, victim);
+      if (res === undefined) return { project, result: null };
+      if (res.kind === 'delete-feature') {
+        // The whole leaf was removed (last territory ring gone). Drop it from the
+        // snapshot. If it owned this history → that history becomes orphan, which the
+        // round-trip layer still represents faithfully; but to keep the per-edit
+        // invariant battery (which forbids orphan-by-refs) honest, only remove the
+        // feature when it is NOT this history's owner. Otherwise no-op (an owner
+        // self-deletion is the deletion-flow's concern, not this round-trip walk).
+        if (res.featureId === history.featureId) return { project, result: null };
+        const out = commit(removeFeature(features, res.featureId));
+        return { project: out.project, result: res };
+      }
+      // Survives: the affected ring may have lost vertices; drop any vertex that no
+      // longer appears in the leaf's rings (keep the store ref-tight so refsResolve
+      // and the round-trip stay valid).
+      const newFeatures = features.map((f) => (f.id === leaf.id ? res.feature : f));
+      const stillCited = new Set<string>();
+      for (const f of newFeatures) {
+        if (f.kind === 'leaf') for (const r of f.shape.rings) for (const v of r.vertexIds) stillCited.add(v);
+        if (f.kind === 'line') for (const v of f.vertexIds) stillCited.add(v);
+        if (f.kind === 'point') stillCited.add(f.vertexId);
+      }
+      const keptVerts = [...store.byId.values()].filter((v) => stillCited.has(v.id));
+      const out = commit(newFeatures, createVertexStore(keptVerts));
+      return { project: out.project, result: res };
+    }
+    case 'delLineVertex': {
+      const lines = features.filter((f): f is LineFeature => f.kind === 'line');
+      if (lines.length === 0) return { project, result: null };
+      const line = lines[cmd.pick % lines.length]!;
+      const victim = line.vertexIds[cmd.pick % line.vertexIds.length]!;
+      const res = deleteLineVertex(line, victim);
+      if (res === undefined) return { project, result: null };
+      if (res.kind === 'delete-feature') {
+        if (res.featureId === history.featureId) return { project, result: null };
+        const out = commit(removeFeature(features, res.featureId));
+        return { project: out.project, result: res };
+      }
+      const newFeatures = features.map((f) => (f.id === line.id ? res.feature : f));
+      const stillCited = new Set<string>();
+      for (const f of newFeatures) {
+        if (f.kind === 'leaf') for (const r of f.shape.rings) for (const v of r.vertexIds) stillCited.add(v);
+        if (f.kind === 'line') for (const v of f.vertexIds) stillCited.add(v);
+        if (f.kind === 'point') stillCited.add(f.vertexId);
+      }
+      const keptVerts = [...store.byId.values()].filter((v) => stillCited.has(v.id));
+      const out = commit(newFeatures, createVertexStore(keptVerts));
+      return { project: out.project, result: res };
+    }
+  }
+}
+
+/**
+ * SELECTION-VALIDITY (選択が常に有効). Build a selection that targets the edited
+ * feature + a couple of its pre-edit vertices, run the REAL U22
+ * reresolveAfterStructureChange with the edit's CommandResult, and assert the
+ * surviving selection references ONLY ids that EXIST in the post-edit first
+ * snapshot (no dangling active feature, no dangling selected vertex). A deleted
+ * feature / removed vertex must have dropped out.
+ */
+function selectionStaysValid(
+  before: DomainProject,
+  after: DomainProject,
+  hi: number,
+  result: FeatureEditResult,
+): boolean {
+  const beforeFeatures = before.histories[hi]!.series.entries[0]!.anchor.snapshot.features;
+  if (beforeFeatures.length === 0) return true;
+  const target = beforeFeatures[0]!;
+  // Pick up to 3 vertex ids the target referenced before the edit.
+  const beforeStore = before.histories[hi]!.series.entries[0]!.anchor.snapshot.vertices;
+  const targetVerts: string[] = [];
+  if (target.kind === 'point') targetVerts.push(target.vertexId);
+  if (target.kind === 'line') targetVerts.push(...target.vertexIds);
+  if (target.kind === 'leaf') for (const r of target.shape.rings) targetVerts.push(...r.vertexIds);
+  const pickVerts = new Set(
+    targetVerts.slice(0, 3).map((v) => asVertexId(v)).filter((v) => beforeStore.byId.has(v)),
+  );
+
+  let sel: SelectionState = withActiveFeature(EMPTY_SELECTION, target.id);
+  if (pickVerts.size > 0) sel = withVertexSet(sel, target.id, pickVerts);
+
+  const cmdResult = commandResultFromEditResult(result);
+  const next = reresolveAfterStructureChange(sel, cmdResult);
+
+  const afterEntry = after.histories[hi]!.series.entries[0]!;
+  const afterFeatureIds = new Set(afterEntry.anchor.snapshot.features.map((f) => f.id as string));
+  const afterVertexIds = new Set([...afterEntry.anchor.snapshot.vertices.byId.keys()].map((v) => v as string));
+
+  // Active feature, if retained, must still exist post-edit.
+  if (next.activeFeature !== null && !afterFeatureIds.has(next.activeFeature as string)) return false;
+  // Every retained selected vertex must still exist post-edit.
+  for (const vid of next.vertexIds) {
+    if (!afterVertexIds.has(vid as string)) return false;
+  }
+  // The owner, if any, must still exist.
+  if (next.vertexOwner !== null && !afterFeatureIds.has(next.vertexOwner as string)) return false;
+  return true;
+}
+
+describe('bug hunt #2 / NEW exploration (seed 26002) — structural edits + selection', () => {
+  it('generated base (with line features) satisfies every load invariant', () => {
+    fc.assert(
+      fc.property(projectArb2(), (project) => {
+        const check = checkBaseInvariants(project);
+        if (!check.ok) throw new Error(`base project failed: ${check.failed}`);
+      }),
+      { seed: SEED2, numRuns: 400 },
+    );
+  });
+
+  it('structural vertex add/delete preserves all invariants + in-memory round-trip', () => {
+    fc.assert(
+      fc.property(
+        projectArb2(),
+        fc.array(structCmdArb(), { minLength: 1, maxLength: 16 }),
+        (initial, cmds) => {
+          let project = initial;
+          const base = checkBaseInvariants(project);
+          if (!base.ok) throw new Error(`generated base invalid: ${base.failed}`);
+          for (const cmd of cmds) {
+            const out = applyStructCmd(project, cmd);
+            project = out.project;
+            const check = checkAllInvariants(project);
+            if (!check.ok) {
+              throw new Error(
+                `invariant "${check.failed}" broke after struct cmd ${JSON.stringify(cmd)}`,
+              );
+            }
+          }
+        },
+      ),
+      { seed: SEED2, numRuns: 700 },
+    );
+  });
+
+  it('structural edits round-trip through the ACTUAL JSON+Zod boundary', () => {
+    fc.assert(
+      fc.property(projectArb2(), fc.array(structCmdArb(), { maxLength: 16 }), (initial, cmds) => {
+        let project = initial;
+        for (const cmd of cmds) {
+          project = applyStructCmd(project, cmd).project;
+          const rt = boundaryRoundTrips(project);
+          if (!rt.ok) {
+            throw new Error(
+              `boundary round-trip broke (${rt.reason}) after struct cmd ${JSON.stringify(cmd)}`,
+            );
+          }
+        }
+      }),
+      { seed: SEED2, numRuns: 700 },
+    );
+  });
+
+  it('selection stays valid after each structural edit (選択が常に有効, via U22 re-resolution)', () => {
+    fc.assert(
+      fc.property(
+        projectArb2(),
+        fc.array(structCmdArb(), { minLength: 1, maxLength: 12 }),
+        (initial, cmds) => {
+          let project = initial;
+          for (const cmd of cmds) {
+            const hi = cmd.hi % project.histories.length;
+            const before = project;
+            const out = applyStructCmd(project, cmd);
+            if (out.result !== null) {
+              if (!selectionStaysValid(before, out.project, hi, out.result)) {
+                throw new Error(
+                  `selection re-resolution left a dangling id after ${JSON.stringify(cmd)}`,
+                );
+              }
+            }
+            project = out.project;
+          }
+        },
+      ),
+      { seed: SEED2, numRuns: 600 },
+    );
+  });
+});
+
+// --- NEW corruption class: RingHierarchyInvalid (dangling hole parent ring) --
+
+/**
+ * Corrupt a holed leaf so its hole's `parentRingId` points at a NON-EXISTENT
+ * territory ring. The Zod schema accepts it (a hole still carries A parentRingId
+ * string), but U07 validateRingHierarchy rejects it → RingHierarchyInvalid. Returns
+ * null when no history carries a holed leaf as its sole feature.
+ */
+function corruptRingHierarchy(
+  project: DomainProject,
+): { project: DomainProject; expectKind: string } | null {
+  const histories = cloneHistories(project);
+  for (let hi = 0; hi < histories.length; hi += 1) {
+    const h = histories[hi]!;
+    const e0 = h.series.entries[0]!;
+    const feats = e0.anchor.snapshot.features;
+    if (feats.length !== 1) continue;
+    const leaf = feats[0]!;
+    if (leaf.kind !== 'leaf') continue;
+    const hole = leaf.shape.rings.find((r) => r.kind === RING_KIND.Hole);
+    if (hole === undefined || hole.kind !== RING_KIND.Hole) continue;
+    const ghostRing = asRingId('ghost-territory-ring-zzz');
+    const brokenHole = withHoleRingParent(hole, ghostRing);
+    const newRings: Ring[] = leaf.shape.rings.map((r) => (r.id === hole.id ? brokenHole : r));
+    const brokenLeaf: LeafFeature = { ...leaf, shape: createShape(newRings) };
+    mapFirstEntryFeatures(histories, hi, (features) =>
+      features.map((f) => (f.id === leaf.id ? brokenLeaf : f)),
+    );
+    // Confirm the corruption actually breaks U07 validation before asserting on it.
+    const checkLeaf = histories[hi]!.series.entries[0]!.anchor.snapshot;
+    if (validateRingHierarchy(brokenLeaf.shape, checkLeaf.vertices).valid) return null;
+    return {
+      project: { ...project, histories },
+      expectKind: INCONSISTENCY.RingHierarchyInvalid,
+    };
+  }
+  return null;
+}
+
+describe('bug hunt #2 / NEW conflict class (seed 26002) — RingHierarchyInvalid', () => {
+  it('a dangling-hole-parent leaf is DETECTED as RingHierarchyInvalid', () => {
+    fc.assert(
+      fc.property(projectArb2(), (project) => {
+        const inj = corruptRingHierarchy(project);
+        if (inj === null) return;
+        const report = checkConsistency(inj.project, CAL);
+        if (report.ok) throw new Error('dangling-hole-parent corruption was NOT detected');
+        const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+        if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+          throw new Error(
+            `expected ${inj.expectKind} but got: ${[...kinds].join(', ')}`,
+          );
+        }
+      }),
+      { seed: SEED2, numRuns: 600 },
+    );
+  });
+
+  it('RingHierarchyInvalid repair is HONEST and converges to a clean, round-tripping fixpoint', () => {
+    fc.assert(
+      fc.property(projectArb2(), (project) => {
+        const inj = corruptRingHierarchy(project);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (fix.honestyViolated) {
+          throw new Error('applyRepairChecked reported resolved:true while growing/leaving target');
+        }
+        if (!fix.converged) {
+          throw new Error(`RingHierarchyInvalid repair did not converge (stuck=${fix.stuck})`);
+        }
+        const finalReport = checkConsistency(fix.project, CAL);
+        if (!finalReport.ok) {
+          throw new Error(
+            `post-repair still inconsistent: ${finalReport.inconsistencies.map((i) => i.kind).join(', ')}`,
+          );
+        }
+        const rt = boundaryRoundTrips(fix.project);
+        if (!rt.ok) throw new Error(`repaired project failed boundary round-trip (${rt.reason})`);
+      }),
+      { seed: SEED2, numRuns: 600 },
     );
   });
 });
