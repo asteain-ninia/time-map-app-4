@@ -458,5 +458,194 @@ describe('time-anchor + history undo/redo — invariants under random edit strea
   });
 });
 
+// ===========================================================================
+// SEED 4002 expansion suite.
+//
+// A second, independently-pinned pass over the SAME real operations with a
+// different deterministic seed (4002) and a larger run budget, plus extra
+// metamorphic laws not covered by the 4001 suite:
+//   - changeStart followed by changeStart-back is an identity ONLY when the
+//     re-move is accepted and nothing collided away (we assert against the
+//     single source of truth + structural view).
+//   - a full random edit stream driven THROUGH the dual-stack history, then
+//     fully undone, returns to the root (re-checked here at 4002 so a seed-
+//     specific ordering bug would surface independently).
+//   - redo after a single undo restores the exact post-execute state across a
+//     random stream (history-level op∘undo∘redo coherence).
+// ===========================================================================
+
+const SEED_4002 = 4002;
+const NUM_RUNS_4002 = 600;
+
+/**
+ * True when every entry OTHER than `excludeId` is byte-identical (by start/end)
+ * between two series. Used to detect whether a changeStart auto-reorganization
+ * mutated a neighbor (overrun-shortening) or dropped an entry, which makes the
+ * move non-reversible by spec.
+ */
+function nonTargetEntriesEqual(
+  a: AnchorSeries,
+  b: AnchorSeries,
+  excludeId: string,
+): boolean {
+  const key = (s: AnchorSeries) =>
+    JSON.stringify(
+      s.entries
+        .filter((e) => e.anchor.id !== excludeId)
+        .map((e) => ({ id: e.anchor.id, start: e.start, end: e.end })),
+    );
+  return key(a) === key(b);
+}
+
+describe('time-anchor + history undo/redo — seed 4002 expansion', () => {
+  it('every history state (edit/undo/redo) satisfies all invariants (seed 4002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(actionArb, { maxLength: 30 }),
+        (initial, actions) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+          for (const action of actions) {
+            if (action.t === 'edit' && action.op) {
+              const before = history.state;
+              const after = applyEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else {
+              history = redo(history).history;
+            }
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_4002, numRuns: NUM_RUNS_4002 },
+    );
+  });
+
+  it('metamorphic: changeStart then changeStart-back round-trips (seed 4002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.nat(),
+        fc.integer({ min: -600, max: 600 }),
+        (initial, targetN, newYear) => {
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const originalStart = target.start;
+          const id = target.anchor.id;
+
+          const moved = changeStart(initial, id, timePointYear(newYear), cal);
+          if (!moved.ok) return; // rejected move is out of scope
+          expectAllInvariants(moved.series);
+
+          // Move the SAME anchor back to its original start.
+          const back = changeStart(moved.series, id, originalStart, cal);
+          if (!back.ok) return;
+          expectAllInvariants(back.series);
+
+          // changeStart auto-reorganizes via normalization (§5.6 「短縮」):
+          // moving the target THROUGH a bounded neighbor permanently shortens
+          // that neighbor's end, and a keep-last collision can drop an entry.
+          // Both are destructive and NOT undone by moving the target back, so
+          // the round-trip is an identity ONLY when the forward move left every
+          // OTHER entry (by id → start/end) byte-identical. We verify that
+          // precondition directly against the forward result rather than via a
+          // coarse count check (a count-preserving move can still shorten a
+          // neighbor — see the 4002 counterexample that motivated this guard).
+          const othersUnchanged = nonTargetEntriesEqual(initial, moved.series, id);
+          if (othersUnchanged) {
+            // Target untouched elsewhere ⇒ moving it back must restore the
+            // exact original series (full reversibility on the temporal axis).
+            expect(viewSeries(back.series)).toEqual(viewSeries(initial));
+          }
+        },
+      ),
+      { seed: SEED_4002, numRuns: NUM_RUNS_4002 },
+    );
+  });
+
+  it('metamorphic: undoing every executed edit returns to the root (seed 4002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { maxLength: 20 }),
+        (initial, ops) => {
+          let history = createHistory(initial, 200);
+          let pushed = 0;
+          for (const op of ops) {
+            const after = applyEdit(history.state, op);
+            if (after === undefined) continue;
+            history = execute(
+              history,
+              makeSeriesCommand(op.kind, history.state, after),
+            ).history;
+            pushed += 1;
+          }
+          for (let i = 0; i < pushed; i += 1) {
+            history = undo(history).history;
+          }
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+        },
+      ),
+      { seed: SEED_4002, numRuns: NUM_RUNS_4002 },
+    );
+  });
+
+  it('metamorphic: execute∘undo∘redo restores post-execute state across a stream (seed 4002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { maxLength: 20 }),
+        (initial, ops) => {
+          let history = createHistory(initial, 200);
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyEdit(before, op);
+            if (after === undefined) continue;
+            const executed = execute(
+              history,
+              makeSeriesCommand(op.kind, before, after),
+            ).history;
+            const postExecute = executed.state;
+            // undo then redo must reproduce the exact post-execute state, and
+            // the intermediate undo must reproduce the exact pre-execute state.
+            const undone = undo(executed).history;
+            expect(viewSeries(undone.state)).toEqual(viewSeries(before));
+            const redone = redo(undone).history;
+            expect(viewSeries(redone.state)).toEqual(viewSeries(postExecute));
+            // continue the stream from the redone (== post-execute) history.
+            history = redone;
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_4002, numRuns: NUM_RUNS_4002 },
+    );
+  });
+
+  it('save ∘ load == identity for any reachable series (seed 4002)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { maxLength: 20 }),
+        (initial, ops) => {
+          let s = initial;
+          for (const op of ops) {
+            const after = applyEdit(s, op);
+            if (after !== undefined) s = after;
+          }
+          expectSaveLoadIdentity(s);
+        },
+      ),
+      { seed: SEED_4002, numRuns: NUM_RUNS_4002 },
+    );
+  });
+});
+
 // keep normalizeSeries import used even if a branch above is pruned
 void normalizeSeries;

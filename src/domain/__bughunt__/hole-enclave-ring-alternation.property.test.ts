@@ -38,15 +38,24 @@ import {
   childrenOf,
   deleteRingAndReorganize,
   ringDepth,
+  topLevelRings,
   validateAlternation,
   validateGeometry,
   validateRingHierarchy,
 } from '../ring-hierarchy';
-import { createVertex, createVertexStore, type VertexStore } from '../vertex';
+import { getVertex, createVertex, createVertexStore, type VertexStore } from '../vertex';
+import { ringSelfIntersects, type GeoRing } from '../geometry/index';
 
 const SEED = 2001;
 const RUNS = 500;
 const cfg = { seed: SEED, numRuns: RUNS } as const;
+
+// Second, independent campaign — the task's focal seed/run budget. Kept separate
+// from `cfg` so both seeds shrink/replay deterministically and a regression in
+// either is attributable.
+const SEED2 = 2002;
+const RUNS2 = 600;
+const cfg2 = { seed: SEED2, numRuns: RUNS2 } as const;
 
 // ---------------------------------------------------------------------------
 // Shared structural invariant checks
@@ -496,6 +505,213 @@ describe('alternation: deletion repairs malformed input', () => {
         },
       ),
       cfg,
+    );
+  });
+});
+
+// ===========================================================================
+// 5. SECOND CAMPAIGN (seed=2002) — deeper invariants + metamorphic laws
+//
+// Focus per the bughunt brief: after every public operation the focal invariants
+// hold (ring alternation, non-self-intersection, valid containment, valid forest
+// = parent depth is child depth - 1, finite coordinates, selection-of-a-ring
+// stays valid) and the metamorphic laws (delete-absent = identity, determinism,
+// the boolean predicate agrees with the structured validator). These are NEW
+// properties, not duplicates of campaign 1, and they run on seed 2002.
+// ===========================================================================
+
+/** Resolve a ring's vertices to a plain coordinate ring via the PUBLIC store
+ * API (no seam unwrap / quantization — we only need the raw stored geometry for
+ * finiteness + self-intersection checks). Returns undefined if any vertex is
+ * missing (treated as not-geometrically-checkable, mirroring the unit). */
+function rawRing(store: VertexStore, ring: Ring): GeoRing | undefined {
+  const out: { lon: number; lat: number }[] = [];
+  for (const vid of ring.vertexIds) {
+    const v = getVertex(store, vid);
+    if (v === undefined) return undefined;
+    out.push(v.coordinate);
+  }
+  return out;
+}
+
+/** Every resolvable ring's stored coordinates are finite (no NaN / Infinity). */
+function allRingsFinite(shape: Shape, store: VertexStore): boolean {
+  for (const ring of shape.rings) {
+    const geo = rawRing(store, ring);
+    if (geo === undefined) continue;
+    for (const c of geo) {
+      if (!Number.isFinite(c.lon) || !Number.isFinite(c.lat)) return false;
+    }
+  }
+  return true;
+}
+
+/** No resolvable ring self-intersects (each is a simple polygon). */
+function noRingSelfIntersects(shape: Shape, store: VertexStore): boolean {
+  for (const ring of shape.rings) {
+    const geo = rawRing(store, ring);
+    if (geo === undefined) continue;
+    if (ringSelfIntersects(geo)) return false;
+  }
+  return true;
+}
+
+/**
+ * Forest-shape law: a valid alternating forest is a tree-forest where every
+ * non-root ring's depth is exactly one more than its parent's depth (the
+ * "derived aggregate = sum/extension of children" structural analogue). Returns
+ * false if any parent/child depth relationship is violated.
+ */
+function depthsConsistent(shape: Shape): boolean {
+  const byId = new Map(shape.rings.map((r) => [r.id, r] as const));
+  for (const r of shape.rings) {
+    const d = ringDepth(shape, r.id);
+    if (d === undefined) return false; // broken chain
+    const parent = r.parentRingId;
+    if (parent === undefined) {
+      if (d !== 0) return false; // a root must be depth 0
+      continue;
+    }
+    const pd = ringDepth(shape, parent);
+    if (pd === undefined) return false;
+    if (d !== pd + 1) return false;
+    // The parent must actually be present (depth would also catch dangling).
+    if (!byId.has(parent)) return false;
+  }
+  return true;
+}
+
+describe('alternation (seed=2002): deeper structural + geometric invariants', () => {
+  it('generated geometry is finite, simple, and alternation-valid by construction', () => {
+    fc.assert(
+      fc.property(geoShapeArb(), ({ shape, store }) => {
+        expect(storeFinite(store)).toBe(true);
+        expect(allRingsFinite(shape, store)).toBe(true);
+        expect(noRingSelfIntersects(shape, store)).toBe(true);
+        assertStructurallyValid(shape);
+        expect(depthsConsistent(shape)).toBe(true);
+        expect(validateRingHierarchy(shape, store).violations).toEqual([]);
+      }),
+      cfg2,
+    );
+  });
+
+  it('after deleting any ring: forest depths stay consistent and geometry simple+finite', () => {
+    fc.assert(
+      fc.property(
+        geoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, store, targetId }) => {
+          const after = deleteRingAndReorganize(shape, targetId);
+          assertStructurallyValid(after);
+          // Forest law: parent depth = child depth - 1 for every ring.
+          expect(depthsConsistent(after)).toBe(true);
+          // Reorganization never invents or mutates a vertex, so geometry stays
+          // finite and simple; and it must not manufacture containment overlaps.
+          expect(allRingsFinite(after, store)).toBe(true);
+          expect(noRingSelfIntersects(after, store)).toBe(true);
+          expect(validateGeometry(after, store).violations).toEqual([]);
+        },
+      ),
+      cfg2,
+    );
+  });
+
+  it('the boolean alternation predicate agrees with the structured validator', () => {
+    // isAlternationValid (U06 cheap predicate) and validateAlternation (U07
+    // structured) are documented to be the SAME judgement (教訓5.26). On any
+    // (possibly-malformed) shape, the contract is: structured.valid implies the
+    // cheap predicate is true, and whenever the cheap predicate is false the
+    // structured one is false too (the structured one ALSO catches cycles /
+    // dangling that the cheap predicate is not asked to judge).
+    fc.assert(
+      fc.property(
+        fc
+          .array(
+            fc.record({
+              kind: fc.constantFrom(RING_KIND.Territory, RING_KIND.Hole),
+              parentIdx: fc.integer({ min: -1, max: 5 }),
+            }),
+            { minLength: 0, maxLength: 6 },
+          )
+          .map((specs) => {
+            const ids = specs.map((_, i) => asRingId(`p${i}`));
+            const rings: Ring[] = specs.map((spec, i) => {
+              const vids = [asVertexId(`p${i}-a`), asVertexId(`p${i}-b`), asVertexId(`p${i}-c`)];
+              const parentId =
+                spec.parentIdx >= 0 && spec.parentIdx < ids.length ? ids[spec.parentIdx] : undefined;
+              return spec.kind === RING_KIND.Territory
+                ? createTerritoryRing(ids[i] as RingId, vids, parentId)
+                : createHoleRing(ids[i] as RingId, vids, parentId ?? asRingId(`dangle-${i}`));
+            });
+            return createShape(rings);
+          }),
+        (shape) => {
+          const cheap = isAlternationValid(shape);
+          const structured = validateAlternation(shape);
+          if (structured.valid) expect(cheap).toBe(true);
+          if (!cheap) expect(structured.valid).toBe(false);
+        },
+      ),
+      cfg2,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. STATEFUL (seed=2002): random deletion stream over REAL geometry, asserting
+//    the full focal invariant bundle after every single operation.
+// ---------------------------------------------------------------------------
+
+describe('alternation (seed=2002): stateful geometry deletion stream', () => {
+  it('every step keeps alternation, depths, simple+finite geometry, valid containment, valid selection', () => {
+    fc.assert(
+      fc.property(
+        geoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }), {
+              minLength: shape.rings.length + 2,
+              maxLength: shape.rings.length + 6,
+            })
+            .map((selectors) => ({ shape, store, selectors })),
+        ),
+        ({ shape, store, selectors }) => {
+          let current = shape;
+          const checkAll = (s: Shape): void => {
+            assertStructurallyValid(s);
+            expect(depthsConsistent(s)).toBe(true);
+            expect(allRingsFinite(s, store)).toBe(true);
+            expect(noRingSelfIntersects(s, store)).toBe(true);
+            expect(validateGeometry(s, store).violations).toEqual([]);
+            // SELECTION validity: a non-empty valid forest always has a top-level
+            // territory available to select; childrenOf is consistent with links.
+            if (s.rings.length > 0) {
+              expect(topLevelRings(s).length).toBeGreaterThan(0);
+            }
+            for (const r of s.rings) {
+              for (const k of childrenOf(s, r.id)) {
+                expect(k.parentRingId).toBe(r.id);
+              }
+            }
+          };
+          checkAll(current);
+          for (const sel of selectors) {
+            if (current.rings.length === 0) break;
+            const idx = Math.min(current.rings.length - 1, Math.floor(sel * current.rings.length));
+            const target = current.rings[idx];
+            if (target === undefined) continue;
+            const before = current.rings.length;
+            // METAMORPHIC at each step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(current, asRingId('absent-step-id'))).toEqual(current);
+            current = deleteRingAndReorganize(current, target.id);
+            expect(current.rings.length).toBeLessThan(before);
+            checkAll(current);
+          }
+          expect(current.rings.length).toBe(0);
+        },
+      ),
+      cfg2,
     );
   });
 });

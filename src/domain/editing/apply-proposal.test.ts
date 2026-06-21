@@ -239,4 +239,164 @@ describe('applySplitProposal', () => {
     const at0 = resolveAt(aggAfter.series, timePointYear(0), calendar);
     expect(at0.kind).toBe('present');
   });
+
+  it('transfers 共有頂点継続 to a neighbour history via vertexRemap (FR-95 / regression)', () => {
+    // Two leaves sharing ONE boundary vertex id 'sv' (a real shared vertex, cited
+    // by both rings). The split re-mints that boundary id into a NEW id 'sv-new';
+    // the apply path MUST repoint the NEIGHBOUR's citation onto 'sv-new' as part of
+    // the same indivisible split, else the neighbour keeps the stale id and the
+    // boundary tears apart (the bug: vertexRemap was discarded).
+    const target = squareLeaf('f-tgt', ['sv', 't1', 't2'], [0, 1, 2]);
+    const neighbour = squareLeaf('f-nbr', ['sv', 'b1', 'b2'], [0, -1, -2]);
+
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: target.feature, vertices: target.vertices, sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: neighbour.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: neighbour.feature, vertices: neighbour.vertices, sharedCandidateIds: new Map() },
+    });
+
+    // The split re-mints 'sv' -> 'sv-new'. The new vertex body rides in the snapshot
+    // vertices; the inheritor's new shape cites the new id (as the geometry would).
+    const svNew = createVertex(asVertexId('sv-new'), { lon: 0, lat: 0 });
+    const newSide = squareLeaf('f-new', ['n0', 'n1', 'n2'], [10, 11, 12]);
+    const inheritorShape = createShape([
+      createTerritoryRing(asRingId('r-tgt-2'), ['sv-new', 't1'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: target.feature.id,
+      inheritorShape,
+      newFeature: newSide.feature,
+      vertices: [svNew, ...newSide.vertices],
+      vertexRemap: new Map([[asVertexId('sv'), asVertexId('sv-new')]]),
+      sharedEdgeCuts: [],
+      touchedFeatureIds: [target.feature.id, newSide.feature.id],
+    };
+    const proposal = createEditProposal(target.feature.id, timePointYear(500), snapshot);
+
+    const next = applySplitProposal(root, proposal, calendar);
+
+    // The neighbour's anchor effective at the split time repoints 'sv' -> 'sv-new'.
+    const nbrHistory = next.histories.find((h) => h.featureId === neighbour.feature.id)!;
+    const nbrAt500 = resolveAt(nbrHistory.series, timePointYear(500), calendar);
+    expect(nbrAt500.kind).toBe('present');
+    if (nbrAt500.kind !== 'present') return;
+    const nbrSnapshot = nbrAt500.entry.anchor.snapshot;
+    const nbrFeature = nbrSnapshot.features.find((f) => f.id === neighbour.feature.id)!;
+    expect(nbrFeature.kind).toBe('leaf');
+    if (nbrFeature.kind !== 'leaf') return;
+    const nbrIds = nbrFeature.shape.rings[0]!.vertexIds.map((v) => v as string);
+    // The stale shared id is gone; the new shared id is cited (continuation), and
+    // the neighbour's own (un-shared) vertices are untouched.
+    expect(nbrIds).toContain('sv-new');
+    expect(nbrIds).not.toContain('sv');
+    expect(nbrIds).toContain('b1');
+    expect(nbrIds).toContain('b2');
+    // Single source of truth: 'sv-new' resolves to a body in this anchor's store.
+    expect(nbrSnapshot.vertices.byId.has(asVertexId('sv-new'))).toBe(true);
+    // The orphaned old body was pruned (nothing cites it here any more).
+    expect(nbrSnapshot.vertices.byId.has(asVertexId('sv'))).toBe(false);
+
+    // The neighbour's ORIGINAL year-0 anchor is untouched (identity continuity):
+    // the past-edit only inserted/updated the anchor AT the split time.
+    const nbrAt0 = resolveAt(nbrHistory.series, timePointYear(0), calendar);
+    expect(nbrAt0.kind).toBe('present');
+    if (nbrAt0.kind !== 'present') return;
+    const nbrFeature0 = nbrAt0.entry.anchor.snapshot.features.find(
+      (f) => f.id === neighbour.feature.id,
+    )!;
+    if (nbrFeature0.kind === 'leaf') {
+      expect(nbrFeature0.shape.rings[0]!.vertexIds.map((v) => v as string)).toContain('sv');
+    }
+
+    // The inheritor cites the new shared id (its new shape), and an empty-remap split
+    // would leave neighbours untouched — proven by the no-stale-id assertion above.
+    const inhHistory = next.histories.find((h) => h.featureId === target.feature.id)!;
+    const inhAt500 = resolveAt(inhHistory.series, timePointYear(500), calendar);
+    expect(inhAt500.kind).toBe('present');
+  });
+
+  it('cuts a neighbour shared edge mid-way via sharedEdgeCuts (FR-95 / regression)', () => {
+    // Target and neighbour share the EDGE e0-e1 (both rings cite e0 then e1). The
+    // split line crosses that shared edge mid-way at a seam coordinate; the target's
+    // new shape gains a seam node, but the neighbour's matching edge must ALSO gain
+    // the SAME seam vertex id (the discarded second half of FR-95). seamVertex 'cut0'
+    // rides in the snapshot vertices at the seam coordinate.
+    const target = squareLeaf('f-tgt', ['e0', 'e1', 't2'], [0, 10, 5]);
+    const neighbour = squareLeaf('f-nbr', ['e0', 'e1', 'b2'], [0, 10, 5]);
+
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: target.feature, vertices: target.vertices, sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: neighbour.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: neighbour.feature, vertices: neighbour.vertices, sharedCandidateIds: new Map() },
+    });
+
+    const seamCoord = { lon: 5, lat: 0 };
+    const cut0 = createVertex(asVertexId('cut0'), seamCoord);
+    const newSide = squareLeaf('f-new', ['n0', 'n1', 'n2'], [20, 21, 22]);
+    // Inheritor's new shape carries the seam node between e0 and e1.
+    const inheritorShape = createShape([
+      createTerritoryRing(asRingId('r-tgt-2'), ['e0', 'cut0', 'e1'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: target.feature.id,
+      inheritorShape,
+      newFeature: newSide.feature,
+      vertices: [cut0, ...newSide.vertices],
+      vertexRemap: new Map(),
+      sharedEdgeCuts: [
+        {
+          featureId: target.feature.id,
+          ringId: asRingId('r-f-tgt'),
+          edgeStartIndex: 0,
+          edgeStartVertexId: asVertexId('e0'),
+          edgeEndVertexId: asVertexId('e1'),
+          cutCoordinate: seamCoord,
+        },
+      ],
+      touchedFeatureIds: [target.feature.id, newSide.feature.id],
+    };
+    const proposal = createEditProposal(target.feature.id, timePointYear(500), snapshot);
+
+    const next = applySplitProposal(root, proposal, calendar);
+
+    // The neighbour's edge e0-e1 now carries the seam vertex BETWEEN the endpoints.
+    const nbrHistory = next.histories.find((h) => h.featureId === neighbour.feature.id)!;
+    const nbrAt500 = resolveAt(nbrHistory.series, timePointYear(500), calendar);
+    expect(nbrAt500.kind).toBe('present');
+    if (nbrAt500.kind !== 'present') return;
+    const nbrSnapshot = nbrAt500.entry.anchor.snapshot;
+    const nbrFeature = nbrSnapshot.features.find((f) => f.id === neighbour.feature.id)!;
+    expect(nbrFeature.kind).toBe('leaf');
+    if (nbrFeature.kind !== 'leaf') return;
+    const nbrIds = nbrFeature.shape.rings[0]!.vertexIds.map((v) => v as string);
+    const i0 = nbrIds.indexOf('e0');
+    const iCut = nbrIds.indexOf('cut0');
+    const i1 = nbrIds.indexOf('e1');
+    expect(iCut).toBeGreaterThanOrEqual(0); // seam inserted on the neighbour.
+    expect(iCut).toBe(i0 + 1); // immediately after e0.
+    expect(i1).toBe(iCut + 1); // before e1 (e0 -> cut0 -> e1).
+    // Single source of truth: the seam id resolves to a body in the neighbour's store.
+    expect(nbrSnapshot.vertices.byId.has(asVertexId('cut0'))).toBe(true);
+
+    // The neighbour's ORIGINAL year-0 anchor is untouched (no seam there).
+    const nbrAt0 = resolveAt(nbrHistory.series, timePointYear(0), calendar);
+    expect(nbrAt0.kind).toBe('present');
+    if (nbrAt0.kind !== 'present') return;
+    const nbrFeature0 = nbrAt0.entry.anchor.snapshot.features.find(
+      (f) => f.id === neighbour.feature.id,
+    )!;
+    if (nbrFeature0.kind === 'leaf') {
+      expect(nbrFeature0.shape.rings[0]!.vertexIds.map((v) => v as string)).not.toContain('cut0');
+    }
+  });
 });

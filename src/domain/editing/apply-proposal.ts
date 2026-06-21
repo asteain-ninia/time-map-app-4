@@ -63,6 +63,9 @@ import {
 import type { EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
 import type { SplitSnapshot } from '../knife/proposal';
+import type { VertexRemap } from '../shared-vertex';
+import type { WorldCoordinate } from '../coordinate';
+import { quantizedEqual } from '../geometry/index';
 import type { FeatureSnapshot } from './edit-flow';
 import type { DomainProject, FeatureHistory } from '../persistence/serialize';
 
@@ -287,7 +290,332 @@ export function applySplitProposal(
       ? histories.map((h, i) => (i === newExists ? newHistory : h))
       : [...histories, newHistory];
 
+  // 3. 共有頂点継続 (FR-95 / U11 transferSharing): the split re-minted the target's
+  // boundary vertices into NEW ids (the inheritor's new shape + the new feature both
+  // cite those new ids). Any NEIGHBOUR feature that shared the OLD ids must have its
+  // references repointed onto the new ids AS PART OF this one indivisible split,
+  // otherwise the neighbour keeps dangling old ids and the boundary tears apart at a
+  // later move (the bug: vertexRemap was discarded by the apply path). This is the
+  // project-level analogue of U11 transferSharing, applied to every history's anchor
+  // snapshot effective at the anchor time. Pure (returns new histories).
+  histories = applyVertexRemapToHistories(
+    histories,
+    snapshot.vertexRemap,
+    vertices,
+    anchorTime,
+    calendar,
+  );
+
+  // 4. 共有辺途中切断 (FR-95 / U11 insertSharedEdgeCut): where the分断線 crossed a
+  // neighbour's SHARED edge mid-way, the target's new shape gained a node at the seam
+  // but the neighbour's matching edge did not — leaving the seam un-cut on the partner
+  // side (the second half of the discarded continuation). Insert the same seam vertex
+  // id into the neighbour's corresponding edge so both sides carry the shared node.
+  histories = applySharedEdgeCutsToHistories(
+    histories,
+    snapshot,
+    vertices,
+    anchorTime,
+    calendar,
+  );
+
   return withHistories(root, histories);
+}
+
+/**
+ * 共有頂点継続 transfer (FR-95): repoint EVERY history's anchor snapshot effective at
+ * `anchorTime` through `remap` (old vertex id -> new vertex id), so neighbour features
+ * that shared the split target's old boundary vertices follow the re-minted ids and
+ * stay shared (U11 transferSharing semantics, applied across the project's histories
+ * rather than a single SharedVertexState). For each history that actually cites a
+ * remapped old id at that time, a past-edit inserts/updates the anchor at `anchorTime`
+ * with the repointed features and the split's vertex bodies merged in (so every new
+ * id resolves to a body — no dangling references, 教訓5.31); orphaned old bodies that
+ * nothing in that snapshot cites any more are pruned.
+ *
+ * Histories that cite no remapped id are returned untouched (referential identity
+ * preserved), so applying an empty remap is a no-op and the common no-shared-boundary
+ * split costs nothing. Pure.
+ */
+function applyVertexRemapToHistories(
+  histories: readonly FeatureHistory[],
+  remap: VertexRemap,
+  splitVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  if (remap.size === 0) return [...histories];
+  return histories.map((history) => {
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') return history;
+    const base = resolution.entry.anchor.snapshot;
+    const citesRemapped = base.features.some((f) =>
+      [...remap.keys()].some((oldId) => featureReferences(f, oldId)),
+    );
+    if (!citesRemapped) return history;
+
+    const updatedSeries = applyPastEdit(
+      history.series,
+      anchorTime,
+      (effective): Anchor => {
+        const effBase =
+          effective.kind === 'present'
+            ? effective.entry.anchor.snapshot
+            : createAnchorSnapshot([], createVertexStore([]));
+        const features = effBase.features.map((f) => repointThroughRemap(f, remap));
+        const store = remapVertexStore(effBase.vertices, remap, splitVertices, features);
+        return anchorFor(features, store, history.featureId, anchorTime);
+      },
+      calendar,
+    );
+    return { featureId: history.featureId, series: updatedSeries };
+  });
+}
+
+/** Repoint every vertex citation in a feature through `remap` (old -> new). Pure. */
+function repointThroughRemap(feature: Feature, remap: VertexRemap): Feature {
+  let next = feature;
+  for (const [oldId, newId] of remap) {
+    if (oldId === newId) continue;
+    next = repointFeatureVertex(next, oldId, newId);
+  }
+  return next;
+}
+
+/**
+ * Build the remapped snapshot's vertex store: carry the new ids' bodies in from the
+ * split's minted vertices (single source of truth, R6), then prune old bodies that no
+ * surviving feature cites any more (削除は参照掃除まで; 教訓5.21). The new bodies are the
+ * canonical coordinate source for the re-minted shared vertices.
+ */
+function remapVertexStore(
+  base: VertexStore,
+  remap: VertexRemap,
+  splitVertices: readonly Vertex[],
+  features: readonly Feature[],
+): VertexStore {
+  // Merge the split's minted vertex bodies over the base store so every new id a
+  // repointed feature now cites resolves to a body (no dangling refs).
+  const merged = createVertexStore([...base.byId.values(), ...splitVertices]);
+  const byId = new Map(merged.byId);
+  // Prune old bodies that were remapped away and are no longer referenced here.
+  for (const oldId of remap.keys()) {
+    const newId = remap.get(oldId);
+    if (newId === oldId) continue;
+    if (
+      byId.has(oldId) &&
+      !features.some((f) => featureReferences(f, oldId))
+    ) {
+      byId.delete(oldId);
+    }
+  }
+  return { byId };
+}
+
+/**
+ * 共有辺途中切断 transfer (FR-95): for each seam where the分断線 crossed a NEIGHBOUR's
+ * shared edge mid-way, insert the seam's vertex id into the neighbour's matching edge
+ * so the partner side carries the same shared node (U11 insertSharedEdgeCut semantics,
+ * over the project's histories). The seam vertex id + coordinate are taken from the
+ * split's minted vertices (the same id the target's new shape cites at the seam), so
+ * the inserted node is a genuine SHARE — single source of truth (R6).
+ *
+ * The neighbour edge is the consecutive pair (in either direction) citing the cut's
+ * two endpoint ids — matched against BOTH the original and the remapped endpoint ids,
+ * because step 3 may have already repointed the neighbour's endpoints onto the new
+ * shared ids. The seam id is inserted between them only when it is not already present
+ * (idempotent re-application). Cuts with no neighbour partner are left untouched (the
+ * edge was not actually shared). Pure.
+ */
+function applySharedEdgeCutsToHistories(
+  histories: readonly FeatureHistory[],
+  snapshot: SplitSnapshot,
+  splitVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  if (snapshot.sharedEdgeCuts.length === 0) return [...histories];
+  let result: readonly FeatureHistory[] = histories;
+  for (const cut of snapshot.sharedEdgeCuts) {
+    const seam = findVertexAtCoordinate(splitVertices, cut.cutCoordinate);
+    if (seam === undefined) continue; // no minted seam vertex → nothing to share.
+    // The endpoint ids the neighbour's shared edge may cite: the original pair AND the
+    // remapped pair (step 3 may have already repointed them onto the re-minted ids).
+    const startIds = endpointVariants(cut.edgeStartVertexId, snapshot.vertexRemap);
+    const endIds = endpointVariants(cut.edgeEndVertexId, snapshot.vertexRemap);
+    result = result.map((history) =>
+      insertSeamIntoNeighbour(
+        history,
+        cut.featureId,
+        startIds,
+        endIds,
+        seam.id,
+        seam,
+        anchorTime,
+        calendar,
+      ),
+    );
+  }
+  return [...result];
+}
+
+/** The original id plus its remap image (so a matcher catches both pre/post repoint). */
+function endpointVariants(id: VertexId, remap: VertexRemap): ReadonlySet<VertexId> {
+  const set = new Set<VertexId>([id]);
+  const mapped = remap.get(id);
+  if (mapped !== undefined) set.add(mapped);
+  return set;
+}
+
+/** The split's minted vertex whose coordinate matches the seam (quantize-aligned). */
+function findVertexAtCoordinate(
+  vertices: readonly Vertex[],
+  coordinate: WorldCoordinate,
+): Vertex | undefined {
+  return vertices.find((v) => quantizedEqual(v.coordinate, coordinate));
+}
+
+/**
+ * Insert the seam vertex into a neighbour history's matching shared edge at the anchor
+ * time. The neighbour is any feature OTHER than the original cut target whose container
+ * cites the two endpoint ids consecutively; the seam id is spliced between them. Past-
+ * edits the history at the anchor time (carrying the seam body in). Returns the history
+ * unchanged when no matching neighbour edge exists at that time. Pure.
+ */
+function insertSeamIntoNeighbour(
+  history: FeatureHistory,
+  cutTargetId: FeatureId,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamId: VertexId,
+  seamVertex: Vertex,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory {
+  const resolution = resolveAt(history.series, anchorTime, calendar);
+  if (resolution.kind !== 'present') return history;
+  const base = resolution.entry.anchor.snapshot;
+  const hasNeighbourEdge = base.features.some(
+    (f) => f.id !== cutTargetId && featureHasSharedEdge(f, startIds, endIds, seamId),
+  );
+  if (!hasNeighbourEdge) return history;
+
+  const updatedSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      const effBase =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : createAnchorSnapshot([], createVertexStore([]));
+      const features = effBase.features.map((f) =>
+        f.id === cutTargetId ? f : insertSeamIntoFeature(f, startIds, endIds, seamId),
+      );
+      const store = createVertexStore([...effBase.vertices.byId.values(), seamVertex]);
+      return anchorFor(features, store, history.featureId, anchorTime);
+    },
+    calendar,
+  );
+  return { featureId: history.featureId, series: updatedSeries };
+}
+
+/** True iff a feature has a container whose consecutive pair cites the endpoint ids. */
+function featureHasSharedEdge(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamId: VertexId,
+): boolean {
+  for (const ids of vertexIdLists(feature)) {
+    if (edgeIndexFor(ids, startIds, endIds, seamId) >= 0) return true;
+  }
+  return false;
+}
+
+/** Insert the seam id into the matching edge of every container of a feature. Pure. */
+function insertSeamIntoFeature(
+  feature: Feature,
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamId: VertexId,
+): Feature {
+  switch (feature.kind) {
+    case FEATURE_KIND.Line: {
+      const idx = edgeIndexFor(feature.vertexIds, startIds, endIds, seamId);
+      if (idx < 0) return feature;
+      return withLineVertexIds(
+        feature as LineFeature,
+        spliceAfter(feature.vertexIds, idx, seamId),
+      ) as Feature;
+    }
+    case FEATURE_KIND.Leaf: {
+      const rings = (feature as LeafFeature).shape.rings;
+      let changed = false;
+      const nextRings: Ring[] = rings.map((ring) => {
+        const idx = edgeIndexFor(ring.vertexIds, startIds, endIds, seamId);
+        if (idx < 0) return ring;
+        changed = true;
+        const ids = spliceAfter(ring.vertexIds, idx, seamId);
+        return ring.kind === RING_KIND.Territory
+          ? withTerritoryRingVertexIds(ring, ids)
+          : withHoleRingVertexIds(ring, ids);
+      });
+      return changed
+        ? (withLeafShape(feature as LeafFeature, createShape(nextRings)) as Feature)
+        : feature;
+    }
+    default:
+      return feature; // points / aggregates carry no edge.
+  }
+}
+
+/** The ordered vertexId lists of every edge-bearing container of a feature. */
+function vertexIdLists(feature: Feature): readonly (readonly VertexId[])[] {
+  switch (feature.kind) {
+    case FEATURE_KIND.Line:
+      return [feature.vertexIds];
+    case FEATURE_KIND.Leaf:
+      return (feature as LeafFeature).shape.rings.map((r) => r.vertexIds);
+    default:
+      return [];
+  }
+}
+
+/**
+ * The index i of the edge (i -> i+1, closing edge for rings) whose endpoints match the
+ * (start,end) id sets in EITHER direction and whose seam is not already inserted there.
+ * Rings wrap (the n-1 -> 0 closing edge is real); a list shorter than 2 has no edge.
+ * Returns -1 when no such edge exists. Pure.
+ */
+function edgeIndexFor(
+  ids: readonly VertexId[],
+  startIds: ReadonlySet<VertexId>,
+  endIds: ReadonlySet<VertexId>,
+  seamId: VertexId,
+): number {
+  const n = ids.length;
+  if (n < 2) return -1;
+  for (let i = 0; i < n; i += 1) {
+    const a = ids[i];
+    const b = ids[(i + 1) % n];
+    if (a === undefined || b === undefined) continue;
+    if (a === seamId || b === seamId) continue; // already cut here (idempotent).
+    const forward = startIds.has(a) && endIds.has(b);
+    const backward = endIds.has(a) && startIds.has(b);
+    if (forward || backward) return i;
+  }
+  return -1;
+}
+
+/** Return a new id list with `value` inserted immediately after position `index`. */
+function spliceAfter(
+  ids: readonly VertexId[],
+  index: number,
+  value: VertexId,
+): VertexId[] {
+  const next = [...ids];
+  next.splice(index + 1, 0, value);
+  return next;
 }
 
 /** Swap the inheritor's shape; throws if the inheritor is not a leaf (FR-44). */

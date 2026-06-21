@@ -45,7 +45,7 @@ import {
   type GeoMultiPolygon,
 } from '../geometry/types';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
-import { createShape, createTerritoryRing } from '../ring';
+import { createShape, createTerritoryRing, isAlternationValid } from '../ring';
 import {
   buildForest,
   descendantIds,
@@ -54,7 +54,12 @@ import {
   HIERARCHY_ROLE,
   walkToRoot,
 } from '../hierarchy/forest';
-import { derivedDepth, derivedDepths, DEPTH_UNDEFINED } from '../hierarchy/depth';
+import {
+  derivedDepth,
+  derivedDepths,
+  maxDerivedDepth,
+  DEPTH_UNDEFINED,
+} from '../hierarchy/depth';
 import {
   resolveFeatureArea,
   resolveLeafShape,
@@ -784,6 +789,276 @@ describe(`U08 metamorphic identities (seed=${SEED})`, () => {
         }
       }),
       { seed: SEED, numRuns: 300 },
+    );
+  });
+});
+
+// ===========================================================================
+// 5. DEEP / MULTI-LEVEL forests (seed = 5002).
+//
+// The sections above only build TWO-level forests (one root aggregate, leaf
+// children). The 派生集約 = 子の和 invariant is most interesting when it must
+// RECURSE: an aggregate-of-aggregates' area is the union of its child
+// aggregates' areas, each of which is itself the union of its leaves. A bug in
+// the explicit-stack post-order union (resolve-shape.ts), in depth memoization
+// on a deep chain (depth.ts), or in the gap detector on nested children would
+// only surface on >= 3 levels. We therefore generate random NESTED forests and
+// re-assert EVERY U08 invariant, plus the ring-alternation invariant on each
+// leaf shape and the depth-chain coherence on a deliberately deep chain.
+// ===========================================================================
+
+const SEED2 = 5002;
+
+interface DeepSpec {
+  /** Branching: spec[i] = number of children of the i-th node, breadth-first. */
+  readonly childCounts: readonly number[];
+  readonly tileW: number;
+}
+
+/**
+ * Build a nested forest as a single root aggregate whose sub-tree is described
+ * breadth-first by `childCounts`. Node 0 is the root; its children are the next
+ * entries, and so on. A node with childCount 0 is a LEAF (gets a rectangle); a
+ * node with childCount > 0 is an inner aggregate (no shape).
+ *
+ * Geometry is laid so every LEAF rectangle is pairwise-disjoint and gapless:
+ * leaves are emitted in DFS order from a single per-band x-cursor, so each
+ * ancestor aggregate's leaves form one continuous strip and the union has no
+ * inter-child gap at ANY level.
+ */
+function buildDeepForest(spec: DeepSpec): ModelState {
+  const s = emptyState();
+  const counts = spec.childCounts;
+  if (counts.length === 0) {
+    makeLeaf(s, 0, 0, spec.tileW, 10, undefined);
+    return s;
+  }
+  const n = counts.length;
+  const ids: FeatureId[] = [];
+  for (let i = 0; i < n; i += 1) ids.push(asFeatureId(`f-deep-${i}`));
+  // Breadth-first child assignment: a running pointer hands out the next
+  // unassigned node ids as each node's children.
+  const childrenOf: FeatureId[][] = counts.map(() => []);
+  const parentOf: (number | undefined)[] = counts.map(() => undefined);
+  let cursor = 1;
+  for (let i = 0; i < n; i += 1) {
+    const c = counts[i]!;
+    for (let k = 0; k < c && cursor < n; k += 1) {
+      childrenOf[i]!.push(ids[cursor]!);
+      parentOf[cursor] = i;
+      cursor += 1;
+    }
+  }
+  // A single x-cursor lays leaves left to right so every ancestor strip is gapless.
+  let xCursor = 0;
+  const band = 0;
+  const emitted = new Set<number>();
+  function emit(idx: number): void {
+    if (emitted.has(idx)) return;
+    emitted.add(idx);
+    const kids = childrenOf[idx]!;
+    const parentIdx = parentOf[idx];
+    const parentId = parentIdx === undefined ? undefined : ids[parentIdx];
+    if (kids.length === 0) {
+      const x = xCursor;
+      xCursor += spec.tileW;
+      const suffix = freshId(s, 'dleaf');
+      const corners = [
+        createCoordinate(x, band),
+        createCoordinate(x + spec.tileW, band),
+        createCoordinate(x + spec.tileW, band + 10),
+        createCoordinate(x, band + 10),
+      ];
+      const verts = corners.map((cc, vi) =>
+        createVertex(asVertexId(`v-${suffix}-${vi}`), cc),
+      );
+      s.vertices.push(...verts);
+      const ring = createTerritoryRing(
+        asRingId(`r-${suffix}`),
+        verts.map((v) => v.id),
+      );
+      const attrs = createBasicAttributes(suffix, 0, 1);
+      const f =
+        parentId === undefined
+          ? createLeafFeature(ids[idx]!, attrs, COLOR, createShape([ring]))
+          : createLeafFeature(ids[idx]!, attrs, COLOR, createShape([ring]), { parentId });
+      s.features.push(f);
+      return;
+    }
+    for (const childId of kids) {
+      const childIdx = ids.indexOf(childId);
+      if (childIdx >= 0) emit(childIdx);
+    }
+    const attrs = createBasicAttributes(`agg-${idx}`, 0, 1);
+    const f =
+      parentId === undefined
+        ? createAggregateFeature(ids[idx]!, attrs, COLOR, kids)
+        : createAggregateFeature(ids[idx]!, attrs, COLOR, kids, { parentId });
+    s.features.push(f);
+  }
+  emit(0);
+  return s;
+}
+
+function deepForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .tuple(
+      fc.integer({ min: 1, max: 3 }), // root branching (forced >= 1: real hierarchy)
+      fc.array(fc.integer({ min: 0, max: 3 }), { minLength: 0, maxLength: 12 }),
+      fc.integer({ min: 5, max: 20 }), // tile width
+    )
+    .map(([rootBranch, rest, tileW]) =>
+      buildDeepForest({ childCounts: [rootBranch, ...rest], tileW }),
+    );
+}
+
+/** Assert ring-alternation validity for every leaf shape in the model. */
+function assertRingAlternation(s: ModelState): void {
+  for (const f of s.features) {
+    if (f.kind === 'leaf') {
+      expect(isAlternationValid(f.shape)).toBe(true);
+    }
+  }
+}
+
+describe(`U08 deep / multi-level forests (seed=${SEED2})`, () => {
+  it('every U08 invariant holds on randomly-nested forests (派生集約=子の和 recurses)', () => {
+    fc.assert(
+      fc.property(deepForestArb(), (s) => {
+        assertForestInvariants(s);
+        assertRingAlternation(s);
+      }),
+      { seed: SEED2, numRuns: 600 },
+    );
+  });
+
+  it('depth is coherent across every level (child = parent + 1; batch == single)', () => {
+    fc.assert(
+      fc.property(deepForestArb(), (s) => {
+        const forest = buildForest(s.features);
+        const depths = derivedDepths(forest);
+        for (const f of s.features) {
+          expect(depths.get(f.id)).toBe(derivedDepth(forest, f.id));
+        }
+        let manualMax = 0;
+        for (const d of depths.values()) if (d > manualMax) manualMax = d;
+        expect(maxDerivedDepth(forest)).toBe(manualMax);
+        for (const f of s.features) {
+          if (f.parentId !== undefined) {
+            expect(derivedDepth(forest, f.id)).toBe(derivedDepth(forest, f.parentId) + 1);
+          }
+        }
+      }),
+      { seed: SEED2, numRuns: 400 },
+    );
+  });
+
+  it('an inner aggregate area equals the union of its DIRECT children (recursing)', () => {
+    fc.assert(
+      fc.property(deepForestArb(), (s) => {
+        const forest = buildForest(s.features);
+        const vstore = store(s);
+        for (const f of s.features) {
+          const childIds = directChildIds(forest, f.id);
+          if (childIds.length === 0) continue;
+          const own = resolveFeatureArea(forest, vstore, f.id);
+          expect(own.status).toBe('ok');
+          if (own.status !== 'ok') continue;
+          const childAreas: GeoMultiPolygon[] = [];
+          let ok = true;
+          for (const cid of childIds) {
+            const c = resolveFeatureArea(forest, vstore, cid);
+            if (c.status !== 'ok') {
+              ok = false;
+              break;
+            }
+            childAreas.push(c.area);
+          }
+          expect(ok).toBe(true);
+          const u = unionAll(childAreas);
+          expect(u).toBeDefined();
+          if (u !== undefined) {
+            expect(areasEqualWithinTolerance(own.area, u)).toBe(true);
+          }
+        }
+      }),
+      { seed: SEED2, numRuns: 600 },
+    );
+  });
+
+  it('validateHierarchy reports no false-positive on nested valid forests', () => {
+    fc.assert(
+      fc.property(deepForestArb(), (s) => {
+        const v = validateHierarchy(s.features, { vertexStore: store(s) });
+        const badKinds = [
+          HIERARCHY_VIOLATION.Cycle,
+          HIERARCHY_VIOLATION.DanglingParent,
+          HIERARCHY_VIOLATION.DuplicateId,
+          HIERARCHY_VIOLATION.AggregateShapeMismatch,
+          HIERARCHY_VIOLATION.ShapeUnresolved,
+        ];
+        for (const kind of badKinds) {
+          const hits = v.violations.filter((x) => x.kind === kind);
+          expect(hits, `unexpected ${kind}: ${JSON.stringify(hits)}`).toHaveLength(0);
+        }
+      }),
+      { seed: SEED2, numRuns: 400 },
+    );
+  });
+
+  it('a deep chain (A->B->C->...) has strictly increasing depth and resolves to the leaf area', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: 40 }), (depth) => {
+        const s = emptyState();
+        const ids: FeatureId[] = [];
+        for (let i = 0; i < depth; i += 1) ids.push(asFeatureId(`chain-${i}`));
+        const suffix = freshId(s, 'chainleaf');
+        const corners = [
+          createCoordinate(0, 0),
+          createCoordinate(10, 0),
+          createCoordinate(10, 10),
+          createCoordinate(0, 10),
+        ];
+        const verts = corners.map((cc, vi) =>
+          createVertex(asVertexId(`v-${suffix}-${vi}`), cc),
+        );
+        s.vertices.push(...verts);
+        const ring = createTerritoryRing(asRingId(`r-${suffix}`), verts.map((v) => v.id));
+        s.features.push(
+          createLeafFeature(
+            ids[depth - 1]!,
+            createBasicAttributes(suffix, 0, 1),
+            COLOR,
+            createShape([ring]),
+            { parentId: ids[depth - 2]! },
+          ),
+        );
+        for (let i = depth - 2; i >= 0; i -= 1) {
+          const childId = ids[i + 1]!;
+          const attrs = createBasicAttributes(`chain-${i}`, 0, 1);
+          const f =
+            i === 0
+              ? createAggregateFeature(ids[i]!, attrs, COLOR, [childId])
+              : createAggregateFeature(ids[i]!, attrs, COLOR, [childId], {
+                  parentId: ids[i - 1]!,
+                });
+          s.features.push(f);
+        }
+        const forest = buildForest(s.features);
+        for (let i = 0; i < depth; i += 1) {
+          expect(derivedDepth(forest, ids[i]!)).toBe(i);
+        }
+        expect(maxDerivedDepth(forest)).toBe(depth - 1);
+        const v = validateHierarchy(s.features);
+        expect(v.violations.some((x) => x.kind === HIERARCHY_VIOLATION.Cycle)).toBe(false);
+        const rootArea = resolveFeatureArea(forest, store(s), ids[0]!);
+        expect(rootArea.status).toBe('ok');
+        if (rootArea.status === 'ok') {
+          expect(allCoordsFinite(rootArea.area)).toBe(true);
+          expect(isMultiPolygonEmpty(rootArea.area)).toBe(false);
+        }
+      }),
+      { seed: SEED2, numRuns: 300 },
     );
   });
 });
