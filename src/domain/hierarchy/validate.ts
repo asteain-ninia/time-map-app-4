@@ -34,6 +34,7 @@
 // 種別ラベル (kindLabel, FR-40) is never consulted — proven by a regression test.
 
 import { FEATURE_KIND, type Feature } from '../feature';
+import { alignMultiPolygon, referenceLonForMultiPolygon } from '../geo/index';
 import { difference, isOk, union } from '../geometry/boolean-ops';
 import { isMultiPolygonEmpty, type GeoMultiPolygon, type GeoPolygon } from '../geometry/types';
 import type { FeatureId } from '../ids';
@@ -370,13 +371,41 @@ function resolveChildAreas(
   return areas;
 }
 
+/**
+ * R3 seam alignment (audit root cause A): the child / hole areas threaded through
+ * these checks are resolved (ultimately) from RAW stored representatives, so two
+ * areas that are geometrically seam-adjacent (e.g. one near +179 and one near −179,
+ * ~2° apart) can be stored ~360° apart. A boolean op run on them as-is sees no
+ * overlap / scatters the pieces across the map and the gap/overflow verdict is
+ * wrong. Anchor BOTH operands onto ONE common branch (`a`'s outer-ring reference,
+ * falling back to `b`'s when `a` is empty) through the single alignment source of
+ * truth before every union / difference here, exactly as the resolve-shape union
+ * path does (単一真実源 — アルゴリズム再発明禁止). For single-branch (non-seam)
+ * inputs the alignment is the identity, so the common case is unchanged.
+ */
+function commonRef(a: GeoMultiPolygon, b: GeoMultiPolygon): number {
+  return a.length > 0 ? referenceLonForMultiPolygon(a) : referenceLonForMultiPolygon(b);
+}
+
+function alignedUnion(a: GeoMultiPolygon, b: GeoMultiPolygon): GeoMultiPolygon | undefined {
+  const ref = commonRef(a, b);
+  const merged = union(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
+  return isOk(merged) ? merged.result : undefined;
+}
+
+function alignedDifference(a: GeoMultiPolygon, b: GeoMultiPolygon): GeoMultiPolygon | undefined {
+  const ref = commonRef(a, b);
+  const diff = difference(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
+  return isOk(diff) ? diff.result : undefined;
+}
+
 /** Boolean union of a list of areas; undefined if any union is rejected. */
 function unionAll(areas: readonly GeoMultiPolygon[]): GeoMultiPolygon | undefined {
   let acc: GeoMultiPolygon = [];
   for (const area of areas) {
-    const merged = union(acc, area);
-    if (!isOk(merged)) return undefined;
-    acc = merged.result;
+    const merged = alignedUnion(acc, area);
+    if (merged === undefined) return undefined;
+    acc = merged;
   }
   return acc;
 }
@@ -398,9 +427,10 @@ function fillHoles(mp: GeoMultiPolygon): GeoMultiPolygon {
 
 /** The hole regions of `area` as a positive multi-polygon: filled(area) \ area. */
 function holeRegions(area: GeoMultiPolygon): GeoMultiPolygon | undefined {
-  const filled = fillHoles(area);
-  const diff = difference(filled, area);
-  return isOk(diff) ? diff.result : undefined;
+  // `filled` and `area` are the same rings (the outer ring is shared), so they are
+  // already on one branch; routing through alignedDifference keeps the seam frame
+  // consistent (identity for single-branch input) and avoids re-deriving folding.
+  return alignedDifference(fillHoles(area), area);
 }
 
 /**
@@ -439,9 +469,9 @@ function interChildGap(childAreas: readonly GeoMultiPolygon[]): boolean | undefi
   if (ownHoles === undefined) return undefined;
 
   // Residual holes not attributable to any single child = genuine inter-child gap.
-  const residual = difference(unionHoles, ownHoles);
-  if (!isOk(residual)) return undefined;
-  return !isMultiPolygonEmpty(residual.result);
+  const residual = alignedDifference(unionHoles, ownHoles);
+  if (residual === undefined) return undefined;
+  return !isMultiPolygonEmpty(residual);
 }
 
 /**
@@ -458,9 +488,12 @@ export function areasEqualWithinTolerance(a: GeoMultiPolygon, b: GeoMultiPolygon
 
 /** True iff (a \ b) reduces to the empty multi-polygon under U06 tolerance. */
 function directionalDiffEmpty(a: GeoMultiPolygon, b: GeoMultiPolygon): boolean {
-  const diff = difference(a, b);
-  if (!isOk(diff)) return false;
-  return isMultiPolygonEmpty(diff.result);
+  // Align both operands onto one branch (audit root cause A) so two seam-adjacent
+  // areas are not judged "not equal" merely because one is stored a world-turn
+  // away; identity for single-branch input.
+  const diff = alignedDifference(a, b);
+  if (diff === undefined) return false;
+  return isMultiPolygonEmpty(diff);
 }
 
 // --- 0-child aggregate verdict (FR-35, defined here, processed elsewhere) ----
