@@ -340,6 +340,11 @@ export function App(): JSX.Element {
     // listeners to the map INPUT layer (教訓 5.14). View-mode left/middle drag pans;
     // the wheel does cursor-anchored zoom in EVERY mode. Selection / add are owned by
     // their own input controllers, so those ports are honest no-ops here.
+    // Drain a throttled redraw before a pointerdown hit-test so drawn == live state
+    // (bughunt round-2: stale-frame hit-test window). Assigned once the redraw
+    // scheduler is built below; a no-op until then (the early base paint is already
+    // synchronous, so a press before the scheduler exists has nothing to flush).
+    let flushRedraw = (): void => {};
     const cameraPort: CameraPort = {
       read: () => ports.readCamera(),
       write: (camera) => {
@@ -498,6 +503,16 @@ export function App(): JSX.Element {
     };
 
     const onPointerDown = (e: PointerEvent): void => {
+      // STALE-FRAME HIT-TEST FIX (bughunt round-2): drain any throttled redraw NOW so
+      // the pixels match the live store state BEFORE the hit-test runs. The hit-test
+      // reads LIVE store state + the live camera (hitTester.hitTest), but the redraw is
+      // FPS-capped, so when a frame is held back by the cap the store has advanced while
+      // the user still sees the OLD frame — a press would then resolve against the NEW
+      // feature set, not the visible one (『見える ≠ 掴める』). Flushing first restores
+      // drawn == state (clip ⊇ draw ⊇ hit) at the instant of the press; it honours the
+      // pending draw exactly once (no extra paint, 受け入れ基準 5) and is a no-op when no
+      // frame is pending, so it costs nothing on the common path.
+      flushRedraw();
       const { x, y } = toSurface(e.clientX, e.clientY);
       const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
       // Capture the pointer for a pan so the drag keeps tracking even if the cursor
@@ -553,6 +568,10 @@ export function App(): JSX.Element {
         // sequence for it here. Non-left presses (middle/right) go to the dispatcher,
         // which decides pan vs context-menu from its mode×button table.
         if (e.button === 0) return;
+        // Drain a throttled redraw before the dispatcher hit-tests (a right-button
+        // press resolves a context-menu hit), for the same『見える＝掴める』reason as
+        // the background pointerdown above (single flush rule).
+        flushRedraw();
         const { x, y } = toSurface(clientX, clientY);
         const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
         // Capture on the OVERLAY bridge (the element the event fired on) so a middle-
@@ -609,6 +628,10 @@ export function App(): JSX.Element {
       initialFps: renderFps,
     });
     const requestRedraw = (): void => redrawScheduler.request();
+    // Now that the scheduler exists, point the pre-declared flush at it so a
+    // pointerdown drains any pending throttled frame before the hit-test (drawn ==
+    // state, 『見える＝掴める』).
+    flushRedraw = (): void => redrawScheduler.flush();
     // FR-110 ROOT FIX (bughunt round-2): route the host's OWN high-frequency repaints
     // through the SAME scheduler. Pan/wheel (writeCamera), tool-draft moves (drawAdd /
     // drawKnife) and resize (resyncViewport) previously called the synchronous full-frame

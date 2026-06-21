@@ -33,6 +33,13 @@ export interface RedrawSchedulerOptions {
   readonly schedule?: ScheduleFrame;
   /** Injected cancel (defaults to cancelAnimationFrame inside U19). */
   readonly cancel?: CancelFrame;
+  /**
+   * Injected monotonic clock (ms) used by {@link RedrawScheduler.flush} to advance
+   * the FrameScheduler's per-frame-budget accounting when a pending frame is drained
+   * synchronously. Defaults to `performance.now()` (falling back to `Date.now()`); a
+   * test injects a deterministic clock (NFR 5.8).
+   */
+  readonly now?: () => number;
 }
 
 /**
@@ -43,6 +50,13 @@ export interface RedrawSchedulerOptions {
 export interface RedrawScheduler {
   /** Request a throttled redraw (FR-71 / 受け入れ基準 5). */
   request(): void;
+  /**
+   * Drain any pending throttled redraw NOW (bypassing the FR-110 cap) so the drawn
+   * pixels match the live store state before a hit-test (bughunt round-2: stale-frame
+   * hit-test window). A no-op when no frame is pending; honours the pending draw
+   * exactly once (the scheduled frame is cancelled), so 1 フレーム 1 描画 holds.
+   */
+  flush(): void;
   /** Apply a new render FPS (rebuilds the cap; no-op when unchanged). */
   setFps(fps: number): void;
   /** Cancel any pending frame and release the scheduler (teardown). */
@@ -58,6 +72,14 @@ export interface RedrawScheduler {
  */
 export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawScheduler {
   const { draw, schedule, cancel } = options;
+  // Monotonic clock for flush() budget accounting. Prefer performance.now (monotonic);
+  // fall back to Date.now where it is unavailable (some headless runners).
+  const now =
+    options.now ??
+    (() =>
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now());
   let fps = options.initialFps;
   // Build the FrameScheduler options without ever assigning `undefined` to the
   // optional schedule/cancel (exactOptionalPropertyTypes: omit ⇒ U19's rAF defaults).
@@ -75,6 +97,9 @@ export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawSc
   return {
     request(): void {
       scheduler.request();
+    },
+    flush(): void {
+      scheduler.flush(now());
     },
     setFps(nextFps: number): void {
       if (nextFps === fps) return;

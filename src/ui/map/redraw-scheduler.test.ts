@@ -179,6 +179,51 @@ describe('createRedrawScheduler (FR-110 renderFps 結線)', () => {
     expect(fake.pending()).toBe(1);
   });
 
+  it('flush drains a throttled redraw NOW so drawn == state before a pointerdown hit-test (bughunt round-2: stale-frame hit-test window)', () => {
+    // The map hit-test reads LIVE store state + the live camera, but the redraw is
+    // FPS-capped. When the cap holds a frame back the store has already advanced while
+    // the user still sees the OLD frame, so a press would resolve against the NEW
+    // feature set, not the visible one (『見える ≠ 掴める』). The composition root drains
+    // the scheduler synchronously before processing a pointerdown so drawn == state at
+    // the instant of the press. This pins that drain on the wiring unit.
+    const fake = makeFakeScheduler();
+    let now = 0;
+    let draws = 0;
+    const rs = createRedrawScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      initialFps: 2, // 500ms budget — the kind of low renderFps that opens the window
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      now: () => now,
+    });
+
+    // First draw establishes the budget baseline.
+    rs.request();
+    fake.tick(0);
+    expect(draws).toBe(1);
+
+    // A store change requests a redraw 10ms later; the 500ms cap would HOLD it back, so
+    // the pixels lag the store (the stale-frame window). A pointerdown flush must paint
+    // it NOW, exactly once, cancelling the scheduled frame (no double draw, 受け入れ基準 5).
+    now = 10;
+    rs.request();
+    expect(fake.pending()).toBe(1);
+
+    rs.flush(); // pointerdown drains the pending frame before hit-testing
+    expect(draws).toBe(2); // drawn immediately despite being under the cap budget
+    expect(fake.pending()).toBe(0); // the scheduled frame was cancelled
+
+    // The cancelled frame must not draw a second time even if a stray tick arrives.
+    expect(fake.tick(20)).toBe(false);
+    expect(draws).toBe(2);
+
+    // flush with nothing pending is a no-op.
+    rs.flush();
+    expect(draws).toBe(2);
+  });
+
   it('dispose cancels a pending frame (teardown)', () => {
     const fake = makeFakeScheduler();
     let draws = 0;

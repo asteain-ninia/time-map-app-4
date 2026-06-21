@@ -92,6 +92,38 @@ export class FrameScheduler {
     return this.dirty;
   }
 
+  /**
+   * Draw NOW if a frame is pending, bypassing the FR-110 per-frame cap, and cancel
+   * the scheduled frame so it does not draw a SECOND time (受け入れ基準 5: 1 フレーム
+   * 1 描画 is preserved — the pending draw is honoured exactly once, just earlier).
+   *
+   * WHY (bughunt round-2 — stale-frame hit-test window): the map hit-test reads LIVE
+   * store state + the live camera, but the redraw is throttled, so when the cap is
+   * holding a frame back the store has advanced while the pixels still show the OLD
+   * frame. A pointerdown in that gap resolves against the NEW set while the user aims
+   * at the OLD drawing (『見える ≠ 掴める』). The composition root drains the scheduler
+   * synchronously before processing a pointerdown so `drawn == state` at the instant
+   * of the hit-test, restoring the clip ⊇ draw ⊇ hit (= current state) invariant the
+   * hit-test is built on. This is the SAME single draw closure the frame would have
+   * run (no second paint rule, 教訓 5.16) — only the timing changes.
+   *
+   * The cap accounting stays honest: `lastDrawMs` is advanced to the supplied `nowMs`
+   * (a `performance.now()`-style timestamp from the caller) so a frame scheduled
+   * immediately after a flush is still gated by the per-frame budget from THIS draw,
+   * never double-drawing within one budget window. A no-op when nothing is pending.
+   */
+  flush(nowMs: number): void {
+    if (this.handle !== null) {
+      this.cancel(this.handle);
+      this.handle = null;
+    }
+    if (!this.dirty) return;
+    this.dirty = false;
+    this.lastDrawMs = nowMs;
+    this.drawCount += 1;
+    this.draw();
+  }
+
   /** Cancel any pending frame and clear the dirty flag (teardown). */
   dispose(): void {
     if (this.handle !== null) {

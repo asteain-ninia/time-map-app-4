@@ -127,6 +127,84 @@ describe('FR-110: fps cap reschedules instead of drawing twice in a budget windo
   });
 });
 
+describe('flush drains a pending frame NOW (bughunt round-2: stale-frame hit-test window)', () => {
+  it('draws the pending frame immediately, bypassing the fps cap, and only once', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 2, // 500ms budget — a frame that would otherwise be held back by the cap
+    });
+
+    // First draw establishes lastDrawMs at t=0.
+    fs.request();
+    fake.tick(0);
+    expect(draws).toBe(1);
+
+    // A request 10ms later is WELL under the 500ms budget: the next frame would be
+    // rescheduled (held back), so the pixels would lag the store — exactly the
+    // stale-frame hit-test window. A flush must draw it NOW regardless of the cap.
+    fs.request();
+    expect(fs.isDirty).toBe(true);
+    expect(fake.pending()).toBe(1); // a frame is scheduled
+
+    fs.flush(10); // a pointerdown drains it before hit-testing
+    expect(draws).toBe(2); // drawn immediately despite < budget
+    expect(fs.isDirty).toBe(false);
+    expect(fake.pending()).toBe(0); // the scheduled frame was cancelled (no double draw)
+
+    // The cancelled frame, if it still ran, must NOT draw a second time.
+    expect(fake.tick(20)).toBe(false);
+    expect(draws).toBe(2);
+  });
+
+  it('is a no-op when nothing is pending', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 60,
+    });
+    fs.flush(100); // nothing requested
+    expect(draws).toBe(0);
+    expect(fs.isDirty).toBe(false);
+  });
+
+  it('advances the cap budget so a frame scheduled right after a flush is still gated', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 10, // 100ms budget
+    });
+
+    fs.request();
+    fs.flush(0); // flush draws at t=0 and sets lastDrawMs = 0
+    expect(draws).toBe(1);
+
+    // A new request 50ms later (< 100ms budget since the flush draw) must be GATED —
+    // the flush honoured the per-frame budget accounting, so no double-draw window.
+    fs.request();
+    fake.tick(50);
+    expect(draws).toBe(1);
+    expect(fs.isDirty).toBe(true);
+    fake.tick(150); // > budget since the flush ⇒ now it draws
+    expect(draws).toBe(2);
+  });
+});
+
 describe('dispose cancels a pending frame', () => {
   it('clears dirty and cancels', () => {
     const fake = makeFakeScheduler();
