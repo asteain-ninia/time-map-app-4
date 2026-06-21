@@ -136,17 +136,34 @@ export function buildReverseIndex(
   return index;
 }
 
-/** All shape references citing a vertex id (empty when the id is unreferenced). */
+/**
+ * All shape references citing a vertex id (empty when the id is unreferenced).
+ *
+ * Each call builds the full reverse index (O(C·L) over all containers). When a
+ * caller needs the references of MANY vertices of one state (e.g. a per-frame
+ * move loop, or a batch share), build the index ONCE with `buildReverseIndex`
+ * and pass it via `index` so the scan is not repeated per vertex (バグハント3:
+ * referencesOf を頂点ごとに呼ぶと全コンテナを毎回走査する性能退行を回避).
+ * Passing an index built from a DIFFERENT state is the caller's responsibility.
+ */
 export function referencesOf(
   state: SharedVertexState,
   vertexId: VertexId,
+  index?: ReadonlyMap<VertexId, readonly ShapeReference[]>,
 ): readonly ShapeReference[] {
-  return buildReverseIndex(state).get(vertexId) ?? [];
+  return (index ?? buildReverseIndex(state)).get(vertexId) ?? [];
 }
 
-/** A shared vertex is one cited by ≥2 distinct shape references (§4.1). */
-export function isSharedVertex(state: SharedVertexState, vertexId: VertexId): boolean {
-  return referencesOf(state, vertexId).length >= 2;
+/**
+ * A shared vertex is one cited by ≥2 distinct shape references (§4.1). Pass a
+ * pre-built `index` (see `referencesOf`) to avoid rebuilding it per call.
+ */
+export function isSharedVertex(
+  state: SharedVertexState,
+  vertexId: VertexId,
+  index?: ReadonlyMap<VertexId, readonly ShapeReference[]>,
+): boolean {
+  return referencesOf(state, vertexId, index).length >= 2;
 }
 
 /** Every vertex id that is shared (cited ≥2 times), in deterministic order. */
@@ -467,8 +484,11 @@ export function shareVertices(
   if (candidateId === targetId) {
     return rejected(REJECT_REASON.NotFound, 'cannot share a vertex with itself');
   }
-  const candidateRefs = referencesOf(state, candidateId);
-  const targetRefs = referencesOf(state, targetId);
+  // Build the reverse index ONCE and look up both vertices from it (バグハント3):
+  // referencesOf(state, …) would otherwise re-scan every container twice here.
+  const index = buildReverseIndex(state);
+  const candidateRefs = referencesOf(state, candidateId, index);
+  const targetRefs = referencesOf(state, targetId, index);
   if (candidateRefs.length === 0 || targetRefs.length === 0) {
     return rejected(
       REJECT_REASON.NotFound,
@@ -548,6 +568,11 @@ export function moveVertices(
   let nextStore = state.vertices;
   const touchedVertexIds = new Set<VertexId>();
   const touchedFeatureIds = new Set<FeatureId>();
+  // Build the reverse index ONCE outside the move loop (バグハント3): a move only
+  // changes vertex BODIES, never `state.containers`, so the index is invariant
+  // across the loop. Calling referencesOf(state, …) per move would re-scan every
+  // container on every pointer-move event — O(moves · C·L) — dominating drag CPU.
+  const index = buildReverseIndex(state);
   for (const move of moves) {
     const vertex = getVertex(nextStore, move.vertexId);
     if (vertex === undefined) {
@@ -555,7 +580,7 @@ export function moveVertices(
     }
     nextStore = setVertex(nextStore, withVertexCoordinate(vertex, move.coordinate));
     touchedVertexIds.add(move.vertexId);
-    for (const ref of referencesOf(state, move.vertexId)) {
+    for (const ref of referencesOf(state, move.vertexId, index)) {
       touchedFeatureIds.add(featureIdOf(ref.container));
     }
   }

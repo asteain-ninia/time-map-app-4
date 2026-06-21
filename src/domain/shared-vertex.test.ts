@@ -515,3 +515,96 @@ describe('property: shared-group invariants (技術方針 R6)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// バグハント3 回帰: referencesOf / shareVertices / moveVertices must build the
+// reverse index AT MOST ONCE per command entry — not once per looked-up vertex.
+// Regression for: referencesOf(state, vid) rebuilt buildReverseIndex() from
+// scratch on every call, so the per-frame move loop and shareVertices' two
+// lookups re-scanned every container O(C·L) times each.
+// ---------------------------------------------------------------------------
+
+describe('reverse-index reuse (バグハント3 performance regression)', () => {
+  // Wrap a state's container map so every full iteration (what buildReverseIndex
+  // performs via `.values()`) is counted. referencesOf with a pre-built index
+  // must NOT iterate; commands must iterate exactly once regardless of how many
+  // vertices they touch.
+  function countingState(base: SharedVertexState): {
+    state: SharedVertexState;
+    scans: () => number;
+  } {
+    let scans = 0;
+    const real = base.containers;
+    const proxy = new Proxy(real, {
+      get(target, prop, receiver) {
+        if (prop === 'values') {
+          return () => {
+            scans += 1;
+            return target.values();
+          };
+        }
+        const v = Reflect.get(target, prop, receiver);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    return {
+      state: { vertices: base.vertices, containers: proxy as typeof real },
+      scans: () => scans,
+    };
+  }
+
+  it('referencesOf with a supplied index does not scan the containers', () => {
+    const base = baseline();
+    const index = buildReverseIndex(base);
+    const { state: s, scans } = countingState(base);
+    // Look up many vertices using the shared index.
+    for (const id of ['vA1', 'vA2', 'vA3', 'vB1', 'vB2', 'vB3']) {
+      referencesOf(s, V(id), index);
+    }
+    expect(scans()).toBe(0);
+    // Equivalence with the unindexed path.
+    expect(referencesOf(base, V('vA2'), index)).toEqual(referencesOf(base, V('vA2')));
+  });
+
+  it('moveVertices builds the reverse index once for a multi-vertex move', () => {
+    const base = baseline();
+    const { state: s, scans } = countingState(base);
+    const moved = moveVertices(s, [
+      { vertexId: V('vA1'), coordinate: createCoordinate(1, 1) },
+      { vertexId: V('vA2'), coordinate: createCoordinate(2, 2) },
+      { vertexId: V('vA3'), coordinate: createCoordinate(3, 3) },
+      { vertexId: V('vB1'), coordinate: createCoordinate(4, 4) },
+    ]);
+    expect(moved.status).toBe(SHARED_VERTEX_OUTCOME.Applied);
+    // One scan total — not one per moved vertex (would have been 4 before fix).
+    expect(scans()).toBe(1);
+  });
+
+  it('shareVertices builds the reverse index once (not twice) per call', () => {
+    const base = baseline();
+    const { state: s, scans } = countingState(base);
+    const r = shareVertices(s, V('vB1'), V('vA2'));
+    expect(r.status).toBe(SHARED_VERTEX_OUTCOME.Applied);
+    // candidateRefs + targetRefs share one index — a single container scan.
+    expect(scans()).toBe(1);
+  });
+
+  it('repeated linked moves stay correct with the cached index', () => {
+    const s = shareVertices(baseline(), V('vB1'), V('vA2'));
+    expect(s.status).toBe(SHARED_VERTEX_OUTCOME.Applied);
+    if (s.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+    let cur = s.state;
+    // Simulate a drag: many move frames over the same (shared) vertex.
+    for (let i = 0; i < 50; i += 1) {
+      const moved = moveVertices(cur, [
+        { vertexId: V('vA2'), coordinate: createCoordinate(i, i) },
+      ]);
+      expect(moved.status).toBe(SHARED_VERTEX_OUTCOME.Applied);
+      if (moved.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      cur = moved.state;
+    }
+    expect(getVertex(cur.vertices, V('vA2'))?.coordinate).toEqual(createCoordinate(49, 49));
+    // Both rings still cite the one shared body.
+    expect(referencesOf(cur, V('vA2')).length).toBe(2);
+  });
+});
