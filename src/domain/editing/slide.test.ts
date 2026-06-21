@@ -379,6 +379,83 @@ describe('constrainSlide — containment must not seat the vertex inside another
   });
 });
 
+// --- bughunt2: the containment pass runs LAST; its FINAL fallback must satisfy BOTH
+// invariants (受け入れ基準6 第4項 + 末端地物同士が重ならない / FR-28 / FR-89).
+//
+// The containment pass (constrainWithinParent) is fed `preContainmentPos` — the
+// output of the other-terminal pass. That value is candidate-safe (the re-check before
+// the containment pass guarantees it) but, by the very reason constrainWithinParent is
+// invoked, it can be OUTSIDE the parent (it is the position that drifted out of the
+// parent region). The historical post-containment guard had an ORDERING ASYMMETRY: the
+// outside-parent revert re-checked its fallback, but the inside-candidate revert fell
+// back to `preContainmentPos` WITHOUT re-asserting parent containment — so when the
+// containment-corrected position happened to land inside another terminal, the committed
+// result could be `preContainmentPos`, which can be outside the parent (a hole/enclave
+// vertex escaping its parent ring). The fix commits the first of
+// [containment-result, preContainmentPos, start] that satisfies BOTH invariants.
+//
+// This block locks that contract: across drags whose targets reach far OUTSIDE the
+// parent (so preContainmentPos is genuinely parent-outside, the bug's precondition),
+// past an other-terminal that sits INSIDE the parent, the committed position must NEVER
+// be outside the parent NOR strictly inside the other terminal — whichever fallback the
+// guard takes. Geometry is axis-aligned (the OTHER square inside the parent, reused
+// from the U24-blocker fixtures) to isolate the containment-fallback ordering from
+// unrelated oblique-edge numerics.
+describe('constrainSlide — containment FINAL fallback commits a position safe on BOTH invariants (bughunt2 ordering asymmetry / FR-28 / FR-89)', () => {
+  it('a contained vertex dragged far out past the parent boundary, alongside an inside terminal, stays inside the parent', () => {
+    // Start inside the parent (and outside OTHER); target far OUTSIDE the parent right
+    // edge at OTHER's latitude band, so the other-terminal pass yields a parent-OUTSIDE
+    // preContainmentPos and the containment pass must pull it back without ever
+    // committing the parent-outside fallback.
+    const r = constrainSlide({
+      start: coord(9.5, 1), // inside the parent, BELOW the OTHER terminal (lat<4)
+      target: coord(40, 5.5), // far outside the parent (lon ≫ 10), at OTHER's lat band
+      edges: OTHER_EDGES,
+      candidates: [OTHER_CAND],
+      containment: PARENT_CONTAINMENT,
+    });
+    expect(pointInPolygonOutside(r.position)).toBe(false);
+    expect(isPointStrictlyInside(r.position, OTHER_POLY)).toBe(false);
+  });
+
+  it('property: with targets reaching far outside the parent, the commit is NEVER outside the parent NOR inside the other terminal', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          sx: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          sy: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          // Targets reach well beyond the parent in BOTH directions so the containment
+          // pass is repeatedly exercised with a parent-OUTSIDE preContainmentPos (the
+          // bug's precondition: the fallback source itself violates containment).
+          tx: fc.double({ min: -30, max: 40, noNaN: true, noDefaultInfinity: true }),
+          ty: fc.double({ min: -30, max: 40, noNaN: true, noDefaultInfinity: true }),
+        }),
+        ({ sx, sy, tx, ty }) => {
+          const start = coord(sx, sy);
+          // Frame precondition: the previous accepted position is inside the parent and
+          // outside the other terminal (a legal vertex) — safe on BOTH invariants.
+          fc.pre(isPointStrictlyInside(start, PARENT_POLY));
+          fc.pre(!isPointStrictlyInside(start, OTHER_POLY));
+          const r = constrainSlide({
+            start,
+            target: coord(tx, ty),
+            edges: OTHER_EDGES,
+            candidates: [OTHER_CAND],
+            containment: PARENT_CONTAINMENT,
+          });
+          // The committed position must satisfy BOTH invariants — the fix guarantees
+          // the final fallback never commits a parent-outside (or candidate-inside)
+          // point even when the inside-candidate fallback's source (preContainmentPos)
+          // is itself outside the parent.
+          expect(pointInPolygonOutside(r.position)).toBe(false);
+          expect(isPointStrictlyInside(r.position, OTHER_POLY)).toBe(false);
+        },
+      ),
+      { numRuns: 30000 },
+    );
+  });
+});
+
 // --- multi-candidate: sliding along candidate A must not land inside candidate B
 // (受け入れ基準6 / FR-28). Two adjacent squares share a vertical seam at lon=4; a
 // vertex sliding down candidate A's right edge must not be committed inside B.

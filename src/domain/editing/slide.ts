@@ -594,24 +594,23 @@ export function constrainSlide(input: SlideInput): SlideResult {
     pos = quantizeCoordinate(within.position);
     for (const b of within.boundaries) boundaries.push(b);
     collided = collided || within.collided;
-    // FINAL INVARIANT re-check for containment: never commit a position outside the
-    // parent region. If a residual numeric case slips through, fall back to the
-    // start (the previous accepted frame is contained by precondition).
-    if (isOutsideContainment(pos, containment)) {
-      pos = start;
-    }
-    // FINAL OTHER-TERMINAL re-check AFTER the containment pass (the missing guard,
-    // U24 high blocker / 受け入れ基準6 / FR-28 / FR-89「最終位置で末端地物同士が重ならない」):
-    // the containment pass runs LAST and could have relocated the vertex strictly
-    // inside another terminal. Re-assert the other-terminal invariant here. Fall back
-    // first to the candidate-safe pre-containment position; if even that drifted
-    // inside a candidate, fall back all the way to the input start (safe by
-    // precondition — the previous accepted frame).
-    if (isInsideAnyCandidate(pos, candidates) !== undefined) {
-      pos =
-        isInsideAnyCandidate(preContainmentPos, candidates) === undefined
-          ? preContainmentPos
-          : start;
+    // FINAL re-check AFTER the containment pass (the missing guard,
+    // U24 high blocker / 受け入れ基準6 / FR-28 / FR-89「最終位置で末端地物同士が重ならない」
+    // かつ 第4項「親領域の内側に留まる」): the containment pass runs LAST and could have
+    // relocated the vertex strictly inside another terminal. The committed position
+    // must satisfy BOTH invariants — inside the parent AND outside every other
+    // terminal. If the containment result violates the other-terminal invariant we
+    // fall back, but the fallback ITSELF must also satisfy BOTH invariants:
+    // `preContainmentPos` is the other-terminal pass output that was fed INTO the
+    // containment pass precisely because it could be OUTSIDE the parent (the reason
+    // constrainWithinParent was invoked), so it is candidate-safe but NOT guaranteed
+    // parent-contained. Therefore commit the first of
+    // [containment-result, preContainmentPos, start] that satisfies BOTH invariants;
+    // `start` is the previous accepted frame and is safe on both by precondition.
+    const satisfiesBoth = (p: WorldCoordinate): boolean =>
+      !isOutsideContainment(p, containment) && isInsideAnyCandidate(p, candidates) === undefined;
+    if (!satisfiesBoth(pos)) {
+      pos = satisfiesBoth(preContainmentPos) ? preContainmentPos : start;
     }
   }
 
