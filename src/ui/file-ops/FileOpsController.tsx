@@ -285,19 +285,26 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // transition via resetToDomain (受け入れ基準 4 同時初期化, 教訓 5.2 全経路で破棄).
         // A stale selection or focus from the previous project would otherwise
         // dangle against the new domain (finding 4).
-        store.getState().resetToDomain(project);
         // 二重真実源 fix (the load half): hydrate the U16 store settings from the
         // loaded project's persisted UI settings so the panel / zoom clamp / label
         // threshold reflect THIS project, and a previous project's settings do not
         // linger. A pre-`ui` manifest carries NO uiSettings — in that case we must
         // hydrate the EXPLICIT DEFAULTS, NOT pass an empty patch (finding). passing
-        // `{}` makes hydrateSettings keep the CURRENT settings, and resetToDomain does
+        // `{}` makes the hydrate keep the CURRENT settings, and the domain swap does
         // not touch the settings slices, so a previous project's edited zoom / grid /
         // timeline settings would leak into the freshly-loaded old-format project. The
         // new-project path likewise hydrates buildEmptyProject's default uiSettings;
         // this is its load-half analog (教訓 5.2 全経路で破棄, 教訓 5.36 同時初期化).
-        // Runs right after resetToDomain so both halves of the load are reflected together.
-        store.getState().hydrateSettings(
+        //
+        // ATOMIC reflect (bughunt2): the domain swap and the settings hydrate run in
+        // ONE store transition (reflectLoadedProject), not as resetToDomain THEN
+        // hydrateSettings. The two-call form swapped the domain first, so if the
+        // settings hydrate threw on an inverted timeline range it stranded the NEW
+        // domain alongside the OLD settings/range; the fused action derives the
+        // timeline before mutating, so an invalid project rolls back fully and the
+        // store stays on the previous project.
+        store.getState().reflectLoadedProject(
+          project,
           project.uiSettings === undefined
             ? {
                 projectSettings: DEFAULT_PROJECT_SETTINGS,
@@ -333,17 +340,22 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     const initialiseNewProject = (): void => {
       // Atomic new-project init: empty domain + discarded session state + clean
       // baseline + new save context (教訓 5.36 / 受け入れ基準 4: 同時初期化, 取り残さない,
-      // 教訓 5.2 全経路で破棄). resetToDomain clears selection / tool / mode / focus so
-      // nothing from the previous project survives into the empty one (finding 4).
+      // 教訓 5.2 全経路で破棄). reflectLoadedProject clears selection / tool / mode /
+      // focus so nothing from the previous project survives into the empty one
+      // (finding 4), AND resets the store settings to the new project's defaults so a
+      // 新規 after editing settings clears the panel back to defaults rather than
+      // carrying the previous project's settings (二重真実源 fix, the new-project
+      // half, 教訓 5.2 全経路で破棄). buildEmptyProject always carries default
+      // uiSettings, so the settings slice is always defined. As with the load path,
+      // the domain swap and the settings hydrate run in ONE rollback-safe transition
+      // (bughunt2): the timeline is derived before any mutation.
       const empty = buildEmptyProject();
-      store.getState().resetToDomain(empty);
-      // 二重真実源 fix (the new-project half): reset the store settings to the new
-      // project's defaults so a 新規 after editing settings clears the panel back to
-      // defaults rather than carrying the previous project's settings (教訓 5.2 全経路で
-      // 破棄). buildEmptyProject always carries default uiSettings, so this is defined.
-      if (empty.uiSettings !== undefined) {
-        store.getState().hydrateSettings(fromPersistedUiSettings(empty.uiSettings));
-      }
+      store.getState().reflectLoadedProject(
+        empty,
+        empty.uiSettings !== undefined
+          ? fromPersistedUiSettings(empty.uiSettings)
+          : {},
+      );
       applyContext(buildNewProjectContext());
     };
     registry.register(COMMAND_ID.FileNew, {

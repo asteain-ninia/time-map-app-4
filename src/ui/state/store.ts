@@ -300,6 +300,32 @@ export interface SessionStoreActions<S> {
     readonly projectSettings?: ProjectSettings;
     readonly appSettings?: AppSettings;
   }): void;
+  /**
+   * ATOMIC LOAD / NEW reflect (bughunt2 finding): swap the domain AND hydrate the
+   * UI settings in ONE transition that fully rolls back on failure. The previous
+   * two-call sequence — `resetToDomain(project)` THEN `hydrateSettings(...)` — was
+   * NOT atomic: `resetToDomain` unconditionally swapped the domain (and cleared the
+   * session state) BEFORE `hydrateSettings` ran, and `hydrateSettings` calls
+   * `deriveTimelineState`, which THROWS on an inverted timeline range
+   * (timelineMin >= timelineMax). A throw there left the store half-applied — the
+   * NEW domain installed but the OLD project's settings (zoom clamp / timeline
+   * range / grid / labels) still in place, with the slider range no longer matching
+   * the domain. The schema (uiProjectSettingsSchema.superRefine) blocks an inverted
+   * range at the parse boundary today, so this was latent rather than live; but any
+   * future reflect path that synthesizes settings (a repair, a new importer) would
+   * corrupt state. This action derives the timeline FIRST (the only throwing step),
+   * so if the incoming settings are invalid NOTHING is mutated, then commits the
+   * domain swap + session discard + settings hydrate + derived range/time in a
+   * SINGLE set(). It carries the exact semantics of {@link resetToDomain} +
+   * {@link hydrateSettings} run back-to-back, only fused and rollback-safe.
+   */
+  reflectLoadedProject(
+    nextDomain: S,
+    settings: {
+      readonly projectSettings?: ProjectSettings;
+      readonly appSettings?: AppSettings;
+    },
+  ): void;
   /** Clear the project-dirty flag (called after a save by the persistence unit). */
   markProjectSaved(): void;
 }
@@ -830,6 +856,45 @@ export function createSessionStore<S>(
         ...(settings.appSettings !== undefined
           ? { appSettings: settings.appSettings }
           : {}),
+        ...timelinePatch,
+      });
+    },
+
+    reflectLoadedProject(nextDomain, settings) {
+      // ATOMIC reflect (bughunt2): derive the timeline BEFORE any set() so the only
+      // step that can throw (deriveTimelineState on an inverted range) cannot leave
+      // the store half-applied. The two-call form (resetToDomain THEN hydrateSettings)
+      // swapped the domain first, so a throw in hydrateSettings stranded the NEW
+      // domain alongside the OLD settings/range. Here, if the incoming settings are
+      // invalid we throw with NOTHING mutated; on success the domain swap, session
+      // discard, settings hydrate, and derived range/time all land in ONE set().
+      const effectiveProject =
+        settings.projectSettings ?? get().projectSettings;
+      // resetToDomain clears the selection to EMPTY before hydrate derives the range,
+      // so derive against EMPTY_SELECTION (the post-reset selection) — preserving the
+      // exact result of the previous resetToDomain → hydrateSettings ordering.
+      const timelinePatch = deriveTimelineState(
+        effectiveProject,
+        get().currentTime,
+        EMPTY_SELECTION,
+        existence,
+        calendar,
+      );
+      set({
+        // -- resetToDomain half: new domain + discarded session state (教訓 5.2) --
+        domain: nextDomain,
+        mode: EDIT_MODE.View,
+        activeTool: null,
+        displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS },
+        // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
+        ...(settings.projectSettings !== undefined
+          ? { projectSettings: settings.projectSettings }
+          : {}),
+        ...(settings.appSettings !== undefined
+          ? { appSettings: settings.appSettings }
+          : {}),
+        // -- clean baseline + derived range/time (both halves cleared dirty) --
+        projectDirty: false,
         ...timelinePatch,
       });
     },

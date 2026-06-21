@@ -428,6 +428,109 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(s.currentTime).toEqual(timePointYear(80));
   });
 
+  // 回帰 (bughunt2): reflectLoadedProject is the ATOMIC LOAD / NEW reflect. The
+  // previous two-call form — resetToDomain(project) THEN hydrateSettings(...) —
+  // swapped the domain FIRST, so if the settings hydrate threw on an inverted
+  // timeline range (timelineMin >= timelineMax, rejected by deriveTimelineState)
+  // the throw escaped with the NEW domain already installed alongside the OLD
+  // project's settings/range — a half-applied store. The atomic action derives the
+  // timeline BEFORE any mutation, so an invalid project throws with the store
+  // UNCHANGED: same domain, same settings, same range/time, same dirty flag.
+  it('reflectLoadedProject rolls back FULLY when the incoming timeline range is inverted (no half-applied swap)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      mode: EDIT_MODE.Edit,
+      activeTool: asToolId('add'),
+    });
+    // Establish a known-good baseline the failed reflect must not perturb.
+    store.getState().hydrateSettings({
+      projectSettings: {
+        ...DEFAULT_PROJECT_SETTINGS,
+        timelineMinYear: 0,
+        timelineMaxYear: 100,
+        zoomMax: 33,
+      },
+    });
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+    const before = store.getState();
+    const domainBefore = before.domain;
+    const projectSettingsBefore = before.projectSettings;
+    const appSettingsBefore = before.appSettings;
+
+    // Attempt to reflect a project whose persisted timeline range is INVERTED
+    // (min >= max). This is what a future repair / importer that bypasses the
+    // persistence schema could synthesize. The derive must reject it.
+    expect(() =>
+      store.getState().reflectLoadedProject(
+        { tag: 'inverted-load' },
+        {
+          projectSettings: {
+            ...DEFAULT_PROJECT_SETTINGS,
+            timelineMinYear: 500,
+            timelineMaxYear: 100,
+            zoomMax: 99,
+          },
+          appSettings: { ...DEFAULT_APP_SETTINGS, renderFps: 12 },
+        },
+      ),
+    ).toThrow(/inverted timeline range/);
+
+    // FULL ROLLBACK: nothing was mutated. The domain was NOT swapped (the bug left
+    // it swapped), the settings did NOT change to the invalid project's values, and
+    // the derived range / currentTime / session state are exactly as before.
+    const after = store.getState();
+    expect(after.domain).toBe(domainBefore);
+    expect(after.domain.tag).toBe('d0');
+    expect(after.projectSettings).toBe(projectSettingsBefore);
+    expect(after.projectSettings.zoomMax).toBe(33);
+    expect(after.appSettings).toBe(appSettingsBefore);
+    expect(after.timelineMin).toEqual(timePointYear(0));
+    expect(after.timelineMax).toEqual(timePointYear(100));
+    expect(after.currentTime).toEqual(timePointYear(50));
+  });
+
+  it('reflectLoadedProject applies domain + settings + derived range/time atomically on a valid project', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      mode: EDIT_MODE.Edit,
+      activeTool: asToolId('add'),
+    });
+    store.getState().updateProjectSetting('zoomMax', 9999);
+    expect(store.getState().projectDirty).toBe(true);
+    // currentTime near the right end of the default 0..10000 range.
+    store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
+
+    store.getState().reflectLoadedProject(
+      { tag: 'loaded' },
+      {
+        projectSettings: {
+          ...DEFAULT_PROJECT_SETTINGS,
+          timelineMinYear: 0,
+          timelineMaxYear: 100,
+          zoomMax: 12,
+        },
+        appSettings: { ...DEFAULT_APP_SETTINGS, renderFps: 24 },
+      },
+    );
+
+    const s = store.getState();
+    // Domain swapped.
+    expect(s.domain.tag).toBe('loaded');
+    // Old session state discarded (resetToDomain半).
+    expect(s.activeFeature).toBeNull();
+    expect(s.activeTool).toBeNull();
+    expect(s.mode).toBe(EDIT_MODE.View);
+    // Settings hydrated to the loaded project (持ち越し防止).
+    expect(s.projectSettings.zoomMax).toBe(12);
+    expect(s.appSettings.renderFps).toBe(24);
+    // Derived range reflects the NEW project; out-of-range currentTime clamped in.
+    expect(s.timelineMin).toEqual(timePointYear(0));
+    expect(s.timelineMax).toEqual(timePointYear(100));
+    expect(s.currentTime).toEqual(timePointYear(100));
+    // A LOAD / NEW is a clean baseline.
+    expect(s.projectDirty).toBe(false);
+  });
+
   // 回帰 (finding): a LIVE settings-dialog confirm changes the timeline range
   // through updateProjectSetting, NOT hydrateSettings. The slider reads the derived
   // timelineMin/Max mirror + currentTime, so a timeline-key change must re-derive

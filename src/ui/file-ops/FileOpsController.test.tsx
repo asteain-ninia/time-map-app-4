@@ -218,10 +218,13 @@ describe('読み込み: same flow, reflects into the U16 store (受け入れ基�
     const store = makeStore();
     const registry = new CommandRegistry();
     const api = makeApi({ load: vi.fn(async () => okLoad()) });
-    // A clean Open now reflects via the atomic whole-state swap resetToDomain
-    // (finding 4): it discards stale selection/tool/focus AND clears dirty in one
-    // transition, rather than the bare setDomainState (which left them dangling).
-    const resetDomain = vi.spyOn(store.getState(), 'resetToDomain');
+    // A clean Open now reflects via the atomic whole-state swap reflectLoadedProject
+    // (finding 4 + bughunt2): it discards stale selection/tool/focus, hydrates the
+    // settings, AND clears dirty in one rollback-safe transition, rather than the
+    // bare setDomainState (which left them dangling) or the earlier non-atomic
+    // resetToDomain-then-hydrateSettings pair (which could strand a swapped domain
+    // alongside old settings if the hydrate threw).
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
     await act(async () => {
@@ -229,8 +232,8 @@ describe('読み込み: same flow, reflects into the U16 store (受け入れ基�
     });
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
     // Empty-project manifest ⇒ empty consistency report ⇒ ReflectDirect (no modal).
-    await waitFor(() => expect(resetDomain).toHaveBeenCalledTimes(1));
-    // A fresh load is a CLEAN baseline (resetToDomain clears dirty).
+    await waitFor(() => expect(reflect).toHaveBeenCalledTimes(1));
+    // A fresh load is a CLEAN baseline (reflectLoadedProject clears dirty).
     expect(store.getState().projectDirty).toBe(false);
     expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument();
   });
@@ -369,7 +372,7 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     const registry = new CommandRegistry();
     const loadDropped = vi.fn(async () => okLoad());
     const api = makeApi({ loadDropped });
-    const resetDomain = vi.spyOn(store.getState(), 'resetToDomain');
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
 
     let handlers: FileDropHandlers | null = null;
     const registerDropTarget: DropTargetHook = (h) => {
@@ -400,8 +403,8 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     // The drop is a valid drop target (preventDefault) and routes through loadDropped.
     expect(dropEvent.preventDefault).toHaveBeenCalled();
     await waitFor(() => expect(loadDropped).toHaveBeenCalledWith('/abs/p.tmap'));
-    // D&D goes through the SAME reflect path as the menu load (resetToDomain).
-    await waitFor(() => expect(resetDomain).toHaveBeenCalledTimes(1));
+    // D&D goes through the SAME reflect path as the menu load (reflectLoadedProject).
+    await waitFor(() => expect(reflect).toHaveBeenCalledTimes(1));
   });
 });
 
@@ -530,7 +533,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     await act(async () => registryB.dispatch(COMMAND_ID.FileOpen));
     await waitFor(() => expect(storeB.getState().projectSettings.zoomMax).toBe(25));
     expect(storeB.getState().appSettings.renderFps).toBe(30);
-    // A fresh load is a CLEAN baseline (hydrate clears dirty alongside resetToDomain).
+    // A fresh load is a CLEAN baseline (reflectLoadedProject clears dirty as it swaps).
     expect(storeB.getState().projectDirty).toBe(false);
   });
 
@@ -573,11 +576,12 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
   });
 
   it('loading a pre-`ui` (old-format) project resets settings to DEFAULTS, not the previous project (持ち越し防止)', async () => {
-    // Regression (bughunt): an old-format .tmap carries NO uiSettings. resetToDomain
-    // does not touch the settings slices, and hydrateSettings({}) keeps the CURRENT
-    // settings — so a previous project's edited zoom/grid/timeline settings used to
-    // leak into the freshly-loaded old-format project. The load path must hydrate the
-    // EXPLICIT defaults for a pre-`ui` manifest so nothing carries over.
+    // Regression (bughunt): an old-format .tmap carries NO uiSettings. The domain
+    // swap does not touch the settings slices, and an empty `{}` hydrate keeps the
+    // CURRENT settings — so a previous project's edited zoom/grid/timeline settings
+    // used to leak into the freshly-loaded old-format project. The load path must
+    // hydrate the EXPLICIT defaults for a pre-`ui` manifest so nothing carries over
+    // (now via the atomic reflectLoadedProject).
     const store = makeStore();
     const registry = new CommandRegistry();
     // The user edits several settings in the CURRENT project. Mark saved so Open
