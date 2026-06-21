@@ -165,3 +165,63 @@ describe('criterion 6: bulk-load, one-by-one insert, diff update all agree', () 
     expect(refsOf(idx.all())).toEqual(new Set(['X']));
   });
 });
+
+// --- regression: O(k) ref removal via auxiliary index -----------------------
+//
+// Pins the bughunt-2 fix: removeRef must (a) fully clear EVERY entry sharing a
+// ref — including duplicates from seam replicas inserted at different boxes —
+// and (b) do so without depending on a degenerate-box full scan. We exercise a
+// large differential-update loop (the 技術方針 2.7 drag path) so a regression to
+// the old O(n·k) `tree.all()` scan would both be slow and, more importantly,
+// must still produce the exact same contents as a full rebuild.
+describe('regression: removeRef clears all copies of a ref via the byRef index', () => {
+  it('removes every duplicate entry sharing a ref (seam-replica case)', () => {
+    const idx = new SpatialIndex<string>();
+    // Same ref inserted three times at disjoint boxes (e.g. identity + replicas).
+    idx.insert(entry('R', 0, 0, 5));
+    idx.insert(entry('R', 100, 100, 5));
+    idx.insert(entry('R', 200, 200, 5));
+    idx.insert(entry('OTHER', 50, 50, 5));
+    expect(idx.size()).toBe(4);
+
+    idx.removeRef('R');
+
+    expect(idx.size()).toBe(1);
+    expect(refsOf(idx.all())).toEqual(new Set(['OTHER']));
+    // No straggler box of R survives anywhere it was placed.
+    for (const q of [
+      { minX: 0, minY: 0, maxX: 5, maxY: 5 },
+      { minX: 100, minY: 100, maxX: 105, maxY: 105 },
+      { minX: 200, minY: 200, maxX: 205, maxY: 205 },
+    ]) {
+      expect(idx.search(q).some((e) => e.ref === 'R')).toBe(false);
+    }
+  });
+
+  it('a long diff-update loop stays consistent with a full rebuild', () => {
+    const N = 2000;
+    const diff = new SpatialIndex<number>();
+    for (let i = 0; i < N; i++) diff.insert({ ref: i, minX: i, minY: 0, maxX: i + 1, maxY: 1 });
+
+    // Drag every entry to a new spot via removeRef -> insert (the差分更新 path).
+    for (let i = 0; i < N; i++) {
+      diff.removeRef(i);
+      diff.insert({ ref: i, minX: i, minY: 1000, maxX: i + 1, maxY: 1001 });
+    }
+
+    const rebuilt = new SpatialIndex<number>();
+    const finalEntries: IndexEntry<number>[] = [];
+    for (let i = 0; i < N; i++) finalEntries.push({ ref: i, minX: i, minY: 1000, maxX: i + 1, maxY: 1001 });
+    rebuilt.bulkLoad(finalEntries);
+
+    expect(diff.size()).toBe(rebuilt.size());
+    // Old positions hold nothing; new positions hold everything.
+    expect(diff.search({ minX: 0, minY: -1, maxX: N, maxY: 2 }).length).toBe(0);
+    const moved = new Set(diff.search({ minX: 0, minY: 999, maxX: N, maxY: 1002 }).map((e) => e.ref));
+    const rebuiltMoved = new Set(
+      rebuilt.search({ minX: 0, minY: 999, maxX: N, maxY: 1002 }).map((e) => e.ref),
+    );
+    expect(moved).toEqual(rebuiltMoved);
+    expect(moved.size).toBe(N);
+  });
+});

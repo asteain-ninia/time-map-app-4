@@ -53,8 +53,24 @@ export function entryFromShape<Ref>(ref: Ref, shape: GeoMultiPolygon): IndexEntr
 export class SpatialIndex<Ref> {
   private readonly tree: RBush<IndexEntry<Ref>>;
 
+  /**
+   * Auxiliary `ref → entries` index kept in lock-step with the tree across every
+   * mutation (bulkLoad / insert / remove / clear). Its sole purpose is to make
+   * {@link removeRef} and {@link boundsOf} O(k) in the number of entries sharing
+   * a ref instead of O(n) full scans of `tree.all()` — so the差分更新 path
+   * (技術方針 2.7: drag-time insert/removeRef) does not degrade to O(n·k) at the
+   * 5000 規模 the spec targets. 教訓5.5: this is duplicated state, so every
+   * mutating method updates BOTH structures or neither (no partial writes).
+   *
+   * Key semantics match the tree's own `e.ref === ref` comparison: a JS Map uses
+   * SameValueZero, which is value equality for primitive refs and identity for
+   * object refs (e.g. seam replica tags) — identical to the previous `===` filter.
+   */
+  private readonly byRef: Map<Ref, IndexEntry<Ref>[]>;
+
   constructor(maxEntries?: number) {
     this.tree = maxEntries === undefined ? new RBush<IndexEntry<Ref>>() : new RBush<IndexEntry<Ref>>(maxEntries);
+    this.byRef = new Map<Ref, IndexEntry<Ref>[]>();
   }
 
   /**
@@ -65,13 +81,18 @@ export class SpatialIndex<Ref> {
    */
   bulkLoad(entries: readonly IndexEntry<Ref>[]): this {
     this.tree.clear();
-    if (entries.length > 0) this.tree.load(entries);
+    this.byRef.clear();
+    if (entries.length > 0) {
+      this.tree.load(entries);
+      for (const entry of entries) this.track(entry);
+    }
     return this;
   }
 
   /** Insert one entry (差分更新 half: the "add" of a local change). */
   insert(entry: IndexEntry<Ref>): this {
     this.tree.insert(entry);
+    this.track(entry);
     return this;
   }
 
@@ -83,21 +104,22 @@ export class SpatialIndex<Ref> {
    * matched (removal of an absent ref is a no-op, not an error).
    */
   removeRef(ref: Ref): this {
-    // RBush removes by a single matching item; loop until none remain so a ref
-    // that was inserted more than once (e.g. seam replicas sharing a base ref)
-    // is fully cleared rather than leaving stragglers (片落とし禁止, 教訓5.1).
-    for (;;) {
-      const match = this.tree.search(this.boundsOf(ref));
-      const victim = match.find((e) => e.ref === ref);
-      if (victim === undefined) break;
-      this.tree.remove(victim);
-    }
+    // Every entry sharing this ref is already tracked in `byRef`, so we remove
+    // each one from the tree by object identity (RBush's default equality) — no
+    // search, no `boundsOf`, no full scan. A ref inserted more than once (e.g.
+    // seam replicas sharing a base ref) is fully cleared, not left with
+    // stragglers (片落とし禁止, 教訓5.1). Removal of an absent ref is a no-op.
+    const victims = this.byRef.get(ref);
+    if (victims === undefined) return this;
+    for (const victim of victims) this.tree.remove(victim);
+    this.byRef.delete(ref);
     return this;
   }
 
   /** Empty the index. */
   clear(): this {
     this.tree.clear();
+    this.byRef.clear();
     return this;
   }
 
@@ -121,25 +143,13 @@ export class SpatialIndex<Ref> {
   }
 
   /**
-   * The smallest box covering every entry that shares `ref` — used internally by
-   * {@link removeRef} to localise the search before filtering by ref value. When
-   * no entry matches, returns a degenerate box that intersects nothing useful;
-   * the subsequent `find` simply yields undefined.
+   * Record `entry` under its ref in the auxiliary {@link byRef} index. Called by
+   * every method that adds to the tree (bulkLoad / insert) so the two structures
+   * stay in agreement; {@link removeRef} reads it to find victims in O(k).
    */
-  private boundsOf(ref: Ref): BBox {
-    let box: BBox | undefined;
-    for (const e of this.tree.all()) {
-      if (e.ref !== ref) continue;
-      box =
-        box === undefined
-          ? { minX: e.minX, minY: e.minY, maxX: e.maxX, maxY: e.maxY }
-          : {
-              minX: Math.min(box.minX, e.minX),
-              minY: Math.min(box.minY, e.minY),
-              maxX: Math.max(box.maxX, e.maxX),
-              maxY: Math.max(box.maxY, e.maxY),
-            };
-    }
-    return box ?? { minX: NaN, minY: NaN, maxX: NaN, maxY: NaN };
+  private track(entry: IndexEntry<Ref>): void {
+    const existing = this.byRef.get(entry.ref);
+    if (existing === undefined) this.byRef.set(entry.ref, [entry]);
+    else existing.push(entry);
   }
 }
