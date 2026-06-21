@@ -70,18 +70,15 @@ import {
   type HitResult,
 } from '../../domain/selection';
 import type { ScreenPoint } from '../../render';
-import { featuresAt, verticesAt } from '../live-lookup';
+import { verticesAt } from '../live-lookup';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import { buildForest } from '../../domain/hierarchy/forest';
 import {
   DISPLAY_VERDICT,
   type ResolvedDisplayShape,
 } from '../../domain/display';
 import { pointInPolygon, POINT_LOCATION } from '../../domain/geometry/predicates';
-import {
-  resolveDisplayControl,
-  type DisplayControlInput,
-} from '../../render/display-pipeline';
+import type { DisplayControlInput } from '../../render/display-pipeline';
+import { resolveDisplayFor } from './display-resolution-cache';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 
@@ -375,24 +372,6 @@ function drawnLonOffsets(lonMin: number, lonMax: number, wrap: WrapFrame): numbe
 }
 
 /**
- * The AREA features (leaf + aggregate) effective at `time`, resolved through the
- * U34 display pipeline against `control` — i.e. the EXACT `ResolvedDisplayShape`
- * set the renderer draws (committed-features runs the same `resolveDisplayControl`).
- * Omitted features and U08 failures are not in the list, so they are never hit.
- */
-function drawnAreas(
-  features: readonly Feature[],
-  store: ReturnType<typeof verticesAt>,
-  control: DisplayControlInput,
-): readonly ResolvedDisplayShape[] {
-  const areaFeatures = features.filter(
-    (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
-  );
-  const forest = buildForest(areaFeatures);
-  return resolveDisplayControl(forest, store, control).shapes;
-}
-
-/**
  * The topmost drawn AREA whose resolved (drawn) shape contains `worldPoint`, else
  * null. The shape is whatever U34 resolved for the verdict — an aggregate's集約形状
  * or a leaf's own shape — so a body click selects the feature the user actually SEES
@@ -490,9 +469,11 @@ export function drawnAreaAt(
   worldPoint: WorldCoordinate,
 ): FeatureId | null {
   const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
-  const features = featuresAt(input.root, input.time);
-  const vertices = verticesAt(input.root, input.time);
-  const areas = drawnAreas(features, vertices, control);
+  // The SAME shared resolution committed-features draws and liveHitTestAt hits, computed
+  // once per (root, time, control) generation (教訓 5.29, bughunt2 perf). The knife click
+  // then reuses the frame's already-resolved area set instead of rebuilding the whole
+  // hierarchy/display pipeline a second/third time per interaction.
+  const areas = resolveDisplayFor(input.root, input.time, control).resolved.shapes;
   // The knife has no own grab radius; an area body click resolves by world containment, so
   // the cursor window margin is just the default grab radius (over-includes ≤1 turn, never
   // under-includes a containing replica — see drawnLonOffsets TAIL-LATENCY CLAMP).
@@ -529,11 +510,12 @@ export function liveHitTestAt(
   // O(features × total-turns) (bughunt2 tail-latency clamp; see drawnLonOffsets).
   const wrap = buildWrapFrame(input.wrap, worldPoint.lon, radius);
 
-  const features = featuresAt(root, time);
-  const vertices = verticesAt(root, time);
-
-  // The drawn area set (集約/実形状) — the SAME resolution committed-features draws.
-  const areas = drawnAreas(features, vertices, control);
+  // The SHARED resolution: featuresAt / verticesAt and the drawn area set (集約/実形状),
+  // computed ONCE per (root, time, control) generation and reused by committed-features
+  // (draw) — so a pointerdown does NOT re-run the whole U34 hierarchy/display pipeline
+  // the just-drawn frame already computed (教訓 5.29 単一真実源 = 単一 COMPUTATION, bughunt2).
+  const { features, vertices, resolved } = resolveDisplayFor(root, time, control);
+  const areas = resolved.shapes;
 
   // Which features expose their OWN vertices this frame: area features drawn with
   // their own real shape (verdict Real), plus every point / line (always drawn

@@ -43,13 +43,10 @@ import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex } from '../../domain/vertex';
 import { unwrapLonSequence } from '../../domain/geo/longitude';
-import { buildForest } from '../../domain/hierarchy/forest';
+import type { ResolvedDisplayShapes } from '../../domain/display';
 
-import {
-  buildDisplayAreas,
-  type DisplayControlInput,
-} from '../../render/display-pipeline';
-import type { PresentationFor } from '../../render/display-bridge';
+import type { DisplayControlInput } from '../../render/display-pipeline';
+import { toEvaluatedAreas, type PresentationFor } from '../../render/display-bridge';
 import type {
   EvaluatedFeature,
   EvaluatedLine,
@@ -57,7 +54,7 @@ import type {
   FeatureStyle,
 } from '../../render/feature-layer';
 
-import { featuresAt, verticesAt } from '../live-lookup';
+import { resolveDisplayFor } from './display-resolution-cache';
 
 /** Map a domain `ColorInfo` (FR-100/101) to U19's render `FeatureStyle`. */
 function styleOf(color: ColorInfo): FeatureStyle {
@@ -74,40 +71,36 @@ function labelOf(feature: Feature): string {
 }
 
 /**
- * Build the U19 area draw set through the U34 display pipeline (FR-42 / FR-43).
- * Presentation (style / label / selected) comes from the resolved feature's own
- * `ColorInfo` + name; geometry is U34's single-resolved shape (教訓 5.29). The
- * focus-emphasis verdict (FR-43) reuses the selected color so an emphasized region
- * stands out without U34 owning the palette.
+ * Build the U19 area draw set from the SHARED U34-resolved display shapes (FR-42 /
+ * FR-43). The geometry / verdict resolution is the cached `resolveDisplayFor` bundle —
+ * the SAME single computation the live hit-test reuses (教訓 5.29: 描画と同じ単一真実源
+ * is also a single COMPUTATION, not two recomputations per interaction). This step is
+ * just the selection-dependent presentation mapping (style / label / selected), which
+ * is why it stays here rather than in the cache: the resolved shapes do not depend on
+ * `selectedId`, so caching them while mapping presentation per call keeps the memo
+ * selection-independent. Presentation comes from the resolved feature's own `ColorInfo`
+ * + name; the focus-emphasis verdict (FR-43) reuses the selected color so an emphasized
+ * region stands out without U34 owning the palette.
  */
 function buildAreas(
-  features: readonly Feature[],
-  store: ReturnType<typeof verticesAt>,
-  control: DisplayControlInput,
+  resolved: ResolvedDisplayShapes,
+  areaFeatures: readonly Feature[],
   selectedId: FeatureId | null,
 ): EvaluatedFeature[] {
-  // Only面情報 (leaf + aggregate) are part of the hierarchy / area pipeline. Points
-  // and lines carry no area; if left in the forest they would each yield an EMPTY
-  // EvaluatedArea (a phantom that draws nothing but doubles the feature). They are
-  // emitted directly by the caller instead, so exclude them here.
-  const areaFeatures = features.filter(
-    (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
-  );
-  const forest = buildForest(areaFeatures);
   const byId = new Map<FeatureId, Feature>(areaFeatures.map((f) => [f.id, f]));
-  const presentationFor: PresentationFor = (resolved) => {
-    const feature = byId.get(resolved.featureId);
+  const presentationFor: PresentationFor = (shape) => {
+    const feature = byId.get(shape.featureId);
     const style = feature ? styleOf(feature.color) : FALLBACK_STYLE;
-    const selected = resolved.featureId === selectedId;
+    const selected = shape.featureId === selectedId;
     return {
       style,
       label: feature ? labelOf(feature) : '',
       // FR-82 selection + FR-43 emphasis both paint the highlight color; the ring
       // structure never changes (教訓 5.25 — single shape resolution).
-      selected: selected || resolved.emphasized,
+      selected: selected || shape.emphasized,
     };
   };
-  return buildDisplayAreas(forest, store, control, presentationFor);
+  return toEvaluatedAreas(resolved, presentationFor);
 }
 
 /** Style used only if a resolved area's source feature cannot be found (defensive). */
@@ -131,16 +124,25 @@ export function buildCommittedFeatures(
   selectedId: FeatureId | null,
   displayControl: DisplayControlInput,
 ): EvaluatedFeature[] {
-  const features = featuresAt(root, time);
-  const vertices = verticesAt(root, time);
+  // The SHARED resolution: featuresAt / verticesAt / forest / U34-resolved shapes,
+  // computed ONCE and reused by the live hit-test for this same (root, time,
+  // displayControl) generation (教訓 5.29, bughunt2 perf). The selection-dependent
+  // presentation mapping is applied below, so the memo stays selection-independent.
+  const { features, vertices, resolved } = resolveDisplayFor(
+    root,
+    time,
+    displayControl,
+  );
+
+  // The AREA features (leaf + aggregate) — points / lines carry no hierarchy rollup
+  // and are emitted directly below (the area pipeline would resolve them to an empty
+  // shape and never draw them), so they are excluded from the presentation map.
+  const areaFeatures = features.filter(
+    (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
+  );
 
   // Areas (面情報) through U34 —集約形状 / depth / focus honoured.
-  const out: EvaluatedFeature[] = buildAreas(
-    features,
-    vertices,
-    displayControl,
-    selectedId,
-  );
+  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeatures, selectedId);
 
   // Points / lines directly: they have no hierarchy rollup (no own area), so the
   // area pipeline would resolve them to an empty shape and never draw them.
