@@ -774,8 +774,80 @@ export function applyEditProposal(
   }
 
   const newHistory: FeatureHistory = { featureId: history.featureId, series: updatedSeries };
-  const histories = root.histories.map((h, i) => (i === index ? newHistory : h));
+  let histories = root.histories.map((h, i) => (i === index ? newHistory : h));
+
+  // 共有頂点移動の全履歴反映 (FR-59 一体編集 / 教訓5.20, Codex bug-hunt true-positive):
+  // a moved VertexId may be SHARED — a neighbour feature living in ITS OWN history can
+  // cite the same VertexId at this time (a shared boundary vertex). The write-back above
+  // only refreshed the TARGET history's snapshot store; every OTHER effective history that
+  // cites a moved id still holds the OLD coordinate. That stale body would (a) make the
+  // boundary visibly tear (the neighbour stays at the old spot) and (b) win the load-time
+  // consistency concat (last-write-wins over same-id bodies), partially reverting the move.
+  // Propagate the moved bodies into EVERY effective history's snapshot that cites them — as
+  // part of THIS one indivisible proposal — so same-id coordinates never diverge. The target
+  // history (index `index`) already carries the new bodies and is skipped.
+  histories = applyMovedVerticesToHistories(
+    histories,
+    movedVertices,
+    index,
+    anchorTime,
+    calendar,
+  );
   return withHistories(root, histories);
+}
+
+/**
+ * 共有頂点移動の継続 (FR-59 / 教訓5.20): refresh the moved vertex bodies into EVERY history
+ * (other than the already-updated target at `skipIndex`) whose anchor snapshot effective at
+ * `anchorTime` CITES at least one moved VertexId. A neighbour feature that shares a moved
+ * boundary vertex lives in its own history with its own copy of that vertex body; without
+ * this the neighbour keeps the stale coordinate, the boundary tears, and the load-time
+ * consistency concat can let the stale body override the moved one (last-write-wins).
+ *
+ * For each such history a past-edit at `anchorTime` overlays the moved bodies onto the
+ * effective snapshot's vertex store (id → new coordinate) while leaving its features and
+ * every untouched vertex unchanged. Histories that cite no moved id are returned untouched
+ * (referential identity preserved), so a plain non-shared move costs nothing. Pure.
+ */
+function applyMovedVerticesToHistories(
+  histories: readonly FeatureHistory[],
+  movedVertices: readonly Vertex[],
+  skipIndex: number,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): FeatureHistory[] {
+  if (movedVertices.length === 0) return [...histories];
+  const movedIds = new Set<VertexId>(movedVertices.map((v) => v.id));
+  return histories.map((history, i) => {
+    if (i === skipIndex) return history;
+    const resolution = resolveAt(history.series, anchorTime, calendar);
+    if (resolution.kind !== 'present') return history;
+    const base = resolution.entry.anchor.snapshot;
+    const citesMoved = base.features.some((f) =>
+      [...movedIds].some((id) => featureReferences(f, id)),
+    );
+    if (!citesMoved) return history;
+
+    const updatedSeries = applyPastEdit(
+      history.series,
+      anchorTime,
+      (effective): Anchor => {
+        const effBase =
+          effective.kind === 'present'
+            ? effective.entry.anchor.snapshot
+            : createAnchorSnapshot([], createVertexStore([]));
+        // Overlay the moved bodies last so they win the merge for shared ids; every
+        // other vertex body rides along unchanged.
+        const store = createVertexStore([
+          ...effBase.vertices.byId.values(),
+          ...movedVertices,
+        ]);
+        return anchorFor(effBase.features, store, history.featureId, anchorTime);
+      },
+      calendar,
+    );
+    return { featureId: history.featureId, series: updatedSeries };
+  });
 }
 
 // --- snap → share write-back (FR-31 / FR-32, U24 sharePair → U11) -----------

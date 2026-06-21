@@ -83,6 +83,7 @@ export const INCONSISTENCY_LABELS = {
   'anchor-spatial-overlap': '同時刻の地物どうしの空間的重なり',
   'orphan-history': '所有地物が存在しない孤立した歴史',
   'duplicate-owner-history': '同一地物を所有する歴史の重複',
+  'vertex-coordinate-divergence': '共有頂点の座標が歴史間で食い違っている',
 } as const satisfies Record<Inconsistency['kind'], string>;
 
 // --- user choices (per-inconsistency repair option) -------------------------

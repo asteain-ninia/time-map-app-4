@@ -46,6 +46,7 @@ import { validateRingHierarchy } from '../ring-hierarchy';
 import type { FeatureId, VertexId } from '../ids';
 import { idToString } from '../ids';
 import { createVertexStore, type Vertex, type VertexStore } from '../vertex';
+import { quantizedEqual } from '../geometry/index';
 import type { DomainProject, FeatureHistory } from './serialize';
 import { resolveAt } from '../anchor-series';
 
@@ -91,6 +92,19 @@ export const INCONSISTENCY = {
    * legacy file never silently loads with an ambiguous timeline (FR-106 拡張).
    */
   DuplicateOwnerHistory: 'duplicate-owner-history',
+  /**
+   * One VertexId resolves to DIFFERENT coordinates in two effective anchor snapshots
+   * at the SAME time. A vertex body is the single source of a point's position (R6); a
+   * SHARED vertex (a boundary vertex two features cite) must hold ONE coordinate across
+   * every history effective at that time. Divergence means a move was applied to only
+   * one history's snapshot store (the neighbour kept the stale coordinate, U44 bug-hunt
+   * true-positive). The time-slice consistency pass concatenates all effective histories'
+   * vertices into ONE store where last-write-wins would SILENTLY pick one coordinate and
+   * hide the disagreement, so the divergence is detected explicitly here BEFORE the concat
+   * collapses it — surfacing the partial-revert/boundary-tear rather than masking it
+   * (FR-106 拡張).
+   */
+  VertexCoordinateDivergence: 'vertex-coordinate-divergence',
 } as const;
 
 export type InconsistencyKind = (typeof INCONSISTENCY)[keyof typeof INCONSISTENCY];
@@ -309,6 +323,54 @@ function terminalExclusionsFrom(
   }));
 }
 
+// --- same-id vertex coordinate divergence across effective snapshots ---------
+//
+// The time-slice pass concatenates EVERY effective history's vertices into one store
+// (checkTimeSlice → createVertexStore), where same-id bodies collapse last-write-wins.
+// A SHARED vertex (a boundary vertex two features in two histories both cite) must hold
+// ONE coordinate at a given time; if a move updated only one history's snapshot store the
+// other keeps the stale coordinate, and the concat would SILENTLY pick one — partially
+// reverting the move / tearing the boundary with nothing reported (U44 bug-hunt
+// true-positive). We compare the bodies BEFORE the concat: the first coordinate seen per
+// id is the reference, and any later body for the same id whose coordinate differs (on the
+// U06 quantization grid, so sub-grid noise is not a false positive — single truth source,
+// 教訓5.30) is flagged once per offending id.
+
+function detectVertexDivergence(
+  perHistory: readonly { readonly featureId: FeatureId; readonly vertices: readonly Vertex[] }[],
+  features: readonly Feature[],
+  atTime: TimePoint,
+): Inconsistency[] {
+  const firstSeen = new Map<VertexId, Vertex>();
+  const flagged = new Set<VertexId>();
+  const out: Inconsistency[] = [];
+  for (const { vertices } of perHistory) {
+    for (const v of vertices) {
+      const prior = firstSeen.get(v.id);
+      if (prior === undefined) {
+        firstSeen.set(v.id, v);
+        continue;
+      }
+      if (flagged.has(v.id)) continue;
+      if (!quantizedEqual(prior.coordinate, v.coordinate)) {
+        flagged.add(v.id);
+        // Report the features that cite this divergent vertex (so the message names the
+        // boundary's two sides), falling back to the raw id when none is resolvable.
+        const citing = features.filter((f) => referencedVertexIds(f).includes(v.id));
+        const ids = citing.map((f) => f.id);
+        out.push({
+          kind: INCONSISTENCY.VertexCoordinateDivergence,
+          featureIds: ids,
+          featureNames: namesOf(features, ids),
+          atTime,
+          detail: `vertex:${idToString(v.id)}`,
+        });
+      }
+    }
+  }
+  return out;
+}
+
 // --- (e) aggregate = sum of children (delegated to U08) ---------------------
 
 function detectAggregateSum(
@@ -487,12 +549,18 @@ function checkTimeSlice(
 ): Inconsistency[] {
   const features: Feature[] = [];
   const allVertices: Vertex[] = [];
+  // Keep each effective history's vertices SEPARATE (as well as the concatenated list) so a
+  // same-id coordinate disagreement between two histories can be detected BEFORE the concat
+  // collapses it last-write-wins (shared-vertex move propagation bug).
+  const perHistory: { featureId: FeatureId; vertices: Vertex[] }[] = [];
   for (const h of histories) {
     const res = resolveAt(h.series, atTime, calendar);
     if (res.kind !== 'present') continue;
     const snap = res.entry.anchor.snapshot;
     for (const f of snap.features) features.push(f);
-    for (const v of snap.vertices.byId.values()) allVertices.push(v);
+    const hVertices = [...snap.vertices.byId.values()];
+    for (const v of hVertices) allVertices.push(v);
+    perHistory.push({ featureId: h.featureId, vertices: hVertices });
   }
   const vertices: VertexStore = createVertexStore(allVertices);
 
@@ -508,6 +576,7 @@ function checkTimeSlice(
     ...terminalExclusionsFrom(overlaps, features, atTime),
     ...detectAggregateSum(features, vertices, atTime),
     ...anchorSpatialOverlapsFrom(overlaps, features, atTime),
+    ...detectVertexDivergence(perHistory, features, atTime),
   ];
 }
 

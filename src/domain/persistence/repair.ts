@@ -27,7 +27,9 @@ import { FEATURE_KIND, withAggregateChildIds, withParentId } from '../feature';
 import { buildForest, directChildIds } from '../hierarchy/forest';
 import { HIERARCHY_VIOLATION } from '../hierarchy/validate';
 import type { Calendar } from '../time/calendar';
-import type { FeatureId } from '../ids';
+import { asVertexId, type FeatureId, type VertexId } from '../ids';
+import { createVertex, type Vertex } from '../vertex';
+import { coordinatesEqual } from '../coordinate';
 import { checkConsistency, INCONSISTENCY, type Inconsistency } from './consistency';
 import type { DomainProject, FeatureHistory } from './serialize';
 
@@ -56,6 +58,8 @@ export const REPAIR_OPTION = {
   DropOrphanHistory: 'drop-orphan-history',
   /** 同一地物を所有する重複した歴史 → 先頭のみ残し、重複分を除外する。 */
   DropDuplicateOwnerHistories: 'drop-duplicate-owner-histories',
+  /** 共有頂点の座標が歴史間で食い違う → 全スナップショットを最初の座標へ揃える。 */
+  ReconcileVertexCoordinate: 'reconcile-vertex-coordinate',
 } as const;
 
 export type RepairOptionId = (typeof REPAIR_OPTION)[keyof typeof REPAIR_OPTION];
@@ -85,6 +89,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
     '所有する地物が存在しない歴史（空のタイムライン）を読み込みから除外します。',
   [REPAIR_OPTION.DropDuplicateOwnerHistories]:
     '同一地物を所有する歴史が複数あるとき、先頭の歴史のみを残して重複分を読み込みから除外します。',
+  [REPAIR_OPTION.ReconcileVertexCoordinate]:
+    '同一の頂点が歴史間で異なる座標を持つとき、最初に現れた座標へすべて揃えます。',
 };
 
 /**
@@ -129,6 +135,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.DropOrphanHistory)];
     case INCONSISTENCY.DuplicateOwnerHistory:
       return [opt(REPAIR_OPTION.DropDuplicateOwnerHistories)];
+    case INCONSISTENCY.VertexCoordinateDivergence:
+      return [opt(REPAIR_OPTION.ReconcileVertexCoordinate)];
   }
 }
 
@@ -312,6 +320,65 @@ function dropDuplicateOwnerHistories(
   return { ...project, histories };
 }
 
+/**
+ * Reconcile a shared vertex whose coordinate diverges across histories to ONE canonical
+ * coordinate (FR-106 拡張): the FIRST body seen for that id (in history → entry → store
+ * order) is authoritative — the same reference the divergence detector compares against —
+ * and every later snapshot body for that id is overwritten to match. This collapses the
+ * same-id coordinate disagreement to a single source of truth (R6) without dropping any
+ * feature, so the boundary re-joins rather than tearing. Pure: returns a new project,
+ * reusing unchanged anchors/snapshots. A no-op when no snapshot carries the id.
+ */
+function reconcileVertexCoordinate(
+  project: DomainProject,
+  vertexId: VertexId,
+): DomainProject {
+  // Find the canonical coordinate: the first body for this id across the whole project,
+  // in the SAME traversal order the detector uses (history, then entry, then store).
+  let canonical: Vertex | undefined;
+  outer: for (const h of project.histories) {
+    for (const e of h.series.entries) {
+      const body = e.anchor.snapshot.vertices.byId.get(vertexId);
+      if (body !== undefined) {
+        canonical = body;
+        break outer;
+      }
+    }
+  }
+  if (canonical === undefined) return project; // no snapshot carries it → nothing to do.
+  const fixed = createVertex(vertexId, canonical.coordinate);
+
+  const histories: FeatureHistory[] = project.histories.map((h) => ({
+    featureId: h.featureId,
+    series: {
+      entries: h.series.entries.map((e) => {
+        const store = e.anchor.snapshot.vertices;
+        const existing = store.byId.get(vertexId);
+        // Only rewrite a snapshot that carries the id AND disagrees with the canonical
+        // body (preserve referential identity of every untouched anchor).
+        if (existing === undefined || coordinatesEqual(existing.coordinate, fixed.coordinate)) {
+          return e;
+        }
+        const byId = new Map(store.byId);
+        byId.set(vertexId, fixed);
+        return {
+          anchor: {
+            id: e.anchor.id,
+            snapshot: {
+              features: e.anchor.snapshot.features,
+              vertices: { byId },
+            },
+          },
+          start: e.start,
+          end: e.end,
+        };
+      }),
+    },
+  }));
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  return { ...project, histories };
+}
+
 /** Drop the FIRST of the overlapping pair (deterministic: the lower-ordered id). */
 function dropOneOfPair(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const first = ids[0];
@@ -365,6 +432,14 @@ export function applyRepair(
       return dropHistories(project, inc.featureIds);
     case REPAIR_OPTION.DropDuplicateOwnerHistories:
       return dropDuplicateOwnerHistories(project, inc.featureIds);
+    case REPAIR_OPTION.ReconcileVertexCoordinate: {
+      // The divergent vertex id rides in `detail` as `vertex:<id>` (see consistency.ts
+      // detectVertexDivergence). Without it there is nothing to reconcile → no-op.
+      const prefix = 'vertex:';
+      if (inc.detail === undefined || !inc.detail.startsWith(prefix)) return project;
+      const vertexId = asVertexId(inc.detail.slice(prefix.length));
+      return reconcileVertexCoordinate(project, vertexId);
+    }
   }
 }
 
