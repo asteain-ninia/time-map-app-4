@@ -602,18 +602,21 @@ function computeEdgeCuts(
         const b = linePts[i + 1];
         if (a === undefined || b === undefined) continue;
         const hit = segmentsIntersect(a, b, startC, endC);
-        // A Proper crossing is always a mid-edge cut. An Endpoint contact is a
-        // mid-edge cut ONLY when its point falls strictly between the edge's
-        // endpoints (a cut-line vertex landing partway along the edge); an Endpoint
-        // at an existing edge vertex needs no new node (Codex M1).
-        const isMidEdge =
-          hit.point !== undefined &&
-          (hit.relation === SEGMENT_RELATION.Proper ||
-            (hit.relation === SEGMENT_RELATION.Endpoint &&
-              !coordinatesEqual(quantizeCoordinate(hit.point), startC) &&
-              !coordinatesEqual(quantizeCoordinate(hit.point), endC)));
-        if (!isMidEdge || hit.point === undefined) continue;
+        if (hit.point === undefined) continue;
+        if (hit.relation !== SEGMENT_RELATION.Proper && hit.relation !== SEGMENT_RELATION.Endpoint) {
+          continue;
+        }
         const coordinate = quantizeCoordinate(hit.point);
+        // A mid-edge cut is recorded ONLY when the (quantized) intersection point
+        // falls strictly between the edge's (quantized) endpoints. This applies to
+        // BOTH a Proper crossing AND an Endpoint contact: an intersection that
+        // quantizes onto an existing edge vertex (startC/endC) needs no new node and
+        // would otherwise produce a zero-length edge / duplicate-coordinate node on
+        // the共有相手 edge (Codex M1; bug-hunt: a near-endpoint Proper crossing that
+        // quantizes onto startC/endC is degenerate and must be skipped too).
+        if (coordinatesEqual(coordinate, startC) || coordinatesEqual(coordinate, endC)) {
+          continue;
+        }
         const key = `${ring.id}:${j}:${coordinate.lon},${coordinate.lat}`;
         if (seen.has(key)) continue;
         seen.add(key);

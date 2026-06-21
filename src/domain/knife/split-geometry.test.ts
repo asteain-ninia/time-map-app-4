@@ -185,6 +185,44 @@ describe('executeSplit — mid-edge ENDPOINT contact is a 共有辺途中切断�
     );
     expect(cornerCut).toBeUndefined();
   });
+
+  it('does NOT record a cut for a PROPER crossing that quantizes onto an existing corner', () => {
+    const { feature, store } = unitSquare();
+    // A slanted segment (-1,-2)→(1,2.0000001) crosses the bottom edge (0,0)-(10,0)
+    // PROPERLY (interiors cross, not at a line vertex) at x ≈ -2.5e-8, which the U06
+    // grid (1e7 cells/deg) quantizes onto the existing corner (0,0). The old Proper
+    // branch recorded that as a mid-edge cut, yielding an EdgeCutPoint AT an existing
+    // vertex — a zero-length edge / duplicate-coordinate node on the 共有相手 edge
+    // (bug-hunt: knife/split-geometry computeEdgeCuts). It must be skipped just like
+    // the Endpoint-at-vertex case. The clean exit through the top edge stays a real cut.
+    const line = createOpenKnifeLine([c(-1, -2), c(1, 2.0000001), c(6, 15)]);
+    const result = executeSplit(feature, store, line);
+    expect(result).toBeDefined();
+    if (!result) return;
+    const cornerCut = result.edgeCuts.find(
+      (e) => e.coordinate.lon === 0 && e.coordinate.lat === 0,
+    );
+    expect(cornerCut).toBeUndefined();
+    // No recorded cut sits on an existing edge endpoint (degenerate node).
+    for (const cut of result.edgeCuts) {
+      const startV = store.byId.get(cut.edgeStartVertexId);
+      const endV = store.byId.get(cut.edgeEndVertexId);
+      expect(startV).toBeDefined();
+      expect(endV).toBeDefined();
+      const onStart =
+        startV !== undefined &&
+        cut.coordinate.lon === startV.coordinate.lon &&
+        cut.coordinate.lat === startV.coordinate.lat;
+      const onEnd =
+        endV !== undefined &&
+        cut.coordinate.lon === endV.coordinate.lon &&
+        cut.coordinate.lat === endV.coordinate.lat;
+      expect(onStart).toBe(false);
+      expect(onEnd).toBe(false);
+    }
+    // The genuine top-edge crossing is still recorded.
+    expect(result.edgeCuts.some((e) => e.coordinate.lat === 10)).toBe(true);
+  });
 });
 
 describe('closed-line split (受け入れ基準3 — interior vs exterior)', () => {
