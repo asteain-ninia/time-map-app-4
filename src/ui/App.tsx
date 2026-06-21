@@ -82,6 +82,7 @@ import {
 } from '../domain/command/history';
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafAtPoint, leafShapeAt } from './live-lookup';
+import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
 import {
   PointerDispatcher,
@@ -121,10 +122,39 @@ export function App(): JSX.Element {
   // Bootstrap with an empty NEW project (地物 0 件 + 出界図 preset background,
   // FR-03 / spec §D). The file-ops controller re-initialises this atomically on
   // 新規プロジェクト and replaces it wholesale on 読み込み (教訓 5.22 / 5.36).
+  // ROOT FIX (bughunt: live store created with NO ExistenceResolver — a time
+  // change never deselected a feature/vertex that ceased to exist). The store
+  // re-validates time-dependent selection on every time-change through an INJECTED
+  // existence port (教訓 5.5/5.6, store.ts:setCurrentTime → U22 revalidateForTime),
+  // re-implementing NO time logic. Without an `existence` option it fell back to
+  // ALWAYS_PRESENT_RESOLVER, so the whole re-validation funnel was a silent no-op:
+  // selecting a feature effective only in [t0,t1] then dragging the timeline past
+  // t1 left it the active selection (property panel / delete / edit-move all acting
+  // on a feature the map had dropped), contradicting FR-64/66/70.
+  //
+  // We now wire an existence resolver bound to the LIVE domain root via the SAME
+  // featuresAt/verticesAt live-lookup the renderer / hit-test / knife use (単一
+  // 真実源 — "exists" == "drawn/hittable"). The chicken/egg (the resolver must read
+  // the store created BELOW) is resolved with a getRoot ref, the same pattern
+  // recordCommit uses: the ref is assigned right after createSessionStore returns,
+  // and the resolver reads it live per call (never a stale capture, 教訓 5.6).
+  const liveRootRef = useRef<(() => DomainRoot) | null>(null);
   const store = useMemo(
-    () => createSessionStore<DomainRoot>({ initialDomain: buildEmptyProject() }),
+    () =>
+      createSessionStore<DomainRoot>({
+        initialDomain: buildEmptyProject(),
+        existence: createLiveExistenceResolver(() => {
+          // Read the live committed root through the ref; until it is wired (it is
+          // assigned synchronously on the very next line after this store is built)
+          // fall back to an empty project so a predicate can never throw.
+          const getRoot = liveRootRef.current;
+          return getRoot !== null ? getRoot() : buildEmptyProject();
+        }),
+      }),
     [],
   );
+  // Wire the live-root thunk now that the store exists (chicken/egg resolution).
+  liveRootRef.current = () => store.getState().domain;
 
   // The U20 command registry: the ファイル menu / shortcuts dispatch through it.
   // Created here and shared with BOTH the shell (so the menu binds it) and the
