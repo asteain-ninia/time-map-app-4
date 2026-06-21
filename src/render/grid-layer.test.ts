@@ -110,6 +110,29 @@ describe('viewportLonSpan', () => {
   });
 });
 
+describe('buildGridPrimitives is hang-safe for pathological cameras (H1)', () => {
+  it('a finite-but-huge centerLon (1e15) does not hang the meridian loop', () => {
+    // centerLon is NOT clamped by the camera; a huge value pushes viewportLonSpan's
+    // edges past 2^53 where `lon += spacing` is a float no-op. The meridian
+    // enumeration must terminate (bounded count) — the assertion is completion.
+    const hugeCamera: Camera = { centerLon: 1e15, centerLat: 0, zoom: 800 / 360 };
+    const t0 = Date.now();
+    const prims = buildGridPrimitives(true, DEFAULT_GRID_STYLE, hugeCamera, viewport);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(Array.isArray(prims)).toBe(true);
+  });
+
+  it('an extreme zoom-out over a wide span does not allocate an unbounded array', () => {
+    // Tiny zoom: viewportLonSpan covers a huge finite span → meridian count would be
+    // enormous. The cap returns no meridians (parallels may still be present).
+    const tinyZoom: Camera = { centerLon: 0, centerLat: 0, zoom: 1e-9 };
+    const t0 = Date.now();
+    const prims = buildGridPrimitives(true, DEFAULT_GRID_STYLE, tinyZoom, viewport);
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(Array.isArray(prims)).toBe(true);
+  });
+});
+
 describe('base-map is NOT a hit-test target (FR-06 / 受け入れ基準 6)', () => {
   it('hitTest returns the world point under the cursor regardless of any base-map', () => {
     // The renderer's hitTest goes through the shared transform (screenToWorld) and

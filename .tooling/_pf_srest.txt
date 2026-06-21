@@ -1,0 +1,27 @@
+SEAM-AUDIT 残修正レビュー依頼(根本2原因 align/unwrap は別コミット 9964314 で対応済み。その「残り」の検証)。
+
+監査文書: .autopilot/SEAM-AUDIT.md。直近で対応済み(commit 9964314): C1/C2/C3(per-ring 独立 unwrap の共通 world-turn 整列, alignRingTo 適用), C6/C7/C8(unwrapRing の閉合辺連続化・>180°辺・対蹠タイブレーク一般化)。
+
+以下「残り候補」の実在性と根本修正の妥当性を、ソースを当たって厳密に三角測量してほしい。確証なき LOW は除外可。
+
+1) C9 [HIGH/H1] grid-layer メリディアン列挙に safe-integer / magnitude ガードが無く、巨大有限 centerLon(例 1e15, 2^53+1)で graticuleLongitudes の `lon += spacing` ループが no-op 化しフレームハング。
+   - 場所: src/render/grid-layer.ts viewportLonSpan(:147-162) / buildGridPrimitives メリディアンループ(:215); src/domain/basemap/grid.ts graticuleLongitudes(:135-153)。
+   - 参照ガード: src/render/vtransform.ts wrapTurnsForLonSpan/wrapTurnsForViewport の Number.isSafeInteger + MAX_WRAP_REPLICAS 上限(:273-279,:351-357)。
+   - 問: graticuleLongitudes(あるいは viewportLonSpan)に safe-integer/メリディアン本数上限ガードを足すのが正しい根本修正か。tiny-zoom×wide-span の無制限確保も同根か。
+
+2) C10 [MED/M1] クリップ worldRectIntersectsViewWrapped(src/render/feature-layer.ts:229-238)に MAX_WRAP_REPLICAS 上限が無いが、描画 wrapTurnsForLonSpan は上限超で [0] に退避。「kept by clip ⇒ painted by renderer」不変条件が病的 span(数百万度 / lon≈1e15)で破れる(clip 保持なのに draw が [0] で画面外)。
+   - 問: clip 側を draw と同一の退避ロジックに揃える(span が MAX を超える/非安全整数なら [0] turn 相当のみ判定)のが正しいか。hit-test(live-hit-test.ts drawnAreaAtPoint/drawnLonOffsets:285-348)は既に wrapTurnsForLonSpan を使うので draw と一致しているか確認。退避先を [0] でなく nearest-visible turn にする案の是非。
+
+3) C4 [MED/M6,L10] U10 排他/索引 bbox がリング座標を verbatim min/max で取り、単一リング内 179→-179 が逆回り ~358° bbox になる。
+   - 場所: src/domain/spatial/overlap.ts(detectTerminalOverlaps :84-176)/ src/domain/spatial/bbox.ts(multiPolygonBBox :37-78)。
+   - 問: bbox/overlap 計算前に unwrapRing で連続化すべきか。replicateShape(worldWrapReplicas)はリング全体 ±360 平行移動のみで 1リング内 179→-179 を救えないのは事実か。回帰: 1枚のシーム跨ぎ面が 179/-179 で格納されるケース。
+
+4) C11 [MED/M5] worldWrapReplicas / ringsShareVertexAcrossSeam の既定 turns={-1,0,1} が1周分のみで >360° 地物の交差/共有頂点を取りこぼす(540 と -180 は +2 が必要)。
+   - 場所: src/domain/geo/seam.ts(:172-178,:213-233)。
+   - 問: replica 範囲を span から ceil(span/360) で動的算出するのが正しいか。既定値依存の呼び出し側はどこか。
+
+5) C14 [LOW/M10,L8] survey 大円/equirect 測量が経度差>180° を常に最短側へ縮約し長経路測量が表現不能; greatCirclePath のニアミス対蹠(omega≈π)で slerp が暴れる。
+   - 場所: src/domain/survey/great-circle-path.ts(:114,:116-152,:211), src/domain/geo/geodesy.ts(:46,:65)。
+   - 問: これは LOW で remaining に回すべきか、実害ある根本修正対象か。距離(haversine)は別経路で安定か確認。
+
+各項目: 実在(true positive)か、すでに別経路で緩和済みか、根本修正の場所と最小差分、回帰テスト観点(property か behavioral)。誤検出は明示。

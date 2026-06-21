@@ -107,6 +107,25 @@ export const LAT_MIN_DEG = -90;
 export const LAT_MAX_DEG = 90;
 
 /**
+ * Hard upper bound on the number of meridians {@link graticuleLongitudes} will
+ * enumerate for a single frame (H1 安全性 / 病的入力).
+ *
+ * Two pathologies make the naive `lon += spacing` loop dangerous:
+ *   1. A finite-but-HUGE viewport span (a tiny zoom over a wide pan) makes the
+ *      count `(east − west) / spacing` finite yet enormous — the loop would
+ *      allocate an unbounded array EACH FRAME.
+ *   2. A finite-but-huge edge magnitude (|lon| ≳ 2^53, e.g. centerLon = 1e15,
+ *      which the camera never clamps) makes `lon += spacing` a no-op once the ULP
+ *      exceeds `spacing` — the loop NEVER terminates and the frame HANGS.
+ * `vtransform.wrapTurnsForLonSpan/ForViewport` already guard their turn loops with
+ * `Number.isSafeInteger` + `MAX_WRAP_REPLICAS`; this is the parallel guard for the
+ * grid meridian loop, which had none. At the densest spacing (5°) this still covers
+ * ~14 full world turns of meridians — far more than any real viewport shows — so a
+ * legitimate deep-zoom-near-the-seam frame is never truncated.
+ */
+export const MAX_GRATICULE_MERIDIANS = 1000;
+
+/**
  * The latitudes (deg) at which to draw parallels, at `spacing` intervals, covering
  * the full world band [−90, +90] inclusive on multiples of the spacing. Always
  * includes 0 (the equator) because every allowed spacing divides 90. Pure;
@@ -131,6 +150,14 @@ export function graticuleLatitudes(spacing: GridSpacingDeg): number[] {
  * a private ±360° calculation — the multiples are simply continued past ±180, and
  * the LABEL for each is normalized later via {@link formatLongitudeLabel}. Pure;
  * returned ascending. A degenerate span (west > east or non-finite) yields [].
+ *
+ * SAFETY (H1): the enumeration is bounded by {@link MAX_GRATICULE_MERIDIANS}. A
+ * finite-but-huge span (tiny zoom × wide pan) or a finite-but-huge edge magnitude
+ * (|lon| ≳ 2^53, where `lon += spacing` stops advancing and the loop would HANG)
+ * would otherwise blow up the frame. The count is computed in CLOSED FORM (so the
+ * guard itself never iterates the pathological range); when it would exceed the cap
+ * we return [] (no meridians this frame) rather than hang/OOM — the same "degenerate
+ * frame draws nothing extra" discipline as the non-finite case (教訓 5.18).
  */
 export function graticuleLongitudes(
   lonWest: number,
@@ -144,10 +171,17 @@ export function graticuleLongitudes(
   ) {
     return [];
   }
-  const out: number[] = [];
   const first = Math.ceil(lonWest / spacing) * spacing;
-  for (let lon = first; lon <= lonEast + EMPHASIS_EPSILON; lon += spacing) {
-    out.push(lon);
+  // Bound the meridian count BEFORE looping: this catches both the unbounded-array
+  // pathology (huge finite span) and the never-terminating-loop pathology (huge
+  // |lon| where `lon += spacing` is a float no-op). `count` is closed form so the
+  // guard never iterates the pathological range.
+  const count = Math.floor((lonEast + EMPHASIS_EPSILON - first) / spacing) + 1;
+  if (!Number.isFinite(count) || count <= 0) return [];
+  if (count > MAX_GRATICULE_MERIDIANS) return [];
+  const out: number[] = [];
+  for (let i = 0; i < count; i += 1) {
+    out.push(first + i * spacing);
   }
   return out;
 }
