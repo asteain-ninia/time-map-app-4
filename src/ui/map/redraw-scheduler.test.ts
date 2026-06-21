@@ -98,15 +98,71 @@ describe('createRedrawScheduler (FR-110 renderFps 結線)', () => {
       schedule: fake.schedule,
       cancel: fake.cancel,
     });
-    // A pending frame on the old scheduler is cancelled when the rate changes; the new
-    // scheduler schedules fresh on the next request (so the new budget governs).
+    // A pending frame on the old scheduler is carried onto the rebuilt scheduler (so a
+    // renderFps-only change never drops an in-flight draw), and the new budget governs.
     rs.request();
     expect(fake.pending()).toBe(1);
     rs.setFps(1);
-    expect(fake.pending()).toBe(0); // old pending frame cancelled by the rebuild
-    rs.request();
+    expect(fake.pending()).toBe(1); // the pending frame survives the rebuild (re-requested)
     fake.tick(0);
-    expect(draws).toBe(1); // the new scheduler drew on the next request
+    expect(draws).toBe(1); // the rebuilt scheduler drew the carried-over frame
+  });
+
+  it('setFps does NOT drop a pending throttled redraw (bughunt round-2 regression)', () => {
+    // Repro of the round-1 regression: a frame is already pending (time-slider drag /
+    // playback / pan-driven domain redraw in flight) at the instant a settings confirm
+    // changes ONLY renderFps. The old setFps disposed the scheduler — cancelling the
+    // pending rAF and clearing dirty — and App.tsx's content gate early-returned without
+    // re-requesting, so the in-flight frame was lost and the map showed a stale frame
+    // until the next unrelated store change. The carry-over must keep the draw alive.
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const rs = createRedrawScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      initialFps: 60,
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+    });
+
+    rs.request(); // a redraw is in flight (frame pending, dirty)
+    expect(fake.pending()).toBe(1);
+    expect(draws).toBe(0);
+
+    rs.setFps(30); // settings confirm changes ONLY renderFps — must NOT drop the frame
+
+    // No further request() is issued (App.tsx's content gate early-returns for a pure
+    // renderFps change). The carried-over frame must still draw on the next tick.
+    expect(fake.pending()).toBe(1); // still pending after the rebuild
+    fake.tick(0);
+    expect(draws).toBe(1); // the in-flight frame survived and drew
+
+    // And the new budget governs subsequent draws (the rebuild took effect).
+    rs.request();
+    fake.tick(10); // 10ms < 1000/30 ≈ 33.3ms budget ⇒ gated, no draw yet
+    expect(draws).toBe(1);
+    fake.tick(100); // > budget since last draw ⇒ the gated draw runs
+    expect(draws).toBe(2);
+  });
+
+  it('setFps with no pending frame does not spuriously schedule one', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const rs = createRedrawScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      initialFps: 60,
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+    });
+    // No request() outstanding ⇒ a renderFps change must not conjure a draw.
+    expect(fake.pending()).toBe(0);
+    rs.setFps(15);
+    expect(fake.pending()).toBe(0);
+    fake.tick(0);
+    expect(draws).toBe(0);
   });
 
   it('setFps with an unchanged value does not churn (keeps the pending frame)', () => {

@@ -79,8 +79,20 @@ export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawSc
     setFps(nextFps: number): void {
       if (nextFps === fps) return;
       fps = nextFps;
+      // ROOT FIX (bughunt round-2: renderFps-only settings change silently DROPS a
+      // pending throttled redraw). The cap is fixed at construction, so a CHANGED fps
+      // must rebuild the FrameScheduler. dispose() cancels the old scheduler's pending
+      // rAF AND clears its dirty flag, so a frame that was already requested (time
+      // slider drag / playback / pan-driven redraw in flight) would be lost forever:
+      // App.tsx's store subscription calls setFps *before* its content-changed gate,
+      // and a pure renderFps change early-returns without re-requesting. We therefore
+      // carry the old scheduler's pending state into the new one — if a draw was
+      // outstanding, re-request it on the rebuilt scheduler so the in-flight frame is
+      // honored under the new budget instead of being dropped.
+      const wasPending = scheduler.isDirty;
       scheduler.dispose();
       scheduler = build();
+      if (wasPending) scheduler.request();
     },
     dispose(): void {
       scheduler.dispose();
