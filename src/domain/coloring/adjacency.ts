@@ -31,6 +31,13 @@ export interface AdjacencyGraph {
   readonly nodes: readonly FeatureId[];
   /** node id -> its neighbours, sorted by id. */
   readonly neighbors: ReadonlyMap<FeatureId, readonly FeatureId[]>;
+  /**
+   * The canonical, comparable signature of this graph's nodes + undirected edge
+   * set, computed ONCE at build time (see {@link computeAdjacencySignature}).
+   * The recolor trigger compares two of these already-computed strings instead
+   * of re-sorting/re-joining the edge set on every {@link shouldRecolor} call.
+   */
+  readonly signature: string;
 }
 
 function compareIds(a: FeatureId, b: FeatureId): number {
@@ -66,7 +73,8 @@ export function buildAdjacencyGraph(
     const set = adj.get(id) ?? new Set<FeatureId>();
     neighbors.set(id, [...set].sort(compareIds));
   }
-  return { nodes: sortedNodes, neighbors };
+  const signature = computeAdjacencySignature(sortedNodes, neighbors);
+  return { nodes: sortedNodes, neighbors, signature };
 }
 
 /** The neighbours of a node (empty array if the node is absent). */
@@ -75,16 +83,20 @@ export function neighborsOf(graph: AdjacencyGraph, id: FeatureId): readonly Feat
 }
 
 /**
- * A canonical, comparable signature of the graph's UNDIRECTED edge set. Two
- * graphs with the same nodes + same shared boundaries produce the same string,
- * regardless of insertion order. This is the result-state key used by the
- * recolor trigger (教訓 5.6: detect change by RESULT STATE, not call path).
+ * Compute the canonical signature from already-normalized graph data. Called
+ * ONCE by {@link buildAdjacencyGraph}; the result is cached on the graph as
+ * {@link AdjacencyGraph.signature}. Two graphs with the same nodes + same shared
+ * boundaries produce the same string, regardless of insertion order — the
+ * result-state key the recolor trigger turns on (教訓 5.6).
  */
-export function adjacencySignature(graph: AdjacencyGraph): string {
+function computeAdjacencySignature(
+  nodes: readonly FeatureId[],
+  neighbors: ReadonlyMap<FeatureId, readonly FeatureId[]>,
+): string {
   const edges: string[] = [];
-  for (const id of graph.nodes) {
+  for (const id of nodes) {
     const sid = idToString(id);
-    for (const n of neighborsOf(graph, id)) {
+    for (const n of neighbors.get(id) ?? []) {
       const sn = idToString(n);
       // Each undirected edge once, in (min,max) order.
       if (sid < sn) edges.push(`${sid}|${sn}`);
@@ -92,6 +104,16 @@ export function adjacencySignature(graph: AdjacencyGraph): string {
   }
   edges.sort();
   // Include isolated nodes so adding a node with no edges still differs.
-  const nodeSig = graph.nodes.map(idToString).join(',');
+  const nodeSig = nodes.map(idToString).join(',');
   return `N:${nodeSig};E:${edges.join(';')}`;
+}
+
+/**
+ * The canonical, comparable signature of the graph's nodes + UNDIRECTED edge
+ * set. Computed once at build time and cached on the graph (教訓 5.6: detect
+ * change by RESULT STATE, not call path); this reader returns that cached value
+ * in O(1) so repeated recolor decisions never re-sort the edge set.
+ */
+export function adjacencySignature(graph: AdjacencyGraph): string {
+  return graph.signature;
 }

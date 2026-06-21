@@ -12,7 +12,7 @@
 //
 // PURITY (受け入れ基準6): pure comparison, no mutation, deterministic.
 
-import { adjacencySignature, type AdjacencyGraph } from './adjacency';
+import { type AdjacencyGraph } from './adjacency';
 
 /**
  * Whether the adjacency relation changed between the previous and current graph.
@@ -26,7 +26,10 @@ export function adjacencyChanged(
   previous: AdjacencyGraph,
   current: AdjacencyGraph,
 ): boolean {
-  return adjacencySignature(previous) !== adjacencySignature(current);
+  // Compare the signatures computed ONCE at build time (cached on the graph),
+  // not recomputed per call — building the signature is O(E·log E); this
+  // comparison is O(signature length). See AdjacencyGraph.signature.
+  return previous.signature !== current.signature;
 }
 
 /**
