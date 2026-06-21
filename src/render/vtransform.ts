@@ -30,6 +30,32 @@ import { LONGITUDE_PERIOD } from '../domain/geo/seam';
 import type { Camera, Viewport, ZoomRange } from './camera';
 import { clampZoom, WORLD_LAT_SPAN_DEG, WORLD_LON_SPAN_DEG } from './camera';
 
+/**
+ * The maximum number of ±360° wrap replicas any single frame will ever enumerate.
+ *
+ * The seam-tiling loops below enumerate an inclusive integer turn range. The range
+ * is normally tiny (1 replica at any usable zoom; a few dozen when fully zoomed out),
+ * but two FINITE-yet-pathological inputs blow it up — and the per-frame finiteness
+ * guard does NOT catch them because the numbers stay finite:
+ *
+ *   1. A huge finite `centerLon` (e.g. 1e20). centerLon is a CONTINUOUS, unbounded,
+ *      NEVER-clamped scalar (pan/zoom only ever clamp zoom — see camera.ts/clampZoom),
+ *      so it can legitimately reach magnitudes above 2^53. Then leftLon/rightLon and
+ *      hence minTurn/maxTurn exceed `Number.MAX_SAFE_INTEGER`, where `t += 1` is a
+ *      NO-OP (1 is below the ULP at that scale) → the loop NEVER terminates and the
+ *      render/hit-test frame HANGS.
+ *   2. A tiny-but-positive zoom over a very wide covered span yields a huge-but-finite
+ *      `maxTurn − minTurn`, so the loop allocates an ENORMOUS turns[] array every frame
+ *      (both the renderer AND the hit-test call these), exhausting memory.
+ *
+ * `MAX_WRAP_REPLICAS` bounds the enumerated count so neither path can hang or
+ * memory-exhaust. The legitimate ceiling is the world width in screen pixels divided
+ * by one period at the minimum usable zoom — at the FR-10 minimum zoom (1 px/deg) a
+ * 4K-wide viewport (~4096 px) covers ~12 turns; we keep a generous safety margin so a
+ * real fully-zoomed-out frame is never clipped, while the pathological cases bail.
+ */
+export const MAX_WRAP_REPLICAS = 100_000;
+
 /** A point in CSS-pixel screen space (origin top-left, y down). */
 export interface ScreenPoint {
   readonly x: number;
@@ -223,6 +249,20 @@ export function wrapTurnsForViewport(camera: Camera, viewport: Viewport): number
   const minTurn = Math.floor((leftLon + 180) / LONGITUDE_PERIOD);
   const maxTurn = Math.floor((rightLon + 180) / LONGITUDE_PERIOD);
 
+  // Magnitude guard (病的入力の安全性): the finiteness guard above keeps the bounds
+  // finite, but a finite-yet-huge centerLon (>2^53) makes them exceed safe-integer
+  // precision — where `t += 1` is a no-op and the loop NEVER terminates — and a tiny
+  // zoom over a wide span makes (maxTurn − minTurn) finite but enormous, allocating an
+  // unbounded array each frame. Either way bail to the identity turn [0], the same
+  // safe degenerate fallback this unit already returns for a zero viewport.
+  if (
+    !Number.isSafeInteger(minTurn) ||
+    !Number.isSafeInteger(maxTurn) ||
+    maxTurn - minTurn >= MAX_WRAP_REPLICAS
+  ) {
+    return [0];
+  }
+
   const turns: number[] = [];
   for (let t = minTurn; t <= maxTurn; t += 1) {
     turns.push(t);
@@ -288,6 +328,18 @@ export function wrapTurnsForLonSpan(
   const rightLon = screenToWorld({ x: viewport.widthCss, y: 0 }, camera, viewport).lon;
   const minTurn = Math.ceil((leftLon - lonMax) / LONGITUDE_PERIOD);
   const maxTurn = Math.floor((rightLon - lonMin) / LONGITUDE_PERIOD);
+  // Same magnitude guard as {@link wrapTurnsForViewport}: a finite-but-huge centerLon
+  // (or lonMin/lonMax) pushes the bounds past safe-integer precision (the `t += 1`
+  // loop never advances → frame hang), and a tiny zoom over a wide span makes the
+  // inclusive count enormous-but-finite (unbounded allocation each frame). Bail to the
+  // identity turn [0] in either case.
+  if (
+    !Number.isSafeInteger(minTurn) ||
+    !Number.isSafeInteger(maxTurn) ||
+    maxTurn - minTurn >= MAX_WRAP_REPLICAS
+  ) {
+    return [0];
+  }
   const turns: number[] = [];
   for (let t = minTurn; t <= maxTurn; t += 1) turns.push(t);
   return turns.length === 0 ? [0] : turns;

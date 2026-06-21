@@ -229,6 +229,25 @@ describe('wrapTurnsForViewport (FR-07 seam tiling)', () => {
       expect(wrapTurnsForViewport({ ...CAM, centerLon: bad }, VP)).toEqual([0]);
     }
   }, 1000);
+
+  it('returns [0] (does not hang) for a finite but out-of-safe-integer-magnitude centerLon (REGRESSION)', () => {
+    // Bughunt: centerLon is a continuous, unbounded, never-clamped scalar. At ~1e20
+    // leftLon/rightLon stay FINITE (so the finiteness guard passes) but minTurn/maxTurn
+    // exceed Number.MAX_SAFE_INTEGER, where `t += 1` is a no-op → the t-loop never
+    // terminates and the frame hangs. The magnitude guard must short-circuit to [0].
+    // The 1s timeout fails (rather than hanging the suite) if the guard regresses.
+    const cam: Camera = { centerLon: 1e20, centerLat: 0, zoom: 10 };
+    expect(wrapTurnsForViewport(cam, VP)).toEqual([0]);
+  }, 1000);
+
+  it('returns [0] for a tiny zoom over a wide span (no unbounded array alloc) (REGRESSION)', () => {
+    // Bughunt: a tiny-but-positive zoom yields a huge-but-finite covered span, so
+    // (maxTurn − minTurn) is finite but enormous and the loop would allocate a giant
+    // array each frame (renderer AND hit-test). The replica cap must bail to [0].
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 1e-12 };
+    const turns = wrapTurnsForViewport(cam, VP);
+    expect(turns).toEqual([0]);
+  }, 1000);
 });
 
 describe('wrapTurnsForLonSpan (HB-14 — per-primitive turns for continuous longitude)', () => {
@@ -277,6 +296,21 @@ describe('wrapTurnsForLonSpan (HB-14 — per-primitive turns for continuous long
       const cam: Camera = { centerLon: bad, centerLat: 0, zoom: 10 };
       expect(wrapTurnsForLonSpan(0, 0, cam, VP800)).toEqual([0]);
     }
+  }, 1000);
+
+  it('returns [0] (does not hang) for a finite but out-of-safe-integer-magnitude centerLon (REGRESSION)', () => {
+    // Same hang vector as wrapTurnsForViewport: a finite ~1e20 centerLon makes the
+    // turn bounds exceed safe-integer precision, where `t += 1` never advances. The
+    // magnitude guard must bail to [0].
+    const cam: Camera = { centerLon: 1e20, centerLat: 0, zoom: 10 };
+    expect(wrapTurnsForLonSpan(0, 0, cam, VP800)).toEqual([0]);
+  }, 1000);
+
+  it('returns [0] for a tiny zoom over a wide span (no unbounded array alloc) (REGRESSION)', () => {
+    // A tiny zoom yields a finite-but-enormous (maxTurn − minTurn); the replica cap
+    // must prevent the per-frame unbounded array allocation.
+    const cam: Camera = { centerLon: 0, centerLat: 0, zoom: 1e-12 };
+    expect(wrapTurnsForLonSpan(0, 0, cam, VP800)).toEqual([0]);
   }, 1000);
 });
 
