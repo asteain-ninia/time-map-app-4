@@ -43,7 +43,14 @@ import {
   validateGeometry,
   validateRingHierarchy,
 } from '../ring-hierarchy';
-import { getVertex, createVertex, createVertexStore, type VertexStore } from '../vertex';
+import {
+  getVertex,
+  createVertex,
+  createVertexStore,
+  setVertex,
+  withVertexCoordinate,
+  type VertexStore,
+} from '../vertex';
 import { ringSelfIntersects, type GeoRing } from '../geometry/index';
 
 const SEED = 2001;
@@ -1003,6 +1010,318 @@ describe('alternation (seed=2004): metamorphic laws', () => {
         expect(norm(ab)).toBe(norm(ba));
       }),
       cfg3,
+    );
+  });
+});
+
+// ===========================================================================
+// 8. FOURTH CAMPAIGN (seed=22001) — STATEFUL edit-command stream over a
+//    (Shape, VertexStore) model, exploring a region NOT covered by campaigns
+//    1-3 (seeds 2001/2002/2004, which only ever DELETE rings).
+//
+// The brief asks for "ランダムな編集コマンド列" (a random edit-command sequence) and
+// the full invariant bundle after EVERY operation, plus the metamorphic laws
+// undo∘op = identity, op∘inverse = identity, and save∘load = identity.
+//
+// New ground vs. prior campaigns:
+//   - The model carries BOTH a shape and a mutable vertex store, and the command
+//     set includes a geometry mutation (rigid translation of a whole top-level
+//     subtree), not only structural deletion. A rigid translation by a finite
+//     offset preserves containment / non-self-intersection WITHIN a subtree and,
+//     because top-level bands start 80° apart with half-width ≤16 and the offset
+//     is clamped to ±15, never collides two bands (min gap 80-30-30 = 20 > 0).
+//     So a correct system MUST keep validateGeometry clean across the whole
+//     stream — any violation is a real defect, not a generator artifact.
+//   - undo is modelled by snapshotting state BEFORE each op and asserting the
+//     snapshot reproduces the pre-state verbatim (the editor undo contract).
+//   - op∘inverse for the translation command: translate by +d then by -d on the
+//     SAME subtree must restore the exact prior store (a true inverse pair).
+//   - save∘load identity is asserted on the live (Shape, store) state at every
+//     step, not just the initial state.
+//
+// Determinism: seed fixed to 22001, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED4 = 22001;
+const RUNS4 = 500;
+const cfg4 = { seed: SEED4, numRuns: RUNS4 } as const;
+
+/** Live editor state: a shape plus the vertex store its rings resolve against. */
+interface EditState {
+  readonly shape: Shape;
+  readonly store: VertexStore;
+}
+
+/** The set of ring IDs in `ringId`'s subtree (itself + all descendants). */
+function subtreeRingIds(shape: Shape, ringId: RingId): ReadonlySet<RingId> {
+  const childrenByParent = new Map<RingId, RingId[]>();
+  for (const r of shape.rings) {
+    const p = r.parentRingId;
+    if (p === undefined) continue;
+    const bucket = childrenByParent.get(p);
+    if (bucket === undefined) childrenByParent.set(p, [r.id]);
+    else bucket.push(r.id);
+  }
+  const out = new Set<RingId>();
+  const stack: RingId[] = [ringId];
+  while (stack.length > 0) {
+    const id = stack.pop();
+    if (id === undefined || out.has(id)) continue;
+    out.add(id);
+    for (const c of childrenByParent.get(id) ?? []) stack.push(c);
+  }
+  return out;
+}
+
+/** Rigidly translate every vertex of every ring in `ringId`'s subtree by
+ * (dLon, dLat). Returns a NEW store; the shape is unchanged (geometry lives in
+ * the store, parent links in the shape). A rigid translation preserves the
+ * subtree's internal containment/simplicity exactly. */
+function translateSubtree(
+  state: EditState,
+  ringId: RingId,
+  dLon: number,
+  dLat: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const movedVertexIds = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) movedVertexIds.add(vid);
+  }
+  let store = state.store;
+  for (const vid of movedVertexIds) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const moved = withVertexCoordinate(
+      v,
+      createCoordinate(v.coordinate.lon + dLon, v.coordinate.lat + dLat),
+    );
+    store = setVertex(store, moved);
+  }
+  return store;
+}
+
+/** Serialize the whole editor state (shape + store as an array) and back — the
+ * structural save→load round-trip over the LIVE state at any step. */
+function saveLoadState(state: EditState): EditState {
+  const savedShape = JSON.parse(JSON.stringify(state.shape)) as Shape;
+  const vertexArray = [...state.store.byId.values()].map((v) => ({
+    id: v.id,
+    coordinate: { lon: v.coordinate.lon, lat: v.coordinate.lat },
+  }));
+  const reloadedVertices = (JSON.parse(JSON.stringify(vertexArray)) as typeof vertexArray).map(
+    (v) => createVertex(v.id as VertexId, createCoordinate(v.coordinate.lon, v.coordinate.lat)),
+  );
+  return { shape: savedShape, store: createVertexStore(reloadedVertices) };
+}
+
+/** The full focal invariant bundle for one (shape, store) state. */
+function assertFullBundle(state: EditState): void {
+  // alternation + acyclic + unique + finite-depth forest
+  assertStructurallyValid(state.shape);
+  // forest law: parent depth = child depth - 1 (derived-aggregate analogue)
+  expect(depthsConsistent(state.shape)).toBe(true);
+  // coordinates never NaN/Infinity
+  expect(storeFinite(state.store)).toBe(true);
+  expect(allRingsFinite(state.shape, state.store)).toBe(true);
+  // non self-intersection
+  expect(noRingSelfIntersects(state.shape, state.store)).toBe(true);
+  // valid containment / sibling & enclave non-overlap
+  expect(validateGeometry(state.shape, state.store).violations).toEqual([]);
+  // selection validity: a non-empty valid forest always exposes a selectable
+  // top-level territory, and childrenOf agrees with the stored parent links.
+  if (state.shape.rings.length > 0) {
+    expect(topLevelRings(state.shape).length).toBeGreaterThan(0);
+  }
+  for (const r of state.shape.rings) {
+    for (const k of childrenOf(state.shape, r.id)) {
+      expect(k.parentRingId).toBe(r.id);
+    }
+  }
+  // save -> load = identity over the LIVE state at this step.
+  const reloaded = saveLoadState(state);
+  expect(reloaded.shape).toEqual(state.shape);
+  for (const v of state.store.byId.values()) {
+    const rv = reloaded.store.byId.get(v.id);
+    expect(rv).not.toBeUndefined();
+    expect(Object.is(rv?.coordinate.lon, v.coordinate.lon)).toBe(true);
+    expect(Object.is(rv?.coordinate.lat, v.coordinate.lat)).toBe(true);
+  }
+}
+
+/** A generated edit command, resolved against the current state at run time. */
+type EditCommand =
+  | { readonly tag: 'delete'; readonly sel: number }
+  | {
+      readonly tag: 'translate';
+      readonly sel: number;
+      readonly dLon: number;
+      readonly dLat: number;
+    }
+  | { readonly tag: 'saveLoad' }
+  | { readonly tag: 'noop-delete-absent' };
+
+function editCommandArb(): fc.Arbitrary<EditCommand> {
+  const off = (): fc.Arbitrary<number> =>
+    fc.double({ min: -15, max: 15, noNaN: true, noDefaultInfinity: true });
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('delete' as const), sel: sel() }),
+    fc.record({
+      tag: fc.constant('translate' as const),
+      sel: sel(),
+      dLon: off(),
+      dLat: off(),
+    }),
+    fc.record({ tag: fc.constant('saveLoad' as const) }),
+    fc.record({ tag: fc.constant('noop-delete-absent' as const) }),
+  );
+}
+
+/** Pick a top-level ring ID from a selector in [0,1). undefined when empty. */
+function pickTopLevel(shape: Shape, sel: number): RingId | undefined {
+  const tops = topLevelRings(shape);
+  if (tops.length === 0) return undefined;
+  const idx = Math.min(tops.length - 1, Math.floor(sel * tops.length));
+  return tops[idx]?.id;
+}
+
+/** Pick any ring ID from a selector in [0,1). undefined when empty. */
+function pickAny(shape: Shape, sel: number): RingId | undefined {
+  if (shape.rings.length === 0) return undefined;
+  const idx = Math.min(shape.rings.length - 1, Math.floor(sel * shape.rings.length));
+  return shape.rings[idx]?.id;
+}
+
+describe('alternation (seed=22001): stateful edit-command stream + metamorphic laws', () => {
+  it('every command keeps the full invariant bundle and the absent-delete identity holds at each step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommandArb(), { minLength: 3, maxLength: shape.rings.length + 8 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: EditState = { shape, store };
+          assertFullBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC (every step): deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-22001'))).toEqual(
+              state.shape,
+            );
+
+            switch (cmd.tag) {
+              case 'delete': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = { shape: nextShape, store: state.store };
+                assertFullBundle(state);
+                break;
+              }
+              case 'translate': {
+                const targetId = pickTopLevel(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.store;
+                const movedStore = translateSubtree(state, targetId, cmd.dLon, cmd.dLat);
+                state = { shape: state.shape, store: movedStore };
+                assertFullBundle(state);
+                // OP∘INVERSE = identity (modulo IEEE-754 rounding): translating the
+                // same subtree back by the negated offset restores the prior store
+                // coordinates. Float add-then-subtract is not bit-exact in general
+                // (e.g. (-1.6 + 4) - 4 != -1.6), so the honest law is "equal within
+                // a tight epsilon", asserted here — NOT exact equality, which would
+                // be a false property of floating-point translation.
+                const restored = translateSubtree(state, targetId, -cmd.dLon, -cmd.dLat);
+                for (const v of before.byId.values()) {
+                  const rv = restored.byId.get(v.id);
+                  expect(rv).not.toBeUndefined();
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+                }
+                break;
+              }
+              case 'saveLoad': {
+                // SAVE∘LOAD = identity as an explicit command in the stream.
+                const reloaded = saveLoadState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                state = reloaded;
+                assertFullBundle(state);
+                break;
+              }
+              case 'noop-delete-absent': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('absent-cmd'));
+                expect(next).toEqual(state.shape);
+                state = { shape: next, store: state.store };
+                assertFullBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+          }
+        },
+      ),
+      cfg4,
+    );
+  });
+
+  it('op∘inverse: translate(+d) then translate(-d) on a subtree restores the store (within float epsilon)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              dLon: fc.double({ min: -15, max: 15, noNaN: true, noDefaultInfinity: true }),
+              dLat: fc.double({ min: -15, max: 15, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const state: EditState = { shape, store };
+          const targetId = pickTopLevel(shape, op.sel);
+          if (targetId === undefined) return;
+          const moved = translateSubtree(state, targetId, op.dLon, op.dLat);
+          // The whole state with the moved subtree must still be fully valid.
+          assertFullBundle({ shape, store: moved });
+          const back = translateSubtree({ shape, store: moved }, targetId, -op.dLon, -op.dLat);
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            // Equal within a tight epsilon (float add-then-subtract is not bit-exact).
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+          }
+        },
+      ),
+      cfg4,
+    );
+  });
+
+  it('undo∘delete: the pre-delete snapshot reproduces the original valid state verbatim', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, store, targetId }) => {
+          const before: EditState = { shape, store };
+          const snapshot = saveLoadState(before);
+          const afterShape = deleteRingAndReorganize(shape, targetId);
+          const after: EditState = { shape: afterShape, store };
+          assertFullBundle(after);
+          // UNDO = restore snapshot: the snapshot reproduces the original state
+          // exactly (what an undo of the delete must yield).
+          expect(snapshot.shape).toEqual(shape);
+          assertFullBundle(snapshot);
+          // The delete only ever shrinks (or keeps) the forest.
+          expect(after.shape.rings.length).toBeLessThanOrEqual(shape.rings.length);
+        },
+      ),
+      cfg4,
     );
   });
 });

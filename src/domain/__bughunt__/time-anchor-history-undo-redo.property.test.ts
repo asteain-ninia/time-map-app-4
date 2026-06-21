@@ -59,7 +59,13 @@ import {
 } from '../command/history';
 import { getCalendar } from '../time/calendar';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
-import { timePointYear, type TimePoint } from '../time/time-point';
+import {
+  timePointYear,
+  timePointYearMonth,
+  timePointYearMonthDay,
+  type TimePoint,
+} from '../time/time-point';
+import { compare } from '../time/normalized';
 import {
   createAggregateFeature,
   createLeafFeature,
@@ -1052,6 +1058,359 @@ describe('time-anchor + history undo/redo — seed 4004 rich-snapshot expansion'
         },
       ),
       { seed: SEED_4004, numRuns: NUM_RUNS_4004 },
+    );
+  });
+});
+
+// ===========================================================================
+// SEED 24001 expansion suite — MIXED-GRANULARITY time points + new interactions.
+//
+// Independently-pinned (seed 24001), a NEW exploration distinct from the
+// 4001/4002/4004 passes. Two structural gaps motivate this suite:
+//
+//   1. EVERY existing suite builds anchor starts/ends with `timePointYear`
+//      only. The calendar comparison contract (compare → normalize over WHOLE
+//      DAYS) treats a year-only point as Jan-1 of that year, so two anchors a
+//      year apart are always >= 365 days apart and a sub-year ordering can
+//      never be generated. This suite drives anchors whose starts AND ends are
+//      year / yearMonth / yearMonthDay points, so changeStart / setEnd /
+//      applyPastEdit must order, dedup-by-start, and shorten-overrun using the
+//      day-level normalized comparison — e.g. two distinct entries whose starts
+//      share a year but differ by month, an end set to the same MONTH as the
+//      next start, or a changeStart that crosses a neighbor by a single day.
+//      A bug that compared by year scalar (rather than via normalize) or that
+//      mishandled a same-year tie under dedup would surface only here.
+//
+//   2. NEW interaction patterns the 4001/4002 streams do not cover:
+//        - resolveAt over ARBITRARY probe times spanning the whole timeline
+//          (not only entry starts): the resolved anchor must always be a real
+//          present entry, never a phantom (selection-always-valid, strengthened
+//          to off-anchor probes including mid-interval, gap, and post-end).
+//        - history BRANCH DIVERGENCE: execute → undo → execute. The second
+//          execute must DROP the redo stack (FR-74), and the post-divergence
+//          state + every invariant must hold; a stale redo entry must not be
+//          replayable onto the diverged branch.
+//
+// Determinism: pinned seed 24001, large run budget. Permanent asset; must NOT
+// be relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_24001 = 24001;
+const NUM_RUNS_24001 = 500;
+
+/**
+ * A mixed-granularity TimePoint generator that always yields a calendar-VALID
+ * point (routed implicitly through the same day-counts `validate` enforces): a
+ * year in a tight band so anchors can land in the same year, plus an optional
+ * month (1..12) and an optional day (1..28 — always valid in every Gregorian
+ * month, including February, leap or not). Sub-year resolution lets the suite
+ * generate same-year-different-month anchors that year-only points cannot.
+ */
+const mixedTimePointArb: fc.Arbitrary<TimePoint> = fc.oneof(
+  fc.record({ year: fc.integer({ min: -30, max: 30 }) }).map((r) => timePointYear(r.year)),
+  fc
+    .record({
+      year: fc.integer({ min: -30, max: 30 }),
+      month: fc.integer({ min: 1, max: 12 }),
+    })
+    .map((r) => timePointYearMonth(r.year, r.month)),
+  fc
+    .record({
+      year: fc.integer({ min: -30, max: 30 }),
+      month: fc.integer({ min: 1, max: 12 }),
+      day: fc.integer({ min: 1, max: 28 }),
+    })
+    .map((r) => timePointYearMonthDay(r.year, r.month, r.day)),
+);
+
+/**
+ * A valid, non-empty anchor series whose entry STARTS span mixed granularity.
+ * Distinct points are generated, sorted by the real calendar comparison, and a
+ * subset get a bounded end placed at the next entry's start (gapless adjacency
+ * at day resolution) — then funneled through the real normalizeSeries so the
+ * result is guaranteed valid even where two generated points share a year.
+ */
+function mixedAnchorSeriesArb(): fc.Arbitrary<AnchorSeries> {
+  return fc
+    .uniqueArray(mixedTimePointArb, {
+      minLength: 1,
+      maxLength: 6,
+      comparator: (a, b) => compareMixedForUnique(a, b),
+    })
+    .chain((points) => {
+      const sorted = [...points].sort((a, b) => compareTP(a, b));
+      const endChoice = fc.array(fc.boolean(), {
+        minLength: sorted.length,
+        maxLength: sorted.length,
+      });
+      return endChoice.map((wantEnd) => {
+        const entries: AnchorEntry[] = sorted.map((start, i) => {
+          const anchor = makeAnchor(i + 1, `-mx${i}`);
+          const next = sorted[i + 1];
+          // Bounded end == next start (INV-2 boundary) when chosen and a next
+          // exists; otherwise open-ended. normalizeSeries repairs any residual.
+          const end = wantEnd[i] && next !== undefined ? next : null;
+          return createAnchorEntry(anchor, start, end);
+        });
+        return normalizeSeries(entries, cal);
+      });
+    });
+}
+
+/** Strict structural comparison used only to dedupe generated points so the
+ * uniqueArray comparator removes calendar-equal points (same normalized day),
+ * which would otherwise be collapsed by normalizeSeries and shrink the series. */
+function compareMixedForUnique(a: TimePoint, b: TimePoint): boolean {
+  return compareTP(a, b) === 0;
+}
+
+/** Calendar comparison shorthand for the local generators. */
+function compareTP(a: TimePoint, b: TimePoint): number {
+  return compare(a, b, cal);
+}
+
+/** A probe-time generator spanning the timeline (well before the earliest start
+ * to well after the latest), at mixed granularity, for off-anchor resolveAt. */
+const probeTimeArb: fc.Arbitrary<TimePoint> = mixedTimePointArb;
+
+/** resolveAt at an ARBITRARY probe must yield either `absent` or a `present`
+ * entry that is a REAL member of the series (never a phantom anchor id), and a
+ * present resolution's interval must actually contain the probe (start<=probe,
+ * and probe<end when bounded). This strengthens selection-validity to
+ * off-anchor probe times (mid-interval / gap / post-end). */
+function expectProbeSelectionValid(s: AnchorSeries, probe: TimePoint): void {
+  const ids = new Set(s.entries.map((e) => e.anchor.id));
+  const r = resolveAt(s, probe, cal);
+  if (r.kind === 'present') {
+    expect(ids.has(r.entry.anchor.id)).toBe(true);
+    // start is inclusive: probe must be at or after the resolved start.
+    expect(compare(r.entry.start, probe, cal)).toBeLessThanOrEqual(0);
+    // end is exclusive: a bounded resolved entry must end strictly after probe.
+    if (r.entry.end !== null) {
+      expect(compare(probe, r.entry.end, cal)).toBeLessThan(0);
+    }
+    // The resolved entry must be the one with the GREATEST start <= probe.
+    for (const e of s.entries) {
+      if (compare(e.start, probe, cal) <= 0) {
+        expect(compare(e.start, r.entry.start, cal)).toBeLessThanOrEqual(0);
+      }
+    }
+  }
+}
+
+/** Apply one abstract edit using MIXED-granularity time points. Mirrors
+ * applyEdit but draws start/end from the mixed arbitrary's value space (passed
+ * in pre-resolved on the EditOp). */
+type MixedEditOp =
+  | { readonly kind: 'changeStart'; readonly target: number; readonly start: TimePoint }
+  | { readonly kind: 'setEnd'; readonly target: number; readonly end: TimePoint | null }
+  | { readonly kind: 'delete'; readonly target: number }
+  | { readonly kind: 'pastEdit'; readonly at: TimePoint; readonly seed: number };
+
+const mixedEditOpArb: fc.Arbitrary<MixedEditOp> = fc.oneof(
+  fc.record({
+    kind: fc.constant('changeStart' as const),
+    target: fc.nat(),
+    start: mixedTimePointArb,
+  }),
+  fc.record({
+    kind: fc.constant('setEnd' as const),
+    target: fc.nat(),
+    end: fc.option(mixedTimePointArb, { nil: null }),
+  }),
+  fc.record({ kind: fc.constant('delete' as const), target: fc.nat() }),
+  fc.record({
+    kind: fc.constant('pastEdit' as const),
+    at: mixedTimePointArb,
+    seed: fc.integer({ min: 0, max: 100000 }),
+  }),
+);
+
+function applyMixedEdit(s: AnchorSeries, op: MixedEditOp): AnchorSeries | undefined {
+  const idAt = (i: number) => s.entries[i % s.entries.length]!.anchor.id;
+  let next: AnchorSeries | undefined;
+  if (op.kind === 'changeStart') {
+    const r = changeStart(s, idAt(op.target), op.start, cal);
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'setEnd') {
+    const r = setEnd(s, idAt(op.target), op.end, cal);
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'delete') {
+    const r = deleteAnchor(s, idAt(op.target), cal);
+    next = r.ok ? r.series : undefined;
+  } else {
+    next = applyPastEdit(s, op.at, () => makeAnchor(op.seed, `-mpe-${op.seed}`), cal);
+  }
+  if (next === undefined) return undefined;
+  if (JSON.stringify(viewSeries(next)) === JSON.stringify(viewSeries(s))) {
+    return undefined;
+  }
+  return next;
+}
+
+interface MixedAction {
+  readonly t: 'edit' | 'undo' | 'redo';
+  readonly op?: MixedEditOp;
+}
+
+const mixedActionArb: fc.Arbitrary<MixedAction> = fc.oneof(
+  mixedEditOpArb.map((op) => ({ t: 'edit' as const, op })),
+  fc.constant({ t: 'undo' as const }),
+  fc.constant({ t: 'redo' as const }),
+);
+
+describe('time-anchor + history undo/redo — seed 24001 mixed-granularity expansion', () => {
+  it('mixed-granularity series keep every invariant through edit/undo/redo (seed 24001)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.array(mixedActionArb, { maxLength: 28 }),
+        (initial, actions) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+          for (const action of actions) {
+            if (action.t === 'edit' && action.op) {
+              const before = history.state;
+              const after = applyMixedEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else {
+              history = redo(history).history;
+            }
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_24001, numRuns: NUM_RUNS_24001 },
+    );
+  });
+
+  it('resolveAt over arbitrary probe times is always selection-valid (mixed, seed 24001)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.array(mixedEditOpArb, { maxLength: 14 }),
+        fc.array(probeTimeArb, { minLength: 1, maxLength: 8 }),
+        (initial, ops, probes) => {
+          let s = initial;
+          for (const op of ops) {
+            const after = applyMixedEdit(s, op);
+            if (after !== undefined) s = after;
+          }
+          // Series invariants hold on the reachable state…
+          expectAllInvariants(s);
+          // …and resolveAt is selection-valid at every probe (incl. off-anchor).
+          for (const probe of probes) {
+            expectProbeSelectionValid(s, probe);
+          }
+          // Plus the standard at-start selection-validity.
+          expectSelectionValid(s);
+        },
+      ),
+      { seed: SEED_24001, numRuns: NUM_RUNS_24001 },
+    );
+  });
+
+  it('metamorphic: undo∘execute == identity over mixed-granularity edits (seed 24001)', () => {
+    fc.assert(
+      fc.property(mixedAnchorSeriesArb(), mixedEditOpArb, (initial, op) => {
+        const history0 = createHistory(initial, 50);
+        const after = applyMixedEdit(history0.state, op);
+        if (after === undefined) return;
+        const executed = execute(
+          history0,
+          makeSeriesCommand(op.kind, history0.state, after),
+        ).history;
+        expect(viewSeries(executed.state)).toEqual(viewSeries(after));
+        const undone = undo(executed).history;
+        expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+        const redone = redo(undone).history;
+        expect(viewSeries(redone.state)).toEqual(viewSeries(after));
+      }),
+      { seed: SEED_24001, numRuns: NUM_RUNS_24001 },
+    );
+  });
+
+  it('history branch divergence: execute after undo drops the redo branch (seed 24001)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        mixedEditOpArb,
+        mixedEditOpArb,
+        (initial, opA, opB) => {
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+
+          // First edit (A): need a real change to have something to undo.
+          const afterA = applyMixedEdit(history.state, opA);
+          if (afterA === undefined) return;
+          history = execute(
+            history,
+            makeSeriesCommand(opA.kind, history.state, afterA),
+          ).history;
+          const stateAfterA = history.state;
+
+          // Undo A → back to root, A now sits on the redo stack.
+          history = undo(history).history;
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+          expect(history.redoStack.length).toBe(1);
+
+          // Diverge: execute a DIFFERENT edit (B) from the root. Per FR-74 this
+          // must clear the redo stack entirely so the undone A can never be
+          // replayed onto the B branch.
+          const afterB = applyMixedEdit(history.state, opB);
+          if (afterB === undefined) {
+            // B was a no-op/rejected from root; redo of A must still be possible
+            // and must restore exactly the post-A state (history still coherent).
+            const redoneA = redo(history).history;
+            expect(viewSeries(redoneA.state)).toEqual(viewSeries(stateAfterA));
+            assertStepInvariants(redoneA.state);
+            return;
+          }
+          history = execute(
+            history,
+            makeSeriesCommand(opB.kind, history.state, afterB),
+          ).history;
+
+          // Redo stack dropped; state is the B branch and every invariant holds.
+          expect(history.redoStack.length).toBe(0);
+          expect(viewSeries(history.state)).toEqual(viewSeries(afterB));
+          assertStepInvariants(history.state);
+
+          // A redo() now is a no-op (nothing to redo) — the stale A is gone.
+          const afterRedoAttempt = redo(history).history;
+          expect(viewSeries(afterRedoAttempt.state)).toEqual(viewSeries(afterB));
+          assertStepInvariants(afterRedoAttempt.state);
+
+          // Undo of B returns to the root (single-step branch is coherent).
+          const undoneB = undo(history).history;
+          expect(viewSeries(undoneB.state)).toEqual(viewSeries(initial));
+          assertStepInvariants(undoneB.state);
+        },
+      ),
+      { seed: SEED_24001, numRuns: NUM_RUNS_24001 },
+    );
+  });
+
+  it('save∘load == identity for any reachable mixed-granularity series (seed 24001)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.array(mixedEditOpArb, { maxLength: 18 }),
+        (initial, ops) => {
+          let s = initial;
+          for (const op of ops) {
+            const after = applyMixedEdit(s, op);
+            if (after !== undefined) s = after;
+          }
+          expectSaveLoadIdentity(s);
+        },
+      ),
+      { seed: SEED_24001, numRuns: NUM_RUNS_24001 },
     );
   });
 });

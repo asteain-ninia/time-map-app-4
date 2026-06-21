@@ -410,6 +410,31 @@ function repointAll(
   return withContainers(state, next);
 }
 
+/**
+ * Drop later duplicate citations of any id within ONE container's id list,
+ * keeping the FIRST occurrence (order-preserving). Used by transferSharing to
+ * collapse a same-container fold into a valid (non-self-citing) container — a
+ * ring/line must never cite one vertex twice (§4.3 participation). Returns the
+ * SAME array reference when nothing was dropped (so identity remaps stay no-ops).
+ */
+function dedupeContainerCitations(ids: readonly VertexId[]): readonly VertexId[] {
+  let seen: Set<VertexId> | undefined;
+  let out: VertexId[] | undefined;
+  for (let i = 0; i < ids.length; i += 1) {
+    const id = ids[i];
+    if (id === undefined) continue; // noUncheckedIndexedAccess discipline
+    if (seen === undefined) seen = new Set<VertexId>();
+    if (seen.has(id)) {
+      // First duplicate: materialize the deduped copy of the prefix kept so far.
+      if (out === undefined) out = ids.slice(0, i) as VertexId[];
+      continue;
+    }
+    seen.add(id);
+    if (out !== undefined) out.push(id);
+  }
+  return out ?? ids;
+}
+
 /** True iff any container still cites `vertexId`. */
 function isReferenced(state: SharedVertexState, vertexId: VertexId): boolean {
   for (const entry of state.containers.values()) {
@@ -722,6 +747,22 @@ export type VertexRemap = ReadonlyMap<VertexId, VertexId>;
  * original store is read for carry-forward because old bodies may be pruned
  * below; reading from the post-prune store would lose the source coordinate.
  *
+ * Same-container fold collapse (§4.3 / FR-32 participation): a fold may map two
+ * ids that are BOTH cited by ONE container onto the same new id — e.g. a ring
+ * [v0, v1, v2] under {v1 -> v0} would become [v0, v0, v2]. That is an ILLEGAL
+ * state: the container would cite one id twice (a same-ring / same-line-path
+ * participation violation, and — when the duplicates are adjacent — a zero-length
+ * edge), and derivation would report a "shared" vertex that is really a self-
+ * citation within one container. shareVertices REJECTS exactly this merge, so the
+ * merge-time transfer must NOT silently produce it (教訓5.6 結果状態で判定 /
+ * 不正状態を表現不能に). The geometrically correct outcome of folding co-cited
+ * vertices of one ring/path together is to COLLAPSE the now-degenerate repeat:
+ * within each container, keep only the FIRST citation of each id (dropping the
+ * later duplicate positions). This removes the degenerate self-touch / zero-
+ * length edge while preserving the order of the remaining distinct vertices, and
+ * keeps every legitimate CROSS-container share intact (two different containers
+ * folding onto one id is a real share, never collapsed).
+ *
  * Orphaned old vertex bodies (no longer cited and present in `remap`'s domain)
  * are pruned afterwards (削除は参照掃除まで; 教訓5.21).
  */
@@ -729,7 +770,12 @@ export function transferSharing(state: SharedVertexState, remap: VertexRemap): S
   if (remap.size === 0) return state;
   const containers = new Map<string, ContainerEntry>();
   for (const [key, entry] of state.containers) {
-    const ids = entry.vertexIds.map((id) => remap.get(id) ?? id);
+    const remapped = entry.vertexIds.map((id) => remap.get(id) ?? id);
+    // Collapse a same-container fold: drop any later duplicate citation of an id
+    // so no container ends up citing one id more than once (no same-ring /
+    // same-line-path self-share, no zero-length edge). Pure (no mutation of the
+    // input); first occurrence wins so the remaining vertex order is preserved.
+    const ids = dedupeContainerCitations(remapped);
     containers.set(key, { container: entry.container, vertexIds: ids });
   }
   let next = withContainers(state, containers);
