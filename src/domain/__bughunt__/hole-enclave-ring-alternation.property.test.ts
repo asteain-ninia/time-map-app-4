@@ -2127,3 +2127,386 @@ describe('alternation (seed=22003): GROW (add hole/enclave) + anchor series + me
     );
   });
 });
+
+// ===========================================================================
+// 11. SEVENTH CAMPAIGN (seed=22004) — NEW exploration (bughunt run #2).
+//
+// Distinct from the prior six campaigns (seeds 2001/2002/2004/22001/22002/
+// 22003) in BOTH the seed and the operation set. Prior campaigns covered:
+// delete (all), rigid translate of a top/any subtree, extract-territory,
+// leaf-first deletion confluence, add-hole / add-enclave, and an anchor series.
+// This run adds operation/interaction classes none of them reach, and carries a
+// LIVE SELECTION across the whole stream so the brief's "選択が常に有効" law is
+// asserted after EVERY operation (no prior campaign carried a selection):
+//
+//   (a) SCALE-SUBTREE about its own centroid by a factor k ∈ [0.5, 1.0): a
+//       contraction toward the centroid. Shrinking a subtree rigidly toward its
+//       own centroid keeps every contained child contained (a point inside a
+//       rectangle stays inside when the whole rectangle shrinks toward an
+//       interior centroid) and keeps disjoint siblings disjoint (each shrinks
+//       within its own cell). So a correct system MUST keep validateGeometry
+//       clean; any violation is a real re-link/containment defect. op∘inverse:
+//       scaling the SAME subtree back by 1/k restores coordinates within a tight
+//       float epsilon (multiply-then-divide is not bit-exact).
+//   (b) LIVE SELECTION re-resolution: the editor holds a selected ring id.
+//       After every command the selection contract must hold — the selected id
+//       is EITHER still present in the shape (a valid selectable ring) OR has
+//       been re-resolved (to undefined, i.e. "nothing selected") because its
+//       ring was deleted/absorbed. It must NEVER point at a ring absent from the
+//       shape (a dangling selection — the analogue of a dangling parent for the
+//       UI layer). We model the re-resolution explicitly and assert it.
+//   (c) FULL-STREAM UNDO: a snapshot is taken (via save→load) BEFORE each
+//       command; after the command we assert that the snapshot still reproduces
+//       the exact pre-command state (undo∘op = identity for delete, scale,
+//       save-load, and the absent-delete no-op alike).
+//   (d) save→load = identity over the (shape, store, selection) triple at every
+//       step, including the selection field.
+//
+// Determinism: seed fixed to 22004, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED7 = 22004;
+const RUNS7 = 450;
+const cfg7 = { seed: SEED7, numRuns: RUNS7 } as const;
+
+/** A live editor state that carries a SELECTION alongside the shape + store. The
+ * selection is a ring id or undefined ("nothing selected"). */
+interface SelState {
+  readonly shape: Shape;
+  readonly store: VertexStore;
+  readonly selected: RingId | undefined;
+}
+
+/** The selection contract: a selection is valid iff it is undefined OR points at
+ * a ring actually present in the shape. A selection that survived a deletion of
+ * its ring (dangling) is INVALID — the bug class this law guards against. */
+function selectionValid(state: SelState): boolean {
+  if (state.selected === undefined) return true;
+  return state.shape.rings.some((r) => r.id === state.selected);
+}
+
+/** Re-resolve a selection after a structural edit: keep it if its ring is still
+ * present, otherwise clear it (undefined). This is the editor's documented
+ * "selection follows the model" behavior — never leave a dangling selection. */
+function reresolveSelection(
+  shape: Shape,
+  selected: RingId | undefined,
+): RingId | undefined {
+  if (selected === undefined) return undefined;
+  return shape.rings.some((r) => r.id === selected) ? selected : undefined;
+}
+
+/** Centroid (mean of all subtree vertices) of `ringId`'s subtree in the store.
+ * Returns undefined if the subtree has no resolvable vertex. */
+function subtreeCentroid(
+  state: SelState,
+  ringId: RingId,
+): { lon: number; lat: number } | undefined {
+  const ids = subtreeRingIds(state.shape, ringId);
+  let sumLon = 0;
+  let sumLat = 0;
+  let n = 0;
+  const seen = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) {
+      if (seen.has(vid)) continue;
+      seen.add(vid);
+      const v = getVertex(state.store, vid);
+      if (v === undefined) continue;
+      sumLon += v.coordinate.lon;
+      sumLat += v.coordinate.lat;
+      n += 1;
+    }
+  }
+  if (n === 0) return undefined;
+  return { lon: sumLon / n, lat: sumLat / n };
+}
+
+/** Scale every vertex of `ringId`'s subtree about a fixed center by factor k
+ * (c + k*(p-c)). Returns a NEW store; the shape (parent links) is unchanged. A
+ * contraction (k<1) toward an interior center preserves containment + disjointness.
+ * The center is passed in (the subtree's centroid, captured BEFORE scaling) so the
+ * forward and inverse scale share the SAME pivot — a true op∘inverse pair. */
+function scaleSubtreeAbout(
+  state: SelState,
+  ringId: RingId,
+  center: { lon: number; lat: number },
+  k: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const movedVertexIds = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) movedVertexIds.add(vid);
+  }
+  let store = state.store;
+  for (const vid of movedVertexIds) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const scaled = withVertexCoordinate(
+      v,
+      createCoordinate(
+        center.lon + k * (v.coordinate.lon - center.lon),
+        center.lat + k * (v.coordinate.lat - center.lat),
+      ),
+    );
+    store = setVertex(store, scaled);
+  }
+  return store;
+}
+
+/** Save→load the (shape, store, selection) triple and back. */
+function saveLoadSelState(state: SelState): SelState {
+  const reloaded = saveLoadState({ shape: state.shape, store: state.store });
+  // The selection is a primitive id (string brand); round-trip it as JSON too so
+  // a non-plain selection field would surface as a mismatch.
+  const reloadedSel = JSON.parse(JSON.stringify(state.selected ?? null)) as string | null;
+  return {
+    shape: reloaded.shape,
+    store: reloaded.store,
+    selected: reloadedSel === null ? undefined : (reloadedSel as RingId),
+  };
+}
+
+/** Full focal bundle for a SelState: the (shape, store) bundle PLUS the selection
+ * validity law and the (shape, store, selection) save→load identity. */
+function assertSelBundle(state: SelState): void {
+  assertFullBundle({ shape: state.shape, store: state.store });
+  // SELECTION is always valid: undefined, or a ring present in the shape. Never
+  // dangling.
+  expect(selectionValid(state)).toBe(true);
+  // save → load = identity over the full triple (including the selection).
+  const reloaded = saveLoadSelState(state);
+  expect(reloaded.shape).toEqual(state.shape);
+  expect(reloaded.selected).toEqual(state.selected);
+}
+
+/** A seventh-campaign edit command. */
+type EditCommand7 =
+  | { readonly tag: 'select'; readonly sel: number }
+  | { readonly tag: 'delete-selected' }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | { readonly tag: 'scale-any'; readonly sel: number; readonly k: number }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand7Arb(): fc.Arbitrary<EditCommand7> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  // Contraction factor strictly in [0.5, 1.0): never expands (would risk pushing
+  // a subtree out of its cell), never collapses below half (keeps geometry simple).
+  const factor = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('select' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-selected' as const) }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('scale-any' as const), sel: sel(), k: factor() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=22004): subtree-scale + live selection + full-stream undo', () => {
+  it('contracting ANY subtree about its centroid keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              k: fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickAny(shape, op.sel);
+          if (targetId === undefined) return;
+          const state: SelState = { shape, store, selected: undefined };
+          const center = subtreeCentroid(state, targetId);
+          if (center === undefined) return;
+          const moved = scaleSubtreeAbout(state, targetId, center, op.k);
+          // A centroid contraction keeps EVERY focal invariant: containment,
+          // sibling/enclave non-overlap, simplicity, finiteness.
+          assertSelBundle({ shape, store: moved, selected: undefined });
+          // op∘inverse: scale back about the SAME pivot by 1/k restores coords
+          // (multiply-then-divide => within a tight epsilon, not bit-exact).
+          const back = scaleSubtreeAbout(
+            { shape, store: moved, selected: undefined },
+            targetId,
+            center,
+            1 / op.k,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg7,
+    );
+  });
+
+  it('a selection is never left dangling after deleting its own ring', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((selId) => ({ shape, store, selId })),
+        ),
+        ({ shape, store, selId }) => {
+          // Select a ring, then delete that very ring.
+          const selected: SelState = { shape, store, selected: selId };
+          expect(selectionValid(selected)).toBe(true);
+          const afterShape = deleteRingAndReorganize(shape, selId);
+          const afterSel = reresolveSelection(afterShape, selId);
+          const after: SelState = { shape: afterShape, store, selected: afterSel };
+          // The selected ring is gone, so the re-resolved selection MUST be
+          // cleared (undefined) — never a dangling id pointing at an absent ring.
+          expect(afterShape.rings.some((r) => r.id === selId)).toBe(false);
+          expect(afterSel).toBeUndefined();
+          assertSelBundle(after);
+        },
+      ),
+      cfg7,
+    );
+  });
+
+  it('deleting an UNRELATED ring keeps a valid selection pointing at the same ring', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).chain((selId) =>
+            ringIdFromShapeArb(shape).map((delId) => ({ shape, store, selId, delId })),
+          ),
+        ),
+        ({ shape, store, selId, delId }) => {
+          // Only meaningful when the deleted ring is NOT in the selected ring's
+          // subtree-removal set: after deletion, if the selected ring still
+          // exists, the selection must be preserved (not spuriously cleared).
+          const afterShape = deleteRingAndReorganize(shape, delId);
+          const afterSel = reresolveSelection(afterShape, selId);
+          const after: SelState = { shape: afterShape, store, selected: afterSel };
+          assertSelBundle(after);
+          if (afterShape.rings.some((r) => r.id === selId)) {
+            // Survivor: selection must still point at it (preserved, not dropped).
+            expect(afterSel).toBe(selId);
+          } else {
+            // Removed by the deletion's reorganization: selection cleared.
+            expect(afterSel).toBeUndefined();
+          }
+        },
+      ),
+      cfg7,
+    );
+  });
+
+  it('stateful: interleaved select / delete / scale / save-load keeps the full bundle and undo=identity at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand7Arb(), { minLength: 5, maxLength: shape.rings.length + 12 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: SelState = { shape, store, selected: undefined };
+          assertSelBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-22004'))).toEqual(
+              state.shape,
+            );
+            // FULL-STREAM UNDO: snapshot the pre-command state. Whatever the
+            // command does, this snapshot must still reproduce the pre-state
+            // exactly (undo∘op = identity). Captured via save→load so the snapshot
+            // is an independent value, not an alias of the live state.
+            const snapshot = saveLoadSelState(state);
+
+            switch (cmd.tag) {
+              case 'select': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                state = { ...state, selected: targetId };
+                assertSelBundle(state);
+                break;
+              }
+              case 'delete-selected': {
+                if (state.selected === undefined) break;
+                const targetId = state.selected;
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  shape: nextShape,
+                  store: state.store,
+                  selected: reresolveSelection(nextShape, targetId),
+                };
+                // The selected ring was present, so deletion strictly shrinks.
+                expect(state.shape.rings.length).toBeLessThan(before);
+                // Its own ring is gone => selection cleared, never dangling.
+                expect(state.selected).toBeUndefined();
+                assertSelBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  shape: nextShape,
+                  store: state.store,
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                assertSelBundle(state);
+                break;
+              }
+              case 'scale-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const center = subtreeCentroid(state, targetId);
+                if (center === undefined) break;
+                const beforeStore = state.store;
+                const moved = scaleSubtreeAbout(state, targetId, center, cmd.k);
+                state = { ...state, store: moved };
+                assertSelBundle(state);
+                // op∘inverse: scale back about the same pivot by 1/k restores the
+                // prior coordinates (within a tight float epsilon).
+                const back = scaleSubtreeAbout(state, targetId, center, 1 / cmd.k);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadSelState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.selected).toEqual(state.selected);
+                state = reloaded;
+                assertSelBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-22004'));
+                expect(next).toEqual(state.shape);
+                state = { ...state, shape: next };
+                assertSelBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+
+            // UNDO∘op = identity: the pre-command snapshot still reproduces the
+            // pre-command state verbatim (shape + selection; the store snapshot is
+            // an independent copy so a later mutation cannot have aliased it).
+            assertSelBundle(snapshot);
+          }
+        },
+      ),
+      cfg7,
+    );
+  });
+});

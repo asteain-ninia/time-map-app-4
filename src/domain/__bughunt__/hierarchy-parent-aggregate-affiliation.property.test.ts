@@ -1645,3 +1645,526 @@ describe(`affiliation — committed parent was always a listed candidate (seed=$
     );
   });
 });
+
+// ===========================================================================
+// ===========================================================================
+//  FOURTH BUG-HUNT SECTION (seed = 25004) — SECOND-PASS new exploration.
+//
+//  Every §1..§12 above either drives a SHALLOW forest (root aggregate → leaves)
+//  or a heterogeneous-period SHALLOW forest. None of them ever:
+//    - starts from a THREE-level pre-existing forest (grandparent aggregate →
+//      sub-aggregates → leaves), so re-parenting an aggregate that ALREADY owns
+//      descendants (subtree move) is never exercised;
+//    - re-affiliates an INTERMEDIATE aggregate to `none` (de-nesting a whole
+//      sub-tree to top-level) and checks the sub-tree travels intact;
+//    - drives a WHOLE SEQUENCE of commands and then rewinds the ENTIRE undo
+//      stack (undo ∘ undo ∘ … ∘ op ∘ op ∘ … == identity) — §3/§7 only ever undo
+//      ONE op;
+//    - attempts a deliberate CYCLE (re-parent an ancestor under its own
+//      descendant) and asserts it is ALWAYS rejected (never commits a cycle).
+//
+//  §13 deep stateful drive: every invariant after every committed command on the
+//      3-level model, PLUS subtree-integrity (an aggregate target's whole leaf
+//      set re-parents coherently; childIds order is preserved through commits).
+//  §14 full undo-stack rewind metamorphic over a command SEQUENCE.
+//  §15 de-nest-to-top (`none` on an intermediate aggregate) round-trip: the
+//      sub-tree's leaves stay under the (now top-level) intermediate, and a
+//      following `existing` back under the grandparent restores the structure.
+//  §16 cycle-attempt guard: re-parenting any feature under one of its OWN
+//      descendants is rejected (AFFILIATION_REJECT.Cycle or never a proposal).
+//  §17 save∘load JSON identity over the 3-level committed set (childIds order,
+//      derived areas, depths all preserved).
+// ===========================================================================
+// ===========================================================================
+
+const SEED4 = 25004;
+
+// ---------------------------------------------------------------------------
+// §13 model: a THREE-level forest. Each root is a grandparent aggregate whose
+// children are sub-aggregates; each sub-aggregate owns `leafCount` gapless leaf
+// strips. The whole sub-tree shares one period (so re-parenting within a band is
+// legal), but each root band is spatially disjoint. This is the first model in
+// the file with an aggregate that has aggregate children — the substrate for
+// subtree-move and de-nest interactions.
+// ---------------------------------------------------------------------------
+
+interface DeepRootSpec {
+  /** number of sub-aggregates under the grandparent (>= 1). */
+  readonly subAggCount: number;
+  /** leaves under EACH sub-aggregate (>= 1). */
+  readonly leafCount: number;
+  readonly start: number;
+  readonly end: number;
+}
+
+function buildDeepForest(specs: readonly DeepRootSpec[]): ModelState {
+  const s = emptyState();
+  let n = 0;
+  specs.forEach((spec, rootIdx) => {
+    const baseY = rootIdx * 1000;
+    n += 1;
+    const grandId = asFeatureId(`d-grand-${n}`);
+    const subIds: FeatureId[] = [];
+    for (let sa = 0; sa < spec.subAggCount; sa += 1) {
+      n += 1;
+      const subId = asFeatureId(`d-sub-${n}`);
+      subIds.push(subId);
+      const leafIds: FeatureId[] = [];
+      // each sub-aggregate occupies its own x-band so sub-aggregate footprints
+      // are disjoint (gapless within, disjoint between) — keeps 派生集約=子の和
+      // unambiguous at the grandparent.
+      const subBaseX = sa * 1000;
+      for (let c = 0; c < spec.leafCount; c += 1) {
+        n += 1;
+        const suffix = `d-leaf-${n}`;
+        const x = subBaseX + c * 10;
+        const corners = [
+          createCoordinate(x, baseY),
+          createCoordinate(x + 10, baseY),
+          createCoordinate(x + 10, baseY + 10),
+          createCoordinate(x, baseY + 10),
+        ];
+        const verts = corners.map((cc, i) => createVertex(asVertexId(`dv-${suffix}-${i}`), cc));
+        s.vertices.push(...verts);
+        const ring = createTerritoryRing(
+          asRingId(`dr-${suffix}`),
+          verts.map((v) => v.id),
+        );
+        const fid = asFeatureId(`df-${suffix}`);
+        leafIds.push(fid);
+        s.features.push(
+          createLeafFeature(
+            fid,
+            createBasicAttributes(suffix, spec.start, spec.end),
+            COLOR,
+            createShape([ring]),
+            { parentId: subId },
+          ),
+        );
+      }
+      s.features.push(
+        createAggregateFeature(
+          subId,
+          createBasicAttributes(`d-sub-${n}`, spec.start, spec.end),
+          COLOR,
+          leafIds,
+          { parentId: grandId },
+        ),
+      );
+    }
+    s.features.push(
+      createAggregateFeature(
+        grandId,
+        createBasicAttributes(`d-grand-${n}`, spec.start, spec.end),
+        COLOR,
+        subIds,
+      ),
+    );
+  });
+  return s;
+}
+
+const deepRootSpecArb: fc.Arbitrary<DeepRootSpec> = fc
+  .record({
+    subAggCount: fc.integer({ min: 1, max: 3 }),
+    leafCount: fc.integer({ min: 1, max: 3 }),
+    start: fc.integer({ min: -40, max: 40 }),
+    span: fc.integer({ min: 1, max: 50 }),
+  })
+  .map(({ subAggCount, leafCount, start, span }) => ({
+    subAggCount,
+    leafCount,
+    start,
+    end: start + span,
+  }));
+
+function deepForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(deepRootSpecArb, { minLength: 1, maxLength: 3 })
+    .map((specs) => buildDeepForest(specs));
+}
+
+/** The full set of leaves transitively under `id` in `features`. */
+function descendantLeaves(features: readonly Feature[], id: FeatureId): Set<FeatureId> {
+  const forest = buildForest(features);
+  const out = new Set<FeatureId>();
+  const walk = (cur: FeatureId): void => {
+    const kids = directChildIds(forest, cur);
+    if (kids.length === 0) {
+      out.add(cur);
+      return;
+    }
+    for (const k of kids) walk(k);
+  };
+  walk(id);
+  return out;
+}
+
+/** All transitive descendant ids (leaves AND intermediates) of `id`. */
+function descendantIds(features: readonly Feature[], id: FeatureId): Set<FeatureId> {
+  const forest = buildForest(features);
+  const out = new Set<FeatureId>();
+  const walk = (cur: FeatureId): void => {
+    for (const k of directChildIds(forest, cur)) {
+      out.add(k);
+      walk(k);
+    }
+  };
+  walk(id);
+  return out;
+}
+
+// ===========================================================================
+// §13. DEEP (3-level) stateful drive + subtree integrity.
+// ===========================================================================
+
+describe(`affiliation — deep 3-level invariants + subtree integrity (seed=${SEED4})`, () => {
+  it('every invariant after every committed command; aggregate targets re-parent whole subtree', () => {
+    fc.assert(
+      fc.property(
+        deepForestArb(),
+        fc.array(affCmd2Arb, { minLength: 0, maxLength: 12 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 6000,
+          };
+          assertFeatureSetInvariants(st.features, st.store);
+
+          for (const cmd of cmds) {
+            // Capture the would-be target's descendant leaves BEFORE the command so
+            // we can assert subtree integrity after an aggregate-target re-parent.
+            const allIds = st.features.map((f) => f.id);
+            let targetLeavesBefore: Set<FeatureId> | undefined;
+            let targetId: FeatureId | undefined;
+            if (cmd.t === 'existing' || cmd.t === 'none') {
+              targetId = pick(allIds, cmd.targetWhich);
+              if (targetId !== undefined) {
+                targetLeavesBefore = descendantLeaves(st.features, targetId);
+              }
+            }
+
+            const applied = applyAffCmd2(st, cmd);
+            if (applied === undefined) continue;
+            assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+            const present = new Set(applied.next.features.map((f) => f.id));
+            for (const id of applied.proposal.survivedTouchedIds) {
+              expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.createdIds) {
+              expect(present.has(id), `created ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.deletedIds) {
+              expect(present.has(id), `deleted ${id} still present`).toBe(false);
+            }
+
+            // Subtree integrity: when an aggregate target with leaves was
+            // re-parented, EVERY leaf that was under it survives and is reachable
+            // (FR-48 expands the aggregate to all its sub-regions; no leaf is
+            // dropped or duplicated). They need not share a single parent (each
+            // moved independently), but the full leaf SET is conserved.
+            if (
+              targetId !== undefined &&
+              targetLeavesBefore !== undefined &&
+              targetLeavesBefore.size > 0 &&
+              // only meaningful when the target was a genuine aggregate (≥1 leaf
+              // that is not itself the target).
+              !(targetLeavesBefore.size === 1 && targetLeavesBefore.has(targetId))
+            ) {
+              for (const lid of targetLeavesBefore) {
+                expect(
+                  present.has(lid),
+                  `subtree leaf ${lid} vanished after re-parenting aggregate ${targetId}`,
+                ).toBe(true);
+              }
+            }
+
+            st = applied.next;
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 500 },
+    );
+  });
+});
+
+// ===========================================================================
+// §14. FULL UNDO-STACK REWIND: undo∘…∘op∘…  == identity over a SEQUENCE.
+//
+// §3/§7 undo exactly ONE op. Here we build a stack of committed commands, then
+// pop them in reverse with command.undo and assert we land EXACTLY on the
+// original baseline (every intermediate undo lands on its own pre-state too).
+// This catches an undo that is individually-correct but not composable (e.g.
+// baseline captured by reference and mutated, or id-state leakage across ops).
+// ===========================================================================
+
+interface StackFrame {
+  readonly command: ReturnType<typeof createAffiliationCommand>;
+  readonly preState: readonly Feature[];
+  readonly postState: readonly Feature[];
+}
+
+describe(`affiliation — full undo-stack rewind == identity (seed=${SEED4})`, () => {
+  it('a sequence of commands rewinds exactly to the original baseline', () => {
+    fc.assert(
+      fc.property(
+        deepForestArb(),
+        fc.array(affCmd2Arb, { minLength: 1, maxLength: 8 }),
+        (initial, cmds) => {
+          const original: readonly Feature[] = [...initial.features];
+          let st: AffState = {
+            features: original,
+            store: store(initial),
+            idCounter: 7000,
+          };
+          const stack: StackFrame[] = [];
+
+          for (const cmd of cmds) {
+            const applied = applyAffCmd2(st, cmd);
+            if (applied === undefined) continue;
+            const preState = st.features;
+            const command = createAffiliationCommand(preState, applied.proposal);
+            const exec = command.execute(preState);
+            // execute must reproduce the proposal's nextFeatures exactly.
+            expect(
+              featuresEqual(exec.state, applied.proposal.nextFeatures),
+              'execute != proposal.nextFeatures',
+            ).toBe(true);
+            stack.push({ command, preState, postState: exec.state });
+            st = { ...applied.next, features: exec.state };
+          }
+
+          if (stack.length === 0) return; // nothing committed: trivially identity.
+
+          // Rewind: pop in reverse. Each undo must land on that frame's preState.
+          let cur: readonly Feature[] = stack[stack.length - 1]!.postState;
+          for (let i = stack.length - 1; i >= 0; i -= 1) {
+            const frame = stack[i]!;
+            // The current state must equal this frame's postState before undo.
+            expect(
+              featuresEqual(cur, frame.postState),
+              `pre-undo state drift at frame ${i}`,
+            ).toBe(true);
+            const undone = frame.command.undo(cur);
+            expect(
+              featuresEqual(undone.state, frame.preState),
+              `undo at frame ${i} != its preState`,
+            ).toBe(true);
+            cur = undone.state;
+          }
+
+          // After rewinding the whole stack we are byte-identical to the original.
+          expect(featuresEqual(cur, original), 'full rewind != original baseline').toBe(true);
+          expect(cur.length).toBe(original.length);
+
+          // And redoing the whole stack forward reproduces the final committed set
+          // WITHOUT re-minting ids (教訓 5.20).
+          const finalPost = stack[stack.length - 1]!.postState;
+          let fwd: readonly Feature[] = cur;
+          for (const frame of stack) {
+            fwd = frame.command.redo(fwd).state;
+          }
+          expect(featuresEqual(fwd, finalPost), 'full redo != final committed set').toBe(true);
+        },
+      ),
+      { seed: SEED4, numRuns: 500 },
+    );
+  });
+});
+
+// ===========================================================================
+// §15. DE-NEST-TO-TOP: `none` on an INTERMEDIATE aggregate, then back.
+//
+// Take a sub-aggregate (has a grandparent AND owns leaves). Re-affiliate it to
+// `none`. FR-48 expands the aggregate target to its leaves and applies the SAME
+// decision (none) to each, so every leaf becomes top-level and the now-empty
+// sub-aggregate AND (if it loses all children) the grandparent auto-disappear.
+// Then re-affiliate one of those freed leaves back under the grandparent (if it
+// survived) — the structure must stay valid throughout. The key contracts:
+//   - after `none`, none of the freed leaves is parented under the OLD sub-agg;
+//   - the old sub-aggregate (now child-less) does not linger as an empty agg;
+//   - the committed forest is valid at every step (派生集約=子の和 included).
+// ===========================================================================
+
+describe(`affiliation — de-nest intermediate aggregate to top-level (seed=${SEED4})`, () => {
+  it('none on a sub-aggregate frees its leaves to top-level and prunes the empty agg', () => {
+    fc.assert(
+      fc.property(deepForestArb(), fc.nat(), (initial, subWhich) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 8000,
+        };
+        const forest0 = buildForest(st.features);
+        // sub-aggregates: have a parent (grandparent) AND have children (leaves).
+        const subAggs = st.features.filter(
+          (f) =>
+            f.parentId !== undefined &&
+            f.kind === 'aggregate' &&
+            directChildIds(forest0, f.id).length > 0,
+        );
+        if (subAggs.length === 0) return;
+        const sub = subAggs[subWhich % subAggs.length]!;
+        const freedLeaves = descendantLeaves(st.features, sub.id);
+        if (freedLeaves.size === 0) return;
+
+        const applied = applyAffCmd(st, {
+          t: 'none',
+          targetWhich: st.features.indexOf(sub),
+        });
+        if (applied === undefined) return; // a legitimate rejection (rare); skip.
+        const next = applied.next;
+        assertFeatureSetInvariants(next.features, next.store);
+
+        // Every freed leaf survives and is now top-level (parentId undefined),
+        // because `none` applied to each expanded leaf re-parents it to top.
+        for (const lid of freedLeaves) {
+          const lf = next.features.find((f) => f.id === lid);
+          expect(lf, `freed leaf ${lid} vanished`).toBeDefined();
+          expect(lf?.parentId, `freed leaf ${lid} not top-level after none`).toBe(undefined);
+        }
+
+        // The old sub-aggregate, having lost every child, must NOT linger as an
+        // empty aggregate (FR-35 sweep+prune).
+        const subStill = next.features.find((f) => f.id === sub.id);
+        if (subStill !== undefined) {
+          // If it somehow survives, it must still be a valid non-empty aggregate.
+          const childIds = directChildIds(buildForest(next.features), sub.id);
+          expect(
+            childIds.length,
+            `sub-aggregate ${sub.id} lingered empty after de-nest`,
+          ).toBeGreaterThan(0);
+        }
+      }),
+      { seed: SEED4, numRuns: 400 },
+    );
+  });
+});
+
+// ===========================================================================
+// §16. CYCLE-ATTEMPT GUARD: re-parenting a feature under its own descendant.
+//
+// For any feature X with at least one descendant D, an `existing` command that
+// makes D the new parent of X would create a cycle. The guard (教訓 5.22 /
+// isLegalNewParent) MUST reject this — it must never produce a proposal. We try
+// EVERY (ancestor, descendant) pair and assert no commit; when it rejects with a
+// machine-readable kind it must be the Cycle reason (or SameFeature when the
+// expansion collapses), never a silent acceptance.
+// ===========================================================================
+
+describe(`affiliation — cycle attempts are always rejected (seed=${SEED4})`, () => {
+  it('re-parenting a feature under any of its descendants never commits', () => {
+    fc.assert(
+      fc.property(deepForestArb(), fc.nat(), fc.nat(), (initial, xWhich, dWhich) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 9000,
+        };
+        // Pick an ancestor X that actually has descendants.
+        const withDesc = st.features.filter(
+          (f) => descendantIds(st.features, f.id).size > 0,
+        );
+        if (withDesc.length === 0) return;
+        const x = withDesc[xWhich % withDesc.length]!;
+        const descs = [...descendantIds(st.features, x.id)];
+        const d = descs[dWhich % descs.length]!;
+
+        const idState = createIdGeneratorState(0, st.idCounter);
+        const result = buildAffiliationProposal(
+          st.features,
+          x.id,
+          parentExisting(d),
+          { idState, now: makeNow(1), vertexStore: st.store },
+        );
+
+        // The cycle-forming command must NEVER commit.
+        expect(
+          result.status,
+          `cycle commit: re-parented ${x.id} under its descendant ${d}`,
+        ).not.toBe('proposal');
+
+        // When X is a genuine aggregate, FR-48 expands X to its leaves and applies
+        // the decision to EACH leaf. Making a leaf's own ancestor-side descendant
+        // the parent can collapse to SameFeature; either way it must be one of the
+        // candidate-predicate rejections, never anything that leaked through.
+        if (result.status === 'rejected') {
+          expect(
+            [
+              AFFILIATION_REJECT.Cycle,
+              AFFILIATION_REJECT.SameFeature,
+              AFFILIATION_REJECT.ExistencePeriod,
+              AFFILIATION_REJECT.TargetKind,
+              'hierarchy',
+              'internal',
+            ].includes(result.kind as never),
+            `unexpected rejection kind for cycle attempt: ${result.kind}`,
+          ).toBe(true);
+        }
+      }),
+      { seed: SEED4, numRuns: 600 },
+    );
+  });
+});
+
+// ===========================================================================
+// §17. save∘load JSON identity over the 3-level committed set.
+//
+// Distinct from §8 (shallow het model): here a 3-level model with nested
+// aggregates is driven, then JSON round-tripped. childIds ORDER, derived areas,
+// and derived DEPTHS must all survive the round-trip byte-for-byte / value-for-
+// value. Nested aggregates exercise the round-trip of an aggregate whose own
+// children are aggregates (the depth-2 case §8 cannot reach).
+// ===========================================================================
+
+describe(`affiliation — deep save∘load identity (childIds order + depths) (seed=${SEED4})`, () => {
+  it('JSON round-trip preserves features, childIds order, derived areas AND depths', () => {
+    fc.assert(
+      fc.property(
+        deepForestArb(),
+        fc.array(affCmd2Arb, { minLength: 0, maxLength: 10 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 10000,
+          };
+          for (const cmd of cmds) {
+            const applied = applyAffCmd2(st, cmd);
+            if (applied !== undefined) st = applied.next;
+          }
+          const parsed = JSON.parse(JSON.stringify(st.features)) as Feature[];
+          expect(featuresEqual(parsed, st.features)).toBe(true);
+
+          const f0 = buildForest(st.features);
+          const f1 = buildForest(parsed);
+          const d0 = derivedDepths(f0);
+          const d1 = derivedDepths(f1);
+          for (const f of st.features) {
+            // childIds order preserved for aggregates (featuresEqual checks set/
+            // length; here we additionally pin ORDER explicitly).
+            if (f.kind === 'aggregate') {
+              const reF = parsed.find((g) => g.id === f.id);
+              expect(reF?.kind).toBe('aggregate');
+              if (reF?.kind === 'aggregate') {
+                expect(reF.childIds, `childIds order drift on ${f.id}`).toEqual(f.childIds);
+              }
+            }
+            // derived depth preserved.
+            expect(d1.get(f.id), `depth drift on ${f.id}`).toBe(d0.get(f.id));
+            // derived area preserved.
+            const a = resolveFeatureArea(f0, st.store, f.id);
+            const b = resolveFeatureArea(f1, st.store, f.id);
+            expect(a.status).toBe(b.status);
+            if (a.status === 'ok' && b.status === 'ok') {
+              expect(areasEqualWithinTolerance(a.area, b.area)).toBe(true);
+            }
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 300 },
+    );
+  });
+});

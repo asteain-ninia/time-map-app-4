@@ -2976,3 +2976,630 @@ describe('seed=21003 — LeafOnly merge under an existing aggregate: childIds sy
     );
   });
 });
+
+// ===========================================================================
+// 11. SEED=21004 EXTENSION — NEW exploration (bug-hunt round 2, disjoint from
+//     the 1000-21003 band). Different generators / command sets / interactions.
+//
+// Every earlier seed only ever calls buildMergeProposal with inputs that are
+// ALREADY known-legal (≥2 distinct targets, all present at the chosen atTime, no
+// vertical relation), so the merge precondition GATE (precondition.ts) and the
+// FOUR rejection paths it owns are dead code across the entire 1000-21003 band:
+//
+//     validateMergePreconditions → { TooFew, TargetMissing, NotPresentAtTime,
+//                                     VerticalRelation }
+//
+// The candidate-enumeration helpers (candidates.ts) — allowedMergeParentCandidates
+// / propertyInheritCandidates — and the existence-period predicates existsAtTime /
+// isVerticallyRelated are likewise never touched. This block opens those live
+// paths with brand-new generators and asserts the relations they must satisfy:
+//
+//   (R1) REJECTION purity (op-on-illegal == identity / no-op): a buildMergeProposal
+//        whose targets violate ANY precondition MUST return Rejected with the
+//        machine-readable reason matching the violation AND must not mutate the
+//        input world (the features array, every feature value, and the store are
+//        byte-for-byte unchanged after the rejected call). A rejecting op that
+//        silently mutated shared state would corrupt undo. Generated violations:
+//          • TooFew          — 0 or 1 distinct targets,
+//          • TargetMissing   — a target id absent from the feature set,
+//          • NotPresentAtTime— a target whose [startYear,endYear] excludes atTime,
+//          • VerticalRelation— two targets in an ancestor/descendant relation.
+//
+//   (R2) classifyMerge ∘ validateMergePreconditions ordering: when a world is BOTH
+//        vertically-related AND otherwise mergeable, the verdict is the rejection
+//        (the gate runs FIRST), never a Proposal — i.e. the precondition is a hard
+//        guard, not advisory. Metamorphic: removing the offending relation (re-point
+//        the child to top-level) flips the SAME targets from Rejected→Proposal.
+//
+//   (R3) existsAtTime boundary inclusivity: the existence interval is CLOSED
+//        ([startYear,endYear]); a merge AT exactly startYear or endYear is legal,
+//        AT startYear-1 / endYear+1 is NotPresentAtTime. Pins the closed-interval
+//        contract the gate and candidates share (a >/>= off-by-one would slip).
+//
+//   (R4) allowedMergeParentCandidates soundness: every returned candidate (a) is
+//        NOT a target and NOT a descendant of any target (no vertical capture),
+//        (b) exists at atTime, and (c) its period overlaps the target envelope.
+//        propertyInheritCandidates returns EXACTLY the resolvable targets. These
+//        are the structured choices the UI seeds the parent / inherit pickers with;
+//        a candidate that is secretly a descendant would let the user build a cycle.
+//
+//   (R5) STATEFUL: a random chain that INTERLEAVES legal merges with deliberately
+//        illegal ones (too-few / missing / out-of-time). After EVERY command the
+//        world invariants hold; every illegal attempt is a verified no-op (world
+//        identical to before); every legal merge keeps the forest valid.
+//
+// Determinism: seed = 21004, numRuns large (per task). PERMANENT asset — any
+// reproduced counterexample is a real domain defect, never to be masked here.
+// ===========================================================================
+
+import {
+  MERGE_REJECT,
+  validateMergePreconditions,
+  existsAtTime,
+  isVerticallyRelated,
+} from '../merge/precondition';
+import {
+  allowedMergeParentCandidates,
+  propertyInheritCandidates,
+} from '../merge/candidates';
+import { descendantIds } from '../hierarchy/forest';
+import type { FeatureId } from '../ids';
+
+const SEED_21004 = 21004;
+const RUNS_21004 = 500;
+
+/**
+ * Build a flat world of N standalone top-level leaves (disjoint boxes), each with
+ * its own period [start, end].
+ */
+interface FlatWorld {
+  readonly features: Feature[];
+  readonly store: VertexStore;
+}
+
+function flatLeafWorld(
+  specs: ReadonlyArray<{ readonly start: number; readonly end: number }>,
+): FlatWorld {
+  const features: Feature[] = [];
+  const verts: Vertex[] = [];
+  specs.forEach((sp, i) => {
+    const b = box(i * 50, i * 50 + 30, 0, 30);
+    b.ids.forEach((id, k) => verts.push(createVertex(id, b.coords[k]!)));
+    features.push(
+      createLeafFeature(
+        asFeatureId(`bh4r-leaf-${counter++}`),
+        createBasicAttributes(`L${i}`, sp.start, sp.end),
+        COLOR,
+        createShape([createTerritoryRing(freshRid(), b.ids)]),
+      ),
+    );
+  });
+  return { features, store: createVertexStore(verts) };
+}
+
+/** A deep structural snapshot of a feature list + store, for purity comparison. */
+function featureWorldSnapshot(features: readonly Feature[], store: VertexStore): string {
+  return JSON.stringify({
+    features: features.map((f) => ({
+      id: f.id,
+      kind: f.kind,
+      parentId: f.parentId,
+      childIds: f.kind === 'aggregate' ? f.childIds : undefined,
+      shape: f.kind === 'leaf' ? f.shape : undefined,
+      attributes: f.attributes,
+    })),
+    vertices: [...store.byId.entries()].sort(([x], [y]) => (x < y ? -1 : 1)),
+  });
+}
+
+const STD_PROP = propertyNew({ attributes: ATTRS, color: COLOR });
+
+// --- (R1) rejection purity: illegal merge == verified no-op -------------------
+
+describe('seed=21004 — precondition rejections are pure no-ops with the right reason', () => {
+  it('TooFew: 0 or 1 distinct targets is rejected and never mutates the world', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({ start: fc.constant(0), end: fc.constant(100) }), { minLength: 2, maxLength: 5 }),
+        fc.boolean(),
+        (specs, zero) => {
+          const { features, store } = flatLeafWorld(specs);
+          const before = featureWorldSnapshot(features, store);
+          // Either no target, or the SAME target twice (dedup → 1 distinct).
+          const targetIds = zero ? [] : [features[0]!.id, features[0]!.id];
+          const res = buildMergeProposal({
+            features,
+            vertices: store,
+            targetIds,
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: STD_PROP,
+            ids: idPorts(),
+          });
+          expect(res.status).toBe(MERGE_STATUS.Rejected);
+          if (res.status === MERGE_STATUS.Rejected) {
+            expect(res.kind).toBe(MERGE_REJECT.TooFew);
+          }
+          // Purity: the world value is untouched after a rejected op.
+          expect(featureWorldSnapshot(features, store)).toBe(before);
+          // The standalone predicate agrees with the gate.
+          const verdict = validateMergePreconditions(features, targetIds, 50);
+          expect(verdict.ok).toBe(false);
+          if (!verdict.ok) expect(verdict.reason).toBe(MERGE_REJECT.TooFew);
+        },
+      ),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+
+  it('TargetMissing: a target id absent from the feature set is rejected as a no-op', () => {
+    fc.assert(
+      fc.property(
+        fc.array(fc.record({ start: fc.constant(0), end: fc.constant(100) }), { minLength: 1, maxLength: 4 }),
+        (specs) => {
+          const { features, store } = flatLeafWorld(specs);
+          const before = featureWorldSnapshot(features, store);
+          const ghost = asFeatureId(`bh4r-ghost-${counter++}`); // never in `features`.
+          const present = features[0]!.id;
+          const res = buildMergeProposal({
+            features,
+            vertices: store,
+            targetIds: [present, ghost],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: STD_PROP,
+            ids: idPorts(),
+          });
+          expect(res.status).toBe(MERGE_STATUS.Rejected);
+          if (res.status === MERGE_STATUS.Rejected) {
+            expect(res.kind).toBe(MERGE_REJECT.TargetMissing);
+          }
+          expect(featureWorldSnapshot(features, store)).toBe(before);
+        },
+      ),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+
+  it('NotPresentAtTime: a target whose closed period excludes atTime is rejected as a no-op', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -200, max: 200 }), // start of target B
+        fc.integer({ min: 1, max: 100 }), // span of B
+        fc.integer({ min: -1000, max: 1000 }), // atTime
+        (bStart, span, atTime) => {
+          const bEnd = bStart + span;
+          // Target A is always present at atTime; B may or may not be.
+          const { features, store } = flatLeafWorld([
+            { start: atTime - 10, end: atTime + 10 }, // A: definitely covers atTime.
+            { start: bStart, end: bEnd }, // B: covers atTime iff bStart<=atTime<=bEnd.
+          ]);
+          const before = featureWorldSnapshot(features, store);
+          const res = buildMergeProposal({
+            features,
+            vertices: store,
+            targetIds: [features[0]!.id, features[1]!.id],
+            atTime,
+            parentDecision: parentNone,
+            propertyDecision: STD_PROP,
+            ids: idPorts(),
+          });
+          const bPresent = bStart <= atTime && atTime <= bEnd;
+          if (bPresent) {
+            // Both present + disjoint + no relation → a valid leaf merge.
+            expect(res.status).toBe(MERGE_STATUS.Proposal);
+          } else {
+            expect(res.status).toBe(MERGE_STATUS.Rejected);
+            if (res.status === MERGE_STATUS.Rejected) {
+              expect(res.kind).toBe(MERGE_REJECT.NotPresentAtTime);
+            }
+            // Purity on the rejecting path: inputs untouched.
+            expect(featureWorldSnapshot(features, store)).toBe(before);
+          }
+          // The standalone existsAtTime predicate agrees feature-by-feature.
+          expect(existsAtTime(features[1]!, atTime)).toBe(bPresent);
+        },
+      ),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+
+  it('VerticalRelation: an ancestor + descendant pair is rejected as a no-op', () => {
+    fc.assert(
+      fc.property(dim, dim, (w, h) => {
+        // Build: aggregate parent → leaf child. Target the parent AND its child.
+        const b = box(0, w, 0, h);
+        const verts = b.ids.map((id, k) => createVertex(id, b.coords[k]!));
+        const store = createVertexStore(verts);
+        const parentAggId = asFeatureId(`bh4r-par-${counter++}`);
+        const childId = asFeatureId(`bh4r-chi-${counter++}`);
+        const child = createLeafFeature(
+          childId,
+          createBasicAttributes('child', 0, 100),
+          COLOR,
+          createShape([createTerritoryRing(freshRid(), b.ids)]),
+          { parentId: parentAggId },
+        );
+        const parentAgg = createAggregateFeature(
+          parentAggId,
+          createBasicAttributes('parent', 0, 100),
+          COLOR,
+          [childId],
+        );
+        const features: Feature[] = [child, parentAgg];
+        const before = featureWorldSnapshot(features, store);
+
+        const res = buildMergeProposal({
+          features,
+          vertices: store,
+          targetIds: [parentAggId, childId],
+          atTime: 50,
+          parentDecision: parentNone,
+          propertyDecision: STD_PROP,
+          ids: idPorts(),
+        });
+        expect(res.status).toBe(MERGE_STATUS.Rejected);
+        if (res.status === MERGE_STATUS.Rejected) {
+          expect(res.kind).toBe(MERGE_REJECT.VerticalRelation);
+        }
+        expect(featureWorldSnapshot(features, store)).toBe(before);
+
+        // The standalone relation predicate agrees (both directions).
+        const forest = buildForest(features);
+        expect(isVerticallyRelated(forest, parentAggId, childId)).toBe(true);
+        expect(isVerticallyRelated(forest, childId, parentAggId)).toBe(true);
+      }),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+});
+
+// --- (R2) gate runs first; removing the relation flips Rejected→Proposal ------
+
+describe('seed=21004 — precondition is a hard guard (metamorphic: drop the relation)', () => {
+  it('a vertical pair is Rejected; re-pointing the child to top-level flips the SAME targets to Proposal', () => {
+    fc.assert(
+      fc.property(dim, dim, (w, h) => {
+        const b = box(0, w, 0, h);
+        const verts = b.ids.map((id, k) => createVertex(id, b.coords[k]!));
+        // A SECOND disjoint box so that, once unrelated, the two leaves merge legally.
+        const b2 = box(w + 20, w + 20 + w, 0, h);
+        const verts2 = b2.ids.map((id, k) => createVertex(id, b2.coords[k]!));
+        const store = createVertexStore([...verts, ...verts2]);
+
+        const parentAggId = asFeatureId(`bh4g-par-${counter++}`);
+        const childId = asFeatureId(`bh4g-chi-${counter++}`);
+        const otherLeafId = asFeatureId(`bh4g-oth-${counter++}`);
+        const child = createLeafFeature(
+          childId,
+          createBasicAttributes('child', 0, 100),
+          COLOR,
+          createShape([createTerritoryRing(freshRid(), b.ids)]),
+          { parentId: parentAggId },
+        );
+        const otherLeaf = createLeafFeature(
+          otherLeafId,
+          createBasicAttributes('other', 0, 100),
+          COLOR,
+          createShape([createTerritoryRing(freshRid(), b2.ids)]),
+          { parentId: parentAggId },
+        );
+        const parentAgg = createAggregateFeature(
+          parentAggId,
+          createBasicAttributes('parent', 0, 100),
+          COLOR,
+          [childId, otherLeafId],
+        );
+        const features: Feature[] = [child, otherLeaf, parentAgg];
+
+        // Vertical: parent + its child → Rejected (the gate runs before classify).
+        const rejected = buildMergeProposal({
+          features,
+          vertices: store,
+          targetIds: [parentAggId, childId],
+          atTime: 50,
+          parentDecision: parentNone,
+          propertyDecision: STD_PROP,
+          ids: idPorts(),
+        });
+        expect(rejected.status).toBe(MERGE_STATUS.Rejected);
+        if (rejected.status === MERGE_STATUS.Rejected) {
+          expect(rejected.kind).toBe(MERGE_REJECT.VerticalRelation);
+        }
+
+        // Metamorphic: re-point the child to top-level (drop the relation), then the
+        // SAME two leaves (child + other, now siblings with no ancestry) merge legally.
+        const childTop = withParentId21003(child, undefined) as LeafFeature;
+        const featuresFixed: Feature[] = [childTop, otherLeaf, parentAgg];
+        const accepted = buildMergeProposal({
+          features: featuresFixed,
+          vertices: store,
+          targetIds: [childId, otherLeafId],
+          atTime: 50,
+          parentDecision: parentNone,
+          propertyDecision: STD_PROP,
+          ids: idPorts(),
+        });
+        expect(accepted.status).toBe(MERGE_STATUS.Proposal);
+        if (accepted.status === MERGE_STATUS.Proposal) {
+          const result = accepted.proposal.nextFeatures.find(
+            (x) => x.id === accepted.proposal.resultFeatureId,
+          );
+          expect(result?.kind).toBe('leaf');
+          if (result && result.kind === 'leaf') {
+            expect(isAlternationValid(result.shape)).toBe(true);
+          }
+        }
+      }),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+});
+
+// --- (R3) existsAtTime closed-interval boundary inclusivity ------------------
+
+describe('seed=21004 — existence interval is CLOSED at both ends (no off-by-one)', () => {
+  it('merge AT startYear / endYear is legal; AT start-1 / end+1 is NotPresentAtTime', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: -300, max: 300 }),
+        fc.integer({ min: 1, max: 200 }),
+        (start, span) => {
+          const end = start + span;
+          // A always covers the whole [start-5, end+5] band; B is exactly [start,end].
+          const make = () =>
+            flatLeafWorld([
+              { start: start - 5, end: end + 5 },
+              { start, end },
+            ]);
+          const tryAt = (atTime: number) => {
+            const { features, store } = make();
+            return buildMergeProposal({
+              features,
+              vertices: store,
+              targetIds: [features[0]!.id, features[1]!.id],
+              atTime,
+              parentDecision: parentNone,
+              propertyDecision: STD_PROP,
+              ids: idPorts(),
+            }).status;
+          };
+          // Inclusive ends: legal exactly AT the boundaries.
+          expect(tryAt(start)).toBe(MERGE_STATUS.Proposal);
+          expect(tryAt(end)).toBe(MERGE_STATUS.Proposal);
+          // Strictly outside: rejected.
+          expect(tryAt(start - 1)).toBe(MERGE_STATUS.Rejected);
+          expect(tryAt(end + 1)).toBe(MERGE_STATUS.Rejected);
+        },
+      ),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+});
+
+// --- (R4) candidate enumeration soundness ------------------------------------
+
+describe('seed=21004 — merge candidate enumeration is sound (no vertical capture)', () => {
+  it('parent candidates exclude targets + descendants, exist at time, overlap period; inherit == targets', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 4 }),
+        fc.integer({ min: -100, max: 100 }),
+        fc.integer({ min: 1, max: 80 }),
+        (k, periodStart, periodSpan) => {
+          const verts: Vertex[] = [];
+          const features: Feature[] = [];
+
+          const standalone: FeatureId[] = [];
+          for (let i = 0; i < k; i += 1) {
+            const b = box(i * 80, i * 80 + 40, 0, 40);
+            b.ids.forEach((id, idx) => verts.push(createVertex(id, b.coords[idx]!)));
+            const fid = asFeatureId(`bh4c-leaf-${counter++}`);
+            features.push(
+              createLeafFeature(
+                fid,
+                createBasicAttributes(`L${i}`, periodStart, periodStart + periodSpan),
+                COLOR,
+                createShape([createTerritoryRing(freshRid(), b.ids)]),
+              ),
+            );
+            standalone.push(fid);
+          }
+
+          // A top-level aggregate (broad period) owning a grandchild leaf — a
+          // legitimate parent candidate (not a target, not a descendant of a target).
+          const aggId = asFeatureId(`bh4c-agg-${counter++}`);
+          const gcBox = box(5000, 5040, 0, 40);
+          gcBox.ids.forEach((id, idx) => verts.push(createVertex(id, gcBox.coords[idx]!)));
+          const gcId = asFeatureId(`bh4c-gc-${counter++}`);
+          features.push(
+            createLeafFeature(
+              gcId,
+              createBasicAttributes('gc', -500, 500),
+              COLOR,
+              createShape([createTerritoryRing(freshRid(), gcBox.ids)]),
+              { parentId: aggId },
+            ),
+          );
+          features.push(
+            createAggregateFeature(aggId, createBasicAttributes('agg', -500, 500), COLOR, [gcId]),
+          );
+
+          const atTime = periodStart; // inside every standalone leaf's period.
+          const targetIds = [standalone[0]!, standalone[1]!];
+
+          const forest = buildForest(features);
+          const candidates = allowedMergeParentCandidates(features, targetIds, atTime);
+          const candidateIds = new Set(candidates.map((c) => c.featureId));
+
+          // (a) no candidate is a target or a descendant of a target.
+          const forbidden = new Set<FeatureId>(targetIds);
+          for (const t of targetIds) for (const d of descendantIds(forest, t)) forbidden.add(d);
+          for (const id of candidateIds) {
+            expect(forbidden.has(id)).toBe(false);
+          }
+          // (b) every candidate exists at atTime, (c) period overlaps the envelope.
+          let envStart = Number.POSITIVE_INFINITY;
+          let envEnd = Number.NEGATIVE_INFINITY;
+          for (const t of targetIds) {
+            const f = forest.byId.get(t)!;
+            envStart = Math.min(envStart, f.attributes.startYear);
+            envEnd = Math.max(envEnd, f.attributes.endYear);
+          }
+          for (const c of candidates) {
+            const f = forest.byId.get(c.featureId)!;
+            expect(existsAtTime(f, atTime)).toBe(true);
+            const overlaps = f.attributes.startYear <= envEnd && envStart <= f.attributes.endYear;
+            expect(overlaps).toBe(true);
+          }
+
+          // propertyInheritCandidates returns EXACTLY the resolvable targets.
+          const inherit = propertyInheritCandidates(features, targetIds);
+          expect(inherit.map((c) => c.featureId).sort()).toEqual([...targetIds].sort());
+
+          // Soundness vs the gate: any returned candidate is a legal parent.
+          for (const c of candidates) {
+            const r = buildMergeProposal({
+              features,
+              vertices: createVertexStore(verts),
+              targetIds,
+              atTime,
+              parentDecision: parentExisting(c.featureId),
+              propertyDecision: STD_PROP,
+              ids: idPorts(),
+            });
+            expect(r.status).toBe(MERGE_STATUS.Proposal);
+            if (r.status === MERGE_STATUS.Proposal) {
+              const result = r.proposal.nextFeatures.find(
+                (x) => x.id === r.proposal.resultFeatureId,
+              );
+              expect(result?.parentId).toBe(c.featureId);
+              const f2 = buildForest(r.proposal.nextFeatures);
+              expect(walkToRoot(f2, r.proposal.resultFeatureId).cyclic).toBe(false);
+            }
+          }
+        },
+      ),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+});
+
+// --- (R5) stateful: interleave legal merges with illegal (no-op) attempts -----
+
+type RejCmd =
+  | { readonly t: 'mergeLegal'; readonly aPick: number; readonly bPick: number }
+  | { readonly t: 'mergeTooFew'; readonly pick: number }
+  | { readonly t: 'mergeMissing'; readonly pick: number }
+  | {
+      readonly t: 'mergeOutOfTime';
+      readonly aPick: number;
+      readonly bPick: number;
+      readonly when: number;
+    }
+  | { readonly t: 'split'; readonly leafPick: number; readonly frac: number };
+
+const rejCmdArb: fc.Arbitrary<RejCmd> = fc.oneof(
+  fc.record({
+    t: fc.constant<'mergeLegal'>('mergeLegal'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+  }),
+  fc.record({ t: fc.constant<'mergeTooFew'>('mergeTooFew'), pick: fc.nat({ max: 1_000_000 }) }),
+  fc.record({ t: fc.constant<'mergeMissing'>('mergeMissing'), pick: fc.nat({ max: 1_000_000 }) }),
+  fc.record({
+    t: fc.constant<'mergeOutOfTime'>('mergeOutOfTime'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+    when: fc.integer({ min: 10_000, max: 20_000 }), // far beyond any feature's period.
+  }),
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    frac: fc.double({ min: 0, max: 1, noNaN: true }),
+  }),
+);
+
+describe('seed=21004 — stateful: illegal merges are verified no-ops; legal ops keep invariants', () => {
+  it('a chain interleaving legal merges/splits with too-few / missing / out-of-time attempts stays valid', () => {
+    fc.assert(
+      fc.property(fc.array(rejCmdArb, { minLength: 1, maxLength: 16 }), (cmds) => {
+        let world = initialWorld();
+        checkWorldInvariants(world);
+
+        for (const cmd of cmds) {
+          const before = featureWorldSnapshot(world.features, world.store);
+
+          if (cmd.t === 'mergeTooFew') {
+            const id = world.features[cmd.pick % world.features.length]!.id;
+            const res = buildMergeProposal({
+              features: world.features,
+              vertices: world.store,
+              targetIds: [id, id], // 1 distinct → TooFew.
+              atTime: 50,
+              parentDecision: parentNone,
+              propertyDecision: STD_PROP,
+              ids: idPorts(),
+            });
+            expect(res.status).toBe(MERGE_STATUS.Rejected);
+            if (res.status === MERGE_STATUS.Rejected) expect(res.kind).toBe(MERGE_REJECT.TooFew);
+            expect(featureWorldSnapshot(world.features, world.store)).toBe(before); // no-op.
+            continue;
+          }
+
+          if (cmd.t === 'mergeMissing') {
+            const present = world.features[cmd.pick % world.features.length]!.id;
+            const ghost = asFeatureId(`bh4s-ghost-${counter++}`);
+            const res = buildMergeProposal({
+              features: world.features,
+              vertices: world.store,
+              targetIds: [present, ghost],
+              atTime: 50,
+              parentDecision: parentNone,
+              propertyDecision: STD_PROP,
+              ids: idPorts(),
+            });
+            expect(res.status).toBe(MERGE_STATUS.Rejected);
+            if (res.status === MERGE_STATUS.Rejected) {
+              expect(res.kind).toBe(MERGE_REJECT.TargetMissing);
+            }
+            expect(featureWorldSnapshot(world.features, world.store)).toBe(before);
+            continue;
+          }
+
+          if (cmd.t === 'mergeOutOfTime') {
+            if (world.features.length < 2) continue;
+            const n = world.features.length;
+            const i = cmd.aPick % n;
+            let j = cmd.bPick % n;
+            if (j === i) j = (j + 1) % n;
+            const res = buildMergeProposal({
+              features: world.features,
+              vertices: world.store,
+              targetIds: [world.features[i]!.id, world.features[j]!.id],
+              atTime: cmd.when, // far beyond every feature's [0,100] period.
+              parentDecision: parentNone,
+              propertyDecision: STD_PROP,
+              ids: idPorts(),
+            });
+            expect(res.status).toBe(MERGE_STATUS.Rejected);
+            if (res.status === MERGE_STATUS.Rejected) {
+              expect(res.kind).toBe(MERGE_REJECT.NotPresentAtTime);
+            }
+            expect(featureWorldSnapshot(world.features, world.store)).toBe(before);
+            continue;
+          }
+
+          // Legal edits (reuse the seed=1002 appliers).
+          world =
+            cmd.t === 'split'
+              ? applySplit(world, cmd)
+              : applyMerge(world, { aPick: cmd.aPick, bPick: cmd.bPick });
+          checkWorldInvariants(world);
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+        }
+      }),
+      { seed: SEED_21004, numRuns: RUNS_21004 },
+    );
+  });
+});

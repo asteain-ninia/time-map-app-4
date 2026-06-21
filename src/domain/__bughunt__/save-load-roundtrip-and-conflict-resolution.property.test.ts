@@ -34,9 +34,17 @@
 //   3. Metamorphic identities reused from the brief: undo ∘ op = identity (via the
 //      U12 history module) and op ∘ inverse-op = identity (insert→delete anchor).
 //
-// Determinism: seed pinned to 26001 for THIS file; numRuns kept large (300–1000).
-// Permanent asset: it asserts the SPECIFIED behaviour and never papers over a real
-// defect (no green-faking).
+// Determinism: seeds pinned to 26001/26002/26003/26004 for THIS file; numRuns kept
+// large (300–1000). Permanent asset: it asserts the SPECIFIED behaviour and never
+// papers over a real defect (no green-faking). Section 6 (seed 26004) adds a DISJOINT
+// fourth exploration with command kinds / interactions the earlier sections never
+// reach: (1) corrupting a project that has ALREADY undergone a random edit walk
+// (earlier corruptions only hit the pristine generator output); (2) repair-fixpoint
+// IDEMPOTENCE on a CORRUPTED project (repair∘repair = repair — re-running the drive
+// on the already-repaired state must be an exact no-op); (3) double save→load
+// stability (load∘save∘load∘save = load∘save) + serialize CANONICALITY (two
+// independent serializations are byte-identical); (4) a mixed Edit+Struct command
+// interleaving asserting the anchor-series ordering / round-trip after each step.
 
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
@@ -2064,6 +2072,299 @@ describe('bug hunt #2 / THIRD exploration (seed 26003) — new repair paths', ()
         }
       }),
       { seed: SEED3, numRuns: 700 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 6 — FOURTH exploration (seed 26004, disjoint from 26001/26002/26003
+// above and from the identity suite's 1000–6004). This section reaches command
+// kinds / interactions / metamorphic laws NONE of the earlier sections drive:
+//
+//   (l) CORRUPT-AFTER-EDIT: every earlier corruption injects into the PRISTINE
+//       generator output. Here we first run a random EditCmd walk (changeStart /
+//       setEnd / deleteAnchor / insertPastEdit / recolour / moveVertex), THEN
+//       inject one of the seven FR-106 corruption classes into the EDITED project,
+//       then drive the real U14 consistency + auto-repair fixpoint. This exercises
+//       the detector + repairs against series/vertex topologies the generator never
+//       emits directly (e.g. a series that has been retimed + had anchors inserted /
+//       deleted), asserting the SAME metamorphic laws: detected ⇒ honest ⇒ converges
+//       ⇒ round-trips through the actual JSON+Zod boundary after resolution.
+//
+//   (m) REPAIR-FIXPOINT IDEMPOTENCE on a CORRUPTED project (repair∘repair = repair):
+//       the earlier idempotence law only ran on an already-CLEAN project. Here we
+//       repair a corrupt project to a fixpoint, then run the EXACT SAME drive again
+//       on the repaired result and assert it is an EXACT no-op (projectsEqual). A
+//       repair that kept mutating a project it already certified clean would be a
+//       受け入れ基準5 over-reach (a repair must be a fixpoint of itself).
+//
+//   (n) DOUBLE save→load STABILITY (load∘save∘load∘save = load∘save) + serialize
+//       CANONICALITY: two INDEPENDENT serializations of the same project must be
+//       byte-identical (a deterministic, canonical encoding — no Map/Set iteration
+//       nondeterminism, no Date.now, no float-format drift), and loading the project
+//       a SECOND time through the boundary must reproduce the first-load result
+//       exactly. The earlier round-trip laws only asserted a SINGLE save→load = the
+//       original; they never asserted the encoding is canonical nor that a re-save of
+//       a loaded project is stable (a load that subtly re-normalized would drift on
+//       the second pass and silently change a file each time it is opened+saved).
+//
+//   (o) MIXED Edit+Struct INTERLEAVING: the earlier walks ran EditCmds and
+//       StructCmds in SEPARATE tests. Here we interleave both kinds in one sequence
+//       (a retime/recolour/move can land between a vertex add and a vertex delete on
+//       the same feature), asserting the full per-edit invariant battery + boundary
+//       round-trip after EVERY step — a command-ordering interaction neither earlier
+//       walk reaches.
+// ============================================================================
+
+const SEED4 = 26004;
+
+/** Two independent serializations of a project must be byte-identical (canonical). */
+function serializeIsCanonical(project: DomainProject): boolean {
+  const a = JSON.stringify(serialize(project));
+  const b = JSON.stringify(serialize(project));
+  return a === b;
+}
+
+/**
+ * load∘save∘load∘save = load∘save. Serialize→parse→deserialize once (load1), then
+ * serialize THAT and load again (load2); load2 must equal load1 (a re-save of a
+ * loaded project is a fixpoint — opening + saving a file repeatedly never drifts).
+ */
+function doubleBoundaryStable(project: DomainProject): { ok: boolean; reason: string } {
+  const j1 = JSON.parse(JSON.stringify(serialize(project)));
+  const p1 = parseManifest(j1);
+  if (p1.outcome !== PARSE_OUTCOME.Ok) return { ok: false, reason: `parse1:${p1.outcome}` };
+  const load1 = deserialize(p1.manifest);
+  const j2 = JSON.parse(JSON.stringify(serialize(load1)));
+  // Canonicality across the SECOND save of the loaded project: the bytes of save(load1)
+  // must equal the bytes of save(original) — a loaded project re-encodes identically.
+  if (JSON.stringify(j2) !== JSON.stringify(j1)) return { ok: false, reason: 'resave-bytes-drift' };
+  const p2 = parseManifest(j2);
+  if (p2.outcome !== PARSE_OUTCOME.Ok) return { ok: false, reason: `parse2:${p2.outcome}` };
+  const load2 = deserialize(p2.manifest);
+  if (!projectsEqual(load1, load2)) return { ok: false, reason: 'load2-ne-load1' };
+  return { ok: true, reason: '' };
+}
+
+/** A union of Edit and Struct commands so a single sequence interleaves both. */
+type MixedCmd = { mix: 'edit'; cmd: EditCmd } | { mix: 'struct'; cmd: StructCmd };
+
+function mixedCmdArb(): fc.Arbitrary<MixedCmd> {
+  return fc.oneof(
+    cmdArb().map((cmd) => ({ mix: 'edit' as const, cmd })),
+    structCmdArb().map((cmd) => ({ mix: 'struct' as const, cmd })),
+  );
+}
+
+function applyMixedCmd(project: DomainProject, m: MixedCmd): DomainProject {
+  return m.mix === 'edit' ? applyCmd(project, m.cmd) : applyStructCmd(project, m.cmd).project;
+}
+
+/**
+ * EDIT commands that mutate ONLY the timeline / colour, never vertex GEOMETRY:
+ * changeStart / setEnd / deleteAnchor / insertPastEdit / recolour. A raw `moveVertex`
+ * is DELIBERATELY excluded for the corrupt-after-edit walk: dragging a SHARED
+ * boundary vertex of two sibling children can legitimately slide one child's
+ * territory on top of its neighbour's, producing a TerminalExclusion /
+ * AnchorSpatialOverlap — a documented conflict-resolution class (see ringGeometryValid
+ * / aggregateUnionValid: a vertex drag CAN create overlap, which the load-time layer
+ * surfaces, not something the edit op forbids). That is NOT a defect, so the
+ * corrupt-after-edit precondition "the edit walk alone leaves the project consistent"
+ * must use the geometry-preserving subset; these commands still reach retimed /
+ * anchor-inserted / anchor-deleted series the generator never emits directly, which is
+ * the genuinely-new surface this exploration targets. (The full battery — including
+ * moveVertex-driven overlap — is still asserted as a STRUCTURAL/round-trip invariant
+ * by the mixed-interleaving and Section-1 walks, which never claim post-edit
+ * consistency, only the geometry-agnostic checkAllInvariants + round-trip.)
+ */
+function nonGeometricCmdArb(): fc.Arbitrary<EditCmd> {
+  return fc.oneof(
+    fc.record({
+      tag: fc.constant('changeStart' as const),
+      hi: fc.nat(),
+      anchorIdx: fc.nat(),
+      year: fc.integer({ min: -300, max: 300 }),
+    }),
+    fc.record({
+      tag: fc.constant('setEnd' as const),
+      hi: fc.nat(),
+      anchorIdx: fc.nat(),
+      year: fc.option(fc.integer({ min: -300, max: 300 }), { nil: null }),
+    }),
+    fc.record({ tag: fc.constant('deleteAnchor' as const), hi: fc.nat(), anchorIdx: fc.nat() }),
+    fc.record({
+      tag: fc.constant('insertPastEdit' as const),
+      hi: fc.nat(),
+      year: fc.integer({ min: -300, max: 300 }),
+    }),
+    fc.record({
+      tag: fc.constant('recolor' as const),
+      hi: fc.nat(),
+      opacity: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+    }),
+  );
+}
+
+describe('bug hunt #2 / FOURTH exploration (seed 26004) — corrupt-after-edit + idempotence', () => {
+  it('serialize is CANONICAL: two independent serializations are byte-identical', () => {
+    fc.assert(
+      fc.property(projectArb2(), fc.array(mixedCmdArb(), { maxLength: 16 }), (initial, cmds) => {
+        let project = initial;
+        if (!serializeIsCanonical(project)) throw new Error('base serialize not canonical');
+        for (const m of cmds) {
+          project = applyMixedCmd(project, m);
+          if (!serializeIsCanonical(project)) {
+            throw new Error(`serialize not canonical after ${JSON.stringify(m)}`);
+          }
+        }
+      }),
+      { seed: SEED4, numRuns: 500 },
+    );
+  });
+
+  it('double save→load is STABLE (load∘save∘load∘save = load∘save) with no re-save byte drift', () => {
+    fc.assert(
+      fc.property(projectArb2(), fc.array(mixedCmdArb(), { maxLength: 16 }), (initial, cmds) => {
+        let project = initial;
+        for (const m of cmds) {
+          project = applyMixedCmd(project, m);
+          const stable = doubleBoundaryStable(project);
+          if (!stable.ok) {
+            throw new Error(`double round-trip unstable (${stable.reason}) after ${JSON.stringify(m)}`);
+          }
+        }
+      }),
+      { seed: SEED4, numRuns: 600 },
+    );
+  });
+
+  it('MIXED Edit+Struct interleaving preserves every invariant + boundary round-trip', () => {
+    fc.assert(
+      fc.property(
+        projectArb2(),
+        fc.array(mixedCmdArb(), { minLength: 1, maxLength: 20 }),
+        (initial, cmds) => {
+          let project = initial;
+          const base = checkBaseInvariants(project);
+          if (!base.ok) throw new Error(`generated base invalid: ${base.failed}`);
+          for (const m of cmds) {
+            project = applyMixedCmd(project, m);
+            const check = checkAllInvariants(project);
+            if (!check.ok) {
+              throw new Error(`invariant "${check.failed}" broke after mixed cmd ${JSON.stringify(m)}`);
+            }
+            const rt = boundaryRoundTrips(project);
+            if (!rt.ok) {
+              throw new Error(`boundary round-trip broke (${rt.reason}) after mixed ${JSON.stringify(m)}`);
+            }
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 700 },
+    );
+  });
+
+  it('CORRUPT-AFTER-EDIT: a corruption injected into an EDITED project is DETECTED', () => {
+    fc.assert(
+      fc.property(
+        projectArb(),
+        fc.array(nonGeometricCmdArb(), { maxLength: 12 }),
+        corruptionArb,
+        fc.nat(),
+        (initial, cmds, tag, pick) => {
+          // First run a GEOMETRY-PRESERVING edit walk (retime / setEnd / delete /
+          // insert / recolour — see nonGeometricCmdArb), THEN corrupt. This reaches
+          // series topologies the generator never emits while keeping the
+          // "edit walk alone stays consistent" precondition true.
+          let edited = initial;
+          for (const c of cmds) edited = applyCmd(edited, c);
+          // The edited project itself must still be consistent (sanity: edits preserve it).
+          const editedReport = checkConsistency(edited, CAL);
+          if (!editedReport.ok) {
+            throw new Error(
+              `edit walk ALONE produced an inconsistency before corruption: ${editedReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const inj = corrupt(edited, tag, pick);
+          if (inj === null) return; // inapplicable to this edited shape — skip.
+          const report = checkConsistency(inj.project, CAL);
+          if (report.ok) {
+            throw new Error(`corruption "${tag}" on an EDITED project was NOT detected`);
+          }
+          const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+          if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+            throw new Error(
+              `corruption "${tag}" (post-edit) expected ${inj.expectKind} but got: ${[...kinds].join(', ')}`,
+            );
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 900 },
+    );
+  });
+
+  it('CORRUPT-AFTER-EDIT: repair is HONEST, converges, and round-trips through Zod', () => {
+    fc.assert(
+      fc.property(
+        projectArb(),
+        fc.array(nonGeometricCmdArb(), { maxLength: 12 }),
+        corruptionArb,
+        fc.nat(),
+        (initial, cmds, tag, pick) => {
+          let edited = initial;
+          for (const c of cmds) edited = applyCmd(edited, c);
+          const inj = corrupt(edited, tag, pick);
+          if (inj === null) return;
+          const fix = repairToFixpoint(inj.project);
+          if (fix.honestyViolated) {
+            throw new Error(
+              `applyRepairChecked reported resolved:true while growing/leaving target (post-edit "${tag}")`,
+            );
+          }
+          if (!fix.converged) {
+            throw new Error(`post-edit safe-repair fixpoint did not converge for "${tag}" (stuck=${fix.stuck})`);
+          }
+          const finalReport = checkConsistency(fix.project, CAL);
+          if (!finalReport.ok) {
+            throw new Error(
+              `post-edit repaired project still inconsistent for "${tag}": ${finalReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rt = boundaryRoundTrips(fix.project);
+          if (!rt.ok) {
+            throw new Error(`post-edit repaired project failed boundary round-trip (${rt.reason}) for "${tag}"`);
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 900 },
+    );
+  });
+
+  it('REPAIR-FIXPOINT IDEMPOTENCE: repair∘repair = repair on a CORRUPTED project (re-drive is a no-op)', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruptionArb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt(project, tag, pick);
+        if (inj === null) return;
+        const fix1 = repairToFixpoint(inj.project);
+        if (!fix1.converged) return; // convergence is covered by Section 2's law.
+        // Re-running the SAME drive on the already-repaired (clean) project must be an
+        // EXACT no-op: a repair is a fixpoint of itself (repair∘repair = repair).
+        const fix2 = repairToFixpoint(fix1.project);
+        if (!fix2.converged) {
+          throw new Error(`second repair drive did not converge for "${tag}" (stuck=${fix2.stuck})`);
+        }
+        if (fix2.honestyViolated) {
+          throw new Error(`second repair drive reported a dishonest resolution for "${tag}"`);
+        }
+        if (!projectsEqual(fix2.project, fix1.project)) {
+          throw new Error(`repair∘repair ≠ repair for "${tag}": second drive mutated an already-clean project`);
+        }
+      }),
+      { seed: SEED4, numRuns: 900 },
     );
   });
 });

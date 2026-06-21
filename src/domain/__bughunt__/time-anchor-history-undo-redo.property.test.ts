@@ -43,7 +43,7 @@ import {
   type SeriesResult,
 } from '../anchor-series';
 import { applyPastEdit } from '../anchor-series';
-import { anchorSeriesArb, makeAnchor } from '../anchor-series.arbitraries';
+import { anchorSeriesArb, makeAnchor, makeSnapshot } from '../anchor-series.arbitraries';
 import {
   type Command,
   type CommandOutcome,
@@ -2094,6 +2094,396 @@ describe('time-anchor + history undo/redo — seed 24003 in-place replace + laws
         },
       ),
       { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+});
+
+// ===========================================================================
+// SEED 24004 expansion suite — MULTI-FEATURE shared history + op∘inverse-op +
+// pointer-walk coherence + grow/shrink limit model.
+//
+// A NEW exploration distinct from every prior pass (4001/4002/4004/24001/24002/
+// 24003 and the earlier 1000-6000 sweep). Seed 24004 is fresh. Four structural
+// gaps motivate this suite; none is exercised by any existing suite in this file:
+//
+//   1. EVERY prior suite drives a SINGLE anchor series through the history, so
+//      the history's domain-state root is always one feature's timeline. In the
+//      real app a single undo/redo stack threads the WHOLE document (many
+//      features' timelines) as one state value (FR-73). If a command captured
+//      shared/aliased structure, or undo/redo restored the wrong half of a
+//      composite state, a single-series suite could never catch it. This suite
+//      makes the history state a PAIR of two independent series and routes each
+//      edit to one of the two by a generated selector, asserting after every
+//      step that BOTH series satisfy the full contract and that undo/redo
+//      restores BOTH halves exactly (no cross-feature bleed).
+//
+//   2. op∘inverse-op == identity on the INSERT axis: applyPastEdit at a year
+//      with no existing anchor INSERTS a new entry; deleteAnchor of that exact
+//      inserted id must restore the original series structurally. No prior suite
+//      states this insert/delete inverse (24003 covers in-place REPLACE + a
+//      delete no-resurrection law, but never insert-then-delete reversibility).
+//      The 4001 suite's only op∘inverse law is setEnd(x)∘setEnd(null).
+//
+//   3. History POINTER-WALK coherence: a history with N applied edits is a
+//      straight line of N+1 states (root + one per edit) as long as no new edit
+//      intervenes. A random walk of ONLY undo/redo must therefore always land on
+//      the SAME state that occupies the resulting pointer position — recorded
+//      independently when the line was built. A pointer/stack-splice bug (wrong
+//      end popped, redo pushing onto the wrong stack) surfaces as a walk landing
+//      on a mismatched recorded state. No prior suite records the full line and
+//      replays an arbitrary undo/redo walk against it.
+//
+//   4. withLimit GROW-then-SHRINK against the reference model: 24002 only ever
+//      sets a limit in [1,5] from an already-small base, so growing the limit
+//      above the current stack depth (a no-op trim) and then shrinking it below
+//      the live redo-bearing depth is never exercised together. Here the base
+//      history uses a generous limit, edits overflow nothing, then withLimit is
+//      driven both up and down with a populated redo stack, checked against the
+//      model (redo stack must survive a limit change; only the undo stack trims).
+//
+// All series invariants (validateSeries), no NaN/Infinity, forest/selection
+// validity, and save∘load==identity are re-asserted after every reachable state.
+//
+// Determinism: pinned seed 24004, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_24004 = 24004;
+const NUM_RUNS_24004 = 500;
+
+// --- multi-feature (pair) history state -------------------------------------
+//
+// The history root is a PAIR of independent anchor series (two features sharing
+// one undo/redo stack, as the real document does). A reversible command wraps a
+// whole before/after PAIR, exactly like makeSeriesCommand but over the pair, so
+// undo/redo must restore BOTH halves with no cross-talk.
+
+interface SeriesPair {
+  readonly a: AnchorSeries;
+  readonly b: AnchorSeries;
+}
+
+const PAIR_EDIT = defineCommandKind('bughunt/pair-edit');
+
+function makePairCommand(
+  label: string,
+  before: SeriesPair,
+  after: SeriesPair,
+): Command<SeriesPair> {
+  const result = createCommandResult({});
+  const toAfter = (): CommandOutcome<SeriesPair> => ({ state: after, result });
+  const toBefore = (): CommandOutcome<SeriesPair> => ({ state: before, result });
+  return { kind: PAIR_EDIT, label, execute: toAfter, undo: toBefore, redo: toAfter };
+}
+
+function viewPair(p: SeriesPair): unknown {
+  return { a: viewSeries(p.a), b: viewSeries(p.b) };
+}
+
+function assertPairInvariants(p: SeriesPair): void {
+  assertStepInvariants(p.a);
+  assertStepInvariants(p.b);
+}
+
+// An edit targeting one of the two series in the pair.
+interface PairAction {
+  readonly t: 'edit' | 'undo' | 'redo';
+  readonly which?: 'a' | 'b';
+  readonly op?: EditOp;
+}
+
+const pairActionArb: fc.Arbitrary<PairAction> = fc.oneof(
+  fc.record({
+    t: fc.constant('edit' as const),
+    which: fc.constantFrom('a' as const, 'b' as const),
+    op: editOpArb,
+  }),
+  fc.constant({ t: 'undo' as const }),
+  fc.constant({ t: 'redo' as const }),
+);
+
+describe('time-anchor + history undo/redo — seed 24004 multi-feature + inverse + pointer-walk', () => {
+  it('two features share ONE history: every state keeps both halves valid; undo/redo restores both (seed 24004)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        anchorSeriesArb(cal),
+        fc.array(pairActionArb, { maxLength: 30 }),
+        (initialA, initialB, actions) => {
+          const initial: SeriesPair = { a: initialA, b: initialB };
+          assertPairInvariants(initial);
+
+          let history: History<SeriesPair> = createHistory(initial, 50);
+          for (const action of actions) {
+            if (action.t === 'edit' && action.op && action.which) {
+              const before = history.state;
+              const target = action.which === 'a' ? before.a : before.b;
+              const edited = applyEdit(target, action.op);
+              if (edited === undefined) continue; // rejected / no-op
+              const after: SeriesPair =
+                action.which === 'a'
+                  ? { a: edited, b: before.b }
+                  : { a: before.a, b: edited };
+              history = execute(
+                history,
+                makePairCommand(`${action.which}:${action.op.kind}`, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else {
+              history = redo(history).history;
+            }
+            // Both halves must independently satisfy the whole contract, and an
+            // edit to one feature must never have mutated the other.
+            assertPairInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_24004, numRuns: NUM_RUNS_24004 },
+    );
+  });
+
+  it('multi-feature metamorphic: undo∘execute restores BOTH halves; the untouched half is byte-identical (seed 24004)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        anchorSeriesArb(cal),
+        fc.constantFrom('a' as const, 'b' as const),
+        editOpArb,
+        (initialA, initialB, which, op) => {
+          const initial: SeriesPair = { a: initialA, b: initialB };
+          const target = which === 'a' ? initial.a : initial.b;
+          const edited = applyEdit(target, op);
+          if (edited === undefined) return;
+          const after: SeriesPair =
+            which === 'a' ? { a: edited, b: initial.b } : { a: initial.a, b: edited };
+
+          let history: History<SeriesPair> = createHistory(initial, 50);
+          history = execute(history, makePairCommand(`${which}:${op.kind}`, initial, after)).history;
+
+          // Post-execute: edited half advanced, OTHER half byte-identical.
+          expect(viewPair(history.state)).toEqual(viewPair(after));
+          const otherBefore = which === 'a' ? viewSeries(initial.b) : viewSeries(initial.a);
+          const otherAfter =
+            which === 'a' ? viewSeries(history.state.b) : viewSeries(history.state.a);
+          expect(otherAfter).toEqual(otherBefore); // no cross-feature bleed
+
+          // undo restores BOTH halves exactly; redo re-advances both.
+          const undone = undo(history).history;
+          expect(viewPair(undone.state)).toEqual(viewPair(initial));
+          const redone = redo(undone).history;
+          expect(viewPair(redone.state)).toEqual(viewPair(after));
+        },
+      ),
+      { seed: SEED_24004, numRuns: NUM_RUNS_24004 },
+    );
+  });
+
+  it('op∘inverse-op == identity: applyPastEdit INSERT then deleteAnchor of the inserted id restores the series (seed 24004)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.integer({ min: -1200, max: 1200 }),
+        fc.integer({ min: 0, max: 100000 }),
+        (initial, year, seed) => {
+          assertStepInvariants(initial);
+          const at = timePointYear(year);
+          // Only the INSERT branch is in scope: skip when an entry already starts
+          // exactly at `at` (that is the REPLACE branch, covered by seed 24003).
+          const collides = initial.entries.some(
+            (e) => compare(e.start, at, cal) === 0,
+          );
+          if (collides) return;
+
+          const insertedId = asAnchorId(`a-${seed}-ins24004`);
+          const inserted = applyPastEdit(
+            initial,
+            at,
+            () => createAnchor(insertedId, makeSnapshot(seed)),
+            cal,
+          );
+          // Insert must have actually added the new id (no silent dedup loss).
+          const present = inserted.entries.some((e) => e.anchor.id === insertedId);
+          if (!present) {
+            // The only way an insert "vanishes" is a degenerate-drop in
+            // normalize (the inserted open-ended entry can never be degenerate),
+            // so this must not happen — assert it explicitly rather than skipping.
+            expect(present).toBe(true);
+            return;
+          }
+          expect(inserted.entries.length).toBe(initial.entries.length + 1);
+          assertStepInvariants(inserted);
+
+          // §5.6「短縮」caveat (the SAME destructive auto-reorganization the 4002
+          // changeStart round-trip guards against): inserting at `at` between a
+          // bounded predecessor whose end OVERRUNS `at` and the next start
+          // permanently SHORTENS that predecessor's end to `at` (INV-2). Deleting
+          // the inserted anchor afterwards re-opens a gap but does NOT restore the
+          // shortened end, so insert∘delete is an identity ONLY when the insert
+          // left every PRE-EXISTING entry (by id → start/end) byte-identical. We
+          // verify that precondition directly against the forward result; when it
+          // does not hold, the shortening is correct (documented) behavior and the
+          // round-trip is legitimately not an identity — out of scope for this law.
+          const originalKey = JSON.stringify(
+            initial.entries.map((e) => ({ id: e.anchor.id, start: e.start, end: e.end })),
+          );
+          const preservedKey = JSON.stringify(
+            inserted.entries
+              .filter((e) => e.anchor.id !== insertedId)
+              .map((e) => ({ id: e.anchor.id, start: e.start, end: e.end })),
+          );
+          const noNeighborShortened = originalKey === preservedKey;
+
+          // Inverse op: delete the exact inserted id. It must succeed (the series
+          // has >= 2 entries now). When no neighbor was shortened, it restores the
+          // original series structurally (op∘inverse-op == identity).
+          const back = deleteAnchor(inserted, insertedId, cal);
+          expect(back.ok).toBe(true);
+          if (back.ok) {
+            assertStepInvariants(back.series);
+            if (noNeighborShortened) {
+              expect(viewSeries(back.series)).toEqual(viewSeries(initial));
+            }
+          }
+          if (!noNeighborShortened) return; // shortening case: not an identity.
+
+          // Drive the same insert/delete pair through the dual-stack history as a
+          // composite: ONE undo must jump from post-delete back to the original.
+          const cInsert = makeSeriesCommand('pastEdit-insert', initial, inserted);
+          if (!back.ok) return;
+          const cDelete = makeSeriesCommand('delete-inserted', inserted, back.series);
+          const composite = createCompositeCommand('bughunt/insert-then-delete', [
+            cInsert,
+            cDelete,
+          ]);
+          let history = createHistory(initial, 10);
+          history = execute(history, composite).history;
+          // The net effect of insert+delete is identity, so the post-composite
+          // state equals the original — but it is still ONE undo unit.
+          expect(history.undoStack.length).toBe(1);
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+          const undone = undo(history).history;
+          expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+          expect(undone.undoStack.length).toBe(0);
+        },
+      ),
+      { seed: SEED_24004, numRuns: NUM_RUNS_24004 },
+    );
+  });
+
+  it('history pointer-walk coherence: any undo/redo-only walk lands on the recorded state for that pointer (seed 24004)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { minLength: 1, maxLength: 14 }),
+        fc.array(fc.boolean(), { minLength: 1, maxLength: 40 }), // walk: true=redo,false=undo
+        (initial, ops, walk) => {
+          // Build a straight line of states by executing the accepted edits.
+          let history: History<AnchorSeries> = createHistory(initial, 200);
+          const line: unknown[] = [viewSeries(initial)]; // line[k] = state at pointer k
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(history, makeSeriesCommand(op.kind, before, after)).history;
+            line.push(viewSeries(after));
+          }
+          const top = line.length - 1; // current pointer == top of the line
+          if (top === 0) return; // nothing to walk
+
+          // The current pointer equals undoStack depth; track it as we walk and
+          // assert the production state matches the recorded line state at every
+          // step. undo decrements (floored at 0), redo increments (capped at top).
+          let pointer = history.undoStack.length;
+          expect(pointer).toBe(top);
+          for (const goRedo of walk) {
+            if (goRedo) {
+              history = redo(history).history;
+              pointer = Math.min(top, pointer + 1);
+            } else {
+              history = undo(history).history;
+              pointer = Math.max(0, pointer - 1);
+            }
+            // Production pointer (undo depth) and the model pointer must agree…
+            expect(history.undoStack.length).toBe(pointer);
+            // …and the observable state must equal the independently-recorded
+            // state that occupies that pointer position on the line.
+            expect(viewSeries(history.state)).toEqual(line[pointer]);
+            // The redo stack depth is the distance from the top.
+            expect(history.redoStack.length).toBe(top - pointer);
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_24004, numRuns: NUM_RUNS_24004 },
+    );
+  });
+
+  it('withLimit grow-then-shrink agrees with the model and never drops the redo stack (seed 24004)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { minLength: 1, maxLength: 12 }),
+        fc.integer({ min: 1, max: 8 }), // undos to populate a redo stack
+        fc.array(fc.integer({ min: 1, max: 50 }), { minLength: 1, maxLength: 6 }), // limit walk
+        (initial, ops, undoN, limitWalk) => {
+          // Start with a generous limit so the initial edits never trim.
+          let history = createHistory(initial, 100);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: 100,
+          };
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(history, makeSeriesCommand(op.kind, before, after)).history;
+            model = modelExecute(model, viewSeries(before), viewSeries(after));
+          }
+          // Populate a redo stack by undoing a few accepted edits.
+          const pushed = history.undoStack.length;
+          const undos = Math.min(pushed, undoN);
+          for (let i = 0; i < undos; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+          }
+          expectHistoryMatchesModel(history, model);
+          const redoDepthBefore = history.redoStack.length;
+
+          // Now walk the limit up and down. Each withLimit must: trim only the
+          // OLDEST undo entries when the new limit is below the current undo
+          // depth, leave the undo stack alone when the limit grows, and NEVER
+          // touch the redo stack or the observable state.
+          for (const lim of limitWalk) {
+            const stateBefore = viewSeries(history.state);
+            history = withLimit(history, lim);
+            model = modelWithLimit(model, lim);
+            expectHistoryMatchesModel(history, model);
+            // withLimit never changes the current state…
+            expect(viewSeries(history.state)).toEqual(stateBefore);
+            // …and never drops a redo entry (a limit change is not a new edit).
+            expect(history.redoStack.length).toBe(redoDepthBefore);
+            assertStepInvariants(history.state);
+          }
+
+          // After all the limit churn, the retained undo stack must still undo
+          // coherently down to its (possibly trimmed) floor without throwing.
+          const retained = history.undoStack.length;
+          for (let i = 0; i < retained; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+            expectHistoryMatchesModel(history, model);
+            assertStepInvariants(history.state);
+          }
+          // A further undo is a no-op on the empty stack.
+          const extra = undo(history).history;
+          expect(extra.undoStack.length).toBe(0);
+          expect(viewSeries(extra.state)).toEqual(viewSeries(history.state));
+        },
+      ),
+      { seed: SEED_24004, numRuns: NUM_RUNS_24004 },
     );
   });
 });

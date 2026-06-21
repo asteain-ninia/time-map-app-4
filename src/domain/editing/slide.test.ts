@@ -456,6 +456,89 @@ describe('constrainSlide — containment FINAL fallback commits a position safe 
   });
 });
 
+// --- bughunt2: when a fallback PINS the vertex back at the frame start (no net
+// motion), the result must report NO slide — collided=false and an EMPTY boundary
+// list (受け入れ基準6・7 / 教訓5.18). The containment pass runs LAST and accumulates
+// `collided`/`boundaries` for a slide it then ABANDONS: if neither the containment
+// result nor `preContainmentPos` satisfies BOTH invariants the committed position
+// rolls back to the input `start`, yet `collided`/`boundaries` were left set. The
+// render layer would then HIGHLIGHT a boundary edge the (un-moved) vertex is not
+// actually riding — the vertex sits at the previous frame's position, not on the
+// contact edge — so the user sees a collision/highlight despite the vertex not having
+// moved one bit. The fix unifies every "rolled back to start" branch onto the
+// invariant "collided/boundaries ⇒ the vertex was actually displaced from start".
+//
+// Fixture: OTHER STRADDLES the parent's right edge (lon=10) — lon[9,11] × lat[4,7] —
+// so the containment slide up the right edge re-enters OTHER (containment result fails
+// the candidate invariant) while `preContainmentPos` lies OUTSIDE the parent (the
+// other-terminal pass pushed past lon=10): both fallbacks are rejected, forcing
+// pos=start with a parent-edge boundary already recorded. This is the exact path the
+// old code reported collided=true at an unmoved position.
+const STRADDLE_OTHER_POLY: GeoPolygon = [[coord(9, 4), coord(11, 4), coord(11, 7), coord(9, 7)]];
+const STRADDLE_OTHER_EDGES: BoundaryEdge[] = [
+  { featureId: 'OTHER', edgeKey: 'so:0', a: coord(9, 4), b: coord(11, 4) },
+  { featureId: 'OTHER', edgeKey: 'so:1', a: coord(11, 4), b: coord(11, 7) },
+  { featureId: 'OTHER', edgeKey: 'so:2', a: coord(11, 7), b: coord(9, 7) },
+  { featureId: 'OTHER', edgeKey: 'so:3', a: coord(9, 7), b: coord(9, 4) },
+];
+const STRADDLE_OTHER_CAND: CandidateTerminal = { featureId: 'OTHER', polygon: STRADDLE_OTHER_POLY };
+
+describe('constrainSlide — a fallback that pins the vertex at start reports NO slide (bughunt2 boundary/collided consistency / 教訓5.18)', () => {
+  it('exact CEX: rollback to start commits collided=false and empty boundaries (not a phantom highlight)', () => {
+    // Start inside the parent and outside OTHER; target far to the upper-right so the
+    // other-terminal pass yields a parent-OUTSIDE preContainmentPos and the containment
+    // pass slides up the right edge straight back INTO the straddling OTHER. Neither
+    // fallback satisfies BOTH invariants → pos rolls back to the input start.
+    const start = coord(0.2, 0.2);
+    const r = constrainSlide({
+      start,
+      target: coord(40, 40),
+      edges: STRADDLE_OTHER_EDGES,
+      candidates: [STRADDLE_OTHER_CAND],
+      containment: PARENT_CONTAINMENT,
+    });
+    // The vertex did NOT move — the committed position is exactly the input start.
+    expect(r.position).toEqual({ lon: 0.2, lat: 0.2 });
+    // ...therefore there is NO slide to report: no highlight, no collision flag.
+    expect(r.boundaries).toEqual([]);
+    expect(r.collided).toBe(false);
+  });
+
+  it('property: whenever the commit equals the unchanged start, collided=false and boundaries is empty', () => {
+    fc.assert(
+      fc.property(
+        fc.record({
+          sx: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          sy: fc.double({ min: 0.2, max: 9.8, noNaN: true, noDefaultInfinity: true }),
+          tx: fc.double({ min: -30, max: 40, noNaN: true, noDefaultInfinity: true }),
+          ty: fc.double({ min: -30, max: 40, noNaN: true, noDefaultInfinity: true }),
+        }),
+        ({ sx, sy, tx, ty }) => {
+          const start = coord(sx, sy);
+          fc.pre(isPointStrictlyInside(start, PARENT_POLY));
+          fc.pre(!isPointStrictlyInside(start, STRADDLE_OTHER_POLY));
+          const r = constrainSlide({
+            start,
+            target: coord(tx, ty),
+            edges: STRADDLE_OTHER_EDGES,
+            candidates: [STRADDLE_OTHER_CAND],
+            containment: PARENT_CONTAINMENT,
+          });
+          // The contract under test: a reported collision/highlight implies the vertex
+          // was actually displaced from its frame start. When the commit is the
+          // unchanged start (no net motion), the move is a no-op — report no slide.
+          const moved = Math.hypot(r.position.lon - start.lon, r.position.lat - start.lat);
+          if (moved < 1e-9) {
+            expect(r.collided).toBe(false);
+            expect(r.boundaries).toEqual([]);
+          }
+        },
+      ),
+      { numRuns: 30000 },
+    );
+  });
+});
+
 // --- multi-candidate: sliding along candidate A must not land inside candidate B
 // (受け入れ基準6 / FR-28). Two adjacent squares share a vertical seam at lon=4; a
 // vertex sliding down candidate A's right edge must not be committed inside B.

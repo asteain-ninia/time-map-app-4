@@ -616,8 +616,33 @@ export function constrainSlide(input: SlideInput): SlideResult {
 
   // `pos` is already quantized by every branch above; quantize once more defensively
   // (idempotent) so the committed value is unconditionally on the world grid.
+  const committed = quantizeCoordinate(pos);
+
+  // BOUNDARY/COLLISION CONSISTENCY (bughunt2): a reported `collided` + non-empty
+  // `boundaries` means "the vertex was constrained — it slid ALONG these edges". The
+  // render layer highlights those edges as the contact the vertex is riding. But two
+  // fallback branches above commit the FRAME START unchanged when no constrained point
+  // satisfies the invariants:
+  //   - the other-terminal final invariant fallback `pos = start` (the candidate-inside
+  //     residual case), and
+  //   - the containment final fallback `pos = start` (neither the containment result nor
+  //     `preContainmentPos` satisfies BOTH invariants).
+  // In both, `collided`/`boundaries` were accumulated for a slide that was ultimately
+  // ABANDONED — the committed position is exactly the input start, so the vertex did NOT
+  // move one bit, let alone slide along the recorded edges. Returning collided=true with
+  // those edges made the render layer highlight a boundary the pinned-in-place vertex is
+  // not actually riding (it sits at the previous frame's position, not on the contact
+  // edge), so the user saw a collision/highlight despite zero motion. When the committed
+  // position is the unchanged frame start, the move was a no-op: report no slide. This
+  // unifies every "rolled back to start" branch onto the invariant
+  // "collided/boundaries ⇒ the vertex was actually displaced from start". 教訓5.18 /
+  // 受け入れ基準6・7. (`start` is already quantized, so the comparison is grid-exact.)
+  if (len(sub(committed, start)) < EPS) {
+    return { position: committed, boundaries: [], collided: false };
+  }
+
   return {
-    position: quantizeCoordinate(pos),
+    position: committed,
     boundaries,
     collided: collided || boundaries.length > 0,
   };
