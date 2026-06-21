@@ -28,6 +28,13 @@ import {
   type Anchor,
 } from '../anchor';
 import {
+  RING_KIND,
+  createShape,
+  withHoleRingVertexIds,
+  withTerritoryRingVertexIds,
+  type Ring,
+} from '../ring';
+import {
   createAnchorEntry,
   applyPastEdit,
   resolveAt,
@@ -35,9 +42,24 @@ import {
 } from '../anchor-series';
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
-import { asAnchorId, idToString, type AnchorId, type FeatureId } from '../ids';
-import { withLeafShape, type Feature, type LeafFeature } from '../feature';
-import { createVertexStore, type Vertex, type VertexStore } from '../vertex';
+import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } from '../ids';
+import {
+  FEATURE_KIND,
+  withLeafShape,
+  withLineVertexIds,
+  withPointVertexId,
+  type Feature,
+  type LeafFeature,
+  type LineFeature,
+  type PointFeature,
+} from '../feature';
+import {
+  createVertex,
+  createVertexStore,
+  getVertex,
+  type Vertex,
+  type VertexStore,
+} from '../vertex';
 import type { EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
 import type { SplitSnapshot } from '../knife/proposal';
@@ -331,15 +353,23 @@ export function applyEditProposal(
           : createAnchorSnapshot([], createVertexStore([]));
       // Swap (or drop) the touched feature in the effective snapshot; siblings
       // (an aggregate's other children) are preserved as one unit (FR-59).
-      const features = computeEditedFeatures(base.features, featureId, snapshot.feature);
+      const editedFeatures = computeEditedFeatures(base.features, featureId, snapshot.feature);
       // Merge the moved vertex bodies over the inherited store (a moved id replaces
       // its old body; untouched vertices ride along). createVertexStore keeps the
       // LAST body for a duplicate key, so the moved bodies (appended after) win.
-      const mergedVertices = createVertexStore([
+      const baseVertices = createVertexStore([
         ...base.vertices.byId.values(),
         ...movedVertices,
       ]);
-      return anchorFor(features, mergedVertices, featureId, anchorTime);
+      // FR-31 / 受け入れ基準12: a snap that survived to release carries a decided
+      // share pair; collapse the dragged vertex onto the target id so the two
+      // coincident vertices become ONE shared vertex AS PART OF this indivisible
+      // edit (otherwise they stay distinct ids and a later move tears the boundary).
+      const shared =
+        snapshot.sharePair !== undefined
+          ? applySharePair(editedFeatures, baseVertices, snapshot.sharePair)
+          : { features: editedFeatures, vertices: baseVertices };
+      return anchorFor(shared.features, shared.vertices, featureId, anchorTime);
     },
     calendar,
   );
@@ -358,6 +388,114 @@ export function applyEditProposal(
   const newHistory: FeatureHistory = { featureId: history.featureId, series: updatedSeries };
   const histories = root.histories.map((h, i) => (i === index ? newHistory : h));
   return withHistories(root, histories);
+}
+
+// --- snap → share write-back (FR-31 / FR-32, U24 sharePair → U11) -----------
+
+/**
+ * Apply a decided share pair (受け入れ基準12 / FR-31) to the just-edited anchor
+ * snapshot: every shape reference to the dragged vertex id is repointed to the
+ * target id across ALL features in the snapshot, so the two coincident vertices
+ * collapse to ONE shared id (single-source-of-truth, R6 / shared-vertex.ts §4.2).
+ *
+ * WHY HERE (not only as a separate U11 host call): `applyEditProposal` is the
+ * keystone that turns the indivisible proposal into project state, and U24's
+ * `confirmRelease` already forwards the decided pair in the proposal. Without
+ * repointing here the dragged vertex stays a DISTINCT id at the same coordinate
+ * (the bug): a later move of the partner tears the boundary apart. Doing the
+ * repoint at apply makes the share part of the SAME indivisible edit (FR-59 /
+ * 教訓5.20) so it undoes/redoes as one unit.
+ *
+ * The target's coordinate is canonical (the candidate's body is discarded — exactly
+ * shared-vertex.ts shareVertices semantics). The dragged vertex was moved onto the
+ * target at the snap, so the merged store already carries that (snapped) coordinate
+ * under the dragged id; this function carries it forward onto the TARGET id when the
+ * target body is absent from this anchor's store (the target lives in a sibling
+ * history), so the snapshot never holds a dangling reference (no-dangling-refs,
+ * 教訓5.31), and prunes the now-orphaned dragged body.
+ *
+ * Pure — returns the new feature list + vertex store; never mutates the inputs.
+ */
+function applySharePair(
+  features: readonly Feature[],
+  vertices: VertexStore,
+  sharePair: { readonly dragged: VertexId; readonly target: VertexId },
+): { readonly features: readonly Feature[]; readonly vertices: VertexStore } {
+  const { dragged, target } = sharePair;
+  if (dragged === target) return { features, vertices }; // never share with itself.
+
+  const repointed = features.map((f) => repointFeatureVertex(f, dragged, target));
+  const stillReferencesDragged = repointed.some((f) => featureReferences(f, dragged));
+
+  // Carry the canonical coordinate onto the target id. The dragged body sits at the
+  // snapped (== target) coordinate after the move; reuse it as the target's source
+  // when the target has no body in THIS anchor store (single source of truth, R6).
+  let store = vertices;
+  if (getVertex(store, target) === undefined) {
+    const draggedBody = getVertex(store, dragged);
+    if (draggedBody !== undefined) {
+      const byId = new Map(store.byId);
+      byId.set(target, createVertex(target, draggedBody.coordinate));
+      store = { byId };
+    }
+  }
+  // Prune the orphaned dragged body (it is no longer referenced after repointing).
+  if (!stillReferencesDragged && getVertex(store, dragged) !== undefined) {
+    const byId = new Map(store.byId);
+    byId.delete(dragged);
+    store = { byId };
+  }
+  return { features: repointed, vertices: store };
+}
+
+/** Repoint every citation of `fromId` to `toId` in a single feature. Pure. */
+function repointFeatureVertex(feature: Feature, fromId: VertexId, toId: VertexId): Feature {
+  switch (feature.kind) {
+    case FEATURE_KIND.Point:
+      return feature.vertexId === fromId
+        ? (withPointVertexId(feature as PointFeature, toId) as Feature)
+        : feature;
+    case FEATURE_KIND.Line: {
+      if (!feature.vertexIds.includes(fromId)) return feature;
+      const ids = feature.vertexIds.map((id) => (id === fromId ? toId : id));
+      return withLineVertexIds(feature as LineFeature, ids) as Feature;
+    }
+    case FEATURE_KIND.Leaf: {
+      const rings = (feature as LeafFeature).shape.rings;
+      if (!rings.some((r) => r.vertexIds.includes(fromId))) return feature;
+      const nextRings = rings.map((ring) => repointRingVertex(ring, fromId, toId));
+      return withLeafShape(feature as LeafFeature, createShape(nextRings)) as Feature;
+    }
+    case FEATURE_KIND.Aggregate:
+      return feature; // aggregates cite no vertices (FR-35).
+    default:
+      return feature;
+  }
+}
+
+/** Repoint a single ring's vertex id list (preserving kind + parent). Pure. */
+function repointRingVertex(ring: Ring, fromId: VertexId, toId: VertexId): Ring {
+  if (!ring.vertexIds.includes(fromId)) return ring;
+  const ids = ring.vertexIds.map((id) => (id === fromId ? toId : id));
+  return ring.kind === RING_KIND.Territory
+    ? withTerritoryRingVertexIds(ring, ids)
+    : withHoleRingVertexIds(ring, ids);
+}
+
+/** True iff a feature cites `vertexId` anywhere (point / line / ring). Pure. */
+function featureReferences(feature: Feature, vertexId: VertexId): boolean {
+  switch (feature.kind) {
+    case FEATURE_KIND.Point:
+      return feature.vertexId === vertexId;
+    case FEATURE_KIND.Line:
+      return feature.vertexIds.includes(vertexId);
+    case FEATURE_KIND.Leaf:
+      return feature.shape.rings.some((r) => r.vertexIds.includes(vertexId));
+    case FEATURE_KIND.Aggregate:
+      return false;
+    default:
+      return false;
+  }
 }
 
 /**

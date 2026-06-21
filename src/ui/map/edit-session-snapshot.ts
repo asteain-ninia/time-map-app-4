@@ -23,7 +23,11 @@ import {
   moveFeatureVertices,
   moveVertexTo,
 } from '../../domain/editing/move';
-import { buildSnapshot, type FeatureSnapshot } from '../../domain/editing/edit-flow';
+import {
+  buildSnapshot,
+  decideSharePairAtRelease,
+  type FeatureSnapshot,
+} from '../../domain/editing/edit-flow';
 import type { Feature } from '../../domain/feature';
 import { FEATURE_KIND } from '../../domain/feature';
 import type { RingId, VertexId } from '../../domain/ids';
@@ -63,7 +67,11 @@ export function buildEditSnapshot(
   if (session.target.tool === EDIT_TOOL.VertexMove) {
     const moved = moveVertexTo(session.target.vertexId, store, session.preview);
     if (moved === undefined) return buildSnapshot({ vertices: [] });
-    return buildSnapshot({ feature, vertices: [moved] });
+    // 受け入れ基準12 / FR-31: forward a snap that survived to release as the decided
+    // share pair so the apply op collapses the dragged vertex onto its target (the
+    // SINGLE U24→U11 hand-off; decideSharePairAtRelease drops a lapsed candidate).
+    const sharePair = decideSharePairAtRelease(session);
+    return buildSnapshot({ feature, vertices: [moved], sharePair });
   }
 
   if (session.target.tool === EDIT_TOOL.FeatureMove) {
