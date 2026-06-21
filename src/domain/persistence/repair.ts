@@ -323,6 +323,16 @@ export function applyRepair(
   optionId: RepairOptionId,
   calendar: Calendar,
 ): DomainProject {
+  // GUARD (受け入れ基準5 / 教訓5.22): an option only describes a repair for the
+  // inconsistency KIND it was offered for (repairOptionsFor). The switch below
+  // dispatches purely on optionId and would otherwise apply e.g. a Drop*/Detach
+  // transform to inc.featureIds regardless of whether that option was ever
+  // offered for inc.kind — so a mismatched, replayed, or forged option↔inc pair
+  // (e.g. DropAggregateFeature against a TimeConflict) would silently delete /
+  // re-parent the arbitrary feature sitting at inc.featureIds[0]. Reject any
+  // such pair by returning the project UNCHANGED (the input is never mutated),
+  // so no repair runs that was not actually offered for this inconsistency.
+  if (!repairOptionsFor(inc).some((o) => o.id === optionId)) return project;
   switch (optionId) {
     case REPAIR_OPTION.DropFeatureWithMissingVertex:
     case REPAIR_OPTION.DropTopologyFeature:

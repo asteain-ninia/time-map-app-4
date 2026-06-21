@@ -478,6 +478,30 @@ describe('(f) time conflict', () => {
       expect(h.series.entries.length).toBeGreaterThan(0);
     }
   });
+
+  it('rejects a mismatched option↔kind pair, leaving the project unchanged (bug-hunt regression)', () => {
+    // A forged / replayed repair command pairs DropAggregateFeature (only offered
+    // for AggregateSumMismatch) with a TimeConflict whose featureIds[0] is an
+    // arbitrary, perfectly-valid feature. Before the guard, applyRepair dispatched
+    // purely on optionId and would DROP that feature (and re-parent its children),
+    // corrupting the project even though no such repair was ever offered for this
+    // kind. The guard must reject the pair and return the project untouched.
+    const project = projectWithTimeConflict();
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TimeConflict)!;
+    // Sanity: the abusive option is genuinely NOT one of the offered options.
+    expect(repairOptionsFor(inc).some((o) => o.id === REPAIR_OPTION.DropAggregateFeature)).toBe(
+      false,
+    );
+    const repaired = applyRepair(project, inc, REPAIR_OPTION.DropAggregateFeature, CAL);
+    // Returned UNCHANGED: the would-be-dropped feature's history (and its owner) survive.
+    expect(repaired).toBe(project);
+    expect(repaired.histories.map((h) => h.featureId)).toEqual(project.histories.map((h) => h.featureId));
+    // applyRepairChecked over the mismatch leaves the original conflict in place
+    // (nothing was silently "fixed" by deleting the feature).
+    const checked = applyRepairChecked(project, inc, REPAIR_OPTION.DropAggregateFeature, CAL);
+    expect(checked.resolved).toBe(false);
+    expect(find(checked.remaining, INCONSISTENCY.TimeConflict)).toBeDefined();
+  });
 });
 
 // --- orphan / zombie history (owner feature absent from all snapshots) ------
