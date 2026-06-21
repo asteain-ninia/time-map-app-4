@@ -563,8 +563,8 @@ function featureHasSharedEdge(
   endIds: ReadonlySet<VertexId>,
   seamId: VertexId,
 ): boolean {
-  for (const ids of vertexIdLists(feature)) {
-    if (edgeIndexFor(ids, startIds, endIds, seamId) >= 0) return true;
+  for (const { ids, closed } of vertexIdLists(feature)) {
+    if (edgeIndexFor(ids, startIds, endIds, seamId, closed) >= 0) return true;
   }
   return false;
 }
@@ -578,7 +578,10 @@ function insertSeamIntoFeature(
 ): Feature {
   switch (feature.kind) {
     case FEATURE_KIND.Line: {
-      const idx = edgeIndexFor(feature.vertexIds, startIds, endIds, seamId);
+      // A line is an OPEN polyline: it has no wrap-around last->first edge, so the
+      // seam may only land on a real interior edge (closed = false). Treating it as a
+      // ring would splice the seam onto a phantom closing edge and corrupt the line.
+      const idx = edgeIndexFor(feature.vertexIds, startIds, endIds, seamId, false);
       if (idx < 0) return feature;
       return withLineVertexIds(
         feature as LineFeature,
@@ -589,7 +592,7 @@ function insertSeamIntoFeature(
       const rings = (feature as LeafFeature).shape.rings;
       let changed = false;
       const nextRings: Ring[] = rings.map((ring) => {
-        const idx = edgeIndexFor(ring.vertexIds, startIds, endIds, seamId);
+        const idx = edgeIndexFor(ring.vertexIds, startIds, endIds, seamId, true);
         if (idx < 0) return ring;
         changed = true;
         const ids = spliceAfter(ring.vertexIds, idx, seamId);
@@ -606,13 +609,23 @@ function insertSeamIntoFeature(
   }
 }
 
+/** A container's ordered vertexId list plus whether its last->first edge is real. */
+interface EdgeBearingList {
+  readonly ids: readonly VertexId[];
+  /** Rings wrap (closed); lines are open polylines with no closing edge. */
+  readonly closed: boolean;
+}
+
 /** The ordered vertexId lists of every edge-bearing container of a feature. */
-function vertexIdLists(feature: Feature): readonly (readonly VertexId[])[] {
+function vertexIdLists(feature: Feature): readonly EdgeBearingList[] {
   switch (feature.kind) {
     case FEATURE_KIND.Line:
-      return [feature.vertexIds];
+      return [{ ids: feature.vertexIds, closed: false }];
     case FEATURE_KIND.Leaf:
-      return (feature as LeafFeature).shape.rings.map((r) => r.vertexIds);
+      return (feature as LeafFeature).shape.rings.map((r) => ({
+        ids: r.vertexIds,
+        closed: true,
+      }));
     default:
       return [];
   }
@@ -621,18 +634,22 @@ function vertexIdLists(feature: Feature): readonly (readonly VertexId[])[] {
 /**
  * The index i of the edge (i -> i+1, closing edge for rings) whose endpoints match the
  * (start,end) id sets in EITHER direction and whose seam is not already inserted there.
- * Rings wrap (the n-1 -> 0 closing edge is real); a list shorter than 2 has no edge.
- * Returns -1 when no such edge exists. Pure.
+ * Rings wrap (the n-1 -> 0 closing edge is real, `closed = true`); an OPEN line has no
+ * such closing edge (`closed = false`), so only its n-1 interior edges are scanned —
+ * matching the phantom last->first edge would splice a seam onto an edge the line does
+ * not have. A list shorter than 2 has no edge. Returns -1 when none matches. Pure.
  */
 function edgeIndexFor(
   ids: readonly VertexId[],
   startIds: ReadonlySet<VertexId>,
   endIds: ReadonlySet<VertexId>,
   seamId: VertexId,
+  closed: boolean,
 ): number {
   const n = ids.length;
   if (n < 2) return -1;
-  for (let i = 0; i < n; i += 1) {
+  const edgeCount = closed ? n : n - 1;
+  for (let i = 0; i < edgeCount; i += 1) {
     const a = ids[i];
     const b = ids[(i + 1) % n];
     if (a === undefined || b === undefined) continue;

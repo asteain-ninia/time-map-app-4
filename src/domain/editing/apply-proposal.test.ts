@@ -9,7 +9,14 @@ import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 import { createBasicAttributes } from '../attributes';
 import { createColorInfo } from '../attributes';
-import { createAggregateFeature, createLeafFeature, type Feature, type LeafFeature } from '../feature';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  createLineFeature,
+  type Feature,
+  type LeafFeature,
+  type LineFeature,
+} from '../feature';
 import { createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
@@ -49,6 +56,20 @@ function squareLeaf(idRaw: string, vRaw: readonly string[], lons: readonly numbe
     createBasicAttributes('F', 0, 0),
     color,
     createShape([ring]),
+  );
+  return { feature, vertices };
+}
+
+function lineFeat(idRaw: string, vRaw: readonly string[], lons: readonly number[]): {
+  feature: LineFeature;
+  vertices: ReturnType<typeof createVertex>[];
+} {
+  const vertices = vRaw.map((v, i) => createVertex(asVertexId(v), { lon: lons[i] ?? 0, lat: 0 }));
+  const feature = createLineFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes('L', 0, 0),
+    color,
+    vertices.map((v) => v.id),
   );
   return { feature, vertices };
 }
@@ -397,6 +418,70 @@ describe('applySplitProposal', () => {
     )!;
     if (nbrFeature0.kind === 'leaf') {
       expect(nbrFeature0.shape.rings[0]!.vertexIds.map((v) => v as string)).not.toContain('cut0');
+    }
+  });
+
+  it('does NOT splice a seam onto an OPEN line neighbour via the phantom closing edge (bughunt regression)', () => {
+    // An OPEN line neighbour [A, X, B] has NO wrap-around B->A edge: its only real
+    // edges are A->X and X->B. A SharedEdgeCut at the A-B seam must therefore find no
+    // matching edge on the line and leave it UNTOUCHED. The bug treated the line as a
+    // closed ring (edge scan i -> (i+1)%n included the phantom B->A closing edge),
+    // matching it and splicing the seam after B -> [A, X, B, cut0], a seam vertex on
+    // an edge the line does not have, corrupting the polyline.
+    const target = squareLeaf('f-tgt', ['e0', 'e1', 't2'], [0, 10, 5]);
+    // Line endpoints A=e0, B=e1 match the cut endpoints; X (mid) sits between them in
+    // index order but the A-B pair is only consecutive across the (absent) closing edge.
+    const lineNbr = lineFeat('f-line', ['e0', 'lx', 'e1'], [0, 5, 10]);
+
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: target.feature, vertices: target.vertices, sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: lineNbr.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: lineNbr.feature, vertices: lineNbr.vertices, sharedCandidateIds: new Map() },
+    });
+
+    const seamCoord = { lon: 5, lat: 0 };
+    const cut0 = createVertex(asVertexId('cut0'), seamCoord);
+    const newSide = squareLeaf('f-new', ['n0', 'n1', 'n2'], [20, 21, 22]);
+    const inheritorShape = createShape([
+      createTerritoryRing(asRingId('r-tgt-2'), ['e0', 'cut0', 'e1'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: target.feature.id,
+      inheritorShape,
+      newFeature: newSide.feature,
+      vertices: [cut0, ...newSide.vertices],
+      vertexRemap: new Map(),
+      sharedEdgeCuts: [
+        {
+          featureId: target.feature.id,
+          ringId: asRingId('r-f-tgt'),
+          edgeStartIndex: 0,
+          edgeStartVertexId: asVertexId('e0'),
+          edgeEndVertexId: asVertexId('e1'),
+          cutCoordinate: seamCoord,
+        },
+      ],
+      touchedFeatureIds: [target.feature.id, newSide.feature.id],
+    };
+    const proposal = createEditProposal(target.feature.id, timePointYear(500), snapshot);
+
+    const next = applySplitProposal(root, proposal, calendar);
+
+    // The line neighbour is left exactly as authored: [e0, lx, e1], no seam anywhere.
+    const lineHistory = next.histories.find((h) => h.featureId === lineNbr.feature.id)!;
+    for (const t of [timePointYear(0), timePointYear(500)]) {
+      const at = resolveAt(lineHistory.series, t, calendar);
+      expect(at.kind).toBe('present');
+      if (at.kind !== 'present') return;
+      const lf = at.entry.anchor.snapshot.features.find((f) => f.id === lineNbr.feature.id)!;
+      expect(lf.kind).toBe('line');
+      if (lf.kind !== 'line') return;
+      expect(lf.vertexIds.map((v) => v as string)).toEqual(['e0', 'lx', 'e1']);
     }
   });
 });
