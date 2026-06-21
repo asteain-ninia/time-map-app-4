@@ -43,7 +43,12 @@ import {
 } from '../ring';
 import { containerKey, type SharedEdgeCutSpec, type VertexRemap } from '../shared-vertex';
 import { createVertex, type Vertex } from '../vertex';
-import { type EdgeCutPoint, type SplitResult, type SplitSide } from './split-geometry';
+import {
+  MIN_POLYGON_VERTICES,
+  type EdgeCutPoint,
+  type SplitResult,
+  type SplitSide,
+} from './split-geometry';
 
 // ---------------------------------------------------------------------------
 // 継承先選択 (spec §成果物 InheritanceChoice 相当)
@@ -303,6 +308,34 @@ function reparentByContainment(raws: readonly RawRing[]): Ring[] {
   return rings;
 }
 
+/**
+ * True iff EVERY ring of `shape` has at least {@link MIN_POLYGON_VERTICES} (3)
+ * vertices — the same最低 3 頂点 invariant the geometry layer enforces on its boolean
+ * output (split-geometry `everyOuterRingHasMinVertices` + U06 `checkRing` /
+ * INVARIANT_VIOLATION.TooFewVertices).
+ *
+ * The geometry层's check is partial — `everyOuterRingHasMinVertices` only inspects
+ * each piece's OUTER ring (index 0). A degenerate HOLE ring (quantized down to <3
+ * vertices) that slips through is silently mis-handled by {@link
+ * reparentByContainment}: {@link ringStrictlyContains} returns false for any
+ * length<3 ring, so the degenerate ring finds no containing parent and is demoted
+ * to a TOP-LEVEL territory (a phantom, area≈0 piece) rather than dropped or
+ * rejected — and {@link isAlternationValid} cannot catch it because a parentless
+ * territory is a structurally valid alternation. We therefore re-assert the ≥3
+ * 頂点 invariant at the proposal gate (单一真实源 with MIN_POLYGON_VERTICES) so such a
+ * ring fails LOUDLY instead of committing a phantom territory into a Shape. Under
+ * the production pipeline (executeSplit → checkSplittable → U06 boolean ops) the
+ * R2 defense already rejects degenerate rings upstream, so this guard never fires
+ * there; it hardens the public assembly entry point against a hand-built or
+ * future-changed SplitResult (defense-in-depth, 教訓5.26).
+ */
+function everyRingHasMinVertices(shape: Shape): boolean {
+  for (const ring of shape.rings) {
+    if (ring.vertexIds.length < MIN_POLYGON_VERTICES) return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // 旧→新頂点対応写像 (FR-95; U11 `transferSharing` consumes it)
 // ---------------------------------------------------------------------------
@@ -465,6 +498,17 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
   // broken shape. Delegated to U07's ring-hierarchy validator (過少共有 5.30).
   if (!isAlternationValid(inheritorShape) || !isAlternationValid(builtNew.shape)) {
     throw new Error('split produced an invalid ring hierarchy (FR-24 alternation)');
+  }
+
+  // FR-44 最低 3 頂点 / 教訓5.26: every ring (outer AND hole, both sides) must clear the
+  // ≥3 頂点 invariant. A hole that quantized to <3 vertices is NOT caught by the
+  // alternation check (reparentByContainment silently demotes it to a parentless,
+  // structurally-valid top-level territory — a phantom area≈0 piece, see
+  // everyRingHasMinVertices). Re-assert the same invariant the geometry layer
+  // enforces (单一真实源 MIN_POLYGON_VERTICES) so a degenerate ring fails loudly here
+  // rather than committing a phantom territory into a Shape.
+  if (!everyRingHasMinVertices(inheritorShape) || !everyRingHasMinVertices(builtNew.shape)) {
+    throw new Error('split produced a degenerate ring (FR-44 最低3頂点)');
   }
 
   // FR-95: carry the共有辺途中切断点情報 from the geometry result onto the proposal,

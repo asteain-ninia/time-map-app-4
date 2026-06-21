@@ -18,7 +18,7 @@ import {
   toSplitSnapshot,
   toEditProposal,
 } from './proposal';
-import { executeSplit, smallerSide } from './split-geometry';
+import { executeSplit, smallerSide, type SplitSide } from './split-geometry';
 import {
   ATTRS,
   COLOR,
@@ -241,6 +241,91 @@ describe('FR-91 ring reorganization — hole + enclave + untouched hole (受け�
       const hole = sideWithHole.rings.find((r) => r.kind === RING_KIND.Hole)!;
       const parent = sideWithHole.rings.find((r) => r.id === hole.parentRingId);
       expect(parent?.kind).toBe(RING_KIND.Territory);
+    }
+  });
+});
+
+describe('bughunt2 — degenerate (<3 vertex) ring guard at proposal assembly (FR-44 最低3頂点)', () => {
+  // A direct SplitResult whose side carries a DEGENERATE hole ring (2 vertices).
+  // The geometry layer's everyOuterRingHasMinVertices only inspects each piece's
+  // OUTER ring, so a quantization-collapsed HOLE ring (index >= 1) is NOT caught
+  // there. Inside buildShapeFromSide, ringStrictlyContains returns false for any
+  // length<3 ring, so reparentByContainment finds no containing parent for the
+  // degenerate hole and silently DEMOTES it to a top-level territory — a phantom,
+  // area≈0 piece that passes isAlternationValid (a parentless territory is valid
+  // alternation). The proposal-gate guard must surface this as a loud rejection.
+  function sideWithDegenerateHole(): { sideA: SplitSide; sideB: SplitSide } {
+    // A valid 10×10 square outer plus a 2-vertex (degenerate) hole ring.
+    const outer = [c(0, 0), c(10, 0), c(10, 10), c(0, 10)];
+    const degenerateHole = [c(3, 3), c(7, 7)]; // <3 vertices: cannot bound an area.
+    const sideA: SplitSide = {
+      area: [[outer, degenerateHole]],
+      areaKm2: 100,
+    };
+    // A well-formed opposite side so only the degenerate hole is at fault.
+    const sideB: SplitSide = {
+      area: [[[c(10, 0), c(20, 0), c(20, 10), c(10, 10)]]],
+      areaKm2: 100,
+    };
+    return { sideA, sideB };
+  }
+
+  it('rejects a proposal whose built shape carries a <3-vertex hole ring (no phantom territory)', () => {
+    const { feature, store } = unitSquare('degh');
+    const { sideA, sideB } = sideWithDegenerateHole();
+    const result = { sideA, sideB, edgeCuts: [] };
+    expect(() =>
+      assembleSplitProposal({
+        target: feature,
+        store: store.byId,
+        result,
+        choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+        nonInherited: { attributes: ATTRS, color: COLOR },
+        ids: freshIdPorts(),
+      }),
+    ).toThrow(/最低3頂点|degenerate ring/);
+  });
+
+  it('the degenerate hole is on the NON-inheritor side and is STILL rejected (both sides guarded)', () => {
+    const { feature, store } = unitSquare('degh2');
+    const { sideA, sideB } = sideWithDegenerateHole();
+    // sideA carries the degenerate hole; inherit sideB so the bad ring lands on the
+    // NEW-feature side — the guard must cover that side too, not just the inheritor.
+    const result = { sideA, sideB, edgeCuts: [] };
+    expect(() =>
+      assembleSplitProposal({
+        target: feature,
+        store: store.byId,
+        result,
+        choice: createInheritanceChoice(INHERITANCE_SIDE.B),
+        nonInherited: { attributes: ATTRS, color: COLOR },
+        ids: freshIdPorts(),
+      }),
+    ).toThrow(/最低3頂点|degenerate ring/);
+  });
+
+  it('a well-formed two-ring shape (square + valid hole) is NOT rejected by the guard', () => {
+    const { feature, store } = unitSquare('degh3');
+    const outer = [c(0, 0), c(10, 0), c(10, 10), c(0, 10)];
+    const validHole = [c(3, 3), c(7, 3), c(7, 7), c(3, 7)];
+    const sideA: SplitSide = { area: [[outer, validHole]], areaKm2: 100 };
+    const sideB: SplitSide = {
+      area: [[[c(10, 0), c(20, 0), c(20, 10), c(10, 10)]]],
+      areaKm2: 100,
+    };
+    const result = { sideA, sideB, edgeCuts: [] };
+    const proposal = assembleSplitProposal({
+      target: feature,
+      store: store.byId,
+      result,
+      choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+      nonInherited: { attributes: ATTRS, color: COLOR },
+      ids: freshIdPorts(),
+    });
+    // The valid hole nests under its containing territory (no phantom, no throw).
+    expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+    for (const ring of proposal.inheritorShape.rings) {
+      expect(ring.vertexIds.length).toBeGreaterThanOrEqual(3);
     }
   });
 });
