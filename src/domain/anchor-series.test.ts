@@ -377,6 +377,53 @@ describe('resolveAt on an unsorted series (corrupt/legacy persistence input)', (
   });
 });
 
+// --- regression (bughunt2): resolveAt / normalizeSeries duplicate-start parity
+//
+// consistency.checkTimeSlice resolves the effective snapshot on the RAW
+// (un-normalized) series via resolveAt, while a NormalizeSeries repair collapses
+// the series with normalizeSeries. If a corrupt / hand-edited / legacy series
+// carries DUPLICATE starts (an INV-1 TimeConflict, separately flagged), the two
+// MUST pick the SAME entry at the tie time — otherwise the snapshot inspected
+// during detection differs from the one that survives repair, surfacing a
+// spurious "new" overlap/topology inconsistency that blocks the TimeConflict
+// repair in applyRepairChecked. normalizeSeries keeps the LAST entry for a
+// duplicate start; resolveAt must agree (LAST wins), not pick the FIRST.
+describe('resolveAt vs normalizeSeries on duplicate starts (bughunt2 parity)', () => {
+  it('resolveAt picks the LAST entry for a tie, matching normalizeSeries collapse', () => {
+    // Two distinct anchors sharing start=100 (an INV-1 violation a raw/legacy
+    // series can carry). Build the series object DIRECTLY to bypass the
+    // normalization that would collapse them — this is the unvalidated input the
+    // consistency path resolves on.
+    const a = entry(1, 100, null);
+    const b = entry(2, 100, null);
+    const raw: AnchorSeries = { entries: [a, b] };
+
+    // What the repair would keep: the LAST entry for the duplicate start.
+    const normalized = normalizeSeries(raw.entries, cal);
+    expect(normalized.entries).toHaveLength(1);
+    const survivor = normalized.entries[0]!;
+    expect(survivor.anchor.id).toBe(b.anchor.id);
+
+    // What detection sees on the RAW series must be the SAME entry.
+    const resolved = present(resolveAt(raw, timePointYear(150), cal));
+    expect(resolved.anchor.id).toBe(survivor.anchor.id);
+    expect(resolved.anchor.id).toBe(b.anchor.id); // LAST, not FIRST (a).
+  });
+
+  it('agrees across an arbitrary number of duplicate-start entries', () => {
+    // start=50 carries three duplicates; the LAST (id seed 3) must win in BOTH.
+    const raw: AnchorSeries = {
+      entries: [entry(1, 50, null), entry(2, 50, null), entry(3, 50, null)],
+    };
+    const survivor = normalizeSeries(raw.entries, cal).entries.find(
+      (e) => e.start.year === 50,
+    )!;
+    const resolved = present(resolveAt(raw, timePointYear(50), cal));
+    expect(resolved.anchor.id).toBe(survivor.anchor.id);
+    expect(resolved.anchor.id).toBe(raw.entries[2]!.anchor.id);
+  });
+});
+
 describe('deleteAnchor (AC-3, INV-5, §9.2 pair concept)', () => {
   it('deletes a middle anchor and opens a valid gap', () => {
     const s = series(entry(1, 100, 150), entry(2, 200, 250), entry(3, 300, null));

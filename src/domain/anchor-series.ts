@@ -388,15 +388,22 @@ export function resolveAt(
   // yields exactly the same entry the binary search did.
   //
   // `time` is normalized exactly once. Ties on start cannot occur in a valid
-  // series (INV-1 forbids duplicate starts); should a corrupt series carry them,
-  // the FIRST occurrence wins for determinism (`>` keeps the earlier index).
+  // series (INV-1 forbids duplicate starts); should a corrupt / hand-edited /
+  // legacy series carry them, the LAST occurrence wins (`>=` advances the index
+  // on a tie). This MUST match normalizeSeries' duplicate-start collapse, which
+  // also keeps the LAST entry for each distinct start (see the keep-last dedup
+  // there). Otherwise the snapshot the consistency check inspects on the RAW
+  // series (resolveAt, this path) would differ from the snapshot that survives
+  // a NormalizeSeries repair, flipping which feature is effective at a tie time
+  // and making applyRepairChecked see a spurious "new" overlap/topology
+  // inconsistency that blocks the TimeConflict repair (bughunt2).
   const t: Normalized = normalize(time, calendar);
   let idx = -1;
   let best: Normalized | null = null;
   for (let i = 0; i < entries.length; i++) {
     const start = normalize(entries[i]!.start, calendar);
     if (compareNormalized(start, t) > 0) continue; // start after time: not yet effective.
-    if (best === null || compareNormalized(start, best) > 0) {
+    if (best === null || compareNormalized(start, best) >= 0) {
       best = start;
       idx = i;
     }
