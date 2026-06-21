@@ -88,12 +88,17 @@ import { buildCommittedFeatures } from './map/committed-features';
 import {
   PointerDispatcher,
   NOOP_ADD_PORT,
-  NOOP_CONTEXT_MENU_PORT,
   LongitudeShiftControl,
   type CameraPort,
   type HitTester,
   type MapCameraInput,
 } from './map/index';
+import { createLiveContextMenuPort } from './map/live-context-menu-port';
+import {
+  MapContextMenu,
+  type ContextMenuOpener,
+} from './map/MapContextMenu';
+import { HIT_KIND } from '../domain/selection';
 import { liveHitTestAt, drawnAreaAt } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
@@ -211,6 +216,16 @@ export function App(): JSX.Element {
   // camera-only events (wheel + non-left pointer) to that one dispatcher (単一真実源 —
   // no second pan/zoom path, 教訓 5.29). Until the map mounts it degrades to a no-op.
   const cameraInputRef = useRef<MapCameraInput | null>(null);
+
+  // ROOT FIX (bughunt2: FR-96 の右クリックメニューが NO-OP ポートに結線されていた). The
+  // U40 dispatcher routes every right-button press to the `contextMenu` port, but the
+  // root backed it with NOOP_CONTEXT_MENU_PORT, so right-click never opened a menu
+  // (教訓 5.7). We now back it with the LIVE port (createLiveContextMenuPort, built in
+  // onMapMount from the SAME hit-test / selection / surface transform the click path
+  // uses) and bridge its open-request to the {@link MapContextMenu} React mount through
+  // this opener ref — the SAME late-binding pattern cameraInputRef uses. A no-op until
+  // the mount registers its setter (bindContextMenuOpener below).
+  const contextMenuOpenerRef = useRef<ContextMenuOpener | null>(null);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -490,6 +505,34 @@ export function App(): JSX.Element {
         recordCommitRef.current?.(outcome.result, preference);
       },
     });
+    // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
+    // right-button press the dispatcher calls this port (dispatch.ts:「Right button
+    // is always a context-menu request」); it promotes the hit feature into the LIVE
+    // selection through the SAME write path a left click uses (so 削除 etc. target the
+    // right-clicked feature, 教訓 5.11), converts the surface point back to client px
+    // for the position:fixed menu (the inverse of `toSurface`, same hookTarget rect —
+    // 単一の transform, 教訓 5.29), and opens the {@link MapContextMenu} React mount
+    // through the opener ref. Was NOOP_CONTEXT_MENU_PORT — right-click was a dead end.
+    const contextMenu = createLiveContextMenuPort({
+      surfaceToClient: (point) => {
+        const box = hookTarget.getBoundingClientRect();
+        return { x: point.x + box.left, y: point.y + box.top };
+      },
+      promoteHit: (hit) => {
+        const s = store.getState();
+        // A feature-body / vertex hit becomes the active feature (the menu's command
+        // target); a vertex hit additionally selects that vertex, exactly as a left
+        // click resolves it (単一の選択書き込み経路). Empty space is never reached here
+        // (the port skips promotion for an empty hit, keeping the current selection).
+        if (hit.kind === HIT_KIND.FeatureBody) {
+          s.setActiveFeature(hit.featureId);
+        } else if (hit.kind === HIT_KIND.Vertex) {
+          s.setActiveFeature(hit.featureId);
+          s.replaceVertexSelection(hit.featureId, [hit.vertexId]);
+        }
+      },
+      open: (request) => contextMenuOpenerRef.current?.open(request),
+    });
     const dispatcher = new PointerDispatcher({
       getMode: () => store.getState().mode,
       camera: cameraPort,
@@ -497,7 +540,7 @@ export function App(): JSX.Element {
       selection: selectionPort,
       editSession,
       add: NOOP_ADD_PORT,
-      contextMenu: NOOP_CONTEXT_MENU_PORT,
+      contextMenu,
       // FR-10 即時反映 / Codex medium #6: clamp the wheel zoom against the LIVE
       // effective range (project-setting min/max + the renderer fit-world floor),
       // read fresh per notch so a settings change reaches the wheel and the floor
@@ -547,6 +590,12 @@ export function App(): JSX.Element {
       dispatcher.pointerCancel(e.pointerId);
     };
     const onPointerLeave = (): void => dispatcher.pointerLeave();
+    // BUGHUNT2 ROOT FIX (FR-96) — suppress the NATIVE browser/OS context menu on the
+    // map so OUR right-click menu (opened from the pointerdown above) is the only one
+    // shown. Without this the default contextmenu would pop over the custom menu. The
+    // dispatcher already drove the context-menu request on pointerdown; this only
+    // stops the default so the two never overlap.
+    const onContextMenu = (e: MouseEvent): void => e.preventDefault();
     const onWheel = (e: WheelEvent): void => {
       // Prevent the page from scrolling so a notch becomes a zoom, not a scroll.
       e.preventDefault();
@@ -559,6 +608,7 @@ export function App(): JSX.Element {
     hookTarget.addEventListener('pointerup', onPointerUp);
     hookTarget.addEventListener('pointercancel', onPointerCancel);
     hookTarget.addEventListener('pointerleave', onPointerLeave);
+    hookTarget.addEventListener('contextmenu', onContextMenu);
     // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
     hookTarget.addEventListener('wheel', onWheel, { passive: false });
 
@@ -727,12 +777,23 @@ export function App(): JSX.Element {
       hookTarget.removeEventListener('pointerup', onPointerUp);
       hookTarget.removeEventListener('pointercancel', onPointerCancel);
       hookTarget.removeEventListener('pointerleave', onPointerLeave);
+      hookTarget.removeEventListener('contextmenu', onContextMenu);
       hookTarget.removeEventListener('wheel', onWheel);
       ports.dispose();
       rendererRef.current = null;
       cameraInputRef.current = null;
     };
   }, [store]);
+
+  // Bridge the {@link MapContextMenu} mount's open-setter to the imperative live
+  // context-menu port (assigned to the opener ref the port reads). Stable so the
+  // mount's effect binds once; null on unmount (教訓 5.2 全経路で破棄).
+  const bindContextMenuOpener = useCallback(
+    (opener: ContextMenuOpener | null): void => {
+      contextMenuOpenerRef.current = opener;
+    },
+    [],
+  );
 
   // Supply the camera clamp range to U17 (FR-10 / FR-109 即時反映). Caches the
   // value and forwards it to the live renderer when one is mounted.
@@ -1227,6 +1288,17 @@ export function App(): JSX.Element {
                 app-active-feature マーカーと同方式). They hold NO truth — pure mirrors
                 of the store (技術方針 2.5). */}
             <SessionModeMarker store={store} />
+            {/* BUGHUNT2 ROOT FIX — the FR-96 right-click context menu mount. Bridges
+                the live context-menu port (createLiveContextMenuPort in onMapMount) to
+                the U20 ContextMenu component, bound to the LIVE registry + session
+                mode so each item's enabled state comes from the SAME resolveCommandEnabled
+                the menu bar / shortcuts use (教訓 5.13). Was unreachable: the port was
+                NOOP_CONTEXT_MENU_PORT, so right-click opened nothing. */}
+            <MapContextMenu<DomainRoot>
+              store={store}
+              registry={registry}
+              bindOpener={bindContextMenuOpener}
+            />
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
                 the ファイル menu / shortcut commands on the SAME registry the shell
                 dispatches, drives the FR-107 unsaved warning + FR-106 repair modals,
