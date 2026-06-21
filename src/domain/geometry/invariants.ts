@@ -117,13 +117,96 @@ function bboxesOverlap(a: Bbox, b: Bbox): boolean {
 }
 
 /**
+ * Twice the SIGNED area of a ring (shoelace). Sign encodes winding:
+ * positive = counter-clockwise (interior on the LEFT of each directed edge),
+ * negative = clockwise (interior on the RIGHT). Magnitude is unused — only the
+ * sign is consumed (by {@link ringsBoundaryCoincidentSameSide}), so float
+ * imprecision in the magnitude is irrelevant here.
+ */
+function ringSignedAreaX2(ring: GeoRing): number {
+  const n = ring.length;
+  let acc = 0;
+  for (let i = 0; i < n; i += 1) {
+    const p = ring[i];
+    const q = ring[(i + 1) % n];
+    if (p === undefined || q === undefined) continue;
+    acc += p.lon * q.lat - q.lon * p.lat;
+  }
+  return acc;
+}
+
+/**
+ * True iff two rings share a positive-length boundary run AND keep their
+ * interiors on the SAME geometric side of that shared line — the signature of a
+ * coincident / boundary-overlapping pair (e.g. an identical duplicate piece, or a
+ * duplicate hole) whose interiors therefore overlap.
+ *
+ * This is the case the proper-crossing + strictly-Inside-vertex witnesses in
+ * {@link ringsOverlap} / {@link piecesSolidOverlap} structurally cannot see: for
+ * two coincident rings every edge pair is Collinear (never Proper) and every
+ * vertex lies on the other's boundary (pointInPolygon → Boundary, never Inside),
+ * so without this check a fully-coincident duplicate would pass the disjoint
+ * invariant. A legal edge-adjacent touch (two pieces sharing a border) is NOT
+ * flagged: there the two rings traverse the shared edge in OPPOSITE winding
+ * sense, putting their interiors on OPPOSITE sides → returns false.
+ *
+ * Robust & epsilon-free: the shared run is detected by `segmentsIntersect`'s
+ * exact Collinear classification (orient2d signs); the interior side of each ring
+ * is derived from its winding sign (signed area) and the directed edge — no
+ * coordinate-scale-dependent offset probe.
+ */
+function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean {
+  const an = a.length;
+  const bn = b.length;
+  // Interior-side sign per ring: +1 if interior is on the LEFT of each directed
+  // edge (CCW winding), -1 if on the RIGHT (CW winding). A degenerate (zero-area)
+  // ring has no interior side and cannot coincide-overlap.
+  const wa = ringSignedAreaX2(a);
+  const wb = ringSignedAreaX2(b);
+  if (wa === 0 || wb === 0) return false;
+  const sideA = wa > 0 ? 1 : -1;
+  const sideB = wb > 0 ? 1 : -1;
+
+  for (let i = 0; i < an; i += 1) {
+    const a1 = a[i];
+    const a2 = a[(i + 1) % an];
+    if (a1 === undefined || a2 === undefined) continue;
+    for (let j = 0; j < bn; j += 1) {
+      const b1 = b[j];
+      const b2 = b[(j + 1) % bn];
+      if (b1 === undefined || b2 === undefined) continue;
+      if (segmentsIntersect(a1, a2, b1, b2).relation !== SEGMENT_RELATION.Collinear) {
+        continue;
+      }
+      // The two edges are collinear and overlap along a positive-length run.
+      // Each ring's inward normal along its edge is leftNormal(dir) scaled by its
+      // winding sign. The edges are parallel; if they point the SAME way the
+      // shared direction is identical, if OPPOSITE the directions are negated.
+      const dax = a2.lon - a1.lon;
+      const day = a2.lat - a1.lat;
+      const dbx = b2.lon - b1.lon;
+      const dby = b2.lat - b1.lat;
+      // Sign of the dot product tells whether the two edge directions are aligned
+      // (+) or anti-aligned (-) along the shared line.
+      const sameDir = dax * dbx + day * dby >= 0 ? 1 : -1;
+      // Interiors land on the same geometric side of the shared line iff the
+      // inward-normal directions agree once relative edge orientation is folded in.
+      if (sideA === sideB * sameDir) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * True iff two simple rings have OVERLAPPING INTERIORS (not merely boundary
  * contact). Used to enforce the multi-polygon type契约 (types.ts): polygon pieces
  * are disjoint and holes within one piece do not overlap. A boundary-only touch
  * (shared edge / vertex) is NOT an overlap. Detection:
  *   - any Proper edge crossing means the boundaries cross → interiors overlap;
- *   - otherwise (no crossing) one ring is either disjoint from or nested in the
- *     other: a vertex of one strictly Inside the other witnesses nesting/overlap.
+ *   - a vertex of one strictly Inside the other witnesses nesting/overlap;
+ *   - a coincident boundary run with interiors on the same side witnesses a
+ *     duplicate / fully-overlapping ring that the first two probes structurally
+ *     miss (every edge Collinear, every vertex on the other's Boundary).
  * Both rings are assumed already validated as simple (caller checks checkRing).
  */
 function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
@@ -152,7 +235,9 @@ function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
   for (const v of b) {
     if (pointInPolygon(v, aPoly) === POINT_LOCATION.Inside) return true;
   }
-  return false;
+  // No proper crossing and no strictly-Inside vertex: a fully/partly coincident
+  // boundary (identical duplicate ring) still overlaps — detect it explicitly.
+  return ringsBoundaryCoincidentSameSide(a, b);
 }
 
 /**
@@ -301,6 +386,14 @@ function checkPiecesDisjoint(
  * A Proper crossing of the two outer boundaries means the outer-bounded regions
  * interleave; otherwise nesting is witnessed by an outer vertex of one piece lying
  * strictly inside the other piece's solid (hole-aware `pointInPolygon`).
+ *
+ * Two pieces with COINCIDENT outer rings (an identical duplicate piece) are also
+ * flagged: their outer-bounded regions are the same, which the proper-crossing and
+ * strictly-Inside-vertex probes structurally miss (every outer edge Collinear,
+ * every outer vertex on the other's Boundary). This cannot misfire on a legal
+ * ENCLAVE — an enclave's outer ring is nested inside the parent's HOLE, so the two
+ * outer rings are disjoint, share no boundary run, and {@link
+ * ringsBoundaryCoincidentSameSide} returns false.
  */
 function piecesSolidOverlap(
   polyA: GeoPolygon,
@@ -329,7 +422,7 @@ function piecesSolidOverlap(
   for (const v of outerB) {
     if (pointInPolygon(v, polyA) === POINT_LOCATION.Inside) return true;
   }
-  return false;
+  return ringsBoundaryCoincidentSameSide(outerA, outerB);
 }
 
 /** True iff the multi-polygon satisfies every invariant. */

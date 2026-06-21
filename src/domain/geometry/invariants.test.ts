@@ -189,6 +189,80 @@ describe('invariants (R2 back-half, acceptance criterion 2)', () => {
     expect(isMultiPolygonValid([[outer, h1, h2]])).toBe(true);
   });
 
+  it('flags two IDENTICAL outer rings (duplicate polygon piece, 100% overlap)', () => {
+    // Regression: for two coincident outers every edge pair is Collinear (never
+    // Proper) and every vertex lies on the other ring's boundary (pointInPolygon
+    // → Boundary, never Inside), so the proper-crossing + strictly-Inside-vertex
+    // probes both miss it. A fully-coincident duplicate piece must NOT pass the
+    // disjoint-piece契约.
+    const piece = rect(0, 0, 10, 10);
+    const dup = rect(0, 0, 10, 10);
+    const v = checkMultiPolygonInvariants([[piece], [dup]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+  });
+
+  it('flags a duplicate outer ring with extra COLLINEAR vertices (coincident area, no shared vertices strictly inside)', () => {
+    // Same square, but the duplicate has an extra collinear midpoint vertex on the
+    // bottom edge. Areas are identical, no vertex of one is strictly inside the
+    // other, no edge Proper-crosses — only the boundary-coincidence test catches it.
+    const piece = rect(0, 0, 10, 10);
+    const dup = [c(0, 0), c(5, 0), c(10, 0), c(10, 10), c(0, 10)];
+    const v = checkMultiPolygonInvariants([[piece], [dup]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+  });
+
+  it('flags two IDENTICAL holes within one polygon (duplicate hole, 100% overlap)', () => {
+    const outer = rect(0, 0, 100, 100);
+    const h1 = rect(20, 20, 30, 30);
+    const h2 = rect(20, 20, 30, 30);
+    const v = checkMultiPolygonInvariants([[outer, h1, h2]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+  });
+
+  it('does NOT flag two legal edge-adjacent pieces sharing a border (boundary touch is not overlap)', () => {
+    // Two squares sharing the full vertical edge x=10. Both CCW, so they traverse
+    // the shared edge in OPPOSITE directions → interiors on OPPOSITE sides → the
+    // coincidence test must NOT report overlap (FR-26 境界の接触は重なりに含めない).
+    const left = rect(0, 0, 10, 10);
+    const right = rect(10, 0, 10, 10);
+    expect(isMultiPolygonValid([[left], [right]])).toBe(true);
+  });
+
+  it('does NOT flag a legal enclave even when probed by the coincidence test', () => {
+    // The enclave's outer is nested inside the parent HOLE: outers share no
+    // boundary run, so the coincidence test returns false (no false positive).
+    const outer = rect(0, 0, 100, 100);
+    const hole = rect(30, 30, 40, 40);
+    const island = rect(40, 40, 20, 20);
+    expect(isMultiPolygonValid([[outer, hole], [island]])).toBe(true);
+  });
+
+  it('property: a duplicate of any rectangle piece is always flagged as overlapping', () => {
+    fc.assert(
+      fc.property(
+        fc.double({ min: -160, max: 0, noNaN: true, noDefaultInfinity: true }),
+        fc.double({ min: -80, max: 0, noNaN: true, noDefaultInfinity: true }),
+        fc.double({ min: 1, max: 80, noNaN: true, noDefaultInfinity: true }),
+        fc.double({ min: 1, max: 80, noNaN: true, noDefaultInfinity: true }),
+        (x, y, w, h) => {
+          const a = rect(x, y, w, h);
+          const b = rect(x, y, w, h);
+          // As duplicate pieces.
+          const piecesV = checkMultiPolygonInvariants([[a], [b]]);
+          expect(piecesV.some((vi) => vi.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(
+            true,
+          );
+          // As duplicate holes inside a large enclosing outer.
+          const big = rect(-170, -85, 339, 169);
+          const holesV = checkMultiPolygonInvariants([[big, a, b]]);
+          expect(holesV.some((vi) => vi.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(
+            true,
+          );
+        },
+      ),
+    );
+  });
+
   it('property: a hole built strictly inside a concave (notched) outer is always valid', () => {
     // Concave outer: a 40x40 square with a right-side rectangular notch removed
     // at y in [yLo, yHi], cut inward to xNotch. A hole built strictly within the
