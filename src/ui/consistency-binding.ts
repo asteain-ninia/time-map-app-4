@@ -61,7 +61,11 @@ import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
 import { buildForest } from '../domain/hierarchy/forest';
-import { extractTerminalShapes } from '../domain/spatial/index';
+import {
+  extractTerminalShapes,
+  createTerminalShapeCache,
+  type TerminalShapeCache,
+} from '../domain/spatial/index';
 import { detectTerminalOverlaps } from '../domain/spatial/index';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
@@ -246,13 +250,17 @@ function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => s
  */
 function detectSpatialAt<Snapshot>(
   proposal: EditProposal<Snapshot>,
+  cache?: TerminalShapeCache,
 ): (resultState: DomainRoot) => SpatialCheckResult {
   return (resultState) => {
     const time = proposal.anchorTime;
     const features = featuresAt(resultState, time);
     const vertices = verticesAt(resultState, time);
     const forest = buildForest(features);
-    const terminals = extractTerminalShapes(forest, vertices);
+    // bughunt3: thread the binding's long-lived cache so an edit confirm re-resolves
+    // ONLY the touched terminal(s); the other 5,000-scale terminals reuse their prior
+    // shape (immutable features/vertices ⇒ reference identity proves no change).
+    const terminals = extractTerminalShapes(forest, vertices, cache);
     const pairs = detectTerminalOverlaps(terminals);
     const names = displayNamesAt(resultState, time);
     return conflictsFromOverlapPairs(pairs, names, () => ({ kind: 'point', at: time }));
@@ -505,10 +513,11 @@ function bindPortsToProposal<Snapshot>(
   access: DomainRootAccess,
   base: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
+  spatialCache?: TerminalShapeCache,
 ): ConsistencyPorts<DomainRoot, Snapshot> {
   return {
     ...base,
-    detectSpatial: detectSpatialAt(proposal),
+    detectSpatial: detectSpatialAt(proposal, spatialCache),
     applyResolution: applyResolutionAt(access, proposal.anchorTime),
   };
 }
@@ -523,13 +532,14 @@ function runResolutionsGuarded<Snapshot>(
   base: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
   resolutions: readonly Resolution[],
+  spatialCache?: TerminalShapeCache,
 ): ProcessResult<DomainRoot> {
   try {
     return orchestratorApplyResolutions(
       access.getRoot(),
       proposal,
       resolutions,
-      bindPortsToProposal(access, base, proposal),
+      bindPortsToProposal(access, base, proposal, spatialCache),
     );
   } catch (error) {
     const rejection: RejectedResult = {
@@ -566,11 +576,12 @@ function createAccumulatingApply<Snapshot>(
   access: DomainRootAccess,
   ports: ConsistencyPorts<DomainRoot, Snapshot>,
   proposal: EditProposal<Snapshot>,
+  spatialCache?: TerminalShapeCache,
 ): (resolutions: readonly Resolution[]) => ProcessResult<DomainRoot> {
   const accumulated = new Map<string, Resolution>();
   return (resolutions) => {
     for (const r of resolutions) accumulated.set(r.conflictId, r);
-    return runResolutionsGuarded(access, ports, proposal, [...accumulated.values()]);
+    return runResolutionsGuarded(access, ports, proposal, [...accumulated.values()], spatialCache);
   };
 }
 
@@ -594,11 +605,20 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
     applyResolution: () => undefined,
     makeCommand,
   };
+  // bughunt3: one incremental terminal-shape cache per binding, threaded through
+  // every confirm / apply-resolutions over this binding so an edit re-resolves
+  // only the touched terminals (NFR 5.x — 5,000-terminal scale stays O(touched)).
+  const spatialCache = createTerminalShapeCache();
   return {
     ports,
     startProcess: (proposal) =>
-      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
-    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
   };
 };
 
@@ -629,11 +649,17 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access) => {
     applyResolution: () => undefined,
     makeCommand,
   };
+  const spatialCache = createTerminalShapeCache();
   return {
     ports,
     startProcess: (proposal) =>
-      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
-    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
   };
 };
 
@@ -651,11 +677,17 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
     applyResolution: () => undefined,
     makeCommand,
   };
+  const spatialCache = createTerminalShapeCache();
   return {
     ports,
     startProcess: (proposal) =>
-      runGuarded(access.getRoot(), proposal, bindPortsToProposal(access, ports, proposal)),
-    applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
   };
 };
 

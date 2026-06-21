@@ -26,4 +26,8 @@ export {
   detectTerminalOverlapsNaive,
 } from './overlap';
 
-export { extractTerminalShapes } from './terminals';
+export {
+  extractTerminalShapes,
+  createTerminalShapeCache,
+  type TerminalShapeCache,
+} from './terminals';
