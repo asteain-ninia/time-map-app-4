@@ -251,6 +251,22 @@ export interface SessionStoreActions<S> {
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
+  /**
+   * Write BOTH timeline-range bounds (timelineMinYear + timelineMaxYear) in ONE
+   * transition (finding bughunt2). The per-key {@link updateProjectSetting} derives
+   * the timeline state after EACH single key change, so writing the two bounds
+   * sequentially passes through a transient inverted range
+   * ({newMin, oldMax}) whenever the whole window is shifted forward — and
+   * {@link deriveTimelineState} throws on an inverted range (precondition guard). A
+   * caller that has validated the WHOLE draft (min < max) must therefore fold both
+   * bounds into a single set() so no intermediate inversion is ever derived. This
+   * action does exactly that: it writes both keys, derives the range/time ONCE from
+   * the final (valid) pair, and emits a single timelineMaxYear change notification
+   * (the upper bound is the last-written key, matching the per-key order). The
+   * incoming pair MUST already satisfy min < max (validated by the confirm entry);
+   * deriveTimelineState asserts it.
+   */
+  setProjectTimelineRangeYears(minYear: number, maxYear: number): void;
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
   /**
    * Hydrate BOTH settings slices wholesale from a loaded / new project's persisted
@@ -686,6 +702,44 @@ export function createSessionStore<S>(
         projectDirty: true,
         lastSettingsChange: { scope, key },
         ...(timelinePatch ?? {}),
+      });
+    },
+
+    setProjectTimelineRangeYears(minYear, maxYear) {
+      // finding bughunt2: the settings-dialog confirm writes changed project keys
+      // one at a time, and the two timeline bounds are written in
+      // PROJECT_SETTING_KEYS order (timelineMinYear before timelineMaxYear). When
+      // the whole range is shifted FORWARD (e.g. [0,10000] -> [20000,30000]) the
+      // per-key path first commits {min:20000, max:10000(old)} — an inverted range —
+      // and deriveTimelineState THROWS on it (precondition), escaping the click
+      // handler with the other already-written keys partially applied. Folding both
+      // bounds into ONE set() (deriving the range/time ONCE from the final valid
+      // pair) removes the transient inversion entirely. Both keys land together so
+      // the projectSettings, the derived range mirror and currentTime never drift
+      // (二重の真実源 を作らない, 単一の set()).
+      const nextProject: ProjectSettings = {
+        ...get().projectSettings,
+        timelineMinYear: minYear,
+        timelineMaxYear: maxYear,
+      };
+      const timelinePatch = deriveTimelineState(
+        nextProject,
+        get().currentTime,
+        get().selection,
+        existence,
+        calendar,
+      );
+      // Emit the upper-bound key as the change notification: it matches the
+      // last-written key on the legacy per-key order, so subscribers keyed on
+      // timelineMaxYear still fire and the slider re-reads the new range.
+      set({
+        projectSettings: nextProject,
+        projectDirty: true,
+        lastSettingsChange: {
+          scope: SETTINGS_SCOPE.Project,
+          key: 'timelineMaxYear',
+        },
+        ...timelinePatch,
       });
     },
 

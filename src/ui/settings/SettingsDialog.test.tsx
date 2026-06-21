@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { StoreApi } from 'zustand/vanilla';
 
+import { timePointYear } from '../../domain/time/time-point';
 import { createSessionStore, type SessionStore } from '../state/store';
+import { TIME_CHANGE_SOURCE } from '../state/store';
 import { DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 
 import { SettingsDialog } from './SettingsDialog';
@@ -33,6 +35,7 @@ function portFrom(store: StoreApi<SessionStore<TestDomain>>): SettingsStorePort 
     projectSettings: s.projectSettings,
     appSettings: s.appSettings,
     updateProjectSetting: s.updateProjectSetting,
+    setProjectTimelineRangeYears: s.setProjectTimelineRangeYears,
     updateAppSetting: s.updateAppSetting,
   };
 }
@@ -124,6 +127,45 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
 
     expect(seen).toContain(0.2);
     expect(store.getState().projectSettings.gridOpacity).toBeCloseTo(0.2);
+  });
+
+  // 回帰 (bughunt2: 設定ダイアログでタイムライン範囲を前方シフトすると confirm が例外を
+  // 投げ、設定が部分適用＋クラッシュ). The confirm loop wrote changed project keys one at a
+  // time in PROJECT_SETTING_KEYS order (timelineMinYear BEFORE timelineMaxYear), and the
+  // per-key store path derives the timeline state after EACH single write. Shifting the
+  // whole range FORWARD ([0,10000]→[20000,30000], both bounds valid, draft min<max) first
+  // committed {min:20000, max:10000(old)} — an inverted range that throws in
+  // deriveTimelineState — so confirm threw INSIDE the click handler with other keys
+  // already partially applied. The fix writes both bounds in ONE transaction, so a
+  // forward shift confirms cleanly and reflects the new range immediately.
+  it('a forward timeline-range shift confirms without throwing (finding bughunt2)', () => {
+    const store = makeStore();
+    // Park currentTime inside the OLD default range [0,10000].
+    store.getState().setCurrentTime(timePointYear(5000), TIME_CHANGE_SOURCE.Slider);
+    // Also change a NON-timeline key that sorts BEFORE the timeline keys, to prove the
+    // pre-fix partial-application (equatorLengthKm is written, timelineMaxYear is not).
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '12345' } });
+    // Shift the whole window forward: both bounds valid (20000 < 30000).
+    fireEvent.change(screen.getByLabelText('タイムライン最小年'), { target: { value: '20000' } });
+    fireEvent.change(screen.getByLabelText('タイムライン最大年'), { target: { value: '30000' } });
+
+    // Pre-fix this click threw an uncaught error escaping the handler; it must not now.
+    expect(() => fireEvent.click(screen.getByTestId('settings-save'))).not.toThrow();
+
+    const s = store.getState();
+    // Both timeline bounds were applied (no partial application).
+    expect(s.projectSettings.timelineMinYear).toBe(20000);
+    expect(s.projectSettings.timelineMaxYear).toBe(30000);
+    // The non-timeline key was applied too.
+    expect(s.projectSettings.equatorLengthKm).toBe(12345);
+    // The derived slider range reflects the new window…
+    expect(s.timelineMin).toEqual(timePointYear(20000));
+    expect(s.timelineMax).toEqual(timePointYear(30000));
+    // …and currentTime (5000) was outside the new range, clamped to the lower bound.
+    expect(s.currentTime).toEqual(timePointYear(20000));
+    expect(s.projectDirty).toBe(true);
   });
 
   it('a confirmed FPS change reflects immediately and is clamped at the store (受け入れ基準 2)', () => {

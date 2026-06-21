@@ -45,6 +45,15 @@ export interface SettingsStorePort {
   readonly appSettings: AppSettings;
   /** U16: write ONE project setting (dirty-marks the project, notifies, 教訓 5.35). */
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
+  /**
+   * U16: write BOTH timeline-range bounds atomically (finding bughunt2). The
+   * confirm path uses this — never two `updateProjectSetting` calls — for the
+   * timeline keys, because the per-key path derives the range after EACH single
+   * write and a forward range shift ([0,10000]→[20000,30000]) passes through a
+   * transient inverted {newMin, oldMax} that throws. One transaction over the
+   * validated (min < max) pair removes that intermediate inversion.
+   */
+  setProjectTimelineRangeYears(minYear: number, maxYear: number): void;
   /** U16: write ONE app setting (app-level persistence, notifies, 教訓 5.35). */
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
 }
@@ -146,9 +155,26 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
     const changedProject = changedProjectKeys(store.projectSettings, projectV.value);
     const changedApp = changedAppKeys(store.appSettings, appV.value);
 
+    // finding bughunt2: the two timeline bounds MUST be written in ONE transaction.
+    // Writing them one-by-one (the generic per-key path) derives the timeline state
+    // after each single write, so a forward range shift ([0,10000]→[20000,30000])
+    // first commits {min:20000, max:10000(old)} — an inverted range that throws in
+    // deriveTimelineState — escaping the click handler with the other keys partially
+    // applied. So we route the timeline keys through the atomic
+    // setProjectTimelineRangeYears and write only the NON-timeline changed keys per
+    // key. The whole draft is already validated above (min < max), so the pair is
+    // safe. `changedProject` (the returned order) is unchanged for observability.
+    const timelineChanged = changedProject.some(isTimelineKey);
     for (const key of changedProject) {
+      if (isTimelineKey(key)) continue; // handled atomically below
       // Per-scope routing: project settings dirty-mark the document (教訓 5.36).
       writeProject(store, projectV.value, key);
+    }
+    if (timelineChanged) {
+      store.setProjectTimelineRangeYears(
+        projectV.value.timelineMinYear,
+        projectV.value.timelineMaxYear,
+      );
     }
     for (const key of changedApp) {
       writeApp(store, appV.value, key);
@@ -171,6 +197,11 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
   }, [store]);
 
   return { projectDraft, appDraft, errors, setProjectField, setAppField, confirm, cancel };
+}
+
+/** The two timeline-range bound keys, written atomically (finding bughunt2). */
+function isTimelineKey(key: ProjectSettingKey): boolean {
+  return key === 'timelineMinYear' || key === 'timelineMaxYear';
 }
 
 // --- Type-preserving single-key writers (avoid an unsafe cast) ----------------
