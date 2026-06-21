@@ -832,36 +832,50 @@ export function buildFeaturePrimitivesWithVisible(
     clip,
   );
 
-  // Build per-band so we can interleave by draw order without re-sorting strings.
-  const areas: DrawPrimitive[] = [];
-  const lines: DrawPrimitive[] = [];
-  const points: DrawPrimitive[] = [];
+  // Emit straight into ONE output array in the layer契約 band order (AREAS → LINES →
+  // POINTS, then all LABELS on top). Bodies are appended in three kind-filtered
+  // passes — the area bodies of EVERY feature precede the line bodies precede the
+  // point bodies — so the final order is identical to the previous per-band staging
+  // without the four intermediate arrays or the spread-concat copy that allocated a
+  // fifth array every rendered frame (bughunt3: one output array, push() only).
+  // Labels (from any kind) are deferred to a single staging array and appended last
+  // so a later body fill never hides an earlier label.
+  const primitives: DrawPrimitive[] = [];
   const labels: DrawPrimitive[] = [];
 
+  // Append a feature's body primitives straight into the shared output and DEFER
+  // its labels (any kind) to `labels`; labels are flushed last so a later fill
+  // never hides an earlier label. `emit` keeps the routing in one place across the
+  // three band passes so the body/label split cannot drift between kinds.
+  const emit = (prims: readonly DrawPrimitive[]): void => {
+    for (const p of prims) (p.kind === 'label' ? labels : primitives).push(p);
+  };
+
+  for (const f of visible) {
+    if (f.kind === 'area') emit(buildAreaPrimitives(f, opts));
+  }
+  for (const f of visible) {
+    if (f.kind === 'line') emit(buildLinePrimitives(f, opts));
+  }
   for (const f of visible) {
     switch (f.kind) {
-      case 'area': {
-        const prims = buildAreaPrimitives(f, opts);
-        for (const p of prims) (p.kind === 'label' ? labels : areas).push(p);
+      case 'point':
+        emit(buildPointPrimitives(f, opts));
         break;
-      }
-      case 'line': {
-        const prims = buildLinePrimitives(f, opts);
-        for (const p of prims) (p.kind === 'label' ? labels : lines).push(p);
-        break;
-      }
-      case 'point': {
-        const prims = buildPointPrimitives(f, opts);
-        for (const p of prims) (p.kind === 'label' ? labels : points).push(p);
-        break;
-      }
+      case 'area':
+      case 'line':
+        break; // already emitted in their band passes above
       default:
+        // Compile-time exhaustiveness over the EvaluatedFeature union: a new kind
+        // makes `f` non-`never` here and fails the build, so it can never be
+        // silently dropped from the draw (教訓: 網羅性は型で保証).
         assertNeverFeature(f);
     }
   }
+  for (const p of labels) primitives.push(p);
 
   return {
-    primitives: [...areas, ...lines, ...points, ...labels],
+    primitives,
     visibleCount: visible.length,
   };
 }

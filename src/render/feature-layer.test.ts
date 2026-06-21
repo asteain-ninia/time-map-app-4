@@ -618,4 +618,58 @@ describe('受け入れ基準 6: purity + draw order', () => {
     // shape (area) is first band.
     expect(kinds[0]).toBe('shape');
   });
+
+  // bughunt3 regression: buildFeaturePrimitivesWithVisible used to allocate four
+  // band staging arrays (areas/lines/points/labels) and spread-concat them into a
+  // fifth output array every frame. It now emits into a single output array (plus a
+  // deferred labels array) via push() only. This pins the EXACT band ordering across
+  // MANY interleaved features per band so the allocation refactor cannot regress the
+  // areas → lines → points → labels contract or interleave bodies across bands.
+  it('keeps strict band order (all areas, then all lines, then all points, then all labels) with multiple features per band', () => {
+    const features: EvaluatedFeature[] = [
+      // intentionally interleaved input order across kinds
+      { kind: 'point', id: 'p1', at: { lon: -5, lat: -5 }, style: STYLE, label: 'P1', selected: false },
+      {
+        kind: 'line',
+        id: 'l1',
+        points: [
+          { lon: -20, lat: 1 },
+          { lon: 20, lat: 1 },
+        ],
+        style: STYLE,
+        label: 'L1',
+        selected: false,
+      },
+      { kind: 'area', id: 'a1', shape: [[squareRing(0, 0, 20)]], style: STYLE, label: 'A1', selected: false },
+      { kind: 'point', id: 'p2', at: { lon: 5, lat: 5 }, style: STYLE, label: 'P2', selected: false },
+      {
+        kind: 'line',
+        id: 'l2',
+        points: [
+          { lon: -20, lat: -1 },
+          { lon: 20, lat: -1 },
+        ],
+        style: STYLE,
+        label: 'L2',
+        selected: false,
+      },
+      { kind: 'area', id: 'a2', shape: [[squareRing(0, 0, 18)]], style: STYLE, label: 'A2', selected: false },
+    ];
+    const kinds = buildFeaturePrimitives(features, opts()).map((p) => p.kind);
+
+    // Bodies (non-label) must appear in contiguous band blocks: shape* line* point*,
+    // and ALL labels after every body — no body of a later band may precede an
+    // earlier band's body, and no label may precede any body.
+    const bands = ['shape', 'line', 'point', 'label'] as const;
+    const rank = (k: string): number => bands.indexOf(k as (typeof bands)[number]);
+    expect(kinds.every((k) => rank(k) >= 0)).toBe(true);
+    for (let i = 1; i < kinds.length; i += 1) {
+      expect(rank(kinds[i]!)).toBeGreaterThanOrEqual(rank(kinds[i - 1]!));
+    }
+    // sanity: every band is actually represented (two features each → ≥2 bodies/band).
+    expect(kinds.filter((k) => k === 'shape').length).toBe(2);
+    expect(kinds.filter((k) => k === 'line').length).toBe(2);
+    expect(kinds.filter((k) => k === 'point').length).toBe(2);
+    expect(kinds.filter((k) => k === 'label').length).toBeGreaterThanOrEqual(2);
+  });
 });
