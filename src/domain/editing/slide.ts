@@ -111,6 +111,20 @@ export interface SlideResult {
 }
 
 const EPS = 1e-9;
+/**
+ * The SQUARED-length degeneracy tolerance — the square of {@link EPS}, used wherever
+ * a value compared against the threshold is itself a squared magnitude (`dot(v, v)`),
+ * NOT a true length. {@link EPS} is a length tolerance (compared against `len(...)`);
+ * comparing a squared length against `EPS` directly would mis-apply the tolerance at
+ * its square root, so any edge/motion shorter than sqrt(EPS)=3.16e-5 deg (~3.5 m)
+ * was wrongly treated as degenerate. Coordinates are quantized to a 1e-7 grid, so
+ * real short edges (1e-6..1e-5 deg) are legitimate; they must NOT degenerate. Using
+ * `EPS2 = EPS*EPS = 1e-18` makes the squared-length checks degenerate-equivalent to
+ * the length checks (a true length below EPS ⇔ its square below EPS2), so a short but
+ * real edge yields a proper tangential slide instead of a silent zero/undefined.
+ * 単一真実源: one length tolerance, its square for squared comparisons.
+ */
+const EPS2 = EPS * EPS;
 /** Iteration cap for chained corner slides (角を回り込む連続接触). */
 const MAX_SLIDE_PASSES = 4;
 
@@ -153,7 +167,7 @@ function crossingParameter(
   if ((!isProper && !isInteriorEndpoint) || rel.point === undefined) return undefined;
   const motion = sub(target, start);
   const motionLen2 = dot(motion, motion);
-  if (motionLen2 < EPS) return undefined;
+  if (motionLen2 < EPS2) return undefined;
   // t = projection of (point - start) onto motion, normalized.
   const toPoint = sub(rel.point, start);
   const t = dot(toPoint, motion) / motionLen2;
@@ -173,7 +187,7 @@ function tangentialComponent(
 ): { lon: number; lat: number } {
   const edge = sub(b, a);
   const edgeLen2 = dot(edge, edge);
-  if (edgeLen2 < EPS) return { lon: 0, lat: 0 };
+  if (edgeLen2 < EPS2) return { lon: 0, lat: 0 };
   const k = dot(v, edge) / edgeLen2;
   return { lon: edge.lon * k, lat: edge.lat * k };
 }
@@ -226,7 +240,7 @@ function nearestEdgeOf(
     const ab = sub(edge.b, edge.a);
     const ab2 = dot(ab, ab);
     const ap = sub(p, edge.a);
-    const k = ab2 < EPS ? 0 : Math.max(0, Math.min(1, dot(ap, ab) / ab2));
+    const k = ab2 < EPS2 ? 0 : Math.max(0, Math.min(1, dot(ap, ab) / ab2));
     const closest = add(edge.a, { lon: ab.lon * k, lat: ab.lat * k });
     const d = len(sub(p, closest));
     if (d < bestDist) {
@@ -404,7 +418,7 @@ function largestSafePrefix(
 function projectOntoEdge(p: WorldCoordinate, edge: BoundaryEdge): WorldCoordinate {
   const ab = sub(edge.b, edge.a);
   const ab2 = dot(ab, ab);
-  if (ab2 < EPS) return p;
+  if (ab2 < EPS2) return p;
   const k = dot(sub(p, edge.a), ab) / ab2;
   return add(edge.a, { lon: ab.lon * k, lat: ab.lat * k });
 }
@@ -421,7 +435,7 @@ function nearestParentEdge(
     const ab = sub(edge.b, edge.a);
     const ab2 = dot(ab, ab);
     const ap = sub(p, edge.a);
-    const k = ab2 < EPS ? 0 : Math.max(0, Math.min(1, dot(ap, ab) / ab2));
+    const k = ab2 < EPS2 ? 0 : Math.max(0, Math.min(1, dot(ap, ab) / ab2));
     const closest = add(edge.a, { lon: ab.lon * k, lat: ab.lat * k });
     const d = len(sub(p, closest));
     if (d < bestDist) {

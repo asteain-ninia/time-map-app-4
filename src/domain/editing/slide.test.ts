@@ -421,6 +421,68 @@ describe('constrainSlide — multi-candidate (受け入れ基準6 / FR-28)', () 
   });
 });
 
+// --- short boundary edges: EPS unit-mismatch regression (受け入れ基準6 / FR-28) ----
+// crossingParameter / tangentialComponent / projectOntoEdge guard degeneracy by
+// comparing a SQUARED magnitude (`dot(v,v)`) against the threshold. The threshold
+// must be the SQUARE of the length tolerance EPS (=1e-18), not EPS itself (=1e-9):
+// with the wrong threshold any edge or motion shorter than sqrt(1e-9)=3.16e-5 deg
+// (~3.5 m) was treated as degenerate, so the tangential component collapsed to {0,0}
+// and a penetrating move into a small terminal silently no-op'd, letting the vertex
+// pass through. Coordinates quantize to a 1e-7 grid, so a ~1e-5 deg edge is a real,
+// legitimate boundary that MUST still slide. These edges are far above the grid yet
+// were below the old (mis-squared) threshold.
+const TINY = 1e-5; // 10× above the quantize grid (1e-7), 3× below sqrt(EPS) (3.16e-5)
+// A small square terminal at the origin with side length TINY deg.
+const TINY_SQUARE: GeoPolygon = [
+  [coord(0, 0), coord(TINY, 0), coord(TINY, TINY), coord(0, TINY)],
+];
+const TINY_SQUARE_EDGES: BoundaryEdge[] = [
+  { featureId: 'TS', edgeKey: 't:0', a: coord(0, 0), b: coord(TINY, 0) },
+  { featureId: 'TS', edgeKey: 't:1', a: coord(TINY, 0), b: coord(TINY, TINY) },
+  { featureId: 'TS', edgeKey: 't:2', a: coord(TINY, TINY), b: coord(0, TINY) },
+  { featureId: 'TS', edgeKey: 't:3', a: coord(0, TINY), b: coord(0, 0) },
+];
+const TINY_SQUARE_CAND: CandidateTerminal = { featureId: 'TS', polygon: TINY_SQUARE };
+
+describe('constrainSlide — short boundary edges still constrain (EPS² unit regression / FR-28)', () => {
+  it('a penetrating move across a ~1e-5 deg edge is redirected, not passed through', () => {
+    // Start just left of the small square, target deep inside it: the start→target
+    // segment crosses the (short) left edge. Before the fix tangentialComponent saw
+    // edgeLen2 = TINY² = 1e-10 < EPS(1e-9) and returned {0,0}, so the slide produced
+    // no tangential redirection and the final invariant check fell back to `start`
+    // with collided=false-ish — but crucially the move was NOT constrained as a slide.
+    const mid = TINY / 2;
+    const r = constrainSlide({
+      start: coord(-TINY, mid),
+      target: coord(mid, mid), // strictly inside the small square
+      edges: TINY_SQUARE_EDGES,
+      candidates: [TINY_SQUARE_CAND],
+    });
+    // The move IS detected as a collision (a real crossing of a real short edge).
+    expect(r.collided).toBe(true);
+    expect(r.boundaries.length).toBeGreaterThan(0);
+    // And the committed position is never left strictly inside the small terminal.
+    expect(isPointStrictlyInside(r.position, TINY_SQUARE)).toBe(false);
+  });
+
+  it('a diagonal move into a short edge keeps a NON-ZERO tangential slide', () => {
+    // Push diagonally into the left (vertical, length TINY) edge: the +lon component
+    // penetrates (dropped), the +lat component is tangential along the edge and MUST
+    // be kept. The bug zeroed the whole tangential vector for this short edge, so the
+    // vertex would not slide up at all. Here we assert it slides up (lat increases).
+    const r = constrainSlide({
+      start: coord(-TINY * 0.001, TINY * 0.25),
+      target: coord(TINY * 0.5, TINY * 0.75), // +lon into square, +lat along left edge
+      edges: TINY_SQUARE_EDGES,
+      candidates: [TINY_SQUARE_CAND],
+    });
+    expect(r.collided).toBe(true);
+    expect(isPointStrictlyInside(r.position, TINY_SQUARE)).toBe(false);
+    // Tangential motion (up the short left edge) was preserved, not collapsed to zero.
+    expect(r.position.lat).toBeGreaterThan(TINY * 0.25);
+  });
+});
+
 describe('constrainSlide — boundary identity for highlight (受け入れ基準6)', () => {
   it('outputs the contacted boundary edge id so the render layer can highlight', () => {
     const r = constrainSlide({
