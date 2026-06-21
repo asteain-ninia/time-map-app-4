@@ -123,6 +123,173 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
   });
 });
 
+describe('ui settings — semantic range/order enforcement (bug-hunt regression)', () => {
+  // Regression (bug-hunt): uiProjectSettingsSchema / uiAppSettingsSchema validated
+  // every numeric setting as a bare finite number with NO range or ordering
+  // refinement. A crafted / corrupted manifest could therefore load with
+  // timelineMinYear > timelineMaxYear, renderFps = 0, zoomMin > zoomMax,
+  // flattening ≥ 1 (degenerate geodesy), gridOpacity outside [0,1],
+  // snapDistance < 0, etc. — values that pass structural validation (and the
+  // consistency layer does not cover settings) yet break timeline derivation /
+  // rendering / area math. The schema must reject them via superRefine at the load
+  // boundary. The range/order RULES are single-sourced in ./settings-constraints
+  // (shared with the UI confirm path).
+
+  /** A fully-valid `ui` block (every numeric field inside its allowed range). */
+  function validUi(): {
+    project: Record<string, unknown>;
+    app: Record<string, unknown>;
+  } {
+    return {
+      project: {
+        projectName: 'p',
+        projectDescription: 'd',
+        equatorLengthKm: 40000,
+        flattening: 0.0034,
+        timelineMinYear: -500,
+        timelineMaxYear: 2000,
+        gridSpacingDeg: 10,
+        gridColor: '#abcdef',
+        gridOpacity: 0.5,
+        baseMapId: '@preset/equirectangular-world',
+        areaLabelOccupancyThreshold: 0.3,
+        newAreaAutoColorDefault: false,
+        defaultPaletteTheme: 'default',
+        customPalette: ['#112233'],
+        zoomMin: 1,
+        zoomMax: 50,
+      },
+      app: {
+        snapDistancePx: 50,
+        renderFps: 60,
+        vertexMarkerCap: 500,
+        showConflictGuide: true,
+      },
+    };
+  }
+
+  /** Build a manifest carrying a `ui` block produced by `mutate` over a valid one. */
+  function manifestWithUi(
+    mutate: (ui: ReturnType<typeof validUi>) => void,
+  ): Record<string, unknown> {
+    const manifest = serialize(richValidProject()) as Record<string, unknown>;
+    const ui = validUi();
+    mutate(ui);
+    return { ...manifest, ui };
+  }
+
+  it('accepts a manifest whose ui block is fully in-range', () => {
+    const manifest = manifestWithUi(() => {});
+    expect(manifestSchema.safeParse(manifest).success).toBe(true);
+  });
+
+  it('rejects timelineMinYear >= timelineMaxYear (reversed / zero-width range)', () => {
+    const reversed = manifestWithUi((ui) => {
+      ui.project.timelineMinYear = 2000;
+      ui.project.timelineMaxYear = 1000;
+    });
+    expect(manifestSchema.safeParse(reversed).success).toBe(false);
+
+    const zeroWidth = manifestWithUi((ui) => {
+      ui.project.timelineMinYear = 1500;
+      ui.project.timelineMaxYear = 1500;
+    });
+    expect(manifestSchema.safeParse(zeroWidth).success).toBe(false);
+  });
+
+  it('rejects renderFps outside [1, 60] (0, negative, > 60)', () => {
+    for (const fps of [0, -10, 61]) {
+      const m = manifestWithUi((ui) => {
+        ui.app.renderFps = fps;
+      });
+      expect(manifestSchema.safeParse(m).success).toBe(false);
+    }
+  });
+
+  it('rejects zoomMin > zoomMax (reversed) and out-of-boundary zoom', () => {
+    const reversed = manifestWithUi((ui) => {
+      ui.project.zoomMin = 50;
+      ui.project.zoomMax = 1;
+    });
+    expect(manifestSchema.safeParse(reversed).success).toBe(false);
+
+    const tooSmall = manifestWithUi((ui) => {
+      ui.project.zoomMin = 0.01; // below the 0.1 floor
+    });
+    expect(manifestSchema.safeParse(tooSmall).success).toBe(false);
+
+    const tooLarge = manifestWithUi((ui) => {
+      ui.project.zoomMax = 99999; // above the 10000 ceil
+    });
+    expect(manifestSchema.safeParse(tooLarge).success).toBe(false);
+  });
+
+  it('rejects flattening >= 1 or < 0 (degenerate / inverted geodesy)', () => {
+    for (const f of [1, 1.5, -0.1]) {
+      const m = manifestWithUi((ui) => {
+        ui.project.flattening = f;
+      });
+      expect(manifestSchema.safeParse(m).success).toBe(false);
+    }
+  });
+
+  it('rejects gridOpacity and occupancy threshold outside [0, 1]', () => {
+    for (const v of [-0.1, 1.1]) {
+      const opacity = manifestWithUi((ui) => {
+        ui.project.gridOpacity = v;
+      });
+      expect(manifestSchema.safeParse(opacity).success).toBe(false);
+
+      const occupancy = manifestWithUi((ui) => {
+        ui.project.areaLabelOccupancyThreshold = v;
+      });
+      expect(manifestSchema.safeParse(occupancy).success).toBe(false);
+    }
+  });
+
+  it('rejects non-positive equator length and off-list grid spacing', () => {
+    const equator = manifestWithUi((ui) => {
+      ui.project.equatorLengthKm = 0;
+    });
+    expect(manifestSchema.safeParse(equator).success).toBe(false);
+
+    const spacing = manifestWithUi((ui) => {
+      ui.project.gridSpacingDeg = 7; // not one of 5/10/15/30
+    });
+    expect(manifestSchema.safeParse(spacing).success).toBe(false);
+  });
+
+  it('rejects a negative snap distance and a non-integer / negative marker cap', () => {
+    const snap = manifestWithUi((ui) => {
+      ui.app.snapDistancePx = -5;
+    });
+    expect(manifestSchema.safeParse(snap).success).toBe(false);
+
+    const fractionalCap = manifestWithUi((ui) => {
+      ui.app.vertexMarkerCap = 12.5;
+    });
+    expect(manifestSchema.safeParse(fractionalCap).success).toBe(false);
+
+    const negativeCap = manifestWithUi((ui) => {
+      ui.app.vertexMarkerCap = -1;
+    });
+    expect(manifestSchema.safeParse(negativeCap).success).toBe(false);
+  });
+
+  it('reports the offending field path so the boundary can surface it (教訓5.26)', () => {
+    const m = manifestWithUi((ui) => {
+      ui.project.zoomMin = 50;
+      ui.project.zoomMax = 1;
+    });
+    const result = parseManifest(m);
+    expect(result.outcome).toBe(PARSE_OUTCOME.Invalid);
+    if (result.outcome === PARSE_OUTCOME.Invalid) {
+      const paths = result.issues.map((i) => i.path.join('.'));
+      expect(paths.some((p) => p.includes('zoomMin'))).toBe(true);
+    }
+  });
+});
+
 describe('parse boundary — version handling (受け入れ基準3, FR-104)', () => {
   it('parses a supported-version manifest into a typed value', () => {
     const manifest = serialize(richValidProject());

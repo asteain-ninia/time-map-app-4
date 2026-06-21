@@ -28,6 +28,18 @@ import { z } from 'zod';
 import { getCalendar } from '../time/calendar';
 import { timePointYear, timePointYearMonth, timePointYearMonthDay } from '../time/time-point';
 import { MAX_YEAR, validate as validateTimePoint } from '../time/validate';
+import {
+  isValidEquatorKm,
+  isValidFlattening,
+  isValidGridSpacing,
+  isValidRenderFps,
+  isValidSnapDistancePx,
+  isValidTimelineOrder,
+  isValidUnitFraction,
+  isValidVertexMarkerCap,
+  isValidZoomOrder,
+  isWithinZoomBoundary,
+} from './settings-constraints';
 
 /**
  * The one schema version this build understands (FR-104). A manifest whose
@@ -348,6 +360,18 @@ export const settingsSchema = z
 
 const colorHexSchema = z.string();
 
+// SEMANTIC range/order enforcement (bug-hunt fix): the structural shape below
+// validates each numeric field as a bare finite number, which is NOT enough — a
+// crafted / corrupted manifest could load with timelineMinYear > timelineMaxYear,
+// renderFps = 0, zoomMin > zoomMax, flattening ≥ 1 (degenerate geodesy),
+// gridOpacity outside [0,1], snapDistance ≤ 0, etc. Those pass structural
+// validation and the consistency layer does not cover settings, so they produce a
+// "valid" project that breaks timeline derivation / rendering / area math. The
+// range + order RULES are single-sourced in `./settings-constraints` (shared with
+// the UI confirm path so the form and the file can never disagree) and enforced
+// HERE via superRefine, at the load boundary. Each failing field gets its own
+// `path` so the parse boundary reports it inline (教訓 5.26 拒否理由は path 付き).
+
 export const uiProjectSettingsSchema = z
   .object({
     projectName: z.string(),
@@ -367,7 +391,72 @@ export const uiProjectSettingsSchema = z
     zoomMin: finiteNumber,
     zoomMax: finiteNumber,
   })
-  .strict();
+  .strict()
+  .superRefine((s, ctx) => {
+    if (!isValidEquatorKm(s.equatorLengthKm)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['equatorLengthKm'],
+        message: 'equator length must be a finite positive km value',
+      });
+    }
+    if (!isValidFlattening(s.flattening)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['flattening'],
+        message: 'flattening must be in [0, 1)',
+      });
+    }
+    if (!isValidTimelineOrder(s.timelineMinYear, s.timelineMaxYear)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['timelineMinYear'],
+        message: 'timeline min year must be strictly less than max year',
+      });
+    }
+    if (!isValidGridSpacing(s.gridSpacingDeg)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['gridSpacingDeg'],
+        message: 'grid spacing must be one of the allowed spacings (5/10/15/30)',
+      });
+    }
+    if (!isValidUnitFraction(s.gridOpacity)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['gridOpacity'],
+        message: 'grid opacity must be in [0, 1]',
+      });
+    }
+    if (!isValidUnitFraction(s.areaLabelOccupancyThreshold)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['areaLabelOccupancyThreshold'],
+        message: 'area-label occupancy threshold must be in [0, 1]',
+      });
+    }
+    if (!isWithinZoomBoundary(s.zoomMin)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['zoomMin'],
+        message: 'zoomMin must be within [0.1, 10000]',
+      });
+    }
+    if (!isWithinZoomBoundary(s.zoomMax)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['zoomMax'],
+        message: 'zoomMax must be within [0.1, 10000]',
+      });
+    }
+    if (!isValidZoomOrder(s.zoomMin, s.zoomMax)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['zoomMin'],
+        message: 'zoomMin must be less than or equal to zoomMax',
+      });
+    }
+  });
 
 export const uiAppSettingsSchema = z
   .object({
@@ -376,7 +465,30 @@ export const uiAppSettingsSchema = z
     vertexMarkerCap: finiteNumber,
     showConflictGuide: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((s, ctx) => {
+    if (!isValidSnapDistancePx(s.snapDistancePx)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['snapDistancePx'],
+        message: 'snap distance must be a finite value >= 0',
+      });
+    }
+    if (!isValidRenderFps(s.renderFps)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['renderFps'],
+        message: 'render FPS must be in [1, 60]',
+      });
+    }
+    if (!isValidVertexMarkerCap(s.vertexMarkerCap)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['vertexMarkerCap'],
+        message: 'vertex marker cap must be a non-negative integer',
+      });
+    }
+  });
 
 export const uiSettingsSchema = z
   .object({

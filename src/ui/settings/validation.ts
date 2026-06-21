@@ -15,6 +15,14 @@
 
 import { isGridSpacing } from '../../domain/basemap/grid';
 import {
+  OCCUPANCY_MAX as DOMAIN_OCCUPANCY_MAX,
+  OCCUPANCY_MIN as DOMAIN_OCCUPANCY_MIN,
+  OPACITY_MAX as DOMAIN_OPACITY_MAX,
+  OPACITY_MIN as DOMAIN_OPACITY_MIN,
+  SNAP_DISTANCE_MIN as DOMAIN_SNAP_DISTANCE_MIN,
+  VERTEX_MARKER_CAP_MIN as DOMAIN_VERTEX_MARKER_CAP_MIN,
+} from '../../domain/persistence/settings-constraints';
+import {
   type AppSettings,
   type ProjectSettings,
   DEFAULT_APP_SETTINGS,
@@ -70,14 +78,17 @@ function err<T>(errors: readonly SettingsValidationError[]): ValidationResult<T>
 
 // --- Bounds (single place each numeric rule lives, 教訓 5.19) -----------------
 
-export const OPACITY_MIN = 0;
-export const OPACITY_MAX = 1;
-export const OCCUPANCY_MIN = 0;
-export const OCCUPANCY_MAX = 1;
-/** Snap distance must be positive (a non-positive radius disables snapping). */
-export const SNAP_DISTANCE_MIN = 0;
+// Single-sourced in the domain settings-constraints module (shared with the
+// persistence load boundary so the form and the file can never disagree);
+// re-exported here for the existing UI call sites / tests that read them.
+export const OPACITY_MIN = DOMAIN_OPACITY_MIN;
+export const OPACITY_MAX = DOMAIN_OPACITY_MAX;
+export const OCCUPANCY_MIN = DOMAIN_OCCUPANCY_MIN;
+export const OCCUPANCY_MAX = DOMAIN_OCCUPANCY_MAX;
+/** Snap distance must be non-negative (a non-positive radius disables snapping). */
+export const SNAP_DISTANCE_MIN = DOMAIN_SNAP_DISTANCE_MIN;
 /** Marker cap must be a non-negative integer (0 == show none). */
-export const VERTEX_MARKER_CAP_MIN = 0;
+export const VERTEX_MARKER_CAP_MIN = DOMAIN_VERTEX_MARKER_CAP_MIN;
 
 function isFiniteNumber(n: number): boolean {
   return typeof n === 'number' && Number.isFinite(n);

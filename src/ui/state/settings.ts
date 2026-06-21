@@ -13,6 +13,12 @@
 // persistence unit (spec スコープ「やらないこと」). Here we own only the
 // classification (what is saved where) and the defaults.
 
+import {
+  MAX_RENDER_FPS as DOMAIN_MAX_RENDER_FPS,
+  MIN_RENDER_FPS as DOMAIN_MIN_RENDER_FPS,
+  ZOOM_LIMIT_CEIL as DOMAIN_ZOOM_LIMIT_CEIL,
+  ZOOM_LIMIT_FLOOR as DOMAIN_ZOOM_LIMIT_FLOOR,
+} from '../../domain/persistence/settings-constraints';
 import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 // --- Classification (the boundary) ------------------------------------------
@@ -172,9 +178,12 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   showConflictGuide: true,
 };
 
-/** Inclusive FPS bounds (FR-110: 1〜60 FPS). */
-export const MIN_RENDER_FPS = 1;
-export const MAX_RENDER_FPS = 60;
+// Inclusive FPS bounds (FR-110: 1〜60 FPS). Single-sourced in the domain
+// settings-constraints module (shared with the persistence load boundary so the
+// form and the file can never disagree); re-exported here for the existing UI
+// call sites that read them from this module.
+export const MIN_RENDER_FPS = DOMAIN_MIN_RENDER_FPS;
+export const MAX_RENDER_FPS = DOMAIN_MAX_RENDER_FPS;
 
 // --- Zoom-limit single source of truth (FR-10, U39) -------------------------
 //
@@ -189,10 +198,11 @@ export const MAX_RENDER_FPS = 60;
 export const DEFAULT_ZOOM_MIN = 1;
 /** FR-10 default maximum zoom magnification (50×). */
 export const DEFAULT_ZOOM_MAX = 50;
-/** FR-10 lowest value the user may set for the minimum zoom (0.1×). */
-export const ZOOM_LIMIT_FLOOR = 0.1;
-/** FR-10 highest value the user may set for the maximum zoom (10000×). */
-export const ZOOM_LIMIT_CEIL = 10000;
+// FR-10 user-settable zoom boundary [0.1×, 10000×]. Single-sourced in the domain
+// settings-constraints module (shared with the persistence load boundary);
+// re-exported here for the existing UI call sites that read them from this module.
+export const ZOOM_LIMIT_FLOOR = DOMAIN_ZOOM_LIMIT_FLOOR;
+export const ZOOM_LIMIT_CEIL = DOMAIN_ZOOM_LIMIT_CEIL;
 
 /**
  * Default timeline range as TimePoints (year granularity; 教訓 5.16 完全値).
