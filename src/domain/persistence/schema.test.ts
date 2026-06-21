@@ -80,6 +80,37 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
     expect(manifestSchema.safeParse(clone3).success).toBe(false);
   });
 
+  it('rejects an unbounded persisted year (precision-collapse / denormalize-hang defence)', () => {
+    // Regression (bug-hunt): yearSchema was z.number().int() with NO magnitude
+    // bound, so a crafted manifest could persist a huge year (e.g. 1e20) that
+    // passes the schema. Once normalized to a day-count it overflows
+    // Number.MAX_SAFE_INTEGER — distinct days in that year alias to the SAME
+    // value (breaking compare/duration exactness) and the year-by-year
+    // denormalize walk hangs (~1e20 iterations). The schema must reject it at
+    // the load boundary BEFORE it ever reaches normalize/denormalize.
+    const manifest = serialize(richValidProject());
+
+    const hugeStart = structuredClone(manifest) as unknown as {
+      histories: { entries: { start: Record<string, unknown> }[] }[];
+    };
+    hugeStart.histories[0]!.entries[0]!.start = { granularity: 'year', year: 1e20 };
+    expect(() => manifestSchema.safeParse(hugeStart)).not.toThrow();
+    expect(manifestSchema.safeParse(hugeStart).success).toBe(false);
+
+    // The other persisted year leaves (attribute startYear/endYear, timeline
+    // bounds) share yearSchema and are bounded too — a huge attribute year is
+    // rejected rather than silently carried into later day-count arithmetic.
+    const hugeAttr = structuredClone(manifest) as unknown as {
+      histories: {
+        entries: {
+          anchor: { snapshot: { features: { attributes: Record<string, unknown> }[] } };
+        }[];
+      }[];
+    };
+    hugeAttr.histories[0]!.entries[0]!.anchor.snapshot.features[0]!.attributes['startYear'] = 1e20;
+    expect(manifestSchema.safeParse(hugeAttr).success).toBe(false);
+  });
+
   it('forbids representing an aggregate with a shape field (不正状態を表現不能)', () => {
     const manifest = serialize(richValidProject());
     const clone = structuredClone(manifest);

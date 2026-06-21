@@ -185,6 +185,7 @@ export {
   isWithinNormalized,
   type TimeValidationError,
   type TimeValidation,
+  MAX_YEAR,
   validate,
   isValid,
 } from './time/index';

@@ -104,6 +104,7 @@ describe('error messages are Japanese (FR-115)', () => {
       'month-out-of-range',
       'day-out-of-range',
       'year-not-integer',
+      'year-out-of-range',
     ] as const) {
       expect(ymdErrorMessage(e).length).toBeGreaterThan(0);
     }

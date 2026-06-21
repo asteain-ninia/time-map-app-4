@@ -20,7 +20,7 @@ import {
   type TimeGranularity,
   type TimePoint,
 } from '../../domain/time/time-point';
-import { validate, type TimeValidationError } from '../../domain/time/validate';
+import { MAX_YEAR, validate, type TimeValidationError } from '../../domain/time/validate';
 import { toYearLabel } from './time-display';
 
 /**
@@ -144,6 +144,8 @@ export function ymdErrorMessage(error: YmdDraftError): string {
     case 'month-not-integer':
     case 'day-not-integer':
       return '整数を入力してください。';
+    case 'year-out-of-range':
+      return `年は±${MAX_YEAR.toLocaleString('en-US')}の範囲で入力してください。`;
     case 'month-empty':
       return '月を入力してください。';
     case 'day-empty':

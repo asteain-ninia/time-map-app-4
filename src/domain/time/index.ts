@@ -44,6 +44,7 @@ export {
 export {
   type TimeValidationError,
   type TimeValidation,
+  MAX_YEAR,
   validate,
   isValid,
 } from './validate';

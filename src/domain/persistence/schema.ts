@@ -27,7 +27,7 @@ import { z } from 'zod';
 
 import { getCalendar } from '../time/calendar';
 import { timePointYear, timePointYearMonth, timePointYearMonthDay } from '../time/time-point';
-import { validate as validateTimePoint } from '../time/validate';
+import { MAX_YEAR, validate as validateTimePoint } from '../time/validate';
 
 /**
  * The one schema version this build understands (FR-104). A manifest whose
@@ -44,8 +44,19 @@ const idSchema = z.string().min(1);
 /** A finite number (rejects NaN / ±Infinity, which JSON cannot even carry). */
 const finiteNumber = z.number().finite();
 
-/** A year is a plain integer (negative = BCE; matches domain `Year`). */
-const yearSchema = z.number().int();
+/**
+ * A year is a plain integer (negative = BCE; matches domain `Year`), bounded in
+ * magnitude to ±MAX_YEAR. The bound is the SAME one the domain `validate`
+ * enforces (単一真実源, imported from the time module) and is the structural
+ * defence against an unbounded persisted year: without it a crafted manifest
+ * could carry a huge year (e.g. 1e20) that, once normalized to a day-count,
+ * overflows Number.MAX_SAFE_INTEGER — collapsing distinct days to one value
+ * (breaking compare/duration exactness) and turning the year-by-year
+ * denormalize walk into an effectively-infinite hang. Every persisted year leaf
+ * (anchor start/end via timePointSchema, attribute startYear/endYear, timeline
+ * bounds) flows through this one schema, so the bound is enforced once.
+ */
+const yearSchema = z.number().int().min(-MAX_YEAR).max(MAX_YEAR);
 
 // --- coordinate / vertex (FR-103 全頂点・共有頂点) ---------------------------
 

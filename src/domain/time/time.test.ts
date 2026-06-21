@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_YEAR,
   compare,
   complete,
   completeEquals,
@@ -136,6 +137,58 @@ describe('validate', () => {
     expect(validate(timePointYearMonthDay(2020, 1, 1.5), cal)).toEqual({
       ok: false,
       error: 'day-not-integer',
+    });
+  });
+
+  // Regression (bug-hunt): an unbounded year was accepted by validate (it only
+  // checked Number.isInteger). A huge year then made the normalized day-count
+  // overflow Number.MAX_SAFE_INTEGER — distinct days collapsed to one value
+  // (breaking compare/duration exactness, FR-70/72) and turned the year-by-year
+  // denormalize walk into an effectively-infinite hang. validate is the single
+  // truth source the persistence schema routes through, so the bound lives here.
+  describe('rejects an out-of-range (unbounded) year', () => {
+    it('rejects a year beyond ±MAX_YEAR for every granularity', () => {
+      const tooBig = MAX_YEAR + 1;
+      const tooSmall = -(MAX_YEAR + 1);
+      expect(validate(timePointYear(tooBig), cal)).toEqual({
+        ok: false,
+        error: 'year-out-of-range',
+      });
+      expect(validate(timePointYear(tooSmall), cal)).toEqual({
+        ok: false,
+        error: 'year-out-of-range',
+      });
+      // The huge year that triggered the original precision collapse.
+      expect(validate(timePointYearMonthDay(1e20, 1, 1), cal)).toEqual({
+        ok: false,
+        error: 'year-out-of-range',
+      });
+      expect(validate(timePointYearMonth(tooBig, 6), cal)).toEqual({
+        ok: false,
+        error: 'year-out-of-range',
+      });
+    });
+
+    it('accepts the year exactly at the ±MAX_YEAR boundary', () => {
+      expect(validate(timePointYear(MAX_YEAR), cal)).toEqual({ ok: true });
+      expect(validate(timePointYear(-MAX_YEAR), cal)).toEqual({ ok: true });
+    });
+
+    it('keeps the normalized day-count exact and below MAX_SAFE_INTEGER at the bound', () => {
+      // At the bound, normalize must still be an exact safe integer, so two
+      // distinct days in the same boundary year map to DISTINCT values and the
+      // denormalize round-trip is exact (no precision collapse, no hang).
+      const dayA = timePointYearMonthDay(MAX_YEAR, 1, 1);
+      const dayB = timePointYearMonthDay(MAX_YEAR, 1, 2);
+      const nA = normalize(dayA, cal);
+      const nB = normalize(dayB, cal);
+      expect(Number.isSafeInteger(nA as number)).toBe(true);
+      expect(Number.isSafeInteger(nB as number)).toBe(true);
+      expect(nA).not.toBe(nB);
+      expect(duration(dayA, dayB, cal)).toBe(1);
+      expect(compare(dayA, dayB, cal)).toBe(-1);
+      expect(denormalize(nA, cal)).toEqual({ year: MAX_YEAR, month: 1, day: 1 });
+      expect(denormalize(nB, cal)).toEqual({ year: MAX_YEAR, month: 1, day: 2 });
     });
   });
 
