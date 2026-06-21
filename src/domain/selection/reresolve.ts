@@ -41,10 +41,16 @@ export interface NextTargetPreference {
 }
 
 function survivesResult(id: DomainId, result: CommandResult): boolean {
-  // Survives iff not deleted AND (it existed before or was created). A created
-  // ID counts as present after the command (教訓 5.11).
-  if (result.deleted.has(id)) return false;
-  return result.survived.has(id) || result.created.has(id) || result.touched.has(id);
+  // Survives iff it existed before (survived) or was created — these are the only
+  // two states in which an element is present AFTER the command (教訓 5.11).
+  //
+  // We deliberately do NOT consult `result.touched`: per the CommandResult
+  // contract (command/result.ts: `touched === created ∪ survived ∪ deleted`,
+  // pairwise-disjoint change sets), `touched` adds nothing here except — were the
+  // contract ever violated — touched-but-uncategorised IDs that have no defined
+  // post-command existence. Trusting `touched` to mean "present" would silently
+  // mask such a contract break and let a non-survived/created element "survive".
+  return result.survived.has(id) || result.created.has(id);
 }
 
 /**

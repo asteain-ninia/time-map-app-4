@@ -87,6 +87,36 @@ describe('structure-change re-resolution (教訓 5.11)', () => {
     expect(next.activeFeature).toBeNull();
   });
 
+  it('does NOT promote a preference present only in touched (not survived/created)', () => {
+    // REGRESSION (bughunt3): survivesResult must not treat a `touched`-only ID as
+    // present. Per the CommandResult contract (command/result.ts) touched =
+    // created ∪ survived ∪ deleted; a touched ID outside survived/created has no
+    // defined post-command existence. We hand-build an out-of-contract result
+    // (touched ⊃ change sets) to assert the re-resolver no longer "survives" via
+    // touched — which previously could mask a contract break.
+    const state = EMPTY_SELECTION;
+    const result = createCommandResult({
+      // C is neither survived, created, nor deleted...
+      touched: dom(fid('C')), // ...but it IS in touched (contract-violating shape).
+    });
+    expect(result.survived.has(fid('C'))).toBe(false);
+    expect(result.created.has(fid('C'))).toBe(false);
+    expect(result.deleted.has(fid('C'))).toBe(false);
+    expect(result.touched.has(fid('C'))).toBe(true);
+
+    const next = reresolveAfterStructureChange(state, result, {
+      featureId: fid('C'),
+    });
+    expect(next.activeFeature).toBeNull(); // touched alone must NOT make C survive.
+
+    // Same for a vertex-selection preference present only in touched.
+    const vnext = reresolveAfterStructureChange(state, result, {
+      vertexSelection: { ownerFeatureId: fid('C'), vertexIds: vidSet('C-v0') },
+    });
+    expect(vnext.vertexOwner).toBeNull();
+    expect(vnext.vertexIds.size).toBe(0);
+  });
+
   it('discards any in-flight transient on a structure change (教訓 5.2)', () => {
     const dragging: SelectionState = withTransient(
       withVertexSet(EMPTY_SELECTION, fid('A'), vidSet('A-v0')),
