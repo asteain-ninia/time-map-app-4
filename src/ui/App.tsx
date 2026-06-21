@@ -1065,6 +1065,13 @@ export function App(): JSX.Element {
       lastCommittedDomainRef.current = s.domain;
       historyRef.current = createHistory(s.domain);
       refreshUndoRedoEnabled();
+      // 教訓 5.2 全経路で破棄: a whole-state swap (load / new / drag-drop) invalidates
+      // any paused-conflict modal — its pending result + applyResolutions are bound
+      // to the OLD proposal AND the OLD root, so a 確定/取消 against the new project
+      // would replay a foreign baseline (mismatched feature/vertex ids) into
+      // recordCommit/reArmActiveTool. Atomically dismiss the modal on the same swap
+      // that re-roots the history so no stale binding can survive the load.
+      setConflictState(null);
     });
   }, [store, refreshUndoRedoEnabled]);
 

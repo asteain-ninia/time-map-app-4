@@ -75,6 +75,128 @@ function addSnapshot(feature: LeafFeature, vertices: Vertex[]): AddSnapshot {
   return { feature, vertices, sharedCandidateIds: new Map() };
 }
 
+// REGRESSION (bughunt2): conflictState (U35 modal) was never cleared on LOAD / NEW.
+// App holds the paused-conflict modal in React state (setConflictState) set ONLY in
+// onAddConflicts/onKnifeConflicts and cleared ONLY in onConflictCommitted/onConflictCancel.
+// A LOAD / NEW / drag-drop swaps the domain wholesale through the store
+// (reflectLoadedProject / resetToDomain), re-rooting App's history via the
+// store.subscribe bridge — but that bridge did NOT clear conflictState. So a modal
+// left open over the OLD project survived the load, still bound to the OLD proposal +
+// OLD root; a 確定/取消 then replayed a foreign baseline (mismatched feature/vertex ids)
+// into recordCommit / reArmActiveTool — state corruption or a throw. The fix clears
+// conflictState in the SAME subscribe branch that detects the swap (教訓 5.2 全経路で破棄).
+//
+// This drives App's bridge assembled EXACTLY as App.tsx installs it (mirroring the
+// "tool switch mid-drag" regression test's approach): the SAME createSessionStore, the
+// SAME lastCommittedDomainRef compare, the SAME createHistory re-root, and the SAME
+// setConflictState(null) that App.tsx now performs — over a REAL reflectLoadedProject load.
+describe('conflict modal is dismissed on an external whole-state swap (bughunt2 教訓5.2)', () => {
+  it('a LOAD (reflectLoadedProject) clears a paused-conflict modal AND re-roots the history', async () => {
+    const { renderHook, act } = await import('@testing-library/react');
+    const { useEffect, useRef, useState } = await import('react');
+    const { createSessionStore } = await import('./state/store');
+    const { createHistory } = await import('../domain/command/history');
+
+    // A real project A (seeded leaf) and a DIFFERENT real project B to load.
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const projectA: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: a.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    const b = squareLeaf('f-b', 'vb', 50, 50);
+    const projectB: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: b.feature.id,
+      anchorTime: timePointYear(2000),
+      snapshot: addSnapshot(b.feature, b.vertices),
+    });
+
+    const store = createSessionStore<DomainRoot>({ initialDomain: projectA });
+
+    // The harness reproduces App's conflict-state holder + its load/new subscribe
+    // bridge VERBATIM (App.tsx: const [conflictState] = useState; the store.subscribe
+    // that re-roots history on s.domain !== lastCommittedDomainRef.current and now
+    // also calls setConflictState(null)).
+    const { result } = renderHook(() => {
+      const [conflictState, setConflictState] = useState<{ tag: string } | null>(null);
+      const lastCommittedDomainRef = useRef<DomainRoot>(store.getState().domain);
+      const historyRef = useRef(createHistory(store.getState().domain));
+      useEffect(() => {
+        return store.subscribe((s) => {
+          if (s.domain === lastCommittedDomainRef.current) return;
+          lastCommittedDomainRef.current = s.domain;
+          historyRef.current = createHistory(s.domain);
+          // THE FIX under test (教訓 5.2): the swap dismisses any paused modal.
+          setConflictState(null);
+        });
+      }, []);
+      return { conflictState, setConflictState, historyRef };
+    });
+
+    // 1) A confirmation pauses on conflicts → the modal is open (state non-null),
+    //    bound to project A's proposal.
+    act(() => {
+      result.current.setConflictState({ tag: 'paused-on-A' });
+    });
+    expect(result.current.conflictState).not.toBeNull();
+    const historyBefore = result.current.historyRef.current;
+
+    // 2) The user loads a DIFFERENT project while the modal is still open.
+    act(() => {
+      store.getState().reflectLoadedProject(projectB, {});
+    });
+
+    // THE proof: the load atomically dismissed the stale modal (no 確定/取消 can now
+    // replay a foreign baseline) AND re-rooted the history to the new project.
+    expect(result.current.conflictState).toBeNull();
+    expect(store.getState().domain).toBe(projectB);
+    expect(result.current.historyRef.current).not.toBe(historyBefore);
+    expect(result.current.historyRef.current.state).toBe(projectB);
+  });
+
+  it('a NEW (resetToDomain) likewise clears a paused-conflict modal', async () => {
+    const { renderHook, act } = await import('@testing-library/react');
+    const { useEffect, useRef, useState } = await import('react');
+    const { createSessionStore } = await import('./state/store');
+    const { createHistory } = await import('../domain/command/history');
+
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const projectA: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: a.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    const freshProject = emptyProject(); // a NEW project baseline (FR-03)
+    const store = createSessionStore<DomainRoot>({ initialDomain: projectA });
+
+    const { result } = renderHook(() => {
+      const [conflictState, setConflictState] = useState<{ tag: string } | null>(null);
+      const lastCommittedDomainRef = useRef<DomainRoot>(store.getState().domain);
+      const historyRef = useRef(createHistory(store.getState().domain));
+      useEffect(() => {
+        return store.subscribe((s) => {
+          if (s.domain === lastCommittedDomainRef.current) return;
+          lastCommittedDomainRef.current = s.domain;
+          historyRef.current = createHistory(s.domain);
+          setConflictState(null);
+        });
+      }, []);
+      return { conflictState, setConflictState };
+    });
+
+    act(() => {
+      result.current.setConflictState({ tag: 'paused-on-A' });
+    });
+    expect(result.current.conflictState).not.toBeNull();
+
+    act(() => {
+      store.getState().resetToDomain(freshProject);
+    });
+    expect(result.current.conflictState).toBeNull();
+    expect(store.getState().domain).toBe(freshProject);
+  });
+});
+
 describe('createLiveAddBinding', () => {
   it('commits a non-overlapping add and the command swaps state', () => {
     let root = emptyProject();
