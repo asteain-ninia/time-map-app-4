@@ -14,7 +14,12 @@ import type { EvaluatedFeature, FeatureStyle } from '../../render/feature-layer'
 import type { GridStyle } from '../../render/grid-layer';
 import { DEFAULT_GRID_STYLE, withOpacity } from '../../render/grid-layer';
 
-import { composeFrame } from './host-ports';
+import {
+  DEFAULT_SCREEN_SIZES,
+  selectVisibleFeatures,
+} from '../../render/feature-layer';
+
+import { composeFrame, composeFrameWithCount } from './host-ports';
 
 const VIEWPORT: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
 const CAMERA: Camera = DEFAULT_CAMERA;
@@ -167,5 +172,73 @@ describe('composeFrame', () => {
 
     expect(committedPointCount(before)).toBe(1);
     expect(committedPointCount(after)).toBe(2);
+  });
+});
+
+// 回帰 (bughunt round-2): paintWith はかつて 1 フレームにつき選別(O(n) view clip)を
+// 二度走らせていた — composeFrame 内 buildFeaturePrimitives で一度、観測フック
+// onVisibleFeatureCount 用に selectVisibleFeatures をもう一度。フックは本番(App.tsx)で
+// 常時配線されるため、毎フレーム二重の地物コストを払っていた。修正後は composeFrame が
+// 同一の clip パスから可視数を返す(composeFrameWithCount.visibleCount)。本テストは
+// その単一真実源契約を固定する:
+//   1. visibleCount は selectVisibleFeatures(...).length と厳密一致(ドリフトなし)。
+//   2. 画面外の確定地物は visibleCount から除外される(生の length ではなく clip 後の数)。
+describe('composeFrameWithCount visibleCount — single clip pass (bughunt round-2)', () => {
+  // ズームインしたカメラ: 原点付近のみが可視。遠方の地物は view clip で落ちる。
+  const ZOOMED_IN: Camera = { ...CAMERA, zoom: 10, centerLon: 0, centerLat: 0 };
+
+  it('visibleCount equals selectVisibleFeatures(...).length over the SAME clipped set', () => {
+    const committed: EvaluatedFeature[] = [
+      point('near-1', 0, 0),
+      point('near-2', 1, 1),
+      point('far-1', 170, 80), // off-screen at this zoom/center
+    ];
+    const { visibleCount } = composeFrameWithCount({
+      baseImage: null,
+      committed,
+      overlay: [],
+      camera: ZOOMED_IN,
+      viewport: VIEWPORT,
+    });
+    const expected = selectVisibleFeatures(
+      committed,
+      ZOOMED_IN,
+      VIEWPORT,
+      DEFAULT_SCREEN_SIZES,
+    ).length;
+    // The hook count is read off the SAME clip pass that built the primitives, so it
+    // must match the standalone selector exactly (no recomputed estimate, 教訓 5.29).
+    expect(visibleCount).toBe(expected);
+    // And it must reflect the CLIPPED set, not the raw committed length: the far
+    // feature is excluded (HB-14 count is clip-aware, not a count of all committed).
+    expect(visibleCount).toBeLessThan(committed.length);
+    expect(visibleCount).toBe(2);
+  });
+
+  it('reports 0 for an empty committed set (no spurious count)', () => {
+    const { visibleCount } = composeFrameWithCount({
+      baseImage: null,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    expect(visibleCount).toBe(0);
+  });
+
+  it('counts every committed feature when all survive the clip (zoomed out)', () => {
+    const committed: EvaluatedFeature[] = [
+      point('a', 0, 0),
+      point('b', 10, 20),
+      point('c', 30, 40),
+    ];
+    const { visibleCount } = composeFrameWithCount({
+      baseImage: null,
+      committed,
+      overlay: [],
+      camera: CAMERA, // zoom 1: whole world visible
+      viewport: VIEWPORT,
+    });
+    expect(visibleCount).toBe(committed.length);
   });
 });

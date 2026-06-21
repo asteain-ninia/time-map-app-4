@@ -24,8 +24,7 @@ import {
   type GridStyle,
 } from '../../render/grid-layer';
 import {
-  buildFeaturePrimitives,
-  selectVisibleFeatures,
+  buildFeaturePrimitivesWithVisible,
   DEFAULT_LABEL_THRESHOLDS,
   DEFAULT_SCREEN_SIZES,
   type EvaluatedFeature,
@@ -193,14 +192,32 @@ export interface FrameInputs {
 }
 
 /**
- * Compose ONE frame's draw primitives in back-to-front order (P0-A / 教訓 §4 single
- * base source): base map → graticule → COMMITTED features → tool overlay. Pure, so
- * the layer ORDER and the committed-feature inclusion are unit-testable without a
- * DOM / Canvas; the host below delegates to it on every paint. The committed
- * features go through U19's `buildFeaturePrimitives` (view-clip + LOD ON), so what
- * draws is exactly what U19 decides (single truth source, 教訓 5.29).
+ * The result of {@link composeFrameWithCount}: the back-to-front primitive array
+ * PLUS the count of committed features that survived the period-aware view clip in
+ * the SAME compose pass (HB-14). The count is read straight off
+ * `buildFeaturePrimitivesWithVisible`, so the frame is built and the visible count
+ * is known in ONE O(n) clip pass — never a second `selectVisibleFeatures` over the
+ * committed set just to publish the observation hook (bughunt round-2: paintWith no
+ * longer does double feature work per frame).
  */
-export function composeFrame(inputs: FrameInputs): DrawPrimitive[] {
+export interface ComposedFrame {
+  readonly primitives: DrawPrimitive[];
+  /** Committed features that survived this frame's view clip (HB-14 hook source). */
+  readonly visibleCount: number;
+}
+
+/**
+ * Compose ONE frame's draw primitives in back-to-front order (P0-A / 教訓 §4 single
+ * base source): base map → graticule → COMMITTED features → tool overlay, AND report
+ * the committed-feature view-clip survivor count from the SAME pass. Pure, so the
+ * layer ORDER, committed-feature inclusion, and the visible count are unit-testable
+ * without a DOM / Canvas; the host below delegates to it on every paint. The
+ * committed features go through U19's `buildFeaturePrimitivesWithVisible`
+ * (view-clip + LOD ON), so what draws — and the count published to the HB-14
+ * observation hook — is exactly what U19's ONE clip pass decides (single truth
+ * source, 教訓 5.29; no double O(n) feature work per frame, bughunt round-2).
+ */
+export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
   const primitives: DrawPrimitive[] = [];
   if (inputs.baseImage !== null) {
     primitives.push(buildBaseMapPrimitive(inputs.baseImage, PRESET_BASEMAP_META));
@@ -213,18 +230,29 @@ export function composeFrame(inputs: FrameInputs): DrawPrimitive[] {
       inputs.viewport,
     ),
   );
+  let visibleCount = 0;
   if (inputs.committed.length > 0) {
-    primitives.push(
-      ...buildFeaturePrimitives(inputs.committed, {
-        camera: inputs.camera,
-        viewport: inputs.viewport,
-        sizes: DEFAULT_SCREEN_SIZES,
-        thresholds: inputs.thresholds ?? DEFAULT_LABEL_THRESHOLDS,
-      }),
-    );
+    const built = buildFeaturePrimitivesWithVisible(inputs.committed, {
+      camera: inputs.camera,
+      viewport: inputs.viewport,
+      sizes: DEFAULT_SCREEN_SIZES,
+      thresholds: inputs.thresholds ?? DEFAULT_LABEL_THRESHOLDS,
+    });
+    primitives.push(...built.primitives);
+    visibleCount = built.visibleCount;
   }
   primitives.push(...inputs.overlay);
-  return primitives;
+  return { primitives, visibleCount };
+}
+
+/**
+ * Compose ONE frame's draw primitives in back-to-front order (see
+ * {@link composeFrameWithCount}). Thin wrapper returning ONLY the primitive array
+ * for callers that do not need the HB-14 visible count (e.g. the pure
+ * layer-order/inclusion unit tests). Pure.
+ */
+export function composeFrame(inputs: FrameInputs): DrawPrimitive[] {
+  return composeFrameWithCount(inputs).primitives;
 }
 
 /**
@@ -287,8 +315,9 @@ export function createAddHostPorts(
     const camera = renderer.getCamera();
     const viewport = renderer.getViewport();
     // Compose the frame (base → grid → COMMITTED features → overlay) for the
-    // CURRENT camera/viewport.
-    const primitives = composeFrame({
+    // CURRENT camera/viewport, AND get back the view-clip survivor count from the
+    // SAME compose pass (no second O(n) clip just for the hook, bughunt round-2).
+    const { primitives, visibleCount } = composeFrameWithCount({
       baseImage,
       committed,
       overlay,
@@ -299,18 +328,12 @@ export function createAddHostPorts(
     });
     renderer.drawBatch({ primitives });
     // HB-14 観測フック: publish how many committed features survived the period-aware
-    // view clip THIS frame (the SAME selector `buildFeaturePrimitives` uses), so a
-    // zoom-in E2E can assert the candidate/clip set never wrongly drops to 0 while a
-    // feature is still on screen (再発防止, 既存 app-active-feature 方式).
-    if (options.onVisibleFeatureCount !== undefined) {
-      const visible = selectVisibleFeatures(
-        committed,
-        camera,
-        viewport,
-        DEFAULT_SCREEN_SIZES,
-      );
-      options.onVisibleFeatureCount(visible.length);
-    }
+    // view clip THIS frame. The count comes from the SAME `selectVisibleFeatures`
+    // pass `buildFeaturePrimitivesWithVisible` already ran to build the primitives —
+    // never a recomputed estimate (教訓 5.29) and never a second clip pass per frame
+    // — so a zoom-in E2E can assert the candidate/clip set never wrongly drops to 0
+    // while a feature is still on screen (再発防止, 既存 app-active-feature 方式).
+    options.onVisibleFeatureCount?.(visibleCount);
   };
 
   // FR-110 throttle seam. The high-frequency repaint paths (pan / wheel via

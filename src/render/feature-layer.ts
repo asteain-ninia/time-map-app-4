@@ -769,6 +769,37 @@ export function buildFeaturePrimitives(
   features: readonly EvaluatedFeature[],
   opts: BuildOptions,
 ): DrawPrimitive[] {
+  return buildFeaturePrimitivesWithVisible(features, opts).primitives;
+}
+
+/** The result of {@link buildFeaturePrimitivesWithVisible}: the flat primitive
+ * array PLUS the period-aware view-clip survivor count from the SAME pass. */
+export interface FeaturePrimitivesResult {
+  /** The flat primitive array for `MapRenderer.drawBatch` (same as {@link buildFeaturePrimitives}). */
+  readonly primitives: DrawPrimitive[];
+  /**
+   * How many committed features SURVIVED the period-aware view clip this build
+   * (`selectVisibleFeatures(...).length`). Exposed so a caller that needs the count
+   * (the HB-14 `data-visible-feature-count` observation hook) reads it off the SAME
+   * clip pass the primitives were built from instead of re-running the O(n) selector
+   * a second time per frame (bughunt round-2: no double feature work). EXACTLY the
+   * set whose primitives are in {@link primitives} — hook and draw cannot drift
+   * (教訓 5.29 単一真実源).
+   */
+  readonly visibleCount: number;
+}
+
+/**
+ * {@link buildFeaturePrimitives} PLUS the view-clip survivor count from the ONE
+ * clip pass it already runs (教訓 5.29). `buildFeaturePrimitives` delegates here, so
+ * the clip + LOD + per-band ordering live in a single place; callers that also need
+ * the HB-14 visible count call this directly and read {@link FeaturePrimitivesResult.visibleCount}
+ * rather than paying a second `selectVisibleFeatures` pass (bughunt round-2). Pure.
+ */
+export function buildFeaturePrimitivesWithVisible(
+  features: readonly EvaluatedFeature[],
+  opts: BuildOptions,
+): FeaturePrimitivesResult {
   const clip = opts.clip ?? true;
   // Narrow to the period-aware, inflated view clip via the SINGLE selector the
   // observation hook + HB-14 property also use (教訓 5.29 — one truth source for
@@ -810,7 +841,10 @@ export function buildFeaturePrimitives(
     }
   }
 
-  return [...areas, ...lines, ...points, ...labels];
+  return {
+    primitives: [...areas, ...lines, ...points, ...labels],
+    visibleCount: visible.length,
+  };
 }
 
 /** Compile-time exhaustiveness guard for the evaluated-feature union. */

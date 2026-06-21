@@ -105,7 +105,9 @@ export {
   areaRingLabelVisible,
   ringCentroid,
   buildFeaturePrimitives,
+  buildFeaturePrimitivesWithVisible,
 } from './feature-layer';
+export type { FeaturePrimitivesResult } from './feature-layer';
 
 // U34 → U19 render-boundary bridge: feeds U34's U08-resolved 集約/実形状
 // (`ResolvedDisplayShape.shape`) verbatim into U19's `EvaluatedArea.shape`, so the
