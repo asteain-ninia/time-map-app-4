@@ -279,6 +279,52 @@ describe('受け入れ基準 3: time-change re-validation', () => {
     // The store called the injected predicate rather than computing existence itself.
     expect(featureExistsAt).toHaveBeenCalledWith(f('A'), timePointYear(1));
   });
+
+  // 回帰 (bughunt2 finding): setCurrentTime did NOT clamp the incoming time into the
+  // live [timelineMin, timelineMax] range — it committed the RAW time and
+  // re-validated selection against it, unlike deriveTimelineState (which clamps via
+  // clampTimeToRange on the LOAD / NEW + dialog paths). The contract was asymmetric:
+  // a non-UI caller (or a playback edge overshooting a bound) could set currentTime
+  // outside the range, resolving the domain at a time with no committed features
+  // (空表示) while selection was revalidated at that same out-of-range time — a
+  // "selection survives but nothing draws" mismatch. The store must enforce the
+  // invariant itself rather than trusting every caller to pre-clamp.
+  it('clamps an out-of-range time to the timeline bound (above max) before committing (finding)', () => {
+    // Default range is 0..10000. Feature A exists ONLY inside the range (at the max
+    // bound) but NOT at the out-of-range raw time the caller passes.
+    const existence: ExistenceResolver = {
+      featureExistsAt: (_fid, t) =>
+        t.year >= 0 && t.year <= 10000,
+      vertexExistsAt: () => false,
+    };
+    const store = makeStore(existence, { activeFeature: f('A') });
+
+    // A future non-UI caller overshoots the upper bound (10000 -> 99999).
+    store.getState().setCurrentTime(timePointYear(99999), TIME_CHANGE_SOURCE.Playback);
+
+    const s = store.getState();
+    // currentTime was clamped to the max bound, NOT committed as the raw 99999 —
+    // so committed-features resolves inside the range and the map is not blank.
+    expect(s.currentTime).toEqual(timePointYear(10000));
+    // Selection was revalidated against the CLAMPED time (A exists there), so it
+    // survives consistently with what is actually drawn — no "survives but blank".
+    expect(s.activeFeature).toBe(f('A'));
+    expect(s.lastTimeChangeSource).toBe(TIME_CHANGE_SOURCE.Playback);
+  });
+
+  it('clamps an out-of-range time to the timeline bound (below min) before committing (finding)', () => {
+    const store = makeStore();
+    // Undershoot the lower bound (0 -> -5000) on the slider path.
+    store.getState().setCurrentTime(timePointYear(-5000), TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().currentTime).toEqual(timePointYear(0));
+  });
+
+  it('leaves an in-range time unchanged (clamp is a no-op on shipped paths)', () => {
+    const store = makeStore();
+    // 9000 is inside the default 0..10000 range -> committed verbatim.
+    store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().currentTime).toEqual(timePointYear(9000));
+  });
 });
 
 // --- 受け入れ基準 4: settings boundary --------------------------------------

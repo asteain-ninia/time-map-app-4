@@ -640,13 +640,26 @@ export function createSessionStore<S>(
     setCurrentTime(time, source) {
       // 教訓 5.5/5.6: re-validate via U22 against the injected existence port.
       // The store resolves no time itself; every path funnels through here.
+      //
+      // Finding (bughunt2): clamp the incoming time into the live timeline range
+      // BEFORE it is committed and BEFORE selection is re-validated, exactly as
+      // deriveTimelineState does on the LOAD / NEW + dialog paths (clampTimeToRange).
+      // The store — not each caller — must enforce the [timelineMin, timelineMax]
+      // invariant: an out-of-range currentTime resolves the domain at a time with
+      // no committed features (空表示) while selection is revalidated at that same
+      // out-of-range time, so a stale selection would "survive but nothing draws".
+      // All shipped UI callers already clamp (useTimeline / bounded playback), so
+      // this is a no-op on every live path; it only closes the asymmetry for a
+      // future non-UI caller or a playback edge that overshoots a bound.
+      const { selection, timelineMin, timelineMax } = get();
+      const clamped = clampTimeToRange(time, timelineMin, timelineMax, calendar);
       const next = revalidateForTime(
-        get().selection,
-        time,
+        selection,
+        clamped,
         existenceAtTime(existence),
       );
       set({
-        currentTime: time,
+        currentTime: clamped,
         lastTimeChangeSource: source,
         ...selectionPatch(next),
       });
