@@ -72,11 +72,17 @@ export function existencePeriodsCompatible(a: Feature, b: Feature): boolean {
  *   2. 候補が対象の下位領域 (循環安全に列挙) → Cycle。対象の上位領域は除外しない
  *      (直轄化のため候補に含む＝教訓 5.25)。
  *   3. 存在期間が両立しない → ExistencePeriod。
+ *
+ * 性能: 候補ごとに対象の子孫集合を再走査すると O(n) の DFS が候補数ぶん走り、
+ * 一覧算出が O(n²) に退化する (受け入れ基準 6)。対象の子孫は候補に依らず不変なので、
+ * 呼び出し側が一度だけ算出した子孫集合 (Set) を `targetDescendants` で渡せる。
+ * 省略時は本関数が単発呼び出し用に内部で 1 回だけ算出する (単一述語＝教訓 5.26)。
  */
 export function isLegalNewParent(
   forest: Forest,
   targetId: FeatureId,
   candidateId: FeatureId,
+  targetDescendants?: ReadonlySet<FeatureId>,
 ): LegalityVerdict {
   if (candidateId === targetId) return illegal(AFFILIATION_REJECT.SameFeature);
 
@@ -88,9 +94,11 @@ export function isLegalNewParent(
   // 循環参照防止: 候補が対象の子孫 (孫含む) に入っていれば循環になる。
   // descendantIds は visited 集合で再入を遮断するため、壊れた (循環) データでも
   // 有限に終わる (教訓 5.28)。対象の上位領域は子孫ではないので自然に候補に残る
-  // (直轄化の例外を削らない＝教訓 5.25)。
-  const descendants = descendantIds(forest, targetId);
-  if (descendants.includes(candidateId)) return illegal(AFFILIATION_REJECT.Cycle);
+  // (直轄化の例外を削らない＝教訓 5.25)。一覧算出からは事前計算済み集合を受け取り
+  // O(1) 判定にする (上記性能注記); 渡されなければ単発算出する。
+  const descendants =
+    targetDescendants ?? new Set(descendantIds(forest, targetId));
+  if (descendants.has(candidateId)) return illegal(AFFILIATION_REJECT.Cycle);
 
   // 存在期間整合 (親＝下位の和を将来満たせる位置にあること)。
   if (!existencePeriodsCompatible(target, candidate)) {
@@ -123,8 +131,11 @@ export function allowedParentCandidates(
   targetId: FeatureId,
 ): ParentCandidate[] {
   const out: ParentCandidate[] = [];
+  // 対象の子孫集合は候補ループ中で不変なので一度だけ算出して O(1) 判定に使う。
+  // これにより一覧算出が候補ごとの DFS 再走査による O(n²) に退化しない (受け入れ基準 6)。
+  const targetDescendants = new Set(descendantIds(forest, targetId));
   for (const id of forest.orderedIds) {
-    if (isLegalNewParent(forest, targetId, id).ok) {
+    if (isLegalNewParent(forest, targetId, id, targetDescendants).ok) {
       const f = forest.byId.get(id);
       if (f === undefined) continue;
       out.push({ featureId: id, displayName: featureDisplayName(f) });

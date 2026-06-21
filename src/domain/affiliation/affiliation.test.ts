@@ -17,7 +17,7 @@ import {
 import { createShape, createTerritoryRing } from '../ring';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { createIdGeneratorState } from '../id-generator';
-import { buildForest, hasChildren } from '../hierarchy/forest';
+import { buildForest, descendantIds, hasChildren, type Forest } from '../hierarchy/forest';
 import { validateHierarchy } from '../hierarchy/validate';
 
 import {
@@ -386,6 +386,72 @@ describe('受け入れ基準3: 循環参照防止・存在期間整合 (FR-48)',
     expect(p).toBeDefined();
     expect(p?.displayName.trim().length).toBeGreaterThan(0);
     expect(p?.displayName).toBe('p');
+  });
+
+  // Regression (bughunt3): allowedParentCandidates は候補ごとに isLegalNewParent を呼び、
+  // 旧実装は各呼び出しで対象の子孫を descendantIds で再走査していた (O(n) DFS × n 候補
+  // = O(n²); 5,000 地物で 2,500 万ステップ, ピッカー開閉と確定前再検証の度に UI を阻害)。
+  // 修正: 対象の子孫集合をループ前に 1 回だけ算出し Set で O(1) 判定に渡す。
+  //
+  // 本テストは「対象の子孫走査がループ全体で 1 回だけ」を機械的に固定する。descendantIds は
+  // directChildIds(forest, id) 経由で forest.childrenOf.get(id) を引く。対象 id への .get 回数を
+  // 数え、候補数 n に依存せず 1 回であることを検証する (O(n²) 退化への回帰ガード)。受け入れ基準 6。
+  it('一覧算出は対象の子孫を候補ごとに再走査しない (O(n²) 退化への回帰ガード, 基準6)', () => {
+    // 対象 t と、t の子孫でない兄弟候補を多数 (循環でない正常な森)。
+    const n = 200;
+    const target = agg('t', 't', 0, 100);
+    const siblings: Feature[] = [];
+    for (let i = 0; i < n; i += 1) siblings.push(agg(`s${i}`, `s${i}`, 0, 100));
+    const base = buildForest([target, ...siblings]);
+
+    // childrenOf.get の呼び出しを id 別に数える計測用ラッパ。森の派生結果は base と同一。
+    const getCounts = new Map<FeatureId, number>();
+    const countingChildrenOf: ReadonlyMap<FeatureId, readonly FeatureId[]> = {
+      get(id: FeatureId) {
+        getCounts.set(id, (getCounts.get(id) ?? 0) + 1);
+        return base.childrenOf.get(id);
+      },
+      has: (id: FeatureId) => base.childrenOf.has(id),
+      get size() {
+        return base.childrenOf.size;
+      },
+      forEach: base.childrenOf.forEach.bind(base.childrenOf),
+      entries: base.childrenOf.entries.bind(base.childrenOf),
+      keys: base.childrenOf.keys.bind(base.childrenOf),
+      values: base.childrenOf.values.bind(base.childrenOf),
+      [Symbol.iterator]: base.childrenOf[Symbol.iterator].bind(base.childrenOf),
+    } as ReadonlyMap<FeatureId, readonly FeatureId[]>;
+    const measured: Forest = { ...base, childrenOf: countingChildrenOf };
+
+    const candidates = allowedParentCandidates(measured, fid('t')).map((c) => c.featureId);
+
+    // 正しさ: 自身を除く全候補が合法 (子孫でなく存在期間も両立)。
+    expect(candidates).toHaveLength(n);
+    expect(candidates).not.toContain(fid('t'));
+
+    // 性能形状: 対象 t の子孫走査 (childrenOf.get('t')) はループ全体で 1 回のみ。
+    // 旧 O(n²) 実装では候補数 n 回 (= n+? ) 引かれていた。
+    expect(getCounts.get(fid('t'))).toBe(1);
+  });
+
+  // Regression (bughunt3): 事前計算した子孫集合を渡す経路と、内部で算出する単発経路は
+  // 同一述語でなければならない (教訓 5.26 単一の真実源)。両経路の判定が全候補で一致する。
+  it('isLegalNewParent: 事前計算子孫集合の経路と単発経路の判定が完全一致 (教訓5.26)', () => {
+    const features = [
+      agg('root', 'root', 0, 100),
+      agg('mid', 'mid', 0, 100, 'root'),
+      leaf('leaf', 'leaf', 0, 100, 'mid'),
+      agg('other', 'other', 0, 100),
+      leaf('past', 'past', 200, 300), // 存在期間不整合候補。
+    ];
+    const forest = buildForest(features);
+    const target = fid('root');
+    const precomputed = new Set(descendantIds(forest, target));
+    for (const id of forest.orderedIds) {
+      const withSet = isLegalNewParent(forest, target, id, precomputed);
+      const without = isLegalNewParent(forest, target, id);
+      expect(withSet).toEqual(without);
+    }
   });
 });
 
