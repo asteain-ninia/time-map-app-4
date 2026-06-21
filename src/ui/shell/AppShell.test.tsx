@@ -146,6 +146,40 @@ describe('tooltips (FR-112, 受け入れ基準 6)', () => {
     expect(screen.getByTestId('mode-add')).toHaveTextContent(MODE_LABELS.add);
     expect(screen.getByTestId('mode-edit')).toHaveTextContent(MODE_LABELS.edit);
   });
+
+  // HB-16: the left toolbar's mode-toggle buttons must NOT be wrapped in a
+  // Tooltip (the hover bubble obstructed the click). The tool buttons keep theirs.
+  it('mode-toggle buttons render with no tooltip wrapper', () => {
+    render(<AppShell store={makeStore(EDIT_MODE.Edit)} />);
+    for (const id of ['mode-view', 'mode-add', 'mode-edit']) {
+      const btn = screen.getByTestId(id);
+      // No surrounding .tooltip container, and no sibling role="tooltip" bubble.
+      expect(btn.closest('.tooltip')).toBeNull();
+      const group = btn.closest('.toolbar__modes') as HTMLElement;
+      expect(group.querySelector('[role="tooltip"]')).toBeNull();
+      expect(group.querySelector('.tooltip')).toBeNull();
+    }
+  });
+
+  it('mode-toggle buttons still function on a real click (HB-16)', () => {
+    const store = makeStore(EDIT_MODE.View);
+    render(<AppShell store={store} />);
+    // View → leave view-only into an editing mode, which enables add/edit.
+    fireEvent.click(screen.getByTestId('mode-view'));
+    expect(store.getState().mode).not.toBe(EDIT_MODE.View);
+
+    fireEvent.click(screen.getByTestId('mode-add'));
+    expect(store.getState().mode).toBe(EDIT_MODE.Add);
+
+    fireEvent.click(screen.getByTestId('mode-edit'));
+    expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+  });
+
+  it('tool buttons still carry a tooltip after HB-16 (regression guard)', () => {
+    render(<AppShell store={makeStore(EDIT_MODE.Add)} />);
+    const toolBtn = screen.getByTestId(`tool-${TOOL_ID.AddPoint}`);
+    expect(toolBtn.closest('.tooltip')).not.toBeNull();
+  });
 });
 
 describe('shortcut wiring (FR-112, 受け入れ基準 7/9)', () => {

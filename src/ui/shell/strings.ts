@@ -136,8 +136,8 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'edit.knife': '地物を分割します',
   'edit.reparent': '地物の所属を変更します',
   'edit.merge': '複数の地物を結合します',
-  'mode.add': '追加モードに切り替えます',
-  'mode.edit': '編集モードに切り替えます',
+  // HB-16: the mode-toggle tooltips (mode.add / mode.edit) were removed — the
+  // left toolbar's mode buttons no longer render a Tooltip (ユーザー決定 2026-06-21).
 } as const;
 
 /**

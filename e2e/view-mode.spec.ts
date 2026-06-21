@@ -121,4 +121,36 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       await app.close();
     }
   });
+
+  // HB-16 — the left toolbar's mode-toggle buttons must carry NO tooltip (the
+  // hover bubble obstructed the click target), while the tool buttons keep theirs.
+  // Behavioral: assert no tooltip element near the mode buttons, that they still
+  // function on a real click, and that a tool button still has its tooltip.
+  test('mode-toggle buttons have no tooltip and still work; tool tooltips remain (HB-16)', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // No .tooltip wrapper or role="tooltip" bubble inside the mode group.
+      const modeGroup = page.locator('.toolbar__modes');
+      await expect(modeGroup).toBeVisible();
+      await expect(modeGroup.locator('.tooltip')).toHaveCount(0);
+      await expect(modeGroup.locator('[role="tooltip"]')).toHaveCount(0);
+      // The mode buttons themselves are not wrapped by a tooltip container.
+      for (const id of ['mode-view', 'mode-add', 'mode-edit']) {
+        await expect(page.getByTestId(id).locator('xpath=ancestor::*[contains(@class,"tooltip")]')).toHaveCount(0);
+      }
+
+      // They still function: leave View via mode-view, then enter 追加モード.
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await page.getByTestId('mode-view').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('edit');
+      await page.getByTestId('mode-add').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('add');
+
+      // Tool buttons still carry their tooltip (regression: not all removed).
+      const toolBtn = page.getByTestId('tool-add.point');
+      await expect(toolBtn.locator('xpath=ancestor::*[contains(@class,"tooltip")]')).toHaveCount(1);
+    } finally {
+      await app.close();
+    }
+  });
 });

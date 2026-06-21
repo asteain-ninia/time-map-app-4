@@ -32,39 +32,36 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
             add/edit toggles, so this single control is the live導線 in/out of the
             display-only state. In View it enables editing (lands in 編集モード via
             setViewOnly(false)); in an editing mode it returns to View. */}
-        <Tooltip text={TOOLTIPS['view.toggleViewMode'] ?? MODE_LABELS.view}>
-          <button
-            type="button"
-            data-testid="mode-view"
-            aria-pressed={shell.mode === EDIT_MODE.View}
-            onClick={() => shell.setViewOnly(shell.mode !== EDIT_MODE.View)}
-          >
-            {MODE_LABELS.view}
-          </button>
-        </Tooltip>
-        <Tooltip text={TOOLTIPS['mode.add'] ?? MODE_LABELS.add}>
-          <button
-            type="button"
-            data-testid="mode-add"
-            aria-pressed={shell.mode === EDIT_MODE.Add}
-            // View-only disables editing-mode entry (教訓 5.13).
-            disabled={shell.mode === EDIT_MODE.View}
-            onClick={() => shell.toggleMode('add')}
-          >
-            {MODE_LABELS.add}
-          </button>
-        </Tooltip>
-        <Tooltip text={TOOLTIPS['mode.edit'] ?? MODE_LABELS.edit}>
-          <button
-            type="button"
-            data-testid="mode-edit"
-            aria-pressed={shell.mode === EDIT_MODE.Edit}
-            disabled={shell.mode === EDIT_MODE.View}
-            onClick={() => shell.toggleMode('edit')}
-          >
-            {MODE_LABELS.edit}
-          </button>
-        </Tooltip>
+        {/* HB-16: mode toggles carry NO tooltip — the hover bubble was getting in
+            the way of the click target (ユーザー決定 2026-06-21). The tool buttons
+            below keep their FR-112 tooltips. */}
+        <button
+          type="button"
+          data-testid="mode-view"
+          aria-pressed={shell.mode === EDIT_MODE.View}
+          onClick={() => shell.setViewOnly(shell.mode !== EDIT_MODE.View)}
+        >
+          {MODE_LABELS.view}
+        </button>
+        <button
+          type="button"
+          data-testid="mode-add"
+          aria-pressed={shell.mode === EDIT_MODE.Add}
+          // View-only disables editing-mode entry (教訓 5.13).
+          disabled={shell.mode === EDIT_MODE.View}
+          onClick={() => shell.toggleMode('add')}
+        >
+          {MODE_LABELS.add}
+        </button>
+        <button
+          type="button"
+          data-testid="mode-edit"
+          aria-pressed={shell.mode === EDIT_MODE.Edit}
+          disabled={shell.mode === EDIT_MODE.View}
+          onClick={() => shell.toggleMode('edit')}
+        >
+          {MODE_LABELS.edit}
+        </button>
       </div>
 
       <div className="toolbar__tools" role="group" aria-label="ツール選択" data-testid="toolbar-tools">
