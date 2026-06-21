@@ -8,6 +8,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -253,6 +254,64 @@ describe('キャンセルと一時状態の破棄 (受け入れ基準 7, 教訓 
     await user.click(screen.getByTestId('conflict-cancel'));
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+describe('確定後の onCommitted 再生成でも二重確定しない (回帰: phase ゲート, 教訓 5.2)', () => {
+  // 回帰防止: App の onConflictCommitted は conflictState を deps に持つため、確定
+  // (setConflictState 経由) の前後で識別子が変わり、ConflictResolutionModal の
+  // onCommitted プロップ → useConflictResolution.apply が再生成される。apply は
+  // phase!==Resolving で硬くゲートし、onCommitted を呼ぶ前に Committed へ遷移する
+  // ので、再生成された apply は二度と確定できない。ここではモーダルを実際に確定
+  // させた後、新しい onCommitted 参照で再レンダーし、apply ボタンが無効のままで
+  // applyResolutions も onCommitted も一度しか呼ばれないことを固定する。
+  it('確定後に onCommitted を差し替えて再レンダーしても再確定できない', async () => {
+    const user = userEvent.setup();
+    const applyResolutions = vi.fn<(r: readonly Resolution[]) => ProcessResult<unknown>>(
+      () => ({
+        status: PROCESS_STATUS.Committed,
+        state: {},
+        command: {} as never,
+      }),
+    );
+    const onCommittedA = vi.fn<(r: ProcessResult<unknown>) => void>();
+    const onCommittedB = vi.fn<(r: ProcessResult<unknown>) => void>();
+
+    const props = {
+      pending: pendingOf([conflict('c1', FA, FB)]),
+      applyResolutions,
+      shapesFor,
+      showGuide: false as boolean,
+    };
+
+    const { rerender } = render(
+      <ConflictResolutionModal<unknown> {...props} onCommitted={onCommittedA} />,
+    );
+
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+
+    // 一度だけ確定した。
+    expect(applyResolutions).toHaveBeenCalledTimes(1);
+    expect(onCommittedA).toHaveBeenCalledTimes(1);
+
+    // App 側で conflictState が変わり onCommitted が再生成される状況を再現:
+    // 新しい onCommitted 参照を渡して再レンダー (apply も内部で再生成される)。
+    act(() => {
+      rerender(
+        <ConflictResolutionModal<unknown> {...props} onCommitted={onCommittedB} />,
+      );
+    });
+
+    // phase は Committed のまま — apply ボタンは無効で、押しても再確定しない。
+    const applyBtn = screen.getByTestId('conflict-apply');
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
+
+    // 二重確定なし: applyResolutions は依然 1 回、いずれの onCommitted も再発火しない。
+    expect(applyResolutions).toHaveBeenCalledTimes(1);
+    expect(onCommittedA).toHaveBeenCalledTimes(1);
+    expect(onCommittedB).not.toHaveBeenCalled();
   });
 });
 
