@@ -412,15 +412,32 @@ function replaceIdInContainer(
   return { container: entry.container, vertexIds: next };
 }
 
-/** Replace every occurrence of `fromId` with `toId` across ALL containers. */
+/**
+ * Replace every occurrence of `fromId` with `toId` across the containers that
+ * cite `fromId`. `fromRefs` are `fromId`'s shape references taken from the
+ * pre-built reverse index (バグハント3): they name exactly the containers to
+ * rewrite, so the guard pass no longer scans every container with
+ * `Array.includes` (O(C·L)) — only the k containers that actually reference
+ * `fromId` are touched (O(k) container lookups + one `.map` each over the
+ * matching rings/lines). Containers that do not cite `fromId` keep their exact
+ * array reference (immutability preserved; identity stable).
+ */
 function repointAll(
   state: SharedVertexState,
   fromId: VertexId,
   toId: VertexId,
+  fromRefs: readonly ShapeReference[],
 ): SharedVertexState {
+  if (fromRefs.length === 0) return state;
   const next = new Map(state.containers);
-  for (const [key, entry] of next) {
-    if (!entry.vertexIds.includes(fromId)) continue;
+  // The reverse index lists one ShapeReference PER citation, so a container that
+  // cites `fromId` at several positions appears multiple times; dedupe by key so
+  // each affected container is rewritten once (the `.map` handles all positions).
+  const affectedKeys = new Set<string>();
+  for (const ref of fromRefs) affectedKeys.add(containerKey(ref.container));
+  for (const key of affectedKeys) {
+    const entry = next.get(key);
+    if (entry === undefined) continue; // index/state mismatch — leave as-is
     const ids = entry.vertexIds.map((id) => (id === fromId ? toId : id));
     next.set(key, { container: entry.container, vertexIds: ids });
   }
@@ -509,8 +526,19 @@ export function shareVertices(
   }
 
   // Build candidate (NOT yet committed) state: repoint, prune orphaned candidate.
-  let next = repointAll(state, candidateId, targetId);
-  if (!isReferenced(next, candidateId)) {
+  // Pass candidateRefs (from the pre-built index) so repointAll touches only the
+  // containers that actually cite the candidate (バグハント3: avoids the O(C·L)
+  // Array.includes guard scan over every container).
+  let next = repointAll(state, candidateId, targetId, candidateRefs);
+  // After repointAll, EVERY citation of candidateId (its complete set was
+  // candidateRefs) has been rewritten to targetId, so candidateId is now
+  // unreferenced by construction — its body is orphaned and pruned. Deriving
+  // this from candidateRefs avoids a second O(C·L) container scan (the same
+  // バグハント3 pattern isReferenced would otherwise repeat over every
+  // container) while staying exactly equivalent: candidateRefs came from the
+  // reverse index built over `state`, and repointAll replaced all `candidateId`
+  // occurrences in precisely those containers.
+  if (getVertex(next.vertices, candidateId) !== undefined) {
     next = withVertices(next, removeVertex(next.vertices, candidateId));
   }
 

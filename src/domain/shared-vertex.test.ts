@@ -607,4 +607,85 @@ describe('reverse-index reuse (バグハント3 performance regression)', () => 
     // Both rings still cite the one shared body.
     expect(referencesOf(cur, V('vA2')).length).toBe(2);
   });
+
+  // バグハント3 回帰: repointAll (内部) must rewrite ONLY the containers that
+  // actually cite the candidate, using the pre-built reverse index — never the
+  // old Array.includes(fromId) guard run over EVERY container (O(C·L) scan).
+  // The orphan-prune that follows must likewise NOT re-scan every container.
+  // We instrument `.includes` on the DECOY containers' vertexId arrays: those
+  // arrays have nothing to do with the share, so an Array.includes call on any
+  // of them is exactly the regression. buildReverseIndex uses positional
+  // iteration (no .includes), so it does not register — the only thing this
+  // counts is the guard / orphan scan the fix removed.
+  it('shareVertices repoints without an Array.includes scan over every container', () => {
+    const verts: Array<readonly [string, number, number]> = [
+      ['vA1', 0, 0],
+      ['vA2', 10, 0],
+      ['vA3', 5, 10],
+      ['vB1', 20, 0],
+      ['vB2', 30, 0],
+      ['vB3', 25, 10],
+    ];
+    const containers: ContainerEntry[] = [
+      { container: ring('A', 'r0'), vertexIds: [V('vA1'), V('vA2'), V('vA3')] },
+      { container: ring('B', 'r0'), vertexIds: [V('vB1'), V('vB2'), V('vB3')] },
+    ];
+    // Many decoy rings that cite NEITHER the candidate (vB1) nor the target (vA2).
+    const decoyCount = 50;
+    const decoyKeys: string[] = [];
+    for (let i = 0; i < decoyCount; i += 1) {
+      const a = `d${i}a`;
+      const b = `d${i}b`;
+      const c = `d${i}c`;
+      verts.push([a, 100 + i, 0], [b, 110 + i, 0], [c, 105 + i, 10]);
+      const container = ring(`D${i}`, 'r0');
+      containers.push({ container, vertexIds: [V(a), V(b), V(c)] });
+      decoyKeys.push(containerKey(container));
+    }
+
+    // Wrap each decoy's vertexId array so any `.includes(...)` is counted.
+    let decoyIncludes = 0;
+    const instrumentedContainers = containers.map((entry) => {
+      if (!decoyKeys.includes(containerKey(entry.container))) return entry;
+      const wrapped = new Proxy(entry.vertexIds as VertexId[], {
+        get(target, prop, receiver) {
+          if (prop === 'includes') {
+            return (...args: Parameters<VertexId[]['includes']>) => {
+              decoyIncludes += 1;
+              return target.includes(...args);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { container: entry.container, vertexIds: wrapped };
+    });
+    const store = state(verts, []).vertices;
+    const baseState = createSharedVertexState(store, instrumentedContainers);
+
+    const r = shareVertices(baseState, V('vB1'), V('vA2'));
+    expect(r.status).toBe(SHARED_VERTEX_OUTCOME.Applied);
+    if (r.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+
+    // Zero includes on decoy containers: the fix uses the reverse index instead
+    // of scanning every container. Before the fix, repointAll's guard alone
+    // called .includes on all decoyCount decoys (and the orphan check repeated it).
+    expect(decoyIncludes).toBe(0);
+
+    // Correctness fully preserved: vB1 folded into vA2 (shared by rings A and B);
+    // candidate pruned; every decoy ring left identical (same array reference).
+    expect(isSharedVertex(r.state, V('vA2'))).toBe(true);
+    expect(getVertex(r.state.vertices, V('vB1'))).toBeUndefined();
+    for (const key of decoyKeys) {
+      expect(r.state.containers.get(key)?.vertexIds).toBe(
+        baseState.containers.get(key)?.vertexIds,
+      );
+    }
+    const bRefs = referencesOf(r.state, V('vA2'))
+      .map((x) => containerKey(x.container))
+      .sort();
+    expect(bRefs).toEqual(
+      [containerKey(ring('A', 'r0')), containerKey(ring('B', 'r0'))].sort(),
+    );
+  });
 });
