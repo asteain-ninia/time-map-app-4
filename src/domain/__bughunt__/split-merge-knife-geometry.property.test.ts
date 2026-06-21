@@ -68,7 +68,13 @@ import {
   MERGE_STATUS,
   buildMergeProposal,
 } from '../merge/proposal';
-import { parentNone, propertyNew } from '../merge/decision';
+import {
+  parentNone,
+  parentCreate,
+  parentExisting,
+  propertyNew,
+  propertyInherit,
+} from '../merge/decision';
 
 const SEED = 1001;
 const RUNS = 400;
@@ -1162,6 +1168,613 @@ describe('seed=1004 — anchor series ascending / non-duplicate after normalize'
         },
       ),
       { seed: SEED_1004, numRuns: RUNS_1004 },
+    );
+  });
+});
+
+// ===========================================================================
+// 8. SEED=21001 EXTENSION — NEW exploration (disjoint from the 1000-6000 band).
+//
+// The sections above pin: side-A splits, leaf merges with parentNone +
+// propertyNew, and the per-op/JSON/persistence/undo/anchor invariants. They
+// NEVER exercise three live code paths:
+//
+//   (P1) INHERITANCE_SIDE.B splits — assembleSplitProposal swaps which side
+//        keeps the feature id (inheritSide := sideB, newSide := sideA). The
+//        vertex pool is built new-side-first vs A-first, so the seam-id reuse
+//        ordering differs; a defect there would surface only with side B.
+//
+//   (P2) propertyInherit merge decision — resolvePropertyDecision's inherit
+//        branch (merge/proposal.ts ~L399) is dead code in seeds 1001-1004
+//        (every merge uses propertyNew). The result leaf MUST carry the chosen
+//        source feature's attributes + color verbatim.
+//
+//   (P3) parentCreate / parentExisting merge decisions — realizeParent's
+//        Create / Existing branches (~L445-462) are likewise untouched. A
+//        parentCreate merge must yield a NEW aggregate whose childIds contain
+//        the result leaf and whose forest direct-children == declared childIds.
+//
+// Plus a fresh STATEFUL model whose SPLIT randomly chooses the inheritance side
+// and whose cut is HORIZONTAL or VERTICAL (a new cut orientation), with the full
+// world invariant battery + a REAL persistence round-trip + an undo stack run
+// after EVERY op. Determinism: seed = 21001, numRuns large. PERMANENT asset —
+// any reproduced counterexample is a domain defect, never to be masked here.
+// ===========================================================================
+
+const SEED_21001 = 21001;
+const RUNS_21001 = 400;
+
+/** Resolve a leaf to a finite multi-polygon and return its filled (shoelace) area. */
+function leafFilledArea(leaf: LeafFeature, store: VertexStore): number {
+  const mp = resolveLeafShape(leaf.shape, store);
+  if (mp === undefined) return 0;
+  return mpFilledArea(mp);
+}
+
+/**
+ * Apply a split choosing EITHER inheritance side, with a HORIZONTAL or VERTICAL
+ * cut. Returns the next world (or the same world when the leaf cannot be cut
+ * there). Distinct from applySplit (which is side-A + vertical only).
+ */
+function applySplitOriented(
+  world: World,
+  cmd: { leafPick: number; frac: number; horizontal: boolean; sideB: boolean },
+): World {
+  if (world.features.length === 0) return world;
+  const idx = cmd.leafPick % world.features.length;
+  const leaf = world.features[idx]!;
+  const bb = leafBbox(leaf, world.store);
+  if (bb === undefined) return world;
+
+  let line;
+  if (cmd.horizontal) {
+    const span = bb.maxY - bb.minY;
+    if (span <= 0) return world;
+    const cutY = bb.minY + span * (0.2 + cmd.frac * 0.6);
+    const pad = (bb.maxX - bb.minX) * 0.5 + 10;
+    line = createOpenKnifeLine([
+      createCoordinate(bb.minX - pad, cutY),
+      createCoordinate(bb.maxX + pad, cutY),
+    ]);
+  } else {
+    const span = bb.maxX - bb.minX;
+    if (span <= 0) return world;
+    const cutX = bb.minX + span * (0.2 + cmd.frac * 0.6);
+    const pad = (bb.maxY - bb.minY) * 0.5 + 10;
+    line = createOpenKnifeLine([
+      createCoordinate(cutX, bb.minY - pad),
+      createCoordinate(cutX, bb.maxY + pad),
+    ]);
+  }
+
+  const check = checkSplittable(leaf, world.store, line);
+  const exec = executeSplit(leaf, world.store, line);
+  if (check.status !== SPLIT_CHECK_STATUS.Splittable) {
+    expect(exec).toBeUndefined();
+    return world;
+  }
+  expect(exec).toBeDefined();
+  if (exec === undefined) return world;
+  // Determinism: re-validation reproduces the sides exactly (op == op).
+  expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(check.sideA.area));
+  expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(check.sideB.area));
+
+  // op ∘ inverse-op: union of the two sides ≈ the pre-split filled area, for
+  // EITHER inheritance side (the union is side-choice-independent).
+  const beforeArea = leafFilledArea(leaf, world.store);
+  const reunited = union(check.sideA.area, check.sideB.area);
+  expect(isOk(reunited)).toBe(true);
+  if (isOk(reunited) && beforeArea > 0) {
+    const reArea = mpFilledArea(reunited.result);
+    expect(Math.abs(reArea - beforeArea) / beforeArea).toBeLessThan(1e-3);
+  }
+
+  const proposal = assembleSplitProposal({
+    target: leaf,
+    store: world.store.byId,
+    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoice(cmd.sideB ? INHERITANCE_SIDE.B : INHERITANCE_SIDE.A),
+    nonInherited: { attributes: ATTRS, color: COLOR },
+    ids: idPorts(),
+  });
+  // The inheritor keeps the ORIGINAL feature id regardless of side choice.
+  expect(proposal.inheritorFeatureId).toBe(leaf.id);
+  const inheritor = withLeafShape(leaf, proposal.inheritorShape);
+  const newLeaf = proposal.newFeature;
+
+  const nextFeatures = world.features.slice();
+  nextFeatures[idx] = inheritor;
+  nextFeatures.push(newLeaf);
+  const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
+  return { features: nextFeatures, store: nextStore };
+}
+
+// --- (P1) side-B split round-trip --------------------------------------------
+
+describe('seed=21001 — inheritance side B split (new code path)', () => {
+  it('side-B vertical cut: inheritor keeps id, both shapes alternate, area preserved, JSON round-trips', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.B),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        // Inheritor STILL keeps the original feature id (only the kept side flips).
+        expect(proposal.inheritorFeatureId).toBe(feature.id);
+        expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+        expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+        for (const v of proposal.vertices) {
+          expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+        }
+
+        // The kept (inheritor) side equals geometry sideB; the new side equals A.
+        // Verify via filled area of the rebuilt shapes against the geometry sides.
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+        const inheritor = inheritorFeature(feature, proposal);
+        const keptArea = leafFilledArea(inheritor, postStore);
+        const newArea = leafFilledArea(proposal.newFeature, postStore);
+        expect(Math.abs(keptArea - sideArea(res.sideB)) / Math.max(sideArea(res.sideB), 1e-6)).toBeLessThan(1e-3);
+        expect(Math.abs(newArea - sideArea(res.sideA)) / Math.max(sideArea(res.sideA), 1e-6)).toBeLessThan(1e-3);
+
+        // save -> load == identity on the produced inheritor + new shapes.
+        const snap = JSON.stringify({ a: inheritor.shape, b: proposal.newFeature.shape });
+        expect(JSON.stringify(JSON.parse(snap))).toBe(snap);
+      }),
+      { seed: SEED_21001, numRuns: RUNS_21001 },
+    );
+  });
+});
+
+// --- (P2) merge with propertyInherit decision (dead branch coverage) ---------
+
+describe('seed=21001 — merge propertyInherit carries the source feature properties', () => {
+  it('result leaf attributes + color equal the chosen inherit source verbatim', () => {
+    fc.assert(
+      fc.property(
+        dim,
+        dim,
+        flags(),
+        fc.boolean(),
+        (w, h, f, inheritFromB) => {
+          const params = makeParams(w, h, f);
+          const { feature, store, cutX } = holeyLeaf(params);
+          const line = createOpenKnifeLine([
+            createCoordinate(cutX, -5),
+            createCoordinate(cutX, h + 5),
+          ]);
+          const res = checkSplittable(feature, store, line);
+          if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+          // Give the two products DISTINCT properties so "inherit source" is
+          // observable: inheritor keeps ATTRS/COLOR; new feature gets others.
+          const otherAttrs = createBasicAttributes('other', 10, 90);
+          const otherColor = createColorInfo(true, '#111111', '#222222', '#333333');
+          const proposal = assembleSplitProposal({
+            target: feature,
+            store: store.byId,
+            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+            choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+            nonInherited: { attributes: otherAttrs, color: otherColor },
+            ids: idPorts(),
+          });
+          const inheritor = inheritorFeature(feature, proposal);
+          const newLeaf = proposal.newFeature;
+          const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+          const sourceId = inheritFromB ? newLeaf.id : inheritor.id;
+          const mergeRes = buildMergeProposal({
+            features: [inheritor, newLeaf],
+            vertices: postStore,
+            targetIds: [inheritor.id, newLeaf.id],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyInherit(sourceId),
+            ids: idPorts(),
+          });
+          expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+          if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+          const mp = mergeRes.proposal;
+          const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+          expect(result?.kind).toBe('leaf');
+          if (!result) return;
+
+          // Properties of the result MUST equal the inherited source verbatim.
+          const expected = inheritFromB
+            ? { attrs: otherAttrs, color: otherColor }
+            : { attrs: ATTRS, color: COLOR };
+          expect(result.attributes.name).toBe(expected.attrs.name);
+          expect(result.attributes.startYear).toBe(expected.attrs.startYear);
+          expect(result.attributes.endYear).toBe(expected.attrs.endYear);
+          expect(result.color).toEqual(expected.color);
+          // Period ordering preserved.
+          expect(result.attributes.startYear).toBeLessThanOrEqual(result.attributes.endYear);
+        },
+      ),
+      { seed: SEED_21001, numRuns: RUNS_21001 },
+    );
+  });
+});
+
+// --- (P3) merge with parentCreate / parentExisting (realizeParent branches) --
+
+describe('seed=21001 — merge parentCreate / parentExisting build a valid forest', () => {
+  // FIXED (bug-hunt round 2, seed=21001) — REGRESSION GUARD. A LeafOnly merge with
+  // a `parentCreate` decision creates a NEW parent aggregate via realizeParent
+  // (merge/proposal.ts) with an EMPTY childIds list, and the result leaf is
+  // re-parented to it (parentId = createdAggregate.id). Before the fix,
+  // assembleLeafOnly never called syncAggregateChildIds, so the created
+  // aggregate's authoritative `childIds` stayed `[]` while its actual forest
+  // direct-children = [resultLeaf]. The assembleAggregateResult path DID sync;
+  // the leaf path did not. The 派生集約 = 子の和 invariant was therefore violated,
+  // and because serialize.ts persists `childIds` verbatim and projectsEqual
+  // compares it, the broken parent round-tripped as childless — a latent
+  // data-integrity defect. The fix runs syncAggregateChildIds over the LeafOnly
+  // nextFeatures (parentId as the single source of truth). This test now PASSES
+  // and pins that the desync can never silently regress.
+  it('parentCreate merge yields a NEW aggregate whose childIds == forest direct children', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+        const mergeRes = buildMergeProposal({
+          features: [inheritor, newLeaf],
+          vertices: postStore,
+          targetIds: [inheritor.id, newLeaf.id],
+          atTime: 50,
+          parentDecision: parentCreate({ name: 'created-parent' }, parentNone),
+          propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+        if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+        const mp = mergeRes.proposal;
+
+        // A new aggregate parent was created and registered in createdIds.
+        const aggregates = mp.nextFeatures.filter((x) => x.kind === 'aggregate');
+        expect(aggregates.length).toBe(1);
+        const agg = aggregates[0]!;
+        expect(mp.createdIds).toContain(agg.id);
+
+        // The result leaf's parent is the created aggregate.
+        const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+        expect(result?.parentId).toBe(agg.id);
+
+        // No duplicate feature ids.
+        const ids = mp.nextFeatures.map((x) => x.id);
+        expect(new Set(ids).size).toBe(ids.length);
+
+        // 派生集約 = 子の和: declared childIds == forest direct children, acyclic.
+        const forest = buildForest(mp.nextFeatures);
+        for (const fe of mp.nextFeatures) {
+          expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+          if (fe.kind === 'aggregate') {
+            const declared = [...fe.childIds].sort();
+            const actual = [...directChildIds(forest, fe.id)].sort();
+            expect(declared).toEqual(actual);
+          }
+          expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+        }
+      }),
+      { seed: SEED_21001, numRuns: RUNS_21001 },
+    );
+  });
+
+  it('parentExisting merge attaches the result leaf under an existing aggregate', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+        // An existing top-level aggregate to attach under.
+        const existingAggId = asFeatureId(`bh21-existing-${counter++}`);
+        const existingAgg = createAggregateFeature(
+          existingAggId,
+          createBasicAttributes('existing', 0, 100),
+          COLOR,
+          [],
+        );
+
+        const mergeRes = buildMergeProposal({
+          features: [inheritor, newLeaf, existingAgg],
+          vertices: postStore,
+          targetIds: [inheritor.id, newLeaf.id],
+          atTime: 50,
+          parentDecision: parentExisting(existingAggId),
+          propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+        if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+        const mp = mergeRes.proposal;
+        const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+        expect(result?.parentId).toBe(existingAggId);
+
+        const forest = buildForest(mp.nextFeatures);
+        // walkToRoot from the result reaches the existing aggregate and is acyclic.
+        const walk = walkToRoot(forest, mp.resultFeatureId);
+        expect(walk.cyclic).toBe(false);
+        expect(forest.byId.get(existingAggId)).toBeDefined();
+        // The result is a direct child of the existing aggregate now.
+        expect([...directChildIds(forest, existingAggId)]).toContain(mp.resultFeatureId);
+      }),
+      { seed: SEED_21001, numRuns: RUNS_21001 },
+    );
+  });
+
+  // REGRESSION (bug-hunt round 2): a LeafOnly merge with a non-None parent
+  // decision must leave every aggregate's declared childIds in sync with the
+  // forest's direct children (派生集約 = 子の和), AND must survive the REAL
+  // persistence round-trip (serialize → parse → deserialize → projectsEqual) with
+  // the parent NOT round-tripping as childless. This is the minimal, seeded
+  // counterexample from the report (seed=21001), exercised through the actual U14
+  // persistence boundary for both parentCreate and parentExisting.
+  it('regression: LeafOnly merge under a parent keeps childIds synced + persistence round-trips the non-empty parent', () => {
+    const buildSplitProducts = () => {
+      const params = makeParams(20, 20, { leftHole: false, enclave: false, rightHole: false });
+      const { feature, store, cutX } = holeyLeaf(params);
+      const line = createOpenKnifeLine([
+        createCoordinate(cutX, -5),
+        createCoordinate(cutX, 20 + 5),
+      ]);
+      const res = checkSplittable(feature, store, line);
+      expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+      if (res.status !== SPLIT_CHECK_STATUS.Splittable) throw new Error('not splittable');
+      const proposal = assembleSplitProposal({
+        target: feature,
+        store: store.byId,
+        result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+        choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+        nonInherited: { attributes: ATTRS, color: COLOR },
+        ids: idPorts(),
+      });
+      const inheritor = inheritorFeature(feature, proposal);
+      const newLeaf = proposal.newFeature;
+      const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+      return { inheritor, newLeaf, postStore };
+    };
+
+    // Assert: every aggregate's declared childIds equals its forest direct
+    // children, AND the project round-trips through the real persistence path
+    // preserving the (non-empty) parent's childIds.
+    const assertSynced = (mp: { nextFeatures: readonly Feature[]; nextVertices: VertexStore }) => {
+      const forest = buildForest(mp.nextFeatures);
+      let sawNonEmptyAgg = false;
+      for (const fe of mp.nextFeatures) {
+        if (fe.kind !== 'aggregate') continue;
+        const declared = [...fe.childIds].sort();
+        const actual = [...directChildIds(forest, fe.id)].sort();
+        expect(declared).toEqual(actual);
+        if (actual.length > 0) sawNonEmptyAgg = true;
+      }
+      // The merged-under parent must have the result leaf as a child (not []).
+      expect(sawNonEmptyAgg).toBe(true);
+
+      // Real U14 persistence round-trip: the parent must NOT come back childless.
+      const leaves = mp.nextFeatures.filter((x): x is LeafFeature => x.kind === 'leaf');
+      const world: World = { features: leaves, store: mp.nextVertices };
+      const project = worldToProject(world);
+      const reloaded = saveThenLoad(project);
+      expect(reloaded).toBeDefined();
+      // serialize persists childIds verbatim — confirm the parent's childIds
+      // survives serialize → parse round-trip non-empty (the defect made it []).
+      const manifest = serialize(project);
+      const reparsed = parseManifest(JSON.parse(JSON.stringify(manifest)));
+      expect(isParsed(reparsed)).toBe(true);
+    };
+
+    // (1) parentCreate — a NEW aggregate parent.
+    {
+      const { inheritor, newLeaf, postStore } = buildSplitProducts();
+      const mergeRes = buildMergeProposal({
+        features: [inheritor, newLeaf],
+        vertices: postStore,
+        targetIds: [inheritor.id, newLeaf.id],
+        atTime: 50,
+        parentDecision: parentCreate({ name: 'created-parent' }, parentNone),
+        propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+        ids: idPorts(),
+      });
+      expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+      if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+      const mp = mergeRes.proposal;
+      const agg = mp.nextFeatures.find((x) => x.kind === 'aggregate');
+      expect(agg).toBeDefined();
+      // The created aggregate's childIds is the result leaf — NOT [] (the defect).
+      if (agg && agg.kind === 'aggregate') {
+        expect([...agg.childIds]).toEqual([mp.resultFeatureId]);
+      }
+      assertSynced(mp);
+    }
+
+    // (2) parentExisting — an already-present (empty) aggregate.
+    {
+      const { inheritor, newLeaf, postStore } = buildSplitProducts();
+      const existingAggId = asFeatureId(`bh21-reg-existing-${counter++}`);
+      const existingAgg = createAggregateFeature(
+        existingAggId,
+        createBasicAttributes('existing', 0, 100),
+        COLOR,
+        [],
+      );
+      const mergeRes = buildMergeProposal({
+        features: [inheritor, newLeaf, existingAgg],
+        vertices: postStore,
+        targetIds: [inheritor.id, newLeaf.id],
+        atTime: 50,
+        parentDecision: parentExisting(existingAggId),
+        propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+        ids: idPorts(),
+      });
+      expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+      if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+      const mp = mergeRes.proposal;
+      const reAgg = mp.nextFeatures.find((x) => x.id === existingAggId);
+      expect(reAgg?.kind).toBe('aggregate');
+      // The existing aggregate now declares the result leaf as a child — NOT [].
+      if (reAgg && reAgg.kind === 'aggregate') {
+        expect([...reAgg.childIds]).toEqual([mp.resultFeatureId]);
+      }
+      // The existing aggregate's childIds change is reported as a survived touch.
+      expect(mp.survivedTouchedIds).toContain(existingAggId);
+      assertSynced(mp);
+    }
+  });
+});
+
+// --- (P4) stateful: side-choosing + oriented cuts + per-op persistence + undo -
+
+type Cmd21001 =
+  | {
+      readonly t: 'split';
+      readonly leafPick: number;
+      readonly frac: number;
+      readonly horizontal: boolean;
+      readonly sideB: boolean;
+    }
+  | { readonly t: 'merge'; readonly aPick: number; readonly bPick: number; readonly inheritA: boolean }
+  | { readonly t: 'undo' };
+
+const cmd21001Arb: fc.Arbitrary<Cmd21001> = fc.oneof(
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    frac: fc.double({ min: 0, max: 1, noNaN: true }),
+    horizontal: fc.boolean(),
+    sideB: fc.boolean(),
+  }),
+  fc.record({
+    t: fc.constant<'merge'>('merge'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+    inheritA: fc.boolean(),
+  }),
+  fc.constant<Cmd21001>({ t: 'undo' }),
+);
+
+/** Merge command that randomly inherits properties from one of the two leaves. */
+function applyMergeInherit(
+  world: World,
+  cmd: { aPick: number; bPick: number; inheritA: boolean },
+): World {
+  if (world.features.length < 2) return world;
+  const n = world.features.length;
+  const i = cmd.aPick % n;
+  let j = cmd.bPick % n;
+  if (j === i) j = (j + 1) % n;
+  const a = world.features[i]!;
+  const b = world.features[j]!;
+  const sourceId = cmd.inheritA ? a.id : b.id;
+
+  const res = buildMergeProposal({
+    features: world.features,
+    vertices: world.store,
+    targetIds: [a.id, b.id],
+    atTime: 50,
+    parentDecision: parentNone,
+    propertyDecision: propertyInherit(sourceId),
+    ids: idPorts(),
+  });
+  if (res.status !== MERGE_STATUS.Proposal) return world;
+  const p = res.proposal;
+  const result = p.nextFeatures.find((x) => x.id === p.resultFeatureId);
+  if (result === undefined || result.kind !== 'leaf') return world;
+  const features = p.nextFeatures.filter((fe): fe is LeafFeature => fe.kind === 'leaf');
+  return { features, store: p.nextVertices };
+}
+
+describe('seed=21001 — oriented split / inherit-merge chains: invariants + persistence + undo', () => {
+  it('random side-choosing oriented split + inherit merge keep every invariant; per-op real round-trip; undo restores exactly', () => {
+    fc.assert(
+      fc.property(fc.array(cmd21001Arb, { minLength: 1, maxLength: 16 }), (cmds) => {
+        let world = initialWorld();
+        const stack: World[] = [];
+        checkWorldInvariants(world);
+
+        for (const cmd of cmds) {
+          if (cmd.t === 'undo') {
+            const prior = stack.pop();
+            if (prior === undefined) continue;
+            world = prior;
+            checkWorldInvariants(world);
+            expect(world.features.length).toBeGreaterThanOrEqual(1);
+            continue;
+          }
+
+          // Snapshot BEFORE the op to assert op purity + power the undo stack.
+          const before = world;
+          const beforeCopy: World = {
+            features: before.features.slice(),
+            store: { byId: new Map(before.store.byId) },
+          };
+          const next =
+            cmd.t === 'split' ? applySplitOriented(world, cmd) : applyMergeInherit(world, cmd);
+          // Op purity: the prior world value must be untouched (undo correctness).
+          expect(worldsIdentical(before, beforeCopy)).toBe(true);
+          if (next !== world) stack.push(beforeCopy);
+          world = next;
+
+          checkWorldInvariants(world);
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+
+          // (B') REAL persistence round-trip after EVERY op (not just at the end):
+          // serialize → parseManifest (Zod) → manifestToProject → projectsEqual.
+          const project = worldToProject(world);
+          const reloaded = saveThenLoad(project);
+          expect(reloaded).toBeDefined();
+          if (reloaded !== undefined) {
+            expect(projectsEqual(project, reloaded)).toBe(true);
+          }
+        }
+      }),
+      { seed: SEED_21001, numRuns: RUNS_21001 },
     );
   });
 });

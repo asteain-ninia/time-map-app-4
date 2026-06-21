@@ -608,19 +608,32 @@ function assembleLeafOnly(
     .concat(realizedParent.created)
     .concat(resultLeaf);
 
+  // childIds 再同期 (parentId を単一真実源に集約の childIds を再構築)。末端のみ結合でも
+  // 上位領域決定が create / existing の場合、結果末端を当該集約へ付け替える (parentId を
+  // 張り替える) ため、その集約の childIds が脱同期する。集約結合パス (assembleAggregateResult)
+  // と同一の規約 — persistence / deletion eligibility が childIds を権威データとする
+  // (serialize は childIds を verbatim 永続化し projectsEqual も比較する) ため、結果末端を
+  // 直接子に持つ親集約 (新規 create / 既存 existing 双方) の childIds を整合させる。
+  // parentId が none の場合は付け替えがなく同期は恒等 (changedIds 空)。
+  const synced = syncAggregateChildIds(nextFeatures);
+
   // 頂点ストア: 新規頂点を追加 (旧頂点は U11 transferSharing が整理する素材として残す)。
   const nextVertices = addVertices(vertices, built.vertices);
 
   const createdIds = [...realizedParent.createdIds, resultFeatureId];
+  // 既存集約 (existing) の childIds を変更した場合のみ存続変更として報告する。新規 create
+  // 集約は createdIds 側で扱うため survivedTouched からは除く。
+  const createdIdSet = new Set<FeatureId>(createdIds);
+  const survivedTouchedIds = [...synced.changedIds].filter((id) => !createdIdSet.has(id));
   const proposal: MergeProposal = {
     mergeKind: MERGE_KIND.LeafOnly,
     targetIds,
     resultFeatureId,
-    nextFeatures,
+    nextFeatures: synced.features,
     nextVertices,
     createdIds,
     deletedIds: [...deleted],
-    survivedTouchedIds: [],
+    survivedTouchedIds,
     vertexRemap,
   };
   return { status: MERGE_STATUS.Proposal, proposal };
