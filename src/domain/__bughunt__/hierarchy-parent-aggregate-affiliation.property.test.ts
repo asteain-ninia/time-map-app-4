@@ -2168,3 +2168,484 @@ describe(`affiliation — deep save∘load identity (childIds order + depths) (s
     );
   });
 });
+
+// ===========================================================================
+// ===========================================================================
+//  FIFTH BUG-HUNT SECTION (seed = 35002) — TRUE fast-check STATEFUL model.
+//
+//  Every §1..§17 above uses `fc.property` with a HAND-ROLLED command-array fold
+//  (we `pick` indices, fold a loop, and assert inline). None of them uses the
+//  fast-check STATEFUL machinery (`fc.commands` + `fc.modelRun`). This section
+//  is a deliberately-disjoint NEW exploration (seed 35002, outside the prior
+//  1000..6000 / 21000..26000 seed ranges) that drives the REAL 所属変更 pipeline
+//  through fast-check's stateful command generator. The stateful generator
+//  produces command SEQUENCES with fast-check's own length/shrinking strategy
+//  (different distribution from `fc.array(affCmdArb)`), so it walks interaction
+//  orderings the hand-rolled folds never reach, and shrinks counter-examples to
+//  a minimal failing command list automatically.
+//
+//  The SUT (system under test) is the live affiliation state PLUS a parallel
+//  anchor series (U09) that snapshots every committed state, so a SINGLE command
+//  run checks the full invariant battery after EVERY committed command:
+//    - リング交互性・非自己交差・包含妥当 / 階層森構造妥当 (validateHierarchy with
+//      the vertexStore runs 形状=和・隙間なし, i.e. ring inclusion/union validity);
+//    - 派生集約=子の和 (assertFeatureSetInvariants);
+//    - 錨列の昇順・非重複 (assertAscendingUnique on the riding series);
+//    - 座標に NaN/Infinity 無し (allCoordsFinite inside assertFeatureSetInvariants);
+//    - 選択が常に有効 (survivedTouched/created resolve, deleted gone);
+//    - save->load=恒等 (JSON round-trip equality, checked every Nth command).
+//  Metamorphic identities are folded into the commands themselves:
+//    - undo∘op==id and op∘undo∘redo==op are checked inside EVERY committed
+//      ExistingCommand/NoneCommand/CreateCommand/FederateCommand `run`;
+//    - op∘逆op==id is a dedicated stateful command (ReaffiliateRoundTrip).
+//
+//  Determinism: seed = 35002, numRuns large. PERMANENT ASSET — assertions encode
+//  the SPEC; a counter-example is a finding, never a reason to weaken a check.
+// ===========================================================================
+// ===========================================================================
+
+const SEED5 = 35002;
+
+// ---------------------------------------------------------------------------
+// §18 model: a VARIABLE-DEPTH, MIXED-PERIOD forest distinct from every prior
+// generator. Some roots are flat (agg→leaves like §0), some are deep (grand→
+// sub→leaves like §13), and per-root periods vary so the existence guard is
+// genuinely exercised. This is the substrate the stateful commands mutate.
+// ---------------------------------------------------------------------------
+
+interface MixedRootSpec {
+  readonly deep: boolean; // true => grand→sub→leaves; false => agg→leaves.
+  readonly subCount: number; // sub-aggregates (deep) — ignored when flat.
+  readonly leafCount: number; // leaves per (sub-)aggregate.
+  readonly start: number;
+  readonly end: number;
+}
+
+function buildMixedForest(specs: readonly MixedRootSpec[]): ModelState {
+  const s = emptyState();
+  let n = 0;
+  const pushLeaf = (
+    parentId: FeatureId,
+    baseY: number,
+    baseX: number,
+    c: number,
+    start: number,
+    end: number,
+  ): FeatureId => {
+    n += 1;
+    const suffix = `m-leaf-${n}`;
+    const x = baseX + c * 10;
+    const corners = [
+      createCoordinate(x, baseY),
+      createCoordinate(x + 10, baseY),
+      createCoordinate(x + 10, baseY + 10),
+      createCoordinate(x, baseY + 10),
+    ];
+    const verts = corners.map((cc, i) => createVertex(asVertexId(`mv-${suffix}-${i}`), cc));
+    s.vertices.push(...verts);
+    const ring = createTerritoryRing(asRingId(`mr-${suffix}`), verts.map((v) => v.id));
+    const fid = asFeatureId(`mf-${suffix}`);
+    s.features.push(
+      createLeafFeature(
+        fid,
+        createBasicAttributes(suffix, start, end),
+        COLOR,
+        createShape([ring]),
+        { parentId },
+      ),
+    );
+    return fid;
+  };
+
+  specs.forEach((spec, rootIdx) => {
+    const baseY = rootIdx * 1000;
+    n += 1;
+    const rootId = asFeatureId(`m-root-${n}`);
+    if (!spec.deep) {
+      const childIds: FeatureId[] = [];
+      for (let c = 0; c < spec.leafCount; c += 1) {
+        childIds.push(pushLeaf(rootId, baseY, 0, c, spec.start, spec.end));
+      }
+      s.features.push(
+        createAggregateFeature(
+          rootId,
+          createBasicAttributes(`m-root-${n}`, spec.start, spec.end),
+          COLOR,
+          childIds,
+        ),
+      );
+      return;
+    }
+    // deep: grand(rootId) -> sub-aggregates -> leaves.
+    const subIds: FeatureId[] = [];
+    for (let sa = 0; sa < spec.subCount; sa += 1) {
+      n += 1;
+      const subId = asFeatureId(`m-sub-${n}`);
+      subIds.push(subId);
+      const leafIds: FeatureId[] = [];
+      for (let c = 0; c < spec.leafCount; c += 1) {
+        leafIds.push(pushLeaf(subId, baseY, sa * 1000, c, spec.start, spec.end));
+      }
+      s.features.push(
+        createAggregateFeature(
+          subId,
+          createBasicAttributes(`m-sub-${n}`, spec.start, spec.end),
+          COLOR,
+          leafIds,
+          { parentId: rootId },
+        ),
+      );
+    }
+    s.features.push(
+      createAggregateFeature(
+        rootId,
+        createBasicAttributes(`m-root-${n}`, spec.start, spec.end),
+        COLOR,
+        subIds,
+      ),
+    );
+  });
+  return s;
+}
+
+const mixedRootSpecArb: fc.Arbitrary<MixedRootSpec> = fc
+  .record({
+    deep: fc.boolean(),
+    subCount: fc.integer({ min: 1, max: 3 }),
+    leafCount: fc.integer({ min: 1, max: 3 }),
+    start: fc.integer({ min: -60, max: 60 }),
+    span: fc.integer({ min: 1, max: 45 }),
+  })
+  .map(({ deep, subCount, leafCount, start, span }) => ({
+    deep,
+    subCount,
+    leafCount,
+    start,
+    end: start + span,
+  }));
+
+function mixedForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(mixedRootSpecArb, { minLength: 1, maxLength: 4 })
+    .map((specs) => buildMixedForest(specs));
+}
+
+// ---------------------------------------------------------------------------
+// §18 SUT: the live affiliation state + a parallel committed-snapshot series +
+// a redo-able command journal. `model` is the lightweight fast-check model
+// (feature count + an opaque tick); the SUT carries the heavy real state.
+// ---------------------------------------------------------------------------
+
+interface StatefulModel {
+  /** ticks committed so far (for picker/index modulo determinism only). */
+  commits: number;
+}
+
+class StatefulSut {
+  state: AffState;
+  series: AnchorSeries;
+  private snapIdx = 1;
+  /** committed commands count — used to throttle the (expensive) save∘load. */
+  committed = 0;
+
+  constructor(initial: ModelState) {
+    this.state = {
+      features: [...initial.features],
+      store: store(initial),
+      idCounter: 50000,
+    };
+    this.series = normalizeSeries([snapshotEntry(this.state.features, this.state.store, 0)], CAL);
+  }
+
+  /** Apply one real proposal-producing command, then check the full battery. */
+  commitAndCheck(
+    applied: { next: AffState; proposal: AffiliationProposal; baseline: readonly Feature[] } | undefined,
+  ): void {
+    if (applied === undefined) return; // rejected / N/A: legitimate, no state change.
+
+    // (1) full forest/area/coord/childIds battery on the committed set.
+    assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+    // (2) 選択が常に有効: notified ids resolve, deleted gone, created fresh.
+    const present = new Set(applied.next.features.map((f) => f.id));
+    for (const id of applied.proposal.survivedTouchedIds) {
+      expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.createdIds) {
+      expect(present.has(id), `created ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.deletedIds) {
+      expect(present.has(id), `deleted ${id} still present`).toBe(false);
+    }
+    const baselineIds = new Set(applied.baseline.map((f) => f.id));
+    const del = new Set(applied.proposal.deletedIds);
+    for (const id of applied.proposal.createdIds) {
+      expect(baselineIds.has(id), `created ${id} collides with existing`).toBe(false);
+      expect(del.has(id), `created ${id} also in deletedIds`).toBe(false);
+    }
+
+    // (3) METAMORPHIC undo∘op==id and op∘undo∘redo==op THROUGH the real command.
+    const command = createAffiliationCommand(applied.baseline, applied.proposal);
+    const exec = command.execute(applied.baseline);
+    expect(
+      featuresEqual(exec.state, applied.proposal.nextFeatures),
+      'execute != proposal.nextFeatures',
+    ).toBe(true);
+    const undone = command.undo(exec.state);
+    expect(featuresEqual(undone.state, applied.baseline), 'undo∘op != identity').toBe(true);
+    const redone = command.redo(undone.state);
+    expect(featuresEqual(redone.state, applied.proposal.nextFeatures), 'op∘undo∘redo != op').toBe(
+      true,
+    );
+    // redo must not re-mint ids (教訓 5.20).
+    const reCreated = redone.state
+      .filter((f) => !baselineIds.has(f.id))
+      .map((f) => f.id)
+      .sort();
+    const origCreated = [...applied.proposal.createdIds].sort();
+    expect(reCreated).toEqual(origCreated);
+
+    // commit the SUT state.
+    this.state = applied.next;
+    this.committed += 1;
+
+    // (4) anchor列 昇順・非重複: append the new committed snapshot.
+    const entries = [...this.series.entries, snapshotEntry(this.state.features, this.state.store, this.snapIdx)];
+    this.snapIdx += 1;
+    this.series = normalizeSeries(entries, CAL);
+    assertAscendingUnique(this.series);
+    expect(this.series.entries.length, 'series became empty (INV-5)').toBeGreaterThan(0);
+
+    // (5) save∘load=恒等 every 3rd commit (full check is O(features); throttle).
+    if (this.committed % 3 === 0) {
+      const parsed = JSON.parse(JSON.stringify(this.state.features)) as Feature[];
+      expect(featuresEqual(parsed, this.state.features), 'save∘load != identity').toBe(true);
+      const f0 = buildForest(this.state.features);
+      const f1 = buildForest(parsed);
+      for (const f of this.state.features) {
+        const a = resolveFeatureArea(f0, this.state.store, f.id);
+        const b = resolveFeatureArea(f1, this.state.store, f.id);
+        expect(a.status).toBe(b.status);
+        if (a.status === 'ok' && b.status === 'ok') {
+          expect(areasEqualWithinTolerance(a.area, b.area), 'save∘load area drift').toBe(true);
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §18 stateful Commands (fast-check `Command<StatefulModel, StatefulSut>`).
+// Each `check` is permissive (the real pipeline decides legality at run time);
+// `run` builds + applies the real proposal and runs the SUT battery. A `run`
+// that did not commit (rejected) leaves both model and SUT unchanged.
+// ---------------------------------------------------------------------------
+
+type SCmd = fc.Command<StatefulModel, StatefulSut>;
+
+class ExistingCmd implements SCmd {
+  constructor(
+    readonly targetWhich: number,
+    readonly parentWhich: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel, s: StatefulSut): void {
+    const applied = applyAffCmd(s.state, {
+      t: 'existing',
+      targetWhich: this.targetWhich,
+      parentWhich: this.parentWhich,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `existing(t=${this.targetWhich},p=${this.parentWhich})`;
+  }
+}
+
+class NoneCmd implements SCmd {
+  constructor(readonly targetWhich: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel, s: StatefulSut): void {
+    const applied = applyAffCmd(s.state, { t: 'none', targetWhich: this.targetWhich });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `none(t=${this.targetWhich})`;
+  }
+}
+
+class CreateUnderCmd implements SCmd {
+  constructor(
+    readonly targetWhich: number,
+    readonly topWhich: number,
+    readonly deep: boolean,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel, s: StatefulSut): void {
+    const applied = applyAffCmd2(s.state, {
+      t: this.deep ? 'createDeepUnderExisting' : 'createUnderExisting',
+      targetWhich: this.targetWhich,
+      topWhich: this.topWhich,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `${this.deep ? 'createDeepUnder' : 'createUnder'}(t=${this.targetWhich},top=${this.topWhich})`;
+  }
+}
+
+class CreateTopCmd implements SCmd {
+  constructor(
+    readonly targetWhich: number,
+    readonly deep: boolean,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel, s: StatefulSut): void {
+    const applied = applyAffCmd(s.state, {
+      t: this.deep ? 'createDeep' : 'createNewTop',
+      targetWhich: this.targetWhich,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `${this.deep ? 'createDeep' : 'createTop'}(t=${this.targetWhich})`;
+  }
+}
+
+class FederateCmd implements SCmd {
+  constructor(
+    readonly a: number,
+    readonly b: number,
+    readonly c: number,
+    readonly d: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel, s: StatefulSut): void {
+    const applied = applyAffCmd2(s.state, {
+      t: 'federate4',
+      aWhich: this.a,
+      bWhich: this.b,
+      cWhich: this.c,
+      dWhich: this.d,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `federate4(${this.a},${this.b},${this.c},${this.d})`;
+  }
+}
+
+/**
+ * op∘逆op==identity AS A STATEFUL COMMAND: pick a leaf with a current parent,
+ * move it under a different compatible aggregate, then move it back, and assert
+ * the parentId is restored — all against the LIVE SUT state mid-sequence (so the
+ * round-trip is exercised on states the other commands have already mutated, a
+ * stronger setting than §3/§7 which only round-trip the pristine initial forest).
+ * On either leg failing to commit the command is a no-op (legitimate).
+ */
+class ReaffiliateRoundTripCmd implements SCmd {
+  constructor(
+    readonly leafWhich: number,
+    readonly aggWhich: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel, s: StatefulSut): void {
+    const features = s.state.features;
+    const forest = buildForest(features);
+    const leaves = features.filter((f) => directChildIds(forest, f.id).length === 0);
+    const aggs = features.filter((f) => f.kind === 'aggregate');
+    if (leaves.length === 0 || aggs.length === 0) return;
+    const leaf = leaves[this.leafWhich % leaves.length]!;
+    const originalParent = leaf.parentId;
+    if (originalParent === undefined) return;
+    const compatible = aggs.filter(
+      (a) =>
+        a.id !== originalParent &&
+        a.id !== leaf.id &&
+        a.attributes.startYear <= leaf.attributes.endYear &&
+        leaf.attributes.startYear <= a.attributes.endYear,
+    );
+    if (compatible.length === 0) return;
+    const otherAgg = compatible[this.aggWhich % compatible.length]!;
+
+    const moved = applyAffCmd(s.state, {
+      t: 'existing',
+      targetWhich: features.indexOf(leaf),
+      parentWhich: features.indexOf(otherAgg),
+    });
+    if (moved === undefined) return;
+    const movedLeaf = moved.next.features.find((f) => f.id === leaf.id);
+    expect(movedLeaf?.parentId, 'op did not move leaf').toBe(otherAgg.id);
+    s.commitAndCheck(moved); // commits the move + full battery.
+
+    const back = applyAffCmd(s.state, {
+      t: 'existing',
+      targetWhich: s.state.features.findIndex((f) => f.id === leaf.id),
+      parentWhich: s.state.features.findIndex((f) => f.id === originalParent),
+    });
+    if (back === undefined) {
+      // Could not move back (e.g. original parent auto-disappeared when it lost
+      // its last child). That is a legitimate FR-35 outcome, not a violation of
+      // op∘逆op: the precondition (original parent still exists) no longer holds.
+      const origStillThere = s.state.features.some((f) => f.id === originalParent);
+      // If the original parent survived, moving back MUST have been possible.
+      expect(
+        origStillThere,
+        'op∘逆op: back-move rejected though original parent still exists',
+      ).toBe(false);
+      return;
+    }
+    const restored = back.next.features.find((f) => f.id === leaf.id);
+    expect(restored?.parentId, 'op∘逆op did not restore parentId').toBe(originalParent);
+    s.commitAndCheck(back);
+  }
+  toString(): string {
+    return `roundTrip(leaf=${this.leafWhich},agg=${this.aggWhich})`;
+  }
+}
+
+const statefulCommandsArb: fc.Arbitrary<Iterable<SCmd>> = fc.commands(
+  [
+    fc.tuple(fc.nat(), fc.nat()).map(([t, p]) => new ExistingCmd(t, p)),
+    fc.nat().map((t) => new NoneCmd(t)),
+    fc.tuple(fc.nat(), fc.nat(), fc.boolean()).map(([t, top, d]) => new CreateUnderCmd(t, top, d)),
+    fc.tuple(fc.nat(), fc.boolean()).map(([t, d]) => new CreateTopCmd(t, d)),
+    fc
+      .tuple(fc.nat(), fc.nat(), fc.nat(), fc.nat())
+      .map(([a, b, c, d]) => new FederateCmd(a, b, c, d)),
+    fc.tuple(fc.nat(), fc.nat()).map(([l, a]) => new ReaffiliateRoundTripCmd(l, a)),
+  ],
+  { maxCommands: 16 },
+);
+
+describe(`affiliation — STATEFUL model: full invariant battery per command (seed=${SEED5})`, () => {
+  it('fc.commands drives the real pipeline; every invariant + metamorphic id holds', () => {
+    fc.assert(
+      fc.property(mixedForestArb(), statefulCommandsArb, (initial, cmds) => {
+        const setup: fc.ModelRunSetup<StatefulModel, StatefulSut> = () => ({
+          model: { commits: 0 },
+          real: new StatefulSut(initial),
+        });
+        fc.modelRun(setup, cmds);
+      }),
+      { seed: SEED5, numRuns: 700 },
+    );
+  });
+});

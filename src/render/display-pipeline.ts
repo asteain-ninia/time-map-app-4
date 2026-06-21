@@ -36,7 +36,7 @@ import {
   type ResolvedDisplayShapes,
 } from '../domain/display';
 import type { Forest } from '../domain/hierarchy/forest';
-import { maxDerivedDepth } from '../domain/hierarchy';
+import { derivedDepths, isDepthUndefined } from '../domain/hierarchy';
 import type { FeatureId } from '../domain/ids';
 import type { VertexStore } from '../domain/vertex';
 
@@ -74,7 +74,18 @@ export function resolveDisplayControl(
   store: VertexStore,
   control: DisplayControlInput,
 ): ResolvedDisplayShapes {
-  const range = depthRange(maxDerivedDepth(forest));
+  // ONE O(n) memoised depth pass (教訓5.30 過少共有の戒め): the derived-depth map
+  // feeds BOTH the range clamp (its max) AND buildDisplayDecisions. Without this,
+  // maxDerivedDepth would run derivedDepths once for the range and then
+  // buildDisplayDecisions would re-walk each feature individually via derivedDepth
+  // (O(n·depth) ~ O(n²) on a chain-shaped forest). Computing it here once and
+  // passing it through keeps the whole pipeline call O(n).
+  const depths = derivedDepths(forest);
+  let maxDepth = 0;
+  for (const d of depths.values()) {
+    if (!isDepthUndefined(d) && d > maxDepth) maxDepth = d;
+  }
+  const range = depthRange(maxDepth);
   const globalThreshold = clampThreshold(control.globalDepth, range);
   const focus: FocusConfig = {
     originId: control.focus.originId,
@@ -82,7 +93,7 @@ export function resolveDisplayControl(
     emphasize: control.focus.emphasize,
   };
 
-  const decisions = buildDisplayDecisions({ forest, globalThreshold, focus });
+  const decisions = buildDisplayDecisions({ forest, depths, globalThreshold, focus });
   return resolveDisplayShapes(forest, store, decisions);
 }
 

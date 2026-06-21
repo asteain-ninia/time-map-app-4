@@ -2510,3 +2510,407 @@ describe('alternation (seed=22004): subtree-scale + live selection + full-stream
     );
   });
 });
+
+// ===========================================================================
+// 12. EIGHTH CAMPAIGN (seed=32002) — NEW exploration (bughunt run #3).
+//
+// Distinct from ALL seven prior campaigns (seeds 2001/2002/2004/22001/22002/
+// 22003/22004) in BOTH the seed AND the operation set / generators. The brief
+// for this run asks for a *different exploration* from the previous seeds
+// (1000-6000 / 21000-26000 are explicitly excluded; this file's prior seeds are
+// the 2xxx / 22xxx ranges). Two genuinely new ingredients here:
+//
+//   (1) Two new RIGID-MOTION transforms not used by any prior campaign:
+//       - ROTATE-TOP-SUBTREE: rotate a whole top-level band about its own
+//         centroid by an arbitrary angle. Rotation is an isometry, so it
+//         preserves every ring's simplicity AND the internal containment of the
+//         whole subtree exactly (a child rectangle inside a parent rectangle
+//         stays inside when the WHOLE band rotates rigidly about a shared
+//         pivot). Top bands start 80° apart; even the worst-case rotated
+//         half-diagonal of a half-width/height ≤16 rectangle is 16·√2 ≈ 22.6, so
+//         two bands' rotated extents (≤45.3 wide) never reach the 80° gap — no
+//         enclave-overlap is manufactured. A correct system MUST keep
+//         validateGeometry clean; any violation is a real re-link/containment
+//         defect, not a generator artifact. op∘inverse: rotate back by −θ about
+//         the SAME captured pivot restores coordinates within a tight epsilon.
+//       - REFLECT-TOP-SUBTREE: reflect a whole top-level band across the
+//         vertical line through its centroid (lon → 2·cx − lon). A reflection is
+//         an isometry confined to the band's own bounding box, so it likewise
+//         preserves simplicity + internal containment and cannot reach a
+//         neighbouring band. It is its OWN inverse (reflect twice = identity),
+//         giving an exact op∘op = identity law (not merely within epsilon — a
+//         reflection about a fixed axis is bit-exact: 2·cx − (2·cx − x) = x for
+//         the small finite magnitudes here, asserted with a tight epsilon to be
+//         safe against any rounding).
+//
+//   (2) The FIRST campaign to carry BOTH a live SELECTION *and* an ascending
+//       duplicate-free ANCHOR series in the SAME state (campaign 6 had anchors
+//       but no selection; campaign 7 had a selection but no anchors). After
+//       EVERY command this asserts the full focal bundle PLUS: selection is
+//       never dangling, the anchor series stays strictly ascending & unique, and
+//       save→load is the identity over the WHOLE (shape, store, selection,
+//       anchors) quadruple.
+//
+// Determinism: seed fixed to 32002, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED8 = 32002;
+const RUNS8 = 500;
+const cfg8 = { seed: SEED8, numRuns: RUNS8 } as const;
+
+/** The combined editor state for campaign 8: shape + store + a live selection +
+ * an ascending duplicate-free anchor series + a fresh-id counter. The first
+ * state in this file to carry a selection AND an anchor series together. */
+interface FullState {
+  readonly shape: Shape;
+  readonly store: VertexStore;
+  readonly selected: RingId | undefined;
+  readonly anchors: readonly number[];
+}
+
+/** Rotate every vertex of `ringId`'s subtree about a fixed pivot by `angle`
+ * radians (a rigid isometry). Returns a NEW store; the shape (parent links) is
+ * unchanged. The pivot is passed in (captured BEFORE the rotation) so the forward
+ * and inverse rotation share the SAME center — a true op∘inverse pair. */
+function rotateSubtreeAbout(
+  state: FullState,
+  ringId: RingId,
+  pivot: { lon: number; lat: number },
+  angle: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const dx = v.coordinate.lon - pivot.lon;
+    const dy = v.coordinate.lat - pivot.lat;
+    const rotated = withVertexCoordinate(
+      v,
+      createCoordinate(pivot.lon + dx * cos - dy * sin, pivot.lat + dx * sin + dy * cos),
+    );
+    store = setVertex(store, rotated);
+  }
+  return store;
+}
+
+/** Reflect every vertex of `ringId`'s subtree across the vertical line lon = axisLon
+ * (lon → 2·axisLon − lon; lat unchanged). A rigid isometry that is its OWN inverse
+ * (reflecting twice restores the original). Returns a NEW store; shape unchanged. */
+function reflectSubtreeAbout(
+  state: FullState,
+  ringId: RingId,
+  axisLon: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const reflected = withVertexCoordinate(
+      v,
+      createCoordinate(2 * axisLon - v.coordinate.lon, v.coordinate.lat),
+    );
+    store = setVertex(store, reflected);
+  }
+  return store;
+}
+
+/** Save→load the whole (shape, store, selection, anchors) quadruple and back. */
+function saveLoadFullState(state: FullState): FullState {
+  const reloaded = saveLoadState({ shape: state.shape, store: state.store });
+  const reloadedSel = JSON.parse(JSON.stringify(state.selected ?? null)) as string | null;
+  const reloadedAnchors = JSON.parse(JSON.stringify(state.anchors)) as readonly number[];
+  return {
+    shape: reloaded.shape,
+    store: reloaded.store,
+    selected: reloadedSel === null ? undefined : (reloadedSel as RingId),
+    anchors: reloadedAnchors,
+  };
+}
+
+/** Full focal invariant bundle for a FullState: the (shape, store) bundle PLUS
+ * selection validity, anchor ascending/unique, and the quadruple save→load
+ * identity. */
+function assertFullStateBundle(state: FullState): void {
+  assertFullBundle({ shape: state.shape, store: state.store });
+  // SELECTION is always valid: undefined, or a ring present in the shape.
+  expect(selectionValid({ shape: state.shape, store: state.store, selected: state.selected })).toBe(
+    true,
+  );
+  // ANCHOR series: strictly ascending => sorted AND duplicate-free (FR-54).
+  expect(anchorsAscendingUnique(state.anchors)).toBe(true);
+  // save → load = identity over the full quadruple.
+  const reloaded = saveLoadFullState(state);
+  expect(reloaded.shape).toEqual(state.shape);
+  expect(reloaded.selected).toEqual(state.selected);
+  expect(reloaded.anchors).toEqual(state.anchors);
+  for (const v of state.store.byId.values()) {
+    const rv = reloaded.store.byId.get(v.id);
+    expect(rv).not.toBeUndefined();
+    expect(Object.is(rv?.coordinate.lon, v.coordinate.lon)).toBe(true);
+    expect(Object.is(rv?.coordinate.lat, v.coordinate.lat)).toBe(true);
+  }
+}
+
+/** Pick a TOP-LEVEL ring id from a [0,1) selector; undefined when none. */
+function pickTopLevelId(shape: Shape, sel: number): RingId | undefined {
+  return pickTopLevel(shape, sel);
+}
+
+/** An eighth-campaign edit command. */
+type EditCommand8 =
+  | { readonly tag: 'select'; readonly sel: number }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | { readonly tag: 'rotate-top'; readonly sel: number; readonly angle: number }
+  | { readonly tag: 'reflect-top'; readonly sel: number }
+  | { readonly tag: 'anchor-insert'; readonly value: number }
+  | { readonly tag: 'anchor-remove'; readonly sel: number }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand8Arb(): fc.Arbitrary<EditCommand8> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  // Full-circle rotation angle in radians.
+  const angle = (): fc.Arbitrary<number> =>
+    fc.double({ min: -Math.PI, max: Math.PI, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('select' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('rotate-top' as const), sel: sel(), angle: angle() }),
+    fc.record({ tag: fc.constant('reflect-top' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -40, max: 40 }) }),
+    fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=32002): rigid rotate/reflect of top bands + selection + anchors', () => {
+  it('rotating a top-level band about its centroid keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              angle: fc.double({ min: -Math.PI, max: Math.PI, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickTopLevelId(shape, op.sel);
+          if (targetId === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const pivot = subtreeCentroid(
+            { shape, store, selected: undefined },
+            targetId,
+          );
+          if (pivot === undefined) return;
+          const moved = rotateSubtreeAbout(state, targetId, pivot, op.angle);
+          // A rigid rotation of a whole top band keeps EVERY focal invariant:
+          // internal containment, sibling/enclave non-overlap, simplicity, finite.
+          assertFullStateBundle({ shape, store: moved, selected: undefined, anchors: [] });
+          // op∘inverse: rotate back by −angle about the SAME pivot restores coords
+          // (trig round-trip => within a tight epsilon, not bit-exact).
+          const back = rotateSubtreeAbout(
+            { shape, store: moved, selected: undefined, anchors: [] },
+            targetId,
+            pivot,
+            -op.angle,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg8,
+    );
+  });
+
+  it('reflecting a top-level band across its centroid axis keeps the full bundle (reflect∘reflect = identity)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true })
+            .map((sel) => ({ shape, store, sel })),
+        ),
+        ({ shape, store, sel }) => {
+          const targetId = pickTopLevelId(shape, sel);
+          if (targetId === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const centroid = subtreeCentroid(
+            { shape, store, selected: undefined },
+            targetId,
+          );
+          if (centroid === undefined) return;
+          const moved = reflectSubtreeAbout(state, targetId, centroid.lon);
+          // A reflection of a whole top band is an isometry confined to its own
+          // bounding box: full bundle survives.
+          assertFullStateBundle({ shape, store: moved, selected: undefined, anchors: [] });
+          // op∘op = identity: reflecting back across the SAME axis restores coords.
+          const back = reflectSubtreeAbout(
+            { shape, store: moved, selected: undefined, anchors: [] },
+            targetId,
+            centroid.lon,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+          }
+        },
+      ),
+      cfg8,
+    );
+  });
+
+  it('stateful: interleaved select / delete / rotate-top / reflect-top / anchor / save-load keeps the full bundle at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand8Arb(), { minLength: 5, maxLength: shape.rings.length + 14 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: FullState = { shape, store, selected: undefined, anchors: [] };
+          assertFullStateBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-32002'))).toEqual(
+              state.shape,
+            );
+            // FULL-STREAM UNDO: an independent snapshot of the pre-command state.
+            const snapshot = saveLoadFullState(state);
+
+            switch (cmd.tag) {
+              case 'select': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                state = { ...state, selected: targetId };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  ...state,
+                  shape: nextShape,
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'rotate-top': {
+                const targetId = pickTopLevelId(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const pivot = subtreeCentroid(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                );
+                if (pivot === undefined) break;
+                const beforeStore = state.store;
+                const moved = rotateSubtreeAbout(state, targetId, pivot, cmd.angle);
+                state = { ...state, store: moved };
+                assertFullStateBundle(state);
+                // op∘inverse: rotate back restores prior coordinates (tight epsilon).
+                const back = rotateSubtreeAbout(state, targetId, pivot, -cmd.angle);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'reflect-top': {
+                const targetId = pickTopLevelId(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const centroid = subtreeCentroid(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                );
+                if (centroid === undefined) break;
+                const beforeStore = state.store;
+                const moved = reflectSubtreeAbout(state, targetId, centroid.lon);
+                state = { ...state, store: moved };
+                assertFullStateBundle(state);
+                // reflect∘reflect = identity: reflecting back restores coordinates.
+                const back = reflectSubtreeAbout(state, targetId, centroid.lon);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+                }
+                break;
+              }
+              case 'anchor-insert': {
+                const before = state.anchors;
+                state = { ...state, anchors: insertAnchor(state.anchors, cmd.value) };
+                if (before.includes(cmd.value)) expect(state.anchors).toEqual(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'anchor-remove': {
+                const idx =
+                  state.anchors.length === 0
+                    ? -1
+                    : Math.min(
+                        state.anchors.length - 1,
+                        Math.floor(cmd.sel * state.anchors.length),
+                      );
+                state = { ...state, anchors: removeAnchorAt(state.anchors, idx) };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadFullState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.selected).toEqual(state.selected);
+                expect(reloaded.anchors).toEqual(state.anchors);
+                state = reloaded;
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-32002'));
+                expect(next).toEqual(state.shape);
+                state = { ...state, shape: next };
+                assertFullStateBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+
+            // UNDO∘op = identity: the pre-command snapshot still reproduces the
+            // pre-command state verbatim (an independent copy, no aliasing).
+            assertFullStateBundle(snapshot);
+          }
+        },
+      ),
+      cfg8,
+    );
+  });
+});

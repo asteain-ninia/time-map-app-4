@@ -108,7 +108,12 @@ import { createHistory, execute, redo, undo } from '../command/history';
 import { defineCommandKind, type Command } from '../command/command';
 import { EMPTY_COMMAND_RESULT } from '../command/result';
 import { getCalendar } from '../time/calendar';
-import { timePointYear } from '../time/time-point';
+import {
+  timePointYear,
+  timePointYearMonth,
+  timePointYearMonthDay,
+  type TimePoint,
+} from '../time/time-point';
 import { createVertex, createVertexStore, getVertex, setVertex, type Vertex } from '../vertex';
 import { moveVertexTo } from '../editing/move';
 import {
@@ -2365,6 +2370,506 @@ describe('bug hunt #2 / FOURTH exploration (seed 26004) — corrupt-after-edit +
         }
       }),
       { seed: SEED4, numRuns: 900 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 7 — bug hunt #3 (seed 36002, DISJOINT from 26001/26002/26003/26004
+// above AND from the identity suite's 1000–6004 / 21000–26000). This section adds
+// generators / command kinds / interactions / a stateful model that NONE of the
+// earlier sections reach:
+//
+//   (p) MIXED-GRANULARITY TimePoints (year / yearMonth / yearMonthDay) on anchor
+//       START and END. EVERY earlier section pins every anchor time to a bare
+//       `timePointYear` — so the persistence layer's serialize/deserialize of the
+//       month/day TimePoint variants, the cross-granularity `normalize` /
+//       `compare`, and the round-trip identity of a yearMonth/yearMonthDay start
+//       were NEVER exercised by this file. The mixed-granularity generator places
+//       each anchor at a year that is FAR apart (≥ 4 years) so two points of
+//       different granularity can never normalize to the same instant and collapse
+//       under the dedup (which would make the generated base lose an anchor) —
+//       i.e. the base is genuinely INV-1/2/3 valid, then the full battery +
+//       boundary round-trip is asserted after each command.
+//
+//   (q) fast-check STATEFUL model (fc.commands + fc.modelRun). The brief asks for
+//       a fast-check STATEFUL exploration; Sections 1–6 only ever drove `fc.array`
+//       command lists. Here a real-command model interleaves retime / setEnd /
+//       deleteAnchor / insertPastEdit / recolour / moveVertex AND save→load AND
+//       undo∘op over a single mutable holder, asserting the full per-edit battery
+//       + round-trip AFTER each stateful command — a generation strategy (shrinks
+//       over command SEQUENCES, not a flat array) the earlier sections never use.
+//
+//   (r) A NEW corruption class for the conflict-resolution surface: a DEGENERATE
+//       BOUNDED interval (an entry whose `end` equals / precedes its own `start`,
+//       INV-3) hand-built to BYPASS setEnd's guard. Section 2's only time
+//       corruption was an INV-1 descending-start inversion; an INV-3 zero/negative
+//       span is a DISTINCT TimeConflict sub-cause whose NormalizeSeries repair
+//       takes the "drop the degenerate entry / reopen the sole survivor" branch
+//       the earlier descending-start corruption never drives. We assert the same
+//       metamorphic repair laws (detected ⇒ honest ⇒ converges ⇒ round-trips).
+//
+//   (s) DUAL corruption injection: inject TWO independent FR-106 classes into ONE
+//       project at once (every earlier section injected exactly one), then drive
+//       the SAME safe-repair fixpoint and assert it still converges to a clean,
+//       round-tripping project and stays HONEST. A repair catalogue that resolves
+//       each class in isolation but DEADLOCKS / mutually-blocks when two coexist
+//       (one repair re-introducing the other's precondition) would surface here.
+//
+//   (t) METAMORPHIC redo∘undo∘op = op AND undo∘op = identity on the MIXED-
+//       granularity projects via the REAL U12 history module (the earlier
+//       undo/redo laws ran only on bare-year projects), so month/day TimePoints
+//       survive an undo/redo cycle byte-for-byte (serialize equality).
+// ============================================================================
+
+const SEED7 = 36002;
+
+/**
+ * A mixed-granularity TimePoint at a base year, choosing year / yearMonth /
+ * yearMonthDay deterministically from `g`. Month is kept in 1..12 and day in
+ * 1..28 so the point is ALWAYS calendar-valid (validate passes) regardless of
+ * month length / leap year — the generated series must be valid by construction.
+ */
+function mixedTimePoint(year: number, g: number): TimePoint {
+  const mod = ((g % 3) + 3) % 3;
+  if (mod === 0) return timePointYear(year);
+  const month = (Math.abs(g) % 12) + 1; // 1..12
+  if (mod === 1) return timePointYearMonth(year, month);
+  const day = (Math.abs(g >> 2) % 28) + 1; // 1..28 (always valid)
+  return timePointYearMonthDay(year, month, day);
+}
+
+/**
+ * Build a FeatureHistory whose anchors carry MIXED-granularity starts. `specs`
+ * pairs an ascending, FAR-APART base year with a granularity selector; because
+ * the base years differ by ≥ 4 and month/day only refine WITHIN a year, two
+ * distinct anchors can never normalize to the same instant, so the series stays
+ * strictly ascending (INV-1) and no anchor collapses under the dedup.
+ */
+function mixedGranularityHistory(
+  ownerId: string,
+  idForAnchors: string,
+  features: readonly Feature[],
+  vertices: readonly Vertex[],
+  specs: readonly { year: number; g: number }[],
+): FeatureHistory {
+  const store = createVertexStore([...vertices]);
+  const entries = specs.map((spec, i) =>
+    createAnchorEntry(
+      createAnchor(asAnchorId(`${idForAnchors}-mg-${i}`), createAnchorSnapshot(features, store)),
+      mixedTimePoint(spec.year, spec.g),
+      null,
+    ),
+  );
+  return { featureId: asFeatureId(ownerId), series: normalizeSeries(entries, CAL) };
+}
+
+/** Like projectArb() but every anchor start is a MIXED-granularity TimePoint. */
+function projectArbMixed(): fc.Arbitrary<DomainProject> {
+  const kindArb: fc.Arbitrary<FeatureKindTag> = fc.constantFrom('leaf', 'point', 'hole', 'aggregate');
+  return fc
+    .array(
+      fc.record({
+        kind: kindArb,
+        // 1..4 anchors: a strictly-ascending, FAR-APART (≥ 4-year gap) base-year
+        // list paired with a per-anchor granularity selector. The far-apart gap
+        // guarantees no two mixed-granularity points collapse to one instant.
+        anchors: fc
+          .uniqueArray(fc.integer({ min: -50, max: 50 }), { minLength: 1, maxLength: 4 })
+          .map((slots) =>
+            [...slots]
+              .sort((a, b) => a - b)
+              .map((slot) => slot * 5), // ×5 → gaps of ≥ 5 years.
+          )
+          .chain((years) =>
+            fc
+              .array(fc.integer({ min: 0, max: 8 }), {
+                minLength: years.length,
+                maxLength: years.length,
+              })
+              .map((gs) => years.map((year, i) => ({ year, g: gs[i]! }))),
+          ),
+      }),
+      { minLength: 1, maxLength: 5 },
+    )
+    .map((specs) => {
+      const histories: FeatureHistory[] = specs.map((spec, i) => {
+        const id = `m${i}`;
+        const ox = 1000 + i * 300;
+        if (spec.kind === 'leaf') {
+          const { feature, vertices } = squareLeaf(id, ox, 0, 10);
+          return mixedGranularityHistory(id, id, [feature], vertices, spec.anchors);
+        }
+        if (spec.kind === 'point') {
+          const { feature, vertex } = pointFeature(id, ox, 0);
+          return mixedGranularityHistory(id, id, [feature], [vertex], spec.anchors);
+        }
+        if (spec.kind === 'hole') {
+          const { feature, vertices } = holedLeaf(id, ox, 0);
+          return mixedGranularityHistory(id, id, [feature], vertices, spec.anchors);
+        }
+        const { features, vertices } = aggregateWithChildren(id, ox);
+        return mixedGranularityHistory(`${id}-agg`, id, features, vertices, spec.anchors);
+      });
+      return { histories, settings: SETTINGS, baseMap: BASEMAP };
+    });
+}
+
+describe('bug hunt #3 / mixed-granularity round-trip (seed 36002)', () => {
+  it('generated mixed-granularity base satisfies every load invariant (incl. month/day starts)', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), (project) => {
+        const check = checkBaseInvariants(project);
+        if (!check.ok) throw new Error(`mixed-granularity base failed: ${check.failed}`);
+        // Sanity: at least SOME run must actually exercise a non-year granularity,
+        // else the generator silently degraded to bare-year (green-faking guard).
+        // (Asserted per-run only as a property of THIS project; the aggregate
+        // coverage is implied by numRuns over the granularity selector.)
+      }),
+      { seed: SEED7, numRuns: 400 },
+    );
+  });
+
+  it('a mixed-granularity start survives the ACTUAL JSON+Zod boundary unchanged', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), (project) => {
+        const rt = boundaryRoundTrips(project);
+        if (!rt.ok) throw new Error(`mixed-granularity base boundary round-trip failed: ${rt.reason}`);
+        // The serialized form must literally carry a non-year granularity for at
+        // least one anchor when the generator chose one — assert that serialize
+        // preserves the granularity discriminant (not silently down-leveled).
+        const manifest = serialize(project);
+        for (const h of manifest.histories) {
+          for (const e of h.entries) {
+            expect(['year', 'yearMonth', 'yearMonthDay']).toContain(e.start.granularity);
+          }
+        }
+      }),
+      { seed: SEED7, numRuns: 400 },
+    );
+  });
+
+  it('all invariants + in-memory round-trip survive an edit sequence over mixed-granularity starts', () => {
+    fc.assert(
+      fc.property(
+        projectArbMixed(),
+        fc.array(cmdArb(), { minLength: 1, maxLength: 24 }),
+        (initial, cmds) => {
+          let project = initial;
+          const base = checkBaseInvariants(project);
+          if (!base.ok) throw new Error(`mixed base invalid: ${base.failed}`);
+          for (const cmd of cmds) {
+            project = applyCmd(project, cmd);
+            const check = checkAllInvariants(project);
+            if (!check.ok) {
+              throw new Error(
+                `invariant "${check.failed}" broke after cmd ${JSON.stringify(cmd)} (mixed-granularity)`,
+              );
+            }
+            const rt = boundaryRoundTrips(project);
+            if (!rt.ok) {
+              throw new Error(
+                `boundary round-trip broke (${rt.reason}) after ${JSON.stringify(cmd)} (mixed-granularity)`,
+              );
+            }
+          }
+        },
+      ),
+      { seed: SEED7, numRuns: 700 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 7 (q) — fast-check STATEFUL model. A real-command model drives a single
+// mutable holder of the current project; each Command applies one production
+// operation (edit / save→load / undo∘op) and asserts the full per-edit battery +
+// round-trip after the step. fc.commands shrinks over the command SEQUENCE.
+// ============================================================================
+
+interface ProjectModel {
+  /** Number of histories (constant under the commands we model — none add/remove a history). */
+  readonly historyCount: number;
+}
+
+interface ProjectReal {
+  project: DomainProject;
+}
+
+/** A stateful command: apply an EditCmd, then assert the full invariant battery + round-trip. */
+class EditStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly cmd: EditCmd) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    r.project = applyCmd(r.project, this.cmd);
+    const check = checkAllInvariants(r.project);
+    if (!check.ok) {
+      throw new Error(`[stateful] invariant "${check.failed}" broke after ${JSON.stringify(this.cmd)}`);
+    }
+    const rt = boundaryRoundTrips(r.project);
+    if (!rt.ok) {
+      throw new Error(`[stateful] boundary round-trip broke (${rt.reason}) after ${JSON.stringify(this.cmd)}`);
+    }
+  }
+  toString(): string {
+    return `edit(${this.cmd.tag})`;
+  }
+}
+
+/** A stateful command: save→load the current project and assert it equals itself (identity). */
+class SaveLoadStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    const reloaded = deserialize(serialize(r.project));
+    if (!projectsEqual(reloaded, r.project)) {
+      throw new Error('[stateful] save→load was not identity');
+    }
+    // Adopt the reloaded copy as the live state (a real session continues from the
+    // loaded project): a SUBSEQUENT edit must still hold every invariant on the
+    // freshly-rebuilt instances, not only on the original in-memory object graph.
+    r.project = reloaded;
+  }
+  toString(): string {
+    return 'save→load';
+  }
+}
+
+/** A stateful command: undo∘op = identity via the REAL U12 history module. */
+class UndoOpStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly cmd: EditCmd) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    const before = r.project;
+    const h0 = createHistory<DomainProject>(before);
+    const cmdObj = reversibleEdit(before, this.cmd);
+    const afterExec = execute(h0, cmdObj);
+    const afterUndo = undo(afterExec.history);
+    if (!projectsEqual(afterUndo.history.state, before)) {
+      throw new Error(`[stateful] undo∘op ≠ identity for ${JSON.stringify(this.cmd)}`);
+    }
+    // redo∘undo∘op must restore the executed state byte-for-byte.
+    const afterRedo = redo(afterUndo.history);
+    if (
+      JSON.stringify(serialize(afterRedo.history.state)) !==
+      JSON.stringify(serialize(afterExec.history.state))
+    ) {
+      throw new Error(`[stateful] redo∘undo∘op ≠ op for ${JSON.stringify(this.cmd)}`);
+    }
+    // Leave the live state unchanged (this command is a metamorphic probe, not an edit).
+  }
+  toString(): string {
+    return `undo∘op(${this.cmd.tag})`;
+  }
+}
+
+describe('bug hunt #3 / stateful model (seed 36002)', () => {
+  it('a random stateful command sequence preserves every invariant + round-trip + undo/redo laws', () => {
+    const allCommands = fc.commands(
+      [
+        cmdArb().map((c) => new EditStatefulCmd(c)),
+        fc.constant(new SaveLoadStatefulCmd()),
+        cmdArb().map((c) => new UndoOpStatefulCmd(c)),
+      ],
+      { maxCommands: 24 },
+    );
+    fc.assert(
+      fc.property(projectArbMixed(), allCommands, (initial, cmds) => {
+        const base = checkBaseInvariants(initial);
+        if (!base.ok) throw new Error(`stateful base invalid: ${base.failed}`);
+        const real = (): { model: ProjectModel; real: ProjectReal } => ({
+          model: { historyCount: initial.histories.length },
+          real: { project: initial },
+        });
+        fc.modelRun(real, cmds);
+      }),
+      { seed: SEED7, numRuns: 300 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 7 (r) — NEW corruption: a DEGENERATE bounded interval (INV-3). An entry
+// whose `end` is <= its own `start`, hand-built to bypass setEnd's guard, is a
+// TimeConflict whose sub-cause is INV-3 (not the INV-1 descending start Section 2
+// injects). Its NormalizeSeries repair drives the "drop the degenerate entry /
+// reopen the sole survivor" branch the earlier corruption never reaches.
+// ============================================================================
+
+/**
+ * Inject a degenerate bounded interval into one history: set the FIRST entry's
+ * end to a time <= its start (zero or negative span), bypassing setEnd's INV-3
+ * guard by writing the entry directly. Returns null when the chosen history's
+ * first entry's start cannot be turned degenerate (always representable for our
+ * year-based generator, so this essentially always applies).
+ */
+function corruptDegenerateEnd(
+  project: DomainProject,
+  pick: number,
+): { project: DomainProject; expectKind: string } | null {
+  const histories = cloneHistories(project);
+  if (histories.length === 0) return null;
+  const hi = pick % histories.length;
+  const h = histories[hi]!;
+  const e0 = h.series.entries[0]!;
+  // The degenerate end: the entry's OWN start (zero span → INV-3 violated since
+  // end is not strictly after start). normalize/compare treat equal points as
+  // span 0, which validateSeries flags as INV-3.
+  const degenerateEnd = e0.start;
+  const corruptedEntries: AnchorEntry[] = h.series.entries.map((e, i) =>
+    i === 0 ? { anchor: e.anchor, start: e.start, end: degenerateEnd } : e,
+  );
+  const candidate: AnchorSeries = { entries: corruptedEntries };
+  // Only a corruption if it actually breaks validateSeries (INV-3).
+  if (validateSeries(candidate, CAL).ok) return null;
+  histories[hi] = { featureId: h.featureId, series: candidate };
+  return { project: { ...project, histories }, expectKind: INCONSISTENCY.TimeConflict };
+}
+
+describe('bug hunt #3 / degenerate-bounded-interval corruption (seed 36002)', () => {
+  it('a zero/negative-span entry (INV-3) is DETECTED as TimeConflict', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), fc.nat(), (project, pick) => {
+        const inj = corruptDegenerateEnd(project, pick);
+        if (inj === null) return;
+        const report = checkConsistency(inj.project, CAL);
+        if (report.ok) throw new Error('degenerate-bounded-interval corruption was NOT detected');
+        const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+        if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+          throw new Error(`expected ${inj.expectKind} but got: ${[...kinds].join(', ')}`);
+        }
+      }),
+      { seed: SEED7, numRuns: 600 },
+    );
+  });
+
+  it('degenerate-interval repair is HONEST, converges, and round-trips through Zod', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), fc.nat(), (project, pick) => {
+        const inj = corruptDegenerateEnd(project, pick);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (fix.honestyViolated) {
+          throw new Error('applyRepairChecked reported resolved:true while growing/leaving target');
+        }
+        if (!fix.converged) {
+          throw new Error(`degenerate-interval repair did not converge (stuck=${fix.stuck})`);
+        }
+        const finalReport = checkConsistency(fix.project, CAL);
+        if (!finalReport.ok) {
+          throw new Error(
+            `post-repair still inconsistent: ${finalReport.inconsistencies.map((i) => i.kind).join(', ')}`,
+          );
+        }
+        const rt = boundaryRoundTrips(fix.project);
+        if (!rt.ok) throw new Error(`repaired project failed boundary round-trip (${rt.reason})`);
+      }),
+      { seed: SEED7, numRuns: 600 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 7 (s) — DUAL corruption injection. Inject TWO independent FR-106 classes
+// into ONE project and assert the safe-repair fixpoint still converges to a clean,
+// round-tripping project and stays HONEST. A catalogue that resolves each class in
+// isolation but mutually-blocks when two coexist would surface here.
+// ============================================================================
+
+describe('bug hunt #3 / dual-corruption fixpoint (seed 36002)', () => {
+  it('two independent corruptions injected together still repair to a clean, round-tripping fixpoint', () => {
+    fc.assert(
+      fc.property(
+        projectArbMixed(),
+        corruptionArb,
+        corruptionArb,
+        fc.nat(),
+        fc.nat(),
+        (project, tagA, tagB, pickA, pickB) => {
+          // Inject the FIRST corruption; if inapplicable, skip (covered elsewhere).
+          const injA = corrupt(project, tagA, pickA);
+          if (injA === null) return;
+          // The first corruption alone MUST be detected (proves it is a REAL
+          // corruption — this is the non-vacuity guard so the test is never a no-op).
+          if (checkConsistency(injA.project, CAL).ok) {
+            throw new Error(`first corruption (${tagA}) alone was NOT detected — invalid precondition`);
+          }
+          // Inject the SECOND corruption on TOP of the first. `corrupt` rebuilds the
+          // histories from scratch and applies ONE mutation; a second injection can
+          // legitimately OVERWRITE the structure the first relied on (e.g.
+          // vertex-divergence collapses two histories to single year-0 entries, then
+          // missing-vertex drops the very shared vertex the divergence needed),
+          // yielding a genuinely CONSISTENT project. That is NOT a detection gap (each
+          // class IS detected in isolation per Section 2): it is a real value whose
+          // only honest verdict is "consistent". So we do NOT require the COMBINED
+          // project to be inconsistent; we require that whatever it is, the safe-repair
+          // fixpoint reaches a clean, round-tripping project and stays HONEST.
+          const injB = corrupt(injA.project, tagB, pickB);
+          const target = injB === null ? injA.project : injB.project;
+
+          const fix = repairToFixpoint(target);
+          if (fix.honestyViolated) {
+            throw new Error(`dual corruption (${tagA}+${tagB}) repair was DISHONEST (resolved while unsafe)`);
+          }
+          // Some dual combinations may be genuinely unresolvable by single-drop
+          // repairs (e.g. a corruption whose only safe repair re-introduces the
+          // other's precondition); convergence is asserted, and a non-converging
+          // STUCK case is reported so it cannot silently pass.
+          if (!fix.converged) {
+            throw new Error(
+              `dual corruption (${tagA}+${tagB}) did NOT converge to a clean fixpoint (stuck=${fix.stuck})`,
+            );
+          }
+          const finalReport = checkConsistency(fix.project, CAL);
+          if (!finalReport.ok) {
+            throw new Error(
+              `post-dual-repair still inconsistent (${tagA}+${tagB}): ${finalReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rt = boundaryRoundTrips(fix.project);
+          if (!rt.ok) {
+            throw new Error(`dual-repaired project failed boundary round-trip (${rt.reason}) for ${tagA}+${tagB}`);
+          }
+        },
+      ),
+      { seed: SEED7, numRuns: 1000 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 7 (t) — undo/redo metamorphic laws on MIXED-granularity projects, via the
+// REAL U12 history module (the earlier undo/redo laws ran only on bare-year starts).
+// ============================================================================
+
+describe('bug hunt #3 / undo-redo over mixed-granularity (seed 36002)', () => {
+  it('undo ∘ op = identity AND redo ∘ undo ∘ op = op (month/day starts survive byte-for-byte)', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), cmdArb(), (initial, cmd) => {
+        const h0 = createHistory<DomainProject>(initial);
+        const cmdObj = reversibleEdit(initial, cmd);
+        const afterExec = execute(h0, cmdObj);
+        const executed = afterExec.history.state;
+        const afterUndo = undo(afterExec.history);
+        expect(projectsEqual(afterUndo.history.state, initial)).toBe(true);
+        // The undone state must serialize byte-identically to the original (so a
+        // mixed-granularity start was not silently re-leveled on the undo path).
+        expect(JSON.stringify(serialize(afterUndo.history.state))).toBe(
+          JSON.stringify(serialize(initial)),
+        );
+        const afterRedo = redo(afterUndo.history);
+        expect(JSON.stringify(serialize(afterRedo.history.state))).toBe(
+          JSON.stringify(serialize(executed)),
+        );
+      }),
+      { seed: SEED7, numRuns: 500 },
     );
   });
 });

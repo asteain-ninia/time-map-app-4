@@ -2825,3 +2825,483 @@ describe('shared-vertex-linkage round-2 fifth pass (seed 23004)', () => {
     expect(after.containers.get(containerKey(ringFeature('2')))?.vertexIds[0]).toBe(asVertexId('p'));
   });
 });
+
+// ===========================================================================
+// SIXTH EXPLORATION PASS (bug-hunt round 3 — "発見のみ・修正しない").
+// A FRESH, INDEPENDENT search with a NEW seed (33002 — disjoint from EVERY
+// earlier pass: round-1 seeds 1000-6000 / 3004 and round-2 seeds 23001-23004)
+// and numRuns deliberately raised. This pass is built around explicit INVERSE
+// command pairs so the undo / inverse metamorphic laws — only ever asserted as
+// the narrow reshare∘unshare special case before — are exercised over an
+// arbitrary reachable state and across EVERY mutating command kind:
+//
+//   * `moveUndo`        — capture a shared vertex's live coordinate, move it
+//                         elsewhere, then move it BACK to the captured value.
+//                         undo∘move must restore the state byte-for-byte. (Round
+//                         1 checked "move out then back" only from the PRISTINE
+//                         buildState; here the base is an arbitrary op-reached
+//                         state, and the vertex is required to be SHARED so the
+//                         restore must re-converge every referrer, not just one.)
+//   * `transferUndo`    — fold a -> b, then fold b -> a (the inverse remap) in a
+//                         second call. For a fold where `b` was NOT previously
+//                         cited, op∘逆op must return the original citations and
+//                         bodies (a genuine algebraic inverse on disjoint ids).
+//   * `dupShareInbox`   — attempt shareVertices on two ids that are BOTH cited by
+//                         ONE container (same ring / same line path). This MUST
+//                         be rejected with REJECT_REASON.Participation and leave
+//                         the state untouched — the shipped command's gate. No
+//                         earlier pass deliberately fed share a same-container
+//                         pair (the random `share` op hit it only incidentally);
+//                         here it is the explicit law, asserted directly.
+//   * `coordSwap`       — swap the coordinates of TWO distinct shared vertices in
+//                         a single multi-spec move (a<-b.coord, b<-a.coord), and
+//                         require swap∘swap = identity (an involution). Probes
+//                         that a batched move computes every new body from the
+//                         ORIGINAL store snapshot (read-before-write), not from
+//                         partially-updated bodies — a true simultaneous swap,
+//                         never a both-collapse-to-one aliasing bug. (No earlier
+//                         multiMove ever cross-assigned ids' coordinates.)
+//   * `cutUndo`         — insert a shared-edge cut, then SHARE the minted cut id
+//                         onto one of its own edge endpoints to dissolve it back
+//                         (a structural inverse of the cut), asserting invariants
+//                         hold through the mint→dissolve round (a composite no
+//                         earlier pass formed).
+//
+// New algebraic / metamorphic laws checked here (none asserted by earlier passes
+// over an arbitrary reachable base / shared vertex):
+//   * undo∘move = identity for a SHARED vertex from an arbitrary reachable state.
+//   * op∘逆op = identity for transferSharing on a disjoint fold/un-fold pair.
+//   * a coordinate swap of two shared vertices is an involution (swap∘swap = id)
+//     AND each body ends at the OTHER's original coordinate (true simultaneity).
+//   * shareVertices on a same-container pair is rejected (Participation), input
+//     untouched — the participation gate holds for the SHARE command directly.
+//   * save∘load = identity across the round-6 op stream.
+//   * a rejected round-6 op leaves the input untouched (full rollback).
+//   * sharedVertexIds is duplicate-free after every op (selection validity).
+// ===========================================================================
+
+const SEED6 = 33002;
+const NUM_RUNS6 = 1200;
+
+type Op6 =
+  | { readonly t: 'moveUndo'; readonly i: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'transferUndo'; readonly a: number; readonly b: number }
+  | { readonly t: 'coordSwap'; readonly i: number; readonly j: number }
+  | { readonly t: 'cutUndo'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'share'; readonly i: number; readonly j: number }
+  | { readonly t: 'unshare'; readonly i: number }
+  | { readonly t: 'edgeCut'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number };
+
+const op6Arb: fc.Arbitrary<Op6> = fc.oneof(
+  fc.record({
+    t: fc.constant('moveUndo' as const),
+    i: fc.nat(20),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({ t: fc.constant('transferUndo' as const), a: fc.nat(20), b: fc.nat(20) }),
+  fc.record({ t: fc.constant('coordSwap' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('cutUndo' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({ t: fc.constant('share' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('unshare' as const), i: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('edgeCut' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+);
+
+function applyOp6(ctx: ModelCtx, op: Op6): void {
+  const validators = [zeroLengthEdgeValidator];
+  switch (op.t) {
+    case 'moveUndo': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const out = moveVertices(ctx.state, [{ vertexId: vid, coordinate: createCoordinate(op.lon, op.lat) }], { validators });
+      if (out.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = out.state;
+      return;
+    }
+    case 'transferUndo': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      if (ids.length < 2) return;
+      const from = ids[op.a % ids.length];
+      const to = ids[op.b % ids.length];
+      if (from === undefined || to === undefined || from === to) return;
+      ctx.state = transferSharing(ctx.state, new Map([[from, to]]));
+      return;
+    }
+    case 'coordSwap': {
+      const shared = sharedVertexIds(ctx.state);
+      if (shared.length < 2) return;
+      const a = pick(shared, op.i);
+      const b = pick(shared, op.j);
+      if (a === undefined || b === undefined || a === b) return;
+      const ca = getVertex(ctx.state.vertices, a)?.coordinate;
+      const cb = getVertex(ctx.state.vertices, b)?.coordinate;
+      if (ca === undefined || cb === undefined) return;
+      const res = moveVertices(
+        ctx.state,
+        [
+          { vertexId: a, coordinate: cb },
+          { vertexId: b, coordinate: ca },
+        ],
+        { validators },
+      );
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'cutUndo': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: 0 },
+          partner: { containerKey: containerKey(partner.container), edgeStart: 0 },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      ctx.state = out.result.state;
+      ctx.idState = out.idState;
+      return;
+    }
+    case 'share': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const cand = pick(ids, op.i);
+      const targ = pick(ids, op.j);
+      if (cand === undefined || targ === undefined) return;
+      const res = shareVertices(ctx.state, cand, targ, { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'unshare': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const refs = referencesOf(ctx.state, vid);
+      const ref = refs[op.i % refs.length];
+      if (ref === undefined) return;
+      const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+    case 'edgeCut': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const pEdge = realEdgeStart(primary, op.pIdx);
+      const qEdge = realEdgeStart(partner, op.qIdx);
+      if (pEdge === undefined || qEdge === undefined) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: pEdge },
+          partner: { containerKey: containerKey(partner.container), edgeStart: qEdge },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+  }
+}
+
+describe('shared-vertex-linkage round-3 sixth pass (seed 33002)', () => {
+  it('round-6 inverse-pair op sequences preserve all invariants after every step', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op6Arb, { minLength: 1, maxLength: 30 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        checkInvariants(ctx.state, 'initial');
+        checkParticipationOfShared(ctx.state, 'initial');
+        checkSharedSetDistinct(ctx.state, 'initial');
+        let step = 0;
+        for (const op of ops) {
+          applyOp6(ctx, op);
+          step += 1;
+          const label = `after step ${step} (${op.t})`;
+          checkInvariants(ctx.state, label);
+          checkParticipationOfShared(ctx.state, label);
+          checkSharedSetDistinct(ctx.state, label);
+        }
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  it('save∘load = identity on round-6 reachable states', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op6Arb, { minLength: 0, maxLength: 25 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp6(ctx, op);
+        const restored = load(save(ctx.state));
+        expect(canonical(restored)).toEqual(canonical(ctx.state));
+        expect(canonical(load(save(restored)))).toEqual(canonical(ctx.state));
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  it('a rejected round-6 op leaves the input state untouched (full rollback)', () => {
+    fc.assert(
+      fc.property(seedArb, op6Arb, (seed, op) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const ctx: ModelCtx = { state, idState: createIdGeneratorState(0, 0), clock: makeClock() };
+        applyOp6(ctx, op);
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  // undo∘move = identity for a SHARED vertex reached through an arbitrary op
+  // stream: capture the live coordinate, move it elsewhere, then move it BACK to
+  // the captured value. Restoring must re-converge EVERY referrer (single body),
+  // yielding canonical content byte-identical to before the move.
+  it('undo (move-back) of a shared-vertex move restores the state exactly', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.array(op6Arb, { minLength: 0, maxLength: 12 }),
+        fc.nat(20),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, ops, idx, lon, lat) => {
+          const ctx: ModelCtx = {
+            state: buildState(seed),
+            idState: createIdGeneratorState(0, 0),
+            clock: makeClock(),
+          };
+          for (const op of ops) applyOp6(ctx, op);
+          const base = ctx.state;
+          const baseCanon = canonical(base);
+          const shared = sharedVertexIds(base);
+          const vid = pick(shared, idx);
+          if (vid === undefined) return;
+          const orig = getVertex(base.vertices, vid)?.coordinate;
+          if (orig === undefined) return;
+          const out = moveVertices(base, [{ vertexId: vid, coordinate: createCoordinate(lon, lat) }], {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (out.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const undo = moveVertices(out.state, [{ vertexId: vid, coordinate: orig }], {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (undo.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          expect(canonical(undo.state)).toEqual(baseCanon);
+          checkInvariants(undo.state, 'after move undo');
+        },
+      ),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  // op∘逆op = identity for transferSharing on a DISJOINT fold/un-fold pair: when
+  // the target `to` is NOT itself cited beforehand (so the fold is a clean rename
+  // of `from`'s citations), folding from -> to and then to -> from must restore
+  // the original citations AND bodies (a genuine algebraic inverse). When `to` is
+  // already cited (a real merge, lossy) the law does not apply, so it is skipped.
+  it('transferSharing fold then inverse-fold is the identity on a disjoint rename', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), fc.nat(20), (seed, a, b) => {
+        const state = buildState(seed);
+        const ids = [...new Set(allCitedIds(state))];
+        if (ids.length < 2) return;
+        const from = ids[a % ids.length];
+        const to = ids[b % ids.length];
+        if (from === undefined || to === undefined || from === to) return;
+        // A clean rename requires the target id to be absent from the store and
+        // uncited, so folding is reversible (no pre-existing citations are lost).
+        if (getVertex(state.vertices, to) !== undefined) return;
+        if (allCitedIds(state).includes(to)) return;
+        const folded = transferSharing(state, new Map([[from, to]]));
+        const back = transferSharing(folded, new Map([[to, from]]));
+        checkInvariants(folded, 'after fold');
+        checkInvariants(back, 'after inverse fold');
+        expect(canonical(back)).toEqual(canonical(state));
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  // A coordinate swap of two distinct shared vertices is an INVOLUTION: swapping
+  // their coordinates, then swapping again, returns the original state — and a
+  // single swap lands each body at the OTHER's original coordinate (proving the
+  // batched move reads every source coordinate from the ORIGINAL snapshot, a true
+  // simultaneous swap with no read-after-write aliasing).
+  it('a coordinate swap of two shared vertices is a simultaneous involution', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op6Arb, { minLength: 0, maxLength: 12 }), fc.nat(20), fc.nat(20), (seed, ops, ai, bi) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp6(ctx, op);
+        const base = ctx.state;
+        const baseCanon = canonical(base);
+        const shared = sharedVertexIds(base);
+        if (shared.length < 2) return;
+        const a = shared[ai % shared.length];
+        const b = shared[bi % shared.length];
+        if (a === undefined || b === undefined || a === b) return;
+        const ca = getVertex(base.vertices, a)?.coordinate;
+        const cb = getVertex(base.vertices, b)?.coordinate;
+        if (ca === undefined || cb === undefined) return;
+        const swap1 = moveVertices(
+          base,
+          [
+            { vertexId: a, coordinate: cb },
+            { vertexId: b, coordinate: ca },
+          ],
+          { validators: [zeroLengthEdgeValidator] },
+        );
+        if (swap1.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        // Each body landed at the OTHER's original coordinate (true simultaneity).
+        expect(getVertex(swap1.state.vertices, a)?.coordinate).toEqual(cb);
+        expect(getVertex(swap1.state.vertices, b)?.coordinate).toEqual(ca);
+        checkInvariants(swap1.state, 'after swap');
+        // Swap again -> involution -> back to the original.
+        const swap2 = moveVertices(
+          swap1.state,
+          [
+            { vertexId: a, coordinate: ca },
+            { vertexId: b, coordinate: cb },
+          ],
+          { validators: [zeroLengthEdgeValidator] },
+        );
+        if (swap2.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        expect(canonical(swap2.state)).toEqual(baseCanon);
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  // shareVertices on two ids cited by ONE container (same ring / same line path)
+  // MUST be rejected with Participation, leaving the state byte-identical. This
+  // pins the SHARE command's participation gate directly (the random `share` op
+  // only hit this incidentally); a regression that silently merged a same-ring
+  // pair would create a self-citing container and a zero-length edge.
+  it('share of two same-container vertices is rejected (participation), input untouched', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(8), fc.nat(8), fc.nat(8), (seed, cIdx, pi, pj) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const entries = [...state.containers.values()];
+        if (entries.length === 0) return;
+        const entry = entries[cIdx % entries.length];
+        if (entry === undefined) return;
+        const ids = entry.vertexIds;
+        if (ids.length < 2) return;
+        const a = ids[pi % ids.length];
+        const b = ids[pj % ids.length];
+        if (a === undefined || b === undefined || a === b) return;
+        const res = shareVertices(state, a, b, { validators: [zeroLengthEdgeValidator] });
+        // Two vertices of the SAME container can never be merged into one group.
+        expect(res.status).toBe(SHARED_VERTEX_OUTCOME.Rejected);
+        if (res.status === SHARED_VERTEX_OUTCOME.Rejected) {
+          expect(res.reason).toBe(REJECT_REASON.Participation);
+        }
+        // The input value is immutable regardless of outcome.
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+
+  // A shared-edge cut followed by re-sharing the minted cut id onto one of its
+  // own edge-endpoints dissolves the freshly minted share. The mint→dissolve
+  // round must keep every invariant and never strand a dangling reference; the
+  // cut id must vanish (its sole remaining purpose folded back into an endpoint).
+  it('cut then re-share the cut id onto an endpoint keeps invariants and prunes the mint', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.nat(8),
+        fc.nat(8),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, pIdx, qIdx, lon, lat) => {
+          const state = buildState(seed);
+          const entries = [...state.containers.values()];
+          if (entries.length < 2) return;
+          const primary = entries[pIdx % entries.length];
+          const partner = entries[qIdx % entries.length];
+          if (primary === undefined || partner === undefined) return;
+          const pKey = containerKey(primary.container);
+          const qKey = containerKey(partner.container);
+          if (pKey === qKey) return;
+          const cut = insertSharedEdgeCut(
+            state,
+            {
+              primary: { containerKey: pKey, edgeStart: 0 },
+              partner: { containerKey: qKey, edgeStart: 0 },
+              cutCoordinate: createCoordinate(lon + 0.5, lat + 0.5),
+            },
+            createIdGeneratorState(0, 0),
+            makeClock(),
+            { validators: [zeroLengthEdgeValidator] },
+          );
+          if (cut.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const cutId = cut.cutVertexId;
+          if (cutId === undefined) return;
+          const afterCut = cut.result.state;
+          checkInvariants(afterCut, 'after cut');
+          checkParticipationOfShared(afterCut, 'after cut');
+          // Re-share the cut id onto SOME other cited id (the dissolve direction).
+          const others = [...new Set(allCitedIds(afterCut))].filter((id) => id !== cutId);
+          const target = others[0];
+          if (target === undefined) return;
+          const dissolve = shareVertices(afterCut, cutId, target, {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (dissolve.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          // The cut id is folded away entirely.
+          expect(allCitedIds(dissolve.state).includes(cutId)).toBe(false);
+          expect(getVertex(dissolve.state.vertices, cutId)).toBeUndefined();
+          checkInvariants(dissolve.state, 'after cut dissolve');
+          checkParticipationOfShared(dissolve.state, 'after cut dissolve');
+          checkSharedSetDistinct(dissolve.state, 'after cut dissolve');
+        },
+      ),
+      { seed: SEED6, numRuns: NUM_RUNS6 },
+    );
+  });
+});

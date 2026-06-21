@@ -3,9 +3,10 @@
 // display-control inputs (global depth N / individual focus M) actually drive the
 // U19 draw batch, and changing them changes which features draw / at what shape.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../domain/attributes';
+import * as depthModule from '../domain/hierarchy/depth';
 import { createCoordinate } from '../domain/coordinate';
 import {
   createAggregateFeature,
@@ -185,7 +186,77 @@ describe('display pipeline: focus deep-dives only the vertical region (FR-43)', 
 });
 
 // =============================================================================
-// 3. purity (受け入れ基準6)
+// 3. perf wiring: the precomputed depth map is reused, not re-walked per feature
+//    (bughunt3 regression — double O(n) depth traversal).
+// =============================================================================
+describe('display pipeline: a single O(n) depth pass feeds the whole call', () => {
+  // Build a chain-shaped forest A -> B -> C -> ... of `n` features. This is the
+  // worst case for the old bug: buildDisplayDecisions used to call the per-feature
+  // derivedDepth (an O(depth) walkToRoot) for EVERY node, degrading to O(n^2).
+  function chainForest(n: number): Forest {
+    const features: Feature[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const id = `chain-${i}`;
+      const parent = i === 0 ? undefined : `chain-${i - 1}`;
+      // Give each node its own 4-vertex ring so shape resolution succeeds.
+      const ring = createTerritoryRing(
+        asRingId(`r-${id}`),
+        [asVertexId('a0'), asVertexId('a1'), asVertexId('a2'), asVertexId('a3')],
+      );
+      features.push(
+        createLeafFeature(
+          fid(id),
+          attrs(id),
+          COLOR,
+          createShape([ring]),
+          parent !== undefined ? { parentId: fid(parent) } : {},
+        ),
+      );
+    }
+    return buildForest(features);
+  }
+
+  it('resolveDisplayControl never falls back to the per-feature derivedDepth walk', () => {
+    const f = chainForest(50);
+    const vs = store();
+    // Spy on the single-feature walk. The pipeline must precompute derivedDepths
+    // ONCE and pass it through, so this per-feature fallback is never reached.
+    const spy = vi.spyOn(depthModule, 'derivedDepth');
+    try {
+      resolveDisplayControl(f, vs, control({ globalDepth: 5 }));
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('the precomputed-map batch matches a per-feature reference (no behaviour drift)', () => {
+    // Equivalence guard: reusing the precomputed depths must yield exactly the
+    // same decisions as resolving each feature's depth independently. We build a
+    // reference set of drawable ids straight from the single-feature derivedDepth
+    // (the path the bug walked per node) and assert the pipeline agrees.
+    const n = 12;
+    const f = chainForest(n);
+    const vs = store();
+    const globalDepth = 6;
+
+    const pipelineDrawn = new Set(drawnIds(f, vs, control({ globalDepth })));
+
+    // Reference: at globalDepth=6 on a depth chain, the terminal at depth 6 draws
+    // (as aggregate, it has a child) and depths 0..5 draw (Real, expanded); depths
+    // 7..n-1 are absorbed (Omitted). Compute via the per-feature walk directly.
+    const reference = new Set<string>();
+    for (let i = 0; i < n; i += 1) {
+      const id = fid(`chain-${i}`);
+      const d = depthModule.derivedDepth(f, id);
+      if (d <= globalDepth) reference.add(`chain-${i}`);
+    }
+    expect(pipelineDrawn).toEqual(reference);
+  });
+});
+
+// =============================================================================
+// 4. purity (受け入れ基準6)
 // =============================================================================
 describe('display pipeline: purity', () => {
   it('same inputs → equal areas; inputs untouched', () => {

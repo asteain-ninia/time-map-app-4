@@ -2487,3 +2487,344 @@ describe('time-anchor + history undo/redo — seed 24004 multi-feature + inverse
     );
   });
 });
+
+// ===========================================================================
+// SEED 34002 expansion suite — MIXED-GRANULARITY edits driven through a
+// BOUNDED-LIMIT dual-stack history checked against a REFERENCE MODEL, plus a
+// COMPOSITE branch-divergence law and a 3-hop changeStart inverse law.
+//
+// A NEW exploration distinct from every prior pass in this file (seeds 4001 /
+// 4002 / 4004 / 24001 / 24002 / 24003 / 24004) and from the earlier
+// 1000-6000 / 21000-26000 sweep. Seed 34002 is fresh. The novelty is the CROSS
+// of two axes that were each covered separately but never together, plus laws
+// no prior suite states:
+//
+//   1. CROSS: mixed-granularity (year / yearMonth / yearMonthDay) edits AND a
+//      SMALL trimming history limit AND the explicit reference model. The 24001
+//      suite drives mixed granularity but with a generous, never-trimming limit
+//      and NO reference model (it only checks self-consistency via undo/redo).
+//      The 24002 suite drives the reference model with a small trimming limit
+//      but ONLY year-only EditOps, so the calendar's day-level normalize is
+//      never on the trimming path. Here, mixed-granularity edits (which exercise
+//      same-year dedup, sub-year overrun-shortening, and day-resolution
+//      ordering) flow through a 1..4-limit history whose undo stack is CONSTANTLY
+//      trimmed, and the production history is checked against an independent
+//      model at every step. A trim bug that only manifests when the dropped
+//      undo unit carried a sub-year start/end change (e.g. a mis-keyed dedup on
+//      a same-year tie inside the replayed command) would surface only here.
+//
+//   2. editIfChanged with a content-derived isNoOp over MIXED edits, folded into
+//      the same trimming stream (教訓 5.24). A no-op mixed edit must push NO
+//      entry and must leave both the history AND the model untouched.
+//
+//   3. COMPOSITE branch divergence (FR-73/FR-74 together): execute a composite
+//      of N mixed edits as ONE undo unit, undo it (whole chain to redo), then
+//      execute a DIFFERENT composite from the pre-chain root. The second
+//      composite must DROP the redo branch entirely (the first composite can
+//      never be replayed onto the diverged branch), the post-divergence state +
+//      every invariant must hold, and the diverged composite must still undo as
+//      ONE step back to the root. No prior suite combines composites with
+//      branch divergence.
+//
+//   4. 3-hop changeStart inverse on the temporal axis: changeStart to year P,
+//      then to year Q, then back to the ORIGINAL start, with mixed-granularity
+//      targets. When NO neighbor was destructively shortened across the two
+//      forward hops (verified directly against each hop's result, mirroring the
+//      4002 single-hop guard), the composed move must restore the exact original
+//      series. A path-dependence / accumulation bug across multiple hops that a
+//      single-hop round-trip cannot see would surface here.
+//
+// All series invariants (validateSeries — INV-1..3,5,6), no NaN/Infinity,
+// forest validity, selection validity, and save∘load==identity are re-asserted
+// after every reachable state.
+//
+// Determinism: pinned seed 34002, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_34002 = 34002;
+const NUM_RUNS_34002 = 700;
+
+// A bounded-history action space over MIXED-granularity edits, including the
+// ghost-suppressing editIfChanged path, undo/redo, clearRedo, and setLimit —
+// the full command surface driven against the reference model with a small,
+// constantly-trimming limit.
+type MixedBoundedAction =
+  | { readonly t: 'edit'; readonly op: MixedEditOp }
+  | { readonly t: 'editIfChanged'; readonly op: MixedEditOp }
+  | { readonly t: 'undo' }
+  | { readonly t: 'redo' }
+  | { readonly t: 'clearRedo' }
+  | { readonly t: 'setLimit'; readonly limit: number };
+
+const mixedBoundedActionArb: fc.Arbitrary<MixedBoundedAction> = fc.oneof(
+  mixedEditOpArb.map((op) => ({ t: 'edit' as const, op })),
+  mixedEditOpArb.map((op) => ({ t: 'editIfChanged' as const, op })),
+  fc.constant({ t: 'undo' as const }),
+  fc.constant({ t: 'undo' as const }), // weight drain ops higher to churn stacks
+  fc.constant({ t: 'redo' as const }),
+  fc.constant({ t: 'redo' as const }),
+  fc.constant({ t: 'clearRedo' as const }),
+  fc.record({ t: fc.constant('setLimit' as const), limit: fc.integer({ min: 1, max: 6 }) }),
+);
+
+describe('time-anchor + history undo/redo — seed 34002 mixed-granularity bounded-model', () => {
+  it('mixed-granularity edits through a SMALL-limit history agree with a reference model (seed 34002)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 4 }), // SMALL limit ⇒ trimming is the common case
+        fc.array(mixedBoundedActionArb, { maxLength: 44 }),
+        (initial, limit, actions) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          expectHistoryMatchesModel(history, model);
+
+          for (const action of actions) {
+            if (action.t === 'edit' || action.t === 'editIfChanged') {
+              const before = history.state;
+              const after = applyMixedEdit(before, action.op);
+              if (after === undefined) {
+                // No-op / rejected mixed edit. For editIfChanged exercise the
+                // ghost-suppression path with an always-true isNoOp (教訓 5.24);
+                // it must leave both history AND model untouched.
+                if (action.t === 'editIfChanged') {
+                  const step = executeIfChanged(
+                    history,
+                    makeSeriesCommand(action.op.kind, before, before),
+                    () => true,
+                  );
+                  history = step.history;
+                }
+                expectHistoryMatchesModel(history, model);
+                continue;
+              }
+              const cmd = makeSeriesCommand(action.op.kind, before, after);
+              if (action.t === 'edit') {
+                history = execute(history, cmd).history;
+              } else {
+                // Real change ⇒ isNoOp false ⇒ behaves exactly like execute.
+                history = executeIfChanged(history, cmd, () => false).history;
+              }
+              model = modelExecute(model, viewSeries(before), viewSeries(after));
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+              model = modelUndo(model);
+            } else if (action.t === 'redo') {
+              history = redo(history).history;
+              model = modelRedo(model);
+            } else if (action.t === 'clearRedo') {
+              history = clearRedo(history);
+              model = modelClearRedo(model);
+            } else {
+              history = withLimit(history, action.limit);
+              model = modelWithLimit(model, action.limit);
+            }
+            expectHistoryMatchesModel(history, model);
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_34002, numRuns: NUM_RUNS_34002 },
+    );
+  });
+
+  it('FR-74 (mixed): after overflowing a small limit, draining the retained stack lands on the oldest retained pre-state (seed 34002)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 3 }),
+        fc.array(mixedEditOpArb, { minLength: 1, maxLength: 18 }),
+        (initial, limit, ops) => {
+          let history = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyMixedEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(
+              history,
+              makeSeriesCommand(op.kind, before, after),
+            ).history;
+            model = modelExecute(model, viewSeries(before), viewSeries(after));
+          }
+          const retained = model.undo.length;
+          for (let i = 0; i < retained; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+          }
+          expectHistoryMatchesModel(history, model);
+          assertStepInvariants(history.state);
+          // Production and model must agree on the (possibly trimmed) floor.
+          expect(viewSeries(history.state)).toEqual(model.current);
+          // A further undo is a no-op on the drained stack.
+          const extra = undo(history).history;
+          expect(viewSeries(extra.state)).toEqual(viewSeries(history.state));
+          expect(extra.undoStack.length).toBe(history.undoStack.length);
+        },
+      ),
+      { seed: SEED_34002, numRuns: NUM_RUNS_34002 },
+    );
+  });
+
+  it('composite branch divergence: a second composite from the root drops the first composite from redo (seed 34002)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.array(mixedEditOpArb, { minLength: 1, maxLength: 6 }),
+        fc.array(mixedEditOpArb, { minLength: 1, maxLength: 6 }),
+        (initial, opsA, opsB) => {
+          // Build composite A from the root by folding accepted mixed edits.
+          const buildComposite = (
+            from: AnchorSeries,
+            ops: readonly MixedEditOp[],
+            label: string,
+          ): { cmd: Command<AnchorSeries>; post: AnchorSeries } | undefined => {
+            const subs: Command<AnchorSeries>[] = [];
+            let cursor = from;
+            for (const op of ops) {
+              const after = applyMixedEdit(cursor, op);
+              if (after === undefined) continue;
+              subs.push(makeSeriesCommand(op.kind, cursor, after));
+              cursor = after;
+            }
+            if (subs.length === 0) return undefined;
+            return { cmd: createCompositeCommand(label, subs), post: cursor };
+          };
+
+          const a = buildComposite(initial, opsA, 'bughunt/mixed-chain-A');
+          if (a === undefined) return;
+
+          let history = createHistory(initial, 10);
+          history = execute(history, a.cmd).history;
+          expect(history.undoStack.length).toBe(1);
+          expect(viewSeries(history.state)).toEqual(viewSeries(a.post));
+          assertStepInvariants(history.state);
+
+          // Undo composite A as ONE unit → root, A sits on the redo stack.
+          history = undo(history).history;
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+          expect(history.redoStack.length).toBe(1);
+          assertStepInvariants(history.state);
+
+          // Diverge: build composite B from the SAME root.
+          const b = buildComposite(history.state, opsB, 'bughunt/mixed-chain-B');
+          if (b === undefined) {
+            // B produced nothing from the root; redo of A must still restore the
+            // exact post-A state (history coherence preserved on a no-op diverge).
+            const redoneA = redo(history).history;
+            expect(viewSeries(redoneA.state)).toEqual(viewSeries(a.post));
+            assertStepInvariants(redoneA.state);
+            return;
+          }
+          history = execute(history, b.cmd).history;
+
+          // FR-74: executing B drops the redo branch entirely; A is gone.
+          expect(history.redoStack.length).toBe(0);
+          expect(history.undoStack.length).toBe(1);
+          expect(viewSeries(history.state)).toEqual(viewSeries(b.post));
+          assertStepInvariants(history.state);
+
+          // A redo() now is a no-op — the stale A composite cannot resurrect.
+          const afterRedo = redo(history).history;
+          expect(viewSeries(afterRedo.state)).toEqual(viewSeries(b.post));
+          expect(afterRedo.redoStack.length).toBe(0);
+
+          // Undo of B is ONE step back to the root (single indivisible unit).
+          const undoneB = undo(history).history;
+          expect(viewSeries(undoneB.state)).toEqual(viewSeries(initial));
+          expect(undoneB.undoStack.length).toBe(0);
+          assertStepInvariants(undoneB.state);
+        },
+      ),
+      { seed: SEED_34002, numRuns: NUM_RUNS_34002 },
+    );
+  });
+
+  it('3-hop changeStart inverse: move P→Q→original restores the series when no neighbor was shortened (mixed, seed 34002)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.nat(),
+        mixedTimePointArb,
+        mixedTimePointArb,
+        (initial, targetN, pointP, pointQ) => {
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const id = target.anchor.id;
+          const originalStart = target.start;
+
+          // Hop 1: original → P.
+          const hop1 = changeStart(initial, id, pointP, cal);
+          if (!hop1.ok) return;
+          expectAllInvariants(hop1.series);
+          const othersAfter1 = nonTargetEntriesEqual(initial, hop1.series, id);
+
+          // Hop 2: P → Q.
+          const hop2 = changeStart(hop1.series, id, pointQ, cal);
+          if (!hop2.ok) return;
+          expectAllInvariants(hop2.series);
+          const othersAfter2 = nonTargetEntriesEqual(hop1.series, hop2.series, id);
+
+          // Hop 3: Q → original start.
+          const hop3 = changeStart(hop2.series, id, originalStart, cal);
+          if (!hop3.ok) return;
+          expectAllInvariants(hop3.series);
+
+          // The composed move is an identity ONLY when neither forward hop
+          // destructively shortened / dropped a NON-target neighbor (§5.6「短縮」).
+          // We verify that precondition directly against each hop's result, then
+          // assert the full 3-hop round-trip restores the exact original series.
+          if (othersAfter1 && othersAfter2) {
+            expect(viewSeries(hop3.series)).toEqual(viewSeries(initial));
+          }
+        },
+      ),
+      { seed: SEED_34002, numRuns: NUM_RUNS_34002 },
+    );
+  });
+
+  it('save∘load == identity for any reachable mixed series under a small-limit stream (seed 34002)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 4 }),
+        fc.array(mixedBoundedActionArb, { maxLength: 36 }),
+        (initial, limit, actions) => {
+          let history: History<AnchorSeries> = createHistory(initial, limit);
+          for (const action of actions) {
+            if (action.t === 'edit' || action.t === 'editIfChanged') {
+              const before = history.state;
+              const after = applyMixedEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else if (action.t === 'redo') {
+              history = redo(history).history;
+            } else if (action.t === 'clearRedo') {
+              history = clearRedo(history);
+            } else {
+              history = withLimit(history, action.limit);
+            }
+            expectSaveLoadIdentity(history.state);
+          }
+        },
+      ),
+      { seed: SEED_34002, numRuns: NUM_RUNS_34002 },
+    );
+  });
+});
