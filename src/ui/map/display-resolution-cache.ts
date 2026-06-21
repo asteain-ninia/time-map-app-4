@@ -38,6 +38,7 @@
 // memo (same key ⇒ same value), not a second truth source.
 
 import { FEATURE_KIND, type Feature } from '../../domain/feature';
+import type { FeatureId } from '../../domain/ids';
 import { buildForest, type Forest } from '../../domain/hierarchy/forest';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
@@ -65,6 +66,16 @@ export interface DisplayResolution {
    * O(n) scan over `features` a second time per generation (bughunt3).
    */
   readonly areaFeatures: readonly Feature[];
+  /**
+   * `areaFeatures` indexed by `FeatureId`, for the draw path's by-id presentation lookup
+   * (committed-features `buildAreas` resolves each resolved shape's `featureId` back to its
+   * source feature for style / label). This map is SELECTION-INDEPENDENT — it depends only
+   * on `(root, time, displayControl)` — so building it ONCE here and reusing it lets a
+   * selection toggle (which misses the selection-keyed output memo and re-runs the draw
+   * presentation) skip re-allocating an O(n) Map over all area features every toggle
+   * (bughunt3). Built once per resolution generation, shared read-only with the draw path.
+   */
+  readonly areaFeaturesById: ReadonlyMap<FeatureId, Feature>;
   /** The vertex store effective at `time` (U09), the SAME `verticesAt` both paths used. */
   readonly vertices: VertexStore;
   /** The forest over the AREA features (leaf + aggregate) — what `buildForest` builds. */
@@ -153,9 +164,12 @@ export function computeDisplayResolution(
   const areaFeatures = features.filter(
     (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
   );
+  const areaFeaturesById = new Map<FeatureId, Feature>(
+    areaFeatures.map((f) => [f.id, f]),
+  );
   const forest = buildForest(areaFeatures);
   const resolved = resolveDisplayControl(forest, vertices, control);
-  return { features, areaFeatures, vertices, forest, resolved };
+  return { features, areaFeatures, areaFeaturesById, vertices, forest, resolved };
 }
 
 /**

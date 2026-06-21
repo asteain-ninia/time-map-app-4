@@ -151,4 +151,27 @@ describe('display-resolution-cache (bughunt2: single shared computation)', () =>
     // The forest is built from exactly these area features (same single source).
     expect(resolution.forest.byId.size).toBe(resolution.areaFeatures.length);
   });
+
+  // bughunt3 回帰 (Map allocation per selection toggle): the resolution ALSO exposes the
+  // SELECTION-INDEPENDENT `areaFeaturesById` lookup the draw path needs to resolve each
+  // resolved shape back to its source feature for style/label. Before the fix the draw path
+  // (`buildAreas`) allocated `new Map(areaFeatures.map(...))` over ALL area features on
+  // EVERY call — and every selection toggle is a draw-cache miss, so a rapid hover cycle
+  // re-built an O(n) Map per pointer-move. Building it ONCE here, keyed only on
+  // (root, time, displayControl), means a selection toggle reuses the SAME map object.
+  it('exposes a by-id AREA-feature map, shared (same object) on a cache hit', () => {
+    const root = project();
+    const time = timePointYear(10);
+
+    const first = resolveDisplayFor(root, time, DISPLAY);
+    const second = resolveDisplayFor(root, time, DISPLAY);
+
+    // The map indexes exactly the area features by their id.
+    expect(first.areaFeaturesById.size).toBe(first.areaFeatures.length);
+    for (const f of first.areaFeatures) {
+      expect(first.areaFeaturesById.get(f.id)).toBe(f);
+    }
+    // A cache hit returns the SAME map object — not re-allocated per consumer/call.
+    expect(second.areaFeaturesById).toBe(first.areaFeaturesById);
+  });
 });

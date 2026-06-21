@@ -81,15 +81,20 @@ function labelOf(feature: Feature): string {
  * selection-independent. Presentation comes from the resolved feature's own `ColorInfo`
  * + name; the focus-emphasis verdict (FR-43) reuses the selected color so an emphasized
  * region stands out without U34 owning the palette.
+ *
+ * `areaFeaturesById` is the SELECTION-INDEPENDENT by-id lookup the resolution cache built
+ * ONCE for this `(root, time, displayControl)` generation. Reusing it here means a
+ * selection toggle — which misses the selection-keyed output memo and re-runs this draw
+ * presentation — no longer re-allocates an O(n) Map over all area features on every toggle
+ * (bughunt3); only the cheap per-shape presentation mapping re-runs.
  */
 function buildAreas(
   resolved: ResolvedDisplayShapes,
-  areaFeatures: readonly Feature[],
+  areaFeaturesById: ReadonlyMap<FeatureId, Feature>,
   selectedId: FeatureId | null,
 ): EvaluatedFeature[] {
-  const byId = new Map<FeatureId, Feature>(areaFeatures.map((f) => [f.id, f]));
   const presentationFor: PresentationFor = (shape) => {
-    const feature = byId.get(shape.featureId);
+    const feature = areaFeaturesById.get(shape.featureId);
     const style = feature ? styleOf(feature.color) : FALLBACK_STYLE;
     const selected = shape.featureId === selectedId;
     return {
@@ -204,20 +209,24 @@ export function computeCommittedFeatures(
   // computed ONCE and reused by the live hit-test for this same (root, time,
   // displayControl) generation (教訓 5.29, bughunt2 perf). The selection-dependent
   // presentation mapping is applied below, so the memo stays selection-independent.
-  // `areaFeatures` (leaf + aggregate) is the SAME list the cache already filtered to
-  // build the forest — points / lines carry no hierarchy rollup and are emitted
-  // directly below (the area pipeline would resolve them to an empty shape and never
-  // draw them). Reusing the resolution's `areaFeatures` here avoids re-filtering the
-  // whole feature list a second time per generation (bughunt3 — the cache and this
-  // draw path no longer each run the identical O(n) leaf/aggregate scan).
-  const { features, areaFeatures, vertices, resolved } = resolveDisplayFor(
+  // `areaFeaturesById` (leaf + aggregate, indexed by id) is built ONCE by the cache for
+  // this generation — points / lines carry no hierarchy rollup and are emitted directly
+  // below (the area pipeline would resolve them to an empty shape and never draw them).
+  // Reusing the resolution's pre-built by-id map here avoids both re-filtering the whole
+  // feature list AND re-allocating an O(n) Map over all area features a second time per
+  // generation (bughunt3 — the cache and this draw path no longer each run the identical
+  // O(n) leaf/aggregate scan, and a selection toggle no longer rebuilds the lookup Map).
+  const { features, areaFeaturesById, vertices, resolved } = resolveDisplayFor(
     root,
     time,
     displayControl,
   );
 
-  // Areas (面情報) through U34 —集約形状 / depth / focus honoured.
-  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeatures, selectedId);
+  // Areas (面情報) through U34 —集約形状 / depth / focus honoured. The by-id presentation
+  // lookup is the cache's SELECTION-INDEPENDENT `areaFeaturesById`, built once per
+  // generation, so a selection toggle re-runs only the cheap per-shape mapping, not the
+  // O(n) Map construction over all area features (bughunt3).
+  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeaturesById, selectedId);
 
   // Points / lines directly: they have no hierarchy rollup (no own area), so the
   // area pipeline would resolve them to an empty shape and never draw them.

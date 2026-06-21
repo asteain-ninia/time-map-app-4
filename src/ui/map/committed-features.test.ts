@@ -36,7 +36,10 @@ import {
   buildCommittedFeatures,
   clearCommittedFeaturesCache,
 } from './committed-features';
-import { clearDisplayResolutionCache } from './display-resolution-cache';
+import {
+  clearDisplayResolutionCache,
+  resolveDisplayFor,
+} from './display-resolution-cache';
 
 // Default display control: global depth 0 (top-level rollup), no focus. A root
 // leaf with no children draws directly at N=0 (it IS its own top-level区).
@@ -292,5 +295,41 @@ describe('buildCommittedFeatures output memo (bughunt2: camera-only frames reuse
     // The batches differ — year 0 has only the point, year 100 adds the leaf area.
     expect(new Set(atYear0.map((f) => f.id))).toEqual(new Set(['pt-1']));
     expect(new Set(atYear100.map((f) => f.id))).toEqual(new Set(['pt-1', 'leaf-1']));
+  });
+});
+
+// bughunt3 回帰 (O(n) Map allocation per selection toggle): the area-presentation by-id
+// lookup is SELECTION-INDEPENDENT, so it must come from the resolution cache (keyed on
+// root/time/displayControl) and be REUSED across selection toggles — not re-allocated as a
+// fresh O(n) Map on each toggle's draw-cache miss. With 5000 area features and a rapid
+// hover cycle (a selectedId change per pointer-move) the old code built a 5000-entry Map
+// every move. This proves a selection toggle re-runs the draw but shares the SAME lookup
+// Map object, while still painting the new selection correctly (no degradation).
+describe('buildCommittedFeatures area lookup (bughunt3: no Map rebuild per selection toggle)', () => {
+  it('reuses the SAME area by-id lookup Map across a selection toggle', () => {
+    const root = project();
+    const time = timePointYear(100); // the leaf area is effective (it has a by-id entry)
+
+    // Frame 1: no selection — the draw path resolves (and caches) the resolution bundle.
+    buildCommittedFeatures(root, time, null, DISPLAY);
+    const mapBefore = resolveDisplayFor(root, time, DISPLAY).areaFeaturesById;
+
+    // A selection toggle: a different selectedId → the selection-keyed output memo MISSES
+    // and the draw presentation re-runs (this is the path that used to rebuild the Map).
+    const selected = 'leaf-1' as unknown as FeatureId;
+    const withSelection = buildCommittedFeatures(root, time, selected, DISPLAY);
+
+    // The resolution bundle (and its by-id lookup) is selection-independent, so the toggle
+    // hit the resolution cache and reused the EXACT same Map object — no re-allocation.
+    const mapAfter = resolveDisplayFor(root, time, DISPLAY).areaFeaturesById;
+    expect(mapAfter).toBe(mapBefore);
+
+    // ...and the selection is still applied correctly (no behaviour regression).
+    expect(withSelection.find((f) => f.id === 'leaf-1')?.selected).toBe(true);
+
+    // Toggling back is again a reuse of the same lookup, with selection cleared.
+    const cleared = buildCommittedFeatures(root, time, null, DISPLAY);
+    expect(resolveDisplayFor(root, time, DISPLAY).areaFeaturesById).toBe(mapBefore);
+    expect(cleared.find((f) => f.id === 'leaf-1')?.selected).toBe(false);
   });
 });
