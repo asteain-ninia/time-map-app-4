@@ -11,6 +11,7 @@ import {
   type TimePoint,
 } from '../../domain/time/time-point';
 import { STEP_UNIT, stepTimePoint } from './step';
+import { formatTimePoint } from './time-display';
 
 const cal = getCalendar('gregorian');
 
@@ -135,4 +136,47 @@ describe('stepTimePoint round-trip identity (BUGHUNT:time-roundtrip)', () => {
       });
     }
   }
+});
+
+describe('stepTimePoint granularity promotion is display-only, not a value change (BUGHUNT2:time-fwd-back-display)', () => {
+  // Bughunt2 finding (classified TEST ARTIFACT, not a defect): a metamorphic
+  // check that compares DISPLAY STRINGS flagged "0年" -> "0年1月" after a 月
+  // forward step (and "0年" -> "0年1月1日" after 日) as a non-identity. It is
+  // not: the step's result granularity is max(input, unit), so the FIRST forward
+  // step on a coarser-than-unit point legitimately PROMOTES the displayed
+  // precision (year -> yearMonth -> yearMonthDay). The underlying instant is the
+  // completed default of "0年" (year 0, month 1, day 1) and is unchanged. This
+  // test pins down both halves so a real value corruption (instant drift) would
+  // fail loudly, while the intentional display promotion is asserted explicitly.
+
+  it('a 月 forward+back on year 0 promotes display to "0年1月" while restoring the instant', () => {
+    const start = timePointYear(0);
+    const fwd = stepTimePoint(start, STEP_UNIT.Month, 1, cal);
+    const back = stepTimePoint(fwd, STEP_UNIT.Month, -1, cal);
+
+    // The forward step really advances the instant by one month (month 1 -> 2);
+    // it is NOT a no-op, so the "0年" -> "0年1月" diff the metamorphic check saw
+    // is the BACK leg landing at month 1 with promoted (yearMonth) granularity.
+    expect(formatTimePoint(start)).toBe('0年');
+    expect(formatTimePoint(fwd)).toBe('0年2月');
+    expect(formatTimePoint(back)).toBe('0年1月');
+    expect(back.granularity).toBe('yearMonth');
+
+    // The round-trip restores the original instant (the completed default of
+    // "0年" = year 0 month 1 day 1). Only the displayed precision was promoted.
+    expect(normalize(back, cal)).toBe(normalize(start, cal));
+  });
+
+  it('a 日 forward+back on year 0 promotes display to "0年1月1日" while restoring the instant', () => {
+    const start = timePointYear(0);
+    const fwd = stepTimePoint(start, STEP_UNIT.Day, 1, cal);
+    const back = stepTimePoint(fwd, STEP_UNIT.Day, -1, cal);
+
+    expect(formatTimePoint(start)).toBe('0年');
+    expect(formatTimePoint(fwd)).toBe('0年1月2日');
+    expect(formatTimePoint(back)).toBe('0年1月1日');
+    expect(back.granularity).toBe('yearMonthDay');
+
+    expect(normalize(back, cal)).toBe(normalize(start, cal));
+  });
 });
