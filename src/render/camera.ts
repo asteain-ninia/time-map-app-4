@@ -90,9 +90,16 @@ export const WORLD_LAT_SPAN_DEG = 180;
  * which silently pass `NaN` through (both `NaN < min` and `NaN > max` are false).
  *
  * Bounds are sanitized to a usable inclusive range first:
- *   - non-finite `minZoom` falls back to the FR-10 default min;
- *   - non-finite `maxZoom` falls back to the FR-10 default max;
+ *   - a non-finite OR non-positive `minZoom` falls back to the FR-10 default min;
+ *   - a non-finite OR non-positive `maxZoom` falls back to the FR-10 default max;
  *   - a degenerate range (min > max) collapses to `min`.
+ * Zoom is CSS pixels per degree, so a usable bound MUST be strictly positive: a
+ * finite-but-degenerate range like {0,0} (or a negative / sign-crossing range)
+ * would otherwise be accepted as-is and pin a positive zoom to 0, which then
+ * divides into ±Infinity inside `zoomAtCursor` (newCenter = world − Δ/0) and
+ * poisons every later world↔screen transform and wrap-turn enumeration. Treating
+ * `<= 0` bounds the same as non-finite ones keeps the clamp window strictly
+ * positive, so the result is guaranteed finite AND > 0.
  * Then a non-finite `zoom` is mapped to the bound implied by its SIGN before
  * clamping, so the returned zoom can never be NaN/Infinity AND never reverses the
  * caller's intent:
@@ -105,8 +112,18 @@ export const WORLD_LAT_SPAN_DEG = 180;
  *     conservative default; there is no direction to honour).
  */
 export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): number {
-  const safeMin = Number.isFinite(range.minZoom) ? range.minZoom : DEFAULT_ZOOM_RANGE.minZoom;
-  const safeMaxRaw = Number.isFinite(range.maxZoom) ? range.maxZoom : DEFAULT_ZOOM_RANGE.maxZoom;
+  // A usable zoom bound must be finite AND strictly positive (CSS px per degree).
+  // `<= 0` (including a finite {0,0} / negative / sign-crossing range) falls back
+  // to the FR-10 default so the clamp window can never collapse onto 0 and make a
+  // later `Δ / zoom` non-finite in `zoomAtCursor`.
+  const safeMin =
+    Number.isFinite(range.minZoom) && range.minZoom > 0
+      ? range.minZoom
+      : DEFAULT_ZOOM_RANGE.minZoom;
+  const safeMaxRaw =
+    Number.isFinite(range.maxZoom) && range.maxZoom > 0
+      ? range.maxZoom
+      : DEFAULT_ZOOM_RANGE.maxZoom;
   // A degenerate range (min > max) collapses to `min` so the clamp window is
   // never empty and the result stays well-defined.
   const safeMax = safeMaxRaw < safeMin ? safeMin : safeMaxRaw;

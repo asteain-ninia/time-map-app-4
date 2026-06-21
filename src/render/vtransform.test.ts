@@ -140,6 +140,45 @@ describe('clampZoom (single clamp boundary — finite guarantee)', () => {
     const degenerate: ZoomRange = { minZoom: 50, maxZoom: 1 };
     expect(clampZoom(10, degenerate)).toBe(50);
   });
+
+  it('never returns a non-positive zoom for a finite degenerate / negative / sign-crossing range (REGRESSION)', () => {
+    // Zoom is CSS px per degree; a usable bound must be > 0. Before the fix a
+    // FINITE-but-non-positive range passed `Number.isFinite` and was accepted as
+    // valid, so a positive zoom pinned to 0 (or a negative bound). That 0 then
+    // became `zoomAtCursor`'s clampedZoom and divided into ±Infinity
+    // (newCenter = world − Δ/0), poisoning every later transform + wrap turn.
+    // Each pathological range must still yield a FINITE, STRICTLY-POSITIVE zoom.
+    const ranges: readonly ZoomRange[] = [
+      { minZoom: 0, maxZoom: 0 }, // finite degenerate {0,0}
+      { minZoom: -5, maxZoom: -1 }, // wholly negative
+      { minZoom: -10, maxZoom: 10 }, // sign-crossing (min <= 0)
+      { minZoom: 0, maxZoom: 50 }, // zero lower bound
+      { minZoom: 5, maxZoom: 0 }, // positive min, non-positive max
+    ];
+    for (const range of ranges) {
+      for (const z of [5, 0.001, 9999, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+        const out = clampZoom(z, range);
+        expect(Number.isFinite(out)).toBe(true);
+        expect(out).toBeGreaterThan(0);
+      }
+    }
+    // {0,0} normalises both bounds to the FR-10 default window [1, 50], so an
+    // in-window target passes through and an over-target pins to the default max.
+    expect(clampZoom(5, { minZoom: 0, maxZoom: 0 })).toBe(5);
+    expect(clampZoom(9999, { minZoom: 0, maxZoom: 0 })).toBe(DEFAULT_ZOOM_RANGE.maxZoom);
+  });
+
+  it('keeps the camera center finite when zoomAtCursor is fed a finite degenerate range (REGRESSION)', () => {
+    // The end-to-end corruption path the {0,0} clamp defect enabled: a measured
+    // (finite-positive zoom) camera + a wheel notch + a degenerate {0,0} range
+    // must NOT produce a ±Infinity center.
+    const measured: Camera = { centerLon: 10, centerLat: 5, zoom: 4 };
+    const next = zoomAtCursor(measured, VP, { x: 600, y: 200 }, 8, { minZoom: 0, maxZoom: 0 });
+    expect(next.zoom).toBeGreaterThan(0);
+    expect(Number.isFinite(next.zoom)).toBe(true);
+    expect(Number.isFinite(next.centerLon)).toBe(true);
+    expect(Number.isFinite(next.centerLat)).toBe(true);
+  });
 });
 
 describe('zoomAtCursor (FR-08 cursor-anchored)', () => {
