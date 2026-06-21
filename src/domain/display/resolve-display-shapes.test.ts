@@ -190,6 +190,100 @@ describe('resolveDisplayShapes — omission & failure handling', () => {
 });
 
 // =============================================================================
+// 6. Seam-crossing AREA leaves ARE longitude-unwrapped (parity with the LINE path)
+//    Regression: a leaf ring stored with FOLDED representatives across ±180 (e.g.
+//    lon 179 next to lon -179) must come out of the display pipeline as a
+//    CONTINUOUS run (span ~2°), NOT the false ~358° "long way round" span that
+//    made the renderer / hit-test tile wrap replicas across the whole map.
+//    (HB-14 / FR-07 / 技術方針 R3 単一真実源; mirrors committed-features.ts line unwrap.)
+// =============================================================================
+describe('resolveDisplayShapes — seam-crossing area is unwrapped (HB-14 parity)', () => {
+  // A 2°-wide square straddling the antimeridian, stored FOLDED: the east edge at
+  // lon 179, the west edge at lon -179 (the representative fold of 181). Raw, this
+  // ring's lon span is 179 − (−179) = 358°; unwrapped it is a 2° continuous run.
+  const SEAM_VERTICES = [
+    createVertex(asVertexId('s0'), createCoordinate(179, 0)),
+    createVertex(asVertexId('s1'), createCoordinate(-179, 0)), // == 181 folded
+    createVertex(asVertexId('s2'), createCoordinate(-179, 1)),
+    createVertex(asVertexId('s3'), createCoordinate(179, 1)),
+  ];
+
+  function seamForest(): Forest {
+    // A single TOP-LEVEL leaf (no parent → drawn Real at N=0).
+    const ring = createTerritoryRing(
+      asRingId('r-seam'),
+      ['s0', 's1', 's2', 's3'].map(asVertexId),
+    );
+    return buildForest([
+      createLeafFeature(fid('seam'), attrs('seam'), COLOR, createShape([ring])),
+    ]);
+  }
+
+  function seamStore(): VertexStore {
+    return createVertexStore(SEAM_VERTICES);
+  }
+
+  function lonSpan(shape: { lon: number }[][][]): number {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const poly of shape)
+      for (const ring of poly)
+        for (const c of ring) {
+          if (c.lon < min) min = c.lon;
+          if (c.lon > max) max = c.lon;
+        }
+    return max - min;
+  }
+
+  it('the drawn shape spans ~2° (continuous), NOT the false ~358° long-way span', () => {
+    const forest = seamForest();
+    const vs = seamStore();
+    const decisions = buildDisplayDecisions({ forest, globalThreshold: 0 });
+    const resolved = resolveDisplayShapes(forest, vs, decisions);
+    const seam = resolved.shapes.find((s) => s.featureId === fid('seam'));
+    expect(seam).toBeDefined();
+
+    const span = lonSpan(seam!.shape as unknown as { lon: number }[][][]);
+    // Unwrapped: the short way (~2°). The pre-fix bug produced ~358°.
+    expect(span).toBeCloseTo(2, 6);
+    expect(span).toBeLessThan(180);
+
+    // The raw U08 resolution (no unwrap) DOES show the false ~358° span — proving
+    // the pipeline's unwrap is what closes the gap (not the resolver itself).
+    const raw = resolveFeatureArea(forest, vs, fid('seam'));
+    if (raw.status !== 'ok') throw new Error('expected ok');
+    expect(lonSpan(raw.area as unknown as { lon: number }[][][])).toBeCloseTo(358, 6);
+  });
+
+  it('every adjacent in-ring longitude gap is ≤ 180° after unwrap (continuity)', () => {
+    const forest = seamForest();
+    const vs = seamStore();
+    const decisions = buildDisplayDecisions({ forest, globalThreshold: 0 });
+    const resolved = resolveDisplayShapes(forest, vs, decisions);
+    const seam = resolved.shapes.find((s) => s.featureId === fid('seam'))!;
+    for (const poly of seam.shape)
+      for (const ring of poly)
+        for (let i = 1; i < ring.length; i += 1) {
+          const gap = Math.abs(ring[i]!.lon - ring[i - 1]!.lon);
+          expect(gap).toBeLessThanOrEqual(180);
+        }
+  });
+
+  it('a NON-seam leaf is unchanged (unwrap is a no-op away from the seam)', () => {
+    // 受け入れ基準: the disjoint forest (squares at [0..1]² and [10..11]²) has no
+    // ring gap ≥ 180°, so unwrapping must leave its geometry byte-for-byte.
+    const forest = disjointForest();
+    const vs = store();
+    const decisions = buildDisplayDecisions({ forest, globalThreshold: 0 });
+    const resolved = resolveDisplayShapes(forest, vs, decisions);
+    const root = resolved.shapes.find((s) => s.featureId === fid('root'))!;
+    const direct = resolveFeatureArea(forest, vs, fid('root'));
+    if (direct.status !== 'ok') throw new Error('expected ok');
+    expect(root.shape).toEqual(direct.area);
+  });
+});
+
+// =============================================================================
 // 5. Purity (受け入れ基準6)
 // =============================================================================
 describe('resolveDisplayShapes — purity', () => {

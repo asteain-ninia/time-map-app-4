@@ -500,16 +500,20 @@ describe('liveHitTestAt', () => {
     it('grabs a deep zoom-out replica AREA BODY at +720° (turns are span-derived, not fixed ±1)', () => {
       // Zoom far OUT so the viewport spans more than two world turns: the area body must
       // be probed at the +2 turn, which the OLD fixed ±1 probe missed (lon=720 取りこぼし).
-      // A WIDE square (200° across) so its replica centre is well clear of any corner
-      // vertex in screen px — a genuine body hit, not a vertex hit.
-      const big = bigSquareLeaf('f-big', 'vbig', 0, -100, 200); // canonical [0,200]×[-100,100]
+      // A WIDE square (160° across) so its replica centre is well clear of any corner
+      // vertex in screen px — a genuine body hit, not a vertex hit. Width is kept
+      // under 180° so the area's resolved ring is unambiguous: the display pipeline
+      // now seam-UNWRAPS every area ring (parity with the line path), so a >180°
+      // single edge would be re-read as the short way round — a genuinely wide area
+      // is represented with each edge ≤ 180°.
+      const big = bigSquareLeaf('f-big', 'vbig', 0, -80, 160); // canonical [0,160]×[-80,80]
       const root = commit(emptyProject(), big, 1000);
       const wideCamera: Camera = { centerLon: 820, centerLat: 0, zoom: 0.2 }; // view spans ~1000° (>2 turns)
       const wideToScreen = (w: { lon: number; lat: number }) =>
         worldToScreen(w, wideCamera, wrapViewport);
       const wideWrap = { camera: wideCamera, viewport: wrapViewport };
-      // Centre of the +720° replica body (canonical centre lon 100 → replica lon 820).
-      const replicaCentre = { lon: 820, lat: 0 };
+      // Centre of the +720° replica body (canonical centre lon 80 → replica lon 800).
+      const replicaCentre = { lon: 800, lat: 0 };
       const screen = wideToScreen(replicaCentre);
       const hit = liveHitTestAt(
         { root, time, toScreen: wideToScreen, wrap: wideWrap, point: screen },

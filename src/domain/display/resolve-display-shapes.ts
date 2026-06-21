@@ -24,6 +24,7 @@
 // PURITY (受け入れ基準6): reads forest + decisions + vertex store, returns a fresh
 // list, mutates nothing.
 
+import { unwrapRing } from '../geo/seam';
 import type { GeoMultiPolygon } from '../geometry/types';
 import { resolveFeatureArea, type ShapeResolutionFailure } from '../hierarchy/resolve-shape';
 import type { Forest } from '../hierarchy/forest';
@@ -49,7 +50,12 @@ export interface ResolvedDisplayShape {
   readonly verdict: typeof DISPLAY_VERDICT.Real | typeof DISPLAY_VERDICT.Aggregate;
   /** The feature whose U08 resolution produced `shape` (roll-up target / self). */
   readonly geometrySourceId: FeatureId;
-  /** The SINGLE U08-resolved geometry, all pieces kept (教訓5.1). */
+  /**
+   * The SINGLE U08-resolved geometry, all pieces kept (教訓5.1), with every ring
+   * longitude-UNWRAPPED into a continuous run (U05 `unwrapRing`) so a seam-crossing
+   * area draws / hit-tests the short way, never the false ~358° span (see
+   * `unwrapShape`; parity with the line path in committed-features.ts).
+   */
   readonly shape: GeoMultiPolygon;
   readonly emphasized: boolean;
 }
@@ -87,6 +93,34 @@ export function geometrySourceFor(decision: DisplayDecision): FeatureId {
 }
 
 /**
+ * Longitude-unwrap every ring of a resolved area into a CONTINUOUS run (U05's
+ * `unwrapRing`, which delegates to U04's single ±360° turn-counting source).
+ *
+ * WHY (seam parity with the LINE path — HB-14 / FR-07 / 技術方針 R3 単一真実源):
+ * a feature straddling the antimeridian is stored with FOLDED representatives
+ * (e.g. lon 179 next to lon -179). U03's `WorldCoordinate` is a continuous scalar
+ * that may already lie outside [-180,180) but is NOT guaranteed to be unwrapped.
+ * U08's `resolveFeatureArea` resolves rings from RAW vertex coordinates with zero
+ * seam handling, so a seam-crossing ring can come back with a ~358° longitude
+ * span. The render layer's continuous-longitude contract (feature-layer +
+ * canvas2d-renderer `primitiveLonSpan`, and the hit-test `multiPolygonLonSpan`)
+ * then tiles ±360° wrap replicas off that FALSE span — painting / hit-testing the
+ * polygon "the long way round" across the whole map. The LINE path already guards
+ * exactly this case via `unwrapLonSequence` (committed-features.ts); the AREA path
+ * did not. Unwrapping here — the ONE node both the renderer
+ * (committed-features → buildDisplayAreas) and the hit-test
+ * (live-hit-test → drawnAreas) consume — closes the asymmetry at a single source,
+ * so draw and hit-test stay byte-for-byte consistent (教訓5.29). Per-ring unwrap
+ * keeps each contiguous ring continuous without merging pieces (教訓5.1 飛び地保持).
+ * The union math upstream is untouched (it still operates on raw representatives);
+ * we only make the FINAL drawn/hit geometry continuous, exactly as the line path
+ * unwraps its final points.
+ */
+function unwrapShape(shape: GeoMultiPolygon): GeoMultiPolygon {
+  return shape.map((polygon) => polygon.map((ring) => unwrapRing(ring)));
+}
+
+/**
  * Resolve every DRAWABLE decision's geometry through U08's single resolution.
  * Omitted decisions are dropped (受け入れ基準1). For each remaining decision the
  * geometry is `resolveFeatureArea(forest, store, geometrySourceFor(decision))` —
@@ -119,7 +153,11 @@ export function resolveDisplayShapes(
       featureId: decision.featureId,
       verdict: decision.verdict,
       geometrySourceId,
-      shape: resolution.area,
+      // Seam-unwrapped so a ring crossing the antimeridian is a CONTINUOUS run,
+      // not folded representatives that span ~358° (parity with the line path —
+      // see unwrapShape). 飛び地は片落とししない (教訓5.1): each ring is unwrapped
+      // independently; no piece is merged or dropped.
+      shape: unwrapShape(resolution.area),
       emphasized: decision.emphasized,
     });
   }
