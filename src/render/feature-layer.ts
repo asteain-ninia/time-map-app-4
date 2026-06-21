@@ -267,8 +267,34 @@ export function pointRect(at: WorldPoint): WorldRect {
   return { minLon: at.lon, maxLon: at.lon, minLat: at.lat, maxLat: at.lat };
 }
 
+// --- bounding-rect MEMOIZATION (bughunt3 #low: per-frame recompute) ----------
+//
+// `featureIntersectsViewport` is called from `selectVisibleFeatures` on EVERY
+// frame for EVERY feature; for an area it walks every vertex of every ring of
+// every piece (triple-nested) and for a line every vertex, even though the
+// geometry is IMMUTABLE until the next domain change rebuilds the feature. The
+// bounding rect is a pure function of that geometry, so we memoize it KEYED BY
+// THE GEOMETRY OBJECT REFERENCE in a WeakMap: the same `shape` / `points` array
+// that survives across frames hits the cache (O(1)), while a domain change that
+// recreates the feature produces a fresh array reference that misses and is
+// recomputed exactly once. Purity is preserved (same input ⇒ same output) and
+// the readonly `EvaluatedArea` / `EvaluatedLine` types are NOT mutated; the
+// WeakMap also lets a feature that scrolls out of the live set be GC'd with its
+// cached rect (no unbounded growth, 教訓 5.18 absence-not-leak). `undefined`
+// (empty geometry) is itself a valid cached result, so we store a sentinel and
+// distinguish "absent from cache" via `.has`.
+const shapeRectCache = new WeakMap<GeoMultiPolygon, WorldRect | undefined>();
+const pointsRectCache = new WeakMap<readonly WorldPoint[], WorldRect | undefined>();
+
 /** Bounding world rect of a vertex list, or undefined when empty (教訓 5.18). */
 export function pointsRect(points: readonly WorldPoint[]): WorldRect | undefined {
+  if (pointsRectCache.has(points)) return pointsRectCache.get(points);
+  const r = computePointsRect(points);
+  pointsRectCache.set(points, r);
+  return r;
+}
+
+function computePointsRect(points: readonly WorldPoint[]): WorldRect | undefined {
   let r: WorldRect | undefined;
   for (const p of points) {
     r =
@@ -286,6 +312,13 @@ export function pointsRect(points: readonly WorldPoint[]): WorldRect | undefined
 
 /** Bounding world rect of a multi-polygon (every ring), or undefined when empty. */
 export function shapeRect(shape: GeoMultiPolygon): WorldRect | undefined {
+  if (shapeRectCache.has(shape)) return shapeRectCache.get(shape);
+  const r = computeShapeRect(shape);
+  shapeRectCache.set(shape, r);
+  return r;
+}
+
+function computeShapeRect(shape: GeoMultiPolygon): WorldRect | undefined {
   let r: WorldRect | undefined;
   for (const piece of shape) {
     for (const ring of piece) {

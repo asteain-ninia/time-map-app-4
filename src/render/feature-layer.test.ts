@@ -26,6 +26,8 @@ import {
   projectedLengthPx,
   projectedRingAreaPx,
   ringOccupancy,
+  shapeRect,
+  pointsRect,
   simplifyRing,
   simplifyShape,
   viewportWorldRect,
@@ -418,6 +420,68 @@ describe('受け入れ基準 5: view clipping drops off-screen features', () => 
         view,
       ),
     ).toBe(false);
+  });
+
+  it('memoizes shapeRect / pointsRect per geometry reference without losing correctness (bughunt3 #low)', () => {
+    // The bounding rect is recomputed from coordinates on EVERY visibility check
+    // (every frame, every feature). The fix caches it keyed by the immutable
+    // geometry reference. This regression pins BOTH halves of that contract:
+    //  (1) CORRECTNESS — the cached value equals a fresh full computation, AND
+    //  (2) REFERENCE-KEYED CACHE — the SAME array reference returns the identical
+    //      result object (cache hit, no recompute) while a structurally-equal but
+    //      DIFFERENT reference yields an equal-but-distinct object (cache miss,
+    //      i.e. caching never serves a stale rect after the domain rebuilds it).
+    const shape: GeoMultiPolygon = [
+      [
+        [
+          { lon: -10, lat: -5 },
+          { lon: 20, lat: -5 },
+          { lon: 20, lat: 15 },
+          { lon: -10, lat: 15 },
+        ],
+        // A hole ring whose vertices fall INSIDE the outer bbox (must not widen it).
+        [
+          { lon: 0, lat: 0 },
+          { lon: 5, lat: 0 },
+          { lon: 5, lat: 5 },
+        ],
+      ],
+      // A second disjoint piece that DOES widen the bbox (片落とし禁止 教訓 5.1).
+      [
+        [
+          { lon: 40, lat: 30 },
+          { lon: 50, lat: 30 },
+          { lon: 50, lat: 35 },
+        ],
+      ],
+    ];
+    const expected = { minLon: -10, maxLon: 50, minLat: -5, maxLat: 35 };
+    const first = shapeRect(shape);
+    expect(first).toEqual(expected);
+    // Same reference ⇒ exact same object back (proves it was cached, not recomputed).
+    expect(shapeRect(shape)).toBe(first);
+    // Structurally identical but a NEW reference ⇒ recomputed (equal, not same).
+    const cloned: GeoMultiPolygon = shape.map((piece) => piece.map((ring) => ring.map((c) => ({ ...c }))));
+    const cloneRect = shapeRect(cloned);
+    expect(cloneRect).toEqual(expected);
+    expect(cloneRect).not.toBe(first);
+
+    // Same contract for the line-vertex bounding rect.
+    const pts = [
+      { lon: 3, lat: 7 },
+      { lon: -2, lat: 1 },
+      { lon: 9, lat: 9 },
+    ];
+    const pr = pointsRect(pts);
+    expect(pr).toEqual({ minLon: -2, maxLon: 9, minLat: 1, maxLat: 9 });
+    expect(pointsRect(pts)).toBe(pr);
+    expect(pointsRect([...pts])).not.toBe(pr);
+
+    // Empty geometry caches `undefined` (教訓 5.18 absence, not a crash) — the
+    // sentinel `.has` path must treat undefined as a real cached result.
+    const empty: GeoMultiPolygon = [];
+    expect(shapeRect(empty)).toBeUndefined();
+    expect(pointsRect([])).toBeUndefined();
   });
 
   it('keeps a feature whose ±360° replica is on screen after panning past one turn (Codex high #1)', () => {

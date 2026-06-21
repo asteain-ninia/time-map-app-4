@@ -412,8 +412,32 @@ function primitiveLonSpan(p: DrawPrimitive): { min: number; max: number } | unde
   }
 }
 
+// Longitude-span MEMOIZATION (bughunt3 #low: per-drawBatch recompute). `drawBatch`
+// runs every frame (pan / zoom) and `primitiveLonSpan` walks every vertex of every
+// ring of every shape primitive each time, even though the primitive geometry is
+// IMMUTABLE between rebuilds (a feature's primitives are reconstructed only on a
+// domain / selected-time / LOD change, NOT on a camera move). The span is a pure
+// function of the vertex array, so we cache it KEYED BY THE ARRAY REFERENCE: the
+// same `points` array reused across frames hits the cache; a rebuilt primitive
+// brings a fresh array that misses and recomputes once. A WeakMap lets a primitive
+// dropped on the next rebuild be GC'd with its cached span (no unbounded growth).
+// `undefined` (empty list) is a valid cached value, distinguished via `.has`.
+const lonSpanCache = new WeakMap<
+  readonly WorldPoint[],
+  { min: number; max: number } | undefined
+>();
+
 /** Longitude span of a vertex list, or undefined when empty. */
 function lonSpanOfPoints(
+  points: readonly WorldPoint[],
+): { min: number; max: number } | undefined {
+  if (lonSpanCache.has(points)) return lonSpanCache.get(points);
+  const span = computeLonSpanOfPoints(points);
+  lonSpanCache.set(points, span);
+  return span;
+}
+
+function computeLonSpanOfPoints(
   points: readonly WorldPoint[],
 ): { min: number; max: number } | undefined {
   let min = Infinity;
