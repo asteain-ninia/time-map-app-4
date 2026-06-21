@@ -54,6 +54,54 @@ describe('createSharedIdMint (finding 3: single generator + reservation set)', (
     }
   });
 
+  it('does NOT re-scan the whole project on every mint (bughunt2 perf)', () => {
+    // The old code called collectProjectRawIds(getRoot()) on EVERY mint, so
+    // assembling one add proposal with V vertices did V+ full project
+    // traversals → O(V × project_size). The root is immutable until commit, so
+    // a stable root must be scanned exactly ONCE across many mints. We count how
+    // often the project actually gets WALKED by wrapping the histories array in
+    // an access-counting proxy (collectProjectRawIds reads root.histories).
+    const project = projectWithOneLeaf();
+    let histAccesses = 0;
+    const counting: DomainProject = new Proxy(project, {
+      get(target, prop, receiver) {
+        if (prop === 'histories') histAccesses += 1;
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const mint = createSharedIdMint(() => counting);
+    for (let i = 0; i < 100; i += 1) mint('v');
+    // Exactly one scan for the single immutable root, not one per mint.
+    expect(histAccesses).toBe(1);
+  });
+
+  it('re-scans only when the root reference changes (next commit)', () => {
+    // After a commit the store hands back a NEW immutable root object, so the
+    // cache must invalidate and freshly include the newly-committed ids.
+    let current = projectWithOneLeaf();
+    const mint = createSharedIdMint(() => current);
+    // First batch over root A → one scan's worth of work, all ids disjoint.
+    const batchA = [mint('v'), mint('v'), mint('f')];
+    // Simulate a commit: a brand-new root object (different identity) that now
+    // also contains a second leaf, so its ids must be respected too.
+    const second = squareLeaf('seed2', '種国2', 10, 10);
+    current = {
+      histories: [
+        ...projectWithOneLeaf().histories,
+        singleAnchorHistory('seed2', [second.feature], createVertexStore(second.vertices)),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const existingAfterCommit = collectProjectRawIds(current);
+    const batchB = [mint('v'), mint('f'), mint('r')];
+    // None of batch B may collide with the now-larger project…
+    for (const id of batchB) expect(existingAfterCommit.has(id)).toBe(false);
+    // …nor with anything issued in batch A (session reservation persists).
+    const all = new Set([...batchA, ...batchB]);
+    expect(all.size).toBe(batchA.length + batchB.length);
+  });
+
   it('two tools sharing ONE minter produce disjoint ids (no Add/Knife collision)', () => {
     // Simulate the App wiring: a single minter handed to two bootstraps.
     const mint = createSharedIdMint(() => projectWithOneLeaf());

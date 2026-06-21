@@ -1623,6 +1623,7 @@ import {
   createIdGeneratorState,
   nextRawId,
   type IdGeneratorState,
+  type IdReservation,
 } from '../domain/id-generator';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
 
@@ -1677,9 +1678,29 @@ export function createSharedIdMint(getRoot: () => DomainProject): SharedIdMint {
   let state: IdGeneratorState = createIdGeneratorState();
   let tick = 0;
   const issued = new Set<string>();
+  // PERF (bughunt2): collectProjectRawIds walks the WHOLE project
+  // (histories × entries × features × vertices/rings). The previous code re-ran
+  // it on EVERY mint, so assembling one add proposal with V vertices did V+ full
+  // traversals → O(V × project_size) per add/knife, quadratic on large projects.
+  // The domain root is IMMUTABLE — every commit yields a brand-new root object
+  // (store reducers never mutate in place) — so the scan result is stable until
+  // the root reference changes. Memoize the scan keyed by root IDENTITY and only
+  // union the session-issued ids per call (教訓 5.37 重複チェック still satisfied:
+  // `existing` always = current project ids ∪ this session's issued ids).
+  let scannedRoot: DomainProject | null = null;
+  let scannedIds = new Set<string>();
   return (prefix: string): string => {
-    const existing = collectProjectRawIds(getRoot());
-    for (const id of issued) existing.add(id);
+    const root = getRoot();
+    if (root !== scannedRoot) {
+      scannedRoot = root;
+      scannedIds = collectProjectRawIds(root);
+    }
+    // Issued ids are unioned into the cached project scan WITHOUT mutating it,
+    // because nextRawId only READS `existing` (IdReservation = membership test);
+    // we feed a composite view that defers to both sets (no per-mint copy).
+    const existing: IdReservation = {
+      has: (id: string): boolean => scannedIds.has(id) || issued.has(id),
+    };
     const g = nextRawId(prefix, state, () => (tick += 1), existing);
     state = g.state;
     issued.add(g.value);

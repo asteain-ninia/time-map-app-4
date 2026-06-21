@@ -33,6 +33,18 @@ export interface GeneratedId {
   readonly state: IdGeneratorState;
 }
 
+/**
+ * The minimal membership-test contract the generator needs for its duplicate
+ * check (lesson 5.37). It only ever asks "is this candidate already taken?", so
+ * it requires nothing beyond `has`. A `ReadonlySet<string>` satisfies this
+ * structurally; callers that union several id sources can also pass a cheap
+ * composite view (e.g. live-project-scan ∪ session-issued) WITHOUT copying the
+ * whole set per call.
+ */
+export interface IdReservation {
+  has(id: string): boolean;
+}
+
 export function createIdGeneratorState(
   initialTime = 0,
   initialCounter = 0,
@@ -52,14 +64,15 @@ function formatId(prefix: string, time: number, counter: number): string {
  * @param prefix  short discriminator for the ID kind (e.g. 'v', 'f', 'r').
  * @param state   current generator state.
  * @param now     injected time source.
- * @param existing optional set of raw IDs already in use; the generator skips
- *                 any candidate present here (duplicate check, lesson 5.37).
+ * @param existing optional membership test over raw IDs already in use; the
+ *                 generator skips any candidate present here (duplicate check,
+ *                 lesson 5.37). Any `ReadonlySet<string>` satisfies it.
  */
 export function nextRawId(
   prefix: string,
   state: IdGeneratorState,
   now: TimeSource,
-  existing?: ReadonlySet<string>,
+  existing?: IdReservation,
 ): GeneratedId {
   const observed = now();
   // Never let the time component move backwards even if `now` is non-monotonic.
