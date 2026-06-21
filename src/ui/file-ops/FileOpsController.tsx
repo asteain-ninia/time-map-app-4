@@ -27,6 +27,7 @@ import type { SaveRequest, TimeMapApi } from '../../shell/ipc/contract';
 import type { ZoomRange } from '../../render/camera';
 
 import type { SessionStore } from '../state/store';
+import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
 
 import { buildFileCommandPorts, cameraZoomRange, type FileOpsHost } from './bridge';
@@ -288,13 +289,20 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // 二重真実源 fix (the load half): hydrate the U16 store settings from the
         // loaded project's persisted UI settings so the panel / zoom clamp / label
         // threshold reflect THIS project, and a previous project's settings do not
-        // linger. A pre-`ui` manifest carries none → the store keeps its defaults
-        // (hydrateSettings with an empty patch resets dirty to the clean baseline,
-        // matching resetToDomain). Runs right after resetToDomain so both halves of
-        // the load are reflected together (教訓 5.36 同時初期化).
+        // linger. A pre-`ui` manifest carries NO uiSettings — in that case we must
+        // hydrate the EXPLICIT DEFAULTS, NOT pass an empty patch (finding). passing
+        // `{}` makes hydrateSettings keep the CURRENT settings, and resetToDomain does
+        // not touch the settings slices, so a previous project's edited zoom / grid /
+        // timeline settings would leak into the freshly-loaded old-format project. The
+        // new-project path likewise hydrates buildEmptyProject's default uiSettings;
+        // this is its load-half analog (教訓 5.2 全経路で破棄, 教訓 5.36 同時初期化).
+        // Runs right after resetToDomain so both halves of the load are reflected together.
         store.getState().hydrateSettings(
           project.uiSettings === undefined
-            ? {}
+            ? {
+                projectSettings: DEFAULT_PROJECT_SETTINGS,
+                appSettings: DEFAULT_APP_SETTINGS,
+              }
             : fromPersistedUiSettings(project.uiSettings),
         );
         applyContext(

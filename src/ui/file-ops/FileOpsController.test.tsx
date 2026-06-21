@@ -20,6 +20,7 @@ import type { DomainProject } from '../../domain/persistence/index';
 import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../shell/ipc/contract';
 
 import { createSessionStore, type SessionStore } from '../state/store';
+import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 
 import {
@@ -569,6 +570,60 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     await act(async () => registry.dispatch(COMMAND_ID.FileOpen));
     // The loaded project's setting REPLACES the previous one — it does not linger.
     await waitFor(() => expect(store.getState().projectSettings.zoomMax).toBe(12));
+  });
+
+  it('loading a pre-`ui` (old-format) project resets settings to DEFAULTS, not the previous project (持ち越し防止)', async () => {
+    // Regression (bughunt): an old-format .tmap carries NO uiSettings. resetToDomain
+    // does not touch the settings slices, and hydrateSettings({}) keeps the CURRENT
+    // settings — so a previous project's edited zoom/grid/timeline settings used to
+    // leak into the freshly-loaded old-format project. The load path must hydrate the
+    // EXPLICIT defaults for a pre-`ui` manifest so nothing carries over.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    // The user edits several settings in the CURRENT project. Mark saved so Open
+    // proceeds without the unsaved warning (this test is about settings RESET, not dirty).
+    act(() => {
+      store.getState().updateProjectSetting('zoomMax', 9999);
+      store.getState().updateProjectSetting('gridSpacingDeg', 1.5);
+      store.getState().updateProjectSetting('timelineMinYear', -500);
+      store.getState().updateProjectSetting('timelineMaxYear', 500);
+      store.getState().updateAppSetting('renderFps', 15);
+      store.getState().markProjectSaved();
+    });
+    expect(store.getState().projectSettings.zoomMax).toBe(9999);
+    expect(store.getState().appSettings.renderFps).toBe(15);
+
+    // Build an OLD-FORMAT manifest: a project WITHOUT uiSettings serializes to a
+    // pre-`ui` manifest (no `ui` block) that deserializes back to no uiSettings.
+    const { uiSettings: _omit, ...oldFormatProject } = buildEmptyProject();
+    void _omit;
+    const oldManifest = serialize(oldFormatProject);
+    expect(oldManifest.ui).toBeUndefined();
+    const api = makeApi({
+      load: vi.fn(async () => ({
+        ok: true as const,
+        path: '/tmp/old.tmap',
+        manifest: oldManifest,
+        baseMapImage: new Uint8Array(),
+        attachments: [],
+      })),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => registry.dispatch(COMMAND_ID.FileOpen));
+    // Every edited setting reverts to its default — the previous project's values
+    // do NOT linger across the old-format load.
+    await waitFor(() => expect(store.getState().projectSettings.zoomMax).toBe(DEFAULT_PROJECT_SETTINGS.zoomMax));
+    const s = store.getState();
+    expect(s.projectSettings.gridSpacingDeg).toBe(DEFAULT_PROJECT_SETTINGS.gridSpacingDeg);
+    expect(s.projectSettings.timelineMinYear).toBe(DEFAULT_PROJECT_SETTINGS.timelineMinYear);
+    expect(s.projectSettings.timelineMaxYear).toBe(DEFAULT_PROJECT_SETTINGS.timelineMaxYear);
+    expect(s.appSettings.renderFps).toBe(DEFAULT_APP_SETTINGS.renderFps);
+    // The derived timeline range mirror also reverts to the default range.
+    expect(s.timelineMin).toEqual(timePointYear(DEFAULT_PROJECT_SETTINGS.timelineMinYear));
+    expect(s.timelineMax).toEqual(timePointYear(DEFAULT_PROJECT_SETTINGS.timelineMaxYear));
+    // A fresh load is a CLEAN baseline.
+    expect(s.projectDirty).toBe(false);
   });
 });
 
