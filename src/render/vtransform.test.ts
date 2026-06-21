@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 import { wrapLonDeg } from '../domain/geo/longitude';
 
-import type { Camera, Viewport } from './camera';
-import { DEFAULT_ZOOM_RANGE } from './camera';
+import type { Camera, Viewport, ZoomRange } from './camera';
+import { clampZoom, DEFAULT_ZOOM_RANGE } from './camera';
 import {
   fitWorldZoom,
   initialCamera,
@@ -98,7 +98,65 @@ describe('initialCamera (FR-11)', () => {
   });
 });
 
+describe('clampZoom (single clamp boundary — finite guarantee)', () => {
+  it('clamps into the inclusive range and passes an in-range value through', () => {
+    expect(clampZoom(9999, DEFAULT_ZOOM_RANGE)).toBe(DEFAULT_ZOOM_RANGE.maxZoom);
+    expect(clampZoom(0.001, DEFAULT_ZOOM_RANGE)).toBe(DEFAULT_ZOOM_RANGE.minZoom);
+    expect(clampZoom(10, DEFAULT_ZOOM_RANGE)).toBe(10);
+  });
+
+  it('never passes a non-finite zoom through — returns a finite fallback (REGRESSION)', () => {
+    // Before the fix `NaN < min` and `NaN > max` were both false, so clampZoom
+    // returned NaN unchanged, which then propagated into a NaN camera center via
+    // zoomAtCursor. The clamp must yield the (finite) lower bound instead.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const out = clampZoom(bad, DEFAULT_ZOOM_RANGE);
+      expect(Number.isFinite(out)).toBe(true);
+    }
+    // A non-finite target has no meaningful position in the range, so it is
+    // pinned to the (finite) lower bound — the documented finite fallback.
+    expect(clampZoom(Number.NaN, DEFAULT_ZOOM_RANGE)).toBe(DEFAULT_ZOOM_RANGE.minZoom);
+    expect(clampZoom(Number.POSITIVE_INFINITY, DEFAULT_ZOOM_RANGE)).toBe(
+      DEFAULT_ZOOM_RANGE.minZoom,
+    );
+    expect(clampZoom(Number.NEGATIVE_INFINITY, DEFAULT_ZOOM_RANGE)).toBe(
+      DEFAULT_ZOOM_RANGE.minZoom,
+    );
+  });
+
+  it('stays finite when the supplied range bounds are non-finite', () => {
+    const nanRange: ZoomRange = { minZoom: Number.NaN, maxZoom: Number.NaN };
+    expect(Number.isFinite(clampZoom(10, nanRange))).toBe(true);
+    const infMax: ZoomRange = { minZoom: 2, maxZoom: Number.POSITIVE_INFINITY };
+    // A non-finite max must not let an arbitrarily large zoom escape unbounded.
+    expect(Number.isFinite(clampZoom(1e9, infMax))).toBe(true);
+    expect(clampZoom(1, infMax)).toBe(2); // still honours the finite lower bound
+  });
+
+  it('collapses a degenerate range (min > max) to min, never NaN', () => {
+    const degenerate: ZoomRange = { minZoom: 50, maxZoom: 1 };
+    expect(clampZoom(10, degenerate)).toBe(50);
+  });
+});
+
 describe('zoomAtCursor (FR-08 cursor-anchored)', () => {
+  it('yields a FINITE camera even for a non-finite target zoom (REGRESSION)', () => {
+    // Guard against the NaN-camera corruption path: a NaN nextZoom previously
+    // produced centerLon/centerLat === NaN (division by a NaN clamped zoom).
+    const next = zoomAtCursor(CAM, VP, { x: 600, y: 200 }, Number.NaN, DEFAULT_ZOOM_RANGE);
+    expect(Number.isFinite(next.zoom)).toBe(true);
+    expect(Number.isFinite(next.centerLon)).toBe(true);
+    expect(Number.isFinite(next.centerLat)).toBe(true);
+  });
+
+  it('yields a finite camera when a range bound is non-finite (REGRESSION)', () => {
+    const badRange: ZoomRange = { minZoom: Number.NaN, maxZoom: Number.NaN };
+    const next = zoomAtCursor(CAM, VP, { x: 600, y: 200 }, 10, badRange);
+    expect(Number.isFinite(next.zoom)).toBe(true);
+    expect(Number.isFinite(next.centerLon)).toBe(true);
+    expect(Number.isFinite(next.centerLat)).toBe(true);
+  });
+
   it('keeps the world point under the cursor fixed on screen', () => {
     const cursor = { x: 600, y: 200 };
     const before = screenToWorld(cursor, CAM, VP);

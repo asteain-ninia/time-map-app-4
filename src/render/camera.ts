@@ -81,12 +81,31 @@ export const WORLD_LAT_SPAN_DEG = 180;
 
 /**
  * Clamp a zoom value into an inclusive range. Pure; returns the input unchanged
- * when already in range. A degenerate range (min > max) collapses to `min` so the
- * result is always well-defined rather than NaN.
+ * when already in range. The result is ALWAYS finite (病的入力の安全性): this is
+ * the single documented clamp boundary that every camera consumer trusts
+ * (`zoomAtCursor` divides by the clamped zoom — see vtransform.ts — so a NaN/∞
+ * result would propagate into a NaN camera center and corrupt every subsequent
+ * world↔screen transform and wrap-turn enumeration). We therefore guard BOTH the
+ * value and the bounds for finiteness rather than relying on `<`/`>` comparisons,
+ * which silently pass `NaN` through (both `NaN < min` and `NaN > max` are false).
+ *
+ * Bounds are sanitized to a usable inclusive range first:
+ *   - non-finite `minZoom` falls back to the FR-10 default min;
+ *   - non-finite `maxZoom` falls back to the FR-10 default max;
+ *   - a degenerate range (min > max) collapses to `min`.
+ * Then a non-finite `zoom` is replaced by the (finite) lower bound before
+ * clamping, so the returned zoom can never be NaN/Infinity.
  */
 export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): number {
-  const { minZoom, maxZoom } = range;
-  if (zoom < minZoom) return minZoom;
-  if (zoom > maxZoom) return maxZoom;
-  return zoom;
+  const safeMin = Number.isFinite(range.minZoom) ? range.minZoom : DEFAULT_ZOOM_RANGE.minZoom;
+  const safeMaxRaw = Number.isFinite(range.maxZoom) ? range.maxZoom : DEFAULT_ZOOM_RANGE.maxZoom;
+  // A degenerate range (min > max) collapses to `min` so the clamp window is
+  // never empty and the result stays well-defined.
+  const safeMax = safeMaxRaw < safeMin ? safeMin : safeMaxRaw;
+  // A non-finite target zoom has no meaningful position in the range; pin it to
+  // the (finite) lower bound rather than letting `<`/`>` pass NaN through.
+  const safeZoom = Number.isFinite(zoom) ? zoom : safeMin;
+  if (safeZoom < safeMin) return safeMin;
+  if (safeZoom > safeMax) return safeMax;
+  return safeZoom;
 }
