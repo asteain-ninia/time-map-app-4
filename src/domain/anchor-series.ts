@@ -19,6 +19,8 @@
 //   INV-3 positive span: each end (if any) is strictly after its own start.
 //   INV-4 gaps allowed: temporal enclaves (non-existence periods) are valid.
 //   INV-5 non-empty: the series always holds at least one anchor.
+//   INV-6 unique ids: no two entries share an AnchorId (the id is the routing
+//     key for every by-id edit; see validateSeries / indexOfAnchor below).
 
 import type { Anchor, AnchorSnapshot } from './anchor';
 import type { AnchorId } from './ids';
@@ -170,7 +172,7 @@ function rejectIfInvalidTime(
 // --- Validation (single source of truth; §5.4) ------------------------------
 
 /** Identifies which invariant a violation pertains to. */
-export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3' | 'INV-5';
+export type InvariantId = 'INV-1' | 'INV-2' | 'INV-3' | 'INV-5' | 'INV-6';
 
 /** A single invariant violation, with the offending anchor id(s) when known. */
 export interface InvariantViolation {
@@ -196,6 +198,26 @@ export function validateSeries(series: AnchorSeries, calendar: Calendar): Valida
   if (entries.length === 0) {
     violations.push({ invariant: 'INV-5', anchorIds: [] });
     return { ok: false, violations };
+  }
+
+  // INV-6 unique ids: the AnchorId is the routing key for every by-id edit
+  // (changeStart / setEnd / deleteAnchor all locate the target via the FIRST
+  // entry matching the id; see indexOfAnchor). Two entries sharing an id would
+  // make every such edit silently act on the earlier occurrence regardless of
+  // which one the caller meant, and the later one would be unreachable by id.
+  // Validate uniqueness here (the single source of truth) rather than relying on
+  // the start-time check (INV-1): distinct-start duplicates pass INV-1 yet still
+  // misroute. The earliest entry of each duplicated id is the canonical one; the
+  // violation names the duplicated id so the caller can locate every collision.
+  const firstSeenById = new Map<AnchorId, number>();
+  for (let i = 0; i < entries.length; i++) {
+    const id = entries[i]!.anchor.id;
+    const firstSeen = firstSeenById.get(id);
+    if (firstSeen === undefined) {
+      firstSeenById.set(id, i);
+    } else {
+      violations.push({ invariant: 'INV-6', anchorIds: [id] });
+    }
   }
 
   for (let i = 0; i < entries.length; i++) {
@@ -238,9 +260,12 @@ export function isValidSeries(series: AnchorSeries, calendar: Calendar): boolean
 /**
  * Sorts entries by start time and shortens any entry whose end overruns the
  * next entry's start, restoring INV-1〜INV-3 while preserving gaps (INV-4).
- * Entries with equal start times are collapsed by keeping the LAST one given
+ * Entries sharing an AnchorId are collapsed first by keeping the LAST one given
+ * (INV-6: an id is the routing key for by-id edits and must be unique), then
+ * entries with equal start times are collapsed by keeping the LAST one given
  * (deterministic, §9.... determinism), so the result has strictly ascending
- * starts. An entry that carries a degenerate bounded interval (its own end is
+ * starts and unique ids. An entry that carries a degenerate bounded interval
+ * (its own end is
  * not strictly after its start, INV-3) is DROPPED entirely rather than silently
  * reopened to null: reopening would resurrect a feature meant to stop existing
  * as one that exists forever, contradicting the guarded edit paths (changeStart
@@ -255,8 +280,24 @@ export function normalizeSeries(
   entries: readonly AnchorEntry[],
   calendar: Calendar,
 ): AnchorSeries {
+  // Collapse duplicate AnchorIds (INV-6) FIRST, keeping the LAST entry for each
+  // id (consistent with the keep-last duplicate-start collapse below, and with
+  // the guarded edit paths that append the explicitly-edited entry last so it
+  // wins). An id is the routing key for every by-id edit; two entries sharing it
+  // make those edits misroute, so a series carrying duplicates (only reachable
+  // from corrupt / hand-edited persistence — this unit's operations never mint a
+  // duplicate) must be repaired here before validation, not just flagged. Done
+  // before the sort so the surviving entry keeps its own start for the dedup and
+  // overrun passes. This preserves input order among distinct ids (Map iteration
+  // order), so the subsequent stable sort is deterministic.
+  const byId = new Map<AnchorId, AnchorEntry>();
+  for (const entry of entries) {
+    byId.set(entry.anchor.id, entry);
+  }
+  const unique = [...byId.values()];
+
   // Stable sort by start time. Array.prototype.sort is stable in modern V8.
-  const sorted = [...entries].sort((a, b) => compare(a.start, b.start, calendar));
+  const sorted = [...unique].sort((a, b) => compare(a.start, b.start, calendar));
 
   // Collapse duplicate starts: keep the last entry for each distinct start.
   const deduped: AnchorEntry[] = [];

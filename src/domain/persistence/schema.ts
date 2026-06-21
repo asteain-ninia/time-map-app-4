@@ -367,7 +367,32 @@ export const featureHistorySchema = z
     featureId: idSchema,
     entries: z.array(anchorEntrySchema),
   })
-  .strict();
+  .strict()
+  // ANCHOR-ID UNIQUENESS within a series (bug-hunt fix, INV-6): the AnchorId is
+  // the routing key for every by-id edit (U09 changeStart / setEnd / deleteAnchor
+  // all locate the target via the FIRST entry matching the id). Two entries
+  // sharing an id make those edits silently act on the earlier occurrence
+  // regardless of which the user meant, and the later one is unreachable by id —
+  // a corrupt / legacy / hand-edited manifest would load that ambiguity silently.
+  // U09 normalizeSeries repairs it (keep-last) and validateSeries flags it, but a
+  // file never re-normalized on load (deserializeHistory restores entries
+  // verbatim) would slip through. Catch it at this structural boundary, reporting
+  // the path of the offending later entry (教訓 5.26 拒否理由は path 付き).
+  .superRefine((history, ctx) => {
+    const seen = new Set<string>();
+    history.entries.forEach((entry, index) => {
+      const id = entry.anchor.id;
+      if (seen.has(id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['entries', index, 'anchor', 'id'],
+          message: `duplicate anchor id in series: ${id}`,
+        });
+      } else {
+        seen.add(id);
+      }
+    });
+  });
 
 // --- settings (FR-109: プロジェクト固有設定 + FR-110: アプリ全体設定) -------
 
