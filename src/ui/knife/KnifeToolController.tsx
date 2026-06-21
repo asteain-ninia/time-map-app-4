@@ -107,8 +107,6 @@ export interface KnifeToolControllerProps<S> {
    * reach the dispatcher and 地図のパン/ズームが死ぬ. Optional: defaults to a no-op.
    */
   readonly mapCameraInput?: MapCameraInput | undefined;
-  /** The current camera zoom (CSS px/deg) for the固定円 radius. */
-  readonly zoom: number;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection. */
   readonly onCommitted?: ((result: ProcessResult<S>, snapshot: SplitSnapshot) => void) | undefined;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
@@ -137,7 +135,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     featureAtPoint,
     targetShape,
     drawSink,
-    zoom,
     onConflicts,
     defaultColor,
     style,
@@ -146,6 +143,17 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
+  // ROOT FIX (bughunt2: per-wheel-notch App re-render re-rendered ALL overlay
+  // controllers). The固定円 world radius (circleRadiusPx / zoom) and the閉線スナップ
+  // 判定 must track the LIVE camera zoom, but the zoom scalar used to be LIFTED into
+  // App (useStore at the App level) and threaded down as a `zoom` prop. Because the
+  // render-camera mirror writes a new store.camera.zoom on EVERY wheel notch, that
+  // App-level subscription re-rendered the WHOLE overlay subtree once per notch
+  // (技術方針 2.3 の部分後退). Subscribing to the zoom HERE — the ONLY consumer —
+  // keeps the固定円 reactive while leaving the zoom scalar OFF the App render path,
+  // so a wheel notch re-renders只 this controller, not its siblings (二重真実源を
+  // 作らない: the store camera stays the single zoom truth, 教訓 5.29).
+  const zoom = useStore(store, (s) => s.camera.zoom);
 
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
 

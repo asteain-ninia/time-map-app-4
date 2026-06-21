@@ -151,7 +151,6 @@ function mountKnife(
       featureAtPoint={featureAtPoint}
       targetShape={undefined}
       drawSink={drawSink}
-      zoom={10}
       defaultColor={DEFAULT_COLOR}
     />,
   );
@@ -307,51 +306,29 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
 
 // --- REGRESSION (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) ----------
 //
-// ROOT BUG: App.tsx passed `zoom={rendererRef.current?.zoom() ?? 1}` to this
-// controller — read ONCE at React render time. The App does not re-render on a
+// ROOT BUG (bughunt): App.tsx passed `zoom={rendererRef.current?.zoom() ?? 1}` to
+// this controller — read ONCE at React render time. The App does not re-render on a
 // pan/wheel (the live draw path bypasses React, 技術方針 2.3), so after the user
 // zoomed, the固定円 world radius (circleRadiusPx / zoom) and the閉線スナップ判定 stayed
-// frozen at the first-render zoom and drifted from what the user sees. ROOT FIX:
-// App subscribes to store.camera.zoom (useStore) and the live render camera is
-// mirrored into store.camera on EVERY change, so the zoom prop tracks the true zoom.
+// frozen at the first-render zoom and drifted from what the user sees.
 //
-// This test reproduces the App wiring (a wrapper that feeds the controller
-// `useStore(store, s => s.camera.zoom)`, exactly as App does) and proves the固定円
-// 閉線判定 follows the LIVE store zoom: a fixed click distance from the first point
-// CLOSES at low zoom (large world radius) but is treated as a頂点追加 at high zoom
-// (small world radius) — i.e. the same gesture changes verdict purely because the
-// store zoom changed, with NO re-mount.
+// ROOT FIX (bughunt2): the controller SUBSCRIBES to store.camera.zoom INTERNALLY
+// (useStore over its own `store` prop), so the zoom is no longer lifted to App and
+// threaded down as a prop — lifting it put the zoom scalar on the App render path,
+// re-rendering every overlay sibling once per wheel notch. The live render camera is
+// still mirrored into store.camera on EVERY change, so the internal subscription sees
+// the true zoom, but a wheel notch now re-renders ONLY this controller.
+//
+// This test proves the固定円閉線判定 follows the LIVE store zoom: a fixed click distance
+// from the first point CLOSES at low zoom (large world radius) but is treated as a
+// 頂点追加 at high zoom (small world radius) — i.e. the same gesture changes verdict
+// purely because the store zoom changed, with NO re-mount.
 describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store camera zoom (回帰)', () => {
-  // A wrapper mirroring App.tsx's wiring: the zoom prop is DERIVED from the live
-  // store camera via useStore, so a store camera change re-renders the controller
-  // with the new zoom (the exact contract the bug broke).
-  function ZoomWiredKnife(props: {
-    readonly store: StoreApi<SessionStore<S>>;
-    readonly startProcess: ReturnType<typeof vi.fn>;
-    readonly resolveFeature: (fid: typeof TARGET_ID) => Feature | undefined;
-    readonly resolveStore: () => VertexStore;
-    readonly featureAtPoint: FeatureAtPoint;
-    readonly drawSink: KnifeDrawSink;
-  }): JSX.Element {
-    const zoom = useStore(props.store, (s) => s.camera.zoom);
-    return (
-      <KnifeToolController<S>
-        store={props.store}
-        startProcess={props.startProcess}
-        ids={ids()}
-        resolveFeature={props.resolveFeature}
-        resolveStore={props.resolveStore}
-        anchorTime={() => ANCHOR}
-        screenToWorld={screenToWorld}
-        featureAtPoint={props.featureAtPoint}
-        targetShape={undefined}
-        drawSink={props.drawSink}
-        zoom={zoom}
-        defaultColor={DEFAULT_COLOR}
-      />
-    );
-  }
-
+  // bughunt2: the controller now SUBSCRIBES to store.camera.zoom INTERNALLY (the
+  // zoom scalar is no longer lifted to App / threaded as a prop — that put it on
+  // the App render path and re-rendered every overlay sibling per wheel notch). So
+  // the controller is rendered DIRECTLY here; a store camera change must re-render
+  // it on its own and flip the固定円 verdict, with NO wrapper and NO re-mount.
   function mountZoomWired(initialZoom: number): Harness {
     const { feature, store: vstore } = targetLeaf();
     const store = createSessionStore<S>({
@@ -383,13 +360,18 @@ describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store ca
       p.lon >= 0 && p.lon <= 10 && p.lat >= 0 && p.lat <= 10 ? TARGET_ID : null;
 
     const utils = render(
-      <ZoomWiredKnife
+      <KnifeToolController<S>
         store={store}
         startProcess={startProcess}
+        ids={ids()}
         resolveFeature={resolveFeature}
         resolveStore={resolveStore}
+        anchorTime={() => ANCHOR}
+        screenToWorld={screenToWorld}
         featureAtPoint={featureAtPoint}
+        targetShape={undefined}
         drawSink={drawSink}
+        defaultColor={DEFAULT_COLOR}
       />,
     );
     return { store, startProcess, drawSink, unmount: utils.unmount };
@@ -451,5 +433,88 @@ describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store ca
     clickInput(FIRST.lon, FIRST.lat + CLOSE_GAP);
     expect(screen.getByTestId('knife-cut-count').textContent).toBe('4');
     h.unmount();
+  });
+});
+
+// --- REGRESSION (bughunt2: per-wheel-notch App re-render re-rendered ALL overlay
+// controllers) ----------------------------------------------------------------
+//
+// ROOT BUG: App lifted the zoom subscription (useStore(store, s => s.camera.zoom))
+// to its OWN body and threaded it to KnifeToolController as a `zoom` prop. Because
+// the render-camera mirror writes a NEW store.camera.zoom on every wheel notch, that
+// App-level subscription re-rendered App — and with it the ENTIRE overlay subtree
+// (AddTool / Knife / FileOps / HelpTools / conflict modal) — once per notch, a
+// partial regression of 技術方針 2.3 (the live draw path must bypass React).
+//
+// ROOT FIX: the zoom subscription moved INTO KnifeToolController (its only consumer).
+// A wheel notch now re-renders ONLY the knife controller, NOT its overlay siblings.
+//
+// This test reproduces the App overlay shape: the knife controller mounted ALONGSIDE
+// a sibling overlay that does NOT read camera.zoom. A store zoom change must re-render
+// the knife controller (proven by the固定円 verdict tests above) WITHOUT re-rendering
+// the sibling. Before the fix the shared App parent re-rendered, so the sibling's
+// render count climbed per notch; after the fix it stays put.
+describe('KnifeToolController — a wheel-notch zoom change does NOT re-render overlay siblings (回帰 bughunt2)', () => {
+  it('the zoom subscription is local to the knife controller (sibling render count is flat)', () => {
+    const { feature, store: vstore } = targetLeaf();
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeTool: null,
+        camera: { zoom: 1, centerLon: 0, centerLat: 0, panX: 0, panY: 0 },
+      },
+    });
+    const startProcess = vi.fn((): ProcessResult<S> => committed);
+    const drawSink: KnifeDrawSink = { drawKnife() {} };
+    const resolveFeature = (fid: typeof TARGET_ID): Feature | undefined =>
+      fid === TARGET_ID ? feature : undefined;
+    const resolveStore = (): VertexStore => vstore;
+    const featureAtPoint: FeatureAtPoint = (p) =>
+      p.lon >= 0 && p.lon <= 10 && p.lat >= 0 && p.lat <= 10 ? TARGET_ID : null;
+
+    // A sibling overlay that subscribes to the SAME store but NOT to camera.zoom
+    // (it reads mode, like the real AddTool / FileOps / HelpTools controllers). Its
+    // render count is the regression probe: it must NOT climb on a zoom-only change.
+    let siblingRenders = 0;
+    function SiblingOverlay(): JSX.Element {
+      useStore(store, (s) => s.mode);
+      siblingRenders += 1;
+      return <div data-testid="sibling-overlay" />;
+    }
+
+    const utils = render(
+      <>
+        <SiblingOverlay />
+        <KnifeToolController<S>
+          store={store}
+          startProcess={startProcess}
+          ids={ids()}
+          resolveFeature={resolveFeature}
+          resolveStore={resolveStore}
+          anchorTime={() => ANCHOR}
+          screenToWorld={screenToWorld}
+          featureAtPoint={featureAtPoint}
+          targetShape={undefined}
+          drawSink={drawSink}
+          defaultColor={DEFAULT_COLOR}
+        />
+      </>,
+    );
+
+    activateKnife(store); // a real overlay state change — both may render here
+    const baseline = siblingRenders;
+
+    // Spin the wheel: 5 notch-equivalent zoom writes through the live camera mirror.
+    act(() => {
+      for (let i = 0; i < 5; i += 1) {
+        store.getState().updateCamera({ zoom: 1 + (i + 1) * 0.25 });
+      }
+    });
+
+    // The sibling did NOT re-render on any of the zoom-only notches (the bug made it
+    // climb by 5 because the shared App parent re-rendered each time).
+    expect(siblingRenders).toBe(baseline);
+    utils.unmount();
   });
 });

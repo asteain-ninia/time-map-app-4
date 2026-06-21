@@ -771,17 +771,16 @@ export function App(): JSX.Element {
     [],
   );
 
-  // ROOT FIX (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) — SUBSCRIBE to
-  // the live store camera zoom so the U26 knife controller's 固定円 world-radius
-  // (circleRadiusPx / zoom) and 閉線スナップ判定 track the CURRENT zoom. Reading
-  // rendererRef.current?.zoom() at render time captured the zoom ONCE and never
-  // updated: the App does not otherwise re-render on a pan/wheel (the live draw path
-  // bypasses React, 技術方針 2.3), so the zoom prop stayed at the first-render value
-  // and the固定円 半径 / 閉線距離 drifted after every zoom. publishCameraHooks now
-  // mirrors EVERY render-camera change into store.camera (including the FR-11 fit-all
-  // initial camera), so this subscription delivers the renderer's TRUE zoom — fit at
-  // mount, then live on each wheel notch — and re-renders the controller's zoom prop.
-  const cameraZoom = useStore(store, (s) => s.camera.zoom);
+  // NOTE (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale → bughunt2: その購読
+  // を App から降ろす) — the U26 knife controller's 固定円 world-radius
+  // (circleRadiusPx / zoom) and 閉線スナップ判定 must track the LIVE camera zoom, which
+  // publishCameraHooks mirrors into store.camera on EVERY render-camera change (fit at
+  // mount, then live on each wheel notch; see updateCamera below). That subscription
+  // now lives INSIDE KnifeToolController (its only consumer), NOT here: lifting the
+  // zoom scalar to App put it on the React render path, so every wheel notch re-rendered
+  // the whole overlay subtree (AddTool / Knife / FileOps / HelpTools / conflict modal)
+  // — a partial regression of 技術方針 2.3. Subscribing in the controller keeps the
+  // 固定円 reactive while a wheel notch re-renders 只 that controller, not its siblings.
 
   // The add host ports (id minting / ring ids / the U13 process-start adapter).
   //
@@ -1244,7 +1243,6 @@ export function App(): JSX.Element {
               targetShape={knifeTargetShape}
               drawSink={knifeDrawSink}
               mapCameraInput={mapCameraInput}
-              zoom={cameraZoom}
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}
