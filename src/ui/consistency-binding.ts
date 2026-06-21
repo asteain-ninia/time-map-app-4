@@ -42,10 +42,12 @@ import type { DomainId, FeatureId, RingId, VertexId } from '../domain/ids';
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
 import type { AddSnapshot } from '../domain/add/index';
 import type { SplitSnapshot } from '../domain/knife/index';
+import type { MergeSnapshot } from '../domain/merge/index';
 import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
   applyEditProposal,
+  applyMergeProposal,
   applySplitProposal,
   deriveAnchorId,
   findHistoryContaining,
@@ -129,6 +131,10 @@ export type CreateLiveKnifeBinding = (
 export type CreateLiveEditBinding = (
   access: DomainRootAccess,
 ) => LiveConsistencyBinding<FeatureSnapshot>;
+
+export type CreateLiveMergeBinding = (
+  access: DomainRootAccess,
+) => LiveConsistencyBinding<MergeSnapshot>;
 
 export type MakeSingleUndoCommand = (
   baseline: DomainRoot,
@@ -672,6 +678,46 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, SplitSnapshot> = {
     applyProposal: (current, proposal) => applySplitProposal(current, proposal, calendar),
     checkTime: checkTimeOverExisting,
+    checkConstraints,
+    detectSpatial: () => [],
+    applyResolution: () => undefined,
+    makeCommand,
+  };
+  const spatialCache = createTerminalShapeCache();
+  return {
+    ports,
+    startProcess: (proposal) =>
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
+  };
+};
+
+/**
+ * Build the live MERGE binding (U30 → U13). `applyProposal` is U44's
+ * {@link applyMergeProposal} (fold targets into one result feature over the project's
+ * histories at the anchor time) bound to the active calendar; the other ports mirror
+ * the add / knife bindings (temporal validity, spatial detection over the trial state,
+ * U06 difference write-back, U12 single-undo). The merge proposal's preconditions
+ * (≥2 targets / 対象時間に存在 / 非縦方向) are validated INSIDE the domain
+ * `buildMergeProposal` the controller calls before this binding runs, so the result
+ * feature handed here is already a valid assembly (教訓 5.26). The binding reads the
+ * current root via getRoot at process-start (never a stale capture, 教訓 5.6) and never
+ * writes the store — the host's onCommitted owns the single store-write path.
+ */
+export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
+  const ports: ConsistencyPorts<DomainRoot, MergeSnapshot> = {
+    applyProposal: (current, proposal) => applyMergeProposal(current, proposal, calendar),
+    // The proposal anchors on the NEW result feature (createdIds), which is not yet
+    // effective at the anchor time — so the time gate is calendar-validity only (like
+    // the add binding), NOT checkTimeOverExisting (which would reject the not-yet-born
+    // result as featureNotEffectiveAtTime). The targets' presence at the time is already
+    // enforced by buildMergeProposal's validateMergePreconditions (教訓 5.26).
+    checkTime: checkTimeOver,
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,

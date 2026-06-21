@@ -62,6 +62,7 @@ import {
 } from '../vertex';
 import type { EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
+import type { MergeSnapshot } from '../merge/proposal';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { VertexRemap } from '../shared-vertex';
 import type { WorldCoordinate } from '../coordinate';
@@ -113,13 +114,13 @@ function singleAnchorSeries(anchor: Anchor, anchorTime: TimePoint): AnchorSeries
   return { entries: [createAnchorEntry(anchor, anchorTime, null)] };
 }
 
-function findHistory(
-  root: DomainProject,
+function findHistoryIn(
+  histories: readonly FeatureHistory[],
   featureId: FeatureId,
 ): { readonly index: number; readonly history: FeatureHistory } | undefined {
-  const index = root.histories.findIndex((h) => h.featureId === featureId);
+  const index = histories.findIndex((h) => h.featureId === featureId);
   if (index < 0) return undefined;
-  const history = root.histories[index];
+  const history = histories[index];
   if (history === undefined) return undefined;
   return { index, history };
 }
@@ -174,15 +175,30 @@ export function findHistoryContaining(
   anchorTime: TimePoint,
   calendar: Calendar,
 ): { readonly index: number; readonly history: FeatureHistory } | undefined {
+  return findHistoryContainingIn(root.histories, featureId, anchorTime, calendar);
+}
+
+/**
+ * {@link findHistoryContaining} over an arbitrary history list, so callers that thread
+ * an evolving list (the merge slice, which rewrites across three steps) reuse the SAME
+ * tiered, time-correct, cycle-safe containment lookup without re-wrapping a DomainProject
+ * (single truth source, 教訓 5.30). Pure.
+ */
+function findHistoryContainingIn(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): { readonly index: number; readonly history: FeatureHistory } | undefined {
   // Tier 1: the history keyed by the id itself AND effective-containing at the time.
-  const own = findHistory(root, featureId);
+  const own = findHistoryIn(histories, featureId);
   if (own !== undefined && snapshotAtTimeContains(own.history, featureId, anchorTime, calendar)) {
     return own;
   }
   // Tier 2: any history whose effective snapshot carries the feature at the time
   // (child-inside-aggregate, OR the correct one among duplicate owners).
-  for (let index = 0; index < root.histories.length; index += 1) {
-    const history = root.histories[index];
+  for (let index = 0; index < histories.length; index += 1) {
+    const history = histories[index];
     if (history === undefined) continue;
     if (snapshotAtTimeContains(history, featureId, anchorTime, calendar)) {
       return { index, history };
@@ -233,7 +249,7 @@ export function applyAddProposal(
   const series = singleAnchorSeries(anchor, anchorTime);
   const history: FeatureHistory = { featureId, series };
 
-  const existing = findHistory(root, featureId);
+  const existing = findHistoryIn(root.histories, featureId);
   if (existing === undefined) {
     return withHistories(root, [...root.histories, history]);
   }
@@ -788,6 +804,159 @@ function applyInheritorShape(feature: Feature, snapshot: SplitSnapshot): LeafFea
     throw new Error('U44: split inheritor must be a leaf feature (FR-44)');
   }
   return withLeafShape(feature, snapshot.inheritorShape);
+}
+
+// --- merge slice (U30 MergeSnapshot → fold targets into one result) ---------
+
+/**
+ * Apply a merge (合体 / 結合) proposal to the project at the anchor time (FR-50 /
+ * FR-94, 教訓 5.11 / 5.20 / 5.23). U30's {@link MergeSnapshot} carries the COMPLETE
+ * after-state effective set (`nextFeatures` / `nextVertices`) plus the lifecycle ID
+ * partitions the domain already computed:
+ *   - `createdIds`: the new result feature (+ any new上位領域) — born here, get a
+ *     fresh single-entry {@link FeatureHistory} anchored at `anchorTime`;
+ *   - `deletedIds`: the targets whose identity ended (folded into the result) — removed
+ *     from their containing anchor snapshot at `anchorTime` (their own history dropped
+ *     when emptied, 片落とし禁止);
+ *   - `survivedTouchedIds`: features that continue but had references repointed (a
+ *     reparented child / an existing parent's childIds) — rewritten in place at
+ *     `anchorTime` with their after-state.
+ *
+ * Each created / survived feature's after-state is taken from `snapshot.nextFeatures`
+ * (the single source of truth the proposal assembled, 教訓 5.29); the merge's new
+ * vertices (`nextVertices`, non-empty for末端のみ結合 which re-mints the union boundary)
+ * ride into every rewritten / created anchor so no reference dangles (教訓 5.31).
+ *
+ * Mirrors {@link applySplitProposal}'s temporal discipline: a past-edit UPDATES the
+ * anchor that already starts at `anchorTime`, else INSERTS one inheriting the effective
+ * state — earlier slots are untouched (FR-55). Pure: returns a NEW project.
+ */
+export function applyMergeProposal(
+  root: DomainProject,
+  proposal: EditProposal<MergeSnapshot>,
+  calendar: Calendar,
+): DomainProject {
+  const { snapshot, anchorTime } = proposal;
+  const afterById = new Map<FeatureId, Feature>();
+  for (const f of snapshot.nextFeatures) afterById.set(f.id, f);
+  const mergeVertices = [...snapshot.nextVertices.byId.values()];
+
+  let histories: readonly FeatureHistory[] = root.histories;
+
+  // 1. Deleted targets: drop each from its containing snapshot at the anchor time
+  // (the result feature absorbs them). Process by containment so a folded child of an
+  // aggregate snapshot is removed in place while siblings survive.
+  for (const deletedId of snapshot.deletedIds) {
+    histories = removeFeatureAtTime(histories, deletedId, anchorTime, calendar);
+  }
+
+  // 2. Survived-but-touched features: rewrite each in place with its after-state
+  // (parentId / childIds repointed by the proposal), carrying the merge's vertices.
+  for (const survivedId of snapshot.survivedTouchedIds) {
+    const after = afterById.get(survivedId);
+    if (after === undefined) continue; // defensive: lifecycle set out of sync.
+    histories = rewriteFeatureSnapshotAtTime(
+      histories,
+      survivedId,
+      after,
+      mergeVertices,
+      anchorTime,
+      calendar,
+    );
+  }
+
+  // 3. Created features (result feature + any new上位領域): a fresh single-entry
+  // history each, anchored at the anchor time (replacing defensively if the id exists).
+  for (const createdId of snapshot.createdIds) {
+    const created = afterById.get(createdId);
+    if (created === undefined) continue;
+    const vertexStore = createVertexStore(mergeVertices);
+    const anchor = anchorFor([created], vertexStore, createdId, anchorTime);
+    const newHistory: FeatureHistory = {
+      featureId: createdId,
+      series: singleAnchorSeries(anchor, anchorTime),
+    };
+    const existing = histories.findIndex((h) => h.featureId === createdId);
+    histories =
+      existing >= 0
+        ? histories.map((h, i) => (i === existing ? newHistory : h))
+        : [...histories, newHistory];
+  }
+
+  return withHistories(root, histories);
+}
+
+/**
+ * Remove `featureId` from whatever history snapshot is effective at `anchorTime`,
+ * past-editing that history so only the anchor at the time changes (siblings of a
+ * multi-feature snapshot survive). When the removal empties the feature's OWN history
+ * (it was the sole occupant) the whole history is dropped (no幽霊 series). Histories
+ * not carrying the feature at the time are returned untouched. Pure.
+ */
+function removeFeatureAtTime(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): readonly FeatureHistory[] {
+  const found = findHistoryContainingIn(histories, featureId, anchorTime, calendar);
+  if (found === undefined) return histories;
+  const { index, history } = found;
+  const updatedSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      const base =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : createAnchorSnapshot([], createVertexStore([]));
+      const features = base.features.filter((f) => f.id !== featureId);
+      return anchorFor(features, base.vertices, history.featureId, anchorTime);
+    },
+    calendar,
+  );
+  if (history.featureId === featureId && seriesHasNoFeatures(updatedSeries)) {
+    return histories.filter((_, i) => i !== index);
+  }
+  return histories.map((h, i) =>
+    i === index ? { featureId: history.featureId, series: updatedSeries } : h,
+  );
+}
+
+/**
+ * Rewrite `featureId`'s after-state into the history snapshot effective at
+ * `anchorTime`, carrying `extraVertices` (the merge's new bodies) so every reference
+ * resolves. Past-edits in place, preserving siblings; appends the feature when the
+ * effective snapshot did not already hold it. Pure.
+ */
+function rewriteFeatureSnapshotAtTime(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  after: Feature,
+  extraVertices: readonly Vertex[],
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): readonly FeatureHistory[] {
+  const found = findHistoryContainingIn(histories, featureId, anchorTime, calendar);
+  if (found === undefined) return histories;
+  const { index, history } = found;
+  const updatedSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      const base =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : createAnchorSnapshot([], createVertexStore([]));
+      const features = computeEditedFeatures(base.features, featureId, after);
+      const store = createVertexStore([...base.vertices.byId.values(), ...extraVertices]);
+      return anchorFor(features, store, history.featureId, anchorTime);
+    },
+    calendar,
+  );
+  return histories.map((h, i) =>
+    i === index ? { featureId: history.featureId, series: updatedSeries } : h,
+  );
 }
 
 // --- edit slice (U24 FeatureSnapshot → in-place anchor rewrite / deletion) ---

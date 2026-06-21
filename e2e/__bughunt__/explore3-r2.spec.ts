@@ -605,26 +605,28 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       const countBeforeMerge = await checkParity(page, 'before-merge');
       if (splitsDone > 0 && (await armEditTool(page, 'merge'))) {
         await shot(page, 'merge-armed');
+        // bughunt3 fix: the 結合 tool now collects targets by click then commits via
+        // its OWN 結合を確定 button (data-testid merge-confirm), mirroring the knife's
+        // 分断線を確定 (the domain runs validateMergePreconditions at confirm, 教訓 5.26).
+        // Click two adjacent split-sibling faces to toggle them into the target set.
         await page.mouse.click(sx - 50, sy + 28);
         await page.waitForTimeout(70);
         await page.mouse.click(sx + 50, sy + 28);
         await page.waitForTimeout(120);
-        const mConfirm = page.getByTestId('knife-confirm-inheritor');
-        if (await mConfirm.isVisible().catch(() => false)) {
-          await page.getByTestId('knife-choose-a').click().catch(() => undefined);
-          await mConfirm.click().catch(() => undefined);
-          await page.waitForTimeout(120);
-          if (await page.getByTestId('add-property-form').isVisible().catch(() => false)) {
-            await page.getByTestId('add-name').fill('merged').catch(() => undefined);
-            await page.getByTestId('add-save').click().catch(() => undefined);
-            await page.waitForTimeout(220);
-            if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
-              await page.getByTestId('conflict-cancel').click().catch(() => undefined);
-            }
+        const mergeConfirm = page.getByTestId('merge-confirm');
+        if (
+          (await mergeConfirm.isVisible().catch(() => false)) &&
+          (await mergeConfirm.isEnabled().catch(() => false))
+        ) {
+          await mergeConfirm.click().catch(() => undefined);
+          await page.waitForTimeout(220);
+          if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
+            await page.getByTestId('conflict-cancel').click().catch(() => undefined);
           }
         } else {
-          const msg = ((await page.getByTestId('knife-message').textContent().catch(() => '')) ?? '').trim();
-          if (msg) record('merge-flow-note', `merge produced message="${msg}" (no inheritor confirm shown)`);
+          const msg = ((await page.getByTestId('merge-message').textContent().catch(() => '')) ?? '').trim();
+          if (msg) record('merge-flow-note', `merge produced message="${msg}"`);
+          else record('merge-flow-note', 'merge-confirm not enabled (fewer than 2 valid targets resolved)');
         }
         await clearStuckModals(page, 'after-merge');
         await shot(page, 'merged');

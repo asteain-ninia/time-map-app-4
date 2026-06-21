@@ -1,0 +1,67 @@
+/* U30 — merge-tool (合体 / 結合) chrome styles (FR-50 / FR-52, 教訓 5.14 input layers).
+   Mirrors knife.css: the scaffold carries the shell grid so its input bridge covers
+   ONLY the central map cell (sharing the canvas' exact client rect so "clicked here ⇒
+   toggled here" cannot diverge), and only the interactive children take pointer events. */
+.merge-tool {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
+  pointer-events: none;
+}
+
+/* The transparent map-input bridge: covers the central map cell exactly (row 2,
+   col 2 = .app-shell__map) while selecting and captures pointer events, forwarding
+   them to the hook. Removed the moment the session ends (教訓 5.14). */
+.merge-tool__input {
+  grid-row: 2;
+  grid-column: 2;
+  min-height: 0;
+  position: relative;
+  z-index: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+}
+
+/* The guide + message float over the map (FR-92). */
+.merge-tool__guide,
+.merge-tool__message {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  pointer-events: none;
+}
+.merge-tool__guide {
+  top: 12px;
+  background: rgba(20, 24, 33, 0.8);
+  color: #fff;
+}
+.merge-tool__message {
+  top: 48px;
+  background: #b71c1c;
+  color: #fff;
+}
+
+.merge-tool__controls {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  /* .merge-tool is pointer-events:none; the floating controls MUST re-enable input
+     or the 結合を確定 / 取消 buttons are unclickable (教訓 5.14). */
+  pointer-events: auto;
+}

@@ -57,6 +57,8 @@ import {
   KnifeToolController,
   type KnifeDrawSink,
 } from './knife/index';
+import { MergeToolController } from './merge/index';
+import './merge/merge.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
 import { createColorInfo } from '../domain/attributes';
@@ -1103,6 +1105,24 @@ export function App(): JSX.Element {
     [store, sharedMint],
   );
 
+  // U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool bootstrap mirrors the knife one —
+  // shared id minting + live-lookup ports + the LIVE U13 binding (createLiveMergeBinding).
+  // Selecting 編集モード→結合 starts a session, map-input clicks toggle target faces, and
+  // 結合を確定 builds a MergeProposal (buildMergeProposal) and hands a merge EditProposal
+  // to U13. This is the missing消費する ui コンシューマ for src/domain/merge (bughunt3:
+  // 結合 was a dead button — domain logic existed but no UI drove it).
+  const mergeBootstrap = useMemo(
+    () =>
+      createMergeBootstrap(
+        () => store.getState().domain,
+        () => store.getState().currentTime,
+        sharedMint,
+        () => store.getState().displayControl,
+        () => rendererRef.current?.readCamera(),
+      ),
+    [store, sharedMint],
+  );
+
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
   // promote the new feature so selection re-resolves to it.
   const onAddCommitted = useCallback(
@@ -1120,6 +1140,17 @@ export function App(): JSX.Element {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const inheritorId = snapshot.touchedFeatureIds[0] ?? snapshot.inheritorFeatureId;
       recordCommit(result, { featureId: inheritorId });
+    },
+    [recordCommit],
+  );
+
+  // MERGE COMMIT (教訓 5.11 / U12): record as one history unit and promote the result
+  // feature (MergeSnapshot.resultFeatureId) so selection re-resolves to the merged
+  // 地物 rather than blanket-clearing (FR-94 / merge-after selection retention).
+  const onMergeCommitted = useCallback(
+    (result: ProcessResult<DomainRoot>, snapshot: MergeSnapshot) => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      recordCommit(result, { featureId: snapshot.resultFeatureId });
     },
     [recordCommit],
   );
@@ -1198,6 +1229,20 @@ export function App(): JSX.Element {
       });
     },
     [knifeBootstrap],
+  );
+
+  const onMergeConflicts = useCallback(
+    (result: ProcessResult<DomainRoot>, proposal: EditProposal<MergeSnapshot>) => {
+      if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+      // Promote the result feature on commit, the SAME preference a direct merge
+      // commit uses (教訓 5.11 / merge selection retention).
+      setConflictState({
+        pending: result,
+        applyResolutions: mergeBootstrap.applyResolutionsFor(proposal),
+        preference: { featureId: proposal.snapshot.resultFeatureId },
+      });
+    },
+    [mergeBootstrap],
   );
 
   const onConflictCommitted = useCallback(
@@ -1356,6 +1401,24 @@ export function App(): JSX.Element {
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}
+            />
+            {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
+                SAME store. Selecting 編集モード→結合 starts a session; map-input clicks
+                toggle target faces; 結合を確定 builds a MergeProposal and hands a merge
+                EditProposal to the U13 seam (createLiveMergeBinding). Was a dead button
+                — domain/merge existed but no UI consumed it (bughunt3 merge-no-reduction). */}
+            <MergeToolController<DomainRoot>
+              store={store}
+              startProcess={mergeBootstrap.startProcess}
+              ids={mergeBootstrap.ids}
+              resolveFeatures={mergeBootstrap.resolveFeatures}
+              resolveStore={mergeBootstrap.resolveStore}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={mergeBootstrap.featureAtPoint}
+              mapCameraInput={mapCameraInput}
+              onCommitted={onMergeCommitted}
+              onConflicts={onMergeConflicts}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes
@@ -1721,6 +1784,7 @@ import {
   createLiveAddBinding,
   createLiveEditBinding,
   createLiveKnifeBinding,
+  createLiveMergeBinding,
   createDeleteFeatureCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
@@ -1866,6 +1930,90 @@ function createKnifeBootstrap(
   return {
     ids,
     resolveFeature,
+    resolveStore,
+    featureAtPoint,
+    startProcess,
+    applyResolutionsFor,
+  };
+}
+
+// --- The merge bootstrap (id ports + live-lookup + the U13 seam) --------------
+
+import type {
+  ResolveFeatures as MergeResolveFeatures,
+  ResolveVertexStore as MergeResolveStore,
+  StartMergeProcess,
+  FeatureAtPoint as MergeFeatureAtPoint,
+} from './merge/index';
+import type { MergeIdPorts, MergeSnapshot } from '../domain/merge/index';
+
+interface MergeBootstrap<S> {
+  readonly ids: MergeIdPorts;
+  readonly resolveFeatures: MergeResolveFeatures;
+  readonly resolveStore: MergeResolveStore;
+  readonly featureAtPoint: MergeFeatureAtPoint;
+  readonly startProcess: StartMergeProcess<S>;
+  /** Build the U35 apply-resolutions adapter bound to ONE paused merge proposal. */
+  readonly applyResolutionsFor: (
+    proposal: EditProposal<MergeSnapshot>,
+  ) => ApplyResolutions<S>;
+}
+
+function createMergeBootstrap(
+  getRoot: () => DomainRoot,
+  getTime: () => TimePoint,
+  mint: SharedIdMint,
+  getDisplayControl: () => DisplayControlInput,
+  getWrap: () => KnifeWrapFrame,
+): MergeBootstrap<DomainRoot> {
+  // Ids minted through the SAME shared minter the add / knife bootstraps use (finding
+  // 3): one generator + a project-wide reservation set, so a merge-minted id (the new
+  // result feature / 上位領域 / re-minted union vertices) can collide with neither an
+  // add / knife-minted id nor a loaded id (教訓 5.37).
+  const ids: MergeIdPorts = {
+    nextFeatureId: () => asFeatureId(mint('f')),
+    nextVertexId: () => asVertexId(mint('v')),
+    nextRingId: () => asRingId(mint('r')),
+  };
+
+  // LIVE live-lookup ports (P0-B): the features / vertices effective at the CURRENT
+  // time, read at call time so a load / time move / edit is reflected without a stale
+  // capture (教訓 5.6). They share the SAME live-lookup rule (live-lookup.ts) the knife
+  // bootstrap and the consistency binding use, so merge target selection / precondition
+  // 検証 and U13 spatial detection can never disagree (二重真実源を作らない, 教訓 5.29).
+  const resolveFeatures: MergeResolveFeatures = () => featuresAt(getRoot(), getTime());
+  const resolveStore: MergeResolveStore = () => verticesAt(getRoot(), getTime());
+  // 対象探索は描画解決と同じ単一真実源: route through `drawnAreaAt` — the SAME
+  // display-control-resolved drawn-area set the renderer / main hit-test / knife pick —
+  // so a body click resolves to the feature the user SEES (honouring 集約表示 + the
+  // renderer's ±360° wrap turns). Read at call time (教訓 5.6 / 5.29).
+  const featureAtPoint: MergeFeatureAtPoint = (point): FeatureId | null =>
+    drawnAreaAt(
+      {
+        root: getRoot(),
+        time: getTime(),
+        displayControl: getDisplayControl(),
+        wrap: getWrap(),
+      },
+      point,
+    );
+
+  // U44 — the LIVE U13 binding for merge. The proposal is ALREADY a U13
+  // EditProposal<MergeSnapshot> (toMergeEditProposal ran in the hook), so the swap is
+  // contract-clean. The binding's applyProposal = U44's applyMergeProposal.
+  const live = createLiveMergeBinding({
+    getRoot,
+    nextVertexId: ids.nextVertexId,
+    nextRingId: ids.nextRingId,
+  });
+  const startProcess = live.startProcess;
+  const applyResolutionsFor = (
+    proposal: EditProposal<MergeSnapshot>,
+  ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
+
+  return {
+    ids,
+    resolveFeatures,
     resolveStore,
     featureAtPoint,
     startProcess,
