@@ -8,6 +8,7 @@ import {
   checkMultiPolygonInvariants,
   isMultiPolygonValid,
 } from './invariants';
+import { POINT_LOCATION, pointInPolygon } from './predicates';
 import type { GeoMultiPolygon } from './types';
 
 const c = createCoordinate;
@@ -172,6 +173,50 @@ describe('invariants (R2 back-half, acceptance criterion 2)', () => {
     const hole = rect(30, 30, 40, 40);
     const island = rect(40, 40, 20, 20);
     expect(isMultiPolygonValid([[outer, hole], [island]])).toBe(true);
+  });
+
+  it('flags a piece poking through a CONCAVE hole notch: all its vertices lie in the hole (outside solid) but an edge crosses the notch wall into solid', () => {
+    // Regression for the cross-piece overlap that the vertex-in-solid + outer-vs-
+    // outer probes structurally miss. piece0 (B) is a 100x100 square with a
+    // U-shaped (concave) hole: the hole box is [30,70]x[30,70] MINUS a right-side
+    // solid tongue at [60,70]x[40,60] that juts into the hole. piece1 (A) is a
+    // triangle whose three vertices all sit in the EMPTY part of the hole — so
+    // every A vertex is OUTSIDE B's solid — yet one edge sweeps across the tongue
+    // (x=65 from y=35 to y=65) into B's solid. The solids therefore overlap.
+    const outer = rect(0, 0, 100, 100);
+    const hole = [
+      c(30, 30),
+      c(70, 30),
+      c(70, 40),
+      c(60, 40),
+      c(60, 60),
+      c(70, 60),
+      c(70, 70),
+      c(30, 70),
+    ];
+    // Fixture sanity: the tongue interior is B's solid; the mouth is empty hole.
+    expect(pointInPolygon(c(65, 50), [outer, hole])).toBe(POINT_LOCATION.Inside);
+    expect(pointInPolygon(c(50, 50), [outer, hole])).toBe(POINT_LOCATION.Outside);
+
+    // A triangle wholly inside the empty hole region (no edge crosses the tongue)
+    // must remain VALID — guards against a false positive from the new probe.
+    const clear = [c(40, 45), c(40, 55), c(58, 50)];
+    for (const v of clear) {
+      expect(pointInPolygon(v, [outer, hole])).toBe(POINT_LOCATION.Outside);
+    }
+    expect(isMultiPolygonValid([[outer, hole], [clear]])).toBe(true);
+
+    // The intruder: every vertex is in the empty hole (outside B's solid), but the
+    // edge (65,35)->(65,65) runs through the tongue solid (y in [40,60] at x=65).
+    const intruder = [c(65, 35), c(65, 65), c(50, 50)];
+    for (const v of intruder) {
+      expect(pointInPolygon(v, [outer, hole])).toBe(POINT_LOCATION.Outside);
+    }
+    const v = checkMultiPolygonInvariants([[outer, hole], [intruder]]);
+    expect(v.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
+    // Symmetric: order of pieces must not matter.
+    const v2 = checkMultiPolygonInvariants([[intruder], [outer, hole]]);
+    expect(v2.some((x) => x.kind === INVARIANT_VIOLATION.OverlappingPieces)).toBe(true);
   });
 
   it('flags two overlapping holes within one polygon (disjoint-hole契约)', () => {

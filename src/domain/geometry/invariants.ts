@@ -394,6 +394,16 @@ function checkPiecesDisjoint(
  * ENCLAVE — an enclave's outer ring is nested inside the parent's HOLE, so the two
  * outer rings are disjoint, share no boundary run, and {@link
  * ringsBoundaryCoincidentSameSide} returns false.
+ *
+ * The vertex-in-solid and outer-vs-outer probes are NOT sufficient on their own:
+ * a small piece whose outer vertices all sit inside a CONCAVE (U-shaped) hole of
+ * the other piece — so every vertex is OUTSIDE that piece's solid — can still poke
+ * an EDGE through the notch wall into the solid. That intrusion crosses the other
+ * piece's HOLE boundary (a Proper crossing of an outer edge against a hole-ring
+ * edge) without crossing its outer ring and without putting any vertex in the
+ * solid, so we test outer-edge-vs-other-hole-edge crossings explicitly. A legal
+ * enclave stays strictly inside the parent hole and never crosses the hole
+ * boundary, so this probe does not misfire on it.
  */
 function piecesSolidOverlap(
   polyA: GeoPolygon,
@@ -422,7 +432,45 @@ function piecesSolidOverlap(
   for (const v of outerB) {
     if (pointInPolygon(v, polyA) === POINT_LOCATION.Inside) return true;
   }
+  // Edge pokes through a concave hole notch of the other piece: an outer edge of
+  // one piece Proper-crosses a hole ring of the other. Such a crossing means the
+  // edge passes from the other piece's hole (empty) into its solid (or vice
+  // versa), so the solids overlap even though no vertex lands in the solid.
+  if (outerRingCrossesHoleOf(outerA, polyB)) return true;
+  if (outerRingCrossesHoleOf(outerB, polyA)) return true;
   return ringsBoundaryCoincidentSameSide(outerA, outerB);
+}
+
+/**
+ * True iff any edge of `outer` Proper-crosses a hole ring (index >= 1) of `poly`.
+ * A proper crossing of a hole boundary means `outer` passes through the notch/
+ * mouth of that hole, transitioning between the hole's empty region and the
+ * surrounding solid — the witness for the "piece pokes through a concave hole"
+ * overlap that vertex-in-solid and outer-vs-outer tests structurally miss. A legal
+ * enclave (outer nested wholly inside the hole) never crosses the hole boundary,
+ * so this returns false for it.
+ */
+function outerRingCrossesHoleOf(outer: GeoRing, poly: GeoPolygon): boolean {
+  const on = outer.length;
+  for (let h = 1; h < poly.length; h += 1) {
+    const hole = poly[h];
+    if (hole === undefined) continue;
+    const hn = hole.length;
+    for (let i = 0; i < on; i += 1) {
+      const a1 = outer[i];
+      const a2 = outer[(i + 1) % on];
+      if (a1 === undefined || a2 === undefined) continue;
+      for (let j = 0; j < hn; j += 1) {
+        const b1 = hole[j];
+        const b2 = hole[(j + 1) % hn];
+        if (b1 === undefined || b2 === undefined) continue;
+        if (segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 /** True iff the multi-polygon satisfies every invariant. */
