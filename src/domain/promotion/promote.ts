@@ -31,7 +31,12 @@ import {
   type Feature,
   type LeafFeature,
 } from '../feature';
-import { unwrapRing, worldWrapReplicas } from '../geo/index';
+import {
+  alignMultiPolygon,
+  referenceLonForMultiPolygon,
+  unwrapRing,
+  worldWrapReplicas,
+} from '../geo/index';
 import {
   difference as geoDifference,
   isMultiPolygonEmpty,
@@ -253,10 +258,18 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
     return rejected(PROMOTION_REJECT.GeometryUnresolved, [...acquiredChildIds]);
   }
 
-  // --- 差分 (元形状 − 下位領域の和) を U06 経由で算出 (R3 unwrap 済み座標上) ---
+  // --- 差分 (元形状 − 下位領域の和) を U06 経由で算出 -------------------------
+  // R3 seam alignment (audit root cause A): originalShapeMp は target の RAW 代表値、
+  // childUnion は子の和 (子の frame で連続化済み) で、両者は別の world-turn に格納され
+  // 得る。per-ring 独立 unwrap (unwrapMultiPolygon) は各リングを自分の先頭頂点に揃える
+  // だけで両被演算子を共通分岐に乗せないため、target が子と反対 turn に格納されていると
+  // 幾何的に同一の子を差し引けず偽の直轄領を生む。共通アンカー (target の外環基準) へ
+  // alignMultiPolygon で両者を揃えてから差分する (単一真実源 — drill と同じ規律)。
+  // single-branch (非 seam) 入力では恒等変換。
+  const diffRef = referenceLonForMultiPolygon(originalShapeMp);
   const diff = geoDifference(
-    unwrapMultiPolygon(originalShapeMp),
-    unwrapMultiPolygon(childUnion),
+    alignMultiPolygon(originalShapeMp, diffRef),
+    alignMultiPolygon(childUnion, diffRef),
   );
   if (!isOk(diff)) {
     return rejected(PROMOTION_REJECT.GeometryUnresolved, [targetId]);
@@ -413,7 +426,19 @@ function unionChildAreas(
   for (const cid of childIds) {
     const res = resolveFeatureArea(forest, store, cid);
     if (res.status !== 'ok') return undefined;
-    const merged = geoUnion(acc, res.area);
+    // R3 seam alignment (audit root cause A): each child area is resolved from RAW
+    // stored representatives, so a child whose territory straddles the seam (or
+    // whose vertex list merely starts on the opposite seam side from the
+    // accumulator) sits ~360° away from the running union. Unioned as-is, two
+    // seam-adjacent children (+179 / −179, ~2° apart) are ~358° apart and the union
+    // scatters them instead of joining them. Anchor BOTH operands onto ONE common
+    // branch (the accumulator's outer-ring reference, falling back to the child's
+    // when the accumulator is empty) through the single alignment source of truth
+    // before the op (単一真実源 — same helper the resolve-shape union path uses).
+    // Identity for single-branch (non-seam) inputs, so the common case is unchanged.
+    const ref =
+      acc.length > 0 ? referenceLonForMultiPolygon(acc) : referenceLonForMultiPolygon(res.area);
+    const merged = geoUnion(alignMultiPolygon(acc, ref), alignMultiPolygon(res.area, ref));
     if (!isOk(merged)) return undefined;
     acc = merged.result;
   }
