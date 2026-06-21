@@ -105,19 +105,22 @@ describe('clampZoom (single clamp boundary — finite guarantee)', () => {
     expect(clampZoom(10, DEFAULT_ZOOM_RANGE)).toBe(10);
   });
 
-  it('never passes a non-finite zoom through — returns a finite fallback (REGRESSION)', () => {
+  it('never passes a non-finite zoom through — returns a finite, sign-correct bound (REGRESSION)', () => {
     // Before the fix `NaN < min` and `NaN > max` were both false, so clampZoom
     // returned NaN unchanged, which then propagated into a NaN camera center via
-    // zoomAtCursor. The clamp must yield the (finite) lower bound instead.
+    // zoomAtCursor. The clamp must yield a FINITE bound instead.
     for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
       const out = clampZoom(bad, DEFAULT_ZOOM_RANGE);
       expect(Number.isFinite(out)).toBe(true);
     }
-    // A non-finite target has no meaningful position in the range, so it is
-    // pinned to the (finite) lower bound — the documented finite fallback.
+    // A non-finite target is resolved by its SIGN, not blindly to `min`: the old
+    // "always min" behaviour silently REVERSED an extreme wheel zoom-IN (whose
+    // factor overflowed `camera.zoom * factor` to +∞) into a full zoom-OUT
+    // (bughunt). +∞ is above every finite bound → upper; -∞ below every finite
+    // bound → lower; NaN is positionless → lower (conservative default).
     expect(clampZoom(Number.NaN, DEFAULT_ZOOM_RANGE)).toBe(DEFAULT_ZOOM_RANGE.minZoom);
     expect(clampZoom(Number.POSITIVE_INFINITY, DEFAULT_ZOOM_RANGE)).toBe(
-      DEFAULT_ZOOM_RANGE.minZoom,
+      DEFAULT_ZOOM_RANGE.maxZoom,
     );
     expect(clampZoom(Number.NEGATIVE_INFINITY, DEFAULT_ZOOM_RANGE)).toBe(
       DEFAULT_ZOOM_RANGE.minZoom,

@@ -93,8 +93,16 @@ export const WORLD_LAT_SPAN_DEG = 180;
  *   - non-finite `minZoom` falls back to the FR-10 default min;
  *   - non-finite `maxZoom` falls back to the FR-10 default max;
  *   - a degenerate range (min > max) collapses to `min`.
- * Then a non-finite `zoom` is replaced by the (finite) lower bound before
- * clamping, so the returned zoom can never be NaN/Infinity.
+ * Then a non-finite `zoom` is mapped to the bound implied by its SIGN before
+ * clamping, so the returned zoom can never be NaN/Infinity AND never reverses the
+ * caller's intent:
+ *   - `+Infinity` is above every finite bound → it pins to the UPPER bound. (A
+ *     wheel "zoom-in" notch whose factor overflowed to +∞ must end at MAX zoom,
+ *     never MIN — see PointerDispatcher.wheel; the previous "always lower bound"
+ *     behaviour silently REVERSED an extreme zoom-in into a full zoom-out.)
+ *   - `-Infinity` is below every finite bound → it pins to the LOWER bound.
+ *   - `NaN` has no position on the line → it pins to the LOWER bound (the safe,
+ *     conservative default; there is no direction to honour).
  */
 export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): number {
   const safeMin = Number.isFinite(range.minZoom) ? range.minZoom : DEFAULT_ZOOM_RANGE.minZoom;
@@ -102,10 +110,14 @@ export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): 
   // A degenerate range (min > max) collapses to `min` so the clamp window is
   // never empty and the result stays well-defined.
   const safeMax = safeMaxRaw < safeMin ? safeMin : safeMaxRaw;
-  // A non-finite target zoom has no meaningful position in the range; pin it to
-  // the (finite) lower bound rather than letting `<`/`>` pass NaN through.
-  const safeZoom = Number.isFinite(zoom) ? zoom : safeMin;
-  if (safeZoom < safeMin) return safeMin;
-  if (safeZoom > safeMax) return safeMax;
-  return safeZoom;
+  // A non-finite target zoom is resolved by its sign, not blindly to `min`:
+  // +∞ saturates to the upper bound, -∞ to the lower, NaN (positionless) to the
+  // lower. `<`/`>` would otherwise pass NaN straight through (both comparisons
+  // are false for NaN), so we resolve finiteness explicitly first.
+  if (!Number.isFinite(zoom)) {
+    return zoom === Number.POSITIVE_INFINITY ? safeMax : safeMin;
+  }
+  if (zoom < safeMin) return safeMin;
+  if (zoom > safeMax) return safeMax;
+  return zoom;
 }

@@ -17,7 +17,7 @@ import {
 } from '../../domain/selection';
 import { asFeatureId, asVertexId } from '../../domain/ids';
 import { EDIT_MODE, type EditMode } from '../state/session';
-import type { Camera, ScreenPoint, Viewport } from '../../render';
+import { DEFAULT_ZOOM_RANGE, type Camera, type ScreenPoint, type Viewport } from '../../render';
 
 const VIEWPORT: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
 
@@ -351,6 +351,34 @@ describe('wheel → U17 cursor-anchored zoom (受け入れ基準 2)', () => {
     // Both zoom in, but the 10px delta moves zoom less than the 100px notch.
     expect(small.camera.camera.zoom).toBeGreaterThan(start);
     expect(small.camera.camera.zoom).toBeLessThan(big.camera.camera.zoom);
+  });
+
+  // Bughunt REGRESSION: a deltaMode=2 (page, ×800) event with a large deltaY is a
+  // zoom-IN gesture, but `wheelFactor ** (-normalizedPx / NOTCH)` overflowed the
+  // factor to +Infinity → `camera.zoom * factor === +∞` → clampZoom (formerly)
+  // mapped +∞ to the LOWER bound, snapping the map to MINIMUM zoom — direction
+  // REVERSED. The fix saturates the per-event notch count so the factor stays
+  // finite, and clampZoom resolves +∞ to the UPPER bound. Either way the direction
+  // is honoured: an extreme zoom-IN must end at MAX zoom, never MIN.
+  it('an extreme deltaMode=page zoom-IN notch saturates to MAX zoom, not MIN (REGRESSION)', () => {
+    const { camera, dispatcher } = setup(EDIT_MODE.View); // start zoom 4, range 1..50
+    const before = camera.camera.zoom;
+    // The exact repro from the audit: deltaMode=2 (page), large negative deltaY.
+    dispatcher.wheel({ x: 200, y: 150, deltaY: -1000, deltaMode: 2 });
+    expect(camera.writes.length).toBe(1);
+    expect(Number.isFinite(camera.camera.zoom)).toBe(true);
+    // Direction honoured: zoom went UP (in), not down to the minimum.
+    expect(camera.camera.zoom).toBeGreaterThan(before);
+    expect(camera.camera.zoom).toBe(DEFAULT_ZOOM_RANGE.maxZoom);
+  });
+
+  it('an extreme deltaMode=page zoom-OUT notch saturates to MIN zoom (REGRESSION)', () => {
+    const { camera, dispatcher } = setup(EDIT_MODE.View); // start zoom 4, range 1..50
+    const before = camera.camera.zoom;
+    dispatcher.wheel({ x: 200, y: 150, deltaY: 1000, deltaMode: 2 });
+    expect(Number.isFinite(camera.camera.zoom)).toBe(true);
+    expect(camera.camera.zoom).toBeLessThan(before);
+    expect(camera.camera.zoom).toBe(DEFAULT_ZOOM_RANGE.minZoom);
   });
 
   it('deltaMode line (1) is normalized to a comparable pixel magnitude', () => {

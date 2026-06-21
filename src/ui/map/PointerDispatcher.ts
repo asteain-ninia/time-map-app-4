@@ -86,6 +86,20 @@ const WHEEL_PAGE_PX = 800;
  */
 const WHEEL_NOTCH_PX = 100;
 
+/**
+ * Saturation cap (in notches) for a single wheel event's zoom step. A pathological
+ * device/driver can emit a huge `deltaY` — and, multiplied by the page/line
+ * normalization (×800 / ×16), `normalizedPx` can reach values whose exponent makes
+ * `wheelFactor ** (-normalizedPx / WHEEL_NOTCH_PX)` overflow to ±Infinity (or
+ * underflow to 0). A non-finite `factor` makes `camera.zoom * factor` non-finite,
+ * and the clamp would then have to guess the intended bound. We instead saturate
+ * the per-event exponent magnitude to a value that keeps the factor comfortably
+ * finite while still being far larger than any real notch (≈ 50 notches spans the
+ * whole 1×..50× range in one event), so an extreme notch zooms fully in the
+ * CORRECT direction instead of overflowing into a reversed jump (bughunt).
+ */
+const WHEEL_MAX_NOTCHES = 50;
+
 export interface PointerDispatcherOptions {
   /** Reads the current mode from U20 (called per event — mode is live). */
   readonly getMode: () => EditMode;
@@ -386,9 +400,16 @@ export class PointerDispatcher {
       w.deltaMode === 1 ? WHEEL_LINE_PX : w.deltaMode === 2 ? WHEEL_PAGE_PX : 1;
     const normalizedPx = w.deltaY * pxPerUnit;
     // deltaY < 0 (scroll up) → zoom IN (factor > 1); > 0 → zoom OUT (factor < 1).
-    // `wheelFactor ** (-normalizedPx / NOTCH)` ⇒ a ~100px notch reproduces the old
-    // one-step feel, smaller deltas a proportionally smaller step.
-    const factor = Math.pow(this.wheelFactor, -normalizedPx / WHEEL_NOTCH_PX);
+    // `wheelFactor ** (-notches)` ⇒ a ~100px notch reproduces the old one-step
+    // feel, smaller deltas a proportionally smaller step. Saturate the per-event
+    // notch count to ±WHEEL_MAX_NOTCHES FIRST so an extreme deltaY (esp. after the
+    // ×800 page / ×16 line normalization) can never overflow the factor to
+    // ±Infinity — which would push a non-finite zoom into the clamp and (formerly)
+    // reverse an extreme zoom-IN into a full zoom-OUT (bughunt). Sign is preserved,
+    // so the direction is always honoured.
+    const notches = -normalizedPx / WHEEL_NOTCH_PX;
+    const saturated = Math.max(-WHEEL_MAX_NOTCHES, Math.min(WHEEL_MAX_NOTCHES, notches));
+    const factor = Math.pow(this.wheelFactor, saturated);
 
     const { camera, viewport } = this.opts.camera.read();
     const cursor: ScreenPoint = { x: w.x, y: w.y };
