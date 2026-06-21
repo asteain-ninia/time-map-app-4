@@ -14,7 +14,7 @@
 // 候補から結合対象とその全下位領域を除外する (結果地物→親→…→結合対象 という縦の
 // 巻き込みを防ぐ)。
 
-import type { Feature } from '../feature';
+import { featureDisplayName, type Feature } from '../feature';
 import { buildForest, descendantIds, type Forest } from '../hierarchy/forest';
 import type { FeatureId } from '../ids';
 import { existsAtTime } from './precondition';
@@ -114,7 +114,7 @@ export function allowedMergeParentCandidates(
     ) {
       continue;
     }
-    out.push({ featureId: id, displayName: f.attributes.name });
+    out.push({ featureId: id, displayName: featureDisplayName(f) });
   }
   return out;
 }
@@ -134,7 +134,7 @@ export function propertyInheritCandidates(
   for (const id of targetIds) {
     const f = byId.get(id);
     if (f === undefined) continue;
-    out.push({ featureId: id, displayName: f.attributes.name });
+    out.push({ featureId: id, displayName: featureDisplayName(f) });
   }
   return out;
 }

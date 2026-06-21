@@ -151,6 +151,24 @@ export function createAggregateFeature(
   };
 }
 
+// --- Derived: display name (name → id fallback) -----------------------------
+
+/**
+ * The human-facing display name for a feature in any selection / list surface
+ * (親選択 dropdown, 結合対象/引き継ぎ元 picker, 所属変更候補, 地物一覧, 競合解決
+ * radios). An unnamed face is the DEFAULT (the add form commits an empty name),
+ * so the raw `attributes.name` is present-but-blank, not absent — a bare `??`
+ * never fires. We trim and fall back to the feature id whenever the name is
+ * blank, guaranteeing every option/row carries a visible identifier the user can
+ * disambiguate by. Single source of this fallback rule (教訓 5.30): every
+ * selection surface defers here instead of re-deriving the rule, so no surface
+ * can drift back to blank labels.
+ */
+export function featureDisplayName(feature: Feature): string {
+  const name = feature.attributes.name.trim();
+  return name.length > 0 ? name : (feature.id as unknown as string);
+}
+
 // --- Derived: top-level <=> no parent (FR-34 / FR-39) -----------------------
 
 /** A feature is top-level iff it has no parent. Single source of truth. */

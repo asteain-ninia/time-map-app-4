@@ -22,7 +22,7 @@
 // module never resolves time itself; the caller backs the predicate with U09 /
 // the displayed feature data.
 
-import { FEATURE_KIND, type Feature } from '../feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../feature';
 import type { FeatureId } from '../ids';
 
 /** A parent candidate: the face id plus its display name (for the選択 UI). */
@@ -66,7 +66,7 @@ export function parentCandidates(
   for (const feature of displayedFeatures) {
     if (!isFaceFeature(feature)) continue;
     if (!existsAt(feature.id)) continue;
-    out.push({ featureId: feature.id, displayName: feature.attributes.name });
+    out.push({ featureId: feature.id, displayName: featureDisplayName(feature) });
   }
   return out;
 }

@@ -16,7 +16,7 @@
 //
 // 下位領域列挙・循環判定は U08 (forest) の循環安全走査を経由し再実装しない。
 
-import type { Feature } from '../feature';
+import { featureDisplayName, type Feature } from '../feature';
 import { descendantIds, type Forest } from '../hierarchy/forest';
 import type { FeatureId } from '../ids';
 
@@ -127,7 +127,7 @@ export function allowedParentCandidates(
     if (isLegalNewParent(forest, targetId, id).ok) {
       const f = forest.byId.get(id);
       if (f === undefined) continue;
-      out.push({ featureId: id, displayName: f.attributes.name });
+      out.push({ featureId: id, displayName: featureDisplayName(f) });
     }
   }
   return out;

@@ -63,6 +63,7 @@ import { difference, isOk } from '../domain/geometry/index';
 import { quantizeCoordinate } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import {
+  featureDisplayName,
   withLeafShape,
   type Feature,
   type LeafFeature,
@@ -222,11 +223,11 @@ function checkTimeOverExisting<Snapshot>(
  * empty string is present-but-blank, not absent.
  */
 function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => string {
-  const byId = new Map<FeatureId, string>();
-  for (const f of featuresAt(root, time)) byId.set(f.id, f.attributes.name);
+  const byId = new Map<FeatureId, Feature>();
+  for (const f of featuresAt(root, time)) byId.set(f.id, f);
   return (id) => {
-    const name = byId.get(id)?.trim();
-    return name !== undefined && name.length > 0 ? name : String(id);
+    const f = byId.get(id);
+    return f !== undefined ? featureDisplayName(f) : String(id);
   };
 }
 

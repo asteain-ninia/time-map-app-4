@@ -112,6 +112,7 @@ export {
   createLeafFeature,
   createAggregateFeature,
   isTopLevel,
+  featureDisplayName,
   hasNoChildren,
   withParentId,
   withKindLabel,

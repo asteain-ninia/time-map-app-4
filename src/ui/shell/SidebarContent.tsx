@@ -24,7 +24,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { AnchorSeries } from '../../domain/anchor-series';
-import type { Feature } from '../../domain/feature';
+import { featureDisplayName, type Feature } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { Calendar } from '../../domain/time/calendar';
@@ -128,11 +128,10 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   };
 }
 
-/** A short human label for a feature row (name falls back to its id). */
-function featureLabel(feature: Feature): string {
-  const name = feature.attributes.name.trim();
-  return name.length > 0 ? name : (feature.id as unknown as string);
-}
+/** A short human label for a feature row (name falls back to its id). Defers to
+ * the domain's single fallback rule so this list and the selection pickers share
+ * one source of truth (教訓 5.30). */
+const featureLabel = featureDisplayName;
 
 /**
  * 地物一覧 — the list of features effective at the current time (FR-111). Selecting

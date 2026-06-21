@@ -60,4 +60,22 @@ describe('parentCandidates (FR-77 / 教訓 5.3 / 5.18)', () => {
     const cands = parentCandidates([leaf('A')], () => true);
     expect(candidateIdSet(cands).has(asFeatureId('A'))).toBe(true);
   });
+
+  // Regression (bughunt): an UNNAMED face (the add form's default — empty name)
+  // must NOT produce a blank, sight-unselectable option label in the 親 dropdown.
+  // The displayName must fall back to a visible identifier (the feature id).
+  it('gives an unnamed face a non-blank display label (id fallback)', () => {
+    const unnamed = createLeafFeature(
+      asFeatureId('U'),
+      createBasicAttributes('   ', 0, 100), // present-but-blank: a bare ?? would not fire
+      color,
+      createShape([
+        createTerritoryRing(asRingId('r-U'), [asVertexId('v1'), asVertexId('v2'), asVertexId('v3')]),
+      ]),
+    );
+    const cands = parentCandidates([unnamed], () => true);
+    expect(cands).toHaveLength(1);
+    expect(cands[0]?.displayName.trim().length).toBeGreaterThan(0);
+    expect(cands[0]?.displayName).toBe('U');
+  });
 });

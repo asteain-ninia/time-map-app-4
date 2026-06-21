@@ -373,6 +373,20 @@ describe('受け入れ基準3: 循環参照防止・存在期間整合 (FR-48)',
     const forest = buildForest([x, y]);
     expect(() => allowedParentCandidates(forest, fid('x'))).not.toThrow();
   });
+
+  // Regression (bughunt): a名称未設定の候補上位領域 (the add form's default — empty
+  // name) must not surface as a blank, sight-unselectable row in the所属変更候補
+  // list. The displayName falls back to the feature id (featureDisplayName), never ''.
+  it('名称未設定の候補上位領域に空でない表示名 (id フォールバック) を与える', () => {
+    const target = leaf('t', 'target', 0, 100);
+    const unnamedParent = leaf('p', '   ', 0, 100); // present-but-blank name
+    const forest = buildForest([target, unnamedParent]);
+    const cands = allowedParentCandidates(forest, fid('t'));
+    const p = cands.find((c) => c.featureId === fid('p'));
+    expect(p).toBeDefined();
+    expect(p?.displayName.trim().length).toBeGreaterThan(0);
+    expect(p?.displayName).toBe('p');
+  });
 });
 
 // --- 受け入れ基準 4: 飛び地化を許容 (FR-49) ----------------------------------
