@@ -52,6 +52,11 @@ import {
 } from '../domain/editing/apply-proposal';
 import { createAnchor, createAnchorSnapshot, type Anchor } from '../domain/anchor';
 import { applyPastEdit } from '../domain/anchor-series';
+import {
+  createDeletionState,
+  createDeleteFeatureCommand,
+  isNoOpDeletion,
+} from '../domain/deletion/index';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -167,6 +172,7 @@ function runGuarded<S, Snapshot>(
 }
 
 const LIVE_COMMIT_KIND = defineCommandKind('u44-live-commit');
+const DELETE_COMMIT_KIND = defineCommandKind('u44-delete-commit');
 
 /**
  * U09 — temporal-consistency check. For an add the feature is new (no existing
@@ -652,3 +658,136 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
     applyResolutionsFor: (proposal) => createAccumulatingApply(access, ports, proposal),
   };
 };
+
+// --- U31 全錨削除 → DomainRoot whole-state-swap (FR-41 / FR-73 / FR-85) -------
+//
+// WHY THIS FILE (integration honesty, 教訓 5.7「ロジックがあっても UI から呼ばれず
+// 機能しない状態を作らない」): U31 (src/domain/deletion) implements the indivisible
+// 全錨 delete (sweep 全時間軸 + 双方向参照掃除 + 空集約の連鎖剪定, FR-41 / FR-35) as a
+// pure {@link createDeleteFeatureCommand} over a flat {@link DeletionState} (an ordered
+// anchor list). The LIVE truth root is U14's {@link DomainProject} (per-feature
+// histories, each its own anchor series). This adapter is the ONE place that maps
+// between the two so the 編集→削除 menu / Delete キー / (future) プロパティ削除ボタン all
+// drive the SAME pure U31 logic — a single truth source for deletion (§4 / 教訓 5.30),
+// never a second hand-rolled removal path.
+//
+// The map is positional: every anchor across every history is flattened in a stable
+// (history, entry) order into the DeletionState; U31 rewrites each anchor in place
+// (same id, same order) and may PRUNE features out of a snapshot; the swept anchors
+// are folded back into their originating entries (start/end preserved), and a history
+// whose every anchor snapshot is left empty is dropped wholesale (its feature ceased
+// to exist across the whole timeline — 教訓 5.6 集約の連鎖消滅 / no幽霊 history).
+
+/**
+ * Build the indivisible 全錨 delete command for `targetId` over the live root, or
+ * `null` when the feature is absent everywhere (a no-op the caller must NOT push —
+ * 教訓 5.24 no幽霊 undo entry). The returned command is the SAME whole-state-swap
+ * shape add / knife / edit commits use (via {@link makeCommand}), so it records as
+ * ONE undo unit and its CommandResult drives selection re-resolution identically
+ * (教訓 5.11 / 5.23): the deleted ids drop out of selection, undo brings them back.
+ */
+export function createDeleteFeatureCommandForRoot(
+  root: DomainRoot,
+  targetId: FeatureId,
+): Command<DomainRoot> | null {
+  // Flatten every history's anchors into the U31 view, remembering each anchor's
+  // (history index, entry index) origin so the swept result folds back exactly.
+  interface Origin {
+    readonly historyIndex: number;
+    readonly entryIndex: number;
+  }
+  const origins: Origin[] = [];
+  const anchors: Anchor[] = [];
+  root.histories.forEach((history, historyIndex) => {
+    history.series.entries.forEach((entry, entryIndex) => {
+      origins.push({ historyIndex, entryIndex });
+      anchors.push(entry.anchor);
+    });
+  });
+
+  const before = createDeletionState(anchors);
+  if (isNoOpDeletion(before, targetId)) return null;
+
+  // Run the pure U31 command once to obtain the swept after-anchors + the change
+  // set. execute is a whole-state swap that ignores its input, so calling it on
+  // `before` yields the planned after-state exactly.
+  const command = createDeleteFeatureCommand(before, targetId);
+  const outcome = command.execute(before);
+  const afterAnchors = outcome.state.anchors;
+
+  // Fold the swept anchors back into their originating histories, preserving each
+  // entry's start/end (U31 only rewrites the snapshot, never the interval).
+  const rebuiltEntries = root.histories.map((h) => h.series.entries.map((e) => e));
+  afterAnchors.forEach((anchor, flatIndex) => {
+    const origin = origins[flatIndex];
+    if (origin === undefined) return;
+    const slot = rebuiltEntries[origin.historyIndex];
+    if (slot === undefined) return;
+    const entry = slot[origin.entryIndex];
+    if (entry === undefined) return;
+    slot[origin.entryIndex] = { anchor, start: entry.start, end: entry.end };
+  });
+
+  const histories: FeatureHistory[] = [];
+  root.histories.forEach((history, historyIndex) => {
+    const entries = rebuiltEntries[historyIndex];
+    if (entries === undefined) return;
+    // Drop a history whose every anchor snapshot is now empty: its feature (and
+    // any chain-pruned aggregate) ceased to exist across the whole timeline, so a
+    // kept empty series would be a幽霊 orphan (教訓 5.6 / load-time consistency).
+    const allEmpty = entries.every((e) => e.anchor.snapshot.features.length === 0);
+    if (allEmpty) return;
+    histories.push({ featureId: history.featureId, series: { entries } });
+  });
+
+  const finalState: DomainRoot = {
+    histories,
+    settings: root.settings,
+    baseMap: root.baseMap,
+  };
+
+  // The lifecycle delta drives selection re-resolution (教訓 5.11): a feature
+  // present in the baseline histories but absent from the final ones was DELETED
+  // (the target plus any 連鎖-pruned aggregate, FR-35); everything still present
+  // SURVIVED. NOTE: the shared {@link makeCommand} cannot be reused here — it only
+  // ever reports `created` in the forward result (its lifecycle model is add/split,
+  // where nothing disappears), so a deletion would silently report no `deleted`
+  // ids and selection would keep the gone feature. We build the swap command with
+  // the correct delete result directly (教訓 5.23 symmetric execute/undo).
+  const baselineIds = new Set<FeatureId>(root.histories.map((h) => h.featureId));
+  const finalIds = new Set<FeatureId>(histories.map((h) => h.featureId));
+  const deleted = new Set<DomainId>();
+  const survived = new Set<DomainId>();
+  for (const id of baselineIds) {
+    if (finalIds.has(id)) survived.add(id);
+    else deleted.add(id);
+  }
+  const forward: CommandResult = createCommandResult({ deleted, survived });
+  // Undo brings the deleted features back: report them as created so selection
+  // re-resolution can promote them again, mirroring the forward touched set.
+  const backward: CommandResult = createCommandResult({
+    created: deleted,
+    survived,
+    touched: forward.touched,
+  });
+
+  const swap: Command<DomainRoot> = {
+    kind: DELETE_COMMIT_KIND,
+    label: 'delete',
+    execute(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+    undo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: root, result: backward };
+    },
+    redo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+  };
+  // Wrap in a composite so it records as ONE indivisible undo unit, consistent with
+  // every other commit (isCompositeCommand-friendly; FR-73 / FR-94).
+  return createCompositeCommand('delete', [swap]);
+}

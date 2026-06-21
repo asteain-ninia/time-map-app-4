@@ -80,6 +80,7 @@ import {
   canRedo as historyCanRedo,
   type History,
 } from '../domain/command/history';
+import type { Command } from '../domain/command/index';
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafShapeAt } from './live-lookup';
 import { createLiveExistenceResolver } from './live-existence';
@@ -853,19 +854,29 @@ export function App(): JSX.Element {
   // committed state + CommandResult), so the derived result is exact regardless of
   // the stack. The committed domain becomes the new history root; we tag it so the
   // load/new subscription below does NOT mistake our own commit for an external swap.
-  const recordCommit = useCallback(
+  const recordCommand = useCallback(
     (
-      result: ProcessResult<DomainRoot>,
+      command: Command<DomainRoot>,
       preference?: { readonly featureId: FeatureId },
     ): void => {
-      if (result.status !== PROCESS_STATUS.Committed) return;
-      const step = historyExecute(historyRef.current, result.command);
+      const step = historyExecute(historyRef.current, command);
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
       store.getState().applyCommandResult(step.history.state, step.result, preference);
       refreshUndoRedoEnabled();
     },
     [store, refreshUndoRedoEnabled],
+  );
+
+  const recordCommit = useCallback(
+    (
+      result: ProcessResult<DomainRoot>,
+      preference?: { readonly featureId: FeatureId },
+    ): void => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      recordCommand(result.command, preference);
+    },
+    [recordCommand],
   );
 
   // Keep the edit-session's commit-handler ref pointed at the current recordCommit.
@@ -930,6 +941,45 @@ export function App(): JSX.Element {
       registry.unregister(COMMAND_ID.ViewToggleViewMode);
     };
   }, [registry, store]);
+
+  // BUGHUNT2 ROOT FIX — register the 編集→削除 (EditDelete) command on the SAME
+  // registry the 編集 menu + the Delete accelerator dispatch (教訓 5.13 単一の権限/
+  // 真実源). This is the SAME defect class as the HB-4 ViewToggleViewMode fix above:
+  // COMMAND_ID.EditDelete was declared (commands.ts), placed in the 編集 menu with
+  // the Delete accelerator (menu.ts), gated as an EDITING_COMMAND (permissions.ts),
+  // labelled「削除」/「選択中の地物を削除します」(strings.ts) and listed in the
+  // ショートカット一覧 — but NO unit ever registered a handler, so registry.isRunnable
+  // returned false: the menu item was permanently disabled AND the Delete key was a
+  // silent no-op (registry.dispatch returns false). 削除ロジック (U31) existed but was
+  // never reachable from any live UI 導線 (教訓 5.7).
+  //
+  // The handler deletes the ACTIVE feature (FR-79 / FR-85「選択中の地物を削除します」)
+  // through U31's indivisible 全錨 delete (sweep 全時間軸 + 双方向参照掃除 + 空集約の
+  // 連鎖剪定, FR-41 / FR-35) — the SAME pure {@link createDeleteFeatureCommand} the
+  // (future) プロパティ削除ボタン also routes through (single truth source, 教訓 5.30),
+  // wrapped by `createDeleteFeatureCommandForRoot` into the SAME whole-state-swap
+  // command shape add / knife / edit commits use, then recorded as ONE undo unit via
+  // `recordCommand` (教訓 5.11 / 5.24): an absent target builds no command (no幽霊
+  // entry), and the deleted feature drops out of selection while undo restores it.
+  // `canRun` gates on an active feature so the menu item / Delete key disable together
+  // when nothing is selected; permissions.ts already 표示専用モードでは一括無効化.
+  useEffect(() => {
+    const deleteActiveFeature = (): void => {
+      const s = store.getState();
+      const active = s.selection.activeFeature;
+      if (active === null) return;
+      const command = createDeleteFeatureCommandForRoot(s.domain, active);
+      if (command === null) return; // target absent everywhere: no幽霊 entry (教訓 5.24)
+      recordCommand(command);
+    };
+    registry.register(COMMAND_ID.EditDelete, {
+      run: deleteActiveFeature,
+      canRun: () => store.getState().selection.activeFeature !== null,
+    });
+    return () => {
+      registry.unregister(COMMAND_ID.EditDelete);
+    };
+  }, [registry, store, recordCommand]);
 
   // Reset the history on an EXTERNAL whole-state swap (file load / new). A subscribe
   // bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live domain
@@ -1484,6 +1534,7 @@ import {
   createLiveAddBinding,
   createLiveEditBinding,
   createLiveKnifeBinding,
+  createDeleteFeatureCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';

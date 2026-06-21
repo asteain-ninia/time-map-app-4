@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import {
   createLiveAddBinding,
   createLiveKnifeBinding,
+  createDeleteFeatureCommandForRoot,
   type DomainRoot,
 } from './consistency-binding';
 import {
@@ -797,5 +798,166 @@ describe('applyEditProposal (U44 — FeatureSnapshot in-place anchor rewrite / d
     // The feature is gone AND the original root is unmutated (purity).
     expect(featureByIdAt(deleted, time, seed.feature.id)).toBeUndefined();
     expect(featureByIdAt(root, time, seed.feature.id)).toBeDefined();
+  });
+});
+
+// REGRESSION (bughunt2): 編集→削除 menu command AND the Delete keyboard accelerator
+// were DEAD — COMMAND_ID.EditDelete was declared, placed in the 編集 menu with the
+// Delete chord, gated as an EDITING_COMMAND, labelled and listed in the
+// ショートカット一覧, but NO unit registered a handler, so registry.isRunnable was
+// false: the menu item was permanently disabled and the Delete key was a silent
+// no-op (registry.dispatch returned false). Deletion was unreachable from any live
+// UI 導線 (教訓 5.7), exactly the HB-4 ViewToggleViewMode defect class. The fix wires
+// U31's indivisible 全錨 delete (createDeleteFeatureCommandForRoot) so the menu and
+// the Delete key both delete the active feature as ONE undo unit.
+describe('createDeleteFeatureCommandForRoot (bughunt2 — U31 全錨削除 over DomainRoot)', () => {
+  it('builds a command that removes the target feature from the committed state', () => {
+    const seed = squareLeaf('f-del', 'vd', 0, 0);
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    expect(root.histories).toHaveLength(1);
+
+    const command = createDeleteFeatureCommandForRoot(root, seed.feature.id);
+    expect(command).not.toBeNull();
+    if (command === null) return;
+
+    const after = command.execute(root);
+    // The feature's history is dropped wholesale (its sole anchor was emptied).
+    expect(after.state.histories).toHaveLength(0);
+    // The command reports the feature as deleted so selection re-resolution drops it.
+    expect(after.result.deleted.has(seed.feature.id)).toBe(true);
+    // Purity: the original root is unmutated.
+    expect(root.histories).toHaveLength(1);
+  });
+
+  it('undo restores the deleted feature exactly (one indivisible undo unit, 教訓 5.20)', () => {
+    const seed = squareLeaf('f-del', 'vd', 0, 0);
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const command = createDeleteFeatureCommandForRoot(root, seed.feature.id);
+    if (command === null) throw new Error('expected a delete command');
+
+    const after = command.execute(root);
+    const undone = command.undo(after.state);
+    // Undo brings the feature back and reports it created so selection re-resolves.
+    expect(undone.state.histories).toHaveLength(1);
+    expect(undone.state.histories[0]!.featureId).toBe(seed.feature.id);
+    expect(undone.result.created.has(seed.feature.id)).toBe(true);
+  });
+
+  it('returns null for a feature absent everywhere (教訓 5.24 no幽霊 undo entry)', () => {
+    const seed = squareLeaf('f-1', 'v1', 0, 0);
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    expect(createDeleteFeatureCommandForRoot(root, asFeatureId('ghost'))).toBeNull();
+  });
+
+  it('deletes only the target, leaving sibling features (and their histories) intact', () => {
+    let root: DomainRoot = emptyProject();
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 10, 10);
+    root = applyAddProposal(root, {
+      featureId: a.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    root = applyAddProposal(root, {
+      featureId: b.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(b.feature, b.vertices),
+    });
+    expect(root.histories).toHaveLength(2);
+
+    const command = createDeleteFeatureCommandForRoot(root, a.feature.id);
+    if (command === null) throw new Error('expected a delete command');
+    const after = command.execute(root);
+
+    const ids = after.state.histories.map((h) => h.featureId);
+    expect(ids).toEqual([b.feature.id]);
+    expect(after.result.deleted.has(a.feature.id)).toBe(true);
+    expect(after.result.survived.has(b.feature.id)).toBe(true);
+  });
+});
+
+// REGRESSION (bughunt2): the WIRED 編集→削除 / Delete key path. Assembling the
+// registry + keymap exactly as the shell does, registering the EditDelete handler
+// exactly as App.tsx does, and dispatching the Delete chord through the SAME
+// dispatchChord the keyboard hook uses must DELETE the active feature. Before the
+// fix the chord resolved to an UNREGISTERED id → DISPATCH_RESULT.Disabled (silent
+// no-op) and the feature stayed (the e2e BUGHUNT:delete-count repro: 3→3, expected
+// 3→2). This drives the real registry / permissions / keymap, not a mock.
+describe('wired 編集→削除 / Delete key deletes the active feature (bughunt2 教訓5.13)', () => {
+  it('the Delete chord dispatches EditDelete and removes the active feature in Edit mode', async () => {
+    const { CommandRegistry, COMMAND_ID } = await import('./shell/commands');
+    const { buildDefaultKeymap } = await import('./shell/default-keymap');
+    const { dispatchChord, keyChordFromEvent, DISPATCH_RESULT } = await import(
+      './shell/shortcuts'
+    );
+    const { EDIT_MODE } = await import('./state/session');
+    const { featureByIdAt } = await import('./live-lookup');
+
+    const seed = squareLeaf('f-del', 'vd', 0, 0);
+    let root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const time = timePointYear(1000);
+
+    // Mimic App.tsx: the active feature is the delete target; the handler records
+    // the U31 command back into the live root (the store-write App performs).
+    let activeFeature: ReturnType<typeof asFeatureId> | null = seed.feature.id;
+    const registry = new CommandRegistry();
+    registry.register(COMMAND_ID.EditDelete, {
+      run: () => {
+        if (activeFeature === null) return;
+        const command = createDeleteFeatureCommandForRoot(root, activeFeature);
+        if (command === null) return;
+        root = command.execute(root).state;
+        activeFeature = null; // selection re-resolution drops the deleted feature.
+      },
+      canRun: () => activeFeature !== null,
+    });
+
+    const keymap = buildDefaultKeymap();
+    // The Delete key event the renderer would deliver (no modifiers).
+    const deleteChord = keyChordFromEvent({ key: 'Delete' } as KeyboardEvent);
+
+    // Sanity: the feature exists before the Delete key.
+    expect(featureByIdAt(root, time, seed.feature.id)).toBeDefined();
+
+    // In Edit mode the chord resolves → EditDelete → runs (the dead path is alive).
+    const ran = dispatchChord(deleteChord, keymap, registry, EDIT_MODE.Edit);
+    expect(ran).toBe(DISPATCH_RESULT.Ran);
+    expect(featureByIdAt(root, time, seed.feature.id)).toBeUndefined();
+  });
+
+  it('the EditDelete chord is DISABLED (not unbound, not a no-op) in 表示専用 mode (教訓5.13)', async () => {
+    const { CommandRegistry, COMMAND_ID } = await import('./shell/commands');
+    const { buildDefaultKeymap } = await import('./shell/default-keymap');
+    const { dispatchChord, keyChordFromEvent, DISPATCH_RESULT } = await import(
+      './shell/shortcuts'
+    );
+    const { EDIT_MODE } = await import('./state/session');
+
+    const registry = new CommandRegistry();
+    // Registered + runnable, so a Disabled result can only come from the permission
+    // axis (view-only), proving the editing-command gate covers the Delete key.
+    registry.register(COMMAND_ID.EditDelete, { run: () => {}, canRun: () => true });
+    const keymap = buildDefaultKeymap();
+    const deleteChord = keyChordFromEvent({ key: 'Delete' } as KeyboardEvent);
+
+    expect(dispatchChord(deleteChord, keymap, registry, EDIT_MODE.View)).toBe(
+      DISPATCH_RESULT.Disabled,
+    );
   });
 });
