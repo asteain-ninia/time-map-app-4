@@ -26,7 +26,7 @@ import { createVertex, createVertexStore, type Vertex } from '../../domain/verte
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import type { AddSnapshot } from '../../domain/add/index';
-import { worldToScreen, screenToWorld } from '../../render';
+import { worldToScreen, screenToWorld, wrapTurnsForLonSpan } from '../../render';
 import type { Camera, Viewport } from '../../render';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -661,6 +661,88 @@ describe('liveHitTestAt', () => {
       );
       expect(hit.kind).toBe(HIT_KIND.FeatureBody);
       if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(big.feature.id);
+    });
+  });
+
+  // --- bughunt2: 病的ズームアウトでも hit-test は O(features × cursor-window) に収まる ---
+  //
+  // `wrapTurnsForLonSpan` is BOUNDED (MAX_WRAP_REPLICAS = 100_000) but at a pathological
+  // full zoom-out (tiny zoom over a very wide covered span) it can still return TENS OF
+  // THOUSANDS of turns. The hit-test used to probe EVERY such replica for EVERY vertex /
+  // line-vertex / polygon-ring on every pointerdown — tens of millions of synchronous
+  // projections that jank the UI thread. The fix clamps the per-drawable turn enumeration
+  // to the few replicas whose footprint can reach the cursor (drawnLonOffsets TAIL-LATENCY
+  // CLAMP), so the probe count is independent of how many turns the viewport spans — while
+  // still resolving the SAME replica the renderer drew (clip ⊇ draw ⊇ hit unchanged).
+  describe('extreme zoom-out hit-test is bounded (bughunt2 tail-latency clamp)', () => {
+    it('probes only a handful of replicas yet still grabs the on-screen one', () => {
+      // A point at canonical lon 0. A tiny-zoom frame whose covered span is millions of
+      // degrees → `wrapTurnsForLonSpan` returns thousands of turns (well below the cap).
+      const p = pointFeature('f-zp', 'vzp', 0, 0);
+      const root = commit(emptyProject(), p, 1000);
+      // A tiny zoom whose covered span is ~7.2 million degrees → tens of thousands of turns,
+      // yet the 8px grab radius is only a small fraction of that span (so the cursor window
+      // is a SMALL slice of the drawn turn list — the clamp's win is unambiguous here).
+      const tinyCamera: Camera = { centerLon: 3_600_000, centerLat: 0, zoom: 5e-5 };
+      const tinyViewport: Viewport = { widthCss: 360, heightCss: 360, devicePixelRatio: 1 };
+      // Sanity: the renderer's own turn enumeration for this point's span is enormous, so
+      // the OLD code would have done ~that many projections for this single vertex alone.
+      const drawnTurns = wrapTurnsForLonSpan(0, 0, tinyCamera, tinyViewport);
+      expect(drawnTurns.length).toBeGreaterThan(10_000);
+
+      // Count projector invocations during ONE hit-test.
+      let projections = 0;
+      const countingToScreen = (w: { lon: number; lat: number }) => {
+        projections += 1;
+        return worldToScreen(w, tinyCamera, tinyViewport);
+      };
+      const wrap = { camera: tinyCamera, viewport: tinyViewport };
+      // The replica nearest the camera centre is turn 10_000 (lon 3_600_000).
+      const replica = { lon: 3_600_000, lat: 0 };
+      const screen = worldToScreen(replica, tinyCamera, tinyViewport);
+      const clickWorld = screenToWorld(screen, tinyCamera, tinyViewport);
+      const hit = liveHitTestAt(
+        { root, time, toScreen: countingToScreen, wrap, point: screen },
+        { lon: clickWorld.lon, lat: clickWorld.lat },
+      );
+
+      // Still resolves the on-screen replica (clip ⊇ draw ⊇ hit unchanged).
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(p.feature.id);
+      // The probe count is BOUNDED by the cursor window, NOT the turn list: the cursor
+      // window is ~1 + 2·(radius/zoom)/period turns wide (a small fraction of the span), so
+      // the projection count is a SMALL FRACTION of what the OLD full-turn probe did. The
+      // point is probed in two passes (vertex-owner step 1 + point-body step 2), so the OLD
+      // cost was ~2·drawnTurns.length; assert we are an order of magnitude below that.
+      expect(projections).toBeLessThan(drawnTurns.length / 10);
+    });
+
+    it('still returns EMPTY when no replica lands under the cursor (no false hit from the clamp)', () => {
+      // Same pathological frame, but click FAR from any replica of the point (a lat far off
+      // the point's lat so no replica is within the grab radius). The clamp must not invent
+      // a hit, and must not iterate the whole turn list to decide so.
+      const p = pointFeature('f-zp2', 'vzp2', 0, 0);
+      const root = commit(emptyProject(), p, 1000);
+      const tinyCamera: Camera = { centerLon: 3_600_000, centerLat: 0, zoom: 5e-5 };
+      const tinyViewport: Viewport = { widthCss: 360, heightCss: 360, devicePixelRatio: 1 };
+      const drawnTurns = wrapTurnsForLonSpan(0, 0, tinyCamera, tinyViewport);
+      const wrap = { camera: tinyCamera, viewport: tinyViewport };
+      let projections = 0;
+      const countingToScreen = (w: { lon: number; lat: number }) => {
+        projections += 1;
+        return worldToScreen(w, tinyCamera, tinyViewport);
+      };
+      // Click at the TOP edge: far in the y axis (lat) from the lat-0 point, so no replica
+      // is within the grab radius regardless of longitude. The clamp must not invent a hit,
+      // and must still bound the probe count rather than walking the whole turn list.
+      const screen = { x: 180, y: 0 };
+      const clickWorld = screenToWorld(screen, tinyCamera, tinyViewport);
+      const hit = liveHitTestAt(
+        { root, time, toScreen: countingToScreen, wrap, point: screen },
+        { lon: clickWorld.lon, lat: clickWorld.lat },
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+      expect(projections).toBeLessThan(drawnTurns.length / 10);
     });
   });
 

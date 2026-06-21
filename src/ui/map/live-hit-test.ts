@@ -269,25 +269,109 @@ function distToSegmentSq(p: ScreenPoint, a: ScreenPoint, b: ScreenPoint): number
   return distSq(p, foot);
 }
 
-/** The wrap configuration the hit-test resolves turns against (see LiveHitTestInput.wrap). */
-type WrapFrame = { readonly camera: Camera; readonly viewport: Viewport } | undefined;
+/**
+ * The wrap configuration the hit-test resolves turns against (see LiveHitTestInput.wrap),
+ * AUGMENTED with the cursor's continuous world longitude and a degree margin. The cursor
+ * fields let {@link drawnLonOffsets} clamp the drawn-turn enumeration to ONLY the few
+ * replicas whose on-screen footprint can actually reach the cursor — see the tail-latency
+ * note on that function. They are derived once per `liveHitTestAt` call (the cursor world
+ * point and the screen-px grab radius the caller already supplies), never per drawable.
+ */
+type WrapFrame =
+  | {
+      readonly camera: Camera;
+      readonly viewport: Viewport;
+      /** The cursor's continuous world longitude (degrees) — the click's world lon. */
+      readonly cursorLon: number;
+      /** Half-window in DEGREES around the cursor a replica may sit and still be hittable. */
+      readonly marginDeg: number;
+    }
+  | undefined;
+
+/** The public 2-field wrap input the caller supplies (camera + viewport only). */
+type WrapInput = { readonly camera: Camera; readonly viewport: Viewport } | undefined;
 
 /**
- * The ±360° world-turn offsets (in DEGREES) at which the renderer drew a drawable
- * whose continuous-longitude content spans `[lonMin, lonMax]` (bughunt 単一真実源).
+ * Build the internal {@link WrapFrame} from the caller's `wrap` input plus the cursor's
+ * world longitude and the screen-px grab radius, deriving the per-call cursor window the
+ * drawn-turn enumeration is clamped to (see {@link drawnLonOffsets} TAIL-LATENCY CLAMP).
  *
- * With a `wrap` frame this delegates to the SAME `wrapTurnsForLonSpan` the Canvas
- * renderer uses, so the proximity/containment tests consider EXACTLY the replicas the
- * renderer painted (clip ⊇ draw ⊇ hit). Without one (legacy / single-frame tests) it
- * returns the canonical turn plus ±1 — the previous fixed probe — so behaviour is
- * unchanged for callers that did not draw wrap replicas.
+ * `marginDeg` converts the screen-px grab radius into degrees via the frame's zoom (px per
+ * degree) so the same window serves both the proximity probes (a vertex/point/line is
+ * hittable within `radiusPx`) and the area-body containment (margin only over-includes by
+ * at most one turn on each side — never under-includes a replica that could contain the
+ * cursor). A non-finite/≤0 zoom (unmeasured camera) yields a 0 margin: the cursor turn
+ * itself still resolves, and such a frame draws no real replicas anyway.
+ */
+function buildWrapFrame(wrap: WrapInput, cursorLon: number, radiusPx: number): WrapFrame {
+  if (wrap === undefined) return undefined;
+  const zoom = wrap.camera.zoom;
+  const marginDeg = Number.isFinite(zoom) && zoom > 0 ? radiusPx / zoom : 0;
+  return { camera: wrap.camera, viewport: wrap.viewport, cursorLon, marginDeg };
+}
+
+/**
+ * The ±360° world-turn offsets (in DEGREES) at which the renderer drew a drawable whose
+ * continuous-longitude content spans `[lonMin, lonMax]` AND whose replica can actually
+ * reach the cursor (bughunt 単一真実源 + tail-latency clamp).
+ *
+ * With a `wrap` frame this delegates to the SAME `wrapTurnsForLonSpan` the Canvas renderer
+ * uses, so the proximity/containment tests consider the replicas the renderer painted
+ * (clip ⊇ draw ⊇ hit). Without one (legacy / single-frame tests) it returns the canonical
+ * turn plus ±1 — the previous fixed probe — so behaviour is unchanged for those callers.
+ *
+ * TAIL-LATENCY CLAMP (bughunt2 — 病的ズームでの O(features × wrap-replicas) 抑制):
+ * `wrapTurnsForLonSpan` is BOUNDED (MAX_WRAP_REPLICAS) but can still return tens of
+ * thousands of turns at a pathological full zoom-out. The hit-test would otherwise probe
+ * EVERY such replica for EVERY vertex / line-vertex / polygon-ring on every pointerdown —
+ * tens of millions of synchronous projections that jank the UI thread. But a replica only
+ * matters to the hit-test if its shifted footprint `[lonMin + off, lonMax + off]` lies
+ * within `marginDeg` of the cursor longitude (a vertex/point/line is grabbable only inside
+ * the screen-px radius; an area body only when the cursor is inside it). Replicas are
+ * spaced exactly one period apart, so the relevant turns form a TINY contiguous window:
+ *   off ∈ [cursorLon − lonMax − margin, cursorLon − lonMin + margin]
+ * i.e. turns ∈ [ceil(lo/period), floor(hi/period)]. We INTERSECT that cursor window with
+ * the renderer's drawn turn range so the result is a SUBSET of what the renderer painted
+ * (clip ⊇ draw ⊇ hit is preserved — we never probe a turn the renderer did NOT draw, and
+ * we never drop a drawn turn that could be near the cursor). The probe count is now
+ * O(span-in-turns) bounded by the cursor window (≈ 1 + 2·margin/period turns), independent
+ * of how many total turns the viewport spans — so the per-pointerdown cost stays small even
+ * at the cap.
  */
 function drawnLonOffsets(lonMin: number, lonMax: number, wrap: WrapFrame): number[] {
   if (wrap === undefined) {
     return [0, LONGITUDE_PERIOD, -LONGITUDE_PERIOD];
   }
   const turns = wrapTurnsForLonSpan(lonMin, lonMax, wrap.camera, wrap.viewport);
-  return turns.map((t) => t * LONGITUDE_PERIOD);
+  if (turns.length <= 1) return turns.map((t) => t * LONGITUDE_PERIOD);
+
+  // Clamp the drawn turns to the cursor's reachable window (see TAIL-LATENCY CLAMP). The
+  // window edges come from "the cursor lon lies within [lonMin+off−margin, lonMax+off+margin]".
+  // `wrapTurnsForLonSpan` returns a CONTIGUOUS ascending integer range, so its bounds are
+  // `turns[0]`..`turns[last]` — we intersect that range with the cursor window ARITHMETICALLY
+  // and enumerate ONLY the (tiny) overlap, never walking the full (possibly huge) turn list.
+  // A non-finite span/cursor (cannot happen for drawn geometry, but be defensive) skips the
+  // clamp and keeps the full drawn set so correctness never depends on the optimisation.
+  if (
+    !Number.isFinite(lonMin) ||
+    !Number.isFinite(lonMax) ||
+    !Number.isFinite(wrap.cursorLon) ||
+    !Number.isFinite(wrap.marginDeg)
+  ) {
+    return turns.map((t) => t * LONGITUDE_PERIOD);
+  }
+  const drawnMin = turns[0]!;
+  const drawnMax = turns[turns.length - 1]!;
+  const windowLo = Math.ceil((wrap.cursorLon - lonMax - wrap.marginDeg) / LONGITUDE_PERIOD);
+  const windowHi = Math.floor((wrap.cursorLon - lonMin + wrap.marginDeg) / LONGITUDE_PERIOD);
+  // Intersection of the drawn range [drawnMin, drawnMax] with the cursor window.
+  const lo = windowLo > drawnMin ? windowLo : drawnMin;
+  const hi = windowHi < drawnMax ? windowHi : drawnMax;
+  // A drawn span with NO replica near the cursor contributes nothing (the drawable simply
+  // is not under the cursor) — return the empty set rather than the full turn list.
+  const result: number[] = [];
+  for (let t = lo; t <= hi; t += 1) result.push(t * LONGITUDE_PERIOD);
+  return result;
 }
 
 /**
@@ -409,7 +493,11 @@ export function drawnAreaAt(
   const features = featuresAt(input.root, input.time);
   const vertices = verticesAt(input.root, input.time);
   const areas = drawnAreas(features, vertices, control);
-  return drawnAreaAtPoint(areas, worldPoint, input.wrap);
+  // The knife has no own grab radius; an area body click resolves by world containment, so
+  // the cursor window margin is just the default grab radius (over-includes ≤1 turn, never
+  // under-includes a containing replica — see drawnLonOffsets TAIL-LATENCY CLAMP).
+  const wrap = buildWrapFrame(input.wrap, worldPoint.lon, DEFAULT_HIT_RADIUS_PX);
+  return drawnAreaAtPoint(areas, worldPoint, wrap);
 }
 
 /**
@@ -431,10 +519,15 @@ export function liveHitTestAt(
   input: LiveHitTestInput,
   worldPoint: WorldCoordinate,
 ): HitResult {
-  const { root, time, toScreen, point, wrap } = input;
+  const { root, time, toScreen, point } = input;
   const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
   const radius = input.radiusPx ?? DEFAULT_HIT_RADIUS_PX;
   const radiusSq = radius * radius;
+  // Augment the caller's wrap input with the cursor world longitude + a degree margin so the
+  // drawn-turn enumeration is clamped to the few replicas that can reach the cursor — keeping
+  // a pathological full-zoom-out pointerdown O(features × cursor-window) instead of
+  // O(features × total-turns) (bughunt2 tail-latency clamp; see drawnLonOffsets).
+  const wrap = buildWrapFrame(input.wrap, worldPoint.lon, radius);
 
   const features = featuresAt(root, time);
   const vertices = verticesAt(root, time);
