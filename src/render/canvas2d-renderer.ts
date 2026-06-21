@@ -22,7 +22,7 @@
 import { LONGITUDE_PERIOD } from '../domain/geo/seam';
 
 import type { Camera, Viewport, ZoomRange } from './camera';
-import { DEFAULT_ZOOM_RANGE } from './camera';
+import { clampZoom, DEFAULT_ZOOM_RANGE } from './camera';
 import type {
   BaseMapPrimitive,
   DrawPrimitive,
@@ -108,6 +108,19 @@ export class Canvas2DMapRenderer implements MapRenderer {
 
   setZoomRange(range: ZoomRange): void {
     this.zoomRange = range;
+    // FR-10 / FR-109 即時反映: a settings change must take effect on the CURRENT
+    // camera at once, not lazily on the next wheel notch. If the live zoom now sits
+    // OUTSIDE the new clamp (e.g. zoomed to 50× then max lowered to 10), re-clamp the
+    // camera into the effective range here so the very next paint shows the bounded
+    // zoom. We clamp against `effectiveZoomRange()` (the SAME range wheel-zoom obeys,
+    // i.e. with the fit-all floor applied) so the renderer never lands on a zoom the
+    // wheel path could not reach. Only re-assign when the value actually changes so an
+    // in-range range update is a no-op (callers diff `getCamera()` to decide whether to
+    // re-paint / mirror — keeping the camera identity stable avoids a spurious notify).
+    const clamped = clampZoom(this.camera.zoom, this.effectiveZoomRange());
+    if (clamped !== this.camera.zoom) {
+      this.camera = { ...this.camera, zoom: clamped };
+    }
   }
 
   /** Size the backing buffer to physical px (CSS × dpr); store stays CSS-based. */

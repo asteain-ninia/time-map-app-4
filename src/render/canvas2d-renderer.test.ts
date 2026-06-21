@@ -267,6 +267,65 @@ describe('wheel zoom range honors the fit-all floor (Codex medium #6)', () => {
   });
 });
 
+describe('setZoomRange re-clamps the LIVE camera (FR-10 / FR-109 即時反映 — bughunt regression)', () => {
+  // ROOT CAUSE the fix closes: setZoomRange only stored `this.zoomRange` and never
+  // re-clamped the current camera. So after zooming to 50× then lowering the max to
+  // 10× in settings, the renderer kept drawing at 50× until the NEXT wheel notch
+  // finally clamped it — a settings change that did not take effect at once
+  // (FR-10 / FR-109 即時反映 違反). setZoomRange now re-clamps the live camera zoom
+  // into the new effective range so the very next paint shows the bounded zoom.
+  it('lowers the current zoom to the new max when the live zoom exceeds it', () => {
+    const { r } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 50 });
+    r.setZoomRange({ minZoom: 1, maxZoom: 10 });
+    expect(r.getCamera().zoom).toBe(10);
+    // The center is untouched — only the zoom is clamped.
+    expect(r.getCamera().centerLon).toBe(0);
+    expect(r.getCamera().centerLat).toBe(0);
+  });
+
+  it('raises the current zoom to the new min when the live zoom is below it', () => {
+    // A large viewport so the fit-all floor (min(w/360,h/180)=2) does NOT swallow the
+    // configured min: with fit (2) < configured min (5) the effective floor is fit,
+    // which would mask the configured min — pick a viewport whose fit floor is below
+    // the configured min so the configured min is the effective floor. Here fit =
+    // min(1800/360, 900/180) = 5, so the effective floor IS the configured min (5).
+    const big: Viewport = { widthCss: 1800, heightCss: 900, devicePixelRatio: 1 };
+    const { r } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 2 }, big);
+    r.setZoomRange({ minZoom: 5, maxZoom: 50 });
+    // fit = min(1800/360, 900/180) = 5 ≥ configured min (5), so the effective floor IS
+    // the configured min — the live zoom (2) is re-clamped up to it.
+    expect(r.effectiveZoomRange().minZoom).toBe(5);
+    expect(r.getCamera().zoom).toBe(5);
+  });
+
+  it('leaves the camera identity untouched when the live zoom is already in range (no-op)', () => {
+    const cam: Camera = { centerLon: 7, centerLat: -3, zoom: 8 };
+    const { r } = makeRenderer(cam);
+    const before = r.getCamera();
+    r.setZoomRange({ minZoom: 1, maxZoom: 50 });
+    // Stable identity so the host's getCamera() diff stays a no-op (no spurious
+    // repaint / onCameraChange notify for an in-range range update).
+    expect(r.getCamera()).toBe(before);
+    expect(r.getCamera().zoom).toBe(8);
+  });
+
+  it('clamps to the fit-all floor, not the configured min, on a sub-1 fit viewport', () => {
+    // The effective floor is the fit-all zoom when it is below the configured min, so
+    // re-clamping must use effectiveZoomRange() (the SAME range wheel-zoom obeys),
+    // never landing on a zoom the wheel path could not reach.
+    const small: Viewport = { widthCss: 300, heightCss: 100, devicePixelRatio: 1 };
+    const surface = new FakeCanvasSurface();
+    const r = new Canvas2DMapRenderer(surface, {
+      camera: { centerLon: 0, centerLat: 0, zoom: 0.1 },
+      viewport: small,
+    });
+    const floor = r.effectiveZoomRange().minZoom;
+    expect(floor).toBeLessThan(1); // fit-all floor for this small viewport
+    r.setZoomRange({ minZoom: 1, maxZoom: 50 });
+    expect(r.getCamera().zoom).toBe(floor);
+  });
+});
+
 describe('FR-21: shape primitive fills holes透過 via even-odd, single fill', () => {
   it('traces outer + hole into one path and fills evenodd once (hole透過)', () => {
     const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 10 });

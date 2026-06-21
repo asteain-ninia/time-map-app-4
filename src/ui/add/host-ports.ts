@@ -405,7 +405,22 @@ export function createAddHostPorts(
       options.onCameraChange?.(camera);
     },
     setZoomRange(range: ZoomRange): void {
+      // FR-10 / FR-109 即時反映: applying a new clamp may re-clamp the LIVE camera
+      // (e.g. zoomed to 50× then max lowered to 10×). The renderer re-clamps its own
+      // camera inside `setZoomRange`; if that changed the zoom, the screen must update
+      // and U16's store mirror (via onCameraChange) must reflect the bounded zoom at
+      // once — otherwise the old 50× frame lingers until the next wheel notch. We diff
+      // the camera around the call (the renderer keeps identity stable on a no-op
+      // change) so an in-range range update stays a silent no-op (no spurious repaint /
+      // notify), while a real re-clamp repaints and mirrors through the SAME single
+      // onCameraChange path the wheel/pan use (no duplicated store-mirror logic).
+      const before = renderer.getCamera();
       renderer.setZoomRange(range);
+      const after = renderer.getCamera();
+      if (after.zoom !== before.zoom) {
+        paintWith(lastOverlay);
+        options.onCameraChange?.(after);
+      }
     },
     effectiveZoomRange(): ZoomRange {
       return renderer.effectiveZoomRange();
