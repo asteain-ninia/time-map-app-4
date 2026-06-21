@@ -29,7 +29,7 @@
 // never re-orient (the proposal layer re-parents rings by containment, U06 predicate).
 
 import { type WorldCoordinate } from '../coordinate';
-import { unwrapRing } from '../geo/index';
+import { alignMultiPolygon, referenceLonForMultiPolygon, unwrapRingAnchored } from '../geo/index';
 import {
   difference,
   intersection,
@@ -188,17 +188,30 @@ export function checkDrillable(
     return rejection(DRILL_REJECT.DegenerateRegion);
   }
 
-  // Seam-unwrap the region into a single continuous run before geometry (R3); we
-  // pass continuous scalars through and never re-wrap ourselves (spec §無限横スクロール).
-  const regionPts = unwrapRing([...region]);
-  if (ringSelfIntersects(regionPts)) {
-    return rejection(DRILL_REJECT.SelfIntersecting);
+  const leaf: LeafFeature = target;
+  const rawTargetMp = resolveLeafShape(leaf.shape, store);
+  if (rawTargetMp === undefined) {
+    return rejection(DRILL_REJECT.Unresolvable);
   }
 
-  const leaf: LeafFeature = target;
-  const targetMp = resolveLeafShape(leaf.shape, store);
-  if (targetMp === undefined) {
-    return rejection(DRILL_REJECT.Unresolvable);
+  // R3 seam alignment (audit root cause A): the target is resolved from RAW stored
+  // representatives (resolveLeafShape does zero seam handling), while the region is
+  // unwrapped on its own first vertex. A seam-crossing target (e.g. an outer ring
+  // stored +179 next to −179) and a region drawn on the other replica would sit
+  // ~360° apart, so the boolean ops below would see no overlap and either
+  // mis-classify containment or build a broken hole. We anchor BOTH onto ONE common
+  // branch (the target's outer-ring reference) through the single alignment source
+  // of truth, then run every predicate / op in that continuous frame. For
+  // single-branch (non-seam) inputs the alignment is the identity.
+  const refLon = referenceLonForMultiPolygon(rawTargetMp);
+  const targetMp = alignMultiPolygon(rawTargetMp, refLon);
+
+  // Seam-unwrap the region into a single continuous run anchored to the SAME branch
+  // as the target before geometry (R3); we pass continuous scalars through and never
+  // re-wrap ourselves (spec §無限横スクロール).
+  const regionPts = unwrapRingAnchored([...region], refLon);
+  if (ringSelfIntersects(regionPts)) {
+    return rejection(DRILL_REJECT.SelfIntersecting);
   }
 
   // 内部完全包含 / 非交差の cheap pre-gate (教訓5.26: 確定前に同じ述語で検証).

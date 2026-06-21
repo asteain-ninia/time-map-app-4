@@ -14,6 +14,7 @@ export {
   wrapLonDeg,
   shortestLonDeltaDeg,
   unwrapLonSequence,
+  unwrapClosedLonSequence,
 } from './longitude';
 
 export {
@@ -36,9 +37,14 @@ export {
   normalizeCoordinate,
   isRepresentativeRing,
   unwrapRing,
+  unwrapRingClosed,
   rewrapRing,
   maxAdjacentLonGap,
   worldWrapReplicas,
   rewrapReplicas,
   ringsShareVertexAcrossSeam,
+  anchorLonToRef,
+  unwrapRingAnchored,
+  referenceLonForMultiPolygon,
+  alignMultiPolygon,
 } from './seam';

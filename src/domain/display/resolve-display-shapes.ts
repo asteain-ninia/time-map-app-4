@@ -24,7 +24,7 @@
 // PURITY (受け入れ基準6): reads forest + decisions + vertex store, returns a fresh
 // list, mutates nothing.
 
-import { unwrapRing } from '../geo/seam';
+import { alignMultiPolygon } from '../geo/seam';
 import type { GeoMultiPolygon } from '../geometry/types';
 import { resolveFeatureArea, type ShapeResolutionFailure } from '../hierarchy/resolve-shape';
 import type { Forest } from '../hierarchy/forest';
@@ -115,9 +115,26 @@ export function geometrySourceFor(decision: DisplayDecision): FeatureId {
  * The union math upstream is untouched (it still operates on raw representatives);
  * we only make the FINAL drawn/hit geometry continuous, exactly as the line path
  * unwraps its final points.
+ *
+ * PER-POLYGON ALIGNMENT (audit root cause A — H4 / M7 / M11 / L11): a plain
+ * independent per-ring unwrap anchors EACH ring to its OWN first vertex, so a
+ * seam-crossing outer ring and a hole (or enclave) whose vertex list starts on the
+ * opposite seam side land ~360° apart even though they coincide geometrically — the
+ * hole then punches at a false position one world-turn away and 穴透過 breaks, the
+ * renderer/hit-test tile off a ~358° span, and the label centroid drifts. We funnel
+ * through {@link alignMultiPolygon} (the single cross-ring alignment source of
+ * truth) so every ring of a polygon piece is unwrapped AND shifted onto its own
+ * outer ring's common world turn. 飛び地は片落とししない (教訓5.1): pieces are kept
+ * intact; each PIECE is anchored to ITS OWN outer ring (alignMultiPolygon uses the
+ * first piece's outer as the default reference, so we align per polygon piece to
+ * keep disjoint enclaves on their own natural branch rather than forcing them onto
+ * one global turn).
  */
 function unwrapShape(shape: GeoMultiPolygon): GeoMultiPolygon {
-  return shape.map((polygon) => polygon.map((ring) => unwrapRing(ring)));
+  // Align each polygon piece independently: a piece's outer ring is the reference
+  // for its own holes, so a hole sharing the outer's turn is correct, while a
+  // separate enclave piece keeps its own natural branch (no false global merge).
+  return shape.map((polygon) => alignMultiPolygon([polygon])[0]!);
 }
 
 /**

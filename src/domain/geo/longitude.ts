@@ -117,6 +117,89 @@ export function unwrapLonSequence(lons: readonly number[]): number[] {
 }
 
 /**
+ * Unwrap a CLOSED ring of longitudes into the continuous run with the SMALLEST
+ * longitude span (max − min), making the implicit closing edge (last → first) as
+ * continuous as the input topology allows — the start-vertex independence
+ * {@link unwrapLonSequence} cannot give on its own (audit root cause B).
+ *
+ * WHY a separate closed variant (技術方針 R3 / 単一真実源): {@link unwrapLonSequence}
+ * anchors the run at the FIRST element and never sees the closing edge. For a SIMPLE
+ * (net-winding-zero) ring whose first vertex is not at the seam crossing, the open
+ * unwrap can push the crossing into the closing edge and inflate the run's span by a
+ * full turn, so a consumer that closes the ring (shoelace area, polygon clipping,
+ * bbox) reads a false ~360° horizontal extent and mis-builds the shape. This variant
+ * does NOT re-implement the ±360° step rule (that stays in `shortestLonDeltaDeg`): it
+ * picks the ROTATION of the cyclic vertex list whose forward unwrap minimizes the
+ * span — the rotation that does NOT absorb the crossing into its closing edge — then
+ * un-rotates the values back to the original vertex order.
+ *
+ * SCOPE / HONEST LIMIT (Codex root-cause review #1): for a SIMPLE ring (the sum of
+ * cyclic shortest-deltas is ~0) every rotation lifts to the SAME planar polygon up to
+ * a whole-turn translation, so the minimal-span rotation is genuinely continuous as a
+ * cycle. For a ring with NONZERO net winding (it truly circles a pole; the cyclic
+ * shortest-deltas sum to a nonzero multiple of 360°) NO unwrap can make every edge
+ * ≤ 180° — that winding is intrinsic and must show up on SOME edge. This variant then
+ * just relocates the unavoidable winding to the minimal-span placement; it does not
+ * (and cannot) erase it. Such pole-encircling rings are out of the editor's domain
+ * (a face is a bounded simple polygon), so minimal-span is the correct, stable choice
+ * for every input the geometry pipeline actually produces.
+ *
+ * Degenerate rings (< 3 elements have no closing edge distinct from the open run)
+ * delegate straight to {@link unwrapLonSequence}. Pure; input never mutated.
+ */
+export function unwrapClosedLonSequence(lons: readonly number[]): number[] {
+  const n = lons.length;
+  if (n < 3) return unwrapLonSequence(lons);
+
+  // Try every rotation; keep the one whose continuous run has the smallest span
+  // (max − min). For a simple ring the minimal-span rotation is the one whose closing
+  // edge is NOT a seam jump (a crossing absorbed into an interior edge stays bounded
+  // by the shortest-delta rule; absorbed into the closing edge it inflates the span
+  // by a full turn). Ties (already-continuous rings) keep the earliest rotation, so
+  // rotation 0 — i.e. plain unwrapLonSequence order — wins when nothing crosses.
+  let bestStart = 0;
+  let bestSpan = Number.POSITIVE_INFINITY;
+  let bestRun: number[] | undefined;
+  for (let start = 0; start < n; start += 1) {
+    const rotated: number[] = [];
+    for (let k = 0; k < n; k += 1) rotated.push(lons[(start + k) % n]!);
+    const run = unwrapLonSequence(rotated);
+    let min = Number.POSITIVE_INFINITY;
+    let max = Number.NEGATIVE_INFINITY;
+    for (const v of run) {
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    const span = max - min;
+    if (span < bestSpan - SPAN_EPSILON) {
+      bestSpan = span;
+      bestStart = start;
+      bestRun = run;
+    }
+  }
+  if (bestRun === undefined) return unwrapLonSequence(lons);
+
+  // Un-rotate: place each unwrapped value back at its original index. For a simple
+  // ring the run is continuous as a cycle, so rotating the array of values back to
+  // original order keeps every edge (the original closing edge included) within the
+  // shortest-delta bound; for a winding ring the (intrinsic) winding edge is simply
+  // carried to its minimal-span position.
+  const out: number[] = new Array<number>(n);
+  for (let k = 0; k < n; k += 1) {
+    out[(bestStart + k) % n] = bestRun[k]!;
+  }
+  return out;
+}
+
+/** Span improvements below this (in degrees) are ignored, so a rotation is only
+ * replaced when it is meaningfully tighter; this keeps the earliest (rotation-0)
+ * placement for already-continuous rings and avoids reshuffling on sub-degree float
+ * jitter. It does NOT make results input-jitter-invariant (a perturbed input can
+ * still cross the threshold) — for identical IEEE inputs the choice is deterministic.
+ * 1e-6 is far below any seam crossing's full-turn (360°) span difference. */
+const SPAN_EPSILON = 1e-6;
+
+/**
  * The double immediately adjacent to `x` in the direction of `toward`
  * (the IEEE-754 "next representable value"). Used to nudge an accumulated
  * longitude back by the minimum possible amount.

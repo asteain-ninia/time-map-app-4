@@ -17,6 +17,7 @@
 
 import type { Feature, LeafFeature } from '../feature';
 import { FEATURE_KIND } from '../feature';
+import { alignMultiPolygon, referenceLonForMultiPolygon } from '../geo/index';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { InvariantViolation as GeoInvariantViolation } from '../geometry/invariants';
 import { EMPTY_MULTI_POLYGON, type GeoMultiPolygon, type GeoRing } from '../geometry/types';
@@ -189,7 +190,21 @@ export function resolveFeatureArea(
 
     // Fold a child's completed area into this frame's running union (片落とし禁止).
     if (completedArea !== undefined) {
-      const merged = union(frame.acc, completedArea);
+      // R3 seam alignment (audit root cause A): each leaf area is resolved from RAW
+      // stored representatives, so a child whose territory straddles the seam (or
+      // whose vertex list merely starts on the opposite seam side from the
+      // accumulator) sits ~360° away from the running union. Unioned as-is, two
+      // seam-adjacent children (e.g. +179 and −179, geometrically ~2° apart) are
+      // ~358° apart and the union scatters them across the whole map instead of
+      // joining them. Anchor BOTH operands onto ONE common branch (the accumulator's
+      // outer-ring reference, falling back to the child's when the accumulator is
+      // empty) through the single alignment source of truth before the op. For
+      // single-branch (non-seam) inputs the alignment is the identity.
+      const ref =
+        frame.acc.length > 0
+          ? referenceLonForMultiPolygon(frame.acc)
+          : referenceLonForMultiPolygon(completedArea);
+      const merged = union(alignMultiPolygon(frame.acc, ref), alignMultiPolygon(completedArea, ref));
       completedArea = undefined;
       if (merged.status === BOOLEAN_OP_STATUS.Rejected) {
         return failed({

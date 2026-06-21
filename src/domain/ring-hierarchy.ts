@@ -31,7 +31,7 @@
 
 import { assertNever } from './assert-never';
 import type { WorldCoordinate } from './coordinate';
-import { unwrapRing, worldWrapReplicas } from './geo/index';
+import { anchorLonToRef, unwrapRing } from './geo/index';
 import {
   pointInPolygon,
   POINT_LOCATION,
@@ -316,32 +316,28 @@ function ringLonAnchor(ring: GeoRing): number {
  * longitude frame. Returns `ring` shifted by the whole number of ±360° turns that
  * minimizes the longitude gap between the two rings' anchors.
  *
- * Single source of truth (技术方针 R3 / 单一真实源 §4): the ±360° replication is
- * U05's {@link worldWrapReplicas} (the canonical "hold A, shift B by world turns"
- * machinery U05 itself uses in `ringsShareVertexAcrossSeam`). We do NOT reinvent
- * any ±360° folding here — we only *select* the replica whose anchor is nearest
- * the reference's. The candidate turn span is widened enough that even a parent
- * and hole resolved a turn apart (and any incidental further turn introduced by
- * their independent per-ring unwrap) are brought together: ±2 turns bracket every
- * representative-input pair (each ring's own anchor is within one turn of any
- * representative value, so the inter-ring gap is < 2 turns).
+ * Reuse over re-derivation (技术方针 R3 / 单一真实源 §4): the ±360° branch selection
+ * delegates to U05's {@link anchorLonToRef} ("shift a longitude onto the branch
+ * nearest a reference") rather than re-implementing a turn scan here. We anchor the
+ * ring's MEAN longitude onto the reference's branch and shift the whole ring by that
+ * one whole-turn offset, which brings a parent and hole resolved a turn apart
+ * together regardless of how many turns their independent per-ring unwrap introduced.
+ * (This replaced an inline ±2-turn `worldWrapReplicas` scan; the mean+anchor form is
+ * equivalent for every representative pair and drops the arbitrary ±2 clamp.)
+ *
+ * Note: at an EXACT antipodal tie (the two anchors 180° apart) `anchorLonToRef`
+ * resolves to the +180 branch (the seam's −180→+180 sign convention); the previous
+ * ordered scan happened to resolve such a tie to the −180 copy. Both copies are the
+ * same geometric point one world turn apart, so the aligned comparison is unaffected;
+ * only the (arbitrary) representative differs.
  */
 function alignRingTo(reference: GeoRing, ring: GeoRing): GeoRing {
   if (ring.length === 0 || reference.length === 0) return ring;
   const refAnchor = ringLonAnchor(reference);
-  let best: GeoRing = ring;
-  let bestGap = Number.POSITIVE_INFINITY;
-  // ±2 turns: a hole/parent pair each unwrapped to its own first vertex can be up
-  // to (just under) two world turns apart; bracketing ±2 guarantees the minimizer
-  // is interior to the candidate set, not clamped at an edge.
-  for (const replica of worldWrapReplicas(ring, [-2, -1, 0, 1, 2])) {
-    const gap = Math.abs(ringLonAnchor(replica.ring) - refAnchor);
-    if (gap < bestGap) {
-      bestGap = gap;
-      best = replica.ring;
-    }
-  }
-  return best;
+  const anchor = ringLonAnchor(ring);
+  const shift = anchorLonToRef(anchor, refAnchor) - anchor;
+  if (shift === 0) return ring;
+  return ring.map((c) => ({ lon: c.lon + shift, lat: c.lat }));
 }
 
 /**
