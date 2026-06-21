@@ -685,6 +685,44 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
       DEFAULT_PROJECT_SETTINGS.timelineMaxYear,
     );
   });
+
+  // 回帰 (bughunt2 二巡目): the finding alleged that a single-key timeline write
+  // which inverts the range "leaks a half-applied store" — committing the dirty
+  // flags / change-notification while the inverted projectSettings is NOT written.
+  // That is impossible by construction: deriveTimelineState is evaluated and the
+  // patch assigned BEFORE the single set(), so an inverting write throws with NO
+  // mutation at all. This test pins the COMPLETE no-partial-failure contract that
+  // the earlier tests left implicit: projectDirty, lastSettingsChange, the
+  // projectSettings slice AND the derived range/time mirror must ALL be exactly
+  // their pre-call values after the throw — there is no stranded half-commit.
+  it('updateProjectSetting commits NOTHING on an inverting single-key timeline write (no half-applied store: dirty flag + change notification + settings + derived mirror all untouched) (finding)', () => {
+    const store = makeStore();
+    // Start from a known-CLEAN baseline so a stray projectDirty=true would be
+    // visible, and put currentTime inside the OLD range (would be snapped if the
+    // inverted derive ran). Default range is 0..10000.
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+    store.getState().markProjectSaved();
+    const before = store.getState();
+    expect(before.projectDirty).toBe(false);
+
+    // Raise the lower bound above the current upper bound (10000) -> inversion.
+    expect(() =>
+      store.getState().updateProjectSetting('timelineMinYear', 20000),
+    ).toThrow(/inverted timeline range/);
+
+    const after = store.getState();
+    // The dirty flag was NOT armed (the finding's "strand projectDirty" claim).
+    expect(after.projectDirty).toBe(false);
+    // No change notification was emitted (the finding's "lastSettingsChange unset").
+    expect(after.lastSettingsChange).toEqual(before.lastSettingsChange);
+    // The whole projectSettings slice is byte-for-byte the pre-call value (the
+    // inverted timelineMinYear was NOT written — no partial commit).
+    expect(after.projectSettings).toEqual(before.projectSettings);
+    // The derived range mirror + currentTime were never re-derived/snapped.
+    expect(after.timelineMin).toEqual(before.timelineMin);
+    expect(after.timelineMax).toEqual(before.timelineMax);
+    expect(after.currentTime).toEqual(timePointYear(50));
+  });
 });
 
 // --- 受け入れ基準 5: Canvas subscribes only (no React path) -----------------
