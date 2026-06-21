@@ -662,6 +662,50 @@ describe('liveHitTestAt', () => {
       expect(hit.kind).toBe(HIT_KIND.FeatureBody);
       if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(big.feature.id);
     });
+
+    // --- bughunt3: drawnAreaAtPoint inline-probe parity (no probes[] allocation) -------
+    //
+    // drawnAreaAtPoint no longer materialises a per-area `probes[]` array; it probes each
+    // ±360° offset INLINE and exits on the first matching (offset, polygon) pair. The
+    // reorganised loop nests offset-OUTER / polygon-INNER (the original was
+    // polygon-outer / probe-inner). Both are the SAME existential over (offset, polygon)
+    // pairs, but the most demanding case to keep green is a MULTI-polygon area whose hit
+    // is in a NON-first polygon at a NON-zero offset: it forces the inner polygon `.some`
+    // past index 0 AND the outer offset `.some` past the canonical turn. An aggregate at
+    // N=0 over two DISJOINT child squares draws exactly such a multi-polygon集約形状.
+    it('grabs the SECOND polygon of a multi-polygon aggregate shown only as a +360° replica', () => {
+      // Two disjoint child squares → aggregate集約形状 is a multi-polygon: [0,4]² and
+      // [6,10]². The click lands in the SECOND polygon ([6,10]²), under the +360° replica.
+      const childA = squareLeaf('f-mpa', 'vmpa', 0, 0); // first polygon [0,4]²
+      const childB = squareLeaf('f-mpb', 'vmpb', 6, 0); // second polygon [6,10]²
+      const aggId = asFeatureId('f-mpagg');
+      const agg = createAggregateFeature(
+        aggId,
+        createBasicAttributes('f-mpagg', 0, 0),
+        color,
+        [childA.feature.id, childB.feature.id],
+      );
+      let root = commit(emptyProject(), { feature: agg, vertices: [] }, 1000);
+      root = commit(root, { feature: withParentId(childA.feature, aggId), vertices: childA.vertices }, 1000);
+      root = commit(root, { feature: withParentId(childB.feature, aggId), vertices: childB.vertices }, 1000);
+      // Centre of the SECOND polygon's +360° replica body (canonical lon 8 → replica 368),
+      // away from any vertex so it is a genuine body containment hit.
+      const replicaCentre = { lon: 368, lat: 2 };
+      const screen = wrapToScreen(replicaCentre);
+      const hit = liveHitTestAt(
+        {
+          root,
+          time,
+          displayControl: { globalDepth: 0, focus: { originId: null, depth: 0, emphasize: false } },
+          toScreen: wrapToScreen,
+          wrap,
+          point: screen,
+        },
+        screenToWorldFor(screen),
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(aggId);
+    });
   });
 
   // --- bughunt2: 病的ズームアウトでも hit-test は O(features × cursor-window) に収まる ---

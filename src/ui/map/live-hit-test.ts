@@ -398,13 +398,16 @@ function drawnAreaAtPoint(
     const span = multiPolygonLonSpan(area.shape);
     const offsets =
       span === undefined ? [0] : drawnLonOffsets(span.min, span.max, wrap);
-    const probes: WorldCoordinate[] = offsets.map((off) => ({
-      lon: worldPoint.lon - off,
-      lat: worldPoint.lat,
-    }));
-    const inside = area.shape.some((polygon) =>
-      probes.some((p) => pointInPolygon(p, polygon) === POINT_LOCATION.Inside),
-    );
+    // Probe each replica offset INLINE (no intermediate `probes[]` array): a replica
+    // drawn at `+off°` covers `polygon.lon + off`, so the click lands inside it iff
+    // `worldPoint.lon − off` lands inside the canonical polygon. Iterating offsets in
+    // the outer loop lets the first matching (offset, polygon) pair exit early.
+    const inside = offsets.some((off) => {
+      const probe: WorldCoordinate = { lon: worldPoint.lon - off, lat: worldPoint.lat };
+      return area.shape.some(
+        (polygon) => pointInPolygon(probe, polygon) === POINT_LOCATION.Inside,
+      );
+    });
     if (inside) hit = area.featureId; // keep scanning; a later (top) area wins
   }
   return hit;
