@@ -54,6 +54,53 @@ describe('screenToWorld', () => {
     expect(back.lon).toBeCloseTo(w.lon, 9);
     expect(back.lat).toBeCloseTo(w.lat, 9);
   });
+
+  it('returns a FINITE world point (the camera centre) for an unmeasured zoom===0 camera, never ±Infinity (REGRESSION bughunt2)', () => {
+    // The bug: before the surface is measured the camera zoom is 0
+    // (`initialCamera`/`fitWorldZoom` return 0 for a 0×0 mount — the "not yet
+    // measured" sentinel). A pointerdown in that pre-measurement window reaches
+    // App's hit-tester → liveHitTestAt → screenToWorld, which divided the screen
+    // offset by zoom 0 and returned lon/lat = ±Infinity, breaking every downstream
+    // vertex-proximity / area-containment judgement. The transform pair itself must
+    // guard zoom (zoomAtCursor already guarded its own division, but the bare
+    // screenToWorld was unprotected). Degenerate fallback: the camera centre, finite.
+    const unmeasured: Camera = { centerLon: 12, centerLat: -7, zoom: 0 };
+    const w = screenToWorld({ x: 600, y: 200 }, unmeasured, VP);
+    expect(Number.isFinite(w.lon)).toBe(true);
+    expect(Number.isFinite(w.lat)).toBe(true);
+    expect(w).toEqual({ lon: 12, lat: -7 });
+  });
+
+  it('returns the camera centre for any non-finite-or-non-positive zoom (REGRESSION bughunt2)', () => {
+    // The same division hazard for the other pathological zoom values the camera
+    // could carry before / outside a measured frame.
+    for (const badZoom of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const cam: Camera = { centerLon: 5, centerLat: 3, zoom: badZoom };
+      const w = screenToWorld({ x: 0, y: 0 }, cam, VP);
+      expect(Number.isFinite(w.lon)).toBe(true);
+      expect(Number.isFinite(w.lat)).toBe(true);
+      expect(w).toEqual({ lon: 5, lat: 3 });
+    }
+  });
+});
+
+describe('worldToScreen / screenToWorld degenerate-zoom guard (bughunt2)', () => {
+  it('worldToScreen collapses every world point to the viewport centre for zoom===0 (REGRESSION)', () => {
+    const unmeasured: Camera = { centerLon: 0, centerLat: 0, zoom: 0 };
+    const s = worldToScreen({ lon: 123, lat: 45 }, unmeasured, VP);
+    expect(s).toEqual({ x: VP.widthCss / 2, y: VP.heightCss / 2 });
+    expect(Number.isFinite(s.x)).toBe(true);
+    expect(Number.isFinite(s.y)).toBe(true);
+  });
+
+  it('the degenerate fallbacks are mutual inverses (viewport centre ↔ camera centre)', () => {
+    const cam: Camera = { centerLon: 30, centerLat: -15, zoom: 0 };
+    const center = { x: VP.widthCss / 2, y: VP.heightCss / 2 };
+    // screen centre → camera centre → screen centre.
+    const w = screenToWorld(center, cam, VP);
+    expect(w).toEqual({ lon: 30, lat: -15 });
+    expect(worldToScreen(w, cam, VP)).toEqual(center);
+  });
 });
 
 describe('fitWorldZoom (FR-11)', () => {

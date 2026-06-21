@@ -77,6 +77,18 @@ export interface WorldPoint {
  *
  * Latitude is flipped (lat up ⇒ y down). Pure; the inverse is
  * {@link screenToWorld}.
+ *
+ * UNMEASURED-CAMERA GUARD (病的入力の安全性, same discipline as {@link zoomAtCursor} /
+ * {@link wrapTurnsForViewport}): before the map surface is first measured the camera
+ * zoom is 0 (`initialCamera`/`fitWorldZoom` return 0 for a degenerate/unmeasured
+ * viewport — the documented "not yet measured" sentinel; a 0×0 mount seeds exactly
+ * such a camera, see host-ports `createAddHostPorts`). With a non-finite-or-non-
+ * positive zoom the scale `(world − center) * zoom` is meaningless — and were a NaN /
+ * ±Infinity center ever fed in it would propagate — so there is no well-defined screen
+ * position yet. We collapse every world point to the viewport CENTRE (the camera
+ * centre's screen image), which keeps the result FINITE and exactly inverts the
+ * matching {@link screenToWorld} degenerate fallback. The first measured frame restores
+ * a finite-positive zoom and the normal affine mapping.
  */
 export function worldToScreen(
   world: WorldPoint,
@@ -85,6 +97,9 @@ export function worldToScreen(
 ): ScreenPoint {
   const cx = viewport.widthCss / 2;
   const cy = viewport.heightCss / 2;
+  if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) {
+    return { x: cx, y: cy };
+  }
   const x = cx + (world.lon - camera.centerLon) * camera.zoom;
   const y = cy - (world.lat - camera.centerLat) * camera.zoom;
   return { x, y };
@@ -97,6 +112,19 @@ export function worldToScreen(
  * CONTINUOUS scalar (it can fall outside [-180, 180)) — callers that need a
  * representative longitude pass it through U05's normalization, never an ad-hoc
  * fold here.
+ *
+ * UNMEASURED-CAMERA GUARD (病的入力の安全性 — the bug this closes, bughunt2): before the
+ * surface is measured the camera zoom is 0 (the "not yet measured" sentinel from
+ * `initialCamera`/`fitWorldZoom`; a 0×0 mount seeds it, see host-ports
+ * `createAddHostPorts`). Dividing the screen offset by zoom 0 makes lon/lat ±Infinity,
+ * which then poisons every downstream consumer — most reachably a `pointerdown` in that
+ * pre-measurement window: App's hit-tester calls `liveHitTestAt` → this `screenToWorld`,
+ * and an ∞ world point breaks the vertex-proximity / area-containment judgements. The
+ * guard returns the camera CENTRE (a finite world point: no screen-offset displacement
+ * is computable without a scale), which exactly inverts the {@link worldToScreen}
+ * degenerate fallback (viewport centre ↔ camera centre). `zoomAtCursor` already guards
+ * its own division; this protects the transform pair itself so EVERY caller is safe.
+ * The first measured frame restores a finite-positive zoom and the normal mapping.
  */
 export function screenToWorld(
   screen: ScreenPoint,
@@ -105,6 +133,9 @@ export function screenToWorld(
 ): WorldPoint {
   const cx = viewport.widthCss / 2;
   const cy = viewport.heightCss / 2;
+  if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) {
+    return { lon: camera.centerLon, lat: camera.centerLat };
+  }
   const lon = camera.centerLon + (screen.x - cx) / camera.zoom;
   const lat = camera.centerLat - (screen.y - cy) / camera.zoom;
   return { lon, lat };
