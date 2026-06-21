@@ -260,6 +260,57 @@ describe('createRedrawScheduler (FR-110 renderFps 結線)', () => {
     expect(draws).toBe(2);
   });
 
+  it('flush does NOT poison the cap budget when performance.now is unavailable (bughunt round-2: draw-hang)', () => {
+    // ROOT regression for the finding: the default `now` used by flush() previously fell
+    // back to Date.now() (epoch ~1.7e12) when performance.now was absent (headless/special
+    // runners). flush() then seeded the FrameScheduler's lastDrawMs with that epoch value,
+    // while onFrame compares it against small origin-relative rAF timestamps — so every
+    // subsequent frame failed the cap gate (huge negative delta < minFrameMs) and was
+    // rescheduled forever: the map NEVER repainted again. We pin the default-clock path
+    // (no injected `now`) with performance.now removed, proving flush stays on the rAF
+    // basis and drawing recovers.
+    const savedPerformance = (globalThis as { performance?: unknown }).performance;
+    // Remove performance entirely so the default clock takes the no-monotonic-clock branch.
+    delete (globalThis as { performance?: unknown }).performance;
+    try {
+      const fake = makeFakeScheduler();
+      let draws = 0;
+      const rs = createRedrawScheduler({
+        draw: () => {
+          draws += 1;
+        },
+        initialFps: 2, // 500ms budget — low enough that the cap actually holds frames
+        schedule: fake.schedule,
+        cancel: fake.cancel,
+        // NOTE: no `now` injected ⇒ exercises the real default-clock fallback path.
+      });
+
+      // Establish a first draw on the rAF basis at t=0.
+      rs.request();
+      fake.tick(0);
+      expect(draws).toBe(1);
+
+      // A pointerdown flush (no rAF-compatible clock) drains the pending frame now. With the
+      // old Date.now fallback this seeded lastDrawMs ≈ 1.7e12.
+      rs.request();
+      rs.flush();
+      expect(draws).toBe(2);
+      expect(fake.pending()).toBe(0); // the scheduled frame was cancelled (no double draw)
+
+      // THE BUG: a subsequent throttled redraw must still be able to draw. Before the fix
+      // the rAF timestamp (600) minus the epoch lastDrawMs was hugely negative, so onFrame
+      // rescheduled forever and the map hung. Now it draws.
+      rs.request();
+      fake.tick(600); // ≥ 500ms budget on the rAF basis ⇒ draws (does NOT reschedule)
+      expect(draws).toBe(3);
+      expect(fake.pending()).toBe(0); // recovered — NOT stuck in an infinite reschedule loop
+    } finally {
+      if (savedPerformance !== undefined) {
+        (globalThis as { performance?: unknown }).performance = savedPerformance;
+      }
+    }
+  });
+
   it('dispose cancels a pending frame (teardown)', () => {
     const fake = makeFakeScheduler();
     let draws = 0;

@@ -203,6 +203,45 @@ describe('flush drains a pending frame NOW (bughunt round-2: stale-frame hit-tes
     fake.tick(150); // > budget since the flush ⇒ now it draws
     expect(draws).toBe(2);
   });
+
+  it('flush() WITHOUT a timestamp draws but leaves lastDrawMs on the rAF basis (bughunt round-2: no draw-hang)', () => {
+    // Repro of the finding: when no rAF-compatible clock is available, flush() must NOT
+    // seed lastDrawMs with a foreign (e.g. epoch Date.now) value, because onFrame compares
+    // it against small origin-relative rAF timestamps. The previous code did `lastDrawMs =
+    // nowMs` unconditionally; an epoch value (~1.7e12) made every later `timeMs - lastDrawMs`
+    // hugely negative ⇒ < minFrameMs ⇒ infinite reschedule ⇒ the map never repaints.
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 2, // 500ms budget
+    });
+
+    // Establish a draw on the rAF basis at t=0.
+    fs.request();
+    fake.tick(0);
+    expect(draws).toBe(1);
+    expect(fs.lastDraw).toBe(0);
+
+    // A pointerdown flush with NO timestamp drains the pending frame now...
+    fs.request();
+    fs.flush(); // omitted nowMs ⇒ draw but do not touch the budget clock
+    expect(draws).toBe(2);
+    // ...and crucially leaves lastDrawMs on the rAF basis (0), NOT some epoch value.
+    expect(fs.lastDraw).toBe(0);
+
+    // The very bug: a subsequent rAF frame at an origin-relative timestamp MUST still be
+    // able to draw. With the old epoch poisoning this delta was negative forever and the
+    // frame was rescheduled into oblivion. Now the budget gate sees 600 - 0 = 600ms ≥ 500,
+    // so the frame draws instead of hanging.
+    fs.request();
+    fake.tick(600);
+    expect(draws).toBe(3); // NOT stuck — the scheduler recovered, no draw-hang
+  });
 });
 
 describe('initialLastDrawMs seeds the cap budget (bughunt round-2: rebuild reset)', () => {

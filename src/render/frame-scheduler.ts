@@ -130,15 +130,31 @@ export class FrameScheduler {
    * (a `performance.now()`-style timestamp from the caller) so a frame scheduled
    * immediately after a flush is still gated by the per-frame budget from THIS draw,
    * never double-drawing within one budget window. A no-op when nothing is pending.
+   *
+   * ROOT FIX (bughunt round-2 — flush 時刻が rAF タイムスタンプと別基準だと描画ハング):
+   * `nowMs` MUST share the rAF time origin that `onFrame` compares against (i.e. a
+   * `performance.now()`-style value), because the cap gate does `timeMs - lastDrawMs`.
+   * If a caller passed an epoch-based `Date.now()` value here (when `performance.now`
+   * is unavailable), `lastDrawMs` would become ~1.7e12 while the next rAF `timeMs` is a
+   * small origin-relative ms — the difference is hugely negative, so every subsequent
+   * `onFrame` fails the gate and reschedules forever, and the map NEVER repaints. To
+   * make that mistake impossible at the boundary, `nowMs` is now OPTIONAL: when the
+   * caller has no rAF-compatible clock it omits it, and we draw WITHOUT touching
+   * `lastDrawMs` — the existing (rAF-basis or -Infinity) value keeps `onFrame`'s
+   * comparison valid, trading at most one un-gated post-flush frame for correctness
+   * (never a hang). A no-op when nothing is pending.
    */
-  flush(nowMs: number): void {
+  flush(nowMs?: number): void {
     if (this.handle !== null) {
       this.cancel(this.handle);
       this.handle = null;
     }
     if (!this.dirty) return;
     this.dirty = false;
-    this.lastDrawMs = nowMs;
+    // Only advance the budget clock when the caller supplied an rAF-basis timestamp.
+    // Omitting it leaves lastDrawMs on the same time origin onFrame uses, so the cap
+    // gate can never be poisoned by a foreign (epoch) value ⇒ no draw-hang.
+    if (nowMs !== undefined) this.lastDrawMs = nowMs;
     this.drawCount += 1;
     this.draw();
   }

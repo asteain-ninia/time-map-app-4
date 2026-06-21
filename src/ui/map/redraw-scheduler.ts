@@ -36,8 +36,10 @@ export interface RedrawSchedulerOptions {
   /**
    * Injected monotonic clock (ms) used by {@link RedrawScheduler.flush} to advance
    * the FrameScheduler's per-frame-budget accounting when a pending frame is drained
-   * synchronously. Defaults to `performance.now()` (falling back to `Date.now()`); a
-   * test injects a deterministic clock (NFR 5.8).
+   * synchronously. It MUST share the rAF time origin (a `performance.now()`-style
+   * value), because the scheduler's cap gate compares it against rAF timestamps; a
+   * test injects a deterministic clock (NFR 5.8). Defaults to `performance.now()` when
+   * available and to `undefined` otherwise — see {@link RedrawScheduler.flush}.
    */
   readonly now?: () => number;
 }
@@ -72,14 +74,26 @@ export interface RedrawScheduler {
  */
 export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawScheduler {
   const { draw, schedule, cancel } = options;
-  // Monotonic clock for flush() budget accounting. Prefer performance.now (monotonic);
-  // fall back to Date.now where it is unavailable (some headless runners).
-  const now =
+  // Monotonic clock for flush() budget accounting. It MUST be on the SAME time origin
+  // as the rAF timestamps the FrameScheduler's cap gate compares against, so we use
+  // performance.now() (which shares rAF's time origin) and NOTHING ELSE.
+  //
+  // ROOT FIX (bughunt round-2 — flush 時刻が rAF 基準とずれると描画ハング): the previous
+  // code fell back to Date.now() (epoch ~1.7e12) when performance.now was unavailable.
+  // flush() then seeded lastDrawMs with that epoch value while onFrame compared it
+  // against small origin-relative rAF timestamps ⇒ a hugely negative delta ⇒ every
+  // frame failed the cap gate and rescheduled forever ⇒ the map never repaints (a hard
+  // draw-hang on headless/special runners; Electron renderers always have
+  // performance.now so production was unaffected). We now drop the Date.now fallback
+  // entirely: when no rAF-compatible clock exists, `now` returns undefined and flush
+  // draws WITHOUT advancing the budget clock, keeping lastDrawMs on a basis onFrame
+  // can compare — correctness over a leaked frame, never a hang.
+  const now: () => number | undefined =
     options.now ??
     (() =>
       typeof performance !== 'undefined' && typeof performance.now === 'function'
         ? performance.now()
-        : Date.now());
+        : undefined);
   let fps = options.initialFps;
   // Build the FrameScheduler options without ever assigning `undefined` to the
   // optional schedule/cancel (exactOptionalPropertyTypes: omit ⇒ U19's rAF defaults).
@@ -100,6 +114,9 @@ export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawSc
       scheduler.request();
     },
     flush(): void {
+      // now() yields a performance.now()-basis ms (rAF-compatible) or undefined when no
+      // such clock exists; flush() advances the budget only for the former, so the cap
+      // gate is never poisoned by a foreign time base (bughunt round-2: draw-hang fix).
       scheduler.flush(now());
     },
     setFps(nextFps: number): void {
