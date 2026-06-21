@@ -47,11 +47,13 @@ export {
   type AddPort,
   type ContextMenuPort,
   type PointerModifiers,
+  type MapCameraInput,
   NO_MODIFIERS,
   EMPTY_HIT_TESTER,
   NOOP_SELECTION_PORT,
   NOOP_ADD_PORT,
   NOOP_CONTEXT_MENU_PORT,
+  NOOP_MAP_CAMERA_INPUT,
 } from './ports';
 
 export {

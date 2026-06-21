@@ -156,3 +156,54 @@ export const NOOP_ADD_PORT: AddPort = {
 export const NOOP_CONTEXT_MENU_PORT: ContextMenuPort = {
   request(): void {},
 };
+
+// --- Tool-overlay → camera forwarding port (bughunt: 追加/ナイフ描画中のパン/ズーム)
+//
+// PROBLEM the port closes: in 追加/ナイフ描画フェーズ the tool controller mounts a
+// full-surface input bridge as a SIBLING above the map (教訓 5.14). It captures
+// pointer/wheel events to drive vertex placement, but those events then never reach
+// the {@link PointerDispatcher}'s DOM listeners (attached to the map-input-layer, a
+// background sibling) — so 中ボタンパン and ホイールズーム died during drawing while
+// the dispatcher unit tests (which call it directly, no overlay) stayed green.
+//
+// 教訓 5.7「ロジックがあっても UI から呼ばれず機能しない状態を作らない」/ 教訓 5.29
+// 単一真実源: rather than re-implementing pan/zoom in the overlay (a SECOND camera
+// input path that could drift), the tool bridge FORWARDS the camera-only events to
+// the SAME live dispatcher through this port. The port takes CLIENT coordinates and
+// owns the client→surface conversion (the same rect the dispatcher's own listeners
+// use), so the controllers carry no geometry knowledge and the two paths share one
+// transform (cannot diverge).
+//
+// The LEFT button stays owned by the tool (point placement / cut input); only the
+// wheel (zoom in every mode) and NON-left pointer interactions (middle-button pan)
+// are forwarded — so forwarding can never steal the tool's own left-button input.
+
+/**
+ * Forward the camera-relevant raw DOM events from a tool-overlay input bridge to
+ * the live {@link PointerDispatcher}, in CLIENT coordinates (the port converts to
+ * surface space internally). Wheel zooms in every mode; the pointer methods drive a
+ * middle-button pan during 追加/ナイフ描画 (the dispatcher's mode×button table gates
+ * which non-left button actually pans). Left-button input is NOT routed here — the
+ * tool controller owns it (受け入れ基準: forwarding never steals tool input).
+ */
+export interface MapCameraInput {
+  /** A wheel notch at a client position → cursor-anchored zoom (every mode). */
+  wheel(clientX: number, clientY: number, deltaY: number, deltaMode: number): void;
+  /** A non-left pointer press at a client position → maybe-pan start. */
+  pointerDown(e: PointerEvent, clientX: number, clientY: number): void;
+  /** A pointer move (held button in `buttons`) → pan update if one is in flight. */
+  pointerMove(e: PointerEvent, clientX: number, clientY: number): void;
+  /** A pointer release → finalize / drop any pan it was driving. */
+  pointerUp(e: PointerEvent, clientX: number, clientY: number): void;
+  /** A pointer cancel → drop any pan transient for this pointer. */
+  pointerCancel(pointerId: number): void;
+}
+
+/** A camera-input port that does nothing (pre-mount / tests without a renderer). */
+export const NOOP_MAP_CAMERA_INPUT: MapCameraInput = {
+  wheel(): void {},
+  pointerDown(): void {},
+  pointerMove(): void {},
+  pointerUp(): void {},
+  pointerCancel(): void {},
+};

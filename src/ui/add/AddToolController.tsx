@@ -43,6 +43,7 @@ import { EDIT_MODE } from '../state/session';
 import { coerceGridSpacing } from '../../domain/basemap/grid';
 import { buildAddPrimitives, type AddStyle } from '../../render/add-batch';
 import type { DrawPrimitive } from '../../render/map-renderer';
+import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import { AddPropertyForm } from './AddPropertyForm';
 import { ADD_STRINGS } from './strings';
@@ -77,6 +78,15 @@ export interface AddToolControllerProps<S> {
   readonly screenToWorld: ScreenToWorld;
   /** The provisional-add render sink (U17). */
   readonly drawSink: AddDrawSink;
+  /**
+   * Forward the camera-only raw events (wheel + non-left pointer) from the add
+   * input bridge to the live map dispatcher (bughunt: 追加描画中の中ボタンパン/
+   * ホイールズーム). The bridge covers the whole map while drawing (教訓 5.14), so
+   * without this the wheel / middle-button events it captures never reach the
+   * dispatcher and 地図のパン/ズームが死ぬ. Optional: defaults to a no-op so a test
+   * that mounts the controller without a renderer is unaffected.
+   */
+  readonly mapCameraInput?: MapCameraInput | undefined;
   /**
    * Host commit handler (教訓 5.11): swap the new domain state in and re-resolve
    * selection from the new feature id. The controller forwards `applyCommandResult`
@@ -124,6 +134,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     isInsideTerminal,
     style,
   } = props;
+  const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
@@ -258,6 +269,39 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     [add.phase, add.preview, screenToWorld],
   );
 
+  // --- Camera passthrough (bughunt: 追加描画中の中ボタンパン/ホイールズーム). The input
+  // bridge captures every pointer/wheel event over the map; forward the camera-only
+  // ones (wheel + non-left pointer) to the live map dispatcher so 中ボタンパン /
+  // ホイールズーム keep working while drawing. The LEFT button is consumed by
+  // placeAt / preview above and is NOT forwarded — the dispatcher would ignore it
+  // anyway (add-mode left is not a pan button), but we keep the surfaces cleanly
+  // separated so the two paths can never both act on one press (教訓 5.9).
+  const onMapWheel = useCallback(
+    (e: { clientX: number; clientY: number; deltaY: number; deltaMode: number }) => {
+      mapCameraInput.wheel(e.clientX, e.clientY, e.deltaY, e.deltaMode);
+    },
+    [mapCameraInput],
+  );
+  const onMapCameraPointerDown = useCallback(
+    (e: PointerEvent) => {
+      if (e.button === 0) return; // left = tool placement (handled by onMapPointerDown)
+      mapCameraInput.pointerDown(e, e.clientX, e.clientY);
+    },
+    [mapCameraInput],
+  );
+  const onMapCameraPointerMove = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerMove(e, e.clientX, e.clientY),
+    [mapCameraInput],
+  );
+  const onMapCameraPointerUp = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerUp(e, e.clientX, e.clientY),
+    [mapCameraInput],
+  );
+  const onMapCameraPointerCancel = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerCancel(e.pointerId),
+    [mapCameraInput],
+  );
+
   // Render the provisional-add chrome (complete trigger + property form) plus the
   // transient map-input layer, which sits in the shell overlay ABOVE the map and
   // captures pointer events while an add is in progress (教訓 5.14): the input
@@ -269,6 +313,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       parentCandidates={parentCandidates ?? []}
       onMapPointerDown={onMapPointerDown}
       onMapPointerMove={onMapPointerMove}
+      onMapWheel={onMapWheel}
+      onMapCameraPointerDown={onMapCameraPointerDown}
+      onMapCameraPointerMove={onMapCameraPointerMove}
+      onMapCameraPointerUp={onMapCameraPointerUp}
+      onMapCameraPointerCancel={onMapCameraPointerCancel}
     />
   );
 }
@@ -280,6 +329,102 @@ interface AddToolChromeProps {
   readonly parentCandidates: readonly ParentCandidate[];
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
+  /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
+  readonly onMapWheel: (e: {
+    clientX: number;
+    clientY: number;
+    deltaY: number;
+    deltaMode: number;
+  }) => void;
+  /** Forward a non-left press over the bridge to the camera (描画中の中ボタンパン). */
+  readonly onMapCameraPointerDown: (e: PointerEvent) => void;
+  readonly onMapCameraPointerMove: (e: PointerEvent) => void;
+  readonly onMapCameraPointerUp: (e: PointerEvent) => void;
+  readonly onMapCameraPointerCancel: (e: PointerEvent) => void;
+}
+
+/**
+ * The transparent map-input bridge mounted while drawing (教訓 5.14). It forwards
+ * LEFT-button press / move to the add hook (placeAt / preview) via React handlers,
+ * AND forwards the camera-only events (wheel + non-left pointer) to the live map
+ * dispatcher (bughunt: 追加描画中の中ボタンパン/ホイールズーム).
+ *
+ * The wheel + pointer listeners are attached NATIVELY through a ref rather than as
+ * React props because React registers `onWheel` as a PASSIVE root listener, so a
+ * React handler cannot `preventDefault()` the page scroll — the host's own map
+ * listener uses `{ passive: false }` for exactly this reason, and we mirror it so a
+ * notch becomes a zoom, not a scroll. The native pointer listeners additionally let
+ * a middle-button pan use the bridge's own `setPointerCapture` for the drag
+ * (受け入れ基準 3 連続保証), which the camera port performs via `e.currentTarget`.
+ */
+function AddInputBridge(props: {
+  readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
+  readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
+  readonly onMapWheel: (e: {
+    clientX: number;
+    clientY: number;
+    deltaY: number;
+    deltaMode: number;
+  }) => void;
+  readonly onMapCameraPointerDown: (e: PointerEvent) => void;
+  readonly onMapCameraPointerMove: (e: PointerEvent) => void;
+  readonly onMapCameraPointerUp: (e: PointerEvent) => void;
+  readonly onMapCameraPointerCancel: (e: PointerEvent) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const {
+    onMapPointerDown,
+    onMapPointerMove,
+    onMapWheel,
+    onMapCameraPointerDown,
+    onMapCameraPointerMove,
+    onMapCameraPointerUp,
+    onMapCameraPointerCancel,
+  } = props;
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const onWheel = (e: WheelEvent): void => {
+      // Suppress page scroll so a notch zooms (mirrors the host's passive:false
+      // wheel listener); then forward to the cursor-anchored zoom.
+      e.preventDefault();
+      onMapWheel({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        deltaY: e.deltaY,
+        deltaMode: e.deltaMode,
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('pointerdown', onMapCameraPointerDown);
+    el.addEventListener('pointermove', onMapCameraPointerMove);
+    el.addEventListener('pointerup', onMapCameraPointerUp);
+    el.addEventListener('pointercancel', onMapCameraPointerCancel);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('pointerdown', onMapCameraPointerDown);
+      el.removeEventListener('pointermove', onMapCameraPointerMove);
+      el.removeEventListener('pointerup', onMapCameraPointerUp);
+      el.removeEventListener('pointercancel', onMapCameraPointerCancel);
+    };
+  }, [
+    onMapWheel,
+    onMapCameraPointerDown,
+    onMapCameraPointerMove,
+    onMapCameraPointerUp,
+    onMapCameraPointerCancel,
+  ]);
+  return (
+    <div
+      ref={ref}
+      className="add-tool__input"
+      data-testid="add-input-layer"
+      onPointerDown={(e) =>
+        onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
+      }
+      onPointerMove={(e) => onMapPointerMove({ clientX: e.clientX, clientY: e.clientY })}
+    />
+  );
 }
 
 function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
@@ -296,17 +441,18 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
     <div className="add-tool" data-testid="add-tool" data-phase={add.phase}>
       {/* The map input bridge: a transparent layer that forwards pointer events
           to the hook. It sits in the overlay above the map (教訓 5.14) ONLY while
-          an add is in progress, so it never steals input otherwise. */}
+          an add is in progress, so it never steals input otherwise. It ALSO forwards
+          the camera-only events (wheel + non-left pointer) to the live map dispatcher
+          so 中ボタンパン / ホイールズーム keep working while drawing (bughunt). */}
       {add.phase === ADD_PHASE.Drawing && (
-        <div
-          className="add-tool__input"
-          data-testid="add-input-layer"
-          onPointerDown={(e) =>
-            props.onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
-          }
-          onPointerMove={(e) =>
-            props.onMapPointerMove({ clientX: e.clientX, clientY: e.clientY })
-          }
+        <AddInputBridge
+          onMapPointerDown={props.onMapPointerDown}
+          onMapPointerMove={props.onMapPointerMove}
+          onMapWheel={props.onMapWheel}
+          onMapCameraPointerDown={props.onMapCameraPointerDown}
+          onMapCameraPointerMove={props.onMapCameraPointerMove}
+          onMapCameraPointerUp={props.onMapCameraPointerUp}
+          onMapCameraPointerCancel={props.onMapCameraPointerCancel}
         />
       )}
 

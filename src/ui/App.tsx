@@ -91,6 +91,7 @@ import {
   NOOP_CONTEXT_MENU_PORT,
   type CameraPort,
   type HitTester,
+  type MapCameraInput,
 } from './map/index';
 import { liveHitTestAt } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
@@ -192,6 +193,17 @@ export function App(): JSX.Element {
   // a React re-render. Until the map mounts the ports degrade gracefully (no-op
   // draw / identity transform), so the wiring is real and never crashes pre-mount.
   const rendererRef = useRef<AddHostPorts | null>(null);
+
+  // ROOT FIX (bughunt: 追加/ナイフ描画中は中ボタンパンとホイールズームが効かない). The
+  // add / knife controllers mount a full-surface input bridge ABOVE the map while
+  // drawing (教訓 5.14); it captures pointer/wheel events that then never reach the
+  // U40 PointerDispatcher (its DOM listeners are on the background map-input-layer,
+  // a sibling), so 中ボタンパン / ホイールズーム died during drawing. We hold a
+  // {@link MapCameraInput} port — built in onMapMount from the SAME live dispatcher —
+  // behind a ref and hand it to both tool controllers so their bridge FORWARDS the
+  // camera-only events (wheel + non-left pointer) to that one dispatcher (単一真実源 —
+  // no second pan/zoom path, 教訓 5.29). Until the map mounts it degrades to a no-op.
+  const cameraInputRef = useRef<MapCameraInput | null>(null);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -518,6 +530,54 @@ export function App(): JSX.Element {
     // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
     hookTarget.addEventListener('wheel', onWheel, { passive: false });
 
+    // ROOT FIX (bughunt: 追加/ナイフ描画中は中ボタンパンとホイールズームが効かない) —
+    // expose the camera-only entry points of THIS dispatcher to the tool overlays.
+    // The tool input bridge sits above the map (教訓 5.14) and would otherwise eat
+    // the wheel / middle-button events; it now forwards them here so they reach the
+    // SAME live dispatcher the background listeners use (単一真実源 — one pan/zoom
+    // path, no drift). Client coords are converted to surface space with the SAME
+    // `toSurface` (hookTarget rect) the native listeners use, so "scroll here ⇒ zoom
+    // anchored here" cannot diverge between the two input surfaces (教訓 5.29). Left-
+    // button input is NOT routed here (it stays owned by the tool); only the wheel
+    // and non-left pointer interactions (the dispatcher's mode×button table gates
+    // which non-left button actually pans) flow through.
+    cameraInputRef.current = {
+      wheel: (clientX, clientY, deltaY, deltaMode): void => {
+        const { x, y } = toSurface(clientX, clientY);
+        dispatcher.wheel({ x, y, deltaY, deltaMode });
+      },
+      pointerDown: (e, clientX, clientY): void => {
+        // The tool owns the LEFT button (placement / cut input); never start a pan
+        // sequence for it here. Non-left presses (middle/right) go to the dispatcher,
+        // which decides pan vs context-menu from its mode×button table.
+        if (e.button === 0) return;
+        const { x, y } = toSurface(clientX, clientY);
+        const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
+        // Capture on the OVERLAY bridge (the element the event fired on) so a middle-
+        // button pan keeps tracking even if the cursor leaves the bridge mid-drag
+        // (受け入れ基準 3 押下→移動→解放の連続保証).
+        if (target === DISPATCH_TARGET.Pan) {
+          (e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId);
+        }
+      },
+      pointerMove: (e, clientX, clientY): void => {
+        // A move with the left button held is a tool draw, not a pan — the dispatcher
+        // tracks only the pointers IT started (a left press never started one here),
+        // so an untracked move is a safe no-op. We still forward every move so an
+        // in-flight middle-button pan keeps updating.
+        const { x, y } = toSurface(clientX, clientY);
+        dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
+      },
+      pointerUp: (e, clientX, clientY): void => {
+        const { x, y } = toSurface(clientX, clientY);
+        dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
+        (e.currentTarget as Element | null)?.releasePointerCapture?.(e.pointerId);
+      },
+      pointerCancel: (pointerId): void => {
+        dispatcher.pointerCancel(pointerId);
+      },
+    };
+
     // Abort any in-progress pan/selection on a mode OR active-tool change so a stale
     // reference from the previous mode/tool cannot bleed into the next (教訓 5.2,
     // 受け入れ基準 6). A tool switch (store.setActiveTool) runs the same reset契約 as
@@ -589,6 +649,7 @@ export function App(): JSX.Element {
       hookTarget.removeEventListener('wheel', onWheel);
       ports.dispose();
       rendererRef.current = null;
+      cameraInputRef.current = null;
     };
   }, [store]);
 
@@ -619,6 +680,26 @@ export function App(): JSX.Element {
       drawKnife(primitives: readonly DrawPrimitive[]): void {
         rendererRef.current?.drawKnife(primitives);
       },
+    }),
+    [],
+  );
+
+  // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
+  // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
+  // ref (set in onMapMount), degrading to a no-op before the map mounts — the SAME
+  // late-binding pattern `screenToWorld` / `drawSink` use, so the controllers depend
+  // on a stable contract that never re-mounts the map (技術方針 2.3).
+  const mapCameraInput: MapCameraInput = useMemo(
+    () => ({
+      wheel: (clientX, clientY, deltaY, deltaMode) =>
+        cameraInputRef.current?.wheel(clientX, clientY, deltaY, deltaMode),
+      pointerDown: (e, clientX, clientY) =>
+        cameraInputRef.current?.pointerDown(e, clientX, clientY),
+      pointerMove: (e, clientX, clientY) =>
+        cameraInputRef.current?.pointerMove(e, clientX, clientY),
+      pointerUp: (e, clientX, clientY) =>
+        cameraInputRef.current?.pointerUp(e, clientX, clientY),
+      pointerCancel: (pointerId) => cameraInputRef.current?.pointerCancel(pointerId),
     }),
     [],
   );
@@ -1022,6 +1103,7 @@ export function App(): JSX.Element {
               nextRingId={hostBootstrap.nextRingId}
               screenToWorld={screenToWorld}
               drawSink={drawSink}
+              mapCameraInput={mapCameraInput}
               onCommitted={onAddCommitted}
               onConflicts={onAddConflicts}
             />
@@ -1036,6 +1118,7 @@ export function App(): JSX.Element {
               featureAtPoint={knifeBootstrap.featureAtPoint}
               targetShape={knifeTargetShape}
               drawSink={knifeDrawSink}
+              mapCameraInput={mapCameraInput}
               zoom={cameraZoom}
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}

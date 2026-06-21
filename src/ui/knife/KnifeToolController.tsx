@@ -42,6 +42,7 @@ import {
 
 import { buildKnifePrimitives, DEFAULT_KNIFE_STYLE, type KnifeStyle } from '../../render/knife-batch';
 import type { DrawPrimitive } from '../../render/map-renderer';
+import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
@@ -98,6 +99,14 @@ export interface KnifeToolControllerProps<S> {
   readonly targetShape: GeoMultiPolygon | undefined;
   /** The provisional-knife render sink (U17). */
   readonly drawSink: KnifeDrawSink;
+  /**
+   * Forward the camera-only raw events (wheel + non-left pointer) from the knife
+   * input bridge to the live map dispatcher (bughunt: ナイフ描画中の中ボタンパン/
+   * ホイールズーム). The bridge covers the whole map while selecting / drawing
+   * (教訓 5.14), so without this the wheel / middle-button events it captures never
+   * reach the dispatcher and 地図のパン/ズームが死ぬ. Optional: defaults to a no-op.
+   */
+  readonly mapCameraInput?: MapCameraInput | undefined;
   /** The current camera zoom (CSS px/deg) for the固定円 radius. */
   readonly zoom: number;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection. */
@@ -133,6 +142,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     defaultColor,
     style,
   } = props;
+  const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
@@ -237,11 +247,47 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     [knife, screenToWorld, featureAtPoint, circleWorldRadius],
   );
 
+  // --- Camera passthrough (bughunt: ナイフ描画中の中ボタンパン/ホイールズーム). The
+  // input bridge captures every pointer/wheel event over the map; forward the
+  // camera-only ones (wheel + non-left pointer) to the live map dispatcher so 中ボタ
+  // ンパン / ホイールズーム keep working while selecting / drawing. The LEFT button is
+  // consumed by target select / cut-point input above and is NOT forwarded.
+  const onMapWheel = useCallback(
+    (e: { clientX: number; clientY: number; deltaY: number; deltaMode: number }) => {
+      mapCameraInput.wheel(e.clientX, e.clientY, e.deltaY, e.deltaMode);
+    },
+    [mapCameraInput],
+  );
+  const onMapCameraPointerDown = useCallback(
+    (e: PointerEvent) => {
+      if (e.button === 0) return; // left = target/cut input (handled by onMapPointerDown)
+      mapCameraInput.pointerDown(e, e.clientX, e.clientY);
+    },
+    [mapCameraInput],
+  );
+  const onMapCameraPointerMove = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerMove(e, e.clientX, e.clientY),
+    [mapCameraInput],
+  );
+  const onMapCameraPointerUp = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerUp(e, e.clientX, e.clientY),
+    [mapCameraInput],
+  );
+  const onMapCameraPointerCancel = useCallback(
+    (e: PointerEvent) => mapCameraInput.pointerCancel(e.pointerId),
+    [mapCameraInput],
+  );
+
   return (
     <KnifeToolChrome
       knife={knife}
       defaultColor={defaultColor}
       onMapPointerDown={onMapPointerDown}
+      onMapWheel={onMapWheel}
+      onMapCameraPointerDown={onMapCameraPointerDown}
+      onMapCameraPointerMove={onMapCameraPointerMove}
+      onMapCameraPointerUp={onMapCameraPointerUp}
+      onMapCameraPointerCancel={onMapCameraPointerCancel}
     />
   );
 }
@@ -252,6 +298,96 @@ interface KnifeToolChromeProps<S> {
   readonly knife: ReturnType<typeof useKnifeTool<S>>;
   readonly defaultColor: ColorInfo;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
+  /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
+  readonly onMapWheel: (e: {
+    clientX: number;
+    clientY: number;
+    deltaY: number;
+    deltaMode: number;
+  }) => void;
+  /** Forward a non-left press over the bridge to the camera (描画中の中ボタンパン). */
+  readonly onMapCameraPointerDown: (e: PointerEvent) => void;
+  readonly onMapCameraPointerMove: (e: PointerEvent) => void;
+  readonly onMapCameraPointerUp: (e: PointerEvent) => void;
+  readonly onMapCameraPointerCancel: (e: PointerEvent) => void;
+}
+
+/**
+ * The transparent map-input bridge mounted while selecting / drawing (教訓 5.14). It
+ * forwards LEFT-button presses to the knife hook (target select / cut input) via a
+ * React handler, AND forwards the camera-only events (wheel + non-left pointer) to
+ * the live map dispatcher (bughunt: ナイフ描画中の中ボタンパン/ホイールズーム).
+ *
+ * The wheel + pointer listeners are attached NATIVELY through a ref because React
+ * registers `onWheel` as a PASSIVE root listener, so a React handler cannot
+ * `preventDefault()` the page scroll — the host's own map listener uses
+ * `{ passive: false }` for the same reason, and we mirror it so a notch zooms
+ * instead of scrolling. (Mirrors AddInputBridge — kept per-controller because the
+ * LEFT-button forwarding differs, 教訓 5.30 過剰共有の戒め.)
+ */
+function KnifeInputBridge(props: {
+  readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
+  readonly onMapWheel: (e: {
+    clientX: number;
+    clientY: number;
+    deltaY: number;
+    deltaMode: number;
+  }) => void;
+  readonly onMapCameraPointerDown: (e: PointerEvent) => void;
+  readonly onMapCameraPointerMove: (e: PointerEvent) => void;
+  readonly onMapCameraPointerUp: (e: PointerEvent) => void;
+  readonly onMapCameraPointerCancel: (e: PointerEvent) => void;
+}): JSX.Element {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const {
+    onMapPointerDown,
+    onMapWheel,
+    onMapCameraPointerDown,
+    onMapCameraPointerMove,
+    onMapCameraPointerUp,
+    onMapCameraPointerCancel,
+  } = props;
+  useEffect(() => {
+    const el = ref.current;
+    if (el === null) return;
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault();
+      onMapWheel({
+        clientX: e.clientX,
+        clientY: e.clientY,
+        deltaY: e.deltaY,
+        deltaMode: e.deltaMode,
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('pointerdown', onMapCameraPointerDown);
+    el.addEventListener('pointermove', onMapCameraPointerMove);
+    el.addEventListener('pointerup', onMapCameraPointerUp);
+    el.addEventListener('pointercancel', onMapCameraPointerCancel);
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('pointerdown', onMapCameraPointerDown);
+      el.removeEventListener('pointermove', onMapCameraPointerMove);
+      el.removeEventListener('pointerup', onMapCameraPointerUp);
+      el.removeEventListener('pointercancel', onMapCameraPointerCancel);
+    };
+  }, [
+    onMapWheel,
+    onMapCameraPointerDown,
+    onMapCameraPointerMove,
+    onMapCameraPointerUp,
+    onMapCameraPointerCancel,
+  ]);
+  return (
+    <div
+      ref={ref}
+      className="knife-tool__input"
+      data-testid="knife-input-layer"
+      onPointerDown={(e) =>
+        onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
+      }
+    />
+  );
 }
 
 function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null {
@@ -268,14 +404,17 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
       {/* The map input bridge: a transparent layer ABOVE the map (教訓 5.14) ONLY
           while selecting / drawing, so it never steals input otherwise. The
           overlay drawn underneath does NOT capture clicks — this layer does, and
-          forwards them to the hook with the固定円ヒット優先. */}
+          forwards them to the hook with the固定円ヒット優先. It ALSO forwards the
+          camera-only events (wheel + non-left pointer) to the live map dispatcher so
+          中ボタンパン / ホイールズーム keep working while selecting / drawing (bughunt). */}
       {(knife.flow === KNIFE_FLOW.SelectingTarget || knife.flow === KNIFE_FLOW.DrawingCut) && (
-        <div
-          className="knife-tool__input"
-          data-testid="knife-input-layer"
-          onPointerDown={(e) =>
-            props.onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
-          }
+        <KnifeInputBridge
+          onMapPointerDown={props.onMapPointerDown}
+          onMapWheel={props.onMapWheel}
+          onMapCameraPointerDown={props.onMapCameraPointerDown}
+          onMapCameraPointerMove={props.onMapCameraPointerMove}
+          onMapCameraPointerUp={props.onMapCameraPointerUp}
+          onMapCameraPointerCancel={props.onMapCameraPointerCancel}
         />
       )}
 

@@ -61,7 +61,7 @@ export async function launchApp(): Promise<LaunchedApp> {
  * toggles are disabled; toggling 表示専用 off enables them, then 追加モード arms add.
  * This is the SAME live導線 the regression suite drives (no overlay bypass).
  */
-async function enterAddMode(page: Page): Promise<void> {
+export async function enterAddMode(page: Page): Promise<void> {
   const viewToggle = page.getByTestId('mode-view');
   await expect(viewToggle).toBeVisible();
   if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
