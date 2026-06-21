@@ -53,7 +53,11 @@
 // PURITY: no React, no store, no Canvas. It builds fresh arrays; inputs are never
 // mutated.
 
-import { FEATURE_KIND, type Feature } from '../../domain/feature';
+import {
+  FEATURE_KIND,
+  isDrawableLineVertexCount,
+  type Feature,
+} from '../../domain/feature';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
@@ -133,21 +137,37 @@ const DEFAULT_DISPLAY_CONTROL: DisplayControlInput = {
 };
 
 /**
- * Does EVERY vertex of this line resolve in the live store this frame? The renderer
- * (committed-features Line branch) draws a line ALL-OR-NOTHING: if any one of its
- * vertexIds is unresolved it sets `resolvable=false` and drops the WHOLE primitive
- * (a line `[v1, missing, v2]` is NOT drawn). The hit-test MUST mirror that rule so
- * what-is-hit == what-is-drawn (clip ⊇ draw ⊇ hit): an undrawn line must contribute
- * NEITHER a grabbable vertex (vertexOwners) NOR a hittable body segment. Without this
- * the two paths diverged — vertexOwners claimed v1/v2 and the body path built
- * per-contiguous-run geometry around the gap, so an invisible line stayed selectable
- * by clicking its surviving endpoints / segments (bughunt: 描画とヒットの不一致).
+ * Is this line actually DRAWN this frame — i.e. would the renderer paint it? The
+ * renderer (committed-features Line branch → feature-layer `buildLinePrimitives`)
+ * draws a line under TWO conditions, both mirrored here so what-is-hit == what-is-
+ * drawn (clip ⊇ draw ⊇ hit): an undrawn line must contribute NEITHER a grabbable
+ * vertex (vertexOwners) NOR a hittable body segment.
+ *
+ *   1. ALL-OR-NOTHING (bughunt 描画とヒットの不一致): if ANY of its vertexIds is
+ *      unresolved in the live store, committed-features sets `resolvable=false` and
+ *      drops the WHOLE primitive (a line `[v1, missing, v2]` is NOT drawn). Without
+ *      this the two paths diverged — vertexOwners claimed v1/v2 and the body path
+ *      built per-contiguous-run geometry around the gap, so an invisible line stayed
+ *      selectable by clicking a surviving endpoint / segment.
+ *
+ *   2. MINIMUM VERTICES (bughunt 1頂点 line は描画されないのに掴める): a line needs ≥2
+ *      resolved vertices to be a real polyline (FR-19). A 1-vertex line renders to
+ *      nothing (committed-features drops it; `buildLinePrimitives` needs
+ *      points.length≥2), so its single vertex must not be grabbable either. The
+ *      「2頂点未満は描かない」rule is the SINGLE domain predicate
+ *      `isDrawableLineVertexCount` (教訓 5.30), shared with committed-features so the
+ *      draw/hit decision cannot drift.
  */
 function lineFullyResolved(
   vertexIds: readonly VertexId[],
   vertices: ReturnType<typeof verticesAt>,
 ): boolean {
-  return vertexIds.every((vid) => getVertex(vertices, vid) !== undefined);
+  let resolvedCount = 0;
+  for (const vid of vertexIds) {
+    if (getVertex(vertices, vid) === undefined) return false;
+    resolvedCount += 1;
+  }
+  return isDrawableLineVertexCount(resolvedCount);
 }
 
 /**

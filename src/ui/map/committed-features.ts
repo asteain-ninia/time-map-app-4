@@ -32,7 +32,11 @@
 //
 // PURITY: builds fresh arrays; inputs are never mutated.
 
-import { FEATURE_KIND, type Feature } from '../../domain/feature';
+import {
+  FEATURE_KIND,
+  isDrawableLineVertexCount,
+  type Feature,
+} from '../../domain/feature';
 import type { ColorInfo } from '../../domain/attributes';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
@@ -170,7 +174,14 @@ export function buildCommittedFeatures(
           }
           raw.push({ lon: v.coordinate.lon, lat: v.coordinate.lat });
         }
-        if (!resolvable || raw.length === 0) break;
+        // A line needs ≥2 resolved vertices to be a real polyline (FR-19). A
+        // 1-vertex line (corrupt load / mid-edit transient) renders to NOTHING in
+        // the renderer (`buildLinePrimitives` needs points.length≥2), so it must
+        // not be emitted as an `EvaluatedLine` here either — otherwise the hit-test
+        // would offer its single, invisible vertex for selection (clip ⊇ draw ⊇ hit
+        // 違反). The「2頂点未満は描かない」rule is the SINGLE domain predicate
+        // `isDrawableLineVertexCount` (教訓 5.30), shared with the hit-test.
+        if (!resolvable || !isDrawableLineVertexCount(raw.length)) break;
         // HB-14 / FR-07: a line whose vertices straddle the antimeridian must be a
         // CONTINUOUS run, not two stored representatives [179, -179] (which the render
         // layer's continuous-longitude contract — feature-layer EvaluatedLine.points —

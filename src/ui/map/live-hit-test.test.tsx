@@ -765,6 +765,53 @@ describe('liveHitTestAt', () => {
       if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(ln.feature.id);
     });
   });
+
+  // --- bughunt: 1 頂点だけの line は描画されないのに頂点として掴める -------------------
+  //
+  // committed-features draws a line all-or-nothing AND only when it has ≥2 resolved
+  // vertices (feature-layer.buildLinePrimitives needs points.length≥2). A degenerate
+  // 1-vertex line (corrupt load / mid-edit transient) therefore renders to NOTHING.
+  // But the hit-test's lineFullyResolved used to return true for it (its single vertex
+  // resolves), so vertexOwners registered that invisible vertex as grabbable and a
+  // click near it selected the undrawn line (clip ⊇ draw ⊇ hit 違反). The fix shares
+  // the SINGLE domain predicate isDrawableLineVertexCount(≥2) with committed-features,
+  // so a sub-2-vertex line contributes NEITHER a grabbable vertex NOR a body.
+  describe('degenerate 1-vertex line (renderer/hit-test minimum-vertex parity)', () => {
+    /** A root holding one committed line with a SINGLE vertex at (lon,lat). */
+    function soloLineRoot(
+      lon: number,
+      lat: number,
+    ): { root: DomainRoot; lineId: ReturnType<typeof asFeatureId> } {
+      // lineFeature builds a vertex per point; one point ⇒ a 1-vertex line.
+      const ln = lineFeature('f-solo', 'vsolo', [[lon, lat]]);
+      expect(ln.feature.kind === 'line' && ln.feature.vertexIds.length).toBe(1);
+      return { root: commit(emptyProject(), ln, 1000), lineId: ln.feature.id };
+    }
+
+    it('does NOT select the line via its single (invisible) VERTEX', () => {
+      const { root } = soloLineRoot(2, 2);
+      // Click right on the lone vertex. With the bug this returned a vertex hit on the
+      // undrawn line; the fix makes it empty (nothing drawn is grabbable here).
+      const at = { lon: 2, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: toScreen(at) },
+        at,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
+
+    it('does NOT select the line via a BODY probe at its single vertex', () => {
+      const { root } = soloLineRoot(2, 2);
+      // A 1-vertex line has no segment, so even the body path must contribute nothing.
+      // Probe a hair off the vertex (still inside the grab radius) — still empty.
+      const near = toScreen({ lon: 2, lat: 2 });
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: { x: near.x + 1, y: near.y + 1 } },
+        { lon: 2, lat: 2 },
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
+  });
 });
 
 /** screenToWorld against the wrap test camera (centerLon 360). */

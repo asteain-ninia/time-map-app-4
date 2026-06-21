@@ -35,6 +35,7 @@
 //     the same input yields the same primitives.
 
 import { LONGITUDE_PERIOD } from '../domain/geo/seam';
+import { isDrawableLineVertexCount } from '../domain/feature';
 import type { GeoMultiPolygon, GeoPolygon, GeoRing } from '../domain/geometry/types';
 
 import type { Camera, Viewport } from './camera';
@@ -597,7 +598,11 @@ function buildPointPrimitives(
 
 /** Build the draw primitives for ONE line feature: the polyline + (conditional) label. */
 function buildLinePrimitives(f: EvaluatedLine, opts: BuildOptions): DrawPrimitive[] {
-  if (f.points.length < 2) return [];
+  // A polyline needs ≥2 points to have a segment (FR-19); a degenerate 1-point line
+  // draws nothing. The「2頂点未満は描かない」rule is the SINGLE domain predicate
+  // `isDrawableLineVertexCount` (教訓 5.30), shared with the render bridge
+  // (committed-features) and the hit-test so draw/hit cannot drift.
+  if (!isDrawableLineVertexCount(f.points.length)) return [];
   const stroke = activeColor(f.style, f.selected);
   const line: LinePrimitive = {
     kind: 'line',

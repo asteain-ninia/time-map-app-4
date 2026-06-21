@@ -161,6 +161,56 @@ describe('buildCommittedFeatures', () => {
     }
   });
 
+  it('does NOT emit a 1-vertex line (描画されない＝EvaluatedLine にもしない, clip⊇draw⊇hit)', () => {
+    // bughunt: a degenerate single-vertex line (corrupt load / mid-edit transient) is
+    // structurally valid but renders to NOTHING — feature-layer.buildLinePrimitives
+    // needs ≥2 points. The bridge previously dropped a line only when raw.length===0,
+    // so a 1-vertex line became an EvaluatedLine that the renderer never drew yet the
+    // hit-test offered its (invisible) vertex for selection. The bridge must mirror the
+    // renderer's minimum-vertex rule and emit NO line for a sub-2-vertex line.
+    const v = createVertex(asVertexId('solo-v'), createCoordinate(10, 10));
+    const lf = createLineFeature(
+      asFeatureId('solo-line'),
+      createBasicAttributes('一頂点線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [v.id],
+    );
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory('solo-line', [lf], createVertexStore([v]), 0),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const features = buildCommittedFeatures(root, timePointYear(10), null, DISPLAY);
+    // The 1-vertex line contributes NO drawable: not as a line, and not as anything.
+    expect(features.find((f) => f.id === 'solo-line')).toBeUndefined();
+    expect(features.filter((f) => f.kind === 'line')).toHaveLength(0);
+  });
+
+  it('emits a 2-vertex line (the minimum drawable line is still drawn)', () => {
+    // Boundary parity with the predicate: exactly MIN_LINE_VERTICES (2) IS drawable.
+    const va = createVertex(asVertexId('two-a'), createCoordinate(10, 10));
+    const vb = createVertex(asVertexId('two-b'), createCoordinate(12, 10));
+    const lf = createLineFeature(
+      asFeatureId('two-line'),
+      createBasicAttributes('二頂点線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [va.id, vb.id],
+    );
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory('two-line', [lf], createVertexStore([va, vb]), 0),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const features = buildCommittedFeatures(root, timePointYear(10), null, DISPLAY);
+    const line = features.find((f) => f.id === 'two-line');
+    expect(line?.kind).toBe('line');
+    if (line && line.kind === 'line') expect(line.points).toHaveLength(2);
+  });
+
   it('marks the active feature selected (FR-82) without changing structure', () => {
     const root = project();
     const selected = 'pt-1' as unknown as FeatureId;

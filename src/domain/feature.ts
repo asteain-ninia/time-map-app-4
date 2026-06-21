@@ -58,6 +58,40 @@ export interface LineFeature extends FeatureCommon {
   readonly vertexIds: readonly VertexId[];
 }
 
+/**
+ * The minimum number of (resolved) vertices a line needs to be a real,
+ * DRAWABLE polyline (FR-19): a single point is not a line — it has no segment.
+ * This is the SINGLE source of the「線は2頂点以上」rule (教訓 5.30 過少共有の戒め):
+ * the add-tool minimum (add/shape-draft), the edit invariant that deletes a line
+ * dropping below it (editing/edit-ops line<2 → delete), the render bridge
+ * (ui/map/committed-features) that emits an `EvaluatedLine`, the renderer that
+ * builds a `LinePrimitive`, and the hit-test that offers a line's vertices /
+ * body all defer here so what is CLIPPED ⊇ what is DRAWN ⊇ what is HIT can never
+ * drift apart for a degenerate (1-vertex) line.
+ */
+export const MIN_LINE_VERTICES = 2;
+
+/**
+ * Is this line drawable, i.e. does it carry at least {@link MIN_LINE_VERTICES}
+ * vertices? A 1-vertex line is structurally valid (it can transiently exist from
+ * a corrupt load or a mid-edit state) but renders to nothing, so it must also be
+ * non-grabbable. Callers that resolve vertices at a time first should pass the
+ * COUNT OF RESOLVED vertices (see `isDrawableLineVertexCount`).
+ */
+export function isDrawableLine(feature: LineFeature): boolean {
+  return feature.vertexIds.length >= MIN_LINE_VERTICES;
+}
+
+/**
+ * The drawable-line predicate over a RESOLVED-vertex count (or point count): the
+ * render bridge / hit-test resolve each `vertexId` at the current time and may
+ * end up with fewer usable points than `vertexIds.length`. They share this single
+ * rule so the「2頂点未満は描かない＝掴ませない」decision is identical everywhere.
+ */
+export function isDrawableLineVertexCount(resolvedCount: number): boolean {
+  return resolvedCount >= MIN_LINE_VERTICES;
+}
+
 /** FR-20: an area defined by a set of rings (territory + hole). */
 export interface LeafFeature extends FeatureCommon {
   readonly kind: typeof FEATURE_KIND.Leaf;
