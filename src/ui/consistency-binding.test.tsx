@@ -49,6 +49,7 @@ function squareLeaf(
   vPrefix: string,
   ox: number,
   oy: number,
+  name = idRaw,
 ): { feature: LeafFeature; vertices: Vertex[] } {
   const corners = [
     [0, 0],
@@ -62,7 +63,7 @@ function squareLeaf(
   const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
   const feature = createLeafFeature(
     asFeatureId(idRaw),
-    createBasicAttributes(idRaw, 0, 0),
+    createBasicAttributes(name, 0, 0),
     color,
     createShape([ring]),
   );
@@ -130,6 +131,44 @@ describe('createLiveAddBinding', () => {
     if (second.status === PROCESS_STATUS.ConflictsPending) {
       expect(second.conflicts.length).toBeGreaterThan(0);
     }
+  });
+
+  // REGRESSION (bughunt R2): the conflict modal showed BLANK feature labels —
+  // the priority radios read "優先: " and the overlap row read "／" with no
+  // identifier — for UNNAMED faces (the default: the add form commits an empty
+  // name). Root cause: displayNamesAt used `byId.get(id) ?? String(id)`, and the
+  // `??` only fires when the id is ABSENT; a present-but-empty name ('') returned
+  // '' and never fell back. The conflict's displayName MUST carry an identifier
+  // (the feature id, mirroring 地物一覧's name→id rule) so FR-63 priority
+  // selection is disambiguatable. This drives the REAL U13 pipeline.
+  it('conflict display names fall back to the feature id when the name is EMPTY (FR-62)', () => {
+    let root = emptyProject();
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId('vx'),
+      nextRingId: () => asRingId('rx'),
+    });
+    // Two overlapping squares, BOTH with an empty name (unnamed faces default).
+    const a = squareLeaf('f-a', 'va', 0, 0, '');
+    const first = binding.startProcess(
+      createEditProposal(a.feature.id, timePointYear(1000), addSnapshot(a.feature, a.vertices)),
+    );
+    expect(first.status).toBe(PROCESS_STATUS.Committed);
+    if (first.status === PROCESS_STATUS.Committed) root = first.state;
+
+    const b = squareLeaf('f-b', 'vb', 1, 1, '');
+    const second = binding.startProcess(
+      createEditProposal(b.feature.id, timePointYear(1000), addSnapshot(b.feature, b.vertices)),
+    );
+    expect(second.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (second.status !== PROCESS_STATUS.ConflictsPending) return;
+    const conflict = second.conflicts[0]!;
+    // Neither side renders blank: both carry the feature id as the fallback label.
+    expect(conflict.a.displayName.trim().length).toBeGreaterThan(0);
+    expect(conflict.b.displayName.trim().length).toBeGreaterThan(0);
+    expect([conflict.a.displayName, conflict.b.displayName].sort()).toEqual(
+      ['f-a', 'f-b'].sort(),
+    );
   });
 
   it('rejects a split whose inheritor is not effective at the anchor time as a TIME violation', () => {

@@ -211,11 +211,23 @@ function checkTimeOverExisting<Snapshot>(
   };
 }
 
-/** A display-name lookup over the trial state at the anchor time (FR-62). */
+/**
+ * A display-name lookup over the trial state at the anchor time (FR-62).
+ *
+ * Falls back to the feature id whenever the name is missing OR blank
+ * (unnamed faces are the default — the add form commits an empty name), so the
+ * conflict modal's priority radios and overlap rows always carry an identifier
+ * the user can disambiguate by. This mirrors the 地物一覧 label rule in
+ * SidebarContent (name → id fallback): a `??` alone is insufficient because an
+ * empty string is present-but-blank, not absent.
+ */
 function displayNamesAt(root: DomainRoot, time: TimePoint): (id: FeatureId) => string {
   const byId = new Map<FeatureId, string>();
   for (const f of featuresAt(root, time)) byId.set(f.id, f.attributes.name);
-  return (id) => byId.get(id) ?? String(id);
+  return (id) => {
+    const name = byId.get(id)?.trim();
+    return name !== undefined && name.length > 0 ? name : String(id);
+  };
 }
 
 /**
