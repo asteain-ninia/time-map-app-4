@@ -21,9 +21,8 @@
 
 import { type WorldCoordinate } from '../coordinate';
 import {
-  pointInPolygon,
-  POINT_LOCATION,
   quantizeCoordinate,
+  ringStrictlyContains,
   type GeoMultiPolygon,
   type GeoRing,
 } from '../geometry/index';
@@ -114,11 +113,22 @@ function ringAreaAbs(ring: GeoRing): number {
   return Math.abs(sum) / 2;
 }
 
-/** True iff `inner`'s representative point lies strictly inside `outer`. */
+/**
+ * True iff `inner` ring lies strictly inside `outer` ring.
+ *
+ * Delegates to the shared {@link ringStrictlyContains} predicate (単一の真実源,
+ * the same boundary-robust nesting test that backs U06's hole↔outer invariant and
+ * U26 split re-parenting in knife/proposal). A lone `inner[0]` vertex probe was
+ * fragile: after quantization a 飛び地/穴's first vertex frequently lands exactly
+ * ON a shared seam boundary of the candidate outer/hole, where `pointInPolygon`
+ * returns Boundary (not Inside) — so the old probe reported "not contained" for a
+ * genuinely nested ring, and {@link reparentByContainment} would wrongly promote a
+ * 穴/飛び地 to a top-level territory, collapsing the 直轄領 hierarchy (FR-24). The
+ * robust predicate tests no-vertex-outside + no-edge-stretch-outside + has-real-
+ * interior-inside, so an on-boundary seam vertex no longer fools it.
+ */
 function ringContains(outer: GeoRing, inner: GeoRing): boolean {
-  const probe = inner[0];
-  if (probe === undefined) return false;
-  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
+  return ringStrictlyContains(outer, inner);
 }
 
 /**
