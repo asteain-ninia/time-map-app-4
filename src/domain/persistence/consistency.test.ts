@@ -10,6 +10,7 @@ import {
   type DomainProject,
   type FeatureHistory,
   type Inconsistency,
+  type UiSettings,
 } from './index';
 import {
   CAL,
@@ -535,6 +536,199 @@ describe('orphan history (zombie series, FR-106 拡張)', () => {
     // The owning history is removed too — no orphan/zombie history remains.
     expect(applied.project.histories.map((h) => h.featureId)).toEqual(['dz-b']);
     expect(find(applied.remaining, INCONSISTENCY.OrphanHistory)).toBeUndefined();
+  });
+});
+
+// --- uiSettings preservation across repair (bug-hunt regression) ------------
+
+describe('repair preserves the optional uiSettings block (regression)', () => {
+  // A fully-specified UI settings surface (FR-109 / FR-110), distinct from any
+  // default so a drop-to-defaults regression is detectable. Carries a non-empty
+  // custom palette, project name/description, zoom/timeline bounds, grid, and the
+  // conflict-guide toggle — exactly the fields the buggy transforms silently lost.
+  const UI: UiSettings = {
+    project: {
+      projectName: '帝国年代記',
+      projectDescription: 'A test project with a full ui block.',
+      equatorLengthKm: 40000,
+      flattening: 0.0034,
+      timelineMinYear: -500,
+      timelineMaxYear: 2000,
+      gridSpacingDeg: 15,
+      gridColor: '#abcdef',
+      gridOpacity: 0.42,
+      baseMapId: '@preset/equirectangular-world',
+      areaLabelOccupancyThreshold: 0.3,
+      newAreaAutoColorDefault: false,
+      defaultPaletteTheme: 'pastel',
+      customPalette: ['#112233', '#445566'],
+      zoomMin: 0.25,
+      zoomMax: 8,
+    },
+    app: {
+      snapDistancePx: 50,
+      renderFps: 60,
+      vertexMarkerCap: 500,
+      showConflictGuide: false,
+    },
+  };
+
+  /** Attach the UI block to a project. */
+  function withUi(project: DomainProject): DomainProject {
+    return { ...project, uiSettings: UI };
+  }
+
+  function expectUiPreserved(applied: { project: DomainProject }): void {
+    // The whole block must survive verbatim — not be reset to undefined/defaults.
+    expect(applied.project.uiSettings).toBeDefined();
+    expect(applied.project.uiSettings).toEqual(UI);
+    // And specifically the fields the bug stripped (named for diagnosability).
+    expect(applied.project.uiSettings!.project.projectName).toBe('帝国年代記');
+    expect(applied.project.uiSettings!.project.customPalette).toEqual(['#112233', '#445566']);
+    expect(applied.project.uiSettings!.app.showConflictGuide).toBe(false);
+  }
+
+  it('survives a drop-feature repair (missing-vertex)', () => {
+    const leaf = squareLeaf('uir-mv', '欠損国', 0, 0);
+    const verts = createVertexStore(leaf.vertices.slice(0, 3));
+    const project = withUi({
+      histories: [singleAnchorHistory('uir-mv', [leaf.feature], verts)],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    });
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.MissingVertexReference)!;
+    const applied = applyRepairChecked(project, inc, repairOptionsFor(inc)[0]!.id, CAL);
+    expect(applied.resolved).toBe(true);
+    expectUiPreserved(applied);
+  });
+
+  it('survives a detach-to-top-level repair (dangling parent)', () => {
+    const leaf = squareLeaf('uir-dp', '孤児', 0, 0);
+    const orphan = { ...leaf.feature, parentId: asFeatureId('ghost') } as Feature;
+    const project = withUi({
+      histories: [singleAnchorHistory('uir-dp', [orphan], createVertexStore(leaf.vertices))],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    });
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TreeTopology)!;
+    const applied = applyRepairChecked(project, inc, 'detach-to-top-level', CAL);
+    expect(applied.resolved).toBe(true);
+    expectUiPreserved(applied);
+  });
+
+  it('survives a normalize-series repair (time conflict)', () => {
+    const pt = pointFeature('uir-tc', '都市', 10, 10);
+    const snap = createAnchorSnapshot([pt.feature], createVertexStore([pt.vertex]));
+    const project = withUi({
+      histories: [
+        {
+          featureId: asFeatureId('uir-tc'),
+          series: {
+            entries: [
+              createAnchorEntry(createAnchor(asAnchorId('uir-tc-a1'), snap), timePointYear(100), null),
+              createAnchorEntry(createAnchor(asAnchorId('uir-tc-a2'), snap), timePointYear(100), null),
+            ],
+          },
+        },
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    });
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TimeConflict)!;
+    const applied = applyRepairChecked(project, inc, 'normalize-series', CAL);
+    expect(applied.resolved).toBe(true);
+    expectUiPreserved(applied);
+  });
+
+  it('survives a drop-orphan-history repair', () => {
+    const leaf = squareLeaf('uir-oh', '実在国', 0, 0);
+    const real = singleAnchorHistory('uir-oh', [leaf.feature], createVertexStore(leaf.vertices));
+    const orphanSnap = createAnchorSnapshot([leaf.feature], createVertexStore(leaf.vertices));
+    const orphan: FeatureHistory = {
+      featureId: asFeatureId('uir-oh-ghost'),
+      series: {
+        entries: [
+          createAnchorEntry(createAnchor(asAnchorId('uir-oh-anc'), orphanSnap), timePointYear(0), null),
+        ],
+      },
+    };
+    const project = withUi({
+      histories: [real, orphan],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    });
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.OrphanHistory)!;
+    const applied = applyRepairChecked(project, inc, repairOptionsFor(inc)[0]!.id, CAL);
+    expect(applied.resolved).toBe(true);
+    expectUiPreserved(applied);
+  });
+
+  it('survives a drop-aggregate repair (detach children + drop)', () => {
+    // Reuse the inter-child-gap aggregate shape inline so the drop-aggregate path
+    // (detachChildrenOf → dropFeatures, both fixed) is exercised with a ui block.
+    const rect = (id: string, x: number, y: number, w: number, h: number) => {
+      const corners = [
+        createCoordinate(x, y),
+        createCoordinate(x + w, y),
+        createCoordinate(x + w, y + h),
+        createCoordinate(x, y + h),
+      ];
+      const vertices = corners.map((c, i) => createVertex(asVertexId(`${id}-v${i}`), c));
+      const ring = createTerritoryRing(asRingId(`${id}-r`), vertices.map((v) => v.id));
+      const feature = createLeafFeature(
+        asFeatureId(id),
+        createBasicAttributes(id, 0, 100),
+        COLOR,
+        createShape([ring]),
+        { parentId: asFeatureId('uir-agg') },
+      );
+      return { feature, vertices };
+    };
+    const tiles = [
+      rect('uir-fb', 0, 0, 30, 10),
+      rect('uir-ft', 0, 20, 30, 10),
+      rect('uir-fl', 0, 10, 10, 10),
+      rect('uir-fr', 20, 10, 10, 10),
+    ];
+    const children = tiles.map((t) => t.feature);
+    const agg = createAggregateFeature(
+      asFeatureId('uir-agg'),
+      createBasicAttributes('枠連合', 0, 100),
+      COLOR,
+      children.map((c) => c.id),
+    );
+    const verts = createVertexStore(tiles.flatMap((t) => t.vertices));
+    const anchor = createAnchor(
+      asAnchorId('uir-agg-anc'),
+      createAnchorSnapshot([...children, agg], verts),
+    );
+    const project = withUi({
+      histories: [
+        {
+          featureId: asFeatureId('uir-agg'),
+          series: { entries: [createAnchorEntry(anchor, timePointYear(0), null)] },
+        },
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    });
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.AggregateSumMismatch)!;
+    const applied = applyRepairChecked(project, inc, repairOptionsFor(inc)[0]!.id, CAL);
+    expect(applied.resolved).toBe(true);
+    expectUiPreserved(applied);
+  });
+
+  it('leaves a project WITHOUT uiSettings still without it (no spurious key)', () => {
+    const leaf = squareLeaf('uir-none', '欠損国', 0, 0);
+    const verts = createVertexStore(leaf.vertices.slice(0, 3));
+    const project: DomainProject = {
+      histories: [singleAnchorHistory('uir-none', [leaf.feature], verts)],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.MissingVertexReference)!;
+    const applied = applyRepairChecked(project, inc, repairOptionsFor(inc)[0]!.id, CAL);
+    expect(applied.project.uiSettings).toBeUndefined();
   });
 });
 

@@ -125,7 +125,11 @@ function mapSnapshotFeatures(
       })),
     },
   }));
-  return { histories, settings: project.settings, baseMap: project.baseMap };
+  // Spread the input so every optional project field (e.g. uiSettings, FR-109/110)
+  // survives the transform; only `histories` is replaced. Rebuilding the project as
+  // an explicit { histories, settings, baseMap } literal would silently DROP
+  // uiSettings, leaving the domain root inconsistent after any repair.
+  return { ...project, histories };
 }
 
 /**
@@ -143,7 +147,8 @@ function dropFeatures(project: DomainProject, ids: readonly FeatureId[]): Domain
   );
   // Drop the histories owned by a removed feature (zombie-history prevention).
   const histories = filtered.histories.filter((h) => !drop.has(h.featureId));
-  return { histories, settings: filtered.settings, baseMap: filtered.baseMap };
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  return { ...filtered, histories };
 }
 
 /** Detach the given feature ids to top-level (clear parentId) in every snapshot. */
@@ -176,16 +181,17 @@ function normalizeHistories(
       ? { featureId: h.featureId, series: normalizeSeries(h.series.entries, calendar) }
       : h,
   );
-  return { histories, settings: project.settings, baseMap: project.baseMap };
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  return { ...project, histories };
 }
 
 /** Remove the FeatureHistory entries owned by the given ids (orphan-history repair). */
 function dropHistories(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const drop = new Set<FeatureId>(ids);
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
   return {
+    ...project,
     histories: project.histories.filter((h) => !drop.has(h.featureId)),
-    settings: project.settings,
-    baseMap: project.baseMap,
   };
 }
 
