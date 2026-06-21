@@ -517,6 +517,49 @@ describe('受け入れ基準 5: Canvas-style subscriber receives updates', () =>
   });
 });
 
+// --- bughunt2 再発防止: one camera change is ONE store transition ------------
+// publishCameraHooks (App.tsx) once issued TWO separate set() calls per live
+// camera change — updateCamera({...,centerLon}) then setCenterLon(centerLon) —
+// firing the store subscription twice on the hottest path (every pan move /
+// wheel notch). updateCamera now mirrors centerLon into the top-level FR-12
+// longitude truth inside the SAME set(), so the subscription fires once and the
+// two truths can never diverge between transitions (二重真実源を作らない, 教訓 5.29).
+describe('bughunt2: updateCamera mirrors centerLon in a single set()', () => {
+  it('a camera change carrying centerLon fires the subscription exactly once', () => {
+    const store = makeStore();
+    let notifications = 0;
+    store.subscribe(() => {
+      notifications += 1;
+    });
+
+    store.getState().updateCamera({ zoom: 3, centerLon: 42, centerLat: 7 });
+
+    // ONE transition for the whole camera change (not updateCamera + setCenterLon).
+    expect(notifications).toBe(1);
+    // Both longitude truths advanced together in that single transition.
+    const s = store.getState();
+    expect(s.camera.centerLon).toBe(42);
+    expect(s.centerLon).toBe(42);
+    expect(s.camera.zoom).toBe(3);
+    expect(s.camera.centerLat).toBe(7);
+  });
+
+  it('a zoom-only update leaves the top-level centerLon untouched', () => {
+    const store = makeStore(undefined, { centerLon: 99 });
+    let notifications = 0;
+    store.subscribe(() => {
+      notifications += 1;
+    });
+
+    store.getState().updateCamera({ zoom: 5 });
+
+    expect(notifications).toBe(1);
+    expect(store.getState().camera.zoom).toBe(5);
+    // No centerLon in the patch -> the FR-12 longitude truth is not disturbed.
+    expect(store.getState().centerLon).toBe(99);
+  });
+});
+
 // --- mode/tool reset契約 (教訓 5.2) ----------------------------------------
 
 describe('mode/tool switch discards transient selection (教訓 5.2)', () => {

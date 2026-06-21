@@ -574,7 +574,20 @@ export function createSessionStore<S>(
     },
 
     updateCamera(patch) {
-      set({ camera: { ...get().camera, ...patch } });
+      // The top-level `centerLon` (FR-12 longitude shift) and `camera.centerLon`
+      // are the SAME longitude truth (App.tsx publishCameraHooks mirrors every
+      // live render-camera center into both). Keep them in lock-step inside the
+      // SINGLE set() so a live pan / wheel is ONE store transition — never a
+      // `updateCamera` set() immediately followed by a separate `setCenterLon`
+      // set(), which fired the subscription twice on the hottest path and could
+      // momentarily diverge the two truths between the two transitions (二重真実源を
+      // 作らない, 教訓 5.29). When the patch carries `centerLon` we mirror it; when it
+      // does not (e.g. a zoom-only update) the top-level `centerLon` is untouched.
+      const next: { camera: Camera; centerLon?: number } = {
+        camera: { ...get().camera, ...patch },
+      };
+      if (patch.centerLon !== undefined) next.centerLon = patch.centerLon;
+      set(next);
     },
 
     setCenterLon(centerLon) {

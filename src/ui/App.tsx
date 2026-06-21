@@ -251,6 +251,12 @@ export function App(): JSX.Element {
       // are patched (the store Camera additionally has panX/panY).
       const s = store.getState();
       const cur = s.camera;
+      // ONE store transition per camera change: `updateCamera` mirrors `centerLon`
+      // into the top-level FR-12 longitude truth within the SAME set() (store.ts),
+      // so a live pan / wheel — the hottest path — fires the subscription once, not
+      // twice (updateCamera + setCenterLon). The guard also covers the centerLon
+      // mirror: if camera fields are unchanged then centerLon (== camera.centerLon)
+      // is too, so there is nothing to write.
       if (
         cur.zoom !== camera.zoom ||
         cur.centerLon !== camera.centerLon ||
@@ -262,7 +268,6 @@ export function App(): JSX.Element {
           centerLat: camera.centerLat,
         });
       }
-      if (s.centerLon !== camera.centerLon) s.setCenterLon(camera.centerLon);
     };
 
     /**
