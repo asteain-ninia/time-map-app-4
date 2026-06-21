@@ -517,6 +517,28 @@ describe('cycle resilience (教訓5.28)', () => {
     expect(() => descendantIds(forest, asFeatureId('a'))).not.toThrow();
   });
 
+  it('two distinct cycles whose ids contain the "|" separator are BOTH reported (dedup key collision regression)', () => {
+    // FeatureIds are z.string().min(1) (persistence/schema.ts) and may contain a
+    // literal '|'. The dedup key MUST distinguish member SETS even when the ids
+    // themselves embed the separator. Cycle 1 = {a, 'b|c'}; cycle 2 = {'a|b', c}.
+    // The old key `[...cycle].sort().join('|')` mapped BOTH to 'a|b|c', suppressing
+    // the second cycle. They are structurally distinct and must each be reported.
+    const c1a = withParentId(agg('a', []), asFeatureId('b|c'));
+    const c1b = withParentId(agg('b|c', []), asFeatureId('a'));
+    const c2a = withParentId(agg('a|b', []), asFeatureId('c'));
+    const c2b = withParentId(agg('c', []), asFeatureId('a|b'));
+    const forest = buildForest([c1a, c1b, c2a, c2b]);
+
+    const cycles = checkCycles(forest).filter((v) => v.kind === HIERARCHY_VIOLATION.Cycle);
+    expect(cycles).toHaveLength(2); // both distinct cycles surfaced, no collision.
+
+    const memberSets = cycles.map((v) => new Set(v.featureIds.map((id) => id as string)));
+    const hasSet = (want: ReadonlySet<string>): boolean =>
+      memberSets.some((got) => got.size === want.size && [...want].every((m) => got.has(m)));
+    expect(hasSet(new Set(['a', 'b|c']))).toBe(true);
+    expect(hasSet(new Set(['a|b', 'c']))).toBe(true);
+  });
+
   it('resolveFeatureArea is finite on a cycle', () => {
     const a = withParentId(agg('a', ['b']), asFeatureId('b'));
     const b = withParentId(agg('b', ['a']), asFeatureId('a'));

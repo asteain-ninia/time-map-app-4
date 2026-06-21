@@ -138,7 +138,13 @@ export function checkCycles(forest: Forest): HierarchyViolation[] {
       for (const node of walk.chain) acyclic.add(node);
       continue;
     }
-    const key = [...walk.cycle].sort().join('|');
+    // Key by the sorted member SET. Use JSON.stringify (not join('|')) so the
+    // encoding is unambiguous: a FeatureId is z.string().min(1) and may itself
+    // contain a '|', so a join-delimited key collides across structurally-distinct
+    // cycles (e.g. ['a','b|c'] and ['a|b','c'] both yield 'a|b|c'), suppressing the
+    // second cycle. JSON.stringify preserves element boundaries, so distinct sets
+    // always produce distinct keys.
+    const key = JSON.stringify([...walk.cycle].sort());
     if (reported.has(key)) continue;
     reported.add(key);
     out.push({ kind: HIERARCHY_VIOLATION.Cycle, featureIds: walk.cycle });
