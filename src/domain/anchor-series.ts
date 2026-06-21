@@ -210,11 +210,14 @@ export function isValidSeries(series: AnchorSeries, calendar: Calendar): boolean
  * next entry's start, restoring INV-1〜INV-3 while preserving gaps (INV-4).
  * Entries with equal start times are collapsed by keeping the LAST one given
  * (deterministic, §9.... determinism), so the result has strictly ascending
- * starts. Entries whose end is not strictly after their start are dropped of
- * their (invalid) end, i.e. their end is shortened to null only when shortening
- * to the next start would create a non-positive span — instead such an entry is
- * removed because it would be fully covered. The result is non-empty unless the
- * input was empty (callers guarantee non-empty input via the operations).
+ * starts. An entry that carries a degenerate bounded interval (its own end is
+ * not strictly after its start, INV-3) is DROPPED entirely rather than silently
+ * reopened to null: reopening would resurrect a feature meant to stop existing
+ * as one that exists forever, contradicting the guarded edit paths (changeStart
+ * / setEnd) and FR-56. The result is non-empty unless the input was empty: if
+ * every input entry is degenerate (a fully corrupt history reachable only from
+ * persistence repair, never from this unit's operations), the earliest entry is
+ * kept as open-ended as the least-bad INV-5 fallback.
  *
  * This is deterministic: identical input always yields identical output.
  */
@@ -236,8 +239,11 @@ export function normalizeSeries(
     }
   }
 
-  // Shorten overruns so each end <= next start; drop ends that would become
-  // non-positive (start >= end) by clamping, then removing zero/negative spans.
+  // Shorten overruns so each end <= next start, then enforce INV-3 (positive
+  // span). Note: after dedup the starts are strictly ascending, so an end that
+  // is shortened to `next.start` is always strictly after this entry's start —
+  // the only way `start >= end` can hold below is when the entry carries its
+  // OWN degenerate bounded interval (end <= start) on input.
   const result: AnchorEntry[] = [];
   for (let i = 0; i < deduped.length; i++) {
     const entry = deduped[i]!;
@@ -247,13 +253,29 @@ export function normalizeSeries(
       // Overrun: shorten to the next start (INV-2). This is the §5.6 "短縮".
       end = next.start;
     }
-    // Drop an end that is not strictly after start (INV-3): treat as open or
-    // skip. We clamp by clearing the (now invalid) end rather than the entry,
-    // because the entry itself (its start + snapshot) is still meaningful.
+    // INV-3 positive span: an end that is not strictly after its own start is a
+    // degenerate bounded interval (the feature exists for a zero/negative span).
+    // Do NOT silently clear it to null — that would resurrect a feature meant to
+    // stop existing as one that exists forever, contradicting the guarded edit
+    // paths (changeStart's `startNotBeforeEnd`, setEnd's `endNotAfterStart`,
+    // INV-3 / FR-56). The entry has no valid existence, so DROP it entirely
+    // (§5.6: "fully covered" → removed), preserving the remaining anchors.
     if (end !== null && compare(entry.start, end, calendar) >= 0) {
-      end = null;
+      continue;
     }
     result.push(end === entry.end ? entry : withEntryEnd(entry, end));
+  }
+
+  // INV-5: a series may never be empty. If the only entries on input were all
+  // degenerate (a fully corrupt history — not producible by this unit's guarded
+  // operations, but reachable from persistence repair), recovery must still
+  // yield a non-empty series. As the least-bad fallback, keep the earliest such
+  // entry as open-ended: there is no valid bounded interpretation of any entry,
+  // and an empty series is forbidden. A mixed input (some valid entries) never
+  // reaches this branch because the valid entries survive the drop above.
+  if (result.length === 0 && deduped.length > 0) {
+    const first = deduped[0]!;
+    result.push(first.end === null ? first : withEntryEnd(first, null));
   }
 
   return { entries: result };
