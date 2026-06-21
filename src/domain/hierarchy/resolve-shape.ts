@@ -96,11 +96,30 @@ function resolveRingCoords(ring: Ring, store: VertexStore): GeoRing | undefined 
 export function resolveLeafShape(shape: Shape, store: VertexStore): GeoMultiPolygon | undefined {
   const holesByParent = new Map<string, Ring[]>();
   const territories: Ring[] = [];
+  // Every territory ring's id — the only ids a hole may legitimately hang under.
+  // A hole is bucketed by parentRingId below and re-attached to its territory by
+  // territory.id; if its parentRingId names NO territory ring (a dangling parent,
+  // or a parent that is itself a hole — both ring-hierarchy defects U07 reports as
+  // DanglingParent / HoleParentNotTerritory) the bucket is never consumed and the
+  // hole would be SILENTLY DROPPED, emitting the leaf as a wrongly-solid area. That
+  // phantom solid then drives false-positive overlap detection (U10 terminal /
+  // anchor-spatial exclusion: a feature sitting in what should be a hole is reported
+  // as overlapping). We refuse to resolve such a shape — undefined signals an
+  // unresolvable leaf (same contract as a missing vertex), so callers (U10
+  // extractTerminalShapes, hit-test, render) skip it rather than treat a fake solid
+  // as real area; the actual ring-hierarchy defect is surfaced separately by U07.
+  const territoryIds = new Set<string>();
+  for (const ring of shape.rings) {
+    if (ring.kind === RING_KIND.Territory) territoryIds.add(ring.id);
+  }
   for (const ring of shape.rings) {
     if (ring.kind === RING_KIND.Territory) {
       territories.push(ring);
     } else {
       const key = ring.parentRingId;
+      // A hole whose parent is not an existing territory ring would be dropped:
+      // treat the whole leaf as unresolvable rather than emit a phantom solid.
+      if (!territoryIds.has(key)) return undefined;
       const bucket = holesByParent.get(key);
       if (bucket === undefined) holesByParent.set(key, [ring]);
       else bucket.push(ring);
