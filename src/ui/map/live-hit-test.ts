@@ -337,6 +337,54 @@ function multiPolygonLonSpan(
   return min === Infinity ? undefined : { min, max };
 }
 
+/** The inputs the display-control-aware area lookup needs (the live root + time + control). */
+export interface DrawnAreaAtPointInput {
+  readonly root: DomainProject;
+  readonly time: TimePoint;
+  /**
+   * The display-control (FR-42 / FR-43) the frame drew with: global depth N +
+   * individual focus M. The lookup resolves the SAME aggregate/real shape set the
+   * renderer fills (committed-features), so what is returned is exactly what is
+   * drawn. When omitted, falls back to N=0 / no focus (the renderer default).
+   */
+  readonly displayControl?: DisplayControlInput | undefined;
+  /**
+   * The camera + viewport the frame drew with, used to enumerate the EXACT ±360°
+   * wrap turns the renderer painted each area at (`wrapTurnsForLonSpan`). When
+   * omitted, falls back to a fixed ±1 turn probe (the previous behaviour).
+   */
+  readonly wrap?: { readonly camera: Camera; readonly viewport: Viewport } | undefined;
+}
+
+/**
+ * The topmost DRAWN AREA whose resolved (drawn) shape contains `worldPoint`, else
+ * null — resolved through the U34 display pipeline against the supplied
+ * display-control, i.e. the EXACT set the renderer draws and the main hit-test
+ * (`liveHitTestAt`) area branch picks (単一真実源).
+ *
+ * WHY THIS EXISTS (bughunt — ナイフの対象面探索が displayControl を無視): the knife
+ * `featureAtPoint` port previously used the raw `live-lookup.leafAtPoint`, which
+ * tests every committed leaf body regardless of what is drawn. With the default
+ * N=0 the map shows top-level AGGREGATES rolled up and OMITS the child leaves, so
+ * clicking an aggregate body returned a HIDDEN child leaf as the split target
+ * (描画されていないものが選ばれる, 二重真実源). Routing the knife through THIS lookup —
+ * the same `drawnAreas` + `drawnAreaAtPoint` `liveHitTestAt` uses — makes 対象面選択
+ * agree with both the renderer and the main hit-test: a body click resolves to the
+ * AGGREGATE the user sees (which the hook's LEAF gate then rejects as unsplittable),
+ * never to an undrawn child leaf. Aggregate vs leaf is the display verdict's job;
+ * this returns whichever feature the user actually SEES under the cursor.
+ */
+export function drawnAreaAt(
+  input: DrawnAreaAtPointInput,
+  worldPoint: WorldCoordinate,
+): FeatureId | null {
+  const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
+  const features = featuresAt(input.root, input.time);
+  const vertices = verticesAt(input.root, input.time);
+  const areas = drawnAreas(features, vertices, control);
+  return drawnAreaAtPoint(areas, worldPoint, input.wrap);
+}
+
 /**
  * Resolve what a screen click hit, vertex-first then feature body (受け入れ基準:
  * 頂点優先 → なければ地物). The set considered is EXACTLY what the renderer drew this

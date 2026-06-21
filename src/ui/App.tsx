@@ -81,7 +81,7 @@ import {
   type History,
 } from '../domain/command/history';
 import { COMMAND_ID } from './shell/commands';
-import { featuresAt, verticesAt, leafAtPoint, leafShapeAt } from './live-lookup';
+import { featuresAt, verticesAt, leafShapeAt } from './live-lookup';
 import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
 import {
@@ -93,7 +93,7 @@ import {
   type HitTester,
   type MapCameraInput,
 } from './map/index';
-import { liveHitTestAt } from './map/live-hit-test';
+import { liveHitTestAt, drawnAreaAt } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
 import {
@@ -357,8 +357,9 @@ export function App(): JSX.Element {
     // HB-15 ROOT FIX — wire the LIVE map click hit-test + selection so an edit-mode
     // click on a vertex / feature actually selects (教訓 5.7 合成ルートの結線漏れ). The
     // hit-test reuses the renderer's box-corrected screen↔world (HB-7) AND
-    // live-lookup's featuresAt / verticesAt / leafAtPoint (the SAME resolution the
-    // U13 binding + U26 knife ports use — 二重真実源を作らない, 教訓 5.29).
+    // live-lookup's featuresAt / verticesAt AND the SAME display-control-resolved drawn
+    // area set the U26 knife featureAtPoint port now uses (drawnAreaAt) — 二重真実源を
+    // 作らない, 教訓 5.29).
     //
     // Surface screen point → world (renderer inverse against the live camera/viewport
     // the frame drew with). Shared by the hit-test and the selection port so a click
@@ -896,6 +897,12 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
+        // 対象面探索を描画解決と同じ単一真実源にする (bughunt): the display-control comes
+        // from the SAME store slice committed-features feeds buildDisplayAreas with, and
+        // the wrap frame from the SAME live render camera/viewport the frame drew at, so
+        // ナイフの対象面選択 agrees with both the renderer and the main hit-test.
+        () => store.getState().displayControl,
+        () => rendererRef.current?.readCamera(),
       ),
     [store, sharedMint],
   );
@@ -1474,6 +1481,11 @@ import type {
   FeatureAtPoint,
 } from './knife/index';
 import type { SplitIdPorts, SplitSnapshot } from '../domain/knife/index';
+import type { DisplayControlInput } from '../render/display-pipeline';
+import type { Camera, Viewport } from '../render';
+
+/** A snapshot of the camera/viewport the frame drew with (for the knife wrap probe). */
+type KnifeWrapFrame = { readonly camera: Camera; readonly viewport: Viewport } | undefined;
 
 interface KnifeBootstrap<S> {
   readonly ids: SplitIdPorts;
@@ -1491,6 +1503,8 @@ function createKnifeBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
+  getDisplayControl: () => DisplayControlInput,
+  getWrap: () => KnifeWrapFrame,
 ): KnifeBootstrap<DomainRoot> {
   // Ids are minted through the SAME shared minter the add bootstrap uses (finding
   // 3): a single generator + a project-wide reservation set, so a knife-minted id
@@ -1511,8 +1525,27 @@ function createKnifeBootstrap(
   const resolveFeature: ResolveFeature = (featureId): Feature | undefined =>
     featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
   const resolveStore: ResolveVertexStore = (): VertexStore => verticesAt(getRoot(), getTime());
+  // 対象面探索は描画解決と同じ単一真実源 (bughunt: ナイフが displayControl を無視して
+  // 裏の非表示 leaf を選べた). The previous `leafAtPoint` tested every committed leaf
+  // body regardless of what was drawn, so with the default N=0 集約表示 a click on an
+  // aggregate body returned a HIDDEN child leaf as the split target (描画されていない
+  // ものが選ばれる, 二重真実源). We now route through `drawnAreaAt` — the SAME
+  // `resolveDisplayControl`-based drawn-area set the renderer (committed-features) fills
+  // and the main hit-test (`liveHitTestAt`) picks — honouring the store's display-control
+  // and the renderer's ±360° wrap turns. A body click resolves to the AGGREGATE the user
+  // SEES (which the hook's LEAF gate then rejects as unsplittable), never an undrawn child
+  // leaf. Read at call time so a load / time move / depth-slider change is reflected
+  // without a stale capture (教訓 5.6 / 5.29).
   const featureAtPoint: FeatureAtPoint = (point): FeatureId | null =>
-    leafAtPoint(getRoot(), getTime(), point);
+    drawnAreaAt(
+      {
+        root: getRoot(),
+        time: getTime(),
+        displayControl: getDisplayControl(),
+        wrap: getWrap(),
+      },
+      point,
+    );
 
   // U44 — the LIVE U13 binding for split. The proposal is ALREADY a U13
   // EditProposal<SplitSnapshot> (toEditProposal ran in the hook), so the swap is

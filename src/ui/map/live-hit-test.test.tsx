@@ -6,7 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { liveHitTestAt } from './live-hit-test';
+import { liveHitTestAt, drawnAreaAt } from './live-hit-test';
 import { HIT_KIND } from '../../domain/selection';
 import type { DomainRoot } from '../consistency-binding';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
@@ -411,6 +411,82 @@ describe('liveHitTestAt', () => {
       );
       expect(hit.kind).toBe(HIT_KIND.FeatureBody);
       if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(agg2Id);
+    });
+  });
+
+  // --- bughunt: ナイフの対象面探索が表示解決(displayControl)を無視して裏の非表示 leaf を選べる ---
+  //
+  // The knife `featureAtPoint` port (App.createKnifeBootstrap) USED to call
+  // live-lookup.leafAtPoint, which tests every committed leaf body regardless of what is
+  // DRAWN. With the default N=0 集約表示 the renderer draws the parent's 集約形状 and OMITS
+  // the children — yet a click on the aggregate body returned a HIDDEN child leaf as the
+  // split target (描画されていないものが選ばれる, 二重真実源). The fix routes the knife
+  // through `drawnAreaAt` — the SAME resolveDisplayControl-based drawn-area set the
+  // renderer fills and the main hit-test (`liveHitTestAt`) picks (単一真実源). These
+  // assertions pin that drawnAreaAt obeys the display control exactly: a body click in a
+  // hidden child's footprint resolves to the AGGREGATE the user sees (which the hook's
+  // LEAF gate then rejects as unsplittable), never the undrawn child leaf — and once the
+  // child is expanded, drawnAreaAt returns the child leaf so it becomes a valid target.
+  describe('drawnAreaAt — knife featureAtPoint honours displayControl (単一真実源)', () => {
+    /** An aggregate `agg` over two child leaves at [0,4]² and [6,10]² (parented). */
+    function aggregateHierarchy(): {
+      root: DomainRoot;
+      aggId: Feature['id'];
+      childAId: Feature['id'];
+    } {
+      const childA = squareLeaf('f-childA', 'vca', 0, 0); // [0,4]×[0,4]
+      const childB = squareLeaf('f-childB', 'vcb', 6, 0); // [6,10]×[0,4]
+      const aggId = asFeatureId('f-agg');
+      const childAp = { feature: withParentId(childA.feature, aggId), vertices: childA.vertices };
+      const childBp = { feature: withParentId(childB.feature, aggId), vertices: childB.vertices };
+      const agg = createAggregateFeature(
+        aggId,
+        createBasicAttributes('f-agg', 0, 0),
+        color,
+        [childAp.feature.id, childBp.feature.id],
+      );
+      let root = commit(emptyProject(), { feature: agg, vertices: [] }, 1000);
+      root = commit(root, childAp, 1000);
+      root = commit(root, childBp, 1000);
+      return { root, aggId, childAId: childAp.feature.id };
+    }
+
+    const aggregatedControl = {
+      globalDepth: 0,
+      focus: { originId: null, depth: 0, emphasize: false },
+    };
+
+    it('a click on a hidden child body resolves to the AGGREGATE, never the child leaf', () => {
+      const { root, aggId, childAId } = aggregateHierarchy();
+      // Inside child A's footprint, which at N=0 is drawn as the aggregate's 集約形状.
+      const inChildA = { lon: 2, lat: 2 };
+      const fid = drawnAreaAt(
+        { root, time, displayControl: aggregatedControl },
+        inChildA,
+      );
+      expect(fid).toBe(aggId);
+      // Regression guard: the OLD leafAtPoint returned the hidden child leaf here.
+      expect(fid).not.toBe(childAId);
+    });
+
+    it('expanded (N high enough) resolves the child LEAF (a valid split target)', () => {
+      const { root, childAId } = aggregateHierarchy();
+      const expandedControl = {
+        globalDepth: 5, // deeper than the children → they draw their OWN shape
+        focus: { originId: null, depth: 0, emphasize: false },
+      };
+      const inChildA = { lon: 2, lat: 2 };
+      const fid = drawnAreaAt(
+        { root, time, displayControl: expandedControl },
+        inChildA,
+      );
+      expect(fid).toBe(childAId);
+    });
+
+    it('returns null on empty space (no drawn area under the cursor)', () => {
+      const { root } = aggregateHierarchy();
+      const far = { lon: 50, lat: 50 };
+      expect(drawnAreaAt({ root, time, displayControl: aggregatedControl }, far)).toBeNull();
     });
   });
 
