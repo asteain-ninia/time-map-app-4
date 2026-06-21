@@ -118,6 +118,84 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     await waitFor(() => expect(store.getState().projectDirty).toBe(true));
   });
 
+  it('a project-SETTING change landing DURING the async save keeps projectDirty (settings half of the lost-edit guard)', async () => {
+    // Regression for the lost-edit guard's SETTINGS hole: the save folds the store's
+    // projectSettings/appSettings into the manifest's uiSettings, so a mid-write
+    // setting change (e.g. zoomMax) is NOT on disk. markClean used to compare the
+    // domain reference ALONE, which is unchanged by updateProjectSetting, so it
+    // wrongly cleared dirty and silently dropped the new setting. Now markClean also
+    // compares both settings slices, so a settings-only mid-write change keeps dirty.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let resolveSave!: (r: SaveResponse) => void;
+    const saveAs = vi.fn(
+      () => new Promise<SaveResponse>((resolve) => { resolveSave = resolve; }),
+    );
+    const api = makeApi({ saveAs });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Mark dirty via a project-SETTING change only (no domain edit) and start a save.
+    act(() => { store.getState().updateProjectSetting('zoomMax', 20); });
+    expect(store.getState().projectDirty).toBe(true);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
+
+    // The user changes ANOTHER project setting DURING the in-flight write. This
+    // re-arms projectDirty but leaves the domain reference untouched.
+    act(() => { store.getState().updateProjectSetting('zoomMax', 35); });
+
+    // The IPC write (carrying zoomMax=20) completes.
+    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.tmap' }); });
+
+    // The mid-save setting (zoomMax=35) is NOT on disk, so dirty MUST stay set —
+    // the setting change is not silently marked saved.
+    await waitFor(() => expect(store.getState().projectDirty).toBe(true));
+    expect(store.getState().projectSettings.zoomMax).toBe(35);
+  });
+
+  it('saves are serialized: 保存A→設定変更→保存B→A完了 does not clear dirty against B (interleave guard)', async () => {
+    // Regression for the single-snapshot interleave hole: with overlapping saves, a
+    // second save's snapshot used to overwrite the first's, so the first save's
+    // completion marked the project clean against the WRONG snapshot. Serializing
+    // saves ensures save B does not even start until save A completes, so A's
+    // completion compares against A's own snapshot.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const resolvers: Array<(r: SaveResponse) => void> = [];
+    const save = vi.fn(
+      () => new Promise<SaveResponse>((resolve) => { resolvers.push(resolve); }),
+    );
+    // Pre-establish a save path so 保存 routes to save (not saveAs).
+    const api = makeApi({ save });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Give the project a save path (a successful saveAs) so subsequent saves use save().
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSaveAs); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+
+    // Dirty via a setting, start save A.
+    act(() => { store.getState().updateProjectSetting('zoomMax', 20); });
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+    // Change a setting, then dispatch save B — but B must NOT start while A is still
+    // in flight (serialized): save() is still called only once.
+    act(() => { store.getState().updateProjectSetting('zoomMax', 30); });
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    expect(save).toHaveBeenCalledTimes(1); // B is queued behind A, not started
+
+    // A completes. Its snapshot held zoomMax=20, but the live store is now zoomMax=30,
+    // so A's completion must NOT clear dirty.
+    await act(async () => { resolvers[0]!({ ok: true, path: '/tmp/p.tmap' }); });
+    expect(store.getState().projectDirty).toBe(true);
+
+    // Now B actually starts (the chain advanced) and completes; its snapshot matches
+    // the live state (zoomMax=30, no further change), so dirty clears.
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
+    await act(async () => { resolvers[1]!({ ok: true, path: '/tmp/p.tmap' }); });
+    await waitFor(() => expect(store.getState().projectDirty).toBe(false));
+  });
+
   it('a save with NO concurrent edit clears dirty (normal path)', async () => {
     const store = makeStore();
     const registry = new CommandRegistry();

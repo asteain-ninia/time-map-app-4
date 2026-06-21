@@ -72,7 +72,21 @@ function toProject(parse: Extract<LoadStep, { kind: 'reflect-direct' }>['parse']
  * come from the host. NOTHING here re-implements a dependency unit.
  */
 export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
-  const runSave = async (which: 'save' | 'saveAs'): Promise<boolean> => {
+  // Saves are SERIALIZED through this single in-flight chain (lost-edit guard, the
+  // 保存A→編集→保存B→A完了 case): without it two saves could overlap, and the second
+  // save's snapshot would overwrite the first's, so the first's completion would
+  // mark the project clean against the WRONG snapshot — clearing dirty while disk
+  // still holds the earlier save's content. Chaining guarantees that when a save's
+  // onSaved runs, its OWN snapshot (captured in buildSaveRequest) is the one the
+  // lost-edit guard compares against, because no later save started in between.
+  let saveChain: Promise<unknown> = Promise.resolve();
+
+  const performSave = async (which: 'save' | 'saveAs'): Promise<boolean> => {
+    // buildSaveRequest captures the snapshot the lost-edit guard compares against;
+    // it MUST run inside the serialized section (immediately before the awaited IPC
+    // call), so the snapshot reflects the state at THIS save's actual start, not at
+    // the moment the command was dispatched while an earlier save was still in
+    // flight (otherwise a change made between dispatch and turn would be missed).
     const req = host.buildSaveRequest();
     const res: SaveResponse =
       which === 'saveAs' ? await host.api.saveAs(req) : await host.api.save(req);
@@ -84,6 +98,15 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     // 元の操作を中止するだけ); a write failure is reported (FR-115).
     if (res.reason === 'write-failed') host.notify(res.message);
     return false;
+  };
+
+  const runSave = (which: 'save' | 'saveAs'): Promise<boolean> => {
+    // Append to the chain so saves run strictly one-at-a-time. A prior save's
+    // failure/rejection must NOT poison the chain, so we swallow it (catch) before
+    // queueing the next save; this save's own outcome is still returned faithfully.
+    const result = saveChain.then(() => performSave(which));
+    saveChain = result.catch(() => undefined);
+    return result;
   };
 
   const loadVia = async (call: () => Promise<LoadResponse>): Promise<LoadTransport> =>

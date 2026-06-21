@@ -155,20 +155,46 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     contextRef.current = next;
   }, []);
 
-  // The domain reference that was SERIALIZED into the in-flight save request. A
-  // save serializes the domain at save START (buildSaveRequest); the IPC write is
-  // async. If the user edits DURING the wait, applyCommandResult swaps in a new
-  // domain reference and re-arms projectDirty — but that edit is NOT on disk. So
-  // onSaved must clear dirty ONLY when the live domain is still the exact reference
-  // we wrote; otherwise the post-save state is genuinely unsaved and the flag must
-  // stay set (教訓 5.36 単一基準: 保存済み扱いはディスク内容と一致する時だけ).
-  const savedDomainRef = useRef<DomainProject | null>(null);
+  // The EXACT store snapshot that was serialized into the in-flight save request.
+  // A save serializes a snapshot at save START (buildSaveRequest); the IPC write is
+  // async. If the user changes ANYTHING that the save persisted DURING the wait, the
+  // store swaps in a new reference for that slice and re-arms projectDirty — but that
+  // change is NOT on disk. So onSaved must clear dirty ONLY when the live snapshot is
+  // still the exact one we wrote; otherwise the post-save state is genuinely unsaved
+  // and the flag must stay set (教訓 5.36 単一基準: 保存済み扱いはディスク内容と一致する時だけ).
+  //
+  // CRITICAL (the settings half of the lost-edit guard): the save request folds the
+  // store's projectSettings + appSettings into the manifest's uiSettings, so a save
+  // persists ALL THREE references (domain + the two settings slices). Comparing the
+  // domain reference ALONE would clear dirty even when a mid-write setting change
+  // (e.g. zoomMax via updateProjectSetting) re-armed projectDirty without touching
+  // the domain — silently losing that setting (the very state this snapshot guards).
+  // The store swaps each slice WHOLESALE on every change (new object reference), so a
+  // per-slice identity compare detects a mid-write change to ANY persisted slice.
+  interface SavedSnapshot {
+    readonly domain: DomainProject;
+    readonly projectSettings: SessionStore<DomainProject>['projectSettings'];
+    readonly appSettings: SessionStore<DomainProject>['appSettings'];
+  }
+  const savedSnapshotRef = useRef<SavedSnapshot | null>(null);
 
-  // Clear the single dirty source ONLY if no edit landed during the save's async
-  // write. The save path records the serialized domain in savedDomainRef; here we
-  // compare it by reference identity (the store swaps the whole domain on any edit).
+  // Clear the single dirty source ONLY if NO change landed during the save's async
+  // write to ANY slice the save persisted (domain + projectSettings + appSettings).
+  // The save path records the serialized snapshot in savedSnapshotRef; here we
+  // compare each slice by reference identity (the store swaps each whole slice on any
+  // change). If any differs, the on-disk content no longer matches the live state, so
+  // dirty must stay set (受け入れ基準 2 全経路: 設定だけの変更も取りこぼさない).
   const markClean = useCallback(() => {
-    if (savedDomainRef.current !== store.getState().domain) return;
+    const snapshot = savedSnapshotRef.current;
+    if (snapshot === null) return;
+    const state = store.getState();
+    if (
+      snapshot.domain !== state.domain ||
+      snapshot.projectSettings !== state.projectSettings ||
+      snapshot.appSettings !== state.appSettings
+    ) {
+      return;
+    }
     store.getState().markProjectSaved();
   }, [store]);
 
@@ -180,12 +206,17 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const host: FileOpsHost | null = useMemo(() => {
     if (api === null) return null;
     const buildSaveRequest = (): SaveRequest => {
-      // Capture the EXACT domain reference the lost-edit guard (finding 2) compares
-      // against: it is the LIVE store domain, so onSaved can tell whether an edit
-      // landed during the async write by reference identity. We do NOT mutate it.
+      // Capture the EXACT snapshot the lost-edit guard compares against: the LIVE
+      // store domain AND the two settings slices this save persists. onSaved can then
+      // tell whether ANY persisted slice changed during the async write by reference
+      // identity. We do NOT mutate any of them.
       const state = store.getState();
       const domain = state.domain;
-      savedDomainRef.current = domain;
+      savedSnapshotRef.current = {
+        domain,
+        projectSettings: state.projectSettings,
+        appSettings: state.appSettings,
+      };
       // 二重真実源 fix: the user settings live in the U16 store, NOT in
       // domain.settings, so serialize(domain) alone would drop every settings-panel
       // change (zoom / timeline / grid / label / palette …). Fold the LIVE store
@@ -218,8 +249,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // a successful write established this file as the save target regardless of
         // whether a later edit re-dirtied the document (finding 2 切り離し).
         applyContext(contextAfterSave(contextRef.current, path));
-        // Clear dirty ONLY if no edit landed during the async write (lost-edit
-        // guard): markClean compares the live domain to the serialized reference.
+        // Clear dirty ONLY if no edit OR settings change landed during the async
+        // write (lost-edit guard): markClean compares the live domain AND both
+        // settings slices to the serialized snapshot.
         markClean();
       },
       // The SINGLE dirty basis (spec §B): the store's projectDirty, set by BOTH
