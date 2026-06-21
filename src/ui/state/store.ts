@@ -47,6 +47,7 @@ import {
   type ProjectSettings,
   type SettingsScope,
   SETTINGS_SCOPE,
+  appSettingDirtiesProject,
   classifySettingKey,
   clampRenderFps,
   DEFAULT_APP_SETTINGS,
@@ -819,15 +820,29 @@ export function createSessionStore<S>(
       // bughunt root: app settings are persisted ONLY inside the project file's
       // uiSettings (there is no separate app-settings store), and the unsaved-changes
       // guard reads `projectDirty` as its single basis. Without marking the project
-      // dirty here, changing ONLY an app setting (e.g. renderFps) and quitting passed
-      // the guard with no warning and the change was silently lost. The save path
-      // already folds appSettings into the manifest and the lost-edit guard already
-      // treats appSettings as a persisted slice (FileOpsController markClean), so a
-      // change to it MUST arm the same dirty flag a project-setting change does
-      // (受け入れ基準 2 全経路: 設定だけの変更も取りこぼさない, 教訓 5.36 単一基準).
+      // dirty here, changing ONLY a document-affecting app setting (e.g. renderFps)
+      // and quitting passed the guard with no warning and the change was silently
+      // lost. The save path already folds appSettings into the manifest and the
+      // lost-edit guard already treats appSettings as a persisted slice
+      // (FileOpsController markClean), so such a change MUST arm the same dirty flag a
+      // project-setting change does (受け入れ基準 2 全経路: 設定だけの変更も取りこぼ
+      // さない, 教訓 5.36 単一基準).
+      //
+      // EXCEPTION (bughunt2 finding): a PURE cosmetic / first-time-hint preference
+      // (showConflictGuide, FR-118) must NOT, on its own, dirty the document. It is
+      // a one-shot "do not show this hint again" flag whose default is "show", so
+      // losing the suppression on quit merely re-shows a harmless guide — never
+      // document loss. Dismissing the hint INSIDE the conflict modal and then
+      // CANCELLING the edit would otherwise leave the project dirty purely because a
+      // UI hint was hidden, producing a surprising false unsaved-changes warning on
+      // quit. The cosmetic classification is single-sourced in `settings.ts`
+      // (appSettingDirtiesProject, 教訓 5.19), so the dirty basis stays singular and
+      // the decision lives once. The setting still round-trips into the file on the
+      // next genuine save (the persistence bridge is unchanged).
+      const dirties = appSettingDirtiesProject(key);
       set({
         appSettings: clamped,
-        projectDirty: true,
+        ...(dirties ? { projectDirty: true } : {}),
         lastSettingsChange: { scope, key },
       });
     },

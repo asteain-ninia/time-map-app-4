@@ -167,6 +167,40 @@ export function isAppSettingKey(key: SettingKey): key is AppSettingKey {
   return APP_KEY_SET.has(key);
 }
 
+/**
+ * App settings that are PURE first-time / cosmetic UX preferences whose loss on
+ * quit is harmless — they revert to a harmless default and never represent
+ * document content (bughunt2 finding).
+ *
+ * WHY this set exists (reconciling 教訓 5.36 single-dirty-basis): app settings are
+ * persisted ONLY inside the project file's uiSettings, so a change to a
+ * DOCUMENT-AFFECTING app setting (snap distance, render FPS, vertex-marker cap)
+ * MUST arm `projectDirty` or the change is silently lost on quit (受け入れ基準 2).
+ * But `showConflictGuide` is different: it is a one-shot "do not show this hint
+ * again" flag (FR-118). Dismissing the hint INSIDE the conflict modal and then
+ * CANCELLING the edit would otherwise leave the project dirty purely because a UI
+ * hint was hidden — a surprising false unsaved-changes warning on quit. Because
+ * its default is "show" and losing the suppression merely re-shows a harmless
+ * guide, this preference must NOT, on its own, dirty the document. It still
+ * round-trips into the file on the next genuine save (the persistence bridge is
+ * unchanged), so a real save preserves it.
+ *
+ * This is a single-sourced classification (教訓 5.19): the store consults this set
+ * rather than hard-coding the key, so the dirty/no-dirty decision lives once.
+ */
+const COSMETIC_APP_KEY_SET: ReadonlySet<string> = new Set<AppSettingKey>([
+  'showConflictGuide',
+]);
+
+/**
+ * Whether changing this app setting should mark the project document dirty.
+ * `true` for document-affecting app settings (the default); `false` for pure
+ * cosmetic/first-time-hint preferences (see {@link COSMETIC_APP_KEY_SET}).
+ */
+export function appSettingDirtiesProject(key: AppSettingKey): boolean {
+  return !COSMETIC_APP_KEY_SET.has(key);
+}
+
 // --- Defaults ---------------------------------------------------------------
 
 /** FR-110 defaults: snap 50px, 60 FPS. Vertex-marker cap a conservative default. */

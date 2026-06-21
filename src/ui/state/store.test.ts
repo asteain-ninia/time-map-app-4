@@ -390,6 +390,43 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(store.getState().projectDirty).toBe(true);
   });
 
+  // 回帰 (bughunt2 finding): showConflictGuide is a PURE first-time / cosmetic UX
+  // preference (FR-118). Dismissing the conflict-resolution guide hint INSIDE the
+  // conflict modal routes through updateAppSetting('showConflictGuide', false). If
+  // that dirtied the project, ticking "do not show this guide again" and then
+  // CANCELLING the conflict resolution (no domain change) would leave the project
+  // dirty and pop a surprising unsaved-changes warning on quit, caused only by
+  // hiding a UI hint. So this cosmetic app preference must NOT, on its own, mark the
+  // project dirty — while still updating the value and emitting the change so the
+  // settings dialog / persistence bridge reflect it (it round-trips on a real save).
+  it('suppressing the conflict guide (cosmetic app pref) does NOT mark the project dirty', () => {
+    const store = makeStore();
+    expect(store.getState().projectDirty).toBe(false);
+    store.getState().updateAppSetting('showConflictGuide', false);
+    const s = store.getState();
+    // The value is applied and the change is observable...
+    expect(s.appSettings.showConflictGuide).toBe(false);
+    expect(s.lastSettingsChange).toEqual({
+      scope: SETTINGS_SCOPE.App,
+      key: 'showConflictGuide',
+    });
+    // ...but the document dirty flag is NOT armed by this cosmetic preference alone.
+    expect(s.projectDirty).toBe(false);
+  });
+
+  // Guard the EXCEPTION's scope: re-enabling the guide is equally cosmetic and must
+  // not dirty the project either, and a pre-existing dirty flag is left untouched
+  // (the cosmetic write neither sets nor CLEARS projectDirty).
+  it('toggling showConflictGuide leaves a pre-existing dirty flag unchanged', () => {
+    const store = makeStore();
+    store.getState().updateProjectSetting('gridSpacingDeg', 5);
+    expect(store.getState().projectDirty).toBe(true);
+    store.getState().updateAppSetting('showConflictGuide', false);
+    expect(store.getState().projectDirty).toBe(true);
+    store.getState().updateAppSetting('showConflictGuide', true);
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
   it('applies FR-110 defaults (snap 50px, 60 FPS) and clamps FPS to [1,60]', () => {
     const store = makeStore();
     expect(DEFAULT_APP_SETTINGS.snapDistancePx).toBe(50);
