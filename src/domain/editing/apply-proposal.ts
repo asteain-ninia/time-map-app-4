@@ -62,7 +62,7 @@ import {
 } from '../vertex';
 import type { EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
-import type { SplitSnapshot } from '../knife/proposal';
+import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { VertexRemap } from '../shared-vertex';
 import type { WorldCoordinate } from '../coordinate';
 import { quantizedEqual } from '../geometry/index';
@@ -478,28 +478,90 @@ function applySharedEdgeCutsToHistories(
   calendar: Calendar,
 ): FeatureHistory[] {
   if (snapshot.sharedEdgeCuts.length === 0) return [...histories];
+  // GROUP cuts by their ORIGINAL edge (same target feature + same endpoint pair) so
+  // an edge crossed at MULTIPLE points is transferred to the neighbour in ONE pass.
+  // WHY (bug-hunt): inserting seams one-cut-at-a-time mutated the neighbour edge after
+  // the first seam, so the two endpoint ids were no longer consecutive — the 2nd+ cuts
+  // on that edge then matched nothing and the neighbour was left missing those nodes
+  // (the boundary tore on a later move). One ordered splice fixes all crossings at once.
+  const groups = groupSharedEdgeCuts(snapshot.sharedEdgeCuts, splitVertices);
   let result: readonly FeatureHistory[] = histories;
-  for (const cut of snapshot.sharedEdgeCuts) {
-    const seam = findVertexAtCoordinate(splitVertices, cut.cutCoordinate);
-    if (seam === undefined) continue; // no minted seam vertex → nothing to share.
+  for (const group of groups) {
     // The endpoint ids the neighbour's shared edge may cite: the original pair AND the
     // remapped pair (step 3 may have already repointed them onto the re-minted ids).
-    const startIds = endpointVariants(cut.edgeStartVertexId, snapshot.vertexRemap);
-    const endIds = endpointVariants(cut.edgeEndVertexId, snapshot.vertexRemap);
+    const startIds = endpointVariants(group.edgeStartVertexId, snapshot.vertexRemap);
+    const endIds = endpointVariants(group.edgeEndVertexId, snapshot.vertexRemap);
     result = result.map((history) =>
-      insertSeamIntoNeighbour(
+      insertSeamsIntoNeighbour(
         history,
-        cut.featureId,
+        group.featureId,
         startIds,
         endIds,
-        seam.id,
-        seam,
+        group.seams,
         anchorTime,
         calendar,
       ),
     );
   }
   return [...result];
+}
+
+/** A seam node to splice into a neighbour edge: its minted vertex + cut coordinate. */
+interface SeamInsertion {
+  readonly vertex: Vertex;
+  readonly coordinate: WorldCoordinate;
+}
+
+/** All seam nodes that land on ONE original shared edge of ONE target feature. */
+interface SharedEdgeCutGroup {
+  readonly featureId: FeatureId;
+  readonly edgeStartVertexId: VertexId;
+  readonly edgeEndVertexId: VertexId;
+  readonly seams: readonly SeamInsertion[];
+}
+
+/**
+ * Group every共有辺途中切断点 by the ORIGINAL edge it crosses — keyed by the target
+ * feature id plus the edge's two endpoint vertex ids (order-independent), so two cuts
+ * on the SAME shared edge end up in one group. Each cut's minted seam vertex (matched
+ * by quantized coordinate) is collected; cuts with no minted seam are dropped. Groups
+ * and their seams preserve the geometry layer's emission order; the splice orders them
+ * along the edge afterwards (so the absolute key order here does not matter). Pure.
+ */
+function groupSharedEdgeCuts(
+  cuts: readonly SplitSharedEdgeCut[],
+  splitVertices: readonly Vertex[],
+): SharedEdgeCutGroup[] {
+  const byKey = new Map<string, SharedEdgeCutGroup & { seams: SeamInsertion[] }>();
+  const order: string[] = [];
+  for (const cut of cuts) {
+    const seam = findVertexAtCoordinate(splitVertices, cut.cutCoordinate);
+    if (seam === undefined) continue; // no minted seam vertex → nothing to share.
+    // Order-independent edge key: the same physical edge yields the same key whether the
+    // geometry recorded it as (start,end) or (end,start).
+    const lo = idToString(cut.edgeStartVertexId) <= idToString(cut.edgeEndVertexId)
+      ? cut.edgeStartVertexId
+      : cut.edgeEndVertexId;
+    const hi = lo === cut.edgeStartVertexId ? cut.edgeEndVertexId : cut.edgeStartVertexId;
+    const key = `${idToString(cut.featureId)}|${idToString(lo)}|${idToString(hi)}`;
+    let group = byKey.get(key);
+    if (group === undefined) {
+      group = {
+        featureId: cut.featureId,
+        edgeStartVertexId: cut.edgeStartVertexId,
+        edgeEndVertexId: cut.edgeEndVertexId,
+        seams: [],
+      };
+      byKey.set(key, group);
+      order.push(key);
+    }
+    // Skip a duplicate seam node (same coordinate recorded twice for one edge).
+    if (group.seams.some((s) => quantizedEqual(s.coordinate, cut.cutCoordinate))) continue;
+    group.seams.push({ vertex: seam, coordinate: cut.cutCoordinate });
+  }
+  return order
+    .map((key) => byKey.get(key))
+    .filter((g): g is SharedEdgeCutGroup & { seams: SeamInsertion[] } => g !== undefined);
 }
 
 /** The original id plus its remap image (so a matcher catches both pre/post repoint). */
@@ -519,30 +581,35 @@ function findVertexAtCoordinate(
 }
 
 /**
- * Insert the seam vertex into a neighbour history's matching shared edge at the anchor
- * time. The neighbour is any feature OTHER than the original cut target whose container
- * cites the two endpoint ids consecutively; the seam id is spliced between them. Past-
- * edits the history at the anchor time (carrying the seam body in). Returns the history
- * unchanged when no matching neighbour edge exists at that time. Pure.
+ * Insert EVERY seam node for one shared edge into a neighbour history's matching edge
+ * at the anchor time, in a SINGLE pass. The neighbour is any feature OTHER than the
+ * original cut target whose container cites the two endpoint ids consecutively; all of
+ * the edge's seam ids are spliced between them, ordered along the edge (so multiple
+ * mid-edge crossings of one shared edge all land — bug-hunt: one-at-a-time insertion
+ * broke after the first seam de-adjacentised the endpoints). Past-edits the history at
+ * the anchor time (carrying the seam bodies in). Returns the history unchanged when no
+ * matching neighbour edge exists at that time. Pure.
  */
-function insertSeamIntoNeighbour(
+function insertSeamsIntoNeighbour(
   history: FeatureHistory,
   cutTargetId: FeatureId,
   startIds: ReadonlySet<VertexId>,
   endIds: ReadonlySet<VertexId>,
-  seamId: VertexId,
-  seamVertex: Vertex,
+  seams: readonly SeamInsertion[],
   anchorTime: TimePoint,
   calendar: Calendar,
 ): FeatureHistory {
+  if (seams.length === 0) return history;
+  const seamIds = new Set(seams.map((s) => s.vertex.id));
   const resolution = resolveAt(history.series, anchorTime, calendar);
   if (resolution.kind !== 'present') return history;
   const base = resolution.entry.anchor.snapshot;
   const hasNeighbourEdge = base.features.some(
-    (f) => f.id !== cutTargetId && featureHasSharedEdge(f, startIds, endIds, seamId),
+    (f) => f.id !== cutTargetId && featureHasSharedEdge(f, startIds, endIds, seamIds),
   );
   if (!hasNeighbourEdge) return history;
 
+  const seamVertices = seams.map((s) => s.vertex);
   const updatedSeries = applyPastEdit(
     history.series,
     anchorTime,
@@ -551,10 +618,10 @@ function insertSeamIntoNeighbour(
         effective.kind === 'present'
           ? effective.entry.anchor.snapshot
           : createAnchorSnapshot([], createVertexStore([]));
+      const store = createVertexStore([...effBase.vertices.byId.values(), ...seamVertices]);
       const features = effBase.features.map((f) =>
-        f.id === cutTargetId ? f : insertSeamIntoFeature(f, startIds, endIds, seamId),
+        f.id === cutTargetId ? f : insertSeamsIntoFeature(f, startIds, endIds, seams, store),
       );
-      const store = createVertexStore([...effBase.vertices.byId.values(), seamVertex]);
       return anchorFor(features, store, history.featureId, anchorTime);
     },
     calendar,
@@ -562,46 +629,56 @@ function insertSeamIntoNeighbour(
   return { featureId: history.featureId, series: updatedSeries };
 }
 
-/** True iff a feature has a container whose consecutive pair cites the endpoint ids. */
+/**
+ * True iff a feature has a container whose consecutive pair cites the endpoint ids and
+ * whose edge is not already fully cut (at least one of the edge's seam ids is missing).
+ */
 function featureHasSharedEdge(
   feature: Feature,
   startIds: ReadonlySet<VertexId>,
   endIds: ReadonlySet<VertexId>,
-  seamId: VertexId,
+  seamIds: ReadonlySet<VertexId>,
 ): boolean {
   for (const { ids, closed } of vertexIdLists(feature)) {
-    if (edgeIndexFor(ids, startIds, endIds, seamId, closed) >= 0) return true;
+    if (edgeIndexFor(ids, startIds, endIds, seamIds, closed) >= 0) return true;
   }
   return false;
 }
 
-/** Insert the seam id into the matching edge of every container of a feature. Pure. */
-function insertSeamIntoFeature(
+/**
+ * Insert all of an edge's seam ids into the matching edge of every container of a
+ * feature, ordered along the edge by each seam's distance from the edge start. The
+ * vertex store resolves the matched endpoint + already-present node coordinates so the
+ * seams are spliced in the geometrically correct sequence (FR-95). Pure.
+ */
+function insertSeamsIntoFeature(
   feature: Feature,
   startIds: ReadonlySet<VertexId>,
   endIds: ReadonlySet<VertexId>,
-  seamId: VertexId,
+  seams: readonly SeamInsertion[],
+  store: VertexStore,
 ): Feature {
+  const seamIds = new Set(seams.map((s) => s.vertex.id));
   switch (feature.kind) {
     case FEATURE_KIND.Line: {
       // A line is an OPEN polyline: it has no wrap-around last->first edge, so the
       // seam may only land on a real interior edge (closed = false). Treating it as a
       // ring would splice the seam onto a phantom closing edge and corrupt the line.
-      const idx = edgeIndexFor(feature.vertexIds, startIds, endIds, seamId, false);
+      const idx = edgeIndexFor(feature.vertexIds, startIds, endIds, seamIds, false);
       if (idx < 0) return feature;
       return withLineVertexIds(
         feature as LineFeature,
-        spliceAfter(feature.vertexIds, idx, seamId),
+        spliceSeamsAfter(feature.vertexIds, idx, seams, store),
       ) as Feature;
     }
     case FEATURE_KIND.Leaf: {
       const rings = (feature as LeafFeature).shape.rings;
       let changed = false;
       const nextRings: Ring[] = rings.map((ring) => {
-        const idx = edgeIndexFor(ring.vertexIds, startIds, endIds, seamId, true);
+        const idx = edgeIndexFor(ring.vertexIds, startIds, endIds, seamIds, true);
         if (idx < 0) return ring;
         changed = true;
-        const ids = spliceAfter(ring.vertexIds, idx, seamId);
+        const ids = spliceSeamsAfter(ring.vertexIds, idx, seams, store);
         return ring.kind === RING_KIND.Territory
           ? withTerritoryRingVertexIds(ring, ids)
           : withHoleRingVertexIds(ring, ids);
@@ -649,7 +726,7 @@ function edgeIndexFor(
   ids: readonly VertexId[],
   startIds: ReadonlySet<VertexId>,
   endIds: ReadonlySet<VertexId>,
-  seamId: VertexId,
+  seamIds: ReadonlySet<VertexId>,
   closed: boolean,
 ): number {
   const n = ids.length;
@@ -659,7 +736,7 @@ function edgeIndexFor(
     const a = ids[i];
     const b = ids[(i + 1) % n];
     if (a === undefined || b === undefined) continue;
-    if (a === seamId || b === seamId) continue; // already cut here (idempotent).
+    if (seamIds.has(a) || seamIds.has(b)) continue; // already cut here (idempotent).
     const forward = startIds.has(a) && endIds.has(b);
     const backward = endIds.has(a) && startIds.has(b);
     if (forward || backward) return i;
@@ -667,15 +744,42 @@ function edgeIndexFor(
   return -1;
 }
 
-/** Return a new id list with `value` inserted immediately after position `index`. */
-function spliceAfter(
+/**
+ * Splice every seam id into the id list immediately after `index` (the edge start),
+ * ordered along the edge by each seam's distance from the edge start vertex. The edge's
+ * start/end coordinates are resolved from `store`; seams already present are skipped
+ * (idempotent re-application). One pass so an edge crossed at MULTIPLE points carries
+ * ALL its nodes in the correct sequence. Pure.
+ */
+function spliceSeamsAfter(
   ids: readonly VertexId[],
   index: number,
-  value: VertexId,
+  seams: readonly SeamInsertion[],
+  store: VertexStore,
 ): VertexId[] {
   const next = [...ids];
-  next.splice(index + 1, 0, value);
+  const present = new Set(ids);
+  const toInsert = seams.filter((s) => !present.has(s.vertex.id));
+  if (toInsert.length === 0) return next;
+  const startId = ids[index];
+  const startV = startId === undefined ? undefined : getVertex(store, startId);
+  const ordered =
+    startV === undefined
+      ? toInsert // no anchor coordinate → fall back to emission order.
+      : [...toInsert].sort(
+          (p, q) =>
+            squaredDistance(startV.coordinate, p.coordinate) -
+            squaredDistance(startV.coordinate, q.coordinate),
+        );
+  next.splice(index + 1, 0, ...ordered.map((s) => s.vertex.id));
   return next;
+}
+
+/** Squared planar distance between two coordinates (monotone ⇒ fine for ordering). */
+function squaredDistance(a: WorldCoordinate, b: WorldCoordinate): number {
+  const dLon = a.lon - b.lon;
+  const dLat = a.lat - b.lat;
+  return dLon * dLon + dLat * dLat;
 }
 
 /** Swap the inheritor's shape; throws if the inheritor is not a leaf (FR-44). */

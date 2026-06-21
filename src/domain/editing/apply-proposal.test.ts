@@ -484,4 +484,106 @@ describe('applySplitProposal', () => {
       expect(lf.vertexIds.map((v) => v as string)).toEqual(['e0', 'lx', 'e1']);
     }
   });
+
+  it('cuts a neighbour shared edge at MULTIPLE points, all seams transferred in edge order (FR-95 / bughunt regression)', () => {
+    // Target and neighbour share the edge e0-e1 (e0 at lon 0, e1 at lon 10). The split
+    // line crosses that ONE shared edge at TWO mid-edge points (lon 3 and lon 7). The
+    // target's new shape gains BOTH seam nodes; the neighbour's matching edge must ALSO
+    // gain BOTH seam vertices, in edge-parameter order (e0 -> cut3 -> cut7 -> e1).
+    //
+    // The bug: seams were spliced one-cut-at-a-time, so after the FIRST seam was
+    // inserted between e0 and e1 they were no longer consecutive — the SECOND cut on
+    // the same edge matched nothing and the neighbour was left missing it (boundary
+    // tear on a later move). This asserts BOTH seams land and in the correct order even
+    // though the cuts are listed REVERSED (cut7 before cut3) in sharedEdgeCuts.
+    const target = squareLeaf('f-tgt', ['e0', 'e1', 't2'], [0, 10, 5]);
+    const neighbour = squareLeaf('f-nbr', ['e0', 'e1', 'b2'], [0, 10, 5]);
+
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: target.feature, vertices: target.vertices, sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: neighbour.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: neighbour.feature, vertices: neighbour.vertices, sharedCandidateIds: new Map() },
+    });
+
+    const coord3 = { lon: 3, lat: 0 };
+    const coord7 = { lon: 7, lat: 0 };
+    const cut3 = createVertex(asVertexId('cut3'), coord3);
+    const cut7 = createVertex(asVertexId('cut7'), coord7);
+    const newSide = squareLeaf('f-new', ['n0', 'n1', 'n2'], [20, 21, 22]);
+    // Inheritor's new shape carries BOTH seam nodes between e0 and e1, in order.
+    const inheritorShape = createShape([
+      createTerritoryRing(asRingId('r-tgt-2'), ['e0', 'cut3', 'cut7', 'e1'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: target.feature.id,
+      inheritorShape,
+      newFeature: newSide.feature,
+      vertices: [cut3, cut7, ...newSide.vertices],
+      vertexRemap: new Map(),
+      // Listed REVERSED on purpose (cut7 first): the splice must order by edge parameter.
+      sharedEdgeCuts: [
+        {
+          featureId: target.feature.id,
+          ringId: asRingId('r-f-tgt'),
+          edgeStartIndex: 0,
+          edgeStartVertexId: asVertexId('e0'),
+          edgeEndVertexId: asVertexId('e1'),
+          cutCoordinate: coord7,
+        },
+        {
+          featureId: target.feature.id,
+          ringId: asRingId('r-f-tgt'),
+          edgeStartIndex: 0,
+          edgeStartVertexId: asVertexId('e0'),
+          edgeEndVertexId: asVertexId('e1'),
+          cutCoordinate: coord3,
+        },
+      ],
+      touchedFeatureIds: [target.feature.id, newSide.feature.id],
+    };
+    const proposal = createEditProposal(target.feature.id, timePointYear(500), snapshot);
+
+    const next = applySplitProposal(root, proposal, calendar);
+
+    const nbrHistory = next.histories.find((h) => h.featureId === neighbour.feature.id)!;
+    const nbrAt500 = resolveAt(nbrHistory.series, timePointYear(500), calendar);
+    expect(nbrAt500.kind).toBe('present');
+    if (nbrAt500.kind !== 'present') return;
+    const nbrSnapshot = nbrAt500.entry.anchor.snapshot;
+    const nbrFeature = nbrSnapshot.features.find((f) => f.id === neighbour.feature.id)!;
+    expect(nbrFeature.kind).toBe('leaf');
+    if (nbrFeature.kind !== 'leaf') return;
+    const nbrIds = nbrFeature.shape.rings[0]!.vertexIds.map((v) => v as string);
+    // BOTH seams present, in edge order between e0 and e1.
+    const i0 = nbrIds.indexOf('e0');
+    const i3 = nbrIds.indexOf('cut3');
+    const i7 = nbrIds.indexOf('cut7');
+    const i1 = nbrIds.indexOf('e1');
+    expect(i3).toBeGreaterThanOrEqual(0);
+    expect(i7).toBeGreaterThanOrEqual(0);
+    expect(i3).toBe(i0 + 1); // e0 -> cut3
+    expect(i7).toBe(i3 + 1); // cut3 -> cut7
+    expect(i1).toBe(i7 + 1); // cut7 -> e1
+    // Single source of truth: BOTH seam ids resolve to bodies in the neighbour's store.
+    expect(nbrSnapshot.vertices.byId.has(asVertexId('cut3'))).toBe(true);
+    expect(nbrSnapshot.vertices.byId.has(asVertexId('cut7'))).toBe(true);
+
+    // The neighbour's ORIGINAL year-0 anchor is untouched (no seams there).
+    const nbrAt0 = resolveAt(nbrHistory.series, timePointYear(0), calendar);
+    expect(nbrAt0.kind).toBe('present');
+    if (nbrAt0.kind !== 'present') return;
+    const nbrFeature0 = nbrAt0.entry.anchor.snapshot.features.find(
+      (f) => f.id === neighbour.feature.id,
+    )!;
+    if (nbrFeature0.kind === 'leaf') {
+      const ids0 = nbrFeature0.shape.rings[0]!.vertexIds.map((v) => v as string);
+      expect(ids0).not.toContain('cut3');
+      expect(ids0).not.toContain('cut7');
+    }
+  });
 });
