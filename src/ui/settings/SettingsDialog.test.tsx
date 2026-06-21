@@ -93,7 +93,11 @@ describe('confirm routes to the correct scope (受け入れ基準 3 / 教訓 5.3
     expect(s.lastSettingsChange?.scope).toBe('project');
   });
 
-  it('app edit does NOT dirty-mark the project (app-level persistence)', () => {
+  // 回帰 (bughunt: App 設定変更が dirty を立てず無警告で失われる). App settings are
+  // persisted ONLY inside the project file (uiSettings; no separate app-settings
+  // store), and the unsaved guard reads projectDirty as its single basis. An app
+  // edit MUST dirty-mark the project so the change is not silently lost on quit.
+  it('app edit dirty-marks the project (so the unsaved guard fires)', () => {
     const store = makeStore();
     render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
 
@@ -103,7 +107,7 @@ describe('confirm routes to the correct scope (受け入れ基準 3 / 教訓 5.3
 
     const s = store.getState();
     expect(s.appSettings.snapDistancePx).toBe(80);
-    expect(s.projectDirty).toBe(false); // app setting never dirties the project.
+    expect(s.projectDirty).toBe(true); // app setting is persisted in the project ⇒ dirty.
     expect(s.lastSettingsChange?.scope).toBe('app');
   });
 });

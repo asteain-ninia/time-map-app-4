@@ -106,6 +106,7 @@ import {
   screenToWorld as unprojectScreenToWorld,
   type ScreenPoint,
 } from '../render';
+import { createRedrawScheduler } from './map/redraw-scheduler';
 import type { Camera as RenderCamera } from '../render/camera';
 import type { WorldCoordinate } from '../domain/coordinate';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
@@ -593,6 +594,21 @@ export function App(): JSX.Element {
       prevActiveTool = s.activeTool;
       dispatcher.onModeChange();
     });
+    // FR-110 描画更新頻度: route EVERY store-driven redraw through the U19 redraw
+    // scheduler so the configured render FPS actually caps the draw rate (bughunt
+    // root: the FrameScheduler existed but was never instantiated, so renderFps was a
+    // dead setting — validated/clamped/persisted yet never reaching the draw loop,
+    // 教訓 5.7). The scheduler collapses N requests within one frame into ONE draw
+    // (受け入れ基準 5) and gates draws faster than the per-frame budget. A live
+    // renderFps change re-arms the cap via setFps (watched in the subscription below)
+    // so a settings confirm takes effect at once (FR-110 即時反映). The single-rAF
+    // throttle lives in U19; this is only the結線 (no second copy of the rule).
+    let renderFps = store.getState().appSettings.renderFps;
+    const redrawScheduler = createRedrawScheduler({
+      draw: () => ports.redraw(),
+      initialFps: renderFps,
+    });
+    const requestRedraw = (): void => redrawScheduler.request();
     // Re-composite whenever the committed domain / current time / selection /
     // display-control / label-threshold setting changes so an added / edited /
     // split feature (or a slider / setting change) draws at once (P0-A / 教訓 5.5).
@@ -613,6 +629,14 @@ export function App(): JSX.Element {
     let prevGridColor = store.getState().projectSettings.gridColor;
     let prevGridOpacity = store.getState().projectSettings.gridOpacity;
     const unsubscribe = store.subscribe((s) => {
+      // FR-110: a live renderFps change re-arms the per-frame budget (the cap is
+      // fixed at scheduler construction, so setFps rebuilds it). This is NOT gated by
+      // the early-return below — a pure renderFps change re-arms the budget without
+      // forcing a redraw of unchanged content.
+      if (s.appSettings.renderFps !== renderFps) {
+        renderFps = s.appSettings.renderFps;
+        redrawScheduler.setFps(renderFps);
+      }
       const areaThreshold = s.projectSettings.areaLabelOccupancyThreshold;
       const gridSpacing = s.projectSettings.gridSpacingDeg;
       const gridColor = s.projectSettings.gridColor;
@@ -637,11 +661,12 @@ export function App(): JSX.Element {
       prevGridSpacing = gridSpacing;
       prevGridColor = gridColor;
       prevGridOpacity = gridOpacity;
-      ports.redraw();
+      requestRedraw();
     });
     return () => {
       unsubscribe();
       unsubscribeMode();
+      redrawScheduler.dispose();
       hookTarget.removeEventListener('pointerdown', onPointerDown);
       hookTarget.removeEventListener('pointermove', onPointerMove);
       hookTarget.removeEventListener('pointerup', onPointerUp);

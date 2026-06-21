@@ -664,8 +664,18 @@ export function createSessionStore<S>(
         key === 'renderFps'
           ? { ...next, renderFps: clampRenderFps(next.renderFps) }
           : next;
+      // bughunt root: app settings are persisted ONLY inside the project file's
+      // uiSettings (there is no separate app-settings store), and the unsaved-changes
+      // guard reads `projectDirty` as its single basis. Without marking the project
+      // dirty here, changing ONLY an app setting (e.g. renderFps) and quitting passed
+      // the guard with no warning and the change was silently lost. The save path
+      // already folds appSettings into the manifest and the lost-edit guard already
+      // treats appSettings as a persisted slice (FileOpsController markClean), so a
+      // change to it MUST arm the same dirty flag a project-setting change does
+      // (受け入れ基準 2 全経路: 設定だけの変更も取りこぼさない, 教訓 5.36 単一基準).
       set({
         appSettings: clamped,
+        projectDirty: true,
         lastSettingsChange: { scope, key },
       });
     },

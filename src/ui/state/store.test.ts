@@ -319,16 +319,29 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(changes).toContain('equatorLengthKm');
   });
 
-  it('an app-setting change does NOT mark the project dirty', () => {
+  // 回帰 (bughunt: App 設定変更が dirty を立てず無警告で失われる). App settings are
+  // persisted ONLY inside the project file's uiSettings (no separate app-settings
+  // store), and the unsaved-changes guard reads projectDirty as its single basis. So
+  // an app-setting change MUST arm projectDirty exactly like a project-setting change,
+  // otherwise changing only an app setting (e.g. renderFps) and quitting passes the
+  // guard with no warning and the change is silently lost (受け入れ基準 2 全経路).
+  it('an app-setting change marks the project dirty (so the unsaved guard fires)', () => {
     const store = makeStore();
+    expect(store.getState().projectDirty).toBe(false);
     store.getState().updateAppSetting('snapDistancePx', 80);
     const s = store.getState();
     expect(s.appSettings.snapDistancePx).toBe(80);
-    expect(s.projectDirty).toBe(false);
+    expect(s.projectDirty).toBe(true);
     expect(s.lastSettingsChange).toEqual({
       scope: SETTINGS_SCOPE.App,
       key: 'snapDistancePx',
     });
+  });
+
+  it('a renderFps change also marks the project dirty', () => {
+    const store = makeStore();
+    store.getState().updateAppSetting('renderFps', 30);
+    expect(store.getState().projectDirty).toBe(true);
   });
 
   it('applies FR-110 defaults (snap 50px, 60 FPS) and clamps FPS to [1,60]', () => {
