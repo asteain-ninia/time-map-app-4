@@ -58,9 +58,25 @@ import {
   type History,
 } from '../command/history';
 import { getCalendar } from '../time/calendar';
-import { asAnchorId } from '../ids';
+import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { timePointYear, type TimePoint } from '../time/time-point';
-import type { Feature } from '../feature';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  type Feature,
+} from '../feature';
+import { createBasicAttributes, createColorInfo } from '../attributes';
+import { createCoordinate } from '../coordinate';
+import { createVertex, createVertexStore } from '../vertex';
+import {
+  createHoleRing,
+  createShape,
+  createTerritoryRing,
+  type Ring,
+  type Shape,
+} from '../ring';
+import { validateAlternation } from '../ring-hierarchy';
+import { createAnchorSnapshot } from '../anchor';
 
 const cal = getCalendar('gregorian');
 
@@ -649,3 +665,393 @@ describe('time-anchor + history undo/redo — seed 4002 expansion', () => {
 
 // keep normalizeSeries import used even if a branch above is pruned
 void normalizeSeries;
+
+// ===========================================================================
+// SEED 4004 expansion suite — RICH snapshots (rings + hierarchy forest).
+//
+// The 4001/4002 suites drive POINT-ONLY anchor snapshots, so the spec's
+// ring-alternation / non-self-intersection / containment and hierarchy-forest
+// (derived-aggregate = children) invariants are never exercised across the
+// undo/redo + save/load cycle. The anchor-series unit holds the snapshot
+// OPAQUELY (it never interprets shapes/hierarchy), so if undo/redo or the
+// JSON save→load boundary silently dropped or reordered shape rings, child
+// references, parent-ring links, or aliased vertex IDs, the point-only suites
+// would not catch it. This suite drives anchors whose snapshots carry:
+//   - LEAF features with a real, alternation-valid ring forest (territory →
+//     hole → territory …), and
+//   - AGGREGATE features whose childIds reference present features (the
+//     "derived aggregate = the set of its children" forest invariant),
+// through the SAME real history operations, asserting after every step:
+//   - INV-1..INV-3, INV-5 on the series (single source of truth),
+//   - ring alternation valid on every leaf shape (validateAlternation),
+//   - every ring's parentRingId resolves to a present ring (no dangling),
+//   - every aggregate childId resolves to a present feature in the same
+//     snapshot, and no feature is its own parent / own child,
+//   - no NaN / Infinity in any coordinate / year scalar,
+//   - a FULL-FIDELITY save → JSON → load round-trip reproduces the rich
+//     snapshot verbatim (shapes, ring parents, childIds, vertices included).
+// Metamorphic: undo∘execute == identity, full-undo == root, redo restores the
+// post-execute state — all over the rich snapshots.
+//
+// Determinism: pinned seed 4004, large run budget. Permanent asset; must not be
+// relaxed to paint a broken behavior green.
+// ===========================================================================
+
+const SEED_4004 = 4004;
+const NUM_RUNS_4004 = 400;
+
+// --- rich snapshot generator (real factories; 教訓 5.39) --------------------
+
+/** A small alternation-valid ring forest: 1-2 top territories, each with an
+ * optional hole, each hole with an optional nested (enclave) territory. Built
+ * through the REAL U06 ring factories so it is structurally valid by
+ * construction; geometry coordinates are placeholders (this targets the
+ * STRUCTURAL alternation + parent-link invariants under undo/redo/persist). */
+function ringForestArb(tag: string): fc.Arbitrary<Shape> {
+  return fc
+    .array(
+      fc.record({
+        hole: fc.boolean(),
+        enclave: fc.boolean(),
+      }),
+      { minLength: 1, maxLength: 2 },
+    )
+    .map((plans) => {
+      const rings: Ring[] = [];
+      let n = 0;
+      const rid = () => asRingId(`${tag}-r${n++}`);
+      const vids = (id: string) => [
+        asVertexId(`${id}-a`),
+        asVertexId(`${id}-b`),
+        asVertexId(`${id}-c`),
+      ];
+      for (const plan of plans) {
+        const tId = rid();
+        rings.push(createTerritoryRing(tId, vids(tId)));
+        if (plan.hole) {
+          const hId = rid();
+          rings.push(createHoleRing(hId, vids(hId), tId));
+          if (plan.enclave) {
+            const eId = rid();
+            rings.push(createTerritoryRing(eId, vids(eId), hId));
+          }
+        }
+      }
+      return createShape(rings);
+    });
+}
+
+/** Build a rich snapshot: a leaf feature with a ring forest, plus an aggregate
+ * feature whose childIds reference the leaf (derived-aggregate = children). All
+ * vertices referenced by the rings are present in the vertex store. */
+function richSnapshotArb(idTag: string): fc.Arbitrary<AnchorSnapshot> {
+  return fc
+    .tuple(
+      ringForestArb(idTag),
+      fc.integer({ min: -90, max: 90 }),
+      fc.integer({ min: -180, max: 180 }),
+    )
+    .map(([shape, lat, lon]) => {
+      const attrs = createBasicAttributes(`name-${idTag}`, lat, lon);
+      const color = createColorInfo(true, '#102030', '#405060', '#708090');
+      const leafId = asFeatureId(`${idTag}-leaf`);
+      const aggId = asFeatureId(`${idTag}-agg`);
+      const leaf = createLeafFeature(leafId, attrs, color, shape);
+      // Aggregate's childIds reference the present leaf — the forest invariant
+      // (derived aggregate == the set of its children) is satisfiable.
+      const agg = createAggregateFeature(aggId, attrs, color, [leafId]);
+      // One vertex per ring-vertex id so every ring reference resolves.
+      const verts = shape.rings.flatMap((r) =>
+        r.vertexIds.map((vid, i) =>
+          createVertex(vid, createCoordinate((lon + i) % 180, (lat + i) % 90)),
+        ),
+      );
+      return createAnchorSnapshot([leaf, agg], createVertexStore(verts));
+    });
+}
+
+/** A valid, non-empty anchor series whose anchors carry RICH snapshots. */
+function richAnchorSeriesArb(): fc.Arbitrary<AnchorSeries> {
+  return fc
+    .uniqueArray(fc.integer({ min: -300, max: 300 }), {
+      minLength: 1,
+      maxLength: 5,
+    })
+    .chain((years) => {
+      const sorted = [...years].sort((a, b) => a - b);
+      return fc
+        .tuple(...sorted.map((y) => richSnapshotArb(`y${y}`)))
+        .map((snaps) => {
+          const entries: AnchorEntry[] = sorted.map((y, i) => {
+            const anchor = createAnchor(asAnchorId(`a-${y}`), snaps[i]!);
+            return createAnchorEntry(anchor, timePointYear(y), null);
+          });
+          return normalizeSeries(entries, cal);
+        });
+    });
+}
+
+// --- rich-snapshot invariant checks ----------------------------------------
+
+/** Ring alternation valid + every parentRingId resolves (no dangling parent)
+ * for every leaf shape in every snapshot of the series. */
+function expectRingHierarchyValid(s: AnchorSeries): void {
+  for (const e of s.entries) {
+    for (const f of e.anchor.snapshot.features) {
+      if (f.kind !== 'leaf') continue;
+      const shape = f.shape;
+      const res = validateAlternation(shape);
+      if (!res.valid) {
+        throw new Error(
+          `ring alternation violated in leaf ${f.id}: ${JSON.stringify(res.violations)}`,
+        );
+      }
+      const ringIds = new Set(shape.rings.map((r) => r.id));
+      for (const r of shape.rings) {
+        if (r.parentRingId !== undefined) {
+          expect(ringIds.has(r.parentRingId)).toBe(true);
+          expect(r.parentRingId).not.toBe(r.id); // no self-parent ring
+        }
+      }
+    }
+  }
+}
+
+/** Hierarchy forest: every aggregate childId resolves to a present feature in
+ * the same snapshot, no aggregate lists itself as a child, and the feature
+ * parent forest (parentId) has no dangling / self links. */
+function expectAggregateForestValid(s: AnchorSeries): void {
+  for (const e of s.entries) {
+    const features = e.anchor.snapshot.features;
+    const featureIds = new Set<string>(features.map((f) => f.id));
+    for (const f of features) {
+      if (f.parentId !== undefined) {
+        expect(featureIds.has(f.parentId)).toBe(true);
+        expect(f.parentId).not.toBe(f.id);
+      }
+      if (f.kind === 'aggregate') {
+        for (const childId of f.childIds) {
+          // Derived aggregate = the set of its children: each child must exist.
+          expect(featureIds.has(childId)).toBe(true);
+          expect(childId).not.toBe(f.id); // an aggregate is never its own child
+        }
+        // childIds carry no duplicates (a child counted twice would
+        // double-count in any derived aggregate area).
+        expect(new Set(f.childIds).size).toBe(f.childIds.length);
+      }
+    }
+  }
+}
+
+// --- full-fidelity save / load (rings + childIds + vertices) ----------------
+
+/** A faithful save→JSON→load that preserves the FULL feature objects (shape
+ * rings, parentRingId, aggregate childIds, parentId) and the vertex store.
+ * Unlike the point-only serializer above, this round-trips the whole snapshot,
+ * so a dropped/reordered ring or childId or a lost parent link would surface as
+ * a structural inequality rather than passing silently. */
+function expectRichSaveLoadIdentity(s: AnchorSeries): void {
+  const toPlain = (series: AnchorSeries) =>
+    series.entries.map((e) => ({
+      anchorId: e.anchor.id,
+      start: e.start,
+      end: e.end,
+      features: e.anchor.snapshot.features,
+      vertices: [...e.anchor.snapshot.vertices.byId.entries()].map(
+        ([id, v]) => ({ id, lon: v.coordinate.lon, lat: v.coordinate.lat }),
+      ),
+    }));
+  const plain = toPlain(s);
+  const reloaded = JSON.parse(JSON.stringify(plain)) as typeof plain;
+  // Rebuild a series from the reloaded plain data WITHOUT re-normalizing (a
+  // faithful load must reproduce the saved structure verbatim).
+  const rebuilt: AnchorSeries = {
+    entries: reloaded.map((pe) => {
+      const verts = pe.vertices.map((pv) =>
+        createVertex(asVertexId(pv.id), createCoordinate(pv.lon, pv.lat)),
+      );
+      const snapshot = createAnchorSnapshot(
+        pe.features as readonly Feature[],
+        createVertexStore(verts),
+      );
+      return createAnchorEntry(
+        createAnchor(asAnchorId(pe.anchorId), snapshot),
+        pe.start,
+        pe.end,
+      );
+    }),
+  };
+  expect(toPlain(rebuilt)).toEqual(plain);
+  // The reload must still satisfy every structural invariant.
+  expectRingHierarchyValid(rebuilt);
+  expectAggregateForestValid(rebuilt);
+}
+
+function assertRichStepInvariants(s: AnchorSeries): void {
+  expectAllInvariants(s);
+  expectNoBadNumbers(s);
+  expectRingHierarchyValid(s);
+  expectAggregateForestValid(s);
+  expectSelectionValid(s);
+  expectRichSaveLoadIdentity(s);
+}
+
+/** Apply an abstract edit (reusing the 4001 EditOp space) to a rich series,
+ * returning a changed series or undefined for a rejected / no-op edit. pastEdit
+ * inserts a RICH snapshot so inserted anchors keep the rich shape. */
+function applyRichEdit(s: AnchorSeries, op: EditOp): AnchorSeries | undefined {
+  const idAt = (i: number) => s.entries[i % s.entries.length]!.anchor.id;
+  let next: AnchorSeries | undefined;
+  if (op.kind === 'changeStart') {
+    const r = changeStart(s, idAt(op.target), timePointYear(op.year), cal);
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'setEnd') {
+    const r = setEnd(
+      s,
+      idAt(op.target),
+      op.end === null ? null : timePointYear(op.end),
+      cal,
+    );
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'delete') {
+    const r = deleteAnchor(s, idAt(op.target), cal);
+    next = r.ok ? r.series : undefined;
+  } else {
+    // pastEdit: build a fresh rich snapshot deterministically from the seed.
+    const tag = `pe${op.seed}`;
+    const leafId = asFeatureId(`${tag}-leaf`);
+    const aggId = asFeatureId(`${tag}-agg`);
+    const attrs = createBasicAttributes(tag, op.seed % 90, op.seed % 180);
+    const color = createColorInfo(true, '#111', '#222', '#333');
+    const tRid = asRingId(`${tag}-t`);
+    const hRid = asRingId(`${tag}-h`);
+    const tV = [asVertexId(`${tag}-ta`), asVertexId(`${tag}-tb`), asVertexId(`${tag}-tc`)];
+    const hV = [asVertexId(`${tag}-ha`), asVertexId(`${tag}-hb`), asVertexId(`${tag}-hc`)];
+    const shape = createShape([
+      createTerritoryRing(tRid, tV),
+      createHoleRing(hRid, hV, tRid),
+    ]);
+    const leaf = createLeafFeature(leafId, attrs, color, shape);
+    const agg = createAggregateFeature(aggId, attrs, color, [leafId]);
+    const verts = [...tV, ...hV].map((vid, i) =>
+      createVertex(vid, createCoordinate((op.seed + i) % 180, (op.seed + i) % 90)),
+    );
+    const snap = createAnchorSnapshot([leaf, agg], createVertexStore(verts));
+    next = applyPastEdit(
+      s,
+      timePointYear(op.year),
+      () => createAnchor(asAnchorId(`${tag}-anchor`), snap),
+      cal,
+    );
+  }
+  if (next === undefined) return undefined;
+  if (JSON.stringify(viewSeries(next)) === JSON.stringify(viewSeries(s))) {
+    return undefined;
+  }
+  return next;
+}
+
+describe('time-anchor + history undo/redo — seed 4004 rich-snapshot expansion', () => {
+  it('rich snapshots keep ring-alternation + hierarchy-forest + save/load through edit/undo/redo', () => {
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.array(actionArb, { maxLength: 24 }),
+        (initial, actions) => {
+          assertRichStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+          for (const action of actions) {
+            if (action.t === 'edit' && action.op) {
+              const before = history.state;
+              const after = applyRichEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else {
+              history = redo(history).history;
+            }
+            assertRichStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_4004, numRuns: NUM_RUNS_4004 },
+    );
+  });
+
+  it('metamorphic: undo∘execute == identity and redo restores post-execute (rich, seed 4004)', () => {
+    fc.assert(
+      fc.property(richAnchorSeriesArb(), editOpArb, (initial, op) => {
+        const history0 = createHistory(initial, 50);
+        const after = applyRichEdit(history0.state, op);
+        if (after === undefined) return;
+        const executed = execute(
+          history0,
+          makeSeriesCommand(op.kind, history0.state, after),
+        ).history;
+        expect(viewSeries(executed.state)).toEqual(viewSeries(after));
+        expectRingHierarchyValid(executed.state);
+        expectAggregateForestValid(executed.state);
+        const undone = undo(executed).history;
+        expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+        expectRingHierarchyValid(undone.state);
+        expectAggregateForestValid(undone.state);
+        const redone = redo(undone).history;
+        expect(viewSeries(redone.state)).toEqual(viewSeries(after));
+        expectRingHierarchyValid(redone.state);
+        expectAggregateForestValid(redone.state);
+      }),
+      { seed: SEED_4004, numRuns: NUM_RUNS_4004 },
+    );
+  });
+
+  it('metamorphic: undoing every executed edit returns to the root (rich, seed 4004)', () => {
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.array(editOpArb, { maxLength: 16 }),
+        (initial, ops) => {
+          let history = createHistory(initial, 100);
+          let pushed = 0;
+          for (const op of ops) {
+            const after = applyRichEdit(history.state, op);
+            if (after === undefined) continue;
+            history = execute(
+              history,
+              makeSeriesCommand(op.kind, history.state, after),
+            ).history;
+            pushed += 1;
+          }
+          for (let i = 0; i < pushed; i += 1) {
+            history = undo(history).history;
+          }
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+          expectRingHierarchyValid(history.state);
+          expectAggregateForestValid(history.state);
+        },
+      ),
+      { seed: SEED_4004, numRuns: NUM_RUNS_4004 },
+    );
+  });
+
+  it('full-fidelity save∘load == identity for any reachable rich series (seed 4004)', () => {
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.array(editOpArb, { maxLength: 16 }),
+        (initial, ops) => {
+          let s = initial;
+          for (const op of ops) {
+            const after = applyRichEdit(s, op);
+            if (after !== undefined) s = after;
+          }
+          expectRichSaveLoadIdentity(s);
+        },
+      ),
+      { seed: SEED_4004, numRuns: NUM_RUNS_4004 },
+    );
+  });
+});

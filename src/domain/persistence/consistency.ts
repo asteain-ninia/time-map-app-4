@@ -42,6 +42,7 @@ import { checkAggregateShapes, HIERARCHY_VIOLATION, validateHierarchy } from '..
 import { extractTerminalShapes } from '../spatial/terminals';
 import { detectTerminalOverlaps, type OverlapPair } from '../spatial/overlap';
 import { validateSeries } from '../anchor-series';
+import { validateRingHierarchy } from '../ring-hierarchy';
 import type { FeatureId, VertexId } from '../ids';
 import { idToString } from '../ids';
 import { createVertexStore, type Vertex, type VertexStore } from '../vertex';
@@ -66,6 +67,21 @@ export const INCONSISTENCY = {
    * keeps an empty timeline (FR-106 拡張).
    */
   OrphanHistory: 'orphan-history',
+  /**
+   * A leaf feature's ring hierarchy (territory↔hole alternation + geometry) is
+   * invalid: a dangling/cyclic parentRingId, a hole not contained in its parent,
+   * crossing/overlapping rings, etc. (U07 validateRingHierarchy). The schema only
+   * fixes the WORST forms unrepresentable (a parentless hole, a duplicate ring id);
+   * the territory→hole→territory alternation and the per-ring geometry are runtime
+   * invariants the schema cannot express, so a corrupt shape — e.g. a hole whose
+   * parentRingId names no existing territory ring — passes structural validation.
+   * resolveLeafShape then SILENTLY DROPS that orphan hole (it is bucketed under a
+   * parent id that no territory ring carries, so it is never emitted), and the
+   * feature loads as a hole-free / partially-invisible area with NO inconsistency
+   * reported. Detected here per leaf so the load / repair never silently keeps a
+   * wrong-looking feature (FR-106 拡張; Codex bug-hunt true-positive).
+   */
+  RingHierarchyInvalid: 'ring-hierarchy-invalid',
   /**
    * Two or more FeatureHistory entries share ONE owner featureId. A feature must
    * own exactly one timeline (its series is the single source of its state through
@@ -219,6 +235,45 @@ function detectShapePreservation(features: readonly Feature[], atTime: TimePoint
         detail: 'leaf-with-children',
       });
     }
+  }
+  return out;
+}
+
+// --- ring-hierarchy validity per leaf (delegated to U07) --------------------
+//
+// The schema makes a parentless hole and a duplicate ring id unrepresentable, but
+// the territory→hole→territory alternation and per-ring geometry (hole contained
+// in its parent, siblings/enclaves non-overlapping) are RUNTIME invariants U07
+// owns (validateRingHierarchy). They were never wired into load-time consistency,
+// so a shape with an orphan/cyclic parentRingId or a non-contained hole passed
+// load and resolveLeafShape silently dropped the offending hole — the feature
+// loaded as a hole-free / partially-invisible area with nothing reported. We run
+// U07's single predicate per leaf here (単一真実源, 教訓5.30 — never re-implement the
+// ring checks) and surface ANY violation as one RingHierarchyInvalid per leaf.
+
+function detectRingHierarchy(
+  features: readonly Feature[],
+  vertices: VertexStore,
+  atTime: TimePoint,
+): Inconsistency[] {
+  const out: Inconsistency[] = [];
+  for (const feature of features) {
+    if (feature.kind !== 'leaf') continue;
+    const result = validateRingHierarchy(feature.shape, vertices);
+    if (result.valid) continue;
+    // The first violation kind is the machine sub-cause (e.g. dangling-parent,
+    // hole-not-contained); every violation rides on the single inconsistency so
+    // the repair acts on the whole leaf rather than per-ring. exactOptionalPropertyTypes:
+    // only set `detail` when a sub-cause exists (a non-valid result always carries
+    // at least one violation, so this is defensive).
+    const detail = result.violations[0]?.kind;
+    out.push({
+      kind: INCONSISTENCY.RingHierarchyInvalid,
+      featureIds: [feature.id],
+      featureNames: namesOf(features, [feature.id]),
+      atTime,
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
   return out;
 }
@@ -449,6 +504,7 @@ function checkTimeSlice(
     ...detectMissingVertices(features, vertices, atTime),
     ...detectTreeTopology(features, atTime),
     ...detectShapePreservation(features, atTime),
+    ...detectRingHierarchy(features, vertices, atTime),
     ...terminalExclusionsFrom(overlaps, features, atTime),
     ...detectAggregateSum(features, vertices, atTime),
     ...anchorSpatialOverlapsFrom(overlaps, features, atTime),

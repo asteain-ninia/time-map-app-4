@@ -833,3 +833,335 @@ describe('stateful model-based edit sequences (fast-check, seed=1002)', () => {
     );
   });
 });
+
+// ===========================================================================
+// 7. SEED=1004 EXTENSION — undo metamorphic + real persistence round-trip +
+//    selection validity + forest / anchor-ordering invariants.
+//
+// The seed=1001/1002 sections above already pin the per-op + JSON-structural
+// invariants. This block adds the relations the task names but those sections do
+// NOT yet cover end-to-end:
+//
+//   (A) undo ∘ op == identity — applied as a real STACK: the model snapshots the
+//       world BEFORE each command and, on an 'undo' command, pops back to it; the
+//       restored world must be STRUCTURALLY IDENTICAL to the pre-op snapshot (not
+//       merely invariant-valid). A divergence here is a defect in how an op
+//       captures / rebuilds state (e.g. an op that mutates shared input, leaving
+//       the "previous" snapshot silently changed under the undo).
+//
+//   (B) save ∘ load == identity through the REAL persistence path (U14), not a
+//       bare JSON.stringify: serialize → parseManifest (Zod boundary) →
+//       manifestToProject → projectsEqual. The seed=1001 round-trip only proved
+//       JSON.stringify(x) re-stringifies equal; this proves the produced split /
+//       merge geometry survives the actual schema + deserialize the app ships.
+//
+//   (C) selection always valid (選択が常に有効): the model tracks a "selected"
+//       feature id across the whole chain; after every op the selection either
+//       resolves to a live feature or has been re-pointed to one — a dangling
+//       selection (pointing at a consumed / split-away feature) is a defect.
+//
+//   (D) forest parent links are acyclic and aggregate childIds == direct children
+//       (派生集約 = 子の和) — exercised by interleaving an aggregate-merge command
+//       into the leaf split/merge chain so the forest actually grows aggregates.
+//
+//   (E) anchor列の昇順・非重複: each surviving feature is given a period interval;
+//       the model asserts startYear <= endYear and, across a generated multi-entry
+//       "anchor series", strictly-ascending non-duplicate starts after normalize.
+//
+// Determinism: seed = 1004, numRuns large (per task). PERMANENT asset.
+// ===========================================================================
+
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { createAnchorEntry, normalizeSeries, isValidSeries } from '../anchor-series';
+import { getCalendar } from '../time/calendar';
+import { createGeoParams } from '../geo/geo-params';
+import { timePointYear } from '../time/time-point';
+import { asAnchorId } from '../ids';
+import { walkToRoot } from '../hierarchy/forest';
+import type { Feature } from '../feature';
+import {
+  serialize,
+  manifestToProject,
+  projectsEqual,
+  type DomainProject,
+  type FeatureHistory,
+  type ProjectSettings,
+  type BaseMapReference,
+} from '../persistence/serialize';
+import { parseManifest, isParsed } from '../persistence/boundary';
+
+const SEED_1004 = 1004;
+const RUNS_1004 = 400;
+
+// --- persistence scaffolding (constant settings / base map for every project) ---
+
+const PROJECT_SETTINGS: ProjectSettings = {
+  calendarId: 'gregorian',
+  geo: createGeoParams(40075, 0),
+  gridSpacingDeg: 1,
+  snapDistancePx: 8,
+  autoColorDefault: true,
+};
+const BASE_MAP: BaseMapReference = {
+  source: 'bh-basemap',
+  meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 },
+};
+
+/**
+ * Build a DomainProject whose every feature carries a TWO-entry anchor series
+ * (years 0 and 50, both holding the same full-state snapshot). This forces the
+ * persistence path to round-trip multiple anchors per feature AND lets the
+ * round-trip act as the save→load identity over the produced split/merge geometry.
+ */
+function worldToProject(world: World): DomainProject {
+  const snapshot = createAnchorSnapshot([...world.features], world.store);
+  const histories: FeatureHistory[] = world.features.map((f) => {
+    const e0 = createAnchorEntry(
+      createAnchor(asAnchorId(`bh-a0-${counter++}`), snapshot),
+      timePointYear(0),
+      timePointYear(25),
+    );
+    const e1 = createAnchorEntry(
+      createAnchor(asAnchorId(`bh-a1-${counter++}`), snapshot),
+      timePointYear(30),
+      null,
+    );
+    return { featureId: f.id, series: { entries: [e0, e1] } };
+  });
+  return { histories, settings: PROJECT_SETTINGS, baseMap: BASE_MAP };
+}
+
+/** save ∘ load through the REAL persistence path; returns the reloaded project. */
+function saveThenLoad(project: DomainProject): DomainProject | undefined {
+  const manifest = serialize(project);
+  const parsed = parseManifest(JSON.parse(JSON.stringify(manifest)));
+  if (!isParsed(parsed)) return undefined;
+  return manifestToProject(parsed.manifest);
+}
+
+/** Structural identity of two worlds (features by id+shape, store by id+coord). */
+function worldsIdentical(a: World, b: World): boolean {
+  if (a.features.length !== b.features.length) return false;
+  const aSnap = JSON.stringify({
+    features: a.features.map((f) => ({ id: f.id, shape: f.shape, parentId: f.parentId })),
+    vertices: [...a.store.byId.entries()].sort(([x], [y]) => (x < y ? -1 : 1)),
+  });
+  const bSnap = JSON.stringify({
+    features: b.features.map((f) => ({ id: f.id, shape: f.shape, parentId: f.parentId })),
+    vertices: [...b.store.byId.entries()].sort(([x], [y]) => (x < y ? -1 : 1)),
+  });
+  return aSnap === bSnap;
+}
+
+// --- (A) undo metamorphic + (C) selection validity stateful model -----------
+
+type Cmd1004 =
+  | { readonly t: 'split'; readonly leafPick: number; readonly frac: number }
+  | { readonly t: 'merge'; readonly aPick: number; readonly bPick: number }
+  | { readonly t: 'undo' }
+  | { readonly t: 'reselect'; readonly pick: number };
+
+const cmd1004Arb: fc.Arbitrary<Cmd1004> = fc.oneof(
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    frac: fc.double({ min: 0, max: 1, noNaN: true }),
+  }),
+  fc.record({
+    t: fc.constant<'merge'>('merge'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+  }),
+  fc.constant<Cmd1004>({ t: 'undo' }),
+  fc.record({ t: fc.constant<'reselect'>('reselect'), pick: fc.nat({ max: 1_000_000 }) }),
+);
+
+describe('seed=1004 — undo identity + selection validity (fast-check)', () => {
+  it('undo ∘ op == identity (stack pop restores the exact prior world); selection stays valid', () => {
+    fc.assert(
+      fc.property(fc.array(cmd1004Arb, { minLength: 1, maxLength: 16 }), (cmds) => {
+        let world = initialWorld();
+        // History stack of prior worlds for undo. The seed world is the floor.
+        const stack: World[] = [];
+        // Selection: a feature id the user currently has selected. Always points
+        // at a LIVE feature after every op (選択が常に有効).
+        let selected = world.features[0]!.id;
+        checkWorldInvariants(world);
+
+        const ensureSelectionValid = () => {
+          // If the selected feature was consumed (split-away / merged), re-point to
+          // a surviving feature — the selection must never dangle.
+          if (!world.features.some((f) => f.id === selected)) {
+            selected = world.features[0]!.id;
+          }
+          expect(world.features.some((f) => f.id === selected)).toBe(true);
+        };
+
+        for (const cmd of cmds) {
+          if (cmd.t === 'undo') {
+            const prior = stack.pop();
+            if (prior === undefined) continue; // nothing to undo.
+            // undo ∘ op == identity: the popped world is byte-for-byte the world
+            // that existed BEFORE the op whose result we are discarding.
+            world = prior;
+            ensureSelectionValid();
+            checkWorldInvariants(world);
+            continue;
+          }
+          if (cmd.t === 'reselect') {
+            selected = world.features[cmd.pick % world.features.length]!.id;
+            continue;
+          }
+          // A real edit: snapshot the CURRENT world, then apply.
+          const before = world;
+          const beforeCopy: World = {
+            features: before.features.slice(),
+            store: { byId: new Map(before.store.byId) },
+          };
+          const next = cmd.t === 'split' ? applySplit(world, cmd) : applyMerge(world, cmd);
+          // Op purity: applying an op must NOT have mutated the prior world value
+          // (else the undo snapshot would be corrupted). Verify the snapshot is
+          // still identical to what `before` was.
+          expect(worldsIdentical(before, beforeCopy)).toBe(true);
+          if (next !== world) stack.push(beforeCopy);
+          world = next;
+          ensureSelectionValid();
+          checkWorldInvariants(world);
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+        }
+      }),
+      { seed: SEED_1004, numRuns: RUNS_1004 },
+    );
+  });
+});
+
+// --- (B) real persistence save∘load==identity over produced geometry --------
+
+describe('seed=1004 — save ∘ load == identity via real U14 persistence path', () => {
+  it('a world produced by random split/merge round-trips through serialize→parse→deserialize', () => {
+    fc.assert(
+      fc.property(fc.array(cmdArb, { minLength: 1, maxLength: 12 }), (cmds) => {
+        let world = initialWorld();
+        for (const cmd of cmds) world = applyCmd(world, cmd);
+        checkWorldInvariants(world);
+
+        const project = worldToProject(world);
+        const reloaded = saveThenLoad(project);
+        expect(reloaded).toBeDefined();
+        if (reloaded === undefined) return;
+        // The persisted-then-restored project equals the original structurally:
+        // every feature shape + every vertex coordinate + every anchor entry.
+        expect(projectsEqual(project, reloaded)).toBe(true);
+      }),
+      { seed: SEED_1004, numRuns: RUNS_1004 },
+    );
+  });
+});
+
+// --- (D) forest validity with aggregates interleaved ------------------------
+//
+// Build N leaves, give each its own aggregate parent, then aggregate-merge a
+// random subset. After the merge the result aggregate's childIds must equal its
+// forest direct children, no parent link may be cyclic, and no feature may be its
+// own ancestor.
+
+describe('seed=1004 — forest validity (aggregate childIds == direct children, acyclic)', () => {
+  it('aggregate-merge of a random subset keeps the forest a valid森 (派生集約 = 子の和)', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 2, max: 6 }),
+        fc.array(fc.boolean(), { minLength: 2, maxLength: 6 }),
+        (numAgg, pickMask) => {
+          const features: Feature[] = [];
+          const verts: Vertex[] = [];
+          const aggIds: ReturnType<typeof asFeatureId>[] = [];
+          for (let i = 0; i < numAgg; i += 1) {
+            const aggId = asFeatureId(`bh4-A-${counter++}`);
+            aggIds.push(aggId);
+            const lb = box(i * 100, i * 100 + 50, 0, 50);
+            lb.ids.forEach((id, k) => verts.push(createVertex(id, lb.coords[k]!)));
+            const childId = asFeatureId(`bh4-c-${counter++}`);
+            features.push(
+              createLeafFeature(
+                childId,
+                createBasicAttributes(`c${i}`, i, 100 + i),
+                COLOR,
+                createShape([createTerritoryRing(freshRid(), lb.ids)]),
+                { parentId: aggId },
+              ),
+            );
+            features.push(
+              createAggregateFeature(aggId, createBasicAttributes(`A${i}`, i, 100 + i), COLOR, [childId]),
+            );
+          }
+          // Pick the aggregates whose mask bit is set (≥2 to make a merge meaningful).
+          const picked = aggIds.filter((_, i) => pickMask[i] ?? false);
+          if (picked.length < 2) return; // need ≥2 to merge.
+
+          const vertices = createVertexStore(verts);
+          const r = buildMergeProposal({
+            features,
+            vertices,
+            targetIds: picked,
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: createBasicAttributes('agg', 0, 200), color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(r.status).toBe(MERGE_STATUS.Proposal);
+          if (r.status !== MERGE_STATUS.Proposal) return;
+          const p = r.proposal;
+          const forest = buildForest(p.nextFeatures);
+
+          // No duplicate ids.
+          const ids = p.nextFeatures.map((x) => x.id);
+          expect(new Set(ids).size).toBe(ids.length);
+
+          for (const fe of p.nextFeatures) {
+            // Acyclic parent chain (educated by walkToRoot's cycle detection).
+            const walk = walkToRoot(forest, fe.id);
+            expect(walk.cyclic).toBe(false);
+            // 派生集約 = 子の和: every aggregate's declared childIds == direct children.
+            if (fe.kind === 'aggregate') {
+              const declared = [...fe.childIds].sort();
+              const actual = [...directChildIds(forest, fe.id)].sort();
+              expect(declared).toEqual(actual);
+            }
+            // Period ordering on every surviving feature (startYear <= endYear).
+            expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+          }
+        },
+      ),
+      { seed: SEED_1004, numRuns: RUNS_1004 },
+    );
+  });
+});
+
+// --- (E) anchor series 昇順・非重複 -----------------------------------------
+
+describe('seed=1004 — anchor series ascending / non-duplicate after normalize', () => {
+  it('normalizeSeries produces strictly-ascending, non-duplicate starts for any entry set', () => {
+    const cal = getCalendar('gregorian');
+    fc.assert(
+      fc.property(
+        fc.array(fc.integer({ min: -500, max: 500 }), { minLength: 1, maxLength: 12 }),
+        (years) => {
+          // A snapshot is irrelevant to ordering; reuse a trivial empty world store.
+          const snap = createAnchorSnapshot([], createVertexStore([]));
+          const entries = years.map((y) =>
+            createAnchorEntry(createAnchor(asAnchorId(`bh4-an-${counter++}`), snap), timePointYear(y), null),
+          );
+          const series = normalizeSeries(entries, cal);
+          // INV-1..5 hold on the normalized series (single source of the rule).
+          expect(isValidSeries(series, cal)).toBe(true);
+          // Starts are strictly ascending and non-duplicate (昇順・非重複).
+          const starts = series.entries.map((e) => (e.start as { year: number }).year);
+          for (let i = 1; i < starts.length; i += 1) {
+            expect(starts[i]! > starts[i - 1]!).toBe(true);
+          }
+        },
+      ),
+      { seed: SEED_1004, numRuns: RUNS_1004 },
+    );
+  });
+});

@@ -44,6 +44,8 @@ export const REPAIR_OPTION = {
   ReconcileChildIds: 'reconcile-child-ids',
   /** 形状保持規則違反 → 当該地物を除外する。 */
   DropShapeRoleFeature: 'drop-shape-role-feature',
+  /** リング階層不整合（穴の親不在・包含/交差違反など）→ 当該地物を除外する。 */
+  DropRingHierarchyFeature: 'drop-ring-hierarchy-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
   DropOverlappingFeature: 'drop-overlapping-feature',
   /** 親=下位和不一致 → 当該集約地物を除外する（下位は最上位化）。 */
@@ -74,6 +76,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.ReconcileChildIds]:
     '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',
   [REPAIR_OPTION.DropShapeRoleFeature]: '形状の規則に違反している地物を読み込みから除外します。',
+  [REPAIR_OPTION.DropRingHierarchyFeature]:
+    'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
   [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
   [REPAIR_OPTION.DropAggregateFeature]: '下位領域と一致しない集約地物を除外し、下位を最上位化します。',
   [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
@@ -112,6 +116,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.DetachToTopLevel), opt(REPAIR_OPTION.DropTopologyFeature)];
     case INCONSISTENCY.ShapePreservation:
       return [opt(REPAIR_OPTION.DropShapeRoleFeature)];
+    case INCONSISTENCY.RingHierarchyInvalid:
+      return [opt(REPAIR_OPTION.DropRingHierarchyFeature)];
     case INCONSISTENCY.TerminalExclusion:
     case INCONSISTENCY.AnchorSpatialOverlap:
       return [opt(REPAIR_OPTION.DropOverlappingFeature)];
@@ -337,6 +343,7 @@ export function applyRepair(
     case REPAIR_OPTION.DropFeatureWithMissingVertex:
     case REPAIR_OPTION.DropTopologyFeature:
     case REPAIR_OPTION.DropShapeRoleFeature:
+    case REPAIR_OPTION.DropRingHierarchyFeature:
       return dropFeatures(project, inc.featureIds);
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);

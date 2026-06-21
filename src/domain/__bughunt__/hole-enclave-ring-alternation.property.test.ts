@@ -715,3 +715,294 @@ describe('alternation (seed=2002): stateful geometry deletion stream', () => {
     );
   });
 });
+
+// ===========================================================================
+// 7. THIRD CAMPAIGN (seed=2004) — focal brief: richer multi-child geometry,
+//    save->load identity, and op∘inverse metamorphic laws.
+//
+// The campaign-1/2 geometry generator only ever produces ONE hole per territory
+// and ONE enclave per hole. The documented 教訓5.40 defect class (deletion
+// MANUFACTURING an overlap by absorbing/lifting siblings) only fires when a ring
+// has MULTIPLE same-parent siblings. This campaign therefore generates trees
+// with up to 3 holes per territory and up to 3 enclaves per hole, all laid out
+// in disjoint sub-columns so the starting shape is geometry-valid by
+// construction, then asserts the full invariant bundle survives every deletion.
+// ===========================================================================
+
+const SEED3 = 2004;
+const RUNS3 = 700;
+const cfg3 = { seed: SEED3, numRuns: RUNS3 } as const;
+
+interface Rect {
+  readonly cx: number;
+  readonly cy: number;
+  readonly halfW: number;
+  readonly halfH: number;
+}
+
+/** Split a rectangle into `n` disjoint child rectangles along the X axis, each
+ * strictly inside the parent with a gutter between them so siblings never touch.
+ * A child's half-height is also shrunk so it sits clear of the parent's top/
+ * bottom edge. Returns [] for n<=0. Geometry-valid by construction. */
+function disjointChildRects(parent: Rect, n: number): readonly Rect[] {
+  if (n <= 0) return [];
+  // Usable interior width with a margin on each side and gutters between cells.
+  const margin = parent.halfW * 0.15;
+  const innerHalfW = parent.halfW - margin;
+  const cellWidth = (2 * innerHalfW) / n;
+  const childHalfW = cellWidth * 0.3; // leaves a gutter (cell is 0.6 filled)
+  const childHalfH = parent.halfH * 0.4;
+  const out: Rect[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const cellCenter = parent.cx - innerHalfW + cellWidth * (i + 0.5);
+    out.push({ cx: cellCenter, cy: parent.cy, halfW: childHalfW, halfH: childHalfH });
+  }
+  return out;
+}
+
+/** A nested plan with explicit per-level child COUNTS and rectangles. */
+interface GeoPlan {
+  readonly rect: Rect;
+  readonly kind: typeof RING_KIND.Territory | typeof RING_KIND.Hole;
+  readonly children: readonly GeoPlan[];
+}
+
+/** Build a geo plan: a territory rect with `holeCounts.length` holes, each hole
+ * carrying that many enclaves, each enclave carrying `enclaveHoles` holes. */
+function buildTerritoryPlan(
+  rect: Rect,
+  holeCounts: readonly number[],
+  enclaveHoles: number,
+): GeoPlan {
+  const holeRects = disjointChildRects(rect, holeCounts.length);
+  const holes: GeoPlan[] = holeRects.map((hr, i) => {
+    const enclaveCount = holeCounts[i] ?? 0;
+    const enclaveRects = disjointChildRects(hr, enclaveCount);
+    const enclaves: GeoPlan[] = enclaveRects.map((er) => {
+      const innerHoleRects = disjointChildRects(er, enclaveHoles);
+      const innerHoles: GeoPlan[] = innerHoleRects.map((ihr) => ({
+        rect: ihr,
+        kind: RING_KIND.Hole,
+        children: [],
+      }));
+      return { rect: er, kind: RING_KIND.Territory, children: innerHoles };
+    });
+    return { rect: hr, kind: RING_KIND.Hole, children: enclaves };
+  });
+  return { rect, kind: RING_KIND.Territory, children: holes };
+}
+
+/** Materialize a GeoPlan into rings + vertices with globally-unique IDs. */
+function materializePlan(
+  plan: GeoPlan,
+  parentId: RingId | undefined,
+  fresh: () => RingId,
+  rings: Ring[],
+  vertices: { id: VertexId; lon: number; lat: number }[],
+): void {
+  const id = fresh();
+  rings.push(
+    rectRing(id, plan.rect.cx, plan.rect.cy, plan.rect.halfW, plan.rect.halfH, plan.kind, parentId, vertices),
+  );
+  for (const child of plan.children) {
+    materializePlan(child, id, fresh, rings, vertices);
+  }
+}
+
+/** Rich geometry generator: multiple top-level territories in disjoint longitude
+ * bands; each territory has 0..3 holes; each hole has 0..3 enclaves; each enclave
+ * has 0..2 inner holes. Geometry-valid by construction. */
+function richGeoShapeArb(): fc.Arbitrary<GeoShape> {
+  return fc
+    .array(
+      fc.record({
+        halfW: fc.double({ min: 10, max: 16, noNaN: true, noDefaultInfinity: true }),
+        halfH: fc.double({ min: 10, max: 16, noNaN: true, noDefaultInfinity: true }),
+        // For each hole: how many enclaves it has (length => number of holes).
+        holeCounts: fc.array(fc.integer({ min: 0, max: 3 }), { minLength: 0, maxLength: 3 }),
+        enclaveHoles: fc.integer({ min: 0, max: 2 }),
+      }),
+      { minLength: 1, maxLength: 3 },
+    )
+    .map((specs) => {
+      const rings: Ring[] = [];
+      const vertices: { id: VertexId; lon: number; lat: number }[] = [];
+      let counter = 0;
+      const fresh = (): RingId => asRingId(`x${counter++}`);
+      // Disjoint longitude bands, wide enough (80 apart) that top territories of
+      // half-width <=16 never touch.
+      let bandCenter = -160;
+      for (const spec of specs) {
+        const rect: Rect = { cx: bandCenter, cy: 0, halfW: spec.halfW, halfH: spec.halfH };
+        bandCenter += 80;
+        const plan = buildTerritoryPlan(rect, spec.holeCounts, spec.enclaveHoles);
+        materializePlan(plan, undefined, fresh, rings, vertices);
+      }
+      const store = createVertexStore(
+        vertices.map((v) => createVertex(v.id, createCoordinate(v.lon, v.lat))),
+      );
+      return { shape: createShape(rings), store };
+    });
+}
+
+/** Serialize a shape to plain JSON-safe data and back — the structural core of a
+ * save->load round-trip (the model is "plain data" by design, lesson 5.20/5.31).
+ * If the in-memory model is genuinely plain, JSON.parse(JSON.stringify(x)) must
+ * reproduce it exactly. A non-plain field (a class instance, a Map, a function,
+ * a -0, a non-finite number) would surface here as a round-trip mismatch. */
+function jsonRoundTrip<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+describe('alternation (seed=2004): rich multi-child geometry under deletion', () => {
+  it('rich nested hierarchies are geometry-valid and structurally valid by construction', () => {
+    fc.assert(
+      fc.property(richGeoShapeArb(), ({ shape, store }) => {
+        expect(storeFinite(store)).toBe(true);
+        expect(allRingsFinite(shape, store)).toBe(true);
+        expect(noRingSelfIntersects(shape, store)).toBe(true);
+        assertStructurallyValid(shape);
+        expect(depthsConsistent(shape)).toBe(true);
+        // The whole point of the rich generator: starting geometry has NO
+        // violations even with many siblings.
+        expect(validateRingHierarchy(shape, store).violations).toEqual([]);
+      }),
+      cfg3,
+    );
+  });
+
+  it('deleting ANY ring of a rich hierarchy never manufactures a geometry violation (教訓5.40)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, store, targetId }) => {
+          const after = deleteRingAndReorganize(shape, targetId);
+          assertStructurallyValid(after);
+          expect(depthsConsistent(after)).toBe(true);
+          expect(allRingsFinite(after, store)).toBe(true);
+          expect(noRingSelfIntersects(after, store)).toBe(true);
+          // The focal property: reorganization must NOT create siblings/enclaves
+          // overlap nor break hole-containment. The store is untouched, so any
+          // violation is purely a re-linking defect.
+          const geo = validateGeometry(after, store);
+          expect(geo.violations).toEqual([]);
+        },
+      ),
+      cfg3,
+    );
+  });
+
+  it('stateful: rich geometry survives a full random deletion stream to empty', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }), {
+              minLength: shape.rings.length + 2,
+              maxLength: shape.rings.length + 6,
+            })
+            .map((selectors) => ({ shape, store, selectors })),
+        ),
+        ({ shape, store, selectors }) => {
+          let current = shape;
+          const checkAll = (s: Shape): void => {
+            assertStructurallyValid(s);
+            expect(depthsConsistent(s)).toBe(true);
+            expect(allRingsFinite(s, store)).toBe(true);
+            expect(noRingSelfIntersects(s, store)).toBe(true);
+            expect(validateGeometry(s, store).violations).toEqual([]);
+            if (s.rings.length > 0) expect(topLevelRings(s).length).toBeGreaterThan(0);
+          };
+          checkAll(current);
+          for (const sel of selectors) {
+            if (current.rings.length === 0) break;
+            const idx = Math.min(current.rings.length - 1, Math.floor(sel * current.rings.length));
+            const target = current.rings[idx];
+            if (target === undefined) continue;
+            current = deleteRingAndReorganize(current, target.id);
+            checkAll(current);
+          }
+          expect(current.rings.length).toBe(0);
+        },
+      ),
+      cfg3,
+    );
+  });
+});
+
+describe('alternation (seed=2004): metamorphic laws', () => {
+  it('save -> load is the identity on the shape (plain-data round-trip)', () => {
+    fc.assert(
+      fc.property(richGeoShapeArb(), ({ shape }) => {
+        const reloaded = jsonRoundTrip(shape);
+        expect(reloaded).toEqual(shape);
+        // The reloaded shape is still a valid alternating forest.
+        assertStructurallyValid(reloaded);
+      }),
+      cfg3,
+    );
+  });
+
+  it('save -> load is the identity on the vertex coordinates (no -0 / non-finite drift)', () => {
+    fc.assert(
+      fc.property(richGeoShapeArb(), ({ store }) => {
+        for (const v of store.byId.values()) {
+          const reloaded = jsonRoundTrip(v.coordinate);
+          // Coordinates are plain finite numbers; round-trip must be exact,
+          // including the +0 / -0 normalization the coordinate seam guarantees.
+          expect(reloaded).toEqual(v.coordinate);
+          expect(Object.is(reloaded.lon, v.coordinate.lon)).toBe(true);
+          expect(Object.is(reloaded.lat, v.coordinate.lat)).toBe(true);
+        }
+      }),
+      cfg3,
+    );
+  });
+
+  it('metamorphic: delete(delete(s, t), t) == delete(s, t) (deletion is idempotent in its target)', () => {
+    // Once the target is gone, deleting it again is a no-op on the result (the
+    // target is absent => identity). This is the op∘op stability law for an
+    // idempotent destructive operation.
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, targetId }) => {
+          const once = deleteRingAndReorganize(shape, targetId);
+          const twice = deleteRingAndReorganize(once, targetId);
+          expect(twice).toEqual(once);
+        },
+      ),
+      cfg3,
+    );
+  });
+
+  it('metamorphic: deletion order independence for two distinct top-level enclaves', () => {
+    // Deleting two DISJOINT top-level territories (separate bands) in either
+    // order yields the same forest — they share no ancestry, so reorganization of
+    // one cannot affect the other (op_a ∘ op_b == op_b ∘ op_a).
+    fc.assert(
+      fc.property(richGeoShapeArb(), ({ shape }) => {
+        const tops = topLevelRings(shape);
+        if (tops.length < 2) return; // need two independent subtrees
+        const a = tops[0];
+        const b = tops[1];
+        if (a === undefined || b === undefined) return;
+        const ab = deleteRingAndReorganize(deleteRingAndReorganize(shape, a.id), b.id);
+        const ba = deleteRingAndReorganize(deleteRingAndReorganize(shape, b.id), a.id);
+        // Compare as ID-keyed sets (ring array order may differ between paths).
+        const norm = (s: Shape): string =>
+          JSON.stringify(
+            [...s.rings]
+              .map((r) => ({ id: r.id, kind: r.kind, parent: r.parentRingId ?? null }))
+              .sort((x, y) => x.id.localeCompare(y.id)),
+          );
+        expect(norm(ab)).toBe(norm(ba));
+      }),
+      cfg3,
+    );
+  });
+});

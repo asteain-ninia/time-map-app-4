@@ -17,8 +17,8 @@
 //   - save ∘ load = identity     (serialize(deserialize(m)) deep-equals m;
 //                                 deserialize(serialize(p)) ≡ p)
 //
-// Determinism: seed pinned to 6001 for THIS file (overriding the suite-wide
-// seed), numRuns kept large (300–600). The test is a permanent asset: it asserts
+// Determinism: seed pinned to 6004 for THIS file (overriding the suite-wide
+// seed), numRuns kept large (300–1000). The test is a permanent asset: it asserts
 // the SPECIFIED behaviour and does not paper over a real defect.
 
 import fc from 'fast-check';
@@ -78,11 +78,14 @@ import {
 // eslint-disable-next-line no-restricted-imports
 import { deserialize } from '../persistence/serialize';
 import { parseManifest, PARSE_OUTCOME } from '../persistence';
+import { resolveAt } from '../anchor-series';
+import { EMPTY_SELECTION, withActiveFeature } from '../selection/state';
+import { revalidateForTime, type ExistenceAtTime } from '../selection/reresolve';
 
 const CAL = getCalendar('gregorian');
-// Determinism: seed pinned to 6002 for THIS file (overriding the suite-wide seed)
+// Determinism: seed pinned to 6004 for THIS file (overriding the suite-wide seed)
 // per the bug-hunt brief. numRuns kept large (300–1000).
-const SEED = 6002;
+const SEED = 6004;
 
 const SETTINGS: ProjectSettings = {
   calendarId: 'gregorian',
@@ -573,7 +576,7 @@ describe('save-load-roundtrip-identity (bug hunt)', () => {
 });
 
 // ============================================================================
-// EXTENDED SURFACE (seed 6002): hole rings, derived aggregates (子の和), shared
+// EXTENDED SURFACE (seed 6004): hole rings, derived aggregates (子の和), shared
 // vertices, and a GENUINE undo through the U12 history module. These exercise
 // invariant surfaces the disjoint-square generator above never reaches.
 // ============================================================================
@@ -899,6 +902,103 @@ describe('save-load-roundtrip-identity — metamorphic undo/redo (via U12 histor
               ),
             };
             expect(projectsEqual(restored, project)).toBe(true);
+          }
+        },
+      ),
+      { seed: SEED, numRuns: 500 },
+    );
+  });
+});
+
+// ============================================================================
+// 選択が常に有効 (selection always valid). The brief lists "selection always
+// valid" as a per-edit load invariant alongside the round-trip. We track a real
+// SelectionState (an active feature) across the edit sequence and, after EACH
+// edit, re-validate it through the REAL U22 `revalidateForTime` against U09
+// existence (resolveAt). The invariant: a selection is NEVER left dangling —
+// after re-validation the active feature is either (a) null (correctly dropped
+// because the feature no longer exists at the probe time) or (b) a feature id
+// that genuinely resolves to a present anchor at that time. A selection that
+// "survives" pointing at a non-existent feature would be the bug.
+// ============================================================================
+
+/** All distinct feature ids that ever appear in a project's snapshots. */
+function allFeatureIds(project: DomainProject): string[] {
+  const ids = new Set<string>();
+  for (const h of project.histories) {
+    for (const e of h.series.entries) {
+      for (const f of e.anchor.snapshot.features) ids.add(f.id);
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Does `featureId` exist (resolve to a present anchor that still contains it) at
+ * `year` anywhere in the project? Backed by the REAL U09 `resolveAt` — the same
+ * existence logic the production selection re-resolution is wired to.
+ */
+function featureExistsAtYear(
+  project: DomainProject,
+  featureId: string,
+  year: number,
+): boolean {
+  for (const h of project.histories) {
+    const res = resolveAt(h.series, timePointYear(year), CAL);
+    if (res.kind !== 'present') continue;
+    if (res.entry.anchor.snapshot.features.some((f) => f.id === featureId)) return true;
+  }
+  return false;
+}
+
+/** An ExistenceAtTime backed by the project at a probe year (vertex existence
+ * folds onto feature existence — a vertex exists iff its owner feature does at
+ * the probe time, which is all the active-feature invariant needs). */
+function existenceFor(project: DomainProject, year: number): ExistenceAtTime<number> {
+  return {
+    featureExistsAt: (fid) => featureExistsAtYear(project, fid, year),
+    vertexExistsAt: (fid) => featureExistsAtYear(project, fid, year),
+  };
+}
+
+describe('save-load-roundtrip-identity — selection always valid (via U22 revalidate)', () => {
+  it('a tracked selection is never left dangling after a random edit sequence', () => {
+    fc.assert(
+      fc.property(
+        richProjectArb(),
+        fc.array(cmdArb(), { minLength: 1, maxLength: 20 }),
+        fc.integer({ min: -200, max: 200 }),
+        (initial, cmds, probeYear) => {
+          let project = initial;
+          // Seed a selection on a feature that exists at probeYear if one does,
+          // else on an arbitrary feature id (the dangling case we then exercise).
+          const ids = allFeatureIds(project);
+          const seedId =
+            ids.find((id) => featureExistsAtYear(project, id, probeYear)) ?? ids[0];
+          let selection =
+            seedId === undefined
+              ? EMPTY_SELECTION
+              : withActiveFeature(EMPTY_SELECTION, asFeatureId(seedId));
+
+          for (const cmd of cmds) {
+            project = applyCmd(project, cmd);
+            // Re-validate the selection against the (edited) project at probeYear.
+            selection = revalidateForTime(selection, probeYear, existenceFor(project, probeYear));
+            // INVARIANT: the active feature is either dropped (null) or genuinely
+            // resolves to a present anchor at probeYear. Never a dangling ref.
+            if (selection.activeFeature !== null) {
+              if (!featureExistsAtYear(project, selection.activeFeature, probeYear)) {
+                throw new Error(
+                  `selection points at non-existent feature ${selection.activeFeature} ` +
+                    `at year ${probeYear} after cmd ${JSON.stringify(cmd)}`,
+                );
+              }
+            }
+            // And the underlying project is still a clean, save-loadable state.
+            const check = checkAllInvariants(project);
+            if (!check.ok) {
+              throw new Error(`invariant "${check.failed}" broke after cmd ${JSON.stringify(cmd)}`);
+            }
           }
         },
       ),

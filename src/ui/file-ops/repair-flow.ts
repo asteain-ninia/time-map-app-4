@@ -76,6 +76,7 @@ export const INCONSISTENCY_LABELS = {
   'missing-vertex-reference': '存在しない頂点参照',
   'tree-topology': '階層（ツリー）構造の不整合',
   'shape-preservation': '形状保持規則の違反',
+  'ring-hierarchy-invalid': 'リング階層（領土と穴の入れ子関係・包含）の不整合',
   'terminal-exclusion': '末端地物の重なり',
   'aggregate-sum-mismatch': '集約と下位領域の和の不一致',
   'time-conflict': '時間（錨列）の矛盾',

@@ -22,7 +22,7 @@
 //   * transferSharing(identity remap) = identity.
 //   * a REJECTED op leaves the input state byte-identical (full rollback).
 //
-// Determinism: seed = 3001, numRuns large. Run ONLY this file:
+// Determinism: seed = 3004, numRuns large. Run ONLY this file:
 //   npx vitest run src/domain/__bughunt__/shared-vertex-linkage.property.test.ts
 //
 // Findings are reported by FAILING assertions (no green-washing of real bugs).
@@ -55,8 +55,8 @@ import {
 } from '../shared-vertex';
 import { createVertex, createVertexStore, getVertex, type Vertex } from '../vertex';
 
-const SEED = 3002;
-const NUM_RUNS = 600;
+const SEED = 3004;
+const NUM_RUNS = 800;
 
 // A monotonic injected time source (deterministic). Each call advances by 1.
 function makeClock(start = 1): () => number {
@@ -698,6 +698,102 @@ describe('shared-vertex-linkage stateful invariants (bughunt)', () => {
         // The content must be byte-identical to the pre-unshare state: the split
         // body is pruned and the reference points back at the original id.
         expect(canonical(back.state)).toEqual(baseCanon);
+      }),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
+  // A linked move follows EVERY referrer: after moving a shared vertex, every
+  // citation of that id (which resolves to the single body) reads the new
+  // coordinate, and the change set names the moved id plus every feature that
+  // cited it (symmetric touched set; §4.8 / 教訓5.23).
+  it('linked move updates all referrers and reports a complete touched set', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), fc.integer({ min: -179, max: 179 }), fc.integer({ min: -85, max: 85 }), (seed, idx, lon, lat) => {
+        const state = buildState(seed);
+        const ids = [...new Set(allCitedIds(state))];
+        const vid = pick(ids, idx);
+        if (vid === undefined) return;
+        const refsBefore = referencesOf(state, vid);
+        const expectedFeatures = new Set(refsBefore.map((r) => r.container.featureId));
+        const coord = createCoordinate(lon, lat);
+        const res = moveVertices(state, [{ vertexId: vid, coordinate: coord }], {
+          validators: [zeroLengthEdgeValidator],
+        });
+        if (res.status !== SHARED_VERTEX_OUTCOME.Applied) return; // e.g. zero-length edge
+        // Single body updated -> every referrer reads it.
+        const moved = getVertex(res.state.vertices, vid);
+        expect(moved?.coordinate).toEqual(coord);
+        // Touched set names the moved id.
+        expect(res.change.touchedVertexIds.has(vid)).toBe(true);
+        // Touched features cover exactly the features that cited the id.
+        for (const f of expectedFeatures) {
+          expect(res.change.touchedFeatureIds.has(f), `missing touched feature ${f}`).toBe(true);
+        }
+        // No vertices created or deleted by a pure coordinate move.
+        expect(res.change.createdVertexIds.size).toBe(0);
+        expect(res.change.deletedVertexIds.size).toBe(0);
+        checkInvariants(res.state, 'after linked move');
+        checkParticipationOfShared(res.state, 'after linked move');
+      }),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
+  // share change-set accounting: an APPLIED share that prunes the orphaned
+  // candidate body must report it in deletedVertexIds; the candidate id must no
+  // longer have a body NOR be cited; and the body count must drop by exactly 1.
+  it('applied share that collapses a vertex reports the pruned body accurately', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(opArb, { minLength: 0, maxLength: 12 }), fc.nat(20), fc.nat(20), (seed, ops, ai, bi) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp(ctx, op);
+        const ids = [...new Set(allCitedIds(ctx.state))];
+        if (ids.length < 2) return;
+        const cand = ids[ai % ids.length];
+        const targ = ids[bi % ids.length];
+        if (cand === undefined || targ === undefined || cand === targ) return;
+        const beforeCount = ctx.state.vertices.byId.size;
+        const res = shareVertices(ctx.state, cand, targ, { validators: [zeroLengthEdgeValidator] });
+        if (res.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        // After repointing, the candidate id is no longer cited (all its
+        // citations moved to the target).
+        expect(allCitedIds(res.state).includes(cand)).toBe(false);
+        // Its body is pruned.
+        expect(getVertex(res.state.vertices, cand)).toBeUndefined();
+        expect(res.state.vertices.byId.size).toBe(beforeCount - 1);
+        // The change set names the pruned id (and ONLY it).
+        expect(res.change.deletedVertexIds.has(cand)).toBe(true);
+        expect(res.change.deletedVertexIds.size).toBe(1);
+        expect(res.change.createdVertexIds.size).toBe(0);
+        checkInvariants(res.state, 'after collapsing share');
+        checkParticipationOfShared(res.state, 'after collapsing share');
+      }),
+      { seed: SEED, numRuns: NUM_RUNS },
+    );
+  });
+
+  // Metamorphic: shareVertices(a, a) — sharing a vertex with itself — must be a
+  // structural no-op rejection (NotFound), never a self-merge that silently
+  // deletes the only body of `a` (which would dangle every citation).
+  it('share(a, a) is rejected and leaves the state untouched', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), (seed, idx) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const ids = [...new Set(allCitedIds(state))];
+        const vid = pick(ids, idx);
+        if (vid === undefined) return;
+        const res = shareVertices(state, vid, vid, { validators: [zeroLengthEdgeValidator] });
+        expect(res.status).toBe(SHARED_VERTEX_OUTCOME.Rejected);
+        if (res.status === SHARED_VERTEX_OUTCOME.Rejected) {
+          expect(res.reason).toBe(REJECT_REASON.NotFound);
+        }
+        expect(canonical(state)).toEqual(before);
       }),
       { seed: SEED, numRuns: NUM_RUNS },
     );

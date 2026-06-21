@@ -170,7 +170,32 @@ export const shapeSchema = z
   .object({
     rings: z.array(ringSchema),
   })
-  .strict();
+  .strict()
+  // RING-ID UNIQUENESS (bug-hunt fix): a shape's rings are addressed by RingId —
+  // resolveLeafShape buckets hole rings under their territory parent's id and a
+  // ring's parentRingId references another ring's id. A duplicate RingId makes
+  // that addressing ambiguous: two rings sharing an id mean a parentRingId no
+  // longer names exactly one parent, and the indexById maps the structured ring
+  // checks build collapse last-write-wins (the first ring's vertices/role are
+  // silently dropped). Like the duplicate-vertex collapse, this destroys evidence
+  // BEFORE any consistency check can see it, so a corrupt / hand-edited / legacy
+  // shape would load as a valid-looking but wrong feature. Reject any duplicate
+  // id at this structural boundary, reporting the path of the offending later
+  // ring (教訓 5.26 拒否理由は path 付き).
+  .superRefine((shape, ctx) => {
+    const seen = new Set<string>();
+    shape.rings.forEach((ring, index) => {
+      if (seen.has(ring.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['rings', index, 'id'],
+          message: `duplicate ring id in shape: ${ring.id}`,
+        });
+      } else {
+        seen.add(ring.id);
+      }
+    });
+  });
 
 // --- features (FR-18/19/20/35: 点 / 線 / 末端 / 集約, discriminated union) ---
 //
