@@ -121,6 +121,45 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
     agg['shape'] = { rings: [] };
     expect(manifestSchema.safeParse(clone).success).toBe(false);
   });
+
+  it('rejects a snapshot with duplicate vertex ids (last-write-wins collapse defence)', () => {
+    // Regression (bug-hunt): anchorSnapshotSchema validated `vertices` as a plain
+    // array with NO uniqueness refinement. deserializeSnapshot feeds it to
+    // createVertexStore, which does `byId.set(v.id, v)` in a loop — two entries
+    // sharing an id but carrying DIFFERENT coordinates collapse last-write-wins,
+    // irreversibly dropping the first vertex's coordinate BEFORE any consistency
+    // check runs. The MissingVertexReference check cannot recover it (the surviving
+    // vertex still satisfies every reference), so a corrupt/legacy/hand-edited
+    // manifest loaded silently with a moved/dropped vertex and no inconsistency
+    // reported. The schema must reject the duplicate at the load boundary.
+    const manifest = serialize(richValidProject());
+    const clone = structuredClone(manifest);
+
+    // The aggregate's snapshot owns the two leaves' polygon vertices; pick its
+    // first vertex and append a SECOND entry with the SAME id but a different
+    // coordinate.
+    const aggHistory = clone.histories.find((h) => h.featureId === 'agg-1')!;
+    const snapshot = aggHistory.entries[0]!.anchor.snapshot;
+    const original = snapshot.vertices[0]!;
+    snapshot.vertices.push({
+      id: original.id,
+      coordinate: { lon: original.coordinate.lon + 1, lat: original.coordinate.lat + 1 },
+    });
+
+    const parsed = manifestSchema.safeParse(clone);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      // The rejection is reported with a path at the offending duplicate entry's
+      // id (教訓 5.26 拒否理由は path 付き), not as an opaque whole-manifest error.
+      const hasVertexIdPath = parsed.error.issues.some(
+        (issue) =>
+          issue.path.includes('vertices') &&
+          issue.path[issue.path.length - 1] === 'id' &&
+          issue.message.includes('duplicate vertex id'),
+      );
+      expect(hasVertexIdPath).toBe(true);
+    }
+  });
 });
 
 describe('ui settings — semantic range/order enforcement (bug-hunt regression)', () => {

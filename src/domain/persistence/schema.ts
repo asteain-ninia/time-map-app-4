@@ -288,7 +288,32 @@ export const anchorSnapshotSchema = z
     features: z.array(featureSchema),
     vertices: z.array(vertexSchema),
   })
-  .strict();
+  .strict()
+  // VERTEX-ID UNIQUENESS (bug-hunt fix): a snapshot's vertex store is a MAP keyed
+  // by VertexId (createVertexStore does `byId.set(v.id, v)` in a loop), so two
+  // array entries sharing an id but carrying DIFFERENT coordinates collapse
+  // last-write-wins on load — the first vertex's coordinate is irreversibly
+  // dropped before any consistency check runs. The MissingVertexReference check
+  // cannot recover it: the surviving (last) vertex still satisfies every
+  // reference, so a corrupt / legacy / hand-edited manifest loads silently with a
+  // moved-or-dropped vertex and NO inconsistency reported. The store collapse is
+  // the destruction of evidence; the only place to catch it is BEFORE load, at
+  // this structural boundary. Reject any duplicate id, reporting the path of the
+  // offending later entry (教訓 5.26 拒否理由は path 付き).
+  .superRefine((snapshot, ctx) => {
+    const seen = new Set<string>();
+    snapshot.vertices.forEach((vertex, index) => {
+      if (seen.has(vertex.id)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['vertices', index, 'id'],
+          message: `duplicate vertex id in snapshot: ${vertex.id}`,
+        });
+      } else {
+        seen.add(vertex.id);
+      }
+    });
+  });
 
 export const anchorSchema = z
   .object({
