@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
 import { FEATURE_KIND } from '../feature';
-import { asFeatureId } from '../ids';
+import { asFeatureId, asRingId, asVertexId } from '../ids';
 import { isAlternationValid, RING_KIND } from '../ring';
 import { containerKey } from '../shared-vertex';
 import { timePointYear } from '../time/time-point';
@@ -295,6 +295,61 @@ describe('FR-95 shared-edge mid cut → U11 SharedEdgeCutSpec (受け入れ基�
       // sharedTop→sharedBottom).
       expect(partnerSpec.partner.edgeStart).toBe(3);
     }
+  });
+
+  it('does NOT match a line container\'s phantom wrap edge as a partner (open path has no closing edge)', () => {
+    // Regression (bug-hunt): findPartnerEdge iterated every container as if it
+    // were a CLOSED ring (b = ids[(i+1)%n]), wrapping last→first. A 'line'
+    // container's path is OPEN — it has no closing edge. If a cut edge's two
+    // endpoints happen to be the FIRST and LAST vertices of a line, the phantom
+    // wrap edge was matched and a shared-edge cut was targeted at the wrong
+    // position (edgeStart n-1, a non-existent edge).
+    const { feature, proposal: base } = setup();
+    // Two endpoint vertex ids for the cut edge, plus a middle line vertex.
+    const startVid = asVertexId('phantom-a');
+    const endVid = asVertexId('phantom-b');
+    const midVid = asVertexId('phantom-mid');
+    // A synthetic proposal whose single shared-edge cut cites those endpoints
+    // (toSharedEdgeCutSpecs reads only `sharedEdgeCuts`).
+    const proposal = {
+      ...base,
+      sharedEdgeCuts: [
+        {
+          featureId: feature.id,
+          ringId: asRingId('r0'),
+          edgeStartIndex: 0,
+          edgeStartVertexId: startVid,
+          edgeEndVertexId: endVid,
+          cutCoordinate: c(10, 5),
+        },
+      ],
+    };
+
+    // The line path: [end, mid, start]. Its FIRST (end) and LAST (start) vertices
+    // are the cut edge's endpoints — the phantom wrap edge last↔first would
+    // FALSELY match if the open line were treated as a closed ring.
+    const lineKey = containerKey({ kind: 'line', featureId: asFeatureId('line-1') });
+    const containers = new Map<string, readonly VertexId[]>([
+      [lineKey, [endVid, midVid, startVid]],
+    ]);
+
+    const specs = toSharedEdgeCutSpecs(proposal, containers);
+    // The open line has NO closing edge, so no partner is resolved on the wrap.
+    expect(specs.find((s) => s.partner.containerKey === lineKey)).toBeUndefined();
+    expect(specs.length).toBe(0);
+
+    // Sanity: a REAL interior edge of the same line (mid→start at i=1) DOES match,
+    // proving the fix only excludes the phantom wrap, not genuine open-path edges.
+    const realEdge = toSharedEdgeCutSpecs(
+      {
+        ...proposal,
+        sharedEdgeCuts: [
+          { ...proposal.sharedEdgeCuts[0]!, edgeStartVertexId: midVid, edgeEndVertexId: startVid },
+        ],
+      },
+      containers,
+    );
+    expect(realEdge.find((s) => s.partner.containerKey === lineKey)?.partner.edgeStart).toBe(1);
   });
 
   it('produces NO partner spec when the cut edge is not shared', () => {

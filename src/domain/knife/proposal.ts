@@ -518,6 +518,18 @@ interface PartnerEdge {
   readonly edgeStart: number;
 }
 
+/**
+ * Whether a container key names an OPEN path (a line) rather than a CLOSED ring.
+ * The kind is encoded in the key by {@link containerKey}: `ring:<feature>:<ring>`
+ * is closed (last↔first edge real); `line:<feature>` is an open path with NO
+ * closing edge. Resolving openness from the key (the single key format) keeps
+ * this in lock-step with U11's container model without widening the type that
+ * the host supplies (it carries only vertexId lists).
+ */
+function isOpenContainerKey(key: string): boolean {
+  return key.startsWith('line:');
+}
+
 function findPartnerEdge(
   primaryKey: string,
   startVid: VertexId,
@@ -527,7 +539,13 @@ function findPartnerEdge(
   for (const [key, ids] of containers) {
     if (key === primaryKey) continue;
     const n = ids.length;
-    for (let i = 0; i < n; i += 1) {
+    // A closed ring has edges 0..n-1 (the n-1↔0 closing edge is real); an OPEN
+    // line path has edges 0..n-2 — it has NO wrap edge, so the last→first pair is
+    // phantom and must never be matched as a partner (would target edgeStart n-1
+    // on a non-existent edge; bug-hunt: line containers treated as closed rings).
+    const open = isOpenContainerKey(key);
+    const edgeCount = open ? n - 1 : n;
+    for (let i = 0; i < edgeCount; i += 1) {
       const a = ids[i];
       const b = ids[(i + 1) % n];
       if (a === undefined || b === undefined) continue;
