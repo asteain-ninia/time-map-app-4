@@ -2336,3 +2336,643 @@ describe('seed=21002 — closed cut enclosing a hole: both sides valid + finite 
     );
   });
 });
+
+// ===========================================================================
+// 10. SEED=21003 EXTENSION — NEW exploration (bug-hunt round 2, disjoint from
+//     the 1000-21002 band). Different generators / command sets / interactions.
+//
+// Every earlier seed merges EITHER all-leaves (LeafOnly) OR all-aggregates
+// (AggregateOnly); the THIRD classifyMerge branch — MERGE_KIND.Mixed (a leaf AND
+// an aggregate targeted together) — is dead code in every seed 1000-21002. The
+// split inheritance side is also always a FIXED choice or a coin flip, never the
+// FR-93 小さい方 (smaller-side) preview that the product actually seeds the UI with.
+// And no stateful model keeps AGGREGATES live in the world, so the forest invariant
+// battery (acyclic + 派生集約 = 子の和) has never run over a multi-level forest as it
+// evolves under chained edits. This block opens five live paths none of the earlier
+// seeds touch:
+//
+//   (M1) MIXED merge (classifyMerge → MERGE_KIND.Mixed, assembleAggregateResult
+//        mixed branch ~L680): target ONE aggregate (owning K leaves) together with
+//        a STANDALONE leaf. The result aggregate must keep the standalone leaf as a
+//        DIRECT continuing child (同一性保持) AND flatten the aggregate's K children
+//        onto itself, the source aggregate must vanish (deletedIds), and 派生集約 =
+//        子の和 must hold over the K+1 children. Two-kind targeting is never tested.
+//
+//   (M2) smallerSide-driven inheritance (FR-93): drive INHERITANCE_SIDE from
+//        `smallerSide(exec)` — the real preview the UI seeds — and assert the
+//        inheritor side's resolved filled area is ≤ the new feature's. Every earlier
+//        seed used a fixed/random side, never the area-derived preview, so a defect
+//        wiring smallerSide → inheritance choice would slip through.
+//
+//   (M3) Multi-segment ZIG-ZAG open cut (a W that crosses the outer boundary FOUR
+//        times): countBoundaryTransits must count ≥4 transits, and when accepted the
+//        two sides stay valid/finite/alternating and the filled areas sum to the
+//        whole. Every earlier open cut was a straight or single-bend line (exactly 2
+//        transits); >2 transits exercises the multi-piece clip extrusion.
+//
+//   (M4) Stateful model whose WORLD KEEPS AGGREGATES: an initial single aggregate
+//        parent over the seed leaf, then a random split/mixed-merge/reparent chain.
+//        After EVERY op the FULL forest battery runs: acyclic (walkToRoot), 派生集約
+//        = 子の和 over every aggregate, unique ids, finite coords, valid leaf
+//        multi-polygons, AND a save→load==identity over the whole feature+vertex
+//        snapshot. No earlier stateful model carried aggregates, so this is the
+//        first time the forest invariant runs as the forest mutates.
+//
+//   (M5) parentExisting childIds-sync + persistence: a LeafOnly merge UNDER an
+//        existing aggregate must sync that aggregate's declared childIds to the
+//        result leaf (single source of truth = parentId) AND that non-empty childIds
+//        must survive the REAL serialize → parseManifest boundary (the defect the
+//        round-2 report pinned made it round-trip as []). Exercised with the leaf
+//        world carried through worldToProject's real U14 path.
+//
+// Determinism: seed = 21003, numRuns large (per task). PERMANENT asset — any
+// reproduced counterexample is a real domain defect, never to be masked here.
+// ===========================================================================
+
+const SEED_21003 = 21003;
+const RUNS_21003 = 400;
+
+// New imports for the 21003 exploration (Mixed merge kind, parent-id mutation,
+// child-id re-sync, and a full-feature persistence project builder).
+import { MERGE_KIND as MERGE_KIND_21003 } from '../merge/proposal';
+import { withParentId as withParentId21003, withAggregateChildIds } from '../feature';
+
+/**
+ * Re-sync every aggregate's declared childIds to the parentId relation (single
+ * source of truth = parentId), mirroring merge/proposal's syncAggregateChildIds so
+ * the forest-stateful model never leaves a manually-reparented aggregate desynced.
+ */
+function syncForestChildIds(features: readonly Feature[]): Feature[] {
+  const forest = buildForest(features);
+  return features.map((f) => {
+    if (f.kind !== 'aggregate') return f;
+    const desired = directChildIds(forest, f.id);
+    return withAggregateChildIds(f, desired);
+  });
+}
+
+/**
+ * Build a DomainProject from a FULL feature list (leaves AND aggregates) so the
+ * real U14 persistence path round-trips an aggregate's childIds verbatim. Every
+ * feature gets a two-entry history whose anchor snapshot holds the WHOLE feature
+ * set + store (the same convention as worldToProject, generalized past leaves).
+ */
+function worldToProject21003(
+  features: readonly Feature[],
+  store: VertexStore,
+): DomainProject {
+  const snapshot = createAnchorSnapshot([...features], store);
+  const histories: FeatureHistory[] = features.map((f) => {
+    const e0 = createAnchorEntry(
+      createAnchor(asAnchorId(`bh3-a0-${counter++}`), snapshot),
+      timePointYear(0),
+      timePointYear(25),
+    );
+    const e1 = createAnchorEntry(
+      createAnchor(asAnchorId(`bh3-a1-${counter++}`), snapshot),
+      timePointYear(30),
+      null,
+    );
+    return { featureId: f.id, series: { entries: [e0, e1] } };
+  });
+  return { histories, settings: PROJECT_SETTINGS, baseMap: BASE_MAP };
+}
+
+// --- (M1) MIXED merge: one aggregate (K leaves) + one standalone leaf --------
+
+describe('seed=21003 — MIXED merge (leaf + aggregate) flattens + keeps the leaf as a child', () => {
+  it('result aggregate owns the standalone leaf AND the aggregate grandchildren; source agg vanishes; 派生集約 = 子の和', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 3 }), // K = children under the one aggregate.
+        (k) => {
+          const features: Feature[] = [];
+          const verts: Vertex[] = [];
+
+          // One aggregate owning K leaf children.
+          const aggId = asFeatureId(`bh3-A-${counter++}`);
+          const childIds: ReturnType<typeof asFeatureId>[] = [];
+          for (let c = 0; c < k; c += 1) {
+            const lb = box(c * 60, c * 60 + 40, 0, 40);
+            lb.ids.forEach((id, i) => verts.push(createVertex(id, lb.coords[i]!)));
+            const childId = asFeatureId(`bh3-c-${counter++}`);
+            childIds.push(childId);
+            features.push(
+              createLeafFeature(
+                childId,
+                createBasicAttributes(`c${c}`, 0, 100),
+                COLOR,
+                createShape([createTerritoryRing(freshRid(), lb.ids)]),
+                { parentId: aggId },
+              ),
+            );
+          }
+          features.push(
+            createAggregateFeature(aggId, createBasicAttributes('A', 0, 100), COLOR, childIds),
+          );
+
+          // One STANDALONE top-level leaf (no parent) — the mixed second target.
+          const sb = box(1000, 1040, 0, 40);
+          sb.ids.forEach((id, i) => verts.push(createVertex(id, sb.coords[i]!)));
+          const standaloneId = asFeatureId(`bh3-s-${counter++}`);
+          features.push(
+            createLeafFeature(
+              standaloneId,
+              createBasicAttributes('standalone', 0, 100),
+              COLOR,
+              createShape([createTerritoryRing(freshRid(), sb.ids)]),
+            ),
+          );
+
+          const vertices = createVertexStore(verts);
+          const r = buildMergeProposal({
+            features,
+            vertices,
+            // MIXED: an aggregate AND a leaf targeted together.
+            targetIds: [aggId, standaloneId],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: createBasicAttributes('mix', 0, 100), color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(r.status).toBe(MERGE_STATUS.Proposal);
+          if (r.status !== MERGE_STATUS.Proposal) return;
+          const p = r.proposal;
+          expect(p.mergeKind).toBe(MERGE_KIND_21003.Mixed);
+
+          // The source aggregate vanishes (its identity ends); its leaves continue.
+          expect(p.nextFeatures.find((x) => x.id === aggId)).toBeUndefined();
+          expect(p.deletedIds).toContain(aggId);
+
+          // Exactly one result aggregate; it is the result feature id.
+          const resultAggs = p.nextFeatures.filter((x) => x.kind === 'aggregate');
+          expect(resultAggs.length).toBe(1);
+          const result = resultAggs[0]!;
+          expect(result.id).toBe(p.resultFeatureId);
+
+          // The standalone leaf survives, re-pointed to the result aggregate.
+          const standaloneAfter = p.nextFeatures.find((x) => x.id === standaloneId);
+          expect(standaloneAfter).toBeDefined();
+          expect(standaloneAfter?.parentId).toBe(result.id);
+          // Every grandchild survives, re-pointed to the result aggregate too.
+          for (const childId of childIds) {
+            const child = p.nextFeatures.find((x) => x.id === childId);
+            expect(child).toBeDefined();
+            expect(child?.parentId).toBe(result.id);
+          }
+
+          // 派生集約 = 子の和: declared childIds == forest direct children == K leaves + standalone.
+          const forest = buildForest(p.nextFeatures);
+          if (result.kind === 'aggregate') {
+            const declared = [...result.childIds].sort();
+            const actual = [...directChildIds(forest, result.id)].sort();
+            expect(declared).toEqual(actual);
+            const expected = [...childIds, standaloneId].sort();
+            expect(actual).toEqual(expected);
+          }
+
+          // No duplicate ids; acyclic; period ordering on every survivor.
+          const ids = p.nextFeatures.map((x) => x.id);
+          expect(new Set(ids).size).toBe(ids.length);
+          for (const fe of p.nextFeatures) {
+            expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+            expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+          }
+        },
+      ),
+      { seed: SEED_21003, numRuns: RUNS_21003 },
+    );
+  });
+});
+
+// --- (M2) smallerSide-driven inheritance (FR-93 preview wiring) --------------
+
+describe('seed=21003 — smallerSide-driven inheritance keeps the SMALLER side as inheritor', () => {
+  it('choosing INHERITANCE_SIDE from smallerSide(exec) makes the inheritor area ≤ the new feature area', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const exec = executeSplit(feature, store, line);
+        if (exec === undefined) return;
+
+        // The FR-93 preview hint — the real value the UI seeds the choice with.
+        const smaller = smallerSide(exec);
+        const choice = createInheritanceChoice(
+          smaller === 'a' ? INHERITANCE_SIDE.A : INHERITANCE_SIDE.B,
+        );
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: exec.sideA, sideB: exec.sideB, edgeCuts: exec.edgeCuts },
+          choice,
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+
+        // The inheritor (which kept the original id) must be the SMALLER side's
+        // geometry — its filled area ≤ the new feature's (FR-93 小さい方を継承先に).
+        const inhArea = leafFilledArea(inheritor, postStore);
+        const newArea = leafFilledArea(newLeaf, postStore);
+        // Tolerance: areas are positive; allow quantization noise via a relative slack.
+        const slack = Math.max(inhArea, newArea, 1) * 1e-3;
+        expect(inhArea).toBeLessThanOrEqual(newArea + slack);
+
+        // The geometry sides agree with smallerSide's km2 verdict.
+        if (smaller === 'a') expect(exec.sideA.areaKm2).toBeLessThanOrEqual(exec.sideB.areaKm2);
+        else expect(exec.sideB.areaKm2).toBeLessThanOrEqual(exec.sideA.areaKm2);
+
+        // Both rebuilt shapes alternate + finite vertices (sanity over the chosen side).
+        expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+        expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+        for (const v of proposal.vertices) {
+          expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+        }
+      }),
+      { seed: SEED_21003, numRuns: RUNS_21003 },
+    );
+  });
+});
+
+// --- (M3) zig-zag (W) open cut crossing the outer boundary 4 times -----------
+
+describe('seed=21003 — zig-zag (W) open cut: >2 boundary transits stay valid + area-preserving', () => {
+  it('a 4-transit W cut, when accepted, yields two valid finite alternation-correct area-preserving sides', () => {
+    fc.assert(
+      fc.property(
+        // No holes/enclaves: a plain rectangle so the W's 4 transits are all on the
+        // single outer boundary (the multi-transit clip extrusion is what we probe).
+        fc.double({ min: 30, max: 80, noNaN: true }),
+        fc.double({ min: 30, max: 80, noNaN: true }),
+        (w, h) => {
+          const params = makeParams(w, h, { leftHole: false, enclave: false, rightHole: false });
+          const { feature, store } = holeyLeaf(params);
+          // A W that enters/exits the TOP boundary twice and dips to the bottom twice,
+          // crossing the outer ring 4 times (down-up-down-up across the top edge).
+          const yTop = h + 10;
+          const yBot = -10;
+          const line = createOpenKnifeLine([
+            createCoordinate(w * 0.2, yTop),
+            createCoordinate(w * 0.35, yBot),
+            createCoordinate(w * 0.5, yTop),
+            createCoordinate(w * 0.65, yBot),
+            createCoordinate(w * 0.8, yTop),
+          ]);
+          const res = checkSplittable(feature, store, line);
+          // The W may or may not be accepted by the pierce/clip gates; when it is,
+          // every invariant must hold.
+          if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+          for (const side of [res.sideA, res.sideB]) {
+            expect(everyCoordFinite(side.area)).toBe(true);
+            expect(isMultiPolygonValid(side.area)).toBe(true);
+            expect(sideArea(side)).toBeGreaterThan(0);
+          }
+          const sum = sideArea(res.sideA) + sideArea(res.sideB);
+          const whole = filledArea(params);
+          expect(Math.abs(sum - whole) / whole).toBeLessThan(1e-3);
+
+          const proposal = assembleSplitProposal({
+            target: feature,
+            store: store.byId,
+            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+            choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+            nonInherited: { attributes: ATTRS, color: COLOR },
+            ids: idPorts(),
+          });
+          expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+          expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+          for (const v of proposal.vertices) {
+            expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+          }
+        },
+      ),
+      { seed: SEED_21003, numRuns: RUNS_21003 },
+    );
+  });
+});
+
+// --- (M4) stateful model whose WORLD KEEPS AGGREGATES (forest battery) -------
+//
+// A separate world model from `World`: it carries the FULL feature set (leaves +
+// aggregates) and the store, so the forest invariant runs over a multi-level
+// hierarchy as it evolves under split / mixed-merge / reparent commands.
+
+interface ForestWorld {
+  features: Feature[];
+  store: VertexStore;
+}
+
+type ForestCmd =
+  | { readonly t: 'split'; readonly leafPick: number; readonly frac: number }
+  | { readonly t: 'reparentTop'; readonly pick: number }
+  | { readonly t: 'mergeUnderAgg'; readonly aPick: number; readonly bPick: number }
+  | { readonly t: 'noop' };
+
+const forestCmdArb: fc.Arbitrary<ForestCmd> = fc.oneof(
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    frac: fc.double({ min: 0, max: 1, noNaN: true }),
+  }),
+  fc.record({ t: fc.constant<'reparentTop'>('reparentTop'), pick: fc.nat({ max: 1_000_000 }) }),
+  fc.record({
+    t: fc.constant<'mergeUnderAgg'>('mergeUnderAgg'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+  }),
+  fc.constant<ForestCmd>({ t: 'noop' }),
+);
+
+function leafFeaturesOf(world: ForestWorld): LeafFeature[] {
+  return world.features.filter((f): f is LeafFeature => f.kind === 'leaf');
+}
+
+function aggregatesOf(world: ForestWorld): Feature[] {
+  return world.features.filter((f) => f.kind === 'aggregate');
+}
+
+/** Full forest invariant battery over a multi-level world. */
+function checkForestWorldInvariants(world: ForestWorld): void {
+  const ids = world.features.map((f) => f.id);
+  expect(new Set(ids).size).toBe(ids.length); // unique ids.
+
+  const forest = buildForest(world.features);
+  for (const fe of world.features) {
+    // Acyclic parent chain (no feature is its own ancestor).
+    expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+    // 派生集約 = 子の和: every aggregate's declared childIds == its forest direct children.
+    if (fe.kind === 'aggregate') {
+      const declared = [...fe.childIds].sort();
+      const actual = [...directChildIds(forest, fe.id)].sort();
+      expect(declared).toEqual(actual);
+    }
+    // Period ordering on every feature.
+    expect(fe.attributes.startYear).toBeLessThanOrEqual(fe.attributes.endYear);
+  }
+
+  // Leaf geometry: alternation, dangling-free, finite, valid multi-polygon.
+  for (const leaf of leafFeaturesOf(world)) {
+    expect(isAlternationValid(leaf.shape)).toBe(true);
+    for (const ring of leaf.shape.rings) {
+      for (const vid of ring.vertexIds) {
+        const v = world.store.byId.get(vid);
+        expect(v).toBeDefined();
+        if (v) {
+          expect(Number.isFinite(v.coordinate.lon)).toBe(true);
+          expect(Number.isFinite(v.coordinate.lat)).toBe(true);
+        }
+      }
+    }
+    const mp = resolveLeafShape(leaf.shape, world.store);
+    expect(mp).toBeDefined();
+    if (mp) {
+      expect(isMultiPolygonValid(mp)).toBe(true);
+      expect(everyCoordFinite(mp)).toBe(true);
+    }
+  }
+
+  // save -> load == identity over the WHOLE world (features + store).
+  const snapshot = {
+    features: world.features.map((f) => ({
+      id: f.id,
+      parentId: f.parentId,
+      kind: f.kind,
+      childIds: f.kind === 'aggregate' ? f.childIds : undefined,
+      shape: f.kind === 'leaf' ? f.shape : undefined,
+    })),
+    vertices: [...world.store.byId.values()],
+  };
+  const saved = JSON.stringify(snapshot);
+  expect(JSON.stringify(JSON.parse(saved))).toBe(saved);
+}
+
+/** Split a leaf in the forest world (side A, vertical), preserving its parentId. */
+function forestSplit(world: ForestWorld, cmd: { leafPick: number; frac: number }): ForestWorld {
+  const leaves = leafFeaturesOf(world);
+  if (leaves.length === 0) return world;
+  const leaf = leaves[cmd.leafPick % leaves.length]!;
+  const bb = leafBbox(leaf, world.store);
+  if (bb === undefined) return world;
+  const span = bb.maxX - bb.minX;
+  if (span <= 0) return world;
+  const cutX = bb.minX + span * (0.2 + cmd.frac * 0.6);
+  const pad = (bb.maxY - bb.minY) * 0.5 + 10;
+  const line = createOpenKnifeLine([
+    createCoordinate(cutX, bb.minY - pad),
+    createCoordinate(cutX, bb.maxY + pad),
+  ]);
+  const check = checkSplittable(leaf, world.store, line);
+  const exec = executeSplit(leaf, world.store, line);
+  if (check.status !== SPLIT_CHECK_STATUS.Splittable) {
+    expect(exec).toBeUndefined();
+    return world;
+  }
+  if (exec === undefined) return world;
+  const proposal = assembleSplitProposal({
+    target: leaf,
+    store: world.store.byId,
+    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+    nonInherited: { attributes: ATTRS, color: COLOR },
+    ids: idPorts(),
+  });
+  // The inheritor keeps id + parentId; the new leaf inherits the same parent
+  // (proposal.newFeature already carries the original's parentId).
+  const inheritor = withLeafShape(leaf, proposal.inheritorShape);
+  const nextFeatures = world.features.map((f) => (f.id === leaf.id ? inheritor : f));
+  nextFeatures.push(proposal.newFeature);
+  // The new leaf inherits the original's parent, so the parent aggregate now has an
+  // extra direct child. The host (U13 applyProposal) re-syncs aggregate childIds to
+  // the parentId relation; mirror that here so the forest invariant stays exact.
+  const synced = syncForestChildIds(nextFeatures);
+  const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
+  return { features: synced, store: nextStore };
+}
+
+/** Re-point a randomly picked feature to be a top-level root (parentId removed). */
+function forestReparentTop(world: ForestWorld, cmd: { pick: number }): ForestWorld {
+  if (world.features.length === 0) return world;
+  const target = world.features[cmd.pick % world.features.length]!;
+  if (target.parentId === undefined) return world; // already top-level → no-op.
+  const reparented = withParentId21003(target, undefined);
+  const nextFeatures = world.features.map((f) => (f.id === target.id ? reparented : f));
+  // Re-sync aggregate childIds to the new parent relation (single source = parentId).
+  const synced = syncForestChildIds(nextFeatures);
+  return { features: synced, store: world.store };
+}
+
+/** Merge two leaves under a (possibly existing) aggregate, keeping the forest valid. */
+function forestMergeUnderAgg(
+  world: ForestWorld,
+  cmd: { aPick: number; bPick: number },
+): ForestWorld {
+  const leaves = leafFeaturesOf(world);
+  if (leaves.length < 2) return world;
+  const i = cmd.aPick % leaves.length;
+  let j = cmd.bPick % leaves.length;
+  if (j === i) j = (j + 1) % leaves.length;
+  const a = leaves[i]!;
+  const b = leaves[j]!;
+
+  // Pick an existing aggregate to attach under, if any; else create a fresh one.
+  const aggs = aggregatesOf(world);
+  const parentDecision =
+    aggs.length > 0
+      ? parentExisting(aggs[cmd.aPick % aggs.length]!.id)
+      : parentCreate({ name: 'created' }, parentNone);
+
+  const res = buildMergeProposal({
+    features: world.features,
+    vertices: world.store,
+    targetIds: [a.id, b.id],
+    atTime: 50,
+    parentDecision,
+    propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+    ids: idPorts(),
+  });
+  if (res.status !== MERGE_STATUS.Proposal) return world;
+  const p = res.proposal;
+  const result = p.nextFeatures.find((x) => x.id === p.resultFeatureId);
+  if (result === undefined || result.kind !== 'leaf') return world;
+  return { features: [...p.nextFeatures], store: p.nextVertices };
+}
+
+function applyForestCmd(world: ForestWorld, cmd: ForestCmd): ForestWorld {
+  switch (cmd.t) {
+    case 'split':
+      return forestSplit(world, cmd);
+    case 'reparentTop':
+      return forestReparentTop(world, cmd);
+    case 'mergeUnderAgg':
+      return forestMergeUnderAgg(world, cmd);
+    case 'noop':
+      return world;
+  }
+}
+
+function initialForestWorld(): ForestWorld {
+  // A single holey leaf under one aggregate parent — so the forest is multi-level
+  // from the start and the very first split exercises hole re-parenting under a
+  // live aggregate.
+  const aggId = asFeatureId(`bh3-rootA-${counter++}`);
+  const { feature, store } = holeyLeaf({
+    w: 60,
+    h: 40,
+    leftHole: true,
+    enclave: true,
+    rightHole: true,
+  });
+  const childLeaf = withParentId21003(feature, aggId) as LeafFeature;
+  const agg = createAggregateFeature(aggId, createBasicAttributes('rootA', 0, 100), COLOR, [
+    feature.id,
+  ]);
+  return { features: [childLeaf, agg], store };
+}
+
+describe('seed=21003 — stateful forest world: split / mixed-merge / reparent keep the forest valid', () => {
+  it('random forest edits keep acyclic + 派生集約 = 子の和 + valid leaf geometry + round-trip after each op', () => {
+    fc.assert(
+      fc.property(fc.array(forestCmdArb, { minLength: 1, maxLength: 14 }), (cmds) => {
+        let world = initialForestWorld();
+        checkForestWorldInvariants(world);
+        for (const cmd of cmds) {
+          world = applyForestCmd(world, cmd);
+          checkForestWorldInvariants(world);
+          // Liveness: at least one feature always remains.
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+        }
+      }),
+      { seed: SEED_21003, numRuns: RUNS_21003 },
+    );
+  });
+});
+
+// --- (M5) parentExisting LeafOnly merge: childIds sync survives real U14 path -
+
+describe('seed=21003 — LeafOnly merge under an existing aggregate: childIds synced + persists non-empty', () => {
+  it('the existing parent declares the result leaf and that childIds survives serialize → parse', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+        const existingAggId = asFeatureId(`bh3-exist-${counter++}`);
+        const existingAgg = createAggregateFeature(
+          existingAggId,
+          createBasicAttributes('existing', 0, 100),
+          COLOR,
+          [],
+        );
+
+        const mergeRes = buildMergeProposal({
+          features: [inheritor, newLeaf, existingAgg],
+          vertices: postStore,
+          targetIds: [inheritor.id, newLeaf.id],
+          atTime: 50,
+          parentDecision: parentExisting(existingAggId),
+          propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+        if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+        const mp = mergeRes.proposal;
+
+        // The existing aggregate now declares EXACTLY the result leaf (not []).
+        const reAgg = mp.nextFeatures.find((x) => x.id === existingAggId);
+        expect(reAgg?.kind).toBe('aggregate');
+        if (reAgg && reAgg.kind === 'aggregate') {
+          expect([...reAgg.childIds]).toEqual([mp.resultFeatureId]);
+        }
+        // Reported as a survived (touched) feature.
+        expect(mp.survivedTouchedIds).toContain(existingAggId);
+
+        // 派生集約 = 子の和 over the whole result; acyclic.
+        const forest = buildForest(mp.nextFeatures);
+        for (const fe of mp.nextFeatures) {
+          expect(walkToRoot(forest, fe.id).cyclic).toBe(false);
+          if (fe.kind === 'aggregate') {
+            const declared = [...fe.childIds].sort();
+            const actual = [...directChildIds(forest, fe.id)].sort();
+            expect(declared).toEqual(actual);
+          }
+        }
+
+        // Real U14 persistence: the project (with the non-empty aggregate carried
+        // through the histories) must round-trip with the parent's childIds intact.
+        const project = worldToProject21003(mp.nextFeatures, mp.nextVertices);
+        const manifest = serialize(project);
+        const reparsed = parseManifest(JSON.parse(JSON.stringify(manifest)));
+        expect(isParsed(reparsed)).toBe(true);
+        if (!isParsed(reparsed)) return;
+        const reloaded = manifestToProject(reparsed.manifest);
+        expect(projectsEqual(project, reloaded)).toBe(true);
+      }),
+      { seed: SEED_21003, numRuns: RUNS_21003 },
+    );
+  });
+});

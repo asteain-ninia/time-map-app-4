@@ -92,13 +92,20 @@ import {
   type ParentDecision,
 } from '../affiliation/decision';
 import { createAffiliationCommand } from '../affiliation/command';
+import {
+  AFFILIATION_REJECT,
+  allowedParentCandidates,
+  isLegalNewParent,
+} from '../affiliation/candidates';
 import { createIdGeneratorState } from '../id-generator';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import {
+  applyPastEdit,
   changeStart,
   createAnchorEntry,
   deleteAnchor,
   normalizeSeries,
+  resolveAt,
   setEnd,
   validateSeries,
   type AnchorSeries,
@@ -110,6 +117,19 @@ const SEED = 25001;
 // Second bug-hunt pass: a NEW, deliberately-disjoint exploration that does not
 // re-walk seed 25001's runs. Used by every §5..§8 block below.
 const SEED2 = 25002;
+// SECOND BUG-HUNT SESSION (this pass): a THIRD, deliberately-disjoint seed for
+// §9..§12 below. These sections add NEW interactions never exercised by §1..§8:
+//   §9  picker⇔confirm agreement (allowedParentCandidates vs the REAL commit /
+//       isLegalNewParent single-source predicate, 教訓 5.26);
+//   §10 resolveAt temporal-resolution coherence over committed-state snapshots
+//       AND applyPastEdit insert/replace idempotence (neither resolveAt nor
+//       applyPastEdit is touched anywhere in §1..§8);
+//   §11 multi-target federate → de-federate(none each) inverse: a federation's
+//       leaves all return to top-level (parentId undefined) and the federation
+//       root auto-disappears (FR-35 sweep) — a 連邦化∘逆 round-trip §1..§8 omit;
+//   §12 candidate-set ⊇ every committed `existing` target/parent pair: any pair
+//       the picker would HIDE must never commit (no back-door illegal parent).
+const SEED3 = 25003;
 const COLOR = createColorInfo(true, '#0a141e', '#283c50', '#5a6e82');
 const CAL = getCalendar('gregorian');
 
@@ -1281,6 +1301,347 @@ describe(`affiliation — heterogeneous save∘load identity (seed=${SEED2})`, (
         },
       ),
       { seed: SEED2, numRuns: 300 },
+    );
+  });
+});
+
+// ===========================================================================
+// ===========================================================================
+//  THIRD BUG-HUNT SECTION (seed = 25003) — picker⇔confirm single-source,
+//  temporal resolution, and the multi-target federate inverse.
+//
+//  None of §9..§12 re-walks the §1..§8 generators verbatim:
+//    §9  drives the UI PICKER (allowedParentCandidates) and asserts it agrees
+//        with the REAL commit pipeline for EVERY existing candidate — a listed
+//        candidate must never be rejected by the candidate predicate at commit,
+//        and a hidden one must never commit (教訓 5.26 single-source).
+//    §10 drives resolveAt + applyPastEdit (untouched by §1..§8): resolveAt must
+//        agree with the strictly-ascending series order, and applyPastEdit's
+//        insert-then-resolve / replace-is-idempotent contracts must hold.
+//    §11 a federate(create→NewTop) over N leaves, then de-federate every leaf to
+//        `none`: all leaves return to top-level AND the federation root auto-
+//        disappears (FR-35), a 連邦化∘逆 round-trip §1..§8 never close.
+//    §12 a stronger picker⇔commit direction over the heterogeneous-period model.
+// ===========================================================================
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// §9. PICKER ⇔ CONFIRM single-source (教訓 5.26).
+//
+// allowedParentCandidates(forest, target) is the SAME predicate
+// (isLegalNewParent) the confirm-time guard funnels through. We assert the two
+// never disagree on EXISTING features:
+//   (a) every listed candidate, used as a real `existing` parent, never trips a
+//       CANDIDATE-predicate rejection (same-feature / cycle / existence-period).
+//       It MAY still fail post-commit hierarchy validation (a separate concern),
+//       but the picker promised the *candidate predicate* passes — so the commit
+//       must not come back with one of those three reasons.
+//   (b) every NON-listed existing feature, used as a real `existing` parent,
+//       is rejected (it can never silently commit through a back door).
+// A disagreement in either direction is a single-source violation (a bug).
+// ---------------------------------------------------------------------------
+
+const CANDIDATE_REJECTS = new Set<string>([
+  AFFILIATION_REJECT.SameFeature,
+  AFFILIATION_REJECT.Cycle,
+  AFFILIATION_REJECT.ExistencePeriod,
+]);
+
+describe(`affiliation — picker ⇔ confirm single-source (seed=${SEED3})`, () => {
+  it('listed candidates never trip a candidate-predicate rejection; hidden ones never commit', () => {
+    fc.assert(
+      fc.property(validForestArb(), fc.nat(), (initial, targetWhich) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 700,
+        };
+        const forest = buildForest(st.features);
+        const allIds = st.features.map((f) => f.id);
+        const target = pick(allIds, targetWhich);
+        if (target === undefined) return;
+
+        // resolveTargetLeaves expands an aggregate target to its leaves; the
+        // picker is contracted on the target ID itself (its own candidate set),
+        // so we compare against a LEAF target to keep the picker contract exact.
+        const isAggTarget = directChildIds(forest, target).length > 0;
+        if (isAggTarget) return; // picker is single-target; skip aggregate expansion.
+
+        const candidates = allowedParentCandidates(forest, target);
+        const listed = new Set(candidates.map((c) => c.featureId));
+
+        for (const cand of st.features.map((f) => f.id)) {
+          // The single-source predicate verdict (what the picker used).
+          const verdict = isLegalNewParent(forest, target, cand);
+          expect(listed.has(cand), `picker/predicate disagree for ${cand}`).toBe(verdict.ok);
+
+          const idState = createIdGeneratorState(0, st.idCounter);
+          const result = buildAffiliationProposal(
+            st.features,
+            target,
+            parentExisting(cand),
+            { idState, now: makeNow(1), vertexStore: st.store },
+          );
+
+          if (verdict.ok) {
+            // (a) listed: must not be rejected for a CANDIDATE-predicate reason.
+            if (result.status !== 'proposal') {
+              expect(
+                CANDIDATE_REJECTS.has(result.kind),
+                `listed candidate ${cand} rejected by candidate predicate: ${result.kind}`,
+              ).toBe(false);
+            } else {
+              assertFeatureSetInvariants(result.proposal.nextFeatures, st.store);
+            }
+          } else {
+            // (b) hidden: must NOT commit (the back-door is closed).
+            expect(
+              result.status,
+              `hidden candidate ${cand} committed (back-door)`,
+            ).not.toBe('proposal');
+          }
+        }
+      }),
+      { seed: SEED3, numRuns: 400 },
+    );
+  });
+});
+
+// ===========================================================================
+// §10. TEMPORAL RESOLUTION: resolveAt order-coherence + applyPastEdit identity.
+//
+// resolveAt and applyPastEdit are NOT exercised by §1..§8. Here a parallel
+// anchor series rides committed affiliation states, and we assert:
+//   (a) resolveAt at each entry's OWN start returns that very entry (start is
+//       inclusive; INV-1 ascending guarantees uniqueness) — unless the entry's
+//       own bounded end makes it instantly absent, which our snapshots never set;
+//   (b) resolveAt strictly BEFORE the first start is `absent` (existence not yet
+//       begun);
+//   (c) applyPastEdit at an EXISTING start REPLACES (count unchanged) and a
+//       second identical applyPastEdit is idempotent in count;
+//   (d) applyPastEdit at a NEW (later) start INSERTS exactly one anchor and the
+//       new start resolves to the freshly-inserted anchor.
+// ===========================================================================
+
+describe(`affiliation — resolveAt coherence + applyPastEdit identity (seed=${SEED3})`, () => {
+  it('resolveAt agrees with ascending order; applyPastEdit replace/insert behave', () => {
+    fc.assert(
+      fc.property(
+        validForestArb(),
+        fc.array(affCmdArb, { minLength: 0, maxLength: 6 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 800,
+          };
+          const entries = [snapshotEntry(st.features, st.store, 0)];
+          let idx = 1;
+          for (const cmd of cmds) {
+            const applied = applyAffCmd(st, cmd);
+            if (applied === undefined) continue;
+            st = applied.next;
+            entries.push(snapshotEntry(st.features, st.store, idx));
+            idx += 1;
+          }
+          const series = normalizeSeries(entries, CAL);
+          assertAscendingUnique(series);
+
+          // (a) each entry's own start resolves to that entry.
+          for (const e of series.entries) {
+            const r = resolveAt(series, e.start, CAL);
+            expect(r.kind, `resolveAt absent at own start ${e.start.year}`).toBe('present');
+            if (r.kind === 'present') {
+              expect(r.entry.anchor.id, 'resolveAt returned wrong entry').toBe(e.anchor.id);
+            }
+          }
+
+          // (b) before the first start: absent.
+          const firstStart = series.entries[0]!.start.year;
+          const before = resolveAt(series, timePointYear(firstStart - 1), CAL);
+          expect(before.kind, 'resolveAt before first start not absent').toBe('absent');
+
+          // (c) applyPastEdit at an EXISTING start: replace, count unchanged + idempotent.
+          const targetEntry = series.entries[0]!;
+          const replSnap = createAnchorSnapshot(st.features, st.store);
+          const makeRepl = () => createAnchor(targetEntry.anchor.id, replSnap);
+          const afterReplace = applyPastEdit(series, targetEntry.start, makeRepl, CAL);
+          expect(afterReplace.entries.length, 'applyPastEdit replace changed count').toBe(
+            series.entries.length,
+          );
+          assertAscendingUnique(afterReplace);
+          const afterReplace2 = applyPastEdit(afterReplace, targetEntry.start, makeRepl, CAL);
+          expect(afterReplace2.entries.length, 'applyPastEdit replace not idempotent').toBe(
+            afterReplace.entries.length,
+          );
+
+          // (d) applyPastEdit at a NEW (strictly later) start: insert exactly one.
+          const lastStart = series.entries[series.entries.length - 1]!.start.year;
+          const newStart = timePointYear(lastStart + 100);
+          const newAnchorId = asAnchorId(`a-new-${idx}`);
+          const insSnap = createAnchorSnapshot(st.features, st.store);
+          const afterInsert = applyPastEdit(
+            series,
+            newStart,
+            () => createAnchor(newAnchorId, insSnap),
+            CAL,
+          );
+          expect(afterInsert.entries.length, 'applyPastEdit insert did not add one').toBe(
+            series.entries.length + 1,
+          );
+          assertAscendingUnique(afterInsert);
+          const resolvedNew = resolveAt(afterInsert, newStart, CAL);
+          expect(resolvedNew.kind).toBe('present');
+          if (resolvedNew.kind === 'present') {
+            expect(resolvedNew.entry.anchor.id, 'inserted anchor not effective at its start').toBe(
+              newAnchorId,
+            );
+          }
+        },
+      ),
+      { seed: SEED3, numRuns: 400 },
+    );
+  });
+});
+
+// ===========================================================================
+// §11. MULTI-TARGET FEDERATE ∘ DE-FEDERATE inverse (連邦化∘逆 round-trip).
+//
+// Federate >=2 existing top-level roots under a NEW common top (create→NewTop),
+// then de-federate every original target back to `none`. After the round-trip:
+//   - every original target is top-level again (parentId === undefined);
+//   - the federation root auto-disappears once it loses all sub-regions (FR-35
+//     sweep+prune); it must NOT linger as an empty aggregate;
+//   - the surviving feature set is structurally valid throughout.
+// §1..§8 federate but never de-federate, so this closes a NEW inverse pair.
+// ===========================================================================
+
+describe(`affiliation — federate ∘ de-federate inverse (seed=${SEED3})`, () => {
+  it('federating N roots then de-federating each to none restores all to top-level', () => {
+    fc.assert(
+      fc.property(validForestArb(), fc.nat(), fc.nat(), (initial, aWhich, bWhich) => {
+        let st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 900,
+        };
+        // Pick two DISTINCT top-level roots (aggregates) with compatible periods
+        // so the federation's existence guard never rejects the setup.
+        const roots = st.features.filter((f) => f.parentId === undefined);
+        if (roots.length < 2) return;
+        const a = roots[aWhich % roots.length]!;
+        const bCandidates = roots.filter(
+          (r) =>
+            r.id !== a.id &&
+            r.attributes.startYear <= a.attributes.endYear &&
+            a.attributes.startYear <= r.attributes.endYear,
+        );
+        if (bCandidates.length === 0) return;
+        const b = bCandidates[bWhich % bCandidates.length]!;
+
+        // Remember the leaves under each root (federate expands aggregates to leaves).
+        const forest0 = buildForest(st.features);
+        const targetLeaves = [
+          ...directChildIds(forest0, a.id),
+          ...directChildIds(forest0, b.id),
+        ];
+        if (targetLeaves.length < 2) return;
+        const originalParents = new Map(
+          targetLeaves.map((id) => [id, st.features.find((f) => f.id === id)!.parentId] as const),
+        );
+
+        // op: federate a + b under a fresh NewTop.
+        const fed = applyAffCmd(st, {
+          t: 'federate',
+          aWhich: st.features.indexOf(a),
+          bWhich: st.features.indexOf(b),
+          cWhich: st.features.indexOf(a), // dedup collapses to {a,b}.
+        });
+        if (fed === undefined) return;
+        st = fed.next;
+        assertFeatureSetInvariants(st.features, st.store);
+        expect(fed.proposal.createdIds.length, 'federate minted no root').toBeGreaterThan(0);
+        const fedRoot = fed.proposal.createdIds[fed.proposal.createdIds.length - 1]!;
+        // Every original leaf now sits (transitively) under the federation root.
+        for (const lid of targetLeaves) {
+          const lf = st.features.find((f) => f.id === lid);
+          expect(lf, `leaf ${lid} vanished after federate`).toBeDefined();
+        }
+
+        // 逆op: de-federate every original leaf back to `none` (top-level).
+        for (const lid of targetLeaves) {
+          const idx = st.features.findIndex((f) => f.id === lid);
+          if (idx < 0) continue;
+          const back = applyAffCmd(st, { t: 'none', targetWhich: idx });
+          if (back === undefined) continue;
+          st = back.next;
+          assertFeatureSetInvariants(st.features, st.store);
+        }
+
+        // After the round-trip: every original leaf is top-level again.
+        for (const lid of targetLeaves) {
+          const lf = st.features.find((f) => f.id === lid);
+          expect(lf, `leaf ${lid} missing after de-federate`).toBeDefined();
+          expect(lf?.parentId, `leaf ${lid} still parented after de-federate`).toBe(undefined);
+        }
+        void originalParents;
+        // The federation root must have auto-disappeared (it lost all sub-regions).
+        const rootStillThere = st.features.some((f) => f.id === fedRoot);
+        expect(rootStillThere, 'federation root lingered as empty aggregate').toBe(false);
+      }),
+      { seed: SEED3, numRuns: 400 },
+    );
+  });
+});
+
+// ===========================================================================
+// §12. PICKER ⊇ COMMIT over the heterogeneous-period model.
+//
+// On the het model (per-leaf independent periods), drive a real `existing`
+// command for a random leaf/parent pair and assert: whenever it COMMITS, the
+// chosen parent was a LISTED candidate (the picker would never have hidden a
+// parent the commit accepts). A commit through a hidden parent is a back-door
+// single-source violation distinct from §9 (different model + commit-first).
+// ===========================================================================
+
+describe(`affiliation — committed parent was always a listed candidate (seed=${SEED3})`, () => {
+  it('het model: every committed existing-parent was a picker candidate', () => {
+    fc.assert(
+      fc.property(hetForestArb(), fc.nat(), fc.nat(), (initial, targetWhich, parentWhich) => {
+        const st: AffState = {
+          features: [...initial.features],
+          store: store(initial),
+          idCounter: 5000,
+        };
+        const forest = buildForest(st.features);
+        const allIds = st.features.map((f) => f.id);
+        const target = pick(allIds, targetWhich);
+        const parent = pick(allIds, parentWhich);
+        if (target === undefined || parent === undefined) return;
+        // Keep the picker contract exact: single-target (skip aggregate targets).
+        if (directChildIds(forest, target).length > 0) return;
+
+        const listed = new Set(
+          allowedParentCandidates(forest, target).map((c) => c.featureId),
+        );
+
+        const idState = createIdGeneratorState(0, st.idCounter);
+        const result = buildAffiliationProposal(
+          st.features,
+          target,
+          parentExisting(parent),
+          { idState, now: makeNow(1), vertexStore: st.store },
+        );
+
+        if (result.status === 'proposal') {
+          expect(
+            listed.has(parent),
+            `committed existing-parent ${parent} was NOT a listed candidate (back-door)`,
+          ).toBe(true);
+          assertFeatureSetInvariants(result.proposal.nextFeatures, st.store);
+        }
+      }),
+      { seed: SEED3, numRuns: 500 },
     );
   });
 });

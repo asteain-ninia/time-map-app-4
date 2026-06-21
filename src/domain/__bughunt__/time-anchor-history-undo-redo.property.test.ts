@@ -1766,3 +1766,334 @@ describe('time-anchor + history undo/redo — seed 24001 mixed-granularity expan
     );
   });
 });
+
+// ===========================================================================
+// SEED 24003 expansion suite — IN-PLACE past-edit replacement + algebraic laws
+// (idempotency / inverse / commutativity) + content-derived executeIfChanged.
+//
+// A NEW exploration distinct from the 4001/4002/4004/24001/24002 passes
+// (different seed 24003, different command-space + interactions). Structural
+// gaps the prior suites leave open:
+//
+//   1. applyPastEdit has TWO branches (anchor-series.ts §5.7): INSERT a new
+//      anchor when no entry starts exactly at baseTime, and REPLACE-IN-PLACE the
+//      snapshot when an entry already starts there. EVERY prior suite drives
+//      pastEdit with a FRESH per-seed anchor id, so baseTime essentially never
+//      coincides with an existing start (years are drawn from a wide band) — the
+//      REPLACE branch (which appends the edited entry LAST so the keep-last dedup
+//      lets it win, and must NOT change the entry count, start, or end) is
+//      effectively unexercised through undo/redo + save/load. A bug there (e.g.
+//      the in-place `map` form regression called out in the §5.7 comment, which
+//      would drop the edit on a duplicate-id series, or a start/end mutation on
+//      replace) would slip past the existing streams. This suite targets the
+//      EXACT start of a randomly chosen existing entry so the REPLACE branch is
+//      the common case, asserting: count/start/end preserved, ONLY the snapshot
+//      changed, and full undo/redo + save/load fidelity.
+//
+//   2. Algebraic laws on the temporal-axis operations that no prior suite states:
+//        - IDEMPOTENCY: setEnd(null) twice == once (clearing an already-open end
+//          is a no-op); a REPLACE past-edit with the SAME snapshot twice == once.
+//        - INVERSE / no-resurrection: deleteAnchor(id) then deleteAnchor(id)
+//          again must REJECT with anchorNotFound (a deleted id is gone, never
+//          silently re-resolving to a different entry).
+//        - COMMUTATIVITY of delete: deleting two DISTINCT ids in either order
+//          yields the structurally-identical series (delete is order-independent
+//          on the time axis; a normalization ordering bug would break this).
+//
+//   3. executeIfChanged with a REAL content-derived isNoOp. Prior suites pass
+//      only the constants () => true / () => false. Here isNoOp is derived from
+//      the SAME source as the resulting state (serialized-view equality of the
+//      command's post-state vs the current baseline — 教訓 5.24「baseline は
+//      フォーム同期と同一ソースから導出する」). A no-op edit (post == baseline)
+//      must push NO history entry; a real edit must push exactly one. This
+//      catches a ghost-entry regression that the always-false constant cannot.
+//
+// All series invariants (validateSeries), no NaN/Infinity, forest/selection
+// validity, and save∘load==identity are re-asserted after every reachable state.
+//
+// Determinism: pinned seed 24003, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_24003 = 24003;
+const NUM_RUNS_24003 = 500;
+
+/** Structural-view equality of two series (object-identity-independent). */
+function seriesViewEqual(a: AnchorSeries, b: AnchorSeries): boolean {
+  return JSON.stringify(viewSeries(a)) === JSON.stringify(viewSeries(b));
+}
+
+/** The serialized snapshot of one entry (features + vertices), for "only the
+ * snapshot changed" comparisons that ignore start/end. */
+function entrySnapshotView(e: AnchorEntry): unknown {
+  return {
+    features: e.anchor.snapshot.features,
+    vertices: [...e.anchor.snapshot.vertices.byId.values()].map((v) => ({
+      id: v.id,
+      lon: v.coordinate.lon,
+      lat: v.coordinate.lat,
+    })),
+  };
+}
+
+describe('time-anchor + history undo/redo — seed 24003 in-place replace + laws', () => {
+  it('applyPastEdit at an EXISTING start replaces ONLY the snapshot; count/start/end preserved; undo/redo round-trips (seed 24003)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.nat(),
+        fc.integer({ min: 0, max: 100000 }),
+        (initial, targetN, seed) => {
+          assertStepInvariants(initial);
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const baseTime = target.start; // EXACT existing start ⇒ REPLACE branch.
+
+          const next = applyPastEdit(
+            initial,
+            baseTime,
+            () => makeAnchor(seed, `-rep-${seed}`),
+            cal,
+          );
+
+          // The REPLACE branch must preserve the entry COUNT (no insert).
+          expect(next.entries.length).toBe(initial.entries.length);
+          assertStepInvariants(next);
+
+          // The entry that owns baseTime must keep its start and end; only its
+          // snapshot may differ. Locate it by start (unique under INV-1).
+          const newTarget = next.entries.find(
+            (e) => compare(e.start, baseTime, cal) === 0,
+          );
+          expect(newTarget).toBeDefined();
+          if (newTarget) {
+            expect(compare(newTarget.start, target.start, cal)).toBe(0);
+            if (target.end === null) {
+              expect(newTarget.end).toBeNull();
+            } else {
+              expect(newTarget.end).not.toBeNull();
+              if (newTarget.end) {
+                expect(compare(newTarget.end, target.end, cal)).toBe(0);
+              }
+            }
+          }
+
+          // Every OTHER entry (by start) is byte-identical (no neighbor touched).
+          const otherKey = (s: AnchorSeries) =>
+            JSON.stringify(
+              s.entries
+                .filter((e) => compare(e.start, baseTime, cal) !== 0)
+                .map((e) => ({
+                  id: e.anchor.id,
+                  start: e.start,
+                  end: e.end,
+                  snap: entrySnapshotView(e),
+                })),
+            );
+          expect(otherKey(next)).toBe(otherKey(initial));
+
+          // Drive through the dual-stack history: execute, undo (restores the
+          // ORIGINAL snapshot exactly), redo (restores the replacement).
+          if (seriesViewEqual(next, initial)) return; // identical snapshot ⇒ no-op
+          let history = createHistory(initial, 20);
+          history = execute(
+            history,
+            makeSeriesCommand('pastEdit-replace', initial, next),
+          ).history;
+          expect(viewSeries(history.state)).toEqual(viewSeries(next));
+          const undone = undo(history).history;
+          expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+          assertStepInvariants(undone.state);
+          const redone = redo(undone).history;
+          expect(viewSeries(redone.state)).toEqual(viewSeries(next));
+          assertStepInvariants(redone.state);
+        },
+      ),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+
+  it('idempotency: setEnd(null) twice == once; in-place pastEdit with identical snapshot twice == once (seed 24003)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.nat(),
+        fc.integer({ min: 0, max: 100000 }),
+        (initial, targetN, seed) => {
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const id = target.anchor.id;
+
+          // setEnd(null) idempotency.
+          const c1 = setEnd(initial, id, null, cal);
+          expect(c1.ok).toBe(true);
+          if (c1.ok) {
+            expectAllInvariants(c1.series);
+            const c2 = setEnd(c1.series, id, null, cal);
+            expect(c2.ok).toBe(true);
+            if (c2.ok) {
+              // Clearing an already-open end must be a structural no-op.
+              expect(viewSeries(c2.series)).toEqual(viewSeries(c1.series));
+            }
+          }
+
+          // In-place pastEdit idempotency: replacing the snapshot at an existing
+          // start with the SAME factory twice yields the same series the first
+          // replace produced (a second identical replace is a no-op).
+          const make = () => makeAnchor(seed, `-idem-${seed}`);
+          const r1 = applyPastEdit(initial, target.start, make, cal);
+          expectAllInvariants(r1);
+          const r2 = applyPastEdit(r1, target.start, make, cal);
+          expectAllInvariants(r2);
+          expect(viewSeries(r2)).toEqual(viewSeries(r1));
+        },
+      ),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+
+  it('no-resurrection: deleting an id then deleting it again rejects with anchorNotFound (seed 24003)', () => {
+    fc.assert(
+      fc.property(anchorSeriesArb(cal), fc.nat(), (initial, targetN) => {
+        // Need >= 2 entries so the first delete is allowed (INV-5 guard).
+        if (initial.entries.length < 2) return;
+        const target = initial.entries[targetN % initial.entries.length]!;
+        const id = target.anchor.id;
+
+        const first = deleteAnchor(initial, id, cal);
+        expect(first.ok).toBe(true);
+        if (!first.ok) return;
+        expectAllInvariants(first.series);
+        // The id must be GONE — no entry resolves to it.
+        expect(first.series.entries.some((e) => e.anchor.id === id)).toBe(false);
+
+        // Deleting the same id again must be a clean rejection, never a silent
+        // misroute onto a different entry.
+        const second = deleteAnchor(first.series, id, cal);
+        expect(second.ok).toBe(false);
+        if (!second.ok) {
+          expect(second.reason.code).toBe('anchorNotFound');
+        }
+        // The series is unchanged by the rejected second delete.
+        expectAllInvariants(first.series);
+      }),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+
+  it('commutativity: deleting two distinct ids in either order yields the same series (seed 24003)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.nat(),
+        fc.nat(),
+        (initial, aN, bN) => {
+          // Need >= 3 entries so BOTH deletes are individually allowed (each
+          // delete keeps >= 1; with 3 entries deleting any 2 keeps >= 1).
+          if (initial.entries.length < 3) return;
+          const n = initial.entries.length;
+          const i = aN % n;
+          let j = bN % n;
+          if (j === i) j = (j + 1) % n;
+          const idA = initial.entries[i]!.anchor.id;
+          const idB = initial.entries[j]!.anchor.id;
+          if (idA === idB) return;
+
+          const ab1 = deleteAnchor(initial, idA, cal);
+          if (!ab1.ok) return;
+          const ab2 = deleteAnchor(ab1.series, idB, cal);
+          if (!ab2.ok) return;
+
+          const ba1 = deleteAnchor(initial, idB, cal);
+          if (!ba1.ok) return;
+          const ba2 = deleteAnchor(ba1.series, idA, cal);
+          if (!ba2.ok) return;
+
+          expectAllInvariants(ab2.series);
+          expectAllInvariants(ba2.series);
+          // Delete is order-independent on the time axis: the two orders must
+          // produce the structurally-identical series.
+          expect(viewSeries(ab2.series)).toEqual(viewSeries(ba2.series));
+        },
+      ),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+
+  it('executeIfChanged with a content-derived isNoOp pushes iff the edit really changes the series (seed 24003)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(editOpArb, { maxLength: 24 }),
+        (initial, ops) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+          for (const op of ops) {
+            const before = history.state;
+            // Compute the candidate AFTER state. applyEdit returns undefined for a
+            // rejected/no-op edit; model that as a command that maps to `before`
+            // (a true no-op) so the content-derived isNoOp suppresses it.
+            const computed = applyEdit(before, op);
+            const after = computed ?? before;
+            const cmd = makeSeriesCommand(op.kind, before, after);
+            const depthBefore = history.undoStack.length;
+
+            // isNoOp derived from the SAME source as the resulting state: the
+            // command's post-state view equals the current baseline view.
+            const step = executeIfChanged(history, cmd, (s) =>
+              JSON.stringify(viewSeries(after)) === JSON.stringify(viewSeries(s)),
+            );
+            history = step.history;
+
+            if (computed === undefined) {
+              // True no-op ⇒ NO ghost entry pushed (教訓 5.24).
+              expect(history.undoStack.length).toBe(depthBefore);
+              expect(viewSeries(history.state)).toEqual(viewSeries(before));
+            } else {
+              // Real change ⇒ exactly one entry pushed and state advanced.
+              expect(history.undoStack.length).toBe(depthBefore + 1);
+              expect(viewSeries(history.state)).toEqual(viewSeries(after));
+            }
+            assertStepInvariants(history.state);
+          }
+
+          // Undo everything pushed ⇒ back to root (history coherence under the
+          // ghost-suppressed stream).
+          while (canUndo(history)) {
+            history = undo(history).history;
+          }
+          expect(viewSeries(history.state)).toEqual(viewSeries(initial));
+        },
+      ),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+
+  it('every history state (edit/undo/redo) satisfies all invariants (seed 24003, fresh stream)', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.array(actionArb, { maxLength: 32 }),
+        (initial, actions) => {
+          assertStepInvariants(initial);
+          let history: History<AnchorSeries> = createHistory(initial, 50);
+          for (const action of actions) {
+            if (action.t === 'edit' && action.op) {
+              const before = history.state;
+              const after = applyEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else {
+              history = redo(history).history;
+            }
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_24003, numRuns: NUM_RUNS_24003 },
+    );
+  });
+});

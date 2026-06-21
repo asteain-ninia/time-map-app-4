@@ -1695,3 +1695,375 @@ describe('bug hunt #2 / NEW conflict class (seed 26002) — RingHierarchyInvalid
     );
   });
 });
+
+// ============================================================================
+// Section 5 — THIRD exploration (seed 26003, disjoint from 26001/26002 above and
+// from the identity suite's 1000–6004). This section reaches CONFLICT classes and
+// REPAIR PATHS the earlier corruption catalogue never injects — exercising the
+// auto-repair routines that Sections 2 & 4 never drove a single time:
+//
+//   (h) ShapePreservation / leaf-empty-shape   → DropShapeRoleFeature
+//   (i) ShapePreservation / aggregate-no-children → DropShapeRoleFeature
+//   (j) TreeTopology / child-parent-mismatch    → ReconcileChildIds (the FIRST,
+//       NON-destructive option — rebuild childIds from the parentId source of
+//       truth — which NO prior corruption ever selected: every earlier topology
+//       injection was a cycle / dangling parent, which only offer detach/drop)
+//   (k) TerminalExclusion + AnchorSpatialOverlap (one geometric overlap surfaces
+//       BOTH kinds, FR-106 d+g)                 → DropOverlappingFeature
+//
+// (An inter-child-gap AggregateSumMismatch was DELIBERATELY NOT added here: with
+// this harness's two side-by-side tiling children no coordinate edit can open a
+// genuine enclosed gap without either tearing the SHARED boundary vertex — which is
+// VertexCoordinateDivergence, already covered — or producing a legal 飛び地 / lake
+// the U08 gap rule correctly does NOT flag. A coverage probe (kept during
+// development) proved a naive shared-edge nudge NEVER actually trips the
+// AggregateSumMismatch verdict, so injecting it would have been a green-faking
+// no-op. AggregateSumMismatch's safe-repair is instead exercised as COLLATERAL by
+// the missing-vertex-on-a-shared-aggregate-vertex path already noted in Section 2.)
+//
+// Plus two NEW metamorphic laws never asserted before:
+//   - REPAIR-ORDER INDEPENDENCE: for the reconcilable child-parent-mismatch, the
+//     ReconcileChildIds repair reaches the SAME consistent project whether driven
+//     to fixpoint directly or after first round-tripping the corrupt project
+//     through the JSON+Zod boundary (load → repair = repair → load on the repaired
+//     side: a repair is a pure function of the loaded state, not of how it loaded).
+//   - NON-DESTRUCTIVE REPAIR PRESERVES FEATURES: the child-parent-mismatch
+//     reconcile repair must keep EVERY feature (it only rewrites childIds), unlike
+//     the drop repairs — so the repaired project has the same feature-id set as the
+//     corrupt one. (A reconcile that silently dropped a feature would be a 受け入れ
+//     基準5 over-reach.)
+// ============================================================================
+
+const SEED3 = 26003;
+
+type Corruption3Tag =
+  | 'leaf-empty-shape'
+  | 'aggregate-no-children'
+  | 'child-parent-mismatch'
+  | 'terminal-overlap';
+
+/** All feature ids appearing in a project's first-entry snapshots, as a set. */
+function allFeatureIds(project: DomainProject): Set<string> {
+  const out = new Set<string>();
+  for (const h of project.histories) {
+    for (const e of h.series.entries) {
+      for (const f of e.anchor.snapshot.features) out.add(f.id as string);
+    }
+  }
+  return out;
+}
+
+/**
+ * Inject one Section-5 corruption class into a valid project, returning the
+ * corrupted project AND the inconsistency kind(s) it should provoke + a code for
+ * the repair OPTION the framework should offer. Returns null when the chosen
+ * corruption is inapplicable to this particular project shape (caller skips).
+ */
+function corrupt3(
+  project: DomainProject,
+  tag: Corruption3Tag,
+  pick: number,
+): { project: DomainProject; expectKind: string } | null {
+  const histories = cloneHistories(project);
+  if (histories.length === 0) return null;
+  const hi = pick % histories.length;
+
+  switch (tag) {
+    case 'leaf-empty-shape': {
+      // Replace a STANDALONE leaf's shape with an EMPTY ring set → a shapeless
+      // 末端地物 (形状保持規則違反 / leaf-empty-shape). Restrict to a single-feature
+      // leaf history so the DropShapeRoleFeature repair (drop the offending feature +
+      // its history) converges without colliding with aggregate/shared-vertex state.
+      const h = histories[hi]!;
+      const e0 = h.series.entries[0]!;
+      if (e0.anchor.snapshot.features.length !== 1) return null;
+      const only = e0.anchor.snapshot.features[0]!;
+      if (only.kind !== 'leaf') return null;
+      const emptied: LeafFeature = { ...only, shape: createShape([]) };
+      mapFirstEntryFeatures(histories, hi, (features) =>
+        features.map((f) => (f.id === only.id ? emptied : f)),
+      );
+      // Confirm the corruption is real (an empty-shape leaf is flagged).
+      return {
+        project: { ...project, histories },
+        expectKind: INCONSISTENCY.ShapePreservation,
+      };
+    }
+    case 'aggregate-no-children': {
+      // Find an aggregate history and STRIP its childIds to [] (and detach the real
+      // children to top-level so they are not orphaned by a dangling parentId) → a
+      // declared-aggregate with no children (形状保持規則違反 / aggregate-no-children).
+      let targetAgg: string | null = null;
+      for (let i = 0; i < histories.length; i += 1) {
+        const feats = histories[i]!.series.entries[0]!.anchor.snapshot.features;
+        const agg = feats.find((f) => f.kind === 'aggregate');
+        if (agg !== undefined) {
+          targetAgg = agg.id as string;
+          // Strip childIds AND clear the children's parentId in THIS history.
+          mapFirstEntryFeatures(histories, i, (features) =>
+            features.map((f) => {
+              if (f.id === agg.id && f.kind === 'aggregate') {
+                return withAggregateChildIds(f, []);
+              }
+              if (f.parentId !== undefined && (f.parentId as string) === (agg.id as string)) {
+                return withParentId(f, undefined);
+              }
+              return f;
+            }),
+          );
+          break;
+        }
+      }
+      if (targetAgg === null) return null;
+      return {
+        project: { ...project, histories },
+        expectKind: INCONSISTENCY.ShapePreservation,
+      };
+    }
+    case 'child-parent-mismatch': {
+      // Find an aggregate + its real children, then REMOVE one child id from the
+      // aggregate's declared childIds while LEAVING that child's parentId pointing
+      // at the aggregate → declared childIds ⊊ derived (parentId) set →
+      // ChildParentMismatch (a TreeTopology sub-cause whose FIRST offered repair is
+      // the NON-destructive ReconcileChildIds). The child stays in the snapshot.
+      for (let i = 0; i < histories.length; i += 1) {
+        const feats = histories[i]!.series.entries[0]!.anchor.snapshot.features;
+        const agg = feats.find((f) => f.kind === 'aggregate');
+        if (agg === undefined || agg.kind !== 'aggregate' || agg.childIds.length === 0) continue;
+        const dropped = agg.childIds[pick % agg.childIds.length]!;
+        mapFirstEntryFeatures(histories, i, (features) =>
+          features.map((f) =>
+            f.id === agg.id && f.kind === 'aggregate'
+              ? withAggregateChildIds(f, f.childIds.filter((c) => c !== dropped))
+              : f,
+          ),
+        );
+        return {
+          project: { ...project, histories },
+          expectKind: INCONSISTENCY.TreeTopology,
+        };
+      }
+      return null;
+    }
+    case 'terminal-overlap': {
+      // Make TWO standalone leaf features occupy the SAME space at the SAME time →
+      // a positive-area overlap that surfaces as BOTH TerminalExclusion (d) and
+      // AnchorSpatialOverlap (g). We take two single-leaf histories, collapse each to
+      // ONE entry starting at the same year, and translate the SECOND leaf's vertices
+      // on top of the first's footprint. Needs ≥2 single-leaf histories.
+      const leafHist: number[] = [];
+      for (let i = 0; i < histories.length; i += 1) {
+        const feats = histories[i]!.series.entries[0]!.anchor.snapshot.features;
+        if (feats.length === 1 && feats[0]!.kind === 'leaf') leafHist.push(i);
+        if (leafHist.length === 2) break;
+      }
+      if (leafHist.length < 2) return null;
+      const [iA, iB] = leafHist as [number, number];
+      const hA = histories[iA]!;
+      const hB = histories[iB]!;
+      const eA = hA.series.entries[0]!;
+      const eB = hB.series.entries[0]!;
+      const at = timePointYear(0);
+      // Reference footprint: leaf A's vertices, verbatim.
+      const aVerts = [...eA.anchor.snapshot.vertices.byId.values()];
+      const aFirst = aVerts[0]!;
+      // Rebuild B's store so EVERY B vertex sits at A's first-vertex coordinate
+      // OFFSET by its own delta from B's first vertex — i.e. translate B's whole
+      // footprint to start exactly where A's does. Same SHAPE, overlapping AREA.
+      const bVerts = [...eB.anchor.snapshot.vertices.byId.values()];
+      const bFirst = bVerts[0]!;
+      const movedB = bVerts.map((v) =>
+        createVertex(
+          v.id,
+          createCoordinate(
+            aFirst.coordinate.lon + (v.coordinate.lon - bFirst.coordinate.lon),
+            aFirst.coordinate.lat + (v.coordinate.lat - bFirst.coordinate.lat),
+          ),
+        ),
+      );
+      histories[iA] = {
+        featureId: hA.featureId,
+        series: { entries: [{ anchor: eA.anchor, start: at, end: null }] },
+      };
+      histories[iB] = {
+        featureId: hB.featureId,
+        series: {
+          entries: [
+            {
+              anchor: createAnchor(
+                eB.anchor.id,
+                createAnchorSnapshot(eB.anchor.snapshot.features, createVertexStore(movedB)),
+              ),
+              start: at,
+              end: null,
+            },
+          ],
+        },
+      };
+      return {
+        project: { ...project, histories },
+        expectKind: INCONSISTENCY.TerminalExclusion,
+      };
+    }
+  }
+}
+
+const corruption3Arb: fc.Arbitrary<Corruption3Tag> = fc.constantFrom(
+  'leaf-empty-shape',
+  'aggregate-no-children',
+  'child-parent-mismatch',
+  'terminal-overlap',
+);
+
+describe('bug hunt #2 / THIRD exploration (seed 26003) — new repair paths', () => {
+  it('every Section-5 corruption is DETECTED with its expected kind (no silent pass)', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruption3Arb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt3(project, tag, pick);
+        if (inj === null) return;
+        const report = checkConsistency(inj.project, CAL);
+        if (report.ok) {
+          throw new Error(`Section-5 corruption "${tag}" was NOT detected (report empty)`);
+        }
+        const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+        if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+          throw new Error(
+            `corruption "${tag}" expected kind ${inj.expectKind} but got: ${[...kinds].join(', ')}`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 900 },
+    );
+  });
+
+  it('applyRepairChecked stays HONEST for the new repair paths (resolved ⇒ no growth, target gone)', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruption3Arb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt3(project, tag, pick);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (fix.honestyViolated) {
+          throw new Error(
+            `applyRepairChecked reported resolved:true while growing the report / leaving target for "${tag}"`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 900 },
+    );
+  });
+
+  it('safe-repair fixpoint converges to a CLEAN project for every Section-5 corruption', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruption3Arb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt3(project, tag, pick);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (!fix.converged) {
+          throw new Error(
+            `safe-repair fixpoint did not converge for "${tag}" (stuck=${fix.stuck})`,
+          );
+        }
+        const finalReport = checkConsistency(fix.project, CAL);
+        if (!finalReport.ok) {
+          throw new Error(
+            `post-repair project still inconsistent for "${tag}": ${finalReport.inconsistencies
+              .map((i) => i.kind)
+              .join(', ')}`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 900 },
+    );
+  });
+
+  it('save→load = identity AFTER Section-5 conflict resolution (repaired round-trips through Zod)', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruption3Arb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt3(project, tag, pick);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (!fix.converged) return;
+        const rt = boundaryRoundTrips(fix.project);
+        if (!rt.ok) {
+          throw new Error(
+            `repaired project failed boundary round-trip (${rt.reason}) for corruption "${tag}"`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 900 },
+    );
+  });
+
+  it('child-parent-mismatch reconcile is NON-DESTRUCTIVE: every feature survives the repair', () => {
+    fc.assert(
+      fc.property(projectArb2(), fc.nat(), (project, pick) => {
+        const inj = corrupt3(project, 'child-parent-mismatch', pick);
+        if (inj === null) return;
+        const beforeIds = allFeatureIds(inj.project);
+        const fix = repairToFixpoint(inj.project);
+        if (!fix.converged) {
+          throw new Error(`child-parent-mismatch did not converge (stuck=${fix.stuck})`);
+        }
+        const afterIds = allFeatureIds(fix.project);
+        // The reconcile repair only rewrites childIds; it must NOT drop any feature.
+        for (const id of beforeIds) {
+          if (!afterIds.has(id)) {
+            throw new Error(
+              `feature ${id} was DROPPED by the (supposedly non-destructive) reconcile repair`,
+            );
+          }
+        }
+        if (afterIds.size !== beforeIds.size) {
+          throw new Error(
+            `reconcile changed the feature-id set size: ${beforeIds.size} → ${afterIds.size}`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 700 },
+    );
+  });
+
+  it('REPAIR-ORDER INDEPENDENCE: repair-then-save = save-then-repair (load is not load-path-dependent)', () => {
+    fc.assert(
+      fc.property(projectArb2(), corruption3Arb, fc.nat(), (project, tag, pick) => {
+        const inj = corrupt3(project, tag, pick);
+        if (inj === null) return;
+
+        // Path 1: repair the in-memory corrupt project to a fixpoint, then save→load.
+        const fixDirect = repairToFixpoint(inj.project);
+        if (!fixDirect.converged) return; // convergence is covered by the law above.
+        const directJson = JSON.parse(JSON.stringify(serialize(fixDirect.project)));
+        const directParsed = parseManifest(directJson);
+        if (directParsed.outcome !== PARSE_OUTCOME.Ok) {
+          throw new Error(`direct-path parse failed: ${directParsed.outcome}`);
+        }
+        const directLoaded = deserialize(directParsed.manifest);
+
+        // Path 2: save→load the CORRUPT project FIRST (it is structurally valid, so it
+        // round-trips through Zod), THEN repair the LOADED copy to a fixpoint.
+        const corruptJson = JSON.parse(JSON.stringify(serialize(inj.project)));
+        const corruptParsed = parseManifest(corruptJson);
+        if (corruptParsed.outcome !== PARSE_OUTCOME.Ok) {
+          // A corruption that is NOT structurally representable cannot take this path;
+          // skip (the in-memory detection/repair laws still cover it).
+          return;
+        }
+        const corruptLoaded = deserialize(corruptParsed.manifest);
+        const fixLoaded = repairToFixpoint(corruptLoaded);
+        if (!fixLoaded.converged) {
+          throw new Error(`load-then-repair did not converge for "${tag}" (stuck=${fixLoaded.stuck})`);
+        }
+
+        // The two paths must reach the SAME consistent project (a repair is a pure
+        // function of the loaded domain state, independent of whether it loaded before
+        // or after repair).
+        if (!projectsEqual(directLoaded, fixLoaded.project)) {
+          throw new Error(
+            `repair-order dependence for "${tag}": repair∘load ≠ load∘repair`,
+          );
+        }
+      }),
+      { seed: SEED3, numRuns: 700 },
+    );
+  });
+});

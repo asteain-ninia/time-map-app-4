@@ -1645,3 +1645,485 @@ describe('alternation (seed=22002): subtree-nudge + extract + leaf-first deletio
     );
   });
 });
+
+// ===========================================================================
+// 10. SIXTH CAMPAIGN (seed=22003) — NEW exploration: edit streams that GROW the
+//     shape (ADD a hole / ADD an enclave) interleaved with delete / nudge /
+//     save-load, PLUS an ascending non-duplicate ANCHOR series carried alongside
+//     the (shape, store) state.
+//
+// Every prior campaign (seeds 2001/2002/2004/22001/22002) only ever SHRINKS or
+// rigidly MOVES the shape — none of them ADDS a ring, so the add-then-validate
+// re-link path and the "newly created hole must be contained + sibling-disjoint"
+// geometry path were never exercised by this file. This campaign closes that gap
+// and also adds the brief's explicit "錨列の昇順・非重複" (anchor series ascending
+// & non-duplicate) and "save->load=恒等" laws over a combined editor state.
+//
+// New ground vs. campaigns 1-5:
+//   (a) ADD-HOLE: punch a fresh, strictly-smaller, centered hole into a LEAF
+//       TERRITORY (a territory with no existing children). Centered + 0.2× the
+//       parent half-size keeps it strictly inside with no sibling to overlap, so
+//       a correct system MUST keep validateGeometry clean; any violation is a real
+//       containment/re-link defect, not a generator artifact.
+//   (b) ADD-ENCLAVE: the mirror — drop a fresh, strictly-smaller, centered
+//       territory (enclave) into a LEAF HOLE, preserving hole→territory
+//       alternation and containment.
+//   (c) ANCHOR SERIES: a sorted, duplicate-free list of integer anchor positions
+//       (the temporal-axis ordering the spec FR-54 anchors live on). Insert keeps
+//       it strictly ascending and unique; remove keeps it sorted; both must round-
+//       trip through save→load. Asserted after EVERY command in the stream.
+//   (d) Metamorphic laws on the GROWN state: undo∘add = delete-of-the-added-ring
+//       (the added ring is removed and the prior forest restored), op∘inverse for
+//       the nudge, and save∘load = identity over the full (shape, store, anchors)
+//       triple.
+//
+// Determinism: seed fixed to 22003, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED6 = 22003;
+const RUNS6 = 350;
+const cfg6 = { seed: SEED6, numRuns: RUNS6 } as const;
+
+/** Axis-aligned bounds of a ring resolved against the store (the rich generator
+ * builds axis-aligned rectangles, so min/max over the vertices is the rect). */
+function ringBounds(
+  store: VertexStore,
+  ring: Ring,
+): { minLon: number; maxLon: number; minLat: number; maxLat: number } | undefined {
+  let minLon = Infinity;
+  let maxLon = -Infinity;
+  let minLat = Infinity;
+  let maxLat = -Infinity;
+  let any = false;
+  for (const vid of ring.vertexIds) {
+    const v = getVertex(store, vid);
+    if (v === undefined) return undefined;
+    any = true;
+    if (v.coordinate.lon < minLon) minLon = v.coordinate.lon;
+    if (v.coordinate.lon > maxLon) maxLon = v.coordinate.lon;
+    if (v.coordinate.lat < minLat) minLat = v.coordinate.lat;
+    if (v.coordinate.lat > maxLat) maxLat = v.coordinate.lat;
+  }
+  if (!any) return undefined;
+  return { minLon, maxLon, minLat, maxLat };
+}
+
+/** A ring is a LEAF iff it has no children in the shape. */
+function isLeafRing(shape: Shape, ringId: RingId): boolean {
+  return childrenOf(shape, ringId).length === 0;
+}
+
+/** The combined editor state for campaign 6: a shape, its store, a monotonically
+ * increasing fresh-id counter (so added rings/vertices never collide), and an
+ * ascending duplicate-free anchor-position series. */
+interface GrowState {
+  readonly shape: Shape;
+  readonly store: VertexStore;
+  readonly nextId: number;
+  readonly anchors: readonly number[];
+}
+
+/** The anchor series is strictly ascending (=> also duplicate-free). */
+function anchorsAscendingUnique(anchors: readonly number[]): boolean {
+  for (let i = 1; i < anchors.length; i += 1) {
+    const prev = anchors[i - 1];
+    const cur = anchors[i];
+    if (prev === undefined || cur === undefined) return false;
+    if (!(cur > prev)) return false; // not strictly increasing => duplicate or out of order
+  }
+  return true;
+}
+
+/** Insert `value` into a sorted unique list, keeping it sorted & unique. A value
+ * already present is a no-op (set semantics: the temporal axis has at most one
+ * anchor per position). */
+function insertAnchor(anchors: readonly number[], value: number): readonly number[] {
+  if (anchors.includes(value)) return anchors;
+  const out = [...anchors, value].sort((a, b) => a - b);
+  return out;
+}
+
+/** Remove the anchor at sorted index `idx` (no-op if out of range). */
+function removeAnchorAt(anchors: readonly number[], idx: number): readonly number[] {
+  if (idx < 0 || idx >= anchors.length) return anchors;
+  return anchors.filter((_, i) => i !== idx);
+}
+
+/** Add a centered, strictly-smaller HOLE into a LEAF TERRITORY. Returns the new
+ * state plus the added ring id, or undefined if `territoryId` is not an
+ * addable leaf territory (no children, resolvable bounds). The hole is 0.2× the
+ * territory half-size, centered, so it is strictly contained with no sibling. */
+function addHoleToLeafTerritory(
+  state: GrowState,
+  territoryId: RingId,
+): { state: GrowState; addedId: RingId } | undefined {
+  const territory = state.shape.rings.find((r) => r.id === territoryId);
+  if (territory === undefined || territory.kind !== RING_KIND.Territory) return undefined;
+  if (!isLeafRing(state.shape, territoryId)) return undefined;
+  const b = ringBounds(state.store, territory);
+  if (b === undefined) return undefined;
+  const cx = (b.minLon + b.maxLon) / 2;
+  const cy = (b.minLat + b.maxLat) / 2;
+  const halfW = ((b.maxLon - b.minLon) / 2) * 0.2;
+  const halfH = ((b.maxLat - b.minLat) / 2) * 0.2;
+  if (!(halfW > 0) || !(halfH > 0)) return undefined; // degenerate parent, skip
+
+  const counter = state.nextId;
+  const addedId = asRingId(`add${counter}`);
+  const vertices: { id: VertexId; lon: number; lat: number }[] = [];
+  const ring = rectRing(addedId, cx, cy, halfW, halfH, RING_KIND.Hole, territoryId, vertices);
+  let store = state.store;
+  for (const v of vertices) {
+    store = setVertex(store, createVertex(v.id, createCoordinate(v.lon, v.lat)));
+  }
+  const shape = createShape([...state.shape.rings, ring]);
+  return {
+    state: { shape, store, nextId: counter + 1, anchors: state.anchors },
+    addedId,
+  };
+}
+
+/** Add a centered, strictly-smaller ENCLAVE (territory) into a LEAF HOLE — the
+ * mirror of {@link addHoleToLeafTerritory}, preserving hole→territory alternation
+ * and containment. */
+function addEnclaveToLeafHole(
+  state: GrowState,
+  holeId: RingId,
+): { state: GrowState; addedId: RingId } | undefined {
+  const hole = state.shape.rings.find((r) => r.id === holeId);
+  if (hole === undefined || hole.kind !== RING_KIND.Hole) return undefined;
+  if (!isLeafRing(state.shape, holeId)) return undefined;
+  const b = ringBounds(state.store, hole);
+  if (b === undefined) return undefined;
+  const cx = (b.minLon + b.maxLon) / 2;
+  const cy = (b.minLat + b.maxLat) / 2;
+  const halfW = ((b.maxLon - b.minLon) / 2) * 0.2;
+  const halfH = ((b.maxLat - b.minLat) / 2) * 0.2;
+  if (!(halfW > 0) || !(halfH > 0)) return undefined;
+
+  const counter = state.nextId;
+  const addedId = asRingId(`add${counter}`);
+  const vertices: { id: VertexId; lon: number; lat: number }[] = [];
+  const ring = rectRing(addedId, cx, cy, halfW, halfH, RING_KIND.Territory, holeId, vertices);
+  let store = state.store;
+  for (const v of vertices) {
+    store = setVertex(store, createVertex(v.id, createCoordinate(v.lon, v.lat)));
+  }
+  const shape = createShape([...state.shape.rings, ring]);
+  return {
+    state: { shape, store, nextId: counter + 1, anchors: state.anchors },
+    addedId,
+  };
+}
+
+/** Save→load the combined GrowState (shape + store + anchors) and back. */
+function saveLoadGrowState(state: GrowState): GrowState {
+  const reloadedShapeStore = saveLoadState({ shape: state.shape, store: state.store });
+  const reloadedAnchors = JSON.parse(JSON.stringify(state.anchors)) as readonly number[];
+  return {
+    shape: reloadedShapeStore.shape,
+    store: reloadedShapeStore.store,
+    nextId: state.nextId,
+    anchors: reloadedAnchors,
+  };
+}
+
+/** Full focal invariant bundle for a GrowState: the (shape, store) bundle PLUS
+ * the anchor-series ascending/non-duplicate law and the combined save→load
+ * identity. */
+function assertGrowBundle(state: GrowState): void {
+  assertFullBundle({ shape: state.shape, store: state.store });
+  // Anchor series: strictly ascending => sorted AND duplicate-free (FR-54).
+  expect(anchorsAscendingUnique(state.anchors)).toBe(true);
+  // save → load = identity over the full triple.
+  const reloaded = saveLoadGrowState(state);
+  expect(reloaded.shape).toEqual(state.shape);
+  expect(reloaded.anchors).toEqual(state.anchors);
+  for (const v of state.store.byId.values()) {
+    const rv = reloaded.store.byId.get(v.id);
+    expect(rv).not.toBeUndefined();
+    expect(Object.is(rv?.coordinate.lon, v.coordinate.lon)).toBe(true);
+    expect(Object.is(rv?.coordinate.lat, v.coordinate.lat)).toBe(true);
+  }
+}
+
+/** A sixth-campaign edit command. */
+type EditCommand6 =
+  | { readonly tag: 'add-hole'; readonly sel: number }
+  | { readonly tag: 'add-enclave'; readonly sel: number }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | { readonly tag: 'nudge-any'; readonly sel: number; readonly dLon: number; readonly dLat: number }
+  | { readonly tag: 'anchor-insert'; readonly value: number }
+  | { readonly tag: 'anchor-remove'; readonly sel: number }
+  | { readonly tag: 'save-load' };
+
+function editCommand6Arb(): fc.Arbitrary<EditCommand6> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  const nudge = (): fc.Arbitrary<number> =>
+    fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('add-hole' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('add-enclave' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({
+      tag: fc.constant('nudge-any' as const),
+      sel: sel(),
+      dLon: nudge(),
+      dLat: nudge(),
+    }),
+    fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -50, max: 50 }) }),
+    fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+  );
+}
+
+describe('alternation (seed=22003): GROW (add hole/enclave) + anchor series + metamorphic laws', () => {
+  it('adding a centered hole to a leaf territory keeps the full geometry bundle (undo = delete restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true })
+            .map((sel) => ({ shape, store, sel })),
+        ),
+        ({ shape, store, sel }) => {
+          const leafTerritories = shape.rings.filter(
+            (r) => r.kind === RING_KIND.Territory && isLeafRing(shape, r.id),
+          );
+          if (leafTerritories.length === 0) return; // vacuous
+          const idx = Math.min(leafTerritories.length - 1, Math.floor(sel * leafTerritories.length));
+          const target = leafTerritories[idx];
+          if (target === undefined) return;
+
+          const start: GrowState = { shape, store, nextId: 0, anchors: [] };
+          const result = addHoleToLeafTerritory(start, target.id);
+          expect(result).not.toBeUndefined();
+          if (result === undefined) return;
+          // The grown state is fully valid: the new hole is contained, simple,
+          // finite, and creates no sibling/containment violation.
+          assertGrowBundle(result.state);
+          // The added ring is present, is a hole, and is parented to the target.
+          const added = result.state.shape.rings.find((r) => r.id === result.addedId);
+          expect(added?.kind).toBe(RING_KIND.Hole);
+          expect(added?.parentRingId).toBe(target.id);
+          // UNDO∘add = delete the added ring: it restores the original forest
+          // structure exactly (same ids/kinds/parents) — the added ring is the
+          // only one removed and it had no children.
+          const undone = deleteRingAndReorganize(result.state.shape, result.addedId);
+          const norm = (s: Shape): string =>
+            JSON.stringify(
+              [...s.rings]
+                .map((r) => ({ id: r.id, kind: r.kind, parent: r.parentRingId ?? null }))
+                .sort((x, y) => x.id.localeCompare(y.id)),
+            );
+          expect(norm(undone)).toBe(norm(shape));
+        },
+      ),
+      cfg6,
+    );
+  });
+
+  it('adding a centered enclave to a leaf hole keeps the full geometry bundle (undo = delete restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true })
+            .map((sel) => ({ shape, store, sel })),
+        ),
+        ({ shape, store, sel }) => {
+          const leafHoles = shape.rings.filter(
+            (r) => r.kind === RING_KIND.Hole && isLeafRing(shape, r.id),
+          );
+          if (leafHoles.length === 0) return; // vacuous
+          const idx = Math.min(leafHoles.length - 1, Math.floor(sel * leafHoles.length));
+          const target = leafHoles[idx];
+          if (target === undefined) return;
+
+          const start: GrowState = { shape, store, nextId: 0, anchors: [] };
+          const result = addEnclaveToLeafHole(start, target.id);
+          expect(result).not.toBeUndefined();
+          if (result === undefined) return;
+          assertGrowBundle(result.state);
+          const added = result.state.shape.rings.find((r) => r.id === result.addedId);
+          expect(added?.kind).toBe(RING_KIND.Territory);
+          expect(added?.parentRingId).toBe(target.id);
+          // UNDO∘add = delete the added enclave restores the original forest.
+          const undone = deleteRingAndReorganize(result.state.shape, result.addedId);
+          const norm = (s: Shape): string =>
+            JSON.stringify(
+              [...s.rings]
+                .map((r) => ({ id: r.id, kind: r.kind, parent: r.parentRingId ?? null }))
+                .sort((x, y) => x.id.localeCompare(y.id)),
+            );
+          expect(norm(undone)).toBe(norm(shape));
+        },
+      ),
+      cfg6,
+    );
+  });
+
+  it('anchor series stays strictly ascending & duplicate-free under insert/remove and round-trips', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.oneof(
+            fc.record({ op: fc.constant('insert' as const), value: fc.integer({ min: -30, max: 30 }) }),
+            fc.record({ op: fc.constant('remove' as const), sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }) }),
+          ),
+          { minLength: 1, maxLength: 30 },
+        ),
+        (ops) => {
+          let anchors: readonly number[] = [];
+          for (const op of ops) {
+            if (op.op === 'insert') {
+              anchors = insertAnchor(anchors, op.value);
+            } else {
+              const idx = anchors.length === 0 ? -1 : Math.min(anchors.length - 1, Math.floor(op.sel * anchors.length));
+              anchors = removeAnchorAt(anchors, idx);
+            }
+            // Invariant after EVERY op: strictly ascending (=> sorted + unique).
+            expect(anchorsAscendingUnique(anchors)).toBe(true);
+            // save → load is the identity on the anchor series.
+            expect(JSON.parse(JSON.stringify(anchors))).toEqual(anchors);
+          }
+          // Inserting a value already present is a no-op (set semantics).
+          if (anchors.length > 0) {
+            const existing = anchors[0];
+            if (existing !== undefined) {
+              expect(insertAnchor(anchors, existing)).toEqual(anchors);
+            }
+          }
+        },
+      ),
+      cfg6,
+    );
+  });
+
+  it('stateful: interleaved add / delete / nudge / anchor-insert / anchor-remove / save-load keeps the full bundle', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand6Arb(), { minLength: 5, maxLength: shape.rings.length + 14 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: GrowState = { shape, store, nextId: 0, anchors: [] };
+          assertGrowBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-22003'))).toEqual(
+              state.shape,
+            );
+
+            switch (cmd.tag) {
+              case 'add-hole': {
+                const leafTerritories = state.shape.rings.filter(
+                  (r) => r.kind === RING_KIND.Territory && isLeafRing(state.shape, r.id),
+                );
+                if (leafTerritories.length === 0) break;
+                const i = Math.min(
+                  leafTerritories.length - 1,
+                  Math.floor(cmd.sel * leafTerritories.length),
+                );
+                const target = leafTerritories[i];
+                if (target === undefined) break;
+                const before = state.shape.rings.length;
+                const r = addHoleToLeafTerritory(state, target.id);
+                if (r === undefined) break;
+                state = r.state;
+                expect(state.shape.rings.length).toBe(before + 1);
+                assertGrowBundle(state);
+                break;
+              }
+              case 'add-enclave': {
+                const leafHoles = state.shape.rings.filter(
+                  (r) => r.kind === RING_KIND.Hole && isLeafRing(state.shape, r.id),
+                );
+                if (leafHoles.length === 0) break;
+                const i = Math.min(leafHoles.length - 1, Math.floor(cmd.sel * leafHoles.length));
+                const target = leafHoles[i];
+                if (target === undefined) break;
+                const before = state.shape.rings.length;
+                const r = addEnclaveToLeafHole(state, target.id);
+                if (r === undefined) break;
+                state = r.state;
+                expect(state.shape.rings.length).toBe(before + 1);
+                assertGrowBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.shape.rings.length;
+                state = { ...state, shape: deleteRingAndReorganize(state.shape, targetId) };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertGrowBundle(state);
+                break;
+              }
+              case 'nudge-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const beforeStore = state.store;
+                const moved = translateAnySubtree(
+                  { shape: state.shape, store: state.store },
+                  targetId,
+                  cmd.dLon,
+                  cmd.dLat,
+                );
+                state = { ...state, store: moved };
+                assertGrowBundle(state);
+                // op∘inverse: nudge back restores prior coordinates (tight epsilon).
+                const back = translateAnySubtree(
+                  { shape: state.shape, store: state.store },
+                  targetId,
+                  -cmd.dLon,
+                  -cmd.dLat,
+                );
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 9);
+                }
+                break;
+              }
+              case 'anchor-insert': {
+                const before = state.anchors;
+                state = { ...state, anchors: insertAnchor(state.anchors, cmd.value) };
+                // Insert is idempotent for an already-present value.
+                if (before.includes(cmd.value)) expect(state.anchors).toEqual(before);
+                assertGrowBundle(state);
+                break;
+              }
+              case 'anchor-remove': {
+                const idx =
+                  state.anchors.length === 0
+                    ? -1
+                    : Math.min(
+                        state.anchors.length - 1,
+                        Math.floor(cmd.sel * state.anchors.length),
+                      );
+                state = { ...state, anchors: removeAnchorAt(state.anchors, idx) };
+                assertGrowBundle(state);
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadGrowState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.anchors).toEqual(state.anchors);
+                state = reloaded;
+                assertGrowBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+          }
+        },
+      ),
+      cfg6,
+    );
+  });
+});

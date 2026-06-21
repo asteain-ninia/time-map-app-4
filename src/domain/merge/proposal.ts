@@ -49,7 +49,7 @@ import {
   type Ring,
   type Shape,
 } from '../ring';
-import { pointInPolygon, POINT_LOCATION } from '../geometry/index';
+import { ringStrictlyContains } from '../geometry/index';
 import { createVertex, getVertex, type Vertex, type VertexStore } from '../vertex';
 import type { VertexRemap } from '../shared-vertex';
 import { type WorldCoordinate } from '../coordinate';
@@ -212,16 +212,25 @@ function ringAreaAbs(ring: GeoRing): number {
 }
 
 /**
- * `inner` の代表点 (連続フレーム済み) が `outer` (連続フレーム済み) の厳密内部にあるか。
+ * `inner` リング (連続フレーム済み) が `outer` リング (連続フレーム済み) の厳密内部に
+ * あるか。共有 {@link ringStrictlyContains} 述語へ委譲する (単一の真実源, U06 の穴↔外環
+ * 不変条件・U26 split 再親付け (knife/proposal)・直轄領昇格 (promotion/direct-domain) と
+ * 同一の境界堅牢な入れ子判定)。
  *
  * 両オペランドは {@link reparentByContainment} で事前に共通アンカーへ揃えた連続フレーム
  * 座標であることを前提とする (R3 seam alignment / audit root cause A)。整列は包含判定の
- * 外側に巻き上げ済み — ここでは pointInPolygon のみを走らせる (アルゴリズム再発明禁止)。
+ * 外側へ巻き上げ済みで、ringStrictlyContains は整列済みリングをそのまま受け付ける。
+ *
+ * bughunt2: 旧実装は単一頂点 (inner[0]) プローブだった。量子化後、ドーナツ状 union の穴
+ * リング先頭頂点はシーム接合や共有辺で外環境界上へ落ちやすく、そこでは pointInPolygon が
+ * Boundary (Inside ではない) を返すため、本当に入れ子の穴を「非包含」と誤判定していた。
+ * 誤判定すると穴が最上位領土へ降格され (proposal.ts), 交互不変条件が崩れて結合が
+ * 'hierarchy' / MSG_MERGE_INTERNAL で不当に拒否されていた。境界堅牢な述語は
+ * vertex-outside なし + edge-stretch-outside なし + 内部実体ありを判定するため、境界上の
+ * シーム頂点に騙されない。
  */
 function alignedRingContains(outer: GeoRing, inner: GeoRing): boolean {
-  const probe = inner[0];
-  if (probe === undefined) return false;
-  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
+  return ringStrictlyContains(outer, inner);
 }
 
 /**
@@ -816,3 +825,10 @@ export { asFeatureId, asRingId, asVertexId };
 export { MERGE_REJECT };
 export type { MergeRejectKind };
 export type { LeafFeature };
+
+// テスト専用エクスポート: reparentByContainment の境界堅牢な包含判定 (bughunt2) を、
+// boolean-op による頂点再並びに依存せず決定的に検証するため、整列済みリングから直接
+// Shape を組む段だけを公開する (sibling の promotion/direct-domain が buildDirectDomainShape
+// を公開しているのと同じ意図)。
+export { buildShapeFromMultiPolygon as __test_buildShapeFromMultiPolygon };
+export type { BuiltShape as __TestBuiltShape };
