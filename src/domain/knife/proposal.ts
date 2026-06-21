@@ -22,6 +22,7 @@
 import type { BasicAttributes, ColorInfo } from '../attributes';
 import { type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from '../geometry/index';
+import { normalizeCoordinate } from '../geo/index';
 import type { GeoMultiPolygon } from '../geometry/types';
 import {
   createLeafFeature,
@@ -104,8 +105,18 @@ interface BuiltShape {
   readonly byCoord: ReadonlyMap<string, VertexId>;
 }
 
+/**
+ * 量子化座標のキー。経度は representative 分岐 [-180,180) に畳んでから量子化する
+ * (FR-95): split-geometry は target 外環の参照経度へ全入力を anchor して連続フレーム
+ * (>180° を取り得る) で boolean 演算するため、シームを跨ぐ辺は boolean 出力上 190° の
+ * ような連続値になり得る (split-geometry.ts targetReferenceLon / anchorMultiPolygon)。
+ * 一方、旧頂点ストアは representative (例 −170°) で格納されている。periodic に同一の点
+ * (190° と −170°) が同じキーに落ちるよう先に正規化することで、旧→新対応 (buildRemap)
+ * と頂点重複集約が world-turn ズレで取りこぼされないようにする (merge/proposal.ts
+ * coordKey と単一真実源)。旧頂点は既に representative なので正規化は恒等。
+ */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(c);
+  const q = quantizeCoordinate(normalizeCoordinate(c));
   return `${q.lon},${q.lat}`;
 }
 
@@ -177,7 +188,12 @@ function buildShapeFromSide(side: SplitSide, ids: SplitIdPorts, pool: VertexPool
         // First time this physical coordinate is seen on EITHER side: mint once.
         vid = ids.nextVertexId();
         pool.byKey.set(key, vid);
-        pool.vertices.push(createVertex(vid, quantizeCoordinate(c)));
+        // Store the REPRESENTATIVE ([-180,180)) coordinate, not the continuous
+        // anchored value the boolean op emits (可能な 190° 等): a seam-crossing new
+        // vertex must persist on the SAME branch as every other feature's
+        // representative so save→load/整合性 concat and FR-95 共有頂点継続 align
+        // (merge/proposal.ts と単一真実源).
+        pool.vertices.push(createVertex(vid, quantizeCoordinate(normalizeCoordinate(c))));
       }
       byCoord.set(key, vid);
       out.push(vid);
