@@ -4122,3 +4122,403 @@ describe('seed=31002 — coupled geometry + anchor-series stateful model (invari
     );
   });
 });
+
+// ===========================================================================
+// 13. SEED=31003 EXTENSION — NEW exploration (bug-hunt round 3, disjoint from the
+//     1000-31002 band). NEW command set / generators / metamorphic relations that
+//     no earlier seed combines.
+//
+// Earlier seeds drive the split inheritance side either FIXED, by a coin flip, or
+// (in seed=21003 §M2) by `smallerSide` in ISOLATION on a single op. They NEVER:
+//   - chain a smallerSide-DRIVEN split into a merge-BACK (FR-93 preview → op →
+//     inverse-op), so a defect wiring `smallerSide` → inheritance choice that only
+//     shows up when the chosen inheritor is later fed to a merge would slip through;
+//   - run a stateful model whose SPLIT cut is a random DIAGONAL (not axis-aligned)
+//     AND whose inheritance side is `smallerSide`-driven, with the full world
+//     invariant battery + a REAL U14 persistence round-trip + an undo stack after
+//     EVERY op (seed=31001/31002 stateful cuts were vertical or H/V only);
+//   - assert the anchor-series op∘inverse-op relation `setEnd(x) ∘ setEnd(null)`
+//     and `changeStart(move) ∘ changeStart(back)` restore the original (id,start)
+//     projection (seed=21002/31002 only checked insert∘delete and forward 昇順).
+//
+// This block opens those three:
+//
+//   (Y1) smallerSide-driven split → merge-back (op ∘ inverse-op): cut a holey leaf,
+//        choose the inheritor = `smallerSide(exec)`, assert the inheritor's resolved
+//        filled area ≤ the new feature's (FR-93小さい方), then merge the two products
+//        back and assert the merged filled area == the original (no area lost across
+//        the smallerSide → split → merge round-trip). Both products' shapes must
+//        alternate + cite only finite, existing vertices, and the result leaf too.
+//
+//   (Y2) DIAGONAL-cut + smallerSide stateful model: SPLIT draws a random diagonal
+//        line across the leaf bbox and inherits the smaller side; MERGE folds two
+//        leaves; UNDO pops the stack. After EVERY applied op the whole-world battery
+//        runs (alternation / valid MP / finite / dangling-free / unique ids), a REAL
+//        serialize→parseManifest→deserialize→projectsEqual round-trip runs, op purity
+//        is asserted (the prior world value is untouched), and undo restores the exact
+//        prior world (undo ∘ op == identity).
+//
+//   (Y3) anchor-series op ∘ inverse-op: for a live series, `setEnd(entry, x)` then
+//        `setEnd(entry, null)` restores the original (id,start,end) projection; and a
+//        `changeStart(entry, y)` to a fresh non-colliding year followed by
+//        `changeStart(entry, original)` restores the original start SET. Plus the
+//        standard 昇順・非重複 + isValidSeries + unique-id battery after each step.
+//
+// Determinism: seed = 31003, numRuns large (per task). PERMANENT asset — any
+// reproduced counterexample is a real domain defect, never to be masked here.
+// ===========================================================================
+
+const SEED_31003 = 31003;
+const RUNS_31003 = 500;
+
+// --- (Y1) smallerSide-driven split → merge-back (op ∘ inverse-op) -------------
+
+describe('seed=31003 — smallerSide-driven split then merge-back conserves area (FR-93 op∘inverse-op)', () => {
+  it('inheritor = smallerSide; its filled area ≤ new feature; merge-back recovers the original area', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const exec = executeSplit(feature, store, line);
+        if (exec === undefined) return; // not splittable here → vacuous.
+
+        // FR-93: the UI seeds the inheritance side from the 小さい方 preview.
+        const smaller = smallerSide(exec); // 'a' | 'b'
+        const choice = createInheritanceChoice(
+          smaller === 'a' ? INHERITANCE_SIDE.A : INHERITANCE_SIDE.B,
+        );
+
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: exec.sideA, sideB: exec.sideB, edgeCuts: exec.edgeCuts },
+          choice,
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        // The inheritor always keeps the original feature id, whichever side won.
+        expect(proposal.inheritorFeatureId).toBe(feature.id);
+        const inheritor = inheritorFeature(feature, proposal);
+        const newLeaf = proposal.newFeature;
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+        // Both products alternate + cite only finite, existing vertices.
+        for (const leaf of [inheritor, newLeaf]) {
+          expect(isAlternationValid(leaf.shape)).toBe(true);
+          for (const ring of leaf.shape.rings) {
+            for (const vid of ring.vertexIds) {
+              const v = postStore.byId.get(vid);
+              expect(v).toBeDefined();
+              if (v) {
+                expect(Number.isFinite(v.coordinate.lon)).toBe(true);
+                expect(Number.isFinite(v.coordinate.lat)).toBe(true);
+              }
+            }
+          }
+        }
+
+        // FR-93小さい方: the kept (inheritor) side's filled area ≤ the new side's.
+        const keptArea = leafFilledArea(inheritor, postStore);
+        const newArea = leafFilledArea(newLeaf, postStore);
+        // smallerSide compares areaKm2; the resolved filled areas honor the same
+        // ordering (allow a tiny quantization slack so an exact tie never flips).
+        expect(keptArea).toBeLessThanOrEqual(newArea + Math.max(newArea, keptArea) * 1e-6 + 1e-9);
+
+        // op ∘ inverse-op: merge the two products back into one leaf and assert the
+        // recovered filled area equals the ORIGINAL leaf's filled area (no loss).
+        const beforeArea = leafFilledArea(feature, store);
+        const mergeRes = buildMergeProposal({
+          features: [inheritor, newLeaf],
+          vertices: postStore,
+          targetIds: [inheritor.id, newLeaf.id],
+          atTime: 50,
+          parentDecision: parentNone,
+          propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+        if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+        const mp = mergeRes.proposal;
+        const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+        expect(result?.kind).toBe('leaf');
+        if (!result || result.kind !== 'leaf') return;
+        expect(isAlternationValid(result.shape)).toBe(true);
+
+        const mergedArea = leafFilledArea(result, mp.nextVertices);
+        if (beforeArea > 0) {
+          expect(Math.abs(mergedArea - beforeArea) / beforeArea).toBeLessThan(1e-3);
+        }
+        // Result leaf cites only finite, existing vertices.
+        for (const ring of result.shape.rings) {
+          for (const vid of ring.vertexIds) {
+            const v = mp.nextVertices.byId.get(vid);
+            expect(v).toBeDefined();
+            if (v) {
+              expect(Number.isFinite(v.coordinate.lon)).toBe(true);
+              expect(Number.isFinite(v.coordinate.lat)).toBe(true);
+            }
+          }
+        }
+        // Period ordering preserved.
+        expect(result.attributes.startYear).toBeLessThanOrEqual(result.attributes.endYear);
+      }),
+      { seed: SEED_31003, numRuns: RUNS_31003 },
+    );
+  });
+});
+
+// --- (Y2) diagonal-cut + smallerSide stateful model -------------------------
+
+type Cmd31003 =
+  | {
+      readonly t: 'split';
+      readonly leafPick: number;
+      readonly t0: number;
+      readonly t1: number;
+    }
+  | { readonly t: 'merge'; readonly aPick: number; readonly bPick: number }
+  | { readonly t: 'undo' };
+
+const cmd31003Arb: fc.Arbitrary<Cmd31003> = fc.oneof(
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    t0: fc.double({ min: 0.15, max: 0.85, noNaN: true }),
+    t1: fc.double({ min: 0.15, max: 0.85, noNaN: true }),
+  }),
+  fc.record({
+    t: fc.constant<'merge'>('merge'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+  }),
+  fc.constant<Cmd31003>({ t: 'undo' }),
+);
+
+/**
+ * Split a chosen leaf with a random DIAGONAL line (enters left, exits right,
+ * piercing offsets t0/t1 on the two vertical bbox edges), inheriting the
+ * smallerSide. Distinct from applySplit (vertical) and applySplitOriented (H/V).
+ */
+function applySplitDiagonal(
+  world: World,
+  cmd: { leafPick: number; t0: number; t1: number },
+): World {
+  if (world.features.length === 0) return world;
+  const idx = cmd.leafPick % world.features.length;
+  const leaf = world.features[idx]!;
+  const bb = leafBbox(leaf, world.store);
+  if (bb === undefined) return world;
+  const spanX = bb.maxX - bb.minX;
+  const spanY = bb.maxY - bb.minY;
+  if (spanX <= 0 || spanY <= 0) return world;
+  const padX = spanX * 0.5 + 10;
+  // A line from outside-left to outside-right, crossing the leaf diagonally.
+  const line = createOpenKnifeLine([
+    createCoordinate(bb.minX - padX, bb.minY + spanY * cmd.t0),
+    createCoordinate(bb.maxX + padX, bb.minY + spanY * cmd.t1),
+  ]);
+
+  const check = checkSplittable(leaf, world.store, line);
+  const exec = executeSplit(leaf, world.store, line);
+  if (check.status !== SPLIT_CHECK_STATUS.Splittable) {
+    expect(exec).toBeUndefined();
+    return world;
+  }
+  expect(exec).toBeDefined();
+  if (exec === undefined) return world;
+  // Determinism: re-validation reproduces the sides exactly (op == op).
+  expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(check.sideA.area));
+  expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(check.sideB.area));
+
+  // op ∘ inverse-op: union of the two sides ≈ the pre-split filled area.
+  const beforeArea = leafFilledArea(leaf, world.store);
+  const reunited = union(check.sideA.area, check.sideB.area);
+  expect(isOk(reunited)).toBe(true);
+  if (isOk(reunited) && beforeArea > 0) {
+    const reArea = mpFilledArea(reunited.result);
+    expect(Math.abs(reArea - beforeArea) / beforeArea).toBeLessThan(1e-3);
+  }
+
+  const smaller = smallerSide(exec);
+  const proposal = assembleSplitProposal({
+    target: leaf,
+    store: world.store.byId,
+    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoice(smaller === 'a' ? INHERITANCE_SIDE.A : INHERITANCE_SIDE.B),
+    nonInherited: { attributes: ATTRS, color: COLOR },
+    ids: idPorts(),
+  });
+  expect(proposal.inheritorFeatureId).toBe(leaf.id);
+  const inheritor = withLeafShape(leaf, proposal.inheritorShape);
+  const newLeaf = proposal.newFeature;
+
+  const nextFeatures = world.features.slice();
+  nextFeatures[idx] = inheritor;
+  nextFeatures.push(newLeaf);
+  const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
+  return { features: nextFeatures, store: nextStore };
+}
+
+describe('seed=31003 — diagonal split (smallerSide) + merge + undo: invariants + real round-trip', () => {
+  it('random diagonal-cut/merge chains keep every world invariant, round-trip, and undo restores exactly', () => {
+    fc.assert(
+      fc.property(fc.array(cmd31003Arb, { minLength: 1, maxLength: 16 }), (cmds) => {
+        let world = initialWorld();
+        const stack: World[] = [];
+        checkWorldInvariants(world);
+
+        for (const cmd of cmds) {
+          if (cmd.t === 'undo') {
+            const prior = stack.pop();
+            if (prior === undefined) continue;
+            // undo ∘ op == identity (the popped world is the exact prior world).
+            world = prior;
+            checkWorldInvariants(world);
+            expect(world.features.length).toBeGreaterThanOrEqual(1);
+            continue;
+          }
+
+          // Snapshot BEFORE the op to assert op purity + power the undo stack.
+          const before = world;
+          const beforeCopy: World = {
+            features: before.features.slice(),
+            store: { byId: new Map(before.store.byId) },
+          };
+          const next =
+            cmd.t === 'split' ? applySplitDiagonal(world, cmd) : applyMerge(world, cmd);
+          // Op purity: the prior world value must be untouched (undo correctness).
+          expect(worldsIdentical(before, beforeCopy)).toBe(true);
+          if (next !== world) stack.push(beforeCopy);
+          world = next;
+
+          checkWorldInvariants(world);
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+
+          // REAL persistence round-trip after EVERY op (serialize → parse → deser).
+          const project = worldToProject(world);
+          const reloaded = saveThenLoad(project);
+          expect(reloaded).toBeDefined();
+          if (reloaded !== undefined) {
+            expect(projectsEqual(project, reloaded)).toBe(true);
+          }
+        }
+      }),
+      { seed: SEED_31003, numRuns: RUNS_31003 },
+    );
+  });
+});
+
+// --- (Y3) anchor-series op ∘ inverse-op (setEnd / changeStart round-trips) ----
+
+describe('seed=31003 — anchor series op∘inverse-op: setEnd / changeStart round-trips restore the projection', () => {
+  it('setEnd(x) ∘ setEnd(null) restores (id,start,end); changeStart(move) ∘ changeStart(back) restores the start set', () => {
+    const cal = getCalendar('gregorian');
+    const emptySnap = createAnchorSnapshot([], createVertexStore([]));
+
+    const projOf = (series: AnchorSeries) =>
+      series.entries.map((e) => ({ id: e.anchor.id, start: e.start, end: e.end }));
+    const startSetOf = (series: AnchorSeries) =>
+      series.entries.map((e) => (e.start as { year: number }).year).sort((a, b) => a - b);
+    const assertSeries = (series: AnchorSeries) => {
+      expect(series.entries.length).toBeGreaterThanOrEqual(1); // INV-5.
+      expect(isValidSeries(series, cal)).toBe(true);
+      const starts = series.entries.map((e) => (e.start as { year: number }).year);
+      for (let i = 1; i < starts.length; i += 1) {
+        expect(starts[i]! > starts[i - 1]!).toBe(true); // 昇順・非重複.
+      }
+      const ids = series.entries.map((e) => e.anchor.id);
+      expect(new Set(ids).size).toBe(ids.length); // unique anchor ids.
+    };
+
+    fc.assert(
+      fc.property(
+        // A set of distinct ascending base years.
+        fc.uniqueArray(fc.integer({ min: -300, max: 300 }), { minLength: 1, maxLength: 6 }),
+        fc.nat({ max: 1_000_000 }), // which entry to operate on.
+        fc.integer({ min: 1, max: 200 }), // a positive end offset to set.
+        (baseYears, pick, endOff) => {
+          const sorted = [...baseYears].sort((a, b) => a - b);
+          const series: AnchorSeries = {
+            entries: sorted.map((y) =>
+              createAnchorEntry(
+                createAnchor(asAnchorId(`bh31x-an-${counter++}`), emptySnap),
+                timePointYear(y),
+                null,
+              ),
+            ),
+          };
+          assertSeries(series);
+          const beforeProj = JSON.stringify(projOf(series));
+          const beforeStartSet = startSetOf(series);
+
+          // --- setEnd(x) ∘ setEnd(null) round-trip ---
+          // All base entries start open-ended (end === null). Pick one, give it a
+          // bounded end strictly before the NEXT anchor's start (so setEnd is
+          // accepted without auto-reorg shifting a neighbor), then clear it again.
+          const idx = pick % series.entries.length;
+          const target = series.entries[idx]!;
+          const targetStartYear = (target.start as { year: number }).year;
+          const nextEntry = series.entries[idx + 1];
+          const ceiling =
+            nextEntry === undefined
+              ? targetStartYear + endOff + 1
+              : (nextEntry.start as { year: number }).year;
+          // Choose an end strictly in (start, ceiling) when room exists.
+          if (ceiling - targetStartYear >= 2) {
+            const endYear = targetStartYear + Math.min(endOff, ceiling - targetStartYear - 1);
+            const set = setEnd(series, target.anchor.id, timePointYear(endYear), cal);
+            if (set.ok) {
+              assertSeries(set.series);
+              const cleared = setEnd(set.series, target.anchor.id, null, cal);
+              expect(cleared.ok).toBe(true);
+              if (cleared.ok) {
+                assertSeries(cleared.series);
+                // op ∘ inverse-op: the (id,start,end) projection is restored.
+                expect(JSON.stringify(projOf(cleared.series))).toBe(beforeProj);
+              }
+            }
+          }
+
+          // --- changeStart(move) ∘ changeStart(back) round-trip ---
+          // Move the target start to a fresh year well above every existing start
+          // (no collision → it lands as a new top), then move it back to its
+          // original year (also collision-free → original start set recovered).
+          const freshYear = (sorted[sorted.length - 1] ?? 0) + 500 + (pick % 100);
+          const moved = changeStart(series, target.anchor.id, timePointYear(freshYear), cal);
+          if (moved.ok) {
+            assertSeries(moved.series);
+            // The moved anchor's start is now the fresh year.
+            const movedEntry = moved.series.entries.find((e) => e.anchor.id === target.anchor.id);
+            expect(movedEntry).toBeDefined();
+            if (movedEntry) {
+              expect((movedEntry.start as { year: number }).year).toBe(freshYear);
+            }
+            const back = changeStart(
+              moved.series,
+              target.anchor.id,
+              timePointYear(targetStartYear),
+              cal,
+            );
+            expect(back.ok).toBe(true);
+            if (back.ok) {
+              assertSeries(back.series);
+              // op ∘ inverse-op on the start SET (ids preserved; ordering restored).
+              expect(startSetOf(back.series)).toEqual(beforeStartSet);
+              // The target anchor id survived the round-trip with its original start.
+              const restored = back.series.entries.find((e) => e.anchor.id === target.anchor.id);
+              expect(restored).toBeDefined();
+              if (restored) {
+                expect((restored.start as { year: number }).year).toBe(targetStartYear);
+              }
+            }
+          }
+        },
+      ),
+      { seed: SEED_31003, numRuns: RUNS_31003 },
+    );
+  });
+});

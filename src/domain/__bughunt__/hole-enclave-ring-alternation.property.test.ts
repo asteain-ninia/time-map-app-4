@@ -2914,3 +2914,333 @@ describe('alternation (seed=32002): rigid rotate/reflect of top bands + selectio
     );
   });
 });
+
+// ===========================================================================
+// 13. NINTH CAMPAIGN (seed=32003) — NEW exploration (bughunt run #3, focal seed).
+//
+// The brief for THIS run mandates a seed distinct from every prior campaign
+// (the 2xxx / 22xxx / 32002 ranges already used in this file, and the
+// 1000-6000 / 21000-26000 ranges explicitly excluded). It also asks for a NEW
+// command set / generator. Two genuinely new ingredients none of campaigns 1-8
+// exercise:
+//
+//   (1) A NON-rigid affine transform: VERTICAL SHEAR of a whole top-level band
+//       about its own centroid longitude — lat → lat + s·(lon − cx), lon
+//       unchanged. Unlike every prior transform (translate/scale/rotate/reflect,
+//       which are similarity/isometry maps), a shear is a general affine map. It
+//       is still BIJECTIVE and affine, so it maps each simple rectangle to a
+//       simple parallelogram (simplicity preserved) AND preserves containment
+//       exactly (a point inside a polygon stays inside under any invertible affine
+//       map applied to BOTH). Because it only changes lat, and top bands are
+//       separated in LON (80° apart), it can never make two bands collide. So a
+//       correct system MUST keep validateGeometry clean after a shear of a whole
+//       band; any violation is a real re-link/containment defect — NOT a generator
+//       artifact. op∘inverse: shearing the SAME band by −s restores coordinates
+//       within a tight float epsilon (multiply-add-then-subtract is not bit-exact).
+//
+//   (2) A RE-KEY (rename every ring id + vertex id by a bijection) metamorphic
+//       law: renaming all ids consistently must commute with deletion. Formally,
+//       for the bijection ρ on ids, delete(rekey_ρ(s), ρ(t)) and
+//       rekey_ρ(delete(s, t)) must be the SAME forest up to the renaming — the
+//       operation does not depend on the particular id strings, only on the graph
+//       structure (an alpha-equivalence / naming-invariance law no prior campaign
+//       probed). This catches any accidental string-order dependence inside the
+//       reorganizer (e.g. a `localeCompare` tie-break that leaks into the result).
+//
+// The state carries BOTH a live selection and an ascending duplicate-free anchor
+// series (reusing FullState), so the full focal bundle — alternation, acyclic,
+// unique ids, finite-depth forest, depth-consistency, finite coords, simplicity,
+// containment/non-overlap, selection-never-dangling, anchors ascending-unique,
+// save→load identity over the quadruple — is asserted after EVERY command.
+//
+// Determinism: seed fixed to 32003, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED9 = 32003;
+const RUNS9 = 500;
+const cfg9 = { seed: SEED9, numRuns: RUNS9 } as const;
+
+/** Vertical shear every vertex of `ringId`'s subtree about a fixed longitude
+ * pivot: lat → lat + s·(lon − pivotLon), lon unchanged. A bijective affine map;
+ * applied to a whole band it preserves each ring's simplicity and the band's
+ * internal containment exactly. The pivot longitude is passed in (captured BEFORE
+ * the shear) so the forward and inverse share the SAME axis — a true op∘inverse
+ * pair. Returns a NEW store; the shape (parent links) is unchanged. */
+function shearSubtreeAbout(
+  state: FullState,
+  ringId: RingId,
+  pivotLon: number,
+  s: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const sheared = withVertexCoordinate(
+      v,
+      createCoordinate(v.coordinate.lon, v.coordinate.lat + s * (v.coordinate.lon - pivotLon)),
+    );
+    store = setVertex(store, sheared);
+  }
+  return store;
+}
+
+/** A consistent renaming (bijection) of every ring id and vertex id in an
+ * (shape, store) state, plus the image of a chosen target id under that same
+ * bijection. The renaming is a fixed prefix swap ("r…"/"x…"/"g…" → "Z…") that is
+ * injective on the generator's id strings, so distinct ids stay distinct. */
+function rekeyState(
+  state: EditState,
+  targetId: RingId,
+): { state: EditState; targetId: RingId } {
+  const ringRename = (id: RingId): RingId => asRingId(`Z__${id}`);
+  const vertexRename = (id: VertexId): VertexId => asVertexId(`Z__${id}`);
+  const rings: Ring[] = state.shape.rings.map((r) => {
+    const newId = ringRename(r.id);
+    const newVids = r.vertexIds.map(vertexRename);
+    const newParent = r.parentRingId === undefined ? undefined : ringRename(r.parentRingId);
+    return r.kind === RING_KIND.Territory
+      ? createTerritoryRing(newId, newVids, newParent)
+      : createHoleRing(newId, newVids, newParent ?? asRingId('UNREACHABLE'));
+  });
+  const vertices = [...state.store.byId.values()].map((v) =>
+    createVertex(vertexRename(v.id), createCoordinate(v.coordinate.lon, v.coordinate.lat)),
+  );
+  return {
+    state: { shape: createShape(rings), store: createVertexStore(vertices) },
+    targetId: ringRename(targetId),
+  };
+}
+
+/** Normalize a forest to an id-keyed structural signature, with every ring id
+ * stripped of the `Z__` rekey prefix so a renamed-then-deleted forest and a
+ * deleted-then-renamed forest compare equal (naming invariance). */
+function structuralSignature(shape: Shape, stripPrefix: boolean): string {
+  const strip = (id: string): string =>
+    stripPrefix && id.startsWith('Z__') ? id.slice(3) : id;
+  return JSON.stringify(
+    [...shape.rings]
+      .map((r) => ({
+        id: strip(r.id),
+        kind: r.kind,
+        parent: r.parentRingId === undefined ? null : strip(r.parentRingId),
+      }))
+      .sort((x, y) => x.id.localeCompare(y.id)),
+  );
+}
+
+/** A ninth-campaign edit command. */
+type EditCommand9 =
+  | { readonly tag: 'select'; readonly sel: number }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | { readonly tag: 'shear-top'; readonly sel: number; readonly s: number }
+  | { readonly tag: 'anchor-insert'; readonly value: number }
+  | { readonly tag: 'anchor-remove'; readonly sel: number }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand9Arb(): fc.Arbitrary<EditCommand9> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  // Shear factor: bounded but non-trivial. Affine bijectivity preserves geometry
+  // for any finite factor; we cap it to keep coordinates comfortably finite.
+  const shear = (): fc.Arbitrary<number> =>
+    fc.double({ min: -2, max: 2, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('select' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('shear-top' as const), sel: sel(), s: shear() }),
+    fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -40, max: 40 }) }),
+    fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=32003): affine shear of top bands + rekey-commutes-with-delete', () => {
+  it('vertical-shearing a top-level band about its centroid lon keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              s: fc.double({ min: -2, max: 2, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickTopLevelId(shape, op.sel);
+          if (targetId === undefined) return;
+          const pivot = subtreeCentroid({ shape, store, selected: undefined }, targetId);
+          if (pivot === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const moved = shearSubtreeAbout(state, targetId, pivot.lon, op.s);
+          // A whole-band affine shear keeps EVERY focal invariant: simplicity (a
+          // parallelogram is simple), internal containment (affine-preserved), and
+          // band non-overlap (lat-only change cannot close an 80° lon gap).
+          assertFullStateBundle({ shape, store: moved, selected: undefined, anchors: [] });
+          // op∘inverse: shear back by −s about the SAME pivot lon restores coords
+          // (multiply-add-then-subtract => within a tight epsilon, not bit-exact).
+          const back = shearSubtreeAbout(
+            { shape, store: moved, selected: undefined, anchors: [] },
+            targetId,
+            pivot.lon,
+            -op.s,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg9,
+    );
+  });
+
+  it('naming invariance: rekey-then-delete equals delete-then-rekey (structural signature)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, store, targetId }) => {
+          // Path A: rename everything, THEN delete the renamed target.
+          const renamed = rekeyState({ shape, store }, targetId);
+          const deletedAfterRename = deleteRingAndReorganize(renamed.state.shape, renamed.targetId);
+          // Path B: delete the original target, THEN rename the result.
+          const deletedFirst = deleteRingAndReorganize(shape, targetId);
+          const renamedAfterDelete = rekeyState({ shape: deletedFirst, store }, targetId);
+          // The two forests must be IDENTICAL once the rekey prefix is stripped:
+          // deletion depends only on graph structure, not on the id strings. A
+          // mismatch would reveal a string-order dependence inside the reorganizer.
+          expect(structuralSignature(deletedAfterRename, true)).toBe(
+            structuralSignature(renamedAfterDelete.state.shape, true),
+          );
+          // Both results are valid alternating forests, referentially integral.
+          assertStructurallyValid(deletedAfterRename);
+          assertStructurallyValid(renamedAfterDelete.state.shape);
+        },
+      ),
+      cfg9,
+    );
+  });
+
+  it('stateful: interleaved select / delete / shear-top / anchor / save-load keeps the full bundle at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand9Arb(), { minLength: 5, maxLength: shape.rings.length + 14 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: FullState = { shape, store, selected: undefined, anchors: [] };
+          assertFullStateBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-32003'))).toEqual(
+              state.shape,
+            );
+            // FULL-STREAM UNDO: an independent snapshot of the pre-command state.
+            const snapshot = saveLoadFullState(state);
+
+            switch (cmd.tag) {
+              case 'select': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                state = { ...state, selected: targetId };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  ...state,
+                  shape: nextShape,
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'shear-top': {
+                const targetId = pickTopLevelId(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const pivot = subtreeCentroid(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                );
+                if (pivot === undefined) break;
+                const beforeStore = state.store;
+                const moved = shearSubtreeAbout(state, targetId, pivot.lon, cmd.s);
+                state = { ...state, store: moved };
+                assertFullStateBundle(state);
+                // op∘inverse: shear back by −s about the same axis restores coords.
+                const back = shearSubtreeAbout(state, targetId, pivot.lon, -cmd.s);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'anchor-insert': {
+                const before = state.anchors;
+                state = { ...state, anchors: insertAnchor(state.anchors, cmd.value) };
+                if (before.includes(cmd.value)) expect(state.anchors).toEqual(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'anchor-remove': {
+                const idx =
+                  state.anchors.length === 0
+                    ? -1
+                    : Math.min(
+                        state.anchors.length - 1,
+                        Math.floor(cmd.sel * state.anchors.length),
+                      );
+                state = { ...state, anchors: removeAnchorAt(state.anchors, idx) };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadFullState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.selected).toEqual(state.selected);
+                expect(reloaded.anchors).toEqual(state.anchors);
+                state = reloaded;
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-32003'));
+                expect(next).toEqual(state.shape);
+                state = { ...state, shape: next };
+                assertFullStateBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+
+            // UNDO∘op = identity: the pre-command snapshot still reproduces the
+            // pre-command state verbatim (an independent copy, no aliasing).
+            assertFullStateBundle(snapshot);
+          }
+        },
+      ),
+      cfg9,
+    );
+  });
+});

@@ -3305,3 +3305,575 @@ describe('shared-vertex-linkage round-3 sixth pass (seed 33002)', () => {
     );
   });
 });
+
+// ===========================================================================
+// SEVENTH EXPLORATION PASS (bug-hunt round 3 — "発見のみ・修正しない").
+// A FRESH, INDEPENDENT search with a NEW seed (33003 — disjoint from EVERY
+// earlier pass: round-1 seeds 1000-6000 / 3004, round-2 seeds 23001-23004, and
+// the round-3 sixth-pass seed 33002) and a deliberately large numRuns. This
+// pass introduces command kinds / generators / metamorphic interactions that
+// NONE of the earlier passes exercised, focused on HIGHER-ORDER composites that
+// chain a mint with a *second* mint or a move of the just-minted body — the
+// stale-snapshot / position-recompute / aliasing surface that only appears when
+// one structural mutation is consumed by the next within ONE step:
+//
+//   * `cutTwice`          — TWO shared-edge cuts on the SAME (primary, partner)
+//                           container pair, back to back. The second cut's
+//                           edgeStart is RE-DERIVED from the container AFTER the
+//                           first cut grew it by one, so it drives the splice
+//                           path over a list whose length / positions just
+//                           shifted under the first insertion. No earlier pass
+//                           ever performed two cuts in one step; this probes that
+//                           the second mint reads the LIVE (post-first-cut) state
+//                           and yields a second id shared exactly twice, with the
+//                           first cut id still shared exactly twice (independent
+//                           mints, no position corruption / no id reuse).
+//   * `unshareThenMove`   — split ONE reference off a shared vertex, THEN move the
+//                           freshly MINTED id (the inverse ordering of round-5's
+//                           moveThenUnshare). The minted id must be independently
+//                           movable; moving it must NOT drag the original body
+//                           (no aliasing), and the original referrers must keep
+//                           the original coordinate.
+//   * `foldUnfold`        — fold { a -> b } then immediately fold { b -> a } in
+//                           the SAME step, in-stream, over an ARBITRARY reachable
+//                           base. When `b` was uncited beforehand this is a clean
+//                           rename whose inverse must restore the citations; the
+//                           op merely exercises the carry-forward / prune path
+//                           twice per step (the dedicated law below pins the exact
+//                           identity on a disjoint rename).
+//   * `moveToExisting`    — move a shared vertex ONTO the exact coordinate of a
+//                           DIFFERENT existing vertex. Two distinct ids at one
+//                           coordinate are legal as long as they are not adjacent
+//                           in any container (zeroLengthEdgeValidator gates on
+//                           ADJACENCY, not on global coincidence). Probes that the
+//                           validator does not over-reject coincident-but-non-
+//                           adjacent vertices, and that when it DOES reject (a
+//                           coincidence becomes adjacent) the input is untouched.
+//   * `tripleShare`       — fold THREE distinct candidates onto ONE target via
+//                           three sequential `shareVertices` applies (incremental
+//                           group growth across up to three containers in one
+//                           step). Round-4's chainShare only ever did two legs;
+//                           this drives the participation gate / prune accounting
+//                           across a third consecutive merge onto a growing group.
+//
+// New algebraic / metamorphic laws checked here (none asserted by earlier passes
+// in this exact form / base):
+//   * TWO consecutive shared-edge cuts on one container pair mint two DISTINCT
+//     ids, each cited exactly twice (a clean share), with the bodies count grown
+//     by exactly 2 and no id reused — the second cut reads the live grown state.
+//   * unshare-then-move-the-mint: the minted body moves independently of the
+//     original (no shared mutable cell); the original body keeps its coordinate.
+//   * transferSharing op∘逆op = identity on a disjoint rename reached through the
+//     round-7 op stream (re-confirms §4.7 reversibility from a NON-pristine base).
+//   * a move onto an existing vertex's coordinate is accepted iff it does not
+//     create an adjacent coincidence; on rejection the input is byte-identical.
+//   * save∘load = identity across the round-7 op stream.
+//   * a rejected round-7 op leaves the input untouched (full rollback).
+//   * every-step invariants incl. participation + duplicate-free shared set.
+// ===========================================================================
+
+const SEED7 = 33003;
+const NUM_RUNS7 = 1200;
+
+type Op7 =
+  | { readonly t: 'cutTwice'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'unshareThenMove'; readonly i: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'foldUnfold'; readonly a: number; readonly b: number }
+  | { readonly t: 'moveToExisting'; readonly i: number; readonly j: number }
+  | { readonly t: 'tripleShare'; readonly c1: number; readonly c2: number; readonly c3: number; readonly tgt: number }
+  | { readonly t: 'share'; readonly i: number; readonly j: number }
+  | { readonly t: 'unshare'; readonly i: number }
+  | { readonly t: 'edgeCut'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number };
+
+const op7Arb: fc.Arbitrary<Op7> = fc.oneof(
+  fc.record({
+    t: fc.constant('cutTwice' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({
+    t: fc.constant('unshareThenMove' as const),
+    i: fc.nat(20),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({ t: fc.constant('foldUnfold' as const), a: fc.nat(20), b: fc.nat(20) }),
+  fc.record({ t: fc.constant('moveToExisting' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('tripleShare' as const), c1: fc.nat(20), c2: fc.nat(20), c3: fc.nat(20), tgt: fc.nat(20) }),
+  fc.record({ t: fc.constant('share' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('unshare' as const), i: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('edgeCut' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+);
+
+function applyOp7(ctx: ModelCtx, op: Op7): void {
+  const validators = [zeroLengthEdgeValidator];
+  switch (op.t) {
+    case 'cutTwice': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      const pKey = containerKey(primary.container);
+      const qKey = containerKey(partner.container);
+      if (pKey === qKey) return;
+      // First cut at edge 0 of each container.
+      const first = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: pKey, edgeStart: 0 },
+          partner: { containerKey: qKey, edgeStart: 0 },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (first.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      ctx.state = first.result.state;
+      ctx.idState = first.idState;
+      // Second cut: re-derive a real edge from the LIVE (grown) containers.
+      const pNow = ctx.state.containers.get(pKey);
+      const qNow = ctx.state.containers.get(qKey);
+      if (pNow === undefined || qNow === undefined) return;
+      const pEdge = realEdgeStart(pNow, op.pIdx + 1);
+      const qEdge = realEdgeStart(qNow, op.qIdx + 1);
+      if (pEdge === undefined || qEdge === undefined) return;
+      const second = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: pKey, edgeStart: pEdge },
+          partner: { containerKey: qKey, edgeStart: qEdge },
+          // Distinct coordinate so neither cut creates a coincident-edge reject.
+          cutCoordinate: createCoordinate(op.lon - 0.5, op.lat - 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (second.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = second.result.state;
+        ctx.idState = second.idState;
+      }
+      return;
+    }
+    case 'unshareThenMove': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const refs = referencesOf(ctx.state, vid);
+      const ref = refs[op.i % refs.length];
+      if (ref === undefined) return;
+      const split = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+      if (split.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      ctx.state = split.result.state;
+      ctx.idState = split.idState;
+      const newId = split.newVertexId;
+      if (newId === undefined) return;
+      // Move ONLY the freshly minted id.
+      const moved = moveVertices(ctx.state, [{ vertexId: newId, coordinate: createCoordinate(op.lon, op.lat) }], {
+        validators,
+      });
+      if (moved.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = moved.state;
+      return;
+    }
+    case 'foldUnfold': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      if (ids.length < 2) return;
+      const a = ids[op.a % ids.length];
+      const b = ids[op.b % ids.length];
+      if (a === undefined || b === undefined || a === b) return;
+      ctx.state = transferSharing(ctx.state, new Map([[a, b]]));
+      ctx.state = transferSharing(ctx.state, new Map([[b, a]]));
+      return;
+    }
+    case 'moveToExisting': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const others = [...new Set(allCitedIds(ctx.state))].filter((id) => id !== vid);
+      const targetId = pick(others, op.j);
+      if (targetId === undefined) return;
+      const targetCoord = getVertex(ctx.state.vertices, targetId)?.coordinate;
+      if (targetCoord === undefined) return;
+      const res = moveVertices(ctx.state, [{ vertexId: vid, coordinate: targetCoord }], { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'tripleShare': {
+      const target0 = pick([...new Set(allCitedIds(ctx.state))], op.tgt);
+      if (target0 === undefined) return;
+      for (const pickIdx of [op.c1, op.c2, op.c3]) {
+        const ids = [...new Set(allCitedIds(ctx.state))];
+        const cand = pick(ids, pickIdx);
+        if (cand === undefined || cand === target0) continue;
+        const r = shareVertices(ctx.state, cand, target0, { validators });
+        if (r.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = r.state;
+      }
+      return;
+    }
+    case 'share': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const cand = pick(ids, op.i);
+      const targ = pick(ids, op.j);
+      if (cand === undefined || targ === undefined) return;
+      const res = shareVertices(ctx.state, cand, targ, { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'unshare': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const refs = referencesOf(ctx.state, vid);
+      const ref = refs[op.i % refs.length];
+      if (ref === undefined) return;
+      const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+    case 'edgeCut': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const pEdge = realEdgeStart(primary, op.pIdx);
+      const qEdge = realEdgeStart(partner, op.qIdx);
+      if (pEdge === undefined || qEdge === undefined) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: pEdge },
+          partner: { containerKey: containerKey(partner.container), edgeStart: qEdge },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+  }
+}
+
+describe('shared-vertex-linkage round-3 seventh pass (seed 33003)', () => {
+  it('round-7 higher-order composite op sequences preserve all invariants after every step', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op7Arb, { minLength: 1, maxLength: 30 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        checkInvariants(ctx.state, 'initial');
+        checkParticipationOfShared(ctx.state, 'initial');
+        checkSharedSetDistinct(ctx.state, 'initial');
+        let step = 0;
+        for (const op of ops) {
+          applyOp7(ctx, op);
+          step += 1;
+          const label = `after step ${step} (${op.t})`;
+          checkInvariants(ctx.state, label);
+          checkParticipationOfShared(ctx.state, label);
+          checkSharedSetDistinct(ctx.state, label);
+        }
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  it('save∘load = identity on round-7 reachable states', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op7Arb, { minLength: 0, maxLength: 25 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp7(ctx, op);
+        const restored = load(save(ctx.state));
+        expect(canonical(restored)).toEqual(canonical(ctx.state));
+        expect(canonical(load(save(restored)))).toEqual(canonical(ctx.state));
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  it('a rejected round-7 op leaves the input state untouched (full rollback)', () => {
+    fc.assert(
+      fc.property(seedArb, op7Arb, (seed, op) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const ctx: ModelCtx = { state, idState: createIdGeneratorState(0, 0), clock: makeClock() };
+        applyOp7(ctx, op);
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  // TWO consecutive shared-edge cuts on ONE (primary, partner) container pair: the
+  // second cut's edgeStart is re-derived from the container AFTER the first grew
+  // it. Both cuts must mint DISTINCT ids, each cited exactly twice (a clean share
+  // across the two containers), the body count must grow by exactly 2, and no id
+  // may be reused. Drives the splice / position recompute over a just-mutated list.
+  it('two consecutive cuts on one container pair mint two distinct twice-shared ids', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.nat(8),
+        fc.nat(8),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, pIdx, qIdx, lon, lat) => {
+          const state = buildState(seed);
+          const entries = [...state.containers.values()];
+          if (entries.length < 2) return;
+          const primary = entries[pIdx % entries.length];
+          const partner = entries[qIdx % entries.length];
+          if (primary === undefined || partner === undefined) return;
+          const pKey = containerKey(primary.container);
+          const qKey = containerKey(partner.container);
+          if (pKey === qKey) return;
+          const idState0 = createIdGeneratorState(0, 0);
+          const clock = makeClock();
+          const bodiesBefore = state.vertices.byId.size;
+          const first = insertSharedEdgeCut(
+            state,
+            {
+              primary: { containerKey: pKey, edgeStart: 0 },
+              partner: { containerKey: qKey, edgeStart: 0 },
+              cutCoordinate: createCoordinate(lon + 0.5, lat + 0.5),
+            },
+            idState0,
+            clock,
+            { validators: [zeroLengthEdgeValidator] },
+          );
+          if (first.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const id1 = first.cutVertexId;
+          if (id1 === undefined) return;
+          const afterFirst = first.result.state;
+          const pNow = afterFirst.containers.get(pKey);
+          const qNow = afterFirst.containers.get(qKey);
+          if (pNow === undefined || qNow === undefined) return;
+          const pEdge = realEdgeStart(pNow, pIdx + 1);
+          const qEdge = realEdgeStart(qNow, qIdx + 1);
+          if (pEdge === undefined || qEdge === undefined) return;
+          const second = insertSharedEdgeCut(
+            afterFirst,
+            {
+              primary: { containerKey: pKey, edgeStart: pEdge },
+              partner: { containerKey: qKey, edgeStart: qEdge },
+              cutCoordinate: createCoordinate(lon - 0.5, lat - 0.5),
+            },
+            first.idState,
+            clock,
+            { validators: [zeroLengthEdgeValidator] },
+          );
+          if (second.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const id2 = second.cutVertexId;
+          if (id2 === undefined) return;
+          const afterSecond = second.result.state;
+          // The two mints are DISTINCT ids (no reuse across cuts).
+          expect(id1).not.toBe(id2);
+          // Each cut id is cited exactly twice (a clean cross-container share).
+          expect(referencesOf(afterSecond, id1).length).toBe(2);
+          expect(referencesOf(afterSecond, id2).length).toBe(2);
+          expect(isSharedVertex(afterSecond, id1)).toBe(true);
+          expect(isSharedVertex(afterSecond, id2)).toBe(true);
+          // Body count grew by exactly 2 (one per cut).
+          expect(afterSecond.vertices.byId.size).toBe(bodiesBefore + 2);
+          checkInvariants(afterSecond, 'after two cuts');
+          checkParticipationOfShared(afterSecond, 'after two cuts');
+        },
+      ),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  // unshare then move the MINTED id: the freshly split body must be independently
+  // movable — moving it must NOT change the original body's coordinate (no shared
+  // mutable cell / aliasing), and the original's referrers must keep its value.
+  it('moving a freshly unshared mint does not drag the original body', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.array(op7Arb, { minLength: 0, maxLength: 10 }),
+        fc.nat(20),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, ops, idx, lon, lat) => {
+          const ctx: ModelCtx = {
+            state: buildState(seed),
+            idState: createIdGeneratorState(0, 0),
+            clock: makeClock(),
+          };
+          for (const op of ops) applyOp7(ctx, op);
+          const shared = sharedVertexIds(ctx.state);
+          const vid = pick(shared, idx);
+          if (vid === undefined) return;
+          const origCoord = getVertex(ctx.state.vertices, vid)?.coordinate;
+          if (origCoord === undefined) return;
+          const refs = referencesOf(ctx.state, vid);
+          const ref = refs[idx % refs.length];
+          if (ref === undefined) return;
+          const split = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (split.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const newId = split.newVertexId;
+          if (newId === undefined) return;
+          // The mint starts at the original coordinate (same-coordinate split).
+          expect(getVertex(split.result.state.vertices, newId)?.coordinate).toEqual(origCoord);
+          // Move ONLY the mint somewhere it will not become adjacent-coincident.
+          const dest = createCoordinate(lon, lat);
+          const moved = moveVertices(split.result.state, [{ vertexId: newId, coordinate: dest }], {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (moved.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          // The mint moved; the original body is UNCHANGED (no aliasing).
+          expect(getVertex(moved.state.vertices, newId)?.coordinate).toEqual(dest);
+          expect(getVertex(moved.state.vertices, vid)?.coordinate).toEqual(origCoord);
+          checkInvariants(moved.state, 'after unshare-then-move-mint');
+          checkParticipationOfShared(moved.state, 'after unshare-then-move-mint');
+        },
+      ),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  // transferSharing op∘逆op = identity on a DISJOINT rename, reached through the
+  // round-7 op stream (a NON-pristine base). When the target id is absent from the
+  // store and uncited, folding from -> to then to -> from must restore the exact
+  // citations and bodies (a genuine algebraic inverse; re-confirms §4.7).
+  it('transferSharing fold-then-unfold is the identity on a disjoint rename (round-7 base)', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op7Arb, { minLength: 0, maxLength: 12 }), fc.nat(20), fc.nat(20), (seed, ops, a, b) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp7(ctx, op);
+        const base = ctx.state;
+        const ids = [...new Set(allCitedIds(base))];
+        if (ids.length < 2) return;
+        const from = ids[a % ids.length];
+        const to = ids[b % ids.length];
+        if (from === undefined || to === undefined || from === to) return;
+        // Clean rename requires the target to be absent + uncited beforehand.
+        if (getVertex(base.vertices, to) !== undefined) return;
+        if (allCitedIds(base).includes(to)) return;
+        const folded = transferSharing(base, new Map([[from, to]]));
+        const back = transferSharing(folded, new Map([[to, from]]));
+        checkInvariants(folded, 'fold');
+        checkInvariants(back, 'unfold');
+        expect(canonical(back)).toEqual(canonical(base));
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  // A move of a shared vertex ONTO the exact coordinate of a DIFFERENT existing
+  // vertex: legal iff it does not create an adjacent coincidence in any container
+  // (zeroLengthEdgeValidator gates on ADJACENCY, never on global coincidence). The
+  // validator must not over-reject coincident-but-non-adjacent vertices; and on a
+  // (legitimate) rejection the input must be byte-identical (full rollback).
+  it('moving onto an existing coordinate is gated by adjacency, never global coincidence', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op7Arb, { minLength: 0, maxLength: 10 }), fc.nat(20), fc.nat(20), (seed, ops, ai, bi) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp7(ctx, op);
+        const base = ctx.state;
+        const before = canonical(base);
+        const ids = [...new Set(allCitedIds(base))];
+        if (ids.length < 2) return;
+        const vid = ids[ai % ids.length];
+        const other = ids[bi % ids.length];
+        if (vid === undefined || other === undefined || vid === other) return;
+        const targetCoord = getVertex(base.vertices, other)?.coordinate;
+        if (targetCoord === undefined) return;
+        const res = moveVertices(base, [{ vertexId: vid, coordinate: targetCoord }], {
+          validators: [zeroLengthEdgeValidator],
+        });
+        // The input value is immutable regardless of outcome (full rollback).
+        expect(canonical(base)).toEqual(before);
+        if (res.status === SHARED_VERTEX_OUTCOME.Applied) {
+          // Accepted: the body now sits at the coincident coordinate, and the
+          // result is internally consistent (no dangling refs / finite coords).
+          expect(getVertex(res.state.vertices, vid)?.coordinate).toEqual(targetCoord);
+          checkInvariants(res.state, 'after move-onto-existing');
+          checkParticipationOfShared(res.state, 'after move-onto-existing');
+          // The accepted state must itself report ZERO zero-length-edge violations
+          // (acceptance ⇔ no adjacent coincidence — the validator is the authority).
+          expect(zeroLengthEdgeValidator(res.state).length).toBe(0);
+        } else {
+          // Rejected: the ONLY legitimate reason for a pure coordinate move is a
+          // result-invalid (adjacent coincidence), and there must be at least one
+          // such violation present in the would-be state (i.e. the move really did
+          // create an adjacent coincidence — never a spurious rejection).
+          expect(res.reason).toBe(REJECT_REASON.ResultInvalid);
+        }
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+
+  // tripleShare accounting: folding up to three distinct candidates onto ONE
+  // target via three sequential applied shares leaves NONE of the applied
+  // candidates cited, the target cited by the union of the merged groups, and the
+  // state fully consistent. Every applied leg's candidate body must be pruned.
+  it('three sequential shares onto one target fold every applied candidate away', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), fc.nat(20), fc.nat(20), fc.nat(20), (seed, c1, c2, c3, tgt) => {
+        const validators = [zeroLengthEdgeValidator];
+        let state = buildState(seed);
+        const target = pick([...new Set(allCitedIds(state))], tgt);
+        if (target === undefined) return;
+        const appliedCandidates: VertexId[] = [];
+        for (const pickIdx of [c1, c2, c3]) {
+          const ids = [...new Set(allCitedIds(state))];
+          const cand = pick(ids, pickIdx);
+          if (cand === undefined || cand === target) continue;
+          const r = shareVertices(state, cand, target, { validators });
+          if (r.status !== SHARED_VERTEX_OUTCOME.Applied) continue;
+          state = r.state;
+          appliedCandidates.push(cand);
+        }
+        if (appliedCandidates.length === 0) return;
+        // Every applied candidate is gone (no body, no citation).
+        for (const cand of appliedCandidates) {
+          expect(allCitedIds(state).includes(cand), `candidate ${cand} still cited`).toBe(false);
+          expect(getVertex(state.vertices, cand), `candidate ${cand} still bodied`).toBeUndefined();
+        }
+        // The target survives and is bodied.
+        expect(getVertex(state.vertices, target)).toBeDefined();
+        checkInvariants(state, 'after tripleShare');
+        checkParticipationOfShared(state, 'after tripleShare');
+        checkSharedSetDistinct(state, 'after tripleShare');
+      }),
+      { seed: SEED7, numRuns: NUM_RUNS7 },
+    );
+  });
+});

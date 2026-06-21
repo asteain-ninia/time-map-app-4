@@ -333,34 +333,49 @@ function reconcileVertexCoordinate(
   project: DomainProject,
   vertexId: VertexId,
 ): DomainProject {
-  // Find the canonical coordinate: the first body for this id across the whole project,
-  // in the SAME traversal order the detector uses (history, then entry, then store).
-  let canonical: Vertex | undefined;
-  outer: for (const h of project.histories) {
+  // The canonical coordinate for EVERY vertex id: the FIRST body seen for that id in
+  // the detector's traversal order (history → entry → store). We collect ALL of them
+  // up-front, then reconcile not only the named `vertexId` but every OTHER id whose
+  // bodies also disagree across snapshots.
+  //
+  // Reconciling only the single named vertex is unsafe when MORE THAN ONE shared
+  // vertex diverges at the same slice: the spatial checks ((d) terminal-exclusion /
+  // (g) anchor-spatial-overlap) read the time-slice's last-write-wins MERGED store,
+  // so while ONE divergent vertex is still present a feature's effective geometry can
+  // overlap a neighbour's — meaning a per-vertex reconcile TRANSIENTLY manufactures a
+  // terminal/spatial-overlap (a NEW inconsistency) that `applyRepairChecked` then
+  // correctly refuses to certify, deadlocking the safe-repair fixpoint. Aligning all
+  // co-divergent boundary vertices to their single source of truth (R6) in ONE
+  // application restores the consistent base geometry atomically — matching this
+  // option's stated intent (同一頂点の座標を…すべて揃える) — so the repair converges
+  // without ever passing through a geometry-broken intermediate. Idempotent: on a
+  // project with a single divergence it rewrites exactly that one vertex.
+  void vertexId; // every divergent id is reconciled; the named one is included.
+  const canonicalById = new Map<VertexId, Vertex>();
+  for (const h of project.histories) {
     for (const e of h.series.entries) {
-      const body = e.anchor.snapshot.vertices.byId.get(vertexId);
-      if (body !== undefined) {
-        canonical = body;
-        break outer;
+      for (const body of e.anchor.snapshot.vertices.byId.values()) {
+        if (!canonicalById.has(body.id)) canonicalById.set(body.id, body);
       }
     }
   }
-  if (canonical === undefined) return project; // no snapshot carries it → nothing to do.
-  const fixed = createVertex(vertexId, canonical.coordinate);
+  if (canonicalById.size === 0) return project; // no vertices at all → nothing to do.
 
   const histories: FeatureHistory[] = project.histories.map((h) => ({
     featureId: h.featureId,
     series: {
       entries: h.series.entries.map((e) => {
         const store = e.anchor.snapshot.vertices;
-        const existing = store.byId.get(vertexId);
-        // Only rewrite a snapshot that carries the id AND disagrees with the canonical
-        // body (preserve referential identity of every untouched anchor).
-        if (existing === undefined || coordinatesEqual(existing.coordinate, fixed.coordinate)) {
-          return e;
+        // Rewrite only the bodies that DISAGREE with their canonical coordinate, so an
+        // anchor whose every vertex already matches keeps its referential identity.
+        let byId: Map<VertexId, Vertex> | undefined;
+        for (const body of store.byId.values()) {
+          const canonical = canonicalById.get(body.id)!;
+          if (coordinatesEqual(body.coordinate, canonical.coordinate)) continue;
+          if (byId === undefined) byId = new Map(store.byId);
+          byId.set(body.id, createVertex(body.id, canonical.coordinate));
         }
-        const byId = new Map(store.byId);
-        byId.set(vertexId, fixed);
+        if (byId === undefined) return e;
         return {
           anchor: {
             id: e.anchor.id,

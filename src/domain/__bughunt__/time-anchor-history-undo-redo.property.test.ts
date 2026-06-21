@@ -2828,3 +2828,392 @@ describe('time-anchor + history undo/redo — seed 34002 mixed-granularity bound
     );
   });
 });
+
+// ===========================================================================
+// SEED 34003 expansion suite — fc.commands STATEFUL model over a BOUNDED-LIMIT
+// history carrying RICH snapshots (ring forest + hierarchy forest), with
+// OFF-ANCHOR probe-selection re-checked on every reachable state.
+//
+// This is a NEW exploration distinct from every prior pass in this file. The
+// prior suites either:
+//   - drive a manual `fc.array(actionArb)` loop (4001/4002/4004/24001/34002), or
+//   - check the bounded reference model on POINT-ONLY snapshots (24002/34002), or
+//   - check rich ring/hierarchy invariants on an UNBOUNDED history (4004).
+// NONE of them combine all three at once:
+//   (a) a real fast-check STATEFUL run (fc.commands + fc.modelRun) — the proper
+//       model-based generator, which interleaves edit/undo/redo/clearRedo/
+//       setLimit/composite in dependency order and SHRINKS the failing command
+//       sequence (fc.array cannot shrink an interdependent stream as tightly);
+//   (b) a SMALL undo-limit (1..3) so FR-74 trimming is the common case, with the
+//       production History checked against the same reference Model used by the
+//       24002/34002 suites — but now under RICH snapshots, so a trim/undo/redo
+//       bug that drops or reorders shape rings / aggregate childIds / parent
+//       links would surface as a model divergence AND a structural-invariant
+//       failure simultaneously; and
+//   (c) OFF-ANCHOR resolveAt probe-selection validity (expectProbeSelectionValid)
+//       re-asserted on every reachable state — selection must stay valid not just
+//       at anchor starts but at mid-interval / gap / post-end probe times, across
+//       the trimming history regime.
+//
+// Plus a composite command bundling a CHAIN of rich edits driven as ONE undo
+// unit through the SMALL-limit history (FR-73/FR-94) and reconciled with the
+// model (a composite is exactly one modelExecute step).
+//
+// Invariants re-asserted after EVERY reachable state (assertRichStepInvariants):
+//   INV-1..3,5,6 (validateSeries), ring alternation + parent-ring links,
+//   aggregate child/parent forest, no NaN/Infinity, rich save∘load == identity.
+// Metamorphic laws (history level): model agreement at every step ⇒ undo∘execute
+//   == identity, redo restores post-execute, full retained-undo == oldest
+//   retained pre-state, composite undo/redo are single steps.
+//
+// Determinism: pinned seed 34003, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_34003 = 34003;
+const NUM_RUNS_34003 = 500;
+
+// --- the stateful "real" system under test ----------------------------------
+//
+// The real system is a bounded-limit History<AnchorSeries> carrying RICH
+// snapshots. The fc-model is the plain-value reference Model (already defined
+// above for the 24002 suite). Each fc.Command mutates BOTH and then asserts:
+//   - production history agrees with the reference model (state + stack depths +
+//     canUndo/canRedo gates + limit), and
+//   - the reachable rich series satisfies every structural invariant, and
+//   - off-anchor probe selection is valid.
+
+interface RichSut {
+  history: History<AnchorSeries>;
+}
+
+// fc.commands mutates a model object in-place; we keep the reference Model and a
+// fixed probe time inside it so commands can reconcile against both.
+interface RichModelState {
+  model: Model;
+  readonly probe: TimePoint;
+}
+
+type RichFcCommand = fc.Command<RichModelState, RichSut>;
+
+function reconcile(m: RichModelState, sut: RichSut): void {
+  expectHistoryMatchesModel(sut.history, m.model);
+  assertRichStepInvariants(sut.history.state);
+  expectProbeSelectionValid(sut.history.state, m.probe);
+}
+
+class RichEditCommand implements RichFcCommand {
+  constructor(private readonly op: EditOp) {}
+  check(): boolean {
+    return true; // an edit is always attempted; a no-op simply pushes nothing.
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    const before = sut.history.state;
+    const after = applyRichEdit(before, this.op);
+    if (after === undefined) {
+      // Rejected / no-op rich edit: neither history nor model may change.
+      reconcile(m, sut);
+      return;
+    }
+    sut.history = execute(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return `richEdit(${JSON.stringify(this.op)})`;
+  }
+}
+
+class RichEditIfChangedCommand implements RichFcCommand {
+  constructor(private readonly op: EditOp) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    const before = sut.history.state;
+    const after = applyRichEdit(before, this.op);
+    if (after === undefined) {
+      // Exercise the ghost-suppression path (教訓 5.24): an always-true isNoOp
+      // must leave BOTH history and model untouched, never pushing an entry.
+      sut.history = executeIfChanged(
+        sut.history,
+        makeSeriesCommand(this.op.kind, before, before),
+        () => true,
+      ).history;
+      reconcile(m, sut);
+      return;
+    }
+    // Real change ⇒ isNoOp false ⇒ behaves exactly like execute.
+    sut.history = executeIfChanged(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+      () => false,
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return `richEditIfChanged(${JSON.stringify(this.op)})`;
+  }
+}
+
+class RichCompositeCommand implements RichFcCommand {
+  constructor(private readonly ops: readonly EditOp[]) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    // Fold the ops into a chain of real sub-commands, skipping rejected/no-ops.
+    const subCommands: Command<AnchorSeries>[] = [];
+    let cursor = sut.history.state;
+    const before = cursor;
+    for (const op of this.ops) {
+      const after = applyRichEdit(cursor, op);
+      if (after === undefined) continue;
+      subCommands.push(makeSeriesCommand(op.kind, cursor, after));
+      cursor = after;
+    }
+    if (subCommands.length === 0) {
+      reconcile(m, sut); // nothing to bundle: no change
+      return;
+    }
+    const postChain = cursor;
+    const composite = createCompositeCommand('bughunt/rich-edit-chain', subCommands);
+    sut.history = execute(sut.history, composite).history;
+    // A composite is exactly ONE model step: before -> post-chain.
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(postChain));
+    // The composite must have landed exactly on the post-chain state.
+    expect(viewSeries(sut.history.state)).toEqual(viewSeries(postChain));
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return `richComposite(${this.ops.length} ops)`;
+  }
+}
+
+class UndoCommand implements RichFcCommand {
+  check(): boolean {
+    return true; // undo on an empty stack is a defined no-op.
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    sut.history = undo(sut.history).history;
+    m.model = modelUndo(m.model);
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return 'undo';
+  }
+}
+
+class RedoCommand implements RichFcCommand {
+  check(): boolean {
+    return true; // redo on an empty stack is a defined no-op.
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    sut.history = redo(sut.history).history;
+    m.model = modelRedo(m.model);
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return 'redo';
+  }
+}
+
+class ClearRedoCommand implements RichFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    sut.history = clearRedo(sut.history);
+    m.model = modelClearRedo(m.model);
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return 'clearRedo';
+  }
+}
+
+class SetLimitCommand implements RichFcCommand {
+  constructor(private readonly limit: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichModelState, sut: RichSut): void {
+    sut.history = withLimit(sut.history, this.limit);
+    m.model = modelWithLimit(m.model, this.limit);
+    reconcile(m, sut);
+  }
+  toString(): string {
+    return `setLimit(${this.limit})`;
+  }
+}
+
+const richCommandsArb: fc.Arbitrary<Iterable<RichFcCommand>> = fc.commands(
+  [
+    editOpArb.map((op): RichFcCommand => new RichEditCommand(op)),
+    editOpArb.map((op): RichFcCommand => new RichEditIfChangedCommand(op)),
+    fc
+      .array(editOpArb, { minLength: 1, maxLength: 4 })
+      .map((ops): RichFcCommand => new RichCompositeCommand(ops)),
+    fc.constant(new UndoCommand() as RichFcCommand),
+    fc.constant(new UndoCommand() as RichFcCommand), // weight undo to drain stacks
+    fc.constant(new RedoCommand() as RichFcCommand),
+    fc.constant(new RedoCommand() as RichFcCommand),
+    fc.constant(new ClearRedoCommand() as RichFcCommand),
+    fc
+      .integer({ min: 1, max: 4 })
+      .map((n): RichFcCommand => new SetLimitCommand(n)),
+  ],
+  { maxCommands: 40 },
+);
+
+describe('time-anchor + history undo/redo — seed 34003 stateful rich bounded-model', () => {
+  it('fc.commands: bounded rich history stays model-consistent and structurally valid (seed 34003)', () => {
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 3 }), // SMALL limit ⇒ FR-74 trimming is common
+        probeTimeArb,
+        richCommandsArb,
+        (initial, limit, probe, commands) => {
+          assertRichStepInvariants(initial);
+          expectProbeSelectionValid(initial, probe);
+          const clampedLimit = Math.max(1, Math.floor(limit));
+          const setup = (): { model: RichModelState; real: RichSut } => {
+            const history = createHistory(initial, clampedLimit);
+            const model: RichModelState = {
+              model: {
+                current: viewSeries(initial),
+                undo: [],
+                redo: [],
+                limit: clampedLimit,
+              },
+              probe,
+            };
+            // Sanity at t0.
+            expectHistoryMatchesModel(history, model.model);
+            return { model, real: { history } };
+          };
+          fc.modelRun(setup, commands);
+        },
+      ),
+      { seed: SEED_34003, numRuns: NUM_RUNS_34003 },
+    );
+  });
+
+  it('FR-74 (rich): draining the retained undo stack lands on the oldest retained pre-state (seed 34003)', () => {
+    // Overflow a small limit with rich edits, then drain the WHOLE retained undo
+    // stack: the result must equal the reference model's floor (the `before` of
+    // the oldest retained edit), NOT the original root, and every reachable state
+    // — including the floor — must keep ring/hierarchy/forest validity.
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 2 }),
+        fc.array(editOpArb, { minLength: 1, maxLength: 14 }),
+        (initial, limit, ops) => {
+          let history = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyRichEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(
+              history,
+              makeSeriesCommand(op.kind, before, after),
+            ).history;
+            model = modelExecute(model, viewSeries(before), viewSeries(after));
+            assertRichStepInvariants(history.state);
+          }
+          const retained = model.undo.length;
+          for (let i = 0; i < retained; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+            assertRichStepInvariants(history.state);
+          }
+          expectHistoryMatchesModel(history, model);
+          const expectedFloor =
+            retained === 0 ? viewSeries(initial) : model.current;
+          expect(viewSeries(history.state)).toEqual(expectedFloor);
+          // A further undo is a no-op.
+          const extra = undo(history).history;
+          expect(viewSeries(extra.state)).toEqual(viewSeries(history.state));
+          expect(extra.undoStack.length).toBe(history.undoStack.length);
+        },
+      ),
+      { seed: SEED_34003, numRuns: NUM_RUNS_34003 },
+    );
+  });
+
+  it('op∘inverse-op (rich): applyPastEdit INSERT then deleteAnchor of the inserted id restores the series (seed 34003)', () => {
+    // A targeted reversibility law on the rich axis: inserting a fresh rich
+    // anchor at a NON-existing start, then deleting exactly that anchor id, must
+    // restore the original series byte-for-byte (the insert/delete pair is the
+    // identity ON THE SERIES), and every intermediate state stays structurally
+    // valid. Skipped when the insert collides with an existing start (replace,
+    // not insert) or when the delete would empty the series.
+    fc.assert(
+      fc.property(
+        richAnchorSeriesArb(),
+        fc.integer({ min: -400, max: 400 }),
+        fc.integer({ min: 0, max: 100000 }),
+        (initial, year, seed) => {
+          const at = timePointYear(year);
+          // Only the pure-INSERT case is in scope: skip when a start already
+          // exists at `at` (that path REPLACES a snapshot, not reversible by
+          // delete).
+          const existing = initial.entries.some(
+            (e) => compare(e.start, at, cal) === 0,
+          );
+          if (existing) return;
+
+          const tag = `inv${seed}`;
+          const insertedId = asAnchorId(`${tag}-anchor`);
+          // Reuse the rich pastEdit construction by routing through applyRichEdit.
+          const inserted = applyRichEdit(initial, {
+            kind: 'pastEdit',
+            year,
+            seed,
+          });
+          if (inserted === undefined) return; // no-op insert (shouldn't happen)
+          // The inserted anchor id used by applyRichEdit's pastEdit branch.
+          // It mints id `pe<seed>-anchor`; align our delete target with it.
+          const peId = asAnchorId(`pe${seed}-anchor`);
+          void insertedId;
+          void tag;
+          assertRichStepInvariants(inserted);
+
+          // The insert must have added exactly one entry (or replaced via dedup,
+          // in which case the count is unchanged and this law does not apply).
+          if (inserted.entries.length !== initial.entries.length + 1) return;
+
+          const del = deleteAnchor(inserted, peId, cal);
+          if (!del.ok) return; // would-be-empty etc.: out of scope
+          assertRichStepInvariants(del.series);
+
+          // Insert∘delete on the series is the identity ONLY when the insert did
+          // not auto-shorten a neighbor's end (normalization §5.6「短縮」). Verify
+          // that precondition against the non-target entries, then assert the
+          // exact round-trip.
+          const othersUnchanged = nonTargetEntriesEqual(
+            initial,
+            inserted,
+            peId as unknown as string,
+          );
+          if (othersUnchanged) {
+            expect(viewSeries(del.series)).toEqual(viewSeries(initial));
+          }
+        },
+      ),
+      { seed: SEED_34003, numRuns: NUM_RUNS_34003 },
+    );
+  });
+});

@@ -163,23 +163,43 @@ function referencedVertexIds(feature: Feature): VertexId[] {
 
 // --- (a) missing vertex reference -------------------------------------------
 
-function detectMissingVertices(
-  features: readonly Feature[],
-  vertices: VertexStore,
-  atTime: TimePoint,
-): Inconsistency[] {
+/**
+ * One effective history's own snapshot at a time slice: the features it carries
+ * and the vertex store THOSE features must resolve against. Vertex ids are
+ * namespaced per feature/history (a leaf's `a0` is local to that leaf), so a
+ * dangling reference must be checked against the feature's OWN snapshot store —
+ * never the cross-history concatenation, where another history's same-id vertex
+ * would silently mask the absence (FR-106(a) cross-history masking, Codex bug-hunt
+ * true-positive).
+ */
+interface SnapshotScope {
+  readonly features: readonly Feature[];
+  readonly vertices: VertexStore;
+}
+
+/**
+ * Detect FR-106(a) per SNAPSHOT SCOPE: each effective history's features are
+ * resolved ONLY against their own snapshot's vertex store. Within one snapshot
+ * features legitimately share vertices (aggregate children share a boundary
+ * vertex), so the scope is per-snapshot, not per-individual-feature — but it is
+ * NEVER the merged cross-history store, which would hide a feature A's dangling
+ * `a0` behind a different history's vertex that happens to share the id `a0`.
+ */
+function detectMissingVertices(scopes: readonly SnapshotScope[], atTime: TimePoint): Inconsistency[] {
   const out: Inconsistency[] = [];
-  for (const feature of features) {
-    const refs = referencedVertexIds(feature);
-    const missing = refs.filter((vid) => !vertices.byId.has(vid));
-    if (missing.length > 0) {
-      out.push({
-        kind: INCONSISTENCY.MissingVertexReference,
-        featureIds: [feature.id],
-        featureNames: namesOf(features, [feature.id]),
-        atTime,
-        detail: `missing:${missing.map(idToString).join(',')}`,
-      });
+  for (const scope of scopes) {
+    for (const feature of scope.features) {
+      const refs = referencedVertexIds(feature);
+      const missing = refs.filter((vid) => !scope.vertices.byId.has(vid));
+      if (missing.length > 0) {
+        out.push({
+          kind: INCONSISTENCY.MissingVertexReference,
+          featureIds: [feature.id],
+          featureNames: namesOf(scope.features, [feature.id]),
+          atTime,
+          detail: `missing:${missing.map(idToString).join(',')}`,
+        });
+      }
     }
   }
   return out;
@@ -553,6 +573,11 @@ function checkTimeSlice(
   // same-id coordinate disagreement between two histories can be detected BEFORE the concat
   // collapses it last-write-wins (shared-vertex move propagation bug).
   const perHistory: { featureId: FeatureId; vertices: Vertex[] }[] = [];
+  // Per-SNAPSHOT scopes (features + their OWN store) for the FR-106(a) missing-vertex
+  // check, which must NOT resolve against the cross-history concatenation (vertex ids
+  // are namespaced per feature, so a same-id vertex from another history would mask a
+  // true dangling reference — FR-106(a) cross-history masking).
+  const scopes: SnapshotScope[] = [];
   for (const h of histories) {
     const res = resolveAt(h.series, atTime, calendar);
     if (res.kind !== 'present') continue;
@@ -561,6 +586,7 @@ function checkTimeSlice(
     const hVertices = [...snap.vertices.byId.values()];
     for (const v of hVertices) allVertices.push(v);
     perHistory.push({ featureId: h.featureId, vertices: hVertices });
+    scopes.push({ features: snap.features, vertices: snap.vertices });
   }
   const vertices: VertexStore = createVertexStore(allVertices);
 
@@ -569,7 +595,7 @@ function checkTimeSlice(
   const overlaps = detectTerminalOverlapPairs(features, vertices);
 
   return [
-    ...detectMissingVertices(features, vertices, atTime),
+    ...detectMissingVertices(scopes, atTime),
     ...detectTreeTopology(features, atTime),
     ...detectShapePreservation(features, atTime),
     ...detectRingHierarchy(features, vertices, atTime),

@@ -2649,3 +2649,509 @@ describe(`affiliation — STATEFUL model: full invariant battery per command (se
     );
   });
 });
+
+// ===========================================================================
+// ===========================================================================
+//  SIXTH BUG-HUNT SECTION (seed = 35003) — SECOND fast-check STATEFUL model,
+//  deliberately disjoint from the §18 stateful run (seed 35002) and from every
+//  prior seed range (1000..6000 / 21000..26000 / 35002).
+//
+//  §18 is the FIRST stateful model, but its per-command checks omit FOUR things
+//  this section adds, all evaluated on the LIVE, ALREADY-MUTATED mid-sequence
+//  state (a strictly stronger setting than §9/§12/§16, which only ever probe the
+//  PRISTINE initial forest):
+//
+//    (A) PICKER ⇔ COMMIT single-source on the LIVE state. After every committed
+//        command we pick a random surviving leaf and assert, for EVERY existing
+//        feature, that allowedParentCandidates / isLegalNewParent agree exactly
+//        with what the REAL commit pipeline does for a candidate-predicate
+//        reason (listed ⇒ never a SameFeature/Cycle/ExistencePeriod rejection;
+//        hidden ⇒ never commits). §9/§12 only do this on the initial forest; a
+//        single-source drift that only manifests AFTER auto-disappear / subtree
+//        moves (教訓 5.26) would slip past §18.
+//
+//    (B) CYCLE-ATTEMPT guard on the LIVE state, as a stateful command: pick any
+//        surviving feature X with descendants and try to parent X under one of
+//        its OWN descendants. It must NEVER commit (§16 only tries this on the
+//        pristine deep forest; here the ancestry graph has been reshaped by the
+//        preceding commands).
+//
+//    (C) DE-NEST an INTERMEDIATE aggregate to `none` as a stateful command, with
+//        the freed-leaf / empty-parent-prune contract enforced live mid-sequence
+//        (§15 only de-nests on the pristine deep forest, never interleaved).
+//
+//    (D) A FULL UNDO-STACK REWIND at the END of every run: each committed command
+//        is journaled, and at teardown we pop the entire stack with command.undo
+//        and assert we land byte-identical on the ORIGINAL initial forest, then
+//        redo the whole stack forward without re-minting ids. §18 checks undo∘op
+//        for ONE op at a time but never rewinds the composed sequence; §14 does a
+//        full rewind but NOT through the fast-check stateful generator's orderings.
+//
+//  Determinism: seed = 35003, numRuns large. PERMANENT ASSET — assertions encode
+//  the SPEC; a counter-example is a finding, never a reason to weaken a check.
+// ===========================================================================
+// ===========================================================================
+
+const SEED6 = 35003;
+
+// ---------------------------------------------------------------------------
+// §19 model: a NEW variable-shape forest distinct from mixedForestArb. Roots are
+// flat OR deep (like §18) BUT periods are drawn from a WIDER, partly-disjoint
+// spread so more re-parent attempts genuinely straddle the existence guard, and
+// every root may independently start its period anywhere in a wide band. This is
+// the substrate the §19 stateful commands mutate.
+// ---------------------------------------------------------------------------
+
+const wideRootSpecArb: fc.Arbitrary<MixedRootSpec> = fc
+  .record({
+    deep: fc.boolean(),
+    subCount: fc.integer({ min: 1, max: 3 }),
+    leafCount: fc.integer({ min: 1, max: 3 }),
+    // Wider, more-disjoint period band than mixedRootSpecArb (-60..60 / span 1..45).
+    start: fc.integer({ min: -200, max: 200 }),
+    span: fc.integer({ min: 1, max: 30 }),
+  })
+  .map(({ deep, subCount, leafCount, start, span }) => ({
+    deep,
+    subCount,
+    leafCount,
+    start,
+    end: start + span,
+  }));
+
+function wideForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(wideRootSpecArb, { minLength: 1, maxLength: 4 })
+    .map((specs) => buildMixedForest(specs));
+}
+
+// ---------------------------------------------------------------------------
+// §19 SUT: live affiliation state + parallel committed-snapshot series + a
+// command JOURNAL (for the end-of-run full rewind, contract (D)). Each commit
+// also runs the live picker⇔commit single-source probe (contract (A)).
+// ---------------------------------------------------------------------------
+
+interface StatefulModel6 {
+  commits: number;
+}
+
+interface JournalFrame {
+  readonly command: ReturnType<typeof createAffiliationCommand>;
+  readonly preState: readonly Feature[];
+  readonly postState: readonly Feature[];
+  readonly createdIds: readonly FeatureId[];
+}
+
+class StatefulSut6 {
+  state: AffState;
+  series: AnchorSeries;
+  private snapIdx = 1;
+  committed = 0;
+  /** the ORIGINAL initial forest — the rewind target (contract (D)). */
+  readonly original: readonly Feature[];
+  /** committed-command journal for the end-of-run full rewind. */
+  readonly journal: JournalFrame[] = [];
+  /** a deterministic counter to vary the live picker probe target per commit. */
+  private probeTick = 0;
+
+  constructor(initial: ModelState) {
+    this.original = [...initial.features];
+    this.state = {
+      features: [...initial.features],
+      store: store(initial),
+      idCounter: 60000,
+    };
+    this.series = normalizeSeries([snapshotEntry(this.state.features, this.state.store, 0)], CAL);
+  }
+
+  /** Apply one real proposal, run the per-commit battery, journal it. */
+  commitAndCheck(
+    applied:
+      | { next: AffState; proposal: AffiliationProposal; baseline: readonly Feature[] }
+      | undefined,
+  ): void {
+    if (applied === undefined) return; // rejected / N/A: legitimate, no state change.
+
+    assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+    const present = new Set(applied.next.features.map((f) => f.id));
+    for (const id of applied.proposal.survivedTouchedIds) {
+      expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.createdIds) {
+      expect(present.has(id), `created ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.deletedIds) {
+      expect(present.has(id), `deleted ${id} still present`).toBe(false);
+    }
+    const baselineIds = new Set(applied.baseline.map((f) => f.id));
+    const del = new Set(applied.proposal.deletedIds);
+    for (const id of applied.proposal.createdIds) {
+      expect(baselineIds.has(id), `created ${id} collides with existing`).toBe(false);
+      expect(del.has(id), `created ${id} also in deletedIds`).toBe(false);
+    }
+
+    // METAMORPHIC undo∘op==id and op∘undo∘redo==op THROUGH the real command +
+    // journal the frame for the end-of-run full rewind (contract (D)).
+    const command = createAffiliationCommand(applied.baseline, applied.proposal);
+    const exec = command.execute(applied.baseline);
+    expect(
+      featuresEqual(exec.state, applied.proposal.nextFeatures),
+      'execute != proposal.nextFeatures',
+    ).toBe(true);
+    const undone = command.undo(exec.state);
+    expect(featuresEqual(undone.state, applied.baseline), 'undo∘op != identity').toBe(true);
+    const redone = command.redo(undone.state);
+    expect(featuresEqual(redone.state, applied.proposal.nextFeatures), 'op∘undo∘redo != op').toBe(
+      true,
+    );
+
+    this.journal.push({
+      command,
+      preState: applied.baseline,
+      postState: exec.state,
+      createdIds: applied.proposal.createdIds,
+    });
+
+    this.state = applied.next;
+    this.committed += 1;
+
+    // anchor列 昇順・非重複: append the new committed snapshot.
+    const entries = [
+      ...this.series.entries,
+      snapshotEntry(this.state.features, this.state.store, this.snapIdx),
+    ];
+    this.snapIdx += 1;
+    this.series = normalizeSeries(entries, CAL);
+    assertAscendingUnique(this.series);
+    expect(this.series.entries.length, 'series became empty (INV-5)').toBeGreaterThan(0);
+
+    // save∘load=恒等 every 3rd commit.
+    if (this.committed % 3 === 0) {
+      const parsed = JSON.parse(JSON.stringify(this.state.features)) as Feature[];
+      expect(featuresEqual(parsed, this.state.features), 'save∘load != identity').toBe(true);
+    }
+
+    // (A) LIVE picker ⇔ commit single-source probe on the mutated state.
+    this.probePickerCommitAgreement();
+  }
+
+  /**
+   * Contract (A): on the LIVE committed state, pick one surviving LEAF target and
+   * assert allowedParentCandidates / isLegalNewParent agree with the real commit
+   * pipeline for every existing feature (教訓 5.26 single-source) — listed never
+   * trips a candidate-predicate rejection; hidden never commits.
+   */
+  private probePickerCommitAgreement(): void {
+    const features = this.state.features;
+    const forest = buildForest(features);
+    // single-target picker contract: probe a LEAF (no children) target only.
+    const leaves = features.filter((f) => directChildIds(forest, f.id).length === 0);
+    if (leaves.length === 0) return;
+    this.probeTick += 1;
+    const target = leaves[this.probeTick % leaves.length]!.id;
+
+    const listed = new Set(allowedParentCandidates(forest, target).map((c) => c.featureId));
+
+    for (const f of features) {
+      const cand = f.id;
+      const verdict = isLegalNewParent(forest, target, cand);
+      expect(
+        listed.has(cand),
+        `LIVE picker/predicate disagree: target=${target} cand=${cand}`,
+      ).toBe(verdict.ok);
+
+      const idState = createIdGeneratorState(0, this.state.idCounter);
+      const result = buildAffiliationProposal(features, target, parentExisting(cand), {
+        idState,
+        now: makeNow(1),
+        vertexStore: this.state.store,
+      });
+
+      if (verdict.ok) {
+        if (result.status !== 'proposal') {
+          expect(
+            CANDIDATE_REJECTS.has(result.kind),
+            `LIVE listed candidate ${cand} rejected by candidate predicate: ${result.kind}`,
+          ).toBe(false);
+        }
+      } else {
+        expect(
+          result.status,
+          `LIVE hidden candidate ${cand} committed (back-door)`,
+        ).not.toBe('proposal');
+      }
+    }
+  }
+
+  /**
+   * Contract (D): pop the whole journal with command.undo; assert we land exactly
+   * on the original initial forest, then redo forward without re-minting ids.
+   */
+  rewindAll(): void {
+    if (this.journal.length === 0) {
+      // nothing committed: SUT state must equal the original.
+      expect(featuresEqual(this.state.features, this.original), 'no-op run drifted').toBe(true);
+      return;
+    }
+    let cur: readonly Feature[] = this.journal[this.journal.length - 1]!.postState;
+    for (let i = this.journal.length - 1; i >= 0; i -= 1) {
+      const frame = this.journal[i]!;
+      expect(featuresEqual(cur, frame.postState), `pre-undo drift at frame ${i}`).toBe(true);
+      const undone = frame.command.undo(cur);
+      expect(featuresEqual(undone.state, frame.preState), `undo at frame ${i} != preState`).toBe(
+        true,
+      );
+      cur = undone.state;
+    }
+    expect(featuresEqual(cur, this.original), 'full rewind != original baseline').toBe(true);
+    expect(cur.length).toBe(this.original.length);
+
+    // redo the whole stack forward; the final state must match and ids stay put.
+    const finalPost = this.journal[this.journal.length - 1]!.postState;
+    let fwd: readonly Feature[] = cur;
+    for (const frame of this.journal) {
+      fwd = frame.command.redo(fwd).state;
+    }
+    expect(featuresEqual(fwd, finalPost), 'full redo != final committed set').toBe(true);
+  }
+}
+
+type SCmd6 = fc.Command<StatefulModel6, StatefulSut6>;
+
+class ExistingCmd6 implements SCmd6 {
+  constructor(
+    readonly targetWhich: number,
+    readonly parentWhich: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel6, s: StatefulSut6): void {
+    const applied = applyAffCmd(s.state, {
+      t: 'existing',
+      targetWhich: this.targetWhich,
+      parentWhich: this.parentWhich,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `existing(t=${this.targetWhich},p=${this.parentWhich})`;
+  }
+}
+
+class NoneCmd6 implements SCmd6 {
+  constructor(readonly targetWhich: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel6, s: StatefulSut6): void {
+    const applied = applyAffCmd(s.state, { t: 'none', targetWhich: this.targetWhich });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `none(t=${this.targetWhich})`;
+  }
+}
+
+class CreateUnderCmd6 implements SCmd6 {
+  constructor(
+    readonly targetWhich: number,
+    readonly topWhich: number,
+    readonly deep: boolean,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel6, s: StatefulSut6): void {
+    const applied = applyAffCmd2(s.state, {
+      t: this.deep ? 'createDeepUnderExisting' : 'createUnderExisting',
+      targetWhich: this.targetWhich,
+      topWhich: this.topWhich,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `${this.deep ? 'createDeepUnder' : 'createUnder'}(t=${this.targetWhich},top=${this.topWhich})`;
+  }
+}
+
+class FederateCmd6 implements SCmd6 {
+  constructor(
+    readonly a: number,
+    readonly b: number,
+    readonly c: number,
+    readonly d: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel6, s: StatefulSut6): void {
+    const applied = applyAffCmd2(s.state, {
+      t: 'federate4',
+      aWhich: this.a,
+      bWhich: this.b,
+      cWhich: this.c,
+      dWhich: this.d,
+    });
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `federate4(${this.a},${this.b},${this.c},${this.d})`;
+  }
+}
+
+/**
+ * Contract (C): de-nest an INTERMEDIATE aggregate (has a parent AND owns
+ * children) to `none`, LIVE mid-sequence. The freed descendant leaves must all
+ * survive and become top-level; the emptied intermediate must not linger as an
+ * empty aggregate (FR-35). On a non-committing pick this is a no-op.
+ */
+class DenestSubtreeCmd6 implements SCmd6 {
+  constructor(readonly subWhich: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel6, s: StatefulSut6): void {
+    const features = s.state.features;
+    const forest = buildForest(features);
+    const subAggs = features.filter(
+      (f) =>
+        f.parentId !== undefined &&
+        f.kind === 'aggregate' &&
+        directChildIds(forest, f.id).length > 0,
+    );
+    if (subAggs.length === 0) return;
+    const sub = subAggs[this.subWhich % subAggs.length]!;
+    // resolveTargetLeaves expands an aggregate to its DIRECT children only
+    // (直接の子のみ — proposal.ts resolveTargetLeaves), each of which receives the
+    // SAME `none` decision => each becomes top-level. Transitive descendant leaves
+    // deeper than the direct children stay under their own (now top-level) parent;
+    // the contract is (i) every direct child becomes top-level, (ii) NO descendant
+    // leaf vanishes (subtree integrity), (iii) the emptied target does not linger.
+    const directChildrenBefore = [...directChildIds(forest, sub.id)];
+    const descLeavesBefore = descendantLeaves(features, sub.id);
+    if (directChildrenBefore.length === 0) return;
+
+    const applied = applyAffCmd(s.state, {
+      t: 'none',
+      targetWhich: features.indexOf(sub),
+    });
+    if (applied === undefined) return; // legitimate rejection: no-op.
+    s.commitAndCheck(applied);
+    m.commits += 1;
+
+    const next = applied.next.features;
+    const present = new Set(next.map((f) => f.id));
+    // (i) each DIRECT child of the de-nested aggregate is now top-level.
+    for (const cid of directChildrenBefore) {
+      expect(present.has(cid), `de-nest: direct child ${cid} vanished`).toBe(true);
+      const cf = next.find((f) => f.id === cid);
+      expect(cf?.parentId, `de-nest: direct child ${cid} not top-level`).toBe(undefined);
+    }
+    // (ii) subtree integrity: no transitive descendant leaf is dropped.
+    for (const lid of descLeavesBefore) {
+      expect(present.has(lid), `de-nest: descendant leaf ${lid} vanished`).toBe(true);
+    }
+    const subStill = next.find((f) => f.id === sub.id);
+    if (subStill !== undefined) {
+      const kids = directChildIds(buildForest(next), sub.id);
+      expect(kids.length, `de-nest: intermediate ${sub.id} lingered empty`).toBeGreaterThan(0);
+    }
+  }
+  toString(): string {
+    return `denest(sub=${this.subWhich})`;
+  }
+}
+
+/**
+ * Contract (B): try to re-parent a feature X under one of its OWN descendants,
+ * LIVE mid-sequence. This forms a cycle and MUST never commit; a machine-readable
+ * rejection must be a candidate-predicate / hierarchy reason, never silent
+ * acceptance. State is never mutated by this command (it asserts the rejection).
+ */
+class CycleAttemptCmd6 implements SCmd6 {
+  constructor(
+    readonly xWhich: number,
+    readonly dWhich: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel6, s: StatefulSut6): void {
+    const features = s.state.features;
+    // Local descendantIds takes (features, id) and returns a Set<FeatureId>.
+    const withDesc = features.filter((f) => descendantIds(features, f.id).size > 0);
+    if (withDesc.length === 0) return;
+    const x = withDesc[this.xWhich % withDesc.length]!;
+    const descs = [...descendantIds(features, x.id)];
+    if (descs.length === 0) return;
+    const d = descs[this.dWhich % descs.length]!;
+
+    const idState = createIdGeneratorState(0, s.state.idCounter);
+    const result = buildAffiliationProposal(features, x.id, parentExisting(d), {
+      idState,
+      now: makeNow(1),
+      vertexStore: s.state.store,
+    });
+
+    expect(
+      result.status,
+      `LIVE cycle commit: re-parented ${x.id} under its descendant ${d}`,
+    ).not.toBe('proposal');
+    if (result.status === 'rejected') {
+      expect(
+        [
+          AFFILIATION_REJECT.Cycle,
+          AFFILIATION_REJECT.SameFeature,
+          AFFILIATION_REJECT.ExistencePeriod,
+          AFFILIATION_REJECT.TargetKind,
+          'hierarchy',
+          'internal',
+        ].includes(result.kind as never),
+        `unexpected rejection kind for LIVE cycle attempt: ${result.kind}`,
+      ).toBe(true);
+    }
+    // X's ancestry is unchanged (no state mutation by a cycle attempt).
+  }
+  toString(): string {
+    return `cycleAttempt(x=${this.xWhich},d=${this.dWhich})`;
+  }
+}
+
+const statefulCommands6Arb: fc.Arbitrary<Iterable<SCmd6>> = fc.commands(
+  [
+    fc.tuple(fc.nat(), fc.nat()).map(([t, p]) => new ExistingCmd6(t, p)),
+    fc.nat().map((t) => new NoneCmd6(t)),
+    fc.tuple(fc.nat(), fc.nat(), fc.boolean()).map(([t, top, d]) => new CreateUnderCmd6(t, top, d)),
+    fc
+      .tuple(fc.nat(), fc.nat(), fc.nat(), fc.nat())
+      .map(([a, b, c, d]) => new FederateCmd6(a, b, c, d)),
+    fc.nat().map((w) => new DenestSubtreeCmd6(w)),
+    fc.tuple(fc.nat(), fc.nat()).map(([x, d]) => new CycleAttemptCmd6(x, d)),
+  ],
+  { maxCommands: 18 },
+);
+
+describe(`affiliation — STATEFUL model #2: live picker/cycle/de-nest + full rewind (seed=${SEED6})`, () => {
+  it('fc.commands drives the real pipeline; live single-source + cycle guard + end-of-run rewind hold', () => {
+    fc.assert(
+      fc.property(wideForestArb(), statefulCommands6Arb, (initial, cmds) => {
+        let sut: StatefulSut6 | undefined;
+        const setup: fc.ModelRunSetup<StatefulModel6, StatefulSut6> = () => {
+          const real = new StatefulSut6(initial);
+          sut = real;
+          return { model: { commits: 0 }, real };
+        };
+        fc.modelRun(setup, cmds);
+        // Contract (D): full undo-stack rewind == identity over the whole sequence.
+        sut?.rewindAll();
+      }),
+      { seed: SEED6, numRuns: 700 },
+    );
+  });
+});

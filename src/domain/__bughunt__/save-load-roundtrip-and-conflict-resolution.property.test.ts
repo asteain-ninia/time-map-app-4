@@ -2873,3 +2873,434 @@ describe('bug hunt #3 / undo-redo over mixed-granularity (seed 36002)', () => {
     );
   });
 });
+
+// ============================================================================
+// Section 8 — bug hunt #3 / FIFTH exploration (seed 36003, DISJOINT from all the
+// pins above: 26001/26002/26003/26004, 36002, AND the identity suite's
+// 1000–6004 / 21000–26000). This section reaches command kinds / interactions /
+// metamorphic laws and a STATEFUL strategy that NONE of the earlier sections
+// drive even once:
+//
+//   (u) A fast-check STATEFUL model whose alphabet includes CONFLICT-RESOLUTION
+//       as live commands — Section 7(q)'s stateful model only ever drove edit /
+//       save→load / undo∘op; it never injected a corruption nor ran a repair as a
+//       stateful step. Here a single mutable holder is driven by an interleaving
+//       of: a geometry-preserving EDIT, a STRUCTURAL vertex add/delete (U24),
+//       save→load, undo∘op, AND a CORRUPT-THEN-REPAIR-TO-FIXPOINT command (inject
+//       one FR-106 class, assert detection + honest convergence + post-repair
+//       consistency + boundary round-trip, then ADOPT the repaired project as the
+//       live state so a SUBSEQUENT command continues from a once-corrupted-then-
+//       healed project). The "continue editing a project that was already repaired
+//       once" path is a session interaction no earlier section reaches — every
+//       earlier corrupt→repair test ended at the fixpoint and never fed it back
+//       into the edit/round-trip walk. fc.commands shrinks over the SEQUENCE.
+//
+//   (v) TRIPLE corruption injection (Section 7(s) maxed out at TWO): inject THREE
+//       independent FR-106 classes into ONE project, then drive the same safe-
+//       repair fixpoint and assert it still converges to a clean, round-tripping
+//       project and stays HONEST. A catalogue that pairwise-resolves but
+//       three-way-deadlocks (one repair re-introducing a second's precondition
+//       while a third blocks the only escape) would surface only at arity ≥ 3.
+//
+//   (w) op ∘ inverse-op = identity for the END-time axis (Section 3 only covered
+//       insert∘delete on the START axis): setEnd(e) then setEnd(null) on the SAME
+//       anchor must restore the ORIGINAL series byte-for-byte when the original
+//       end was already null — clearing an end you just set is the exact inverse
+//       of setting it. Driven through the REAL U09 setEnd guard on each history.
+//
+//   (x) changeStart is a SELF-INVERSE round-trip on the START axis: moving an
+//       anchor's start to a fresh free year and back to its original year must
+//       restore the original series (the two changeStart ops compose to identity
+//       when the intermediate year collides with no other anchor). A start-axis
+//       op∘inverse-op law the insert∘delete law (Section 3) never asserts.
+// ============================================================================
+
+const SEED8 = 36003;
+
+/**
+ * Inject one corruption AND drive the safe-repair fixpoint as ONE stateful step,
+ * asserting the full metamorphic conflict-resolution battery, then return the
+ * repaired (clean) project so the caller can adopt it as the live session state.
+ * Returns null if the corruption was inapplicable to this project shape (the
+ * caller leaves the live state unchanged). Throws on any law violation.
+ */
+function corruptThenRepairStep(
+  project: DomainProject,
+  tag: CorruptionTag,
+  pick: number,
+): DomainProject | null {
+  const inj = corrupt(project, tag, pick);
+  if (inj === null) return null;
+  // Detection: the injected class MUST be flagged (no silent pass).
+  const report = checkConsistency(inj.project, CAL);
+  if (report.ok) {
+    throw new Error(`[stateful] corruption "${tag}" on a live project was NOT detected`);
+  }
+  const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+  if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+    throw new Error(
+      `[stateful] corruption "${tag}" expected ${inj.expectKind} but got: ${[...kinds].join(', ')}`,
+    );
+  }
+  const fix = repairToFixpoint(inj.project);
+  if (fix.honestyViolated) {
+    throw new Error(`[stateful] applyRepairChecked dishonest for live corruption "${tag}"`);
+  }
+  if (!fix.converged) {
+    throw new Error(`[stateful] live corruption "${tag}" did not converge (stuck=${fix.stuck})`);
+  }
+  if (!checkConsistency(fix.project, CAL).ok) {
+    throw new Error(`[stateful] post-repair live project still inconsistent for "${tag}"`);
+  }
+  const rt = boundaryRoundTrips(fix.project);
+  if (!rt.ok) {
+    throw new Error(`[stateful] repaired live project failed boundary round-trip (${rt.reason})`);
+  }
+  return fix.project;
+}
+
+/** A stateful command: apply ONE structural U24 edit, then assert battery + round-trip. */
+class StructStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly cmd: StructCmd) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    r.project = applyStructCmd(r.project, this.cmd).project;
+    const check = checkAllInvariants(r.project);
+    if (!check.ok) {
+      throw new Error(`[stateful] invariant "${check.failed}" broke after struct ${JSON.stringify(this.cmd)}`);
+    }
+    const rt = boundaryRoundTrips(r.project);
+    if (!rt.ok) {
+      throw new Error(`[stateful] boundary round-trip broke (${rt.reason}) after struct ${JSON.stringify(this.cmd)}`);
+    }
+  }
+  toString(): string {
+    return `struct(${this.cmd.tag})`;
+  }
+}
+
+/**
+ * A stateful command: inject a corruption, repair to a fixpoint, assert the
+ * conflict-resolution battery, and ADOPT the healed project as the live state so
+ * later commands continue from a once-corrupted-then-repaired session.
+ */
+class CorruptRepairStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly tag: CorruptionTag, private readonly pick: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    const healed = corruptThenRepairStep(r.project, this.tag, this.pick);
+    if (healed === null) return; // inapplicable to this live shape — leave state as-is.
+    // The healed project must STILL satisfy the full per-edit invariant battery —
+    // a repaired project is a legitimate live session state that the user keeps
+    // editing, so every load-relevant invariant must hold on it too.
+    const check = checkAllInvariants(healed);
+    if (!check.ok) {
+      throw new Error(`[stateful] healed project failed invariant "${check.failed}" for "${this.tag}"`);
+    }
+    r.project = healed;
+  }
+  toString(): string {
+    return `corrupt→repair(${this.tag})`;
+  }
+}
+
+const corruptRepairCmdArb: fc.Arbitrary<CorruptRepairStatefulCmd> = fc
+  .record({ tag: corruptionArb, pick: fc.nat() })
+  .map(({ tag, pick }) => new CorruptRepairStatefulCmd(tag, pick));
+
+describe('bug hunt #3 / FIFTH exploration (seed 36003) — stateful with conflict-resolution', () => {
+  it('a stateful sequence of edits / struct-edits / save→load / undo / corrupt→repair holds every law', () => {
+    const allCommands = fc.commands(
+      [
+        cmdArb().map((c) => new EditStatefulCmd(c)),
+        structCmdArb().map((c) => new StructStatefulCmd(c)),
+        fc.constant(new SaveLoadStatefulCmd()),
+        cmdArb().map((c) => new UndoOpStatefulCmd(c)),
+        corruptRepairCmdArb,
+      ],
+      { maxCommands: 28 },
+    );
+    fc.assert(
+      // projectArb2() so STRUCTURAL edits (line/leaf vertex ops) have material to work on.
+      fc.property(projectArb2(), allCommands, (initial, cmds) => {
+        const base = checkBaseInvariants(initial);
+        if (!base.ok) throw new Error(`stateful base invalid: ${base.failed}`);
+        const setup = (): { model: ProjectModel; real: ProjectReal } => ({
+          model: { historyCount: initial.histories.length },
+          real: { project: initial },
+        });
+        fc.modelRun(setup, cmds);
+      }),
+      { seed: SEED8, numRuns: 350 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 8 (v) — TRIPLE corruption injection. Inject THREE independent FR-106
+// classes into ONE project and assert the safe-repair fixpoint still converges to
+// a clean, round-tripping project and stays HONEST. A catalogue that pairwise-
+// resolves but THREE-way mutually blocks would surface only here.
+// ============================================================================
+
+describe('bug hunt #3 / triple-corruption fixpoint (seed 36003)', () => {
+  it('three independent corruptions injected together still repair to a clean, round-tripping fixpoint', () => {
+    fc.assert(
+      fc.property(
+        projectArbMixed(),
+        corruptionArb,
+        corruptionArb,
+        corruptionArb,
+        fc.nat(),
+        fc.nat(),
+        fc.nat(),
+        (project, tagA, tagB, tagC, pickA, pickB, pickC) => {
+          const injA = corrupt(project, tagA, pickA);
+          if (injA === null) return;
+          // Non-vacuity guard: the FIRST corruption alone must be detected (proves it
+          // is a REAL corruption so the test is never a silent no-op).
+          if (checkConsistency(injA.project, CAL).ok) {
+            throw new Error(`first corruption (${tagA}) alone was NOT detected — invalid precondition`);
+          }
+          // Stack the second and third on top. As in the dual case (Section 7(s)), a
+          // later injection can legitimately OVERWRITE the structure an earlier one
+          // relied on, yielding a project whose only honest verdict for some classes is
+          // "already consistent". That is NOT a detection gap (each class IS detected in
+          // isolation per Section 2); we require only that whatever the COMBINED project
+          // is, the safe-repair fixpoint reaches a clean, round-tripping, HONEST result.
+          const injB = corrupt(injA.project, tagB, pickB);
+          const afterB = injB === null ? injA.project : injB.project;
+          const injC = corrupt(afterB, tagC, pickC);
+          const target = injC === null ? afterB : injC.project;
+
+          const fix = repairToFixpoint(target);
+          if (fix.honestyViolated) {
+            throw new Error(
+              `triple corruption (${tagA}+${tagB}+${tagC}) repair was DISHONEST (resolved while unsafe)`,
+            );
+          }
+          if (!fix.converged) {
+            throw new Error(
+              `triple corruption (${tagA}+${tagB}+${tagC}) did NOT converge (stuck=${fix.stuck})`,
+            );
+          }
+          const finalReport = checkConsistency(fix.project, CAL);
+          if (!finalReport.ok) {
+            throw new Error(
+              `post-triple-repair still inconsistent (${tagA}+${tagB}+${tagC}): ${finalReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rt = boundaryRoundTrips(fix.project);
+          if (!rt.ok) {
+            throw new Error(
+              `triple-repaired project failed boundary round-trip (${rt.reason}) for ${tagA}+${tagB}+${tagC}`,
+            );
+          }
+        },
+      ),
+      { seed: SEED8, numRuns: 1000 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 8 (v.bug) — FR-106(a) MissingVertexReference CROSS-HISTORY MASKING.
+//
+// This minimal, deterministic case is the SHRUNK root cause the triple-corruption
+// property above first surfaced (as a repair deadlock). It is isolated here so the
+// defect is documented unambiguously and the suite fails loudly until the detector
+// is fixed (緑偽装禁止: we assert the SPECIFIED correct behaviour, not the buggy one).
+//
+// DEFECT: `checkConsistency` resolves a feature's vertex references against the
+// MERGED vertex store of ALL histories effective at a time slice
+// (consistency.ts checkTimeSlice → createVertexStore(allVertices), last-write-wins),
+// then runs detectMissingVertices against that merged store. So a feature whose OWN
+// snapshot store is MISSING a vertex it references is NOT flagged whenever ANY other
+// feature in ANOTHER history defines a vertex with the SAME id at the same time —
+// the stray same-id body masks the genuine dangling reference. Vertex ids are
+// per-feature in this domain (a feature's snapshot must carry the vertices it cites),
+// so cross-history masking is a true false-negative: the load-time integrity gate
+// (FR-106 a) silently passes a project that references a non-existent vertex, and a
+// later edit / repair that removes the masking feature unmasks a "new" missing-vertex
+// the auto-repair framework then (correctly) refuses to certify — deadlocking the
+// safe-repair fixpoint (the property failure above).
+//
+// EXPECTED: A's missing `a0` reference is reported as MissingVertexReference for A.
+// ============================================================================
+
+describe('bug hunt #3 / FR-106(a) cross-history missing-vertex masking (seed 36003)', () => {
+  it('a feature whose OWN snapshot lacks a referenced vertex IS detected even when another history defines that id', () => {
+    // Feature A (leaf) references a0..a3, but its OWN snapshot store OMITS a0 →
+    // A genuinely carries a dangling vertex reference (FR-106 a).
+    const aVerts = [
+      createVertex(asVertexId('mvm-a0'), createCoordinate(10, 0)),
+      createVertex(asVertexId('mvm-a1'), createCoordinate(20, 0)),
+      createVertex(asVertexId('mvm-a2'), createCoordinate(20, 10)),
+      createVertex(asVertexId('mvm-a3'), createCoordinate(10, 10)),
+    ];
+    const aRing = createTerritoryRing(asRingId('mvm-a-r'), aVerts.map((v) => v.id));
+    const aLeaf = createLeafFeature(
+      asFeatureId('mvm-A'),
+      createBasicAttributes('A', 0, 100),
+      COLOR,
+      createShape([aRing]),
+    );
+    const aStore = createVertexStore([aVerts[1]!, aVerts[2]!, aVerts[3]!]); // omits a0.
+
+    // Feature B (point) in a DIFFERENT history at the SAME time defines a vertex
+    // with the SAME id `mvm-a0` (a stray same-id body — reachable from a corrupt /
+    // hand-edited file or a shared-boundary mishap).
+    const bVertex = createVertex(asVertexId('mvm-b-v'), createCoordinate(500, 0));
+    const strayA0 = createVertex(asVertexId('mvm-a0'), createCoordinate(10, 0));
+    const bPoint = createPointFeature(
+      asFeatureId('mvm-B'),
+      createBasicAttributes('B', 0, 50),
+      COLOR,
+      bVertex.id,
+      { kindLabel: '都市' },
+    );
+    const bStore = createVertexStore([bVertex, strayA0]);
+
+    const project: DomainProject = {
+      histories: [
+        {
+          featureId: asFeatureId('mvm-A'),
+          series: normalizeSeries(
+            [
+              createAnchorEntry(
+                createAnchor(asAnchorId('mvm-A-0'), createAnchorSnapshot([aLeaf], aStore)),
+                timePointYear(0),
+                null,
+              ),
+            ],
+            CAL,
+          ),
+        },
+        {
+          featureId: asFeatureId('mvm-B'),
+          series: normalizeSeries(
+            [
+              createAnchorEntry(
+                createAnchor(asAnchorId('mvm-B-0'), createAnchorSnapshot([bPoint], bStore)),
+                timePointYear(0),
+                null,
+              ),
+            ],
+            CAL,
+          ),
+        },
+      ],
+      settings: SETTINGS,
+      baseMap: BASEMAP,
+    };
+
+    const report = checkConsistency(project, CAL);
+    const flaggedA = report.inconsistencies.some(
+      (i) =>
+        i.kind === INCONSISTENCY.MissingVertexReference &&
+        i.featureIds.includes(asFeatureId('mvm-A')),
+    );
+    if (!flaggedA) {
+      throw new Error(
+        `FR-106(a) false-negative: A references mvm-a0 absent from its OWN snapshot, ` +
+          `but checkConsistency did not flag it (masked by history B's same-id vertex). ` +
+          `report=[${report.inconsistencies.map((i) => `${i.kind}/${i.detail}`).join(', ')}]`,
+      );
+    }
+  });
+});
+
+// ============================================================================
+// Section 8 (w)+(x) — op ∘ inverse-op = identity on the END and START time axes,
+// driven through the REAL U09 setEnd / changeStart guards. Section 3's only
+// inverse-op law was insert∘delete on the START axis; these reach the end-time
+// clear-after-set inverse AND the changeStart self-inverse round-trip neither
+// earlier law touches.
+// ============================================================================
+
+describe('bug hunt #3 / inverse-op on the time axes (seed 36003)', () => {
+  it('setEnd(e) then setEnd(null) restores the series (clear is the inverse of set) — END axis', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), fc.nat(), fc.integer({ min: 1, max: 40 }), (project, hiPick, span) => {
+        const n = project.histories.length;
+        if (n === 0) return;
+        const hi = hiPick % n;
+        const history = project.histories[hi]!;
+        const entries = history.series.entries;
+        // Target an anchor whose end is ALREADY null (open-ended): clearing the end we
+        // set must then restore EXACTLY that open-ended original. Pick the LAST entry so
+        // there is no next-anchor bound to clamp the end against (setEnd's endBeyondNextEnd
+        // / overrun-shorten cannot perturb it), making the inverse exact.
+        const target = entries[entries.length - 1]!;
+        if (target.end !== null) return; // only the open-ended case is a clean inverse.
+        const startYear = target.start.granularity === 'year'
+          ? target.start.year
+          : target.start.year; // year field exists on every granularity.
+        const newEnd = timePointYear(startYear + span);
+        const set = setEnd(history.series, target.anchor.id, newEnd, CAL);
+        if (!set.ok) return; // rejected (e.g. endNotAfterStart on a degenerate pick) — skip.
+        const cleared = setEnd(set.series, target.anchor.id, null, CAL);
+        expect(cleared.ok).toBe(true);
+        if (cleared.ok) {
+          const restored: DomainProject = {
+            ...project,
+            histories: project.histories.map((h, i) =>
+              i === hi ? { featureId: h.featureId, series: cleared.series } : h,
+            ),
+          };
+          expect(projectsEqual(restored, project)).toBe(true);
+          // And it must serialize byte-identically (no silent re-leveling on the round-trip).
+          expect(JSON.stringify(serialize(restored))).toBe(JSON.stringify(serialize(project)));
+        }
+      }),
+      { seed: SEED8, numRuns: 600 },
+    );
+  });
+
+  it('changeStart(y2) then changeStart(y1) restores the series (self-inverse) — START axis', () => {
+    fc.assert(
+      fc.property(projectArbMixed(), fc.nat(), (project, hiPick) => {
+        const n = project.histories.length;
+        if (n === 0) return;
+        const hi = hiPick % n;
+        const history = project.histories[hi]!;
+        const entries = history.series.entries;
+        // Target the LAST anchor (no future anchor to perturb on the way out / back).
+        const target = entries[entries.length - 1]!;
+        if (target.start.granularity !== 'year') return; // restore-to-year is exact only for a year start.
+        if (target.end !== null) return; // an own-end could trip startNotBeforeEnd; keep it clean.
+        const y1 = target.start.year;
+        // A fresh intermediate year FAR from every existing start so no dedup-collapse
+        // occurs on either hop (collapsing would lose an anchor and break the inverse).
+        const usedYears = new Set(
+          entries
+            .map((e) => (e.start.granularity === 'year' ? e.start.year : null))
+            .filter((y): y is number => y !== null),
+        );
+        let y2 = y1 + 1000;
+        while (usedYears.has(y2)) y2 += 1;
+        const out = changeStart(history.series, target.anchor.id, timePointYear(y2), CAL);
+        if (!out.ok) return;
+        const back = changeStart(out.series, target.anchor.id, timePointYear(y1), CAL);
+        expect(back.ok).toBe(true);
+        if (back.ok) {
+          const restored: DomainProject = {
+            ...project,
+            histories: project.histories.map((h, i) =>
+              i === hi ? { featureId: h.featureId, series: back.series } : h,
+            ),
+          };
+          expect(projectsEqual(restored, project)).toBe(true);
+          expect(JSON.stringify(serialize(restored))).toBe(JSON.stringify(serialize(project)));
+        }
+      }),
+      { seed: SEED8, numRuns: 600 },
+    );
+  });
+});
