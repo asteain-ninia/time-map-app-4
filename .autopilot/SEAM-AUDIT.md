@@ -210,3 +210,17 @@
 **繰越**: C5, C11, C12, C13, C14(M10 部分), C15。
 
 繰越の総評: 残課題はいずれも (i) 通常の編集ワークフローでは到達しない病的入力(>360° 幅・多周回ワールドラップ・~1e15 pan・生折り畳み座標を契約違反で渡す)、または (ii) 機能欠陥でなく防御層/UI 仕様合意を要する項目に限られる。HIGH の根本原因 A(align 欠落)/B(unwrap 前提破れ)は全て解決済みで、シーム欠陥の主要被害面は塞がれた。
+
+---
+
+## 6. 確定処理: シーム整列 横展開(2026-06-21 finalize alignment rollout)
+
+§4 根本原因 A(per-ring 独立 unwrap が共通 world-turn に整列されない=`alignRingTo` 欠落)の修正を、初回 finalize(§5・commit `9964314`)で塞いだ display/drill/集約 union の3経路から、**残る boolean-ops 呼び出し側(merge/hierarchy validate/promotion)へ横展開して完了した**。全経路を `9964314` 由来の単一真実源ヘルパ(`alignMultiPolygon` / `referenceLonForMultiPolygon` / `commonRef`)経由に統一し、boolean ops 前に被演算子を共通 world-turn へ整列させる(per-ring 独立 unwrap を排除)。Codex review 指摘も反映し、整列で生じた連続値(>180°)が永続化へ漏れないよう `normalizeCoordinate` で representative へ正規化、周期同一点(FR-95 旧→新対応等)を取りこぼさないようにした。
+
+| 経路 | 状態 | 解決 commit / 内容 |
+| --- | --- | --- |
+| **merge proposal** `merge/proposal.ts`(`unionLeafShapes` / `reparentByContainment.ringContains`) | **[解決]** | `44b0960`(共有 `alignMultiPolygon`/`referenceLonForMultiPolygon` で整列。シーム跨ぎ隣接末端の論理和が ~360° に散らばらず1連続片へ結合。coordKey/頂点格納を `normalizeCoordinate` で representative 正規化。`proposal.seam.test.ts` 追加) |
+| **hierarchy validate** `hierarchy/validate.ts`(`checkAggregateShapes` の `unionAll`/`holeRegions`/`interChildGap` 残差/`directionalDiffEmpty`) | **[解決]** | `7c50104`(`commonRef`+`alignMultiPolygon` 経由に統一。子の lake hole を inter-child gap と誤検出せず周期同一領域を等価判定。`validate.seam.test.ts` 追加) |
+| **promotion** `promotion/promote.ts`(`unionChildAreas` の子面積 union と 元形状−子和の `geoDifference`) | **[解決]** | `9c61d6f`(差分被演算子 `originalShapeMp`/`childUnion` を per-ring 独立 unwrap でなく共通アンカーへ整列。親頂点列がシーム西側始点で子が東フレーム着地でも偽の直轄領を生まない。`promote.seam.test.ts` 追加) |
+
+横展開の総評: これで boolean-ops を呼ぶ全ドメイン経路(display unwrapShape / drill / 集約 union / U10 overlap / merge / hierarchy validate / promotion)が **`alignMultiPolygon` 単一真実源で共通 world-turn 整列済み**となり、根本原因 A の横展開は完了。検証4点(typecheck/lint/test/test:e2e)全緑・skip 0・デグレなし(test 230 files・2478 tests / e2e 54 passed。§5 finalize 時点 227/2467 から +3 files・+11 tests = 3 本の `*.seam.test.ts` 純増、回帰なし)。残繰越(C5/C11/C12/C13/C14(M10)/C15)は §5 のとおり病的入力 or 仕様合意要で機能欠陥ではなく不変。
