@@ -609,6 +609,18 @@ export function App(): JSX.Element {
       initialFps: renderFps,
     });
     const requestRedraw = (): void => redrawScheduler.request();
+    // FR-110 ROOT FIX (bughunt round-2): route the host's OWN high-frequency repaints
+    // through the SAME scheduler. Pan/wheel (writeCamera), tool-draft moves (drawAdd /
+    // drawKnife) and resize (resyncViewport) previously called the synchronous full-frame
+    // recomposition on every input event, so those interactions — exactly the ones FR-110
+    // is meant to cap — repainted at raw input rate, bypassing the FrameScheduler that was
+    // wired only around the store-subscription redraw. Injecting the requester here makes
+    // the host defer its composite to `redrawScheduler.request()` (whose draw re-enters
+    // `ports.redraw()`), so N input events within one frame collapse to ONE composite and
+    // the configured render FPS caps the draw rate (受け入れ基準 5). The camera/overlay
+    // state is still written synchronously inside the host, so readCamera / hit-tests / the
+    // observation hooks see the live camera at once — only the pixels are throttled.
+    ports.setRedrawRequester(requestRedraw);
     // Re-composite whenever the committed domain / current time / selection /
     // display-control / label-threshold setting changes so an added / edited /
     // split feature (or a slider / setting change) draws at once (P0-A / 教訓 5.5).

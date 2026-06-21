@@ -101,6 +101,26 @@ export interface AddHostPorts {
    * split feature draws at once (P0-A / 教訓 5.5).
    */
   redraw(): void;
+  /**
+   * Inject the throttled redraw requester (FR-110 / 受け入れ基準 5). After this is
+   * set, the high-frequency repaint paths — `writeCamera` (pan / wheel zoom),
+   * `drawAdd` / `drawKnife` (tool-draft moves) and `resyncViewport` — stop calling
+   * the synchronous full-frame recomposition directly and instead route through this
+   * requester, whose draw closure re-enters {@link AddHostPorts.redraw}. That funnels
+   * EVERY repaint through the single {@link FrameScheduler} the composition root owns,
+   * so the configured render FPS caps even the highest-frequency interactions and N
+   * input events within one frame collapse to ONE composite (受け入れ基準 5). Until it
+   * is set the host paints synchronously (the legacy behaviour, so pre-mount paints
+   * and tests without a scheduler still draw at once).
+   *
+   * IMPORTANT: this throttles only the COMPOSITE (the expensive
+   * buildGrid/buildFeature/selectVisible recomposition). The camera state itself is
+   * still written to the renderer SYNCHRONOUSLY inside `writeCamera`, and
+   * `onCameraChange` still fires synchronously, so `readCamera` / `screenToWorld` /
+   * hit-tests and the observation hooks always see the live camera at once — only the
+   * pixels are rate-capped (単一真実源 — the throttle never desyncs the camera truth).
+   */
+  setRedrawRequester(request: () => void): void;
   /** The current camera zoom (CSS px per degree) — the固定円 radius input (FR-17). */
   zoom(): number;
   /**
@@ -292,6 +312,20 @@ export function createAddHostPorts(
       options.onVisibleFeatureCount(visible.length);
     }
   };
+
+  // FR-110 throttle seam. The high-frequency repaint paths (pan / wheel via
+  // writeCamera, tool-draft moves via drawAdd / drawKnife, resyncViewport, the
+  // setZoomRange re-clamp) call `requestPaint()` instead of `paintWith` directly so
+  // EVERY repaint can be coalesced and rate-capped by the composition root's single
+  // FrameScheduler. Default: paint synchronously with the last overlay (legacy
+  // behaviour, used pre-mount, during the async base-map decode, and in tests that
+  // build the host without a scheduler). `setRedrawRequester` swaps in the
+  // scheduler-backed requester, whose draw closure re-enters `redraw()` → the SAME
+  // synchronous `paintWith(lastOverlay)`, so the deferred composite always uses the
+  // overlay/camera/viewport state that the caller stashed synchronously BEFORE the
+  // request (no second draw rule — one paint function, gated; no lost update, 教訓 5.6).
+  let requestPaint = (): void => paintWith(lastOverlay);
+
   /**
    * Measure the canvas's LIVE on-screen box as a {@link Viewport}. This is the
    * SAME `getBoundingClientRect()` the `screenToWorld` offset uses, so the
@@ -340,7 +374,12 @@ export function createAddHostPorts(
       renderer.setCamera(initialCamera(next));
       options.onCameraChange?.(renderer.getCamera());
     }
-    paintWith(lastOverlay);
+    // Route through the throttle: a ResizeObserver can fire at raw layout rate during a
+    // window drag, so the (expensive) recomposition is coalesced/capped like pan/zoom.
+    // The viewport + camera are already updated synchronously above, so a deferred frame
+    // composes against the fresh box (the next paint redraws through the SAME transform
+    // the hit-test reads — no stale-frame gap).
+    requestPaint();
   };
 
   // P1 ROOT FIX — keep the renderer viewport synced to the LIVE canvas box. The
@@ -381,14 +420,24 @@ export function createAddHostPorts(
       return { lon: world.lon, lat: world.lat };
     },
     drawAdd(primitives): void {
-      paintWith(primitives);
+      // Stash the new overlay synchronously so a deferred frame composes it, then route
+      // the (throttled) repaint through the single scheduler (FR-110). A tool-draft move
+      // fires on every pointermove; coalescing keeps the draw rate at the configured cap.
+      lastOverlay = primitives;
+      requestPaint();
     },
     drawKnife(primitives): void {
-      paintWith(primitives);
+      lastOverlay = primitives;
+      requestPaint();
     },
     redraw(): void {
-      // Re-composite with the latest committed features + the last tool overlay.
+      // Re-composite with the latest committed features + the last tool overlay. This is
+      // the scheduler's draw target (the throttled requester re-enters here), so it stays
+      // a SYNCHRONOUS paint — the single place the composite actually runs.
       paintWith(lastOverlay);
+    },
+    setRedrawRequester(request): void {
+      requestPaint = request;
     },
     zoom(): number {
       return renderer.getCamera().zoom;
@@ -397,12 +446,16 @@ export function createAddHostPorts(
       return { camera: renderer.getCamera(), viewport: renderer.getViewport() };
     },
     writeCamera(camera: Camera): void {
-      // Mirror the new camera into the renderer (the single camera the draw uses),
-      // re-composite with the last overlay so the pan/zoom is visible at once, and
-      // notify the host so it can reflect the live pan/zoom into observation hooks.
+      // Mirror the new camera into the renderer SYNCHRONOUSLY (the single camera the
+      // draw / hit-test / screenToWorld read — they must see the live pan/zoom at once,
+      // 教訓 5.29) and notify the host so it reflects the live pan/zoom into the store
+      // truth + observation hooks immediately. Only the (expensive) re-composite is
+      // routed through the throttle: pan fires writeCamera on EVERY pointermove and the
+      // wheel on every notch, so coalescing/capping the paint here is exactly what
+      // FR-110 caps — without it pan/zoom repaint at raw input rate (bughunt round-2).
       renderer.setCamera(camera);
-      paintWith(lastOverlay);
       options.onCameraChange?.(camera);
+      requestPaint();
     },
     setZoomRange(range: ZoomRange): void {
       // FR-10 / FR-109 即時反映: applying a new clamp may re-clamp the LIVE camera
@@ -418,8 +471,10 @@ export function createAddHostPorts(
       renderer.setZoomRange(range);
       const after = renderer.getCamera();
       if (after.zoom !== before.zoom) {
-        paintWith(lastOverlay);
+        // Mirror the bounded zoom at once (FR-10 即時反映) and route the re-composite
+        // through the throttle like every other repaint (single paint path).
         options.onCameraChange?.(after);
+        requestPaint();
       }
     },
     effectiveZoomRange(): ZoomRange {
