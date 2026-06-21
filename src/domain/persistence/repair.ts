@@ -23,7 +23,9 @@
 
 import { normalizeSeries } from '../anchor-series';
 import type { Feature } from '../feature';
-import { withParentId } from '../feature';
+import { FEATURE_KIND, withAggregateChildIds, withParentId } from '../feature';
+import { buildForest, directChildIds } from '../hierarchy/forest';
+import { HIERARCHY_VIOLATION } from '../hierarchy/validate';
 import type { Calendar } from '../time/calendar';
 import type { FeatureId } from '../ids';
 import { checkConsistency, INCONSISTENCY, type Inconsistency } from './consistency';
@@ -38,6 +40,8 @@ export const REPAIR_OPTION = {
   DetachToTopLevel: 'detach-to-top-level',
   /** ツリー位相不整合 → 当該地物を除外する。 */
   DropTopologyFeature: 'drop-topology-feature',
+  /** 集約の childIds と parentId の乖離 → childIds を parentId から再構築する。 */
+  ReconcileChildIds: 'reconcile-child-ids',
   /** 形状保持規則違反 → 当該地物を除外する。 */
   DropShapeRoleFeature: 'drop-shape-role-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
@@ -65,6 +69,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
     '存在しない頂点を参照している地物を読み込みから除外します。',
   [REPAIR_OPTION.DetachToTopLevel]: '親参照を解除して、この地物を最上位に変更します。',
   [REPAIR_OPTION.DropTopologyFeature]: '階層が壊れている地物を読み込みから除外します。',
+  [REPAIR_OPTION.ReconcileChildIds]:
+    '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',
   [REPAIR_OPTION.DropShapeRoleFeature]: '形状の規則に違反している地物を読み込みから除外します。',
   [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
   [REPAIR_OPTION.DropAggregateFeature]: '下位領域と一致しない集約地物を除外し、下位を最上位化します。',
@@ -87,6 +93,18 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
     case INCONSISTENCY.MissingVertexReference:
       return [opt(REPAIR_OPTION.DropFeatureWithMissingVertex)];
     case INCONSISTENCY.TreeTopology:
+      // A childIds⇔parentId divergence is repaired by REBUILDING childIds from the
+      // authoritative parent relation (the source of truth the whole hierarchy /
+      // shape path reads). Detach / drop are still offered as fallbacks. Other
+      // topology sub-causes (cycle / dangling-parent / top-level-flag) keep the
+      // original detach / drop options only.
+      if (inc.detail === HIERARCHY_VIOLATION.ChildParentMismatch) {
+        return [
+          opt(REPAIR_OPTION.ReconcileChildIds),
+          opt(REPAIR_OPTION.DetachToTopLevel),
+          opt(REPAIR_OPTION.DropTopologyFeature),
+        ];
+      }
       return [opt(REPAIR_OPTION.DetachToTopLevel), opt(REPAIR_OPTION.DropTopologyFeature)];
     case INCONSISTENCY.ShapePreservation:
       return [opt(REPAIR_OPTION.DropShapeRoleFeature)];
@@ -143,12 +161,76 @@ function mapSnapshotFeatures(
 function dropFeatures(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const drop = new Set<FeatureId>(ids);
   const filtered = mapSnapshotFeatures(project, (features) =>
-    features.filter((f) => !drop.has(f.id)),
+    // Remove the targets AND scrub them from every SURVIVOR's references in BOTH
+    // directions (教訓5.21): clear a parentId that points at a dropped feature
+    // (else a dangling 上位領域参照 remains) AND drop the id from any aggregate's
+    // childIds (else a dangling 下位領域参照 — the bug this repair previously
+    // manufactured). Removing the feature alone left both kinds of dangling
+    // reference behind, so the repaired project still failed validation.
+    scrubReferences(
+      features.filter((f) => !drop.has(f.id)),
+      drop,
+    ),
   );
   // Drop the histories owned by a removed feature (zombie-history prevention).
   const histories = filtered.histories.filter((h) => !drop.has(h.featureId));
   // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
   return { ...filtered, histories };
+}
+
+/**
+ * Scrub every reference to a removed id out of the surviving features, BOTH
+ * directions (教訓5.21): clear a parentId pointing at a removed feature and drop
+ * removed ids from any aggregate's childIds. Pure: returns a new feature list,
+ * reusing unchanged feature instances.
+ */
+function scrubReferences(
+  features: readonly Feature[],
+  removed: ReadonlySet<FeatureId>,
+): Feature[] {
+  return features.map((f) => {
+    let next = f;
+    if (next.parentId !== undefined && removed.has(next.parentId)) {
+      next = withParentId(next, undefined);
+    }
+    if (next.kind === FEATURE_KIND.Aggregate) {
+      const kept = next.childIds.filter((cid) => !removed.has(cid));
+      if (kept.length !== next.childIds.length) {
+        next = withAggregateChildIds(next, kept);
+      }
+    }
+    return next;
+  });
+}
+
+/**
+ * Rebuild every aggregate's `childIds` from the authoritative parent relation so
+ * the two encodings agree (FR-34 / U08 単一真実源). For each aggregate, childIds
+ * becomes exactly the ids of the features whose parentId is that aggregate, in
+ * forest (input) order. parentId is the source of truth the whole hierarchy /
+ * shape path reads; childIds is the redundant view, so reconciling means
+ * regenerating the view — never the other way (which could resurrect a child the
+ * parent path already dropped). Pure: per-snapshot, returns new features.
+ */
+function reconcileChildIds(project: DomainProject): DomainProject {
+  return mapSnapshotFeatures(project, (features) => {
+    const forest = buildForest(features);
+    return features.map((f) => {
+      if (f.kind !== FEATURE_KIND.Aggregate) return f;
+      const derived = directChildIds(forest, f.id);
+      if (idArraysEqual(f.childIds, derived)) return f;
+      return withAggregateChildIds(f, [...derived]);
+    });
+  });
+}
+
+/** Order-sensitive id-array equality (avoids rebuilding an unchanged aggregate). */
+function idArraysEqual(a: readonly FeatureId[], b: readonly FeatureId[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 /** Detach the given feature ids to top-level (clear parentId) in every snapshot. */
@@ -219,6 +301,8 @@ export function applyRepair(
       return dropFeatures(project, inc.featureIds);
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);
+    case REPAIR_OPTION.ReconcileChildIds:
+      return reconcileChildIds(project);
     case REPAIR_OPTION.DropOverlappingFeature:
       return dropOneOfPair(project, inc.featureIds);
     case REPAIR_OPTION.DropAggregateFeature: {

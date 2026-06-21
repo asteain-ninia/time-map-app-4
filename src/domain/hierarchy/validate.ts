@@ -33,7 +33,7 @@
 //
 // 種別ラベル (kindLabel, FR-40) is never consulted — proven by a regression test.
 
-import type { Feature } from '../feature';
+import { FEATURE_KIND, type Feature } from '../feature';
 import { difference, isOk, union } from '../geometry/boolean-ops';
 import { isMultiPolygonEmpty, type GeoMultiPolygon, type GeoPolygon } from '../geometry/types';
 import type { FeatureId } from '../ids';
@@ -50,6 +50,14 @@ export const HIERARCHY_VIOLATION = {
   DanglingParent: 'dangling-parent',
   /** An aggregate's shape ≠ union of its direct children (gap or overflow). */
   AggregateShapeMismatch: 'aggregate-shape-mismatch',
+  /**
+   * An aggregate's DECLARED `childIds` set disagrees with the children derived
+   * from the parent relation (directChildIds). The two are redundant encodings of
+   * the SAME parent/child edge and MUST agree; when they drift the parentId-driven
+   * resolve/hierarchy path and the childIds-driven deletion path operate on
+   * different child sets (教訓5.30 単一真実源の破れ).
+   */
+  ChildParentMismatch: 'child-parent-mismatch',
   /** A shape could not be resolved (missing vertex/child, or union rejected). */
   ShapeUnresolved: 'shape-unresolved',
   /** Two or more features share the same FeatureId in the input set. */
@@ -169,6 +177,84 @@ export function checkDanglingParents(forest: Forest): HierarchyViolation[] {
     const parentId = f?.parentId;
     if (parentId !== undefined && !forest.byId.has(parentId)) {
       out.push({ kind: HIERARCHY_VIOLATION.DanglingParent, featureIds: [id] });
+    }
+  }
+  return out;
+}
+
+// --- 3b. declared childIds <=> parentId-derived children --------------------
+
+/**
+ * Detect aggregates whose DECLARED `childIds` set diverges from the set of
+ * children derived from the parent relation (`directChildIds`, which the whole
+ * U08 hierarchy — buildForest / resolveFeatureArea / depth — is built on).
+ *
+ * `childIds` (an aggregate field) and `parentId` (every feature's parent link)
+ * are two redundant encodings of the SAME edge. The hierarchy / shape path reads
+ * children from `parentId`; the U31 deletion path (referencesInAnchor parentRefs,
+ * sweepFeature childIds) reads them from `childIds`. If they drift, the two paths
+ * silently operate on different child sets, yet every other structural check
+ * passes. This check closes that gap by requiring the two sets to be EQUAL (as
+ * sets — order is not significant) for every aggregate.
+ *
+ * Both divergence directions are reported on the aggregate id:
+ *   - a declared childId that does NOT parent back to the aggregate (or is absent
+ *     from the set entirely) — a phantom / mis-parented declared child, and
+ *   - a parentId-derived child that the aggregate does NOT declare — a child the
+ *     deletion path would fail to sweep.
+ * Duplicate declared childIds also count as a divergence (the declared multiset
+ * cannot equal the de-duplicated derived set). Dangling declared childIds (no
+ * such feature present) are a divergence too — they have no feature to parent
+ * back. The aggregate id is reported once with every implicated child id.
+ */
+export function checkChildParentAgreement(forest: Forest): HierarchyViolation[] {
+  const out: HierarchyViolation[] = [];
+  for (const id of forest.orderedIds) {
+    const feature = forest.byId.get(id);
+    if (feature === undefined || feature.kind !== FEATURE_KIND.Aggregate) continue;
+
+    const derived = directChildIds(forest, id);
+    const declared = feature.childIds;
+
+    const derivedSet = new Set<FeatureId>(derived);
+    // A declared id is BAD if it is duplicated, not present in the set, or its
+    // feature does not actually point back to this aggregate via parentId.
+    const seenDeclared = new Set<FeatureId>();
+    const mismatched = new Set<FeatureId>();
+    for (const childId of declared) {
+      if (seenDeclared.has(childId)) {
+        mismatched.add(childId); // duplicate declaration.
+        continue;
+      }
+      seenDeclared.add(childId);
+      if (!derivedSet.has(childId)) mismatched.add(childId);
+    }
+    // A derived child the aggregate failed to declare is equally a divergence.
+    for (const childId of derived) {
+      if (!seenDeclared.has(childId)) mismatched.add(childId);
+    }
+
+    if (mismatched.size > 0) {
+      // Report implicated child ids in a deterministic order (declared first in
+      // declaration order, then any derived-only ids in forest order).
+      const ordered: FeatureId[] = [];
+      const emitted = new Set<FeatureId>();
+      for (const childId of declared) {
+        if (mismatched.has(childId) && !emitted.has(childId)) {
+          emitted.add(childId);
+          ordered.push(childId);
+        }
+      }
+      for (const childId of derived) {
+        if (mismatched.has(childId) && !emitted.has(childId)) {
+          emitted.add(childId);
+          ordered.push(childId);
+        }
+      }
+      out.push({
+        kind: HIERARCHY_VIOLATION.ChildParentMismatch,
+        featureIds: [id, ...ordered],
+      });
     }
   }
   return out;
@@ -441,6 +527,7 @@ export function validateHierarchy(
     ...checkTopLevelEquivalence(forest, flags),
     ...checkCycles(forest),
     ...checkDanglingParents(forest),
+    ...checkChildParentAgreement(forest),
   ];
   if (flagEmpty) {
     violations.push(...checkAggregateChildCounts(forest));

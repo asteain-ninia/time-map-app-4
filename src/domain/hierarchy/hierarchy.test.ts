@@ -34,6 +34,7 @@ import {
   AGGREGATE_CHILD_VERDICT,
   areasEqualWithinTolerance,
   checkAggregateShapes,
+  checkChildParentAgreement,
   checkCycles,
   checkDanglingParents,
   checkDuplicateIds,
@@ -712,5 +713,96 @@ describe('deep chain resolution (stack & depth, regression)', () => {
     expect(depths.get(asFeatureId('tip-leaf'))).toBe(5000);
     expect(maxDerivedDepth(forest)).toBe(5000);
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+// =============================================================================
+// 7. childIds <=> parentId agreement (bug-hunt regression)
+// =============================================================================
+//
+// Regression for: "childIds vs parentId can diverge undetected". The hierarchy /
+// shape path derives children from `parentId` (directChildIds); the U31 deletion
+// path reads them from an aggregate's declared `childIds`. They are redundant
+// encodings of the SAME edge and MUST agree, but validation previously checked
+// neither against the other — so a manifest whose childIds and parentId disagreed
+// passed every structural/consistency check yet behaved differently between the
+// two paths. checkChildParentAgreement closes that gap.
+describe('childIds ⇔ parentId agreement (bug-hunt regression)', () => {
+  it('a consistent aggregate (childIds == parentId-derived children) is OK', () => {
+    const root = agg('a', ['b', 'c']);
+    const b = leafFromRect('b', 0, 0, 1, 1, 'a').feature;
+    const c = leafFromRect('c', 2, 0, 1, 1, 'a').feature;
+    const forest = buildForest([root, b, c]);
+    expect(checkChildParentAgreement(forest)).toEqual([]);
+  });
+
+  it('flags a declared childId whose feature does NOT parent back (phantom child)', () => {
+    // The aggregate declares `b` as a child, but `b.parentId` is absent: the
+    // deletion path (childIds) would treat b as a sub-region while the hierarchy
+    // path (parentId) would not. directChildIds(a) is empty; declared is [b].
+    const root = agg('a', ['b']);
+    const b = leafFromRect('b', 0, 0, 1, 1 /* no parentId */).feature;
+    const forest = buildForest([root, b]);
+    expect(directChildIds(forest, asFeatureId('a'))).toEqual([]);
+    const violations = checkChildParentAgreement(forest);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.kind).toBe(HIERARCHY_VIOLATION.ChildParentMismatch);
+    expect(violations[0]!.featureIds).toEqual([asFeatureId('a'), asFeatureId('b')]);
+  });
+
+  it('flags a parentId-derived child the aggregate FAILED to declare (missing childId)', () => {
+    // `b.parentId === a` (so directChildIds(a) === [b]) but a.childIds is empty:
+    // the deletion sweep would never drop b from a's (empty) childIds.
+    const root = agg('a', [] /* declares nothing */);
+    const b = leafFromRect('b', 0, 0, 1, 1, 'a').feature;
+    const forest = buildForest([root, b]);
+    expect(directChildIds(forest, asFeatureId('a'))).toEqual([asFeatureId('b')]);
+    const violations = checkChildParentAgreement(forest);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.featureIds).toEqual([asFeatureId('a'), asFeatureId('b')]);
+  });
+
+  it('flags a childId pointing at a different aggregate than the child parents to', () => {
+    // b.parentId === a1, but a2 (not a1) declares b in its childIds. Both
+    // aggregates are inconsistent: a1 omits b; a2 declares a phantom b.
+    const a1 = agg('a1', [] /* should list b */);
+    const a2 = agg('a2', ['b'] /* phantom: b parents to a1 */);
+    const b = leafFromRect('b', 0, 0, 1, 1, 'a1').feature;
+    const forest = buildForest([a1, a2, b]);
+    const violations = checkChildParentAgreement(forest);
+    expect(violations).toHaveLength(2);
+    const byId = new Map(violations.map((v) => [v.featureIds[0], v.featureIds]));
+    expect(byId.get(asFeatureId('a1'))).toEqual([asFeatureId('a1'), asFeatureId('b')]);
+    expect(byId.get(asFeatureId('a2'))).toEqual([asFeatureId('a2'), asFeatureId('b')]);
+  });
+
+  it('flags a duplicated declared childId even when parentId agrees', () => {
+    const root = agg('a', ['b', 'b']);
+    const b = leafFromRect('b', 0, 0, 1, 1, 'a').feature;
+    const forest = buildForest([root, b]);
+    const violations = checkChildParentAgreement(forest);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]!.featureIds).toEqual([asFeatureId('a'), asFeatureId('b')]);
+  });
+
+  it('validateHierarchy surfaces the divergence (was previously OK)', () => {
+    // The whole point of the bug: structural + consistency validation passed.
+    const root = agg('a', ['b']);
+    const b = leafFromRect('b', 0, 0, 1, 1 /* no parentId */).feature;
+    const result = validateHierarchy([root, b]);
+    expect(result.ok).toBe(false);
+    expect(
+      result.violations.some((v) => v.kind === HIERARCHY_VIOLATION.ChildParentMismatch),
+    ).toBe(true);
+  });
+
+  it('does NOT flag an aggregate whose declared childIds order differs only by order? (order is part of the edge view)', () => {
+    // childIds order is significant for the deletion view but the AGREEMENT check
+    // is set-based: both sets are {b, c}, so no violation regardless of order.
+    const root = agg('a', ['c', 'b']);
+    const b = leafFromRect('b', 0, 0, 1, 1, 'a').feature;
+    const c = leafFromRect('c', 2, 0, 1, 1, 'a').feature;
+    const forest = buildForest([root, b, c]);
+    expect(checkChildParentAgreement(forest)).toEqual([]);
   });
 });

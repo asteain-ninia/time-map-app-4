@@ -4,6 +4,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   INCONSISTENCY,
+  REPAIR_OPTION,
+  applyRepair,
   applyRepairChecked,
   checkConsistency,
   repairOptionsFor,
@@ -746,5 +748,118 @@ describe('repair purity (教訓5.22)', () => {
     applyRepairChecked(project, inc, 'drop-feature-missing-vertex', CAL);
     const after = JSON.stringify(project.histories.map((h) => h.featureId));
     expect(after).toBe(before);
+  });
+});
+
+// --- bug-hunt regression: childIds ⇔ parentId divergence + repair -----------
+//
+// Two halves of the bug:
+//   1. A manifest whose aggregate childIds disagree with the children's parentId
+//      previously passed checkConsistency (TreeTopology never compared the two).
+//   2. The drop-feature repair removed a feature without scrubbing it from any
+//      parent aggregate's childIds, MANUFACTURING a dangling childId after repair.
+describe('bug-hunt: childIds ⇔ parentId divergence (FR-106 / 教訓5.21)', () => {
+  /** An aggregate `aggId` declaring `childIds`, plus a leaf child parented to it. */
+  function projectWithAggAndChild(
+    aggId: string,
+    declaredChildIds: string[],
+    child: { feature: Feature; vertices: ReturnType<typeof createVertex>[] },
+    childParentId: string | undefined,
+  ): DomainProject {
+    const agg = createAggregateFeature(
+      asFeatureId(aggId),
+      createBasicAttributes(aggId, 0, 100),
+      COLOR,
+      declaredChildIds.map(asFeatureId),
+    );
+    const childFeature =
+      childParentId === undefined
+        ? child.feature
+        : ({ ...child.feature, parentId: asFeatureId(childParentId) } as Feature);
+    const store = createVertexStore(child.vertices);
+    return {
+      histories: [singleAnchorHistory(aggId, [agg, childFeature], store)],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+  }
+
+  it('detects an aggregate whose childIds list a feature with a different/absent parentId', () => {
+    // agg declares `cd-child` but the child has NO parentId: the resolve path and
+    // the deletion path disagree on agg's child set. Previously reported OK.
+    const child = squareLeaf('cd-child', '子', 0, 0);
+    const project = projectWithAggAndChild('cd-agg', ['cd-child'], child, undefined);
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TreeTopology);
+    expect(inc).toBeDefined();
+    expect(inc!.detail).toBe('child-parent-mismatch');
+    expect(inc!.featureIds).toContain(asFeatureId('cd-agg'));
+  });
+
+  it('reconcile-childIds repair rebuilds childIds from parentId and re-validates clean', () => {
+    // agg declares a child (cd2-child) that does NOT parent back, and OMITS the
+    // child that DOES (cd2-real). Reconcile must make childIds == [cd2-real].
+    const real = squareLeaf('cd2-real', '実子', 0, 0);
+    const realChild = { ...real.feature, parentId: asFeatureId('cd2-agg') } as Feature;
+    const agg = createAggregateFeature(
+      asFeatureId('cd2-agg'),
+      createBasicAttributes('cd2-agg', 0, 100),
+      COLOR,
+      [asFeatureId('cd2-phantom')], // wrong: phantom child, omits the real one.
+    );
+    const project: DomainProject = {
+      histories: [
+        singleAnchorHistory('cd2-agg', [agg, realChild], createVertexStore(real.vertices)),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TreeTopology)!;
+    expect(repairOptionsFor(inc)[0]!.id).toBe(REPAIR_OPTION.ReconcileChildIds);
+    const applied = applyRepairChecked(project, inc, REPAIR_OPTION.ReconcileChildIds, CAL);
+    expect(applied.resolved).toBe(true);
+    expect(applied.remaining.ok).toBe(true);
+    // The reconciled aggregate now declares exactly the parentId-derived child.
+    const repairedAgg = applied.project.histories[0]!.series.entries[0]!.anchor.snapshot.features.find(
+      (f) => f.id === asFeatureId('cd2-agg'),
+    );
+    expect(repairedAgg?.kind).toBe('aggregate');
+    if (repairedAgg?.kind === 'aggregate') {
+      expect(repairedAgg.childIds).toEqual([asFeatureId('cd2-real')]);
+    }
+  });
+
+  it('drop-feature repair scrubs the dropped id from a parent aggregate childIds (no dangling childId)', () => {
+    // Build a CONSISTENT agg→child, then drop the child. Before the fix, the child
+    // was removed but agg.childIds still listed it — a dangling childId that the
+    // re-validation now catches (and the fix prevents).
+    const child = squareLeaf('df-child', '子', 0, 0);
+    const project = projectWithAggAndChild('df-agg', ['df-child'], child, 'df-agg');
+    // Sanity: the starting project is fully consistent.
+    expect(checkConsistency(project, CAL).ok).toBe(true);
+
+    const dropInc: Inconsistency = {
+      kind: INCONSISTENCY.MissingVertexReference, // any kind routed to dropFeatures.
+      featureIds: [asFeatureId('df-child')],
+      featureNames: ['子'],
+    };
+    const repaired = applyRepair(project, dropInc, REPAIR_OPTION.DropFeatureWithMissingVertex, CAL);
+    // The surviving aggregate must NOT still list the dropped child.
+    const survivingAgg = repaired.histories[0]!.series.entries[0]!.anchor.snapshot.features.find(
+      (f) => f.id === asFeatureId('df-agg'),
+    );
+    expect(survivingAgg?.kind).toBe('aggregate');
+    if (survivingAgg?.kind === 'aggregate') {
+      expect(survivingAgg.childIds).not.toContain(asFeatureId('df-child'));
+      expect(survivingAgg.childIds).toEqual([]);
+    }
+    // And no dangling childId / parentId is left for the consistency checker.
+    // (The agg is now a 0-child declared aggregate, which is its own, separately
+    // reported state — but NOT a child-parent-mismatch dangling reference.)
+    const after = checkConsistency(repaired, CAL);
+    expect(
+      after.inconsistencies.some(
+        (i) => i.kind === INCONSISTENCY.TreeTopology && i.detail === 'child-parent-mismatch',
+      ),
+    ).toBe(false);
   });
 });
