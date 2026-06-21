@@ -24,6 +24,7 @@ import {
   lodLevelForZoom,
   pointLabelVisible,
   projectedLengthPx,
+  projectedRingAreaPx,
   ringOccupancy,
   simplifyRing,
   simplifyShape,
@@ -35,6 +36,8 @@ import type {
   PointPrimitive,
   PolygonShapePrimitive,
 } from './map-renderer';
+import type { GeoRing } from '../domain/geometry/types';
+import { worldToScreen } from './vtransform';
 
 const VP: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
 const CAM: Camera = { centerLon: 0, centerLat: 0, zoom: 10 };
@@ -296,6 +299,57 @@ describe('受け入れ基準 4: area-ring occupancy, per ring (FR-86 リング�
     const thAt = { ...DEFAULT_LABEL_THRESHOLDS, areaMinOccupancy: occ };
     expect(areaRingLabelVisible(ring, CAM, VP, thBelow)).toBe(false);
     expect(areaRingLabelVisible(ring, CAM, VP, thAt)).toBe(true);
+  });
+});
+
+describe('projectedRingAreaPx: allocation-free shoelace stays exact (bughunt3)', () => {
+  // Reference oracle: the original allocating implementation (map → ScreenPoint[]
+  // → shoelace). The inlined two-variable accumulator must agree with it bit-for-
+  // bit on every ring, so the perf fix cannot silently change the projected area.
+  function refArea(ring: GeoRing, camera: Camera, viewport: Viewport): number {
+    if (ring.length < 3) return 0;
+    const pts = ring.map((c) => worldToScreen(c, camera, viewport));
+    let twice = 0;
+    for (let i = 0; i < pts.length; i += 1) {
+      const a = pts[i]!;
+      const b = pts[(i + 1) % pts.length]!;
+      twice += a.x * b.y - b.x * a.y;
+    }
+    return Math.abs(twice) / 2;
+  }
+
+  it('matches the closed-form area of an axis-aligned square', () => {
+    // half-size 10° at zoom 10 ⇒ a 200×200 px square ⇒ 40000 px².
+    const ring = squareRing(0, 0, 10);
+    expect(projectedRingAreaPx(ring, CAM, VP)).toBeCloseTo(40000, 6);
+  });
+
+  it('equals the allocating reference for an off-origin, irregular ring', () => {
+    // Asymmetric pentagon away from the camera centre: this is the case a wrong
+    // closing edge or a missing centre offset (cx/cy) would silently break.
+    const ring: GeoRing = [
+      { lon: 31.5, lat: -12.25 },
+      { lon: 47.0, lat: -9.0 },
+      { lon: 52.75, lat: 4.5 },
+      { lon: 38.0, lat: 16.25 },
+      { lon: 27.5, lat: 2.0 },
+    ];
+    const cam: Camera = { centerLon: 40, centerLat: 0, zoom: 6.5 };
+    expect(projectedRingAreaPx(ring, cam, VP)).toBeCloseTo(refArea(ring, cam, VP), 6);
+  });
+
+  it('is orientation-independent (CW ring = CCW ring)', () => {
+    const cw = squareRing(40, 0, 7);
+    const ccw = [...cw].reverse() as GeoRing;
+    const a = projectedRingAreaPx(cw, CAM, VP);
+    expect(a).toBeGreaterThan(0);
+    expect(projectedRingAreaPx(ccw, CAM, VP)).toBeCloseTo(a, 9);
+  });
+
+  it('returns 0 for the unmeasured camera (zoom ≤ 0) and degenerate rings', () => {
+    const ring = squareRing(0, 0, 10);
+    expect(projectedRingAreaPx(ring, { centerLon: 0, centerLat: 0, zoom: 0 }, VP)).toBe(0);
+    expect(projectedRingAreaPx(ring.slice(0, 2) as GeoRing, CAM, VP)).toBe(0);
   });
 });
 

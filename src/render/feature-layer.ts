@@ -46,7 +46,7 @@ import type {
   PointPrimitive,
   PolygonShapePrimitive,
 } from './map-renderer';
-import type { ScreenPoint, WorldPoint } from './vtransform';
+import type { WorldPoint } from './vtransform';
 import { MAX_WRAP_REPLICAS, screenToWorld, worldToScreen } from './vtransform';
 
 // --- single screen-size source (FR-17 / 教訓 5.30) ---------------------------
@@ -518,13 +518,32 @@ export function projectedRingAreaPx(
   viewport: Viewport,
 ): number {
   if (ring.length < 3) return 0;
-  const pts: ScreenPoint[] = ring.map((c) => worldToScreen(c, camera, viewport));
+  // Inline the world→screen projection into the shoelace accumulator so we never
+  // allocate an intermediate ScreenPoint[] (this runs once per territory ring per
+  // visible area feature per frame; see bughunt3). The projection MUST stay an
+  // exact mirror of worldToScreen, including its unmeasured-camera guard: when
+  // zoom is non-finite or ≤ 0 every vertex collapses to the viewport centre, so
+  // the signed area is 0 — we short-circuit to preserve that contract.
+  if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) return 0;
+  const cx = viewport.widthCss / 2;
+  const cy = viewport.heightCss / 2;
+  const { centerLon, centerLat, zoom } = camera;
+  const c0 = ring[0]!;
+  const firstX = cx + (c0.lon - centerLon) * zoom;
+  const firstY = cy - (c0.lat - centerLat) * zoom;
+  let prevX = firstX;
+  let prevY = firstY;
   let twice = 0;
-  for (let i = 0; i < pts.length; i += 1) {
-    const a = pts[i]!;
-    const b = pts[(i + 1) % pts.length]!;
-    twice += a.x * b.y - b.x * a.y;
+  for (let i = 1; i < ring.length; i += 1) {
+    const c = ring[i]!;
+    const curX = cx + (c.lon - centerLon) * zoom;
+    const curY = cy - (c.lat - centerLat) * zoom;
+    twice += prevX * curY - curX * prevY;
+    prevX = curX;
+    prevY = curY;
   }
+  // Close the ring (last vertex → first).
+  twice += prevX * firstY - firstX * prevY;
   return Math.abs(twice) / 2;
 }
 
