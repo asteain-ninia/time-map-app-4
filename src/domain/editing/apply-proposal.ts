@@ -197,7 +197,13 @@ function withHistories(
   root: DomainProject,
   histories: readonly FeatureHistory[],
 ): DomainProject {
-  return { histories, settings: root.settings, baseMap: root.baseMap };
+  // Spread to preserve ALL of root's fields — including the optional
+  // DomainProject.uiSettings (FR-109/110). Rebuilding as an explicit
+  // { histories, settings, baseMap } literal silently DROPS uiSettings, so any
+  // committed edit/add/split on a loaded project that carries persisted UI
+  // settings would lose them on the next save. Mirrors repair.ts's deliberate
+  // spread; only `histories` is replaced.
+  return { ...root, histories };
 }
 
 // --- add slice (U23 AddSnapshot → new FeatureHistory) -----------------------
