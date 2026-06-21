@@ -146,6 +146,42 @@ describe('createRedrawScheduler (FR-110 renderFps 結線)', () => {
     expect(draws).toBe(2);
   });
 
+  it('setFps carries the last-draw time so the new budget gates the FIRST post-change frame (bughunt round-2: rebuild resets lastDrawMs)', () => {
+    // Repro of the finding: rebuilding the FrameScheduler on a renderFps change seeded a
+    // fresh lastDrawMs = -Infinity, so the first onFrame after the change ALWAYS satisfied
+    // the cap gate and drew immediately — leaking one uncapped frame on the boundary. When
+    // renderFps is LOWERED while frames are flowing, that first frame ignored the (much
+    // larger) new budget. Carrying the outgoing scheduler's last-draw time fixes it.
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const rs = createRedrawScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      initialFps: 60, // fast budget initially
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+    });
+
+    // A draw at t=0 establishes the last-draw time on the original scheduler.
+    rs.request();
+    fake.tick(0);
+    expect(draws).toBe(1);
+
+    // Lower renderFps to 1 (1000ms budget) — the kind of change that should slow drawing.
+    rs.setFps(1);
+
+    // A redraw 100ms after the last draw must now be HELD to the new 1000ms budget. Before
+    // the fix the rebuilt scheduler's lastDrawMs was -Infinity, so this frame drew at once.
+    rs.request();
+    fake.tick(100); // 100ms < 1000ms since the carried last draw ⇒ gated, no draw
+    expect(draws).toBe(1);
+    expect(fake.pending()).toBe(1); // the frame is held, not leaked
+
+    fake.tick(2000); // now past the new budget ⇒ the held frame finally draws
+    expect(draws).toBe(2);
+  });
+
   it('setFps with no pending frame does not spuriously schedule one', () => {
     const fake = makeFakeScheduler();
     let draws = 0;

@@ -205,6 +205,52 @@ describe('flush drains a pending frame NOW (bughunt round-2: stale-frame hit-tes
   });
 });
 
+describe('initialLastDrawMs seeds the cap budget (bughunt round-2: rebuild reset)', () => {
+  it('gates the first frame against the seeded last-draw time instead of drawing uncapped', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    // A scheduler built with initialLastDrawMs = 0 must treat t=0 as its last draw, so a
+    // frame arriving within the per-frame budget is held back — NOT drawn immediately as
+    // it would be with the default lastDrawMs = -Infinity.
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 1, // 1000ms budget
+      initialLastDrawMs: 0,
+    });
+    expect(fs.lastDraw).toBe(0);
+
+    fs.request();
+    fake.tick(100); // only 100ms after the seeded last draw (< 1000ms) ⇒ gated, no draw
+    expect(draws).toBe(0);
+    expect(fs.isDirty).toBe(true);
+    expect(fake.pending()).toBe(1);
+
+    fake.tick(2000); // now past the budget ⇒ the held frame draws
+    expect(draws).toBe(1);
+  });
+
+  it('defaults lastDraw to NEGATIVE_INFINITY (first frame draws at once) when unseeded', () => {
+    const fake = makeFakeScheduler();
+    let draws = 0;
+    const fs = new FrameScheduler({
+      draw: () => {
+        draws += 1;
+      },
+      schedule: fake.schedule,
+      cancel: fake.cancel,
+      fps: 1,
+    });
+    expect(fs.lastDraw).toBe(Number.NEGATIVE_INFINITY);
+    fs.request();
+    fake.tick(100); // no prior draw ⇒ draws immediately despite the 1000ms budget
+    expect(draws).toBe(1);
+  });
+});
+
 describe('dispose cancels a pending frame', () => {
   it('clears dirty and cancels', () => {
     const fake = makeFakeScheduler();

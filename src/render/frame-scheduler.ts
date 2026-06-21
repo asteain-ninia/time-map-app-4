@@ -29,6 +29,15 @@ export interface FrameSchedulerOptions {
   readonly cancel?: CancelFrame;
   /** Target frames per second (FR-110, clamped to [1, 60]). Default 60. */
   readonly fps?: number;
+  /**
+   * Seed for the per-frame-budget accounting (`lastDrawMs`). Defaults to
+   * `Number.NEGATIVE_INFINITY` so a freshly built scheduler always draws its first
+   * frame at once. The redraw wiring (redraw-scheduler.setFps) passes the OUTGOING
+   * scheduler's last-draw time when it rebuilds on a renderFps change, so the new
+   * (possibly lower) budget gates the first post-change frame instead of leaking one
+   * uncapped draw on the boundary (bughunt round-2).
+   */
+  readonly initialLastDrawMs?: number;
 }
 
 /** Clamp the configured fps into FR-110's [1, 60] range (default 60 when invalid). */
@@ -53,7 +62,7 @@ export class FrameScheduler {
 
   private dirty = false;
   private handle: number | null = null;
-  private lastDrawMs = Number.NEGATIVE_INFINITY;
+  private lastDrawMs: number;
   /** Number of actual draws performed (test/instrumentation, 受け入れ基準 5). */
   private drawCount = 0;
 
@@ -68,6 +77,16 @@ export class FrameScheduler {
         if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(h);
       });
     this.minFrameMs = 1000 / clampFps(options.fps);
+    this.lastDrawMs = options.initialLastDrawMs ?? Number.NEGATIVE_INFINITY;
+  }
+
+  /**
+   * The timestamp (ms) of the most recent draw, or `Number.NEGATIVE_INFINITY` if no
+   * draw has happened yet. The redraw wiring carries this across a renderFps rebuild
+   * so the new budget governs from the first frame (bughunt round-2).
+   */
+  get lastDraw(): number {
+    return this.lastDrawMs;
   }
 
   /**

@@ -83,12 +83,13 @@ export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawSc
   let fps = options.initialFps;
   // Build the FrameScheduler options without ever assigning `undefined` to the
   // optional schedule/cancel (exactOptionalPropertyTypes: omit ⇒ U19's rAF defaults).
-  const build = (): FrameScheduler => {
+  const build = (initialLastDrawMs?: number): FrameScheduler => {
     const opts: FrameSchedulerOptions = {
       draw,
       fps,
       ...(schedule !== undefined ? { schedule } : {}),
       ...(cancel !== undefined ? { cancel } : {}),
+      ...(initialLastDrawMs !== undefined ? { initialLastDrawMs } : {}),
     };
     return new FrameScheduler(opts);
   };
@@ -114,9 +115,18 @@ export function createRedrawScheduler(options: RedrawSchedulerOptions): RedrawSc
       // carry the old scheduler's pending state into the new one — if a draw was
       // outstanding, re-request it on the rebuilt scheduler so the in-flight frame is
       // honored under the new budget instead of being dropped.
+      //
+      // ROOT FIX (bughunt round-2: rebuild resets lastDrawMs to NEGATIVE_INFINITY, so
+      // the first post-change frame ignores the new budget). A fresh FrameScheduler
+      // seeds lastDrawMs = -Infinity, which makes its first onFrame always satisfy the
+      // cap gate and draw immediately — leaking one uncapped frame on the boundary of
+      // every renderFps change (e.g. lowering to 1 FPS would not hold the first frame
+      // to the new 1000ms budget). Carry the outgoing scheduler's last-draw time into
+      // the rebuilt one so the new budget governs from the very first frame.
       const wasPending = scheduler.isDirty;
+      const carriedLastDraw = scheduler.lastDraw;
       scheduler.dispose();
-      scheduler = build();
+      scheduler = build(carriedLastDraw);
       if (wasPending) scheduler.request();
     },
     dispose(): void {
