@@ -490,6 +490,52 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(s.timelineMax).toEqual(before.timelineMax);
     expect(s.currentTime).toEqual(timePointYear(9000));
   });
+
+  // finding (bughunt2): updateProjectSetting writes a timeline key and re-derives the
+  // range, but the order rule timelineMinYear < timelineMaxYear lives only in U38's
+  // validateProjectSettings, which the dialog runs BEFORE the store. A non-dialog
+  // caller raising timelineMinYear above the current timelineMaxYear used to produce
+  // an inverted (min>=max) range, and clampTimeToRange would silently snap currentTime
+  // against it with no rejection (空表示). deriveTimelineState now asserts the
+  // precondition and rejects an inverted range loudly instead of clamping.
+  it('updateProjectSetting rejects an inverted timeline range (min above current max) instead of clamping (finding)', () => {
+    const store = makeStore();
+    // Default range is 0..10000; slide currentTime into the OLD range.
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+    const before = store.getState();
+
+    // Raise the lower bound ABOVE the current upper bound (10000) -> would invert.
+    expect(() =>
+      store.getState().updateProjectSetting('timelineMinYear', 20000),
+    ).toThrow(/inverted timeline range/);
+
+    // The rejection leaves the store untouched: no half-applied inverted range,
+    // and currentTime was NOT snapped against a min>=max window.
+    const after = store.getState();
+    expect(after.projectSettings.timelineMinYear).toBe(
+      before.projectSettings.timelineMinYear,
+    );
+    expect(after.timelineMin).toEqual(before.timelineMin);
+    expect(after.timelineMax).toEqual(before.timelineMax);
+    expect(after.currentTime).toEqual(timePointYear(50));
+  });
+
+  // The mirror case: lowering timelineMaxYear below the current timelineMinYear is
+  // likewise an inverted range and must be rejected, not clamped.
+  it('updateProjectSetting rejects lowering timelineMaxYear below the current min (finding)', () => {
+    const store = makeStore();
+    // First raise the min to a valid mid value (200 < 10000, still ordered).
+    store.getState().updateProjectSetting('timelineMinYear', 200);
+    // Now drop the max below that min -> inverted.
+    expect(() =>
+      store.getState().updateProjectSetting('timelineMaxYear', 100),
+    ).toThrow(/inverted timeline range/);
+    // The earlier valid min survives; nothing half-applied.
+    expect(store.getState().projectSettings.timelineMinYear).toBe(200);
+    expect(store.getState().projectSettings.timelineMaxYear).toBe(
+      DEFAULT_PROJECT_SETTINGS.timelineMaxYear,
+    );
+  });
 });
 
 // --- 受け入れ基準 5: Canvas subscribes only (no React path) -----------------

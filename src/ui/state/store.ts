@@ -344,7 +344,10 @@ function clampTimeToRange(
  *
  * This is the SINGLE place the timeline RANGE is derived from
  * projectSettings.timelineMin/MaxYear, so there is no second truth source
- * (技術方針 2.5). It is run from BOTH paths that can change the effective timeline
+ * (技術方針 2.5). PRECONDITION: the incoming range MUST already satisfy
+ * timelineMinYear < timelineMaxYear (validated by validateProjectSettings on every
+ * write path); this function asserts it and throws on an inverted range rather than
+ * clamping currentTime against a min>=max window. It is run from BOTH paths that can change the effective timeline
  * range: a LOAD / NEW hydrate ({@link SessionStoreActions.hydrateSettings}) AND a
  * live settings-dialog confirm ({@link SessionStoreActions.updateProjectSetting}
  * with a timeline key) — finding: pre-fix the dialog path wrote only
@@ -367,6 +370,26 @@ function deriveTimelineState(
 ): TimelineDerivation {
   const timelineMin = timePointYear(effectiveProject.timelineMinYear);
   const timelineMax = timePointYear(effectiveProject.timelineMaxYear);
+  // PRECONDITION (finding): the range order rule timelineMinYear < timelineMaxYear
+  // lives in U38's validateProjectSettings, which BOTH writing paths run before they
+  // reach the store — the dialog/confirm entry validates the draft and the LOAD / NEW
+  // hydrate comes through the persistence validation boundary. This is the SINGLE
+  // place the range is derived (see above), so an inverted range here is a
+  // programming error from an unvalidated caller, not a user input to clamp: without
+  // this guard clampTimeToRange would silently snap currentTime against a min>=max
+  // range (空表示 with no rejection). Reject it loudly so every (current and future)
+  // caller is forced to pre-validate rather than letting an inverted range leak in.
+  if (compareNormalized(
+    normalize(timelineMin, calendar),
+    normalize(timelineMax, calendar),
+  ) >= 0) {
+    throw new Error(
+      `deriveTimelineState: inverted timeline range — timelineMinYear ` +
+        `(${String(effectiveProject.timelineMinYear)}) must be < timelineMaxYear ` +
+        `(${String(effectiveProject.timelineMaxYear)}); the range must be ` +
+        `validated (validateProjectSettings) before it reaches the store.`,
+    );
+  }
   const clampedTime = clampTimeToRange(
     currentTime,
     timelineMin,
