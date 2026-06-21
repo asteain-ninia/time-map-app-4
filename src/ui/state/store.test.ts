@@ -1029,4 +1029,57 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     // depth / emphasize preserved.
     expect(store.getState().displayControl.focus.depth).toBe(4);
   });
+
+  // bughunt3 regression: a NO-OP display-control write (same value) must PRESERVE
+  // the `displayControl` reference. The display pipeline's shared memos
+  // (resolveDisplayFor / buildCommittedFeatures) and the Canvas redraw subscription
+  // all key on `displayControl` IDENTITY, treating reference == value. A slider drag
+  // emits many events at the SAME integer depth; if each repeated-value call spread a
+  // fresh-but-equal object, every memo would miss and the pipeline + redraw would re-run
+  // for unchanged geometry. An unchanged depth/focus must therefore keep ONE identity.
+  it('no-op display-control writes preserve the displayControl reference (identity stability)', () => {
+    const store = makeStore();
+    // Establish a non-default state once, then capture the reference.
+    store.getState().setGlobalDepth(3);
+    store.getState().setDisplayFocus({ originId: f('B'), depth: 5, emphasize: true });
+    const ref = store.getState().displayControl;
+
+    // Re-writing the SAME values (the slider-drag-at-same-step case) must NOT churn
+    // a new object — the reference is unchanged, so the display memos / redraw stay hit.
+    store.getState().setGlobalDepth(3);
+    expect(store.getState().displayControl).toBe(ref);
+
+    store.getState().setFocusOrigin(f('B'));
+    expect(store.getState().displayControl).toBe(ref);
+
+    store.getState().setFocusDepth(5);
+    expect(store.getState().displayControl).toBe(ref);
+
+    store.getState().setFocusEmphasize(true);
+    expect(store.getState().displayControl).toBe(ref);
+
+    store.getState().setDisplayFocus({ originId: f('B'), depth: 5, emphasize: true });
+    expect(store.getState().displayControl).toBe(ref);
+
+    // And a notifier subscriber is NOT fired by a no-op write (no spurious redraw).
+    const seen = vi.fn();
+    const unsub = store.subscribe((s) => seen(s.displayControl));
+    store.getState().setGlobalDepth(3); // no-op
+    store.getState().setFocusEmphasize(true); // no-op
+    expect(seen).not.toHaveBeenCalled();
+    unsub();
+
+    // A genuine CHANGE still swaps the reference and fires the subscriber.
+    store.getState().setGlobalDepth(4);
+    expect(store.getState().displayControl).not.toBe(ref);
+    expect(store.getState().displayControl.globalDepth).toBe(4);
+  });
+
+  it('clearDisplayFocus is a no-op (reference preserved) when focus is already cleared', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    const ref = store.getState().displayControl; // focus already NO_DISPLAY_FOCUS
+    store.getState().clearDisplayFocus();
+    expect(store.getState().displayControl).toBe(ref);
+  });
 });

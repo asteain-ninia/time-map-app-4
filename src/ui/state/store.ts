@@ -701,33 +701,71 @@ export function createSessionStore<S>(
     // selection / domain, so a depth or focus change cannot disturb an
     // in-progress edit (FR-42 非干渉, 受け入れ基準 2). The reverse — mode/tool
     // setters never write displayControl — is structurally true above.
+    //
+    // IDENTITY STABILITY (bughunt3 finding: displayControl object identity churn):
+    // every setter below is a NO-OP when the incoming value equals the current
+    // value — it returns WITHOUT calling set(), so the `displayControl` reference
+    // is preserved. The display pipeline's three shared memos (resolveDisplayFor,
+    // buildCommittedFeatures) AND the Canvas redraw subscription (App.tsx) all key
+    // on `displayControl` IDENTITY, treating a reference match as a value match
+    // (the slice is swapped wholesale, never mutated). A slider drag emits MANY
+    // events at the SAME integer depth (pointermove between steps); without this
+    // guard each repeated-value call spread a fresh-but-equal `displayControl`
+    // object, busting every memo and forcing a redundant pipeline run + redraw even
+    // though geometry was unchanged. Skipping the no-op write keeps a single
+    // identity for an unchanged depth/focus → cache HIT (教訓 5.29: 単一真実源 =
+    // 単一 COMPUTATION — an unchanged input must not look like a new generation).
     setGlobalDepth(depth) {
-      set({ displayControl: { ...get().displayControl, globalDepth: depth } });
+      const dc = get().displayControl;
+      if (dc.globalDepth === depth) return;
+      set({ displayControl: { ...dc, globalDepth: depth } });
     },
 
     setFocusOrigin(originId) {
       const dc = get().displayControl;
+      if (dc.focus.originId === originId) return;
       set({ displayControl: { ...dc, focus: { ...dc.focus, originId } } });
     },
 
     setFocusDepth(depth) {
       const dc = get().displayControl;
+      if (dc.focus.depth === depth) return;
       set({ displayControl: { ...dc, focus: { ...dc.focus, depth } } });
     },
 
     setFocusEmphasize(emphasize) {
       const dc = get().displayControl;
+      if (dc.focus.emphasize === emphasize) return;
       set({ displayControl: { ...dc, focus: { ...dc.focus, emphasize } } });
     },
 
     setDisplayFocus(focus) {
-      set({ displayControl: { ...get().displayControl, focus } });
+      const dc = get().displayControl;
+      // Value-equal replacement is a no-op: preserve the existing reference so the
+      // display memos / redraw do not see a new generation for an unchanged focus.
+      if (
+        dc.focus.originId === focus.originId &&
+        dc.focus.depth === focus.depth &&
+        dc.focus.emphasize === focus.emphasize
+      ) {
+        return;
+      }
+      set({ displayControl: { ...dc, focus } });
     },
 
     clearDisplayFocus() {
       // Revert focus to global-N-only; the global depth itself is untouched
-      // (教訓 5.2: discard the transient focus on the clear path).
-      set({ displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS } });
+      // (教訓 5.2: discard the transient focus on the clear path). Already-cleared
+      // is a no-op so the reference is preserved (identity stability, above).
+      const dc = get().displayControl;
+      if (
+        dc.focus.originId === NO_DISPLAY_FOCUS.originId &&
+        dc.focus.depth === NO_DISPLAY_FOCUS.depth &&
+        dc.focus.emphasize === NO_DISPLAY_FOCUS.emphasize
+      ) {
+        return;
+      }
+      set({ displayControl: { ...dc, focus: NO_DISPLAY_FOCUS } });
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----
