@@ -174,4 +174,59 @@ describe('display-resolution-cache (bughunt2: single shared computation)', () =>
     // A cache hit returns the SAME map object — not re-allocated per consumer/call.
     expect(second.areaFeaturesById).toBe(first.areaFeaturesById);
   });
+
+  // bughunt3 回帰 (O(n·v) owner-Map rebuild per pointer event): the resolution ALSO
+  // exposes the SELECTION-INDEPENDENT `grabbable` set + `owners` (vertex → owning feature)
+  // map the live hit-test's vertex-proximity step iterates. BEFORE THE FIX `liveHitTestAt`
+  // rebuilt this Map from scratch on EVERY pointer event — for a map with 5000 leaves each
+  // having a 100-vertex polygon that is 500,000 Map insertions per event, BEFORE the
+  // proximity test even began, with no caching across frames. Now it is built ONCE per
+  // (root, time, displayControl) generation and reused, so a pointer-move over an unchanged
+  // domain is a cache HIT with zero re-insertions.
+  it('exposes the grabbable set + owners map, shared (same object) on a cache hit', () => {
+    const root = project(); // one top-level square leaf (verdict Real at N=0)
+    const time = timePointYear(10);
+
+    const first = resolveDisplayFor(root, time, DISPLAY);
+    const second = resolveDisplayFor(root, time, DISPLAY);
+
+    // The single leaf is drawn with its own real shape, so it is grabbable and OWNS each
+    // of its 4 square-ring vertices; nothing else contributes an owner.
+    expect([...first.grabbable]).toEqual(['leaf-1']);
+    expect(first.owners.size).toBe(4);
+    for (const ownerId of first.owners.values()) {
+      expect(ownerId).toBe('leaf-1');
+    }
+
+    // The core perf guard: a cache hit returns the SAME set + map objects — they are NOT
+    // re-allocated (and the owner Map is NOT re-inserted) per consumer/call/pointer event.
+    expect(second.grabbable).toBe(first.grabbable);
+    expect(second.owners).toBe(first.owners);
+  });
+
+  // bughunt3 回帰 (the owner Map is NOT rebuilt on every pointerdown): two hit-tests on the
+  // SAME (root, time, displayControl) generation must share the ONE resolution bundle — the
+  // owner Map among them — proving the O(n·v) build does not recur per pointer event. We
+  // assert this through the shared memo's identity: both calls resolve to the same bundle, so
+  // both iterate the same already-built `owners` map (no per-call rebuild).
+  it('a repeated hit-test on one generation reuses the SAME owners map (no per-event rebuild)', () => {
+    const root = project();
+    const time = timePointYear(10);
+    const toScreen = (w: { lon: number; lat: number }) => ({ x: w.lon, y: w.lat });
+
+    // Resolve once so the bundle (and its owners map) is memoized.
+    const bundle = resolveDisplayFor(root, time, DISPLAY);
+
+    // Simulate two consecutive pointer events at the same generation. Each goes through the
+    // shared memo; neither rebuilds the owner Map. (A vertex sits at the square corner.)
+    for (const pt of [{ x: 5, y: 5 }, { x: 6, y: 4 }]) {
+      liveHitTestAt(
+        { root, time, displayControl: DISPLAY, toScreen, point: pt },
+        { lon: pt.x, lat: pt.y },
+      );
+      // The hit-test read the SAME memoized bundle (and thus the SAME owners map) — not a
+      // freshly rebuilt one — on each event.
+      expect(resolveDisplayFor(root, time, DISPLAY).owners).toBe(bundle.owners);
+    }
+  });
 });

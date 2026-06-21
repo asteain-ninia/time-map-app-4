@@ -53,11 +53,7 @@
 // PURITY: no React, no store, no Canvas. It builds fresh arrays; inputs are never
 // mutated.
 
-import {
-  FEATURE_KIND,
-  isDrawableLineVertexCount,
-  type Feature,
-} from '../../domain/feature';
+import { FEATURE_KIND } from '../../domain/feature';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
@@ -70,15 +66,15 @@ import {
   type HitResult,
 } from '../../domain/selection';
 import type { ScreenPoint } from '../../render';
-import { verticesAt } from '../live-lookup';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import {
-  DISPLAY_VERDICT,
-  type ResolvedDisplayShape,
-} from '../../domain/display';
+import type { ResolvedDisplayShape } from '../../domain/display';
 import { pointInPolygon, POINT_LOCATION } from '../../domain/geometry/predicates';
 import type { DisplayControlInput } from '../../render/display-pipeline';
-import { resolveDisplayFor } from './display-resolution-cache';
+import {
+  resolveDisplayFor,
+  lineFullyResolved,
+  vertexOwners,
+} from './display-resolution-cache';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 
@@ -133,92 +129,13 @@ const DEFAULT_DISPLAY_CONTROL: DisplayControlInput = {
   focus: { originId: null, depth: 0, emphasize: false },
 };
 
-/**
- * Is this line actually DRAWN this frame — i.e. would the renderer paint it? The
- * renderer (committed-features Line branch → feature-layer `buildLinePrimitives`)
- * draws a line under TWO conditions, both mirrored here so what-is-hit == what-is-
- * drawn (clip ⊇ draw ⊇ hit): an undrawn line must contribute NEITHER a grabbable
- * vertex (vertexOwners) NOR a hittable body segment.
- *
- *   1. ALL-OR-NOTHING (bughunt 描画とヒットの不一致): if ANY of its vertexIds is
- *      unresolved in the live store, committed-features sets `resolvable=false` and
- *      drops the WHOLE primitive (a line `[v1, missing, v2]` is NOT drawn). Without
- *      this the two paths diverged — vertexOwners claimed v1/v2 and the body path
- *      built per-contiguous-run geometry around the gap, so an invisible line stayed
- *      selectable by clicking a surviving endpoint / segment.
- *
- *   2. MINIMUM VERTICES (bughunt 1頂点 line は描画されないのに掴める): a line needs ≥2
- *      resolved vertices to be a real polyline (FR-19). A 1-vertex line renders to
- *      nothing (committed-features drops it; `buildLinePrimitives` needs
- *      points.length≥2), so its single vertex must not be grabbable either. The
- *      「2頂点未満は描かない」rule is the SINGLE domain predicate
- *      `isDrawableLineVertexCount` (教訓 5.30), shared with committed-features so the
- *      draw/hit decision cannot drift.
- */
-function lineFullyResolved(
-  vertexIds: readonly VertexId[],
-  vertices: ReturnType<typeof verticesAt>,
-): boolean {
-  let resolvedCount = 0;
-  for (const vid of vertexIds) {
-    if (getVertex(vertices, vid) === undefined) return false;
-    resolvedCount += 1;
-  }
-  return isDrawableLineVertexCount(resolvedCount);
-}
-
-/**
- * Collect every committed vertex's OWNING feature (point.vertexId / line.vertexIds /
- * leaf ring vertexIds), but ONLY for features whose ids are in `grabbable`. The
- * first owner encountered wins for a shared vertex — a shared vertex still selects A
- * real owner feature, which is all the U22 contract needs (a vertex hit carries its
- * owner + the vertex id). Aggregates carry no own vertices (their area is derived),
- * so they contribute none even when present.
- *
- * `grabbable` is the set of feature ids actually DRAWN with their own vertices this
- * frame (Real-verdict areas + every point / line). An aggregated or omitted area
- * leaf is NOT in the set, so its (hidden) vertices are never offered for selection
- * (Codex #2: 描画されていない頂点は拾わない).
- *
- * A LINE is additionally all-or-nothing (`lineFullyResolved`): a partially-corrupt
- * line whose render primitive is dropped contributes NO grabbable vertices — its
- * surviving endpoints must not stay selectable while invisible (bughunt 単一真実源:
- * committed-features と同じ全頂点解決チェック).
- */
-export function vertexOwners(
-  features: readonly Feature[],
-  grabbable: ReadonlySet<FeatureId>,
-  vertices: ReturnType<typeof verticesAt>,
-): Map<VertexId, FeatureId> {
-  const owners = new Map<VertexId, FeatureId>();
-  const claim = (vid: VertexId, fid: FeatureId): void => {
-    if (!owners.has(vid)) owners.set(vid, fid);
-  };
-  for (const f of features) {
-    if (!grabbable.has(f.id)) continue;
-    switch (f.kind) {
-      case FEATURE_KIND.Point:
-        claim(f.vertexId, f.id);
-        break;
-      case FEATURE_KIND.Line:
-        // Mirror the renderer's all-or-nothing draw: a line with ANY unresolved
-        // vertex is not drawn, so none of its vertices are grabbable.
-        if (lineFullyResolved(f.vertexIds, vertices)) {
-          for (const vid of f.vertexIds) claim(vid, f.id);
-        }
-        break;
-      case FEATURE_KIND.Leaf:
-        for (const ring of f.shape.rings) {
-          for (const vid of ring.vertexIds) claim(vid, f.id);
-        }
-        break;
-      default:
-        // Aggregate: no own vertices.
-        break;
-    }
-  }
-  return owners;
-}
+// `lineFullyResolved` (the「描かれる線か」predicate) and `vertexOwners` (the grabbable
+// vertex → owner map) now live in `display-resolution-cache` so the owner map is built
+// ONCE per (root, time, displayControl) generation and shared by the draw + hit paths,
+// instead of being rebuilt on every pointer event (bughunt3 — O(n·v) Map rebuild per
+// pointerdown). They are re-exported here unchanged for the line-BODY probe below and
+// for the per-frame default-control fallback / tests (single source, 教訓 5.30).
+export { lineFullyResolved, vertexOwners };
 
 /**
  * The MINIMUM squared screen distance from `point` to a single world coordinate as the
@@ -513,30 +430,20 @@ export function liveHitTestAt(
   // O(features × total-turns) (bughunt2 tail-latency clamp; see drawnLonOffsets).
   const wrap = buildWrapFrame(input.wrap, worldPoint.lon, radius);
 
-  // The SHARED resolution: featuresAt / verticesAt and the drawn area set (集約/実形状),
-  // computed ONCE per (root, time, control) generation and reused by committed-features
-  // (draw) — so a pointerdown does NOT re-run the whole U34 hierarchy/display pipeline
-  // the just-drawn frame already computed (教訓 5.29 単一真実源 = 単一 COMPUTATION, bughunt2).
-  const { features, vertices, resolved } = resolveDisplayFor(root, time, control);
+  // The SHARED resolution: featuresAt / verticesAt, the drawn area set (集約/実形状), AND
+  // the selection-independent `grabbable` set + `owners` vertex→feature map — all computed
+  // ONCE per (root, time, control) generation and reused by committed-features (draw). So a
+  // pointerdown does NOT re-run the U34 hierarchy/display pipeline the just-drawn frame
+  // already computed, AND does NOT rebuild the O(n·v) owner Map over every leaf ring vertex
+  // on every pointer event (bughunt3 — a 5000-leaf × 100-vertex map was 500,000 Map
+  // insertions PER pointer event before the proximity test even began). On an unchanged
+  // domain a pointer-move is a cache HIT with zero re-insertions (教訓 5.29 単一真実源 =
+  // 単一 COMPUTATION). `grabbable` / `owners` are exactly what this function built inline
+  // before — same values, now memoised — so behaviour is unchanged (see vertexOwners).
+  const { features, vertices, resolved, owners } = resolveDisplayFor(root, time, control);
   const areas = resolved.shapes;
 
-  // Which features expose their OWN vertices this frame: area features drawn with
-  // their own real shape (verdict Real), plus every point / line (always drawn
-  // directly). An aggregate-displayed area (verdict Aggregate) draws derived geometry
-  // with NO grabbable own vertices, and an omitted leaf is not drawn at all — so
-  // neither contributes a vertex (Codex #2: 非表示頂点は拾わない).
-  const grabbable = new Set<FeatureId>();
-  for (const area of areas) {
-    if (area.verdict === DISPLAY_VERDICT.Real) grabbable.add(area.featureId);
-  }
-  for (const f of features) {
-    if (f.kind === FEATURE_KIND.Point || f.kind === FEATURE_KIND.Line) {
-      grabbable.add(f.id);
-    }
-  }
-
   // 1. Nearest DRAWN VERTEX within the screen-px radius (vertex-first priority).
-  const owners = vertexOwners(features, grabbable, vertices);
   let bestVertex: { featureId: FeatureId; vertexId: VertexId } | null = null;
   let bestDistSq = radiusSq;
   for (const [vertexId, featureId] of owners) {
