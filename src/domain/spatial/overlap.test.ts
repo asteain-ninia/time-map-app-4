@@ -188,6 +188,58 @@ describe('criterion 4: seam-crossing overlap (U05)', () => {
     const pairs = detectTerminalOverlaps([term('ONLY', a)]);
     expect(pairs).toHaveLength(0);
   });
+
+  // M6 root fix: a SINGLE seam-crossing leaf stored in FOLDED representative form —
+  // its ring jumps 179 → −179 INSIDE the ring. Read verbatim its bbox spans the
+  // wrong way round the world (~358°, [−179, 179]); a far-away Greenwich terminal
+  // then falls inside that phantom box and the boolean op on the backwards ring can
+  // report a spurious overlap. With seam-continuity normalization the folded ring
+  // becomes its true ~2°-wide self near the antimeridian and the two are disjoint.
+  it('does NOT report a folded seam-crossing leaf as overlapping a distant Greenwich terminal (no phantom 358° bbox)', () => {
+    // Folded representative of a ~2°-wide quad straddling +180: 179 → −179 inside.
+    const folded: GeoMultiPolygon = [
+      [
+        [
+          createCoordinate(179, 0),
+          createCoordinate(-179, 0),
+          createCoordinate(-179, 10),
+          createCoordinate(179, 10),
+        ],
+      ],
+    ];
+    const greenwich = rect(-1, 2, 1, 8); // small quad at the prime meridian.
+    const pairs = detectTerminalOverlaps([term('SEAM', folded), term('GREENWICH', greenwich)]);
+    expect(pairs).toHaveLength(0);
+    // The naive reference must agree (narrowing correctness holds on this input too).
+    const naive = detectTerminalOverlapsNaive([term('SEAM', folded), term('GREENWICH', greenwich)]);
+    expect(naive).toHaveLength(0);
+  });
+
+  it('DOES detect two folded seam-crossing leaves that genuinely overlap near the antimeridian', () => {
+    // Both stored folded near +180; geometrically they overlap at the seam.
+    const a: GeoMultiPolygon = [
+      [
+        [
+          createCoordinate(178, 0),
+          createCoordinate(-179, 0),
+          createCoordinate(-179, 10),
+          createCoordinate(178, 10),
+        ],
+      ],
+    ];
+    const b: GeoMultiPolygon = [
+      [
+        [
+          createCoordinate(179, 2),
+          createCoordinate(-178, 2),
+          createCoordinate(-178, 8),
+          createCoordinate(179, 8),
+        ],
+      ],
+    ];
+    const pairs = detectTerminalOverlaps([term('A', a), term('B', b)]);
+    expect(pairKeys(pairs)).toEqual(new Set(['A|B']));
+  });
 });
 
 // --- criterion 7: multiple pairs / multiple pieces, nothing dropped ---------

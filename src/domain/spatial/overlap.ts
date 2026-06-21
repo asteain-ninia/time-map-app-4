@@ -28,7 +28,7 @@
 
 import type { FeatureId } from '../ids';
 import { idToString } from '../ids';
-import { worldWrapReplicas, type WrapReplica } from '../geo/seam';
+import { alignMultiPolygon, worldWrapReplicas, type WrapReplica } from '../geo/seam';
 import { intersection, isOk } from '../geometry/boolean-ops';
 import {
   EMPTY_MULTI_POLYGON,
@@ -80,6 +80,28 @@ export interface DetectOptions {
 
 const DEFAULT_SEAM_TURNS: readonly number[] = [-1, 0, 1];
 
+/**
+ * Make a terminal's shape SEAM-CONTINUOUS before it is indexed / tested (M6 root
+ * fix). The shapes arrive from U08's `resolveLeafShape`, which returns RAW stored
+ * representatives with zero seam handling — so a single leaf whose territory
+ * straddles the seam can be stored folded (e.g. a ring `[179, −179, …]`). Read
+ * verbatim, its bbox spans the WRONG way round the world (~358° instead of ~2°),
+ * which both (1) blows up candidate narrowing to all-pairs (NFR 5.1/5.2 退行) and
+ * (2) feeds polygon-clipping a backwards ring, producing phantom overlaps /
+ * missed real ones. `replicateShape` only shifts whole rings by ±360°, so it can
+ * never repair an intra-ring 179→−179 jump.
+ *
+ * `alignMultiPolygon` is the SINGLE seam-continuity source (audit root cause A/B):
+ * it unwraps each ring across its closing edge AND anchors every ring (outer +
+ * holes + enclaves) onto one common branch, so a folded seam ring becomes its
+ * true ~2°-wide continuous self and a hole on the opposite seam side does not land
+ * a world-turn away. For an already-continuous single-branch shape this is the
+ * identity. Pure; the input is never mutated.
+ */
+function seamContinuousShape(shape: GeoMultiPolygon): GeoMultiPolygon {
+  return alignMultiPolygon(shape) as GeoMultiPolygon;
+}
+
 /** Shift every ring of a multi-polygon by `turns` world turns (via U05 per ring). */
 function replicateShape(shape: GeoMultiPolygon, turns: number): GeoMultiPolygon {
   return shape.map((poly) =>
@@ -120,12 +142,15 @@ export function detectTerminalOverlaps(
   //    we only add non-zero turns as extra placements.
   const placements: Placement[] = [];
   for (const t of terminals) {
-    const baseBox = multiPolygonBBox(t.shape);
+    // Seam-continuous the raw representative shape FIRST (M6): the bbox and every
+    // ±360° replica are then derived from a ring that never folds backwards.
+    const shape = seamContinuousShape(t.shape);
+    const baseBox = multiPolygonBBox(shape);
     if (baseBox === undefined) continue; // empty shape: cannot overlap anything.
-    placements.push({ id: t.id, turns: 0, shape: t.shape, bbox: baseBox });
+    placements.push({ id: t.id, turns: 0, shape, bbox: baseBox });
     for (const turns of seamTurns) {
       if (turns === 0) continue;
-      const shifted = replicateShape(t.shape, turns);
+      const shifted = replicateShape(shape, turns);
       const box = multiPolygonBBox(shifted);
       if (box === undefined) continue;
       placements.push({ id: t.id, turns, shape: shifted, bbox: box });
@@ -224,19 +249,23 @@ export function detectTerminalOverlapsNaive(
   for (let i = 0; i < terminals.length; i += 1) {
     const a = terminals[i];
     if (a === undefined) continue;
-    if (multiPolygonBBox(a.shape) === undefined) continue;
+    // Same seam-continuity normalization as the indexed detector (M6) so the two
+    // detectors test identical geometry (narrowing-correctness invariant).
+    const aShape = seamContinuousShape(a.shape);
+    if (multiPolygonBBox(aShape) === undefined) continue;
     for (let j = i + 1; j < terminals.length; j += 1) {
       const b = terminals[j];
       if (b === undefined) continue;
-      if (multiPolygonBBox(b.shape) === undefined) continue;
+      const bShape = seamContinuousShape(b.shape);
+      if (multiPolygonBBox(bShape) === undefined) continue;
       if (a.id === b.id) continue;
 
       // Test the identity A against every ±360° replica of B (and identity).
       let overlap: GeoMultiPolygon = EMPTY_MULTI_POLYGON;
       for (const turns of seamTurns) {
-        const shiftedB = turns === 0 ? b.shape : replicateShape(b.shape, turns);
+        const shiftedB = turns === 0 ? bShape : replicateShape(bShape, turns);
         if (counter !== undefined) counter.count += 1;
-        const piece = overlapArea(a.shape, shiftedB);
+        const piece = overlapArea(aShape, shiftedB);
         if (piece !== undefined) {
           // Accumulate all pieces across replicas (片落とし禁止, 教訓5.1).
           overlap = [...overlap, ...piece];
