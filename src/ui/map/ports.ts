@@ -106,6 +106,27 @@ export interface ContextMenuPort {
   request(point: ScreenPoint, hit: HitResult): void;
 }
 
+/**
+ * The minimal DOM pointer-capture surface a pan needs (the subset of `Element`
+ * the dispatcher touches). Supplied per-press so the dispatcher can capture the
+ * pointer on pan-start AND — crucially — RELEASE it on EVERY teardown path
+ * (release / cancel / mode-change abort), keeping capture lifecycle symmetric
+ * with the transient teardown discipline (教訓 5.2 全経路破棄).
+ *
+ * BUGHUNT2 root: a middle-button pan started through the tool-overlay input bridge
+ * captures the pointer on the BRIDGE element. A mid-pan tool/mode switch aborts the
+ * pan transient (`onModeChange` → `abortAll`) but formerly left the DOM capture in
+ * place — and the bridge element can UNMOUNT on that switch, so the trailing
+ * `pointerup` had no captured element to land on (we relied on the browser's
+ * implicit on-removal release). The dispatcher now owns the release: it stores this
+ * handle on the pan record and calls `releasePointerCapture` on every teardown path
+ * BEFORE the element can unmount, so capture is never left dangling.
+ */
+export interface PointerCaptureTarget {
+  setPointerCapture(pointerId: number): void;
+  releasePointerCapture(pointerId: number): void;
+}
+
 /** Modifier-key state carried with a press (Shift drives U22's toggle/add). */
 export interface PointerModifiers {
   readonly shift: boolean;

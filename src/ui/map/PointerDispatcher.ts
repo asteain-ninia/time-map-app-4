@@ -37,6 +37,7 @@ import type {
   ContextMenuPort,
   EditSessionPort,
   HitTester,
+  PointerCaptureTarget,
   PointerModifiers,
   SelectionPort,
 } from './ports';
@@ -147,6 +148,13 @@ interface ActivePointer {
   readonly originY: number;
   /** Pan reference (only for kind === Pan). */
   readonly panRef: PanReference | null;
+  /**
+   * The DOM element this pointer was captured on at press (only set for a pan that
+   * captured). The dispatcher releases this on EVERY teardown path so capture is
+   * never left dangling on a mid-pan abort — esp. when the overlay bridge element
+   * unmounts on a tool/mode switch (BUGHUNT2, 教訓 5.2 全経路破棄).
+   */
+  readonly captureTarget: PointerCaptureTarget | null;
   /** Whether movement has crossed the drag threshold yet (click vs drag). */
   dragged: boolean;
   /**
@@ -200,8 +208,16 @@ export class PointerDispatcher {
    * Handle a pointer press. Decides the single行き先 from (mode × button × hit)
    * and starts the matching sequence. A right-button press goes straight to the
    * context-menu port and starts no tracked sequence (no teardown needed).
+   *
+   * `captureTarget` (optional) is the DOM element to capture the pointer on when
+   * the press starts a PAN, so the drag keeps tracking even if the cursor leaves
+   * the element mid-drag (受け入れ基準 3 押下→移動→解放の連続保証). The dispatcher
+   * performs the capture here and OWNS its release on every teardown path
+   * (BUGHUNT2 root: a mid-pan tool/mode abort must release capture BEFORE the
+   * overlay bridge element can unmount, not rely on the browser's implicit
+   * on-removal release — 教訓 5.2 全経路破棄).
    */
-  pointerDown(p: NormalizedPointer): DispatchTarget {
+  pointerDown(p: NormalizedPointer, captureTarget?: PointerCaptureTarget): DispatchTarget {
     const mode = this.opts.getMode();
     const point: ScreenPoint = { x: p.x, y: p.y };
     const hit = this.opts.hitTester.hitTest(point);
@@ -210,12 +226,18 @@ export class PointerDispatcher {
     switch (target) {
       case DISPATCH_TARGET.Pan: {
         const { camera, viewport } = this.opts.camera.read();
+        // Capture the pointer on the supplied element so the pan keeps tracking
+        // off-element; remember the element so the dispatcher can release it on any
+        // teardown path. The capture is bound to THIS gesture's record (per-pointer).
+        const captured = captureTarget ?? null;
+        captured?.setPointerCapture(p.pointerId);
         this.active.set(p.pointerId, {
           kind: DISPATCH_TARGET.Pan,
           button: p.button,
           originX: p.x,
           originY: p.y,
           panRef: { camera, viewport, origin: point },
+          captureTarget: captured,
           dragged: false,
           editing: false,
         });
@@ -250,6 +272,7 @@ export class PointerDispatcher {
           originX: p.x,
           originY: p.y,
           panRef: null,
+          captureTarget: null,
           dragged: false,
           editing,
         });
@@ -265,6 +288,7 @@ export class PointerDispatcher {
           originX: p.x,
           originY: p.y,
           panRef: null,
+          captureTarget: null,
           dragged: false,
           editing: false,
         });
@@ -324,6 +348,9 @@ export class PointerDispatcher {
     // Drop the record FIRST so any downstream callback cannot observe stale
     // transient state, and so an early return can never skip teardown.
     this.active.delete(p.pointerId);
+    // Release any DOM pointer capture this pan held (symmetric with the press-time
+    // capture; safe no-op when nothing was captured).
+    releasePointerCapture(rec, p.pointerId);
 
     const point: ScreenPoint = { x: p.x, y: p.y };
     if (rec.kind === DISPATCH_TARGET.Pan) {
@@ -354,6 +381,8 @@ export class PointerDispatcher {
     const rec = this.active.get(pointerId);
     if (rec === undefined) return;
     this.active.delete(pointerId);
+    // Release any DOM pointer capture this pan held (教訓 5.2 全経路破棄).
+    releasePointerCapture(rec, pointerId);
     if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.cancel();
       if (rec.editing && this.opts.editSession !== undefined) {
@@ -425,11 +454,17 @@ export class PointerDispatcher {
   private abortAll(): void {
     let hadSelectEdit = false;
     let hadEditSession = false;
-    for (const rec of this.active.values()) {
+    for (const [pointerId, rec] of this.active) {
       if (rec.kind === DISPATCH_TARGET.SelectEdit) {
         hadSelectEdit = true;
         if (rec.editing) hadEditSession = true;
       }
+      // BUGHUNT2 root: release the DOM pointer capture this pan held BEFORE the
+      // captured element (e.g. the overlay input bridge) can unmount on the
+      // tool/mode switch that triggered this abort — so a mid-pan switch never
+      // leaves capture dangling on a vanishing element (was: relied on the
+      // browser's implicit on-removal release / the eventual pointerup).
+      releasePointerCapture(rec, pointerId);
     }
     this.active.clear();
     if (hadSelectEdit) this.opts.selection.cancel();
@@ -468,6 +503,22 @@ export class PointerDispatcher {
         meta: e.metaKey,
       },
     };
+  }
+}
+
+/**
+ * Release the DOM pointer capture an {@link ActivePointer} pan held, if any.
+ * Defensive: the capture may already be gone (browser auto-released it, or the
+ * element was removed), so a throw from `releasePointerCapture` (e.g. an invalid
+ * pointerId after implicit release) is swallowed — the goal is only to ensure the
+ * dispatcher never LEAVES a capture dangling, never to assert one still exists.
+ */
+function releasePointerCapture(rec: ActivePointer, pointerId: number): void {
+  if (rec.captureTarget === null) return;
+  try {
+    rec.captureTarget.releasePointerCapture(pointerId);
+  } catch {
+    // Already released / element detached — nothing to clean up.
   }
 }
 

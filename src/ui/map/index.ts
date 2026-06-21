@@ -46,6 +46,7 @@ export {
   type EditSessionPort,
   type AddPort,
   type ContextMenuPort,
+  type PointerCaptureTarget,
   type PointerModifiers,
   type MapCameraInput,
   NO_MODIFIERS,

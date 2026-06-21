@@ -87,7 +87,6 @@ import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
 import {
   PointerDispatcher,
-  DISPATCH_TARGET,
   NOOP_ADD_PORT,
   NOOP_CONTEXT_MENU_PORT,
   type CameraPort,
@@ -520,10 +519,13 @@ export function App(): JSX.Element {
       // frame is pending, so it costs nothing on the common path.
       flushRedraw();
       const { x, y } = toSurface(e.clientX, e.clientY);
-      const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
-      // Capture the pointer for a pan so the drag keeps tracking even if the cursor
-      // leaves the layer mid-drag (受け入れ基準 3 押下→移動→解放の連続保証).
-      if (target === DISPATCH_TARGET.Pan) hookTarget.setPointerCapture?.(e.pointerId);
+      // Hand the capture target to the dispatcher so IT owns the pan's pointer
+      // capture lifecycle end to end: capture on pan-start, release on EVERY
+      // teardown path (release / cancel / mode-change abort). hookTarget is a
+      // stable background element, but routing capture through the dispatcher keeps
+      // the native and overlay-bridge paths under ONE capture discipline (教訓 5.2 /
+      // 5.29) rather than each re-implementing setPointerCapture/release.
+      dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y), hookTarget);
     };
     const onPointerMove = (e: PointerEvent): void => {
       const { x, y } = toSurface(e.clientX, e.clientY);
@@ -531,8 +533,9 @@ export function App(): JSX.Element {
     };
     const onPointerUp = (e: PointerEvent): void => {
       const { x, y } = toSurface(e.clientX, e.clientY);
+      // The dispatcher releases the pan's pointer capture itself (it owns the
+      // capture lifecycle, set in pointerDown above) — no manual release here.
       dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
-      hookTarget.releasePointerCapture?.(e.pointerId);
     };
     const onPointerCancel = (e: PointerEvent): void => {
       dispatcher.pointerCancel(e.pointerId);
@@ -579,13 +582,17 @@ export function App(): JSX.Element {
         // the background pointerdown above (single flush rule).
         flushRedraw();
         const { x, y } = toSurface(clientX, clientY);
-        const target = dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
-        // Capture on the OVERLAY bridge (the element the event fired on) so a middle-
-        // button pan keeps tracking even if the cursor leaves the bridge mid-drag
-        // (受け入れ基準 3 押下→移動→解放の連続保証).
-        if (target === DISPATCH_TARGET.Pan) {
-          (e.currentTarget as Element | null)?.setPointerCapture?.(e.pointerId);
-        }
+        // Hand the OVERLAY bridge (the element the event fired on) to the dispatcher
+        // as the pan's capture target so a middle-button pan keeps tracking off the
+        // bridge (受け入れ基準 3 押下→移動→解放の連続保証). Crucially the dispatcher now
+        // OWNS the release on every teardown path: a mid-pan tool/mode switch fires
+        // onModeChange → abortAll, which releases this capture BEFORE the bridge can
+        // unmount on that switch (BUGHUNT2 root — was: capture left dangling, relying
+        // on the browser's implicit on-removal release / the eventual pointerup).
+        dispatcher.pointerDown(
+          PointerDispatcher.normalize(e, x, y),
+          e.currentTarget as Element | null ?? undefined,
+        );
       },
       pointerMove: (e, clientX, clientY): void => {
         // A move with the left button held is a tool draw, not a pan — the dispatcher
@@ -597,8 +604,9 @@ export function App(): JSX.Element {
       },
       pointerUp: (e, clientX, clientY): void => {
         const { x, y } = toSurface(clientX, clientY);
+        // The dispatcher releases the bridge's pointer capture itself (it owns the
+        // capture lifecycle, set in pointerDown above) — no manual release here.
         dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
-        (e.currentTarget as Element | null)?.releasePointerCapture?.(e.pointerId);
       },
       pointerCancel: (pointerId): void => {
         dispatcher.pointerCancel(pointerId);

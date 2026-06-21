@@ -9,7 +9,12 @@ import {
   type NormalizedPointer,
 } from './PointerDispatcher';
 import { DISPATCH_TARGET, POINTER_BUTTON, type PointerButton } from './dispatch';
-import { NO_MODIFIERS, type PointerModifiers, type SelectionPort } from './ports';
+import {
+  NO_MODIFIERS,
+  type PointerCaptureTarget,
+  type PointerModifiers,
+  type SelectionPort,
+} from './ports';
 import {
   EMPTY_HIT,
   vertexHit,
@@ -62,6 +67,24 @@ class FakeContextMenu {
   requests = 0;
   request() {
     this.requests += 1;
+  }
+}
+
+/**
+ * A fake DOM pointer-capture target that records set/release calls and tracks the
+ * currently-captured pointer ids — so a test can assert the dispatcher RELEASES a
+ * pan's capture on every teardown path (BUGHUNT2).
+ */
+class FakeCaptureTarget implements PointerCaptureTarget {
+  readonly captured = new Set<number>();
+  readonly calls: string[] = [];
+  setPointerCapture(pointerId: number): void {
+    this.captured.add(pointerId);
+    this.calls.push(`set:${pointerId}`);
+  }
+  releasePointerCapture(pointerId: number): void {
+    this.captured.delete(pointerId);
+    this.calls.push(`release:${pointerId}`);
   }
 }
 
@@ -228,6 +251,96 @@ describe('全経路破棄 of transient state (受け入れ基準 6, 教訓 5.2)'
     // +40px right = +10° world ⇒ center -10° relative to the fresh base only.
     const last = camera.writes[camera.writes.length - 1]!;
     expect(last.centerLon - baseAtSecondPress).toBeCloseTo(-10, 6);
+  });
+});
+
+describe('pan pointer-capture lifecycle (BUGHUNT2 — 全経路で capture を解放)', () => {
+  // ROOT of BUGHUNT2: a middle-button pan started through the tool-overlay input
+  // bridge captures the pointer on the BRIDGE element. A mid-pan tool/mode switch
+  // aborts the pan transient (onModeChange → abortAll) but FORMERLY left the DOM
+  // capture in place — and the bridge element can UNMOUNT on that switch, so the
+  // trailing pointerup had no captured element to land on. The dispatcher now owns
+  // capture lifecycle: it captures on pan-start and RELEASES on every teardown path
+  // (release / cancel / mode-change abort) BEFORE the element can unmount.
+
+  it('captures on pan-start and releases on pointerUp', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    const cap = new FakeCaptureTarget();
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle), cap);
+    expect(cap.captured.has(1)).toBe(true);
+    dispatcher.pointerMove(ptr(1, 480, 300, POINTER_BUTTON.Middle));
+    dispatcher.pointerUp(ptr(1, 480, 300, POINTER_BUTTON.Middle));
+    expect(cap.captured.has(1)).toBe(false); // released, not left dangling
+    expect(cap.calls).toEqual(['set:1', 'release:1']);
+  });
+
+  it('releases the capture on a mid-pan mode change (the reported repro)', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    const cap = new FakeCaptureTarget();
+    // Start a middle-button pan through the (bridge) capture target...
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle), cap);
+    dispatcher.pointerMove(ptr(1, 440, 300, POINTER_BUTTON.Middle));
+    expect(cap.captured.has(1)).toBe(true);
+    // ...then a tool/mode switch fires onModeChange WHILE the pointer is still held.
+    dispatcher.onModeChange();
+    // The transient is gone AND the DOM capture is released — so when the bridge
+    // element unmounts on the switch it carries no dangling capture, and the trailing
+    // pointerup is a safe no-op (the record is already gone).
+    expect(dispatcher.isPanning).toBe(false);
+    expect(dispatcher.activeCount).toBe(0);
+    expect(cap.captured.has(1)).toBe(false);
+    expect(cap.calls).toEqual(['set:1', 'release:1']);
+  });
+
+  it('releases the capture on pointercancel', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    const cap = new FakeCaptureTarget();
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle), cap);
+    dispatcher.pointerCancel(1);
+    expect(cap.captured.has(1)).toBe(false);
+  });
+
+  it('releases the capture on pointerleave (abort of every live pointer)', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    const cap = new FakeCaptureTarget();
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle), cap);
+    dispatcher.pointerLeave();
+    expect(cap.captured.has(1)).toBe(false);
+  });
+
+  it('a pan with NO capture target works and never touches capture', () => {
+    // The dispatcher unit tests call pointerDown without a target; that path must
+    // stay a no-op for capture (no throw, no spurious release on teardown).
+    const { camera, dispatcher } = setup(EDIT_MODE.View);
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle));
+    dispatcher.pointerMove(ptr(1, 480, 300, POINTER_BUTTON.Middle));
+    expect(() => dispatcher.onModeChange()).not.toThrow();
+    expect(camera.writes.length).toBeGreaterThan(0);
+  });
+
+  it('swallows a release that throws (capture already gone / element detached)', () => {
+    const { dispatcher } = setup(EDIT_MODE.View);
+    const throwing: PointerCaptureTarget = {
+      setPointerCapture() {},
+      releasePointerCapture() {
+        throw new DOMException('InvalidPointerId');
+      },
+    };
+    dispatcher.pointerDown(ptr(1, 400, 300, POINTER_BUTTON.Middle), throwing);
+    // A throw from the browser's releasePointerCapture must not break teardown.
+    expect(() => dispatcher.onModeChange()).not.toThrow();
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('does NOT capture for a non-pan press (edit-mode left selection)', () => {
+    const { dispatcher } = setup(EDIT_MODE.Edit);
+    const cap = new FakeCaptureTarget();
+    // A capture target is offered, but the press resolves to SelectEdit, not Pan,
+    // so no capture is taken (capture is a pan-only concern).
+    expect(dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left), cap)).toBe(
+      DISPATCH_TARGET.SelectEdit,
+    );
+    expect(cap.calls).toEqual([]);
   });
 });
 
