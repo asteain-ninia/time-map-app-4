@@ -137,6 +137,35 @@ describe('checkSplittable — OPEN cut must transit outside→outside (FR-90; Co
   });
 });
 
+describe('checkSplittable — degenerate looping OPEN cut (bug-hunt2: zero-area clip)', () => {
+  it('rejects a U-shaped OPEN cut whose first and last points coincide', () => {
+    const { feature, store } = unitSquare();
+    // A U-shaped OPEN polyline whose ENDS are the SAME node (2,-5): it dips into the
+    // [0,10]² square from below twice but loops back to its start. snapCutLine drops
+    // only CONSECUTIVE duplicates for an open line, so first===last survives; both
+    // endpoints are strictly outside and the path makes ≥2 boundary transits, so
+    // linePiercesFace passes. The endpoint chord is then dx=dy=0, which used to make
+    // openLineToClip's offset normal (0,0) → a ZERO-AREA clip ring whose boolean op
+    // vanished and mis-reported as 貫通せず/不正形状. It must now be the honest
+    // DegenerateLine rejection instead.
+    const line = createOpenKnifeLine([c(2, -5), c(2, 5), c(8, 5), c(8, -5), c(2, -5)]);
+    const res = checkSplittable(feature, store, line);
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
+    if (res.status === SPLIT_CHECK_STATUS.NotSplittable) {
+      expect(res.reason).toBe(SPLIT_REJECT.DegenerateLine);
+      expect(res.message).toBe(SPLIT_REJECT_MESSAGE[SPLIT_REJECT.DegenerateLine]);
+    }
+  });
+
+  it('still accepts a non-looping outside→outside cut over the same square', () => {
+    // Guard against over-rejection: a genuine vertical pierce (distinct endpoints)
+    // remains splittable after the degenerate-clip guard.
+    const { feature, store } = unitSquare();
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(5, -5), c(5, 15)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+  });
+});
+
 describe('checkSplittable — antimeridian seam alignment (R3; Codex seam-mismatch)', () => {
   it('splits a seam-crossing target (stored 170°..−170°) with a cut drawn at +180°', () => {
     // A thin box crossing the world seam, stored in representative form: its outer

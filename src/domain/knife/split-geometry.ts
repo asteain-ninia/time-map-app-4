@@ -30,6 +30,7 @@ import {
   isOk,
   pointInPolygon,
   POINT_LOCATION,
+  QUANTIZE_SCALE,
   quantizeCoordinate,
   segmentsIntersect,
   SEGMENT_RELATION,
@@ -221,6 +222,21 @@ function snapCutLine(
  * The offset direction is the outward normal of the polyline's overall chord; a
  * generous magnitude (10× the span, min 720°) guarantees the closing path lies
  * well outside the target and the seam-unwrapped span.
+ *
+ * Degenerate-chord guard (bug-hunt2): the offset normal must NOT be derived from
+ * the endpoint chord alone. A U-shaped / looping OPEN polyline whose first and last
+ * vertices quantize onto the SAME grid node (snapCutLine drops only consecutive
+ * duplicates for an open line, never first==last) gives dx=dy=0, so the old
+ * `len = hypot(0,0) || 1 = 1` produced nx=ny=0: the `back` path retraced `forward`
+ * with ZERO offset, yielding a zero-AREA clip ring whose boolean op vanished and
+ * mis-reported downstream as 貫通せず/不正形状 instead of an honest rejection. More
+ * generally a near-degenerate short chord with a far-bulging cut points the normal
+ * along the wrong axis, landing the half-region on the geometrically wrong side. So
+ * when the endpoint chord is ~0 we fall back to the polyline's OVERALL extent (its
+ * bbox diagonal) for the direction; the perpendicular of that is a stable normal
+ * that pushes `back` cleanly to one side. The caller (checkSplittable) additionally
+ * rejects a clip whose ring area is still ~0 with DegenerateLine, so a polyline with
+ * no extent at all (every vertex on one node) can never form a clip.
  */
 function openLineToClip(
   line: readonly WorldCoordinate[],
@@ -231,9 +247,27 @@ function openLineToClip(
   const first = line[0];
   const last = line[line.length - 1];
   if (first === undefined || last === undefined) return [];
-  // Chord direction (start → end); the offset normal is perpendicular to it.
-  const dx = last.lon - first.lon;
-  const dy = last.lat - first.lat;
+  // Chord direction (start → end); the offset normal is perpendicular to it. When
+  // the endpoints coincide (first===last, a looping cut) the chord is degenerate, so
+  // derive the direction from the polyline's overall bbox diagonal instead — never
+  // from the zero chord (which would collapse the normal to (0,0)).
+  let dx = last.lon - first.lon;
+  let dy = last.lat - first.lat;
+  if (Math.hypot(dx, dy) <= CHORD_DEGENERATE_EPS) {
+    let minLon = Number.POSITIVE_INFINITY;
+    let maxLon = Number.NEGATIVE_INFINITY;
+    let minLat = Number.POSITIVE_INFINITY;
+    let maxLat = Number.NEGATIVE_INFINITY;
+    for (const p of line) {
+      if (p === undefined) continue;
+      if (p.lon < minLon) minLon = p.lon;
+      if (p.lon > maxLon) maxLon = p.lon;
+      if (p.lat < minLat) minLat = p.lat;
+      if (p.lat > maxLat) maxLat = p.lat;
+    }
+    dx = Number.isFinite(minLon) ? maxLon - minLon : 0;
+    dy = Number.isFinite(minLat) ? maxLat - minLat : 0;
+  }
   const len = Math.hypot(dx, dy) || 1;
   const nx = -dy / len;
   const ny = dx / len;
@@ -245,6 +279,32 @@ function openLineToClip(
     back.push({ lon: p.lon + nx * offset, lat: p.lat + ny * offset });
   }
   return [...forward, ...back];
+}
+
+/**
+ * Below this chord/extent length (in continuous-lon degrees) the polyline has no
+ * usable direction for the offset normal — i.e. effectively a single point. It is
+ * one quantum of the U06 grid (1 / QUANTIZE_SCALE), the smallest distance two
+ * distinct grid nodes can differ by, so a chord at or below it is treated as having
+ * collapsed onto one node.
+ */
+const CHORD_DEGENERATE_EPS = 1 / QUANTIZE_SCALE;
+
+/**
+ * Planar (continuous-lon) twice-signed area of a ring via the shoelace formula. The
+ * clip ring is built in the seam-anchored planar system, so this cheap planar area
+ * is the right degeneracy probe (we only test for ~0, not a geodesic magnitude).
+ */
+function planarRingArea2(ring: GeoRing): number {
+  let acc = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    const p = ring[i];
+    const q = ring[(i + 1) % n];
+    if (p === undefined || q === undefined) continue;
+    acc += p.lon * q.lat - q.lon * p.lat;
+  }
+  return Math.abs(acc);
 }
 
 // ---------------------------------------------------------------------------
@@ -489,7 +549,15 @@ export function checkSplittable(
       return rejection(SPLIT_REJECT.DoesNotPierce);
     }
     const span = multiPolygonSpan(targetMp);
-    clip = [[openLineToClip(linePts, span)]];
+    const clipRing = openLineToClip(linePts, span);
+    // Reject a degenerate clip (bug-hunt2): even with the chord guard, a polyline
+    // with no spatial extent at all (every snapped vertex on one grid node) yields a
+    // zero-area ring. A zero-area clip makes intersection/difference vanish and would
+    // mis-report as 貫通せず/不正形状 — surface the honest 分断線の点が足りません instead.
+    if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
+      return rejection(SPLIT_REJECT.DegenerateLine);
+    }
+    clip = [[clipRing]];
   }
 
   const inside = intersection(targetMp, clip);
