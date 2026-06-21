@@ -200,17 +200,24 @@ function EventsSection<S>(props: {
   const domain = useStore(store, (s) => s.domain);
   void domain; // recompute the event rows when the committed domain changes.
   const root = getRoot();
-  const rows = root.histories.flatMap((history) =>
-    history.series.entries.map((entry) => ({
+  const rows = root.histories.flatMap((history) => {
+    // Defer to the domain's single fallback rule (教訓 5.30): an unnamed feature
+    // carries a present-but-blank name (''), so a bare `??` never fires and the
+    // row would render blank. featureDisplayName trims and falls back to the id,
+    // matching the 地物一覧 so every event row carries a visible identifier.
+    const owner = history.series.entries[0]?.anchor.snapshot.features.find(
+      (f) => f.id === history.featureId,
+    );
+    const label = owner
+      ? featureDisplayName(owner)
+      : (history.featureId as unknown as string);
+    return history.series.entries.map((entry) => ({
       featureId: history.featureId,
       anchorId: entry.anchor.id as unknown as string,
       start: entry.start,
-      name:
-        history.series.entries[0]?.anchor.snapshot.features.find(
-          (f) => f.id === history.featureId,
-        )?.attributes.name ?? (history.featureId as unknown as string),
-    })),
-  );
+      name: label,
+    }));
+  });
 
   return (
     <div className="sidebar-list" data-testid="event-list">

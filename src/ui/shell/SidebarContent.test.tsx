@@ -142,4 +142,25 @@ describe('SidebarContent — HB-3 wiring', () => {
     const list = screen.getByTestId('event-list');
     expect(within(list).getByText('織田領')).toBeInTheDocument();
   });
+
+  // Regression (BUGHUNT R3): an unnamed feature is the DEFAULT (the add form
+  // commits an empty name), so its attributes.name is present-but-blank (''). A
+  // bare `name ?? id` never fires for '' and the イベント一覧 row rendered as a
+  // blank, illegible button. The row must defer to the domain fallback rule and
+  // show the feature id — matching the 地物一覧 — so every row is identifiable.
+  it('falls back to the feature id when an event owner feature is unnamed', () => {
+    const a = squareLeaf('f-5-4', ''); // unnamed (default) — present-but-blank name.
+    const root = withLeaf(emptyProject(), a, 1000);
+    renderWith(root);
+
+    // The 地物一覧 already shows the id fallback…
+    const features = screen.getByTestId('feature-list');
+    expect(within(features).getByText('f-5-4')).toBeInTheDocument();
+
+    // …and the イベント一覧 row must show the SAME visible id, never a blank button.
+    const events = screen.getByTestId('event-list');
+    const row = within(events).getByText('f-5-4');
+    expect(row).toBeInTheDocument();
+    expect(row.textContent?.trim()).not.toBe('');
+  });
 });
