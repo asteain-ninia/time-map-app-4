@@ -181,3 +181,32 @@
 - **C15 [LOW]** screenToWorld/host-ports の極端 pan 時の数値劣化対策(L5)、clampGapToStep の収束上限見直し(L7)。場所: `vtransform.ts:101-111`, `longitude.ts:124-161`。
 
 **着手順の推奨**: C9(独立・ハング修正)→ C6/C7(unwrap 根本)→ C1/C2/C3(align 根本、最大被害)→ C4/C5/C10/C11/C12 → 残り LOW。C1〜C3 と C6 は所見の大半を連動解消するため、これら4本でシーム欠陥の主要部分を塞げる。
+
+---
+
+## 5. 確定処理: 各 C 項目の解決状況(2026-06-21 finalize)
+
+着手順の推奨どおり、根本原因 A/B に収束する HIGH 項目と、独立かつ影響の大きい MED/LOW を優先実装した。全修正は専用シーム修正パスで commit 済み(typecheck/lint/test/test:e2e 全緑・skip 0・デグレなし確認済み)。
+
+| 項目 | 確度 | 状態 | 解決 commit / 繰越理由 |
+| --- | --- | --- | --- |
+| **C1** unwrapShape に外環基準 align(H4→M7/M11/L11 連動) | HIGH | **[解決]** | `9964314`(resolve-display-shapes.ts に polygon 単位 align 追加) |
+| **C2** drill-geometry の region/target 共通アンカー整列(H2) | HIGH | **[解決]** | `9964314`(drill-geometry.ts、boolean-ops 前に align) |
+| **C3** resolveFeatureArea 集約 union 前の子 leaf 整列(H3) | HIGH | **[解決]** | `9964314`(resolve-shape.ts、union 前に共通フレーム化) |
+| **C4** U10 overlap/bbox を unwrap で連続化(M6/L10) | MED | **[解決]** | `464ea63`(overlap.ts を alignMultiPolygon で連続化、179→-179 逆回り358° bbox 解消) |
+| **C5** rewrapRing を連続性保存版へ置換(M4) | MED | **[繰越]** | boolean-ops は現状 rewrapRing を呼ばず連続座標で返す(消費側責務)ため実害顕在化せず。素朴 per-vertex rewrap を使う消費側が現れていない=潜在のまま。連続性保存版の API 設計は別パスへ。 |
+| **C6** unwrapRing/unwrapLonSequence に閉合辺連続化+正味巻き最小化(H5→H6/M2/M8/M9/L6 連動) | HIGH | **[解決]** | `9964314`(longitude.ts/seam.ts、>180°辺・閉合辺・対蹠を一般化) |
+| **C7** ringAreaKm2/polygonAreaKm2 を C6 連続化に依存(H6/M11) | HIGH | **[解決]** | `9964314`(C6 の連続化に依存、property suite で >180° 辺の面積一致を検証) |
+| **C8** shortestLonDeltaDeg の対蹠タイブレークをリング文脈依存に(M2/M9) | MED | **[解決]** | `9964314`(unwrap 一般化に内包、対蹠辺の符号をリング正味巻きで決定) |
+| **C9** grid-layer/graticuleLongitudes に safe-integer/magnitude/本数上限ガード(H1) | HIGH | **[解決]** | `0f1ad10`(grid.ts/grid-layer.ts、巨大 centerLon のフレームハング防止) |
+| **C10** clip と draw の turn ロジック単一ソース化+clip 側 MAX_WRAP_REPLICAS 縮退(M1/L1/L2) | MED | **[解決]** | `4e6076a`(feature-layer.ts、退避境界で clip⊇draw 維持) |
+| **C11** worldWrapReplicas/ringsShareVertexAcrossSeam の replica 範囲を span から動的算出(M5) | MED | **[繰越]** | 既定 turns={-1,0,1} の偽陰性は >360° 幅 or 2周以上ワールドラップという病的入力でのみ顕在化。通常編集の到達範囲外であり、C1/C6 解決後の動的算出設計とまとめて別パスへ。 |
+| **C12** quantizeScalar/quantizeRing にシーム周期の節点同一視 or 非連続入力検出(M3/L9) | MED | **[繰越]** | quantize は unwrap 済み連続座標を入力前提(規約)であり +180/-180 混在は呼び出し側バグ。C1/C6 で上流の連続化が強化されたため実害到達経路が縮小。周期同一視は量子化セマンティクス変更を伴うため慎重に別パスへ。 |
+| **C13** boolean-ops 防御層に非連続(>180°辺)入力検出を追加(L12) | LOW | **[繰越]** | 契約違反の可視化(防御層強化)であり機能欠陥ではない。C1/C2/C3/C6 で主要呼び出し側が連続化されたため違反入力経路が実質塞がれた。検出層追加は次パスで。 |
+| **C14** survey 連続スカラー長経路モード/greatCirclePath ニアミス対蹠フォールバック緩和(M10/L8) | LOW | **[一部解決]** | `edd13af`(great-circle-path.ts、近傍対蹠の slerp 不安定を許容閾値で退避=L8 解決)。M10 の連続スカラー長経路モード(UI 明示)は **[繰越]**(FR-14 距離表示と UI 仕様の合意が必要)。 |
+| **C15** screenToWorld 極端 pan 数値劣化対策/clampGapToStep 収束上限見直し(L5/L7) | LOW | **[繰越]** | いずれも ~1e15 pan や多周回連続スカラといった理論的病的入力に限定され、FR-12 のワールドスクロール設計上 fold しない方針とも整合。実データ非到達のため次パスへ。 |
+
+**解決(全/一部)**: C1, C2, C3, C4, C6, C7, C8, C9, C10, C14(L8)。
+**繰越**: C5, C11, C12, C13, C14(M10 部分), C15。
+
+繰越の総評: 残課題はいずれも (i) 通常の編集ワークフローでは到達しない病的入力(>360° 幅・多周回ワールドラップ・~1e15 pan・生折り畳み座標を契約違反で渡す)、または (ii) 機能欠陥でなく防御層/UI 仕様合意を要する項目に限られる。HIGH の根本原因 A(align 欠落)/B(unwrap 前提破れ)は全て解決済みで、シーム欠陥の主要被害面は塞がれた。
