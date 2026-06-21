@@ -420,12 +420,39 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // =====================================================================
       // B. CONSECUTIVE KNIFE SPLITS → MERGE (合体).
       // =====================================================================
-      // Fresh isolated face well away from the nest (top-left quadrant) so the
-      // cuts/merge operate on a clean target.
-      const sx = cx - 360;
-      const sy = cy - 220;
-      const baseRes = await commitFace(page, sx, sy, 120, { name: 'split-base' });
+      // Fresh isolated face for the cuts/merge to operate on a clean target.
+      //
+      // ROOT-CAUSE FIX (R3 coverage gap): the base was previously placed at
+      // (cx-360, cy-220) with half=120, which drove its left corners out to cx-480 and
+      // its top to cy-340 — beyond the clear, hit-testable central map. Those corner
+      // clicks were swallowed by toolbar/sidebar chrome (or fell outside the input
+      // layer), so the face never committed; the subsequent knife-split-1/2 and
+      // 合体(merge) checks then had NO valid target and reported 'no-confirm'. That made
+      // split×2→merge LOOK exercised when it was not. We now place the base where the
+      // grid faces committed: horizontally CENTRED (cx) and just BELOW the centred deep
+      // nest (≈cx±220 / cy±220), with a small footprint, then CLAMP the footprint and
+      // the vertical pierce inside the input layer so every click lands on hittable
+      // canvas. (Per the recorded repro: "Re-place split-base at (cx, cy+offset) inside
+      // the unobstructed map.") Phase D's grid already tolerates any residual overlap —
+      // it cancels conflicts and only counts committed faces (gridConflicts).
+      const sHalf = 80;
+      // A pierce only needs to clear the face's edges; keep the reach modest so the
+      // cut endpoints stay inside the layer with the base low in the viewport.
+      const sReach = sHalf + 40;
+      const sx = cx; // horizontally centred — guaranteed inside the layer
+      const syMin = b.y + sReach + 12; // keep the upward pierce on canvas
+      const syMax = b.y + b.height - (sReach + 12); // keep the downward pierce on canvas
+      // Just below the nest's lower edge (≈cy+220), clamped inside the layer.
+      const sy = Math.min(syMax, Math.max(syMin, cy + 240));
+      const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
+      // GATE: the split-base MUST commit, else B never reaches knife/merge (the very
+      // gap this round was opened to close). Failing loudly here prevents a silent
+      // regression back into "split×2→merge skipped, mistaken for a pass".
+      if (baseRes !== 'committed') {
+        record('split-base-not-committed', `split-base outcome=${baseRes} — knife/merge phase cannot run`);
+      }
+      expect(baseRes, 'split-base must commit so the knife-split×2→merge path is exercised').toBe('committed');
       await shot(page, 'split-base');
 
       await goView(page);
@@ -442,7 +469,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
         if (kbox) {
           // Map (sx,sy) — they are screen coords already (same coordinate space).
           // First vertical cut down the middle.
-          const r1 = await knifeSplitVertical(page, sx, sy, 200, 'split-half-1');
+          const r1 = await knifeSplitVertical(page, sx, sy, sReach, 'split-half-1');
           await shot(page, 'split-1');
           if (r1 === 'split') splitsDone += 1;
           else record('knife-split-1', `first split outcome=${r1}`);
@@ -457,12 +484,17 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
 
           // Second consecutive split: cut one of the halves HORIZONTALLY.
           if (await armEditTool(page, 'knife')) {
-            // Target the LEFT half (sx - 55) with a horizontal pierce.
+            // Target the LEFT half (sx - 55) with a horizontal pierce. Clamp the
+            // pierce endpoints inside the layer so the cut clicks land on canvas
+            // even when the base sits near the left edge (same root-fix discipline).
             const hx = sx - 55;
+            const hReach = sHalf;
+            const hLeft = Math.max(b.x + 4, hx - hReach);
+            const hRight = Math.min(b.x + b.width - 4, hx + hReach);
             await page.mouse.click(hx, sy);
             await page.waitForTimeout(70);
-            await page.mouse.click(hx - 160, sy); // left
-            await page.mouse.click(hx + 160, sy); // right → horizontal pierce
+            await page.mouse.click(hLeft, sy); // left
+            await page.mouse.click(hRight, sy); // right → horizontal pierce
             const cc = page.getByTestId('knife-confirm-cut');
             if (await cc.isVisible().catch(() => false)) {
               await cc.click();
