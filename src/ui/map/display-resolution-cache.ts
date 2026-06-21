@@ -58,6 +58,13 @@ import { featuresAt, verticesAt } from '../live-lookup';
 export interface DisplayResolution {
   /** Every feature effective at `time` (U09), the SAME `featuresAt` both paths used. */
   readonly features: readonly Feature[];
+  /**
+   * The AREA features (leaf + aggregate) filtered out of `features` — the EXACT list
+   * `buildForest` was built from. Exposed so the draw path's presentation mapping
+   * (committed-features `buildAreas`) reuses this filter instead of re-running the same
+   * O(n) scan over `features` a second time per generation (bughunt3).
+   */
+  readonly areaFeatures: readonly Feature[];
   /** The vertex store effective at `time` (U09), the SAME `verticesAt` both paths used. */
   readonly vertices: VertexStore;
   /** The forest over the AREA features (leaf + aggregate) — what `buildForest` builds. */
@@ -148,7 +155,7 @@ export function computeDisplayResolution(
   );
   const forest = buildForest(areaFeatures);
   const resolved = resolveDisplayControl(forest, vertices, control);
-  return { features, vertices, forest, resolved };
+  return { features, areaFeatures, vertices, forest, resolved };
 }
 
 /**

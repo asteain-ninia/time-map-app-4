@@ -204,17 +204,16 @@ export function computeCommittedFeatures(
   // computed ONCE and reused by the live hit-test for this same (root, time,
   // displayControl) generation (教訓 5.29, bughunt2 perf). The selection-dependent
   // presentation mapping is applied below, so the memo stays selection-independent.
-  const { features, vertices, resolved } = resolveDisplayFor(
+  // `areaFeatures` (leaf + aggregate) is the SAME list the cache already filtered to
+  // build the forest — points / lines carry no hierarchy rollup and are emitted
+  // directly below (the area pipeline would resolve them to an empty shape and never
+  // draw them). Reusing the resolution's `areaFeatures` here avoids re-filtering the
+  // whole feature list a second time per generation (bughunt3 — the cache and this
+  // draw path no longer each run the identical O(n) leaf/aggregate scan).
+  const { features, areaFeatures, vertices, resolved } = resolveDisplayFor(
     root,
     time,
     displayControl,
-  );
-
-  // The AREA features (leaf + aggregate) — points / lines carry no hierarchy rollup
-  // and are emitted directly below (the area pipeline would resolve them to an empty
-  // shape and never draw them), so they are excluded from the presentation map.
-  const areaFeatures = features.filter(
-    (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
   );
 
   // Areas (面情報) through U34 —集約形状 / depth / focus honoured.

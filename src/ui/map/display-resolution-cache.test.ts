@@ -17,6 +17,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
+import { FEATURE_KIND } from '../../domain/feature';
 import { createVertexStore } from '../../domain/vertex';
 import type { DomainProject } from '../../domain/persistence/index';
 import {
@@ -125,5 +126,29 @@ describe('display-resolution-cache (bughunt2: single shared computation)', () =>
     expect(second.resolved).toBe(first.resolved);
     expect(second.features).toBe(first.features);
     expect(second.vertices).toBe(first.vertices);
+    // bughunt3: the filtered area-feature list is reused, not re-derived per consumer.
+    expect(second.areaFeatures).toBe(first.areaFeatures);
+  });
+
+  // bughunt3 回帰: the resolution EXPOSES the leaf/aggregate `areaFeatures` it already
+  // filtered to build the forest, so the draw path (committed-features `buildAreas`) can
+  // reuse it instead of re-running the IDENTICAL O(n) leaf/aggregate scan over `features`
+  // a second time per cache miss (every real state change). Before the fix the bundle had
+  // no `areaFeatures` field and committed-features re-filtered `features` itself.
+  it('exposes the filtered AREA features (leaf + aggregate), reused not re-derived', () => {
+    const root = project();
+    const time = timePointYear(10);
+
+    const resolution = resolveDisplayFor(root, time, DISPLAY);
+
+    // The square leaf is an area feature; it is present, points/lines would be excluded.
+    expect(resolution.areaFeatures.map((f) => f.id)).toEqual(['leaf-1']);
+    // It is EXACTLY the same-kind filter the cache applies to build the forest — every
+    // exposed feature is a leaf or aggregate, never a point/line.
+    for (const f of resolution.areaFeatures) {
+      expect([FEATURE_KIND.Leaf, FEATURE_KIND.Aggregate]).toContain(f.kind);
+    }
+    // The forest is built from exactly these area features (same single source).
+    expect(resolution.forest.byId.size).toBe(resolution.areaFeatures.length);
   });
 });
