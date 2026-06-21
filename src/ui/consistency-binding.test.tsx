@@ -652,6 +652,123 @@ describe('wired edit-session: an edit-mode vertex drag commits a real geometry c
   });
 });
 
+// REGRESSION (bughunt: tool switch mid-edit-drag did not abort the in-flight edit —
+// the drag still committed on release). App.tsx subscribed only to `mode` and called
+// dispatcher.onModeChange() (→ abortAll) when `mode` changed. A TOOL switch
+// (store.setActiveTool) runs the SAME reset契約 — it wipes the selection context — but
+// leaves `mode` untouched, so the abort never fired: an edit session begun in Edit mode
+// survived a mid-drag toolbar switch and PointerDispatcher.pointerUp still ran
+// editSession.release → confirmRelease → recordCommit, landing a stray commit whose
+// selection context was already cleared (violates 教訓5.2 全経路で破棄 / 受け入れ基準6).
+// The fix tracks prevActiveTool alongside prevMode in the App subscription and aborts on
+// EITHER change. This drives the REAL store + REAL dispatcher assembled as App wires them.
+describe('tool switch mid-drag aborts the in-flight edit (no stray commit — 教訓5.2 / 受け入れ基準6)', () => {
+  it('switching the active tool during an edit-drag discards the session so release commits NOTHING', async () => {
+    const { PointerDispatcher } = await import('./map/PointerDispatcher');
+    const { POINTER_BUTTON } = await import('./map/dispatch');
+    const { createEditSessionPort } = await import('./map/edit-session-adapter');
+    const { buildEditSnapshot, ringIdForLeafVertex } = await import(
+      './map/edit-session-snapshot'
+    );
+    const { createLiveEditBinding } = await import('./consistency-binding');
+    const { RELEASE_OUTCOME } = await import('../domain/editing/index');
+    const { NO_MODIFIERS } = await import('./map/ports');
+    const { vertexHit } = await import('../domain/selection');
+    const { verticesAt } = await import('./live-lookup');
+    const { createSessionStore } = await import('./state/store');
+    const { EDIT_MODE, asToolId } = await import('./state/session');
+
+    // Seed one committed leaf at year 1000 (the live root the binding reads).
+    const seed = squareLeaf('f-1', 'v1', 0, 0); // corners (0,0)(2,0)(2,2)(0,2)
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    const time = timePointYear(1000);
+    const draggedVertexId = seed.vertices[0]!.id; // the (0,0) corner
+
+    // Live store, started in Edit mode (as a vertex edit-drag requires).
+    const store = createSessionStore<DomainRoot>({
+      initialDomain: root,
+      initial: { mode: EDIT_MODE.Edit, activeTool: asToolId('edit.vertex') },
+    });
+
+    const screenToWorld = (p: { x: number; y: number }) => ({ lon: p.x, lat: p.y });
+    const editBinding = createLiveEditBinding({ getRoot: () => store.getState().domain });
+    const ctx = { getRoot: () => store.getState().domain, getTime: () => time };
+    let releaseOutcomes = 0;
+    const editSession = createEditSessionPort<DomainRoot>({
+      screenToWorld,
+      ringIdForVertex: (hit) => ringIdForLeafVertex(ctx, hit.featureId, hit.vertexId),
+      featureMoveAllowed: () => false,
+      anchorTime: () => time,
+      currentState: () => store.getState().domain,
+      ports: editBinding.ports,
+      buildSnapshot: (session) => buildEditSnapshot(ctx, session),
+      // If this fires, a commit straddled the tool switch — exactly the bug.
+      onReleased: (outcome) => {
+        if (outcome.kind === RELEASE_OUTCOME.Processed) releaseOutcomes += 1;
+      },
+    });
+
+    const dispatcher = new PointerDispatcher({
+      getMode: () => store.getState().mode,
+      camera: {
+        read: () => ({
+          camera: { centerLon: 0, centerLat: 0, zoom: 1 },
+          viewport: { widthCss: 800, heightCss: 600, devicePixelRatio: 1 },
+        }),
+        write: () => {},
+      },
+      hitTester: { hitTest: () => vertexHit(seed.feature.id, draggedVertexId) },
+      selection: { start: () => {}, move: () => {}, end: () => {}, cancel: () => {} },
+      editSession,
+      add: { press: () => {} },
+      contextMenu: { request: () => {} },
+    });
+
+    // Wire the SAME subscription App.tsx installs: abort the dispatcher's transient on
+    // a mode OR active-tool change (the fix — pre-fix this watched `mode` alone).
+    let prevMode = store.getState().mode;
+    let prevActiveTool = store.getState().activeTool;
+    const unsubscribe = store.subscribe((s) => {
+      if (s.mode === prevMode && s.activeTool === prevActiveTool) return;
+      prevMode = s.mode;
+      prevActiveTool = s.activeTool;
+      dispatcher.onModeChange();
+    });
+
+    const ptr = (x: number, y: number) => ({
+      pointerId: 1,
+      x,
+      y,
+      button: POINTER_BUTTON.Left,
+      modifiers: NO_MODIFIERS,
+    });
+
+    // 1) Begin a real vertex drag: press the corner, move past the 4px threshold.
+    dispatcher.pointerDown(ptr(0, 0));
+    dispatcher.pointerMove({ ...ptr(5, 5), button: POINTER_BUTTON.Left });
+
+    // 2) Switch the active tool mid-drag (a separate DOM pointer, e.g. the toolbar).
+    //    This runs the reset契約 and — via the subscription — must abort the session.
+    store.getState().setActiveTool(asToolId('edit.knife'));
+
+    // 3) Release the ORIGINAL pointer over the map.
+    dispatcher.pointerUp(ptr(5, 5));
+
+    // The session was aborted by the tool switch: NO confirm/commit ever ran.
+    expect(releaseOutcomes).toBe(0);
+    // The committed geometry is untouched — the (0,0) corner never moved.
+    expect(verticesAt(store.getState().domain, time).byId.get(draggedVertexId)!.coordinate).toEqual(
+      { lon: 0, lat: 0 },
+    );
+
+    unsubscribe();
+  });
+});
+
 describe('applyEditProposal (U44 — FeatureSnapshot in-place anchor rewrite / deletion)', () => {
   it('a deletion snapshot removes the feature from the committed state', async () => {
     const { applyEditProposal } = await import('../domain/editing/apply-proposal');

@@ -518,12 +518,18 @@ export function App(): JSX.Element {
     // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
     hookTarget.addEventListener('wheel', onWheel, { passive: false });
 
-    // Abort any in-progress pan/selection on a mode change so a stale reference from
-    // the previous mode cannot bleed into the next (教訓 5.2, 受け入れ基準 6).
+    // Abort any in-progress pan/selection on a mode OR active-tool change so a stale
+    // reference from the previous mode/tool cannot bleed into the next (教訓 5.2,
+    // 受け入れ基準 6). A tool switch (store.setActiveTool) runs the same reset契約 as
+    // setMode — it wipes the selection context — but leaves `mode` untouched, so
+    // watching `mode` alone let an in-flight edit-drag survive a mid-drag toolbar
+    // switch and still commit on release (bughunt root: the abort fired only on mode).
     let prevMode = store.getState().mode;
+    let prevActiveTool = store.getState().activeTool;
     const unsubscribeMode = store.subscribe((s) => {
-      if (s.mode === prevMode) return;
+      if (s.mode === prevMode && s.activeTool === prevActiveTool) return;
       prevMode = s.mode;
+      prevActiveTool = s.activeTool;
       dispatcher.onModeChange();
     });
     // Re-composite whenever the committed domain / current time / selection /
