@@ -209,6 +209,70 @@ describe('liveHitTestAt', () => {
     if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(p.feature.id);
   });
 
+  // --- bughunt: 前面に描かれた line をクリックしても背面の area が選ばれる -------------
+  //
+  // The renderer paints AREAS first, then LINES, then POINTS (feature-layer
+  // buildFeaturePrimitives `[...areas, ...lines, ...points, ...labels]`), so a line drawn
+  // over an area sits visually ON TOP of it. Before the fix the body hit-test probed the
+  // AREA body first and returned immediately, so a click on the middle of a line crossing
+  // the area selected the BACK area, not the FRONT line (『見えている＝掴める』違反: 描画順
+  // と hit-test 優先順位の不一致). The fix probes point / line bodies in REVERSE draw order
+  // (before the area body), so the on-top feature is grabbed. Vertices still win over all.
+  describe('body hit order = reverse draw order (line over area, point over area)', () => {
+    it('clicking the middle of a LINE crossing an area selects the LINE, not the back area', () => {
+      // A 10×10 area covering [0,10]², and a horizontal line at lat 5 crossing through
+      // its interior from lon 1 to lon 9 (endpoints inside the area too).
+      const area = bigSquareLeaf('f-area', 'var', 0, 0, 10); // [0,10]×[0,10]
+      const line = lineFeature('f-line', 'vln', [
+        [1, 5],
+        [9, 5],
+      ]);
+      let root = commit(emptyProject(), area, 1000);
+      root = commit(root, line, 1000);
+      // Mid of the line segment (lon 5, lat 5): inside the area body AND on the line,
+      // far (>8px at zoom 10) from every line endpoint and every area corner vertex.
+      const mid = { lon: 5, lat: 5 };
+      const hit = liveHitTestAt({ root, time, toScreen, point: toScreen(mid) }, mid);
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(line.feature.id);
+    });
+
+    it('clicking a POINT drawn over an area selects the POINT, not the back area', () => {
+      // The point's own vertex is the nearest drawn vertex, so this also exercises the
+      // vertex-first path landing on the point rather than the area body underneath.
+      const area = bigSquareLeaf('f-area', 'var', 0, 0, 10); // [0,10]×[0,10]
+      const point = pointFeature('f-pt', 'vpt', 5, 5); // inside the area
+      let root = commit(emptyProject(), area, 1000);
+      root = commit(root, point, 1000);
+      const at = { lon: 5, lat: 5 };
+      const hit = liveHitTestAt({ root, time, toScreen, point: toScreen(at) }, at);
+      expect([HIT_KIND.Vertex, HIT_KIND.FeatureBody]).toContain(hit.kind);
+      if (hit.kind === HIT_KIND.Vertex || hit.kind === HIT_KIND.FeatureBody) {
+        expect(hit.featureId).toBe(point.feature.id);
+      }
+    });
+
+    it('clicking the area where NO line/point overlaps still selects the area (no regression)', () => {
+      // Same area + line, but click a spot inside the area well away (>8px) from the
+      // line: the area body is the only thing under the cursor and must still be hit.
+      const area = bigSquareLeaf('f-area', 'var', 0, 0, 10); // [0,10]×[0,10]
+      const line = lineFeature('f-line', 'vln', [
+        [1, 5],
+        [9, 5],
+      ]);
+      let root = commit(emptyProject(), area, 1000);
+      root = commit(root, line, 1000);
+      // lon 5, lat 2: inside the area, ~3° (30 px) below the line at lat 5 — out of reach.
+      const inAreaOnly = { lon: 5, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: toScreen(inAreaOnly) },
+        inAreaOnly,
+      );
+      expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+      if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(area.feature.id);
+    });
+  });
+
   // --- bughunt: 日付変更線を跨ぐ line の描画位置と hit-test を一致させる ----------
   //
   // A line whose stored vertices straddle the antimeridian ([179, -179]) is DRAWN by

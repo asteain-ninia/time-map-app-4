@@ -37,11 +37,18 @@
 //   1. The nearest DRAWN VERTEX within `radiusPx` SCREEN pixels of the cursor — only
 //      vertices of features actually drawn with their own shape (Real-verdict areas,
 //      plus every point/line). Aggregated / omitted areas contribute none.
-//   2. Else the topmost DRAWN AREA whose resolved shape contains the cursor (world
+//   2. Else a POINT / LINE feature within the screen-px radius (no fillable body).
+//   3. Else the topmost DRAWN AREA whose resolved shape contains the cursor (world
 //      containment, 穴透過). For an aggregate that is the AGGREGATE's集約形状, so the
 //      aggregate is selected — never a hidden child leaf.
-//   3. Else a POINT / LINE feature within the screen-px radius (no fillable body).
 //   4. Else {@link EMPTY_HIT} (empty space → clears selection downstream).
+//
+// BODY ORDER = REVERSE DRAW ORDER (bughunt 前面の line をクリックして背面の area が選ばれる,
+// 教訓 5.14): the renderer paints AREAS first, then LINES, then POINTS (feature-layer
+// buildFeaturePrimitives), so a point / line drawn over an area is visually ON TOP. The
+// body hit-test therefore probes point / line bodies (step 2) BEFORE the area body
+// (step 3) so the feature the user SEES on top is the one grabbed (『見えている＝掴める』).
+// Vertices still win over every body (step 1).
 //
 // PURITY: no React, no store, no Canvas. It builds fresh arrays; inputs are never
 // mutated.
@@ -392,6 +399,12 @@ export function drawnAreaAt(
  * aggregate/real/omit), points / lines directly. Vertex / point / line proximity uses
  * a SCREEN-px radius so the grab area is a constant on-screen size at every zoom; the
  * area body uses the drawn shape's world-space containment (穴透過 honoured).
+ *
+ * Feature BODIES are probed in REVERSE draw order — point / line BEFORE area — because
+ * the renderer paints areas underneath lines and points (feature-layer); a point / line
+ * drawn over an area is on top, so it must be grabbed first (bughunt 前面の line をクリック
+ * して背面の area が選ばれる). Vertices (step 1) still win over every body.
+ *
  * Returns {@link EMPTY_HIT} when nothing drawn is within reach.
  */
 export function liveHitTestAt(
@@ -441,15 +454,21 @@ export function liveHitTestAt(
     return vertexHit(bestVertex.featureId, bestVertex.vertexId);
   }
 
-  // 2. Topmost DRAWN AREA body under the cursor (resolved-shape containment, 穴透過).
-  //    For an aggregate this is the AGGREGATE's 集約形状 → the aggregate is selected,
-  //    never a hidden child leaf.
-  const area = drawnAreaAtPoint(areas, worldPoint, wrap);
-  if (area !== null) return featureBodyHit(area);
-
-  // 3. A POINT / LINE feature near the cursor (screen-px proximity — no fillable
+  // 2. A POINT / LINE feature near the cursor (screen-px proximity — no fillable
   //    body). Nearest representative vertex / segment wins, so a click on a stand-alone
   //    point / line selects that feature as its body.
+  //
+  // HIT/DRAW ORDER PARITY (bughunt 前面の line をクリックして背面の area が選ばれる):
+  // the renderer paints AREAS first, then LINES, then POINTS, then LABELS
+  // (feature-layer buildFeaturePrimitives `[...areas, ...lines, ...points, ...labels]`),
+  // so a point / line drawn OVER an area sits visually ON TOP of it. The body hit-test
+  // must therefore resolve in REVERSE draw order: probe the point / line bodies BEFORE
+  // the area body so the feature the user SEES on top is the one selected
+  // (『見えている＝掴める』, 教訓 5.14 描画順を hit-test の優先順位へ適用). Previously the
+  // area body was probed first and returned immediately, so a click on the middle of a
+  // line crossing an area selected the back area instead of the front line.
+  //
+  // Vertex-first (step 1) still wins over every body, per 受け入れ基準: 頂点 → 地物.
   let bestBody: FeatureId | null = null;
   bestDistSq = radiusSq;
   for (const f of features) {
@@ -536,6 +555,13 @@ export function liveHitTestAt(
     }
   }
   if (bestBody !== null) return featureBodyHit(bestBody);
+
+  // 3. Topmost DRAWN AREA body under the cursor (resolved-shape containment, 穴透過).
+  //    Probed AFTER point / line bodies because areas are painted UNDERNEATH them
+  //    (reverse draw order — see step 2). For an aggregate this is the AGGREGATE's
+  //    集約形状 → the aggregate is selected, never a hidden child leaf.
+  const area = drawnAreaAtPoint(areas, worldPoint, wrap);
+  if (area !== null) return featureBodyHit(area);
 
   return EMPTY_HIT;
 }
