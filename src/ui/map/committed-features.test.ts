@@ -5,7 +5,7 @@
 // changes which features appear. Built from the REAL domain factories via the
 // persistence fixtures (教訓 5.39: instantiate, never hand-write literals).
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
 import type { FeatureId } from '../../domain/ids';
@@ -31,7 +31,12 @@ import type { Feature } from '../../domain/feature';
 import type { FeatureHistory } from '../../domain/persistence/serialize';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
-import { buildCommittedFeatures } from './committed-features';
+import * as displayBridge from '../../render/display-bridge';
+import {
+  buildCommittedFeatures,
+  clearCommittedFeaturesCache,
+} from './committed-features';
+import { clearDisplayResolutionCache } from './display-resolution-cache';
 
 // Default display control: global depth 0 (top-level rollup), no focus. A root
 // leaf with no children draws directly at N=0 (it IS its own top-level区).
@@ -57,6 +62,12 @@ function project(): DomainProject {
     baseMap: DEFAULT_BASEMAP,
   };
 }
+
+afterEach(() => {
+  clearCommittedFeaturesCache();
+  clearDisplayResolutionCache();
+  vi.restoreAllMocks();
+});
 
 describe('buildCommittedFeatures', () => {
   it('emits the committed point effective at the current time', () => {
@@ -220,5 +231,66 @@ describe('buildCommittedFeatures', () => {
 
     const none = buildCommittedFeatures(root, timePointYear(0), null, DISPLAY);
     expect(none.find((f) => f.id === 'pt-1')?.selected).toBe(false);
+  });
+});
+
+// bughunt2 回帰: a camera-only frame must NOT rebuild the EvaluatedFeature[] batch.
+// `ports.redraw()` re-reads the committed-features getter once per drawn frame; during a
+// sustained pan/zoom (FR-110 caps the rate, not the cost) the four inputs (root / time /
+// selectedId / displayControl) are all unchanged immutable store references, so the built
+// batch — including the per-line `unwrapLonSequence` allocations and the presentation
+// mapping (`toEvaluatedAreas`) — must be served from the memo, not re-derived. We spy on
+// the presentation-mapping step that should run only on a real rebuild and assert it runs
+// ONCE across many same-input calls, then re-runs only on an input identity change.
+describe('buildCommittedFeatures output memo (bughunt2: camera-only frames reuse the batch)', () => {
+  it('reuses the SAME batch across repeated same-input frames (no rebuild)', () => {
+    const root = project();
+    const time = timePointYear(100); // both the point AND the leaf area are effective
+    const spy = vi.spyOn(displayBridge, 'toEvaluatedAreas');
+
+    const first = buildCommittedFeatures(root, time, null, DISPLAY);
+    // Three more camera-only frames at the SAME generation (a pan/zoom redraw burst).
+    const second = buildCommittedFeatures(root, time, null, DISPLAY);
+    const third = buildCommittedFeatures(root, time, null, DISPLAY);
+
+    // The area presentation mapping built the batch exactly ONCE — the later frames hit
+    // the memo and returned the SAME array object (identity reuse, not a copy).
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(second).toBe(first);
+    expect(third).toBe(first);
+  });
+
+  it('rebuilds when the selection IDENTITY changes (FR-82, no stale batch)', () => {
+    const root = project();
+    const time = timePointYear(100);
+    const selected = 'leaf-1' as unknown as FeatureId;
+    const spy = vi.spyOn(displayBridge, 'toEvaluatedAreas');
+
+    const unselected = buildCommittedFeatures(root, time, null, DISPLAY);
+    const withSelection = buildCommittedFeatures(root, time, selected, DISPLAY);
+
+    // A selection change is a miss → a fresh rebuild, and the new batch reflects it.
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(withSelection).not.toBe(unselected);
+    expect(unselected.find((f) => f.id === 'leaf-1')?.selected).toBe(false);
+    expect(withSelection.find((f) => f.id === 'leaf-1')?.selected).toBe(true);
+
+    // Re-querying the FIRST (unselected) generation is a hit again (LRU capacity ≥ 2).
+    const unselectedAgain = buildCommittedFeatures(root, time, null, DISPLAY);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(unselectedAgain).toBe(unselected);
+  });
+
+  it('rebuilds when the time IDENTITY changes (the resolved set changes)', () => {
+    const root = project();
+    const spy = vi.spyOn(displayBridge, 'toEvaluatedAreas');
+
+    const atYear0 = buildCommittedFeatures(root, timePointYear(0), null, DISPLAY);
+    const atYear100 = buildCommittedFeatures(root, timePointYear(100), null, DISPLAY);
+
+    expect(spy).toHaveBeenCalledTimes(2);
+    // The batches differ — year 0 has only the point, year 100 adds the leaf area.
+    expect(new Set(atYear0.map((f) => f.id))).toEqual(new Set(['pt-1']));
+    expect(new Set(atYear100.map((f) => f.id))).toEqual(new Set(['pt-1', 'leaf-1']));
   });
 });

@@ -117,8 +117,84 @@ const FALLBACK_STYLE: FeatureStyle = {
  * `buildFeaturePrimitives` over the result and composites it under the tool
  * overlays. Pure — the same root + time + selection + display-control yields the
  * same list.
+ *
+ * OUTPUT MEMO (bughunt2 perf): the shared `resolveDisplayFor` cache already keeps a
+ * camera-only frame from re-running the U34 forest/display pipeline, but the per-frame
+ * PRESENTATION rebuild (style/label/selected mapping + the per-line `unwrapLonSequence`
+ * allocations below) still ran on EVERY composite — and `ports.redraw()` re-reads this
+ * getter once per drawn frame, so a sustained pan/zoom at the FR-110 cap re-derived the
+ * entire `EvaluatedFeature[]` each frame even though none of its four inputs changed.
+ * This function is PURE over `(root, time, selectedId, displayControl)` — all four are
+ * immutable U16 store references swapped wholesale, never mutated — so we memoize the
+ * built batch keyed by their IDENTITY: a camera-only frame (same four references) now
+ * returns the SAME already-built array instead of rebuilding it. A real change to any
+ * of the four (commit / time-drag / selection / slider) is an identity miss and rebuilds
+ * identically, so the result is never stale. Callers treat the array as read-only (it is
+ * shared), matching the existing "builds fresh arrays; inputs never mutated" contract.
  */
 export function buildCommittedFeatures(
+  root: DomainProject,
+  time: TimePoint,
+  selectedId: FeatureId | null,
+  displayControl: DisplayControlInput,
+): EvaluatedFeature[] {
+  for (let i = 0; i < outputCache.length; i += 1) {
+    const entry = outputCache[i]!;
+    if (
+      entry.root === root &&
+      entry.time === time &&
+      entry.selectedId === selectedId &&
+      entry.control === displayControl
+    ) {
+      // Promote to most-recently-used so the live generation, hit most often (every
+      // camera-only frame), is the last to be evicted.
+      if (i !== outputCache.length - 1) {
+        outputCache.splice(i, 1);
+        outputCache.push(entry);
+      }
+      return entry.value;
+    }
+  }
+  const value = computeCommittedFeatures(root, time, selectedId, displayControl);
+  outputCache.push({ root, time, selectedId, control: displayControl, value });
+  if (outputCache.length > OUTPUT_CACHE_CAPACITY) outputCache.shift();
+  return value;
+}
+
+/** One built-batch memo entry: the four identity keys plus the batch they produced. */
+interface OutputCacheEntry {
+  readonly root: DomainProject;
+  readonly time: TimePoint;
+  readonly selectedId: FeatureId | null;
+  readonly control: DisplayControlInput;
+  readonly value: EvaluatedFeature[];
+}
+
+// A tiny bounded LRU over the BUILT batch. Capacity 2 absorbs the only realistic
+// alternation — the live (root, time, selectedId, displayControl) generation served to
+// the renderer every frame, occasionally interleaved with a transient generation (a
+// selection toggle, the help-search corpus read) — without ever growing unbounded.
+// Stale generations are never queried again (the store swaps the references forward), so
+// a larger cache would only retain memory.
+const OUTPUT_CACHE_CAPACITY = 2;
+const outputCache: OutputCacheEntry[] = [];
+
+/**
+ * Drop every memoized batch. The memo keys on input IDENTITY, so a stale entry can never
+ * be served while the store holds new references — this exists ONLY for test isolation
+ * (a test that asserts the un-cached rebuild count must start clean).
+ */
+export function clearCommittedFeaturesCache(): void {
+  outputCache.length = 0;
+}
+
+/**
+ * Build the committed-feature draw batch for `(root, time, selectedId, displayControl)` —
+ * the EXACT computation `buildCommittedFeatures` ran inline before the output memo.
+ * Exposed for tests that want the un-cached result; production code goes through the
+ * memoized {@link buildCommittedFeatures}.
+ */
+export function computeCommittedFeatures(
   root: DomainProject,
   time: TimePoint,
   selectedId: FeatureId | null,
