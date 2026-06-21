@@ -1053,24 +1053,27 @@ export function App(): JSX.Element {
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
   // selection. Toggling the tool null→prev funnels both controllers through
-  // resetForSwitch (discard) then start (fresh session). BUT the store's
-  // setActiveTool runs the reset契約 and clears selection (store.ts), which would
-  // wipe the feature a conflict commit JUST promoted (教訓 5.11 — selection must
-  // survive a structure-change commit). So we capture the selection truth before
-  // the toggle and restore it after the re-arm: only the TOOL DRAFT is discarded,
-  // the selection is preserved (軽微UX).
+  // resetForSwitch (discard) then start (fresh session) ACROSS a microtask
+  // boundary so React's keyed effects observe both transitions. BUT the store's
+  // setActiveTool reset契約 clears selection by default, which would wipe the
+  // feature a conflict commit JUST promoted (教訓 5.11 — selection must survive a
+  // structure-change commit).
+  //
+  // ROOT FIX (bughunt round-2): pin the captured selection to BOTH toggle steps
+  // via setActiveTool's preserveSelection arg. Earlier code cleared at the null
+  // step and only restored AFTER the microtask re-arm, so the store transiently
+  // held activeFeature=null between the two transitions — a synchronous broadcast
+  // that re-rendered the property panel / sidebar empty and requested an extra
+  // empty-selection canvas redraw before self-correcting one microtask later. By
+  // preserving the selection in the SAME transition that changes activeTool, only
+  // the TOOL DRAFT is discarded; no subscriber ever observes an empty frame.
   const reArmActiveTool = useCallback(() => {
     const s = store.getState();
     const tool = s.activeTool;
     const retained = s.selection;
-    s.setActiveTool(null);
+    s.setActiveTool(null, retained);
     queueMicrotask(() => {
-      const next = store.getState();
-      next.setActiveTool(tool);
-      // Restore the selection the tool re-arm just cleared (active feature +
-      // vertex context). Re-apply through the SAME truth-preserving setters so the
-      // U22 selection state and its derived mirrors stay consistent (技術方針 2.5).
-      next.restoreSelection(retained);
+      store.getState().setActiveTool(tool, retained);
     });
   }, [store]);
 

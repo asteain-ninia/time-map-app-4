@@ -651,6 +651,56 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     expect(store.getState().activeFeature).toBe(f('A'));
     expect(store.getState().activeTool).toBe(asToolId('rect'));
   });
+
+  it('setActiveTool(tool, preserveSelection) re-arms WITHOUT broadcasting an empty selection (bughunt round-2 flicker)', () => {
+    // Regression for: reArmActiveTool toggled the tool null→prev and CLEARED the
+    // selection at the null step, restoring it only one microtask later. Every
+    // subscriber (canvas redraw / property panel / sidebar) therefore observed a
+    // transient activeFeature=null frame between the two transitions — an extra
+    // empty-selection render that self-corrected one tick later. The fix pins the
+    // committed selection to BOTH toggle steps via preserveSelection so no frame is
+    // ever empty.
+    const store = makeStore(undefined, { activeFeature: f('A') });
+    store.getState().setActiveTool(asToolId('rect'));
+    store.getState().setActiveFeature(f('A'));
+    const retained = store.getState().selection;
+
+    // Record every activeFeature value a subscriber sees during the re-arm.
+    const observedActive: Array<ReturnType<typeof f> | null> = [];
+    const observedTool: Array<ReturnType<typeof asToolId> | null> = [];
+    const unsubscribe = store.subscribe((s) => {
+      observedActive.push(s.activeFeature);
+      observedTool.push(s.activeTool);
+    });
+
+    // The exact re-arm sequence App.reArmActiveTool runs (synchronous null step +
+    // re-arm step; the microtask boundary does not affect what each set() emits).
+    store.getState().setActiveTool(null, retained); // re-arm step 1
+    store.getState().setActiveTool(asToolId('rect'), retained); // re-arm step 2
+    unsubscribe();
+
+    // The tool STILL toggles null→prev, so the add/knife controller reset funnel
+    // (keyed on activeTool) fires exactly as before — the draft is still discarded.
+    expect(observedTool).toEqual([null, asToolId('rect')]);
+    // But NO subscriber ever observes an empty selection: the committed feature is
+    // preserved across BOTH transitions (no flicker / no extra empty redraw).
+    expect(observedActive).toEqual([f('A'), f('A')]);
+    expect(observedActive).not.toContain(null);
+
+    // Final state: tool re-armed, committed selection intact.
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().activeTool).toBe(asToolId('rect'));
+  });
+
+  it('setActiveTool(tool) without preserveSelection still clears (reset契約 default unchanged)', () => {
+    const store = makeStore(undefined, { activeFeature: f('A') });
+    store.getState().setActiveTool(asToolId('rect'));
+    store.getState().setActiveFeature(f('A'));
+    expect(store.getState().activeFeature).toBe(f('A'));
+    // Default path (no second arg) keeps wiping the selection (教訓 5.2).
+    store.getState().setActiveTool(asToolId('edit.knife'));
+    expect(store.getState().activeFeature).toBeNull();
+  });
 });
 
 // --- vertex selection update rules (FR-80 / FR-81) --------------------------

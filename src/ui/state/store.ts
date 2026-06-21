@@ -221,7 +221,23 @@ export interface SessionStoreActions<S> {
 
   // mode / tool
   setMode(mode: EditMode): void;
-  setActiveTool(tool: ToolId | null): void;
+  /**
+   * Arm / clear the toolbar tool. By default it runs the reset契約 and CLEARS the
+   * selection (教訓 5.2 全経路で破棄) — a deliberate tool switch must not carry a
+   * stale selection context into the next operation.
+   *
+   * `preserveSelection` is the narrow exception for the post-conflict re-arm
+   * (App.reArmActiveTool, 教訓 5.11): the re-arm has to toggle the tool null→prev
+   * so the add / knife controllers funnel through resetForSwitch → start (discard
+   * the tool DRAFT) ACROSS a microtask boundary, but the committed selection a
+   * structure-change commit just promoted must SURVIVE that toggle. Passing the
+   * captured {@link SelectionState} pins `activeFeature` (and its derived mirrors)
+   * to that value in the SAME transition that changes `activeTool`, so no
+   * subscriber (Canvas redraw / property panel / sidebar) ever observes a
+   * transient empty-selection frame between the toggle steps. It re-applies U22's
+   * existing selection value; it re-implements no rule.
+   */
+  setActiveTool(tool: ToolId | null, preserveSelection?: SelectionState): void;
 
   // time (every path goes through setCurrentTime -> re-validation)
   setCurrentTime(time: TimePoint, source: TimeChangeSource): void;
@@ -582,9 +598,16 @@ export function createSessionStore<S>(
       set({ mode, activeTool: null, ...selectionPatch(EMPTY_SELECTION) });
     },
 
-    setActiveTool(tool) {
-      // Tool switch also runs the reset契約.
-      set({ activeTool: tool, ...selectionPatch(EMPTY_SELECTION) });
+    setActiveTool(tool, preserveSelection) {
+      // Tool switch also runs the reset契約 (clear selection) UNLESS the caller
+      // explicitly pins a selection to preserve — the post-conflict re-arm carries
+      // the committed selection so the null→prev toggle never paints an empty frame
+      // (教訓 5.11). When preserved, only `activeTool` actually changes; the
+      // selection mirrors are re-applied to the SAME value atomically.
+      set({
+        activeTool: tool,
+        ...selectionPatch(preserveSelection ?? EMPTY_SELECTION),
+      });
     },
 
     // -- time (single re-validation funnel, 教訓 5.5 / 5.6) -----------------
