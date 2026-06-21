@@ -34,6 +34,29 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
     expect(screen.getByTestId('tl')).toBeInTheDocument();
   });
 
+  it('renders the mapOverlay slot INSIDE the map area, not the full-shell overlay', () => {
+    // FR-12 regression lock (bughunt2): a map-anchored control (経度シフト) must
+    // render in the map cell so it cannot overlap / steal clicks from the
+    // surrounding chrome (toolbar / sidebar / timeline). Placing it in the
+    // full-shell .app-shell__overlay (inset:0) put it over the timeline, where it
+    // intercepted the 1年次へ進む button and broke the FR-01 / FR-02 e2e flows.
+    render(
+      <AppShell
+        store={makeStore()}
+        mapOverlay={<div data-testid="map-widget" />}
+      />,
+    );
+    const widget = screen.getByTestId('map-widget');
+    expect(widget).toBeInTheDocument();
+    // It lives under the map area (.map-area), NOT under the shell overlay.
+    expect(screen.getByTestId('map-area')).toContainElement(widget);
+    expect(screen.getByTestId('map-overlay')).toContainElement(widget);
+    const shellOverlay = screen.queryByTestId('app-shell-overlay');
+    if (shellOverlay !== null) {
+      expect(shellOverlay).not.toContainElement(widget);
+    }
+  });
+
   it('sidebar has the three sections (events / features / properties)', () => {
     render(<AppShell store={makeStore()} />);
     expect(screen.getByTestId('sidebar-tab-events')).toBeInTheDocument();

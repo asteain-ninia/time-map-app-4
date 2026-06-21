@@ -41,10 +41,16 @@ export interface AppShellProps<S> {
   readonly onMapMount?: (el: HTMLDivElement) => (() => void) | void;
   /** Floating panels / modals / context menu overlay (later units). */
   readonly overlay?: ReactNode;
+  /**
+   * Controls anchored to the MAP AREA only (FR-12 経度シフト 等). Unlike `overlay`
+   * (which spans the whole shell), these render inside the map cell so they cannot
+   * overlap the toolbar / sidebar / timeline chrome (教訓 5.14).
+   */
+  readonly mapOverlay?: ReactNode;
 }
 
 export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
-  const { store, sidebar, timeline, status, onMapMount, overlay } = props;
+  const { store, sidebar, timeline, status, onMapMount, overlay, mapOverlay } = props;
 
   const registry = useMemo(() => props.registry ?? new CommandRegistry(), [props.registry]);
   const sizeStore = useMemo(() => props.sizeStore ?? new MapSizeStore(), [props.sizeStore]);
@@ -68,7 +74,11 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
         </div>
 
         <div className="app-shell__map">
-          <MapContainer sizeStore={sizeStore} {...(onMapMount ? { onMount: onMapMount } : {})} />
+          <MapContainer
+            sizeStore={sizeStore}
+            {...(onMapMount ? { onMount: onMapMount } : {})}
+            {...(mapOverlay != null ? { mapOverlay } : {})}
+          />
         </div>
 
         <div className="app-shell__sidebar">

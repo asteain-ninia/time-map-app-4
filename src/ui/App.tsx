@@ -89,6 +89,7 @@ import {
   PointerDispatcher,
   NOOP_ADD_PORT,
   NOOP_CONTEXT_MENU_PORT,
+  LongitudeShiftControl,
   type CameraPort,
   type HitTester,
   type MapCameraInput,
@@ -111,7 +112,12 @@ import type { Camera as RenderCamera } from '../render/camera';
 import type { WorldCoordinate } from '../domain/coordinate';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
 import { DEFAULT_GRID_STYLE, type GridStyle } from '../render/grid-layer';
-import { coerceGridSpacing } from '../domain/basemap/index';
+import {
+  coerceGridSpacing,
+  applyLongitudeShift,
+  centerLonForPreset,
+  type CenterLonPreset,
+} from '../domain/basemap/index';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
 
 // The domain truth root is U14's persistence {@link DomainProject} (histories +
@@ -1178,6 +1184,23 @@ export function App(): JSX.Element {
         sidebar={sidebar}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
+        mapOverlay={
+          /* FR-12 INTEGRATION (教訓 5.7 合成ルートの結線漏れ / 教訓 5.16 倍率の二重適用
+             防止): mount the U18 経度シフト control ANCHORED TO THE MAP AREA (not the
+             whole-shell overlay, which would overlap the timeline / status bar and
+             steal their clicks) and wire it to the SAME renderer camera the U40
+             pan/wheel path writes (rendererRef → writeCamera), so a shift / preset
+             actually moves the map center. The widget existed + was unit-tested but
+             was never mounted — the FR-12 feature was user-unreachable (bughunt2).
+             The widget reports a RAW shift操作量; the zoom is applied ONCE here via
+             applyLongitudeShift against the LIVE camera zoom (the domain multiplies,
+             never the widget, 教訓 5.16). writeCamera fires onCameraChange →
+             publishCameraHooks → updateCamera, which mirrors centerLon into the store
+             truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to
+             store.centerLon — reflects the new center. A preset jumps the continuous
+             center to the named longitude (本初子午線中心 0° / 太平洋中心 180°). */
+          <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
+        }
         overlay={
           <>
             {/* Observability marker (回帰観点 E2E): mirrors the live selection truth
@@ -1368,6 +1391,61 @@ function SessionModeMarker(props: {
         {activeTool ?? ''}
       </span>
     </>
+  );
+}
+
+/**
+ * FR-12 経度シフト panel: mounts the U18 {@link LongitudeShiftControl} bound to the
+ * LIVE session store + the renderer camera (教訓 5.7 合成ルートの結線漏れ).
+ *
+ * The readout subscribes to the store's top-level `centerLon` truth (the SAME
+ * value publishCameraHooks mirrors from every live render-camera change), so it
+ * tracks pans / wheels / shifts / presets from one source (単一真実源, 技術方針 2.5).
+ *
+ * A shift / preset is applied by reading the LIVE renderer camera and writing a NEW
+ * camera with the recomputed centerLon back through `writeCamera` — the SAME camera
+ * the U40 pan/wheel path writes, so there is no second camera/longitude truth (教訓
+ * 5.29). The zoom is applied EXACTLY once, inside `applyLongitudeShift` against the
+ * live camera zoom; the widget reports a RAW shift操作量 and never sees zoom, so the
+ * factor can never double-apply (教訓 5.16). Before the map mounts the renderer ref
+ * is null and the handlers are honest no-ops (the widget still renders the readout).
+ */
+function LongitudeShiftPanel(props: {
+  readonly store: ReturnType<typeof createSessionStore<DomainRoot>>;
+  readonly rendererRef: React.MutableRefObject<AddHostPorts | null>;
+}): JSX.Element {
+  const { store, rendererRef } = props;
+  const centerLon = useStore(store, (s) => s.centerLon);
+
+  const onShift = useCallback(
+    (shift: number): void => {
+      const ports = rendererRef.current;
+      if (ports === null) return;
+      const { camera } = ports.readCamera();
+      // Zoom applied ONCE in the domain (教訓 5.16); the continuous center stays a
+      // scalar (FR-07, folding only at display time).
+      const nextLon = applyLongitudeShift(camera.centerLon, shift, camera.zoom);
+      ports.writeCamera({ ...camera, centerLon: nextLon });
+    },
+    [rendererRef],
+  );
+
+  const onPreset = useCallback(
+    (preset: CenterLonPreset): void => {
+      const ports = rendererRef.current;
+      if (ports === null) return;
+      const { camera } = ports.readCamera();
+      ports.writeCamera({ ...camera, centerLon: centerLonForPreset(preset) });
+    },
+    [rendererRef],
+  );
+
+  return (
+    <LongitudeShiftControl
+      centerLon={centerLon}
+      onShift={onShift}
+      onPreset={onPreset}
+    />
   );
 }
 

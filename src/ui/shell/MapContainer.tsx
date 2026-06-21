@@ -9,7 +9,7 @@
 // the input layer and are forwarded to later interaction units; front overlays
 // (modal / draggable panel / context menu) sit above it and take input first.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { APP_STRINGS } from './strings';
 import {
@@ -31,10 +31,20 @@ export interface MapContainerProps {
   readonly onMount?: (el: HTMLDivElement) => (() => void) | void;
   /** Pointer handler for the map input layer (later interaction unit). */
   readonly onMapPointerDown?: (e: React.PointerEvent<HTMLDivElement>) => void;
+  /**
+   * Controls anchored to the MAP AREA (not the whole shell): floating map widgets
+   * such as the FR-12 経度シフト control. They render ABOVE the input layer but are
+   * scoped to the map cell, so their absolute positioning is relative to the map
+   * (`.map-area`, inset:0) and they can never overlap / steal clicks from the
+   * surrounding chrome (toolbar / sidebar / timeline) the way a full-shell overlay
+   * panel would (教訓 5.14: 背面の操作を奪わない). Each child opts back into pointer
+   * events; the empty container is pointer-events:none so it never blocks the map.
+   */
+  readonly mapOverlay?: ReactNode;
 }
 
 export function MapContainer(props: MapContainerProps): JSX.Element {
-  const { sizeStore, throttleMs = 50, onMount, onMapPointerDown } = props;
+  const { sizeStore, throttleMs = 50, onMount, onMapPointerDown, mapOverlay } = props;
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -79,6 +89,14 @@ export function MapContainer(props: MapContainerProps): JSX.Element {
         data-testid="map-input-layer"
         onPointerDown={onMapPointerDown}
       />
+      {/* Map-anchored floating controls (FR-12 経度シフト 等). Above the input
+          layer, scoped to the map cell; the container itself is transparent to
+          pointer events so only the controls themselves capture input. */}
+      {mapOverlay != null && (
+        <div className="map-area__overlay" data-testid="map-overlay">
+          {mapOverlay}
+        </div>
+      )}
     </div>
   );
 }

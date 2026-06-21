@@ -553,6 +553,52 @@ body {
   padding: 8px;
 }
 
+/* Map-anchored overlay layer: scoped to the map cell (.map-area, inset:0), above
+ * the canvas + input layers. It is pointer-events:none so it never blocks the map;
+ * each control re-enables pointer events on itself. Because it lives INSIDE the map
+ * area (not the full-shell .app-shell__overlay), an absolutely-positioned control
+ * anchors to the map and can never overlap the surrounding chrome (toolbar /
+ * sidebar / timeline) and steal its clicks (教訓 5.14: 背面の操作を奪わない). */
+.map-area__overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.map-area__overlay > * {
+  pointer-events: auto;
+}
+
+/* FR-12 経度シフト control: a small floating panel in the bottom-left of the MAP
+ * AREA (anchored to .map-area__overlay, so it never overlaps the timeline / status
+ * bar). Positioned away from the toolbar so it does not cover feature ops. */
+.longitude-shift {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #888;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.longitude-shift__readout {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.longitude-shift__buttons,
+.longitude-shift__presets {
+  display: flex;
+  gap: 4px;
+}
+
 /* Tooltip bubble: shown on hover/focus (FR-112). */
 .tooltip {
   position: relative;
