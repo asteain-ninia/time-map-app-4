@@ -46,11 +46,13 @@ import type { MergeSnapshot } from '../domain/merge/index';
 import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
+  applyAffiliationProposal,
   applyEditProposal,
   applyMergeProposal,
   applySplitProposal,
   deriveAnchorId,
   findHistoryContaining,
+  type AffiliationSnapshot,
 } from '../domain/editing/apply-proposal';
 import { createAnchor, createAnchorSnapshot, type Anchor } from '../domain/anchor';
 import { applyPastEdit } from '../domain/anchor-series';
@@ -135,6 +137,10 @@ export type CreateLiveEditBinding = (
 export type CreateLiveMergeBinding = (
   access: DomainRootAccess,
 ) => LiveConsistencyBinding<MergeSnapshot>;
+
+export type CreateLiveAffiliationBinding = (
+  access: DomainRootAccess,
+) => LiveConsistencyBinding<AffiliationSnapshot>;
 
 export type MakeSingleUndoCommand = (
   baseline: DomainRoot,
@@ -717,6 +723,48 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
     // the add binding), NOT checkTimeOverExisting (which would reject the not-yet-born
     // result as featureNotEffectiveAtTime). The targets' presence at the time is already
     // enforced by buildMergeProposal's validateMergePreconditions (教訓 5.26).
+    checkTime: checkTimeOver,
+    checkConstraints,
+    detectSpatial: () => [],
+    applyResolution: () => undefined,
+    makeCommand,
+  };
+  const spatialCache = createTerminalShapeCache();
+  return {
+    ports,
+    startProcess: (proposal) =>
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
+  };
+};
+
+/**
+ * Build the live 所属変更 (reparent / affiliation-change) binding (U28 → U13).
+ * `applyProposal` is U44's {@link applyAffiliationProposal} (reparent the targets +
+ * create新上位領域 + auto-prune emptied aggregates over the project's histories at the
+ * anchor time) bound to the active calendar; the other ports mirror the merge binding
+ * (calendar-validity time gate, spatial detection over the trial state, U06 difference
+ * write-back, U12 single-undo). The reparent's preconditions (循環 / 存在期間 / 対象
+ * 種別 / 確定後階層整合) are validated INSIDE the domain {@link buildAffiliationProposal}
+ * the controller calls before this binding runs, so the after-state handed here is
+ * already a valid assembly (教訓 5.26).
+ *
+ * WHY checkTime (not checkTimeOverExisting): the proposal anchors on a continuing leaf
+ * target that IS effective at the time, but a `create`-decision may also introduce a
+ * not-yet-born aggregate; the targets' presence at the time is already enforced by
+ * buildAffiliationProposal, so the live gate is calendar-validity only (like merge),
+ * avoiding a spurious featureNotEffectiveAtTime on the new aggregate. The binding reads
+ * the current root via getRoot at process-start (never a stale capture, 教訓 5.6) and
+ * never writes the store — the host's onCommitted owns the single store-write path.
+ */
+export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (access) => {
+  const ports: ConsistencyPorts<DomainRoot, AffiliationSnapshot> = {
+    applyProposal: (current, proposal) => applyAffiliationProposal(current, proposal, calendar),
     checkTime: checkTimeOver,
     checkConstraints,
     detectSpatial: () => [],

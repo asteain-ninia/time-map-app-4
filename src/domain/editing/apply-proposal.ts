@@ -60,9 +60,10 @@ import {
   type Vertex,
   type VertexStore,
 } from '../vertex';
-import type { EditProposal } from '../consistency/types';
+import { createEditProposal, type EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
 import type { MergeSnapshot } from '../merge/proposal';
+import type { AffiliationProposal } from '../affiliation/proposal';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { VertexRemap } from '../shared-vertex';
 import type { WorldCoordinate } from '../coordinate';
@@ -957,6 +958,128 @@ function rewriteFeatureSnapshotAtTime(
   return histories.map((h, i) =>
     i === index ? { featureId: history.featureId, series: updatedSeries } : h,
   );
+}
+
+// --- affiliation slice (U28 所属変更 → reparent + auto-prune over histories) --
+
+/**
+ * The opaque snapshot U13's {@link EditProposal} carries for an 所属変更 (reparent /
+ * affiliation-change, U28). It mirrors the merge snapshot's lifecycle-partition shape
+ * so the SAME apply discipline (drop deleted / rewrite survived / create new, all by
+ * time-correct containment past-edits) folds it into the live project. U28's domain
+ * core ({@link buildAffiliationProposal}) already assembled the complete after-state
+ * (`nextFeatures`) plus the lifecycle id partitions; aggregates are shapeless (FR-35),
+ * so — unlike the merge slice — NO new vertices are minted (the reparent never rewrites
+ * geometry), and the snapshot carries none.
+ */
+export interface AffiliationSnapshot {
+  /** The expanded leaf targets whose parent was repointed (FR-48). */
+  readonly targetIds: readonly FeatureId[];
+  /** The complete after-state effective feature set (new aggregates appended). */
+  readonly nextFeatures: readonly Feature[];
+  /** New上位領域 (aggregate) ids born by a `create` decision — get a fresh history. */
+  readonly createdIds: readonly FeatureId[];
+  /** Aggregates auto-pruned (emptied by the reparent) — removed at the anchor time. */
+  readonly deletedIds: readonly FeatureId[];
+  /** Continuing features whose parentId / childIds were repointed — rewritten in place. */
+  readonly survivedTouchedIds: readonly FeatureId[];
+}
+
+/** Pack an {@link AffiliationProposal} into the U13 snapshot value. Pure. */
+export function toAffiliationSnapshot(proposal: AffiliationProposal): AffiliationSnapshot {
+  return {
+    targetIds: proposal.targetIds,
+    nextFeatures: proposal.nextFeatures,
+    createdIds: proposal.createdIds,
+    deletedIds: proposal.deletedIds,
+    survivedTouchedIds: proposal.survivedTouchedIds,
+  };
+}
+
+/**
+ * Map an {@link AffiliationProposal} to a U13 {@link EditProposal} (FR-94). The anchor
+ * feature is the FIRST expanded leaf target (a continuing feature effective at the
+ * time), so the time gate ({@link checkTimeOverExisting} in the live binding) finds it.
+ * `anchorTime` is the confirm time the caller supplies. Pure.
+ */
+export function toAffiliationEditProposal(
+  proposal: AffiliationProposal,
+  anchorTime: TimePoint,
+): EditProposal<AffiliationSnapshot> {
+  const first = proposal.targetIds[0];
+  if (first === undefined) {
+    // buildAffiliationProposal rejects an empty target set, so this is unreachable;
+    // guarded for the type (mirrors the merge / U28 adapter discipline).
+    throw new Error('U44: affiliation proposal has no target');
+  }
+  return createEditProposal(first, anchorTime, toAffiliationSnapshot(proposal));
+}
+
+/**
+ * Apply an 所属変更 (reparent / affiliation-change) proposal to the project at the
+ * anchor time (FR-46〜FR-49 / FR-94, 教訓 5.11 / 5.20 / 5.23). It mirrors
+ * {@link applyMergeProposal}'s lifecycle discipline against the SAME time-correct
+ * containment helpers (past-edit only the anchor at the time, preserve siblings):
+ *   - `deletedIds`: aggregates auto-pruned by the reparent (emptied of all下位領域) —
+ *     removed from their containing snapshot at the anchor time (own history dropped
+ *     when emptied, 連鎖剪定);
+ *   - `survivedTouchedIds`: targets + existing parents whose parentId / childIds were
+ *     repointed — rewritten in place with their after-state;
+ *   - `createdIds`: new上位領域 born by a `create` decision (帰属 / 連邦化 / 自治化) —
+ *     each gets a fresh single-entry history anchored at the anchor time.
+ *
+ * Each touched feature's after-state is taken from `snapshot.nextFeatures` (the single
+ * source of truth the proposal assembled, 教訓 5.29). Aggregates are shapeless (FR-35),
+ * so no vertices ride along. Pure: returns a NEW project.
+ */
+export function applyAffiliationProposal(
+  root: DomainProject,
+  proposal: EditProposal<AffiliationSnapshot>,
+  calendar: Calendar,
+): DomainProject {
+  const { snapshot, anchorTime } = proposal;
+  const afterById = new Map<FeatureId, Feature>();
+  for (const f of snapshot.nextFeatures) afterById.set(f.id, f);
+
+  let histories: readonly FeatureHistory[] = root.histories;
+
+  // 1. Auto-pruned aggregates: drop each from its containing snapshot at the time.
+  for (const deletedId of snapshot.deletedIds) {
+    histories = removeFeatureAtTime(histories, deletedId, anchorTime, calendar);
+  }
+
+  // 2. Survived-but-touched (reparented targets + re-synced parents): rewrite in place
+  // with their after-state (parentId / childIds repointed by the proposal). No vertices.
+  for (const survivedId of snapshot.survivedTouchedIds) {
+    const after = afterById.get(survivedId);
+    if (after === undefined) continue; // defensive: lifecycle set out of sync.
+    histories = rewriteFeatureSnapshotAtTime(
+      histories,
+      survivedId,
+      after,
+      [],
+      anchorTime,
+      calendar,
+    );
+  }
+
+  // 3. Created aggregates (new上位領域 / 中間階層): a fresh single-entry history each.
+  for (const createdId of snapshot.createdIds) {
+    const created = afterById.get(createdId);
+    if (created === undefined) continue;
+    const anchor = anchorFor([created], createVertexStore([]), createdId, anchorTime);
+    const newHistory: FeatureHistory = {
+      featureId: createdId,
+      series: singleAnchorSeries(anchor, anchorTime),
+    };
+    const existing = histories.findIndex((h) => h.featureId === createdId);
+    histories =
+      existing >= 0
+        ? histories.map((h, i) => (i === existing ? newHistory : h))
+        : [...histories, newHistory];
+  }
+
+  return withHistories(root, histories);
 }
 
 // --- edit slice (U24 FeatureSnapshot → in-place anchor rewrite / deletion) ---

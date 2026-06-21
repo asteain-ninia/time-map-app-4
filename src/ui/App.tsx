@@ -59,6 +59,8 @@ import {
 } from './knife/index';
 import { MergeToolController } from './merge/index';
 import './merge/merge.css';
+import { ReparentToolController } from './reparent/index';
+import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
 import { createColorInfo } from '../domain/attributes';
@@ -1123,6 +1125,24 @@ export function App(): JSX.Element {
     [store, sharedMint],
   );
 
+  // U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool bootstrap mirrors the merge one —
+  // live-lookup features + the LIVE U13 binding (createLiveAffiliationBinding). Selecting
+  // 編集モード→所属変更 starts a session, the first map click picks the target, the second
+  // picks the new上位領域, and 所属変更を確定 builds an AffiliationProposal
+  // (buildAffiliationProposal) and hands an affiliation EditProposal to U13. This is the
+  // missing消費する ui コンシューマ for src/domain/affiliation (bughunt3: 所属変更 was a
+  // dead button — domain logic existed but no UI drove it).
+  const reparentBootstrap = useMemo(
+    () =>
+      createReparentBootstrap(
+        () => store.getState().domain,
+        () => store.getState().currentTime,
+        () => store.getState().displayControl,
+        () => rendererRef.current?.readCamera(),
+      ),
+    [store],
+  );
+
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
   // promote the new feature so selection re-resolves to it.
   const onAddCommitted = useCallback(
@@ -1151,6 +1171,19 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>, snapshot: MergeSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       recordCommit(result, { featureId: snapshot.resultFeatureId });
+    },
+    [recordCommit],
+  );
+
+  // REPARENT COMMIT (教訓 5.11 / U12): record as one history unit and keep selection on
+  // the reparented target (AffiliationSnapshot.targetIds[0]) so the property panel /
+  // sidebar re-resolve to it rather than blanket-clearing (FR-94 / reparent-after
+  // selection retention; the finding's reparent-lost-selection guard).
+  const onReparentCommitted = useCallback(
+    (result: ProcessResult<DomainRoot>, snapshot: AffiliationSnapshot) => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      const targetId = snapshot.targetIds[0];
+      recordCommit(result, targetId !== undefined ? { featureId: targetId } : undefined);
     },
     [recordCommit],
   );
@@ -1243,6 +1276,21 @@ export function App(): JSX.Element {
       });
     },
     [mergeBootstrap],
+  );
+
+  const onReparentConflicts = useCallback(
+    (result: ProcessResult<DomainRoot>, proposal: EditProposal<AffiliationSnapshot>) => {
+      if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+      // Promote the reparented target on commit, the SAME preference a direct reparent
+      // commit uses (教訓 5.11 / reparent selection retention).
+      const targetId = proposal.snapshot.targetIds[0];
+      setConflictState({
+        pending: result,
+        applyResolutions: reparentBootstrap.applyResolutionsFor(proposal),
+        ...(targetId !== undefined ? { preference: { featureId: targetId } } : {}),
+      });
+    },
+    [reparentBootstrap],
   );
 
   const onConflictCommitted = useCallback(
@@ -1419,6 +1467,23 @@ export function App(): JSX.Element {
               mapCameraInput={mapCameraInput}
               onCommitted={onMergeCommitted}
               onConflicts={onMergeConflicts}
+            />
+            {/* U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool controller, bound to the
+                SAME store. Selecting 編集モード→所属変更 starts a session; the first map
+                click picks the target, the second the new上位領域; 所属変更を確定 builds an
+                AffiliationProposal and hands an affiliation EditProposal to the U13 seam
+                (createLiveAffiliationBinding). Was a dead button — domain/affiliation
+                existed but no UI consumed it (bughunt3 reparent-dead-button). */}
+            <ReparentToolController<DomainRoot>
+              store={store}
+              startProcess={reparentBootstrap.startProcess}
+              resolveFeatures={reparentBootstrap.resolveFeatures}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={reparentBootstrap.featureAtPoint}
+              mapCameraInput={mapCameraInput}
+              onCommitted={onReparentCommitted}
+              onConflicts={onReparentConflicts}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes
@@ -1785,6 +1850,7 @@ import {
   createLiveEditBinding,
   createLiveKnifeBinding,
   createLiveMergeBinding,
+  createLiveAffiliationBinding,
   createDeleteFeatureCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
@@ -2019,4 +2085,65 @@ function createMergeBootstrap(
     startProcess,
     applyResolutionsFor,
   };
+}
+
+// --- The reparent bootstrap (live-lookup + the U13 seam) ----------------------
+
+import type {
+  ResolveFeatures as ReparentResolveFeatures,
+  StartAffiliationProcess,
+  FeatureAtPoint as ReparentFeatureAtPoint,
+} from './reparent/index';
+import type { AffiliationSnapshot } from '../domain/editing/apply-proposal';
+
+interface ReparentBootstrap<S> {
+  readonly resolveFeatures: ReparentResolveFeatures;
+  readonly featureAtPoint: ReparentFeatureAtPoint;
+  readonly startProcess: StartAffiliationProcess<S>;
+  /** Build the U35 apply-resolutions adapter bound to ONE paused reparent proposal. */
+  readonly applyResolutionsFor: (
+    proposal: EditProposal<AffiliationSnapshot>,
+  ) => ApplyResolutions<S>;
+}
+
+function createReparentBootstrap(
+  getRoot: () => DomainRoot,
+  getTime: () => TimePoint,
+  getDisplayControl: () => DisplayControlInput,
+  getWrap: () => KnifeWrapFrame,
+): ReparentBootstrap<DomainRoot> {
+  // LIVE live-lookup ports (P0-B): the features effective at the CURRENT time, read at
+  // call time so a load / time move / edit is reflected without a stale capture (教訓
+  // 5.6). They share the SAME live-lookup rule (live-lookup.ts) the knife / merge
+  // bootstraps and the consistency binding use, so reparent target / parent selection
+  // and U28 legality 検証 can never disagree with what is drawn (二重真実源を作らない,
+  // 教訓 5.29). No id ports: the existing-parent reparent mints nothing (aggregates are
+  // shapeless, FR-35; a `create` decision would mint inside buildAffiliationProposal).
+  const resolveFeatures: ReparentResolveFeatures = () => featuresAt(getRoot(), getTime());
+  // 対象/上位探索は描画解決と同じ単一真実源: route through `drawnAreaAt` — the SAME
+  // display-control-resolved drawn-area set the renderer / main hit-test / knife / merge
+  // pick — so a body click resolves to the feature the user SEES (honouring 集約表示 +
+  // the renderer's ±360° wrap turns). Read at call time (教訓 5.6 / 5.29). This lets the
+  // user pick a deeply-nested face AND a different ancestor ring as the new parent.
+  const featureAtPoint: ReparentFeatureAtPoint = (point): FeatureId | null =>
+    drawnAreaAt(
+      {
+        root: getRoot(),
+        time: getTime(),
+        displayControl: getDisplayControl(),
+        wrap: getWrap(),
+      },
+      point,
+    );
+
+  // U44 — the LIVE U13 binding for reparent. The proposal is ALREADY a U13
+  // EditProposal<AffiliationSnapshot> (toAffiliationEditProposal ran in the hook), so the
+  // swap is contract-clean. The binding's applyProposal = U44's applyAffiliationProposal.
+  const live = createLiveAffiliationBinding({ getRoot });
+  const startProcess = live.startProcess;
+  const applyResolutionsFor = (
+    proposal: EditProposal<AffiliationSnapshot>,
+  ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
+
+  return { resolveFeatures, featureAtPoint, startProcess, applyResolutionsFor };
 }
