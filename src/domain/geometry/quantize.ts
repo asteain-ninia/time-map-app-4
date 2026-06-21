@@ -7,7 +7,11 @@
 //
 // All functions are pure: inputs are never mutated, new values are returned.
 
-import { createCoordinate, type WorldCoordinate } from '../coordinate';
+import {
+  createCoordinate,
+  MAX_COORDINATE_MAGNITUDE,
+  type WorldCoordinate,
+} from '../coordinate';
 import type { GeoMultiPolygon, GeoPolygon, GeoRing } from './types';
 
 /**
@@ -27,6 +31,20 @@ import type { GeoMultiPolygon, GeoPolygon, GeoRing } from './types';
  * rejected/removed rather than emitted as a pathological micro-polygon.
  */
 export const QUANTIZE_SCALE = 1e7;
+
+// 单一真实源 fail-loud: the coordinate construction seam (../coordinate) bounds a
+// scalar's magnitude against THIS grid scale so quantization can never overflow a
+// finite input to ±Infinity. It restates the scale locally to avoid a layer cycle;
+// guard here that the two never drift. MAX_COORDINATE_MAGNITUDE is derived as
+// Number.MAX_SAFE_INTEGER / scale, so re-deriving it must reproduce it.
+const EXPECTED_MAX_COORDINATE_MAGNITUDE = Number.MAX_SAFE_INTEGER / QUANTIZE_SCALE;
+if (MAX_COORDINATE_MAGNITUDE !== EXPECTED_MAX_COORDINATE_MAGNITUDE) {
+  throw new Error(
+    `quantize: QUANTIZE_SCALE (${QUANTIZE_SCALE}) disagrees with the coordinate ` +
+      `magnitude bound (got ${MAX_COORDINATE_MAGNITUDE}, expected ` +
+      `${EXPECTED_MAX_COORDINATE_MAGNITUDE}); the two MUST share one grid scale.`,
+  );
+}
 
 /** Snap a single scalar to the integer grid, returning the grid-aligned value. */
 export function quantizeScalar(value: number): number {

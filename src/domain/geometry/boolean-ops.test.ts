@@ -181,6 +181,45 @@ describe('boolean-ops: defense layer never throws — always a typed rejection (
     }).not.toThrow();
     expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
   });
+
+  // Regression for the bug-hunt finding:
+  //   "quantizeScalar can produce Infinity for a finite input, throwing past the
+  //    boolean-op rejection contract"
+  //
+  // A finite-but-astronomical coordinate (lon = 1e302) overflows the quantization
+  // grid: 1e302 * 1e7 === +Infinity, so quantizeCoordinate -> createCoordinate
+  // throws a RangeError. The INPUT quantization used to run BEFORE the R2 try/catch,
+  // so that RangeError escaped union/difference/intersection — breaking the
+  // documented "never throw, always return a discriminated rejection" contract.
+  //
+  // The construction seam now forbids constructing such a coordinate, so we inject
+  // it as a raw object (bypassing the factory) to simulate corrupted geometry that
+  // somehow reached this layer; the op must STILL catch the throw and return a
+  // typed rejection, never let it escape.
+  it('a finite-but-overflowing input coordinate rejects, does not throw (Infinity overflow)', () => {
+    // Bypass createCoordinate's magnitude guard to model raw/corrupted input that
+    // reached the geometry layer: a coordinate whose magnitude overflows the grid.
+    const overflow: GeoMultiPolygon = [
+      [[{ lon: 1e302, lat: 0 }, { lon: 1e302, lat: 1 }, { lon: 0, lat: 0 }]],
+    ] as unknown as GeoMultiPolygon;
+
+    let r: ReturnType<typeof union>;
+    expect(() => {
+      r = union(overflow, EMPTY_MULTI_POLYGON);
+    }).not.toThrow();
+    expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+
+    // Same guarantee for difference and intersection (all three share the seam).
+    expect(() => {
+      r = difference(overflow, EMPTY_MULTI_POLYGON);
+    }).not.toThrow();
+    expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+
+    expect(() => {
+      r = intersection(overflow, EMPTY_MULTI_POLYGON);
+    }).not.toThrow();
+    expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+  });
 });
 
 function anyPieceContains(mp: GeoMultiPolygon, point: ReturnType<typeof c>): boolean {

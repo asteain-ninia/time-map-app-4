@@ -25,6 +25,7 @@
 
 import { z } from 'zod';
 
+import { MAX_COORDINATE_MAGNITUDE } from '../coordinate';
 import { getCalendar } from '../time/calendar';
 import { timePointYear, timePointYearMonth, timePointYearMonthDay } from '../time/time-point';
 import { MAX_YEAR, validate as validateTimePoint } from '../time/validate';
@@ -57,6 +58,22 @@ const idSchema = z.string().min(1);
 const finiteNumber = z.number().finite();
 
 /**
+ * A coordinate scalar (degrees): finite AND bounded in magnitude.
+ *
+ * `.finite()` alone is NOT enough (单一真实源 with the domain construction seam):
+ * a finite-but-astronomical scalar (e.g. lon = 1e302 in a crafted/corrupted
+ * manifest) is not a representable map point and overflows the U06 quantization
+ * grid to ±Infinity, which would later throw deep inside the boolean-op pipeline
+ * (breaking the R2 "never throw" contract). The SAME bound the domain
+ * `createCoordinate` enforces is restated here so a pathological coordinate is
+ * rejected at the structural-validity boundary (a clean schema error on load)
+ * rather than crashing deserialize or a later geometry op.
+ */
+const coordinateScalar = finiteNumber
+  .min(-MAX_COORDINATE_MAGNITUDE)
+  .max(MAX_COORDINATE_MAGNITUDE);
+
+/**
  * A year is a plain integer (negative = BCE; matches domain `Year`), bounded in
  * magnitude to ±MAX_YEAR. The bound is the SAME one the domain `validate`
  * enforces (単一真実源, imported from the time module) and is the structural
@@ -74,8 +91,8 @@ const yearSchema = z.number().int().min(-MAX_YEAR).max(MAX_YEAR);
 
 export const coordinateSchema = z
   .object({
-    lon: finiteNumber,
-    lat: finiteNumber,
+    lon: coordinateScalar,
+    lat: coordinateScalar,
   })
   .strict();
 

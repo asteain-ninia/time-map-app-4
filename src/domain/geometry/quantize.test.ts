@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import fc from 'fast-check';
 
-import { createCoordinate } from '../coordinate';
+import { createCoordinate, MAX_COORDINATE_MAGNITUDE } from '../coordinate';
 import {
   QUANTIZE_SCALE,
   quantizeCoordinate,
@@ -57,5 +58,66 @@ describe('quantize (R2 front-half, acceptance criterion 2)', () => {
 
   it('returns an empty ring for empty input (length-decided, lesson 5.18)', () => {
     expect(quantizeRing([])).toEqual([]);
+  });
+
+  // Regression for the bug-hunt finding:
+  //   "quantizeScalar can produce Infinity for a finite input, throwing past the
+  //    boolean-op rejection contract"
+  //
+  // quantizeScalar snaps via Math.round(value * 1e7) / 1e7. For a finite-but-huge
+  // scalar (e.g. 1e302) the multiply overflows IEEE-754 to +Infinity, so a finite
+  // input would yield a NON-finite grid value, which createCoordinate then throws
+  // on — escaping union/difference/intersection's R2 "never throw" contract. The
+  // fix bounds coordinate magnitude at the construction seam so such a coordinate
+  // can never be born (and so quantizing any constructible coordinate stays finite).
+  describe('quantization never turns a finite coordinate non-finite (Infinity overflow regression)', () => {
+    it('the magnitude bound keeps the grid index finite (no overflow to ±Infinity)', () => {
+      // The whole point of the bound: at the ceiling, |value| * scale must stay
+      // finite (≈ MAX_SAFE_INTEGER, which is ~1e293 below MAX_VALUE), so the index
+      // can never overflow to ±Infinity and Math.round stays finite. This is the
+      // exact property whose absence caused the bug.
+      const idx = MAX_COORDINATE_MAGNITUDE * QUANTIZE_SCALE;
+      expect(Number.isFinite(idx)).toBe(true);
+      expect(idx).toBeLessThan(Number.MAX_VALUE);
+      expect(Number.isFinite(Math.round(idx) / QUANTIZE_SCALE)).toBe(true);
+    });
+
+    it('createCoordinate rejects a finite-but-overflowing scalar at birth', () => {
+      // 1e302 is the documented repro: 1e302 * 1e7 === Infinity.
+      expect(Number.isFinite(1e302 * QUANTIZE_SCALE)).toBe(false); // sanity
+      expect(() => createCoordinate(1e302, 0)).toThrow(RangeError);
+      expect(() => createCoordinate(0, -1e302)).toThrow(RangeError);
+      // The exact ceiling is allowed; clearly beyond it is rejected.
+      expect(() => createCoordinate(MAX_COORDINATE_MAGNITUDE, 0)).not.toThrow();
+      expect(() => createCoordinate(-MAX_COORDINATE_MAGNITUDE, 0)).not.toThrow();
+      expect(() => createCoordinate(MAX_COORDINATE_MAGNITUDE * 2, 0)).toThrow(RangeError);
+    });
+
+    it('property: quantizing any constructible coordinate stays finite (never overflows)', () => {
+      fc.assert(
+        fc.property(
+          fc.double({
+            noNaN: true,
+            noDefaultInfinity: true,
+            min: -MAX_COORDINATE_MAGNITUDE,
+            max: MAX_COORDINATE_MAGNITUDE,
+          }),
+          fc.double({
+            noNaN: true,
+            noDefaultInfinity: true,
+            min: -MAX_COORDINATE_MAGNITUDE,
+            max: MAX_COORDINATE_MAGNITUDE,
+          }),
+          (lon, lat) => {
+            // Every constructible coordinate must quantize without overflowing the
+            // grid index to ±Infinity — the regression invariant.
+            const q = quantizeCoordinate(createCoordinate(lon, lat));
+            expect(Number.isFinite(q.lon)).toBe(true);
+            expect(Number.isFinite(q.lat)).toBe(true);
+          },
+        ),
+        { numRuns: 1000 },
+      );
+    });
   });
 });

@@ -142,38 +142,46 @@ function runBooleanOp(
   subject: GeoMultiPolygon,
   clip: GeoMultiPolygon,
 ): BooleanOpResult {
-  // 1. Quantize (front half of R2 defense).
-  const qSubject = quantizeMultiPolygon(subject);
-  const qClip = quantizeMultiPolygon(clip);
+  // The WHOLE pipeline — input quantization, kernel call, AND output conversion —
+  // runs inside one R2 try/catch. INPUT quantization is not safe to run outside it:
+  // `quantizeCoordinate` re-mints each coordinate through `createCoordinate`, whose
+  // finite + magnitude guards THROW on a pathological scalar (e.g. a corrupted
+  // load carrying lon = 1e302, which the persistence schema's `.finite()` admits).
+  // If that throw escaped here it would break the R2 "never throw, always a
+  // discriminated rejection" contract — so it must be caught and mapped to a
+  // rejection like every other degeneracy (病的入力の落とし穴 / 教訓5.26).
+  return runKernelAndConvert(op, () => {
+    // 1. Quantize (front half of R2 defense). Acceptance criterion 2: there is no
+    // path to the kernel that skips quantization.
+    const qSubject = quantizeMultiPolygon(subject);
+    const qClip = quantizeMultiPolygon(clip);
 
-  // The kernel rejects polygons with empty ring lists; an empty subject means an
-  // empty result for every op except where the kernel would throw, so short-out.
-  const subjectLib = multiPolygonToLib(qSubject).filter((poly) => poly.length > 0 && poly[0]!.length > 0);
-  const clipLib = multiPolygonToLib(qClip).filter((poly) => poly.length > 0 && poly[0]!.length > 0);
+    // The kernel rejects polygons with empty ring lists; an empty subject means an
+    // empty result for every op except where the kernel would throw, so short-out.
+    const subjectLib = multiPolygonToLib(qSubject).filter(
+      (poly) => poly.length > 0 && poly[0]!.length > 0,
+    );
+    const clipLib = multiPolygonToLib(qClip).filter(
+      (poly) => poly.length > 0 && poly[0]!.length > 0,
+    );
 
-  if (subjectLib.length === 0) {
-    // Union with empty subject == clip; difference/intersection == empty.
-    if (op === BOOLEAN_OP.Union) {
-      // The kernel normalize call (normalizeUnion) and the lib->geo conversion
-      // can both throw on degenerate clip input — the kernel itself can throw on
-      // some degenerate ring lists, and conversion throws (RangeError) if the
-      // kernel emits a non-finite vertex (createCoordinate's finite guard). Both
-      // must surface as a rejection, never crash the caller (R2). Run them inside
-      // the same try/catch as the main kernel path below.
-      return runKernelAndConvert(op, () =>
-        libMultiPolygonToGeo(normalizeUnion(clipLib)),
-      );
+    if (subjectLib.length === 0) {
+      // Union with empty subject == clip; difference/intersection == empty.
+      if (op === BOOLEAN_OP.Union) {
+        // The kernel normalize call (normalizeUnion) and the lib->geo conversion
+        // can both throw on degenerate clip input — the kernel itself can throw on
+        // some degenerate ring lists, and conversion throws (RangeError) if the
+        // kernel emits a non-finite vertex (createCoordinate's finite guard).
+        return libMultiPolygonToGeo(normalizeUnion(clipLib));
+      }
+      return EMPTY_MULTI_POLYGON;
     }
-    return { status: BOOLEAN_OP_STATUS.Ok, result: EMPTY_MULTI_POLYGON };
-  }
 
-  // 2. Kernel + 3/4 conversion: the kernel can throw on degenerate input, and
-  // the lib->geo conversion can throw (RangeError) if the kernel emits a
-  // non-finite vertex. BOTH are inside the try so neither can escape the R2
-  // "never throw, always a discriminated rejection" contract.
-  return runKernelAndConvert(op, () =>
-    libMultiPolygonToGeo(runKernel(op, subjectLib, clipLib)),
-  );
+    // 2. Kernel + 3/4 conversion: the kernel can throw on degenerate input, and
+    // the lib->geo conversion can throw (RangeError) if the kernel emits a
+    // non-finite vertex.
+    return libMultiPolygonToGeo(runKernel(op, subjectLib, clipLib));
+  });
 }
 
 /**

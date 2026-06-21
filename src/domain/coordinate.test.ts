@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 
-import { createCoordinate, withLat, withLon } from './coordinate';
+import { createCoordinate, MAX_COORDINATE_MAGNITUDE, withLat, withLon } from './coordinate';
 
 // Regression for the bug-hunt finding:
 //   "save->load identity collapses negative-zero (-0) coordinates to +0 under
@@ -58,8 +58,26 @@ describe('createCoordinate — signed-zero normalization (JSON round-trip identi
     fc.assert(
       fc.property(
         // fc.double can generate -0; include it explicitly to exercise the seam.
-        fc.oneof(fc.constant(-0), fc.double({ noNaN: true, noDefaultInfinity: true })),
-        fc.oneof(fc.constant(-0), fc.double({ noNaN: true, noDefaultInfinity: true })),
+        // Bound the magnitude to the coordinate construction domain (a scalar past
+        // MAX_COORDINATE_MAGNITUDE is rejected at birth — covered by quantize.test).
+        fc.oneof(
+          fc.constant(-0),
+          fc.double({
+            noNaN: true,
+            noDefaultInfinity: true,
+            min: -MAX_COORDINATE_MAGNITUDE,
+            max: MAX_COORDINATE_MAGNITUDE,
+          }),
+        ),
+        fc.oneof(
+          fc.constant(-0),
+          fc.double({
+            noNaN: true,
+            noDefaultInfinity: true,
+            min: -MAX_COORDINATE_MAGNITUDE,
+            max: MAX_COORDINATE_MAGNITUDE,
+          }),
+        ),
         (lon, lat) => {
           const c = createCoordinate(lon, lat);
           const roundTripped = JSON.parse(JSON.stringify(c)) as typeof c;
