@@ -22,7 +22,7 @@ import {
   type Feature,
 } from '../../domain/feature';
 import { createShape, createTerritoryRing } from '../../domain/ring';
-import { createVertex, type Vertex } from '../../domain/vertex';
+import { createVertex, createVertexStore, type Vertex } from '../../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import type { AddSnapshot } from '../../domain/add/index';
@@ -521,6 +521,108 @@ describe('liveHitTestAt', () => {
       );
       expect(hit.kind).toBe(HIT_KIND.FeatureBody);
       if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(big.feature.id);
+    });
+  });
+
+  // --- bughunt: 一部の頂点が解決できない line は描画もヒットもされない ---------------
+  //
+  // committed-features draws a LINE all-or-nothing: if ANY of its vertexIds fails to
+  // resolve in the live vertex store it sets resolvable=false and drops the WHOLE
+  // primitive (a line [v1, missing, v2] is NOT drawn). The hit-test must mirror that
+  // rule, but it used to diverge: vertexOwners claimed EVERY line vertexId (incl. the
+  // surviving v1/v2) and the body path built per-contiguous-run geometry skipping the
+  // gap — so an INVISIBLE, partially-corrupt line stayed selectable by clicking a
+  // surviving endpoint or segment (描画とヒットの不一致, clip ⊇ draw ⊇ hit 違反).
+  //
+  // Repro: commit a 3-vertex line, then drop its MIDDLE vertex from the resolved store
+  // (a partially-corrupt snapshot). The line is undrawn; neither its surviving
+  // endpoints (vertex hit) nor its surviving segment (body hit) may select it.
+  describe('partially-resolvable line (renderer/hit-test all-or-nothing parity)', () => {
+    /** Rebuild `root` with `vid` removed from every anchor snapshot's vertex store. */
+    function dropVertex(root: DomainRoot, vid: ReturnType<typeof asVertexId>): DomainRoot {
+      return {
+        ...root,
+        histories: root.histories.map((h) => ({
+          ...h,
+          series: {
+            ...h.series,
+            entries: h.series.entries.map((e) => {
+              const survivors: Vertex[] = [];
+              for (const v of e.anchor.snapshot.vertices.byId.values()) {
+                if (v.id !== vid) survivors.push(v);
+              }
+              return {
+                ...e,
+                anchor: {
+                  ...e.anchor,
+                  snapshot: {
+                    ...e.anchor.snapshot,
+                    vertices: createVertexStore(survivors),
+                  },
+                },
+              };
+            }),
+          },
+        })),
+      };
+    }
+
+    // A 3-vertex horizontal line at lat 2: endpoints lon 0 & 4, middle lon 2.
+    function corruptLineRoot(): { root: DomainRoot; lineId: ReturnType<typeof asFeatureId> } {
+      const ln = lineFeature('f-corrupt', 'vcl', [
+        [0, 2],
+        [2, 2], // middle vertex — this one we drop
+        [4, 2],
+      ]);
+      const committed = commit(emptyProject(), ln, 1000);
+      const root = dropVertex(committed, asVertexId('vcl-1'));
+      return { root, lineId: ln.feature.id };
+    }
+
+    it('does NOT select the line via a surviving ENDPOINT vertex', () => {
+      const { root } = corruptLineRoot();
+      // Click right on the surviving (0,2) endpoint. If vertexOwners still claimed it
+      // this would be a vertex hit on the (invisible) line — the bug.
+      const endpoint = { lon: 0, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: toScreen(endpoint) },
+        endpoint,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
+
+    it('does NOT select the line via a surviving BODY segment', () => {
+      const { root } = corruptLineRoot();
+      // Click the midpoint of the SURVIVING 0→? run. With the middle vertex gone the
+      // only resolvable run that the old per-run body path built was the lone endpoint
+      // at lon 0 / lon 4 (no drawable segment), but a 4-vertex variant would expose a
+      // real surviving segment; either way the body must not hit. Probe lon 3.5 lat 2,
+      // which lies on the original 2→4 drawn segment yet is far (>8px) from lon 4's
+      // endpoint — a clean body-only probe.
+      const onSegment = { lon: 3.5, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: toScreen(onSegment) },
+        onSegment,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Empty);
+    });
+
+    it('a FULLY-resolvable line IS still selectable (no regression)', () => {
+      // Sanity: with NO vertex dropped the same line is drawn and grabbable, so the
+      // all-or-nothing guard only suppresses the corrupt case.
+      const ln = lineFeature('f-ok', 'vok', [
+        [0, 2],
+        [2, 2],
+        [4, 2],
+      ]);
+      const root = commit(emptyProject(), ln, 1000);
+      const endpoint = { lon: 0, lat: 2 };
+      const hit = liveHitTestAt(
+        { root, time, toScreen, point: toScreen(endpoint) },
+        endpoint,
+      );
+      expect(hit.kind).toBe(HIT_KIND.Vertex);
+      if (hit.kind === HIT_KIND.Vertex) expect(hit.featureId).toBe(ln.feature.id);
     });
   });
 });

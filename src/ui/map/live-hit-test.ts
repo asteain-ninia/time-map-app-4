@@ -126,6 +126,24 @@ const DEFAULT_DISPLAY_CONTROL: DisplayControlInput = {
 };
 
 /**
+ * Does EVERY vertex of this line resolve in the live store this frame? The renderer
+ * (committed-features Line branch) draws a line ALL-OR-NOTHING: if any one of its
+ * vertexIds is unresolved it sets `resolvable=false` and drops the WHOLE primitive
+ * (a line `[v1, missing, v2]` is NOT drawn). The hit-test MUST mirror that rule so
+ * what-is-hit == what-is-drawn (clip ⊇ draw ⊇ hit): an undrawn line must contribute
+ * NEITHER a grabbable vertex (vertexOwners) NOR a hittable body segment. Without this
+ * the two paths diverged — vertexOwners claimed v1/v2 and the body path built
+ * per-contiguous-run geometry around the gap, so an invisible line stayed selectable
+ * by clicking its surviving endpoints / segments (bughunt: 描画とヒットの不一致).
+ */
+function lineFullyResolved(
+  vertexIds: readonly VertexId[],
+  vertices: ReturnType<typeof verticesAt>,
+): boolean {
+  return vertexIds.every((vid) => getVertex(vertices, vid) !== undefined);
+}
+
+/**
  * Collect every committed vertex's OWNING feature (point.vertexId / line.vertexIds /
  * leaf ring vertexIds), but ONLY for features whose ids are in `grabbable`. The
  * first owner encountered wins for a shared vertex — a shared vertex still selects A
@@ -137,10 +155,16 @@ const DEFAULT_DISPLAY_CONTROL: DisplayControlInput = {
  * frame (Real-verdict areas + every point / line). An aggregated or omitted area
  * leaf is NOT in the set, so its (hidden) vertices are never offered for selection
  * (Codex #2: 描画されていない頂点は拾わない).
+ *
+ * A LINE is additionally all-or-nothing (`lineFullyResolved`): a partially-corrupt
+ * line whose render primitive is dropped contributes NO grabbable vertices — its
+ * surviving endpoints must not stay selectable while invisible (bughunt 単一真実源:
+ * committed-features と同じ全頂点解決チェック).
  */
 export function vertexOwners(
   features: readonly Feature[],
   grabbable: ReadonlySet<FeatureId>,
+  vertices: ReturnType<typeof verticesAt>,
 ): Map<VertexId, FeatureId> {
   const owners = new Map<VertexId, FeatureId>();
   const claim = (vid: VertexId, fid: FeatureId): void => {
@@ -153,7 +177,11 @@ export function vertexOwners(
         claim(f.vertexId, f.id);
         break;
       case FEATURE_KIND.Line:
-        for (const vid of f.vertexIds) claim(vid, f.id);
+        // Mirror the renderer's all-or-nothing draw: a line with ANY unresolved
+        // vertex is not drawn, so none of its vertices are grabbable.
+        if (lineFullyResolved(f.vertexIds, vertices)) {
+          for (const vid of f.vertexIds) claim(vid, f.id);
+        }
         break;
       case FEATURE_KIND.Leaf:
         for (const ring of f.shape.rings) {
@@ -349,7 +377,7 @@ export function liveHitTestAt(
   }
 
   // 1. Nearest DRAWN VERTEX within the screen-px radius (vertex-first priority).
-  const owners = vertexOwners(features, grabbable);
+  const owners = vertexOwners(features, grabbable, vertices);
   let bestVertex: { featureId: FeatureId; vertexId: VertexId } | null = null;
   let bestDistSq = radiusSq;
   for (const [vertexId, featureId] of owners) {
@@ -398,6 +426,13 @@ export function liveHitTestAt(
       // stored lon (-179) instead makes the body a ~358° segment crossing the screen
       // centre, so the click misses the drawn seam segment and false-hits mid-screen.
       // We delegate to the SAME unwrap rule the renderer uses (never re-derive it).
+      //
+      // ALL-OR-NOTHING (bughunt 描画とヒットの不一致): committed-features drops the WHOLE
+      // line primitive when ANY vertexId is unresolved (resolvable=false). The body
+      // hit-test must do the same — otherwise a partially-corrupt line that is NOT
+      // drawn would still be selectable via its surviving segments. Reject it before
+      // contributing any segment so what-is-hit == what-is-drawn (clip ⊇ draw ⊇ hit).
+      if (!lineFullyResolved(f.vertexIds, vertices)) continue;
       //
       // Resolve the line's vertices into a per-vertex {coord | gap} list, then unwrap
       // the longitudes of each CONTIGUOUS resolvable run independently (a gap breaks
