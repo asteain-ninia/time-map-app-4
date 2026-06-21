@@ -386,8 +386,19 @@ function sameInconsistency(a: Inconsistency, b: Inconsistency): boolean {
 /**
  * Apply a repair AND re-validate (受け入れ基準5). Returns the repaired project, a
  * full re-check report, and a `resolved` flag that is true iff the targeted
- * inconsistency no longer appears. Pure: builds and validates a new instance,
- * never touching the input (教訓5.22 / R2).
+ * inconsistency no longer appears AND the repair introduced NO new inconsistency
+ * (受け入れ基準5: 適用後に新たな不整合を作らない). Pure: builds and validates a new
+ * instance, never touching the input (教訓5.22 / R2).
+ *
+ * 教訓5.18 / R2: checking ONLY that the target disappeared is insufficient — a
+ * repair that removes the target but manufactures a fresh violation (e.g. dropping
+ * the sole missing-vertex child of an aggregate, leaving the aggregate childless →
+ * a NEW AggregateSumMismatch / ShapePreservation / OrphanHistory) would otherwise
+ * report resolved:true and let the UI commit a still-inconsistent project. So we
+ * compare the BEFORE / AFTER reports and require that `remaining` contain no
+ * inconsistency that was absent from the pre-repair report. Inconsistencies that
+ * already existed (the project may carry several, repaired one at a time) are NOT
+ * counted as "new", so resolving one issue at a time still progresses.
  */
 export function applyRepairChecked(
   project: DomainProject,
@@ -395,8 +406,38 @@ export function applyRepairChecked(
   optionId: RepairOptionId,
   calendar: Calendar,
 ): RepairApplication {
+  const before = checkConsistency(project, calendar);
   const repaired = applyRepair(project, inc, optionId, calendar);
   const remaining = checkConsistency(repaired, calendar);
-  const resolved = !remaining.inconsistencies.some((other) => sameInconsistency(inc, other));
+
+  // (1) the SPECIFIC targeted inconsistency must be gone.
+  const targetGone = !remaining.inconsistencies.some((other) => sameInconsistency(inc, other));
+  // (2) NO inconsistency may appear in `remaining` that was absent BEFORE the
+  // repair (a repair must never GROW the report — 受け入れ基準5). Pre-existing
+  // inconsistencies are matched and consumed one-for-one so a duplicate that was
+  // already present twice does not look "new" while a genuinely added duplicate
+  // does. Anything left unmatched in `remaining` is freshly introduced.
+  const introducedNothingNew = !hasNewInconsistency(before.inconsistencies, remaining.inconsistencies);
+
+  const resolved = targetGone && introducedNothingNew;
   return { project: repaired, resolved, remaining };
+}
+
+/**
+ * True iff `after` contains an inconsistency that is not accounted for by `before`
+ * (i.e. the repair manufactured a NEW violation). Matching is one-for-one on
+ * structural identity (sameInconsistency): each `before` entry can excuse at most
+ * one `after` entry, so an entry whose multiplicity GREW counts as new.
+ */
+function hasNewInconsistency(
+  before: readonly Inconsistency[],
+  after: readonly Inconsistency[],
+): boolean {
+  const available = [...before];
+  for (const a of after) {
+    const idx = available.findIndex((b) => sameInconsistency(a, b));
+    if (idx === -1) return true; // not present before → newly introduced.
+    available.splice(idx, 1); // consume one matching pre-existing entry.
+  }
+  return false;
 }

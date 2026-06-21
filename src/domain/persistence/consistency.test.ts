@@ -942,3 +942,108 @@ describe('bug-hunt: childIds ⇔ parentId divergence (FR-106 / 教訓5.21)', () 
     ).toBe(false);
   });
 });
+
+// --- bug-hunt regression: applyRepairChecked must not report resolved when the --
+// repair INTRODUCES a new inconsistency (受け入れ基準5 適用後に新たな不整合を作らない) -
+//
+// repro (from the finding): the sole child of an aggregate has a
+// MissingVertexReference. The drop-feature repair removes that child, scrubbing it
+// from the aggregate's childIds — which leaves the aggregate with ZERO children, a
+// FRESH ShapePreservation (aggregate-no-children) violation that was absent before.
+// The targeted MissingVertexReference is gone, but the report has GROWN, so
+// `resolved` must be false (it was true before the fix because resolved checked
+// ONLY that the single target disappeared, never that nothing new appeared).
+describe('bug-hunt: applyRepairChecked rejects a repair that introduces a NEW inconsistency', () => {
+  /** An aggregate over a single leaf child whose ring references one ABSENT vertex. */
+  function projectAggWithMissingVertexChild(): DomainProject {
+    const child = squareLeaf('bh-child', '子', 0, 0);
+    const childFeature = { ...child.feature, parentId: asFeatureId('bh-agg') } as Feature;
+    const agg = createAggregateFeature(
+      asFeatureId('bh-agg'),
+      createBasicAttributes('連邦', 0, 100),
+      COLOR,
+      [asFeatureId('bh-child')],
+    );
+    // Store only 3 of the child's 4 ring vertices → a MissingVertexReference on it.
+    const store = createVertexStore(child.vertices.slice(0, 3));
+    return {
+      histories: [singleAnchorHistory('bh-agg', [agg, childFeature], store)],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+  }
+
+  it('resolved is FALSE when dropping the sole child manufactures aggregate-no-children', () => {
+    const project = projectAggWithMissingVertexChild();
+    const before = checkConsistency(project, CAL);
+    // Precondition: the ONLY inconsistency before repair is the missing vertex.
+    const inc = find(before, INCONSISTENCY.MissingVertexReference);
+    expect(inc).toBeDefined();
+    expect(inc!.featureIds).toContain(asFeatureId('bh-child'));
+    expect(
+      before.inconsistencies.some((i) => i.kind === INCONSISTENCY.ShapePreservation),
+    ).toBe(false);
+
+    const applied = applyRepairChecked(
+      project,
+      inc!,
+      REPAIR_OPTION.DropFeatureWithMissingVertex,
+      CAL,
+    );
+
+    // The targeted inconsistency IS gone …
+    expect(
+      applied.remaining.inconsistencies.some(
+        (i) => i.kind === INCONSISTENCY.MissingVertexReference,
+      ),
+    ).toBe(false);
+    // … but a NEW one was introduced (the now-childless aggregate) …
+    expect(
+      applied.remaining.inconsistencies.some(
+        (i) =>
+          i.kind === INCONSISTENCY.ShapePreservation && i.detail === 'aggregate-no-children',
+      ),
+    ).toBe(true);
+    // … so the repair must NOT claim resolution (and the report is not clean).
+    expect(applied.resolved).toBe(false);
+    expect(applied.remaining.ok).toBe(false);
+  });
+
+  it('resolved stays TRUE when other PRE-EXISTING inconsistencies remain (not counted as new)', () => {
+    // A clean drop-feature repair on one issue must still report resolved even when
+    // the project carries an UNRELATED, pre-existing inconsistency the repair does
+    // not touch: only GENUINELY NEW violations void resolution.
+    const mv = squareLeaf('bh2-mv', '欠損', 0, 0);
+    const mvStore = createVertexStore(mv.vertices.slice(0, 3)); // missing vertex.
+    const emptyAgg = createAggregateFeature(
+      asFeatureId('bh2-empty-agg'),
+      createBasicAttributes('空集約', 0, 100),
+      COLOR,
+      [],
+    ); // a pre-existing, untouched aggregate-no-children violation.
+    const project: DomainProject = {
+      histories: [
+        singleAnchorHistory('bh2-mv', [mv.feature], mvStore, 0),
+        singleAnchorHistory('bh2-empty-agg', [emptyAgg], createVertexStore([]), 500),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.MissingVertexReference)!;
+    const applied = applyRepairChecked(
+      project,
+      inc,
+      REPAIR_OPTION.DropFeatureWithMissingVertex,
+      CAL,
+    );
+    // The target is gone and NOTHING new was introduced, so resolved is true even
+    // though the pre-existing empty-aggregate violation still appears in remaining.
+    expect(applied.resolved).toBe(true);
+    expect(
+      applied.remaining.inconsistencies.some(
+        (i) =>
+          i.kind === INCONSISTENCY.ShapePreservation && i.detail === 'aggregate-no-children',
+      ),
+    ).toBe(true);
+  });
+});
