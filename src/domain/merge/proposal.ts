@@ -27,6 +27,7 @@
 
 import { createBasicAttributes, type BasicAttributes, type ColorInfo } from '../attributes';
 import { quantizeCoordinate } from '../geometry/index';
+import { alignMultiPolygon, normalizeCoordinate, referenceLonForMultiPolygon } from '../geo/index';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
 import {
@@ -175,8 +176,17 @@ interface BuiltShape {
   readonly byCoord: ReadonlyMap<string, VertexId>;
 }
 
+/**
+ * 量子化座標のキー。経度は representative 分岐 [-180,180) に畳んでから量子化する
+ * (FR-95): union のオペランドは alignMultiPolygon で連続フレーム (>180° を取り得る) へ
+ * 揃えてから演算するため、シーム跨ぎで結合された頂点は出力上 190° のような連続値になり
+ * 得る。一方、旧頂点ストアは representative (例 −170°) で格納されている。periodic に同一の
+ * 点 (190° と −170°) が同じキーに落ちるよう先に正規化することで、旧→新対応 (buildRemap)
+ * と頂点重複集約が world-turn ズレで取りこぼされないようにする。旧頂点は既に
+ * representative なので正規化は恒等。
+ */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(c);
+  const q = quantizeCoordinate(normalizeCoordinate(c));
   return `${q.lon},${q.lat}`;
 }
 
@@ -201,11 +211,24 @@ function ringAreaAbs(ring: GeoRing): number {
   return Math.abs(sum) / 2;
 }
 
-/** `inner` の代表点が `outer` の厳密内部にあるか。 */
+/**
+ * `inner` の代表点が `outer` の厳密内部にあるか。
+ *
+ * R3 seam alignment (audit root cause A): 両リングは同一 union 出力由来で通常は同じ
+ * world-turn にあるが、seam をまたぐピース同士は per-ring の格納分岐が ±360° ずれ得る。
+ * 共通アンカー (outer の外環基準) へ {@link alignMultiPolygon} で揃えてから包含述語を
+ * 走らせ、単一真実源を再利用する (アルゴリズム再発明禁止)。single-branch 入力では
+ * 恒等変換なので通常系は不変。
+ */
 function ringContains(outer: GeoRing, inner: GeoRing): boolean {
-  const probe = inner[0];
-  if (probe === undefined) return false;
-  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
+  if (inner[0] === undefined) return false;
+  const ref = referenceLonForMultiPolygon([[outer]]);
+  const [alignedOuter] = alignMultiPolygon([[outer]], ref);
+  const [alignedInner] = alignMultiPolygon([[inner]], ref);
+  const outerRing = alignedOuter?.[0];
+  const probe = alignedInner?.[0]?.[0];
+  if (outerRing === undefined || probe === undefined) return false;
+  return pointInPolygon(probe, [outerRing]) === POINT_LOCATION.Inside;
 }
 
 /**
@@ -265,7 +288,11 @@ function buildShapeFromMultiPolygon(mp: GeoMultiPolygon, ids: MergeIdPorts): Bui
       if (vid === undefined) {
         vid = ids.nextVertexId();
         byCoord.set(key, vid);
-        vertices.push(createVertex(vid, quantizeCoordinate(c)));
+        // Store the REPRESENTATIVE (folded) coordinate, never the aligned >180°
+        // continuous one: every leaf vertex in the store is representative, so a
+        // seam-merged vertex must round-trip to the same branch its neighbours use
+        // (resolveLeafShape re-aligns on read). FR-95 key matching relies on this.
+        vertices.push(createVertex(vid, quantizeCoordinate(normalizeCoordinate(c))));
       }
       out.push(vid);
     }
@@ -301,7 +328,20 @@ function unionLeafShapes(
     if (f === undefined || f.kind !== 'leaf') return { ok: false };
     const area = resolveLeafShape(f.shape, store);
     if (area === undefined) return { ok: false };
-    const merged = union(acc, area);
+    // R3 seam alignment (audit root cause A): resolveLeafShape returns RAW stored
+    // representatives with zero seam handling, so a leaf whose territory straddles
+    // the seam (or whose vertex list merely starts on the opposite seam side from
+    // the accumulator) sits ~360° away from the running union. Unioned as-is, two
+    // seam-adjacent leaves (e.g. +179 and −179, geometrically ~2° apart) are ~358°
+    // apart and the union scatters them across the whole map instead of joining
+    // them into one continuous merged terminal. Anchor BOTH operands onto ONE
+    // common branch (the accumulator's outer-ring reference, falling back to the
+    // leaf's own when the accumulator is empty) through the single alignment source
+    // of truth before the op. For single-branch (non-seam) inputs this is the
+    // identity, so the common case is unchanged.
+    const ref =
+      acc.length > 0 ? referenceLonForMultiPolygon(acc) : referenceLonForMultiPolygon(area);
+    const merged = union(alignMultiPolygon(acc, ref), alignMultiPolygon(area, ref));
     if (merged.status === BOOLEAN_OP_STATUS.Rejected) return { ok: false };
     acc = merged.result;
   }
