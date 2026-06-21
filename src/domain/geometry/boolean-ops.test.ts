@@ -145,6 +145,44 @@ describe('boolean-ops: output is re-quantized onto the grid (单一真实源)', 
   });
 });
 
+describe('boolean-ops: defense layer never throws — always a typed rejection (R2)', () => {
+  // The kernel can THROW on degenerate input (polygon-clipping rejects, e.g., an
+  // outer ring paired with an empty hole-ring list). The empty-subject Union
+  // branch routes the clip through the kernel (normalizeUnion) and converts its
+  // output to domain geometry; both steps must sit inside the R2 try/catch so a
+  // kernel throw becomes a discriminated rejection, never an escaping exception
+  // that crashes the loader.
+  it('empty-subject union with an outer-ring + empty-hole clip rejects, does not throw', () => {
+    // Subject empty -> the union short-out branch calls the kernel on the clip.
+    const empty: GeoMultiPolygon = EMPTY_MULTI_POLYGON;
+    // A single polygon piece: one valid outer ring plus an EMPTY hole-ring list.
+    // This survives quantization and the empty-ring filter (the outer ring is
+    // non-empty) and reaches the kernel, which rejects it as invalid geometry.
+    const clip: GeoMultiPolygon = [[[c(0, 0), c(10, 0), c(10, 10), c(0, 10)], []]];
+
+    let r: ReturnType<typeof union>;
+    // The whole point: the call must RETURN, never throw.
+    expect(() => {
+      r = union(empty, clip);
+    }).not.toThrow();
+    // ...and the return value must be a typed rejection.
+    expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+  });
+
+  it('a non-empty-subject op whose clip makes the kernel throw rejects, does not throw', () => {
+    // Valid subject, but a clip the kernel rejects (outer ring + empty hole list)
+    // exercises the main kernel path's try/catch.
+    const subject = multiPolygonFromRing(rect(0, 0, 10, 10));
+    const clip: GeoMultiPolygon = [[[c(2, 2), c(8, 2), c(8, 8), c(2, 8)], []]];
+
+    let r: ReturnType<typeof intersection>;
+    expect(() => {
+      r = intersection(subject, clip);
+    }).not.toThrow();
+    expect(r!.status).toBe(BOOLEAN_OP_STATUS.Rejected);
+  });
+});
+
 function anyPieceContains(mp: GeoMultiPolygon, point: ReturnType<typeof c>): boolean {
   return mp.some((poly) => pointInPolygon(point, poly) === POINT_LOCATION.Inside);
 }

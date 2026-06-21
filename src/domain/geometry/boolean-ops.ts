@@ -154,26 +154,57 @@ function runBooleanOp(
   if (subjectLib.length === 0) {
     // Union with empty subject == clip; difference/intersection == empty.
     if (op === BOOLEAN_OP.Union) {
-      return finalizeOk(op, libMultiPolygonToGeo(normalizeUnion(clipLib)));
+      // The kernel normalize call (normalizeUnion) and the lib->geo conversion
+      // can both throw on degenerate clip input — the kernel itself can throw on
+      // some degenerate ring lists, and conversion throws (RangeError) if the
+      // kernel emits a non-finite vertex (createCoordinate's finite guard). Both
+      // must surface as a rejection, never crash the caller (R2). Run them inside
+      // the same try/catch as the main kernel path below.
+      return runKernelAndConvert(op, () =>
+        libMultiPolygonToGeo(normalizeUnion(clipLib)),
+      );
     }
     return { status: BOOLEAN_OP_STATUS.Ok, result: EMPTY_MULTI_POLYGON };
   }
 
-  // 2. Kernel.
-  let raw: LibMultiPolygon;
+  // 2. Kernel + 3/4 conversion: the kernel can throw on degenerate input, and
+  // the lib->geo conversion can throw (RangeError) if the kernel emits a
+  // non-finite vertex. BOTH are inside the try so neither can escape the R2
+  // "never throw, always a discriminated rejection" contract.
+  return runKernelAndConvert(op, () =>
+    libMultiPolygonToGeo(runKernel(op, subjectLib, clipLib)),
+  );
+}
+
+/**
+ * Run a kernel-call-plus-conversion thunk inside the R2 try/catch and finalize.
+ *
+ * The entire critical section — calling the `polygon-clipping` kernel AND
+ * converting its tuple output back to domain `GeoMultiPolygon` — runs inside one
+ * try/catch. The kernel can throw on degenerate input (e.g. an outer ring with
+ * an empty hole list), and the conversion can throw a `RangeError` from
+ * `createCoordinate`'s finite guard when the kernel emits a NaN/±Infinity vertex
+ * on degenerate geometry. Either throw is mapped to a discriminated rejection so
+ * the defense layer never propagates an exception to the caller.
+ */
+function runKernelAndConvert(
+  op: BooleanOp,
+  produce: () => GeoMultiPolygon,
+): BooleanOpResult {
+  let geo: GeoMultiPolygon;
   try {
-    raw = runKernel(op, subjectLib, clipLib);
+    geo = produce();
   } catch {
-    // A kernel throw on degenerate input is treated as a rejection, never a
-    // silent empty success — the defense layer must surface it (R2).
+    // A kernel throw, or a non-finite vertex tripping createCoordinate's finite
+    // guard, is treated as a rejection — never a silent empty success or an
+    // escaping exception. The defense layer must surface it (R2).
     return {
       status: BOOLEAN_OP_STATUS.Rejected,
       op,
       violations: [],
     };
   }
-
-  return finalizeOk(op, libMultiPolygonToGeo(raw));
+  return finalizeOk(op, geo);
 }
 
 /**
