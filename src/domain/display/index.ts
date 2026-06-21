@@ -29,6 +29,8 @@ export {
   type ResolvedDisplayShape,
   type ResolvedDisplayFailure,
   type ResolvedDisplayShapes,
+  type DisplayShapeCache,
   geometrySourceFor,
   resolveDisplayShapes,
+  createDisplayShapeCache,
 } from './resolve-display-shapes';

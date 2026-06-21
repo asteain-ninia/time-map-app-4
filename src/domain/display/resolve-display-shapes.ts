@@ -24,12 +24,13 @@
 // PURITY (受け入れ基準6): reads forest + decisions + vertex store, returns a fresh
 // list, mutates nothing.
 
+import { FEATURE_KIND, type Feature, type LeafFeature } from '../feature';
 import { alignMultiPolygon } from '../geo/seam';
 import type { GeoMultiPolygon } from '../geometry/types';
 import { resolveFeatureArea, type ShapeResolutionFailure } from '../hierarchy/resolve-shape';
-import type { Forest } from '../hierarchy/forest';
-import type { FeatureId } from '../ids';
-import type { VertexStore } from '../vertex';
+import { descendantIds, type Forest } from '../hierarchy/forest';
+import type { FeatureId, VertexId } from '../ids';
+import { getVertex, type Vertex, type VertexStore } from '../vertex';
 
 import {
   DISPLAY_VERDICT,
@@ -137,6 +138,140 @@ function unwrapShape(shape: GeoMultiPolygon): GeoMultiPolygon {
   return shape.map((polygon) => alignMultiPolygon([polygon])[0]!);
 }
 
+// --- incremental geometry-resolution cache (bughunt3) -----------------------
+//
+// WHY THIS EXISTS: `resolveDisplayShapes` runs once per display-pipeline call, and
+// for every drawable AGGREGATE it asks U08's `resolveFeatureArea` for that node's
+// 集約形状 — a full explicit-stack post-order boolean UNION of every descendant's
+// resolved area, leaves first. That union work is the dominant cost of a deep,
+// wide hierarchy (the spec's 5,000-object scale, nested 10 levels). The shared
+// display-resolution memo (ui/map/display-resolution-cache.ts) only short-circuits
+// when (root, time, displayControl) are ALL reference-identical, so a single slider
+// tick — which swaps `displayControl` to a NEW object while `forest` / vertices are
+// byte-identical — misses that memo and re-derives the ENTIRE union tree from the
+// leaves, even though not one polygon changed (bughunt3 finding).
+//
+// THE FIX (the SAME proven pattern as spatial/terminals.ts): hold ONE cache across
+// pipeline runs and key each resolved geometry by its `geometrySourceId`. A cached
+// entry is reused iff every input that feeds that node's U08 resolution is
+// reference-identical to when it was resolved:
+//   - the exact ORDERED set of subtree feature ids (so a structural edit — a child
+//     added / removed / re-parented — invalidates: the union has different operands);
+//   - the exact feature OBJECT for the source and every descendant (an edit to any
+//     leaf's shape produces a NEW feature object → reference change → re-resolve);
+//   - the exact vertex OBJECT for every vertex any of those features reference (a
+//     moved vertex is a new object → re-resolve).
+// This is correctness-safe for the identical reason the terminal cache is: features
+// and vertices are IMMUTABLE value objects with structural sharing (U16 swaps a new
+// object ONLY for what an edit touched), so reference identity of the whole subtree
+// snapshot is a proof the resolved geometry is unchanged. A slider tick (forest /
+// vertices untouched) becomes O(drawable) hash lookups with ZERO boolean-union work
+// instead of a full bottom-up re-union. A real geometry / structure edit is an
+// identity miss and re-resolves identically, so the result is never stale.
+
+/**
+ * One cached geometry resolution: the inputs (by reference identity) the resolved
+ * `shape` was derived from. `shape` is the UNWRAPPED `GeoMultiPolygon` ready to hand
+ * to U19 (so a hit reuses the final drawn geometry, not just the raw union), or a
+ * `failure` reason when the source could not be resolved (re-used so a re-run does
+ * not re-attempt a known-failing resolution).
+ */
+interface GeometryCacheEntry {
+  /** Source feature object + every descendant feature object, by id. */
+  readonly featureRefs: ReadonlyMap<FeatureId, Feature>;
+  /** Every vertex object any of those features reference, by id. */
+  readonly vertexRefs: ReadonlyMap<VertexId, Vertex>;
+  /** The unwrapped resolved geometry, or undefined when resolution failed. */
+  readonly shape: GeoMultiPolygon | undefined;
+  /** The failure reason when `shape` is undefined (surfaced as data, 教訓5.26). */
+  readonly failure: ShapeResolutionFailure | undefined;
+}
+
+/**
+ * An incremental cache for {@link resolveDisplayShapes}. Hold ONE instance across
+ * display-pipeline runs (e.g. on the shared display-resolution memo) and pass it on
+ * every call: a drawable whose source feature, whole subtree structure, and every
+ * referenced vertex are reference-identical to the prior run reuses its resolved
+ * (and seam-unwrapped) geometry and skips the U08 boolean-union entirely. Mutated in
+ * place by `resolveDisplayShapes`; never share one across unrelated domains.
+ */
+export interface DisplayShapeCache {
+  entries: Map<FeatureId, GeometryCacheEntry>;
+}
+
+/** Create an empty {@link DisplayShapeCache}. */
+export function createDisplayShapeCache(): DisplayShapeCache {
+  return { entries: new Map() };
+}
+
+/** The vertex objects a leaf references through its shape rings (by id). */
+function collectLeafVertexRefs(
+  feature: Feature,
+  store: VertexStore,
+  into: Map<VertexId, Vertex>,
+): void {
+  if (feature.kind !== FEATURE_KIND.Leaf) return;
+  for (const ring of (feature as LeafFeature).shape.rings) {
+    for (const vid of ring.vertexIds) {
+      const vertex = getVertex(store, vid);
+      // A missing vertex is recorded as absent; validity re-checks the same store,
+      // so an unresolvable source stays unresolvable unless the vertex appears.
+      if (vertex !== undefined) into.set(vid, vertex);
+    }
+  }
+}
+
+/**
+ * Snapshot every input `geometrySourceId`'s U08 resolution depends on, by reference:
+ * the source feature + all its descendants (the union operands), and every vertex
+ * those features reference. Returns undefined when the source itself is absent from
+ * the forest (a stale roll-up target — the caller falls back to a fresh resolution
+ * which will surface the MissingChild failure).
+ */
+function snapshotInputs(
+  forest: Forest,
+  store: VertexStore,
+  geometrySourceId: FeatureId,
+): { featureRefs: Map<FeatureId, Feature>; vertexRefs: Map<VertexId, Vertex> } | undefined {
+  const source = forest.byId.get(geometrySourceId);
+  if (source === undefined) return undefined;
+  const featureRefs = new Map<FeatureId, Feature>();
+  const vertexRefs = new Map<VertexId, Vertex>();
+  featureRefs.set(geometrySourceId, source);
+  collectLeafVertexRefs(source, store, vertexRefs);
+  // descendantIds is cycle-safe (教訓5.28): a broken/cyclic subtree yields a finite
+  // id set, matching exactly the nodes resolveFeatureArea's visited-set would touch.
+  for (const id of descendantIds(forest, geometrySourceId)) {
+    const f = forest.byId.get(id);
+    if (f === undefined) continue;
+    featureRefs.set(id, f);
+    collectLeafVertexRefs(f, store, vertexRefs);
+  }
+  return { featureRefs, vertexRefs };
+}
+
+/**
+ * Is a cached entry still valid for the current forest + store? Valid iff the
+ * snapshot of subtree feature objects and referenced vertex objects is reference-
+ * identical to the cached one (same size, same object per id) — i.e. nothing the
+ * node's U08 resolution reads has changed. Any add / remove / re-parent / edited
+ * shape / moved vertex is a reference change and fails this check.
+ */
+function geometryEntryStillValid(
+  entry: GeometryCacheEntry,
+  snapshot: { featureRefs: Map<FeatureId, Feature>; vertexRefs: Map<VertexId, Vertex> },
+): boolean {
+  if (entry.featureRefs.size !== snapshot.featureRefs.size) return false;
+  if (entry.vertexRefs.size !== snapshot.vertexRefs.size) return false;
+  for (const [id, f] of snapshot.featureRefs) {
+    if (entry.featureRefs.get(id) !== f) return false;
+  }
+  for (const [vid, v] of snapshot.vertexRefs) {
+    if (entry.vertexRefs.get(vid) !== v) return false;
+  }
+  return true;
+}
+
 /**
  * Resolve every DRAWABLE decision's geometry through U08's single resolution.
  * Omitted decisions are dropped (受け入れ基準1). For each remaining decision the
@@ -144,19 +279,65 @@ function unwrapShape(shape: GeoMultiPolygon): GeoMultiPolygon {
  * the SAME resolution that drives draw / hit-test / label downstream — and the
  * returned `area` is handed through unchanged so 複数片（飛び地）が全反映される
  * (教訓5.1). Pure: builds and returns fresh arrays; no input is mutated.
+ *
+ * Pass an optional {@link DisplayShapeCache} (held across pipeline runs) to make the
+ * geometry resolution INCREMENTAL (bughunt3): a drawable whose source feature,
+ * subtree structure, and referenced vertices are all reference-identical to the prior
+ * run reuses its resolved geometry and skips the full boolean-union entirely. The
+ * cache is correctness-safe (features / vertices are immutable value objects with
+ * structural sharing) and produces byte-for-byte the same output as an un-cached run.
  */
 export function resolveDisplayShapes(
   forest: Forest,
   store: VertexStore,
   decisions: DisplayDecisionMap,
+  cache?: DisplayShapeCache,
 ): ResolvedDisplayShapes {
   const shapes: ResolvedDisplayShape[] = [];
   const failures: ResolvedDisplayFailure[] = [];
+  // A fresh entry map per run: a drawable that vanished this run drops out (no stale
+  // geometry retained), survivors keep their reused-or-fresh entry. Note the cache is
+  // keyed by geometrySourceId, so two decisions rolling up to the SAME target resolve
+  // its geometry once and the second reuses the just-built entry.
+  const nextEntries = cache !== undefined ? new Map<FeatureId, GeometryCacheEntry>() : undefined;
 
   for (const [, decision] of decisions) {
     if (decision.verdict === DISPLAY_VERDICT.Omitted) continue;
 
     const geometrySourceId = geometrySourceFor(decision);
+
+    if (cache !== undefined && nextEntries !== undefined) {
+      // Reuse an entry already built THIS run (a shared roll-up target), else a
+      // still-valid entry carried over from a prior run; otherwise resolve fresh.
+      let entry = nextEntries.get(geometrySourceId);
+      if (entry === undefined) {
+        const snapshot = snapshotInputs(forest, store, geometrySourceId);
+        const prior = cache.entries.get(geometrySourceId);
+        if (prior !== undefined && snapshot !== undefined && geometryEntryStillValid(prior, snapshot)) {
+          entry = prior;
+        } else {
+          entry = resolveGeometryEntry(forest, store, geometrySourceId, snapshot);
+        }
+        nextEntries.set(geometrySourceId, entry);
+      }
+      if (entry.shape === undefined) {
+        failures.push({
+          featureId: decision.featureId,
+          geometrySourceId,
+          reason: entry.failure!,
+        });
+        continue;
+      }
+      shapes.push({
+        featureId: decision.featureId,
+        verdict: decision.verdict,
+        geometrySourceId,
+        shape: entry.shape,
+        emphasized: decision.emphasized,
+      });
+      continue;
+    }
+
     const resolution = resolveFeatureArea(forest, store, geometrySourceId);
     if (resolution.status === 'failed') {
       failures.push({
@@ -179,5 +360,41 @@ export function resolveDisplayShapes(
     });
   }
 
+  if (cache !== undefined && nextEntries !== undefined) {
+    cache.entries = nextEntries;
+  }
   return { shapes, failures };
+}
+
+/**
+ * Resolve one geometry source fresh and package it as a {@link GeometryCacheEntry}
+ * (snapshot + unwrapped shape, or the failure reason). The cached `shape` is the
+ * SAME `unwrapShape(resolution.area)` the un-cached path produces, so a cache HIT
+ * yields byte-for-byte what the un-cached run would (no behaviour change).
+ */
+function resolveGeometryEntry(
+  forest: Forest,
+  store: VertexStore,
+  geometrySourceId: FeatureId,
+  snapshot: { featureRefs: Map<FeatureId, Feature>; vertexRefs: Map<VertexId, Vertex> } | undefined,
+): GeometryCacheEntry {
+  // A snapshot is always available when the source resolves; when it is undefined the
+  // source is absent from the forest and resolveFeatureArea returns a MissingChild
+  // failure, which we record with empty ref maps so a re-run re-attempts it.
+  const refs = snapshot ?? { featureRefs: new Map(), vertexRefs: new Map() };
+  const resolution = resolveFeatureArea(forest, store, geometrySourceId);
+  if (resolution.status === 'failed') {
+    return {
+      featureRefs: refs.featureRefs,
+      vertexRefs: refs.vertexRefs,
+      shape: undefined,
+      failure: resolution.reason,
+    };
+  }
+  return {
+    featureRefs: refs.featureRefs,
+    vertexRefs: refs.vertexRefs,
+    shape: unwrapShape(resolution.area),
+    failure: undefined,
+  };
 }

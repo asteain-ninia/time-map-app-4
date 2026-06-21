@@ -47,7 +47,12 @@ import { buildForest, type Forest } from '../../domain/hierarchy/forest';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex, type VertexStore } from '../../domain/vertex';
-import { DISPLAY_VERDICT, type ResolvedDisplayShapes } from '../../domain/display';
+import {
+  DISPLAY_VERDICT,
+  createDisplayShapeCache,
+  type DisplayShapeCache,
+  type ResolvedDisplayShapes,
+} from '../../domain/display';
 import {
   resolveDisplayControl,
   type DisplayControlInput,
@@ -133,6 +138,18 @@ interface CacheEntry {
 const CACHE_CAPACITY = 2;
 const cache: CacheEntry[] = [];
 
+// The INCREMENTAL geometry-resolution cache (bughunt3), held across pipeline runs and
+// passed into `resolveDisplayControl` below. The (root, time, control)-keyed memo above
+// only short-circuits when ALL THREE references match; a slider tick swaps `control` to
+// a NEW object and MISSES it, so `computeDisplayResolution` re-runs the U34/U08 pipeline.
+// Without this geometry cache that re-run would re-derive EVERY drawable aggregate's
+// 集約形状 — a full bottom-up boolean union from the leaves — even though `forest` /
+// `vertices` are byte-identical. This cache lets each such re-run reuse the prior run's
+// resolved geometry by reference identity of the subtree (feature + vertex objects),
+// skipping the union entirely; only nodes whose geometry actually changed re-resolve.
+// It is a pure-function memo (same inputs ⇒ same value), so it never changes the result.
+const geometryCache: DisplayShapeCache = createDisplayShapeCache();
+
 /** Identity match across all three immutable keys (a value match, since none mutate). */
 function matches(
   entry: CacheEntry,
@@ -200,7 +217,10 @@ export function computeDisplayResolution(
     areaFeatures.map((f) => [f.id, f]),
   );
   const forest = buildForest(areaFeatures);
-  const resolved = resolveDisplayControl(forest, vertices, control);
+  // The incremental geometry cache makes a control-only re-run (slider tick) reuse the
+  // prior run's union geometry by subtree reference identity instead of re-deriving the
+  // whole tree from the leaves (bughunt3). Correctness-safe: it is a pure-function memo.
+  const resolved = resolveDisplayControl(forest, vertices, control, geometryCache);
   const grabbable = buildGrabbable(features, resolved);
   const owners = vertexOwners(features, grabbable, vertices);
   return {
@@ -324,4 +344,7 @@ export function vertexOwners(
  */
 export function clearDisplayResolutionCache(): void {
   cache.length = 0;
+  // Also drop the incremental geometry entries so a test asserting un-cached
+  // recomputation / union counts starts from a clean slate.
+  geometryCache.entries = new Map();
 }

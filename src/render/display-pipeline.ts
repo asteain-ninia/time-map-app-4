@@ -32,6 +32,7 @@ import {
   clampThreshold,
   depthRange,
   resolveDisplayShapes,
+  type DisplayShapeCache,
   type FocusConfig,
   type ResolvedDisplayShapes,
 } from '../domain/display';
@@ -68,11 +69,19 @@ export interface DisplayControlInput {
  * to the forest's derivable depth range first (FR-117). This is the geometry layer
  * of the pipeline, exposed separately so a caller can inspect failures / sources
  * before bridging to U19. Pure.
+ *
+ * Pass an optional {@link DisplayShapeCache} (held across pipeline runs by the caller —
+ * e.g. the shared display-resolution memo) to make the per-feature U08 boolean-union
+ * geometry resolution INCREMENTAL (bughunt3): a slider tick that swaps only
+ * `control` while `forest` / `store` stay reference-identical reuses every drawable's
+ * resolved geometry instead of re-deriving the whole union tree from the leaves. The
+ * cache is correctness-safe and yields byte-for-byte the un-cached result.
  */
 export function resolveDisplayControl(
   forest: Forest,
   store: VertexStore,
   control: DisplayControlInput,
+  geometryCache?: DisplayShapeCache,
 ): ResolvedDisplayShapes {
   // ONE O(n) memoised depth pass (教訓5.30 過少共有の戒め): the derived-depth map
   // feeds BOTH the range clamp (its max) AND buildDisplayDecisions. Without this,
@@ -94,7 +103,7 @@ export function resolveDisplayControl(
   };
 
   const decisions = buildDisplayDecisions({ forest, depths, globalThreshold, focus });
-  return resolveDisplayShapes(forest, store, decisions);
+  return resolveDisplayShapes(forest, store, decisions, geometryCache);
 }
 
 /**
