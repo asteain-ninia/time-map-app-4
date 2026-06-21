@@ -469,12 +469,21 @@ function dedupeContainerCitations(ids: readonly VertexId[]): readonly VertexId[]
   return out ?? ids;
 }
 
-/** True iff any container still cites `vertexId`. */
-function isReferenced(state: SharedVertexState, vertexId: VertexId): boolean {
+/**
+ * The set of every vertex id cited by at least one container, built in ONE
+ * O(C·L) pass. Callers that must answer "is this id referenced?" for MANY ids of
+ * the same state use this once and test membership in O(1), instead of an
+ * O(C·L) container scan per id (バグハント3: a per-id full-container scan inside
+ * a loop over k ids is O(k·C·L)).
+ */
+function referencedVertexIds(state: SharedVertexState): ReadonlySet<VertexId> {
+  const referenced = new Set<VertexId>();
   for (const entry of state.containers.values()) {
-    if (entry.vertexIds.includes(vertexId)) return true;
+    for (const id of entry.vertexIds) {
+      if (id !== undefined) referenced.add(id);
+    }
   }
-  return false;
+  return referenced;
 }
 
 // ---------------------------------------------------------------------------
@@ -847,10 +856,16 @@ export function transferSharing(state: SharedVertexState, remap: VertexRemap): S
     store = setVertex(store, createVertex(newId, oldVertex.coordinate));
   }
   // 2. Prune old bodies that were remapped away and are no longer referenced.
+  //    Collect every still-cited id from the remapped containers in ONE pass
+  //    (O(C·L)), then test each remap key against that set in O(1). Calling
+  //    isReferenced per key would re-scan all containers for every key
+  //    (O(K·C·L) — バグハント3: transferSharing with a K-key remap over C
+  //    containers must not pay a full container scan per key).
+  const stillReferenced = referencedVertexIds(next);
   for (const oldId of remap.keys()) {
     const newId = remap.get(oldId);
     if (newId === oldId) continue;
-    if (!isReferenced(next, oldId) && getVertex(store, oldId) !== undefined) {
+    if (!stillReferenced.has(oldId) && getVertex(store, oldId) !== undefined) {
       store = removeVertex(store, oldId);
     }
   }

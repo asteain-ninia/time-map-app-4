@@ -688,4 +688,84 @@ describe('reverse-index reuse (バグハント3 performance regression)', () => 
       [containerKey(ring('A', 'r0')), containerKey(ring('B', 'r0'))].sort(),
     );
   });
+
+  // バグハント3 回帰: transferSharing's orphan prune asked `isReferenced(next,
+  // oldId)` once PER remap key — each call an Array.includes scan over EVERY
+  // container (O(K·C·L) for a K-key remap over C containers). The fix collects
+  // the still-referenced ids ONCE and tests membership in O(1) per key. We
+  // instrument `.includes` on decoy containers (that the remap never touches):
+  // any includes there is exactly the per-key full-container scan the fix removed.
+  it('transferSharing prunes orphans without a per-remap-key Array.includes scan', () => {
+    const verts: Array<readonly [string, number, number]> = [
+      ['vA1', 0, 0],
+      ['vA2', 10, 0],
+      ['vA3', 5, 10],
+    ];
+    // The container under remap: ring A cites three vertices we will remap away.
+    const containers: ContainerEntry[] = [
+      { container: ring('A', 'r0'), vertexIds: [V('vA1'), V('vA2'), V('vA3')] },
+    ];
+    // Many decoy rings that cite NONE of the remapped ids.
+    const decoyCount = 40;
+    const decoyKeys: string[] = [];
+    for (let i = 0; i < decoyCount; i += 1) {
+      const a = `d${i}a`;
+      const b = `d${i}b`;
+      const c = `d${i}c`;
+      verts.push([a, 100 + i, 0], [b, 110 + i, 0], [c, 105 + i, 10]);
+      const container = ring(`D${i}`, 'r0');
+      containers.push({ container, vertexIds: [V(a), V(b), V(c)] });
+      decoyKeys.push(containerKey(container));
+    }
+
+    let decoyIncludes = 0;
+    const instrumentedContainers = containers.map((entry) => {
+      if (!decoyKeys.includes(containerKey(entry.container))) return entry;
+      const wrapped = new Proxy(entry.vertexIds as VertexId[], {
+        get(target, prop, receiver) {
+          if (prop === 'includes') {
+            return (...args: Parameters<VertexId[]['includes']>) => {
+              decoyIncludes += 1;
+              return target.includes(...args);
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+      return { container: entry.container, vertexIds: wrapped };
+    });
+    const store = state(verts, []).vertices;
+    const baseState = createSharedVertexState(store, instrumentedContainers);
+
+    // A multi-key remap: each old id maps to a fresh successor (split-style).
+    const remap = new Map<VertexId, VertexId>([
+      [V('vA1'), V('vA1b')],
+      [V('vA2'), V('vA2b')],
+      [V('vA3'), V('vA3b')],
+    ]);
+    const moved = transferSharing(baseState, remap);
+
+    // Zero includes on decoy containers: the prune builds the referenced-id set
+    // once and tests O(1). Before the fix this was decoyCount * remap.size scans.
+    expect(decoyIncludes).toBe(0);
+
+    // Correctness preserved: ring A now cites the successors (each carrying the
+    // old coordinate forward); the orphaned old bodies are pruned from the store.
+    expect(moved.containers.get(containerKey(ring('A', 'r0')))?.vertexIds).toEqual([
+      V('vA1b'),
+      V('vA2b'),
+      V('vA3b'),
+    ]);
+    for (const oldId of ['vA1', 'vA2', 'vA3']) {
+      expect(getVertex(moved.vertices, V(oldId))).toBeUndefined();
+    }
+    expect(getVertex(moved.vertices, V('vA1b'))?.coordinate).toEqual(createCoordinate(0, 0));
+    expect(getVertex(moved.vertices, V('vA2b'))?.coordinate).toEqual(createCoordinate(10, 0));
+    // Decoy rings keep their exact citation lists (values unchanged by the remap).
+    for (const key of decoyKeys) {
+      expect(moved.containers.get(key)?.vertexIds).toEqual(
+        [...(baseState.containers.get(key)?.vertexIds ?? [])],
+      );
+    }
+  });
 });
