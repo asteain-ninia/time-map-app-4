@@ -25,6 +25,7 @@ import type { AnchorId } from './ids';
 import type { Calendar } from './time/calendar';
 import type { TimePoint } from './time/time-point';
 import { compare, compareNormalized, normalize, type Normalized } from './time/normalized';
+import { validate as validateTimePoint, type TimeValidationError } from './time/validate';
 
 // --- Core value types -------------------------------------------------------
 
@@ -122,7 +123,19 @@ export type RejectReason =
    * into an open-ended one. Rejected rather than clamped so a feature meant to
    * stop existing is never resurrected indefinitely (INV-3, FR-56).
    */
-  | { readonly code: 'startNotBeforeEnd' };
+  | { readonly code: 'startNotBeforeEnd' }
+  /**
+   * A caller-supplied TimePoint is not valid for the calendar (out-of-range
+   * month/day, non-integer, or year beyond ±MAX_YEAR). Such a point MUST be
+   * rejected at the operation boundary rather than normalized: `normalize`
+   * assumes a validated point and an out-of-range month silently ALIASES onto a
+   * real date (e.g. 2024-13 → 2025-01), so a genuine neighbouring anchor would
+   * collide with it under the dedup and one anchor would be silently lost. This
+   * mirrors the persistence boundary, which already routes loaded TimePoints
+   * through the same domain `validate` (timePointSchema.superRefine), so the only
+   * remaining entry path is an unvalidated in-memory (UI) edit.
+   */
+  | { readonly code: 'invalidTime'; readonly error: TimeValidationError };
 
 /** Outcome of a mutating operation: a new series, or a rejection reason. */
 export type SeriesResult =
@@ -135,6 +148,23 @@ function ok(series: AnchorSeries): SeriesResult {
 
 function reject(reason: RejectReason): SeriesResult {
   return { ok: false, reason };
+}
+
+/**
+ * Returns an `invalidTime` rejection if `time` is not valid for the calendar,
+ * otherwise `undefined`. This is the SINGLE guard the calendar-aware edit
+ * operations call on every caller-supplied TimePoint before it ever reaches
+ * `normalize` / `compare`. It routes through the same domain `validate` the
+ * persistence boundary uses (単一真実源), so an in-memory UI edit cannot feed an
+ * out-of-range TimePoint (e.g. month 13) that would silently alias onto a real
+ * date and collide with a genuine anchor during dedup.
+ */
+function rejectIfInvalidTime(
+  time: TimePoint,
+  calendar: Calendar,
+): SeriesResult | undefined {
+  const result = validateTimePoint(time, calendar);
+  return result.ok ? undefined : reject({ code: 'invalidTime', error: result.error });
 }
 
 // --- Validation (single source of truth; §5.4) ------------------------------
@@ -347,6 +377,14 @@ export function resolveAt(
  * The new entry inherits NO end (open within its slot); overlap is resolved by
  * normalization. Because the only structural change is at `baseTime`, this never
  * alters any future entry's start or snapshot.
+ *
+ * `baseTime` MUST be a TimePoint valid for the calendar. Unlike the guarded
+ * `SeriesResult`-returning operations (changeStart / setEnd), this returns a
+ * series directly and cannot surface a rejection reason, so an invalid base time
+ * throws a `RangeError` rather than being normalized: an out-of-range month
+ * aliases onto a real date (e.g. 2024-13 → 2025-01) and would collide with a
+ * genuine anchor under the dedup, silently dropping one. All in-tree callers
+ * pass a resolved/validated time, so this is a defensive boundary assertion.
  */
 export function applyPastEdit(
   series: AnchorSeries,
@@ -354,6 +392,11 @@ export function applyPastEdit(
   makeAnchor: (effective: Resolution) => Anchor,
   calendar: Calendar,
 ): AnchorSeries {
+  const timeCheck = validateTimePoint(baseTime, calendar);
+  if (!timeCheck.ok) {
+    throw new RangeError(`applyPastEdit: invalid baseTime (${timeCheck.error})`);
+  }
+
   const existingIndex = series.entries.findIndex(
     (e) => compare(e.start, baseTime, calendar) === 0,
   );
@@ -391,6 +434,11 @@ export function changeStart(
   newStart: TimePoint,
   calendar: Calendar,
 ): SeriesResult {
+  // Reject an out-of-range start before it can be normalized (an invalid month
+  // aliases onto a real date and would collide with a genuine anchor on dedup).
+  const invalid = rejectIfInvalidTime(newStart, calendar);
+  if (invalid !== undefined) return invalid;
+
   const index = indexOfAnchor(series, id);
   if (index < 0) return reject({ code: 'anchorNotFound', id });
 
@@ -432,6 +480,13 @@ export function setEnd(
   newEnd: TimePoint | null,
   calendar: Calendar,
 ): SeriesResult {
+  // Reject an out-of-range end before it can be normalized (clearing the end via
+  // `null` is always valid and skips this guard).
+  if (newEnd !== null) {
+    const invalid = rejectIfInvalidTime(newEnd, calendar);
+    if (invalid !== undefined) return invalid;
+  }
+
   const index = indexOfAnchor(series, id);
   if (index < 0) return reject({ code: 'anchorNotFound', id });
 

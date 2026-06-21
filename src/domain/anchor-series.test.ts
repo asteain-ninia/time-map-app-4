@@ -28,7 +28,7 @@ import { createCoordinate } from './coordinate';
 import { createPointFeature } from './feature';
 import { getCalendar } from './time/calendar';
 import { asAnchorId, asFeatureId, asVertexId } from './ids';
-import { timePointYear } from './time/time-point';
+import { timePointYear, timePointYearMonth } from './time/time-point';
 import { createVertex, createVertexStore } from './vertex';
 
 const cal = getCalendar('gregorian');
@@ -245,6 +245,63 @@ describe('changeStart (AC-3, FR-58)', () => {
       const moved = r.series.entries.find((e) => e.anchor.id === s.entries[0]!.anchor.id)!;
       expect(moved.end).toEqual(timePointYear(150));
     }
+  });
+});
+
+// --- regression: invalid in-memory TimePoint must be rejected, not aliased --
+//
+// `normalize` assumes a validated point: its month loop only touches
+// `daysInMonth` for m < month, so month 13 NEVER throws and instead aliases
+// onto the next year's Jan 1 (timePointYearMonth(2024, 13) ≡ 2024-01-01 + a full
+// year ≡ 2025-01-01). The series ops dedup distinct starts by `compare`/
+// `normalize`, so before the fix an invalid 2024-13 start collided with a
+// genuine 2025-01 anchor and keep-last dedup silently dropped one anchor. The
+// persistence boundary already validates (timePointSchema.superRefine); these
+// guard the in-memory UI edit path the same way.
+describe('invalid TimePoint rejection at the series-op boundary (no aliasing)', () => {
+  it('changeStart rejects an out-of-range month instead of aliasing onto a real date', () => {
+    // Two genuine anchors; the second starts at 2025-01.
+    const s = normalizeSeries(
+      [
+        createAnchorEntry(makeAnchor(1, '-a'), timePointYearMonth(2024, 1)),
+        createAnchorEntry(makeAnchor(2, '-b'), timePointYearMonth(2025, 1)),
+      ],
+      cal,
+    );
+    expect(s.entries).toHaveLength(2);
+
+    // 2024-13 normalizes to the same integer as 2025-01: WITHOUT the guard this
+    // collides with anchor #2 and keep-last dedup drops one anchor.
+    const r = changeStart(s, s.entries[0]!.anchor.id, timePointYearMonth(2024, 13), cal);
+
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason.code).toBe('invalidTime');
+      if (r.reason.code === 'invalidTime') {
+        expect(r.reason.error).toBe('month-out-of-range');
+      }
+    }
+    // The original series must be untouched: no anchor was lost or moved.
+    expect(s.entries).toHaveLength(2);
+    expect(s.entries[1]!.start).toEqual(timePointYearMonth(2025, 1));
+  });
+
+  it('setEnd rejects an out-of-range end but still allows clearing to null', () => {
+    const s = series(entry(1, 100, null));
+    const bad = setEnd(s, s.entries[0]!.anchor.id, timePointYearMonth(2024, 13), cal);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.reason.code).toBe('invalidTime');
+
+    // Clearing the end (null) skips the time guard and remains valid.
+    const cleared = setEnd(s, s.entries[0]!.anchor.id, null, cal);
+    expect(cleared.ok).toBe(true);
+  });
+
+  it('applyPastEdit throws on an invalid base time rather than aliasing/dropping', () => {
+    const s = series(entry(1, 100, null));
+    expect(() =>
+      applyPastEdit(s, timePointYearMonth(2024, 13), () => makeAnchor(2, '-c'), cal),
+    ).toThrow(RangeError);
   });
 });
 
