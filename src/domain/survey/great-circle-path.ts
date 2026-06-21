@@ -33,6 +33,21 @@ export const MIN_PATH_SEGMENTS = 1;
 export const DEGREES_PER_SEGMENT = 2;
 
 /**
+ * Minimum |sin(ω)| for which slerp is numerically usable (L8 root fix). The slerp
+ * weights are `sin((1−t)·ω)/sin(ω)` and `sin(t·ω)/sin(ω)`; as ω → 0 OR ω → π the
+ * denominator `sin(ω)` collapses toward 0 and those weights explode, flinging the
+ * interpolated midpoints to the poles. An EXACT-zero guard is not enough: a
+ * near-antipodal pair gives ω ≈ π where `Math.sin(π) ≈ 1.22e-16` is non-zero yet
+ * tiny — `omega === 0 || sinOmega === 0` never fires, but the path is already
+ * garbage. (A near-antipodal great circle is genuinely ill-defined — infinitely
+ * many shortest paths — so there is no "correct" bow to draw.) Below this tolerance
+ * we fall back to the straight endpoint pair, the same safe degenerate result the
+ * exact-zero case already returned. 1e-9 corresponds to ω within ~5.7e-8° of 0/180°
+ * — far closer than any user could click — so a real arc is never degraded.
+ */
+export const SLERP_MIN_SIN = 1e-9;
+
+/**
  * Adaptive segment count for an arc spanning `centralAngleDeg` degrees: roughly
  * one segment per {@link DEGREES_PER_SEGMENT}°, clamped to
  * [{@link MIN_PATH_SEGMENTS}, {@link MAX_PATH_SEGMENTS}]. A 0° arc (identical
@@ -120,11 +135,15 @@ export function greatCirclePath(
       ? Math.floor(segments)
       : segmentCountForAngle(omega * RAD_TO_DEG);
 
-  // Degenerate / antipodal-near-zero: slerp's sin(omega) denominator vanishes.
-  // Fall back to the two endpoints (a straight, zero-bow line); the path is then
-  // exactly [a, b] with a's longitude as the continuous base.
+  // Degenerate (0° arc) OR near-antipodal (ω ≈ π): slerp's sin(ω) denominator
+  // vanishes or is too tiny to divide by, so the interpolated points would fly to
+  // the poles (L8). `Math.sin(π) ≈ 1.22e-16 ≠ 0`, so an exact-zero test misses the
+  // near-antipodal case — we test |sin(ω)| against a tolerance instead. Fall back
+  // to the two endpoints (a straight, zero-bow line); the path is then exactly
+  // [a, b] with a's longitude as the continuous base. (A near-antipodal great
+  // circle has no unique shortest path, so no specific bow is "correct" anyway.)
   const sinOmega = Math.sin(omega);
-  if (omega === 0 || sinOmega === 0) {
+  if (omega === 0 || Math.abs(sinOmega) < SLERP_MIN_SIN) {
     return continuousLon([aLocal, bLocal], aFoldLon, turnOffset);
   }
 

@@ -53,6 +53,45 @@ describe('greatCirclePath endpoints (AC-3 端点一致)', () => {
       expect(Number.isFinite(p.lat)).toBe(true);
     }
   });
+
+  // L8 root fix: a near-antipodal pair gives ω ≈ π, where `Math.sin(π) ≈ 1.22e-16`
+  // is NON-ZERO — so the old exact-zero guard `omega === 0 || sinOmega === 0` never
+  // fired, and slerp divided by a ~1e-10 denominator (an ill-conditioned op: a
+  // near-antipodal great circle has no unique shortest path, so the bow is
+  // arbitrary). The tolerance guard `|sin(ω)| < SLERP_MIN_SIN` now catches this and
+  // returns the deterministic straight endpoint pair instead, the SAME safe
+  // degenerate result the exact-zero case already gave. We assert that contract: a
+  // near-antipodal request degrades to the 2-point fallback, with finite, pole-free
+  // coordinates (never NaN, never a division blow-up).
+  it('near-antipodal endpoints degrade to the stable 2-point fallback, not an ill-conditioned slerp (L8)', () => {
+    const a = { lon: 0, lat: 10 };
+    // Exact antipode of a is (180, −10); nudge so the EXACT-π branch is NOT taken
+    // but ω is within ~1e-8° of π (sin(ω) ~ 2.4e-10, below SLERP_MIN_SIN = 1e-9).
+    const b = { lon: 180 - 1e-8, lat: -10 };
+    const path = greatCirclePath(a, b);
+    // Fallback is the two endpoints only — no interior slerp points to blow up.
+    expect(path).toHaveLength(2);
+    for (const p of path) {
+      expect(Number.isFinite(p.lon)).toBe(true);
+      expect(Number.isFinite(p.lat)).toBe(true);
+      expect(Math.abs(p.lat)).toBeLessThanOrEqual(90);
+    }
+    const first = path[0];
+    const last = path[path.length - 1];
+    expect(first?.lat).toBeCloseTo(a.lat, 9);
+    expect(last?.lat).toBeCloseTo(b.lat, 9);
+  });
+
+  it('exact antipode is finite and stable (退化入力)', () => {
+    const a = { lon: 0, lat: 10 };
+    const b = { lon: 180, lat: -10 }; // exact antipode of a.
+    const path = greatCirclePath(a, b);
+    expect(path).toHaveLength(2);
+    for (const p of path) {
+      expect(Number.isFinite(p.lat)).toBe(true);
+      expect(Number.isFinite(p.lon)).toBe(true);
+    }
+  });
 });
 
 describe('polyline length ≈ U04 great-circle distance (定義のドリフト防止, AC-3)', () => {
