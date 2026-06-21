@@ -212,47 +212,63 @@ function ringAreaAbs(ring: GeoRing): number {
 }
 
 /**
- * `inner` の代表点が `outer` の厳密内部にあるか。
+ * `inner` の代表点 (連続フレーム済み) が `outer` (連続フレーム済み) の厳密内部にあるか。
  *
- * R3 seam alignment (audit root cause A): 両リングは同一 union 出力由来で通常は同じ
- * world-turn にあるが、seam をまたぐピース同士は per-ring の格納分岐が ±360° ずれ得る。
- * 共通アンカー (outer の外環基準) へ {@link alignMultiPolygon} で揃えてから包含述語を
- * 走らせ、単一真実源を再利用する (アルゴリズム再発明禁止)。single-branch 入力では
- * 恒等変換なので通常系は不変。
+ * 両オペランドは {@link reparentByContainment} で事前に共通アンカーへ揃えた連続フレーム
+ * 座標であることを前提とする (R3 seam alignment / audit root cause A)。整列は包含判定の
+ * 外側に巻き上げ済み — ここでは pointInPolygon のみを走らせる (アルゴリズム再発明禁止)。
  */
-function ringContains(outer: GeoRing, inner: GeoRing): boolean {
-  if (inner[0] === undefined) return false;
-  const ref = referenceLonForMultiPolygon([[outer]]);
-  const [alignedOuter] = alignMultiPolygon([[outer]], ref);
-  const [alignedInner] = alignMultiPolygon([[inner]], ref);
-  const outerRing = alignedOuter?.[0];
-  const probe = alignedInner?.[0]?.[0];
-  if (outerRing === undefined || probe === undefined) return false;
-  return pointInPolygon(probe, [outerRing]) === POINT_LOCATION.Inside;
+function alignedRingContains(outer: GeoRing, inner: GeoRing): boolean {
+  const probe = inner[0];
+  if (probe === undefined) return false;
+  return pointInPolygon(probe, [outer]) === POINT_LOCATION.Inside;
 }
 
 /**
  * 生リング群を包含関係で領土→穴→領土→… の交互階層へ再親付けする (FR-24)。各リングの
  * 親は「自身を厳密に含む反対種別の最小面積リング」。包含親がなければ最上位領土。これに
  * より穴あき和 (ドーナツ状) でも交互不変条件を保つ。純粋・入力非破壊。
+ *
+ * 性能 (bughunt2): 旧実装は R^2 の各ペアごとに alignMultiPolygon を 2 回再割り当てして
+ * いた (1 ペアにつき両リングを連続フレーム配列へ作り直す)。整列はループ外へ巻き上げ、
+ * 全リングを共通アンカー (先頭片の外環基準) へ一度だけ揃えてから素の包含走査を行う
+ * (R3 seam alignment / audit root cause A の単一真実源を再利用)。全リングは同一 union
+ * 出力由来で既に同じ連続フレームにあるため、共通アンカーへの一括整列は per-pair 整列と
+ * 包含結果が等価で、single-branch 入力では恒等変換のまま (通常系不変)。さらに候補親を
+ * 面積昇順に走査して最小包含親を最初に見つけた時点で打ち切る。
  */
 function reparentByContainment(raws: readonly RawRing[]): Ring[] {
   const areaOf = new Map<RingId, number>();
   for (const r of raws) areaOf.set(r.id, ringAreaAbs(r.coords));
 
+  // 整列をループ外へ巻き上げる: 全リングを 1 つの共通アンカーへ一度だけ揃える。共通
+  // アンカーは全リングを 1 つの multi-polygon として渡したときの外環基準 (先頭片の外環)。
+  const ref = referenceLonForMultiPolygon(raws.map((r) => [r.coords]));
+  const alignedById = new Map<RingId, GeoRing>();
+  for (const r of raws) {
+    const aligned = alignMultiPolygon([[r.coords]], ref)[0]?.[0];
+    alignedById.set(r.id, aligned ?? r.coords);
+  }
+
+  // 候補親を面積昇順に並べた索引 (最小包含親を最初の一致で確定し打ち切るため)。
+  const candidatesByAreaAsc = [...raws].sort(
+    (x, y) =>
+      (areaOf.get(x.id) ?? Number.POSITIVE_INFINITY) -
+      (areaOf.get(y.id) ?? Number.POSITIVE_INFINITY),
+  );
+
   const rings: Ring[] = [];
   for (const r of raws) {
+    const alignedInner = alignedById.get(r.id) ?? r.coords;
     let bestParent: RawRing | undefined;
-    let bestArea = Number.POSITIVE_INFINITY;
-    for (const cand of raws) {
+    for (const cand of candidatesByAreaAsc) {
       if (cand.id === r.id) continue;
       if (cand.isOuter === r.isOuter) continue; // 親は種別が交互。
-      if (!ringContains(cand.coords, r.coords)) continue;
-      const a = areaOf.get(cand.id) ?? Number.POSITIVE_INFINITY;
-      if (a < bestArea) {
-        bestArea = a;
-        bestParent = cand;
-      }
+      const alignedOuter = alignedById.get(cand.id) ?? cand.coords;
+      if (!alignedRingContains(alignedOuter, alignedInner)) continue;
+      // 面積昇順走査なので最初に見つかった包含親が最小面積親。即確定して打ち切る。
+      bestParent = cand;
+      break;
     }
     if (r.isOuter) {
       rings.push(
