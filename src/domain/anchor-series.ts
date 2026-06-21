@@ -332,23 +332,32 @@ export function resolveAt(
   calendar: Calendar,
 ): Resolution {
   const entries = series.entries;
-  // INV-1 guarantees strictly ascending starts, so the entry effective at `time`
-  // is the last one whose start <= time — found by binary search (O(log n)) over
-  // the ascending starts. `time` is normalized exactly once. Series that are not
-  // yet normalized (built by hand) still resolve correctly via the same <=
-  // ordering the linear scan used; binary search only assumes ascending starts,
-  // which every series produced by this unit's operations satisfies.
+  // The entry effective at `time` is the one with the GREATEST start <= time.
+  //
+  // A binary search would be tempting (INV-1 promises strictly ascending starts),
+  // but `resolveAt` is reachable from the persistence / consistency path on a
+  // series that has NOT been re-normalized on load (serialize deserializeHistory
+  // restores entries verbatim; consistency.checkTimeSlice resolves on that raw
+  // series). A corrupt / hand-edited / legacy file can therefore present an
+  // UNSORTED series, and binary search on unsorted starts returns the wrong
+  // anchor (e.g. starts [100,0,200] at t=150 would land on start=0, not 100),
+  // making load-time consistency inspect the wrong snapshot. A linear "greatest
+  // start <= time" scan is correct for BOTH normalized and unvalidated input and
+  // is cheap: anchor series are per-feature and short. On a normalized series it
+  // yields exactly the same entry the binary search did.
+  //
+  // `time` is normalized exactly once. Ties on start cannot occur in a valid
+  // series (INV-1 forbids duplicate starts); should a corrupt series carry them,
+  // the FIRST occurrence wins for determinism (`>` keeps the earlier index).
   const t: Normalized = normalize(time, calendar);
-  let lo = 0;
-  let hi = entries.length - 1;
   let idx = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (compareNormalized(normalize(entries[mid]!.start, calendar), t) <= 0) {
-      idx = mid; // start <= time: a candidate; search right for a later one.
-      lo = mid + 1;
-    } else {
-      hi = mid - 1;
+  let best: Normalized | null = null;
+  for (let i = 0; i < entries.length; i++) {
+    const start = normalize(entries[i]!.start, calendar);
+    if (compareNormalized(start, t) > 0) continue; // start after time: not yet effective.
+    if (best === null || compareNormalized(start, best) > 0) {
+      best = start;
+      idx = i;
     }
   }
   if (idx < 0) return ABSENT;

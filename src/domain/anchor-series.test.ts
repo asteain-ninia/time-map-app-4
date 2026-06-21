@@ -305,9 +305,9 @@ describe('invalid TimePoint rejection at the series-op boundary (no aliasing)', 
   });
 });
 
-// --- resolveAt binary-search correctness over a deep series ----------------
+// --- resolveAt correctness over a deep series -------------------------------
 
-describe('resolveAt deep-series correctness (binary search)', () => {
+describe('resolveAt deep-series correctness', () => {
   it('resolves the correct entry across a long ascending series', () => {
     const entries: AnchorEntry[] = [];
     for (let i = 0; i < 200; i++) entries.push(entry(i + 1, i * 10, null));
@@ -321,6 +321,59 @@ describe('resolveAt deep-series correctness (binary search)', () => {
       s.entries[199]!.anchor.id,
     );
     expect(resolveAt(s, timePointYear(-1), cal).kind).toBe('absent');
+  });
+});
+
+// --- regression: resolveAt on an UNSORTED (corrupt/legacy) series -----------
+//
+// resolveAt is reachable from the persistence / consistency path on a series
+// that has NOT been re-normalized on load (deserializeHistory restores entries
+// verbatim; consistency.checkTimeSlice resolves on that raw series). A corrupt,
+// hand-edited, or legacy file can present an UNSORTED series. resolveAt must
+// still return the entry with the GREATEST start <= time, not whatever a search
+// that assumes ascending starts happens to land on. We build the series object
+// DIRECTLY (bypassing normalizeSeries) to model exactly the unvalidated input
+// that deserialization can yield.
+describe('resolveAt on an unsorted series (corrupt/legacy persistence input)', () => {
+  it('returns the greatest start <= time for the reported repro [100,0,200]@150', () => {
+    // The exact failing case: a naive binary search returns the start=0 entry.
+    const unsorted: AnchorSeries = {
+      entries: [entry(1, 100, null), entry(2, 0, null), entry(3, 200, null)],
+    };
+    const r = present(resolveAt(unsorted, timePointYear(150), cal));
+    expect(r.start).toEqual(timePointYear(100));
+    expect(r.anchor.id).toBe(unsorted.entries[0]!.anchor.id);
+  });
+
+  it('matches the normalized resolution for arbitrary permutations of any series', () => {
+    fc.assert(
+      fc.property(
+        anchorSeriesArb(cal),
+        fc.integer({ min: -1000, max: 5000 }),
+        fc.integer({ min: 0, max: 2 ** 31 - 1 }),
+        (sorted, queryYear, shuffleSeed) => {
+          const query = timePointYear(queryYear);
+          // A permutation of a VALID series is still semantically the same set of
+          // entries; resolveAt must be order-independent — the effective entry is
+          // defined by start times, not array position. Shuffle deterministically.
+          const arr = [...sorted.entries];
+          for (let i = arr.length - 1; i > 0; i--) {
+            const j = ((shuffleSeed * (i + 1)) >>> 0) % (i + 1);
+            [arr[i], arr[j]] = [arr[j]!, arr[i]!];
+          }
+          const shuffled: AnchorSeries = { entries: arr };
+
+          const expected = resolveAt(sorted, query, cal);
+          const actual = resolveAt(shuffled, query, cal);
+          expect(actual.kind).toBe(expected.kind);
+          if (expected.kind === 'present' && actual.kind === 'present') {
+            // Same start time selected (ties cannot occur in a valid series).
+            expect(actual.entry.start).toEqual(expected.entry.start);
+            expect(actual.entry.anchor.id).toBe(expected.entry.anchor.id);
+          }
+        },
+      ),
+    );
   });
 });
 
