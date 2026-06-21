@@ -125,6 +125,24 @@ function findHistory(
 }
 
 /**
+ * True iff the history's snapshot EFFECTIVE at `anchorTime` carries `featureId` as
+ * one of its features. This is the time-correct containment test: a history may own
+ * the feature id yet not be effective at the edit time (a duplicate-owner history
+ * covering a disjoint period — Codex true-positive), in which case it must NOT be the
+ * edit target. Pure.
+ */
+function snapshotAtTimeContains(
+  history: FeatureHistory,
+  featureId: FeatureId,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): boolean {
+  const resolution = resolveAt(history.series, anchorTime, calendar);
+  if (resolution.kind !== 'present') return false;
+  return resolution.entry.anchor.snapshot.features.some((f) => f.id === featureId);
+}
+
+/**
  * Locate the history whose snapshot effective at `anchorTime` CONTAINS `featureId`,
  * even when that is not the history's own `featureId`. A single anchor snapshot can
  * carry multiple features (an aggregate's children live inside the aggregate's
@@ -132,8 +150,23 @@ function findHistory(
  * on `history.featureId` misses a child leaf that is a valid split / adjust target.
  * Resolving by containment lets the op rewrite that child IN PLACE within its owning
  * snapshot, preserving siblings (Codex U44 true-positive: otherwise a duplicate
- * same-id history is appended). Returns the first containing history (ids are unique
- * across the effective slice, so there is at most one). Pure.
+ * same-id history is appended).
+ *
+ * TIME-CORRECTNESS (Codex U44 true-positive, duplicate-owner histories): the lookup
+ * MUST return the history that actually carries the feature AT `anchorTime`, not merely
+ * the first history keyed by the id. If a project (corrupt / hand-edited / legacy file)
+ * holds two histories for the same featureId over DISJOINT periods, an edit at the later
+ * period must land in the later history — never blindly in the first (earlier) one. So:
+ *   1. Prefer an own-keyed history that is EFFECTIVE-CONTAINING at the time (common case:
+ *      a single owner history that spans the edit time → returned immediately).
+ *   2. Otherwise scan ALL histories for one whose effective snapshot contains the feature
+ *      at the time (catches the child-inside-aggregate case AND the right duplicate owner).
+ *   3. Only if none is effective-containing fall back to the first own-keyed history (so
+ *      an edit at a time the feature is absent everywhere still has a defined target — the
+ *      orchestrator's checkTime gate normally rejects this, and applyPastEdit then inserts
+ *      a fresh anchor in that owner's series rather than throwing).
+ * Returns the first match within each tier (ids are unique across one effective slice, so
+ * tier 1/2 yield at most one). Pure.
  */
 export function findHistoryContaining(
   root: DomainProject,
@@ -141,19 +174,23 @@ export function findHistoryContaining(
   anchorTime: TimePoint,
   calendar: Calendar,
 ): { readonly index: number; readonly history: FeatureHistory } | undefined {
-  // Prefer the history keyed by the id itself (the common single-feature case).
+  // Tier 1: the history keyed by the id itself AND effective-containing at the time.
   const own = findHistory(root, featureId);
-  if (own !== undefined) return own;
+  if (own !== undefined && snapshotAtTimeContains(own.history, featureId, anchorTime, calendar)) {
+    return own;
+  }
+  // Tier 2: any history whose effective snapshot carries the feature at the time
+  // (child-inside-aggregate, OR the correct one among duplicate owners).
   for (let index = 0; index < root.histories.length; index += 1) {
     const history = root.histories[index];
     if (history === undefined) continue;
-    const resolution = resolveAt(history.series, anchorTime, calendar);
-    if (resolution.kind !== 'present') continue;
-    if (resolution.entry.anchor.snapshot.features.some((f) => f.id === featureId)) {
+    if (snapshotAtTimeContains(history, featureId, anchorTime, calendar)) {
       return { index, history };
     }
   }
-  return undefined;
+  // Tier 3: defensive fallback to the first own-keyed history (feature absent at the
+  // time everywhere — gated upstream; keeps a defined insertion target without throwing).
+  return own;
 }
 
 function withHistories(

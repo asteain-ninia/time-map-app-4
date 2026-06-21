@@ -66,6 +66,15 @@ export const INCONSISTENCY = {
    * keeps an empty timeline (FR-106 拡張).
    */
   OrphanHistory: 'orphan-history',
+  /**
+   * Two or more FeatureHistory entries share ONE owner featureId. A feature must
+   * own exactly one timeline (its series is the single source of its state through
+   * time, 教訓5.30); duplicate owners mean an edit-time lookup cannot deterministically
+   * route an edit to the right history (Codex U44 true-positive — an edit at a later
+   * period can land in an earlier duplicate). Detected so a corrupt / hand-edited /
+   * legacy file never silently loads with an ambiguous timeline (FR-106 拡張).
+   */
+  DuplicateOwnerHistory: 'duplicate-owner-history',
 } as const;
 
 export type InconsistencyKind = (typeof INCONSISTENCY)[keyof typeof INCONSISTENCY];
@@ -337,6 +346,40 @@ function detectOrphanHistories(histories: readonly FeatureHistory[]): Inconsiste
   return out;
 }
 
+// --- duplicate-owner histories (one featureId must own one timeline) ---------
+//
+// Each FeatureHistory is keyed by the stable id of the feature it OWNS, and that
+// ownership must be UNIQUE: a feature's series is the single source of its state
+// through time (教訓5.30). When two histories carry the same featureId — a corrupt
+// or hand-edited file, or a legacy export — an edit-time lookup (U44
+// findHistoryContaining) can no longer deterministically route an edit to the
+// intended timeline (an edit at a later period may resolve into an earlier duplicate;
+// Codex U44 true-positive). U44 was hardened to route by effective containment at the
+// edit time, but the duplicate state itself is still inconsistent and must be flagged
+// so a load / repair never silently keeps an ambiguous timeline. One inconsistency is
+// emitted per offending featureId, naming every history index sharing it.
+
+function detectDuplicateOwnerHistories(
+  histories: readonly FeatureHistory[],
+): Inconsistency[] {
+  const byOwner = new Map<FeatureId, number>();
+  for (const h of histories) {
+    byOwner.set(h.featureId, (byOwner.get(h.featureId) ?? 0) + 1);
+  }
+  const out: Inconsistency[] = [];
+  for (const [featureId, count] of byOwner) {
+    if (count > 1) {
+      out.push({
+        kind: INCONSISTENCY.DuplicateOwnerHistory,
+        featureIds: [featureId],
+        featureNames: [idToString(featureId)],
+        detail: `count:${count}`,
+      });
+    }
+  }
+  return out;
+}
+
 // --- the anchor-time sweep --------------------------------------------------
 //
 // Spatial / hierarchy checks are per-TIME-SLICE: at each distinct interval
@@ -431,6 +474,9 @@ export function checkConsistency(project: DomainProject, calendar: Calendar): Co
 
   // Orphan / zombie histories: owner feature absent from all its snapshots.
   inconsistencies.push(...detectOrphanHistories(project.histories));
+
+  // Duplicate-owner histories: two timelines keyed by one featureId.
+  inconsistencies.push(...detectDuplicateOwnerHistories(project.histories));
 
   // (a)(b)(c)(d)(e)(g): per distinct anchor time-slice over the combined state.
   for (const atTime of distinctAnchorTimes(project.histories, calendar)) {

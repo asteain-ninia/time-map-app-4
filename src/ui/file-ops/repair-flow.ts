@@ -81,6 +81,7 @@ export const INCONSISTENCY_LABELS = {
   'time-conflict': '時間（錨列）の矛盾',
   'anchor-spatial-overlap': '同時刻の地物どうしの空間的重なり',
   'orphan-history': '所有地物が存在しない孤立した歴史',
+  'duplicate-owner-history': '同一地物を所有する歴史の重複',
 } as const satisfies Record<Inconsistency['kind'], string>;
 
 // --- user choices (per-inconsistency repair option) -------------------------

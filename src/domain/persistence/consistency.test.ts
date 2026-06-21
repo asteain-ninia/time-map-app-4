@@ -541,6 +541,61 @@ describe('orphan history (zombie series, FR-106 拡張)', () => {
   });
 });
 
+// --- duplicate-owner histories (bug-hunt regression, FR-106 拡張) -----------
+
+describe('duplicate-owner histories (one featureId, two timelines)', () => {
+  // Two histories keyed by the SAME featureId over disjoint periods — a corrupt /
+  // hand-edited / legacy file. The lone owner must own exactly one timeline.
+  function projectWithDuplicateOwner(): DomainProject {
+    const early = squareLeaf('dup', '早期国', 0, 0);
+    const late = squareLeaf('dup', '後期国', 0, 0);
+    // Both histories are keyed by 'dup'; the early one starts at year 0, the late at
+    // year 1000. (singleAnchorHistory anchors each at its own startYear, open-ended,
+    // but each is its OWN one-entry series, so they cover the same id twice.)
+    const earlyHistory = singleAnchorHistory('dup', [early.feature], createVertexStore(early.vertices), 0);
+    const lateHistory = singleAnchorHistory('dup', [late.feature], createVertexStore(late.vertices), 1000);
+    return {
+      histories: [earlyHistory, lateHistory],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+  }
+
+  it('detects two histories sharing one owner featureId', () => {
+    const inc = find(
+      checkConsistency(projectWithDuplicateOwner(), CAL),
+      INCONSISTENCY.DuplicateOwnerHistory,
+    );
+    expect(inc).toBeDefined();
+    expect(inc!.featureIds).toContain('dup');
+    expect(inc!.detail).toBe('count:2');
+  });
+
+  it('does NOT flag a single-owner history (no false positive)', () => {
+    const leaf = squareLeaf('solo', '単独国', 0, 0);
+    const project: DomainProject = {
+      histories: [singleAnchorHistory('solo', [leaf.feature], createVertexStore(leaf.vertices))],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    expect(find(checkConsistency(project, CAL), INCONSISTENCY.DuplicateOwnerHistory)).toBeUndefined();
+  });
+
+  it('repair (drop duplicate owner histories) keeps the first and re-validates clean', () => {
+    const project = projectWithDuplicateOwner();
+    const inc = find(checkConsistency(project, CAL), INCONSISTENCY.DuplicateOwnerHistory)!;
+    const options = repairOptionsFor(inc);
+    expect(options.length).toBeGreaterThan(0);
+    const applied = applyRepairChecked(project, inc, options[0]!.id, CAL);
+    expect(applied.resolved).toBe(true);
+    expect(applied.remaining.ok).toBe(true);
+    // Exactly one 'dup' history survives (the first, year-0 occurrence).
+    const dupHistories = applied.project.histories.filter((h) => h.featureId === 'dup');
+    expect(dupHistories).toHaveLength(1);
+    expect(dupHistories[0]!.series.entries[0]!.start.year).toBe(0);
+  });
+});
+
 // --- uiSettings preservation across repair (bug-hunt regression) ------------
 
 describe('repair preserves the optional uiSettings block (regression)', () => {

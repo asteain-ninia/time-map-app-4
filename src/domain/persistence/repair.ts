@@ -52,6 +52,8 @@ export const REPAIR_OPTION = {
   NormalizeSeries: 'normalize-series',
   /** 孤立した歴史（所有地物が全スナップショットに不在）→ 当該歴史を除外する。 */
   DropOrphanHistory: 'drop-orphan-history',
+  /** 同一地物を所有する重複した歴史 → 先頭のみ残し、重複分を除外する。 */
+  DropDuplicateOwnerHistories: 'drop-duplicate-owner-histories',
 } as const;
 
 export type RepairOptionId = (typeof REPAIR_OPTION)[keyof typeof REPAIR_OPTION];
@@ -77,6 +79,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
   [REPAIR_OPTION.DropOrphanHistory]:
     '所有する地物が存在しない歴史（空のタイムライン）を読み込みから除外します。',
+  [REPAIR_OPTION.DropDuplicateOwnerHistories]:
+    '同一地物を所有する歴史が複数あるとき、先頭の歴史のみを残して重複分を読み込みから除外します。',
 };
 
 /**
@@ -117,6 +121,8 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       return [opt(REPAIR_OPTION.NormalizeSeries)];
     case INCONSISTENCY.OrphanHistory:
       return [opt(REPAIR_OPTION.DropOrphanHistory)];
+    case INCONSISTENCY.DuplicateOwnerHistory:
+      return [opt(REPAIR_OPTION.DropDuplicateOwnerHistories)];
   }
 }
 
@@ -277,6 +283,29 @@ function dropHistories(project: DomainProject, ids: readonly FeatureId[]): Domai
   };
 }
 
+/**
+ * For each owner id in `ids`, keep only the FIRST FeatureHistory keyed by it and drop
+ * the rest, collapsing a duplicate-owner timeline to a single deterministic one. The
+ * first occurrence (file order) is authoritative; later duplicates are removed. The
+ * remaining history is left intact (its snapshots are not touched), so this repair
+ * never manufactures an orphan/missing-vertex issue out of the survivor. Pure.
+ */
+function dropDuplicateOwnerHistories(
+  project: DomainProject,
+  ids: readonly FeatureId[],
+): DomainProject {
+  const targets = new Set<FeatureId>(ids);
+  const seen = new Set<FeatureId>();
+  const histories = project.histories.filter((h) => {
+    if (!targets.has(h.featureId)) return true;
+    if (seen.has(h.featureId)) return false; // a later duplicate → drop.
+    seen.add(h.featureId);
+    return true; // the first occurrence → keep.
+  });
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  return { ...project, histories };
+}
+
 /** Drop the FIRST of the overlapping pair (deterministic: the lower-ordered id). */
 function dropOneOfPair(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const first = ids[0];
@@ -317,6 +346,8 @@ export function applyRepair(
       return normalizeHistories(project, inc.featureIds, calendar);
     case REPAIR_OPTION.DropOrphanHistory:
       return dropHistories(project, inc.featureIds);
+    case REPAIR_OPTION.DropDuplicateOwnerHistories:
+      return dropDuplicateOwnerHistories(project, inc.featureIds);
   }
 }
 
