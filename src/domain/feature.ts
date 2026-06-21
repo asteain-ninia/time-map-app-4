@@ -246,6 +246,43 @@ export function withAggregateChildIds(
   return { ...feature, childIds };
 }
 
+// --- 末端→集約 transition (FR-35) -------------------------------------------
+
+/**
+ * Convert a non-aggregate feature into a shapeless AggregateFeature, preserving
+ * the shared fields (id, attributes, color, kindLabel, parentId) and adopting the
+ * given child ids. This is the「末端→集約」transition (FR-35): the moment a feature
+ * gains children it becomes an aggregate, whose area is the derived union of those
+ * children (派生集約=子の和). Its own geometry (a leaf's `shape`, a point's
+ * `vertexId`, a line's `vertexIds`) is DROPPED — an aggregate has no shape field,
+ * so a former leaf can never silently keep a footprint beyond the union of its
+ * children. An already-aggregate feature is returned with its child ids updated
+ * (the conversion is idempotent on aggregates).
+ *
+ * 教訓 5.6: the trigger is the RESULT state (has children), not a creation path —
+ * every flow that makes a feature a parent funnels through this single conversion.
+ */
+export function toShapelessAggregate(
+  feature: Feature,
+  childIds: readonly FeatureId[],
+): AggregateFeature {
+  const optional: OptionalCommonFields =
+    feature.kindLabel !== undefined && feature.parentId !== undefined
+      ? { kindLabel: feature.kindLabel, parentId: feature.parentId }
+      : feature.kindLabel !== undefined
+        ? { kindLabel: feature.kindLabel }
+        : feature.parentId !== undefined
+          ? { parentId: feature.parentId }
+          : {};
+  return createAggregateFeature(
+    feature.id,
+    feature.attributes,
+    feature.color,
+    childIds,
+    optional,
+  );
+}
+
 // --- Exhaustiveness demonstration -------------------------------------------
 //
 // A label function whose `switch` handles every variant. Removing a `case`

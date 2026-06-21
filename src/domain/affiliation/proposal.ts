@@ -24,6 +24,7 @@
 import { createBasicAttributes, createColorInfo, type ColorInfo } from '../attributes';
 import {
   createAggregateFeature,
+  toShapelessAggregate,
   withAggregateChildIds,
   withParentId,
   type Feature,
@@ -399,11 +400,14 @@ function buildProposalForLeaves(
   const emptied = emptiedAggregateIds(reparented, realized.createdIds);
   const swept = sweepAndPruneAnchor(reparented, emptied);
 
-  // 集約地物 childIds の再同期 (報告 blocking 修正)。U28 内部検証は parentId を単一
-  // 真実源とするため childIds 不整合でも素通りするが、persistence/serialize と
-  // deletion/eligibility は childIds を権威データとして同期維持する不変条件を前提と
-  // する。最終 parentId 関係 (sweep 後の確定状態) から全集約の childIds を再構築し、
-  // (a) 新規生成集約に実子を設定、(b) 子を失った既存親集約から該当 ID を除去する。
+  // 末端→集約 transition + 集約地物 childIds の再同期 (FR-35, 報告 blocking 修正)。
+  // U28 内部検証は parentId を単一真実源とするため childIds 不整合でも素通りするが、
+  // persistence/serialize と deletion/eligibility は childIds を権威データとして同期
+  // 維持する不変条件を前提とする。最終 parentId 関係 (sweep 後の確定状態) から:
+  //   (a) 直轄化 (既存末端を新親に選ぶ) で子を得た非集約地物を、形状を持たない集約地物
+  //       へ変換する (FR-35; 派生集約=子の和 を保つため自前の footprint を捨てる)。
+  //   (b) 全集約の childIds を実子へ再構築し、(c) 子を失った既存親集約から ID を除去。
+  // 判別は結果状態 (子を持つか) で行う (教訓 5.6)。
   const synced = syncAggregateChildIds(swept.features);
 
   // 確定後整合性の再検証 (U08; 基準 5 / FR-94, 教訓 5.22/5.26)。違反すれば確定せず
@@ -461,14 +465,17 @@ function emptiedAggregateIds(
 }
 
 /**
- * 確定状態 (parentId が単一真実源) から全集約地物の childIds を再構築する。U28 の
- * 親子張り替えは parentId のみを更新するため、集約地物の childIds は脱同期する:
- * 旧親には移動した子が残り、新規生成集約は空のまま。serialize 往復・deletion
- * eligibility は childIds を権威データとして扱うため、確定前にここで同期する。
+ * 確定状態 (parentId が単一真実源) から各地物の集約性・childIds を再構築する。U28 の
+ * 親子張り替えは parentId のみを更新するため、(1) 直轄化で既存末端を新親に選ぶと、その
+ * 末端は kind:'leaf' のまま子を持ってしまい、(2) 集約地物の childIds は脱同期する:
+ * 旧親には移動した子が残り、新規生成集約は空のまま。
  *
- * childrenOf (forest) を子の権威ソースとして各集約の childIds を再生成する。順序は
- * forest の入力順 (= 地物配列順) で安定。childIds が実際に変化した集約 ID を
- * changedIds で返し、通知対象 (旧親/新親) に含める。
+ * 末端→集約 transition (FR-35, 教訓 5.6): 子を持つ非集約地物 (leaf/point/line) を、形状
+ * を持たない集約地物へ変換する。これにより派生集約=子の和 (resolveFeatureArea が自前の
+ * footprint を子の和に上乗せしない) が確定状態で保たれ、checkAggregateShapes の前提
+ * (集約は形状なし) も満たされる。childrenOf (forest) を子の権威ソースとして各集約の
+ * childIds を再生成する。順序は forest の入力順 (= 地物配列順) で安定。kind 変更または
+ * childIds が実際に変化した地物 ID を changedIds で返し、通知対象 (旧親/新親) に含める。
  */
 function syncAggregateChildIds(features: readonly Feature[]): {
   readonly features: readonly Feature[];
@@ -477,8 +484,14 @@ function syncAggregateChildIds(features: readonly Feature[]): {
   const forest = buildForest(features);
   const changedIds = new Set<FeatureId>();
   const next = features.map((f) => {
-    if (f.kind !== 'aggregate') return f;
     const desired = directChildIds(forest, f.id);
+    if (f.kind !== 'aggregate') {
+      // 非集約 (leaf/point/line)。子を持てば集約へ変換 (末端→集約, FR-35)。子なしは不変。
+      if (desired.length === 0) return f;
+      changedIds.add(f.id);
+      return toShapelessAggregate(f, desired);
+    }
+    // 既存集約: childIds を実子へ再同期。
     if (sameIdList(f.childIds, desired)) return f;
     changedIds.add(f.id);
     return withAggregateChildIds(f, desired);

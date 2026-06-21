@@ -76,6 +76,20 @@ import {
   type Vertex,
   type VertexStore,
 } from '../vertex';
+import {
+  buildAffiliationProposal,
+  buildAffiliationProposalForTargets,
+  type AffiliationProposal,
+  type ProposalResult,
+} from '../affiliation/proposal';
+import {
+  parentCreate,
+  parentExisting,
+  parentNone,
+  type ParentDecision,
+} from '../affiliation/decision';
+import { createAffiliationCommand } from '../affiliation/command';
+import { createIdGeneratorState } from '../id-generator';
 
 const SEED = 5001;
 const COLOR = createColorInfo(true, '#102030', '#405060', '#708090');
@@ -1060,5 +1074,480 @@ describe(`U08 deep / multi-level forests (seed=${SEED2})`, () => {
       }),
       { seed: SEED2, numRuns: 300 },
     );
+  });
+});
+
+// ===========================================================================
+// 6. REAL PUBLIC COMMAND DRIVE (seed = 5004).
+//
+// Sections 1-5 drive a HAND-BUILT valid model: they never call the real U28
+// 所属変更 (affiliation) flow that actually re-parents features, generates new
+// intermediate aggregates, auto-prunes emptied aggregates, and re-syncs
+// childIds. THAT pipeline (buildAffiliationProposal / buildProposalForLeaves /
+// syncAggregateChildIds / sweepAndPruneAnchor) is where parent/aggregate/union
+// bugs would actually live. Here we:
+//   - build a random valid forest,
+//   - apply a RANDOM SEQUENCE of real affiliation commands (existing/none/create),
+//     each validated with the vertex store so 形状=和・隙間なし runs,
+//   - after EVERY committed proposal assert every U08 invariant on nextFeatures:
+//       * forest valid (no cycle / dangling / duplicate / shape mismatch),
+//       * depth coherent, derived area finite, 派生集約 = 子の和,
+//       * childIds == parentId-derived children (single-source agreement),
+//       * selection stays valid (every survivedTouched / created id resolves),
+//   - metamorphic: undo∘op == identity (createAffiliationCommand), and
+//     save∘load (JSON round-trip) == identity over nextFeatures.
+// ===========================================================================
+
+const SEED4 = 5004;
+
+/** A live, fully-validated U08 view assertion over an arbitrary feature set. */
+function assertFeatureSetInvariants(
+  features: readonly Feature[],
+  vstore: VertexStore,
+): void {
+  const forest = buildForest(features);
+
+  // (a) Structural validity via the real validator WITH shape check enabled.
+  const v = validateHierarchy(features, { vertexStore: vstore });
+  const badKinds = [
+    HIERARCHY_VIOLATION.Cycle,
+    HIERARCHY_VIOLATION.DanglingParent,
+    HIERARCHY_VIOLATION.DuplicateId,
+    HIERARCHY_VIOLATION.AggregateShapeMismatch,
+    HIERARCHY_VIOLATION.ShapeUnresolved,
+    HIERARCHY_VIOLATION.ChildParentMismatch,
+  ];
+  for (const kind of badKinds) {
+    const hits = v.violations.filter((x) => x.kind === kind);
+    expect(hits, `unexpected ${kind}: ${JSON.stringify(hits)}`).toHaveLength(0);
+  }
+
+  // (b) Depth coherence + (c) derived area finite + 派生集約 = 子の和.
+  const depths = derivedDepths(forest);
+  for (const f of features) {
+    const d = derivedDepth(forest, f.id);
+    expect(d).not.toBe(DEPTH_UNDEFINED);
+    expect(depths.get(f.id)).toBe(d);
+    if (f.parentId === undefined) {
+      expect(d).toBe(0);
+    } else {
+      expect(forest.byId.has(f.parentId)).toBe(true);
+      expect(d).toBe(derivedDepth(forest, f.parentId) + 1);
+    }
+
+    const res = resolveFeatureArea(forest, vstore, f.id);
+    expect(res.status).toBe('ok');
+    if (res.status !== 'ok') continue;
+    expect(allCoordsFinite(res.area)).toBe(true);
+
+    const childIds = directChildIds(forest, f.id);
+    if (childIds.length > 0) {
+      const childAreas: GeoMultiPolygon[] = [];
+      let ok = true;
+      for (const cid of childIds) {
+        const cres = resolveFeatureArea(forest, vstore, cid);
+        if (cres.status !== 'ok') {
+          ok = false;
+          break;
+        }
+        childAreas.push(cres.area);
+      }
+      expect(ok).toBe(true);
+      const u = unionAll(childAreas);
+      expect(u).toBeDefined();
+      if (u !== undefined) {
+        // 派生集約 = 子の和: a feature that HAS children (result-state aggregate,
+        // 教訓5.6) must have its derived area equal to the union of those children.
+        //
+        // BUG FIXED (seed=5004): the real 所属変更 (affiliation) flow lets an
+        // EXISTING LEAF be chosen as a target's new parent (直轄化 / direct-control,
+        // explicitly allowed by affiliation/candidates.ts). Previously the leaf KEPT
+        // its own `shape` (kind stayed 'leaf') yet gained a child, so
+        // resolveFeatureArea added the leaf's OWN footprint on top of the child union
+        // ("末端→集約 transition" rule in resolve-shape.ts) — derived area ⊋ union of
+        // children, violating 派生集約=子の和, AND validateHierarchy returned ok
+        // (checkAggregateShapes only looks for inter-child GAPS, never "own area
+        // beyond children"). The fix converts any non-aggregate that gains children
+        // into a shapeless aggregate (FR-35) in buildProposalForLeaves
+        // (syncAggregateChildIds → feature.toShapelessAggregate), so the committed
+        // state always satisfies this invariant. Do not weaken it.
+        expect(areasEqualWithinTolerance(res.area, u)).toBe(true);
+      }
+    }
+
+    // (d) aggregate childIds == parentId-derived children (single-source).
+    if (f.kind === 'aggregate') {
+      const declared = [...f.childIds].sort();
+      const derived = [...childIds].sort();
+      expect(declared, `childIds drift on ${f.id}`).toEqual(derived);
+    }
+  }
+}
+
+/** Pick a deterministic element from a non-empty list by an index nat. */
+function pick<T>(arr: readonly T[], n: number): T | undefined {
+  if (arr.length === 0) return undefined;
+  return arr[n % arr.length];
+}
+
+/**
+ * A random affiliation command spec. `targetWhich` selects an existing feature
+ * (any kind) to re-affiliate; `decision` is how to choose the new parent.
+ */
+type AffCmd =
+  | { readonly t: 'existing'; readonly targetWhich: number; readonly parentWhich: number }
+  | { readonly t: 'none'; readonly targetWhich: number }
+  | { readonly t: 'createNewTop'; readonly targetWhich: number }
+  | { readonly t: 'createUnderExisting'; readonly targetWhich: number; readonly parentWhich: number }
+  | { readonly t: 'federate'; readonly aWhich: number; readonly bWhich: number };
+
+const affCmdArb: fc.Arbitrary<AffCmd> = fc.oneof(
+  fc.record({
+    t: fc.constant<'existing'>('existing'),
+    targetWhich: fc.nat(),
+    parentWhich: fc.nat(),
+  }),
+  fc.record({ t: fc.constant<'none'>('none'), targetWhich: fc.nat() }),
+  fc.record({ t: fc.constant<'createNewTop'>('createNewTop'), targetWhich: fc.nat() }),
+  fc.record({
+    t: fc.constant<'createUnderExisting'>('createUnderExisting'),
+    targetWhich: fc.nat(),
+    parentWhich: fc.nat(),
+  }),
+  fc.record({
+    t: fc.constant<'federate'>('federate'),
+    aWhich: fc.nat(),
+    bWhich: fc.nat(),
+  }),
+);
+
+interface AffState {
+  features: readonly Feature[];
+  store: VertexStore;
+  idCounter: number;
+}
+
+/** Monotonic injected time source so id-generation stays deterministic. */
+function makeNow(start: number): () => number {
+  let t = start;
+  return () => {
+    t += 1;
+    return t;
+  };
+}
+
+/**
+ * Build and (if committed) apply ONE real affiliation command. Returns the new
+ * state and the proposal (for undo metamorphic checks), or undefined when the
+ * command did not produce a commit (rejected / not applicable) — a rejection is
+ * a legitimate outcome and is NOT a bug, so we only assert invariants on commits.
+ */
+function applyAffCmd(
+  st: AffState,
+  cmd: AffCmd,
+): { next: AffState; proposal: AffiliationProposal } | undefined {
+  const features = st.features;
+  const idState = createIdGeneratorState(0, st.idCounter);
+  const now = makeNow(st.idCounter * 100 + 1);
+  const opts = { idState, now, vertexStore: st.store };
+
+  const allIds = features.map((f) => f.id);
+
+  let result: ProposalResult;
+  switch (cmd.t) {
+    case 'existing': {
+      const target = pick(allIds, cmd.targetWhich);
+      const parent = pick(allIds, cmd.parentWhich);
+      if (target === undefined || parent === undefined) return undefined;
+      const decision: ParentDecision = parentExisting(parent);
+      result = buildAffiliationProposal(features, target, decision, opts);
+      break;
+    }
+    case 'none': {
+      const target = pick(allIds, cmd.targetWhich);
+      if (target === undefined) return undefined;
+      result = buildAffiliationProposal(features, target, parentNone, opts);
+      break;
+    }
+    case 'createNewTop': {
+      const target = pick(allIds, cmd.targetWhich);
+      if (target === undefined) return undefined;
+      const decision: ParentDecision = parentCreate({ name: 'new-top' }, parentNone);
+      result = buildAffiliationProposal(features, target, decision, opts);
+      break;
+    }
+    case 'createUnderExisting': {
+      const target = pick(allIds, cmd.targetWhich);
+      const top = pick(allIds, cmd.parentWhich);
+      if (target === undefined || top === undefined) return undefined;
+      const decision: ParentDecision = parentCreate({ name: 'mid' }, parentExisting(top));
+      result = buildAffiliationProposal(features, target, decision, opts);
+      break;
+    }
+    case 'federate': {
+      const a = pick(allIds, cmd.aWhich);
+      const b = pick(allIds, cmd.bWhich);
+      if (a === undefined || b === undefined || a === b) return undefined;
+      const decision: ParentDecision = parentCreate({ name: 'federation' }, parentNone);
+      result = buildAffiliationProposalForTargets(features, [a, b], decision, opts);
+      break;
+    }
+  }
+
+  if (result.status !== 'proposal') return undefined;
+  const proposal = result.proposal;
+
+  // The new vertex store is unchanged by affiliation (it never edits geometry),
+  // so we reuse st.store. Advance the id counter from the proposal's id state.
+  const next: AffState = {
+    features: proposal.nextFeatures,
+    store: st.store,
+    idCounter: proposal.idState.counter + 1,
+  };
+  return { next, proposal };
+}
+
+describe(`U08 real affiliation command drive (seed=${SEED4})`, () => {
+  it('every U08 invariant holds after every committed real affiliation command', () => {
+    fc.assert(
+      fc.property(
+        validForestArb(),
+        fc.array(affCmdArb, { minLength: 0, maxLength: 10 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 1000,
+          };
+          assertFeatureSetInvariants(st.features, st.store);
+
+          for (const cmd of cmds) {
+            const applied = applyAffCmd(st, cmd);
+            if (applied === undefined) continue; // rejected / N/A: legitimate.
+            // A committed proposal MUST yield a fully-valid forest.
+            assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+            // (e) selection stays valid: every notified id resolves in next state.
+            const present = new Set(applied.next.features.map((f) => f.id));
+            for (const id of applied.proposal.survivedTouchedIds) {
+              expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.createdIds) {
+              expect(present.has(id), `created ${id} missing`).toBe(true);
+            }
+            for (const id of applied.proposal.deletedIds) {
+              expect(present.has(id), `deleted ${id} still present`).toBe(false);
+            }
+            st = applied.next;
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 500 },
+    );
+  });
+
+  it('undo ∘ affiliation-command == identity (single undo unit, 教訓 5.11)', () => {
+    fc.assert(
+      fc.property(
+        validForestArb(),
+        affCmdArb,
+        (initial, cmd) => {
+          const st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 2000,
+          };
+          const applied = applyAffCmd(st, cmd);
+          if (applied === undefined) return; // rejected: nothing to undo.
+
+          const baseline = st.features;
+          const command = createAffiliationCommand(baseline, applied.proposal);
+          const afterExec = command.execute(baseline);
+          // execute applies the proposal's nextFeatures.
+          expect(
+            featuresEqual(afterExec.state, applied.proposal.nextFeatures),
+            'execute != proposal.nextFeatures',
+          ).toBe(true);
+          // undo restores the exact baseline (structural identity).
+          const afterUndo = command.undo(afterExec.state);
+          expect(featuresEqual(afterUndo.state, baseline), 'undo != baseline').toBe(true);
+          expect(afterUndo.state.length).toBe(baseline.length);
+          // redo re-applies WITHOUT re-minting ids (教訓 5.20): identical again.
+          const afterRedo = command.redo(afterUndo.state);
+          expect(
+            featuresEqual(afterRedo.state, applied.proposal.nextFeatures),
+            'redo != proposal.nextFeatures',
+          ).toBe(true);
+        },
+      ),
+      { seed: SEED4, numRuns: 400 },
+    );
+  });
+
+  it('save ∘ load (JSON round-trip) == identity over the committed feature set', () => {
+    fc.assert(
+      fc.property(
+        validForestArb(),
+        fc.array(affCmdArb, { minLength: 0, maxLength: 6 }),
+        (initial, cmds) => {
+          let st: AffState = {
+            features: [...initial.features],
+            store: store(initial),
+            idCounter: 3000,
+          };
+          for (const cmd of cmds) {
+            const applied = applyAffCmd(st, cmd);
+            if (applied !== undefined) st = applied.next;
+          }
+          const json = JSON.stringify(st.features);
+          const parsed = JSON.parse(json) as Feature[];
+          expect(featuresEqual(parsed, st.features)).toBe(true);
+          // The reloaded set resolves to identical aggregate areas.
+          const f0 = buildForest(st.features);
+          const f1 = buildForest(parsed);
+          for (const f of st.features) {
+            const a = resolveFeatureArea(f0, st.store, f.id);
+            const b = resolveFeatureArea(f1, st.store, f.id);
+            expect(a.status).toBe(b.status);
+            if (a.status === 'ok' && b.status === 'ok') {
+              expect(areasEqualWithinTolerance(a.area, b.area)).toBe(true);
+            }
+          }
+        },
+      ),
+      { seed: SEED4, numRuns: 300 },
+    );
+  });
+});
+
+// ===========================================================================
+// 7. REGRESSION (focused, deterministic): 直轄化 末端→集約 transition (FR-35).
+//
+// The minimal seed-5004 shrink from the bug report, pinned as a non-property
+// unit test so the exact 派生集約=子の和 break can never silently regress:
+//   f-agg-1 (aggregate) -> [f-leaf-2 = rect [0,10]x[0,10], f-leaf-3 = rect
+//   [10,20]x[0,10]]. 直轄化: re-affiliate target f-leaf-3 under the EXISTING LEAF
+//   f-leaf-2. Before the fix, f-leaf-2 stayed kind:'leaf' with a child, so its
+//   derived area was [0,20]x[0,10] (own ∪ child) ⊋ union of children
+//   ([10,20]x[0,10]) and validateHierarchy returned ok=true (false negative).
+//   After the fix, f-leaf-2 is converted to a shapeless aggregate, so its derived
+//   area equals exactly the union of its children, and the invariant holds.
+// ===========================================================================
+
+const SEED_REPRO = 5004;
+
+/** Build the three-feature fixture (agg over two adjacent leaf strips). */
+function buildDirectControlFixture(): { features: Feature[]; vstore: VertexStore } {
+  const aggId = asFeatureId('f-agg-1');
+  const leaf2 = asFeatureId('f-leaf-2');
+  const leaf3 = asFeatureId('f-leaf-3');
+
+  function rectLeaf(
+    id: FeatureId,
+    suffix: string,
+    x0: number,
+    parent: FeatureId,
+  ): { feature: Feature; verts: Vertex[] } {
+    const corners = [
+      createCoordinate(x0, 0),
+      createCoordinate(x0 + 10, 0),
+      createCoordinate(x0 + 10, 10),
+      createCoordinate(x0, 10),
+    ];
+    const verts = corners.map((c, i) => createVertex(asVertexId(`v-${suffix}-${i}`), c));
+    const ring = createTerritoryRing(
+      asRingId(`r-${suffix}`),
+      verts.map((v) => v.id),
+    );
+    const feature = createLeafFeature(
+      id,
+      createBasicAttributes(suffix, 0, 1),
+      COLOR,
+      createShape([ring]),
+      { parentId: parent },
+    );
+    return { feature, verts };
+  }
+
+  const l2 = rectLeaf(leaf2, 'leaf-2', 0, aggId);
+  const l3 = rectLeaf(leaf3, 'leaf-3', 10, aggId);
+  const agg = createAggregateFeature(
+    aggId,
+    createBasicAttributes('agg-1', 0, 1),
+    COLOR,
+    [leaf2, leaf3],
+  );
+  return {
+    features: [agg, l2.feature, l3.feature],
+    vstore: createVertexStore([...l2.verts, ...l3.verts]),
+  };
+}
+
+describe(`U08 直轄化 末端→集約 regression (seed=${SEED_REPRO})`, () => {
+  it('直轄化 onto an existing leaf converts it to a shapeless aggregate (派生集約=子の和 holds)', () => {
+    const { features, vstore } = buildDirectControlFixture();
+    const leaf2 = asFeatureId('f-leaf-2');
+    const leaf3 = asFeatureId('f-leaf-3');
+
+    const result = buildAffiliationProposal(features, leaf3, parentExisting(leaf2), {
+      idState: createIdGeneratorState(0, 1000),
+      now: makeNow(1),
+      vertexStore: vstore,
+    });
+    expect(result.status, JSON.stringify(result)).toBe('proposal');
+    if (result.status !== 'proposal') return;
+
+    const next = result.proposal.nextFeatures;
+
+    // f-leaf-2 must now be a SHAPELESS aggregate (no `shape` field), not a leaf.
+    const newParent = next.find((f) => f.id === leaf2);
+    expect(newParent).toBeDefined();
+    expect(newParent?.kind).toBe('aggregate');
+    expect((newParent as unknown as { shape?: unknown }).shape).toBeUndefined();
+
+    // Tree: f-agg-1 -> f-leaf-2 -> f-leaf-3.
+    const forest = buildForest(next);
+    expect(directChildIds(forest, leaf2)).toEqual([leaf3]);
+
+    // 派生集約=子の和: f-leaf-2's derived area == union of its children (f-leaf-3),
+    // i.e. exactly [10,20]x[0,10], NOT [0,20]x[0,10] (the pre-fix overflow).
+    const parentArea = resolveFeatureArea(forest, vstore, leaf2);
+    const childArea = resolveFeatureArea(forest, vstore, leaf3);
+    expect(parentArea.status).toBe('ok');
+    expect(childArea.status).toBe('ok');
+    if (parentArea.status === 'ok' && childArea.status === 'ok') {
+      expect(areasEqualWithinTolerance(parentArea.area, childArea.area)).toBe(true);
+    }
+
+    // And the whole committed state passes every U08 invariant (no false negative).
+    assertFeatureSetInvariants(next, vstore);
+  });
+
+  it('自治化 (parentCreate under an existing leaf) also converts that leaf', () => {
+    const { features, vstore } = buildDirectControlFixture();
+    const leaf2 = asFeatureId('f-leaf-2');
+    const leaf3 = asFeatureId('f-leaf-3');
+
+    const result = buildAffiliationProposal(
+      features,
+      leaf3,
+      parentCreate({ name: 'mid' }, parentExisting(leaf2)),
+      {
+        idState: createIdGeneratorState(0, 2000),
+        now: makeNow(1),
+        vertexStore: vstore,
+      },
+    );
+    expect(result.status, JSON.stringify(result)).toBe('proposal');
+    if (result.status !== 'proposal') return;
+
+    const next = result.proposal.nextFeatures;
+    // The intermediate aggregate 'mid' ends up under f-leaf-2, so f-leaf-2 becomes
+    // a parent and MUST be converted to a shapeless aggregate.
+    const newParent = next.find((f) => f.id === leaf2);
+    expect(newParent?.kind).toBe('aggregate');
+    expect((newParent as unknown as { shape?: unknown }).shape).toBeUndefined();
+
+    assertFeatureSetInvariants(next, vstore);
   });
 });
