@@ -181,6 +181,34 @@ describe('zoomAtCursor (FR-08 cursor-anchored)', () => {
     zoomAtCursor(cam, VP, { x: 100, y: 100 }, 5);
     expect(cam).toEqual({ centerLon: 0, centerLat: 0, zoom: 2 });
   });
+
+  it('no-ops against an unmeasured (zoom === 0) camera, never an ∞ center (REGRESSION)', () => {
+    // Pre-measurement window: `initialCamera`/`fitWorldZoom` return zoom 0 for a
+    // zero-size mount, the renderer's "not yet measured" sentinel. A wheel notch in
+    // that window previously divided by camera.zoom (0) inside screenToWorld, making
+    // the world point under the cursor ±Infinity and the new centerLon/centerLat ∞,
+    // corrupting every later transform + wrap-turn enumeration. The OLD zoom is
+    // unchecked by clampZoom (which only guards the NEW zoom). Guard: no-op.
+    const unmeasured = initialCamera({ widthCss: 0, heightCss: 0, devicePixelRatio: 1 });
+    expect(unmeasured.zoom).toBe(0);
+    const next = zoomAtCursor(unmeasured, VP, { x: 600, y: 200 }, 10, DEFAULT_ZOOM_RANGE);
+    expect(next).toEqual(unmeasured);
+    expect(Number.isFinite(next.centerLon)).toBe(true);
+    expect(Number.isFinite(next.centerLat)).toBe(true);
+  });
+
+  it('no-ops against a non-finite-positive OLD zoom via the wheel-step path (REGRESSION)', () => {
+    // The realistic call path is zoomStepAtCursor (PointerDispatcher.wheel). With a
+    // zoom-0 camera the multiplicative step (0 * factor = 0) would clamp the NEW zoom
+    // fine, but the OLD-zoom division in screenToWorld would still poison the center.
+    for (const badZoom of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const cam: Camera = { centerLon: 5, centerLat: -3, zoom: badZoom };
+      const next = zoomStepAtCursor(cam, VP, { x: 600, y: 200 }, 1.1, DEFAULT_ZOOM_RANGE);
+      expect(next).toEqual(cam);
+      expect(Number.isFinite(next.centerLon)).toBe(true);
+      expect(Number.isFinite(next.centerLat)).toBe(true);
+    }
+  });
 });
 
 describe('zoomStepAtCursor', () => {

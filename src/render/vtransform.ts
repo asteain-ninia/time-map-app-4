@@ -176,6 +176,21 @@ export function zoomAtCursor(
   nextZoom: number,
   range?: ZoomRange,
 ): Camera {
+  // The cursor invariant inverts the OLD camera via `screenToWorld`, which divides
+  // by `camera.zoom` (vtransform.ts §screenToWorld). `clampZoom` only guarantees the
+  // NEW zoom is finite-positive — the OLD zoom is unchecked. Before the map surface
+  // is first measured the camera zoom is 0 (`initialCamera`/`fitWorldZoom` return 0
+  // for a degenerate/unmeasured viewport, the documented "not yet measured" sentinel),
+  // so a wheel notch in that pre-measurement window would divide by 0, make the world
+  // point under the cursor ±Infinity, and corrupt centerLon/centerLat (∞) — poisoning
+  // every subsequent transform and the wrap-turn enumeration. NO-OP against an
+  // unmeasured (non-finite-positive zoom) camera: there is no meaningful world point
+  // under the cursor yet, and the renderer already treats `zoom === 0` as "not yet
+  // measured" (病的入力の安全性, same degenerate-fallback discipline as the wrap-turn
+  // functions). The first real frame re-establishes a finite-positive zoom.
+  if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) {
+    return camera;
+  }
   const world = screenToWorld(cursor, camera, viewport);
   const clampedZoom = clampZoom(nextZoom, range);
   const cx = viewport.widthCss / 2;
