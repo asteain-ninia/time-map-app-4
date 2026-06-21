@@ -227,6 +227,62 @@ describe('HB-14: selectVisibleFeatures keeps every on-screen feature (candidate 
   });
 });
 
+// M1 root-fix: the clip closed form reports an intersection for ANY ±360° turn k,
+// but the renderer only paints the turns wrapTurnsForLonSpan enumerates — and that
+// path collapses to the identity turn [0] once the inclusive turn count reaches
+// MAX_WRAP_REPLICAS / leaves safe-integer precision. At THAT boundary the old clip
+// could keep a feature whose only intersecting replica is a k≠0 the renderer never
+// draws ("kept by clip but not painted"). The clip must collapse in lock-step.
+describe('M1: clip ⊇ draw holds at the MAX_WRAP_REPLICAS degenerate boundary', () => {
+  it('does not keep a feature whose only on-screen replica is a turn the renderer will not paint', () => {
+    // A pathological pan: centerLon enormous so the view span vs a turn-0 feature
+    // forces the renderer-side turn count past MAX_WRAP_REPLICAS → draw bails to [0].
+    const viewport: Viewport = { widthCss: 800, heightCss: 400, devicePixelRatio: 1 };
+    // Tiny zoom over an astronomically panned centre: the view covers a huge span.
+    const camera: Camera = { centerLon: 5e10, centerLat: 0, zoom: 1e-9 };
+
+    // A feature sitting near the origin (turn 0 content). Under the closed-form clip
+    // its k≠0 replica intersects the panned view; under the renderer it is only ever
+    // drawn at turn [0] (the collapse), which is off-screen.
+    const feature: EvaluatedPoint = {
+      kind: 'point',
+      id: 'p',
+      at: { lon: 0, lat: 0 },
+      style: STYLE,
+      label: '',
+      selected: false,
+    };
+
+    const kept = selectVisibleFeatures([feature], camera, viewport, DEFAULT_SCREEN_SIZES);
+    // Whatever the clip decides, the renderer's turn set must paint it if kept.
+    const turns = wrapTurnsForLonSpan(0, 0, camera, viewport);
+    const paints = turns.some((t) => {
+      const s = worldToScreen({ lon: 0 + t * LONGITUDE_PERIOD, lat: 0 }, camera, viewport);
+      return s.x >= 0 && s.x <= viewport.widthCss && s.y >= 0 && s.y <= viewport.heightCss;
+    });
+    // Invariant: kept ⇒ painted. (Here both are false — the feature is off-screen at
+    // the only turn the renderer draws — so the clip must NOT keep it.)
+    if (kept.length > 0) expect(paints).toBe(true);
+    expect(kept.length === 0 || paints).toBe(true);
+  });
+
+  it('still keeps a genuinely on-screen feature at the same pathological camera (no over-cull)', () => {
+    const viewport: Viewport = { widthCss: 800, heightCss: 400, devicePixelRatio: 1 };
+    const camera: Camera = { centerLon: 5e10, centerLat: 0, zoom: 1e-9 };
+    // A feature whose turn-0 content actually sits at the panned centre is on screen.
+    const feature: EvaluatedPoint = {
+      kind: 'point',
+      id: 'p',
+      at: { lon: camera.centerLon, lat: 0 },
+      style: STYLE,
+      label: '',
+      selected: false,
+    };
+    const kept = selectVisibleFeatures([feature], camera, viewport, DEFAULT_SCREEN_SIZES);
+    expect(kept).toHaveLength(1);
+  });
+});
+
 /** Every vertex of a feature (point/line/area) as a flat WorldPoint list. */
 function featureVertices(f: EvaluatedFeature): WorldPoint[] {
   switch (f.kind) {

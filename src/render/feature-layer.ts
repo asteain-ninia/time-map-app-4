@@ -47,7 +47,7 @@ import type {
   PolygonShapePrimitive,
 } from './map-renderer';
 import type { ScreenPoint, WorldPoint } from './vtransform';
-import { screenToWorld, worldToScreen } from './vtransform';
+import { MAX_WRAP_REPLICAS, screenToWorld, worldToScreen } from './vtransform';
 
 // --- single screen-size source (FR-17 / 教訓 5.30) ---------------------------
 
@@ -225,10 +225,35 @@ export function worldRectsIntersect(a: WorldRect, b: WorldRect): boolean {
  * shifted interval that can reach the view does so. We compute the minimal k that
  * pushes `a.maxLon` to or past `view.minLon` and check that shifted `a.minLon` does
  * not overshoot `view.maxLon`. Pure.
+ *
+ * CLIP ⊇ DRAW AT THE DEGENERATE BOUNDARY (M1 root fix): the closed form above
+ * reports an intersection for ANY integer k, but the RENDERER only paints the turns
+ * `wrapTurnsForLonSpan` enumerates — and that path BAILS to the identity turn `[0]`
+ * once the inclusive turn count reaches `MAX_WRAP_REPLICAS` or the bounds leave
+ * safe-integer precision (otherwise its `t += 1` loop hangs / over-allocates). At
+ * that pathological boundary the closed-form clip would keep a feature whose only
+ * intersecting replica is some k ≠ 0 that the renderer NEVER draws → "kept by clip
+ * but not painted", the exact invariant `wrapTurnsForLonSpan` exists to protect
+ * (教訓 5.29 単一真実源). So we mirror the SAME degenerate guard here: when the draw
+ * path would collapse to `[0]`, the clip likewise tests ONLY the identity-turn
+ * replica (`a` itself vs `view`), keeping clip and draw in lock-step.
  */
 export function worldRectIntersectsViewWrapped(a: WorldRect, view: WorldRect): boolean {
   // Latitude is never wrapped: a quick reject keeps the common case cheap.
   if (a.minLat > view.maxLat || a.maxLat < view.minLat) return false;
+  // The inclusive turn range the renderer would enumerate for this content span vs
+  // this view (identical formula to wrapTurnsForLonSpan). Used only to detect the
+  // degenerate-collapse boundary; the actual intersection uses the O(1) form below.
+  const minTurn = Math.ceil((view.minLon - a.maxLon) / LONGITUDE_PERIOD);
+  const maxTurn = Math.floor((view.maxLon - a.minLon) / LONGITUDE_PERIOD);
+  if (
+    !Number.isSafeInteger(minTurn) ||
+    !Number.isSafeInteger(maxTurn) ||
+    maxTurn - minTurn >= MAX_WRAP_REPLICAS
+  ) {
+    // Draw collapses to turn [0]; keep iff the identity-turn replica is visible.
+    return worldRectsIntersect(a, view);
+  }
   // Smallest integer k with (a.maxLon + k·360) >= view.minLon: the first replica
   // whose right edge reaches the view's left edge.
   const k = Math.ceil((view.minLon - a.maxLon) / LONGITUDE_PERIOD);
