@@ -8,7 +8,7 @@
 // item shows a Japanese tooltip (FR-112). Item实处理 is registered by later
 // units; this bar only dispatches the command id.
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { CommandRegistry } from './commands';
 import { resolveCommandEnabled } from './permissions';
@@ -33,9 +33,39 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
   // Resolve once per mount: "Ctrl" on Windows/Linux, "⌘" on macOS — never "Mod".
   const platform = useMemo(() => props.platform ?? detectPlatform(), [props.platform]);
   const [openKey, setOpenKey] = useState<string | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // Close契機: Escape key and any outside interaction — same離脱経路 the other
+  // overlays (設定/競合/ヘルプ) and the context menu offer, so an open menu does
+  // not stay up and block背面操作 (UX一貫性, ContextMenu と同型). Only armed while
+  // a menu is open so the listeners do nothing in the common closed state.
+  useEffect(() => {
+    if (openKey === null) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setOpenKey(null);
+    };
+    const onDown = (e: PointerEvent): void => {
+      // A click inside the bar (re-open/switch/dispatch) is handled by the
+      // buttons themselves; only outside interaction closes here.
+      const root = rootRef.current;
+      if (root !== null && e.target instanceof Node && root.contains(e.target)) {
+        return;
+      }
+      setOpenKey(null);
+    };
+    window.addEventListener('keydown', onKey);
+    // Defer the outside-click listener so the opening click does not self-close.
+    const t = setTimeout(() => window.addEventListener('pointerdown', onDown), 0);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('pointerdown', onDown);
+      clearTimeout(t);
+    };
+  }, [openKey]);
 
   return (
     <div
+      ref={rootRef}
       className="menubar"
       role="menubar"
       aria-label="メニューバー"
