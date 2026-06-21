@@ -414,6 +414,69 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(s.timelineMax).toEqual(timePointYear(100));
     expect(s.currentTime).toEqual(timePointYear(80));
   });
+
+  // 回帰 (finding): a LIVE settings-dialog confirm changes the timeline range
+  // through updateProjectSetting, NOT hydrateSettings. The slider reads the derived
+  // timelineMin/Max mirror + currentTime, so a timeline-key change must re-derive
+  // the range and re-clamp currentTime in the SAME transition. Pre-fix,
+  // updateProjectSetting wrote only projectSettings, so narrowing the range via the
+  // dialog left the slider on the OLD 0..10000 range (and currentTime outside the
+  // new range) until a reload.
+  it('updateProjectSetting re-derives the timeline range and clamps currentTime when timelineMaxYear changes (finding)', () => {
+    const store = makeStore();
+    // Default range is 0..10000. Slide near the right end of the OLD range.
+    store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().timelineMax).toEqual(timePointYear(10000));
+
+    // Narrow the upper bound via the live dialog path (repro: 10000 -> 100).
+    store.getState().updateProjectSetting('timelineMaxYear', 100);
+
+    const s = store.getState();
+    // The settings value is written...
+    expect(s.projectSettings.timelineMaxYear).toBe(100);
+    // ...AND the derived slider range mirror reflects it immediately (no reload).
+    expect(s.timelineMax).toEqual(timePointYear(100));
+    expect(s.timelineMin).toEqual(timePointYear(0));
+    // currentTime (9000) was outside the new range and was clamped to the new max.
+    expect(s.currentTime).toEqual(timePointYear(100));
+    // A project-setting change still dirty-marks the document.
+    expect(s.projectDirty).toBe(true);
+  });
+
+  it('updateProjectSetting re-derives the range when timelineMinYear changes (finding)', () => {
+    const store = makeStore();
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+
+    // Raise the lower bound past the current time.
+    store.getState().updateProjectSetting('timelineMinYear', 200);
+
+    const s = store.getState();
+    expect(s.timelineMin).toEqual(timePointYear(200));
+    // currentTime (50) was below the new min and clamped up to it.
+    expect(s.currentTime).toEqual(timePointYear(200));
+  });
+
+  it('updateProjectSetting keeps an in-range currentTime unchanged on a timeline-key change', () => {
+    const store = makeStore();
+    store.getState().setCurrentTime(timePointYear(50), TIME_CHANGE_SOURCE.Slider);
+    store.getState().updateProjectSetting('timelineMaxYear', 100);
+    expect(store.getState().currentTime).toEqual(timePointYear(50));
+  });
+
+  it('updateProjectSetting on a NON-timeline key leaves the timeline range and currentTime untouched', () => {
+    const store = makeStore();
+    store.getState().setCurrentTime(timePointYear(9000), TIME_CHANGE_SOURCE.Slider);
+    const before = store.getState();
+
+    store.getState().updateProjectSetting('equatorLengthKm', 50000);
+
+    const s = store.getState();
+    expect(s.projectSettings.equatorLengthKm).toBe(50000);
+    // Time state is the project-INDEPENDENT axis for a non-timeline key.
+    expect(s.timelineMin).toEqual(before.timelineMin);
+    expect(s.timelineMax).toEqual(before.timelineMax);
+    expect(s.currentTime).toEqual(timePointYear(9000));
+  });
 });
 
 // --- 受け入れ基準 5: Canvas subscribes only (no React path) -----------------

@@ -337,6 +337,55 @@ function clampTimeToRange(
   return candidate;
 }
 
+/**
+ * The store patch that re-derives ALL project-dependent time state from a set of
+ * project settings: the slider's range mirror (timelineMin/Max), a currentTime
+ * re-clamped into that range, and the selection re-validated for the clamped time.
+ *
+ * This is the SINGLE place the timeline RANGE is derived from
+ * projectSettings.timelineMin/MaxYear, so there is no second truth source
+ * (技術方針 2.5). It is run from BOTH paths that can change the effective timeline
+ * range: a LOAD / NEW hydrate ({@link SessionStoreActions.hydrateSettings}) AND a
+ * live settings-dialog confirm ({@link SessionStoreActions.updateProjectSetting}
+ * with a timeline key) — finding: pre-fix the dialog path wrote only
+ * projectSettings, so the slider kept the OLD range and currentTime dangled
+ * outside the new range until a reload. Both callers fold this patch into the SAME
+ * set() as their own writes so settings and the derived range/time never drift.
+ */
+interface TimelineDerivation extends SelectionPatch {
+  readonly timelineMin: TimePoint;
+  readonly timelineMax: TimePoint;
+  readonly currentTime: TimePoint;
+}
+
+function deriveTimelineState(
+  effectiveProject: ProjectSettings,
+  currentTime: TimePoint,
+  selection: SelectionState,
+  existence: ExistenceResolver,
+  calendar: Calendar,
+): TimelineDerivation {
+  const timelineMin = timePointYear(effectiveProject.timelineMinYear);
+  const timelineMax = timePointYear(effectiveProject.timelineMaxYear);
+  const clampedTime = clampTimeToRange(
+    currentTime,
+    timelineMin,
+    timelineMax,
+    calendar,
+  );
+  const revalidated = revalidateForTime(
+    selection,
+    clampedTime,
+    existenceAtTime(existence),
+  );
+  return {
+    timelineMin,
+    timelineMax,
+    currentTime: clampedTime,
+    ...selectionPatch(revalidated),
+  };
+}
+
 // --- Store factory ----------------------------------------------------------
 
 export interface CreateSessionStoreOptions<S> {
@@ -573,10 +622,34 @@ export function createSessionStore<S>(
       if (scope !== SETTINGS_SCOPE.Project) {
         throw new Error(`not a project setting: ${String(key)}`);
       }
+      const nextProject: ProjectSettings = {
+        ...get().projectSettings,
+        [key]: value,
+      };
+      // finding: a live settings-dialog confirm changes the timeline range through
+      // THIS path (not hydrateSettings). The slider reads the derived timelineMin/Max
+      // mirror and currentTime, so a timeline-key change must re-derive the range,
+      // re-clamp currentTime into it, and re-validate selection — otherwise the
+      // slider keeps the OLD range (and currentTime dangles outside the new one)
+      // until a reload. Non-timeline keys leave the time state untouched. Both the
+      // settings write and the derived range/time land in ONE set() so they can
+      // never drift (二重の真実源 を作らない, 単一の set()).
+      const timelineChanged =
+        key === 'timelineMinYear' || key === 'timelineMaxYear';
+      const timelinePatch = timelineChanged
+        ? deriveTimelineState(
+            nextProject,
+            get().currentTime,
+            get().selection,
+            existence,
+            calendar,
+          )
+        : null;
       set({
-        projectSettings: { ...get().projectSettings, [key]: value },
+        projectSettings: nextProject,
         projectDirty: true,
         lastSettingsChange: { scope, key },
+        ...(timelinePatch ?? {}),
       });
     },
 
@@ -619,31 +692,22 @@ export function createSessionStore<S>(
       // settings and the derived range/time can never drift apart.
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
-      const timelineMin = timePointYear(effectiveProject.timelineMinYear);
-      const timelineMax = timePointYear(effectiveProject.timelineMaxYear);
-      const clampedTime = clampTimeToRange(
+      const timelinePatch = deriveTimelineState(
+        effectiveProject,
         get().currentTime,
-        timelineMin,
-        timelineMax,
-        calendar,
-      );
-      const revalidated = revalidateForTime(
         get().selection,
-        clampedTime,
-        existenceAtTime(existence),
+        existence,
+        calendar,
       );
       set({
         projectDirty: false,
-        timelineMin,
-        timelineMax,
-        currentTime: clampedTime,
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }
           : {}),
         ...(settings.appSettings !== undefined
           ? { appSettings: settings.appSettings }
           : {}),
-        ...selectionPatch(revalidated),
+        ...timelinePatch,
       });
     },
 
