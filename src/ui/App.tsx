@@ -111,6 +111,7 @@ import {
   buildEditSnapshot,
   ringIdForLeafVertex,
 } from './map/edit-session-snapshot';
+import { createNeighboursQuery } from './map/slide-snap-neighbours';
 import { RELEASE_OUTCOME, type DragSession } from '../domain/editing/index';
 import {
   worldToScreen as projectWorldToScreen,
@@ -594,11 +595,20 @@ export function App(): JSX.Element {
     //
     // The binding reads the LIVE root at process-start (getRoot, never a stale capture —
     // 教訓5.6) and the after-state snapshot is built against the SAME committed root +
-    // current time the renderer / hit-test resolve against (単一真実源, 教訓5.29). The
-    // slide/snap LIGHT PATH deps are intentionally omitted here: with them absent the
-    // adapter does a preview-only move (受け入れ基準6/12 share-pair stays off until U10's
-    // live near-candidate query is wired), never silently claiming a slide/snap it cannot
-    // compute. The move + confirm path is fully reachable today.
+    // current time the renderer / hit-test resolve against (単一真実源, 教訓5.29).
+    //
+    // HB3-20 ROOT FIX — the slide / snap LIGHT PATH is now WIRED (診断 HB3-20 / 教訓 5.7
+    // 「ロジックがあっても UI から呼ばれず機能しない」). The adapter's constrainSlide (排他)
+    // + decideSnap (滑り) + the release-time decideSharePairAtRelease (共有化, built into
+    // buildEditSnapshot) were live in the domain and unit-tested, but the three deps they
+    // need were INTENTIONALLY omitted here — so a dragged vertex tunnelled through a
+    // neighbour terminal and never snapped to / shared an adjacent boundary vertex. We now
+    // inject them: a U10 RBush near-candidate query (`createNeighboursQuery`, narrowed per
+    // frame around the preview — never an all-features scan, 教訓 5.3/5.4), the SAME
+    // world→screen transform the draw uses (so it snaps where it looks like it snaps,
+    // 単一真実源 5.29), and the live U16 snap distance (FR-110). With these present the
+    // adapter runs the slide + snap light path every move and confirmRelease's share-pair
+    // decision can collapse a surviving snap onto its target (受け入れ基準6/12).
     const editBinding = createLiveEditBinding({
       getRoot: () => store.getState().domain,
     });
@@ -606,6 +616,25 @@ export function App(): JSX.Element {
       getRoot: () => store.getState().domain,
       getTime: () => store.getState().currentTime,
     };
+    // The per-frame near-candidate query for the slide/snap light path (HB3-20). It
+    // resolves the LIVE committed domain at the current time, narrows to terminals near
+    // the preview via U10's RBush, and returns their boundary edges / polygons / snap
+    // vertices + the dragged hole/enclave vertex's parent containment (受け入れ基準6 第4項).
+    const neighboursQuery = createNeighboursQuery({
+      getRoot: () => store.getState().domain,
+      getTime: () => store.getState().currentTime,
+      // The screen snap distance (px) expressed in WORLD units at the current zoom —
+      // ONLY to widen the candidate query rectangle (the snap DECISION stays screen-space
+      // in decideSnap, FR-31). zoom is CSS px per degree, so world margin = px / zoom; a
+      // non-positive / unmeasured zoom yields 0 (no extra margin, exact-coincidence only).
+      snapWorldMargin: () => {
+        const { camera } = ports.readCamera();
+        const px = store.getState().appSettings.snapDistancePx;
+        if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) return 0;
+        if (!Number.isFinite(px) || px <= 0) return 0;
+        return px / camera.zoom;
+      },
+    });
     const editSession = createEditSessionPort<DomainRoot>({
       // The dragged handle world position uses the SAME renderer inverse the hit-test
       // and selection use, so the press / preview / release resolve against one camera.
@@ -623,8 +652,26 @@ export function App(): JSX.Element {
       currentState: () => store.getState().domain,
       ports: editBinding.ports,
       // Assemble the complete after-state snapshot from the live session (moved vertex
-      // bodies against the committed feature record / vertex store, 単一真実源).
+      // bodies against the committed feature record / vertex store, 単一真実源). The snap
+      // that survived to release is promoted to a share pair inside buildEditSnapshot via
+      // decideSharePairAtRelease, so the dragged vertex collapses onto its target (HB3-20
+      // 共有化 / 受け入れ基準12).
       buildSnapshot: (session) => buildEditSnapshot(editSnapshotCtx, session),
+      // --- HB3-20: slide / snap LIGHT PATH deps (受け入れ基準6 / 12) -----------------
+      // The SAME world→screen transform the draw / hit-test use (so the snap fires where
+      // it visually looks like it should, 単一真実源 5.29). decideSnap measures candidate
+      // proximity in SCREEN px, so the projection must be the live camera's.
+      worldToScreen: (world) => {
+        const { camera, viewport } = ports.readCamera();
+        return projectWorldToScreen(world, camera, viewport);
+      },
+      // The live U16 snap distance in screen px (FR-110). Read fresh so a settings change
+      // takes effect on the next drag (教訓 5.35); non-positive ⇒ decideSnap never snaps.
+      snapDistancePx: () => store.getState().appSettings.snapDistancePx,
+      // The U10 near-candidate query for one drag frame (constrainSlide + decideSnap
+      // inputs). Only called for a single-vertex drag (the adapter gates on a known
+      // draggedVertexId); feature-move has no single point to slide / snap.
+      neighboursAt: (preview, session) => neighboursQuery(preview, session),
       // On a processed release, record the committed edit as ONE U12 undo unit and
       // re-resolve selection to the edited feature (教訓5.11). A NoOp (zero-move / no
       // change) records nothing; a rejection / conflict surfaces no commit here (the
