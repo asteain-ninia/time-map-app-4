@@ -87,6 +87,10 @@ function createWindow(): void {
     // FR-114: 800×600 minimum, from the single shared constant (domain).
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
+    // HB3-24 [暫定]: hide the native OS menu bar by default (the app's own メニューバー
+    // is the primary surface); Alt reveals it momentarily so native accelerators are
+    // not lost entirely (ユーザー: ネイティブツールバーは消して良さそう, 中間策).
+    autoHideMenuBar: true,
     show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.cjs'),
