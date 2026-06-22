@@ -67,9 +67,11 @@ export const TOOL_LABELS = {
   'edit.merge': '結合',
 } as const;
 
-/** Sidebar section titles (イベント一覧・地物一覧・プロパティ, FR-111). */
+/** Sidebar section titles (FR-111). HB3-28: the「イベント一覧」tab is renamed to
+ * 「歴史アンカー一覧（年表）」 so it is not confused with the地物一覧 — it lists each
+ * feature's history anchors (its 時間軸イベント), not the features themselves. */
 export const SIDEBAR_SECTION_TITLES = {
-  events: 'イベント一覧',
+  events: '歴史アンカー一覧（年表）',
   features: '地物一覧',
   properties: 'プロパティ',
 } as const;
@@ -86,7 +88,13 @@ export const STATUS_STRINGS = {
  */
 export const SIDEBAR_CONTENT_STRINGS = {
   featuresEmpty: '地物がありません。地図に地物を追加すると一覧に表示されます。',
-  eventsEmpty: 'イベントがありません。地物の履歴がここに表示されます。',
+  eventsEmpty: '歴史アンカーがありません。地物の履歴がここに表示されます。',
+  // HB3-28: captions explaining what each list shows + how the two differ (the
+  // user asked「イベント一覧と地物一覧の違いは？」). 地物一覧 = features effective at the
+  // current year; 歴史アンカー一覧 = every feature's history anchors across time.
+  featuresCaption: '現在の年に存在する地物の一覧です。行を選ぶとその地物を選択します。',
+  eventsCaption:
+    '各地物の歴史アンカー（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択します。',
 } as const;
 
 /**

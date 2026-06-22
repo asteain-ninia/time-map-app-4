@@ -159,6 +159,9 @@ function FeaturesSection<S>(props: {
 
   return (
     <div className="sidebar-list" data-testid="feature-list">
+      <p className="sidebar-list__caption" data-testid="feature-list-caption">
+        {SIDEBAR_CONTENT_STRINGS.featuresCaption}
+      </p>
       {features.length === 0 ? (
         <p className="sidebar-list__empty" data-testid="feature-list-empty">
           {SIDEBAR_CONTENT_STRINGS.featuresEmpty}
@@ -221,6 +224,9 @@ function EventsSection<S>(props: {
 
   return (
     <div className="sidebar-list" data-testid="event-list">
+      <p className="sidebar-list__caption" data-testid="event-list-caption">
+        {SIDEBAR_CONTENT_STRINGS.eventsCaption}
+      </p>
       {rows.length === 0 ? (
         <p className="sidebar-list__empty" data-testid="event-list-empty">
           {SIDEBAR_CONTENT_STRINGS.eventsEmpty}
