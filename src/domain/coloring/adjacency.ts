@@ -40,9 +40,16 @@ export interface AdjacencyGraph {
   readonly signature: string;
 }
 
-function compareIds(a: FeatureId, b: FeatureId): number {
-  const sa = idToString(a);
-  const sb = idToString(b);
+/**
+ * Compare two ids by their already-resolved string forms. The sort comparators
+ * inside {@link buildAdjacencyGraph} precompute each id's string ONCE (into
+ * `idStr`) and reuse it for every comparison and for the signature — instead of
+ * re-deriving the string via {@link idToString} twice per comparison (an
+ * O(V·d·log d) wave of redundant calls) and again per edge/node in
+ * {@link computeAdjacencySignature}. Determinism is unchanged: this is the same
+ * lexicographic string ordering used before, just over cached strings.
+ */
+function compareStr(sa: string, sb: string): number {
   return sa < sb ? -1 : sa > sb ? 1 : 0;
 }
 
@@ -67,13 +74,21 @@ export function buildAdjacencyGraph(
     adj.get(edge.a)?.add(edge.b);
     adj.get(edge.b)?.add(edge.a);
   }
-  const sortedNodes = [...nodeSet].sort(compareIds);
+  // Resolve each id's string form ONCE and reuse it for every sort comparison
+  // and for the signature, instead of calling idToString twice per comparison
+  // and again per edge/node in computeAdjacencySignature.
+  const idStr = new Map<FeatureId, string>();
+  for (const id of nodeSet) {
+    idStr.set(id, idToString(id));
+  }
+  const strOf = (id: FeatureId): string => idStr.get(id) ?? idToString(id);
+  const sortedNodes = [...nodeSet].sort((a, b) => compareStr(strOf(a), strOf(b)));
   const neighbors = new Map<FeatureId, readonly FeatureId[]>();
   for (const id of sortedNodes) {
     const set = adj.get(id) ?? new Set<FeatureId>();
-    neighbors.set(id, [...set].sort(compareIds));
+    neighbors.set(id, [...set].sort((a, b) => compareStr(strOf(a), strOf(b))));
   }
-  const signature = computeAdjacencySignature(sortedNodes, neighbors);
+  const signature = computeAdjacencySignature(sortedNodes, neighbors, strOf);
   return { nodes: sortedNodes, neighbors, signature };
 }
 
@@ -92,19 +107,20 @@ export function neighborsOf(graph: AdjacencyGraph, id: FeatureId): readonly Feat
 function computeAdjacencySignature(
   nodes: readonly FeatureId[],
   neighbors: ReadonlyMap<FeatureId, readonly FeatureId[]>,
+  strOf: (id: FeatureId) => string = idToString,
 ): string {
   const edges: string[] = [];
   for (const id of nodes) {
-    const sid = idToString(id);
+    const sid = strOf(id);
     for (const n of neighbors.get(id) ?? []) {
-      const sn = idToString(n);
+      const sn = strOf(n);
       // Each undirected edge once, in (min,max) order.
       if (sid < sn) edges.push(`${sid}|${sn}`);
     }
   }
   edges.sort();
   // Include isolated nodes so adding a node with no edges still differs.
-  const nodeSig = nodes.map(idToString).join(',');
+  const nodeSig = nodes.map(strOf).join(',');
   return `N:${nodeSig};E:${edges.join(';')}`;
 }
 
