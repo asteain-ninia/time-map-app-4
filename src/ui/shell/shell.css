@@ -595,6 +595,9 @@ body {
   position: absolute;
   left: 12px;
   bottom: 12px;
+  /* Keep the panel compact in the corner so it covers as little of the map as
+   * possible (HB-15: its box used to stretch ~526px across the map's lower half). */
+  max-width: 240px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -604,6 +607,16 @@ body {
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   font-size: 12px;
+  /* HB-15 REGRESSION FIX (編集モードで地物本体をクリックしても選択できない): this panel is a
+   * direct child of `.map-area__overlay`, whose `> *` rule re-enables pointer events on the
+   * WHOLE child box. The HB3-1 readout + hint + wide preset buttons grew the box to ~526×174,
+   * so it sat over the map's lower-centre and SWALLOWED every body click there — the pointer
+   * never reached the map-input-layer / dispatcher, so the hit-test never ran. The container
+   * (and its text) are now click-through; only the actual controls (slider / buttons) below
+   * re-enable input, exactly like the knife/merge/reparent tool overlays (教訓 5.14 透明な
+   * 背面層は背面の操作を奪わない). pointer-events is inherited, so the readout/hint paragraph
+   * inherit `none` and the map stays selectable behind them. */
+  pointer-events: none;
 }
 
 .longitude-shift__readout {
@@ -614,7 +627,15 @@ body {
 .longitude-shift__buttons,
 .longitude-shift__presets {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
+}
+
+/* Only the interactive controls take pointer input back from the click-through
+ * container above (HB-15). Everything else in the panel lets map clicks fall through. */
+.longitude-shift input[type='range'],
+.longitude-shift button {
+  pointer-events: auto;
 }
 
 /* Tooltip bubble: shown on hover/focus (FR-112). */

@@ -104,4 +104,53 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
       await app.close();
     }
   });
+
+  // HB-15 OVERLAY REGRESSION: the bottom-left 経度シフト panel (a child of
+  // `.map-area__overlay`, whose `> *` rule re-enables pointer events) grew to ~526×174
+  // with the HB3-1 readout + hint + wide preset buttons and sat over the map's lower
+  // centre. Every body click there hit the panel's TEXT, never the map-input-layer /
+  // dispatcher — so 編集モードで地物本体をクリックしても選択できなかった (the hit-test never
+  // ran). The panel is now click-through except on its controls. This locks that a click
+  // ON the readout TEXT falls through to the map underneath.
+  test('経度シフトパネルのテキスト上のクリックは地図へ貫通する (HB-15 オーバーレイ回帰)', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // Commit one face at the CENTRE (the readout sits bottom-left, away from it).
+      await enterAddArea(page);
+      const addLayer = page.getByTestId('add-input-layer');
+      await expect(addLayer).toBeVisible();
+      const a = (await addLayer.boundingBox())!;
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      for (const [dx, dy] of [
+        [-120, -120],
+        [120, -120],
+        [120, 120],
+        [-120, 120],
+      ] as const) {
+        await page.mouse.click(cx + dx, cy + dy);
+      }
+      await page.getByTestId('add-complete').click();
+      await page.getByTestId('add-save').click();
+      const activeFeature = page.getByTestId('app-active-feature');
+      await expect(activeFeature).toHaveText(/\S/);
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+
+      // 編集モード, then re-select the centre face so the selection is non-empty.
+      await enterEditMode(page);
+      await page.mouse.click(cx, cy);
+      await expect(activeFeature).toHaveText(faceId);
+
+      // Click ON the 経度シフト readout TEXT. The empty map is behind it (the only face is
+      // at the centre), so a CLICK-THROUGH lands on empty space and CLEARS the selection.
+      // If the panel swallowed the click (the regression), the selection would NOT change.
+      const readout = page.getByTestId('center-lon-readout');
+      await expect(readout).toBeVisible();
+      const rb = (await readout.boundingBox())!;
+      await page.mouse.click(rb.x + rb.width / 2, rb.y + rb.height / 2);
+      await expect(activeFeature).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
 });
