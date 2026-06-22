@@ -157,6 +157,15 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
 
+  // HB3-6 / HB3-18: when the knife picks a (leaf) target, promote it into the store
+  // selection through the SAME setActiveFeature path every selection uses (no second
+  // selection source, 教訓 5.29). useKnifeTargetShape keys on activeFeature, so this
+  // both surfaces the target-emphasis shape AND draws it in the selection color.
+  const promoteTargetSelection = useCallback(
+    (fid: FeatureId) => store.getState().setActiveFeature(fid),
+    [store],
+  );
+
   const knife = useKnifeTool<S>({
     resolveFeature,
     resolveStore,
@@ -164,6 +173,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     ids,
     startProcess,
     onCommitted,
+    onTargetSelected: promoteTargetSelection,
     ...(onConflicts ? { onConflicts } : {}),
   });
 

@@ -102,6 +102,13 @@ export interface UseKnifeToolOptions<S> {
   readonly onConflicts?:
     | ((result: ProcessResult<S>, proposal: EditProposal<SplitSnapshot>) => void)
     | undefined;
+  /**
+   * Promote the chosen target into the host selection (HB3-6 / HB3-18): so the
+   * knife target is highlighted (its resolved shape drawn via the live selection)
+   * AND drawn in the selection color while the knife operates on it. Called ONLY
+   * after the LEAF gate passes, so clicking an aggregate never selects it.
+   */
+  readonly onTargetSelected?: ((featureId: FeatureId) => void) | undefined;
 }
 
 // --- Flow phase the chrome reads (mirrors the domain phase + U13 outcomes) ----
@@ -161,8 +168,16 @@ export type UseKnifeTool = UseKnifeToolState & UseKnifeToolActions;
 // --- The hook ---------------------------------------------------------------
 
 export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
-  const { resolveFeature, resolveStore, anchorTime, ids, startProcess, onCommitted, onConflicts } =
-    options;
+  const {
+    resolveFeature,
+    resolveStore,
+    anchorTime,
+    ids,
+    startProcess,
+    onCommitted,
+    onConflicts,
+    onTargetSelected,
+  } = options;
 
   const [state, setState] = useState<KnifeState>(idle);
   const [message, setMessage] = useState<string | null>(null);
@@ -197,8 +212,11 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
       }
       setMessage(null);
       setState((s) => selectTargetTx(s, featureId));
+      // HB3-6 / HB3-18: promote the (valid leaf) target into the host selection so
+      // it is highlighted + drawn in the selection color while the knife runs.
+      onTargetSelected?.(featureId);
     },
-    [resolveFeature],
+    [resolveFeature, onTargetSelected],
   );
 
   const placeCutPointAction = useCallback((point: WorldCoordinate) => {

@@ -183,6 +183,18 @@ describe('KnifeToolController — target select → cut → confirm (受け入�
     h.unmount();
   });
 
+  it('HB3-6/18: selecting a leaf target promotes it into the store selection', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    // Activating the knife tool runs the reset契約 → no selection yet.
+    expect(h.store.getState().activeFeature).toBeNull();
+    // Clicking inside the target leaf selects it AND promotes it into the store
+    // selection (so the target is highlighted + drawn in the selection color).
+    clickInput(5, 5);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    h.unmount();
+  });
+
   it('clicking a leaf selects it, then cut points + confirm splits into two', () => {
     const h = mountKnife();
     activateKnife(h.store);
