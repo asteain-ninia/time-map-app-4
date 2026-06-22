@@ -98,6 +98,16 @@ export interface CreateAddHostPortsOptions {
    */
   readonly editHandles?: () => readonly DrawPrimitive[];
   /**
+   * Whether a LIVE edit-drag preview is in flight THIS frame (HB3-4). The edit preview
+   * (a vertex / feature following the cursor) is composited INSIDE the {@link editHandles}
+   * layer, NOT the tool {@link FrameInputs.overlay}, so it does not register in the
+   * overlay-derived preview count. The composition root reports it here so the frame
+   * summary's `hasLivePreview` (read by the __E2E__ observation hook) is true during an
+   * edit drag too — letting a behavioural E2E assert the drag preview is genuinely live
+   * (received the session, scheduled a frame). Defaults to false when absent.
+   */
+  readonly editPreviewActive?: () => boolean;
+  /**
    * Notified after every composite with a summary of the frame actually drawn THIS
    * paint (HB3-9 観測フック). The composition root mirrors it into the `window.__E2E__`
    * render-observation hook so a BEHAVIOURAL E2E (real pointer events) can assert the
@@ -132,6 +142,13 @@ export interface FrameSummary {
   readonly preview: number;
   /** True iff any live preview (tool overlay) primitive is present this frame. */
   readonly hasLivePreview: boolean;
+  /**
+   * The WORLD positions of every VERTEX edit-handle drawn this frame (HB3-4 観測フック).
+   * During a live vertex / feature drag these are the PREVIEW positions, so a behavioural
+   * E2E can assert the dragged handle follows the cursor mid-drag AND stays put after
+   * release (no jump back to the committed position). Empty when no handles are drawn.
+   */
+  readonly vertexHandlePositions: readonly { readonly lon: number; readonly lat: number }[];
 }
 
 export interface AddHostPorts {
@@ -400,10 +417,16 @@ export function createAddHostPorts(
       let shape = 0;
       let point = 0;
       let line = 0;
+      const vertexHandlePositions: { lon: number; lat: number }[] = [];
       for (const p of primitives) {
         switch (p.kind) {
           case 'handle':
             handle += 1;
+            // HB3-4 観測フック: record vertex-handle world positions (preview positions
+            // during a live drag) so an E2E can assert follow-the-cursor + no-jump.
+            if (p.handleKind === 'vertex') {
+              vertexHandlePositions.push({ lon: p.at.lon, lat: p.at.lat });
+            }
             break;
           case 'label':
             label += 1;
@@ -421,6 +444,9 @@ export function createAddHostPorts(
             break;
         }
       }
+      // HB3-4: a live preview is present iff the tool overlay has primitives OR an edit
+      // drag is in flight (the edit preview rides the editHandles layer, not the overlay).
+      const editPreview = options.editPreviewActive?.() ?? false;
       options.onFrameComposed({
         handle,
         label,
@@ -428,7 +454,8 @@ export function createAddHostPorts(
         point,
         line,
         preview: overlay.length,
-        hasLivePreview: overlay.length > 0,
+        hasLivePreview: overlay.length > 0 || editPreview,
+        vertexHandlePositions,
       });
     }
     // HB-14 観測フック: publish how many committed features survived the period-aware

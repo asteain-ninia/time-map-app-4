@@ -111,7 +111,7 @@ import {
   buildEditSnapshot,
   ringIdForLeafVertex,
 } from './map/edit-session-snapshot';
-import { RELEASE_OUTCOME } from '../domain/editing/index';
+import { RELEASE_OUTCOME, type DragSession } from '../domain/editing/index';
 import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
@@ -258,6 +258,20 @@ export function App(): JSX.Element {
     );
     const hookTarget: HTMLElement = inputLayer ?? el;
 
+    // HB3-4 ROOT FIX — the LIVE edit-drag preview. The U24 drag session held the moved
+    // geometry as a transient (教訓 5.22: a drag never mutates committed state), but the
+    // adapter had no `onPreview` and the render layer had no consumer, so the committed
+    // feature + its handles kept drawing at the PRESS position for the whole drag and
+    // then JUMPED to the new place on release (診断 HB3-4 / 教訓 5.7). We hold the live
+    // session here as transient render state: the adapter's `onPreview` sets it (begin /
+    // each move) and clears it (release / cancel), and the `editHandles` getter applies
+    // its preview to the handle + outline positions so the vertex / feature follows the
+    // cursor every frame. It carries NO truth — the commit still flows through onReleased
+    // → recordCommit (技術方針 2.5). `scheduleEditPreviewRedraw` is pointed at the redraw
+    // scheduler once it exists (a no-op until then; the early base paint is synchronous).
+    let liveEditSession: DragSession | null = null;
+    let scheduleEditPreviewRedraw = (): void => {};
+
     /** Reflect the live camera into the observation hooks (pan offset + zoom). */
     const publishCameraHooks = (camera: RenderCamera): void => {
       // Pan offset is the camera center displacement from the FR-11 origin (0,0);
@@ -324,6 +338,7 @@ export function App(): JSX.Element {
       line: number;
       preview: number;
       hasLivePreview: boolean;
+      vertexHandlePositions: readonly { readonly lon: number; readonly lat: number }[];
     };
     let lastFrame: E2EFrameSummary = {
       handle: 0,
@@ -333,6 +348,7 @@ export function App(): JSX.Element {
       line: 0,
       preview: 0,
       hasLivePreview: false,
+      vertexHandlePositions: [],
     };
     const e2eWindow = el.ownerDocument.defaultView as (Window & {
       __E2E__?: unknown;
@@ -351,6 +367,27 @@ export function App(): JSX.Element {
         getPrimitiveCounts: (): E2EFrameSummary => ({ ...lastFrame }),
         /** Whether a live tool preview (FR-78 仮表示 overlay) is present this frame. */
         hasLivePreview: (): boolean => lastFrame.hasLivePreview,
+        /**
+         * HB3-4: the WORLD positions of the active feature's VERTEX edit-handles in the
+         * LAST drawn frame (preview positions during a live drag). A behavioural E2E
+         * asserts the dragged handle follows the cursor mid-drag and does NOT jump back
+         * to the committed position after release.
+         */
+        getVertexHandlePositions: (): readonly {
+          readonly lon: number;
+          readonly lat: number;
+        }[] => lastFrame.vertexHandlePositions.map((p) => ({ lon: p.lon, lat: p.lat })),
+        /**
+         * HB3-4: convert a CLIENT screen point to a world coordinate via the LIVE
+         * renderer inverse (the SAME transform the draw / hit-test use). Lets the drag
+         * E2E identify WHICH committed handle corresponds to a known screen corner,
+         * independent of the camera. Returns null before the renderer mounts.
+         */
+        screenToWorld: (
+          clientX: number,
+          clientY: number,
+        ): { readonly lon: number; readonly lat: number } | null =>
+          rendererRef.current?.screenToWorld(clientX, clientY) ?? null,
       };
     }
 
@@ -423,11 +460,29 @@ export function App(): JSX.Element {
       editHandles: () => {
         const s = store.getState();
         if (s.mode !== EDIT_MODE.Edit) return [];
+        // HB3-4: pass the LIVE drag session so the active feature's handles + a preview
+        // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
+        // and at the committed position otherwise. The builder ignores a session for a
+        // different feature (no stale bleed, 教訓 5.6).
         return buildActiveFeatureHandlePrimitives(
           s.domain,
           s.currentTime,
           s.activeFeature,
           s.displayControl,
+          liveEditSession,
+        );
+      },
+      // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
+      // for the active feature in 編集 mode. ORed into the frame's `hasLivePreview` so a
+      // behavioural E2E (and the __E2E__ hook) can assert the drag preview is live — the
+      // edit preview is composited in the editHandles layer (NOT the tool overlay), so it
+      // would otherwise not register in the overlay-derived preview count.
+      editPreviewActive: () => {
+        const s = store.getState();
+        return (
+          s.mode === EDIT_MODE.Edit &&
+          liveEditSession !== null &&
+          liveEditSession.target.featureId === s.activeFeature
         );
       },
       // HB3-9 観測フック: mirror the last drawn frame's primitive summary into __E2E__.
@@ -583,6 +638,16 @@ export function App(): JSX.Element {
           outcome.proposal.snapshot.deletedFeatureId;
         const preference = featureId !== undefined ? { featureId } : undefined;
         recordCommitRef.current?.(outcome.result, preference);
+      },
+      // HB3-4: receive the live session on every transition (begin / each move / release
+      // / cancel). Hold it as transient render state and schedule a frame so the dragged
+      // vertex / feature is redrawn at its preview position and FOLLOWS the cursor. On
+      // release / cancel the session is null, so the next frame draws the committed
+      // geometry (release path already ran recordCommit). Carries NO truth — the redraw
+      // re-reads the store + this transient (技術方針 2.5 / 受け入れ基準8).
+      onPreview: (session) => {
+        liveEditSession = session;
+        scheduleEditPreviewRedraw();
       },
     });
     // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
@@ -782,6 +847,12 @@ export function App(): JSX.Element {
     // pointerdown drains any pending throttled frame before the hit-test (drawn ==
     // state, 『見える＝掴める』).
     flushRedraw = (): void => redrawScheduler.flush();
+    // HB3-4: route the live edit-drag preview redraw through the SAME FPS-capped
+    // scheduler as every other high-frequency repaint, so a drag's per-move preview is
+    // coalesced/capped like pan/zoom (受け入れ基準5) — N moves within one frame collapse
+    // to ONE composite. The session is already stashed synchronously in onPreview, so a
+    // deferred frame reads the freshest preview (no lost update, 教訓 5.6).
+    scheduleEditPreviewRedraw = (): void => redrawScheduler.request();
     // FR-110 ROOT FIX (bughunt round-2): route the host's OWN high-frequency repaints
     // through the SAME scheduler. Pan/wheel (writeCamera), tool-draft moves (drawAdd /
     // drawKnife) and resize (resyncViewport) previously called the synchronous full-frame

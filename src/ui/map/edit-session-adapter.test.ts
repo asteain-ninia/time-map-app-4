@@ -271,6 +271,81 @@ describe('edit-mode feature-body drag drives a whole-feature move (受け入れ�
   });
 });
 
+// HB3-4 — the live-drag PREVIEW notification. The adapter must hand the host the live
+// session on begin + every move (so the geometry follows the cursor) and clear it (null)
+// on release / cancel — otherwise the committed feature draws at the press position for
+// the whole drag and JUMPS on release (診断 HB3-4 / 教訓 5.7).
+describe('edit-session onPreview tracks the live drag and clears on teardown (HB3-4)', () => {
+  function previewSetup(
+    hit: HitResult,
+    extra: Partial<EditSessionAdapterDeps<FakeState>> = {},
+  ) {
+    const previews: (null | { featureId: string; lon: number; lat: number })[] = [];
+    const base = setup(hit, {
+      onPreview: (session) =>
+        previews.push(
+          session === null
+            ? null
+            : {
+                featureId: session.target.featureId as unknown as string,
+                lon: session.preview.lon,
+                lat: session.preview.lat,
+              },
+        ),
+      ...extra,
+    });
+    return { ...base, previews };
+  }
+
+  it('a vertex drag previews each move at the cursor, then clears to null on release', () => {
+    const { dispatcher, previews } = previewSetup(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10)); // begin → preview at the press point
+    dispatcher.pointerMove(ptr(1, 25, 30)); // move → preview follows
+    dispatcher.pointerMove(ptr(1, 40, 45)); // move → preview follows
+    dispatcher.pointerUp(ptr(1, 40, 45)); // release → preview cleared (null)
+
+    // begin + 2 moves + 1 release notification = 4.
+    expect(previews).toHaveLength(4);
+    expect(previews[0]).toEqual({ featureId: 'L', lon: 10, lat: 10 });
+    expect(previews[1]).toEqual({ featureId: 'L', lon: 25, lat: 30 });
+    expect(previews[2]).toEqual({ featureId: 'L', lon: 40, lat: 45 });
+    expect(previews[3]).toBeNull(); // release clears the transient (no jump).
+  });
+
+  it('a zero-move click previews the press then clears (null) — no lingering preview', () => {
+    const { dispatcher, previews } = previewSetup(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerUp(ptr(1, 10, 10)); // click (wasDrag=false)
+    expect(previews).toHaveLength(2);
+    expect(previews[0]).toEqual({ featureId: 'L', lon: 10, lat: 10 });
+    expect(previews[1]).toBeNull();
+  });
+
+  it('a mode change mid-drag clears the preview (null) via cancel (教訓5.2)', () => {
+    const { dispatcher, previews } = previewSetup(
+      vertexHit(asFeatureId('L'), asVertexId('v0')),
+    );
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    dispatcher.onModeChange(); // abort → cancel → preview cleared
+    expect(previews[previews.length - 1]).toBeNull();
+  });
+
+  it('a selection-only body press (move not allowed) never previews', () => {
+    const { dispatcher, previews } = previewSetup(featureBodyHit(asFeatureId('L')), {
+      featureMoveAllowed: () => false,
+    });
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    dispatcher.pointerUp(ptr(1, 40, 40));
+    expect(previews).toHaveLength(0); // begin returned false → no session, no preview.
+  });
+});
+
 // 受け入れ基準6 / 12 — the slide / snap LIGHT PATH is driven from update(), not only
 // from the pure unit tests: a live drag constrains the preview against near edges
 // (constrainSlide) and carries a screen-proximity snap candidate (decideSnap) into

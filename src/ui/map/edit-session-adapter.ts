@@ -121,6 +121,20 @@ export interface EditSessionAdapterDeps<S> {
    * click that the wasDrag guard discarded (no confirm runs on a click).
    */
   readonly onReleased: (outcome: ReleaseOutcome<S>) => void;
+  /**
+   * Notified with the LIVE drag session on EVERY transition (HB3-4): the new session
+   * on `begin` / each `update`, and `null` on `release` / `cancel` (the transient is
+   * gone). The host holds it as transient render state and schedules a frame so the
+   * dragged vertex / feature is drawn at its preview position and FOLLOWS the cursor
+   * during the gesture — without this the committed geometry kept drawing at the press
+   * position for the whole drag and then JUMPED to the new place on release (診断
+   * HB3-4 / 教訓 5.7「ロジックがあっても UI から呼ばれず機能しない」). It carries NO truth
+   * (the commit still happens via {@link onReleased}); it is a pure transient mirror so
+   * the render layer can show the in-flight move (受け入れ基準8 共有状態は触らない). A
+   * press that never started a session (selection-only) is never previewed; a click
+   * that the wasDrag guard discards ends with a `null` preview like any release.
+   */
+  readonly onPreview?: (session: DragSession | null) => void;
 
   // --- slide / snap LIGHT PATH deps (受け入れ基準6 / 12) ---------------------
   //
@@ -156,6 +170,13 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
   // The single in-flight session (null = idle). 受け入れ基準9 全パス破棄: it is set
   // on begin and cleared on release / cancel — never left dangling.
   let session: DragSession | null = null;
+
+  // HB3-4: notify the host of the live session on every transition so it can draw the
+  // dragged geometry at its preview position (follows the cursor) and clear it on
+  // teardown (release / cancel). A pure transient mirror — never the commit (教訓 5.7).
+  function notifyPreview(): void {
+    deps.onPreview?.(session);
+  }
 
   function targetFromHit(hit: HitResult): DragTarget | null {
     if (hit.kind === HIT_KIND.Vertex) {
@@ -232,12 +253,14 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
         return false;
       }
       session = beginDrag(target, deps.screenToWorld(point));
+      notifyPreview(); // HB3-4: open the transient preview at the press position.
       return true;
     },
 
     update(point: ScreenPoint): void {
       if (session === null) return; // no live session (a selection-only press).
       session = applyMove(session, deps.screenToWorld(point));
+      notifyPreview(); // HB3-4: the geometry follows the cursor this frame.
     },
 
     release(point: ScreenPoint, wasDrag: boolean): void {
@@ -249,6 +272,7 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       // ghost undo (受け入れ基準9 / 教訓5.24). Only a real drag reaches confirmRelease.
       if (!wasDrag) {
         session = discardDrag(); // 全経路破棄 (教訓5.2) — click leaves no transient.
+        notifyPreview(); // HB3-4: clear any preview the press opened (null).
         return;
       }
       // Land the final sample on the slide/snap light path, then run THE completion
@@ -263,12 +287,17 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
         current: deps.currentState(),
         ports: deps.ports,
       });
-      deps.onReleased(outcome);
+      // HB3-4: clear the live preview BEFORE applying the committed outcome, so the
+      // host stops drawing the transient and the committed geometry (now updated by
+      // onReleased → recordCommit) is what draws next — no double-draw, no jump.
       session = discardDrag(); // 全経路破棄 (教訓5.2).
+      notifyPreview(); // preview is gone (null).
+      deps.onReleased(outcome);
     },
 
     cancel(): void {
       session = discardDrag(); // drop the transient, run no confirm (教訓5.2).
+      notifyPreview(); // HB3-4: clear the preview (null) on abandon / mode switch.
     },
   };
 }
