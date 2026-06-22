@@ -376,12 +376,16 @@ body {
   margin: 4px 0;
 }
 
+/* HB3-25: keep the年操作バー(step + playback) on ONE row (nowrap); scroll
+ * horizontally if a very narrow window cannot fit it rather than wrapping to
+ * multiple lines. Captions are inline + shrunk (see .timeline-step__unit below). */
 .timeline__controls {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 12px;
   margin-top: 6px;
+  overflow-x: auto;
 }
 
 /* HB-11: 年目盛トラック。各目盛は刻み線+ラベルで構成し、ラベルは目盛位置を中心に
@@ -479,11 +483,14 @@ body {
   border-color: var(--c-accent);
 }
 
+/* HB3-25: caption beside the control (横並び) + shrunk, so the年操作バー fits one row. */
 .timeline-step__unit,
 .timeline-playback__speed {
   display: inline-flex;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .timeline-step__unit-caption,
@@ -680,14 +687,16 @@ body {
   cursor: crosshair;
 }
 
-/* The add chrome (complete / undo / cancel / grid-snap) floats at the top-left
- * of the map cell while drawing; it must take input itself (sits over the bridge). */
+/* HB3-7/22: the add chrome (complete / undo / cancel / grid-snap) floats at the
+ * BOTTOM-CENTER of the map cell while drawing — matching the edit tools (knife /
+ * merge / reparent all sit bottom-center), so every tool's 確定 button is in the
+ * same place. It must take input itself (sits over the bridge). */
 .add-tool__controls {
   grid-row: 2;
   grid-column: 2;
-  align-self: start;
-  justify-self: start;
-  margin: 8px;
+  align-self: end;
+  justify-self: center;
+  margin: 0 0 16px;
   pointer-events: auto;
   display: flex;
   flex-wrap: wrap;
