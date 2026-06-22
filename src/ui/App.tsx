@@ -472,6 +472,17 @@ export function App(): JSX.Element {
       editHandles: () => {
         const s = store.getState();
         if (s.mode !== EDIT_MODE.Edit) return [];
+        // HB3-6/18 review fix: tools with their OWN overlay (ナイフ / 結合 / 所属変更) promote a
+        // target into activeFeature for highlighting; the edit-handles layer must NOT also
+        // draw vertex/edge handles on that target during those tools (cosmetic bleed under
+        // the tool overlay). Handles belong to 選択 / 頂点編集 / 地物移動 only.
+        if (
+          s.activeTool === TOOL_ID.EditKnife ||
+          s.activeTool === TOOL_ID.EditMerge ||
+          s.activeTool === TOOL_ID.EditReparent
+        ) {
+          return [];
+        }
         // HB3-4: pass the LIVE drag session so the active feature's handles + a preview
         // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
         // and at the committed position otherwise. The builder ignores a session for a
@@ -640,10 +651,16 @@ export function App(): JSX.Element {
       // non-positive / unmeasured zoom yields 0 (no extra margin, exact-coincidence only).
       snapWorldMargin: () => {
         const { camera } = ports.readCamera();
-        const px = store.getState().appSettings.snapDistancePx;
         if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) return 0;
-        if (!Number.isFinite(px) || px <= 0) return 0;
-        return px / camera.zoom;
+        const px = store.getState().appSettings.snapDistancePx;
+        // HB3-20 review fix: this margin widens the near-candidate QUERY used for BOTH the
+        // snap AND the slide (排他) look-ahead. The snap DECISION uses snapDistancePx in
+        // decideSnap (screen-space), so we floor the QUERY window at a fixed look-ahead —
+        // disabling snap (snapDistancePx=0, a valid setting) must NOT also disable the slide
+        // collision look-ahead, or a fast drag could tunnel a vertex through a thin
+        // neighbour. Over-including candidates is safe: decideSnap with px=0 never snaps.
+        const queryPx = Math.max(Number.isFinite(px) && px > 0 ? px : 0, SLIDE_LOOKAHEAD_PX);
+        return queryPx / camera.zoom;
       },
     });
     const editSession = createEditSessionPort<DomainRoot>({
@@ -1572,6 +1589,28 @@ export function App(): JSX.Element {
       setDetailPanels((s) => openPanel(s, featureId, DETAIL_PANEL_BASE_POS)),
     [],
   );
+  // HB3-11 review fix: prune detail panels whose feature no longer exists in the LIVE
+  // domain — deleted, or swapped away by a file LOAD / NEW project — so a stale panel
+  // never lingers as an invisible, un-closable ghost (a missing feature renders null in
+  // DetailPanels, so without this the entry could not be closed). Keyed on DOMAIN identity
+  // (camera / time set()s are skipped) and returns the SAME state ref when nothing is
+  // pruned, so it adds no re-render churn. A time-hidden feature still EXISTS in the domain
+  // (a history carries it), so it is kept — only genuinely-removed features are pruned.
+  useEffect(() => {
+    let prevDomain = store.getState().domain;
+    return store.subscribe(() => {
+      const domain = store.getState().domain;
+      if (domain === prevDomain) return;
+      prevDomain = domain;
+      setDetailPanels((s) => {
+        if (s.panels.length === 0) return s;
+        const live = s.panels.filter((p) =>
+          domain.histories.some((h) => h.featureId === p.featureId),
+        );
+        return live.length === s.panels.length ? s : { panels: live };
+      });
+    });
+  }, [store]);
   // LIVE feature lookup for the detail panels (resolves at the current time, fresh
   // per call — never a stale capture, 教訓 5.6 / 単一真実源 5.29).
   const detailFeatureLookup = useMemo<PropertyFeatureLookup>(
@@ -1853,6 +1892,11 @@ export function App(): JSX.Element {
 
 /** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
 const KNIFE_DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+
+/** HB3-20 review fix: minimum near-candidate query look-ahead (screen px) so the
+ *  slide (排他) collision check keeps working even when the user disables snapping
+ *  (snapDistancePx=0). Converted to world units per frame via the live zoom. */
+const SLIDE_LOOKAHEAD_PX = 8;
 
 /** HB3-11: base screen position for the first detail panel (later panels cascade). */
 const DETAIL_PANEL_BASE_POS = { x: 160, y: 120 };
