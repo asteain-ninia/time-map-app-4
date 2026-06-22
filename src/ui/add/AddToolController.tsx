@@ -466,7 +466,11 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
             disabled={!add.canComplete}
             onClick={() => add.completeShape()}
           >
-            {isFace ? ADD_STRINGS.completeFace : ADD_STRINGS.completeLine}
+            {isFace
+              ? ADD_STRINGS.completeFace
+              : isLine
+                ? ADD_STRINGS.completeLine
+                : ADD_STRINGS.completePoint}
           </button>
           <button
             type="button"

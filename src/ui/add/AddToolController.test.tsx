@@ -150,6 +150,14 @@ describe('U23 integration: toolbar → add flow → save (受け入れ基準 1 /
     expect(h.proposals[0]?.anchorTime).toEqual(timePointYearMonthDay(1500, 6, 20));
   });
 
+  it('HB3-21: the complete button names the POINT tool (「点を確定」, not 「線を確定」)', () => {
+    mountApp();
+    selectTool('tool-add.point');
+    clickMap(10, 20);
+    // Regression: the point tool fell into the line branch and showed 「線を確定」.
+    expect(screen.getByTestId('add-complete')).toHaveTextContent('点を確定');
+  });
+
   it('line: needs 2 vertices; <2 is rejected with a Japanese message, then completes', () => {
     const h = mountApp();
     selectTool('tool-add.line');

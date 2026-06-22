@@ -19,6 +19,7 @@ export const ADD_STRINGS = {
   toolFace: '面を追加',
   completeLine: '線を確定',
   completeFace: '面を閉じて確定',
+  completePoint: '点を確定',
   cancel: '追加をキャンセル',
   undoVertex: '直前の頂点を取り消す',
   gridSnap: 'グリッドスナップ',
