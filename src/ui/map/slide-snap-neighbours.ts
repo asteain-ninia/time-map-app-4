@@ -48,6 +48,7 @@ import type { TimePoint } from '../../domain/time/time-point';
 import type { Feature, LeafFeature } from '../../domain/feature';
 import { FEATURE_KIND } from '../../domain/feature';
 import type { GeoPolygon, GeoRing } from '../../domain/geometry/types';
+import { shortestLonDeltaDeg, LONGITUDE_PERIOD } from '../../domain/geo/index';
 import { RING_KIND, type Ring } from '../../domain/ring';
 import type { RingId } from '../../domain/ids';
 import { getVertex, type VertexStore } from '../../domain/vertex';
@@ -242,21 +243,37 @@ export function createNeighboursQuery(
 
     // The query rectangle: a point around the preview, widened by the snap world
     // margin (so a vertex within the screen snap distance but outside the terminal
-    // bbox is still considered) plus a small epsilon so a coincident point still hits.
+    // bbox is still considered). RBush's search bounds are INCLUSIVE, so a margin of 0
+    // still returns a feature whose bbox touches the preview point — no epsilon needed.
+    // SEAM (±360°, R3): a neighbour stored on the FAR side of the antimeridian (e.g.
+    // preview at 179.5°, neighbour at −179.5°, actually 1° apart) has a bbox the single
+    // preview-frame rectangle would miss, so we probe the query in each ±360° longitude
+    // frame (the SAME wrap-probe leafAtPoint uses) and de-duplicate by feature — what
+    // slides / snaps then agrees with what the user sees across the seam (単一真実源 5.29).
     const rawMargin = ctx.snapWorldMargin();
     const margin = Number.isFinite(rawMargin) && rawMargin > 0 ? rawMargin : 0;
-    const queryBox: BBox = {
-      minX: preview.lon - margin,
+    const queryBoxAt = (lon: number): BBox => ({
+      minX: lon - margin,
       minY: preview.lat - margin,
-      maxX: preview.lon + margin,
+      maxX: lon + margin,
       maxY: preview.lat + margin,
-    };
+    });
 
     const edges: BoundaryEdge[] = [];
     const candidates: CandidateTerminal[] = [];
     const snapCandidates: SnapCandidate[] = [];
 
-    const nearHits = entries.length > 0 ? index.search(queryBox) : [];
+    const nearHits: IndexEntry<NearTerminal>[] = [];
+    if (entries.length > 0) {
+      const seenNear = new Set<string>();
+      for (const lon of [preview.lon, preview.lon + LONGITUDE_PERIOD, preview.lon - LONGITUDE_PERIOD]) {
+        for (const hit of index.search(queryBoxAt(lon))) {
+          if (seenNear.has(hit.ref.featureId)) continue;
+          seenNear.add(hit.ref.featureId);
+          nearHits.push(hit);
+        }
+      }
+    }
     const nearFeatureIds = new Set<string>();
     for (const hit of nearHits) {
       const near = hit.ref;
@@ -305,10 +322,16 @@ export function createNeighboursQuery(
 
 /**
  * True iff `p` is within `margin` (world units, as a square — matching the query
- * rectangle) of `centre`. A zero margin keeps only an exactly-coincident point;
- * the actual snap proximity is decided in SCREEN space by decideSnap, so this is a
- * conservative pre-filter, never the snap rule.
+ * rectangle) of `centre`, measuring LONGITUDE as the SHORTEST wrapped delta so the
+ * ±180° seam is handled: a point at −179.5° is 1° from 179.5°, not 359° (R3 /
+ * 単一真実源 5.29 — the bare lon difference wrongly excluded seam-adjacent snap
+ * candidates). A zero margin keeps only an exactly-coincident point; the actual snap
+ * proximity is decided in SCREEN space by decideSnap, so this is a conservative
+ * pre-filter, never the snap rule.
  */
 function withinMargin(p: WorldCoordinate, centre: WorldCoordinate, margin: number): boolean {
-  return Math.abs(p.lon - centre.lon) <= margin && Math.abs(p.lat - centre.lat) <= margin;
+  return (
+    Math.abs(shortestLonDeltaDeg(p.lon, centre.lon)) <= margin &&
+    Math.abs(p.lat - centre.lat) <= margin
+  );
 }

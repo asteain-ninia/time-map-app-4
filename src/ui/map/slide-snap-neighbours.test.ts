@@ -103,6 +103,37 @@ describe('createNeighboursQuery (HB3-20 slide/snap inputs)', () => {
     expect(result.snapCandidates).toHaveLength(0);
   });
 
+  it('HB3-20 SEAM: includes a neighbour ACROSS the ±180° antimeridian (wrapped distance)', () => {
+    // leaf-b sits at lon −179° (its left corner leaf-b-0 = (−179, 0)); the preview is at
+    // lon 179° — only 2° apart across the seam, but 358° apart by raw subtraction. The
+    // bare-difference bug excluded it; the wrapped distance (shortestLonDeltaDeg) + the
+    // ±360° query probe must include it (review-confirmed HIGH defect, 単一真実源 R3).
+    const a = squareLeaf('leaf-a', 'A国', 0, 0, 10);
+    const b = squareLeaf('leaf-b', 'B国', -179, 0, 5);
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory(
+          'leaf-a',
+          [a.feature, b.feature],
+          createVertexStore([...a.vertices, ...b.vertices]),
+          0,
+        ),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const query = createNeighboursQuery({
+      getRoot: () => root,
+      getTime: () => timePointYear(0),
+      snapWorldMargin: () => 5,
+    });
+    const result = query({ lon: 179, lat: 0 }, vertexMoveSession());
+    expect(result.candidates.some((c) => c.featureId === 'leaf-b')).toBe(true);
+    expect(result.edges.some((e) => e.featureId === 'leaf-b')).toBe(true);
+    const snapIds = result.snapCandidates.map((s) => s.vertexId as unknown as string);
+    expect(snapIds).toContain('leaf-b-0'); // (−179,0) is 2° from the (179,0) preview across the seam.
+  });
+
   it('excludes the dragged feature even when the preview is inside its own bbox', () => {
     const { root } = twoLeafProject();
     const query = createNeighboursQuery({
