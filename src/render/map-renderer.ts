@@ -151,6 +151,12 @@ export interface LabelPrimitive {
   readonly fontPx: number;
   readonly fill: string;
   /**
+   * Optional contrasting outline color drawn UNDER the fill (HB3-26): a label over a
+   * same-colored fill is invisible, so a halo (e.g. a light stroke behind dark text)
+   * keeps it legible over any background. Undefined ⇒ no halo (grid labels opt out).
+   */
+  readonly halo?: string;
+  /**
    * Opt out of the seam turn-loop (see {@link GridLinePrimitive.wrap}). Grid labels
    * are anchored at continuous-span longitudes already, so re-tiling would stack
    * duplicate text and (for translucent labels) compound alpha (Codex high #2).

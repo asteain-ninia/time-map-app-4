@@ -369,6 +369,14 @@ export class Canvas2DMapRenderer implements MapRenderer {
     const ctx = this.ctx;
     // fontPx is screen-fixed (FR-17): the font is set in CSS px, never zoomed.
     ctx.font = `${p.fontPx}px sans-serif`;
+    // HB3-26: draw the halo FIRST (a contrasting outline) so the fill text on top stays
+    // legible over a same-colored background. Rounded joins avoid spiky corners.
+    if (p.halo !== undefined) {
+      ctx.lineJoin = 'round';
+      ctx.lineWidth = Math.max(2, p.fontPx / 5);
+      ctx.strokeStyle = p.halo;
+      ctx.strokeText(p.text, x, y);
+    }
     ctx.fillStyle = p.fill;
     ctx.fillText(p.text, x, y);
   }

@@ -22,6 +22,8 @@ export class FakeContext2D {
   lineWidths: number[] = [];
   fonts: string[] = [];
   fillTexts: { text: string; x: number; y: number }[] = [];
+  /** Each `strokeText` call (HB3-26 label halo, drawn under the fill text). */
+  strokeTexts: { text: string; x: number; y: number }[] = [];
   moveTos: { x: number; y: number }[] = [];
   lineTos: { x: number; y: number }[] = [];
   /** Each `rect` call (edit-handle EDGE markers draw a square via rect). */
@@ -37,6 +39,7 @@ export class FakeContext2D {
   fillStyle = '';
   strokeStyle = '';
   lineWidth = 0;
+  lineJoin = '';
   font = '';
 
   setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void {
@@ -71,6 +74,9 @@ export class FakeContext2D {
   fillText(text: string, x: number, y: number): void {
     this.fonts.push(this.font);
     this.fillTexts.push({ text, x, y });
+  }
+  strokeText(text: string, x: number, y: number): void {
+    this.strokeTexts.push({ text, x, y });
   }
   drawImage(_img: unknown, x: number, y: number, w: number, h: number): void {
     this.drawImages.push({ x, y, w, h });

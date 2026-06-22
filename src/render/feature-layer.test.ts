@@ -224,6 +224,23 @@ describe('受け入れ基準 3: aggregate derived shape (single resolution, 教�
     expect(s.pieces[0]![0]!.length).toBe(4);
     expect(lbl?.text).toBe('AGG');
   });
+
+  it('HB3-26: an area label uses a readable fill + halo, not the polygon fill', () => {
+    const derived: GeoMultiPolygon = [[squareRing(0, 0, 20)]];
+    const agg: EvaluatedArea = {
+      kind: 'area',
+      id: 'agg',
+      shape: derived,
+      style: STYLE,
+      label: 'COUNTRY',
+      selected: false,
+    };
+    const lbl = labels(buildFeaturePrimitives([agg], opts()))[0];
+    expect(lbl).toBeDefined();
+    // Regression: the label was drawn in STYLE.fill (== the polygon) → invisible.
+    expect(lbl?.fill).not.toBe(STYLE.fill);
+    expect(lbl?.halo).toBeDefined();
+  });
 });
 
 // --- 受け入れ基準 4: per-type label visibility + constant size (FR-86/FR-17) --

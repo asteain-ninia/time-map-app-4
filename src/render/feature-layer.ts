@@ -645,6 +645,16 @@ function activeColor(style: FeatureStyle, selected: boolean): string {
 }
 
 /**
+ * HB3-26: an AREA label was drawn in the polygon's OWN fill color, so over its own
+ * fill it was invisible (「面地物の地物ラベルが殆ど見えない」). Area labels are instead
+ * drawn in a fixed readable dark color with a light halo (drawn under the fill by the
+ * renderer), so they stay legible over any fill — including the translucent fills
+ * HB3-13 introduces. Line/point labels keep their border-color text (already visible).
+ */
+const AREA_LABEL_FILL = '#1a1a1a';
+const AREA_LABEL_HALO = 'rgba(255, 255, 255, 0.9)';
+
+/**
  * Build the draw primitives for ONE point feature: the marker + (conditionally)
  * its label. Order: marker then label (label on top). The label is added only
  * when text is non-empty AND the point-label threshold passes (FR-86, 受け入れ基準 4).
@@ -760,7 +770,8 @@ function buildAreaPrimitives(f: EvaluatedArea, opts: BuildOptions): DrawPrimitiv
           at: ringCentroid(territory),
           text: f.label,
           fontPx: opts.sizes.labelFontPx,
-          fill: color,
+          fill: AREA_LABEL_FILL,
+          halo: AREA_LABEL_HALO,
         } satisfies LabelPrimitive);
       }
     }
