@@ -32,6 +32,7 @@ export {
   setEmphasizedKinds,
   setEmphasizedDepth,
   clearEmphasis,
+  reconcileToLiveFeatures,
   emphasisActive,
 } from './filter-state';
 

@@ -330,8 +330,39 @@ function drawnAreaAtPoint(
   return hit;
 }
 
-/** The canonical-longitude span `[min, max]` over every ring of a multi-polygon, or undefined when empty. */
-function multiPolygonLonSpan(
+// Longitude-span MEMOIZATION (bughunt3 #medium: per-area-per-hit-test recompute).
+// `drawnAreaAtPoint` calls `multiPolygonLonSpan(area.shape)` for EVERY area on EVERY
+// pointerdown / pointermove that reaches the area-body probe, and the span is a
+// triple-nested walk (polygon → ring → coord) over every vertex. The `shape` arrays
+// are IMMUTABLE between display-resolution generations and are shared across frames
+// via the `display-resolution-cache` memo (keyed on `(root, time, displayControl)`
+// identity), so the SAME array reference recurs across a stream of pointer events.
+// The span is a pure function of that array, so we cache it KEYED BY THE ARRAY
+// REFERENCE: repeated events on a stable resolution hit the cache (O(1)); a fresh
+// resolution brings fresh `shape` arrays that miss and recompute once. A WeakMap lets
+// a shape dropped on the next resolution be GC'd with its cached span (no unbounded
+// growth). This mirrors `lonSpanCache` in canvas2d-renderer.ts. `undefined` (empty
+// shape) is a valid cached value, distinguished via `.has`.
+const lonSpanCache = new WeakMap<
+  ResolvedDisplayShape['shape'],
+  { min: number; max: number } | undefined
+>();
+
+/**
+ * The canonical-longitude span `[min, max]` over every ring of a multi-polygon, or
+ * undefined when empty — MEMOIZED by the `shape` array reference (see `lonSpanCache`).
+ * Exported for the regression that pins the reference-keyed cache contract.
+ */
+export function multiPolygonLonSpan(
+  shape: ResolvedDisplayShape['shape'],
+): { min: number; max: number } | undefined {
+  if (lonSpanCache.has(shape)) return lonSpanCache.get(shape);
+  const span = computeMultiPolygonLonSpan(shape);
+  lonSpanCache.set(shape, span);
+  return span;
+}
+
+function computeMultiPolygonLonSpan(
   shape: ResolvedDisplayShape['shape'],
 ): { min: number; max: number } | undefined {
   let min = Infinity;

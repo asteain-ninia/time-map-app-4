@@ -6,7 +6,8 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { liveHitTestAt, drawnAreaAt } from './live-hit-test';
+import { liveHitTestAt, drawnAreaAt, multiPolygonLonSpan } from './live-hit-test';
+import type { GeoMultiPolygon } from '../../domain/geometry/index';
 import { HIT_KIND } from '../../domain/selection';
 import type { DomainRoot } from '../consistency-binding';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
@@ -937,6 +938,65 @@ describe('liveHitTestAt', () => {
       );
       expect(hit.kind).toBe(HIT_KIND.Empty);
     });
+  });
+});
+
+describe('multiPolygonLonSpan memoization (bughunt3 #medium)', () => {
+  // drawnAreaAtPoint calls multiPolygonLonSpan(area.shape) for EVERY area on EVERY
+  // pointer event that reaches the area-body probe; the span is a triple-nested walk
+  // over every vertex. The fix caches it keyed by the IMMUTABLE shape array reference
+  // (the resolved shapes are shared across frames via the display-resolution memo). This
+  // regression pins BOTH halves of that contract, mirroring feature-layer's shapeRect:
+  //  (1) CORRECTNESS — the span equals a fresh full computation, AND
+  //  (2) REFERENCE-KEYED CACHE — the SAME array reference returns the IDENTICAL result
+  //      object (cache hit, no re-walk), while a structurally-equal but DIFFERENT
+  //      reference yields an equal-but-distinct object (cache miss — never a stale span
+  //      after the domain rebuilds the shape).
+  it('caches the span per shape reference without serving a stale value', () => {
+    const shape: GeoMultiPolygon = [
+      [
+        // Outer ring spanning lon [-10, 20].
+        [
+          { lon: -10, lat: -5 },
+          { lon: 20, lat: -5 },
+          { lon: 20, lat: 15 },
+          { lon: -10, lat: 15 },
+        ],
+        // A hole ring INSIDE the outer lon range (must not widen the span).
+        [
+          { lon: 0, lat: 0 },
+          { lon: 5, lat: 0 },
+          { lon: 5, lat: 5 },
+        ],
+      ],
+      // A second disjoint piece that DOES widen the span to lon=50 (片落とし禁止 教訓 5.1).
+      [
+        [
+          { lon: 40, lat: 30 },
+          { lon: 50, lat: 30 },
+          { lon: 50, lat: 35 },
+        ],
+      ],
+    ];
+    const expected = { min: -10, max: 50 };
+    const first = multiPolygonLonSpan(shape);
+    expect(first).toEqual(expected);
+    // Same reference ⇒ exact same object back (proves it was cached, not re-walked).
+    expect(multiPolygonLonSpan(shape)).toBe(first);
+
+    // Structurally identical but a NEW reference ⇒ recomputed (equal, not same).
+    const cloned: GeoMultiPolygon = shape.map((piece) =>
+      piece.map((ring) => ring.map((c) => ({ ...c }))),
+    );
+    const cloneSpan = multiPolygonLonSpan(cloned);
+    expect(cloneSpan).toEqual(expected);
+    expect(cloneSpan).not.toBe(first);
+
+    // Empty shape caches `undefined` (教訓 5.18 absence, not a crash) — the sentinel
+    // `.has` path must treat undefined as a real cached result, not a miss.
+    const empty: GeoMultiPolygon = [];
+    expect(multiPolygonLonSpan(empty)).toBeUndefined();
+    expect(multiPolygonLonSpan(empty)).toBeUndefined();
   });
 });
 

@@ -3217,3 +3217,433 @@ describe('time-anchor + history undo/redo — seed 34003 stateful rich bounded-m
     );
   });
 });
+
+// ===========================================================================
+// SEED 34004 expansion suite — fc.commands STATEFUL model over a BOUNDED-LIMIT
+// history driven by MIXED-GRANULARITY edits, reconciled against the reference
+// Model, with OFF-ANCHOR probe-selection re-checked on every reachable state.
+//
+// A NEW exploration distinct from every prior pass in this file (seeds 4001 /
+// 4002 / 4004 / 24001 / 24002 / 24003 / 24004 / 34002 / 34003) and from the
+// earlier 1000-6000 / 21000-26000 sweep. Seed 34004 is fresh. The novelty is the
+// THREE-WAY CROSS of axes that prior suites cover only pairwise, plus two
+// temporal-axis algebraic laws no prior suite states under MIXED granularity:
+//
+//   1. CROSS that no suite makes: a real fast-check STATEFUL run (fc.commands +
+//      fc.modelRun) AND mixed-granularity (year / yearMonth / yearMonthDay)
+//      edits AND a SMALL trimming undo-limit (1..3) AND the explicit reference
+//      Model. The closest prior suites each drop one axis:
+//        - 24001 drives mixed granularity but with a generous never-trimming
+//          limit, no reference model, and a MANUAL fc.array loop (no fc.commands
+//          shrinking of an interdependent stream).
+//        - 34002 drives mixed granularity + reference model + small trimming
+//          limit, but via a MANUAL fc.array loop — NOT fc.commands, so an
+//          interdependent failing stream cannot be shrunk as tightly.
+//        - 34003 is a true fc.commands run against the model under a small limit,
+//          but uses POINT-ONLY / rich snapshots built from YEAR-ONLY EditOps, so
+//          the calendar's day-level normalize (same-year dedup, sub-year
+//          overrun-shortening) is never on the trimming/undo/redo path.
+//      Here the fc.commands generator interleaves mixed-granularity edit /
+//      editIfChanged / undo / redo / clearRedo / setLimit / composite in
+//      dependency order over a constantly-trimming 1..3-limit history, and the
+//      production History is reconciled with an independent Model at every step.
+//      A trim/undo/redo bug whose dropped undo unit carried a SUB-YEAR start/end
+//      change (a mis-keyed same-year dedup inside the replayed command, or an
+//      off-by-one window when the trimmed unit's normalize differs at day
+//      resolution) would surface ONLY in this cross — and fc.commands would
+//      shrink it to the minimal interdependent sequence.
+//
+//   2. OFF-ANCHOR probe-selection validity (expectProbeSelectionValid) re-checked
+//      on EVERY reachable state of the stateful run, not just at anchor starts:
+//      across the trimming history, undo/redo, and composite branches, resolveAt
+//      at a fixed mid-interval / gap / post-end probe must always resolve to a
+//      REAL present member (never a phantom) whose interval truly contains the
+//      probe. 34002 (mixed + model) never probes off-anchor; 34003 probes but on
+//      year-only EditOps. This is the first off-anchor probe over the mixed
+//      trimming-history regime driven statefully.
+//
+//   3. Two temporal-axis algebraic laws under MIXED granularity that no prior
+//      suite states at this granularity:
+//        - setEnd INVERSE: from a cleared (open-ended) baseline, setEnd(end)
+//          then setEnd(null) must restore the open-ended baseline structurally
+//          (op∘inverse-op == identity on the end axis) — the 4001 suite states
+//          this only for YEAR-ONLY ends; here `end` is a mixed-granularity point
+//          so a same-year / sub-year end that ties a neighbor's start exercises
+//          the day-level INV-2 shorten on the set and its clean removal on the
+//          clear.
+//        - delete NO-RESURRECTION under mixed granularity: deleting an id then
+//          deleting it again must REJECT with anchorNotFound (a deleted mixed-
+//          granularity anchor is gone, never silently re-resolving onto a
+//          same-year neighbor). 24003 states this for year-only series only.
+//
+// All series invariants (validateSeries — INV-1..3,5,6), no NaN/Infinity, forest
+// validity, selection validity, and save∘load==identity are re-asserted after
+// every reachable state (assertStepInvariants), plus the model agreement
+// (state + stack depths + canUndo/canRedo gates + limit) at every fc.command.
+//
+// Determinism: pinned seed 34004, large run budget. Permanent asset; must NOT be
+// relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_34004 = 34004;
+const NUM_RUNS_34004 = 600;
+
+// --- the stateful "real" system under test (mixed-granularity, bounded) ------
+//
+// The real system is a bounded-limit History<AnchorSeries> carrying POINT-ONLY
+// snapshots but driven by MIXED-granularity edits. The fc-model is the plain-
+// value reference Model (defined for the 24002 suite). Each fc.Command mutates
+// BOTH and then reconciles: production history agrees with the reference model
+// (state + stack depths + gates + limit), the reachable series satisfies every
+// structural invariant, AND off-anchor probe selection is valid.
+
+interface MixedSut {
+  history: History<AnchorSeries>;
+}
+
+interface MixedModelState {
+  model: Model;
+  readonly probe: TimePoint;
+}
+
+type MixedFcCommand = fc.Command<MixedModelState, MixedSut>;
+
+function reconcileMixed(m: MixedModelState, sut: MixedSut): void {
+  expectHistoryMatchesModel(sut.history, m.model);
+  assertStepInvariants(sut.history.state);
+  expectProbeSelectionValid(sut.history.state, m.probe);
+}
+
+class MixedEditCommand implements MixedFcCommand {
+  constructor(private readonly op: MixedEditOp) {}
+  check(): boolean {
+    return true; // an edit is always attempted; a no-op simply pushes nothing.
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    const before = sut.history.state;
+    const after = applyMixedEdit(before, this.op);
+    if (after === undefined) {
+      reconcileMixed(m, sut); // rejected / no-op: neither side changes.
+      return;
+    }
+    sut.history = execute(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return `mixedEdit(${JSON.stringify(this.op)})`;
+  }
+}
+
+class MixedEditIfChangedCommand implements MixedFcCommand {
+  constructor(private readonly op: MixedEditOp) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    const before = sut.history.state;
+    const after = applyMixedEdit(before, this.op);
+    if (after === undefined) {
+      // Ghost-suppression path (教訓 5.24): an always-true isNoOp must leave
+      // BOTH history and model untouched and push nothing.
+      sut.history = executeIfChanged(
+        sut.history,
+        makeSeriesCommand(this.op.kind, before, before),
+        () => true,
+      ).history;
+      reconcileMixed(m, sut);
+      return;
+    }
+    sut.history = executeIfChanged(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+      () => false,
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return `mixedEditIfChanged(${JSON.stringify(this.op)})`;
+  }
+}
+
+class MixedCompositeCommand implements MixedFcCommand {
+  constructor(private readonly ops: readonly MixedEditOp[]) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    const subCommands: Command<AnchorSeries>[] = [];
+    let cursor = sut.history.state;
+    const before = cursor;
+    for (const op of this.ops) {
+      const after = applyMixedEdit(cursor, op);
+      if (after === undefined) continue;
+      subCommands.push(makeSeriesCommand(op.kind, cursor, after));
+      cursor = after;
+    }
+    if (subCommands.length === 0) {
+      reconcileMixed(m, sut); // nothing to bundle.
+      return;
+    }
+    const postChain = cursor;
+    const composite = createCompositeCommand('bughunt/mixed-edit-chain', subCommands);
+    sut.history = execute(sut.history, composite).history;
+    // A composite is exactly ONE model step: before -> post-chain.
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(postChain));
+    // The composite must have landed exactly on the post-chain state.
+    expect(viewSeries(sut.history.state)).toEqual(viewSeries(postChain));
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return `mixedComposite(${this.ops.length} ops)`;
+  }
+}
+
+class MixedUndoCommand implements MixedFcCommand {
+  check(): boolean {
+    return true; // undo on an empty stack is a defined no-op.
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    sut.history = undo(sut.history).history;
+    m.model = modelUndo(m.model);
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return 'undo';
+  }
+}
+
+class MixedRedoCommand implements MixedFcCommand {
+  check(): boolean {
+    return true; // redo on an empty stack is a defined no-op.
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    sut.history = redo(sut.history).history;
+    m.model = modelRedo(m.model);
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return 'redo';
+  }
+}
+
+class MixedClearRedoCommand implements MixedFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    sut.history = clearRedo(sut.history);
+    m.model = modelClearRedo(m.model);
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return 'clearRedo';
+  }
+}
+
+class MixedSetLimitCommand implements MixedFcCommand {
+  constructor(private readonly limit: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: MixedModelState, sut: MixedSut): void {
+    sut.history = withLimit(sut.history, this.limit);
+    m.model = modelWithLimit(m.model, this.limit);
+    reconcileMixed(m, sut);
+  }
+  toString(): string {
+    return `setLimit(${this.limit})`;
+  }
+}
+
+const mixedCommandsArb: fc.Arbitrary<Iterable<MixedFcCommand>> = fc.commands(
+  [
+    mixedEditOpArb.map((op): MixedFcCommand => new MixedEditCommand(op)),
+    mixedEditOpArb.map((op): MixedFcCommand => new MixedEditIfChangedCommand(op)),
+    fc
+      .array(mixedEditOpArb, { minLength: 1, maxLength: 4 })
+      .map((ops): MixedFcCommand => new MixedCompositeCommand(ops)),
+    fc.constant(new MixedUndoCommand() as MixedFcCommand),
+    fc.constant(new MixedUndoCommand() as MixedFcCommand), // weight drain ops higher
+    fc.constant(new MixedRedoCommand() as MixedFcCommand),
+    fc.constant(new MixedRedoCommand() as MixedFcCommand),
+    fc.constant(new MixedClearRedoCommand() as MixedFcCommand),
+    fc.integer({ min: 1, max: 4 }).map((n): MixedFcCommand => new MixedSetLimitCommand(n)),
+  ],
+  { maxCommands: 44 },
+);
+
+describe('time-anchor + history undo/redo — seed 34004 stateful mixed-granularity bounded-model', () => {
+  it('fc.commands: bounded mixed-granularity history stays model-consistent + selection-valid (seed 34004)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 3 }), // SMALL limit ⇒ FR-74 trimming is common
+        probeTimeArb,
+        mixedCommandsArb,
+        (initial, limit, probe, commands) => {
+          assertStepInvariants(initial);
+          expectProbeSelectionValid(initial, probe);
+          const clampedLimit = Math.max(1, Math.floor(limit));
+          const setup = (): { model: MixedModelState; real: MixedSut } => {
+            const history = createHistory(initial, clampedLimit);
+            const model: MixedModelState = {
+              model: {
+                current: viewSeries(initial),
+                undo: [],
+                redo: [],
+                limit: clampedLimit,
+              },
+              probe,
+            };
+            expectHistoryMatchesModel(history, model.model); // sanity at t0
+            return { model, real: { history } };
+          };
+          fc.modelRun(setup, commands);
+        },
+      ),
+      { seed: SEED_34004, numRuns: NUM_RUNS_34004 },
+    );
+  });
+
+  it('FR-74 (mixed, stateful-built): draining the retained undo stack lands on the oldest retained pre-state (seed 34004)', () => {
+    // Overflow a small limit with mixed-granularity edits, then drain the WHOLE
+    // retained undo stack: the floor must equal the reference model's current
+    // (the `before` of the oldest retained edit), NOT the original root, and
+    // every reachable state must keep all invariants.
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 2 }),
+        fc.array(mixedEditOpArb, { minLength: 1, maxLength: 16 }),
+        (initial, limit, ops) => {
+          let history = createHistory(initial, limit);
+          let model: Model = {
+            current: viewSeries(initial),
+            undo: [],
+            redo: [],
+            limit: Math.max(1, Math.floor(limit)),
+          };
+          for (const op of ops) {
+            const before = history.state;
+            const after = applyMixedEdit(before, op);
+            if (after === undefined) continue;
+            history = execute(
+              history,
+              makeSeriesCommand(op.kind, before, after),
+            ).history;
+            model = modelExecute(model, viewSeries(before), viewSeries(after));
+            assertStepInvariants(history.state);
+          }
+          const retained = model.undo.length;
+          for (let i = 0; i < retained; i += 1) {
+            history = undo(history).history;
+            model = modelUndo(model);
+            assertStepInvariants(history.state);
+          }
+          expectHistoryMatchesModel(history, model);
+          const expectedFloor = retained === 0 ? viewSeries(initial) : model.current;
+          expect(viewSeries(history.state)).toEqual(expectedFloor);
+          // A further undo is a no-op on the drained stack.
+          const extra = undo(history).history;
+          expect(viewSeries(extra.state)).toEqual(viewSeries(history.state));
+          expect(extra.undoStack.length).toBe(history.undoStack.length);
+        },
+      ),
+      { seed: SEED_34004, numRuns: NUM_RUNS_34004 },
+    );
+  });
+
+  it('op∘inverse-op (mixed end axis): setEnd(end) then setEnd(null) restores the open-ended baseline (seed 34004)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.nat(),
+        mixedTimePointArb,
+        (initial, targetN, endPoint) => {
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const id = target.anchor.id;
+          // Establish a clean open-ended baseline for the target.
+          const cleared = setEnd(initial, id, null, cal);
+          if (!cleared.ok) return;
+          const base = cleared.series;
+          // Set a mixed-granularity end; rejected ends are out of scope.
+          const set = setEnd(base, id, endPoint, cal);
+          if (!set.ok) return;
+          expectAllInvariants(set.series);
+          // Clearing it must restore the open-ended baseline structurally.
+          const recleared = setEnd(set.series, id, null, cal);
+          expect(recleared.ok).toBe(true);
+          if (recleared.ok) {
+            expectAllInvariants(recleared.series);
+            expect(viewSeries(recleared.series)).toEqual(viewSeries(base));
+          }
+        },
+      ),
+      { seed: SEED_34004, numRuns: NUM_RUNS_34004 },
+    );
+  });
+
+  it('no-resurrection (mixed): deleting an id then deleting it again rejects with anchorNotFound (seed 34004)', () => {
+    fc.assert(
+      fc.property(mixedAnchorSeriesArb(), fc.nat(), (initial, targetN) => {
+        if (initial.entries.length < 2) return; // INV-5 guard on the first delete
+        const target = initial.entries[targetN % initial.entries.length]!;
+        const id = target.anchor.id;
+
+        const first = deleteAnchor(initial, id, cal);
+        expect(first.ok).toBe(true);
+        if (!first.ok) return;
+        expectAllInvariants(first.series);
+        expect(first.series.entries.some((e) => e.anchor.id === id)).toBe(false);
+
+        const second = deleteAnchor(first.series, id, cal);
+        expect(second.ok).toBe(false);
+        if (!second.ok) {
+          expect(second.reason.code).toBe('anchorNotFound');
+        }
+        expectAllInvariants(first.series);
+      }),
+      { seed: SEED_34004, numRuns: NUM_RUNS_34004 },
+    );
+  });
+
+  it('save∘load == identity for any reachable mixed series under a stateful small-limit stream (seed 34004)', () => {
+    fc.assert(
+      fc.property(
+        mixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 3 }),
+        fc.array(mixedBoundedActionArb, { maxLength: 40 }),
+        (initial, limit, actions) => {
+          let history: History<AnchorSeries> = createHistory(initial, limit);
+          for (const action of actions) {
+            if (action.t === 'edit' || action.t === 'editIfChanged') {
+              const before = history.state;
+              const after = applyMixedEdit(before, action.op);
+              if (after === undefined) continue;
+              history = execute(
+                history,
+                makeSeriesCommand(action.op.kind, before, after),
+              ).history;
+            } else if (action.t === 'undo') {
+              history = undo(history).history;
+            } else if (action.t === 'redo') {
+              history = redo(history).history;
+            } else if (action.t === 'clearRedo') {
+              history = clearRedo(history);
+            } else {
+              history = withLimit(history, action.limit);
+            }
+            expectSaveLoadIdentity(history.state);
+            assertStepInvariants(history.state);
+          }
+        },
+      ),
+      { seed: SEED_34004, numRuns: NUM_RUNS_34004 },
+    );
+  });
+});

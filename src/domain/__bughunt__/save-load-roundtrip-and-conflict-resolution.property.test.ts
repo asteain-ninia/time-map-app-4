@@ -3304,3 +3304,279 @@ describe('bug hunt #3 / inverse-op on the time axes (seed 36003)', () => {
     );
   });
 });
+
+// ============================================================================
+// Section 9 — bug hunt #3 / SIXTH exploration (seed 36004, DISJOINT from EVERY
+// pin above: 26001/26002/26003/26004, 36002, 36003, AND the identity suite's
+// 1000–6004 / 21000–26000). This section reaches command kinds / interactions /
+// metamorphic laws that NONE of the earlier sections drive even once:
+//
+//   (y) A fast-check STATEFUL model whose alphabet injects a corruption into a
+//       FRESHLY-RELOADED (post save→load) object graph — not the pristine
+//       generator output (Section 2), not an in-memory-edited project (Section
+//       6's corrupt-after-edit), and not a live in-memory holder (Section 8u's
+//       corrupt→repair). The novel surface: the SaveLoadThenCorruptStatefulCmd
+//       FIRST drives save→load (rebuilding every Vertex / Anchor / Feature
+//       instance through serialize→deserialize), THEN corrupts THAT rebuilt graph,
+//       repairs to a fixpoint, asserts the full conflict-resolution battery, and
+//       ADOPTS the healed result as the live state. A corruption-detection /
+//       repair path that only works on the original in-memory instances (e.g. an
+//       identity-keyed cache, a referential-equality shortcut, a memoized store)
+//       but breaks on the structurally-identical-but-freshly-built reload would
+//       surface ONLY here. fc.commands shrinks over the SEQUENCE.
+//
+//   (z) QUADRUPLE corruption injection (Sections 7(s)/8(v) maxed out at TWO/THREE):
+//       inject FOUR independent FR-106 classes into ONE project, then drive the
+//       same safe-repair fixpoint and assert it still converges to a clean,
+//       round-tripping, HONEST project. A catalogue that resolves at arity ≤ 3 but
+//       four-way-deadlocks (a fourth class re-introducing an earlier precondition
+//       on the only escape route) would surface only at arity ≥ 4.
+//
+//   (aa) A HEAL → EDIT → RE-HEAL cycle: corrupt a project, repair to a clean
+//       fixpoint, then apply a GEOMETRY-PRESERVING edit walk to the HEALED project
+//       (a user keeps editing a once-repaired file), assert it stays consistent +
+//       round-trips, THEN corrupt the healed-and-edited project a SECOND time and
+//       re-repair — asserting the framework heals a project that has ALREADY been
+//       through one full corrupt→repair→edit lifecycle. Every earlier corrupt→
+//       repair test ended at the first fixpoint; none fed a healed project back
+//       through an edit walk AND a second corruption round.
+// ============================================================================
+
+const SEED9 = 36004;
+
+/**
+ * A stateful command that drives save→load FIRST (adopting the rebuilt copy),
+ * THEN injects a corruption into that RELOADED object graph, repairs to a
+ * fixpoint, asserts the full conflict-resolution battery, and adopts the healed
+ * project as the live state. The corruption therefore operates on
+ * freshly-deserialized Vertex / Anchor / Feature instances, not the original
+ * in-memory ones — a path no earlier corrupt→repair test reaches.
+ */
+class SaveLoadThenCorruptStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly tag: CorruptionTag, private readonly pick: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    // 1. save→load must be identity on the current live state.
+    const reloaded = deserialize(serialize(r.project));
+    if (!projectsEqual(reloaded, r.project)) {
+      throw new Error('[stateful] save→load was not identity before corruption');
+    }
+    // 2. Corrupt + repair the RELOADED graph (rebuilt instances).
+    const healed = corruptThenRepairStep(reloaded, this.tag, this.pick);
+    if (healed === null) {
+      // Corruption inapplicable to this reloaded shape — still adopt the reloaded
+      // copy (a real session continues from the loaded project).
+      r.project = reloaded;
+      return;
+    }
+    // 3. The healed reloaded project must satisfy the full per-edit battery.
+    const check = checkAllInvariants(healed);
+    if (!check.ok) {
+      throw new Error(
+        `[stateful] healed RELOADED project failed invariant "${check.failed}" for "${this.tag}"`,
+      );
+    }
+    r.project = healed;
+  }
+  toString(): string {
+    return `save→load→corrupt→repair(${this.tag})`;
+  }
+}
+
+/** A stateful command: one STRUCTURAL edit, THEN save→load, asserting identity on the rebuilt graph. */
+class StructThenSaveLoadStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly cmd: StructCmd) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    r.project = applyStructCmd(r.project, this.cmd).project;
+    const check = checkAllInvariants(r.project);
+    if (!check.ok) {
+      throw new Error(
+        `[stateful] invariant "${check.failed}" broke after struct ${JSON.stringify(this.cmd)}`,
+      );
+    }
+    // Immediately save→load the structurally-edited project (a changed ring/line
+    // cardinality must round-trip), and adopt the rebuilt copy as the live state.
+    const reloaded = deserialize(serialize(r.project));
+    if (!projectsEqual(reloaded, r.project)) {
+      throw new Error(`[stateful] struct→save→load ≠ identity after ${JSON.stringify(this.cmd)}`);
+    }
+    r.project = reloaded;
+  }
+  toString(): string {
+    return `struct→save→load(${this.cmd.tag})`;
+  }
+}
+
+const saveLoadCorruptCmdArb: fc.Arbitrary<SaveLoadThenCorruptStatefulCmd> = fc
+  .record({ tag: corruptionArb, pick: fc.nat() })
+  .map(({ tag, pick }) => new SaveLoadThenCorruptStatefulCmd(tag, pick));
+
+describe('bug hunt #3 / SIXTH exploration (seed 36004) — corrupt a RELOADED graph + arity-4', () => {
+  it('a stateful interleaving of edit / struct→save→load / undo / save→load→corrupt→repair holds every law', () => {
+    const allCommands = fc.commands(
+      [
+        cmdArb().map((c) => new EditStatefulCmd(c)),
+        structCmdArb().map((c) => new StructThenSaveLoadStatefulCmd(c)),
+        fc.constant(new SaveLoadStatefulCmd()),
+        cmdArb().map((c) => new UndoOpStatefulCmd(c)),
+        saveLoadCorruptCmdArb,
+      ],
+      { maxCommands: 30 },
+    );
+    fc.assert(
+      // projectArb2() so STRUCTURAL edits (line/leaf vertex ops) have material to work on.
+      fc.property(projectArb2(), allCommands, (initial, cmds) => {
+        const base = checkBaseInvariants(initial);
+        if (!base.ok) throw new Error(`stateful base invalid: ${base.failed}`);
+        const setup = (): { model: ProjectModel; real: ProjectReal } => ({
+          model: { historyCount: initial.histories.length },
+          real: { project: initial },
+        });
+        fc.modelRun(setup, cmds);
+      }),
+      { seed: SEED9, numRuns: 350 },
+    );
+  });
+
+  it('QUADRUPLE corruption injected together still repairs to a clean, round-tripping, HONEST fixpoint', () => {
+    fc.assert(
+      fc.property(
+        projectArbMixed(),
+        corruptionArb,
+        corruptionArb,
+        corruptionArb,
+        corruptionArb,
+        fc.nat(),
+        fc.nat(),
+        fc.nat(),
+        fc.nat(),
+        (project, tagA, tagB, tagC, tagD, pickA, pickB, pickC, pickD) => {
+          const injA = corrupt(project, tagA, pickA);
+          if (injA === null) return;
+          // Non-vacuity guard: the FIRST corruption alone must be detected (the test
+          // is never a silent no-op — at least one real corruption is present).
+          if (checkConsistency(injA.project, CAL).ok) {
+            throw new Error(`first corruption (${tagA}) alone was NOT detected — invalid precondition`);
+          }
+          // Stack B, C, D. As in the dual/triple cases, a later injection can
+          // legitimately OVERWRITE the structure an earlier one relied on; we require
+          // only that whatever the COMBINED project is, the safe-repair fixpoint
+          // reaches a clean, round-tripping, HONEST result.
+          const injB = corrupt(injA.project, tagB, pickB);
+          const afterB = injB === null ? injA.project : injB.project;
+          const injC = corrupt(afterB, tagC, pickC);
+          const afterC = injC === null ? afterB : injC.project;
+          const injD = corrupt(afterC, tagD, pickD);
+          const target = injD === null ? afterC : injD.project;
+
+          const fix = repairToFixpoint(target);
+          const combo = `${tagA}+${tagB}+${tagC}+${tagD}`;
+          if (fix.honestyViolated) {
+            throw new Error(`quadruple corruption (${combo}) repair was DISHONEST (resolved while unsafe)`);
+          }
+          if (!fix.converged) {
+            throw new Error(`quadruple corruption (${combo}) did NOT converge (stuck=${fix.stuck})`);
+          }
+          const finalReport = checkConsistency(fix.project, CAL);
+          if (!finalReport.ok) {
+            throw new Error(
+              `post-quadruple-repair still inconsistent (${combo}): ${finalReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rt = boundaryRoundTrips(fix.project);
+          if (!rt.ok) {
+            throw new Error(`quadruple-repaired project failed boundary round-trip (${rt.reason}) for ${combo}`);
+          }
+        },
+      ),
+      { seed: SEED9, numRuns: 1000 },
+    );
+  });
+
+  it('HEAL → EDIT → RE-HEAL: a healed project stays consistent through an edit walk and a SECOND corruption', () => {
+    fc.assert(
+      fc.property(
+        projectArb(),
+        corruptionArb,
+        fc.nat(),
+        fc.array(nonGeometricCmdArb(), { maxLength: 10 }),
+        corruptionArb,
+        fc.nat(),
+        (project, tag1, pick1, editCmds, tag2, pick2) => {
+          // 1. First corrupt → repair to a clean fixpoint.
+          const inj1 = corrupt(project, tag1, pick1);
+          if (inj1 === null) return; // inapplicable — skip.
+          const fix1 = repairToFixpoint(inj1.project);
+          if (fix1.honestyViolated) {
+            throw new Error(`first repair DISHONEST for "${tag1}"`);
+          }
+          if (!fix1.converged) return; // convergence covered by Section 2; only continue from a clean heal.
+          const healed = fix1.project;
+          if (!checkConsistency(healed, CAL).ok) {
+            throw new Error(`post-repair-1 project NOT clean for "${tag1}"`);
+          }
+
+          // 2. Apply a GEOMETRY-PRESERVING edit walk to the HEALED project (a user
+          //    keeps editing a once-repaired file). These edits must NOT introduce a
+          //    new inconsistency (geometry-preserving subset, see nonGeometricCmdArb),
+          //    and the project must round-trip after EACH step.
+          let edited = healed;
+          for (const c of editCmds) {
+            edited = applyCmd(edited, c);
+            const check = checkAllInvariants(edited);
+            if (!check.ok) {
+              throw new Error(`invariant "${check.failed}" broke editing a HEALED project after ${JSON.stringify(c)}`);
+            }
+          }
+          const editedReport = checkConsistency(edited, CAL);
+          if (!editedReport.ok) {
+            throw new Error(
+              `editing a HEALED project produced an inconsistency (${tag1}→edit): ${editedReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rtEdited = boundaryRoundTrips(edited);
+          if (!rtEdited.ok) {
+            throw new Error(`healed-then-edited project failed boundary round-trip (${rtEdited.reason})`);
+          }
+
+          // 3. Corrupt the healed-and-edited project a SECOND time and re-repair.
+          const inj2 = corrupt(edited, tag2, pick2);
+          if (inj2 === null) return; // second corruption inapplicable to this edited shape — skip.
+          const report2 = checkConsistency(inj2.project, CAL);
+          if (report2.ok) {
+            throw new Error(`second corruption "${tag2}" on a healed-then-edited project was NOT detected`);
+          }
+          const fix2 = repairToFixpoint(inj2.project);
+          if (fix2.honestyViolated) {
+            throw new Error(`second repair DISHONEST for "${tag1}→edit→${tag2}"`);
+          }
+          if (!fix2.converged) {
+            throw new Error(`second repair did NOT converge for "${tag1}→edit→${tag2}" (stuck=${fix2.stuck})`);
+          }
+          const finalReport = checkConsistency(fix2.project, CAL);
+          if (!finalReport.ok) {
+            throw new Error(
+              `post-re-heal project still inconsistent (${tag1}→edit→${tag2}): ${finalReport.inconsistencies
+                .map((i) => i.kind)
+                .join(', ')}`,
+            );
+          }
+          const rt2 = boundaryRoundTrips(fix2.project);
+          if (!rt2.ok) {
+            throw new Error(`re-healed project failed boundary round-trip (${rt2.reason}) for "${tag1}→edit→${tag2}"`);
+          }
+        },
+      ),
+      { seed: SEED9, numRuns: 900 },
+    );
+  });
+});

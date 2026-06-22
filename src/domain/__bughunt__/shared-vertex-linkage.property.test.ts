@@ -3877,3 +3877,459 @@ describe('shared-vertex-linkage round-3 seventh pass (seed 33003)', () => {
     );
   });
 });
+
+// ===========================================================================
+// EIGHTH EXPLORATION PASS (bug-hunt round 3 — "発見のみ・修正しない", 第3回).
+// A FRESH, INDEPENDENT search with a NEW seed (33004 — disjoint from EVERY
+// earlier pass: round-1 seeds 1000-6000 / 3004, round-2 seeds 23001-23004, and
+// round-3 seeds 33002 / 33003) and numRuns deliberately raised. The earlier
+// passes never:
+//   - unshared SEVERAL distinct shared vertices in ONE step (interleaved fan),
+//   - moved a vertex EXACTLY onto a non-adjacent same-container neighbour's live
+//     coordinate to probe quantized zero-length detection through the linkage,
+//   - cut a shared edge and then SHARED the minted cut id onto a THIRD vertex
+//     (a different container) in one composite step,
+//   - asserted moveVertices COMMUTES with save∘load (the body update is pure
+//     plain-data and must survive a round-trip on either side),
+//   - asserted unshareReference on a NON-shared vertex's sole reference is a
+//     genuine no-op apply that does NOT spuriously birth a shared group, and
+//   - asserted that an applied unshare strictly REDUCES the citation count of the
+//     original id by exactly one (conservation of citations across the split).
+//
+// New command kinds:
+//   * `fanUnshare`   — split ONE reference off EACH of up to three DISTINCT shared
+//                      vertices in a single step (interleaved, re-deriving refs
+//                      between legs). Drives the id-mint / reverse-index rebuild
+//                      path across multiple simultaneous fans.
+//   * `moveToNeighbor` — move a chosen vertex EXACTLY onto the live coordinate of
+//                      another vertex that shares one of its containers. The
+//                      zeroLengthEdgeValidator must REJECT when the two become
+//                      adjacent / quantize-coincident on a ring or line edge, and
+//                      the input must be untouched on that rejection.
+//   * `cutThenShareThird` — insert a shared-edge cut, then SHARE the minted cut id
+//                      onto a third cited vertex of a DIFFERENT container. A mint
+//                      followed by a merge of that mint, composed in one step.
+//   * `reindexTransfer` — transferSharing folding a cited id onto a target, then
+//                      IMMEDIATELY a second fold of a fresh id onto the SAME
+//                      target, so the target accrues citations across two folds in
+//                      one step (carry-forward / prune run twice back to back).
+//
+// New algebraic / metamorphic laws checked here (none asserted by earlier passes):
+//   * moveVertices COMMUTES with save∘load: load(save(move(s))) ≡
+//     move(load(save(s))) for an applied move (plain-data body update is
+//     round-trip-stable on either side).
+//   * unshareReference on a vertex cited EXACTLY ONCE applies (mints a fresh body
+//     and repoints the sole reference) WITHOUT creating a shared group — the
+//     original id ends cited zero times, the minted id cited once, neither shared.
+//   * an applied unshare conserves citations: refsBefore(original) =
+//     refsAfter(original) + 1 (exactly one citation peeled onto the mint).
+//   * fully fanning several shared vertices leaves NONE of them shared.
+//   * save∘load = identity across the round-8 op stream.
+//   * a rejected round-8 op leaves the input untouched (full rollback).
+//   * sharedVertexIds is duplicate-free after every op (selection validity).
+// ===========================================================================
+
+const SEED8 = 33004;
+const NUM_RUNS8 = 1200;
+
+type Op8 =
+  | { readonly t: 'fanUnshare'; readonly a: number; readonly b: number; readonly c: number }
+  | { readonly t: 'moveToNeighbor'; readonly i: number; readonly j: number }
+  | { readonly t: 'cutThenShareThird'; readonly pIdx: number; readonly qIdx: number; readonly tIdx: number; readonly lon: number; readonly lat: number }
+  | { readonly t: 'reindexTransfer'; readonly a: number; readonly b: number; readonly tgt: number }
+  | { readonly t: 'share'; readonly i: number; readonly j: number }
+  | { readonly t: 'unshare'; readonly i: number }
+  | { readonly t: 'edgeCut'; readonly pIdx: number; readonly qIdx: number; readonly lon: number; readonly lat: number };
+
+const op8Arb: fc.Arbitrary<Op8> = fc.oneof(
+  fc.record({ t: fc.constant('fanUnshare' as const), a: fc.nat(20), b: fc.nat(20), c: fc.nat(20) }),
+  fc.record({ t: fc.constant('moveToNeighbor' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('cutThenShareThird' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    tIdx: fc.nat(20),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+  fc.record({ t: fc.constant('reindexTransfer' as const), a: fc.nat(20), b: fc.nat(20), tgt: fc.nat(20) }),
+  fc.record({ t: fc.constant('share' as const), i: fc.nat(20), j: fc.nat(20) }),
+  fc.record({ t: fc.constant('unshare' as const), i: fc.nat(20) }),
+  fc.record({
+    t: fc.constant('edgeCut' as const),
+    pIdx: fc.nat(8),
+    qIdx: fc.nat(8),
+    lon: fc.integer({ min: -179, max: 179 }),
+    lat: fc.integer({ min: -85, max: 85 }),
+  }),
+);
+
+function applyOp8(ctx: ModelCtx, op: Op8): void {
+  const validators = [zeroLengthEdgeValidator];
+  switch (op.t) {
+    case 'fanUnshare': {
+      // Split ONE reference off EACH of up to three distinct shared vertices,
+      // re-deriving the shared set between legs (ids / positions shift as bodies
+      // are minted and references repointed).
+      for (const pickIdx of [op.a, op.b, op.c]) {
+        const shared = sharedVertexIds(ctx.state);
+        const vid = pick(shared, pickIdx);
+        if (vid === undefined) continue;
+        const refs = referencesOf(ctx.state, vid);
+        if (refs.length < 2) continue;
+        const ref = refs[pickIdx % refs.length];
+        if (ref === undefined) continue;
+        const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+        if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+          ctx.state = out.result.state;
+          ctx.idState = out.idState;
+        }
+      }
+      return;
+    }
+    case 'moveToNeighbor': {
+      // Move a chosen vertex onto the LIVE coordinate of another cited vertex.
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const vid = pick(ids, op.i);
+      const other = pick(ids, op.j);
+      if (vid === undefined || other === undefined || vid === other) return;
+      const target = getVertex(ctx.state.vertices, other);
+      if (target === undefined) return;
+      const res = moveVertices(ctx.state, [{ vertexId: vid, coordinate: target.coordinate }], { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'cutThenShareThird': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: 0 },
+          partner: { containerKey: containerKey(partner.container), edgeStart: 0 },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+      ctx.state = out.result.state;
+      ctx.idState = out.idState;
+      const cutId = out.cutVertexId;
+      if (cutId === undefined) return;
+      // Share the minted cut id onto a THIRD cited vertex (merge of the mint).
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const third = pick(ids, op.tIdx);
+      if (third === undefined || third === cutId) return;
+      const merged = shareVertices(ctx.state, cutId, third, { validators });
+      if (merged.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = merged.state;
+      return;
+    }
+    case 'reindexTransfer': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      if (ids.length < 3) return;
+      const target = ids[op.tgt % ids.length];
+      const a = ids[op.a % ids.length];
+      if (target === undefined || a === undefined) return;
+      if (a !== target) ctx.state = transferSharing(ctx.state, new Map([[a, target]]));
+      // Second fold of a FRESH id onto the SAME target.
+      const ids2 = [...new Set(allCitedIds(ctx.state))];
+      const b = pick(ids2, op.b);
+      if (b === undefined || b === target) return;
+      ctx.state = transferSharing(ctx.state, new Map([[b, target]]));
+      return;
+    }
+    case 'share': {
+      const ids = [...new Set(allCitedIds(ctx.state))];
+      const cand = pick(ids, op.i);
+      const targ = pick(ids, op.j);
+      if (cand === undefined || targ === undefined) return;
+      const res = shareVertices(ctx.state, cand, targ, { validators });
+      if (res.status === SHARED_VERTEX_OUTCOME.Applied) ctx.state = res.state;
+      return;
+    }
+    case 'unshare': {
+      const shared = sharedVertexIds(ctx.state);
+      const vid = pick(shared, op.i);
+      if (vid === undefined) return;
+      const refs = referencesOf(ctx.state, vid);
+      const ref = refs[op.i % refs.length];
+      if (ref === undefined) return;
+      const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, { validators });
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+    case 'edgeCut': {
+      const entries = [...ctx.state.containers.values()];
+      if (entries.length < 2) return;
+      const primary = entries[op.pIdx % entries.length];
+      const partner = entries[op.qIdx % entries.length];
+      if (primary === undefined || partner === undefined) return;
+      if (containerKey(primary.container) === containerKey(partner.container)) return;
+      const pEdge = realEdgeStart(primary, op.pIdx);
+      const qEdge = realEdgeStart(partner, op.qIdx);
+      if (pEdge === undefined || qEdge === undefined) return;
+      const out = insertSharedEdgeCut(
+        ctx.state,
+        {
+          primary: { containerKey: containerKey(primary.container), edgeStart: pEdge },
+          partner: { containerKey: containerKey(partner.container), edgeStart: qEdge },
+          cutCoordinate: createCoordinate(op.lon + 0.5, op.lat + 0.5),
+        },
+        ctx.idState,
+        ctx.clock,
+        { validators },
+      );
+      if (out.result.status === SHARED_VERTEX_OUTCOME.Applied) {
+        ctx.state = out.result.state;
+        ctx.idState = out.idState;
+      }
+      return;
+    }
+  }
+}
+
+describe('shared-vertex-linkage round-3 eighth pass (seed 33004)', () => {
+  it('round-8 new-op random sequences preserve all invariants after every step', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op8Arb, { minLength: 1, maxLength: 30 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        checkInvariants(ctx.state, 'initial');
+        checkParticipationOfShared(ctx.state, 'initial');
+        checkSharedSetDistinct(ctx.state, 'initial');
+        let step = 0;
+        for (const op of ops) {
+          applyOp8(ctx, op);
+          step += 1;
+          const label = `after step ${step} (${op.t})`;
+          checkInvariants(ctx.state, label);
+          checkParticipationOfShared(ctx.state, label);
+          checkSharedSetDistinct(ctx.state, label);
+        }
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  it('save∘load = identity on round-8 reachable states', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op8Arb, { minLength: 0, maxLength: 25 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp8(ctx, op);
+        const restored = load(save(ctx.state));
+        expect(canonical(restored)).toEqual(canonical(ctx.state));
+        expect(canonical(load(save(restored)))).toEqual(canonical(ctx.state));
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  it('a rejected round-8 op leaves the input state untouched (full rollback)', () => {
+    fc.assert(
+      fc.property(seedArb, op8Arb, (seed, op) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const ctx: ModelCtx = { state, idState: createIdGeneratorState(0, 0), clock: makeClock() };
+        applyOp8(ctx, op);
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  // moveVertices COMMUTES with save∘load: the body update is pure plain-data, so a
+  // JSON round-trip before or after an applied move yields byte-identical content.
+  it('moveVertices commutes with save∘load', () => {
+    fc.assert(
+      fc.property(
+        seedArb,
+        fc.nat(20),
+        fc.integer({ min: -179, max: 179 }),
+        fc.integer({ min: -85, max: 85 }),
+        (seed, idx, lon, lat) => {
+          const state = buildState(seed);
+          const ids = [...new Set(allCitedIds(state))];
+          const vid = pick(ids, idx);
+          if (vid === undefined) return;
+          const coord = createCoordinate(lon, lat);
+          // move THEN round-trip.
+          const movedThenLoaded = moveVertices(state, [{ vertexId: vid, coordinate: coord }], { validators: [zeroLengthEdgeValidator] });
+          if (movedThenLoaded.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          const left = load(save(movedThenLoaded.state));
+          // round-trip THEN move.
+          const reloaded = load(save(state));
+          const movedAfter = moveVertices(reloaded, [{ vertexId: vid, coordinate: coord }], { validators: [zeroLengthEdgeValidator] });
+          if (movedAfter.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+          checkInvariants(left, 'move-then-load');
+          checkInvariants(movedAfter.state, 'load-then-move');
+          expect(canonical(left)).toEqual(canonical(movedAfter.state));
+        },
+      ),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  // Unsharing the SOLE reference of a NON-shared vertex still applies (mints a
+  // fresh same-coordinate body, repoints the only reference), but must NOT birth a
+  // spurious shared group: the original id ends cited zero times, the minted id
+  // cited exactly once, and neither is shared.
+  it('unshare of a non-shared vertex repoints its sole reference without sharing', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(20), (seed, idx) => {
+        const state = buildState(seed);
+        // Pick a cited id that is NOT shared (cited exactly once).
+        const counts = new Map<VertexId, number>();
+        for (const id of allCitedIds(state)) counts.set(id, (counts.get(id) ?? 0) + 1);
+        const singles = [...counts.entries()].filter(([, c]) => c === 1).map(([id]) => id);
+        const vid = pick(singles, idx);
+        if (vid === undefined) return;
+        const refs = referencesOf(state, vid);
+        expect(refs.length).toBe(1);
+        const ref = refs[0];
+        if (ref === undefined) return;
+        const out = unshareReference(state, vid, ref, createIdGeneratorState(0, 0), makeClock(), {
+          validators: [zeroLengthEdgeValidator],
+        });
+        if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        const newId = out.newVertexId;
+        expect(newId).toBeDefined();
+        if (newId === undefined) return;
+        // The original id is now cited zero times; the minted id cited once.
+        expect(allCitedIds(out.result.state).includes(vid)).toBe(false);
+        expect(referencesOf(out.result.state, newId).length).toBe(1);
+        // Neither is shared (no spurious group birthed).
+        expect(isSharedVertex(out.result.state, vid)).toBe(false);
+        expect(isSharedVertex(out.result.state, newId)).toBe(false);
+        checkInvariants(out.result.state, 'after non-shared unshare');
+        checkSharedSetDistinct(out.result.state, 'after non-shared unshare');
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  // Citation conservation: an applied unshare peels EXACTLY one citation off the
+  // original id onto the freshly minted id — refsBefore(orig) === refsAfter(orig)
+  // + 1, and the minted id is cited exactly once.
+  it('an applied unshare conserves citations (peels exactly one onto the mint)', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op8Arb, { minLength: 0, maxLength: 12 }), fc.nat(20), (seed, ops, idx) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp8(ctx, op);
+        const shared = sharedVertexIds(ctx.state);
+        const vid = pick(shared, idx);
+        if (vid === undefined) return;
+        const refsBefore = referencesOf(ctx.state, vid).length;
+        if (refsBefore < 2) return;
+        const ref = referencesOf(ctx.state, vid)[idx % refsBefore];
+        if (ref === undefined) return;
+        const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, {
+          validators: [zeroLengthEdgeValidator],
+        });
+        if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) return;
+        const newId = out.newVertexId;
+        if (newId === undefined) return;
+        const refsAfter = referencesOf(out.result.state, vid).length;
+        expect(refsAfter).toBe(refsBefore - 1);
+        expect(referencesOf(out.result.state, newId).length).toBe(1);
+        checkInvariants(out.result.state, 'after conserving unshare');
+        checkParticipationOfShared(out.result.state, 'after conserving unshare');
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  // Fully fanning several shared vertices: split off references (last-ref first)
+  // from EACH currently-shared vertex until none remain shared. The end state must
+  // have an EMPTY shared set, and every invariant must hold throughout.
+  it('fanning every shared vertex apart leaves an empty shared set', () => {
+    fc.assert(
+      fc.property(seedArb, fc.array(op8Arb, { minLength: 0, maxLength: 12 }), (seed, ops) => {
+        const ctx: ModelCtx = {
+          state: buildState(seed),
+          idState: createIdGeneratorState(0, 0),
+          clock: makeClock(),
+        };
+        for (const op of ops) applyOp8(ctx, op);
+        // Repeatedly peel the last ref off each shared vertex until none are left.
+        let guard = 0;
+        while (guard < 64) {
+          guard += 1;
+          const shared = sharedVertexIds(ctx.state);
+          if (shared.length === 0) break;
+          const vid = shared[0];
+          if (vid === undefined) break;
+          const refs = referencesOf(ctx.state, vid);
+          if (refs.length < 2) break;
+          const ref = refs[refs.length - 1];
+          if (ref === undefined) break;
+          const out = unshareReference(ctx.state, vid, ref, ctx.idState, ctx.clock, {
+            validators: [zeroLengthEdgeValidator],
+          });
+          if (out.result.status !== SHARED_VERTEX_OUTCOME.Applied) break; // a leg rejected
+          ctx.state = out.result.state;
+          ctx.idState = out.idState;
+        }
+        // If the loop terminated cleanly (no rejection), the shared set is empty.
+        if (sharedVertexIds(ctx.state).length === 0) {
+          checkInvariants(ctx.state, 'after full fan');
+          checkParticipationOfShared(ctx.state, 'after full fan');
+          checkSharedSetDistinct(ctx.state, 'after full fan');
+        }
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+
+  // moveToNeighbor: moving a vertex EXACTLY onto a same-container neighbour's live
+  // coordinate must be REJECTED by the zero-length-edge validator when the two are
+  // adjacent (or quantize-coincident) on a ring / line edge — and the input must
+  // be untouched on that rejection (immutability + full rollback).
+  it('moving onto an adjacent same-container neighbour is rejected (zero-length edge), input untouched', () => {
+    fc.assert(
+      fc.property(seedArb, fc.nat(8), (seed, cIdx) => {
+        const state = buildState(seed);
+        const before = canonical(state);
+        const entries = [...state.containers.values()];
+        const entry = entries[cIdx % Math.max(1, entries.length)];
+        if (entry === undefined || entry.vertexIds.length < 2) return;
+        // Take two ADJACENT positions in the container.
+        const a = entry.vertexIds[0];
+        const b = entry.vertexIds[1];
+        if (a === undefined || b === undefined || a === b) return;
+        const bodyB = getVertex(state.vertices, b);
+        if (bodyB === undefined) return;
+        // Move `a` onto `b`'s coordinate -> the a->b edge collapses to zero length.
+        const res = moveVertices(state, [{ vertexId: a, coordinate: bodyB.coordinate }], {
+          validators: [zeroLengthEdgeValidator],
+        });
+        expect(res.status).toBe(SHARED_VERTEX_OUTCOME.Rejected);
+        if (res.status === SHARED_VERTEX_OUTCOME.Rejected) {
+          expect(res.reason).toBe(REJECT_REASON.ResultInvalid);
+        }
+        // The input state object is unchanged (immutability).
+        expect(canonical(state)).toEqual(before);
+      }),
+      { seed: SEED8, numRuns: NUM_RUNS8 },
+    );
+  });
+});

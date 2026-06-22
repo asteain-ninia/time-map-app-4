@@ -149,6 +149,51 @@ export function clearEmphasis(state: FilterState): FilterState {
 }
 
 /**
+ * Re-evaluate the per-feature parts of the filter state against the CURRENT set
+ * of live feature ids (教訓 5.5/5.6 + 教訓 5.11): drop any emphasized-id and any
+ * `individual` override whose feature no longer exists. This is the SAME
+ * criterion {@link reevaluateResult} (search.ts) applies to search hits — derived
+ * from the live母集合, not gated on which command changed it.
+ *
+ * WHY (finding bughunt3 — dangling emphasized ids): the kind/depth axes are
+ * value-keyed and self-heal, but `emphasizedIds` and `individual` are keyed by
+ * `FeatureId`. When a feature is deleted (edit op / undo / redo), nothing prunes
+ * those id-keyed sets, so a deleted id lingers. The ID generator never recycles a
+ * live id, but undo/redo REPLAYS a recorded id, so the exact id can return on a
+ * later structure change; the stale emphasis would then re-attach to whatever
+ * feature now carries that id (cross-domain display-state corruption). Every
+ * structure-changing path must funnel through this one reconciliation so a removed
+ * id can never dangle. Pure / immutable: returns the SAME reference when nothing
+ * changed (no needless identity churn for the display memos, cf. store identity
+ * stability), else a fresh pruned state.
+ */
+export function reconcileToLiveFeatures(
+  state: FilterState,
+  liveFeatureIds: ReadonlySet<FeatureId>,
+): FilterState {
+  let emphasizedChanged = false;
+  const emphasizedIds = new Set<FeatureId>();
+  for (const id of state.emphasizedIds) {
+    if (liveFeatureIds.has(id)) emphasizedIds.add(id);
+    else emphasizedChanged = true;
+  }
+
+  let individualChanged = false;
+  const individual = new Map<FeatureId, IndividualOverride>();
+  for (const [id, override] of state.individual) {
+    if (liveFeatureIds.has(id)) individual.set(id, override);
+    else individualChanged = true;
+  }
+
+  if (!emphasizedChanged && !individualChanged) return state;
+  return {
+    ...state,
+    ...(emphasizedChanged ? { emphasizedIds } : {}),
+    ...(individualChanged ? { individual } : {}),
+  };
+}
+
+/**
  * Whether ANY emphasis is currently in effect. When true, the resolution dims
  * features that are not emphasized; when false, every passing feature renders at
  * the plain opacity (受け入れ基準1: 強調が無いときは減衰しない).

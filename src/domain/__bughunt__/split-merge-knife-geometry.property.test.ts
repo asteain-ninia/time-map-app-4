@@ -4522,3 +4522,575 @@ describe('seed=31003 — anchor series op∘inverse-op: setEnd / changeStart rou
     );
   });
 });
+
+// ===========================================================================
+// 14. SEED=31004 EXTENSION — NEW exploration (bug-hunt round 3, disjoint from the
+//     1000-6000 AND 21000-31003 bands). NEW command set / generators / metamorphic
+//     relations that NO earlier seed combines.
+//
+// Every earlier seed asserts on the produced SHAPES (alternation / valid MP /
+// finite / area) and the FOREST (childIds / acyclic), and a few assert on the
+// vertex STORE (dangling-free). But NONE of seeds 1000-31003 ever inspects the
+// `vertexRemap` field that BOTH the split proposal (knife/proposal.ts) and the
+// leaf-only merge proposal (merge/proposal.ts) emit — the FR-95 旧→新頂点対応写像
+// that U11 `transferSharing` consumes to carry 共有頂点 continuation across an edit.
+// A defect in buildRemap (an entry pointing at a vertex that does not survive, a
+// remap whose endpoints' quantized coordinates DIFFER, a key that is not actually
+// one of the target's old vertices, or a non-deterministic remap) would corrupt
+// the shared-vertex graph on the very next edit and is INVISIBLE to every shape /
+// forest / store assertion the earlier seeds make. This block opens five live
+// relations none of them touch, all centered on the remap as a first-class value:
+//
+//   (Z1) SPLIT remap soundness (FR-95): for proposal.vertexRemap, EVERY (oldId →
+//        newId) entry must satisfy — oldId is one of the TARGET leaf's old vertex
+//        ids; newId exists among the proposal's freshly-minted `vertices`; and the
+//        old and new vertices share the SAME quantized+normalized coordinate (the
+//        exact coordKey contract buildRemap enforces). The remap is a partial map
+//        (vertices the boolean op dissolved have no entry) — so keys ⊆ old ids, and
+//        every VALUE is a minted new vertex. No NaN/Infinity on either endpoint.
+//
+//   (Z2) MERGE remap soundness (FR-95): the SAME contract through buildMergeProposal
+//        on a leaf-only union — every (oldId → newId) maps an old TARGET-leaf vertex
+//        to a surviving `nextVertices` vertex at the identical quantized coordinate.
+//        Leaf-only merges are the only mergeKind that rebuilds vertices, so the remap
+//        is non-empty exactly there; an aggregate-only merge leaves it empty.
+//
+//   (Z3) remap-DRIVEN selection validity (選択が常に有効, via FR-95): a stateful model
+//        that carries a SET of "selected vertex ids" and, after every split/merge,
+//        RE-POINTS the selection through the op's vertexRemap (selected old id →
+//        its new id when the remap names it; dropped when the op dissolved it). After
+//        every op EVERY surviving selected id must exist in the live store — a remap
+//        that named a non-existent target, or omitted a survivor, would dangle the
+//        selection. Full world battery + per-op REAL persistence round-trip + undo
+//        stack (undo ∘ op == identity over BOTH world AND selection).
+//
+//   (Z4) remap DETERMINISM (op == op over the remap value): two independent
+//        assembleSplitProposal runs on the same target+line produce remaps with the
+//        SAME old-id key SET and the SAME old→new COORDINATE mapping (the minted new
+//        ids differ because idPorts mint fresh ids, so we compare the coordinate
+//        relation, not literal ids). A non-deterministic buildRemap would surface
+//        here and nowhere else.
+//
+//   (Z5) remap COVERAGE vs survival: a target old vertex has a remap entry IFF its
+//        quantized coordinate survives into the union result (i.e. it is a corner the
+//        boolean op kept). Concretely: every target old vertex whose coordinate
+//        equals some minted new-vertex coordinate MUST appear as a remap key; and no
+//        remap key's coordinate is absent from the minted set. This pins buildRemap's
+//        "和で消えた頂点は対応なし" contract from BOTH directions (no spurious entry,
+//        no missing survivor) — a one-sided test would miss a dropped survivor.
+//
+// Determinism: seed = 31004, numRuns large (per task). PERMANENT asset — any
+// reproduced counterexample is a real domain defect, never to be masked here.
+// ===========================================================================
+
+import { quantizeCoordinate as quantizeCoordinate31004 } from '../geometry/index';
+import { normalizeCoordinate as normalizeCoordinate31004 } from '../geo/index';
+import type { VertexId as VertexId31004 } from '../ids';
+
+const SEED_31004 = 31004;
+const RUNS_31004 = 600;
+
+/** The exact coordKey buildRemap / coordKey use (quantize ∘ normalize → string). */
+function coordKey31004(c: WorldCoordinate): string {
+  const q = quantizeCoordinate31004(normalizeCoordinate31004(c));
+  return `${q.lon}|${q.lat}`;
+}
+
+/** Every vertex id cited by a leaf's rings. */
+function leafVertexIds31004(leaf: LeafFeature): Set<VertexId31004> {
+  const set = new Set<VertexId31004>();
+  for (const ring of leaf.shape.rings) for (const vid of ring.vertexIds) set.add(vid);
+  return set;
+}
+
+/**
+ * Core remap soundness battery shared by (Z1)/(Z2): given the OLD store, the OLD
+ * target vertex-id set, the NEW store (post-op), the minted-new vertex id set, and
+ * the remap, assert every FR-95 contract clause. `targetOldIds` is the universe of
+ * ids the remap is allowed to KEY on; `newVertexIds` is the set the remap may map TO.
+ */
+function assertRemapSound31004(args: {
+  oldStore: VertexStore;
+  targetOldIds: ReadonlySet<VertexId31004>;
+  newStore: VertexStore;
+  newVertexIds: ReadonlySet<VertexId31004>;
+  remap: ReadonlyMap<VertexId31004, VertexId31004>;
+}): void {
+  const { oldStore, targetOldIds, newStore, newVertexIds, remap } = args;
+  // Build the coordKey set of the minted-new vertices (the union-result corners).
+  const newKeyToId = new Map<string, VertexId31004>();
+  for (const nid of newVertexIds) {
+    const nv = newStore.byId.get(nid);
+    expect(nv).toBeDefined();
+    if (nv) newKeyToId.set(coordKey31004(nv.coordinate), nid);
+  }
+
+  for (const [oldId, newId] of remap.entries()) {
+    // (a) the KEY is one of the target's OLD vertices.
+    expect(targetOldIds.has(oldId)).toBe(true);
+    // (b) the VALUE is one of the freshly-minted NEW vertices that survives.
+    expect(newVertexIds.has(newId)).toBe(true);
+    const ov = oldStore.byId.get(oldId);
+    const nv = newStore.byId.get(newId);
+    expect(ov).toBeDefined();
+    expect(nv).toBeDefined();
+    if (!ov || !nv) continue;
+    // (c) endpoints are finite (no NaN / Infinity introduced by the remap).
+    expect(Number.isFinite(ov.coordinate.lon) && Number.isFinite(ov.coordinate.lat)).toBe(true);
+    expect(Number.isFinite(nv.coordinate.lon) && Number.isFinite(nv.coordinate.lat)).toBe(true);
+    // (d) old and new share the SAME quantized+normalized coordinate (coordKey).
+    expect(coordKey31004(ov.coordinate)).toBe(coordKey31004(nv.coordinate));
+  }
+
+  // (Z5) coverage, BOTH directions:
+  //   • no spurious entry: every remap key's coordinate is present among the minted
+  //     set (already implied by clause (d), re-checked against the minted key set);
+  //   • no missing survivor: every OLD target vertex whose coordinate equals a minted
+  //     new-vertex coordinate MUST appear as a remap key (和で消えた頂点 only are absent).
+  for (const oldId of remap.keys()) {
+    const ov = oldStore.byId.get(oldId)!;
+    expect(newKeyToId.has(coordKey31004(ov.coordinate))).toBe(true);
+  }
+  for (const oldId of targetOldIds) {
+    const ov = oldStore.byId.get(oldId);
+    if (ov === undefined) continue;
+    const key = coordKey31004(ov.coordinate);
+    if (newKeyToId.has(key)) {
+      // This old corner survived into the result → it MUST be remapped, and to the
+      // new vertex sharing its coordinate.
+      expect(remap.has(oldId)).toBe(true);
+      const mapped = remap.get(oldId);
+      expect(mapped).toBeDefined();
+      if (mapped !== undefined) {
+        expect(coordKey31004(newStore.byId.get(mapped)!.coordinate)).toBe(key);
+      }
+    }
+  }
+}
+
+// --- (Z1) SPLIT vertexRemap soundness ----------------------------------------
+
+describe('seed=31004 — split vertexRemap is sound (FR-95 旧→新頂点対応写像)', () => {
+  it('every remap entry keys an old target vertex and maps to a minted new vertex at the same quantized coord', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), fc.boolean(), (w, h, f, sideB) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+        const proposal = assembleSplitProposal({
+          target: feature,
+          store: store.byId,
+          result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+          choice: createInheritanceChoice(sideB ? INHERITANCE_SIDE.B : INHERITANCE_SIDE.A),
+          nonInherited: { attributes: ATTRS, color: COLOR },
+          ids: idPorts(),
+        });
+        const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+        const newVertexIds = new Set<VertexId31004>(proposal.vertices.map((v) => v.id));
+        assertRemapSound31004({
+          oldStore: store,
+          targetOldIds: leafVertexIds31004(feature),
+          newStore: postStore,
+          newVertexIds,
+          remap: proposal.vertexRemap,
+        });
+        // The remap is NON-EMPTY for a real split (some original corner always
+        // survives into at least one side — the cut never dissolves the whole leaf).
+        expect(proposal.vertexRemap.size).toBeGreaterThan(0);
+      }),
+      { seed: SEED_31004, numRuns: RUNS_31004 },
+    );
+  });
+});
+
+// --- (Z2) MERGE vertexRemap soundness (leaf-only union) ----------------------
+
+describe('seed=31004 — leaf-only merge vertexRemap is sound (FR-95)', () => {
+  it('a leaf-only union remap maps surviving old target vertices to nextVertices at the same quantized coord', () => {
+    fc.assert(
+      fc.property(
+        fc.double({ min: 20, max: 50, noNaN: true }),
+        fc.double({ min: 20, max: 50, noNaN: true }),
+        fc.double({ min: 1, max: 6, noNaN: true }), // small overlap so the union fuses a shared edge.
+        (w, h, overlap) => {
+          // Two boxes that ABUT/overlap on a shared vertical edge so the union keeps
+          // most corners (giving a non-trivial remap) yet fuses the seam.
+          const bA = box(0, w, 0, h);
+          const bB = box(w - overlap, 2 * w - overlap, 0, h);
+          const verts: Vertex[] = [];
+          [bA, bB].forEach((b) => b.ids.forEach((id, k) => verts.push(createVertex(id, b.coords[k]!))));
+          const store = createVertexStore(verts);
+          const leafA = createLeafFeature(
+            asFeatureId(`bh31004-a-${counter++}`),
+            createBasicAttributes('A', 0, 100),
+            COLOR,
+            createShape([createTerritoryRing(freshRid(), bA.ids)]),
+          );
+          const leafB = createLeafFeature(
+            asFeatureId(`bh31004-b-${counter++}`),
+            createBasicAttributes('B', 0, 100),
+            COLOR,
+            createShape([createTerritoryRing(freshRid(), bB.ids)]),
+          );
+
+          const res = buildMergeProposal({
+            features: [leafA, leafB],
+            vertices: store,
+            targetIds: [leafA.id, leafB.id],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(res.status).toBe(MERGE_STATUS.Proposal);
+          if (res.status !== MERGE_STATUS.Proposal) return;
+          const mp = res.proposal;
+          expect(mp.mergeKind).toBe(MERGE_KIND_21003.LeafOnly);
+
+          // The minted-new vertices are exactly those present in nextVertices but not
+          // in the OLD store (the leaf-only union rebuilds the result leaf's vertices).
+          const newVertexIds = new Set<VertexId31004>();
+          for (const [id] of mp.nextVertices.byId) {
+            if (!store.byId.has(id)) newVertexIds.add(id);
+          }
+          const targetOldIds = new Set<VertexId31004>([
+            ...leafVertexIds31004(leafA),
+            ...leafVertexIds31004(leafB),
+          ]);
+          assertRemapSound31004({
+            oldStore: store,
+            targetOldIds,
+            newStore: mp.nextVertices,
+            newVertexIds,
+            remap: mp.vertexRemap,
+          });
+          // A leaf-only union rebuilds vertices → the remap is non-empty.
+          expect(mp.vertexRemap.size).toBeGreaterThan(0);
+        },
+      ),
+      { seed: SEED_31004, numRuns: RUNS_31004 },
+    );
+  });
+
+  it('an aggregate-only merge leaves the remap empty (no vertices rebuilt)', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 2, max: 4 }), (numAgg) => {
+        const features: Feature[] = [];
+        const verts: Vertex[] = [];
+        const aggIds: ReturnType<typeof asFeatureId>[] = [];
+        for (let i = 0; i < numAgg; i += 1) {
+          const aggId = asFeatureId(`bh31004-A-${counter++}`);
+          aggIds.push(aggId);
+          const lb = box(i * 100, i * 100 + 50, 0, 50);
+          lb.ids.forEach((id, k) => verts.push(createVertex(id, lb.coords[k]!)));
+          const childId = asFeatureId(`bh31004-c-${counter++}`);
+          features.push(
+            createLeafFeature(
+              childId,
+              createBasicAttributes(`c${i}`, 0, 100),
+              COLOR,
+              createShape([createTerritoryRing(freshRid(), lb.ids)]),
+              { parentId: aggId },
+            ),
+          );
+          features.push(
+            createAggregateFeature(aggId, createBasicAttributes(`A${i}`, 0, 100), COLOR, [childId]),
+          );
+        }
+        const res = buildMergeProposal({
+          features,
+          vertices: createVertexStore(verts),
+          targetIds: aggIds,
+          atTime: 50,
+          parentDecision: parentNone,
+          propertyDecision: propertyNew({ attributes: createBasicAttributes('agg', 0, 100), color: COLOR }),
+          ids: idPorts(),
+        });
+        expect(res.status).toBe(MERGE_STATUS.Proposal);
+        if (res.status !== MERGE_STATUS.Proposal) return;
+        // AggregateOnly merges do NOT rebuild geometry → the remap is empty.
+        expect(res.proposal.vertexRemap.size).toBe(0);
+      }),
+      { seed: SEED_31004, numRuns: RUNS_31004 },
+    );
+  });
+});
+
+// --- (Z3) remap-driven selection validity stateful model ---------------------
+
+interface SelWorld {
+  readonly world: World;
+  /** A set of "selected" vertex ids the user is tracking across edits. */
+  readonly selected: ReadonlySet<VertexId31004>;
+}
+
+type SelCmd =
+  | { readonly t: 'split'; readonly leafPick: number; readonly frac: number }
+  | { readonly t: 'merge'; readonly aPick: number; readonly bPick: number }
+  | { readonly t: 'selectRing'; readonly leafPick: number }
+  | { readonly t: 'undo' };
+
+const selCmdArb: fc.Arbitrary<SelCmd> = fc.oneof(
+  fc.record({
+    t: fc.constant<'split'>('split'),
+    leafPick: fc.nat({ max: 1_000_000 }),
+    frac: fc.double({ min: 0, max: 1, noNaN: true }),
+  }),
+  fc.record({
+    t: fc.constant<'merge'>('merge'),
+    aPick: fc.nat({ max: 1_000_000 }),
+    bPick: fc.nat({ max: 1_000_000 }),
+  }),
+  fc.record({ t: fc.constant<'selectRing'>('selectRing'), leafPick: fc.nat({ max: 1_000_000 }) }),
+  fc.constant<SelCmd>({ t: 'undo' }),
+);
+
+/** Every vertex id cited by any leaf in a world (the live, referenced vertices). */
+function citedVertexIds31004(world: World): Set<VertexId31004> {
+  const cited = new Set<VertexId31004>();
+  for (const leaf of world.features) {
+    for (const ring of leaf.shape.rings) for (const vid of ring.vertexIds) cited.add(vid);
+  }
+  return cited;
+}
+
+/**
+ * Carry a vertex selection forward through an op's vertexRemap, then keep only the
+ * ids that are still CITED by a surviving leaf:
+ *   - a selected OLD id the remap names becomes its NEW id (FR-95 continuation);
+ *   - a selected id absent from the remap but still cited by a surviving leaf stays
+ *     (it belonged to an untouched feature — e.g. the other operand of a split);
+ *   - a selected id that is neither remapped to a cited vertex nor still cited is
+ *     DROPPED. (The store is ADDITIVE — `addVertices` never deletes the consumed
+ *     leaves' old vertices — so "present in the store" is NOT survival; the proper
+ *     liveness test is "cited by a surviving leaf". A selection must follow the
+ *     geometry, never linger on an orphaned, uncited vertex.)
+ */
+function carrySelection31004(
+  selected: ReadonlySet<VertexId31004>,
+  remap: ReadonlyMap<VertexId31004, VertexId31004>,
+  nextWorld: World,
+): Set<VertexId31004> {
+  const cited = citedVertexIds31004(nextWorld);
+  const next = new Set<VertexId31004>();
+  for (const sid of selected) {
+    const mapped = remap.get(sid);
+    if (mapped !== undefined) {
+      if (cited.has(mapped)) next.add(mapped); // remapped survivor that is still cited.
+    } else if (cited.has(sid)) {
+      next.add(sid); // untouched survivor still cited by some surviving leaf.
+    }
+    // else: dissolved / orphaned → drop (selection must follow the live geometry).
+  }
+  return next;
+}
+
+/** Split that also returns the proposal so the caller can carry the selection. */
+function selSplit(world: World, cmd: { leafPick: number; frac: number }): {
+  next: World;
+  remap: ReadonlyMap<VertexId31004, VertexId31004>;
+} {
+  if (world.features.length === 0) return { next: world, remap: new Map() };
+  const idx = cmd.leafPick % world.features.length;
+  const leaf = world.features[idx]!;
+  const bb = leafBbox(leaf, world.store);
+  if (bb === undefined) return { next: world, remap: new Map() };
+  const span = bb.maxX - bb.minX;
+  if (span <= 0) return { next: world, remap: new Map() };
+  const cutX = bb.minX + span * (0.2 + cmd.frac * 0.6);
+  const pad = (bb.maxY - bb.minY) * 0.5 + 10;
+  const line = createOpenKnifeLine([
+    createCoordinate(cutX, bb.minY - pad),
+    createCoordinate(cutX, bb.maxY + pad),
+  ]);
+  const check = checkSplittable(leaf, world.store, line);
+  const exec = executeSplit(leaf, world.store, line);
+  if (check.status !== SPLIT_CHECK_STATUS.Splittable) {
+    expect(exec).toBeUndefined();
+    return { next: world, remap: new Map() };
+  }
+  if (exec === undefined) return { next: world, remap: new Map() };
+  const proposal = assembleSplitProposal({
+    target: leaf,
+    store: world.store.byId,
+    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+    nonInherited: { attributes: ATTRS, color: COLOR },
+    ids: idPorts(),
+  });
+  const inheritor = withLeafShape(leaf, proposal.inheritorShape);
+  const nextFeatures = world.features.slice();
+  nextFeatures[idx] = inheritor;
+  nextFeatures.push(proposal.newFeature);
+  const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
+  return { next: { features: nextFeatures, store: nextStore }, remap: proposal.vertexRemap };
+}
+
+/** Merge that also returns the proposal's remap so the caller can carry selection. */
+function selMerge(world: World, cmd: { aPick: number; bPick: number }): {
+  next: World;
+  remap: ReadonlyMap<VertexId31004, VertexId31004>;
+} {
+  if (world.features.length < 2) return { next: world, remap: new Map() };
+  const n = world.features.length;
+  const i = cmd.aPick % n;
+  let j = cmd.bPick % n;
+  if (j === i) j = (j + 1) % n;
+  const a = world.features[i]!;
+  const b = world.features[j]!;
+  const res = buildMergeProposal({
+    features: world.features,
+    vertices: world.store,
+    targetIds: [a.id, b.id],
+    atTime: 50,
+    parentDecision: parentNone,
+    propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+    ids: idPorts(),
+  });
+  if (res.status !== MERGE_STATUS.Proposal) return { next: world, remap: new Map() };
+  const p = res.proposal;
+  const result = p.nextFeatures.find((x) => x.id === p.resultFeatureId);
+  if (result === undefined || result.kind !== 'leaf') return { next: world, remap: new Map() };
+  const features = p.nextFeatures.filter((fe): fe is LeafFeature => fe.kind === 'leaf');
+  return { next: { features, store: p.nextVertices }, remap: p.vertexRemap };
+}
+
+describe('seed=31004 — remap-driven selection stays valid across edit chains (FR-95 + 選択が常に有効)', () => {
+  it('a vertex selection carried through every op vertexRemap never dangles; undo restores world + selection', () => {
+    fc.assert(
+      fc.property(fc.array(selCmdArb, { minLength: 1, maxLength: 16 }), (cmds) => {
+        let sw: SelWorld = { world: initialWorld(), selected: new Set() };
+        const stack: SelWorld[] = [];
+        checkWorldInvariants(sw.world);
+
+        const assertSelectionValid = () => {
+          // Every selected id resolves to a LIVE vertex AND is cited by some leaf
+          // (selection must point at a real, referenced vertex — never dangle).
+          const cited = new Set<VertexId31004>();
+          for (const leaf of sw.world.features) {
+            for (const ring of leaf.shape.rings) for (const vid of ring.vertexIds) cited.add(vid);
+          }
+          for (const sid of sw.selected) {
+            expect(sw.world.store.byId.has(sid)).toBe(true);
+            expect(cited.has(sid)).toBe(true);
+          }
+        };
+        assertSelectionValid();
+
+        for (const cmd of cmds) {
+          if (cmd.t === 'undo') {
+            const prior = stack.pop();
+            if (prior === undefined) continue;
+            // undo ∘ op == identity over the COUPLED (world + selection) value.
+            sw = prior;
+            checkWorldInvariants(sw.world);
+            assertSelectionValid();
+            expect(sw.world.features.length).toBeGreaterThanOrEqual(1);
+            continue;
+          }
+          if (cmd.t === 'selectRing') {
+            if (sw.world.features.length === 0) continue;
+            const leaf = sw.world.features[cmd.leafPick % sw.world.features.length]!;
+            // Select every vertex of the leaf's first (outer) ring.
+            const sel = new Set<VertexId31004>(sw.selected);
+            const outer = leaf.shape.rings[0];
+            if (outer) for (const vid of outer.vertexIds) sel.add(vid);
+            sw = { world: sw.world, selected: sel };
+            assertSelectionValid();
+            continue;
+          }
+
+          // A real edit: snapshot the coupled value (purity + undo), apply, then
+          // carry the selection forward through the op's remap.
+          const before = sw;
+          const beforeWorldCopy: World = {
+            features: before.world.features.slice(),
+            store: { byId: new Map(before.world.store.byId) },
+          };
+          const beforeSelCopy = new Set(before.selected);
+          const { next, remap } =
+            cmd.t === 'split' ? selSplit(before.world, cmd) : selMerge(before.world, cmd);
+          // Op purity: the prior world value is untouched.
+          expect(worldsIdentical(before.world, beforeWorldCopy)).toBe(true);
+          if (next === before.world) {
+            // No-op (not splittable / not mergeable). Selection unchanged.
+            sw = before;
+            assertSelectionValid();
+            continue;
+          }
+          const nextSelected = carrySelection31004(before.selected, remap, next);
+          stack.push({ world: beforeWorldCopy, selected: beforeSelCopy });
+          sw = { world: next, selected: nextSelected };
+
+          checkWorldInvariants(sw.world);
+          assertSelectionValid();
+          expect(sw.world.features.length).toBeGreaterThanOrEqual(1);
+
+          // REAL persistence round-trip after EVERY op (serialize → parse → deser).
+          const project = worldToProject(sw.world);
+          const reloaded = saveThenLoad(project);
+          expect(reloaded).toBeDefined();
+          if (reloaded !== undefined) {
+            expect(projectsEqual(project, reloaded)).toBe(true);
+          }
+        }
+      }),
+      { seed: SEED_31004, numRuns: RUNS_31004 },
+    );
+  });
+});
+
+// --- (Z4) remap DETERMINISM (op == op over the coordinate relation) ----------
+
+describe('seed=31004 — split vertexRemap is deterministic (op == op over the coord relation)', () => {
+  it('two independent split proposals on the same target+line yield the same old-id keyset + old→new coord map', () => {
+    fc.assert(
+      fc.property(dim, dim, flags(), (w, h, f) => {
+        const params = makeParams(w, h, f);
+        const { feature, store, cutX } = holeyLeaf(params);
+        const line = createOpenKnifeLine([
+          createCoordinate(cutX, -5),
+          createCoordinate(cutX, h + 5),
+        ]);
+        const res = checkSplittable(feature, store, line);
+        if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+        const build = () =>
+          assembleSplitProposal({
+            target: feature,
+            store: store.byId,
+            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+            choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+            nonInherited: { attributes: ATTRS, color: COLOR },
+            ids: idPorts(),
+          });
+        const p1 = build();
+        const p2 = build();
+        const store1 = createVertexStore([...store.byId.values(), ...p1.vertices]);
+        const store2 = createVertexStore([...store.byId.values(), ...p2.vertices]);
+
+        // Same SET of old-id keys (the new vertex ids differ; old keys must not).
+        const keys1 = [...p1.vertexRemap.keys()].sort();
+        const keys2 = [...p2.vertexRemap.keys()].sort();
+        expect(keys1).toEqual(keys2);
+
+        // Same old→new COORDINATE relation: for each old key, the mapped new vertex
+        // sits at the identical quantized coordinate in both runs.
+        for (const oldId of p1.vertexRemap.keys()) {
+          const n1 = store1.byId.get(p1.vertexRemap.get(oldId)!)!;
+          const n2 = store2.byId.get(p2.vertexRemap.get(oldId)!)!;
+          expect(coordKey31004(n1.coordinate)).toBe(coordKey31004(n2.coordinate));
+          // And it equals the old vertex's own coordinate (the FR-95 continuation).
+          const ov = store.byId.get(oldId)!;
+          expect(coordKey31004(n1.coordinate)).toBe(coordKey31004(ov.coordinate));
+        }
+      }),
+      { seed: SEED_31004, numRuns: RUNS_31004 },
+    );
+  });
+});

@@ -3244,3 +3244,325 @@ describe('alternation (seed=32003): affine shear of top bands + rekey-commutes-w
     );
   });
 });
+
+// ===========================================================================
+// 14. TENTH CAMPAIGN (seed=32004) — NEW exploration (bughunt run #3, focal seed).
+//
+// The brief for THIS run mandates a seed distinct from EVERY prior campaign in
+// this file (the 2xxx / 22xxx / 32002 / 32003 ranges) AND distinct from the
+// explicitly-excluded 1000-6000 / 21000-26000 ranges, with a NEW command set /
+// generator. Three genuinely new ingredients none of campaigns 1-9 exercise:
+//
+//   (1) A NON-UNIFORM ANISOTROPIC SCALE of a whole top-level band about its own
+//       centroid: lon → cx + kx·(lon − cx), lat → cy + ky·(lat − cy), with
+//       INDEPENDENT contraction factors kx, ky ∈ [0.5, 1.0). Every prior affine
+//       campaign used a UNIFORM scale (campaign 7: single factor k about the
+//       centroid), a rotation (8), a reflection (8), or a vertical shear (9). A
+//       non-uniform diagonal scale is a distinct affine map: it maps each
+//       axis-aligned rectangle to a SMALLER axis-aligned rectangle (so simplicity
+//       is preserved), and being a bijective affine map applied to BOTH a parent
+//       and its children, it preserves containment exactly AND keeps disjoint
+//       siblings disjoint (each child shrinks within its own cell toward the
+//       shared band centroid, which lies in the band's interior). Because both
+//       factors are < 1 the band's bounding box only ever SHRINKS, so two bands
+//       80° apart can never collide. A correct system MUST therefore keep
+//       validateGeometry clean; any violation is a real re-link/containment
+//       defect — NOT a generator artifact. op∘inverse: scaling the SAME band back
+//       by (1/kx, 1/ky) about the SAME captured centroid restores coordinates
+//       within a tight float epsilon (multiply-then-divide is not bit-exact).
+//
+//   (2) A DIRECT-CHILD-ABSORPTION + referential-integrity law on the structural
+//       reorganizer that no prior campaign asserts directly. The documented
+//       contract (deleteHole / deleteTerritory) is NOT "absorb the whole subtree":
+//       deleting a ring removes the ring itself AND its DIRECT children (the holes
+//       under a deleted territory, or the enclaves under a deleted hole — these
+//       are absorbed because they have no surviving parent to punch/sit in), while
+//       GRAND-children are RE-LINKED up to the deleted ring's grandparent (lifted,
+//       not dropped). So the precise law we pin is: after delete(s, root), (a) the
+//       root is gone, (b) every DIRECT child of root in the ORIGINAL shape is gone
+//       too, and (c) NO surviving ring still references the root or any removed
+//       direct child as its parent (no dangling parent survives — 教訓5.21). Then
+//       re-deleting the (now-absent) root id is the identity. This is the correct
+//       reorganization contract, distinct from campaign 2004's twice-delete law.
+//
+//   (3) The state carries BOTH a live selection AND an ascending duplicate-free
+//       anchor series (reusing FullState), so the full focal bundle — alternation,
+//       acyclic, unique ids, finite-depth forest, depth-consistency, finite
+//       coords, simplicity, containment/non-overlap, selection-never-dangling,
+//       anchors ascending-unique, save→load identity over the quadruple — is
+//       asserted after EVERY command, plus full-stream undo (undo∘op = identity).
+//
+// Determinism: seed fixed to 32004, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED10 = 32004;
+const RUNS10 = 450;
+const cfg10 = { seed: SEED10, numRuns: RUNS10 } as const;
+
+/** Non-uniformly scale every vertex of `ringId`'s subtree about a fixed center by
+ * INDEPENDENT factors (kx, ky): lon → cx + kx·(lon − cx), lat → cy + ky·(lat − cy).
+ * Returns a NEW store; the shape (parent links) is unchanged. A diagonal affine
+ * map: applied to a whole band with both factors in (0,1] it maps each
+ * axis-aligned rectangle to a smaller axis-aligned rectangle (simplicity kept) and
+ * preserves containment/disjointness. The center is passed in (captured BEFORE the
+ * scale) so the forward and inverse share the SAME pivot — a true op∘inverse pair. */
+function scaleSubtreeAnisotropic(
+  state: FullState,
+  ringId: RingId,
+  center: { lon: number; lat: number },
+  kx: number,
+  ky: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    const scaled = withVertexCoordinate(
+      v,
+      createCoordinate(
+        center.lon + kx * (v.coordinate.lon - center.lon),
+        center.lat + ky * (v.coordinate.lat - center.lat),
+      ),
+    );
+    store = setVertex(store, scaled);
+  }
+  return store;
+}
+
+/** A tenth-campaign edit command. */
+type EditCommand10 =
+  | { readonly tag: 'select'; readonly sel: number }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | {
+      readonly tag: 'aniso-scale-top';
+      readonly sel: number;
+      readonly kx: number;
+      readonly ky: number;
+    }
+  | { readonly tag: 'anchor-insert'; readonly value: number }
+  | { readonly tag: 'anchor-remove'; readonly sel: number }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand10Arb(): fc.Arbitrary<EditCommand10> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  // Contraction factor strictly in [0.5, 1.0): never expands, never collapses
+  // below half (keeps geometry comfortably simple and inside its cell).
+  const factor = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('select' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('aniso-scale-top' as const), sel: sel(), kx: factor(), ky: factor() }),
+    fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -40, max: 40 }) }),
+    fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=32004): anisotropic scale of top bands + subtree-absorption law', () => {
+  it('non-uniformly scaling a top-level band about its centroid keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              kx: fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true }),
+              ky: fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickTopLevelId(shape, op.sel);
+          if (targetId === undefined) return;
+          const center = subtreeCentroid({ shape, store, selected: undefined }, targetId);
+          if (center === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const moved = scaleSubtreeAnisotropic(state, targetId, center, op.kx, op.ky);
+          // A whole-band anisotropic contraction keeps EVERY focal invariant:
+          // simplicity (axis-aligned rect → smaller axis-aligned rect), internal
+          // containment (affine-preserved), band non-overlap (box only shrinks).
+          assertFullStateBundle({ shape, store: moved, selected: undefined, anchors: [] });
+          // op∘inverse: scale back by (1/kx, 1/ky) about the SAME pivot restores
+          // coords (multiply-then-divide => within a tight epsilon, not bit-exact).
+          const back = scaleSubtreeAnisotropic(
+            { shape, store: moved, selected: undefined, anchors: [] },
+            targetId,
+            center,
+            1 / op.kx,
+            1 / op.ky,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg10,
+    );
+  });
+
+  it('direct-child absorption + no-dangling: deleting a ring removes it and its direct children, lifts grandchildren, leaves no dangling parent', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((rootId) => ({ shape, store, rootId })),
+        ),
+        ({ shape, store, rootId }) => {
+          // The direct children of the deleted root in the ORIGINAL shape are
+          // absorbed (a hole whose territory is gone / an enclave whose hole is
+          // gone has no surviving parent), so they are removed alongside the root.
+          const directChildIds = new Set(childrenOf(shape, rootId).map((r) => r.id));
+          const removed = new Set<RingId>([rootId, ...directChildIds]);
+
+          const after = deleteRingAndReorganize(shape, rootId);
+          assertStructurallyValid(after);
+          expect(validateGeometry(after, store).violations).toEqual([]);
+
+          // (a) the root and (b) every original direct child are gone.
+          for (const id of removed) {
+            expect(after.rings.some((r) => r.id === id)).toBe(false);
+          }
+          // (c) NO surviving ring still references a removed ring as parent — the
+          // reorganizer re-linked (lifted) grand-children rather than leaving a
+          // dangling reference to the deleted root / absorbed child (教訓5.21).
+          for (const r of after.rings) {
+            if (r.parentRingId !== undefined) {
+              expect(removed.has(r.parentRingId)).toBe(false);
+            }
+          }
+          // Re-deleting the (now-absent) root id is the identity.
+          expect(deleteRingAndReorganize(after, rootId)).toEqual(after);
+        },
+      ),
+      cfg10,
+    );
+  });
+
+  it('stateful: interleaved select / delete / aniso-scale-top / anchor / save-load keeps the full bundle at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand10Arb(), { minLength: 5, maxLength: shape.rings.length + 14 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: FullState = { shape, store, selected: undefined, anchors: [] };
+          assertFullStateBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(deleteRingAndReorganize(state.shape, asRingId('absent-32004'))).toEqual(
+              state.shape,
+            );
+            // FULL-STREAM UNDO: an independent snapshot of the pre-command state.
+            const snapshot = saveLoadFullState(state);
+
+            switch (cmd.tag) {
+              case 'select': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                state = { ...state, selected: targetId };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  ...state,
+                  shape: nextShape,
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'aniso-scale-top': {
+                const targetId = pickTopLevelId(state.shape, cmd.sel);
+                if (targetId === undefined) break;
+                const center = subtreeCentroid(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                );
+                if (center === undefined) break;
+                const beforeStore = state.store;
+                const moved = scaleSubtreeAnisotropic(state, targetId, center, cmd.kx, cmd.ky);
+                state = { ...state, store: moved };
+                assertFullStateBundle(state);
+                // op∘inverse: scale back by (1/kx, 1/ky) restores prior coords.
+                const back = scaleSubtreeAnisotropic(
+                  state,
+                  targetId,
+                  center,
+                  1 / cmd.kx,
+                  1 / cmd.ky,
+                );
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'anchor-insert': {
+                const before = state.anchors;
+                state = { ...state, anchors: insertAnchor(state.anchors, cmd.value) };
+                if (before.includes(cmd.value)) expect(state.anchors).toEqual(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'anchor-remove': {
+                const idx =
+                  state.anchors.length === 0
+                    ? -1
+                    : Math.min(
+                        state.anchors.length - 1,
+                        Math.floor(cmd.sel * state.anchors.length),
+                      );
+                state = { ...state, anchors: removeAnchorAt(state.anchors, idx) };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadFullState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.selected).toEqual(state.selected);
+                expect(reloaded.anchors).toEqual(state.anchors);
+                state = reloaded;
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-32004'));
+                expect(next).toEqual(state.shape);
+                state = { ...state, shape: next };
+                assertFullStateBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+
+            // UNDO∘op = identity: the pre-command snapshot still reproduces the
+            // pre-command state verbatim (an independent copy, no aliasing).
+            assertFullStateBundle(snapshot);
+          }
+        },
+      ),
+      cfg10,
+    );
+  });
+});

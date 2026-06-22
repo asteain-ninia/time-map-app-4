@@ -3155,3 +3155,439 @@ describe(`affiliation — STATEFUL model #2: live picker/cycle/de-nest + full re
     );
   });
 });
+
+// ===========================================================================
+// ===========================================================================
+//  SEVENTH BUG-HUNT SECTION (seed = 35004) — THIRD fast-check STATEFUL model,
+//  deliberately disjoint from §18 (35002) / §19 (35003) AND from every prior
+//  seed range (1000..6000 / 21000..26000 / 35002 / 35003).
+//
+//  NEW exploration axis no prior section reaches: a LIVE, INTERLEAVED undo/redo
+//  MANAGER plus LIVE guarded anchor-series MUTATING edits, both driven THROUGH
+//  the fast-check stateful command stream and intermixed with real commits.
+//
+//  Why this is genuinely new (not a re-walk of §18/§19):
+//    - §18 checks undo∘op==id and op∘undo∘redo==op for ONE op in isolation and
+//      never keeps a live undo stack between commits;
+//    - §19 journals every commit and rewinds the WHOLE stack only ONCE at
+//      teardown (a pure linear rewind);
+//    - NEITHER ever performs a PARTIAL undo, then a NEW commit on top of the
+//      partially-undone state, then a redo. That sequence is exactly where a
+//      real editor's undo/redo stack management breaks (教訓 5.11/5.20/5.23):
+//        * a new commit after a partial undo must TRUNCATE the redo stack (the
+//          redone-away future is unreachable) — a stale redo entry replayed onto
+//          a divergent state would corrupt the forest or resurrect a pruned id;
+//        * undo/redo must be byte-stable and id-stable across these transitions
+//          (no re-mint, no drift) even when the live state was reshaped by
+//          auto-disappear (FR-35) between the undo and the next commit.
+//    - The anchor series here is not append-only (§18/§19 only append committed
+//      snapshots): it also rides LIVE guarded changeStart/setEnd/deleteAnchor
+//      ops INSIDE the stateful stream and must hold INV-1/INV-5/INV-6 after
+//      every outcome, including across affiliation undo/redo transitions.
+//
+//  The §20 SUT maintains a genuine UNDO STACK and REDO STACK. Stateful commands:
+//    AffiliationStep   — build+apply a real proposal; push onto undo stack;
+//                        TRUNCATE the redo stack (new edit invalidates futures);
+//                        run the full per-commit invariant battery; append a
+//                        committed-state anchor snapshot.
+//    UndoStep          — pop the undo stack, apply command.undo to the LIVE state,
+//                        assert it lands on that frame's recorded preState, push
+//                        the frame onto the redo stack; re-validate the forest.
+//    RedoStep          — pop the redo stack, apply command.redo, assert it lands
+//                        on that frame's recorded postState WITHOUT re-minting
+//                        ids, push back onto the undo stack; re-validate.
+//    SeriesEditStep    — a guarded changeStart/setEnd/deleteAnchor on the live
+//                        riding series; INV-1/INV-5/INV-6 must hold after.
+//
+//  Invariants asserted (every committed/undone/redone state): 階層森構造妥当 /
+//  派生集約=子の和 / 座標 finite / 選択が常に有効 / リング交互性・包含妥当
+//  (validateHierarchy 形状=和) / 錨列 昇順・非重複 / save->load=恒等 (throttled).
+//  Metamorphic: undo∘op==id, op∘undo∘redo==op, AND the redo-stack-truncation
+//  law (no stale future is ever replayed). Determinism: seed 35004, numRuns
+//  large. PERMANENT ASSET — a counter-example is a finding, never a reason to
+//  weaken a check.
+// ===========================================================================
+// ===========================================================================
+
+const SEED7 = 35004;
+
+// ---------------------------------------------------------------------------
+// §20 model: a NEW asymmetric forest generator. Each root independently chooses
+// flat-vs-deep (reusing buildMixedForest) BUT periods are drawn from a narrow,
+// HEAVILY-OVERLAPPING band so MOST re-parent attempts are legal (the existence
+// guard rarely vetoes). Dense legality maximises the number of commits that
+// actually land — which is what stresses the undo/redo STACK interactions this
+// section targets (more frames => deeper partial-undo-then-new-commit chains).
+// This distribution is disjoint from mixedForestArb (−60..60) and wideForestArb
+// (−200..200, sparse): here −10..10 with span 20..50 => near-total overlap.
+// ---------------------------------------------------------------------------
+
+const denseRootSpecArb: fc.Arbitrary<MixedRootSpec> = fc
+  .record({
+    deep: fc.boolean(),
+    subCount: fc.integer({ min: 1, max: 3 }),
+    leafCount: fc.integer({ min: 1, max: 3 }),
+    start: fc.integer({ min: -10, max: 10 }),
+    span: fc.integer({ min: 20, max: 50 }),
+  })
+  .map(({ deep, subCount, leafCount, start, span }) => ({
+    deep,
+    subCount,
+    leafCount,
+    start,
+    end: start + span,
+  }));
+
+function denseForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(denseRootSpecArb, { minLength: 1, maxLength: 4 })
+    .map((specs) => buildMixedForest(specs));
+}
+
+// ---------------------------------------------------------------------------
+// §20 SUT: live affiliation state + a genuine undo/redo stack + a live riding
+// anchor series (append on commit, mutate on SeriesEditStep). idCounter is the
+// SINGLE source of fresh ids; it only ever advances on a real commit (undo/redo
+// replay the recorded proposal and never re-mint, 教訓 5.20).
+// ---------------------------------------------------------------------------
+
+interface StatefulModel7 {
+  commits: number;
+}
+
+interface UndoFrame7 {
+  readonly command: ReturnType<typeof createAffiliationCommand>;
+  readonly preState: readonly Feature[];
+  readonly postState: readonly Feature[];
+  readonly createdIds: readonly FeatureId[];
+  /** the idCounter value AFTER this commit (so undo/redo restore it exactly). */
+  readonly idCounterAfter: number;
+}
+
+class StatefulSut7 {
+  state: AffState;
+  series: AnchorSeries;
+  private snapIdx = 1;
+  committed = 0;
+  readonly original: readonly Feature[];
+  /** live undo stack (most-recent on top). */
+  readonly undoStack: UndoFrame7[] = [];
+  /** live redo stack (most-recently-undone on top). */
+  readonly redoStack: UndoFrame7[] = [];
+
+  constructor(initial: ModelState) {
+    this.original = [...initial.features];
+    this.state = {
+      features: [...initial.features],
+      store: store(initial),
+      idCounter: 70000,
+    };
+    this.series = normalizeSeries(
+      [snapshotEntry(this.state.features, this.state.store, 0)],
+      CAL,
+    );
+  }
+
+  /** Shared per-state battery (forest/area/coord/childIds/series/save-load). */
+  private checkState(features: readonly Feature[], vstore: VertexStore): void {
+    assertFeatureSetInvariants(features, vstore);
+    assertAscendingUnique(this.series);
+    expect(this.series.entries.length, 'series empty (INV-5)').toBeGreaterThan(0);
+  }
+
+  /** AffiliationStep: build+apply a real proposal, push undo, TRUNCATE redo. */
+  commitAndCheck(
+    applied:
+      | { next: AffState; proposal: AffiliationProposal; baseline: readonly Feature[] }
+      | undefined,
+  ): void {
+    if (applied === undefined) return; // rejected / N/A: legitimate no-op.
+
+    // (1) full forest/area/coord/childIds battery on the committed set.
+    assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+    // (2) 選択が常に有効 + created/deleted disjointness.
+    const present = new Set(applied.next.features.map((f) => f.id));
+    for (const id of applied.proposal.survivedTouchedIds) {
+      expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.createdIds) {
+      expect(present.has(id), `created ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.deletedIds) {
+      expect(present.has(id), `deleted ${id} still present`).toBe(false);
+    }
+    const baselineIds = new Set(applied.baseline.map((f) => f.id));
+    const del = new Set(applied.proposal.deletedIds);
+    for (const id of applied.proposal.createdIds) {
+      expect(baselineIds.has(id), `created ${id} collides with existing`).toBe(false);
+      expect(del.has(id), `created ${id} also in deletedIds`).toBe(false);
+    }
+
+    // (3) METAMORPHIC undo∘op==id and op∘undo∘redo==op THROUGH the real command.
+    const command = createAffiliationCommand(applied.baseline, applied.proposal);
+    const exec = command.execute(applied.baseline);
+    expect(
+      featuresEqual(exec.state, applied.proposal.nextFeatures),
+      'execute != proposal.nextFeatures',
+    ).toBe(true);
+    const undone = command.undo(exec.state);
+    expect(featuresEqual(undone.state, applied.baseline), 'undo∘op != identity').toBe(true);
+    const redone = command.redo(undone.state);
+    expect(
+      featuresEqual(redone.state, applied.proposal.nextFeatures),
+      'op∘undo∘redo != op',
+    ).toBe(true);
+    const reCreated = redone.state
+      .filter((f) => !baselineIds.has(f.id))
+      .map((f) => f.id)
+      .sort();
+    expect(reCreated).toEqual([...applied.proposal.createdIds].sort());
+
+    // Commit the live state. Push the frame; TRUNCATE the redo stack: a NEW edit
+    // after any undo makes the redone-away future unreachable (教訓 5.11). A stale
+    // redo entry must never be replayable onto this divergent timeline.
+    this.undoStack.push({
+      command,
+      preState: applied.baseline,
+      postState: exec.state,
+      createdIds: applied.proposal.createdIds,
+      idCounterAfter: applied.next.idCounter,
+    });
+    this.redoStack.length = 0; // redo-stack-truncation law.
+
+    this.state = applied.next;
+    this.committed += 1;
+
+    // (4) anchor列 昇順・非重複: append the new committed snapshot.
+    this.series = normalizeSeries(
+      [...this.series.entries, snapshotEntry(this.state.features, this.state.store, this.snapIdx)],
+      CAL,
+    );
+    this.snapIdx += 1;
+    this.checkState(this.state.features, this.state.store);
+
+    // (5) save∘load=恒等 every 3rd commit.
+    if (this.committed % 3 === 0) {
+      const parsed = JSON.parse(JSON.stringify(this.state.features)) as Feature[];
+      expect(featuresEqual(parsed, this.state.features), 'save∘load != identity').toBe(true);
+      const f0 = buildForest(this.state.features);
+      const f1 = buildForest(parsed);
+      for (const f of this.state.features) {
+        const a = resolveFeatureArea(f0, this.state.store, f.id);
+        const b = resolveFeatureArea(f1, this.state.store, f.id);
+        expect(a.status).toBe(b.status);
+        if (a.status === 'ok' && b.status === 'ok') {
+          expect(areasEqualWithinTolerance(a.area, b.area), 'save∘load area drift').toBe(true);
+        }
+      }
+    }
+  }
+
+  /** UndoStep: pop undo stack, apply command.undo to the LIVE state. */
+  doUndo(): void {
+    const frame = this.undoStack.pop();
+    if (frame === undefined) return; // empty undo stack: legitimate no-op.
+    // The LIVE state must currently equal this frame's postState (it is the top
+    // of the timeline). If not, an earlier commit corrupted the stack ordering.
+    expect(
+      featuresEqual(this.state.features, frame.postState),
+      'undo: live state != top-frame postState',
+    ).toBe(true);
+    const undone = frame.command.undo(this.state.features);
+    expect(
+      featuresEqual(undone.state, frame.preState),
+      'undo: result != frame.preState',
+    ).toBe(true);
+    // Restore the live state AND the idCounter to the pre-commit value (undo must
+    // not leave id-state ahead, else a later commit could collide, 教訓 5.20).
+    const prevIdCounter =
+      this.undoStack.length === 0
+        ? 70000
+        : this.undoStack[this.undoStack.length - 1]!.idCounterAfter;
+    this.state = { features: undone.state, store: this.state.store, idCounter: prevIdCounter };
+    this.redoStack.push(frame);
+    // The undone forest must itself be fully valid (FR-35 集約復活 included).
+    this.checkState(this.state.features, this.state.store);
+  }
+
+  /** RedoStep: pop redo stack, apply command.redo, assert id-stable. */
+  doRedo(): void {
+    const frame = this.redoStack.pop();
+    if (frame === undefined) return; // empty redo stack: legitimate no-op.
+    expect(
+      featuresEqual(this.state.features, frame.preState),
+      'redo: live state != frame.preState',
+    ).toBe(true);
+    const redone = frame.command.redo(this.state.features);
+    expect(
+      featuresEqual(redone.state, frame.postState),
+      'redo: result != frame.postState',
+    ).toBe(true);
+    // redo must not re-mint ids: the created set on the redone state matches the
+    // frame's recorded createdIds exactly (教訓 5.20).
+    const preIds = new Set(frame.preState.map((f) => f.id));
+    const reCreated = redone.state
+      .filter((f) => !preIds.has(f.id))
+      .map((f) => f.id)
+      .sort();
+    expect(reCreated, 'redo re-minted / dropped created ids').toEqual(
+      [...frame.createdIds].sort(),
+    );
+    this.state = {
+      features: redone.state,
+      store: this.state.store,
+      idCounter: frame.idCounterAfter,
+    };
+    this.undoStack.push(frame);
+    this.checkState(this.state.features, this.state.store);
+  }
+
+  /** SeriesEditStep: a guarded live series mutation; INV-1/INV-5/INV-6 after. */
+  editSeries(op: SeriesOp): void {
+    switch (op.t) {
+      case 'append': {
+        this.series = normalizeSeries(
+          [...this.series.entries, snapshotEntry(this.state.features, this.state.store, this.snapIdx)],
+          CAL,
+        );
+        this.snapIdx += 1;
+        break;
+      }
+      case 'changeStart': {
+        const target = pick(this.series.entries, op.which);
+        if (target !== undefined) {
+          const r = changeStart(this.series, target.anchor.id, timePointYear(op.year), CAL);
+          if (r.ok) this.series = r.series;
+        }
+        break;
+      }
+      case 'setEnd': {
+        const target = pick(this.series.entries, op.which);
+        if (target !== undefined) {
+          const end = op.year === null ? null : timePointYear(op.year);
+          const r = setEnd(this.series, target.anchor.id, end, CAL);
+          if (r.ok) this.series = r.series;
+        }
+        break;
+      }
+      case 'delete': {
+        const target = pick(this.series.entries, op.which);
+        if (target !== undefined) {
+          const r = deleteAnchor(this.series, target.anchor.id, CAL);
+          if (r.ok) this.series = r.series;
+        }
+        break;
+      }
+    }
+    expect(this.series.entries.length, 'series empty after edit (INV-5)').toBeGreaterThan(0);
+    assertAscendingUnique(this.series);
+  }
+
+  /** End-of-run: the live state must be reconstructible by replaying the undo
+   *  stack forward from the original baseline (timeline consistency). */
+  verifyTimeline(): void {
+    let cur: readonly Feature[] = this.original;
+    for (const frame of this.undoStack) {
+      expect(
+        featuresEqual(cur, frame.preState),
+        'timeline: frame.preState != replayed state',
+      ).toBe(true);
+      cur = frame.command.redo(cur).state;
+      expect(featuresEqual(cur, frame.postState), 'timeline: redo != frame.postState').toBe(true);
+    }
+    expect(
+      featuresEqual(cur, this.state.features),
+      'timeline replay != live committed state',
+    ).toBe(true);
+  }
+}
+
+type SCmd7 = fc.Command<StatefulModel7, StatefulSut7>;
+
+class AffiliationStep7 implements SCmd7 {
+  constructor(
+    readonly cmd: AffCmd2,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel7, s: StatefulSut7): void {
+    const applied = applyAffCmd2(s.state, this.cmd);
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `aff(${JSON.stringify(this.cmd)})`;
+  }
+}
+
+class UndoStep7 implements SCmd7 {
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel7, s: StatefulSut7): void {
+    s.doUndo();
+  }
+  toString(): string {
+    return 'undo';
+  }
+}
+
+class RedoStep7 implements SCmd7 {
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel7, s: StatefulSut7): void {
+    s.doRedo();
+  }
+  toString(): string {
+    return 'redo';
+  }
+}
+
+class SeriesEditStep7 implements SCmd7 {
+  constructor(readonly op: SeriesOp) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel7, s: StatefulSut7): void {
+    s.editSeries(this.op);
+  }
+  toString(): string {
+    return `series(${this.op.t})`;
+  }
+}
+
+const statefulCommands7Arb: fc.Arbitrary<Iterable<SCmd7>> = fc.commands(
+  [
+    affCmd2Arb.map((c) => new AffiliationStep7(c)),
+    // bias toward undo/redo so partial-undo-then-new-commit chains form often.
+    fc.constant(new UndoStep7()),
+    fc.constant(new UndoStep7()),
+    fc.constant(new RedoStep7()),
+    fc.constant(new RedoStep7()),
+    seriesOpArb.map((op) => new SeriesEditStep7(op)),
+  ],
+  { maxCommands: 22 },
+);
+
+describe(`affiliation — STATEFUL model #3: live undo/redo stack + series edits (seed=${SEED7})`, () => {
+  it('fc.commands interleaves commit/undo/redo/series; stacks stay consistent + redo truncated', () => {
+    fc.assert(
+      fc.property(denseForestArb(), statefulCommands7Arb, (initial, cmds) => {
+        let sut: StatefulSut7 | undefined;
+        const setup: fc.ModelRunSetup<StatefulModel7, StatefulSut7> = () => {
+          const real = new StatefulSut7(initial);
+          sut = real;
+          return { model: { commits: 0 }, real };
+        };
+        fc.modelRun(setup, cmds);
+        // End-of-run: the live state is exactly the forward replay of the undo
+        // stack from the original baseline (no stale-redo corruption ever leaked).
+        sut?.verifyTimeline();
+      }),
+      { seed: SEED7, numRuns: 700 },
+    );
+  });
+});
