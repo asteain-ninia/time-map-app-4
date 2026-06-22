@@ -165,6 +165,10 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     (fid: FeatureId) => store.getState().setActiveFeature(fid),
     [store],
   );
+  // HB3-6/18 review fix: on cancel, drop the promoted target from the host selection
+  // so a cancelled knife target does not stay highlighted / Delete-able (the commit
+  // path keeps selection via onCommitted, so this fires only on explicit cancel).
+  const clearTargetSelection = useCallback(() => store.getState().clearSelection(), [store]);
 
   const knife = useKnifeTool<S>({
     resolveFeature,
@@ -174,6 +178,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     startProcess,
     onCommitted,
     onTargetSelected: promoteTargetSelection,
+    onCancelled: clearTargetSelection,
     ...(onConflicts ? { onConflicts } : {}),
   });
 

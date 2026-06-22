@@ -195,6 +195,20 @@ describe('KnifeToolController — target select → cut → confirm (受け入�
     h.unmount();
   });
 
+  it('HB3-6/18 review: cancel (Escape) clears the promoted target selection (no leak)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    // Escape → knife.cancel() → onCancelled → clearSelection: the cancelled target must
+    // NOT linger as the selection (else it stays highlighted + Delete-able).
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(h.store.getState().activeFeature).toBeNull();
+    h.unmount();
+  });
+
   it('clicking a leaf selects it, then cut points + confirm splits into two', () => {
     const h = mountKnife();
     activateKnife(h.store);

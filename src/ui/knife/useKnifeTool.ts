@@ -109,6 +109,16 @@ export interface UseKnifeToolOptions<S> {
    * after the LEAF gate passes, so clicking an aggregate never selects it.
    */
   readonly onTargetSelected?: ((featureId: FeatureId) => void) | undefined;
+  /**
+   * Undo the {@link onTargetSelected} promotion when the user CANCELS (Escape /
+   * cancel button / rejection dismiss). Without this, a promoted knife target leaks
+   * into the host selection after cancel — it stays highlighted and becomes the
+   * Delete target (review-confirmed HIGH). NOT called on commit (the host's
+   * onCommitted re-resolves selection to the inheritor) nor on tool/mode switch
+   * (setActiveTool/setMode already clear selection — clearing again post-commit
+   * would wipe the just-promoted inheritor).
+   */
+  readonly onCancelled?: (() => void) | undefined;
 }
 
 // --- Flow phase the chrome reads (mirrors the domain phase + U13 outcomes) ----
@@ -177,6 +187,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     onCommitted,
     onConflicts,
     onTargetSelected,
+    onCancelled,
   } = options;
 
   const [state, setState] = useState<KnifeState>(idle);
@@ -330,7 +341,16 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     [resolveFeature, resolveStore, ids, anchorTime, startProcess, onCommitted, onConflicts, discard],
   );
 
-  const cancel = useCallback(() => discard(), [discard]);
+  // HB3-6/18 review fix: an explicit cancel (Escape / cancel button / rejection
+  // dismiss) un-promotes the knife target from the host selection (onCancelled), so a
+  // cancelled target does not leak as the highlighted + Delete-able selection. The
+  // tool/mode-switch path (resetForSwitch) does NOT clear here — setActiveTool/setMode
+  // already cleared selection, and clearing on the post-commit setActiveTool(null)
+  // would wipe the inheritor the commit just promoted.
+  const cancel = useCallback(() => {
+    discard();
+    onCancelled?.();
+  }, [discard, onCancelled]);
   const resetForSwitch = useCallback(() => discard(), [discard]);
 
   // --- Derived view -------------------------------------------------------
