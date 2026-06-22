@@ -82,6 +82,7 @@ export {
   type Opacity,
   DEFAULT_PALETTE_THEME_ID,
   DEFAULT_OPACITY,
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
   createBasicAttributes,
   basicAttributesEqual,
   withName,

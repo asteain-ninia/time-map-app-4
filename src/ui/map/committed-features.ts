@@ -47,6 +47,7 @@ import type { ResolvedDisplayShapes } from '../../domain/display';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
 import { toEvaluatedAreas, type PresentationFor } from '../../render/display-bridge';
+import { withOpacity } from '../../render/grid-layer';
 import type {
   EvaluatedFeature,
   EvaluatedLine,
@@ -56,12 +57,24 @@ import type {
 
 import { resolveDisplayFor } from './display-resolution-cache';
 
+/**
+ * Fold a persisted fill alpha (FR-97 / U33 / HB3-13) into the CSS color string the
+ * renderer fills with. The renderer takes a single color string per primitive, so the
+ *透過度 is baked here — the SAME place the fill color is resolved (単一真実源, 教訓 §4),
+ * mirroring how `grid-layer` folds opacity into the grid color. An OPAQUE (1) color is
+ * left as its `#rrggbb` form (no rgba churn for the common case); only a translucent
+ * alpha (e.g. the HB3-13 新規地物既定 0.7) becomes `rgba(...)`.
+ */
+function withAlpha(color: string, opacity: number): string {
+  return opacity >= 1 ? color : withOpacity(color, opacity);
+}
+
 /** Map a domain `ColorInfo` (FR-100/101) to U19's render `FeatureStyle`. */
 function styleOf(color: ColorInfo): FeatureStyle {
   return {
-    fill: color.fillColor,
+    fill: withAlpha(color.fillColor, color.fillOpacity),
     stroke: color.borderColor,
-    selectedColor: color.selectedColor,
+    selectedColor: withAlpha(color.selectedColor, color.selectedOpacity),
   };
 }
 

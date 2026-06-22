@@ -144,6 +144,30 @@ describe('buildCommittedFeatures', () => {
     }
   });
 
+  it('HB3-13: folds a translucent fill opacity into the rendered fill color (rgba); opaque stays hex', () => {
+    // A leaf whose ColorInfo carries the HB3-13 新規地物 default (fillOpacity 0.7, selected
+    // opaque). The render bridge must bake the alpha into the fill color string the canvas
+    // fills with — #abcdef = rgb(171,205,239) → rgba(...,0.7) — while the opaque selected
+    // color stays its hex form (no rgba churn for opacity 1).
+    const leaf = squareLeaf('leaf-t', 'T国', 0, 0, 10);
+    const translucent = {
+      ...leaf.feature,
+      color: createColorInfo(true, '#abcdef', '#fedcba', '#012345', 'default', 0.7, 1),
+    } as Feature;
+    const root: DomainProject = {
+      histories: [singleAnchorHistory('leaf-t', [translucent], createVertexStore(leaf.vertices), 0)],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const features = buildCommittedFeatures(root, timePointYear(0), null, DISPLAY);
+    const area = features.find((f) => f.id === 'leaf-t');
+    expect(area?.kind).toBe('area');
+    if (area && area.kind === 'area') {
+      expect(area.style.fill).toBe('rgba(171, 205, 239, 0.7)');
+      expect(area.style.selectedColor).toBe('#fedcba'); // selectedOpacity 1 → hex unchanged
+    }
+  });
+
   it('HB-14/FR-07: unwraps a seam-crossing line into a continuous run [179,181]', () => {
     // A line whose two vertices are stored as representatives either side of the
     // antimeridian (lon 179 and lon -179, a 2° hop across +180). The render layer's

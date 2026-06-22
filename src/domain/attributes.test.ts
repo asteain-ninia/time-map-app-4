@@ -16,6 +16,7 @@ import {
   withSelectedColor,
   withSelectedOpacity,
   withStartYear,
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
 } from './attributes';
 
 // Criterion 8 + criterion 5: attribute/color types exist with full withXxx
@@ -77,6 +78,21 @@ describe('color info (FR-97)', () => {
         createColorInfo(true, '#111', '#222', '#333', 'default', 1, 1),
       ),
     ).toBe(false);
+  });
+
+  it('HB3-13: the new-feature default fill opacity is translucent (0.7) and distinct from the deserialize default (1)', () => {
+    expect(DEFAULT_NEW_FEATURE_FILL_OPACITY).toBe(0.7);
+    // It is genuinely translucent so new 面 do not hide what is under them…
+    expect(DEFAULT_NEW_FEATURE_FILL_OPACITY).toBeLessThan(1);
+    // …and it is a SEPARATE concept from the "absent in manifest ⇒ opaque" default.
+    expect(DEFAULT_NEW_FEATURE_FILL_OPACITY).not.toBe(DEFAULT_OPACITY);
+    // Stamping it onto a default color yields a translucent fill, opaque elsewhere.
+    const newFeatureColor = withFillOpacity(
+      createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
+      DEFAULT_NEW_FEATURE_FILL_OPACITY,
+    );
+    expect(newFeatureColor.fillOpacity).toBe(0.7);
+    expect(newFeatureColor.selectedOpacity).toBe(DEFAULT_OPACITY);
   });
 
   it('paletteTheme is a persisted style attribute (U33 AC1)', () => {

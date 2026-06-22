@@ -72,6 +72,16 @@ export const DEFAULT_PALETTE_THEME_ID: PaletteTheme = 'default';
  */
 export const DEFAULT_OPACITY = 1;
 
+/**
+ * The default fill alpha for a FRESHLY-ADDED feature (HB3-13: 新規地物の既定塗り透過度).
+ * Distinct from {@link DEFAULT_OPACITY} (=1): that is the DESERIALIZE default — a manifest
+ * with no opacity field restores fully opaque — whereas this is the value the add form
+ * stamps onto a brand-new feature's `ColorInfo` so newly drawn 面 are slightly translucent
+ * (やや透過) and overlapping features remain legible. 全地物一律 (HB3-13 確定). Single source
+ * of the "new feature" alpha so the add form and the knife default reference one constant.
+ */
+export const DEFAULT_NEW_FEATURE_FILL_OPACITY = 0.7;
+
 /** An alpha (透過度) value, constrained at the edit/clamp seams to [0,1]. */
 export type Opacity = number;
 

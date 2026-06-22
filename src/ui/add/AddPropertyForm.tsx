@@ -12,6 +12,8 @@ import { useState } from 'react';
 import {
   createBasicAttributes,
   createColorInfo,
+  withFillOpacity,
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
   type BasicAttributes,
   type ColorInfo,
 } from '../../domain/attributes';
@@ -20,8 +22,14 @@ import type { FeatureId } from '../../domain/ids';
 
 import { ADD_STRINGS } from './strings';
 
-// A sensible default color for a freshly-added feature (FR-97 auto-color on).
-const DEFAULT_COLOR: ColorInfo = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+// A sensible default color for a freshly-added feature (FR-97 auto-color on). HB3-13:
+// new features default to a slightly TRANSLUCENT fill (DEFAULT_NEW_FEATURE_FILL_OPACITY
+// = 0.7) so overlapping 面 stay legible; the selected alpha stays opaque so a selected
+// feature pops. The user can edit both opacities later in the property panel (U33).
+const DEFAULT_COLOR: ColorInfo = withFillOpacity(
+  createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
+);
 const DEFAULT_START_YEAR = 0;
 const DEFAULT_END_YEAR = 0;
 

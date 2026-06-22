@@ -55,3 +55,14 @@
 - **HB3-13 既定透過0.7**: `activeColor`(feature-layer)は opacity 非適用＝feature 塗りは現状不透明。data-model 透過の配管（ColorInfo.fillOpacity→FeatureStyle→withOpacity 適用）＋新規既定0.7＋**視覚ベースライン再生成**が必要。要注意（DEFAULT_OPACITY を変えると load 既定/テストに波及）。
 - **E2E スイープ**: 各 HB3 に behavioral E2E（実ドラッグ/クリックで結果アサート）＋テキストアサート E2E の追従（タブ改称・ボタン文言）＋**視覚回帰ベースライン再生成**（HB3-26 ハロー/HB3-7/22/25 配置で screenshot が変わる）。`npm run test:e2e`。
 - **大物（専用ユニット）**: HB3-5/19 ナイフ n-way（k+1片）／HB3-10 共有頂点溶接／HB3-12 存在期間の単一真実源。
+
+---
+
+## 後継セッション進捗（2026-06-23, 新Claude・完全自律 / トークンループ病治療後）
+
+前任ログは犠牲subagent経由で要約参照（病原体は隔離済・本体未摂取）。ユーザー指示=「AskUser禁止・じゃんじゃん自走・いっぱいバグ直して未実装機能を実装」。
+
+- **ベースライン**: HEAD `dd09bf9` は緑。未追跡WIP `e2e/human-bugs-3.spec.ts`(未使用helper)のみ赤→除去しコミット `1052f5f`。vitest 250 files / 2931 tests / typecheck=0 / lint=0。
+- **[最重要] 編集モードのクリック選択回帰を根治** (commit `8d1ce75`)。前任が病に倒れる直前まで二分探索していた未解決バグ。診断手順: edit-select/edit-handles が retries=0 で 3/3 決定的失敗 → 一時HITDIAG計測で「本体中心クリックが hit-test に届かない」を観測 → `document.elementFromPoint` で**HB3-1 経度シフトパネル(`.longitude-shift`, ~526×174)が地図下半分を覆い `.map-area__overlay > *{pointer-events:auto}` でクリックを横取り**と特定。修正=パネルを `pointer-events:none`(コントロールのみauto)+`max-width:240px`。回帰E2E追加。**教訓: HB3-1のような"情報を足すUI"が容易にオーバーレイ肥大→背面操作奪取を起こす。新規オーバーレイは必ず pointer-events:none+コントロールのみauto。**
+  - 副次: この修正は add/knife 等**全モードで**地図クリックの横取りを解消する(パネルは全モードで map-overlay に存在)。
+- 次の着手: HB3-13(新規地物の既定塗り透過0.7・確定)→ HB3-23(グリッド0.1°)→ 大物。

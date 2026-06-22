@@ -74,7 +74,12 @@ import { ReparentToolController, type ReparentDrawSink } from './reparent/index'
 import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
-import { createBasicAttributes, createColorInfo } from '../domain/attributes';
+import {
+  createBasicAttributes,
+  createColorInfo,
+  withFillOpacity,
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
+} from '../domain/attributes';
 import {
   ConflictResolutionModal,
   type ApplyResolutions,
@@ -1891,7 +1896,12 @@ export function App(): JSX.Element {
 }
 
 /** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
-const KNIFE_DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+// HB3-13: a knife-split's non-inherited piece is a NEW feature, so it gets the same
+// translucent default fill (0.7) as a freshly-added feature (単一真実源の既定値).
+const KNIFE_DEFAULT_COLOR = withFillOpacity(
+  createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
+  DEFAULT_NEW_FEATURE_FILL_OPACITY,
+);
 
 /** HB3-20 review fix: minimum near-candidate query look-ahead (screen px) so the
  *  slide (排他) collision check keeps working even when the user disables snapping
