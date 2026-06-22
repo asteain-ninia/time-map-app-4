@@ -342,6 +342,17 @@ body {
   line-height: 1.5;
 }
 
+/* HB3-28: the per-list explanatory caption (地物一覧 / 歴史アンカー一覧 の用途説明). A
+   muted, smaller note above the list so the two lists are distinguishable. */
+.sidebar-list__caption {
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--c-border);
+  color: var(--c-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* Status bar: a thin bottom strip. */
 .statusbar {
   display: flex;
