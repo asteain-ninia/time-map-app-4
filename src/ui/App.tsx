@@ -22,6 +22,15 @@ import { createSessionStore } from './state/store';
 import { EDIT_MODE } from './state/session';
 import { AppShell } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
+import {
+  DetailPanels,
+  EMPTY_DETAIL_PANELS,
+  closeDetailPanel,
+  openPanel,
+  type DetailPanelsState,
+  type AssetResolver,
+  type FeatureLookup as PropertyFeatureLookup,
+} from './property';
 import { Timeline } from './timeline/Timeline';
 import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
@@ -1526,6 +1535,30 @@ export function App(): JSX.Element {
   // domain change via a store subscription mirrored into React state.
   const knifeTargetShape = useKnifeTargetShape(store);
 
+  // HB3-11 — feature detail panels (FR-99後段). The U32 DetailPanels + open-panel
+  // model existed and were unit-tested, but the property panel's「詳細」button's
+  // onOpenDetail was never wired into the composition root, so detail display did
+  // nothing (教訓 5.7「ロジックがあっても UI から呼ばれず機能しない」). Hold the open-panels
+  // state, open one on the button, mount the panels in the overlay; the document body
+  // is an honest empty stub for now (HB3-11 decision; 文書本体保存は別タスク).
+  const [detailPanels, setDetailPanels] = useState<DetailPanelsState>(EMPTY_DETAIL_PANELS);
+  const onOpenDetail = useCallback(
+    (featureId: FeatureId) =>
+      setDetailPanels((s) => openPanel(s, featureId, DETAIL_PANEL_BASE_POS)),
+    [],
+  );
+  // LIVE feature lookup for the detail panels (resolves at the current time, fresh
+  // per call — never a stale capture, 教訓 5.6 / 単一真実源 5.29).
+  const detailFeatureLookup = useMemo<PropertyFeatureLookup>(
+    () => ({
+      featureAt: (featureId) =>
+        featuresAt(store.getState().domain, store.getState().currentTime).find(
+          (f) => f.id === featureId,
+        ) ?? null,
+    }),
+    [store],
+  );
+
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
   // never passed to AppShell, so the sidebar rendered empty and the U32
@@ -1541,8 +1574,9 @@ export function App(): JSX.Element {
         getRoot: () => store.getState().domain,
         getTime: () => store.getState().currentTime,
         calendar,
+        onOpenDetail,
       }),
-    [store, calendar],
+    [store, calendar, onOpenDetail],
   );
 
   return (
@@ -1581,6 +1615,18 @@ export function App(): JSX.Element {
                 inheritor stays selected after a split (教訓 5.11). Hidden; it holds
                 NO truth — it只 reflects the store (技術方針 2.5). */}
             <ActiveFeatureMarker store={store} />
+            {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
+                per feature, showing all attributes (dl) + an empty document-body stub.
+                Selecting from a panel promotes through the SAME store.setActiveFeature
+                path every selection uses (no second selection source, 教訓 5.29). */}
+            <DetailPanels
+              state={detailPanels}
+              featureLookup={detailFeatureLookup}
+              assetResolver={NO_ASSET_RESOLVER}
+              detailDocumentOf={() => ''}
+              onClose={(id) => setDetailPanels((s) => closeDetailPanel(s, id))}
+              onSelectFeature={(fid) => store.getState().setActiveFeature(fid)}
+            />
             {/* HB-10 観測フック (Ctrl+Y redo の挙動 E2E): mirror the live undo/redo
                 stack availability into hidden markers (既存 app-active-feature 方式).
                 A behavioural test commits→undo→Ctrl+Y redo and asserts these flip,
@@ -1723,6 +1769,12 @@ export function App(): JSX.Element {
 
 /** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
 const KNIFE_DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+
+/** HB3-11: base screen position for the first detail panel (later panels cascade). */
+const DETAIL_PANEL_BASE_POS = { x: 160, y: 120 };
+/** HB3-11: detail documents are an honest empty stub for now (文書本体保存は別タスク) and
+ *  carry no embedded assets, so the asset resolver always returns null (safe broken-image). */
+const NO_ASSET_RESOLVER: AssetResolver = { resolveAsset: () => null };
 
 /**
  * Mount {@link AddToolController} with the live FACE parent candidates (FR-77 親面).
