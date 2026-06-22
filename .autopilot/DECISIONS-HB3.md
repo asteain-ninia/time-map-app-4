@@ -41,6 +41,10 @@
 - HB3-26 `61efb29`: 面ラベルを可読色＋ハロー描画（LabelPrimitive.halo? 追加）＋回帰。
 - HB3-7/22/25 `a65018e`: 確定ボタン下部中央統一＋年操作バー一行（CSS）。
 - HB3-11 `2289489`: 地物詳細パネルを結線（既存 DetailPanels をマウント、文書本体は空スタブ）。
+- HB3-8 `3e58136`: 頂点編集↔地物移動を排他化（featureMoveAllowed を 地物移動ツール時のみ）。
+- HB3-24 `60ffaa8`: Electron ネイティブメニューバーを autoHideMenuBar で既定非表示（Alt表示）。
+
+**= ここまでで HB3 28件中 14件 処理（HB3-20/21/1/2/28/3/6/18/17/26/7/22/25/11/8/24）。**
 
 **残り（調査済・継続用メモ）**
 - **HB3-14 属性編集**: 適用機構は既存（`createLiveEditBinding`＝App の `editBinding` ／ `applyEditProposal`／consistency）。要実装＝`buildSidebarContent` に `editDispatch` を渡す。dispatch は PropertyEditIntent から「新 attributes/color を持つ FeatureSnapshot の EditProposal」を作り `editBinding.startProcess`→`recordCommit`。FeatureSnapshot 組立は `src/ui/map/edit-session-snapshot.ts` の buildEditSnapshot を参考に属性のみ版を作る。現状は throwing stub `editNotWired`（SidebarContent.tsx:100）。
