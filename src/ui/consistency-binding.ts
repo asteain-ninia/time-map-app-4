@@ -426,8 +426,15 @@ function applyResolutionAt(
     const adjustId = resolution.adjustFeatureId;
     const features = featuresAt(state, anchorTime);
     const vertices = verticesAt(state, anchorTime);
-    const adjust = features.find((f) => f.id === adjustId);
-    const priority = features.find((f) => f.id === resolution.priorityFeatureId);
+    // Index the effective-feature list ONCE into a Map for O(1) lookups: this
+    // closure is invoked up to maxRounds × #conflicts times in the convergence
+    // loop (orchestrator U06), and the previous two Array.find scans were each
+    // O(n) over the full (5,000-scale) feature list — O(rounds × conflicts × n)
+    // redundant work. Mirrors the displayNamesAt byId pattern (bughunt-t2).
+    const byId = new Map<FeatureId, Feature>();
+    for (const f of features) byId.set(f.id, f);
+    const adjust = byId.get(adjustId);
+    const priority = byId.get(resolution.priorityFeatureId);
     if (adjust === undefined || priority === undefined) return undefined;
     if (adjust.kind !== 'leaf' || priority.kind !== 'leaf') return undefined;
 

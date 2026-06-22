@@ -398,6 +398,110 @@ describe('applyResolutionsFor (U35 proposal-bound adapter)', () => {
     }
   });
 
+  // REGRESSION (bughunt-t2): applyResolutionAt indexes featuresAt ONCE into a
+  // Map<FeatureId, Feature> for O(1) adjust/priority lookups instead of two
+  // Array.find scans per call. This guards the behavioural contract that the
+  // Map keyed by feature id still resolves the CORRECT adjust + priority per
+  // call when the convergence loop invokes applyResolutionAt multiple times for
+  // DISTINCT priority features in a single round: a single wide adjust leaf f-n
+  // overlapping two separate priorities f-a and f-b, both policies supplied in
+  // ONE apply, must commit with f-n trimmed away from BOTH and both priorities
+  // surviving un-trimmed (a mis-keyed lookup would trim the wrong feature or
+  // refuse). The O(1) lookup must not change which feature each round picks.
+  it('resolves two conflicts with distinct priorities in one apply — each picks the right adjust/priority (bughunt-t2)', async () => {
+    const { featureByIdAt, verticesAt } = await import('./live-lookup');
+    const { resolveLeafShape } = await import('../domain/hierarchy/resolve-shape');
+    const { pointInPolygon, POINT_LOCATION } = await import('../domain/geometry/predicates');
+
+    let root = emptyProject();
+    let n = 0;
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
+      nextRingId: () => asRingId(`rr-${(n += 1)}`),
+    });
+
+    // Two disjoint priority leaves: f-a [0,2]² and f-b [10,12]².
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const ra = binding.startProcess(
+      createEditProposal(a.feature.id, timePointYear(1000), addSnapshot(a.feature, a.vertices)),
+    );
+    if (ra.status === PROCESS_STATUS.Committed) root = ra.state;
+    const b = squareLeaf('f-b', 'vb', 10, 0);
+    const rb = binding.startProcess(
+      createEditProposal(b.feature.id, timePointYear(1000), addSnapshot(b.feature, b.vertices)),
+    );
+    if (rb.status === PROCESS_STATUS.Committed) root = rb.state;
+
+    // A wide adjust leaf x∈[1,11], y∈[0,2] overlaps BOTH priorities at once.
+    const nVerts = [
+      [1, 0],
+      [11, 0],
+      [11, 2],
+      [1, 2],
+    ].map((c, i) => createVertex(asVertexId(`vn-${i}`), { lon: c[0]!, lat: c[1]! }));
+    const nRing = createTerritoryRing(asRingId('r-f-n'), nVerts.map((v) => v.id));
+    const nFeature = createLeafFeature(
+      asFeatureId('f-n'),
+      createBasicAttributes('f-n', 0, 0),
+      color,
+      createShape([nRing]),
+    );
+    const proposal = createEditProposal(
+      nFeature.id,
+      timePointYear(1000),
+      addSnapshot(nFeature, nVerts),
+    );
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    expect(pending.conflicts.length).toBe(2);
+
+    // BOTH policies in ONE apply: f-n is the adjust side of each conflict, with
+    // the OTHER participant (f-a or f-b) as priority — distinct per conflict, so
+    // the inner loop calls applyResolutionAt twice and the Map must key each to
+    // its own priority feature.
+    const policyFor = (conflict: (typeof pending.conflicts)[number]) => {
+      const priorityFeatureId =
+        conflict.a.featureId === nFeature.id ? conflict.b.featureId : conflict.a.featureId;
+      return { conflictId: conflict.id, priorityFeatureId, adjustFeatureId: nFeature.id };
+    };
+    const committed = binding.applyResolutionsFor(proposal)(pending.conflicts.map(policyFor));
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+
+    root = committed.command.execute(root).state;
+    const time = timePointYear(1000);
+    const vertices = verticesAt(root, time);
+
+    // All three features survive (f-n trimmed, not deleted).
+    const fa = featureByIdAt(root, time, a.feature.id);
+    const fb = featureByIdAt(root, time, b.feature.id);
+    const fn = featureByIdAt(root, time, nFeature.id);
+    expect(fa?.kind).toBe('leaf');
+    expect(fb?.kind).toBe('leaf');
+    expect(fn?.kind).toBe('leaf');
+    if (fa?.kind !== 'leaf' || fb?.kind !== 'leaf' || fn?.kind !== 'leaf') return;
+
+    // The trimmed adjust f-n no longer covers the interior of EITHER priority —
+    // proving each applyResolutionAt call subtracted the RIGHT priority (a
+    // mis-keyed Map lookup would leave one overlap behind or trim a priority).
+    // resolveLeafShape yields a GeoMultiPolygon (array of polygons); a point is
+    // inside the feature when it is inside ANY of its polygons.
+    const nArea = resolveLeafShape(fn.shape, vertices)!;
+    const insideAt = (
+      area: typeof nArea,
+      pt: { lon: number; lat: number },
+    ): boolean => area.some((poly) => pointInPolygon(pt, poly) === POINT_LOCATION.Inside);
+    expect(insideAt(nArea, { lon: 1, lat: 1 })).toBe(false); // f-a interior carved out
+    expect(insideAt(nArea, { lon: 11, lat: 1 })).toBe(false); // f-b interior carved out
+    // The priorities themselves are intact: their own centres stay inside them.
+    const aArea = resolveLeafShape(fa.shape, vertices)!;
+    const bArea = resolveLeafShape(fb.shape, vertices)!;
+    expect(insideAt(aArea, { lon: 1, lat: 1 })).toBe(true);
+    expect(insideAt(bArea, { lon: 11, lat: 1 })).toBe(true);
+  });
+
   it('returns conflicts-pending again when no policy is supplied (部分確定の禁止)', () => {
     let root = emptyProject();
     const binding = createLiveAddBinding({ getRoot: () => root });
