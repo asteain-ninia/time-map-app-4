@@ -10,6 +10,7 @@ import { getCalendar } from '../../domain/time/calendar';
 import { normalize } from '../../domain/time/normalized';
 import {
   timePointYear,
+  timePointYearMonth,
   timePointYearMonthDay,
 } from '../../domain/time/time-point';
 import {
@@ -20,6 +21,7 @@ import {
   fractionToTime,
   fromYearLabel,
   generateTicks,
+  granularityNote,
   timeToFraction,
   toNormalizedRange,
   toYearLabel,
@@ -40,6 +42,14 @@ describe('紀元前 (BC) display', () => {
   it('formats a TimePoint honoring granularity (未指定 omitted)', () => {
     expect(formatTimePoint(timePointYear(-44))).toBe('紀元前44年');
     expect(formatTimePoint(timePointYearMonthDay(2026, 6, 20))).toBe('2026年6月20日');
+  });
+
+  it('HB3-3: granularityNote explains an omitted month/day ONLY when unspecified', () => {
+    // Year-only / month-level points carry a tooltip note so 「YYYY年」 reads as
+    // intentional (未指定=値なし), not "missing"; a full y/m/d point carries none.
+    expect(granularityNote(timePointYear(1500))).toContain('月日は未指定');
+    expect(granularityNote(timePointYearMonth(1500, 6))).toContain('日は未指定');
+    expect(granularityNote(timePointYearMonthDay(1500, 6, 20))).toBe('');
   });
 });
 

@@ -14,7 +14,7 @@ import type { SessionStore } from '../state/store';
 import { PlaybackControls } from './PlaybackControls';
 import { StepControls } from './StepControls';
 import { YearMonthDayInput } from './YearMonthDayInput';
-import { formatTimePoint, formatYear, generateTicks } from './time-display';
+import { formatTimePoint, formatYear, generateTicks, granularityNote } from './time-display';
 import { useTimeline } from './useTimeline';
 import { usePlayback } from './usePlayback';
 
@@ -38,7 +38,11 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     <div className="timeline" data-testid="timeline">
       <div className="timeline__readout">
         <span className="timeline__range-min">{formatTimePoint(t.timelineMin)}</span>
-        <span className="timeline__current" data-testid="timeline-current">
+        <span
+          className="timeline__current"
+          data-testid="timeline-current"
+          title={granularityNote(t.currentTime)}
+        >
           {formatTimePoint(t.currentTime)}
         </span>
         <span className="timeline__range-max">{formatTimePoint(t.timelineMax)}</span>

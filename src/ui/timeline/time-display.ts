@@ -86,6 +86,25 @@ export function formatTimePoint(point: TimePoint): string {
   }
 }
 
+/**
+ * A tooltip note explaining WHY a readout shows no month/day (HB3-3): the value's
+ * granularity is year- or month-level, so month/day are genuinely unspecified
+ * (U21「未指定=値なし」) — not missing or broken. Empty for a full y/m/d point, so a
+ * complete value carries no needless tooltip. The visible label stays minimal
+ * (formatTimePoint); this only clarifies on hover that the omission is intentional
+ * (年のみ時は「YYYY年」と明示、月日は捏造しない — delegated decision 2026-06-22).
+ */
+export function granularityNote(point: TimePoint): string {
+  switch (point.granularity) {
+    case 'year':
+      return '月日は未指定です（指定された年のみ表示しています）';
+    case 'yearMonth':
+      return '日は未指定です（指定された年月のみ表示しています）';
+    case 'yearMonthDay':
+      return '';
+  }
+}
+
 // --- Range <-> slider position mapping --------------------------------------
 //
 // The slider's internal scalar position is a fraction in [0, 1]. It is a pure
