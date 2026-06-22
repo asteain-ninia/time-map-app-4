@@ -1365,8 +1365,15 @@ export function App(): JSX.Element {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const inheritorId = snapshot.touchedFeatureIds[0] ?? snapshot.inheritorFeatureId;
       recordCommit(result, { featureId: inheritorId });
+      // HB3-17: the split is done — the knife is no longer in knife state, so
+      // deactivate the tool (the toolbar button must not stay pressed/"active";
+      // ツール状態とUI表示のデシンク). Preserve the just-promoted inheritor selection
+      // (教訓 5.11): recordCommit re-resolved selection onto the inheritor, so read it
+      // back and pin it across the tool clear — only activeTool changes, not selection.
+      const s = store.getState();
+      s.setActiveTool(null, s.selection);
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // MERGE COMMIT (教訓 5.11 / U12): record as one history unit and promote the result
