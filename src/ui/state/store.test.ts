@@ -1125,4 +1125,55 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     expect(after.focus.emphasize).toBe(false);
     expect(after.globalDepth).toBe(2);
   });
+
+  // bughunt3 regression: applyCommandResult re-resolves the SELECTION against the
+  // CommandResult (deleted IDs dropped, 教訓 5.11) but historically left the per-
+  // feature display focus ALONE. A structure-changing command — e.g. a conflict
+  // resolution that merges / deletes a feature — can remove the very feature the
+  // focus origin points at. Without re-resolving the focus, focus.originId dangled
+  // at a deleted feature after the edit, surviving until the next load. The focus is
+  // now re-resolved on the SAME path: a deleted origin is cleared to global N.
+  it('applyCommandResult clears a display focus whose origin the command deleted (bughunt3)', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    store.getState().setDisplayFocus({ originId: f('X'), depth: 4, emphasize: true });
+
+    // The edit (conflict resolution merging X away) deletes the focused feature X.
+    const result = createCommandResult({
+      survived: [f('Y')],
+      created: [f('M')],
+      deleted: [f('X')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+
+    const dc = store.getState().displayControl;
+    // The dangling per-feature focus is dropped (revert to global N)...
+    expect(dc.focus.originId).toBeNull();
+    expect(dc.focus.depth).toBe(0);
+    expect(dc.focus.emphasize).toBe(false);
+    // ...while the project-independent global depth N is preserved (教訓 5.13).
+    expect(dc.globalDepth).toBe(2);
+  });
+
+  it('applyCommandResult keeps a display focus whose origin survived, preserving identity (bughunt3)', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    store.getState().setDisplayFocus({ originId: f('X'), depth: 4, emphasize: true });
+    const ref = store.getState().displayControl;
+
+    // An ordinary edit that does NOT touch the focused feature X. The focus origin
+    // survives, so the displayControl reference must be PRESERVED (no memo churn):
+    // the display pipeline / redraw key on displayControl identity.
+    const result = createCommandResult({
+      survived: [f('X'), f('Y')],
+      deleted: [f('Z')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+
+    const dc = store.getState().displayControl;
+    expect(dc).toBe(ref); // same reference: an unrelated edit is a focus memo HIT
+    expect(dc.focus.originId).toBe(f('X'));
+    expect(dc.focus.depth).toBe(4);
+    expect(dc.focus.emphasize).toBe(true);
+  });
 });

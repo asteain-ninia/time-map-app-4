@@ -389,6 +389,33 @@ function clearedFocusControl(dc: DisplayControl): DisplayControl {
 }
 
 /**
+ * Re-resolve the display-control's individual focus after a structure-changing
+ * command (bughunt3): a merge / split / delete (including conflict resolution)
+ * can REMOVE the very feature the focus origin points at. Selection is already
+ * re-resolved against the {@link CommandResult} (deleted IDs dropped, 教訓 5.11)
+ * — the focus origin is the ONE remaining per-feature reference that, without this,
+ * would survive pointing at a deleted feature. We apply the SAME rule here: if the
+ * command DELETED the current focus origin, clear the focus to {@link NO_DISPLAY_FOCUS}
+ * (revert to global N, 教訓 5.2 stale を破棄). A focus whose origin survived (or no
+ * active focus) is left untouched.
+ *
+ * IDENTITY STABILITY (same invariant as {@link clearedFocusControl}): when nothing
+ * has to change — no focus, or the origin survived — we return the EXISTING
+ * `displayControl` reference unchanged so the display memos / Canvas redraw, which
+ * key on `displayControl` identity, are not busted by a value-equal-but-reference-new
+ * object on every edit (教訓 5.29). Only an origin that was actually deleted allocates.
+ */
+function focusControlAfterStructureChange(
+  dc: DisplayControl,
+  result: CommandResult,
+): DisplayControl {
+  if (dc.focus.originId === null) return dc;
+  if (!result.deleted.has(dc.focus.originId)) return dc;
+  // The focused feature is gone — drop the per-feature focus, keep global depth N.
+  return clearedFocusControl(dc);
+}
+
+/**
  * Adapt the store's injected {@link ExistenceResolver} to U22's
  * {@link revalidateForTime} existence port (教訓 5.34: the two layers meet at a
  * fixed contract, not by accident). The store still resolves NOTHING itself —
@@ -586,10 +613,25 @@ export function createSessionStore<S>(
         result,
         preference,
       );
+      // The per-feature display focus is the ONE remaining reference to a specific
+      // feature that selection re-resolution does not cover; re-resolve it against
+      // the SAME result so a focus origin the command DELETED (e.g. a feature merged
+      // away by conflict resolution) does not dangle (bughunt3 — see
+      // focusControlAfterStructureChange). Identity is preserved when the origin
+      // survived, so an ordinary edit does not bust the display memos.
+      const nextDisplayControl = focusControlAfterStructureChange(
+        get().displayControl,
+        result,
+      );
       // A domain edit marks the project dirty (spec §B dirty 単一基準 / 教訓 5.36):
       // this is the SAME projectDirty a setting change sets, so the U39 unsaved
       // guard sees BOTH edit kinds through one flag (no second truth source).
-      set({ domain: nextDomain, projectDirty: true, ...selectionPatch(next) });
+      set({
+        domain: nextDomain,
+        projectDirty: true,
+        displayControl: nextDisplayControl,
+        ...selectionPatch(next),
+      });
     },
 
     setDomainState(nextDomain) {
