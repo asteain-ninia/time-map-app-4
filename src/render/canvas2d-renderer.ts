@@ -376,6 +376,10 @@ export class Canvas2DMapRenderer implements MapRenderer {
       ctx.lineWidth = Math.max(2, p.fontPx / 5);
       ctx.strokeStyle = p.halo;
       ctx.strokeText(p.text, x, y);
+      // HB3-26 review fix: restore the default join so the label halo's 'round' does not
+      // leak into later/next-frame strokes (polygon borders, gridlines) — they expect the
+      // canvas default 'miter'. The renderer otherwise sets lineWidth/strokeStyle per call.
+      ctx.lineJoin = 'miter';
     }
     ctx.fillStyle = p.fill;
     ctx.fillText(p.text, x, y);
