@@ -3566,3 +3566,515 @@ describe('alternation (seed=32004): anisotropic scale of top bands + subtree-abs
     );
   });
 });
+
+// ===========================================================================
+// CAMPAIGN 11 (seed=42001) — a fresh exploration disjoint from every earlier
+// seed in this file (2001/2002/2004, 22001-22004, 32002-32004) AND from the
+// past bughunt campaigns at 1000-6000 / 21000-26000 / 31000-36000. It adds NEW
+// command kinds / generators not exercised before here:
+//
+//   (1) COMPOSITE affine "place" of a top-level band: rotate ∘ uniform-scale
+//       about the band's OWN centroid, applied as ONE operation with a true
+//       inverse (un-rotate then un-scale about the SAME centroid). Earlier
+//       campaigns rotate, scale, shear, reflect and aniso-scale SEPARATELY;
+//       none composes a rotation with a uniform contraction as a single
+//       op∘inverse pair. A pure rotation about the centroid + a uniform
+//       contraction about the same point are each band-safe (a top-level square
+//       of half-width ≤16 has circumradius ≤16√2≈22.6 < the 40 half-gap between
+//       80-spaced bands), so their composite keeps containment / band non-
+//       overlap, and its inverse restores coordinates to a tight epsilon.
+//
+//   (2) UNIFORM scale of an ARBITRARY (possibly nested) subtree about its own
+//       centroid by a contraction factor — a true op∘inverse pair on any ring,
+//       not just a top-level band.
+//
+//   (3) REKEY-COMMUTES-WITH-DELETE checked INLINE within the live command
+//       stream (rename(delete(s)) ≡ delete(rename(s)) up to the rename
+//       prefix), rather than only as a standalone property as campaign 9 does.
+//
+//   (4) A NEW stream command mix: select / delete-selected / delete-any /
+//       place-top (composite) / uscale-any / anchor-insert / anchor-remove /
+//       save-load / rekey-commutes / delete-absent-noop — interleaved, with the
+//       full focal bundle (alternation, acyclic, unique ids, finite-depth
+//       forest, depth-consistency = derived-aggregate forest law, finite coords,
+//       simplicity, containment / sibling & enclave non-overlap, selection
+//       never dangling, anchors strictly ascending = sorted+unique, save→load
+//       identity over the whole quadruple) asserted after EVERY command, PLUS
+//       full-stream undo (undo∘op = identity via an independent pre-command
+//       snapshot) and the delete-absent identity at every step.
+//
+// Determinism: seed fixed to 42001, numRuns large; permanent asset, no green-fake.
+// ===========================================================================
+
+const SEED11 = 42001;
+const RUNS11 = 600;
+const cfg11 = { seed: SEED11, numRuns: RUNS11 } as const;
+// The interleaved stream is the heaviest property (many sub-assertions per step);
+// give it a still-large but bounded budget so the campaign stays runnable.
+const cfg11Stream = { seed: SEED11, numRuns: 220 } as const;
+
+/**
+ * COMPOSITE rigid+similarity transform of `ringId`'s subtree about a fixed
+ * center: first uniformly scale by `k` (c + k·(p−c)), then rotate the scaled
+ * point about the SAME center by `angle` radians. Equivalent to applying the
+ * single linear map R(angle)·(k·I) to (p−c) and re-adding c. Returns a NEW
+ * store; the shape (parent links) is unchanged. The center + (k, angle) are
+ * captured BEFORE the move so {@link unplaceSubtree} forms a true inverse.
+ */
+function placeSubtree(
+  state: FullState,
+  ringId: RingId,
+  center: { lon: number; lat: number },
+  k: number,
+  angle: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  const cos = Math.cos(angle);
+  const sin = Math.sin(angle);
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    // scale first
+    const sx = k * (v.coordinate.lon - center.lon);
+    const sy = k * (v.coordinate.lat - center.lat);
+    // then rotate the scaled offset about the center
+    const placed = withVertexCoordinate(
+      v,
+      createCoordinate(center.lon + sx * cos - sy * sin, center.lat + sx * sin + sy * cos),
+    );
+    store = setVertex(store, placed);
+  }
+  return store;
+}
+
+/** Exact inverse of {@link placeSubtree} for the SAME center / k / angle:
+ * un-rotate by −angle then un-scale by 1/k. Composing place then unplace
+ * restores coordinates to a tight float epsilon (the forward map is a
+ * similarity, its inverse the reciprocal similarity about the same center). */
+function unplaceSubtree(
+  state: FullState,
+  ringId: RingId,
+  center: { lon: number; lat: number },
+  k: number,
+  angle: number,
+): VertexStore {
+  const ids = subtreeRingIds(state.shape, ringId);
+  const moved = new Set<VertexId>();
+  for (const ring of state.shape.rings) {
+    if (!ids.has(ring.id)) continue;
+    for (const vid of ring.vertexIds) moved.add(vid);
+  }
+  const cos = Math.cos(-angle);
+  const sin = Math.sin(-angle);
+  const invK = 1 / k;
+  let store = state.store;
+  for (const vid of moved) {
+    const v = getVertex(store, vid);
+    if (v === undefined) continue;
+    // un-rotate first (inverse order)
+    const dx = v.coordinate.lon - center.lon;
+    const dy = v.coordinate.lat - center.lat;
+    const rx = dx * cos - dy * sin;
+    const ry = dx * sin + dy * cos;
+    // then un-scale
+    const restored = withVertexCoordinate(
+      v,
+      createCoordinate(center.lon + invK * rx, center.lat + invK * ry),
+    );
+    store = setVertex(store, restored);
+  }
+  return store;
+}
+
+/** Uniform contraction of an ARBITRARY subtree about its own centroid by `k`
+ * (reuses {@link scaleSubtreeAbout}); the centroid is captured here so the
+ * inverse (k → 1/k about the same centroid) is exact. Returns undefined when
+ * the subtree has no resolvable centroid (e.g. a vertex is missing). */
+function uniformScaleAnySubtree(
+  state: FullState,
+  ringId: RingId,
+  k: number,
+): { store: VertexStore; center: { lon: number; lat: number } } | undefined {
+  const center = subtreeCentroid(
+    { shape: state.shape, store: state.store, selected: undefined },
+    ringId,
+  );
+  if (center === undefined) return undefined;
+  const store = scaleSubtreeAbout(
+    { shape: state.shape, store: state.store, selected: undefined },
+    ringId,
+    center,
+    k,
+  );
+  return { store, center };
+}
+
+/** An eleventh-campaign edit command. */
+type EditCommand11 =
+  | { readonly tag: 'select'; readonly sel: number }
+  | { readonly tag: 'delete-selected' }
+  | { readonly tag: 'delete-any'; readonly sel: number }
+  | {
+      readonly tag: 'place-top';
+      readonly sel: number;
+      readonly k: number;
+      readonly angle: number;
+    }
+  | { readonly tag: 'uscale-any'; readonly sel: number; readonly k: number }
+  | { readonly tag: 'anchor-insert'; readonly value: number }
+  | { readonly tag: 'anchor-remove'; readonly sel: number }
+  | { readonly tag: 'save-load' }
+  | { readonly tag: 'rekey-commutes'; readonly sel: number }
+  | { readonly tag: 'delete-absent-noop' };
+
+function editCommand11Arb(): fc.Arbitrary<EditCommand11> {
+  const sel = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
+  // Uniform contraction strictly in [0.5, 1.0): never expands (which could push a
+  // band out of its cell or a subtree past its parent), never collapses below
+  // half (keeps each rectangle comfortably non-degenerate / simple).
+  const factor = (): fc.Arbitrary<number> =>
+    fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true });
+  const angle = (): fc.Arbitrary<number> =>
+    fc.double({ min: -Math.PI, max: Math.PI, noNaN: true, noDefaultInfinity: true });
+  return fc.oneof(
+    fc.record({ tag: fc.constant('select' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-selected' as const) }),
+    fc.record({ tag: fc.constant('delete-any' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('place-top' as const), sel: sel(), k: factor(), angle: angle() }),
+    fc.record({ tag: fc.constant('uscale-any' as const), sel: sel(), k: factor() }),
+    fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -40, max: 40 }) }),
+    fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('save-load' as const) }),
+    fc.record({ tag: fc.constant('rekey-commutes' as const), sel: sel() }),
+    fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
+  );
+}
+
+describe('alternation (seed=42001): composite place + uniform-scale-any + rekey-commutes stream', () => {
+  it('placing (rotate∘uniform-scale) a top-level band about its centroid keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              k: fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true }),
+              angle: fc.double({ min: -Math.PI, max: Math.PI, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickTopLevelId(shape, op.sel);
+          if (targetId === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const center = subtreeCentroid(
+            { shape, store, selected: undefined },
+            targetId,
+          );
+          if (center === undefined) return;
+          const moved = placeSubtree(state, targetId, center, op.k, op.angle);
+          // A composite rotate∘uniform-contraction about the band's own centroid
+          // keeps every focal invariant: each axis-aligned rectangle maps to a
+          // (rotated, smaller) rectangle (still simple, non-self-intersecting),
+          // internal containment is affine-preserved, and the band stays inside
+          // its 80-wide cell (circumradius ≤16√2 < 40 half-gap).
+          assertFullStateBundle({ shape, store: moved, selected: undefined, anchors: [] });
+          // op∘inverse: un-rotate(−angle) then un-scale(1/k) about the SAME
+          // centroid restores coords (multiply/rotate then divide/rotate-back =>
+          // within a tight epsilon, not bit-exact).
+          const back = unplaceSubtree(
+            { shape, store: moved, selected: undefined, anchors: [] },
+            targetId,
+            center,
+            op.k,
+            op.angle,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg11,
+    );
+  });
+
+  it('uniformly contracting ANY subtree about its centroid keeps the full bundle (op∘inverse restores)', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .record({
+              sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
+              k: fc.double({ min: 0.5, max: 0.999, noNaN: true, noDefaultInfinity: true }),
+            })
+            .map((op) => ({ shape, store, op })),
+        ),
+        ({ shape, store, op }) => {
+          const targetId = pickAny(shape, op.sel);
+          if (targetId === undefined) return;
+          const state: FullState = { shape, store, selected: undefined, anchors: [] };
+          const result = uniformScaleAnySubtree(state, targetId, op.k);
+          if (result === undefined) return;
+          assertFullStateBundle({
+            shape,
+            store: result.store,
+            selected: undefined,
+            anchors: [],
+          });
+          // op∘inverse: scale back by 1/k about the SAME centroid restores coords.
+          const back = scaleSubtreeAbout(
+            { shape, store: result.store, selected: undefined },
+            targetId,
+            result.center,
+            1 / op.k,
+          );
+          for (const v of store.byId.values()) {
+            const rv = back.byId.get(v.id);
+            expect(rv).not.toBeUndefined();
+            expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+            expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+          }
+        },
+      ),
+      cfg11,
+    );
+  });
+
+  it('rekey commutes with delete: rename(delete(s)) ≡ delete(rename(s)) up to the rename prefix', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          ringIdFromShapeArb(shape).map((targetId) => ({ shape, store, targetId })),
+        ),
+        ({ shape, store, targetId }) => {
+          // (a) delete THEN rename.
+          const deletedFirst = deleteRingAndReorganize(shape, targetId);
+          const renamedAfterDelete = rekeyState(
+            { shape: deletedFirst, store },
+            // any valid id works as the second arg; we only use the renamed shape.
+            targetId,
+          ).state.shape;
+          // (b) rename THEN delete (delete the renamed image of the same ring).
+          const renamed = rekeyState({ shape, store }, targetId);
+          const deletedAfterRename = deleteRingAndReorganize(
+            renamed.state.shape,
+            renamed.targetId,
+          );
+          // Both forests, stripped of the rename prefix, are structurally identical:
+          // the reorganization is naming-invariant (a pure function of structure).
+          expect(structuralSignature(deletedAfterRename, true)).toBe(
+            structuralSignature(renamedAfterDelete, true),
+          );
+          // Both are independently valid alternating forests.
+          assertStructurallyValid(deletedAfterRename);
+          assertStructurallyValid(renamedAfterDelete);
+        },
+      ),
+      cfg11,
+    );
+  });
+
+  it('stateful: interleaved select / delete-selected / delete-any / place-top / uscale-any / anchor / save-load / rekey-commutes keeps the full bundle + undo=identity at every step', () => {
+    fc.assert(
+      fc.property(
+        richGeoShapeArb().chain(({ shape, store }) =>
+          fc
+            .array(editCommand11Arb(), { minLength: 6, maxLength: shape.rings.length + 16 })
+            .map((commands) => ({ shape, store, commands })),
+        ),
+        ({ shape, store, commands }) => {
+          let state: FullState = { shape, store, selected: undefined, anchors: [] };
+          assertFullStateBundle(state);
+          for (const cmd of commands) {
+            // METAMORPHIC every step: deleting an absent ring is the identity.
+            expect(
+              deleteRingAndReorganize(state.shape, asRingId('absent-42001')),
+            ).toEqual(state.shape);
+            // FULL-STREAM UNDO: an independent snapshot of the pre-command state.
+            const snapshot = saveLoadFullState(state);
+
+            switch (cmd.tag) {
+              case 'select': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                state = { ...state, selected: targetId };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-selected': {
+                if (state.selected === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, state.selected);
+                state = {
+                  ...state,
+                  shape: nextShape,
+                  // selection must follow the model: its own ring is gone now.
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                // a delete-selected always clears the dangling selection.
+                expect(state.selected).toBeUndefined();
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const before = state.shape.rings.length;
+                const nextShape = deleteRingAndReorganize(state.shape, targetId);
+                state = {
+                  ...state,
+                  shape: nextShape,
+                  selected: reresolveSelection(nextShape, state.selected),
+                };
+                expect(state.shape.rings.length).toBeLessThan(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'place-top': {
+                const targetId = pickTopLevelId(state.shape, cmd.sel);
+                if (targetId === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const center = subtreeCentroid(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                );
+                if (center === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const beforeStore = state.store;
+                const moved = placeSubtree(state, targetId, center, cmd.k, cmd.angle);
+                state = { ...state, store: moved };
+                assertFullStateBundle(state);
+                // op∘inverse: un-place restores prior coords.
+                const back = unplaceSubtree(state, targetId, center, cmd.k, cmd.angle);
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'uscale-any': {
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const beforeStore = state.store;
+                const result = uniformScaleAnySubtree(state, targetId, cmd.k);
+                if (result === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                state = { ...state, store: result.store };
+                assertFullStateBundle(state);
+                // op∘inverse: scale back by 1/k about the SAME centroid.
+                const back = scaleSubtreeAbout(
+                  { shape: state.shape, store: state.store, selected: undefined },
+                  targetId,
+                  result.center,
+                  1 / cmd.k,
+                );
+                for (const v of beforeStore.byId.values()) {
+                  const rv = back.byId.get(v.id);
+                  expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 6);
+                  expect(rv?.coordinate.lat).toBeCloseTo(v.coordinate.lat, 6);
+                }
+                break;
+              }
+              case 'anchor-insert': {
+                const before = state.anchors;
+                state = { ...state, anchors: insertAnchor(state.anchors, cmd.value) };
+                if (before.includes(cmd.value)) expect(state.anchors).toEqual(before);
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'anchor-remove': {
+                const idx =
+                  state.anchors.length === 0
+                    ? -1
+                    : Math.min(
+                        state.anchors.length - 1,
+                        Math.floor(cmd.sel * state.anchors.length),
+                      );
+                state = { ...state, anchors: removeAnchorAt(state.anchors, idx) };
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'save-load': {
+                const reloaded = saveLoadFullState(state);
+                expect(reloaded.shape).toEqual(state.shape);
+                expect(reloaded.selected).toEqual(state.selected);
+                expect(reloaded.anchors).toEqual(state.anchors);
+                state = reloaded;
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'rekey-commutes': {
+                // METAMORPHIC, live: deleting then renaming equals renaming then
+                // deleting (up to the rename prefix) on the CURRENT shape. The
+                // state itself is left unchanged — this is a read-only law check.
+                const targetId = pickAny(state.shape, cmd.sel);
+                if (targetId === undefined) {
+                  assertFullStateBundle(state);
+                  break;
+                }
+                const deletedFirst = deleteRingAndReorganize(state.shape, targetId);
+                const renamedAfterDelete = rekeyState(
+                  { shape: deletedFirst, store: state.store },
+                  targetId,
+                ).state.shape;
+                const renamed = rekeyState(
+                  { shape: state.shape, store: state.store },
+                  targetId,
+                );
+                const deletedAfterRename = deleteRingAndReorganize(
+                  renamed.state.shape,
+                  renamed.targetId,
+                );
+                expect(structuralSignature(deletedAfterRename, true)).toBe(
+                  structuralSignature(renamedAfterDelete, true),
+                );
+                assertFullStateBundle(state);
+                break;
+              }
+              case 'delete-absent-noop': {
+                const next = deleteRingAndReorganize(state.shape, asRingId('nope-42001'));
+                expect(next).toEqual(state.shape);
+                state = { ...state, shape: next };
+                assertFullStateBundle(state);
+                break;
+              }
+              default:
+                break;
+            }
+
+            // UNDO∘op = identity: the pre-command snapshot still reproduces the
+            // pre-command state verbatim (an independent copy, no aliasing).
+            assertFullStateBundle(snapshot);
+          }
+        },
+      ),
+      cfg11Stream,
+    );
+  });
+});

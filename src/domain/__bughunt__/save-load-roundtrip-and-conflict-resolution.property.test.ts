@@ -58,6 +58,7 @@ import {
   applyPastEdit,
   normalizeSeries,
   validateSeries,
+  resolveAt,
   type AnchorSeries,
   type AnchorEntry,
 } from '../anchor-series';
@@ -3577,6 +3578,428 @@ describe('bug hunt #3 / SIXTH exploration (seed 36004) — corrupt a RELOADED gr
         },
       ),
       { seed: SEED9, numRuns: 900 },
+    );
+  });
+});
+
+// ============================================================================
+// Section 10 — bug hunt #4 / SEVENTH exploration (seed 46001, DISJOINT from EVERY
+// pin above: 26001/26002/26003/26004, 36002/36003/36004, AND the identity suite's
+// 1000–6004 / 21000–26000 / 31000–36000). Every earlier section in this file left
+// EVERY anchor OPEN-ENDED (`end === null`): the multiAnchorHistory / mixedGranularity
+// factories pass `null` for every entry's end, and the only bounded ends the prior
+// walks ever produced were transient (a setEnd immediately followed by other ops),
+// never the GENERATED base. So the persistence + consistency + resolveAt behaviour of
+// a series carrying genuine BOUNDED intervals WITH temporal-enclave GAPS (INV-4 —
+// non-existence windows between a bounded end and the next start) was NEVER the
+// subject of a round-trip / invariant / conflict-resolution law here. This section
+// adds that surface and the command kinds / generators / metamorphic laws it unlocks:
+//
+//   (ab) BOUNDED-END + GAP generator (projectArbBounded): each history's anchors are
+//        laid out as [start_i, end_i) windows with a strictly-positive GAP between
+//        end_i and start_{i+1} (a non-existence enclave, INV-4). The generated base
+//        therefore carries non-null ends AND interior gaps — INV-1/2/3 valid by
+//        construction — exercising serialize/deserialize of the `end` field, the
+//        anchor-time sweep over BOTH interval boundaries (start AND end are slice
+//        events, consistency.ts distinctAnchorTimes), and resolveAt's bounded-window
+//        / gap branch (end-exclusive ABSENT) that the all-null prior bases never hit.
+//        Full per-edit battery + boundary round-trip after each cmd.
+//
+//   (ac) TEMPORAL-ENCLAVE resolveAt law (選択が常に有効, over TIME): at a time INSIDE
+//        a generated gap, resolveAt MUST return `absent` for that history (the feature
+//        does not exist then); at a time INSIDE a window it MUST return the owning
+//        entry. A "selection over time" / display query that resolved a feature inside
+//        its own non-existence enclave would paint a ghost. No earlier section probes
+//        resolveAt at a gap interior because no earlier base had a gap.
+//
+//   (ad) NEW corruption: an INV-2 OVERLAP (a bounded end that OVERRUNS the next
+//        entry's start), hand-built to bypass setEnd's overrun-shorten guard. Section
+//        2 injected only an INV-1 descending start; Section 7(r) only an INV-3
+//        zero/negative span. An INV-2 overlap is the THIRD, distinct TimeConflict
+//        sub-cause, whose NormalizeSeries repair drives the "clamp the overrunning end
+//        to the next start" branch neither earlier time corruption reaches. Same
+//        metamorphic repair laws (detected ⇒ honest ⇒ converges ⇒ round-trips).
+//
+//   (ae) BOUNDED-SERIES STATEFUL model with conflict-resolution: a fast-check
+//        fc.commands model over a bounded-end base interleaving a geometry-preserving
+//        EDIT, save→load, undo∘op, AND a corrupt(INV-2-overlap)→repair-to-fixpoint
+//        command that adopts the healed project — the FIRST stateful drive whose live
+//        state carries bounded intervals + gaps THROUGH a corrupt→repair→continue
+//        cycle (Sections 7q/8u/9 stateful models all ran over all-null-end bases).
+// ============================================================================
+
+const SEED10 = 46001;
+
+/**
+ * Build a FeatureHistory whose anchors carry genuine BOUNDED intervals separated by
+ * temporal-enclave GAPS (INV-4). `windows` is an ascending list of [start,end) year
+ * pairs already guaranteed non-overlapping with a positive gap between consecutive
+ * windows by the caller's generator. The LAST window MAY be open-ended (end null) so
+ * both the bounded and the trailing-open shapes are exercised.
+ */
+function boundedGapHistory(
+  ownerId: string,
+  idForAnchors: string,
+  features: readonly Feature[],
+  vertices: readonly Vertex[],
+  windows: readonly { start: number; end: number | null }[],
+): FeatureHistory {
+  const store = createVertexStore([...vertices]);
+  const entries = windows.map((w, i) =>
+    createAnchorEntry(
+      createAnchor(asAnchorId(`${idForAnchors}-bw-${i}`), createAnchorSnapshot(features, store)),
+      timePointYear(w.start),
+      w.end === null ? null : timePointYear(w.end),
+    ),
+  );
+  return { featureId: asFeatureId(ownerId), series: normalizeSeries(entries, CAL) };
+}
+
+/**
+ * Lay N anchors out as bounded [start,end) windows with a strictly-positive gap
+ * between consecutive windows: window i = [base_i, base_i + span_i), and base_{i+1}
+ * = base_i + span_i + gap_i with span_i ≥ 1 and gap_i ≥ 1. The LAST window is left
+ * open-ended (end null) so the series carries BOTH a bounded interior and a trailing
+ * open window. Returns the windows AND the interior gap MIDPOINTS (a time inside each
+ * non-existence enclave) for the resolveAt-at-gap law. With span ≥ 1 and gap ≥ 1 the
+ * series is INV-1/2/3 valid (strictly ascending starts, end strictly after start,
+ * end ≤ next start), so normalizeSeries keeps every anchor.
+ */
+function layoutBoundedWindows(
+  count: number,
+  spans: readonly number[],
+  gaps: readonly number[],
+): { windows: { start: number; end: number | null }[]; gapMidpoints: number[] } {
+  const windows: { start: number; end: number | null }[] = [];
+  const gapMidpoints: number[] = [];
+  let cursor = -100;
+  for (let i = 0; i < count; i += 1) {
+    const span = Math.max(1, spans[i] ?? 1);
+    const start = cursor;
+    const isLast = i === count - 1;
+    if (isLast) {
+      // Trailing open-ended window.
+      windows.push({ start, end: null });
+      break;
+    }
+    const end = start + span;
+    windows.push({ start, end });
+    const gap = Math.max(1, gaps[i] ?? 1);
+    // A time strictly between `end` (exclusive — feature already gone) and the next
+    // start: the interior of the non-existence enclave. gap ≥ 1 guarantees end < next
+    // start, so a midpoint exists exactly when gap ≥ 2; for gap === 1 there is no
+    // INTEGER interior point, so record the gap midpoint only when gap ≥ 2.
+    if (gap >= 2) gapMidpoints.push(end + Math.floor(gap / 2));
+    cursor = end + gap;
+  }
+  return { windows, gapMidpoints };
+}
+
+/** Like projectArb() but every history carries BOUNDED [start,end) windows + gaps. */
+function projectArbBounded(): fc.Arbitrary<DomainProject> {
+  const kindArb: fc.Arbitrary<FeatureKindTag> = fc.constantFrom('leaf', 'point', 'hole', 'aggregate');
+  return fc
+    .array(
+      fc.record({
+        kind: kindArb,
+        // count ≥ 2 GUARANTEES at least one bounded [start,end) window (only the LAST
+        // window is open-ended), so the generated base always carries a non-null end +
+        // an interior enclave — the whole point of THIS exploration. A count===1
+        // history would be all-open (the prior sections' shape), making the bounded /
+        // gap laws vacuous; the harness's own non-vacuity guards (below) reject that.
+        count: fc.integer({ min: 2, max: 4 }),
+        spans: fc.array(fc.integer({ min: 1, max: 20 }), { minLength: 4, maxLength: 4 }),
+        gaps: fc.array(fc.integer({ min: 1, max: 20 }), { minLength: 4, maxLength: 4 }),
+      }),
+      { minLength: 1, maxLength: 5 },
+    )
+    .map((specs) => {
+      const histories: FeatureHistory[] = specs.map((spec, i) => {
+        const id = `b${i}`;
+        const ox = 1000 + i * 300;
+        const { windows } = layoutBoundedWindows(spec.count, spec.spans, spec.gaps);
+        if (spec.kind === 'leaf') {
+          const { feature, vertices } = squareLeaf(id, ox, 0, 10);
+          return boundedGapHistory(id, id, [feature], vertices, windows);
+        }
+        if (spec.kind === 'point') {
+          const { feature, vertex } = pointFeature(id, ox, 0);
+          return boundedGapHistory(id, id, [feature], [vertex], windows);
+        }
+        if (spec.kind === 'hole') {
+          const { feature, vertices } = holedLeaf(id, ox, 0);
+          return boundedGapHistory(id, id, [feature], vertices, windows);
+        }
+        const { features, vertices } = aggregateWithChildren(id, ox);
+        return boundedGapHistory(`${id}-agg`, id, features, vertices, windows);
+      });
+      return { histories, settings: SETTINGS, baseMap: BASEMAP };
+    });
+}
+
+/**
+ * Inject an INV-2 OVERLAP into one history: extend the FIRST entry's end so it
+ * OVERRUNS the SECOND entry's start (end > next.start), bypassing setEnd's
+ * overrun-shorten guard by writing the entry directly. Needs ≥ 2 entries whose
+ * starts are bare-year (our bounded generator guarantees this). Returns null when
+ * inapplicable. The candidate must actually fail validateSeries (INV-2) to be a
+ * genuine corruption.
+ */
+function corruptOverlapEnd(
+  project: DomainProject,
+  pick: number,
+): { project: DomainProject; expectKind: string } | null {
+  const histories = cloneHistories(project);
+  if (histories.length === 0) return null;
+  const hi = pick % histories.length;
+  const h = histories[hi]!;
+  const entries = h.series.entries;
+  if (entries.length < 2) return null;
+  const e0 = entries[0]!;
+  const e1 = entries[1]!;
+  if (e1.start.granularity !== 'year' || e0.start.granularity !== 'year') return null;
+  // Overrunning end: strictly AFTER the next entry's start (INV-2 violated since an
+  // end must be ≤ the next start). +5 beyond e1.start guarantees a real overrun.
+  const overrunEnd = timePointYear(e1.start.year + 5);
+  const corruptedEntries: AnchorEntry[] = entries.map((e, i) =>
+    i === 0 ? { anchor: e.anchor, start: e.start, end: overrunEnd } : e,
+  );
+  const candidate: AnchorSeries = { entries: corruptedEntries };
+  if (validateSeries(candidate, CAL).ok) return null;
+  histories[hi] = { featureId: h.featureId, series: candidate };
+  return { project: { ...project, histories }, expectKind: INCONSISTENCY.TimeConflict };
+}
+
+describe('bug hunt #4 / bounded-interval + gap round-trip (seed 46001)', () => {
+  it('generated bounded-end + gap base satisfies every load invariant (non-null ends + enclaves)', () => {
+    fc.assert(
+      fc.property(projectArbBounded(), (project) => {
+        const check = checkBaseInvariants(project);
+        if (!check.ok) throw new Error(`bounded-gap base failed: ${check.failed}`);
+        // Non-vacuity: at least one entry in this project MUST carry a non-null end
+        // (else the generator silently degraded to the all-open shape the prior
+        // sections already cover — a green-faking guard for THIS exploration).
+        const hasBoundedEnd = project.histories.some((hh) =>
+          hh.series.entries.some((e) => e.end !== null),
+        );
+        if (!hasBoundedEnd) {
+          throw new Error('bounded-gap generator produced no non-null end (degraded to all-open)');
+        }
+      }),
+      { seed: SEED10, numRuns: 400 },
+    );
+  });
+
+  it('a bounded end + interior gap survives the ACTUAL JSON+Zod boundary unchanged', () => {
+    fc.assert(
+      fc.property(projectArbBounded(), (project) => {
+        const rt = boundaryRoundTrips(project);
+        if (!rt.ok) throw new Error(`bounded-gap base boundary round-trip failed: ${rt.reason}`);
+        // The serialized form must literally carry the non-null end (not silently
+        // dropped / re-opened on the persistence round-trip).
+        const manifest = serialize(project);
+        let sawBoundedEnd = false;
+        for (const hh of manifest.histories) {
+          for (const e of hh.entries) {
+            if (e.end !== null && e.end !== undefined) sawBoundedEnd = true;
+          }
+        }
+        if (!sawBoundedEnd) throw new Error('serialize dropped every bounded end');
+      }),
+      { seed: SEED10, numRuns: 400 },
+    );
+  });
+
+  it('resolveAt is ABSENT inside a non-existence enclave and PRESENT inside a window (選択 over time)', () => {
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            count: fc.integer({ min: 2, max: 4 }),
+            spans: fc.array(fc.integer({ min: 1, max: 20 }), { minLength: 4, maxLength: 4 }),
+            // Force gap ≥ 2 so every interior enclave has an integer midpoint to probe.
+            gaps: fc.array(fc.integer({ min: 2, max: 20 }), { minLength: 4, maxLength: 4 }),
+          }),
+          { minLength: 1, maxLength: 4 },
+        ),
+        (specs) => {
+          for (let i = 0; i < specs.length; i += 1) {
+            const spec = specs[i]!;
+            const id = `r${i}`;
+            const { feature, vertices } = squareLeaf(id, 1000 + i * 300, 0, 10);
+            const { windows, gapMidpoints } = layoutBoundedWindows(spec.count, spec.spans, spec.gaps);
+            const history = boundedGapHistory(id, id, [feature], vertices, windows);
+            // Every interior gap midpoint must resolve to ABSENT (the feature does not
+            // exist in its own non-existence enclave — a query there would paint a ghost).
+            for (const mid of gapMidpoints) {
+              const res = resolveAt(history.series, timePointYear(mid), CAL);
+              if (res.kind !== 'absent') {
+                throw new Error(`resolveAt PRESENT inside enclave at year ${mid} (should be absent)`);
+              }
+            }
+            // The interior of each BOUNDED window must resolve to PRESENT.
+            for (const w of windows) {
+              if (w.end === null) {
+                // Open window: a time at/after start is present.
+                const res = resolveAt(history.series, timePointYear(w.start), CAL);
+                if (res.kind !== 'present') {
+                  throw new Error(`resolveAt ABSENT inside open window starting ${w.start}`);
+                }
+              } else if (w.end - w.start >= 1) {
+                const within = w.start; // start is inclusive, end exclusive.
+                const res = resolveAt(history.series, timePointYear(within), CAL);
+                if (res.kind !== 'present') {
+                  throw new Error(`resolveAt ABSENT inside window [${w.start},${w.end})`);
+                }
+              }
+            }
+          }
+        },
+      ),
+      { seed: SEED10, numRuns: 500 },
+    );
+  });
+
+  it('all invariants + in-memory round-trip survive an edit sequence over bounded-gap series', () => {
+    fc.assert(
+      fc.property(
+        projectArbBounded(),
+        fc.array(cmdArb(), { minLength: 1, maxLength: 24 }),
+        (initial, cmds) => {
+          let project = initial;
+          const base = checkBaseInvariants(project);
+          if (!base.ok) throw new Error(`bounded base invalid: ${base.failed}`);
+          for (const cmd of cmds) {
+            project = applyCmd(project, cmd);
+            const check = checkAllInvariants(project);
+            if (!check.ok) {
+              throw new Error(
+                `invariant "${check.failed}" broke after cmd ${JSON.stringify(cmd)} (bounded-gap)`,
+              );
+            }
+            const rt = boundaryRoundTrips(project);
+            if (!rt.ok) {
+              throw new Error(
+                `boundary round-trip broke (${rt.reason}) after ${JSON.stringify(cmd)} (bounded-gap)`,
+              );
+            }
+          }
+        },
+      ),
+      { seed: SEED10, numRuns: 700 },
+    );
+  });
+});
+
+describe('bug hunt #4 / INV-2 overlap corruption (seed 46001)', () => {
+  it('a bounded end that overruns the next start (INV-2) is DETECTED as TimeConflict', () => {
+    fc.assert(
+      fc.property(projectArbBounded(), fc.nat(), (project, pick) => {
+        const inj = corruptOverlapEnd(project, pick);
+        if (inj === null) return;
+        const report = checkConsistency(inj.project, CAL);
+        if (report.ok) throw new Error('INV-2 overlap corruption was NOT detected');
+        const kinds = new Set(report.inconsistencies.map((i) => i.kind));
+        if (!kinds.has(inj.expectKind as Inconsistency['kind'])) {
+          throw new Error(`expected ${inj.expectKind} but got: ${[...kinds].join(', ')}`);
+        }
+      }),
+      { seed: SEED10, numRuns: 600 },
+    );
+  });
+
+  it('INV-2 overlap repair is HONEST, converges, and round-trips through Zod', () => {
+    fc.assert(
+      fc.property(projectArbBounded(), fc.nat(), (project, pick) => {
+        const inj = corruptOverlapEnd(project, pick);
+        if (inj === null) return;
+        const fix = repairToFixpoint(inj.project);
+        if (fix.honestyViolated) {
+          throw new Error('applyRepairChecked reported resolved:true while growing/leaving target');
+        }
+        if (!fix.converged) {
+          throw new Error(`INV-2 overlap repair did not converge (stuck=${fix.stuck})`);
+        }
+        const finalReport = checkConsistency(fix.project, CAL);
+        if (!finalReport.ok) {
+          throw new Error(
+            `post-repair still inconsistent: ${finalReport.inconsistencies.map((i) => i.kind).join(', ')}`,
+          );
+        }
+        const rt = boundaryRoundTrips(fix.project);
+        if (!rt.ok) throw new Error(`repaired project failed boundary round-trip (${rt.reason})`);
+      }),
+      { seed: SEED10, numRuns: 600 },
+    );
+  });
+});
+
+/**
+ * A stateful command: inject an INV-2 overlap, repair to a fixpoint, assert the full
+ * conflict-resolution battery, and ADOPT the healed project so later commands
+ * continue from a once-corrupted-then-healed BOUNDED-interval session. Operates on
+ * the bounded-end + gap live state no earlier stateful model carried.
+ */
+class OverlapCorruptRepairStatefulCmd implements fc.Command<ProjectModel, ProjectReal> {
+  constructor(private readonly pick: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: ProjectModel, r: ProjectReal): void {
+    const inj = corruptOverlapEnd(r.project, this.pick);
+    if (inj === null) return; // inapplicable to this live shape — leave state as-is.
+    const report = checkConsistency(inj.project, CAL);
+    if (report.ok) {
+      throw new Error('[stateful] INV-2 overlap on a live bounded project was NOT detected');
+    }
+    if (!new Set(report.inconsistencies.map((i) => i.kind)).has(INCONSISTENCY.TimeConflict)) {
+      throw new Error('[stateful] INV-2 overlap did not surface TimeConflict');
+    }
+    const fix = repairToFixpoint(inj.project);
+    if (fix.honestyViolated) {
+      throw new Error('[stateful] applyRepairChecked dishonest for live INV-2 overlap');
+    }
+    if (!fix.converged) {
+      throw new Error(`[stateful] live INV-2 overlap did not converge (stuck=${fix.stuck})`);
+    }
+    if (!checkConsistency(fix.project, CAL).ok) {
+      throw new Error('[stateful] post-repair live bounded project still inconsistent');
+    }
+    const rt = boundaryRoundTrips(fix.project);
+    if (!rt.ok) throw new Error(`[stateful] repaired live bounded project round-trip failed (${rt.reason})`);
+    const check = checkAllInvariants(fix.project);
+    if (!check.ok) {
+      throw new Error(`[stateful] healed bounded project failed invariant "${check.failed}"`);
+    }
+    r.project = fix.project;
+  }
+  toString(): string {
+    return 'overlap-corrupt→repair';
+  }
+}
+
+describe('bug hunt #4 / bounded-series stateful with conflict-resolution (seed 46001)', () => {
+  it('a stateful sequence over a bounded-gap base (edit / save→load / undo / overlap-corrupt→repair) holds every law', () => {
+    const allCommands = fc.commands(
+      [
+        cmdArb().map((c) => new EditStatefulCmd(c)),
+        fc.constant(new SaveLoadStatefulCmd()),
+        cmdArb().map((c) => new UndoOpStatefulCmd(c)),
+        fc.nat().map((pick) => new OverlapCorruptRepairStatefulCmd(pick)),
+      ],
+      { maxCommands: 26 },
+    );
+    fc.assert(
+      fc.property(projectArbBounded(), allCommands, (initial, cmds) => {
+        const base = checkBaseInvariants(initial);
+        if (!base.ok) throw new Error(`bounded stateful base invalid: ${base.failed}`);
+        const setup = (): { model: ProjectModel; real: ProjectReal } => ({
+          model: { historyCount: initial.histories.length },
+          real: { project: initial },
+        });
+        fc.modelRun(setup, cmds);
+      }),
+      { seed: SEED10, numRuns: 350 },
     );
   });
 });

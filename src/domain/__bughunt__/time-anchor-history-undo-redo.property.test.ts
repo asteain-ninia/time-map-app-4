@@ -3647,3 +3647,513 @@ describe('time-anchor + history undo/redo — seed 34004 stateful mixed-granular
     );
   });
 });
+
+// ===========================================================================
+// SEED 44001 expansion suite — fc.commands STATEFUL model over a BOUNDED-LIMIT
+// history that combines, for the FIRST time in this file, RICH snapshots (ring
+// forest + hierarchy/aggregate forest) WITH MIXED-granularity time edits, plus
+// a brand-new SAVE→LOAD CHECKPOINT command driven THROUGH the dual-stack
+// history, and a changeStart∘changeStart-back inverse law over the rich+mixed
+// axis. This is a genuinely distinct exploration from every prior pass:
+//
+//   - 34003 = rich snapshots BUT year-only EditOp (changeStart/setEnd use
+//     timePointYear; no month/day starts ever reach the rich series).
+//   - 34004 = mixed-granularity edits BUT point-only snapshots (no rings, no
+//     aggregate forest, so a trim/undo bug that drops a ring or childId at a
+//     sub-year start cannot surface there).
+//   - NONE combine rich snapshots + mixed-granularity starts in ONE stateful
+//     run, and NONE drive a save→load round-trip as a real HISTORY edit (so an
+//     undo/redo that does not survive a persistence checkpoint mid-stream is
+//     untested everywhere else).
+//
+// New commands in the action space (interleaved/shrunk by fc.commands):
+//   (a) RichMixedEdit / RichMixedEditIfChanged — changeStart/setEnd/delete/
+//       pastEdit where every time is drawn from mixedTimePointArb and every
+//       inserted/replaced snapshot is a RICH ring+aggregate forest.
+//   (b) RichMixedComposite — a CHAIN of rich+mixed edits as ONE undo unit.
+//   (c) CheckpointCommand — serialize the current rich series to JSON, reload
+//       it verbatim (NO re-normalize), assert structural identity, and push the
+//       reloaded series as a real history edit. A reloaded-but-identical series
+//       is a no-op (pushes nothing); a reloaded series that DIFFERS would be a
+//       persistence bug AND would diverge from the model. This exercises
+//       save∘load==identity AS A HISTORY TRANSITION (undo of a checkpoint that
+//       changed nothing is still a defined no-op against the model).
+//   (d) undo / redo / clearRedo / setLimit (small limit ⇒ FR-74 trimming common).
+//
+// Reconciled after EVERY reachable state: production history == reference Model
+// (state + stack depths + canUndo/canRedo gates + limit); rich structural
+// invariants (INV-1..3,5,6, ring alternation + parent-ring links, aggregate
+// child/parent forest, no NaN/Infinity, rich save∘load == identity); AND
+// off-anchor probe-selection validity.
+//
+// Extra metamorphic law (separate property): changeStart(t) then changeStart
+// back to the ORIGINAL start is an identity ON THE TARGET ENTRY when the
+// re-move is accepted and nothing collided away (asserted against the single
+// source of truth + structural view), driven THROUGH execute/undo so a history
+// round-trip is folded in.
+//
+// Determinism: pinned seed 44001, large run budget. Permanent asset; must NOT
+// be relaxed to paint a broken existing behavior green.
+// ===========================================================================
+
+const SEED_44001 = 44001;
+const NUM_RUNS_44001 = 600;
+
+// --- rich + mixed-granularity series generator ------------------------------
+//
+// Distinct mixed-granularity start points (year / year-month / year-month-day),
+// each anchor carrying a RICH ring+aggregate snapshot, funneled through the real
+// normalizeSeries so the result is guaranteed valid even where two generated
+// points share a year.
+function richMixedAnchorSeriesArb(): fc.Arbitrary<AnchorSeries> {
+  return fc
+    .uniqueArray(mixedTimePointArb, {
+      minLength: 1,
+      maxLength: 5,
+      comparator: (a, b) => compareMixedForUnique(a, b),
+    })
+    .chain((points) => {
+      const sorted = [...points].sort((a, b) => compareTP(a, b));
+      return fc
+        .tuple(...sorted.map((_, i) => richSnapshotArb(`rm${i}`)))
+        .map((snaps) => {
+          const entries: AnchorEntry[] = sorted.map((start, i) => {
+            const anchor = createAnchor(asAnchorId(`a-rm${i}`), snaps[i]!);
+            return createAnchorEntry(anchor, start, null);
+          });
+          return normalizeSeries(entries, cal);
+        });
+    });
+}
+
+/** Apply one MIXED-granularity edit that, for pastEdit, inserts a RICH snapshot
+ * (ring forest + aggregate forest). Mirrors applyMixedEdit's time handling and
+ * applyRichEdit's snapshot construction, combining both for the first time. */
+function applyRichMixedEdit(s: AnchorSeries, op: MixedEditOp): AnchorSeries | undefined {
+  const idAt = (i: number) => s.entries[i % s.entries.length]!.anchor.id;
+  let next: AnchorSeries | undefined;
+  if (op.kind === 'changeStart') {
+    const r = changeStart(s, idAt(op.target), op.start, cal);
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'setEnd') {
+    const r = setEnd(s, idAt(op.target), op.end, cal);
+    next = r.ok ? r.series : undefined;
+  } else if (op.kind === 'delete') {
+    const r = deleteAnchor(s, idAt(op.target), cal);
+    next = r.ok ? r.series : undefined;
+  } else {
+    // pastEdit at a mixed-granularity time, inserting a RICH snapshot built
+    // deterministically from the seed (territory + hole + leaf + aggregate).
+    const tag = `rmpe${op.seed}`;
+    const leafId = asFeatureId(`${tag}-leaf`);
+    const aggId = asFeatureId(`${tag}-agg`);
+    const attrs = createBasicAttributes(tag, op.seed % 90, op.seed % 180);
+    const color = createColorInfo(true, '#0a0b0c', '#1a1b1c', '#2a2b2c');
+    const tRid = asRingId(`${tag}-t`);
+    const hRid = asRingId(`${tag}-h`);
+    const tV = [asVertexId(`${tag}-ta`), asVertexId(`${tag}-tb`), asVertexId(`${tag}-tc`)];
+    const hV = [asVertexId(`${tag}-ha`), asVertexId(`${tag}-hb`), asVertexId(`${tag}-hc`)];
+    const shape = createShape([
+      createTerritoryRing(tRid, tV),
+      createHoleRing(hRid, hV, tRid),
+    ]);
+    const leaf = createLeafFeature(leafId, attrs, color, shape);
+    const agg = createAggregateFeature(aggId, attrs, color, [leafId]);
+    const verts = [...tV, ...hV].map((vid, i) =>
+      createVertex(vid, createCoordinate((op.seed + i) % 180, (op.seed + i) % 90)),
+    );
+    const snap = createAnchorSnapshot([leaf, agg], createVertexStore(verts));
+    next = applyPastEdit(
+      s,
+      op.at,
+      () => createAnchor(asAnchorId(`${tag}-anchor`), snap),
+      cal,
+    );
+  }
+  if (next === undefined) return undefined;
+  if (JSON.stringify(viewSeries(next)) === JSON.stringify(viewSeries(s))) {
+    return undefined;
+  }
+  return next;
+}
+
+/** Save→JSON→load the FULL rich series verbatim (no re-normalize), returning the
+ * reloaded series. The faithful reload must reproduce the saved structure (rings,
+ * parentRingId, aggregate childIds, parentId, vertices) exactly, so this is the
+ * persistence round-trip exercised as a value transformation. */
+function checkpointReload(s: AnchorSeries): AnchorSeries {
+  const toPlain = (series: AnchorSeries) =>
+    series.entries.map((e) => ({
+      anchorId: e.anchor.id,
+      start: e.start,
+      end: e.end,
+      features: e.anchor.snapshot.features,
+      vertices: [...e.anchor.snapshot.vertices.byId.entries()].map(([id, v]) => ({
+        id,
+        lon: v.coordinate.lon,
+        lat: v.coordinate.lat,
+      })),
+    }));
+  const reloaded = JSON.parse(JSON.stringify(toPlain(s))) as ReturnType<typeof toPlain>;
+  return {
+    entries: reloaded.map((pe) => {
+      const verts = pe.vertices.map((pv) =>
+        createVertex(asVertexId(pv.id), createCoordinate(pv.lon, pv.lat)),
+      );
+      const snapshot = createAnchorSnapshot(
+        pe.features as readonly Feature[],
+        createVertexStore(verts),
+      );
+      return createAnchorEntry(
+        createAnchor(asAnchorId(pe.anchorId), snapshot),
+        pe.start,
+        pe.end,
+      );
+    }),
+  };
+}
+
+// --- the stateful "real" system: bounded rich+mixed history -----------------
+
+interface RichMixedSut {
+  history: History<AnchorSeries>;
+}
+
+interface RichMixedModelState {
+  model: Model;
+  readonly probe: TimePoint;
+}
+
+type RichMixedFcCommand = fc.Command<RichMixedModelState, RichMixedSut>;
+
+function reconcileRichMixed(m: RichMixedModelState, sut: RichMixedSut): void {
+  expectHistoryMatchesModel(sut.history, m.model);
+  assertRichStepInvariants(sut.history.state);
+  expectProbeSelectionValid(sut.history.state, m.probe);
+}
+
+class RichMixedEditCommand implements RichMixedFcCommand {
+  constructor(private readonly op: MixedEditOp) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    const before = sut.history.state;
+    const after = applyRichMixedEdit(before, this.op);
+    if (after === undefined) {
+      reconcileRichMixed(m, sut); // rejected / no-op
+      return;
+    }
+    sut.history = execute(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return `richMixedEdit(${JSON.stringify(this.op)})`;
+  }
+}
+
+class RichMixedEditIfChangedCommand implements RichMixedFcCommand {
+  constructor(private readonly op: MixedEditOp) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    const before = sut.history.state;
+    const after = applyRichMixedEdit(before, this.op);
+    if (after === undefined) {
+      sut.history = executeIfChanged(
+        sut.history,
+        makeSeriesCommand(this.op.kind, before, before),
+        () => true,
+      ).history;
+      reconcileRichMixed(m, sut);
+      return;
+    }
+    sut.history = executeIfChanged(
+      sut.history,
+      makeSeriesCommand(this.op.kind, before, after),
+      () => false,
+    ).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(after));
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return `richMixedEditIfChanged(${JSON.stringify(this.op)})`;
+  }
+}
+
+class RichMixedCompositeCommand implements RichMixedFcCommand {
+  constructor(private readonly ops: readonly MixedEditOp[]) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    const subCommands: Command<AnchorSeries>[] = [];
+    let cursor = sut.history.state;
+    const before = cursor;
+    for (const op of this.ops) {
+      const after = applyRichMixedEdit(cursor, op);
+      if (after === undefined) continue;
+      subCommands.push(makeSeriesCommand(op.kind, cursor, after));
+      cursor = after;
+    }
+    if (subCommands.length === 0) {
+      reconcileRichMixed(m, sut);
+      return;
+    }
+    const postChain = cursor;
+    const composite = createCompositeCommand('bughunt/rich-mixed-edit-chain', subCommands);
+    sut.history = execute(sut.history, composite).history;
+    m.model = modelExecute(m.model, viewSeries(before), viewSeries(postChain));
+    expect(viewSeries(sut.history.state)).toEqual(viewSeries(postChain));
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return `richMixedComposite(${this.ops.length} ops)`;
+  }
+}
+
+class CheckpointCommand implements RichMixedFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    const before = sut.history.state;
+    const reloaded = checkpointReload(before);
+    // save∘load == identity: the reload MUST be structurally identical. If it is
+    // not, this expectation fails loudly (a persistence bug). When identical the
+    // checkpoint is a no-op against the history (no entry pushed) but we still
+    // push it through the real execute path with a content-derived no-op guard so
+    // the ghost-suppression contract (教訓 5.24) is exercised on a save→load step.
+    expect(viewSeries(reloaded)).toEqual(viewSeries(before));
+    const isNoOp = (cur: AnchorSeries) =>
+      JSON.stringify(viewSeries(reloaded)) === JSON.stringify(viewSeries(cur));
+    sut.history = executeIfChanged(
+      sut.history,
+      makeSeriesCommand('checkpoint', before, reloaded),
+      isNoOp,
+    ).history;
+    // The reloaded series is identical, so isNoOp is true and NOTHING is pushed:
+    // history and model are both unchanged.
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return 'checkpoint';
+  }
+}
+
+class RichMixedUndoCommand implements RichMixedFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    sut.history = undo(sut.history).history;
+    m.model = modelUndo(m.model);
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return 'undo';
+  }
+}
+
+class RichMixedRedoCommand implements RichMixedFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    sut.history = redo(sut.history).history;
+    m.model = modelRedo(m.model);
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return 'redo';
+  }
+}
+
+class RichMixedClearRedoCommand implements RichMixedFcCommand {
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    sut.history = clearRedo(sut.history);
+    m.model = modelClearRedo(m.model);
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return 'clearRedo';
+  }
+}
+
+class RichMixedSetLimitCommand implements RichMixedFcCommand {
+  constructor(private readonly limit: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: RichMixedModelState, sut: RichMixedSut): void {
+    sut.history = withLimit(sut.history, this.limit);
+    m.model = modelWithLimit(m.model, this.limit);
+    reconcileRichMixed(m, sut);
+  }
+  toString(): string {
+    return `setLimit(${this.limit})`;
+  }
+}
+
+const richMixedCommandsArb: fc.Arbitrary<Iterable<RichMixedFcCommand>> = fc.commands(
+  [
+    mixedEditOpArb.map((op): RichMixedFcCommand => new RichMixedEditCommand(op)),
+    mixedEditOpArb.map((op): RichMixedFcCommand => new RichMixedEditIfChangedCommand(op)),
+    fc
+      .array(mixedEditOpArb, { minLength: 1, maxLength: 4 })
+      .map((ops): RichMixedFcCommand => new RichMixedCompositeCommand(ops)),
+    fc.constant(new CheckpointCommand() as RichMixedFcCommand),
+    fc.constant(new RichMixedUndoCommand() as RichMixedFcCommand),
+    fc.constant(new RichMixedUndoCommand() as RichMixedFcCommand), // weight drains
+    fc.constant(new RichMixedRedoCommand() as RichMixedFcCommand),
+    fc.constant(new RichMixedRedoCommand() as RichMixedFcCommand),
+    fc.constant(new RichMixedClearRedoCommand() as RichMixedFcCommand),
+    fc.integer({ min: 1, max: 4 }).map((n): RichMixedFcCommand => new RichMixedSetLimitCommand(n)),
+  ],
+  { maxCommands: 44 },
+);
+
+describe('time-anchor + history undo/redo — seed 44001 stateful rich+mixed bounded-model + checkpoint', () => {
+  it('fc.commands: bounded rich+mixed history stays model-consistent, structurally valid, and survives save→load checkpoints (seed 44001)', () => {
+    fc.assert(
+      fc.property(
+        richMixedAnchorSeriesArb(),
+        fc.integer({ min: 1, max: 3 }), // SMALL limit ⇒ FR-74 trimming is common
+        probeTimeArb,
+        richMixedCommandsArb,
+        (initial, limit, probe, commands) => {
+          assertRichStepInvariants(initial);
+          expectProbeSelectionValid(initial, probe);
+          const clampedLimit = Math.max(1, Math.floor(limit));
+          const setup = (): { model: RichMixedModelState; real: RichMixedSut } => {
+            const history = createHistory(initial, clampedLimit);
+            const model: RichMixedModelState = {
+              model: {
+                current: viewSeries(initial),
+                undo: [],
+                redo: [],
+                limit: clampedLimit,
+              },
+              probe,
+            };
+            expectHistoryMatchesModel(history, model.model); // sanity at t0
+            return { model, real: { history } };
+          };
+          fc.modelRun(setup, commands);
+        },
+      ),
+      { seed: SEED_44001, numRuns: NUM_RUNS_44001 },
+    );
+  });
+
+  it('metamorphic (rich+mixed): changeStart(t) then changeStart-back to the original start is identity on the target, via execute/undo (seed 44001)', () => {
+    // Move the target's start to a new mixed-granularity point, then move it back
+    // to its ORIGINAL start. When both moves are accepted and nothing collided
+    // away (every non-target entry is byte-identical across the round-trip), the
+    // result must equal the original series. We additionally drive the first move
+    // through the dual-stack history and verify undo restores the pre-move series,
+    // folding a history round-trip into the spatial-temporal inverse law.
+    fc.assert(
+      fc.property(
+        richMixedAnchorSeriesArb(),
+        fc.nat(),
+        mixedTimePointArb,
+        (initial, targetN, newStart) => {
+          const target = initial.entries[targetN % initial.entries.length]!;
+          const id = target.anchor.id;
+          const originalStart = target.start;
+
+          const moved = changeStart(initial, id, newStart, cal);
+          if (!moved.ok) return; // rejected move is out of scope for this law
+          const afterMove = moved.series;
+          if (JSON.stringify(viewSeries(afterMove)) === JSON.stringify(viewSeries(initial))) {
+            return; // no-op move (newStart resolved to the same start)
+          }
+          expectAllInvariants(afterMove);
+          expectRingHierarchyValid(afterMove);
+          expectAggregateForestValid(afterMove);
+
+          // Drive the move through history and confirm undo restores the original.
+          let history = createHistory(initial, 10);
+          history = execute(history, makeSeriesCommand('changeStart', initial, afterMove)).history;
+          expect(viewSeries(history.state)).toEqual(viewSeries(afterMove));
+          const undone = undo(history).history;
+          expect(viewSeries(undone.state)).toEqual(viewSeries(initial));
+
+          // The moved entry must still be present (changeStart preserves count
+          // unless a start collision collapsed it).
+          if (!afterMove.entries.some((e) => e.anchor.id === id)) return;
+
+          // Move back to the original start.
+          const back = changeStart(afterMove, id, originalStart, cal);
+          if (!back.ok) return;
+          const afterBack = back.series;
+          expectAllInvariants(afterBack);
+          expectRingHierarchyValid(afterBack);
+          expectAggregateForestValid(afterBack);
+
+          // The round-trip is an identity ONLY when nothing collided away in
+          // either direction (every non-target entry unchanged across both moves
+          // AND the original still holds the same set of ids). Otherwise the move
+          // legitimately reorganized neighbors and is not reversible by spec.
+          const sameNonTargetThere = nonTargetEntriesEqual(initial, afterMove, id);
+          const sameNonTargetBack = nonTargetEntriesEqual(afterMove, afterBack, id);
+          const sameIds =
+            JSON.stringify(initial.entries.map((e) => e.anchor.id).sort()) ===
+            JSON.stringify(afterBack.entries.map((e) => e.anchor.id).sort());
+          if (sameNonTargetThere && sameNonTargetBack && sameIds) {
+            expect(viewSeries(afterBack)).toEqual(viewSeries(initial));
+          }
+        },
+      ),
+      { seed: SEED_44001, numRuns: NUM_RUNS_44001 },
+    );
+  });
+
+  it('save→load checkpoint is an exact identity AND a history no-op for any reachable rich+mixed series (seed 44001)', () => {
+    // Independent (non-stateful) confirmation of the checkpoint law: after a
+    // random rich+mixed edit stream, serializing→reloading the series yields a
+    // structurally identical series, and pushing it through executeIfChanged with
+    // a content-derived no-op guard pushes NOTHING (the history is untouched).
+    fc.assert(
+      fc.property(
+        richMixedAnchorSeriesArb(),
+        fc.array(mixedEditOpArb, { maxLength: 16 }),
+        (initial, ops) => {
+          let s = initial;
+          for (const op of ops) {
+            const after = applyRichMixedEdit(s, op);
+            if (after !== undefined) s = after;
+          }
+          assertRichStepInvariants(s);
+          const reloaded = checkpointReload(s);
+          // save∘load == identity (full rich fidelity).
+          expect(viewSeries(reloaded)).toEqual(viewSeries(s));
+          expectRingHierarchyValid(reloaded);
+          expectAggregateForestValid(reloaded);
+
+          // Pushing the checkpoint through history must be a no-op.
+          let history = createHistory(s, 10);
+          const depthBefore = history.undoStack.length;
+          history = executeIfChanged(
+            history,
+            makeSeriesCommand('checkpoint', s, reloaded),
+            (cur) =>
+              JSON.stringify(viewSeries(reloaded)) === JSON.stringify(viewSeries(cur)),
+          ).history;
+          expect(history.undoStack.length).toBe(depthBefore);
+          expect(viewSeries(history.state)).toEqual(viewSeries(s));
+        },
+      ),
+      { seed: SEED_44001, numRuns: NUM_RUNS_44001 },
+    );
+  });
+});

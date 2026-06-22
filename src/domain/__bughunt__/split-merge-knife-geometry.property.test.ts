@@ -5094,3 +5094,586 @@ describe('seed=31004 — split vertexRemap is deterministic (op == op over the c
     );
   });
 });
+
+// ===========================================================================
+// 15. SEED=41001 EXTENSION — NEW exploration (bug-hunt closure T2, disjoint from
+//     the 1000-6000 / 21000-26000 / 31000-36000 bands).
+//
+// Every band above builds its leaves with `holeyLeaf`, whose boxes live at the
+// ORIGIN (lon ∈ [0, w], w ≤ 80). They therefore NEVER cross the ±180° antimeridian
+// seam, so the R3 seam-alignment machinery that the split / merge / resolve code
+// is SATURATED with comments about —
+//   - split-geometry.ts `anchorLon` / `unwrapAnchoredRing` / `targetReferenceLon`
+//     / `anchorMultiPolygon` (checkSplittable anchors target + cut onto one branch),
+//   - merge/proposal.ts `unionLeafShapes` `alignMultiPolygon` + `coordKey`'s
+//     normalize-before-quantize, and `reparentByContainment`'s common-anchor align,
+//   - resolve-shape.ts `alignMultiPolygon` of every child area before union,
+// — runs as the IDENTITY in all of them. This band deliberately places geometry
+// ON the seam and draws cuts on the OPPOSITE ±360° replica so those branches do
+// real work, then asserts the SAME invariant battery the other bands assert:
+//
+//   (S1) seam split: a leaf straddling +180° cut by an open line drawn near −180°
+//        (the other replica) is still Splittable, both sides valid + finite +
+//        area-preserving, and executeSplit == checkSplittable (op == op).
+//   (S2) seam split-then-merge-back (op ∘ inverse-op): union(sideA, sideB) recovers
+//        the original filled area; the domain merge of the two products is one valid
+//        alternation leaf citing only finite, in-store vertices.
+//   (S3) seam leaves stored as REPRESENTATIVES (lon ∈ [-180,180)) merge into one
+//        valid leaf whose resolved area equals the sum of the inputs — exercising
+//        unionLeafShapes' alignMultiPolygon on genuinely seam-split operands.
+//   (S4) seam stateful model: a fresh command generator (cut offset chosen on a
+//        random ±360° replica, merge of seam-adjacent products) drives chained
+//        split/merge; after EVERY op the whole world stays alternation-valid,
+//        resolvable, finite, dangling-free, id-unique, and JSON-round-trips; plus
+//        the per-op op==op and op∘inverse-op area relations hold.
+//   (S5) seam persistence: a seam world round-trips through the REAL U14 path
+//        (serialize → parseManifest → manifestToProject → projectsEqual).
+//
+// Determinism: seed = 41001, numRuns large (per task). PERMANENT asset — any
+// counterexample is a real seam/quantization defect to fix in the domain, never a
+// reason to relax an assertion here (緑偽装禁止).
+// ===========================================================================
+
+import {
+  unwrapRing as unwrapRing41001,
+  alignMultiPolygon as alignMultiPolygon41001,
+  referenceLonForMultiPolygon as referenceLonForMultiPolygon41001,
+} from '../geo/index';
+
+const SEED_41001 = 41001;
+const RUNS_41001 = 500;
+
+/**
+ * Seam-aware whole-world invariant battery. `checkWorldInvariants` validates the
+ * RAW resolved leaf shape, which is correct for origin geometry but WRONG for a
+ * seam-straddling leaf: resolveLeafShape is documented to return raw stored
+ * representatives with ZERO seam handling (the seam alignment is the consumer's job
+ * before any geometry op), so a straddling outer ring reads as self-crossing under
+ * isMultiPolygonValid until it is aligned onto a single ±360° branch. This helper
+ * therefore aligns each resolved leaf area to its own outer-ring reference (the same
+ * single-source alignMultiPolygon the split/merge/resolve code uses) BEFORE checking
+ * validity, while keeping every other invariant (alternation, dangling-vertex,
+ * finite, id-unique, JSON round-trip) identical to checkWorldInvariants.
+ */
+function checkSeamWorldInvariants(world: World): void {
+  const ids = world.features.map((f) => f.id);
+  expect(new Set(ids).size).toBe(ids.length); // (I6) unique ids.
+
+  for (const leaf of world.features) {
+    expect(isAlternationValid(leaf.shape)).toBe(true); // (I1) alternation.
+
+    // (I5) every cited vertex exists; (I4) finite; representatives only.
+    for (const ring of leaf.shape.rings) {
+      for (const vid of ring.vertexIds) {
+        const v = world.store.byId.get(vid);
+        expect(v).toBeDefined();
+        if (v) {
+          expect(Number.isFinite(v.coordinate.lon)).toBe(true);
+          expect(Number.isFinite(v.coordinate.lat)).toBe(true);
+          expect(v.coordinate.lon).toBeGreaterThanOrEqual(-180);
+          expect(v.coordinate.lon).toBeLessThan(180);
+        }
+      }
+    }
+
+    // (I2) resolves to a valid multi-polygon ONCE seam-aligned (the consumer's
+    // contract). A straddling ring is only invalid in its raw representative form.
+    const mp = resolveLeafShape(leaf.shape, world.store);
+    expect(mp).toBeDefined();
+    if (mp) {
+      const ref = referenceLonForMultiPolygon41001(mp);
+      const aligned = alignMultiPolygon41001(mp, ref);
+      expect(isMultiPolygonValid(aligned)).toBe(true);
+      expect(everyCoordFinite(aligned)).toBe(true);
+    }
+
+    if (leaf.parentId !== undefined) expect(leaf.parentId).not.toBe(leaf.id); // (I3).
+  }
+
+  // (I7) save -> load == identity over the whole world.
+  const snapshot = {
+    features: world.features.map((f) => ({ id: f.id, shape: f.shape })),
+    vertices: [...world.store.byId.values()],
+  };
+  const saved = JSON.stringify(snapshot);
+  expect(JSON.stringify(JSON.parse(saved))).toBe(saved);
+}
+
+/**
+ * A holey leaf whose outer box is CENTERED at `centerLon` (degrees), stored as
+ * REPRESENTATIVES (each vertex longitude folded into [-180,180) via
+ * normalizeCoordinate). When centerLon is near ±180 the box straddles the seam, so
+ * its representative vertices land on BOTH sides of the antimeridian — exactly the
+ * stored state resolveLeafShape / checkSplittable must seam-align before any
+ * boolean op. The cut crosses the box at a representative longitude that may be the
+ * OTHER ±360° replica of the same world point (`replicaTurns`).
+ */
+function seamLeaf(opts: {
+  readonly centerLon: number;
+  readonly halfW: number;
+  readonly h: number;
+  readonly leftHole: boolean;
+  readonly rightHole: boolean;
+}): { feature: LeafFeature; store: VertexStore; cutLonRep: number; trueWidth: number; trueFilled: number } {
+  const { centerLon, halfW, h } = opts;
+  const y0 = -h / 2;
+  const y1 = h / 2;
+  const vertices: Vertex[] = [];
+  const rings: Ring[] = [];
+  // Build boxes in CONTINUOUS lon (centered system), then store representatives.
+  const repBox = (xa: number, xb: number, ya: number, yb: number) => {
+    const cont = [
+      [xa, ya],
+      [xb, ya],
+      [xb, yb],
+      [xa, yb],
+    ] as const;
+    return cont.map(([lon, lat]) => {
+      const id = freshVid();
+      // Store the REPRESENTATIVE coordinate (normalize folds lon into [-180,180)).
+      const rep = normalizeCoordinate31004(createCoordinate(lon, lat));
+      vertices.push(createVertex(id, rep));
+      return id;
+    });
+  };
+
+  const x0 = centerLon - halfW;
+  const x1 = centerLon + halfW;
+  const outerIds = repBox(x0, x1, y0, y1);
+  const tOuter = createTerritoryRing(freshRid(), outerIds);
+  rings.push(tOuter);
+
+  // The full outer rectangle area; holes subtracted below.
+  const trueWidth = x1 - x0;
+  let filled = trueWidth * h;
+
+  if (opts.leftHole) {
+    const lx0 = centerLon - halfW * 0.6;
+    const lx1 = centerLon - halfW * 0.2;
+    const ly0 = y0 + h * 0.2;
+    const ly1 = y1 - h * 0.2;
+    const ids = repBox(lx0, lx1, ly0, ly1);
+    rings.push(createHoleRing(freshRid(), ids, tOuter.id));
+    filled -= (lx1 - lx0) * (ly1 - ly0);
+  }
+  if (opts.rightHole) {
+    const rx0 = centerLon + halfW * 0.2;
+    const rx1 = centerLon + halfW * 0.6;
+    const ry0 = y0 + h * 0.25;
+    const ry1 = y1 - h * 0.25;
+    const ids = repBox(rx0, rx1, ry0, ry1);
+    rings.push(createHoleRing(freshRid(), ids, tOuter.id));
+    filled -= (rx1 - rx0) * (ry1 - ry0);
+  }
+
+  const feature = createLeafFeature(
+    asFeatureId(`bh-seam-${counter++}`),
+    ATTRS,
+    COLOR,
+    createShape(rings),
+  );
+  // The cut crosses the box interior at centerLon; expose it folded to a
+  // representative so the CALLER can additionally jitter it onto another replica.
+  const cutLonRep = normalizeCoordinate31004(createCoordinate(centerLon, 0)).lon;
+  return { feature, store: createVertexStore(vertices), cutLonRep, trueWidth, trueFilled: filled };
+}
+
+/** Filled (outer − holes) area of a multi-polygon via shoelace; seam-band reuse. */
+function mpFilled41001(mp: GeoMultiPolygon): number {
+  return mpFilledArea(mp);
+}
+
+describe('seed=41001 — seam-straddling split: valid + finite + area-preserving (R3)', () => {
+  it('a leaf centered on/near ±180° is split by a cut on the opposite replica; both sides hold', () => {
+    fc.assert(
+      fc.property(
+        // Centers chosen to land ON and AROUND the seam, plus a control off-seam.
+        fc.constantFrom(180, 179.5, -179.5, -180, 175, -175, 90, 0),
+        fc.double({ min: 6, max: 30, noNaN: true }), // halfW (keep box < 180° wide).
+        fc.double({ min: 8, max: 40, noNaN: true }), // height.
+        fc.boolean(),
+        fc.boolean(),
+        // Replica turns for the CUT longitude: draw the cut on the +360 / -360 copy.
+        fc.constantFrom(-1, 0, 1),
+        (centerLon, halfW, h, leftHole, rightHole, replicaTurns) => {
+          const { feature, store, trueFilled, trueWidth } = seamLeaf({
+            centerLon,
+            halfW,
+            h,
+            leftHole,
+            rightHole,
+          });
+          // The cut is a vertical line through the box center, drawn on a chosen
+          // ±360° replica (replicaTurns). The split must seam-anchor it back onto the
+          // target's branch (anchorLon) for the boolean op to see the overlap.
+          const cutLon = centerLon + replicaTurns * 360;
+          const line = createOpenKnifeLine([
+            createCoordinate(cutLon, -h),
+            createCoordinate(cutLon, h),
+          ]);
+          const res = checkSplittable(feature, store, line);
+          // A vertical cut through the box center pierces outer→outer, so it must be
+          // splittable regardless of which replica the line was drawn on (R3).
+          expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+          if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+          for (const side of [res.sideA, res.sideB]) {
+            expect(everyCoordFinite(side.area)).toBe(true);
+            expect(isMultiPolygonValid(side.area)).toBe(true);
+            expect(sideArea(side)).toBeGreaterThan(0);
+          }
+          // Area preservation: the two sides sum to the leaf's true filled area.
+          // (sideArea uses planar shoelace, matching trueFilled's planar product.)
+          const sum = sideArea(res.sideA) + sideArea(res.sideB);
+          expect(trueWidth).toBeGreaterThan(0);
+          expect(Math.abs(sum - trueFilled) / trueFilled).toBeLessThan(1e-3);
+
+          // op == op: executeSplit reproduces checkSplittable's sides exactly.
+          const exec = executeSplit(feature, store, line);
+          expect(exec).toBeDefined();
+          if (exec === undefined) return;
+          expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(res.sideA.area));
+          expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(res.sideB.area));
+
+          // Rebuilt shapes alternate (the minted vertices are folded representatives).
+          const proposal = assembleSplitProposal({
+            target: feature,
+            store: store.byId,
+            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: exec.edgeCuts },
+            choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+            nonInherited: { attributes: ATTRS, color: COLOR },
+            ids: idPorts(),
+          });
+          expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+          expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+          for (const v of proposal.vertices) {
+            expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+            // Minted vertices are stored as representatives (lon ∈ [-180,180)).
+            expect(v.coordinate.lon).toBeGreaterThanOrEqual(-180);
+            expect(v.coordinate.lon).toBeLessThan(180);
+          }
+        },
+      ),
+      { seed: SEED_41001, numRuns: RUNS_41001 },
+    );
+  });
+});
+
+describe('seed=41001 — seam split-then-merge-back (op ∘ inverse-op recovers area)', () => {
+  it('union(sideA, sideB) of a seam split recovers the leaf area; merge yields one valid leaf', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(180, 179.5, -179.5, -180, 178, -178),
+        fc.double({ min: 6, max: 28, noNaN: true }),
+        fc.double({ min: 8, max: 36, noNaN: true }),
+        fc.boolean(),
+        fc.boolean(),
+        fc.constantFrom(-1, 0, 1),
+        (centerLon, halfW, h, leftHole, rightHole, replicaTurns) => {
+          const { feature, store, trueFilled } = seamLeaf({ centerLon, halfW, h, leftHole, rightHole });
+          const cutLon = centerLon + replicaTurns * 360;
+          const line = createOpenKnifeLine([
+            createCoordinate(cutLon, -h),
+            createCoordinate(cutLon, h),
+          ]);
+          const res = checkSplittable(feature, store, line);
+          if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+
+          // Direct geometric inverse on the split's own (already aligned) areas.
+          const reunited = union(res.sideA.area, res.sideB.area);
+          expect(isOk(reunited)).toBe(true);
+          if (!isOk(reunited)) return;
+          expect(isMultiPolygonValid(reunited.result)).toBe(true);
+          expect(everyCoordFinite(reunited.result)).toBe(true);
+          const reArea = mpFilled41001(reunited.result);
+          expect(Math.abs(reArea - trueFilled) / trueFilled).toBeLessThan(1e-3);
+
+          const exec = executeSplit(feature, store, line)!;
+          const proposal = assembleSplitProposal({
+            target: feature,
+            store: store.byId,
+            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: exec.edgeCuts },
+            choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+            nonInherited: { attributes: ATTRS, color: COLOR },
+            ids: idPorts(),
+          });
+          const inheritor = inheritorFeature(feature, proposal);
+          const newLeaf = proposal.newFeature;
+          const postStore = createVertexStore([...store.byId.values(), ...proposal.vertices]);
+
+          const mergeRes = buildMergeProposal({
+            features: [inheritor, newLeaf],
+            vertices: postStore,
+            targetIds: [inheritor.id, newLeaf.id],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+            ids: idPorts(),
+          });
+          expect(mergeRes.status).toBe(MERGE_STATUS.Proposal);
+          if (mergeRes.status !== MERGE_STATUS.Proposal) return;
+          const mp = mergeRes.proposal;
+          const result = mp.nextFeatures.find((x) => x.id === mp.resultFeatureId);
+          expect(result?.kind).toBe('leaf');
+          if (result && result.kind === 'leaf') {
+            expect(isAlternationValid(result.shape)).toBe(true);
+            const rawMerged = resolveLeafShape(result.shape, mp.nextVertices);
+            expect(rawMerged).toBeDefined();
+            if (rawMerged) {
+              // Seam-align before validity/area (consumer contract): a straddling
+              // merged band is only valid/measurable once anchored onto one branch.
+              const merged = alignMultiPolygon41001(
+                rawMerged,
+                referenceLonForMultiPolygon41001(rawMerged),
+              );
+              expect(isMultiPolygonValid(merged)).toBe(true);
+              expect(everyCoordFinite(merged)).toBe(true);
+              const mergedArea = mpFilled41001(merged);
+              // Merge-back recovers the original filled area within quantization.
+              expect(Math.abs(mergedArea - trueFilled) / trueFilled).toBeLessThan(2e-3);
+            }
+            for (const ring of result.shape.rings) {
+              for (const vid of ring.vertexIds) {
+                const v = mp.nextVertices.byId.get(vid);
+                expect(v).toBeDefined();
+                if (v) {
+                  expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
+                }
+              }
+            }
+          }
+        },
+      ),
+      { seed: SEED_41001, numRuns: RUNS_41001 },
+    );
+  });
+});
+
+describe('seed=41001 — seam leaf-only merge of representatives unions into one valid leaf', () => {
+  it('two seam-adjacent leaves (stored as representatives) merge to one alternation-valid leaf', () => {
+    fc.assert(
+      fc.property(
+        // A pair of boxes that overlap across the seam: left box ends at +180, right
+        // box starts before +180 and extends PAST it (= −180 representative). Their
+        // union is one continuous band straddling the antimeridian.
+        fc.double({ min: 4, max: 20, noNaN: true }),
+        fc.double({ min: 8, max: 30, noNaN: true }),
+        // overlap fraction of w, kept strictly inside (0,1) so the right box always
+        // straddles the seam (right edge 180 − overlap + w > 180) AND truly overlaps
+        // the left box — the union width is then exactly 2w − overlap.
+        fc.double({ min: 0.2, max: 0.8, noNaN: true }),
+        (w, h, fracOverlap) => {
+          const overlap = w * fracOverlap;
+          // Left box: [180 - w, 180]; right box: [180 - overlap, 180 - overlap + w]
+          // so they OVERLAP by `overlap` straddling the seam at 180.
+          const left = seamLeaf({ centerLon: 180 - w / 2, halfW: w / 2, h, leftHole: false, rightHole: false });
+          const rightCenter = 180 - overlap + w / 2;
+          const right = seamLeaf({ centerLon: rightCenter, halfW: w / 2, h, leftHole: false, rightHole: false });
+
+          const features: LeafFeature[] = [left.feature, right.feature];
+          const store = createVertexStore([...left.store.byId.values(), ...right.store.byId.values()]);
+
+          const res = buildMergeProposal({
+            features,
+            vertices: store,
+            targetIds: [left.feature.id, right.feature.id],
+            atTime: 50,
+            parentDecision: parentNone,
+            propertyDecision: propertyNew({ attributes: ATTRS, color: COLOR }),
+            ids: idPorts(),
+          });
+          // Two overlapping seam-adjacent boxes union into one piece — must succeed.
+          expect(res.status).toBe(MERGE_STATUS.Proposal);
+          if (res.status !== MERGE_STATUS.Proposal) return;
+          const p = res.proposal;
+          const result = p.nextFeatures.find((x) => x.id === p.resultFeatureId);
+          expect(result?.kind).toBe('leaf');
+          if (result && result.kind === 'leaf') {
+            expect(isAlternationValid(result.shape)).toBe(true);
+            const rawMp = resolveLeafShape(result.shape, p.nextVertices);
+            expect(rawMp).toBeDefined();
+            if (rawMp) {
+              // Seam-align before validity/area: the merged band straddles the seam,
+              // so its raw representative shape is only valid/measurable once anchored
+              // onto one ±360° branch (the consumer's contract, same as resolve/union).
+              const mp = alignMultiPolygon41001(rawMp, referenceLonForMultiPolygon41001(rawMp));
+              expect(isMultiPolygonValid(mp)).toBe(true);
+              expect(everyCoordFinite(mp)).toBe(true);
+              // Every stored vertex is a representative (lon ∈ [-180,180)).
+              for (const ring of result.shape.rings) {
+                for (const vid of ring.vertexIds) {
+                  const v = p.nextVertices.byId.get(vid);
+                  expect(v).toBeDefined();
+                  if (v) {
+                    expect(v.coordinate.lon).toBeGreaterThanOrEqual(-180);
+                    expect(v.coordinate.lon).toBeLessThan(180);
+                  }
+                }
+              }
+              // Area: union of two overlapping w×h boxes overlapping by `overlap`
+              // in lon = (2w − overlap) × h. The seam fold must NOT scatter them.
+              const expected = (2 * w - overlap) * h;
+              const got = mpFilled41001(mp);
+              expect(Math.abs(got - expected) / expected).toBeLessThan(5e-3);
+            }
+          }
+        },
+      ),
+      { seed: SEED_41001, numRuns: RUNS_41001 },
+    );
+  });
+});
+
+// --- (S4) seam stateful model + (S5) real persistence round-trip ------------
+
+interface SeamCmd {
+  readonly t: 'split' | 'merge' | 'noop';
+  readonly pickA: number;
+  readonly pickB: number;
+  readonly frac: number;
+  readonly replicaTurns: number;
+}
+
+const seamCmdArb: fc.Arbitrary<SeamCmd> = fc.record({
+  t: fc.constantFrom<'split' | 'merge' | 'noop'>('split', 'split', 'merge', 'noop'),
+  pickA: fc.nat({ max: 1_000_000 }),
+  pickB: fc.nat({ max: 1_000_000 }),
+  frac: fc.double({ min: 0, max: 1, noNaN: true }),
+  replicaTurns: fc.constantFrom(-1, 0, 1),
+});
+
+/** Initial seam world: a single seam-straddling holey leaf centered at +180°. */
+function seamInitialWorld(): World {
+  const { feature, store } = seamLeaf({
+    centerLon: 180,
+    halfW: 24,
+    h: 30,
+    leftHole: true,
+    rightHole: true,
+  });
+  return { features: [feature], store };
+}
+
+/**
+ * SPLIT in the seam world: like applySplit, but the cut longitude is computed in
+ * the SEAM-CONTINUOUS frame (unwrap the leaf's outer ring) and then drawn on a
+ * chosen ±360° replica, so the R3 anchor path runs on every op.
+ */
+function seamApplySplit(world: World, cmd: SeamCmd): World {
+  if (world.features.length === 0) return world;
+  const idx = cmd.pickA % world.features.length;
+  const leaf = world.features[idx]!;
+  const mp = resolveLeafShape(leaf.shape, world.store);
+  if (mp === undefined || mp.length === 0) return world;
+  // Seam-continuous bbox of the outer rings (so a straddling box has a real span).
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const poly of mp) {
+    const outer = poly[0];
+    if (outer === undefined) continue;
+    const cont = unwrapRing41001([...outer]);
+    for (const c of cont) {
+      if (c.lon < minX) minX = c.lon;
+      if (c.lon > maxX) maxX = c.lon;
+      if (c.lat < minY) minY = c.lat;
+      if (c.lat > maxY) maxY = c.lat;
+    }
+  }
+  const span = maxX - minX;
+  if (!Number.isFinite(span) || span <= 0) return world;
+  const cutLonCont = minX + span * (0.25 + cmd.frac * 0.5);
+  const cutLon = cutLonCont + cmd.replicaTurns * 360;
+  const pad = (maxY - minY) * 0.5 + 10;
+  const line = createOpenKnifeLine([
+    createCoordinate(cutLon, minY - pad),
+    createCoordinate(cutLon, maxY + pad),
+  ]);
+
+  const check = checkSplittable(leaf, world.store, line);
+  const exec = executeSplit(leaf, world.store, line);
+  if (check.status !== SPLIT_CHECK_STATUS.Splittable) {
+    expect(exec).toBeUndefined();
+    return world;
+  }
+  expect(exec).toBeDefined();
+  if (exec === undefined) return world;
+  // op == op.
+  expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(check.sideA.area));
+  expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(check.sideB.area));
+  // op ∘ inverse-op: union recovers the pre-split area. Compute the pre-split area
+  // from the SEAM-ALIGNED resolved shape: the raw resolved mp of a straddling leaf
+  // is split across the ±360° fold, so its planar shoelace area is meaningless until
+  // aligned onto one branch (the same alignMultiPolygon the split applies internally).
+  const beforeArea = mpFilled41001(
+    alignMultiPolygon41001(mp, referenceLonForMultiPolygon41001(mp)),
+  );
+  const reunited = union(check.sideA.area, check.sideB.area);
+  expect(isOk(reunited)).toBe(true);
+  if (isOk(reunited) && beforeArea > 0) {
+    expect(Math.abs(mpFilled41001(reunited.result) - beforeArea) / beforeArea).toBeLessThan(2e-3);
+  }
+
+  const proposal = assembleSplitProposal({
+    target: leaf,
+    store: world.store.byId,
+    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoice(INHERITANCE_SIDE.A),
+    nonInherited: { attributes: ATTRS, color: COLOR },
+    ids: idPorts(),
+  });
+  const inheritor = withLeafShape(leaf, proposal.inheritorShape);
+  const newLeaf = proposal.newFeature;
+  const nextFeatures = world.features.slice();
+  nextFeatures[idx] = inheritor;
+  nextFeatures.push(newLeaf);
+  const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
+  return { features: nextFeatures, store: nextStore };
+}
+
+function seamApplyCmd(world: World, cmd: SeamCmd): World {
+  switch (cmd.t) {
+    case 'split':
+      return seamApplySplit(world, cmd);
+    case 'merge':
+      return applyMerge(world, { aPick: cmd.pickA, bPick: cmd.pickB });
+    case 'noop':
+      return world;
+  }
+}
+
+describe('seed=41001 — seam stateful split/merge chains keep every invariant + persist', () => {
+  it('chained seam edits stay valid/finite/resolvable/round-trippable after each op', () => {
+    fc.assert(
+      fc.property(fc.array(seamCmdArb, { minLength: 1, maxLength: 12 }), (cmds) => {
+        let world = seamInitialWorld();
+        checkSeamWorldInvariants(world);
+        for (const cmd of cmds) {
+          world = seamApplyCmd(world, cmd);
+          checkSeamWorldInvariants(world);
+          expect(world.features.length).toBeGreaterThanOrEqual(1);
+          // Extra seam-specific check: every stored vertex stays a representative.
+          for (const leaf of world.features) {
+            for (const ring of leaf.shape.rings) {
+              for (const vid of ring.vertexIds) {
+                const v = world.store.byId.get(vid);
+                if (v) {
+                  expect(v.coordinate.lon).toBeGreaterThanOrEqual(-180);
+                  expect(v.coordinate.lon).toBeLessThan(180);
+                }
+              }
+            }
+          }
+        }
+        // (S5) the final seam world round-trips through the REAL U14 path.
+        const project = worldToProject(world);
+        const reloaded = saveThenLoad(project);
+        expect(reloaded).toBeDefined();
+        if (reloaded === undefined) return;
+        expect(projectsEqual(project, reloaded)).toBe(true);
+      }),
+      { seed: SEED_41001, numRuns: RUNS_41001 },
+    );
+  });
+});

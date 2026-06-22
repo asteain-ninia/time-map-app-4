@@ -3591,3 +3591,438 @@ describe(`affiliation — STATEFUL model #3: live undo/redo stack + series edits
     );
   });
 });
+
+// ===========================================================================
+// ===========================================================================
+//  EIGHTH BUG-HUNT SECTION (seed = 45001) — FOURTH fast-check STATEFUL model,
+//  a NEW exploration deliberately disjoint from the §18 (35002) / §19 (35003) /
+//  §20 (35004) stateful runs AND from every prior seed range used in this repo's
+//  affiliation bug-hunts (1000..6000 / 21000..26000 / 31000..36000). seed=45001
+//  sits in a fresh band so its fast-check command stream + initial-forest draws
+//  walk interaction orderings none of the earlier runs reached.
+//
+//  WHY THIS IS GENUINELY NEW (not a re-walk of §18/§19/§20):
+//    All three prior stateful SUTs keep the parallel anchor series as an
+//    APPEND-or-guarded-MUTATE history but NONE of them ever:
+//      (i)  drives the TEMPORAL-RESOLUTION reader (`resolveAt`) on the LIVE
+//           riding series after every committed affiliation command and asserts
+//           it stays coherent with the strictly-ascending order (each entry's own
+//           start resolves to that entry; strictly-before-first is absent) WHILE
+//           the underlying committed forest keeps mutating under auto-disappear /
+//           subtree moves. §10 checks resolveAt but only on a PRISTINE folded
+//           array, never live inside a fast-check stateful stream where prior
+//           commands have reshaped the series AND the forest;
+//      (ii) interleaves `applyPastEdit` HISTORY edits (insert-at-new-start /
+//           replace-at-existing-start) THROUGH the stateful generator between
+//           real affiliation commits, asserting the insert/replace count law and
+//           that the edited series stays INV-1/INV-5/INV-6 AND that the freshly
+//           inserted anchor is immediately effective at its own start via
+//           resolveAt. §10 does insert/replace once on a pristine series; here it
+//           rides a continuously-mutated live series;
+//      (iii) drives a NEW affiliation command — `createNewTop` immediately
+//           followed by its `none` inverse on the SAME leaf, as ONE stateful
+//           command (CreateThenIsolate) — and asserts op∘逆op restores the leaf
+//           to top-level (parentId undefined) AND the freshly-created top auto-
+//           disappears (FR-35 sweep) once its only child leaves. §11 closes a
+//           federate∘de-federate inverse but never the create-top∘isolate inverse,
+//           and never inside a live stateful stream.
+//
+//  Per committed/edited state the FULL invariant battery still runs (the SPEC,
+//  never weakened to paint green):
+//    - 階層森構造妥当 + リング交互性・包含妥当 (validateHierarchy 形状=和・隙間なし
+//      via assertFeatureSetInvariants with the vertexStore);
+//    - 派生集約=子の和 / aggregate childIds single-source agreement;
+//    - 座標に NaN/Infinity 無し (allCoordsFinite);
+//    - 選択が常に有効 (survivedTouched/created resolve, deleted gone, created fresh);
+//    - 錨列の昇順・非重複 (assertAscendingUnique) + INV-5 non-empty;
+//    - save->load=恒等 (JSON round-trip, throttled every 3rd commit).
+//  Metamorphic, folded into the commands:
+//    - undo∘op==id and op∘undo∘redo==op THROUGH createAffiliationCommand on EVERY
+//      committed affiliation command (id-stable redo, 教訓 5.20);
+//    - op∘逆op==id for CreateThenIsolate (create-top then isolate restores top);
+//    - applyPastEdit insert/replace count law + resolveAt coherence (save∘load of
+//      the temporal reader against the ascending order).
+//
+//  Determinism: seed = 45001 fixed, numRuns large. PERMANENT ASSET — a counter-
+//  example is a finding, never a reason to relax a check.
+// ===========================================================================
+// ===========================================================================
+
+const SEED8 = 45001;
+
+// ---------------------------------------------------------------------------
+// §21 model: a NEW per-leaf-period generator distinct from every prior one. It
+// reuses the structural shape of buildMixedForest (flat OR deep roots) but draws
+// periods from a MEDIUM band (−120..120, span 5..35) — disjoint from
+// mixedForestArb (−60..60 / 1..45), wideForestArb (−200..200 / 1..30) and
+// denseForestArb (−10..10 / 20..50). This sits between "dense overlap" and
+// "sparse disjoint", so the existence guard accepts ~half of re-parent attempts:
+// the regime where picker⇔commit single-source AND existence-guard coherence are
+// BOTH exercised heavily in one run, on states the prior commands have mutated.
+// ---------------------------------------------------------------------------
+
+const mediumRootSpecArb: fc.Arbitrary<MixedRootSpec> = fc
+  .record({
+    deep: fc.boolean(),
+    subCount: fc.integer({ min: 1, max: 3 }),
+    leafCount: fc.integer({ min: 1, max: 3 }),
+    start: fc.integer({ min: -120, max: 120 }),
+    span: fc.integer({ min: 5, max: 35 }),
+  })
+  .map(({ deep, subCount, leafCount, start, span }) => ({
+    deep,
+    subCount,
+    leafCount,
+    start,
+    end: start + span,
+  }));
+
+function mediumForestArb(): fc.Arbitrary<ModelState> {
+  return fc
+    .array(mediumRootSpecArb, { minLength: 1, maxLength: 4 })
+    .map((specs) => buildMixedForest(specs));
+}
+
+// ---------------------------------------------------------------------------
+// §21 SUT: live affiliation state + a CONTINUOUSLY-MUTATED riding anchor series
+// on which resolveAt / applyPastEdit are exercised live, plus an undo journal
+// for the end-of-run full rewind. snapStartYear advances strictly so every
+// snapshot anchor has a unique strictly-increasing start (INV-1) and the
+// applyPastEdit insert target (lastStart + gap) is always genuinely new.
+// ---------------------------------------------------------------------------
+
+interface StatefulModel8 {
+  commits: number;
+}
+
+interface Journal8 {
+  readonly command: ReturnType<typeof createAffiliationCommand>;
+  readonly preState: readonly Feature[];
+  readonly postState: readonly Feature[];
+  readonly createdIds: readonly FeatureId[];
+}
+
+class StatefulSut8 {
+  state: AffState;
+  series: AnchorSeries;
+  private snapIdx = 1;
+  /** strictly-increasing year used as the next snapshot anchor's start. */
+  private nextStartYear = 1000;
+  committed = 0;
+  readonly original: readonly Feature[];
+  readonly journal: Journal8[] = [];
+  /** monotone source of unique inserted-anchor ids for applyPastEdit. */
+  private pastEditTick = 0;
+
+  constructor(initial: ModelState) {
+    this.original = [...initial.features];
+    this.state = {
+      features: [...initial.features],
+      store: store(initial),
+      idCounter: 80000,
+    };
+    this.series = normalizeSeries(
+      [this.freshSnapshotEntry()],
+      CAL,
+    );
+    assertAscendingUnique(this.series);
+  }
+
+  /** A committed-state snapshot entry at the next strictly-increasing start. */
+  private freshSnapshotEntry() {
+    const snap = createAnchorSnapshot(this.state.features, this.state.store);
+    const anchor = createAnchor(asAnchorId(`s8-${this.snapIdx}`), snap);
+    const entry = createAnchorEntry(anchor, timePointYear(this.nextStartYear), null);
+    this.snapIdx += 1;
+    this.nextStartYear += 10;
+    return entry;
+  }
+
+  /** The full per-state invariant battery (forest/area/coord/childIds + series). */
+  private checkState(): void {
+    assertFeatureSetInvariants(this.state.features, this.state.store);
+    assertAscendingUnique(this.series);
+    expect(this.series.entries.length, 'series empty (INV-5)').toBeGreaterThan(0);
+  }
+
+  /**
+   * Contract: resolveAt agrees with the strictly-ascending order on the LIVE
+   * series — every entry's own start resolves to itself; strictly before the
+   * first start is `absent`. Exercised after every mutation of the live series.
+   */
+  private checkResolveCoherence(): void {
+    for (const e of this.series.entries) {
+      const r = resolveAt(this.series, e.start, CAL);
+      expect(r.kind, `resolveAt absent at own start ${e.start.year}`).toBe('present');
+      if (r.kind === 'present') {
+        expect(r.entry.anchor.id, 'resolveAt returned wrong entry').toBe(e.anchor.id);
+      }
+    }
+    const firstStart = this.series.entries[0]!.start.year;
+    const before = resolveAt(this.series, timePointYear(firstStart - 1), CAL);
+    expect(before.kind, 'resolveAt before first start not absent').toBe('absent');
+  }
+
+  /** Apply one real proposal, run the per-commit battery, journal it, append snap. */
+  commitAndCheck(
+    applied:
+      | { next: AffState; proposal: AffiliationProposal; baseline: readonly Feature[] }
+      | undefined,
+  ): void {
+    if (applied === undefined) return; // rejected / N/A: legitimate no-op.
+
+    assertFeatureSetInvariants(applied.next.features, applied.next.store);
+
+    const present = new Set(applied.next.features.map((f) => f.id));
+    for (const id of applied.proposal.survivedTouchedIds) {
+      expect(present.has(id), `survivedTouched ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.createdIds) {
+      expect(present.has(id), `created ${id} missing`).toBe(true);
+    }
+    for (const id of applied.proposal.deletedIds) {
+      expect(present.has(id), `deleted ${id} still present`).toBe(false);
+    }
+    const baselineIds = new Set(applied.baseline.map((f) => f.id));
+    const del = new Set(applied.proposal.deletedIds);
+    for (const id of applied.proposal.createdIds) {
+      expect(baselineIds.has(id), `created ${id} collides with existing`).toBe(false);
+      expect(del.has(id), `created ${id} also in deletedIds`).toBe(false);
+    }
+
+    // METAMORPHIC undo∘op==id and op∘undo∘redo==op THROUGH the real command.
+    const command = createAffiliationCommand(applied.baseline, applied.proposal);
+    const exec = command.execute(applied.baseline);
+    expect(
+      featuresEqual(exec.state, applied.proposal.nextFeatures),
+      'execute != proposal.nextFeatures',
+    ).toBe(true);
+    const undone = command.undo(exec.state);
+    expect(featuresEqual(undone.state, applied.baseline), 'undo∘op != identity').toBe(true);
+    const redone = command.redo(undone.state);
+    expect(
+      featuresEqual(redone.state, applied.proposal.nextFeatures),
+      'op∘undo∘redo != op',
+    ).toBe(true);
+    const reCreated = redone.state
+      .filter((f) => !baselineIds.has(f.id))
+      .map((f) => f.id)
+      .sort();
+    expect(reCreated).toEqual([...applied.proposal.createdIds].sort());
+
+    this.journal.push({
+      command,
+      preState: applied.baseline,
+      postState: exec.state,
+      createdIds: applied.proposal.createdIds,
+    });
+
+    this.state = applied.next;
+    this.committed += 1;
+
+    // anchor列 昇順・非重複: append a fresh committed snapshot, then check resolveAt.
+    this.series = normalizeSeries([...this.series.entries, this.freshSnapshotEntry()], CAL);
+    this.checkState();
+    this.checkResolveCoherence();
+
+    // save∘load=恒等 every 3rd commit.
+    if (this.committed % 3 === 0) {
+      const parsed = JSON.parse(JSON.stringify(this.state.features)) as Feature[];
+      expect(featuresEqual(parsed, this.state.features), 'save∘load != identity').toBe(true);
+      const f0 = buildForest(this.state.features);
+      const f1 = buildForest(parsed);
+      for (const f of this.state.features) {
+        const a = resolveFeatureArea(f0, this.state.store, f.id);
+        const b = resolveFeatureArea(f1, this.state.store, f.id);
+        expect(a.status).toBe(b.status);
+        if (a.status === 'ok' && b.status === 'ok') {
+          expect(areasEqualWithinTolerance(a.area, b.area), 'save∘load area drift').toBe(true);
+        }
+      }
+    }
+  }
+
+  /**
+   * Contract (ii): a LIVE applyPastEdit on the riding series.
+   *   - REPLACE at an existing entry's start: count unchanged, idempotent.
+   *   - INSERT at a strictly-later new start: count + 1, inserted anchor is
+   *     immediately effective at its own start (resolveAt), series stays
+   *     INV-1/INV-5/INV-6.
+   */
+  pastEdit(insert: boolean, which: number): void {
+    if (insert) {
+      const lastStart = this.series.entries[this.series.entries.length - 1]!.start.year;
+      this.pastEditTick += 1;
+      const newStart = timePointYear(lastStart + 50 + this.pastEditTick);
+      const newId = asAnchorId(`s8-past-${this.pastEditTick}`);
+      const snap = createAnchorSnapshot(this.state.features, this.state.store);
+      const before = this.series.entries.length;
+      const after = applyPastEdit(this.series, newStart, () => createAnchor(newId, snap), CAL);
+      expect(after.entries.length, 'applyPastEdit insert did not add one').toBe(before + 1);
+      this.series = after;
+      assertAscendingUnique(this.series);
+      const resolved = resolveAt(this.series, newStart, CAL);
+      expect(resolved.kind, 'inserted anchor absent at its start').toBe('present');
+      if (resolved.kind === 'present') {
+        expect(resolved.entry.anchor.id, 'inserted anchor not effective').toBe(newId);
+      }
+      return;
+    }
+    // REPLACE at an existing start: pick a live entry, replace its snapshot.
+    const target = pick(this.series.entries, which);
+    if (target === undefined) return;
+    const snap = createAnchorSnapshot(this.state.features, this.state.store);
+    const makeRepl = () => createAnchor(target.anchor.id, snap);
+    const before = this.series.entries.length;
+    const replaced = applyPastEdit(this.series, target.start, makeRepl, CAL);
+    expect(replaced.entries.length, 'applyPastEdit replace changed count').toBe(before);
+    // idempotent in count.
+    const replaced2 = applyPastEdit(replaced, target.start, makeRepl, CAL);
+    expect(replaced2.entries.length, 'applyPastEdit replace not idempotent').toBe(before);
+    this.series = replaced2;
+    assertAscendingUnique(this.series);
+    this.checkResolveCoherence();
+  }
+
+  /** End-of-run: replaying the journal forward from the original reproduces live. */
+  verifyTimeline(): void {
+    let cur: readonly Feature[] = this.original;
+    for (const frame of this.journal) {
+      expect(featuresEqual(cur, frame.preState), 'timeline preState drift').toBe(true);
+      cur = frame.command.redo(cur).state;
+      expect(featuresEqual(cur, frame.postState), 'timeline redo != postState').toBe(true);
+    }
+    expect(featuresEqual(cur, this.state.features), 'timeline replay != live state').toBe(true);
+    // And the full reverse rewind lands byte-identical on the original baseline.
+    let back: readonly Feature[] = this.state.features;
+    for (let i = this.journal.length - 1; i >= 0; i -= 1) {
+      back = this.journal[i]!.command.undo(back).state;
+    }
+    expect(featuresEqual(back, this.original), 'full rewind != original').toBe(true);
+    expect(back.length).toBe(this.original.length);
+  }
+}
+
+type SCmd8 = fc.Command<StatefulModel8, StatefulSut8>;
+
+class AffStep8 implements SCmd8 {
+  constructor(readonly cmd: AffCmd2) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel8, s: StatefulSut8): void {
+    const applied = applyAffCmd2(s.state, this.cmd);
+    s.commitAndCheck(applied);
+    if (applied !== undefined) m.commits += 1;
+  }
+  toString(): string {
+    return `aff(${JSON.stringify(this.cmd)})`;
+  }
+}
+
+/**
+ * Contract (iii): create a fresh new-top over a chosen LEAF, then immediately
+ * isolate that same leaf back to `none`. op∘逆op==id: the leaf returns to
+ * top-level (parentId undefined) and the just-created top auto-disappears once it
+ * loses its only child (FR-35 sweep+prune). Both legs run the full SUT battery.
+ * A non-committing first leg is a legitimate no-op.
+ */
+class CreateThenIsolate8 implements SCmd8 {
+  constructor(readonly leafWhich: number) {}
+  check(): boolean {
+    return true;
+  }
+  run(m: StatefulModel8, s: StatefulSut8): void {
+    const features = s.state.features;
+    const forest = buildForest(features);
+    const leaves = features.filter((f) => directChildIds(forest, f.id).length === 0);
+    if (leaves.length === 0) return;
+    const leaf = leaves[this.leafWhich % leaves.length]!;
+    const leafIdx = features.indexOf(leaf);
+
+    // op: createNewTop over the leaf (mints a fresh top aggregate as its parent).
+    const created = applyAffCmd2(s.state, { t: 'createNewTop', targetWhich: leafIdx });
+    if (created === undefined) return; // legitimate rejection: no-op.
+    s.commitAndCheck(created);
+    m.commits += 1;
+
+    const newTops = created.proposal.createdIds;
+    expect(newTops.length, 'createNewTop minted no top').toBeGreaterThan(0);
+    const newTop = newTops[newTops.length - 1]!;
+    const movedLeaf = s.state.features.find((f) => f.id === leaf.id);
+    expect(movedLeaf, 'leaf vanished after createNewTop').toBeDefined();
+    expect(movedLeaf?.parentId, 'leaf not under created top').toBe(newTop);
+
+    // 逆op: isolate the leaf back to `none`.
+    const leafIdx2 = s.state.features.findIndex((f) => f.id === leaf.id);
+    const isolated = applyAffCmd2(s.state, { t: 'none', targetWhich: leafIdx2 });
+    if (isolated === undefined) {
+      // Could only fail if the leaf vanished — it did not. Treat a non-commit as a
+      // finding-worthy surprise: a top-level isolate of a surviving leaf must work.
+      expect(
+        s.state.features.some((f) => f.id === leaf.id),
+        'isolate(none) rejected though leaf survives',
+      ).toBe(false);
+      return;
+    }
+    s.commitAndCheck(isolated);
+    m.commits += 1;
+
+    // op∘逆op: the leaf is top-level again.
+    const restored = s.state.features.find((f) => f.id === leaf.id);
+    expect(restored, 'leaf vanished after isolate').toBeDefined();
+    expect(restored?.parentId, 'createNewTop∘isolate did not restore top-level').toBe(undefined);
+    // The just-created top, having lost its only child, must have auto-disappeared.
+    const topStill = s.state.features.some((f) => f.id === newTop);
+    expect(topStill, 'created top lingered as empty aggregate after isolate').toBe(false);
+  }
+  toString(): string {
+    return `createThenIsolate(leaf=${this.leafWhich})`;
+  }
+}
+
+/** Contract (ii) as a stateful command: a live applyPastEdit insert OR replace. */
+class PastEditStep8 implements SCmd8 {
+  constructor(
+    readonly insert: boolean,
+    readonly which: number,
+  ) {}
+  check(): boolean {
+    return true;
+  }
+  run(_m: StatefulModel8, s: StatefulSut8): void {
+    s.pastEdit(this.insert, this.which);
+  }
+  toString(): string {
+    return `pastEdit(${this.insert ? 'insert' : 'replace'},${this.which})`;
+  }
+}
+
+const statefulCommands8Arb: fc.Arbitrary<Iterable<SCmd8>> = fc.commands(
+  [
+    affCmd2Arb.map((c) => new AffStep8(c)),
+    fc.nat().map((l) => new CreateThenIsolate8(l)),
+    fc.tuple(fc.boolean(), fc.nat()).map(([ins, w]) => new PastEditStep8(ins, w)),
+  ],
+  { maxCommands: 20 },
+);
+
+describe(`affiliation — STATEFUL model #4: live resolveAt/applyPastEdit + create∘isolate (seed=${SEED8})`, () => {
+  it('fc.commands drives the real pipeline; temporal reader + history edits + inverse hold', () => {
+    fc.assert(
+      fc.property(mediumForestArb(), statefulCommands8Arb, (initial, cmds) => {
+        let sut: StatefulSut8 | undefined;
+        const setup: fc.ModelRunSetup<StatefulModel8, StatefulSut8> = () => {
+          const real = new StatefulSut8(initial);
+          sut = real;
+          return { model: { commits: 0 }, real };
+        };
+        fc.modelRun(setup, cmds);
+        // End-of-run: forward replay == live state, and full reverse rewind ==
+        // original baseline (no journal drift across the whole interleaved run).
+        sut?.verifyTimeline();
+      }),
+      { seed: SEED8, numRuns: 800 },
+    );
+  });
+});

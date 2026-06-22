@@ -1,7 +1,7 @@
 // U10 spatial-index wrapper tests — criterion 6 (build / diff-update / rebuild
 // agree) plus the generic query and the bbox helpers.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createCoordinate } from '../coordinate';
 import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
@@ -223,5 +223,65 @@ describe('regression: removeRef clears all copies of a ref via the byRef index',
     );
     expect(moved).toEqual(rebuiltMoved);
     expect(moved.size).toBe(N);
+  });
+});
+
+// --- regression (bughunt-t2): size() is O(1), never re-walks the tree ---------
+//
+// Pins the fix for "SpatialIndex.size() allocates O(n) array on every call":
+// size() must read a live counter maintained at each mutation, NOT delegate to
+// `tree.all().length` (which copied every entry into a throwaway array just to
+// read its length — turning size-sampling in hot paths into O(n) garbage). The
+// counter must also stay exactly correct through every mutation path, including
+// seam-replica duplicates that share one ref. A regression to the old body would
+// either call `all()` here (caught by the spy) or drift from the true count.
+describe('regression (bughunt-t2): size() is O(1) and never calls tree.all()', () => {
+  it('does not allocate a full array (all() is not called) when reading size', () => {
+    const idx = new SpatialIndex<number>();
+    for (let i = 0; i < 5000; i++) idx.insert({ ref: i, minX: i, minY: 0, maxX: i + 1, maxY: 1 });
+
+    const allSpy = vi.spyOn(idx, 'all');
+    for (let i = 0; i < 50; i++) expect(idx.size()).toBe(5000);
+    expect(allSpy).not.toHaveBeenCalled();
+    allSpy.mockRestore();
+  });
+
+  it('the live count stays exactly correct across every mutation path', () => {
+    const idx = new SpatialIndex<string>();
+    expect(idx.size()).toBe(0);
+
+    // insert
+    idx.insert(entry('A', 0, 0, 1));
+    idx.insert(entry('B', 10, 0, 1));
+    expect(idx.size()).toBe(2);
+
+    // seam replicas: same ref inserted at several boxes counts each entry, not
+    // each distinct ref (so size differs from a distinct-ref count).
+    idx.insert(entry('A', 100, 0, 1));
+    idx.insert(entry('A', 200, 0, 1));
+    expect(idx.size()).toBe(4);
+
+    // removeRef removes ALL copies of the ref and decrements by that many.
+    idx.removeRef('A');
+    expect(idx.size()).toBe(1);
+
+    // removeRef of an absent ref does not touch the count.
+    idx.removeRef('ZZZ');
+    expect(idx.size()).toBe(1);
+
+    // bulkLoad replaces and resets the count to the new contents.
+    idx.bulkLoad([entry('X', 0, 0, 1), entry('Y', 5, 0, 1), entry('Z', 9, 0, 1)]);
+    expect(idx.size()).toBe(3);
+
+    // clear resets to zero.
+    idx.clear();
+    expect(idx.size()).toBe(0);
+
+    // The maintained count must agree with the ground-truth full scan after the
+    // whole sequence (a counter that drifted would diverge here).
+    idx.bulkLoad([entry('P', 0, 0, 1), entry('P', 50, 0, 1), entry('Q', 80, 0, 1)]);
+    idx.insert(entry('R', 120, 0, 1));
+    idx.removeRef('P');
+    expect(idx.size()).toBe(idx.all().length);
   });
 });

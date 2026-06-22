@@ -68,9 +68,23 @@ export class SpatialIndex<Ref> {
    */
   private readonly byRef: Map<Ref, IndexEntry<Ref>[]>;
 
+  /**
+   * Live count of entries currently in the tree, maintained in lock-step with
+   * every mutation (track / removeRef / bulkLoad / clear). Exists so {@link size}
+   * is O(1): the old `tree.all().length` allocated a full n-length copy of the
+   * tree on every call just to read its length, which silently turned size-sampling
+   * in hot paths (e.g. benchmarks) into O(n) garbage (教訓5.5: derived state is
+   * kept explicit and updated at each mutation, never recomputed by full scan).
+   *
+   * This counts entries, not distinct refs — so it differs from `byRef.size`,
+   * which would undercount seam replicas that share one ref across several boxes.
+   */
+  private count: number;
+
   constructor(maxEntries?: number) {
     this.tree = maxEntries === undefined ? new RBush<IndexEntry<Ref>>() : new RBush<IndexEntry<Ref>>(maxEntries);
     this.byRef = new Map<Ref, IndexEntry<Ref>[]>();
+    this.count = 0;
   }
 
   /**
@@ -82,6 +96,7 @@ export class SpatialIndex<Ref> {
   bulkLoad(entries: readonly IndexEntry<Ref>[]): this {
     this.tree.clear();
     this.byRef.clear();
+    this.count = 0;
     if (entries.length > 0) {
       this.tree.load(entries);
       for (const entry of entries) this.track(entry);
@@ -112,6 +127,7 @@ export class SpatialIndex<Ref> {
     const victims = this.byRef.get(ref);
     if (victims === undefined) return this;
     for (const victim of victims) this.tree.remove(victim);
+    this.count -= victims.length;
     this.byRef.delete(ref);
     return this;
   }
@@ -120,6 +136,7 @@ export class SpatialIndex<Ref> {
   clear(): this {
     this.tree.clear();
     this.byRef.clear();
+    this.count = 0;
     return this;
   }
 
@@ -137,9 +154,14 @@ export class SpatialIndex<Ref> {
     return this.tree.all();
   }
 
-  /** Count of entries currently indexed. */
+  /**
+   * Count of entries currently indexed. O(1): reads the live {@link count}
+   * maintained at each mutation rather than allocating `tree.all()` to take its
+   * length (the latter copied all n entries on every call — costly when size is
+   * sampled in hot paths such as benchmarks).
+   */
   size(): number {
-    return this.tree.all().length;
+    return this.count;
   }
 
   /**
@@ -151,5 +173,6 @@ export class SpatialIndex<Ref> {
     const existing = this.byRef.get(entry.ref);
     if (existing === undefined) this.byRef.set(entry.ref, [entry]);
     else existing.push(entry);
+    this.count += 1;
   }
 }
