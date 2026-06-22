@@ -30,6 +30,7 @@ import {
   openPanel,
   type DetailPanelsState,
   type AssetResolver,
+  type EditDispatch,
   type FeatureLookup as PropertyFeatureLookup,
 } from './property';
 import { Timeline } from './timeline/Timeline';
@@ -73,7 +74,7 @@ import { ReparentToolController } from './reparent/index';
 import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
-import { createColorInfo } from '../domain/attributes';
+import { createBasicAttributes, createColorInfo } from '../domain/attributes';
 import {
   ConflictResolutionModal,
   type ApplyResolutions,
@@ -122,7 +123,7 @@ import {
   ringIdForLeafVertex,
 } from './map/edit-session-snapshot';
 import { createNeighboursQuery } from './map/slide-snap-neighbours';
-import { RELEASE_OUTCOME, type DragSession } from '../domain/editing/index';
+import { RELEASE_OUTCOME, type DragSession, type FeatureSnapshot } from '../domain/editing/index';
 import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
@@ -1565,6 +1566,60 @@ export function App(): JSX.Element {
     [store],
   );
 
+  // HB3-14 — attribute editing. The U32 property form's SAVE assembled a
+  // PropertyEditIntent and handed it to editDispatch, but the composition root passed
+  // NO editDispatch to buildSidebarContent, so save fell to the honest throwing stub
+  // (editNotWired) — attribute editing did nothing (教訓 5.7). Wire a real dispatch: it
+  // builds the after-state feature (new attributes + color, SAME geometry), wraps it as a
+  // U24 {@link FeatureSnapshot} EditProposal at the edit-target anchor time, runs the SAME
+  // fixed-order U13 pipeline add/knife/move use (createLiveEditBinding → applyEditProposal),
+  // and records ONE U12 undo unit. A Rejected result throws so the form surfaces 保存に失敗
+  // rather than a silent no-op (HB-3 honest-failure discipline).
+  const propertyEditBinding = useMemo(
+    () => createLiveEditBinding({ getRoot: () => store.getState().domain }),
+    [store],
+  );
+  const propertyEditDispatch = useMemo<EditDispatch>(
+    () => ({
+      dispatchEdit: (intent) => {
+        const feature = featuresAt(store.getState().domain, intent.editTime).find(
+          (f) => f.id === intent.featureId,
+        );
+        if (feature === undefined) {
+          throw new Error('編集対象が現在の時刻に存在しません。');
+        }
+        const v = intent.attributes;
+        const nextFeature = withColor(
+          withAttributes(feature, createBasicAttributes(v.name, v.startYear, v.endYear)),
+          createColorInfo(
+            v.autoColorEnabled,
+            v.fillColor,
+            v.selectedColor,
+            v.borderColor,
+            v.paletteTheme,
+            v.fillOpacity,
+            v.selectedOpacity,
+          ),
+        );
+        // Attribute / style edit: geometry is unchanged, so no vertex body moves.
+        const snapshot: FeatureSnapshot = { feature: nextFeature, vertices: [] };
+        const proposal = createEditProposal(intent.featureId, intent.editTime, snapshot);
+        const result = propertyEditBinding.startProcess(proposal);
+        if (result.status === PROCESS_STATUS.Committed) {
+          recordCommit(result, { featureId: intent.featureId });
+          return;
+        }
+        if (result.status === PROCESS_STATUS.Rejected) {
+          throw new Error(result.message);
+        }
+        // detectSpatial=[] for the edit binding, so a pure attribute edit never reaches
+        // ConflictsPending; surface honestly if it somehow does (never a silent success).
+        throw new Error('属性の編集を適用できませんでした。');
+      },
+    }),
+    [store, propertyEditBinding, recordCommit],
+  );
+
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
   // never passed to AppShell, so the sidebar rendered empty and the U32
@@ -1581,8 +1636,9 @@ export function App(): JSX.Element {
         getTime: () => store.getState().currentTime,
         calendar,
         onOpenDetail,
+        editDispatch: propertyEditDispatch,
       }),
-    [store, calendar, onOpenDetail],
+    [store, calendar, onOpenDetail, propertyEditDispatch],
   );
 
   return (
@@ -2107,6 +2163,7 @@ export function createSharedIdMint(getRoot: () => DomainProject): SharedIdMint {
 }
 import {
   PROCESS_STATUS,
+  createEditProposal,
   type ProcessResult,
   type EditProposal,
 } from '../domain/consistency/index';
@@ -2175,7 +2232,7 @@ function createAddBootstrap<S>(getRoot: () => S, mint: SharedIdMint): AddBootstr
 // --- The knife bootstrap (id ports + domain-lookup stubs + the U13 seam) -----
 
 import type { VertexStore } from '../domain/vertex';
-import type { Feature } from '../domain/feature';
+import { withAttributes, withColor, type Feature } from '../domain/feature';
 import type { FeatureId } from '../domain/ids';
 import type {
   ResolveFeature,
