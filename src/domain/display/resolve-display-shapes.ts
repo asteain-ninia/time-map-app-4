@@ -194,14 +194,32 @@ interface GeometryCacheEntry {
  * referenced vertex are reference-identical to the prior run reuses its resolved
  * (and seam-unwrapped) geometry and skips the U08 boolean-union entirely. Mutated in
  * place by `resolveDisplayShapes`; never share one across unrelated domains.
+ *
+ * WHOLE-CACHE FAST PATH (bughunt3 — the snapshot walk itself was not cached): the
+ * per-entry validity check rebuilds each source's full subtree snapshot via
+ * `descendantIds` (an O(subtree) DFS) PLUS a fresh vertex scan, just to compare it by
+ * reference. On a slider tick — where the U16 store swaps only `displayControl` and
+ * hands the SAME `forest` / `store` objects (both pure functions of the unchanged
+ * domain+time) to the pipeline — that meant every cache HIT still paid an O(k·n)
+ * re-walk of every aggregate's subtree even though not one input changed, negating
+ * much of the union-skip benefit. We therefore record the `forest` and `store` the
+ * entries were resolved against: when the next run hands back the IDENTICAL pair, the
+ * entire input space of every entry is provably unchanged (forest/store are derived
+ * purely from immutable feature/vertex value objects), so every carried-over entry is
+ * valid with ZERO per-entry snapshot work. Only when `forest` / `store` actually
+ * differ do we fall back to the per-source subtree-snapshot validation.
  */
 export interface DisplayShapeCache {
   entries: Map<FeatureId, GeometryCacheEntry>;
+  /** The `forest` the current `entries` were resolved against (whole-cache fast path). */
+  forest: Forest | undefined;
+  /** The `store` the current `entries` were resolved against (whole-cache fast path). */
+  store: VertexStore | undefined;
 }
 
 /** Create an empty {@link DisplayShapeCache}. */
 export function createDisplayShapeCache(): DisplayShapeCache {
-  return { entries: new Map() };
+  return { entries: new Map(), forest: undefined, store: undefined };
 }
 
 /** The vertex objects a leaf references through its shape rings (by id). */
@@ -300,6 +318,12 @@ export function resolveDisplayShapes(
   // keyed by geometrySourceId, so two decisions rolling up to the SAME target resolve
   // its geometry once and the second reuses the just-built entry.
   const nextEntries = cache !== undefined ? new Map<FeatureId, GeometryCacheEntry>() : undefined;
+  // WHOLE-CACHE FAST PATH (bughunt3): when the prior run resolved against the IDENTICAL
+  // forest + store, every input feeding every entry is provably unchanged, so a carried
+  // -over entry is valid WITHOUT rebuilding its subtree snapshot (no per-entry
+  // descendantIds walk). Only when forest / store differ do we validate per source.
+  const inputsUnchanged =
+    cache !== undefined && cache.forest === forest && cache.store === store;
 
   for (const [, decision] of decisions) {
     if (decision.verdict === DISPLAY_VERDICT.Omitted) continue;
@@ -311,12 +335,22 @@ export function resolveDisplayShapes(
       // still-valid entry carried over from a prior run; otherwise resolve fresh.
       let entry = nextEntries.get(geometrySourceId);
       if (entry === undefined) {
-        const snapshot = snapshotInputs(forest, store, geometrySourceId);
         const prior = cache.entries.get(geometrySourceId);
-        if (prior !== undefined && snapshot !== undefined && geometryEntryStillValid(prior, snapshot)) {
+        if (inputsUnchanged && prior !== undefined) {
+          // forest + store are reference-identical to when `prior` was resolved, so its
+          // whole subtree (feature objects) and referenced vertices are unchanged — reuse
+          // it directly, skipping the snapshot DFS the validity check would otherwise run.
           entry = prior;
         } else {
-          entry = resolveGeometryEntry(forest, store, geometrySourceId, snapshot);
+          // forest or store changed (a structural / geometry edit, or a fresh cache):
+          // build the subtree snapshot and validate the prior entry against it by
+          // reference identity, re-resolving only on a genuine miss.
+          const snapshot = snapshotInputs(forest, store, geometrySourceId);
+          if (prior !== undefined && snapshot !== undefined && geometryEntryStillValid(prior, snapshot)) {
+            entry = prior;
+          } else {
+            entry = resolveGeometryEntry(forest, store, geometrySourceId, snapshot);
+          }
         }
         nextEntries.set(geometrySourceId, entry);
       }
@@ -362,6 +396,10 @@ export function resolveDisplayShapes(
 
   if (cache !== undefined && nextEntries !== undefined) {
     cache.entries = nextEntries;
+    // Record the forest + store these entries were resolved against so the NEXT run can
+    // take the whole-cache fast path when it hands back the identical pair (bughunt3).
+    cache.forest = forest;
+    cache.store = store;
   }
   return { shapes, failures };
 }

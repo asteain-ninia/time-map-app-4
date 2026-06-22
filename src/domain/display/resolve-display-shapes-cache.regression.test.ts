@@ -29,6 +29,7 @@ import {
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { createShape, createTerritoryRing } from '../ring';
 import { buildForest, type Forest } from '../hierarchy/forest';
+import * as forestModule from '../hierarchy/forest';
 import { createVertex, createVertexStore, type Vertex } from '../vertex';
 import * as booleanOps from '../geometry/boolean-ops';
 
@@ -113,6 +114,79 @@ describe('resolveDisplayShapes incremental geometry cache (bughunt3)', () => {
     expect(second).toEqual(uncached);
     // And the reused shape is the very same object the first run produced.
     expect(second.shapes[0]!.shape).toBe(first.shapes[0]!.shape);
+  });
+
+  it('a control-only re-run with identical forest+store does NO subtree snapshot walk (descendantIds is not called)', () => {
+    // The earlier fix skipped the boolean UNION on a control-only re-run, but the cache
+    // HIT still rebuilt every source's subtree snapshot via descendantIds (an O(subtree)
+    // DFS per aggregate) JUST to validate the entry by reference — an O(k·n) re-walk per
+    // tick of inputs that did not change. This pins the whole-cache fast path: when the
+    // re-run hands back the IDENTICAL forest + store, the snapshot walk is skipped
+    // entirely, so descendantIds is never called on the HIT.
+    const forest = forestOf();
+    const store = createVertexStore(buildVertices());
+    const cache = createDisplayShapeCache();
+
+    const descendantSpy = vi.spyOn(forestModule, 'descendantIds');
+    try {
+      // First run primes the cache; the snapshot walk legitimately runs to BUILD entries.
+      const decisionsN0 = buildDisplayDecisions({ forest, globalThreshold: 0 });
+      const first = resolveDisplayShapes(forest, store, decisionsN0, cache);
+      expect(descendantSpy.mock.calls.length).toBeGreaterThan(0); // built the snapshot once.
+
+      // Slider tick: a fresh decision map, but forest + store are reference-identical.
+      // The whole-cache fast path must reuse every entry with ZERO snapshot walks.
+      descendantSpy.mockClear();
+      const decisionsAgain = buildDisplayDecisions({ forest, globalThreshold: 0 });
+      const second = resolveDisplayShapes(forest, store, decisionsAgain, cache);
+      expect(descendantSpy.mock.calls.length).toBe(0); // <-- the snapshot walk is skipped.
+
+      // CORRECTNESS: byte-for-byte the un-cached resolution, and the reused shape object.
+      const uncached = resolveDisplayShapes(forest, store, decisionsAgain);
+      expect(second).toEqual(uncached);
+      expect(second.shapes[0]!.shape).toBe(first.shapes[0]!.shape);
+    } finally {
+      descendantSpy.mockRestore();
+    }
+  });
+
+  it('a NEW forest object (rebuilt from the same features) falls back to per-source snapshot validation and still reuses geometry', () => {
+    // The fast path keys on forest+store IDENTITY. When the pipeline rebuilds the forest
+    // (a new object over the same immutable features — e.g. a generation that misses the
+    // outer memo), the fast path does NOT apply, so we must fall back to the per-source
+    // subtree-snapshot reference check — which still validates and reuses the cached
+    // geometry (the feature/vertex objects are unchanged), skipping the boolean union.
+    const features = [
+      createAggregateFeature(fid('root'), attrs('root'), COLOR, [fid('sqA'), fid('sqB')]),
+      squareLeaf('sqA', ['a0', 'a1', 'a2', 'a3'], 'root'),
+      squareLeaf('sqB', ['b0', 'b1', 'b2', 'b3'], 'root'),
+    ];
+    const forest1 = buildForest(features);
+    const store = createVertexStore(buildVertices());
+    const cache = createDisplayShapeCache();
+
+    const decisions1 = buildDisplayDecisions({ forest: forest1, globalThreshold: 0 });
+    const first = resolveDisplayShapes(forest1, store, decisions1, cache);
+
+    // Rebuild the forest from the SAME feature objects (a new Forest, byId/childrenOf are
+    // new maps) — store unchanged. Fast path misses; per-source validation must pass.
+    const forest2 = buildForest(features);
+    expect(forest2).not.toBe(forest1);
+
+    unionSpy.mockClear();
+    const descendantSpy = vi.spyOn(forestModule, 'descendantIds');
+    try {
+      const decisions2 = buildDisplayDecisions({ forest: forest2, globalThreshold: 0 });
+      const second = resolveDisplayShapes(forest2, store, decisions2, cache);
+      // The snapshot walk runs (fast path missed) but the boolean union is still skipped
+      // because the per-source reference check validates the carried-over entry.
+      expect(descendantSpy.mock.calls.length).toBeGreaterThan(0);
+      expect(unionSpy.mock.calls.length).toBe(0);
+      // CORRECTNESS: same geometry object reused (no re-resolution).
+      expect(second.shapes[0]!.shape).toBe(first.shapes[0]!.shape);
+    } finally {
+      descendantSpy.mockRestore();
+    }
   });
 
   it('a moved vertex (new vertex object) invalidates the entry and re-unions, with correct geometry', () => {

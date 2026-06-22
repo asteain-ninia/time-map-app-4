@@ -345,6 +345,10 @@ export function vertexOwners(
 export function clearDisplayResolutionCache(): void {
   cache.length = 0;
   // Also drop the incremental geometry entries so a test asserting un-cached
-  // recomputation / union counts starts from a clean slate.
+  // recomputation / union counts starts from a clean slate. Reset the recorded
+  // forest / store too, so the whole-cache fast path cannot match a stale generation
+  // and so the prior generation's objects are not retained (bughunt3).
   geometryCache.entries = new Map();
+  geometryCache.forest = undefined;
+  geometryCache.store = undefined;
 }
