@@ -24,6 +24,8 @@ export class FakeContext2D {
   fillTexts: { text: string; x: number; y: number }[] = [];
   moveTos: { x: number; y: number }[] = [];
   lineTos: { x: number; y: number }[] = [];
+  /** Each `rect` call (edit-handle EDGE markers draw a square via rect). */
+  rects: { x: number; y: number; w: number; h: number }[] = [];
   /** Each fill call records (fillStyle, fill-rule) so even-odd hole透過 is testable. */
   fills: { style: string; rule: string }[] = [];
   /** Each stroke call records its strokeStyle (paired with lineWidths by index). */
@@ -55,6 +57,9 @@ export class FakeContext2D {
   }
   arc(x: number, y: number, r: number): void {
     this.arcs.push({ x, y, r });
+  }
+  rect(x: number, y: number, w: number, h: number): void {
+    this.rects.push({ x, y, w, h });
   }
   fill(rule?: string): void {
     this.fills.push({ style: this.fillStyle, rule: rule ?? 'nonzero' });

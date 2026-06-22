@@ -27,6 +27,7 @@ import type {
   BaseMapPrimitive,
   DrawPrimitive,
   GridLinePrimitive,
+  HandlePrimitive,
   HitTestResult,
   LabelPrimitive,
   LinePrimitive,
@@ -232,6 +233,9 @@ export class Canvas2DMapRenderer implements MapRenderer {
       case 'point':
         this.drawPoint(primitive, lonOffset);
         return;
+      case 'handle':
+        this.drawHandle(primitive, lonOffset);
+        return;
       case 'label':
         this.drawLabel(primitive, lonOffset);
         return;
@@ -258,6 +262,38 @@ export class Canvas2DMapRenderer implements MapRenderer {
     ctx.arc(x, y, p.radiusPx, 0, Math.PI * 2);
     ctx.fillStyle = p.fill;
     ctx.fill();
+  }
+
+  /**
+   * Draw an EDIT HANDLE marker (FR-87 / HB3-9) at a CONSTANT on-screen size (FR-17 —
+   * `radiusPx` / `strokeWidthPx` are screen-fixed, never multiplied by zoom, exactly
+   * like {@link drawPoint}). A VERTEX handle is a filled disc (move / delete target);
+   * an EDGE handle is a hollow square (add-a-new-vertex target) so the two read
+   * differently. Both are stroked so they stand out over any base / fill color.
+   */
+  private drawHandle(p: HandlePrimitive, lonOffset: number): void {
+    const { x, y } = this.project(p.at, lonOffset);
+    const ctx = this.ctx;
+    if (p.handleKind === 'edge') {
+      // Hollow square for an edge-midpoint (add-vertex) handle.
+      const s = p.radiusPx;
+      ctx.beginPath();
+      ctx.rect(x - s, y - s, s * 2, s * 2);
+      ctx.fillStyle = p.fill;
+      ctx.fill();
+      ctx.lineWidth = p.strokeWidthPx;
+      ctx.strokeStyle = p.stroke;
+      ctx.stroke();
+      return;
+    }
+    // Filled disc for a vertex (move / delete) handle.
+    ctx.beginPath();
+    ctx.arc(x, y, p.radiusPx, 0, Math.PI * 2);
+    ctx.fillStyle = p.fill;
+    ctx.fill();
+    ctx.lineWidth = p.strokeWidthPx;
+    ctx.strokeStyle = p.stroke;
+    ctx.stroke();
   }
 
   private drawLine(p: LinePrimitive, lonOffset: number): void {
@@ -389,6 +425,7 @@ function primitiveWraps(primitive: DrawPrimitive): boolean {
 function primitiveLonSpan(p: DrawPrimitive): { min: number; max: number } | undefined {
   switch (p.kind) {
     case 'point':
+    case 'handle':
     case 'label':
       return { min: p.at.lon, max: p.at.lon };
     case 'line':

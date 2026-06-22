@@ -74,6 +74,55 @@ describe('FR-17: line width and label font are constant on screen across zoom', 
   });
 });
 
+describe('HB3-9 / FR-17: edit handle markers draw at constant on-screen size', () => {
+  it('keeps the vertex-handle disc radius fixed while the position moves with zoom', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'handle',
+          at: { lon: 10, lat: 5 },
+          radiusPx: 5,
+          fill: '#fff',
+          stroke: '#0a66c2',
+          strokeWidthPx: 1.5,
+          handleKind: 'vertex',
+        },
+      ],
+    };
+    const a = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    a.r.drawBatch(batch);
+    const b = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 16 });
+    b.r.drawBatch(batch);
+    // Disc radius is screen-fixed; the projected position moves with zoom.
+    expect(a.surface.ctx.arcs[0]!.r).toBe(5);
+    expect(b.surface.ctx.arcs[0]!.r).toBe(5);
+    expect(a.surface.ctx.arcs[0]!.x).not.toBeCloseTo(b.surface.ctx.arcs[0]!.x, 1);
+    // It is stroked (outlined) at the screen-fixed width.
+    expect(a.surface.ctx.lineWidths).toContain(1.5);
+  });
+
+  it('draws an edge-midpoint handle as a screen-fixed square (rect), not a disc', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'handle',
+          at: { lon: 0, lat: 0 },
+          radiusPx: 3.5,
+          fill: '#bde3ff',
+          stroke: '#0a66c2',
+          strokeWidthPx: 1.5,
+          handleKind: 'edge',
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 8 });
+    r.drawBatch(batch);
+    expect(surface.ctx.rects).toHaveLength(1);
+    expect(surface.ctx.rects[0]!.w).toBe(7); // 2 * radiusPx, screen-fixed
+    expect(surface.ctx.arcs).toHaveLength(0); // an edge handle is a square, not a disc
+  });
+});
+
 describe('HiDPI: backing buffer is physical px; transform is CSS px', () => {
   it('sizes the backing buffer by devicePixelRatio', () => {
     const { surface } = makeRenderer(

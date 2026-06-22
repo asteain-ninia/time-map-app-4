@@ -89,6 +89,7 @@ import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafShapeAt } from './live-lookup';
 import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
+import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
   PointerDispatcher,
   NOOP_ADD_PORT,
@@ -306,6 +307,58 @@ export function App(): JSX.Element {
       hookTarget.dataset['visibleFeatureCount'] = String(count);
     };
 
+    // HB3-9 RENDER OBSERVATION HOOK (__E2E__). The bughunt lesson "Behavioral E2E
+    // standard" requires tests that observe the actual RENDER so a render-only bug
+    // (handles never drawn) is detectable from a real pointer-driven test — a synthetic
+    // shortcut cannot see it. We expose a small read-only window hook that mirrors (a)
+    // the live active feature id, (b) the live active tool id (the toolbar's aria-pressed
+    // tool), (c) the per-kind primitive counts of the LAST drawn frame (handle / label /
+    // preview / shape / point / line), and (d) whether a live tool preview is present.
+    // It holds NO truth — pure mirrors of the store + the last composed frame (技術方針
+    // 2.5). `frame` is updated by the host's onFrameComposed below.
+    type E2EFrameSummary = {
+      handle: number;
+      label: number;
+      shape: number;
+      point: number;
+      line: number;
+      preview: number;
+      hasLivePreview: boolean;
+    };
+    let lastFrame: E2EFrameSummary = {
+      handle: 0,
+      label: 0,
+      shape: 0,
+      point: 0,
+      line: 0,
+      preview: 0,
+      hasLivePreview: false,
+    };
+    const e2eWindow = el.ownerDocument.defaultView as (Window & {
+      __E2E__?: unknown;
+    }) | null;
+    if (e2eWindow !== null) {
+      e2eWindow.__E2E__ = {
+        /** The live active feature id ('' when none). */
+        getActiveFeature: (): string =>
+          (store.getState().activeFeature as unknown as string | null) ?? '',
+        /** The live active tool id ('' when none) — the toolbar's aria-pressed tool. */
+        getActiveTool: (): string =>
+          (store.getState().activeTool as unknown as string | null) ?? '',
+        /** The live interaction mode ('view' / 'add' / 'edit'). */
+        getMode: (): string => store.getState().mode,
+        /** Per-kind primitive counts of the LAST drawn frame (handle/label/shape/point/line). */
+        getPrimitiveCounts: (): E2EFrameSummary => ({ ...lastFrame }),
+        /** Whether a live tool preview (FR-78 仮表示 overlay) is present this frame. */
+        hasLivePreview: (): boolean => lastFrame.hasLivePreview,
+      };
+    }
+
+    /** HB3-9: mirror the last composed frame's primitive summary into the __E2E__ hook. */
+    const publishFrameHook = (summary: E2EFrameSummary): void => {
+      lastFrame = summary;
+    };
+
     // P0-A — feed the LIVE committed features into the renderer. The host reads
     // this getter on every composite, so the latest committed domain resolved at
     // the current time (with the live selection for FR-82) is what draws (single
@@ -356,6 +409,29 @@ export function App(): JSX.Element {
       onCameraChange: (camera) => publishCameraHooks(camera),
       // HB-14 観測フック: how many committed features survived this frame's clip.
       onVisibleFeatureCount: (count) => publishVisibleCountHook(count),
+      // HB3-9 ROOT FIX — the EDIT HANDLES layer (FR-87). `computeHandles` was a dead
+      // domain value with NO render consumer (診断 HB3-9 / 教訓 5.7「ロジックはあるが UI
+      // から呼ばれない」): a user who selected a feature in 編集 mode saw no vertex /
+      // add-vertex handles and could not tell what to grab. We now evaluate it FRESH
+      // per composite for the active feature and feed the resulting screen-fixed
+      // (FR-17) handle primitives into the frame ABOVE the committed shape and UNDER the
+      // tool overlay. Gated to 編集 mode with an active feature; in every other state the
+      // getter returns [] so no handle draws (受け入れ基準: 非存在は描画指示に現れない).
+      // This is the prerequisite for HB3-4 (drag preview) / HB3-8 (move 排他). The
+      // feature + vertex store come from the SAME resolveDisplayFor bundle the draw /
+      // hit-test share, so a handle sits exactly on the drawn vertex (教訓 5.29).
+      editHandles: () => {
+        const s = store.getState();
+        if (s.mode !== EDIT_MODE.Edit) return [];
+        return buildActiveFeatureHandlePrimitives(
+          s.domain,
+          s.currentTime,
+          s.activeFeature,
+          s.displayControl,
+        );
+      },
+      // HB3-9 観測フック: mirror the last drawn frame's primitive summary into __E2E__.
+      onFrameComposed: (summary) => publishFrameHook(summary),
     });
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).
@@ -727,6 +803,10 @@ export function App(): JSX.Element {
     let prevDomain = store.getState().domain;
     let prevTime = store.getState().currentTime;
     let prevActive = store.getState().activeFeature;
+    // HB3-9: the edit-handles layer is gated on 編集 mode, so a mode change (View↔Edit↔
+    // Add) must trigger a redraw — otherwise entering 編集 with a feature already selected
+    // would not draw its handles until some other tracked input changed (教訓 5.5).
+    let prevRedrawMode = store.getState().mode;
     let prevDisplay = store.getState().displayControl;
     let prevAreaThreshold =
       store.getState().projectSettings.areaLabelOccupancyThreshold;
@@ -754,6 +834,7 @@ export function App(): JSX.Element {
         s.domain === prevDomain &&
         s.currentTime === prevTime &&
         s.activeFeature === prevActive &&
+        s.mode === prevRedrawMode &&
         s.displayControl === prevDisplay &&
         areaThreshold === prevAreaThreshold &&
         gridSpacing === prevGridSpacing &&
@@ -765,6 +846,7 @@ export function App(): JSX.Element {
       prevDomain = s.domain;
       prevTime = s.currentTime;
       prevActive = s.activeFeature;
+      prevRedrawMode = s.mode;
       prevDisplay = s.displayControl;
       prevAreaThreshold = areaThreshold;
       prevGridSpacing = gridSpacing;
@@ -786,6 +868,11 @@ export function App(): JSX.Element {
       ports.dispose();
       rendererRef.current = null;
       cameraInputRef.current = null;
+      // HB3-9: drop the render-observation hook so a remount re-installs a fresh one
+      // bound to the new renderer (no stale closure over the disposed host).
+      if (e2eWindow !== null && '__E2E__' in e2eWindow) {
+        delete (e2eWindow as { __E2E__?: unknown }).__E2E__;
+      }
     };
   }, [store]);
 

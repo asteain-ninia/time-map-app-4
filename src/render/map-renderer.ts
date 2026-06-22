@@ -113,6 +113,35 @@ export interface GridLinePrimitive {
   readonly wrap?: boolean;
 }
 
+/**
+ * An EDIT HANDLE marker (FR-87 / HB3-9): a vertex or edge-midpoint grab target for
+ * the SELECTED feature, drawn at a CONSTANT on-screen size (FR-17 — `radiusPx` is
+ * never multiplied by zoom, exactly like a {@link PointPrimitive}). It is a distinct
+ * primitive KIND (not reused as a point) so the editing overlay reads as its own
+ * layer and a behavioural E2E can count "handle" primitives separately from feature
+ * points (観測フック __E2E__: primitive 種別カウント handle|label|preview|shape).
+ *
+ * `shape` distinguishes a VERTEX handle (move / delete target) from an EDGE-midpoint
+ * handle (add-a-new-vertex target, FR-87); the renderer draws the two differently
+ * (filled disc vs hollow square) so the user can tell them apart, but the size is the
+ * SAME screen-fixed source as every other marker (教訓 5.30 単一サイズ源).
+ */
+export interface HandlePrimitive {
+  readonly kind: 'handle';
+  /** World position (vertex coordinate / edge midpoint); transformed each frame. */
+  readonly at: WorldPoint;
+  /** Constant on-screen radius in CSS pixels (NOT derived from zoom, FR-17). */
+  readonly radiusPx: number;
+  /** Fill color for the handle marker. */
+  readonly fill: string;
+  /** Outline color for the handle marker (so it reads on any base color). */
+  readonly stroke: string;
+  /** Outline width in CSS px (screen-fixed, FR-17). */
+  readonly strokeWidthPx: number;
+  /** Which structural element this handle targets (FR-87). */
+  readonly handleKind: 'vertex' | 'edge';
+}
+
 /** A text label anchored at a world point, drawn at a constant on-screen font px (FR-17). */
 export interface LabelPrimitive {
   readonly kind: 'label';
@@ -153,6 +182,7 @@ export type DrawPrimitive =
   | PolygonPrimitive
   | PolygonShapePrimitive
   | GridLinePrimitive
+  | HandlePrimitive
   | LabelPrimitive
   | BaseMapPrimitive;
 

@@ -46,6 +46,7 @@ export {
   type PolygonPrimitive,
   type PolygonShapePrimitive,
   type GridLinePrimitive,
+  type HandlePrimitive,
   type LabelPrimitive,
   type BaseMapPrimitive,
   type HitTestResult,
@@ -156,6 +157,15 @@ export {
   DEFAULT_ADD_STYLE,
   buildAddPrimitives,
 } from './add-batch';
+
+// U24 → render: edit-handles drawing (FR-87 / FR-17, HB3-9). Pure: turns the domain
+// `computeHandles` output (world coords) into screen-fixed `HandlePrimitive`s for the
+// selected feature, composited only in 編集 mode with an active feature. No Canvas API.
+export {
+  type EditHandleStyle,
+  DEFAULT_EDIT_HANDLE_STYLE,
+  buildEditHandlePrimitives,
+} from './edit-handles-layer';
 
 // U26: knife-tool provisional drawing (FR-90 薄オーバーレイ＋対象面強調 / FR-78 分断線
 // 仮表示 / FR-92 + FR-17 ズーム非依存固定円). Pure: turns the knife session state +

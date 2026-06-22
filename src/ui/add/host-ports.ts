@@ -84,6 +84,54 @@ export interface CreateAddHostPortsOptions {
    * a recomputed estimate, so the hook and the draw cannot drift (教訓 5.29).
    */
   readonly onVisibleFeatureCount?: (count: number) => void;
+  /**
+   * Return the EDIT-HANDLE primitives to composite over the committed features THIS
+   * frame (HB3-9 / FR-87). The composition root computes them from
+   * `computeHandles(activeFeature, vertexStore)` (domain) → `buildEditHandlePrimitives`
+   * (render) ONLY when in 編集 mode with an active feature, and returns an empty array
+   * otherwise. Read on EVERY composite so the handles re-project against the live
+   * camera and stay screen-fixed (FR-17) while the feature's fill scales with zoom; a
+   * selection / time / domain / display change re-runs the getter on the next redraw
+   * (教訓 5.5). Defaults to none when absent (legacy callers / pre-mount). The handles
+   * draw ABOVE the committed features but UNDER the tool overlay (FR-78 仮表示 stays on
+   * top), matching the back-to-front layer contract.
+   */
+  readonly editHandles?: () => readonly DrawPrimitive[];
+  /**
+   * Notified after every composite with a summary of the frame actually drawn THIS
+   * paint (HB3-9 観測フック). The composition root mirrors it into the `window.__E2E__`
+   * render-observation hook so a BEHAVIOURAL E2E (real pointer events) can assert the
+   * frame's primitive content — e.g. that selecting a face in 編集 mode produced
+   * `handle` primitives, that a live tool draft produced `preview` (overlay) primitives,
+   * and the per-kind counts. It reflects EXACTLY the primitives passed to
+   * `renderer.drawBatch` (never a recomputed estimate), so the hook and the pixels
+   * cannot drift (教訓 5.29). Holds NO truth — a pure mirror of the drawn frame.
+   */
+  readonly onFrameComposed?: (summary: FrameSummary) => void;
+}
+
+/**
+ * A per-frame render summary for the HB3-9 `__E2E__` observation hook: the count of each
+ * primitive KIND actually drawn this paint, plus a convenience `preview` count (the tool
+ * overlay primitives = FR-78 仮表示 / knife / add draft) and whether any live preview is
+ * present. Kept renderer-independent (plain counts), so a behavioural E2E reads it the
+ * same way regardless of backend.
+ */
+export interface FrameSummary {
+  /** Edit-handle primitives drawn this frame (HB3-9 vertex / edge handles). */
+  readonly handle: number;
+  /** Label primitives drawn this frame (FR-86 ラベル). */
+  readonly label: number;
+  /** Polygon-shape primitives drawn this frame (面情報 fills). */
+  readonly shape: number;
+  /** Point primitives drawn this frame (点情報 markers). */
+  readonly point: number;
+  /** Line primitives drawn this frame (線情報 polylines). */
+  readonly line: number;
+  /** Tool-overlay (仮表示 / preview) primitives drawn this frame (add / knife draft). */
+  readonly preview: number;
+  /** True iff any live preview (tool overlay) primitive is present this frame. */
+  readonly hasLivePreview: boolean;
 }
 
 export interface AddHostPorts {
@@ -178,6 +226,12 @@ export interface FrameInputs {
   readonly committed: readonly EvaluatedFeature[];
   /** The current tool-overlay primitives (FR-78 provisional add / knife). */
   readonly overlay: readonly DrawPrimitive[];
+  /**
+   * The edit-handle primitives for the active feature (HB3-9 / FR-87), composited
+   * ABOVE the committed features and UNDER the {@link overlay}. Empty when not editing
+   * / no active feature. Defaults to none.
+   */
+  readonly editHandles?: readonly DrawPrimitive[];
   /** The camera + viewport the grid / committed features are projected with. */
   readonly camera: Camera;
   readonly viewport: Viewport;
@@ -241,6 +295,10 @@ export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
     primitives.push(...built.primitives);
     visibleCount = built.visibleCount;
   }
+  // HB3-9: the active feature's edit handles draw ABOVE the committed features (so a
+  // handle sits on top of the shape it edits) but UNDER the tool overlay (FR-78 仮表示
+  // / knife stays on top). Empty when not editing / no active feature.
+  if (inputs.editHandles !== undefined) primitives.push(...inputs.editHandles);
   primitives.push(...inputs.overlay);
   return { primitives, visibleCount };
 }
@@ -321,12 +379,58 @@ export function createAddHostPorts(
       baseImage,
       committed,
       overlay,
+      // HB3-9: the active feature's edit handles, recomputed fresh per frame so they
+      // re-project against the live camera and stay screen-fixed (FR-17). Empty when
+      // not editing / no active feature (the getter returns []).
+      editHandles: options.editHandles?.() ?? [],
       camera,
       viewport,
       thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
       grid: options.gridStyle?.() ?? DEFAULT_GRID_STYLE,
     });
     renderer.drawBatch({ primitives });
+    // HB3-9 観測フック: summarise the frame ACTUALLY drawn (per-kind primitive counts +
+    // the tool-overlay/preview count) so a behavioural E2E can assert handles appear on
+    // selection, a tool draft shows a live preview, etc. Counted over the SAME array
+    // passed to drawBatch (no recomputed estimate, 教訓 5.29); `preview` is the overlay
+    // primitive count (FR-78 仮表示), which the per-kind counts above also include.
+    if (options.onFrameComposed !== undefined) {
+      let handle = 0;
+      let label = 0;
+      let shape = 0;
+      let point = 0;
+      let line = 0;
+      for (const p of primitives) {
+        switch (p.kind) {
+          case 'handle':
+            handle += 1;
+            break;
+          case 'label':
+            label += 1;
+            break;
+          case 'shape':
+            shape += 1;
+            break;
+          case 'point':
+            point += 1;
+            break;
+          case 'line':
+            line += 1;
+            break;
+          default:
+            break;
+        }
+      }
+      options.onFrameComposed({
+        handle,
+        label,
+        shape,
+        point,
+        line,
+        preview: overlay.length,
+        hasLivePreview: overlay.length > 0,
+      });
+    }
     // HB-14 観測フック: publish how many committed features survived the period-aware
     // view clip THIS frame. The count comes from the SAME `selectVisibleFeatures`
     // pass `buildFeaturePrimitivesWithVisible` already ran to build the primitives —
