@@ -30,9 +30,12 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { EditProposal, ProcessResult } from '../../domain/consistency/index';
+import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
 import type { AffiliationSnapshot } from '../../domain/editing/apply-proposal';
 
+import { buildReparentHighlight } from '../../render/reaffiliation-batch';
+import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
@@ -52,8 +55,38 @@ import {
 /** Pointer client-coords → world (U17, same renderer inverse the click path uses). */
 export type ScreenToWorld = (clientX: number, clientY: number) => WorldCoordinate;
 
-/** Feature id under a world point (host drawn-area hit-test). null = miss. */
+/**
+ * Feature id under a world point (host LEAF hit-test). null = miss. HB3-16: this resolves
+ * an INDIVIDUAL leaf via `leafAtPoint` (not the drawn aggregate) so a child inside an
+ * aggregate is pickable, AND so two siblings of the SAME aggregate resolve to DISTINCT ids
+ * — the root of HB3-15(b)「後から選択が消える」 (both siblings used to resolve to the one
+ * parent aggregate id, so the second pick toggled the first back off).
+ */
 export type FeatureAtPoint = (point: WorldCoordinate) => FeatureId | null;
+
+/**
+ * Resolve a chosen feature's leaf shape at the reparent anchor time (host live-lookup
+ * `leafShapeAt`), or undefined when it is absent / not a leaf. Used to highlight the picked
+ * target + new parent on the map (HB3-15(c)) so an undrawn leaf inside an aggregate is
+ * visible.
+ */
+export type ResolveLeafShape = (featureId: FeatureId) => GeoMultiPolygon | undefined;
+
+/**
+ * The render sink the reparent target-highlight primitives are pushed into (U17). Mirrors
+ * the knife `KnifeDrawSink` — the host shares the single tool-overlay slot (reparent /
+ * knife / merge are mutually exclusive, so only one feeds it at a time).
+ */
+export interface ReparentDrawSink {
+  drawHighlight(primitives: readonly DrawPrimitive[]): void;
+}
+
+/** A no-op draw sink (for hosts / tests that have not mounted a renderer yet). */
+export const NO_REPARENT_DRAW_SINK: ReparentDrawSink = {
+  drawHighlight() {
+    /* nothing to draw into yet */
+  },
+};
 
 export interface ReparentToolControllerProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -65,8 +98,12 @@ export interface ReparentToolControllerProps<S> {
   readonly anchorTime: ResolveAnchorTime;
   /** Pointer client-coords → world (U17). */
   readonly screenToWorld: ScreenToWorld;
-  /** Feature id under a world point (host hit-test). */
+  /** Feature id under a world point (host LEAF hit-test, HB3-16). */
   readonly featureAtPoint: FeatureAtPoint;
+  /** Resolve a target / new-parent id → its leaf shape for the on-map highlight (HB3-15(c)). */
+  readonly resolveLeafShape?: ResolveLeafShape | undefined;
+  /** The reparent target-highlight render sink (U17, HB3-15(c)). Defaults to a no-op. */
+  readonly drawSink?: ReparentDrawSink | undefined;
   /** Forward camera-only events (wheel + non-left pointer) to the live dispatcher. */
   readonly mapCameraInput?: MapCameraInput | undefined;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the target. */
@@ -90,6 +127,8 @@ export function ReparentToolController<S>(
     props;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
+  const resolveLeafShape = props.resolveLeafShape;
+  const drawSink = props.drawSink ?? NO_REPARENT_DRAW_SINK;
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
@@ -132,6 +171,28 @@ export function ReparentToolController<S>(
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [reparent.flow, reparent.cancel]);
+
+  // --- HB3-15(c): feed the target + new-parent highlight to the render sink on every
+  // selection change. Each id's leaf shape is resolved through the SAME live-lookup the
+  // commit uses (`leafShapeAt`), so what highlights == what is committed (単一真実源).
+  // Because HB3-16 lets a leaf INSIDE an aggregate be picked (it is not drawn standalone),
+  // this is the user's only on-map feedback that an undrawn leaf was chosen as the target /
+  // destination — without it the prior 「描画されていないものが選ばれる」regression would
+  // return. The target and new parent draw in DISTINCT tool-specific colours so the two
+  // roles read apart. An idle / empty selection builds `[]` so the highlight vanishes on
+  // every reset path (教訓 5.2 / 5.18). targetId/newParentId are the reactive drivers;
+  // anchorTime/domain are read at call time inside resolveLeafShape (教訓 5.6).
+  useEffect(() => {
+    const targetShape =
+      resolveLeafShape && reparent.targetId !== null
+        ? resolveLeafShape(reparent.targetId)
+        : undefined;
+    const newParentShape =
+      resolveLeafShape && reparent.newParentId !== null
+        ? resolveLeafShape(reparent.newParentId)
+        : undefined;
+    drawSink.drawHighlight(buildReparentHighlight({ targetShape, newParentShape }));
+  }, [reparent.targetId, reparent.newParentId, resolveLeafShape, drawSink]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and feeds it to
   // the hook (first = target, second = new parent). The overlay never steals other

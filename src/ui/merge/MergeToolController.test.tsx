@@ -39,14 +39,19 @@ import {
   createLiveMergeBinding,
   type DomainRoot,
 } from '../consistency-binding';
-import { featuresAt, verticesAt } from '../live-lookup';
+import { featuresAt, verticesAt, leafShapeAt } from '../live-lookup';
 import { createSharedIdMint } from '../App';
 import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
+
+import type { DrawPrimitive } from '../../render/map-renderer';
+import { DEFAULT_MERGE_TARGET_STYLE } from '../../render/reaffiliation-batch';
 
 import {
   MergeToolController,
   type ScreenToWorld,
   type FeatureAtPoint,
+  type MergeDrawSink,
+  type ResolveLeafShape,
 } from './MergeToolController';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -114,6 +119,8 @@ const screenToWorld: ScreenToWorld = (clientX, clientY) => ({ lon: clientX, lat:
 
 interface Harness {
   readonly store: StoreApi<SessionStore<DomainRoot>>;
+  /** The LAST highlight batch the controller pushed to the render sink (HB3-15(c)). */
+  readonly lastHighlight: () => readonly DrawPrimitive[];
   readonly unmount: () => void;
 }
 
@@ -147,12 +154,25 @@ function mountMerge(): Harness {
   const resolveFeatures = () => featuresAt(store.getState().domain, store.getState().currentTime);
   const resolveStore = () => verticesAt(store.getState().domain, store.getState().currentTime);
 
-  // A click inside [0,2]² → leaf-a; inside [2,4]×[0,2] → leaf-b; else miss.
+  // A click inside [0,2]² → leaf-a; inside [2,4]×[0,2] → leaf-b; else miss. HB3-16: this
+  // mirrors the live `leafAtPoint` port — an INDIVIDUAL leaf is resolved per click.
   const featureAtPoint: FeatureAtPoint = (p) => {
     if (p.lat < 0 || p.lat > 2) return null;
     if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
     if (p.lon > 2 && p.lon <= 4) return asFeatureId('leaf-b');
     return null;
+  };
+
+  // HB3-15(c): the live leaf-shape resolver (the SAME live-lookup the App bootstrap uses).
+  const resolveLeafShape: ResolveLeafShape = (id) =>
+    leafShapeAt(store.getState().domain, store.getState().currentTime, id) ?? undefined;
+
+  // Capture the highlight batch the controller pushes on every selection change.
+  let highlight: readonly DrawPrimitive[] = [];
+  const drawSink: MergeDrawSink = {
+    drawHighlight(primitives): void {
+      highlight = primitives;
+    },
   };
 
   // On commit, record the committed project back into the store (the SAME single
@@ -175,11 +195,13 @@ function mountMerge(): Harness {
       anchorTime={() => store.getState().currentTime}
       screenToWorld={screenToWorld}
       featureAtPoint={featureAtPoint}
+      resolveLeafShape={resolveLeafShape}
+      drawSink={drawSink}
       onCommitted={onCommitted}
     />,
   );
 
-  return { store, unmount: utils.unmount };
+  return { store, lastHighlight: () => highlight, unmount: utils.unmount };
 }
 
 function activateMerge(store: StoreApi<SessionStore<DomainRoot>>): void {
@@ -233,6 +255,29 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
     clickInput(1, 1); // remove leaf-a
     expect(screen.getByTestId('merge-target-count').textContent).toBe('0');
     expect(screen.getByTestId('merge-confirm')).toBeDisabled();
+    h.unmount();
+  });
+
+  it('toggled targets render a tool-specific highlight; clearing empties it (HB3-15(c))', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    // No targets yet → an empty highlight frame (教訓 5.18).
+    expect(h.lastHighlight()).toEqual([]);
+
+    // Toggle both adjacent leaves: each picked LEAF (HB3-16) gets an emphasis shape in the
+    // merge tool colour, so the user SEES the chosen targets even when aggregated.
+    clickInput(1, 1); // leaf-a
+    clickInput(3, 1); // leaf-b
+    const shapes = h.lastHighlight().filter((p) => p.kind === 'shape');
+    expect(shapes).toHaveLength(2);
+    for (const s of shapes) {
+      expect(s.kind).toBe('shape');
+      if (s.kind === 'shape') expect(s.fill).toBe(DEFAULT_MERGE_TARGET_STYLE.fill);
+    }
+
+    // Untoggling one leaf drops its highlight (single truth: highlight == selection).
+    clickInput(1, 1); // remove leaf-a
+    expect(h.lastHighlight().filter((p) => p.kind === 'shape')).toHaveLength(1);
     h.unmount();
   });
 

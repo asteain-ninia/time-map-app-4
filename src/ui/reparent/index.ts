@@ -24,7 +24,10 @@ export { REPARENT_STRINGS } from './strings';
 
 export {
   ReparentToolController,
+  NO_REPARENT_DRAW_SINK,
   type ReparentToolControllerProps,
   type ScreenToWorld,
   type FeatureAtPoint,
+  type ResolveLeafShape,
+  type ReparentDrawSink,
 } from './ReparentToolController';

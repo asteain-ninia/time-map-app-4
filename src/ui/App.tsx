@@ -68,9 +68,9 @@ import {
   KnifeToolController,
   type KnifeDrawSink,
 } from './knife/index';
-import { MergeToolController } from './merge/index';
+import { MergeToolController, type MergeDrawSink } from './merge/index';
 import './merge/merge.css';
-import { ReparentToolController } from './reparent/index';
+import { ReparentToolController, type ReparentDrawSink } from './reparent/index';
 import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
@@ -97,7 +97,7 @@ import {
 } from '../domain/command/history';
 import type { Command } from '../domain/command/index';
 import { COMMAND_ID } from './shell/commands';
-import { featuresAt, verticesAt, leafShapeAt } from './live-lookup';
+import { featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
@@ -1050,6 +1050,28 @@ export function App(): JSX.Element {
     }),
     [],
   );
+  // HB3-15(c): the merge / reparent target-highlight sinks. They share the renderer's
+  // SINGLE tool-overlay slot (drawKnife) — knife / merge / reparent are mutually exclusive
+  // tools, so only one ever feeds it at a time, and an idle/empty selection pushes `[]` so
+  // the highlight clears on every reset path (教訓 5.2 / 5.18). Each reads the live renderer
+  // through the ref, degrading to a no-op before the map mounts (the same late-binding
+  // pattern drawSink / knifeDrawSink use).
+  const mergeDrawSink: MergeDrawSink = useMemo(
+    () => ({
+      drawHighlight(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawKnife(primitives);
+      },
+    }),
+    [],
+  );
+  const reparentDrawSink: ReparentDrawSink = useMemo(
+    () => ({
+      drawHighlight(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawKnife(primitives);
+      },
+    }),
+    [],
+  );
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1340,8 +1362,6 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        () => store.getState().displayControl,
-        () => rendererRef.current?.readCamera(),
       ),
     [store, sharedMint],
   );
@@ -1358,8 +1378,6 @@ export function App(): JSX.Element {
       createReparentBootstrap(
         () => store.getState().domain,
         () => store.getState().currentTime,
-        () => store.getState().displayControl,
-        () => rendererRef.current?.readCamera(),
       ),
     [store],
   );
@@ -1784,6 +1802,8 @@ export function App(): JSX.Element {
               anchorTime={() => store.getState().currentTime}
               screenToWorld={screenToWorld}
               featureAtPoint={mergeBootstrap.featureAtPoint}
+              resolveLeafShape={mergeBootstrap.resolveLeafShape}
+              drawSink={mergeDrawSink}
               mapCameraInput={mapCameraInput}
               onCommitted={onMergeCommitted}
               onConflicts={onMergeConflicts}
@@ -1801,6 +1821,8 @@ export function App(): JSX.Element {
               anchorTime={() => store.getState().currentTime}
               screenToWorld={screenToWorld}
               featureAtPoint={reparentBootstrap.featureAtPoint}
+              resolveLeafShape={reparentBootstrap.resolveLeafShape}
+              drawSink={reparentDrawSink}
               mapCameraInput={mapCameraInput}
               onCommitted={onReparentCommitted}
               onConflicts={onReparentConflicts}
@@ -2345,6 +2367,8 @@ interface MergeBootstrap<S> {
   readonly resolveFeatures: MergeResolveFeatures;
   readonly resolveStore: MergeResolveStore;
   readonly featureAtPoint: MergeFeatureAtPoint;
+  /** Resolve a target id → its leaf shape at the current time (HB3-15(c) highlight). */
+  readonly resolveLeafShape: (featureId: FeatureId) => GeoMultiPolygon | undefined;
   readonly startProcess: StartMergeProcess<S>;
   /** Build the U35 apply-resolutions adapter bound to ONE paused merge proposal. */
   readonly applyResolutionsFor: (
@@ -2356,8 +2380,6 @@ function createMergeBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
-  getDisplayControl: () => DisplayControlInput,
-  getWrap: () => KnifeWrapFrame,
 ): MergeBootstrap<DomainRoot> {
   // Ids minted through the SAME shared minter the add / knife bootstraps use (finding
   // 3): one generator + a project-wide reservation set, so a merge-minted id (the new
@@ -2376,20 +2398,19 @@ function createMergeBootstrap(
   // 検証 and U13 spatial detection can never disagree (二重真実源を作らない, 教訓 5.29).
   const resolveFeatures: MergeResolveFeatures = () => featuresAt(getRoot(), getTime());
   const resolveStore: MergeResolveStore = () => verticesAt(getRoot(), getTime());
-  // 対象探索は描画解決と同じ単一真実源: route through `drawnAreaAt` — the SAME
-  // display-control-resolved drawn-area set the renderer / main hit-test / knife pick —
-  // so a body click resolves to the feature the user SEES (honouring 集約表示 + the
-  // renderer's ±360° wrap turns). Read at call time (教訓 5.6 / 5.29).
+  // HB3-16: 結合の対象探索は INDIVIDUAL LEAF を拾う `leafAtPoint`. 結合は末端 leaf のみを
+  // たたみ込む操作なので、集約表示中(N=0)に集約体の下に隠れた子 leaf も直接ターゲットに
+  // できなければならない (DECISIONS HB3-16). `drawnAreaAt` は描画されている集約体 id を返す
+  // ため、(a) 個別 leaf が選べず、(b) 同じ集約に属する兄弟 A,B が両方とも同一の集約 id へ
+  // 解決して2回目クリックで1回目が toggle off される「後から選択が消える」HB3-15(b) を生む。
+  // `leafAtPoint` は各 leaf を別 id へ解決するので両症状が解消する。描画されていない leaf を
+  // 選ぶ違和感(旧 bughunt の懸念)は HB3-15(c) のツール専用ハイライト(resolveLeafShape →
+  // buildMergeHighlight)で「選んだ leaf が地図上に見える」ことで解消する(両方セットで実装)。
+  // 単一真実源: leafAtPoint と下の resolveLeafShape は同じ live-lookup を使う (教訓 5.6/5.29)。
   const featureAtPoint: MergeFeatureAtPoint = (point): FeatureId | null =>
-    drawnAreaAt(
-      {
-        root: getRoot(),
-        time: getTime(),
-        displayControl: getDisplayControl(),
-        wrap: getWrap(),
-      },
-      point,
-    );
+    leafAtPoint(getRoot(), getTime(), point);
+  const resolveLeafShape = (featureId: FeatureId): GeoMultiPolygon | undefined =>
+    leafShapeAt(getRoot(), getTime(), featureId) ?? undefined;
 
   // U44 — the LIVE U13 binding for merge. The proposal is ALREADY a U13
   // EditProposal<MergeSnapshot> (toMergeEditProposal ran in the hook), so the swap is
@@ -2409,6 +2430,7 @@ function createMergeBootstrap(
     resolveFeatures,
     resolveStore,
     featureAtPoint,
+    resolveLeafShape,
     startProcess,
     applyResolutionsFor,
   };
@@ -2426,6 +2448,8 @@ import type { AffiliationSnapshot } from '../domain/editing/apply-proposal';
 interface ReparentBootstrap<S> {
   readonly resolveFeatures: ReparentResolveFeatures;
   readonly featureAtPoint: ReparentFeatureAtPoint;
+  /** Resolve a target / new-parent id → its leaf shape at the current time (HB3-15(c)). */
+  readonly resolveLeafShape: (featureId: FeatureId) => GeoMultiPolygon | undefined;
   readonly startProcess: StartAffiliationProcess<S>;
   /** Build the U35 apply-resolutions adapter bound to ONE paused reparent proposal. */
   readonly applyResolutionsFor: (
@@ -2436,8 +2460,6 @@ interface ReparentBootstrap<S> {
 function createReparentBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
-  getDisplayControl: () => DisplayControlInput,
-  getWrap: () => KnifeWrapFrame,
 ): ReparentBootstrap<DomainRoot> {
   // LIVE live-lookup ports (P0-B): the features effective at the CURRENT time, read at
   // call time so a load / time move / edit is reflected without a stale capture (教訓
@@ -2447,21 +2469,18 @@ function createReparentBootstrap(
   // 教訓 5.29). No id ports: the existing-parent reparent mints nothing (aggregates are
   // shapeless, FR-35; a `create` decision would mint inside buildAffiliationProposal).
   const resolveFeatures: ReparentResolveFeatures = () => featuresAt(getRoot(), getTime());
-  // 対象/上位探索は描画解決と同じ単一真実源: route through `drawnAreaAt` — the SAME
-  // display-control-resolved drawn-area set the renderer / main hit-test / knife / merge
-  // pick — so a body click resolves to the feature the user SEES (honouring 集約表示 +
-  // the renderer's ±360° wrap turns). Read at call time (教訓 5.6 / 5.29). This lets the
-  // user pick a deeply-nested face AND a different ancestor ring as the new parent.
+  // HB3-16: 所属変更の対象/上位探索も INDIVIDUAL LEAF を拾う `leafAtPoint` (DECISIONS HB3-16).
+  // 集約表示中(N=0)に集約体の下に隠れた個別 leaf を直接ターゲット/新上位に選べる必要がある。
+  // `drawnAreaAt` だと描画されている集約体 id を返すため、同じ集約に属する兄弟 A,B を続けて
+  // 選ぶと両方が同一 id へ解決し、2回目クリックが pick の same-id ルールで1回目を toggle off
+  // してしまう = HB3-15(b)「後から選択が消える」の同一親解決バグ。`leafAtPoint` は各 leaf を
+  // 別 id へ解決するのでこれが解消する(別の上位領域へ移す操作が成立)。描画されていない leaf を
+  // 選ぶ違和感は HB3-15(c) のツール専用ハイライト(resolveLeafShape → buildReparentHighlight)
+  // で見えるようにすることで解消(両方セットで実装)。単一真実源 (教訓 5.6 / 5.29)。
   const featureAtPoint: ReparentFeatureAtPoint = (point): FeatureId | null =>
-    drawnAreaAt(
-      {
-        root: getRoot(),
-        time: getTime(),
-        displayControl: getDisplayControl(),
-        wrap: getWrap(),
-      },
-      point,
-    );
+    leafAtPoint(getRoot(), getTime(), point);
+  const resolveLeafShape = (featureId: FeatureId): GeoMultiPolygon | undefined =>
+    leafShapeAt(getRoot(), getTime(), featureId) ?? undefined;
 
   // U44 — the LIVE U13 binding for reparent. The proposal is ALREADY a U13
   // EditProposal<AffiliationSnapshot> (toAffiliationEditProposal ran in the hook), so the
@@ -2472,5 +2491,5 @@ function createReparentBootstrap(
     proposal: EditProposal<AffiliationSnapshot>,
   ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
 
-  return { resolveFeatures, featureAtPoint, startProcess, applyResolutionsFor };
+  return { resolveFeatures, featureAtPoint, resolveLeafShape, startProcess, applyResolutionsFor };
 }

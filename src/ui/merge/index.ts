@@ -24,7 +24,10 @@ export { MERGE_STRINGS } from './strings';
 
 export {
   MergeToolController,
+  NO_MERGE_DRAW_SINK,
   type MergeToolControllerProps,
   type ScreenToWorld,
   type FeatureAtPoint,
+  type ResolveLeafShape,
+  type MergeDrawSink,
 } from './MergeToolController';

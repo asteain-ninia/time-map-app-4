@@ -38,13 +38,21 @@ import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../st
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { createLiveAffiliationBinding, type DomainRoot } from '../consistency-binding';
-import { featuresAt } from '../live-lookup';
+import { featuresAt, leafShapeAt } from '../live-lookup';
 import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
+
+import type { DrawPrimitive } from '../../render/map-renderer';
+import {
+  DEFAULT_REPARENT_PARENT_STYLE,
+  DEFAULT_REPARENT_TARGET_STYLE,
+} from '../../render/reaffiliation-batch';
 
 import {
   ReparentToolController,
   type ScreenToWorld,
   type FeatureAtPoint,
+  type ReparentDrawSink,
+  type ResolveLeafShape,
 } from './ReparentToolController';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -112,6 +120,8 @@ const screenToWorld: ScreenToWorld = (clientX, clientY) => ({ lon: clientX, lat:
 
 interface Harness {
   readonly store: StoreApi<SessionStore<DomainRoot>>;
+  /** The LAST highlight batch the controller pushed to the render sink (HB3-15(c)). */
+  readonly lastHighlight: () => readonly DrawPrimitive[];
   readonly unmount: () => void;
 }
 
@@ -132,12 +142,26 @@ function mountReparent(): Harness {
 
   const resolveFeatures = () => featuresAt(store.getState().domain, store.getState().currentTime);
 
-  // A click inside [0,2]² → leaf-a; inside [4,6]×[0,2] → leaf-b; else miss.
+  // A click inside [0,2]² → leaf-a; inside [4,6]×[0,2] → leaf-b; else miss. HB3-16: this
+  // mirrors the live `leafAtPoint` port — an INDIVIDUAL leaf is resolved per click, so two
+  // siblings resolve to DISTINCT ids (the fix for HB3-15(b)).
   const featureAtPoint: FeatureAtPoint = (p) => {
     if (p.lat < 0 || p.lat > 2) return null;
     if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
     if (p.lon >= 4 && p.lon <= 6) return asFeatureId('leaf-b');
     return null;
+  };
+
+  // HB3-15(c): the live leaf-shape resolver (the SAME live-lookup the App bootstrap uses).
+  const resolveLeafShape: ResolveLeafShape = (id) =>
+    leafShapeAt(store.getState().domain, store.getState().currentTime, id) ?? undefined;
+
+  // Capture the highlight batch the controller pushes on every selection change.
+  let highlight: readonly DrawPrimitive[] = [];
+  const drawSink: ReparentDrawSink = {
+    drawHighlight(primitives): void {
+      highlight = primitives;
+    },
   };
 
   // On commit, record the committed project back into the store (the SAME single
@@ -158,11 +182,13 @@ function mountReparent(): Harness {
       anchorTime={() => store.getState().currentTime}
       screenToWorld={screenToWorld}
       featureAtPoint={featureAtPoint}
+      resolveLeafShape={resolveLeafShape}
+      drawSink={drawSink}
       onCommitted={onCommitted}
     />,
   );
 
-  return { store, unmount: utils.unmount };
+  return { store, lastHighlight: () => highlight, unmount: utils.unmount };
 }
 
 function activateReparent(store: StoreApi<SessionStore<DomainRoot>>): void {
@@ -232,6 +258,50 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     clickInput(1, 1); // click leaf-a again → cleared, back to pick-target
     expect(screen.getByTestId('reparent-target').textContent).toBe('');
     expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
+    h.unmount();
+  });
+
+  it('picking sibling A then a different sibling B keeps BOTH (HB3-15(b) 後から選択が消えない)', () => {
+    // HB3-15(b): the symptom was that selecting one feature then a DIFFERENT one as the
+    // reparent target dropped the first. The root cause was the drawn-AGGREGATE hit-test
+    // resolving both siblings to the SAME parent id, so pick()'s same-id rule toggled the
+    // first back off. With per-leaf resolution the two clicks return DISTINCT ids, so the
+    // first stays as the target and the second becomes the new parent — both survive.
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1); // leaf-a → target
+    clickInput(5, 1); // leaf-b (a DISTINCT id) → new parent
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
+    // Neither selection was dropped, so confirm is enabled (legal new parent).
+    expect(screen.getByTestId('reparent-confirm')).not.toBeDisabled();
+    h.unmount();
+  });
+
+  it('the picked target + new parent render in DISTINCT tool-specific colours (HB3-15(c))', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    // No selection yet → empty highlight frame (教訓 5.18).
+    expect(h.lastHighlight()).toEqual([]);
+
+    // Pick the target: ONE highlight shape in the reparent TARGET colour.
+    clickInput(1, 1); // leaf-a
+    let shapes = h.lastHighlight().filter((p) => p.kind === 'shape');
+    expect(shapes).toHaveLength(1);
+    if (shapes[0]!.kind === 'shape') {
+      expect(shapes[0]!.stroke).toBe(DEFAULT_REPARENT_TARGET_STYLE.stroke);
+    }
+
+    // Pick the new parent: TWO highlight shapes, target then parent, in DISTINCT colours so
+    // the two roles read apart on the map.
+    clickInput(5, 1); // leaf-b
+    shapes = h.lastHighlight().filter((p) => p.kind === 'shape');
+    expect(shapes).toHaveLength(2);
+    if (shapes[0]!.kind === 'shape' && shapes[1]!.kind === 'shape') {
+      expect(shapes[0]!.stroke).toBe(DEFAULT_REPARENT_TARGET_STYLE.stroke);
+      expect(shapes[1]!.stroke).toBe(DEFAULT_REPARENT_PARENT_STYLE.stroke);
+      expect(shapes[0]!.stroke).not.toBe(shapes[1]!.stroke);
+    }
     h.unmount();
   });
 

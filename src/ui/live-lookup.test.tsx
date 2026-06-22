@@ -17,7 +17,12 @@ import { applyAddProposal } from '../domain/editing/apply-proposal';
 import { createEditProposal } from '../domain/consistency/index';
 import { timePointYear } from '../domain/time/time-point';
 import { createBasicAttributes, createColorInfo } from '../domain/attributes';
-import { createLeafFeature, type LeafFeature } from '../domain/feature';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  type AggregateFeature,
+  type LeafFeature,
+} from '../domain/feature';
 import { createShape, createTerritoryRing } from '../domain/ring';
 import { createVertex, type Vertex } from '../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
@@ -136,6 +141,55 @@ describe('live-lookup', () => {
     expect(leafAtPoint(root, timePointYear(1000), { lon: -179.5, lat: 1 })).toBe(a.feature.id);
     // Far from any replica → still null.
     expect(leafAtPoint(root, timePointYear(1000), { lon: 0, lat: 1 })).toBeNull();
+  });
+
+  // HB3-16 / HB3-15(b): leafAtPoint resolves an INDIVIDUAL child leaf even when those
+  // leaves are children of an AGGREGATE parent (so only the aggregate is "displayed" at
+  // N=0). This is the root the merge / reparent featureAtPoint ports now use (App.tsx),
+  // so a leaf inside an aggregate is pickable (HB3-16) AND two siblings of the SAME parent
+  // resolve to DISTINCT ids — the fix for HB3-15(b)「後から選択が消える」(routing through
+  // the drawn AGGREGATE id returned the parent for BOTH siblings, so the 2nd pick toggled
+  // the 1st back off). leafAtPoint ignores display-control by design (it tests leaf bodies
+  // directly), so the verdict is independent of whether an aggregate parent exists.
+  it('leafAtPoint picks the individual child leaf inside an aggregate; siblings → distinct ids', () => {
+    // Two edge-adjacent child leaves [0,2]² and [2,4]×[0,2] under one aggregate parent.
+    const a = squareLeaf('child-a', 'ca', 0, 0); // [0,2]×[0,2]
+    const b = squareLeaf('child-b', 'cb', 2, 0); // [2,4]×[0,2] — adjacent on x=2
+    const childA: LeafFeature = {
+      ...a.feature,
+      parentId: asFeatureId('agg'),
+    };
+    const childB: LeafFeature = {
+      ...b.feature,
+      parentId: asFeatureId('agg'),
+    };
+    const aggregate: AggregateFeature = createAggregateFeature(
+      asFeatureId('agg'),
+      createBasicAttributes('agg', 0, 0),
+      color,
+      [childA.id, childB.id],
+    );
+    let root = withLeaf(emptyProject(), { feature: childA, vertices: a.vertices }, 1000);
+    root = withLeaf(root, { feature: childB, vertices: b.vertices }, 1000);
+    // Add the (shapeless) aggregate parent to the SAME anchor's snapshot so the children
+    // genuinely have a present parent.
+    root = applyAddProposal(
+      root,
+      createEditProposal(aggregate.id, timePointYear(1000), {
+        feature: aggregate,
+        vertices: [],
+        sharedCandidateIds: new Map(),
+      }),
+    );
+
+    // A click inside child-a resolves to child-a (the individual leaf), NOT the aggregate.
+    const hitA = leafAtPoint(root, timePointYear(1000), { lon: 1, lat: 1 });
+    expect(hitA).toBe(childA.id);
+    expect(hitA).not.toBe(aggregate.id);
+    // A click inside child-b resolves to child-b — a DISTINCT id from child-a (HB3-15(b)).
+    const hitB = leafAtPoint(root, timePointYear(1000), { lon: 3, lat: 1 });
+    expect(hitB).toBe(childB.id);
+    expect(hitB).not.toBe(hitA);
   });
 
   it('leafShapeAt returns the resolved multipolygon of the leaf, undefined when absent', () => {

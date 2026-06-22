@@ -30,9 +30,12 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { EditProposal, ProcessResult } from '../../domain/consistency/index';
+import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
 import type { MergeSnapshot, MergeIdPorts } from '../../domain/merge/index';
 
+import { buildMergeHighlight } from '../../render/reaffiliation-batch';
+import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
@@ -53,8 +56,35 @@ import {
 /** Pointer client-coords → world (U17, same renderer inverse the click path uses). */
 export type ScreenToWorld = (clientX: number, clientY: number) => WorldCoordinate;
 
-/** Feature id under a world point (host drawn-area hit-test). null = miss. */
+/**
+ * Feature id under a world point (host LEAF hit-test). null = miss. HB3-16: this resolves
+ * an INDIVIDUAL leaf via `leafAtPoint` (not the drawn aggregate) so a child inside an
+ * aggregate is pickable as a merge target.
+ */
 export type FeatureAtPoint = (point: WorldCoordinate) => FeatureId | null;
+
+/**
+ * Resolve a chosen target's leaf shape at the merge anchor time (host live-lookup
+ * `leafShapeAt`), or undefined when it is absent / not a leaf. Used to highlight the
+ * picked leaf on the map (HB3-15(c)) so an undrawn leaf inside an aggregate is visible.
+ */
+export type ResolveLeafShape = (featureId: FeatureId) => GeoMultiPolygon | undefined;
+
+/**
+ * The render sink the merge target-highlight primitives are pushed into (U17). Mirrors the
+ * knife `KnifeDrawSink` — the host shares the single tool-overlay slot (merge / knife /
+ * reparent are mutually exclusive, so only one feeds it at a time).
+ */
+export interface MergeDrawSink {
+  drawHighlight(primitives: readonly DrawPrimitive[]): void;
+}
+
+/** A no-op draw sink (for hosts / tests that have not mounted a renderer yet). */
+export const NO_MERGE_DRAW_SINK: MergeDrawSink = {
+  drawHighlight() {
+    /* nothing to draw into yet */
+  },
+};
 
 export interface MergeToolControllerProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -70,8 +100,12 @@ export interface MergeToolControllerProps<S> {
   readonly anchorTime: ResolveAnchorTime;
   /** Pointer client-coords → world (U17). */
   readonly screenToWorld: ScreenToWorld;
-  /** Feature id under a world point (host hit-test). */
+  /** Feature id under a world point (host LEAF hit-test, HB3-16). */
   readonly featureAtPoint: FeatureAtPoint;
+  /** Resolve a target id → its leaf shape for the on-map highlight (HB3-15(c)). */
+  readonly resolveLeafShape?: ResolveLeafShape | undefined;
+  /** The merge target-highlight render sink (U17, HB3-15(c)). Defaults to a no-op. */
+  readonly drawSink?: MergeDrawSink | undefined;
   /** Forward camera-only events (wheel + non-left pointer) to the live dispatcher. */
   readonly mapCameraInput?: MapCameraInput | undefined;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the result. */
@@ -100,6 +134,8 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   } = props;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
+  const resolveLeafShape = props.resolveLeafShape;
+  const drawSink = props.drawSink ?? NO_MERGE_DRAW_SINK;
 
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
@@ -143,6 +179,22 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [merge.flow, merge.cancel]);
+
+  // --- HB3-15(c): feed the target highlight to the render sink on every selection change.
+  // Each toggled target's leaf shape is resolved through the SAME live-lookup the commit
+  // uses (`leafShapeAt`), so what highlights == what is committed (単一真実源). Because
+  // HB3-16 lets a leaf INSIDE an aggregate be picked (it is not drawn standalone), this is
+  // the user's only on-map feedback that an undrawn leaf was chosen — without it the prior
+  // 「描画されていないものが選ばれる」regression would return. An idle / empty selection
+  // builds `[]` so the highlight vanishes on every reset path (教訓 5.2 / 5.18) with no
+  // clearing code. targetIds is the reactive driver; anchorTime/domain are read at call
+  // time inside resolveLeafShape (教訓 5.6).
+  useEffect(() => {
+    const shapes = resolveLeafShape
+      ? merge.targetIds.map((id) => resolveLeafShape(id))
+      : [];
+    drawSink.drawHighlight(buildMergeHighlight({ targetShapes: shapes }));
+  }, [merge.targetIds, resolveLeafShape, drawSink]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and toggles it
   // into / out of the target set. The overlay never steals other input — the input
