@@ -22,6 +22,7 @@ import { createSessionStore } from './state/store';
 import { EDIT_MODE } from './state/session';
 import { AppShell } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
+import { TOOL_ID } from './shell/tools';
 import {
   DetailPanels,
   EMPTY_DETAIL_PANELS,
@@ -653,9 +654,14 @@ export function App(): JSX.Element {
       ringIdForVertex: (hit) =>
         ringIdForLeafVertex(editSnapshotCtx, hit.featureId, hit.vertexId),
       // A feature-body hit begins a WHOLE-FEATURE move (受け入れ基準2 / FR-88) ONLY when
-      // the body is the currently-selected active feature (a body click on a NON-active
-      // feature stays plain U22 selection — first click selects, a later drag moves).
+      // (HB3-8 ユーザー確定=排他) the 地物移動 tool is active AND the body is the currently-
+      // selected active feature. Gating on EDIT_MOVE makes vertex-edit and feature-move
+      // MUTUALLY EXCLUSIVE: in 頂点編集 a body drag no longer moves the whole feature
+      // (ハンドル経由の頂点移動のみ) — that misfire (頂点編集中に地物移動が暴発) is the bug.
+      // A body click on a non-active feature, or in any non-move tool, stays plain U22
+      // selection (first click selects; switch to 地物移動 then drag to move).
       featureMoveAllowed: (hit) =>
+        store.getState().activeTool === TOOL_ID.EditMove &&
         store.getState().selection.activeFeature === hit.featureId,
       anchorTime: () => store.getState().currentTime,
       currentState: () => store.getState().domain,
