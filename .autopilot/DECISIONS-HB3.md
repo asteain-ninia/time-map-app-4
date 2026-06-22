@@ -30,22 +30,24 @@
 
 前セッションが生成不具合で中断。後続セッションが `../../`(!WORKSPACE) のログを精読して引き継ぎ。ユーザー指示=「AskUser禁止・自己判断で じゃんじゃん自走」。攻略順は**「広く先に＋ナイフ(HB3-5/19 n-way)は後で本格対応」**（ユーザー選択）。
 
-**完了・コミット済**
-- HB3-20: slide/snap ライトパス結線（前セッションの未コミット作業を全ゲート緑で確定 / `ebf0c10`）。
+**コミット済（全ゲート緑・デグレ無し / vitest 249 files・~2916 tests）**
+- HB3-20 `ebf0c10`: slide/snap ライトパス結線（前セッション未コミット作業を確定）。
+- HB3-21 `fbf575a`: 点追加の確定ボタン「点を確定」（line/face/point 分岐）＋回帰。
+- HB3-1/2 `2caf96c`: 経度プリセット明示「太平洋中心（経度180°）」等＋シフトが相対である可視ヒント（HB3-1 暫定）。
+- HB3-28 `0986c74`: 「イベント一覧」→「歴史アンカー一覧（年表）」＋各一覧キャプション。
+- HB3-3 `4851c91`: タイムライン年のみ表示維持＋未指定 tooltip（granularityNote）＋回帰。
+- HB3-6/18 `ca96655`: ナイフ対象選択を `setActiveFeature` へ結線（強調＋選択色）＋回帰。
+- HB3-17 `9281abe`: 分割確定後にツール解除（選択保持）でデシンク解消。
+- HB3-26 `61efb29`: 面ラベルを可読色＋ハロー描画（LabelPrimitive.halo? 追加）＋回帰。
+- HB3-7/22/25 `a65018e`: 確定ボタン下部中央統一＋年操作バー一行（CSS）。
+- HB3-11 `2289489`: 地物詳細パネルを結線（既存 DetailPanels をマウント、文書本体は空スタブ）。
 
-**実装済（バッチ確定待ち／非描画・ベースライン非影響）**
-- HB3-21: 点追加の確定ボタンを「点を確定」に（line/face/point で分岐）。
-- HB3-2: 経度プリセットを「太平洋中心（経度180°）」「本初子午線中心（経度0°）」へ明示。
-- HB3-1[暫定]: 経度シフトは相対ジョグである旨を明示（中心経度は数値readoutが真値、と注記）。既定どおり相対維持。
-- HB3-28: 「イベント一覧」→「歴史アンカー一覧（年表）」へ改称＋各一覧に説明キャプション。
-- HB3-3: タイムライン現在値は粒度尊重（年のみ→「YYYY年」、捏造しない）を維持し、未指定である旨の tooltip を追加。
-- HB3-6/18: ナイフ対象選択時に `setActiveFeature` を結線（強調＋選択色）。
-- HB3-17: 分割確定後に `setActiveTool(null)`（選択は保持）でツール状態とUI表示のデシンク解消。
-- 各項目に回帰テスト追加（point label / granularityNote / knife target promote 等）。
-
-**次バッチ（描画/CSS＝視覚回帰ベースライン再生成とまとめて実施）**
-- HB3-26 ラベル可読性（ハロー＋読みやすい色）/ HB3-13 既定透過(0.7) / HB3-7/22 確定ボタン下部中央統一（追加ツールを編集ツールに合わせる）/ HB3-25 年操作バー一行 / HB3-23 グリッド0.1°。
-
-**後続バッチ（App.tsx 合成ルート系・逐次）**: HB3-11 詳細パネル / HB3-14 属性編集 / HB3-15/16 リーフピック / HB3-8 頂点編集↔移動の排他。
-**electron**: HB3-24 autoHideMenuBar。
-**大物（専用ユニット）**: HB3-5/19 ナイフ n-way / HB3-10 共有頂点溶接 / HB3-12 存在期間の単一真実源。
+**残り（調査済・継続用メモ）**
+- **HB3-14 属性編集**: 適用機構は既存（`createLiveEditBinding`＝App の `editBinding` ／ `applyEditProposal`／consistency）。要実装＝`buildSidebarContent` に `editDispatch` を渡す。dispatch は PropertyEditIntent から「新 attributes/color を持つ FeatureSnapshot の EditProposal」を作り `editBinding.startProcess`→`recordCommit`。FeatureSnapshot 組立は `src/ui/map/edit-session-snapshot.ts` の buildEditSnapshot を参考に属性のみ版を作る。現状は throwing stub `editNotWired`（SidebarContent.tsx:100）。
+- **HB3-15/16 リーフピック**: `live-hit-test.ts:418` + `depth-focus.ts:100` が兄弟を同一親へ解決。`leafAtPoint`（集約中でも個別リーフを拾う）を追加し、結合/所属変更/集約時のピックに使う。HB3-15(b) 後から選択が消えるのは hit-test 同一親解決バグ＝修正。ツール専用ハイライト色も。
+- **HB3-8 排他**: `edit-session-adapter.ts:170-178`×`App.tsx`（body hit→featureMoveAllowed=true）。**ユーザー確定=別ツールで排他**（頂点編集中は本体ドラッグで地物全体を動かさない／移動は別ツール）。
+- **HB3-24 electron**: main の `autoHideMenuBar:true`（Alt表示）。`src/main/`（or electron entry）。
+- **HB3-23 グリッド0.1°**: GridSettingsPanel に 1°/0.5°/0.1° 追加＋小数ラベル＋経線上限＋性能。FR-13改訂。
+- **HB3-13 既定透過0.7**: `activeColor`(feature-layer)は opacity 非適用＝feature 塗りは現状不透明。data-model 透過の配管（ColorInfo.fillOpacity→FeatureStyle→withOpacity 適用）＋新規既定0.7＋**視覚ベースライン再生成**が必要。要注意（DEFAULT_OPACITY を変えると load 既定/テストに波及）。
+- **E2E スイープ**: 各 HB3 に behavioral E2E（実ドラッグ/クリックで結果アサート）＋テキストアサート E2E の追従（タブ改称・ボタン文言）＋**視覚回帰ベースライン再生成**（HB3-26 ハロー/HB3-7/22/25 配置で screenshot が変わる）。`npm run test:e2e`。
+- **大物（専用ユニット）**: HB3-5/19 ナイフ n-way（k+1片）／HB3-10 共有頂点溶接／HB3-12 存在期間の単一真実源。
