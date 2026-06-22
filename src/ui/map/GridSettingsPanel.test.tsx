@@ -37,11 +37,11 @@ describe('GridSettingsPanel (FR-13 / 受け入れ基準 9)', () => {
     expect(onToggle).toHaveBeenCalledWith(false);
   });
 
-  it('offers exactly 5/10/15/30 as spacing options', () => {
+  it('offers 0.1/0.5/1/5/10/15/30 as spacing options (HB3-23 fine spacings)', () => {
     renderPanel();
     const select = screen.getByLabelText('グリッド間隔') as HTMLSelectElement;
     const values = Array.from(select.options).map((o) => o.value);
-    expect(values).toEqual(['5', '10', '15', '30']);
+    expect(values).toEqual(['0.1', '0.5', '1', '5', '10', '15', '30']);
   });
 
   it('changing spacing reports a coerced GridSpacingDeg', () => {

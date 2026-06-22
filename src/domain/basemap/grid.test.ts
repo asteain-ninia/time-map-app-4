@@ -19,22 +19,27 @@ import {
   longitudeEmphasis,
 } from './grid';
 
-describe('grid spacings (FR-13: 5/10/15/30, default 10)', () => {
-  it('lists exactly 5/10/15/30', () => {
-    expect(GRID_SPACINGS_DEG).toEqual([5, 10, 15, 30]);
+describe('grid spacings (FR-13 改訂 HB3-23: 0.1/0.5/1/5/10/15/30, default 10)', () => {
+  it('lists 0.1/0.5/1/5/10/15/30 ascending (HB3-23 fine spacings added)', () => {
+    expect(GRID_SPACINGS_DEG).toEqual([0.1, 0.5, 1, 5, 10, 15, 30]);
   });
 
   it('default is 10', () => {
     expect(DEFAULT_GRID_SPACING_DEG).toBe(10);
   });
 
-  it('isGridSpacing accepts allowed, rejects others', () => {
+  it('isGridSpacing accepts allowed (incl. fine spacings), rejects others', () => {
     expect(isGridSpacing(10)).toBe(true);
+    expect(isGridSpacing(0.1)).toBe(true);
+    expect(isGridSpacing(0.5)).toBe(true);
+    expect(isGridSpacing(1)).toBe(true);
     expect(isGridSpacing(7)).toBe(false);
+    expect(isGridSpacing(0.2)).toBe(false);
   });
 
   it('coerceGridSpacing keeps allowed, defaults others to 10', () => {
     expect(coerceGridSpacing(30)).toBe(30);
+    expect(coerceGridSpacing(0.1)).toBe(0.1);
     expect(coerceGridSpacing(7)).toBe(10);
   });
 });
@@ -144,5 +149,29 @@ describe('label normalization (受け入れ基準 13)', () => {
     expect(formatLongitudeLabel(190)).toBe('170°W');
     // continuous 200° → -160°W.
     expect(formatLongitudeLabel(200)).toBe('160°W');
+  });
+
+  it('HB3-23: sub-degree spacings render decimal labels (whole degrees stay integer)', () => {
+    // 0.1°/0.5° grids label tenths; the trailing .0 is dropped for whole degrees.
+    expect(formatLatitudeLabel(0.1)).toBe('0.1°N');
+    expect(formatLatitudeLabel(-0.5)).toBe('0.5°S');
+    expect(formatLatitudeLabel(10.5)).toBe('10.5°N');
+    expect(formatLatitudeLabel(10)).toBe('10°N'); // whole degree → no decimal
+    expect(formatLongitudeLabel(0.1)).toBe('0.1°E');
+    expect(formatLongitudeLabel(-0.1)).toBe('0.1°W');
+    expect(formatLongitudeLabel(179.9)).toBe('179.9°E');
+    expect(formatLongitudeLabel(1)).toBe('1°E'); // whole degree → no decimal
+    // Float accumulation (0.1+0.1+0.1) must not leak into the label.
+    expect(formatLongitudeLabel(0.1 + 0.1 + 0.1)).toBe('0.3°E');
+  });
+
+  it('HB3-23: a 0.1° meridian span enumerates sub-degree meridians (bounded by cap)', () => {
+    const lons = graticuleLongitudes(0, 1, 0.1);
+    // 0,0.1,…,1.0 = 11 meridians, all within the cap.
+    expect(lons.length).toBe(11);
+    expect(lons.length).toBeLessThanOrEqual(MAX_GRATICULE_MERIDIANS);
+    expect(formatLongitudeLabel(lons[1]!)).toBe('0.1°E');
+    // A far-zoomed-out 0.1° grid exceeds the cap → degrades to no grid (not a storm).
+    expect(graticuleLongitudes(-180, 180, 0.1)).toEqual([]);
   });
 });

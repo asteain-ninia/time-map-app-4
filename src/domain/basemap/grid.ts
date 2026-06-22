@@ -21,11 +21,16 @@
 import { wrapLonDeg } from '../geo/longitude';
 
 /**
- * The selectable grid spacings in degrees (spec FR-13: 5 / 10 / 15 / 30, default
- * 10). Frozen tuple so the UI <select> and validation share one list (教訓 5.19:
- * the option set is a constant, not scattered literals).
+ * The selectable grid spacings in degrees (spec FR-13, 改訂 HB3-23: 0.1 / 0.5 / 1 / 5 /
+ * 10 / 15 / 30, default 10). HB3-23 adds the fine spacings (1° / 0.5° / 0.1°) for
+ * detail work; the 0.1° spacing draws sub-degree labels (`formatLongitudeLabel` /
+ * `formatLatitudeLabel` are decimal-aware) and is bounded per frame by
+ * {@link MAX_GRATICULE_MERIDIANS} (a far-zoomed-out 0.1° grid degrades to no grid
+ * rather than a meridian storm). Ascending so the UI <select> reads fine→coarse.
+ * Frozen tuple so the UI <select> and validation share one list (教訓 5.19: the
+ * option set is a constant, not scattered literals).
  */
-export const GRID_SPACINGS_DEG = [5, 10, 15, 30] as const;
+export const GRID_SPACINGS_DEG = [0.1, 0.5, 1, 5, 10, 15, 30] as const;
 
 export type GridSpacingDeg = (typeof GRID_SPACINGS_DEG)[number];
 
@@ -189,15 +194,33 @@ export function graticuleLongitudes(
 // --- Label TEXT (U05-normalized, 受け入れ基準 13) ---------------------------
 
 /**
- * Format a parallel's label (e.g. "10°N", "30°S", "0°"). Latitude is never wrapped
- * (no latitude periodicity, FR-05). The equator reads "0°"; N/S suffix otherwise.
- * Rounded to the nearest integer degree (grid spacings are whole degrees).
+ * Round a degree value to the finest grid resolution (0.1°, HB3-23) so float
+ * accumulation in the graticule loop (`lat += spacing`) never leaks into a label
+ * (e.g. 0.30000000000000004 → 0.3). Whole-degree spacings round to themselves.
+ */
+function roundToGridDeg(deg: number): number {
+  return Math.round(deg * 10) / 10;
+}
+
+/**
+ * Format an absolute degree magnitude, dropping a trailing `.0` so whole degrees read
+ * as integers ("10") and tenths read with one decimal ("0.1", "10.5") — HB3-23.
+ */
+function formatDegMagnitude(absDeg: number): string {
+  const s = absDeg.toFixed(1);
+  return s.endsWith('.0') ? s.slice(0, -2) : s;
+}
+
+/**
+ * Format a parallel's label (e.g. "10°N", "30°S", "0°", and at 0.1° spacing "0.1°N").
+ * Latitude is never wrapped (no latitude periodicity, FR-05). The equator reads "0°";
+ * N/S suffix otherwise. Decimal-aware (HB3-23): sub-degree spacings keep one decimal.
  */
 export function formatLatitudeLabel(lat: number): string {
-  const rounded = Math.round(lat);
-  if (rounded === 0) return '0°';
-  const hemi = rounded > 0 ? 'N' : 'S';
-  return `${Math.abs(rounded)}°${hemi}`;
+  const r = roundToGridDeg(lat);
+  if (r === 0) return '0°';
+  const hemi = r > 0 ? 'N' : 'S';
+  return `${formatDegMagnitude(Math.abs(r))}°${hemi}`;
 }
 
 /**
@@ -210,11 +233,10 @@ export function formatLatitudeLabel(lat: number): string {
  *   - east → "…°E", west → "…°W".
  */
 export function formatLongitudeLabel(lon: number): string {
-  const rep = wrapLonDeg(lon);
-  const rounded = Math.round(rep);
-  if (rounded === 0) return '0°';
+  const rep = roundToGridDeg(wrapLonDeg(lon));
+  if (rep === 0) return '0°';
   // wrapLonDeg yields −180 for the antimeridian; label it 180° without hemisphere.
-  if (rounded === -180 || rounded === 180) return '180°';
-  const hemi = rounded > 0 ? 'E' : 'W';
-  return `${Math.abs(rounded)}°${hemi}`;
+  if (rep === -180 || rep === 180) return '180°';
+  const hemi = rep > 0 ? 'E' : 'W';
+  return `${formatDegMagnitude(Math.abs(rep))}°${hemi}`;
 }

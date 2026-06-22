@@ -13,7 +13,7 @@
 //     display, the new-project initialisation (U39) and the test expectations all
 //     read the same value (受け入れ基準 4 / 5).
 
-import { isGridSpacing } from '../../domain/basemap/grid';
+import { isGridSpacing, GRID_SPACINGS_DEG } from '../../domain/basemap/grid';
 import {
   OCCUPANCY_MAX as DOMAIN_OCCUPANCY_MAX,
   OCCUPANCY_MIN as DOMAIN_OCCUPANCY_MIN,
@@ -101,7 +101,9 @@ export const REJECTION = {
   timelineOrder: 'タイムラインの最小年は最大年より小さくしてください。',
   equatorNonPositive: '赤道長は 0 より大きい値を入力してください。',
   flatteningRange: '扁平率は 0 以上 1 未満の値を入力してください。',
-  gridSpacing: 'グリッド間隔は 5・10・15・30 度のいずれかを選んでください。',
+  // Derived from the single GRID_SPACINGS_DEG list (HB3-23) so the message can never
+  // drift from the actual allowed spacings when the list changes.
+  gridSpacing: `グリッド間隔は ${GRID_SPACINGS_DEG.join('・')} 度のいずれかを選んでください。`,
   gridOpacityRange: 'グリッド不透明度は 0 から 1 の範囲で入力してください。',
   occupancyRange: '面情報ラベル表示閾値は 0 から 1 の範囲で入力してください。',
   fpsRange: `描画更新頻度は ${String(MIN_RENDER_FPS)} から ${String(MAX_RENDER_FPS)} FPS の範囲で入力してください。`,
