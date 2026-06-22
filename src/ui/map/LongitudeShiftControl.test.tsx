@@ -88,9 +88,11 @@ describe('LongitudeShiftControl', () => {
     render(
       <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={onPreset} />,
     );
-    await user.click(screen.getByText('本初子午線中心'));
+    // HB3-2: labels now name the centered longitude (e.g.「太平洋中心（経度180°）」),
+    // so match on the stable prefix rather than the full parenthetical text.
+    await user.click(screen.getByText(/^本初子午線中心/));
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.PrimeMeridian);
-    await user.click(screen.getByText('太平洋中心'));
+    await user.click(screen.getByText(/^太平洋中心/));
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.Pacific);
   });
 });

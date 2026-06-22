@@ -32,9 +32,11 @@ export interface LongitudeShiftControlProps {
 /** Slider半幅: the slider runs [−SHIFT_SLIDER_RANGE, +SHIFT_SLIDER_RANGE]. */
 const SHIFT_SLIDER_RANGE = 10;
 
+// HB3-2: name the longitude each preset centers on, so 「太平洋中心」 reads as the
+// 経度180° preset (the user wondered what "太平洋" meant — clarify it inline).
 const PRESET_LABELS: Readonly<Record<CenterLonPreset, string>> = {
-  [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心',
-  [CENTER_LON_PRESET.Pacific]: '太平洋中心',
+  [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心（経度0°）',
+  [CENTER_LON_PRESET.Pacific]: '太平洋中心（経度180°）',
 };
 
 export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.Element {
@@ -58,6 +60,14 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
       <div className="longitude-shift__readout" data-testid="center-lon-readout">
         中心経度: {formatCenterLonDisplay(centerLon)}
       </div>
+
+      {/* HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on
+          release), NOT an absolute position — that is why the thumb does not track
+          the center. The真値 is the numeric readout above. Say so explicitly so the
+          fixed thumb no longer reads as "out of sync with the actual value". */}
+      <p className="longitude-shift__hint" data-testid="longitude-shift-hint">
+        スライダーは相対シフト（離すと中央へ戻ります）。現在の中心経度は上の数値が真値です。
+      </p>
 
       <input
         type="range"
