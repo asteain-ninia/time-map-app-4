@@ -1082,4 +1082,47 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     store.getState().clearDisplayFocus();
     expect(store.getState().displayControl).toBe(ref);
   });
+
+  // bughunt3 regression: resetToDomain (LOAD / NEW) must PRESERVE the displayControl
+  // reference when the focus is already cleared. The display pipeline's shared memos
+  // (resolveDisplayFor / buildCommittedFeatures) and the Canvas redraw subscription
+  // key on displayControl IDENTITY (reference == value). Before the fix the reset path
+  // unconditionally spread `{ ...dc, focus: NO_DISPLAY_FOCUS }`, minting a value-EQUAL
+  // but reference-NEW object on every load (even at the default globalDepth=0 / no
+  // focus), busting every memo and forcing a redundant pipeline run + redraw although
+  // depth and geometry were unchanged.
+  it('resetToDomain preserves the displayControl reference when focus is already cleared (bughunt3 identity)', () => {
+    const store = makeStore();
+    // A typical load baseline: a global depth set, no individual focus.
+    store.getState().setGlobalDepth(2);
+    const ref = store.getState().displayControl; // focus already NO_DISPLAY_FOCUS
+    expect(ref.focus.originId).toBeNull();
+
+    store.getState().resetToDomain({ tag: 'loaded' });
+
+    const after = store.getState().displayControl;
+    // SAME reference: a load with no active focus is a memo HIT, not a new generation.
+    expect(after).toBe(ref);
+    // Global depth N (project-independent) preserved; focus still cleared.
+    expect(after.globalDepth).toBe(2);
+    expect(after.focus.originId).toBeNull();
+  });
+
+  it('resetToDomain still clears a STALE focus (and swaps the reference) on load', () => {
+    const store = makeStore();
+    store.getState().setGlobalDepth(2);
+    store.getState().setDisplayFocus({ originId: f('A'), depth: 4, emphasize: true });
+    const ref = store.getState().displayControl; // focus is ACTIVE here
+
+    store.getState().resetToDomain({ tag: 'loaded' });
+
+    const after = store.getState().displayControl;
+    // A real change (stale per-feature focus dropped) must swap the reference...
+    expect(after).not.toBe(ref);
+    // ...with the focus cleared and the global depth preserved (教訓 5.13).
+    expect(after.focus.originId).toBeNull();
+    expect(after.focus.depth).toBe(0);
+    expect(after.focus.emphasize).toBe(false);
+    expect(after.globalDepth).toBe(2);
+  });
 });

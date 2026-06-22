@@ -358,6 +358,37 @@ function selectionPatch(selection: SelectionState): SelectionPatch {
 }
 
 /**
+ * The display-control for a LOAD / NEW: the global depth N is project-independent
+ * UI state and is intentionally KEPT, while the per-feature focus M (which points at
+ * a specific feature of the OLD project) is cleared to {@link NO_DISPLAY_FOCUS}
+ * (FR-42 / FR-43, 教訓 5.13).
+ *
+ * IDENTITY STABILITY (bughunt3 finding: displayControl identity churn on load): the
+ * display pipeline's shared memos (resolveDisplayFor / buildCommittedFeatures) and
+ * the Canvas redraw subscription all key on `displayControl` IDENTITY, treating a
+ * reference match as a value match (the slice is swapped wholesale, never mutated).
+ * The depth/focus SETTERS already preserve the reference on a no-op write to honour
+ * that invariant; the reset paths must do the SAME. When the current focus is ALREADY
+ * cleared (the common case — a fresh load with no active focus, e.g. globalDepth=0
+ * default), spreading `{ ...dc, focus: NO_DISPLAY_FOCUS }` would mint a value-EQUAL
+ * but reference-NEW object, busting every memo on each load and forcing a redundant
+ * pipeline re-run + redraw even though depth and geometry are unchanged. So we return
+ * the EXISTING reference unchanged when focus is already none, and only allocate a new
+ * object when a stale focus actually has to be cleared (教訓 5.29: 単一真実源 = 単一
+ * COMPUTATION — an unchanged input must not look like a new generation).
+ */
+function clearedFocusControl(dc: DisplayControl): DisplayControl {
+  if (
+    dc.focus.originId === NO_DISPLAY_FOCUS.originId &&
+    dc.focus.depth === NO_DISPLAY_FOCUS.depth &&
+    dc.focus.emphasize === NO_DISPLAY_FOCUS.emphasize
+  ) {
+    return dc;
+  }
+  return { ...dc, focus: NO_DISPLAY_FOCUS };
+}
+
+/**
  * Adapt the store's injected {@link ExistenceResolver} to U22's
  * {@link revalidateForTime} existence port (教訓 5.34: the two layers meet at a
  * fixed contract, not by accident). The store still resolves NOTHING itself —
@@ -583,7 +614,11 @@ export function createSessionStore<S>(
         projectDirty: false,
         mode: EDIT_MODE.View,
         activeTool: null,
-        displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS },
+        // Keep the global depth N (project-independent) and clear only the per-feature
+        // focus M; preserve the displayControl REFERENCE when focus is already cleared
+        // so a load with no active focus does not bust the display memos (bughunt3 —
+        // see clearedFocusControl).
+        displayControl: clearedFocusControl(get().displayControl),
         ...selectionPatch(EMPTY_SELECTION),
       });
     },
@@ -951,7 +986,10 @@ export function createSessionStore<S>(
         domain: nextDomain,
         mode: EDIT_MODE.View,
         activeTool: null,
-        displayControl: { ...get().displayControl, focus: NO_DISPLAY_FOCUS },
+        // Identity-preserving focus clear (bughunt3): keep global depth N, preserve the
+        // displayControl reference when focus is already none so an atomic load with no
+        // active focus does not bust the display memos (see clearedFocusControl).
+        displayControl: clearedFocusControl(get().displayControl),
         // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }
