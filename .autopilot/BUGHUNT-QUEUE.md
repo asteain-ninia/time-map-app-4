@@ -1,8 +1,29 @@
 # 非ナイフ・バグ狩り 確定キュー (2026-06-24, 31エージェント workflow / 敵対的検証済)
 
-候補23件中 **18件を確定**(各候補を別エージェントが refute 試行→残存のみ)。重大度順。修正後に各行へ ✅+コミットを追記すること。
+## ✅ 全18件 決着済 (2026-06-24) — 17修正 + 1偽陽性
 
-> 出典 workflow: wou5lpqkk。本スレは proposal.ts クランプ(440cb06)まで完了。以下が次の波。
+| 領域 | 解決 | コミット/根拠 |
+| --- | --- | --- |
+| merge vertexRemap データ欠損 | 修正(test-first) | 750a673 |
+| file-ops auto-save未購読 + baseMapImage 0バイト | 修正 | 11130c5 |
+| HB3-12 存続期間: changeStart/setEnd/deleteAnchor 未配線 + startYear/endYear cosmetic | 修正(機能実装+E2E) | 278dba6 |
+| reparent: parentNone確定UI欠落 / vertexStore形状チェックskip / 拒否後pick stale-closure | 修正×3 | 5283f4f |
+| anchor-timeline: AnchorTimeBar軸スパン崩壊 / AnchorSectionキー再マウント | 修正×2 | 3a99071 |
+| conflict: 拒否フェーズ行き止まり | 修正 | 9b84f2d |
+| conflict: ミニマップ再ラウンド陳腐化 | 修正 | c0fe41a |
+| FR-52 マージ親/属性継承ダイアログ欠落 | 実装(+E2E) | 20395e3 |
+| undo後dirty残存 / withLimit(FR-74)未配線 | 修正×2 | 70cdd58 |
+| **#4 reparent競合の nextVertexId/nextRingId 未配線** | **偽陽性** | reparentはleaf形状不変→terminal-overlap検出が不変→mintを要するoverlap-trim解決に到達しない。修正案の`ids.nextVertexId`も該当スコープにidsなしで誤り(c0fe41a 調査報告) |
+
+チェックポイント: フル vitest **2992 passed** / e2e **74 passed** / typecheck=0 / lint=0（デグレなし）。各修正は敵対的検証(別subagent)で REAL を確認してから着手。
+
+---
+
+（以下は当初の確定リスト原文。各行の解決状況は上表を参照。）
+
+候補23件中 **18件を確定**(各候補を別エージェントが refute 試行→残存のみ)。重大度順。
+
+> 出典 workflow: wou5lpqkk。
 
 ## 1. [HIGH/data-loss] applyMergeProposal discards vertexRemap — shared boundary vertices become dangling after leaf-only merge
 - 領域: merge-weld

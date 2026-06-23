@@ -23,7 +23,10 @@
   - **HB3-12 存続期間編集を UI へ結線**(278dba6, behavioral E2E + スクショ)。changeStart/setEnd を新 AnchorIntervalEditIntent→dispatch から。
   - **バグハント workflow(31エージェント/敵対的検証)→確定18件を `.autopilot/BUGHUNT-QUEUE.md` へ**。早期修正2件: merge vertexRemap データ欠損(750a673, test-first)・file-ops auto-save未購読+baseMapImage 0バイト(11130c5)。
   - **D36 衛生スイープ完了**(挙動不変・独立6コミット): a6c1fb4/8570641/a86950a/20b45f7/(スクショ再現性)/306e1af。詳細は DECISIONS D36。
-  - **次アクション**: 非ナイフ確定キュー残（reparent/conflict/anchor-timeline/undo/FR-52 等）を重大度順に逐次修正（test-first・各フルゲート緑）。
+  - **非ナイフ確定キュー18件 完了**（test-first/敵対的検証・各バッチ独立コミット・主スレはオーケストレーターで背景subagentへ委譲）: reparent tool×3=parentNone確定UI/vertexStore形状チェック/拒否後pick(5283f4f) / anchor-timeline×2=軸スパン崩壊/AnchorSectionキー再マウント(3a99071) / conflict-retry 行き止まり(9b84f2d) / conflict-minimap 陳腐化(c0fe41a) / FR-52 マージ親・属性継承ダイアログ(20395e3) / undo-dirty+withLimit(70cdd58)。**#4「reparent競合の id 未配線」は偽陽性と確定**（reparent は leaf 形状を変えず terminal-overlap 検出が不変＝mint を要する overlap-trim 解決に到達しない；バグ狩りの修正案 `ids.nextVertexId` も該当スコープに `ids` なしで誤り）。HB3-12 が存続期間系3件、merge/file-ops が HIGH 3件を別途解消済＝**18件すべて決着（17修正+1偽陽性）**。
+  - **チェックポイント全緑（デグレなし）**: フル `npm run test`=**2992 passed** / フル `npm run test:e2e`=**74 passed (48.7m)** / typecheck=0 / lint=0。
+  - **衛生メモ（将来候補）**: `screenshots/__bughunt__/*.png`(160+) は探索 spec の `page.screenshot` 成果物で毎 e2e 実行ごとにバイトが変わる＝run-to-run チャーン源。視覚回帰 baseline ではない（behavioral アサーションは緑）。`screenshots/__bughunt__/` を gitignore する価値あり（今回はコミットせず revert でツリー清潔を維持）。
+  - **次アクション**: 確定キュー完遂につき、**新領域**（描画/Canvas2D・座標 vtransform・選択 hit-test・persistence 往復・U06 ブール演算・time/暦・性能）の**第2次バグハント workflow**を起動し triage→test-first 修正を継続（停止しない）。
 - 2026-06-23: **後継セッション（トークンループ病・治療後）— HB3継続 + 編集回帰根治**。前任ログは犠牲subagent経由で要約参照（病原体未摂取・`dad32df5`隔離厳守）。ユーザー指示=AskUser禁止・じゃんじゃん自走・いっぱいバグ直して未実装機能を実装。全e2e=**75 passed (9.0m)** で4コミットのe2e健全性を確認。コミット（全てローカル・緑ゲート確認）:
   - `1052f5f` chore: 未追跡WIP `e2e/human-bugs-3.spec.ts` の死コード(未使用helper)除去でゲート緑化＋治療handoff doc追跡。ベースライン vitest 250 files/2931 tests。
   - `8d1ce75` **[最重要] 編集モードのクリック選択回帰を根治**。前任が病に倒れる直前まで二分探索していた未解決バグ。`document.elementFromPoint` 計測で **HB3-1 経度シフトパネル(`.longitude-shift` ~526×174)が地図下半分を覆い `.map-area__overlay > *{pointer-events:auto}` でクリックを横取り**と特定。修正=パネルを `pointer-events:none`(コントロールのみauto)+`max-width:240px`。回帰E2E追加。全モードで地図クリックの横取りを解消。
