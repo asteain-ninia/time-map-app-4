@@ -5,6 +5,15 @@
 方針: ユーザーが起きるまで停止しない。各マイルストーンでgit commit（ローカルのみ、pushしない）。
 
 ## 進捗ログ（新しい順・先頭追記）
+- 2026-06-23: **後継セッション（トークンループ病・治療後）— HB3継続 + 編集回帰根治**。前任ログは犠牲subagent経由で要約参照（病原体未摂取・`dad32df5`隔離厳守）。ユーザー指示=AskUser禁止・じゃんじゃん自走・いっぱいバグ直して未実装機能を実装。全e2e=**75 passed (9.0m)** で4コミットのe2e健全性を確認。コミット（全てローカル・緑ゲート確認）:
+  - `1052f5f` chore: 未追跡WIP `e2e/human-bugs-3.spec.ts` の死コード(未使用helper)除去でゲート緑化＋治療handoff doc追跡。ベースライン vitest 250 files/2931 tests。
+  - `8d1ce75` **[最重要] 編集モードのクリック選択回帰を根治**。前任が病に倒れる直前まで二分探索していた未解決バグ。`document.elementFromPoint` 計測で **HB3-1 経度シフトパネル(`.longitude-shift` ~526×174)が地図下半分を覆い `.map-area__overlay > *{pointer-events:auto}` でクリックを横取り**と特定。修正=パネルを `pointer-events:none`(コントロールのみauto)+`max-width:240px`。回帰E2E追加。全モードで地図クリックの横取りを解消。
+  - `0a42894` fix(HB3-13): 新規地物の既定塗りを半透明(0.7)化＋描画へ透過適用(`committed-features.styleOf` で `withOpacity`)。視覚ベースライン再生成。
+  - `26a8b71` feat(HB3-23): グリッド間隔に 1°/0.5°/0.1° 追加(小数ラベル・経線上限degradeは1000据置・既定10°据置で視覚不変)。
+  - `a77f19b` test(HB3-14): 属性保存→永続化の behavioral E2E ロック。
+  - `8e31639` fix(HB3-14): 属性編集の編集対象錨を**現在時刻の錨へ自動既定**(`resolveAt` フォールバック)。「属性編集の保存が必ず失敗」(錨未選択ガード)の残存摩擦を根治＝地物選択→即名前変更→保存が手動の錨選択なしで通る。
+  - **未着手の大物（次セッション最優先候補）**: HB3-5/19 ナイフ n-way(k+1片)＝プラン確定済(`HB3-5-19-NWAY-PLAN.md`/`dd09bf9`)・**未実装**。現行2-wayは4回横断で「sideB=2飛び地を持つ1地物」を返す(probe確認＝有効だが束ねられ)。フルn-wayはsplit-geometry/proposal/apply/session/UI/型に跨る大物・高リスクで本セッションは安全側で延期。HB3-10共有頂点溶接 / HB3-12存在期間の単一真実源も大物(暫定・要確認)。
+  - **bughunt explorer 所見(参考・要triage)**: reparent後のconflict-modal残留/undo-count不整合、time月日 fwd∘back のgranularity昇格非恒等 等。多くは競合解決/granularity仕様と絡むノイズでクリーン再現未取得。
 - 2026-06-21: **HUMAN-BUGS 第2ラウンド確定処理（HB-5..HB-15）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0・デグレなし）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**204 files・2098 tests passed, exit 0**（前回 HB-1..4 確定の 202/2069 から +2 files/+29 tests・回帰なし＝HB-5..15 の修正/E2E ハーネス追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **43 passed・exit 0（skip 0）**（前回 24 → +19＝HB-5..15 の behavioral/visual E2E 追加 + 本ラウンド `e2e/coord-cluster.spec.ts` の2件）。
   - **スクショ再生成確認**: `npm run test:e2e` 前に `screenshots/app-shell.png` と `with-feature.png` を削除→ e2e 実行後に **両方が再生成されたことを確認**（共に 04:08 タイムスタンプ、app-shell.png=264073B / with-feature.png=260145B）。
   - **HB-5..HB-14 = 解決済（対応コミットは既存：`a4edd8d`=HB-14 / `d1bb17f`=HB-8,9 / `ea78e6a`=HB-5,10,11,12,13、座標クラスタ根本=`a4edd8d`+`4ad603c`）**。詳細・対応コミット・追加E2E は `.autopilot/HUMAN-BUGS-2.md` に [解決] で追記。
@@ -88,11 +97,13 @@ TypeScript strict + Electron + React18(UIシェル限定) + 自前Canvas2D(MapRe
 - [継続] 仕事が尽きたら隣接作業を探して継続
 
 ## 次のアクション
-IMPL自己駆動エンジン稼働中(2巡目・D20緩和ゲート): task wdbnw92v0 / run wf_af2ffda0-ddf / script tma4-impl-engine-wf_5563901e-9cb.js。(1巡目 wf_5563901e-9cb は11波28doneで停止→D20介入後に再起動)
-波ごとに「ready選定→実装→4レンズレビュー→収束修正→検証→units.json更新→commit」を最大30波ループ。
-- 完了通知時: doneCountを確認 → 残ユニットがあれば同スクリプトを新runで再起動して続行 → 全done(またはneeds-attentionで停止)なら CONVERGE へ。
-- 沈黙/異常終了時: Workflow({scriptPath:"...tma4-impl-engine-wf_5563901e-9cb.js", resumeFromRunId:"wf_af2ffda0-ddf"}) で再開(完了済みagentはキャッシュ)。停止していたら新runで再起動(残ユニットがあれば)。
-- 真実源は `git log` と units.json。
+**フェーズ=HUMAN-BUGS-3(HB3) 継続中**（IMPL/CONVERGE/QUALITY/HUMAN-BUGS(1,2)/BUGHUNT は完了済）。真実源は `git log`。HB3 の判断は `.autopilot/DECISIONS-HB3.md`、診断は `HUMAN-BUGS-3-DIAGNOSIS.md`。
+次セッションの優先順（上から）:
+1. **HB3-5/19 ナイフ n-way（k+1片）** ＝ HB3 最後の大物・フラッグシップ。プラン確定済 `.autopilot/HB3-5-19-NWAY-PLAN.md`（iterative-per-chord・G1〜G8）。現行2-wayは緑で動くが4回横断で「飛び地を束ねた1地物」を返す。split-geometry/proposal/apply-proposal/session/UI/型に跨る大物。**専用セッションで property test 先行・closed knife の2-way は温存(G7)・2横断(common)と4横断(new)を両方ロック**。
+2. **HB3-10 共有頂点溶接 / HB3-12 存在期間の単一真実源** ＝ 大物・暫定要確認（DECISIONS-HB3参照）。HB3-12 は「錨列を正本・属性年を導出表示専用」が推奨。
+3. **E2E 行動スイープ継続** ＝ HB3 各修正の behavioral E2E 追加（merge/reparent leaf-pick・knife target 等）。今セッションで HB3-14 を追加済。bughunt explorer 所見の triage（reparent undo/modal・time granularity）。
+- 各ユニット: 実装→多視点レビュー→**フルゲート緑(typecheck/lint/vitest/e2e・デグレ厳禁)**→commit(ローカルのみ・push禁止)。視覚spec(sidebar-property/ux-cluster)は当環境基準。
+- **病の防壁厳守**: 前任ログ(`.jsonl`)は直接 cat/grep/Read 禁止・必ず subagent 経由・`dad32df5` は読む/再開しない（`PROTOCOL.md`/`HANDOFF-2026-06-23.md`）。
 
 ## 注記
 - args が当環境で未配達のため、ユニット選定はエンジン内 Select エージェントが units.json+git から行う(argsに非依存)。
