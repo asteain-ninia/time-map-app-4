@@ -43,6 +43,27 @@ describe('panCameraTo', () => {
     expect(panCameraTo(ref, { x: 123, y: 456 }).zoom).toBe(BASE.zoom);
   });
 
+  it('clamps centerLat to +90 for a northward pan past the north pole (REGRESSION bughunt2)', () => {
+    // The bug: centerLat = camera.centerLat - dLat was UNCLAMPED. Latitude is NOT
+    // periodic (unlike the continuous-scalar centerLon), so a pan dragging far enough
+    // toward the pole pushed centerLat beyond +90°, scrolling the whole world
+    // off-screen with no recovery gesture. The result must be bounded to [−90, 90].
+    // Drag DOWN (origin y=0 → current y=600) at zoom 4 moves the center UP by 150°,
+    // so the unclamped center would be 5 + 150 = 155° — far past the pole.
+    const ref = refAt({ x: 400, y: 0 });
+    const next = panCameraTo(ref, { x: 400, y: 600 });
+    expect(next.centerLat).toBe(90);
+    expect(next.zoom).toBe(BASE.zoom);
+  });
+
+  it('clamps centerLat to -90 for a southward pan past the south pole (REGRESSION bughunt2)', () => {
+    // Drag UP (origin y=600 → current y=0) at zoom 4 moves the center DOWN by 150°,
+    // so the unclamped center would be 5 - 150 = -145°. Clamp → -90.
+    const ref = refAt({ x: 400, y: 600 });
+    const next = panCameraTo(ref, { x: 400, y: 0 });
+    expect(next.centerLat).toBe(-90);
+  });
+
   it('keeps centerLon a continuous scalar across the ±180° seam (R3)', () => {
     // Start near +175°, drag far enough that the continuous center exceeds +180.
     const camera: Camera = { centerLon: 175, centerLat: 0, zoom: 4 };

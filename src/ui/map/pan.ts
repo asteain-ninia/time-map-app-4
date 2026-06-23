@@ -20,6 +20,7 @@
 // that crosses the ±180° seam (受け入れ基準 1 末項).
 
 import {
+  clampLat,
   screenToWorld,
   type Camera,
   type ScreenPoint,
@@ -69,6 +70,12 @@ export function panCameraTo(ref: PanReference, current: ScreenPoint): Camera {
     // Subtract: dragging the pointer right (world moves right under finger)
     // moves the camera center left, so content follows the pointer.
     centerLon: camera.centerLon - dLon,
-    centerLat: camera.centerLat - dLat,
+    // Latitude is NOT periodic (unlike the continuous-scalar centerLon, which we
+    // never fold): a pan past the north/south pole would push centerLat beyond ±90
+    // and scroll the whole world off-screen with no recovery gesture. Bound it to
+    // the world's physical [−90, 90] via U17's `clampLat` (the single latitude
+    // clamp boundary, 単一真実源 with zoomAtCursor). Pan still never zooms; only the
+    // resulting center latitude is bounded.
+    centerLat: clampLat(camera.centerLat - dLat),
   };
 }

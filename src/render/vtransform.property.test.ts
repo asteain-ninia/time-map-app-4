@@ -6,7 +6,7 @@
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_ZOOM_RANGE } from './camera';
+import { DEFAULT_ZOOM_RANGE, WORLD_LAT_MAX_DEG, WORLD_LAT_MIN_DEG } from './camera';
 import {
   cameraArb,
   continuousLonArb,
@@ -104,8 +104,19 @@ describe('property: cursor-anchored zoom (受け入れ基準 2)', () => {
                 const next = zoomAtCursor(camera, vp, cursor, targetZoom);
                 const screenAfter = worldToScreen(worldBefore, next, vp);
                 // Tolerance scales with the (large) coordinate magnitudes involved.
+                // The longitude axis is a continuous (unbounded) scalar, so the
+                // cursor-anchored invariant holds unconditionally on x.
                 expect(screenAfter.x).toBeCloseTo(cursor.x, 2);
-                expect(screenAfter.y).toBeCloseTo(cursor.y, 2);
+                // Latitude is now bounded to the world's [−90, 90] (bughunt2 clampLat):
+                // at a small zoom the cursor can point at a world latitude beyond the
+                // pole, and keeping it under the cursor would require a center past ±90.
+                // The clamp deliberately wins there (a center past the pole scrolls the
+                // world permanently off-screen). The y-axis invariant therefore holds
+                // EXCEPT when the clamp engaged — i.e. when the new center sits strictly
+                // inside the latitude band. (The x invariant above is always asserted.)
+                if (next.centerLat > WORLD_LAT_MIN_DEG && next.centerLat < WORLD_LAT_MAX_DEG) {
+                  expect(screenAfter.y).toBeCloseTo(cursor.y, 2);
+                }
               },
             ),
             { numRuns: 15 },

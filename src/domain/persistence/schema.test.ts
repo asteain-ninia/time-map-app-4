@@ -122,6 +122,47 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
     expect(manifestSchema.safeParse(clone).success).toBe(false);
   });
 
+  it('rejects degenerate legacy geo params on settings.project.geo (silent area/distance zeroing defence)', () => {
+    // Regression (bug-hunt2): geoParamsSchema validated equatorKm/flattening only as
+    // bare finite numbers. The richer `ui` block guards its own copy, but `ui` is
+    // OPTIONAL — a manifest carrying a degenerate `settings.project.geo` and NO `ui`
+    // block passed parseManifest, reached deserializeGeo → createGeoParams, and made
+    // kmPerLatDeg = equatorKm/360 * (1 - flattening) collapse to 0, silently zeroing
+    // EVERY area/distance for the whole session. The schema must reject it at the
+    // load boundary, reusing the same ./settings-constraints predicates as the UI.
+    const manifest = serialize(richValidProject());
+
+    // equatorKm = 0 (non-positive equator → kmPerLatDeg = 0).
+    const zeroEquator = structuredClone(manifest);
+    zeroEquator.settings.project.geo.equatorKm = 0;
+    const zeroEquatorRes = manifestSchema.safeParse(zeroEquator);
+    expect(zeroEquatorRes.success).toBe(false);
+    if (!zeroEquatorRes.success) {
+      // The rejection is reported with a path at the offending field (教訓 5.26).
+      const hasEquatorPath = zeroEquatorRes.error.issues.some(
+        (issue) => issue.path[issue.path.length - 1] === 'equatorKm',
+      );
+      expect(hasEquatorPath).toBe(true);
+    }
+
+    // flattening = 1 (degenerate geodesy → kmPerLatDeg = equatorKm/360 * 0 = 0).
+    const degenerateFlattening = structuredClone(manifest);
+    degenerateFlattening.settings.project.geo.flattening = 1;
+    expect(manifestSchema.safeParse(degenerateFlattening).success).toBe(false);
+
+    // flattening < 0 (inverted geodesy) is likewise rejected.
+    const invertedFlattening = structuredClone(manifest);
+    invertedFlattening.settings.project.geo.flattening = -0.1;
+    expect(manifestSchema.safeParse(invertedFlattening).success).toBe(false);
+
+    // A valid geo block (Earth-ish) still passes — the guard is range-only, not a
+    // blanket reject of the legacy path.
+    const validGeo = structuredClone(manifest);
+    validGeo.settings.project.geo.equatorKm = 40000;
+    validGeo.settings.project.geo.flattening = 0.0034;
+    expect(manifestSchema.safeParse(validGeo).success).toBe(true);
+  });
+
   it('rejects a snapshot with duplicate vertex ids (last-write-wins collapse defence)', () => {
     // Regression (bug-hunt): anchorSnapshotSchema validated `vertices` as a plain
     // array with NO uniqueness refinement. deserializeSnapshot feeds it to

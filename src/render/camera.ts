@@ -138,3 +138,28 @@ export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): 
   if (zoom > safeMax) return safeMax;
   return zoom;
 }
+
+/** Inclusive latitude bounds: the world spans −90° (south pole) .. +90° (north pole). */
+export const WORLD_LAT_MIN_DEG = -90;
+export const WORLD_LAT_MAX_DEG = 90;
+
+/**
+ * Clamp a camera center latitude into the world's physical [−90, +90] range. Pure;
+ * returns the input unchanged when already in range.
+ *
+ * Unlike `centerLon` (a CONTINUOUS scalar with no bound — the seam wraps ±360°),
+ * latitude is NOT periodic: there is nothing above the north pole or below the
+ * south pole. `zoomAtCursor` and `panCameraTo` derive the new `centerLat` by
+ * adding an unbounded screen-offset/zoom term to the old center, so a zoom-at-the-
+ * top-edge near the pole or a northward pan past it can push `centerLat` beyond
+ * ±90. Such a center scrolls the whole world off-screen with no recovery gesture
+ * (every world latitude maps above/below the viewport), leaving a permanently
+ * blank canvas. This is the single clamp boundary both camera writers route the
+ * resulting latitude through, mirroring `clampZoom`'s role for zoom (病的入力の安全性).
+ * Zoom behaviour is unchanged — only the bounded center latitude is affected.
+ */
+export function clampLat(lat: number): number {
+  if (lat < WORLD_LAT_MIN_DEG) return WORLD_LAT_MIN_DEG;
+  if (lat > WORLD_LAT_MAX_DEG) return WORLD_LAT_MAX_DEG;
+  return lat;
+}

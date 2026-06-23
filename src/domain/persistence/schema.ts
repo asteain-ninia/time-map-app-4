@@ -397,13 +397,44 @@ export const featureHistorySchema = z
 
 // --- settings (FR-109: プロジェクト固有設定 + FR-110: アプリ全体設定) -------
 
-/** Geodesic params (FR-109: 赤道長・扁平率) — mirrors the U04 GeoParams. */
+/**
+ * Geodesic params (FR-109: 赤道長・扁平率) — mirrors the U04 GeoParams.
+ *
+ * SEMANTIC range enforcement (bug-hunt fix): the structural shape validates
+ * `equatorKm`/`flattening` only as bare finite numbers, which is NOT enough — a
+ * degenerate `equatorKm <= 0` or `flattening >= 1` (or `< 0`) makes the U04
+ * `kmPerLatDeg = equatorKm/360 * (1 - flattening)` collapse to 0 (or invert), so
+ * EVERY area/distance silently returns 0 for the whole session. The richer `ui`
+ * block already guards its own copy of these (uiProjectSettingsSchema.superRefine
+ * below), but that block is `.optional()`: a manifest carrying a degenerate
+ * `settings.project.geo` and no `ui` block passed straight through to
+ * deserializeGeo → createGeoParams. The range RULES are single-sourced in
+ * `./settings-constraints` (shared with the UI confirm path); we enforce the SAME
+ * predicates here so the legacy geo path can never disagree with the UI form, each
+ * failing field reported with its own `path` (教訓 5.26 拒否理由は path 付き).
+ */
 export const geoParamsSchema = z
   .object({
     equatorKm: finiteNumber,
     flattening: finiteNumber,
   })
-  .strict();
+  .strict()
+  .superRefine((geo, ctx) => {
+    if (!isValidEquatorKm(geo.equatorKm)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['equatorKm'],
+        message: 'equator length must be a finite positive km value',
+      });
+    }
+    if (!isValidFlattening(geo.flattening)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['flattening'],
+        message: 'flattening must be in [0, 1)',
+      });
+    }
+  });
 
 /** Project-scoped settings (FR-109). */
 export const projectSettingsSchema = z

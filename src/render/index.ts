@@ -18,7 +18,10 @@ export {
   DEFAULT_ZOOM_RANGE,
   WORLD_LON_SPAN_DEG,
   WORLD_LAT_SPAN_DEG,
+  WORLD_LAT_MIN_DEG,
+  WORLD_LAT_MAX_DEG,
   clampZoom,
+  clampLat,
 } from './camera';
 
 // Pure VTransform (renderer-independent; reusable by any backend).

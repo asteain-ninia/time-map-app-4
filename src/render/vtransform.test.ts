@@ -297,6 +297,54 @@ describe('zoomAtCursor (FR-08 cursor-anchored)', () => {
   });
 });
 
+describe('zoomAtCursor — latitude clamp at the pole (bughunt2)', () => {
+  it('clamps the resulting centerLat to <= 90 when zooming at the top edge near the pole (REGRESSION)', () => {
+    // The bug: centerLat = world.lat + (cursor.y - cy) / clampedZoom was UNCLAMPED.
+    // Near the north pole (centerLat ≈ 89), a zoom anchored at the very top edge
+    // (cursor.y = 0, so cursor.y - cy is a large negative offset over a small zoom)
+    // pushes the new center beyond +90°, scrolling the world permanently off-screen
+    // with no recovery gesture. Latitude is NOT periodic, so the result must be
+    // bounded to the world's [−90, 90].
+    const nearPole: Camera = { centerLon: 0, centerLat: 89, zoom: 2 };
+    // Zoom IN (old 2 → new 50) anchored at the very top edge (cursor.y = 0). The
+    // closed form is newCenterLat = centerLat + (cursor.y - cy)·(1/newZoom − 1/oldZoom);
+    // with cursor.y − cy = −300 and newZoom > oldZoom this term is large and POSITIVE
+    // (≈ +144°), so the UNCLAMPED center would be ≈ 233° — far past the pole. Clamp → ≤ 90.
+    const next = zoomAtCursor(nearPole, VP, { x: 400, y: 0 }, 50, DEFAULT_ZOOM_RANGE);
+    expect(next.centerLat).toBeLessThanOrEqual(90);
+    expect(next.centerLat).toBeGreaterThanOrEqual(-90);
+    expect(Number.isFinite(next.centerLat)).toBe(true);
+  });
+
+  it('clamps to >= -90 when zooming at the bottom edge near the south pole (REGRESSION)', () => {
+    const nearSouthPole: Camera = { centerLon: 0, centerLat: -89, zoom: 2 };
+    // Zoom IN at the bottom edge (cursor.y = heightCss): (cursor.y − cy) = +300 and
+    // newZoom > oldZoom make the closed-form term large and NEGATIVE (≈ −144°), so the
+    // unclamped center would fall to ≈ −233°. Clamp → ≥ −90.
+    const next = zoomAtCursor(
+      nearSouthPole,
+      VP,
+      { x: 400, y: VP.heightCss },
+      50,
+      DEFAULT_ZOOM_RANGE,
+    );
+    expect(next.centerLat).toBeGreaterThanOrEqual(-90);
+    expect(next.centerLat).toBeLessThanOrEqual(90);
+  });
+
+  it('leaves an in-range centerLat unchanged (clamp is a no-op away from the poles)', () => {
+    // The cursor-anchored zoom near the equator must be untouched by the clamp.
+    const cursor = { x: 600, y: 200 };
+    const before = screenToWorld(cursor, CAM, VP);
+    const next = zoomAtCursor(CAM, VP, cursor, 10);
+    const after = worldToScreen(before, next, VP);
+    expect(after.x).toBeCloseTo(cursor.x, 6);
+    expect(after.y).toBeCloseTo(cursor.y, 6);
+    expect(next.centerLat).toBeGreaterThan(-90);
+    expect(next.centerLat).toBeLessThan(90);
+  });
+});
+
 describe('zoomStepAtCursor', () => {
   it('multiplies the current zoom by the factor (before clamp)', () => {
     const next = zoomStepAtCursor(CAM, VP, { x: 400, y: 300 }, 1.5);

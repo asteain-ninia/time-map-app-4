@@ -28,7 +28,7 @@ import { wrapLonDeg } from '../domain/geo/longitude';
 import { LONGITUDE_PERIOD } from '../domain/geo/seam';
 
 import type { Camera, Viewport, ZoomRange } from './camera';
-import { clampZoom, WORLD_LAT_SPAN_DEG, WORLD_LON_SPAN_DEG } from './camera';
+import { clampLat, clampZoom, WORLD_LAT_SPAN_DEG, WORLD_LON_SPAN_DEG } from './camera';
 
 /**
  * The maximum number of ±360° wrap replicas any single frame will ever enumerate.
@@ -229,7 +229,13 @@ export function zoomAtCursor(
   return {
     zoom: clampedZoom,
     centerLon: world.lon - (cursor.x - cx) / clampedZoom,
-    centerLat: world.lat + (cursor.y - cy) / clampedZoom,
+    // Latitude is NOT periodic (unlike the continuous-scalar centerLon): the
+    // screen-offset term can push the new center past ±90° when zooming at the
+    // top/bottom edge near a pole, scrolling the world off-screen with no recovery.
+    // Bound it to the world's physical [−90, 90] (clampLat — the single latitude
+    // clamp boundary, same role as clampZoom). The cursor invariant still holds for
+    // every in-range gesture; only the pathological past-the-pole case is bounded.
+    centerLat: clampLat(world.lat + (cursor.y - cy) / clampedZoom),
   };
 }
 
