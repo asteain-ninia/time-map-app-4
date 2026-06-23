@@ -74,3 +74,16 @@
 - **HB3-14 完了（2コミット）**: `a77f19b`=保存→永続化の behavioral E2E ロック。`8e31639`=**錨自動選択フォールバック**。editDispatch 結線(`3869c09`)後も「属性編集の保存が必ず失敗」が残っていた真因＝PropertyPanel の `selectedAnchorId` 初期 null・手動クリックのみで、地物選択→即名前変更→保存が「錨が選択されていません」で失敗。修正=編集対象錨を「明示選択 ?? 現在時刻に有効な錨(`resolveAt` §5.8)」へフォールバック。これで手動の錨選択なしに属性編集が通る。明示選択は優先・錨無し時刻は従来どおり対象なし。**[決定・低リスク]** 既存 PropertyPanel.test 16 緑（全テストが明示クリックするためフォールバックは上書きされ非干渉）。
 - **HB3-5/19 ナイフ n-way は本セッション延期 [決定・根拠]**: probe で現行2-wayの4回横断挙動を確認＝`sideA=1多角形 / sideB=2多角形`（飛び地を束ねた1地物を返す＝**有効だが束ねられた**、無効/クラッシュではない）。よって「正直 reject」は動く機能を奪うため不当。フル n-way（独立k+1片化）が真の修正だが split-geometry/proposal/apply/session/UI/型に跨る大物・高リスクで、監視なし夜間の完遂に不適（プラン自体も専用ユニット・ユーザーも「後で本格対応」）。次セッションの最優先・専用作業として申し送り（プランは `HB3-5-19-NWAY-PLAN.md` で確定済）。
 - **未解決の編集回帰を根治 [最重要成果]** (`8d1ce75`): 前任が病に倒れる直前まで二分探索していた「編集モードで地物本体クリックで選択できない」回帰。`elementFromPoint` 計測で HB3-1 経度シフトパネルが地図を覆いクリックを横取りと特定・修正。詳細は上記§とコミット。
+
+### HB3-5/19 ナイフ n-way 分割 — 着手・ドメイン層完了 (2026-06-24, 新セッション)
+
+前セッションで「延期・申し送り」とした大物に着手し、ドメイン層を完遂。
+
+- **幾何コア** (`collectOpenPieces`/`splitIntoChords`, split-geometry.ts): 開線を内部チョード(境界→面内→境界)へ分解、各チョードに既存2-way機構(`openLineToClip`+U06 intersection/difference)を1本ずつ適用 = **2k横断→k+1片**。dangling頭尾は自然脱落、自己交差は `SelfIntersectingCut` で正直reject。probe(`__nway-probe.test.ts`)で 2/3/4片・面積保存を確認。
+- **純粋に加法的スコープ**: OPEN・単一ポリゴン単一リング面・**≥2チョード**時のみ n-way。≤2片/CLOSED/穴/飛び地は既存2-wayを**bit-for-bit維持**(全既存テスト・FR-95シーム節点保存)。前セッションが恐れた「動く機能を奪う」懸念は加法スコープで回避。
+- **検証 Workflow**(Sonnet/Explore 多エージェント, Codex代替): シーム=checkSplittableのアンカー後値を渡す/穴・飛び地=2-wayフォールバックで延期(将来課題)/自己交差・凹面・境界沿い=correct。最重要リスク(凹面1チョードが片側を2連結成分へ分断)は「単一連結面のみ成分分割」を試みたがコム過剰分割で撤回・文書化済み限界へ。
+- **移行(加法的エイリアス方式)**: `SplitResult.pieces[]`+`smallestPieceIndex`(FR-93一般化)、`InheritanceChoice.inheritIndex`+`createInheritanceChoiceAt`、`SplitEditProposal/SplitSnapshot.newFeatures[]`、`applySplitProposal` が k 新地物を1アンドゥ単位でループ確定(FR-94一般化)。`sideA/sideB`/`newFeature`/`smallerSide` はエイリアス保持で churn 最小。
+- **ドメイン commit `8cc828c`**: 全 vitest **2944 passed** / typecheck=0 / lint=0。bughunt property(W/diagonal/seam の3 applySplit変種)を面積=全片合計・apply=全新地物へ修正。
+- **進行中(背景委譲)**: (A) UI移行 subagent = InheritorModal/session/useKnifeTool/Controller を n片チューザへ + **実機スクショ behavioral E2E**(コム/Wカット→k+1片観測)+ ゲート→緑なら自己コミット。(B) Sonnet 多ペルソナ・レビュー workflow(Codex代替)= ドメイン migration を4レンズで敵対的レビュー。
+- **残課題(将来)**: 穴/飛び地面の n-way、n-way の FR-95 edge-cut 一致、エイリアス最終削除。
+- **運用学習(ユーザー指摘)**: 本スレに逐次編集を抱え込みすぎ＝subagent/workflow 活用不足。以降は**主スレ=オーケストレーター、重い作業=背景 workflow/subagent**。Codex は死亡、レビューは Sonnet 多ペルソナ workflow で代替する。
