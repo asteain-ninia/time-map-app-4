@@ -239,6 +239,13 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
           {series !== null && (
             <AnchorSection
+              // Feature-scoped key so React REMOUNTS the section on a target
+              // change, resetting its transient view-mode (List/TimeBar) state —
+              // the reset the section's own doc comment promises via "keyed
+              // remount upstream" (教訓 5.2: a selection change discards transient
+              // UI state). Without it the chosen mode persisted (stale) across
+              // feature switches.
+              key={targetFeatureId ?? 'none'}
               series={series}
               calendar={calendar}
               selectedAnchorId={effectiveAnchorId}

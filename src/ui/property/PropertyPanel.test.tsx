@@ -288,6 +288,30 @@ describe('PropertyPanel — context-feature anchor select (FR-84, 教訓 5.2 / 5
   });
 });
 
+describe('PropertyPanel — AnchorSection view-mode reset on feature switch (BUG B, 教訓 5.2)', () => {
+  it('switching the target feature remounts AnchorSection, resetting its view mode to List', () => {
+    // The section's transient view mode (List/TimeBar) is documented as "reset on
+    // selection change via the keyed remount upstream". The panel must therefore
+    // mount <AnchorSection key={targetFeatureId}> so a feature switch REMOUNTS it.
+    // Without the key the chosen mode persisted (stale) across features.
+    const store = makeStore({ active: true });
+    renderPanel(store);
+
+    // Default = list view. Switch to the time-bar view on feature A.
+    expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('anchor-mode-timebar'));
+    expect(screen.getByTestId('anchor-timebar')).toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-list')).not.toBeInTheDocument();
+
+    // Switch to a DIFFERENT feature: the section must remount back to list view.
+    act(() => {
+      store.getState().setActiveFeature(fB);
+    });
+    expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-timebar')).not.toBeInTheDocument();
+  });
+});
+
 describe('PropertyPanel — U33 style section integration (FR-100 / FR-102, AC1)', () => {
   it('mounts the StyleSection inside the panel (palette dropdown + fill picker present)', () => {
     renderPanel(makeStore({ active: true }));

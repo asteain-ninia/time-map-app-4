@@ -16,6 +16,8 @@ import { useEffect, useState, type WheelEvent } from 'react';
 import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
 import type { AnchorId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
+import { denormalize, normalize, type Normalized } from '../../domain/time/normalized';
+import { timePointYearMonthDay, type TimePoint } from '../../domain/time/time-point';
 
 import { formatTimePoint } from '../timeline/time-display';
 
@@ -27,11 +29,25 @@ import {
   viewFromTimePoints,
   viewMaxTime,
   viewMinTime,
+  viewSpanDays,
   zoomView,
 } from './timebar';
 
 /** The default axis pixel length used until layout measures (and in tests). */
 export const DEFAULT_TIMEBAR_PIXELS = 480;
+
+/**
+ * Headroom (in WHOLE DAYS) appended past the last anchor's START when the series
+ * is open-ended (継続中 — no end). At least one full year so the axis never
+ * collapses to a sliver when the last anchor starts late in its year (e.g. a
+ * late month/day): `last.start.year + 1` (Jan 1) would otherwise leave only the
+ * remaining days of the year between start and that edge, pinning the view at the
+ * zoom floor. Computed via U02 normalize/denormalize — never via UI day math.
+ */
+export const OPEN_ENDED_HEADROOM_DAYS = 365;
+
+/** Floor for the WHOLE initial span (days) so the axis never collapses (≥1 year). */
+export const MIN_INITIAL_SPAN_DAYS = 365;
 
 export interface AnchorTimeBarProps {
   readonly series: AnchorSeries;
@@ -60,8 +76,34 @@ function initialView(
       calendar,
     );
   }
-  const max = last.end ?? { granularity: 'year' as const, year: last.start.year + 1 };
-  return viewFromTimePoints(first.start, max, pixelLength, calendar);
+  // The max edge. For a CLOSED last interval it is the end. For an OPEN-ENDED
+  // (継続中) series we add ≥1 year of headroom past the last START in WHOLE DAYS
+  // via U02 (normalize → +headroom → denormalize) — NOT `start.year + 1`, which
+  // collapses to a sliver when the start is late in its year (BUG: late month/day
+  // → near-zero span → pinned at the zoom floor, unusable bar).
+  let max: TimePoint;
+  if (last.end !== null && last.end !== undefined) {
+    max = last.end;
+  } else {
+    const lastStartDays = normalize(last.start, calendar) as number;
+    const c = denormalize((lastStartDays + OPEN_ENDED_HEADROOM_DAYS) as Normalized, calendar);
+    max = timePointYearMonthDay(c.year, c.month, c.day);
+  }
+
+  const view = viewFromTimePoints(first.start, max, pixelLength, calendar);
+  // Floor the WHOLE span to ≥1 year regardless of granularity, so a very-short
+  // closed final interval (or first==last) can never pin the axis at the zoom
+  // floor either. Push the max edge out by the deficit in whole days via U02.
+  const span = viewSpanDays(view);
+  if (span >= MIN_INITIAL_SPAN_DAYS) return view;
+  const flooredMaxDays = (view.min as number) + MIN_INITIAL_SPAN_DAYS;
+  const fc = denormalize(flooredMaxDays as Normalized, calendar);
+  return viewFromTimePoints(
+    first.start,
+    timePointYearMonthDay(fc.year, fc.month, fc.day),
+    pixelLength,
+    calendar,
+  );
 }
 
 export function AnchorTimeBar(props: AnchorTimeBarProps): JSX.Element {

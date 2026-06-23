@@ -96,4 +96,48 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
     // a1 spans 1000..1500 of a ~1000..1601 window → wide enough to show a label.
     expect(bar1.getAttribute('data-show-label')).toBe('true');
   });
+
+  // BUG A regression: an OPEN-ENDED series whose ONLY anchor starts LATE in its
+  // year must still produce a non-degenerate axis span. The old `last.start.year
+  // + 1` (= next Jan 1) left only the remaining ~7 days of the year between the
+  // late start and the max edge, collapsing the view to the zoom floor (~1 day)
+  // and making the bar unusable.
+  function lateOpenEndedSeries(): AnchorSeries {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return {
+      entries: [
+        createAnchorEntry(
+          createAnchor(asAnchorId('a1'), snap),
+          timePointYearMonthDay(2000, 12, 25),
+          null,
+        ),
+      ],
+    };
+  }
+
+  it('a late-starting open-ended series keeps a non-degenerate axis span (BUG A)', () => {
+    render(
+      <AnchorSection
+        series={lateOpenEndedSeries()}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        initialMode="timeBar"
+      />,
+    );
+    const minTime = screen.getByTestId('timebar-edge-min').textContent ?? '';
+    const maxTime = screen.getByTestId('timebar-edge-max').textContent ?? '';
+    // The window must span at least into the NEXT year past the late start —
+    // i.e. ≥1 year of headroom, not the ~7-day sliver `start.year + 1` produced.
+    expect(minTime).toContain('2000年12月25日');
+    expect(maxTime).toContain('2001年12月');
+
+    // And it is NOT pinned at the zoom floor: zooming OUT must visibly widen the
+    // window (an axis already collapsed to ~1 day would barely move / round-trip
+    // to the same edge). The max edge year must change on a clear zoom-out.
+    const axis = screen.getByTestId('timebar-axis');
+    fireEvent.wheel(axis, { deltaY: 100, clientX: 0 }); // zoom out, focus = left edge
+    const maxAfter = screen.getByTestId('timebar-edge-max').textContent ?? '';
+    expect(maxAfter).not.toBe(maxTime);
+  });
 });
