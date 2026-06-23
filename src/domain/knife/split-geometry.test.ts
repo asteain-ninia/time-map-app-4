@@ -220,6 +220,10 @@ describe('collectOpenPieces — n-way direct invariants (HB3-5/19; ported from s
       }
     return acc;
   };
+  // FR-44: every piece's outer ring must clear the ≥3-vertex floor (ported probe invariant).
+  const everyPieceHasMinVertices = (pieces: readonly GeoMultiPolygon[]): void => {
+    for (const mp of pieces) for (const poly of mp) expect(poly[0]!.length).toBeGreaterThanOrEqual(3);
+  };
 
   it('a 2-crossing straight cut → 2 pieces, area preserved', () => {
     const r = collectOpenPieces(line([[5, -1], [5, 11]]), square, 100);
@@ -227,6 +231,7 @@ describe('collectOpenPieces — n-way direct invariants (HB3-5/19; ported from s
     if (r.ok) {
       expect(r.pieces.length).toBe(2);
       expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+      everyPieceHasMinVertices(r.pieces);
     }
   });
 
@@ -237,6 +242,7 @@ describe('collectOpenPieces — n-way direct invariants (HB3-5/19; ported from s
     if (r.ok) {
       expect(r.pieces.length).toBe(3);
       expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+      everyPieceHasMinVertices(r.pieces);
     }
   });
 
@@ -250,6 +256,17 @@ describe('collectOpenPieces — n-way direct invariants (HB3-5/19; ported from s
     if (r.ok) {
       expect(r.pieces.length).toBe(4);
       expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+      everyPieceHasMinVertices(r.pieces);
+    }
+  });
+
+  it('a 2-crossing HORIZONTAL straight cut → 2 pieces (orthogonal direction)', () => {
+    const r = collectOpenPieces(line([[-1, 5], [11, 5]]), square, 100);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pieces.length).toBe(2);
+      expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+      everyPieceHasMinVertices(r.pieces);
     }
   });
 
