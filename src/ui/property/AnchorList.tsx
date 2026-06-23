@@ -88,7 +88,18 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
             </button>
 
             {editable && (
+              // The editor seeds its local draft from the entry's CURRENT start/end
+              // at mount ONLY (year granularity). A successful changeStart / setEnd /
+              // clear-end re-renders this list from the live root with the NEW interval,
+              // but the editor's draft would keep showing the PRE-edit value. Key the
+              // editor on the entry's current start & end years so an interval change
+              // REMOUNTS it — re-seeding the draft from the new stored value (the same
+              // "re-seed draft from source" contract the direct-jump field uses). The
+              // open-ended end (`null`) is keyed as 'open' so 継続中にする also re-seeds.
               <AnchorIntervalEditor
+                key={`${entry.anchor.id}-${entry.start.year}-${
+                  entry.end === null ? 'open' : entry.end.year
+                }`}
                 entry={entry}
                 featureId={featureId}
                 soleAnchor={soleAnchor}

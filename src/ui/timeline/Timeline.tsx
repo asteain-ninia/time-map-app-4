@@ -93,7 +93,17 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         <PlaybackControls controller={playback} />
       </div>
 
+      {/* The direct-jump field MIRRORS the current time: it seeds its draft from
+          `initialValue` at mount only (教訓 5.2 — its transient draft is otherwise
+          owned by the user's typing). To re-seed it after the time changes by ANY
+          other path (slider scrub, play, step, anchor jump) we key it on the
+          serialized currentTime so React REMOUNTS the input — the documented
+          "syncs to this when it changes via key/remount" contract. Granularity is
+          included so a year-only vs y/m/d change also re-seeds. */}
       <YearMonthDayInput
+        key={`${t.currentTime.year}-${t.currentTime.granularity}-${
+          'month' in t.currentTime ? t.currentTime.month : ''
+        }-${'day' in t.currentTime ? t.currentTime.day : ''}`}
         title="直接ジャンプ"
         calendar={t.calendar}
         initialValue={t.currentTime}

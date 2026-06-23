@@ -41,6 +41,15 @@ export function usePlayback<S>(
 
   const accumulatorRef = useRef<PlaybackAccumulator>(INITIAL_PLAYBACK_ACCUMULATOR);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // The running tick reads the speed through a REF, not the closure value, so a
+  // speed change WHILE playing takes effect on the very next tick — without
+  // tearing down and restarting the interval (which would reset the accumulator
+  // and drop the in-progress fractional day). `speed` is therefore intentionally
+  // NOT a dependency of `play` (it is mirrored here on every change).
+  const speedRef = useRef<PlaybackSpeed>(speed);
+  useEffect(() => {
+    speedRef.current = speed;
+  }, [speed]);
 
   const clearTimer = useCallback(() => {
     if (timerRef.current !== null) {
@@ -65,7 +74,7 @@ export function usePlayback<S>(
       const current: TimePoint = state.currentTime;
       const result = advancePlayback(
         current,
-        speed,
+        speedRef.current,
         direction,
         state.timelineMin,
         state.timelineMax,
@@ -81,7 +90,7 @@ export function usePlayback<S>(
         accumulatorRef.current = INITIAL_PLAYBACK_ACCUMULATOR;
       }
     }, PLAYBACK_TICK_MS);
-  }, [store, speed, direction, calendar, clearTimer]);
+  }, [store, direction, calendar, clearTimer]);
 
   const toggle = useCallback(() => {
     if (isPlaying) pause();
