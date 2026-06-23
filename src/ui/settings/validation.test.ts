@@ -180,6 +180,16 @@ describe('validateAppSettings (FR-110, 受け入れ基準 2 / 7 / 8)', () => {
     expect(validateAppSettings(appOf({ vertexMarkerCap: 0 })).ok).toBe(true);
     expect(validateAppSettings(appOf({ vertexMarkerCap: 3000 })).ok).toBe(true);
   });
+
+  // FR-74 (undo履歴上限を設定可能化): a positive integer; 0 / negative / fractional
+  // are rejected, accepts the default 100 and small positive values.
+  it('rejects non-positive / non-integer undo stack size, accepts positive integers', () => {
+    expect(errorFields(validateAppSettings(appOf({ undoStackSize: 0 })))).toContain('undoStackSize');
+    expect(errorFields(validateAppSettings(appOf({ undoStackSize: -3 })))).toContain('undoStackSize');
+    expect(errorFields(validateAppSettings(appOf({ undoStackSize: 2.5 })))).toContain('undoStackSize');
+    expect(validateAppSettings(appOf({ undoStackSize: 1 })).ok).toBe(true);
+    expect(validateAppSettings(appOf({ undoStackSize: 100 })).ok).toBe(true);
+  });
 });
 
 describe('draft→commit diff / no-op guard (教訓 5.24, 受け入れ基準 6)', () => {

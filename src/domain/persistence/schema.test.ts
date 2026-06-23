@@ -203,6 +203,7 @@ describe('ui settings — semantic range/order enforcement (bug-hunt regression)
         renderFps: 60,
         vertexMarkerCap: 500,
         showConflictGuide: true,
+        undoStackSize: 100,
       },
     };
   }

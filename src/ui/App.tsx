@@ -44,6 +44,7 @@ import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
 import type { DomainProject } from '../domain/persistence/index';
+import { projectsEqual } from '../domain/persistence/index';
 import {
   FileOpsController,
   buildEmptyProject,
@@ -100,6 +101,7 @@ import {
   redo as historyRedo,
   canUndo as historyCanUndo,
   canRedo as historyCanRedo,
+  withLimit as historyWithLimit,
   type History,
 } from '../domain/command/history';
 import type { Command } from '../domain/command/index';
@@ -180,6 +182,12 @@ export function App(): JSX.Element {
     () =>
       createSessionStore<DomainRoot>({
         initialDomain: buildEmptyProject(),
+        // bughunt (全 undo 後の dirty 解消): the store recomputes dirty after an undo /
+        // redo by comparing the restored domain to the last-saved baseline. Commands
+        // rebuild state via Immer, so the restored reference is value-equal-but-new — we
+        // inject the domain's OWN value equality (U14 projectsEqual) rather than a bare
+        // === so a true round-trip back to the saved state is recognised as clean.
+        domainEquals: projectsEqual,
         existence: createLiveExistenceResolver(() => {
           // Read the live committed root through the ref; until it is wired (it is
           // assigned synchronously on the very next line after this store is built)
@@ -1176,7 +1184,15 @@ export function App(): JSX.Element {
   // command stack of the OLD project is meaningless against the NEW one
   // (consistency-binding's whole-state-swap commands ignore the live input state,
   // so a stale stack would replay foreign states — 教訓 5.20 / 5.22).
-  const historyRef = useRef<History<DomainRoot>>(createHistory(store.getState().domain));
+  // FR-74: the undo-stack depth limit is a configurable app setting (undoStackSize),
+  // so the live history is created at the CONFIGURED limit (not the hard-coded
+  // DEFAULT_HISTORY_LIMIT) and re-bounded whenever the setting changes (subscription
+  // below). withLimit is wired here — the SAME single seam createHistory uses — so the
+  // FR-74 上限変更可 contract is actually reachable from the UI (was: withLimit had no
+  // caller, 教訓 5.7「ロジックがあっても UI から呼ばれない」).
+  const historyRef = useRef<History<DomainRoot>>(
+    createHistory(store.getState().domain, store.getState().appSettings.undoStackSize),
+  );
 
   // The last domain WE committed (or reset to). The store subscription uses it to
   // tell an external whole-state swap (file load / new) from our own edit commit:
@@ -1237,7 +1253,11 @@ export function App(): JSX.Element {
       if (step.history === historyRef.current) return; // empty stack: no-op
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
-      store.getState().applyCommandResult(step.history.state, step.result);
+      // bughunt (全 undo 後の dirty 解消): an undo recomputes projectDirty against the
+      // last SAVED baseline (applyUndoRedoResult) instead of forcing it true, so undoing
+      // back to the saved state clears the unsaved-changes warning. An ordinary edit
+      // still dirties through applyCommandResult (recordCommand) — that path is unchanged.
+      store.getState().applyUndoRedoResult(step.history.state, step.result);
       refreshUndoRedoEnabled();
     };
     const runRedo = (): void => {
@@ -1245,7 +1265,9 @@ export function App(): JSX.Element {
       if (step.history === historyRef.current) return;
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
-      store.getState().applyCommandResult(step.history.state, step.result);
+      // Symmetric to runUndo: a redo recomputes dirty against the saved baseline (redoing
+      // away from the saved state re-dirties; redoing back onto it stays clean).
+      store.getState().applyUndoRedoResult(step.history.state, step.result);
       refreshUndoRedoEnabled();
     };
     registry.register(COMMAND_ID.EditUndo, {
@@ -1334,7 +1356,9 @@ export function App(): JSX.Element {
     return store.subscribe((s) => {
       if (s.domain === lastCommittedDomainRef.current) return;
       lastCommittedDomainRef.current = s.domain;
-      historyRef.current = createHistory(s.domain);
+      // Re-root at the CONFIGURED undo-stack depth (FR-74), read live so a load that
+      // hydrated a different undoStackSize re-roots at the loaded project's limit.
+      historyRef.current = createHistory(s.domain, s.appSettings.undoStackSize);
       refreshUndoRedoEnabled();
       // 教訓 5.2 全経路で破棄: a whole-state swap (load / new / drag-drop) invalidates
       // any paused-conflict modal — its pending result + applyResolutions are bound
@@ -1343,6 +1367,27 @@ export function App(): JSX.Element {
       // recordCommit/reArmActiveTool. Atomically dismiss the modal on the same swap
       // that re-roots the history so no stale binding can survive the load.
       setConflictState(null);
+    });
+  }, [store, refreshUndoRedoEnabled]);
+
+  // FR-74 ROOT FIX — re-bound the LIVE undo history when the configurable
+  // undoStackSize app setting changes (教訓 5.7「ロジックがあっても UI から呼ばれない」:
+  // withLimit was implemented + unit-tested but had NO caller, so the depth limit was
+  // permanently fixed at DEFAULT_HISTORY_LIMIT=100). A settings-dialog confirm writes
+  // appSettings.undoStackSize through the U16 store; this subscription applies the
+  // SAME pure withLimit the history already exposes (no second trim rule, 教訓 5.29),
+  // so lowering the limit immediately evicts the oldest entries past the new bound and
+  // raising it restores headroom. Gated on an actual change of the watched value so an
+  // unrelated store transition does not re-allocate the history. refreshUndoRedoEnabled
+  // nudges the menu/shortcut gate after a trim may have emptied the undo stack.
+  useEffect(() => {
+    let prevUndoStackSize = store.getState().appSettings.undoStackSize;
+    return store.subscribe((s) => {
+      const next = s.appSettings.undoStackSize;
+      if (next === prevUndoStackSize) return;
+      prevUndoStackSize = next;
+      historyRef.current = historyWithLimit(historyRef.current, next);
+      refreshUndoRedoEnabled();
     });
   }, [store, refreshUndoRedoEnabled]);
 

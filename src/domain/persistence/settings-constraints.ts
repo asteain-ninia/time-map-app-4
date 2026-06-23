@@ -47,6 +47,13 @@ export const SNAP_DISTANCE_MIN = 0;
 /** Vertex-marker display cap is a non-negative integer (FR-110; 0 == show none). */
 export const VERTEX_MARKER_CAP_MIN = 0;
 
+/**
+ * Undo-stack depth limit is a positive integer (FR-74). At least one unit must be
+ * retainable; the history clamps a value < 1 to 1 (withLimit), but a persisted /
+ * confirmed value must already be a valid positive integer.
+ */
+export const UNDO_STACK_SIZE_MIN = 1;
+
 /** Render update rate is clamped to [1, 60] FPS (FR-110). */
 export const MIN_RENDER_FPS = 1;
 export const MAX_RENDER_FPS = 60;
@@ -107,6 +114,11 @@ export function isValidSnapDistancePx(px: number): boolean {
 /** Vertex-marker cap must be a non-negative integer. */
 export function isValidVertexMarkerCap(cap: number): boolean {
   return isFiniteNumber(cap) && Number.isInteger(cap) && cap >= VERTEX_MARKER_CAP_MIN;
+}
+
+/** Undo-stack depth limit must be a positive integer (FR-74). */
+export function isValidUndoStackSize(size: number): boolean {
+  return isFiniteNumber(size) && Number.isInteger(size) && size >= UNDO_STACK_SIZE_MIN;
 }
 
 /** A single zoom magnitude must be finite and inside the FR-10 boundary [0.1, 10000]. */

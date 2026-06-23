@@ -72,6 +72,7 @@ const UI_SETTINGS: UiSettings = {
     renderFps: 24,
     vertexMarkerCap: 1234,
     showConflictGuide: false,
+    undoStackSize: 42,
   },
 };
 

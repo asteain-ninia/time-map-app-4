@@ -487,6 +487,18 @@ function AppTab(props: {
       </label>
 
       <label>
+        {APP_FIELD_STRINGS.undoStackSize}
+        <input
+          type="number"
+          min={1}
+          step={1}
+          aria-label={APP_FIELD_STRINGS.undoStackSize}
+          value={d.undoStackSize}
+          onChange={(e) => set('undoStackSize', Number(e.target.value))}
+        />
+      </label>
+
+      <label>
         <input
           type="checkbox"
           aria-label={APP_FIELD_STRINGS.showConflictGuide}

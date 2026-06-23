@@ -20,6 +20,7 @@ import {
   OPACITY_MAX as DOMAIN_OPACITY_MAX,
   OPACITY_MIN as DOMAIN_OPACITY_MIN,
   SNAP_DISTANCE_MIN as DOMAIN_SNAP_DISTANCE_MIN,
+  UNDO_STACK_SIZE_MIN as DOMAIN_UNDO_STACK_SIZE_MIN,
   VERTEX_MARKER_CAP_MIN as DOMAIN_VERTEX_MARKER_CAP_MIN,
 } from '../../domain/persistence/settings-constraints';
 import {
@@ -89,6 +90,8 @@ export const OCCUPANCY_MAX = DOMAIN_OCCUPANCY_MAX;
 export const SNAP_DISTANCE_MIN = DOMAIN_SNAP_DISTANCE_MIN;
 /** Marker cap must be a non-negative integer (0 == show none). */
 export const VERTEX_MARKER_CAP_MIN = DOMAIN_VERTEX_MARKER_CAP_MIN;
+/** Undo-stack depth limit must be a positive integer (FR-74; at least 1). */
+export const UNDO_STACK_SIZE_MIN = DOMAIN_UNDO_STACK_SIZE_MIN;
 
 function isFiniteNumber(n: number): boolean {
   return typeof n === 'number' && Number.isFinite(n);
@@ -109,6 +112,7 @@ export const REJECTION = {
   fpsRange: `描画更新頻度は ${String(MIN_RENDER_FPS)} から ${String(MAX_RENDER_FPS)} FPS の範囲で入力してください。`,
   snapDistanceRange: '共有頂点スナップ距離は 0 以上の数値で入力してください。',
   vertexMarkerCapRange: '全頂点マーカー表示上限は 0 以上の整数で入力してください。',
+  undoStackSizeRange: 'アンドゥ履歴の上限は 1 以上の整数で入力してください。',
   notANumber: '数値を入力してください。',
 } as const;
 
@@ -204,6 +208,15 @@ export function validateAppSettings(draft: AppSettings): ValidationResult<AppSet
     !Number.isInteger(draft.vertexMarkerCap)
   ) {
     errors.push({ field: 'vertexMarkerCap', message: REJECTION.vertexMarkerCapRange });
+  }
+
+  if (!isFiniteNumber(draft.undoStackSize)) {
+    errors.push({ field: 'undoStackSize', message: REJECTION.notANumber });
+  } else if (
+    draft.undoStackSize < UNDO_STACK_SIZE_MIN ||
+    !Number.isInteger(draft.undoStackSize)
+  ) {
+    errors.push({ field: 'undoStackSize', message: REJECTION.undoStackSizeRange });
   }
 
   return errors.length === 0 ? ok(draft) : err(errors);

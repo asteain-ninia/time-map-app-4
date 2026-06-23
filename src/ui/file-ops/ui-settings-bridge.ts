@@ -56,6 +56,7 @@ export function toPersistedUiSettings(live: LiveSettings): UiSettings {
       renderFps: a.renderFps,
       vertexMarkerCap: a.vertexMarkerCap,
       showConflictGuide: a.showConflictGuide,
+      undoStackSize: a.undoStackSize,
     },
   };
 }
@@ -91,6 +92,7 @@ export function fromPersistedUiSettings(ui: UiSettings): LiveSettings {
       renderFps: a.renderFps,
       vertexMarkerCap: a.vertexMarkerCap,
       showConflictGuide: a.showConflictGuide,
+      undoStackSize: a.undoStackSize,
     },
   };
 }

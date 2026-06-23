@@ -36,6 +36,7 @@ import {
   isValidRenderFps,
   isValidSnapDistancePx,
   isValidTimelineOrder,
+  isValidUndoStackSize,
   isValidUnitFraction,
   isValidVertexMarkerCap,
   isValidZoomOrder,
@@ -556,6 +557,7 @@ export const uiAppSettingsSchema = z
     renderFps: finiteNumber,
     vertexMarkerCap: finiteNumber,
     showConflictGuide: z.boolean(),
+    undoStackSize: finiteNumber,
   })
   .strict()
   .superRefine((s, ctx) => {
@@ -578,6 +580,13 @@ export const uiAppSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ['vertexMarkerCap'],
         message: 'vertex marker cap must be a non-negative integer',
+      });
+    }
+    if (!isValidUndoStackSize(s.undoStackSize)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['undoStackSize'],
+        message: 'undo stack size must be a positive integer',
       });
     }
   });

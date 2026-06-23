@@ -187,6 +187,21 @@ export interface SessionStoreActions<S> {
     result: CommandResult,
     preference?: NextTargetPreference,
   ): void;
+  /**
+   * Apply an UNDO / REDO step exactly like {@link applyCommandResult} (same domain
+   * swap + U22 selection re-resolution + display-focus re-resolution) EXCEPT the
+   * dirty flag is RECOMPUTED against the last SAVED baseline instead of being forced
+   * true (bughunt: 全 undo 後も dirty が残り保存済みでも未保存警告が出る). When the
+   * resulting domain is value-equal (injected `domainEquals`) to the saved baseline
+   * the project is clean (`projectDirty = false`); otherwise it is dirty. If the
+   * project was never saved (no baseline) it stays dirty. Every OTHER dirty-setting
+   * path is unchanged — a fresh edit still marks dirty through {@link applyCommandResult}.
+   */
+  applyUndoRedoResult(
+    nextDomain: S,
+    result: CommandResult,
+    preference?: NextTargetPreference,
+  ): void;
   /** Replace the domain-state reference without a command result (e.g. load). */
   setDomainState(nextDomain: S): void;
   /**
@@ -534,6 +549,18 @@ export interface CreateSessionStoreOptions<S> {
   /** Injected time-existence predicates (单一真实源; defaults to always-present). */
   readonly existence?: ExistenceResolver;
   /**
+   * Value-equality for the opaque domain root `S`, used ONLY to recompute the
+   * dirty flag after an undo / redo (bughunt: 全 undo 後も dirty が残る). The store
+   * never reaches into `S` (spec 依存: ルート状態を不変に受け渡す), so the composition
+   * root injects the domain's own equality (App.tsx wires `projectsEqual`). When an
+   * undo / redo lands back on a state that is value-equal to the last SAVED baseline
+   * the project is clean again — but commands rebuild the state via Immer, so the
+   * restored reference is value-equal-but-NEW; a bare `===` would always look dirty.
+   * Defaults to reference identity ({@link Object.is}) when not injected (tests with
+   * an opaque/primitive domain), which still clears dirty for a literal round-trip.
+   */
+  readonly domainEquals?: (a: S, b: S) => boolean;
+  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -567,7 +594,19 @@ export function createSessionStore<S>(
 ): StoreApi<SessionStore<S>> {
   const existence = options.existence ?? ALWAYS_PRESENT_RESOLVER;
   const calendar = options.calendar ?? getCalendar('gregorian');
+  const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
+
+  // The domain reference last established as the SAVED / CLEAN baseline (bughunt:
+  // 全 undo 後の dirty 解消). It is the ONE reference an undo / redo compares against
+  // to decide whether the project is back to its saved state. It is set by EVERY
+  // clean-baseline path (markProjectSaved on save, and the LOAD / NEW reflects which
+  // establish a fresh clean baseline) and stays null until the first save / load /
+  // new — while null, an undo / redo can never be "clean" (a never-saved project is
+  // always treated dirty once edited). It lives as a closure variable (not store
+  // state) because it is internal bookkeeping no subscriber renders; the store keeps
+  // a single dirty TRUTH (projectDirty), and this only feeds its recomputation.
+  let savedDomain: S | null = null;
 
   // Build the initial selection TRUTH (U22 SelectionState) from the test/init
   // overrides, then derive the mirrors from it — there is no second source.
@@ -634,6 +673,33 @@ export function createSessionStore<S>(
       });
     },
 
+    applyUndoRedoResult(nextDomain, result, preference) {
+      // Same reflect as applyCommandResult (U22 selection + display-focus re-resolution,
+      // 教訓 5.11 / bughunt3) — the ONLY difference is the dirty flag is recomputed
+      // against the saved baseline rather than forced true (bughunt: 全 undo 後も dirty
+      // が残る). When the restored domain is value-equal to the last SAVED reference the
+      // project is back to its saved state (clean); otherwise it is dirty. A project that
+      // was never saved (savedDomain === null) can never be clean here, so an undo that
+      // empties the stack on a never-saved project keeps it dirty (correct: there is no
+      // on-disk content to be "in sync" with).
+      const next = reresolveAfterStructureChange(
+        get().selection,
+        result,
+        preference,
+      );
+      const nextDisplayControl = focusControlAfterStructureChange(
+        get().displayControl,
+        result,
+      );
+      const clean = savedDomain !== null && domainEquals(nextDomain, savedDomain);
+      set({
+        domain: nextDomain,
+        projectDirty: !clean,
+        displayControl: nextDisplayControl,
+        ...selectionPatch(next),
+      });
+    },
+
     setDomainState(nextDomain) {
       // A domain swap (any edit path) marks the project dirty (spec §B 単一基準).
       // A LOAD / NEW also swaps the domain but is a clean baseline; those paths
@@ -643,6 +709,9 @@ export function createSessionStore<S>(
     },
 
     resetToDomain(nextDomain) {
+      // A LOAD / NEW is a fresh CLEAN baseline: record it as the saved reference so a
+      // later undo / redo back to this exact state reads clean (bughunt 全 undo dirty).
+      savedDomain = nextDomain;
       // Atomic whole-state swap for LOAD / NEW: new domain + discarded session
       // state + clean baseline, in ONE set() (教訓 5.2 全経路で破棄, 受け入れ基準 4
       // 同時初期化). selection/tool/mode/focus from the OLD project cannot survive:
@@ -982,6 +1051,10 @@ export function createSessionStore<S>(
       // would survive a LOAD / NEW and the domain would resolve at a time outside
       // the new range (空表示). This runs in the SAME set() as the slice swap so
       // settings and the derived range/time can never drift apart.
+      // hydrateSettings is a clean baseline (LOAD / NEW settings hydrate) but does NOT
+      // swap the domain — so the current domain becomes the saved reference (bughunt
+      // 全 undo dirty), keeping savedDomain consistent with the cleared dirty flag.
+      savedDomain = get().domain;
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
       const timelinePatch = deriveTimelineState(
@@ -1011,6 +1084,10 @@ export function createSessionStore<S>(
       // domain alongside the OLD settings/range. Here, if the incoming settings are
       // invalid we throw with NOTHING mutated; on success the domain swap, session
       // discard, settings hydrate, and derived range/time all land in ONE set().
+      // A LOAD / NEW is a fresh CLEAN baseline (this is the atomic resetToDomain +
+      // hydrateSettings reflect); record the new domain as the saved reference so an
+      // undo / redo back to it reads clean (bughunt 全 undo dirty).
+      savedDomain = nextDomain;
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
       // resetToDomain clears the selection to EMPTY before hydrate derives the range,
@@ -1046,6 +1123,12 @@ export function createSessionStore<S>(
     },
 
     markProjectSaved() {
+      // A successful save makes the LIVE domain the new clean baseline (bughunt 全 undo
+      // dirty): record it so a later undo / redo back to this state reads clean. The
+      // persistence guard (FileOpsController.markClean) only calls this when the live
+      // domain still matches what was written to disk, so get().domain here IS exactly
+      // the on-disk content (the saved reference, 単一基準).
+      savedDomain = get().domain;
       set({ projectDirty: false });
     },
   }));

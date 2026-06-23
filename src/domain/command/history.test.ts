@@ -104,6 +104,28 @@ describe('limit / oldest-eviction / redo clearing (受け入れ基準 2, FR-74)'
     expect(h.undoStack.map((c) => c.label)).toEqual(['n3', 'n4']);
   });
 
+  // FR-74 wiring lock (bughunt): the App composition root drives the configurable
+  // undoStackSize setting into the live history via withLimit. This pins the exact
+  // task scenario — re-bound to 2, push 3 commands, only 2 remain undoable — so the
+  // setting→withLimit seam can never silently revert to the fixed 100 limit again.
+  it('after re-bounding the limit to 2, only the newest 2 of 3 pushed commands are undoable', () => {
+    // Start at the default limit (the historyRef seed in App.tsx).
+    let h = createHistory(emptyState());
+    // The undoStackSize setting changes to 2 → the root applies withLimit(h, 2).
+    h = withLimit(h, 2);
+    for (let i = 0; i < 3; i += 1) {
+      h = execute(h, addFeatureCommand(asFeatureId(`f${i}`), `n${i}`)).history;
+    }
+    // Only 2 undo units survive (the oldest was evicted at push time, FR-74).
+    expect(h.undoStack.length).toBe(2);
+    expect(h.undoStack.map((c) => c.label)).toEqual(['n1', 'n2']);
+    // Exactly 2 successive undos are possible; the third is a no-op (empty stack).
+    h = undo(h).history;
+    h = undo(h).history;
+    expect(canUndo(h)).toBe(false);
+    expect(undo(h).history).toBe(h);
+  });
+
   it('limit < 1 is clamped to 1', () => {
     expect(createHistory(emptyState(), 0).limit).toBe(1);
     expect(withLimit(createHistory(emptyState()), -5).limit).toBe(1);

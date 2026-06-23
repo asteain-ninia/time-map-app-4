@@ -651,6 +651,7 @@ describe('repair preserves the optional uiSettings block (regression)', () => {
       renderFps: 60,
       vertexMarkerCap: 500,
       showConflictGuide: false,
+      undoStackSize: 100,
     },
   };
 

@@ -390,6 +390,24 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(store.getState().projectDirty).toBe(true);
   });
 
+  // FR-74: the undo-stack depth limit round-trips through the app-settings slice as a
+  // document-affecting app setting (it drives withLimit in App.tsx; the value lives in
+  // appSettings and persists in the project file's uiSettings).
+  it('an undoStackSize change round-trips through the app slice and marks the project dirty', () => {
+    const store = makeStore();
+    expect(store.getState().appSettings.undoStackSize).toBe(
+      DEFAULT_APP_SETTINGS.undoStackSize,
+    );
+    store.getState().updateAppSetting('undoStackSize', 2);
+    const s = store.getState();
+    expect(s.appSettings.undoStackSize).toBe(2);
+    expect(s.projectDirty).toBe(true);
+    expect(s.lastSettingsChange).toEqual({
+      scope: SETTINGS_SCOPE.App,
+      key: 'undoStackSize',
+    });
+  });
+
   // 回帰 (bughunt2 finding): showConflictGuide is a PURE first-time / cosmetic UX
   // preference (FR-118). Dismissing the conflict-resolution guide hint INSIDE the
   // conflict modal routes through updateAppSetting('showConflictGuide', false). If
@@ -444,6 +462,90 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     expect(store.getState().projectDirty).toBe(true);
     store.getState().markProjectSaved();
     expect(store.getState().projectDirty).toBe(false);
+  });
+
+  // bughunt (全 undo 後の dirty 解消): an undo / redo must RECOMPUTE projectDirty
+  // against the last-saved baseline, not force it true. Pre-fix, undo/redo routed
+  // through applyCommandResult which always set projectDirty=true, so a project fully
+  // undone back to its saved state still warned about unsaved changes.
+  describe('undo/redo dirty recomputation against the saved baseline (bughunt)', () => {
+    // A store whose opaque domain equality compares the `tag` by value, so a restored
+    // value-equal-but-new domain reference is recognised as equal to the saved one.
+    function dirtyStore() {
+      return createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        domainEquals: (a, b) => a.tag === b.tag,
+      });
+    }
+    const edit = createCommandResult({ created: [f('A')] });
+    const undoResult = createCommandResult({ deleted: [f('A')] });
+
+    it('undo back to the saved state clears dirty; redo re-dirties', () => {
+      const store = dirtyStore();
+      // Establish a clean saved baseline at d0.
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // An edit advances the domain and marks dirty.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+
+      // Undo restores a value-equal d0 (new reference) → back to saved → clean.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Redo away from the saved state → dirty again.
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    it('undo keeps the project dirty when it has never been saved (no baseline)', () => {
+      const store = dirtyStore();
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+      // Undo to d0 — but the project was never saved, so there is no clean baseline.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    it('undo to a state that differs from the saved baseline stays dirty', () => {
+      const store = dirtyStore();
+      // Save at d1 (the baseline is d1, not d0).
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().applyCommandResult({ tag: 'd2' }, edit);
+      // Undo to d1 (the saved baseline) → clean.
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+      // A further undo to d0 (NOT the saved baseline) → dirty.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    it('applyUndoRedoResult still re-resolves selection like applyCommandResult', () => {
+      const store = createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        domainEquals: (a, b) => a.tag === b.tag,
+        initial: { activeFeature: f('A') },
+      });
+      // An undo that deletes the active feature drops it from the selection (U22).
+      store.getState().applyUndoRedoResult(
+        { tag: 'd1' },
+        createCommandResult({ deleted: [f('A')] }),
+      );
+      expect(store.getState().activeFeature).toBeNull();
+    });
+
+    it('a clean LOAD / NEW reflect re-arms the baseline so an undo back to it reads clean', () => {
+      const store = dirtyStore();
+      // Reflect a loaded project at d0 (clean baseline).
+      store.getState().reflectLoadedProject({ tag: 'd0' }, {});
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
   });
 
   // 回帰 (finding): hydrateSettings is the LOAD / NEW project-settings half. The

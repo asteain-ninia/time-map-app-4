@@ -19,6 +19,7 @@ import {
   ZOOM_LIMIT_CEIL as DOMAIN_ZOOM_LIMIT_CEIL,
   ZOOM_LIMIT_FLOOR as DOMAIN_ZOOM_LIMIT_FLOOR,
 } from '../../domain/persistence/settings-constraints';
+import { DEFAULT_HISTORY_LIMIT } from '../../domain/command/history';
 import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 // --- Classification (the boundary) ------------------------------------------
@@ -103,6 +104,16 @@ export interface AppSettings {
   /** Upper bound on simultaneously rendered vertex markers (FR-110). */
   readonly vertexMarkerCap: number;
   /**
+   * Undo-stack depth limit (FR-74「アンドゥ履歴の上限は設定変更可」). The maximum number
+   * of undo units the live history retains; on overflow the OLDEST is evicted
+   * (domain/command/history withLimit / trimUndoStack). Default
+   * {@link DEFAULT_UNDO_STACK_SIZE} (== domain DEFAULT_HISTORY_LIMIT). A value < 1 is
+   * clamped to 1 by the history itself. An APP-wide setting (FR-110): it governs
+   * editing behaviour app-wide, so a change dirties the project (it is persisted in
+   * the project file's uiSettings like the other document-affecting app settings).
+   */
+  readonly undoStackSize: number;
+  /**
    * Whether the first-time guide for the conflict-resolution modal is shown
    * (FR-118). This is an APP-wide user-experience preference, NOT project data
    * (教訓 5.36: the guide-shown/suppressed state belongs to app settings, with a
@@ -146,6 +157,7 @@ export const APP_SETTING_KEYS = [
   'renderFps',
   'vertexMarkerCap',
   'showConflictGuide',
+  'undoStackSize',
 ] as const satisfies readonly AppSettingKey[];
 
 const PROJECT_KEY_SET: ReadonlySet<string> = new Set(PROJECT_SETTING_KEYS);
@@ -203,6 +215,13 @@ export function appSettingDirtiesProject(key: AppSettingKey): boolean {
 
 // --- Defaults ---------------------------------------------------------------
 
+/**
+ * FR-74 default undo-stack depth. Single-sourced to the domain history's
+ * {@link DEFAULT_HISTORY_LIMIT} (== 100) so the UI default and the history default
+ * can never drift (教訓 5.19 単一の真実源).
+ */
+export const DEFAULT_UNDO_STACK_SIZE = DEFAULT_HISTORY_LIMIT;
+
 /** FR-110 defaults: snap 50px, 60 FPS. Vertex-marker cap a conservative default. */
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   snapDistancePx: 50,
@@ -210,6 +229,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vertexMarkerCap: 2000,
   // FR-118: the conflict-resolution guide is shown by default on first use.
   showConflictGuide: true,
+  // FR-74: the undo history retains 100 units by default (== DEFAULT_HISTORY_LIMIT).
+  undoStackSize: DEFAULT_UNDO_STACK_SIZE,
 };
 
 // Inclusive FPS bounds (FR-110: 1〜60 FPS). Single-sourced in the domain

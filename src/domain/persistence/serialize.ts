@@ -695,7 +695,8 @@ function uiSettingsEqual(a: UiSettings | undefined, b: UiSettings | undefined): 
     aa.snapDistancePx === ab.snapDistancePx &&
     aa.renderFps === ab.renderFps &&
     aa.vertexMarkerCap === ab.vertexMarkerCap &&
-    aa.showConflictGuide === ab.showConflictGuide
+    aa.showConflictGuide === ab.showConflictGuide &&
+    aa.undoStackSize === ab.undoStackSize
   );
 }
 
