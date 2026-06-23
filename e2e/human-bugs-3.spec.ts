@@ -9,16 +9,20 @@ import { test, expect, type Page } from '@playwright/test';
 
 import { commitOneFace, launchApp } from './helpers';
 
-/** Land in 追加モード from any starting mode (mirrors helpers.enterAddMode). */
+/** Land in 追加モード idempotently from any starting mode (a second call while already
+ *  in 追加モード must NOT toggle it back off — clicking an active mode toggle reverts it). */
 async function enterAddMode(page: Page): Promise<void> {
+  const addMode = page.getByTestId('mode-add');
+  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
   const viewToggle = page.getByTestId('mode-view');
   await expect(viewToggle).toBeVisible();
   if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
     await viewToggle.click();
   }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
+  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
+    await expect(addMode).toBeEnabled();
+    await addMode.click();
+  }
   await expect(addMode).toHaveAttribute('aria-pressed', 'true');
 }
 
@@ -221,6 +225,65 @@ test.describe('HB3-6/18 — ナイフで面をクリックすると対象とし�
       // selection/highlight color (it used to NOT update the selection → no highlight).
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+/** Commit one square face centred at (cx,cy) with the given half-size, via the live add導線.
+ *  Re-arms 追加モード + 面ツール idempotently so a SECOND call (after a prior commit left the
+ *  tool armed) toggles it OFF→ON for a fresh add session rather than disarming it. */
+async function commitFaceAt(page: Page, cx: number, cy: number, half: number): Promise<void> {
+  await enterAddMode(page);
+  const area = page.getByTestId('tool-add.area');
+  await expect(area).toBeVisible();
+  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click(); // re-arm fresh
+  await area.click();
+  await expect(area).toHaveAttribute('aria-pressed', 'true');
+  const addLayer = page.getByTestId('add-input-layer');
+  await expect(addLayer).toBeVisible();
+  for (const [dx, dy] of [
+    [-half, -half],
+    [half, -half],
+    [half, half],
+    [-half, half],
+  ] as const) {
+    await page.mouse.click(cx + dx, cy + dy);
+  }
+  await page.getByTestId('add-complete').click();
+  await page.getByTestId('add-save').click();
+}
+
+test.describe('HB3-15/16 — 結合ツールは個別リーフ本体をクリックして対象に取れる', () => {
+  test('2つの面をクリックで結合対象に取り、確定が有効化される', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // Two distinct top-level faces, left & right of centre (non-overlapping).
+      const mapInput = page.getByTestId('map-input-layer');
+      const m0 = (await mapInput.boundingBox())!;
+      const cx = m0.x + m0.width / 2;
+      const cy = m0.y + m0.height / 2;
+      await commitFaceAt(page, cx - 150, cy, 70);
+      await commitFaceAt(page, cx + 150, cy, 70);
+
+      // Arm the merge (結合) tool.
+      await enterEditMode(page);
+      const mergeTool = page.getByTestId('tool-edit.merge');
+      await expect(mergeTool).toBeEnabled();
+      await mergeTool.click();
+      await expect(mergeTool).toHaveAttribute('aria-pressed', 'true');
+
+      // Click each face body → each is picked as an INDIVIDUAL leaf target (HB3-16
+      // leafAtPoint). The hidden target-count mirror climbs 0 → 1 → 2.
+      const targetCount = page.getByTestId('merge-target-count');
+      await page.mouse.click(cx - 150, cy);
+      await expect(targetCount).toHaveText('1');
+      await page.mouse.click(cx + 150, cy);
+      await expect(targetCount).toHaveText('2');
+
+      // With two non-vertically-related leaves chosen, confirm is enabled (canConfirm).
+      await expect(page.getByTestId('merge-confirm')).toBeEnabled();
     } finally {
       await app.close();
     }
