@@ -13,6 +13,7 @@ import {
   INHERITANCE_SIDE,
   assembleSplitProposal,
   createInheritanceChoice,
+  createInheritanceChoiceAt,
   inheritorFeature,
   toSharedEdgeCutSpecs,
   toSplitSnapshot,
@@ -326,6 +327,58 @@ describe('bughunt2 — degenerate (<3 vertex) ring guard at proposal assembly (F
     expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
     for (const ring of proposal.inheritorShape.rings) {
       expect(ring.vertexIds.length).toBeGreaterThanOrEqual(3);
+    }
+  });
+});
+
+describe('bughunt3 — out-of-range inheritIndex must NOT duplicate a piece (Sonnet review HB3-5/19)', () => {
+  // A 3-piece (k+1) n-way result. If the effective inheritor index and the
+  // non-inheritor filter ever diverge, pieces[0] becomes BOTH the inheritor shape
+  // AND a new feature → a phantom duplicate. A stale/out-of-range UI index (e.g. the
+  // user chose 面5 of a previous 5-piece cut, then re-cut into 3) must clamp safely.
+  const threePieces = (): readonly SplitSide[] => [
+    { area: [[[c(0, 0), c(10, 0), c(10, 10), c(0, 10)]]], areaKm2: 100 },
+    { area: [[[c(10, 0), c(20, 0), c(20, 10), c(10, 10)]]], areaKm2: 100 },
+    { area: [[[c(20, 0), c(30, 0), c(30, 10), c(20, 10)]]], areaKm2: 100 },
+  ];
+
+  it('clamps an out-of-range inheritIndex to 0 — exactly k new features, no duplicated piece', () => {
+    const { feature, store } = unitSquare('clamp');
+    const pieces = threePieces();
+    const proposal = assembleSplitProposal({
+      target: feature,
+      store: store.byId,
+      result: { pieces, sideA: pieces[0]!, sideB: pieces[1]!, edgeCuts: [] },
+      choice: createInheritanceChoiceAt(99), // stale / out-of-range
+      nonInherited: { attributes: ATTRS, color: COLOR },
+      ids: freshIdPorts(),
+    });
+    // 3 pieces → 1 inheritor + EXACTLY 2 new features. The bug would yield 3 (all
+    // pieces land in newSides because the filter used the unclamped index 99).
+    expect(proposal.newFeatures).toHaveLength(2);
+    expect(proposal.inheritorFeatureId).toBe(feature.id);
+    // target + 2 new = 3 touched (the bug produced target + 3 = 4).
+    expect(proposal.touchedFeatureIds).toHaveLength(3);
+    // Each output feature id is distinct (no piece minted twice).
+    const ids = [proposal.inheritorFeatureId, ...proposal.newFeatures.map((f) => f.id)];
+    expect(new Set(ids).size).toBe(3);
+  });
+
+  it('an in-range inheritIndex selects that piece and makes the OTHER k-1 new (n-way)', () => {
+    const { feature, store } = unitSquare('inrange');
+    const pieces = threePieces();
+    const proposal = assembleSplitProposal({
+      target: feature,
+      store: store.byId,
+      result: { pieces, sideA: pieces[0]!, sideB: pieces[1]!, edgeCuts: [] },
+      choice: createInheritanceChoiceAt(2),
+      nonInherited: { attributes: ATTRS, color: COLOR },
+      ids: freshIdPorts(),
+    });
+    expect(proposal.newFeatures).toHaveLength(2);
+    expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
+    for (const nf of proposal.newFeatures) {
+      expect(isAlternationValid(nf.shape)).toBe(true);
     }
   });
 });

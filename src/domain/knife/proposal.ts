@@ -483,8 +483,13 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
   // OTHER piece becomes a new feature. `pieces` falls back to the 2-way [sideA, sideB]
   // for callers that build a result without the n-way `pieces` field.
   const pieces = result.pieces ?? [result.sideA, result.sideB];
-  const inheritIndex = choice.inheritIndex ?? (choice.inherit === INHERITANCE_SIDE.A ? 0 : 1);
-  const inheritSide = pieces[inheritIndex] ?? pieces[0]!;
+  // Resolve ONE effective index and reuse it for BOTH the inheritor pick AND the
+  // non-inheritor filter. If they diverge (e.g. an out-of-range/stale UI index after a
+  // re-cut produced fewer pieces), pieces[0] would become BOTH the inheritor shape and a
+  // new feature — a phantom duplicate piece (Sonnet review HB3-5/19, 教訓5.7系の堅牢性).
+  const rawIndex = choice.inheritIndex ?? (choice.inherit === INHERITANCE_SIDE.A ? 0 : 1);
+  const inheritIndex = rawIndex >= 0 && rawIndex < pieces.length ? rawIndex : 0;
+  const inheritSide = pieces[inheritIndex]!;
   const newSides = pieces.filter((_, i) => i !== inheritIndex);
 
   // ONE shared vertex pool across ALL pieces so a shared-seam coordinate resolves to the
