@@ -182,3 +182,47 @@ test.describe('HB3-14 — 属性編集（名前）を保存すると反映され
     }
   });
 });
+
+test.describe('HB3-6/18 — ナイフで面をクリックすると対象として選択・強調される', () => {
+  test('ナイフ武装→面クリックで対象が active feature になる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // Inline add (capture the layer box = the face's stable screen position).
+      await enterAddMode(page);
+      await page.getByTestId('tool-add.area').click();
+      const addLayer = page.getByTestId('add-input-layer');
+      await expect(addLayer).toBeVisible();
+      const a = (await addLayer.boundingBox())!;
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      for (const [dx, dy] of [
+        [-120, -120],
+        [120, -120],
+        [120, 120],
+        [-120, 120],
+      ] as const) {
+        await page.mouse.click(cx + dx, cy + dy);
+      }
+      await page.getByTestId('add-complete').click();
+      await page.getByTestId('add-save').click();
+      const activeFeature = page.getByTestId('app-active-feature');
+      await expect(activeFeature).toHaveText(/\S/);
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+
+      // Arm the knife (edit mode → knife tool). Entering edit clears the selection.
+      await enterEditMode(page);
+      const knifeTool = page.getByTestId('tool-edit.knife');
+      await expect(knifeTool).toBeEnabled();
+      await knifeTool.click();
+      await expect(knifeTool).toHaveAttribute('aria-pressed', 'true');
+
+      // Click the face body → it becomes the knife TARGET. HB3-6/18: selecting a knife
+      // target syncs store.setActiveFeature(target) so the target draws in the
+      // selection/highlight color (it used to NOT update the selection → no highlight).
+      await page.mouse.click(cx, cy);
+      await expect(activeFeature).toHaveText(faceId);
+    } finally {
+      await app.close();
+    }
+  });
+});
