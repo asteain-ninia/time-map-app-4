@@ -17,6 +17,19 @@
 
 チェックポイント: フル vitest **2992 passed** / e2e **74 passed** / typecheck=0 / lint=0（デグレなし）。各修正は敵対的検証(別subagent)で REAL を確認してから着手。
 
+## ✅ 第2次バグハント — 5件確定・全修正 (2026-06-24, 29エージェント・到達性証明検証)
+
+新領域×正確性/エッジ角度。候補21件中5件を確定（reachable を必須化＝#4型偽陽性を防ぐため、16件 refute）。
+
+| 領域 | バグ | 解決 |
+| --- | --- | --- |
+| persistence | `geoParamsSchema` が退化測地(equatorKm≤0/flattening≥1)を素通り→全面積/距離が無言で0 [HIGH] | superRefine で reject (cdb7f7f) |
+| vtransform/pan | zoomAtCursor/panCameraTo が centerLat を±90クランプせず→極でズーム/パンすると画面が永久に真っ白 | `clampLat` 追加 (cdb7f7f) |
+| time/anchor | `setEnd` が次アンカーへ食い込む終了を ok:true で黙って改変 [data-loss] | ガード厳格化＝次の開始へ到達したら reject (aff36d7) |
+| history/store | undo-dirty の clean/dirty 基準が設定変更を無視 ×2(applyUndoRedoResult + savedベースライン) | saved ベースラインに設定を含める (f6d00ae) |
+
+後3件は今セッション新コード(HB3-12 setEnd / P1 undo-dirty)のエッジを自己検出。チェックポイント: フル vitest 緑 + build + knife-nway スモーク緑。
+
 ---
 
 （以下は当初の確定リスト原文。各行の解決状況は上表を参照。）
