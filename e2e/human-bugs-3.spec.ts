@@ -7,7 +7,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { commitOneFace, launchApp } from './helpers';
 
 /** Land in 追加モード from any starting mode (mirrors helpers.enterAddMode). */
 async function enterAddMode(page: Page): Promise<void> {
@@ -20,6 +20,22 @@ async function enterAddMode(page: Page): Promise<void> {
   await expect(addMode).toBeEnabled();
   await addMode.click();
   await expect(addMode).toHaveAttribute('aria-pressed', 'true');
+}
+
+/** Land in 編集モード idempotently from any starting mode. */
+async function enterEditMode(page: Page): Promise<void> {
+  const editMode = page.getByTestId('mode-edit');
+  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
+  const viewToggle = page.getByTestId('mode-view');
+  await expect(viewToggle).toBeVisible();
+  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
+    await viewToggle.click();
+  }
+  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
+    await expect(editMode).toBeEnabled();
+    await editMode.click();
+  }
+  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
 }
 
 test.describe('HB3-21 — 点追加の確定ボタンは「点を確定」', () => {
@@ -76,6 +92,57 @@ test.describe('HB3-11 — 地物の「詳細」ボタンで詳細パネルが開
       await expect(detailButton).toBeVisible();
       await detailButton.click();
       await expect(page.getByTestId(`detail-panel-${faceId}`)).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('HB3-14 — 属性編集（名前）を保存すると反映され失敗しない', () => {
+  test('編集モードで地物を選び名前を変更→保存→新名が反映される', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // Commit one face through the LIVE add導線 (selects it on commit).
+      await commitOneFace(page);
+      const activeFeature = page.getByTestId('app-active-feature');
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+      expect(faceId.length).toBeGreaterThan(0);
+
+      // 編集モード clears the post-commit selection (教訓 5.2); re-select the face by a
+      // REAL body click (the HB-15 path, now un-blocked) so the property panel binds to it.
+      await enterEditMode(page);
+      const addLayer = page.getByTestId('add-input-layer');
+      // In 編集モード the add layer is gone; click the map centre where the face is.
+      const mapInput = page.getByTestId('map-input-layer');
+      const mb = (await mapInput.boundingBox())!;
+      await page.mouse.click(mb.x + mb.width / 2, mb.y + mb.height / 2);
+      await expect(activeFeature).toHaveText(faceId);
+      void addLayer;
+
+      // Select the (only) anchor so the edit has a target time (FR-59 — an attribute
+      // edit is anchored; the save guard rejects with 「錨が選択されていません」 otherwise).
+      await page.getByTestId('anchor-mode-list').click();
+      await page.locator('[data-testid^="anchor-row-"]').first().click();
+
+      // The basic-info form is now editable (edit mode + selected feature). Change the
+      // name and SAVE. HB3-14 regression: the save used to throw `editNotWired` and fail.
+      const basicInfo = page.getByTestId('basic-info');
+      await expect(basicInfo).toBeVisible();
+      const nameInput = basicInfo.getByLabel('名前');
+      await expect(nameInput).toBeEnabled();
+      await nameInput.fill('改名テスト国');
+      await page.getByTestId('save-button').click();
+      // The save must NOT fail: no error save-message appears (the editNotWired stub
+      // or the no-anchor guard would surface one here).
+      await expect(page.getByTestId('save-message')).toHaveCount(0);
+
+      // The edit PERSISTED: deselect, re-select the face, and the bound name input
+      // re-syncs to the committed feature's new name (HB3-14 wiring is live, not a stub).
+      await page.mouse.click(mb.x + 8, mb.y + 8); // click empty → deselect
+      await expect(activeFeature).toHaveText('');
+      await page.mouse.click(mb.x + mb.width / 2, mb.y + mb.height / 2); // re-select the face
+      await expect(activeFeature).toHaveText(faceId);
+      await expect(page.getByTestId('basic-info').getByLabel('名前')).toHaveValue('改名テスト国');
     } finally {
       await app.close();
     }
