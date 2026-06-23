@@ -30,6 +30,24 @@
 
 後3件は今セッション新コード(HB3-12 setEnd / P1 undo-dirty)のエッジを自己検出。チェックポイント: フル vitest 緑 + build + knife-nway スモーク緑。
 
+## ✅ 第3次バグハント — 9件確定・8修正+1 no-op (2026-06-24, 24エージェント・到達性証明検証)
+
+最も未ハントだった領域(shell/shortcut・search・timeline・basemap・knife深部)。候補18件中9確定（9 refute）。knife-geometry-deep は確定0＝n-way は堅牢。
+
+| 領域 | バグ | 解決 |
+| --- | --- | --- |
+| shell/shortcut | グローバルショートカットがモーダル貫通(undo/delete/redo) [HIGH] | 統一 suspended(modal-open) (e63c8b9) |
+| shell/shortcut | Add/Knife 描画中に Ctrl+Z 二重発火(頂点取消+ドメインundo) [HIGH] | suspended に tool-drawing 追加（リスナ順を実証検証＝stopImmediatePropagation単独は手遅れ）(e63c8b9) |
+| search | 検索ヒットのクリックが dead-end(選択/強調されない) [HIGH] | setActiveFeature + setDisplayFocus (53ef909) |
+| diagnostics | 地物カウントが mount スナップショットで凍結 | useStore 反応化 (53ef909) |
+| search | 結果が corpus 変化後に再評価されず stale hit 残留 | store 購読で再評価 (53ef909) |
+| timeline | 再生中の速度変更が次の pause/play まで無効(stale closure) | speedRef (05b5ad5) |
+| timeline | 直接ジャンプ入力が currentTime に再シードされず固定 | key 再マウント (05b5ad5) |
+| timeline/property | HB3-12 アンカー編集器が編集後に古い値表示 | key 再マウント (05b5ad5) |
+| basemap | formatCenterLon が 179.95→「180°」 [LOW] | **no-op で非適用**(rep∈[-180,180) なので提案 `>=180‖<=-180` は `===180‖===-180` と等価＝挙動不変。1桁丸めとして実害なし) |
+
+チェックポイント: フル vitest 緑 + build + e2e スモーク(shortcut-suspend/knife-nway)緑。
+
 ---
 
 （以下は当初の確定リスト原文。各行の解決状況は上表を参照。）
