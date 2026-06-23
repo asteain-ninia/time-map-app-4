@@ -23,7 +23,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { Calendar } from '../../domain/time/calendar';
 import type { ConsistencyReport, DomainProject } from '../../domain/persistence/index';
 import { serialize } from '../../domain/persistence/index';
-import type { SaveRequest, TimeMapApi } from '../../shell/ipc/contract';
+import type { LoadResponse, NamedAsset, SaveRequest, TimeMapApi } from '../../shell/ipc/contract';
 import type { ZoomRange } from '../../render/camera';
 
 import type { SessionStore } from '../state/store';
@@ -156,6 +156,26 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     contextRef.current = next;
   }, []);
 
+  // BUG #6 (data-loss) fix — the loaded ASSET BYTES, retained between load and save.
+  //
+  // The base-map image and attachment bytes live ONLY on the IPC `LoadResponse`
+  // (they are NOT part of `DomainProject`, which carries just a `baseMap.source`
+  // reference). Previously `buildSaveRequest` shipped `new Uint8Array()` / `[]` for
+  // them, so the FIRST save overwrote the on-disk `.tmap` with a zero-byte base-map
+  // asset — permanently losing the loaded map image on round-trip. The renderer is
+  // the only place that holds these bytes after a load, so we retain them here and
+  // re-ship them on save until the live asset units rebind the base map. A new /
+  // empty project carries no assets (empty image + no attachments). The ref is
+  // updated ONLY on a successful load (in the api-load wrappers below) and reset on
+  // a new-project init, mirroring the save context's lifecycle (教訓 5.36 同時初期化).
+  const loadedAssetsRef = useRef<{ baseMapImage: Uint8Array; attachments: readonly NamedAsset[] }>({
+    baseMapImage: new Uint8Array(),
+    attachments: [],
+  });
+  const resetLoadedAssets = useCallback(() => {
+    loadedAssetsRef.current = { baseMapImage: new Uint8Array(), attachments: [] };
+  }, []);
+
   // The EXACT store snapshot that was serialized into the in-flight save request.
   // A save serializes a snapshot at save START (buildSaveRequest); the IPC write is
   // async. If the user changes ANYTHING that the save persisted DURING the wait, the
@@ -206,6 +226,27 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // --- the live host capabilities (each is a dependency-unit API) -----------
   const host: FileOpsHost | null = useMemo(() => {
     if (api === null) return null;
+    // BUG #6 fix (capture half): wrap the U15 load calls so a successful load RETAINS
+    // its asset bytes in loadedAssetsRef before the load-adapter strips them (the
+    // adapter keeps only path + manifest). This is the only seam where the renderer
+    // sees the raw `LoadResponse.baseMapImage` / `.attachments`; without retaining
+    // them here the bytes are gone by the time a save assembles its request. A failed
+    // / cancelled load leaves the retained assets untouched (no destructive replace
+    // happened). All other api members pass through unchanged.
+    const captureAssets = (response: LoadResponse): LoadResponse => {
+      if (response.ok) {
+        loadedAssetsRef.current = {
+          baseMapImage: response.baseMapImage,
+          attachments: response.attachments,
+        };
+      }
+      return response;
+    };
+    const capturingApi: TimeMapApi = {
+      ...api,
+      load: async () => captureAssets(await api.load()),
+      loadDropped: async (droppedPath: string) => captureAssets(await api.loadDropped(droppedPath)),
+    };
     const buildSaveRequest = (): SaveRequest => {
       // Capture the EXACT snapshot the lost-edit guard compares against: the LIVE
       // store domain AND the two settings slices this save persists. onSaved can then
@@ -231,18 +272,22 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           appSettings: state.appSettings,
         }),
       };
+      // BUG #6 fix: ship the RETAINED asset bytes (the base-map image + attachments
+      // captured on the last successful load), NOT zero bytes. Without this the first
+      // save wrote an empty base-map asset over the loaded one, permanently losing the
+      // map image on a load→save round-trip. A new/empty project retains empty assets,
+      // so this is a no-op there. The live asset units can later update the ref when
+      // the base map is rebound in the renderer; the save path already reaches U15.
+      const assets = loadedAssetsRef.current;
       return {
-        // The manifest is serialized from the current domain (U14 serialize). Asset
-        // bytes (base-map / attachments) are owned by the render/asset units; until
-        // those are live-bound the request ships none — the SAVE path is fully wired
-        // and reaches U15 (受け入れ基準 1), the asset payload activates when bound.
+        // The manifest is serialized from the current domain (U14 serialize).
         manifest: serialize(domainToSave),
-        baseMapImage: new Uint8Array(),
-        attachments: [],
+        baseMapImage: assets.baseMapImage,
+        attachments: assets.attachments,
       };
     };
     return {
-      api,
+      api: capturingApi,
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
       onSaved: (path: string) => {
@@ -357,6 +402,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           : {},
       );
       applyContext(buildNewProjectContext());
+      // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map /
+      // attachment bytes from a previously-loaded project so 新規 after a load does not
+      // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
+      resetLoadedAssets();
     };
     registry.register(COMMAND_ID.FileNew, {
       run: () => void newProjectCommand(ports, initialiseNewProject),
@@ -372,13 +421,31 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       registry.unregister(COMMAND_ID.FileSave);
       registry.unregister(COMMAND_ID.FileSaveAs);
     };
-  }, [ports, registry, store, applyContext]);
+  }, [ports, registry, store, applyContext, resetLoadedAssets]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
   // `projectDirty`, set by BOTH setDomainState / applyCommandResult (domain edits)
   // AND updateProjectSetting (project settings, e.g. ズーム制限 FR-109). The guard's
   // isDirty() reads that flag directly, so there is no second dirty source to drift
   // (教訓 5.30 過少共有の戒め) and no per-path subscribe hook to keep in sync.
+
+  // --- auto-save tick subscription (FR-108 / 受け入れ基準 3) ------------------
+  //
+  // BUG #5 (wiring-gap) fix: the FR-108 auto-save chain was complete on the main side
+  // (the scheduler ticks and `webContents.send(AutoSaveTick)` fires) and the preload
+  // exposed `onAutoSaveTick`, but NO renderer effect subscribed to it — so every tick
+  // fell into the void and auto-save silently never saved. Subscribe here and route
+  // the tick through the SAME save decision the menu uses (saveCommand with the live
+  // needsSaveAs, 教訓 5.6 同一フロー): a never-saved project auto-saves via 名前を付けて保存
+  // (main owns the dialog), an established one saves to its path. The subscription
+  // returns an Unsubscribe that detaches the listener on unmount / re-arm. ports being
+  // live guarantees the save chain (serialized, lost-edit-guarded) is in place.
+  useEffect(() => {
+    if (api === null || ports === null) return undefined;
+    return api.onAutoSaveTick(() => {
+      void saveCommand(ports, needsSaveAs(contextRef.current));
+    });
+  }, [api, ports]);
 
   // --- window-close interception with the SAME quit guard (FR-107) ----------
   useEffect(() => {

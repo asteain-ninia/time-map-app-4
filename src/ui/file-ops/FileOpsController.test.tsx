@@ -654,6 +654,133 @@ describe('終了確認ガード (FR-107)', () => {
   });
 });
 
+describe('自動保存ティックの購読 (FR-108 / 受け入れ基準 3 — BUG #5)', () => {
+  // Regression for the wiring gap: main ticks AutoSaveTick and the preload exposes
+  // onAutoSaveTick, but no renderer effect subscribed — so auto-save never saved.
+  it('subscribes to onAutoSaveTick on mount and detaches on unmount', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const unsubscribe = vi.fn();
+    const onAutoSaveTick = vi.fn(() => unsubscribe);
+    const api = makeApi({ onAutoSaveTick });
+    const view = render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL} />,
+    );
+    // The controller actually subscribes (previously it never did).
+    expect(onAutoSaveTick).toHaveBeenCalledTimes(1);
+    // Unmount detaches the listener via the returned Unsubscribe (no leak).
+    view.unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it('firing the tick performs a save through the SAME path as the menu (never-saved → Save As)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let fireTick: (() => void) | null = null;
+    const onAutoSaveTick = vi.fn((listener: () => void) => {
+      fireTick = listener;
+      return () => {};
+    });
+    const api = makeApi({ onAutoSaveTick });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    expect(fireTick).not.toBeNull();
+    // The main-side scheduler fires the tick: the renderer must now save. A fresh
+    // (never-saved) project routes 保存 → 名前を付けて保存 (no path yet), same as the menu.
+    await act(async () => {
+      fireTick!();
+    });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+  });
+
+  it('the tick saves to the current path once the project has one (auto-save loop closes)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let fireTick: (() => void) | null = null;
+    const api = makeApi({ onAutoSaveTick: vi.fn((l: () => void) => { fireTick = l; return () => {}; }) });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Establish a save path (a successful Save As) so later saves use save().
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSaveAs); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+
+    // A subsequent auto-save tick saves to the established path, not Save As again.
+    await act(async () => { fireTick!(); });
+    await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    expect(api.saveAs).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込み=地図画像消失の回帰)', () => {
+  // Regression for the data-loss bug: buildSaveRequest shipped new Uint8Array() for
+  // baseMapImage, so the first save overwrote the loaded map image with zero bytes.
+  it('a loaded project re-saves the loaded base-map bytes, not zero bytes', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const mapBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]); // PNG-ish marker
+    const attachmentBytes = new Uint8Array([9, 8, 7]);
+    const loaded: LoadResponse = {
+      ok: true,
+      path: '/tmp/loaded.tmap',
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: mapBytes,
+      attachments: [{ name: 'attach-1.png', bytes: attachmentBytes }],
+    };
+    let savedReq: SaveRequest | null = null;
+    const api = makeApi({
+      load: vi.fn(async () => loaded),
+      // After a load the project has a path, but force Save As-free path by capturing
+      // whichever the save routes through; loaded files use save() (path set on reflect
+      // only via contextForLoadedFile). Capture both to be robust.
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.tmap' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.tmap' }; }),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Load (captures the asset bytes in the renderer).
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+
+    // Now save: the request must carry the LOADED bytes, not zero bytes.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReq).not.toBeNull());
+    expect(savedReq!.baseMapImage).toEqual(mapBytes);
+    expect(savedReq!.baseMapImage.length).toBeGreaterThan(0);
+    expect(savedReq!.attachments).toHaveLength(1);
+    expect(savedReq!.attachments[0]!.bytes).toEqual(attachmentBytes);
+  });
+
+  it('a NEW project saves zero base-map bytes (no carry-over from a previous load)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const mapBytes = new Uint8Array([1, 2, 3, 4]);
+    let savedReq: SaveRequest | null = null;
+    const api = makeApi({
+      load: vi.fn(async () => ({
+        ok: true as const,
+        path: '/tmp/loaded.tmap',
+        manifest: serialize(buildEmptyProject()),
+        baseMapImage: mapBytes,
+        attachments: [],
+      })),
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Load a project carrying map bytes, then start a NEW project (drops the assets).
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    await act(async () => { registry.dispatch(COMMAND_ID.FileNew); });
+
+    // Saving the new project must NOT re-ship the previous project's map bytes.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReq).not.toBeNull());
+    expect(savedReq!.baseMapImage.length).toBe(0);
+    expect(savedReq!.attachments).toHaveLength(0);
+  });
+});
+
 // --- helpers ----------------------------------------------------------------
 
 import { createAnchor, createAnchorSnapshot } from '../../domain/anchor';
