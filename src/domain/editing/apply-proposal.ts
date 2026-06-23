@@ -888,6 +888,22 @@ export function applyMergeProposal(
         : [...histories, newHistory];
   }
 
+  // 4. 共有頂点継続 (FR-95 / U11 transferSharing): 末端のみ結合は union 境界を NEW な
+  // VertexId へ作り直す (buildShapeFromMultiPolygon)。結合対象でも結果地物でもない NEIGHBOUR
+  // が旧境界頂点 id を共有していた場合、その引用を新 id へ張り替えねば旧頂点が孤立し
+  // NEIGHBOUR のリングがぶら下がり参照を抱える (次の移動/解決でシームが裂ける)。split 経路
+  // (applySplitProposal の本ステップ, applyVertexRemapToHistories) と同型に、結合の
+  // vertexRemap + 作り直した頂点 body を全 history の対象時刻アンカーへ適用する。集約系
+  // (vertexRemap 空) では恒等 = 無操作、共有 NEIGHBOUR が無い末端結合でも no-op
+  // (citesRemapped で素通り; 既存 merge テストが回帰しない)。純粋。
+  histories = applyVertexRemapToHistories(
+    histories,
+    snapshot.vertexRemap,
+    mergeVertices,
+    anchorTime,
+    calendar,
+  );
+
   return withHistories(root, histories);
 }
 

@@ -3,8 +3,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyAddProposal, applySplitProposal, deriveAnchorId } from './apply-proposal';
+import { applyAddProposal, applyMergeProposal, applySplitProposal, deriveAnchorId } from './apply-proposal';
 import { createEditProposal } from '../consistency/types';
+import { MERGE_STATUS, buildMergeProposal, toMergeEditProposal } from '../merge/proposal';
+import { parentNone, propertyNew } from '../merge/decision';
+import { makeIdPorts } from '../merge/fixtures';
 import { getCalendar } from '../time/calendar';
 import { timePointYear } from '../time/time-point';
 import { createBasicAttributes } from '../attributes';
@@ -585,5 +588,210 @@ describe('applySplitProposal', () => {
       expect(ids0).not.toContain('cut3');
       expect(ids0).not.toContain('cut7');
     }
+  });
+});
+
+describe('applyMergeProposal', () => {
+  // Collect EVERY vertex id any feature in an anchor snapshot cites (ring vertices,
+  // line vertices, point vertex). A reference to an id absent from that snapshot's
+  // vertex store is a dangling reference — the seam tears on the next move/resolve.
+  function citedVertexIds(features: readonly Feature[]): Set<string> {
+    const cited = new Set<string>();
+    for (const f of features) {
+      if (f.kind === 'leaf') {
+        for (const ring of f.shape.rings) for (const v of ring.vertexIds) cited.add(v as string);
+      } else if (f.kind === 'line') {
+        for (const v of f.vertexIds) cited.add(v as string);
+      } else if (f.kind === 'point') {
+        cited.add(f.vertexId as string);
+      }
+    }
+    return cited;
+  }
+
+  it('repoints a NEIGHBOUR sharing a merged boundary vertex (FR-95 / dangling regression)', () => {
+    // Leaf-only merge re-mints the union boundary into NEW vertex ids. Three leaves:
+    //   A = square [0,0]-[10,10], B = square [10,10]-[20,20] touch ONLY at corner
+    //   (10,10), citing it by the SAME VertexId 'sc' (a real shared corner). A third
+    //   leaf C = square [10,10]-[20,0] ALSO cites 'sc' at (10,10) but is NOT a merge
+    //   target. Merging A+B re-mints the corner 'sc' -> a new id; C still cites the
+    //   OLD 'sc'. The apply path MUST repoint C onto the new id as part of the same
+    //   indivisible merge (mirroring the split path's applyVertexRemapToHistories),
+    //   else the old body is orphaned and C's ring holds a dangling reference.
+    const sc = asVertexId('sc'); // corner (10,10), shared by A, B and the neighbour C.
+    const va0 = createVertex(asVertexId('a-v0'), { lon: 0, lat: 0 });
+    const va1 = createVertex(asVertexId('a-v1'), { lon: 10, lat: 0 });
+    const vscBody = createVertex(sc, { lon: 10, lat: 10 });
+    const va3 = createVertex(asVertexId('a-v3'), { lon: 0, lat: 10 });
+    const vb1 = createVertex(asVertexId('b-v1'), { lon: 20, lat: 10 });
+    const vb2 = createVertex(asVertexId('b-v2'), { lon: 20, lat: 20 });
+    const vb3 = createVertex(asVertexId('b-v3'), { lon: 10, lat: 20 });
+    const vc1 = createVertex(asVertexId('c-v1'), { lon: 20, lat: 0 });
+    const vc2 = createVertex(asVertexId('c-v2'), { lon: 20, lat: 10 });
+    const vc3 = createVertex(asVertexId('c-v3'), { lon: 10, lat: 0 });
+
+    const aRing = createTerritoryRing(asRingId('a-r0'), [va0.id, va1.id, sc, va3.id]);
+    const bRing = createTerritoryRing(asRingId('b-r0'), [sc, vb1.id, vb2.id, vb3.id]);
+    // C touches the shared corner (10,10) via 'sc' (truly shared), but is not merged.
+    const cRing = createTerritoryRing(asRingId('c-r0'), [vc3.id, vc1.id, vc2.id, sc]);
+    // Periods span the merge time (500) so all three exist at the merge (precondition).
+    const a = createLeafFeature(asFeatureId('a'), createBasicAttributes('a', 0, 1000), color, createShape([aRing]));
+    const b = createLeafFeature(asFeatureId('b'), createBasicAttributes('b', 0, 1000), color, createShape([bRing]));
+    const cFeature = createLeafFeature(asFeatureId('c'), createBasicAttributes('c', 0, 1000), color, createShape([cRing]));
+
+    const features: Feature[] = [a, b, cFeature];
+    const store = createVertexStore([va0, va1, vscBody, va3, vb1, vb2, vb3, vc1, vc2, vc3]);
+
+    // Seed all three leaves' histories into a project, each effective at the merge time.
+    let root: DomainProject = emptyProject();
+    for (const f of [a, b, cFeature]) {
+      const fStore = createVertexStore(
+        [...store.byId.values()].filter((v) => citedVertexIds([f]).has(v.id as string)),
+      );
+      root = applyAddProposal(root, {
+        featureId: f.id,
+        anchorTime: timePointYear(0),
+        snapshot: { feature: f, vertices: [...fStore.byId.values()], sharedCandidateIds: new Map() },
+      });
+    }
+
+    // Build the REAL merge proposal for A+B (leaf-only) and confirm 'sc' is re-minted.
+    const built = buildMergeProposal({
+      features,
+      vertices: store,
+      targetIds: [asFeatureId('a'), asFeatureId('b')],
+      atTime: 500,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({
+        attributes: createBasicAttributes('merged', 0, 100),
+        color,
+      }),
+      ids: makeIdPorts(),
+    });
+    expect(built.status).toBe(MERGE_STATUS.Proposal);
+    if (built.status !== MERGE_STATUS.Proposal) return;
+    const mergeProposal = built.proposal;
+    // The shared corner survives as a union boundary vertex and is re-minted.
+    expect(mergeProposal.vertexRemap.has(sc)).toBe(true);
+    expect(mergeProposal.deletedIds).toContain(asFeatureId('a'));
+    expect(mergeProposal.deletedIds).toContain(asFeatureId('b'));
+    // C is NOT a target — not deleted, not survived-touched, not created by the merge.
+    expect(mergeProposal.deletedIds).not.toContain(asFeatureId('c'));
+    expect(mergeProposal.survivedTouchedIds).not.toContain(asFeatureId('c'));
+    expect(mergeProposal.createdIds).not.toContain(asFeatureId('c'));
+
+    const editProposal = toMergeEditProposal(mergeProposal, timePointYear(500));
+    const next = applyMergeProposal(root, editProposal, calendar);
+
+    // CORE ASSERTION: after the merge, NO surviving feature references a VertexId that
+    // is absent from its own anchor snapshot's vertex store at the merge time. If C was
+    // left citing the orphaned old 'sc', that id resolves to no body -> dangling.
+    for (const history of next.histories) {
+      const at = resolveAt(history.series, timePointYear(500), calendar);
+      if (at.kind !== 'present') continue;
+      const snap = at.entry.anchor.snapshot;
+      const cited = citedVertexIds(snap.features);
+      for (const vid of cited) {
+        expect(
+          snap.vertices.byId.has(asVertexId(vid)),
+          `feature in history ${history.featureId as string} cites vertex ${vid} absent from its store (dangling)`,
+        ).toBe(true);
+      }
+    }
+
+    // Specifically: C's ring was repointed off the stale 'sc' onto the re-minted id,
+    // and that new id resolves to a body in C's anchor store (single source of truth).
+    const newSc = mergeProposal.vertexRemap.get(sc)! as string;
+    const cHistory = next.histories.find((h) => h.featureId === asFeatureId('c'))!;
+    const cAt500 = resolveAt(cHistory.series, timePointYear(500), calendar);
+    expect(cAt500.kind).toBe('present');
+    if (cAt500.kind !== 'present') return;
+    const cSnap = cAt500.entry.anchor.snapshot;
+    const cAfter = cSnap.features.find((f) => f.id === asFeatureId('c'))!;
+    expect(cAfter.kind).toBe('leaf');
+    if (cAfter.kind !== 'leaf') return;
+    const cIds = cAfter.shape.rings[0]!.vertexIds.map((v) => v as string);
+    expect(cIds).toContain(newSc);
+    expect(cIds).not.toContain('sc');
+    expect(cSnap.vertices.byId.has(asVertexId(newSc))).toBe(true);
+
+    // C's ORIGINAL year-0 anchor is untouched (identity continuity; past-edit only the
+    // anchor effective at the merge time).
+    const cAt0 = resolveAt(cHistory.series, timePointYear(0), calendar);
+    expect(cAt0.kind).toBe('present');
+    if (cAt0.kind !== 'present') return;
+    const cFeature0 = cAt0.entry.anchor.snapshot.features.find((f) => f.id === asFeatureId('c'))!;
+    if (cFeature0.kind === 'leaf') {
+      expect(cFeature0.shape.rings[0]!.vertexIds.map((v) => v as string)).toContain('sc');
+    }
+  });
+
+  it('a merge with NO sharing neighbour leaves unrelated histories untouched (no-op repoint)', () => {
+    // A+B merge as before, but the third leaf D shares NO vertex id with A or B (it
+    // sits far away with its own ids). The repoint step must be a no-op for D: its
+    // history object is preserved and it still cites exactly its own vertices.
+    const sc = asVertexId('sc');
+    const va0 = createVertex(asVertexId('a-v0'), { lon: 0, lat: 0 });
+    const va1 = createVertex(asVertexId('a-v1'), { lon: 10, lat: 0 });
+    const vscBody = createVertex(sc, { lon: 10, lat: 10 });
+    const va3 = createVertex(asVertexId('a-v3'), { lon: 0, lat: 10 });
+    const vb1 = createVertex(asVertexId('b-v1'), { lon: 20, lat: 10 });
+    const vb2 = createVertex(asVertexId('b-v2'), { lon: 20, lat: 20 });
+    const vb3 = createVertex(asVertexId('b-v3'), { lon: 10, lat: 20 });
+
+    const aRing = createTerritoryRing(asRingId('a-r0'), [va0.id, va1.id, sc, va3.id]);
+    const bRing = createTerritoryRing(asRingId('b-r0'), [sc, vb1.id, vb2.id, vb3.id]);
+    const a = createLeafFeature(asFeatureId('a'), createBasicAttributes('a', 0, 1000), color, createShape([aRing]));
+    const b = createLeafFeature(asFeatureId('b'), createBasicAttributes('b', 0, 1000), color, createShape([bRing]));
+    const d = squareLeaf('d', ['d0', 'd1', 'd2'], [100, 110, 120]);
+
+    const store = createVertexStore([va0, va1, vscBody, va3, vb1, vb2, vb3, ...d.vertices]);
+
+    let root: DomainProject = emptyProject();
+    root = applyAddProposal(root, {
+      featureId: a.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: a, vertices: [va0, va1, vscBody, va3], sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: b.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: b, vertices: [vscBody, vb1, vb2, vb3], sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: d.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: d.feature, vertices: d.vertices, sharedCandidateIds: new Map() },
+    });
+
+    const dHistoryBefore = root.histories.find((h) => h.featureId === d.feature.id)!;
+
+    const built = buildMergeProposal({
+      features: [a, b, d.feature],
+      vertices: store,
+      targetIds: [asFeatureId('a'), asFeatureId('b')],
+      atTime: 500,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({
+        attributes: createBasicAttributes('merged', 0, 100),
+        color,
+      }),
+      ids: makeIdPorts(),
+    });
+    expect(built.status).toBe(MERGE_STATUS.Proposal);
+    if (built.status !== MERGE_STATUS.Proposal) return;
+
+    const next = applyMergeProposal(root, toMergeEditProposal(built.proposal, timePointYear(500)), calendar);
+
+    // D's history is referentially identical (the empty-overlap repoint is a no-op for it).
+    const dHistoryAfter = next.histories.find((h) => h.featureId === d.feature.id)!;
+    expect(dHistoryAfter).toBe(dHistoryBefore);
+    // D still cites exactly its own vertices, all resolving to bodies (no dangling).
+    const dAt = resolveAt(dHistoryAfter.series, timePointYear(500), calendar);
+    expect(dAt.kind).toBe('present');
+    if (dAt.kind !== 'present') return;
+    const dSnap = dAt.entry.anchor.snapshot;
+    const dCited = citedVertexIds(dSnap.features);
+    for (const vid of dCited) expect(dSnap.vertices.byId.has(asVertexId(vid))).toBe(true);
   });
 });
