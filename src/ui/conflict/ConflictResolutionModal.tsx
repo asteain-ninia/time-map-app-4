@@ -211,15 +211,25 @@ export function ConflictResolutionModal<S>(
           </button>
         )}
 
-        {/* Rejection banner (FR-115 / FR-117). */}
+        {/* Rejection banner (FR-115 / FR-117). Includes a retry affordance so the
+            Rejected phase is not a dead-end: the user can re-enter Resolving and
+            pick different policies without abandoning the paused edit (cancel). */}
         {phase === MODAL_PHASE.Rejected && rejectionMessage !== null && (
-          <p
+          <div
             className="conflict-dialog__error"
             role="alert"
             data-testid="conflict-rejection"
           >
-            {rejectionMessage}
-          </p>
+            <p className="conflict-dialog__error-message">{rejectionMessage}</p>
+            <button
+              type="button"
+              className="conflict-dialog__retry"
+              data-testid="conflict-retry"
+              onClick={() => resolution.resetToResolving()}
+            >
+              {ACTION_STRINGS.retry}
+            </button>
+          </div>
         )}
 
         <div className="conflict-dialog__body">

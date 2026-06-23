@@ -72,6 +72,13 @@ export const ACTION_STRINGS = {
   cancel: 'キャンセル',
   /** Title shown on the disabled apply button explaining why. */
   applyDisabledHint: 'すべての重なりに方針を指定すると適用できます。',
+  /**
+   * Retry button shown in the rejection banner (FR-115 行き止まり解消): re-enters
+   * the resolving phase so the user can pick different policies and apply again,
+   * WITHOUT abandoning the paused edit (cancel) — the rejected drafts are spent
+   * (教訓 5.2) so the user starts the re-pick fresh.
+   */
+  retry: '選択し直す',
 } as const;
 
 /** First-time guide (FR-118). Japanese only (FR-115). */

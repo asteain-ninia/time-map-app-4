@@ -241,6 +241,79 @@ describe('再競合とエラー提示 (受け入れ基準 6)', () => {
   });
 });
 
+describe('拒否フェーズの行き止まり解消 (FR-115 / 教訓 5.2)', () => {
+  it('拒否後に「選択し直す」で Resolving へ戻り、別方針で再適用できる', async () => {
+    const user = userEvent.setup();
+    // First apply → Rejected; after retry + re-pick, the second apply commits.
+    let call = 0;
+    const apply = vi.fn<(r: readonly Resolution[]) => ProcessResult<unknown>>(() => {
+      call += 1;
+      if (call === 1) {
+        return {
+          status: PROCESS_STATUS.Rejected,
+          kind: REJECTION_KIND.Internal,
+          message: '内部処理で想定外の問題が発生しました。',
+        };
+      }
+      return { status: PROCESS_STATUS.Committed, state: {}, command: {} as never };
+    });
+    const onCancel = vi.fn();
+    const onCommitted = vi.fn();
+    renderModal([conflict('c1', FA, FB)], {
+      applyResolutions: apply,
+      onCancel,
+      onCommitted,
+    });
+
+    // Round 1: pick a policy, apply → rejected.
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+    expect(screen.getByTestId('conflict-rejection')).toBeInTheDocument();
+    // Dead-end-killer: a retry control exists in the rejection banner.
+    const retry = screen.getByTestId('conflict-retry');
+    expect(retry).toBeInTheDocument();
+
+    // Retry: re-enter Resolving WITHOUT abandoning the operation (no onCancel),
+    // the rejection banner clears and the spent draft is gone (apply re-disabled).
+    await user.click(retry);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('conflict-rejection')).not.toBeInTheDocument();
+    expect(screen.getByTestId(`policy-c1-${String(FA)}`)).not.toBeChecked();
+    expect(screen.getByTestId('conflict-apply')).toBeDisabled();
+
+    // Re-pick a DIFFERENT priority and apply again → commits this time.
+    await user.click(screen.getByTestId(`policy-c1-${String(FB)}`));
+    const applyBtn = screen.getByTestId('conflict-apply');
+    expect(applyBtn).toBeEnabled();
+    await user.click(applyBtn);
+    expect(apply).toHaveBeenCalledTimes(2);
+    expect(apply.mock.calls[1]![0]).toEqual([
+      { conflictId: 'c1', priorityFeatureId: FB, adjustFeatureId: FA },
+    ]);
+    expect(onCommitted).toHaveBeenCalledTimes(1);
+  });
+
+  it('再選択せず「選択し直す」直後は適用ボタンが無効 (拒否ドラフトは破棄済み, 教訓 5.2)', async () => {
+    const user = userEvent.setup();
+    const apply = vi.fn(
+      (): ProcessResult<unknown> => ({
+        status: PROCESS_STATUS.Rejected,
+        kind: REJECTION_KIND.Internal,
+        message: '内部処理で想定外の問題が発生しました。',
+      }),
+    );
+    renderModal([conflict('c1', FA, FB)], { applyResolutions: apply });
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+    // Retry then immediately try to apply — must NOT re-fire with stale drafts.
+    await user.click(screen.getByTestId('conflict-retry'));
+    const applyBtn = screen.getByTestId('conflict-apply');
+    expect(applyBtn).toBeDisabled();
+    await user.click(applyBtn);
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('キャンセルと一時状態の破棄 (受け入れ基準 7, 教訓 5.2)', () => {
   it('キャンセルは onCancel を呼び、ドメイン適用は行わない', async () => {
     const user = userEvent.setup();

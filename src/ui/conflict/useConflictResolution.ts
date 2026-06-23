@@ -82,6 +82,14 @@ export interface ConflictResolutionActions {
   choosePriority(conflictId: string, priorityFeatureId: FeatureId): void;
   /** Apply all policies via the U13 adapter (only when `canApply`). */
   apply(): void;
+  /**
+   * Re-enter the Resolving phase from Rejected so the user can pick different
+   * policies and apply again — WITHOUT discarding the conflict set / calling
+   * `onCancel` (FR-115 行き止まり解消). The rejected drafts are already spent
+   * (cleared on rejection, 教訓 5.2 全経路で破棄), so the user re-picks fresh; the
+   * conflict list is untouched. No-op outside the Rejected phase (型経由の分岐).
+   */
+  resetToResolving(): void;
   /** Cancel: discard ALL draft state; no domain change (教訓 5.2 / 受け入れ基準 7). */
   cancel(): void;
 }
@@ -133,6 +141,21 @@ export function useConflictResolution<S>(
     setPhase(MODAL_PHASE.Resolving);
     onCancel?.();
   }, [onCancel]);
+
+  const resetToResolving = useCallback(() => {
+    // Re-arm the resolving phase from Rejected (FR-115 行き止まり解消). ONLY the
+    // Rejected phase has a path here: never re-open a Committed modal, and a
+    // no-op while already Resolving (型経由の分岐, 教訓 5.19). The drafts were
+    // already cleared on rejection (教訓 5.2), so we keep them empty here — the
+    // user re-picks fresh, and `canApply` re-arms once every conflict has a
+    // policy again. The conflict set is left intact: this is NOT a cancel
+    // (onCancel is NOT called, no domain change).
+    setPhase((p) => {
+      if (p !== MODAL_PHASE.Rejected) return p;
+      setRejectionMessage(null);
+      return MODAL_PHASE.Resolving;
+    });
+  }, []);
 
   const apply = useCallback(() => {
     // Hard gate: never split the apply; only fire while RESOLVING and when全件
@@ -201,6 +224,7 @@ export function useConflictResolution<S>(
     committed,
     choosePriority,
     apply,
+    resetToResolving,
     cancel,
   };
 }
