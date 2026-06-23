@@ -28,6 +28,7 @@ import {
   REPAIR_OUTCOME,
   type RepairChoices,
 } from './repair-flow';
+import { REPAIR_STRINGS } from './strings';
 
 /**
  * Ports the file commands depend on. Each maps 1:1 to a dependency unit's public
@@ -56,7 +57,17 @@ export interface FileCommandPorts {
   readonly calendar: Calendar;
 
   // -- auto-repair UI (FR-106) — returns the user's choices, or null to abort -
-  readonly promptRepair: (report: ConsistencyReport) => Promise<RepairChoices | null>;
+  //
+  // `isRetry` distinguishes the FIRST open from a RE-PRESENT after the chosen
+  // repairs left the project inconsistent (REPAIR_OUTCOME.Unresolved). The
+  // controller shows the『前回の修復では解消できなかった』banner only on a retry —
+  // completeLoad stays pure (it merely passes the flag), so the seam lives entirely
+  // in the port contract (BUG #2: the retry banner was unreachable from the live
+  // flow because the controller had no way to tell first-open from retry-open).
+  readonly promptRepair: (
+    report: ConsistencyReport,
+    isRetry: boolean,
+  ) => Promise<RepairChoices | null>;
 
   // -- reflect + notify ------------------------------------------------------
   /** Reflect a validated project into the domain (確定後のみ, 教訓 5.22). */
@@ -112,23 +123,41 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   }
   if (step.kind !== LOAD_STEP.Repair) return; // unreachable for an Ok parse
 
-  // Inconsistencies: drive the auto-repair UI. A null choice == 修復せず中止.
-  const choices = await ports.promptRepair(step.report);
+  // Inconsistencies: drive the auto-repair UI (first open, isRetry=false). A null
+  // choice == 修復せず中止 — the user's explicit abort, which keeps the current state
+  // and is NOT a failure to notify about (受け入れ基準 3: 中止は静かに現状維持).
+  const choices = await ports.promptRepair(step.report, false);
   if (choices === null) return;
   const rows = buildRepairRows(step.report);
   const applied = applyChosenRepairs(project, rows, choices, ports.calendar);
   // 教訓 5.22: reflect ONLY when the repaired project is fully consistent.
   if (applied.outcome === REPAIR_OUTCOME.Applied) {
     ports.reflectProject(applied.project, transport.ok ? transport.path : '');
-  } else if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
-    // The chosen repairs did not resolve everything; re-present (the UI loops).
-    const retry = await ports.promptRepair(applied.remaining);
-    if (retry === null) return;
+    return;
+  }
+  if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
+    // The chosen repairs did not resolve everything; re-present ONCE (isRetry=true,
+    // so the controller shows the『前回は解消できなかった』banner — BUG #2).
+    const retry = await ports.promptRepair(applied.remaining, true);
+    // BUG #5: a cancelled retry must NOT silently drop the load. Unlike the first
+    // 中止 (which keeps the untouched current state with no surprise), reaching the
+    // retry means we already told the user their first repair failed; cancelling now
+    // is a genuine "could not make it consistent" outcome, so surface it explicitly.
+    if (retry === null) {
+      ports.notify(REPAIR_STRINGS.abortedUnresolved);
+      return;
+    }
     const retryRows = buildRepairRows(applied.remaining);
     const retried = applyChosenRepairs(applied.project, retryRows, retry, ports.calendar);
     if (retried.outcome === REPAIR_OUTCOME.Applied) {
       ports.reflectProject(retried.project, transport.ok ? transport.path : '');
+      return;
     }
+    // BUG #5: the SECOND attempt is ALSO Unresolved (or Incomplete, which cannot
+    // occur — promptRepair returns complete choices or null). We do NOT loop forever
+    // and we do NOT silently load inconsistent data: abort the load and tell the user
+    // the file could not be made consistent (教訓 5.22 確定までドメインを破壊しない).
+    ports.notify(REPAIR_STRINGS.abortedUnresolved);
   }
   // Incomplete cannot occur here (promptRepair returns complete choices or null).
 }

@@ -320,8 +320,14 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      promptRepair: (report: ConsistencyReport) =>
+      promptRepair: (report: ConsistencyReport, isRetry: boolean) =>
         new Promise<RepairChoices | null>((resolve) => {
+          // BUG #2: a retry-open (the first chosen repairs left the project
+          // inconsistent, REPAIR_OUTCOME.Unresolved) shows the『前回の修復では解消
+          // できなかった』banner; a fresh first-open clears it. Without this the live
+          // flow always passed unresolved={false}, so the banner (tested in isolation
+          // in RepairDialog.test.tsx) was unreachable through the real load path.
+          setRepairUnresolved(isRetry);
           setPendingRepair({
             report,
             resolve: (choices) => {

@@ -27,6 +27,13 @@ export const REPAIR_STRINGS = {
   abort: '読み込みを中止',
   /** Shown when a repair did not fully resolve the data (受け入れ基準 3 末項). */
   unresolved: '選択した修復ではすべての不整合を解消できませんでした。別の方法を選んでください。',
+  /**
+   * Final notice when even the SECOND repair attempt could not make the data
+   * consistent (or the retry was cancelled): the load is aborted rather than
+   * silently loading inconsistent data (FR-106 / 教訓 5.22 確定までドメインを破壊しない).
+   */
+  abortedUnresolved:
+    '不整合を解消できなかったため、読み込みを中止しました。データは変更されていません。',
   /** Field labels for one inconsistency row. */
   fieldTime: '作中時刻',
   fieldRange: '時間範囲',

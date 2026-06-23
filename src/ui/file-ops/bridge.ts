@@ -47,8 +47,15 @@ export interface FileOpsHost {
   readonly isDirty: () => boolean;
   /** Show the 3-choice unsaved warning (U20 modal); resolves the choice (FR-107). */
   readonly promptUnsaved: () => Promise<UnsavedChoice>;
-  /** Show the auto-repair UI (U20 modal); resolves choices or null (FR-106). */
-  readonly promptRepair: (report: ConsistencyReport) => Promise<RepairChoices | null>;
+  /**
+   * Show the auto-repair UI (U20 modal); resolves choices or null (FR-106).
+   * `isRetry` is true when re-presenting after the first repair left the project
+   * inconsistent, so the controller shows the『前回は解消できなかった』banner (BUG #2).
+   */
+  readonly promptRepair: (
+    report: ConsistencyReport,
+    isRetry: boolean,
+  ) => Promise<RepairChoices | null>;
   /** Reflect a validated project into the store + adopt its save context (教訓 5.22). */
   readonly reflectProject: (project: DomainProject, path: string) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */

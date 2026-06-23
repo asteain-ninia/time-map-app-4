@@ -11,6 +11,25 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { StoreApi } from 'zustand/vanilla';
 
+// BUG #2 (repair retry banner) needs a load whose FIRST chosen repair leaves the
+// project inconsistent so the SECOND repair dialog re-opens with the unresolved
+// banner. Crafting a domain project that provably fails to self-heal is brittle, so
+// we override ONLY repair-flow's apply step with a per-test outcome queue; the rest
+// of repair-flow (buildRepairRows / allChoicesMade / setRepairChoice / labels /
+// REPAIR_OUTCOME) stays REAL so the RepairDialog still renders real, pickable rows.
+const applyOutcomeQueue: unknown[] = [];
+vi.mock('./repair-flow', async (importActual) => {
+  const actual = await importActual<typeof import('./repair-flow')>();
+  return {
+    ...actual,
+    applyChosenRepairs: vi.fn((...args: unknown[]) =>
+      applyOutcomeQueue.length > 0
+        ? applyOutcomeQueue.shift()
+        : (actual.applyChosenRepairs as (...a: never[]) => unknown)(...(args as never[])),
+    ),
+  };
+});
+
 import { getCalendar } from '../../domain/time/calendar';
 import {
   serialize,
@@ -30,6 +49,8 @@ import {
   type WindowCloseHook,
 } from './FileOpsController';
 import { buildEmptyProject } from './save-context';
+import { REPAIR_OUTCOME } from './repair-flow';
+import { REPAIR_STRINGS } from './strings';
 
 const CAL = getCalendar('gregorian');
 
@@ -56,7 +77,11 @@ function okLoad(): LoadResponse {
   return { ok: true, path: '/tmp/loaded.tmap', manifest, baseMapImage: new Uint8Array(), attachments: [] };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  applyOutcomeQueue.length = 0;
+  vi.clearAllMocks();
+});
 
 describe('FileOpsController registers the ファイル commands on the U20 registry (受け入れ基準 1/6)', () => {
   it('registers New / Open / Save / Save As', () => {
@@ -426,6 +451,75 @@ describe('自動修復オプション UI (FR-106 / 受け入れ基準 3)', () =>
     await waitFor(() =>
       expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
     );
+  });
+
+  /** Pick the first repair option in every row, then click 修復して読み込む. */
+  async function chooseAllAndApply(): Promise<void> {
+    const radios = screen.getAllByRole('radio');
+    for (const radio of radios) {
+      // One option per row in the brokenLoad report; selecting each completes the form.
+      fireEvent.click(radio);
+    }
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('repair-apply'));
+    });
+  }
+
+  it('BUG #2: a first Unresolved re-opens the dialog WITH the unresolved banner (live flow)', async () => {
+    // First chosen repair leaves the project inconsistent (Unresolved); the retry
+    // then resolves it. The banner — tested in isolation in RepairDialog.test.tsx —
+    // must now be REACHABLE through the live controller flow (it never was before).
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ load: vi.fn(async () => brokenLoad()) });
+    applyOutcomeQueue.push(
+      // 1st apply → still broken: re-present with the banner.
+      { outcome: REPAIR_OUTCOME.Unresolved, project: buildEmptyProject(), remaining: { ok: false, inconsistencies: [{ kind: 'shape-preservation', featureIds: [], featureNames: ['A'], detail: 'x' }] } },
+      // 2nd apply (after the retry) → resolved.
+      { outcome: REPAIR_OUTCOME.Applied, project: buildEmptyProject() },
+    );
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    // First dialog: NO unresolved banner.
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    expect(screen.queryByTestId('repair-unresolved')).not.toBeInTheDocument();
+
+    // Choose + apply → the first repair is Unresolved, so the dialog re-opens.
+    await chooseAllAndApply();
+    // The retry dialog now shows the banner (BUG #2: previously always unresolved={false}).
+    await waitFor(() =>
+      expect(screen.getByTestId('repair-unresolved')).toHaveTextContent(REPAIR_STRINGS.unresolved),
+    );
+  });
+
+  it('BUG #5: BOTH attempts Unresolved → the load aborts with a notice (no silent success)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ load: vi.fn(async () => brokenLoad()) });
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
+    const alertSpy = vi.spyOn(globalThis, 'alert').mockImplementation(() => {});
+    const stillBroken = { ok: false as const, inconsistencies: [{ kind: 'shape-preservation' as const, featureIds: [], featureNames: ['A'], detail: 'x' }] };
+    applyOutcomeQueue.push(
+      { outcome: REPAIR_OUTCOME.Unresolved, project: buildEmptyProject(), remaining: stillBroken },
+      { outcome: REPAIR_OUTCOME.Unresolved, project: buildEmptyProject(), remaining: stillBroken },
+    );
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    await chooseAllAndApply(); // 1st apply Unresolved → retry dialog opens
+    await waitFor(() => expect(screen.getByTestId('repair-unresolved')).toBeInTheDocument());
+    await chooseAllAndApply(); // 2nd apply ALSO Unresolved → explicit abort
+
+    // The flow surfaces the explicit failure notice and does NOT reflect a project.
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith(REPAIR_STRINGS.abortedUnresolved));
+    expect(reflect).not.toHaveBeenCalled();
+    // The modal is closed (the load ended, not looping forever).
+    await waitFor(() =>
+      expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
+    );
+    alertSpy.mockRestore();
   });
 });
 
