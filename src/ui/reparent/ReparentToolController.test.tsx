@@ -316,6 +316,39 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     h.unmount();
   });
 
+  it('最上位へ (detach / parentNone) button: enabled with a target alone, detaches a nested leaf (bughunt parentNone wiring)', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+
+    // First reparent leaf-a UNDER leaf-b so it is nested (gives us something to detach).
+    clickInput(1, 1); // target = leaf-a
+    clickInput(5, 1); // new parent = leaf-b
+    fireEvent.click(screen.getByTestId('reparent-confirm'));
+    expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
+
+    // Re-arm (the confirm re-armed at pick-target) and pick the nested leaf-a as the target.
+    clickInput(1, 1);
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    // The detach button is enabled with ONLY a target (no new parent needed), unlike confirm.
+    expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
+    expect(screen.getByTestId('reparent-confirm-none')).not.toBeDisabled();
+
+    // Click 最上位へ → leaf-a returns to top level (parentId cleared). This whole path
+    // (parentNone) was previously UNREACHABLE from the UI.
+    fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined();
+    h.unmount();
+  });
+
+  it('the detach button is disabled until a target is picked', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    expect(screen.getByTestId('reparent-confirm-none')).toBeDisabled();
+    clickInput(1, 1); // pick leaf-a
+    expect(screen.getByTestId('reparent-confirm-none')).not.toBeDisabled();
+    h.unmount();
+  });
+
   it('leaving the reparent tool discards the transient selection (教訓 5.2 全経路で破棄)', () => {
     const h = mountReparent();
     activateReparent(h.store);

@@ -16,6 +16,7 @@ export {
   type UseReparentToolOptions,
   type ResolveFeatures,
   type ResolveAnchorTime,
+  type ResolveVertexStore,
   type StartAffiliationProcess,
   useReparentTool,
 } from './useReparentTool';

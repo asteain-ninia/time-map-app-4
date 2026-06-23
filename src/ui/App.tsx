@@ -1917,6 +1917,7 @@ export function App(): JSX.Element {
               store={store}
               startProcess={reparentBootstrap.startProcess}
               resolveFeatures={reparentBootstrap.resolveFeatures}
+              resolveStore={reparentBootstrap.resolveStore}
               anchorTime={() => store.getState().currentTime}
               screenToWorld={screenToWorld}
               featureAtPoint={reparentBootstrap.featureAtPoint}
@@ -2550,6 +2551,7 @@ function createMergeBootstrap(
 
 import type {
   ResolveFeatures as ReparentResolveFeatures,
+  ResolveVertexStore as ReparentResolveStore,
   StartAffiliationProcess,
   FeatureAtPoint as ReparentFeatureAtPoint,
 } from './reparent/index';
@@ -2557,6 +2559,8 @@ import type { AffiliationSnapshot } from '../domain/editing/apply-proposal';
 
 interface ReparentBootstrap<S> {
   readonly resolveFeatures: ReparentResolveFeatures;
+  /** Live vertices at the anchor time → enables the post-reparent 形状=和 check (基準 5). */
+  readonly resolveStore: ReparentResolveStore;
   readonly featureAtPoint: ReparentFeatureAtPoint;
   /** Resolve a target / new-parent id → its leaf shape at the current time (HB3-15(c)). */
   readonly resolveLeafShape: (featureId: FeatureId) => GeoMultiPolygon | undefined;
@@ -2579,6 +2583,13 @@ function createReparentBootstrap(
   // 教訓 5.29). No id ports: the existing-parent reparent mints nothing (aggregates are
   // shapeless, FR-35; a `create` decision would mint inside buildAffiliationProposal).
   const resolveFeatures: ReparentResolveFeatures = () => featuresAt(getRoot(), getTime());
+  // The vertices effective at the SAME anchor time (the SAME live-lookup the knife / merge
+  // bootstraps use, 単一真実源 教訓 5.29). Threaded into buildAffiliationProposal so the
+  // post-reparent 形状=和・隙間なし check (checkAggregateShapes via validateHierarchy) runs
+  // (基準 5 / FR-35) — previously omitted, so the shape-gap check was silently skipped on
+  // every reparent (bughunt). Read at call time so a load / time move / edit is reflected
+  // without a stale capture (教訓 5.6).
+  const resolveStore: ReparentResolveStore = () => verticesAt(getRoot(), getTime());
   // HB3-16: 所属変更の対象/上位探索も INDIVIDUAL LEAF を拾う `leafAtPoint` (DECISIONS HB3-16).
   // 集約表示中(N=0)に集約体の下に隠れた個別 leaf を直接ターゲット/新上位に選べる必要がある。
   // `drawnAreaAt` だと描画されている集約体 id を返すため、同じ集約に属する兄弟 A,B を続けて
@@ -2601,5 +2612,12 @@ function createReparentBootstrap(
     proposal: EditProposal<AffiliationSnapshot>,
   ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
 
-  return { resolveFeatures, featureAtPoint, resolveLeafShape, startProcess, applyResolutionsFor };
+  return {
+    resolveFeatures,
+    resolveStore,
+    featureAtPoint,
+    resolveLeafShape,
+    startProcess,
+    applyResolutionsFor,
+  };
 }

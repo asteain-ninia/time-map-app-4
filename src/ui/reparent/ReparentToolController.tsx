@@ -47,6 +47,7 @@ import {
   useReparentTool,
   type ResolveAnchorTime,
   type ResolveFeatures,
+  type ResolveVertexStore,
   type StartAffiliationProcess,
 } from './useReparentTool';
 
@@ -96,6 +97,12 @@ export interface ReparentToolControllerProps<S> {
   readonly resolveFeatures: ResolveFeatures;
   /** The anchor time the reparent confirms at (UI 文脈優先). */
   readonly anchorTime: ResolveAnchorTime;
+  /**
+   * Live-lookup of the vertices at the anchor time. Threaded into the hook so
+   * buildAffiliationProposal's post-reparent 形状=和・隙間なし check runs (基準 5 / FR-35).
+   * Optional: a host without it falls back to the topological-only check.
+   */
+  readonly resolveStore?: ResolveVertexStore | undefined;
   /** Pointer client-coords → world (U17). */
   readonly screenToWorld: ScreenToWorld;
   /** Feature id under a world point (host LEAF hit-test, HB3-16). */
@@ -125,6 +132,7 @@ export function ReparentToolController<S>(
 ): JSX.Element | null {
   const { store, startProcess, resolveFeatures, anchorTime, screenToWorld, featureAtPoint, onConflicts } =
     props;
+  const resolveStore = props.resolveStore;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
   const resolveLeafShape = props.resolveLeafShape;
@@ -138,6 +146,7 @@ export function ReparentToolController<S>(
     anchorTime,
     startProcess,
     onCommitted,
+    ...(resolveStore ? { resolveStore } : {}),
     ...(onConflicts ? { onConflicts } : {}),
   });
 
@@ -270,6 +279,17 @@ export function ReparentToolController<S>(
           onClick={() => reparent.confirm()}
         >
           {REPARENT_STRINGS.confirm}
+        </button>
+        {/* 最上位化 (detach / make-top-level, parentNone): enabled once a target is picked,
+            independent of a new parent (FR-46 独立 / 解体の構成要素). Was unreachable — the
+            domain parentNone variant had no UI entry point (bughunt wiring gap). */}
+        <button
+          type="button"
+          data-testid="reparent-confirm-none"
+          disabled={!reparent.canConfirmNone}
+          onClick={() => reparent.confirmNone()}
+        >
+          {REPARENT_STRINGS.confirmNone}
         </button>
         <button
           type="button"

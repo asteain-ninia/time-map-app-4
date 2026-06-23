@@ -30,13 +30,16 @@ import { buildForest } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 import { createIdGeneratorState } from '../../domain/id-generator';
 import type { TimePoint } from '../../domain/time/time-point';
+import type { VertexStore } from '../../domain/vertex';
 import {
   AFFILIATION_STATUS,
   buildAffiliationProposal,
   isLegalNewParent,
   parentExisting,
+  parentNone,
   type AffiliationProposal,
   type AffiliationRejected,
+  type ParentDecision,
 } from '../../domain/affiliation/index';
 import {
   toAffiliationEditProposal,
@@ -53,6 +56,17 @@ export type ResolveFeatures = () => readonly Feature[];
 /** Resolve the reparent anchor time (the UI current time, 文脈優先). */
 export type ResolveAnchorTime = () => TimePoint;
 
+/**
+ * Resolve the {@link VertexStore} effective at the reparent anchor time (host live-lookup
+ * `verticesAt`). Threaded into buildAffiliationProposal so the post-reparent
+ * 形状=和・隙間なし check (checkAggregateShapes via validateHierarchy) actually runs
+ * (基準 5 / FR-35). Without it the shape-gap validation is silently skipped — the
+ * bughunt finding "reparent skips the aggregate-shape check" (mirrors the knife / merge
+ * bootstrap resolveStore). Optional: a host that has not bound it falls back to the
+ * topological-only check (the prior behaviour).
+ */
+export type ResolveVertexStore = () => VertexStore;
+
 /** The U13 process-start adapter the host injects (createLiveAffiliationBinding). */
 export type StartAffiliationProcess<S> = (
   proposal: EditProposal<AffiliationSnapshot>,
@@ -61,6 +75,8 @@ export type StartAffiliationProcess<S> = (
 export interface UseReparentToolOptions<S> {
   readonly resolveFeatures: ResolveFeatures;
   readonly anchorTime: ResolveAnchorTime;
+  /** Live-lookup of the vertices at the anchor time → enables the shape-gap check (基準 5). */
+  readonly resolveStore?: ResolveVertexStore;
   readonly startProcess: StartAffiliationProcess<S>;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the target. */
   readonly onCommitted?: (result: ProcessResult<S>, snapshot: AffiliationSnapshot) => void;
@@ -100,6 +116,13 @@ export interface UseReparentToolState {
   readonly message: string | null;
   /** Whether confirm is allowed (a target + a legal new parent are chosen). */
   readonly canConfirm: boolean;
+  /**
+   * Whether 最上位化 (detach / make-top-level, `parentNone`) is allowed: a target is
+   * picked. The new-parent guard does NOT apply — detaching only needs a target
+   * (FR-46 独立 / FR-47 解体 の構成要素). 単一フロー上の別決定 (parentNone) なので
+   * existing-parent の canConfirm とは独立 (教訓 5.26).
+   */
+  readonly canConfirmNone: boolean;
 }
 
 export interface UseReparentToolActions {
@@ -115,6 +138,13 @@ export interface UseReparentToolActions {
   readonly cancel: () => void;
   /** Build the affiliation proposal and drive U13 (the COMPLETE trigger, 教訓 5.7). */
   readonly confirm: () => void;
+  /**
+   * Build a `parentNone` (最上位化 / detach) proposal and drive U13 — the make-top-level
+   * COMPLETE trigger (教訓 5.7). Mirrors {@link confirm} but with the `parentNone`
+   * decision and NO new-parent guard (detaching only needs a target). This is the UI
+   * entry point the domain `parentNone` variant had no consumer for (bughunt wiring gap).
+   */
+  readonly confirmNone: () => void;
 }
 
 export type UseReparentTool = UseReparentToolState & UseReparentToolActions;
@@ -126,6 +156,7 @@ function rejectionMessage(rejection: AffiliationRejected): string {
 
 export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseReparentTool {
   const { resolveFeatures, anchorTime, startProcess } = options;
+  const resolveStore = options.resolveStore;
   const onCommitted = options.onCommitted;
   const onConflicts = options.onConflicts;
 
@@ -167,7 +198,16 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     setMessage(null);
     setFlow((f) => {
       if (f === REPARENT_FLOW.Idle) return f;
-      // After a rejection / paused state a fresh pick returns to the active phase.
+      // After a rejection / paused-conflict the transient still holds the FAILED target +
+      // new parent. The user's NEXT click is a fresh start, not a continuation: without
+      // resetting, that click would be (mis)read as a new-parent pick against the stale
+      // target (or toggle the stale target off). Drop the stale selection and treat this
+      // click as a fresh TARGET pick (教訓 5.12 — a meaningful event clears the failure).
+      if (f === REPARENT_FLOW.Rejected || f === REPARENT_FLOW.ConflictPaused) {
+        setTargetId(featureId);
+        setNewParentId(null);
+        return REPARENT_FLOW.PickParent;
+      }
       if (targetId === null) {
         setTargetId(featureId);
         return REPARENT_FLOW.PickParent;
@@ -196,55 +236,72 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     // is included so a post-commit re-arm recomputes.
   }, [flow, targetId, newParentId, resolveFeatures]);
 
-  const confirm = useCallback((): void => {
-    if (targetId === null || newParentId === null) return;
-    const features = resolveFeatures();
-    const at = anchorTime();
+  // 最上位化 (detach) only needs a target — `parentNone` carries no new-parent legality
+  // (循環/存在期間 are vacuous when the parent reference is removed, 教訓 5.26). Honest
+  // about whether a confirmNone would be accepted.
+  const canConfirmNone = useMemo(
+    () => flow !== REPARENT_FLOW.Idle && targetId !== null,
+    [flow, targetId],
+  );
 
-    // Build the affiliation proposal (FR-46/48). Decision = 既存上位領域 (the picked
-    // parent). buildAffiliationProposal re-runs the SAME legality predicate (教訓 5.26),
-    // expands an aggregate target to its下位領域, auto-prunes emptied aggregates, and
-    // re-validates U08 hierarchy consistency — refusing without touching shared state on
-    // any violation (教訓 5.22). idState is a fresh generator (its internal `existing`
-    // set is built from the live features, so a `create`-path id can never collide; the
-    // existing-parent path used here mints nothing).
-    const result = buildAffiliationProposal(features, targetId, parentExisting(newParentId), {
-      idState: createIdGeneratorState(),
-      now: () => Date.now(),
-    });
-    if (result.status === AFFILIATION_STATUS.Rejected) {
-      setMessage(rejectionMessage(result));
-      setFlow(REPARENT_FLOW.Rejected);
-      return;
-    }
-
-    const proposal: AffiliationProposal = result.proposal;
-    const editProposal = toAffiliationEditProposal(proposal, at);
-    const processResult = startProcess(editProposal);
-    switch (processResult.status) {
-      case PROCESS_STATUS.Committed:
-        onCommitted?.(processResult, editProposal.snapshot);
-        reset(REPARENT_FLOW.PickTarget); // re-arm fresh for another reparent (教訓 5.2).
-        return;
-      case PROCESS_STATUS.ConflictsPending:
-        setFlow(REPARENT_FLOW.ConflictPaused);
-        onConflicts?.(processResult, editProposal);
-        return;
-      case PROCESS_STATUS.Rejected:
-        setMessage(processResult.message);
+  // Shared build → drive helper (single confirm path, 教訓 5.7). Builds the proposal for
+  // `decision`, threading the LIVE vertexStore so buildAffiliationProposal's post-reparent
+  // 形状=和・隙間なし check (checkAggregateShapes via validateHierarchy) runs (基準 5 /
+  // FR-35) — omitted previously, so the shape-gap check was silently skipped on every
+  // reparent (bughunt). idState is a fresh generator (its internal `existing` set is built
+  // from the live features, so a `create`-path id can never collide; existing/none mint
+  // nothing).
+  const driveProposal = useCallback(
+    (target: FeatureId, decision: ParentDecision): void => {
+      const features = resolveFeatures();
+      const at = anchorTime();
+      const result = buildAffiliationProposal(features, target, decision, {
+        idState: createIdGeneratorState(),
+        now: () => Date.now(),
+        ...(resolveStore ? { vertexStore: resolveStore() } : {}),
+      });
+      if (result.status === AFFILIATION_STATUS.Rejected) {
+        setMessage(rejectionMessage(result));
         setFlow(REPARENT_FLOW.Rejected);
         return;
-    }
-  }, [
-    resolveFeatures,
-    anchorTime,
-    targetId,
-    newParentId,
-    startProcess,
-    onCommitted,
-    onConflicts,
-    reset,
-  ]);
+      }
+
+      const proposal: AffiliationProposal = result.proposal;
+      const editProposal = toAffiliationEditProposal(proposal, at);
+      const processResult = startProcess(editProposal);
+      switch (processResult.status) {
+        case PROCESS_STATUS.Committed:
+          onCommitted?.(processResult, editProposal.snapshot);
+          reset(REPARENT_FLOW.PickTarget); // re-arm fresh for another reparent (教訓 5.2).
+          return;
+        case PROCESS_STATUS.ConflictsPending:
+          setFlow(REPARENT_FLOW.ConflictPaused);
+          onConflicts?.(processResult, editProposal);
+          return;
+        case PROCESS_STATUS.Rejected:
+          setMessage(processResult.message);
+          setFlow(REPARENT_FLOW.Rejected);
+          return;
+      }
+    },
+    [resolveFeatures, anchorTime, resolveStore, startProcess, onCommitted, onConflicts, reset],
+  );
+
+  // Confirm 既存上位領域 (the picked parent, FR-46/48). buildAffiliationProposal re-runs
+  // the SAME legality predicate (教訓 5.26), expands an aggregate target to its下位領域,
+  // auto-prunes emptied aggregates, and re-validates U08 hierarchy consistency — refusing
+  // without touching shared state on any violation (教訓 5.22).
+  const confirm = useCallback((): void => {
+    if (targetId === null || newParentId === null) return;
+    driveProposal(targetId, parentExisting(newParentId));
+  }, [targetId, newParentId, driveProposal]);
+
+  // Confirm 最上位化 (detach to top level, `parentNone`, FR-46 独立 / 解体の構成要素).
+  // Only a target is required — no new parent guard (the parent reference is removed).
+  const confirmNone = useCallback((): void => {
+    if (targetId === null) return;
+    driveProposal(targetId, parentNone);
+  }, [targetId, driveProposal]);
 
   const guide = useMemo(
     () =>
@@ -261,11 +318,13 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     guide,
     message,
     canConfirm,
+    canConfirmNone,
     start,
     resetForSwitch,
     pick,
     clearSelection,
     cancel,
     confirm,
+    confirmNone,
   };
 }
