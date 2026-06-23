@@ -1,13 +1,19 @@
-// U26 — the継承先選択モーダル (FR-93, 教訓 5.4 / 5.14).
+// U26 — the継承先選択モーダル (FR-93, HB3-5/19 n-way, 教訓 5.4 / 5.14).
 //
 // Shown after the split is validated (phase ChoosingInheritor). It is a CENTERED
 // modal that:
-//   - previews BOTH split results with the小さい方 (面積比較) boxed (FR-93 小さい方
-//     プレビュー). The smaller side is computed in the domain (`smallerSide`) and
-//     passed in as `smallerSide` so the UI and geometry agree (教訓 5.30).
-//   - offers a継承先 button per side with selection HIGHLIGHT (FR-93 ボタン選択時
-//     ハイライト) — seeded to the小さい方 by the domain (教訓 5.4 UI 文脈優先).
+//   - previews EVERY split piece (HB3-5/19: an open cut crossing the boundary 2k
+//     times yields k+1 pieces) with the小さい方 (面積比較) boxed (FR-93 小さい方
+//     プレビュー). The smallest piece is computed in the domain (`smallestPieceIndex`)
+//     and passed in as `smallestIndex` so the UI and geometry agree (教訓 5.30).
+//   - offers a継承先 button per piece with selection HIGHLIGHT (FR-93 ボタン選択時
+//     ハイライト) — seeded to the小さい方 by the domain (教訓 5.4 UI 文脈優先). The k-1
+//     non-chosen pieces all share the ONE U23 default authored next (the domain
+//     assembler does this; the modal just picks WHICH piece inherits).
 //   - confirms via the確定 button (the完了トリガー the controller wires; 教訓 5.7).
+//
+// A 2-piece split renders exactly two buttons (knife-choose-0 / knife-choose-1),
+// visually identical to the prior 2-way modal — only driven by index, not 'a'/'b'.
 //
 // INPUT-LAYER DESIGN (教訓 5.14): a full-surface BACKDROP UNDER the dialog captures
 // pointer events so背面 (map / cut-line input) cannot be operated while the modal
@@ -16,29 +22,26 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { INHERITANCE_SIDE, type InheritanceSide } from '../../domain/knife/index';
 import type { GeoMultiPolygon } from '../../domain/geometry/types';
 
 import { KNIFE_STRINGS } from './strings';
 
 export interface InheritorModalProps {
-  /** Side A geometry (for the preview). */
-  readonly sideA: GeoMultiPolygon;
-  /** Side B geometry (for the preview). */
-  readonly sideB: GeoMultiPolygon;
-  /** Which side is the small方 (domain-computed; FR-93). It is boxed in the preview. */
-  readonly smallerSide: InheritanceSide;
-  /** The currently-highlighted choice (seeded to the小さい方; FR-93). */
-  readonly selected: InheritanceSide;
-  /** Highlight a継承先 choice (FR-93). */
-  readonly onSelect: (side: InheritanceSide) => void;
+  /** Every split piece's geometry, in `SplitResult.pieces` order (HB3-5/19 n-way). */
+  readonly pieces: readonly GeoMultiPolygon[];
+  /** Which piece is the small方 (domain-computed; FR-93). It is boxed in the preview. */
+  readonly smallestIndex: number;
+  /** The currently-highlighted piece index (seeded to the小さい方; FR-93). */
+  readonly selectedIndex: number;
+  /** Highlight a継承先 piece by index (FR-93). */
+  readonly onSelect: (index: number) => void;
   /** Confirm the highlighted継承先 (教訓 5.7 完了トリガー). */
   readonly onConfirm: () => void;
   /** Cancel the whole knife operation (教訓 5.2). */
   readonly onCancel: () => void;
 }
 
-/** Bounding box across both sides (for a shared preview viewBox). */
+/** Bounding box across all pieces (for a shared preview viewBox). */
 function boundsOf(...mps: readonly GeoMultiPolygon[]): {
   minX: number;
   minY: number;
@@ -81,8 +84,13 @@ function pathFor(mp: GeoMultiPolygon): string {
 
 const PREVIEW_PX = 200;
 
+/** The piece label (面 1 / 面 2 / …). Index-based so it scales to any k+1. */
+function pieceLabel(index: number): string {
+  return `${KNIFE_STRINGS.chooseAsInheritor}（面 ${index + 1}）`;
+}
+
 export function InheritorModal(props: InheritorModalProps): JSX.Element {
-  const { sideA, sideB, smallerSide, selected, onSelect, onConfirm, onCancel } = props;
+  const { pieces, smallestIndex, selectedIndex, onSelect, onConfirm, onCancel } = props;
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const onKeyDown = useCallback(
@@ -100,11 +108,12 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
     dialogRef.current?.focus();
   }, []);
 
-  const b = boundsOf(sideA, sideB);
+  const b = boundsOf(...pieces);
   // SVG y grows downward; flip lat so north is up in the preview.
   const viewBox = `${b.minX} ${-(b.minY + b.h)} ${b.w} ${b.h}`;
-  const smallerMp = smallerSide === INHERITANCE_SIDE.A ? sideA : sideB;
+  const smallerMp = pieces[smallestIndex] ?? pieces[0] ?? [];
   const sb = boundsOf(smallerMp);
+  const strokeWidth = b.w / PREVIEW_PX;
 
   return (
     <div className="knife-modal-root" data-testid="knife-inheritor-modal-root">
@@ -134,7 +143,7 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
           {KNIFE_STRINGS.smallerHint}
         </p>
 
-        {/* The shared preview: both sides drawn; the小さい方 boxed (FR-93). */}
+        {/* The shared preview: ALL pieces drawn; the小さい方 boxed (FR-93). */}
         <svg
           className="knife-preview"
           data-testid="knife-preview"
@@ -144,28 +153,20 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
           // Flip y so latitude points up (the data is lat-up, SVG is y-down).
           style={{ transform: 'scaleY(-1)' }}
         >
-          <path
-            data-testid="knife-preview-a"
-            d={pathFor(sideA)}
-            className={
-              'knife-preview__side' +
-              (selected === INHERITANCE_SIDE.A ? ' knife-preview__side--selected' : '')
-            }
-            fill={selected === INHERITANCE_SIDE.A ? 'rgba(255,193,7,0.5)' : 'rgba(120,144,156,0.4)'}
-            stroke="#37474f"
-            strokeWidth={b.w / PREVIEW_PX}
-          />
-          <path
-            data-testid="knife-preview-b"
-            d={pathFor(sideB)}
-            className={
-              'knife-preview__side' +
-              (selected === INHERITANCE_SIDE.B ? ' knife-preview__side--selected' : '')
-            }
-            fill={selected === INHERITANCE_SIDE.B ? 'rgba(255,193,7,0.5)' : 'rgba(120,144,156,0.4)'}
-            stroke="#37474f"
-            strokeWidth={b.w / PREVIEW_PX}
-          />
+          {pieces.map((mp, i) => (
+            <path
+              key={i}
+              data-testid={`knife-preview-${i}`}
+              d={pathFor(mp)}
+              className={
+                'knife-preview__side' +
+                (selectedIndex === i ? ' knife-preview__side--selected' : '')
+              }
+              fill={selectedIndex === i ? 'rgba(255,193,7,0.5)' : 'rgba(120,144,156,0.4)'}
+              stroke="#37474f"
+              strokeWidth={strokeWidth}
+            />
+          ))}
           {/* 小さい方を囲うプレビューボックス (FR-93). */}
           <rect
             data-testid="knife-smaller-box"
@@ -175,36 +176,24 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
             height={sb.h}
             fill="none"
             stroke="#d50000"
-            strokeWidth={(b.w / PREVIEW_PX) * 2}
+            strokeWidth={strokeWidth * 2}
             strokeDasharray={`${b.w / 30} ${b.w / 60}`}
           />
         </svg>
 
         <div className="knife-dialog__choices" role="group" aria-label={KNIFE_STRINGS.inheritorTitle}>
-          <button
-            type="button"
-            data-testid="knife-choose-a"
-            aria-pressed={selected === INHERITANCE_SIDE.A}
-            className={
-              'knife-choice' +
-              (selected === INHERITANCE_SIDE.A ? ' knife-choice--selected' : '')
-            }
-            onClick={() => onSelect(INHERITANCE_SIDE.A)}
-          >
-            {KNIFE_STRINGS.chooseSideA}
-          </button>
-          <button
-            type="button"
-            data-testid="knife-choose-b"
-            aria-pressed={selected === INHERITANCE_SIDE.B}
-            className={
-              'knife-choice' +
-              (selected === INHERITANCE_SIDE.B ? ' knife-choice--selected' : '')
-            }
-            onClick={() => onSelect(INHERITANCE_SIDE.B)}
-          >
-            {KNIFE_STRINGS.chooseSideB}
-          </button>
+          {pieces.map((_, i) => (
+            <button
+              key={i}
+              type="button"
+              data-testid={`knife-choose-${i}`}
+              aria-pressed={selectedIndex === i}
+              className={'knife-choice' + (selectedIndex === i ? ' knife-choice--selected' : '')}
+              onClick={() => onSelect(i)}
+            >
+              {pieceLabel(i)}
+            </button>
+          ))}
         </div>
 
         <footer className="knife-dialog__footer">

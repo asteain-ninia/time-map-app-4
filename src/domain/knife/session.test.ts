@@ -4,7 +4,6 @@ import { createCoordinate } from '../coordinate';
 import { asFeatureId } from '../ids';
 import { KNIFE_LINE_KIND } from './knife-line';
 import { knifeGuideText, KNIFE_GUIDE } from './messages';
-import { INHERITANCE_SIDE } from './proposal';
 import type { SplitResult } from './split-geometry';
 import {
   KNIFE_PHASE,
@@ -26,9 +25,17 @@ import {
 const c = (lon: number, lat: number) => createCoordinate(lon, lat);
 const tid = asFeatureId('leaf-1');
 
+// A 3-PIECE n-way result (HB3-5/19): a comb cut on [0,10]² producing three columns of
+// areas 50 / 20 / 30. `pieces` is the n-way source; `sideA`/`sideB` are the 2-way
+// aliases = pieces[0]/pieces[1]. The smallest piece is index 1 (area 20).
 const fakeResult: SplitResult = {
+  pieces: [
+    { area: [[[c(0, 0), c(5, 0), c(5, 10), c(0, 10)]]], areaKm2: 50 },
+    { area: [[[c(5, 0), c(7, 0), c(7, 10), c(5, 10)]]], areaKm2: 20 },
+    { area: [[[c(7, 0), c(10, 0), c(10, 10), c(7, 10)]]], areaKm2: 30 },
+  ],
   sideA: { area: [[[c(0, 0), c(5, 0), c(5, 10), c(0, 10)]]], areaKm2: 50 },
-  sideB: { area: [[[c(5, 0), c(10, 0), c(10, 10), c(5, 10)]]], areaKm2: 50 },
+  sideB: { area: [[[c(5, 0), c(7, 0), c(7, 10), c(5, 10)]]], areaKm2: 20 },
   edgeCuts: [],
 };
 
@@ -51,18 +58,20 @@ describe('knife state machine — happy path (FR-90 / FR-92 / FR-93)', () => {
       expect(isFixedCircleVisible(s)).toBe(true);
     }
 
-    s = confirmCut(s, fakeResult, INHERITANCE_SIDE.A);
+    // Seed the inheritor to the SMALLEST piece (index 1, area 20). HB3-5/19 n-way.
+    s = confirmCut(s, fakeResult, 1);
     expect(s.phase).toBe(KNIFE_PHASE.ChoosingInheritor);
     if (s.phase === KNIFE_PHASE.ChoosingInheritor) {
-      expect(s.selected).toBe(INHERITANCE_SIDE.A);
+      expect(s.selectedIndex).toBe(1);
     }
 
-    s = selectInheritor(s, INHERITANCE_SIDE.B);
-    if (s.phase === KNIFE_PHASE.ChoosingInheritor) expect(s.selected).toBe(INHERITANCE_SIDE.B);
+    // The user can change the inheritor to any of the k+1 pieces (here piece 2).
+    s = selectInheritor(s, 2);
+    if (s.phase === KNIFE_PHASE.ChoosingInheritor) expect(s.selectedIndex).toBe(2);
 
     s = confirmInheritor(s);
     expect(s.phase).toBe(KNIFE_PHASE.EnteringProperties);
-    if (s.phase === KNIFE_PHASE.EnteringProperties) expect(s.inherit).toBe(INHERITANCE_SIDE.B);
+    if (s.phase === KNIFE_PHASE.EnteringProperties) expect(s.inheritIndex).toBe(2);
   });
 });
 
@@ -145,7 +154,7 @@ describe('一時状態の全経路破棄 (教訓5.2 / 受け入れ基準8)', () 
     const choosing = confirmCut(
       placeCutPoint(placeCutPoint(selectTarget(startKnife(), tid), c(5, -5)), c(5, 15)),
       fakeResult,
-      INHERITANCE_SIDE.A,
+      0,
     );
     expect(choosing.phase).toBe(KNIFE_PHASE.ChoosingInheritor);
     // After cancel the transient (overlay/cut/circle/preview) is gone.
@@ -167,7 +176,7 @@ describe('一時状態の全経路破棄 (教訓5.2 / 受け入れ基準8)', () 
     let s = confirmCut(
       placeCutPoint(placeCutPoint(selectTarget(startKnife(), tid), c(5, -5)), c(5, 15)),
       fakeResult,
-      INHERITANCE_SIDE.A,
+      0,
     );
     s = backToDrawing(s);
     expect(s.phase).toBe(KNIFE_PHASE.DrawingCut);
@@ -198,7 +207,7 @@ describe('guide text (FR-92 / FR-115)', () => {
     s = placeCutPoint(placeCutPoint(placeCutPoint(s, c(0, 0)), c(1, 0)), c(1, 1));
     expect(knifeGuideText(s)).toContain(KNIFE_GUIDE.DrawCutClosable);
 
-    const choosing = confirmCut(s, fakeResult, INHERITANCE_SIDE.A);
+    const choosing = confirmCut(s, fakeResult, 0);
     expect(knifeGuideText(choosing)).toBe(KNIFE_GUIDE.ChooseInheritor);
   });
 });

@@ -8,10 +8,12 @@
 export const KNIFE_STRINGS = {
   /** 継承先選択モーダル title (FR-93). */
   inheritorTitle: '継承先を選択',
-  /** Label for choosing side A as the継承先. */
-  chooseSideA: 'こちらを継承先にする（A）',
-  /** Label for choosing side B as the継承先. */
-  chooseSideB: 'こちらを継承先にする（B）',
+  /**
+   * Per-piece継承先 button label prefix (HB3-5/19 n-way). The modal appends the
+   * piece number (面 1 / 面 2 / …) so it scales to any k+1 pieces, replacing the
+   * fixed 2-way A/B labels.
+   */
+  chooseAsInheritor: 'こちらを継承先にする',
   /** The smaller-side preview caption (FR-93 小さい方プレビュー). */
   smallerHint: '小さい方を囲って表示しています。',
   /** Confirm the chosen継承先 (advance to非継承側プロパティ入力). */

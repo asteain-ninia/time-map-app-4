@@ -828,7 +828,6 @@ export {
   backToDrawing,
   isOverlayVisible as isKnifeOverlayVisible,
   isFixedCircleVisible,
-  nonInheritedSide,
   KNIFE_GUIDE,
   knifeGuideText,
 } from './knife/index';

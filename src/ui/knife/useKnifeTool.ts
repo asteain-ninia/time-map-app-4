@@ -35,27 +35,24 @@ import type { Vertex, VertexStore } from '../../domain/vertex';
 import {
   KNIFE_PHASE,
   SPLIT_CHECK_STATUS,
-  INHERITANCE_SIDE,
   assembleSplitProposal,
   cancelKnife,
   checkSplittable,
   clickInsideCircle as clickInsideCircleTx,
   confirmCut,
   confirmInheritor as confirmInheritorTx,
-  createInheritanceChoice,
+  createInheritanceChoiceAt,
   executeSplit,
   idle,
   knifeGuideText,
-  nonInheritedSide,
   placeCutPoint,
   selectInheritor as selectInheritorTx,
   selectTarget as selectTargetTx,
-  smallerSide,
+  smallestPieceIndex,
   startKnife,
   toEditProposal,
   toSplitSnapshot,
   undoLastCutPoint,
-  type InheritanceSide,
   type KnifeState,
   type NonInheritedProperties,
   type SplitIdPorts,
@@ -161,8 +158,8 @@ export interface UseKnifeToolActions {
   undoCutPoint(): void;
   /** CONFIRM the cut (= 分割可能検証 + executeSplit; 教訓 5.7 完了トリガー). */
   confirmCut(): void;
-  /** Highlight a継承先 choice (FR-93). */
-  selectInheritor(side: InheritanceSide): void;
+  /** Highlight a継承先 piece by INDEX (FR-93 / HB3-5/19 n-way). */
+  selectInheritor(index: number): void;
   /** CONFIRM the继承先 → 非継承側プロパティ入力 (教訓 5.7 完了トリガー). */
   confirmInheritor(): void;
   /** SAVE非継承側 props → assemble proposal → U13 (教訓 5.7 完了トリガー). */
@@ -244,8 +241,8 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
 
   // CONFIRM CUT trigger (教訓 5.7): re-run the SAME domain validation (教訓 5.26 確定
   // 前にも同じサービスで) and execute the split. On success advance to継承先選択 seeded
-  // with the小さい方 (FR-93 / 教訓 5.4); on failure surface the Japanese message and
-  // stay in DrawingCut — nothing is recorded (教訓 5.22).
+  // with the SMALLEST piece (FR-93 小さい方 / 教訓 5.4, HB3-5/19 n-way); on failure
+  // surface the Japanese message and stay in DrawingCut — nothing is recorded (教訓 5.22).
   const confirmCutAction = useCallback(() => {
     setState((s) => {
       if (s.phase !== KNIFE_PHASE.DrawingCut) return s;
@@ -268,12 +265,12 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
         return s;
       }
       setMessage(null);
-      return confirmCut(s, result, smallerSide(result));
+      return confirmCut(s, result, smallestPieceIndex(result));
     });
   }, [resolveFeature, resolveStore]);
 
-  const selectInheritor = useCallback((side: InheritanceSide) => {
-    setState((s) => selectInheritorTx(s, side));
+  const selectInheritor = useCallback((index: number) => {
+    setState((s) => selectInheritorTx(s, index));
   }, []);
 
   // CONFIRM INHERITOR trigger (教訓 5.7): advance to非継承側プロパティ入力.
@@ -300,7 +297,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
           target: leaf,
           store: store.byId,
           result: s.result,
-          choice: createInheritanceChoice(s.inherit),
+          choice: createInheritanceChoiceAt(s.inheritIndex),
           nonInherited: props,
           ids,
         });
@@ -401,4 +398,4 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
 }
 
 // Re-export inheritance helpers callers commonly need at the wiring site.
-export { INHERITANCE_SIDE, nonInheritedSide, type InheritanceSide, type Vertex };
+export { type Vertex };

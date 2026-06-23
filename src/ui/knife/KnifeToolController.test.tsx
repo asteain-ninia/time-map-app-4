@@ -260,10 +260,10 @@ describe('KnifeToolController — inheritor modal + save → U13 (受け入れ�
     expect(screen.getByTestId('knife-backdrop')).toBeInTheDocument();
     // The smaller-side preview box exists (FR-93 小さい方プレビュー).
     expect(screen.getByTestId('knife-smaller-box')).toBeInTheDocument();
-    // Selecting side A highlights it (aria-pressed flips).
-    fireEvent.click(screen.getByTestId('knife-choose-a'));
-    expect(screen.getByTestId('knife-choose-a')).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.getByTestId('knife-choose-b')).toHaveAttribute('aria-pressed', 'false');
+    // Selecting piece 0 highlights it (aria-pressed flips); HB3-5/19 index-based.
+    fireEvent.click(screen.getByTestId('knife-choose-0'));
+    expect(screen.getByTestId('knife-choose-0')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('knife-choose-1')).toHaveAttribute('aria-pressed', 'false');
     h.unmount();
   });
 

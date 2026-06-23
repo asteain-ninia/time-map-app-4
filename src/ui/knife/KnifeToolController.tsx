@@ -34,9 +34,8 @@ import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
 import {
   KNIFE_PHASE,
-  smallerSide as domainSmallerSide,
+  smallestPieceIndex,
   shouldCloseOnCircleClick,
-  type InheritanceSide,
   type SplitSnapshot,
 } from '../../domain/knife/index';
 
@@ -486,14 +485,18 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
         </div>
       )}
 
-      {/* 継承先選択モーダル (FR-93). */}
+      {/* 継承先選択モーダル (FR-93 / HB3-5/19 n-way: one button per piece). */}
       {choosing && knife.state.phase === KNIFE_PHASE.ChoosingInheritor && (
         <InheritorModal
-          sideA={knife.state.result.sideA.area}
-          sideB={knife.state.result.sideB.area}
-          smallerSide={domainSmallerSide(knife.state.result) as InheritanceSide}
-          selected={knife.state.selected}
-          onSelect={(side) => knife.selectInheritor(side)}
+          pieces={(
+            knife.state.result.pieces ?? [
+              knife.state.result.sideA,
+              knife.state.result.sideB,
+            ]
+          ).map((piece) => piece.area)}
+          smallestIndex={smallestPieceIndex(knife.state.result)}
+          selectedIndex={knife.state.selectedIndex}
+          onSelect={(index) => knife.selectInheritor(index)}
           onConfirm={() => knife.confirmInheritor()}
           onCancel={() => knife.cancel()}
         />

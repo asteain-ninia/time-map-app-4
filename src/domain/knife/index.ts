@@ -76,7 +76,6 @@ export {
   backToDrawing,
   isOverlayVisible,
   isFixedCircleVisible,
-  nonInheritedSide,
 } from './session';
 
 export { KNIFE_GUIDE, knifeGuideText } from './messages';

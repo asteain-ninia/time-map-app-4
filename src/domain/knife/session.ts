@@ -24,10 +24,6 @@ import {
   withoutLastPoint,
   type KnifeLine,
 } from './knife-line';
-import {
-  INHERITANCE_SIDE,
-  type InheritanceSide,
-} from './proposal';
 import type { SplitResult } from './split-geometry';
 import type { WorldCoordinate } from '../coordinate';
 
@@ -65,8 +61,11 @@ export interface ChoosingInheritorState {
   readonly targetId: FeatureId;
   readonly line: KnifeLine;
   readonly result: SplitResult;
-  /** The currently-highlighted choice (seeded to the小さい方; FR-93 / 教訓5.4). */
-  readonly selected: InheritanceSide;
+  /**
+   * The currently-highlighted piece, as an INDEX into `result.pieces` (HB3-5/19
+   * n-way). Seeded to the SMALLEST piece (`smallestPieceIndex`; FR-93 / 教訓5.4).
+   */
+  readonly selectedIndex: number;
 }
 
 export interface EnteringPropertiesState {
@@ -74,8 +73,11 @@ export interface EnteringPropertiesState {
   readonly targetId: FeatureId;
   readonly line: KnifeLine;
   readonly result: SplitResult;
-  /** The confirmed継承先 side; the OTHER side is the非継承側 being authored. */
-  readonly inherit: InheritanceSide;
+  /**
+   * The confirmed継承先 piece INDEX (into `result.pieces`); EVERY other piece becomes a
+   * 非継承側 new feature sharing the ONE U23 default being authored (HB3-5/19 n-way).
+   */
+  readonly inheritIndex: number;
 }
 
 export type KnifeState =
@@ -178,15 +180,15 @@ export function clickInsideCircle(
 }
 
 /**
- * 分割成立 (検証通過) — advance to継承先選択 with the computed result. `smaller` is
- * the小さい方 side, seeded as the highlighted choice (FR-93 / 教訓5.4 UI 文脈優先).
- * Confirming the cut is the完了トリガー the UI must call (教訓5.7). No-op unless in
- * DrawingCut.
+ * 分割成立 (検証通過) — advance to継承先選択 with the computed result. `smallestIndex` is
+ * the SMALLEST piece's index (`smallestPieceIndex`), seeded as the highlighted choice
+ * (FR-93 小さい方 / 教訓5.4 UI 文脈優先 — HB3-5/19 generalized to n-way). Confirming the
+ * cut is the完了トリガー the UI must call (教訓5.7). No-op unless in DrawingCut.
  */
 export function confirmCut(
   state: KnifeState,
   result: SplitResult,
-  smaller: InheritanceSide,
+  smallestIndex: number,
 ): KnifeState {
   if (state.phase !== KNIFE_PHASE.DrawingCut) return state;
   return {
@@ -194,16 +196,19 @@ export function confirmCut(
     targetId: state.targetId,
     line: state.line,
     result,
-    selected: smaller,
+    selectedIndex: smallestIndex,
   };
 }
 
 // --- ChoosingInheritor transitions ------------------------------------------
 
-/** Highlight a継承先 choice (FR-93 ボタン選択時ハイライト). No-op unless in ChoosingInheritor. */
-export function selectInheritor(state: KnifeState, side: InheritanceSide): KnifeState {
+/**
+ * Highlight a継承先 piece by INDEX (FR-93 ボタン選択時ハイライト; HB3-5/19 n-way). No-op
+ * unless in ChoosingInheritor.
+ */
+export function selectInheritor(state: KnifeState, index: number): KnifeState {
   if (state.phase !== KNIFE_PHASE.ChoosingInheritor) return state;
-  return { ...state, selected: side };
+  return { ...state, selectedIndex: index };
 }
 
 /**
@@ -217,7 +222,7 @@ export function confirmInheritor(state: KnifeState): KnifeState {
     targetId: state.targetId,
     line: state.line,
     result: state.result,
-    inherit: state.selected,
+    inheritIndex: state.selectedIndex,
   };
 }
 
@@ -249,9 +254,4 @@ export function isOverlayVisible(state: KnifeState): boolean {
 /** True iff the固定円 should be shown (≥1 cut point placed while drawing; FR-92). */
 export function isFixedCircleVisible(state: KnifeState): boolean {
   return state.phase === KNIFE_PHASE.DrawingCut && state.line.points.length >= 1;
-}
-
-/** The non-inherited side (the one being authored) for a given inherit choice. */
-export function nonInheritedSide(inherit: InheritanceSide): InheritanceSide {
-  return inherit === INHERITANCE_SIDE.A ? INHERITANCE_SIDE.B : INHERITANCE_SIDE.A;
 }
