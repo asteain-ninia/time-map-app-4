@@ -12,6 +12,9 @@
   - `26a8b71` feat(HB3-23): グリッド間隔に 1°/0.5°/0.1° 追加(小数ラベル・経線上限degradeは1000据置・既定10°据置で視覚不変)。
   - `a77f19b` test(HB3-14): 属性保存→永続化の behavioral E2E ロック。
   - `8e31639` fix(HB3-14): 属性編集の編集対象錨を**現在時刻の錨へ自動既定**(`resolveAt` フォールバック)。「属性編集の保存が必ず失敗」(錨未選択ガード)の残存摩擦を根治＝地物選択→即名前変更→保存が手動の錨選択なしで通る。
+  - `4e0626e` docs / `22e56b0` test(HB3-6/18 ナイフ対象強調) / `662b251` test(HB3-15/16 結合 leafAtPoint・add系ヘルパ冪等化)。
+  - `d987c0d` **fix(FR-85): プロパティタブ「地物を削除」ボタンを結線**(E2E probing 中に未mountを発見)。`DeleteFeatureButton`+単体7本は存在するが PropertyPanel に未mount・live削除は menu/Deleteキーのみ(EditDeleteハンドラのコメントも「(future)プロパティ削除ボタン」)。menu/Deleteと同じ単一削除経路(`createDeleteFeatureCommandForRoot`→`recordCommand`)を結線。delete∘undo=恒等も E2E ロック。
+  - **本セッションの behavioral E2E probing が発見した実バグ3件**(全て教訓5.7「ロジックはあるが UI から呼ばれない/塞がれている」型): ①編集モード本体クリック選択回帰[経度パネルがクリック横取り] ②属性編集が錨未選択で必ず保存失敗 ③FR-85削除ボタン未結線。**実ジェスチャを駆動する behavioral E2E が金脈**(前任の教訓を実証)。次セッションも同手法で reparent(所属変更)/conflict解決/file save-load 等を probe する価値大。
   - **未着手の大物（次セッション最優先候補）**: HB3-5/19 ナイフ n-way(k+1片)＝プラン確定済(`HB3-5-19-NWAY-PLAN.md`/`dd09bf9`)・**未実装**。現行2-wayは4回横断で「sideB=2飛び地を持つ1地物」を返す(probe確認＝有効だが束ねられ)。フルn-wayはsplit-geometry/proposal/apply/session/UI/型に跨る大物・高リスクで本セッションは安全側で延期。HB3-10共有頂点溶接 / HB3-12存在期間の単一真実源も大物(暫定・要確認)。
   - **bughunt explorer 所見(参考・要triage)**: reparent後のconflict-modal残留/undo-count不整合、time月日 fwd∘back のgranularity昇格非恒等 等。多くは競合解決/granularity仕様と絡むノイズでクリーン再現未取得。
 - 2026-06-21: **HUMAN-BUGS 第2ラウンド確定処理（HB-5..HB-15）**。作業ルート time-map-app-4・Bash 非対話/GUI起動なしで全体検証4点を再実測し **全緑（skip 0・デグレなし）を確認**: `npm run typecheck`=exit 0[node+web+e2e 3構成] / `npm run lint`=exit 0[eslint . clean] / `npm run test`=**204 files・2098 tests passed, exit 0**（前回 HB-1..4 確定の 202/2069 から +2 files/+29 tests・回帰なし＝HB-5..15 の修正/E2E ハーネス追加分） / `npm run test:e2e`=electron-vite build 成功 → playwright **43 passed・exit 0（skip 0）**（前回 24 → +19＝HB-5..15 の behavioral/visual E2E 追加 + 本ラウンド `e2e/coord-cluster.spec.ts` の2件）。
