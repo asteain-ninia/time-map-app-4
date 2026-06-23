@@ -16,6 +16,7 @@
 // U20 menu/shortcut formatters) — no new domain logic.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { SessionStore } from '../state/store';
@@ -32,6 +33,7 @@ import {
 import { SettingsDialog } from '../settings/index';
 import {
   searchFeatures,
+  reevaluateResult,
   validateSearchQuery,
   kindAxisOf,
   SEARCH_STRINGS,
@@ -44,6 +46,7 @@ import { featuresAt } from '../live-lookup';
 import { buildCommittedFeatures } from '../map/committed-features';
 import type { Feature } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
+import type { TimePoint } from '../../domain/time/time-point';
 import type { DomainProject } from '../../domain/persistence/index';
 
 /** Which help/tools view is currently open (only one at a time). */
@@ -258,6 +261,7 @@ function SearchView(props: {
   readonly store: StoreApi<SessionStore<DomainProject>>;
   readonly onClose: () => void;
 }): JSX.Element {
+  const { store } = props;
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<SearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -275,7 +279,49 @@ function SearchView(props: {
     setError(null);
     // Pure search over the ACTUAL drawn母集合 (教訓 5.3 / 5.5). Re-derives the corpus
     // each click so it reflects the current time + display-control.
-    setResult(searchFeatures(buildSearchCorpus(props.store), validated.value));
+    setResult(searchFeatures(buildSearchCorpus(store), validated.value));
+  };
+
+  // BUG #9 — a shown result is re-evaluated whenever the corpus (domain / time /
+  // display-control) changes, so a deleted/hidden hit drops out and the list never
+  // shows a feature that no longer resolves (教訓 5.5/5.6: re-derive from the母集合,
+  // never gate on which input path changed). We only subscribe WHILE a result is
+  // shown (result !== null) and re-run the SAME single-source predicate
+  // (reevaluateResult, discovery/search) over the freshly-built corpus — no parallel
+  // search logic here. The subscription is set up ONCE per "result became shown"
+  // (the effect depends on `store` and whether a result exists, NOT on `result`'s
+  // value), so it never resubscribes per render and cannot loop: the functional
+  // setResult only writes a NEW value when a hit actually dropped, and a value-equal
+  // pass leaves the same reference (no further render).
+  const hasResult = result !== null;
+  useEffect(() => {
+    if (!hasResult) return;
+    const reevaluate = (): void => {
+      setResult((prev) =>
+        prev === null ? prev : reevaluateResult(prev, buildSearchCorpus(store)),
+      );
+    };
+    // Re-evaluate immediately against the current母集合 (the corpus may already have
+    // changed between submit and this effect running) and on every store change.
+    reevaluate();
+    return store.subscribe(reevaluate);
+  }, [store, hasResult]);
+
+  // BUG #3 — a hit click promotes the feature into the LIVE selection (the SAME
+  // store.setActiveFeature path the map / sidebar use, no second selection source —
+  // 教訓 5.29) AND drives the display-control individual focus onto it with emphasis
+  // (FR-43 / FR-82 — the existing emphasis machinery, setDisplayFocus). The depth M
+  // is kept from the current focus so a click does not silently change the deep-dive
+  // level. This is the existing single-source highlight/selection path, not a parallel
+  // one (教訓 5.6 / 5.29). The panel stays open so the user can pick another hit.
+  const onHitClick = (featureId: FeatureId): void => {
+    const s = store.getState();
+    s.setActiveFeature(featureId);
+    s.setDisplayFocus({
+      originId: featureId,
+      depth: s.displayControl.focus.depth,
+      emphasize: true,
+    });
   };
 
   return (
@@ -323,19 +369,30 @@ function SearchView(props: {
           ) : (
             <ul>
               {result.hits.map((hit) => (
-                <li key={hit.featureId} data-testid="search-panel-hit">
-                  <span className="search-panel__hit-name">{hit.name}</span>
-                  <span className="search-panel__hit-fields">
-                    {hit.matchedFields
-                      .map((f) =>
-                        f === MATCH_FIELD.Name
-                          ? SEARCH_STRINGS.matchedInName
-                          : f === MATCH_FIELD.Description
-                            ? SEARCH_STRINGS.matchedInDescription
-                            : SEARCH_STRINGS.matchedInAttribute,
-                      )
-                      .join(' / ')}
-                  </span>
+                <li key={hit.featureId}>
+                  {/* BUG #3 — the hit is a real button so a click (and keyboard
+                      activation) selects + emphasizes the feature on the map through
+                      the LIVE store actions (onHitClick). Before this it was an inert
+                      <li> with no handler — a dead-ended result. */}
+                  <button
+                    type="button"
+                    className="search-panel__hit"
+                    data-testid="search-panel-hit"
+                    onClick={() => onHitClick(hit.featureId)}
+                  >
+                    <span className="search-panel__hit-name">{hit.name}</span>
+                    <span className="search-panel__hit-fields">
+                      {hit.matchedFields
+                        .map((f) =>
+                          f === MATCH_FIELD.Name
+                            ? SEARCH_STRINGS.matchedInName
+                            : f === MATCH_FIELD.Description
+                              ? SEARCH_STRINGS.matchedInDescription
+                              : SEARCH_STRINGS.matchedInAttribute,
+                        )
+                        .join(' / ')}
+                    </span>
+                  </button>
                 </li>
               ))}
             </ul>
@@ -430,8 +487,7 @@ function ShortcutsView(props: {
 // --- 診断情報 (HB-9 / FR-117) ------------------------------------------------
 
 /** Format a TimePoint as a year label for the diagnostics 概況 (簡潔; FR-117). */
-function currentTimeLabel(store: StoreApi<SessionStore<DomainProject>>): string {
-  const t = store.getState().currentTime;
+function currentTimeLabel(t: TimePoint): string {
   return `${String(t.year)}年`;
 }
 
@@ -441,9 +497,20 @@ function DiagnosticsView(props: {
 }): JSX.Element {
   // A non-sensitive アプリ概況 derived from the live store (FR-117 / FR-02: counts +
   // flags only, never project content). featureCount = features effective NOW.
-  const s = props.store.getState();
-  const featureCount = featuresAt(s.domain, s.currentTime).length;
-  const hasUnsavedChanges = s.projectDirty;
+  //
+  // BUG #8 — these are REACTIVE useStore selections, not a bare getState() snapshot
+  // taken once at mount. The bare-snapshot form FROZE the displayed feature count and
+  // unsaved flag at the moment the panel opened, so scrubbing the timeline or
+  // adding/removing a feature never updated them (the store changed but this view was
+  // not subscribed). Subscribing through useStore re-renders the panel on every
+  // relevant store change (技術方針 2.5 React は subscribe でブリッジ). featureCount is
+  // selected from (domain, currentTime) so it tracks BOTH edits and time scrubs.
+  const featureCount = useStore(
+    props.store,
+    (s) => featuresAt(s.domain, s.currentTime).length,
+  );
+  const hasUnsavedChanges = useStore(props.store, (s) => s.projectDirty);
+  const currentTime = useStore(props.store, (s) => s.currentTime);
 
   return (
     <HelpModal
@@ -460,7 +527,7 @@ function DiagnosticsView(props: {
           <dt>地物数</dt>
           <dd data-testid="diagnostics-feature-count">{featureCount}</dd>
           <dt>{DIAGNOSTICS_STRINGS.fieldContextTime}</dt>
-          <dd data-testid="diagnostics-current-time">{currentTimeLabel(props.store)}</dd>
+          <dd data-testid="diagnostics-current-time">{currentTimeLabel(currentTime)}</dd>
           <dt>未保存の変更</dt>
           <dd data-testid="diagnostics-unsaved">{hasUnsavedChanges ? 'あり' : 'なし'}</dd>
         </dl>

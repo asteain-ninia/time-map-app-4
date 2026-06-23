@@ -11,12 +11,22 @@ import { useState } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 import type { CommandId } from '../shell/index';
 
-import { createSessionStore, type SessionStore } from '../state/store';
+import { createSessionStore, type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import { CommandRegistry, COMMAND_ID } from '../shell/index';
 import { AppShell } from '../shell';
 import { EDIT_MODE } from '../state/session';
 import { buildEmptyProject } from '../file-ops/index';
 import type { DomainProject } from '../../domain/persistence/index';
+
+import { applyAddProposal } from '../../domain/editing/apply-proposal';
+import { createEditProposal } from '../../domain/consistency/index';
+import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
+import { createLeafFeature, type LeafFeature } from '../../domain/feature';
+import { createShape, createTerritoryRing } from '../../domain/ring';
+import { createVertex, type Vertex } from '../../domain/vertex';
+import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
+import type { AddSnapshot } from '../../domain/add/index';
+import { timePointYear } from '../../domain/time/time-point';
 
 import { HelpToolsController } from './HelpToolsController';
 
@@ -24,6 +34,72 @@ afterEach(() => cleanup());
 
 function makeStore(): StoreApi<SessionStore<DomainProject>> {
   return createSessionStore<DomainProject>({ initialDomain: buildEmptyProject() });
+}
+
+// --- helpers to build a project carrying a real leaf feature (for the bughunt3
+// search-hit / diagnostics-count / stale-result tests) -----------------------
+
+const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+
+/** A small square leaf with a name, effective over [startYear, endYear]. */
+function squareLeaf(
+  idRaw: string,
+  name: string,
+  startYear: number,
+  endYear: number,
+): { feature: LeafFeature; vertices: Vertex[] } {
+  const corners = [
+    [0, 0],
+    [2, 0],
+    [2, 2],
+    [0, 2],
+  ];
+  const vertices = corners.map((c, i) =>
+    createVertex(asVertexId(`${idRaw}-v${i}`), { lon: c[0]!, lat: c[1]! }),
+  );
+  const ring = createTerritoryRing(
+    asRingId(`r-${idRaw}`),
+    vertices.map((v) => v.id),
+  );
+  const feature = createLeafFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes(name, startYear, endYear),
+    color,
+    createShape([ring]),
+  );
+  return { feature, vertices };
+}
+
+/** Add a leaf to a DomainProject at `year` (returns the new project root). */
+function withLeaf(
+  project: DomainProject,
+  leaf: { feature: LeafFeature; vertices: Vertex[] },
+  year: number,
+): DomainProject {
+  const snapshot: AddSnapshot = {
+    feature: leaf.feature,
+    vertices: leaf.vertices,
+    sharedCandidateIds: new Map(),
+  };
+  return applyAddProposal(
+    project,
+    createEditProposal(leaf.feature.id, timePointYear(year), snapshot),
+  ) as DomainProject;
+}
+
+/** A store whose domain carries the given leaf, present at `time`. */
+function storeWithLeaf(
+  idRaw: string,
+  name: string,
+  startYear: number,
+  endYear: number,
+  time: number,
+): StoreApi<SessionStore<DomainProject>> {
+  const project = withLeaf(buildEmptyProject(), squareLeaf(idRaw, name, startYear, endYear), startYear);
+  return createSessionStore<DomainProject>({
+    initialDomain: project,
+    initial: { currentTime: timePointYear(time) },
+  });
 }
 
 /** Dispatch a command through the registry inside act() so the view state flushes. */
@@ -249,5 +325,102 @@ describe('bughunt3 (H1): Ctrl+Z does NOT pass through an open modal to EditUndo'
     expect(screen.queryByTestId('settings-dialog')).not.toBeInTheDocument();
     act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
     expect(globalUndo).toHaveBeenCalledTimes(2);
+  });
+});
+
+// BUG #3 — a search hit click was DEAD-ENDED: the hit <li> had no handler, so a
+// click did nothing (no selection, no emphasis, no navigation). The fix wires the
+// click to the SAME single-source store actions the map / sidebar use
+// (setActiveFeature + setDisplayFocus emphasis, 教訓 5.29 / FR-82).
+describe('BUG #3 — clicking a search hit selects + emphasizes the feature (was dead-ended)', () => {
+  it('promotes the clicked hit into the LIVE selection and emphasizes it via display focus', () => {
+    const store = storeWithLeaf('rome', 'ローマ', 1000, 2000, 1500);
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.ToolsSearch);
+
+    // Run a search that matches the one visible feature.
+    fireEvent.change(screen.getByTestId('search-panel-input'), { target: { value: 'ローマ' } });
+    fireEvent.click(screen.getByTestId('search-panel-run'));
+    const hit = screen.getByTestId('search-panel-hit');
+    expect(hit).toBeInTheDocument();
+
+    // Before the click: nothing selected, no focus emphasis.
+    expect(store.getState().activeFeature).toBeNull();
+    expect(store.getState().displayControl.focus.originId).toBeNull();
+
+    // Click the hit → it flows through the store's single-source actions.
+    act(() => {
+      fireEvent.click(hit);
+    });
+
+    const after = store.getState();
+    expect(after.activeFeature).toBe(asFeatureId('rome'));
+    expect(after.displayControl.focus.originId).toBe(asFeatureId('rome'));
+    expect(after.displayControl.focus.emphasize).toBe(true);
+  });
+});
+
+// BUG #8 — the diagnostics feature count was FROZEN at mount (a bare getState()
+// snapshot). Scrubbing the timeline or editing never updated it. The fix subscribes
+// the view to the store via useStore so the count / unsaved flag track live state.
+describe('BUG #8 — diagnostics count is reactive, not a frozen mount snapshot', () => {
+  it('the feature count updates when currentTime scrubs the feature out of existence', () => {
+    // The feature's add-anchor starts at year 1000; mount at 1100 (present → count 1).
+    const store = storeWithLeaf('athens', 'アテネ', 1000, 1200, 1100);
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpDiagnostics);
+    expect(screen.getByTestId('diagnostics-feature-count')).toHaveTextContent('1');
+
+    // Scrub to a time BEFORE the feature's anchor (year 500 < 1000) → not yet
+    // effective, so the live count must drop to 0.
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.Slider);
+    });
+    expect(screen.getByTestId('diagnostics-feature-count')).toHaveTextContent('0');
+    // The current-time label also tracks the scrub.
+    expect(screen.getByTestId('diagnostics-current-time')).toHaveTextContent('500年');
+  });
+
+  it('the unsaved-changes flag updates when the store becomes dirty', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpDiagnostics);
+    expect(screen.getByTestId('diagnostics-unsaved')).toHaveTextContent('なし');
+
+    // A live edit marks the project dirty → the diagnostics view re-renders.
+    act(() => {
+      store.getState().updateProjectSetting('equatorLengthKm', 12345);
+    });
+    expect(screen.getByTestId('diagnostics-unsaved')).toHaveTextContent('あり');
+  });
+});
+
+// BUG #9 — a shown search result was computed once on submit and never refreshed, so
+// a deleted/hidden feature lingered as a stale hit. The fix re-evaluates the result
+// against the live corpus on every store change while a result is shown
+// (reevaluateResult, 教訓 5.5/5.6).
+describe('BUG #9 — a shown search result re-evaluates when the corpus changes', () => {
+  it('a hit drops out when its feature is scrubbed out of the visible母集合', () => {
+    // The feature's add-anchor starts at year 1000; search while present (at 1100).
+    const store = storeWithLeaf('sparta', 'スパルタ', 1000, 1200, 1100);
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.ToolsSearch);
+
+    fireEvent.change(screen.getByTestId('search-panel-input'), { target: { value: 'スパルタ' } });
+    fireEvent.click(screen.getByTestId('search-panel-run'));
+    expect(screen.getAllByTestId('search-panel-hit')).toHaveLength(1);
+
+    // Scrub BEFORE the feature's anchor (year 500 < 1000) → the corpus no longer
+    // contains it, so the shown result must re-evaluate and drop the now-stale hit
+    // (no manual re-search).
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.Slider);
+    });
+    expect(screen.queryByTestId('search-panel-hit')).not.toBeInTheDocument();
+    expect(screen.getByTestId('search-panel-no-results')).toBeInTheDocument();
   });
 });
