@@ -4,6 +4,18 @@
 作業ルート: c:\!WORKSPACE\time-map-app\time-map-app-4 （!WORKSPACEセッションから絶対パスで駆動）
 方針: ユーザーが起きるまで停止しない。各マイルストーンでgit commit（ローカルのみ、pushしない）。
 
+## 要確認リスト（暫定決定の単一集約 — D36 衛生 / 離席運用前提）
+
+起床後レビューは事実上起きない前提で運用する。下記は**現行の既定値で動作中**。変えたい項目だけ指示してください。**今後の暫定決定は必ずこの1リストへ1行追記**（散逸＝恒久化の防止）。決定の経緯詳細は `DECISIONS-HB3.md`（HB3 表）・`DECISIONS.md` を参照（本リストが live ステータスの単一窓口）。
+
+| ID | 暫定決定（現行の既定値） | 実装状況 | 要確認 |
+| --- | --- | --- | --- |
+| HB3-1 | 中心経度=相対ジョグ維持＋数値常時表示（絶対経度入力UIは無し） | 実装済（`.longitude-shift`） | 相対ジョグ方式で良いか（絶対指定は不要か） |
+| HB3-10 | 競合解決後、調整後境界を優先地物の既存頂点へ**共有頂点化(溶接)**＝新規要件 | **未実装**（将来 / 現状は溶接せず独立頂点） | この溶接を実装するか |
+| HB3-12 | 存続期間の単一真実源=錨列。属性 start/end(FR-97) は錨列の導出 | **編集UI実装済**（278dba6: changeStart/setEnd を property dispatch から） | 属性 start/end を「導出・表示専用」とすべきか／今回の「編集可＝錨列を駆動」で良いか（現状は後者） |
+| HB3-23 | グリッド間隔 0.1° まで対応（0.1°広域は「グリッドなし」へ degrade） | 実装済（26a8b71） | ほぼ確定。広域 degrade で良いか |
+| HB3-24 | Electron 既定メニュー autoHideMenuBar:true（Alt 一時表示）＋本番最小化 | 実装済 | ネイティブ・ショートカット維持の中間策で良いか |
+
 ## 進捗ログ（新しい順・先頭追記）
 - 2026-06-23: **後継セッション（トークンループ病・治療後）— HB3継続 + 編集回帰根治**。前任ログは犠牲subagent経由で要約参照（病原体未摂取・`dad32df5`隔離厳守）。ユーザー指示=AskUser禁止・じゃんじゃん自走・いっぱいバグ直して未実装機能を実装。全e2e=**75 passed (9.0m)** で4コミットのe2e健全性を確認。コミット（全てローカル・緑ゲート確認）:
   - `1052f5f` chore: 未追跡WIP `e2e/human-bugs-3.spec.ts` の死コード(未使用helper)除去でゲート緑化＋治療handoff doc追跡。ベースライン vitest 250 files/2931 tests。
@@ -93,11 +105,21 @@
 TypeScript strict + Electron + React18(UIシェル限定) + 自前Canvas2D(MapRenderer i/f, WebGL退避路) + Zustand + 純粋ドメインコア + Immerコマンド履歴 + RBush + polygon-clipping + Zod + .tmap(ZIP/fflate) + Vite/electron-vite + Vitest/fast-check/Playwright。
 
 ## フェーズ状態
+（真実源は `git log`。D36 衛生スイープで実態へ同期。）
 - [完了] DESIGN — 要件定義書(FR-118)・技術方針・開発ガイド(教訓41)・spec×42。commit 8226b9c。
-- [進行中] IMPL — 42ユニットを依存順(.autopilot/units.json)で実装。各unit: 実装→多視点レビュー(最大2巡収束)→typecheck/lint/test緑→commit。
-- [未] CONVERGE — 全FR充足の収束レビュー
-- [未] QUALITY — 些細なバグ/性能改善（デグレ厳禁）
-- [継続] 仕事が尽きたら隣接作業を探して継続
+- [完了] IMPL — units.json 全43ユニット done（依存順・各 unit 多視点レビュー収束＋緑ゲート）。
+- [完了] CONVERGE — 全FR収束レビュー（ライブ U13 結線 = U44 含む）。
+- [完了] QUALITY — 軽微バグ/性能改善（4点全緑・skip 0・デグレなし）。
+- [完了] HUMAN-BUGS 1/2/3 — 人間実機テスト由来バグ（HB-1..16 / HB3-*）。各 behavioral/visual E2E でロック。HB3 残大物も解消（下記）。
+- [完了] BUGHUNT — 未知バグの能動炙り出し（67件根治、`BUGHUNT.md`）。
+- [完了] SEAM-AUDIT — シーム/対蹠経線(±180°)コーナーケース統合監査（C1〜C15、`SEAM-AUDIT.md`）。
+- [進行中] HB3 大物 + 継続バグ修正（2026-06-24 セッション）:
+    - [完了] **HB3-5/19 ナイフ n-way（2k横断→k+1片）** — ドメイン(8cc828c)+UI/スクショE2E(01ed1d6)+継承先 index クランプ(440cb06)。
+    - [完了] **HB3-12 存続期間編集を UI へ結線** — changeStart/setEnd（278dba6, behavioral E2E 付）。
+    - [完了] バグハント由来の早期修正 — merge vertexRemap データ欠損(750a673) / file-ops auto-save+baseMapImage(11130c5)。
+    - [進行中] **D36 衛生スイープ**（probe掃除/PROTOCOL/DECISIONS/STATE/スクショ）。
+    - [未] **非ナイフ確定キュー18件**（`.autopilot/BUGHUNT-QUEUE.md`、敵対的検証済）を重大度順に消化 — reparent/conflict/anchor-timeline/undo/FR-52 等。
+- [継続] 仕事が尽きたら隣接作業を探して継続（停止しない）。
 
 ## 次のアクション
 **フェーズ=HUMAN-BUGS-3(HB3) 継続中**（IMPL/CONVERGE/QUALITY/HUMAN-BUGS(1,2)/BUGHUNT は完了済）。真実源は `git log`。HB3 の判断は `.autopilot/DECISIONS-HB3.md`、診断は `HUMAN-BUGS-3-DIAGNOSIS.md`。
