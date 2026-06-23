@@ -53,22 +53,25 @@ export interface ProcessOptions {
 
 // --- result constructors (factories, never bare literals — 教訓5.19) --------
 
-function pending(conflicts: readonly Conflict[]): ConflictsPendingResult {
+function pending<S>(conflicts: readonly Conflict[], trialState: S): ConflictsPendingResult<S> {
   return {
     status: PROCESS_STATUS.ConflictsPending,
     conflicts,
     unresolvedConflictIds: conflicts.map((c) => c.id),
+    trialState,
   };
 }
 
-function pendingWithUnresolved(
+function pendingWithUnresolved<S>(
   conflicts: readonly Conflict[],
   unresolvedConflictIds: readonly string[],
-): ConflictsPendingResult {
+  trialState: S,
+): ConflictsPendingResult<S> {
   return {
     status: PROCESS_STATUS.ConflictsPending,
     conflicts,
     unresolvedConflictIds,
+    trialState,
   };
 }
 
@@ -180,8 +183,10 @@ export function startProcess<S, Snapshot>(
     return { status: PROCESS_STATUS.Committed, state: trialState, command };
   }
 
-  // Conflicts found: pause confirmation, surface the full structured list.
-  return pending(conflicts);
+  // Conflicts found: pause confirmation, surface the full structured list +
+  // the trial state they were detected against (the UI preview reads geometry
+  // from here, never the committed root — 教訓 5.6 / 5.29).
+  return pending(conflicts, trialState);
 }
 
 /**
@@ -231,9 +236,11 @@ export function applyResolutions<S, Snapshot>(
   // (教訓5.18).
   const unresolved = conflicts.filter((c) => !isResolvedBy(c, byConflict.get(c.id)));
   if (unresolved.length > 0) {
+    // No difference applied yet — the preview state is the proposal trial state.
     return pendingWithUnresolved(
       conflicts,
       unresolved.map((c) => c.id),
+      trialState,
     );
   }
 
@@ -289,9 +296,13 @@ export function applyResolutions<S, Snapshot>(
     // newly-adjusted state); otherwise surface them for fresh policies.
     const stillUnresolved = residual.filter((c) => !isResolvedBy(c, byConflict.get(c.id)));
     if (stillUnresolved.length > 0) {
+      // The differences for THIS round are already applied to workState, so the
+      // preview reflects the current trial geometry (trimmed shapes), not the
+      // stale pre-resolution shapes (the re-conflict stale-minimap fix).
       return pendingWithUnresolved(
         residual,
         stillUnresolved.map((c) => c.id),
+        workState,
       );
     }
     conflicts = residual;

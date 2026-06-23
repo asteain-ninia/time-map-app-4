@@ -37,10 +37,11 @@ const committed: CommittedResult<S> = {
   state: STATE,
   command: { kind: 'k', execute: () => ({ state: STATE, result: undefined as never }) } as never,
 };
-const pending: ConflictsPendingResult = {
+const pending: ConflictsPendingResult<S> = {
   status: PROCESS_STATUS.ConflictsPending,
   conflicts: [],
   unresolvedConflictIds: [],
+  trialState: STATE,
 };
 const rejected: RejectedResult = {
   status: PROCESS_STATUS.Rejected,

@@ -48,11 +48,13 @@ function conflict(id: string, a: FeatureId, b: FeatureId): Conflict {
   };
 }
 
-function pendingOf(conflicts: Conflict[]): ConflictsPendingResult {
+function pendingOf(conflicts: Conflict[]): ConflictsPendingResult<unknown> {
   return {
     status: PROCESS_STATUS.ConflictsPending,
     conflicts,
     unresolvedConflictIds: conflicts.map((c) => c.id),
+    // The opaque trial state the modal threads to shapesFor (never inspected here).
+    trialState: {},
   };
 }
 
@@ -171,6 +173,7 @@ describe('再競合とエラー提示 (受け入れ基準 6)', () => {
         status: PROCESS_STATUS.ConflictsPending,
         conflicts: [conflict('c9', FA, FB)],
         unresolvedConflictIds: ['c9'],
+        trialState: {},
       }),
     );
     renderModal([conflict('c1', FA, FB)], { applyResolutions: apply });
@@ -221,6 +224,59 @@ describe('再競合とエラー提示 (受け入れ基準 6)', () => {
     expect(apply).toHaveBeenCalledTimes(1); // no re-fire from the rejected phase.
   });
 
+  it('再競合ラウンドで shapesFor に当ラウンドの試行状態を渡す (ミニマップ陳腐化の防止)', async () => {
+    // ITEM-1 lock: the conflict-preview minimap must read participant geometry
+    // from the TRIAL state the current round was detected against — the
+    // difference-adjusted (trimmed) root the orchestrator hands back — NOT the
+    // opening/committed root. Otherwise after a resolution round the preview shows
+    // stale pre-resolution shapes. We tag the opening trial state and the
+    // re-conflict trial state distinctly and assert shapesFor receives the round's
+    // trial state once the modal re-構成s (教訓 5.6 / 5.29 single truth source).
+    const user = userEvent.setup();
+    const openingTrial = { round: 0 };
+    const reconflictTrial = { round: 1 };
+    const apply = vi.fn(
+      (): ProcessResult<unknown> => ({
+        status: PROCESS_STATUS.ConflictsPending,
+        conflicts: [conflict('c2', FC, FD)],
+        unresolvedConflictIds: ['c2'],
+        trialState: reconflictTrial,
+      }),
+    );
+    // Record every trial state shapesFor is invoked with.
+    const seenTrials: unknown[] = [];
+    const recordingShapesFor = (c: Conflict, trialState: unknown): ConflictShapes => {
+      seenTrials.push(trialState);
+      return { aFeatureId: c.a.featureId, aShape: TRI, bFeatureId: c.b.featureId, bShape: TRI };
+    };
+    render(
+      <ConflictResolutionModal<unknown>
+        pending={{
+          status: PROCESS_STATUS.ConflictsPending,
+          conflicts: [conflict('c1', FA, FB)],
+          unresolvedConflictIds: ['c1'],
+          trialState: openingTrial,
+        }}
+        applyResolutions={apply}
+        shapesFor={recordingShapesFor}
+        showGuide={false}
+      />,
+    );
+    // Opening round previews against the opening trial state.
+    expect(seenTrials).toContain(openingTrial);
+    seenTrials.length = 0;
+    // Resolve c1 → re-conflict surfaces c2 with the difference-adjusted trial root.
+    await user.click(screen.getByTestId(`policy-c1-${String(FA)}`));
+    await user.click(screen.getByTestId('conflict-apply'));
+    expect(screen.getByTestId('conflict-row-c2')).toBeInTheDocument();
+    // The preview now reads the ROUND'S trial state: the LATEST shapesFor call (the
+    // settled re-構成 render) uses the difference-adjusted trial root, not the stale
+    // opening root. (Intermediate transition renders may briefly re-use the opening
+    // state, but the committed render — what the user sees — is the new trial.)
+    expect(seenTrials).toContain(reconflictTrial);
+    expect(seenTrials[seenTrials.length - 1]).toBe(reconflictTrial);
+  });
+
   it('再競合では生き残る競合の選択を保持する (pruneDrafts; 教訓 5.5)', async () => {
     const user = userEvent.setup();
     // First apply (c1 chosen) → re-conflict surfacing c1 (survives) + c2 (new).
@@ -229,6 +285,7 @@ describe('再競合とエラー提示 (受け入れ基準 6)', () => {
         status: PROCESS_STATUS.ConflictsPending,
         conflicts: [conflict('c1', FA, FB), conflict('c2', FC, FD)],
         unresolvedConflictIds: ['c2'],
+        trialState: {},
       }),
     );
     renderModal([conflict('c1', FA, FB)], { applyResolutions: apply });

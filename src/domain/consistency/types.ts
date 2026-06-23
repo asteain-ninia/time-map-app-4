@@ -157,13 +157,29 @@ export interface CommittedResult<S> {
  * conflicts (resolved + unresolved) so the UI modal can drive (FR-62), plus the
  * subset still missing a policy. `unresolved.length > 0` ⇒ not committable
  * (教訓5.18: emptiness decided by length, not by a falsy short-circuit).
+ *
+ * Also carries `trialState`: the INTERMEDIATE result state these conflicts were
+ * detected against — the proposal applied to the baseline on the first round, and
+ * the difference-adjusted (trimmed) state on each re-conflict round. The UI's
+ * conflict-preview minimap resolves each participant's shape FROM this trial root
+ * (not the committed/original root), so after a resolution round the preview
+ * reflects the current trial geometry rather than the stale pre-resolution shapes
+ * (single truth source, 教訓5.6 / 5.29 — the same state the detector saw). Generic
+ * over the opaque state `S`; defaulted to `unknown` so consumers that ignore it
+ * (the snapshot-agnostic modal/hook) need no type argument.
  */
-export interface ConflictsPendingResult {
+export interface ConflictsPendingResult<S = unknown> {
   readonly status: typeof PROCESS_STATUS.ConflictsPending;
   /** Every conflict detected at this step (片落としなし, FR-62 / 教訓5.1). */
   readonly conflicts: readonly Conflict[];
   /** The ids of conflicts that still have no resolution policy. */
   readonly unresolvedConflictIds: readonly string[];
+  /**
+   * The intermediate trial state the conflicts were detected against (proposal
+   * applied + any difference adjustments). The UI reads participant geometry from
+   * here so the preview tracks the current trial, never the committed root.
+   */
+  readonly trialState: S;
 }
 
 /**
@@ -181,7 +197,7 @@ export interface RejectedResult {
 /** The discriminated process result (spec §成果物). */
 export type ProcessResult<S> =
   | CommittedResult<S>
-  | ConflictsPendingResult
+  | ConflictsPendingResult<S>
   | RejectedResult;
 
 // --- Dependency ports (the fixed contracts U13 calls) -----------------------

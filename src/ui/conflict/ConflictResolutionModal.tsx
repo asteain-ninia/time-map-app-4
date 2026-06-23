@@ -46,16 +46,23 @@ import {
   PREVIEW_STRINGS,
 } from './strings';
 
-/** Resolve the two shapes for a conflict (host looks them up from domain state). */
-export type ConflictShapesLookup = (conflict: Conflict) => ConflictShapes;
+/**
+ * Resolve the two shapes for a conflict (host looks them up from state). The host
+ * receives the INTERMEDIATE trial state the conflict was detected against (the
+ * proposal applied + any difference adjustments) so the preview reads the current
+ * trial geometry, never the committed/original root — after a resolution round
+ * the preview reflects the trimmed shapes (the re-conflict stale-minimap fix).
+ * `S` is the opaque domain state; the modal never inspects it.
+ */
+export type ConflictShapesLookup<S> = (conflict: Conflict, trialState: S) => ConflictShapes;
 
 export interface ConflictResolutionModalProps<S> {
   /** The U13 process result that opened the modal (唯一の入力, 教訓 5.3). */
-  readonly pending: ConflictsPendingResult;
+  readonly pending: ConflictsPendingResult<S>;
   /** The U13 apply-and-reevaluate adapter (一括適用, 受け入れ基準 5). */
   readonly applyResolutions: ApplyResolutions<S>;
   /** Host lookup for the two terminal shapes of a conflict (for the preview). */
-  readonly shapesFor: ConflictShapesLookup;
+  readonly shapesFor: ConflictShapesLookup<S>;
   /** Whether the first-time guide should be shown (APP setting, FR-118 / 教訓 5.36). */
   readonly showGuide: boolean;
   /** Persist the guide-suppress choice into the APP setting (教訓 5.36). */
@@ -93,7 +100,8 @@ export function ConflictResolutionModal<S>(
     onCancel,
     onCommitted,
   });
-  const { conflicts, drafts, listVM, phase, rejectionMessage, canApply } = resolution;
+  const { conflicts, trialState, drafts, listVM, phase, rejectionMessage, canApply } =
+    resolution;
 
   // The conflict whose preview is shown. Defaults to the first; follows the new
   // list when再構成 swaps it out (教訓 5.5: 依存状態変化で再選択).
@@ -305,7 +313,7 @@ export function ConflictResolutionModal<S>(
               <>
                 <MinimapPreview
                   conflict={focusedConflict}
-                  shapes={shapesFor(focusedConflict)}
+                  shapes={shapesFor(focusedConflict, trialState)}
                   priorityFeatureId={drafts.get(focusedConflict.id)}
                   widthPx={previewW}
                   heightPx={previewH}

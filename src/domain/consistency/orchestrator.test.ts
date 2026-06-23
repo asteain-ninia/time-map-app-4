@@ -173,6 +173,10 @@ describe('受け入れ基準2: 空間競合の構造化リスト (FR-62)', () =>
     expect(only.time).toEqual({ kind: 'point', at: timePointYear(1000) });
     expect(only.a.displayName).toBe(`name-${FA}`);
     expect(only.b.displayName).toBe(`name-${FB}`);
+    // ITEM-1 lock: the first-round pending carries the PROPOSAL trial state (the
+    // proposal applied to the baseline) so the UI preview reads geometry from the
+    // detected state, not the committed root (the stale-minimap fix).
+    expect(result.trialState).toEqual({ applied: ['proposal:a'] });
   });
 
   it('複数競合が同時にあるとき全競合が漏れなくリストに現れる (片落としなし)', () => {
@@ -389,6 +393,11 @@ describe('受け入れ基準7: 差分調整後の再検出と収束 (FR-61)', ()
     expect(result.status).toBe(PROCESS_STATUS.ConflictsPending);
     if (result.status !== PROCESS_STATUS.ConflictsPending) return;
     expect(result.unresolvedConflictIds).toEqual([cNew.id]);
+    // ITEM-1 lock: a re-conflict round carries the DIFFERENCE-ADJUSTED trial state
+    // (workState — proposal applied + the c1 resolution), NOT the un-adjusted
+    // proposal trial state, so the UI preview tracks the current trimmed geometry
+    // rather than the stale pre-resolution shapes (the stale-minimap fix).
+    expect(result.trialState).toEqual({ applied: ['proposal:a', `adjust:${FB}`] });
   });
 
   it('収束しない (毎回同じ競合が残る) 場合は拒否(収束失敗)を返し、無限ループしない', () => {

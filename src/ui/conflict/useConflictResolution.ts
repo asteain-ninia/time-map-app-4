@@ -64,6 +64,13 @@ export interface ConflictResolutionState<S> {
   readonly phase: ModalPhase;
   /** The current conflict list (re-構成 on再競合, 教訓 5.5). */
   readonly conflicts: readonly Conflict[];
+  /**
+   * The intermediate trial state the CURRENT conflicts were detected against
+   * (proposal applied + any difference adjustments from the latest round). The
+   * preview resolves participant geometry from here so it tracks the live trial,
+   * never the committed root — updated on every再競合 round (教訓 5.6 / 5.29).
+   */
+  readonly trialState: S;
   readonly drafts: ResolutionDrafts;
   /** The derived list view-model (受け入れ基準 2). */
   readonly listVM: ConflictListVM;
@@ -99,7 +106,7 @@ export type UseConflictResolution<S> = ConflictResolutionState<S> &
 
 export interface UseConflictResolutionOptions<S> {
   /** The U13 process result that opened the modal (唯一の入力, 教訓 5.3). */
-  readonly pending: ConflictsPendingResult;
+  readonly pending: ConflictsPendingResult<S>;
   /** The U13 apply-and-reevaluate adapter. */
   readonly applyResolutions: ApplyResolutions<S>;
   /** Called when the user cancels (host abandons the paused edit). */
@@ -123,6 +130,10 @@ export function useConflictResolution<S>(
 
   const [phase, setPhase] = useState<ModalPhase>(MODAL_PHASE.Resolving);
   const [conflicts, setConflicts] = useState<readonly Conflict[]>(pending.conflicts);
+  // The trial state the CURRENT conflicts were detected against; seeded from the
+  // opening pending result and re-set on every再競合 round so the preview reads
+  // the live trial geometry (the re-conflict stale-minimap fix, 教訓 5.6 / 5.29).
+  const [trialState, setTrialState] = useState<S>(pending.trialState);
   const [drafts, setDrafts] = useState<ResolutionDrafts>(EMPTY_DRAFTS);
   const [rejectionMessage, setRejectionMessage] = useState<string | null>(null);
   const [committed, setCommitted] = useState<ProcessResult<S> | null>(null);
@@ -182,6 +193,10 @@ export function useConflictResolution<S>(
         // across rounds (consistency-binding.createAccumulatingApply): discarding a
         // surviving choice here would force a needless re-pick and could oscillate.
         setConflicts(result.conflicts);
+        // Advance the preview to the difference-adjusted trial state of this round
+        // so the minimap shows the current (trimmed) trial geometry, not the stale
+        // pre-resolution shapes (the re-conflict stale-minimap fix, 教訓 5.6).
+        setTrialState(result.trialState);
         setDrafts((d) => pruneDrafts(d, result.conflicts));
         setRejectionMessage(null);
         setPhase(MODAL_PHASE.Resolving);
@@ -216,6 +231,7 @@ export function useConflictResolution<S>(
   return {
     phase,
     conflicts,
+    trialState,
     drafts,
     listVM,
     unresolved,

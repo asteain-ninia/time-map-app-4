@@ -1538,16 +1538,22 @@ export function App(): JSX.Element {
   }, [store]);
 
   // Build the per-conflict shapes lookup for the preview: the two participants'
-  // resolved leaf shapes at the conflict time, from the LIVE root (the same
-  // live-lookup the detection used — single truth source, 教訓 5.29).
+  // resolved leaf shapes at the conflict time, from the TRIAL state the detection
+  // ran against (the proposal applied + any difference adjustments), NOT the
+  // committed root. On a re-conflict round the orchestrator hands back the
+  // difference-adjusted trial root, so reading from it makes the minimap reflect
+  // the current (trimmed) trial geometry instead of the stale pre-resolution
+  // shapes (the re-conflict stale-minimap fix — same state the detector saw,
+  // single truth source 教訓 5.6 / 5.29). `trialState` is always the live
+  // DomainRoot the U13 binding threads through ProcessResult.
   const shapesFor = useCallback(
-    (conflict: Conflict): ConflictShapes => ({
+    (conflict: Conflict, trialState: DomainRoot): ConflictShapes => ({
       aFeatureId: conflict.a.featureId,
-      aShape: shapeForConflictParticipant(store.getState().domain, conflict, conflict.a.featureId),
+      aShape: shapeForConflictParticipant(trialState, conflict, conflict.a.featureId),
       bFeatureId: conflict.b.featureId,
-      bShape: shapeForConflictParticipant(store.getState().domain, conflict, conflict.b.featureId),
+      bShape: shapeForConflictParticipant(trialState, conflict, conflict.b.featureId),
     }),
-    [store],
+    [],
   );
 
   const onAddConflicts = useCallback(
@@ -2165,7 +2171,7 @@ function LongitudeShiftPanel(props: {
  * is generic over the domain root only (it never sees the snapshot type).
  */
 interface ConflictPending {
-  readonly pending: ConflictsPendingResult;
+  readonly pending: ConflictsPendingResult<DomainRoot>;
   readonly applyResolutions: ApplyResolutions<DomainRoot>;
   /**
    * The selection preference for the eventual commit (教訓 5.11). A direct add /
