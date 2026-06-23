@@ -115,6 +115,13 @@ export interface FileOpsControllerProps {
    * actually reaches the load flow — the overlay container cannot (教訓 5.14).
    */
   readonly registerDropTarget?: DropTargetHook;
+  /**
+   * Report whether a file-ops modal (FR-107 未保存警告 / FR-106 修復ダイアログ) is open
+   * (bughunt3 H1). The modal-open state lives HERE, not in App.tsx, so the host needs
+   * this lift to suspend the global shortcut dispatcher while the dialog owns the
+   * keyboard — otherwise Ctrl+Z / Delete leak THROUGH the warning to a domain op.
+   */
+  readonly onModalOpenChange?: (open: boolean) => void;
 }
 
 /** The pending unsaved-warning modal (a resolver the dialog feeds the choice to). */
@@ -499,6 +506,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     const cleanup = registerDropTarget({ onDragOver, onDrop });
     return typeof cleanup === 'function' ? cleanup : undefined;
   }, [registerDropTarget, onDragOver, onDrop]);
+
+  // bughunt3 (H1): mirror "a file-ops modal is open" up to the host so it suspends the
+  // global shortcut dispatcher while the 未保存警告 / 修復 dialog owns the keyboard. The
+  // pending* state here is the single truth; we only reflect it (no duplicate flag).
+  // Cleared on unmount so a torn-down controller never leaves the dispatcher suspended.
+  const onModalOpenChange = props.onModalOpenChange;
+  useEffect(() => {
+    if (onModalOpenChange === undefined) return undefined;
+    const open = pendingUnsaved !== null || pendingRepair !== null;
+    onModalOpenChange(open);
+    return () => onModalOpenChange(false);
+  }, [pendingUnsaved, pendingRepair, onModalOpenChange]);
 
   // The controller's container lives in the front overlay (pointer-events:none,
   // 教訓 5.14) so it never steals click / pan from the map. The D&D drop target is

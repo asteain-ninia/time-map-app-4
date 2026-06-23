@@ -97,6 +97,17 @@ export interface AddToolControllerProps<S> {
     | undefined;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
   readonly onConflicts?: ((result: ProcessResult<S>, proposal: AddProposal) => void) | undefined;
+  /**
+   * Report whether an add session is in progress (bughunt3). The host raises the
+   * global-shortcut suspension while this is true so the controller's OWN Ctrl+Z
+   * (vertex-undo, FR-78) is the only handler — the global EditUndo no longer also
+   * fires (H2 二重undo). Fires `true` whenever the session is past Idle (Drawing /
+   * PropertyForm / transient), `false` when it returns to Idle. The window keydown
+   * listener for Ctrl+Z is registered only in Drawing, but suspending across the
+   * whole non-Idle session also keeps a stray global Delete from hitting the active
+   * feature while the add chrome owns the interaction (single-source boundary).
+   */
+  readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
   /** Face parent candidates at the current time (FR-77); host-resolved (U10/U08). */
   readonly parentCandidates?: readonly ParentCandidate[] | undefined;
   /** Nearest existing-vertex proximity resolver (FR-31; U10/U24). */
@@ -248,6 +259,23 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [add.phase, add.cancel, add.undo]);
+
+  // --- bughunt3 (H2): report the in-progress add to the host so it suspends the
+  // GLOBAL shortcut dispatcher while this controller owns Ctrl+Z. The global
+  // useShortcuts listener registers BEFORE this controller's (mount vs. phase-change),
+  // so it would fire EditUndo FIRST and a tool-side stopImmediatePropagation could not
+  // unwind it — suspending the global path entirely is the only robust fix (教訓 5.29
+  // 単一真実源: the host derives shortcutsSuspended = modalOpen || toolDrawing). The
+  // session phase here is that single truth; we only mirror it up (no duplicate state).
+  const onDrawingChange = props.onDrawingChange;
+  useEffect(() => {
+    if (onDrawingChange === undefined) return;
+    const drawing = add.phase !== ADD_PHASE.Idle;
+    onDrawingChange(drawing);
+    // On unmount, clear the flag so a torn-down controller never leaves the global
+    // dispatcher suspended (教訓 5.2 全経路で破棄).
+    return () => onDrawingChange(false);
+  }, [add.phase, onDrawingChange]);
 
   // --- Map-input handlers the host wires onto the input layer (教訓 5.14). A click
   // places a vertex (placeAt); pointer move updates the cursor-follow preview.

@@ -15,7 +15,7 @@
 // ショートカット一覧 views built here over existing pure logic (U41 search/log,
 // U20 menu/shortcut formatters) — no new domain logic.
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { SessionStore } from '../state/store';
@@ -65,6 +65,15 @@ export interface HelpToolsControllerProps {
   readonly registry: CommandRegistry;
   /** Platform for accelerator labels in the shortcut list (testable injection). */
   readonly platform?: Platform;
+  /**
+   * Report whether one of this controller's modals (設定 / 検索 / バージョン /
+   * ショートカット一覧 / 診断) is open (bughunt3 H1). The modal-open state lives HERE,
+   * not in App.tsx, so the host cannot suspend the global shortcut dispatcher without
+   * this lift. The host ORs it into shortcutsSuspended so Ctrl+Z / Delete cannot leak
+   * THROUGH an open dialog to a domain op (these dialogs handle only Esc/Tab via React
+   * onKeyDown, which a native window listener ignores). Fires on every open/close.
+   */
+  readonly onModalOpenChange?: (open: boolean) => void;
 }
 
 /**
@@ -99,6 +108,27 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
       registry.unregister(COMMAND_ID.HelpDiagnostics);
     };
   }, [registry]);
+
+  // bughunt3 (H1): mirror "a modal is open" up to the host so it can suspend the
+  // global shortcut dispatcher while one of these dialogs owns the keyboard. The view
+  // state here is the single truth; we only reflect it (no duplicate flag). Cleared on
+  // unmount so a torn-down controller never leaves the dispatcher suspended (教訓 5.2).
+  const onModalOpenChange = props.onModalOpenChange;
+  const modalOpenRef = useRef(false);
+  useEffect(() => {
+    if (onModalOpenChange === undefined) return;
+    const open = view !== HELP_VIEW.None;
+    if (open !== modalOpenRef.current) {
+      modalOpenRef.current = open;
+      onModalOpenChange(open);
+    }
+    return () => {
+      if (modalOpenRef.current) {
+        modalOpenRef.current = false;
+        onModalOpenChange(false);
+      }
+    };
+  }, [view, onModalOpenChange]);
 
   const close = (): void => setView(HELP_VIEW.None);
 

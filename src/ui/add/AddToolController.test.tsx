@@ -38,9 +38,12 @@ import { EMPTY_COMMAND_RESULT } from '../../domain/command/result';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { timePointYearMonthDay } from '../../domain/time/time-point';
 
+import { useState } from 'react';
+
 import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { AppShell } from '../shell';
+import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 
 import { AddToolController, type AddDrawSink, type ScreenToWorld } from './AddToolController';
 
@@ -289,5 +292,87 @@ describe('U23 integration: U13 rejection surfaces a Japanese message (FR-115)', 
     expect(within(rejection).getByRole('alert')).toHaveTextContent('時間が不正です。');
     // Nothing committed: the domain reference is unchanged.
     expect(h.store.getState().domain).toEqual({ tag: 'initial' });
+  });
+});
+
+// bughunt3 H2 — Ctrl+Z must NOT double-fire during add drawing. Mounts the REAL
+// production graph (AppShell wiring useShortcuts + the AddToolController) over ONE
+// store, with the host derivation (suspended = addDrawing) the App uses, plus a live
+// EditUndo handler on the SAME registry the shell dispatches. The empirically-verified
+// listener order is: useShortcuts (mounted at shell level) registers BEFORE the
+// controller's drawing-only keydown listener, so without suspension the global
+// EditUndo fires FIRST on Ctrl+Z and the tool's vertex-undo ALSO fires — one Ctrl+Z
+// would roll back a committed feature AND remove a vertex. The suspension makes the
+// global path stand down while drawing, so only the tool's vertex-undo runs.
+describe('U23 bughunt3 (H2): Ctrl+Z does NOT double-fire while drawing', () => {
+  function mountWithGlobalUndo(): {
+    store: StoreApi<SessionStore<S>>;
+    globalUndo: ReturnType<typeof vi.fn>;
+  } {
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: { mode: EDIT_MODE.Add, currentTime: timePointYearMonthDay(1500, 6, 20) },
+    });
+    const registry = new CommandRegistry();
+    const globalUndo = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run: globalUndo });
+
+    let f = 0;
+    let v = 0;
+    let r = 0;
+
+    // Mirror the App.tsx host wiring: hold the drawing flag, thread it as `suspended`
+    // into AppShell, and feed the controller's onDrawingChange back into it. This is
+    // the exact production mechanism under test (no stand-in for the suspension).
+    function Host(): JSX.Element {
+      const [addDrawing, setAddDrawing] = useState(false);
+      return (
+        <AppShell
+          store={store}
+          registry={registry}
+          suspended={addDrawing}
+          overlay={
+            <AddToolController<S>
+              store={store}
+              startProcess={() => committed}
+              ids={{
+                nextFeatureId: () => asFeatureId(`f${++f}`),
+                nextVertexId: () => asVertexId(`v${++v}`),
+              }}
+              nextRingId={() => asRingId(`r${++r}`)}
+              screenToWorld={screenToWorld}
+              drawSink={{ drawAdd: () => {} }}
+              onDrawingChange={setAddDrawing}
+            />
+          }
+        />
+      );
+    }
+    render(<Host />);
+    return { store, globalUndo };
+  }
+
+  it('removes only the last vertex; the global EditUndo never fires while drawing', () => {
+    const { globalUndo } = mountWithGlobalUndo();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(4, 0);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
+
+    // ONE Ctrl+Z while drawing: the tool removes the last vertex (2 → 1) and the
+    // GLOBAL EditUndo (which would roll back a committed domain op) is suspended.
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('1');
+    expect(globalUndo).not.toHaveBeenCalled();
+  });
+
+  it('the global EditUndo re-arms once the add session ends (back to Idle)', () => {
+    const { store, globalUndo } = mountWithGlobalUndo();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    // Leaving 追加モード ends the session → suspension lifts; the global undo is live.
+    act(() => store.getState().setMode(EDIT_MODE.Edit));
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });

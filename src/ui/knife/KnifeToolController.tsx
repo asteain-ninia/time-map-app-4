@@ -112,6 +112,15 @@ export interface KnifeToolControllerProps<S> {
   readonly onConflicts?:
     | ((result: ProcessResult<S>, proposal: EditProposal<SplitSnapshot>) => void)
     | undefined;
+  /**
+   * Report whether a knife session is in progress (bughunt3). The host raises the
+   * global-shortcut suspension while this is true so the controller's OWN Ctrl+Z
+   * (undoCutPoint during DrawingCut, FR-78) is the only handler — the global EditUndo
+   * no longer also fires (H2 二重undo) — AND so a stray global Delete cannot hit the
+   * active feature while the InheritorModal / property form (H1 modal-pass-through) is
+   * up. Fires `true` whenever the flow is past Idle, `false` on return to Idle.
+   */
+  readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
   /** A sensible color for the非継承側 new feature when the form omits it (FR-97). */
   readonly defaultColor: ColorInfo;
   /** Provisional draw style override. */
@@ -228,6 +237,24 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [knife.flow, knife.state.phase, knife.cancel, knife.undoCutPoint]);
+
+  // --- bughunt3 (H2 / H1): report the in-progress knife to the host so it suspends
+  // the GLOBAL shortcut dispatcher. The global useShortcuts listener registers BEFORE
+  // this controller's (mount vs. flow-change), so it would fire EditUndo FIRST on
+  // Ctrl+Z during DrawingCut and a tool-side stopImmediatePropagation could not unwind
+  // it — suspending the global path entirely is the robust fix (host derives
+  // shortcutsSuspended = modalOpen || toolDrawing, 単一真実源 教訓 5.29). The knife flow
+  // is that single truth; we only mirror it up. Suspending across the WHOLE non-Idle
+  // flow also covers the InheritorModal / 非継承側 property form (H1).
+  const onDrawingChange = props.onDrawingChange;
+  useEffect(() => {
+    if (onDrawingChange === undefined) return;
+    const active = knife.flow !== KNIFE_FLOW.Idle;
+    onDrawingChange(active);
+    // On unmount clear the flag so a torn-down controller never leaves the global
+    // dispatcher suspended (教訓 5.2 全経路で破棄).
+    return () => onDrawingChange(false);
+  }, [knife.flow, onDrawingChange]);
 
   // --- Map-input handler with the固定円ヒット優先 (教訓 5.14). A click while:
   //   - SelectingTarget → resolve the feature under it and select (LEAF gate in hook);

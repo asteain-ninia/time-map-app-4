@@ -47,10 +47,30 @@ export interface AppShellProps<S> {
    * overlap the toolbar / sidebar / timeline chrome (教訓 5.14).
    */
   readonly mapOverlay?: ReactNode;
+  /**
+   * Suspend the global keyboard-shortcut dispatcher (bughunt3). The host raises this
+   * while something else owns the keyboard — a modal is open (Ctrl+Z must not undo a
+   * domain op THROUGH the modal, H1) or an Add/Knife tool is mid-drawing (its own
+   * Ctrl+Z owns vertex-undo, so the global EditUndo must NOT also fire, H2). It is the
+   * SINGLE source of truth (modalOpen || toolDrawing); the global window listener
+   * never runs while raised, so the fix is robust regardless of listener registration
+   * order (a later tool handler's stopImmediatePropagation could not unwind an already-
+   * fired global undo). Defaults to false (always live).
+   */
+  readonly suspended?: boolean;
 }
 
 export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
-  const { store, sidebar, timeline, status, onMapMount, overlay, mapOverlay } = props;
+  const {
+    store,
+    sidebar,
+    timeline,
+    status,
+    onMapMount,
+    overlay,
+    mapOverlay,
+    suspended = false,
+  } = props;
 
   const registry = useMemo(() => props.registry ?? new CommandRegistry(), [props.registry]);
   const sizeStore = useMemo(() => props.sizeStore ?? new MapSizeStore(), [props.sizeStore]);
@@ -59,8 +79,10 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
   const mode = useStore(store, (s) => s.mode);
 
   // Single shortcut dispatcher, gated by the same enabled judgement as the menu
-  // (教訓 5.13). A later unit can suspend it when a modal owns the keyboard.
-  useShortcuts({ keymap, registry, mode });
+  // (教訓 5.13). The host SUSPENDS it (bughunt3) while a modal owns the keyboard or
+  // an Add/Knife tool is mid-drawing, so global EditUndo/EditDelete neither leak
+  // THROUGH a modal (H1) nor double-fire alongside the tool's own Ctrl+Z (H2).
+  useShortcuts({ keymap, registry, mode, suspended });
 
   return (
     <div className="app-shell" data-testid="app-shell">

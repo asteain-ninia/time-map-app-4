@@ -1510,6 +1510,33 @@ export function App(): JSX.Element {
   // unit and re-arm the paused tool; on cancel we discard the tool draft (教訓 5.2).
   const [conflictState, setConflictState] = useState<ConflictPending | null>(null);
 
+  // bughunt3 — GLOBAL SHORTCUT SUSPENSION (H1 + H2). The single `suspended` signal the
+  // shell threads into useShortcuts (AppShell): the global window-keydown dispatcher
+  // (Ctrl+Z=EditUndo / Delete=EditDelete / Ctrl+Y=EditRedo) must STAND DOWN whenever
+  // something else owns the keyboard, so it neither (H1) fires THROUGH an open modal —
+  // those modals handle only Esc/Tab via React onKeyDown, which a native window listener
+  // ignores — nor (H2) double-fires alongside an Add/Knife tool's OWN Ctrl+Z while
+  // drawing (the global listener registers FIRST, so it would win the race and a tool-
+  // side stopImmediatePropagation could not unwind the already-fired undo).
+  //
+  // It is derived as modalOpen || toolDrawing from the components that OWN each piece of
+  // truth (教訓 5.29 単一真実源 — no duplicate phase/visibility state):
+  //   - conflictState        : the U35 conflict modal (already top-level here);
+  //   - helpModalOpen         : 設定/検索/バージョン/ショートカット/診断 (HelpToolsController);
+  //   - fileModalOpen         : FR-107 未保存警告 / FR-106 修復 (FileOpsController);
+  //   - addDrawing / knifeDrawing : an Add session past Idle / a Knife flow past Idle.
+  // Each child reflects its own state up through a callback; this root only ORs them.
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
+  const [fileModalOpen, setFileModalOpen] = useState(false);
+  const [addDrawing, setAddDrawing] = useState(false);
+  const [knifeDrawing, setKnifeDrawing] = useState(false);
+  const shortcutsSuspended =
+    conflictState !== null ||
+    helpModalOpen ||
+    fileModalOpen ||
+    addDrawing ||
+    knifeDrawing;
+
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
   // selection. Toggling the tool null→prev funnels both controllers through
@@ -1819,6 +1846,7 @@ export function App(): JSX.Element {
         store={store}
         registry={registry}
         sidebar={sidebar}
+        suspended={shortcutsSuspended}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
         mapOverlay={
@@ -1901,6 +1929,7 @@ export function App(): JSX.Element {
               supplyZoomRange={supplyZoomRange}
               registerWindowClose={registerWindowClose}
               registerDropTarget={registerDropTarget}
+              onModalOpenChange={setFileModalOpen}
             />
             {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
                 (設定 / 検索) と ヘルプ (バージョン情報 / ショートカット一覧 / 診断情報)
@@ -1910,7 +1939,11 @@ export function App(): JSX.Element {
                 of dead command). The handlers are torn down on unmount (useEffect
                 cleanup unregister). 設定 reuses the U38 dialog bound to the live
                 store; the rest are minimal views over existing pure logic. */}
-            <HelpToolsController store={store} registry={registry} />
+            <HelpToolsController
+              store={store}
+              registry={registry}
+              onModalOpenChange={setHelpModalOpen}
+            />
             <AddToolControllerWithParents
               store={store}
               startProcess={hostBootstrap.startProcess}
@@ -1921,6 +1954,7 @@ export function App(): JSX.Element {
               mapCameraInput={mapCameraInput}
               onCommitted={onAddCommitted}
               onConflicts={onAddConflicts}
+              onDrawingChange={setAddDrawing}
             />
             <KnifeToolController<DomainRoot>
               store={store}
@@ -1937,6 +1971,7 @@ export function App(): JSX.Element {
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}
+              onDrawingChange={setKnifeDrawing}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
                 SAME store. Selecting 編集モード→結合 starts a session; map-input clicks

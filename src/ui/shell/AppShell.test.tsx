@@ -232,6 +232,32 @@ describe('shortcut wiring (FR-112, 受け入れ基準 7/9)', () => {
     render(<AppShell store={makeStore(EDIT_MODE.Edit)} />);
     expect(() => fireEvent.keyDown(window, { key: 's', ctrlKey: true })).not.toThrow();
   });
+
+  // bughunt3: AppShell THREADS a `suspended` flag into the global shortcut hook so
+  // the host can stand the dispatcher down while a modal owns the keyboard / a tool
+  // is mid-drawing. Without this, Ctrl+Z fired through open modals and double-fired
+  // during Add/Knife drawing.
+  it('suspended=true stops the global shortcut dispatcher (modal / drawing)', () => {
+    const store = makeStore(EDIT_MODE.Edit);
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run });
+    render(<AppShell store={store} registry={registry} suspended />);
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('suspended=false (default) keeps the dispatcher live', () => {
+    const store = makeStore(EDIT_MODE.Edit);
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run });
+    render(<AppShell store={store} registry={registry} suspended={false} />);
+
+    fireEvent.keyDown(window, { key: 'z', ctrlKey: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('map input layer (教訓 5.14, 受け入れ基準 8)', () => {
