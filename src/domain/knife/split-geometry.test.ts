@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinate } from '../coordinate';
+import type { GeoMultiPolygon } from '../geometry/index';
 import {
   SPLIT_CHECK_STATUS,
   SPLIT_REJECT,
   SPLIT_REJECT_MESSAGE,
   checkSplittable,
+  collectOpenPieces,
   executeSplit,
   smallerSide,
 } from './split-geometry';
@@ -193,6 +195,67 @@ describe('checkSplittable — HB3-5/19 n-way: a comb cut crossing the boundary 2
     if (res.status === SPLIT_CHECK_STATUS.Splittable) {
       expect(res.pieces?.length).toBe(2);
     }
+  });
+});
+
+describe('collectOpenPieces — n-way direct invariants (HB3-5/19; ported from scratch probe)', () => {
+  // Direct unit coverage of the iterative-per-chord core: a 2k-boundary-crossing open
+  // line yields k+1 pieces and conserves area (sum of piece areas ≈ original). These
+  // example cases were promoted from a disposable scratch probe (D36 hygiene sweep);
+  // they assert the same invariants without console output or ghost-replay risk.
+  const square: GeoMultiPolygon = [[[c(0, 0), c(10, 0), c(10, 10), c(0, 10)]]];
+  const line = (pts: ReadonlyArray<readonly [number, number]>) => pts.map(([x, y]) => c(x, y));
+  const totalArea = (pieces: readonly GeoMultiPolygon[]): number => {
+    let acc = 0;
+    for (const mp of pieces)
+      for (const poly of mp) {
+        const ring = poly[0]!;
+        let a = 0;
+        for (let i = 0; i < ring.length; i++) {
+          const p = ring[i]!;
+          const q = ring[(i + 1) % ring.length]!;
+          a += p.lon * q.lat - q.lon * p.lat;
+        }
+        acc += Math.abs(a) / 2;
+      }
+    return acc;
+  };
+
+  it('a 2-crossing straight cut → 2 pieces, area preserved', () => {
+    const r = collectOpenPieces(line([[5, -1], [5, 11]]), square, 100);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pieces.length).toBe(2);
+      expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+    }
+  });
+
+  it('a 4-crossing comb cut → 3 pieces, area preserved', () => {
+    // enter left @ (0,5), exit bottom @ (5,0), re-enter bottom @ (8,0), exit right @ (10,5).
+    const r = collectOpenPieces(line([[-1, 5], [5, 5], [5, -1], [8, -1], [8, 5], [11, 5]]), square, 100);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pieces.length).toBe(3);
+      expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+    }
+  });
+
+  it('a 6-crossing comb cut (3 teeth) → 4 pieces, area preserved', () => {
+    const r = collectOpenPieces(
+      line([[-1, 5], [2, 5], [2, -1], [4, -1], [4, 5], [6, 5], [6, -1], [8, -1], [8, 5], [11, 5]]),
+      square,
+      100,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.pieces.length).toBe(4);
+      expect(totalArea(r.pieces)).toBeCloseTo(100, 1);
+    }
+  });
+
+  it('a dangling cut that starts inside and crosses the boundary only once → rejected', () => {
+    const r = collectOpenPieces(line([[5, 5], [5, 11]]), square, 100);
+    expect(r.ok).toBe(false);
   });
 });
 

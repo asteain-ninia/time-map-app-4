@@ -7,3 +7,7 @@ build/
 test-results/
 playwright-report/
 .playwright/
+
+# Cross-model review scratch (codex-delegate / 手書きレビュー依頼). Never tracked — these
+# are throwaway prompts/outputs and were a source of repo clutter (D36 hygiene sweep).
+.tooling/_rev*.txt
