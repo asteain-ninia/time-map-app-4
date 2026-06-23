@@ -1682,6 +1682,24 @@ export function App(): JSX.Element {
     [store, propertyEditBinding, recordCommit],
   );
 
+  // FR-85 — the プロパティタブ「地物を削除」button. The {@link DeleteFeatureButton}
+  // component + the U31 delete command both existed and were unit-tested, but the button
+  // was NEVER mounted in the live property panel — only the 編集メニュー / Delete キー
+  // reached COMMAND_ID.EditDelete (see the EditDelete handler above, which itself notes
+  // "(future) プロパティ削除ボタン"). Same wiring-gap class as HB3-11/HB3-14 (教訓 5.7
+  // ロジックはあるが UI から呼ばれない). Wire the button through the SAME pure
+  // createDeleteFeatureCommandForRoot path the menu/Delete-key use (single delete truth
+  // source, 教訓 5.30): it deletes the shown feature across 全錨 as ONE undo unit, and an
+  // absent target builds no command (no幽霊 entry, 教訓 5.24). Undo restores it.
+  const propertyDeleteFeature = useCallback(
+    (featureId: FeatureId): void => {
+      const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
+      if (command === null) return;
+      recordCommand(command);
+    },
+    [store, recordCommand],
+  );
+
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
   // never passed to AppShell, so the sidebar rendered empty and the U32
@@ -1699,8 +1717,9 @@ export function App(): JSX.Element {
         calendar,
         onOpenDetail,
         editDispatch: propertyEditDispatch,
+        onDeleteFeature: propertyDeleteFeature,
       }),
-    [store, calendar, onOpenDetail, propertyEditDispatch],
+    [store, calendar, onOpenDetail, propertyEditDispatch, propertyDeleteFeature],
   );
 
   return (

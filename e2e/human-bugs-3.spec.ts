@@ -255,6 +255,43 @@ async function commitFaceAt(page: Page, cx: number, cy: number, half: number): P
   await page.getByTestId('add-save').click();
 }
 
+test.describe('メタモルフィック — 地物の削除∘取消は恒等（bughunt delete-undo 所見のクリーン検証）', () => {
+  test('地物を削除すると消え、Ctrl+Z の取消で同じ位置に復活して再選択できる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await commitOneFace(page);
+      const activeFeature = page.getByTestId('app-active-feature');
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+      expect(faceId.length).toBeGreaterThan(0);
+
+      // 編集モード, then re-select the centre face (HB-15 body click).
+      await enterEditMode(page);
+      const mapInput = page.getByTestId('map-input-layer');
+      const mb = (await mapInput.boundingBox())!;
+      const ccx = mb.x + mb.width / 2;
+      const ccy = mb.y + mb.height / 2;
+      await page.mouse.click(ccx, ccy);
+      await expect(activeFeature).toHaveText(faceId);
+
+      // Delete it: button → confirm dialog → 確定 (FR-85).
+      await page.getByRole('button', { name: '地物を削除' }).click();
+      await page.getByRole('button', { name: '削除を確定' }).click();
+      await expect(activeFeature).toHaveText('');
+      // It is GONE: clicking where it was selects nothing.
+      await page.mouse.click(ccx, ccy);
+      await expect(activeFeature).toHaveText('');
+
+      // Undo (real Ctrl+Z) restores the feature → delete∘undo = identity.
+      await page.keyboard.press('Control+z');
+      // Its position is selectable again: the SAME feature id is back.
+      await page.mouse.click(ccx, ccy);
+      await expect(activeFeature).toHaveText(faceId);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
 test.describe('HB3-15/16 — 結合ツールは個別リーフ本体をクリックして対象に取れる', () => {
   test('2つの面をクリックで結合対象に取り、確定が有効化される', async () => {
     const { app, page } = await launchApp();

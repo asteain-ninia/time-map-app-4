@@ -28,8 +28,11 @@ import { EDIT_MODE } from '../state/session';
 import type { SessionStore } from '../state/store';
 import { TIME_CHANGE_SOURCE } from '../state/store';
 
+import { DELETE_TARGET_KIND } from '../../domain/deletion';
+
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
+import { DeleteFeatureButton } from './DeleteFeatureButton';
 import type {
   AnchorSeriesLookup,
   EditDispatch,
@@ -58,6 +61,8 @@ export interface PropertyPanelProps<S> {
   readonly ownerLookup?: VertexOwnerLookup;
   /** Open a detail panel for the feature (FR-99後段). */
   readonly onOpenDetail?: (featureId: FeatureId) => void;
+  /** FR-85: delete the feature shown in the panel (the「地物を削除」button's confirm). */
+  readonly onDeleteFeature?: (featureId: FeatureId) => void;
   /**
    * Palette themes for the U33「スタイル」section dropdown (from settings, FR-109).
    * Forwarded to the basic-info form's StyleSection. When omitted the form falls
@@ -74,6 +79,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     editDispatch,
     calendar,
     onOpenDetail,
+    onDeleteFeature,
   } = props;
 
   // Raw selection inputs (教訓 5.10): each is read from the store's mirror of
@@ -202,6 +208,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               calendar={calendar}
               selectedAnchorId={effectiveAnchorId}
               onSelectAnchor={handleSelectAnchor}
+            />
+          )}
+
+          {/* FR-85: the always-present「地物を削除」button for the shown feature. Routes
+              through the host's onDeleteFeature (= the SAME U31 delete the menu/Delete-key
+              use). Only mounted when the host wired a handler (honest-stub discipline). */}
+          {onDeleteFeature !== undefined && (
+            <DeleteFeatureButton
+              target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
+              onConfirm={onDeleteFeature}
             />
           )}
         </>

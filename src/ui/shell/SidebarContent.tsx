@@ -87,6 +87,8 @@ export interface SidebarContentDeps<S> {
    */
   readonly editDispatch?: EditDispatch;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
+  /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
+  readonly onDeleteFeature?: (featureId: FeatureId) => void;
 }
 
 /**
@@ -95,7 +97,7 @@ export interface SidebarContentDeps<S> {
  * prop, so the panels render INSIDE the styled sidebar cell (HB-3 fix).
  */
 export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProps {
-  const { store, getRoot, getTime, calendar, editDispatch, onOpenDetail } = deps;
+  const { store, getRoot, getTime, calendar, editDispatch, onOpenDetail, onDeleteFeature } = deps;
 
   const dispatch: EditDispatch = editDispatch ?? {
     // 教訓 5.7: the SAVE trigger is fully wired + observable; the live edit-apply
@@ -123,6 +125,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         editDispatch={dispatch}
         calendar={calendar}
         {...(onOpenDetail ? { onOpenDetail } : {})}
+        {...(onDeleteFeature ? { onDeleteFeature } : {})}
       />
     ),
   };
