@@ -546,6 +546,74 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
       store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
       expect(store.getState().projectDirty).toBe(false);
     });
+
+    // bughunt2: the clean/dirty baseline must account for BOTH the domain AND the
+    // settings slice (the persisted file carries both). A project that is domain-
+    // clean but settings-dirty (a setting changed after the last save) MUST NOT be
+    // reported clean by an unrelated undo / redo — pre-fix it compared only the
+    // domain, so the settings edit silently dropped out of the unsaved-changes guard.
+    it('a settings-only change after save stays dirty across an unrelated undo/redo (Q4)', () => {
+      const store = dirtyStore();
+      // Clean baseline at d0 (domain + current settings).
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Advance + save so there is a real saved baseline at d1.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Change ONLY a setting — the domain is untouched, so a domain-only clean
+      // check would call this clean after any undo/redo.
+      store.getState().updateProjectSetting('gridSpacingDeg', 7);
+      expect(store.getState().projectDirty).toBe(true);
+
+      // An unrelated undo to d0 then redo to d1 (the saved domain) MUST keep the
+      // project dirty: the live settings still differ from the saved baseline.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    it('an app-setting-only change after save stays dirty across an unrelated undo/redo (Q4)', () => {
+      const store = dirtyStore();
+      store.getState().markProjectSaved();
+      store.getState().updateAppSetting('snapDistancePx', 80);
+      expect(store.getState().projectDirty).toBe(true);
+      // Undo/redo back to the exact saved domain must NOT clear the settings dirt.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    // bughunt2 (Q5): undo/redo back to the EXACT saved domain+settings reads clean,
+    // and a save AFTER a settings change refreshes the baseline to include the new
+    // settings (so a later undo/redo to that domain reads clean again).
+    it('undo/redo to the exact saved domain+settings reads clean; re-save refreshes the settings baseline (Q5)', () => {
+      const store = dirtyStore();
+      store.getState().markProjectSaved(); // baseline: d0 + default settings.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+
+      // Undo to d0 with settings still at their saved values → fully clean.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Now change a setting and SAVE: the new settings join the saved baseline.
+      store.getState().updateProjectSetting('gridSpacingDeg', 7);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // An undo/redo back to the saved domain now reads clean (the saved baseline
+      // includes gridSpacingDeg=7), and reverting the setting reads dirty again.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().updateProjectSetting('gridSpacingDeg', 5);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+    });
   });
 
   // 回帰 (finding): hydrateSettings is the LOAD / NEW project-settings half. The

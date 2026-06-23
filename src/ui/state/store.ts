@@ -55,6 +55,7 @@ import {
   DEFAULT_TIMELINE_MAX,
   DEFAULT_TIMELINE_MIN,
 } from './settings';
+import { isAppNoOp, isProjectNoOp } from '../settings/diff';
 import {
   type ActiveFeature,
   type Camera,
@@ -608,6 +609,19 @@ export function createSessionStore<S>(
   // a single dirty TRUTH (projectDirty), and this only feeds its recomputation.
   let savedDomain: S | null = null;
 
+  // The SETTINGS half of the saved / clean baseline (bughunt2: undo-dirty ignored
+  // settings). The persisted project file carries BOTH the domain and the ui
+  // settings slice (projectSettings + the document-affecting appSettings), so the
+  // clean/dirty truth must compare BOTH halves — not the domain alone. Without
+  // these, a project that is domain-clean but settings-dirty (a setting changed
+  // after the last save) was reported CLEAN after any unrelated undo / redo
+  // (applyUndoRedoResult compared only the domain), so the user could lose
+  // settings edits believing they were saved. Captured in lock-step with
+  // `savedDomain` on EVERY clean-baseline path; stay null until the first save /
+  // load / new, mirroring `savedDomain` (a never-saved project is always dirty).
+  let savedProjectSettings: ProjectSettings | null = null;
+  let savedAppSettings: AppSettings | null = null;
+
   // Build the initial selection TRUTH (U22 SelectionState) from the test/init
   // overrides, then derive the mirrors from it — there is no second source.
   let initialSelection: SelectionState = EMPTY_SELECTION;
@@ -623,7 +637,31 @@ export function createSessionStore<S>(
   }
   const initialPatch = selectionPatch(initialSelection);
 
-  return createStore<SessionStore<S>>((set, get) => ({
+  return createStore<SessionStore<S>>((set, get) => {
+    // Capture the CURRENT (live) domain + settings as the saved / clean baseline.
+    // Every clean-establishing path routes through here so the three references can
+    // never drift (single capture site, 二重の真実源 を作らない). `domain` is taken
+    // from the caller-supplied value when it is being swapped in the SAME set()
+    // (LOAD / NEW), else from the live store (save / settings hydrate). Defined
+    // inside the store callback so it can read `get()` (the saved baseline lives in
+    // the enclosing factory closure).
+    const captureSavedBaseline = (domain: S): void => {
+      savedDomain = domain;
+      savedProjectSettings = get().projectSettings;
+      savedAppSettings = get().appSettings;
+    };
+
+    // True when the LIVE settings still match the saved baseline (both halves).
+    // Reuses the settings diff helpers (structural, handle the customPalette array)
+    // so the no-op predicate the dialog uses and the dirty baseline agree (教訓 5.19
+    // 単一のキー一覧). A null baseline (never saved) is never settings-clean.
+    const settingsMatchSaved = (): boolean =>
+      savedProjectSettings !== null &&
+      savedAppSettings !== null &&
+      isProjectNoOp(savedProjectSettings, get().projectSettings) &&
+      isAppNoOp(savedAppSettings, get().appSettings);
+
+    return {
     // -- initial state -------------------------------------------------------
     domain: options.initialDomain,
     selection: initialPatch.selection,
@@ -691,7 +729,17 @@ export function createSessionStore<S>(
         get().displayControl,
         result,
       );
-      const clean = savedDomain !== null && domainEquals(nextDomain, savedDomain);
+      // Clean requires BOTH halves of the persisted baseline to match: the
+      // restored domain value-equals the saved domain AND the live settings still
+      // match the saved settings (bughunt2). An undo / redo never touches the
+      // settings slice, so a project that was domain-clean but settings-dirty
+      // (a setting changed after the last save) MUST stay dirty here — comparing
+      // the domain alone falsely cleared it and silently discarded the settings
+      // edit from the unsaved-changes guard's view.
+      const clean =
+        savedDomain !== null &&
+        domainEquals(nextDomain, savedDomain) &&
+        settingsMatchSaved();
       set({
         domain: nextDomain,
         projectDirty: !clean,
@@ -709,9 +757,12 @@ export function createSessionStore<S>(
     },
 
     resetToDomain(nextDomain) {
-      // A LOAD / NEW is a fresh CLEAN baseline: record it as the saved reference so a
-      // later undo / redo back to this exact state reads clean (bughunt 全 undo dirty).
-      savedDomain = nextDomain;
+      // A LOAD / NEW is a fresh CLEAN baseline: record it (domain + the live
+      // settings) as the saved reference so a later undo / redo back to this exact
+      // state reads clean (bughunt 全 undo dirty + settings, bughunt2). resetToDomain
+      // does NOT swap the settings slice, so the live projectSettings/appSettings ARE
+      // the new baseline's settings.
+      captureSavedBaseline(nextDomain);
       // Atomic whole-state swap for LOAD / NEW: new domain + discarded session
       // state + clean baseline, in ONE set() (教訓 5.2 全経路で破棄, 受け入れ基準 4
       // 同時初期化). selection/tool/mode/focus from the OLD project cannot survive:
@@ -1054,9 +1105,17 @@ export function createSessionStore<S>(
       // hydrateSettings is a clean baseline (LOAD / NEW settings hydrate) but does NOT
       // swap the domain — so the current domain becomes the saved reference (bughunt
       // 全 undo dirty), keeping savedDomain consistent with the cleared dirty flag.
-      savedDomain = get().domain;
+      // Capture the SETTINGS half from the EFFECTIVE (post-hydrate) values — the
+      // incoming slice when present, else the kept current one — NOT the live store
+      // values, which are about to be replaced in the same set() (bughunt2). Reusing
+      // captureSavedBaseline would read the pre-swap settings, so set the baseline
+      // explicitly here.
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
+      const effectiveApp = settings.appSettings ?? get().appSettings;
+      savedDomain = get().domain;
+      savedProjectSettings = effectiveProject;
+      savedAppSettings = effectiveApp;
       const timelinePatch = deriveTimelineState(
         effectiveProject,
         get().currentTime,
@@ -1085,11 +1144,17 @@ export function createSessionStore<S>(
       // invalid we throw with NOTHING mutated; on success the domain swap, session
       // discard, settings hydrate, and derived range/time all land in ONE set().
       // A LOAD / NEW is a fresh CLEAN baseline (this is the atomic resetToDomain +
-      // hydrateSettings reflect); record the new domain as the saved reference so an
-      // undo / redo back to it reads clean (bughunt 全 undo dirty).
-      savedDomain = nextDomain;
+      // hydrateSettings reflect); record the new domain AND the effective settings as
+      // the saved reference so an undo / redo back to it reads clean (bughunt 全 undo
+      // dirty + settings, bughunt2). The settings half must be the EFFECTIVE (post-
+      // swap) values — incoming slice or kept current — not the live store values that
+      // this same set() replaces.
       const effectiveProject =
         settings.projectSettings ?? get().projectSettings;
+      const effectiveApp = settings.appSettings ?? get().appSettings;
+      savedDomain = nextDomain;
+      savedProjectSettings = effectiveProject;
+      savedAppSettings = effectiveApp;
       // resetToDomain clears the selection to EMPTY before hydrate derives the range,
       // so derive against EMPTY_SELECTION (the post-reset selection) — preserving the
       // exact result of the previous resetToDomain → hydrateSettings ordering.
@@ -1127,9 +1192,12 @@ export function createSessionStore<S>(
       // dirty): record it so a later undo / redo back to this state reads clean. The
       // persistence guard (FileOpsController.markClean) only calls this when the live
       // domain still matches what was written to disk, so get().domain here IS exactly
-      // the on-disk content (the saved reference, 単一基準).
-      savedDomain = get().domain;
+      // the on-disk content (the saved reference, 単一基準). Capture the SETTINGS half
+      // too (the persisted file carries them): a setting changed after THIS save now
+      // makes the project read dirty even after an unrelated undo / redo (bughunt2).
+      captureSavedBaseline(get().domain);
       set({ projectDirty: false });
     },
-  }));
+    };
+  });
 }
