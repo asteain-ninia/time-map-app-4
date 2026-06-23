@@ -17,6 +17,13 @@
 | HB3-24 | Electron 既定メニュー autoHideMenuBar:true（Alt 一時表示）＋本番最小化 | 実装済 | ネイティブ・ショートカット維持の中間策で良いか |
 
 ## 進捗ログ（新しい順・先頭追記）
+
+- 2026-06-24: **HB3 大物完遂 + バグハント + D36 衛生スイープ**（ユーザー在席中の指示反映: スクショE2E徹底 / 主スレ=オーケストレーター化・重作業は背景subagent/workflow / Codex死亡→Sonnet多ペルソナ・レビューで代替）。全コミット ローカル・各フルゲート緑・push せず。
+  - **HB3-5/19 ナイフ n-way（2k横断→k+1片）完成**: ドメイン(8cc828c)+UI片チューザ/実機スクショE2E(01ed1d6)+継承先 index クランプ(440cb06=Sonnetレビュー指摘)。全 vitest 2944 passed。
+  - **HB3-12 存続期間編集を UI へ結線**(278dba6, behavioral E2E + スクショ)。changeStart/setEnd を新 AnchorIntervalEditIntent→dispatch から。
+  - **バグハント workflow(31エージェント/敵対的検証)→確定18件を `.autopilot/BUGHUNT-QUEUE.md` へ**。早期修正2件: merge vertexRemap データ欠損(750a673, test-first)・file-ops auto-save未購読+baseMapImage 0バイト(11130c5)。
+  - **D36 衛生スイープ完了**(挙動不変・独立6コミット): a6c1fb4/8570641/a86950a/20b45f7/(スクショ再現性)/306e1af。詳細は DECISIONS D36。
+  - **次アクション**: 非ナイフ確定キュー残（reparent/conflict/anchor-timeline/undo/FR-52 等）を重大度順に逐次修正（test-first・各フルゲート緑）。
 - 2026-06-23: **後継セッション（トークンループ病・治療後）— HB3継続 + 編集回帰根治**。前任ログは犠牲subagent経由で要約参照（病原体未摂取・`dad32df5`隔離厳守）。ユーザー指示=AskUser禁止・じゃんじゃん自走・いっぱいバグ直して未実装機能を実装。全e2e=**75 passed (9.0m)** で4コミットのe2e健全性を確認。コミット（全てローカル・緑ゲート確認）:
   - `1052f5f` chore: 未追跡WIP `e2e/human-bugs-3.spec.ts` の死コード(未使用helper)除去でゲート緑化＋治療handoff doc追跡。ベースライン vitest 250 files/2931 tests。
   - `8d1ce75` **[最重要] 編集モードのクリック選択回帰を根治**。前任が病に倒れる直前まで二分探索していた未解決バグ。`document.elementFromPoint` 計測で **HB3-1 経度シフトパネル(`.longitude-shift` ~526×174)が地図下半分を覆い `.map-area__overlay > *{pointer-events:auto}` でクリックを横取り**と特定。修正=パネルを `pointer-events:none`(コントロールのみauto)+`max-width:240px`。回帰E2E追加。全モードで地図クリックの横取りを解消。
@@ -117,7 +124,7 @@ TypeScript strict + Electron + React18(UIシェル限定) + 自前Canvas2D(MapRe
     - [完了] **HB3-5/19 ナイフ n-way（2k横断→k+1片）** — ドメイン(8cc828c)+UI/スクショE2E(01ed1d6)+継承先 index クランプ(440cb06)。
     - [完了] **HB3-12 存続期間編集を UI へ結線** — changeStart/setEnd（278dba6, behavioral E2E 付）。
     - [完了] バグハント由来の早期修正 — merge vertexRemap データ欠損(750a673) / file-ops auto-save+baseMapImage(11130c5)。
-    - [進行中] **D36 衛生スイープ**（probe掃除/PROTOCOL/DECISIONS/STATE/スクショ）。
+    - [完了] **D36 衛生スイープ完了**（probe昇格 a6c1fb4 / PROTOCOLコミット前hygiene 8570641 / DECISIONS重複採番D37-42+フォーク統合 a86950a / STATEフェーズ同期+要確認リスト 20b45f7 / スクショ再現性確認 / Sonnetクロスモデルレビュー対応 306e1af）。
     - [未] **非ナイフ確定キュー18件**（`.autopilot/BUGHUNT-QUEUE.md`、敵対的検証済）を重大度順に消化 — reparent/conflict/anchor-timeline/undo/FR-52 等。
 - [継続] 仕事が尽きたら隣接作業を探して継続（停止しない）。
 

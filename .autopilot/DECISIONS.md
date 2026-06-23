@@ -6,6 +6,15 @@
 
 ## 確定した運用上の決定
 
+- D36(2026-06-24・衛生スイープ＝「散らかさない規律」の再インストール / ユーザー指示): 「作る規律」(property test / behavioral E2E / フルゲート緑)は維持される一方、衛生・監査可能性が引き継ぎで選択的に摩耗していたとのメタレビューを受け、**挙動不変の保守パス**を6タスク + クロスモデルレビューで実施(各独立コミット・全ゲート緑・push せず)。
+  - (1) 使い捨て probe `src/domain/knife/__nway-probe.test.ts`(console.log 付)を削除し、不変量を `split-geometry.test.ts` へ名前付き昇格(2/4/6 横断→k+1片・水平カット・dangling→reject・面積保存・FR-44 最低3頂点)。`.tooling/_rev2.txt` を追跡解除 + `.tooling/_rev*.txt` を .gitignore。**commit a6c1fb4**。
+  - (2) PROTOCOL に「コミット前 hygiene」節を制度化(probe/scratch grep ゼロ出力 / D番号エントリ一意 / STATE フェーズ同期 / スクショ再生成儀式)＝引き継ぎへ強制継承。**commit 8570641**。
+  - (3) DECISIONS の重複採番(旧 D13/D20/D21/D22/D24)を**後発のみ D37〜D42 へ振替**(第1出現=概念定義を維持し「D20 緩和ゲート」等のクロス参照は不変)。DECISIONS.md↔DECISIONS-HB3.md をクロスリンク + フォーク禁止方針で単一真実源化。**commit a86950a**。
+  - (4/5) STATE「フェーズ状態」を git 実態へ同期(IMPL 42ユニット化石を解消)、暫定決定(HB3-1/10/12/23/24)を STATE 冒頭の単一「要確認リスト」へ集約(現行既定値・実装状況・要確認を1行)。**commit 20b45f7**。
+  - (6) knife-nway スクショを baseline削除→build→e2e で再生成し **byte-identical(決定論的・再現可能)** を確認(差分なしゆえ独立コミットなし)。
+  - クロスモデルレビュー: Codex は死亡につき **Sonnet(Opus とは別モデル)** で 1&2 の差分を1回通し、移植被覆ギャップ(FR-44 アサーション欠落)と PROTOCOL チェック精度(2a `grep -v __bughunt__`・2b エントリ限定)を修正。**commit 306e1af**。
+  - 振替: 旧 D13→D37 / 旧 D20(U40/U23/U24)→D38 / 旧 D21(U27/U29/U30)→D39 / 旧 D22(U33/U36)→D40 / 旧 D24(U38)→D41 / 旧 D24(HB-12要確認・D32で解決済)→D42。
+
 - D34(2026-06-21・バグハント収束 + シーム/対蹠コーナーケース修正 + HB-16 の確定処理): バグハント工程（未知バグの能動炙り出し）で **67 件**を根本修正し、シーム/対蹠経線(±180°)コーナーケース統合監査（`.autopilot/SEAM-AUDIT.md`、C1〜C15）の HIGH 根本原因を専用シーム修正パスで塞ぎ、ユーザー決定 **HB-16（左ツールバーのモード切替ボタンのツールチップ削除＝FR-112 縮小）** を解決として確定。全成果は4点全緑・skip 0・デグレなしで commit 済（push せず）。
   - **バグハント（67 件・解決）**: `git log` 上の `fix(bughunt)` コミット **67 本**。代表例 = 描画順と hit-test 優先順位の不一致（前面 line をクリックしても背面 area が選ばれる）/ 共有頂点移動が片方の履歴しか更新しない / 同一共有辺の複数点ナイフ / `resolveAt` 二分探索のアンカー誤り / 旧形式ファイル読込で前プロジェクト設定の漏れ込み / `quantizeScalar`・`clampZoom` の有限入力からの NaN/Infinity 生成 / 追加・ナイフ描画中の中ボタンパン/ホイールズーム不能 / 設定変更が現カメラ zoom を再クランプしない、等。`.autopilot/BUGHUNT.md`・`STATE.md` に手法と内訳。
   - **シーム/対蹠コーナーケース修正（解決 10 / 一部解決 1）**: 監査 C 項目のうち **C1/C2/C3/C6/C7/C8（根本原因 A=per-ring 独立 unwrap の共通 world-turn 整列欠落・B=unwrap の「隣接180°未満/閉合辺無視」前提破れ）を単一コミット `9964314`** で塞ぐ（resolve-display-shapes/drill-geometry/resolve-shape の align 追加 + longitude/seam の unwrap 一般化 >180°辺・閉合辺・対蹠 + property suite）。独立項目 = **C9** grid メリディアン列挙の safe-integer/本数上限ガード（巨大 centerLon フレームハング防止）`0f1ad10` / **C10** clip と draw の MAX_WRAP_REPLICAS 非対称解消（退避境界で clip⊇draw 維持）`4e6076a` / **C4** U10 排他・索引を alignMultiPolygon で連続化（単一リング 179→-179 の逆回り358° bbox 解消）`464ea63` / **C14(L8)** great-circle 近傍対蹠の slerp 不安定を許容閾値で退避 `edd13af`。各 C 項目の [解決/繰越] は `.autopilot/SEAM-AUDIT.md §5` に表で記録。
