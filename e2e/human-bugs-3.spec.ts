@@ -147,4 +147,38 @@ test.describe('HB3-14 — 属性編集（名前）を保存すると反映され
       await app.close();
     }
   });
+
+  test('錨を手動選択せず名前変更→保存できる（現在時刻の錨を自動採用）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // HB3-14 完成: a freshly-selected feature defaults its edit target to the anchor
+      // effective at the current time, so 属性編集→保存 works WITHOUT the user first
+      // hand-picking an anchor (the residual「保存が必ず失敗」friction).
+      await commitOneFace(page);
+      const activeFeature = page.getByTestId('app-active-feature');
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+
+      await enterEditMode(page);
+      const mapInput = page.getByTestId('map-input-layer');
+      const mb = (await mapInput.boundingBox())!;
+      await page.mouse.click(mb.x + mb.width / 2, mb.y + mb.height / 2);
+      await expect(activeFeature).toHaveText(faceId);
+
+      // NO anchor-row click here — straight to editing the name and saving.
+      const nameInput = page.getByTestId('basic-info').getByLabel('名前');
+      await expect(nameInput).toBeEnabled();
+      await nameInput.fill('自動錨テスト国');
+      await page.getByTestId('save-button').click();
+      await expect(page.getByTestId('save-message')).toHaveCount(0);
+
+      // Persisted against the auto-adopted current-time anchor.
+      await page.mouse.click(mb.x + 8, mb.y + 8);
+      await expect(activeFeature).toHaveText('');
+      await page.mouse.click(mb.x + mb.width / 2, mb.y + mb.height / 2);
+      await expect(activeFeature).toHaveText(faceId);
+      await expect(page.getByTestId('basic-info').getByLabel('名前')).toHaveValue('自動錨テスト国');
+    } finally {
+      await app.close();
+    }
+  });
 });

@@ -18,7 +18,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import type { AnchorEntry } from '../../domain/anchor-series';
+import { resolveAt, type AnchorEntry } from '../../domain/anchor-series';
 import type { PaletteThemeId } from '../../domain/coloring';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
@@ -81,6 +81,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const activeFeatureId = useStore(store, (s) => s.selection.activeFeature);
   const vertexIds = useStore(store, (s) => s.selection.vertexIds);
   const mode = useStore(store, (s) => s.mode);
+  const currentTime = useStore(store, (s) => s.currentTime);
 
   const ownerLookup = useMemo(
     () => props.ownerLookup ?? ownerLookupFromMap(new Map()),
@@ -121,11 +122,26 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     setSelectedAnchorId(null);
   }
 
+  // The edit-target anchor: the user's EXPLICIT pick, else (HB3-14) the anchor in
+  // EFFECT at the current time. The residual「属性編集の保存が必ず失敗」friction was the
+  // save guard rejecting with「錨が選択されていません」when a feature was selected but no
+  // anchor hand-picked — selecting a feature now defaults the edit target to the
+  // current-time anchor so 名前変更→保存 works immediately. An explicit pick still wins,
+  // and a time with NO effective anchor (before the feature exists / in an enclave)
+  // still has no target. `resolveAt` is U(anchor-series)'s OWN §5.8 rule — the single
+  // truth source, never re-implemented here (教訓 5.29).
+  const effectiveAnchorId = useMemo<AnchorId | null>(() => {
+    if (selectedAnchorId !== null) return selectedAnchorId;
+    if (series === null) return null;
+    const r = resolveAt(series, currentTime, calendar);
+    return r.kind === 'present' ? r.entry.anchor.id : null;
+  }, [selectedAnchorId, series, currentTime, calendar]);
+
   // The selected entry (for the edit time). The series is the single source.
   const selectedEntry = useMemo<AnchorEntry | null>(() => {
-    if (series === null || selectedAnchorId === null) return null;
-    return series.entries.find((e) => e.anchor.id === selectedAnchorId) ?? null;
-  }, [series, selectedAnchorId]);
+    if (series === null || effectiveAnchorId === null) return null;
+    return series.entries.find((e) => e.anchor.id === effectiveAnchorId) ?? null;
+  }, [series, effectiveAnchorId]);
 
   // 教訓 5.6 / 5.15: anchor selection syncs the session current time to the
   // anchor START via the SAME setCurrentTime action every time path uses. No
@@ -184,7 +200,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             <AnchorSection
               series={series}
               calendar={calendar}
-              selectedAnchorId={selectedAnchorId}
+              selectedAnchorId={effectiveAnchorId}
               onSelectAnchor={handleSelectAnchor}
             />
           )}
