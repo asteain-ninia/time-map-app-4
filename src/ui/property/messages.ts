@@ -38,6 +38,21 @@ export const PROPERTY_STRINGS = {
   openEndLabel: '継続中',
   editTargetBadge: '編集対象',
 
+  // -- 存続期間編集 (HB3-12, FR-54〜FR-59) ------------------------------------
+  /** Edit the anchor's appear-year (U09 changeStart). */
+  startYearEditLabel: '開始年',
+  /** Edit the anchor's disappear-year (U09 setEnd). */
+  endYearEditLabel: '終了年',
+  /** Apply the existence-period edit. */
+  intervalApplyLabel: '反映',
+  /** Clear the end (open-ended / 継続中, U09 setEnd null). */
+  intervalClearEndLabel: '継続中にする',
+  /** Delete this anchor (U09 deleteAnchor). */
+  intervalDeleteLabel: 'この錨を削除',
+  /** Title for the per-anchor存続期間 editor disclosure. */
+  intervalEditTitle: '存続期間を編集',
+  intervalEditFailedPrefix: '存続期間を変更できません: ',
+
   // -- detail panel (FR-99 / FR-98) ------------------------------------------
   openDetailButton: '詳細表示',
   detailPanelTitlePrefix: '詳細: ',

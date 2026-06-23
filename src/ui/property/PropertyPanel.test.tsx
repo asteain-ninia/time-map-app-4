@@ -31,11 +31,14 @@ import { EDIT_MODE } from '../state/session';
 import { createSessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 
 import type {
+  AnchorIntervalEditDispatch,
+  AnchorIntervalEditIntent,
   AnchorSeriesLookup,
   EditDispatch,
   FeatureLookup,
   PropertyEditIntent,
 } from './contracts';
+import { ANCHOR_INTERVAL_OP } from './contracts';
 import { PropertyPanel } from './PropertyPanel';
 import { PROPERTY_STRINGS } from './messages';
 import { STYLE_STRINGS } from './style-section';
@@ -370,5 +373,114 @@ describe('PropertyPanel — detail open (FR-99後段)', () => {
     renderPanel(makeStore({ active: true }), undefined, onOpenDetail);
     fireEvent.click(screen.getByTestId('open-detail-button'));
     expect(onOpenDetail).toHaveBeenCalledWith(fA);
+  });
+});
+
+// HB3-12: the存続期間編集 control wires the anchor list's per-anchor 開始/終了/削除
+// buttons to the host's AnchorIntervalEditDispatch (the SAME single-dispatch discipline
+// the attribute save uses, 教訓 5.6). These prove the UI ASSEMBLES + DISPATCHES the
+// correct typed intent (the command-base then runs the U09 op — covered by
+// consistency-binding.test.tsx). The editor is gated on editable mode + a wired dispatch
+// (no dead control, 教訓 5.7 / 5.13).
+function renderPanelWithInterval(
+  store: ReturnType<typeof makeStore>,
+  anchorIntervalDispatch: AnchorIntervalEditDispatch,
+) {
+  return render(
+    <PropertyPanel
+      store={store}
+      featureLookup={featureLookup}
+      anchorLookup={anchorLookup}
+      editDispatch={{ dispatchEdit: () => {} }}
+      anchorIntervalDispatch={anchorIntervalDispatch}
+      calendar={cal}
+      ownerLookup={ownerLookup}
+    />,
+  );
+}
+
+describe('PropertyPanel — 存続期間編集 wiring (HB3-12, 教訓 5.7)', () => {
+  it('反映 on 開始年 dispatches a changeStart intent for that anchor', () => {
+    const intents: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+
+    // seriesFor() anchor a1 starts 1560; edit it to 1500 and 反映.
+    fireEvent.change(screen.getByTestId('anchor-interval-start-a1'), {
+      target: { value: '1500' },
+    });
+    fireEvent.click(screen.getByTestId('anchor-interval-apply-start-a1'));
+
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    expect(intent.op).toBe(ANCHOR_INTERVAL_OP.ChangeStart);
+    expect(intent.featureId).toBe(fA);
+    expect(intent.anchorId).toBe('a1');
+    if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) {
+      expect(intent.newStart.year).toBe(1500);
+    }
+  });
+
+  it('反映 on 終了年 dispatches a setEnd intent; 継続中にする clears it (null)', () => {
+    const intents: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+
+    fireEvent.change(screen.getByTestId('anchor-interval-end-a1'), {
+      target: { value: '1570' },
+    });
+    fireEvent.click(screen.getByTestId('anchor-interval-apply-end-a1'));
+    fireEvent.click(screen.getByTestId('anchor-interval-clear-end-a1'));
+
+    expect(intents).toHaveLength(2);
+    const setEndIntent = intents[0]!;
+    expect(setEndIntent.op).toBe(ANCHOR_INTERVAL_OP.SetEnd);
+    if (setEndIntent.op === ANCHOR_INTERVAL_OP.SetEnd) {
+      expect(setEndIntent.newEnd?.year).toBe(1570);
+    }
+    const clearIntent = intents[1]!;
+    expect(clearIntent.op).toBe(ANCHOR_INTERVAL_OP.SetEnd);
+    if (clearIntent.op === ANCHOR_INTERVAL_OP.SetEnd) {
+      expect(clearIntent.newEnd).toBeNull();
+    }
+  });
+
+  it('この錨を削除 dispatches a delete intent (series has >1 anchor so the button is enabled)', () => {
+    const intents: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+
+    const del = screen.getByTestId('anchor-interval-delete-a2');
+    expect(del).toBeEnabled(); // 2-anchor series: not the sole anchor.
+    fireEvent.click(del);
+
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.op).toBe(ANCHOR_INTERVAL_OP.Delete);
+    expect(intents[0]!.anchorId).toBe('a2');
+  });
+
+  it('surfaces the dispatch rejection message inline (honest failure, 教訓 5.26)', () => {
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, {
+      dispatchAnchorInterval: () => {
+        throw new Error('存続期間を変更できません: テスト拒否');
+      },
+    });
+    fireEvent.click(screen.getByTestId('anchor-interval-apply-start-a1'));
+    expect(screen.getByTestId('anchor-interval-message-a1')).toHaveTextContent(
+      'テスト拒否',
+    );
+  });
+
+  it('does NOT render the存続期間 editor without a wired dispatch (no dead control, 教訓 5.7)', () => {
+    renderPanel(makeStore({ active: true }));
+    expect(screen.queryByTestId('anchor-interval-a1')).not.toBeInTheDocument();
+  });
+
+  it('does NOT render the存続期間 editor in view mode (whole-form gate, 教訓 5.13)', () => {
+    renderPanelWithInterval(makeStore({ active: true, mode: 'view' }), {
+      dispatchAnchorInterval: () => {},
+    });
+    expect(screen.queryByTestId('anchor-interval-a1')).not.toBeInTheDocument();
   });
 });

@@ -11,11 +11,12 @@
 import { useState } from 'react';
 
 import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
-import type { AnchorId } from '../../domain/ids';
+import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
 
 import { AnchorList } from './AnchorList';
 import { AnchorTimeBar } from './AnchorTimeBar';
+import type { AnchorIntervalEditIntent } from './contracts';
 import { PROPERTY_STRINGS } from './messages';
 
 /** The two anchor-display modes (FR-60). A typed constant (教訓 5.19). */
@@ -32,10 +33,19 @@ export interface AnchorSectionProps {
   readonly selectedAnchorId: AnchorId | null;
   readonly onSelectAnchor: (entry: AnchorEntry) => void;
   readonly initialMode?: AnchorViewMode;
+  /**
+   * HB3-12: the target feature id (routing for存続期間 intents). Present only when the
+   * host wired the存続期間 dispatch AND the form is editable; its presence (with
+   * {@link onEditInterval}) switches the LIST view from read-only to editable.
+   */
+  readonly featureId?: FeatureId;
+  /** HB3-12: dispatch a存続期間 edit; returns an error message to show, or null. */
+  readonly onEditInterval?: (intent: AnchorIntervalEditIntent) => string | null;
 }
 
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
-  const { series, calendar, selectedAnchorId, onSelectAnchor } = props;
+  const { series, calendar, selectedAnchorId, onSelectAnchor, featureId, onEditInterval } =
+    props;
   const [mode, setMode] = useState<AnchorViewMode>(
     props.initialMode ?? ANCHOR_VIEW_MODE.List,
   );
@@ -69,6 +79,9 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
           series={series}
           selectedAnchorId={selectedAnchorId}
           onSelectAnchor={onSelectAnchor}
+          {...(featureId !== undefined && onEditInterval !== undefined
+            ? { featureId, onEditInterval }
+            : {})}
         />
       ) : (
         <AnchorTimeBar

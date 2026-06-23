@@ -37,6 +37,7 @@ import {
   PROPERTY_STRINGS,
   type AnchorSeriesLookup,
   type EditDispatch,
+  type AnchorIntervalEditDispatch,
   type FeatureLookup,
 } from '../property/index';
 
@@ -86,6 +87,13 @@ export interface SidebarContentDeps<S> {
    * U13 seam — the WIRING is real and observable).
    */
   readonly editDispatch?: EditDispatch;
+  /**
+   * HB3-12: the存続期間編集 dispatch (U09 changeStart / setEnd / deleteAnchor). The
+   * composition root wires the real whole-state-swap command bridge; when omitted the
+   * panel hides the存続期間 editor (honest-stub discipline — no dead control). DISTINCT
+   * from {@link editDispatch}, which only rewrites the snapshot, never the interval.
+   */
+  readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
@@ -97,7 +105,16 @@ export interface SidebarContentDeps<S> {
  * prop, so the panels render INSIDE the styled sidebar cell (HB-3 fix).
  */
 export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProps {
-  const { store, getRoot, getTime, calendar, editDispatch, onOpenDetail, onDeleteFeature } = deps;
+  const {
+    store,
+    getRoot,
+    getTime,
+    calendar,
+    editDispatch,
+    anchorIntervalDispatch,
+    onOpenDetail,
+    onDeleteFeature,
+  } = deps;
 
   const dispatch: EditDispatch = editDispatch ?? {
     // 教訓 5.7: the SAVE trigger is fully wired + observable; the live edit-apply
@@ -124,6 +141,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         anchorLookup={anchorLookup}
         editDispatch={dispatch}
         calendar={calendar}
+        {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
         {...(onOpenDetail ? { onOpenDetail } : {})}
         {...(onDeleteFeature ? { onDeleteFeature } : {})}
       />

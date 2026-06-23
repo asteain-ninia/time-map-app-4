@@ -10,6 +10,7 @@ import {
   createLiveAddBinding,
   createLiveKnifeBinding,
   createDeleteFeatureCommandForRoot,
+  createAnchorIntervalCommandForRoot,
   type DomainRoot,
 } from './consistency-binding';
 import {
@@ -17,7 +18,13 @@ import {
   PROCESS_STATUS,
   REJECTION_KIND,
 } from '../domain/consistency/index';
-import { applyAddProposal } from '../domain/editing/apply-proposal';
+import { applyAddProposal, deriveAnchorId } from '../domain/editing/apply-proposal';
+import { featuresAt } from './live-lookup';
+import {
+  buildChangeStartIntent,
+  buildSetEndIntent,
+  buildDeleteAnchorIntent,
+} from './property/index';
 import type { SplitSnapshot } from '../domain/knife/index';
 import { timePointYear } from '../domain/time/time-point';
 import { createBasicAttributes, createColorInfo } from '../domain/attributes';
@@ -1111,6 +1118,127 @@ describe('createDeleteFeatureCommandForRoot (bughunt2 — U31 全錨削除 over 
     expect(ids).toEqual([b.feature.id]);
     expect(after.result.deleted.has(a.feature.id)).toBe(true);
     expect(after.result.survived.has(b.feature.id)).toBe(true);
+  });
+});
+
+// HB3-12 — the WIRED存続期間編集 path (教訓 5.7 配線漏れ修正). The U09 ops
+// changeStart / setEnd / deleteAnchor that move WHEN a feature appears / disappears on
+// the time axis existed + were unit-tested, but NOTHING called them. This proves the
+// dispatch seam: building + executing the command actually MOVES the existence interval
+// (the feature is absent before the new start / after the new end, present otherwise),
+// as observed through `featuresAt` — the exact live-truth set the renderer + 地物一覧 use.
+describe('createAnchorIntervalCommandForRoot (HB3-12 — 存続期間編集 over DomainRoot)', () => {
+  // A feature added at year 1000 is present from 1000 onward (open-ended).
+  function seededAt1000(): { root: DomainRoot; featureId: ReturnType<typeof asFeatureId>; anchorId: ReturnType<typeof deriveAnchorId> } {
+    const seed = squareLeaf('f-existence', 've', 0, 0);
+    const root = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    return {
+      root,
+      featureId: seed.feature.id,
+      anchorId: deriveAnchorId(seed.feature.id, timePointYear(1000)),
+    };
+  }
+
+  it('changeStart moves WHEN the feature appears (absent before the new start, present after)', () => {
+    const { root, featureId, anchorId } = seededAt1000();
+    // Baseline: present at 1000, present at 1500 (open-ended from 1000).
+    expect(featuresAt(root, timePointYear(1000)).some((f) => f.id === featureId)).toBe(true);
+    expect(featuresAt(root, timePointYear(1500)).some((f) => f.id === featureId)).toBe(true);
+
+    const result = createAnchorIntervalCommandForRoot(
+      root,
+      buildChangeStartIntent(featureId, anchorId, timePointYear(1500)),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const after = result.command.execute(root).state;
+
+    // THE PROOF: the feature no longer exists before 1500, but does from 1500 onward.
+    expect(featuresAt(after, timePointYear(1000)).some((f) => f.id === featureId)).toBe(false);
+    expect(featuresAt(after, timePointYear(1499)).some((f) => f.id === featureId)).toBe(false);
+    expect(featuresAt(after, timePointYear(1500)).some((f) => f.id === featureId)).toBe(true);
+    // The feature SURVIVES (identity unchanged — only its interval moved).
+    expect(result.command.execute(root).result.survived.has(featureId)).toBe(true);
+    // Purity: the original root is unmutated.
+    expect(featuresAt(root, timePointYear(1000)).some((f) => f.id === featureId)).toBe(true);
+  });
+
+  it('setEnd moves WHEN the feature disappears (present before the end, absent after)', () => {
+    const { root, featureId, anchorId } = seededAt1000();
+    expect(featuresAt(root, timePointYear(2000)).some((f) => f.id === featureId)).toBe(true);
+
+    const result = createAnchorIntervalCommandForRoot(
+      root,
+      buildSetEndIntent(featureId, anchorId, timePointYear(1800)),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const after = result.command.execute(root).state;
+
+    // Present at 1700 (within [1000, 1800)), absent at 1800 (end is exclusive) and 2000.
+    expect(featuresAt(after, timePointYear(1700)).some((f) => f.id === featureId)).toBe(true);
+    expect(featuresAt(after, timePointYear(1800)).some((f) => f.id === featureId)).toBe(false);
+    expect(featuresAt(after, timePointYear(2000)).some((f) => f.id === featureId)).toBe(false);
+  });
+
+  it('undo restores the original existence interval (one indivisible undo unit, 教訓 5.23)', () => {
+    const { root, featureId, anchorId } = seededAt1000();
+    const result = createAnchorIntervalCommandForRoot(
+      root,
+      buildChangeStartIntent(featureId, anchorId, timePointYear(1500)),
+    );
+    if (!result.ok) throw new Error('expected an interval command');
+    const after = result.command.execute(root);
+    const undone = result.command.undo(after.state);
+    // The original interval is back: present at 1000 again.
+    expect(featuresAt(undone.state, timePointYear(1000)).some((f) => f.id === featureId)).toBe(true);
+  });
+
+  it('rejects deleting the SOLE anchor with U09 wouldBeEmpty (INV-5, feature stays resolvable)', () => {
+    const { root, featureId, anchorId } = seededAt1000();
+    const result = createAnchorIntervalCommandForRoot(
+      root,
+      buildDeleteAnchorIntent(featureId, anchorId),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason.code).toBe('wouldBeEmpty');
+    // The feature is still present (no command was built; the caller pushes nothing).
+    expect(featuresAt(root, timePointYear(1000)).some((f) => f.id === featureId)).toBe(true);
+  });
+
+  it('rejects a start at/after the anchor own end with U09 startNotBeforeEnd', () => {
+    const { root, featureId, anchorId } = seededAt1000();
+    // First bound the anchor: end at 1800. Then try to move start past it.
+    const bounded = createAnchorIntervalCommandForRoot(
+      root,
+      buildSetEndIntent(featureId, anchorId, timePointYear(1800)),
+    );
+    if (!bounded.ok) throw new Error('expected setEnd to succeed');
+    const boundedRoot = bounded.command.execute(root).state;
+
+    const result = createAnchorIntervalCommandForRoot(
+      boundedRoot,
+      buildChangeStartIntent(featureId, anchorId, timePointYear(1900)),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason.code).toBe('startNotBeforeEnd');
+  });
+
+  it('rejects an unknown feature with anchorNotFound (no command built)', () => {
+    const { root, anchorId } = seededAt1000();
+    const result = createAnchorIntervalCommandForRoot(
+      root,
+      buildChangeStartIntent(asFeatureId('ghost'), anchorId, timePointYear(1500)),
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason.code).toBe('anchorNotFound');
   });
 });
 

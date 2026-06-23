@@ -34,6 +34,8 @@ import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
 import type {
+  AnchorIntervalEditDispatch,
+  AnchorIntervalEditIntent,
   AnchorSeriesLookup,
   EditDispatch,
   FeatureLookup,
@@ -52,6 +54,13 @@ export interface PropertyPanelProps<S> {
   readonly featureLookup: FeatureLookup;
   readonly anchorLookup: AnchorSeriesLookup;
   readonly editDispatch: EditDispatch;
+  /**
+   * HB3-12: the存続期間編集 dispatch (U09 changeStart / setEnd / deleteAnchor). When
+   * wired AND the form is editable the anchor section shows a per-anchor存続期間 editor
+   * (move 開始/終了, 継続中, この錨を削除); when omitted the section stays the read-only
+   * view (honest-stub discipline — no dead control, 教訓 5.7).
+   */
+  readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
   readonly calendar: Calendar;
   /**
    * Resolve the owner of a vertex (U22 / U03). Used to evaluate the RAW owner set
@@ -77,6 +86,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     featureLookup,
     anchorLookup,
     editDispatch,
+    anchorIntervalDispatch,
     calendar,
     onOpenDetail,
     onDeleteFeature,
@@ -178,6 +188,31 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [feature, selectedEntry, editDispatch],
   );
 
+  // HB3-12: dispatch a存続期間編集 intent (changeStart / setEnd / deleteAnchor) through
+  // the host's command bridge. The dispatch THROWS the domain's own rejection reason on
+  // a refused op (sole-anchor delete, start≥end, …); we surface its message so the row
+  // editor shows why, never a silent no-op (教訓 5.7 / 5.26). Returns null on success
+  // (the swap re-resolves selection + the series re-renders from the live root).
+  const handleEditInterval = useCallback(
+    (intent: AnchorIntervalEditIntent): string | null => {
+      if (anchorIntervalDispatch === undefined) return null;
+      try {
+        anchorIntervalDispatch.dispatchAnchorInterval(intent);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    },
+    [anchorIntervalDispatch],
+  );
+
+  // The存続期間 editor is shown only when the host wired the dispatch AND the feature is
+  // editable (whole-form gate, 教訓 5.13) — no dead control in view mode / pre-binding.
+  const intervalEditable =
+    anchorIntervalDispatch !== undefined &&
+    decision.editable &&
+    mode !== EDIT_MODE.View;
+
   return (
     <div className="property-panel" data-testid="property-panel">
       {feature === null ? (
@@ -208,6 +243,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               calendar={calendar}
               selectedAnchorId={effectiveAnchorId}
               onSelectAnchor={handleSelectAnchor}
+              {...(intervalEditable
+                ? { featureId: feature.id, onEditInterval: handleEditInterval }
+                : {})}
             />
           )}
 

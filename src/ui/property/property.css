@@ -193,6 +193,50 @@
   color: var(--c-text-muted);
 }
 
+/* --- 存続期間エディタ（HB3-12: 開始/終了/削除をアンカーごとに編集, FR-54〜FR-59） --- */
+.anchor-interval {
+  margin: 4px 0 6px;
+  font-size: 12px;
+}
+
+.anchor-interval > summary {
+  cursor: pointer;
+  color: var(--c-text-muted);
+  user-select: none;
+}
+
+.anchor-interval__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.anchor-interval__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.anchor-interval__field input {
+  width: 8ch;
+  font-variant-numeric: tabular-nums;
+}
+
+.anchor-interval__delete {
+  margin-top: 6px;
+}
+
+.anchor-interval__delete:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.anchor-interval__message {
+  margin: 6px 0 0;
+  color: var(--c-danger, #c0392b);
+}
+
 /* --- 時間バー（アンカーをタイムライン上に帯で表示, FR-60） ------------------ */
 .anchor-timebar__edges {
   display: flex;

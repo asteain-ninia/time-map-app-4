@@ -47,7 +47,11 @@ export type {
   EditDispatch,
   PropertyEditIntent,
   PropertyEditValues,
+  AnchorIntervalEditDispatch,
+  AnchorIntervalEditIntent,
+  AnchorIntervalOp,
 } from './contracts';
+export { ANCHOR_INTERVAL_OP } from './contracts';
 
 // Pure logic: selection-display judgment (FR-83, 教訓 5.10 / 5.29)
 export {
@@ -109,6 +113,15 @@ export {
 
 // Pure logic: edit-intent + no-op guard (FR-97 / FR-84, 教訓 5.24 / 5.15)
 export { valuesFromFeature, isNoOpEdit, buildEditIntent } from './edit-intent';
+
+// Pure logic: 存続期間編集 intent assembly + rejection messaging (HB3-12, 教訓 5.26)
+export {
+  buildChangeStartIntent,
+  buildSetEndIntent,
+  buildDeleteAnchorIntent,
+  yearToTimePoint,
+  intervalRejectionMessage,
+} from './interval-edit';
 
 // Strings
 export { PROPERTY_STRINGS } from './messages';

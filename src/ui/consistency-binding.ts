@@ -38,7 +38,7 @@ import {
   type CommandOutcome,
 } from '../domain/command/index';
 import { createCommandResult, type CommandResult } from '../domain/command/result';
-import type { DomainId, FeatureId, RingId, VertexId } from '../domain/ids';
+import type { AnchorId, DomainId, FeatureId, RingId, VertexId } from '../domain/ids';
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
 import type { AddSnapshot } from '../domain/add/index';
 import type { SplitSnapshot } from '../domain/knife/index';
@@ -55,7 +55,16 @@ import {
   type AffiliationSnapshot,
 } from '../domain/editing/apply-proposal';
 import { createAnchor, createAnchorSnapshot, type Anchor } from '../domain/anchor';
-import { applyPastEdit } from '../domain/anchor-series';
+import {
+  applyPastEdit,
+  changeStart,
+  setEnd,
+  deleteAnchor,
+  type AnchorSeries,
+  type RejectReason,
+} from '../domain/anchor-series';
+import type { AnchorIntervalEditIntent } from './property/index';
+import { ANCHOR_INTERVAL_OP } from './property/index';
 import {
   createDeletionState,
   createDeleteFeatureCommand,
@@ -189,6 +198,7 @@ function runGuarded<S, Snapshot>(
 
 const LIVE_COMMIT_KIND = defineCommandKind('u44-live-commit');
 const DELETE_COMMIT_KIND = defineCommandKind('u44-delete-commit');
+const INTERVAL_COMMIT_KIND = defineCommandKind('u44-interval-commit');
 
 /**
  * U09 — temporal-consistency check. For an add the feature is new (no existing
@@ -923,4 +933,104 @@ export function createDeleteFeatureCommandForRoot(
   // Wrap in a composite so it records as ONE indivisible undo unit, consistent with
   // every other commit (isCompositeCommand-friendly; FR-73 / FR-94).
   return createCompositeCommand('delete', [swap]);
+}
+
+// --- HB3-12 存続期間編集 → DomainRoot whole-state-swap (FR-54〜FR-59 / FR-73) -----
+//
+// WHY THIS EXISTS (integration honesty, 教訓 5.7「ロジックがあっても UI から呼ばれず
+// 機能しない状態を作らない」): U09 (src/domain/anchor-series) implements changeStart /
+// setEnd / deleteAnchor — moving WHEN a feature appears / disappears on the time axis —
+// as pure, unit-tested ops, but NOTHING called them. The property panel showed存続期間
+// bars (FR-84) read-only; editing 開始年/終了年 in 基本情報 only stored cosmetic
+// attributes and never drove the actual anchor interval (the BasicAttributes are part of
+// the SNAPSHOT, which applyEditProposal rewrites; the existence interval is the
+// AnchorEntry start/end, which only these three U09 ops touch). This adapter is the ONE
+// place that maps a UI {@link AnchorIntervalEditIntent} onto the right U09 op over the
+// LIVE root, mirroring {@link createDeleteFeatureCommandForRoot}: a whole-state-swap
+// command recorded as ONE undo unit whose CommandResult drives selection re-resolution.
+
+/** The outcome of building an存続期間 command: a swap command, or a typed rejection. */
+export type AnchorIntervalCommandResult =
+  | { readonly ok: true; readonly command: Command<DomainRoot> }
+  | { readonly ok: false; readonly reason: RejectReason };
+
+/**
+ * Run the U09 op named by `intent` against `series`, returning the new series or the
+ * U09 rejection reason verbatim (so the UI surfaces the domain's own testable reason —
+ * 教訓 5.26 — rather than a generic failure). The anchor id is the routing key; an
+ * unknown id yields U09's `anchorNotFound`.
+ */
+function runIntervalOp(
+  series: AnchorSeries,
+  intent: AnchorIntervalEditIntent,
+  anchorId: AnchorId,
+): { ok: true; series: AnchorSeries } | { ok: false; reason: RejectReason } {
+  const result =
+    intent.op === ANCHOR_INTERVAL_OP.ChangeStart
+      ? changeStart(series, anchorId, intent.newStart, calendar)
+      : intent.op === ANCHOR_INTERVAL_OP.SetEnd
+        ? setEnd(series, anchorId, intent.newEnd, calendar)
+        : deleteAnchor(series, anchorId, calendar);
+  if (!result.ok) return { ok: false, reason: result.reason };
+  return { ok: true, series: result.series };
+}
+
+/**
+ * Build the存続期間編集 command for `intent` over the live root, or a typed rejection
+ * (HB3-12). The target feature's OWN {@link FeatureHistory} carries its anchor series
+ * (U09); we run the matching U09 op (changeStart / setEnd / deleteAnchor) on it and swap
+ * the project's histories with the updated series. The feature SURVIVES (its identity is
+ * unchanged — only its existence interval moved), so the command reports it as survived,
+ * which re-resolves selection without dropping it (教訓 5.11). Recorded as ONE undo unit
+ * via the SAME whole-state-swap shape add / knife / edit / delete commits use.
+ *
+ * A feature whose own history is not found, or whose U09 op is rejected (the sole-anchor
+ * delete guard INV-5, start≥end, out-of-range time, …) returns `{ ok: false, reason }`
+ * so the host surfaces an honest message and pushes NO command (no幽霊 undo entry,
+ * 教訓 5.24). Pure with respect to the root (returns a NEW project).
+ */
+export function createAnchorIntervalCommandForRoot(
+  root: DomainRoot,
+  intent: AnchorIntervalEditIntent,
+): AnchorIntervalCommandResult {
+  const index = root.histories.findIndex((h) => h.featureId === intent.featureId);
+  const history = index >= 0 ? root.histories[index] : undefined;
+  if (history === undefined) {
+    return { ok: false, reason: { code: 'anchorNotFound', id: intent.anchorId } };
+  }
+
+  const run = runIntervalOp(history.series, intent, intent.anchorId);
+  if (!run.ok) return { ok: false, reason: run.reason };
+
+  const updatedHistory: FeatureHistory = { featureId: history.featureId, series: run.series };
+  const histories = root.histories.map((h, i) => (i === index ? updatedHistory : h));
+  const finalState: DomainRoot = { ...root, histories };
+
+  // The feature's identity is unchanged — only its existence interval moved — so it
+  // SURVIVES; report it touched so selection re-resolves against the new interval (a
+  // feature whose start moved past the current time will be dropped by the existence
+  // re-validation funnel, exactly as a time move would, 教訓 5.11). Symmetric execute /
+  // undo (教訓 5.23): the root is immutable so the swap replays deterministically.
+  const survived: ReadonlySet<DomainId> = new Set<DomainId>([intent.featureId]);
+  const forward: CommandResult = createCommandResult({ survived });
+  const backward: CommandResult = createCommandResult({ survived });
+
+  const swap: Command<DomainRoot> = {
+    kind: INTERVAL_COMMIT_KIND,
+    label: 'interval',
+    execute(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+    undo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: root, result: backward };
+    },
+    redo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+  };
+  // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
+  return { ok: true, command: createCompositeCommand('interval', [swap]) };
 }

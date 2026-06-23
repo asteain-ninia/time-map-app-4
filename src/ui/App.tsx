@@ -28,9 +28,11 @@ import {
   EMPTY_DETAIL_PANELS,
   closeDetailPanel,
   openPanel,
+  intervalRejectionMessage,
   type DetailPanelsState,
   type AssetResolver,
   type EditDispatch,
+  type AnchorIntervalEditDispatch,
   type FeatureLookup as PropertyFeatureLookup,
 } from './property';
 import { Timeline } from './timeline/Timeline';
@@ -1700,6 +1702,32 @@ export function App(): JSX.Element {
     [store, recordCommand],
   );
 
+  // HB3-12 — 地物の存続期間編集. The U09 ops (changeStart / setEnd / deleteAnchor) that
+  // move WHEN a feature appears / disappears on the time axis existed + were unit-tested,
+  // but NOTHING called them (教訓 5.7 配線漏れ): the property panel showed存続期間 bars
+  // read-only, and editing 開始年/終了年 only stored cosmetic snapshot attributes — they
+  // never drove the actual anchor interval, so a feature could not be made to (dis)appear
+  // at a different time. Wire the property panel's存続期間 intent through the SAME
+  // whole-state-swap command path 全錨 delete uses (single command truth source, 教訓
+  // 5.30): {@link createAnchorIntervalCommandForRoot} runs the right U09 op on the
+  // feature's series and records ONE undo unit; selection re-resolves against the new
+  // interval (a feature whose start moved past the current time drops out, just like a
+  // time move, 教訓 5.11). A REJECTED op (sole-anchor delete INV-5, start≥end, …) throws
+  // the domain's own testable reason so the panel surfaces it honestly (no silent no-op,
+  // HB-3 honest-failure discipline) and pushes NO command (no幽霊 undo entry, 教訓 5.24).
+  const anchorIntervalDispatch = useMemo<AnchorIntervalEditDispatch>(
+    () => ({
+      dispatchAnchorInterval: (intent) => {
+        const result = createAnchorIntervalCommandForRoot(store.getState().domain, intent);
+        if (!result.ok) {
+          throw new Error(intervalRejectionMessage(result.reason));
+        }
+        recordCommand(result.command, { featureId: intent.featureId });
+      },
+    }),
+    [store, recordCommand],
+  );
+
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
   // never passed to AppShell, so the sidebar rendered empty and the U32
@@ -1717,9 +1745,17 @@ export function App(): JSX.Element {
         calendar,
         onOpenDetail,
         editDispatch: propertyEditDispatch,
+        anchorIntervalDispatch,
         onDeleteFeature: propertyDeleteFeature,
       }),
-    [store, calendar, onOpenDetail, propertyEditDispatch, propertyDeleteFeature],
+    [
+      store,
+      calendar,
+      onOpenDetail,
+      propertyEditDispatch,
+      anchorIntervalDispatch,
+      propertyDeleteFeature,
+    ],
   );
 
   return (
@@ -2274,6 +2310,7 @@ import {
   createLiveMergeBinding,
   createLiveAffiliationBinding,
   createDeleteFeatureCommandForRoot,
+  createAnchorIntervalCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';

@@ -17,7 +17,7 @@
 
 import type { AnchorSeries } from '../../domain/anchor-series';
 import type { Feature } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
+import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 
 /**
@@ -62,6 +62,61 @@ export interface AssetResolver {
 export interface EditDispatch {
   dispatchEdit(intent: PropertyEditIntent): void;
 }
+
+/**
+ * The存続期間編集 dispatch port (HB3-12, 教訓 5.7 配線漏れ修正). DISTINCT from
+ * {@link EditDispatch}: a property/style edit ({@link PropertyEditIntent}) rewrites the
+ * anchor's full-state SNAPSHOT at a time (U44 applyEditProposal → applyPastEdit) and
+ * NEVER touches an anchor's start/end interval. A feature's existence on the time axis
+ * is governed by {@link AnchorSeries} entry start/end, which only U09 `changeStart` /
+ * `setEnd` / `deleteAnchor` move. The property panel hands the existence-edit INTENT
+ * (which feature, which anchor, the operation) to the command base; the host wires the
+ * real bridge to those U09 ops (a whole-state-swap command recorded as ONE undo unit,
+ * mirroring 全錨 delete) and tests assert the intent that was dispatched.
+ */
+export interface AnchorIntervalEditDispatch {
+  dispatchAnchorInterval(intent: AnchorIntervalEditIntent): void;
+}
+
+/** The three存続期間 operations (FR-54〜FR-59, §5.6). A typed constant (教訓 5.19). */
+export const ANCHOR_INTERVAL_OP = {
+  /** Move when the feature appears (U09 changeStart). */
+  ChangeStart: 'changeStart',
+  /** Set / change / clear (`null`) when the feature disappears (U09 setEnd). */
+  SetEnd: 'setEnd',
+  /** Remove this anchor entirely (U09 deleteAnchor; refused for the sole anchor). */
+  Delete: 'delete',
+} as const;
+
+export type AnchorIntervalOp =
+  (typeof ANCHOR_INTERVAL_OP)[keyof typeof ANCHOR_INTERVAL_OP];
+
+/**
+ * The存続期間編集 intent (HB3-12). Names the target feature, the specific anchor
+ * (by id — the routing key for every U09 by-id edit), and the operation. The command
+ * base resolves the feature's {@link AnchorSeries}, runs the matching U09 op, and
+ * records the result as one undo unit; a rejected op surfaces honestly (never silent).
+ */
+export type AnchorIntervalEditIntent =
+  | {
+      readonly featureId: FeatureId;
+      readonly anchorId: AnchorId;
+      readonly op: typeof ANCHOR_INTERVAL_OP.ChangeStart;
+      /** The new start time the anchor should appear at (U09 changeStart). */
+      readonly newStart: TimePoint;
+    }
+  | {
+      readonly featureId: FeatureId;
+      readonly anchorId: AnchorId;
+      readonly op: typeof ANCHOR_INTERVAL_OP.SetEnd;
+      /** The new end time, or `null` to clear it (open-ended). */
+      readonly newEnd: TimePoint | null;
+    }
+  | {
+      readonly featureId: FeatureId;
+      readonly anchorId: AnchorId;
+      readonly op: typeof ANCHOR_INTERVAL_OP.Delete;
+    };
 
 /**
  * The edit intent the property panel hands to the command base. It names the
