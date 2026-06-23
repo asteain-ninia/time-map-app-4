@@ -62,16 +62,29 @@ export const INHERITANCE_SIDE = {
 export type InheritanceSide = (typeof INHERITANCE_SIDE)[keyof typeof INHERITANCE_SIDE];
 
 /**
- * Which side keeps the original feature's identity (FR-93). The non-chosen side
- * becomes a new terminal feature. The UI seeds this from the小さい方 preview but
- * the user confirms it (教訓5.3/5.4: UI 文脈を第一候補に, never a fixed default).
+ * Which PIECE keeps the original feature's identity (FR-93 / HB3-5/19 n-way). The
+ * non-chosen pieces each become a new terminal feature. The UI seeds this from the
+ * 小さい方 preview but the user confirms it (教訓5.3/5.4: UI 文脈を第一候補に, never a
+ * fixed default).
+ *
+ * `inheritIndex` is the n-way selector (index into `SplitResult.pieces`). `inherit`
+ * ('a'/'b') is the 2-way alias kept while consumers migrate; when `inheritIndex` is
+ * absent the assembler derives it from `inherit` (A→0, B→1).
  */
 export interface InheritanceChoice {
   readonly inherit: InheritanceSide;
+  /** n-way: index into `SplitResult.pieces` that keeps the original identity. */
+  readonly inheritIndex?: number;
 }
 
+/** 2-way factory (alias): pick side A (piece 0) or B (piece 1). */
 export function createInheritanceChoice(inherit: InheritanceSide): InheritanceChoice {
-  return { inherit };
+  return { inherit, inheritIndex: inherit === INHERITANCE_SIDE.A ? 0 : 1 };
+}
+
+/** n-way factory (HB3-5/19): pick the piece at `inheritIndex` to keep the original identity. */
+export function createInheritanceChoiceAt(inheritIndex: number): InheritanceChoice {
+  return { inherit: inheritIndex === 0 ? INHERITANCE_SIDE.A : INHERITANCE_SIDE.B, inheritIndex };
 }
 
 // ---------------------------------------------------------------------------
@@ -409,7 +422,13 @@ export interface SplitEditProposal {
   readonly inheritorFeatureId: FeatureId;
   /** The継承先側 feature's new shape (form change of the original feature). */
   readonly inheritorShape: Shape;
-  /** The newly-created非継承側 terminal feature (fresh id; FR-44). */
+  /**
+   * The newly-created non-inheritor terminal features (fresh ids; FR-44 / HB3-5/19
+   * n-way). For a 2-piece split this has length 1; a k+1-piece split has k. Each
+   * inherits the original's parent + the shared U23 default properties.
+   */
+  readonly newFeatures: readonly LeafFeature[];
+  /** @deprecated 2-way alias = `newFeatures[0]` (kept while consumers migrate). */
   readonly newFeature: LeafFeature;
   /** Every newly-minted vertex BOTH features reference (教訓5.20 依存データ). */
   readonly vertices: readonly Vertex[];
@@ -460,54 +479,62 @@ function newFeatureOptional(
 export function assembleSplitProposal(input: AssembleSplitInput): SplitEditProposal {
   const { target, store, result, choice, nonInherited, ids } = input;
 
-  const inheritSide = choice.inherit === INHERITANCE_SIDE.A ? result.sideA : result.sideB;
-  const newSide = choice.inherit === INHERITANCE_SIDE.A ? result.sideB : result.sideA;
+  // n-way piece selection (HB3-5/19): the inheritor keeps the original identity; every
+  // OTHER piece becomes a new feature. `pieces` falls back to the 2-way [sideA, sideB]
+  // for callers that build a result without the n-way `pieces` field.
+  const pieces = result.pieces ?? [result.sideA, result.sideB];
+  const inheritIndex = choice.inheritIndex ?? (choice.inherit === INHERITANCE_SIDE.A ? 0 : 1);
+  const inheritSide = pieces[inheritIndex] ?? pieces[0]!;
+  const newSides = pieces.filter((_, i) => i !== inheritIndex);
 
-  // ONE shared vertex pool across both sides so a shared-seam coordinate resolves
-  // to the SAME minted VertexId on both the inheritor and the new feature (FR-95 /
-  // Codex H2). Build the inheritor side first so the seam ids it mints are reused
-  // (not re-minted) by the new side.
+  // ONE shared vertex pool across ALL pieces so a shared-seam coordinate resolves to the
+  // SAME minted VertexId on every piece (FR-95 / Codex H2 generalized). Build the
+  // inheritor first so the seam ids it mints are reused (not re-minted) by the others.
   const pool = createVertexPool();
   const builtInherit = buildShapeFromSide(inheritSide, ids, pool);
-  const builtNew = buildShapeFromSide(newSide, ids, pool);
+  const builtNews = newSides.map((side) => buildShapeFromSide(side, ids, pool));
 
   // 継承先: keep the original feature, swap only its shape (form change; FR-44).
   const inheritorShape = builtInherit.shape;
 
-  // 非継承側: new terminal feature, U23 properties, inherited parent.
-  const newFeatureId = ids.nextFeatureId();
+  // 非継承側: each remaining piece is a NEW terminal feature carrying the SAME shared
+  // U23 default properties (one shared default, not per-piece forms) + inherited parent.
   const optional = newFeatureOptional(target, nonInherited.kindLabel);
-  const newFeature = createLeafFeature(
-    newFeatureId,
-    nonInherited.attributes,
-    nonInherited.color,
-    builtNew.shape,
-    optional,
+  const newFeatures = builtNews.map((built) =>
+    createLeafFeature(
+      ids.nextFeatureId(),
+      nonInherited.attributes,
+      nonInherited.color,
+      built.shape,
+      optional,
+    ),
   );
 
   const targetVertexIds = collectVertexIds(target);
   const vertexRemap = buildRemap(store, targetVertexIds, [
     builtInherit.byCoord,
-    builtNew.byCoord,
+    ...builtNews.map((b) => b.byCoord),
   ]);
 
-  // U07 / FR-24: the re-parented hierarchy on BOTH sides MUST satisfy the
-  // 領土→穴→領土→… alternation. buildShapeFromSide builds it by containment so this
-  // holds by construction; we assert it (教訓5.26: 確定前に同じサービスで検証) so a
-  // future change that breaks alternation fails loudly rather than committing a
-  // broken shape. Delegated to U07's ring-hierarchy validator (過少共有 5.30).
-  if (!isAlternationValid(inheritorShape) || !isAlternationValid(builtNew.shape)) {
+  // U07 / FR-24: the re-parented hierarchy on EVERY piece MUST satisfy the 領土→穴→領土→…
+  // alternation. buildShapeFromSide builds it by containment so this holds by
+  // construction; we assert it (教訓5.26: 確定前に同じサービスで検証) so a future change
+  // that breaks alternation fails loudly. Delegated to U07's validator (過少共有 5.30).
+  if (
+    !isAlternationValid(inheritorShape) ||
+    builtNews.some((b) => !isAlternationValid(b.shape))
+  ) {
     throw new Error('split produced an invalid ring hierarchy (FR-24 alternation)');
   }
 
-  // FR-44 最低 3 頂点 / 教訓5.26: every ring (outer AND hole, both sides) must clear the
-  // ≥3 頂点 invariant. A hole that quantized to <3 vertices is NOT caught by the
-  // alternation check (reparentByContainment silently demotes it to a parentless,
-  // structurally-valid top-level territory — a phantom area≈0 piece, see
-  // everyRingHasMinVertices). Re-assert the same invariant the geometry layer
-  // enforces (单一真实源 MIN_POLYGON_VERTICES) so a degenerate ring fails loudly here
-  // rather than committing a phantom territory into a Shape.
-  if (!everyRingHasMinVertices(inheritorShape) || !everyRingHasMinVertices(builtNew.shape)) {
+  // FR-44 最低 3 頂点 / 教訓5.26: every ring (outer AND hole, every piece) must clear the
+  // ≥3 頂点 invariant. Re-assert the same invariant the geometry layer enforces (単一真実源
+  // MIN_POLYGON_VERTICES) so a degenerate ring fails loudly here rather than committing a
+  // phantom territory into a Shape.
+  if (
+    !everyRingHasMinVertices(inheritorShape) ||
+    builtNews.some((b) => !everyRingHasMinVertices(b.shape))
+  ) {
     throw new Error('split produced a degenerate ring (FR-44 最低3頂点)');
   }
 
@@ -520,11 +547,12 @@ export function assembleSplitProposal(input: AssembleSplitInput): SplitEditPropo
   return {
     inheritorFeatureId: target.id,
     inheritorShape,
-    newFeature,
+    newFeatures,
+    newFeature: newFeatures[0]!,
     vertices: pool.vertices,
     vertexRemap,
     sharedEdgeCuts,
-    touchedFeatureIds: [target.id, newFeatureId],
+    touchedFeatureIds: [target.id, ...newFeatures.map((f) => f.id)],
   };
 }
 
@@ -669,6 +697,14 @@ export function toSharedEdgeCutSpecs(
 export interface SplitSnapshot {
   readonly inheritorFeatureId: FeatureId;
   readonly inheritorShape: Shape;
+  /**
+   * The new non-inheritor features (HB3-5/19 n-way: k for a k+1-piece split). Optional
+   * ONLY during the consumer migration so hand-built 2-way snapshot literals (which set
+   * only `newFeature`) still compile; `toSplitSnapshot` ALWAYS populates it, and the
+   * apply path falls back to `[newFeature]` when it is absent.
+   */
+  readonly newFeatures?: readonly LeafFeature[];
+  /** 2-way value = `newFeatures[0]` (kept while consumers migrate). */
   readonly newFeature: LeafFeature;
   readonly vertices: readonly Vertex[];
   readonly vertexRemap: VertexRemap;
@@ -681,6 +717,7 @@ export function toSplitSnapshot(proposal: SplitEditProposal): SplitSnapshot {
   return {
     inheritorFeatureId: proposal.inheritorFeatureId,
     inheritorShape: proposal.inheritorShape,
+    newFeatures: proposal.newFeatures,
     newFeature: proposal.newFeature,
     vertices: proposal.vertices,
     vertexRemap: proposal.vertexRemap,

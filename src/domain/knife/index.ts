@@ -31,6 +31,7 @@ export {
   checkSplittable,
   executeSplit,
   smallerSide,
+  smallestPieceIndex,
 } from './split-geometry';
 
 export {
@@ -38,6 +39,7 @@ export {
   type InheritanceSide,
   type InheritanceChoice,
   createInheritanceChoice,
+  createInheritanceChoiceAt,
   type NonInheritedProperties,
   type SplitIdPorts,
   type SplitEditProposal,

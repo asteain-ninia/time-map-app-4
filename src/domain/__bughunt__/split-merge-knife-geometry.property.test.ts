@@ -56,10 +56,12 @@ import {
   checkSplittable,
   executeSplit,
   smallerSide,
+  smallestPieceIndex,
   type SplitSide,
 } from '../knife/split-geometry';
 import {
   INHERITANCE_SIDE,
+  createInheritanceChoiceAt,
   assembleSplitProposal,
   createInheritanceChoice,
   inheritorFeature,
@@ -728,30 +730,36 @@ function applySplit(world: World, cmd: { leafPick: number; frac: number }): Worl
   expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(check.sideA.area));
   expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(check.sideB.area));
 
-  // Metamorphic op∘inverse-op: union(sideA, sideB) ≈ original filled area.
+  // Metamorphic op∘inverse-op (HB3-5/19 n-way): the SUM of every piece's filled area
+  // ≈ the original filled area (片落とし禁止). A cut crossing a concave / multiply-split
+  // leaf may now yield k+1 pieces, so we conserve area over ALL pieces, not just 2 sides.
   const beforeMp = resolveLeafShape(leaf.shape, world.store)!;
   const beforeArea = mpFilledArea(beforeMp);
-  const reunited = union(check.sideA.area, check.sideB.area);
-  expect(isOk(reunited)).toBe(true);
-  if (isOk(reunited) && beforeArea > 0) {
-    const reArea = mpFilledArea(reunited.result);
+  const pieces = check.pieces ?? [check.sideA, check.sideB];
+  if (beforeArea > 0) {
+    const reArea = pieces.reduce((sum, p) => sum + mpFilledArea(p.area), 0);
     expect(Math.abs(reArea - beforeArea) / beforeArea).toBeLessThan(1e-3);
   }
 
   const proposal = assembleSplitProposal({
     target: leaf,
     store: world.store.byId,
-    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    result: {
+      pieces,
+      sideA: check.sideA,
+      sideB: check.sideB,
+      edgeCuts: exec.edgeCuts,
+    },
     choice: createInheritanceChoice(INHERITANCE_SIDE.A),
     nonInherited: { attributes: ATTRS, color: COLOR },
     ids: idPorts(),
   });
   const inheritor = withLeafShape(leaf, proposal.inheritorShape);
-  const newLeaf = proposal.newFeature;
 
+  // Apply ALL new features (k for a k+1-piece split), not just the first (FR-94 n-way).
   const nextFeatures = world.features.slice();
   nextFeatures[idx] = inheritor;
-  nextFeatures.push(newLeaf);
+  for (const nf of proposal.newFeatures) nextFeatures.push(nf);
   const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
   return { features: nextFeatures, store: nextStore };
 }
@@ -2630,25 +2638,30 @@ describe('seed=21003 — zig-zag (W) open cut: >2 boundary transits stay valid +
           // every invariant must hold.
           if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
 
-          for (const side of [res.sideA, res.sideB]) {
+          // HB3-5/19 n-way: a 4-transit W cut now yields k+1 (= 3) pieces, not 2 sides.
+          // Every piece must be valid + finite, and ALL pieces together conserve area.
+          const pieces = res.pieces ?? [res.sideA, res.sideB];
+          for (const side of pieces) {
             expect(everyCoordFinite(side.area)).toBe(true);
             expect(isMultiPolygonValid(side.area)).toBe(true);
             expect(sideArea(side)).toBeGreaterThan(0);
           }
-          const sum = sideArea(res.sideA) + sideArea(res.sideB);
+          const sum = pieces.reduce((acc, side) => acc + sideArea(side), 0);
           const whole = filledArea(params);
           expect(Math.abs(sum - whole) / whole).toBeLessThan(1e-3);
 
           const proposal = assembleSplitProposal({
             target: feature,
             store: store.byId,
-            result: { sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
+            result: { pieces, sideA: res.sideA, sideB: res.sideB, edgeCuts: [] },
             choice: createInheritanceChoice(INHERITANCE_SIDE.A),
             nonInherited: { attributes: ATTRS, color: COLOR },
             ids: idPorts(),
           });
           expect(isAlternationValid(proposal.inheritorShape)).toBe(true);
-          expect(isAlternationValid(proposal.newFeature.shape)).toBe(true);
+          for (const nf of proposal.newFeatures) {
+            expect(isAlternationValid(nf.shape)).toBe(true);
+          }
           for (const v of proposal.vertices) {
             expect(Number.isFinite(v.coordinate.lon) && Number.isFinite(v.coordinate.lat)).toBe(true);
           }
@@ -4334,31 +4347,31 @@ function applySplitDiagonal(
   expect(JSON.stringify(exec.sideA.area)).toBe(JSON.stringify(check.sideA.area));
   expect(JSON.stringify(exec.sideB.area)).toBe(JSON.stringify(check.sideB.area));
 
-  // op ∘ inverse-op: union of the two sides ≈ the pre-split filled area.
+  // op ∘ inverse-op (HB3-5/19 n-way): the SUM of every piece's filled area ≈ the
+  // pre-split filled area (片落とし禁止). A diagonal cut across a previously-split
+  // (concave) leaf may now yield k+1 pieces, so conserve area over ALL pieces.
   const beforeArea = leafFilledArea(leaf, world.store);
-  const reunited = union(check.sideA.area, check.sideB.area);
-  expect(isOk(reunited)).toBe(true);
-  if (isOk(reunited) && beforeArea > 0) {
-    const reArea = mpFilledArea(reunited.result);
+  const pieces = check.pieces ?? [check.sideA, check.sideB];
+  if (beforeArea > 0) {
+    const reArea = pieces.reduce((sum, p) => sum + mpFilledArea(p.area), 0);
     expect(Math.abs(reArea - beforeArea) / beforeArea).toBeLessThan(1e-3);
   }
 
-  const smaller = smallerSide(exec);
+  // The smallest piece keeps the original identity (FR-93, generalized to n-way).
   const proposal = assembleSplitProposal({
     target: leaf,
     store: world.store.byId,
-    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
-    choice: createInheritanceChoice(smaller === 'a' ? INHERITANCE_SIDE.A : INHERITANCE_SIDE.B),
+    result: { pieces, sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    choice: createInheritanceChoiceAt(smallestPieceIndex(exec)),
     nonInherited: { attributes: ATTRS, color: COLOR },
     ids: idPorts(),
   });
   expect(proposal.inheritorFeatureId).toBe(leaf.id);
   const inheritor = withLeafShape(leaf, proposal.inheritorShape);
-  const newLeaf = proposal.newFeature;
 
   const nextFeatures = world.features.slice();
   nextFeatures[idx] = inheritor;
-  nextFeatures.push(newLeaf);
+  for (const nf of proposal.newFeatures) nextFeatures.push(nf);
   const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
   return { features: nextFeatures, store: nextStore };
 }
@@ -5609,25 +5622,26 @@ function seamApplySplit(world: World, cmd: SeamCmd): World {
   const beforeArea = mpFilled41001(
     alignMultiPolygon41001(mp, referenceLonForMultiPolygon41001(mp)),
   );
-  const reunited = union(check.sideA.area, check.sideB.area);
-  expect(isOk(reunited)).toBe(true);
-  if (isOk(reunited) && beforeArea > 0) {
-    expect(Math.abs(mpFilled41001(reunited.result) - beforeArea) / beforeArea).toBeLessThan(2e-3);
+  // HB3-5/19 n-way: conserve area over ALL pieces (a seam cut on a concave/evolved leaf
+  // may yield k+1 pieces, not 2 sides).
+  const pieces = check.pieces ?? [check.sideA, check.sideB];
+  if (beforeArea > 0) {
+    const reArea = pieces.reduce((sum, p) => sum + mpFilled41001(p.area), 0);
+    expect(Math.abs(reArea - beforeArea) / beforeArea).toBeLessThan(2e-3);
   }
 
   const proposal = assembleSplitProposal({
     target: leaf,
     store: world.store.byId,
-    result: { sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
+    result: { pieces, sideA: check.sideA, sideB: check.sideB, edgeCuts: exec.edgeCuts },
     choice: createInheritanceChoice(INHERITANCE_SIDE.A),
     nonInherited: { attributes: ATTRS, color: COLOR },
     ids: idPorts(),
   });
   const inheritor = withLeafShape(leaf, proposal.inheritorShape);
-  const newLeaf = proposal.newFeature;
   const nextFeatures = world.features.slice();
   nextFeatures[idx] = inheritor;
-  nextFeatures.push(newLeaf);
+  for (const nf of proposal.newFeatures) nextFeatures.push(nf);
   const nextStore = createVertexStore([...world.store.byId.values(), ...proposal.vertices]);
   return { features: nextFeatures, store: nextStore };
 }

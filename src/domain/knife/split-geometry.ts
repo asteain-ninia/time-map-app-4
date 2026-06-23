@@ -67,6 +67,12 @@ export const SPLIT_REJECT = {
   Unresolvable: 'unresolvable',
   /** The cut line itself is degenerate (empty / fewer than 2 points). */
   DegenerateLine: 'degenerate-line',
+  /**
+   * The open cut self-intersects (figure-eight / chords crossing each other), so the
+   * iterative per-chord n-way split cannot honestly resolve it into k+1 simple pieces
+   * (HB3-5/19 G3). We reject rather than silently mis-process it.
+   */
+  SelfIntersectingCut: 'self-intersecting-cut',
 } as const;
 
 export type SplitRejectKind = (typeof SPLIT_REJECT)[keyof typeof SPLIT_REJECT];
@@ -79,6 +85,7 @@ export const SPLIT_REJECT_MESSAGE: Readonly<Record<SplitRejectKind, string>> = {
   [SPLIT_REJECT.InvalidShape]: '分割結果が不正な形状になります。分断線を引き直してください。',
   [SPLIT_REJECT.Unresolvable]: '対象面の形状を取得できませんでした。',
   [SPLIT_REJECT.DegenerateLine]: '分断線の点が足りません。',
+  [SPLIT_REJECT.SelfIntersectingCut]: '分断線が自己交差しています。交差しないように引き直してください。',
 };
 
 /** The minimum vertex count for a valid terminal polygon outer ring (FR-44). */
@@ -126,7 +133,17 @@ export type SplitCheckStatus =
 export type SplitCheckResult =
   | {
       readonly status: typeof SPLIT_CHECK_STATUS.Splittable;
+      /**
+       * All resulting pieces (HB3-5/19 n-way: an open cut crossing the boundary 2k
+       * times yields k+1 pieces). `pieces.length >= 2`. The inheritance layer keeps one
+       * piece (`smallestPieceIndex` seeds FR-93) and mints the rest as new features.
+       * Optional ONLY during the n-way consumer migration so hand-built 2-way test
+       * literals still compile; `checkSplittable`/`executeSplit` ALWAYS populate it.
+       */
+      readonly pieces?: readonly SplitSide[];
+      /** 2-way alias = `pieces[0]` (kept while consumers migrate to `pieces`). */
       readonly sideA: SplitSide;
+      /** 2-way alias = `pieces[1]` (kept while consumers migrate to `pieces`). */
       readonly sideB: SplitSide;
     }
   | {
@@ -305,6 +322,185 @@ function planarRingArea2(ring: GeoRing): number {
     acc += p.lon * q.lat - q.lon * p.lat;
   }
   return Math.abs(acc);
+}
+
+// ---------------------------------------------------------------------------
+// n-way OPEN split (HB3-5/19): a cut crossing the boundary 2k times → k+1 pieces.
+//
+// Strategy (確定プラン iterative-per-chord, G1〜G8): decompose the open line into
+// INTERIOR CHORDS (boundary-node → 面内部 → boundary-node), then apply the EXISTING
+// 2-way mechanism (openLineToClip + U06 intersection/difference) ONE chord at a time
+// to whichever current piece the chord runs through. k chords → k+1 pieces. The
+// dangling head/tail (line ends that stop inside / start outside) are naturally
+// dropped because a chord needs a boundary crossing at BOTH ends (G2). A self-
+// intersecting cut (chords crossing) is rejected (G3) rather than mis-processed.
+// ---------------------------------------------------------------------------
+
+/** Whether `point` is strictly inside the multi-polygon (inside ANY polygon; 穴透過 via U06 even-odd). */
+function multiPolygonContains(mp: GeoMultiPolygon, point: WorldCoordinate): boolean {
+  for (const poly of mp) {
+    if (pointInPolygon(point, poly) === POINT_LOCATION.Inside) return true;
+  }
+  return false;
+}
+
+/** Scalar projection parameter of `p` onto segment a→b (0 at a, 1 at b). Pure. */
+function paramAlong(a: WorldCoordinate, b: WorldCoordinate, p: WorldCoordinate): number {
+  const dx = b.lon - a.lon;
+  const dy = b.lat - a.lat;
+  const len2 = dx * dx + dy * dy;
+  if (len2 <= 0) return 0;
+  return ((p.lon - a.lon) * dx + (p.lat - a.lat) * dy) / len2;
+}
+
+/** The boundary crossings of ONE line segment a→b, quantized + sorted by position along a→b. */
+function segmentBoundaryCrossings(
+  a: WorldCoordinate,
+  b: WorldCoordinate,
+  mp: GeoMultiPolygon,
+): WorldCoordinate[] {
+  const hits: { t: number; point: WorldCoordinate }[] = [];
+  for (const poly of mp) {
+    for (const ring of poly) {
+      const n = ring.length;
+      for (let j = 0; j < n; j += 1) {
+        const c = ring[j];
+        const d = ring[(j + 1) % n];
+        if (c === undefined || d === undefined) continue;
+        const hit = segmentsIntersect(a, b, c, d);
+        if (hit.point === undefined) continue;
+        if (hit.relation !== SEGMENT_RELATION.Proper && hit.relation !== SEGMENT_RELATION.Endpoint) {
+          continue;
+        }
+        const t = paramAlong(a, b, hit.point);
+        if (t < -1e-9 || t > 1 + 1e-9) continue;
+        hits.push({ t, point: quantizeCoordinate(hit.point) });
+      }
+    }
+  }
+  hits.sort((x, y) => x.t - y.t);
+  const out: WorldCoordinate[] = [];
+  for (const h of hits) {
+    const prev = out[out.length - 1];
+    if (prev !== undefined && coordinatesEqual(prev, h.point)) continue; // a face-vertex hit by both edges
+    out.push(h.point);
+  }
+  return out;
+}
+
+/**
+ * Decompose the open cut line into INTERIOR CHORDS. Each chord is a polyline that
+ * ENTERS the face at a boundary crossing, runs through its interior, and EXITS at a
+ * boundary crossing (G2: both ends must be crossings; a dangling head/tail at a line
+ * endpoint that is inside the face is dropped). A non-self-intersecting cut crossing
+ * the boundary 2k times yields k chords. Pure.
+ */
+function splitIntoChords(
+  linePts: readonly WorldCoordinate[],
+  mp: GeoMultiPolygon,
+): WorldCoordinate[][] {
+  // 1. Build the augmented vertex list: every original vertex PLUS each segment's
+  //    boundary crossings, in order, flagged whether each is a boundary crossing.
+  const aug: { point: WorldCoordinate; crossing: boolean }[] = [];
+  const first = linePts[0];
+  if (first === undefined) return [];
+  aug.push({ point: first, crossing: false });
+  for (let i = 0; i + 1 < linePts.length; i += 1) {
+    const a = linePts[i]!;
+    const b = linePts[i + 1]!;
+    for (const cr of segmentBoundaryCrossings(a, b, mp)) aug.push({ point: cr, crossing: true });
+    aug.push({ point: b, crossing: false });
+  }
+
+  // 2. Classify each gap (in/out via its midpoint) and collect maximal INSIDE runs
+  //    bounded by boundary crossings at BOTH ends — those are the chords.
+  const chords: WorldCoordinate[][] = [];
+  let i = 0;
+  while (i + 1 < aug.length) {
+    const inside = multiPolygonContains(mp, midpoint(aug[i]!.point, aug[i + 1]!.point));
+    if (!inside) {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < aug.length && multiPolygonContains(mp, midpoint(aug[j]!.point, aug[j + 1]!.point))) {
+      j += 1;
+    }
+    if (aug[i]!.crossing && aug[j]!.crossing) {
+      chords.push(aug.slice(i, j + 1).map((p) => p.point));
+    }
+    i = j;
+  }
+  return chords;
+}
+
+/** Midpoint of two world coordinates (planar; inputs are already seam-anchored). */
+function midpoint(a: WorldCoordinate, b: WorldCoordinate): WorldCoordinate {
+  return createCoordinate((a.lon + b.lon) / 2, (a.lat + b.lat) / 2);
+}
+
+/** A point strictly inside the face along a chord (an interior vertex if any, else its midpoint). */
+function chordInteriorSample(chord: readonly WorldCoordinate[]): WorldCoordinate {
+  if (chord.length > 2) return chord[Math.floor(chord.length / 2)]!;
+  return midpoint(chord[0]!, chord[chord.length - 1]!);
+}
+
+/** The discriminated result of the n-way piece collector. */
+type PiecesResult =
+  | { readonly ok: true; readonly pieces: readonly GeoMultiPolygon[] }
+  | { readonly ok: false; readonly reason: SplitRejectKind };
+
+/**
+ * Collect the k+1 pieces of an OPEN cut by applying each chord's 2-way clip to the
+ * piece it runs through (G1/G6: the piece count is the actual connected-component
+ * count the iterated boolean ops yield, not a `pieces.length===k+1` assert). Rejects
+ * a self-intersecting cut (a chord whose interior lands in no current piece, or whose
+ * clip empties a side) honestly (G3). Pure.
+ */
+export function collectOpenPieces(
+  linePts: readonly WorldCoordinate[],
+  mp: GeoMultiPolygon,
+  span: number,
+): PiecesResult {
+  const chords = splitIntoChords(linePts, mp);
+  if (chords.length === 0) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
+
+  // Each chord is a boundary→interior→boundary cut of exactly ONE current piece (the one
+  // its interior sample lands in). Applying the SAME 2-way clip (openLineToClip +
+  // intersection/difference) to that piece replaces it with its two halves; k chords ⇒
+  // k+1 pieces. NOTE (documented limitation, plan G1/G6): each half is kept WHOLE — we do
+  // NOT split a half into connected components. A single chord that genuinely disconnects
+  // a CONCAVE half into two regions therefore yields ONE multi-part (exclave) piece rather
+  // than two — the SAME conservative grouping the prior 2-way split produced. We avoid the
+  // naive component-split because the chord's own clip (a half-plane extrusion of a BENT
+  // chord) routinely produces disjoint boolean artifacts that are NOT real pieces, and
+  // splitting those over-counts the common comb cut. A true component collector that
+  // distinguishes real cut-disconnections from clip artifacts is future work.
+  const pieces: GeoMultiPolygon[] = [mp];
+  for (const chord of chords) {
+    const clipRing = openLineToClip(chord, span);
+    if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
+      return { ok: false, reason: SPLIT_REJECT.DegenerateLine };
+    }
+    const clip: GeoMultiPolygon = [[clipRing]];
+    const sample = chordInteriorSample(chord);
+    const idx = pieces.findIndex((p) => multiPolygonContains(p, sample));
+    if (idx < 0) return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
+    const piece = pieces[idx]!;
+    const inside = intersection(piece, clip);
+    const outside = difference(piece, clip);
+    if (!isOk(inside) || !isOk(outside)) return { ok: false, reason: SPLIT_REJECT.InvalidShape };
+    if (inside.result.length === 0 || outside.result.length === 0) {
+      return { ok: false, reason: SPLIT_REJECT.SelfIntersectingCut };
+    }
+    pieces.splice(idx, 1, inside.result, outside.result);
+  }
+
+  if (pieces.length < 2) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
+  for (const p of pieces) {
+    if (!everyOuterRingHasMinVertices(p)) return { ok: false, reason: SPLIT_REJECT.TooFewVertices };
+  }
+  return { ok: true, pieces };
 }
 
 // ---------------------------------------------------------------------------
@@ -537,54 +733,84 @@ export function checkSplittable(
     return rejection(SPLIT_REJECT.DegenerateLine);
   }
 
-  let clip: GeoMultiPolygon;
-  if (line.kind === KNIFE_LINE_KIND.Closed) {
-    clip = [[linePts]];
+  // HB3-5/19 n-way split scope — PURELY ADDITIVE: the n-way path is taken ONLY for an
+  // OPEN cut on a SIMPLE face (one polygon, one ring) that decomposes into ≥2 interior
+  // chords (i.e. crosses the boundary ≥4 times ⇒ ≥3 pieces). Every ≤2-piece cut (one
+  // chord), every CLOSED cut, and every holed / multi-region face fall through to the
+  // EXISTING single-clip 2-way path UNCHANGED — so the common 2-piece behaviour (incl.
+  // the FR-95 shared-edge-cut seam node, all existing tests) is bit-for-bit preserved.
+  // Only the genuinely-multi-crossing comb cut (which the 2-way grouped into one
+  // exclave-bearing side) now correctly yields k+1 separate pieces. targetMp + linePts
+  // are already seam-anchored to ONE branch above (R3) so the chord planar geometry is
+  // correct across the antimeridian. (Holes/exclaves + n-way edge-cut coincidence remain
+  // future work — verify-workflow findings.)
+  let pieces: GeoMultiPolygon[];
+  const simpleFace = targetMp.length === 1 && (targetMp[0]?.length ?? 0) === 1;
+  const nwayChords =
+    line.kind === KNIFE_LINE_KIND.Open && simpleFace
+      ? splitIntoChords(linePts, targetMp)
+      : [];
+  if (nwayChords.length >= 2) {
+    const collected = collectOpenPieces(linePts, targetMp, multiPolygonSpan(targetMp));
+    if (!collected.ok) return rejection(collected.reason);
+    pieces = [...collected.pieces];
   } else {
-    // Pre-gate: cheaply reject a line that does not enter the face at all (貫通せず)
-    // with the correct message. NOT a Proper-only parity check — a cut entering or
-    // exiting through an existing polygon vertex (FR-77 grid-snap) must still pass
-    // here; the authoritative 2-piece test is the post-op non-empty gate below.
-    if (!linePiercesFace(linePts, targetMp)) {
+    let clip: GeoMultiPolygon;
+    if (line.kind === KNIFE_LINE_KIND.Closed) {
+      clip = [[linePts]];
+    } else {
+      // Pre-gate: cheaply reject a line that does not enter the face at all (貫通せず)
+      // with the correct message. NOT a Proper-only parity check — a cut entering or
+      // exiting through an existing polygon vertex (FR-77 grid-snap) must still pass
+      // here; the authoritative 2-piece test is the post-op non-empty gate below.
+      if (!linePiercesFace(linePts, targetMp)) {
+        return rejection(SPLIT_REJECT.DoesNotPierce);
+      }
+      const span = multiPolygonSpan(targetMp);
+      const clipRing = openLineToClip(linePts, span);
+      // Reject a degenerate clip (bug-hunt2): even with the chord guard, a polyline
+      // with no spatial extent at all (every snapped vertex on one grid node) yields a
+      // zero-area ring. A zero-area clip makes intersection/difference vanish and would
+      // mis-report as 貫通せず/不正形状 — surface the honest 分断線の点が足りません instead.
+      if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
+        return rejection(SPLIT_REJECT.DegenerateLine);
+      }
+      clip = [[clipRing]];
+    }
+
+    const inside = intersection(targetMp, clip);
+    const outside = difference(targetMp, clip);
+    if (!isOk(inside) || !isOk(outside)) {
+      return rejection(SPLIT_REJECT.InvalidShape);
+    }
+    // Both sides must be non-empty (a 2-piece split) — otherwise the line did not
+    // actually divide the face (貫通せず / fully-inside line that vanished).
+    if (inside.result.length === 0 || outside.result.length === 0) {
       return rejection(SPLIT_REJECT.DoesNotPierce);
     }
-    const span = multiPolygonSpan(targetMp);
-    const clipRing = openLineToClip(linePts, span);
-    // Reject a degenerate clip (bug-hunt2): even with the chord guard, a polyline
-    // with no spatial extent at all (every snapped vertex on one grid node) yields a
-    // zero-area ring. A zero-area clip makes intersection/difference vanish and would
-    // mis-report as 貫通せず/不正形状 — surface the honest 分断線の点が足りません instead.
-    if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
-      return rejection(SPLIT_REJECT.DegenerateLine);
+    pieces = [inside.result, outside.result];
+  }
+
+  // Each piece's every outer ring must have ≥3 vertices (FR-44 最低 3 頂点). collectOpenPieces
+  // already enforces this; the 2-way path is checked here.
+  for (const p of pieces) {
+    if (!everyOuterRingHasMinVertices(p)) {
+      return rejection(SPLIT_REJECT.TooFewVertices);
     }
-    clip = [[clipRing]];
   }
 
-  const inside = intersection(targetMp, clip);
-  const outside = difference(targetMp, clip);
-  if (!isOk(inside) || !isOk(outside)) {
-    return rejection(SPLIT_REJECT.InvalidShape);
-  }
-
-  const sideA = inside.result;
-  const sideB = outside.result;
-
-  // Both sides must be non-empty (a 2-piece split) — otherwise the line did not
-  // actually divide the face (貫通せず / fully-inside line that vanished).
-  if (sideA.length === 0 || sideB.length === 0) {
-    return rejection(SPLIT_REJECT.DoesNotPierce);
-  }
-
-  // Each side's every outer ring must have ≥3 vertices (FR-44 最低 3 頂点).
-  if (!everyOuterRingHasMinVertices(sideA) || !everyOuterRingHasMinVertices(sideB)) {
-    return rejection(SPLIT_REJECT.TooFewVertices);
-  }
-
+  const sides = pieces.map(sideOf);
   return {
     status: SPLIT_CHECK_STATUS.Splittable,
-    sideA: { area: sideA, areaKm2: multiPolygonAreaKm2(sideA, DEFAULT_GEO_PARAMS) },
-    sideB: { area: sideB, areaKm2: multiPolygonAreaKm2(sideB, DEFAULT_GEO_PARAMS) },
+    pieces: sides,
+    sideA: sides[0]!,
+    sideB: sides[1]!,
   };
+}
+
+/** Wrap a resolved multi-polygon piece as a {@link SplitSide} with its geodesic area (FR-93). */
+function sideOf(mp: GeoMultiPolygon): SplitSide {
+  return { area: mp, areaKm2: multiPolygonAreaKm2(mp, DEFAULT_GEO_PARAMS) };
 }
 
 /** Every polygon piece's outer ring (index 0) must have ≥3 vertices (FR-44). */
@@ -610,7 +836,14 @@ function everyOuterRingHasMinVertices(mp: GeoMultiPolygon): boolean {
  * here (spec §成果物 SplitResult「共有辺途中切断点情報」).
  */
 export interface SplitResult {
+  /**
+   * All resulting pieces (HB3-5/19 n-way: k+1 for 2k crossings). `pieces.length >= 2`.
+   * Optional ONLY during the consumer migration; `executeSplit` ALWAYS populates it.
+   */
+  readonly pieces?: readonly SplitSide[];
+  /** 2-way alias = `pieces[0]` (kept while consumers migrate to `pieces`). */
   readonly sideA: SplitSide;
+  /** 2-way alias = `pieces[1]` (kept while consumers migrate to `pieces`). */
   readonly sideB: SplitSide;
   /**
    * Every point where the OPEN cut line crosses an existing target edge partway
@@ -726,13 +959,31 @@ export function executeSplit(
     const anchoredLine = snapCutLine(unwrapAnchoredRing([...line.points], refLon), false);
     edgeCuts = computeEdgeCuts(target, store, anchoredLine, refLon);
   }
-  return { sideA: check.sideA, sideB: check.sideB, edgeCuts };
+  return {
+    pieces: check.pieces ?? [check.sideA, check.sideB],
+    sideA: check.sideA,
+    sideB: check.sideB,
+    edgeCuts,
+  };
 }
 
 /**
- * Identify which side is the smaller (FR-93 小さい方プレビュー). Returns 'a' when
- * sideA is strictly smaller, otherwise 'b' (ties resolve to 'b' deterministically;
- * the value is only a preview hint). Pure.
+ * The index of the SMALLEST piece by area (FR-93 小さい方プレビュー, generalized to n-way).
+ * Ties resolve to the LOWEST index deterministically; the value is only a preview/seed
+ * hint. Pure.
+ */
+export function smallestPieceIndex(result: SplitResult): number {
+  const pieces = result.pieces ?? [result.sideA, result.sideB];
+  let best = 0;
+  for (let i = 1; i < pieces.length; i += 1) {
+    if (pieces[i]!.areaKm2 < pieces[best]!.areaKm2) best = i;
+  }
+  return best;
+}
+
+/**
+ * @deprecated 2-way preview hint (kept while consumers migrate to {@link smallestPieceIndex}).
+ * Returns 'a' when `pieces[0]` is the smaller of the FIRST TWO pieces, else 'b'.
  */
 export function smallerSide(result: SplitResult): 'a' | 'b' {
   return result.sideA.areaKm2 < result.sideB.areaKm2 ? 'a' : 'b';

@@ -336,19 +336,23 @@ export function applySplitProposal(
     );
   }
 
-  // 2. Non-inherited side: a brand-new feature history at the same time.
-  const newId = snapshot.newFeature.id;
-  const newAnchor = anchorFor([snapshot.newFeature], vertexStore, newId, anchorTime);
-  const newHistory: FeatureHistory = {
-    featureId: newId,
-    series: singleAnchorSeries(newAnchor, anchorTime),
-  };
-  // Replace if (defensively) a history with that id already exists, else append.
-  const newExists = histories.findIndex((h) => h.featureId === newId);
-  histories =
-    newExists >= 0
-      ? histories.map((h, i) => (i === newExists ? newHistory : h))
-      : [...histories, newHistory];
+  // 2. Non-inherited side(s): a brand-new feature history PER piece, all at the same
+  // anchor time. HB3-5/19 n-way: a k+1-piece split commits k new features as ONE
+  // indivisible undo unit alongside the inheritor update (FR-94 generalized). For a
+  // plain 2-piece split `newFeatures` has length 1 (identical to the old single-feature
+  // path). Each is appended, or defensively replaced if its id already exists.
+  for (const nf of snapshot.newFeatures ?? [snapshot.newFeature]) {
+    const newAnchor = anchorFor([nf], vertexStore, nf.id, anchorTime);
+    const newHistory: FeatureHistory = {
+      featureId: nf.id,
+      series: singleAnchorSeries(newAnchor, anchorTime),
+    };
+    const newExists = histories.findIndex((h) => h.featureId === nf.id);
+    histories =
+      newExists >= 0
+        ? histories.map((h, i) => (i === newExists ? newHistory : h))
+        : [...histories, newHistory];
+  }
 
   // 3. 共有頂点継続 (FR-95 / U11 transferSharing): the split re-minted the target's
   // boundary vertices into NEW ids (the inheritor's new shape + the new feature both

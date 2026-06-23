@@ -147,7 +147,8 @@ describe('checkSplittable — degenerate looping OPEN cut (bug-hunt2: zero-area 
     // linePiercesFace passes. The endpoint chord is then dx=dy=0, which used to make
     // openLineToClip's offset normal (0,0) → a ZERO-AREA clip ring whose boolean op
     // vanished and mis-reported as 貫通せず/不正形状. It must now be the honest
-    // DegenerateLine rejection instead.
+    // DegenerateLine rejection instead. (This single-chord cut takes the EXISTING 2-way
+    // path; the HB3-5/19 n-way path only engages for ≥2-chord / ≥3-piece cuts.)
     const line = createOpenKnifeLine([c(2, -5), c(2, 5), c(8, 5), c(8, -5), c(2, -5)]);
     const res = checkSplittable(feature, store, line);
     expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
@@ -163,6 +164,35 @@ describe('checkSplittable — degenerate looping OPEN cut (bug-hunt2: zero-area 
     const { feature, store } = unitSquare();
     const res = checkSplittable(feature, store, createOpenKnifeLine([c(5, -5), c(5, 15)]));
     expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+  });
+});
+
+describe('checkSplittable — HB3-5/19 n-way: a comb cut crossing the boundary 2k times → k+1 pieces', () => {
+  it('a 4-crossing comb cut yields 3 pieces (was grouped into one exclave-bearing side by the 2-way)', () => {
+    const { feature, store } = unitSquare();
+    // Enter left @ (0,5) → exit bottom @ (5,0) → re-enter bottom @ (8,0) → exit right @ (10,5):
+    // 4 boundary crossings = 2 interior chords ⇒ 3 separate pieces (the user's corrected
+    // contract, HB3-5/19). The single-clip 2-way returned only 2 sides, one a 2-part exclave.
+    const line = createOpenKnifeLine([
+      c(-1, 5), c(5, 5), c(5, -1), c(8, -1), c(8, 5), c(11, 5),
+    ]);
+    const res = checkSplittable(feature, store, line);
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.pieces?.length).toBe(3);
+      // sideA/sideB aliases remain the first two pieces (back-compat during migration).
+      expect(res.sideA).toBe(res.pieces?.[0]);
+      expect(res.sideB).toBe(res.pieces?.[1]);
+    }
+  });
+
+  it('a plain 2-crossing cut still yields exactly 2 pieces (n-way is additive, not disruptive)', () => {
+    const { feature, store } = unitSquare();
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(5, -1), c(5, 11)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.pieces?.length).toBe(2);
+    }
   });
 });
 
