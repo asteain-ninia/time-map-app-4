@@ -117,7 +117,13 @@ export type RejectReason =
   | { readonly code: 'anchorNotFound'; readonly id: AnchorId }
   /** A requested end time is not strictly after its own start (INV-3). */
   | { readonly code: 'endNotAfterStart' }
-  /** A requested end time would exceed the next future anchor's end. */
+  /**
+   * A requested end time reaches INTO the next future anchor — i.e. it is at or
+   * after that anchor's start. Such an end cannot be honoured exactly: it would
+   * be clamped down to the next start by normalization, so it is rejected rather
+   * than silently coerced (the code name is historical; the guard now keys on the
+   * next anchor's START, not its end — bughunt2).
+   */
   | { readonly code: 'endBeyondNextEnd' }
   /**
    * A start-time change would move the entry's start to or past its OWN bounded
@@ -531,11 +537,18 @@ export function changeStart(
  * Sets, changes, or clears (`null`) the end time of the target anchor (§4.5).
  * Constraints (rejected with a testable reason rather than silently clamped):
  *   - end must be strictly after the entry's own start (INV-3).
- *   - end must not exceed the next future anchor's end, if that anchor has one.
- * The "end must be <= next start" constraint is NOT a rejection: an overrun
- * there is resolved by auto-reorganization (shorten the overrun via
- * normalization), per §4.5 ("自動再編で解消するか、超過を拒否する" — we choose
- * reorganize). Clearing the end (open-ended) is always allowed.
+ *   - end must NOT reach into the next future anchor at all: it must be strictly
+ *     before that anchor's start. §4.5 offers two resolutions for an overrun
+ *     ("自動再編で解消するか、超過を拒否する") — for an EXPLICIT setEnd we choose
+ *     REJECT, because the alternative (auto-reorg) would clamp the requested end
+ *     down to the next start and report ok:true with a DIFFERENT stored value
+ *     than the caller asked for (silent data loss / a lie). Previously the guard
+ *     only rejected `newEnd > nextFuture.end`, so a `newEnd` landing inside the
+ *     next anchor's [start,end) span passed the guard and was then silently
+ *     clamped to the next start by normalization (bughunt2). The auto-reorg
+ *     "短縮" still applies as a SIDE EFFECT of a structural move (changeStart),
+ *     where no single requested end value is being misreported.
+ * Clearing the end (open-ended) is always allowed.
  */
 export function setEnd(
   series: AnchorSeries,
@@ -560,14 +573,18 @@ export function setEnd(
     if (compare(target.start, newEnd, calendar) >= 0) {
       return reject({ code: 'endNotAfterStart' });
     }
-    // Must not exceed the next future anchor's end (§4.5). The "next future
+    // Must not reach into the next future anchor (§4.5). The "next future
     // anchor" is the entry with the smallest start strictly greater than this
-    // entry's start.
+    // entry's start. Reject when `newEnd` reaches that anchor's START (not only
+    // when it passes its end): a `newEnd` inside the next anchor's [start,end)
+    // span would otherwise pass this guard and then be silently clamped down to
+    // `nextFuture.start` by normalizeSeries, so the caller would be told ok:true
+    // with a stored end different from the one requested (bughunt2 silent data
+    // loss). An end STRICTLY before `nextFuture.start` stays valid.
     const nextFuture = findNextFuture(series, target, calendar);
     if (
       nextFuture !== undefined &&
-      nextFuture.end !== null &&
-      compare(newEnd, nextFuture.end, calendar) > 0
+      compare(newEnd, nextFuture.start, calendar) > 0
     ) {
       return reject({ code: 'endBeyondNextEnd' });
     }

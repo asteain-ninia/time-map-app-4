@@ -66,7 +66,7 @@ export function intervalRejectionMessage(reason: RejectReason): string {
       case 'endNotAfterStart':
         return '終了年は開始年より後にしてください。';
       case 'endBeyondNextEnd':
-        return '終了年が次の錨の終了年を超えています。';
+        return '終了年は次の錨の開始年より前にしてください。';
       case 'startNotBeforeEnd':
         return '開始年はこの錨の終了年より前にしてください。';
       case 'invalidTime':

@@ -158,14 +158,40 @@ describe('setEnd (AC-3, FR-58, §4.5)', () => {
     if (!r.ok) expect(r.reason.code).toBe('endBeyondNextEnd');
   });
 
-  it('shortens an overrun into the next start by auto-reorg (not rejection)', () => {
+  // --- bughunt2: setEnd must REJECT (not silently clamp) an end that reaches
+  // into the next anchor. Previously the guard only fired on `newEnd >
+  // nextFuture.end`, so a newEnd landing INSIDE the next anchor's [start,end)
+  // span passed the guard and was then silently shortened to `nextFuture.start`
+  // by normalizeSeries — the op returned ok:true storing a DIFFERENT end than
+  // requested (silent data loss / a lie).
+  it('rejects an end that lands inside the next bounded anchor span (no silent clamp)', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, 250));
+    // 220 is strictly between nextFuture.start (200) and nextFuture.end (250).
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(220), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endBeyondNextEnd');
+    // The original series is untouched (no coerced 200 written behind ok:false).
+    expect(s.entries[0]!.end).toBeNull();
+  });
+
+  it('rejects an end at/past the next OPEN-ended anchor start (no silent clamp)', () => {
     const s = series(entry(1, 100, null), entry(2, 200, null));
-    // Try to set first end past the second start; reorg clamps it to 200.
+    // Setting first end to 250 reaches past the second's start (200): the old
+    // behaviour clamped it to 200 and reported ok:true; now it is rejected.
     const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(250), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endBeyondNextEnd');
+    expect(s.entries[0]!.end).toBeNull();
+  });
+
+  it('accepts an end strictly before the next anchor start and stores it exactly', () => {
+    const s = series(entry(1, 100, null), entry(2, 200, 250));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYear(150), cal);
     expect(r.ok).toBe(true);
     if (r.ok) {
       expect(validateSeries(r.series, cal).ok).toBe(true);
-      expect(r.series.entries[0]!.end).toEqual(timePointYear(200));
+      // The stored end is EXACTLY the requested value, not a coerced one.
+      expect(r.series.entries[0]!.end).toEqual(timePointYear(150));
     }
   });
 
