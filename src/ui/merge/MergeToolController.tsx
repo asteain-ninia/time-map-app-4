@@ -41,6 +41,7 @@ import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 
+import { MergeOptionsDialog } from './MergeOptionsDialog';
 import { MERGE_STRINGS } from './strings';
 import {
   MERGE_FLOW,
@@ -167,9 +168,11 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     // Key on the active boolean only (start/reset fire exactly on a transition).
   }, [isMergeActive]);
 
-  // --- Keyboard: Escape→cancel (FR-78). Active while a session runs.
+  // --- Keyboard: Escape→cancel (FR-78). Active while a session runs, EXCEPT while the
+  // FR-52 options dialog is open (Choosing): there the modal owns Esc (Esc→cancelChoose
+  // keeps the targets and returns to selecting, not abandoning the whole session).
   useEffect(() => {
-    if (merge.flow === MERGE_FLOW.Idle) return;
+    if (merge.flow === MERGE_FLOW.Idle || merge.flow === MERGE_FLOW.Choosing) return;
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -241,17 +244,33 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
 
   return (
     <div className="merge-tool" data-testid="merge-tool" data-flow={merge.flow}>
-      {/* The transparent map-input bridge mounted while selecting (教訓 5.14): forwards
+      {/* The transparent map-input bridge mounted while SELECTING (教訓 5.14): forwards
           LEFT clicks to the hook (target toggle) AND camera-only events to the live
-          dispatcher (pan / zoom keep working). */}
-      <MergeInputBridge
-        onMapPointerDown={onMapPointerDown}
-        onMapWheel={onMapWheel}
-        onMapCameraPointerDown={onMapCameraPointerDown}
-        onMapCameraPointerMove={onMapCameraPointerMove}
-        onMapCameraPointerUp={onMapCameraPointerUp}
-        onMapCameraPointerCancel={onMapCameraPointerCancel}
-      />
+          dispatcher (pan / zoom keep working). It is dropped while the FR-52 options
+          dialog is open (Choosing) so the dialog's backdrop is the only input layer. */}
+      {merge.flow !== MERGE_FLOW.Choosing && (
+        <MergeInputBridge
+          onMapPointerDown={onMapPointerDown}
+          onMapWheel={onMapWheel}
+          onMapCameraPointerDown={onMapCameraPointerDown}
+          onMapCameraPointerMove={onMapCameraPointerMove}
+          onMapCameraPointerUp={onMapCameraPointerUp}
+          onMapCameraPointerCancel={onMapCameraPointerCancel}
+        />
+      )}
+
+      {/* FR-52 options dialog: choose the result's 上位領域 + プロパティ source before the
+          merge proposal is built. 確定 (merge-confirm) opens it; its 結合を実行 applies the
+          chosen ParentDecision / PropertyDecision via confirmWith (教訓 5.7 完了トリガー). */}
+      {merge.flow === MERGE_FLOW.Choosing && (
+        <MergeOptionsDialog
+          parentCandidates={merge.parentCandidates}
+          propertyCandidates={merge.propertyCandidates}
+          buildNewProperties={merge.buildNewProperties}
+          onConfirm={merge.confirmWith}
+          onCancel={merge.cancelChoose}
+        />
+      )}
 
       <p className="merge-tool__guide" data-testid="merge-guide" role="status">
         {merge.guide}

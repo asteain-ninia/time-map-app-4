@@ -230,7 +230,7 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
     h.unmount();
   });
 
-  it('clicking two adjacent faces then 結合を確定 folds them into ONE (count 2→1)', () => {
+  it('clicking two adjacent faces then 結合を確定 → options dialog → 結合を実行 folds them into ONE (count 2→1)', () => {
     const h = mountMerge();
     activateMerge(h.store);
     expect(effectiveCount(h.store)).toBe(2);
@@ -242,8 +242,12 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
     // With 2 valid, non-vertically-related targets present at the time, confirm enables.
     expect(screen.getByTestId('merge-confirm')).not.toBeDisabled();
 
-    // CONFIRM (the COMPLETE trigger; 教訓 5.7) → the merge commits and the count drops.
+    // CONFIRM opens the FR-52 options dialog (it no longer commits directly).
     fireEvent.click(screen.getByTestId('merge-confirm'));
+    expect(screen.getByTestId('merge-options-dialog')).toBeInTheDocument();
+
+    // Accept the seeded defaults (親なし + inherit-first) and run → count drops.
+    fireEvent.click(screen.getByTestId('merge-options-confirm'));
     expect(effectiveCount(h.store)).toBe(1);
     h.unmount();
   });

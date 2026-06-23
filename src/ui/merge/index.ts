@@ -20,7 +20,12 @@ export {
   useMergeTool,
 } from './useMergeTool';
 
-export { MERGE_STRINGS } from './strings';
+export { MERGE_STRINGS, MERGE_OPTIONS_STRINGS } from './strings';
+
+export {
+  MergeOptionsDialog,
+  type MergeOptionsDialogProps,
+} from './MergeOptionsDialog';
 
 export {
   MergeToolController,

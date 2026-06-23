@@ -65,3 +65,95 @@
      or the 結合を確定 / 取消 buttons are unclickable (教訓 5.14). */
   pointer-events: auto;
 }
+
+/* FR-52 結合オプションダイアログ — centered over a full-surface backdrop (教訓 5.14).
+   Mirrors the knife inheritor modal layering. */
+.merge-options-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Re-enable input: the dialog is a child of the pointer-events:none .merge-tool
+     scaffold, so without this the choices / 結合を実行 buttons inherit `none` (教訓 5.14). */
+  pointer-events: auto;
+}
+.merge-options-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.merge-options-dialog {
+  position: relative;
+  z-index: 1;
+  min-width: 360px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow: auto;
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.merge-options-dialog__title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+.merge-options-dialog__hint {
+  margin: 0 0 12px;
+  color: #555;
+  font-size: 13px;
+}
+.merge-options-dialog__section {
+  margin: 0 0 16px;
+  border: 1px solid #cfd8dc;
+  border-radius: 8px;
+  padding: 12px;
+}
+.merge-options-dialog__section legend {
+  font-weight: 600;
+  padding: 0 6px;
+}
+.merge-options-dialog__choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  cursor: pointer;
+}
+.merge-options-dialog__select,
+.merge-options-dialog__text {
+  display: block;
+  width: 100%;
+  margin: 4px 0 8px 24px;
+  max-width: calc(100% - 24px);
+  padding: 6px 8px;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.merge-options-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.merge-options-dialog__confirm {
+  padding: 8px 16px;
+  background: #1565c0;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.merge-options-dialog__confirm:disabled {
+  background: #b0bec5;
+  cursor: not-allowed;
+}
+.merge-options-dialog__cancel {
+  padding: 8px 16px;
+  background: #eceff1;
+  border: 1px solid #cfd8dc;
+  border-radius: 6px;
+  cursor: pointer;
+}

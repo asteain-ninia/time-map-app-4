@@ -27,15 +27,20 @@ import type { Feature } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { VertexStore } from '../../domain/vertex';
+import { createColorInfo, createBasicAttributes } from '../../domain/attributes';
 import {
   MERGE_STATUS,
+  allowedMergeParentCandidates,
   buildMergeProposal,
   mergeRejectMessage,
-  parentNone,
-  propertyInherit,
+  propertyNew,
+  propertyInheritCandidates,
   toMergeEditProposal,
   validateMergePreconditions,
+  type MergeCandidate,
   type MergeIdPorts,
+  type ParentDecision,
+  type PropertyDecision,
   type MergeProposal,
   type MergeRejected,
   type MergeSnapshot,
@@ -81,6 +86,13 @@ export const MERGE_FLOW = {
   Idle: 'idle',
   /** Armed and collecting targets (the only interactive phase). */
   Selecting: 'selecting',
+  /**
+   * Targets are chosen and validated; the FR-52 options dialog is open so the user
+   * can choose the result's 上位領域 (parent) + プロパティ inheritance source before
+   * the proposal is built. The seeded defaults (親なし + inherit-first) let a plain
+   * 確定 still work.
+   */
+  Choosing: 'choosing',
   /** A confirm paused on conflicts (the modal owns the next step, FR-62). */
   ConflictPaused: 'conflict-paused',
   /** A confirm was rejected (the domain refused — show why, 教訓 5.12). */
@@ -99,6 +111,17 @@ export interface UseMergeToolState {
   readonly message: string | null;
   /** Whether confirm is allowed (≥2 valid, non-vertically-related targets exist). */
   readonly canConfirm: boolean;
+  /**
+   * FR-52 親候補: the existing面情報 the result can be re-parented under, at the anchor
+   * time (循環・包含整合を満たすもののみ; allowedMergeParentCandidates). Empty unless the
+   * options dialog is open (Choosing). The dialog renders the「既存から選ぶ」picker over it.
+   */
+  readonly parentCandidates: readonly MergeCandidate[];
+  /**
+   * FR-52 プロパティ引き継ぎ元候補: which merged target's properties can be inherited
+   * (propertyInheritCandidates). Empty unless Choosing. The first is the seeded default.
+   */
+  readonly propertyCandidates: readonly MergeCandidate[];
 }
 
 export interface UseMergeToolActions {
@@ -112,8 +135,30 @@ export interface UseMergeToolActions {
   readonly clearTargets: () => void;
   /** Cancel the session (Escape / cancel button) → idle transient cleared. */
   readonly cancel: () => void;
-  /** Build the merge proposal and drive U13 (the COMPLETE trigger, 教訓 5.7). */
+  /**
+   * Open the FR-52 options dialog (re-validates first, 教訓 5.26). On a valid target
+   * set this enters {@link MERGE_FLOW.Choosing} so the user can pick a 上位領域 +
+   * プロパティ source; on an invalid one it rejects with the reason (same as confirmWith).
+   */
   readonly confirm: () => void;
+  /** Close the options dialog without merging → back to Selecting (the targets persist). */
+  readonly cancelChoose: () => void;
+  /**
+   * Build the merge proposal with the CHOSEN decisions and drive U13 (the COMPLETE
+   * trigger, 教訓 5.7). The seeded defaults (親なし + inherit-first) reproduce the prior
+   * behaviour when the user just confirms without changing anything (FR-52).
+   */
+  readonly confirmWith: (
+    parentDecision: ParentDecision,
+    propertyDecision: PropertyDecision,
+  ) => void;
+  /**
+   * Build a「新規プロパティ」decision from a name only (FR-52 新規入力). The dialog stays
+   * presentational: color is seeded from the first target (or an auto default) and the
+   * existence period from the target envelope, so a bare name yields a valid
+   * {@link PropertyDecision} the domain assembler consumes.
+   */
+  readonly buildNewProperties: (name: string) => PropertyDecision;
 }
 
 export type UseMergeTool = UseMergeToolState & UseMergeToolActions;
@@ -161,7 +206,9 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
 
   const toggleTarget = useCallback((featureId: FeatureId): void => {
     setMessage(null);
-    // A toggle leaves a rejected/paused state back to plain selecting (教訓 5.12).
+    // A toggle leaves a rejected / paused / choosing state back to plain selecting:
+    // the target set changed, so any open options dialog or stale verdict is stale
+    // (教訓 5.12). Idle stays idle (a toggle before arming is a no-op transition).
     setFlow((f) => (f === MERGE_FLOW.Idle ? f : MERGE_FLOW.Selecting));
     setTargetIds((prev) =>
       prev.includes(featureId)
@@ -187,69 +234,129 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
     // is included so a post-commit re-arm recomputes.
   }, [flow, targetIds, resolveFeatures, anchorTime]);
 
+  // FR-52 候補集合: the parent + property-inheritance choices the options dialog renders.
+  // Computed only while the dialog is open (Choosing) over the LIVE features at the anchor
+  // time, by the SAME pure functions the domain unit-tests cover (allowedMergeParentCandidates
+  // / propertyInheritCandidates). Empty otherwise so the dialog binds nothing while selecting.
+  const parentCandidates = useMemo<readonly MergeCandidate[]>(() => {
+    if (flow !== MERGE_FLOW.Choosing) return [];
+    return allowedMergeParentCandidates(resolveFeatures(), targetIds, anchorTime().year);
+  }, [flow, targetIds, resolveFeatures, anchorTime]);
+
+  const propertyCandidates = useMemo<readonly MergeCandidate[]>(() => {
+    if (flow !== MERGE_FLOW.Choosing) return [];
+    return propertyInheritCandidates(resolveFeatures(), targetIds);
+  }, [flow, targetIds, resolveFeatures]);
+
+  // confirm = open the FR-52 options dialog. Re-validate first (教訓 5.26 確定前検証) so a
+  // stale selection (a target dropped by a time move) is refused with the right reason
+  // BEFORE the dialog opens, and the dialog never renders over an invalid set.
   const confirm = useCallback((): void => {
     const features = resolveFeatures();
     const at = anchorTime();
-    // Re-validate at confirm (教訓 5.26 確定前検証): the single predicate, so a stale
-    // selection (a target dropped by a time move) is refused with the right reason.
     const verdict = validateMergePreconditions(features, targetIds, at.year);
     if (!verdict.ok) {
       setMessage(mergeRejectMessage(verdict.reason));
       setFlow(MERGE_FLOW.Rejected);
       return;
     }
+    setMessage(null);
+    setFlow(MERGE_FLOW.Choosing);
+  }, [resolveFeatures, anchorTime, targetIds]);
 
-    // Build the indivisible merge proposal (FR-94). Property: inherit the FIRST chosen
-    // target's properties (the natural default — name/期間/色 carry over from the most
-    // salient pick); 上位領域: 親なし (最上位) — a non-destructive default the user can
-    // re-affiliate afterwards (the reparent tool). Both are valid {@link PropertyDecision}
-    // / {@link ParentDecision} the domain assembler consumes (FR-52); the geometry (末端
-    // のみ論理和 / 集約のみ平坦化 / 混在) is decided inside buildMergeProposal.
-    const first = targetIds[0];
-    if (first === undefined) return; // unreachable (verdict.ok ⇒ ≥2 targets).
-    const result = buildMergeProposal({
-      features,
-      vertices: resolveStore(),
-      targetIds,
-      atTime: at.year,
-      parentDecision: parentNone,
-      propertyDecision: propertyInherit(first),
-      ids,
-    });
-    if (result.status === MERGE_STATUS.Rejected) {
-      setMessage(rejectionMessage(result));
-      setFlow(MERGE_FLOW.Rejected);
-      return;
-    }
+  const cancelChoose = useCallback((): void => {
+    setMessage(null);
+    setFlow(MERGE_FLOW.Selecting); // keep the targets; the user re-opens via 確定.
+  }, []);
 
-    const proposal: MergeProposal = result.proposal;
-    const editProposal = toMergeEditProposal(proposal, at);
-    const processResult = startProcess(editProposal);
-    switch (processResult.status) {
-      case PROCESS_STATUS.Committed:
-        onCommitted?.(processResult, editProposal.snapshot);
-        reset(MERGE_FLOW.Selecting); // re-arm fresh for another merge (教訓 5.2).
-        return;
-      case PROCESS_STATUS.ConflictsPending:
-        setFlow(MERGE_FLOW.ConflictPaused);
-        onConflicts?.(processResult, editProposal);
-        return;
-      case PROCESS_STATUS.Rejected:
-        setMessage(processResult.message);
+  // Build a「新規プロパティ」decision from just a name (FR-52 新規入力). Color is seeded
+  // from the first target (carry its style) or an auto default; the existence period is
+  // the target envelope so the result地物 spans all merged targets. The dialog only owns
+  // the name, keeping it presentational (教訓 5.19 no inline domain literals there).
+  const buildNewProperties = useCallback(
+    (name: string): PropertyDecision => {
+      const features = resolveFeatures();
+      const byId = new Map(features.map((f) => [f.id, f] as const));
+      const chosen = targetIds.map((id) => byId.get(id)).filter((f): f is Feature => f !== undefined);
+      let start = Number.POSITIVE_INFINITY;
+      let end = Number.NEGATIVE_INFINITY;
+      for (const f of chosen) {
+        start = Math.min(start, f.attributes.startYear);
+        end = Math.max(end, f.attributes.endYear);
+      }
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        start = 0;
+        end = 0;
+      }
+      const first = chosen[0];
+      const color = first?.color ?? createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+      return propertyNew({
+        attributes: createBasicAttributes(name, start, end),
+        color,
+      });
+    },
+    [resolveFeatures, targetIds],
+  );
+
+  // confirmWith = build the indivisible merge proposal (FR-94) with the CHOSEN decisions
+  // (FR-52) and drive U13. The seeded defaults (親なし + inherit-first) reproduce the prior
+  // hardcoded behaviour when the user just confirms; the geometry (末端のみ論理和 / 集約のみ
+  // 平坦化 / 混在) is decided inside buildMergeProposal. Re-validates again (教訓 5.26).
+  const confirmWith = useCallback(
+    (parentDecision: ParentDecision, propertyDecision: PropertyDecision): void => {
+      const features = resolveFeatures();
+      const at = anchorTime();
+      const verdict = validateMergePreconditions(features, targetIds, at.year);
+      if (!verdict.ok) {
+        setMessage(mergeRejectMessage(verdict.reason));
         setFlow(MERGE_FLOW.Rejected);
         return;
-    }
-  }, [
-    resolveFeatures,
-    resolveStore,
-    anchorTime,
-    targetIds,
-    ids,
-    startProcess,
-    onCommitted,
-    onConflicts,
-    reset,
-  ]);
+      }
+      const result = buildMergeProposal({
+        features,
+        vertices: resolveStore(),
+        targetIds,
+        atTime: at.year,
+        parentDecision,
+        propertyDecision,
+        ids,
+      });
+      if (result.status === MERGE_STATUS.Rejected) {
+        setMessage(rejectionMessage(result));
+        setFlow(MERGE_FLOW.Rejected);
+        return;
+      }
+
+      const proposal: MergeProposal = result.proposal;
+      const editProposal = toMergeEditProposal(proposal, at);
+      const processResult = startProcess(editProposal);
+      switch (processResult.status) {
+        case PROCESS_STATUS.Committed:
+          onCommitted?.(processResult, editProposal.snapshot);
+          reset(MERGE_FLOW.Selecting); // re-arm fresh for another merge (教訓 5.2).
+          return;
+        case PROCESS_STATUS.ConflictsPending:
+          setFlow(MERGE_FLOW.ConflictPaused);
+          onConflicts?.(processResult, editProposal);
+          return;
+        case PROCESS_STATUS.Rejected:
+          setMessage(processResult.message);
+          setFlow(MERGE_FLOW.Rejected);
+          return;
+      }
+    },
+    [
+      resolveFeatures,
+      resolveStore,
+      anchorTime,
+      targetIds,
+      ids,
+      startProcess,
+      onCommitted,
+      onConflicts,
+      reset,
+    ],
+  );
 
   const guide = useMemo(
     () => (targetIds.length < 2 ? MERGE_STRINGS.guideSelect : MERGE_STRINGS.guideReady),
@@ -262,11 +369,16 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
     guide,
     message,
     canConfirm,
+    parentCandidates,
+    propertyCandidates,
     start,
     resetForSwitch,
     toggleTarget,
     clearTargets,
     cancel,
     confirm,
+    cancelChoose,
+    confirmWith,
+    buildNewProperties,
   };
 }
