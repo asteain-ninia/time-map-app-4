@@ -11,10 +11,11 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { applyAddProposal } from '../../domain/editing/apply-proposal';
+import { applyAddProposal, applyEditProposal } from '../../domain/editing/apply-proposal';
 import { createEditProposal } from '../../domain/consistency/index';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
-import { createLeafFeature, type LeafFeature } from '../../domain/feature';
+import { createLeafFeature, withAttributes, type LeafFeature } from '../../domain/feature';
+import type { FeatureSnapshot } from '../../domain/editing/edit-flow';
 import { createShape, createTerritoryRing } from '../../domain/ring';
 import { createVertex, type Vertex } from '../../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
@@ -81,6 +82,30 @@ function withLeaf(
   );
 }
 
+/**
+ * Add a SECOND history anchor to `leaf`'s series at `year` that renames it to
+ * `newName` (a past-edit on its own series — FR-55). The renamed feature carries
+ * the SAME id, so the event list has two anchors for one feature whose effective
+ * snapshot names differ by anchor time.
+ */
+function renameLeafAt(
+  root: DomainRoot,
+  leaf: { feature: LeafFeature; vertices: Vertex[] },
+  newName: string,
+  year: number,
+): DomainRoot {
+  const renamed = withAttributes(
+    leaf.feature,
+    createBasicAttributes(newName, 1000, 1100),
+  );
+  const snapshot: FeatureSnapshot = { feature: renamed, vertices: [] };
+  return applyEditProposal(
+    root,
+    createEditProposal(leaf.feature.id, timePointYear(year), snapshot),
+    calendar,
+  );
+}
+
 function renderWith(root: DomainRoot) {
   const store = createSessionStore<DomainRoot>({
     initialDomain: root,
@@ -141,6 +166,28 @@ describe('SidebarContent — HB-3 wiring', () => {
     renderWith(root);
     const list = screen.getByTestId('event-list');
     expect(within(list).getByText('織田領')).toBeInTheDocument();
+  });
+
+  // Regression (BUGHUNT4): each event row must resolve its label from ITS OWN
+  // anchor's effective snapshot at that anchor time, not from the FIRST anchor for
+  // the whole feature. A rename committed at a NON-first anchor (a past-edit that
+  // inserts a later anchor with a new name) was invisible because every row reused
+  // the first anchor's label. The first anchor's row must keep the OLD name and the
+  // renamed anchor's row must show the NEW name (single source of truth, 教訓 5.29).
+  it('resolves each event row label from its own anchor (a non-first rename shows on its row)', () => {
+    const a = squareLeaf('f-a', '織田領');
+    let root = withLeaf(emptyProject(), a, 1000); // anchor 1 @1000: 織田領
+    root = renameLeafAt(root, a, '豊臣領', 1100); // anchor 2 @1100: 豊臣領
+    renderWith(root);
+
+    // The two anchor rows are keyed by anchor id (feature id @ anchor year).
+    const firstRow = screen.getByTestId('event-list-item-anchor:f-a@1000');
+    const secondRow = screen.getByTestId('event-list-item-anchor:f-a@1100');
+
+    // The OLD name shows on the first anchor's row; the NEW name on the second.
+    // (The bug rendered the first name '織田領' on BOTH rows.)
+    expect(firstRow.textContent?.trim()).toBe('織田領');
+    expect(secondRow.textContent?.trim()).toBe('豊臣領');
   });
 
   // Regression (BUGHUNT R3): an unnamed feature is the DEFAULT (the add form
