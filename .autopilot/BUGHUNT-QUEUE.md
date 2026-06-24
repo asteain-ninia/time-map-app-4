@@ -291,3 +291,24 @@ Why this one, decisively:
 4. **No new tests/UI surface required to land it**, unlike C2 (needs a subscription effect + test) or the dialog-building wiring-gaps. It is the cleanest critical win and immediately restores a core editing operation.
 
 Fix C2 (auto-save) immediately after — it is the other critical, slightly larger because it needs the subscription effect plus a regression test asserting the tick actually invokes save.
+
+## 🅀 第5次バグハント — 12件確定【未修正・次セッション申し送り】(2026-06-24, 24エージェント・直交角度)
+
+ユーザー指示により**第5次ハント完了をキリとして停止**。以下は**未修正**＝次セッションで重大度順(HIGHから)に着手する。4波の「ロジック読み」と直交する角度(i18n/並行性/エラー注入/幾何極値/a11y)で新種を検出。候補18中12確定。
+
+| 重大度 | 種別 | バグ | 箇所 | 修正案(要旨) |
+| --- | --- | --- | --- | --- |
+| HIGH | data-loss | In-flight repair dialog resolved against wrong project after a concurrent clean load | `src/ui/file-ops/file-commands.ts` | In FileOpsController.tsx, add `const loadInFlightRef = useRef(false);` and wrap the body of each load command registration with a guard: `if (loadInFlightRef.cu |
+| MEDIUM | data-loss | Concurrent load commands orphan the first promptUnsaved resolver | `src/ui/file-ops/FileOpsController.tsx` | In FileOpsController.tsx, add a ref to track whether the unsaved guard is in flight, and use it as a `canRun` gate on the FileOpen and FileNew command registrat |
+| MEDIUM | ux | Auto-save tick fires during promptUnsaved suspension, opening a native Save-As dialog concurrently with the re | `src/ui/file-ops/FileOpsController.tsx` | FileOpsController.tsx:456-461 — track dialog-open state in a ref (e.g. const dialogOpenRef = useRef(false), updated alongside pendingUnsaved/pendingRepair) and  |
+| MEDIUM | correctness | ring-hierarchy.ts ringsOverlap: false negative for two identical territory rings — EnclavesOverlap never fired | `src/domain/ring-hierarchy.ts` | Export `ringsBoundaryCoincidentSameSide` from `src/domain/geometry/invariants.ts` (or add it to the geometry/index.ts barrel), import it in `ring-hierarchy.ts`, |
+| MEDIUM | a11y | HelpModal (Search/About/Shortcuts/Diagnostics) has no Esc handler, no focus trap, and never claims focus on mo | `src/ui/help-tools/HelpToolsController.tsx` | In HelpModal (src/ui/help-tools/HelpToolsController.tsx:170-209): add `tabIndex={-1}`, a `ref={dialogRef}` where `dialogRef = useRef&lt;HTMLDivElement／null&gt;( |
+| MEDIUM | a11y | UnsavedWarningDialog and RepairDialog have no Tab focus trap; RepairDialog never takes focus on mount | `src/ui/file-ops/UnsavedWarningDialog.tsx` | RepairDialog.tsx: import `useEffect` (already imported `useCallback, useMemo, useRef, useState` — add `useEffect`) then add after line 84: `useEffect(() => { ro |
+| MEDIUM | a11y | InheritorModal (knife tool split) has no Tab focus trap — Tab escapes to background after last button | `src/ui/knife/InheritorModal.tsx` | In src/ui/knife/InheritorModal.tsx, extend the onKeyDown callback (lines 96-103) to handle Tab: when e.key === 'Tab', query dialogRef.current for focusable elem |
+| MEDIUM | a11y | Sidebar and SettingsDialog role=tablist buttons lack aria-controls and arrow-key navigation | `src/ui/shell/Sidebar.tsx` | Sidebar.tsx: (1) On each tab button add id={`sidebar-tab-${key}`} and aria-controls={`sidebar-panel-${key}`}. (2) On each panel section add id={`sidebar-panel-$ |
+| LOW | ux | featureDisplayName: invisible chars (U+200B) suppress the ID fallback, producing blank labels everywhere | `src/domain/feature.ts` | feature.ts:202: replace `feature.attributes.name.trim()` with `feature.attributes.name.replace(/[\\u200B-\\u200F\\u2060\\uFEFF]/g, '').trim()`. Additionally com |
+| LOW | edge-case | validateSearchQuery counts UTF-16 code units for MAX_QUERY_LENGTH, halving the effective limit for emoji queri | `src/ui/discovery/validation.ts` | In validation.ts, replace `.pipe(z.string().min(1).max(MAX_QUERY_LENGTH))` with `.pipe(z.string().min(1).refine(s => [...s].length <= MAX_QUERY_LENGTH, { messag |
+| LOW | edge-case | sanitize.ts collapseWhitespace /\s+/ misses U+200B, letting invisible zero-width chars reach the search corpus | `src/ui/discovery/sanitize.ts` | src/ui/discovery/validation.ts line 82: change `.transform(s => s.trim())` to `.transform(s => s.replace(/[​‏⁠﻿]/g, '').trim())` so an invisible-only query is r |
+| LOW | ux | canvas fillText/strokeText for feature labels has no maxWidth, causing very long or emoji-rich names to overpr | `src/render/canvas2d-renderer.ts` | src/render/canvas2d-renderer.ts lines 378 and 385, add a maxWidth argument to both canvas calls: ctx.strokeText(p.text, x, y, MAX_LABEL_WIDTH_PX) and ctx.fillTe |
+
+注: 各件は別subagentの到達性証明検証を通過済(reachable必須)。詳細(再現手順・file:line)はworkflow出力 wed6rxtyp に保存。**HIGH(並行ロード中の修復が別プロジェクトに解決＝データ欠損)を最優先**。
