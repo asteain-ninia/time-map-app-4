@@ -55,7 +55,7 @@ import {
   DEFAULT_TIMELINE_MAX,
   DEFAULT_TIMELINE_MIN,
 } from './settings';
-import { isAppNoOp, isProjectNoOp } from '../settings/diff';
+import { isDocumentAffectingAppNoOp, isProjectNoOp } from '../settings/diff';
 import {
   type ActiveFeature,
   type Camera,
@@ -655,11 +655,19 @@ export function createSessionStore<S>(
     // Reuses the settings diff helpers (structural, handle the customPalette array)
     // so the no-op predicate the dialog uses and the dirty baseline agree (教訓 5.19
     // 単一のキー一覧). A null baseline (never saved) is never settings-clean.
+    //
+    // bughunt-review: the APP half compares ONLY document-affecting keys
+    // (isDocumentAffectingAppNoOp), consistent with `updateAppSetting`'s cosmetic
+    // exception — a pure cosmetic preference (showConflictGuide) deliberately does
+    // NOT dirty the project, so toggling it after a save and then undoing the domain
+    // back to saved must still read CLEAN. Comparing all keys (isAppNoOp) falsely
+    // reported settings-dirty and fired the unsaved-changes guard on quit. The
+    // PROJECT half has no analogous cosmetic exception, so it compares all keys.
     const settingsMatchSaved = (): boolean =>
       savedProjectSettings !== null &&
       savedAppSettings !== null &&
       isProjectNoOp(savedProjectSettings, get().projectSettings) &&
-      isAppNoOp(savedAppSettings, get().appSettings);
+      isDocumentAffectingAppNoOp(savedAppSettings, get().appSettings);
 
     return {
     // -- initial state -------------------------------------------------------

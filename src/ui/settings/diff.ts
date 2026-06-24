@@ -13,6 +13,7 @@ import {
   type ProjectSettings,
   APP_SETTING_KEYS,
   PROJECT_SETTING_KEYS,
+  appSettingDirtiesProject,
 } from '../state/settings';
 
 /** Structural equality for a setting value (handles the customPalette array). */
@@ -56,4 +57,26 @@ export function isProjectNoOp(baseline: ProjectSettings, draft: ProjectSettings)
 /** True iff NOTHING changed in the app draft (the no-op confirm predicate). */
 export function isAppNoOp(baseline: AppSettings, draft: AppSettings): boolean {
   return changedAppKeys(baseline, draft).length === 0;
+}
+
+/**
+ * True iff no DOCUMENT-AFFECTING app setting differs between baseline and draft —
+ * i.e. the two are equal ignoring pure cosmetic / first-time-hint keys
+ * (`showConflictGuide`, see {@link appSettingDirtiesProject}).
+ *
+ * This mirrors the dirty-marking exception in `updateAppSetting`: a cosmetic key
+ * deliberately does NOT dirty the project, so the saved-baseline comparison the
+ * undo/redo clean-check uses must ignore those same keys too. Comparing ALL keys
+ * (via {@link isAppNoOp}) would falsely report the project as settings-dirty after
+ * an undo merely because a non-dirtying cosmetic preference was toggled since save
+ * (bughunt-review: undo-dirty false positive). Single-sourced through
+ * `appSettingDirtiesProject` so the dirty basis stays singular (教訓 5.19).
+ */
+export function isDocumentAffectingAppNoOp(
+  baseline: AppSettings,
+  draft: AppSettings,
+): boolean {
+  return APP_SETTING_KEYS.filter(appSettingDirtiesProject).every((key) =>
+    valueEquals(baseline[key], draft[key]),
+  );
 }

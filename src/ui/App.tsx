@@ -1525,17 +1525,25 @@ export function App(): JSX.Element {
   //   - helpModalOpen         : 設定/検索/バージョン/ショートカット/診断 (HelpToolsController);
   //   - fileModalOpen         : FR-107 未保存警告 / FR-106 修復 (FileOpsController);
   //   - addDrawing / knifeDrawing : an Add session past Idle / a Knife flow past Idle.
+  //   - mergeDrawing / reparentDrawing : a Merge / Reparent flow past Idle (bughunt-review).
+  //     These cover the FR-52 MergeOptionsDialog (a real keyboard-owning modal that
+  //     handles only Esc via React onKeyDown) and the reparent flow — both were MISSED by
+  //     the e63c8b9 wiring, so Ctrl+Z / Delete leaked through them to a domain op.
   // Each child reflects its own state up through a callback; this root only ORs them.
   const [helpModalOpen, setHelpModalOpen] = useState(false);
   const [fileModalOpen, setFileModalOpen] = useState(false);
   const [addDrawing, setAddDrawing] = useState(false);
   const [knifeDrawing, setKnifeDrawing] = useState(false);
+  const [mergeDrawing, setMergeDrawing] = useState(false);
+  const [reparentDrawing, setReparentDrawing] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
     fileModalOpen ||
     addDrawing ||
-    knifeDrawing;
+    knifeDrawing ||
+    mergeDrawing ||
+    reparentDrawing;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -1992,6 +2000,7 @@ export function App(): JSX.Element {
               mapCameraInput={mapCameraInput}
               onCommitted={onMergeCommitted}
               onConflicts={onMergeConflicts}
+              onDrawingChange={setMergeDrawing}
             />
             {/* U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool controller, bound to the
                 SAME store. Selecting 編集モード→所属変更 starts a session; the first map
@@ -2012,6 +2021,7 @@ export function App(): JSX.Element {
               mapCameraInput={mapCameraInput}
               onCommitted={onReparentCommitted}
               onConflicts={onReparentConflicts}
+              onDrawingChange={setReparentDrawing}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes

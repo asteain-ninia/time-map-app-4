@@ -20,7 +20,8 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
@@ -35,6 +36,8 @@ import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
+import { AppShell } from '../shell';
+import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 import {
   createLiveMergeBinding,
   type DomainRoot,
@@ -301,5 +304,111 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
     });
     expect(screen.getByTestId('merge-target-count').textContent).toBe('0');
     h.unmount();
+  });
+});
+
+// bughunt-review — the e63c8b9 global-shortcut suspension MISSED the merge flow. The
+// FR-52 MergeOptionsDialog (opened at MERGE_FLOW.Choosing) is a real keyboard-owning
+// modal that handles ONLY Esc via React onKeyDown, transparent to the global window
+// keydown listener. Without the controller reporting onDrawingChange(true), a global
+// Ctrl+Z would fire EditUndo straight THROUGH the open dialog and undo the last
+// committed domain op. This block mounts the REAL production graph (AppShell wiring
+// useShortcuts + MergeToolController) over ONE store, with the host derivation
+// (suspended = mergeDrawing) the App uses, plus a live EditUndo on the SAME registry
+// the shell dispatches — the exact production mechanism, no stand-in for the suspension.
+describe('MergeToolController bughunt-review: Ctrl+Z does NOT leak through the merge flow', () => {
+  function mountWithGlobalUndo(): {
+    store: StoreApi<SessionStore<DomainRoot>>;
+    globalUndo: ReturnType<typeof vi.fn>;
+  } {
+    const store = createSessionStore<DomainRoot>({
+      initialDomain: twoAdjacentLeaves(),
+      initial: { mode: EDIT_MODE.Edit, activeTool: null },
+    });
+    act(() => {
+      store.getState().setCurrentTime(ANCHOR, TIME_CHANGE_SOURCE.Slider);
+    });
+
+    const registry = new CommandRegistry();
+    const globalUndo = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run: globalUndo });
+
+    const mint = createSharedIdMint(() => store.getState().domain);
+    const ids = {
+      nextFeatureId: () => asFeatureId(mint('f')),
+      nextVertexId: () => asVertexId(mint('v')),
+      nextRingId: () => asRingId(mint('r')),
+    };
+    const live = createLiveMergeBinding({
+      getRoot: () => store.getState().domain,
+      nextVertexId: ids.nextVertexId,
+      nextRingId: ids.nextRingId,
+    });
+    const resolveFeatures = () =>
+      featuresAt(store.getState().domain, store.getState().currentTime);
+    const resolveStore = () =>
+      verticesAt(store.getState().domain, store.getState().currentTime);
+    const featureAtPoint: FeatureAtPoint = (p) => {
+      if (p.lat < 0 || p.lat > 2) return null;
+      if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
+      if (p.lon > 2 && p.lon <= 4) return asFeatureId('leaf-b');
+      return null;
+    };
+
+    // Mirror the App.tsx host wiring: hold the merge-drawing flag, thread it as
+    // `suspended` into AppShell, and feed the controller's onDrawingChange back into it.
+    function Host(): JSX.Element {
+      const [mergeDrawing, setMergeDrawing] = useState(false);
+      return (
+        <AppShell
+          store={store}
+          registry={registry}
+          suspended={mergeDrawing}
+          overlay={
+            <MergeToolController<DomainRoot>
+              store={store}
+              startProcess={live.startProcess}
+              ids={ids}
+              resolveFeatures={resolveFeatures}
+              resolveStore={resolveStore}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={featureAtPoint}
+              onDrawingChange={setMergeDrawing}
+            />
+          }
+        />
+      );
+    }
+    render(<Host />);
+    return { store, globalUndo };
+  }
+
+  it('the global EditUndo never fires while the MergeOptionsDialog is open', () => {
+    const { store, globalUndo } = mountWithGlobalUndo();
+    activateMerge(store);
+
+    // Pick two adjacent leaves and open the FR-52 options dialog (Choosing).
+    clickInput(1, 1); // leaf-a
+    clickInput(3, 1); // leaf-b
+    act(() => {
+      fireEvent.click(screen.getByTestId('merge-confirm'));
+    });
+    expect(screen.getByTestId('merge-options-dialog')).toBeInTheDocument();
+
+    // Ctrl+Z while the dialog is open: the global EditUndo (which would roll back a
+    // committed domain op) is suspended because the merge flow reported drawing=true.
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(globalUndo).not.toHaveBeenCalled();
+  });
+
+  it('the global EditUndo re-arms once the merge session ends (back to Idle)', () => {
+    const { store, globalUndo } = mountWithGlobalUndo();
+    activateMerge(store);
+    clickInput(1, 1); // a session is now active (Selecting) → suspended
+    // Leaving the merge tool ends the session → suspension lifts; the global undo is live.
+    act(() => store.getState().setActiveTool(TOOL_ID.EditSelect));
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });

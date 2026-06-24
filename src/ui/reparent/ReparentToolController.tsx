@@ -121,6 +121,15 @@ export interface ReparentToolControllerProps<S> {
   readonly onConflicts?:
     | ((result: ProcessResult<S>, proposal: EditProposal<AffiliationSnapshot>) => void)
     | undefined;
+  /**
+   * Report whether a reparent session is in progress (bughunt-review). The host raises
+   * the global-shortcut suspension while this is true so a stray global Ctrl+Z / Delete
+   * cannot leak THROUGH a reparent flow to a domain op — the same modal-passthrough the
+   * e63c8b9 fix blocks for Add / Knife but MISSED here. Suspending across the WHOLE
+   * non-Idle flow mirrors Add / Knife / Merge. Fires `true` whenever the flow is past
+   * Idle, `false` on return to Idle (cancel / commit / mode-switch).
+   */
+  readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -167,6 +176,23 @@ export function ReparentToolController<S>(
     }
     // Key on the active boolean only (start/reset fire exactly on a transition).
   }, [isReparentActive]);
+
+  // --- bughunt-review: report the in-progress reparent to the host so it suspends the
+  // GLOBAL shortcut dispatcher while this session owns the keyboard, so a native
+  // window-level Ctrl+Z / Delete cannot fire EditUndo / EditDelete THROUGH the reparent
+  // flow to a domain op (the e63c8b9 modal-passthrough fix missed reparent). The host
+  // derives shortcutsSuspended = modalOpen || toolDrawing (単一真実源 教訓 5.29); the
+  // reparent flow is that single truth and we only mirror it up. Suspending across the
+  // WHOLE non-Idle flow matches Add / Knife / Merge.
+  const onDrawingChange = props.onDrawingChange;
+  useEffect(() => {
+    if (onDrawingChange === undefined) return;
+    const active = reparent.flow !== REPARENT_FLOW.Idle;
+    onDrawingChange(active);
+    // On unmount clear the flag so a torn-down controller never leaves the global
+    // dispatcher suspended (教訓 5.2 全経路で破棄).
+    return () => onDrawingChange(false);
+  }, [reparent.flow, onDrawingChange]);
 
   // --- Keyboard: Escape→cancel (FR-78). Active while a session runs.
   useEffect(() => {

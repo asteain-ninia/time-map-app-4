@@ -586,6 +586,44 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
       expect(store.getState().projectDirty).toBe(true);
     });
 
+    // bughunt-review: the saved-settings comparison the undo/redo clean-check uses must
+    // be CONSISTENT with updateAppSetting's cosmetic exception (appSettingDirtiesProject).
+    // A pure cosmetic preference (showConflictGuide) deliberately does NOT dirty the
+    // project, so dismissing it after a save and then UNDOING the domain back to the saved
+    // state must still read CLEAN — the domain is fully restored and only a non-dirtying
+    // cosmetic pref differs. Pre-fix, settingsMatchSaved compared ALL app keys (isAppNoOp),
+    // so the differing showConflictGuide falsely re-dirtied the project and fired the
+    // unsaved-changes guard on quit.
+    it('dismissing showConflictGuide (cosmetic) does NOT re-dirty across an undo to saved (bughunt-review)', () => {
+      const store = dirtyStore();
+      // Clean baseline at d0 with showConflictGuide at its saved value (default true).
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Dismiss the cosmetic guide — this does NOT dirty the project (appSettingDirtiesProject).
+      store.getState().updateAppSetting('showConflictGuide', false);
+      expect(store.getState().projectDirty).toBe(false);
+
+      // An edit dirties; an undo restores the saved domain. Only the non-dirtying cosmetic
+      // showConflictGuide still differs from the saved baseline, so the project reads CLEAN.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    it('a document-affecting app setting (snapDistancePx) DOES keep dirty after undo to saved (bughunt-review)', () => {
+      const store = dirtyStore();
+      store.getState().markProjectSaved();
+      // A document-affecting app setting change dirties and must SURVIVE an undo to the
+      // saved domain (it is part of the persisted document, unlike the cosmetic guide).
+      store.getState().updateAppSetting('snapDistancePx', 80);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
     // bughunt2 (Q5): undo/redo back to the EXACT saved domain+settings reads clean,
     // and a save AFTER a settings change refreshes the baseline to include the new
     // settings (so a later undo/redo to that domain reads clean again).

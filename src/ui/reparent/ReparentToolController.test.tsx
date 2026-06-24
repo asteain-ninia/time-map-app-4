@@ -22,7 +22,8 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
@@ -37,6 +38,8 @@ import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
+import { AppShell } from '../shell';
+import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 import { createLiveAffiliationBinding, type DomainRoot } from '../consistency-binding';
 import { featuresAt, leafShapeAt } from '../live-lookup';
 import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
@@ -365,5 +368,90 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     });
     expect(screen.getByTestId('reparent-target').textContent).toBe('');
     h.unmount();
+  });
+});
+
+// bughunt-review — the e63c8b9 global-shortcut suspension MISSED the reparent flow too.
+// While a reparent session owns the keyboard, a global window-level Ctrl+Z would fire
+// EditUndo straight through to a domain op. This block mounts the REAL production graph
+// (AppShell wiring useShortcuts + ReparentToolController) over ONE store, with the host
+// derivation (suspended = reparentDrawing) the App uses, plus a live EditUndo on the
+// SAME registry the shell dispatches — the exact production mechanism, no stand-in.
+describe('ReparentToolController bughunt-review: Ctrl+Z does NOT leak through the reparent flow', () => {
+  function mountWithGlobalUndo(): {
+    store: StoreApi<SessionStore<DomainRoot>>;
+    globalUndo: ReturnType<typeof vi.fn>;
+  } {
+    const store = createSessionStore<DomainRoot>({
+      initialDomain: twoTopLevelLeaves(),
+      initial: { mode: EDIT_MODE.Edit, activeTool: null },
+    });
+    act(() => {
+      store.getState().setCurrentTime(ANCHOR, TIME_CHANGE_SOURCE.Slider);
+    });
+
+    const registry = new CommandRegistry();
+    const globalUndo = vi.fn();
+    registry.register(COMMAND_ID.EditUndo, { run: globalUndo });
+
+    const live = createLiveAffiliationBinding({ getRoot: () => store.getState().domain });
+    const resolveFeatures = () =>
+      featuresAt(store.getState().domain, store.getState().currentTime);
+    const featureAtPoint: FeatureAtPoint = (p) => {
+      if (p.lat < 0 || p.lat > 2) return null;
+      if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
+      if (p.lon >= 4 && p.lon <= 6) return asFeatureId('leaf-b');
+      return null;
+    };
+
+    // Mirror the App.tsx host wiring: hold the reparent-drawing flag, thread it as
+    // `suspended` into AppShell, and feed the controller's onDrawingChange back into it.
+    function Host(): JSX.Element {
+      const [reparentDrawing, setReparentDrawing] = useState(false);
+      return (
+        <AppShell
+          store={store}
+          registry={registry}
+          suspended={reparentDrawing}
+          overlay={
+            <ReparentToolController<DomainRoot>
+              store={store}
+              startProcess={live.startProcess}
+              resolveFeatures={resolveFeatures}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={featureAtPoint}
+              onDrawingChange={setReparentDrawing}
+            />
+          }
+        />
+      );
+    }
+    render(<Host />);
+    return { store, globalUndo };
+  }
+
+  it('the global EditUndo never fires while a reparent session is active', () => {
+    const { store, globalUndo } = mountWithGlobalUndo();
+    activateReparent(store);
+
+    // Pick a target: a session is now active (PickParent) → suspended.
+    clickInput(1, 1); // leaf-a
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+
+    // Ctrl+Z while the reparent flow owns the keyboard: the global EditUndo (which would
+    // roll back a committed domain op) is suspended because the flow reported drawing=true.
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(globalUndo).not.toHaveBeenCalled();
+  });
+
+  it('the global EditUndo re-arms once the reparent session ends (back to Idle)', () => {
+    const { store, globalUndo } = mountWithGlobalUndo();
+    activateReparent(store);
+    clickInput(1, 1); // session active → suspended
+    // Leaving the reparent tool ends the session → suspension lifts; the global undo is live.
+    act(() => store.getState().setActiveTool(TOOL_ID.EditSelect));
+    act(() => fireEvent.keyDown(window, { key: 'z', ctrlKey: true }));
+    expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });

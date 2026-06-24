@@ -43,6 +43,7 @@ export {
   changedAppKeys,
   isProjectNoOp,
   isAppNoOp,
+  isDocumentAffectingAppNoOp,
 } from './diff';
 
 export {

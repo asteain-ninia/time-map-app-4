@@ -115,6 +115,17 @@ export interface MergeToolControllerProps<S> {
   readonly onConflicts?:
     | ((result: ProcessResult<S>, proposal: EditProposal<MergeSnapshot>) => void)
     | undefined;
+  /**
+   * Report whether a merge session is in progress (bughunt-review). The host raises
+   * the global-shortcut suspension while this is true so a stray global Ctrl+Z /
+   * Delete cannot leak THROUGH the FR-52 MergeOptionsDialog (Choosing) to a domain op:
+   * that dialog handles only Esc via React onKeyDown, which a native window listener
+   * ignores — the exact modal-passthrough the e63c8b9 fix blocks for Add / Knife but
+   * MISSED here. Suspending across the WHOLE non-Idle merge flow (mirrors Add / Knife)
+   * also covers the SELECTING phase. Fires `true` whenever the flow is past Idle,
+   * `false` on return to Idle (cancel / commit / mode-switch).
+   */
+  readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -167,6 +178,24 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     }
     // Key on the active boolean only (start/reset fire exactly on a transition).
   }, [isMergeActive]);
+
+  // --- bughunt-review: report the in-progress merge to the host so it suspends the
+  // GLOBAL shortcut dispatcher while this session owns the keyboard. The FR-52
+  // MergeOptionsDialog (Choosing) handles only Esc via React onKeyDown, so a native
+  // window-level Ctrl+Z / Delete would otherwise fire EditUndo / EditDelete straight
+  // THROUGH the open dialog (the e63c8b9 modal-passthrough fix missed merge). The host
+  // derives shortcutsSuspended = modalOpen || toolDrawing (単一真実源 教訓 5.29); the
+  // merge flow is that single truth and we only mirror it up. Suspending across the
+  // WHOLE non-Idle flow matches Add / Knife and also covers SELECTING.
+  const onDrawingChange = props.onDrawingChange;
+  useEffect(() => {
+    if (onDrawingChange === undefined) return;
+    const active = merge.flow !== MERGE_FLOW.Idle;
+    onDrawingChange(active);
+    // On unmount clear the flag so a torn-down controller never leaves the global
+    // dispatcher suspended (教訓 5.2 全経路で破棄).
+    return () => onDrawingChange(false);
+  }, [merge.flow, onDrawingChange]);
 
   // --- Keyboard: Escape→cancel (FR-78). Active while a session runs, EXCEPT while the
   // FR-52 options dialog is open (Choosing): there the modal owns Esc (Esc→cancelChoose
