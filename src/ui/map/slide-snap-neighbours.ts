@@ -55,6 +55,7 @@ import { getVertex, type VertexStore } from '../../domain/vertex';
 import { resolveLeafShape } from '../../domain/hierarchy/resolve-shape';
 import { multiPolygonBBox, type BBox } from '../../domain/spatial/bbox';
 import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
+import { complete, completeEquals, type CompleteTimePoint } from '../../domain/time/time-point';
 import { featuresAt, verticesAt } from '../live-lookup';
 
 /** The live domain context the neighbour query resolves against (read fresh per frame). */
@@ -196,6 +197,77 @@ function ringCoordinates(ring: Ring, store: VertexStore): GeoRing | undefined {
 }
 
 /**
+ * One indexed terminal: a LEAF feature's id + its resolved polygon pieces. Built
+ * over EVERY leaf terminal (not just the non-dragged ones) so the index is a pure
+ * function of (root, time) and can be memoized across a drag's frames; the dragged
+ * feature is skipped when COLLECTING hits, not when building (so the same index
+ * serves any dragged feature at the same root/time — bughunt4 #3).
+ */
+interface NearTerminal {
+  readonly featureId: string;
+  readonly polygons: readonly GeoPolygon[];
+}
+
+/** The (root, time)-derived part of the query that is stable across a drag's frames. */
+interface NeighboursBuild {
+  readonly store: VertexStore;
+  readonly features: readonly Feature[];
+  readonly index: SpatialIndex<NearTerminal>;
+  readonly entries: readonly IndexEntry<NearTerminal>[];
+}
+
+/**
+ * Build the {@link NeighboursBuild} for a (root, time): the live vertex store, the
+ * resolved feature list, and a U10 RBush over EVERY leaf terminal's resolved
+ * polygons. Pure in (root, time) — exactly the inputs `featuresAt` / `verticesAt`
+ * read, so memoizing on them is complete and never stale.
+ */
+function buildNeighbours(root: DomainProject, time: TimePoint): NeighboursBuild {
+  const store = verticesAt(root, time);
+  const features = featuresAt(root, time);
+  const index = new SpatialIndex<NearTerminal>();
+  const entries: IndexEntry<NearTerminal>[] = [];
+  for (const f of features) {
+    if (f.kind !== FEATURE_KIND.Leaf) continue;
+    const polygons = resolvedPolygons(f, store);
+    if (polygons.length === 0) continue;
+    const box = multiPolygonBBox(polygons);
+    if (box === undefined) continue;
+    const near: NearTerminal = { featureId: f.id, polygons };
+    entries.push({ ref: near, minX: box.minX, minY: box.minY, maxX: box.maxX, maxY: box.maxY });
+  }
+  if (entries.length > 0) index.bulkLoad(entries);
+  return { store, features, index, entries };
+}
+
+/**
+ * A single-slot memo of {@link buildNeighbours} keyed by (root, time). Reused across
+ * the many pointermove frames of ONE drag (root + time are stable then); a root
+ * REFERENCE change (any committed edit swaps a new root object) or a time VALUE
+ * change rebuilds. The cache holds one entry — a drag never interleaves two domains.
+ */
+function createNeighboursBuildMemo(): (root: DomainProject, time: TimePoint) => NeighboursBuild {
+  let cachedRoot: DomainProject | undefined;
+  let cachedTime: CompleteTimePoint | undefined;
+  let cached: NeighboursBuild | undefined;
+  return (root, time) => {
+    const completed = complete(time);
+    if (
+      cached !== undefined &&
+      cachedRoot === root &&
+      cachedTime !== undefined &&
+      completeEquals(cachedTime, completed)
+    ) {
+      return cached;
+    }
+    cached = buildNeighbours(root, time);
+    cachedRoot = root;
+    cachedTime = completed;
+    return cached;
+  };
+}
+
+/**
  * Create the per-frame {@link SlideSnapNeighbours} query for the live edit session.
  * Returns a `neighboursAt(preview, session)` the adapter calls each move when a
  * single vertex is being dragged.
@@ -209,37 +281,31 @@ function ringCoordinates(ring: Ring, store: VertexStore): GeoRing | undefined {
 export function createNeighboursQuery(
   ctx: NeighboursContext,
 ): (preview: WorldCoordinate, session: DragSession) => SlideSnapNeighbours {
+  // PER-DRAG MEMO (bughunt4 #3): the snap/slide light path calls this closure once
+  // per pointermove frame of a drag, and the (root, time)-derived part — the live
+  // vertex store, the resolved feature list, AND the U10 RBush over every OTHER
+  // terminal's resolved polygons — is IDENTICAL across all those frames (the
+  // committed domain + timeline time are stable while a single drag is in flight;
+  // only the dragged PREVIEW moves). Rebuilding it each frame re-resolved every
+  // leaf's shape and re-bulk-loaded the whole index → O(n) per frame at the 5,000
+  // 規模. We hold the build in the closure scope and reuse it while (root, time) are
+  // unchanged. CORRECTNESS: `root` is the committed `DomainProject` reference — U16
+  // swaps a NEW root object on ANY edit (immutable value objects + structural
+  // sharing), so a reference change after an edit invalidates the memo and the next
+  // frame rebuilds against the edited domain (never a stale index). `time` is
+  // compared by VALUE (the same complete year/month/day resolves the same snapshot
+  // via resolveAt), so a timeline move also rebuilds. Both inputs are exactly what
+  // `featuresAt` / `verticesAt` read, so keying on them is complete.
+  const memo = createNeighboursBuildMemo();
+
   return (preview, session): SlideSnapNeighbours => {
     const root = ctx.getRoot();
     const time = ctx.getTime();
-    const store = verticesAt(root, time);
+    const { store, features, index, entries } = memo(root, time);
     const draggedFeatureId = session.target.featureId;
-    const features = featuresAt(root, time);
 
     // The dragged feature itself (for the hole/enclave containment constraint).
     const draggedFeature = features.find((f) => f.id === draggedFeatureId);
-
-    // Build a U10 RBush over the OTHER terminal LEAF features' resolved shapes. A
-    // feature is a slide/snap obstacle only if it owns area; points / lines carry no
-    // boundary to slide along (they still offer snap vertices — handled below). The
-    // dragged feature is excluded so it never collides with / snaps to itself.
-    interface NearTerminal {
-      readonly featureId: string;
-      readonly polygons: readonly GeoPolygon[];
-    }
-    const index = new SpatialIndex<NearTerminal>();
-    const entries: IndexEntry<NearTerminal>[] = [];
-    for (const f of features) {
-      if (f.id === draggedFeatureId) continue;
-      if (f.kind !== FEATURE_KIND.Leaf) continue;
-      const polygons = resolvedPolygons(f, store);
-      if (polygons.length === 0) continue;
-      const box = multiPolygonBBox(polygons);
-      if (box === undefined) continue;
-      const near: NearTerminal = { featureId: f.id, polygons };
-      entries.push({ ref: near, minX: box.minX, minY: box.minY, maxX: box.maxX, maxY: box.maxY });
-    }
-    if (entries.length > 0) index.bulkLoad(entries);
 
     // The query rectangle: a point around the preview, widened by the snap world
     // margin (so a vertex within the screen snap distance but outside the terminal
@@ -268,6 +334,11 @@ export function createNeighboursQuery(
       const seenNear = new Set<string>();
       for (const lon of [preview.lon, preview.lon + LONGITUDE_PERIOD, preview.lon - LONGITUDE_PERIOD]) {
         for (const hit of index.search(queryBoxAt(lon))) {
+          // The memoized index holds EVERY terminal (so it is a pure function of
+          // (root, time) and reusable across drags); skip the dragged feature here so
+          // it is never its own slide / snap candidate — identical to the prior
+          // build-time exclusion (bughunt4 #3).
+          if (hit.ref.featureId === draggedFeatureId) continue;
           if (seenNear.has(hit.ref.featureId)) continue;
           seenNear.add(hit.ref.featureId);
           nearHits.push(hit);

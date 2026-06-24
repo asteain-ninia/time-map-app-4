@@ -11,7 +11,7 @@
 // UI never fed them inputs, so a dragged vertex tunnelled through a neighbour and never
 // snapped. The behavioural E2E (e2e/edit-slide-snap.spec.ts) drives the full live path.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
 import { createVertexStore } from '../../domain/vertex';
@@ -24,6 +24,7 @@ import {
 } from '../../domain/persistence/fixtures';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { beginDrag, EDIT_TOOL, type DragSession } from '../../domain/editing/drag-session';
+import { SpatialIndex } from '../../domain/spatial/rtree';
 
 import { createNeighboursQuery } from './slide-snap-neighbours';
 
@@ -147,5 +148,87 @@ describe('createNeighboursQuery (HB3-20 slide/snap inputs)', () => {
     expect(
       result.snapCandidates.every((s) => !String(s.vertexId).startsWith('leaf-a')),
     ).toBe(true);
+  });
+});
+
+// --- bughunt4 #3: per-drag (root, time) memo of the RBush + resolved features ---
+//
+// The closure was called once per pointermove FRAME of a drag, and each call rebuilt
+// the U10 RBush + re-resolved every leaf's shape — O(n) per frame at the 5,000 規模,
+// even though the committed domain + time are STABLE across a single drag's frames.
+// The fix memoizes that (root, time)-derived build in the closure scope. These pin:
+//  (a) repeated calls with the SAME (root, time) build the index ONCE;
+//  (b) a changed root REFERENCE or a changed time VALUE rebuilds (never stale);
+//  (c) the query RESULTS are byte-for-byte the same as the un-memoized version.
+describe('createNeighboursQuery memo (bughunt4 #3 — index built once per (root, time))', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('(a) builds the RBush ONCE across MANY same-(root, time) drag frames', () => {
+    const { root } = twoLeafProject();
+    const buildSpy = vi.spyOn(SpatialIndex.prototype, 'bulkLoad');
+    const query = createNeighboursQuery({
+      getRoot: () => root,
+      getTime: () => timePointYear(0), // a NEW TimePoint object each call: value-equal.
+      snapWorldMargin: () => 5,
+    });
+    // Simulate 10 pointermove frames of ONE drag (root + time stable; only preview moves).
+    for (let i = 0; i < 10; i += 1) {
+      query({ lon: 11 + i * 0.01, lat: 0 }, vertexMoveSession());
+    }
+    // The two-leaf project has indexable terminals, so a build calls bulkLoad. The memo
+    // means exactly ONE build across all 10 frames (a fresh TimePoint each frame still
+    // value-equates, so it does NOT defeat the cache).
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('(b) a changed root reference or changed time value rebuilds the index', () => {
+    const a = twoLeafProject();
+    const b = twoLeafProject(); // a structurally-equal but DIFFERENT root object.
+    let currentRoot = a.root;
+    let currentTime = timePointYear(0);
+    const buildSpy = vi.spyOn(SpatialIndex.prototype, 'bulkLoad');
+    const query = createNeighboursQuery({
+      getRoot: () => currentRoot,
+      getTime: () => currentTime,
+      snapWorldMargin: () => 5,
+    });
+    query({ lon: 11, lat: 0 }, vertexMoveSession()); // build #1
+    query({ lon: 11, lat: 0 }, vertexMoveSession()); // cache hit (no build)
+    expect(buildSpy).toHaveBeenCalledTimes(1);
+
+    // A new root REFERENCE (any committed edit swaps the root object) ⇒ rebuild.
+    currentRoot = b.root;
+    query({ lon: 11, lat: 0 }, vertexMoveSession());
+    expect(buildSpy).toHaveBeenCalledTimes(2);
+
+    // A new time VALUE (the timeline moved) ⇒ rebuild.
+    currentTime = timePointYear(1);
+    query({ lon: 11, lat: 0 }, vertexMoveSession());
+    expect(buildSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('(c) memoized RESULTS are identical to an un-memoized fresh query (no behavior change)', () => {
+    const { root } = twoLeafProject();
+    // Reference: a NEW query closure per call never reuses a cache, so it reproduces the
+    // exact un-memoized behaviour. The memoized closure must agree with it frame-by-frame.
+    const ctx = {
+      getRoot: () => root,
+      getTime: () => timePointYear(0),
+      snapWorldMargin: () => 5,
+    };
+    const memoized = createNeighboursQuery(ctx);
+    const previews = [
+      { lon: 11, lat: 0 },
+      { lon: 11, lat: 0.5 },
+      { lon: 5, lat: 5 },
+      { lon: 12, lat: 10 },
+    ];
+    for (const preview of previews) {
+      const fresh = createNeighboursQuery(ctx)(preview, vertexMoveSession());
+      const cached = memoized(preview, vertexMoveSession());
+      expect(cached).toEqual(fresh);
+    }
   });
 });

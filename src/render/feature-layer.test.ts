@@ -633,6 +633,96 @@ describe('受け入れ基準 5: LOD reduces vertex count but preserves topology'
   });
 });
 
+// --- bughunt4 #4: ringToWorldPoints memoization (lonSpanCache defeat) ---------
+//
+// buildAreaPrimitives converted every ring to a NEW WorldPoint[] every frame, so the
+// renderer's lonSpanCache (keyed by that array reference) missed every frame. The fix
+// memoizes the converted array by (rawRing, LOD-tolerance), so an UNCHANGED ring at
+// the same zoom bucket reuses the SAME WorldPoint[] reference. This pins BOTH halves:
+//  (1) REFERENCE-KEYED CACHE — the same GeoRing returns the same array; a different
+//      GeoRing (a domain edit recreates rings) returns a different array, and a zoom
+//      change to a different LOD bucket returns a different (correct-detail) array; AND
+//  (2) IDENTICAL OUTPUT — the produced vertices equal a fresh un-memoized
+//      ringToWorldPoints(simplifyRing(ring, tol)) for every zoom bucket.
+describe('bughunt4 #4: ringToWorldPoints is memoized by (ring, LOD tol) without losing correctness', () => {
+  // A reference oracle for the un-memoized result: map the (separately) simplified
+  // ring to {lon,lat}. Tolerance per zoom mirrors lodLevelForZoom → lodToleranceDeg.
+  function oracleRingPoints(ring: GeoRing, tol: number): { lon: number; lat: number }[] {
+    return simplifyRing(ring, tol).map((c) => ({ lon: c.lon, lat: c.lat }));
+  }
+  function tolForZoom(zoom: number): number {
+    // Full=0, Medium=0.25, Coarse=2 — the same ladder buildAreaPrimitives uses.
+    if (zoom <= 2) return 2;
+    if (zoom <= 16) return 0.25;
+    return 0;
+  }
+  // A ring with enough vertices that Medium/Coarse tolerance actually drops some, so a
+  // zoom-bucket change visibly changes the simplified vertex count (proves scoping).
+  function denseRing(): GeoRing {
+    const pts: GeoRing[number][] = [];
+    for (let i = 0; i <= 40; i += 1) {
+      const t = (i / 40) * Math.PI * 2;
+      pts.push({ lon: 6 + 5 * Math.cos(t), lat: -4 + 5 * Math.sin(t) });
+    }
+    return pts;
+  }
+  function areaOf(ring: GeoRing): EvaluatedArea {
+    return { kind: 'area', id: 'a', shape: [[ring]], style: STYLE, label: '', selected: false };
+  }
+  function piece0Ring0(prims: readonly { kind: string }[]): readonly { lon: number; lat: number }[] {
+    return shapes(prims)[0]!.pieces[0]![0]!;
+  }
+
+  it('same GeoRing + same zoom bucket ⇒ SAME WorldPoint[] reference (cache hit)', () => {
+    const ring = denseRing();
+    const area = areaOf(ring);
+    // lod ON, zoom 10 (Medium bucket, tol 0.25). The SAME EvaluatedArea built twice
+    // must reuse the exact converted array (so lonSpanCache hits across frames).
+    const camMed: Camera = { centerLon: 6, centerLat: -4, zoom: 10 };
+    const first = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camMed })));
+    const second = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camMed })));
+    expect(second).toBe(first);
+    // A NEW (structurally-equal) ring is a fresh reference ⇒ a different array (a real
+    // edit recreates rings as new objects, naturally superseding the WeakMap entry).
+    const clonedRing = ring.map((c) => ({ ...c }));
+    const cloned = piece0Ring0(buildFeaturePrimitives([areaOf(clonedRing)], opts({ camera: camMed })));
+    expect(cloned).not.toBe(first);
+    expect(cloned).toEqual(first); // same values though (structurally-equal input)
+  });
+
+  it('a different zoom BUCKET ⇒ a different, correct-detail array (LOD scoping)', () => {
+    const ring = denseRing();
+    const area = areaOf(ring);
+    const camFull: Camera = { centerLon: 6, centerLat: -4, zoom: 50 }; // Full, tol 0
+    const camMed: Camera = { centerLon: 6, centerLat: -4, zoom: 10 }; // Medium, tol 0.25
+    const camCoarse: Camera = { centerLon: 6, centerLat: -4, zoom: 1 }; // Coarse, tol 2
+    const full = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camFull })));
+    const med = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camMed })));
+    const coarse = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camCoarse })));
+    // Each zoom bucket caches its OWN array reference; they must be distinct objects.
+    expect(med).not.toBe(full);
+    expect(coarse).not.toBe(full);
+    expect(coarse).not.toBe(med);
+    // And each equals the un-memoized oracle for ITS tolerance (no stale cross-bucket).
+    expect(full).toEqual(oracleRingPoints(ring, tolForZoom(50)));
+    expect(med).toEqual(oracleRingPoints(ring, tolForZoom(10)));
+    expect(coarse).toEqual(oracleRingPoints(ring, tolForZoom(1)));
+    // Coarser tolerance drops more vertices (the LOD actually depends on zoom).
+    expect(coarse.length).toBeLessThan(full.length);
+    // Re-querying an EARLIER bucket still returns its own correct array (no clobber).
+    const fullAgain = piece0Ring0(buildFeaturePrimitives([area], opts({ camera: camFull })));
+    expect(fullAgain).toBe(full);
+  });
+
+  it('produced WorldPoint[] is identical to the un-memoized conversion (clip/lod off)', () => {
+    const ring = denseRing();
+    const area = areaOf(ring);
+    // lod off ⇒ tol 0 ⇒ a verbatim pass-through; memoized result must equal the oracle.
+    const got = piece0Ring0(buildFeaturePrimitives([area], opts({ clip: false, lod: false })));
+    expect(got).toEqual(oracleRingPoints(ring, 0));
+  });
+});
+
 // --- 受け入れ基準 6: purity + draw order --------------------------------------
 
 describe('受け入れ基準 6: purity + draw order', () => {

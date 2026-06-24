@@ -724,6 +724,56 @@ function ringToWorldPoints(ring: GeoRing): WorldPoint[] {
   return ring.map((c) => ({ lon: c.lon, lat: c.lat }));
 }
 
+// --- ring → WorldPoint[] MEMOIZATION (bughunt4 #4: lonSpanCache defeat) -------
+//
+// `buildAreaPrimitives` ran `ringToWorldPoints(simplifyRing(ring, tol))` for every
+// ring of every visible area EVERY frame, each time allocating a BRAND-NEW
+// `WorldPoint[]`. That fresh array is what lands in the shape primitive's `pieces`,
+// and the renderer's `lonSpanCache` (canvas2d-renderer.ts) is keyed by that array
+// reference — so a new array every frame meant the lonSpanCache MISSED every frame
+// and re-walked every vertex of every ring per drawBatch (a per-frame O(n) defeat,
+// even on a pure camera pan where neither the geometry nor the LOD tolerance moved).
+//
+// FIX: memoize the converted `WorldPoint[]` keyed by (rawRing, toleranceDeg). The
+// outer WeakMap is keyed by the IMMUTABLE source `GeoRing` (a `readonly
+// WorldCoordinate[]`, types.ts) — the SAME ring object survives across frames while
+// the domain is unedited (the display pipeline's DisplayShapeCache hands the
+// reference-identical resolved geometry through verbatim — display-bridge.ts /
+// resolve-display-shapes.ts), so an unchanged ring reuses the SAME `WorldPoint[]`
+// reference and lonSpanCache HITS. A domain edit recreates the feature's rings as
+// NEW objects (immutable value objects + structural sharing), so the WeakMap entry
+// is naturally superseded — no manual invalidation, no staleness, and a dropped ring
+// is GC'd with its entry (教訓 5.18 absence-not-leak).
+//
+// LOD/ZOOM SAFETY: the simplified output DEPENDS on the LOD tolerance (a function of
+// the zoom BUCKET, lodLevelForZoom → lodToleranceDeg). Keying ONLY on the ring would
+// serve a coarse-zoom array at full zoom (a stale, wrong-detail result). So the inner
+// `Map<number, WorldPoint[]>` keys on the tolerance: a zoom change to a different LOD
+// bucket is a different tolerance ⇒ a different (correct) cached array, while a pan
+// within one bucket reuses it. The tolerance set is the small finite LOD ladder
+// (0 / 0.25 / 2), so the inner map never grows unbounded. The cached value is exactly
+// `ringToWorldPoints(simplifyRing(ring, tol))`, identical to the un-memoized result.
+const ringWorldPointsCache = new WeakMap<GeoRing, Map<number, WorldPoint[]>>();
+
+/**
+ * The `WorldPoint[]` for a raw `GeoRing` at LOD tolerance `toleranceDeg`, memoized
+ * by (ring, tolerance) so an unchanged ring at the same zoom bucket reuses the SAME
+ * array reference across frames (so the renderer's `lonSpanCache` hits). The value is
+ * byte-for-byte `ringToWorldPoints(simplifyRing(ring, toleranceDeg))`.
+ */
+function simplifiedRingWorldPoints(ring: GeoRing, toleranceDeg: number): WorldPoint[] {
+  let byTol = ringWorldPointsCache.get(ring);
+  if (byTol === undefined) {
+    byTol = new Map();
+    ringWorldPointsCache.set(ring, byTol);
+  }
+  const cached = byTol.get(toleranceDeg);
+  if (cached !== undefined) return cached;
+  const points = ringToWorldPoints(simplifyRing(ring, toleranceDeg));
+  byTol.set(toleranceDeg, points);
+  return points;
+}
+
 /**
  * Build the draw primitives for ONE area feature (FR-20 / FR-21 / FR-86). The
  * ENTIRE shape (every territory + every hole + every enclave) becomes ONE
@@ -741,8 +791,16 @@ function buildAreaPrimitives(f: EvaluatedArea, opts: BuildOptions): DrawPrimitiv
   if (shape.length === 0) return [];
 
   const color = activeColor(f.style, f.selected);
-  const pieces: WorldPoint[][][] = shape.map((piece) =>
-    piece.map((ring) => ringToWorldPoints(ring)),
+  // Build the WorldPoint pieces from the RAW rings (`f.shape`) through the memoized
+  // (ring, tol) converter — NOT from `shape` (the simplified rings, freshly allocated
+  // each frame at tol>0): keying on the immutable raw ring + tolerance lets an
+  // unchanged ring at the same zoom bucket reuse the SAME `WorldPoint[]` reference, so
+  // the renderer's lonSpanCache hits (bughunt4 #4). `simplifyShape` is structure-
+  // preserving (1:1 piece/ring map), so this yields the SAME pieces shape as mapping
+  // over `shape`; `simplifiedRingWorldPoints(ring, tol)` === ringToWorldPoints applied
+  // to the simplified ring, so the produced vertices are byte-for-byte identical.
+  const pieces: WorldPoint[][][] = f.shape.map((piece) =>
+    piece.map((ring) => simplifiedRingWorldPoints(ring, tol)),
   );
   // Drop pieces that have no drawable territory (every ring < 3) — never the
   // non-empty pieces (教訓 5.1 片落とし禁止: we keep all real pieces).
