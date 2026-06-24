@@ -87,13 +87,16 @@ interface FakeDir {
 }
 
 function makeBackupFs(dir: FakeDir): BackupFsOps {
+  // Async (bughunt4): copyFile resolves on a later microtask so create-then-prune
+  // only holds if runBackup truly awaits the copy before any remove.
   return {
-    listDir: () => [...dir.files],
-    copyFile: (sourcePath, destPath) => {
+    listDir: async () => [...dir.files],
+    copyFile: async (sourcePath, destPath) => {
       dir.ops.push(`copy ${sourcePath} -> ${destPath}`);
+      await Promise.resolve();
       dir.files.add(basename(destPath));
     },
-    remove: (path) => {
+    remove: async (path) => {
       dir.ops.push(`remove ${path}`);
       dir.files.delete(basename(path));
     },
@@ -107,13 +110,13 @@ function basename(p: string): string {
 const join = (d: string, n: string): string => `${d}/${n}`;
 
 describe('runBackup (受け入れ基準3 / 教訓5.22 create-then-prune)', () => {
-  it('creates the new backup BEFORE pruning, capped at maxGenerations', () => {
+  it('creates the new backup BEFORE pruning, capped at maxGenerations', async () => {
     const dir: FakeDir = { files: new Set([BASE]), ops: [] };
     // Pre-seed 10 existing backups (ts 1000..1009).
     for (let i = 0; i < 10; i++) dir.files.add(backupName(BASE, 1000 + i, 0));
     const fs = makeBackupFs(dir);
 
-    const result = runBackup(fs, join, '/d', BASE, 2000, 10);
+    const result = await runBackup(fs, join, '/d', BASE, 2000, 10);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -132,16 +135,16 @@ describe('runBackup (受け入れ基準3 / 教訓5.22 create-then-prune)', () =>
     expect(dir.files.has(result.createdName)).toBe(true);
   });
 
-  it('the backup is copied FROM the canonical finalized file (受け入れ基準3)', () => {
+  it('the backup is copied FROM the canonical finalized file (受け入れ基準3)', async () => {
     const dir: FakeDir = { files: new Set([BASE]), ops: [] };
-    const result = runBackup(makeBackupFs(dir), join, '/d', BASE, 5, 10);
+    const result = await runBackup(makeBackupFs(dir), join, '/d', BASE, 5, 10);
     expect(result.ok).toBe(true);
     expect(dir.ops.some((o) => o.startsWith(`copy /d/${BASE} ->`))).toBe(true);
   });
 
-  it('initial save with 0 prior backups is valid (教訓5.18)', () => {
+  it('initial save with 0 prior backups is valid (教訓5.18)', async () => {
     const dir: FakeDir = { files: new Set([BASE]), ops: [] };
-    const result = runBackup(makeBackupFs(dir), join, '/d', BASE, 1, 10);
+    const result = await runBackup(makeBackupFs(dir), join, '/d', BASE, 1, 10);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.deletedNames).toEqual([]);

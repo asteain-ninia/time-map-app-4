@@ -79,8 +79,11 @@ export async function handleSaveAs(deps: IpcDeps, req: SaveRequest): Promise<Sav
   return runSave(deps, target, req);
 }
 
-function runSave(deps: IpcDeps, target: string, req: SaveRequest): SaveResponse {
-  const result = saveTmap(
+async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise<SaveResponse> {
+  // Awaited: the save pipeline's file I/O is now async (node:fs/promises) so the
+  // main-process event loop is not frozen during a save (bughunt4). The handler
+  // resolves only after the awaited atomic write + backup complete.
+  const result = await saveTmap(
     deps.saveEnv,
     target,
     {

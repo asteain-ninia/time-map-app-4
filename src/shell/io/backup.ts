@@ -119,14 +119,20 @@ export function nextSequence(
 
 // --- thin fs-backed runner (injected port; Electron-free) -------------------
 
-/** Port for the directory operations a backup run performs. */
+/**
+ * Port for the directory operations a backup run performs. All ops are ASYNC
+ * (return Promises) so the backup never blocks the event loop (bughunt4): on a
+ * large directory the listing / per-generation copy + delete could otherwise
+ * stall the main process. The create-then-prune ORDER is preserved by awaiting
+ * each step in sequence (see {@link runBackup}).
+ */
 export interface BackupFsOps {
   /** List the file names (not full paths) in `dir`. */
-  listDir: (dir: string) => readonly string[];
+  listDir: (dir: string) => Promise<readonly string[]>;
   /** Copy the (already atomically-written) source file to `destPath`. */
-  copyFile: (sourcePath: string, destPath: string) => void;
+  copyFile: (sourcePath: string, destPath: string) => Promise<void>;
   /** Delete a backup file by full path. */
-  remove: (path: string) => void;
+  remove: (path: string) => Promise<void>;
 }
 
 /** Outcome of a backup run. */
@@ -145,16 +151,16 @@ export type BackupResult =
  * `joinPath` builds a full path from dir + name (injected so this stays
  * Electron/path-free at the unit level).
  */
-export function runBackup(
+export async function runBackup(
   fs: BackupFsOps,
   joinPath: (dir: string, name: string) => string,
   dir: string,
   baseName: string,
   timestampMs: number,
   maxGenerations: number,
-): BackupResult {
+): Promise<BackupResult> {
   try {
-    const before = fs.listDir(dir);
+    const before = await fs.listDir(dir);
     const seq = nextSequence(baseName, before, timestampMs);
     const newName = backupName(baseName, timestampMs, seq);
     // Decide deletions from the PRE-add list: selectBackupsToDelete reserves a
@@ -164,10 +170,11 @@ export function runBackup(
       // never delete the one we just created (defensive: it is the newest).
       .filter((name) => name !== newName);
     // 1) Create the new backup FIRST (from the finalized canonical file).
-    fs.copyFile(joinPath(dir, baseName), joinPath(dir, newName));
+    //    Awaited so the copy completes before any prune begins.
+    await fs.copyFile(joinPath(dir, baseName), joinPath(dir, newName));
     // 2) Only AFTER the new one exists, prune the oldest excess (教訓5.22:
     //    a delete-first crash must never leave fewer-than-expected generations).
-    for (const name of toDelete) fs.remove(joinPath(dir, name));
+    for (const name of toDelete) await fs.remove(joinPath(dir, name));
     return { ok: true, createdName: newName, deletedNames: toDelete };
   } catch (error) {
     return { ok: false, message: error instanceof Error ? error.message : String(error) };

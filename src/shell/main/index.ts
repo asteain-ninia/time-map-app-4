@@ -1,5 +1,4 @@
-import { copyFileSync, readdirSync, rmSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { copyFile, readdir, readFile, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
@@ -136,12 +135,14 @@ function buildSaveEnv(): SaveEnv {
   return {
     atomicFs: nodeFsOps,
     backupFs: {
-      listDir: (dir) => readdirSync(dir),
-      copyFile: (sourcePath, destPath) => {
-        copyFileSync(sourcePath, destPath);
+      // Async (node:fs/promises): the backup listing / copy / prune no longer
+      // block the main-process event loop (bughunt4).
+      listDir: (dir) => readdir(dir),
+      copyFile: async (sourcePath, destPath) => {
+        await copyFile(sourcePath, destPath);
       },
-      remove: (path) => {
-        rmSync(path, { force: true });
+      remove: async (path) => {
+        await rm(path, { force: true });
       },
     },
     now: () => Date.now(),

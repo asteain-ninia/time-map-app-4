@@ -45,32 +45,38 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
 
   const saveEnv: SaveEnv = {
     atomicFs: {
-      open: (p) => {
+      open: async (p) => {
         pendingPath = p;
         saveCalls.push(p);
         return 1;
       },
-      write: (_fd, data) => {
+      write: async (_fd, data) => {
         pendingData = data;
       },
-      fsync: () => disk.set(pendingPath, pendingData),
-      close: () => {},
-      rename: (from, to) => {
+      fsync: async () => {
+        disk.set(pendingPath, pendingData);
+      },
+      close: async () => {},
+      rename: async (from, to) => {
         const d = disk.get(from);
         if (d !== undefined) {
           disk.set(to, d);
           disk.delete(from);
         }
       },
-      unlink: (p) => disk.delete(p),
+      unlink: async (p) => {
+        disk.delete(p);
+      },
     },
     backupFs: {
-      listDir: (dir) => [...disk.keys()].filter((p) => dirOf(p) === dir).map(nameOf),
-      copyFile: (s, d) => {
+      listDir: async (dir) => [...disk.keys()].filter((p) => dirOf(p) === dir).map(nameOf),
+      copyFile: async (s, d) => {
         const data = disk.get(s);
         if (data !== undefined) disk.set(d, data);
       },
-      remove: (p) => disk.delete(p),
+      remove: async (p) => {
+        disk.delete(p);
+      },
     },
     now: () => 1000,
     token: () => 'tok',
@@ -145,6 +151,37 @@ describe('handlers take shared args and return shared return types (受け入れ
     expect(res.path).toBe('/d/new.tmap');
     expect(disk.has('/d/new.tmap')).toBe(true);
     expect(saveCalls.length).toBeGreaterThan(0); // atomic write port was used
+  });
+
+  it('Save is async: with a SLOW fs the handler resolves only after the I/O (bughunt4)', async () => {
+    // Wrap the memory atomicFs with a fsync that resolves after a macrotask. If
+    // the save path were synchronous (the bug), the handler Promise would be
+    // settled before the slow I/O ran. We assert it is NOT settled synchronously,
+    // proving the I/O is genuinely awaited off the synchronous call stack.
+    const { deps, disk } = makeDeps();
+    const baseFs = deps.saveEnv.atomicFs;
+    const slowEnv: SaveEnv = {
+      ...deps.saveEnv,
+      atomicFs: {
+        ...baseFs,
+        fsync: async (fd) => {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          await baseFs.fsync(fd);
+        },
+      },
+    };
+    const slowDeps: IpcDeps = { ...deps, saveEnv: slowEnv };
+
+    let settled = false;
+    const promise = handleSave(slowDeps, makeSaveReq()).then((r) => {
+      settled = true;
+      return r;
+    });
+    expect(settled).toBe(false); // not done synchronously — the I/O is awaited
+    const res = await promise;
+    expect(settled).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(disk.has('/d/new.tmap')).toBe(true);
   });
 
   it('Save targets the current path on subsequent saves (no dialog)', async () => {

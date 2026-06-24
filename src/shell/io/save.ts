@@ -44,20 +44,31 @@ export interface SaveEnv {
  * save (the canonical file is already safely written) but is surfaced via
  * `backup` for the caller to log.
  */
-export function saveTmap(
+export async function saveTmap(
   env: SaveEnv,
   targetPath: string,
   contents: TmapContents,
   maxGenerations: number,
-): SaveTmapResult {
+): Promise<SaveTmapResult> {
+  // buildTmap (fflate `zipSync`) is still synchronous: it is CPU-bound, not I/O,
+  // so it cannot block on a slow/network disk and is fast for typical project
+  // sizes. The bughunt4 fix targets the fsync/rename/copy I/O below, which is
+  // what stalls the main-process event loop on slow or network drives.
   const zipBytes = buildTmap(contents);
-  const write: AtomicWriteResult = atomicWrite(env.atomicFs, targetPath, zipBytes, env.token());
+  // Awaited: the atomic write is now non-blocking (node:fs/promises) but its
+  // durability barrier (fsync BEFORE rename) is preserved inside atomicWrite.
+  const write: AtomicWriteResult = await atomicWrite(
+    env.atomicFs,
+    targetPath,
+    zipBytes,
+    env.token(),
+  );
   if (!write.ok) {
     return { ok: false, reason: 'write-failed', message: write.message };
   }
 
   const { dir, name } = env.splitPath(targetPath);
-  const backup = runBackup(
+  const backup = await runBackup(
     env.backupFs,
     env.joinPath,
     dir,
