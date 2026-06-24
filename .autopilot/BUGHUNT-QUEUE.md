@@ -48,6 +48,21 @@
 
 チェックポイント: フル vitest 緑 + build + e2e スモーク(shortcut-suspend/knife-nway)緑。
 
+## ✅ 第4次バグハント — 6件確定・全修正 (2026-06-24, 19エージェント・偽陽性0)
+
+未ハント領域(electron-main/IPC・.tmap repair・discovery・perf/RBush)。候補14件中6確定（8 refute）。
+
+| 領域 | バグ | 解決 |
+| --- | --- | --- |
+| electron-main | runSave が同期ブロッキングI/O(fsync/readdir/rename)でメインのイベントループ停止 [perf] | async fs.promises 化・durability(fsync→rename)厳守 (a2c4a0f) |
+| repair | 修復リトライで未解決バナーが出ない(setRepairUnresolved 未呼び) [ux] | isRetry param で表示 (840833d) |
+| repair | 2回目も未解決/キャンセルが silent | notify+中止の終端枝 (840833d) |
+| perf | ドラッグ毎フレームに RBush 全再構築+形状再解決 [perf] | (root,time) メモ・正しい無効化 (c11b120) |
+| perf | LOD簡略化で lonSpanCache が毎フレーム無効化 [perf] | (ring,LOD)WeakMap メモ (c11b120) |
+| discovery | イベント一覧が全行ラベルを第1錨からのみ導出→非第1錨の改名が出ない | 行ごとに当該錨で解決 (5a01c4a) |
+
+チェックポイント: フルスイート **3041 passed** + build + e2e スモーク(knife-nway/fr52=実保存)緑。**4波累計 38確定 → 36修正 + 2偽陽性/no-op**。
+
 ---
 
 （以下は当初の確定リスト原文。各行の解決状況は上表を参照。）
