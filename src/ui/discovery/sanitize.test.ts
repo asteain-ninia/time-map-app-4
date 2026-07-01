@@ -25,6 +25,12 @@ describe('toSearchableText (検索前サニタイズ, FR-116)', () => {
     expect(toSearchableText('  多くの\n\n空白  ')).toBe('多くの 空白');
   });
 
+  it('drops invisible zero-width code points (not matched by \\s)', () => {
+    // U+200B between words and a U+FEFF (BOM) at the edge must not leak into the
+    // searchable素テキスト nor split a word into two search tokens.
+    expect(toSearchableText('﻿ローマ​帝国')).toBe('ローマ帝国');
+  });
+
   it('does not match on tag names (no HTML leaks into search)', () => {
     const text = toSearchableText('<strong class="x">語</strong>');
     expect(text).toBe('語');

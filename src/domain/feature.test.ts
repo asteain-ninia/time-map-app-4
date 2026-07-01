@@ -7,6 +7,7 @@ import {
   createLeafFeature,
   createLineFeature,
   createPointFeature,
+  featureDisplayName,
   featureKindLabel,
   hasNoChildren,
   isTopLevel,
@@ -83,6 +84,30 @@ describe('aggregate emptiness (lesson 5.18)', () => {
     expect(
       hasNoChildren(createAggregateFeature(asFeatureId('a'), attrs, color, [asFeatureId('c')])),
     ).toBe(false);
+  });
+});
+
+describe('featureDisplayName (name → id fallback, 教訓 5.30)', () => {
+  it('uses the trimmed name when visible text is present', () => {
+    const f = createLeafFeature(
+      asFeatureId('id-1'),
+      createBasicAttributes('  ローマ  ', 0, 100),
+      color,
+      createShape(),
+    );
+    expect(featureDisplayName(f)).toBe('ローマ');
+  });
+
+  it('falls back to the id when the name is invisible-only (not just \\s)', () => {
+    // U+200B/U+FEFF-only name reads as non-blank to a bare trim; the fallback
+    // must still fire so the row/label shows the id, never blank.
+    const f = createLeafFeature(
+      asFeatureId('id-2'),
+      createBasicAttributes('​﻿', 0, 100),
+      color,
+      createShape(),
+    );
+    expect(featureDisplayName(f)).toBe('id-2');
   });
 });
 

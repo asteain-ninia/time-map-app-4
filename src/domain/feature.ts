@@ -25,6 +25,7 @@ import { assertNever } from './assert-never';
 import type { BasicAttributes, ColorInfo } from './attributes';
 import type { FeatureId, VertexId } from './ids';
 import type { Shape } from './ring';
+import { stripInvisibleThenTrim } from './text';
 
 export const FEATURE_KIND = {
   Point: 'point',
@@ -192,14 +193,16 @@ export function createAggregateFeature(
  * (親選択 dropdown, 結合対象/引き継ぎ元 picker, 所属変更候補, 地物一覧, 競合解決
  * radios). An unnamed face is the DEFAULT (the add form commits an empty name),
  * so the raw `attributes.name` is present-but-blank, not absent — a bare `??`
- * never fires. We trim and fall back to the feature id whenever the name is
- * blank, guaranteeing every option/row carries a visible identifier the user can
- * disambiguate by. Single source of this fallback rule (教訓 5.30): every
- * selection surface defers here instead of re-deriving the rule, so no surface
- * can drift back to blank labels.
+ * never fires. We strip invisible/zero-width code points (which `trim` alone
+ * leaves behind, letting an invisible-only name read as non-blank) then trim, and
+ * fall back to the feature id whenever nothing visible remains, guaranteeing
+ * every option/row carries a visible identifier the user can disambiguate by.
+ * Single source of this fallback rule (教訓 5.30): every selection surface defers
+ * here instead of re-deriving the rule, so no surface can drift back to blank
+ * labels; the invisible-char set is shared via `stripInvisibleThenTrim`.
  */
 export function featureDisplayName(feature: Feature): string {
-  const name = feature.attributes.name.trim();
+  const name = stripInvisibleThenTrim(feature.attributes.name);
   return name.length > 0 ? name : (feature.id as unknown as string);
 }
 

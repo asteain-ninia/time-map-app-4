@@ -9,6 +9,14 @@
 
 export { assertNever } from './assert-never';
 
+// Invisible / zero-width code-point handling — single source (教訓 5.30) shared by
+// the display-name fallback (feature.ts) and the discovery search入口 (U41).
+export {
+  stripInvisible,
+  stripInvisibleThenTrim,
+  hasVisibleText,
+} from './text';
+
 export {
   type VertexId,
   type FeatureId,

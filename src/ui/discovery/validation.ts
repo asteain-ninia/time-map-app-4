@@ -18,6 +18,7 @@
 
 import { z } from 'zod';
 
+import { stripInvisibleThenTrim } from '../../domain/text';
 import { OPACITY_MAX, OPACITY_MIN } from './filter-state';
 import { VALIDATION_STRINGS } from './strings';
 
@@ -70,17 +71,34 @@ function fail<T>(reason: ValidationReason): ValidationResult<T> {
 
 // --- search query (FR-116 自己適用) -----------------------------------------
 
-/** Maximum accepted search-query length (defensive bound, NFR 5.5). */
+/**
+ * Maximum accepted search-query length in CODE POINTS (defensive bound, NFR 5.5).
+ * Counted by code point, not UTF-16 code unit, so a surrogate-pair glyph (emoji)
+ * costs 1 like any other character rather than halving the effective limit.
+ */
 export const MAX_QUERY_LENGTH = 256;
+
+/** Code-point length (a surrogate pair counts as 1), the unit the bound uses. */
+function codePointLength(s: string): number {
+  return [...s].length;
+}
 
 /**
  * The single schema declaration for a search query — type is DERIVED from it
- * (技術方針 2.10, no second definition). Trimmed, non-empty, length-bounded.
+ * (技術方針 2.10, no second definition). Invisible/zero-width code points are
+ * stripped before trimming (domain single source, 教訓 5.30) so an invisible-only
+ * query collapses to empty and is rejected; non-empty and length-bounded by code
+ * point (not UTF-16 unit) so emoji do not halve the effective limit.
  */
 export const searchQuerySchema = z
   .string()
-  .transform((s) => s.trim())
-  .pipe(z.string().min(1).max(MAX_QUERY_LENGTH));
+  .transform((s) => stripInvisibleThenTrim(s))
+  .pipe(
+    z
+      .string()
+      .min(1)
+      .refine((s) => codePointLength(s) <= MAX_QUERY_LENGTH),
+  );
 
 /** The validated search query type, derived from the schema (no duplication). */
 export type SearchQuery = z.infer<typeof searchQuerySchema>;
@@ -93,9 +111,11 @@ export type SearchQuery = z.infer<typeof searchQuerySchema>;
 export function validateSearchQuery(raw: string): ValidationResult<SearchQuery> {
   const parsed = searchQuerySchema.safeParse(raw);
   if (parsed.success) return { ok: true, value: parsed.data };
-  // Distinguish empty from too-long by the trimmed length (one-to-one mapping).
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return fail(VALIDATION_REASON.EmptyQuery);
+  // Distinguish empty from too-long by the same normalized form the schema uses
+  // (invisible-stripped + trimmed) so an invisible-only query maps to Empty, not
+  // TooLong (one-to-one mapping, 教訓 5.26).
+  const normalized = stripInvisibleThenTrim(raw);
+  if (normalized.length === 0) return fail(VALIDATION_REASON.EmptyQuery);
   return fail(VALIDATION_REASON.QueryTooLong);
 }
 

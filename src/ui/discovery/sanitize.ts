@@ -13,6 +13,12 @@
 //
 // 純粋: 文字列入力 → 文字列出力。DOM に触れない (タグ除去は正規表現でなく文字走査ベース
 // の単純除去なので jsdom 不要で Vitest 単体テスト可能)。
+//
+// 不可視ゼロ幅コードポイント (`\s` に一致しない U+200B 等) は検索 corpus/クエリに混入
+// すると素テキストを汚すため、除去は domain の単一真実源 `stripInvisible` に委譲する
+// (教訓 5.30: 文字集合を二重定義しない)。
+
+import { stripInvisible } from '../../domain/text';
 
 /**
  * Reduce arbitrary text (a Markdown source OR already-sanitized HTML produced by
@@ -63,7 +69,12 @@ function stripMarkdownMarkup(input: string): string {
   return out;
 }
 
-/** Collapse runs of whitespace to a single space and trim the ends. */
+/**
+ * Collapse runs of whitespace to a single space and trim the ends. Invisible
+ * zero-width code points are dropped FIRST (they are not `\s`, so `\s+` would
+ * otherwise let them survive into the searchable素テキスト) via the domain's
+ * single invisible-char source (教訓 5.30).
+ */
 function collapseWhitespace(input: string): string {
-  return input.replace(/\s+/g, ' ').trim();
+  return stripInvisible(input).replace(/\s+/g, ' ').trim();
 }

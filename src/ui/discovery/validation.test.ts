@@ -31,6 +31,34 @@ describe('validateSearchQuery (FR-116 自己適用, 教訓 5.26)', () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe(VALIDATION_REASON.QueryTooLong);
   });
+
+  it('counts length by code point, so MAX emoji (surrogate pairs) still fit', () => {
+    // Each 😀 is 2 UTF-16 units but 1 code point: a .max() unit-count bound would
+    // reject at half the limit; the code-point bound accepts exactly MAX.
+    const r = validateSearchQuery('😀'.repeat(MAX_QUERY_LENGTH));
+    expect(r.ok).toBe(true);
+  });
+
+  it('rejects an emoji query one code point over the limit', () => {
+    const r = validateSearchQuery('😀'.repeat(MAX_QUERY_LENGTH + 1));
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe(VALIDATION_REASON.QueryTooLong);
+  });
+
+  it('rejects an invisible-only query as empty (not too-long)', () => {
+    const r = validateSearchQuery('​﻿⁠');
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe(VALIDATION_REASON.EmptyQuery);
+      expect(r.message).toBe(VALIDATION_STRINGS.emptyQuery);
+    }
+  });
+
+  it('strips invisible code points around a visible query', () => {
+    const r = validateSearchQuery('​ローマ﻿');
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value).toBe('ローマ');
+  });
 });
 
 describe('validateOpacity (FR-116 透明度の数値範囲)', () => {
