@@ -6,6 +6,16 @@
 
 ## 確定した運用上の決定
 
+- D47(2026-07-02・第9波=MUST FR UI到達性スイープ が「落ちた MUST」6件を捕捉・初期監査の結論を訂正): D43 の初期監査(feature 単位・過去版差分)は「中核 MUST の脱落なし」としたが**不十分だった**。ドメイン実装がある要件は feature 単位で PRESENT に見えるが UI 到達性は別問題。第9波(`w7zuqocbn`・9候補→6確定)が**ドメイン完備・テスト済なのに UI 完全不達=実質落ちた MUST**を捕捉(教訓5.7型・監査の死角):
+  - **[HIGH] FR-22 穴/飛び地の追加(U25 ring-edit)**: addHole/addEnclave/classifyFirstClick/confirmRingEdit + draft 状態機械が完備・テスト済だが、TOOL_ID/COMMAND_ID/Controller/context-menu 全てに無く UI から一切呼ばれない dead code。
+  - **[HIGH] FR-24 穴/領土リング削除+交互構造再編(deleteHoleRing/deleteTerritoryRing)**: 同 U25・UI 未配線。
+  - **[HIGH] FR-45 穴あけによる新地物生成(U27 drill)**: drillRegion/checkDrillable/executeDrill/assembleDrillProposal 完備だが tool/controller 皆無。
+  - **[MEDIUM] FR-20 面積(km²)**: shapeAreaKm2 計算済・テスト済だが property panel 等に表示消費者ゼロ。
+  - **[MEDIUM] FR-30 共有頂点の視覚区別**: 連動移動は機能するが、共有頂点を通常頂点と視覚区別して描く MUST 節が未描画(単一 vertexFill)。
+  - **[MEDIUM] FR-87/88 頂点削除(deleteVertex/deleteRingVertex)**: 本セッションで FR-87 エッジ追加は結線したが、頂点削除側は UI 不達のまま(別経路)。
+  - **教訓(重要)**: 「落ちた要件」検出は feature 棚卸しだけでは不十分＝MUST ごとの UI 到達性(user gesture→domain→描画)追跡が必須。初期監査(過去版差分)は補完的で、真の落ち MUST は reachable 検証でしか出ない。監査doc の総括を訂正済。
+  - **修正計画(重大度順)**: (1)ring-edit(FR-22 穴/飛び地追加 + FR-24 リング削除)= RingEditToolController 新設(knife パターン踏襲) (2)FR-45 drill = DrillToolController 新設 (3)FR-87/88 頂点削除 = edit-session へ結線 (4)FR-20 面積表示 (5)FR-30 共有頂点視覚区別。各 test-first→多次元レビュー→フル vitest→commit。
+
 - D46(2026-07-02・バグハント第8波 確定3件を根治): 第8波(新角度=時間/暦・ナイフ幾何・z順/LOD・FR-74履歴・ストア原子性・ラベル占有)=**7候補→3確定(4 refute)**を実装→多次元レビュー→フル vitest 緑→個別コミット。
   - **[HIGH/幾何] ナイフ傾斜/屈曲カットの clip 押し出し不正** `c106f8b`: 開分断線が軸非平行・L/V/U字だと openLineToClip の半領域構築でコネクタ辺が target を横切り、正当直線カットを invalid-shape 拒否 or 偽片/偽頂点生成(面積和保存でテスト素通り)。extend-to-frame(端セグメント延長→frame外周で閉じる)へ書換え「clip内部辺=描線のみ」を保証。回帰網 assertNoPhantomVertices 追加。デグレなし(axis-parallel/closed/n-way 温存・1500 fuzz+全1789緑)。
   - **[MEDIUM/MUST] FR-80 ドラッグ矩形マルチ頂点選択が UI 到達不能** `fc8e48c`: must 要件だが live-selection-port が drag 早期return・resolver 未供給で不達(教訓5.7)。**監査が PRESENT と誤判定した MUST 欠陥をバグハントが捕捉**(FR-87 と同型)。verticesInRectangle resolver 新設(クリックhit-test/レンダラと単一真実源)+空白press ゲート+wrap-parity(±360°複製列挙)結線。
