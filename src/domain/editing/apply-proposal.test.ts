@@ -21,9 +21,10 @@ import {
   type LineFeature,
 } from '../feature';
 import { createShape, createTerritoryRing } from '../ring';
-import { createVertex, createVertexStore } from '../vertex';
+import { createVertex, createVertexStore, setVertex, withVertexCoordinate } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { isValidSeries } from '../anchor-series';
 import type { AddSnapshot } from '../add/proposal';
@@ -793,5 +794,90 @@ describe('applyMergeProposal', () => {
     const dSnap = dAt.entry.anchor.snapshot;
     const dCited = citedVertexIds(dSnap.features);
     for (const vid of dCited) expect(dSnap.vertices.byId.has(asVertexId(vid))).toBe(true);
+  });
+
+  it('does NOT leak an unrelated feature\'s private vertices into the result history (第7波 divergence)', () => {
+    // A+B merge with an UNRELATED, disjoint leaf N present in the merge input (as it
+    // would be — buildMergeProposal receives the whole effective snapshot). N shares NO
+    // vertex with A/B. The result feature is born a fresh single-feature history; its
+    // snapshot store must carry ONLY the result's own union-boundary vertices — never a
+    // COPY of N's private vertices. If it did, a later move of N (updating N's OWN
+    // history) would disagree with the stale copy and raise a spurious
+    // VertexCoordinateDivergence across histories.
+    const rectLeaf = (
+      id: string,
+      corners: readonly [number, number][],
+    ): { feature: LeafFeature; vertices: ReturnType<typeof createVertex>[] } => {
+      const vertices = corners.map((c, i) => createVertex(asVertexId(`${id}-v${i}`), { lon: c[0], lat: c[1] }));
+      const ring = createTerritoryRing(asRingId(`${id}-r0`), vertices.map((v) => v.id));
+      const feature = createLeafFeature(asFeatureId(id), createBasicAttributes(id, 0, 1000), color, createShape([ring]));
+      return { feature, vertices };
+    };
+    const a = rectLeaf('a', [[0, 0], [10, 0], [10, 10], [0, 10]]);
+    const b = rectLeaf('b', [[10, 0], [20, 0], [20, 10], [10, 10]]); // adjacent to A along x=10.
+    const n = rectLeaf('n', [[100, 100], [110, 100], [110, 110], [100, 110]]); // disjoint, unrelated.
+    const features: Feature[] = [a.feature, b.feature, n.feature];
+    const store = createVertexStore([...a.vertices, ...b.vertices, ...n.vertices]);
+
+    let root: DomainProject = emptyProject();
+    for (const { feature, vertices } of [a, b, n]) {
+      root = applyAddProposal(root, {
+        featureId: feature.id,
+        anchorTime: timePointYear(0),
+        snapshot: { feature, vertices, sharedCandidateIds: new Map() },
+      });
+    }
+
+    const built = buildMergeProposal({
+      features,
+      vertices: store,
+      targetIds: [asFeatureId('a'), asFeatureId('b')],
+      atTime: 500,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({ attributes: createBasicAttributes('merged', 0, 100), color }),
+      ids: makeIdPorts(),
+    });
+    expect(built.status).toBe(MERGE_STATUS.Proposal);
+    if (built.status !== MERGE_STATUS.Proposal) return;
+    const proposal = built.proposal;
+    const merged = applyMergeProposal(root, toMergeEditProposal(proposal, timePointYear(500)), calendar);
+
+    // The result history's snapshot store carries NONE of N's vertices.
+    const resultHistory = merged.histories.find((h) => h.featureId === proposal.resultFeatureId)!;
+    const rAt = resolveAt(resultHistory.series, timePointYear(500), calendar);
+    expect(rAt.kind).toBe('present');
+    if (rAt.kind !== 'present') return;
+    const rStore = rAt.entry.anchor.snapshot.vertices;
+    for (const nv of n.vertices) expect(rStore.byId.has(nv.id)).toBe(false);
+    // And it still resolves every vertex the result feature genuinely cites.
+    const rCited = citedVertexIds(rAt.entry.anchor.snapshot.features);
+    for (const vid of rCited) expect(rStore.byId.has(asVertexId(vid))).toBe(true);
+
+    // Now MOVE N's own vertex (edits N's history only). With the leak fixed no other
+    // history holds an N-vertex copy, so the whole project stays consistent.
+    const nHistory = merged.histories.find((h) => h.featureId === n.feature.id)!;
+    const movedSeries = normalizeSeries(
+      nHistory.series.entries.map((entry) => {
+        const snap = entry.anchor.snapshot;
+        const moved = setVertex(snap.vertices, withVertexCoordinate(n.vertices[0]!, { lon: 999, lat: 999 }));
+        return createAnchorEntry(
+          createAnchor(entry.anchor.id, createAnchorSnapshot(snap.features, moved)),
+          entry.start,
+          entry.end,
+        );
+      }),
+      calendar,
+    );
+    const afterMove: DomainProject = {
+      ...merged,
+      histories: merged.histories.map((h) =>
+        h.featureId === n.feature.id ? { featureId: h.featureId, series: movedSeries } : h,
+      ),
+    };
+    const report = checkConsistency(afterMove, calendar);
+    const divergence = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+    expect(divergence).toBeUndefined();
   });
 });

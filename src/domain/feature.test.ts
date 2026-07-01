@@ -11,6 +11,8 @@ import {
   featureKindLabel,
   hasNoChildren,
   isTopLevel,
+  pruneVertexStore,
+  referencedVertexIds,
   withAggregateChildIds,
   withKindLabel,
   withLeafShape,
@@ -18,6 +20,7 @@ import {
   withParentId,
   withPointVertexId,
 } from './feature';
+import { createVertex, createVertexStore } from './vertex';
 
 const attrs = createBasicAttributes('X', 0, 100);
 const color = createColorInfo(true, '#1', '#2', '#3');
@@ -134,5 +137,43 @@ describe('feature withXxx coverage', () => {
     });
     expect(f.kindLabel).toBe('capital');
     expect('kindLabel' in withKindLabel(f, undefined)).toBe(false);
+  });
+});
+
+describe('referencedVertexIds — every id a feature cites', () => {
+  it('point cites its single vertex, aggregate cites none', () => {
+    const point = createPointFeature(asFeatureId('p'), attrs, color, asVertexId('v'));
+    expect(referencedVertexIds(point)).toEqual([asVertexId('v')]);
+    expect(referencedVertexIds(createAggregateFeature(asFeatureId('a'), attrs, color, []))).toEqual([]);
+  });
+
+  it('line cites its ordered path; leaf cites every ring vertex', () => {
+    const line = createLineFeature(asFeatureId('l'), attrs, color, [asVertexId('v0'), asVertexId('v1')]);
+    expect(referencedVertexIds(line)).toEqual([asVertexId('v0'), asVertexId('v1')]);
+    const ring = createTerritoryRing(asRingId('r'), [asVertexId('a'), asVertexId('b'), asVertexId('c')]);
+    const leaf = createLeafFeature(asFeatureId('f'), attrs, color, createShape([ring]));
+    expect(referencedVertexIds(leaf)).toEqual([asVertexId('a'), asVertexId('b'), asVertexId('c')]);
+  });
+});
+
+describe('pruneVertexStore — drop vertices no feature cites', () => {
+  it('keeps referenced vertices (incl. genuinely shared) and drops orphans', () => {
+    const store = createVertexStore([
+      createVertex(asVertexId('a'), { lon: 0, lat: 0 }),
+      createVertex(asVertexId('b'), { lon: 1, lat: 0 }),
+      createVertex(asVertexId('orphan'), { lon: 9, lat: 9 }),
+    ]);
+    // Two features sharing vertex 'a' — the shared id must survive.
+    const p = createPointFeature(asFeatureId('p'), attrs, color, asVertexId('a'));
+    const line = createLineFeature(asFeatureId('l'), attrs, color, [asVertexId('a'), asVertexId('b')]);
+    const pruned = pruneVertexStore(store, [p, line]);
+    expect([...pruned.byId.keys()].map(String).sort()).toEqual(['a', 'b']);
+  });
+
+  it('a cited id absent from the store is simply not added (no dangling body)', () => {
+    const store = createVertexStore([createVertex(asVertexId('a'), { lon: 0, lat: 0 })]);
+    const line = createLineFeature(asFeatureId('l'), attrs, color, [asVertexId('a'), asVertexId('missing')]);
+    const pruned = pruneVertexStore(store, [line]);
+    expect([...pruned.byId.keys()].map(String)).toEqual(['a']);
   });
 });

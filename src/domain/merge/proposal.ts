@@ -33,6 +33,7 @@ import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
 import {
   createAggregateFeature,
   createLeafFeature,
+  pruneVertexStore,
   withAggregateChildIds,
   withParentId,
   type Feature,
@@ -642,8 +643,13 @@ function assembleLeafOnly(
   // parentId が none の場合は付け替えがなく同期は恒等 (changedIds 空)。
   const synced = syncAggregateChildIds(nextFeatures);
 
-  // 頂点ストア: 新規頂点を追加 (旧頂点は U11 transferSharing が整理する素材として残す)。
-  const nextVertices = addVertices(vertices, built.vertices);
+  // 頂点ストア: 新規頂点を追加後、結果 after-state (synced.features) が実際に参照する頂点
+  // id へ剪定する。入力ストアには無関係地物の私有頂点が含まれるため、剪定しないと結果履歴の
+  // スナップショットへそれらが漏れ、後続の無関係な頂点移動が偽の VertexCoordinateDivergence
+  // を誘発する (第7波 データ整合)。真に共有される頂点 (union 境界・集約の子境界) は結果地物が
+  // 参照するため残り、無関係頂点だけが落ちる。U11 transferSharing が消費する新頂点 body も
+  // 結果末端が参照するため保持される。
+  const nextVertices = pruneVertexStore(addVertices(vertices, built.vertices), synced.features);
 
   const createdIds = [...realizedParent.createdIds, resultFeatureId];
   // 既存集約 (existing) の childIds を変更した場合のみ存続変更として報告する。新規 create
@@ -721,7 +727,10 @@ function assembleAggregateResult(
     targetIds,
     resultFeatureId,
     nextFeatures: synced.features,
-    nextVertices: vertices, // 集約結合は頂点を作り直さない。
+    // 集約結合は頂点を作り直さないが、入力ストアには無関係地物の私有頂点が含まれるため、
+    // 結果 after-state (synced.features) が参照する頂点へ剪定して結果履歴への漏洩を防ぐ
+    // (第7波 データ整合)。継続子 (集約の子末端) が参照する頂点は残る。
+    nextVertices: pruneVertexStore(vertices, synced.features),
     createdIds,
     deletedIds: [...deleted],
     survivedTouchedIds: [...new Set<FeatureId>([...continuingChildren, ...synced.changedIds])],

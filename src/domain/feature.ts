@@ -26,6 +26,7 @@ import type { BasicAttributes, ColorInfo } from './attributes';
 import type { FeatureId, VertexId } from './ids';
 import type { Shape } from './ring';
 import { stripInvisibleThenTrim } from './text';
+import type { Vertex, VertexStore } from './vertex';
 
 export const FEATURE_KIND = {
   Point: 'point',
@@ -338,4 +339,60 @@ export function featureKindLabel(feature: Feature): string {
     default:
       return assertNever(feature);
   }
+}
+
+// --- vertex references ------------------------------------------------------
+
+/**
+ * Every vertex id a single feature references (point vertex / line path / leaf
+ * ring vertices). An aggregate owns no vertices (its area is the runtime union
+ * of its children — FR-35), so it references none. SINGLE source of the「地物が
+ * 参照する頂点 id」規則 (教訓 5.30): the load-time consistency checks
+ * (persistence/consistency), the merge proposal's after-state vertex prune, and
+ * the U06 conflict write-back all defer here so what a feature is deemed to cite
+ * never drifts apart across units.
+ */
+export function referencedVertexIds(feature: Feature): VertexId[] {
+  const out: VertexId[] = [];
+  switch (feature.kind) {
+    case FEATURE_KIND.Point:
+      out.push(feature.vertexId);
+      break;
+    case FEATURE_KIND.Line:
+      for (const v of feature.vertexIds) out.push(v);
+      break;
+    case FEATURE_KIND.Leaf:
+      for (const ring of feature.shape.rings) {
+        for (const v of ring.vertexIds) out.push(v);
+      }
+      break;
+    case FEATURE_KIND.Aggregate:
+      break; // no own vertices.
+    default:
+      assertNever(feature);
+  }
+  return out;
+}
+
+/**
+ * Prune a vertex store to exactly the ids referenced by `features` (via
+ * {@link referencedVertexIds}). Vertices no feature in the set cites are dropped
+ * so a history snapshot never carries private vertices of unrelated features —
+ * those orphans would otherwise leak into a shared cross-history store and, when
+ * an unrelated feature later moves its own like-id vertex, raise a spurious
+ * VertexCoordinateDivergence (第7波 データ整合). Legitimately shared vertices (an
+ * aggregate child's boundary, a union seam kept by the result leaf) ARE cited by
+ * a surviving feature, so they are retained. Input non-destructive.
+ */
+export function pruneVertexStore(store: VertexStore, features: readonly Feature[]): VertexStore {
+  const referenced = new Set<VertexId>();
+  for (const feature of features) {
+    for (const id of referencedVertexIds(feature)) referenced.add(id);
+  }
+  const byId = new Map<VertexId, Vertex>();
+  for (const id of referenced) {
+    const vertex = store.byId.get(id);
+    if (vertex !== undefined) byId.set(id, vertex);
+  }
+  return { byId };
 }

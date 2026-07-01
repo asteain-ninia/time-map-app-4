@@ -45,6 +45,7 @@ import type { TimePoint } from '../time/time-point';
 import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } from '../ids';
 import {
   FEATURE_KIND,
+  pruneVertexStore,
   withLeafShape,
   withLineVertexIds,
   withPointVertexId,
@@ -875,7 +876,15 @@ export function applyMergeProposal(
   for (const createdId of snapshot.createdIds) {
     const created = afterById.get(createdId);
     if (created === undefined) continue;
-    const vertexStore = createVertexStore(mergeVertices);
+    // The created feature gets a FRESH single-feature history, so its snapshot store
+    // must carry ONLY the vertices this one feature cites — never the whole merge
+    // store (`mergeVertices`), which also holds unrelated features' private vertices.
+    // Dumping the full store here would seed the result history with an orphan COPY of
+    // an unrelated feature N's vertex; a later move of N (updating N's own history) then
+    // diverges from this stale copy, raising a spurious VertexCoordinateDivergence
+    // (第7波 データ整合 HIGH). Pruning to the created feature's own refs keeps the
+    // union-boundary / aggregate-child vertices it genuinely cites (単一真実源 剪定).
+    const vertexStore = pruneVertexStore(createVertexStore(mergeVertices), [created]);
     const anchor = anchorFor([created], vertexStore, createdId, anchorTime);
     const newHistory: FeatureHistory = {
       featureId: createdId,

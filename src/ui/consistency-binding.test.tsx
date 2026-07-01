@@ -28,7 +28,9 @@ import {
 import type { SplitSnapshot } from '../domain/knife/index';
 import { timePointYear } from '../domain/time/time-point';
 import { createBasicAttributes, createColorInfo } from '../domain/attributes';
-import { createLeafFeature, type LeafFeature } from '../domain/feature';
+import { createLeafFeature, referencedVertexIds, type LeafFeature } from '../domain/feature';
+import { resolveAt } from '../domain/anchor-series';
+import { getCalendar } from '../domain/time/calendar';
 import { createShape, createTerritoryRing } from '../domain/ring';
 import { createVertex, type Vertex } from '../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
@@ -507,6 +509,83 @@ describe('applyResolutionsFor (U35 proposal-bound adapter)', () => {
     const bArea = resolveLeafShape(fb.shape, vertices)!;
     expect(insideAt(aArea, { lon: 1, lat: 1 })).toBe(true);
     expect(insideAt(bArea, { lon: 11, lat: 1 })).toBe(true);
+  });
+
+  // 第7波 LOW (vertex-store-prune): rewriteFeatureAtTime writes the trimmed adjust
+  // feature back carrying the difference's NEW vertices, merged over the effective
+  // snapshot's store. The trim replaces the adjust ring with a smaller one, so its
+  // FORMER ring vertices become unreferenced. Without pruning to what the new snapshot
+  // actually cites, those orphans linger in the write-back store and accrue across
+  // successive conflict-convergence rounds (the wide f-n is trimmed against TWO
+  // priorities in one apply → two rewrite passes). This asserts the resulting f-n
+  // history snapshot carries NO orphan vertex — every stored id is cited by a feature
+  // in that same snapshot.
+  it('rewriteFeatureAtTime leaves no orphan (unreferenced) vertices after multi-round trim', () => {
+    const calendar = getCalendar('gregorian');
+    let root = emptyProject();
+    let n = 0;
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
+      nextRingId: () => asRingId(`rr-${(n += 1)}`),
+    });
+
+    // Two disjoint priorities f-a [0,2]² and f-b [10,12]², then a wide adjust f-n
+    // x∈[1,11] overlapping BOTH — trimmed against each in one apply (two rewrites).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const ra = binding.startProcess(
+      createEditProposal(a.feature.id, timePointYear(1000), addSnapshot(a.feature, a.vertices)),
+    );
+    if (ra.status === PROCESS_STATUS.Committed) root = ra.state;
+    const b = squareLeaf('f-b', 'vb', 10, 0);
+    const rb = binding.startProcess(
+      createEditProposal(b.feature.id, timePointYear(1000), addSnapshot(b.feature, b.vertices)),
+    );
+    if (rb.status === PROCESS_STATUS.Committed) root = rb.state;
+
+    const nVerts = [
+      [1, 0],
+      [11, 0],
+      [11, 2],
+      [1, 2],
+    ].map((c, i) => createVertex(asVertexId(`vn-${i}`), { lon: c[0]!, lat: c[1]! }));
+    const nRing = createTerritoryRing(asRingId('r-f-n'), nVerts.map((v) => v.id));
+    const nFeature = createLeafFeature(
+      asFeatureId('f-n'),
+      createBasicAttributes('f-n', 0, 0),
+      color,
+      createShape([nRing]),
+    );
+    const proposal = createEditProposal(nFeature.id, timePointYear(1000), addSnapshot(nFeature, nVerts));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const committed = binding.applyResolutionsFor(proposal)(
+      pending.conflicts.map((conflict) => ({
+        conflictId: conflict.id,
+        priorityFeatureId:
+          conflict.a.featureId === nFeature.id ? conflict.b.featureId : conflict.a.featureId,
+        adjustFeatureId: nFeature.id,
+      })),
+    );
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    // Inspect f-n's history snapshot store at the resolution time: NO stored vertex may
+    // be an orphan (uncited by any feature in the same snapshot).
+    const history = root.histories.find((h) => h.featureId === nFeature.id)!;
+    const at = resolveAt(history.series, timePointYear(1000), calendar);
+    expect(at.kind).toBe('present');
+    if (at.kind !== 'present') return;
+    const snap = at.entry.anchor.snapshot;
+    const cited = new Set<string>();
+    for (const f of snap.features) for (const v of referencedVertexIds(f)) cited.add(v as string);
+    const orphans = [...snap.vertices.byId.keys()].map(String).filter((id) => !cited.has(id));
+    expect(orphans).toEqual([]);
+    // Sanity: the trimmed f-n still cites vertices that all resolve in its own store.
+    for (const id of cited) expect(snap.vertices.byId.has(asVertexId(id))).toBe(true);
   });
 
   it('returns conflicts-pending again when no policy is supplied (部分確定の禁止)', () => {

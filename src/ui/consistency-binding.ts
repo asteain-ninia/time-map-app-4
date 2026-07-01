@@ -86,6 +86,7 @@ import { quantizeCoordinate } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import {
   featureDisplayName,
+  pruneVertexStore,
   withLeafShape,
   type Feature,
   type LeafFeature,
@@ -512,7 +513,17 @@ function rewriteFeatureAtTime(
       const features = base.features.some((f) => f.id === featureId)
         ? base.features.map((f) => (f.id === featureId ? feature : f))
         : [...base.features, feature];
-      const vertices = createVertexStore([...base.vertices.byId.values(), ...newVertices]);
+      // Prune to what the NEW snapshot's features actually reference: the trim
+      // replaces the adjust feature's shape with a smaller one, so its former
+      // (now-unreferenced) boundary vertices would otherwise linger as orphans in
+      // the write-back store and accrue across successive conflict-convergence
+      // rounds — leaking into the shared cross-history store and later raising a
+      // spurious divergence (第7波 データ整合 LOW). Vertices any surviving feature
+      // still cites (shared boundaries, untouched siblings) are retained.
+      const vertices = pruneVertexStore(
+        createVertexStore([...base.vertices.byId.values(), ...newVertices]),
+        features,
+      );
       return createAnchor(
         deriveAnchorId(featureId, anchorTime),
         createAnchorSnapshot(features, vertices),

@@ -33,7 +33,7 @@
 //
 // Pure & framework-free.
 
-import type { Feature } from '../feature';
+import { referencedVertexIds, type Feature } from '../feature';
 import type { Calendar } from '../time/calendar';
 import { compare, normalize } from '../time/normalized';
 import type { TimePoint } from '../time/time-point';
@@ -138,27 +138,6 @@ export interface ConsistencyReport {
 function namesOf(features: readonly Feature[], ids: readonly FeatureId[]): string[] {
   const byId = new Map<FeatureId, Feature>(features.map((f) => [f.id, f]));
   return ids.map((id) => byId.get(id)?.attributes.name ?? idToString(id));
-}
-
-/** Every vertex id a feature references (point / line / leaf rings). */
-function referencedVertexIds(feature: Feature): VertexId[] {
-  const out: VertexId[] = [];
-  switch (feature.kind) {
-    case 'point':
-      out.push(feature.vertexId);
-      break;
-    case 'line':
-      for (const v of feature.vertexIds) out.push(v);
-      break;
-    case 'leaf':
-      for (const ring of feature.shape.rings) {
-        for (const v of ring.vertexIds) out.push(v);
-      }
-      break;
-    case 'aggregate':
-      break; // no own vertices.
-  }
-  return out;
 }
 
 // --- (a) missing vertex reference -------------------------------------------
