@@ -57,4 +57,35 @@ describe('UnsavedWarningDialog (FR-107 3択, 受け入れ基準 2)', () => {
     fireEvent.keyDown(screen.getByTestId('unsaved-modal-root'), { key: 'Escape' });
     expect(onChoose).toHaveBeenCalledWith(UNSAVED_CHOICE.Cancel);
   });
+
+  it('focuses the dialog on mount (a11y: keyboard drives it from the start)', () => {
+    render(<UnsavedWarningDialog onChoose={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByTestId('unsaved-modal-root'));
+  });
+
+  it('Tab from the last focusable wraps to the first (focus trap, 背面へ抜けない)', () => {
+    render(<UnsavedWarningDialog onChoose={() => {}} />);
+    const root = screen.getByTestId('unsaved-modal-root');
+    const focusables = root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    last.focus();
+    fireEvent.keyDown(root, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('Shift+Tab from the first focusable wraps to the last (focus trap)', () => {
+    render(<UnsavedWarningDialog onChoose={() => {}} />);
+    const root = screen.getByTestId('unsaved-modal-root');
+    const focusables = root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    first.focus();
+    fireEvent.keyDown(root, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
 });

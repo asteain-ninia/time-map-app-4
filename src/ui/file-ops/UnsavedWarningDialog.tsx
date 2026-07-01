@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
+import { useModalKeydown } from '../a11y/index';
 import { UNSAVED_CHOICE, type UnsavedChoice } from './unsaved-guard';
 import { UNSAVED_STRINGS } from './strings';
 
@@ -37,16 +38,10 @@ export function UnsavedWarningDialog(props: UnsavedWarningDialogProps): JSX.Elem
   const { onChoose, zIndex } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Esc resolves キャンセル (the safe default: keep state, protect unsaved data).
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onChoose(UNSAVED_CHOICE.Cancel);
-      }
-    },
-    [onChoose],
-  );
+  // Esc resolves キャンセル (the safe default: keep state, protect unsaved data) and
+  // Tab / Shift+Tab cycle inside the dialog — the shared trap (教訓 5.13).
+  const cancel = useCallback(() => onChoose(UNSAVED_CHOICE.Cancel), [onChoose]);
+  const onKeyDown = useModalKeydown(rootRef, cancel);
 
   useEffect(() => {
     rootRef.current?.focus();

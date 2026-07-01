@@ -385,6 +385,30 @@ describe('キャンセルと一時状態の破棄 (受け入れ基準 7, 教訓 
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(apply).not.toHaveBeenCalled();
   });
+
+  // 第5次バグハント (a11y) — the dialog focuses on mount, Esc cancels, and Tab wraps
+  // (受け入れ基準 9: フォーカスはモーダル内に留まる) via the shared focus-trap helper.
+  it('マウント時にダイアログへフォーカスし、Esc でキャンセルする (a11y)', () => {
+    const onCancel = vi.fn();
+    renderModal([conflict('c1', FA, FB)], { onCancel });
+    const dialog = screen.getByTestId('conflict-dialog');
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('Tab は末尾から先頭へ循環し、フォーカスが背面へ抜けない (受け入れ基準 9)', () => {
+    renderModal([conflict('c1', FA, FB)]);
+    const dialog = screen.getByTestId('conflict-dialog');
+    const focusables = dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    last.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+  });
 });
 
 describe('確定後の onCommitted 再生成でも二重確定しない (回帰: phase ゲート, 教訓 5.2)', () => {

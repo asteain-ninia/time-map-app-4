@@ -4,7 +4,7 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -83,5 +83,49 @@ describe('DeleteFeatureButton (FR-85, 受け入れ基準 4)', () => {
     await user.click(screen.getByLabelText(DELETE_BUTTON_LABEL));
     await user.click(screen.getByLabelText('削除を確定'));
     expect(onConfirm).toHaveBeenCalledWith(asFeatureId('ctx'));
+  });
+});
+
+// bughunt review #5: the confirmation is a role=dialog but had no Esc / focus-on-mount /
+// Tab トラップ, unlike the app's other modals. It now shares `useModalKeydown` +
+// focus-on-mount for consistency.
+describe('DeleteFeatureButton 確認ダイアログ — 共有モーダル a11y (review #5)', () => {
+  it('ダイアログを開くとダイアログ本体へフォーカスが移る (focus-on-mount)', async () => {
+    renderButton(ACTIVE);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText(DELETE_BUTTON_LABEL));
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+  });
+
+  it('Esc でキャンセル扱いになり、確定せずダイアログが閉じる', async () => {
+    const { onConfirm } = renderButton(ACTIVE);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText(DELETE_BUTTON_LABEL));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(onConfirm).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('Tab / Shift+Tab はダイアログ内で循環する (背面へ抜けない)', async () => {
+    renderButton(ACTIVE);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText(DELETE_BUTTON_LABEL));
+    const dialog = screen.getByRole('dialog');
+    const confirmBtn = screen.getByLabelText('削除を確定'); // first focusable
+    const cancelBtn = screen.getByLabelText('削除をキャンセル'); // last focusable
+
+    // On mount the dialog root holds focus (not in the ring): Tab → first, Shift+Tab → last.
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(confirmBtn);
+
+    // At the last focusable, Tab wraps to the first.
+    cancelBtn.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(confirmBtn);
+
+    // At the first focusable, Shift+Tab wraps to the last.
+    confirmBtn.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(cancelBtn);
   });
 });

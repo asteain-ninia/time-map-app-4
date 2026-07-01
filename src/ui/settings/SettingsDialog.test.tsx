@@ -82,6 +82,66 @@ describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () 
   });
 });
 
+describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
+  it('wires each tab to its panel via id + aria-controls + aria-labelledby', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    const tab = screen.getByTestId('settings-tab-project');
+    const panel = screen.getByTestId('settings-project');
+    expect(tab).toHaveAttribute('id', 'settings-tab-project');
+    expect(tab).toHaveAttribute('aria-controls', 'settings-panel-project');
+    expect(panel).toHaveAttribute('id', 'settings-panel-project');
+    expect(panel).toHaveAttribute('aria-labelledby', 'settings-tab-project');
+  });
+
+  // review #3: BOTH panels are always in the DOM (the inactive one carries `hidden`), so
+  // neither tab's aria-controls points at a missing id. The IDREF targets always exist.
+  it('renders BOTH panels always; the inactive one is hidden (no dangling aria-controls)', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    const projectPanel = screen.getByTestId('settings-project');
+    const appPanel = screen.getByTestId('settings-app');
+    // Both aria-controls IDREF targets exist in the DOM…
+    expect(projectPanel).toHaveAttribute('id', 'settings-panel-project');
+    expect(appPanel).toHaveAttribute('id', 'settings-panel-app');
+    // …with the project (default) shown and the app panel hidden.
+    expect(projectPanel).not.toHaveAttribute('hidden');
+    expect(appPanel).toHaveAttribute('hidden');
+
+    // Switching flips which is hidden (still both present).
+    fireEvent.click(screen.getByTestId('settings-tab-app'));
+    expect(screen.getByTestId('settings-project')).toHaveAttribute('hidden');
+    expect(screen.getByTestId('settings-app')).not.toHaveAttribute('hidden');
+  });
+
+  // review #2: focus must FOLLOW the arrow (WAI-ARIA tablist). Fire each keyDown on the
+  // element that currently HAS focus so the test fails if the dialog only setTab()s
+  // without moving DOM focus. Selection is read from aria-selected (both panels are
+  // always rendered, review #3, so panel presence alone can no longer prove the switch).
+  it('ArrowRight / ArrowLeft move the selected tab AND DOM focus (wrapping)', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    const projectTab = screen.getByTestId('settings-tab-project');
+    const appTab = screen.getByTestId('settings-tab-app');
+
+    projectTab.focus();
+    // project → app on ArrowRight.
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(appTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(appTab);
+
+    // app → project on ArrowRight (wrap).
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
+    expect(projectTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(projectTab);
+
+    // project → app on ArrowLeft (wrap the other way).
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' });
+    expect(appTab).toHaveAttribute('aria-selected', 'true');
+    expect(document.activeElement).toBe(appTab);
+  });
+});
+
 describe('confirm routes to the correct scope (受け入れ基準 3 / 教訓 5.36)', () => {
   it('project edit dirty-marks the project document, not app-level', () => {
     const store = makeStore();

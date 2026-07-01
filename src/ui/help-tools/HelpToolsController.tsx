@@ -19,6 +19,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
+import { useModalKeydown } from '../a11y/index';
 import type { SessionStore } from '../state/store';
 import {
   CommandRegistry,
@@ -174,6 +175,14 @@ function HelpModal(props: {
   readonly onClose: () => void;
   readonly children: ReactNode;
 }): JSX.Element {
+  // Keyboard a11y (第5次バグハント / a11y): focus the dialog on mount, Esc closes,
+  // Tab / Shift+Tab cycle inside it (背面へ抜けない) — the shared trap (教訓 5.13).
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const onKeyDown = useModalKeydown(dialogRef, props.onClose);
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
+
   return (
     <div className="help-modal-root" data-testid={`${props.testid}-root`}>
       <div
@@ -188,6 +197,9 @@ function HelpModal(props: {
         role="dialog"
         aria-modal="true"
         aria-label={props.title}
+        tabIndex={-1}
+        ref={dialogRef}
+        onKeyDown={onKeyDown}
       >
         <header className="help-dialog__header">
           <h2 className="help-dialog__title">{props.title}</h2>

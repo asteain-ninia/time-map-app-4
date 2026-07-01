@@ -137,6 +137,37 @@ describe('RepairDialog (FR-106 一覧表示 + 動的選択肢, 受け入れ基�
     expect(onResolve).toHaveBeenCalledWith(null);
   });
 
+  it('focuses the dialog on mount (a11y: keyboard drives it from the start)', () => {
+    render(<RepairDialog report={reportOf()} onResolve={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByTestId('repair-modal-root'));
+  });
+
+  it('Tab from the last focusable wraps to the first (focus trap, 背面へ抜けない)', () => {
+    render(<RepairDialog report={reportOf()} onResolve={() => {}} />);
+    const root = screen.getByTestId('repair-modal-root');
+    const focusables = root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    last.focus();
+    fireEvent.keyDown(root, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('Shift+Tab from the first focusable wraps to the last (focus trap)', () => {
+    render(<RepairDialog report={reportOf()} onResolve={() => {}} />);
+    const root = screen.getByTestId('repair-modal-root');
+    const focusables = root.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    first.focus();
+    fireEvent.keyDown(root, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
   it('shows the unresolved notice when a previous repair did not finish (受け入れ基準 3 末項)', () => {
     render(<RepairDialog report={reportOf()} onResolve={() => {}} unresolved />);
     expect(screen.getByTestId('repair-unresolved')).toHaveTextContent(REPAIR_STRINGS.unresolved);

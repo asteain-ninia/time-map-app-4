@@ -6,8 +6,9 @@
 // (spec スコープ「やらないこと」). Section slots are passed as optional children
 // so a later unit injects content without this component knowing its shape.
 
-import { useState, type ReactNode } from 'react';
+import { useCallback, useState, type ReactNode } from 'react';
 
+import { nextTabForArrow } from '../a11y/index';
 import { APP_STRINGS, SIDEBAR_SECTION_TITLES } from './strings';
 
 /** The sidebar section keys, in tab order. */
@@ -49,6 +50,20 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   } = props;
   const [active, setActive] = useState<SidebarSection>(initialSection);
 
+  // Arrow-key traversal between the section tabs (WAI-ARIA tablist pattern). Focus
+  // FOLLOWS the arrow (setActive alone would leave DOM focus on the old tab, violating
+  // the tablist contract), so move focus to the target tab too (bughunt review #2).
+  const onTabKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>) => {
+      const next = nextTabForArrow(SECTION_ORDER, active, e.key);
+      if (next === null) return;
+      e.preventDefault();
+      setActive(next);
+      document.getElementById(`sidebar-tab-${next}`)?.focus();
+    },
+    [active],
+  );
+
   const content: Record<SidebarSection, ReactNode> = {
     [SIDEBAR_SECTION.Events]: eventsContent,
     [SIDEBAR_SECTION.Features]: featuresContent,
@@ -57,15 +72,18 @@ export function Sidebar(props: SidebarProps): JSX.Element {
 
   return (
     <aside className="sidebar" aria-label={APP_STRINGS.sidebarAriaLabel} data-testid="sidebar">
-      <div className="sidebar__tabs" role="tablist">
+      <div className="sidebar__tabs" role="tablist" aria-label={APP_STRINGS.sidebarAriaLabel}>
         {SECTION_ORDER.map((key) => (
           <button
             key={key}
             type="button"
             role="tab"
+            id={`sidebar-tab-${key}`}
+            aria-controls={`sidebar-panel-${key}`}
             aria-selected={active === key}
             data-testid={`sidebar-tab-${key}`}
             onClick={() => setActive(key)}
+            onKeyDown={onTabKeyDown}
           >
             {SECTION_TITLE[key]}
           </button>
@@ -75,6 +93,8 @@ export function Sidebar(props: SidebarProps): JSX.Element {
         <section
           key={key}
           role="tabpanel"
+          id={`sidebar-panel-${key}`}
+          aria-labelledby={`sidebar-tab-${key}`}
           hidden={active !== key}
           className="sidebar__panel"
           data-testid={`sidebar-panel-${key}`}

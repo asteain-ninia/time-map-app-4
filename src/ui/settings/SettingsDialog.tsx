@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { DEFAULT_PALETTE_THEME } from '../../domain/coloring/palette';
 import { GRID_SPACINGS_DEG, coerceGridSpacing } from '../../domain/basemap/grid';
+import { useModalKeydown, nextTabForArrow } from '../a11y/index';
 import type { ProjectSettingKey } from '../state/settings';
 
 import {
@@ -36,6 +37,9 @@ const SETTINGS_TAB = {
 } as const;
 
 type SettingsTab = (typeof SETTINGS_TAB)[keyof typeof SETTINGS_TAB];
+
+/** The scope tabs in traversal order (for the WAI-ARIA arrow-key navigation). */
+const SETTINGS_TAB_ORDER: readonly SettingsTab[] = [SETTINGS_TAB.Project, SETTINGS_TAB.App];
 
 /** Palette themes offered for the default-theme select (single source, 教訓 5.19). */
 const PALETTE_THEME_OPTIONS = [DEFAULT_PALETTE_THEME] as const;
@@ -70,33 +74,22 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
     if (result.status !== 'rejected') onClose();
   }, [dialog, onClose]);
 
-  // Focus trap + Esc (受け入れ基準 3 / 6: モーダル離脱の全経路でドラフト破棄).
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        cancelAndClose();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const root = dialogRef.current;
-      if (root === null) return;
-      const focusables = root.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0]!;
-      const last = focusables[focusables.length - 1]!;
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
+  // Focus trap + Esc (受け入れ基準 3 / 6: モーダル離脱の全経路でドラフト破棄). The
+  // trap logic is the shared a11y helper (教訓 5.13 単一の真実源).
+  const onKeyDown = useModalKeydown(dialogRef, cancelAndClose);
+
+  // Arrow-key traversal between the scope tabs (WAI-ARIA tablist pattern). Focus
+  // FOLLOWS the arrow (setTab alone would leave DOM focus on the old tab, violating the
+  // tablist contract), so move focus to the target tab too (bughunt review #2).
+  const onTabKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLButtonElement>) => {
+      const next = nextTabForArrow(SETTINGS_TAB_ORDER, tab, e.key);
+      if (next === null) return;
+      e.preventDefault();
+      setTab(next);
+      document.getElementById(`settings-tab-${next}`)?.focus();
     },
-    [cancelAndClose],
+    [tab],
   );
 
   useEffect(() => {
@@ -132,18 +125,24 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           <button
             type="button"
             role="tab"
+            id="settings-tab-project"
+            aria-controls="settings-panel-project"
             aria-selected={tab === SETTINGS_TAB.Project}
             data-testid="settings-tab-project"
             onClick={() => setTab(SETTINGS_TAB.Project)}
+            onKeyDown={onTabKeyDown}
           >
             {SETTINGS_STRINGS.tabProject}
           </button>
           <button
             type="button"
             role="tab"
+            id="settings-tab-app"
+            aria-controls="settings-panel-app"
             aria-selected={tab === SETTINGS_TAB.App}
             data-testid="settings-tab-app"
             onClick={() => setTab(SETTINGS_TAB.App)}
+            onKeyDown={onTabKeyDown}
           >
             {SETTINGS_STRINGS.tabApp}
           </button>
@@ -160,15 +159,17 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
           </ul>
         )}
 
+        {/* Both panels are ALWAYS rendered; the inactive one carries `hidden` so each
+            tab's aria-controls IDREF always points at an existing panel (review #3: a
+            three-way render left the non-active tab's aria-controls dangling). Mirrors
+            the Sidebar tablist. */}
         <div className="settings-dialog__body">
-          {tab === SETTINGS_TAB.Project ? (
-            <ProjectTab
-              dialog={dialog}
-              onRequestBasemapReplace={onRequestBasemapReplace}
-            />
-          ) : (
-            <AppTab dialog={dialog} />
-          )}
+          <ProjectTab
+            dialog={dialog}
+            onRequestBasemapReplace={onRequestBasemapReplace}
+            hidden={tab !== SETTINGS_TAB.Project}
+          />
+          <AppTab dialog={dialog} hidden={tab !== SETTINGS_TAB.App} />
         </div>
 
         <footer className="settings-dialog__footer">
@@ -199,8 +200,10 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
 function ProjectTab(props: {
   readonly dialog: ReturnType<typeof useSettingsDialog>;
   readonly onRequestBasemapReplace?: (() => void) | undefined;
+  /** Hide (but keep mounted) when the app tab is active, so aria-controls stays valid. */
+  readonly hidden: boolean;
 }): JSX.Element {
-  const { dialog, onRequestBasemapReplace } = props;
+  const { dialog, onRequestBasemapReplace, hidden } = props;
   const d = dialog.projectDraft;
   const set = dialog.setProjectField;
 
@@ -210,7 +213,14 @@ function ProjectTab(props: {
   };
 
   return (
-    <section className="settings-section settings-section--project" data-testid="settings-project">
+    <section
+      className="settings-section settings-section--project"
+      data-testid="settings-project"
+      role="tabpanel"
+      id="settings-panel-project"
+      aria-labelledby="settings-tab-project"
+      hidden={hidden}
+    >
       <p className="settings-section__hint">{SETTINGS_STRINGS.projectScopeHint}</p>
 
       <label>
@@ -444,13 +454,22 @@ function CustomPaletteEditor(props: {
 
 function AppTab(props: {
   readonly dialog: ReturnType<typeof useSettingsDialog>;
+  /** Hide (but keep mounted) when the project tab is active, so aria-controls stays valid. */
+  readonly hidden: boolean;
 }): JSX.Element {
-  const { dialog } = props;
+  const { dialog, hidden } = props;
   const d = dialog.appDraft;
   const set = dialog.setAppField;
 
   return (
-    <section className="settings-section settings-section--app" data-testid="settings-app">
+    <section
+      className="settings-section settings-section--app"
+      data-testid="settings-app"
+      role="tabpanel"
+      id="settings-panel-app"
+      aria-labelledby="settings-tab-app"
+      hidden={hidden}
+    >
       <p className="settings-section__hint">{SETTINGS_STRINGS.appScopeHint}</p>
 
       <label>

@@ -113,6 +113,11 @@ export default defineConfig({
       // import only pure `.ts` (domain persistence/basemap + U16 settings), so they
       // run in node without a DOM.
       'src/ui/file-ops/**/*.test.ts',
+      // a11y shared-helper pure-logic tests: the tablist arrow-key traversal math
+      // (第5次バグハント MEDIUM / a11y). Imports only pure `.ts` (no React/DOM), so
+      // it runs in node. The focus-trap hook test is `.test.tsx` (jsdom; .tsx glob
+      // below).
+      'src/ui/a11y/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U20 shell layout / mode toggle / view-only disabling / drag / tooltip /
       // overlay layering, etc.

@@ -16,8 +16,9 @@
 // unit (教訓 5.24: the host's confirm handler guards no-op). The component does not
 // push history itself.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useModalKeydown } from '../a11y/index';
 import {
   DELETE_TARGET_KIND,
   type DeleteTarget,
@@ -64,6 +65,7 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
   const enabled = featureId !== null;
 
   const [confirming, setConfirming] = useState(false);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const openConfirm = useCallback(() => {
     if (featureId !== null) setConfirming(true);
@@ -80,6 +82,16 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
     setConfirming(false);
   }, [featureId, onConfirm]);
 
+  // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the
+  // shared trap (教訓 5.13 / 5.14), consistent with the app's other role=dialog modals
+  // (bughunt review #5: this confirmation lacked Esc / focus-on-mount / Tab トラップ).
+  const onKeyDown = useModalKeydown(dialogRef, cancel);
+
+  // Focus the dialog when it opens so Esc / Tab are captured (教訓 5.14).
+  useEffect(() => {
+    if (confirming) dialogRef.current?.focus();
+  }, [confirming]);
+
   return (
     <div className="delete-feature" data-testid="delete-feature">
       <button
@@ -92,7 +104,15 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
       </button>
 
       {confirming ? (
-        <div role="dialog" aria-label={MSG_DELETE_CONFIRM_TITLE} className="delete-confirm">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={MSG_DELETE_CONFIRM_TITLE}
+          className="delete-confirm"
+          tabIndex={-1}
+          ref={dialogRef}
+          onKeyDown={onKeyDown}
+        >
           <p>{MSG_DELETE_CONFIRM_BODY}</p>
           <div className="delete-confirm-actions">
             <button type="button" aria-label="削除を確定" onClick={confirm}>

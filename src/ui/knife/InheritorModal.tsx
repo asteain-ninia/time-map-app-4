@@ -20,8 +20,9 @@
 // is open; the dialog sits ABOVE it and its buttons receive input directly. Esc
 // cancels. This is the same layering the conflict modal uses.
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 
+import { useModalKeydown } from '../a11y/index';
 import type { GeoMultiPolygon } from '../../domain/geometry/types';
 
 import { KNIFE_STRINGS } from './strings';
@@ -93,15 +94,9 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
   const { pieces, smallestIndex, selectedIndex, onSelect, onConfirm, onCancel } = props;
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onCancel();
-      }
-    },
-    [onCancel],
-  );
+  // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the
+  // shared trap (教訓 5.13 / 5.14).
+  const onKeyDown = useModalKeydown(dialogRef, onCancel);
 
   // Focus the dialog on mount so Esc / Tab are captured (教訓 5.14).
   useEffect(() => {

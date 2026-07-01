@@ -13,9 +13,10 @@
 // The dialog owns NO repair logic — detection / options / apply + re-validation
 // all live in U14; this is presentation over the pure flow model (受け入れ基準 7).
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
+import { useModalKeydown } from '../a11y/index';
 import { idToString } from '../../domain/ids';
 import type {
   ConsistencyReport,
@@ -83,16 +84,15 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
     setChoices((prev) => setRepairChoice(prev, index, optionId));
   }, []);
 
-  // Esc / 中止 resolve null (修復せず読み込まない): the safe default keeps current state.
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onResolve(null);
-      }
-    },
-    [onResolve],
-  );
+  // Esc / 中止 resolve null (修復せず読み込まない): the safe default keeps current
+  // state. Esc + Tab wrap come from the shared trap (教訓 5.13); focus the dialog on
+  // mount so the keyboard drives it from the start.
+  const abort = useCallback(() => onResolve(null), [onResolve]);
+  const onKeyDown = useModalKeydown(rootRef, abort);
+
+  useEffect(() => {
+    rootRef.current?.focus();
+  }, []);
 
   return (
     <div

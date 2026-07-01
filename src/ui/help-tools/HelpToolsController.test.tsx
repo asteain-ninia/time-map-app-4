@@ -237,6 +237,60 @@ describe('every view closes on the close button (教訓 5.2 全経路で閉じ�
   });
 });
 
+// 第5次バグハント (MEDIUM / a11y) — the HelpModal now focuses the dialog on mount,
+// Esc closes it, and Tab / Shift+Tab cycle inside it (背面へ抜けない) via the shared
+// focus-trap helper. Exercised over the About view (the simplest HelpModal user).
+describe('第5次バグハント (a11y): the HelpModal traps focus + closes on Esc', () => {
+  it('focuses the dialog on mount', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpAbout);
+    expect(document.activeElement).toBe(screen.getByTestId('about-panel'));
+  });
+
+  it('Esc closes the dialog', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpAbout);
+    fireEvent.keyDown(screen.getByTestId('about-panel'), { key: 'Escape' });
+    expect(screen.queryByTestId('about-panel')).not.toBeInTheDocument();
+  });
+
+  it('Tab from the last focusable wraps to the first (focus trap)', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpAbout);
+    const dialog = screen.getByTestId('about-panel');
+    const focusables = dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    last.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(first);
+  });
+
+  it('Shift+Tab from the first focusable wraps to the last (focus trap)', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpAbout);
+    const dialog = screen.getByTestId('about-panel');
+    const focusables = dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    );
+    const first = focusables[0]!;
+    const last = focusables[focusables.length - 1]!;
+    first.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+});
+
 // bughunt3 H1 — the controller lifts "a modal is open" up so the host can suspend the
 // global shortcut dispatcher. Without this the modal-open state was buried here and the
 // shell's window keydown listener kept firing Ctrl+Z / Delete THROUGH the dialog.

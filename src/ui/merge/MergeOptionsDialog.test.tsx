@@ -19,7 +19,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
@@ -50,6 +50,8 @@ import {
   type FeatureAtPoint,
   type ResolveLeafShape,
 } from './MergeToolController';
+import { MergeOptionsDialog } from './MergeOptionsDialog';
+import type { PropertyDecision } from '../../domain/merge/index';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 const ANCHOR = timePointYear(1000);
@@ -329,5 +331,71 @@ describe('MergeOptionsDialog — FR-52 上位領域・属性継承元の選択�
     expect(h.lastProposal()).toBeNull();
     expect(screen.getByTestId('merge-target-count').textContent).toBe('2');
     h.unmount();
+  });
+});
+
+// bughunt review #1: the結合オプション dialog is a `role="dialog"` modal and the a11y
+// module documents it as a trap target, but it used to inline an Esc-only onKeyDown with
+// no Tab-wrap. It now shares `useModalKeydown` like the other 5 modals. These mount the
+// dialog directly (no controller) to verify focus-on-mount + Esc + Tab cycling.
+describe('MergeOptionsDialog — 共有モーダル a11y (useModalKeydown, review #1)', () => {
+  const CANDIDATES = [
+    { featureId: asFeatureId('leaf-a'), displayName: 'leaf-a' },
+    { featureId: asFeatureId('leaf-b'), displayName: 'leaf-b' },
+  ] as const;
+
+  function renderDialog(overrides?: {
+    readonly onCancel?: () => void;
+    readonly onConfirm?: (p: unknown, q: PropertyDecision) => void;
+  }) {
+    const onCancel = overrides?.onCancel ?? vi.fn();
+    const onConfirm = overrides?.onConfirm ?? vi.fn();
+    const buildNewProperties = (name: string): PropertyDecision => ({
+      kind: 'new',
+      properties: { attributes: createBasicAttributes(name, 0, 100), color },
+    });
+    return render(
+      <MergeOptionsDialog
+        parentCandidates={CANDIDATES}
+        propertyCandidates={CANDIDATES}
+        buildNewProperties={buildNewProperties}
+        onConfirm={onConfirm as never}
+        onCancel={onCancel}
+      />,
+    );
+  }
+
+  it('マウント時にダイアログへフォーカスが移る (focus-on-mount)', () => {
+    renderDialog();
+    expect(document.activeElement).toBe(screen.getByTestId('merge-options-dialog'));
+  });
+
+  it('Esc で onCancel が呼ばれる', () => {
+    const onCancel = vi.fn();
+    renderDialog({ onCancel });
+    fireEvent.keyDown(screen.getByTestId('merge-options-dialog'), { key: 'Escape' });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('末尾フォーカスから Tab で先頭へ循環する (Tab-wrap, 背面へ抜けない)', () => {
+    renderDialog();
+    const dialog = screen.getByTestId('merge-options-dialog');
+    // The last focusable is the 結合を実行 (confirm) button; the first is 親なし radio.
+    const confirmBtn = screen.getByTestId('merge-options-confirm');
+    const firstRadio = screen.getByTestId('merge-parent-none');
+    confirmBtn.focus();
+    expect(document.activeElement).toBe(confirmBtn);
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(document.activeElement).toBe(firstRadio);
+  });
+
+  it('先頭フォーカスから Shift+Tab で末尾へ循環する', () => {
+    renderDialog();
+    const dialog = screen.getByTestId('merge-options-dialog');
+    const confirmBtn = screen.getByTestId('merge-options-confirm');
+    const firstRadio = screen.getByTestId('merge-parent-none');
+    firstRadio.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(confirmBtn);
   });
 });

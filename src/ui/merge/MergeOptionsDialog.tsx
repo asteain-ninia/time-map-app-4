@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
+import { useModalKeydown } from '../a11y/index';
 import {
   CREATE_TERMINAL,
   parentCreateWithTerminal,
@@ -89,15 +90,9 @@ export function MergeOptionsDialog(props: MergeOptionsDialogProps): JSX.Element 
   );
   const [newPropertyName, setNewPropertyName] = useState<string>('');
 
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onCancel();
-      }
-    },
-    [onCancel],
-  );
+  // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the
+  // shared trap (教訓 5.13 / 5.14), same as the other 5 modals.
+  const onKeyDown = useModalKeydown(dialogRef, onCancel);
 
   // Focus the dialog on mount so Esc / Tab are captured (教訓 5.14).
   useEffect(() => {

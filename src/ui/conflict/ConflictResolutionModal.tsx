@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { useModalKeydown } from '../a11y/index';
 import type { FeatureId } from '../../domain/ids';
 import type {
   Conflict,
@@ -119,33 +120,14 @@ export function ConflictResolutionModal<S>(
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   // --- focus trap (受け入れ基準 9: フォーカスはモーダル内に留まる) --------------
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        resolution.cancel();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const root = dialogRef.current;
-      if (root === null) return;
-      const focusables = root.querySelectorAll<HTMLElement>(
-        'button:not([disabled]), [href], input:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      );
-      if (focusables.length === 0) return;
-      const first = focusables[0]!;
-      const last = focusables[focusables.length - 1]!;
-      const active = document.activeElement;
-      if (e.shiftKey && active === first) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
-      }
-    },
-    [resolution],
-  );
+  // The trap (Esc + Tab wrap) is the shared a11y helper (教訓 5.13 単一の真実源).
+  const cancel = useCallback(() => resolution.cancel(), [resolution]);
+  const onKeyDown = useModalKeydown(dialogRef, cancel);
+
+  // Focus the dialog on mount so Esc / Tab are captured from the start.
+  useEffect(() => {
+    dialogRef.current?.focus();
+  }, []);
 
   const focusedConflict = conflicts.find((c) => c.id === focusedId) ?? null;
 
@@ -167,6 +149,7 @@ export function ConflictResolutionModal<S>(
         role="dialog"
         aria-modal="true"
         aria-label={CONFLICT_STRINGS.title}
+        tabIndex={-1}
         ref={dialogRef}
         onKeyDown={onKeyDown}
       >
