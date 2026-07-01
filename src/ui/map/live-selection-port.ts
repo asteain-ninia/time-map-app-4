@@ -13,15 +13,22 @@
 //     earlier setActiveFeature-only path wrongly LEFT a stale vertex set);
 //   - a VERTEX click → plain = replace the set with it, Shift = toggle it (FR-80, the
 //     modifiers are now honoured — Codex: the earlier path dropped Shift);
-//   - an EMPTY-space click → clears the whole selection (active + vertex set).
-// The selection is decided on RELEASE for a CLICK only (wasDrag === false); a drag is
-// a pan / edit gesture owned elsewhere, so the reducer's release sees origin === at
-// (a click) and never a rubber-band/move. The press-time WORLD point is captured so
-// the release finalizes against the same coordinate the press recorded.
+//   - an EMPTY-space click → clears the whole selection (active + vertex set);
+//   - an EMPTY-space DRAG → a rubber-band RECTANGLE select of the vertices inside it
+//     (FR-80 must, 教訓 5.7 配線欠落): plain replaces the set, Shift adds to it. The
+//     vertices inside are resolved through an injected {@link RectangleResolver} (the
+//     live drawn-vertex lookup), so the reducer never reaches into geometry itself.
+// The press-time WORLD point is captured so the release finalizes against the same
+// coordinate the press recorded. A NON-empty press (vertex / feature-body / edge handle)
+// stays CLICK-ONLY here (wasDrag ⇒ no selection change): a drag of such a handle is a
+// U24 edit-session gesture owned by the edit-session adapter, so this port must not
+// double-drive it — only an EMPTY-space press ever enters the rubber-band path.
 
 import {
+  HIT_KIND,
   SELECTION_EVENT,
   reduceSelection,
+  type RectangleResolver,
   type SelectionState,
 } from '../../domain/selection';
 import type { WorldCoordinate } from '../../domain/coordinate';
@@ -47,13 +54,24 @@ export type ScreenToWorld = (point: ScreenPoint) => WorldCoordinate;
 
 /**
  * Build a {@link SelectionPort} backed by U22's reducer over the live store. The
- * dispatcher calls start → (move…) → end; a CLICK release drives PointerDown(hit) →
- * PointerUp(at) through {@link reduceSelection} and persists the result. A DRAG
- * release selects nothing (it is owned by the pan / edit-session path).
+ * dispatcher calls start → (move…) → end; the release drives {@link reduceSelection}
+ * and persists the result:
+ *   - a NON-empty press (vertex / body / edge) is CLICK-ONLY — a drag selects nothing
+ *     (that gesture is owned by the pan / U24 edit-session path);
+ *   - an EMPTY-space press drives PointerDown(Empty) → PointerUp(at): a click (at ===
+ *     origin) clears the selection, a DRAG (at = the release world point) rubber-band
+ *     RECTANGLE-selects via the injected {@link RectangleResolver} (FR-80, plain =
+ *     replace / Shift = add).
+ *
+ * `rectangle` is the live drawn-vertex lookup U22 asks for the vertices inside a
+ * rubber-band; when omitted the port uses no resolver (an empty-drag then resolves to
+ * "nothing inside" — a plain drag clears, a shift drag leaves the set), which keeps the
+ * click-only unit tests / callers that never rubber-band unchanged.
  */
 export function createLiveSelectionPort(
   seam: SelectionStoreSeam,
   screenToWorld: ScreenToWorld,
+  rectangle?: RectangleResolver,
 ): SelectionPort {
   // The press captured on the most recent press (null = idle / already applied).
   let pressed: {
@@ -70,17 +88,24 @@ export function createLiveSelectionPort(
       // No live preview here (drag editing is owned by the edit-session adapter);
       // the selection is finalized on the click release via the U22 reducer.
     },
-    end(_point: ScreenPoint, wasDrag: boolean): void {
+    end(point: ScreenPoint, wasDrag: boolean): void {
       const press = pressed;
       pressed = null;
       if (press === null) return;
-      // Only a CLICK selects (教訓 5.30 single click/drag verdict); a drag is a
-      // pan / edit gesture and leaves the selection untouched.
-      if (wasDrag) return;
-      // Drive U22's reducer: PointerDown(hit) then PointerUp at the SAME point (a
-      // click, origin === at), so the body/vertex/empty rules apply verbatim
-      // (単一の真実源, 教訓 5.29). The rectangle resolver is the empty one — a click
-      // never resolves a rubber-band.
+      // A NON-empty press (vertex / feature-body / edge handle) is CLICK-ONLY here: a
+      // drag of such a handle is a U24 edit-session gesture owned by the edit-session
+      // adapter (教訓 5.30 single click/drag verdict), so this port must not double-drive
+      // it. Only an EMPTY-space press can rubber-band, so a non-empty drag selects nothing.
+      const isEmptyPress = press.hit.kind === HIT_KIND.Empty;
+      if (wasDrag && !isEmptyPress) return;
+      // The RELEASE world point for the PointerUp `at`. For a rubber-band (empty-space
+      // DRAG) it is the drag's opposite corner (the reducer sees origin ≠ at → rectangle);
+      // for a click (no drag) it is the SAME press point (origin === at → the body/vertex/
+      // empty click rules apply verbatim). Using the press point for a click keeps a
+      // sub-threshold jitter from spuriously opening a tiny rubber-band.
+      const releaseAt: WorldCoordinate = wasDrag ? screenToWorld(point) : press.at;
+      // Drive U22's OWN reducer (単一の真実源, 教訓 5.29): PointerDown(hit) records the
+      // press (empty → rectangle draft; vertex/body → click/arm), then PointerUp finalizes.
       const base = seam.getSelection();
       const down = reduceSelection(base, {
         kind: SELECTION_EVENT.PointerDown,
@@ -88,12 +113,13 @@ export function createLiveSelectionPort(
         hit: press.hit,
         shiftHeld: press.shift,
       });
-      // PointerUp at the SAME point (a click, origin === at) finalizes via the empty
-      // rectangle resolver (the reducer default) — a click never resolves a band.
-      const up = reduceSelection(down.state, {
-        kind: SELECTION_EVENT.PointerUp,
-        at: press.at,
-      });
+      // PointerUp: a rubber-band resolves the vertices inside through the injected
+      // resolver (FR-80 range select); a click never reaches the rectangle branch.
+      const up = reduceSelection(
+        down.state,
+        { kind: SELECTION_EVENT.PointerUp, at: releaseAt },
+        rectangle === undefined ? {} : { rectangle },
+      );
       seam.restoreSelection(up.state);
     },
     cancel(): void {

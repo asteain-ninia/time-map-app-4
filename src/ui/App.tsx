@@ -129,8 +129,8 @@ import {
   MapContextMenu,
   type ContextMenuOpener,
 } from './map/MapContextMenu';
-import { HIT_KIND } from '../domain/selection';
-import { liveHitTestAt, drawnAreaAt } from './map/live-hit-test';
+import { HIT_KIND, type RectangleResolver } from '../domain/selection';
+import { liveHitTestAt, drawnAreaAt, verticesInRectangle } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
 import {
@@ -659,12 +659,38 @@ export function App(): JSX.Element {
     // set, a vertex click replaces / Shift-toggles, empty clears, exactly per U22
     // (Codex P1: a setActiveFeature-only path wrongly left a stale vertex set). It
     // re-implements no selection rule.
+    // FR-80 must (教訓 5.7 配線欠落) — the rubber-band RECTANGLE resolver: the vertices
+    // inside a drag rectangle come from the SAME live drawn-vertex lookup the click
+    // hit-test and the renderer use (`verticesInRectangle` over the shared display
+    // resolution — displayControl honoured, so an aggregated/omitted vertex is never
+    // rubber-band-selected, 単一真実源 5.29). Supplying it is what turns an empty-space
+    // drag into a range select instead of resolving to "nothing inside".
+    const rectangleResolver: RectangleResolver = {
+      verticesInRectangle: (a, b) => {
+        const s = store.getState();
+        // wrap: enumerate the SAME ±360° turns the renderer painted (wrapTurnsForLonSpan)
+        // so a vertex shown only as a wrap replica on a panned view is rubber-band
+        // selectable — parity with the click hit-test (単一真実源, 描画⊇クリック⊇矩形).
+        const { camera, viewport } = ports.readCamera();
+        return verticesInRectangle(
+          {
+            root: s.domain,
+            time: s.currentTime,
+            displayControl: s.displayControl,
+            wrap: { camera, viewport },
+          },
+          a,
+          b,
+        );
+      },
+    };
     const selectionPort = createLiveSelectionPort(
       {
         getSelection: () => store.getState().selection,
         restoreSelection: (sel) => store.getState().restoreSelection(sel),
       },
       surfaceToWorld,
+      rectangleResolver,
     );
     // ROOT FIX (bughunt: 実アプリで頂点/地物のドラッグ編集が PointerDispatcher に未結線 —
     // confirmRelease 到達不能, 教訓5.7「ロジックがあっても UI から呼ばれず機能しない状態を

@@ -72,6 +72,7 @@ import {
   vertexHit,
   edgeHit,
   type HitResult,
+  type RectangleHit,
 } from '../../domain/selection';
 import {
   computeHandles,
@@ -454,6 +455,120 @@ export function drawnAreaAt(
   // under-includes a containing replica — see drawnLonOffsets TAIL-LATENCY CLAMP).
   const wrap = buildWrapFrame(input.wrap, worldPoint.lon, DEFAULT_HIT_RADIUS_PX);
   return drawnAreaAtPoint(areas, worldPoint, wrap);
+}
+
+/** The inputs the rubber-band rectangle vertex lookup needs (live root + time + control). */
+export interface VerticesInRectangleInput {
+  readonly root: DomainProject;
+  readonly time: TimePoint;
+  /**
+   * The display-control (FR-42 / FR-43) the frame drew with. The lookup enumerates the
+   * SAME grabbable vertex set the renderer draws and `liveHitTestAt` grabs (単一真実源:
+   * an aggregated / omitted feature's vertices are not drawn, so they are not selectable
+   * by a rubber-band either). When omitted, falls back to N=0 / no focus (the default).
+   */
+  readonly displayControl?: DisplayControlInput | undefined;
+  /**
+   * The camera + viewport the frame drew with. Supplied so the rubber-band enumerates the
+   * SAME ±360° wrap turns the renderer painted each vertex at (`wrapTurnsForLonSpan`, via
+   * {@link drawnLonOffsets}) — the SAME helper the CLICK hit-test (`liveHitTestAt` step 1)
+   * uses. Without it a vertex is tested at its canonical longitude only, so a rubber-band
+   * drawn around a vertex VISIBLE (and click-grabbable) only as a +360° replica selected
+   * NOTHING — the rectangle/click parity broke (描画 ⊇ クリック ⊋ 矩形). When omitted, the
+   * canonical ±1-turn set is enumerated (the previous behaviour, unchanged for a single
+   * non-wrapped frame / unit tests).
+   */
+  readonly wrap?: { readonly camera: Camera; readonly viewport: Viewport } | undefined;
+}
+
+/**
+ * The vertices inside the WORLD-space rectangle spanned by opposite corners `a`, `b`
+ * (FR-80 range select), backing U22's {@link RectangleResolver}. Returns the SINGLE
+ * owner + its contained vertices, or `null` when the rectangle contains no grabbable
+ * vertex (教訓 5.18: a real "nothing inside" answer, distinct from a single owner).
+ *
+ * SINGLE TRUTH SOURCE (教訓 5.29): the candidate vertices come from the SAME shared
+ * display resolution's `owners` map (`VertexId → owning FeatureId`, restricted to
+ * features drawn with their own real shape) + `vertices` store the draw path and the
+ * click hit-test already use — so a rubber-band grabs EXACTLY the vertices the user
+ * sees, and an aggregation-omitted / derived vertex is never selected (描画 ⊇ ヒット).
+ *
+ * ONE OWNER (FR-81 / the reducer contract): U22's vertex selection has a single owner,
+ * so the resolver returns one. The FIRST grabbable owner whose vertex lies in the box
+ * wins (the same "first owner wins" convention the vertex-proximity hit uses), and only
+ * THAT owner's contained vertices are returned; vertices of other owners inside the box
+ * are ignored — a rubber-band across two features selects the first one's vertices.
+ *
+ * The rectangle is world-axis-aligned (lon/lat): a vertex is inside when its longitude
+ * is within [min lon, max lon] and its latitude within [min lat, max lat] of the two
+ * corners (inclusive of the edges). Latitude is never wrapped.
+ *
+ * WRAP 単一真実源 (bughunt — 敵対レビュー CONFIRMED: 矩形が ±360° 複製を取りこぼす): the
+ * renderer draws each vertex once per ±360° turn its longitude overlaps the view, and the
+ * CLICK hit-test grabs any drawn replica (`liveHitTestAt` step 1 → {@link drawnLonOffsets}).
+ * The rubber-band's world corners come from the SAME renderer inverse, so when the map is
+ * panned/wrapped the box carries the CONTINUOUS longitude at the visible replica (e.g. ≈360
+ * for a canonical lon-0 vertex shown one turn east), NOT the canonical value. Testing the
+ * raw stored lon against [lonMin, lonMax] therefore MISSED the very replica the user drew
+ * the box around (描画 ⊇ クリック ⊋ 矩形). We now enumerate the SAME `drawnLonOffsets` the
+ * click path uses — per vertex, offsets clamped to the box's own lon window — and a vertex
+ * is inside when ANY replica lon `c.lon + off` falls in [lonMin, lonMax] (a Set keeps a
+ * vertex whose two replicas both land in a very wide box from being added twice). With no
+ * `wrap` frame `drawnLonOffsets` yields the canonical ±1 set, so the canonical offset 0 is
+ * always among the probes and an unpanned box behaves exactly as before.
+ */
+export function verticesInRectangle(
+  input: VerticesInRectangleInput,
+  a: WorldCoordinate,
+  b: WorldCoordinate,
+): RectangleHit | null {
+  const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
+  // The SAME (root, time, control) resolution committed-features draws and liveHitTestAt
+  // grabs against: `owners` is the grabbable vertex → owner map, `vertices` the store.
+  const { owners, vertices } = resolveDisplayFor(input.root, input.time, control);
+  const lonMin = a.lon < b.lon ? a.lon : b.lon;
+  const lonMax = a.lon < b.lon ? b.lon : a.lon;
+  const latMin = a.lat < b.lat ? a.lat : b.lat;
+  const latMax = a.lat < b.lat ? b.lat : a.lat;
+
+  // WRAP frame for the SAME `drawnLonOffsets` enumeration the click hit-test uses (single
+  // truth source). The rectangle has no cursor point, so we centre the drawn-turn clamp on
+  // the box's own lon range: cursorLon = the box centre, marginDeg = the box half-width plus
+  // the default grab radius in degrees. `buildWrapFrame` adds the grab-radius margin itself
+  // (radiusPx/zoom), so passing the half-width AS that radius keeps the clamp window ⊇ the
+  // box — a replica can land in the box only within this window, so no in-box replica is ever
+  // dropped by the tail-latency clamp (see drawnLonOffsets), and offset 0 always resolves.
+  const boxCenterLon = (lonMin + lonMax) / 2;
+  const boxHalfWidthDeg = (lonMax - lonMin) / 2;
+  const zoom = input.wrap?.camera.zoom;
+  const grabMarginDeg =
+    zoom !== undefined && Number.isFinite(zoom) && zoom > 0
+      ? DEFAULT_HIT_RADIUS_PX / zoom
+      : 0;
+  const wrap = buildWrapFrame(input.wrap, boxCenterLon, boxHalfWidthDeg + grabMarginDeg);
+
+  // The single owner the rubber-band selects for (FR-81): the first grabbable owner with
+  // a vertex in the box. Only that owner's contained vertices are collected. A vertex is
+  // inside when its latitude is within the box AND ANY ±360° replica of its longitude (the
+  // SAME turns the renderer drew / the click hit-test grabs) lands in the box's lon range.
+  let owner: FeatureId | null = null;
+  const inside = new Set<VertexId>();
+  for (const [vertexId, featureId] of owners) {
+    const v = getVertex(vertices, vertexId);
+    if (v === undefined) continue;
+    const c = v.coordinate;
+    if (c.lat < latMin || c.lat > latMax) continue;
+    const offsets = drawnLonOffsets(c.lon, c.lon, wrap);
+    const lonInBox = offsets.some((off) => {
+      const lon = c.lon + off;
+      return lon >= lonMin && lon <= lonMax;
+    });
+    if (!lonInBox) continue;
+    if (owner === null) owner = featureId;
+    if (featureId === owner) inside.add(vertexId);
+  }
+  if (owner === null || inside.size === 0) return null;
+  return { ownerFeatureId: owner, vertexIds: inside };
 }
 
 /**

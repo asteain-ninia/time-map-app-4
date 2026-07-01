@@ -6,7 +6,12 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { liveHitTestAt, drawnAreaAt, multiPolygonLonSpan } from './live-hit-test';
+import {
+  liveHitTestAt,
+  drawnAreaAt,
+  multiPolygonLonSpan,
+  verticesInRectangle,
+} from './live-hit-test';
 import type { GeoMultiPolygon } from '../../domain/geometry/index';
 import { HIT_KIND } from '../../domain/selection';
 import type { DomainRoot } from '../consistency-binding';
@@ -1220,3 +1225,164 @@ function worldToScreen2(
   const w = screenToWorld(s, cam, { widthCss: 200, heightCss: 200, devicePixelRatio: 1 });
   return { lon: w.lon, lat: w.lat };
 }
+
+// --- FR-80 rubber-band rectangle: the vertices inside a world box -------------------
+//
+// The rubber-band resolver enumerates the SAME grabbable (drawn) vertices the click
+// hit-test grabs, over the shared display resolution — so a rectangle selects exactly
+// what the user sees (描画 ⊇ ヒット, 単一真実源 5.29). One owner (FR-81): the first
+// grabbable owner with a vertex in the box wins.
+describe('verticesInRectangle (FR-80 rubber-band)', () => {
+  const time = timePointYear(1000);
+
+  it('returns the vertices of a leaf inside the world box', () => {
+    // A 4×4 square leaf with corners at (0,0)..(4,4).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    // A box that encloses the two lower corners (0,0) and (4,0) but not the upper ones.
+    const hit = verticesInRectangle({ root, time }, { lon: -1, lat: -1 }, { lon: 5, lat: 1 });
+    expect(hit).not.toBeNull();
+    expect(hit!.ownerFeatureId).toBe(a.feature.id);
+    expect(hit!.vertexIds).toEqual(new Set([asVertexId('va-0'), asVertexId('va-1')]));
+  });
+
+  it('returns all four corners when the box encloses the whole leaf (corner order agnostic)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    // Opposite corners given in a non-min/max order (the box is normalized internally).
+    const hit = verticesInRectangle({ root, time }, { lon: 5, lat: 5 }, { lon: -1, lat: -1 });
+    expect(hit).not.toBeNull();
+    expect(hit!.vertexIds).toEqual(
+      new Set([
+        asVertexId('va-0'),
+        asVertexId('va-1'),
+        asVertexId('va-2'),
+        asVertexId('va-3'),
+      ]),
+    );
+  });
+
+  it('returns null when the box contains no vertex (教訓 5.18 nothing-inside)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = verticesInRectangle({ root, time }, { lon: 50, lat: 50 }, { lon: 60, lat: 60 });
+    expect(hit).toBeNull();
+  });
+
+  it('returns only ONE owner when the box spans vertices of two features (FR-81)', () => {
+    // Two disjoint square leaves; a box that encloses BOTH must resolve to a single owner.
+    const a = squareLeaf('f-a', 'va', 0, 0); // [0,4]²
+    const b = squareLeaf('f-b', 'vb', 10, 0); // [10,14]×[0,4]
+    let root = commit(emptyProject(), a, 1000);
+    root = commit(root, b, 1000);
+    const hit = verticesInRectangle({ root, time }, { lon: -1, lat: -1 }, { lon: 20, lat: 5 });
+    expect(hit).not.toBeNull();
+    // Exactly one owner, and every returned vertex belongs to it (never a mix).
+    const ownerId = hit!.ownerFeatureId;
+    expect([a.feature.id, b.feature.id]).toContain(ownerId);
+    const ownerPrefix = ownerId === a.feature.id ? 'va' : 'vb';
+    for (const v of hit!.vertexIds) expect(String(v).startsWith(ownerPrefix)).toBe(true);
+  });
+
+  // --- bughunt (敵対レビュー CONFIRMED): 矩形選択が ±360° ラップ複製を取りこぼす ------
+  //
+  // The renderer draws every vertex once per ±360° turn its longitude overlaps the view
+  // (canvas2d-renderer → wrapTurnsForLonSpan), and the CLICK hit-test grabs any drawn
+  // replica (liveHitTestAt uses `drawnLonOffsets` per vertex). But `verticesInRectangle`
+  // compared the vertex's RAW canonical lon against the box's [lonMin, lonMax] — it never
+  // enumerated the ±360° replicas. So when the map is panned/wrapped so a vertex is VISIBLE
+  // (and click-grabbable) only as a +360° replica, a rubber-band drawn around that VISIBLE
+  // replica selected NOTHING — the rectangle-hit and click-hit parity broke (描画 ⊇ クリック
+  // ⊋ 矩形). The fix enumerates the SAME `drawnLonOffsets` the click path uses, so a replica
+  // inside the box counts (single truth source).
+  //
+  // Setup mirrors the click wrap-parity block above: a camera centred one world turn east
+  // (centerLon 360) so the on-screen window is lon ∈ [350, 370]; a leaf stored at canonical
+  // [0,4]² is OFF this window but its +360° replica lands at [360,364]² — on screen. The
+  // rubber-band's world corners come from the renderer inverse, so they carry the CONTINUOUS
+  // lon at the replica (≈360–364), not the canonical 0–4.
+  describe('±360° wrap-replica is rubber-band selectable (rectangle/click wrap parity)', () => {
+    const wrapCamera: Camera = { centerLon: 360, centerLat: 2, zoom: 10 };
+    const wrapViewport: Viewport = viewport;
+    const wrapToScreen = (w: { lon: number; lat: number }) =>
+      worldToScreen(w, wrapCamera, wrapViewport);
+    const wrap = { camera: wrapCamera, viewport: wrapViewport };
+
+    it('a box around a +360° replica selects the leaf (same set the click hit-test grabs)', () => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // canonical [0,4]²; replica [360,364]²
+      const root = commit(emptyProject(), a, 1000);
+      // Box drawn around the replica: continuous world lon [359, 365], lat [-1, 5]. It
+      // encloses all four replica corners (lon 360/364, lat 0/4) yet no canonical vertex
+      // lon (0..4) lies in [359,365] — so the raw-lon compare finds nothing (the bug).
+      const hit = verticesInRectangle(
+        { root, time, wrap },
+        { lon: 359, lat: -1 },
+        { lon: 365, lat: 5 },
+      );
+      expect(hit).not.toBeNull();
+      expect(hit!.ownerFeatureId).toBe(a.feature.id);
+      expect(hit!.vertexIds).toEqual(
+        new Set([
+          asVertexId('va-0'),
+          asVertexId('va-1'),
+          asVertexId('va-2'),
+          asVertexId('va-3'),
+        ]),
+      );
+      // PARITY: the click hit-test grabs the SAME (0,0)-corner replica at lon 360.
+      const replicaCorner = wrapToScreen({ lon: 360, lat: 0 });
+      const clickHit = liveHitTestAt(
+        {
+          root,
+          time,
+          toScreen: wrapToScreen,
+          wrap,
+          point: { x: replicaCorner.x + 1, y: replicaCorner.y - 1 },
+        },
+        screenToWorldFor({ x: replicaCorner.x + 1, y: replicaCorner.y - 1 }),
+      );
+      expect(clickHit.kind).toBe(HIT_KIND.Vertex);
+      if (clickHit.kind === HIT_KIND.Vertex) {
+        expect(hit!.vertexIds.has(clickHit.vertexId)).toBe(true);
+      }
+    });
+
+    it('does NOT over-select: a box around the replica does not grab a canonical-only vertex', () => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // replica [360,364]²
+      const root = commit(emptyProject(), a, 1000);
+      // A box that hugs ONLY the replica's lower-left corner region [359,361]×[-1,1]:
+      // it must contain exactly the replica of the (0,0) corner (lon 360), and none of
+      // the other replica corners (lon 364) nor any spurious replica.
+      const hit = verticesInRectangle(
+        { root, time, wrap },
+        { lon: 359, lat: -1 },
+        { lon: 361, lat: 1 },
+      );
+      expect(hit).not.toBeNull();
+      expect(hit!.vertexIds).toEqual(new Set([asVertexId('va-0')]));
+    });
+
+    it('unpanned box still selects by canonical lon (no regression when a wrap frame is present)', () => {
+      const a = squareLeaf('f-a', 'va', 0, 0); // [0,4]²
+      const root = commit(emptyProject(), a, 1000);
+      // A CANONICAL-frame box (lon [-1,5]) with the DEFAULT (unpanned) camera as the wrap
+      // frame: the canonical position IS on-screen, so the renderer draws offset 0 and the
+      // enumeration includes it — the leaf is selected exactly as the pre-wrap code did.
+      const canonicalWrap = { camera, viewport };
+      const hit = verticesInRectangle(
+        { root, time, wrap: canonicalWrap },
+        { lon: -1, lat: -1 },
+        { lon: 5, lat: 5 },
+      );
+      expect(hit).not.toBeNull();
+      expect(hit!.vertexIds).toEqual(
+        new Set([
+          asVertexId('va-0'),
+          asVertexId('va-1'),
+          asVertexId('va-2'),
+          asVertexId('va-3'),
+        ]),
+      );
+    });
+  });
+});
