@@ -6,6 +6,14 @@
 
 ## 確定した運用上の決定
 
+- D44(2026-07-02・第5次(12)+第6波(3)バグ確定分 + 監査A/B を3ライン運用で全根治): D43 の監査に続き、確定バグ・spec-vs-impl 欠陥を重大度順に**全て根治**(各: 実装ラインが test-first→fast gate、レビューラインが多次元敵対的検証、私がフル vitest→個別コミット。バグハント第6波も並行)。**全コミット ローカルのみ・push せず・各コミット時フル vitest 緑**。
+  - **HIGH×2**: file-ops 並行性データ欠損#1/#2/#3=in-flight mutex `c71a021`(レビューSOUND) / timeline年境界の書込⊄読込=自ファイル読込不能 `0cb522a`。
+  - **MEDIUM×5**: FR-87 エッジ頂点追加UI結線(見える死アフォーダンス解消・新ドメイン不要)`6258ba6`(+シーム中点 midpoint の既存バグ fix-forward) / redo が選択preference未復元 `1275942`(WeakMapレジストリ) / ring-hierarchy 同一リング偽陰性 `faf97b6`(coincident-boundary プローブ・**結合フル vitest がプロパティテスト相互作用を捕捉→診断で TRUE_POSITIVE 確定→prop テストの translate 分岐を有効遷移のみ探索へ整合**) / 集約省略 active leaf のハンドル描画⊋ヒット `e2734d2`(FR-87 パターンを頂点へ拡張) / a11y focus-trap×4+tablist `cf360f5`(共有 src/ui/a11y 化・重複 inline trap も単一化)。
+  - **LOW×3**: Unicode 不可視/コードポイント取りこぼし3件=共有 src/domain/text.ts `faec228` / canvas ラベル maxWidth `adbf7c6` / vertexMarkerCap(FR-110)デッド設定をライブ handle 経路へ結線 `15ff487`。
+  - **vertexMarkerCap cap セマンティクス決定**: 閾値方式(wholesale) — 頂点ハンドル数 > cap で handle 一括省略・cap=0=非表示・undefined=無制限。ライブ適用は active-feature-handles(handle 経路)。classifyVisual(FR-79分類器)は renderer 未結線ゆえ cap 温存+注記のみ。詳細 `AUDIT-DROPPED-REQUIREMENTS.md` B。**巨大地物(>cap 既定2000)は per-vertex ハンドル省略=perf ガード**(通常地物は不変・地物全体選択/移動は別経路で不変)。起床後にこの挙動を変えたい場合は指示を(離席運用ゆえ既定で確定)。
+  - **プロセス所見**: バッチ全体のフル vitest + property/metamorphic オラクルが、ユニットテスト+多次元レビューが SOUND とした ring-hierarchy 修正の横断的相互作用(prop テスト seed=22001)を捕捉。「修正自体を敵対的検証」+「結合フルゲート」の二段が有効。レビューが検出した穴(FR-87 シーム中点・a11y の MergeOptionsDialog未トラップ/矢印focus非移動+テスト偽陽性/aria-controls dangling)は全て fix-forward 済。
+  - **残タスク**: (1)confirm-descope 9件を要件定義書§7へ非目標明記 (2)e2e スモーク(UI結線の end-to-end 検証・FR-87 behavioral) は本セッション範囲で別途。
+
 - D43(2026-07-02・落ちた要件 横断監査 + 3ライン運用 + file-ops 並行性根治 / ユーザー指示「gimoza 品質最優先・過去プロジェクト参照を解禁・特に落ちた要件に注意」「実装/レビュー/バグハストの3ラインを有効運用しメインスレをきれいに」):
   - **落ちた要件 監査**: クリーンルーム封印(過去版非言及)を**本監査に限り解除**し v1/v2/v3→v4 の要件差分を workflow `wgnb7h9i7`(34エージェント・Extract→Merge→Verify)で横断監査。**結論=中核の必須要件で v4 が落としたものは無い(クリーンルーム再実装として忠実)**。27候補→DROPPED/PARTIAL **11件(全 LOW)** / PRESENT・DESCOPED 16件。単一窓口・詳細= [`AUDIT-DROPPED-REQUIREMENTS.md`](./AUDIT-DROPPED-REQUIREMENTS.md)。
   - **要対応2件(spec-vs-impl 欠陥・レビューライン `wr00cr5e1` で両件 CONFIRMED real-gap)**: **A**=FR-87「既存地物へのエッジハンドル頂点追加」が UI 到達不能(MUST・HIT_KIND に Edge 無し・エッジハンドルは描画されるが掴んでも無反応=見える死アフォーダンス・代替経路 grep 皆無)→ **MEDIUM・implement**(新ドメイン不要の4ステップ配線)。 **B**=`vertexMarkerCap`(FR-110)がデッド設定(描画層 `selection/visual.ts` が値未消費)→ **LOW・implement**(cap を classifyVisual へ供給し上限適用・選択/ドラッグ頂点は対象外・cap=0 意味は実装時確定)。設定撤去は FR-110 違反ゆえ非推奨。

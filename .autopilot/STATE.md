@@ -23,8 +23,9 @@
   - **要対応2件をレビューライン(`wr00cr5e1`)で CONFIRMED(real-gap)**: **A**=FR-87「既存地物へのエッジハンドル頂点追加」がUI到達不能(MEDIUM・MUST・エッジハンドルは描画されるが掴んでも無反応=見える死アフォーダンス) / **B**=`vertexMarkerCap`(FR-110)デッド設定(LOW)。両件 implement 予定。
   - **file-ops 並行性データ欠損3件を根治**(第5次#1 HIGH/#2/#3 MEDIUM): in-flight mutex(`opInFlightRef`)で破壊的置換フロー(開く/新規/D&D/終了ガード)を相互排他・保存は既存 saveChain 温存・auto-saveティックはラッチを譲る。**commit `c71a021`**・test-first(3新規テストが fix なしで赤)・フル vitest **256files 3050 passed**・typecheck0/lint0(デグレなし)。
   - **3ライン背景運用**: レビューライン `wr00cr5e1`(完了・A/B確定) + mutex修正の敵対レビュー(別subagent)=**SOUND**(3テストが fix なしで赤を独立再現・6観点健全・fix-forward不要)。バグハントライン第6波 `wud6cxu9p`(稼働中・新角度=undo-redo/persistence/react-effect/geo-time精度/selection-hittest/four-color)。軽微申し送り: DROP時のユーザー通知(将来nicety)・window close イベントは未ブリッジ(配線時 false=閉じない契約厳守)。
-  - **実装ライン進捗**: ✅A(FR-87エッジ頂点追加)=`6258ba6`(新ドメイン不要でUI結線・多次元レビュー3/4 SOUND・シーム中点崩れの既存バグも fix-forward・258files 3067緑)。
-  - **次アクション(実装ライン・重大度順・残)**: 第6波MEDIUM(redo選択preference未復元 / 集約省略leafハンドル描画⊋ヒット)→第5次MEDIUM(ring-hierarchy偽陰性/a11y focus-trap×4)→B(vertexMarkerCap)/第5次LOW(i18n・edge×4)。confirm-descope群は要件定義書§7へ「非目標」明記。UI結線系は e2e スモークをバッチで追加(FR-87 エッジ頂点追加の behavioral E2E 含む)。
+  - **実装ライン 全確定分 完了**(重大度順・各コミット時フル vitest 緑・詳細 DECISIONS **D44**): HIGH×2=`c71a021`(file-ops並行性) `0cb522a`(timeline data-loss)。MEDIUM×5=`6258ba6`(FR-87エッジ頂点追加+シーム中点fix-forward) `1275942`(redo選択preference) `faf97b6`(ring-hierarchy偽陰性・propテストseed=22001をTRUE_POSITIVE診断後に整合) `e2734d2`(集約省略leafハンドル描画⊋ヒット) `cf360f5`(a11y focus-trap×4+tablist・共有a11y化)。LOW×3=`faec228`(Unicode不可視×3・共有text.ts) `adbf7c6`(canvas maxWidth) `15ff487`(vertexMarkerCapライブ結線)。**第5次12件+第6波3件+監査A/B、全て根治**。最終フル vitest **256files 3141 passed** / typecheck0 / lint0。
+  - **残タスク**: (1)confirm-descope 9件を要件定義書§7へ「非目標」明記(漏れと区別) (2)e2e スモークバッチ(UI結線の end-to-end 検証・FR-87 behavioral・スクショ再生確認)。単発低コスト改善(全体表示復帰コマンド/ステータス座標表示)は余力で。
+  - **cap 挙動の要確認(離席運用ゆえ既定で確定・D44)**: vertexMarkerCap 閾値方式=巨大地物(頂点>cap 既定2000)は per-vertex 編集ハンドルを省略(perf ガード)。cap=0=非表示。通常地物・地物全体選択/移動は不変。変えたい場合のみ指示を。
 
 - 2026-06-24: **HB3 大物完遂 + バグハント + D36 衛生スイープ**（ユーザー在席中の指示反映: スクショE2E徹底 / 主スレ=オーケストレーター化・重作業は背景subagent/workflow / Codex死亡→Sonnet多ペルソナ・レビューで代替）。全コミット ローカル・各フルゲート緑・push せず。
   - **HB3-5/19 ナイフ n-way（2k横断→k+1片）完成**: ドメイン(8cc828c)+UI片チューザ/実機スクショE2E(01ed1d6)+継承先 index クランプ(440cb06=Sonnetレビュー指摘)。全 vitest 2944 passed。

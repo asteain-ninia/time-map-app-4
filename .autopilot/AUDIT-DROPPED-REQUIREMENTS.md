@@ -16,7 +16,8 @@
 
 - **A. FR-87「既存地物への頂点追加（エッジハンドル）」** ＝ ✅ **実装完了 `6258ba6`**（新ドメイン不要でUI結線・多次元敵対レビュー3/4 SOUND・シーム中点崩れの既存バグも fix-forward 根治・258files 3067緑）。以下は当初の検出記録: **CONFIRMED real-gap / MEDIUM**。FR-87(must)はエッジハンドルでの新頂点追加を要求し FR-88(must)も線/面の頂点追加を要求。ドメインは実装済(`edit-ops.ts:136 addVertexToLine`/`:151 addVertexToLeafRing`、`EDIT_TOOL.EdgeAdd`)だが UI が起動できない: HIT_KIND に Edge が無く(`selection/contracts.ts:28-35`)、live-hit-test はエッジ中点近接を検査せず、`edit-session-adapter.ts:181-202` が Edge を null 返し(`:200`「EdgeAdd is unreachable」)。**エッジハンドルは描画されているのに掴んでも無反応＝見える死んだアフォーダンス**。代替UI経路も grep で皆無。severity=MEDIUM(データ欠損は無く delete+recreate 可だが MUST 未達+死アフォーダンス)。
   - 最小配線案(新ドメイン不要): (1)`contracts.ts` に HIT_KIND.Edge + HitResult{Edge; featureId; ringId?; startVertexId; endVertexId} + `edgeHit()`。(2)`live-hit-test.ts` の vertex パス後・body パス前でエッジ中点への screen 距離判定→`edgeHit()`。(3)`edit-session-adapter.ts` targetFromHit に Edge→EDIT_TOOL.EdgeAdd 枝(confirmRelease は既に EdgeAdd を処理)。(4)`active-feature-handles.ts:120` previewVertexStore に EdgeAdd 枝。
-- **B. `vertexMarkerCap`（FR-110）がデッド設定** ＝ **CONFIRMED real-gap / LOW**。型/検証/永続化/設定UI/往復は完備だが描画層(`selection/visual.ts:87 classifyVisual`、`src/render/**`)が値を一切消費せず、`activeFeatureVertexIds` を無条件全反復。→ 実装推奨(FR-110 が性能保護目的で明示要求): MarkerInput/classifyVisual に cap を渡し上限適用(選択/ドラッグ中頂点は cap 対象外)、cap=0 の意味(無制限 or 非表示。v3 は「上限超過時はマーカー省略」)を実装時に確定し DECISIONS に記録。設定撤去は FR-110 違反ゆえ非推奨。
+- **B. `vertexMarkerCap`（FR-110）がデッド設定** ＝ ✅ **実装完了 `15ff487`**（当初検出: CONFIRMED real-gap / LOW）。判明: ライブのアクティブ地物頂点表示は `active-feature-handles→buildEditHandlePrimitives` の handle 経路で、`classifyVisual`(FR-79マーカー分類器)は renderer 未結線だった。→ **ライブ handle 経路に cap を結線**(App.tsx から `appSettings.vertexMarkerCap` 供給)。
+  - **cap セマンティクス決定**: **閾値方式(wholesale)** — アクティブ地物の頂点ハンドル数 > cap なら handle を一括省略(頂点/エッジ/ドラッグプレビュー輪郭とも)。**cap=0=非表示**、undefined=無制限。スライス(先頭N)ではない。根拠=FR-110「表示上限」＋既存コメント「0==show none」＋v3「上限超過時は常時マーカーを省略」。既定2000ゆえ通常地物は不変・巨大地物(>cap)のみ per-vertex ハンドル省略(perf ガード)＝地物全体の選択/移動は別経路で不変。classifyVisual の cap は FR-79 分類器として温存(将来 wiring 用・注記済)。設定撤去は FR-110 違反ゆえ非推奨。
 
 ## DROPPED / PARTIAL 11件（全 LOW）
 
@@ -39,11 +40,11 @@
 - PRESENT（v4に相当物あり）: survey-mode / select-all-vertices(FR-79/80/81) / grid-snap(FR-78) / layer-visibility-focus-dimming(FR-113) / about-dialog / event-list-sidebar(FR-111) / conflict-resolution-guide-firsttime。
 - DESCOPED（v4で意図的に非採用/再編）: hover-tooltip（クリック即時表示で代替）/ invalid-shape-mode-change-confirm（FR-88自動削除で代替）/ custom-calendar(将来 §7.1)/ event-marker-timeline(FR-66明記・D32・回帰ロック済)/ layer-slider-shape-reuse(FR-42深度ロールアップで等価)/ layer-draw-order-opacity(FR-34/113/102)/ json-legacy-save-load(§7.3)/ version-compat-convert(§7.3マイグレーション非提供)/ click-latlon-readout-status（クリック座標はFR-16で取得可・ステータス枠は未結線＝任意の小改善余地）。
 
-## 次アクション（自律運用の既定）
+## 次アクション（進捗）
 
-1. **A（FR-87エッジ頂点追加）を実装**（レビューラインで real-gap 確認後）＝落ちた MUST の実質回復。最優先。
-2. **B（vertexMarkerCap）を確定**：描画で上限適用を実装 or 設定撤去（レビューライン判定後）。
-3. confirm-descope 群は **要件定義書 §7 等に「非目標」明記**して「漏れ」と区別（単発の低コスト改善＝全体表示復帰コマンド/ステータス座標表示 は余力で）。
-4. 上記は第5次バグハント確定12件・第6波バグハント確定分と合わせ、重大度順に実装ラインで消化。
+1. ✅ **A（FR-87エッジ頂点追加）実装完了** `6258ba6`（+シーム中点の既存バグ fix-forward）。
+2. ✅ **B（vertexMarkerCap）実装完了** `15ff487`（ライブ handle 経路へ結線・閾値方式・上記参照）。
+3. ⬜ **confirm-descope 9件を要件定義書 §7 に「非目標」明記**（漏れと区別）＝残タスク。単発の低コスト改善（全体表示復帰コマンド/ステータス座標表示）は余力で。
+4. ✅ 第5次バグハント確定12件・第6波確定3件・監査A/B、**全て重大度順に実装ライン(+レビュー/バグハントの3ライン)で根治済**（2026-07-02 セッション）。詳細コミットは DECISIONS D44。
 
 > 単一真実源: 本ファイルが監査の窓口。DECISIONS.md **D43** に要約リンク。workflow 生出力は task `wgnb7h9i7`。
