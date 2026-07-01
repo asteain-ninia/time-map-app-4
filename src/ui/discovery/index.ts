@@ -109,6 +109,12 @@ export {
   wrapAsyncBoundary,
 } from './global-handlers';
 
+// production wiring for the global handlers (FR-117, 教訓 5.7)
+export {
+  type GlobalErrorWiringOptions,
+  wireGlobalErrorHandlers,
+} from './error-wiring';
+
 // log + diagnostics (FR-117 / FR-02, 教訓 5.15 / 5.41)
 export {
   LOG_LEVEL,

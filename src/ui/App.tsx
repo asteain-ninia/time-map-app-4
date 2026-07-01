@@ -43,6 +43,11 @@ import './file-ops/file-ops.css';
 import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
+import {
+  DiagnosticLogger,
+  ErrorBoundary,
+  wireGlobalErrorHandlers,
+} from './discovery/index';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
 import {
@@ -209,6 +214,29 @@ export function App(): JSX.Element {
 
   // The active calendar for U14 load-time consistency checks (FR-106).
   const calendar = useMemo(() => getCalendar('gregorian'), []);
+
+  // U41 INTEGRATION (FR-117, 教訓 5.7 合成ルートの結線漏れ): the single shared
+  // {@link DiagnosticLogger}. Both the non-React global handlers (below) and the
+  // React {@link ErrorBoundary} (wrapping the shell) record through THIS one logger,
+  // so an error caught on any path lands in one diagnostics buffer (単一真実源).
+  const logger = useMemo(() => new DiagnosticLogger(), []);
+
+  // FR-117 ROOT FIX — install the window-level (non-React) error handlers ONCE at
+  // startup. installGlobalErrorHandlers (unhandledrejection / error 捕捉) had no
+  // production caller, so void-ed IPC/IO rejections were silent (教訓 5.7). We wire
+  // it here to the SAME logger and route each caught error's message to the EXISTING
+  // notification surface (globalThis.alert — the sink FileOpsController.notify uses),
+  // introducing NO new toast UI (§7.4 非目標). The uninstall runs on cleanup so a
+  // re-mount (StrictMode double-invoke in dev) never leaks / double-installs listeners
+  // (教訓 5.2 全経路で破棄). The作中時刻 for the log context is the live現在時刻 numeric
+  // instant (non-sensitive, 教訓 5.15 — separate from the record's real-time stamp).
+  useEffect(() => {
+    const uninstall = wireGlobalErrorHandlers(window, {
+      logger,
+      contextTimeLabel: () => String(store.getState().currentTime),
+    });
+    return uninstall;
+  }, [logger, store]);
 
   // Window-close interception (FR-107 終了確認ガード): the controller registers the
   // quit guard; the host stores it so a later shell-side close event can await it.
@@ -1894,6 +1922,15 @@ export function App(): JSX.Element {
   );
 
   return (
+    // U41 INTEGRATION (FR-117, 受け入れ基準3): wrap the whole shell in the React
+    // error boundary bound to the SAME shared logger the global handlers use, so a
+    // render-time exception is caught, logged through the single pipeline and shown
+    // as the日本語 fallback instead of crashing the app (教訓 5.6 全経路網羅). The
+    // non-React paths are covered by the global handlers installed above.
+    <ErrorBoundary
+      logger={logger}
+      contextTimeLabel={() => String(store.getState().currentTime)}
+    >
     <div
       id="app-shell"
       onDragOver={dropHandlers?.onDragOver}
@@ -2093,6 +2130,7 @@ export function App(): JSX.Element {
         }
       />
     </div>
+    </ErrorBoundary>
   );
 }
 
