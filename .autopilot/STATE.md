@@ -18,6 +18,13 @@
 
 ## 進捗ログ（新しい順・先頭追記）
 
+- 2026-07-02: **引き継ぎ + 落ちた要件監査 + 3ライン運用 + file-ops並行性根治**（ユーザー指示: gimoza品質最優先 / 過去プロジェクト参照を解禁・特に落ちた要件に注意 / 実装・レビュー・バグハントの3ライン運用でメインスレを clean 維持 / ultracode ON）。全コミット ローカル・push せず。
+  - **落ちた要件 横断監査 完了**（workflow `wgnb7h9i7`・34エージェント・Extract→Merge→Verify）: クリーンルーム封印を本監査に限り解除し v1/v2/v3→v4 の要件差分を敵対的検証。**結論=中核の必須要件で v4 が落としたものは無い（クリーンルーム再実装として忠実）**。27候補→DROPPED/PARTIAL **11件(全 LOW)** / PRESENT・DESCOPED 16件。単一窓口=`.autopilot/AUDIT-DROPPED-REQUIREMENTS.md`、要約=DECISIONS **D43**。
+  - **要対応2件をレビューライン(`wr00cr5e1`)で CONFIRMED(real-gap)**: **A**=FR-87「既存地物へのエッジハンドル頂点追加」がUI到達不能(MEDIUM・MUST・エッジハンドルは描画されるが掴んでも無反応=見える死アフォーダンス) / **B**=`vertexMarkerCap`(FR-110)デッド設定(LOW)。両件 implement 予定。
+  - **file-ops 並行性データ欠損3件を根治**(第5次#1 HIGH/#2/#3 MEDIUM): in-flight mutex(`opInFlightRef`)で破壊的置換フロー(開く/新規/D&D/終了ガード)を相互排他・保存は既存 saveChain 温存・auto-saveティックはラッチを譲る。**commit `c71a021`**・test-first(3新規テストが fix なしで赤)・フル vitest **256files 3050 passed**・typecheck0/lint0(デグレなし)。
+  - **3ライン背景運用**: レビューライン `wr00cr5e1`(完了・A/B確定) + mutex修正の敵対レビュー(別subagent)=**SOUND**(3テストが fix なしで赤を独立再現・6観点健全・fix-forward不要)。バグハントライン第6波 `wud6cxu9p`(稼働中・新角度=undo-redo/persistence/react-effect/geo-time精度/selection-hittest/four-color)。軽微申し送り: DROP時のユーザー通知(将来nicety)・window close イベントは未ブリッジ(配線時 false=閉じない契約厳守)。
+  - **次アクション(実装ライン・重大度順)**: A(FR-87エッジ頂点追加)→第5次残り(ring-hierarchy偽陰性/a11y focus-trap×4)→B(vertexMarkerCap)→i18n・edge×4。confirm-descope群は要件定義書§7へ「非目標」明記。第6波バグハント確定分を随時統合。
+
 - 2026-06-24: **HB3 大物完遂 + バグハント + D36 衛生スイープ**（ユーザー在席中の指示反映: スクショE2E徹底 / 主スレ=オーケストレーター化・重作業は背景subagent/workflow / Codex死亡→Sonnet多ペルソナ・レビューで代替）。全コミット ローカル・各フルゲート緑・push せず。
   - **HB3-5/19 ナイフ n-way（2k横断→k+1片）完成**: ドメイン(8cc828c)+UI片チューザ/実機スクショE2E(01ed1d6)+継承先 index クランプ(440cb06=Sonnetレビュー指摘)。全 vitest 2944 passed。
   - **HB3-12 存続期間編集を UI へ結線**(278dba6, behavioral E2E + スクショ)。changeStart/setEnd を新 AnchorIntervalEditIntent→dispatch から。

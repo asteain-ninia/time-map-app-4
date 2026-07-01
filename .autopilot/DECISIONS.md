@@ -6,6 +6,13 @@
 
 ## 確定した運用上の決定
 
+- D43(2026-07-02・落ちた要件 横断監査 + 3ライン運用 + file-ops 並行性根治 / ユーザー指示「gimoza 品質最優先・過去プロジェクト参照を解禁・特に落ちた要件に注意」「実装/レビュー/バグハストの3ラインを有効運用しメインスレをきれいに」):
+  - **落ちた要件 監査**: クリーンルーム封印(過去版非言及)を**本監査に限り解除**し v1/v2/v3→v4 の要件差分を workflow `wgnb7h9i7`(34エージェント・Extract→Merge→Verify)で横断監査。**結論=中核の必須要件で v4 が落としたものは無い(クリーンルーム再実装として忠実)**。27候補→DROPPED/PARTIAL **11件(全 LOW)** / PRESENT・DESCOPED 16件。単一窓口・詳細= [`AUDIT-DROPPED-REQUIREMENTS.md`](./AUDIT-DROPPED-REQUIREMENTS.md)。
+  - **要対応2件(spec-vs-impl 欠陥・レビューライン `wr00cr5e1` で両件 CONFIRMED real-gap)**: **A**=FR-87「既存地物へのエッジハンドル頂点追加」が UI 到達不能(MUST・HIT_KIND に Edge 無し・エッジハンドルは描画されるが掴んでも無反応=見える死アフォーダンス・代替経路 grep 皆無)→ **MEDIUM・implement**(新ドメイン不要の4ステップ配線)。 **B**=`vertexMarkerCap`(FR-110)がデッド設定(描画層 `selection/visual.ts` が値未消費)→ **LOW・implement**(cap を classifyVisual へ供給し上限適用・選択/ドラッグ頂点は対象外・cap=0 意味は実装時確定)。設定撤去は FR-110 違反ゆえ非推奨。
+  - **confirm-descope 群(LOW・v1/v2 のUI演出 or 設計転換で不要化)**: 世界情報常時表示 / 成功・情報トースト(教訓5.12が自動消滅を否定) / 閲覧モードのマップ直接クリック詳細 / クリック近傍フォーム / 5段関数トレースログ / 矢印パン・0全体表示 / OSファイル関連付け起動 / 読込キャンセル通知 / サイドバー折畳・選択時タブ自動切替。→ 要件定義書 §7 に「非目標」明記して「漏れ」と区別する(単発の低コスト改善=全体表示復帰コマンド/ステータス座標表示 は余力で)。
+  - **3ライン運用体制(ユーザー指示)**: 実装ライン(メインスレ=オーケストレーターで1ユニットずつ test-first→緑ゲート→commit) / レビューライン(監査所見・各修正を背景 workflow で敵対的検証) / バグハントライン(新角度で背景 workflow・波6以降)。重作業は背景 subagent/workflow に委譲しメインスレを clean に保つ。
+  - **file-ops 並行性データ欠損の根治(第5次バグハント #1/#2/#3)**: `FileOpsController` に in-flight ラッチ `opInFlightRef`/`runExclusive` を導入し**破壊的置換フロー(開く/新規/D&D/終了ガード)を相互排他**(保持中の2つ目は DROP)。auto-save ティックはラッチを『取らず』に『譲る』。**スコープ判断=保存/名前を付けて保存にはラッチを掛けない**(bridge の `saveChain` が既に保存をキュー直列化しており、ラッチを掛けると保存Bをドロップして lost-edit guard の interleave 挙動=既存テスト「saves are serialized」を壊すため)。test-first(3新規テストが fix なしで赤を実証)→file-ops 115緑/typecheck0/lint0。
+
 - D36(2026-06-24・衛生スイープ＝「散らかさない規律」の再インストール / ユーザー指示): 「作る規律」(property test / behavioral E2E / フルゲート緑)は維持される一方、衛生・監査可能性が引き継ぎで選択的に摩耗していたとのメタレビューを受け、**挙動不変の保守パス**を6タスク + クロスモデルレビューで実施(各独立コミット・全ゲート緑・push せず)。
   - (1) 使い捨て probe `src/domain/knife/__nway-probe.test.ts`(console.log 付)を削除し、不変量を `split-geometry.test.ts` へ名前付き昇格(2/4/6 横断→k+1片・水平カット・dangling→reject・面積保存・FR-44 最低3頂点)。`.tooling/_rev2.txt` を追跡解除 + `.tooling/_rev*.txt` を .gitignore。**commit a6c1fb4**。
   - (2) PROTOCOL に「コミット前 hygiene」節を制度化(probe/scratch grep ゼロ出力 / D番号エントリ一意 / STATE フェーズ同期 / スクショ再生成儀式)＝引き継ぎへ強制継承。**commit 8570641**。

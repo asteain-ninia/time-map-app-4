@@ -296,6 +296,8 @@ Fix C2 (auto-save) immediately after — it is the other critical, slightly larg
 
 ユーザー指示により**第5次ハント完了をキリとして停止**。以下は**未修正**＝次セッションで重大度順(HIGHから)に着手する。4波の「ロジック読み」と直交する角度(i18n/並行性/エラー注入/幾何極値/a11y)で新種を検出。候補18中12確定。
 
+> **更新(2026-07-02)**: 並行性3件（HIGH「In-flight repair→別project上書き」/ MEDIUM「並行load resolver孤児化」/ MEDIUM「未保存中の auto-save が Save-As並行起動」）を**単一 in-flight mutex で根治済 → commit `c71a021`**（file-ops エントリ相互排他・保存は既存 saveChain 温存・test-first 3本）。**残り9件未修正**（ring-hierarchy偽陰性 / a11y×4 / i18n・edge×4）。加えて監査(D43)確定の実装候補: **A=FR-87エッジ頂点追加UI到達不能(MEDIUM)** / **B=vertexMarkerCapデッド設定(LOW)**。
+
 | 重大度 | 種別 | バグ | 箇所 | 修正案(要旨) |
 | --- | --- | --- | --- | --- |
 | HIGH | data-loss | In-flight repair dialog resolved against wrong project after a concurrent clean load | `src/ui/file-ops/file-commands.ts` | In FileOpsController.tsx, add `const loadInFlightRef = useRef(false);` and wrap the body of each load command registration with a guard: `if (loadInFlightRef.cu |
@@ -311,4 +313,16 @@ Fix C2 (auto-save) immediately after — it is the other critical, slightly larg
 | LOW | edge-case | sanitize.ts collapseWhitespace /\s+/ misses U+200B, letting invisible zero-width chars reach the search corpus | `src/ui/discovery/sanitize.ts` | src/ui/discovery/validation.ts line 82: change `.transform(s => s.trim())` to `.transform(s => s.replace(/[​‏⁠﻿]/g, '').trim())` so an invisible-only query is r |
 | LOW | ux | canvas fillText/strokeText for feature labels has no maxWidth, causing very long or emoji-rich names to overpr | `src/render/canvas2d-renderer.ts` | src/render/canvas2d-renderer.ts lines 378 and 385, add a maxWidth argument to both canvas calls: ctx.strokeText(p.text, x, y, MAX_LABEL_WIDTH_PX) and ctx.fillTe |
 
-注: 各件は別subagentの到達性証明検証を通過済(reachable必須)。詳細(再現手順・file:line)はworkflow出力 wed6rxtyp に保存。**HIGH(並行ロード中の修復が別プロジェクトに解決＝データ欠損)を最優先**。
+注: 各件は別subagentの到達性証明検証を通過済(reachable必須)。詳細(再現手順・file:line)はworkflow出力 wed6rxtyp に保存。**HIGH(並行ロード中の修復が別プロジェクトに解決＝データ欠損)は c71a021 で修正済**（残り9件未修正）。
+
+## 🅱 第6波バグハント — 3件確定【未修正】(2026-07-02, 12エージェント・新角度=undo-redo/persistence/react-effect/geo-time/selection-hittest/four-color)
+
+波1-5と直交する新角度で 6候補中 **3件確定**(3 refute)。workflow 出力 `wud6cxu9p`。
+
+| 重大度 | 種別 | バグ | 箇所 | 修正案(要旨) |
+| --- | --- | --- | --- | --- |
+| **HIGH** | data-loss | 設定パネルで入力したタイムライン年(非整数 or \|year\|>MAX_YEAR)が保存され、次回ロードで manifest 全体が Invalid 拒否→**自分の正当ファイルが二度と開けない**（書込=有限+min<maxのみ検査 / 読込=`yearSchema=.int().min(-MAX_YEAR).max(MAX_YEAR)` の非対称・教訓6.4.15 片側shim） | `src/ui/settings/validation.ts:144-148` vs `src/domain/persistence/schema.ts:89,505-506` | `validateProjectSettings` の timeline 検査を schema と同一述語(整数+±MAX_YEAR)に揃える。可能なら `isValidPersistedYear` を切り出し両側で共有(単一真実源)。round-trip プロパティテストで境界外年を振り回帰防止。 |
+| MEDIUM | correctness/ux | Redo が元コミットの選択preferenceを復元しない(add→undo→redo で activeFeature=null・metamorphic redo==execute 破れ)。forward commit と conflict は preference 転送済だが `runRedo`(App.tsx:1270)が applyUndoRedoResult に preference を渡さない | `src/ui/App.tsx:1270` / `src/domain/selection/reresolve.ts:92-97` | preference を history エントリ相当(WeakMap<Command,preference>)で保持し redo 時に再供給。undo は現状維持(削除地物はStep1でドロップが正)。add/merge の redo で activeFeature 復元をテストロック。 |
+| MEDIUM | wiring/ux | 集約で省略された active leaf の頂点ハンドルが**描画されるのに掴めない**(描画は verdict 無視で描くがヒットは verdict===Real のみ owner 化)＝描画⊋ヒットの破れ(A/死アフォーダンスと同系) | `src/ui/map/active-feature-handles.ts:228-266` / `display-resolution-cache.ts:246-260,305-338` / `live-hit-test.ts:480-491` | 描画とヒットの verdict 判定を単一化(描くなら掴める/掴めないなら描かない)。A(FR-87)と同じ「描画⊇ヒット」不変量として合わせて対処検討。 |
+
+**優先**: HIGH(timeline年境界)を最優先で実装。
