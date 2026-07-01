@@ -395,6 +395,61 @@ describe('setZoomRange re-clamps the LIVE camera (FR-10 / FR-109 即時反映 �
   });
 });
 
+describe('setViewport re-clamps the LIVE camera into the new fit floor (第7波 setviewport-reclamp)', () => {
+  // ROOT CAUSE the fix closes: setViewport only stored the viewport + re-sized the
+  // backing buffer and never re-clamped the camera. On a SMALL viewport whose fit-all
+  // zoom is sub-1, the effective floor drops to that sub-1 fit, so a max zoom-out parks
+  // the camera BELOW the configured min (1). Enlarging the window raises the fit ABOVE
+  // the configured min, so the effective floor snaps back UP to the configured min (1)
+  // while the camera is still parked below it — stranded BELOW effectiveZoomRange().
+  // minZoom. The next wheel zoom-OUT then clamps UP to that floor — i.e. zooms IN, an
+  // inversion. setViewport now re-clamps the live camera zoom into the new effective
+  // range so the camera never sits below the floor.
+  it('raises a stranded sub-floor zoom up to the enlarged viewport fit floor', () => {
+    const small: Viewport = { widthCss: 300, heightCss: 100, devicePixelRatio: 1 };
+    const surface = new FakeCanvasSurface();
+    const r = new Canvas2DMapRenderer(surface, { viewport: small });
+    // Fit-zoomed initial camera sits AT the sub-1 fit floor of the small viewport.
+    const stranded = r.getCamera().zoom;
+    expect(stranded).toBeLessThan(1);
+    const big: Viewport = { widthCss: 1800, heightCss: 900, devicePixelRatio: 1 };
+    r.setViewport(big);
+    // The enlarged viewport's fit (min(1800/360, 900/180) = 5) exceeds the configured
+    // min, so the effective floor snaps back to the configured min (1). The parked zoom
+    // is below it, so the camera is re-clamped up to the floor — never left below it.
+    const floor = r.effectiveZoomRange().minZoom;
+    expect(floor).toBe(1);
+    expect(r.getCamera().zoom).toBeGreaterThanOrEqual(floor);
+    expect(r.getCamera().zoom).toBe(floor);
+  });
+
+  it('a first zoom-OUT after the resize does NOT invert (increase) the zoom', () => {
+    const small: Viewport = { widthCss: 300, heightCss: 100, devicePixelRatio: 1 };
+    const surface = new FakeCanvasSurface();
+    const r = new Canvas2DMapRenderer(surface, { viewport: small });
+    const big: Viewport = { widthCss: 1800, heightCss: 900, devicePixelRatio: 1 };
+    r.setViewport(big);
+    const afterResize = r.getCamera().zoom;
+    // The very next wheel zoom-OUT must not clamp UP: with the camera already re-clamped
+    // to the floor, one notch out stays at the floor and never increases (no inversion).
+    const next = r.cameraForWheelZoom({ x: 900, y: 450 }, 1 / 1.1);
+    expect(next.zoom).toBeLessThanOrEqual(afterResize);
+  });
+
+  it('leaves the camera identity untouched when the live zoom is already in range (no-op)', () => {
+    // A resize that keeps the fit floor at/below the live zoom must not re-assign the
+    // camera, so the host's getCamera() diff stays a no-op (no spurious notify/repaint).
+    const cam: Camera = { centerLon: 7, centerLat: -3, zoom: 8 };
+    const { r } = makeRenderer(cam);
+    const before = r.getCamera();
+    // Resize to a smaller-but-still-fit-below-8 viewport (fit = min(1200/360, 600/180) =
+    // 3.33 ≤ 8), so the live zoom stays in range and the camera identity is preserved.
+    r.setViewport({ widthCss: 1200, heightCss: 600, devicePixelRatio: 1 });
+    expect(r.getCamera()).toBe(before);
+    expect(r.getCamera().zoom).toBe(8);
+  });
+});
+
 describe('FR-21: shape primitive fills holes透過 via even-odd, single fill', () => {
   it('traces outer + hole into one path and fills evenodd once (hole透過)', () => {
     const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 10 });

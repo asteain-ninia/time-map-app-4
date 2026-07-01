@@ -112,6 +112,20 @@ export class Canvas2DMapRenderer implements MapRenderer {
   setViewport(viewport: Viewport): void {
     this.viewport = viewport;
     this.applyBackingBufferSize();
+    // FR-10 即時反映 (第7波 setviewport-reclamp): the effective zoom floor is derived
+    // from the LIVE viewport's fit-all zoom, so a viewport change can move it. Enlarging
+    // a window whose fit was sub-1 (camera parked BELOW the configured min) raises the
+    // floor back to the configured min while the camera is still parked below it —
+    // stranded outside `effectiveZoomRange()`. The next wheel zoom-OUT would then clamp
+    // UP to the floor — i.e. zoom IN, an inversion. Re-clamp the live camera zoom into
+    // the new effective range HERE, via the SAME single-truth clamp `setZoomRange` uses,
+    // so the wheel path can always reach the current zoom. Only re-assign when the value
+    // actually changes so an in-range resize keeps camera identity stable (callers diff
+    // `getCamera()` to decide whether to re-paint / mirror — no spurious notify).
+    const clamped = clampZoom(this.camera.zoom, this.effectiveZoomRange());
+    if (clamped !== this.camera.zoom) {
+      this.camera = { ...this.camera, zoom: clamped };
+    }
   }
 
   getViewport(): Viewport {

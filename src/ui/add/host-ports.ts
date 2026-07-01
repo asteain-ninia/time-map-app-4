@@ -523,9 +523,17 @@ export function createAddHostPorts(
     // do NOT re-fit on every resize — FR-11 fits at startup only).
     const wasUnmeasured = cur.widthCss <= 0 || cur.heightCss <= 0;
     const nowMeasured = next.widthCss > 0 && next.heightCss > 0;
+    const cameraBefore = renderer.getCamera();
     renderer.setViewport(next);
     if (wasUnmeasured && nowMeasured) {
       renderer.setCamera(initialCamera(next));
+      options.onCameraChange?.(renderer.getCamera());
+    } else if (renderer.getCamera() !== cameraBefore) {
+      // 第7波 setviewport-reclamp: an ordinary (already-measured) resize can move the
+      // effective zoom floor, so `setViewport` may re-clamp the live camera zoom. When
+      // it does, mirror the fresh camera to the observation hooks / minimap so they do
+      // not go stale (setViewport keeps camera identity stable when nothing changed, so
+      // this fires ONLY on an actual re-clamp — the same getCamera() diff callers use).
       options.onCameraChange?.(renderer.getCamera());
     }
     // Route through the throttle: a ResizeObserver can fire at raw layout rate during a
