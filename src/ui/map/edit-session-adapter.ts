@@ -22,14 +22,16 @@
 // fixed by type (教訓5.33 / 5.34). The pure U24 functions remain the single source
 // of the rules.
 //
-// SCOPE NOTE (受け入れ基準9 末項, honestly bounded): U22's {@link HitResult} carries
-// only FeatureBody / Vertex / Empty kinds — there is NO edge-handle hit kind. So the
-// edge-add tool ({@link EDIT_TOOL.EdgeAdd}) cannot be started from this port until
-// U22's hit-test contract exposes an edge hit; that wiring belongs to U22, not here.
-// This adapter therefore drives confirmRelease for the two tools the hit contract
-// CAN express: VertexMove (a vertex-handle hit) and FeatureMove (a feature-body hit
-// on the active feature). EdgeAdd remains UI-unreachable by contract, documented
-// rather than silently claimed.
+// EDGE-ADD (FR-87): U22's {@link HitResult} now carries an Edge kind (an active-feature
+// edge-midpoint hit), so this adapter ALSO drives {@link EDIT_TOOL.EdgeAdd}: an edge hit
+// mints a new vertex id (injected {@link EditSessionAdapterDeps.nextVertexId}, the SAME
+// shared minter add / knife use so ids never collide) and opens a drag whose reserved
+// vertex is inserted onto the edge at confirm time (buildEditSnapshot →
+// addVertexToLine / addVertexToLeafRing). The drag reuses the vertex-move light path
+// (slide / snap / share) exactly, since the reserved id is the session's dragged vertex
+// (drag-session beginDrag). This adapter therefore drives confirmRelease for the three
+// tools the hit contract can express: VertexMove (a vertex-handle hit), FeatureMove (a
+// feature-body hit on the active feature) and EdgeAdd (an active-feature edge-handle hit).
 
 import {
   EDIT_TOOL,
@@ -57,7 +59,7 @@ import {
 import type { ConsistencyPorts } from '../../domain/consistency';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { TimePoint } from '../../domain/time';
-import type { RingId } from '../../domain/ids';
+import type { RingId, VertexId } from '../../domain/ids';
 import type { ScreenPoint } from '../../render';
 import type { EditSessionPort } from './ports';
 
@@ -90,6 +92,17 @@ export interface EditSessionAdapterDeps<S> {
   readonly screenToWorld: (point: ScreenPoint) => WorldCoordinate;
   /** The ring a leaf vertex belongs to (leaf vertex drag only); undefined otherwise. */
   readonly ringIdForVertex?: (hit: Extract<HitResult, { kind: typeof HIT_KIND.Vertex }>) => RingId | undefined;
+  /**
+   * Mint the id RESERVED for the vertex an {@link EDIT_TOOL.EdgeAdd} gesture creates
+   * (FR-87). Called ONCE per edge-handle press; the same id is inserted onto the edge at
+   * confirm time (buildEditSnapshot → addVertexToLine / addVertexToLeafRing), so the
+   * in-flight drag can treat it as the dragged vertex (snap / 共有化候補 like a vertex-
+   * move). Injected so the adapter shares the composition root's single project-wide
+   * minter (add / knife use the same one) and a freshly reserved id can never collide
+   * with stored data (教訓 5.37). When absent, an edge hit begins NO session (an edge-add
+   * cannot be honestly started without a reserved id — 教訓 5.7 no silent half-feature).
+   */
+  readonly nextVertexId?: () => VertexId;
   /**
    * Whether a feature-body hit should start a WHOLE-FEATURE move (受け入れ基準2 /
    * FR-88). A body hit only begins a {@link EDIT_TOOL.FeatureMove} session when this
@@ -197,7 +210,24 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       }
       return null;
     }
-    // EdgeAdd is unreachable: HitResult has no edge kind (see file header scope note).
+    if (hit.kind === HIT_KIND.Edge) {
+      // An active-feature edge-midpoint hit begins an add-a-new-vertex drag (FR-87). We
+      // RESERVE the new vertex id now (the SAME id inserted onto the edge at confirm
+      // time, buildEditSnapshot → addVertexToLine / addVertexToLeafRing) so the in-flight
+      // vertex can slide / snap / share exactly like a vertex-move (drag-session treats
+      // it as the dragged vertex). Without a minter an edge-add cannot be honestly
+      // started (no reserved id) — stay plain selection rather than claim a half edit.
+      if (deps.nextVertexId === undefined) return null;
+      const newVertexId = deps.nextVertexId();
+      return {
+        tool: EDIT_TOOL.EdgeAdd,
+        featureId: hit.featureId,
+        startVertexId: hit.startVertexId,
+        endVertexId: hit.endVertexId,
+        newVertexId,
+        ...(hit.ringId !== undefined ? { ringId: hit.ringId } : {}),
+      };
+    }
     return null; // empty / unsupported → U22 selection only.
   }
 

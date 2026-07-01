@@ -29,6 +29,18 @@ describe('computeHandles (FR-87 受け入れ基準1)', () => {
     expect(h.edges.every((e) => e.kind === HANDLE_KIND.Edge)).toBe(true);
   });
 
+  it('seam-crossing edge midpoint sits on the drawn short-arc edge, not the antipode (FR-87 seam)', () => {
+    // The edge +179 → -179 is drawn across the seam (lon 180). A raw longitude
+    // average would put its midpoint at 0° (the antipode) — half a world from the
+    // edge — so the edge handle (now grabbable via FR-87) would render + hit-test
+    // far from where the edge is drawn. The seam-aware midpoint stays on the edge.
+    const h = computeHandles(line('L', ['a', 'b']), store(['a', 179, 10], ['b', -179, 10]));
+    expect(h.edges).toHaveLength(1);
+    const mid = h.edges[0]!.midpoint;
+    expect(Math.abs(mid.lon)).toBeGreaterThan(170); // near ±180 (the seam), NOT 0
+    expect(mid.lat).toBe(10);
+  });
+
   it('leaf feature → closed ring edge handles (last→first included) with ring origin', () => {
     const t = territory('r0', ['a', 'b', 'c']);
     const h = computeHandles(leaf('F', [t]), store(['a', 0, 0], ['b', 4, 0], ['c', 0, 4]));

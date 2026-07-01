@@ -22,6 +22,7 @@
 //     (受け入れ基準1「穴リング・飛び地リングの各辺にもエッジハンドルが出る」).
 
 import type { WorldCoordinate } from '../coordinate';
+import { shortestLonDeltaDeg, wrapLonDeg } from '../geo/longitude';
 import { getVertex, type VertexStore } from '../vertex';
 import type { FeatureId, RingId, VertexId } from '../ids';
 import {
@@ -80,7 +81,17 @@ export interface EditHandles {
 export const EMPTY_HANDLES: EditHandles = { vertices: [], edges: [] };
 
 function midpoint(a: WorldCoordinate, b: WorldCoordinate): WorldCoordinate {
-  return { lon: (a.lon + b.lon) / 2, lat: (a.lat + b.lat) / 2 };
+  // Seam-aware midpoint (FR-87 review): a raw longitude average puts the midpoint
+  // of a seam-crossing edge (e.g. +179 → -179) at the ANTIPODE (0°), so the drawn
+  // edge handle — and, now that FR-87 makes it grabbable, its hit target — would
+  // sit half a world away from the edge the render layer actually draws (the render
+  // path unwraps via unwrapLon*Sequence). Step along the SHORT arc using the single
+  // source-of-truth shortestLonDeltaDeg, then fold back to base range. A non-seam
+  // edge's short delta equals the plain difference, so this is unchanged there.
+  return {
+    lon: wrapLonDeg(a.lon + shortestLonDeltaDeg(a.lon, b.lon) / 2),
+    lat: (a.lat + b.lat) / 2,
+  };
 }
 
 function vertexHandle(

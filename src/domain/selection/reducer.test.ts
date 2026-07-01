@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EMPTY_HIT,
+  edgeHit,
   featureBodyHit,
   vertexHit,
   type HitResult,
@@ -84,6 +85,22 @@ describe('active feature (FR-79)', () => {
     // not moved: release on the same point clears (FR-79).
     const released = reduce(pressed, up(coord(5, 5)));
     expect(released.activeFeature).toBeNull();
+  });
+
+  it('an edge-handle press leaves selection/active UNCHANGED (FR-87: EdgeAdd start, not a selection change)', () => {
+    // The edge handle exists only for the already-active feature; pressing it begins
+    // an add-a-vertex gesture (EDIT_TOOL.EdgeAdd, owned by U24), NOT a re-selection or
+    // clear (教訓 5.9). Contract-pins the reducer's HIT_KIND.Edge arm against regression.
+    const start = withVertexSet(
+      withActiveFeature(EMPTY_SELECTION, fid('A')),
+      fid('A'),
+      vidSet('A-v0', 'A-v1'),
+    );
+    const next = reduce(start, down(coord(1, 1), edgeHit(fid('A'), vid('A-v0'), vid('A-v1'))));
+    expect(next.activeFeature).toBe(fid('A'));
+    expect(next.vertexIds).toEqual(vidSet('A-v0', 'A-v1'));
+    expect(next.vertexOwner).toBe(start.vertexOwner);
+    expect(isInteracting(next)).toBe(false); // no vertex/rectangle draft armed
   });
 });
 

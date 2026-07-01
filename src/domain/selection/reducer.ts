@@ -224,6 +224,15 @@ function onPointerDown(
       });
     }
 
+    case HIT_KIND.Edge:
+      // Press on an edge-midpoint handle of the active feature (FR-87): this is the
+      // start of an add-a-new-vertex gesture (EDIT_TOOL.EdgeAdd), owned by U24 — NOT a
+      // selection change. The selection set / active feature are left UNCHANGED (教訓
+      // 5.9: the edge handle only exists for the already-active feature, so pressing it
+      // must not re-select or clear anything). The transient is dropped like any new
+      // press but no vertex/rectangle draft is armed here.
+      return base;
+
     case HIT_KIND.Empty:
       // Press on empty space: start a rectangle draft (教訓 5.8: empty press +
       // move = rectangle). If it does not move, release clears the selection.

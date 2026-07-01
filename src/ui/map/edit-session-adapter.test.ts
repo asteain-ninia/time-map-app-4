@@ -18,10 +18,12 @@ import {
 } from './edit-session-adapter';
 import { NO_MODIFIERS, type PointerModifiers, type SelectionPort } from './ports';
 import {
+  edgeHit,
   featureBodyHit,
   vertexHit,
   type HitResult,
 } from '../../domain/selection';
+import { EDIT_TOOL, type DragSession } from '../../domain/editing';
 import { buildSnapshot, type FeatureSnapshot, type ReleaseOutcome } from '../../domain/editing';
 import { PROCESS_STATUS, type ConsistencyPorts } from '../../domain/consistency';
 import { defineCommandKind, createCommandResult, type Command } from '../../domain/command';
@@ -399,5 +401,64 @@ describe('edit-mode drag runs the slide/snap light path through update() (受け
     dispatcher.pointerUp(ptr(1, 41, 41));
     expect(outcomes).toHaveLength(1);
     expect(captured.snap).toBeNull();
+  });
+});
+
+// FR-87 — an active-feature EDGE-handle hit begins an EDIT_TOOL.EdgeAdd drag: the adapter
+// reserves a new vertex id (injected minter, the SAME series add / knife use) and drives
+// the SAME confirmRelease pipeline vertex-move / feature-move reach from the UI.
+describe('edit-mode edge-handle drag drives an EdgeAdd session (FR-87)', () => {
+  const EDGE = edgeHit(asFeatureId('L'), asVertexId('v0'), asVertexId('v1'));
+
+  function edgeSetup(extra: Partial<EditSessionAdapterDeps<FakeState>> = {}) {
+    let minted = 0;
+    const sessions: DragSession[] = [];
+    const base = setup(EDGE, {
+      nextVertexId: () => asVertexId(`new-${(minted += 1)}`),
+      // Capture the confirming session so we can inspect the EdgeAdd target.
+      buildSnapshot: (session) => {
+        sessions.push(session);
+        return buildSnapshot({ feature: FEATURE, vertices: [] });
+      },
+      ...extra,
+    });
+    return { ...base, sessions, mintedCount: () => minted };
+  }
+
+  it('press→move→release on an edge hit runs the U13 confirm with an EdgeAdd target', () => {
+    const { dispatcher, log, outcomes, sessions, mintedCount } = edgeSetup();
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40)); // a real move (crosses threshold)
+    dispatcher.pointerUp(ptr(1, 40, 40));
+
+    // The completion trigger ran the U13 fixed-order pipeline for the edge-add.
+    expect(log.applyProposal).toBe(1);
+    expect(log.makeCommand).toBe(1);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]!.kind).toBe('processed');
+    // Exactly one id reserved (at press), carried as the EdgeAdd target's newVertexId,
+    // AND as the session's dragged vertex (so it can snap / share like a vertex-move).
+    expect(mintedCount()).toBe(1);
+    const session = sessions[0]!;
+    expect(session.target.tool).toBe(EDIT_TOOL.EdgeAdd);
+    if (session.target.tool === EDIT_TOOL.EdgeAdd) {
+      expect(session.target.featureId).toBe(asFeatureId('L'));
+      expect(session.target.startVertexId).toBe(asVertexId('v0'));
+      expect(session.target.endVertexId).toBe(asVertexId('v1'));
+      expect(session.target.newVertexId).toBe(asVertexId('new-1'));
+    }
+    expect(session.draggedVertexId).toBe(asVertexId('new-1'));
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('an edge hit with NO minter injected stays plain selection (no half edit, no confirm)', () => {
+    // Omit nextVertexId: begin must return false and no session / confirm is owed.
+    const { dispatcher, log, outcomes } = setup(EDGE);
+    dispatcher.pointerDown(ptr(1, 10, 10));
+    dispatcher.pointerMove(ptr(1, 40, 40));
+    dispatcher.pointerUp(ptr(1, 40, 40));
+    expect(outcomes).toHaveLength(0);
+    expect(log.applyProposal).toBe(0);
+    expect(dispatcher.activeCount).toBe(0);
   });
 });

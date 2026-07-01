@@ -49,7 +49,7 @@ import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import { RING_KIND } from '../../domain/ring';
 import type { TimePoint } from '../../domain/time/time-point';
-import { getVertex, setVertex, type VertexStore } from '../../domain/vertex';
+import { createVertex, getVertex, setVertex, type VertexStore } from '../../domain/vertex';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
 import {
@@ -117,8 +117,15 @@ export function previewVertexStore(
     }
     return next;
   }
-  // EdgeAdd is UI-unreachable by the U22 hit contract (edit-session-adapter scope note).
-  return store;
+  // EdgeAdd (FR-87): the new vertex is materialised on the edge at confirm time, but the
+  // in-flight drag previews it at `session.preview` so a NEW vertex handle follows the
+  // cursor between the edge's two endpoints (受け入れ基準1 / HB3-4). We insert the reserved
+  // id (session.target.newVertexId) at the preview position into the TRANSIENT store; the
+  // feature record is unchanged during the drag (the confirm snapshot rewrites the id list
+  // via addVertexToLine / addVertexToLeafRing — the SAME single source for the structural
+  // insert, 教訓 5.30). computeHandles over the previewed store then draws the new vertex
+  // handle at the preview; the committed geometry is untouched (教訓 5.22).
+  return setVertex(store, createVertex(session.target.newVertexId, session.preview));
 }
 
 /**

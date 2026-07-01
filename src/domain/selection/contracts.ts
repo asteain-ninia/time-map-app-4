@@ -21,7 +21,7 @@
 // types so the two layers never rely on accidental structural agreement.
 
 import type { WorldCoordinate } from '../coordinate';
-import type { FeatureId, VertexId } from '../ids';
+import type { FeatureId, RingId, VertexId } from '../ids';
 
 // --- Hit result (produced by U24, consumed here) ----------------------------
 
@@ -30,6 +30,13 @@ export const HIT_KIND = {
   FeatureBody: 'featureBody',
   /** The pointer hit a vertex HANDLE (drives the vertex-selection set, FR-80). */
   Vertex: 'vertex',
+  /**
+   * The pointer hit an EDGE-midpoint HANDLE of the active feature (starts an
+   * add-a-new-vertex gesture, FR-87). Unlike a vertex / body hit it does NOT change
+   * the selection set — it only names the edge U24 inserts a new vertex onto when the
+   * handle is dragged / clicked (edit-session-adapter → EDIT_TOOL.EdgeAdd).
+   */
+  Edge: 'edge',
   /** The pointer hit nothing selectable (empty space → clears selection). */
   Empty: 'empty',
 } as const;
@@ -52,6 +59,15 @@ export type HitResult =
       readonly featureId: FeatureId;
       readonly vertexId: VertexId;
     }
+  | {
+      readonly kind: typeof HIT_KIND.Edge;
+      readonly featureId: FeatureId;
+      /** The ring the edge belongs to (leaf only); absent for a line edge. */
+      readonly ringId?: RingId;
+      /** The two endpoint vertex ids of the edge a new vertex is inserted between. */
+      readonly startVertexId: VertexId;
+      readonly endVertexId: VertexId;
+    }
   | { readonly kind: typeof HIT_KIND.Empty };
 
 export function featureBodyHit(featureId: FeatureId): HitResult {
@@ -60,6 +76,23 @@ export function featureBodyHit(featureId: FeatureId): HitResult {
 
 export function vertexHit(featureId: FeatureId, vertexId: VertexId): HitResult {
   return { kind: HIT_KIND.Vertex, featureId, vertexId };
+}
+
+/**
+ * An edge-midpoint hit (FR-87): the active feature's edge from `startVertexId` to
+ * `endVertexId` (on `ringId` for a leaf). U24 turns this into an
+ * {@link EDIT_TOOL.EdgeAdd} drag that inserts a new vertex on that edge. `ringId` is
+ * dropped when undefined (a line edge) so the branded-optional field stays exact.
+ */
+export function edgeHit(
+  featureId: FeatureId,
+  startVertexId: VertexId,
+  endVertexId: VertexId,
+  ringId?: RingId,
+): HitResult {
+  return ringId === undefined
+    ? { kind: HIT_KIND.Edge, featureId, startVertexId, endVertexId }
+    : { kind: HIT_KIND.Edge, featureId, ringId, startVertexId, endVertexId };
 }
 
 export const EMPTY_HIT: HitResult = { kind: HIT_KIND.Empty };

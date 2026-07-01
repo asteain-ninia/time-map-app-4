@@ -1000,6 +1000,81 @@ describe('multiPolygonLonSpan memoization (bughunt3 #medium)', () => {
   });
 });
 
+// --- FR-87: active-feature EDGE-midpoint handles ------------------------------
+//
+// The ACTIVE feature exposes grabbable edge-midpoint handles (add-a-new-vertex, U24
+// EDIT_TOOL.EdgeAdd). A click on an edge midpoint returns an HIT_KIND.Edge carrying the
+// edge's endpoint ids (and ringId for a leaf), probed AFTER vertices (頂点優先) and
+// BEFORE the body. An edge handle is selection-scoped, so it is only returned when the
+// clicked feature is the active feature.
+describe('liveHitTestAt — active-feature edge-midpoint handles (FR-87)', () => {
+  const time = timePointYear(1000);
+
+  it('returns an EDGE hit at a leaf edge midpoint of the ACTIVE feature (ring + endpoints)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0); // corners (0,0)(4,0)(4,4)(0,4)
+    const root = commit(emptyProject(), a, 1000);
+    // Midpoint of the bottom edge va-0(0,0)→va-1(4,0) is (2,0), inside the body but far
+    // (>8px at zoom 10) from every corner vertex.
+    const mid = { lon: 2, lat: 0 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, point: toScreen(mid), activeFeature: a.feature.id },
+      mid,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Edge);
+    if (hit.kind === HIT_KIND.Edge) {
+      expect(hit.featureId).toBe(a.feature.id);
+      expect(hit.startVertexId).toBe(asVertexId('va-0'));
+      expect(hit.endVertexId).toBe(asVertexId('va-1'));
+      expect(hit.ringId).toBe(asRingId('r-f-a'));
+    }
+  });
+
+  it('does NOT return an edge hit when the feature is not the active feature', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    // An interior point near the bottom edge but strictly inside the body: with NO active
+    // feature the edge handles are not probed, so this resolves to the body (not an Edge).
+    const inside = { lon: 2, lat: 1 };
+    const hit = liveHitTestAt({ root, time, toScreen, point: toScreen(inside) }, inside);
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+  });
+
+  it('prefers a VERTEX over an edge midpoint within the same radius (頂点優先)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    // Click exactly on the corner vertex va-0 (0,0): the vertex handle must win over any
+    // edge handle whose midpoint is also nearby.
+    const corner = { lon: 0, lat: 0 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, point: toScreen(corner), activeFeature: a.feature.id },
+      corner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Vertex);
+    if (hit.kind === HIT_KIND.Vertex) expect(hit.vertexId).toBe(asVertexId('va-0'));
+  });
+
+  it('returns an EDGE hit for a LINE active feature (no ringId)', () => {
+    const ln = lineFeature('f-l', 'vl', [
+      [0, 0],
+      [10, 0],
+    ]);
+    const root = commit(emptyProject(), ln, 1000);
+    // Midpoint of the single segment vl-0(0,0)→vl-1(10,0) is (5,0), far from both ends.
+    const mid = { lon: 5, lat: 0 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, point: toScreen(mid), activeFeature: ln.feature.id },
+      mid,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Edge);
+    if (hit.kind === HIT_KIND.Edge) {
+      expect(hit.startVertexId).toBe(asVertexId('vl-0'));
+      expect(hit.endVertexId).toBe(asVertexId('vl-1'));
+      expect('ringId' in hit).toBe(false);
+    }
+  });
+});
+
 /** screenToWorld against the wrap test camera (centerLon 360). */
 function screenToWorldFor(s: { x: number; y: number }): { lon: number; lat: number } {
   const w = screenToWorld(s, { centerLon: 360, centerLat: 2, zoom: 10 }, {

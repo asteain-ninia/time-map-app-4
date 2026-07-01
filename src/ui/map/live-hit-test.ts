@@ -37,6 +37,10 @@
 //   1. The nearest DRAWN VERTEX within `radiusPx` SCREEN pixels of the cursor — only
 //      vertices of features actually drawn with their own shape (Real-verdict areas,
 //      plus every point/line). Aggregated / omitted areas contribute none.
+//   1.5. Else the nearest EDGE-MIDPOINT handle of the ACTIVE feature within the screen-px
+//      radius (FR-87 add-a-new-vertex). Edge handles are a selection-scoped affordance
+//      (only the active feature has them), so this step runs only when an active feature
+//      is supplied; a vertex (step 1) still wins inside the same radius.
 //   2. Else a POINT / LINE feature within the screen-px radius (no fillable body).
 //   3. Else the topmost DRAWN AREA whose resolved shape contains the cursor (world
 //      containment, 穴透過). For an aggregate that is the AGGREGATE's集約形状, so the
@@ -63,8 +67,10 @@ import {
   EMPTY_HIT,
   featureBodyHit,
   vertexHit,
+  edgeHit,
   type HitResult,
 } from '../../domain/selection';
+import { computeHandles, type EdgeHandle } from '../../domain/editing/handles';
 import type { ScreenPoint } from '../../render';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { ResolvedDisplayShape } from '../../domain/display';
@@ -118,6 +124,16 @@ export interface LiveHitTestInput {
   readonly point: ScreenPoint;
   /** The grab radius in SCREEN px for a vertex / point / line hit (default 8). */
   readonly radiusPx?: number;
+  /**
+   * The currently-active feature (FR-87), or null / undefined when none is selected.
+   * ONLY this feature exposes grabbable EDGE-midpoint handles (add-a-new-vertex, U24
+   * EDIT_TOOL.EdgeAdd) — an edge handle is a selection-scoped affordance, unlike a
+   * vertex / body which is grabbable for any drawn feature. When present its edge
+   * midpoints are probed (step 1.5) between the vertex path and the body path, so a
+   * click on an edge midpoint returns an {@link HIT_KIND.Edge} hit rather than the
+   * feature body underneath it.
+   */
+  readonly activeFeature?: FeatureId | null;
 }
 
 /** Default screen-px grab radius for a vertex / point / line hit. */
@@ -451,7 +467,7 @@ export function liveHitTestAt(
   input: LiveHitTestInput,
   worldPoint: WorldCoordinate,
 ): HitResult {
-  const { root, time, toScreen, point } = input;
+  const { root, time, toScreen, point, activeFeature } = input;
   const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
   const radius = input.radiusPx ?? DEFAULT_HIT_RADIUS_PX;
   const radiusSq = radius * radius;
@@ -471,7 +487,11 @@ export function liveHitTestAt(
   // domain a pointer-move is a cache HIT with zero re-insertions (教訓 5.29 単一真実源 =
   // 単一 COMPUTATION). `grabbable` / `owners` are exactly what this function built inline
   // before — same values, now memoised — so behaviour is unchanged (see vertexOwners).
-  const { features, vertices, resolved, owners } = resolveDisplayFor(root, time, control);
+  const { features, areaFeaturesById, vertices, resolved, owners } = resolveDisplayFor(
+    root,
+    time,
+    control,
+  );
   const areas = resolved.shapes;
 
   // 1. Nearest DRAWN VERTEX within the screen-px radius (vertex-first priority).
@@ -488,6 +508,46 @@ export function liveHitTestAt(
   }
   if (bestVertex !== null) {
     return vertexHit(bestVertex.featureId, bestVertex.vertexId);
+  }
+
+  // 1.5. Nearest EDGE-MIDPOINT handle of the ACTIVE feature within the screen-px radius
+  //      (FR-87 add-a-new-vertex). Edge handles are a SELECTION-scoped affordance — they
+  //      exist only for the active feature (unlike vertices / bodies, grabbable for any
+  //      drawn feature), so this probes ONLY when an active feature is supplied. Probed
+  //      AFTER vertices so a vertex still wins inside the same radius (受け入れ基準: 頂点
+  //      優先 — an edge midpoint that coincides with a vertex never steals the grab), and
+  //      BEFORE the point/line/area bodies so a click on an edge midpoint starts an
+  //      EdgeAdd rather than selecting the body underneath it (『見えている＝掴める』).
+  //
+  //      The midpoints come from the SAME `computeHandles` the render layer draws the
+  //      edge handles with, resolved over the SAME shared display vertex store the vertex
+  //      path used (単一真実源, 教訓 5.29 — 描画 ⊇ ヒット), so a handle is grabbable exactly
+  //      where it is drawn. `computeHandles` returns EMPTY_HANDLES for an aggregate (no
+  //      own shape, FR-35) and skips unresolved vertices, so an aggregate / omitted active
+  //      feature contributes no edge handles.
+  if (activeFeature != null) {
+    const feature =
+      areaFeaturesById.get(activeFeature) ?? features.find((f) => f.id === activeFeature);
+    if (feature !== undefined) {
+      const edges = computeHandles(feature, vertices).edges;
+      let bestEdge: EdgeHandle | null = null;
+      let bestEdgeDistSq = radiusSq;
+      for (const edge of edges) {
+        const d = nearestDrawnDistSq(edge.midpoint, point, toScreen, wrap);
+        if (d <= bestEdgeDistSq) {
+          bestEdgeDistSq = d;
+          bestEdge = edge;
+        }
+      }
+      if (bestEdge !== null) {
+        return edgeHit(
+          bestEdge.featureId,
+          bestEdge.startVertexId,
+          bestEdge.endVertexId,
+          bestEdge.ringId,
+        );
+      }
+    }
   }
 
   // 2. A POINT / LINE feature near the cursor (screen-px proximity — no fillable

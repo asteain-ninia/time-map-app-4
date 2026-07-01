@@ -13,6 +13,7 @@ export {
   type HitResult,
   featureBodyHit,
   vertexHit,
+  edgeHit,
   EMPTY_HIT,
   type VertexOwnerLookup,
   ownerLookupFromMap,

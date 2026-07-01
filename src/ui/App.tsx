@@ -268,6 +268,13 @@ export function App(): JSX.Element {
     ((result: ProcessResult<DomainRoot>, preference?: { readonly featureId: FeatureId }) => void) | null
   >(null);
 
+  // The shared vertex-id minter, held behind a ref so the imperatively-created
+  // edit-session port (built in `onMapMount`) can RESERVE a new vertex id for an
+  // FR-87 edge-add without re-mounting the map when the minter memo changes. Assigned
+  // from the SAME `sharedMint` add / knife use (below), so an edge-add-minted id can
+  // collide with neither stored data nor another tool's output (教訓 5.37 重複チェック).
+  const nextVertexIdRef = useRef<(() => VertexId) | null>(null);
+
   // The latest zoom CLAMP range (FR-10). The file-ops controller pushes it on
   // every settings change; we cache it so a range set BEFORE the map mounts is
   // applied as soon as the renderer exists (no lost update, 教訓 5.22).
@@ -599,6 +606,11 @@ export function App(): JSX.Element {
             // point/vertex/line/area shown only as a wrap replica is still grabbable
             // (bughunt: 描画と hit-test の wrap 一致 — clip ⊇ draw ⊇ hit).
             wrap: { camera, viewport },
+            // FR-87: the active feature exposes grabbable EDGE-midpoint handles, so a
+            // click on an edge midpoint returns an Edge hit (→ U24 EdgeAdd) rather than
+            // the body underneath. Only the selected feature draws edge handles, so we
+            // pass the SAME active-feature truth the handle draw path uses (単一真実源).
+            activeFeature: s.selection.activeFeature,
             point,
           },
           // World coordinate of the click (renderer inverse) for the world-space leaf
@@ -686,6 +698,14 @@ export function App(): JSX.Element {
       // the live feature at the current time (shared rule, edit-session-snapshot).
       ringIdForVertex: (hit) =>
         ringIdForLeafVertex(editSnapshotCtx, hit.featureId, hit.vertexId),
+      // FR-87: reserve the new vertex id for an edge-handle add through the SHARED
+      // project-wide minter (via the ref, assigned from sharedMint on every render
+      // before any pointer event can fire), so an edge-add id never collides with
+      // stored data or another tool's output (教訓 5.37). Supplying this dep is what
+      // makes the edge hit reachable; the adapter treats a caller with NO minter
+      // (undefined dep — e.g. a unit test) as "edge hit stays plain selection" via its
+      // own undefined-guard (教訓 5.7). In the live app the dep is always supplied.
+      nextVertexId: () => nextVertexIdRef.current!(),
       // A feature-body hit begins a WHOLE-FEATURE move (受け入れ基準2 / FR-88) ONLY when
       // (HB3-8 ユーザー確定=排他) the 地物移動 tool is active AND the body is the currently-
       // selected active feature. Gating on EDIT_MOVE makes vertex-edit and feature-move
@@ -1170,6 +1190,10 @@ export function App(): JSX.Element {
     () => createSharedIdMint(() => store.getState().domain),
     [store],
   );
+  // Point the edit-session's edge-add vertex minter at the shared minter (FR-87). The
+  // ref indirection lets the map's imperatively-created edit-session port reserve ids
+  // through the SAME series add / knife use without re-mounting on a minter change.
+  nextVertexIdRef.current = () => asVertexId(sharedMint('v'));
 
   const hostBootstrap = useMemo(
     () => createAddBootstrap<DomainRoot>(() => store.getState().domain, sharedMint),
@@ -2462,7 +2486,7 @@ function createAddBootstrap<S>(getRoot: () => S, mint: SharedIdMint): AddBootstr
 
 import type { VertexStore } from '../domain/vertex';
 import { withAttributes, withColor, type Feature } from '../domain/feature';
-import type { FeatureId } from '../domain/ids';
+import type { FeatureId, VertexId } from '../domain/ids';
 import type {
   ResolveFeature,
   ResolveVertexStore,

@@ -23,6 +23,8 @@ import {
   moveFeatureVertices,
   moveVertexTo,
 } from '../../domain/editing/move';
+import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
+import { createVertex } from '../../domain/vertex';
 import {
   buildSnapshot,
   decideSharePairAtRelease,
@@ -45,13 +47,16 @@ export interface EditSnapshotContext {
 
 /**
  * Build the complete after-state {@link FeatureSnapshot} for a confirming edit
- * release. The session's `target` decides which vertices moved:
+ * release. The session's `target` decides which vertices moved / were added:
  *   - VertexMove → the single dragged vertex to its final `preview` (FR-88).
  *   - FeatureMove → every vertex of the feature by the drag delta (FR-88 平行移動).
- * The feature record itself is unchanged (ids / structure are stable); only the
- * vertex bodies carry new coordinates. When the feature / vertices cannot be
- * resolved at the time (stale data) an EMPTY snapshot is returned, which
- * `confirmRelease` treats as a no-op (片落とし禁止 — never a half edit, 教訓5.18).
+ *   - EdgeAdd → a NEW vertex inserted on the pressed edge at the final `preview`
+ *     (FR-87), with the feature's id list rewritten by the domain add ops.
+ * For a move the feature record is unchanged (ids / structure are stable) and only
+ * the vertex bodies carry new coordinates; for an edge-add the feature record's id
+ * list gains the new vertex. When the feature / vertices / edge cannot be resolved
+ * at the time (stale data) an EMPTY snapshot is returned, which `confirmRelease`
+ * treats as a no-op (片落とし禁止 — never a half edit, 教訓5.18).
  */
 export function buildEditSnapshot(
   ctx: EditSnapshotContext,
@@ -80,8 +85,39 @@ export function buildEditSnapshot(
     return buildSnapshot({ feature, vertices: moved });
   }
 
-  // EdgeAdd is UI-unreachable by the U22 hit contract (see edit-session-adapter
-  // header scope note); no snapshot is built for it here.
+  if (session.target.tool === EDIT_TOOL.EdgeAdd) {
+    // Add a NEW vertex on the pressed edge (FR-87). The structural id-list insert is the
+    // domain's SINGLE source (addVertexToLine / addVertexToLeafRing — the same ops the
+    // edge-handle add reuses, 教訓 5.30): they rewrite the feature's vertex/ring id list
+    // to place `newVertexId` between the edge's two endpoints. We build the new vertex
+    // BODY at the drag's final `preview` position, so the confirmed snapshot carries both
+    // the rewritten feature record AND the new coordinate the U13 ports merge (FR-59 一体
+    // 編集). A stale edge (endpoints no longer adjacent) or a leaf without the named ring
+    // yields undefined → an EMPTY snapshot (片落とし禁止 — no half insert, 教訓 5.18); a
+    // point has no edge at all.
+    const { startVertexId, endVertexId, newVertexId } = session.target;
+    const newVertex = createVertex(newVertexId, session.preview);
+    let result;
+    if (feature.kind === FEATURE_KIND.Line) {
+      result = addVertexToLine(feature, startVertexId, endVertexId, newVertexId);
+    } else if (feature.kind === FEATURE_KIND.Leaf && session.target.ringId !== undefined) {
+      result = addVertexToLeafRing(
+        feature,
+        session.target.ringId,
+        startVertexId,
+        endVertexId,
+        newVertexId,
+      );
+    }
+    if (result === undefined || result.kind !== 'feature') return buildSnapshot({ vertices: [] });
+    // 受け入れ基準12 / FR-31: a snap that survived to release shares the new vertex onto
+    // its target (the reserved id is the session's dragged vertex, so decideSharePairAtRelease
+    // resolves it exactly like a vertex-move).
+    const sharePair = decideSharePairAtRelease(session);
+    return buildSnapshot({ feature: result.feature, vertices: [newVertex], sharePair });
+  }
+
+  // No other tool builds a snapshot here (drag-session is exhaustive over EDIT_TOOL).
   return buildSnapshot({ vertices: [] });
 }
 
