@@ -18,6 +18,7 @@ import {
   timePointYearMonthDay,
   type TimePoint,
 } from '../../domain/time/time-point';
+import { MAX_YEAR } from '../../domain/time/validate';
 
 /**
  * The time-bar view window: the normalized [min, max) range currently shown and
@@ -38,6 +39,24 @@ export interface TimeBarView {
 export const MIN_VIEW_DAYS = 1;
 /** Wheel zoom factor per notch (>1 zooms out, <1 zooms in). */
 export const ZOOM_STEP = 1.2;
+/**
+ * The normalized-day magnitude bound a transient view edge may reach, derived
+ * from {@link MAX_YEAR} (単一真実源: the same bound `validate` enforces on every
+ * persisted point). A persisted point spans at most `366 × MAX_YEAR` days from
+ * the epoch (worst-case year length × the year bound), so every legitimate time
+ * lies in `[-NORM_LIMIT, NORM_LIMIT]`.
+ *
+ * WHY the transient view must be clamped here — `denormalize` (normalized.ts)
+ * walks year-by-year (O(|years|)), and `validate` only bounds PERSISTED points,
+ * not a transient zoom window. Without this clamp, wheel zoom-out has no upper
+ * limit: after ~100 notches the span exceeds many MAX_YEAR-days, the edge
+ * denormalize walk balloons to millions of iterations, and the panel freezes for
+ * seconds to minutes (第8波 LOW). Clamping the view into the SAME range that
+ * validate guarantees keeps every denormalize call bounded.
+ */
+export const NORM_LIMIT = 366 * MAX_YEAR;
+/** The widest span a view may zoom OUT to: the full `[-NORM_LIMIT, NORM_LIMIT]` range. */
+export const MAX_VIEW_DAYS = 2 * NORM_LIMIT;
 /**
  * The screen-occupancy threshold (fraction of the axis) a bar must reach before
  * its name label is drawn (教訓 5.29: 単一の判定関数). Below it the label is
@@ -161,7 +180,12 @@ export function shouldShowLabel(segment: BarSegment, view: TimeBarView): boolean
  * Apply a wheel zoom to the view, centered on a focus pixel (FR-60: ホイールで
  * ズーム). `notches` > 0 zooms OUT (span grows), < 0 zooms IN (span shrinks). The
  * focus time stays anchored at the focus pixel so zoom is centered consistently.
- * The span is floored at {@link MIN_VIEW_DAYS}. Pure: returns a new view.
+ * The span is floored at {@link MIN_VIEW_DAYS} and CAPPED at {@link MAX_VIEW_DAYS};
+ * the edges are clamped into `[-NORM_LIMIT, NORM_LIMIT]`. That cap keeps the
+ * transient view inside the SAME normalized range `validate` guarantees for
+ * persisted points, so the per-year `denormalize` walk on the edges stays bounded
+ * — otherwise unbounded zoom-out freezes the panel (第8波 LOW). Pure: returns a
+ * new view. Within the range every zoom/pan is unaffected (the clamp is a no-op).
  */
 export function zoomView(
   view: TimeBarView,
@@ -172,7 +196,10 @@ export function zoomView(
   const span = viewSpanDays(view);
   if (span <= 0) return view;
   const factor = Math.pow(ZOOM_STEP, notches);
-  const newSpan = Math.max(MIN_VIEW_DAYS, Math.round(span * factor));
+  const newSpan = Math.min(
+    MAX_VIEW_DAYS,
+    Math.max(MIN_VIEW_DAYS, Math.round(span * factor)),
+  );
 
   // The normalized value under the focus pixel must stay under it after zoom.
   const focusTime = pixelToTime(focusPx, view, calendar);
@@ -182,7 +209,12 @@ export function zoomView(
       ? Math.min(1, Math.max(0, focusPx / view.pixelLength))
       : 0;
 
-  const newMin = Math.round(focusValue - focusFraction * newSpan);
+  // Clamp the min edge so BOTH edges stay in [-NORM_LIMIT, NORM_LIMIT]: min is
+  // floored at -NORM_LIMIT and capped at NORM_LIMIT - newSpan (the highest min
+  // that keeps max ≤ NORM_LIMIT). newSpan ≤ MAX_VIEW_DAYS guarantees this window
+  // is non-empty. Within the range this leaves the centered result unchanged.
+  const rawMin = Math.round(focusValue - focusFraction * newSpan);
+  const newMin = Math.min(NORM_LIMIT - newSpan, Math.max(-NORM_LIMIT, rawMin));
   const newMax = newMin + newSpan;
   return {
     min: newMin as Normalized,
