@@ -67,6 +67,17 @@ const DEFAULT_VIEWPORT: Viewport = {
   devicePixelRatio: 1,
 };
 
+/**
+ * Overprint guard for feature labels (HB5 LOW): a pathological name (very long, or
+ * emoji-rich so it measures wide) would otherwise paint far past its anchor and smear
+ * across the map. Passed as the `maxWidth` of both the halo stroke and the fill so the
+ * canvas condenses the glyphs to fit this CSS-pixel cap. This is a screen-fixed pixel
+ * budget (FR-17), independent of zoom, and only tightens the pathological case — the
+ * visibility判定 (FR-86: point=最小ズーム, line=可視長, 面=リング画面占有率) still lives in
+ * the label layer, so a label that reaches the renderer at all is only length-capped here.
+ */
+export const MAX_LABEL_WIDTH_PX = 240;
+
 export class Canvas2DMapRenderer implements MapRenderer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly surface: CanvasSurface;
@@ -375,14 +386,14 @@ export class Canvas2DMapRenderer implements MapRenderer {
       ctx.lineJoin = 'round';
       ctx.lineWidth = Math.max(2, p.fontPx / 5);
       ctx.strokeStyle = p.halo;
-      ctx.strokeText(p.text, x, y);
+      ctx.strokeText(p.text, x, y, MAX_LABEL_WIDTH_PX);
       // HB3-26 review fix: restore the default join so the label halo's 'round' does not
       // leak into later/next-frame strokes (polygon borders, gridlines) — they expect the
       // canvas default 'miter'. The renderer otherwise sets lineWidth/strokeStyle per call.
       ctx.lineJoin = 'miter';
     }
     ctx.fillStyle = p.fill;
-    ctx.fillText(p.text, x, y);
+    ctx.fillText(p.text, x, y, MAX_LABEL_WIDTH_PX);
   }
 
   private drawBaseMap(p: BaseMapPrimitive, lonOffset: number): void {

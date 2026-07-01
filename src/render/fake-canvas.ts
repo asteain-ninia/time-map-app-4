@@ -21,9 +21,9 @@ export class FakeContext2D {
   arcs: RecordedArc[] = [];
   lineWidths: number[] = [];
   fonts: string[] = [];
-  fillTexts: { text: string; x: number; y: number }[] = [];
+  fillTexts: { text: string; x: number; y: number; maxWidth?: number }[] = [];
   /** Each `strokeText` call (HB3-26 label halo, drawn under the fill text). */
-  strokeTexts: { text: string; x: number; y: number }[] = [];
+  strokeTexts: { text: string; x: number; y: number; maxWidth?: number }[] = [];
   moveTos: { x: number; y: number }[] = [];
   lineTos: { x: number; y: number }[] = [];
   /** Each `rect` call (edit-handle EDGE markers draw a square via rect). */
@@ -71,12 +71,12 @@ export class FakeContext2D {
     this.lineWidths.push(this.lineWidth);
     this.strokes.push(this.strokeStyle);
   }
-  fillText(text: string, x: number, y: number): void {
+  fillText(text: string, x: number, y: number, maxWidth?: number): void {
     this.fonts.push(this.font);
-    this.fillTexts.push({ text, x, y });
+    this.fillTexts.push(maxWidth === undefined ? { text, x, y } : { text, x, y, maxWidth });
   }
-  strokeText(text: string, x: number, y: number): void {
-    this.strokeTexts.push({ text, x, y });
+  strokeText(text: string, x: number, y: number, maxWidth?: number): void {
+    this.strokeTexts.push(maxWidth === undefined ? { text, x, y } : { text, x, y, maxWidth });
   }
   drawImage(_img: unknown, x: number, y: number, w: number, h: number): void {
     this.drawImages.push({ x, y, w, h });

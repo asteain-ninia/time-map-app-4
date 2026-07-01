@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Camera, Viewport } from './camera';
-import { Canvas2DMapRenderer } from './canvas2d-renderer';
+import { Canvas2DMapRenderer, MAX_LABEL_WIDTH_PX } from './canvas2d-renderer';
 import { FakeCanvasSurface } from './fake-canvas';
 import type { RenderBatch } from './map-renderer';
 
@@ -71,6 +71,26 @@ describe('FR-17: line width and label font are constant on screen across zoom', 
     b.r.drawBatch(batch);
     expect(a.surface.ctx.fonts[0]).toBe('14px sans-serif');
     expect(b.surface.ctx.fonts[0]).toBe('14px sans-serif');
+  });
+
+  it('caps label width with maxWidth on both the halo stroke and the fill text', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'label',
+          at: { lon: 0, lat: 0 },
+          text: '非常に長い地物名前前前前前前前前前前前前前前前前前前前前前前前前前前前前前',
+          fontPx: 14,
+          fill: '#000',
+          halo: '#fff',
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 1 });
+    r.drawBatch(batch);
+    // The overprint guard (maxWidth) is passed to BOTH the halo stroke and the fill.
+    expect(surface.ctx.strokeTexts[0]!.maxWidth).toBe(MAX_LABEL_WIDTH_PX);
+    expect(surface.ctx.fillTexts[0]!.maxWidth).toBe(MAX_LABEL_WIDTH_PX);
   });
 });
 
