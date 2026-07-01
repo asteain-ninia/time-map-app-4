@@ -36,6 +36,7 @@ import {
   pointInPolygon,
   POINT_LOCATION,
   quantizeCoordinate,
+  ringsBoundaryCoincidentSameSide,
   segmentsIntersect,
   SEGMENT_RELATION,
   type GeoPolygon,
@@ -403,7 +404,9 @@ function ringContains(outer: GeoRing, inner: GeoRing): boolean {
  * FR-26 境界接触は重なりに含めない). Used for sibling / enclave non-overlap.
  *
  * Two rings overlap iff their boundaries cross, OR one lies inside the other
- * (a vertex of one strictly inside the other with no crossing). We detect both.
+ * (a vertex of one strictly inside the other with no crossing), OR their
+ * boundaries coincide along a positive-length run with interiors on the same
+ * side (identical / duplicate rings). We detect all three.
  */
 function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
   if (ringsProperlyCross(a, b)) return true;
@@ -417,7 +420,14 @@ function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
   for (const v of a) {
     if (pointInPolygon(v, bPoly) === POINT_LOCATION.Inside) return true;
   }
-  return false;
+  // Two coincident rings (an identical duplicate territory / hole) have every
+  // edge pair Collinear (never Proper) and every vertex on the other's Boundary
+  // (never Inside), so the crossing + strictly-Inside probes above structurally
+  // miss them. Detect that boundary-coincident-same-side case explicitly (单一真
+  // 实源: reuse the same predicate U06's multi-polygon invariants use). A legal
+  // edge-adjacent touch traverses the shared edge in OPPOSITE winding sense, so
+  // its interiors land on OPPOSITE sides and it is NOT flagged.
+  return ringsBoundaryCoincidentSameSide(a, b);
 }
 
 /**

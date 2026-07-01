@@ -43,6 +43,7 @@ export {
   type InvariantViolation,
   checkMultiPolygonInvariants,
   isMultiPolygonValid,
+  ringsBoundaryCoincidentSameSide,
 } from './invariants';
 
 export {

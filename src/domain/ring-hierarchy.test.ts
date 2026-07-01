@@ -224,6 +224,38 @@ describe('validateGeometry (FR-25 / FR-21): enclave non-overlap', () => {
     const b = createTerritoryRing(rid('b'), squareVertexIds('b'));
     expect(validateGeometry(createShape([a, b]), store).valid).toBe(true);
   });
+
+  it('fails when two top-level territories are identical (coincident), reporting EnclavesOverlap', () => {
+    // Two enclaves with the SAME square boundary. Every edge pair is Collinear and
+    // every vertex lies on the other's boundary, so the proper-crossing and
+    // strictly-Inside probes miss the overlap; the boundary-coincident-same-side
+    // check must catch this duplicate (第5次バグハント: false-negative fix).
+    const store = storeFrom({
+      ...squareCoords('a', 0, 0, 40),
+      ...squareCoords('b', 0, 0, 40), // identical square, different vertex ids
+    });
+    const a = createTerritoryRing(rid('a'), squareVertexIds('a'));
+    const b = createTerritoryRing(rid('b'), squareVertexIds('b'));
+    const res = validateGeometry(createShape([a, b]), store);
+    expect(res.valid).toBe(false);
+    expect(res.violations.map((v) => v.kind)).toContain(RING_VIOLATION.EnclavesOverlap);
+  });
+
+  it('fails when two sibling holes are identical (coincident), reporting SiblingsOverlap', () => {
+    // A territory with two holes sharing the SAME boundary — the same coincident-
+    // duplicate case at the sibling (non-top-level) level.
+    const store = storeFrom({
+      ...squareCoords('t', 0, 0, 100),
+      ...squareCoords('h', 20, 20, 40),
+      ...squareCoords('k', 20, 20, 40), // identical to h
+    });
+    const t = createTerritoryRing(rid('t'), squareVertexIds('t'));
+    const h = createHoleRing(rid('h'), squareVertexIds('h'), rid('t'));
+    const k = createHoleRing(rid('k'), squareVertexIds('k'), rid('t'));
+    const res = validateGeometry(createShape([t, h, k]), store);
+    expect(res.valid).toBe(false);
+    expect(res.violations.map((v) => v.kind)).toContain(RING_VIOLATION.SiblingsOverlap);
+  });
 });
 
 describe('validateGeometry (FR-25 / R3): seam-crossing rings (U05 unwrap)', () => {

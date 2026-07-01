@@ -1225,9 +1225,21 @@ describe('alternation (seed=22001): stateful edit-command stream + metamorphic l
               case 'translate': {
                 const targetId = pickTopLevel(state.shape, cmd.sel);
                 if (targetId === undefined) break;
-                const before = state.store;
                 const movedStore = translateSubtree(state, targetId, cmd.dLon, cmd.dLat);
-                state = { shape: state.shape, store: movedStore };
+                const moved: EditState = { shape: state.shape, store: movedStore };
+                // A RAW translate has no collision guard: sliding a top-level territory
+                // can make it OVERLAP a sibling (even a hair-thin positive-area sliver
+                // whose long edges are exactly collinear — detected by ringsOverlap's
+                // coincident-boundary probe). In the live app such a move is caught by
+                // consistency + conflict-resolution (FR-62/63); this raw-op stream runs
+                // NO orchestrator, so it explores only invariant-PRESERVING transitions:
+                // a move that produces a geometry violation is skipped (state unchanged),
+                // not asserted valid. (Previously this stream silently accepted such an
+                // overlap because ringsOverlap missed the collinear-sliver case — the
+                // very false-negative the ring-hierarchy fix closes.)
+                if (validateGeometry(moved.shape, moved.store).violations.length > 0) break;
+                const before = state.store;
+                state = moved;
                 assertFullBundle(state);
                 // OP∘INVERSE = identity (modulo IEEE-754 rounding): translating the
                 // same subtree back by the negated offset restores the prior store

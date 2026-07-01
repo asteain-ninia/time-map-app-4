@@ -155,7 +155,7 @@ function ringSignedAreaX2(ring: GeoRing): number {
  * is derived from its winding sign (signed area) and the directed edge — no
  * coordinate-scale-dependent offset probe.
  */
-function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean {
+export function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean {
   const an = a.length;
   const bn = b.length;
   // Interior-side sign per ring: +1 if interior is on the LEFT of each directed
