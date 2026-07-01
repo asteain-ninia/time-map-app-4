@@ -325,4 +325,17 @@ Fix C2 (auto-save) immediately after — it is the other critical, slightly larg
 | MEDIUM | correctness/ux | Redo が元コミットの選択preferenceを復元しない(add→undo→redo で activeFeature=null・metamorphic redo==execute 破れ)。forward commit と conflict は preference 転送済だが `runRedo`(App.tsx:1270)が applyUndoRedoResult に preference を渡さない | `src/ui/App.tsx:1270` / `src/domain/selection/reresolve.ts:92-97` | preference を history エントリ相当(WeakMap<Command,preference>)で保持し redo 時に再供給。undo は現状維持(削除地物はStep1でドロップが正)。add/merge の redo で activeFeature 復元をテストロック。 |
 | MEDIUM | wiring/ux | 集約で省略された active leaf の頂点ハンドルが**描画されるのに掴めない**(描画は verdict 無視で描くがヒットは verdict===Real のみ owner 化)＝描画⊋ヒットの破れ(A/死アフォーダンスと同系) | `src/ui/map/active-feature-handles.ts:228-266` / `display-resolution-cache.ts:246-260,305-338` / `live-hit-test.ts:480-491` | 描画とヒットの verdict 判定を単一化(描くなら掴める/掴めないなら描かない)。A(FR-87)と同じ「描画⊇ヒット」不変量として合わせて対処検討。 |
 
-**優先**: HIGH(timeline年境界)を最優先で実装。
+**優先**: HIGH(timeline年境界)を最優先で実装。→ **第6波3件すべて根治済**(0cb522a/1275942/e2734d2)。
+
+## 🅲 第7波バグハント — 4件確定【全根治済】(2026-07-02, 17エージェント・新角度=conflict収束/共有頂点整合/effectリーク/IPCエラー注入/永続互換/camera精度)
+
+11候補中 **4件確定**(7 refute)。全て実装→多次元レビュー(SOUND)→フル vitest 緑→個別コミット。workflow `wdhbcga2i`(hunt)/`w6ea51m3g`(fix)。
+
+| 重大度 | バグ | 根治 |
+| --- | --- | --- |
+| **HIGH** | 末端/集約結合の nextVertices が入力ストア全体(無関係地物頂点)を結果履歴へ漏洩→偽 VertexCoordinateDivergence(再読込阻害) | `fc90aca`(referencedVertexIds/pruneVertexStore を feature.ts に単一化・merge両assemble+apply-proposal created経路[decisive]+rewriteFeatureAtTime を剪定) |
+| MEDIUM | FR-117 installGlobalErrorHandlers/ErrorBoundary が本番未装着→void 例外が無音 | `449f4f4`(wireGlobalErrorHandlers 抽出+App.tsx で単一logger install-once+ErrorBoundary mount・既存sink) |
+| MEDIUM | setViewport がカメラ再クランプせず→resize拡大後にホイール縮小がズームインへ反転 | `03f4765`(effectiveZoomRange へ再クランプ・setZoomRange と同一) |
+| LOW | 競合収束の rewriteFeatureAtTime が旧トリム頂点を孤児累積 | `fc90aca`(HIGH と同ヘルパで同時剪定) |
+
+**累計**: 波5(12)+波6(3)+波7(4) 確定19件 + 監査A/B、**全根治**。バグハントは未 dry(波6/7 とも HIGH 検出)＝継続価値あり。

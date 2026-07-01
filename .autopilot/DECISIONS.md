@@ -6,6 +6,13 @@
 
 ## 確定した運用上の決定
 
+- D45(2026-07-02・バグハント第7波 継続運用で確定4件を根治): D44 完了後もバグハントラインを継続(3ライン運用)。第7波(新角度=conflict収束/共有頂点整合/effectリーク/IPCエラー注入/永続互換/camera精度)=**11候補→4確定(7 refute)**を実装→多次元レビュー(全SOUND・穴0)→フル vitest 緑→個別コミット。
+  - **[HIGH/data整合] 結合/競合の頂点ストア漏洩** `fc90aca`: 末端/集約結合の nextVertices が入力ストア全体(無関係地物の私有頂点)を結果履歴へ漏洩→偽 VertexCoordinateDivergence(再読込阻害しうる)。`consistency.ts:144` の参照集合を `feature.ts` の `referencedVertexIds`/`pruneVertexStore` へ抽出(単一真実源)し3サイト剪定(merge両assemble / **apply-proposal created経路=decisive** / rewriteFeatureAtTime)。LOW(競合収束の orphan 累積)も同ヘルパで同時根治。
+  - **[MEDIUM] FR-117 error handler 未結線** `449f4f4`: installGlobalErrorHandlers/ErrorBoundary が本番未装着で void 例外が無音。`wireGlobalErrorHandlers` 抽出→App.tsx で単一 logger・install once(cleanup で uninstall)・ErrorBoundary mount。onError は既存 alert sink(新UIなし・§7.4尊重)。**既知 dev限定 nuance**: React18 DEV は boundary 捕捉 render error を window.onerror へ再dispatch→dev二重alert(本番単一)＝非ブロッカー。
+  - **[MEDIUM] setViewport 再クランプ欠落** `03f4765`: resize 拡大後にホイール縮小がズームインへ反転。setViewport が effectiveZoomRange へ再クランプ(setZoomRange と同一)・host-ports は camera 実変化時のみ onCameraChange 通知。
+  - **プロセス**: バグハント(波6=3確定/波7=4確定・毎回 HIGH を検出)は未だ dry でない=継続価値あり。各波 hunt→到達性証明verify→fix(test-first)→多次元レビュー→フル vitest。
+  - **衛生メモ**: 監査/修正エージェントが `.autopilot/DECISIONS/`(layer-slider-shape-reuse.md, vertex-store-prune.md)へ scratch を生成。単一真実源は本 DECISIONS.md ゆえ内容は D番号へ集約済。当該 stray dir はサンドボックスが削除をブロックし保留(未追跡・HEAD未混入)。次回 hygiene で除去。
+
 - D44(2026-07-02・第5次(12)+第6波(3)バグ確定分 + 監査A/B を3ライン運用で全根治): D43 の監査に続き、確定バグ・spec-vs-impl 欠陥を重大度順に**全て根治**(各: 実装ラインが test-first→fast gate、レビューラインが多次元敵対的検証、私がフル vitest→個別コミット。バグハント第6波も並行)。**全コミット ローカルのみ・push せず・各コミット時フル vitest 緑**。
   - **HIGH×2**: file-ops 並行性データ欠損#1/#2/#3=in-flight mutex `c71a021`(レビューSOUND) / timeline年境界の書込⊄読込=自ファイル読込不能 `0cb522a`。
   - **MEDIUM×5**: FR-87 エッジ頂点追加UI結線(見える死アフォーダンス解消・新ドメイン不要)`6258ba6`(+シーム中点 midpoint の既存バグ fix-forward) / redo が選択preference未復元 `1275942`(WeakMapレジストリ) / ring-hierarchy 同一リング偽陰性 `faf97b6`(coincident-boundary プローブ・**結合フル vitest がプロパティテスト相互作用を捕捉→診断で TRUE_POSITIVE 確定→prop テストの translate 分岐を有効遷移のみ探索へ整合**) / 集約省略 active leaf のハンドル描画⊋ヒット `e2734d2`(FR-87 パターンを頂点へ拡張) / a11y focus-trap×4+tablist `cf360f5`(共有 src/ui/a11y 化・重複 inline trap も単一化)。
