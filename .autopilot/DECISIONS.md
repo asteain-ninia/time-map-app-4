@@ -6,6 +6,12 @@
 
 ## 確定した運用上の決定
 
+- D46(2026-07-02・バグハント第8波 確定3件を根治): 第8波(新角度=時間/暦・ナイフ幾何・z順/LOD・FR-74履歴・ストア原子性・ラベル占有)=**7候補→3確定(4 refute)**を実装→多次元レビュー→フル vitest 緑→個別コミット。
+  - **[HIGH/幾何] ナイフ傾斜/屈曲カットの clip 押し出し不正** `c106f8b`: 開分断線が軸非平行・L/V/U字だと openLineToClip の半領域構築でコネクタ辺が target を横切り、正当直線カットを invalid-shape 拒否 or 偽片/偽頂点生成(面積和保存でテスト素通り)。extend-to-frame(端セグメント延長→frame外周で閉じる)へ書換え「clip内部辺=描線のみ」を保証。回帰網 assertNoPhantomVertices 追加。デグレなし(axis-parallel/closed/n-way 温存・1500 fuzz+全1789緑)。
+  - **[MEDIUM/MUST] FR-80 ドラッグ矩形マルチ頂点選択が UI 到達不能** `fc8e48c`: must 要件だが live-selection-port が drag 早期return・resolver 未供給で不達(教訓5.7)。**監査が PRESENT と誤判定した MUST 欠陥をバグハントが捕捉**(FR-87 と同型)。verticesInRectangle resolver 新設(クリックhit-test/レンダラと単一真実源)+空白press ゲート+wrap-parity(±360°複製列挙)結線。
+  - **[LOW/perf] 時間バー zoom-out 無限 denormalize フリーズ** `88aac32`: MAX_YEAR クランプ欠落→transient view が無制限成長。zoomView を ±(366*MAX_YEAR) にクランプ(単一真実源)。
+  - **プロセス所見(重要)**: 監査(feature 単位の棚卸し)は FR-80 の UI 到達不能を見逃した。バグハントの「reachable 必須」検証が spec-vs-impl の MUST 欠陥を捕捉＝両者は相補的。**残り MUST FR の UI 到達性スイープを次波で実施価値あり**。バグハント(波6=3/波7=4/波8=3・毎回 HIGH)は未dry。
+
 - D45(2026-07-02・バグハント第7波 継続運用で確定4件を根治): D44 完了後もバグハントラインを継続(3ライン運用)。第7波(新角度=conflict収束/共有頂点整合/effectリーク/IPCエラー注入/永続互換/camera精度)=**11候補→4確定(7 refute)**を実装→多次元レビュー(全SOUND・穴0)→フル vitest 緑→個別コミット。
   - **[HIGH/data整合] 結合/競合の頂点ストア漏洩** `fc90aca`: 末端/集約結合の nextVertices が入力ストア全体(無関係地物の私有頂点)を結果履歴へ漏洩→偽 VertexCoordinateDivergence(再読込阻害しうる)。`consistency.ts:144` の参照集合を `feature.ts` の `referencedVertexIds`/`pruneVertexStore` へ抽出(単一真実源)し3サイト剪定(merge両assemble / **apply-proposal created経路=decisive** / rewriteFeatureAtTime)。LOW(競合収束の orphan 累積)も同ヘルパで同時根治。
   - **[MEDIUM] FR-117 error handler 未結線** `449f4f4`: installGlobalErrorHandlers/ErrorBoundary が本番未装着で void 例外が無音。`wireGlobalErrorHandlers` 抽出→App.tsx で単一 logger・install once(cleanup で uninstall)・ErrorBoundary mount。onError は既存 alert sink(新UIなし・§7.4尊重)。**既知 dev限定 nuance**: React18 DEV は boundary 捕捉 render error を window.onerror へ再dispatch→dev二重alert(本番単一)＝非ブロッカー。

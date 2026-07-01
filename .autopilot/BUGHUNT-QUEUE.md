@@ -339,3 +339,15 @@ Fix C2 (auto-save) immediately after — it is the other critical, slightly larg
 | LOW | 競合収束の rewriteFeatureAtTime が旧トリム頂点を孤児累積 | `fc90aca`(HIGH と同ヘルパで同時剪定) |
 
 **累計**: 波5(12)+波6(3)+波7(4) 確定19件 + 監査A/B、**全根治**。バグハントは未 dry(波6/7 とも HIGH 検出)＝継続価値あり。
+
+## 🅳 第8波バグハント — 3件確定【全根治済】(2026-07-02, 13エージェント・新角度=時間/暦・ナイフ幾何・z順/LOD・FR-74履歴・ストア原子性・ラベル占有)
+
+7候補中 **3件確定**(4 refute)。全て実装→多次元レビュー(SOUND・FR-80 の wrap 穴は fix-forward)→フル vitest 緑→個別コミット。workflow `wa33gawd8`(hunt)/`wa9wd9mna`+`a203bb2`(fix)。
+
+| 重大度 | バグ | 根治 |
+| --- | --- | --- |
+| **HIGH** | ナイフの開分断線が軸非平行/L/V/U字だと openLineToClip の押し出し不正→正当直線カットを invalid-shape 拒否 or 偽片/偽頂点生成(面積和保存でテスト素通り) | `c106f8b`(extend-to-frame で「clip内部辺=描線のみ」保証・assertNoPhantomVertices 回帰網・デグレなし) |
+| MEDIUM/**MUST** | FR-80 ドラッグ矩形マルチ頂点選択が UI 到達不能(教訓5.7・**監査が PRESENT と誤判定**) | `fc8e48c`(verticesInRectangle resolver+空白press ゲート+wrap-parity 結線) |
+| LOW | 時間バー zoom-out 上限欠落→transient view 無制限→denormalize O(年) フリーズ | `88aac32`(±366*MAX_YEAR クランプ) |
+
+**累計**: 波5(12)+波6(3)+波7(4)+波8(3)=**確定22件** + 監査A/B、全根治。**知見: 監査(feature棚卸し)は FR-80 の UI 到達不能を見逃したが、バグハントの reachable 検証が捕捉＝相補的。残り MUST FR の UI 到達性スイープを次波で実施。**
