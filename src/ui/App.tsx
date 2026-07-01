@@ -105,6 +105,7 @@ import {
   type History,
 } from '../domain/command/history';
 import type { Command } from '../domain/command/index';
+import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { createLiveExistenceResolver } from './live-existence';
@@ -1224,6 +1225,15 @@ export function App(): JSX.Element {
   // to that new baseline (its old stack cannot apply to the new project).
   const lastCommittedDomainRef = useRef<DomainRoot>(store.getState().domain);
 
+  // 第6波 redo-drops-selection-preference: the selection preference a commit
+  // promotes (次対象昇格 — the created / merged / reparented feature) is a UI-layer
+  // value the pure Command does NOT carry, so a plain redo (which replays the
+  // Command through applyUndoRedoResult) could not recover it and left the promoted
+  // feature un-selected after add→undo→redo. We remember the preference per Command
+  // at record time and look it back up for the exact Command a redo re-applies. undo
+  // stays unchanged (deleted features drop via reresolve Step1; nothing to promote).
+  const redoPreferenceRef = useRef(createRedoPreferenceRegistry<DomainRoot>());
+
   // Re-evaluate the EditUndo / EditRedo enabled gates after any history change so
   // the menu / shortcut reflect availability immediately (FR-74). The registry's
   // canRun closures read the history ref live; this只 nudges any listeners via a
@@ -1247,6 +1257,9 @@ export function App(): JSX.Element {
       const step = historyExecute(historyRef.current, command);
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
+      // Remember this commit's next-target preference so a later redo of the SAME
+      // command re-promotes it (第6波 redo-drops-selection-preference).
+      redoPreferenceRef.current.remember(command, preference);
       store.getState().applyCommandResult(step.history.state, step.result, preference);
       refreshUndoRedoEnabled();
     },
@@ -1285,13 +1298,19 @@ export function App(): JSX.Element {
       refreshUndoRedoEnabled();
     };
     const runRedo = (): void => {
+      // Recover the preference the commit promoted for the command redo re-applies
+      // (the top of the CURRENT redo stack) BEFORE the transition pops it, so the
+      // promoted selection is restored on redo (第6波 redo-drops-selection-preference).
+      const preference = redoPreferenceRef.current.preferenceForNextRedo(
+        historyRef.current,
+      );
       const step = historyRedo(historyRef.current);
       if (step.history === historyRef.current) return;
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
       // Symmetric to runUndo: a redo recomputes dirty against the saved baseline (redoing
       // away from the saved state re-dirties; redoing back onto it stays clean).
-      store.getState().applyUndoRedoResult(step.history.state, step.result);
+      store.getState().applyUndoRedoResult(step.history.state, step.result, preference);
       refreshUndoRedoEnabled();
     };
     registry.register(COMMAND_ID.EditUndo, {
