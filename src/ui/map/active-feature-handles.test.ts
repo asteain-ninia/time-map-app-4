@@ -84,6 +84,97 @@ describe('buildActiveFeatureHandlePrimitives (HB3-9 static handles)', () => {
   });
 });
 
+describe('buildActiveFeatureHandlePrimitives (FR-110 vertexMarkerCap perf gate)', () => {
+  it('draws ALL handles when the vertex count is <= cap', () => {
+    const { root } = leafProject(); // 4-vertex square
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      4, // cap == count → still all handles
+    );
+    expect(vertexHandles(prims)).toHaveLength(4);
+    expect(handles(prims)).toHaveLength(8);
+  });
+
+  it('suppresses ALL handles WHOLESALE (vertex + edge) when count > cap', () => {
+    const { root } = leafProject(); // 4-vertex square
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      3, // 4 > 3 → nothing drawn (not a leading-N slice)
+    );
+    expect(handles(prims)).toHaveLength(0);
+    expect(prims).toHaveLength(0);
+  });
+
+  it('cap === 0 suppresses all handles', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      0,
+    );
+    expect(handles(prims)).toHaveLength(0);
+    expect(prims).toHaveLength(0);
+  });
+
+  it('undefined cap leaves handles unlimited (default behaviour)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+    );
+    expect(handles(prims)).toHaveLength(8);
+  });
+
+  it('gates the live-drag preview too when over cap (perf guard is wholesale)', () => {
+    const { root } = leafProject();
+    // A live vertex drag would normally draw handles + a preview outline; over cap
+    // the whole handle path is suppressed (no partial preview).
+    let session: DragSession = beginDrag(
+      {
+        tool: EDIT_TOOL.VertexMove,
+        featureId: asFeatureId('leaf-1'),
+        vertexId: asVertexId('leaf-1-0'),
+      } as const,
+      { lon: 0, lat: 0 },
+    );
+    session = updateDrag(session, { preview: { lon: 3, lat: 4 } });
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      session,
+      undefined,
+      undefined,
+      1, // 4 > 1 → suppress everything, including the preview outline
+    );
+    expect(prims).toHaveLength(0);
+  });
+});
+
 describe('buildActiveFeatureHandlePrimitives (HB3-4 live drag preview)', () => {
   it('moves the dragged vertex handle to the preview position (follows the cursor)', () => {
     const { root } = leafProject();

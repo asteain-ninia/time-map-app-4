@@ -220,7 +220,19 @@ function linePreview(
  * renderer / hit-test share, so the handles sit exactly on the drawn vertices (教訓
  * 5.29). The world→screen constant-size projection (FR-17) is the renderer's job.
  *
- * Pure over `(root, time, activeFeature, displayControl, session)`.
+ * FR-110 表示上限 (vertexMarkerCap): the per-vertex edit handles are a PERFORMANCE
+ * cost that scales with vertex count, so when the active feature owns MORE than `cap`
+ * vertices (or `cap === 0`) the WHOLE handle path — vertex handles, edge handles AND
+ * the live-drag preview outline — is suppressed WHOLESALE (a threshold, not a leading-N
+ * slice: either all handles or none). This is the LIVE consumer of the setting (the
+ * `visual.classifyVisual` cap is a separate, currently-未結線 FR-79 marker path — see
+ * that file's note). `cap === undefined` leaves handles unlimited; the caller supplies
+ * `appSettings.vertexMarkerCap` (single source = U16). The default cap (2000) leaves
+ * normal features unchanged and only guards pathologically large geometry. Feature-level
+ * selection / move (feature-move) is a SEPARATE path and is unaffected by this gate.
+ *
+ * Pure over `(root, time, activeFeature, displayControl, session, style, previewStyle,
+ * cap)`.
  */
 export function buildActiveFeatureHandlePrimitives(
   root: DomainProject,
@@ -230,6 +242,7 @@ export function buildActiveFeatureHandlePrimitives(
   session?: DragSession | null,
   style?: EditHandleStyle,
   previewStyle?: EditPreviewStyle,
+  cap?: number,
 ): DrawPrimitive[] {
   if (activeFeature === null) return [];
   const { features, areaFeaturesById, vertices } = resolveDisplayFor(
@@ -257,6 +270,15 @@ export function buildActiveFeatureHandlePrimitives(
   // leaf / point / line yields its real handles. Either way we bridge through the SAME
   // render builder so an aggregate active feature simply draws no handles.
   const handles = computeHandles(feature, previewStore);
+
+  // FR-110 表示上限 (vertexMarkerCap) — WHOLESALE perf gate. When the active feature owns
+  // MORE vertices than `cap` (count = one vertex handle per vertex), suppress the ENTIRE
+  // handle path — vertex handles, edge handles AND the live-drag preview outline — and
+  // draw nothing (a threshold, never a leading-N slice). `cap === 0` therefore suppresses
+  // all. `cap === undefined` leaves it unlimited. This is the LIVE consumer of the
+  // setting; feature-level selection / move is a separate path and is not gated here.
+  if (cap !== undefined && handles.vertices.length > cap) return [];
+
   const hasHandles =
     handles !== EMPTY_HANDLES &&
     (handles.vertices.length > 0 || handles.edges.length > 0);

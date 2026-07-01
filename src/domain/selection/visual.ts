@@ -18,6 +18,15 @@
 // maps each category to its concrete style. The unit does NOT decide colors —
 // only categories — and never paints holes or special-cases enclaves (FR-21):
 // it classifies feature/vertex IDENTITIES, leaving ring/hole geometry to U19.
+//
+// NOTE (FR-110 cap wiring): this classifier is currently NOT connected to the
+// renderer (no production consumer feeds its FR-79 markers into a draw path yet;
+// it is retained for future wiring). The LIVE FR-110 vertexMarkerCap gate is
+// applied on the handle path — `ui/map/active-feature-handles.ts`
+// (buildActiveFeatureHandlePrimitives) — which is the path that actually draws the
+// active feature's per-vertex handles today. The `cap` field on {@link MarkerInput}
+// below intentionally mirrors that gate so the two stay consistent when this
+// classifier is eventually wired (not double-applied — only one path draws).
 
 import type { FeatureId, VertexId } from '../ids';
 
@@ -71,6 +80,17 @@ export interface VisualClassification {
 export interface MarkerInput {
   /** Every vertex of the active feature (FR-79 全頂点を半透明マーカー). */
   readonly activeFeatureVertexIds: ReadonlySet<VertexId>;
+  /**
+   * FR-110 表示上限: the active feature's full-vertex markers are a PERFORMANCE
+   * guard — when the active feature owns MORE than `cap` vertices, the FR-79
+   * markers are suppressed WHOLESALE (a threshold, not a slice: we never show a
+   * leading N — either all markers or none). `cap === 0` therefore means "show
+   * none". Omitting the field (or `undefined`) leaves markers unlimited (the
+   * caller supplies `appSettings.vertexMarkerCap`, single source = U16). The cap
+   * gates ONLY these FR-79 markers; selected / dragging vertices are a separate
+   * edit/selection path and are always styled regardless of the cap.
+   */
+  readonly cap?: number;
 }
 
 const NO_MARKERS: MarkerInput = {
@@ -103,9 +123,15 @@ export function classifyVisual(
   }
 
   // Vertex markers (FR-79): the active feature's full vertex set, half-
-  // transparent. Laid down first so selected/dragging override them.
-  for (const vid of markers.activeFeatureVertexIds) {
-    vertices.set(vid, VERTEX_HIGHLIGHT.Marker);
+  // transparent. Laid down first so selected/dragging override them. FR-110
+  // 表示上限 is a WHOLESALE threshold — when the full-vertex count exceeds `cap`
+  // (or cap === 0) we produce NO markers at all (perf guard, never a partial
+  // slice). An undefined cap means unlimited. Selected/dragging are handled
+  // below and are NOT gated by the cap (別経路: edit/selection highlight).
+  if (markers.cap === undefined || markers.activeFeatureVertexIds.size <= markers.cap) {
+    for (const vid of markers.activeFeatureVertexIds) {
+      vertices.set(vid, VERTEX_HIGHLIGHT.Marker);
+    }
   }
 
   // Selected vertices: dedicated style (FR-82). Overrides Marker.

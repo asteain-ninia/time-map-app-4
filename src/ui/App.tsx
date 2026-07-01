@@ -510,12 +510,18 @@ export function App(): JSX.Element {
         // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
         // and at the committed position otherwise. The builder ignores a session for a
         // different feature (no stale bleed, 教訓 5.6).
+        // FR-110: thread appSettings.vertexMarkerCap (single source = U16) so the handle
+        // path is suppressed WHOLESALE for a pathologically large active feature (perf
+        // guard); the default cap (2000) leaves normal features unchanged.
         return buildActiveFeatureHandlePrimitives(
           s.domain,
           s.currentTime,
           s.activeFeature,
           s.displayControl,
           liveEditSession,
+          undefined,
+          undefined,
+          s.appSettings.vertexMarkerCap,
         );
       },
       // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
