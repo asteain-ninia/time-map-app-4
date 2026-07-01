@@ -23,7 +23,8 @@
   - **要対応2件をレビューライン(`wr00cr5e1`)で CONFIRMED(real-gap)**: **A**=FR-87「既存地物へのエッジハンドル頂点追加」がUI到達不能(MEDIUM・MUST・エッジハンドルは描画されるが掴んでも無反応=見える死アフォーダンス) / **B**=`vertexMarkerCap`(FR-110)デッド設定(LOW)。両件 implement 予定。
   - **file-ops 並行性データ欠損3件を根治**(第5次#1 HIGH/#2/#3 MEDIUM): in-flight mutex(`opInFlightRef`)で破壊的置換フロー(開く/新規/D&D/終了ガード)を相互排他・保存は既存 saveChain 温存・auto-saveティックはラッチを譲る。**commit `c71a021`**・test-first(3新規テストが fix なしで赤)・フル vitest **256files 3050 passed**・typecheck0/lint0(デグレなし)。
   - **3ライン背景運用**: レビューライン `wr00cr5e1`(完了・A/B確定) + mutex修正の敵対レビュー(別subagent)=**SOUND**(3テストが fix なしで赤を独立再現・6観点健全・fix-forward不要)。バグハントライン第6波 `wud6cxu9p`(稼働中・新角度=undo-redo/persistence/react-effect/geo-time精度/selection-hittest/four-color)。軽微申し送り: DROP時のユーザー通知(将来nicety)・window close イベントは未ブリッジ(配線時 false=閉じない契約厳守)。
-  - **次アクション(実装ライン・重大度順)**: A(FR-87エッジ頂点追加)→第5次残り(ring-hierarchy偽陰性/a11y focus-trap×4)→B(vertexMarkerCap)→i18n・edge×4。confirm-descope群は要件定義書§7へ「非目標」明記。第6波バグハント確定分を随時統合。
+  - **実装ライン進捗**: ✅A(FR-87エッジ頂点追加)=`6258ba6`(新ドメイン不要でUI結線・多次元レビュー3/4 SOUND・シーム中点崩れの既存バグも fix-forward・258files 3067緑)。
+  - **次アクション(実装ライン・重大度順・残)**: 第6波MEDIUM(redo選択preference未復元 / 集約省略leafハンドル描画⊋ヒット)→第5次MEDIUM(ring-hierarchy偽陰性/a11y focus-trap×4)→B(vertexMarkerCap)/第5次LOW(i18n・edge×4)。confirm-descope群は要件定義書§7へ「非目標」明記。UI結線系は e2e スモークをバッチで追加(FR-87 エッジ頂点追加の behavioral E2E 含む)。
 
 - 2026-06-24: **HB3 大物完遂 + バグハント + D36 衛生スイープ**（ユーザー在席中の指示反映: スクショE2E徹底 / 主スレ=オーケストレーター化・重作業は背景subagent/workflow / Codex死亡→Sonnet多ペルソナ・レビューで代替）。全コミット ローカル・各フルゲート緑・push せず。
   - **HB3-5/19 ナイフ n-way（2k横断→k+1片）完成**: ドメイン(8cc828c)+UI片チューザ/実機スクショE2E(01ed1d6)+継承先 index クランプ(440cb06=Sonnetレビュー指摘)。全 vitest 2944 passed。
