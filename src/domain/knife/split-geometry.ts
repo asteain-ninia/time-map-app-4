@@ -227,76 +227,221 @@ function snapCutLine(
   return out;
 }
 
+/** An axis-aligned bounding box in the seam-anchored planar (continuous-lon) system. */
+interface PlanarBBox {
+  readonly minLon: number;
+  readonly maxLon: number;
+  readonly minLat: number;
+  readonly maxLat: number;
+}
+
 /**
- * Build the CLOSED clip polygon for an open knife line by extruding the polyline
- * far to one side, forming a half-region whose boundary is the polyline. The
- * extrusion offset is large relative to the target's bounding box so the clip
- * fully contains "one side" of any pierce. intersection / difference of the
- * target against this clip then yield the two halves regardless of how the line
- * weaves, because the clip's only relevant boundary inside the target is the
- * polyline itself (the far closing edge is outside the target).
+ * Build the CLOSED clip polygon for an open knife line by CONTINUING the polyline's
+ * two END SEGMENTS outward to a far frame that strictly contains the target, then
+ * closing the loop by walking that frame's border on ONE side. The resulting clip's
+ * ONLY boundary that appears inside the target is the drawn polyline itself — the two
+ * end-segment continuations run outward (away from the face, since `linePiercesFace`
+ * guarantees both endpoints are already strictly outside), and the frame walk is far
+ * outside the target entirely. So intersection / difference of the target against this
+ * clip yield the two halves cut by EXACTLY the drawn line, whatever its shape.
  *
- * The offset direction is the outward normal of the polyline's overall chord; a
- * generous magnitude (10× the span, min 720°) guarantees the closing path lies
- * well outside the target and the seam-unwrapped span.
+ * WHY the frame walk replaces the old parallel-offset reverse path (第8波 flagship):
+ * the previous construction returned along a copy of the whole polyline translated by
+ * a SINGLE fixed normal, joined to the forward path by two straight CONNECTOR edges in
+ * that normal direction. For an AXIS-NON-PARALLEL or BENT (L/V) cut those connectors —
+ * running sideways from an endpoint to the far offset copy — sliced THROUGH the target,
+ * so the clip's in-face boundary was NOT the drawn line: a legitimate straight tilted
+ * cut got rejected as invalid-shape (the offset copy landed on the wrong side and the
+ * boolean op degenerated), and an L/V cut manufactured false diagonal chamfers / phantom
+ * triangle pieces at the corners the connectors crossed (area was still conserved, so an
+ * area-only test passed). Extending the END SEGMENTS along their OWN direction — the way
+ * the user's stroke was already heading out of the face — and closing on a far frame keeps
+ * every non-drawn boundary edge outside the target, so no phantom edge/vertex can appear.
+ * For an axis-parallel straight cut this reduces to the same two vertical/horizontal
+ * halves the old path produced (the extensions are collinear with the cut, the frame walk
+ * is outside), so the common case is unchanged.
  *
- * Degenerate-chord guard (bug-hunt2): the offset normal must NOT be derived from
- * the endpoint chord alone. A U-shaped / looping OPEN polyline whose first and last
- * vertices quantize onto the SAME grid node (snapCutLine drops only consecutive
- * duplicates for an open line, never first==last) gives dx=dy=0, so the old
- * `len = hypot(0,0) || 1 = 1` produced nx=ny=0: the `back` path retraced `forward`
- * with ZERO offset, yielding a zero-AREA clip ring whose boolean op vanished and
- * mis-reported downstream as 貫通せず/不正形状 instead of an honest rejection. More
- * generally a near-degenerate short chord with a far-bulging cut points the normal
- * along the wrong axis, landing the half-region on the geometrically wrong side. So
- * when the endpoint chord is ~0 we fall back to the polyline's OVERALL extent (its
- * bbox diagonal) for the direction; the perpendicular of that is a stable normal
- * that pushes `back` cleanly to one side. The caller (checkSplittable) additionally
- * rejects a clip whose ring area is still ~0 with DegenerateLine, so a polyline with
- * no extent at all (every vertex on one node) can never form a clip.
+ * Degenerate-extent guard (bug-hunt2 lineage): when an end segment has no usable
+ * direction (a looping cut whose endpoints coincide, or a single collapsed node) the
+ * continuation direction is derived from the polyline's overall bbox diagonal instead;
+ * the caller additionally rejects a clip whose ring area is still ~0 with DegenerateLine,
+ * so a polyline with no extent at all can never form a clip.
  */
-function openLineToClip(
-  line: readonly WorldCoordinate[],
-  targetSpan: number,
-): GeoRing {
-  // Walk the polyline forward, then return along a parallel-offset reverse path.
-  const offset = Math.max(targetSpan * 10, 720);
+function openLineToClip(line: readonly WorldCoordinate[], targetBox: PlanarBBox): GeoRing {
   const first = line[0];
   const last = line[line.length - 1];
   if (first === undefined || last === undefined) return [];
-  // Chord direction (start → end); the offset normal is perpendicular to it. When
-  // the endpoints coincide (first===last, a looping cut) the chord is degenerate, so
-  // derive the direction from the polyline's overall bbox diagonal instead — never
-  // from the zero chord (which would collapse the normal to (0,0)).
-  let dx = last.lon - first.lon;
-  let dy = last.lat - first.lat;
-  if (Math.hypot(dx, dy) <= CHORD_DEGENERATE_EPS) {
-    let minLon = Number.POSITIVE_INFINITY;
-    let maxLon = Number.NEGATIVE_INFINITY;
-    let minLat = Number.POSITIVE_INFINITY;
-    let maxLat = Number.NEGATIVE_INFINITY;
-    for (const p of line) {
-      if (p === undefined) continue;
-      if (p.lon < minLon) minLon = p.lon;
-      if (p.lon > maxLon) maxLon = p.lon;
-      if (p.lat < minLat) minLat = p.lat;
-      if (p.lat > maxLat) maxLat = p.lat;
-    }
-    dx = Number.isFinite(minLon) ? maxLon - minLon : 0;
-    dy = Number.isFinite(minLat) ? maxLat - minLat : 0;
-  }
-  const len = Math.hypot(dx, dy) || 1;
-  const nx = -dy / len;
-  const ny = dx / len;
-  const forward: WorldCoordinate[] = line.map((p) => ({ lon: p.lon, lat: p.lat }));
-  const back: WorldCoordinate[] = [];
-  for (let i = line.length - 1; i >= 0; i -= 1) {
-    const p = line[i];
+
+  // The frame must strictly contain the target AND the whole drawn polyline, with a
+  // generous margin so the two end-segment continuations reach it well outside the face
+  // and the frame walk never grazes the target. The margin scales with the combined
+  // extent (min 720° so a tiny target near the seam still gets a far frame).
+  let minLon = targetBox.minLon;
+  let maxLon = targetBox.maxLon;
+  let minLat = targetBox.minLat;
+  let maxLat = targetBox.maxLat;
+  for (const p of line) {
     if (p === undefined) continue;
-    back.push({ lon: p.lon + nx * offset, lat: p.lat + ny * offset });
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
   }
-  return [...forward, ...back];
+  const margin = Math.max((maxLon - minLon + maxLat - minLat) * 10, 720);
+  const frame: PlanarBBox = {
+    minLon: minLon - margin,
+    maxLon: maxLon + margin,
+    minLat: minLat - margin,
+    maxLat: maxLat + margin,
+  };
+
+  // The outward continuation direction of each end. `last` continues along the last
+  // segment (prev → last); `first` continues along the first segment REVERSED (next →
+  // first), i.e. the direction the stroke was already leaving the face by. A degenerate
+  // end segment (repeated node) falls back to the endpoint chord, then to the overall
+  // bbox diagonal — never a zero vector (which would give no exit ray).
+  const chord = endDirection(last.lon - first.lon, last.lat - first.lat, line);
+  const lastPrev = line[line.length - 2];
+  const firstNext = line[1];
+  const lastDir = segmentDirection(
+    lastPrev !== undefined ? last.lon - lastPrev.lon : chord.dx,
+    lastPrev !== undefined ? last.lat - lastPrev.lat : chord.dy,
+    chord,
+  );
+  const firstDir = segmentDirection(
+    firstNext !== undefined ? first.lon - firstNext.lon : -chord.dx,
+    firstNext !== undefined ? first.lat - firstNext.lat : -chord.dy,
+    { dx: -chord.dx, dy: -chord.dy },
+  );
+
+  const exitLast = rayToFrame(last, lastDir, frame);
+  const exitFirst = rayToFrame(first, firstDir, frame);
+  if (exitLast === undefined || exitFirst === undefined) return [];
+
+  // Clip = drawn line + continuation out to the frame at `last`, walk the frame border
+  // to the `first` exit, then the continuation back in to `first`. Walking the frame
+  // corners keeps the closing path strictly on the (outside-the-target) frame boundary.
+  const forward: WorldCoordinate[] = line.map((p) => ({ lon: p.lon, lat: p.lat }));
+  const frameWalk = walkFrameBorder(exitLast, exitFirst, frame);
+  return [...forward, exitLast, ...frameWalk, exitFirst];
 }
+
+/** A non-zero direction for the polyline as a whole (chord, else bbox diagonal). */
+function endDirection(
+  dx: number,
+  dy: number,
+  line: readonly WorldCoordinate[],
+): { dx: number; dy: number } {
+  if (Math.hypot(dx, dy) > CHORD_DEGENERATE_EPS) return { dx, dy };
+  let minLon = Number.POSITIVE_INFINITY;
+  let maxLon = Number.NEGATIVE_INFINITY;
+  let minLat = Number.POSITIVE_INFINITY;
+  let maxLat = Number.NEGATIVE_INFINITY;
+  for (const p of line) {
+    if (p === undefined) continue;
+    if (p.lon < minLon) minLon = p.lon;
+    if (p.lon > maxLon) maxLon = p.lon;
+    if (p.lat < minLat) minLat = p.lat;
+    if (p.lat > maxLat) maxLat = p.lat;
+  }
+  return {
+    dx: Number.isFinite(minLon) ? maxLon - minLon : 0,
+    dy: Number.isFinite(minLat) ? maxLat - minLat : 0,
+  };
+}
+
+/** A usable segment direction, falling back to `fallback` when the segment is degenerate. */
+function segmentDirection(
+  dx: number,
+  dy: number,
+  fallback: { dx: number; dy: number },
+): { dx: number; dy: number } {
+  if (Math.hypot(dx, dy) > CHORD_DEGENERATE_EPS) return { dx, dy };
+  return fallback;
+}
+
+/**
+ * Where the ray from `origin` (strictly inside `frame`) along direction `dir` first
+ * crosses the frame border — the largest slab parameter that keeps the point inside.
+ * Returns undefined only for a zero direction (guarded upstream). Pure.
+ */
+function rayToFrame(
+  origin: WorldCoordinate,
+  dir: { dx: number; dy: number },
+  frame: PlanarBBox,
+): WorldCoordinate | undefined {
+  let t = Number.POSITIVE_INFINITY;
+  if (dir.dx > 0) t = Math.min(t, (frame.maxLon - origin.lon) / dir.dx);
+  else if (dir.dx < 0) t = Math.min(t, (frame.minLon - origin.lon) / dir.dx);
+  if (dir.dy > 0) t = Math.min(t, (frame.maxLat - origin.lat) / dir.dy);
+  else if (dir.dy < 0) t = Math.min(t, (frame.minLat - origin.lat) / dir.dy);
+  if (!Number.isFinite(t) || t <= 0) return undefined;
+  return { lon: origin.lon + dir.dx * t, lat: origin.lat + dir.dy * t };
+}
+
+/**
+ * The frame-corner vertices strictly BETWEEN the border points `from` and `to`, walking
+ * counter-clockwise around the frame. `from`/`to` themselves are NOT included (the caller
+ * emits them). This closes the clip along the outside-the-target frame border. Pure.
+ */
+function walkFrameBorder(
+  from: WorldCoordinate,
+  to: WorldCoordinate,
+  frame: PlanarBBox,
+): WorldCoordinate[] {
+  // The four corners at their CCW perimeter params (see framePerimeterParam): the
+  // bottom→right corner sits at param 1, right→top at 2, top→left at 3, left→bottom at 0.
+  const corners: { param: number; point: WorldCoordinate }[] = [
+    { param: 1, point: { lon: frame.maxLon, lat: frame.minLat } },
+    { param: 2, point: { lon: frame.maxLon, lat: frame.maxLat } },
+    { param: 3, point: { lon: frame.minLon, lat: frame.maxLat } },
+    { param: 0, point: { lon: frame.minLon, lat: frame.minLat } },
+  ];
+  const start = framePerimeterParam(from, frame);
+  const arcTo = forwardArc(start, framePerimeterParam(to, frame));
+  // Each corner strictly between `from` and `to` along the CCW walk, in walk order.
+  const out = corners
+    .filter((c) => {
+      const arc = forwardArc(start, c.param);
+      return arc > PERIM_EPS && arc < arcTo;
+    })
+    .sort((a, b) => forwardArc(start, a.param) - forwardArc(start, b.param))
+    .map((c) => c.point);
+  return out;
+}
+
+/**
+ * Map a point ON the frame border to a scalar in [0,4) that increases counter-clockwise
+ * from the bottom edge: [0,1) bottom (left→right), [1,2) right (bottom→top), [2,3) top
+ * (right→left), [3,4) left (top→bottom). A point exactly on a corner maps to that
+ * corner's integer. Pure.
+ */
+function framePerimeterParam(p: WorldCoordinate, frame: PlanarBBox): number {
+  const w = frame.maxLon - frame.minLon || 1;
+  const h = frame.maxLat - frame.minLat || 1;
+  const onBottom = p.lat <= frame.minLat + (frame.maxLat - frame.minLat) * PERIM_EPS;
+  const onTop = p.lat >= frame.maxLat - (frame.maxLat - frame.minLat) * PERIM_EPS;
+  const onRight = p.lon >= frame.maxLon - (frame.maxLon - frame.minLon) * PERIM_EPS;
+  const onLeft = p.lon <= frame.minLon + (frame.maxLon - frame.minLon) * PERIM_EPS;
+  if (onBottom && !onRight) return (p.lon - frame.minLon) / w; // [0,1)
+  if (onRight) return 1 + (p.lat - frame.minLat) / h; // [1,2)
+  if (onTop) return 2 + (frame.maxLon - p.lon) / w; // [2,3)
+  if (onLeft) return 3 + (frame.maxLat - p.lat) / h; // [3,4)
+  return 0;
+}
+
+/** CCW arc length from `a` to `b` on the [0,4) perimeter, always in [0,4). */
+function forwardArc(a: number, b: number): number {
+  const d = b - a;
+  return d >= 0 ? d : d + 4;
+}
+
+/**
+ * Border-classification tolerance for {@link framePerimeterParam}: a point produced by
+ * {@link rayToFrame} lands on a frame edge up to float rounding, so "on this edge" is
+ * judged within a tiny fraction of the frame extent rather than by exact equality.
+ */
+const PERIM_EPS = 1e-9;
 
 /**
  * Below this chord/extent length (in continuous-lon degrees) the polyline has no
@@ -462,6 +607,8 @@ export function collectOpenPieces(
   mp: GeoMultiPolygon,
   span: number,
 ): PiecesResult {
+  void span; // kept for the stable test/consumer API; the clip frame is derived from `mp`.
+  const box = multiPolygonBBox(mp);
   const chords = splitIntoChords(linePts, mp);
   if (chords.length === 0) return { ok: false, reason: SPLIT_REJECT.DoesNotPierce };
 
@@ -478,7 +625,7 @@ export function collectOpenPieces(
   // distinguishes real cut-disconnections from clip artifacts is future work.
   const pieces: GeoMultiPolygon[] = [mp];
   for (const chord of chords) {
-    const clipRing = openLineToClip(chord, span);
+    const clipRing = openLineToClip(chord, box);
     if (planarRingArea2(clipRing) <= CHORD_DEGENERATE_EPS) {
       return { ok: false, reason: SPLIT_REJECT.DegenerateLine };
     }
@@ -554,8 +701,8 @@ function anchorMultiPolygon(mp: GeoMultiPolygon, ref: number): GeoMultiPolygon {
   return mp.map((poly) => poly.map((ring) => unwrapAnchoredRing(ring, ref)));
 }
 
-/** Horizontal+vertical span of a multi-polygon's outer extent (for offset sizing). */
-function multiPolygonSpan(mp: GeoMultiPolygon): number {
+/** Axis-aligned bounding box of a multi-polygon's outer rings (clip-frame sizing). */
+function multiPolygonBBox(mp: GeoMultiPolygon): PlanarBBox {
   let minLon = Number.POSITIVE_INFINITY;
   let maxLon = Number.NEGATIVE_INFINITY;
   let minLat = Number.POSITIVE_INFINITY;
@@ -570,8 +717,8 @@ function multiPolygonSpan(mp: GeoMultiPolygon): number {
       if (c.lat > maxLat) maxLat = c.lat;
     }
   }
-  if (!Number.isFinite(minLon)) return 0;
-  return Math.max(maxLon - minLon, maxLat - minLat);
+  if (!Number.isFinite(minLon)) return { minLon: 0, maxLon: 0, minLat: 0, maxLat: 0 };
+  return { minLon, maxLon, minLat, maxLat };
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +898,7 @@ export function checkSplittable(
       ? splitIntoChords(linePts, targetMp)
       : [];
   if (nwayChords.length >= 2) {
-    const collected = collectOpenPieces(linePts, targetMp, multiPolygonSpan(targetMp));
+    const collected = collectOpenPieces(linePts, targetMp, 0);
     if (!collected.ok) return rejection(collected.reason);
     pieces = [...collected.pieces];
   } else {
@@ -766,8 +913,7 @@ export function checkSplittable(
       if (!linePiercesFace(linePts, targetMp)) {
         return rejection(SPLIT_REJECT.DoesNotPierce);
       }
-      const span = multiPolygonSpan(targetMp);
-      const clipRing = openLineToClip(linePts, span);
+      const clipRing = openLineToClip(linePts, multiPolygonBBox(targetMp));
       // Reject a degenerate clip (bug-hunt2): even with the chord guard, a polyline
       // with no spatial extent at all (every snapped vertex on one grid node) yields a
       // zero-area ring. A zero-area clip makes intersection/difference vanish and would

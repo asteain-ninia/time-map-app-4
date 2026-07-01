@@ -139,19 +139,134 @@ describe('checkSplittable — OPEN cut must transit outside→outside (FR-90; Co
   });
 });
 
-describe('checkSplittable — degenerate looping OPEN cut (bug-hunt2: zero-area clip)', () => {
-  it('rejects a U-shaped OPEN cut whose first and last points coincide', () => {
+describe('checkSplittable — tilted / bent OPEN cut has NO phantom vertices (第8波 flagship)', () => {
+  // The clip-construction invariant (openLineToClip): the ONLY boundary a resulting
+  // piece may show inside the target is the USER'S drawn line. So every vertex of every
+  // piece must lie either on an ORIGINAL square edge OR on a DRAWN cut segment; any other
+  // vertex is a phantom the extrusion manufactured (the old single-normal offset chamfered
+  // corners into false diagonals / triangle pieces on axis-non-parallel + bent cuts).
+  const SQUARE_EDGES: ReadonlyArray<readonly [ReturnType<typeof c>, ReturnType<typeof c>]> = [
+    [c(0, 0), c(10, 0)],
+    [c(10, 0), c(10, 10)],
+    [c(10, 10), c(0, 10)],
+    [c(0, 10), c(0, 0)],
+  ];
+  const onSegment = (
+    p: ReturnType<typeof c>,
+    a: ReturnType<typeof c>,
+    b: ReturnType<typeof c>,
+  ): boolean => {
+    // Collinear (cross ~0) AND within the segment's bounding box (small tolerance for
+    // the U06 grid quantum). Endpoints count as on-segment.
+    const cross = (b.lon - a.lon) * (p.lat - a.lat) - (b.lat - a.lat) * (p.lon - a.lon);
+    if (Math.abs(cross) > 1e-6) return false;
+    const within = (v: number, lo: number, hi: number) =>
+      v >= Math.min(lo, hi) - 1e-6 && v <= Math.max(lo, hi) + 1e-6;
+    return within(p.lon, a.lon, b.lon) && within(p.lat, a.lat, b.lat);
+  };
+  const drawnSegments = (
+    pts: ReadonlyArray<readonly [number, number]>,
+  ): ReadonlyArray<readonly [ReturnType<typeof c>, ReturnType<typeof c>]> => {
+    const segs: [ReturnType<typeof c>, ReturnType<typeof c>][] = [];
+    for (let i = 0; i + 1 < pts.length; i += 1) {
+      segs.push([c(pts[i]![0], pts[i]![1]), c(pts[i + 1]![0], pts[i + 1]![1])]);
+    }
+    return segs;
+  };
+  const assertNoPhantomVertices = (
+    res: ReturnType<typeof checkSplittable>,
+    cutPts: ReadonlyArray<readonly [number, number]>,
+  ): void => {
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status !== SPLIT_CHECK_STATUS.Splittable) return;
+    const allowed = [...SQUARE_EDGES, ...drawnSegments(cutPts)];
+    for (const piece of res.pieces ?? []) {
+      for (const poly of piece.area) {
+        for (const ring of poly) {
+          for (const v of ring) {
+            const ok = allowed.some(([a, b]) => onSegment(v, a, b));
+            expect(
+              ok,
+              `phantom vertex (${v.lon},${v.lat}) not on any square edge or drawn cut segment`,
+            ).toBe(true);
+          }
+        }
+      }
+    }
+  };
+
+  it('an axis-NON-parallel straight cut splits into two pieces (no invalid-shape rejection)', () => {
     const { feature, store } = unitSquare();
-    // A U-shaped OPEN polyline whose ENDS are the SAME node (2,-5): it dips into the
-    // [0,10]² square from below twice but loops back to its start. snapCutLine drops
-    // only CONSECUTIVE duplicates for an open line, so first===last survives; both
-    // endpoints are strictly outside and the path makes ≥2 boundary transits, so
-    // linePiercesFace passes. The endpoint chord is then dx=dy=0, which used to make
-    // openLineToClip's offset normal (0,0) → a ZERO-AREA clip ring whose boolean op
-    // vanished and mis-reported as 貫通せず/不正形状. It must now be the honest
-    // DegenerateLine rejection instead. (This single-chord cut takes the EXISTING 2-way
-    // path; the HB3-5/19 n-way path only engages for ≥2-chord / ≥3-piece cuts.)
-    const line = createOpenKnifeLine([c(2, -5), c(2, 5), c(8, 5), c(8, -5), c(2, -5)]);
+    // Diagonal [2,-1]→[8,11] enters the bottom edge and exits the top edge; a legitimate
+    // straight bisection. The old single-normal offset copy landed on the wrong side and
+    // the boolean op degenerated → wrongly rejected as invalid-shape.
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(2, -1), c(8, 11)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.pieces?.length).toBe(2);
+      expect(res.sideA.areaKm2).toBeGreaterThan(0);
+      expect(res.sideB.areaKm2).toBeGreaterThan(0);
+    }
+    assertNoPhantomVertices(res, [[2, -1], [8, 11]]);
+  });
+
+  it('an L-shaped cut splits into 2 pieces with NO phantom diagonal vertices', () => {
+    const { feature, store } = unitSquare();
+    // Enter bottom @ x=5, bend at (5,5), exit right edge @ y=5. Every piece vertex must
+    // sit on a square edge or on the drawn L; the old offset connectors chamfered the
+    // (0,0)/(10,10) corners into false diagonals and spun off phantom triangle pieces.
+    const cutPts = [[5, -2], [5, 5], [12, 5]] as const;
+    const res = checkSplittable(
+      feature,
+      store,
+      createOpenKnifeLine(cutPts.map(([x, y]) => c(x, y))),
+    );
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) expect(res.pieces?.length).toBe(2);
+    assertNoPhantomVertices(res, cutPts);
+  });
+
+  it('a V-shaped cut splits into 2 pieces with NO phantom triangle pieces', () => {
+    const { feature, store } = unitSquare();
+    // Enter top-left, dip to apex (5,3) inside, exit top-right. No spurious triangle片.
+    const cutPts = [[-2, 12], [5, 3], [12, 12]] as const;
+    const res = checkSplittable(
+      feature,
+      store,
+      createOpenKnifeLine(cutPts.map(([x, y]) => c(x, y))),
+    );
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) expect(res.pieces?.length).toBe(2);
+    assertNoPhantomVertices(res, cutPts);
+  });
+
+  it('the axis-parallel vertical cut is UNCHANGED (no degression)', () => {
+    const { feature, store } = unitSquare();
+    const cutPts = [[5, -5], [5, 15]] as const;
+    const res = checkSplittable(
+      feature,
+      store,
+      createOpenKnifeLine(cutPts.map(([x, y]) => c(x, y))),
+    );
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.pieces?.length).toBe(2);
+      // Both halves are exactly half (~equal area).
+      expect(Math.abs(res.sideA.areaKm2 - res.sideB.areaKm2)).toBeLessThan(1);
+    }
+    assertNoPhantomVertices(res, cutPts);
+  });
+});
+
+describe('checkSplittable — degenerate / looping OPEN cut', () => {
+  it('rejects a truly zero-extent line (every point on one grid node) as DegenerateLine', () => {
+    const { feature, store } = unitSquare();
+    // Two clicks within one U06 grid cell collapse onto the SAME node under snapCutLine,
+    // leaving <2 distinct vertices — no usable cut. The honest reason is 分断線の点が足りません
+    // (not 貫通せず/不正形状). This is the surviving bug-hunt2 degeneracy guard: with the
+    // 第8波 frame clip, a NON-collapsed polyline can never yield a zero-area clip, so the
+    // guard now fires only for input with no spatial extent at all.
+    const line = createOpenKnifeLine([c(3, 3), c(3, 3.00000001)]);
     const res = checkSplittable(feature, store, line);
     expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
     if (res.status === SPLIT_CHECK_STATUS.NotSplittable) {
@@ -160,9 +275,32 @@ describe('checkSplittable — degenerate looping OPEN cut (bug-hunt2: zero-area 
     }
   });
 
+  it('correctly splits a U-shaped OPEN cut whose first and last points coincide', () => {
+    const { feature, store } = unitSquare();
+    // A U-shaped OPEN polyline whose ENDS are the SAME node (2,-5): it enters the [0,10]²
+    // bottom edge at (2,0), traces up-across-down inside, and exits the bottom at (8,0) —
+    // a genuine outside→through→outside transit carving the notch [2,8]×[0,5]. The OLD
+    // single-normal offset made the endpoint chord dx=dy=0 → a ZERO-AREA clip that vanished
+    // and was rejected as a degeneracy artifact. The 第8波 frame clip extends each END
+    // SEGMENT along its OWN direction (last→left, first→down) and closes on the far frame,
+    // so this cut is now honestly resolved into its two pieces (notch + remainder), with
+    // NO phantom vertices — every piece vertex lands on the square edge or the drawn U.
+    const line = createOpenKnifeLine([c(2, -5), c(2, 5), c(8, 5), c(8, -5), c(2, -5)]);
+    const res = checkSplittable(feature, store, line);
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+    if (res.status === SPLIT_CHECK_STATUS.Splittable) {
+      expect(res.pieces?.length).toBe(2);
+      // The notch piece is [2,8]×[0,5] (30 of the 100 unit-square's area, scaled).
+      const notchArea = Math.min(res.sideA.areaKm2, res.sideB.areaKm2);
+      const remainderArea = Math.max(res.sideA.areaKm2, res.sideB.areaKm2);
+      expect(notchArea).toBeGreaterThan(0);
+      expect(remainderArea).toBeGreaterThan(notchArea);
+    }
+  });
+
   it('still accepts a non-looping outside→outside cut over the same square', () => {
     // Guard against over-rejection: a genuine vertical pierce (distinct endpoints)
-    // remains splittable after the degenerate-clip guard.
+    // remains splittable.
     const { feature, store } = unitSquare();
     const res = checkSplittable(feature, store, createOpenKnifeLine([c(5, -5), c(5, 15)]));
     expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
