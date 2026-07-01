@@ -805,6 +805,93 @@ describe('自動保存ティックの購読 (FR-108 / 受け入れ基準 3 — B
   });
 });
 
+describe('file-ops エントリは相互排他: ダイアログ表示中の並行コマンドを握り潰さない (5th bughunt #1/#2/#3)', () => {
+  it('#1 [HIGH/data-loss]: 修復ダイアログ表示中に発火した2つ目の読み込みはドロップされ、進行中の修復を上書きしない', async () => {
+    // First load is inconsistent → opens the repair dialog and suspends there. A
+    // concurrent second (clean) load would — without the mutex — reflect a fresh
+    // project behind the open dialog, then the delayed repair reflect would clobber it.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let n = 0;
+    const load = vi.fn(async () => {
+      n += 1;
+      return n === 1 ? brokenLoad() : okLoad();
+    });
+    const api = makeApi({ load });
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // Second open WHILE the repair dialog owns the interaction — must be dropped.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    // The concurrent transport was never fetched; no clean project reflected behind it.
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(reflect).not.toHaveBeenCalled();
+    // The original repair interaction is intact.
+    expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument();
+  });
+
+  it('#2 [data-loss]: 進行中の読み込み(transport await)中の2つ目の読み込みはドロップされる（並行 load の直列化）', async () => {
+    // A deferred load suspends the first op at `await ports.load()`. A second open must
+    // not fetch a second transport — the orphaned-promptUnsaved-resolver family shares
+    // this root: two overlapping load flows are never in flight at once.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let resolveLoad!: (r: LoadResponse) => void;
+    const load = vi.fn(() => new Promise<LoadResponse>((res) => { resolveLoad = res; }));
+    const api = makeApi({ load });
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+
+    // Second open while the first transport is still pending — dropped.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    expect(load).toHaveBeenCalledTimes(1);
+
+    // The first (only) load settles normally and reflects exactly once.
+    await act(async () => { resolveLoad(okLoad()); });
+    await waitFor(() => expect(reflect).toHaveBeenCalledTimes(1));
+  });
+
+  it('#3 [ux]: 未保存警告の表示中に発火した自動保存ティックは Save-As を並行して開かない', async () => {
+    // A dirty, never-saved project: FileOpen opens the 未保存警告 and suspends. An
+    // auto-save tick landing now would (without the mutex) route 保存 → 名前を付けて保存
+    // and open a native Save-As dialog CONCURRENTLY with the in-renderer warning.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let fireTick: (() => void) | null = null;
+    const api = makeApi({
+      onAutoSaveTick: vi.fn((l: () => void) => {
+        fireTick = l;
+        return () => {};
+      }),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    act(() => { store.getState().setDomainState(buildEmptyProject()); });
+    expect(store.getState().projectDirty).toBe(true);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('unsaved-modal-root')).toBeInTheDocument());
+
+    // The tick fires during the suspension: it must be dropped, not open Save-As.
+    await act(async () => { fireTick!(); });
+    expect(api.saveAs).not.toHaveBeenCalled();
+    expect(api.save).not.toHaveBeenCalled();
+
+    // Resolve the warning (キャンセル) → the load aborts, state preserved.
+    fireEvent.click(screen.getByTestId('unsaved-cancel'));
+    await waitFor(() =>
+      expect(screen.queryByTestId('unsaved-modal-root')).not.toBeInTheDocument(),
+    );
+  });
+});
+
 describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込み=地図画像消失の回帰)', () => {
   // Regression for the data-loss bug: buildSaveRequest shipped new Uint8Array() for
   // baseMapImage, so the first save overwrote the loaded map image with zero bytes.

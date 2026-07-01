@@ -226,6 +226,38 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     store.getState().markProjectSaved();
   }, [store]);
 
+  // 破壊的置換フローの相互排他ラッチ (5th bughunt #1/#2/#3 — concurrency data-loss/UX 根治).
+  // 開く / 新規 / D&D / 終了ガード は未保存警告(FR-107)や修復(FR-106)モーダルを await する間、
+  // 単一の pendingUnsaved / pendingRepair スロットと store reflect を占有する。直列化しないと
+  // 第1フローがモーダルで中断中に第2フローが走り、ハントが観測した3つの不具合を起こす:
+  //   #1 [HIGH/data-loss] load A の修復ダイアログ表示中に load B(クリーン)が reflect 済みになった後、
+  //      A の修復解決が自分のクロージャ捕捉した(古い)プロジェクトを B の上へ reflect し、
+  //      読み込んだばかりの B を無言で握り潰す;
+  //   #2 [data-loss] 第2 load の promptUnsaved が単一 pendingUnsaved スロットを上書きし、
+  //      第1 resolver を孤児化する(await が永久に settle しない=フローの漏れ);
+  //   #3 [ux] 開く/新規 の promptUnsaved 中断中に auto-save ティックが走り、
+  //      レンダラ内警告と同時にネイティブ Save-As を開く。
+  // 破壊的置換フローを1つのラッチで相互排他し、その3つを根で断つ (教訓 5.6 同一フロー):
+  // ラッチ保持中の破壊的エントリは DROP(no-op、後続の再ディスパッチで再試行可)。auto-save
+  // ティックはラッチを『取らない』が『譲る』(下の購読を参照)。保存同士(保存A→保存B)は本ラッチ
+  // ではなく bridge の saveChain がキュー直列化する(lost-edit guard の担当)ので、ここでは
+  // 保存を gate しない(掛けると保存Bをドロップし interleave 挙動を壊す・教訓 5.24 責務の単一化)。
+  // ラッチは ref(React state 非経由)ゆえ再レンダーなしで async ランナーを門番でき、finally で
+  // 必ず解放するので thrown/中断でも全 file 操作を wedge しない (教訓 5.2)。
+  const opInFlightRef = useRef(false);
+  const runExclusive = useCallback(
+    async <T,>(op: () => Promise<T>): Promise<T | undefined> => {
+      if (opInFlightRef.current) return undefined;
+      opInFlightRef.current = true;
+      try {
+        return await op();
+      } finally {
+        opInFlightRef.current = false;
+      }
+    },
+    [],
+  );
+
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
   const [pendingRepair, setPendingRepair] = useState<PendingRepair | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
@@ -420,10 +452,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
       resetLoadedAssets();
     };
+    // 破壊的置換フロー(開く/新規)はラッチ経由で相互排他 (5th bughunt #1/#2): モーダル中断中に
+    // 発火した2つ目は DROP。保存/名前を付けて保存は bridge の saveChain がキュー直列化するので
+    // ラッチを掛けない(掛けると保存Bをドロップし lost-edit guard の interleave 挙動を壊す)。
     registry.register(COMMAND_ID.FileNew, {
-      run: () => void newProjectCommand(ports, initialiseNewProject),
+      run: () => void runExclusive(() => newProjectCommand(ports, initialiseNewProject)),
     });
-    registry.register(COMMAND_ID.FileOpen, { run: () => void openCommand(ports) });
+    registry.register(COMMAND_ID.FileOpen, {
+      run: () => void runExclusive(() => openCommand(ports)),
+    });
     registry.register(COMMAND_ID.FileSave, {
       run: () => void saveCommand(ports, needsSaveAs(contextRef.current)),
     });
@@ -434,7 +471,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       registry.unregister(COMMAND_ID.FileSave);
       registry.unregister(COMMAND_ID.FileSaveAs);
     };
-  }, [ports, registry, store, applyContext, resetLoadedAssets]);
+  }, [ports, registry, store, applyContext, resetLoadedAssets, runExclusive]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
   // `projectDirty`, set by BOTH setDomainState / applyCommandResult (domain edits)
@@ -455,7 +492,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // live guarantees the save chain (serialized, lost-edit-guarded) is in place.
   useEffect(() => {
     if (api === null || ports === null) return undefined;
+    // 5th bughunt #3: skip the tick while a 破壊的置換 flow (開く/新規/D&D/終了ガード) holds a
+    // 未保存警告 / 修復 dialog — otherwise the tick's 保存→名前を付けて保存 opens a native
+    // Save-As CONCURRENTLY with that dialog. The tick YIELDS to the latch (checks it) but
+    // does NOT take it: an auto-save must never block a user's 開く/新規. Save-vs-save
+    // ordering (incl. tick-vs-manual) is handled by the bridge's saveChain queue.
     return api.onAutoSaveTick(() => {
+      if (opInFlightRef.current) return;
       void saveCommand(ports, needsSaveAs(contextRef.current));
     });
   }, [api, ports]);
@@ -465,9 +508,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     if (ports === null || registerWindowClose === undefined) return undefined;
     // Register the SAME guard the load / new paths use (教訓 5.6); the host awaits
     // it on a close request and closes only when it resolves true.
-    const cleanup = registerWindowClose(() => quitGuard(ports));
+    // 5th bughunt #2: route the close guard through the SAME mutex. If a file op is
+    // mid-flight (a dialog is open), refuse the close (return false) rather than open a
+    // SECOND 未保存警告 over the first — which would orphan the first resolver. The user
+    // resolves the open dialog first, then the close request works.
+    const cleanup = registerWindowClose(
+      async () => (await runExclusive(() => quitGuard(ports))) ?? false,
+    );
     return typeof cleanup === 'function' ? cleanup : undefined;
-  }, [ports, registerWindowClose]);
+  }, [ports, registerWindowClose, runExclusive]);
 
   // --- supply the camera clamp range to U17 on every settings change (FR-10) -
   useEffect(() => {
@@ -496,9 +545,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       const file = e.dataTransfer.files[0];
       const droppedPath = (file as (File & { path?: string }) | undefined)?.path;
       if (droppedPath === undefined || droppedPath === '') return;
-      void dropLoadCommand(ports, droppedPath);
+      // Same mutex as the menu load (5th bughunt #1): a drop during an in-flight op is
+      // dropped, never interleaved with a repair / unsaved dialog already in progress.
+      void runExclusive(() => dropLoadCommand(ports, droppedPath));
     },
-    [ports],
+    [ports, runExclusive],
   );
 
   // --- register the D&D handlers with the host (FR-105) ---------------------
