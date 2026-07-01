@@ -1075,6 +1075,133 @@ describe('liveHitTestAt — active-feature edge-midpoint handles (FR-87)', () =>
   });
 });
 
+// --- active-leaf-handles-draw-hit: 集約で省略された active leaf の頂点ハンドルは掴める ---
+//
+// active-feature-handles.ts draws the ACTIVE feature's OWN vertex handles via
+// computeHandles(activeFeature) REGARDLESS of its display verdict — a user who explicitly
+// selected a leaf sees its handles even when the leaf is aggregation-OMITTED (drawn as the
+// parent's 集約形状). But the hit-test's vertex step iterated ONLY the `owners` map, which
+// carries verdict-Real vertices — so an omitted active leaf's DRAWN vertex handle could NOT
+// be grabbed (描画 ⊋ ヒット). FR-87 already fixed this for EDGE midpoints by probing
+// computeHandles(activeFeature) directly; this extends the SAME pattern to VERTICES, so the
+// active feature's drawn vertices are grabbable at exactly the position they are drawn
+// (draw ⊇ hit). A NON-active omitted leaf's vertices stay ungrabbable (no over-grab).
+describe('liveHitTestAt — aggregation-omitted ACTIVE leaf vertex handles (active-leaf-handles-draw-hit)', () => {
+  const time = timePointYear(1000);
+  const aggregatedControl = {
+    globalDepth: 0,
+    focus: { originId: null, depth: 0, emphasize: false },
+  };
+
+  /** An aggregate `agg` over two child leaves at [0,4]² and [6,10]² (parented). */
+  function aggregateHierarchy(): {
+    root: DomainRoot;
+    aggId: Feature['id'];
+    childAId: Feature['id'];
+    childBId: Feature['id'];
+  } {
+    const childA = squareLeaf('f-childA', 'vca', 0, 0); // [0,4]×[0,4]
+    const childB = squareLeaf('f-childB', 'vcb', 6, 0); // [6,10]×[0,4]
+    const aggId = asFeatureId('f-agg');
+    const childAp = { feature: withParentId(childA.feature, aggId), vertices: childA.vertices };
+    const childBp = { feature: withParentId(childB.feature, aggId), vertices: childB.vertices };
+    const agg = createAggregateFeature(
+      aggId,
+      createBasicAttributes('f-agg', 0, 0),
+      color,
+      [childAp.feature.id, childBp.feature.id],
+    );
+    let root = commit(emptyProject(), { feature: agg, vertices: [] }, 1000);
+    root = commit(root, childAp, 1000);
+    root = commit(root, childBp, 1000);
+    return { root, aggId, childAId: childAp.feature.id, childBId: childBp.feature.id };
+  }
+
+  it('grabs the DRAWN vertex handle of an omitted ACTIVE leaf (its child is not verdict-Real)', () => {
+    const { root, childAId } = aggregateHierarchy();
+    // Child A is aggregation-omitted at N=0, but it IS the active feature, so its own
+    // handles are drawn. Its (4,4) corner handle must be grabbable at its drawn position.
+    const corner = { lon: 4, lat: 4 };
+    const hit = liveHitTestAt(
+      {
+        root,
+        time,
+        displayControl: aggregatedControl,
+        toScreen,
+        point: toScreen(corner),
+        activeFeature: childAId,
+      },
+      corner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Vertex);
+    if (hit.kind === HIT_KIND.Vertex) {
+      expect(hit.featureId).toBe(childAId);
+      expect(hit.vertexId).toBe(asVertexId('vca-2')); // corner (4,4) = index 2
+    }
+  });
+
+  it('does NOT grab a NON-active omitted leaf vertex (falls to the aggregate body — no over-grab)', () => {
+    const { root, aggId, childAId } = aggregateHierarchy();
+    // Child A is active, but we click just INSIDE child B's (6,0) corner (within the grab
+    // radius of it: ~2.8px at zoom 10). Child B is omitted and NOT active, so its vertex is
+    // not grabbable — the click falls through to the drawn aggregate body (its 集約形状
+    // covers child B's footprint). If child B's vertex were wrongly grabbable this would be
+    // a Vertex hit on child B.
+    const corner = { lon: 6.2, lat: 0.2 };
+    const hit = liveHitTestAt(
+      {
+        root,
+        time,
+        displayControl: aggregatedControl,
+        toScreen,
+        point: toScreen(corner),
+        activeFeature: childAId,
+      },
+      corner,
+    );
+    expect(hit.kind).not.toBe(HIT_KIND.Vertex);
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(aggId);
+  });
+
+  it('with NO active feature the omitted leaf vertex stays ungrabbable (regression: verdict gate intact)', () => {
+    const { root, aggId } = aggregateHierarchy();
+    // Same click on child A's (4,4) corner, but no active feature: the omitted child's
+    // vertex is not drawn/grabbable, so the cursor resolves to the aggregate body.
+    const corner = { lon: 3.9, lat: 3.9 };
+    const hit = liveHitTestAt(
+      { root, time, displayControl: aggregatedControl, toScreen, point: toScreen(corner) },
+      corner,
+    );
+    expect(hit.kind).not.toBe(HIT_KIND.Vertex);
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(aggId);
+  });
+
+  it('a VERTEX of the omitted active leaf still wins over its own EDGE midpoint (頂点優先)', () => {
+    const { root, childAId } = aggregateHierarchy();
+    // Click exactly on child A's (0,0) corner: the vertex handle must win over any edge
+    // handle whose midpoint is nearby, matching the vertex-first priority.
+    const corner = { lon: 0, lat: 0 };
+    const hit = liveHitTestAt(
+      {
+        root,
+        time,
+        displayControl: aggregatedControl,
+        toScreen,
+        point: toScreen(corner),
+        activeFeature: childAId,
+      },
+      corner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Vertex);
+    if (hit.kind === HIT_KIND.Vertex) {
+      expect(hit.featureId).toBe(childAId);
+      expect(hit.vertexId).toBe(asVertexId('vca-0'));
+    }
+  });
+});
+
 /** screenToWorld against the wrap test camera (centerLon 360). */
 function screenToWorldFor(s: { x: number; y: number }): { lon: number; lat: number } {
   const w = screenToWorld(s, { centerLon: 360, centerLat: 2, zoom: 10 }, {

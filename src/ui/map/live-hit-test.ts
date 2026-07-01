@@ -36,7 +36,10 @@
 // PRIORITY (受け入れ基準: 頂点優先 → なければ地物, 教訓 5.9 排他分岐の優先順位):
 //   1. The nearest DRAWN VERTEX within `radiusPx` SCREEN pixels of the cursor — only
 //      vertices of features actually drawn with their own shape (Real-verdict areas,
-//      plus every point/line). Aggregated / omitted areas contribute none.
+//      plus every point/line). Aggregated / omitted areas contribute none — EXCEPT the
+//      ACTIVE feature, whose OWN vertex handles are drawn (active-feature-handles) and so
+//      must be grabbable even when it is aggregation-omitted (draw ⊇ hit — same computeHandles
+//      the draw path uses, FR-87 pattern extended from edges to vertices).
 //   1.5. Else the nearest EDGE-MIDPOINT handle of the ACTIVE feature within the screen-px
 //      radius (FR-87 add-a-new-vertex). Edge handles are a selection-scoped affordance
 //      (only the active feature has them), so this step runs only when an active feature
@@ -57,11 +60,11 @@
 // PURITY: no React, no store, no Canvas. It builds fresh arrays; inputs are never
 // mutated.
 
-import { FEATURE_KIND } from '../../domain/feature';
+import { FEATURE_KIND, type Feature } from '../../domain/feature';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
-import { getVertex } from '../../domain/vertex';
+import { getVertex, type VertexStore } from '../../domain/vertex';
 import { unwrapLonSequence } from '../../domain/geo/longitude';
 import {
   EMPTY_HIT,
@@ -70,7 +73,12 @@ import {
   edgeHit,
   type HitResult,
 } from '../../domain/selection';
-import { computeHandles, type EdgeHandle } from '../../domain/editing/handles';
+import {
+  computeHandles,
+  EMPTY_HANDLES,
+  type EdgeHandle,
+  type EditHandles,
+} from '../../domain/editing/handles';
 import type { ScreenPoint } from '../../render';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { ResolvedDisplayShape } from '../../domain/display';
@@ -449,6 +457,33 @@ export function drawnAreaAt(
 }
 
 /**
+ * The ACTIVE feature's OWN edit-handle set (vertex + edge handles), or EMPTY_HANDLES when
+ * there is no active feature / it is not drawn / it is an aggregate. Resolved from the
+ * SAME `computeHandles(feature, store)` the render layer (active-feature-handles) draws the
+ * handles with, over the SAME shared display vertex store the hit-test grabs against
+ * (単一真実源, 教訓 5.29 — 描画 ⊇ ヒット).
+ *
+ * WHY (active-leaf-handles-draw-hit): the active feature's handles are DRAWN regardless of
+ * its display verdict (a user-selected leaf whose vertices are aggregation-omitted still
+ * shows its own handles), so they must be grabbable regardless of verdict too — the
+ * `owners`/`grabbable` set only carries verdict-Real vertices. FR-87 already routed the
+ * EDGE hit through `computeHandles(activeFeature)` for exactly this reason; this shared
+ * resolution feeds BOTH the vertex step and the edge step off the ONE call.
+ */
+function resolveActiveHandles(
+  activeFeature: FeatureId | null | undefined,
+  features: readonly Feature[],
+  areaFeaturesById: ReadonlyMap<FeatureId, Feature>,
+  vertices: VertexStore,
+): EditHandles {
+  if (activeFeature == null) return EMPTY_HANDLES;
+  const feature =
+    areaFeaturesById.get(activeFeature) ?? features.find((f) => f.id === activeFeature);
+  if (feature === undefined) return EMPTY_HANDLES;
+  return computeHandles(feature, vertices);
+}
+
+/**
  * Resolve what a screen click hit, vertex-first then feature body (受け入れ基準:
  * 頂点優先 → なければ地物). The set considered is EXACTLY what the renderer drew this
  * frame: areas through the U34 display pipeline (`displayControl` honoured —
@@ -494,7 +529,28 @@ export function liveHitTestAt(
   );
   const areas = resolved.shapes;
 
-  // 1. Nearest DRAWN VERTEX within the screen-px radius (vertex-first priority).
+  // The ACTIVE feature's OWN handle set (vertices + edges), computed ONCE from the SAME
+  // `computeHandles` the render layer (active-feature-handles) draws with, over the SAME
+  // shared display vertex store the vertex path uses (単一真実源, 教訓 5.29 — 描画 ⊇ ヒット).
+  // Both the vertex step (1) and the edge step (1.5) probe against this, so a handle is
+  // grabbable exactly where it is drawn — INCLUDING when the active leaf is aggregation-
+  // omitted (its `owners`/`grabbable` membership is dropped, but its handles are still
+  // drawn, so they must still be hittable; FR-87 established this for edges, this extends
+  // the SAME pattern to vertices). `computeHandles` returns EMPTY_HANDLES for an aggregate
+  // (no own shape, FR-35) and skips unresolved vertices, so an aggregate / undrawn active
+  // feature contributes nothing.
+  const activeHandles = resolveActiveHandles(
+    activeFeature,
+    features,
+    areaFeaturesById,
+    vertices,
+  );
+
+  // 1. Nearest DRAWN VERTEX within the screen-px radius (vertex-first priority). The
+  //    grabbable `owners` map covers every feature drawn with its own shape; the active
+  //    feature's own vertex handles are additionally probed so an aggregation-omitted
+  //    active leaf's DRAWN vertices are grabbable too (draw ⊇ hit). A vertex claimed by
+  //    both paths resolves to the SAME (featureId, vertexId), so the union is harmless.
   let bestVertex: { featureId: FeatureId; vertexId: VertexId } | null = null;
   let bestDistSq = radiusSq;
   for (const [vertexId, featureId] of owners) {
@@ -504,6 +560,13 @@ export function liveHitTestAt(
     if (d <= bestDistSq) {
       bestDistSq = d;
       bestVertex = { featureId, vertexId };
+    }
+  }
+  for (const vh of activeHandles.vertices) {
+    const d = nearestDrawnDistSq(vh.position, point, toScreen, wrap);
+    if (d <= bestDistSq) {
+      bestDistSq = d;
+      bestVertex = { featureId: vh.featureId, vertexId: vh.vertexId };
     }
   }
   if (bestVertex !== null) {
@@ -522,31 +585,27 @@ export function liveHitTestAt(
   //      The midpoints come from the SAME `computeHandles` the render layer draws the
   //      edge handles with, resolved over the SAME shared display vertex store the vertex
   //      path used (単一真実源, 教訓 5.29 — 描画 ⊇ ヒット), so a handle is grabbable exactly
-  //      where it is drawn. `computeHandles` returns EMPTY_HANDLES for an aggregate (no
-  //      own shape, FR-35) and skips unresolved vertices, so an aggregate / omitted active
+  //      where it is drawn (reused from `activeHandles` computed above — one computeHandles
+  //      per hit-test). `computeHandles` returns EMPTY_HANDLES for an aggregate (no own
+  //      shape, FR-35) and skips unresolved vertices, so an aggregate / omitted active
   //      feature contributes no edge handles.
-  if (activeFeature != null) {
-    const feature =
-      areaFeaturesById.get(activeFeature) ?? features.find((f) => f.id === activeFeature);
-    if (feature !== undefined) {
-      const edges = computeHandles(feature, vertices).edges;
-      let bestEdge: EdgeHandle | null = null;
-      let bestEdgeDistSq = radiusSq;
-      for (const edge of edges) {
-        const d = nearestDrawnDistSq(edge.midpoint, point, toScreen, wrap);
-        if (d <= bestEdgeDistSq) {
-          bestEdgeDistSq = d;
-          bestEdge = edge;
-        }
+  {
+    let bestEdge: EdgeHandle | null = null;
+    let bestEdgeDistSq = radiusSq;
+    for (const edge of activeHandles.edges) {
+      const d = nearestDrawnDistSq(edge.midpoint, point, toScreen, wrap);
+      if (d <= bestEdgeDistSq) {
+        bestEdgeDistSq = d;
+        bestEdge = edge;
       }
-      if (bestEdge !== null) {
-        return edgeHit(
-          bestEdge.featureId,
-          bestEdge.startVertexId,
-          bestEdge.endVertexId,
-          bestEdge.ringId,
-        );
-      }
+    }
+    if (bestEdge !== null) {
+      return edgeHit(
+        bestEdge.featureId,
+        bestEdge.startVertexId,
+        bestEdge.endVertexId,
+        bestEdge.ringId,
+      );
     }
   }
 
