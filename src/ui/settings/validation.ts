@@ -36,6 +36,12 @@ import {
 // 教訓 5.26), so an out-of-range / reversed zoom limit can never be saved — even on
 // a non-UI confirm. Single source: the rule lives once in U39 (単一の真実源).
 import { validateZoomLimits } from '../file-ops/zoom-limit';
+// The persistence load schema (READ side) enforces every persisted year as an
+// integer within ±MAX_YEAR (yearSchema). The timeline-range confirm path (WRITE
+// side) MUST reject the same set, or a value the form accepts but the schema
+// rejects is saved and makes the .tmap un-loadable on reopen (教訓 6.4.15 片側 shim).
+// Both sides share the ONE predicate + bound below (単一の真実源).
+import { MAX_YEAR, isPersistedYear } from '../../domain/time/validate';
 
 // --- Defaults factory (新規プロジェクト初期化の入口, 受け入れ基準 5) ----------
 
@@ -102,6 +108,7 @@ function isFiniteNumber(n: number): boolean {
 /** Japanese rejection messages, produced from a single source (FR-115). */
 export const REJECTION = {
   timelineOrder: 'タイムラインの最小年は最大年より小さくしてください。',
+  timelineYearBound: `タイムラインの年は整数かつ ±${String(MAX_YEAR)} 年以内で入力してください。`,
   equatorNonPositive: '赤道長は 0 より大きい値を入力してください。',
   flatteningRange: '扁平率は 0 以上 1 未満の値を入力してください。',
   // Derived from the single GRID_SPACINGS_DEG list (HB3-23) so the message can never
@@ -143,8 +150,17 @@ export function validateProjectSettings(
 
   if (!isFiniteNumber(draft.timelineMinYear) || !isFiniteNumber(draft.timelineMaxYear)) {
     errors.push({ field: 'timelineMinYear', message: REJECTION.notANumber });
-  } else if (draft.timelineMinYear >= draft.timelineMaxYear) {
-    errors.push({ field: 'timelineMinYear', message: REJECTION.timelineOrder });
+  } else {
+    // Reject exactly what the persistence yearSchema rejects (integer within
+    // ±MAX_YEAR) so a saved timeline range is always re-loadable (書込⊆読込).
+    const minOk = isPersistedYear(draft.timelineMinYear);
+    const maxOk = isPersistedYear(draft.timelineMaxYear);
+    if (!minOk) errors.push({ field: 'timelineMinYear', message: REJECTION.timelineYearBound });
+    if (!maxOk) errors.push({ field: 'timelineMaxYear', message: REJECTION.timelineYearBound });
+    // The order rule is only meaningful once both endpoints are valid years.
+    if (minOk && maxOk && draft.timelineMinYear >= draft.timelineMaxYear) {
+      errors.push({ field: 'timelineMinYear', message: REJECTION.timelineOrder });
+    }
   }
 
   if (!isGridSpacing(draft.gridSpacingDeg)) {

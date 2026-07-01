@@ -87,6 +87,38 @@ describe('validateProjectSettings (FR-109, 受け入れ基準 7 / 8)', () => {
     expect(validateProjectSettings(projectOf({ timelineMinYear: -3000, timelineMaxYear: 0 })).ok).toBe(true);
   });
 
+  // 第6波バグハント HIGH/data-loss: 書込側(この検証)は yearSchema(読込側)と同じ境界
+  // (整数・±MAX_YEAR=±1,000,000)で拒否しないと、フォームが受理した年が .tmap に保存され
+  // 次回ロードで manifest 全体が Invalid 拒否=自分の正当ファイルが二度と開けない(書込⊄読込)。
+  it('rejects a timeline year beyond ±MAX_YEAR (書込⊆読込: 保存ファイルの再ロード不能を防ぐ)', () => {
+    const overMax = validateProjectSettings(projectOf({ timelineMinYear: 0, timelineMaxYear: 1_000_001 }));
+    expect(errorFields(overMax)).toContain('timelineMaxYear');
+    if (!overMax.ok) {
+      expect(overMax.errors.some((e) => e.message === REJECTION.timelineYearBound)).toBe(true);
+    }
+    expect(validateProjectSettings(projectOf({ timelineMinYear: -1_000_001, timelineMaxYear: 0 })).ok).toBe(
+      false,
+    );
+    expect(validateProjectSettings(projectOf({ timelineMinYear: 0, timelineMaxYear: 2_000_000 })).ok).toBe(
+      false,
+    );
+  });
+
+  it('rejects a non-integer timeline year (yearSchema は整数のみ受理)', () => {
+    expect(
+      errorFields(validateProjectSettings(projectOf({ timelineMinYear: 0, timelineMaxYear: 100.5 }))),
+    ).toContain('timelineMaxYear');
+    expect(
+      errorFields(validateProjectSettings(projectOf({ timelineMinYear: 0.5, timelineMaxYear: 10 }))),
+    ).toContain('timelineMinYear');
+  });
+
+  it('accepts the ±MAX_YEAR boundary (過剰拒否しない)', () => {
+    expect(
+      validateProjectSettings(projectOf({ timelineMinYear: -1_000_000, timelineMaxYear: 1_000_000 })).ok,
+    ).toBe(true);
+  });
+
   it('rejects equator length 0 and negative', () => {
     expect(errorFields(validateProjectSettings(projectOf({ equatorLengthKm: 0 })))).toContain('equatorLengthKm');
     expect(errorFields(validateProjectSettings(projectOf({ equatorLengthKm: -1 })))).toContain('equatorLengthKm');
