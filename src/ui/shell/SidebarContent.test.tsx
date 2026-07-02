@@ -394,22 +394,26 @@ describe('SidebarContent — 面積 resolve is not recomputed per frame (FR-20 p
     // The 面積 row is shown, so the resolver DID run and produced a value.
     expect(screen.getByTestId('area-value').textContent).not.toBe('');
 
-    // Now count only the scans of a SINGLE fresh area resolution: scrub the time to a
-    // new instant WITHIN the same anchor interval (1000..1100) with the SAME committed
-    // domain. This re-renders both the 地物一覧 (FeaturesSection, exactly ONE featuresAt
-    // scan) and the property host (a fresh resolve). No feature-lookup churn occurs —
-    // the panel's `feature` memo is keyed to [featureLookup, targetFeatureId], both
-    // stable across a pure time move — and イベント一覧 subscribes only to `domain`
-    // (no scan). So the delta MUST be exactly: FeaturesSection(1) + area resolver(1) = 2.
-    // The pre-fix double `featuresAt` inside the resolver made the resolver cost 2, so
-    // the delta was 3.
+    // Now count the scans of a SINGLE fresh area resolution: scrub the time to a new
+    // instant WITHIN the same anchor interval (1000..1100) with the SAME committed
+    // domain. This re-renders the 地物一覧 (FeaturesSection, exactly ONE featuresAt scan),
+    // the property host (a fresh area resolve, exactly ONE scan — the bughunt #6 no-
+    // double-scan invariant this test protects), and the panel's `feature` memo, which is
+    // keyed to [featureLookup, targetFeatureId, currentTime]. That currentTime dep is the
+    // bughunt 第12波 #1 data-safety fix: a多錨 feature shows a DIFFERENT snapshot at each
+    // anchor, so `feature` MUST re-resolve on a time move (via featureLookup.featureAt →
+    // one more featuresAt scan) — otherwise a stale earlier-anchor snapshot is written
+    // onto the current anchor on save. イベント一覧 subscribes only to `domain` (no scan).
+    // So the delta MUST be exactly: FeaturesSection(1) + area resolver(1) + feature
+    // re-resolve(1) = 3. The bughunt #6 regression this test guards (a DOUBLE scan inside
+    // the resolver) would push the resolver's own contribution to 2, making the delta 4.
     featuresAtCalls.count = 0;
     act(() => {
       store.getState().setCurrentTime(timePointYear(1050), TIME_CHANGE_SOURCE.Slider);
     });
     // The area is unchanged (same shape at the new instant) but the row is still shown.
     expect(screen.getByTestId('area-value').textContent).not.toBe('');
-    expect(featuresAtCalls.count).toBe(2);
+    expect(featuresAtCalls.count).toBe(3);
   });
 
   it('reuses the memoized area (no resolve) on a re-render that leaves area inputs unchanged', () => {

@@ -28,6 +28,7 @@ import { createShape, createTerritoryRing } from '../../domain/ring';
 import { ownerLookupFromMap } from '../../domain/selection';
 import { getCalendar } from '../../domain/time/calendar';
 import {
+  timePointYear,
   timePointYearMonthDay,
   type TimePoint,
 } from '../../domain/time/time-point';
@@ -284,23 +285,35 @@ describe('PropertyPanel — decision message persistence (教訓 5.12)', () => {
 });
 
 describe('PropertyPanel — context-feature anchor select (FR-84, 教訓 5.2 / 5.12)', () => {
-  it('selecting an anchor on a vertex-context feature preserves the in-progress draft', () => {
+  it('a same-feature-same-anchor re-resolve (selection churn) preserves the in-progress draft', () => {
     // Root cause: for a vertex-context target (no active feature, single owner),
     // setCurrentTime → revalidateForTime rebuilds the vertex Set with a FRESH
     // reference, re-rendering the panel with a new selection object naming the
     // SAME feature. Without ID-keyed memoization the resolved feature object would
-    // be new every such render, wiping the draft.
+    // be new every such render, wiping the draft. The draft-reseed key is 地物×錨
+    // (bughunt 第12波 #1), so churn that keeps the SAME feature AND the SAME
+    // explicitly-picked anchor must NOT re-seed. Pick anchor a2 first (an explicit
+    // pick wins over time, so effectiveAnchorId stays a2), type an edit, then fire
+    // a time change WITHIN that pick: the selection object churns but the edit
+    // target (fA × a2) is unchanged, so the draft must survive.
     const store = makeStore({ vertices: true });
     renderPanel(store);
     expect(screen.getByTestId('basic-info')).toBeInTheDocument();
 
-    // Type an edit, THEN select an anchor (the core FR-84 path).
+    fireEvent.click(screen.getByTestId('anchor-row-a2')); // edit target = fA × a2
     fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
       target: { value: '編集中' },
     });
-    fireEvent.click(screen.getByTestId('anchor-row-a2'));
 
-    // The in-progress draft must survive the anchor selection.
+    // A pure selection-object churn (revalidateForTime rebuilds the vertex Set).
+    // The explicit anchor pick a2 still wins, so the edit target does not change.
+    act(() => {
+      store
+        .getState()
+        .setCurrentTime(timePointYearMonthDay(1590, 6, 1), TIME_CHANGE_SOURCE.AnchorSync);
+    });
+
+    // The in-progress draft must survive the churn (same 地物×錨).
     expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('編集中');
   });
 
@@ -670,5 +683,221 @@ describe('PropertyPanel — 面情報の面積表示 (FR-20 / FR-35)', () => {
     );
     expect(screen.getByTestId('basic-info')).toBeInTheDocument();
     expect(screen.queryByTestId('area-row')).not.toBeInTheDocument();
+  });
+});
+
+// bughunt 第12波 #1 (HIGH — データ安全): a多錨 feature carries a DIFFERENT full-state
+// snapshot at each anchor. The production FeatureLookup resolves featuresAt(root, TIME),
+// a TIME-DEPENDENT snapshot, but the composition root memoizes the lookup WITHOUT
+// currentTime (stable reference). Keying the panel's `feature` memo only to
+// [featureLookup, targetFeatureId] froze it at the SELECTION-time snapshot even after
+// the current time — and thus the edit-target anchor / editTime — advanced. A save then
+// wrote the frozen earlier-anchor attributes onto the later anchor, DESTROYING it. These
+// tests use a TIME-DEPENDENT lookup (mirroring production) to prove the save now carries
+// the CURRENT anchor's snapshot, and that the draft re-seeds on the anchor change.
+describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1, HIGH)', () => {
+  const fM = asFeatureId('M');
+  const vM = asVertexId('M-v');
+
+  // Alpha = the snapshot effective at anchor a1 (100..200); Beta = at a2 (200..).
+  // They differ in EVERY basic field so a stale write is unambiguous.
+  const ALPHA = createPointFeature(
+    fM,
+    createBasicAttributes('Alpha', 100, 200),
+    createColorInfo(false, '#aa0000', '#aa1111', '#aa2222'),
+    vM,
+  );
+  const BETA = createPointFeature(
+    fM,
+    createBasicAttributes('Beta', 200, 300),
+    createColorInfo(false, '#00bb00', '#00bb11', '#00bb22'),
+    vM,
+  );
+
+  function multiSeries(): AnchorSeries {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return {
+      entries: [
+        createAnchorEntry(createAnchor(asAnchorId('a1'), snap), timePointYear(100), timePointYear(200)),
+        createAnchorEntry(createAnchor(asAnchorId('a2'), snap), timePointYear(200), null),
+      ],
+    };
+  }
+
+  const anchorLookupM: AnchorSeriesLookup = {
+    anchorSeriesOf: (id) => (id === fM ? multiSeries() : null),
+  };
+
+  // A TIME-DEPENDENT lookup mirroring production (SidebarContent.featureLookupOf →
+  // featuresAt(getRoot(), getTime())): it resolves the feature snapshot at the store's
+  // CURRENT time. Returns a FRESH object each call (id-equal but reference-new), like the
+  // real domain lookup. The OBJECT REFERENCE stays stable across a time change would be
+  // the bug's precondition — but the value it returns depends on the time.
+  function timeDependentLookup(store: ReturnType<typeof makeStore>): FeatureLookup {
+    return {
+      featureAt: (id) => {
+        if (id !== fM) return null;
+        const t = store.getState().currentTime;
+        // < 200 → anchor a1 (Alpha); >= 200 → anchor a2 (Beta).
+        return t.year < 200 ? ALPHA : BETA;
+      },
+    };
+  }
+
+  function makeMultiStore() {
+    return createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeFeature: fM,
+        currentTime: timePointYear(100),
+      },
+    });
+  }
+
+  function renderMulti(
+    store: ReturnType<typeof makeMultiStore>,
+    dispatch: EditDispatch,
+  ) {
+    return render(
+      <PropertyPanel
+        store={store}
+        featureLookup={timeDependentLookup(store)}
+        anchorLookup={anchorLookupM}
+        editDispatch={dispatch}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+  }
+
+  it('after a time move 100→200 the form re-seeds to the CURRENT anchor snapshot (Beta, not Alpha)', () => {
+    const store = makeMultiStore();
+    renderMulti(store, { dispatchEdit: () => {} });
+
+    // At time 100 the form shows the a1 snapshot (Alpha).
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('Alpha');
+    expect(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel)).toHaveValue(100);
+
+    // Move the current time forward to the a2 interval (as the timeline slider would).
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(200), TIME_CHANGE_SOURCE.AnchorSync);
+    });
+
+    // The form must now reflect the a2 snapshot (Beta), NOT the frozen Alpha.
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('Beta');
+    expect(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel)).toHaveValue(200);
+    expect(screen.getByLabelText(PROPERTY_STRINGS.endYearLabel)).toHaveValue(300);
+  });
+
+  it('editing ONE field after a time move saves the CURRENT anchor (Beta) attributes at editTime=200 — never the frozen Alpha', () => {
+    const intents: PropertyEditIntent[] = [];
+    const store = makeMultiStore();
+    renderMulti(store, { dispatchEdit: (i) => intents.push(i) });
+
+    // Move to the a2 interval, then rename ONLY the name.
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(200), TIME_CHANGE_SOURCE.AnchorSync);
+    });
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: 'Gamma' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    // editTime is the CURRENT anchor's start (a2 = 200), 教訓 5.15.
+    expect(intent.editTime.year).toBe(200);
+    // The edited field carries the new value…
+    expect(intent.attributes.name).toBe('Gamma');
+    // …but EVERY un-edited field carries BETA's snapshot, NOT the frozen Alpha's.
+    // Before the fix the draft/feature were frozen at Alpha, so these would be
+    // Alpha's 100/200/#aa* — overwriting Beta on save (the data-loss bug).
+    expect(intent.attributes.startYear).toBe(200);
+    expect(intent.attributes.endYear).toBe(300);
+    expect(intent.attributes.fillColor).toBe('#00bb00');
+    expect(intent.attributes.borderColor).toBe('#00bb22');
+    expect(intent.featureId).toBe(fM);
+  });
+
+  it('a no-op save (unchanged) after a time move does not dispatch — the baseline is the CURRENT anchor (Beta)', () => {
+    // The no-op guard compares the draft to the CURRENT feature (Beta). If the draft
+    // had stayed frozen at Alpha the guard would see a "change" (Alpha≠Beta) and
+    // dispatch a ghost Alpha→Beta overwrite. Re-seeding to Beta makes an untouched
+    // save a true no-op.
+    const intents: PropertyEditIntent[] = [];
+    const store = makeMultiStore();
+    renderMulti(store, { dispatchEdit: (i) => intents.push(i) });
+
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(200), TIME_CHANGE_SOURCE.AnchorSync);
+    });
+    fireEvent.click(screen.getByTestId('save-button')); // nothing changed
+    expect(intents).toHaveLength(0);
+  });
+});
+
+// bughunt 第12波 #2 (HIGH — .tmap 全損防止): the基本情報 開始年/終了年 inputs (type=number)
+// accept huge / negative-huge / fractional years. createBasicAttributes / edit-intent /
+// the edit binding never validate the year, so a Committed save succeeds — but the READ
+// side schema (yearSchema = int within ±MAX_YEAR, the SAME isPersistedYear bound the
+// timeline WRITE side already enforces) rejects the WHOLE manifest on load, so the .tmap
+// can never be reopened (書込⊆読込 asymmetry). handleSave now guards with the SAME
+// isPersistedYear (single truth source) and returns an honest save-failure message.
+describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第12波 #2, HIGH)', () => {
+  function renderYearPanel(dispatch: EditDispatch) {
+    const store = makeStore({ active: true });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={dispatch}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('anchor-row-a1')); // establish an edit target
+  }
+
+  it.each([
+    ['開始年 が範囲外（+5,000,000）', PROPERTY_STRINGS.startYearLabel, '5000000'],
+    ['終了年 が範囲外（+5,000,000）', PROPERTY_STRINGS.endYearLabel, '5000000'],
+    ['開始年 が負の範囲外（-5,000,000）', PROPERTY_STRINGS.startYearLabel, '-5000000'],
+    ['開始年 が小数（1.5）', PROPERTY_STRINGS.startYearLabel, '1.5'],
+  ])(
+    'rejects a save when %s → honest-failure message, NO dispatch (書込⊆読込)',
+    (_label, fieldLabel, badValue) => {
+      const intents: PropertyEditIntent[] = [];
+      renderYearPanel({ dispatchEdit: (i) => intents.push(i) });
+
+      fireEvent.change(screen.getByLabelText(fieldLabel), { target: { value: badValue } });
+      fireEvent.click(screen.getByTestId('save-button'));
+
+      // The edit must NOT dispatch (would otherwise become an un-loadable .tmap).
+      expect(intents).toHaveLength(0);
+      // The failure surfaces honestly through the existing save-message path.
+      const msg = screen.getByTestId('save-message');
+      expect(msg).toHaveTextContent(PROPERTY_STRINGS.yearOutOfRange);
+    },
+  );
+
+  it('accepts a save when both years are in range (±MAX_YEAR) — the guard is not over-broad', () => {
+    const intents: PropertyEditIntent[] = [];
+    renderYearPanel({ dispatchEdit: (i) => intents.push(i) });
+
+    // A normal edit at the boundary must still save (MAX_YEAR = 1,000,000).
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel), {
+      target: { value: '-1000000' },
+    });
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.endYearLabel), {
+      target: { value: '1000000' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.attributes.startYear).toBe(-1000000);
+    expect(intents[0]!.attributes.endYear).toBe(1000000);
+    expect(screen.queryByTestId('save-message')).not.toBeInTheDocument();
   });
 });

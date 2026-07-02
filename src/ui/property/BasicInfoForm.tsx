@@ -16,7 +16,7 @@
 import { useMemo, useState } from 'react';
 
 import type { Feature } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
+import type { AnchorId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import type { PaletteThemeId } from '../../domain/coloring';
@@ -34,6 +34,19 @@ export interface BasicInfoFormProps {
   readonly editable: boolean;
   /** The edit time = current edit-target anchor's start time (教訓 5.15). */
   readonly editTime: TimePoint | null;
+  /**
+   * The edit-target ANCHOR's id (bughunt 第12波 #1). The draft re-seeds when this
+   * changes — extending the selection boundary (教訓 5.2) from 地物 to 地物×錨. A
+   * 多錨 feature carries a DIFFERENT full-state snapshot at each anchor, so when a
+   * time move advances the effective anchor the form must re-seed from the CURRENT
+   * anchor's snapshot (the `feature` prop, re-resolved by the parent), never carry
+   * the prior anchor's edited values onto the new one (which would overwrite it on
+   * save). `null` when no anchor is effective. Distinct from `feature.id`: the SAME
+   * feature id spans every anchor, so id alone cannot detect an intra-feature
+   * anchor change. A same-feature-same-anchor re-resolve (selection-object churn)
+   * keeps this key stable and PRESERVES the draft.
+   */
+  readonly anchorId: AnchorId | null;
   /**
    * Available palette themes for the U33「スタイル」section dropdown (FR-109).
    * Defaults to the current feature's theme alone when a host has not wired the
@@ -77,7 +90,7 @@ function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
 }
 
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
-  const { feature, editable, editTime, areaKm2, onSave } = props;
+  const { feature, editable, editTime, anchorId, areaKm2, onSave } = props;
   // Default the palette dropdown to the feature's current theme alone so the
   // section mounts even when the host has not wired the settings-provided list.
   const paletteThemes = useMemo(
@@ -95,17 +108,27 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
   // selecting a DIFFERENT feature is explicitly one such無関係操作 (spec 行188).
   const [message, setMessage] = useState<string | null>(null);
 
-  // Re-sync the draft to the baseline when the TARGET feature changes (教訓 5.2:
-  // the selection-change boundary discards the transient draft). Keyed to the
-  // feature ID, not the baseline value object: a re-render that re-resolves the
-  // SAME feature to a fresh-but-equal object must NOT reset the draft (root cause
-  // of the U32 blocker — see PropertyPanel's memoized feature). Done during
-  // render via a key sentinel (no effect) so the first paint already reflects the
-  // re-sync. Crucially the held message is PRESERVED across the feature change:
-  // 教訓 5.12 does not list "別地物の選択" among the three clear契機.
-  const [syncedFeatureId, setSyncedFeatureId] = useState<FeatureId>(feature.id);
-  if (syncedFeatureId !== feature.id) {
-    setSyncedFeatureId(feature.id);
+  // Re-sync the draft to the baseline when the EDIT TARGET changes (教訓 5.2: the
+  // selection-change boundary discards the transient draft). The edit target is
+  // 地物×錨, NOT地物 alone (bughunt 第12波 #1): a多錨 feature carries a DIFFERENT
+  // full-state snapshot at each anchor, so the key is `feature.id` AND the
+  // edit-target `anchorId`. Keyed to those IDENTIFIERS, not the baseline value
+  // object: a re-render that re-resolves the SAME feature+anchor to a
+  // fresh-but-equal object must NOT reset the draft (root cause of the U32 blocker
+  // — see PropertyPanel's memoized feature; and selection-object churn from
+  // revalidateForTime). But a time move that advances the effective anchor (a1 →
+  // a2) DOES change `anchorId`, so the draft re-seeds from the CURRENT anchor's
+  // snapshot rather than carrying the prior anchor's edited values onto save
+  // (which would overwrite the new anchor — the data-loss #1 guards against).
+  // Done during render via a key sentinel (no effect) so the first paint already
+  // reflects the re-sync. Crucially the held message is PRESERVED across the
+  // change: 教訓 5.12 does not list a target change among the three clear契機.
+  const editTargetKey = `${feature.id as unknown as string} ${
+    anchorId === null ? '' : (anchorId as unknown as string)
+  }`;
+  const [syncedTargetKey, setSyncedTargetKey] = useState<string>(editTargetKey);
+  if (syncedTargetKey !== editTargetKey) {
+    setSyncedTargetKey(editTargetKey);
     setDraft(baseline);
   }
 

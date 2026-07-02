@@ -23,6 +23,7 @@ import type { PaletteThemeId } from '../../domain/coloring';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
+import { isPersistedYear } from '../../domain/time/validate';
 
 import { EDIT_MODE } from '../state/session';
 import type { SessionStore } from '../state/store';
@@ -138,9 +139,24 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // every such render, churning BasicInfoForm's baseline and wiping an in-progress
   // draft / a held decision message. Keying to the ID keeps the reference stable
   // across selection-object churn that does not actually change the target.
+  //
+  // `currentTime` IS a dep (bughunt 第12波 #1): the production FeatureLookup
+  // (SidebarContent.featureLookupOf) resolves `featuresAt(getRoot(), getTime())`,
+  // a TIME-DEPENDENT snapshot — a多錨 feature shows a DIFFERENT full-state
+  // (name / 開始終了年 / 色) at each anchor. The composition root memoizes the
+  // lookup WITHOUT currentTime, so its reference is stable across a time move;
+  // keying this memo only to `[featureLookup, targetFeatureId]` (both stable when
+  // the same多錨 id stays selected across a time change) froze `feature` at the
+  // selection-time snapshot (e.g. 100年 Alpha) even after the current time — and
+  // therefore the edit-target anchor / editTime — advanced (e.g. 200年 Beta). A
+  // save then wrote the frozen Alpha attributes onto Beta, DESTROYING Beta.
+  // Re-resolving on currentTime keeps `feature` = the CURRENT anchor snapshot, the
+  // single truth source the editTime already points at. A time move WITHIN one
+  // anchor yields an id-equal snapshot; the draft re-seed downstream is keyed to
+  // the edit-target ANCHOR (not this object), so such churn does not wipe a draft.
   const feature = useMemo(
     () => (targetFeatureId !== null ? featureLookup.featureAt(targetFeatureId) : null),
-    [featureLookup, targetFeatureId],
+    [featureLookup, targetFeatureId, currentTime],
   );
   const series = useMemo(
     () => (targetFeatureId !== null ? anchorLookup.anchorSeriesOf(targetFeatureId) : null),
@@ -220,6 +236,17 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       if (feature === null || selectedEntry === null) {
         return `${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`;
       }
+      // WRITE 側の年境界ガード (bughunt 第12波 #2). 基本情報の開始年/終了年は
+      // type=number ゆえ巨大整数・負巨大・小数を受理し、createBasicAttributes /
+      // edit-intent / edit binding はいずれも年を検証しないので Committed→保存成功
+      // まで通る。しかし READ 側 schema.ts の yearSchema (= 同じ ±MAX_YEAR / 整数
+      // 境界) が load 時に範囲外年で manifest 全体を Invalid 拒否 → .tmap が二度と
+      // 開けず全損する（書込⊆読込の非対称）。タイムライン年 (settings/validation)
+      // と同一の単一真実源 isPersistedYear で WRITE 前に弾き、既存 honest-failure
+      // 経路（返り値を save-message 表示）に乗せる。第二の年ルールは作らない。
+      if (!isPersistedYear(values.startYear) || !isPersistedYear(values.endYear)) {
+        return `${PROPERTY_STRINGS.saveFailedPrefix}${PROPERTY_STRINGS.yearOutOfRange}`;
+      }
       try {
         const intent = buildEditIntent(feature, selectedEntry.start, values);
         editDispatch.dispatchEdit(intent);
@@ -276,6 +303,15 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             feature={feature}
             editable={decision.editable && mode !== EDIT_MODE.View}
             editTime={selectedEntry !== null ? selectedEntry.start : null}
+            // The edit-target ANCHOR identity (bughunt 第12波 #1). The form re-seeds
+            // its draft when this changes so a time move that advances the
+            // effective anchor (e.g. 100年 a1 → 200年 a2) re-seeds from the CURRENT
+            // anchor's snapshot rather than carrying the prior anchor's edited
+            // values onto it. `null` when no anchor is effective (before the
+            // feature exists / in an enclave). This EXTENDS the selection boundary
+            // (教訓 5.2) from 地物 to 地物×錨; a same-feature-same-anchor re-resolve
+            // (selection-object churn) keeps the same key and PRESERVES the draft.
+            anchorId={effectiveAnchorId}
             {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
             {...(areaKm2 !== undefined ? { areaKm2 } : {})}
             onSave={(values) => handleSave(values)}
