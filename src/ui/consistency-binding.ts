@@ -42,11 +42,13 @@ import type { AnchorId, DomainId, FeatureId, RingId, VertexId } from '../domain/
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
 import type { AddSnapshot } from '../domain/add/index';
 import type { SplitSnapshot } from '../domain/knife/index';
+import type { DrillSnapshot } from '../domain/drill/index';
 import type { MergeSnapshot } from '../domain/merge/index';
 import type { FeatureSnapshot } from '../domain/editing/index';
 import {
   applyAddProposal,
   applyAffiliationProposal,
+  applyDrillProposal,
   applyEditProposal,
   applyMergeProposal,
   applySplitProposal,
@@ -139,6 +141,10 @@ export type CreateLiveAddBinding = (
 export type CreateLiveKnifeBinding = (
   access: DomainRootAccess,
 ) => LiveConsistencyBinding<SplitSnapshot>;
+
+export type CreateLiveDrillBinding = (
+  access: DomainRootAccess,
+) => LiveConsistencyBinding<DrillSnapshot>;
 
 export type CreateLiveEditBinding = (
   access: DomainRootAccess,
@@ -736,6 +742,44 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access) => {
 export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
   const ports: ConsistencyPorts<DomainRoot, SplitSnapshot> = {
     applyProposal: (current, proposal) => applySplitProposal(current, proposal, calendar),
+    checkTime: checkTimeOverExisting,
+    checkConstraints,
+    detectSpatial: () => [],
+    applyResolution: () => undefined,
+    makeCommand,
+  };
+  const spatialCache = createTerminalShapeCache();
+  return {
+    ports,
+    startProcess: (proposal) =>
+      runGuarded(
+        access.getRoot(),
+        proposal,
+        bindPortsToProposal(access, ports, proposal, spatialCache),
+      ),
+    applyResolutionsFor: (proposal) =>
+      createAccumulatingApply(access, ports, proposal, spatialCache),
+  };
+};
+
+/**
+ * Build the live drill binding (U27 穴あけによる新地物生成 → U13). `applyProposal` is
+ * U44's {@link applyDrillProposal} (原末端への穴形成 + 新地物生成; the original末端
+ * plays the split inheritor's role, minus the shared-edge/remap steps drill never
+ * needs) bound to the active calendar; the other ports mirror the knife binding.
+ *
+ * WHY checkTimeOverExisting (like split/edit, NOT merge): the proposal anchors on the
+ * ORIGINAL末端 (proposal.featureId = originalFeatureId), an EXISTING feature that must
+ * be effective at the anchor time — editing it where it is not effective is a typed
+ * TIME rejection, not a generic internal error. The NEW feature is born INSIDE
+ * applyProposal (never the proposal's anchor), so the not-yet-born-anchor problem the
+ * merge binding avoids does not arise here. The new feature is nonetheless promoted to
+ * `created` by {@link makeCommand}'s baseline↔final history-id delta (finding5), so its
+ * selection re-resolution is correct even though it is not in touchedFeatureIds.
+ */
+export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
+  const ports: ConsistencyPorts<DomainRoot, DrillSnapshot> = {
+    applyProposal: (current, proposal) => applyDrillProposal(current, proposal, calendar),
     checkTime: checkTimeOverExisting,
     checkConstraints,
     detectSpatial: () => [],

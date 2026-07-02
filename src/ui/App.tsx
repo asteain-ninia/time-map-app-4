@@ -80,6 +80,8 @@ import { MergeToolController, type MergeDrawSink } from './merge/index';
 import './merge/merge.css';
 import { RingEditToolController, type RingEditDrawSink } from './ring-edit/index';
 import './ring-edit/ring-edit.css';
+import { DrillToolController, type DrillDrawSink } from './drill/index';
+import './drill/drill.css';
 import { ReparentToolController, type ReparentDrawSink } from './reparent/index';
 import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
@@ -533,7 +535,8 @@ export function App(): JSX.Element {
           s.activeTool === TOOL_ID.EditKnife ||
           s.activeTool === TOOL_ID.EditMerge ||
           s.activeTool === TOOL_ID.EditReparent ||
-          s.activeTool === TOOL_ID.EditRing
+          s.activeTool === TOOL_ID.EditRing ||
+          s.activeTool === TOOL_ID.EditDrill
         ) {
           return [];
         }
@@ -1200,6 +1203,18 @@ export function App(): JSX.Element {
     }),
     [],
   );
+  // U27: the drill (穴あけ) provisional region overlay sink. Shares the SAME single
+  // tool-overlay slot (drawKnife) — drill / ring-edit / knife / merge / reparent are
+  // mutually exclusive tools, so only one ever feeds it at a time; an empty region
+  // pushes `[]` so the overlay clears on every reset path (教訓 5.2 / 5.18).
+  const drillDrawSink: DrillDrawSink = useMemo(
+    () => ({
+      drawDrill(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawKnife(primitives);
+      },
+    }),
+    [],
+  );
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1584,6 +1599,23 @@ export function App(): JSX.Element {
     [store, sharedMint],
   );
 
+  // U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成) bootstrap mirrors
+  // the knife / ring-edit ones — shared id minting + live-lookup ports + the LIVE U13
+  // binding (createLiveDrillBinding, applyProposal = applyDrillProposal). Selecting
+  // 編集モード→穴あけ arms a session; the first map click picks the target末端, then clicks
+  // place the region vertices; 穴あけを確定 → 新地物プロパティ入力 → save runs drillRegion
+  // and hands a drill EditProposal<DrillSnapshot> to U13 (原末端への穴形成 + 新地物 = ONE
+  // undo unit). Was unreachable — domain/drill existed but no UI consumed it (FR-45).
+  const drillBootstrap = useMemo(
+    () =>
+      createDrillBootstrap(
+        () => store.getState().domain,
+        () => store.getState().currentTime,
+        sharedMint,
+      ),
+    [store, sharedMint],
+  );
+
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
   // promote the new feature so selection re-resolves to it.
   const onAddCommitted = useCallback(
@@ -1650,6 +1682,19 @@ export function App(): JSX.Element {
     [recordCommit],
   );
 
+  // DRILL COMMIT (教訓 5.11 / U12): record as one history unit and promote the NEW
+  // feature (DrillSnapshot.newFeature.id) so selection re-resolves to it — the主役 of
+  // 穴あけによる新地物生成 is the born feature (FR-45). The新地物 is not in
+  // touchedFeatureIds, but makeCommand's baseline↔final history-id delta promotes it to
+  // `created` (finding5), so undo/redo selection re-resolution stays correct.
+  const onDrillCommitted = useCallback(
+    (result: ProcessResult<DomainRoot>, snapshot: DrillSnapshot) => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      recordCommit(result, { featureId: snapshot.newFeature.id });
+    },
+    [recordCommit],
+  );
+
   // U35 — the conflict-resolution modal seam. When add / knife confirmation pauses
   // (ConflictsPending) the controller's onConflicts hands us the pending result +
   // the proposal-bound applyResolutions adapter + a shapes lookup; we hold them in
@@ -1686,6 +1731,9 @@ export function App(): JSX.Element {
   // U25: a ring-edit session past Idle owns the keyboard (its OWN Ctrl+Z undoes a
   // vertex; a stray global Delete during a ring-delete must not fire) — 教訓 c1e5534.
   const [ringEditDrawing, setRingEditDrawing] = useState(false);
+  // U27: a drill session past Idle owns the keyboard (its OWN Ctrl+Z undoes a region
+  // vertex; a stray global Delete during a drill must not fire) — 教訓 c1e5534.
+  const [drillDrawing, setDrillDrawing] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
@@ -1694,7 +1742,8 @@ export function App(): JSX.Element {
     knifeDrawing ||
     mergeDrawing ||
     reparentDrawing ||
-    ringEditDrawing;
+    ringEditDrawing ||
+    drillDrawing;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -1814,6 +1863,20 @@ export function App(): JSX.Element {
       });
     },
     [ringEditBootstrap],
+  );
+
+  const onDrillConflicts = useCallback(
+    (result: ProcessResult<DomainRoot>, proposal: EditProposal<DrillSnapshot>) => {
+      if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+      // Promote the NEW feature on commit, the SAME preference a direct drill commit
+      // uses (教訓 5.11 / drill selection — the新地物 is the主役 of FR-45).
+      setConflictState({
+        pending: result,
+        applyResolutions: drillBootstrap.applyResolutionsFor(proposal),
+        preference: { featureId: proposal.snapshot.newFeature.id },
+      });
+    },
+    [drillBootstrap],
   );
 
   const onConflictCommitted = useCallback(
@@ -2223,6 +2286,29 @@ export function App(): JSX.Element {
               onCommitted={onRingEditCommitted}
               onConflicts={onRingEditConflicts}
               onDrawingChange={setRingEditDrawing}
+            />
+            {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
+                controller, bound to the SAME store. Selecting 編集モード→穴あけ arms a
+                session; the first map click picks the target末端 face, then clicks place
+                the region vertices; 穴あけを確定 → 新地物プロパティ入力 → save runs
+                drillRegion and hands a drill EditProposal<DrillSnapshot> to the U13 seam
+                (createLiveDrillBinding). Was unreachable — domain/drill existed but no
+                UI consumed it (integration lens, FR-45). */}
+            <DrillToolController<DomainRoot>
+              store={store}
+              startProcess={drillBootstrap.startProcess}
+              ids={drillBootstrap.ids}
+              resolveFeature={drillBootstrap.resolveFeature}
+              resolveStore={drillBootstrap.resolveStore}
+              anchorTime={() => store.getState().currentTime}
+              screenToWorld={screenToWorld}
+              featureAtPoint={drillBootstrap.featureAtPoint}
+              drawSink={drillDrawSink}
+              mapCameraInput={mapCameraInput}
+              defaultColor={KNIFE_DEFAULT_COLOR}
+              onCommitted={onDrillCommitted}
+              onConflicts={onDrillConflicts}
+              onDrawingChange={setDrillDrawing}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes
@@ -2833,6 +2919,80 @@ function createRingEditBootstrap(
     resolveFeature,
     resolveStore,
     current: () => getRoot(),
+    featureAtPoint,
+    startProcess,
+    applyResolutionsFor,
+  };
+}
+
+// --- The drill bootstrap (id ports + live-lookup + the U13 seam) ---------------
+
+import type {
+  ResolveFeature as DrillResolveFeature,
+  ResolveVertexStore as DrillResolveStore,
+  StartDrillProcess,
+  FeatureAtPoint as DrillFeatureAtPoint,
+} from './drill/index';
+import { createLiveDrillBinding } from './consistency-binding';
+import type { DrillIdPorts, DrillSnapshot } from '../domain/drill/index';
+
+interface DrillBootstrap<S> {
+  readonly ids: DrillIdPorts;
+  readonly resolveFeature: DrillResolveFeature;
+  readonly resolveStore: DrillResolveStore;
+  readonly featureAtPoint: DrillFeatureAtPoint;
+  readonly startProcess: StartDrillProcess<S>;
+  /** Build the U35 apply-resolutions adapter bound to ONE paused drill proposal. */
+  readonly applyResolutionsFor: (
+    proposal: EditProposal<DrillSnapshot>,
+  ) => ApplyResolutions<S>;
+}
+
+function createDrillBootstrap(
+  getRoot: () => DomainRoot,
+  getTime: () => TimePoint,
+  mint: SharedIdMint,
+): DrillBootstrap<DomainRoot> {
+  // Ids minted through the SAME shared minter add / knife / merge / ring-edit use
+  // (finding 3): one generator + a project-wide reservation set, so a drill-minted id
+  // (the new feature + its ring + its vertices) can collide with neither another tool's
+  // output nor loaded data (教訓 5.37).
+  const ids: DrillIdPorts = {
+    nextFeatureId: () => asFeatureId(mint('f')),
+    nextVertexId: () => asVertexId(mint('v')),
+    nextRingId: () => asRingId(mint('r')),
+  };
+
+  // LIVE domain-lookup ports (P0-B): resolve against the CURRENT committed root at the
+  // CURRENT time, read at call time so a load / time move / edit is reflected without a
+  // stale capture (教訓 5.6). They share the SAME live-lookup rule the consistency
+  // binding uses (二重真実源を作らない, 教訓 5.29). featureAtPoint picks an INDIVIDUAL
+  // leaf (like merge / ring-edit) — drill targets one末端 face, so a child inside an
+  // aggregate must be directly pickable (HB3-16 と同型); the hook's LEAF gate +
+  // checkDrillable's NotTerminal reject a body-click that resolves to an aggregate.
+  const resolveFeature: DrillResolveFeature = (featureId): Feature | undefined =>
+    featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
+  const resolveStore: DrillResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
+  const featureAtPoint: DrillFeatureAtPoint = (point): FeatureId | null =>
+    leafAtPoint(getRoot(), getTime(), point);
+
+  // U44 — the LIVE U13 binding for drill. The proposal handed to startProcess is ALREADY
+  // a U13 EditProposal<DrillSnapshot> (toDrillEditProposal ran in the hook), so the swap
+  // is contract-clean; applyProposal = applyDrillProposal (原末端への穴形成 + 新地物生成).
+  const live = createLiveDrillBinding({
+    getRoot,
+    nextVertexId: ids.nextVertexId,
+    nextRingId: ids.nextRingId,
+  });
+  const startProcess = live.startProcess;
+  const applyResolutionsFor = (
+    proposal: EditProposal<DrillSnapshot>,
+  ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
+
+  return {
+    ids,
+    resolveFeature,
+    resolveStore,
     featureAtPoint,
     startProcess,
     applyResolutionsFor,

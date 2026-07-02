@@ -23,6 +23,7 @@
 import type { BasicAttributes, ColorInfo } from '../attributes';
 import { type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from '../geometry/index';
+import { normalizeCoordinate } from '../geo/index';
 import type { GeoMultiPolygon } from '../geometry/types';
 import {
   createLeafFeature,
@@ -41,7 +42,7 @@ import {
   type Ring,
   type Shape,
 } from '../ring';
-import { createVertex, type Vertex } from '../vertex';
+import { createVertex, getVertex, type Vertex, type VertexStore } from '../vertex';
 import { type DrillGeometry } from './drill-geometry';
 
 // ---------------------------------------------------------------------------
@@ -79,9 +80,45 @@ interface BuiltShape {
   readonly vertices: readonly Vertex[];
 }
 
+/**
+ * 量子化座標のキー。経度は representative 分岐 [-180,180) に畳んでから量子化する:
+ * drill-geometry は target 外環の参照経度へ全入力を anchor して連続フレーム (>180° を
+ * 取り得る) で boolean 演算するため、シームを跨ぐ辺は boolean 出力上 190° のような連続値
+ * になり得る (drill-geometry.ts referenceLonForMultiPolygon / alignMultiPolygon)。一方、
+ * 旧頂点ストアは representative で格納される。periodic に同一の点が同じキーに落ちるよう
+ * 先に normalize することで、原末端の未変更外周頂点との突き合わせ (buildExistingSeed) が
+ * world-turn ズレで取りこぼされない (knife/merge の coordKey と単一真実源)。旧頂点は既に
+ * representative なので normalize は恒等。
+ */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(c);
+  const q = quantizeCoordinate(normalizeCoordinate(c));
   return `${q.lon},${q.lat}`;
+}
+
+/**
+ * Build the coordKey → EXISTING VertexId seed from the target leaf's OWN vertices
+ * (its ring vertex bodies resolved through `store`). The holed-original side reuses
+ * these ids for any output coordinate that quantize-matches an existing target vertex
+ * — its UNCHANGED outer boundary — so a boundary vertex the target shares with a
+ * neighbour by id keeps that SAME id (共有関係が保存される; data整合・波7同クラス).
+ * Truly-new coordinates (the hole ring, carved from the region's interior) are absent
+ * from the seed and get a fresh minted id as before. The new-feature side is built
+ * WITHOUT this seed (its interior vertices are genuinely new; minting fresh ids there
+ * is minimal and correct — 対概念分離). Pure.
+ */
+function buildExistingSeed(target: LeafFeature, store: VertexStore): Map<string, Vertex> {
+  const seed = new Map<string, Vertex>();
+  for (const ring of target.shape.rings) {
+    for (const vid of ring.vertexIds) {
+      const vertex = getVertex(store, vid);
+      if (vertex === undefined) continue; // unresolvable ids are checkDrillable's concern.
+      // First id per coordinate key wins (deterministic); an old coincident duplicate
+      // is not re-introduced (single truth per grid node).
+      const key = coordKey(vertex.coordinate);
+      if (!seed.has(key)) seed.set(key, vertex);
+    }
+  }
+  return seed;
 }
 
 /** A raw ring carried from the boolean output with its minted id + coordinates. */
@@ -106,8 +143,19 @@ interface RawRing {
  *
  * 向き正規化は U06 を信頼し再実装しない (注意点・単一の真実源): we never re-orient
  * rings; containment is decided by U06 `pointInPolygon`.
+ *
+ * `existing` (holed side only): a coordKey → EXISTING target Vertex seed. When an
+ * output coordinate quantize-matches an existing target vertex (the UNCHANGED outer
+ * boundary), its EXISTING id + body are REUSED — never re-minted — so a boundary
+ * vertex shared with a neighbour by id keeps that id (共有継続; data整合・波7同クラス /
+ * Option 1). Only truly-new coordinates (the hole ring) mint a fresh id. The
+ * new-feature side passes no seed (its interior vertices are genuinely new).
  */
-function buildShapeFromArea(area: GeoMultiPolygon, ids: DrillIdPorts): BuiltShape {
+function buildShapeFromArea(
+  area: GeoMultiPolygon,
+  ids: DrillIdPorts,
+  existing?: ReadonlyMap<string, Vertex>,
+): BuiltShape {
   const vertices: Vertex[] = [];
   const byCoord = new Map<string, VertexId>();
 
@@ -117,9 +165,18 @@ function buildShapeFromArea(area: GeoMultiPolygon, ids: DrillIdPorts): BuiltShap
       const key = coordKey(c);
       let vid = byCoord.get(key);
       if (vid === undefined) {
-        vid = ids.nextVertexId();
+        const reuse = existing?.get(key);
+        if (reuse !== undefined) {
+          // Unchanged outer-boundary vertex: reuse its existing id AND body so the
+          // share (same id cited by a neighbour) survives the drill, and the bundled
+          // snapshot self-resolves the id (単一真実源, no dangling ref).
+          vid = reuse.id;
+          vertices.push(reuse);
+        } else {
+          vid = ids.nextVertexId();
+          vertices.push(createVertex(vid, quantizeCoordinate(normalizeCoordinate(c))));
+        }
         byCoord.set(key, vid);
-        vertices.push(createVertex(vid, quantizeCoordinate(c)));
       }
       out.push(vid);
     }
@@ -240,6 +297,12 @@ export interface DrillEditProposal {
 export interface AssembleDrillInput {
   /** The original target leaf feature (its identity continues on the holed side). */
   readonly target: LeafFeature;
+  /**
+   * The vertex store BEFORE the drill (for reusing the target's UNCHANGED outer
+   * boundary vertex ids on the holed side — 共有継続 / data整合 Option 1). Mirrors
+   * {@link AssembleSplitInput}'s `store`.
+   */
+  readonly store: VertexStore;
   /** The geometry computed by `drill-geometry` (holed original + carved region). */
   readonly geometry: DrillGeometry;
   /** The new feature's initial properties (from U23's add入力フロー). */
@@ -271,9 +334,13 @@ function newFeatureOptional(
  * a falsy short-circuit, so「最上位⇔親なし」(FR-39) holds for the new feature.
  */
 export function assembleDrillProposal(input: AssembleDrillInput): DrillEditProposal {
-  const { target, geometry, newProperties, ids } = input;
+  const { target, store, geometry, newProperties, ids } = input;
 
-  const builtHoled = buildShapeFromArea(geometry.holedOriginal, ids);
+  // 原末端の未変更外周頂点は再採番せず既存 id を再利用する (共有継続 / data整合 Option 1):
+  // holed side だけに existing seed を渡す。新地物 (newRegion) の内部頂点は従来どおり新規
+  // 採番 (対概念分離) — seed 無しで組み立てる。
+  const existing = buildExistingSeed(target, store);
+  const builtHoled = buildShapeFromArea(geometry.holedOriginal, ids, existing);
   const builtNew = buildShapeFromArea(geometry.newRegion, ids);
 
   // 上位領域の初期継承 (FR-45): the new feature's parent == the original's parent.

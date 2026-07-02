@@ -181,6 +181,7 @@ describe('複数片の保持 (受け入れ8 / 教訓5.1)', () => {
 
     const proposal = assembleDrillProposal({
       target: feature,
+      store,
       geometry,
       newProperties: {
         attributes: createBasicAttributes('新地物', 1500, 1600),

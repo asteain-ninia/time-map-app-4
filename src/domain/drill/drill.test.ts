@@ -3,9 +3,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
-import { FEATURE_KIND, type Feature, type LeafFeature } from '../feature';
-import { type FeatureId } from '../ids';
-import { RING_KIND } from '../ring';
+import { createCoordinate } from '../coordinate';
+import { createLeafFeature, FEATURE_KIND, type Feature, type LeafFeature } from '../feature';
+import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
+import { RING_KIND, createShape, createTerritoryRing } from '../ring';
+import { createVertex, createVertexStore } from '../vertex';
 import { timePointYear } from '../time/time-point';
 import {
   PROCESS_STATUS,
@@ -14,6 +16,11 @@ import {
   type ConsistencyPorts,
   type EditProposal,
 } from '../index';
+import { applyAddProposal, applyDrillProposal } from '../editing/apply-proposal';
+import { getCalendar } from '../time/calendar';
+import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
+import { createGeoParams } from '../geo/geo-params';
+import type { DomainProject } from '../persistence/serialize';
 import {
   DRILL_STATUS,
   drillRegion,
@@ -289,12 +296,171 @@ describe('assembleDrillProposal — 直接組み立て (頂点束ね・教訓5.2
         { lon: 3, lat: 3 }, { lon: 7, lat: 3 }, { lon: 7, lat: 7 }, { lon: 3, lat: 7 },
       ]]],
     };
-    const proposal = assembleDrillProposal({ target: feature, geometry: geo, newProperties: NEW_PROPS, ids });
+    const { store } = unitSquare();
+    const proposal = assembleDrillProposal({ target: feature, store, geometry: geo, newProperties: NEW_PROPS, ids });
     // Vertices for both sides are bundled (片落とし禁止 / 教訓5.20).
     expect(proposal.vertices.length).toBeGreaterThanOrEqual(8);
     // The new feature id is minted from the injected port (plain data; redo replays
     // it without re-minting — 教訓5.20).
     expect(proposal.newFeature.id).toMatch(/^drill-f-/);
     expect(proposal.originalFeatureId).toBe(feature.id);
+  });
+});
+
+// --- data-integrity: 原末端の未変更外周頂点IDを保持する (波7 と同クラス) --------
+//
+// 穴あけは holed original の OUTER 境界を変えない（穴は内部にできるだけ）。その外周頂点は
+// 元から存在し隣接地物と ID 共有し得る（drill-geometry の intersection で内部に閉じるのは
+// 新地物の領土だけで、holed original の外周ではない）。旧実装は buildShapeFromArea が
+// holed original の全座標へ新 VertexId を再採番し、外周の共有 ID を破壊していた → 隣接地物
+// は旧 ID を参照し続け、境界の ID 共有が黙って失われる（後続の連動移動で境界が裂ける／
+// save-load で同座標別 ID になる；split の applyVertexRemapToHistories が防ぐのと同型）。
+// 最小・正の対処は「未変更外周頂点をそもそも再採番しない」= 元頂点 ID の再利用（Option 1）。
+describe('穴あけ後も原末端の外周頂点IDを保持する (data整合 / 波7同クラス)', () => {
+  it('holed original の外周リングは元の頂点IDを再利用し、穴リングのみ新規採番する', () => {
+    const { feature, store } = unitSquare('sq');
+    const res = drillRegion(baseInput(feature, store));
+    if (res.status !== DRILL_STATUS.Drilled) throw new Error('expected drilled');
+
+    const originalOuterIds = feature.shape.rings
+      .flatMap((r) => r.vertexIds)
+      .map((v) => v as string);
+    const holedRings = res.proposal.holedShape.rings;
+    const territory = holedRings.find((r) => r.kind === RING_KIND.Territory)!;
+    const hole = holedRings.find((r) => r.kind === RING_KIND.Hole)!;
+    const holedTerritoryIds = territory.vertexIds.map((v) => v as string);
+    const holeIds = hole.vertexIds.map((v) => v as string);
+
+    // 外周（territory）は元の頂点IDをそのまま再利用（未変更頂点は再採番しない）.
+    for (const oid of originalOuterIds) {
+      expect(holedTerritoryIds).toContain(oid);
+    }
+    // 穴リングは元外周には無い真に新規な座標なので新規採番のまま.
+    for (const hid of holeIds) {
+      expect(originalOuterIds).not.toContain(hid);
+    }
+    // 束ねた頂点集合は再利用した外周頂点の body も自己完結で解決できる（単一真実源）.
+    const bundledIds = new Set(res.proposal.vertices.map((v) => v.id as string));
+    for (const oid of originalOuterIds) expect(bundledIds.has(oid)).toBe(true);
+  });
+
+  it('新地物の内部頂点は従来どおり新規採番（原ID衝突なし）', () => {
+    const { feature, store } = unitSquare('sq');
+    const res = drillRegion(baseInput(feature, store));
+    if (res.status !== DRILL_STATUS.Drilled) throw new Error('expected drilled');
+    const originalOuterIds = feature.shape.rings.flatMap((r) => r.vertexIds).map((v) => v as string);
+    const newIds = res.proposal.newFeature.shape.rings.flatMap((r) => r.vertexIds).map((v) => v as string);
+    // 新地物の領土リングは内部（穴と同座標）で、原外周IDとは別（内部頂点は新規採番）.
+    for (const nid of newIds) expect(originalOuterIds).not.toContain(nid);
+  });
+});
+
+// --- 隣接地物との外周頂点共有が穴あけ後も生存する（end-to-end / data整合） ------
+//
+// 原末端 sq の右辺頂点 sq-v1(10,0)/sq-v2(10,10) を隣接地物 nbr が SAME VertexId で
+// 共有している（実 ID 共有）。穴あけは外周を変えないので、確定後も drilled original は
+// これら外周頂点 ID を保持し、nbr の参照は生存頂点（同一 ID）を指し続けねばならない。
+// 旧実装は外周を再採番し、nbr は孤立した旧 ID を参照＝共有喪失（境界が黙って裂ける）。
+describe('隣接地物と外周頂点を共有する末端の穴あけ (data整合 / FR-95 と同型)', () => {
+  const cal = getCalendar('gregorian');
+
+  function emptyProject(): DomainProject {
+    return {
+      histories: [],
+      settings: {
+        calendarId: 'gregorian',
+        geo: createGeoParams(40000, 0.0034),
+        gridSpacingDeg: 10,
+        snapDistancePx: 50,
+        autoColorDefault: true,
+      },
+      baseMap: { source: 's', meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 } },
+    };
+  }
+
+  it('穴あけ後、隣接は生存する共有頂点を指し・偽 divergence を出さない', () => {
+    const { feature: target, store: targetStore } = unitSquare('sq');
+    // 右隣の四角: 左辺で sq の右辺頂点 sq-v1(10,0)/sq-v2(10,10) を ID 共有.
+    const nbrColor = createColorInfo(true, '#111', '#222', '#333');
+    const nbrRing = createTerritoryRing(asRingId('r-nbr'), [
+      asVertexId('sq-v1'), // (10,0) 共有
+      asVertexId('nbr-a'), // (20,0)
+      asVertexId('nbr-b'), // (20,10)
+      asVertexId('sq-v2'), // (10,10) 共有
+    ]);
+    const neighbour = createLeafFeature(
+      asFeatureId('nbr'),
+      createBasicAttributes('隣', 0, 0),
+      nbrColor,
+      createShape([nbrRing]),
+    );
+    const nbrStore = createVertexStore([
+      createVertex(asVertexId('sq-v1'), createCoordinate(10, 0)),
+      createVertex(asVertexId('sq-v2'), createCoordinate(10, 10)),
+      createVertex(asVertexId('nbr-a'), createCoordinate(20, 0)),
+      createVertex(asVertexId('nbr-b'), createCoordinate(20, 10)),
+    ]);
+
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.id,
+      anchorTime: timePointYear(1500),
+      snapshot: { feature: target, vertices: [...targetStore.byId.values()], sharedCandidateIds: new Map() },
+    });
+    root = applyAddProposal(root, {
+      featureId: neighbour.id,
+      anchorTime: timePointYear(1500),
+      snapshot: { feature: neighbour, vertices: [...nbrStore.byId.values()], sharedCandidateIds: new Map() },
+    });
+
+    const res = drillRegion({
+      target,
+      store: targetStore,
+      region: centralRegion(),
+      editBaseTime: timePointYear(1500),
+      newProperties: NEW_PROPS,
+      ids: freshIdPorts(),
+    });
+    if (res.status !== DRILL_STATUS.Drilled) throw new Error('expected drilled');
+
+    const next = applyDrillProposal(root, toEditProposal(res.proposal, timePointYear(1500)), cal);
+
+    // drilled original が外周で citing する ID 群.
+    const drilledHist = next.histories.find((h) => h.featureId === target.id)!;
+    const dSnap = drilledHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    const dFeat = dSnap.features.find((f) => f.id === target.id)!;
+    const drilledIds = dFeat.kind === 'leaf'
+      ? dFeat.shape.rings.flatMap((r) => r.vertexIds).map((v) => v as string)
+      : [];
+
+    // (a) 原外周頂点 ID を保持: drilled original は依然 sq-v1/sq-v2 を citing.
+    expect(drilledIds).toContain('sq-v1');
+    expect(drilledIds).toContain('sq-v2');
+
+    // (c) 隣接は共有頂点 ID を保持し、drilled original と同一 ID で共有継続.
+    const nbrHist = next.histories.find((h) => h.featureId === neighbour.id)!;
+    const nSnap = nbrHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    const nFeat = nSnap.features.find((f) => f.id === neighbour.id)!;
+    const nbrIds = nFeat.kind === 'leaf'
+      ? nFeat.shape.rings.flatMap((r) => r.vertexIds).map((v) => v as string)
+      : [];
+    // target ∩ neighbour で共有 ID が生き残っている（黙って割れていない）.
+    const sharedAfter = drilledIds.filter((id) => nbrIds.includes(id));
+    expect(sharedAfter).toContain('sq-v1');
+    expect(sharedAfter).toContain('sq-v2');
+    // 共有頂点 body は drilled original のスナップショットで解決できる（dangling でない）.
+    expect(dSnap.vertices.byId.has(asVertexId('sq-v1'))).toBe(true);
+    expect(dSnap.vertices.byId.has(asVertexId('sq-v2'))).toBe(true);
+
+    // (b) checkConsistency が偽の VertexCoordinateDivergence を出さない.
+    const report = checkConsistency(next, cal);
+    const divergence = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+    expect(divergence).toBeUndefined();
+    // MissingVertexReference も無い（隣接の共有参照は生存頂点を指す）.
+    const missing = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.MissingVertexReference,
+    );
+    expect(missing).toBeUndefined();
   });
 });

@@ -66,6 +66,7 @@ import type { AddSnapshot } from '../add/proposal';
 import type { MergeSnapshot } from '../merge/proposal';
 import type { AffiliationProposal } from '../affiliation/proposal';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
+import type { DrillSnapshot } from '../drill/proposal';
 import type { VertexRemap } from '../shared-vertex';
 import type { WorldCoordinate } from '../coordinate';
 import { quantizedEqual } from '../geometry/index';
@@ -810,6 +811,135 @@ function applyInheritorShape(feature: Feature, snapshot: SplitSnapshot): LeafFea
     throw new Error('U44: split inheritor must be a leaf feature (FR-44)');
   }
   return withLeafShape(feature, snapshot.inheritorShape);
+}
+
+// --- drill slice (U27 DrillSnapshot → holed original + new feature) ----------
+
+/**
+ * Apply a drill (穴あけによる新地物生成) proposal: the ORIGINAL feature keeps its
+ * identity and history, with ONLY its shape changed at the anchor time to the holed
+ * shape (a past-edit on its series, FR-45 同一性保持), AND the carved region becomes a
+ * NEW {@link FeatureHistory} anchored at the same time (FR-94 — both地物 confirmed in
+ * ONE op). Every minted vertex from BOTH sides rides into both anchors' snapshots
+ * (教訓 5.20 依存データ保存).
+ *
+ * This is the structural analogue of {@link applySplitProposal} (inheritor update +
+ * new feature) — the original末端 plays the split's inheritor role — but WITHOUT the
+ * split's step 3/4 (共有頂点remap / 共有辺途中切断): the drilled region is clipped
+ * ENTIRELY inside the target's interior (drill-geometry's intersection), so it shares
+ * no boundary vertices / no edges with any NEIGHBOUR — nothing to repoint or cut on a
+ * partner side (drill.ts §core concept / 受け入れ基準5). The new feature is minted with
+ * fresh ids inside the interior, so no other feature cites them.
+ *
+ * The original may live INSIDE a multi-feature snapshot (an aggregate's child leaf),
+ * so it is resolved by snapshot containment, not only by history.featureId, and its
+ * shape is rewritten in place while preserving siblings + the existing vertex store.
+ * If it has no existing history (defensive) it is created as a single-entry series so
+ * the op never throws. Pure (returns a NEW project, never mutates `root`).
+ */
+export function applyDrillProposal(
+  root: DomainProject,
+  proposal: EditProposal<DrillSnapshot>,
+  calendar: Calendar,
+): DomainProject {
+  const { snapshot, anchorTime } = proposal;
+  const vertices: readonly Vertex[] = snapshot.vertices;
+  const vertexStore = createVertexStore(vertices);
+
+  // 1. Original末端: update its shape at the anchor time to the holed shape (identity
+  // continues, FR-45). Resolve by snapshot containment so a child leaf inside an
+  // aggregate snapshot is rewritten in place while siblings survive.
+  const originalId = snapshot.originalFeatureId;
+  const existing = findHistoryContaining(root, originalId, anchorTime, calendar);
+
+  let histories: FeatureHistory[];
+  if (existing === undefined) {
+    // Defensive: synthesise a leaf feature carrying the holed shape and anchor it
+    // (the orchestrator's checkTime gate normally rejects editing an absent feature).
+    const originalFeature = synthesiseDrilledLeaf(originalId, snapshot);
+    const anchor = anchorFor([originalFeature], vertexStore, originalId, anchorTime);
+    histories = [
+      ...root.histories,
+      { featureId: originalId, series: singleAnchorSeries(anchor, anchorTime) },
+    ];
+  } else {
+    const updatedSeries = applyPastEdit(
+      existing.history.series,
+      anchorTime,
+      (effective) => {
+        // Swap ONLY the original leaf's shape to the holed shape, keep every sibling
+        // feature, and carry the drill's vertices alongside the inherited store. The
+        // whole snapshot is replaced as one unit (FR-59); siblings are never dropped.
+        const base =
+          effective.kind === 'present'
+            ? effective.entry.anchor.snapshot
+            : createAnchorSnapshot([], createVertexStore([]));
+        const baseFeature = base.features.find((f) => f.id === originalId);
+        if (baseFeature === undefined) {
+          // Defensive: the containing history no longer holds the original at this
+          // time (stale/repaired data). Fall back to a synthesised leaf carrier so
+          // the op never throws — checkTime already gates the effective-at-time case.
+          const synthesised = synthesiseDrilledLeaf(originalId, snapshot);
+          return anchorFor([synthesised], vertexStore, originalId, anchorTime);
+        }
+        const updatedFeature = applyDrilledShape(baseFeature, snapshot);
+        const features = base.features.map((f) =>
+          f.id === originalId ? updatedFeature : f,
+        );
+        const mergedVertices = createVertexStore([
+          ...base.vertices.byId.values(),
+          ...vertices,
+        ]);
+        return anchorFor(features, mergedVertices, originalId, anchorTime);
+      },
+      calendar,
+    );
+    histories = root.histories.map((h, i) =>
+      i === existing.index ? { featureId: existing.history.featureId, series: updatedSeries } : h,
+    );
+  }
+
+  // 2. New feature: a brand-new feature history anchored at the same time (FR-94 —
+  // the新独立末端地物 born alongside the hole). Appended, or defensively replaced if
+  // its id already exists (stable re-application; never duplicate).
+  const nf = snapshot.newFeature;
+  const newAnchor = anchorFor([nf], vertexStore, nf.id, anchorTime);
+  const newHistory: FeatureHistory = {
+    featureId: nf.id,
+    series: singleAnchorSeries(newAnchor, anchorTime),
+  };
+  const newExists = histories.findIndex((h) => h.featureId === nf.id);
+  histories =
+    newExists >= 0
+      ? histories.map((h, i) => (i === newExists ? newHistory : h))
+      : [...histories, newHistory];
+
+  return withHistories(root, histories);
+}
+
+/** Swap the original's shape to the holed shape; throws if it is not a leaf (FR-45). */
+function applyDrilledShape(feature: Feature, snapshot: DrillSnapshot): LeafFeature {
+  if (feature.kind !== 'leaf') {
+    throw new Error('U44: drill target must be a leaf feature (FR-45)');
+  }
+  return withLeafShape(feature, snapshot.holedShape);
+}
+
+/**
+ * Defensive carrier for the holed original when its history is missing at the anchor
+ * time (stale/repaired data): a leaf carrying the holed shape but no attributes /
+ * parent (the checkTime gate normally rejects this case before we get here). Mirrors
+ * {@link synthesiseInheritorLeaf}.
+ */
+function synthesiseDrilledLeaf(featureId: FeatureId, snapshot: DrillSnapshot): LeafFeature {
+  // Reuse the new feature's attributes/color as a placeholder carrier; the only
+  // load-bearing field is the holed shape + the original id. This path is unreachable
+  // for a real loaded feature; it exists so the op never throws on a degenerate root
+  // (mirrors synthesiseInheritorLeaf).
+  return withLeafShape(
+    { ...snapshot.newFeature, id: featureId },
+    snapshot.holedShape,
+  );
 }
 
 // --- merge slice (U30 MergeSnapshot → fold targets into one result) ---------

@@ -24,6 +24,8 @@ export const TOOL_ID = {
   EditMerge: asToolId('edit.merge'),
   // FR-22 / FR-24 穴・飛び地の追加 / リング削除 (U25 ring-edit)
   EditRing: asToolId('edit.ring'),
+  // FR-45 穴あけによる新地物生成 (U27 drill)
+  EditDrill: asToolId('edit.drill'),
 } as const;
 
 /** The tools shown in 追加モード, in toolbar order. */
@@ -42,6 +44,7 @@ const EDIT_MODE_TOOLS: readonly ToolId[] = [
   TOOL_ID.EditReparent,
   TOOL_ID.EditMerge,
   TOOL_ID.EditRing,
+  TOOL_ID.EditDrill,
 ];
 
 const NO_TOOLS: readonly ToolId[] = [];

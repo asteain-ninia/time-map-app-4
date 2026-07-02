@@ -137,6 +137,7 @@ export function drillRegion(input: DrillInput): DrillResult {
 
   const proposal = assembleDrillProposal({
     target,
+    store: input.store,
     geometry: { holedOriginal: check.holedOriginal, newRegion: check.newRegion },
     newProperties: input.newProperties,
     ids: input.ids,
