@@ -325,10 +325,36 @@ export function applySplitProposal(
         const features = base.features.map((f) =>
           f.id === inheritorId ? updatedFeature : f,
         );
-        const mergedVertices = createVertexStore([
-          ...base.vertices.byId.values(),
-          ...vertices,
-        ]);
+        // Prune the merged store to exactly what THIS snapshot's features (the
+        // inheritor + every sibling) cite. `vertices` = the whole split pool
+        // (`snapshot.vertices`), which also bundles the NEW piece(s)' PRIVATE vertices
+        // that the inheritor side never references. Baking the full pool here would
+        // seed the inheritor's history with orphan COPIES of those; a later move of one
+        // of them (updating the NEW feature's own history) then diverges from this stale
+        // copy, raising a spurious VertexCoordinateDivergence at load (第11波 データ整合
+        // HIGH #1 — the reverse-direction twin of the step-2 newFeature path below, both
+        // pruneVertexStore). The SHARED cut-boundary vertices ARE cited by the inheritor's
+        // new shape, so pruning keeps them (both the inheritor and the new feature retain
+        // the same body → they agree, boundary stays sewn); only unrelated private
+        // vertices drop, and every id the inheritor cites is present in the pool so no
+        // dangling refs result (step-2 と対称・単一真実源 剪定).
+        // Prune the merged store to exactly what THIS snapshot's features (the
+        // inheritor + every sibling) cite. `vertices` = the whole split pool
+        // (`snapshot.vertices`), which also bundles the NEW piece(s)' PRIVATE vertices
+        // that the inheritor side never references. Baking the full pool here would
+        // seed the inheritor's history with orphan COPIES of those; a later move of one
+        // of them (updating the NEW feature's own history) then diverges from this stale
+        // copy, raising a spurious VertexCoordinateDivergence at load (第11波 データ整合
+        // HIGH #1 — the reverse-direction twin of the step-2 newFeature path below, both
+        // pruneVertexStore). The SHARED cut-boundary vertices ARE cited by the inheritor's
+        // new shape, so pruning keeps them (both the inheritor and the new feature retain
+        // the same body → they agree, boundary stays sewn); only unrelated private
+        // vertices drop, and every id the inheritor cites is present in the pool so no
+        // dangling refs result (step-2 と対称・単一真実源 剪定).
+        const mergedVertices = pruneVertexStore(
+          createVertexStore([...base.vertices.byId.values(), ...vertices]),
+          features,
+        );
         return anchorFor(features, mergedVertices, inheritorId, anchorTime);
       },
       calendar,
@@ -900,10 +926,38 @@ export function applyDrillProposal(
         const features = base.features.map((f) =>
           f.id === originalId ? updatedFeature : f,
         );
-        const mergedVertices = createVertexStore([
-          ...base.vertices.byId.values(),
-          ...vertices,
-        ]);
+        // Prune the merged store to exactly what THIS snapshot's features (the holed
+        // original + every sibling) cite. `vertices` = the whole drill pool
+        // (`snapshot.vertices` = builtHoled.vertices ++ builtNew.vertices), which also
+        // bundles the NEW feature's PRIVATE interior-ring vertices the holed original
+        // never references (the hole is clipped ENTIRELY inside the interior, so the two
+        // share no boundary). Baking the full pool here would seed the holed original's
+        // history with orphan COPIES of those; a later move of one (updating the NEW
+        // feature's own history) then diverges from this stale copy, raising a spurious
+        // VertexCoordinateDivergence at load — and the repair silently reverts the move by
+        // canonicalising the earlier orig-history orphan in scan order (第11波 データ整合
+        // HIGH #2 — the reverse-direction twin of the step-2 newFeature path below, both
+        // pruneVertexStore). Every id the holed original cites is present in the pool, so
+        // pruning drops only unrelated private vertices with no dangling refs (step-2 と
+        // 対称・単一真実源 剪定).
+        // Prune the merged store to exactly what THIS snapshot's features (the holed
+        // original + every sibling) cite. `vertices` = the whole drill pool
+        // (`snapshot.vertices` = builtHoled.vertices ++ builtNew.vertices), which also
+        // bundles the NEW feature's PRIVATE interior-ring vertices the holed original
+        // never references (the hole is clipped ENTIRELY inside the interior, so the two
+        // share no boundary). Baking the full pool here would seed the holed original's
+        // history with orphan COPIES of those; a later move of one (updating the NEW
+        // feature's own history) then diverges from this stale copy, raising a spurious
+        // VertexCoordinateDivergence at load — and the repair silently reverts the move by
+        // canonicalising the earlier orig-history orphan in scan order (第11波 データ整合
+        // HIGH #2 — the reverse-direction twin of the step-2 newFeature path below, both
+        // pruneVertexStore). Every id the holed original cites is present in the pool, so
+        // pruning drops only unrelated private vertices with no dangling refs (step-2 と
+        // 対称・単一真実源 剪定).
+        const mergedVertices = pruneVertexStore(
+          createVertexStore([...base.vertices.byId.values(), ...vertices]),
+          features,
+        );
         return anchorFor(features, mergedVertices, originalId, anchorTime);
       },
       calendar,

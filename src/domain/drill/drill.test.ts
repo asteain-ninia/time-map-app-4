@@ -574,4 +574,87 @@ describe('穴あけ新地物アンカーの頂点剪定（偽 VertexCoordinateDi
     );
     expect(divergence).toBeUndefined();
   });
+
+  // --- 逆方向: holed 原末端 step1 アンカーに新地物の私的頂点の孤児コピーが焼き込まれない ----
+  //  （data整合・第11波 #2 HIGH）
+  //
+  // step2（新地物アンカー）は既に自参照のみへ剪定済（上記2テスト）。だが step1（holed 原末端側）は
+  // mergedVertices = createVertexStore([...base.vertices, ...vertices]) がプール全体（新地物の私的
+  // 内部リング頂点 drill-v-* を含む）を holed 原末端の履歴アンカーへそのまま焼くため、holed 原末端が
+  // cite しない新地物私的頂点の孤児コピーを抱える。後で新地物が自分の内部頂点を移動すると、新地物の
+  // 履歴は新座標・holed 原末端の step1 孤児は旧座標のまま乖離し、checkConsistency が偽の
+  // VertexCoordinateDivergence を発火（走査順で先頭 orig 履歴の孤児が canonical 化＝修復が移動を
+  // 静かに巻き戻す）。step2 と対称に step1 mergedVertices も snapshot feature 集合（holed 原末端 +
+  // 全 sibling）へ剪定されねばならない。drill は穴を interior へ clip するので新地物と原末端は境界を
+  // 共有せず、剪定で境界が裂けることはない。
+  it('holed 原末端 step1 アンカーの store は原末端が cite する id のみ（新地物私的頂点の孤児なし）', () => {
+    const { root, res, target } = drilledProject();
+    const nf = res.proposal.newFeature;
+
+    // 新地物が cite する私的内部頂点（holed 原末端は cite しない — interior clip なので非共有）.
+    const holedCited = new Set(
+      res.proposal.holedShape.rings.flatMap((r) => r.vertexIds.map((v) => v as string)),
+    );
+    const nfPrivate = nf.shape.rings
+      .flatMap((r) => r.vertexIds.map((v) => v as string))
+      .filter((id) => !holedCited.has(id));
+    expect(nfPrivate.length).toBeGreaterThan(0); // 前提: 新地物は私的頂点を持つ.
+
+    // holed 原末端の step1 スナップショット.
+    const origHist = root.histories.find((h) => h.featureId === target.id)!;
+    const oSnap = origHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    const oFeat = oSnap.features.find((f) => f.id === target.id)!;
+    const citedIds = oFeat.kind === 'leaf'
+      ? oFeat.shape.rings.flatMap((r) => r.vertexIds)
+      : [];
+    const citedStrings = citedIds.map((v) => v as string);
+    const storeStrings = [...oSnap.vertices.byId.keys()].map((v) => v as string);
+
+    // store は原末端が cite する id 集合と完全一致（新地物私的頂点の孤児コピー 0）.
+    expect([...storeStrings].sort()).toEqual([...citedStrings].sort());
+    // 新地物の私的頂点は holed 原末端 step1 store に混入しない（孤児コピーの直接検証）.
+    for (const priv of nfPrivate) {
+      expect(oSnap.vertices.byId.has(asVertexId(priv))).toBe(false);
+    }
+    // 原末端は自己完結（cite する全 id が store で解決できる — dangling 無し）.
+    for (const cid of citedIds) {
+      expect(oSnap.vertices.byId.has(cid)).toBe(true);
+    }
+  });
+
+  it('穴あけ後に新地物の私的頂点を移動しても偽 VertexCoordinateDivergence が出ない（step1 逆方向）', () => {
+    const { root, res } = drilledProject();
+    const nf = res.proposal.newFeature;
+
+    // 新地物 nf の 1500 スナップショットとその私的内部頂点を取り出す.
+    const nfHist = root.histories.find((h) => h.featureId === nf.id)!;
+    const nSnap = nfHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    const nFeat = nSnap.features.find((f) => f.id === nf.id)!;
+    if (nFeat.kind !== 'leaf') throw new Error('expected leaf');
+    const movedId = nFeat.shape.rings[0]!.vertexIds[0]!; // 新地物の私的内部頂点（interior・非共有）.
+    expect(nSnap.vertices.byId.has(movedId)).toBe(true);
+
+    // 新地物の私的頂点を移動する通常の形状編集（同 id・新 body）.
+    const movedBody = createVertex(movedId, createCoordinate(4.2, 4.2));
+    const movedFeature = withLeafShape(nFeat, nFeat.shape); // 形状（id 列）不変、body だけ移動.
+    const snapshot: FeatureSnapshot = { feature: movedFeature, vertices: [movedBody] };
+    const next = applyEditProposal(
+      root,
+      createEditProposal(nf.id, timePointYear(1500), snapshot),
+      cal,
+    );
+
+    // 新地物の履歴は移動後座標を持つ.
+    const mHist = next.histories.find((h) => h.featureId === nf.id)!;
+    const mSnap = mHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    expect(mSnap.vertices.byId.get(movedId)!.coordinate.lon).toBeCloseTo(4.2);
+    expect(mSnap.vertices.byId.get(movedId)!.coordinate.lat).toBeCloseTo(4.2);
+
+    // 偽の VertexCoordinateDivergence が発火しない（holed 原末端 step1 履歴に孤児旧コピーが無い）.
+    const report = checkConsistency(next, cal);
+    const divergence = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+    expect(divergence).toBeUndefined();
+  });
 });
