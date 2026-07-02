@@ -6,6 +6,8 @@
 
 ## 確定した運用上の決定
 
+- D54(2026-07-03 00:26 開始・夜間ラン第2弾の運用体制 / ユーザー指示): (1)主スレ=Fable はディレクション/指示出し専任、実コーディング・操作・テストは全て **Opus subagent**(workflow の agent() / Agent tool に model:opus を明示。コスト管理のため Fable を subagent に使わない)。(2)**06:00 JST に到達したら即時ブレーキ=完全停止**(コスト上限。05:00 以降は新規着手禁止、05:30 から総括コミット)。(3)優先作業=前セッションの自己申告ギャップ: ①実画面ビジュアル検証(復旧6 MUST を Electron 駆動+スクショ→Opus が画像を目視判定)=ユーザーの第一指摘「テストはしてくれないと」、②v1/v2/v3 深掘り挙動比較(「到達はするが挙動が細部で落ちた」クラス・D43/D47 の要件レベル監査の次の層)、③発見物の根治(test-first→レビュー→個別コミットの既存規律)、④ビジュアル起点バグハント(「バグハントはまだうまくできるはず」)。
+
 - D53(2026-07-02・セッション最終検証 = e2e 回帰診断で回帰0確定 + 10失敗の真因を訂正 + テスト側修正で green 回復): 本セッションの19コミット(落ち MUST 6件 + バグハント41確定)後の包括ゲート(typecheck 0 / lint 0 / フル vitest 271 files・3334 tests 緑)に加え、focus-guard・ツールコントローラ keydown・選択衛生・revalidate 等 keyboard/選択系の変更を含むため e2e(npm run test:e2e)を実行=**10 failed / 75 passed**。専任エージェントで全10失敗を分類。
   - **本セッションの回帰: 0件(確定)**。focus-guard(8afc9be)/選択衛生(9060d2f)/applyUndoRedoResult revalidate(21b6f41)/apply-proposal 剪定/live-lookup メモ化/property/シーム描画 のいずれもどの e2e 失敗の原因でもない。shortcut-suspend.spec が PASS=キーボードは offscreen でも到達しており、focus-guard は編集要素フォーカス時のみ作動(探索スペックは canvas 操作・ux-cluster は suspend が先行)。
   - **従来の申し送り分類「環境依存(offscreen electron keyboard-focus)」は誤りと訂正**。真因は全てテスト側の陳腐化/設計齟齬(実アプリは正常):
