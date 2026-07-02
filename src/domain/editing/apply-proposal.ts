@@ -902,8 +902,21 @@ export function applyDrillProposal(
   // 2. New feature: a brand-new feature history anchored at the same time (FR-94 —
   // the新独立末端地物 born alongside the hole). Appended, or defensively replaced if
   // its id already exists (stable re-application; never duplicate).
+  //
+  // The new feature gets a FRESH single-feature history, so its snapshot store must
+  // carry ONLY the vertices this one feature cites — never the whole drill store
+  // (`vertexStore`), which also bundles the holed original's UNCHANGED outer-boundary
+  // vertices (reused ids/bodies from the seed) AND the hole-ring vertices.焼き込む the
+  // full store here seeds the new feature's history with orphan COPIES of the original's
+  // perimeter/hole vertices that this feature does not reference; a later move of one of
+  // those vertices (updating the ORIGINAL's own history) then diverges from this stale
+  // copy, raising a spurious VertexCoordinateDivergence at load (第10波 データ整合 HIGH).
+  // Prune to the new feature's own refs — symmetric to the merge slice's `createdIds`
+  // path (applyMergeProposal step 3, pruneVertexStore) — keeping only its interior ring
+  // vertices (all present in `builtNew.vertices` → the store), so the anchor is
+  // self-complete with no dangling refs (単一真実源 剪定).
   const nf = snapshot.newFeature;
-  const newAnchor = anchorFor([nf], vertexStore, nf.id, anchorTime);
+  const newAnchor = anchorFor([nf], pruneVertexStore(vertexStore, [nf]), nf.id, anchorTime);
   const newHistory: FeatureHistory = {
     featureId: nf.id,
     series: singleAnchorSeries(newAnchor, anchorTime),

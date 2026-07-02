@@ -4,19 +4,21 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
-import { createLeafFeature, FEATURE_KIND, type Feature, type LeafFeature } from '../feature';
+import { createLeafFeature, withLeafShape, FEATURE_KIND, type Feature, type LeafFeature } from '../feature';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { RING_KIND, createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore } from '../vertex';
 import { timePointYear } from '../time/time-point';
 import {
   PROCESS_STATUS,
+  createEditProposal,
   startProcess,
   type Command,
   type ConsistencyPorts,
   type EditProposal,
 } from '../index';
-import { applyAddProposal, applyDrillProposal } from '../editing/apply-proposal';
+import type { FeatureSnapshot } from '../editing/edit-flow';
+import { applyAddProposal, applyDrillProposal, applyEditProposal } from '../editing/apply-proposal';
 import { getCalendar } from '../time/calendar';
 import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
 import { createGeoParams } from '../geo/geo-params';
@@ -462,5 +464,114 @@ describe('隣接地物と外周頂点を共有する末端の穴あけ (data整�
       (i) => i.kind === INCONSISTENCY.MissingVertexReference,
     );
     expect(missing).toBeUndefined();
+  });
+});
+
+// --- 新地物履歴に原外周/穴頂点の孤児コピーが焼き込まれない（data整合・第10波 HIGH）--
+//
+// 穴あけの新地物アンカーは、両側束ね vertexStore（原末端の未変更外周頂点 + 穴リング頂点
+// を含む）をそのまま焼くと、新地物が cite しない孤児コピーを抱える。後で原末端がその外周
+// 頂点を移動すると、原末端の履歴は新座標、新地物の履歴は焼き込んだ旧座標のまま乖離し、
+// checkConsistency が偽の VertexCoordinateDivergence を発火させる（load 時に
+// ReconcileVertexCoordinate 修復ダイアログに化ける）。merge スライス（applyMergeProposal
+// step3, pruneVertexStore）と対称に、新地物アンカーは自参照のみへ剪定されねばならない。
+describe('穴あけ新地物アンカーの頂点剪定（偽 VertexCoordinateDivergence 防止 / 第10波）', () => {
+  const cal = getCalendar('gregorian');
+
+  function emptyProject(): DomainProject {
+    return {
+      histories: [],
+      settings: {
+        calendarId: 'gregorian',
+        geo: createGeoParams(40000, 0.0034),
+        gridSpacingDeg: 10,
+        snapDistancePx: 50,
+        autoColorDefault: true,
+      },
+      baseMap: { source: 's', meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 } },
+    };
+  }
+
+  /** Add `sq` at 1500 and drill its central region; returns the applied project + proposal. */
+  function drilledProject() {
+    const { feature: target, store: targetStore } = unitSquare('sq');
+    let root = applyAddProposal(emptyProject(), {
+      featureId: target.id,
+      anchorTime: timePointYear(1500),
+      snapshot: {
+        feature: target,
+        vertices: [...targetStore.byId.values()],
+        sharedCandidateIds: new Map(),
+      },
+    });
+    const res = drillRegion({
+      target,
+      store: targetStore,
+      region: centralRegion(),
+      editBaseTime: timePointYear(1500),
+      newProperties: NEW_PROPS,
+      ids: freshIdPorts(),
+    });
+    if (res.status !== DRILL_STATUS.Drilled) throw new Error('expected drilled');
+    root = applyDrillProposal(root, toEditProposal(res.proposal, timePointYear(1500)), cal);
+    return { root, res, target };
+  }
+
+  it('新地物履歴アンカーの store は新地物が cite する id のみ（原外周/穴頂点の孤児なし）', () => {
+    const { root, res, target } = drilledProject();
+    const nf = res.proposal.newFeature;
+    const nfHist = root.histories.find((h) => h.featureId === nf.id)!;
+    const nfSnap = nfHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+
+    const citedIds = nf.shape.rings.flatMap((r) => r.vertexIds);
+    const citedStrings = citedIds.map((v) => v as string);
+    const storeStrings = [...nfSnap.vertices.byId.keys()].map((v) => v as string);
+
+    // store は cite する id 集合と完全一致（孤児コピー 0）— merge createdIds 経路と対称.
+    expect([...storeStrings].sort()).toEqual([...citedStrings].sort());
+    // 新地物アンカー store は原外周頂点 id を含まない（孤児コピー混入の直接検証）.
+    for (const outerId of target.shape.rings.flatMap((r) => r.vertexIds)) {
+      expect(nfSnap.vertices.byId.has(outerId)).toBe(false);
+    }
+    // それでも新地物は自己完結（cite する全 id が store で解決できる — dangling 無し）.
+    for (const cid of citedIds) {
+      expect(nfSnap.vertices.byId.has(cid)).toBe(true);
+    }
+  });
+
+  it('穴あけ後に原末端の外周頂点を移動しても偽 VertexCoordinateDivergence が出ない', () => {
+    const { root, target } = drilledProject();
+
+    // drilled original の 1500 スナップショットとその外周頂点 sq-v0 を取り出す.
+    const origHist = root.histories.find((h) => h.featureId === target.id)!;
+    const oSnap = origHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    const oFeat = oSnap.features.find((f) => f.id === target.id)!;
+    if (oFeat.kind !== 'leaf') throw new Error('expected leaf');
+    const movedId = asVertexId('sq-v0'); // 原外周の左下角（穴あけで不変・共有 body）.
+    const oldBody = oSnap.vertices.byId.get(movedId)!;
+    expect(oldBody).toBeDefined();
+
+    // 原末端の外周頂点 sq-v0 を (0,0) → (-5,-5) へ移動する通常の形状編集（同 id・新 body）.
+    const movedBody = createVertex(movedId, createCoordinate(-5, -5));
+    const movedFeature = withLeafShape(oFeat, oFeat.shape); // 形状（id 列）は不変、body だけ移動.
+    const snapshot: FeatureSnapshot = { feature: movedFeature, vertices: [movedBody] };
+    const next = applyEditProposal(
+      root,
+      createEditProposal(target.id, timePointYear(1500), snapshot),
+      cal,
+    );
+
+    // 原末端の履歴は移動後座標を持つ.
+    const nHist = next.histories.find((h) => h.featureId === target.id)!;
+    const nSnap = nHist.series.entries.find((e) => e.start.year === 1500)!.anchor.snapshot;
+    expect(nSnap.vertices.byId.get(movedId)!.coordinate.lon).toBeCloseTo(-5);
+    expect(nSnap.vertices.byId.get(movedId)!.coordinate.lat).toBeCloseTo(-5);
+
+    // 偽の VertexCoordinateDivergence が発火しない（新地物履歴に sq-v0 の孤児旧コピーが無い）.
+    const report = checkConsistency(next, cal);
+    const divergence = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+    expect(divergence).toBeUndefined();
   });
 });
