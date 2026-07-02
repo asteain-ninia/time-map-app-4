@@ -6,6 +6,16 @@
 
 ## 確定した運用上の決定
 
+- D49(2026-07-02・バグハント第10波 = 新規結線6 MUST を狙った find→敵対verify: 6確定(3HIGH/2MED/1LOW)+2反証 を全根治、+同クラス split 潜在バグも fix): 落ち MUST 復旧6件(D48)の**新規コードが最も新鮮な検査面**という判断でバグハントをそこへ向けた→的中(確定6のうち#2/#3/#5/#6 の4件が新規 MUST 作業内の潜在バグ)。各 test-first(red→green inline revert 実証)→敵対レビュー→フル vitest 緑→個別コミット。全ローカル・push せず。
+  - **#1(HIGH)+#4(MED) キーボード focus 暴発** `8afc9be`: プロパティ名称/年欄・タイムライン年欄など編集要素フォーカス中の Delete/Backspace が選択地物を全錨削除、Ctrl+Z/Y がドメイン undo/redo 暴発+ネイティブ編集ブロック。useShortcuts.ts の window keydown が e.target 無判定、shortcutsSuspended は modal/tool-drawing のみ。→ 純粋述語 isEditableTarget を新設(focus-guard.ts)し単一ディスパッチ地点で early return(教訓5.13)。レビュー SOUND。
+  - **#2(HIGH) setActiveFeature 跨オーナー選択残留** `9060d2f`: サイドバー/イベント一覧/詳細/検索の素の store.setActiveFeature が別オーナーの頂点選択を温存(reducer FeatureBody 分岐・promoteHit=D48 HOLE-2 とは非対称)→ activeFeature=A/vertexOwner=B の食い違いで Delete が runEditDelete 頂点分岐(vertexIds 優先)で B の頂点削除。UI は A 選択中に見える。→ setActiveFeature を「新 active≠現 vertexOwner の時のみ withoutVertexSet 適用」(単一真実源・呼び出し4経路不変)。HOLE-2 の store 経路残余。
+  - **#3(HIGH) drill 新地物アンカーの頂点孤児** `8ded355`: applyDrillProposal step2 が両側束ね store を無剪定で焼き、原末端の非参照外周頂点の孤児コピー→後の移動で偽 VertexCoordinateDivergence(load で修復ダイアログ化)。→ pruneVertexStore(vertexStore,[nf])(merge 1017 と対称)。
+  - **#5(MED) 多錨時刻スライス削除の幽霊選択** `9060d2f`: makeCommand が多錨地物を survived 報告→reresolve(feature-history 単位)が幽霊 activeFeature/頂点選択を刈れず再 Delete no-op 化。→ applyCommandResult コミット後に revalidateForTime(注入済み存在ポート・現時刻)を1回適用(単一真実源=anchor-level 存在、時刻変更経路と同一関数)。ring-edit 最終テリトリ削除幽霊も同時解消。fix-forward(敵対レビュー穴): revalidateForTime を冪等化(剪定なしで同一参照)し参照等価ガードの冗長 set() を防止。
+  - **#6(LOW) FR-20 面積の毎フレーム再計算** `3ad61d6`: resolveAreaKm2 が毎レンダ新クロージャで area memo キャッシュ不発+featuresAt 二重呼び。時間スクラブ/再生で毎フレーム(集約は union 込み)再計算。→ useCallback([...area 入力])で入力メモ化+featuresAt 一本化。穴1(stale)は domain/currentTime 依存で維持。
+  - **反証2件**: 敵対検証で REFUTED(偽陽性/既ガード)=採用せず。
+  - **同クラス split 潜在バグ(drill review 発見)** `913fa97`: applySplitProposal step2 も #3 と同一の未剪定パターン=継承地物の非共有頂点の孤児→偽 divergence。probe で実在確認→ pruneVertexStore(vertexStore,[nf])。split は cut 境界を継承と共有するが共有頂点は nf が cite=保持(境界裂けない)、除去は他地物の私的頂点のみ。これで **anchor store 剪定が merge/drill/split の3経路で単一真実源化**。
+  - **教訓**: (a)新規結線コードは即バグハント対象にすべき(review だけでは #2/#3/#5/#6 を見逃した)。(b)選択衛生は reducer 迂回経路(store.setActiveFeature/promoteHit)の非対称が反復源(D48 HOLE-2→#2)=「頂点掃除規則」を単一化して塞ぐ。(c)anchorFor へ渡す vertexStore は焼く前に pruneVertexStore で自己参照へ剪定する(merge/drill/split で確立=次に anchorFor([x], fullStore) 型を書いたら同バグ)。
+
 - D48(2026-07-02・落ちた MUST 6件 全復旧完了 — D47 修正計画を全実装・敵対検証・個別コミット): D47 が捕捉した「ドメイン完備・テスト済なのに UI 不達＝実質落ちた MUST」6件を全て復旧。各 study→test-first 実装→多次元敵対レビュー→fix-forward→フル vitest 緑→個別コミット（3ライン運用・メインスレはオーケストレータ・全コミット ローカルのみ push せず）:
   - **[HIGH] FR-22/24 穴/飛び地追加・リング削除(U25 ring-edit)** → RingEditToolController 新設(knife パターン)。commit `b695990`。レビュー穴(grid-snap 死にトグル / FeatureDeleted 選択ゴースト=makeCommand `deleted` 集合の根本 fix)を fix-forward。
   - **[HIGH] FR-45 穴あけによる新地物生成(U27 drill)** → DrillToolController 新設 + applyDrillProposal + createLiveDrillBinding。commit `cedc63d`。レビュー穴(外周頂点 remint が共有頂点を破壊)を buildExistingSeed coord-match で fix-forward。
