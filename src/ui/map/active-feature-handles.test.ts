@@ -18,9 +18,11 @@ import {
   squareLeaf,
   singleAnchorHistory,
 } from '../../domain/persistence/fixtures';
-import { createLeafFeature } from '../../domain/feature';
+import { createLeafFeature, createLineFeature } from '../../domain/feature';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createShape, createTerritoryRing } from '../../domain/ring';
+import { unwrapLonSequence } from '../../domain/geo/longitude';
+import { unwrapRingClosed } from '../../domain/geo/seam';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { DEFAULT_EDIT_HANDLE_STYLE } from '../../render/edit-handles-layer';
 import {
@@ -32,7 +34,10 @@ import {
 import type { HandlePrimitive, LinePrimitive } from '../../render/map-renderer';
 import type { DisplayControlInput } from '../../render/display-pipeline';
 
-import { buildActiveFeatureHandlePrimitives } from './active-feature-handles';
+import {
+  buildActiveFeatureHandlePrimitives,
+  buildEditPreviewPrimitives,
+} from './active-feature-handles';
 import { clearDisplayResolutionCache } from './display-resolution-cache';
 
 const DISPLAY: DisplayControlInput = {
@@ -338,6 +343,102 @@ function sharedCornerProject(): DomainProject {
     baseMap: DEFAULT_BASEMAP,
   };
 }
+
+/** The largest adjacent-lon gap magnitude along a polyline's points (no implicit
+ * close). A CONTINUOUS run has every gap ≤ 180°; a world-crossing run (folded
+ * representatives) spans ~358° across the seam. */
+function maxAdjacentGap(points: readonly { lon: number; lat: number }[]): number {
+  let max = 0;
+  for (let i = 1; i < points.length; i += 1) {
+    max = Math.max(max, Math.abs(points[i]!.lon - points[i - 1]!.lon));
+  }
+  return max;
+}
+
+describe('buildEditPreviewPrimitives (Fix C #4 — seam-crossing preview outline unwrap)', () => {
+  it('unwraps a seam-crossing LINE preview to a continuous run [179,181] (parity with committed)', () => {
+    // A line whose two vertices straddle the antimeridian (lon 179 / lon -179): the
+    // committed draw unwraps them to [179, 181] (committed-features.ts:292 via
+    // unwrapLonSequence) so the polyline is one 2° segment. The live-drag PREVIEW
+    // outline must match — not trace 358° the long way round.
+    const va = createVertex(asVertexId('sl-a'), createCoordinate(179, 0));
+    const vb = createVertex(asVertexId('sl-b'), createCoordinate(-179, 0));
+    const line = createLineFeature(
+      asFeatureId('seam-line'),
+      createBasicAttributes('日付変更線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [va.id, vb.id],
+    );
+    const store = createVertexStore([va, vb]);
+
+    const prims = buildEditPreviewPrimitives(line, store);
+    const line0 = lines(prims)[0]!;
+    // Identical to the committed line path's single source (unwrapLonSequence).
+    const expected = unwrapLonSequence([179, -179]);
+    expect(line0.points.map((p) => p.lon)).toEqual(expected);
+    expect(line0.points.map((p) => p.lon)).toEqual([179, 181]);
+    expect(line0.points.map((p) => p.lat)).toEqual([0, 0]);
+    // Continuous: the 2° seam hop, never the ~358° world-crossing span.
+    expect(maxAdjacentGap(line0.points)).toBeLessThanOrEqual(180);
+  });
+
+  it('leaves a NON-seam LINE preview unchanged (identity)', () => {
+    const va = createVertex(asVertexId('nl-a'), createCoordinate(10, 20));
+    const vb = createVertex(asVertexId('nl-b'), createCoordinate(30, 25));
+    const line = createLineFeature(
+      asFeatureId('plain-line'),
+      createBasicAttributes('線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [va.id, vb.id],
+    );
+    const store = createVertexStore([va, vb]);
+    const line0 = lines(buildEditPreviewPrimitives(line, store))[0]!;
+    expect(line0.points.map((p) => p.lon)).toEqual([10, 30]);
+    expect(line0.points.map((p) => p.lat)).toEqual([20, 25]);
+  });
+
+  it('unwraps a seam-crossing LEAF ring preview into a continuous closed outline', () => {
+    // A square straddling the antimeridian: corners at lon 170,-170 (a 20° band across
+    // +180 stored as folded representatives). Its committed area draws through
+    // unwrapShape/alignMultiPolygon (unwrapRingClosed) so every edge — the closing edge
+    // included — stays ≤ 180°. The preview outline must match, not span ~340° per edge.
+    const rv = [
+      createVertex(asVertexId('sr-0'), createCoordinate(170, 0)),
+      createVertex(asVertexId('sr-1'), createCoordinate(-170, 0)),
+      createVertex(asVertexId('sr-2'), createCoordinate(-170, 10)),
+      createVertex(asVertexId('sr-3'), createCoordinate(170, 10)),
+    ];
+    const ring = createTerritoryRing(asRingId('sr-r'), rv.map((v) => v.id));
+    const leaf = createLeafFeature(
+      asFeatureId('seam-leaf'),
+      createBasicAttributes('環礁', 0, 100),
+      createColorInfo(true, '#102030', '#405060', '#708090'),
+      createShape([ring]),
+    );
+    const store = createVertexStore(rv);
+
+    const line0 = lines(buildEditPreviewPrimitives(leaf, store))[0]!;
+    // Continuous across EVERY edge including the implicit closing edge (last → first).
+    expect(maxAdjacentGap(line0.points)).toBeLessThanOrEqual(180);
+    // Matches the domain single source: unwrapRingClosed on the ring, then closed.
+    const unwrapped = unwrapRingClosed(rv.map((v) => v.coordinate));
+    const expectedLons = [...unwrapped.map((c) => c.lon), unwrapped[0]!.lon];
+    expect(line0.points.map((p) => p.lon)).toEqual(expectedLons);
+    // First+last coincide (closed) and lats preserved verbatim.
+    expect(line0.points[0]).toEqual(line0.points[line0.points.length - 1]);
+    expect(line0.points.map((p) => p.lat)).toEqual([0, 0, 10, 10, 0]);
+  });
+
+  it('leaves a NON-seam LEAF ring preview unchanged (identity, still closed)', () => {
+    const { leaf } = leafProject(); // square (0,0)-(10,10), no seam crossing
+    const store = createVertexStore(leaf.vertices);
+    const line0 = lines(buildEditPreviewPrimitives(leaf.feature, store))[0]!;
+    // Raw square corners + closing vertex, longitudes untouched.
+    const rawLons = leaf.vertices.map((v) => v.coordinate.lon);
+    expect(line0.points.map((p) => p.lon)).toEqual([...rawLons, rawLons[0]]);
+    expect(maxAdjacentGap(line0.points)).toBeLessThanOrEqual(180);
+  });
+});
 
 describe('buildActiveFeatureHandlePrimitives (FR-30 shared-vertex visual)', () => {
   it('fills the SHARED vertex handle with sharedVertexFill; non-shared with vertexFill', () => {

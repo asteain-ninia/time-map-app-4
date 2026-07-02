@@ -45,6 +45,9 @@ import {
   FEATURE_KIND,
   type Feature,
 } from '../../domain/feature';
+import { createCoordinate } from '../../domain/coordinate';
+import { unwrapLonSequence } from '../../domain/geo/longitude';
+import { unwrapRingClosed } from '../../domain/geo/seam';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import { RING_KIND } from '../../domain/ring';
@@ -160,7 +163,16 @@ export function buildEditPreviewPrimitives(
     case FEATURE_KIND.Line: {
       const points = resolveRing(feature.vertexIds, store);
       if (points.length >= 2) {
-        out.push(linePreview(points, style));
+        // Seam parity with the COMMITTED line path (committed-features.ts:292 /
+        // HB-14 / FR-07): a line whose vertices straddle ±180 is stored as folded
+        // representatives (e.g. 179 next to -179). The render layer's LinePrimitive
+        // contract requires CONTINUOUS-scalar longitudes, so a raw folded pair would
+        // trace the seam THE LONG WAY (a ~358° world-crossing span) — the committed
+        // draw does not. We delegate to U04's single ±360° unwrap source
+        // (`unwrapLonSequence`, never re-derived — 技術方針 R3 単一真実源), the EXACT
+        // helper committed-features uses, so the preview outline matches the confirmed
+        // geometry vertex-for-vertex. Latitude is never wrapped.
+        out.push(linePreview(unwrapLonPoints(points), style));
       }
       break;
     }
@@ -169,8 +181,16 @@ export function buildEditPreviewPrimitives(
         if (ring.kind !== RING_KIND.Territory && ring.kind !== RING_KIND.Hole) continue;
         const points = resolveRing(ring.vertexIds, store);
         if (points.length < 2) continue;
-        // Close the ring so the preview reads as a polygon outline (last → first).
-        const closed = [...points, points[0]!];
+        // Seam parity with the COMMITTED area path (resolve-display-shapes.unwrapShape
+        // → alignMultiPolygon → unwrapRingClosed): a seam-crossing ring stored as
+        // folded representatives must be made continuous across EVERY edge — the
+        // implicit closing edge (last → first) included — or the preview outline spans
+        // ~358° per crossing edge while the confirmed fill does not. We funnel each
+        // ring through U05's CLOSED-ring unwrap (`unwrapRingClosed`, the single source
+        // the area path uses — never re-derived), THEN close it (append the unwrapped
+        // first vertex) so the polygon outline reads the short way round.
+        const unwrapped = unwrapRingClosedPoints(points);
+        const closed = [...unwrapped, unwrapped[0]!];
         out.push(linePreview(closed, style));
       }
       break;
@@ -193,6 +213,32 @@ function resolveRing(
     out.push({ lon: v.coordinate.lon, lat: v.coordinate.lat });
   }
   return out;
+}
+
+/**
+ * Longitude-unwrap an OPEN sequence of preview points into a continuous run,
+ * delegating to U04's single ±360° turn-counting source (`unwrapLonSequence`) — the
+ * SAME helper the committed line path uses (committed-features.ts:292). Latitude is
+ * copied verbatim (never wrapped). Pure: a fresh array.
+ */
+function unwrapLonPoints(
+  points: readonly { lon: number; lat: number }[],
+): { lon: number; lat: number }[] {
+  const lons = unwrapLonSequence(points.map((p) => p.lon));
+  return points.map((p, i) => ({ lon: lons[i]!, lat: p.lat }));
+}
+
+/**
+ * Longitude-unwrap a CLOSED ring of preview points so it is continuous across the
+ * implicit closing edge as well, delegating to U05's `unwrapRingClosed` — the SAME
+ * helper the committed area path funnels through (resolve-display-shapes.unwrapShape
+ * → alignMultiPolygon → unwrapRingClosed). Latitude is copied verbatim. Pure.
+ */
+function unwrapRingClosedPoints(
+  points: readonly { lon: number; lat: number }[],
+): { lon: number; lat: number }[] {
+  const unwrapped = unwrapRingClosed(points.map((p) => createCoordinate(p.lon, p.lat)));
+  return unwrapped.map((c) => ({ lon: c.lon, lat: c.lat }));
 }
 
 function linePreview(
