@@ -6,6 +6,15 @@
 
 ## 確定した運用上の決定
 
+- D51(2026-07-02・バグハント第12波 新鮮角度 = 4確定/1反証 を全根治): 波10/11 で閉じた seam(anchor-store 孤児/focus-guard/選択衛生/revalidate)を再マイニングせず、未スイープの新鮮角度(永続 roundtrip/repair・描画/LOD/ラベル/z順・時間/再生レース・新鮮)を狙撃→反証1のみで実 HIGH バグを捕捉(まだ dry でない)。各 test-first→敵対レビュー→フル vitest 緑→個別コミット。
+  - **#1(HIGH) 多錨地物の属性編集が別時刻の錨を破壊** `438f441`: PropertyPanel の feature メモ(deps=[featureLookup,targetFeatureId])が currentTime 非依存で、時刻依存 featureLookup + 多錨 id 選択維持により選択時スナップショット(旧錨 Alpha)に凍結。錨リスト(FR-84)で時刻移動しても form は Alpha 表示のまま editTime だけ新錨(Beta)へ追従→1属性編集+保存で Beta へ Alpha 全属性を上書き破壊。→ feature メモに currentTime dep 追加 + draft 再seed 契機を feature.id だけでなく編集対象錨(anchorId)へ拡張(選択境界を 地物→地物×錨)。同一地物・同一錨 churn では draft 保持。
+  - **#2(HIGH) 開始/終了年に WRITE 境界ガード欠如→範囲外年で .tmap 全損** `438f441`: BasicInfoForm の年(type=number)が巨大/負/小数/Infinity を受理・書込経路は無検証で Committed。READ 側 schema の yearSchema(int かつ ±MAX_YEAR)が load 時に範囲外年で manifest 全体を Invalid 拒否→ファイルが二度と開けず全損(書込⊆読込の非対称)。timeline 年は isPersistedYear で WRITE ガード済だが基本情報だけ取り残し。→ handleSave の dispatch 前に isPersistedYear(timeline と同一・単一真実源)で honest-failure。
+  - **#3(MED) ターゲット強調のシーム跨ぎ leaf を全幅帯描画** `ed6508c`: leafShapeAt が resolveLeafShape の生座標(折返し表現)を返し ~358° 帯に。→ 表示経路(unwrapShape)と同一の per-piece alignMultiPolygon を leafShapeAt に通す(3ツール一括・確定と byte 一致)。
+  - **#4(MED) drag プレビュー輪郭が world-crossing** `0f1b2cc`: buildEditPreviewPrimitives が生 lon を line プリミティブに出す。→ 確定経路と同一 helper(line=unwrapLonSequence, leaf ring=unwrapRingClosed)で unwrap。
+  - **教訓**: (a)シーム/経度折返し表現は**描画・ヒットテスト直前に必ず確定経路と同一の unwrap/align を通す**(単一真実源)=波5 finalize・波12 強調/プレビューで反復するクラス。(b)属性編集フォームは selection だけでなく**編集対象の錨×時刻**に追従させる(feature/draft/editTime/no-op ガードが同一錨を指す)。(c)WRITE は必ず READ schema と対称のガードを持つ(書込⊆読込)。
+  - **残(非穴・良性・レビュー確認済)**: (a)明示錨 pick 後に再pick せず別錨区間へ scrub した無変更保存が ghost undo エントリを生む(dispatch は editTime の正しい錨へ冪等書込=データ損失なし)、(b)プレビューの hole/enclave リングは per-ring unwrapRingClosed で、確定エリア経路の unwrapRingAnchored(hole を outer 枝へ寄せる)と ±360 枝が異なりうる(intra-ring は連続・非可視)。将来 nicety。
+  - **累計バグハント確定: 波5-8=22 + 波10=7 + 波11=6 + 波12=4 = 39確定 全根治**。フル vitest 271 files/3324 tests 緑。
+
 - D50(2026-07-02・バグハント第11波 = 系統スイープ: 6確定/0反証 を全根治 — 第10波修正の「対称性の取り残し」を捕捉): 第10波で anchor-store 孤児・focus-guard・存在 revalidate を直したが、いずれも**対称位置に取り残し**があった。狙って系統スイープ→反証0で全て実在。各 test-first→敵対レビュー(全 SOUND・穴0)→フル vitest 緑→個別コミット。
   - **#1+#2(HIGH) split/drill の step1 未剪定** `30f9899`: 第10波の剪定は step2(新地物側)のみ。step1(継承地物/holed 原末端の過去編集)の mergedVertices が分割/穴あけプール全体を焼き、新地物の私的頂点が継承/holed 側の孤児コピー→**逆方向**(新地物が自分の頂点を移動)で偽 VertexCoordinateDivergence(drill は repair が移動を静かに巻き戻す)。→ 両 step1 に pruneVertexStore(..., features) 適用(step2/merge と対称)。共有 cut 境界は継承/holed が cite=保持。**これで anchor store 剪定が split(1+2)/drill(1+2)/merge の全経路で単一真実源化**。
   - **#3+#6(HIGH/MED) ツールコントローラ focus-guard 残余** `59dc6bc`: 第10波の focus-guard は global useShortcuts の1箇所のみ。ツール描画中は shortcutsSuspended で global 停止する一方、6ツールコントローラの自前 window keydown(Escape→cancel/Ctrl+Z→draft undo)が focus 判定なしに発火→タイムライン年欄等フォーカス中にネイティブ文字編集を潰す。→ 各 onKey 先頭に既存 isEditableTarget ガードを再利用(新述語なし)。
