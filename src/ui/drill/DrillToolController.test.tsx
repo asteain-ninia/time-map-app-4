@@ -291,3 +291,80 @@ describe('DrillToolController — transient state discarded on every exit path',
     h.unmount();
   });
 });
+
+// バグハント第11波 #3/#6 — the drill controller's OWN window keydown listener (Escape /
+// Ctrl+Z, live while a session runs) MUST honour the SAME focus guard the global
+// dispatcher does (教訓 5.13 single predicate). The timeline year field / sidebar inputs
+// are live even while a drill region is drawn; a Ctrl+Z / Escape with a text input focused
+// must edit the TEXT natively, NOT undo a region vertex (#3) or cancel the drill (#6). A
+// non-editable focus still cancels / undoes as before.
+describe('DrillToolController — バグハント第11波 (#3/#6): focus guard on the keydown listener', () => {
+  function focusedInput(type = 'text'): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.appendChild(input);
+    input.focus();
+    return input;
+  }
+
+  function drawTwoRegionVertices(): void {
+    clickInput(2, 2); // picks the target末端 face AND is the first region vertex
+    clickInput(10, 2);
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
+  }
+
+  it('Ctrl+Z with a text input focused does NOT undo a vertex and does NOT preventDefault (#3)', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    drawTwoRegionVertices();
+    const input = focusedInput('number');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape with a text input focused does NOT cancel the drill and does NOT preventDefault (#6)', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    drawTwoRegionVertices();
+    const input = focusedInput('text');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape / Ctrl+Z from a NON-editable focus still undoes / cancels (no regression)', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    drawTwoRegionVertices();
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
+    act(() => fireEvent.keyDown(button, { key: 'Escape' }));
+    expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
+    button.remove();
+    h.unmount();
+  });
+});

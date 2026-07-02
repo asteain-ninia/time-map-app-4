@@ -43,6 +43,7 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
+import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 
 import { AddPropertyForm } from '../add/AddPropertyForm';
 import type { AddProperties } from '../../domain/add/index';
@@ -195,6 +196,12 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   useEffect(() => {
     if (drill.flow === DRILL_FLOW.Idle) return;
     const onKey = (e: KeyboardEvent): void => {
+      // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
+      // keyboard (timeline year field / sidebar input) — let native Escape /
+      // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
+      // never cancels or undoes a vertex over native character editing (教訓 5.13:
+      // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
+      if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         drill.cancel();

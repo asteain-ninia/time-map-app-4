@@ -412,3 +412,54 @@ describe('MergeToolController bughunt-review: Ctrl+Z does NOT leak through the m
     expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });
+
+// バグハント第11波 #6 — the merge controller's OWN window keydown listener (Escape, live
+// while Selecting) MUST honour the SAME focus guard the global dispatcher does (教訓 5.13
+// single predicate). The timeline year field / sidebar inputs are live even while merge
+// targets are being picked; an Escape with a text input focused must edit the TEXT
+// natively, NOT cancel the merge. A non-editable focus still cancels as before.
+describe('MergeToolController — バグハント第11波 (#6): focus guard on the Escape listener', () => {
+  function focusedInput(type = 'text'): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.appendChild(input);
+    input.focus();
+    return input;
+  }
+
+  it('Escape with a text input focused does NOT cancel the merge and does NOT preventDefault', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1); // one target → Selecting
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('1');
+    const input = focusedInput('text');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    // The merge session is still up with its target (not cancelled).
+    expect(screen.getByTestId('merge-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('1');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape from a NON-editable focus still cancels the merge (no regression)', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('1');
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    act(() => fireEvent.keyDown(button, { key: 'Escape' }));
+    expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
+    button.remove();
+    h.unmount();
+  });
+});

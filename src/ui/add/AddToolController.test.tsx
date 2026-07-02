@@ -376,3 +376,78 @@ describe('U23 bughunt3 (H2): Ctrl+Z does NOT double-fire while drawing', () => {
     expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });
+
+// バグハント第11波 #3/#6 — the controller's OWN window keydown listener (Escape /
+// Ctrl+Z, live while drawing) MUST honour the SAME focus guard the global dispatcher
+// does (教訓 5.13 single predicate). The timeline year field (YearMonthDayInput) and
+// sidebar inputs are live at all times even while the add tool draws; a Ctrl+Z / Escape
+// with a text input focused must edit the TEXT natively, NOT undo a draft vertex (#3)
+// or cancel the whole add (#6). A non-editable focus still cancels / undoes as before.
+describe('U23 バグハント第11波 (#3/#6): focus guard on the drawing keydown listener', () => {
+  function focusedInput(type = 'text'): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.appendChild(input);
+    input.focus();
+    return input;
+  }
+
+  function drawTwoVertices(): void {
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(4, 0);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
+  }
+
+  it('Ctrl+Z with a text input focused does NOT undo a vertex and does NOT preventDefault (#3)', () => {
+    mountApp();
+    drawTwoVertices();
+    const input = focusedInput('number'); // e.g. the timeline year field
+    const ev = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    // The vertex count is untouched (native per-field undo, not draft-vertex undo)…
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
+    // …and the event was NOT prevented, so the browser's own text undo runs.
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+  });
+
+  it('Escape with a text input focused does NOT cancel the add and does NOT preventDefault (#6)', () => {
+    mountApp();
+    drawTwoVertices();
+    const input = focusedInput('text');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    // The session is still drawing with its 2 vertices (not cancelled / re-armed to 0).
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+  });
+
+  it('Escape / Ctrl+Z from a NON-editable focus still cancels / undoes (no regression)', () => {
+    mountApp();
+    drawTwoVertices();
+    // A non-editable element (button) focused: the tool keys keep working.
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('1');
+    act(() => fireEvent.keyDown(button, { key: 'Escape' }));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    button.remove();
+  });
+});

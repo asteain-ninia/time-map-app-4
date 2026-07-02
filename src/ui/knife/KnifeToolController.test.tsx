@@ -330,6 +330,88 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
   });
 });
 
+// バグハント第11波 #3/#6 — the knife controller's OWN window keydown listener (Escape /
+// Ctrl+Z, live while a session runs) MUST honour the SAME focus guard the global
+// dispatcher does (教訓 5.13 single predicate). The timeline year field / sidebar inputs
+// are live even while a cut is drawn; a Ctrl+Z / Escape with a text input focused must
+// edit the TEXT natively, NOT undo a cut point (#3) or cancel the knife (#6). A
+// non-editable focus still cancels / undoes as before.
+describe('KnifeToolController — バグハント第11波 (#3/#6): focus guard on the keydown listener', () => {
+  function focusedInput(type = 'text'): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.appendChild(input);
+    input.focus();
+    return input;
+  }
+
+  /** Select the target + place 2 cut points (DrawingCut, count = 2). */
+  function drawTwoCutPoints(): void {
+    clickInput(5, 5); // select target
+    clickInput(5, -5); // first cut point
+    clickInput(5, 15); // second cut point (outside the固定円 → vertex add)
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+  }
+
+  it('Ctrl+Z with a text input focused does NOT undo a cut point and does NOT preventDefault (#3)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    drawTwoCutPoints();
+    const input = focusedInput('number');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'z',
+      ctrlKey: true,
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape with a text input focused does NOT cancel the knife and does NOT preventDefault (#6)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    drawTwoCutPoints();
+    const input = focusedInput('text');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    // The knife session is still up (not cancelled) with its 2 cut points.
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape / Ctrl+Z from a NON-editable focus still undoes / cancels (no regression)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    drawTwoCutPoints();
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    // Ctrl+Z undoes one cut point (2 → 1).
+    act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('1');
+    // Escape cancels the whole knife.
+    act(() => fireEvent.keyDown(button, { key: 'Escape' }));
+    expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    button.remove();
+    h.unmount();
+  });
+});
+
 // --- REGRESSION (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) ----------
 //
 // ROOT BUG (bughunt): App.tsx passed `zoom={rendererRef.current?.zoom() ?? 1}` to

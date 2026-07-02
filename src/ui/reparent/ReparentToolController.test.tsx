@@ -455,3 +455,54 @@ describe('ReparentToolController bughunt-review: Ctrl+Z does NOT leak through th
     expect(globalUndo).toHaveBeenCalledTimes(1);
   });
 });
+
+// バグハント第11波 #6 — the reparent controller's OWN window keydown listener (Escape, live
+// while a session runs) MUST honour the SAME focus guard the global dispatcher does
+// (教訓 5.13 single predicate). The timeline year field / sidebar inputs are live even while
+// a reparent target is being picked; an Escape with a text input focused must edit the TEXT
+// natively, NOT cancel the reparent. A non-editable focus still cancels as before.
+describe('ReparentToolController — バグハント第11波 (#6): focus guard on the Escape listener', () => {
+  function focusedInput(type = 'text'): HTMLInputElement {
+    const input = document.createElement('input');
+    input.type = type;
+    document.body.appendChild(input);
+    input.focus();
+    return input;
+  }
+
+  it('Escape with a text input focused does NOT cancel the reparent and does NOT preventDefault', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1); // pick leaf-a → session active (PickParent)
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    const input = focusedInput('text');
+    const ev = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      cancelable: true,
+      bubbles: true,
+    });
+    act(() => {
+      input.dispatchEvent(ev);
+    });
+    // The reparent session is still up with its picked target (not cancelled).
+    expect(screen.getByTestId('reparent-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    expect(ev.defaultPrevented).toBe(false);
+    input.remove();
+    h.unmount();
+  });
+
+  it('Escape from a NON-editable focus still cancels the reparent (no regression)', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+    act(() => fireEvent.keyDown(button, { key: 'Escape' }));
+    expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
+    button.remove();
+    h.unmount();
+  });
+});

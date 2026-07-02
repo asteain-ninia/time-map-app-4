@@ -45,6 +45,8 @@ import { buildAddPrimitives, type AddStyle } from '../../render/add-batch';
 import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
+import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+
 import { AddPropertyForm } from './AddPropertyForm';
 import { ADD_STRINGS } from './strings';
 import { addToolKindFor } from './tool-kind';
@@ -246,6 +248,12 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   useEffect(() => {
     if (add.phase !== ADD_PHASE.Drawing) return;
     const onKey = (e: KeyboardEvent) => {
+      // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
+      // keyboard (timeline year field / sidebar input) — let native Escape /
+      // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
+      // never cancels or undoes a vertex over native character editing (教訓 5.13:
+      // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
+      if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         e.preventDefault();
         add.cancel();
