@@ -6,6 +6,15 @@
 
 ## 確定した運用上の決定
 
+- D48(2026-07-02・落ちた MUST 6件 全復旧完了 — D47 修正計画を全実装・敵対検証・個別コミット): D47 が捕捉した「ドメイン完備・テスト済なのに UI 不達＝実質落ちた MUST」6件を全て復旧。各 study→test-first 実装→多次元敵対レビュー→fix-forward→フル vitest 緑→個別コミット（3ライン運用・メインスレはオーケストレータ・全コミット ローカルのみ push せず）:
+  - **[HIGH] FR-22/24 穴/飛び地追加・リング削除(U25 ring-edit)** → RingEditToolController 新設(knife パターン)。commit `b695990`。レビュー穴(grid-snap 死にトグル / FeatureDeleted 選択ゴースト=makeCommand `deleted` 集合の根本 fix)を fix-forward。
+  - **[HIGH] FR-45 穴あけによる新地物生成(U27 drill)** → DrillToolController 新設 + applyDrillProposal + createLiveDrillBinding。commit `cedc63d`。レビュー穴(外周頂点 remint が共有頂点を破壊)を buildExistingSeed coord-match で fix-forward。
+  - **[MEDIUM] FR-30 共有頂点の視覚区別** → 編集ハンドルを共有頂点で琥珀色(#ffd54a)描画。buildReverseIndex 単一真実源・頂点のみ再色・WeakMap メモ化。commit `fb543e0`。敵対レビュー3レンズ=SOUND(穴0)。
+  - **[MEDIUM] FR-20 面積(km²)表示** → property panel に面積行(末端＋集約 FR-35)。`geodesy.multiPolygonAreaKm2`(既存 ringAreaKm2 カーネルの薄ラッパ=面積の単一真実源)。SidebarContent PropertyPanelHost が by-id ライブ解決ポート `resolveAreaKm2` を供給(domain/currentTime/FR-109 購読・毎レンダ新クロージャで構造編集後も stale なし)。commit `ada3e93`。敵対検証3レンズ(area-kernel=SOUND / reactivity-port=SOUND)→確定穴1件(子なし集約の 0 捏造表示)を空面積ガード(`isMultiPolygonEmpty`→undefined)で fix-forward(red→green 実証)。
+  - **[MEDIUM] FR-87/88 頂点ハンドル削除** → 単一ファネル COMMAND_ID.EditDelete を selection で分岐(頂点選択→vertex-delete / それ以外→従来の全錨削除・挙動不変)。pure ヘルパ `src/ui/vertex-delete.ts`(buildVertexDeletePlan / runEditDelete, 教訓5.34)。commit `9660fbc`。**study フェーズが D47 計画の誤りを是正**: 閾値割れ(線<2 / 面領土0)は createDeleteFeatureCommandForRoot 全錨削除ではなく FeatureSnapshot deletedFeatureId の TIME-SLICE 削除にする(全錨だとタイムライン過剰削除=正しさバグ)。整合性維持プロセスは bindPortsToProposal が本物の detectSpatial を注入するので FR-88 完了時整合性(時間+制約+空間競合)が実際に回る。複数頂点は「進化する in-memory feature」へ逐次適用し1 undo unit に畳む。敵対レビュー3レンズ→確定穴2件を fix-forward: **HOLE-1**(競合解決コミット経路で survive 頂点選択が残留=ゴースト → openConflict / ConflictPending に optional `clearVertexOwner` 追加、onConflictCommitted が Committed 時にクリア。候補A[空 vertexSelection]は reresolve が生存者昇格用途のみで不成立と確認し棄却、局所・他6ツール後方互換の候補B採用)、**HOLE-2**(右クリック本体削除が別地物の残存頂点選択を誤削除=本変更の新規デグレ → `promoteHitToSelection` 純関数で FeatureBody を `withoutVertexSet`・左クリック reducer と単一真実源)。
+  - **既知許容(非穴・レビュー確認済)**: (a)同一 leaf の2リングが共有する頂点を頂点削除すると両リングから除去される(有効な単一スナップショット・正しさ問題なし)、(b)FR-96 右クリック頂点削除は当該 leaf が自形状描画 or active の時のみ到達(集約省略・非 active leaf は本体 hit=全錨削除。WYSIWYG で正しい挙動)。
+  - **総括**: これで D47 が捕捉した落ち MUST 6件(FR-22/24/45/20/30/87-88)を全復旧。ユーザー中核要請「特に落ちた要件がないか気をつけて」を完遂。各コミット時フル vitest 緑(最終 270 files / 3255 tests passed, exit 0)。commit 系列: `b695990`(FR-22/24) → `cedc63d`(FR-45) → `fb543e0`(FR-30) → `ada3e93`(FR-20) → `9660fbc`(FR-87/88)。
+
 - D47(2026-07-02・第9波=MUST FR UI到達性スイープ が「落ちた MUST」6件を捕捉・初期監査の結論を訂正): D43 の初期監査(feature 単位・過去版差分)は「中核 MUST の脱落なし」としたが**不十分だった**。ドメイン実装がある要件は feature 単位で PRESENT に見えるが UI 到達性は別問題。第9波(`w7zuqocbn`・9候補→6確定)が**ドメイン完備・テスト済なのに UI 完全不達=実質落ちた MUST**を捕捉(教訓5.7型・監査の死角):
   - **[HIGH] FR-22 穴/飛び地の追加(U25 ring-edit)**: addHole/addEnclave/classifyFirstClick/confirmRingEdit + draft 状態機械が完備・テスト済だが、TOOL_ID/COMMAND_ID/Controller/context-menu 全てに無く UI から一切呼ばれない dead code。
   - **[HIGH] FR-24 穴/領土リング削除+交互構造再編(deleteHoleRing/deleteTerritoryRing)**: 同 U25・UI 未配線。
