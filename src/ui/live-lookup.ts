@@ -16,7 +16,12 @@ import { FEATURE_KIND } from '../domain/feature';
 import type { FeatureId } from '../domain/ids';
 import type { DomainProject } from '../domain/persistence/index';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
-import type { TimePoint } from '../domain/time/time-point';
+import {
+  complete,
+  completeEquals,
+  type CompleteTimePoint,
+  type TimePoint,
+} from '../domain/time/time-point';
 import { createVertexStore, type Vertex, type VertexStore } from '../domain/vertex';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { alignMultiPolygon } from '../domain/geo/seam';
@@ -26,11 +31,98 @@ import type { WorldCoordinate } from '../domain/coordinate';
 /** The active calendar (gregorian — matches the rest of the composite). */
 const calendar: Calendar = getCalendar('gregorian');
 
+// --- (root, time) resolution memo (第13波 Fix A — HIGH perf) -----------------
+//
+// WHY (教訓 5.29 单一真实源 = 单一 COMPUTATION): this module IS the single
+// resolution source for「その時刻に効いている地物 / 頂点」— the renderer, the
+// hit-test, the U13 binding, the knife/merge/reparent ports, AND (through the
+// injected existence port) the U22 time-change re-validation all funnel here.
+//
+// A single time-change tick (`setCurrentTime`) re-validates the selection by
+// calling the existence port ONCE per selected vertex plus once per selected
+// feature — K calls — and every one funnels through `featuresAt` / `verticesAt`.
+// Un-memoized, each of those K calls re-`resolveAt`-ed EVERY history and rebuilt
+// an O(V_total) `VertexStore` Map only to answer a single `.has()`, then threw it
+// away: `setCurrentTime` cost O(K·V_total) per tick and froze scrub / playback at
+// the NFR-5.2 scale (≈5000 features → V_total≈6500; K=300 measured ≈272ms/tick,
+// past the 100ms playback budget).
+//
+// The fix keys the resolution by (root IDENTITY, time VALUE) — the SAME keying
+// `slide-snap-neighbours`'s per-drag memo already uses. The K repeat calls of one
+// tick collapse into ONE build (O(K + V_total)), and every consumer at that
+// (root, time) generation shares the SAME `Feature[]` / `VertexStore` instance.
+//
+// CORRECTNESS — never stale:
+//   • `root` is the committed `DomainProject` reference. U16 swaps a NEW root
+//     object on ANY edit (immutable value objects + structural sharing), so a
+//     reference change invalidates the memo and the next call rebuilds against
+//     the edited domain.
+//   • `time` is compared by VALUE (`complete` + `completeEquals`): the same
+//     resolved year/month/day resolves the same snapshot via `resolveAt`, and a
+//     fresh-but-value-equal `TimePoint` (setCurrentTime allocates one each tick)
+//     still HITS. A granularity/date change is a value change and rebuilds.
+// So a HIT is only ever served when `resolveAt` would have produced the identical
+// result — a pure-function memo, not a second truth source.
+//
+// READ-ONLY SHARING: the shared results are treated as read-only by every caller
+// (verified by grep — all iterate / `.some` / `.find` / `.filter` / `.map` / build
+// a NEW Map / call the pure `getVertex`/`hasVertex` lookups; none mutate). The
+// `VertexStore` is itself immutable (every write helper returns a new store), and
+// `Feature`s are immutable value objects. Sharing one instance is therefore safe.
+//
+// A tiny bounded LRU (capacity 2, mirroring `display-resolution-cache`): the live
+// store holds ONE current (root, time) generation queried by every consumer, with
+// at most an occasional interleave (a test / a transient second time). Stale
+// generations are never re-queried (the store swaps forward), so a larger cache
+// would only retain memory.
+const LOOKUP_CACHE_CAPACITY = 2;
+
+interface LookupEntry<T> {
+  readonly root: DomainProject;
+  readonly time: CompleteTimePoint;
+  readonly value: T;
+}
+
 /**
- * Every feature effective at `time` across all histories (U09 resolveAt). The
- * union of each present anchor's snapshot features.
+ * A bounded (root-identity, time-value) LRU over a pure resolver. On a HIT the
+ * SAME instance is returned (so a tick's K repeat calls share one build); on a
+ * MISS the resolver runs and the result is memoized. Not stale: a root reference
+ * swap or a time value change misses and rebuilds (see the module note above).
  */
-export function featuresAt(root: DomainProject, time: TimePoint): Feature[] {
+function createLookupMemo<T>(
+  resolve: (root: DomainProject, time: TimePoint) => T,
+): {
+  lookup: (root: DomainProject, time: TimePoint) => T;
+  clear: () => void;
+} {
+  const cache: LookupEntry<T>[] = [];
+  return {
+    lookup(root, time) {
+      const completed = complete(time);
+      for (let i = 0; i < cache.length; i += 1) {
+        const entry = cache[i]!;
+        if (entry.root === root && completeEquals(entry.time, completed)) {
+          // Promote to most-recently-used so the live generation is last evicted.
+          if (i !== cache.length - 1) {
+            cache.splice(i, 1);
+            cache.push(entry);
+          }
+          return entry.value;
+        }
+      }
+      const value = resolve(root, time);
+      cache.push({ root, time: completed, value });
+      if (cache.length > LOOKUP_CACHE_CAPACITY) cache.shift();
+      return value;
+    },
+    clear() {
+      cache.length = 0;
+    },
+  };
+}
+
+/** The UN-cached feature resolution — the pure body wrapped by the memo below. */
+function resolveFeaturesAt(root: DomainProject, time: TimePoint): Feature[] {
   const out: Feature[] = [];
   for (const history of root.histories) {
     const resolution = resolveAt(history.series, time, calendar);
@@ -40,8 +132,8 @@ export function featuresAt(root: DomainProject, time: TimePoint): Feature[] {
   return out;
 }
 
-/** The vertex store effective at `time` (union of every present anchor's store). */
-export function verticesAt(root: DomainProject, time: TimePoint): VertexStore {
+/** The UN-cached vertex-store resolution — the pure body wrapped by the memo below. */
+function resolveVerticesAt(root: DomainProject, time: TimePoint): VertexStore {
   const all: Vertex[] = [];
   for (const history of root.histories) {
     const resolution = resolveAt(history.series, time, calendar);
@@ -49,6 +141,43 @@ export function verticesAt(root: DomainProject, time: TimePoint): VertexStore {
     for (const v of resolution.entry.anchor.snapshot.vertices.byId.values()) all.push(v);
   }
   return createVertexStore(all);
+}
+
+const featuresMemo = createLookupMemo(resolveFeaturesAt);
+const verticesMemo = createLookupMemo(resolveVerticesAt);
+
+/**
+ * Every feature effective at `time` across all histories (U09 resolveAt). The
+ * union of each present anchor's snapshot features.
+ *
+ * Memoized by (root identity, time value): a repeated call at the same generation
+ * returns the SAME array instance (see the module note — collapses a tick's K
+ * existence-port calls into one build; never stale). The result is READ-ONLY.
+ */
+export function featuresAt(root: DomainProject, time: TimePoint): Feature[] {
+  return featuresMemo.lookup(root, time);
+}
+
+/**
+ * The vertex store effective at `time` (union of every present anchor's store).
+ *
+ * Memoized by (root identity, time value): a repeated call at the same generation
+ * returns the SAME `VertexStore` instance (see the module note). The store is
+ * immutable, so sharing it is safe; the result is READ-ONLY.
+ */
+export function verticesAt(root: DomainProject, time: TimePoint): VertexStore {
+  return verticesMemo.lookup(root, time);
+}
+
+/**
+ * Drop the (root, time) resolution memos. The memo keys on input IDENTITY / VALUE,
+ * so a stale entry can never be served while the live store holds a new root — this
+ * exists ONLY for test isolation (a test that asserts build-vs-hit reference
+ * behaviour must start from a clean slate).
+ */
+export function clearLiveLookupCache(): void {
+  featuresMemo.clear();
+  verticesMemo.clear();
 }
 
 /**

@@ -3,7 +3,7 @@
 // feature / vertex resolution at the current time, the leaf hit-test, and the leaf
 // shape resolution match the committed root (no二重真実源, 教訓 5.29).
 
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
   featuresAt,
@@ -11,11 +11,12 @@ import {
   featureByIdAt,
   leafAtPoint,
   leafShapeAt,
+  clearLiveLookupCache,
 } from './live-lookup';
 import type { DomainRoot } from './consistency-binding';
 import { applyAddProposal } from '../domain/editing/apply-proposal';
 import { createEditProposal } from '../domain/consistency/index';
-import { timePointYear } from '../domain/time/time-point';
+import { timePointYear, timePointYearMonth } from '../domain/time/time-point';
 import { createBasicAttributes, createColorInfo } from '../domain/attributes';
 import {
   createAggregateFeature,
@@ -309,5 +310,119 @@ describe('live-lookup', () => {
     const lons = shape![0]![0]!.map((c) => c.lon).sort((x, y) => x - y);
     expect(lons[0]).toBe(0);
     expect(lons[lons.length - 1]).toBe(2);
+  });
+});
+
+// 第13波 Fix A (HIGH, perf): a time-change tick calls the injected existence port
+// K times (once per selected vertex + once per selected feature), and every call
+// funnels through featuresAt / verticesAt. Un-memoized, each of the K calls
+// re-resolved EVERY history and rebuilt an O(V_total) VertexStore Map only to
+// answer one `.has()` — so setCurrentTime cost O(K·V_total) per tick and froze
+// scrub / playback at the NFR-5.2 scale (≈5000 features). live-lookup is the
+// single truth source (教訓 5.29), so it memoizes the resolution by (root IDENTITY,
+// time VALUE) — the SAME keying slide-snap-neighbours already uses. The K repeat
+// calls of one tick collapse into ONE build (O(K + V_total)); a root reference
+// swap (any committed edit) or a time value change rebuilds, so a hit is never
+// stale. These tests pin: same (root, time) ⇒ SAME instance (one build), root
+// swap ⇒ new instance, time change ⇒ new instance, a value-equal FRESH TimePoint
+// object still HITS, and the memoized content equals the un-cached content.
+describe('live-lookup (root, time) memo — Fix A perf', () => {
+  beforeEach(() => {
+    clearLiveLookupCache();
+  });
+
+  it('returns the SAME featuresAt / verticesAt instance for a repeated (root, time)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    const f1 = featuresAt(root, timePointYear(1000));
+    const f2 = featuresAt(root, timePointYear(1000));
+    expect(f2).toBe(f1); // one build; the K repeat calls of a tick share it
+
+    const v1 = verticesAt(root, timePointYear(1000));
+    const v2 = verticesAt(root, timePointYear(1000));
+    expect(v2).toBe(v1);
+    // Same underlying VertexStore map identity too (no rebuild).
+    expect(v2.byId).toBe(v1.byId);
+  });
+
+  it('HITS on a value-equal but distinct TimePoint object (key by value, not identity)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    const t1 = timePointYear(1000);
+    const t2 = timePointYear(1000); // a fresh object each tick (setCurrentTime allocates)
+    expect(t2).not.toBe(t1);
+    expect(featuresAt(root, t2)).toBe(featuresAt(root, t1));
+    expect(verticesAt(root, t2)).toBe(verticesAt(root, t1));
+  });
+
+  it('REBUILDS (new instance) when the root reference is swapped (an edit)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 10, 10);
+    const root1 = withLeaf(emptyProject(), a, 1000);
+    const root2 = withLeaf(root1, b, 1000); // a committed edit swaps a NEW root object
+
+    const f1 = featuresAt(root1, timePointYear(1000));
+    const f2 = featuresAt(root2, timePointYear(1000));
+    expect(f2).not.toBe(f1);
+    // …and the rebuild reflects the edited domain (never stale).
+    expect(f1.map((f) => f.id)).not.toContain(b.feature.id);
+    expect(f2.map((f) => f.id)).toContain(b.feature.id);
+
+    const v1 = verticesAt(root1, timePointYear(1000));
+    const v2 = verticesAt(root2, timePointYear(1000));
+    expect(v2).not.toBe(v1);
+    expect(v2.byId.size).toBe(8); // 4 + 4 vertices after the edit
+  });
+
+  it('REBUILDS (new instance) when the time value changes', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    const f1000 = featuresAt(root, timePointYear(1000));
+    const f2000 = featuresAt(root, timePointYear(2000));
+    expect(f2000).not.toBe(f1000);
+
+    const v1000 = verticesAt(root, timePointYear(1000));
+    const v2000 = verticesAt(root, timePointYear(2000));
+    expect(v2000).not.toBe(v1000);
+  });
+
+  it('keys by COMPLETED time, consistent with resolveAt (year 1000 ≡ yearMonth 1000-01)', () => {
+    // resolveAt normalizes through `complete` (the single default-completion source),
+    // so timePointYear(1000) and timePointYearMonth(1000, 1) resolve the SAME snapshot.
+    // The memo keys on the SAME completion, so they HIT the same build — a value match,
+    // never a stale one (identical resolution ⇒ identical result).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    const fYear = featuresAt(root, timePointYear(1000));
+    const fYearMonth = featuresAt(root, timePointYearMonth(1000, 1));
+    expect(fYearMonth).toBe(fYear);
+    // A DIFFERENT month is a genuine value change → rebuild.
+    expect(featuresAt(root, timePointYearMonth(1000, 6))).not.toBe(fYear);
+  });
+
+  it('memoized result CONTENT equals the un-cached resolution (no behaviour change)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 10, 10);
+    let root = withLeaf(emptyProject(), a, 1000);
+    root = withLeaf(root, b, 1000);
+
+    // First (build) and second (hit) calls must be byte-identical in content.
+    const features = featuresAt(root, timePointYear(1000));
+    expect(featuresAt(root, timePointYear(1000)).map((f) => f.id)).toEqual(
+      features.map((f) => f.id),
+    );
+    expect(features.map((f) => f.id).sort()).toEqual(
+      [a.feature.id, b.feature.id].sort(),
+    );
+
+    const vertices = verticesAt(root, timePointYear(1000));
+    expect(vertices.byId.size).toBe(8);
+    // Absent-time resolution is still empty on a hit.
+    expect(featuresAt(root, timePointYear(500))).toHaveLength(0);
+    expect(verticesAt(root, timePointYear(500)).byId.size).toBe(0);
   });
 });
