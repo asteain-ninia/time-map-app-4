@@ -25,12 +25,20 @@ import {
   type CameraPort,
   type HitTester,
 } from './ports';
-import { createLiveContextMenuPort } from './live-context-menu-port';
+import {
+  createLiveContextMenuPort,
+  promoteHitToSelection,
+} from './live-context-menu-port';
 import {
   EMPTY_HIT,
+  EMPTY_SELECTION,
+  edgeHit,
   featureBodyHit,
+  replaceVertices,
   vertexHit,
+  withActiveFeature,
   type HitResult,
+  type SelectionState,
 } from '../../domain/selection';
 import { asFeatureId, asVertexId } from '../../domain/ids';
 import { EDIT_MODE } from '../state/session';
@@ -99,6 +107,65 @@ describe('createLiveContextMenuPort (FR-96 right-click wiring, bughunt2)', () =>
 
     expect(h.promoted).toEqual([]); // never silently clears the current selection
     expect(h.opened).toEqual([{ clientX: 105, clientY: 206, hit: EMPTY_HIT }]);
+  });
+});
+
+// --- promoteHitToSelection — the right-click promote RULE (bughunt5 HOLE-2) ----
+// The degradation: a right-click feature-body promote set the active feature ONLY
+// and did NOT clear a stale vertex selection (from a prior rubber-band on ANOTHER
+// feature). A following 削除 then read the vertex branch and wrongly deleted THAT
+// feature's vertices instead of the right-clicked body. The left-click reducer path
+// already cleared the vertex set (reducer.ts body branch); these pin the SAME rule
+// for the right-click promote so the two paths are symmetric (単一の真実源).
+
+/** A selection with a rubber-band vertex set owned by feature A. */
+function withVertexSelectionOnA(): SelectionState {
+  return replaceVertices(
+    withActiveFeature(EMPTY_SELECTION, asFeatureId('A')),
+    asFeatureId('A'),
+    new Set([asVertexId('a-1'), asVertexId('a-2')]),
+  );
+}
+
+describe('promoteHitToSelection (right-click promote rule, HOLE-2 degradation)', () => {
+  it('a FEATURE BODY hit on B clears a stale vertex selection on A (no ghost target)', () => {
+    const before = withVertexSelectionOnA();
+    const after = promoteHitToSelection(before, featureBodyHit(asFeatureId('B')));
+
+    expect(after.activeFeature).toBe(asFeatureId('B'));
+    // The stale A-owned vertex set is gone — a following 削除 targets B's body, not A.
+    expect(after.vertexOwner).toBeNull();
+    expect(after.vertexIds.size).toBe(0);
+  });
+
+  it('a VERTEX hit is UNCHANGED: selects that feature + replaces the set with the one vertex', () => {
+    const before = withVertexSelectionOnA();
+    const after = promoteHitToSelection(before, vertexHit(asFeatureId('B'), asVertexId('b-9')));
+
+    expect(after.activeFeature).toBe(asFeatureId('B'));
+    expect(after.vertexOwner).toBe(asFeatureId('B'));
+    expect([...after.vertexIds]).toEqual([asVertexId('b-9')]);
+  });
+
+  it('matches the LEFT-click reducer body branch (withoutVertexSet ∘ withActiveFeature)', () => {
+    // Single truth source: the promote result equals the reducer's body-branch value.
+    const before = withVertexSelectionOnA();
+    const promoted = promoteHitToSelection(before, featureBodyHit(asFeatureId('B')));
+    const reducerBody = { ...before, activeFeature: asFeatureId('B'), vertexOwner: null, vertexIds: new Set() };
+    expect(promoted.activeFeature).toBe(reducerBody.activeFeature);
+    expect(promoted.vertexOwner).toBe(reducerBody.vertexOwner);
+    expect(promoted.vertexIds.size).toBe(0);
+  });
+
+  it('an EMPTY / EDGE hit leaves the current selection untouched (no promote target)', () => {
+    const before = withVertexSelectionOnA();
+    expect(promoteHitToSelection(before, EMPTY_HIT)).toBe(before);
+    expect(
+      promoteHitToSelection(
+        before,
+        edgeHit(asFeatureId('A'), asVertexId('a-1'), asVertexId('a-2')),
+      ),
+    ).toBe(before);
   });
 });
 

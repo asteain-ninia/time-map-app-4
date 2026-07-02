@@ -201,6 +201,37 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     expect([...vs.vertexIds]).toEqual([v('nv1'), v('nv2')]);
   });
 
+  // bughunt5 HOLE-1: a SURVIVE vertex-delete reports the FEATURE as survived (the
+  // deleted vertex ids are NOT in `result.deleted` — makeCommand reports deletion at
+  // feature-history level only, consistency-binding.ts). So reresolve CANNOT prune the
+  // deleted vertex id — it lingers as a ghost. This proves BOTH halves of the App's
+  // reconciliation: (1) the ghost genuinely survives applyCommandResult even with the
+  // feature preference, and (2) the explicit replaceVertexSelection(owner, []) the
+  // onConflictCommitted / direct path runs drops it while keeping the feature active.
+  it('a survive vertex-delete leaves a ghost vertex id that the explicit clear must drop (HOLE-1)', () => {
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('gone')]) },
+    });
+    // The delete SURVIVED the feature A; the vertex id is deleted at the geometry level
+    // but the command result only reports A as survived (feature-history granularity).
+    const result = createCommandResult({ survived: [f('A')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result, { featureId: f('A') });
+
+    // reresolve could NOT prune the ghost vertex id (it is not in result.deleted).
+    const mid = store.getState();
+    expect(mid.activeFeature).toBe(f('A'));
+    expect(mid.vertexSelection).not.toBeNull();
+    expect([...mid.vertexSelection!.vertexIds]).toEqual([v('gone')]); // ghost survives!
+
+    // The explicit clear the survive path runs (direct AND conflict-commit) drops the
+    // ghost while KEEPING the feature active (withVertexSet drops the owner on empty).
+    store.getState().replaceVertexSelection(f('A'), []);
+    const after = store.getState();
+    expect(after.activeFeature).toBe(f('A')); // feature stays active.
+    expect(after.vertexSelection).toBeNull(); // no ghost vertex id remains.
+  });
+
   it('keeps the stored SelectionState in lockstep with the derived mirrors (single truth)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),

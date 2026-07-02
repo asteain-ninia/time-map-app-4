@@ -17,7 +17,14 @@
 // EXISTING command-id menu mechanism (registry + permission gate) — it re-implements
 // no menu rendering, positioning, or command body (単一真実源, 教訓 5.13 / 5.29).
 
-import { HIT_KIND, type HitResult } from '../../domain/selection';
+import {
+  HIT_KIND,
+  replaceVertices,
+  withActiveFeature,
+  withoutVertexSet,
+  type HitResult,
+  type SelectionState,
+} from '../../domain/selection';
 import type { ContextMenuPort } from './ports';
 import type { ScreenPoint } from '../../render';
 
@@ -61,6 +68,44 @@ export interface LiveContextMenuPortDeps {
    * resolved client anchor + hit; a no-op until the mount wires it.
    */
   readonly open: (request: ContextMenuRequest) => void;
+}
+
+/**
+ * Resolve the LIVE selection a right-click promote produces from the current
+ * selection + hit — the SAME rule a LEFT click applies (単一の選択書き込み経路,
+ * 教訓 5.11 / 5.29):
+ *   - a FEATURE BODY hit → that feature becomes the sole active feature AND any
+ *     vertex selection is CLEARED (mirrors the U22 reducer's body branch —
+ *     `withoutVertexSet(withActiveFeature(...))`, reducer.ts). The earlier
+ *     right-click path set the active feature ONLY, so a stale vertex set from a
+ *     prior rubber-band survived and a following 削除 wrongly targeted THOSE
+ *     vertices on ANOTHER feature instead of the right-clicked body (bughunt5
+ *     HOLE-2 degradation — the left-click path already cleared it, this is the
+ *     asymmetry fix);
+ *   - a VERTEX hit → that feature is active AND the vertex set is REPLACED with
+ *     the single hit vertex (unchanged from the prior behaviour: setActiveFeature
+ *     + replaceVertexSelection, composed here through the SAME U22 builders);
+ *   - an EMPTY hit → the current selection is returned UNCHANGED (the caller never
+ *     promotes on empty space — a right-click there keeps what was selected).
+ * Pure — no store access; the caller writes the result through `restoreSelection`.
+ */
+export function promoteHitToSelection(
+  current: SelectionState,
+  hit: HitResult,
+): SelectionState {
+  switch (hit.kind) {
+    case HIT_KIND.FeatureBody:
+      return withoutVertexSet(withActiveFeature(current, hit.featureId));
+    case HIT_KIND.Vertex:
+      return replaceVertices(
+        withActiveFeature(current, hit.featureId),
+        hit.featureId,
+        new Set([hit.vertexId]),
+      );
+    default:
+      // Edge / Empty: not a promote target — leave the selection untouched.
+      return current;
+  }
 }
 
 /**

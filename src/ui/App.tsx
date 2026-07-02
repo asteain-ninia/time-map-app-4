@@ -117,6 +117,7 @@ import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
+import { runEditDelete } from './vertex-delete';
 import { createLiveExistenceResolver } from './live-existence';
 import { buildCommittedFeatures } from './map/committed-features';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
@@ -128,12 +129,12 @@ import {
   type HitTester,
   type MapCameraInput,
 } from './map/index';
-import { createLiveContextMenuPort } from './map/live-context-menu-port';
+import { createLiveContextMenuPort, promoteHitToSelection } from './map/live-context-menu-port';
 import {
   MapContextMenu,
   type ContextMenuOpener,
 } from './map/MapContextMenu';
-import { HIT_KIND, type RectangleResolver } from '../domain/selection';
+import { type RectangleResolver, type NextTargetPreference } from '../domain/selection';
 import { liveHitTestAt, drawnAreaAt, verticesInRectangle } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
@@ -298,7 +299,7 @@ export function App(): JSX.Element {
   // (技術方針 2.3: the live input path stays off React re-render). Assigned by an
   // effect below once `recordCommit` exists; read by the edit-session `onReleased`.
   const recordCommitRef = useRef<
-    ((result: ProcessResult<DomainRoot>, preference?: { readonly featureId: FeatureId }) => void) | null
+    ((result: ProcessResult<DomainRoot>, preference?: NextTargetPreference) => void) | null
   >(null);
 
   // The shared vertex-id minter, held behind a ref so the imperatively-created
@@ -847,16 +848,15 @@ export function App(): JSX.Element {
       },
       promoteHit: (hit) => {
         const s = store.getState();
-        // A feature-body / vertex hit becomes the active feature (the menu's command
-        // target); a vertex hit additionally selects that vertex, exactly as a left
-        // click resolves it (単一の選択書き込み経路). Empty space is never reached here
-        // (the port skips promotion for an empty hit, keeping the current selection).
-        if (hit.kind === HIT_KIND.FeatureBody) {
-          s.setActiveFeature(hit.featureId);
-        } else if (hit.kind === HIT_KIND.Vertex) {
-          s.setActiveFeature(hit.featureId);
-          s.replaceVertexSelection(hit.featureId, [hit.vertexId]);
-        }
+        // Resolve the promoted selection with the SAME U22 builders a LEFT click uses
+        // (単一の選択書き込み経路, 教訓 5.11 / 5.29) and write it through the ONE
+        // restoreSelection seam: a feature-body hit makes it active AND clears any
+        // vertex selection (bughunt5 HOLE-2 — the setActiveFeature-only path left a
+        // stale vertex set, so a following 削除 wrongly targeted those vertices on
+        // ANOTHER feature; the left-click reducer path already cleared it), a vertex
+        // hit selects that feature + that single vertex (unchanged). Empty space is
+        // never reached here (the port skips promotion for an empty hit).
+        s.restoreSelection(promoteHitToSelection(s.selection, hit));
       },
       open: (request) => contextMenuOpenerRef.current?.open(request),
     });
@@ -1342,7 +1342,7 @@ export function App(): JSX.Element {
   const recordCommand = useCallback(
     (
       command: Command<DomainRoot>,
-      preference?: { readonly featureId: FeatureId },
+      preference?: NextTargetPreference,
     ): void => {
       const step = historyExecute(historyRef.current, command);
       historyRef.current = step.history;
@@ -1359,7 +1359,7 @@ export function App(): JSX.Element {
   const recordCommit = useCallback(
     (
       result: ProcessResult<DomainRoot>,
-      preference?: { readonly featureId: FeatureId },
+      preference?: NextTargetPreference,
     ): void => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       recordCommand(result.command, preference);
@@ -1453,6 +1453,8 @@ export function App(): JSX.Element {
   // silent no-op (registry.dispatch returns false). 削除ロジック (U31) existed but was
   // never reachable from any live UI 導線 (教訓 5.7).
   //
+  // NOTE: the FR-88 vertex-delete branch below overrides this whenever a vertex is
+  // selected; this paragraph describes only the no-vertex feature-delete branch.
   // The handler deletes the ACTIVE feature (FR-79 / FR-85「選択中の地物を削除します」)
   // through U31's indivisible 全錨 delete (sweep 全時間軸 + 双方向参照掃除 + 空集約の
   // 連鎖剪定, FR-41 / FR-35) — the SAME pure {@link createDeleteFeatureCommand} the
@@ -1463,23 +1465,83 @@ export function App(): JSX.Element {
   // entry), and the deleted feature drops out of selection while undo restores it.
   // `canRun` gates on an active feature so the menu item / Delete key disable together
   // when nothing is selected; permissions.ts already 표示専用モードでは一括無効化.
+  // FR-88 頂点削除 — the body-scope U13 binding the vertex-delete branch confirms
+  // through. It mirrors {@link propertyEditBinding} (a geometry-changing delete CAN
+  // conflict, so it must NOT reuse propertyEditDispatch which throws on
+  // ConflictsPending). bindPortsToProposal (applied inside startProcess) OVERRIDES the
+  // base detectSpatial with the REAL detectSpatialAt(proposal), so the FR-88 完了時
+  // 整合性維持プロセス (時間整合 + 制約 + 空間競合検出) genuinely fires on the delete.
+  const vertexDeleteBinding = useMemo(
+    () => createLiveEditBinding({ getRoot: () => store.getState().domain }),
+    [store],
+  );
+
+  // FR-87 / FR-88 頂点削除 — the run branches on the LIVE selection (single funnel,
+  // 教訓 5.13): the Delete key + 編集メニュー + FR-96 右クリック「削除」 all dispatch this
+  // ONE command id.
+  //   • vertex selection non-empty (vertexIds + vertexOwner) → delete those vertices.
+  //     A right-click Vertex hit sets exactly this selection (promoteHit), so the
+  //     FR-96「削除」targets the right-clicked vertex with NO extra menu item.
+  //     buildVertexDeletePlan folds a multi-vertex selection into ONE undo unit and
+  //     decides the delete-feature threshold via the domain's SINGLE deleteVertex.
+  //       - survive → confirm the FeatureSnapshot through the SAME U13 pipeline
+  //         add/knife/move/ring-edit use, record ONE undo unit, and re-resolve
+  //         selection to the surviving vertices (makeCommand reports deletion only at
+  //         feature-history level, so the deleted vertex id would otherwise linger —
+  //         we pass the surviving vertex set as the preference AND explicitly reconcile
+  //         when none survive, reresolve.ts:99-110).
+  //       - delete-feature (閾値割れ) → a TIME-SLICE deletion via the SAME
+  //         deletedFeatureId snapshot path ring-edit's last-territory delete uses; the
+  //         feature drops only at the anchor time, NOT all-anchor (belowThreshold: the
+  //         all-anchor delegation would over-delete across the timeline).
+  //     A ConflictsPending is surfaced through the SAME conflict modal add/knife use
+  //     (honest failure, HB-3 — never a silent no-op); a Rejected keeps the selection.
+  //   • otherwise (no vertex selection, only an activeFeature) → the UNCHANGED U31
+  //     全錨 delete (FR-79 / FR-85) recorded as ONE undo unit; an absent target builds
+  //     no command (no幽霊 entry, 教訓 5.24).
   useEffect(() => {
-    const deleteActiveFeature = (): void => {
+    const deleteSelected = (): void => {
       const s = store.getState();
-      const active = s.selection.activeFeature;
-      if (active === null) return;
-      const command = createDeleteFeatureCommandForRoot(s.domain, active);
-      if (command === null) return; // target absent everywhere: no幽霊 entry (教訓 5.24)
-      recordCommand(command);
+      // The ONE handler, delegating the branch to the single testable seam
+      // {@link runEditDelete} (単一真実源 5.29 / 5.34). All host effects are injected
+      // so the App effect holds no duplicated delete logic.
+      runEditDelete<DomainRoot>(s.selection, {
+        getRoot: () => store.getState().domain,
+        getTime: () => store.getState().currentTime,
+        startProcess: (proposal) => vertexDeleteBinding.startProcess(proposal),
+        applyResolutionsFor: (proposal) => vertexDeleteBinding.applyResolutionsFor(proposal),
+        recordCommit: (result, preference) => recordCommit(result, preference),
+        openConflict: (result, apply, preference, clearVertexOwner) => {
+          if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+          setConflictState({
+            pending: result,
+            applyResolutions: apply,
+            ...(preference !== undefined ? { preference } : {}),
+            // Survive vertex-delete only: stash the owner to clear on commit (HOLE-1).
+            ...(clearVertexOwner !== undefined ? { clearVertexOwner } : {}),
+          });
+        },
+        clearVertexSelection: (featureId) =>
+          store.getState().replaceVertexSelection(featureId, []),
+        deleteFeatureAllAnchors: (featureId) => {
+          const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
+          if (command === null) return; // absent everywhere: no幽霊 entry (教訓 5.24)
+          recordCommand(command);
+        },
+      });
     };
     registry.register(COMMAND_ID.EditDelete, {
-      run: deleteActiveFeature,
-      canRun: () => store.getState().selection.activeFeature !== null,
+      run: deleteSelected,
+      // FR-85 と整合: a vertex selection OR an active feature makes 削除 valid.
+      canRun: () => {
+        const sel = store.getState().selection;
+        return (sel.vertexIds.size > 0 && sel.vertexOwner !== null) || sel.activeFeature !== null;
+      },
     });
     return () => {
       registry.unregister(COMMAND_ID.EditDelete);
     };
-  }, [registry, store, recordCommand]);
+  }, [registry, store, recordCommand, recordCommit, vertexDeleteBinding]);
 
   // Reset the history on an EXTERNAL whole-state swap (file load / new). A subscribe
   // bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live domain
@@ -1884,10 +1946,21 @@ export function App(): JSX.Element {
       // Forward the paused edit's selection preference so the modal commit promotes
       // the same feature a direct commit would (教訓 5.11; was being dropped).
       recordCommit(result, conflictState?.preference);
+      // Survive vertex-delete (bughunt5 HOLE-1): the deleted vertex ids linger in the
+      // selection because reresolve cannot prune them (makeCommand reports deletion at
+      // feature-history level only). Clear them in the SAME order the DIRECT survive
+      // commit does (recordCommit → clearVertexSelection, vertex-delete.ts) so the
+      // feature stays active but no ghost vertex id survives to mis-target a later 削除.
+      // recordCommit ran applyCommandResult synchronously, so the store already reflects
+      // the promoted feature; this clear only drops the (now-deleted) vertex set.
+      const clearOwner = conflictState?.clearVertexOwner;
+      if (clearOwner !== undefined && result.status === PROCESS_STATUS.Committed) {
+        store.getState().replaceVertexSelection(clearOwner, []);
+      }
       setConflictState(null);
       reArmActiveTool();
     },
-    [recordCommit, reArmActiveTool, conflictState],
+    [recordCommit, reArmActiveTool, conflictState, store],
   );
 
   const onConflictCancel = useCallback(() => {
@@ -2510,9 +2583,21 @@ interface ConflictPending {
    * The selection preference for the eventual commit (教訓 5.11). A direct add /
    * knife commit promotes the new feature / inheritor; a commit that went THROUGH
    * the conflict modal must promote the SAME element, so we carry it from the
-   * paused edit and forward it on conflict commit (it was being lost before).
+   * paused edit and forward it on conflict commit (it was being lost before). Typed
+   * as the full {@link NextTargetPreference} so a vertex-delete conflict can also
+   * carry a surviving vertex set (the other tools only ever set `featureId`).
    */
-  readonly preference?: { readonly featureId: FeatureId };
+  readonly preference?: NextTargetPreference;
+  /**
+   * The vertex-owner whose vertex selection MUST be cleared once THIS conflict
+   * commits — set ONLY by a SURVIVE vertex-delete (bughunt5 HOLE-1). All selected
+   * vertices were deleted, but reresolve cannot prune them (makeCommand reports
+   * deletion at feature-history level, not per vertex), so the modal-commit path must
+   * clear them explicitly, mirroring the DIRECT survive commit's
+   * recordCommit → clearVertexSelection order. Absent for every other tool
+   * (backward-compatible — a conflict commit with no owner clears nothing).
+   */
+  readonly clearVertexOwner?: FeatureId;
 }
 
 /**
