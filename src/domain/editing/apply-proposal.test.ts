@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyAddProposal, applyMergeProposal, applySplitProposal, deriveAnchorId } from './apply-proposal';
+import { applyAddProposal, applyEditProposal, applyMergeProposal, applySplitProposal, deriveAnchorId } from './apply-proposal';
 import { createEditProposal } from '../consistency/types';
 import { MERGE_STATUS, buildMergeProposal, toMergeEditProposal } from '../merge/proposal';
 import { parentNone, propertyNew } from '../merge/decision';
@@ -16,10 +16,12 @@ import {
   createAggregateFeature,
   createLeafFeature,
   createLineFeature,
+  withLeafShape,
   type Feature,
   type LeafFeature,
   type LineFeature,
 } from '../feature';
+import type { FeatureSnapshot } from './edit-flow';
 import { createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore, setVertex, withVertexCoordinate } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
@@ -589,6 +591,136 @@ describe('applySplitProposal', () => {
       expect(ids0).not.toContain('cut3');
       expect(ids0).not.toContain('cut7');
     }
+  });
+
+  // --- 新地物履歴に継承地物の非共有頂点の孤児コピーが焼き込まれない（data整合・第11波 HIGH）--
+  //
+  // 分割の新地物アンカーは、分割プール全体の vertexStore（継承地物の未変更・非共有な境界
+  // 頂点、n-way では他新地物の私的頂点まで含む）をそのまま焼くと、新地物が cite しない孤児
+  // コピーを抱える。後で継承地物がその非共有頂点を移動すると、継承地物の履歴は新座標、新地物
+  // の履歴は焼き込んだ旧座標のまま乖離し、checkConsistency が偽の VertexCoordinateDivergence
+  // を発火させる（load 時に ReconcileVertexCoordinate 修復ダイアログに化ける）。merge スライス
+  // (applyMergeProposal step3) / drill スライス (applyDrillProposal step2) と対称に、新地物
+  // アンカーは自参照のみへ剪定されねばならない。分割は cut 境界を継承地物と新地物が共有する
+  // (双方が同じ cut 頂点 id を cite) ので、剪定 [nf] は共有 cut 境界を保持し（両側履歴で保持
+  // され一致＝整合）、非共有な私的頂点だけを落とす（境界は裂けない）。
+  it('新地物履歴アンカーの store は新地物が cite する id のみ（継承地物の非共有頂点の孤児なし・共有 cut 境界は保持）', () => {
+    // 継承地物 f-inh の頂点: vi-1(共有 cut 境界), vi-2, vi-3(継承地物の私的・非共有).
+    const inheritor = squareLeaf('f-inh', ['vi-1', 'vi-2', 'vi-3'], [0, 1, 2]);
+    const seeded = applyAddProposal(emptyProject(), {
+      featureId: inheritor.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: inheritor.feature, vertices: inheritor.vertices, sharedCandidateIds: new Map() },
+    });
+
+    // 新地物 f-new は共有 cut 境界 vi-1 を cite し、加えて自分の私的頂点 vn-1, vn-2 を持つ.
+    // 継承地物の新形状は vi-1(共有), vi-2, vi-3(非共有) を cite する.
+    const vn1 = createVertex(asVertexId('vn-1'), { lon: 10, lat: 0 });
+    const vn2 = createVertex(asVertexId('vn-2'), { lon: 11, lat: 0 });
+    const newSideFeature = createLeafFeature(
+      asFeatureId('f-new'),
+      createBasicAttributes('F', 0, 0),
+      color,
+      createShape([createTerritoryRing(asRingId('r-f-new'), ['vi-1', 'vn-1', 'vn-2'].map(asVertexId))]),
+    );
+    const newInheritorShape = createShape([
+      createTerritoryRing(asRingId('r-inh-2'), ['vi-1', 'vi-2', 'vi-3'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: inheritor.feature.id,
+      inheritorShape: newInheritorShape,
+      newFeature: newSideFeature,
+      vertices: [...inheritor.vertices, vn1, vn2],
+      vertexRemap: new Map(),
+      sharedEdgeCuts: [],
+      touchedFeatureIds: [inheritor.feature.id, newSideFeature.id],
+    };
+    const proposal = createEditProposal(inheritor.feature.id, timePointYear(500), snapshot);
+
+    const next = applySplitProposal(seeded, proposal, calendar);
+
+    const nfHist = next.histories.find((h) => h.featureId === newSideFeature.id)!;
+    const nfSnap = nfHist.series.entries.find((e) => e.start.year === 500)!.anchor.snapshot;
+
+    const citedIds = newSideFeature.shape.rings.flatMap((r) => r.vertexIds);
+    const citedStrings = citedIds.map((v) => v as string);
+    const storeStrings = [...nfSnap.vertices.byId.keys()].map((v) => v as string);
+
+    // store は cite する id 集合と完全一致（孤児コピー 0）— merge createdIds / drill 経路と対称.
+    expect([...storeStrings].sort()).toEqual([...citedStrings].sort());
+    // 継承地物の非共有な私的頂点 vi-2 / vi-3 は新地物 store に混入しない（孤児コピーの直接検証）.
+    expect(nfSnap.vertices.byId.has(asVertexId('vi-2'))).toBe(false);
+    expect(nfSnap.vertices.byId.has(asVertexId('vi-3'))).toBe(false);
+    // 共有 cut 境界 vi-1 は新地物が cite するので保持される（境界が裂けない根拠）.
+    expect(nfSnap.vertices.byId.has(asVertexId('vi-1'))).toBe(true);
+    // それでも新地物は自己完結（cite する全 id が store で解決できる — dangling 無し）.
+    for (const cid of citedIds) {
+      expect(nfSnap.vertices.byId.has(cid)).toBe(true);
+    }
+  });
+
+  it('分割後に継承地物の非共有頂点を移動しても偽 VertexCoordinateDivergence が出ない', () => {
+    const inheritor = squareLeaf('f-inh', ['vi-1', 'vi-2', 'vi-3'], [0, 1, 2]);
+    const seeded = applyAddProposal(emptyProject(), {
+      featureId: inheritor.feature.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: inheritor.feature, vertices: inheritor.vertices, sharedCandidateIds: new Map() },
+    });
+    const vn1 = createVertex(asVertexId('vn-1'), { lon: 10, lat: 0 });
+    const vn2 = createVertex(asVertexId('vn-2'), { lon: 11, lat: 0 });
+    const newSideFeature = createLeafFeature(
+      asFeatureId('f-new'),
+      createBasicAttributes('F', 0, 0),
+      color,
+      createShape([createTerritoryRing(asRingId('r-f-new'), ['vi-1', 'vn-1', 'vn-2'].map(asVertexId))]),
+    );
+    const newInheritorShape = createShape([
+      createTerritoryRing(asRingId('r-inh-2'), ['vi-1', 'vi-2', 'vi-3'].map(asVertexId)),
+    ]);
+    const snapshot: SplitSnapshot = {
+      inheritorFeatureId: inheritor.feature.id,
+      inheritorShape: newInheritorShape,
+      newFeature: newSideFeature,
+      vertices: [...inheritor.vertices, vn1, vn2],
+      vertexRemap: new Map(),
+      sharedEdgeCuts: [],
+      touchedFeatureIds: [inheritor.feature.id, newSideFeature.id],
+    };
+    const next = applySplitProposal(
+      seeded,
+      createEditProposal(inheritor.feature.id, timePointYear(500), snapshot),
+      calendar,
+    );
+
+    // 継承地物 f-inh の 500 スナップショットから、その非共有頂点 vi-3 を通常の形状編集で移動する
+    // （id 列は不変、body だけ移動 = 同 id・新座標）.
+    const inhHist = next.histories.find((h) => h.featureId === inheritor.feature.id)!;
+    const oSnap = inhHist.series.entries.find((e) => e.start.year === 500)!.anchor.snapshot;
+    const oFeat = oSnap.features.find((f) => f.id === inheritor.feature.id)!;
+    expect(oFeat.kind).toBe('leaf');
+    if (oFeat.kind !== 'leaf') return;
+    const movedId = asVertexId('vi-3');
+    const movedBody = createVertex(movedId, { lon: -7, lat: -7 });
+    const movedFeature = withLeafShape(oFeat, oFeat.shape); // 形状（id 列）不変、body のみ移動.
+    const moveSnapshot: FeatureSnapshot = { feature: movedFeature, vertices: [movedBody] };
+    const afterMove = applyEditProposal(
+      next,
+      createEditProposal(inheritor.feature.id, timePointYear(500), moveSnapshot),
+      calendar,
+    );
+
+    // 継承地物の履歴は移動後座標を持つ.
+    const nInhHist = afterMove.histories.find((h) => h.featureId === inheritor.feature.id)!;
+    const nInhSnap = nInhHist.series.entries.find((e) => e.start.year === 500)!.anchor.snapshot;
+    expect(nInhSnap.vertices.byId.get(movedId)!.coordinate.lon).toBeCloseTo(-7);
+    expect(nInhSnap.vertices.byId.get(movedId)!.coordinate.lat).toBeCloseTo(-7);
+
+    // 偽の VertexCoordinateDivergence が発火しない（新地物履歴に vi-3 の孤児旧コピーが無い）.
+    const report = checkConsistency(afterMove, calendar);
+    const divergence = report.inconsistencies.find(
+      (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
+    );
+    expect(divergence).toBeUndefined();
   });
 });
 

@@ -344,7 +344,21 @@ export function applySplitProposal(
   // plain 2-piece split `newFeatures` has length 1 (identical to the old single-feature
   // path). Each is appended, or defensively replaced if its id already exists.
   for (const nf of snapshot.newFeatures ?? [snapshot.newFeature]) {
-    const newAnchor = anchorFor([nf], vertexStore, nf.id, anchorTime);
+    // Each new feature gets a FRESH single-feature history, so its snapshot store must
+    // carry ONLY the vertices this one feature cites — never the whole split pool
+    // (`vertexStore` = createVertexStore(pool.vertices)), which also bundles the
+    // inheritor's UNCHANGED non-shared boundary vertices AND (n-way) the OTHER new
+    // pieces' private vertices. Baking the full pool here seeds this new feature's
+    // history with orphan COPIES of vertices it does not reference; a later move of one
+    // of those (updating the inheritor's — or a sibling piece's — own history) then
+    // diverges from this stale copy, raising a spurious VertexCoordinateDivergence at
+    // load (第11波 データ整合 HIGH — same class as the merge createdIds / drill newFeature
+    // paths, applyMergeProposal step 3 / applyDrillProposal step 2, both pruneVertexStore).
+    // The SHARED cut-boundary vertices ARE cited by `nf`, so pruning keeps them (both the
+    // inheritor's kept history and this new feature retain the same body → they agree,
+    // boundary stays sewn); only unrelated private vertices are dropped, and every id `nf`
+    // cites is present in the pool so no dangling refs result (単一真実源 剪定).
+    const newAnchor = anchorFor([nf], pruneVertexStore(vertexStore, [nf]), nf.id, anchorTime);
     const newHistory: FeatureHistory = {
       featureId: nf.id,
       series: singleAnchorSeries(newAnchor, anchorTime),
