@@ -757,6 +757,87 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     });
   });
 
+  // --- 第11波 Fix C (#4=#5): applyUndoRedoResult anchor-level re-validation -----
+  //
+  // Symmetric with the 第10波 #5 guard on applyCommandResult (see above): a
+  // multi-anchor feature's TIME-SLICE delete (or a ring-edit last-territory delete)
+  // drops the feature ONLY at the current time — its OTHER anchors keep the
+  // feature-history alive, so makeCommand reports it as `survived`. reresolveAfter-
+  // StructureChange works at the feature-history level and CANNOT prune something
+  // absent at the current time but present at another anchor. When such a commit is
+  // UNDONE/REDONE, applyUndoRedoResult must run the SAME anchor-level revalidateForTime
+  // (injected existence port + current time) applyCommandResult does — otherwise a
+  // ghost activeFeature / vertex selection revives and lingers (#5 recurs on the
+  // undo/redo path). Pre-fix applyUndoRedoResult ran reresolve ONLY, so these fail.
+  describe('applyUndoRedoResult anchor-level existence re-validation (第11波 Fix C, #4=#5)', () => {
+    it('drops an active feature that an undo/redo left absent at the current time (multi-anchor time-slice delete)', () => {
+      // Feature A is `survived` at the feature-history level (another anchor keeps its
+      // history) but does NOT exist at the current time.
+      const existence = resolverWith(new Set<string>(), new Set<string>());
+      const store = makeStore(existence, { activeFeature: f('A') });
+      const result = createCommandResult({ survived: [f('A')] });
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, result, { featureId: f('A') });
+      // Anchor-level re-validation drops the ghost so a second Delete is not a no-op.
+      expect(store.getState().activeFeature).toBeNull();
+    });
+
+    it('drops a ghost vertex selection whose owner is absent at the current time after an undo/redo', () => {
+      const existence = resolverWith(new Set<string>(), new Set<string>());
+      const store = makeStore(existence, {
+        vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
+      });
+      const result = createCommandResult({ survived: [f('B')] });
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, result);
+      expect(store.getState().vertexSelection).toBeNull();
+    });
+
+    it('PRESERVES an undo/redo target that DOES exist at the current time (revive is kept)', () => {
+      // An undo that REVIVES a feature present at the current time must NOT be dropped
+      // by the anchor-level re-validation — the promoted target survives.
+      const existence = resolverWith(new Set(['M']), new Set(['nv1', 'nv2']));
+      const store = createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        domainEquals: (a, b) => a.tag === b.tag,
+        existence,
+        initial: { activeFeature: null },
+      });
+      const result = createCommandResult({
+        deleted: [f('A')],
+        created: [f('M'), v('nv1'), v('nv2')],
+      });
+      store.getState().applyUndoRedoResult({ tag: 'd1' }, result, {
+        featureId: f('M'),
+        vertexSelection: { ownerFeatureId: f('M'), vertexIds: new Set([v('nv1'), v('nv2')]) },
+      });
+      const s = store.getState();
+      expect(s.activeFeature).toBe(f('M'));
+      expect(s.vertexSelection).not.toBeNull();
+      expect(s.vertexSelection!.ownerFeatureId).toBe(f('M'));
+      expect([...s.vertexSelection!.vertexIds]).toEqual([v('nv1'), v('nv2')]);
+    });
+
+    it('does not disturb the dirty recomputation (revalidation only tightens selection)', () => {
+      // The anchor-level tightening must not perturb the projectDirty recomputation:
+      // an undo back to the saved domain still reads clean even when the (absent)
+      // selection is pruned in the same transition.
+      const existence = resolverWith(new Set<string>(), new Set<string>());
+      const store = createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        domainEquals: (a, b) => a.tag === b.tag,
+        existence,
+        initial: { activeFeature: f('A') },
+      });
+      store.getState().markProjectSaved(); // clean baseline at d0.
+      store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({ created: [f('A')] }));
+      // Undo back to the saved d0 while A is absent at the current time.
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, createCommandResult({ survived: [f('A')] }), {
+        featureId: f('A'),
+      });
+      expect(store.getState().activeFeature).toBeNull(); // ghost pruned.
+      expect(store.getState().projectDirty).toBe(false); // back to saved → clean.
+    });
+  });
+
   // 回帰 (finding): hydrateSettings is the LOAD / NEW project-settings half. The
   // timeline RANGE the slider reads (timelineMin/timelineMax) is a derived mirror
   // of projectSettings.timelineMin/MaxYear, and currentTime must be re-clamped into

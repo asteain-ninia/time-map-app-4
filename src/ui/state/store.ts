@@ -782,12 +782,44 @@ export function createSessionStore<S>(
         savedDomain !== null &&
         domainEquals(nextDomain, savedDomain) &&
         settingsMatchSaved();
+      // COMMIT THE DOMAIN FIRST (第11波 Fix C, #4=#5): symmetric with
+      // applyCommandResult (694-754). The injected existence resolver reads the LIVE
+      // committed root (App wires getRoot = () => store.getState().domain), so the
+      // anchor-level re-validation below must run AFTER `nextDomain` is in the store —
+      // otherwise it would resolve against the PRE-commit domain and prune nothing.
+      // This set reflects a fully-coherent post-commit state on its own (domain +
+      // recomputed dirty + focus + feature-history-level re-resolved selection); the
+      // anchor-level tightening below only ever REMOVES a ghost, never adds one, and
+      // never touches projectDirty.
       set({
         domain: nextDomain,
         projectDirty: !clean,
         displayControl: nextDisplayControl,
         ...selectionPatch(next),
       });
+      // 第11波 Fix C (#4=#5): the sibling of the 第10波 #5 heal on applyCommandResult.
+      // reresolveAfterStructureChange works at the FEATURE-HISTORY level, so undoing /
+      // redoing a multi-anchor feature's TIME-SLICE delete (or a ring-edit last-
+      // territory delete) — reported by makeCommand as `survived` because other anchors
+      // keep the history alive — cannot prune a feature/vertex that is absent at the
+      // CURRENT time but present at another anchor: a ghost activeFeature / vertex
+      // selection revives and lingers (#5 recurring on the undo/redo path). We heal it
+      // with the SAME anchor-level revalidateForTime the time-change path uses, against
+      // the injected existence port at the CURRENT time — the single existence truth源,
+      // re-implementing no time logic. Anything present at the current time (a normal
+      // undo/redo whose target is still drawn) is PRESERVED; anything the restored
+      // domain leaves absent at the current time drops out. Folded into a SECOND set()
+      // ONLY when it actually changed the selection (revalidateForTime is idempotent —
+      // no pruning ⇒ same reference), so the common case does no redundant redraw and
+      // the dirty flag committed above is untouched.
+      const revalidated = revalidateForTime(
+        next,
+        get().currentTime,
+        existenceAtTime(existence),
+      );
+      if (revalidated !== next) {
+        set(selectionPatch(revalidated));
+      }
     },
 
     setDomainState(nextDomain) {
