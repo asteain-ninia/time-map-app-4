@@ -20,6 +20,7 @@
 // SAME store.setActiveFeature path every selection uses (no second selection
 // source); the property panel then re-resolves to it automatically.
 
+import { useCallback } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -166,10 +167,13 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
  * FeaturesSection / EventsSection subscribe and pass down.
  *
  * THE AREA IS LIVE (bughunt review 穴1): the resolver reads the domain + time FRESH
- * per call and is a NEW closure each render, and the host re-renders on every
- * committed-domain change (a vertex add/delete swaps the `domain` reference), so the
- * panel's memo — keyed to the resolver reference — re-derives the area against the
- * CURRENT shape rather than a feature object frozen at selection time.
+ * per call, and its closure is `useCallback`-memoized on the exact area INPUTS
+ * (settings + domain + currentTime, bughunt #6). The host re-renders on every
+ * committed-domain change (a vertex add/delete swaps the `domain` reference), which
+ * yields a NEW resolver reference, so the panel's memo — keyed to that reference —
+ * re-derives the area against the CURRENT shape rather than a feature object frozen at
+ * selection time. When those inputs hold, the reference is stable, so a re-render from
+ * another source reuses the memoized area instead of re-resolving every frame.
  *
  * BOTH 末端 AND 集約 (bughunt review 穴2 / FR-35): the area is `resolveFeatureArea`
  * (U08's single derived-shape resolution — a leaf's own shape OR an aggregate's child
@@ -201,24 +205,35 @@ function PropertyPanelHost<S>(props: {
   const flattening = useStore(store, (s) => s.projectSettings.flattening);
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
-  void domain; // subscribe only: the resolver reads the domain fresh through getRoot.
-  void currentTime; // subscribe only: re-derive when the effective time changes.
-
-  const geoParams: GeoParams = createGeoParams(equatorLengthKm, flattening);
 
   // FR-20 / FR-35: the target feature's 面積（km²）, resolved LIVE from the domain +
-  // time effective now. A NEW closure each render (the host re-renders on any
-  // committed-domain / time / settings change), so the panel's area memo — keyed to
-  // this reference — re-derives against the CURRENT shape after a structural edit,
-  // never a feature object frozen at selection time (bughunt review 穴1). The area is
-  // the SINGLE derived-shape resolution `resolveFeatureArea` (a 末端's own shape OR an
-  // 集約's child union — the same source the map draws, 教訓 5.29 / FR-35 穴2), turned
-  // into km² by the geodesy area kernel. A point / line, an unresolvable / childless
-  // shape, or an unknown id yields `undefined` ⇒ the panel shows no 面積 row.
-  const resolveAreaKm2 = (featureId: FeatureId): number | undefined => {
+  // time effective now.
+  //
+  // MEMOIZED ON ITS INPUTS (bughunt #6 perf): the resolver is a `useCallback` keyed to
+  // the FR-109 settings + the committed `domain` + the effective `currentTime` — the
+  // exact inputs that can change the derived area. The panel's area memo is keyed to
+  // this resolver's reference, so a re-render that leaves those inputs unchanged reuses
+  // the memoized area instead of re-running the O(histories × anchors) featuresAt scan +
+  // boolean-union resolve every frame during a time scrub / playback. Because `domain`
+  // and `currentTime` ARE deps, a structural edit (domain swap) or a time move yields a
+  // NEW closure ⇒ the memo re-derives against the CURRENT shape — the穴1 liveness the
+  // previous "new closure every render" gave, now WITHOUT the per-frame recompute for
+  // inputs that did not move. The resolver still reads the root/time FRESH through
+  // getRoot/getTime (never a stale capture, 教訓 5.6); the deps only gate the closure.
+  //
+  // The area is the SINGLE derived-shape resolution `resolveFeatureArea` (a 末端's own
+  // shape OR an 集約's child union — the same source the map draws, 教訓 5.29 / FR-35
+  // 穴2), turned into km² by the geodesy area kernel. A point / line, an unresolvable /
+  // childless shape, or an unknown id yields `undefined` ⇒ the panel shows no 面積 row.
+  const resolveAreaKm2 = useCallback((featureId: FeatureId): number | undefined => {
+    const geoParams: GeoParams = createGeoParams(equatorLengthKm, flattening);
     const time = getTime();
     const root = getRoot();
-    const feature = featuresAt(root, time).find((f) => f.id === featureId);
+    // ONE featuresAt scan per resolve (bughunt #6): the effective feature set is read
+    // once and reused both to identify the target's kind and to build the AREA forest —
+    // the previous two calls doubled the O(histories × anchors) scan every frame.
+    const effective = featuresAt(root, time);
+    const feature = effective.find((f) => f.id === featureId);
     if (
       feature === undefined ||
       (feature.kind !== FEATURE_KIND.Leaf && feature.kind !== FEATURE_KIND.Aggregate)
@@ -228,7 +243,7 @@ function PropertyPanelHost<S>(props: {
     }
     // Build the forest over the AREA features so an aggregate's child union resolves
     // through the SAME U08 path the renderer uses (single truth source, 教訓 5.29).
-    const areaFeatures = featuresAt(root, time).filter(
+    const areaFeatures = effective.filter(
       (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
     );
     const forest = buildForest(areaFeatures);
@@ -244,7 +259,15 @@ function PropertyPanelHost<S>(props: {
       return undefined;
     }
     return multiPolygonAreaKm2(resolution.area, geoParams);
-  };
+    // Deps = the exact area INPUTS (bughunt #6): the FR-109 geodesic settings + the
+    // committed `domain` + the effective `currentTime`. When any moves, the closure —
+    // and thus the panel's area-memo key — changes, so the area re-derives against the
+    // live shape (穴1 liveness). When they hold, the reference is stable, so a re-render
+    // from another source reuses the memoized area (no per-frame re-resolve). `domain` /
+    // `currentTime` gate the closure only; the body still reads them FRESH through
+    // getRoot / getTime (never a stale capture, 教訓 5.6). getRoot / getTime are stable
+    // (built once in the composition root), listed for completeness.
+  }, [getRoot, getTime, equatorLengthKm, flattening, domain, currentTime]);
 
   return (
     <PropertyPanel<S>

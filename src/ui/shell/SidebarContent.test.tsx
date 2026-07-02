@@ -9,7 +9,23 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// FR-20 perf (bughunt #6): spy on the LIVE `featuresAt` lookup so a test can COUNT
+// how many O(histories × anchors) scans the area resolver runs. The real
+// implementation is preserved (delegated to) — only the call count is observed.
+// A holder object survives `vi.mock` hoisting (the factory captures it by reference).
+const featuresAtCalls = { count: 0 };
+vi.mock('../live-lookup', async (importActual) => {
+  const actual = await importActual<typeof import('../live-lookup')>();
+  return {
+    ...actual,
+    featuresAt: (...args: Parameters<typeof actual.featuresAt>) => {
+      featuresAtCalls.count += 1;
+      return actual.featuresAt(...args);
+    },
+  };
+});
 
 import { applyAddProposal, applyEditProposal } from '../../domain/editing/apply-proposal';
 import { createEditProposal } from '../../domain/consistency/index';
@@ -36,7 +52,7 @@ import { timePointYear } from '../../domain/time/time-point';
 
 import type { DomainRoot } from '../consistency-binding';
 import { featuresAt, verticesAt } from '../live-lookup';
-import { createSessionStore } from '../state/store';
+import { createSessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import { formatAreaKm2 } from '../property/messages';
 import { Sidebar } from './Sidebar';
 import { buildSidebarContent } from './SidebarContent';
@@ -360,5 +376,57 @@ describe('SidebarContent — 面積表示 (FR-20 / FR-35, bughunt review)', () =
 
     // No fabricated value: the 面積 row is ABSENT (not '0.00 km²').
     expect(screen.queryByTestId('area-row')).not.toBeInTheDocument();
+  });
+});
+
+// FR-20 perf (bughunt #6): the area resolver must not run its O(histories × anchors)
+// `featuresAt` scan TWICE per resolve, and re-renders that leave the area inputs
+// (domain / currentTime / geoParams) UNCHANGED must reuse the panel's memoized area
+// rather than re-deriving it every frame during a time scrub / playback. The fix
+// (a) computes the effective feature set ONCE inside the resolver and (b) memoizes the
+// resolver so its reference — the panel's area-memo key — is stable when its inputs are.
+describe('SidebarContent — 面積 resolve is not recomputed per frame (FR-20 perf, bughunt #6)', () => {
+  it('runs featuresAt ONCE per area resolve (no double scan) on a same-interval scrub', () => {
+    const a = squareLeaf('f-a', '尾張国', 0, 0, 2);
+    const root = withLeaf(emptyProject(), a, 1000);
+    const { store } = renderWith(root);
+    fireEvent.click(screen.getByTestId('feature-list-item-f-a'));
+    // The 面積 row is shown, so the resolver DID run and produced a value.
+    expect(screen.getByTestId('area-value').textContent).not.toBe('');
+
+    // Now count only the scans of a SINGLE fresh area resolution: scrub the time to a
+    // new instant WITHIN the same anchor interval (1000..1100) with the SAME committed
+    // domain. This re-renders both the 地物一覧 (FeaturesSection, exactly ONE featuresAt
+    // scan) and the property host (a fresh resolve). No feature-lookup churn occurs —
+    // the panel's `feature` memo is keyed to [featureLookup, targetFeatureId], both
+    // stable across a pure time move — and イベント一覧 subscribes only to `domain`
+    // (no scan). So the delta MUST be exactly: FeaturesSection(1) + area resolver(1) = 2.
+    // The pre-fix double `featuresAt` inside the resolver made the resolver cost 2, so
+    // the delta was 3.
+    featuresAtCalls.count = 0;
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1050), TIME_CHANGE_SOURCE.Slider);
+    });
+    // The area is unchanged (same shape at the new instant) but the row is still shown.
+    expect(screen.getByTestId('area-value').textContent).not.toBe('');
+    expect(featuresAtCalls.count).toBe(2);
+  });
+
+  it('reuses the memoized area (no resolve) on a re-render that leaves area inputs unchanged', () => {
+    const a = squareLeaf('f-a', '尾張国', 0, 0, 2);
+    const root = withLeaf(emptyProject(), a, 1000);
+    const { store } = renderWith(root);
+    fireEvent.click(screen.getByTestId('feature-list-item-f-a'));
+
+    // A selection re-validation (setActiveFeature to the SAME id) re-renders the panel
+    // via its selection subscription WITHOUT changing the area inputs (domain / time /
+    // geoParams). The host does NOT re-render (it subscribes to none of those slices),
+    // so its `resolveAreaKm2` reference is stable and the panel's area memo — keyed to
+    // [targetFeatureId, resolveAreaKm2] — is REUSED: the resolver runs zero times.
+    featuresAtCalls.count = 0;
+    act(() => {
+      store.getState().setActiveFeature(a.feature.id);
+    });
+    expect(featuresAtCalls.count).toBe(0);
   });
 });
