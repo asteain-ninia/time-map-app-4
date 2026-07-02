@@ -364,22 +364,28 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
             const modal = page.getByTestId('knife-inheritor-modal-root');
             if ((await modal.count()) > 0) {
               await shot(page, 'knife-inheritor-modal');
-              // Toggle A then B then A — gate aria-pressed exclusivity.
-              const a = page.getByTestId('knife-choose-a');
-              const bSel = page.getByTestId('knife-choose-b');
-              await a.click().catch(() => undefined);
+              // Toggle piece 0 then 1 then 0 — gate aria-pressed exclusivity. The
+              // n-way chooser (commit 01ed1d6) renders index-based buttons
+              // knife-choose-0 / knife-choose-1 (a vertical 2-point cut → 2 pieces),
+              // not the old A/B testids. Assert both are present so a stale testid can
+              // no longer空振り silently past this exclusivity check.
+              const a = page.getByTestId('knife-choose-0');
+              const bSel = page.getByTestId('knife-choose-1');
+              await expect(a).toBeVisible();
+              await expect(bSel).toBeVisible();
+              await a.click();
               const aPressed1 = await a.getAttribute('aria-pressed');
               const bPressed1 = await bSel.getAttribute('aria-pressed');
               if (aPressed1 === 'true' && bPressed1 === 'true') {
                 record('knife-choice-both-pressed', 'both inheritor choices aria-pressed=true');
               }
-              await bSel.click().catch(() => undefined);
+              await bSel.click();
               const aPressed2 = await a.getAttribute('aria-pressed');
               const bPressed2 = await bSel.getAttribute('aria-pressed');
               if (aPressed2 === 'true' && bPressed2 === 'true') {
                 record('knife-choice-both-pressed', 'both inheritor choices aria-pressed=true after toggle');
               }
-              await a.click().catch(() => undefined);
+              await a.click();
               await shot(page, 'knife-choice-toggled');
 
               await page.getByTestId('knife-confirm-inheritor').click();

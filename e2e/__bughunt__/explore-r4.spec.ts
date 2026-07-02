@@ -409,18 +409,29 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
                 await page.getByTestId('knife-rejected-dismiss').click().catch(() => undefined);
               }
 
-              // Phase 3: inheritor modal (FR-93). Choose a side (A) + confirm.
+              // Phase 3: inheritor modal (FR-93). Choose piece 0 + confirm. The n-way
+              // chooser (commit 01ed1d6) renders index-based buttons knife-choose-0 /
+              // knife-choose-1 (a 2-point vertical cut yields 2 pieces), not the old
+              // A/B testids. Assert the button is present so a stale testid can no
+              // longer空振り silently, then verify the selection took (aria-pressed).
               const inheritorRoot = page.getByTestId('knife-inheritor-modal-root');
               const inheritorConfirm = page.getByTestId('knife-confirm-inheritor');
               if (await inheritorRoot.isVisible().catch(() => false)) {
                 await shot(page, 'knife-inheritor');
-                await page.getByTestId('knife-choose-a').click().catch(() => undefined);
+                const choose0 = page.getByTestId('knife-choose-0');
+                await expect(choose0).toBeVisible();
+                await choose0.click();
+                await expect(choose0).toHaveAttribute('aria-pressed', 'true');
                 await page.waitForTimeout(80);
                 if (await inheritorConfirm.isEnabled().catch(() => false)) {
                   await inheritorConfirm.click();
                 } else {
-                  record('knife-confirm-inheritor-disabled', 'inheritor confirm disabled after choosing side A');
+                  record('knife-confirm-inheritor-disabled', 'inheritor confirm disabled after choosing piece 0');
                 }
+                // The modal must close after confirming (no stranded backdrop).
+                await inheritorRoot
+                  .waitFor({ state: 'detached', timeout: 4000 })
+                  .catch(() => record('knife-inheritor-stuck', 'inheritor modal did not close after confirm'));
                 await page.waitForTimeout(200);
 
                 // Phase 4: non-inherited side props form (re-uses AddPropertyForm).

@@ -329,8 +329,13 @@ async function knifeSplitVertical(
   await page.waitForTimeout(140);
   const modal = page.getByTestId('knife-inheritor-modal-root');
   if ((await modal.count()) === 0) return 'no-modal';
-  // Choose inheritor A and confirm.
-  await page.getByTestId('knife-choose-a').click().catch(() => undefined);
+  // n-way chooser (commit 01ed1d6): a vertical 2-point cut yields 2 pieces →
+  // knife-choose-0 / knife-choose-1 (index-based, not the old A/B testids). Assert
+  // the button is present so a stale testid can no longer空振り silently past the
+  // inheritor selection.
+  const choose0 = page.getByTestId('knife-choose-0');
+  await expect(choose0).toBeVisible();
+  await choose0.click();
   await page.getByTestId('knife-confirm-inheritor').click().catch(() => undefined);
   await page.waitForTimeout(120);
   const form = page.getByTestId('add-property-form');
@@ -500,7 +505,13 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
               await cc.click();
               await page.waitForTimeout(140);
               if ((await page.getByTestId('knife-inheritor-modal-root').count()) > 0) {
-                await page.getByTestId('knife-choose-b').click().catch(() => undefined);
+                // n-way chooser (commit 01ed1d6): a horizontal 2-point cut yields 2
+                // pieces → knife-choose-0 / knife-choose-1 (index-based, not A/B). Pick
+                // piece 1 (the old "b" choice); assert it is present so a stale testid
+                // can no longer空振り silently past this second inheritor selection.
+                const choose1 = page.getByTestId('knife-choose-1');
+                await expect(choose1).toBeVisible();
+                await choose1.click();
                 await page.getByTestId('knife-confirm-inheritor').click().catch(() => undefined);
                 await page.waitForTimeout(120);
                 if (await page.getByTestId('add-property-form').isVisible().catch(() => false)) {
@@ -546,24 +557,30 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
         await page.waitForTimeout(70);
         await page.mouse.click(sx + 55, sy + 30);
         await page.waitForTimeout(120);
-        // A confirm / inheritor step may follow (re-uses knife inheritor flow).
-        const mConfirm = page.getByTestId('knife-confirm-inheritor');
-        if (await mConfirm.isVisible().catch(() => false)) {
-          await page.getByTestId('knife-choose-a').click().catch(() => undefined);
-          await mConfirm.click().catch(() => undefined);
+        // U30 MergeOptionsDialog (FR-52): merge-confirm no longer re-uses the knife
+        // inheritor flow — selecting two siblings opens the parent/property options
+        // dialog (merge-options-dialog). The seeded defaults (親なし + inherit first)
+        // reproduce the prior hardcoded merge, so a plain 確定 (merge-options-confirm)
+        // runs the merge. This probe WANTS the merge to happen (it asserts the count
+        // drops), so we CONFIRM and wait for the dialog's input-blocking backdrop to
+        // detach — otherwise a stranded dialog swallows every later click.
+        const mDialog = page.getByTestId('merge-options-dialog');
+        if (await mDialog.isVisible().catch(() => false)) {
+          await shot(page, 'merge-options');
+          await page.getByTestId('merge-options-confirm').click().catch(() => undefined);
+          await mDialog
+            .waitFor({ state: 'detached', timeout: 6000 })
+            .catch(() => record('merge-options-stuck', 'merge-options dialog did not close after confirm'));
           await page.waitForTimeout(120);
-          if (await page.getByTestId('add-property-form').isVisible().catch(() => false)) {
-            await page.getByTestId('add-name').fill('merged').catch(() => undefined);
-            await page.getByTestId('add-save').click().catch(() => undefined);
-            await page.waitForTimeout(220);
-            if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
-              await page.getByTestId('conflict-cancel').click().catch(() => undefined);
-            }
+          if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
+            await page.getByTestId('conflict-cancel').click().catch(() => undefined);
           }
         } else {
-          // Some merge implementations confirm via a dedicated control or auto-apply.
+          // No options dialog appeared: the two clicks did not select a mergeable
+          // sibling pair. Record it (the merge path was not exercised) rather than
+          // silently pretending it merged.
           const msg = ((await page.getByTestId('knife-message').textContent().catch(() => '')) ?? '').trim();
-          if (msg) record('merge-flow-note', `merge produced message="${msg}" (no inheritor confirm shown)`);
+          record('merge-no-options-dialog', `merge did not open merge-options-dialog${msg ? ` (message="${msg}")` : ''}`);
         }
         await shot(page, 'merged');
         await checkCamera(page, 'after-merge');
