@@ -6,6 +6,13 @@
 
 ## 確定した運用上の決定
 
+- D52(2026-07-02・バグハント第13波 最終 = 2確定/2反証 を根治 + バグハントライン収束判断): 未スイープ角度(a11y・大規模perf・例外/エラー境界・fresh)を狙撃。各 test-first→敵対レビュー(両 SOUND)→フル vitest 緑→個別コミット。
+  - **#1(HIGH・perf, NFR-5.2)** `63a964c`: revalidateForTime が時刻変更 tick 毎に、選択頂点 K 個+アクティブ地物について existence port を呼び、各呼び出しが featuresAt/verticesAt→全 histories resolveAt→createVertexStore で O(V_total) store を新規構築し .has() 1回で破棄=O(K·V_total)/tick。実測 V_total≈6517・K=300→272ms/tick(再生 100ms 予算飽和・5000地物でフリーズ)。→ live-lookup.ts の featuresAt/verticesAt を (root identity, complete(time) 値等価) でメモ化(bounded LRU cap2, display-resolution-cache と同型・既存 complete/completeEquals 流用)。1 tick 内 K 回→1 build に collapse=O(K+V_total)。全消費者(renderer/hit-test/binding/knife-merge-reparent/existence)が透過的に恩恵。上位 API 無改変。root swap/time 変化で必ず再構築=stale なし。
+  - **#2(MED・a11y, WCAG 4.1.2)** `23a344b`: AnchorTimeBar の細バー(占有率<8%)は可視ラベル span 省略で button の子が消えアクセシブル名が空。→ 各バー button に無条件 aria-label(list row と同一 formatTimePoint + openEndLabel)。可視ラベルゲートは不変。
+  - **バグハントライン収束判断**: 本セッションの波別確定数は 波10=7 → 波11=6 → 波12=4 → 波13=2 と単調逓減、波13 は反証2件。主要バグクラス(anchor-store 孤児/focus-guard/選択衛生/revalidate 対称/シーム描画/属性編集データ安全/perf)は**単一真実源化で閉じた**。**バグハントを一旦収束**(dry 接近)と判断。累計 波5-8=22 + 波10-13(7+6+4+2)=19 = **41確定 全根治**。
+  - **余力/将来(非要件・良性・レビュー確認済)**: 単発低コスト改善(全体表示復帰コマンド/ステータス座標表示・監査 D43 由来の nicety)、pre-existing 良性項目(displayControl.focus 存在heal未適用=表示focusのみ / preview hole の ±360枝差=非可視 / 明示錨pick+scrub の ghost undo=データ損失なし)。
+  - 教訓: perf バグは NFR 規模(5000地物)を実 probe した finder が O(K·V_total) を実測捕捉(机上でなく実測が決め手)。live-lookup メモは表示 cache と同型で (root,time) 単一真実源を全消費者で共有。
+
 - D51(2026-07-02・バグハント第12波 新鮮角度 = 4確定/1反証 を全根治): 波10/11 で閉じた seam(anchor-store 孤児/focus-guard/選択衛生/revalidate)を再マイニングせず、未スイープの新鮮角度(永続 roundtrip/repair・描画/LOD/ラベル/z順・時間/再生レース・新鮮)を狙撃→反証1のみで実 HIGH バグを捕捉(まだ dry でない)。各 test-first→敵対レビュー→フル vitest 緑→個別コミット。
   - **#1(HIGH) 多錨地物の属性編集が別時刻の錨を破壊** `438f441`: PropertyPanel の feature メモ(deps=[featureLookup,targetFeatureId])が currentTime 非依存で、時刻依存 featureLookup + 多錨 id 選択維持により選択時スナップショット(旧錨 Alpha)に凍結。錨リスト(FR-84)で時刻移動しても form は Alpha 表示のまま editTime だけ新錨(Beta)へ追従→1属性編集+保存で Beta へ Alpha 全属性を上書き破壊。→ feature メモに currentTime dep 追加 + draft 再seed 契機を feature.id だけでなく編集対象錨(anchorId)へ拡張(選択境界を 地物→地物×錨)。同一地物・同一錨 churn では draft 保持。
   - **#2(HIGH) 開始/終了年に WRITE 境界ガード欠如→範囲外年で .tmap 全損** `438f441`: BasicInfoForm の年(type=number)が巨大/負/小数/Infinity を受理・書込経路は無検証で Committed。READ 側 schema の yearSchema(int かつ ±MAX_YEAR)が load 時に範囲外年で manifest 全体を Invalid 拒否→ファイルが二度と開けず全損(書込⊆読込の非対称)。timeline 年は isPersistedYear で WRITE ガード済だが基本情報だけ取り残し。→ handleSave の dispatch 前に isPersistedYear(timeline と同一・単一真実源)で honest-failure。
