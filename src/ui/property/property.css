@@ -86,6 +86,15 @@
   border-radius: var(--radius);
 }
 
+/* FR-20: the read-only 面積（km²）row for a 面 (leaf) feature. It reuses the
+   .basic-info__field layout (label above value) but shows a plain derived value
+   with no input chrome — it is display-only, never part of the edit draft. */
+.basic-info__field--readonly output {
+  font: inherit;
+  color: var(--c-text);
+  padding: 4px 0;
+}
+
 .basic-info__colors {
   display: flex;
   flex-wrap: wrap;

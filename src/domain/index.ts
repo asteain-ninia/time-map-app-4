@@ -244,6 +244,7 @@ export {
   ringAreaKm2,
   polygonAreaKm2,
   shapeAreaKm2,
+  multiPolygonAreaKm2,
   // U05: periodic-seam ring continuation / inverse normalization / ±360°
   // world-wrap replication (tech policy R3, FR-07 / FR-12).
   LONGITUDE_PERIOD,

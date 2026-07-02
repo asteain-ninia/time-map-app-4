@@ -26,6 +26,7 @@ export {
   ringAreaKm2,
   polygonAreaKm2,
   shapeAreaKm2,
+  multiPolygonAreaKm2,
 } from './geodesy';
 
 // U05: periodic-seam ring continuation, inverse normalization and ±360°

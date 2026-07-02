@@ -22,6 +22,15 @@ export const PROPERTY_STRINGS = {
   nameLabel: '名前',
   startYearLabel: '開始年',
   endYearLabel: '終了年',
+  /**
+   * 面情報の面積 (FR-20). A read-only DERIVED value shown only for leaf (面) features:
+   * the km² area of the resolved shape at the edit time, computed by the geodesy
+   * unit's shapeAreaKm2 (単一真実源, src/domain/geo/geodesy.ts). Point / line features
+   * have no area and never show this row. 赤道長・扁平率 (FR-109) と形状編集で再計算される。
+   */
+  areaLabel: '面積',
+  /** Area unit — square kilometres (FR-20 / 技術方針 §2.9). */
+  areaUnit: 'km²',
   colorSectionTitle: '色情報',
   autoColorLabel: '自動配色を許可',
   fillColorLabel: '塗り色',
@@ -71,3 +80,21 @@ export const PROPERTY_STRINGS = {
    */
   editNotWired: '属性編集の保存はこのビルドでは未対応です。',
 } as const;
+
+/**
+ * Format a shape area (km²) for the read-only 面積 row (FR-20). Mirrors the survey
+ * unit's formatDistanceKm (ja-JP grouping + 2 fraction digits) so magnitudes read
+ * consistently across the app (教訓 5.30). A non-finite value (e.g. a degenerate
+ * shape whose vertices could not all resolve upstream) surfaces a dash rather than
+ * "NaN km²" — the row is honest about an unresolvable value without crashing.
+ */
+export function formatAreaKm2(km2: number): string {
+  if (!Number.isFinite(km2)) {
+    return `— ${PROPERTY_STRINGS.areaUnit}`;
+  }
+  const rounded = km2.toLocaleString('ja-JP', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${rounded} ${PROPERTY_STRINGS.areaUnit}`;
+}

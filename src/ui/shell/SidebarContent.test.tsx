@@ -8,24 +8,36 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { applyAddProposal, applyEditProposal } from '../../domain/editing/apply-proposal';
 import { createEditProposal } from '../../domain/consistency/index';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
-import { createLeafFeature, withAttributes, type LeafFeature } from '../../domain/feature';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  withAttributes,
+  type AggregateFeature,
+  type LeafFeature,
+} from '../../domain/feature';
 import type { FeatureSnapshot } from '../../domain/editing/edit-flow';
 import { createShape, createTerritoryRing } from '../../domain/ring';
 import { createVertex, type Vertex } from '../../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createGeoParams } from '../../domain/geo/geo-params';
+import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
+import { buildForest } from '../../domain/hierarchy/forest';
+import { resolveFeatureArea } from '../../domain/hierarchy/resolve-shape';
+import { FEATURE_KIND } from '../../domain/feature';
 import type { AddSnapshot } from '../../domain/add/index';
 import { getCalendar } from '../../domain/time/calendar';
 import { timePointYear } from '../../domain/time/time-point';
 
 import type { DomainRoot } from '../consistency-binding';
+import { featuresAt, verticesAt } from '../live-lookup';
 import { createSessionStore } from '../state/store';
+import { formatAreaKm2 } from '../property/messages';
 import { Sidebar } from './Sidebar';
 import { buildSidebarContent } from './SidebarContent';
 
@@ -46,15 +58,24 @@ function emptyProject(): DomainRoot {
   };
 }
 
-function squareLeaf(idRaw: string, name: string): { feature: LeafFeature; vertices: Vertex[] } {
+function squareLeaf(
+  idRaw: string,
+  name: string,
+  lonOffset = 0,
+  latOffset = 0,
+  side = 2,
+): { feature: LeafFeature; vertices: Vertex[] } {
   const corners = [
     [0, 0],
-    [2, 0],
-    [2, 2],
-    [0, 2],
+    [side, 0],
+    [side, side],
+    [0, side],
   ];
   const vertices = corners.map((c, i) =>
-    createVertex(asVertexId(`${idRaw}-v${i}`), { lon: c[0]!, lat: c[1]! }),
+    createVertex(asVertexId(`${idRaw}-v${i}`), {
+      lon: c[0]! + lonOffset,
+      lat: c[1]! + latOffset,
+    }),
   );
   const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
   const feature = createLeafFeature(
@@ -209,5 +230,135 @@ describe('SidebarContent — HB-3 wiring', () => {
     const row = within(events).getByText('f-5-4');
     expect(row).toBeInTheDocument();
     expect(row.textContent?.trim()).not.toBe('');
+  });
+});
+
+// FR-20 / FR-35 — the property panel's 面積（km²）row over the LIVE host wiring. The
+// host resolves the area from the CURRENT domain + time + FR-109 store settings, so
+// it must (穴1) re-derive after a structural edit that keeps the same feature id, and
+// (穴2) show a 集約 feature's child-union area, not just a 末端's own shape.
+describe('SidebarContent — 面積表示 (FR-20 / FR-35, bughunt review)', () => {
+  /** GeoParams the host derives from the store's default projectSettings (FR-109). */
+  function hostGeoParams(store: ReturnType<typeof renderWith>['store']) {
+    const s = store.getState().projectSettings;
+    return createGeoParams(s.equatorLengthKm, s.flattening);
+  }
+
+  /** The area the host WOULD compute for `featureId` at the current time (single truth
+   * source: the SAME resolveFeatureArea + geodesy kernel the host uses). */
+  function expectedAreaKm2(
+    store: ReturnType<typeof renderWith>['store'],
+    featureId: ReturnType<typeof asFeatureId>,
+  ): number {
+    const root = store.getState().domain;
+    const time = store.getState().currentTime;
+    const areaFeatures = featuresAt(root, time).filter(
+      (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
+    );
+    const forest = buildForest(areaFeatures);
+    const resolution = resolveFeatureArea(forest, verticesAt(root, time), featureId);
+    if (resolution.status === 'failed') throw new Error('fixture resolution failed');
+    return multiPolygonAreaKm2(resolution.area, hostGeoParams(store));
+  }
+
+  it('re-derives the leaf 面積 after a structural (shape) edit — no stale value (穴1)', () => {
+    const a = squareLeaf('f-a', '尾張国', 0, 0, 2); // 2×2 square
+    const root = withLeaf(emptyProject(), a, 1000);
+    const { store } = renderWith(root);
+
+    fireEvent.click(screen.getByTestId('feature-list-item-f-a'));
+    const before = screen.getByTestId('area-value').textContent;
+    expect(before).toBe(formatAreaKm2(expectedAreaKm2(store, a.feature.id)));
+
+    // Commit a STRUCTURAL edit: the SAME feature id, a LARGER 4×4 shape (new vertex
+    // coordinates). This swaps the committed `domain` reference; the panel keys its
+    // resolved feature to the id (教訓 5.2), so ONLY a live re-resolution reflects the
+    // new area. A stale memo (bughunt review 穴1) would keep the old 2×2 value.
+    const bigger = squareLeaf('f-a', '尾張国', 0, 0, 4); // same id, 4×4 square
+    const nextRoot = applyEditProposal(
+      store.getState().domain,
+      createEditProposal(bigger.feature.id, timePointYear(1000), {
+        feature: bigger.feature,
+        vertices: bigger.vertices,
+      }),
+      calendar,
+    );
+    act(() => {
+      store.getState().setDomainState(nextRoot);
+    });
+
+    const after = screen.getByTestId('area-value').textContent;
+    expect(after).not.toBe(before);
+    expect(after).toBe(formatAreaKm2(expectedAreaKm2(store, bigger.feature.id)));
+  });
+
+  it('shows an 集約 feature 面積 = child union, not just 末端 (FR-35, 穴2)', () => {
+    // Two edge-adjacent child leaves [0,2]² and [2,4]×[0,2] under one aggregate parent.
+    const a = squareLeaf('child-a', 'ca', 0, 0, 2); // [0,2]×[0,2]
+    const b = squareLeaf('child-b', 'cb', 2, 0, 2); // [2,4]×[0,2] — adjacent on x=2
+    const childA: LeafFeature = { ...a.feature, parentId: asFeatureId('agg') };
+    const childB: LeafFeature = { ...b.feature, parentId: asFeatureId('agg') };
+    const aggregate: AggregateFeature = createAggregateFeature(
+      asFeatureId('agg'),
+      createBasicAttributes('尾張＋三河', 1000, 1100),
+      color,
+      [childA.id, childB.id],
+    );
+    let root = withLeaf(emptyProject(), { feature: childA, vertices: a.vertices }, 1000);
+    root = withLeaf(root, { feature: childB, vertices: b.vertices }, 1000);
+    root = applyAddProposal(
+      root,
+      createEditProposal(aggregate.id, timePointYear(1000), {
+        feature: aggregate,
+        vertices: [],
+        sharedCandidateIds: new Map(),
+      }),
+    );
+    const { store } = renderWith(root);
+
+    // Select the AGGREGATE (via the store, the same path the 地物一覧 uses).
+    act(() => {
+      store.getState().setActiveFeature(aggregate.id);
+    });
+
+    // The 面積 row is present for the aggregate (穴2: NOT leaf-only) and equals the
+    // child UNION area — the two adjacent squares union to a 4×2 rectangle, which is
+    // what resolveFeatureArea returns and the geodesy kernel measures (単一真実源).
+    expect(screen.getByTestId('area-row')).toBeInTheDocument();
+    const shown = screen.getByTestId('area-value').textContent;
+    expect(shown).toBe(formatAreaKm2(expectedAreaKm2(store, aggregate.id)));
+    // Sanity: the union area exceeds a single child's area (it spans both children).
+    expect(expectedAreaKm2(store, aggregate.id)).toBeGreaterThan(
+      expectedAreaKm2(store, childA.id),
+    );
+  });
+
+  it('shows NO 面積 row for a CHILDLESS 集約 — no fabricated 0 (集約穴)', () => {
+    // A childless aggregate (or one whose only children are point / line) resolves via
+    // resolveFeatureArea to status 'ok' + EMPTY_MULTI_POLYGON, so the km² kernel would
+    // yield 0. The panel must show NO 面積 row (parity with the map, which draws nothing)
+    // rather than a fabricated '0.00 km²' — the honest-stub contract (bughunt review 集約穴).
+    const aggregate: AggregateFeature = createAggregateFeature(
+      asFeatureId('agg-empty'),
+      createBasicAttributes('空集約', 1000, 1100),
+      color,
+      [], // no children → empty derived shape
+    );
+    const root = applyAddProposal(
+      emptyProject(),
+      createEditProposal(aggregate.id, timePointYear(1000), {
+        feature: aggregate,
+        vertices: [],
+        sharedCandidateIds: new Map(),
+      }),
+    );
+    const { store } = renderWith(root);
+
+    act(() => {
+      store.getState().setActiveFeature(aggregate.id);
+    });
+
+    // No fabricated value: the 面積 row is ABSENT (not '0.00 km²').
+    expect(screen.queryByTestId('area-row')).not.toBeInTheDocument();
   });
 });

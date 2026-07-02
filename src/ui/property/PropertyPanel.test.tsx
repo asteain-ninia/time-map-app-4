@@ -12,13 +12,19 @@ import {
   createAnchorEntry,
 } from '../../domain/anchor-series';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
-import { createPointFeature, type Feature } from '../../domain/feature';
+import { createCoordinate, type WorldCoordinate } from '../../domain/coordinate';
+import { createGeoParams } from '../../domain/geo/geo-params';
+import { shapeAreaKm2 } from '../../domain/geo/geodesy';
+import { createLeafFeature, createPointFeature, type Feature } from '../../domain/feature';
 import {
   asAnchorId,
   asFeatureId,
+  asRingId,
   asVertexId,
   type FeatureId,
+  type VertexId,
 } from '../../domain/ids';
+import { createShape, createTerritoryRing } from '../../domain/ring';
 import { ownerLookupFromMap } from '../../domain/selection';
 import { getCalendar } from '../../domain/time/calendar';
 import {
@@ -40,7 +46,7 @@ import type {
 } from './contracts';
 import { ANCHOR_INTERVAL_OP } from './contracts';
 import { PropertyPanel } from './PropertyPanel';
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, formatAreaKm2 } from './messages';
 import { STYLE_STRINGS } from './style-section';
 
 const cal = getCalendar('gregorian');
@@ -57,6 +63,37 @@ function featureA(): Feature {
 
 function featureB(): Feature {
   return createPointFeature(fB, createBasicAttributes('武田領', 1540, 1582), color, vB1);
+}
+
+// FR-20 area fixtures: a 面 (leaf) feature `L` whose single territory ring is a
+// unit square in world coordinates (0,0)-(1,1)-(1,0)... resolved through a vertex
+// lookup. Point / line features carry no shape, so only this leaf should show a
+// 面積 row.
+const fL = asFeatureId('L');
+const vL1 = asVertexId('L-v1');
+const vL2 = asVertexId('L-v2');
+const vL3 = asVertexId('L-v3');
+const vL4 = asVertexId('L-v4');
+
+const LEAF_VERTICES: ReadonlyMap<VertexId, WorldCoordinate> = new Map([
+  [vL1, createCoordinate(0, 0)],
+  [vL2, createCoordinate(1, 0)],
+  [vL3, createCoordinate(1, 1)],
+  [vL4, createCoordinate(0, 1)],
+]);
+
+function resolveLeafVertex(id: VertexId): WorldCoordinate | undefined {
+  return LEAF_VERTICES.get(id);
+}
+
+function featureL(): Feature {
+  const ring = createTerritoryRing(asRingId('L-r1'), [vL1, vL2, vL3, vL4]);
+  return createLeafFeature(
+    fL,
+    createBasicAttributes('尾張国', 1560, 1582),
+    color,
+    createShape([ring]),
+  );
 }
 
 function seriesFor(): AnchorSeries {
@@ -88,10 +125,11 @@ function makeStore(opts?: { active?: boolean; vertices?: boolean; mode?: 'view' 
 // ID, not the value object, so a re-resolve of the SAME feature does not churn the
 // draft / message.
 const featureLookup: FeatureLookup = {
-  featureAt: (id) => (id === fA ? featureA() : id === fB ? featureB() : null),
+  featureAt: (id) =>
+    id === fA ? featureA() : id === fB ? featureB() : id === fL ? featureL() : null,
 };
 const anchorLookup: AnchorSeriesLookup = {
-  anchorSeriesOf: (id) => (id === fA || id === fB ? seriesFor() : null),
+  anchorSeriesOf: (id) => (id === fA || id === fB || id === fL ? seriesFor() : null),
 };
 const ownerLookup = ownerLookupFromMap(
   new Map([
@@ -506,5 +544,131 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12, 教訓 5.7)', () 
       dispatchAnchorInterval: () => {},
     });
     expect(screen.queryByTestId('anchor-interval-a1')).not.toBeInTheDocument();
+  });
+});
+
+// FR-20 / FR-35: a 面 feature's プロパティパネル shows its 面積（km²）as a read-only
+// derived row, for BOTH a 末端 (leaf) AND an 集約 (aggregate) feature. The value comes
+// from the HOST's `resolveAreaKm2(id)` port (which resolves the live shape + geoParams
+// via the single truth source — see SidebarContent tests) — this unit only asks by ID
+// and displays. It re-derives when the port returns a new value (a structural / 赤道長
+// change swaps the port reference upstream). Point / line features have no area and
+// never show the row; an unwired / undefined port shows no row (honest-stub).
+describe('PropertyPanel — 面情報の面積表示 (FR-20 / FR-35)', () => {
+  const GEO = createGeoParams(40000, 0.0034);
+
+  // The leaf fixture's resolved shape area (the value the real host would compute).
+  const LEAF_AREA = shapeAreaKm2(
+    createShape([createTerritoryRing(asRingId('L-r1'), [vL1, vL2, vL3, vL4])]),
+    resolveLeafVertex,
+    GEO,
+  );
+
+  function makeLeafStore() {
+    return createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: fL },
+    });
+  }
+
+  function renderAreaPanel(
+    store: ReturnType<typeof makeLeafStore>,
+    resolveAreaKm2: (id: FeatureId) => number | undefined,
+  ) {
+    return render(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        resolveAreaKm2={resolveAreaKm2}
+      />,
+    );
+  }
+
+  it('shows the 面積 row for a leaf feature with the value the port returns', () => {
+    renderAreaPanel(makeLeafStore(), () => LEAF_AREA);
+    expect(screen.getByTestId('area-row')).toBeInTheDocument();
+    expect(screen.getByTestId('area-value')).toHaveTextContent(formatAreaKm2(LEAF_AREA));
+  });
+
+  it('re-derives the 面積 when the port returns a NEW value (FR-109 / 構造編集後, 教訓 5.3)', () => {
+    // The panel is keyed to the target ID, so a re-render that swaps the resolver
+    // (the host does this on a 赤道長 change OR a structural edit — the domain
+    // reference changes) MUST reflect the new value, proving the display is derived
+    // from the live port, not cached against the feature object (bughunt review 穴1).
+    const store = makeLeafStore();
+    const { rerender } = renderAreaPanel(store, () => LEAF_AREA);
+    expect(screen.getByTestId('area-value')).toHaveTextContent(formatAreaKm2(LEAF_AREA));
+
+    const bigger = LEAF_AREA * 4;
+    rerender(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        resolveAreaKm2={() => bigger}
+      />,
+    );
+    expect(screen.getByTestId('area-value')).toHaveTextContent(formatAreaKm2(bigger));
+  });
+
+  it('shows the 面積 row for an AGGREGATE feature too (FR-35, bughunt review 穴2)', () => {
+    // The panel is NOT leaf-gated: any feature id whose port returns a value shows the
+    // row. featureA stands in as the selected feature; the host would resolve an
+    // aggregate's child-union area — here the port returns it directly.
+    const AGG_AREA = LEAF_AREA * 3;
+    render(
+      <PropertyPanel
+        store={makeStore({ active: true })}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        resolveAreaKm2={(id) => (id === fA ? AGG_AREA : undefined)}
+      />,
+    );
+    expect(screen.getByTestId('area-row')).toBeInTheDocument();
+    expect(screen.getByTestId('area-value')).toHaveTextContent(formatAreaKm2(AGG_AREA));
+  });
+
+  it('does NOT show the 面積 row when the port returns undefined (point/line — no area)', () => {
+    // A point / line — or any feature the host resolves as arealess — yields undefined.
+    render(
+      <PropertyPanel
+        store={makeStore({ active: true })}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        resolveAreaKm2={() => undefined}
+      />,
+    );
+    expect(screen.getByTestId('basic-info')).toBeInTheDocument();
+    expect(screen.queryByTestId('area-row')).not.toBeInTheDocument();
+  });
+
+  it('does NOT show the 面積 row when the host has not wired the area port (honest-stub)', () => {
+    // No resolveAreaKm2: the feature still renders, but with no fabricated area value
+    // (no dead / guessed row, 教訓 5.7).
+    render(
+      <PropertyPanel
+        store={makeLeafStore()}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    expect(screen.getByTestId('basic-info')).toBeInTheDocument();
+    expect(screen.queryByTestId('area-row')).not.toBeInTheDocument();
   });
 });

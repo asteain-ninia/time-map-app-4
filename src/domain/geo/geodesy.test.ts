@@ -16,6 +16,7 @@ import {
   equirectangularDistanceKm,
   greatCircleDistanceKm,
   lineLengthKm,
+  multiPolygonAreaKm2,
   polygonAreaKm2,
   ringAreaKm2,
   shapeAreaKm2,
@@ -196,6 +197,52 @@ describe('polygonAreaKm2 (territory + / hole -)', () => {
     const shape = createShape([outer]);
     const k = 40000 / 360;
     expect(shapeAreaKm2(shape, resolve, EARTH)).toBeCloseTo(40 * k * (40 * k), 2);
+  });
+});
+
+// multiPolygonAreaKm2 (FR-20 / FR-35): area over an already-RESOLVED GeoMultiPolygon
+// — the shape an aggregate's U08 child-union (resolveFeatureArea) returns. Same
+// territory(+)/hole(−) rule as polygonAreaKm2, ring sign decided by POSITION (index
+// 0 outer, 1.. holes), sharing the single ringAreaKm2 kernel.
+describe('multiPolygonAreaKm2 (resolved GeoMultiPolygon)', () => {
+  const k = 40000 / 360;
+
+  it('is 0 for the empty multi-polygon', () => {
+    expect(multiPolygonAreaKm2([], EARTH)).toBe(0);
+  });
+
+  it('sums disjoint pieces (飛び地は全片加算, 教訓5.1)', () => {
+    const a = [c(0, 0), c(10, 0), c(10, 20), c(0, 20)]; // 10×20
+    const b = [c(30, 0), c(40, 0), c(40, 10), c(30, 10)]; // 10×10
+    const total = multiPolygonAreaKm2([[a], [b]], EARTH);
+    const expected = 10 * k * (20 * k) + 10 * k * (10 * k);
+    expect(total).toBeCloseTo(expected, 2);
+  });
+
+  it('subtracts a hole (index 1..) from its outer (index 0)', () => {
+    const outer = [c(0, 0), c(40, 0), c(40, 40), c(0, 40)];
+    const hole = [c(10, 10), c(20, 10), c(20, 20), c(10, 20)];
+    const total = multiPolygonAreaKm2([[outer, hole]], EARTH);
+    const expected = 40 * k * (40 * k) - 10 * k * (10 * k);
+    expect(total).toBeCloseTo(expected, 2);
+  });
+
+  it('matches shapeAreaKm2 for a single-outer piece (one kernel, 教訓5.29)', () => {
+    const ring = [c(0, 0), c(1, 0), c(1, 1), c(0, 1)]; // unit-square in degrees
+    const viaMulti = multiPolygonAreaKm2([[ring]], EARTH);
+    const shape = createShape([
+      createTerritoryRing(asRingId('t'), [
+        asVertexId('u0'), asVertexId('u1'), asVertexId('u2'), asVertexId('u3'),
+      ]),
+    ]);
+    const resolveUnit = (id: VertexId): WorldCoordinate | undefined =>
+      new Map<VertexId, WorldCoordinate>([
+        [asVertexId('u0'), c(0, 0)],
+        [asVertexId('u1'), c(1, 0)],
+        [asVertexId('u2'), c(1, 1)],
+        [asVertexId('u3'), c(0, 1)],
+      ]).get(id);
+    expect(viaMulti).toBeCloseTo(shapeAreaKm2(shape, resolveUnit, EARTH), 6);
   });
 });
 

@@ -24,13 +24,18 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { AnchorSeries } from '../../domain/anchor-series';
-import { featureDisplayName, type Feature } from '../../domain/feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/feature';
+import { createGeoParams, type GeoParams } from '../../domain/geo/geo-params';
+import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
+import { isMultiPolygonEmpty } from '../../domain/geometry/types';
+import { buildForest } from '../../domain/hierarchy/forest';
+import { resolveFeatureArea } from '../../domain/hierarchy/resolve-shape';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
-import { featuresAt } from '../live-lookup';
+import { featuresAt, verticesAt } from '../live-lookup';
 import { type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import {
   PropertyPanel,
@@ -135,8 +140,10 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     eventsContent: <EventsSection store={store} getRoot={getRoot} />,
     featuresContent: <FeaturesSection store={store} getRoot={getRoot} getTime={getTime} />,
     propertiesContent: (
-      <PropertyPanel<S>
+      <PropertyPanelHost<S>
         store={store}
+        getRoot={getRoot}
+        getTime={getTime}
         featureLookup={featureLookup}
         anchorLookup={anchorLookup}
         editDispatch={dispatch}
@@ -147,6 +154,111 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       />
     ),
   };
+}
+
+/**
+ * Subscribing host for the U32 {@link PropertyPanel}. It reads the LIVE FR-109
+ * geodesic settings (赤道長・扁平率) and the committed domain / current time from the
+ * store, derives the {@link GeoParams}, and hands the panel a `resolveAreaKm2(id)`
+ * port so a 面 feature's 面積（km²）row (FR-20 / FR-35) re-derives whenever those
+ * change (教訓 5.3, no stale cache). This keeps the panel a pure prop-consumer
+ * (port-clean, unit-testable) while the host owns reactivity — mirroring how
+ * FeaturesSection / EventsSection subscribe and pass down.
+ *
+ * THE AREA IS LIVE (bughunt review 穴1): the resolver reads the domain + time FRESH
+ * per call and is a NEW closure each render, and the host re-renders on every
+ * committed-domain change (a vertex add/delete swaps the `domain` reference), so the
+ * panel's memo — keyed to the resolver reference — re-derives the area against the
+ * CURRENT shape rather than a feature object frozen at selection time.
+ *
+ * BOTH 末端 AND 集約 (bughunt review 穴2 / FR-35): the area is `resolveFeatureArea`
+ * (U08's single derived-shape resolution — a leaf's own shape OR an aggregate's child
+ * union, the SAME source the map draws), converted to km² by the geodesy area kernel.
+ * Point / line features and unresolvable / childless shapes yield `undefined` (no row).
+ *
+ * WHY the LIVE UI settings (not domain.settings.geo): the project's geodesic
+ * parameters live in the UI store's `projectSettings` (equatorLengthKm / flattening,
+ * FR-109); the domain-side `settings.geo` is only synced at save. Reading the store
+ * slices here subscribes the host so an equator/flattening edit reflects immediately
+ * (単一真実源: the same values the survey readout derives from).
+ */
+function PropertyPanelHost<S>(props: {
+  readonly store: StoreApi<SessionStore<S>>;
+  readonly getRoot: () => DomainProject;
+  readonly getTime: () => TimePoint;
+  readonly featureLookup: FeatureLookup;
+  readonly anchorLookup: AnchorSeriesLookup;
+  readonly editDispatch: EditDispatch;
+  readonly calendar: Calendar;
+  readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
+  readonly onOpenDetail?: (featureId: FeatureId) => void;
+  readonly onDeleteFeature?: (featureId: FeatureId) => void;
+}): JSX.Element {
+  const { store, getRoot, getTime } = props;
+  // Subscribe to the pieces that must re-derive the shown area: the FR-109 geodesic
+  // settings and the committed domain (a shape edit swaps the domain reference).
+  const equatorLengthKm = useStore(store, (s) => s.projectSettings.equatorLengthKm);
+  const flattening = useStore(store, (s) => s.projectSettings.flattening);
+  const domain = useStore(store, (s) => s.domain);
+  const currentTime = useStore(store, (s) => s.currentTime);
+  void domain; // subscribe only: the resolver reads the domain fresh through getRoot.
+  void currentTime; // subscribe only: re-derive when the effective time changes.
+
+  const geoParams: GeoParams = createGeoParams(equatorLengthKm, flattening);
+
+  // FR-20 / FR-35: the target feature's 面積（km²）, resolved LIVE from the domain +
+  // time effective now. A NEW closure each render (the host re-renders on any
+  // committed-domain / time / settings change), so the panel's area memo — keyed to
+  // this reference — re-derives against the CURRENT shape after a structural edit,
+  // never a feature object frozen at selection time (bughunt review 穴1). The area is
+  // the SINGLE derived-shape resolution `resolveFeatureArea` (a 末端's own shape OR an
+  // 集約's child union — the same source the map draws, 教訓 5.29 / FR-35 穴2), turned
+  // into km² by the geodesy area kernel. A point / line, an unresolvable / childless
+  // shape, or an unknown id yields `undefined` ⇒ the panel shows no 面積 row.
+  const resolveAreaKm2 = (featureId: FeatureId): number | undefined => {
+    const time = getTime();
+    const root = getRoot();
+    const feature = featuresAt(root, time).find((f) => f.id === featureId);
+    if (
+      feature === undefined ||
+      (feature.kind !== FEATURE_KIND.Leaf && feature.kind !== FEATURE_KIND.Aggregate)
+    ) {
+      // Point / line (no area) or an id not effective now → no row.
+      return undefined;
+    }
+    // Build the forest over the AREA features so an aggregate's child union resolves
+    // through the SAME U08 path the renderer uses (single truth source, 教訓 5.29).
+    const areaFeatures = featuresAt(root, time).filter(
+      (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
+    );
+    const forest = buildForest(areaFeatures);
+    const resolution = resolveFeatureArea(forest, verticesAt(root, time), featureId);
+    if (resolution.status === 'failed' || isMultiPolygonEmpty(resolution.area)) {
+      // No area to show: either unresolvable (missing vertex / child / rejected union)
+      // OR resolved to an EMPTY multipolygon — a CHILDLESS aggregate (or one whose only
+      // children are point / line, filtered out above) resolves to status 'ok' + empty
+      // (resolveFeatureArea → ok(EMPTY_MULTI_POLYGON)). Both must yield `undefined` so the
+      // panel shows NO 面積 row rather than a fabricated '0.00 km²' — restoring parity with
+      // the map (which draws nothing for such a feature) and honouring the honest-stub
+      // contract (bughunt review 集約穴 / 教訓 5.7 / 5.26: no fabricated value).
+      return undefined;
+    }
+    return multiPolygonAreaKm2(resolution.area, geoParams);
+  };
+
+  return (
+    <PropertyPanel<S>
+      store={props.store}
+      featureLookup={props.featureLookup}
+      anchorLookup={props.anchorLookup}
+      editDispatch={props.editDispatch}
+      calendar={props.calendar}
+      resolveAreaKm2={resolveAreaKm2}
+      {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
+      {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
+      {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
+    />
+  );
 }
 
 /** A short human label for a feature row (name falls back to its id). Defers to

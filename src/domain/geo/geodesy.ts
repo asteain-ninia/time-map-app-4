@@ -13,6 +13,7 @@
 // source of truth — so distance / length / area never re-derive the wrap rule.
 
 import type { WorldCoordinate } from '../coordinate';
+import type { GeoMultiPolygon } from '../geometry/types';
 import type { Ring, Shape } from '../ring';
 import { RING_KIND } from '../ring';
 import { deriveScalars, type GeoParams } from './geo-params';
@@ -217,4 +218,37 @@ export function shapeAreaKm2(
   geoParams: GeoParams,
 ): number {
   return polygonAreaKm2(shape.rings, resolve, geoParams);
+}
+
+/**
+ * Total area (km²) of an already-RESOLVED {@link GeoMultiPolygon} — the shape a
+ * feature's U08 derived-shape resolution (`resolveFeatureArea`) returns: a LEAF's
+ * own resolved shape or an AGGREGATE's child union (FR-20 / FR-35, 単一真実源
+ * 教訓5.29). Each polygon piece's index-0 outer ring adds and its index-1.. hole
+ * rings subtract — the SAME territory(+)/hole(−) sign rule {@link polygonAreaKm2}
+ * applies, decided by ring POSITION (outer vs hole) here rather than by a stored
+ * `RING_KIND`, because a resolved GeoPolygon carries no kind tag (its convention is
+ * outer-then-holes, see geometry/types `GeoPolygon`). No new area algorithm is
+ * introduced: every ring's absolute area still flows through the single
+ * {@link ringAreaKm2} kernel (which itself handles the ±360° seam), so a leaf's
+ * area via `shapeAreaKm2` and an aggregate's via this function share ONE kernel.
+ */
+export function multiPolygonAreaKm2(
+  multiPolygon: GeoMultiPolygon,
+  geoParams: GeoParams,
+): number {
+  let territory = 0;
+  let hole = 0;
+  for (const polygon of multiPolygon) {
+    for (let i = 0; i < polygon.length; i += 1) {
+      const ring = polygon[i];
+      if (ring === undefined) continue;
+      const area = ringAreaKm2(ring, geoParams);
+      // Index 0 is the outer (territory) ring; indices 1.. are holes punched into
+      // it — mirrors polygonAreaKm2's territory(+)/hole(−) accumulation.
+      if (i === 0) territory += area;
+      else hole += area;
+    }
+  }
+  return territory - hole;
 }

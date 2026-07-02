@@ -78,6 +78,26 @@ export interface PropertyPanelProps<S> {
    * back to the feature's own theme so the section still renders.
    */
   readonly paletteThemes?: readonly PaletteThemeId[];
+  /**
+   * FR-20 / FR-35: resolve a feature's 面積（km²）by id, computed by the HOST from
+   * the LIVE domain + current time + FR-109 geoParams. Returns the km² area of the
+   * feature's U08 derived shape — a 末端 (leaf) feature's own resolved shape OR an
+   * 集約 (aggregate) feature's child-union (single truth source: the same
+   * `resolveFeatureArea` the map draws through + the geodesy area kernel). Returns
+   * `undefined` for a point / line (no area), for an unresolvable / childless shape,
+   * or when the id is unknown — the panel then shows NO 面積 row (honest-stub, no
+   * fabricated value).
+   *
+   * WHY A BY-ID PORT (not a resolved shape prop): the panel keys its resolved
+   * feature to the target ID (教訓 5.2) so a structural edit (vertex add/delete)
+   * that keeps the SAME id does not churn the form draft — but that also means the
+   * memoized `feature` object does NOT change reference on such an edit, so an area
+   * derived from it would go STALE. The host owns reactivity (it subscribes to the
+   * committed domain / time / geoParams) and hands a FRESH resolver each render, so
+   * the panel's area re-derives against the LIVE shape after every structural /
+   * settings change (教訓 5.3, no stale cache) while the draft stays keyed to the id.
+   */
+  readonly resolveAreaKm2?: (featureId: FeatureId) => number | undefined;
 }
 
 export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
@@ -126,6 +146,29 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     () => (targetFeatureId !== null ? anchorLookup.anchorSeriesOf(targetFeatureId) : null),
     [anchorLookup, targetFeatureId],
   );
+
+  // FR-20 / FR-35: the DERIVED area (km²) of the target 面 feature — a 末端 (leaf)
+  // feature's own resolved shape OR an 集約 (aggregate) feature's child-union. The
+  // computation is the HOST's (it subscribes to the live domain / time / geoParams
+  // and owns the single truth source `resolveFeatureArea` + geodesy area kernel);
+  // this unit only asks by ID and displays the result (honest-stub — no fabricated
+  // value; the row is absent when the port is unwired or returns `undefined`).
+  //
+  // KEYED TO THE TARGET ID, NOT the resolved `feature` OBJECT: the panel keeps the
+  // `feature` reference stable across selection-object churn that names the same
+  // target (see the memo above), so it does NOT change on a structural edit that
+  // keeps the id — an area derived from it would stay STALE (bughunt review 穴1). We
+  // instead re-run the host resolver, whose reference the host swaps each render for
+  // the live domain / time / FR-109 settings, so the area re-derives after every
+  // structural / settings change (教訓 5.3). A point / line, an unresolvable or
+  // childless shape, or an unknown id yields `undefined` ⇒ BasicInfoForm shows no row.
+  const { resolveAreaKm2 } = props;
+  const areaKm2 = useMemo<number | undefined>(() => {
+    if (targetFeatureId === null || resolveAreaKm2 === undefined) {
+      return undefined;
+    }
+    return resolveAreaKm2(targetFeatureId);
+  }, [targetFeatureId, resolveAreaKm2]);
 
   // The edit-target anchor is local UI文脈 (教訓 5.4). Keyed by feature so it is
   // discarded when the target feature changes (教訓 5.2).
@@ -234,6 +277,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             editable={decision.editable && mode !== EDIT_MODE.View}
             editTime={selectedEntry !== null ? selectedEntry.start : null}
             {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
+            {...(areaKm2 !== undefined ? { areaKm2 } : {})}
             onSave={(values) => handleSave(values)}
           />
 

@@ -23,7 +23,7 @@ import type { PaletteThemeId } from '../../domain/coloring';
 
 import type { PropertyEditValues } from './contracts';
 import { isNoOpEdit, valuesFromFeature } from './edit-intent';
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, formatAreaKm2 } from './messages';
 import { StyleSection } from './StyleSection';
 import { type StyleValues } from './style-section';
 
@@ -40,6 +40,15 @@ export interface BasicInfoFormProps {
    * settings-provided list, so the section still mounts and round-trips.
    */
   readonly paletteThemes?: readonly PaletteThemeId[];
+  /**
+   * FR-20: the DERIVED area (km²) of a 面 (leaf) feature's resolved shape at the
+   * edit time. A read-only display value the PARENT computes via the geodesy unit's
+   * shapeAreaKm2 (単一真実源, src/domain/geo/geodesy.ts) — never re-derived here.
+   * Present only for leaf features (point / line features carry no area, so the
+   * parent passes `undefined` and no 面積 row renders). Kept distinct from the
+   * label-occupancy projected area (px): the single truth source is geodesy km².
+   */
+  readonly areaKm2?: number;
   /**
    * Save handler. Receives the new values + edit time; returns an error message
    * to display, or null on success. The PARENT owns dispatch so this component
@@ -68,7 +77,7 @@ function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
 }
 
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
-  const { feature, editable, editTime, onSave } = props;
+  const { feature, editable, editTime, areaKm2, onSave } = props;
   // Default the palette dropdown to the feature's current theme alone so the
   // section mounts even when the host has not wired the settings-provided list.
   const paletteThemes = useMemo(
@@ -163,6 +172,21 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           onChange={(e) => patch({ endYear: Number(e.target.value) })}
         />
       </label>
+
+      {/*
+        FR-20: the 面積（km²）of a 面 (leaf) feature. A READ-ONLY derived row — no
+        input, never part of the edit draft / save intent — computed by the parent
+        via the geodesy shapeAreaKm2 (単一真実源). Rendered only when the parent
+        supplies a value (leaf features); point / line features never show it. The
+        value re-derives when 赤道長・扁平率 (FR-109) or the shape changes because the
+        parent recomputes it from the live geoParams + resolved shape (教訓 5.3).
+      */}
+      {areaKm2 !== undefined && (
+        <div className="basic-info__field basic-info__field--readonly" data-testid="area-row">
+          <span>{PROPERTY_STRINGS.areaLabel}</span>
+          <output data-testid="area-value">{formatAreaKm2(areaKm2)}</output>
+        </div>
+      )}
 
       {/*
         U33「スタイル」section (FR-102): owns 自動配色許可・使用パレット・通常表示色・
