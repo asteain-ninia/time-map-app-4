@@ -27,6 +27,8 @@ import { createShape, createTerritoryRing } from '../domain/ring';
 import { createVertex, type Vertex } from '../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
 import { createGeoParams } from '../domain/geo/geo-params';
+import { alignMultiPolygon } from '../domain/geo/index';
+import type { GeoMultiPolygon } from '../domain/geometry/types';
 import type { AddSnapshot } from '../domain/add/index';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -69,6 +71,62 @@ function squareLeaf(
     createShape([ring]),
   );
   return { feature, vertices };
+}
+
+/**
+ * A square leaf straddling the antimeridian: corners at lon 170 and -170 (folded
+ * representatives, ~20° apart the short way), lat [0,2]. Stored verbatim (U03 does
+ * NOT fold on construction), so its raw resolveLeafShape rings are [170,-170,-170,170]
+ * whose naive min→max span is ~340° — the "全幅帯" the display path already avoids.
+ */
+function seamSquareLeaf(idRaw: string, vPrefix: string): {
+  feature: LeafFeature;
+  vertices: Vertex[];
+} {
+  const corners = [
+    [170, 0],
+    [-170, 0],
+    [-170, 2],
+    [170, 2],
+  ];
+  const vertices = corners.map((c, i) =>
+    createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]!, lat: c[1]! }),
+  );
+  const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
+  const feature = createLeafFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes(idRaw, 0, 0),
+    color,
+    createShape([ring]),
+  );
+  return { feature, vertices };
+}
+
+/** The naive min→max longitude span over every ring vertex — the SAME span the
+ * renderer's `primitiveLonSpan` feeds `wrapTurnsForLonSpan` for a target-emphasis
+ * `shape` primitive (canvas2d-renderer). A seam-crossing leaf drawn from folded
+ * representatives yields ~340° here (a full-width band); a continuous run yields the
+ * true ~20°. */
+function multiPolygonNaiveLonSpan(mp: GeoMultiPolygon): number {
+  let min = Infinity;
+  let max = -Infinity;
+  for (const poly of mp) {
+    for (const ring of poly) {
+      for (const c of ring) {
+        if (c.lon < min) min = c.lon;
+        if (c.lon > max) max = c.lon;
+      }
+    }
+  }
+  return min === Infinity ? 0 : max - min;
+}
+
+/** The display path's per-piece continuous-longitude alignment (resolve-display-shapes
+ * `unwrapShape`): each polygon piece is aligned independently onto its own outer ring's
+ * branch. Replicated here from the exported single source (`alignMultiPolygon`) so the
+ * test asserts leafShapeAt matches the committed display geometry byte-for-byte. */
+function displayUnwrap(mp: GeoMultiPolygon): GeoMultiPolygon {
+  return mp.map((poly) => alignMultiPolygon([poly])[0]!);
 }
 
 function snapshotOf(feature: LeafFeature, vertices: Vertex[]): AddSnapshot {
@@ -200,5 +258,56 @@ describe('live-lookup', () => {
     expect(shape!.length).toBeGreaterThan(0);
     expect(leafShapeAt(root, timePointYear(500), a.feature.id)).toBeUndefined();
     expect(leafShapeAt(root, timePointYear(1000), asFeatureId('nope'))).toBeUndefined();
+  });
+
+  // Fix B (bughunt #12): the knife / merge / reparent target emphasis resolves its
+  // shape through leafShapeAt. It USED to return resolveLeafShape's RAW folded
+  // representatives ([170,-170,-170,170] for a seam-crossing leaf), so the renderer's
+  // primitiveLonSpan measured a ~340° span and tiled the emphasis as a near-full-width
+  // (~358°) band across the whole map — a 単一真実源 violation with the confirmed area,
+  // whose display path (resolve-display-shapes unwrapShape → alignMultiPolygon) already
+  // makes the ring a CONTINUOUS ~20° run. leafShapeAt must funnel through the SAME
+  // alignment so all three tools' emphasis matches the confirmed geometry.
+  it('leafShapeAt continuous-aligns a seam-crossing leaf (no全幅帯; matches display path)', () => {
+    const seam = seamSquareLeaf('f-seam', 'vs');
+    const root = withLeaf(emptyProject(), seam, 1000);
+
+    const shape = leafShapeAt(root, timePointYear(1000), seam.feature.id);
+    expect(shape).toBeDefined();
+
+    // The emphasis span is the TRUE ~20° extent, NOT the ~340° full-width band the raw
+    // folded representatives would produce.
+    const span = multiPolygonNaiveLonSpan(shape!);
+    expect(span).toBeCloseTo(20, 6);
+    expect(span).toBeLessThan(180);
+
+    // 単一真実源: leafShapeAt's geometry is byte-for-byte the confirmed display path's
+    // (resolve-display-shapes' unwrapShape = per-piece alignMultiPolygon).
+    expect(shape).toEqual(displayUnwrap(shape!));
+    const expected = alignMultiPolygon([
+      [
+        [
+          { lon: 170, lat: 0 },
+          { lon: -170, lat: 0 },
+          { lon: -170, lat: 2 },
+          { lon: 170, lat: 2 },
+        ],
+      ],
+    ])[0]!;
+    expect(shape![0]).toEqual(expected);
+  });
+
+  it('leafShapeAt leaves a non-seam (single-branch) leaf unchanged (align = identity)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0); // [0,2]×[0,2], all lons in [-180,180)
+    const root = withLeaf(emptyProject(), a, 1000);
+
+    const shape = leafShapeAt(root, timePointYear(1000), a.feature.id);
+    expect(shape).toBeDefined();
+    // A representative-branch ring is untouched by the alignment (identity), so the
+    // emphasis is the same geometry as before the fix for the common non-seam case.
+    expect(shape).toEqual(displayUnwrap(shape!));
+    const lons = shape![0]![0]!.map((c) => c.lon).sort((x, y) => x - y);
+    expect(lons[0]).toBe(0);
+    expect(lons[lons.length - 1]).toBe(2);
   });
 });

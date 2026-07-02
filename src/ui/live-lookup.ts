@@ -19,6 +19,7 @@ import { getCalendar, type Calendar } from '../domain/time/calendar';
 import type { TimePoint } from '../domain/time/time-point';
 import { createVertexStore, type Vertex, type VertexStore } from '../domain/vertex';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
+import { alignMultiPolygon } from '../domain/geo/seam';
 import { pointInPolygon, POINT_LOCATION } from '../domain/geometry/predicates';
 import type { WorldCoordinate } from '../domain/coordinate';
 
@@ -107,8 +108,27 @@ export function leafAtPoint(
 }
 
 /**
- * The resolved multipolygon shape of the leaf `featureId` at `time` (for knife
- * target emphasis), or undefined when it is absent / not a leaf.
+ * The resolved multipolygon shape of the leaf `featureId` at `time`, for the knife /
+ * merge / reparent target emphasis (App.tsx `useKnifeTargetShape`, the merge /
+ * reparent `resolveLeafShape` props), or undefined when it is absent / not a leaf.
+ *
+ * SEAM CONTINUITY (bughunt #12 Fix B — 単一真実源, 技術方針 R3): `resolveLeafShape`
+ * returns RAW stored representatives, so a leaf straddling the antimeridian comes back
+ * with FOLDED longitudes (e.g. a ring [170, -170, -170, 170]). The renderer's
+ * `primitiveLonSpan` then measures a naive ~340° span for that emphasis `shape`
+ * primitive and tiles it as a near-full-width (~358°) band across the whole map — a
+ * drift from the CONFIRMED area, whose display path (resolve-display-shapes'
+ * `unwrapShape`) already funnels each polygon piece through `alignMultiPolygon` to make
+ * every ring a CONTINUOUS run. We pass the resolved shape through the SAME per-piece
+ * alignment here so all three tools' target emphasis is a continuous short-way run that
+ * matches the committed geometry exactly (same align source). A non-seam
+ * (single-branch) leaf is unchanged: the closed unwrap is the identity and the anchor
+ * adds 0 turns, so the common case is byte-for-byte as before. `leafAtPoint` above is
+ * unaffected — it already probes the click point at ±360° replicas.
+ *
+ * Per-PIECE alignment (parity with `unwrapShape`): each polygon piece is aligned to its
+ * OWN outer ring's branch so a disjoint enclave keeps its natural branch and 飛び地は
+ * 片落とししない (教訓 5.1) — pieces are neither merged nor dropped.
  */
 export function leafShapeAt(
   root: DomainProject,
@@ -117,5 +137,10 @@ export function leafShapeAt(
 ): ReturnType<typeof resolveLeafShape> {
   const feature = featureByIdAt(root, time, featureId);
   if (feature === undefined || feature.kind !== FEATURE_KIND.Leaf) return undefined;
-  return resolveLeafShape(feature.shape, verticesAt(root, time));
+  const resolved = resolveLeafShape(feature.shape, verticesAt(root, time));
+  if (resolved === undefined) return undefined;
+  // Continuous-longitude align each piece independently (the display path's rule):
+  // its outer ring is the reference for its own holes, while a separate enclave keeps
+  // its own natural branch (no false global merge).
+  return resolved.map((polygon) => alignMultiPolygon([polygon])[0]!);
 }
