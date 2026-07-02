@@ -33,6 +33,7 @@ import {
   revalidateForTime,
   toggleVertex,
   withActiveFeature,
+  withoutVertexSet,
 } from '../../domain/selection';
 import { getCalendar, type Calendar } from '../../domain/time/calendar';
 import { compareNormalized, normalize } from '../../domain/time/normalized';
@@ -693,7 +694,7 @@ export function createSessionStore<S>(
     applyCommandResult(nextDomain, result, preference) {
       // 教訓 5.11: re-resolve via U22 — drop deleted IDs, promote the caller's
       // next-target preference. The store does NOT re-implement this rule.
-      const next = reresolveAfterStructureChange(
+      const reresolved = reresolveAfterStructureChange(
         get().selection,
         result,
         preference,
@@ -711,12 +712,45 @@ export function createSessionStore<S>(
       // A domain edit marks the project dirty (spec §B dirty 単一基準 / 教訓 5.36):
       // this is the SAME projectDirty a setting change sets, so the U39 unsaved
       // guard sees BOTH edit kinds through one flag (no second truth source).
+      //
+      // COMMIT THE DOMAIN FIRST (第10波 #5): the injected existence resolver reads
+      // the LIVE committed root (App wires getRoot = () => store.getState().domain),
+      // so the anchor-level re-validation below must run AFTER `nextDomain` is in the
+      // store — otherwise it would resolve against the PRE-commit domain (where a
+      // just-deleted time-slice feature is still present) and prune nothing. This set
+      // reflects a fully-coherent post-commit state on its own (domain + focus +
+      // feature-history-level re-resolved selection); the anchor-level tightening
+      // below only ever REMOVES a ghost, never adds one.
       set({
         domain: nextDomain,
         projectDirty: true,
         displayControl: nextDisplayControl,
-        ...selectionPatch(next),
+        ...selectionPatch(reresolved),
       });
+      // 第10波 #5: reresolveAfterStructureChange works at the FEATURE-HISTORY level
+      // (CommandResult survived/created/deleted). A multi-anchor feature's TIME-SLICE
+      // delete (a below-threshold delete at ONE anchor) drops the feature only at the
+      // CURRENT time, while its history survives via other anchors — so makeCommand
+      // reports it as `survived`, reresolve keeps it, and a ghost activeFeature /
+      // vertex selection lingers that draws nothing at this time and no-ops a second
+      // Delete (App ring-edit last-territory ghost, App.tsx onRingEditCommitted, same
+      // failure). We heal it by ALSO running the SAME anchor-level revalidateForTime
+      // the time-change path uses (store setCurrentTime), against the injected
+      // existence port at the CURRENT time — the single existence truth源, re-
+      // implementing no time logic. Anything present at the current time (a normal
+      // add/split/merge/reparent/drill/drag/attribute promotion) is PRESERVED;
+      // anything the commit left absent at the current time drops out. We fold this
+      // into a SECOND set() ONLY when it actually changed the selection (the common
+      // case is a no-op — nothing absent — so no redundant notification / redraw and
+      // no二重の真実源: the selection mirrors and truth are re-derived together).
+      const revalidated = revalidateForTime(
+        reresolved,
+        get().currentTime,
+        existenceAtTime(existence),
+      );
+      if (revalidated !== reresolved) {
+        set(selectionPatch(revalidated));
+      }
     },
 
     applyUndoRedoResult(nextDomain, result, preference) {
@@ -795,7 +829,31 @@ export function createSessionStore<S>(
 
     // -- selection (every mutation flows through U22's truth + builders) ------
     setActiveFeature(featureId) {
-      set(selectionPatch(withActiveFeature(get().selection, featureId)));
+      // 第10波 #2: setActiveFeature is called DIRECTLY by the panel / detail /
+      // search / help-tools promotion paths (SidebarContent / App / HelpTools
+      // Controller) — bypassing the U22 reducer's FeatureBody branch and
+      // promoteHitToSelection, both of which掃除 the vertex set. If we only
+      // re-applied withActiveFeature here, a vertex selection owned by a
+      // DIFFERENT feature would linger, and runEditDelete reads vertexOwner /
+      // vertexIds FIRST — so picking feature A from a panel while a vertex of
+      // feature B is still selected, then pressing Delete, would delete B's
+      // vertex (a feature the user did NOT pick). We heal the asymmetry ONCE at
+      // this single setter (the callers stay untouched): when the new active
+      // feature is NOT the current vertex owner we ALSO run U22's withoutVertex
+      // Set (re-using the same rule the reducer applies, 単一真実源 — we
+      // re-implement nothing). Re-selecting the SAME feature (activeFeature ==
+      // owner) PRESERVES the vertex selection so a panel re-click of the owner
+      // does not wipe a live vertex edit. Keying off the vertex OWNER (not the
+      // previous activeFeature) also heals a stale activeFeature=A / vertexOwner=B
+      // 食い違い. The reArmActiveTool restoreSelection path does not go through
+      // here, so it is unaffected.
+      const s = get();
+      const withFeature = withActiveFeature(s.selection, featureId);
+      const cleaned =
+        featureId !== s.selection.vertexOwner
+          ? withoutVertexSet(withFeature)
+          : withFeature;
+      set(selectionPatch(cleaned));
     },
 
     replaceVertexSelection(ownerFeatureId, vertexIds) {

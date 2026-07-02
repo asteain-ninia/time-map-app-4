@@ -157,7 +157,15 @@ export function revalidateForTime<T>(
       for (const vid of next.vertexIds) {
         if (existence.vertexExistsAt(owner, vid, time)) kept.add(vid);
       }
-      next = withVertexSet(next, owner, kept);
+      // Rebuild ONLY when a vertex was actually dropped. `kept ⊆ vertexIds`, so an
+      // equal size means nothing was pruned — return `next` UNCHANGED (same reference)
+      // rather than allocating an identical set. This makes revalidateForTime IDEMPOTENT
+      // on a fully-present selection, so a reference-equality check by a caller (第10波
+      // #5: applyCommandResult only re-sets the selection when revalidation changed it)
+      // is exact and the common no-op path fires no redundant store notification / redraw.
+      if (kept.size !== next.vertexIds.size) {
+        next = withVertexSet(next, owner, kept);
+      }
     }
   }
 

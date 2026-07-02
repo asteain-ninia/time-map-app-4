@@ -243,6 +243,78 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     expect(s.selection.vertexOwner).toBe(s.vertexSelection!.ownerFeatureId);
     expect([...s.selection.vertexIds]).toEqual([...s.vertexSelection!.vertexIds]);
   });
+
+  // --- 第10波 #5: anchor-level existence re-validation after a commit ---------
+  //
+  // A multi-anchor feature's TIME-SLICE vertex delete (a below-threshold delete at
+  // ONE anchor) drops the feature ONLY at the current time — the OTHER anchors keep
+  // its feature-history alive, so makeCommand reports it as `survived` (its
+  // history-id is still in `final`). reresolveAfterStructureChange works at the
+  // feature-history level (CommandResult), so it CANNOT prune a feature/vertex that
+  // is absent at the current time but present at another anchor: a ghost
+  // activeFeature / vertex selection survives, the map draws nothing at this time,
+  // and a second Delete no-ops. applyCommandResult must therefore ALSO run the SAME
+  // anchor-level revalidateForTime (the injected existence port + current time) the
+  // time-change path uses — the single existence truth source — so a commit that
+  // leaves the selection pointing at something absent at the current time drops it.
+  it('drops an active feature that a commit left absent at the current time (multi-anchor time-slice delete)', () => {
+    // Feature A is `survived` (another anchor keeps its history) but does NOT exist
+    // at the current time (its territory was deleted at THIS anchor).
+    const existence = resolverWith(new Set<string>(), new Set<string>());
+    const store = makeStore(existence, { activeFeature: f('A') });
+
+    // A commit that survives A at feature-history level (reresolve keeps it) …
+    const result = createCommandResult({ survived: [f('A')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result, { featureId: f('A') });
+
+    // …but anchor-level existence re-validation drops it (absent at current time),
+    // so no ghost activeFeature lingers and a second Delete is not a no-op.
+    expect(store.getState().activeFeature).toBeNull();
+  });
+
+  it('drops a ghost vertex selection whose owner is absent at the current time after a commit', () => {
+    // Owner B survived at history level but is absent at the current time; its vertex
+    // selection must be re-validated away (anchor-level), not left as a ghost.
+    const existence = resolverWith(new Set<string>(), new Set<string>());
+    const store = makeStore(existence, {
+      vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
+    });
+    const result = createCommandResult({ survived: [f('B')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+    expect(store.getState().vertexSelection).toBeNull();
+  });
+
+  it('PRESERVES a promoted next-target that DOES exist at the current time (add/split/merge/reparent正常コミット)', () => {
+    // The critical guard: a NORMAL commit (add / split / merge / reparent / drill /
+    // drag / attribute-edit) whose promoted target EXISTS at the current time must
+    // NOT be dropped by the anchor-level re-validation. revalidateForTime keeps what
+    // is present, so the promoted feature + its vertex set survive.
+    const existence = resolverWith(new Set(['M']), new Set(['nv1', 'nv2']));
+    const store = makeStore(existence, { activeFeature: null });
+    const result = createCommandResult({
+      deleted: [f('A'), f('B')],
+      created: [f('M'), v('nv1'), v('nv2')],
+    });
+    store.getState().applyCommandResult({ tag: 'd1' }, result, {
+      featureId: f('M'),
+      vertexSelection: { ownerFeatureId: f('M'), vertexIds: new Set([v('nv1'), v('nv2')]) },
+    });
+    const s = store.getState();
+    expect(s.activeFeature).toBe(f('M')); // present at current time → kept.
+    expect(s.vertexSelection).not.toBeNull();
+    expect(s.vertexSelection!.ownerFeatureId).toBe(f('M'));
+    expect([...s.vertexSelection!.vertexIds]).toEqual([v('nv1'), v('nv2')]);
+  });
+
+  it('single-anchor delete (deleted reported) still drops selection — no regression', () => {
+    // The existing single-anchor path: the feature IS in result.deleted, so reresolve
+    // Step-1 drops it. With the default ALWAYS_PRESENT resolver, the extra
+    // revalidateForTime is a no-op here — the deletion is honoured by reresolve alone.
+    const store = makeStore(undefined, { activeFeature: f('A') });
+    const result = createCommandResult({ deleted: [f('A')] });
+    store.getState().applyCommandResult({ tag: 'd1' }, result);
+    expect(store.getState().activeFeature).toBeNull();
+  });
 });
 
 // --- 受け入れ基準 3: time re-validation (教訓 5.5 / 5.6) --------------------
@@ -1197,6 +1269,87 @@ describe('vertex selection update rules (FR-80 / FR-81)', () => {
     const vs = store.getState().vertexSelection!;
     expect(vs.ownerFeatureId).toBe(f('B'));
     expect([...vs.vertexIds]).toEqual([v('v9')]);
+  });
+});
+
+// --- setActiveFeature selection hygiene (第10波 #2) --------------------------
+//
+// setActiveFeature is called DIRECTLY (bypassing the U22 reducer's FeatureBody
+// branch and promoteHitToSelection, both of which clear the vertex set) by four
+// UI paths: the sidebar 地物一覧 / 詳細, the property-panel feature pick, and the
+// search / help-tools promotion (SidebarContent / App / HelpToolsController). If
+// setActiveFeature only re-applied withActiveFeature it would leave a stale
+// vertex set (vertexIds + vertexOwner) owned by a DIFFERENT feature behind. The
+// Delete导線 (runEditDelete) reads vertexOwner/vertexIds FIRST, so selecting
+// feature A from a panel while a vertex of feature B is still selected, then
+// pressing Delete, would delete B's vertex — acting on a feature the user did NOT
+// pick. So setActiveFeature must clear the vertex selection when the new active
+// feature is NOT the current vertex owner, while PRESERVING it for a re-select of
+// the SAME feature (so a panel re-click of the owner does not wipe a live vertex
+// edit). It re-uses U22's withoutVertexSet — it re-implements no rule.
+describe('setActiveFeature selection hygiene (第10波 #2)', () => {
+  it('clears a DIFFERENT owner\'s vertex selection when a new feature becomes active', () => {
+    // A vertex of feature B is selected; the user then picks feature A from a panel.
+    const store = makeStore(undefined, {
+      vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
+    });
+    expect(store.getState().vertexSelection).not.toBeNull(); // B's vertex is selected.
+
+    store.getState().setActiveFeature(f('A'));
+
+    const s = store.getState();
+    expect(s.activeFeature).toBe(f('A')); // A is now active...
+    // ...and B's stale vertex selection is gone, so a Delete cannot hit B's vertex.
+    expect(s.vertexSelection).toBeNull();
+    expect(s.selection.vertexOwner).toBeNull();
+    expect([...s.selection.vertexIds]).toEqual([]);
+  });
+
+  it('PRESERVES the vertex selection when re-selecting the SAME feature (its owner)', () => {
+    // A vertex of feature A is selected AND A is already active; a panel re-click of
+    // A must not wipe the live vertex selection (activeFeature === vertexOwner).
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1'), v('v2')]) },
+    });
+
+    store.getState().setActiveFeature(f('A'));
+
+    const vs = store.getState().vertexSelection;
+    expect(vs).not.toBeNull();
+    expect(vs!.ownerFeatureId).toBe(f('A'));
+    expect([...vs!.vertexIds]).toEqual([v('v1'), v('v2')]); // preserved, not wiped.
+  });
+
+  it('clears the vertex selection when the new active feature is NOT the owner even if it matches the OLD active feature', () => {
+    // The vertex owner (B) differs from the active feature (A); re-selecting A must
+    // STILL drop B's vertex selection — the guard keys off the vertex OWNER, not the
+    // previous activeFeature (a食い違い activeFeature=A / vertexOwner=B must be healed).
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+    });
+    // Force the食い違い: replace vertices under B (leaves activeFeature = A) …
+    store.getState().replaceVertexSelection(f('B'), [v('v1')]);
+    // (replaceVertices does not touch activeFeature, so activeFeature stays A.)
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().vertexSelection!.ownerFeatureId).toBe(f('B'));
+
+    store.getState().setActiveFeature(f('A')); // re-select A (== old active, != owner B)
+
+    const s = store.getState();
+    expect(s.activeFeature).toBe(f('A'));
+    expect(s.vertexSelection).toBeNull(); // B's vertex dropped despite A == old active.
+  });
+
+  it('clears a stale vertex selection when setting active feature to null', () => {
+    const store = makeStore(undefined, {
+      vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) },
+    });
+    store.getState().setActiveFeature(null);
+    const s = store.getState();
+    expect(s.activeFeature).toBeNull();
+    // null differs from owner B → the stale vertex set is dropped.
+    expect(s.vertexSelection).toBeNull();
   });
 });
 

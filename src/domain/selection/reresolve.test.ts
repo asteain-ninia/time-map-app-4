@@ -163,4 +163,16 @@ describe('time-change re-validation (教訓 5.5)', () => {
     const state = withActiveFeature(EMPTY_SELECTION, fid('B')); // B always exists.
     expect(revalidateForTime(state, 9999, existence).activeFeature).toBe(fid('B'));
   });
+
+  it('returns the SAME reference when nothing is pruned (idempotent no-op)', () => {
+    // A fully-present vertex selection (owner B always exists; all vertices present at
+    // year 50) must come back UNCHANGED by reference — the resolver allocates no new
+    // set when it drops nothing. This is what lets applyCommandResult skip a redundant
+    // second set() (第10波 #5): reference-equality is an exact "did it change" test.
+    const state = withVertexSet(EMPTY_SELECTION, fid('B'), vidSet('B-v0', 'B-v1'));
+    expect(revalidateForTime(state, 50, existence)).toBe(state);
+    // Active-feature-only selection of an ever-present feature is likewise identity.
+    const activeOnly = withActiveFeature(EMPTY_SELECTION, fid('B'));
+    expect(revalidateForTime(activeOnly, 50, existence)).toBe(activeOnly);
+  });
 });
