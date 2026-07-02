@@ -152,6 +152,14 @@ export function AnchorTimeBar(props: AnchorTimeBarProps): JSX.Element {
           const segment = barSegment(entry.start, entry.end, view, calendar);
           const showLabel = shouldShowLabel(segment, view);
           const selected = entry.anchor.id === selectedAnchorId;
+          // Unconditional accessible name (WCAG 4.1.2): a thin bar (<占有率閾値)
+          // hides its visible <span> label, which would otherwise leave the button
+          // nameless to screen readers. Name it from the SAME start→end source the
+          // list row renders (formatTimePoint + PROPERTY_STRINGS.openEndLabel,
+          // AnchorList.tsx) so the two views stay one truth source.
+          const barName = `${formatTimePoint(entry.start)} → ${
+            entry.end === null ? PROPERTY_STRINGS.openEndLabel : formatTimePoint(entry.end)
+          }`;
           return (
             <button
               type="button"
@@ -159,6 +167,7 @@ export function AnchorTimeBar(props: AnchorTimeBarProps): JSX.Element {
               data-testid={`timebar-bar-${entry.anchor.id}`}
               data-show-label={showLabel ? 'true' : 'false'}
               aria-selected={selected}
+              aria-label={barName}
               className={
                 selected
                   ? 'anchor-timebar__bar anchor-timebar__bar--selected'

@@ -141,3 +141,100 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
     expect(maxAfter).not.toBe(maxTime);
   });
 });
+
+describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => {
+  // A series whose FIRST anchor fills almost the entire span (wide, label shown)
+  // and whose SECOND anchor is a hair-thin sliver at the far right (< 8% of the
+  // axis → data-show-label=false → its only conditional visible <span> label is
+  // omitted). Before Fix B the thin bar button had NO accessible name (empty).
+  function thinBarSeries(): AnchorSeries {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return {
+      entries: [
+        // 1000..1990 dominates the ~1000..1991 window (≈99% → label shown).
+        createAnchorEntry(
+          createAnchor(asAnchorId('wide'), snap),
+          timePointYearMonthDay(1000, 1, 1),
+          timePointYearMonthDay(1990, 1, 1),
+        ),
+        // 1990..1991 is ≈0.1% of the axis → label suppressed (thin bar).
+        createAnchorEntry(
+          createAnchor(asAnchorId('thin'), snap),
+          timePointYearMonthDay(1990, 1, 1),
+          timePointYearMonthDay(1991, 1, 1),
+        ),
+      ],
+    };
+  }
+
+  it('the thin bar (no visible label) still exposes an accessible name', () => {
+    render(
+      <AnchorSection
+        series={thinBarSeries()}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        initialMode="timeBar"
+      />,
+    );
+    const thin = screen.getByTestId('timebar-bar-thin');
+    // The thin bar's visible label must be suppressed (this is the WCAG gap).
+    expect(thin.getAttribute('data-show-label')).toBe('false');
+    // Despite no visible child, it must resolve BY its accessible name — the same
+    // start → end integration the list row shows (formatTimePoint + openEndLabel).
+    expect(
+      screen.getByRole('button', { name: '1990年1月1日 → 1991年1月1日' }),
+    ).toBe(thin);
+  });
+
+  it('a wide bar (visible label shown) also carries an accessible name', () => {
+    render(
+      <AnchorSection
+        series={thinBarSeries()}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        initialMode="timeBar"
+      />,
+    );
+    const wide = screen.getByTestId('timebar-bar-wide');
+    expect(wide.getAttribute('data-show-label')).toBe('true');
+    expect(
+      screen.getByRole('button', { name: '1000年1月1日 → 1990年1月1日' }),
+    ).toBe(wide);
+  });
+
+  it('an open-ended bar names its end as 継続中 (same source as the list row)', () => {
+    render(
+      <AnchorSection
+        series={series()}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        initialMode="timeBar"
+      />,
+    );
+    // a2 = 1600..null (継続中): accessible name uses PROPERTY_STRINGS.openEndLabel.
+    expect(
+      screen.getByRole('button', { name: '1600年1月1日 → 継続中' }),
+    ).toBe(screen.getByTestId('timebar-bar-a2'));
+  });
+
+  it('the visible label gate is unchanged (wide shows text, thin hides it)', () => {
+    render(
+      <AnchorSection
+        series={thinBarSeries()}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        initialMode="timeBar"
+      />,
+    );
+    // Wide bar renders its visible <span> label; thin bar renders none. The
+    // accessible-name fix must NOT add a second visible copy of the text.
+    const wide = screen.getByTestId('timebar-bar-wide');
+    const thin = screen.getByTestId('timebar-bar-thin');
+    expect(wide.querySelector('.anchor-timebar__label')).not.toBeNull();
+    expect(thin.querySelector('.anchor-timebar__label')).toBeNull();
+  });
+});
