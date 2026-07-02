@@ -369,7 +369,9 @@ async function knifeSplitVertical(
   await page.waitForTimeout(140);
   const modal = page.getByTestId('knife-inheritor-modal-root');
   if ((await modal.count()) === 0) return 'no-modal';
-  await page.getByTestId('knife-choose-a').click().catch(() => undefined);
+  // n-way chooser (commit 01ed1d6): a vertical 2-point cut yields 2 pieces →
+  // knife-choose-0 / knife-choose-1 (index-based, not the old A/B testids).
+  await page.getByTestId('knife-choose-0').click().catch(() => undefined);
   await page.getByTestId('knife-confirm-inheritor').click().catch(() => undefined);
   await page.waitForTimeout(120);
   const form = page.getByTestId('add-property-form');
@@ -382,6 +384,20 @@ async function knifeSplitVertical(
     await page.getByTestId('conflict-cancel').click().catch(() => undefined);
   }
   return 'split';
+}
+
+// U30 MergeOptionsDialog (FR-52): merge-confirm no longer merges directly — it opens
+// the parent/property options dialog. The seeded defaults (親なし + inherit first)
+// reproduce the prior hardcoded merge, so a plain 確定 (merge-options-confirm) runs
+// the merge. This probe WANTS the merge to happen (it asserts the count drops), so we
+// CONFIRM. Returns true iff the dialog was present and confirmed. Without this the
+// dialog's input-blocking backdrop stays up and later clicks are swallowed.
+async function confirmMergeOptions(page: Page): Promise<boolean> {
+  const dialog = page.getByTestId('merge-options-dialog');
+  if (!(await dialog.isVisible().catch(() => false))) return false;
+  await page.getByTestId('merge-options-confirm').click().catch(() => undefined);
+  await dialog.waitFor({ state: 'detached', timeout: 6000 }).catch(() => undefined);
+  return true;
 }
 
 // Dismiss any stray modal so a stuck dialog from one phase never poisons later
@@ -698,6 +714,9 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
         ) {
           await mergeConfirm.click().catch(() => undefined);
           await page.waitForTimeout(220);
+          // FR-52: merge-confirm opens the options dialog; 確定 with the seeded
+          // defaults runs the merge (this probe asserts the count drops below).
+          await confirmMergeOptions(page);
           if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
             await page.getByTestId('conflict-cancel').click().catch(() => undefined);
           }

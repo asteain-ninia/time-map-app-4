@@ -299,13 +299,15 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
       await page.mouse.click(cx - 3, cy + 180);
       await expect(page.getByTestId('knife-cut-count')).toHaveText('2');
 
-      // 3. 確定 the cut → choose side A as inheritor → confirm → save the非継承側.
+      // 3. 確定 the cut → choose piece 0 as inheritor → confirm → save the非継承側.
+      //    The chooser is n-way (commit 01ed1d6): a 2-point cut yields 2 pieces, so
+      //    the buttons are knife-choose-0 / knife-choose-1 (index-based, not A/B).
       //    These float ABOVE the map with pointer-events re-enabled (knife.css), so
       //    a REAL user click reaches them — we click them as a user would (教訓 5.7
       //    完了トリガー; no overlay bypass).
       await page.getByTestId('knife-confirm-cut').click();
-      await expect(page.getByTestId('knife-choose-a')).toBeVisible();
-      await page.getByTestId('knife-choose-a').click();
+      await expect(page.getByTestId('knife-choose-0')).toBeVisible();
+      await page.getByTestId('knife-choose-0').click();
       await page.getByTestId('knife-confirm-inheritor').click();
       // 非継承側プロパティ入力 (re-used U23 form) — save commits the split.
       await expect(page.getByTestId('add-save')).toBeVisible();

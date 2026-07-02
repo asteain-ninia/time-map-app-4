@@ -346,9 +346,13 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
           const confirm = page.getByTestId('knife-confirm-cut');
           if (await confirm.isVisible().catch(() => false)) {
             await confirm.click();
-            const chooseA = page.getByTestId('knife-choose-a');
-            if (await chooseA.isVisible().catch(() => false)) {
-              await chooseA.click();
+            // n-way chooser (commit 01ed1d6): a 2-point cut yields 2 pieces →
+            // knife-choose-0 / knife-choose-1. Pick piece 0, confirm the inheritor,
+            // then author the shared U23 default via add-save so the modal (and its
+            // input-blocking backdrop) is guaranteed to close before the next step.
+            const choose0 = page.getByTestId('knife-choose-0');
+            if (await choose0.isVisible().catch(() => false)) {
+              await choose0.click();
               await page.getByTestId('knife-confirm-inheritor').click();
               const saveBtn = page.getByTestId('add-save');
               if (await saveBtn.isVisible().catch(() => false)) {

@@ -352,7 +352,9 @@ async function knifeSplitVertical(
   await cc.click();
   await page.waitForTimeout(140);
   if ((await page.getByTestId('knife-inheritor-modal-root').count()) === 0) return 'no-modal';
-  await page.getByTestId('knife-choose-a').click().catch(() => undefined);
+  // n-way chooser (commit 01ed1d6): a vertical 2-point cut yields 2 pieces →
+  // knife-choose-0 / knife-choose-1 (index-based, not the old A/B testids).
+  await page.getByTestId('knife-choose-0').click().catch(() => undefined);
   await page.getByTestId('knife-confirm-inheritor').click().catch(() => undefined);
   await page.waitForTimeout(120);
   const form = page.getByTestId('add-property-form');
@@ -365,6 +367,22 @@ async function knifeSplitVertical(
     await page.getByTestId('conflict-cancel').click().catch(() => undefined);
   }
   return 'split';
+}
+
+// U30 MergeOptionsDialog (FR-52): clicking merge-confirm no longer merges directly —
+// it opens the parent/property options dialog. The seeded defaults (親なし + inherit
+// first) reproduce the prior hardcoded merge, so a plain 確定 (merge-options-confirm)
+// runs the merge. These probes WANT the merge to happen (they assert the count drops
+// and undo/redo the merge op), so we CONFIRM. Returns true iff the dialog was present
+// and confirmed. Without this the dialog's input-blocking backdrop stays up and every
+// later click (undo target, next tool) is swallowed by the backdrop.
+async function confirmMergeOptions(page: Page): Promise<boolean> {
+  const dialog = page.getByTestId('merge-options-dialog');
+  if (!(await dialog.isVisible().catch(() => false))) return false;
+  const confirm = page.getByTestId('merge-options-confirm');
+  await confirm.click().catch(() => undefined);
+  await dialog.waitFor({ state: 'detached', timeout: 6000 }).catch(() => undefined);
+  return true;
 }
 
 test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘逆op / reparent cycle probe / merge op∘逆op / time-scrub coherence / save dirty-flag', () => {
@@ -591,6 +609,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
           if ((await mc.isVisible().catch(() => false)) && (await mc.isEnabled().catch(() => false))) {
             await mc.click().catch(() => undefined);
             await page.waitForTimeout(220);
+            // FR-52: merge-confirm opens the options dialog; 確定 with the seeded
+            // defaults runs the merge (this probe asserts the count drops + undo/redo).
+            await confirmMergeOptions(page);
             await clearStuckModals(page, 'after-merge');
             const afterMerge = await checkParity(page, 'after-merge');
             await shot(page, 'merged');
@@ -788,6 +809,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
           if ((await mc.isVisible().catch(() => false)) && (await mc.isEnabled().catch(() => false))) {
             await mc.click().catch(() => undefined);
             await page.waitForTimeout(220);
+            // FR-52: merge-confirm opens the options dialog; 確定 with the seeded
+            // defaults runs the merge (this probe undo/redoes the merge op below).
+            await confirmMergeOptions(page);
             await clearStuckModals(page, 'iso-after-merge');
             const afterMerge = await listCount();
             rec('iso-after-merge-count', `count after merge = ${afterMerge}`);

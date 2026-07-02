@@ -7,9 +7,44 @@
 // (HB-11/12/13); the Ctrl+Y test fires a real key chord and asserts redo ran via
 // the live undo/redo observation markers (既存 app-active-feature 方式).
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
 import { commitOneFace, launchApp } from './helpers';
+
+/**
+ * Collapse the add drawing session that `commitOneFace` leaves armed, so the global
+ * keyboard shortcuts are no longer suspended before we test Ctrl+Z / Ctrl+Y.
+ *
+ * WHY: after a save the AddToolController re-arms the still-selected add tool with a
+ * FRESH empty session (受け入れ基準 6「保存 → 再度追加開始」, AddToolController の
+ * 再アーム effect). That session sits in the Drawing phase, so the controller reports
+ * `onDrawingChange(true)` and the host raises `shortcutsSuspended` (App.tsx: addDrawing
+ * → shortcutsSuspended). While suspended the GLOBAL undo/redo dispatcher is off and the
+ * add controller's OWN Ctrl+Z (vertex-undo) is the only handler — with zero vertices it
+ * is a no-op, so Ctrl+Z never reaches EditUndo.
+ *
+ * FIX: switch to 編集モード. That drives the add controller's activeKind to null
+ * (mode !== Add) → resetForSwitch → Idle → onDrawingChange(false), clearing the
+ * suspension. We deliberately DO NOT go to 表示 (View) mode: EditUndo/EditRedo are
+ * editing commands gated OFF in view-only (permissions.canEdit === false), so the very
+ * Ctrl+Z/Ctrl+Y we are exercising would be disabled there. 編集モード keeps them
+ * enabled (canEdit true) while still collapsing the add session, and it does NOT touch
+ * the undo/redo stacks (history is mode-independent) — so the test's real assertion,
+ * that Ctrl+Y / Ctrl+Shift+Z drive redo, stays intact. This is the SAME live 導線
+ * (mode toggle) the knife/explore specs use to leave an add session.
+ */
+async function leaveAddSession(page: Page): Promise<void> {
+  const editToggle = page.getByTestId('mode-edit');
+  await expect(editToggle).toBeVisible();
+  if ((await editToggle.getAttribute('aria-pressed')) !== 'true') {
+    await expect(editToggle).toBeEnabled();
+    await editToggle.click();
+  }
+  await expect(editToggle).toHaveAttribute('aria-pressed', 'true');
+  // The add chrome (rendered only while a session is past Idle) is gone → the
+  // controller reported onDrawingChange(false) → shortcuts are no longer suspended.
+  await expect(page.getByTestId('add-tool')).toHaveCount(0);
+}
 
 test.describe('HB-5 — 不要なスクロールバーが出ない (live shell)', () => {
   test('the outer shell is exactly viewport-sized: no document-level scrollbar', async () => {
@@ -110,6 +145,13 @@ test.describe('HB-10 — やり直しのデフォルトが Ctrl+Y (live keymap)'
       await expect(page.getByTestId('app-can-undo')).toHaveText('1');
       await expect(page.getByTestId('app-can-redo')).toHaveText('0');
 
+      // Collapse the re-armed empty add session so the global shortcut dispatcher is
+      // no longer suspended (otherwise the add controller's own no-op Ctrl+Z swallows
+      // the chord). The undo stack is untouched (still canUndo=1) — this only ends the
+      // drawing session, it does not undo the commit.
+      await leaveAddSession(page);
+      await expect(page.getByTestId('app-can-undo')).toHaveText('1');
+
       // 2. Undo with a real Ctrl+Z key chord. The commit is rolled back: nothing is
       //    selected, the redo stack is now armed (canRedo=1).
       await page.keyboard.press('Control+z');
@@ -134,6 +176,9 @@ test.describe('HB-10 — やり直しのデフォルトが Ctrl+Y (live keymap)'
     const { app, page } = await launchApp();
     try {
       await commitOneFace(page);
+      // Collapse the re-armed empty add session so the global shortcut dispatcher is
+      // not suspended when we press Ctrl+Z / Ctrl+Shift+Z (see leaveAddSession).
+      await leaveAddSession(page);
       await page.keyboard.press('Control+z');
       await expect(page.getByTestId('app-can-redo')).toHaveText('1');
       await expect(page.getByTestId('app-can-undo')).toHaveText('0');
