@@ -8,7 +8,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
-import { createVertexStore } from '../../domain/vertex';
+import { createVertex, createVertexStore } from '../../domain/vertex';
+import { createCoordinate } from '../../domain/coordinate';
 import type { DomainProject } from '../../domain/persistence/index';
 import {
   DEFAULT_BASEMAP,
@@ -17,7 +18,11 @@ import {
   squareLeaf,
   singleAnchorHistory,
 } from '../../domain/persistence/fixtures';
-import { asFeatureId, asVertexId } from '../../domain/ids';
+import { createLeafFeature } from '../../domain/feature';
+import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
+import { createShape, createTerritoryRing } from '../../domain/ring';
+import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
+import { DEFAULT_EDIT_HANDLE_STYLE } from '../../render/edit-handles-layer';
 import {
   EDIT_TOOL,
   beginDrag,
@@ -283,5 +288,103 @@ describe('buildActiveFeatureHandlePrimitives (HB3-4 live drag preview)', () => {
     expect(vertexHandles(prims).some((h) => h.at.lon === 70 && h.at.lat === 35)).toBe(true);
     const points = prims.filter((p) => p.kind === 'point');
     expect(points.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+const COLOR = createColorInfo(true, '#102030', '#405060', '#708090', 'default', 1, 1);
+
+/**
+ * Two adjacent square leaves that SHARE one vertex id: `shared-v` is cited by both
+ * `leaf-L`'s ring and `leaf-R`'s ring (the two squares touch at that corner). Every
+ * other vertex is cited by exactly one ring. Both leaves live in ONE anchor so both
+ * are effective (and drawn as their own Real shape) at the same time.
+ */
+function sharedCornerProject(): DomainProject {
+  const shared = createVertex(asVertexId('shared-v'), createCoordinate(10, 0));
+  // Left square: corners (0,0),(10,0)=shared,(10,10),(0,10).
+  const lVerts = [
+    createVertex(asVertexId('lv0'), createCoordinate(0, 0)),
+    shared,
+    createVertex(asVertexId('lv2'), createCoordinate(10, 10)),
+    createVertex(asVertexId('lv3'), createCoordinate(0, 10)),
+  ];
+  const lRing = createTerritoryRing(asRingId('leaf-L-r'), lVerts.map((v) => v.id));
+  const leafL = createLeafFeature(
+    asFeatureId('leaf-L'),
+    createBasicAttributes('L国', 0, 100),
+    COLOR,
+    createShape([lRing]),
+  );
+  // Right square: corners (10,0)=shared,(20,0),(20,10),(10,10).
+  const rVerts = [
+    shared,
+    createVertex(asVertexId('rv1'), createCoordinate(20, 0)),
+    createVertex(asVertexId('rv2'), createCoordinate(20, 10)),
+    createVertex(asVertexId('rv3'), createCoordinate(10, 10)),
+  ];
+  const rRing = createTerritoryRing(asRingId('leaf-R-r'), rVerts.map((v) => v.id));
+  const leafR = createLeafFeature(
+    asFeatureId('leaf-R'),
+    createBasicAttributes('R国', 0, 100),
+    COLOR,
+    createShape([rRing]),
+  );
+  const store = createVertexStore([...lVerts, ...rVerts]);
+  return {
+    histories: [
+      singleAnchorHistory('grp', [leafL, leafR], store, 0),
+    ],
+    settings: DEFAULT_SETTINGS,
+    baseMap: DEFAULT_BASEMAP,
+  };
+}
+
+describe('buildActiveFeatureHandlePrimitives (FR-30 shared-vertex visual)', () => {
+  it('fills the SHARED vertex handle with sharedVertexFill; non-shared with vertexFill', () => {
+    const root = sharedCornerProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-L'),
+      DISPLAY,
+    );
+    const vh = vertexHandles(prims);
+    expect(vh).toHaveLength(4);
+    // The handle at the shared corner (10,0) uses sharedVertexFill.
+    const sharedHandle = vh.find((h) => h.at.lon === 10 && h.at.lat === 0)!;
+    expect(sharedHandle.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.sharedVertexFill);
+    // Every OTHER vertex of leaf-L is a normal (unshared) fill.
+    for (const h of vh) {
+      if (h.at.lon === 10 && h.at.lat === 0) continue;
+      expect(h.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.vertexFill);
+    }
+  });
+
+  it('draws every vertex with the normal fill when the active feature shares nothing', () => {
+    const { root } = leafProject(); // a lone square, no sharing
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+    );
+    const vh = vertexHandles(prims);
+    expect(vh).toHaveLength(4);
+    for (const h of vh) {
+      expect(h.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.vertexFill);
+    }
+  });
+
+  it('marks the shared vertex from the NEIGHBOUR feature\'s perspective too (symmetry)', () => {
+    const root = sharedCornerProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-R'),
+      DISPLAY,
+    );
+    const vh = vertexHandles(prims);
+    const sharedHandle = vh.find((h) => h.at.lon === 10 && h.at.lat === 0)!;
+    expect(sharedHandle.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.sharedVertexFill);
   });
 });

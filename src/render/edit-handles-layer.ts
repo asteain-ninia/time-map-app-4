@@ -27,6 +27,7 @@
 // PURITY: builds and returns a fresh array; the input handle set is never mutated.
 
 import type { EditHandles } from '../domain/editing/handles';
+import type { VertexId } from '../domain/ids';
 
 import type { DrawPrimitive, HandlePrimitive } from './map-renderer';
 
@@ -44,6 +45,13 @@ export interface EditHandleStyle {
   readonly strokeWidthPx: number;
   /** Vertex-handle fill color. */
   readonly vertexFill: string;
+  /**
+   * Fill color for a SHARED vertex handle (FR-30): a vertex cited by ≥2 distinct
+   * shape references (two features / two rings) so the user can tell — at a glance —
+   * which vertices move OTHER features when dragged. A distinct hue from `vertexFill`
+   * (normal) and from any selection / drag highlight so the three never collide.
+   */
+  readonly sharedVertexFill: string;
   /** Edge-handle fill color (distinct so add-vertex reads differently from move). */
   readonly edgeFill: string;
   /** Handle outline color (reads on any base / feature color). */
@@ -61,6 +69,10 @@ export const DEFAULT_EDIT_HANDLE_STYLE: EditHandleStyle = {
   edgeRadiusPx: 3.5,
   strokeWidthPx: 1.5,
   vertexFill: '#ffffff',
+  // FR-30: a warm amber that is distinct from the white normal vertex fill, the
+  // light-blue edge fill (#bde3ff) and the blue outline (#0a66c2) — and clear of
+  // the drag / selection highlight hues so a shared vertex never reads as selected.
+  sharedVertexFill: '#ffd54a',
   edgeFill: '#bde3ff',
   stroke: '#0a66c2',
 };
@@ -76,10 +88,19 @@ export const DEFAULT_EDIT_HANDLE_STYLE: EditHandleStyle = {
  * adjacent edge handle (the move target wins the overlap, 教訓 5.14 描画順). Pure: a
  * fresh array; the input is never mutated. An empty handle set yields an empty array
  * (受け入れ基準: 非存在は描画指示に現れない, 教訓 5.18).
+ *
+ * FR-30 共有頂点の視覚区別: `sharedVertexIds` is the set of vertex ids that are SHARED
+ * (cited by ≥2 distinct shape references — derived by the caller via the domain
+ * `shared-vertex` reverse index). A vertex handle whose `vertexId` is in that set is
+ * filled with `style.sharedVertexFill` instead of `style.vertexFill`, so the user can
+ * tell — at a glance — which vertices move other features when dragged. The handle KIND
+ * stays `'vertex'` (still a move / delete target); only the fill differs. Omitting the
+ * set (or an empty set) draws every vertex with the normal fill (no sharing known).
  */
 export function buildEditHandlePrimitives(
   handles: EditHandles,
   style: EditHandleStyle = DEFAULT_EDIT_HANDLE_STYLE,
+  sharedVertexIds?: ReadonlySet<VertexId>,
 ): DrawPrimitive[] {
   const out: DrawPrimitive[] = [];
   // Edge (add-vertex) handles first, then vertices on top of them.
@@ -95,11 +116,13 @@ export function buildEditHandlePrimitives(
     } satisfies HandlePrimitive);
   }
   for (const vertex of handles.vertices) {
+    // FR-30: a shared vertex gets the distinct sharedVertexFill; others the normal fill.
+    const shared = sharedVertexIds !== undefined && sharedVertexIds.has(vertex.vertexId);
     out.push({
       kind: 'handle',
       at: { lon: vertex.position.lon, lat: vertex.position.lat },
       radiusPx: style.vertexRadiusPx,
-      fill: style.vertexFill,
+      fill: shared ? style.sharedVertexFill : style.vertexFill,
       stroke: style.stroke,
       strokeWidthPx: style.strokeWidthPx,
       handleKind: 'vertex',

@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { EditHandles } from '../domain/editing/handles';
 import { HANDLE_KIND } from '../domain/editing/handles';
+import { asFeatureId, asVertexId, type VertexId } from '../domain/ids';
 
 import {
   buildEditHandlePrimitives,
@@ -13,21 +14,19 @@ import {
 } from './edit-handles-layer';
 import type { HandlePrimitive } from './map-renderer';
 
-const asFeatureId = (s: string): never => s as never; // branded id placeholder
-
 function sampleHandles(): EditHandles {
   return {
     vertices: [
       {
         kind: HANDLE_KIND.Vertex,
         featureId: asFeatureId('f1'),
-        vertexId: asFeatureId('v1'),
+        vertexId: asVertexId('v1'),
         position: { lon: 10, lat: 20 },
       },
       {
         kind: HANDLE_KIND.Vertex,
         featureId: asFeatureId('f1'),
-        vertexId: asFeatureId('v2'),
+        vertexId: asVertexId('v2'),
         position: { lon: 30, lat: 40 },
       },
     ],
@@ -35,8 +34,8 @@ function sampleHandles(): EditHandles {
       {
         kind: HANDLE_KIND.Edge,
         featureId: asFeatureId('f1'),
-        startVertexId: asFeatureId('v1'),
-        endVertexId: asFeatureId('v2'),
+        startVertexId: asVertexId('v1'),
+        endVertexId: asVertexId('v2'),
         midpoint: { lon: 20, lat: 30 },
       },
     ],
@@ -85,5 +84,48 @@ describe('buildEditHandlePrimitives (HB3-9)', () => {
 
   it('returns an empty array for an empty handle set (受け入れ基準: 非存在は描画指示に現れない)', () => {
     expect(buildEditHandlePrimitives({ vertices: [], edges: [] })).toEqual([]);
+  });
+});
+
+describe('buildEditHandlePrimitives shared-vertex distinction (FR-30)', () => {
+  it('fills a SHARED vertex handle with sharedVertexFill and a normal one with vertexFill', () => {
+    const shared: ReadonlySet<VertexId> = new Set([asVertexId('v1')]);
+    const prims = buildEditHandlePrimitives(
+      sampleHandles(),
+      DEFAULT_EDIT_HANDLE_STYLE,
+      shared,
+    );
+    const vertexHandles = prims
+      .filter((p): p is HandlePrimitive => p.kind === 'handle')
+      .filter((h) => h.handleKind === 'vertex');
+    // v1 is shared → sharedVertexFill; v2 is not → normal vertexFill.
+    expect(vertexHandles[0]!.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.sharedVertexFill);
+    expect(vertexHandles[1]!.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.vertexFill);
+    // Edge handles are never re-colored by sharing.
+    const edge = prims
+      .filter((p): p is HandlePrimitive => p.kind === 'handle')
+      .find((h) => h.handleKind === 'edge')!;
+    expect(edge.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.edgeFill);
+  });
+
+  it('uses the normal vertexFill for ALL vertices when no shared set is supplied', () => {
+    const prims = buildEditHandlePrimitives(sampleHandles());
+    const vertexHandles = prims
+      .filter((p): p is HandlePrimitive => p.kind === 'handle')
+      .filter((h) => h.handleKind === 'vertex');
+    for (const h of vertexHandles) {
+      expect(h.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.vertexFill);
+    }
+  });
+
+  it('uses the normal vertexFill when the shared set contains none of the vertices', () => {
+    const shared: ReadonlySet<VertexId> = new Set([asVertexId('zzz')]);
+    const prims = buildEditHandlePrimitives(sampleHandles(), DEFAULT_EDIT_HANDLE_STYLE, shared);
+    const vertexHandles = prims
+      .filter((p): p is HandlePrimitive => p.kind === 'handle')
+      .filter((h) => h.handleKind === 'vertex');
+    for (const h of vertexHandles) {
+      expect(h.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.vertexFill);
+    }
   });
 });
