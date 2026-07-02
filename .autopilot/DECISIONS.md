@@ -6,6 +6,14 @@
 
 ## 確定した運用上の決定
 
+- D50(2026-07-02・バグハント第11波 = 系統スイープ: 6確定/0反証 を全根治 — 第10波修正の「対称性の取り残し」を捕捉): 第10波で anchor-store 孤児・focus-guard・存在 revalidate を直したが、いずれも**対称位置に取り残し**があった。狙って系統スイープ→反証0で全て実在。各 test-first→敵対レビュー(全 SOUND・穴0)→フル vitest 緑→個別コミット。
+  - **#1+#2(HIGH) split/drill の step1 未剪定** `30f9899`: 第10波の剪定は step2(新地物側)のみ。step1(継承地物/holed 原末端の過去編集)の mergedVertices が分割/穴あけプール全体を焼き、新地物の私的頂点が継承/holed 側の孤児コピー→**逆方向**(新地物が自分の頂点を移動)で偽 VertexCoordinateDivergence(drill は repair が移動を静かに巻き戻す)。→ 両 step1 に pruneVertexStore(..., features) 適用(step2/merge と対称)。共有 cut 境界は継承/holed が cite=保持。**これで anchor store 剪定が split(1+2)/drill(1+2)/merge の全経路で単一真実源化**。
+  - **#3+#6(HIGH/MED) ツールコントローラ focus-guard 残余** `59dc6bc`: 第10波の focus-guard は global useShortcuts の1箇所のみ。ツール描画中は shortcutsSuspended で global 停止する一方、6ツールコントローラの自前 window keydown(Escape→cancel/Ctrl+Z→draft undo)が focus 判定なしに発火→タイムライン年欄等フォーカス中にネイティブ文字編集を潰す。→ 各 onKey 先頭に既存 isEditableTarget ガードを再利用(新述語なし)。
+  - **#4=#5(MED) applyUndoRedoResult の revalidate 非対称** `21b6f41`: 第10波 #5 は applyCommandResult のみに revalidateForTime を追加。兄弟の applyUndoRedoResult が欠き、多錨時刻スライス削除の undo/redo で幽霊選択が残り再 Delete no-op 化。→ applyCommandResult と対称に revalidateForTime を畳み込み。
+  - **教訓**: 修正時は必ず**対称位置**(step1↔step2 / applyCommandResult↔applyUndoRedoResult / global dispatcher↔tool controller)を確認する=部分修正は対称の取り残しを生む。系統スイープ(全 anchorFor 呼び出し列挙・全 keydown リスナ棚卸し・兄弟関数対比)が取り残しを機械的に捕捉し反証0。anchor-store 孤児クラスは split/drill/merge 全経路で閉じた(add=単一feature・affiliation=shapeless で非該当)。
+  - **残(非穴・pre-existing・低優先)**: displayControl.focus は anchor-level 存在 heal 未適用(focusControlAfterStructureChange は deleted ベースのみ)=survived-at-history だが現時刻不在の focus origin が残りうる。ただし表示 focus のみでレンダは geometry 由来ゆえ視覚ゴーストなし・次の時刻変更で自己治癒=データバグでない。将来 nicety。
+  - **累計バグハント確定: 波5-8=22 + 波10=7 + 波11=6 = 35確定 全根治**。フル vitest 271 files/3310 tests 緑。
+
 - D49(2026-07-02・バグハント第10波 = 新規結線6 MUST を狙った find→敵対verify: 6確定(3HIGH/2MED/1LOW)+2反証 を全根治、+同クラス split 潜在バグも fix): 落ち MUST 復旧6件(D48)の**新規コードが最も新鮮な検査面**という判断でバグハントをそこへ向けた→的中(確定6のうち#2/#3/#5/#6 の4件が新規 MUST 作業内の潜在バグ)。各 test-first(red→green inline revert 実証)→敵対レビュー→フル vitest 緑→個別コミット。全ローカル・push せず。
   - **#1(HIGH)+#4(MED) キーボード focus 暴発** `8afc9be`: プロパティ名称/年欄・タイムライン年欄など編集要素フォーカス中の Delete/Backspace が選択地物を全錨削除、Ctrl+Z/Y がドメイン undo/redo 暴発+ネイティブ編集ブロック。useShortcuts.ts の window keydown が e.target 無判定、shortcutsSuspended は modal/tool-drawing のみ。→ 純粋述語 isEditableTarget を新設(focus-guard.ts)し単一ディスパッチ地点で early return(教訓5.13)。レビュー SOUND。
   - **#2(HIGH) setActiveFeature 跨オーナー選択残留** `9060d2f`: サイドバー/イベント一覧/詳細/検索の素の store.setActiveFeature が別オーナーの頂点選択を温存(reducer FeatureBody 分岐・promoteHit=D48 HOLE-2 とは非対称)→ activeFeature=A/vertexOwner=B の食い違いで Delete が runEditDelete 頂点分岐(vertexIds 優先)で B の頂点削除。UI は A 選択中に見える。→ setActiveFeature を「新 active≠現 vertexOwner の時のみ withoutVertexSet 適用」(単一真実源・呼び出し4経路不変)。HOLE-2 の store 経路残余。
