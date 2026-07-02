@@ -65,6 +65,7 @@ export const TOOL_LABELS = {
   'edit.knife': 'ナイフ（分割）',
   'edit.reparent': '所属変更',
   'edit.merge': '結合',
+  'edit.ring': '穴・飛び地',
 } as const;
 
 /** Sidebar section titles (FR-111). HB3-28: the「イベント一覧」tab is renamed to
@@ -144,6 +145,7 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'edit.knife': '地物を分割します',
   'edit.reparent': '地物の所属を変更します',
   'edit.merge': '複数の地物を結合します',
+  'edit.ring': '面に穴や飛び地を追加、または穴・領土リングを削除します',
   // HB-16: the mode-toggle tooltips (mode.add / mode.edit) were removed — the
   // left toolbar's mode buttons no longer render a Tooltip (ユーザー決定 2026-06-21).
 } as const;

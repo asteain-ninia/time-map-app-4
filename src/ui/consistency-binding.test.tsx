@@ -9,6 +9,8 @@ import { describe, expect, it } from 'vitest';
 import {
   createLiveAddBinding,
   createLiveKnifeBinding,
+  createLiveEditBinding,
+  createLiveMergeBinding,
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
   type DomainRoot,
@@ -789,6 +791,171 @@ describe('makeCommand finding5 — split created set includes the new feature', 
     expect(undoResult.deleted.has(newSide.feature.id)).toBe(true);
 
     root = result.state;
+  });
+});
+
+// 整合レビュー穴2 (ring-edit deletion ghost の根治): the SHARED makeCommand must fill the
+// forward result's `deleted` set from the baseline↔final history-id delta, not only
+// `created`. A ring-edit last-territory delete goes through the SAME edit binding +
+// confirmRingEdit chain as an add/move; before the fix makeCommand reported no `deleted`,
+// so reresolveAfterStructureChange Step 1 could never drop the removed leaf from the
+// selection and it lingered as a ghost activeFeature. The undo (backward) result is
+// symmetric — what forward deleted is created again — so the restored leaf can be
+// re-promoted. Driven through the REAL createLiveEditBinding chain (not a mock).
+describe('makeCommand — deleted set is filled from the history delta (ring-edit deletion ghost 根治)', () => {
+  it('a committed feature deletion reports the removed feature in `deleted` (Step 1 can drop the ghost)', async () => {
+    const { confirmRingEdit, snapshotForDeletedFeature } = await import(
+      '../domain/ring-edit/index'
+    );
+    const { RELEASE_OUTCOME } = await import('../domain/editing/index');
+
+    // Seed a single-territory leaf at year 1000 (the live root the binding reads).
+    const seed = squareLeaf('f-del', 'vd', 0, 0);
+    const root: DomainRoot = applyAddProposal(emptyProject(), {
+      featureId: seed.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(seed.feature, seed.vertices),
+    });
+    expect(root.histories).toHaveLength(1);
+
+    // The SAME live edit binding + confirm entry the ring-edit bootstrap assembles.
+    const binding = createLiveEditBinding({ getRoot: () => root });
+    const outcome = confirmRingEdit<DomainRoot>({
+      snapshot: snapshotForDeletedFeature(seed.feature.id),
+      anchorTime: timePointYear(1000),
+      current: root,
+      ports: binding.ports,
+      changed: true,
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Processed);
+    if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
+    expect(outcome.result.status).toBe(PROCESS_STATUS.Committed);
+    if (outcome.result.status !== PROCESS_STATUS.Committed) return;
+
+    const forward = outcome.result.command.execute(root).result;
+    // THE root-fix proof: the removed leaf is in `deleted` so selection re-resolution
+    // (reresolveAfterStructureChange Step 1) drops the ghost activeFeature.
+    expect(forward.deleted.has(seed.feature.id)).toBe(true);
+    expect(forward.created.has(seed.feature.id)).toBe(false);
+    expect(forward.survived.has(seed.feature.id)).toBe(false);
+    expect(forward.touched.has(seed.feature.id)).toBe(true);
+
+    // Symmetric backward: undo brings the leaf back → reported as created so it can
+    // be re-promoted (教訓 5.23).
+    const backward = outcome.result.command.undo(outcome.result.state).result;
+    expect(backward.created.has(seed.feature.id)).toBe(true);
+    expect(backward.deleted.has(seed.feature.id)).toBe(false);
+
+    // Prove Step 1 of the shared selection re-resolution actually drops the ghost when
+    // the deleted feature is the active selection (no preference — a last-territory
+    // delete has no next target, exactly as onRingEditCommitted passes it).
+    const { reresolveAfterStructureChange } = await import('../domain/selection/index');
+    const { EMPTY_SELECTION, withActiveFeature } = await import('../domain/selection/state');
+    const selected = withActiveFeature(EMPTY_SELECTION, seed.feature.id);
+    const reresolved = reresolveAfterStructureChange(selected, forward);
+    expect(reresolved.activeFeature).toBeNull();
+  });
+
+  // NON-REGRESSION (敵対的検証): the SAME shared makeCommand runs for MERGE. A leaf-only
+  // N→1 merge folds the N targets away (they leave the histories) and mints a NEW result
+  // feature. The new `deleted` set now reports the N targets — this MUST NOT break merge
+  // selection: the merge commit promotes its resultFeatureId via the caller's preference
+  // (reresolve Step 2), which runs AFTER the deleted-prune (Step 1). Prove the end state
+  // is activeFeature === resultFeatureId even when a merged-away target was selected.
+  it('merge (N→1) reports the folded targets as deleted yet the result stays selected (Step 2 preference wins)', async () => {
+    const { buildMergeProposal, toMergeEditProposal, MERGE_STATUS } = await import(
+      '../domain/merge/index'
+    );
+    const { PARENT_DECISION } = await import('../domain/affiliation/decision');
+    const { PROPERTY_DECISION } = await import('../domain/merge/decision');
+    const { reresolveAfterStructureChange } = await import('../domain/selection/index');
+    const { EMPTY_SELECTION, withActiveFeature } = await import('../domain/selection/state');
+    const { featuresAt: featuresAtLive, verticesAt: verticesAtLive } = await import('./live-lookup');
+
+    // Two edge-adjacent leaves a [0,2]×[0,2] and b [2,4]×[0,2] at year 1000. Built with
+    // a valid existence period (1000,1000) so the merge precondition「対象時間に存在」
+    // passes (squareLeaf's endYear=0 would be rejected as not-present-at-time).
+    const rectLeaf = (idRaw: string, vPrefix: string, ox: number): { feature: LeafFeature; vertices: Vertex[] } => {
+      const corners = [
+        [ox, 0],
+        [ox + 2, 0],
+        [ox + 2, 2],
+        [ox, 2],
+      ];
+      const vertices = corners.map((c, i) =>
+        createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]!, lat: c[1]! }),
+      );
+      const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
+      const feature = createLeafFeature(
+        asFeatureId(idRaw),
+        createBasicAttributes(idRaw, 1000, 1000),
+        color,
+        createShape([ring]),
+      );
+      return { feature, vertices };
+    };
+
+    let root: DomainRoot = emptyProject();
+    const a = rectLeaf('m-a', 'ma', 0); // [0,2]×[0,2]
+    const bFeature2 = rectLeaf('m-b', 'mb', 2); // [2,4]×[0,2] — adjacent on x=2
+    const bFeature = bFeature2.feature;
+    root = applyAddProposal(root, {
+      featureId: a.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    root = applyAddProposal(root, {
+      featureId: bFeature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(bFeature, bFeature2.vertices),
+    });
+
+    let n = 0;
+    const merge = buildMergeProposal({
+      features: featuresAtLive(root, timePointYear(1000)),
+      vertices: verticesAtLive(root, timePointYear(1000)),
+      targetIds: [a.feature.id, bFeature.id],
+      atTime: 1000,
+      parentDecision: { kind: PARENT_DECISION.None },
+      propertyDecision: {
+        kind: PROPERTY_DECISION.New,
+        properties: { attributes: createBasicAttributes('merged', 1000, 1000), color },
+      },
+      ids: {
+        nextFeatureId: () => asFeatureId(`mf-${(n += 1)}`),
+        nextVertexId: () => asVertexId(`mv-${(n += 1)}`),
+        nextRingId: () => asRingId(`mr-${(n += 1)}`),
+      },
+    });
+    expect(merge.status).toBe(MERGE_STATUS.Proposal);
+    if (merge.status !== MERGE_STATUS.Proposal) return;
+    const resultFeatureId = merge.proposal.resultFeatureId;
+
+    const binding = createLiveMergeBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`mvx-${(n += 1)}`),
+      nextRingId: () => asRingId(`mrx-${(n += 1)}`),
+    });
+    const outcome = binding.startProcess(toMergeEditProposal(merge.proposal, timePointYear(1000)));
+    expect(outcome.status).toBe(PROCESS_STATUS.Committed);
+    if (outcome.status !== PROCESS_STATUS.Committed) return;
+
+    const forward = outcome.command.execute(root).result;
+    // The two folded targets are gone from the histories → reported deleted.
+    expect(forward.deleted.has(a.feature.id)).toBe(true);
+    expect(forward.deleted.has(bFeature.id)).toBe(true);
+    // The new result feature is created (and disjoint from the deleted set — invariant).
+    expect(forward.created.has(resultFeatureId)).toBe(true);
+    expect(forward.deleted.has(resultFeatureId)).toBe(false);
+
+    // With a merged-away target selected, reresolution (Step 1 prune + Step 2 promote)
+    // lands the merged RESULT selected — the merge preference wins, no ghost, no
+    // regression from the new `deleted` set.
+    const selected = withActiveFeature(EMPTY_SELECTION, a.feature.id);
+    const reresolved = reresolveAfterStructureChange(selected, forward, {
+      featureId: resultFeatureId,
+    });
+    expect(reresolved.activeFeature).toBe(resultFeatureId);
   });
 });
 

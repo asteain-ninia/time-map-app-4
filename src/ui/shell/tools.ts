@@ -22,6 +22,8 @@ export const TOOL_ID = {
   EditKnife: asToolId('edit.knife'),
   EditReparent: asToolId('edit.reparent'),
   EditMerge: asToolId('edit.merge'),
+  // FR-22 / FR-24 穴・飛び地の追加 / リング削除 (U25 ring-edit)
+  EditRing: asToolId('edit.ring'),
 } as const;
 
 /** The tools shown in 追加モード, in toolbar order. */
@@ -39,6 +41,7 @@ const EDIT_MODE_TOOLS: readonly ToolId[] = [
   TOOL_ID.EditKnife,
   TOOL_ID.EditReparent,
   TOOL_ID.EditMerge,
+  TOOL_ID.EditRing,
 ];
 
 const NO_TOOLS: readonly ToolId[] = [];

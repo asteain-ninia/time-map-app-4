@@ -319,6 +319,7 @@ function makeCommand(
   const finalIds = new Set<FeatureId>(finalState.histories.map((h) => h.featureId));
   const created = new Set<DomainId>();
   const survived = new Set<DomainId>();
+  const deleted = new Set<DomainId>();
   // finding5 — derive created/survived from the ACTUAL history-id delta, not only
   // the orchestrator-supplied `touched`. For a split, the inheritor is the
   // proposal.featureId (in `touched`) but the NON-inherited new feature is born
@@ -331,16 +332,40 @@ function makeCommand(
     if (baselineIds.has(id)) survived.add(id);
     else created.add(id);
   }
-  for (const id of touched) {
-    if (!created.has(id) && finalIds.has(id)) survived.add(id);
+  // ring-edit deletion-ghost fix (整合レビュー): report ids that were in the baseline
+  // histories but are GONE from the final histories as `deleted`, symmetric to the
+  // created delta above. This shared command path is also the ring-edit confirm path,
+  // where a last-territory delete removes the leaf's history wholesale; without a
+  // `deleted` set reresolveAfterStructureChange Step 1 could not drop the removed leaf
+  // from the selection and it lingered as a ghost activeFeature (createDeleteFeature
+  // CommandForRoot already warned about exactly this omission). merge (N→1 folds the
+  // N targets away) / split / reparent see the SAME derivation: an id gone from the
+  // final histories is genuinely deleted, so reporting it is correct for every path —
+  // merge still promotes its resultFeatureId via the caller's `preference` (Step 2),
+  // which runs AFTER the deleted-prune (Step 1), so the merged result stays selected.
+  for (const id of baselineIds) {
+    if (!finalIds.has(id)) deleted.add(id);
   }
-  // The full touched set = every id that participated (the delta + the supplied).
+  for (const id of touched) {
+    if (!created.has(id) && !deleted.has(id) && finalIds.has(id)) survived.add(id);
+  }
+  // The full touched set = every id that participated (created ∪ survived ∪ deleted).
   const touchedSet: ReadonlySet<DomainId> = new Set<DomainId>([
     ...created,
     ...survived,
+    ...deleted,
   ]);
-  const forward: CommandResult = createCommandResult({ created, survived, touched: touchedSet });
+  const forward: CommandResult = createCommandResult({
+    created,
+    survived,
+    deleted,
+    touched: touchedSet,
+  });
+  // backward (undo) is symmetric (教訓 5.23): what forward created is now deleted, and
+  // what forward deleted is brought back = created, so undo's selection re-resolution
+  // drops the re-removed ids and can re-promote the restored ones.
   const backward: CommandResult = createCommandResult({
+    created: deleted,
     deleted: created,
     survived,
     touched: touchedSet,

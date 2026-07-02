@@ -14,7 +14,7 @@ describe('toolsForMode (FR-75)', () => {
     ]);
   });
 
-  it('edit mode exposes the editing tools (select/vertex/move/knife/reparent/merge)', () => {
+  it('edit mode exposes the editing tools (select/vertex/move/knife/reparent/merge/ring)', () => {
     expect(toolsForMode(EDIT_MODE.Edit)).toEqual([
       TOOL_ID.EditSelect,
       TOOL_ID.EditVertex,
@@ -22,6 +22,7 @@ describe('toolsForMode (FR-75)', () => {
       TOOL_ID.EditKnife,
       TOOL_ID.EditReparent,
       TOOL_ID.EditMerge,
+      TOOL_ID.EditRing,
     ]);
   });
 

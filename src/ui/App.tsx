@@ -78,6 +78,8 @@ import {
 } from './knife/index';
 import { MergeToolController, type MergeDrawSink } from './merge/index';
 import './merge/merge.css';
+import { RingEditToolController, type RingEditDrawSink } from './ring-edit/index';
+import './ring-edit/ring-edit.css';
 import { ReparentToolController, type ReparentDrawSink } from './reparent/index';
 import './reparent/reparent.css';
 import { HelpToolsController } from './help-tools/index';
@@ -530,7 +532,8 @@ export function App(): JSX.Element {
         if (
           s.activeTool === TOOL_ID.EditKnife ||
           s.activeTool === TOOL_ID.EditMerge ||
-          s.activeTool === TOOL_ID.EditReparent
+          s.activeTool === TOOL_ID.EditReparent ||
+          s.activeTool === TOOL_ID.EditRing
         ) {
           return [];
         }
@@ -1185,6 +1188,18 @@ export function App(): JSX.Element {
     }),
     [],
   );
+  // U25: the ring-edit provisional overlay sink. Shares the SAME single tool-overlay
+  // slot (drawKnife) — ring-edit / knife / merge / reparent are mutually exclusive
+  // tools, so only one ever feeds it at a time; an idle draft pushes `[]` so the
+  // overlay clears on every reset path (教訓 5.2 / 5.18).
+  const ringEditDrawSink: RingEditDrawSink = useMemo(
+    () => ({
+      drawRingEdit(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawKnife(primitives);
+      },
+    }),
+    [],
+  );
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1554,6 +1569,21 @@ export function App(): JSX.Element {
     [store],
   );
 
+  // U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) bootstrap mirrors the
+  // knife / merge ones — shared id minting + live-lookup ports + the LIVE U13 binding.
+  // Unlike add / knife, ring-edit rides the SAME live `createLiveEditBinding` the
+  // edit-session drag confirm uses (confirmRingEdit → confirmRelease → applyEditProposal),
+  // so FR-22/24 actually reach Committed without the add/knife U13 stub (risks §U13 回避).
+  const ringEditBootstrap = useMemo(
+    () =>
+      createRingEditBootstrap(
+        () => store.getState().domain,
+        () => store.getState().currentTime,
+        sharedMint,
+      ),
+    [store, sharedMint],
+  );
+
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
   // promote the new feature so selection re-resolves to it.
   const onAddCommitted = useCallback(
@@ -1606,6 +1636,20 @@ export function App(): JSX.Element {
     [recordCommit],
   );
 
+  // RING-EDIT COMMIT (教訓 5.11 / U12): record as one history unit. For an add / a
+  // surviving delete, promote the edited leaf so selection re-resolves to it (FR-22/24
+  // selection retention); for a FeatureDeleted last-territory delete the snapshot has
+  // NO feature and the deleted id must NOT be re-selected (it fell out of the domain),
+  // so no preference is passed and the deleted feature drops from selection.
+  const onRingEditCommitted = useCallback(
+    (result: ProcessResult<DomainRoot>, snapshot: RingFeatureSnapshot) => {
+      if (result.status !== PROCESS_STATUS.Committed) return;
+      const fid = snapshot.feature?.id;
+      recordCommit(result, fid !== undefined ? { featureId: fid } : undefined);
+    },
+    [recordCommit],
+  );
+
   // U35 — the conflict-resolution modal seam. When add / knife confirmation pauses
   // (ConflictsPending) the controller's onConflicts hands us the pending result +
   // the proposal-bound applyResolutions adapter + a shapes lookup; we hold them in
@@ -1639,6 +1683,9 @@ export function App(): JSX.Element {
   const [knifeDrawing, setKnifeDrawing] = useState(false);
   const [mergeDrawing, setMergeDrawing] = useState(false);
   const [reparentDrawing, setReparentDrawing] = useState(false);
+  // U25: a ring-edit session past Idle owns the keyboard (its OWN Ctrl+Z undoes a
+  // vertex; a stray global Delete during a ring-delete must not fire) — 教訓 c1e5534.
+  const [ringEditDrawing, setRingEditDrawing] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
@@ -1646,7 +1693,8 @@ export function App(): JSX.Element {
     addDrawing ||
     knifeDrawing ||
     mergeDrawing ||
-    reparentDrawing;
+    reparentDrawing ||
+    ringEditDrawing;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -1750,6 +1798,22 @@ export function App(): JSX.Element {
       });
     },
     [reparentBootstrap],
+  );
+
+  const onRingEditConflicts = useCallback(
+    (result: ProcessResult<DomainRoot>, proposal: EditProposal<RingFeatureSnapshot>) => {
+      if (result.status !== PROCESS_STATUS.ConflictsPending) return;
+      // Promote the edited leaf on commit, the SAME preference a direct ring-edit commit
+      // uses (教訓 5.11). A FeatureDeleted delete carries no surviving feature, so no
+      // preference is set (the deleted id drops from selection).
+      const fid = proposal.snapshot.feature?.id;
+      setConflictState({
+        pending: result,
+        applyResolutions: ringEditBootstrap.applyResolutionsFor(proposal),
+        ...(fid !== undefined ? { preference: { featureId: fid } } : {}),
+      });
+    },
+    [ringEditBootstrap],
   );
 
   const onConflictCommitted = useCallback(
@@ -2134,6 +2198,31 @@ export function App(): JSX.Element {
               onCommitted={onReparentCommitted}
               onConflicts={onReparentConflicts}
               onDrawingChange={setReparentDrawing}
+            />
+            {/* U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) controller,
+                bound to the SAME store. Selecting 編集モード→穴・飛び地 arms a session; the
+                first map click picks the target末端面, then (add) clicks place the new
+                ring's vertices — the first click auto-classifies 穴 vs 飛び地 — and
+                リングを確定 assembles the after-state and drives U24→U13 (the SAME live
+                createLiveEditBinding the edit-session drag uses, so it actually commits);
+                (delete) clicking inside a ring removes it (deleteHoleRing /
+                deleteTerritoryRing). Was unreachable — domain/ring-edit existed but no UI
+                consumed it (integration lens). */}
+            <RingEditToolController<DomainRoot>
+              store={store}
+              startProcess={ringEditBootstrap.startProcess}
+              ids={ringEditBootstrap.ids}
+              resolveFeature={ringEditBootstrap.resolveFeature}
+              resolveStore={ringEditBootstrap.resolveStore}
+              anchorTime={() => store.getState().currentTime}
+              current={ringEditBootstrap.current}
+              screenToWorld={screenToWorld}
+              featureAtPoint={ringEditBootstrap.featureAtPoint}
+              drawSink={ringEditDrawSink}
+              mapCameraInput={mapCameraInput}
+              onCommitted={onRingEditCommitted}
+              onConflicts={onRingEditConflicts}
+              onDrawingChange={setRingEditDrawing}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes
@@ -2666,6 +2755,84 @@ function createKnifeBootstrap(
     ids,
     resolveFeature,
     resolveStore,
+    featureAtPoint,
+    startProcess,
+    applyResolutionsFor,
+  };
+}
+
+// --- The ring-edit bootstrap (id ports + live-lookup + the U24/U13 seam) -------
+
+import type {
+  ResolveFeature as RingResolveFeature,
+  ResolveVertexStore as RingResolveStore,
+  ResolveCurrent as RingResolveCurrent,
+  StartRingEditProcess,
+  FeatureAtPoint as RingFeatureAtPoint,
+} from './ring-edit/index';
+import { confirmRingEdit, type RingIdPorts } from '../domain/ring-edit/index';
+import type { FeatureSnapshot as RingFeatureSnapshot } from '../domain/editing/index';
+
+interface RingEditBootstrap<S> {
+  readonly ids: RingIdPorts;
+  readonly resolveFeature: RingResolveFeature;
+  readonly resolveStore: RingResolveStore;
+  readonly current: RingResolveCurrent<S>;
+  readonly featureAtPoint: RingFeatureAtPoint;
+  readonly startProcess: StartRingEditProcess<S>;
+  /** Build the U35 apply-resolutions adapter bound to ONE paused ring-edit proposal. */
+  readonly applyResolutionsFor: (
+    proposal: EditProposal<RingFeatureSnapshot>,
+  ) => ApplyResolutions<S>;
+}
+
+function createRingEditBootstrap(
+  getRoot: () => DomainRoot,
+  getTime: () => TimePoint,
+  mint: SharedIdMint,
+): RingEditBootstrap<DomainRoot> {
+  // Ids minted through the SAME shared minter add / knife / merge use (finding 3): one
+  // generator + a project-wide reservation set, so a ring-edit-minted id (the new hole
+  // / enclave ring + its vertices) can collide with neither another tool's output nor
+  // loaded data (教訓 5.37).
+  const ids: RingIdPorts = {
+    nextRingId: () => asRingId(mint('r')),
+    nextVertexId: () => asVertexId(mint('v')),
+  };
+
+  // LIVE domain-lookup ports (P0-B): resolve against the CURRENT committed root at the
+  // CURRENT time, read at call time so a load / time move / edit is reflected without a
+  // stale capture (教訓 5.6). They share the SAME live-lookup rule the consistency
+  // binding uses (二重真実源を作らない, 教訓 5.29). featureAtPoint picks an INDIVIDUAL
+  // leaf (like merge) — ring-edit targets one末端 face's ring set, so a child inside an
+  // aggregate must be directly pickable (HB3-16 と同型).
+  const resolveFeature: RingResolveFeature = (featureId): Feature | undefined =>
+    featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
+  const resolveStore: RingResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
+  const featureAtPoint: RingFeatureAtPoint = (point): FeatureId | null =>
+    leafAtPoint(getRoot(), getTime(), point);
+
+  // U44 — the LIVE U13 binding for ring-edit (FR-22/24 は U13 スタブを回避できる大きな
+  // 利点): confirmRingEdit → confirmRelease → ConsistencyPorts<DomainRoot,
+  // FeatureSnapshot> = the SAME live `createLiveEditBinding` the edit-session drag
+  // confirm uses (applyProposal = applyEditProposal). So an add-hole / delete-ring
+  // actually reaches Committed, exactly like an edit-mode vertex drag.
+  const live = createLiveEditBinding({ getRoot: () => getRoot() });
+  const ports = live.ports;
+  // The hook's StartRingEditProcess is the confirm entry: assemble the ONE complete-
+  // state proposal (snapshot) and drive U24→U13. add / delete are always a real change
+  // (changed: true), so the no-op guard never suppresses them (教訓 5.24).
+  const startProcess: StartRingEditProcess<DomainRoot> = (snapshot, anchorTime, current) =>
+    confirmRingEdit<DomainRoot>({ snapshot, anchorTime, current, ports, changed: true });
+  const applyResolutionsFor = (
+    proposal: EditProposal<RingFeatureSnapshot>,
+  ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
+
+  return {
+    ids,
+    resolveFeature,
+    resolveStore,
+    current: () => getRoot(),
     featureAtPoint,
     startProcess,
     applyResolutionsFor,
