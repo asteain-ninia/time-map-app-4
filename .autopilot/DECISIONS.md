@@ -6,6 +6,15 @@
 
 ## 確定した運用上の決定
 
+- D53(2026-07-02・セッション最終検証 = e2e 回帰診断で回帰0確定 + 10失敗の真因を訂正 + テスト側修正で green 回復): 本セッションの19コミット(落ち MUST 6件 + バグハント41確定)後の包括ゲート(typecheck 0 / lint 0 / フル vitest 271 files・3334 tests 緑)に加え、focus-guard・ツールコントローラ keydown・選択衛生・revalidate 等 keyboard/選択系の変更を含むため e2e(npm run test:e2e)を実行=**10 failed / 75 passed**。専任エージェントで全10失敗を分類。
+  - **本セッションの回帰: 0件(確定)**。focus-guard(8afc9be)/選択衛生(9060d2f)/applyUndoRedoResult revalidate(21b6f41)/apply-proposal 剪定/live-lookup メモ化/property/シーム描画 のいずれもどの e2e 失敗の原因でもない。shortcut-suspend.spec が PASS=キーボードは offscreen でも到達しており、focus-guard は編集要素フォーカス時のみ作動(探索スペックは canvas 操作・ux-cluster は suspend が先行)。
+  - **従来の申し送り分類「環境依存(offscreen electron keyboard-focus)」は誤りと訂正**。真因は全てテスト側の陳腐化/設計齟齬(実アプリは正常):
+    - 探索7件 + regression:249: 陳腐 testid `knife-choose-a/-b`。ナイフ継承先モーダルは n-way 化(commit 01ed1d6, セッション開始 fc92e47 より前)で `knife-choose-0/-1/...` にリネーム済なのに旧 testid を `.catch(()=>undefined)` で空振り→モーダル(および merge-options ダイアログ)が開いたまま→背板が後続クリックを遮断してタイムアウト。
+    - ux-cluster HB-10 ×2: `commitOneFace` が追加モードのまま終了→AddToolController が受け入れ基準6 で追加ツール自動再アーム→`addDrawing=true`→`shortcutsSuspended=true`→`useShortcuts` 全面スタンドダウン(bughunt3 H2 二重undo防止)で Ctrl+Z がグローバル undo に届かない。テスト設計と suspend 仕様の齟齬。いずれも fc92e47 で同一失敗を git で確認済。
+  - **テスト側修正(test-only, commit `f289764`, app/domain 変更0)**: knife testid を実 DOM(InheritorModal.tsx)に合わせ `knife-choose-0/-1` へ更新 + merge-options-confirm でダイアログ確定 + ux-cluster は Ctrl+Z 前に編集モードへ切替(描画セッションを畳み suspend 解除・Edit で undo/redo は有効)。実 testid は InheritorModal/MergeOptionsDialog/AddToolController/permissions を読んで確認。アサーションは骨抜きにせず(skip/vacuous なし・merge-reduced 件数減 / undo op∘逆op / HB-10 canRedo↔canUndo 連鎖を保持)。対象10スペック=**20 tests green(targeted 実行で検証)**、e2e tsconfig typecheck exit 0。full スイート再確認を別途実行。
+  - **申し送り(潜在・未対応)**: 他3スペック(explore-r4/explore2-r2/explore3-r1)にも同 stale `knife-choose-a/-b` が残存(現状 `.catch` ガードで green だが将来同じ背板ブロックを起こし得る)。e2e 実行の副産物 screenshots(e2e/__bughunt__/screenshots/*.png 248件)は untracked のまま(将来 .gitignore 化が hygiene)。
+  - **教訓**: 「既知フレーキー/環境依存」と片付けられていた e2e 失敗も、error-context/trace を精査すると実は stale testid のテストバグで、**実アプリの回帰を隠す危険**があった=失敗は必ず症状から真因を分類する(環境要因と決めつけない)。green e2e スイートは回帰検出インフラそのもの。
+
 - D52(2026-07-02・バグハント第13波 最終 = 2確定/2反証 を根治 + バグハントライン収束判断): 未スイープ角度(a11y・大規模perf・例外/エラー境界・fresh)を狙撃。各 test-first→敵対レビュー(両 SOUND)→フル vitest 緑→個別コミット。
   - **#1(HIGH・perf, NFR-5.2)** `63a964c`: revalidateForTime が時刻変更 tick 毎に、選択頂点 K 個+アクティブ地物について existence port を呼び、各呼び出しが featuresAt/verticesAt→全 histories resolveAt→createVertexStore で O(V_total) store を新規構築し .has() 1回で破棄=O(K·V_total)/tick。実測 V_total≈6517・K=300→272ms/tick(再生 100ms 予算飽和・5000地物でフリーズ)。→ live-lookup.ts の featuresAt/verticesAt を (root identity, complete(time) 値等価) でメモ化(bounded LRU cap2, display-resolution-cache と同型・既存 complete/completeEquals 流用)。1 tick 内 K 回→1 build に collapse=O(K+V_total)。全消費者(renderer/hit-test/binding/knife-merge-reparent/existence)が透過的に恩恵。上位 API 無改変。root swap/time 変化で必ず再構築=stale なし。
   - **#2(MED・a11y, WCAG 4.1.2)** `23a344b`: AnchorTimeBar の細バー(占有率<8%)は可視ラベル span 省略で button の子が消えアクセシブル名が空。→ 各バー button に無条件 aria-label(list row と同一 formatTimePoint + openEndLabel)。可視ラベルゲートは不変。
