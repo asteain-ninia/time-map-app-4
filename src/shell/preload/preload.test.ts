@@ -50,6 +50,7 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
     const api: TimeMapApi = buildApi();
     const keys = Object.keys(api).sort();
     expect(keys).toEqual([
+      'appendLog',
       'configureAutoSave',
       'load',
       'loadDropped',
@@ -103,6 +104,18 @@ describe('each API method invokes the correct shared channel (受け入れ基準
     const config = { intervalMs: 1000, maxGenerations: 10 };
     await api.configureAutoSave(config);
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.ConfigureAutoSave, config);
+  });
+
+  it('appendLog → IPC_CHANNEL.AppendLog with the log record (FR-117)', async () => {
+    const api = buildApi();
+    const record = {
+      level: 'error',
+      message: 'boom',
+      recordedAtMs: 1000,
+      context: { summary: 'op' },
+    };
+    await api.appendLog(record);
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.AppendLog, record);
   });
 });
 

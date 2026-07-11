@@ -41,6 +41,15 @@ export const IPC_CHANNEL = {
    * sender (main) and the preload subscriber never rely on a coincidental string.
    */
   AutoSaveTick: 'tmap:auto-save-tick',
+  /**
+   * Renderer→main diagnostic-log append (FR-117 / FR-02). The renderer's
+   * {@link DiagnosticLogger} sink invokes this to persist ONE log entry to a local
+   * JSONL file under the app's userData. Best-effort: main appends and resolves
+   * even on write failure; the renderer sink swallows any rejection so an
+   * error-logging path can never itself crash (log.ts:99). NEVER an external send —
+   * main writes to the local disk only (FR-02 オフライン・ローカルのみ).
+   */
+  AppendLog: 'tmap:append-log',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
@@ -111,6 +120,44 @@ export interface AutoSaveConfig {
 export type ConfigureAutoSaveResponse = { readonly ok: true };
 
 /**
+ * A single diagnostic log entry transported to main for LOCAL file persistence
+ * (FR-117). It structurally mirrors the renderer's `LogEntry`
+ * (src/ui/discovery/log.ts): the contract lives in the SHELL layer and must not
+ * import the ui type (import/no-restricted-paths), so the shape is restated here
+ * as a plain JSON-safe record — a `LogEntry` is assignable to it (the ui-side
+ * test pins that assignability at compile time, 教訓 5.33). `level` is
+ * transported as a string (the ui owns the level semantics). Main does NOT trust
+ * the inbound value: it re-normalizes it (known fields only, string coercion +
+ * length caps — diagnostic-log.ts) before writing ONE JSONL line; it carries only
+ * non-sensitive summaries, never project content (FR-02 / FR-117).
+ */
+export interface DiagnosticLogRecord {
+  /** Severity ('info' | 'warning' | 'error' on the ui side). */
+  readonly level: string;
+  readonly message: string;
+  /** System real time of recording (ms epoch). */
+  readonly recordedAtMs: number;
+  readonly context: DiagnosticLogRecordContext;
+  /**
+   * Set by MAIN ONLY (diagnostic-log.ts) when the entry had to be cut to fit the
+   * per-line / per-file byte caps. Never supplied by the renderer — main's
+   * normalizer strips it from inbound records — so its presence in a persisted
+   * file reliably means "main truncated this entry".
+   */
+  readonly truncated?: true;
+}
+
+/** The non-sensitive context captured with a {@link DiagnosticLogRecord}. */
+export interface DiagnosticLogRecordContext {
+  /** The作中時刻 (現在時刻) at the moment of the operation, as a display string. */
+  readonly contextTime?: string;
+  /** A short operation-context summary (e.g. the action name). */
+  readonly summary?: string;
+  /** The underlying cause/stack as a string, if any (診断用). */
+  readonly cause?: string;
+}
+
+/**
  * Unsubscribe handle returned by a one-way event subscription. Calling it
  * detaches the listener so the renderer can clean up (e.g. on unmount).
  */
@@ -137,4 +184,12 @@ export interface TimeMapApi {
    * directly, so this typed wrapper is the ONLY way it can hear the tick.
    */
   readonly onAutoSaveTick: (listener: () => void) => Unsubscribe;
+  /**
+   * Append ONE diagnostic log entry to the local JSONL file (FR-117 / FR-02).
+   * Wired as the {@link DiagnosticLogger} sink in the renderer. Best-effort: the
+   * returned promise resolves even when the write failed (main swallows the
+   * error), and the renderer sink additionally swallows any rejection so the
+   * logging path can never crash. NEVER leaves the machine (local userData only).
+   */
+  readonly appendLog: (record: DiagnosticLogRecord) => Promise<void>;
 }

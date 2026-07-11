@@ -4,6 +4,7 @@ import {
   IPC_CHANNEL,
   type AutoSaveConfig,
   type ConfigureAutoSaveResponse,
+  type DiagnosticLogRecord,
   type LoadResponse,
   type SaveRequest,
   type SaveResponse,
@@ -51,6 +52,11 @@ export function buildApi(): TimeMapApi {
         ipcRenderer.removeListener(IPC_CHANNEL.AutoSaveTick, wrapped);
       };
     },
+    // Diagnostic-log append (FR-117 / FR-02). Fire the record over the shared
+    // AppendLog channel; main persists it to a LOCAL JSONL file. Best-effort — the
+    // renderer sink swallows any rejection so an error-logging path never crashes.
+    appendLog: (record: DiagnosticLogRecord): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNEL.AppendLog, record) as Promise<void>,
   };
 }
 

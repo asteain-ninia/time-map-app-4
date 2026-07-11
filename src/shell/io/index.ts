@@ -50,3 +50,26 @@ export {
 export { loadTmapBytes } from './load';
 
 export { saveTmap, type SaveEnv, type SaveTmapResult } from './save';
+
+export {
+  DIAGNOSTIC_LOG_PREFIX,
+  DIAGNOSTIC_LOG_EXT,
+  DEFAULT_DIAGNOSTIC_LOG_GENERATIONS,
+  MAX_LOG_LEVEL_CHARS,
+  MAX_LOG_MESSAGE_CHARS,
+  MAX_LOG_CONTEXT_VALUE_CHARS,
+  MAX_LOG_LINE_BYTES,
+  MAX_LOG_FILE_BYTES,
+  DIAGNOSTIC_LOG_FILE_CAP_MESSAGE,
+  nodeDiagnosticLogFs,
+  diagnosticLogFileName,
+  formatDiagnosticLogLine,
+  normalizeDiagnosticLogRecord,
+  capDiagnosticLogLine,
+  diagnosticLogDateKey,
+  selectDiagnosticLogsToDelete,
+  appendDiagnosticLog,
+  pruneDiagnosticLogs,
+  type DiagnosticLogFs,
+  type DiagnosticLogEnv,
+} from './diagnostic-log';

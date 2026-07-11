@@ -16,6 +16,7 @@ import {
   IPC_CHANNEL,
   type AutoSaveConfig,
   type ConfigureAutoSaveResponse,
+  type DiagnosticLogRecord,
   type IpcChannel,
   type LoadResponse,
   type SaveRequest,
@@ -58,6 +59,12 @@ export interface IpcDeps {
   readonly applyAutoSaveConfig: (config: AutoSaveConfig) => void;
   /** Generation cap to use for backups; settings-driven (既定 10). */
   readonly maxGenerations?: number;
+  /**
+   * Append ONE diagnostic log entry to the LOCAL JSONL file (FR-117 / FR-02).
+   * Wired to the diagnostic-log fs adapter in main/index.ts. Best-effort: the
+   * implementation swallows write failures, so this must never reject.
+   */
+  readonly appendDiagnosticLog: (record: DiagnosticLogRecord) => Promise<void>;
 }
 
 const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
@@ -136,6 +143,24 @@ export function handleConfigureAutoSave(
   return { ok: true };
 }
 
+/**
+ * Append ONE diagnostic log entry to the local JSONL file (FR-117 / FR-02). The
+ * append is best-effort: any failure is swallowed here too, so a diagnostic-log
+ * write can never reject the IPC call (an error-logging path must not itself
+ * surface an error). Returns nothing — the renderer sink ignores the result.
+ */
+export async function handleAppendLog(
+  deps: IpcDeps,
+  record: DiagnosticLogRecord,
+): Promise<void> {
+  try {
+    await deps.appendDiagnosticLog(record);
+  } catch {
+    // The adapter is already best-effort; this is a defensive belt so a rejection
+    // never crosses the IPC boundary back into the renderer (FR-117 / log.ts:99).
+  }
+}
+
 // --- registration: one handler per shared channel ---------------------------
 
 /**
@@ -154,4 +179,6 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     handleLoadDropped(deps, p)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.ConfigureAutoSave, ((_event: never, c: AutoSaveConfig) =>
     handleConfigureAutoSave(deps, c)) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.AppendLog, ((_event: never, record: DiagnosticLogRecord) =>
+    handleAppendLog(deps, record)) as (...args: never[]) => unknown);
 }

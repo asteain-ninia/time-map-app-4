@@ -10,10 +10,12 @@ import { buildTmap } from '../io/tmap';
 import {
   IPC_CHANNEL,
   type AutoSaveConfig,
+  type DiagnosticLogRecord,
   type IpcChannel,
   type SaveRequest,
 } from '../ipc/contract';
 import {
+  handleAppendLog,
   handleConfigureAutoSave,
   handleLoad,
   handleLoadDropped,
@@ -100,6 +102,7 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
       },
     },
     applyAutoSaveConfig: vi.fn(),
+    appendDiagnosticLog: vi.fn(async () => {}),
     ...overrides,
   };
   return { deps, disk, saveCalls };
@@ -249,5 +252,33 @@ describe('handlers take shared args and return shared return types (受け入れ
     const res = handleConfigureAutoSave(deps, config);
     expect(res).toEqual({ ok: true });
     expect(apply).toHaveBeenCalledWith(config);
+  });
+
+  it('AppendLog forwards the record to the diagnostic-log adapter (FR-117)', async () => {
+    const append = vi.fn(async () => {});
+    const { deps } = makeDeps({ appendDiagnosticLog: append });
+    const record: DiagnosticLogRecord = {
+      level: 'warning',
+      message: 'w',
+      recordedAtMs: 42,
+      context: { summary: 'op' },
+    };
+    await handleAppendLog(deps, record);
+    expect(append).toHaveBeenCalledWith(record);
+  });
+
+  it('AppendLog is best-effort: a failing adapter never rejects (log.ts:99)', async () => {
+    const { deps } = makeDeps({
+      appendDiagnosticLog: vi.fn(async () => {
+        throw new Error('disk full');
+      }),
+    });
+    const record: DiagnosticLogRecord = {
+      level: 'error',
+      message: 'e',
+      recordedAtMs: 1,
+      context: {},
+    };
+    await expect(handleAppendLog(deps, record)).resolves.toBeUndefined();
   });
 });

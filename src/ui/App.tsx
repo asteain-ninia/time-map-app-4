@@ -46,6 +46,8 @@ import { getCalendar } from '../domain/time/calendar';
 import {
   DiagnosticLogger,
   ErrorBoundary,
+  logSessionStart,
+  resolveDiagnosticLogSink,
   wireGlobalErrorHandlers,
 } from './discovery/index';
 import type { DomainProject } from '../domain/persistence/index';
@@ -224,7 +226,30 @@ export function App(): JSX.Element {
   // {@link DiagnosticLogger}. Both the non-React global handlers (below) and the
   // React {@link ErrorBoundary} (wrapping the shell) record through THIS one logger,
   // so an error caught on any path lands in one diagnostics buffer (単一真実源).
-  const logger = useMemo(() => new DiagnosticLogger(), []);
+  //
+  // FILE PERSISTENCE 結線 (FR-117 / 教訓 5.7): attach the shell file-sink so each
+  // recorded entry is also appended to a LOCAL JSONL file via U15's typed IPC — the
+  // logger was previously built with NO sink, so warnings the user saw on real
+  // hardware left no on-disk trace. `resolveDiagnosticLogSink` returns undefined when
+  // the `timeMapApi` bridge is absent (vitest/jsdom), so tests stay memory-only.
+  const logger = useMemo(() => {
+    const sink = resolveDiagnosticLogSink(globalThis);
+    return new DiagnosticLogger(sink !== undefined ? { sink } : {});
+  }, []);
+
+  // SESSION START MARKER (FR-117): record ONE info entry (app version + real time)
+  // at startup so a diagnostic log file opens with a session boundary the user can
+  // correlate. Routed through the SAME logger → file sink. The ref guard keeps a dev
+  // StrictMode double-mount from double-logging (教訓 5.2 全経路で一貫).
+  const sessionMarkedRef = useRef(false);
+  useEffect(() => {
+    if (sessionMarkedRef.current) return;
+    sessionMarkedRef.current = true;
+    logSessionStart(logger, {
+      version: __APP_VERSION__,
+      contextTimeLabel: String(store.getState().currentTime),
+    });
+  }, [logger, store]);
 
   // FR-117 ROOT FIX — install the window-level (non-React) error handlers ONCE at
   // startup. installGlobalErrorHandlers (unhandledrejection / error 捕捉) had no

@@ -67,6 +67,7 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     loadDropped: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
+    appendLog: vi.fn(async () => {}),
     ...overrides,
   };
 }

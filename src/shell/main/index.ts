@@ -5,12 +5,16 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../../domain/window-constants';
 import {
+  appendDiagnosticLog,
   createAutoSaveScheduler,
   DEFAULT_AUTO_SAVE_INTERVAL_MS,
+  DEFAULT_DIAGNOSTIC_LOG_GENERATIONS,
   DEFAULT_MAX_GENERATIONS,
+  nodeDiagnosticLogFs,
   nodeFsOps,
+  pruneDiagnosticLogs,
 } from '../io';
-import type { SaveEnv } from '../io';
+import type { DiagnosticLogEnv, SaveEnv } from '../io';
 import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
@@ -152,6 +156,21 @@ function buildSaveEnv(): SaveEnv {
   };
 }
 
+/**
+ * The diagnostic-log persistence environment (FR-117 / FR-02). Files live under
+ * `userData/logs`, rotated per day and pruned to the default generation count. The
+ * fs ops are the production `node:fs/promises` binding; the LOGIC (filename /
+ * generation selection / append) is Electron-free and unit-tested (開発ガイド §5.41).
+ */
+function buildDiagnosticLogEnv(): DiagnosticLogEnv {
+  return {
+    fs: nodeDiagnosticLogFs,
+    dir: join(app.getPath('userData'), 'logs'),
+    now: () => new Date(),
+    keepGenerations: DEFAULT_DIAGNOSTIC_LOG_GENERATIONS,
+  };
+}
+
 function wireIpc(): void {
   const currentPath: CurrentPathRef = {
     get: () => currentDocumentPath,
@@ -159,6 +178,14 @@ function wireIpc(): void {
       currentDocumentPath = path;
     },
   };
+
+  // FR-117 ROOT FIX (教訓 5.7 合成ルートの結線漏れ): the renderer's DiagnosticLogger
+  // sink invokes AppendLog; bind it to the LOCAL file adapter here so warnings the
+  // user sees on real hardware are actually persisted to disk (previously the logger
+  // was constructed with NO sink, so nothing reached the filesystem). Old generations
+  // are pruned once at startup (best-effort — never blocks launch).
+  const diagnosticLogEnv = buildDiagnosticLogEnv();
+  void pruneDiagnosticLogs(diagnosticLogEnv);
 
   // The auto-save scheduler drives the renderer to perform a save through the
   // same typed channel (the renderer owns the live manifest/asset bytes). Its
@@ -207,6 +234,7 @@ function wireIpc(): void {
     get maxGenerations(): number {
       return maxGenerations;
     },
+    appendDiagnosticLog: (record) => appendDiagnosticLog(diagnosticLogEnv, record),
   };
 
   registerIpcHandlers(deps);

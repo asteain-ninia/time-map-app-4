@@ -131,6 +131,15 @@ export {
   buildDiagnosticsSnapshot,
 } from './log';
 
+// diagnostic-log FILE SINK bridge + session marker (FR-117 / FR-02, 教訓 5.7 / 5.41)
+export {
+  SESSION_START_MESSAGE,
+  type DiagnosticLogAppendApi,
+  createDiagnosticLogSink,
+  resolveDiagnosticLogSink,
+  logSessionStart,
+} from './log-sink';
+
 // React error boundary (FR-117)
 export {
   type ErrorBoundaryProps,
