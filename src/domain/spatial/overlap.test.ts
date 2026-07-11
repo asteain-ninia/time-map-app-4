@@ -7,7 +7,7 @@ import fc from 'fast-check';
 
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import { asFeatureId, type FeatureId } from '../ids';
-import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
+import type { GeoMultiPolygon, GeoPolygon, GeoRing } from '../geometry/types';
 import {
   detectTerminalOverlaps,
   detectTerminalOverlapsNaive,
@@ -51,6 +51,109 @@ function term(name: string, shape: GeoMultiPolygon): TerminalShape {
 /** Set of normalised "a|b" pair keys from a result list, for order-free compare. */
 function pairKeys(pairs: readonly OverlapPair[]): Set<string> {
   return new Set(pairs.map((p) => `${p.a}|${p.b}`));
+}
+
+/** Square ring of half-size `half` centered on (cx, cy). */
+function centeredSquare(cx: number, cy: number, half: number): GeoRing {
+  return [
+    createCoordinate(cx - half, cy - half),
+    createCoordinate(cx + half, cy - half),
+    createCoordinate(cx + half, cy + half),
+    createCoordinate(cx - half, cy + half),
+  ];
+}
+
+/** Fold a continuous longitude into its [-180, 180) stored representative. */
+function foldLon(lon: number): number {
+  return ((((lon + 180) % 360) + 360) % 360) - 180;
+}
+
+/** Rectangle whose vertices are stored FOLDED per-vertex into [-180, 180): a rect
+ * that crosses ±180 gets the intra-ring 179 → −179 jump (the M6 folded class). */
+function foldedRect(x0: number, y0: number, x1: number, y1: number): GeoMultiPolygon {
+  const ring: GeoRing = [
+    createCoordinate(foldLon(x0), y0),
+    createCoordinate(foldLon(x1), y0),
+    createCoordinate(foldLon(x1), y1),
+    createCoordinate(foldLon(x0), y1),
+  ];
+  return [[ring]];
+}
+
+// --- canonical overlap-geometry comparison (Codex MED fix) -------------------
+//
+// The indexed↔naive equivalence properties must compare overlap GEOMETRY at the
+// COORDINATE level, not by a vertex-count proxy: a proxy would accept one
+// 4-vertex piece silently replaced by a DIFFERENT 4-vertex piece. Both detectors
+// obtain every piece from the same quantized U06 `intersection` pipeline, so
+// coordinates agree exactly when the geometry does; only the REPRESENTATION may
+// differ (piece order from accumulation order; ring rotation / direction in
+// principle). We therefore normalize to a canonical form — each ring rotated to
+// its lexicographically smallest vertex over both directions, holes sorted
+// within their piece, pieces sorted — and deep-compare that.
+//
+// NOTE (world-turn alignment): coordinate-level equality between the detectors is
+// only guaranteed when both anchor a pair on the SAME feature (the indexed
+// detector always anchors on the smaller id; the naive one anchors on input
+// order). Every property below feeds terminals whose input order matches id
+// order (`T0`, `T1`, … / zero-padded), so the anchors coincide and a seam-turn
+// overlap lands on the same world turn on both sides.
+
+type CanonPoint = readonly [number, number];
+
+function pointLess(a: CanonPoint, b: CanonPoint): boolean {
+  return a[0] !== b[0] ? a[0] < b[0] : a[1] < b[1];
+}
+
+/** Canonical vertex sequence of a ring: over both traversal directions, rotate to
+ * start at the lexicographically smallest vertex, then keep the lexicographically
+ * smaller of the two serialized sequences (rotation/direction-invariant form). */
+function canonicalRing(ring: GeoRing): CanonPoint[] {
+  const forward: CanonPoint[] = ring.map((c) => [c.lon, c.lat] as const);
+  const rotateToMin = (pts: CanonPoint[]): CanonPoint[] => {
+    if (pts.length === 0) return pts;
+    let min = 0;
+    for (let i = 1; i < pts.length; i += 1) {
+      if (pointLess(pts[i]!, pts[min]!)) min = i;
+    }
+    return [...pts.slice(min), ...pts.slice(0, min)];
+  };
+  const a = rotateToMin(forward);
+  const b = rotateToMin([...forward].reverse());
+  return JSON.stringify(a) <= JSON.stringify(b) ? a : b;
+}
+
+/** Canonical serialized form of a multi-polygon: rings canonicalized, holes sorted
+ * within their piece (the outer ring keeps position 0 — that slot is contractual),
+ * pieces sorted. Two multi-polygons are geometrically identical up to
+ * representation iff their canonical forms are equal strings. */
+function canonicalMultiPolygon(mp: GeoMultiPolygon): string {
+  const piecesCanon = mp.map((poly) => {
+    const outer = canonicalRing(poly[0] ?? []);
+    const holes = poly
+      .slice(1)
+      .map((ring) => JSON.stringify(canonicalRing(ring)))
+      .sort();
+    return JSON.stringify([JSON.stringify(outer), ...holes]);
+  });
+  return JSON.stringify([...piecesCanon].sort());
+}
+
+/** Assert the indexed detector's result equals the naive reference: the same pair
+ * set AND, per pair, the same overlap geometry down to canonical coordinates. */
+function expectSameDetections(
+  indexed: readonly OverlapPair[],
+  naive: readonly OverlapPair[],
+): void {
+  const indexedByKey = new Map(indexed.map((p) => [`${p.a}|${p.b}`, p] as const));
+  const naiveByKey = new Map(naive.map((p) => [`${p.a}|${p.b}`, p] as const));
+  expect([...indexedByKey.keys()].sort()).toEqual([...naiveByKey.keys()].sort());
+  for (const [key, naivePair] of naiveByKey) {
+    const indexedPair = indexedByKey.get(key)!;
+    expect(canonicalMultiPolygon(indexedPair.overlap)).toBe(
+      canonicalMultiPolygon(naivePair.overlap),
+    );
+  }
 }
 
 // Single-turn options isolate non-seam behaviour from the ±360° machinery.
@@ -164,15 +267,10 @@ describe('criterion 3: candidate narrowing avoids O(n^2) and loses nothing', () 
   // hold WITH the ±360° seam machinery on, where a pair can overlap at more than
   // one turn. Multi-piece features scattered around the globe (incl. both seams)
   // generate exactly the multi-turn-per-pair case the per-pair short-circuit used
-  // to drop. We compare total overlap vertex counts per pair (a piece dropped =>
-  // fewer vertices), the property the old pairKeys/NO_SEAM test could not see.
+  // to drop. Geometry is compared at CANONICAL COORDINATE level (Codex MED fix):
+  // the previous vertex-count proxy would accept one 4-vertex piece silently
+  // replaced by a different 4-vertex piece; the canonical deep-equal cannot.
   it('indexed overlap GEOMETRY matches the naive reference with seams on (property)', () => {
-    // Sum of all ring vertex counts across a multi-polygon.
-    const vtx = (mp: GeoMultiPolygon): number => {
-      let n = 0;
-      for (const poly of mp) for (const ring of poly) n += ring.length;
-      return n;
-    };
     const piece = fc.record({
       x: fc.integer({ min: -200, max: 200 }),
       y: fc.integer({ min: 0, max: 40 }),
@@ -189,18 +287,9 @@ describe('criterion 3: candidate narrowing avoids O(n^2) and loses nothing', () 
             pcs.map((p) => rect(p.x, p.y, p.x + p.w, p.y + p.h)[0]!),
           ),
         );
-        // Default seam turns ({-1,0,+1}) — exercise the ±360° replica path.
-        const indexed = detectTerminalOverlaps(terminals);
-        const naive = detectTerminalOverlapsNaive(terminals);
-        const indexedByKey = new Map(indexed.map((p) => [`${p.a}|${p.b}`, p]));
-        const naiveByKey = new Map(naive.map((p) => [`${p.a}|${p.b}`, p]));
-        // Same set of pairs.
-        expect([...indexedByKey.keys()].sort()).toEqual([...naiveByKey.keys()].sort());
-        // Same overlap area per pair (every seam-turn piece present, no 片落とし).
-        for (const [key, naivePair] of naiveByKey) {
-          const indexedPair = indexedByKey.get(key)!;
-          expect(vtx(indexedPair.overlap)).toBe(vtx(naivePair.overlap));
-        }
+        // Default seam turns ({-1,0,+1}) — exercise the ±360° replica path. Same
+        // pair set AND canonical-coordinate-identical overlap geometry per pair.
+        expectSameDetections(detectTerminalOverlaps(terminals), detectTerminalOverlapsNaive(terminals));
       }),
       { numRuns: 400 },
     );
@@ -259,11 +348,6 @@ describe('criterion 3 (narrowing): overlap-box early-reject never drops a detect
   it('indexed result matches the naive reference with WIDE and NESTED shapes (property)', () => {
     // A generator biased toward big/wide bboxes AND small shapes, so many pairs hit the
     // early-reject (far small features) and the containment path (nested small in big).
-    const vtx = (mp: GeoMultiPolygon): number => {
-      let n = 0;
-      for (const poly of mp) for (const ring of poly) n += ring.length;
-      return n;
-    };
     const box = fc.record({
       x: fc.integer({ min: -80, max: 80 }),
       y: fc.integer({ min: -80, max: 80 }),
@@ -274,17 +358,193 @@ describe('criterion 3 (narrowing): overlap-box early-reject never drops a detect
     fc.assert(
       fc.property(fc.array(box, { minLength: 0, maxLength: 10 }), (boxes) => {
         const terminals = boxes.map((b, i) => term(`T${i}`, rect(b.x, b.y, b.x + b.w, b.y + b.h)));
-        const indexed = detectTerminalOverlaps(terminals, NO_SEAM);
-        const naive = detectTerminalOverlapsNaive(terminals, NO_SEAM);
-        const indexedByKey = new Map(indexed.map((p) => [`${p.a}|${p.b}`, p]));
-        const naiveByKey = new Map(naive.map((p) => [`${p.a}|${p.b}`, p]));
-        // Same pairs (no detection dropped by the reject) AND same overlap geometry.
-        expect([...indexedByKey.keys()].sort()).toEqual([...naiveByKey.keys()].sort());
-        for (const [key, naivePair] of naiveByKey) {
-          expect(vtx(indexedByKey.get(key)!.overlap)).toBe(vtx(naivePair.overlap));
-        }
+        // Same pairs (no detection dropped by the reject) AND canonical-coordinate-
+        // identical overlap geometry per pair (Codex MED fix — no count proxy).
+        expectSameDetections(
+          detectTerminalOverlaps(terminals, NO_SEAM),
+          detectTerminalOverlapsNaive(terminals, NO_SEAM),
+        );
       }),
       { numRuns: 400 },
+    );
+  });
+});
+
+// --- criterion 3 (input classes): 穴 / enclave / シーム折返し / 境界接触 / 量子化近傍 --
+//
+// Codex review MED 2: the equivalence properties above generate axis-parallel
+// rectangles only. This block widens the indexed===naive input space to the
+// difficult classes the early-reject and the kernel-quantization seam could
+// mis-handle, under the SAME canonical-coordinate invariant:
+//   - a polygon with a hole ([[outer, hole]]), and a feature placed WHOLLY INSIDE
+//     another's hole (bbox-contained yet area-disjoint — the reject's
+//     corner-in-outer probe must KEEP the pair and let the kernel decide empty);
+//   - hole + enclave multi-piece shapes (a hole resident may overlap the enclave);
+//   - folded seam representatives (a ring whose lons jump 179 → −179, M6 class);
+//   - edge- / corner-touching rectangles (boundary contact is NOT overlap, FR-26);
+//   - sub-grid float offsets around the 1e-7 quantize step: the kernel quantizes
+//     its inputs while the reject reads RAW float bboxes; rounding is monotone, so
+//     a strict separation can collapse to a zero-area touch but can never flip
+//     into a positive-area overlap (the review's numeric note, pinned here).
+
+describe('criterion 3 (input classes): holes / enclaves / seam folds / touches / sub-grid offsets', () => {
+  it("still agrees when a terminal sits wholly inside another feature's hole", () => {
+    // Donut [-20,20]² with hole [-8,8]²; resident [-5,5]² strictly inside the hole.
+    // No donut edge reaches the shared overlap box (= the resident's bbox), so ONLY
+    // the containment probe keeps the pair; the kernel then decides empty — the
+    // hole flips the corner back outside the AREA, but the probe deliberately
+    // ignores holes (a safe over-approximation that merely forgoes a skip).
+    const donut: GeoMultiPolygon = [[centeredSquare(0, 0, 20), centeredSquare(0, 0, 8)]];
+    const resident: GeoMultiPolygon = [[centeredSquare(0, 0, 5)]];
+    const terminals = [term('A', donut), term('B', resident)];
+    expect(detectTerminalOverlaps(terminals, NO_SEAM)).toHaveLength(0);
+    expect(detectTerminalOverlapsNaive(terminals, NO_SEAM)).toHaveLength(0);
+  });
+
+  it('detects a hole resident that DOES cross onto the donut solid', () => {
+    // Same donut; the resident straddles the hole's right edge onto the ring solid,
+    // so the pair has genuine positive area and must be reported identically.
+    const donut: GeoMultiPolygon = [[centeredSquare(0, 0, 20), centeredSquare(0, 0, 8)]];
+    const crossing: GeoMultiPolygon = [[centeredSquare(8, 0, 3)]];
+    const terminals = [term('A', donut), term('B', crossing)];
+    const indexed = detectTerminalOverlaps(terminals, NO_SEAM);
+    expect(pairKeys(indexed)).toEqual(new Set(['A|B']));
+    expectSameDetections(indexed, detectTerminalOverlapsNaive(terminals, NO_SEAM));
+  });
+
+  it('a sub-grid sliver overlap (3e-8 < one 1e-7 grid cell) quantizes to contact — not an overlap', () => {
+    // Raw bboxes overlap by 3e-8 (the reject keeps the pair); the kernel snaps both
+    // edges onto the same grid node, so the sliver collapses to boundary contact.
+    const terminals = [term('A', rect(0, 0, 10, 10)), term('B', rect(10 - 3e-8, 0, 20, 10))];
+    expect(detectTerminalOverlaps(terminals, NO_SEAM)).toHaveLength(0);
+    expect(detectTerminalOverlapsNaive(terminals, NO_SEAM)).toHaveLength(0);
+  });
+
+  it('a strict sub-grid separation (3e-8 gap) never flips into a positive-area overlap', () => {
+    // The reviewer's numeric note: the reject reads raw float bboxes, the kernel
+    // quantized ones. Rounding is monotone (round(a) ≤ round(b) whenever a ≤ b), so
+    // a strict raw gap can quantize to a touch but never to positive area — the two
+    // pipelines can never disagree in the dangerous direction. Pinned empirically.
+    const terminals = [term('A', rect(0, 0, 10, 10)), term('B', rect(10 + 3e-8, 0, 20, 10))];
+    expect(detectTerminalOverlaps(terminals, NO_SEAM)).toHaveLength(0);
+    expect(detectTerminalOverlapsNaive(terminals, NO_SEAM)).toHaveLength(0);
+  });
+
+  it('an over-grid sliver (1.5e-7) IS a positive-area overlap and the detectors agree on its geometry', () => {
+    const terminals = [term('A', rect(0, 0, 10, 10)), term('B', rect(10 - 1.5e-7, 0, 20, 10))];
+    const indexed = detectTerminalOverlaps(terminals, NO_SEAM);
+    expect(pairKeys(indexed)).toEqual(new Set(['A|B']));
+    expectSameDetections(indexed, detectTerminalOverlapsNaive(terminals, NO_SEAM));
+  });
+
+  it('indexed === naive across the widened input-class generator (property)', () => {
+    const pos = fc.integer({ min: -60, max: 60 });
+    const size = fc.integer({ min: 2, max: 30 });
+
+    // Plain 1-2-piece rectangles (the baseline class, kept in the mix).
+    const rectsFeature: fc.Arbitrary<GeoMultiPolygon[]> = fc
+      .array(fc.record({ x: pos, y: pos, w: size, h: size }), { minLength: 1, maxLength: 2 })
+      .map((pcs) => [pcs.map((p) => rect(p.x, p.y, p.x + p.w, p.y + p.h)[0]!)]);
+
+    // A donut ([[outer, hole]]), optionally with an enclave piece inside the hole,
+    // optionally accompanied by a SEPARATE resident feature that sits wholly inside
+    // the hole (area-disjoint from the donut, bbox-contained — the containment-probe
+    // class) or straddles the hole edge onto the solid (genuine overlap).
+    const donutFeatures: fc.Arbitrary<GeoMultiPolygon[]> = fc
+      .record({
+        cx: pos,
+        cy: pos,
+        hole: fc.integer({ min: 2, max: 6 }),
+        extra: fc.integer({ min: 2, max: 15 }),
+        enclave: fc.boolean(),
+        resident: fc.constantFrom('none', 'inHole', 'crossing'),
+      })
+      .map(({ cx, cy, hole, extra, enclave, resident }) => {
+        const donutPiece: GeoPolygon = [
+          centeredSquare(cx, cy, hole + extra),
+          centeredSquare(cx, cy, hole),
+        ];
+        const donut: GeoMultiPolygon = enclave
+          ? [donutPiece, [centeredSquare(cx, cy, 1)]]
+          : [donutPiece];
+        const out: GeoMultiPolygon[] = [donut];
+        // inHole: strictly inside the hole (margin 1); overlaps the enclave when one
+        // exists — both dispositions are valid agreement inputs.
+        if (resident === 'inHole') out.push([[centeredSquare(cx, cy, hole - 1)]]);
+        if (resident === 'crossing') out.push([[centeredSquare(cx + hole, cy, 2)]]);
+        return out;
+      });
+
+    // Folded seam representatives near ±180 (crossing when off ≤ w), optionally with
+    // a shifted companion so seam pairs overlap / touch / stay apart across the fold.
+    const seamFeatures: fc.Arbitrary<GeoMultiPolygon[]> = fc
+      .record({
+        y: fc.integer({ min: -40, max: 40 }),
+        w: fc.integer({ min: 2, max: 8 }),
+        h: fc.integer({ min: 2, max: 10 }),
+        off: fc.integer({ min: 0, max: 10 }),
+        companion: fc.boolean(),
+        shift: fc.integer({ min: -6, max: 6 }),
+        dy: fc.integer({ min: -3, max: 3 }),
+      })
+      .map(({ y, w, h, off, companion, shift, dy }) => {
+        const out: GeoMultiPolygon[] = [foldedRect(180 + off - w, y, 180 + off, y + h)];
+        if (companion) {
+          out.push(foldedRect(180 + off - w + shift, y + dy, 180 + off + shift, y + h + dy));
+        }
+        return out;
+      });
+
+    // Two rectangles sharing exactly one edge or one corner (boundary contact only —
+    // must never be reported, FR-26; they may still overlap OTHER generated features).
+    const touchFeatures: fc.Arbitrary<GeoMultiPolygon[]> = fc
+      .record({ x: pos, y: pos, w: size, h: size, w2: size, h2: size, corner: fc.boolean() })
+      .map(({ x, y, w, h, w2, h2, corner }) => [
+        rect(x, y, x + w, y + h),
+        corner
+          ? rect(x + w, y + h, x + w + w2, y + h + h2)
+          : rect(x + w, y, x + w + w2, y + h),
+      ]);
+
+    // Two rectangles whose facing edges differ by a sub-/near-grid float offset
+    // (grid step 1e-7, incl. the .5 rounding ties): raw-bbox vs quantized-kernel
+    // boundary cases on both sides of the seam between "touch" and "sliver".
+    const microFeatures: fc.Arbitrary<GeoMultiPolygon[]> = fc
+      .record({
+        x: pos,
+        y: pos,
+        w: size,
+        h: size,
+        w2: size,
+        eps: fc.constantFrom(
+          -2e-7, -1.5e-7, -9e-8, -5.1e-8, -5e-8, -4.9e-8, -1e-8, 0, 1e-8, 4.9e-8, 5e-8, 5.1e-8, 9e-8, 1.5e-7,
+        ),
+      })
+      .map(({ x, y, w, h, w2, eps }) => [
+        rect(x, y, x + w, y + h),
+        rect(x + w + eps, y, x + w + eps + w2, y + h),
+      ]);
+
+    const featureGroup = fc.oneof(
+      rectsFeature,
+      donutFeatures,
+      seamFeatures,
+      touchFeatures,
+      microFeatures,
+    );
+    fc.assert(
+      fc.property(fc.array(featureGroup, { minLength: 0, maxLength: 3 }), (groups) => {
+        const shapes = groups.flat();
+        // Zero-padded ids keep input order == id order (anchor alignment for the
+        // canonical coordinate comparison; see the note at expectSameDetections).
+        const terminals = shapes.map((s, i) => term(`T${String(i).padStart(2, '0')}`, s));
+        // Default seam turns: the ±360° replica machinery runs over every class.
+        expectSameDetections(
+          detectTerminalOverlaps(terminals),
+          detectTerminalOverlapsNaive(terminals),
+        );
+      }),
+      { numRuns: 200 },
     );
   });
 });
@@ -482,6 +742,11 @@ describe('criterion 3 (geometry): a pair overlapping at two seam turns keeps bot
     expect(indexedPair.overlap.length).toBe(naivePair.overlap.length);
     expect(totalVertices(indexedPair.overlap)).toBe(totalVertices(naivePair.overlap));
     expect(totalVertices(indexedPair.overlap)).toBe(8);
+    // And down to canonical coordinates: the same two pieces, not merely the same
+    // counts (Codex MED fix).
+    expect(canonicalMultiPolygon(indexedPair.overlap)).toBe(
+      canonicalMultiPolygon(naivePair.overlap),
+    );
   });
 });
 
