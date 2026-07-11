@@ -207,6 +207,88 @@ describe('criterion 3: candidate narrowing avoids O(n^2) and loses nothing', () 
   });
 });
 
+// --- criterion 3 (narrowing): the overlap-box early-reject loses nothing ------
+//
+// detectTerminalOverlaps skips the polygon-clipping kernel for a candidate pair when
+// either shape does not REACH the shared bbox-overlap rectangle (A∩B ⊆ that rect, so
+// a non-reaching side ⇒ empty intersection). The reject is a SOUND over-approximation:
+// it may only skip pairs the kernel would report empty, never a real overlap. These
+// tests pin that the narrowing "絞り込みが検出を漏らさない" — the two failure modes the
+// reject must never hit are (a) a small feature WHOLLY INSIDE a large one (containment:
+// the large shape has no edge near the small one's bbox, so only the corner-in-outer
+// probe keeps the pair) and (b) a feature in the CONCAVE NOTCH of an L-shaped wide
+// feature whose bbox loosely contains it (a genuine non-overlap the reject SHOULD skip,
+// and whichever way it goes the kernel result must still match the naive reference).
+
+describe('criterion 3 (narrowing): overlap-box early-reject never drops a detection', () => {
+  it('still detects a small terminal fully CONTAINED in a large one (no edge near it)', () => {
+    // BIG spans [0,100]²; SMALL is a strictly-interior square far from every BIG edge.
+    // The reject's edge test finds no BIG edge reaching SMALL's box; only the
+    // corner-in-outer containment probe keeps the pair — it MUST, since they overlap.
+    const pairs = detectTerminalOverlaps(
+      [term('BIG', square(0, 0, 100)), term('SMALL', square(40, 40, 5))],
+      NO_SEAM,
+    );
+    expect(pairKeys(pairs)).toEqual(new Set(['BIG|SMALL']));
+    expect(pairs[0]!.overlap.length).toBeGreaterThan(0);
+  });
+
+  it('does NOT falsely report a feature in the concave notch of an L-shaped wide feature', () => {
+    // L = a big square with its top-right quadrant carved out (as ONE piece via a
+    // reflex outline). A small square sits in the carved notch: inside L's bbox but
+    // outside L's area. The reject may skip it; either way the answer is "no overlap".
+    const L: GeoMultiPolygon = [
+      [
+        [
+          createCoordinate(0, 0),
+          createCoordinate(100, 0),
+          createCoordinate(100, 50),
+          createCoordinate(50, 50),
+          createCoordinate(50, 100),
+          createCoordinate(0, 100),
+        ],
+      ],
+    ];
+    const notch = square(60, 60, 20); // sits in the removed top-right quadrant.
+    const terminals = [term('L', L), term('NOTCH', notch)];
+    expect(detectTerminalOverlaps(terminals, NO_SEAM)).toHaveLength(0);
+    // Narrowing agrees with the exhaustive reference on this wide-bbox input.
+    expect(detectTerminalOverlapsNaive(terminals, NO_SEAM)).toHaveLength(0);
+  });
+
+  it('indexed result matches the naive reference with WIDE and NESTED shapes (property)', () => {
+    // A generator biased toward big/wide bboxes AND small shapes, so many pairs hit the
+    // early-reject (far small features) and the containment path (nested small in big).
+    const vtx = (mp: GeoMultiPolygon): number => {
+      let n = 0;
+      for (const poly of mp) for (const ring of poly) n += ring.length;
+      return n;
+    };
+    const box = fc.record({
+      x: fc.integer({ min: -80, max: 80 }),
+      y: fc.integer({ min: -80, max: 80 }),
+      // Sizes span from tiny to hemisphere-wide, so bboxes loosely contain far shapes.
+      w: fc.integer({ min: 1, max: 160 }),
+      h: fc.integer({ min: 1, max: 160 }),
+    });
+    fc.assert(
+      fc.property(fc.array(box, { minLength: 0, maxLength: 10 }), (boxes) => {
+        const terminals = boxes.map((b, i) => term(`T${i}`, rect(b.x, b.y, b.x + b.w, b.y + b.h)));
+        const indexed = detectTerminalOverlaps(terminals, NO_SEAM);
+        const naive = detectTerminalOverlapsNaive(terminals, NO_SEAM);
+        const indexedByKey = new Map(indexed.map((p) => [`${p.a}|${p.b}`, p]));
+        const naiveByKey = new Map(naive.map((p) => [`${p.a}|${p.b}`, p]));
+        // Same pairs (no detection dropped by the reject) AND same overlap geometry.
+        expect([...indexedByKey.keys()].sort()).toEqual([...naiveByKey.keys()].sort());
+        for (const [key, naivePair] of naiveByKey) {
+          expect(vtx(indexedByKey.get(key)!.overlap)).toBe(vtx(naivePair.overlap));
+        }
+      }),
+      { numRuns: 400 },
+    );
+  });
+});
+
 // --- criterion 4: world-seam crossing pairs ---------------------------------
 
 describe('criterion 4: seam-crossing overlap (U05)', () => {

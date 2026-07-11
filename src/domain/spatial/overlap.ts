@@ -26,10 +26,12 @@
 // the O(n²) all-pairs scan is avoided. Pairs are reported once, normalised to
 // (min id, max id) order, never double-counted (spec §注意点「ペアの二重計上」).
 
+import type { WorldCoordinate } from '../coordinate';
 import type { FeatureId } from '../ids';
 import { idToString } from '../ids';
 import { alignMultiPolygon, worldWrapReplicas, type WrapReplica } from '../geo/seam';
 import { intersection, isOk } from '../geometry/boolean-ops';
+import { pointInPolygon, POINT_LOCATION } from '../geometry/index';
 import {
   EMPTY_MULTI_POLYGON,
   isMultiPolygonEmpty,
@@ -123,6 +125,87 @@ interface Placement {
   readonly bbox: BBox;
 }
 
+// --- candidate early-reject: does a placement REACH the shared overlap box? ----
+//
+// The R-tree + `bboxesIntersect` pre-filter already discards pairs whose whole-shape
+// bboxes are disjoint, but a WIDE shape's bbox (a sprawling multi-island country, a
+// shape spanning a hemisphere) still intersects the bbox of many features its actual
+// geometry never comes near — a small feature sitting in the CONCAVE notch of a big
+// one, or anywhere inside its bbox but far from every edge. Each such pair otherwise
+// pays a full `polygon-clipping` intersection that returns empty (real-data load
+// benchmark: ~1/3 of the bbox-candidate pairs, and HALF the clipping time, were
+// exactly these). This cheap linear test skips them BEFORE the kernel (task 手順3(b)).
+//
+// SOUNDNESS (the output must be byte-for-byte unchanged — 完全不変): A∩B lies wholly
+// inside R = bbox(A) ∩ bbox(B), because A∩B ⊆ A ⊆ bbox(A) and A∩B ⊆ B ⊆ bbox(B). So
+// A∩B ⊆ A∩R and A∩B ⊆ B∩R: if EITHER side does not reach R at all, A∩B is provably
+// empty and the clipping call is skipped. The test can therefore only skip pairs the
+// kernel would report empty — never a real overlap — so the pair set AND the
+// accumulated overlap geometry are identical to the un-narrowed run (the naive
+// reference in overlap.test.ts pins this as a property, seams on). It is applied only
+// to the indexed detector; the naive reference stays exhaustive so the equality holds.
+//
+// `reaches R` is itself a conservative over-approximation of "P ∩ R ≠ ∅":
+//   (1) any EDGE of P whose bbox meets R — covers every case where P's boundary
+//       enters R (a vertex of P in R, or an edge passing through R); AND
+//   (2) R wholly inside P (P's interior covers R with NO boundary of P inside R) —
+//       caught by one corner of R lying inside an outer ring of P.
+// Returning `true` too readily merely forgoes a skip (still correct); a false `false`
+// would drop a detection, which (1)+(2) provably never do. Holes are ignored in (2)
+// (a corner falling in a hole only makes us KEEP the pair — a safe over-approx).
+
+/** Intersection rectangle of two bboxes KNOWN to intersect (may be degenerate to a
+ * line/point when they only touch). Precondition: `bboxesIntersect(a, b)`. */
+function bboxOverlapRect(a: BBox, b: BBox): BBox {
+  return {
+    minX: Math.max(a.minX, b.minX),
+    minY: Math.max(a.minY, b.minY),
+    maxX: Math.min(a.maxX, b.maxX),
+    maxY: Math.min(a.maxY, b.maxY),
+  };
+}
+
+/** True iff segment [p→q]'s axis-aligned bbox meets rect `r` (inclusive) — a
+ * conservative superset of "the edge intersects r": an edge that truly enters r
+ * always passes, so relying on it can never drop a real overlap. */
+function edgeBoxMeetsRect(p: WorldCoordinate, q: WorldCoordinate, r: BBox): boolean {
+  const minLon = p.lon < q.lon ? p.lon : q.lon;
+  const maxLon = p.lon < q.lon ? q.lon : p.lon;
+  if (minLon > r.maxX || maxLon < r.minX) return false;
+  const minLat = p.lat < q.lat ? p.lat : q.lat;
+  const maxLat = p.lat < q.lat ? q.lat : p.lat;
+  return minLat <= r.maxY && maxLat >= r.minY;
+}
+
+/** True iff shape `mp` MAY intersect rectangle `r` — the sound `reaches R` test
+ * documented above. One linear pass over every ring's edges, plus (only when no edge
+ * reaches r) a single point-in-outer-ring probe for the R-wholly-inside-P case. */
+function shapeReachesRect(mp: GeoMultiPolygon, r: BBox): boolean {
+  for (const poly of mp) {
+    for (const ring of poly) {
+      const n = ring.length;
+      for (let i = 0; i < n; i += 1) {
+        const p = ring[i];
+        const q = ring[(i + 1) % n];
+        if (p === undefined || q === undefined) continue;
+        if (edgeBoxMeetsRect(p, q, r)) return true;
+      }
+    }
+  }
+  // No boundary of P enters R, so P∩R is nonempty only if R sits wholly inside P.
+  // One corner of R against each piece's OUTER ring settles that (pointInPolygon is
+  // the single point-in-polygon truth source — 教訓5.30; holes omitted = safe
+  // over-approx). Anything but a strict `outside` keeps the pair.
+  const corner: WorldCoordinate = { lon: r.minX, lat: r.minY };
+  for (const poly of mp) {
+    const outer = poly[0];
+    if (outer !== undefined && pointInPolygon(corner, [outer]) !== POINT_LOCATION.Outside) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Detect every positive-area overlap among the given TERMINAL shapes, using the
  * R-tree to narrow candidates and U05 replicas to catch seam-crossing pairs.
@@ -211,6 +294,15 @@ export function detectTerminalOverlaps(
       // Cheap reject: bbox must actually intersect (search is inclusive; this also
       // mirrors the touch boundary, but the real decision is the area test below).
       if (!bboxesIntersect(a.bbox, b.bbox)) continue;
+
+      // Sound early-reject BEFORE the costly polygon-clipping kernel: A∩B ⊆ the shared
+      // overlap box, so if either side does not reach that box the intersection is
+      // provably empty (see shapeReachesRect). Skipping such a pair cannot change the
+      // detector's output — only avoid an empty-result kernel call (完全不変).
+      const overlapBox = bboxOverlapRect(a.bbox, b.bbox);
+      if (!shapeReachesRect(a.shape, overlapBox) || !shapeReachesRect(b.shape, overlapBox)) {
+        continue;
+      }
 
       if (counter !== undefined) counter.count += 1;
       const piece = overlapArea(a.shape, b.shape);
