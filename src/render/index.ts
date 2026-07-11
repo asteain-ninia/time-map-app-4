@@ -39,6 +39,15 @@ export {
   representativeCenterLon,
 } from './vtransform';
 
+// Camera FIT to an arbitrary world bbox (HB5-3 錨起点の視点合わせ). Pure; proposes a
+// fresh U16 Camera framing a selected feature's extent. U16 stores it via writeCamera.
+export {
+  type WorldBounds,
+  type FitOptions,
+  DEFAULT_FIT_PADDING_RATIO,
+  cameraForBounds,
+} from './fit';
+
 // The renderer-independent drawing contract + batch / hit-test shapes.
 export {
   type MapRenderer,

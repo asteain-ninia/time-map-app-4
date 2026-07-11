@@ -108,6 +108,14 @@ export interface SidebarContentDeps<S> {
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
+  /**
+   * HB5-3: focus the camera on the feature just selected from an錨 row (錨一覧起点).
+   * Called AFTER the row promotes the feature + syncs the time, so the host resolves
+   * the feature's shape at the錨の開始 time and frames the view onto it through the
+   * single camera write path. Omitted (tests / pre-mount) → the錨 click still selects
+   * + syncs time, only the camera does not move (honest absence, no crash).
+   */
+  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
 }
 
 /**
@@ -125,6 +133,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     anchorIntervalDispatch,
     onOpenDetail,
     onDeleteFeature,
+    onFocusFeatureCamera,
   } = deps;
 
   const dispatch: EditDispatch = editDispatch ?? {
@@ -143,7 +152,13 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   const anchorLookup = anchorLookupOf(getRoot);
 
   return {
-    eventsContent: <EventsSection store={store} getRoot={getRoot} />,
+    eventsContent: (
+      <EventsSection
+        store={store}
+        getRoot={getRoot}
+        {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
+      />
+    ),
     featuresContent: <FeaturesSection store={store} getRoot={getRoot} getTime={getTime} />,
     propertiesContent: (
       <PropertyPanelHost<S>
@@ -390,8 +405,10 @@ function FeaturesSection<S>(props: {
 function EventsSection<S>(props: {
   readonly store: StoreApi<SessionStore<S>>;
   readonly getRoot: () => DomainProject;
+  /** HB5-3: focus the camera on the row's feature after selecting + syncing time. */
+  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
 }): JSX.Element {
-  const { store, getRoot } = props;
+  const { store, getRoot, onFocusFeatureCamera } = props;
   const domain = useStore(store, (s) => s.domain);
   void domain; // recompute the event rows when the committed domain changes.
   const root = getRoot();
@@ -438,10 +455,16 @@ function EventsSection<S>(props: {
                 className="sidebar-list__item"
                 data-testid={`event-list-item-${row.anchorId}`}
                 onClick={() => {
+                  // Promote the feature + sync the time FIRST (unchanged single
+                  // selection / time path), THEN focus the camera on the feature at
+                  // that time (HB5-3). The camera write funnels through the host's
+                  // single ports.writeCamera; this錨導線 is the only caller, so a
+                  // map-click selection never moves the view.
                   store.getState().setActiveFeature(row.featureId);
                   store
                     .getState()
                     .setCurrentTime(row.start, TIME_CHANGE_SOURCE.AnchorSync);
+                  onFocusFeatureCamera?.(row.featureId);
                 }}
               >
                 {row.name}

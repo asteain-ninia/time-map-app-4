@@ -36,6 +36,9 @@ const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.EditUndo,
   COMMAND_ID.EditRedo,
   COMMAND_ID.EditDelete,
+  // HB5-4: 選択解除 is an edit-context action — disabled in 表示専用 mode together
+  // with its Escape shortcut (教訓 5.13), so it fires only in 追加/編集 mode.
+  COMMAND_ID.EditDeselect,
 ]);
 
 /** True if the command is an editing command gated by the permission axis. */

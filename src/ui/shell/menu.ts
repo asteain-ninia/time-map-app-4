@@ -91,6 +91,11 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
         [{ key: 'z', ctrlOrMeta: true, shift: true }],
       ),
       item(COMMAND_ID.EditDelete, { key: 'Delete' }),
+      // HB5-4: 選択解除. Escape clears the active-feature + vertex selection through
+      // the SAME global dispatcher the other 編集 shortcuts use — which STANDS DOWN
+      // while a modal / tool-draft owns the keyboard (shortcutsSuspended), so a tool
+      // draft-cancel or modal-close keeps Escape priority (task HB5-4 優先順位).
+      item(COMMAND_ID.EditDeselect, { key: 'Escape' }),
     ],
   },
   {

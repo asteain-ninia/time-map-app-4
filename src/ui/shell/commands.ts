@@ -19,6 +19,8 @@ export const COMMAND_ID = {
   EditUndo: 'edit.undo',
   EditRedo: 'edit.redo',
   EditDelete: 'edit.delete',
+  /** HB5-4: clear the active-feature + vertex selection (U22 clearSelection). */
+  EditDeselect: 'edit.deselect',
   ViewToggleViewMode: 'view.toggleViewMode',
   ViewZoomIn: 'view.zoomIn',
   ViewZoomOut: 'view.zoomOut',

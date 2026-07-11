@@ -123,6 +123,7 @@ import { runEditDelete } from './vertex-delete';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { buildCommittedFeatures } from './map/committed-features';
+import { featureBoundsAt } from './map/feature-bounds';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
   PointerDispatcher,
@@ -150,6 +151,7 @@ import { RELEASE_OUTCOME, type DragSession, type FeatureSnapshot } from '../doma
 import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
+  cameraForBounds,
   type ScreenPoint,
 } from '../render';
 import { createRedrawScheduler } from './map/redraw-scheduler';
@@ -333,6 +335,15 @@ export function App(): JSX.Element {
   // this opener ref — the SAME late-binding pattern cameraInputRef uses. A no-op until
   // the mount registers its setter (bindContextMenuOpener below).
   const contextMenuOpenerRef = useRef<ContextMenuOpener | null>(null);
+
+  // HB5-3 錨起点の視点合わせ — the「錨一覧」/ timeline-origin selection snaps the camera
+  // onto the selected feature's world extent. Built in onMapMount (where `ports` — the
+  // SINGLE camera write path — is in scope) and held behind a ref so the sidebar's
+  // event-row click reaches the LIVE fit without re-mounting the map (the SAME
+  // late-binding pattern cameraInputRef / contextMenuOpenerRef use). A no-op until the
+  // map mounts. ONLY the anchor-origin導線 calls this (map-click selection goes through
+  // the live-selection-port and never here), so a map click never moves the view.
+  const fitCameraToFeatureRef = useRef<((featureId: FeatureId) => void) | null>(null);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -619,6 +630,26 @@ export function App(): JSX.Element {
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).
     if (zoomRangeRef.current !== null) ports.setZoomRange(zoomRangeRef.current);
+
+    // HB5-3 錨起点の視点合わせ — frame the camera onto a feature's world extent. Bound
+    // here because `ports` (the SINGLE camera write path, 教訓 5.29) is in scope. Reads
+    // the LIVE root at the CURRENT time (the anchor-row click sets the time to the錨の
+    // 開始 FIRST via setCurrentTime, so this resolves the shape at that time), computes
+    // the fit against the renderer's OWN viewport + the effective FR-10 zoom clamp
+    // (zoomMin/zoomMax, fit-world floor applied), and writes through `ports.writeCamera`
+    // — the SAME path pan/wheel use, so it mirrors into the U16 store camera truth via
+    // onCameraChange (no二重真実源). A feature with no resolvable extent is a no-op.
+    fitCameraToFeatureRef.current = (featureId: FeatureId): void => {
+      const s = store.getState();
+      const bounds = featureBoundsAt(s.domain, s.currentTime, featureId);
+      if (bounds === null) return;
+      const { viewport } = ports.readCamera();
+      // paddingRatio defaults to DEFAULT_FIT_PADDING_RATIO (≈20% margin/side, HB5-3).
+      const camera = cameraForBounds(bounds, viewport, {
+        range: ports.effectiveZoomRange(),
+      });
+      ports.writeCamera(camera);
+    };
 
     // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
     // pure dispatcher + pan/zoom math existed (PointerDispatcher / pan / VTransform)
@@ -1584,6 +1615,28 @@ export function App(): JSX.Element {
     };
   }, [registry, store, recordCommand, recordCommit, vertexDeleteBinding]);
 
+  // HB5-4 選択解除 — Escape / 編集メニュー「選択解除」clears the active-feature + vertex
+  // selection through the SINGLE U22 clear path (store.clearSelection → EMPTY_SELECTION;
+  // no re-implementation, 教訓 5.29). It routes through the SAME global shortcut
+  // dispatcher (useShortcuts) as the other 編集 commands, which STANDS DOWN whenever a
+  // modal or a tool-draft owns the keyboard (shortcutsSuspended). So a live draft-cancel /
+  // modal-close keeps Escape priority (task HB5-4): this handler is only reached when NO
+  // draft / modal is active. `canRun` gates on a live selection so the menu item / Escape
+  // are a no-op (and the menu item disables) when nothing is selected; permissions.ts
+  // already 表示専用モードでは一括無効化 (EditDeselect ∈ EDITING_COMMANDS).
+  useEffect(() => {
+    registry.register(COMMAND_ID.EditDeselect, {
+      run: () => store.getState().clearSelection(),
+      canRun: () => {
+        const sel = store.getState().selection;
+        return sel.activeFeature !== null || (sel.vertexIds.size > 0 && sel.vertexOwner !== null);
+      },
+    });
+    return () => {
+      registry.unregister(COMMAND_ID.EditDeselect);
+    };
+  }, [registry, store]);
+
   // Reset the history on an EXTERNAL whole-state swap (file load / new). A subscribe
   // bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live domain
   // to the last domain we committed; a mismatch we did not author is a load/new, so
@@ -2158,6 +2211,16 @@ export function App(): JSX.Element {
     [store, recordCommand],
   );
 
+  // HB5-3 — the anchor-origin camera focus handed to the「錨一覧」rows. Stable
+  // (reads the late-bound fit ref), so it never re-builds the sidebar memo. The
+  // event-row click calls this AFTER promoting the feature + syncing time, so the
+  // fit resolves the feature's shape at the錨の開始 time and writes the camera through
+  // the single ports.writeCamera path. Only this錨導線 calls it — a map-click
+  // selection routes through the live-selection-port and never moves the view.
+  const focusCameraOnFeature = useCallback((featureId: FeatureId): void => {
+    fitCameraToFeatureRef.current?.(featureId);
+  }, []);
+
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
   // never passed to AppShell, so the sidebar rendered empty and the U32
@@ -2177,6 +2240,7 @@ export function App(): JSX.Element {
         editDispatch: propertyEditDispatch,
         anchorIntervalDispatch,
         onDeleteFeature: propertyDeleteFeature,
+        onFocusFeatureCamera: focusCameraOnFeature,
       }),
     [
       store,
@@ -2185,6 +2249,7 @@ export function App(): JSX.Element {
       propertyEditDispatch,
       anchorIntervalDispatch,
       propertyDeleteFeature,
+      focusCameraOnFeature,
     ],
   );
 

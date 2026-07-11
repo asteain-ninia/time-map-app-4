@@ -35,6 +35,7 @@ export const MENU_ITEM_LABELS = {
   'edit.undo': '元に戻す',
   'edit.redo': 'やり直し',
   'edit.delete': '削除',
+  'edit.deselect': '選択解除',
   'view.toggleViewMode': '表示専用モード切替',
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
@@ -73,7 +74,10 @@ export const TOOL_LABELS = {
  * 「歴史アンカー一覧（年表）」 so it is not confused with the地物一覧 — it lists each
  * feature's history anchors (its 時間軸イベント), not the features themselves. */
 export const SIDEBAR_SECTION_TITLES = {
-  events: '歴史アンカー一覧（年表）',
+  // HB5-1 / HB5-2: shortened from「歴史アンカー一覧（年表）」and unified to the
+  // domain term「錨」(要件定義書 §3.11 歴史の錨). Parallels「地物一覧」as a tab title
+  // and stays distinct from the property panel's per-feature「歴史の錨」section.
+  events: '錨一覧',
   features: '地物一覧',
   properties: 'プロパティ',
 } as const;
@@ -90,13 +94,13 @@ export const STATUS_STRINGS = {
  */
 export const SIDEBAR_CONTENT_STRINGS = {
   featuresEmpty: '地物がありません。地図に地物を追加すると一覧に表示されます。',
-  eventsEmpty: '歴史アンカーがありません。地物の履歴がここに表示されます。',
+  eventsEmpty: '歴史の錨がありません。地物の履歴がここに表示されます。',
   // HB3-28: captions explaining what each list shows + how the two differ (the
   // user asked「イベント一覧と地物一覧の違いは？」). 地物一覧 = features effective at the
   // current year; 歴史アンカー一覧 = every feature's history anchors across time.
   featuresCaption: '現在の年に存在する地物の一覧です。行を選ぶとその地物を選択します。',
   eventsCaption:
-    '各地物の歴史アンカー（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択します。',
+    '各地物の歴史の錨（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択します。',
 } as const;
 
 /**
@@ -129,6 +133,7 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'edit.undo': '直前の操作を取り消します',
   'edit.redo': '取り消した操作をやり直します',
   'edit.delete': '選択中の地物を削除します',
+  'edit.deselect': '地物と頂点の選択を解除します',
   'view.toggleViewMode': '編集を無効にして閲覧専用にします',
   'view.zoomIn': '地図を拡大します',
   'view.zoomOut': '地図を縮小します',

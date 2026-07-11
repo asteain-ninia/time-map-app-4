@@ -249,6 +249,63 @@ describe('SidebarContent — HB-3 wiring', () => {
   });
 });
 
+// HB5-3 — the錨一覧 row is the ONLY selection導線 that also focuses the camera. It must
+// (a) still promote the feature + sync the time through the SAME store path, and (b)
+// then invoke the host's camera-focus callback with the row's feature AFTER the time
+// sync, so the host resolves the shape at the錨の開始 time. A map-click selection goes
+// through the live-selection-port (not this component) so it never focuses — that is
+// guaranteed by construction (only this row calls the callback).
+describe('SidebarContent — HB5-3 錨起点の視点合わせ', () => {
+  function renderWithFocus(root: DomainRoot, startTime = timePointYear(1500)) {
+    const store = createSessionStore<DomainRoot>({
+      initialDomain: root,
+      initial: { currentTime: startTime },
+    });
+    const focusCalls: { id: string; timeYearAtCall: number }[] = [];
+    const sidebar = buildSidebarContent<DomainRoot>({
+      store,
+      getRoot: () => store.getState().domain,
+      getTime: () => store.getState().currentTime,
+      calendar,
+      onFocusFeatureCamera: (id) => {
+        // Capture the time AT THE MOMENT the focus fires to prove ordering.
+        focusCalls.push({
+          id: id as unknown as string,
+          timeYearAtCall: store.getState().currentTime.year,
+        });
+      },
+    });
+    const utils = render(<Sidebar {...sidebar} />);
+    return { store, focusCalls, ...utils };
+  }
+
+  it('clicking an錨 row selects the feature, syncs the time, THEN focuses the camera', () => {
+    const a = squareLeaf('f-a', '織田領');
+    const root = withLeaf(emptyProject(), a, 1000);
+    const { store, focusCalls } = renderWithFocus(root, timePointYear(1500));
+
+    fireEvent.click(screen.getByTestId('event-list-item-anchor:f-a@1000'));
+
+    // (a) selection + time synced through the store (single truth source, unchanged).
+    expect(store.getState().activeFeature).toBe(a.feature.id);
+    expect(store.getState().currentTime.year).toBe(1000);
+    // (b) camera focus fired ONCE, for the row's feature, AFTER the time sync (sees 1000).
+    expect(focusCalls).toHaveLength(1);
+    expect(focusCalls[0]!.id).toBe('f-a');
+    expect(focusCalls[0]!.timeYearAtCall).toBe(1000);
+  });
+
+  it('still selects + syncs time when NO camera-focus callback is wired (honest absence)', () => {
+    const a = squareLeaf('f-a', '織田領');
+    const root = withLeaf(emptyProject(), a, 1000);
+    // The default renderWith wires NO onFocusFeatureCamera.
+    const { store } = renderWith(root);
+    fireEvent.click(screen.getByTestId('event-list-item-anchor:f-a@1000'));
+    expect(store.getState().activeFeature).toBe(a.feature.id);
+    expect(store.getState().currentTime.year).toBe(1000);
+  });
+});
+
 // FR-20 / FR-35 — the property panel's 面積（km²）row over the LIVE host wiring. The
 // host resolves the area from the CURRENT domain + time + FR-109 store settings, so
 // it must (穴1) re-derive after a structural edit that keeps the same feature id, and
