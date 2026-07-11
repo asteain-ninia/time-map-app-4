@@ -89,9 +89,12 @@ import {
   resolveDisplayFor,
   lineFullyResolved,
   vertexOwners,
+  type DisplayResolution,
 } from './display-resolution-cache';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
+import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
+import { multiPolygonBBox, type BBox } from '../../domain/spatial/bbox';
 
 /** Project a world coordinate to surface-relative screen px (U17 forward transform). */
 export type ProjectToScreen = (world: WorldCoordinate) => ScreenPoint;
@@ -337,22 +340,33 @@ function drawnAreaAtPoint(
 ): FeatureId | null {
   let hit: FeatureId | null = null;
   for (const area of areas) {
-    const span = multiPolygonLonSpan(area.shape);
-    const offsets =
-      span === undefined ? [0] : drawnLonOffsets(span.min, span.max, wrap);
-    // Probe each replica offset INLINE (no intermediate `probes[]` array): a replica
-    // drawn at `+off°` covers `polygon.lon + off`, so the click lands inside it iff
-    // `worldPoint.lon − off` lands inside the canonical polygon. Iterating offsets in
-    // the outer loop lets the first matching (offset, polygon) pair exit early.
-    const inside = offsets.some((off) => {
-      const probe: WorldCoordinate = { lon: worldPoint.lon - off, lat: worldPoint.lat };
-      return area.shape.some(
-        (polygon) => pointInPolygon(probe, polygon) === POINT_LOCATION.Inside,
-      );
-    });
-    if (inside) hit = area.featureId; // keep scanning; a later (top) area wins
+    if (areaContainsPoint(area, worldPoint, wrap)) hit = area.featureId; // later (top) area wins
   }
   return hit;
+}
+
+/**
+ * Does the drawn `area` (any ±360° replica the renderer painted it at) contain
+ * `worldPoint`? The SINGLE containment rule shared by the full-scan
+ * {@link drawnAreaAtPoint} and the index-narrowed {@link drawnAreaAtPointIndexed}
+ * (教訓 5.30 単一判定) — extracted verbatim from the previous inline loop so the two
+ * paths cannot drift. A replica drawn at `+off°` covers `polygon.lon + off`, so the
+ * click lands inside it iff `worldPoint.lon − off` lands inside the canonical polygon
+ * (穴透過 honoured via the domain `pointInPolygon` predicate).
+ */
+function areaContainsPoint(
+  area: ResolvedDisplayShape,
+  worldPoint: WorldCoordinate,
+  wrap: WrapFrame,
+): boolean {
+  const span = multiPolygonLonSpan(area.shape);
+  const offsets = span === undefined ? [0] : drawnLonOffsets(span.min, span.max, wrap);
+  return offsets.some((off) => {
+    const probe: WorldCoordinate = { lon: worldPoint.lon - off, lat: worldPoint.lat };
+    return area.shape.some(
+      (polygon) => pointInPolygon(probe, polygon) === POINT_LOCATION.Inside,
+    );
+  });
 }
 
 // Longitude-span MEMOIZATION (bughunt3 #medium: per-area-per-hit-test recompute).
@@ -403,6 +417,283 @@ function computeMultiPolygonLonSpan(
   return min === Infinity ? undefined : { min, max };
 }
 
+// ===========================================================================
+// BROAD-PHASE SPATIAL INDEX (S3c — pointer 当たり判定の高速化)
+// ===========================================================================
+//
+// WHY (実測: 実データ full で liveHitTestAt ≈35ms/イベント、pointermove 連発で
+// フレーム予算 16.6ms 超過): the two dominant costs are the vertex-proximity scan
+// (step 1: project EVERY grabbable vertex — 99,314 for the derle world — to screen)
+// and the area-body containment scan (step 3: point-in-polygon over EVERY drawn area,
+// rings totalling 99,314 edges). Both are O(全頂点) per pointer event and線形 in the
+// data size (see the S2 分析). A single click within the 100ms budget is fine; a
+// pointermove-driven drag / hover at 60fps is not.
+//
+// The fix is a classic BROAD-PHASE narrow: an RBush (U10 `SpatialIndex`, already a
+// dependency) over the WORLD-space geometry lets a pointer event test only the handful
+// of vertices / areas whose bbox is near the cursor, then run the EXACT same per-
+// candidate test (`nearestDrawnDistSq` / `areaContainsPoint`) unchanged. The candidate
+// set is a conservative SUPERSET of everything the full scan would find within reach,
+// iterated in the SAME order (owners iteration order for vertices, `resolved.shapes`
+// array order for areas), so the returned HitResult is BYTE-IDENTICAL to the full scan
+// — the index only skips geometry the exact test would have rejected anyway.
+//
+// LIFECYCLE (教訓 5.29 単一真実源 = 単一 COMPUTATION): the index is a pure function of
+// the shared `DisplayResolution` (`owners` + `vertices` + `resolved.shapes`), so it is
+// keyed by that bundle's identity — the SAME (root, time, displayControl) generation the
+// renderer and hit-test already share. It is built LAZILY on the first hit-test of a
+// generation (a draw-only pan/zoom frame never pays for it) and cached in a WeakMap so a
+// stream of pointer events over an unchanged domain reuses it, and it is GC'd with the
+// resolution. This mirrors the `lonSpanCache` WeakMap above.
+//
+// WRAP 単一真実源: the candidate enumeration considers the SAME ±360° replicas the exact
+// test does — it walks the (small) set of world-turns at which a canonical vertex/area
+// could replicate to within reach of the cursor, querying the world-space index once per
+// turn. Any true hit's drawn replica is provably in this set (its canonical longitude
+// lies in the indexed data span), so no reachable replica is ever dropped (描画 ⊇ ヒット).
+
+/** One indexed grabbable vertex: its id, owner, and owners-iteration position. */
+interface VertexRef {
+  readonly vertexId: VertexId;
+  readonly featureId: FeatureId;
+  /**
+   * Position in the `owners` Map iteration — the candidate scan sorts by this so a
+   * distance TIE resolves to the SAME vertex the full scan's later-wins `<=` picks
+   * (共有頂点 / 同座標頂点 の tie-break を索引でも完全一致させる).
+   */
+  readonly order: number;
+}
+
+/**
+ * A per-generation broad-phase index over one `DisplayResolution`: an RBush over every
+ * grabbable vertex (canonical lon=X, lat=Y) and one over every drawn area's bbox
+ * (ref = its index in `resolved.shapes`). The `*Lon` extents bound the ±360° turn
+ * enumeration the candidate queries walk.
+ */
+interface HitIndex {
+  readonly vertexIndex: SpatialIndex<VertexRef>;
+  readonly vertexLon: { readonly min: number; readonly max: number } | undefined;
+  readonly areaIndex: SpatialIndex<number>;
+  readonly areaLon: { readonly min: number; readonly max: number } | undefined;
+}
+
+/**
+ * Relative + absolute widening of the vertex broad-phase query box, so a vertex the
+ * EXACT screen-distance test might accept exactly AT the grab radius is never pruned by
+ * float rounding in the world↔screen round-trip (閾値ちょうどの距離 edge). Tiny — it only
+ * over-includes; the exact test still decides the hit.
+ */
+const BROAD_PHASE_EPS_REL = 1e-9;
+const BROAD_PHASE_EPS_ABS = 1e-9;
+
+/**
+ * Cap on the ±360° turn span the candidate enumeration will walk. A normal frame walks
+ * 1–2 turns (the data spans < 360°); only a pathological tiny-zoom frame (grab radius →
+ * a huge world span, or continuous longitudes spanning many turns) would exceed this, and
+ * there the index gives no benefit anyway — so we bail to the full scan (病的入力の安全性,
+ * same discipline as `drawnLonOffsets` TAIL-LATENCY CLAMP / `MAX_WRAP_REPLICAS`).
+ */
+const MAX_BROAD_PHASE_TURNS = 1024;
+
+/** The per-`DisplayResolution` index cache (built lazily, GC'd with the resolution). */
+const hitIndexCache = new WeakMap<DisplayResolution, HitIndex>();
+
+/**
+ * TEST-ONLY toggle: force `liveHitTestAt` / `drawnAreaAt` to bypass the broad-phase
+ * index and run the full linear scans, so a property test can assert the indexed and
+ * un-indexed paths return byte-identical HitResults for the SAME inputs (索引ありなしで
+ * ヒット結果が同一). Never toggled in production. Reset via `setHitIndexEnabledForTest(true)`.
+ */
+let hitIndexEnabled = true;
+export function setHitIndexEnabledForTest(enabled: boolean): void {
+  hitIndexEnabled = enabled;
+}
+
+/** The broad-phase index for `resolution`, built once and memoized by its identity. */
+function getHitIndex(resolution: DisplayResolution): HitIndex {
+  const cached = hitIndexCache.get(resolution);
+  if (cached !== undefined) return cached;
+  const built = buildHitIndex(resolution);
+  hitIndexCache.set(resolution, built);
+  return built;
+}
+
+function buildHitIndex(resolution: DisplayResolution): HitIndex {
+  const { owners, vertices, resolved } = resolution;
+
+  // Vertex index: one zero-area point box per grabbable vertex at its canonical
+  // (lon, lat). `order` records the owners iteration index (undefined vertices are
+  // skipped exactly as the full scan skips them, but still advance the counter so the
+  // relative order of the DEFINED vertices matches the scan).
+  const vertexEntries: IndexEntry<VertexRef>[] = [];
+  let vLonMin = Infinity;
+  let vLonMax = -Infinity;
+  let order = 0;
+  for (const [vertexId, featureId] of owners) {
+    const v = getVertex(vertices, vertexId);
+    if (v !== undefined) {
+      const { lon, lat } = v.coordinate;
+      vertexEntries.push({ ref: { vertexId, featureId, order }, minX: lon, minY: lat, maxX: lon, maxY: lat });
+      if (lon < vLonMin) vLonMin = lon;
+      if (lon > vLonMax) vLonMax = lon;
+    }
+    order += 1;
+  }
+  const vertexIndex = new SpatialIndex<VertexRef>().bulkLoad(vertexEntries);
+
+  // Area index: one bbox per drawn area, ref = its position in `resolved.shapes` (so a
+  // candidate scan sorted by ref reproduces the array-order「後勝ち」topmost rule). An
+  // area with an empty shape has no bbox and can contain no point, so it is omitted
+  // (its exact test is a no-op too — 教訓 5.18).
+  const areaEntries: IndexEntry<number>[] = [];
+  let aLonMin = Infinity;
+  let aLonMax = -Infinity;
+  resolved.shapes.forEach((area, i) => {
+    const box = multiPolygonBBox(area.shape);
+    if (box === undefined) return;
+    areaEntries.push({ ref: i, minX: box.minX, minY: box.minY, maxX: box.maxX, maxY: box.maxY });
+    if (box.minX < aLonMin) aLonMin = box.minX;
+    if (box.maxX > aLonMax) aLonMax = box.maxX;
+  });
+  const areaIndex = new SpatialIndex<number>().bulkLoad(areaEntries);
+
+  return {
+    vertexIndex,
+    vertexLon: vLonMin === Infinity ? undefined : { min: vLonMin, max: vLonMax },
+    areaIndex,
+    areaLon: aLonMin === Infinity ? undefined : { min: aLonMin, max: aLonMax },
+  };
+}
+
+/**
+ * The grabbable-vertex candidates whose nearest drawn ±360° replica could fall within
+ * the screen-px grab radius of the cursor — a conservative SUPERSET of the vertices the
+ * full scan would test as within reach, returned in owners iteration order (so the
+ * caller's later-wins `<=` tie-break is byte-identical). Returns `null` when the index
+ * cannot be applied soundly (index disabled / no wrap frame / unmeasured zoom /
+ * pathological turn span), signalling the caller to fall back to the full scan.
+ */
+function vertexCandidates(
+  hitIndex: HitIndex,
+  worldPoint: WorldCoordinate,
+  wrap: WrapFrame,
+): VertexRef[] | null {
+  if (!hitIndexEnabled || wrap === undefined) return null;
+  const lonExtent = hitIndex.vertexLon;
+  if (lonExtent === undefined) return []; // no grabbable vertices → no candidates
+  const worldLon = worldPoint.lon;
+  const worldLat = worldPoint.lat;
+  const marginDeg = wrap.marginDeg; // = radiusPx / zoom (world radius of the screen-px grab)
+  if (
+    !Number.isFinite(worldLon) ||
+    !Number.isFinite(worldLat) ||
+    !Number.isFinite(marginDeg) ||
+    marginDeg < 0
+  ) {
+    return null;
+  }
+  // Widen the world grab radius by a float-safety epsilon (see BROAD_PHASE_EPS_*).
+  const m = marginDeg * (1 + BROAD_PHASE_EPS_REL) + BROAD_PHASE_EPS_ABS;
+  const refs = collectCandidateRefs(hitIndex.vertexIndex, worldLon, worldLat, m, lonExtent);
+  if (refs === null) return null;
+  refs.sort((a, b) => a.order - b.order);
+  return refs;
+}
+
+/**
+ * The drawn-area candidates (indices into `resolved.shapes`) whose bbox contains the
+ * cursor at some ±360° replica — a SUPERSET of the areas whose exact containment could
+ * hold, returned in ascending array order (so the「後勝ち」topmost rule is preserved).
+ * Returns `null` to fall back to the full scan (index disabled / no wrap frame /
+ * pathological turn span). Containment is exact (no grab radius), so only a tiny float
+ * epsilon widens the point query.
+ */
+function areaCandidates(
+  hitIndex: HitIndex,
+  worldPoint: WorldCoordinate,
+  wrap: WrapFrame,
+): number[] | null {
+  if (!hitIndexEnabled || wrap === undefined) return null;
+  const lonExtent = hitIndex.areaLon;
+  if (lonExtent === undefined) return []; // no drawn areas
+  const worldLon = worldPoint.lon;
+  const worldLat = worldPoint.lat;
+  if (!Number.isFinite(worldLon) || !Number.isFinite(worldLat)) return null;
+  const refs = collectCandidateRefs(
+    hitIndex.areaIndex,
+    worldLon,
+    worldLat,
+    BROAD_PHASE_EPS_ABS,
+    lonExtent,
+  );
+  if (refs === null) return null;
+  refs.sort((a, b) => a - b);
+  return refs;
+}
+
+/**
+ * Gather every index entry ref whose bbox (widened by `m`) overlaps the cursor at some
+ * ±360° world-turn — the shared broad-phase enumeration for vertices and areas.
+ *
+ * A canonical geometry whose lon lies in `[lonExtent.min, lonExtent.max]` replicates to
+ * within `m` of the cursor only at turns `k` where `worldLon − k·period ∈ [min−m, max+m]`
+ * — a tiny contiguous integer range (≈ span/period + 1, normally 1–2). We query the
+ * world-space index once per turn `k` with the box centred at `worldLon − k·period`
+ * (latitude never wraps), dedup refs across turns, and return them. `null` signals an
+ * out-of-range / pathological turn span so the caller falls back to the full scan
+ * (病的入力の安全性).
+ */
+function collectCandidateRefs<Ref>(
+  index: SpatialIndex<Ref>,
+  worldLon: number,
+  worldLat: number,
+  m: number,
+  lonExtent: { readonly min: number; readonly max: number },
+): Ref[] | null {
+  const turnLo = Math.ceil((worldLon - lonExtent.max - m) / LONGITUDE_PERIOD);
+  const turnHi = Math.floor((worldLon - lonExtent.min + m) / LONGITUDE_PERIOD);
+  if (!Number.isSafeInteger(turnLo) || !Number.isSafeInteger(turnHi)) return null;
+  if (turnHi < turnLo) return []; // no replica near the cursor
+  if (turnHi - turnLo > MAX_BROAD_PHASE_TURNS) return null; // pathological — full scan
+  const seen = new Set<Ref>();
+  const out: Ref[] = [];
+  const minY = worldLat - m;
+  const maxY = worldLat + m;
+  for (let k = turnLo; k <= turnHi; k += 1) {
+    const shift = k * LONGITUDE_PERIOD;
+    const box: BBox = { minX: worldLon - shift - m, maxX: worldLon - shift + m, minY, maxY };
+    for (const entry of index.search(box)) {
+      if (!seen.has(entry.ref)) {
+        seen.add(entry.ref);
+        out.push(entry.ref);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * The topmost DRAWN AREA under `worldPoint`, narrowed by the broad-phase area index — a
+ * candidate SET (bbox-near the cursor) whose members run the EXACT {@link areaContainsPoint}
+ * in `resolved.shapes` array order, so the result equals {@link drawnAreaAtPoint} exactly.
+ * Falls back to the full scan when the index does not apply.
+ */
+function drawnAreaAtPointIndexed(
+  areas: readonly ResolvedDisplayShape[],
+  hitIndex: HitIndex,
+  worldPoint: WorldCoordinate,
+  wrap: WrapFrame,
+): FeatureId | null {
+  const candidates = areaCandidates(hitIndex, worldPoint, wrap);
+  if (candidates === null) return drawnAreaAtPoint(areas, worldPoint, wrap);
+  let hit: FeatureId | null = null;
+  for (const i of candidates) {
+    const area = areas[i]!;
+    if (areaContainsPoint(area, worldPoint, wrap)) hit = area.featureId; // later (top) area wins
+  }
+  return hit;
+}
+
 /** The inputs the display-control-aware area lookup needs (the live root + time + control). */
 export interface DrawnAreaAtPointInput {
   readonly root: DomainProject;
@@ -449,12 +740,20 @@ export function drawnAreaAt(
   // once per (root, time, control) generation (教訓 5.29, bughunt2 perf). The knife click
   // then reuses the frame's already-resolved area set instead of rebuilding the whole
   // hierarchy/display pipeline a second/third time per interaction.
-  const areas = resolveDisplayFor(input.root, input.time, control).resolved.shapes;
+  const resolution = resolveDisplayFor(input.root, input.time, control);
   // The knife has no own grab radius; an area body click resolves by world containment, so
   // the cursor window margin is just the default grab radius (over-includes ≤1 turn, never
   // under-includes a containing replica — see drawnLonOffsets TAIL-LATENCY CLAMP).
   const wrap = buildWrapFrame(input.wrap, worldPoint.lon, DEFAULT_HIT_RADIUS_PX);
-  return drawnAreaAtPoint(areas, worldPoint, wrap);
+  // Narrow the O(全エリア) point-in-polygon scan through the SAME broad-phase area index the
+  // main hit-test uses (S3c). The candidate set is a superset run in array order, so the
+  // result equals the full scan exactly (単一真実源 — same areaContainsPoint).
+  return drawnAreaAtPointIndexed(
+    resolution.resolved.shapes,
+    getHitIndex(resolution),
+    worldPoint,
+    wrap,
+  );
 }
 
 /** The inputs the rubber-band rectangle vertex lookup needs (live root + time + control). */
@@ -637,12 +936,15 @@ export function liveHitTestAt(
   // domain a pointer-move is a cache HIT with zero re-insertions (教訓 5.29 単一真実源 =
   // 単一 COMPUTATION). `grabbable` / `owners` are exactly what this function built inline
   // before — same values, now memoised — so behaviour is unchanged (see vertexOwners).
-  const { features, areaFeaturesById, vertices, resolved, owners } = resolveDisplayFor(
-    root,
-    time,
-    control,
-  );
+  const resolution = resolveDisplayFor(root, time, control);
+  const { features, areaFeaturesById, vertices, resolved, owners } = resolution;
   const areas = resolved.shapes;
+  // The broad-phase spatial index for this (root, time, control) generation — built lazily
+  // on the first hit-test and shared across the generation's pointer stream (S3c). It
+  // narrows the two full scans below (vertex proximity + area containment) to the handful
+  // of candidates near the cursor; the exact per-candidate test then decides, so the
+  // HitResult is byte-identical to the un-indexed scan (索引ありなしで結果不変).
+  const hitIndex = getHitIndex(resolution);
 
   // The ACTIVE feature's OWN handle set (vertices + edges), computed ONCE from the SAME
   // `computeHandles` the render layer (active-feature-handles) draws with, over the SAME
@@ -668,13 +970,31 @@ export function liveHitTestAt(
   //    both paths resolves to the SAME (featureId, vertexId), so the union is harmless.
   let bestVertex: { featureId: FeatureId; vertexId: VertexId } | null = null;
   let bestDistSq = radiusSq;
-  for (const [vertexId, featureId] of owners) {
-    const v = getVertex(vertices, vertexId);
-    if (v === undefined) continue;
-    const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
-    if (d <= bestDistSq) {
-      bestDistSq = d;
-      bestVertex = { featureId, vertexId };
+  // Broad-phase: test only the grabbable vertices whose bbox is within the screen-px grab
+  // radius of the cursor (a SUPERSET of the true hits, in owners iteration order). `null`
+  // = the index does not apply this frame → the full scan below, unchanged. Every skipped
+  // vertex is provably out of reach (its every drawn replica is > radius away), so the
+  // best-vertex pick is identical to iterating all of `owners` (索引ありなしで結果不変).
+  const vertexCands = vertexCandidates(hitIndex, worldPoint, wrap);
+  if (vertexCands === null) {
+    for (const [vertexId, featureId] of owners) {
+      const v = getVertex(vertices, vertexId);
+      if (v === undefined) continue;
+      const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
+      if (d <= bestDistSq) {
+        bestDistSq = d;
+        bestVertex = { featureId, vertexId };
+      }
+    }
+  } else {
+    for (const ref of vertexCands) {
+      const v = getVertex(vertices, ref.vertexId);
+      if (v === undefined) continue;
+      const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
+      if (d <= bestDistSq) {
+        bestDistSq = d;
+        bestVertex = { featureId: ref.featureId, vertexId: ref.vertexId };
+      }
     }
   }
   for (const vh of activeHandles.vertices) {
@@ -830,7 +1150,7 @@ export function liveHitTestAt(
   //    Probed AFTER point / line bodies because areas are painted UNDERNEATH them
   //    (reverse draw order — see step 2). For an aggregate this is the AGGREGATE's
   //    集約形状 → the aggregate is selected, never a hidden child leaf.
-  const area = drawnAreaAtPoint(areas, worldPoint, wrap);
+  const area = drawnAreaAtPointIndexed(areas, hitIndex, worldPoint, wrap);
   if (area !== null) return featureBodyHit(area);
 
   return EMPTY_HIT;
