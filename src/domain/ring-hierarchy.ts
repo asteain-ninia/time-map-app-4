@@ -54,6 +54,7 @@ import {
   type Shape,
   type TerritoryRing,
 } from './ring';
+import { bboxesIntersect, ringBBox } from './spatial/bbox';
 import { getVertex, type VertexStore } from './vertex';
 
 // ---------------------------------------------------------------------------
@@ -363,18 +364,44 @@ function resolveAlignedPair(
  * contact is boundary contact, not an exit — FR-25 / FR-26 境界接触は重なりに含めない).
  *
  * The two rings MUST already share a world turn (align via {@link alignRingTo} at
- * the resolve site); this predicate does no ±360° folding of its own. */
-function ringsProperlyCross(a: GeoRing, b: GeoRing): boolean {
+ * the resolve site); this predicate does no ±360° folding of its own.
+ *
+ * A cheap per-edge AABB reject runs before the (robust, hence costly) `orient2d`-
+ * based {@link segmentsIntersect}: two edges whose axis-aligned bounding boxes are
+ * STRICTLY disjoint cannot share any point, so they cannot properly cross and the
+ * exact predicate is skipped. This is the SAME sound, index-free constant-factor
+ * reject the U06 predicate `ringSelfIntersects` already applies (单一真实源 —
+ * identical reasoning), and it is what makes hole-vs-parent (small ring against a
+ * multi-thousand-vertex coastline) tractable. It changes NOTHING in the result
+ * (完全不変): the comparison is strict, so an edge pair that could cross is never
+ * skipped. `applyBboxReject === false` forces the exhaustive scan (the equivalence
+ * reference the property test compares the fast path against). */
+function ringsProperlyCross(a: GeoRing, b: GeoRing, applyBboxReject = true): boolean {
   const an = a.length;
   const bn = b.length;
   for (let i = 0; i < an; i += 1) {
     const a1 = a[i];
     const a2 = a[(i + 1) % an];
     if (a1 === undefined || a2 === undefined) continue;
+    // AABB of edge a, computed once for the whole inner sweep.
+    const aMinLon = a1.lon < a2.lon ? a1.lon : a2.lon;
+    const aMaxLon = a1.lon > a2.lon ? a1.lon : a2.lon;
+    const aMinLat = a1.lat < a2.lat ? a1.lat : a2.lat;
+    const aMaxLat = a1.lat > a2.lat ? a1.lat : a2.lat;
     for (let j = 0; j < bn; j += 1) {
       const b1 = b[j];
       const b2 = b[(j + 1) % bn];
       if (b1 === undefined || b2 === undefined) continue;
+      // Strictly-disjoint edge boxes cannot properly cross → skip the exact test.
+      if (
+        applyBboxReject &&
+        ((b1.lon < b2.lon ? b1.lon : b2.lon) > aMaxLon ||
+          (b1.lon > b2.lon ? b1.lon : b2.lon) < aMinLon ||
+          (b1.lat < b2.lat ? b1.lat : b2.lat) > aMaxLat ||
+          (b1.lat > b2.lat ? b1.lat : b2.lat) < aMinLat)
+      ) {
+        continue;
+      }
       if (segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper) {
         return true;
       }
@@ -384,17 +411,24 @@ function ringsProperlyCross(a: GeoRing, b: GeoRing): boolean {
 }
 
 /**
- * True iff `inner` is fully contained inside `outer`: no inner vertex strictly
- * outside, and no inner edge properly crossing the outer boundary. Boundary
- * contact (a vertex on the outer edge, an edge running along it) is allowed —
- * a hole may share boundary with its parent without leaving it.
+ * True iff no vertex of `inner` lies strictly OUTSIDE `outer` (boundary contact is
+ * allowed — a hole may share boundary with its parent without leaving it).
+ *
+ * This is the vertex half of the old `ringContains`. Full containment also requires
+ * that no inner edge PROPERLY CROSSES the outer boundary; the sole caller (hole
+ * containment, part (a)) has already established non-crossing via an explicit
+ * `ringsProperlyCross` before it consults this, so re-running that O(n·m) crossing
+ * test inside a `ringContains` here would be pure redundant work over a
+ * multi-thousand-vertex parent (the measured hotspot). We therefore split the two
+ * halves and let the caller reuse the crossing verdict it already holds — the
+ * result is IDENTICAL (完全不変): in the caller's no-cross branch, `ringContains`
+ * reduced to exactly this vertex test.
  */
-function ringContains(outer: GeoRing, inner: GeoRing): boolean {
+function noInnerVertexOutside(outer: GeoRing, inner: GeoRing): boolean {
   const outerPoly: GeoPolygon = [outer];
   for (const v of inner) {
     if (pointInPolygon(v, outerPoly) === POINT_LOCATION.Outside) return false;
   }
-  if (ringsProperlyCross(inner, outer)) return false;
   return true;
 }
 
@@ -408,8 +442,8 @@ function ringContains(outer: GeoRing, inner: GeoRing): boolean {
  * boundaries coincide along a positive-length run with interiors on the same
  * side (identical / duplicate rings). We detect all three.
  */
-function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
-  if (ringsProperlyCross(a, b)) return true;
+function ringsOverlap(a: GeoRing, b: GeoRing, applyBboxReject = true): boolean {
+  if (ringsProperlyCross(a, b, applyBboxReject)) return true;
   // No proper crossing: overlap only if one is nested inside the other. Probe a
   // strictly-interior witness vertex (a boundary-only vertex is mere contact).
   const aPoly: GeoPolygon = [a];
@@ -431,6 +465,31 @@ function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
 }
 
 /**
+ * Test / benchmark observability for {@link validateGeometry}. Production never
+ * sets these — the geometry checks run identically with or without them; they only
+ * let a test prove the bbox early-rejects are SOUND (mirrors overlap.ts exposing an
+ * exhaustive naive reference + a predicate counter for its narrowing tests).
+ */
+export interface RingGeometryOptions {
+  /**
+   * When `true`, DISABLE every sound bbox early-reject (the ring-level
+   * strict-disjoint skip in the sibling/enclave loop AND the per-edge AABB reject
+   * inside {@link ringsProperlyCross}), forcing the exhaustive O(n·m) predicate on
+   * every pair. This is the equivalence REFERENCE the property test compares the
+   * fast (default) path against, to pin that the rejects change NOTHING — the same
+   * violation set AND the same order (完全不変).
+   */
+  readonly exhaustive?: boolean;
+  /**
+   * Optional counter incremented once per FULL {@link ringsOverlap} kernel actually
+   * run for a sibling/enclave pair AFTER the ring-level bbox skip. Lets a test /
+   * bench prove the skip collapses the O(k²) kernel calls to the near-neighbour
+   * pairs without touching the result.
+   */
+  readonly overlapKernelCounter?: { count: number };
+}
+
+/**
  * Validate FR-25 geometry for an entire shape against a vertex store:
  *   - each hole fully contained in its parent territory and not crossing it;
  *   - sibling rings (same parent) do not overlap each other;
@@ -440,10 +499,21 @@ function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
  * structural defects surface via {@link validateAlternation}). A high-frequency
  * single-call function: real-time validation calls this each interaction
  * (教訓5.26 same fn, same return for pre-commit rejection).
+ *
+ * The geometric predicates use sound, index-free bbox early-rejects (see
+ * {@link ringsProperlyCross} and the sibling/enclave skip below) so a leaf with a
+ * multi-thousand-vertex coastline and dozens of holes/enclaves stays tractable at
+ * load time; those rejects are result-preserving (完全不変) and can be disabled via
+ * {@link RingGeometryOptions.exhaustive} for the equivalence property test.
  */
-export function validateGeometry(shape: Shape, store: VertexStore): RingValidationResult {
+export function validateGeometry(
+  shape: Shape,
+  store: VertexStore,
+  options?: RingGeometryOptions,
+): RingValidationResult {
   const byId = indexById(shape);
   const violations: RingViolation[] = [];
+  const applyBboxReject = options?.exhaustive !== true;
 
   // (a) hole containment + non-crossing of parent.
   for (const ring of shape.rings) {
@@ -456,9 +526,13 @@ export function validateGeometry(shape: Shape, store: VertexStore): RingValidati
     const pair = resolveAlignedPair(store, parent, ring);
     if (pair === undefined) continue;
     const [parentGeo, holeGeo] = pair;
-    if (ringsProperlyCross(holeGeo, parentGeo)) {
+    // Compute the crossing verdict ONCE and reuse it: when the hole does not cross,
+    // containment reduces to "no hole vertex strictly outside the parent" — the old
+    // `ringContains` re-ran this same O(hole·parent) crossing test a second time
+    // (over the huge parent coastline), which was pure waste (完全不変 to drop it).
+    if (ringsProperlyCross(holeGeo, parentGeo, applyBboxReject)) {
       violations.push(violation(RING_VIOLATION.HoleCrossesParent, ring.id, parent.id));
-    } else if (!ringContains(parentGeo, holeGeo)) {
+    } else if (!noInnerVertexOutside(parentGeo, holeGeo)) {
       violations.push(violation(RING_VIOLATION.HoleNotContained, ring.id, parent.id));
     }
   }
@@ -467,7 +541,7 @@ export function validateGeometry(shape: Shape, store: VertexStore): RingValidati
   //     and check each unordered pair within a group.
   const groups = groupBySharedParent(shape);
   for (const group of groups) {
-    checkGroupPairsNonOverlap(group, store, violations);
+    checkGroupPairsNonOverlap(group, store, violations, applyBboxReject, options?.overlapKernelCounter);
   }
 
   return result(violations);
@@ -498,11 +572,24 @@ function groupBySharedParent(shape: Shape): readonly (readonly Ring[])[] {
 
 /** Check every unordered pair in a sibling group for overlap, pushing structured
  * violations. Top-level pairs are reported as EnclavesOverlap, others as
- * SiblingsOverlap (FR-21 / FR-25 飛び地非重複 vs 兄弟非交差). */
+ * SiblingsOverlap (FR-21 / FR-25 飛び地非重複 vs 兄弟非交差).
+ *
+ * Sound strict-disjoint bbox skip (前任申し送り / the U10 overlap.ts narrowing, same
+ * principle): the pair is resolved into ONE shared world turn, so the two ALIGNED
+ * rings' bounding boxes are directly comparable. If those bboxes are strictly
+ * disjoint, no edge can cross, no vertex can sit inside the other, and no boundary
+ * run can coincide — so {@link ringsOverlap} is provably `false` and the O(n·m)
+ * kernel is skipped. This cannot change the violation set OR its order (完全不変):
+ * only pairs the kernel would report as non-overlapping are skipped. `bboxesIntersect`
+ * is INCLUSIVE, so a mere bbox touch still runs the full check (which correctly
+ * reports boundary contact as non-overlap, FR-26). `applyBboxReject === false` (the
+ * exhaustive reference) forces the kernel on every pair. */
 function checkGroupPairsNonOverlap(
   group: readonly Ring[],
   store: VertexStore,
   out: RingViolation[],
+  applyBboxReject: boolean,
+  overlapKernelCounter?: { count: number },
 ): void {
   for (let i = 0; i < group.length; i += 1) {
     const ri = group[i];
@@ -517,7 +604,14 @@ function checkGroupPairsNonOverlap(
       const pair = resolveAlignedPair(store, ri, rj);
       if (pair === undefined) continue;
       const [gi, gj] = pair;
-      if (!ringsOverlap(gi, gj)) continue;
+      // Strict-disjoint bbox skip on the ALIGNED rings, before the O(n·m) kernel.
+      if (applyBboxReject) {
+        const bi = ringBBox(gi);
+        const bj = ringBBox(gj);
+        if (bi !== undefined && bj !== undefined && !bboxesIntersect(bi, bj)) continue;
+      }
+      if (overlapKernelCounter !== undefined) overlapKernelCounter.count += 1;
+      if (!ringsOverlap(gi, gj, applyBboxReject)) continue;
       const kind = topLevelI
         ? RING_VIOLATION.EnclavesOverlap
         : RING_VIOLATION.SiblingsOverlap;
