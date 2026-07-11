@@ -144,6 +144,23 @@ export function unwrapLonSequence(lons: readonly number[]): number[] {
  * (a face is a bounded simple polygon), so minimal-span is the correct, stable choice
  * for every input the geometry pipeline actually produces.
  *
+ * VALID DOMAIN (契約, Codex adversarial review): every longitude the domain can
+ * legitimately hand this function is bounded by the persisted-coordinate contract —
+ * `coordinateSchema` / `createCoordinate` both reject |scalar| >
+ * MAX_COORDINATE_MAGNITUDE ≈ 9.0072e8° (domain/coordinate.ts), so contract-interior
+ * input is always far below {@link CLOSED_UNWRAP_EXACT_SEARCH_THRESHOLD}. Within that
+ * contract, the O(n) prefix-sum span measurement below and the old per-rotation
+ * measurement differ only by the OLD implementation's own accumulation rounding
+ * (a few ULPs at ≤ 9e8 — orders of magnitude under SPAN_EPSILON), and the prefix-sum
+ * measurement is the numerically BETTER-conditioned of the two (a sum of small
+ * bounded deltas vs accumulation at large absolute value). If a near-tie were ever
+ * decided differently, competing minimal-span rotations of a simple ring are
+ * whole-turn equivalent, and the caller (`seam.unwrapRingClosed`) re-anchors the run
+ * by whole turns anyway — the final geometry is unaffected. Contract-EXTERIOR input
+ * (|lon| beyond the threshold, or non-finite) instead falls back to the exhaustive
+ * search so the output stays exactly the pre-optimisation behaviour (正確性優先;
+ * see {@link CLOSED_UNWRAP_EXACT_SEARCH_THRESHOLD}).
+ *
  * Degenerate rings (< 3 elements have no closing edge distinct from the open run)
  * delegate straight to {@link unwrapLonSequence}. Pure; input never mutated.
  */
@@ -151,12 +168,108 @@ export function unwrapClosedLonSequence(lons: readonly number[]): number[] {
   const n = lons.length;
   if (n < 3) return unwrapLonSequence(lons);
 
-  // Try every rotation; keep the one whose continuous run has the smallest span
-  // (max − min). For a simple ring the minimal-span rotation is the one whose closing
-  // edge is NOT a seam jump (a crossing absorbed into an interior edge stays bounded
-  // by the shortest-delta rule; absorbed into the closing edge it inflates the span
-  // by a full turn). Ties (already-continuous rings) keep the earliest rotation, so
-  // rotation 0 — i.e. plain unwrapLonSequence order — wins when nothing crosses.
+  // DEFENSIVE FALLBACK (Codex HIGH finding): at extreme magnitudes (e.g. 1e18, where
+  // one double ULP is 128°) the old search — which measured spans AFTER unwrapping at
+  // the large absolute value, clampGapToStep included — can select a different
+  // rotation than the exact small prefix sums below, changing the output. Such input
+  // is far outside the persistence contract (±MAX_COORDINATE_MAGNITUDE ≈ 9.0072e8),
+  // so rather than perturb contract-interior performance we route it to the verbatim
+  // pre-optimisation O(n²) search. `!(|v| <= T)` also catches NaN / ±Infinity, so
+  // every pathological ring reproduces the old code's output exactly.
+  for (const lon of lons) {
+    if (!(Math.abs(lon) <= CLOSED_UNWRAP_EXACT_SEARCH_THRESHOLD)) {
+      return closedUnwrapExhaustiveSearch(lons);
+    }
+  }
+
+  // Find the rotation whose continuous run has the smallest span (max − min). For a
+  // simple ring the minimal-span rotation is the one whose closing edge is NOT a seam
+  // jump (a crossing absorbed into an interior edge stays bounded by the shortest-delta
+  // rule; absorbed into the closing edge it inflates the span by a full turn). Ties
+  // (already-continuous rings) keep the earliest rotation, so rotation 0 — i.e. plain
+  // unwrapLonSequence order — wins when nothing crosses.
+  //
+  // PERF (O(n²) → O(n), derle 99k-vertex world): the previous implementation ran a
+  // full `unwrapLonSequence` (+ min/max scan) for EVERY one of the n rotations, so a
+  // single ring cost O(n²) — and this runs per ring in the display-resolution unwrap
+  // (`geo/seam.unwrapRingClosed` via `alignMultiPolygon`), which dominated the cold
+  // display-resolution time (a 9,661-vertex ring alone is ~93M ops). We instead
+  // observe that the continuous run for rotation `s` is the prefix sum of the CYCLIC
+  // shortest-delta step sequence started at `s`: with `P` the running prefix sum over
+  // the doubled step sequence, run value at position k is `P[s+k] − P[s]`, so
+  //   span(s) = max_{m∈[s, s+n-1]} P[m] − min_{m∈[s, s+n-1]} P[m]
+  // (the −P[s] cancels). All n windows' max and min come from ONE monotonic-deque
+  // sliding-window pass — O(n) total. Only the CHOSEN rotation is then materialised
+  // via the SAME `unwrapLonSequence` the old loop used, so the returned run is
+  // byte-for-byte what the previous implementation produced (the span search is the
+  // only thing that changed). Within the contract-bounded domain (see header + the
+  // fallback above) the span computed from raw step prefix sums differs from the old
+  // per-rotation `unwrapLonSequence` span by at most accumulated-rounding ULPs
+  // (≪ SPAN_EPSILON = 1e-6, itself ≪ a seam crossing's ~360° span gap), so the same
+  // rotation is selected; a would-be near-tie is anyway whole-turn-equivalent for the
+  // simple rings this handles and re-anchored identically by the caller.
+  const steps = 2 * n - 1;
+  const prefix = new Array<number>(steps);
+  prefix[0] = 0;
+  for (let m = 1; m < steps; m += 1) {
+    const i = (m - 1) % n;
+    prefix[m] = prefix[m - 1]! + shortestLonDeltaDeg(lons[i]!, lons[(i + 1) % n]!);
+  }
+  const winMax = slidingWindowExtrema(prefix, n, true);
+  const winMin = slidingWindowExtrema(prefix, n, false);
+
+  let bestStart = 0;
+  let bestSpan = winMax[0]! - winMin[0]!;
+  for (let s = 1; s < n; s += 1) {
+    const span = winMax[s]! - winMin[s]!;
+    if (span < bestSpan - SPAN_EPSILON) {
+      bestSpan = span;
+      bestStart = s;
+    }
+  }
+
+  // Materialise the winning rotation and un-rotate: place each unwrapped value back at
+  // its original index. For a simple ring the run is continuous as a cycle, so rotating
+  // the array of values back to original order keeps every edge (the original closing
+  // edge included) within the shortest-delta bound; for a winding ring the (intrinsic)
+  // winding edge is simply carried to its minimal-span position.
+  const rotated = new Array<number>(n);
+  for (let k = 0; k < n; k += 1) rotated[k] = lons[(bestStart + k) % n]!;
+  const bestRun = unwrapLonSequence(rotated);
+  const out = new Array<number>(n);
+  for (let k = 0; k < n; k += 1) {
+    out[(bestStart + k) % n] = bestRun[k]!;
+  }
+  return out;
+}
+
+/**
+ * Longitude magnitude (degrees) above which {@link unwrapClosedLonSequence} abandons
+ * the O(n) prefix-sum rotation search and falls back to the exhaustive O(n²) search
+ * (the verbatim pre-optimisation algorithm), so contract-EXTERIOR input reproduces
+ * the old output exactly (Codex adversarial review, HIGH finding: at e.g. 1e18 the
+ * two span measurements can select different rotations).
+ *
+ * 2^31 ≈ 2.147e9° — more than DOUBLE the persisted-coordinate contract bound
+ * (`MAX_COORDINATE_MAGNITUDE` ≈ 9.0072e8°, enforced by both `createCoordinate` and
+ * `coordinateSchema`), so no ring the domain can actually store or load ever takes
+ * the fallback: contract-interior performance is unchanged, and the quadratic path
+ * exists purely as a correctness belt for pathological direct callers.
+ */
+export const CLOSED_UNWRAP_EXACT_SEARCH_THRESHOLD = 2 ** 31;
+
+/**
+ * The ORIGINAL (pre-optimisation) closed unwrap: run {@link unwrapLonSequence} for
+ * every rotation of the cyclic list, keep the smallest-span run (ties keep the
+ * earliest rotation, per SPAN_EPSILON), and un-rotate it back to input order. O(n²).
+ * Kept verbatim as the extreme-longitude fallback of {@link unwrapClosedLonSequence}
+ * — at magnitudes beyond {@link CLOSED_UNWRAP_EXACT_SEARCH_THRESHOLD} its
+ * large-absolute-value span measurement IS the contracted behaviour, so the fallback
+ * must reproduce it byte-for-byte (it is also the brute-force reference the unit
+ * tests compare the fast path against). Pure; input never mutated.
+ */
+function closedUnwrapExhaustiveSearch(lons: readonly number[]): number[] {
+  const n = lons.length;
   let bestStart = 0;
   let bestSpan = Number.POSITIVE_INFINITY;
   let bestRun: number[] | undefined;
@@ -178,15 +291,39 @@ export function unwrapClosedLonSequence(lons: readonly number[]): number[] {
     }
   }
   if (bestRun === undefined) return unwrapLonSequence(lons);
-
-  // Un-rotate: place each unwrapped value back at its original index. For a simple
-  // ring the run is continuous as a cycle, so rotating the array of values back to
-  // original order keeps every edge (the original closing edge included) within the
-  // shortest-delta bound; for a winding ring the (intrinsic) winding edge is simply
-  // carried to its minimal-span position.
   const out: number[] = new Array<number>(n);
   for (let k = 0; k < n; k += 1) {
     out[(bestStart + k) % n] = bestRun[k]!;
+  }
+  return out;
+}
+
+/**
+ * The per-window maximum (`wantMax`) or minimum of every length-`window` contiguous
+ * window of `arr`, returned in window-start order (length `arr.length − window + 1`).
+ * A monotonic index deque keeps the running extreme in amortised O(1) per element, so
+ * the whole scan is O(arr.length) — the linear core that turns the closed-unwrap
+ * rotation search from O(n²) into O(n). A head pointer (not `Array.shift`) drops
+ * out-of-window indices so no per-pop reindex sneaks the cost back to O(n²). Pure.
+ */
+function slidingWindowExtrema(
+  arr: readonly number[],
+  window: number,
+  wantMax: boolean,
+): number[] {
+  const out: number[] = [];
+  const dq: number[] = []; // indices into `arr`, values monotonic (front = extreme)
+  let head = 0;
+  for (let i = 0; i < arr.length; i += 1) {
+    const v = arr[i]!;
+    while (dq.length > head) {
+      const back = arr[dq[dq.length - 1]!]!;
+      if (wantMax ? back <= v : back >= v) dq.pop();
+      else break;
+    }
+    dq.push(i);
+    if (dq[head]! <= i - window) head += 1;
+    if (i >= window - 1) out.push(arr[dq[head]!]!);
   }
   return out;
 }
