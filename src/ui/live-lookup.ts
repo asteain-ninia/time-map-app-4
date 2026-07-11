@@ -27,6 +27,9 @@ import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { alignMultiPolygon } from '../domain/geo/seam';
 import { pointInPolygon, POINT_LOCATION } from '../domain/geometry/predicates';
 import type { WorldCoordinate } from '../domain/coordinate';
+import type { GeoMultiPolygon } from '../domain/geometry/types';
+import { multiPolygonBBox, type BBox } from '../domain/spatial/bbox';
+import { SpatialIndex, type IndexEntry } from '../domain/spatial/rtree';
 
 /** The active calendar (gregorian — matches the rest of the composite). */
 const calendar: Calendar = getCalendar('gregorian');
@@ -146,6 +149,178 @@ function resolveVerticesAt(root: DomainProject, time: TimePoint): VertexStore {
 const featuresMemo = createLookupMemo(resolveFeaturesAt);
 const verticesMemo = createLookupMemo(resolveVerticesAt);
 
+// ===========================================================================
+// BROAD-PHASE SPATIAL INDEX for `leafAtPoint` (S3d — 個別 leaf 照会の高速化)
+// ===========================================================================
+//
+// WHY (実測: 実データ full で leafAtPoint ≈21ms/呼び出し、99,314 頂点): the knife /
+// merge / reparent / drill / ring-edit `featureAtPoint` ports all call `leafAtPoint`
+// on every target-selection click AND (tool hover追従) on pointer-move. Un-indexed it
+// is O(全頂点) per call: it `resolveLeafShape`s EVERY leaf (allocating all 99,314 ring
+// coordinates) and ray-casts point-in-polygon over EVERY resolved ring, three times
+// (the canonical click plus its ±360° replicas). A single click is within budget; a
+// hover stream at 60fps is not.
+//
+// The fix mirrors the pointer hit-test's broad phase (S3c, live-hit-test.ts): an RBush
+// (U10 `SpatialIndex`) over each leaf's WORLD-space bbox lets a query test only the
+// handful of leaves whose bbox is near the click, then run the EXACT same
+// `pointInPolygon` test on the SAME pre-resolved shape — so the returned FeatureId is
+// byte-identical to the full scan (the index only skips leaves the exact test would
+// have rejected anyway).
+//
+// LIFECYCLE (task: live-lookup 既存の (root,time) メモ化と同じ世代キーに相乗り): the
+// index is a pure function of `(root identity, time value)` — the SAME key the
+// `featuresAt` / `verticesAt` memos already use — so it rides on the identical
+// `createLookupMemo` (a root-swap = any committed edit, or a time change, misses and
+// rebuilds; a repeat call at the same generation HITS). It is built LAZILY on the first
+// `leafAtPoint` of a generation and each build reuses the memoized `featuresAt` /
+// `verticesAt` results, so `resolveLeafShape` is run ONCE per generation (not once per
+// leaf per pointer event). This is a DIFFERENT set from the S3c `HitIndex`, which
+// indexes the DISPLAY-resolved (集約/実形状/省略) draw set keyed by `DisplayResolution`;
+// `leafAtPoint` scans the RAW leaf bodies regardless of display-control (HB3-16), so it
+// needs its own leaf-body index. The shared PARTS — the bbox computation
+// (`multiPolygonBBox`) and the RBush wrapper (`SpatialIndex`) — are the SAME domain-layer
+// single source both indexes use (no HitIndex 二重実装), so the only leaf-specific piece
+// is the fixed ±360° probe enumeration below (which the raw scan already fixed at three
+// turns — `leafAtPoint` has no camera, unlike the S3c wrap enumeration).
+//
+// WRAP 単一真実源: candidate enumeration probes the index at the SAME three ±360° replica
+// longitudes the exact test does (canonical + one turn each side). A probe that lands
+// inside a leaf polygon is within that polygon's bbox ⊆ the leaf's bbox, so no reachable
+// leaf is ever dropped (描画 ⊇ ヒット); the exact test then decides.
+
+/**
+ * One indexed leaf body: its id, PRE-RESOLVED shape (the `resolveLeafShape` output the
+ * exact test runs `pointInPolygon` on — computed ONCE at build, not per query), and its
+ * position in the filtered-leaf scan order. Candidates are iterated in `order` so a
+ * containment TIE resolves to the SAME leaf the full scan's later-wins keeps (最前面
+ * タイブレーク — a later leaf drawn on top wins).
+ */
+interface IndexedLeaf {
+  readonly featureId: FeatureId;
+  readonly shape: GeoMultiPolygon;
+  readonly order: number;
+}
+
+/** The per-(root, time) broad-phase index over the raw leaf bodies. */
+interface LeafHitIndex {
+  readonly index: SpatialIndex<IndexedLeaf>;
+}
+
+/**
+ * Tiny relative/absolute widening of the leaf broad-phase query box so a probe that the
+ * EXACT `pointInPolygon` accepts is never pruned by float rounding in the bbox↔predicate
+ * round-trip. It only over-includes; the exact test still decides the hit.
+ */
+const LEAF_BROAD_PHASE_EPS = 1e-9;
+
+/** Build the leaf-body index for `(root, time)` — one `resolveLeafShape` sweep + bboxes. */
+function buildLeafHitIndex(root: DomainProject, time: TimePoint): LeafHitIndex {
+  const vertices = verticesAt(root, time);
+  const entries: IndexEntry<IndexedLeaf>[] = [];
+  // `order` mirrors `leafAtPoint`'s iteration index over the FILTERED leaves: it advances
+  // for every leaf (even one whose shape is unresolvable / empty and thus not inserted, so
+  // both are skipped exactly as the scan skips them) so the relative order of the INDEXED
+  // leaves matches the scan's later-wins order.
+  let order = 0;
+  for (const f of featuresAt(root, time)) {
+    if (f.kind !== FEATURE_KIND.Leaf) continue;
+    const shape = resolveLeafShape(f.shape, vertices);
+    if (shape !== undefined) {
+      const box = multiPolygonBBox(shape);
+      if (box !== undefined) {
+        entries.push({
+          ref: { featureId: f.id, shape, order },
+          minX: box.minX,
+          minY: box.minY,
+          maxX: box.maxX,
+          maxY: box.maxY,
+        });
+      }
+    }
+    order += 1;
+  }
+  return { index: new SpatialIndex<IndexedLeaf>().bulkLoad(entries) };
+}
+
+const leafIndexMemo = createLookupMemo(buildLeafHitIndex);
+
+/**
+ * TEST-ONLY toggle: force `leafAtPoint` to bypass the broad-phase index and run the full
+ * linear scan, so a property test can assert the indexed and un-indexed paths return
+ * byte-identical results for the SAME inputs (索引ありなしで返り値一致). Never toggled in
+ * production. Reset via `setLeafIndexEnabledForTest(true)`.
+ */
+let leafIndexEnabled = true;
+export function setLeafIndexEnabledForTest(enabled: boolean): void {
+  leafIndexEnabled = enabled;
+}
+
+/**
+ * The SINGLE leaf-body containment rule shared by the full scan and the index-narrowed
+ * path (教訓 5.30 単一判定): the leaf is hit iff ANY of the ±360° `probes` lands strictly
+ * inside ANY of its polygon pieces (穴透過 honoured by `pointInPolygon`; a point on / in a
+ * hole is not a hit). Extracted verbatim from the previous inline loop so the two paths
+ * cannot drift.
+ */
+function leafBodyContains(
+  shape: GeoMultiPolygon,
+  probes: readonly WorldCoordinate[],
+): boolean {
+  return shape.some((polygon) =>
+    probes.some((p) => pointInPolygon(p, polygon) === POINT_LOCATION.Inside),
+  );
+}
+
+/**
+ * The leaf candidates whose bbox contains one of the ±360° `point` replicas — a
+ * conservative SUPERSET of the leaves the full scan would test-and-hit, returned in
+ * scan (`order`) order so the later-wins tie-break is byte-identical. A probe with a
+ * non-finite longitude/latitude contributes no box (its `pointInPolygon` is never
+ * Inside either, so the full scan finds nothing there — consistent).
+ */
+function leafCandidates(hitIndex: LeafHitIndex, point: WorldCoordinate): IndexedLeaf[] {
+  const eps = LEAF_BROAD_PHASE_EPS;
+  const lat = point.lat;
+  // The SAME three ±360° probe longitudes `leafAtPoint`'s exact test uses.
+  const probeLons = [point.lon, point.lon + 360, point.lon - 360];
+  const seen = new Set<number>();
+  const out: IndexedLeaf[] = [];
+  for (const lon of probeLons) {
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+    const box: BBox = { minX: lon - eps, maxX: lon + eps, minY: lat - eps, maxY: lat + eps };
+    for (const entry of hitIndex.index.search(box)) {
+      const ref = entry.ref;
+      if (!seen.has(ref.order)) {
+        seen.add(ref.order);
+        out.push(ref);
+      }
+    }
+  }
+  out.sort((a, b) => a.order - b.order);
+  return out;
+}
+
+/** The un-indexed full scan — the EXACT previous `leafAtPoint` body, kept for the
+ * index-bypass test toggle and as the fallback that the indexed path must equal. */
+function leafAtPointFullScan(
+  root: DomainProject,
+  time: TimePoint,
+  probes: readonly WorldCoordinate[],
+): FeatureId | null {
+  const vertices = verticesAt(root, time);
+  const leaves: LeafFeature[] = featuresAt(root, time).filter(
+    (f): f is LeafFeature => f.kind === FEATURE_KIND.Leaf,
+  );
+  let hit: FeatureId | null = null;
+  for (const leaf of leaves) {
+    const shape = resolveLeafShape(leaf.shape, vertices);
+    if (shape === undefined) continue;
+    if (leafBodyContains(shape, probes)) hit = leaf.id; // a later leaf on top wins
+  }
+  return hit;
+}
+
 /**
  * Every feature effective at `time` across all histories (U09 resolveAt). The
  * union of each present anchor's snapshot features.
@@ -178,6 +353,7 @@ export function verticesAt(root: DomainProject, time: TimePoint): VertexStore {
 export function clearLiveLookupCache(): void {
   featuresMemo.clear();
   verticesMemo.clear();
+  leafIndexMemo.clear();
 }
 
 /**
@@ -209,10 +385,6 @@ export function leafAtPoint(
   time: TimePoint,
   point: WorldCoordinate,
 ): FeatureId | null {
-  const vertices = verticesAt(root, time);
-  const leaves: LeafFeature[] = featuresAt(root, time).filter(
-    (f): f is LeafFeature => f.kind === FEATURE_KIND.Leaf,
-  );
   // The renderer draws each polygon at its canonical longitude AND at ±360°
   // replicas (a polygon spanning the antimeridian, e.g. 179..181, is shown wrapped
   // as a −179.5 replica). The hit-test must agree with what the user sees, so we
@@ -224,14 +396,19 @@ export function leafAtPoint(
     { lon: point.lon + 360, lat: point.lat },
     { lon: point.lon - 360, lat: point.lat },
   ];
+  // The index-bypass path (test toggle) is the verbatim previous full scan.
+  if (!leafIndexEnabled) return leafAtPointFullScan(root, time, probes);
+
+  // Broad phase: the leaves whose bbox is near one of the ±360° probes (a SUPERSET of
+  // the true hits, in scan order), memoized once per (root, time) generation. The exact
+  // per-candidate test below runs the SAME `leafBodyContains` on the SAME pre-resolved
+  // shape as the full scan, in the SAME order, so the returned id is byte-identical
+  // (索引ありなしで返り値一致). Every skipped leaf is provably a miss (its bbox contains no
+  // probe, so no probe can be inside its polygons), and later candidates still win.
+  const hitIndex = leafIndexMemo.lookup(root, time);
   let hit: FeatureId | null = null;
-  for (const leaf of leaves) {
-    const shape = resolveLeafShape(leaf.shape, vertices);
-    if (shape === undefined) continue;
-    const inside = shape.some((polygon) =>
-      probes.some((p) => pointInPolygon(p, polygon) === POINT_LOCATION.Inside),
-    );
-    if (inside) hit = leaf.id; // keep scanning; a later leaf on top wins
+  for (const cand of leafCandidates(hitIndex, point)) {
+    if (leafBodyContains(cand.shape, probes)) hit = cand.featureId; // later leaf on top wins
   }
   return hit;
 }
