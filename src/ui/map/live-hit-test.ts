@@ -227,6 +227,16 @@ type WrapFrame =
       readonly cursorLon: number;
       /** Half-window in DEGREES around the cursor a replica may sit and still be hittable. */
       readonly marginDeg: number;
+      /**
+       * True when the frame's zoom is not finite-positive — the transform layer's
+       * "unmeasured camera" sentinel (`worldToScreen` collapses EVERY world point to the
+       * viewport centre, vtransform.ts degenerate guard). In that state world-space
+       * distance carries NO information about screen-space proximity, so the world-box
+       * BROAD PHASE must not prune anything: the candidate lookups bail to the full scan
+       * (Codex fix-forward #2). The EXACT-path fields above stay valid (marginDeg 0, the
+       * cursor turn still resolves), so `drawnLonOffsets` behaviour is unchanged.
+       */
+      readonly degenerateZoom: boolean;
     }
   | undefined;
 
@@ -243,13 +253,23 @@ type WrapInput = { readonly camera: Camera; readonly viewport: Viewport } | unde
  * hittable within `radiusPx`) and the area-body containment (margin only over-includes by
  * at most one turn on each side — never under-includes a replica that could contain the
  * cursor). A non-finite/≤0 zoom (unmeasured camera) yields a 0 margin: the cursor turn
- * itself still resolves, and such a frame draws no real replicas anyway.
+ * itself still resolves, and such a frame draws no real replicas anyway — but it also
+ * flags {@link WrapFrame.degenerateZoom} so the world-box broad phase disables itself
+ * (the collapsed projection puts every drawable at the viewport centre; a world-space
+ * candidate box would wrongly prune them — Codex fix-forward #2).
  */
 function buildWrapFrame(wrap: WrapInput, cursorLon: number, radiusPx: number): WrapFrame {
   if (wrap === undefined) return undefined;
   const zoom = wrap.camera.zoom;
-  const marginDeg = Number.isFinite(zoom) && zoom > 0 ? radiusPx / zoom : 0;
-  return { camera: wrap.camera, viewport: wrap.viewport, cursorLon, marginDeg };
+  const measured = Number.isFinite(zoom) && zoom > 0;
+  const marginDeg = measured ? radiusPx / zoom : 0;
+  return {
+    camera: wrap.camera,
+    viewport: wrap.viewport,
+    cursorLon,
+    marginDeg,
+    degenerateZoom: !measured,
+  };
 }
 
 /**
@@ -304,8 +324,20 @@ function drawnLonOffsets(lonMin: number, lonMax: number, wrap: WrapFrame): numbe
   }
   const drawnMin = turns[0]!;
   const drawnMax = turns[turns.length - 1]!;
-  const windowLo = Math.ceil((wrap.cursorLon - lonMax - wrap.marginDeg) / LONGITUDE_PERIOD);
-  const windowHi = Math.floor((wrap.cursorLon - lonMin + wrap.marginDeg) / LONGITUDE_PERIOD);
+  // FLOAT-BOUNDARY SAFETY (Codex fix-forward #1, HIGH): the raw ceil/floor window can
+  // round PAST an exact k·period boundary (`cursorLon − lonMax − margin` lands 1 ULP
+  // above k·period ⇒ ceil = k+1), silently DROPPING a replica whose drawable sits
+  // exactly at the grab radius — the exact test then never runs. Widen the cursor
+  // window by ONE WHOLE TURN on each side: a full turn dwarfs any rounding error, the
+  // result is still INTERSECTED with the drawn range below (⊆ draw — never a turn the
+  // renderer did not paint), and the exact per-replica distance / containment test
+  // decides, so over-inclusion can never create a false hit while under-inclusion can
+  // no longer drop a boundary replica (deterministic regression:
+  // live-hit-test-index.property.test.ts「camera OFFSET from the replica」).
+  const windowLo =
+    Math.ceil((wrap.cursorLon - lonMax - wrap.marginDeg) / LONGITUDE_PERIOD) - 1;
+  const windowHi =
+    Math.floor((wrap.cursorLon - lonMin + wrap.marginDeg) / LONGITUDE_PERIOD) + 1;
   // Intersection of the drawn range [drawnMin, drawnMax] with the cursor window.
   const lo = windowLo > drawnMin ? windowLo : drawnMin;
   const hi = windowHi < drawnMax ? windowHi : drawnMax;
@@ -487,11 +519,13 @@ const BROAD_PHASE_EPS_REL = 1e-9;
 const BROAD_PHASE_EPS_ABS = 1e-9;
 
 /**
- * Cap on the ±360° turn span the candidate enumeration will walk. A normal frame walks
- * 1–2 turns (the data spans < 360°); only a pathological tiny-zoom frame (grab radius →
- * a huge world span, or continuous longitudes spanning many turns) would exceed this, and
- * there the index gives no benefit anyway — so we bail to the full scan (病的入力の安全性,
- * same discipline as `drawnLonOffsets` TAIL-LATENCY CLAMP / `MAX_WRAP_REPLICAS`).
+ * Cap on the NUMBER of ±360° turns the candidate enumeration will walk (a COUNT of
+ * inclusive turns, compared as `turnHi − turnLo + 1 > cap` — Codex #3). A normal frame
+ * walks ~3 turns (the data spans < 360°, plus the ±1 float-safety expansion); only a
+ * pathological tiny-zoom frame (grab radius → a huge world span, or continuous
+ * longitudes spanning many turns) would exceed this, and there the index gives no
+ * benefit anyway — so we bail to the full scan (病的入力の安全性, same discipline as
+ * `drawnLonOffsets` TAIL-LATENCY CLAMP / `MAX_WRAP_REPLICAS`).
  */
 const MAX_BROAD_PHASE_TURNS = 1024;
 
@@ -578,7 +612,11 @@ function vertexCandidates(
   worldPoint: WorldCoordinate,
   wrap: WrapFrame,
 ): VertexRef[] | null {
-  if (!hitIndexEnabled || wrap === undefined) return null;
+  // `degenerateZoom` (unmeasured camera): `worldToScreen` collapses every point to the
+  // viewport centre, so world-space proximity says NOTHING about screen proximity — a
+  // world candidate box would prune vertices the exact screen test accepts. Full scan
+  // (Codex fix-forward #2; same sentinel discipline as vtransform's degenerate guards).
+  if (!hitIndexEnabled || wrap === undefined || wrap.degenerateZoom) return null;
   const lonExtent = hitIndex.vertexLon;
   if (lonExtent === undefined) return []; // no grabbable vertices → no candidates
   const worldLon = worldPoint.lon;
@@ -613,7 +651,10 @@ function areaCandidates(
   worldPoint: WorldCoordinate,
   wrap: WrapFrame,
 ): number[] | null {
-  if (!hitIndexEnabled || wrap === undefined) return null;
+  // Degenerate (unmeasured) zoom → full scan, same reasoning as vertexCandidates: the
+  // area-body containment is world-space, but its `drawnLonOffsets` enumeration depends
+  // on the frame; keep the two paths' applicability rule identical (Codex #2).
+  if (!hitIndexEnabled || wrap === undefined || wrap.degenerateZoom) return null;
   const lonExtent = hitIndex.areaLon;
   if (lonExtent === undefined) return []; // no drawn areas
   const worldLon = worldPoint.lon;
@@ -650,11 +691,20 @@ function collectCandidateRefs<Ref>(
   m: number,
   lonExtent: { readonly min: number; readonly max: number },
 ): Ref[] | null {
-  const turnLo = Math.ceil((worldLon - lonExtent.max - m) / LONGITUDE_PERIOD);
-  const turnHi = Math.floor((worldLon - lonExtent.min + m) / LONGITUDE_PERIOD);
+  // ±1-turn float-boundary expansion — the SAME widening `drawnLonOffsets` applies to
+  // the exact path's cursor window (Codex fix-forward #1): the raw ceil/floor bounds can
+  // round past an exact k·period boundary and drop the very turn whose replica sits at
+  // the grab radius. One extra turn per side dwarfs any rounding error; the extra turns
+  // only add (usually empty) index queries, and the exact test still decides every hit,
+  // so the candidate set stays a SUPERSET of the exact path's reachable replicas.
+  const turnLo = Math.ceil((worldLon - lonExtent.max - m) / LONGITUDE_PERIOD) - 1;
+  const turnHi = Math.floor((worldLon - lonExtent.min + m) / LONGITUDE_PERIOD) + 1;
   if (!Number.isSafeInteger(turnLo) || !Number.isSafeInteger(turnHi)) return null;
   if (turnHi < turnLo) return []; // no replica near the cursor
-  if (turnHi - turnLo > MAX_BROAD_PHASE_TURNS) return null; // pathological — full scan
+  // COUNT-based cap (Codex #3): the walked turn COUNT is (turnHi − turnLo + 1);
+  // exceeding MAX_BROAD_PHASE_TURNS bails to the full scan (pathological zoom — the
+  // index would win nothing there anyway).
+  if (turnHi - turnLo + 1 > MAX_BROAD_PHASE_TURNS) return null;
   const seen = new Set<Ref>();
   const out: Ref[] = [];
   const minY = worldLat - m;

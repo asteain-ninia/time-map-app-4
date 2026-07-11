@@ -19,7 +19,7 @@ import fc from 'fast-check';
 
 import { liveHitTestAt, drawnAreaAt, setHitIndexEnabledForTest } from './live-hit-test';
 import type { LiveHitTestInput } from './live-hit-test';
-import type { HitResult } from '../../domain/selection';
+import { HIT_KIND, type HitResult } from '../../domain/selection';
 import type { DomainRoot } from '../consistency-binding';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import { createEditProposal } from '../../domain/consistency/index';
@@ -247,6 +247,13 @@ const TARGETS: WorldCoordinate[] = [
   { lon: 50, lat: 50 }, // empty space
 ];
 
+// pointQ's position — the fixture's most ISOLATED vertex (nearest other vertex ≥13.4°
+// away: vB-2 at (8,8) / lineL end at (14,6) / childA2 corner at (30,30)). The boundary
+// regressions click exactly `radiusPx` from it, so with radius/zoom ≤ 6° it is uniquely
+// nearest and the expected hit is deterministic.
+const ISOLATED_LON = 20;
+const ISOLATED_LAT = 18;
+
 /** Run the hit-test twice — index ON then OFF — and return both results. */
 function bothPaths(input: LiveHitTestInput, worldPoint: WorldCoordinate): {
   indexed: HitResult;
@@ -270,9 +277,13 @@ describe('liveHitTestAt broad-phase index ≡ full scan (S3c)', () => {
           turnK: fc.integer({ min: -2, max: 2 }),
           lonJitter: fc.double({ min: -3, max: 3, noNaN: true, noDefaultInfinity: true }),
           latJitter: fc.double({ min: -3, max: 3, noNaN: true, noDefaultInfinity: true }),
-          zoom: fc.double({ min: 4, max: 200, noNaN: true, noDefaultInfinity: true }),
+          // From 1 px/deg (FR-10 minimum): an 800px viewport then spans 2–3 world
+          // turns, so the multi-turn window-clamp path is exercised too (Codex #3).
+          zoom: fc.double({ min: 1, max: 200, noNaN: true, noDefaultInfinity: true }),
           sjx: fc.double({ min: -16, max: 16, noNaN: true, noDefaultInfinity: true }),
           sjy: fc.double({ min: -16, max: 16, noNaN: true, noDefaultInfinity: true }),
+          // 4/8/12 spans every production value (all real callers use the default 8 —
+          // grep-verified; no caller passes radiusPx at all, Codex #3).
           radiusPx: fc.constantFrom(4, 8, 12),
           controlIdx: fc.nat({ max: CONTROLS.length - 1 }),
           activeIdx: fc.nat({ max: ACTIVE_FEATURES.length - 1 }),
@@ -349,6 +360,184 @@ describe('liveHitTestAt broad-phase index ≡ full scan (S3c)', () => {
     }
   });
 
+  // --- Codex fix-forward #1 (HIGH): float boundary of the ±360° turn-window arithmetic.
+  //
+  // The cursor-window derivation `ceil((cursorLon − lonMax − margin)/360)` /
+  // `floor((cursorLon − lonMin + margin)/360)` can round PAST an exact k·360 boundary,
+  // yielding an EMPTY offset list for a replica vertex exactly `radiusPx` away — the
+  // exact test then never even runs, on the SCAN path too (both paths miss equally, so
+  // the equivalence property alone cannot catch it). These deterministic cases pin the
+  // CONTRACT the review demands — a click exactly at the grab radius from a ±360°
+  // replica IS a vertex hit, on the indexed AND the full-scan path — at zooms 1–2 on an
+  // 800px viewport, where the view spans 2–3 world turns so the multi-turn clamp path
+  // (turns.length > 1) is active. The ±1-turn window expansion makes this structural:
+  // one whole turn dwarfs any rounding error, and the exact test still decides.
+  describe('exact-radius click on a wrap replica is a REAL hit (turn-window float boundary)', () => {
+    it('camera centred on the replica: boundary click hits pointQ on both paths', () => {
+      for (const zoom of [1, 1.25, 1.5, 2]) {
+        for (const radiusPx of [4, 8, 12]) {
+          if (radiusPx / zoom > 6) continue; // keep the boundary vertex uniquely nearest
+          for (const turnK of [-2, -1, 0, 1, 2]) {
+            for (const [sx, sy] of [
+              [1, 0],
+              [-1, 0],
+              [0, 1],
+              [0, -1],
+            ] as const) {
+              const shift = turnK * 360;
+              const camera: Camera = {
+                centerLon: ISOLATED_LON + shift,
+                centerLat: ISOLATED_LAT,
+                zoom,
+              };
+              const toScreen = (w: WorldCoordinate): ScreenPoint =>
+                worldToScreen(w, camera, viewport);
+              const replica = worldToScreen(
+                { lon: ISOLATED_LON + shift, lat: ISOLATED_LAT },
+                camera,
+                viewport,
+              );
+              const clickPoint: ScreenPoint = {
+                x: replica.x + sx * radiusPx,
+                y: replica.y + sy * radiusPx,
+              };
+              const worldPoint = screenToWorld(clickPoint, camera, viewport);
+              const input: LiveHitTestInput = {
+                root: ROOT,
+                time,
+                displayControl: CONTROL_DEFAULT,
+                toScreen,
+                wrap: { camera, viewport },
+                point: clickPoint,
+                radiusPx,
+              };
+              const { indexed, scan } = bothPaths(input, worldPoint);
+              expect(indexed).toEqual(scan);
+              // Not merely equal — the boundary replica must be a REAL hit.
+              expect(indexed.kind).toBe(HIT_KIND.Vertex);
+              if (indexed.kind === HIT_KIND.Vertex) {
+                expect(indexed.featureId).toBe(pointQ.feature.id);
+              }
+            }
+          }
+        }
+      }
+    });
+
+    it('camera OFFSET from the replica (no float cancellation): boundary click still hits', () => {
+      // With the camera centre OFF the vertex, the window arithmetic no longer cancels
+      // exactly (cursorLon and marginDeg come from different float expressions), so the
+      // ceil/floor turn bounds sit at the rounding boundary — the exact case the
+      // ±1-turn expansion exists for.
+      for (const zoom of [1.1, 1.3, 1.7, 1.9]) {
+        for (const turnK of [-2, -1, 1, 2]) {
+          const shift = turnK * 360;
+          const camera: Camera = {
+            centerLon: ISOLATED_LON + shift + 0.37,
+            centerLat: ISOLATED_LAT - 0.21,
+            zoom,
+          };
+          const toScreen = (w: WorldCoordinate): ScreenPoint =>
+            worldToScreen(w, camera, viewport);
+          const replica = worldToScreen(
+            { lon: ISOLATED_LON + shift, lat: ISOLATED_LAT },
+            camera,
+            viewport,
+          );
+          const radiusPx = 4; // 4/1.1 ≈ 3.6° — within the 6° isolation bound
+          const clickPoint: ScreenPoint = { x: replica.x + radiusPx, y: replica.y };
+          const worldPoint = screenToWorld(clickPoint, camera, viewport);
+          const input: LiveHitTestInput = {
+            root: ROOT,
+            time,
+            displayControl: CONTROL_DEFAULT,
+            toScreen,
+            wrap: { camera, viewport },
+            point: clickPoint,
+            radiusPx,
+          };
+          const { indexed, scan } = bothPaths(input, worldPoint);
+          expect(indexed).toEqual(scan);
+          expect(indexed.kind).toBe(HIT_KIND.Vertex);
+          if (indexed.kind === HIT_KIND.Vertex) {
+            expect(indexed.featureId).toBe(pointQ.feature.id);
+          }
+        }
+      }
+    });
+  });
+
+  // --- Codex fix-forward #2 (MED): unmeasured camera (zoom ≤ 0 / non-finite) must fall
+  // back to the full scan. `worldToScreen` collapses EVERY point to the viewport centre
+  // for such a camera (vtransform degenerate guard), so a centre click is within radius
+  // of every drawn vertex — the full scan returns a vertex hit. The index, fed a 0°
+  // margin, would query a near-empty world box around the camera centre and (wrongly)
+  // find nothing; it must instead disable itself for the degenerate frame — the same
+  // "unmeasured zoom" discipline the transform layer applies (vtransform.ts guards).
+  describe('degenerate zoom (unmeasured camera): index falls back to the full scan', () => {
+    it.each([[0], [-5], [Number.NaN], [Number.POSITIVE_INFINITY]])(
+      'zoom=%s: a viewport-centre click agrees AND is a vertex hit',
+      (zoom) => {
+        // Camera centre in empty space (50,50): the index's world-box query there finds
+        // nothing, while the collapsed projection puts every vertex under the cursor.
+        const camera: Camera = { centerLon: 50, centerLat: 50, zoom };
+        const toScreen = (w: WorldCoordinate): ScreenPoint =>
+          worldToScreen(w, camera, viewport);
+        const clickPoint: ScreenPoint = {
+          x: viewport.widthCss / 2,
+          y: viewport.heightCss / 2,
+        };
+        const worldPoint = screenToWorld(clickPoint, camera, viewport);
+        const input: LiveHitTestInput = {
+          root: ROOT,
+          time,
+          displayControl: CONTROL_DEFAULT,
+          toScreen,
+          wrap: { camera, viewport },
+          point: clickPoint,
+        };
+        const { indexed, scan } = bothPaths(input, worldPoint);
+        expect(indexed).toEqual(scan);
+        expect(indexed.kind).toBe(HIT_KIND.Vertex);
+      },
+    );
+  });
+
+  // --- Codex fix-forward #3 (LOW): the broad-phase turn cap is COUNT-based, and both
+  // sides of it behave: below the cap the index narrows (and agrees), above it the
+  // candidate enumeration bails to the full scan (and agrees) — in both cases a click
+  // on the isolated vertex's canonical position is a REAL hit. The fixture's vertex-lon
+  // extent spans ≈358° (seam leaf at ±178..182), so the walked turn count is
+  // ≈ (2·(radiusPx/zoom) + 358)/360 + 1 (+2 expansion); the two zooms below land the
+  // count ≈1000 and ≈1100 — either side of MAX_BROAD_PHASE_TURNS (1024).
+  describe('broad-phase turn cap (count-based): below narrows, above falls back — both hit', () => {
+    it.each([
+      ['below cap (≈1000 turns)', 8 / ((1000 * 360 - 358) / 2)],
+      ['above cap (≈1100 turns)', 8 / ((1100 * 360) / 2)],
+    ])('%s', (_label, zoom) => {
+      const camera: Camera = { centerLon: ISOLATED_LON, centerLat: ISOLATED_LAT, zoom };
+      const toScreen = (w: WorldCoordinate): ScreenPoint =>
+        worldToScreen(w, camera, viewport);
+      const clickPoint = worldToScreen(
+        { lon: ISOLATED_LON, lat: ISOLATED_LAT },
+        camera,
+        viewport,
+      );
+      const worldPoint = screenToWorld(clickPoint, camera, viewport);
+      const input: LiveHitTestInput = {
+        root: ROOT,
+        time,
+        displayControl: CONTROL_DEFAULT,
+        toScreen,
+        wrap: { camera, viewport },
+        point: clickPoint,
+      };
+      const { indexed, scan } = bothPaths(input, worldPoint);
+      expect(indexed).toEqual(scan);
+      expect(indexed.kind).toBe(HIT_KIND.Vertex);
+    });
+  });
+
   it('knife drawnAreaAt agrees with/without the index (aggregate + wrap)', () => {
     fc.assert(
       fc.property(
@@ -357,7 +546,7 @@ describe('liveHitTestAt broad-phase index ≡ full scan (S3c)', () => {
           turnK: fc.integer({ min: -2, max: 2 }),
           lonJitter: fc.double({ min: -2, max: 2, noNaN: true, noDefaultInfinity: true }),
           latJitter: fc.double({ min: -2, max: 2, noNaN: true, noDefaultInfinity: true }),
-          zoom: fc.double({ min: 4, max: 200, noNaN: true, noDefaultInfinity: true }),
+          zoom: fc.double({ min: 1, max: 200, noNaN: true, noDefaultInfinity: true }),
           controlIdx: fc.nat({ max: CONTROLS.length - 1 }),
         }),
         (g) => {
