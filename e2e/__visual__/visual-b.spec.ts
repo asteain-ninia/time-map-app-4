@@ -88,11 +88,6 @@ async function leaveView(page: Page): Promise<void> {
   const v = page.getByTestId('mode-view');
   if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
 }
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') await v.click().catch(() => undefined);
-  await page.getByTestId('add-input-layer').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined);
-}
 async function enterEditMode(page: Page): Promise<void> {
   const editMode = page.getByTestId('mode-edit');
   if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
