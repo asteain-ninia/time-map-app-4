@@ -209,13 +209,17 @@ export function App(): JSX.Element {
           const getRoot = liveRootRef.current;
           return getRoot !== null ? getRoot() : buildEmptyProject();
         }),
-        // 選択 heal の対称性 (time ↔ displayControl): re-validate the vertex selection
-        // on every depth/focus change against the SAME resolveDisplayFor `grabbable`
-        // set the renderer draws / the hit-test grabs (単一真実源). Without this a
-        // depth/focus change that rolls the selection owner up into an aggregate left
-        // the now-un-grabbable vertices selected, and the property panel showed
-        //「選択頂点の所有地物を特定できません」. Bound to the LIVE root via the same
-        // getRoot ref the existence resolver uses (read live per call, never stale).
+        // 選択 heal の対称性 (S4/S4c): re-validate the vertex selection whenever ANY
+        // display-resolution input changes — depth/focus setters, time changes, and
+        // the post-commit tightening of applyCommandResult / applyUndoRedoResult —
+        // against the SAME resolveDisplayFor `owners` map the renderer draws / the
+        // hit-test grabs (単一真実源). Without this a change that stops drawing the
+        // selection owner left its vertices selected but unresolvable, and the
+        // property panel showed「選択頂点の所有地物を特定できません」; a SHARED vertex
+        // that survives through another drawn owner is kept with its owner rewritten.
+        // Bound to the LIVE root via the same getRoot ref the existence resolver uses
+        // (read live per call, never stale — the post-commit heal must see the
+        // just-committed root).
         grabbability: createLiveGrabbabilityResolver(() => {
           const getRoot = liveRootRef.current;
           return getRoot !== null ? getRoot() : buildEmptyProject();

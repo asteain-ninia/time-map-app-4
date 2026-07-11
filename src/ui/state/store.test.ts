@@ -1504,21 +1504,34 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     expect(store.getState().displayControl.focus.depth).toBe(4);
   });
 
-  // === 選択 heal の対称性 (time ↔ displayControl) ===========================
+  // === 選択 heal の対称性 (root / time / control ↔ 選択, S4c で全枝完成) =======
   //
-  // A display-control change (depth / focus) that rolls the vertex-selection OWNER up
-  // into an aggregate (or omits it) makes it stop exposing grabbable vertices, so the
-  // display owner-lookup can no longer resolve them and the property panel shows
-  //「選択頂点の所有地物を特定できません」(CONTEXT_KIND.Unknown). The store heals this in
-  // the SAME set() as the display-control write via U22's revalidateForDisplay against
-  // an INJECTED grabbability resolver — the display-axis sibling of setCurrentTime's
-  // revalidateForTime (教訓 5.5/5.6). It re-implements NO display-verdict logic (単一
-  // 真実源): tests inject a fake resolver, proving the dependency injection.
+  // Any display-resolution input change — a displayControl setter, a time change, or
+  // a domain swap — can make selected vertices vanish from the display owner lookup,
+  // and the property panel would show「選択頂点の所有地物を特定できません」
+  // (CONTEXT_KIND.Unknown). The store heals through the ONE revalidateDisplay funnel
+  // (U22 revalidateForDisplay over the INJECTED displayOwnersAt port) — the
+  // display-axis sibling of setCurrentTime's revalidateForTime (教訓 5.5/5.6). It
+  // re-implements NO display-verdict logic (単一真実源): tests inject fake lookups,
+  // proving the dependency injection.
 
-  /** A grabbability resolver where a fixed set of feature ids is HIDDEN (aggregated / omitted). */
-  function grabbabilityHiding(...hidden: string[]): DisplayGrabbabilityResolver {
+  /**
+   * A display-owner port over a fixed vid→owner map, with `hidden` features treated
+   * as not drawn (their vertices resolve to nothing) — mirrors owners membership.
+   */
+  function displayOwners(
+    entries: Record<string, string>,
+    hidden: readonly string[] = [],
+  ): DisplayGrabbabilityResolver {
     const hiddenSet = new Set(hidden);
-    return { ownerExposesVerticesAt: (fid) => !hiddenSet.has(fid) };
+    return {
+      displayOwnersAt: () => ({
+        ownerOf: (vid) => {
+          const owner = entries[vid as unknown as string];
+          return owner !== undefined && !hiddenSet.has(owner) ? f(owner) : null;
+        },
+      }),
+    };
   }
 
   function storeWithVertexSelection(
@@ -1541,9 +1554,13 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
   }
 
   it('prunes the vertex selection when a DEPTH change hides its owner (Unknown 回避)', () => {
-    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0', 'v1']);
-    // Owner A is rolled up into an aggregate at this depth → its vertices are no longer
-    // grabbable, so the dangling selection is pruned (would otherwise be Unknown).
+    const store = storeWithVertexSelection(
+      displayOwners({ v0: 'A', v1: 'A' }, ['A']),
+      'A',
+      ['v0', 'v1'],
+    );
+    // Owner A is rolled up into an aggregate at this depth → its vertices no longer
+    // resolve, so the dangling selection is pruned (would otherwise be Unknown).
     store.getState().setGlobalDepth(0);
     const s = store.getState();
     expect(s.selection.vertexOwner).toBeNull();
@@ -1552,15 +1569,19 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
   });
 
   it('prunes the vertex selection when a FOCUS change hides its owner', () => {
-    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+    const store = storeWithVertexSelection(displayOwners({ v0: 'A' }, ['A']), 'A', ['v0']);
     store.getState().setDisplayFocus({ originId: f('B'), depth: 5, emphasize: false });
     expect(store.getState().selection.vertexOwner).toBeNull();
     expect(store.getState().selection.vertexIds.size).toBe(0);
   });
 
   it('KEEPS the vertex selection when its owner still draws its own shape (not a blanket clear)', () => {
-    // Only B is hidden; the selection owner A still exposes its vertices → untouched.
-    const store = storeWithVertexSelection(grabbabilityHiding('B'), 'A', ['v0', 'v1']);
+    // Only B is hidden; the selection owner A still owns its vertices → untouched.
+    const store = storeWithVertexSelection(
+      displayOwners({ v0: 'A', v1: 'A' }, ['B']),
+      'A',
+      ['v0', 'v1'],
+    );
     const before = store.getState().selection;
     store.getState().setGlobalDepth(3);
     const after = store.getState().selection;
@@ -1570,10 +1591,31 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     expect(after.vertexIds.size).toBe(2);
   });
 
+  it('[Codex MED] a SHARED vertex surviving through another owner is KEPT with vertexOwner rewritten', () => {
+    // v0 is A's own vertex, v1 is SHARED with B (first-wins owner was A). Hiding A
+    // re-resolves v1 → B while v0 resolves to nothing: the heal keeps {v1} under the
+    // surviving owner B instead of blanket-pruning the whole set.
+    const store = storeWithVertexSelection(
+      displayOwners({ v1: 'B' }),
+      'A',
+      ['v0', 'v1'],
+    );
+    store.getState().setGlobalDepth(0);
+    const s = store.getState();
+    expect([...s.selection.vertexIds]).toEqual([v('v1')]);
+    expect(s.selection.vertexOwner).toBe(f('B'));
+    expect(s.vertexSelection?.ownerFeatureId).toBe(f('B'));
+  });
+
   it('NEVER prunes vertices owned by the ACTIVE feature, even when it is hidden (handles persist)', () => {
     // A is active AND the vertex owner, and hidden (aggregation-omitted). Its edit
     // handles are still drawn (draw ⊇ hit), so its vertex selection survives.
-    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0'], 'A');
+    const store = storeWithVertexSelection(
+      displayOwners({ v0: 'A' }, ['A']),
+      'A',
+      ['v0'],
+      'A',
+    );
     store.getState().setGlobalDepth(0);
     const s = store.getState();
     expect(s.selection.activeFeature).toBe(f('A'));
@@ -1583,7 +1625,12 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
 
   it('prunes a stale vertex set owned by a NON-active hidden feature but keeps the active feature', () => {
     // Active = A (kept); vertex owner = B (hidden) → B's dangling vertices drop, A stays.
-    const store = storeWithVertexSelection(grabbabilityHiding('B'), 'B', ['v0'], 'A');
+    const store = storeWithVertexSelection(
+      displayOwners({ v0: 'B' }, ['B']),
+      'B',
+      ['v0'],
+      'A',
+    );
     store.getState().setGlobalDepth(0);
     const s = store.getState();
     expect(s.selection.activeFeature).toBe(f('A'));
@@ -1599,15 +1646,15 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
       (st: ReturnType<typeof storeWithVertexSelection>) =>
         st.getState().setFocusOrigin(f('Z')),
     ]) {
-      const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+      const store = storeWithVertexSelection(displayOwners({ v0: 'A' }, ['A']), 'A', ['v0']);
       apply(store);
       expect(store.getState().selection.vertexIds.size).toBe(0);
     }
-    // clearDisplayFocus only fires when a focus is currently set — arm one first (with a
-    // resolver that does NOT hide A so arming keeps the selection), then hide A on clear.
+    // clearDisplayFocus only fires when a focus is currently set — arm one first, then
+    // the clear write runs the heal against the hidden-A lookup.
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      grabbability: grabbabilityHiding('A'),
+      grabbability: displayOwners({ v0: 'A' }, ['A']),
       initial: {
         displayControl: { globalDepth: 1, focus: { originId: f('A'), depth: 2, emphasize: true } },
         vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
@@ -1622,11 +1669,99 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     // heal — the display did not change, so there is nothing to re-validate, and the
     // displayControl reference is preserved (bughunt3 identity stability). The heal only
     // fires on an ACTUAL depth/focus change.
-    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+    const store = storeWithVertexSelection(displayOwners({ v0: 'A' }, ['A']), 'A', ['v0']);
     const dcRef = store.getState().displayControl; // globalDepth 5 (from the fixture)
     store.getState().setGlobalDepth(5); // no-op (already 5)
     expect(store.getState().displayControl).toBe(dcRef);
     expect(store.getState().selection.vertexIds.size).toBe(1);
+  });
+
+  // --- S4c (Codex [HIGH]): the heal runs on EVERY display-resolution input change —
+  // time changes and domain swaps, not only displayControl setters. The fakes key on
+  // the TIME / the LIVE DOMAIN to prove the store passes the post-change inputs.
+
+  it('[Codex HIGH] setCurrentTime re-validates against the display owners at the NEW time', () => {
+    const t1 = timePointYear(10);
+    const t2 = timePointYear(200);
+    // The owner lookup resolves v0 → A ONLY at t1: at any other time A is rolled up
+    // (e.g. it became an aggregate's child at the later time) and v0 resolves to nothing.
+    const timeKeyed: DisplayGrabbabilityResolver = {
+      displayOwnersAt: (time) => ({
+        ownerOf: (vid) => (time === t1 && vid === v('v0') ? f('A') : null),
+      }),
+    };
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      grabbability: timeKeyed,
+      initial: {
+        currentTime: t1,
+        vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
+      },
+    });
+    // Existence keeps everything (default resolver); only the display heal can prune.
+    store.getState().setCurrentTime(t2, TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().selection.vertexIds.size).toBe(0);
+    expect(store.getState().selection.vertexOwner).toBeNull();
+  });
+
+  it('[Codex HIGH] applyCommandResult / applyUndoRedoResult re-validate against the LIVE post-commit root', () => {
+    for (const apply of ['command', 'undoRedo'] as const) {
+      // The owner lookup reads the LIVE domain tag at ownerOf time: v0 resolves only
+      // while the committed domain is d0 (in d1 the owner is aggregated away). The
+      // port is consulted AFTER the domain swap, so it must see d1 → prune.
+      const seenTags: string[] = [];
+      let liveTag = 'd0';
+      const domainKeyed: DisplayGrabbabilityResolver = {
+        displayOwnersAt: () => ({
+          ownerOf: (vid) => {
+            seenTags.push(liveTag);
+            return liveTag === 'd0' && vid === v('v0') ? f('A') : null;
+          },
+        }),
+      };
+      const store = createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        grabbability: domainKeyed,
+        initial: {
+          vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
+        },
+      });
+      store.subscribe((s) => {
+        liveTag = s.domain.tag; // mirror of App's live getRoot (post-commit visibility)
+      });
+
+      const result = createCommandResult({ survived: [f('A'), v('v0')] });
+      if (apply === 'command') {
+        store.getState().applyCommandResult({ tag: 'd1' }, result);
+      } else {
+        store.getState().applyUndoRedoResult({ tag: 'd1' }, result);
+      }
+      // The heal consulted the port AFTER the commit (it saw d1) and pruned.
+      expect(seenTags).toContain('d1');
+      expect(store.getState().selection.vertexIds.size).toBe(0);
+    }
+  });
+
+  it('[Codex HIGH] the timeline re-derive (setProjectTimelineRangeYears) heals at the CLAMPED time', () => {
+    const t1 = timePointYear(500);
+    // v0 resolves ONLY at the initial t1 reference; the clamp to the new max (year
+    // 100) passes a DIFFERENT TimePoint → the owner no longer resolves → prune.
+    const timeKeyed: DisplayGrabbabilityResolver = {
+      displayOwnersAt: (time) => ({
+        ownerOf: (vid) => (time === t1 && vid === v('v0') ? f('A') : null),
+      }),
+    };
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      grabbability: timeKeyed,
+      initial: {
+        currentTime: t1,
+        vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
+      },
+    });
+    // Shrink the timeline so currentTime (500) clamps to the new max (100).
+    store.getState().setProjectTimelineRangeYears(0, 100);
+    expect(store.getState().selection.vertexIds.size).toBe(0);
   });
 
   // bughunt3 regression: a NO-OP display-control write (same value) must PRESERVE

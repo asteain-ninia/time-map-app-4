@@ -87,6 +87,5 @@ export {
   reresolveAfterStructureChange,
   type ExistenceAtTime,
   revalidateForTime,
-  type DisplayGrabbability,
   revalidateForDisplay,
 } from './reresolve';

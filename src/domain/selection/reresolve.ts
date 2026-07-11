@@ -13,6 +13,7 @@
 import type { CommandResult } from '../command/result';
 import type { DomainId, FeatureId, VertexId } from '../ids';
 
+import type { VertexOwnerLookup } from './contracts';
 import {
   EMPTY_SELECTION,
   withActiveFeature,
@@ -174,72 +175,84 @@ export function revalidateForTime<T>(
     : { ...next, transient: EMPTY_SELECTION.transient };
 }
 
-// --- Display-control re-validation (選択 heal の対称性: time ↔ displayControl) --
+// --- Display re-validation (選択 heal の対称性: time / root / control ↔ 選択) --
 
 /**
- * Whether a feature exposes its OWN grabbable vertices under the CURRENT display
- * control (global depth N + individual focus M). True iff the feature is drawn with
- * its OWN real shape this frame — a leaf at/above the depth threshold, or a point /
- * line (always drawn directly) — rather than rolled up into an aggregate (its area
- * derived, no own grabbable vertices) or omitted entirely.
+ * Re-validate the vertex selection against the CURRENT display resolution — the
+ * symmetric sibling of {@link revalidateForTime} on the display axis (選択 heal の
+ * 対称性完成, 教訓 5.5 / 5.6 / 5.11). Any change to a display-resolution input
+ * (domain root, current time, or displayControl depth/focus) can make selected
+ * vertices vanish from the display's owner lookup (display-resolution-cache
+ * `vertexOwners` — ONLY the frame's grabbable features own vertices): the owning
+ * leaf rolls up into an aggregate (Omit), or the hierarchy itself changes at a new
+ * time / after an edit / undo. The property panel would then classify the
+ * still-selected vertices as CONTEXT_KIND.Unknown「選択頂点の所有地物を特定でき
+ * ません」. We re-resolve the selection instead of leaving it dangling.
  *
- * Injected (単一の真実源): the selection unit never resolves display verdicts
- * itself (spec 依存 — the mirror of {@link ExistenceAtTime} for the time axis). The
- * composition root backs this with the SAME `resolveDisplayFor(...).grabbable` set
- * the renderer draws and the live hit-test grabs, so「掴める（再検証上）」==「描画/
- * ヒット対象」— no second truth source that could drift (教訓 5.29).
- */
-export interface DisplayGrabbability {
-  ownerExposesVertices(featureId: FeatureId): boolean;
-}
-
-/**
- * Re-validate the vertex selection against a DISPLAY-CONTROL change — the symmetric
- * sibling of {@link revalidateForTime} on the display axis (選択 heal の対称性完成,
- * 教訓 5.5 / 5.6 / 5.11). A depth/focus change can make the vertex-selection OWNER
- * stop exposing its own grabbable vertices (its leaf is rolled up into an aggregate,
- * or omitted). The owner then vanishes from the display's owner lookup
- * (display-resolution-cache `vertexOwners` restricts owners to the frame's grabbable
- * features), so the property panel classifies the still-selected vertices as
- * CONTEXT_KIND.Unknown and shows「選択頂点の所有地物を特定できません」. We prune the
- * now-dangling vertex selection so it does not linger — the SAME discipline the time
- * regime uses: drop what is no longer resolvable, keep everything else, NEVER a
- * blanket clear (教訓 5.11).
+ * PER-VERTEX re-resolution through the injected {@link VertexOwnerLookup} — the SAME
+ * contract the panel's context classification and the hit-test owner map use (単一
+ * 真実源, 教訓 5.29); the composition root backs it with resolveDisplayFor's
+ * `owners`. Per-vertex (NOT a whole-owner verdict check) because a SHARED vertex can
+ * survive through a DIFFERENT owner: with 隣接 features A / B sharing vertex v
+ * (first-wins owner A), a display change that omits A while B stays Real keeps v
+ * drawn and selectable via B — so v is KEPT and the selection's owner is REWRITTEN
+ * to the surviving resolved owner (never a blanket clear, 教訓 5.11):
  *
- * WHOLE-OWNER, not per-vertex (unlike {@link revalidateForTime}): display verdicts
- * are chosen per FEATURE (Real / Aggregate / Omit), so either ALL of an owner's
- * vertices are grabbable (it draws its own shape) or NONE are — there is no
- * partial-vertex display state. So the check is on the owner alone; a surviving
- * owner keeps its whole vertex set.
+ *   1. Every selected vertex is resolved through the lookup; unresolvable vertices
+ *      (owned by nothing drawn this frame) are pruned.
+ *   2. Survivors are grouped by their resolved owner. FR-81 (one owner per vertex
+ *      set) picks ONE group deterministically: the CURRENT owner's group when it
+ *      still owns any survivor, else the group of the FIRST surviving vertex in
+ *      selection iteration order (the same first-wins spirit as the owner map).
+ *   3. `vertexOwner` is rewritten to the kept group's owner (it may differ from the
+ *      pre-heal owner — the shared-vertex case above).
  *
  * ACTIVE-FEATURE EXCEPTION: the ACTIVE feature's edit handles (and thus its
  * vertices) are drawn even when it is aggregation-omitted (draw ⊇ hit,
  * active-feature-handles.ts), so a vertex selection OWNED BY the active feature is
  * never pruned by a display change. The active feature itself is left untouched: a
- * display change never alters feature EXISTENCE (that is the time regime's job), and
- * its handles persist — matching the time convention, which drops the active feature
- * ONLY when it ceases to exist, not merely when it stops drawing its own shape.
+ * display change never alters feature EXISTENCE (that is the time regime's job).
  *
  * The transient is PRESERVED (unlike the time / structure paths): display control is
- * a non-interfering axis (FR-42 非干渉) — a depth/focus change must not abort an
- * in-progress gesture. Idempotent: when nothing is pruned the SAME reference is
- * returned, so the store fires no redundant notification / redraw.
+ * a non-interfering axis (FR-42 非干渉) — a display re-validation must not abort an
+ * in-progress gesture. Idempotent: when every vertex still resolves to the current
+ * owner the SAME reference is returned (no redundant notification / redraw), and the
+ * lookup is never consulted for an empty / active-owned selection.
  */
 export function revalidateForDisplay(
   state: SelectionState,
-  grabbability: DisplayGrabbability,
+  ownerLookup: VertexOwnerLookup,
 ): SelectionState {
-  // No vertex selection ⇒ nothing to heal (and the injected resolver is NOT called,
-  // so an unchanged display with only an active feature / empty selection costs
-  // nothing — the common case).
+  // No vertex selection ⇒ nothing to heal (the injected lookup is NOT consulted, so
+  // the common empty/active-only case costs nothing).
   if (state.vertexOwner === null) return state;
   // The active feature keeps its handles (its vertices stay grabbable) even when
   // omitted, so a vertex selection owned by it survives a display change.
   if (state.vertexOwner === state.activeFeature) return state;
-  // The owner still draws its own grabbable vertices ⇒ keep the whole selection.
-  if (grabbability.ownerExposesVertices(state.vertexOwner)) return state;
-  // The owner no longer exposes grabbable vertices (rolled up / omitted) — drop the
-  // now-dangling set. The active feature + transient are left intact (NOT a blanket
-  // clear, 教訓 5.11).
-  return withoutVertexSet(state);
+
+  // Step 1+2: resolve every vertex, group survivors by their CURRENT display owner.
+  // Map iteration preserves insertion order, so the first-resolved group is the
+  // deterministic fallback pick below.
+  const byOwner = new Map<FeatureId, Set<VertexId>>();
+  for (const vid of state.vertexIds) {
+    const owner = ownerLookup.ownerOf(vid);
+    if (owner === null) continue; // owned by nothing drawn this frame → prune
+    const group = byOwner.get(owner);
+    if (group === undefined) byOwner.set(owner, new Set([vid]));
+    else group.add(vid);
+  }
+
+  // Nothing survives → drop the dangling set; activeFeature + transient stay intact.
+  if (byOwner.size === 0) return withoutVertexSet(state);
+
+  // Step 2 (deterministic single-owner pick, FR-81) + Step 3 (owner rewrite).
+  const previous = state.vertexOwner;
+  const keptOwner = byOwner.has(previous)
+    ? previous
+    : (byOwner.keys().next().value as FeatureId);
+  const kept = byOwner.get(keptOwner) as Set<VertexId>;
+
+  // Idempotent no-op: same owner and no vertex pruned → same reference.
+  if (keptOwner === previous && kept.size === state.vertexIds.size) return state;
+  return withVertexSet(state, keptOwner, kept);
 }

@@ -15,11 +15,11 @@ import {
   EMPTY_SELECTION,
   type SelectionState,
 } from './state';
+import { ownerLookupFromMap, type VertexOwnerLookup } from './contracts';
 import {
   reresolveAfterStructureChange,
   revalidateForTime,
   revalidateForDisplay,
-  type DisplayGrabbability,
   type ExistenceAtTime,
 } from './reresolve';
 import { coord, fid, vid, vidSet } from './fixtures';
@@ -179,38 +179,90 @@ describe('time-change re-validation (教訓 5.5)', () => {
   });
 });
 
-// --- 選択 heal の対称性: display-control re-validation (時刻↔displayControl) ---
+// --- 選択 heal の対称性: display re-validation (root/time/control ↔ 選択) -------
 //
-// The sibling of revalidateForTime on the DISPLAY axis (教訓 5.5/5.6/5.11): a
-// depth/focus change can roll a leaf up into an aggregate (or omit it), so its
-// vertices stop being grabbable and the property panel would show「所有地物を特定で
-// きません」(CONTEXT_KIND.Unknown). The heal prunes the now-dangling vertex set — NOT
-// a blanket clear — keeping the active feature + any still-grabbable selection.
+// The sibling of revalidateForTime on the DISPLAY axis (教訓 5.5/5.6/5.11): any
+// display-resolution input change (depth/focus, time, domain swap) can make selected
+// vertices vanish from the display owner lookup, and the property panel would show
+//「所有地物を特定できません」(CONTEXT_KIND.Unknown). The heal re-resolves each vertex
+// through the CURRENT owner lookup — per-vertex, so a SHARED vertex surviving through
+// another drawn owner is KEPT with the owner rewritten (Codex [MED]) — NOT a blanket
+// clear (active feature + still-resolvable vertices survive).
 
-describe('display-control re-validation (選択 heal の対称性)', () => {
-  // "A国" (fid A) is rolled up / omitted (no own grabbable vertices); everything else
-  // still draws its own shape. Mirrors resolveDisplayFor(...).grabbable membership.
-  const grabbableExcept = (hidden: FeatureId): DisplayGrabbability => ({
-    ownerExposesVertices: (f: FeatureId) => f !== hidden,
-  });
+describe('display re-validation (選択 heal の対称性)', () => {
+  // A plain vid→fid lookup mirroring resolveDisplayFor(...).owners membership.
+  const lookup = (
+    entries: ReadonlyArray<readonly [string, string]>,
+  ): VertexOwnerLookup =>
+    ownerLookupFromMap(new Map(entries.map(([v, f]) => [vid(v), fid(f)])));
 
-  it('prunes the vertex selection when its owner stops exposing grabbable vertices', () => {
+  it('prunes the whole vertex set when NO selected vertex resolves any more', () => {
     const state = withVertexSet(EMPTY_SELECTION, fid('A'), vidSet('A-v0', 'A-v1'));
-    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
-    // A is aggregated/omitted now → the dangling vertex set is dropped (would be Unknown).
+    // A is aggregated/omitted and nothing shares its vertices → owners empty for them.
+    const healed = revalidateForDisplay(state, lookup([]));
     expect(healed.vertexIds.size).toBe(0);
     expect(healed.vertexOwner).toBeNull();
   });
 
-  it('keeps the whole vertex set when the owner still draws its own shape (not a blanket clear)', () => {
+  it('keeps the whole set (SAME reference) when every vertex still resolves to the owner', () => {
     const state = withVertexSet(EMPTY_SELECTION, fid('B'), vidSet('B-v0', 'B-v1'));
-    // Only A is hidden; B still exposes its vertices → the SAME reference is returned.
-    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
-    expect(healed).toBe(state);
+    const healed = revalidateForDisplay(
+      state,
+      lookup([
+        ['B-v0', 'B'],
+        ['B-v1', 'B'],
+      ]),
+    );
+    expect(healed).toBe(state); // idempotent no-op — no redundant notification
     expect(healed.vertexIds).toEqual(vidSet('B-v0', 'B-v1'));
   });
 
-  it('never prunes vertices owned by the ACTIVE feature (its handles stay grabbable when omitted)', () => {
+  it('[Codex MED] KEEPS a shared vertex through its surviving owner and REWRITES vertexOwner', () => {
+    // 隣接 A / B share A-v1 (first-wins owner was A). A is omitted, B stays Real: the
+    // owners map now resolves A-v1 → B while A's other vertices resolve to nothing.
+    // The shared vertex is still drawn/selectable via B → it must NOT be pruned; the
+    // selection's owner is rewritten to B (FR-81 one-owner invariant kept).
+    const state = withVertexSet(
+      EMPTY_SELECTION,
+      fid('A'),
+      vidSet('A-v0', 'A-v1', 'A-v2'),
+    );
+    const healed = revalidateForDisplay(state, lookup([['A-v1', 'B']]));
+    expect(healed.vertexIds).toEqual(vidSet('A-v1'));
+    expect(healed.vertexOwner).toBe(fid('B'));
+  });
+
+  it('prefers the PREVIOUS owner group when it still owns survivors (owners split)', () => {
+    // A still owns A-v0; A-v1 re-resolves to B (shared). FR-81 one owner: keep the
+    // current owner's group deterministically, prune the split-off vertex.
+    const state = withVertexSet(EMPTY_SELECTION, fid('A'), vidSet('A-v0', 'A-v1'));
+    const healed = revalidateForDisplay(
+      state,
+      lookup([
+        ['A-v0', 'A'],
+        ['A-v1', 'B'],
+      ]),
+    );
+    expect(healed.vertexIds).toEqual(vidSet('A-v0'));
+    expect(healed.vertexOwner).toBe(fid('A'));
+  });
+
+  it('with the previous owner gone and owners split, keeps the FIRST surviving group (deterministic)', () => {
+    // A is gone; A-v0 → B, A-v1 → C. Selection iteration order (insertion) makes B's
+    // group the deterministic pick — same first-wins spirit as the owners map itself.
+    const state = withVertexSet(EMPTY_SELECTION, fid('A'), vidSet('A-v0', 'A-v1'));
+    const healed = revalidateForDisplay(
+      state,
+      lookup([
+        ['A-v0', 'B'],
+        ['A-v1', 'C'],
+      ]),
+    );
+    expect(healed.vertexIds).toEqual(vidSet('A-v0'));
+    expect(healed.vertexOwner).toBe(fid('B'));
+  });
+
+  it('never prunes vertices owned by the ACTIVE feature (its handles stay drawn when omitted)', () => {
     // A is the active feature AND the vertex owner; A is aggregation-omitted. Its edit
     // handles (and vertices) are still drawn (draw ⊇ hit), so the selection survives.
     const state = withVertexSet(
@@ -218,38 +270,44 @@ describe('display-control re-validation (選択 heal の対称性)', () => {
       fid('A'),
       vidSet('A-v0'),
     );
-    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
+    const healed = revalidateForDisplay(state, lookup([]));
     expect(healed).toBe(state);
     expect(healed.vertexIds).toEqual(vidSet('A-v0'));
     expect(healed.activeFeature).toBe(fid('A'));
   });
 
   it('prunes a stale vertex set owned by a NON-active feature, keeping the active feature', () => {
-    // Active = A; vertex owner = B (a different feature) which is now hidden. B's stale
-    // vertices drop; A stays active (NOT a blanket clear, 教訓 5.11).
+    // Active = A; vertex owner = B (a different feature) whose vertices no longer
+    // resolve. B's stale vertices drop; A stays active (NOT a blanket clear, 教訓 5.11).
     const state = withVertexSet(
       withActiveFeature(EMPTY_SELECTION, fid('A')),
       fid('B'),
       vidSet('B-v0'),
     );
-    const healed = revalidateForDisplay(state, grabbableExcept(fid('B')));
+    const healed = revalidateForDisplay(state, lookup([]));
     expect(healed.activeFeature).toBe(fid('A'));
     expect(healed.vertexIds.size).toBe(0);
     expect(healed.vertexOwner).toBeNull();
   });
 
-  it('does not call the resolver and returns the SAME reference for an empty / active-only selection', () => {
-    const calls: FeatureId[] = [];
-    const spyGrab: DisplayGrabbability = {
-      ownerExposesVertices: (f) => {
-        calls.push(f);
-        return false;
+  it('does not consult the lookup and returns the SAME reference for an empty / active-only selection', () => {
+    const calls: string[] = [];
+    const spyLookup: VertexOwnerLookup = {
+      ownerOf: (v) => {
+        calls.push(v);
+        return null;
       },
     };
-    expect(revalidateForDisplay(EMPTY_SELECTION, spyGrab)).toBe(EMPTY_SELECTION);
+    expect(revalidateForDisplay(EMPTY_SELECTION, spyLookup)).toBe(EMPTY_SELECTION);
     const activeOnly = withActiveFeature(EMPTY_SELECTION, fid('A'));
-    expect(revalidateForDisplay(activeOnly, spyGrab)).toBe(activeOnly);
-    // The owner check short-circuits before the injected resolver is consulted.
+    expect(revalidateForDisplay(activeOnly, spyLookup)).toBe(activeOnly);
+    // Active-owned selection short-circuits BEFORE the lookup too.
+    const activeOwned = withVertexSet(
+      withActiveFeature(EMPTY_SELECTION, fid('A')),
+      fid('A'),
+      vidSet('A-v0'),
+    );
+    expect(revalidateForDisplay(activeOwned, spyLookup)).toBe(activeOwned);
     expect(calls).toEqual([]);
   });
 
@@ -264,8 +322,8 @@ describe('display-control re-validation (選択 heal の対称性)', () => {
         current: coord(1, 1),
       },
     );
-    // B still grabbable → unchanged, transient intact.
-    const healed = revalidateForDisplay(dragging, grabbableExcept(fid('A')));
+    // B still resolves → unchanged, transient intact.
+    const healed = revalidateForDisplay(dragging, lookup([['B-v0', 'B']]));
     expect(healed).toBe(dragging);
     expect(healed.transient.phase).toBe(POINTER_PHASE.VertexDrag);
   });

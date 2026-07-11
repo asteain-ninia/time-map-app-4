@@ -27,17 +27,36 @@
 import { act, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { asFeatureId, asVertexId } from '../domain/ids';
+import { createAnchor, createAnchorSnapshot } from '../domain/anchor';
+import { createAnchorEntry, normalizeSeries } from '../domain/anchor-series';
+import { createBasicAttributes, createColorInfo } from '../domain/attributes';
+import { createCommandResult } from '../domain/command/result';
+import {
+  createAggregateFeature,
+  createLeafFeature,
+  type Feature,
+} from '../domain/feature';
+import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../domain/ids';
 import {
   EMPTY_SELECTION,
   ownerLookupFromMap,
   withVertexSet,
   type SelectionState,
 } from '../domain/selection';
-import { richValidProject } from '../domain/persistence/fixtures';
-import type { DomainProject } from '../domain/persistence/index';
+import {
+  CAL,
+  DEFAULT_BASEMAP,
+  DEFAULT_SETTINGS,
+  richValidProject,
+  singleAnchorHistory,
+  squareLeaf,
+} from '../domain/persistence/fixtures';
+import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
+import { createCoordinate } from '../domain/coordinate';
+import { createShape, createTerritoryRing } from '../domain/ring';
 import { getCalendar } from '../domain/time/calendar';
 import { timePointYear } from '../domain/time/time-point';
+import { createVertex, createVertexStore } from '../domain/vertex';
 
 import {
   resolveDisplayFor,
@@ -48,7 +67,7 @@ import { DISPLAY_KIND, decideDisplay } from './property/selection-display';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { EDIT_MODE, type DisplayControl } from './state/session';
-import { createSessionStore } from './state/store';
+import { createSessionStore, TIME_CHANGE_SOURCE } from './state/store';
 
 const TIME = timePointYear(10);
 
@@ -84,9 +103,10 @@ function panelDecisionUnder(
   root: DomainProject,
   control: DisplayControl,
   selection: SelectionState,
+  time = TIME,
 ) {
   const ownerLookup = ownerLookupFromMap(
-    resolveDisplayFor(root, TIME, control).owners,
+    resolveDisplayFor(root, time, control).owners,
   );
   return decideDisplay({
     activeFeatureId: selection.activeFeature,
@@ -277,5 +297,277 @@ describe('S4b 本番結線: PropertyPanelHost の ownerLookup (FR-81 貫通)', (
     const guidance = screen.getByTestId('property-guidance');
     expect(guidance).toHaveTextContent(PROPERTY_STRINGS.emptySelection);
     expect(guidance).not.toHaveTextContent(PROPERTY_STRINGS.unknownOwner);
+  });
+});
+
+// =============================================================================
+// S4c — 対称性完成 (Codex fix-forward): display 再検証は displayControl setter だけで
+// なく、表示解決の入力 (root, time, control) の「どれ」が変わる経路でも走る。
+//
+//   - [HIGH] setCurrentTime: 時刻変更で所有 leaf が集約の子に降格 (Omit 化) しても
+//     時刻存在ベース (revalidateForTime) では生存するため、display heal がなければ
+//     owners から消えた頂点選択が残り Unknown 化する。
+//   - [HIGH] applyCommandResult / applyUndoRedoResult: domain スワップで階層が変わる
+//     場合も同様 (heal は既存の time-existence 引き締めと同じく domain コミット後に
+//     LIVE root を見る)。
+//   - [MED] 共有頂点: owners の first-wins 所有者だけが Omit 化しても、頂点が別の
+//     生存所有者経由で描画・選択可能なら保持し、vertexOwner をその所有者へ書き換える
+//     (whole-owner 判定の誤 prune 修正)。
+// =============================================================================
+
+const TEST_COLOR = createColorInfo(true, '#123456', '#654321', '#0f0f0f');
+
+/**
+ * leaf-c is TOP-LEVEL until year 50, then becomes a CHILD of aggregate agg-2 — a
+ * hierarchy change over TIME with the SAME feature id + vertices (one history whose
+ * two anchors carry the different parentage). At N=0: year<50 → leaf-c Real
+ * (grabbable), year≥50 → leaf-c rolled up into agg-2 (Omit, not grabbable) while it
+ * still EXISTS (time-existence keeps the selection — only the display heal prunes it).
+ */
+function hierarchyShiftOverTimeProject(): DomainProject {
+  const c = squareLeaf('leaf-c', 'C国', 40, 0);
+  const aggId = asFeatureId('agg-2');
+  const cAsChild = { ...c.feature, parentId: aggId } as Feature;
+  const agg = createAggregateFeature(
+    aggId,
+    createBasicAttributes('連合', 0, 100),
+    TEST_COLOR,
+    [c.feature.id],
+  );
+  const verts = createVertexStore(c.vertices);
+  const anchorTop = createAnchor(
+    asAnchorId('w-anc-top'),
+    createAnchorSnapshot([c.feature], verts),
+  );
+  const anchorChild = createAnchor(
+    asAnchorId('w-anc-child'),
+    createAnchorSnapshot([cAsChild, agg], verts),
+  );
+  const history: FeatureHistory = {
+    featureId: c.feature.id,
+    series: normalizeSeries(
+      [
+        createAnchorEntry(anchorTop, timePointYear(0), timePointYear(50)),
+        createAnchorEntry(anchorChild, timePointYear(50), null),
+      ],
+      CAL,
+    ),
+  };
+  return { histories: [history], settings: DEFAULT_SETTINGS, baseMap: DEFAULT_BASEMAP };
+}
+
+/** leaf-c TOP-LEVEL (grabbable at N=0). The undo/commit tests swap to parentedRoot. */
+function topLevelRoot(): DomainProject {
+  const c = squareLeaf('leaf-c', 'C国', 40, 0);
+  return {
+    histories: [
+      singleAnchorHistory('leaf-c', [c.feature], createVertexStore(c.vertices), 0),
+    ],
+    settings: DEFAULT_SETTINGS,
+    baseMap: DEFAULT_BASEMAP,
+  };
+}
+
+/** The SAME leaf-c, now a CHILD of agg-2 (Omit at N=0) — everything survives by id. */
+function parentedRoot(): DomainProject {
+  const c = squareLeaf('leaf-c', 'C国', 40, 0);
+  const aggId = asFeatureId('agg-2');
+  const cAsChild = { ...c.feature, parentId: aggId } as Feature;
+  const agg = createAggregateFeature(
+    aggId,
+    createBasicAttributes('連合', 0, 100),
+    TEST_COLOR,
+    [c.feature.id],
+  );
+  return {
+    histories: [
+      singleAnchorHistory('leaf-c', [cAsChild, agg], createVertexStore(c.vertices), 0),
+    ],
+    settings: DEFAULT_SETTINGS,
+    baseMap: DEFAULT_BASEMAP,
+  };
+}
+
+/**
+ * Shared-vertex fixture (Codex [MED]): leaf-d (child of agg-3) and TOP-LEVEL leaf-e
+ * SHARE vertex `leaf-d-1` ((10,0) — a corner of d's square and of e's triangle).
+ * At N=5 both are Real; owners first-wins gives `leaf-d-1` → leaf-d (feature order).
+ * At N=0 leaf-d is rolled up (Omit) while leaf-e stays Real → `leaf-d-1` re-resolves
+ * to leaf-e; d's other three vertices resolve to nothing.
+ */
+function sharedVertexProject(): DomainProject {
+  const d = squareLeaf('leaf-d', 'D国', 0, 0); // verts leaf-d-0..3; leaf-d-1 = (10,0)
+  const aggId = asFeatureId('agg-3');
+  const dAsChild = { ...d.feature, parentId: aggId } as Feature;
+  const agg = createAggregateFeature(
+    aggId,
+    createBasicAttributes('連合D', 0, 100),
+    TEST_COLOR,
+    [d.feature.id],
+  );
+  const e0 = createVertex(asVertexId('leaf-e-0'), createCoordinate(30, 0));
+  const e1 = createVertex(asVertexId('leaf-e-1'), createCoordinate(30, 10));
+  const eRing = createTerritoryRing(asRingId('leaf-e-r'), [
+    asVertexId('leaf-d-1'),
+    e0.id,
+    e1.id,
+  ]);
+  const leafE = createLeafFeature(
+    asFeatureId('leaf-e'),
+    createBasicAttributes('E国', 0, 100),
+    TEST_COLOR,
+    createShape([eRing]),
+  );
+  const verts = createVertexStore([...d.vertices, e0, e1]);
+  return {
+    histories: [singleAnchorHistory('leaf-d', [dAsChild, agg, leafE], verts, 0)],
+    settings: DEFAULT_SETTINGS,
+    baseMap: DEFAULT_BASEMAP,
+  };
+}
+
+describe('S4c 対称性完成: root/time 変更でも display 再検証 (Codex fix-forward)', () => {
+  const LEAF_C = asFeatureId('leaf-c');
+  const LEAF_C_V2 = ['leaf-c-0', 'leaf-c-1'].map(asVertexId);
+
+  it('[HIGH 時刻変更] 新時刻で所有 leaf が子に降格 (Omit 化) → setCurrentTime が prune → Empty', () => {
+    const root = hierarchyShiftOverTimeProject();
+    const store = createSessionStore<DomainProject>({
+      initialDomain: root,
+      grabbability: createLiveGrabbabilityResolver(() => root),
+      initial: {
+        currentTime: TIME, // year 10: leaf-c top-level → Real (grabbable) at N=0
+        displayControl: AGGREGATED,
+        vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
+      },
+    });
+    // Sanity: at year 10 the owner resolves (top-level Real) → editable ContextFeature.
+    expect(
+      panelDecisionUnder(root, AGGREGATED, store.getState().selection).kind,
+    ).toBe(DISPLAY_KIND.ContextFeature);
+
+    // Move time to year 60: leaf-c still EXISTS (revalidateForTime keeps it) but is now
+    // agg-2's child → Omit at N=0 → its vertices vanish from owners. Without the display
+    // heal on the TIME branch the stale selection lingers and the panel reads Unknown.
+    store.getState().setCurrentTime(timePointYear(60), TIME_CHANGE_SOURCE.Slider);
+
+    const healed = store.getState().selection;
+    expect(healed.vertexIds.size).toBe(0);
+    expect(healed.vertexOwner).toBeNull();
+    expect(
+      panelDecisionUnder(root, AGGREGATED, healed, timePointYear(60)).kind,
+    ).toBe(DISPLAY_KIND.Empty);
+  });
+
+  it('[HIGH 時刻変更・保持] 表示状態が変わらない時刻移動は選択を同一参照のまま保持 (誤 prune なし)', () => {
+    const root = hierarchyShiftOverTimeProject();
+    const store = createSessionStore<DomainProject>({
+      initialDomain: root,
+      grabbability: createLiveGrabbabilityResolver(() => root),
+      initial: {
+        currentTime: TIME,
+        displayControl: AGGREGATED,
+        vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
+      },
+    });
+    const before = store.getState().selection;
+    // year 20 is still in the top-level regime (< 50) → owner stays grabbable.
+    store.getState().setCurrentTime(timePointYear(20), TIME_CHANGE_SOURCE.Slider);
+    expect(store.getState().selection).toBe(before); // idempotent — no false prune
+  });
+
+  it('[HIGH undo/redo] 階層が変わる undo 適用後に heal が LIVE root を見て prune する', () => {
+    const before = topLevelRoot();
+    const after = parentedRoot();
+    // The resolver reads the LIVE committed domain (mirrors App wiring getRoot =
+    // store.getState().domain): a subscription keeps it in lock-step, so the heal sees
+    // `after` ONLY once the store actually committed it — proving the heal runs
+    // post-commit (第10波 #5 と同順序).
+    let liveRoot: DomainProject = before;
+    const store = createSessionStore<DomainProject>({
+      initialDomain: before,
+      grabbability: createLiveGrabbabilityResolver(() => liveRoot),
+      initial: {
+        currentTime: TIME,
+        displayControl: AGGREGATED,
+        vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
+      },
+    });
+    store.subscribe((s) => {
+      liveRoot = s.domain;
+    });
+
+    // Undo/redo lands on a domain where leaf-c is a child (everything SURVIVED by id —
+    // reresolveAfterStructureChange prunes nothing, and time-existence keeps leaf-c).
+    store.getState().applyUndoRedoResult(
+      after,
+      createCommandResult({ survived: new Set([LEAF_C, ...LEAF_C_V2]) }),
+    );
+
+    const healed = store.getState().selection;
+    expect(healed.vertexIds.size).toBe(0);
+    expect(
+      panelDecisionUnder(after, AGGREGATED, healed).kind,
+    ).toBe(DISPLAY_KIND.Empty);
+  });
+
+  it('[HIGH 構造コミット] applyCommandResult でも同じ heal が走る (対称位置)', () => {
+    const before = topLevelRoot();
+    const after = parentedRoot();
+    let liveRoot: DomainProject = before;
+    const store = createSessionStore<DomainProject>({
+      initialDomain: before,
+      grabbability: createLiveGrabbabilityResolver(() => liveRoot),
+      initial: {
+        currentTime: TIME,
+        displayControl: AGGREGATED,
+        vertexSelection: { ownerFeatureId: LEAF_C, vertexIds: new Set(LEAF_C_V2) },
+      },
+    });
+    store.subscribe((s) => {
+      liveRoot = s.domain;
+    });
+
+    store.getState().applyCommandResult(
+      after,
+      createCommandResult({ survived: new Set([LEAF_C, ...LEAF_C_V2]) }),
+    );
+
+    expect(store.getState().selection.vertexIds.size).toBe(0);
+    expect(store.getState().projectDirty).toBe(true); // dirty 規約は不変
+  });
+
+  it('[MED 共有頂点] first-wins 所有者だけが Omit 化 → 共有頂点は生存所有者へ書き換えて保持', () => {
+    const root = sharedVertexProject();
+    const store = createSessionStore<DomainProject>({
+      initialDomain: root,
+      grabbability: createLiveGrabbabilityResolver(() => root),
+      initial: {
+        currentTime: TIME,
+        displayControl: EXPANDED, // leaf-d (child) も Real → d-1 の first-wins 所有者 = leaf-d
+        vertexSelection: {
+          ownerFeatureId: asFeatureId('leaf-d'),
+          vertexIds: new Set(
+            ['leaf-d-0', 'leaf-d-1', 'leaf-d-2', 'leaf-d-3'].map(asVertexId),
+          ),
+        },
+      },
+    });
+    // Sanity: EXPANDED では全4頂点が leaf-d に解決 (共有頂点も first-wins で leaf-d)。
+    expect(
+      panelDecisionUnder(root, EXPANDED, store.getState().selection).kind,
+    ).toBe(DISPLAY_KIND.ContextFeature);
+
+    // N=0: leaf-d は agg-3 に丸められ Omit、leaf-e は top-level のまま Real。共有頂点
+    // leaf-d-1 は leaf-e 経由で描画・選択可能 → 全落としせず、所有者を書き換えて保持。
+    store.getState().setGlobalDepth(0);
+
+    const healed = store.getState().selection;
+    expect([...healed.vertexIds]).toEqual([asVertexId('leaf-d-1')]);
+    expect(healed.vertexOwner).toBe(asFeatureId('leaf-e'));
+    // パネルは leaf-e の ContextFeature (Unknown でも Empty でもない)。
+    expect(panelDecisionUnder(root, AGGREGATED, healed).kind).toBe(
+      DISPLAY_KIND.ContextFeature,
+    );
   });
 });

@@ -43,7 +43,6 @@ import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
 import type { DisplayGrabbabilityResolver } from './grabbability';
-import { ALWAYS_GRABBABLE_RESOLVER } from './grabbability';
 import {
   type AppSettingKey,
   type AppSettings,
@@ -504,6 +503,13 @@ function deriveTimelineState(
   selection: SelectionState,
   existence: ExistenceResolver,
   calendar: Calendar,
+  // 選択 heal の対称性 (S4c): the timeline re-derive can MOVE currentTime (the clamp),
+  // and a time move can change the display verdicts — so the same display
+  // re-validation the setCurrentTime funnel runs must run here too, against the
+  // CLAMPED time. Injected as a hook because this is a module-level pure function
+  // while the display port lives in the store factory closure; the caller passes the
+  // store's single revalidateDisplay bound to the live displayControl.
+  displayHeal: (sel: SelectionState, time: TimePoint) => SelectionState,
 ): TimelineDerivation {
   const timelineMin = timePointYear(effectiveProject.timelineMinYear);
   const timelineMax = timePointYear(effectiveProject.timelineMaxYear);
@@ -538,11 +544,15 @@ function deriveTimelineState(
     clampedTime,
     existenceAtTime(existence),
   );
+  // Display re-validation at the CLAMPED time (選択 heal の対称性, S4c): existence
+  // pruning first (the anchor-level truth), then the display owner re-resolution —
+  // the same two-step order the setCurrentTime funnel uses.
+  const healed = displayHeal(revalidated, clampedTime);
   return {
     timelineMin,
     timelineMax,
     currentTime: clampedTime,
-    ...selectionPatch(revalidated),
+    ...selectionPatch(healed),
   };
 }
 
@@ -566,13 +576,17 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly domainEquals?: (a: S, b: S) => boolean;
   /**
-   * Injected display-grabbability predicate (単一真実源; defaults to always-grabbable).
-   * Used ONLY to re-validate the vertex selection on a DISPLAY-CONTROL change (選択
-   * heal の対称性: the display-axis sibling of `existence` for the time axis, 教訓
-   * 5.5/5.6). The composition root wires it to resolveDisplayFor's `grabbable` set so a
-   * depth/focus change that rolls a leaf up into an aggregate prunes its now-un-grabbable
-   * vertex selection instead of leaving it dangling (property panel Unknown). The
-   * default never prunes, so a host that omits it keeps the pre-fix behaviour.
+   * Injected display owner-lookup port (単一真実源; 選択 heal の対称性 — the
+   * display-axis sibling of `existence` for the time axis, 教訓 5.5/5.6). Used to
+   * re-validate the vertex selection whenever ANY display-resolution input changes:
+   * a displayControl setter (depth / focus), a time change (setCurrentTime / timeline
+   * re-derive) or a domain swap (applyCommandResult / applyUndoRedoResult — run AFTER
+   * the commit so the port sees the live post-commit root, S4c). The composition root
+   * wires it to resolveDisplayFor's `owners` map so「掴める」==「描画/ヒット対象」;
+   * U22's revalidateForDisplay then re-resolves each selected vertex per-owner (a
+   * shared vertex surviving through another drawn feature is KEPT with its owner
+   * rewritten — never a blanket clear). When OMITTED the display re-validation is
+   * skipped entirely (honest absence — pre-fix behaviour for opaque-domain tests).
    */
   readonly grabbability?: DisplayGrabbabilityResolver;
   /**
@@ -608,10 +622,29 @@ export function createSessionStore<S>(
   options: CreateSessionStoreOptions<S>,
 ): StoreApi<SessionStore<S>> {
   const existence = options.existence ?? ALWAYS_PRESENT_RESOLVER;
-  const grabbability = options.grabbability ?? ALWAYS_GRABBABLE_RESOLVER;
+  // May be undefined: display re-validation is then SKIPPED everywhere (honest
+  // absence — no fabricated "always owned" truth; see the option doc).
+  const grabbability = options.grabbability;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
+
+  // The SINGLE display re-validation entry (選択 heal の対称性, S4c): every branch
+  // whose change can alter the display resolution — displayControl setters, the
+  // setCurrentTime funnel, the timeline re-derive, and the post-commit tightening in
+  // applyCommandResult / applyUndoRedoResult — funnels through THIS one helper, so
+  // the rule cannot drift between branches (教訓 5.6 / 5.29). It defers entirely to
+  // U22's revalidateForDisplay over the injected port's owner lookup (lazy — the
+  // resolution runs only if a vertex is actually consulted); with no port injected
+  // it is the identity.
+  const revalidateDisplay = (
+    selection: SelectionState,
+    time: TimePoint,
+    control: DisplayControl,
+  ): SelectionState =>
+    grabbability === undefined
+      ? selection
+      : revalidateForDisplay(selection, grabbability.displayOwnersAt(time, control));
 
   // The domain reference last established as the SAVED / CLEAN baseline (bughunt:
   // 全 undo 後の dirty 解消). It is the ONE reference an undo / redo compares against
@@ -687,36 +720,40 @@ export function createSessionStore<S>(
     // Commit a CHANGED display-control value AND heal the vertex selection against it
     // in ONE set() (選択 heal の対称性: the display-axis sibling of setCurrentTime's
     // revalidateForTime, 教訓 5.5/5.6). A depth/focus change can roll the vertex
-    // selection's OWNER up into an aggregate (or omit it), so it stops exposing its own
-    // grabbable vertices and the property panel would classify the still-selected
-    // vertices as CONTEXT_KIND.Unknown「所有地物を特定できません」. We re-validate through
-    // U22's revalidateForDisplay against the injected grabbability port bound to the
-    // NEW control + the CURRENT time — the SAME resolveDisplayFor grabbable set the
-    // renderer draws (単一真実源, re-implementing no verdict logic). Folded into the
-    // SAME set() as the display-control write so display and selection never drift.
+    // selection's OWNER up into an aggregate (or omit it), so its vertices vanish
+    // from the display owner lookup and the property panel would classify them as
+    // CONTEXT_KIND.Unknown「所有地物を特定できません」. We re-validate through the
+    // single revalidateDisplay funnel bound to the NEW control + the CURRENT time —
+    // the SAME resolveDisplayFor owners map the renderer draws / hit-test grabs
+    // (単一真実源, re-implementing no verdict logic). Folded into the SAME set() as
+    // the display-control write so display and selection never drift.
     //
     // ONLY the six pure display-control setters below route through here (never a
     // NO-OP write — the callers return early on an unchanged value, preserving the
     // displayControl reference for the display memos, bughunt3). revalidateForDisplay
-    // is idempotent (returns the SAME selection reference when nothing is pruned — the
+    // is idempotent (returns the SAME selection reference when nothing changes — the
     // common case, and it does not even consult the resolver for an empty/active-only
-    // selection), so the selection mirrors are re-derived only on an actual prune, and
-    // the transient is preserved (FR-42 非干渉 — a display change never aborts a gesture).
+    // selection), so the selection mirrors are re-derived only on an actual change,
+    // and the transient is preserved (FR-42 非干渉 — a display change never aborts a
+    // gesture). A SHARED vertex surviving through another drawn owner is KEPT with
+    // vertexOwner rewritten (Codex [MED], see revalidateForDisplay).
     const commitDisplayControl = (nextControl: DisplayControl): void => {
       const selection = get().selection;
-      const healed = revalidateForDisplay(selection, {
-        ownerExposesVertices: (featureId) =>
-          grabbability.ownerExposesVerticesAt(
-            featureId,
-            get().currentTime,
-            nextControl,
-          ),
-      });
+      const healed = revalidateDisplay(selection, get().currentTime, nextControl);
       set({
         displayControl: nextControl,
         ...(healed !== selection ? selectionPatch(healed) : {}),
       });
     };
+
+    // The deriveTimelineState display-heal hook (S4c): display re-validation at the
+    // CLAMPED time under the CURRENT display control (unchanged on the settings /
+    // hydrate branches that re-derive the timeline). Defined once here so all four
+    // call sites pass the same funnel (教訓 5.6).
+    const timelineDisplayHeal = (
+      sel: SelectionState,
+      t: TimePoint,
+    ): SelectionState => revalidateDisplay(sel, t, get().displayControl);
 
     return {
     // -- initial state -------------------------------------------------------
@@ -796,8 +833,20 @@ export function createSessionStore<S>(
         get().currentTime,
         existenceAtTime(existence),
       );
-      if (revalidated !== reresolved) {
-        set(selectionPatch(revalidated));
+      // 選択 heal の対称性 (S4c, Codex [HIGH]): the domain swap can ALSO change the
+      // display resolution (e.g. an edit reparents the selection owner under an
+      // aggregate → Omit at the current depth while every id SURVIVES). Re-validate
+      // against the display owners over the LIVE (just-committed) root — the injected
+      // port reads the root through getRoot at call time, so running AFTER the first
+      // set() sees the post-commit root, the same ordering as the time tightening
+      // above (第10波 #5). The displayControl used is the one committed in that set().
+      const healed = revalidateDisplay(
+        revalidated,
+        get().currentTime,
+        nextDisplayControl,
+      );
+      if (healed !== reresolved) {
+        set(selectionPatch(healed));
       }
     },
 
@@ -865,8 +914,19 @@ export function createSessionStore<S>(
         get().currentTime,
         existenceAtTime(existence),
       );
-      if (revalidated !== next) {
-        set(selectionPatch(revalidated));
+      // 選択 heal の対称性 (S4c, Codex [HIGH]): symmetric with applyCommandResult —
+      // an undo / redo can restore a domain whose hierarchy differs (the selection
+      // owner becomes / stops being an aggregate's child), changing the display
+      // resolution while every id survives. Runs AFTER the first set() so the
+      // injected port reads the post-commit root (第10波 #5 と同順序); never touches
+      // projectDirty (prune / owner-rewrite only).
+      const healed = revalidateDisplay(
+        revalidated,
+        get().currentTime,
+        nextDisplayControl,
+      );
+      if (healed !== next) {
+        set(selectionPatch(healed));
       }
     },
 
@@ -1002,10 +1062,17 @@ export function createSessionStore<S>(
         clamped,
         existenceAtTime(existence),
       );
+      // 選択 heal の対称性 (S4c, Codex [HIGH]): a TIME change also changes the display
+      // resolution — e.g. at the new time the selection owner becomes an aggregate's
+      // child (Omit at the current depth) while still EXISTING, so revalidateForTime
+      // keeps it but its vertices vanish from the display owners map (panel Unknown).
+      // Re-validate against the display owners at the CLAMPED time + current control,
+      // in the SAME set() (root unchanged on this branch, so pre-set is safe).
+      const healed = revalidateDisplay(next, clamped, get().displayControl);
       set({
         currentTime: clamped,
         lastTimeChangeSource: source,
-        ...selectionPatch(next),
+        ...selectionPatch(healed),
       });
     },
 
@@ -1144,6 +1211,7 @@ export function createSessionStore<S>(
             get().selection,
             existence,
             calendar,
+            timelineDisplayHeal,
           )
         : null;
       set({
@@ -1177,6 +1245,7 @@ export function createSessionStore<S>(
         get().selection,
         existence,
         calendar,
+        timelineDisplayHeal,
       );
       // Emit the upper-bound key as the change notification: it matches the
       // last-written key on the legacy per-key order, so subscribers keyed on
@@ -1273,6 +1342,7 @@ export function createSessionStore<S>(
         get().selection,
         existence,
         calendar,
+        timelineDisplayHeal,
       );
       set({
         projectDirty: false,
@@ -1315,6 +1385,9 @@ export function createSessionStore<S>(
         EMPTY_SELECTION,
         existence,
         calendar,
+        // Selection is EMPTY on this branch, so the display heal is the identity —
+        // passed for signature symmetry (the single funnel, 教訓 5.6).
+        timelineDisplayHeal,
       );
       set({
         // -- resetToDomain half: new domain + discarded session state (教訓 5.2) --
