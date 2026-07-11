@@ -33,6 +33,62 @@ import {
 import type { Camera, Viewport } from '../../render/camera';
 import { initialCamera } from '../../render/vtransform';
 import { loadPresetBaseMap, PRESET_BASEMAP_META } from '../map/base-map-asset';
+import {
+  DISPLAYED_BASEMAP,
+  resolveDisplayedBasemap,
+  type EquirectangularMeta,
+  type ResolvedBasemap,
+} from '../../domain/basemap/index';
+
+/**
+ * The inputs to resolve the displayed PROJECT base-map for one composite (S7 出界図
+ * 結線). The host resolves `source` (+ whether `bytes` are present) through the
+ * domain's {@link resolveDisplayedBasemap}: an empty / preset-id source, OR empty
+ * bytes, → the bundled preset; any other non-empty source WITH bytes → the user map,
+ * painted from `bytes` at `meta` (`DomainProject.baseMap.meta`). Supplied live by the
+ * composition root from the store domain + the bytes retained on the last load.
+ */
+export interface BaseMapInput {
+  /** The project's stored base-map reference (`DomainProject.baseMap.source`). */
+  readonly source: string;
+  /** The project's stored equirectangular meta (`DomainProject.baseMap.meta`). */
+  readonly meta: EquirectangularMeta;
+  /** The loaded base-map image bytes retained after a load; empty = none (→ preset). */
+  readonly bytes: Uint8Array;
+}
+
+/**
+ * Decode base-map image bytes to a paintable image, or null when undecodable (the
+ * caller then silently falls back to the preset — 既存規約 読込失敗→プリセット). The
+ * injection seam the host結線 test drives with a fake decoder (jsdom has no real
+ * `createImageBitmap`).
+ */
+export type DecodeBaseMapImage = (bytes: Uint8Array) => Promise<CanvasImageSource | null>;
+
+/**
+ * Default base-map decoder (S7): decode image bytes to an `ImageBitmap` via
+ * `createImageBitmap(new Blob([bytes]))`.
+ *
+ * CSP NOTE (task §3, CSP は緩めない): the renderer CSP is `img-src 'self' data:`, which
+ * would REJECT a `blob:`-URL `<img>` for the project image. `createImageBitmap` on an
+ * in-memory `Blob` performs NO resource fetch, so it is NOT governed by `img-src` at
+ * all — the project map paints without adding `blob:` to the CSP. Resolves null on any
+ * failure (undecodable bytes, or an environment without `createImageBitmap`), so the
+ * caller keeps the preset background rather than throwing (silent fallback).
+ */
+async function decodeBaseMapBitmap(bytes: Uint8Array): Promise<CanvasImageSource | null> {
+  if (typeof createImageBitmap !== 'function' || bytes.length === 0) return null;
+  try {
+    // Copy into a fresh ArrayBuffer-backed view before wrapping in a Blob: it decodes
+    // exactly this Uint8Array's own range even when it is a view over a larger / shared
+    // buffer, and gives the Blob a plain (non-shared) ArrayBuffer as its part.
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    return await createImageBitmap(new Blob([copy]));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Inputs the host needs to composite the COMMITTED feature layer (P0-A): a getter
@@ -118,6 +174,28 @@ export interface CreateAddHostPortsOptions {
    * cannot drift (教訓 5.29). Holds NO truth — a pure mirror of the drawn frame.
    */
   readonly onFrameComposed?: (summary: FrameSummary) => void;
+  /**
+   * Resolve the CURRENT project base-map to display (S7 出界図 結線 / FR-03). Returns
+   * the project's stored `baseMap.source` + `baseMap.meta` and the loaded base-map
+   * image BYTES (empty when none). Read LIVE on every composite so a project load /
+   * new / replace is followed the moment the store domain + retained bytes change
+   * (教訓 5.6 単一真実源 — source + bytes come straight from the store / retained bytes,
+   * never a stale copy; 教訓 5.7 完了トリガー — the redraw the store change already fires
+   * re-resolves it). The host resolves it through {@link resolveDisplayedBasemap}
+   * (source='' / preset id / empty bytes → the bundled preset; any other non-empty
+   * source WITH bytes → the user map), decodes the bytes ONCE per distinct byte array
+   * (cached by identity — 二重デコード回避), and paints the result UNDER the grid. When
+   * absent the host keeps the legacy preset-only background (existing callers / tests).
+   */
+  readonly baseMap?: () => BaseMapInput;
+  /**
+   * Decode base-map image BYTES to a paintable image (injection seam for tests, S7).
+   * Defaults to {@link decodeBaseMapBitmap} (`createImageBitmap` on an in-memory Blob —
+   * CSP-safe, see its doc). Resolves null on an undecodable image → silent preset
+   * fallback (既存規約). Injected by the host結線 test with a fake decoder because jsdom
+   * has no real `createImageBitmap`.
+   */
+  readonly decodeBaseMapImage?: DecodeBaseMapImage;
 }
 
 /**
@@ -239,6 +317,13 @@ export interface AddHostPorts {
 export interface FrameInputs {
   /** The decoded base-map image, or null until decoded / on decode failure. */
   readonly baseImage: CanvasImageSource | null;
+  /**
+   * The equirectangular world rectangle the base image is pasted onto (S7). Defaults
+   * to {@link PRESET_BASEMAP_META}; for a loaded USER map the host passes the project's
+   * stored `baseMap.meta`, for the preset the full-world preset meta. Ignored when
+   * `baseImage` is null.
+   */
+  readonly baseMeta?: EquirectangularMeta;
   /** The committed features effective at the current time (P0-A). */
   readonly committed: readonly EvaluatedFeature[];
   /** The current tool-overlay primitives (FR-78 provisional add / knife). */
@@ -291,7 +376,11 @@ export interface ComposedFrame {
 export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
   const primitives: DrawPrimitive[] = [];
   if (inputs.baseImage !== null) {
-    primitives.push(buildBaseMapPrimitive(inputs.baseImage, PRESET_BASEMAP_META));
+    // S7: draw the base image at ITS resolved meta (the loaded user map's stored meta,
+    // or the preset's full-world meta) — no longer hard-coded to the preset meta.
+    primitives.push(
+      buildBaseMapPrimitive(inputs.baseImage, inputs.baseMeta ?? PRESET_BASEMAP_META),
+    );
   }
   primitives.push(
     ...buildGridPrimitives(
@@ -368,13 +457,34 @@ export function createAddHostPorts(
   // draw (single base source, 教訓 §4), and paint them once on mount so the central
   // map area is never empty.
   //
-  // BASE MAP IMAGE (FR-03 陸地輪郭): the bundled preset 出界図 (land-only
-  // equirectangular SVG) is decoded asynchronously; until it is ready we paint the
-  // graticule alone, and once `loadPresetBaseMap` resolves we store the decoded
-  // image and re-composite so the land appears UNDER the grid (背景 → 最背面). A
-  // decode failure leaves `baseImage` null → graticule-only fallback (読込失敗 →
-  // グリッド維持), no console noise.
+  // BASE MAP IMAGE (FR-03 陸地輪郭 / S7 出界図 結線): the displayed base map is decoded
+  // asynchronously; until it is ready we paint the graticule alone, and once the decode
+  // resolves we store the decoded image + its meta and re-composite so the land appears
+  // UNDER the grid (背景 → 最背面). A decode failure leaves `baseImage` null →
+  // graticule-only fallback (読込失敗 → グリッド維持), no console noise.
+  //
+  // WHICH base map: when a `baseMap` getter is supplied (the live app), the host reads
+  // the project's stored source + retained bytes each composite and resolves the PROJECT
+  // map (the loaded user 4096×2048 image, perfectly feature-aligned) vs the bundled
+  // preset via `resolveDisplayedBasemap` (S7). Without the getter (legacy callers /
+  // tests) it keeps the preset-only background, exactly as before.
   let baseImage: CanvasImageSource | null = null;
+  // The world rectangle `baseImage` is pasted onto (the resolved user meta or the
+  // preset full-world meta). Defaults to the preset meta until the first decode lands.
+  let baseMeta: EquirectangularMeta = PRESET_BASEMAP_META;
+  // S7 decode cache (二重デコード回避 / 単一真実源): `baseDecodedKey` identifies WHAT is
+  // currently decoded into `baseImage` so a redraw with the SAME source + bytes never
+  // re-decodes; `baseInFlightKey` dedups a decode already in progress for that key;
+  // `baseDecodeSeq` supersedes an in-flight decode when the desired map changes
+  // mid-flight (load A then load B — only the latest applies). The key is derived from
+  // the resolved kind + a per-byte-array identity, so a new load (new bytes reference)
+  // re-decodes while the same reference re-uses the cached image.
+  let baseDecodedKey = '';
+  let baseInFlightKey: string | null = null;
+  let baseDecodeSeq = 0;
+  const baseBytesIds = new WeakMap<Uint8Array, number>();
+  let nextBaseBytesId = 1;
+  const decodeBaseMap = options.decodeBaseMapImage ?? decodeBaseMapBitmap;
   let disposed = false;
   // The last tool-overlay primitives (FR-78 provisional add / knife). Held so a
   // committed-feature redraw or the async base-map decode re-composites with the
@@ -383,6 +493,11 @@ export function createAddHostPorts(
 
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
     lastOverlay = overlay;
+    // S7: re-resolve the displayed project base map from the live getter. A no-op
+    // unless a `baseMap` getter is supplied AND the resolved source/bytes changed (then
+    // it kicks off a decode and re-composites when it lands). Runs first so a load / new
+    // that already triggers this redraw picks up the new map (教訓 5.6 結果状態で検出).
+    ensureBaseMap();
     // Read the committed getter fresh so the latest domain / time / selection truth
     // is drawn (single truth source, 教訓 5.6). Capture it ONCE so the
     // visible-count hook below reports the SAME list the frame composes (no drift).
@@ -394,6 +509,7 @@ export function createAddHostPorts(
     // SAME compose pass (no second O(n) clip just for the hook, bughunt round-2).
     const { primitives, visibleCount } = composeFrameWithCount({
       baseImage,
+      baseMeta,
       committed,
       overlay,
       // HB3-9: the active feature's edit handles, recomputed fresh per frame so they
@@ -465,6 +581,69 @@ export function createAddHostPorts(
     // — so a zoom-in E2E can assert the candidate/clip set never wrongly drops to 0
     // while a feature is still on screen (再発防止, 既存 app-active-feature 方式).
     options.onVisibleFeatureCount?.(visibleCount);
+  };
+
+  // S7 — a stable identity per distinct byte array for the decode cache key. A new
+  // load swaps the retained-bytes reference → a new id → a re-decode; the SAME
+  // reference re-uses the cached decoded image (二重デコード回避).
+  const baseBytesIdFor = (bytes: Uint8Array): number => {
+    let id = baseBytesIds.get(bytes);
+    if (id === undefined) {
+      id = nextBaseBytesId;
+      nextBaseBytesId += 1;
+      baseBytesIds.set(bytes, id);
+    }
+    return id;
+  };
+
+  // S7 — decode the resolved base map to a paintable image + the meta to paint it at. A
+  // USER map decodes the retained bytes at the project's stored meta; on a decode
+  // failure it FALLS BACK to the preset (silent — 既存規約 読込失敗→プリセット, the
+  // resolveDisplayedBasemap loadable=false path). The preset decodes the bundled asset
+  // at PRESET_BASEMAP_META; a preset decode failure yields a null image (graticule-only
+  // background, no console noise).
+  const resolveDisplayImage = async (
+    resolved: ResolvedBasemap,
+    input: BaseMapInput,
+  ): Promise<{ image: CanvasImageSource | null; meta: EquirectangularMeta }> => {
+    if (resolved.kind === DISPLAYED_BASEMAP.User) {
+      const decoded = await decodeBaseMap(input.bytes);
+      if (decoded !== null) return { image: decoded, meta: input.meta };
+      // decode failed → fall through to the preset (silent fallback).
+    }
+    const preset = await loadPresetBaseMap(mount.ownerDocument);
+    return { image: preset, meta: PRESET_BASEMAP_META };
+  };
+
+  // S7 — resolve the CURRENT project base map from the live getter and, when it differs
+  // from what is decoded, kick off ONE decode and re-composite when it lands. A no-op
+  // for legacy callers without a `baseMap` getter (the mount installs the preset). The
+  // resolution funnels through the domain's single `resolveDisplayedBasemap` decision so
+  // every trigger (初回/新規/読込/差し替え/読込失敗) picks the same displayed map (教訓 5.29).
+  const ensureBaseMap = (): void => {
+    const read = options.baseMap;
+    if (read === undefined) return;
+    const input = read();
+    const resolved = resolveDisplayedBasemap(input.source, input.bytes.length > 0);
+    const desiredKey =
+      resolved.kind === DISPLAYED_BASEMAP.User
+        ? `user:${baseBytesIdFor(input.bytes)}`
+        : 'preset';
+    // Already showing it, or already decoding it → nothing to do (二重デコード回避).
+    if (desiredKey === baseDecodedKey || desiredKey === baseInFlightKey) return;
+    baseDecodeSeq += 1;
+    const seq = baseDecodeSeq;
+    baseInFlightKey = desiredKey;
+    void resolveDisplayImage(resolved, input).then((result) => {
+      // Drop a superseded (a newer decode started) or post-dispose result — only the
+      // latest request applies (単一真実源, no stale image flicker).
+      if (disposed || seq !== baseDecodeSeq) return;
+      baseInFlightKey = null;
+      baseImage = result.image;
+      baseMeta = result.meta;
+      baseDecodedKey = desiredKey;
+      paintWith(lastOverlay);
+    });
   };
 
   // FR-110 throttle seam. The high-frequency repaint paths (pan / wheel via
@@ -569,11 +748,22 @@ export function createAddHostPorts(
   options.onCameraChange?.(renderer.getCamera());
   // Kick off the base-map decode; re-composite when it lands (unless disposed),
   // keeping the last overlay so an in-progress tool draft is not wiped.
-  void loadPresetBaseMap(mount.ownerDocument).then((img) => {
-    if (disposed || img === null) return;
-    baseImage = img;
-    paintWith(lastOverlay);
-  });
+  if (options.baseMap === undefined) {
+    // Legacy preset-only path (existing callers / tests with no project base map): the
+    // bundled preset 出界図 is the whole background, decoded once here (unchanged).
+    void loadPresetBaseMap(mount.ownerDocument).then((img) => {
+      if (disposed || img === null) return;
+      baseImage = img;
+      baseMeta = PRESET_BASEMAP_META;
+      paintWith(lastOverlay);
+    });
+  } else {
+    // S7 project-aware path: resolve the displayed base map from the live getter (the
+    // preset for a fresh project, the decoded user image for a loaded one) and repaint
+    // when it lands. Every later load / new / replace re-resolves through ensureBaseMap
+    // at the top of the redraw the store change already fires.
+    ensureBaseMap();
+  }
 
   return {
     screenToWorld(clientX, clientY): WorldCoordinate {

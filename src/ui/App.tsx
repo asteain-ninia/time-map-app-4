@@ -366,6 +366,15 @@ export function App(): JSX.Element {
   // applied as soon as the renderer exists (no lost update, 教訓 5.22).
   const zoomRangeRef = useRef<ZoomRange | null>(null);
 
+  // S7 出界図 結線 — the LOADED project's base-map image bytes, retained here for
+  // DISPLAY. The file-ops controller owns them for save round-trip (loadedAssetsRef);
+  // it pushes the SAME reference here on every load / new via onBaseMapImageChange
+  // (the supplyZoomRange pattern), so the renderer host's `baseMap` getter reads them
+  // together with the store domain's baseMap.source/meta to decide preset vs user map
+  // (単一真実源 — one bytes reference, no divergent copy). Empty until a project with a
+  // base-map image is loaded; empty ⇒ the host shows the bundled preset (FR-03).
+  const baseMapImageRef = useRef<Uint8Array>(new Uint8Array());
+
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
     // HB-1 観測フック target. Resolved BEFORE the renderer is created because
     // `createAddHostPorts` fires `onCameraChange` synchronously on its initial paint
@@ -626,6 +635,22 @@ export function App(): JSX.Element {
       },
       // HB3-9 観測フック: mirror the last drawn frame's primitive summary into __E2E__.
       onFrameComposed: (summary) => publishFrameHook(summary),
+      // S7 出界図 結線 (FR-03 / 教訓 5.7 合成ルートの結線漏れ) — resolve the DISPLAYED base
+      // map from the LIVE truth: the store domain's baseMap.source + meta (swapped on
+      // load / new) and the retained project base-map image bytes (baseMapImageRef,
+      // pushed by the file-ops controller on load / new). The host resolves these
+      // through the domain's single `resolveDisplayedBasemap` decision — a loaded user
+      // project (non-empty source WITH bytes) paints its OWN 4096×2048 image (perfectly
+      // feature-aligned), while a new / empty / preset-id project (or missing bytes)
+      // paints the bundled preset. Read live per composite so a load / new is followed
+      // on the next redraw (単一真実源 — never a stale copy, 教訓 5.6). This is the fix
+      // for the実機 report「海岸線と地物が南北にズレる」: the preset SVG's land was
+      // normalized to a different height than the project image, so features drew
+      // shifted; painting the project's own image removes the shift.
+      baseMap: () => {
+        const bm = store.getState().domain.baseMap;
+        return { source: bm.source, meta: bm.meta, bytes: baseMapImageRef.current };
+      },
     });
     rendererRef.current = ports;
     // Apply any clamp range supplied before mount (FR-10 即時反映).
@@ -1216,6 +1241,19 @@ export function App(): JSX.Element {
   const supplyZoomRange: SupplyZoomRange = useCallback((range) => {
     zoomRangeRef.current = range;
     rendererRef.current?.setZoomRange(range);
+  }, []);
+
+  // S7 出界図 結線 — receive the loaded project's base-map image bytes from the file-ops
+  // controller (on load: the file's bytes; on 新規: empty) and retain them for DISPLAY,
+  // then request a redraw so the renderer host re-resolves preset-vs-user at once (the
+  // SAME supplyZoomRange cache-then-forward pattern). The store domain swap that also
+  // happens on load / new triggers its own redraw, but requesting one here makes the
+  // bytes change an explicit 完了トリガー (教訓 5.7) so display follows even if the bytes
+  // arrive without a domain reference change (e.g. a future 差し替え flow). A no-op on the
+  // renderer when the map has not mounted yet (pre-mount / bootstrap).
+  const handleBaseMapImageChange = useCallback((image: Uint8Array) => {
+    baseMapImageRef.current = image;
+    rendererRef.current?.redraw();
   }, []);
 
   // Stable port closures the controller depends on; each reads the current
@@ -2355,6 +2393,7 @@ export function App(): JSX.Element {
               supplyZoomRange={supplyZoomRange}
               registerWindowClose={registerWindowClose}
               registerDropTarget={registerDropTarget}
+              onBaseMapImageChange={handleBaseMapImageChange}
               onModalOpenChange={setFileModalOpen}
             />
             {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール

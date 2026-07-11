@@ -225,6 +225,66 @@ describe('composeFrameWithCount visibleCount — single clip pass (bughunt round
     });
     expect(visibleCount).toBe(0);
   });
+});
+
+// S7 出界図 結線: the base-map primitive must be placed at the RESOLVED meta (the loaded
+// user map's stored meta, or the preset full-world meta) — no longer hard-coded to the
+// preset meta. A fake image source stands in for the decoded bitmap (composeFrame is
+// pure; it only forwards the image + meta to a BaseMapPrimitive).
+describe('composeFrame base-map meta (S7)', () => {
+  const IMG = {} as unknown as CanvasImageSource;
+
+  const baseMapPrim = (prims: readonly DrawPrimitive[]) =>
+    prims.find(
+      (p): p is Extract<DrawPrimitive, { kind: 'basemap' }> => p.kind === 'basemap',
+    );
+
+  it('draws the base image at the SUPPLIED meta (a loaded user map)', () => {
+    const meta = { lonWest: -180, lonEast: 180, latNorth: 85, latSouth: -85 };
+    const prims = composeFrame({
+      baseImage: IMG,
+      baseMeta: meta,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    const bm = baseMapPrim(prims);
+    expect(bm).toBeDefined();
+    expect(bm!.image).toBe(IMG);
+    expect({
+      lonWest: bm!.lonWest,
+      lonEast: bm!.lonEast,
+      latNorth: bm!.latNorth,
+      latSouth: bm!.latSouth,
+    }).toEqual(meta);
+  });
+
+  it('falls back to the preset full-world meta when none is supplied', () => {
+    const prims = composeFrame({
+      baseImage: IMG,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    const bm = baseMapPrim(prims);
+    expect(bm).toBeDefined();
+    // The preset spans the full 2:1 world (受け入れ基準 2).
+    expect(bm!.lonEast - bm!.lonWest).toBe(360);
+    expect(bm!.latNorth - bm!.latSouth).toBe(180);
+  });
+
+  it('emits NO base-map primitive when there is no image (graticule-only fallback)', () => {
+    const prims = composeFrame({
+      baseImage: null,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    expect(baseMapPrim(prims)).toBeUndefined();
+  });
 
   it('counts every committed feature when all survive the clip (zoomed out)', () => {
     const committed: EvaluatedFeature[] = [

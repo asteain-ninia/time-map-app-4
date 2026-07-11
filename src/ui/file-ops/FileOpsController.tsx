@@ -122,6 +122,16 @@ export interface FileOpsControllerProps {
    * keyboard — otherwise Ctrl+Z / Delete leak THROUGH the warning to a domain op.
    */
   readonly onModalOpenChange?: (open: boolean) => void;
+  /**
+   * S7 出界図 結線 — forward the DISPLAYED project's base-map image bytes to the renderer
+   * host (App caches them and hands them to the map renderer's `baseMap` getter). Called
+   * on every 破壊的置換: a successful load pushes the file's `baseMapImage` bytes (the
+   * project map, feature-aligned) so the renderer paints it instead of the bundled
+   * preset; a 新規 pushes empty bytes so it reverts to the preset (FR-03). The SAME
+   * reference `loadedAssetsRef` retains for save round-trip is forwarded (no divergent
+   * truth). Optional so the standalone controller test needs no renderer.
+   */
+  readonly onBaseMapImageChange?: (image: Uint8Array) => void;
 }
 
 /** The pending unsaved-warning modal (a resolver the dialog feeds the choice to). */
@@ -182,6 +192,14 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const resetLoadedAssets = useCallback(() => {
     loadedAssetsRef.current = { baseMapImage: new Uint8Array(), attachments: [] };
   }, []);
+
+  // S7 出界図 結線 — the latest onBaseMapImageChange callback, held in a ref so the
+  // asset-capture wrapper (inside the `host` memo) and the new-project init (inside an
+  // effect) always call the CURRENT one without rebuilding those memos / re-running
+  // those effects on a prop-identity change (教訓 5.6 — read live). Refreshed every
+  // render so it never goes stale.
+  const onBaseMapImageChangeRef = useRef(props.onBaseMapImageChange);
+  onBaseMapImageChangeRef.current = props.onBaseMapImageChange;
 
   // The EXACT store snapshot that was serialized into the in-flight save request.
   // A save serializes a snapshot at save START (buildSaveRequest); the IPC write is
@@ -278,6 +296,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           baseMapImage: response.baseMapImage,
           attachments: response.attachments,
         };
+        // S7: display the loaded PROJECT base-map image (feature-aligned) instead of the
+        // preset. Forward the SAME bytes reference retained above (単一真実源, no copy);
+        // the renderer host decodes it once and paints it under the grid. Empty bytes
+        // (a project saved without a base-map image) resolve to the preset in the host.
+        onBaseMapImageChangeRef.current?.(response.baseMapImage);
       }
       return response;
     };
@@ -451,6 +474,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       // attachment bytes from a previously-loaded project so 新規 after a load does not
       // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
       resetLoadedAssets();
+      // S7: a new project reverts the DISPLAY to the bundled preset (FR-03) — push empty
+      // bytes so the renderer host drops any previously-loaded project's map image
+      // (教訓 5.2 全経路で破棄, the display half of resetLoadedAssets).
+      onBaseMapImageChangeRef.current?.(new Uint8Array());
     };
     // 破壊的置換フロー(開く/新規)はラッチ経由で相互排他 (5th bughunt #1/#2): モーダル中断中に
     // 発火した2つ目は DROP。保存/名前を付けて保存は bridge の saveChain がキュー直列化するので

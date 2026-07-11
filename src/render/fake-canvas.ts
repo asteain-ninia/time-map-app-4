@@ -34,6 +34,8 @@ export class FakeContext2D {
   strokes: string[] = [];
   closePaths = 0;
   drawImages: { x: number; y: number; w: number; h: number }[] = [];
+  /** The image SOURCE of each `drawImage` call (S7: assert WHICH base map was drawn). */
+  drawnImages: unknown[] = [];
   clearRects = 0;
   setTransforms: number[][] = [];
   fillStyle = '';
@@ -78,8 +80,9 @@ export class FakeContext2D {
   strokeText(text: string, x: number, y: number, maxWidth?: number): void {
     this.strokeTexts.push(maxWidth === undefined ? { text, x, y } : { text, x, y, maxWidth });
   }
-  drawImage(_img: unknown, x: number, y: number, w: number, h: number): void {
+  drawImage(img: unknown, x: number, y: number, w: number, h: number): void {
     this.drawImages.push({ x, y, w, h });
+    this.drawnImages.push(img);
   }
 }
 
