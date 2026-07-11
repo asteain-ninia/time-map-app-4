@@ -12,6 +12,7 @@ import { asFeatureId, asVertexId } from '../../domain/ids';
 import { timePointYear } from '../../domain/time/time-point';
 
 import type { ExistenceResolver } from './existence';
+import type { DisplayGrabbabilityResolver } from './grabbability';
 import {
   APP_SETTING_KEYS,
   PROJECT_SETTING_KEYS,
@@ -1501,6 +1502,131 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     expect(store.getState().displayControl.focus.originId).toBeNull();
     // depth / emphasize preserved.
     expect(store.getState().displayControl.focus.depth).toBe(4);
+  });
+
+  // === 選択 heal の対称性 (time ↔ displayControl) ===========================
+  //
+  // A display-control change (depth / focus) that rolls the vertex-selection OWNER up
+  // into an aggregate (or omits it) makes it stop exposing grabbable vertices, so the
+  // display owner-lookup can no longer resolve them and the property panel shows
+  //「選択頂点の所有地物を特定できません」(CONTEXT_KIND.Unknown). The store heals this in
+  // the SAME set() as the display-control write via U22's revalidateForDisplay against
+  // an INJECTED grabbability resolver — the display-axis sibling of setCurrentTime's
+  // revalidateForTime (教訓 5.5/5.6). It re-implements NO display-verdict logic (単一
+  // 真実源): tests inject a fake resolver, proving the dependency injection.
+
+  /** A grabbability resolver where a fixed set of feature ids is HIDDEN (aggregated / omitted). */
+  function grabbabilityHiding(...hidden: string[]): DisplayGrabbabilityResolver {
+    const hiddenSet = new Set(hidden);
+    return { ownerExposesVerticesAt: (fid) => !hiddenSet.has(fid) };
+  }
+
+  function storeWithVertexSelection(
+    grabbability: DisplayGrabbabilityResolver,
+    owner: string,
+    vertexIds: readonly string[],
+    activeFeature?: string,
+  ) {
+    return createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      grabbability,
+      initial: {
+        // Start at a NON-default depth so the tests' setGlobalDepth(0) is an actual
+        // change (the default is already globalDepth 0 → a no-op that would skip the heal).
+        displayControl: { globalDepth: 5, focus: { originId: null, depth: 0, emphasize: false } },
+        vertexSelection: { ownerFeatureId: f(owner), vertexIds: new Set(vertexIds.map(v)) },
+        ...(activeFeature ? { activeFeature: f(activeFeature) } : {}),
+      },
+    });
+  }
+
+  it('prunes the vertex selection when a DEPTH change hides its owner (Unknown 回避)', () => {
+    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0', 'v1']);
+    // Owner A is rolled up into an aggregate at this depth → its vertices are no longer
+    // grabbable, so the dangling selection is pruned (would otherwise be Unknown).
+    store.getState().setGlobalDepth(0);
+    const s = store.getState();
+    expect(s.selection.vertexOwner).toBeNull();
+    expect(s.selection.vertexIds.size).toBe(0);
+    expect(s.vertexSelection).toBeNull();
+  });
+
+  it('prunes the vertex selection when a FOCUS change hides its owner', () => {
+    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+    store.getState().setDisplayFocus({ originId: f('B'), depth: 5, emphasize: false });
+    expect(store.getState().selection.vertexOwner).toBeNull();
+    expect(store.getState().selection.vertexIds.size).toBe(0);
+  });
+
+  it('KEEPS the vertex selection when its owner still draws its own shape (not a blanket clear)', () => {
+    // Only B is hidden; the selection owner A still exposes its vertices → untouched.
+    const store = storeWithVertexSelection(grabbabilityHiding('B'), 'A', ['v0', 'v1']);
+    const before = store.getState().selection;
+    store.getState().setGlobalDepth(3);
+    const after = store.getState().selection;
+    // Selection truth is preserved by reference (revalidateForDisplay is idempotent),
+    // so no redundant selection re-derive fired.
+    expect(after).toBe(before);
+    expect(after.vertexIds.size).toBe(2);
+  });
+
+  it('NEVER prunes vertices owned by the ACTIVE feature, even when it is hidden (handles persist)', () => {
+    // A is active AND the vertex owner, and hidden (aggregation-omitted). Its edit
+    // handles are still drawn (draw ⊇ hit), so its vertex selection survives.
+    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0'], 'A');
+    store.getState().setGlobalDepth(0);
+    const s = store.getState();
+    expect(s.selection.activeFeature).toBe(f('A'));
+    expect(s.selection.vertexOwner).toBe(f('A'));
+    expect(s.selection.vertexIds.size).toBe(1);
+  });
+
+  it('prunes a stale vertex set owned by a NON-active hidden feature but keeps the active feature', () => {
+    // Active = A (kept); vertex owner = B (hidden) → B's dangling vertices drop, A stays.
+    const store = storeWithVertexSelection(grabbabilityHiding('B'), 'B', ['v0'], 'A');
+    store.getState().setGlobalDepth(0);
+    const s = store.getState();
+    expect(s.selection.activeFeature).toBe(f('A'));
+    expect(s.selection.vertexOwner).toBeNull();
+    expect(s.selection.vertexIds.size).toBe(0);
+  });
+
+  it('heals through EVERY display-control setter (setFocusDepth / Emphasize / clearDisplayFocus)', () => {
+    for (const apply of [
+      (st: ReturnType<typeof storeWithVertexSelection>) => st.getState().setFocusDepth(5),
+      (st: ReturnType<typeof storeWithVertexSelection>) =>
+        st.getState().setFocusEmphasize(true),
+      (st: ReturnType<typeof storeWithVertexSelection>) =>
+        st.getState().setFocusOrigin(f('Z')),
+    ]) {
+      const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+      apply(store);
+      expect(store.getState().selection.vertexIds.size).toBe(0);
+    }
+    // clearDisplayFocus only fires when a focus is currently set — arm one first (with a
+    // resolver that does NOT hide A so arming keeps the selection), then hide A on clear.
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      grabbability: grabbabilityHiding('A'),
+      initial: {
+        displayControl: { globalDepth: 1, focus: { originId: f('A'), depth: 2, emphasize: true } },
+        vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v0')]) },
+      },
+    });
+    store.getState().clearDisplayFocus();
+    expect(store.getState().selection.vertexIds.size).toBe(0);
+  });
+
+  it('a NO-OP display-control write does not run the heal (display unchanged ⇒ selection untouched)', () => {
+    // Even with the owner "hidden", a no-op write (same value) returns early WITHOUT a
+    // heal — the display did not change, so there is nothing to re-validate, and the
+    // displayControl reference is preserved (bughunt3 identity stability). The heal only
+    // fires on an ACTUAL depth/focus change.
+    const store = storeWithVertexSelection(grabbabilityHiding('A'), 'A', ['v0']);
+    const dcRef = store.getState().displayControl; // globalDepth 5 (from the fixture)
+    store.getState().setGlobalDepth(5); // no-op (already 5)
+    expect(store.getState().displayControl).toBe(dcRef);
+    expect(store.getState().selection.vertexIds.size).toBe(1);
   });
 
   // bughunt3 regression: a NO-OP display-control write (same value) must PRESERVE

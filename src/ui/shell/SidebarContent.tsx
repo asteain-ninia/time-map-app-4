@@ -20,7 +20,7 @@
 // SAME store.setActiveFeature path every selection uses (no second selection
 // source); the property panel then re-resolves to it automatically.
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -33,10 +33,15 @@ import { buildForest } from '../../domain/hierarchy/forest';
 import { resolveFeatureArea } from '../../domain/hierarchy/resolve-shape';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
+import {
+  ownerLookupFromMap,
+  type VertexOwnerLookup,
+} from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
+import { resolveDisplayFor } from '../map/display-resolution-cache';
 import { type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import {
   PropertyPanel,
@@ -205,6 +210,36 @@ function PropertyPanelHost<S>(props: {
   const flattening = useStore(store, (s) => s.projectSettings.flattening);
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
+  // The display-control slice — an owner-lookup input (below): a depth/focus change
+  // swaps this reference wholesale (identity == value, bughunt3), re-deriving the lookup.
+  const displayControl = useStore(store, (s) => s.displayControl);
+
+  // FR-81 / 現状.md §5「owner lookup の結線」(S4b root fix): the panel's `ownerLookup`
+  // resolves each selected vertex to its OWNING feature so a vertex-only selection
+  // (no active feature) shows that feature's properties (ContextFeature). Before this
+  // wiring the host passed NO lookup, so the panel fell back to the EMPTY lookup and
+  // EVERY vertex-only selection classified as Unknown —「選択頂点の所有地物を特定でき
+  // ません」on real hardware — regardless of display state (honest-stub left un-wired,
+  // 教訓 5.7).
+  //
+  // SINGLE TRUTH SOURCE (教訓 5.29): owners come from resolveDisplayFor's `owners` map
+  // — the EXACT vertex→feature map the click hit-test grabs from and the renderer
+  // draws (display-resolution-cache). What the user could CLICK to select is precisely
+  // what the panel can resolve back to a feature; the two can never drift. The bundle
+  // is memoized by (root, time, displayControl) IDENTITY and those are the live
+  // store's own references, so this is a cache HIT off the frame the renderer already
+  // resolved — no second pipeline run.
+  //
+  // MEMOIZED ON ITS EXACT INPUTS (the same discipline as resolveAreaKm2 below): the
+  // committed `domain`, the effective `currentTime`, and the `displayControl` slice.
+  // When none moved, the lookup reference is stable so the panel's decision memo does
+  // not re-run; when any moves (edit / time scrub / depth change) the lookup re-derives
+  // against the live resolution (教訓 5.3, no stale capture: the body reads the root /
+  // time FRESH through getRoot / getTime — `domain` / `currentTime` gate the closure).
+  const ownerLookup = useMemo<VertexOwnerLookup>(
+    () => ownerLookupFromMap(resolveDisplayFor(getRoot(), getTime(), displayControl).owners),
+    [getRoot, getTime, domain, currentTime, displayControl],
+  );
 
   // FR-20 / FR-35: the target feature's 面積（km²）, resolved LIVE from the domain +
   // time effective now.
@@ -276,6 +311,7 @@ function PropertyPanelHost<S>(props: {
       anchorLookup={props.anchorLookup}
       editDispatch={props.editDispatch}
       calendar={props.calendar}
+      ownerLookup={ownerLookup}
       resolveAreaKm2={resolveAreaKm2}
       {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}

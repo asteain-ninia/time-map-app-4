@@ -404,16 +404,22 @@ describe('SidebarContent — 面積 resolve is not recomputed per frame (FR-20 p
     // anchor, so `feature` MUST re-resolve on a time move (via featureLookup.featureAt →
     // one more featuresAt scan) — otherwise a stale earlier-anchor snapshot is written
     // onto the current anchor on save. イベント一覧 subscribes only to `domain` (no scan).
+    // The host's FR-81 ownerLookup (S4b 結線) ALSO re-derives on a time move — ONE
+    // resolveDisplayFor compute for the NEW (root, time, control) generation = ONE more
+    // featuresAt scan here. (In the shipped app that generation is SHARED with the
+    // renderer / hit-test via the display-resolution memo — a cache hit, not an extra
+    // pipeline run; under jsdom no renderer resolved it first, so the host's compute IS
+    // the generation's single run.)
     // So the delta MUST be exactly: FeaturesSection(1) + area resolver(1) + feature
-    // re-resolve(1) = 3. The bughunt #6 regression this test guards (a DOUBLE scan inside
-    // the resolver) would push the resolver's own contribution to 2, making the delta 4.
+    // re-resolve(1) + ownerLookup display resolution(1) = 4. The bughunt #6 regression
+    // this test guards (a DOUBLE scan inside the area resolver) would make the delta 5.
     featuresAtCalls.count = 0;
     act(() => {
       store.getState().setCurrentTime(timePointYear(1050), TIME_CHANGE_SOURCE.Slider);
     });
     // The area is unchanged (same shape at the new instant) but the row is still shown.
     expect(screen.getByTestId('area-value').textContent).not.toBe('');
-    expect(featuresAtCalls.count).toBe(3);
+    expect(featuresAtCalls.count).toBe(4);
   });
 
   it('reuses the memoized area (no resolve) on a re-render that leaves area inputs unchanged', () => {

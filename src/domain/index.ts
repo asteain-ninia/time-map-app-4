@@ -678,6 +678,8 @@ export {
   reresolveAfterStructureChange,
   type ExistenceAtTime,
   revalidateForTime,
+  type DisplayGrabbability,
+  revalidateForDisplay,
 } from './selection/index';
 
 // U24: 編集ツール (頂点/エッジハンドル・移動・点/線/面編集・エッジ滑り・スクリーン座標

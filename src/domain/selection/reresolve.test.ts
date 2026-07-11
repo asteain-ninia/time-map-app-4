@@ -18,6 +18,8 @@ import {
 import {
   reresolveAfterStructureChange,
   revalidateForTime,
+  revalidateForDisplay,
+  type DisplayGrabbability,
   type ExistenceAtTime,
 } from './reresolve';
 import { coord, fid, vid, vidSet } from './fixtures';
@@ -174,5 +176,97 @@ describe('time-change re-validation (教訓 5.5)', () => {
     // Active-feature-only selection of an ever-present feature is likewise identity.
     const activeOnly = withActiveFeature(EMPTY_SELECTION, fid('B'));
     expect(revalidateForTime(activeOnly, 50, existence)).toBe(activeOnly);
+  });
+});
+
+// --- 選択 heal の対称性: display-control re-validation (時刻↔displayControl) ---
+//
+// The sibling of revalidateForTime on the DISPLAY axis (教訓 5.5/5.6/5.11): a
+// depth/focus change can roll a leaf up into an aggregate (or omit it), so its
+// vertices stop being grabbable and the property panel would show「所有地物を特定で
+// きません」(CONTEXT_KIND.Unknown). The heal prunes the now-dangling vertex set — NOT
+// a blanket clear — keeping the active feature + any still-grabbable selection.
+
+describe('display-control re-validation (選択 heal の対称性)', () => {
+  // "A国" (fid A) is rolled up / omitted (no own grabbable vertices); everything else
+  // still draws its own shape. Mirrors resolveDisplayFor(...).grabbable membership.
+  const grabbableExcept = (hidden: FeatureId): DisplayGrabbability => ({
+    ownerExposesVertices: (f: FeatureId) => f !== hidden,
+  });
+
+  it('prunes the vertex selection when its owner stops exposing grabbable vertices', () => {
+    const state = withVertexSet(EMPTY_SELECTION, fid('A'), vidSet('A-v0', 'A-v1'));
+    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
+    // A is aggregated/omitted now → the dangling vertex set is dropped (would be Unknown).
+    expect(healed.vertexIds.size).toBe(0);
+    expect(healed.vertexOwner).toBeNull();
+  });
+
+  it('keeps the whole vertex set when the owner still draws its own shape (not a blanket clear)', () => {
+    const state = withVertexSet(EMPTY_SELECTION, fid('B'), vidSet('B-v0', 'B-v1'));
+    // Only A is hidden; B still exposes its vertices → the SAME reference is returned.
+    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
+    expect(healed).toBe(state);
+    expect(healed.vertexIds).toEqual(vidSet('B-v0', 'B-v1'));
+  });
+
+  it('never prunes vertices owned by the ACTIVE feature (its handles stay grabbable when omitted)', () => {
+    // A is the active feature AND the vertex owner; A is aggregation-omitted. Its edit
+    // handles (and vertices) are still drawn (draw ⊇ hit), so the selection survives.
+    const state = withVertexSet(
+      withActiveFeature(EMPTY_SELECTION, fid('A')),
+      fid('A'),
+      vidSet('A-v0'),
+    );
+    const healed = revalidateForDisplay(state, grabbableExcept(fid('A')));
+    expect(healed).toBe(state);
+    expect(healed.vertexIds).toEqual(vidSet('A-v0'));
+    expect(healed.activeFeature).toBe(fid('A'));
+  });
+
+  it('prunes a stale vertex set owned by a NON-active feature, keeping the active feature', () => {
+    // Active = A; vertex owner = B (a different feature) which is now hidden. B's stale
+    // vertices drop; A stays active (NOT a blanket clear, 教訓 5.11).
+    const state = withVertexSet(
+      withActiveFeature(EMPTY_SELECTION, fid('A')),
+      fid('B'),
+      vidSet('B-v0'),
+    );
+    const healed = revalidateForDisplay(state, grabbableExcept(fid('B')));
+    expect(healed.activeFeature).toBe(fid('A'));
+    expect(healed.vertexIds.size).toBe(0);
+    expect(healed.vertexOwner).toBeNull();
+  });
+
+  it('does not call the resolver and returns the SAME reference for an empty / active-only selection', () => {
+    const calls: FeatureId[] = [];
+    const spyGrab: DisplayGrabbability = {
+      ownerExposesVertices: (f) => {
+        calls.push(f);
+        return false;
+      },
+    };
+    expect(revalidateForDisplay(EMPTY_SELECTION, spyGrab)).toBe(EMPTY_SELECTION);
+    const activeOnly = withActiveFeature(EMPTY_SELECTION, fid('A'));
+    expect(revalidateForDisplay(activeOnly, spyGrab)).toBe(activeOnly);
+    // The owner check short-circuits before the injected resolver is consulted.
+    expect(calls).toEqual([]);
+  });
+
+  it('preserves an in-flight transient (FR-42 非干渉: a display change must not abort a gesture)', () => {
+    const dragging: SelectionState = withTransient(
+      withVertexSet(EMPTY_SELECTION, fid('B'), vidSet('B-v0')),
+      {
+        phase: POINTER_PHASE.VertexDrag,
+        ownerFeatureId: fid('B'),
+        pressedVertexId: vid('B-v0'),
+        origin: coord(0, 0),
+        current: coord(1, 1),
+      },
+    );
+    // B still grabbable → unchanged, transient intact.
+    const healed = revalidateForDisplay(dragging, grabbableExcept(fid('A')));
+    expect(healed).toBe(dragging);
+    expect(healed.transient.phase).toBe(POINTER_PHASE.VertexDrag);
   });
 });

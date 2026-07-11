@@ -30,6 +30,7 @@ import {
   addVertices,
   replaceVertices,
   reresolveAfterStructureChange,
+  revalidateForDisplay,
   revalidateForTime,
   toggleVertex,
   withActiveFeature,
@@ -41,6 +42,8 @@ import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
+import type { DisplayGrabbabilityResolver } from './grabbability';
+import { ALWAYS_GRABBABLE_RESOLVER } from './grabbability';
 import {
   type AppSettingKey,
   type AppSettings,
@@ -563,6 +566,16 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly domainEquals?: (a: S, b: S) => boolean;
   /**
+   * Injected display-grabbability predicate (単一真実源; defaults to always-grabbable).
+   * Used ONLY to re-validate the vertex selection on a DISPLAY-CONTROL change (選択
+   * heal の対称性: the display-axis sibling of `existence` for the time axis, 教訓
+   * 5.5/5.6). The composition root wires it to resolveDisplayFor's `grabbable` set so a
+   * depth/focus change that rolls a leaf up into an aggregate prunes its now-un-grabbable
+   * vertex selection instead of leaving it dangling (property panel Unknown). The
+   * default never prunes, so a host that omits it keeps the pre-fix behaviour.
+   */
+  readonly grabbability?: DisplayGrabbabilityResolver;
+  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -595,6 +608,7 @@ export function createSessionStore<S>(
   options: CreateSessionStoreOptions<S>,
 ): StoreApi<SessionStore<S>> {
   const existence = options.existence ?? ALWAYS_PRESENT_RESOLVER;
+  const grabbability = options.grabbability ?? ALWAYS_GRABBABLE_RESOLVER;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
@@ -669,6 +683,40 @@ export function createSessionStore<S>(
       savedAppSettings !== null &&
       isProjectNoOp(savedProjectSettings, get().projectSettings) &&
       isDocumentAffectingAppNoOp(savedAppSettings, get().appSettings);
+
+    // Commit a CHANGED display-control value AND heal the vertex selection against it
+    // in ONE set() (選択 heal の対称性: the display-axis sibling of setCurrentTime's
+    // revalidateForTime, 教訓 5.5/5.6). A depth/focus change can roll the vertex
+    // selection's OWNER up into an aggregate (or omit it), so it stops exposing its own
+    // grabbable vertices and the property panel would classify the still-selected
+    // vertices as CONTEXT_KIND.Unknown「所有地物を特定できません」. We re-validate through
+    // U22's revalidateForDisplay against the injected grabbability port bound to the
+    // NEW control + the CURRENT time — the SAME resolveDisplayFor grabbable set the
+    // renderer draws (単一真実源, re-implementing no verdict logic). Folded into the
+    // SAME set() as the display-control write so display and selection never drift.
+    //
+    // ONLY the six pure display-control setters below route through here (never a
+    // NO-OP write — the callers return early on an unchanged value, preserving the
+    // displayControl reference for the display memos, bughunt3). revalidateForDisplay
+    // is idempotent (returns the SAME selection reference when nothing is pruned — the
+    // common case, and it does not even consult the resolver for an empty/active-only
+    // selection), so the selection mirrors are re-derived only on an actual prune, and
+    // the transient is preserved (FR-42 非干渉 — a display change never aborts a gesture).
+    const commitDisplayControl = (nextControl: DisplayControl): void => {
+      const selection = get().selection;
+      const healed = revalidateForDisplay(selection, {
+        ownerExposesVertices: (featureId) =>
+          grabbability.ownerExposesVerticesAt(
+            featureId,
+            get().currentTime,
+            nextControl,
+          ),
+      });
+      set({
+        displayControl: nextControl,
+        ...(healed !== selection ? selectionPatch(healed) : {}),
+      });
+    };
 
     return {
     // -- initial state -------------------------------------------------------
@@ -1010,28 +1058,33 @@ export function createSessionStore<S>(
     // though geometry was unchanged. Skipping the no-op write keeps a single
     // identity for an unchanged depth/focus → cache HIT (教訓 5.29: 単一真実源 =
     // 単一 COMPUTATION — an unchanged input must not look like a new generation).
+    // Each CHANGED write routes through commitDisplayControl, which folds in the
+    // vertex-selection heal (revalidateForDisplay) so a depth/focus change that hides
+    // the selection owner prunes the now-un-grabbable vertices in the SAME set()
+    // (選択 heal の対称性: display-axis sibling of setCurrentTime). A NO-OP write still
+    // returns early WITHOUT set(), preserving the displayControl reference (bughunt3).
     setGlobalDepth(depth) {
       const dc = get().displayControl;
       if (dc.globalDepth === depth) return;
-      set({ displayControl: { ...dc, globalDepth: depth } });
+      commitDisplayControl({ ...dc, globalDepth: depth });
     },
 
     setFocusOrigin(originId) {
       const dc = get().displayControl;
       if (dc.focus.originId === originId) return;
-      set({ displayControl: { ...dc, focus: { ...dc.focus, originId } } });
+      commitDisplayControl({ ...dc, focus: { ...dc.focus, originId } });
     },
 
     setFocusDepth(depth) {
       const dc = get().displayControl;
       if (dc.focus.depth === depth) return;
-      set({ displayControl: { ...dc, focus: { ...dc.focus, depth } } });
+      commitDisplayControl({ ...dc, focus: { ...dc.focus, depth } });
     },
 
     setFocusEmphasize(emphasize) {
       const dc = get().displayControl;
       if (dc.focus.emphasize === emphasize) return;
-      set({ displayControl: { ...dc, focus: { ...dc.focus, emphasize } } });
+      commitDisplayControl({ ...dc, focus: { ...dc.focus, emphasize } });
     },
 
     setDisplayFocus(focus) {
@@ -1045,7 +1098,7 @@ export function createSessionStore<S>(
       ) {
         return;
       }
-      set({ displayControl: { ...dc, focus } });
+      commitDisplayControl({ ...dc, focus });
     },
 
     clearDisplayFocus() {
@@ -1060,7 +1113,7 @@ export function createSessionStore<S>(
       ) {
         return;
       }
-      set({ displayControl: { ...dc, focus: NO_DISPLAY_FOCUS } });
+      commitDisplayControl({ ...dc, focus: NO_DISPLAY_FOCUS });
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

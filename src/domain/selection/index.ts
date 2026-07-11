@@ -81,10 +81,12 @@ export {
   classifyVisual,
 } from './visual';
 
-// Re-resolution after structure / time changes (教訓 5.11 / 5.5).
+// Re-resolution after structure / time / display-control changes (教訓 5.11 / 5.5).
 export {
   type NextTargetPreference,
   reresolveAfterStructureChange,
   type ExistenceAtTime,
   revalidateForTime,
+  type DisplayGrabbability,
+  revalidateForDisplay,
 } from './reresolve';

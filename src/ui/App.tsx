@@ -121,6 +121,7 @@ import { COMMAND_ID } from './shell/commands';
 import { featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete } from './vertex-delete';
 import { createLiveExistenceResolver } from './live-existence';
+import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { buildCommittedFeatures } from './map/committed-features';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
@@ -205,6 +206,17 @@ export function App(): JSX.Element {
           // Read the live committed root through the ref; until it is wired (it is
           // assigned synchronously on the very next line after this store is built)
           // fall back to an empty project so a predicate can never throw.
+          const getRoot = liveRootRef.current;
+          return getRoot !== null ? getRoot() : buildEmptyProject();
+        }),
+        // 選択 heal の対称性 (time ↔ displayControl): re-validate the vertex selection
+        // on every depth/focus change against the SAME resolveDisplayFor `grabbable`
+        // set the renderer draws / the hit-test grabs (単一真実源). Without this a
+        // depth/focus change that rolls the selection owner up into an aggregate left
+        // the now-un-grabbable vertices selected, and the property panel showed
+        //「選択頂点の所有地物を特定できません」. Bound to the LIVE root via the same
+        // getRoot ref the existence resolver uses (read live per call, never stale).
+        grabbability: createLiveGrabbabilityResolver(() => {
           const getRoot = liveRootRef.current;
           return getRoot !== null ? getRoot() : buildEmptyProject();
         }),
