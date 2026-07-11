@@ -15,8 +15,21 @@
 | HB3-12 | 存続期間の単一真実源=錨列。属性 start/end(FR-97) は錨列の導出 | **編集UI実装済**（278dba6: changeStart/setEnd を property dispatch から） | 属性 start/end を「導出・表示専用」とすべきか／今回の「編集可＝錨列を駆動」で良いか（現状は後者） |
 | HB3-23 | グリッド間隔 0.1° まで対応（0.1°広域は「グリッドなし」へ degrade） | 実装済（26a8b71） | ほぼ確定。広域 degrade で良いか |
 | HB3-24 | Electron 既定メニュー autoHideMenuBar:true（Alt 一時表示）＋本番最小化 | 実装済 | ネイティブ・ショートカット維持の中間策で良いか |
+| HB5-1 | サイドバータブ見出し=「錨一覧」（旧「歴史アンカー一覧（年表）」） | 実装済（e56ae17） | 見出し3文字案で良いか |
+| HB5-3 | 錨一覧クリックの視点フィット: padding 0.2・zoomMin/Max クランプ・地図クリックでは不動 | 実装済（e56ae17） | パディング率・発動条件で良いか |
 
 ## 進捗ログ（新しい順・先頭追記）
+
+- 2026-07-12: **性能最適化セッション（ユーザー指示「本体の最適化をGO」「国境線の情報量を落とすくらいなら本体最適化」）+ 実機FB HB5 対応**。体制=Fable オーケストレータ / 実装 Opus subagent / 全ユニット Codex gpt-5.5 read-only 敵対レビュー（指摘は全件 fix-forward）。全コミット ローカル・push せず・各コミット時ゲート緑。ベンチ対象=derle-import/derle-world-full.tmap（722地物/99,314頂点、実データ）。
+  - **ベンチ基盤**: `src/ui/map/derle-benchmark.test.ts`（3b2094b、DERLE_TMAP_DIR 必須=通常 npm test 非混入）。HEAD で赤だった e2e typecheck ゲートを修復（2468a2c）。
+  - **FR-117 ログ永続を本番結線**（5a60a72）: `userData/logs/diagnostic-YYYY-MM-DD.jsonl`、7世代、フィールド/行16KB/日10MB の3段上限、main 側 normalizer、reject 握り潰しでフィードバックループ遮断。**以後の実機不具合はログで事後検証可能**。
+  - **性能4連（すべて出力完全不変をプロパティテストで固定）**: ①シーム unwrapClosedLonSequence O(n²)→O(n)（c4f2f34）=**表示解決 cold 15.3s→127ms** ②checkConsistency terminal-overlap early-reject（20166eb+c58045c）③ring-hierarchy bbox-reject 3種（b28206c+5d73b70、申し送りの誤診「enclave O(k²)」を実測訂正=真因は穴包含708ms）=**checkConsistency 19.4s→2.1s** ④当たり判定 HitIndex（58b7c6b+c107d01）=**liveHitTestAt 35.3ms→0.07ms**・leafAtPoint 索引（5b0c18b）=**21.1ms→0.04ms**。
+  - **実機報告「所有者特定できません」根治**（2b9a641+3903186）: 本命=PropertyPanelHost の ownerLookup 未結線（教訓5.7）を display resolution owners で結線=FR-81 初機能。副=選択 heal を root/time/control 全書き込み枝で対称化+共有頂点の per-vertex 再解決（Codex HIGH 指摘の反映）。
+  - **実機FB HB5-1..4**（e56ae17）: 可視文字列「アンカー」→「錨」統一・タブ見出し「錨一覧」・錨一覧クリックで地物へカメラ自動フィット・Escape 選択解除（edit.deselect+メニュー、ドラフト/モーダル優先）。
+  - **実機報告「南北ズレ」根治**（76f238c）: 真因=.tmap 同梱 baseMapImage が未描画で常にプリセット（viewBox 高 2122.75≠原本 2131.011）表示。resolveDisplayedBasemap を初結線し User 画像を createImageBitmap で描画（CSP 不変）。データ側は相互相関 dx=0/dy=0 で無罪を実証済み。
+  - **残キュー（申し送り）**: HitIndex 世代毎構築 90-130ms の idle 先行化 / ring-hierarchy part(a) の pointInPolygon ループ（~90ms、predicates 改変要） / discovery 非表示の grabbability 統合 / ベンチ計測の精緻化4件 / メニュー展開中 Escape の選択解除同時発生（規約対象外・許容） / checkConsistency 残 2.1s（実隣接ペアの本質コスト）。
+  - フル vitest 3,334→**3,492件**（+158）。**最終ゲート(静止ツリー・76f238c 時点)全緑**: typecheck(3構成) 0 / lint 0 errors / フル vitest 3,492 passed・0 failed / **e2e 86/86**（1件は FR-20 面積セクションが S4b の表示解決結線で正しく描画されるようになったことによる視覚ベースライン陳腐化 → 再生成して緑。過去の「視覚ベースライン再生成」パターンと同型）。
+  - 追記: S7 への Codex レビューで HIGH1+MED2+LOW1（A→B連続ロードの meta ペアリング競合 / New Project 時の in-flight 未無効化 / 非信頼画像バイトの上限なし / レーステスト不足）→ fix-forward 実施、結果は後続コミット参照。
 
 - 2026-07-02: **引き継ぎ + 落ちた要件監査 + 3ライン運用 + file-ops並行性根治**（ユーザー指示: gimoza品質最優先 / 過去プロジェクト参照を解禁・特に落ちた要件に注意 / 実装・レビュー・バグハントの3ライン運用でメインスレを clean 維持 / ultracode ON）。全コミット ローカル・push せず。
   - **落ちた要件 横断監査 完了**（workflow `wgnb7h9i7`・34エージェント・Extract→Merge→Verify）: クリーンルーム封印を本監査に限り解除し v1/v2/v3→v4 の要件差分を敵対的検証。**結論=中核の必須要件で v4 が落としたものは無い（クリーンルーム再実装として忠実）**。27候補→DROPPED/PARTIAL **11件(全 LOW)** / PRESENT・DESCOPED 16件。単一窓口=`.autopilot/AUDIT-DROPPED-REQUIREMENTS.md`、要約=DECISIONS **D43**。
