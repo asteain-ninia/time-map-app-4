@@ -1239,7 +1239,7 @@ function removeFeatureAtTime(
  * resolves. Past-edits in place, preserving siblings; appends the feature when the
  * effective snapshot did not already hold it. Pure.
  */
-function rewriteFeatureSnapshotAtTime(
+export function rewriteFeatureSnapshotAtTime(
   histories: readonly FeatureHistory[],
   featureId: FeatureId,
   after: Feature,

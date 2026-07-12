@@ -118,6 +118,11 @@ export default defineConfig({
       // it runs in node. The focus-trap hook test is `.test.tsx` (jsdom; .tsx glob
       // below).
       'src/ui/a11y/**/*.test.ts',
+      // U33 auto-color recolor-binding pure-logic tests: the store/App-independent
+      // FeatureColorPort adapter + palette resolution + the maybeComposeAutoRecolor
+      // funnel wrapper (FR-100/101). These import only pure `.ts` (domain coloring /
+      // editing + live-lookup), so they run in node without a DOM.
+      'src/ui/coloring/**/*.test.ts',
       // React component operation tests (jsdom; see environmentMatchGlobs):
       // U20 shell layout / mode toggle / view-only disabling / drag / tooltip /
       // overlay layering, etc.

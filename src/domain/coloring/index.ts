@@ -43,6 +43,8 @@ export {
   adjacencySignature,
 } from './adjacency';
 
+export { buildAdjacencyFromLeaves } from './adjacency-from-features';
+
 export {
   type ColorIndexAssignment,
   assignColorIndices,
