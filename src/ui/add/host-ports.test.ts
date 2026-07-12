@@ -302,3 +302,102 @@ describe('composeFrame base-map meta (S7)', () => {
     expect(visibleCount).toBe(committed.length);
   });
 });
+
+// U37 測量レイヤ (FR-14 / FR-15) — the PERSISTENT survey slot in the frame
+// composition. The survey lines must NOT ride the single tool-overlay slot
+// (drawKnife/lastOverlay — knife/merge/reparent/ring/drill all share it and
+// overwrite each other), because FR-15 keeps the confirmed lines visible AFTER
+// survey mode is exited and while other tools draw. This pins the layer ORDER
+// (base → grid → committed → survey → editHandles → overlay) and the omitted-slot
+// pass-through, so a survey line always draws above the map content but never
+// covers the edit handles / live tool draft.
+describe('composeFrame survey layer (U37 / FR-15 独立スロット)', () => {
+  const SURVEY_STROKE = '#15c0b5';
+  const surveyPrims: DrawPrimitive[] = [
+    {
+      kind: 'line',
+      points: [
+        { lon: 0, lat: 0 },
+        { lon: 5, lat: 5 },
+      ],
+      widthPx: 2,
+      stroke: SURVEY_STROKE,
+    },
+    { kind: 'point', at: { lon: 0, lat: 0 }, radiusPx: 5, fill: SURVEY_STROKE },
+  ];
+  const editHandles: DrawPrimitive[] = [
+    {
+      kind: 'handle',
+      at: { lon: 10, lat: 20 },
+      radiusPx: 6,
+      fill: '#fff',
+      stroke: '#000',
+      strokeWidthPx: 1,
+      handleKind: 'vertex',
+    },
+  ];
+  const overlay: DrawPrimitive[] = [
+    { kind: 'point', at: { lon: 1, lat: 1 }, radiusPx: 4, fill: '#f00' },
+  ];
+
+  it('composites survey ABOVE committed and UNDER editHandles + tool overlay', () => {
+    const prims = composeFrame({
+      baseImage: null,
+      committed: [point('pt-1', 10, 20)],
+      overlay,
+      editHandles,
+      survey: surveyPrims,
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+
+    const committedIdx = prims.findIndex(
+      (p) => p.kind === 'point' && p.fill === STYLE.fill,
+    );
+    const surveyIdx = prims.findIndex(
+      (p) => p.kind === 'line' && p.stroke === SURVEY_STROKE,
+    );
+    const handleIdx = prims.findIndex((p) => p.kind === 'handle');
+    const overlayIdx = prims.indexOf(overlay[0]!);
+
+    expect(committedIdx).toBeGreaterThanOrEqual(0);
+    expect(surveyIdx).toBeGreaterThan(committedIdx);
+    expect(handleIdx).toBeGreaterThan(surveyIdx);
+    expect(overlayIdx).toBeGreaterThan(handleIdx);
+    // Both survey primitives are present verbatim (line + endpoint marker).
+    expect(prims).toContain(surveyPrims[0]);
+    expect(prims).toContain(surveyPrims[1]);
+  });
+
+  it('an OMITTED survey slot is a pass-through (legacy callers unchanged)', () => {
+    const prims = composeFrame({
+      baseImage: null,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    expect(prims.some((p) => p.kind === 'line' && p.stroke === SURVEY_STROKE)).toBe(
+      false,
+    );
+  });
+
+  it('an EMPTY survey slot draws nothing extra (教訓 5.18: empty is a true frame)', () => {
+    const withEmpty = composeFrame({
+      baseImage: null,
+      committed: [],
+      overlay: [],
+      survey: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    const without = composeFrame({
+      baseImage: null,
+      committed: [],
+      overlay: [],
+      camera: CAMERA,
+      viewport: VIEWPORT,
+    });
+    expect(withEmpty.length).toBe(without.length);
+  });
+});

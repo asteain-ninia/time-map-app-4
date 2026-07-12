@@ -28,6 +28,14 @@ export const SURVEY_STRINGS = {
   guideAwaitingEnd: 'もう一度クリックして終点を指定してください（Escでキャンセル）。',
   /** Shown for an internal inconsistency (FR-117). */
   internalError: '内部エラーが発生しました。開発者へ報告してください。',
+  /** Coordinate display-format group label (FR-16 切替, U37). */
+  formatLabel: '座標表示',
+  /** Format switch: show BOTH 度分秒 and 十進 (the FR-16 default). */
+  formatBoth: '両方',
+  /** Format switch: 度分秒 only. */
+  formatDms: '度分秒',
+  /** Format switch: 十進 only. */
+  formatDecimal: '十進',
 } as const;
 
 /** Format a distance (km) for display, e.g. `1,234.56 km`. */

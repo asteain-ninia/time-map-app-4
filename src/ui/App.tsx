@@ -86,6 +86,13 @@ import { DrillToolController, type DrillDrawSink } from './drill/index';
 import './drill/drill.css';
 import { ReparentToolController, type ReparentDrawSink } from './reparent/index';
 import './reparent/reparent.css';
+import {
+  SurveyToolController,
+  SurveyMapBridge,
+  SurveyControls,
+  type SurveyDrawSink,
+} from './survey/index';
+import './survey/survey.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
 import {
@@ -1348,6 +1355,19 @@ export function App(): JSX.Element {
     }),
     [],
   );
+  // U37: the PERSISTENT survey layer sink (FR-14 / FR-15). Deliberately NOT the
+  // shared single tool-overlay slot (drawKnife): the confirmed survey lines must
+  // survive other tools' overlay pushes / `[]` resets and stay visible after
+  // survey mode is exited (FR-15) — the renderer keeps them in a dedicated slot
+  // (host-ports drawSurvey) composited under the edit handles / tool overlay.
+  const surveyDrawSink: SurveyDrawSink = useMemo(
+    () => ({
+      drawSurvey(primitives: readonly DrawPrimitive[]): void {
+        rendererRef.current?.drawSurvey(primitives);
+      },
+    }),
+    [],
+  );
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1951,6 +1971,9 @@ export function App(): JSX.Element {
   // U27: a drill session past Idle owns the keyboard (its OWN Ctrl+Z undoes a region
   // vertex; a stray global Delete during a drill must not fire) — 教訓 c1e5534.
   const [drillDrawing, setDrillDrawing] = useState(false);
+  // U37: an in-progress survey DRAFT owns the keyboard (its OWN Escape cancels the
+  // draft; a stray global Delete during a measurement must not hit the selection).
+  const [surveyDrafting, setSurveyDrafting] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
@@ -1960,7 +1983,8 @@ export function App(): JSX.Element {
     mergeDrawing ||
     reparentDrawing ||
     ringEditDrawing ||
-    drillDrawing;
+    drillDrawing ||
+    surveyDrafting;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -2336,6 +2360,18 @@ export function App(): JSX.Element {
         suspended={shortcutsSuspended}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
+        mapOverlay={
+          /* U37 測量の入力ブリッジ (教訓 5.14 / 5.29): mounted INSIDE the map cell
+             (.map-area__overlay) so its client rect equals the canvas' box by
+             construction — it never covers the 上部バー controls / toolbar /
+             timeline, and "clicked here ⇒ measured here" shares the renderer's
+             one transform. Renders nothing while 測量モード is OFF. */
+          <SurveyMapBridge
+            store={store}
+            screenToWorld={screenToWorld}
+            mapCameraInput={mapCameraInput}
+          />
+        }
         topBar={
           /* FR-12 INTEGRATION (教訓 5.7 合成ルートの結線漏れ / 教訓 5.16 倍率の二重適用
              防止): mount the U18 経度シフト control in the上部バー (ユーザー要望「経度シフト
@@ -2362,6 +2398,11 @@ export function App(): JSX.Element {
           <>
             <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
             <GlobalDepthPanel store={store} />
+            {/* U37 測量モード (FR-14/15/16 結線): the 補助モード toggle + クリア +
+                読取パネル, mounted in the SAME normal-flow 上部バー row as the two
+                view controls above — it never overlaps the map input layer (教訓
+                5.14) and is NOT gated on editability (View でも使える, U37 §2.1). */}
+            <SurveyControls store={store} />
           </>
         }
         overlay={
@@ -2561,6 +2602,19 @@ export function App(): JSX.Element {
               onCommitted={onDrillCommitted}
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
+            />
+            {/* U37 INTEGRATION (教訓 5.7 / 5.2): the survey-mode controller, bound to
+                the SAME store. It is HEADLESS and mounted ALWAYS (even while survey is
+                OFF) so the confirmed survey lines keep drawing through the dedicated
+                persistent survey layer until an explicit clear (FR-15); the transparent
+                input bridge lives in the MAP CELL (AppShell mapOverlay, below) and
+                exists only while 測量モード is active. Was unreachable — domain/survey
+                + ui/survey/survey-batch existed but no UI consumed them (audit:
+                「ドメイン完備・UI 皆無」, FR-14/15/16). */}
+            <SurveyToolController
+              store={store}
+              drawSink={surveyDrawSink}
+              onDrawingChange={setSurveyDrafting}
             />
             {/* U35 — conflict-resolution modal (FR-62 / FR-63). Mounted only while a
                 confirmation is paused; it sits ABOVE the tool input layers and takes

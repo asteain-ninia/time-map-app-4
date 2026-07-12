@@ -17,3 +17,15 @@ export {
   buildSurveyPrimitives,
   currentMeasurement,
 } from './survey-batch';
+
+export {
+  SurveyToolController,
+  SurveyMapBridge,
+  NO_SURVEY_DRAW_SINK,
+  SURVEY_CLICK_MOVE_THRESHOLD_PX,
+  type SurveyDrawSink,
+  type SurveyToolControllerProps,
+  type SurveyMapBridgeProps,
+} from './SurveyToolController';
+
+export { SurveyControls, type SurveyControlsProps } from './SurveyControls';

@@ -1,0 +1,64 @@
+/* U37 — survey-mode chrome styles (FR-14 / FR-15 / FR-16, 教訓 5.14 input layers). */
+
+/* The transparent map-input bridge. It is mounted INSIDE the map cell through
+   AppShell's mapOverlay slot (.map-area__overlay, absolute inset:0 over the map
+   only), so filling its parent makes its client rect equal the canvas' box by
+   construction — "clicked here ⇒ measured here" cannot diverge (教訓 5.29:
+   screenToWorld converts against the canvas rect), and it can never cover the
+   上部バー survey controls / toolbar / timeline the way a whole-shell overlay
+   scaffold (whose empty auto rows collapse) would (教訓 5.14: 透明な層が背面の
+   操作を奪わない). Mounted only while survey mode is active. */
+.survey-tool__input {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  pointer-events: auto;
+  touch-action: none;
+  background: transparent;
+}
+
+/* The topBar controls (toggle / clear / guide / readout) sit in the normal-flow
+   上部バー row (never over the map — no pointer-events trap by construction). */
+.survey-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.survey-controls__toggle[aria-pressed='true'] {
+  background: #1565c0;
+  color: #fff;
+}
+
+.survey-controls__guide {
+  color: inherit;
+  opacity: 0.85;
+}
+
+.survey-controls__readout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.survey-controls__title {
+  font-weight: 600;
+}
+
+.survey-controls__coord {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.survey-controls__coord-label {
+  font-weight: 600;
+}
+
+.survey-controls__format button[aria-pressed='true'] {
+  background: #1565c0;
+  color: #fff;
+}

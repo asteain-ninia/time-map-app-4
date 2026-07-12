@@ -36,6 +36,17 @@ import {
   withActiveFeature,
   withoutVertexSet,
 } from '../../domain/selection';
+import {
+  cancelDraft as surveyCancelDraftTransition,
+  clearSurvey as surveyClearTransition,
+  clickPoint as surveyClickPointTransition,
+  disableSurveyMode,
+  enableSurveyMode,
+  initialSurveyState,
+  updateHover as surveyUpdateHoverTransition,
+  type SurveyState,
+} from '../../domain/survey/index';
+import type { WorldCoordinate } from '../../domain/coordinate';
 import { getCalendar, type Calendar } from '../../domain/time/calendar';
 import { compareNormalized, normalize } from '../../domain/time/normalized';
 import { type TimePoint, timePointYear } from '../../domain/time/time-point';
@@ -161,6 +172,18 @@ export interface SessionStoreState<S> {
    */
   readonly displayControl: DisplayControl;
 
+  // -- survey mode (U37 / FR-14 / FR-15 / FR-16) ------------------------------
+  /**
+   * The survey 補助モード slice (U37): a SEPARATE axis from mode/tool/selection
+   * (specs/U37 §2.1 — never a fourth EDIT_MODE). The store holds ONE domain
+   * {@link SurveyState} and the actions below only call the pure domain
+   * transitions (単一真実源 — no survey logic re-implemented here). This slice is
+   * a NON-persisted temporary display (FR-15): it never reaches the `.tmap`
+   * schema, never marks the project dirty, and is discarded wholesale on a
+   * LOAD / NEW (U37 §4.5).
+   */
+  readonly survey: SurveyState;
+
   // -- settings (FR-109 / FR-110) --------------------------------------------
   readonly projectSettings: ProjectSettings;
   readonly appSettings: AppSettings;
@@ -284,6 +307,29 @@ export interface SessionStoreActions<S> {
   setDisplayFocus(focus: DisplayFocus): void;
   /** Clear the individual focus entirely (revert to global N only, 教訓 5.2). */
   clearDisplayFocus(): void;
+
+  // survey mode (U37 / FR-14 / FR-15 / FR-16) — thin wrappers over domain/survey
+  /**
+   * Turn the survey 補助モード ON. In the SAME transition the active edit tool is
+   * cleared (activeTool: null) so the map is covered by at most ONE input bridge
+   * (入力軸の相互排他) — but the View/Add/Edit mode and the selection are NOT
+   * touched (survey is a separate axis, U37 §2.1). Confirmed lines survive a
+   * re-enable (FR-15).
+   */
+  surveyEnable(): void;
+  /**
+   * Turn the survey 補助モード OFF. Discards the in-progress DRAFT ONLY and KEEPS
+   * the confirmed lines (FR-15 — the named U37 §6 pitfall: 解除≠クリア).
+   */
+  surveyDisable(): void;
+  /** A confirming survey click (first = start, second = confirm a line). */
+  surveyClickPoint(point: WorldCoordinate): void;
+  /** Update the live hover preview point (draft のみ; identity no-op otherwise). */
+  surveyUpdateHover(point: WorldCoordinate): void;
+  /** Cancel the in-progress draft (Escape / mode switch); lines + active kept. */
+  surveyCancelDraft(): void;
+  /** Clear ALL survey results (確定線 + draft) — the only line-emptying path. */
+  surveyClear(): void;
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
@@ -770,6 +816,7 @@ export function createSessionStore<S>(
     camera: init.camera ?? DEFAULT_CAMERA,
     centerLon: init.centerLon ?? 0,
     displayControl: init.displayControl ?? DEFAULT_DISPLAY_CONTROL,
+    survey: initialSurveyState(),
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
@@ -963,6 +1010,9 @@ export function createSessionStore<S>(
         // so a load with no active focus does not bust the display memos (bughunt3 —
         // see clearedFocusControl).
         displayControl: clearedFocusControl(get().displayControl),
+        // U37 §4.5: the survey slice (確定線 + draft + active) belongs to the OLD
+        // project's session — discard it wholesale on a LOAD / NEW (教訓 5.2).
+        survey: initialSurveyState(),
         ...selectionPatch(EMPTY_SELECTION),
       });
     },
@@ -1183,6 +1233,53 @@ export function createSessionStore<S>(
       commitDisplayControl({ ...dc, focus: NO_DISPLAY_FOCUS });
     },
 
+    // -- survey mode (U37): thin calls into domain/survey transitions ---------
+    // Every action funnels the CURRENT slice through the pure domain transition
+    // and writes the result back (単一真実源 — the store re-implements NO survey
+    // rule). None of them touches projectDirty / domain / selection / mode: the
+    // slice is non-persisted UI display (FR-15) on its own axis (U37 §2.1).
+    // Identity-preserving no-op guard: a transition that returns the SAME state
+    // reference (hover with no draft, cancel while idle, …) does NOT call set(),
+    // so no subscriber (Canvas redraw) sees a spurious generation (教訓 5.29 —
+    // the same discipline as the display-control setters above).
+    surveyEnable() {
+      // activeTool is cleared in the SAME set() so the edit-tool bridge unmounts
+      // atomically with the survey bridge mounting (入力軸の相互排他 — at most one
+      // map-covering input layer). Unlike setActiveTool this does NOT clear the
+      // selection: survey is a viewing aid, not a tool switch (U37 §2.1).
+      set({ survey: enableSurveyMode(get().survey), activeTool: null });
+    },
+
+    surveyDisable() {
+      const cur = get().survey;
+      const next = disableSurveyMode(cur);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyClickPoint(point) {
+      const cur = get().survey;
+      const next = surveyClickPointTransition(cur, point);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyUpdateHover(point) {
+      const cur = get().survey;
+      const next = surveyUpdateHoverTransition(cur, point);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyCancelDraft() {
+      const cur = get().survey;
+      const next = surveyCancelDraftTransition(cur);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyClear() {
+      const cur = get().survey;
+      const next = surveyClearTransition(cur);
+      if (next !== cur) set({ survey: next });
+    },
+
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----
     updateProjectSetting(key, value) {
       const scope = classifySettingKey(key);
@@ -1398,6 +1495,8 @@ export function createSessionStore<S>(
         // displayControl reference when focus is already none so an atomic load with no
         // active focus does not bust the display memos (see clearedFocusControl).
         displayControl: clearedFocusControl(get().displayControl),
+        // U37 §4.5: discard the survey slice wholesale (same as resetToDomain).
+        survey: initialSurveyState(),
         // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }

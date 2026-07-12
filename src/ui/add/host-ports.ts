@@ -285,6 +285,13 @@ export interface AddHostPorts {
   /** Paint the provisional knife layer (U26: overlay / 対象面強調 / 分断線 / 固定円). */
   drawKnife(primitives: readonly DrawPrimitive[]): void;
   /**
+   * Paint the PERSISTENT survey layer (U37 / FR-14 / FR-15). A dedicated slot,
+   * NOT the shared tool overlay (仕様書 §3): the confirmed survey lines must keep
+   * drawing across tool-overlay pushes / resets, committed redraws and pan/zoom
+   * until an explicit clear pushes `[]` (FR-15 — 解除後も線が残る).
+   */
+  drawSurvey(primitives: readonly DrawPrimitive[]): void;
+  /**
    * Re-composite the whole frame (base + grid + COMMITTED features + the last tool
    * overlay) from the CURRENT inputs. Called by the composition root whenever the
    * committed domain / current time / selection changes so an added / edited /
@@ -377,6 +384,16 @@ export interface FrameInputs {
   /** The current tool-overlay primitives (FR-78 provisional add / knife). */
   readonly overlay: readonly DrawPrimitive[];
   /**
+   * The PERSISTENT survey layer (U37 / FR-14 / FR-15): confirmed survey lines +
+   * the in-progress draft preview, composited ABOVE the committed features and
+   * UNDER the {@link editHandles} / tool {@link overlay}. This is a SEPARATE slot
+   * from the single tool overlay ON PURPOSE (仕様書 §3): knife / merge / reparent /
+   * ring / drill all share the overlay slot and overwrite each other, while the
+   * survey lines must keep drawing after survey mode is exited and while other
+   * tools draw (FR-15). Defaults to none (legacy callers unchanged).
+   */
+  readonly survey?: readonly DrawPrimitive[];
+  /**
    * The edit-handle primitives for the active feature (HB3-9 / FR-87), composited
    * ABOVE the committed features and UNDER the {@link overlay}. Empty when not editing
    * / no active feature. Defaults to none.
@@ -449,6 +466,10 @@ export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
     primitives.push(...built.primitives);
     visibleCount = built.visibleCount;
   }
+  // U37 survey layer (FR-15): confirmed survey lines draw ABOVE the committed
+  // features (they are a measurement over the map content) but UNDER the edit
+  // handles and the tool overlay, so they never cover an in-progress edit/draft.
+  if (inputs.survey !== undefined) primitives.push(...inputs.survey);
   // HB3-9: the active feature's edit handles draw ABOVE the committed features (so a
   // handle sits on top of the shape it edits) but UNDER the tool overlay (FR-78 仮表示
   // / knife stays on top). Empty when not editing / no active feature.
@@ -552,6 +573,10 @@ export function createAddHostPorts(
   // committed-feature redraw or the async base-map decode re-composites with the
   // overlay still on top, never wiping an in-progress tool draft (教訓 5.6).
   let lastOverlay: readonly DrawPrimitive[] = [];
+  // The last SURVEY-layer primitives (U37 / FR-15) — an independent persistent slot
+  // beside the tool overlay, so a knife/merge/… overlay push (or its `[]` reset)
+  // can never wipe the confirmed survey lines. Cleared only by drawSurvey([]).
+  let lastSurvey: readonly DrawPrimitive[] = [];
 
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
     lastOverlay = overlay;
@@ -574,6 +599,9 @@ export function createAddHostPorts(
       baseMeta,
       committed,
       overlay,
+      // U37: the persistent survey layer rides EVERY composite (FR-15) — it is
+      // stashed by drawSurvey and survives overlay/committed/camera repaints.
+      survey: lastSurvey,
       // HB3-9: the active feature's edit handles, recomputed fresh per frame so they
       // re-project against the live camera and stay screen-fixed (FR-17). Empty when
       // not editing / no active feature (the getter returns []).
@@ -917,6 +945,12 @@ export function createAddHostPorts(
     },
     drawKnife(primitives): void {
       lastOverlay = primitives;
+      requestPaint();
+    },
+    drawSurvey(primitives): void {
+      // The independent survey slot (U37 / FR-15): stash synchronously, then route
+      // the repaint through the single throttle like every other repaint path.
+      lastSurvey = primitives;
       requestPaint();
     },
     redraw(): void {
