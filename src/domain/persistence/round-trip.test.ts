@@ -12,9 +12,18 @@ import {
 // deserialize is persistence-internal (not re-exported from the barrel, 受け入れ
 // 基準8 / R8); the round-trip test reaches it from ./serialize directly, which is
 // exempt from the boundary lint rule as a persistence-module file.
-import { deserialize } from './serialize';
+import { deserialize, type DomainProject } from './serialize';
 import { FIXTURE_DETAIL_DOCUMENT, projectArb, richValidProject } from './fixtures';
-import type { Feature } from '../feature';
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { createAnchorEntry } from '../anchor-series';
+import { createBasicAttributes, createColorInfo } from '../attributes';
+import { createCoordinate } from '../coordinate';
+import { createLeafFeature, type Feature } from '../feature';
+import { createGeoParams } from '../geo/geo-params';
+import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
+import { createShape, createTerritoryRing } from '../ring';
+import { timePointYear } from '../time/time-point';
+import { createVertex, createVertexStore } from '../vertex';
 
 /** Every feature of every anchor snapshot in a restored project (flattened). */
 function allFeatures(project: ReturnType<typeof deserialize>): Feature[] {
@@ -205,5 +214,174 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
         return result.outcome === PARSE_OUTCOME.Ok;
       }),
     );
+  });
+
+  it('golden: a document-less project serializes byte-identically to the pre-FR98 manifest', () => {
+    // FR-98 claims「文書なしプロジェクトの出力は pre-FR98 manifest と byte 同等」
+    // (optional 追記・serializer は absent を書かない). This golden PINS that claim —
+    // and the manifest's key ORDER — as a literal string. The expected text was
+    // generated ONCE and verified byte-identical against the pre-FR98 serializer
+    // (commit 28b692a~1) on this exact project; any serializer change that reorders
+    // keys, adds a key to a doc-less feature, or alters number formatting fails here
+    // loudly instead of silently changing every .tmap on disk. The project is built
+    // INLINE (not from shared fixtures) so fixture drift cannot move the golden.
+    const vertices = [
+      createVertex(asVertexId('g-v0'), createCoordinate(0, 0)),
+      createVertex(asVertexId('g-v1'), createCoordinate(10, 0)),
+      createVertex(asVertexId('g-v2'), createCoordinate(10, 10)),
+      createVertex(asVertexId('g-v3'), createCoordinate(0, 10)),
+    ];
+    const ring = createTerritoryRing(
+      asRingId('g-r'),
+      vertices.map((v) => v.id),
+    );
+    const leaf = createLeafFeature(
+      asFeatureId('g-leaf'),
+      createBasicAttributes('金国', 0, 100),
+      createColorInfo(true, '#102030', '#405060', '#708090', 'default', 0.5, 0.75),
+      createShape([ring]),
+      { kindLabel: '王国', parentId: asFeatureId('g-parent') },
+    );
+    const anchor = createAnchor(
+      asAnchorId('g-anc'),
+      createAnchorSnapshot([leaf], createVertexStore(vertices)),
+    );
+    const project: DomainProject = {
+      histories: [
+        {
+          featureId: asFeatureId('g-leaf'),
+          series: { entries: [createAnchorEntry(anchor, timePointYear(0), null)] },
+        },
+      ],
+      settings: {
+        calendarId: 'gregorian',
+        geo: createGeoParams(40000, 0.0034),
+        gridSpacingDeg: 10,
+        snapDistancePx: 50,
+        autoColorDefault: true,
+      },
+      baseMap: {
+        source: '@preset/equirectangular-world',
+        meta: { lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 },
+      },
+    };
+
+    const expected = `{
+  "version": "tmap/1",
+  "histories": [
+    {
+      "featureId": "g-leaf",
+      "entries": [
+        {
+          "anchor": {
+            "id": "g-anc",
+            "snapshot": {
+              "features": [
+                {
+                  "kind": "leaf",
+                  "id": "g-leaf",
+                  "attributes": {
+                    "name": "金国",
+                    "startYear": 0,
+                    "endYear": 100
+                  },
+                  "color": {
+                    "autoColorEnabled": true,
+                    "fillColor": "#102030",
+                    "fillOpacity": 0.5,
+                    "selectedColor": "#405060",
+                    "selectedOpacity": 0.75,
+                    "borderColor": "#708090",
+                    "paletteTheme": "default"
+                  },
+                  "kindLabel": "王国",
+                  "parentId": "g-parent",
+                  "shape": {
+                    "rings": [
+                      {
+                        "kind": "territory",
+                        "id": "g-r",
+                        "vertexIds": [
+                          "g-v0",
+                          "g-v1",
+                          "g-v2",
+                          "g-v3"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ],
+              "vertices": [
+                {
+                  "id": "g-v0",
+                  "coordinate": {
+                    "lon": 0,
+                    "lat": 0
+                  }
+                },
+                {
+                  "id": "g-v1",
+                  "coordinate": {
+                    "lon": 10,
+                    "lat": 0
+                  }
+                },
+                {
+                  "id": "g-v2",
+                  "coordinate": {
+                    "lon": 10,
+                    "lat": 10
+                  }
+                },
+                {
+                  "id": "g-v3",
+                  "coordinate": {
+                    "lon": 0,
+                    "lat": 10
+                  }
+                }
+              ]
+            }
+          },
+          "start": {
+            "granularity": "year",
+            "year": 0
+          },
+          "end": null
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "project": {
+      "calendarId": "gregorian",
+      "geo": {
+        "equatorKm": 40000,
+        "flattening": 0.0034
+      },
+      "gridSpacingDeg": 10,
+      "snapDistancePx": 50
+    },
+    "app": {
+      "autoColorDefault": true
+    }
+  },
+  "baseMap": {
+    "source": "@preset/equirectangular-world",
+    "meta": {
+      "lonWest": -180,
+      "lonEast": 180,
+      "latNorth": 90,
+      "latSouth": -90
+    }
+  }
+}`;
+
+    const actual = JSON.stringify(serialize(project), null, 2);
+    expect(actual).toBe(expected);
+    // The doc-less manifest carries NO detailDocument key anywhere (the intent
+    // the literal encodes, asserted explicitly for readability).
+    expect(actual).not.toContain('detailDocument');
   });
 });

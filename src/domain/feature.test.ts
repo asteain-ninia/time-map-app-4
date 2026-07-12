@@ -6,6 +6,7 @@ import { promoteFeature } from './promotion/promote';
 import { createShape, createTerritoryRing } from './ring';
 import {
   FEATURE_KIND,
+  MAX_DETAIL_DOCUMENT_LENGTH,
   createAggregateFeature,
   createLeafFeature,
   createLineFeature,
@@ -203,6 +204,38 @@ describe('detailDocument (FR-98) — 詳細文書は kindLabel と同型の任�
     expect(normalizeDetailDocument(undefined)).toBeUndefined();
     expect(normalizeDetailDocument('')).toBeUndefined();
     expect(normalizeDetailDocument(doc)).toBe(doc);
+  });
+
+  it('accepts a document of exactly MAX_DETAIL_DOCUMENT_LENGTH at the domain boundary', () => {
+    const atMax = 'あ'.repeat(MAX_DETAIL_DOCUMENT_LENGTH);
+    const f = withDetailDocument(
+      createLeafFeature(asFeatureId('f'), attrs, color, createShape()),
+      atMax,
+    );
+    expect(f.detailDocument).toBe(atMax);
+    const g = createPointFeature(asFeatureId('g'), attrs, color, asVertexId('v'), {
+      detailDocument: atMax,
+    });
+    expect(g.detailDocument).toBe(atMax);
+  });
+
+  it('rejects an over-MAX document loudly AT BIRTH (WRITE⊆READ — never a saved-but-unloadable .tmap)', () => {
+    // Reject it at birth (createCoordinate の非有限拒否と同じ規律): an in-memory
+    // feature carrying a document the persistence schema would reject must be
+    // unrepresentable. Without this throw, withDetailDocument(feature,
+    // 'x'.repeat(MAX+1)) builds a legal Feature, save writes it verbatim, and the
+    // NEXT open rejects the whole manifest — a「保存できたが開けない」全損. No
+    // truncation (silent data loss); a loud RangeError at the single seam.
+    const overMax = 'x'.repeat(MAX_DETAIL_DOCUMENT_LENGTH + 1);
+    expect(() => normalizeDetailDocument(overMax)).toThrow(RangeError);
+    expect(() =>
+      withDetailDocument(createLeafFeature(asFeatureId('f'), attrs, color, createShape()), overMax),
+    ).toThrow(RangeError);
+    expect(() =>
+      createPointFeature(asFeatureId('g'), attrs, color, asVertexId('v'), {
+        detailDocument: overMax,
+      }),
+    ).toThrow(RangeError);
   });
 
   it('toShapelessAggregate carries the document across the 末端→集約 transition (FR-98 MUST)', () => {

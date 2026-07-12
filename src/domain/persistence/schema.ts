@@ -26,6 +26,7 @@
 import { z } from 'zod';
 
 import { MAX_COORDINATE_MAGNITUDE } from '../coordinate';
+import { MAX_DETAIL_DOCUMENT_LENGTH } from '../feature';
 import { getCalendar } from '../time/calendar';
 import { timePointYear, timePointYearMonth, timePointYearMonthDay } from '../time/time-point';
 import { MAX_YEAR, validate as validateTimePoint } from '../time/validate';
@@ -206,18 +207,14 @@ export const shapeSchema = z
 // `childIds` on a leaf is REJECTED. kindLabel/parentId/detailDocument are
 // optional (key-absent).
 
-/**
- * The maximum accepted length (in UTF-16 code units) of a詳細文書 (FR-98).
- *
- * SINGLE shared bound for BOTH sides of persistence (WRITE⊆READ, the same
- * discipline `isPersistedYear` established): (1) the schema below enforces it at
- * the READ boundary (`z.string().max(...)`), and (2) the FR-98 document editor
- * MUST import THIS constant as its save-time (WRITE) guard. If the two bounds
- * ever diverged with WRITE > READ, a user could save a document that makes the
- * whole .tmap unloadable (manifest-level reject on next open — 全損). Keeping one
- * exported constant makes that asymmetry unrepresentable.
- */
-export const MAX_DETAIL_DOCUMENT_LENGTH = 100_000;
+// The maximum accepted length of a詳細文書 (FR-98) is DEFINED on the domain side
+// (feature.ts, next to the field and its birth-time RangeError guard) and merely
+// RESTATED here at the READ boundary — the same single-source pattern as
+// MAX_COORDINATE_MAGNITUDE / MAX_YEAR above (persistence imports domain, never
+// the reverse). Re-exported so persistence consumers (and the FR-98 editor via
+// this barrel) share the ONE bound: WRITE(ドメイン誕生時 reject)⊆READ(schema
+// max) can never drift apart.
+export { MAX_DETAIL_DOCUMENT_LENGTH } from '../feature';
 
 const featureCommon = {
   id: idSchema,

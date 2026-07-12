@@ -136,6 +136,27 @@ export interface OptionalCommonFields {
 }
 
 /**
+ * The maximum allowed length (in UTF-16 code units, i.e. `string.length` — the
+ * same measure Zod's `z.string().max()` uses) of a詳細文書 (FR-98).
+ *
+ * SINGLE shared bound, defined HERE on the domain side (the import direction is
+ * persistence → domain, never the reverse — the `MAX_COORDINATE_MAGNITUDE` /
+ * `MAX_YEAR` precedent) and enforced on BOTH sides of persistence (WRITE⊆READ,
+ * the `isPersistedYear` discipline):
+ *   - WRITE: every domain construction/update path funnels through
+ *     {@link normalizeDetailDocument}, which REJECTS an over-long document at
+ *     birth (RangeError) — so an in-memory feature the schema would refuse to
+ *     load back is unrepresentable, and「保存できたが二度と開けない .tmap」
+ *     (manifest-level reject on next open = 全損) cannot be produced.
+ *   - READ: `persistence/schema.ts` enforces the SAME constant as
+ *     `z.string().max(...)` at the load boundary (and re-exports it), so the two
+ *     bounds can never drift apart.
+ * The FR-98 editor's save guard must import THIS constant (directly or via the
+ * domain/persistence barrels) for its pre-dispatch length check.
+ */
+export const MAX_DETAIL_DOCUMENT_LENGTH = 100_000;
+
+/**
  * Canonicalize a詳細文書 value: `''`(空文書) collapses to `undefined`(absent), so
  * there is exactly ONE representation of「文書なし」everywhere (教訓 5.30 単一真実源).
  * This is enforced at BOTH construction boundaries — {@link buildCommon} (which every
@@ -144,11 +165,23 @@ export interface OptionalCommonFields {
  * {@link withDetailDocument} (the in-memory update path) — so `featuresEqual` /
  * round-trip identity never see a present-`''` vs absent mismatch. Exported for the
  * FR-98 editor's no-op guard (draft と現文書の正規形比較).
+ *
+ * REJECT AT BIRTH (createCoordinate の非有限/過大拒否と同じ規律): a document
+ * longer than {@link MAX_DETAIL_DOCUMENT_LENGTH} throws a RangeError here — the
+ * single seam every construction path shares — instead of being truncated
+ * (silent data loss) or carried along (an in-memory feature the persistence
+ * schema would reject on the next load, breaking WRITE⊆READ). Callers that
+ * accept free user input (the FR-98 editor) must length-guard with the same
+ * constant BEFORE dispatching, showing an honest failure message.
  */
 export function normalizeDetailDocument(detailDocument: string | undefined): string | undefined {
-  return detailDocument === undefined || detailDocument.length === 0
-    ? undefined
-    : detailDocument;
+  if (detailDocument === undefined || detailDocument.length === 0) return undefined;
+  if (detailDocument.length > MAX_DETAIL_DOCUMENT_LENGTH) {
+    throw new RangeError(
+      `detailDocument exceeds MAX_DETAIL_DOCUMENT_LENGTH (${detailDocument.length} > ${MAX_DETAIL_DOCUMENT_LENGTH})`,
+    );
+  }
+  return detailDocument;
 }
 
 function buildCommon(

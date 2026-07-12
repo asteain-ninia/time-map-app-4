@@ -127,6 +127,7 @@ export {
   withKindLabel,
   withDetailDocument,
   normalizeDetailDocument,
+  MAX_DETAIL_DOCUMENT_LENGTH,
   withAttributes,
   withColor,
   withPointVertexId,
