@@ -28,13 +28,15 @@ import {
   withAggregateChildIds,
   withParentId,
   type Feature,
+  type LeafFeature,
 } from '../feature';
 import { sweepAndPruneAnchor } from '../deletion/sweep';
 import { buildForest, directChildIds, hasChildren } from '../hierarchy/forest';
 import { validateHierarchy } from '../hierarchy/validate';
-import { asFeatureId, type FeatureId } from '../ids';
+import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { nextRawId, type IdGeneratorState, type TimeSource } from '../id-generator';
-import type { VertexStore } from '../vertex';
+import { createVertexStore, type Vertex, type VertexStore } from '../vertex';
+import { buildDirectDomainForLeaf, type DirectDomainMintPorts } from '../promotion';
 import {
   AFFILIATION_REJECT,
   existencePeriodsCompatible,
@@ -49,6 +51,7 @@ import {
 import {
   MSG_AFFILIATION_EXISTENCE,
   MSG_AFFILIATION_HIERARCHY,
+  MSG_AFFILIATION_INTERNAL,
   MSG_AFFILIATION_TARGET_KIND,
   MSG_AFFILIATION_TARGET_MISSING,
   affiliationRejectMessage,
@@ -78,7 +81,13 @@ export interface AffiliationProposal {
   readonly targetIds: readonly FeatureId[];
   /** 適用後の面情報集合 (入力順を可能な限り保持、新規地物は末尾)。 */
   readonly nextFeatures: readonly Feature[];
-  /** 生成した新規上位領域 (集約地物) の ID 集合 (初回生成 ID, 教訓 5.20)。 */
+  /**
+   * FR-37 直轄領自動生成で新設した直轄領 末端地物が参照する新規頂点 (無ければ空)。
+   * 集約地物は形状を持たない (FR-35) が、直轄領は形状持ち末端なので新頂点を運ぶ必要が
+   * あり、U13 apply (applyAffiliationProposal) がこれを直轄領 leaf の履歴へ載せる。
+   */
+  readonly newVertices: readonly Vertex[];
+  /** 生成した新規上位領域 (集約地物) + 直轄領 末端地物 の ID 集合 (初回生成 ID, 教訓 5.20)。 */
   readonly createdIds: readonly FeatureId[];
   /** 自動消滅で削除された集約地物の ID 集合 (連鎖剪定含む, 教訓 5.21)。 */
   readonly deletedIds: readonly FeatureId[];
@@ -400,28 +409,41 @@ function buildProposalForLeaves(
   const emptied = emptiedAggregateIds(reparented, realized.createdIds);
   const swept = sweepAndPruneAnchor(reparented, emptied);
 
+  // FR-37 直轄領自動生成 (教訓 5.7 デッドコード結線)。張り替えの結果、形状持ち末端 (leaf)
+  // が下位領域を得たら (直轄化/自治化)、その「元形状 − 子の和」を新 leaf「直轄領」として
+  // 生成し子として挿入する。これで親領域が保存される。旧実装は syncAggregateChildIds が
+  // 無条件に toShapelessAggregate で形状を破棄していたため、元形状−子の和 が地図から
+  // 沈黙裡に消えていた (実機データ損失級バグ; checkAggregateShapes は元形状を比較しないため
+  // 無反応)。頂点ストアが無い経路 (位相のみ) では形状解決不能なので従来動作 (pre-FR-37)。
+  const dd = generateDirectDomains(swept.features, realized.idState, options);
+  if (dd.status === 'rejected') return dd.rejection;
+
   // 末端→集約 transition + 集約地物 childIds の再同期 (FR-35, 報告 blocking 修正)。
   // U28 内部検証は parentId を単一真実源とするため childIds 不整合でも素通りするが、
   // persistence/serialize と deletion/eligibility は childIds を権威データとして同期
-  // 維持する不変条件を前提とする。最終 parentId 関係 (sweep 後の確定状態) から:
-  //   (a) 直轄化 (既存末端を新親に選ぶ) で子を得た非集約地物を、形状を持たない集約地物
-  //       へ変換する (FR-35; 派生集約=子の和 を保つため自前の footprint を捨てる)。
+  // 維持する不変条件を前提とする。最終 parentId 関係 (直轄領挿入後の確定状態) から:
+  //   (a) 子を得た非集約地物を、形状を持たない集約地物へ変換する (FR-35; 直轄領を子に
+  //       含めるので 派生集約=子の和=元形状∪子の和 が保たれ、元領域は直轄領として存続)。
   //   (b) 全集約の childIds を実子へ再構築し、(c) 子を失った既存親集約から ID を除去。
   // 判別は結果状態 (子を持つか) で行う (教訓 5.6)。
-  const synced = syncAggregateChildIds(swept.features);
+  const synced = syncAggregateChildIds(dd.features);
 
   // 確定後整合性の再検証 (U08; 基準 5 / FR-94, 教訓 5.22/5.26)。違反すれば確定せず
   // 拒否。vertexStore を渡すと形状=和・隙間なし検査まで有効化される (基準 5 中核要件)。
+  // 直轄領が参照する新規頂点を元ストアへ重ねた検証用ストアを渡す (でないと直轄領 leaf の
+  // 形状が解決できず、生成したばかりの直轄領を自ら AggregateShapeMismatch で弾く)。
+  const validationStore = validationVertexStore(options.vertexStore, dd.newVertices);
   const validation = validateHierarchy(
     synced.features,
-    options.vertexStore !== undefined ? { vertexStore: options.vertexStore } : {},
+    validationStore !== undefined ? { vertexStore: validationStore } : {},
   );
   if (!validation.ok) {
     return reject('hierarchy', MSG_AFFILIATION_HIERARCHY, validation.violations);
   }
 
   // 通知対象 (存続側): 張り替えた末端 + sweep が編集した残存 + childIds が同期で
-  // 変化した集約 (旧親=子を失った側 / 新規・既存の新親=子を得た側) + 新規生成。
+  // 変化した集約 (旧親=子を失った側 / 新規・既存の新親=子を得た側)。新規生成 (直轄領・
+  // 集約) は createdIds 側で通知する。
   const survivedTouched = new Set<FeatureId>();
   for (const id of targetLeaves) if (!swept.removedIds.has(id)) survivedTouched.add(id);
   for (const id of swept.editedIds) survivedTouched.add(id);
@@ -430,12 +452,121 @@ function buildProposalForLeaves(
   const proposal: AffiliationProposal = {
     targetIds: targetLeaves,
     nextFeatures: synced.features,
-    createdIds: realized.createdIds,
+    newVertices: dd.newVertices,
+    createdIds: [...realized.createdIds, ...dd.createdDomainIds],
     deletedIds: [...swept.removedIds],
     survivedTouchedIds: [...survivedTouched],
-    idState: realized.idState,
+    idState: dd.idState,
   };
   return { status: 'proposal', proposal };
+}
+
+// --- FR-37 直轄領自動生成 (教訓 5.7 / 5.29 単一真実源) -------------------------
+
+/** {@link generateDirectDomains} の結果。 */
+type DirectDomainsResult =
+  | {
+      readonly status: 'ok';
+      /** 直轄領 leaf を末尾追加した地物集合。 */
+      readonly features: readonly Feature[];
+      /** 直轄領が参照する新規頂点 (U13 apply が履歴へ載せる)。 */
+      readonly newVertices: readonly Vertex[];
+      /** 生成した直轄領 末端地物の ID (createdIds に加える)。 */
+      readonly createdDomainIds: readonly FeatureId[];
+      /** 採番後の id-generator 状態 (直轄領の頂点/リング/地物採番を反映)。 */
+      readonly idState: IdGeneratorState;
+    }
+  | { readonly status: 'rejected'; readonly rejection: AffiliationRejected };
+
+/**
+ * 張り替え+sweep 後の状態で、下位領域を得た全ての形状持ち末端 (leaf/point/line だが実質
+ * leaf) について FR-37 直轄領を生成し、子として挿入する (単一真実源 buildDirectDomainForLeaf,
+ * 教訓 5.29)。生成した直轄領は次段の syncAggregateChildIds が親の childIds に取り込み、親を
+ * 形状なし集約へ変換する。
+ *
+ * 判定は結果状態 (教訓 5.6): kind が非集約かつ直接子を持つ末端を対象とする。所属変更の 1
+ * コマンドで形状持ち末端が子を得るのは高々 1 件 (全対象に同一の新親を与えるため) だが、
+ * 走査は N 件を安全に扱う。
+ *
+ * 退化ガード: 差分が空 (子が親を完全被覆) なら直轄領を作らない (元領域の損失なし)。
+ * 形状解決不能 ('unresolved'): 直轄領を作れないと元形状が沈黙裡に失われる
+ * (checkAggregateShapes は元形状を比較しない) ため、データ損失を防いで確定を拒否する
+ * (教訓 5.26)。頂点ストア未指定 (位相のみ経路) では FR-37 不可 → 従来動作 (pre-FR-37)。
+ */
+function generateDirectDomains(
+  features: readonly Feature[],
+  idState: IdGeneratorState,
+  options: BuildProposalOptions,
+): DirectDomainsResult {
+  const store = options.vertexStore;
+  if (store === undefined) {
+    // 位相のみ経路: 形状解決できないので FR-37 を適用できない (従来どおり)。
+    return { status: 'ok', features, newVertices: [], createdDomainIds: [], idState };
+  }
+
+  const forest = buildForest(features);
+
+  // 採番衝突回避 (教訓 5.37): 既存 feature id + vertex id を予約集合に (promote.ts と同型)。
+  const existing = new Set<string>(features.map((f) => f.id));
+  for (const v of store.byId.keys()) existing.add(v);
+  let gen = idState;
+  const mint = (prefix: string): string => {
+    const r = nextRawId(prefix, gen, options.now, existing);
+    gen = r.state;
+    existing.add(r.value);
+    return r.value;
+  };
+  const ports: DirectDomainMintPorts = {
+    nextVertexId: () => asVertexId(mint('v')),
+    nextRingId: () => asRingId(mint('r')),
+    nextFeatureId: () => asFeatureId(mint('f')),
+  };
+
+  const additions: Feature[] = [];
+  const newVertices: Vertex[] = [];
+  const createdDomainIds: FeatureId[] = [];
+  for (const f of features) {
+    if (f.kind === 'aggregate') continue; // 集約は形状を持たない (FR-35)。
+    const childIds = directChildIds(forest, f.id);
+    if (childIds.length === 0) continue; // 子なし末端は変換されない。
+    const result = buildDirectDomainForLeaf(f as LeafFeature, forest, childIds, store, ports);
+    if (result.kind === 'unresolved') {
+      // 元形状/子の和/差分が U06 で解決できなかった。直轄領なしでは元形状が沈黙裡に
+      // 失われるため、データ損失を防いで拒否する (教訓 5.26)。
+      return {
+        status: 'rejected',
+        rejection: reject('internal', MSG_AFFILIATION_INTERNAL, {
+          featureId: f.id,
+          stage: result.stage,
+        }),
+      };
+    }
+    if (result.kind === 'empty') continue; // 退化ガード: 子が親を完全被覆 → 直轄領不要。
+    additions.push(result.directDomain);
+    for (const v of result.newVertices) newVertices.push(v);
+    createdDomainIds.push(result.directDomain.id);
+  }
+
+  return {
+    status: 'ok',
+    features: additions.length > 0 ? [...features, ...additions] : features,
+    newVertices,
+    createdDomainIds,
+    idState: gen,
+  };
+}
+
+/**
+ * U08 形状検証用の頂点ストア: 元ストアに直轄領の新規頂点を重ねる。新規頂点が無ければ元
+ * ストアをそのまま返す (割当なし)。元ストアが無い (位相のみ) 経路では undefined のまま。
+ */
+function validationVertexStore(
+  base: VertexStore | undefined,
+  newVertices: readonly Vertex[],
+): VertexStore | undefined {
+  if (base === undefined) return undefined;
+  if (newVertices.length === 0) return base;
+  return createVertexStore([...base.byId.values(), ...newVertices]);
 }
 
 /**
@@ -471,11 +602,13 @@ function emptiedAggregateIds(
  * 旧親には移動した子が残り、新規生成集約は空のまま。
  *
  * 末端→集約 transition (FR-35, 教訓 5.6): 子を持つ非集約地物 (leaf/point/line) を、形状
- * を持たない集約地物へ変換する。これにより派生集約=子の和 (resolveFeatureArea が自前の
- * footprint を子の和に上乗せしない) が確定状態で保たれ、checkAggregateShapes の前提
- * (集約は形状なし) も満たされる。childrenOf (forest) を子の権威ソースとして各集約の
- * childIds を再生成する。順序は forest の入力順 (= 地物配列順) で安定。kind 変更または
- * childIds が実際に変化した地物 ID を changedIds で返し、通知対象 (旧親/新親) に含める。
+ * を持たない集約地物へ変換する。元形状は FR-37 直轄領 (generateDirectDomains が本関数の
+ * 前に生成し子として挿入済み) として存続するため、形状破棄で領域は失われない: 変換後の
+ * 派生集約=子の和=元形状∪子の和 となり、checkAggregateShapes の前提 (集約は形状なし) も
+ * 満たす (退化ケース=子が親を完全被覆 では直轄領なしで子の和=元形状)。childrenOf (forest)
+ * を子の権威ソースとして各集約の childIds を再生成する。順序は forest の入力順 (= 地物配列
+ * 順) で安定。kind 変更または childIds が実際に変化した地物 ID を changedIds で返し、通知
+ * 対象 (旧親/新親) に含める。
  */
 function syncAggregateChildIds(features: readonly Feature[]): {
   readonly features: readonly Feature[];
@@ -486,7 +619,8 @@ function syncAggregateChildIds(features: readonly Feature[]): {
   const next = features.map((f) => {
     const desired = directChildIds(forest, f.id);
     if (f.kind !== 'aggregate') {
-      // 非集約 (leaf/point/line)。子を持てば集約へ変換 (末端→集約, FR-35)。子なしは不変。
+      // 非集約 (leaf/point/line)。子を持てば集約へ変換 (末端→集約, FR-35)。元形状は
+      // 直轄領として子に含まれる (generateDirectDomains, FR-37)。子なしは不変。
       if (desired.length === 0) return f;
       changedIds.add(f.id);
       return toShapelessAggregate(f, desired);

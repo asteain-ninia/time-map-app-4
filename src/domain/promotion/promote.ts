@@ -49,15 +49,18 @@ import { sweepAndPruneAnchor } from '../deletion/sweep';
 import { buildForest, directChildIds, hasChildren, type Forest } from '../hierarchy/forest';
 import { resolveFeatureArea, resolveLeafShape } from '../hierarchy/resolve-shape';
 import { validateHierarchy } from '../hierarchy/validate';
-import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
-import { nextRawId, type IdGeneratorState, type TimeSource } from '../id-generator';
-import type { VertexStore } from '../vertex';
-import { setVertex } from '../vertex';
 import {
-  buildDirectDomainShape,
-  directDomainName,
-  type DirectDomainIdPorts,
-} from './direct-domain';
+  asFeatureId,
+  asRingId,
+  asVertexId,
+  type FeatureId,
+  type RingId,
+  type VertexId,
+} from '../ids';
+import { nextRawId, type IdGeneratorState, type TimeSource } from '../id-generator';
+import type { Vertex, VertexStore } from '../vertex';
+import { setVertex } from '../vertex';
+import { buildDirectDomainShape, directDomainName } from './direct-domain';
 
 // ---------------------------------------------------------------------------
 // 公開する判別共用体 — 遷移結果 (spec §成果物)
@@ -215,6 +218,88 @@ function directionalSeamDiffEmpty(subject: GeoMultiPolygon, clip: GeoMultiPolygo
 }
 
 // ---------------------------------------------------------------------------
+// 直轄領生成コア (FR-37) — U29 promote と U28 affiliation の単一真実源 (教訓 5.29)
+// ---------------------------------------------------------------------------
+
+/** 直轄領 末端地物の id 採番ポート (頂点・リング・地物; 注入・決定的, NFR 5.8)。 */
+export interface DirectDomainMintPorts {
+  readonly nextVertexId: () => VertexId;
+  readonly nextRingId: () => RingId;
+  readonly nextFeatureId: () => FeatureId;
+}
+
+/** {@link buildDirectDomainForLeaf} の結果 (判別共用体)。 */
+export type DirectDomainForLeafResult =
+  | {
+      readonly kind: 'domain';
+      /** 生成した直轄領 末端地物 (parentId = leaf.id)。 */
+      readonly directDomain: LeafFeature;
+      /** 直轄領が参照する新規頂点 (呼び出し側が頂点ストアへマージする)。 */
+      readonly newVertices: readonly Vertex[];
+      /** 解決済みの元形状 (呼び出し側の後続検査で再利用; 二重解決回避)。 */
+      readonly originalShape: GeoMultiPolygon;
+    }
+  | { readonly kind: 'empty'; readonly originalShape: GeoMultiPolygon }
+  | { readonly kind: 'unresolved'; readonly stage: 'original' | 'children' | 'diff' | 'build' };
+
+/**
+ * FR-37 直轄領 materialisation for ONE 末端地物 `leaf` that is `childIds` を獲得したとき。
+ * 「元形状 − 下位領域の和」を U06 経由 (seam 整列, 単一真実源) で算出し、非空なら 1 つの
+ * 直轄領 末端地物 (parentId = leaf.id, 既定名称「<元名> 直轄領」) と参照する新規頂点を
+ * 生成して返す。差分が空 (子が親を完全被覆) なら 'empty' (直轄領不要, 退化ガード)。形状・
+ * 差分が U06 で解決できなければ 'unresolved' (段階付き; 呼び出し側が拒否/フォールバック判断)。
+ *
+ * U29 promote (subdivision) と U28 buildProposalForLeaves (直轄化/自治化) が共有する。純粋。
+ *
+ * 直轄化の意味論: 獲得下位領域は `leaf` の元形状の内側である必要はない。派生集約面積 =
+ * 元形状 ∪ 子の和 (直轄領が元形状を保存し、子が自らの面積を足す)。本関数は
+ * 「派生面積 == 元形状」を強制しない (それは promote の純 subdivision 契約 基準 9b)。
+ * subdivision を要求する呼び出し側は本関数の後に自前で areasEqual を検査する。
+ *
+ * `forest` は各 `childIds` が既に `leaf` を親とする状態上で構築されていること (各子の派生
+ * 形状が解決できるように; 子の解決は `leaf` 自身の依然存在する形状に依存しない)。
+ */
+export function buildDirectDomainForLeaf(
+  leaf: LeafFeature,
+  forest: Forest,
+  childIds: readonly FeatureId[],
+  vertices: VertexStore,
+  ports: DirectDomainMintPorts,
+  nameOverride?: string,
+): DirectDomainForLeafResult {
+  const originalShape = resolveLeafShape(leaf.shape, vertices);
+  if (originalShape === undefined) return { kind: 'unresolved', stage: 'original' };
+
+  const childUnion = unionChildAreas(forest, vertices, childIds);
+  if (childUnion === undefined) return { kind: 'unresolved', stage: 'children' };
+
+  // R3 seam alignment (単一真実源): 元形状と子の和を共通アンカー (元形状の外環基準) へ
+  // 揃えてから差分する。single-branch (非 seam) 入力では恒等変換。
+  const diffRef = referenceLonForMultiPolygon(originalShape);
+  const diff = geoDifference(
+    alignMultiPolygon(originalShape, diffRef),
+    alignMultiPolygon(childUnion, diffRef),
+  );
+  if (!isOk(diff)) return { kind: 'unresolved', stage: 'diff' };
+  // 差分が空 (U06 トレランス内面積ゼロ) → 直轄領を生成しない (退化ガード)。
+  if (isMultiPolygonEmpty(diff.result)) return { kind: 'empty', originalShape };
+
+  const built = buildDirectDomainShape(diff.result, {
+    nextVertexId: ports.nextVertexId,
+    nextRingId: ports.nextRingId,
+  });
+  if (built === undefined) return { kind: 'unresolved', stage: 'build' };
+
+  const ddName = directDomainName(leaf.attributes.name, nameOverride);
+  const ddAttrs: BasicAttributes = withName(leaf.attributes, ddName);
+  // 直轄領は新集約地物 (= leaf.id) の下位領域。元末端地物の色を引き継ぐ。
+  const directDomain = createLeafFeature(ports.nextFeatureId(), ddAttrs, leaf.color, built.shape, {
+    parentId: leaf.id,
+  });
+  return { kind: 'domain', directDomain, newVertices: built.vertices, originalShape };
+}
+
+// ---------------------------------------------------------------------------
 // 公開: 末端→集約遷移 (spec §成果物 主関数)
 // ---------------------------------------------------------------------------
 
@@ -243,40 +328,6 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
     if (!byId.has(cid)) return rejected(PROMOTION_REJECT.ChildMissing, [cid]);
   }
 
-  // --- 元形状 (遷移前の末端地物の形状) ---------------------------------------
-  const originalShapeMp = resolveLeafShape((target as LeafFeature).shape, vertices);
-  if (originalShapeMp === undefined) {
-    return rejected(PROMOTION_REJECT.GeometryUnresolved, [targetId]);
-  }
-
-  // --- 下位領域の和 (獲得された全領域; 片落とし禁止 教訓 5.1) -----------------
-  // 形状解決は forest 経由 (resolveFeatureArea) で末端・集約いずれの下位領域でも
-  // 派生形状の単一解決判定に乗せる (教訓 5.29)。
-  const forestBefore = buildForest(features);
-  const childUnion = unionChildAreas(forestBefore, vertices, acquiredChildIds);
-  if (childUnion === undefined) {
-    return rejected(PROMOTION_REJECT.GeometryUnresolved, [...acquiredChildIds]);
-  }
-
-  // --- 差分 (元形状 − 下位領域の和) を U06 経由で算出 -------------------------
-  // R3 seam alignment (audit root cause A): originalShapeMp は target の RAW 代表値、
-  // childUnion は子の和 (子の frame で連続化済み) で、両者は別の world-turn に格納され
-  // 得る。per-ring 独立 unwrap (unwrapMultiPolygon) は各リングを自分の先頭頂点に揃える
-  // だけで両被演算子を共通分岐に乗せないため、target が子と反対 turn に格納されていると
-  // 幾何的に同一の子を差し引けず偽の直轄領を生む。共通アンカー (target の外環基準) へ
-  // alignMultiPolygon で両者を揃えてから差分する (単一真実源 — drill と同じ規律)。
-  // single-branch (非 seam) 入力では恒等変換。
-  const diffRef = referenceLonForMultiPolygon(originalShapeMp);
-  const diff = geoDifference(
-    alignMultiPolygon(originalShapeMp, diffRef),
-    alignMultiPolygon(childUnion, diffRef),
-  );
-  if (!isOk(diff)) {
-    return rejected(PROMOTION_REJECT.GeometryUnresolved, [targetId]);
-  }
-  // 差分が空 (U06 トレランス内面積ゼロ) なら直轄領を生成しない (基準 3)。
-  const hasDirectDomain = !isMultiPolygonEmpty(diff.result);
-
   // --- id 採番ポート (新規生成 ID は復元可能な形で結果へ; 教訓 5.20 / 5.37) -----
   const existing = new Set<string>(features.map((f) => f.id));
   for (const v of vertices.byId.keys()) existing.add(v);
@@ -288,28 +339,36 @@ export function promoteLeafToAggregate(input: PromoteToAggregateInput): Promotio
     return r.value;
   };
 
-  // --- 直轄領 末端地物の生成 (差分が非空のときのみ; FR-37) --------------------
-  let directDomain: LeafFeature | undefined;
-  let nextVertices = vertices;
-  if (hasDirectDomain) {
-    const idPorts: DirectDomainIdPorts = {
+  // --- 元形状 − 下位領域の和 → 直轄領 末端地物 (FR-37; 単一真実源 buildDirectDomainForLeaf,
+  //     教訓 5.29) --------------------------------------------------------------
+  // 形状解決 (resolveLeafShape) + 下位領域の和 (forest 経由 resolveFeatureArea, 片落とし
+  // 禁止 教訓 5.1) + seam 整列差分 + buildDirectDomainShape を共有コアへ委譲する。差分が
+  // 空 (子が親を完全被覆) なら直轄領を生成しない (基準 3)。
+  const forestBefore = buildForest(features);
+  const domain = buildDirectDomainForLeaf(
+    target as LeafFeature,
+    forestBefore,
+    acquiredChildIds,
+    vertices,
+    {
       nextVertexId: () => asVertexId(mint('v')),
       nextRingId: () => asRingId(mint('r')),
-    };
-    const built = buildDirectDomainShape(diff.result, idPorts);
-    if (built === undefined) {
-      // 差分は非空だが形状を組み立てられなかった (退化)。直轄領なしでは隙間が残り
-      // FR-39 を満たせないため拒否する (基準 9 / 教訓 5.26)。
-      return rejected(PROMOTION_REJECT.GeometryUnresolved, [targetId]);
-    }
-    const ddId = asFeatureId(mint('f'));
-    const ddName = directDomainName(target.attributes.name, input.directDomainNameOverride);
-    const ddAttrs: BasicAttributes = withName(target.attributes, ddName);
-    // 直轄領は新集約地物 (= targetId) の下位領域。元末端地物の色を引き継ぐ。
-    directDomain = createLeafFeature(ddId, ddAttrs, target.color, built.shape, {
-      parentId: targetId,
-    });
-    for (const v of built.vertices) nextVertices = setVertex(nextVertices, v);
+      nextFeatureId: () => asFeatureId(mint('f')),
+    },
+    input.directDomainNameOverride,
+  );
+  if (domain.kind === 'unresolved') {
+    // 元形状 / 下位領域の和 / 差分 / 直轄領形状 が U06 で解決できなかった (退化・不正形状)。
+    // 子の和 段は獲得下位領域、それ以外は遷移対象を関与 ID として報告する (基準 9 / 教訓 5.26)。
+    const ids = domain.stage === 'children' ? [...acquiredChildIds] : [targetId];
+    return rejected(PROMOTION_REJECT.GeometryUnresolved, ids);
+  }
+  const originalShapeMp = domain.originalShape;
+  let directDomain: LeafFeature | undefined;
+  let nextVertices = vertices;
+  if (domain.kind === 'domain') {
+    directDomain = domain.directDomain;
+    for (const v of domain.newVertices) nextVertices = setVertex(nextVertices, v);
   }
 
   // --- 末端→集約遷移 (FR-36): 同一 ID・属性引き継ぎ・形状破棄 -----------------

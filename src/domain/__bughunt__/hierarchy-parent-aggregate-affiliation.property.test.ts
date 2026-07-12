@@ -391,6 +391,19 @@ interface AffState {
   idCounter: number;
 }
 
+/**
+ * FR-37: a committed affiliation may mint NEW vertices for an auto-generated 直轄領 末端地物
+ * (when a 形状持ち末端 gains children). Merge them into the running store so the committed
+ * state (including the direct domain) resolves; a plain reparent carries none (identity).
+ */
+function storeWithProposalVertices(
+  base: VertexStore,
+  proposal: AffiliationProposal,
+): VertexStore {
+  if (proposal.newVertices.length === 0) return base;
+  return createVertexStore([...base.byId.values(), ...proposal.newVertices]);
+}
+
 function makeNow(start: number): () => number {
   let t = start;
   return () => {
@@ -486,7 +499,7 @@ function applyAffCmd(
   const proposal = result.proposal;
   const next: AffState = {
     features: proposal.nextFeatures,
-    store: st.store,
+    store: storeWithProposalVertices(st.store, proposal),
     idCounter: proposal.idState.counter + 1,
   };
   return { next, proposal, baseline: features };
@@ -823,7 +836,10 @@ describe(`affiliation — existence-period guard coherence (seed=${SEED})`, () =
           } else if (result.status === 'proposal') {
             // Committed: the created intermediate's period must overlap top, and
             // the whole committed forest must be valid.
-            assertFeatureSetInvariants(result.proposal.nextFeatures, st.store);
+            assertFeatureSetInvariants(
+              result.proposal.nextFeatures,
+              storeWithProposalVertices(st.store, result.proposal),
+            );
           }
         },
       ),
@@ -984,7 +1000,11 @@ function applyAffCmd2(
     if (result.status !== 'proposal') return undefined;
     const proposal = result.proposal;
     return {
-      next: { features: proposal.nextFeatures, store: st.store, idCounter: proposal.idState.counter + 1 },
+      next: {
+        features: proposal.nextFeatures,
+        store: storeWithProposalVertices(st.store, proposal),
+        idCounter: proposal.idState.counter + 1,
+      },
       proposal,
       baseline: features,
     };
@@ -1010,7 +1030,11 @@ function applyAffCmd2(
     if (result.status !== 'proposal') return undefined;
     const proposal = result.proposal;
     return {
-      next: { features: proposal.nextFeatures, store: st.store, idCounter: proposal.idState.counter + 1 },
+      next: {
+        features: proposal.nextFeatures,
+        store: storeWithProposalVertices(st.store, proposal),
+        idCounter: proposal.idState.counter + 1,
+      },
       proposal,
       baseline: features,
     };
@@ -1243,9 +1267,11 @@ describe(`affiliation — heterogeneous metamorphic identities (seed=${SEED2})`,
         expect(movedLeaf?.parentId).toBe(otherAgg.id);
 
         // 逆op: move back to the original parent, again THROUGH the command.
+        // Carry the forward move's result store (moved.next.store), which already includes
+        // any FR-37 直轄領 vertices minted forward, so the reverse resolves them.
         const afterMove: AffState = {
           features: execFwd.state,
-          store: st.store,
+          store: moved.next.store,
           idCounter: moved.next.idCounter,
         };
         const back = applyAffCmd2(afterMove, {
@@ -1258,7 +1284,7 @@ describe(`affiliation — heterogeneous metamorphic identities (seed=${SEED2})`,
         const execBack = cmdBack.execute(back.baseline);
         const restored = execBack.state.find((f) => f.id === leaf.id);
         expect(restored?.parentId, 'op∘逆op did not restore parentId').toBe(originalParent);
-        assertFeatureSetInvariants(execBack.state, st.store);
+        assertFeatureSetInvariants(execBack.state, back.next.store);
       }),
       { seed: SEED2, numRuns: 400 },
     );
@@ -1391,7 +1417,10 @@ describe(`affiliation — picker ⇔ confirm single-source (seed=${SEED3})`, () 
                 `listed candidate ${cand} rejected by candidate predicate: ${result.kind}`,
               ).toBe(false);
             } else {
-              assertFeatureSetInvariants(result.proposal.nextFeatures, st.store);
+              assertFeatureSetInvariants(
+              result.proposal.nextFeatures,
+              storeWithProposalVertices(st.store, result.proposal),
+            );
             }
           } else {
             // (b) hidden: must NOT commit (the back-door is closed).
@@ -1638,7 +1667,10 @@ describe(`affiliation — committed parent was always a listed candidate (seed=$
             listed.has(parent),
             `committed existing-parent ${parent} was NOT a listed candidate (back-door)`,
           ).toBe(true);
-          assertFeatureSetInvariants(result.proposal.nextFeatures, st.store);
+          assertFeatureSetInvariants(
+              result.proposal.nextFeatures,
+              storeWithProposalVertices(st.store, result.proposal),
+            );
         }
       }),
       { seed: SEED3, numRuns: 500 },

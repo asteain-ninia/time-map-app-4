@@ -1159,18 +1159,19 @@ function assertFeatureSetInvariants(
         // 派生集約 = 子の和: a feature that HAS children (result-state aggregate,
         // 教訓5.6) must have its derived area equal to the union of those children.
         //
-        // BUG FIXED (seed=5004): the real 所属変更 (affiliation) flow lets an
-        // EXISTING LEAF be chosen as a target's new parent (直轄化 / direct-control,
-        // explicitly allowed by affiliation/candidates.ts). Previously the leaf KEPT
-        // its own `shape` (kind stayed 'leaf') yet gained a child, so
-        // resolveFeatureArea added the leaf's OWN footprint on top of the child union
-        // ("末端→集約 transition" rule in resolve-shape.ts) — derived area ⊋ union of
-        // children, violating 派生集約=子の和, AND validateHierarchy returned ok
-        // (checkAggregateShapes only looks for inter-child GAPS, never "own area
-        // beyond children"). The fix converts any non-aggregate that gains children
-        // into a shapeless aggregate (FR-35) in buildProposalForLeaves
-        // (syncAggregateChildIds → feature.toShapelessAggregate), so the committed
-        // state always satisfies this invariant. Do not weaken it.
+        // FR-37 (seed=5004): the real 所属変更 (affiliation) flow lets an EXISTING LEAF
+        // be chosen as a target's new parent (直轄化 / direct-control, allowed by
+        // affiliation/candidates.ts). buildProposalForLeaves now runs FR-37 直轄領自動生成
+        // (generateDirectDomains → buildDirectDomainForLeaf): the 形状持ち末端's 元形状 −
+        // 子の和 becomes a NEW 直轄領 末端地物 inserted as a child, THEN the parent is
+        // converted to a shapeless aggregate. So the parent's derived area = union of its
+        // children = 元形状 ∪ 子の和 (元形状 preserved as the 直轄領; NOTHING is lost).
+        // This invariant (derived == union of children) holds either way and is exactly
+        // what proves the shapeless aggregate's area is well-formed — do not weaken it.
+        // (Pre-FR-37 the parent kept kind:'leaf' with a child so resolveFeatureArea added
+        // its OWN footprint ON TOP of the child union — derived ⊋ union — which this once
+        // caught; the earlier lossy "just discard the shape" fix satisfied it too but SILENTLY
+        // DROPPED 元形状−子の和 from the map. FR-37 keeps the area AND the invariant.)
         expect(areasEqualWithinTolerance(res.area, u)).toBe(true);
       }
     }
@@ -1297,11 +1298,18 @@ function applyAffCmd(
   if (result.status !== 'proposal') return undefined;
   const proposal = result.proposal;
 
-  // The new vertex store is unchanged by affiliation (it never edits geometry),
-  // so we reuse st.store. Advance the id counter from the proposal's id state.
+  // FR-37: affiliation now mints NEW vertices when a 形状持ち末端 gains children (直轄領
+  // 自動生成). Merge proposal.newVertices into the store so the committed state's direct
+  // domains resolve (else resolveFeatureArea over the new leaf fails). A plain reparent
+  // carries an empty newVertices, so the store is unchanged in that common case. Advance
+  // the id counter from the proposal's id state (now includes any 直轄領 minting).
+  const nextStore =
+    proposal.newVertices.length > 0
+      ? createVertexStore([...st.store.byId.values(), ...proposal.newVertices])
+      : st.store;
   const next: AffState = {
     features: proposal.nextFeatures,
-    store: st.store,
+    store: nextStore,
     idCounter: proposal.idState.counter + 1,
   };
   return { next, proposal };
@@ -1421,17 +1429,27 @@ describe(`U08 real affiliation command drive (seed=${SEED4})`, () => {
 });
 
 // ===========================================================================
-// 7. REGRESSION (focused, deterministic): 直轄化 末端→集約 transition (FR-35).
+// 7. REGRESSION (focused, deterministic): 直轄化 → FR-37 直轄領自動生成.
 //
-// The minimal seed-5004 shrink from the bug report, pinned as a non-property
-// unit test so the exact 派生集約=子の和 break can never silently regress:
+// The minimal seed-5004 shrink from the bug report, pinned as a non-property unit
+// test so the data-loss can never silently regress:
 //   f-agg-1 (aggregate) -> [f-leaf-2 = rect [0,10]x[0,10], f-leaf-3 = rect
 //   [10,20]x[0,10]]. 直轄化: re-affiliate target f-leaf-3 under the EXISTING LEAF
-//   f-leaf-2. Before the fix, f-leaf-2 stayed kind:'leaf' with a child, so its
-//   derived area was [0,20]x[0,10] (own ∪ child) ⊋ union of children
-//   ([10,20]x[0,10]) and validateHierarchy returned ok=true (false negative).
-//   After the fix, f-leaf-2 is converted to a shapeless aggregate, so its derived
-//   area equals exactly the union of its children, and the invariant holds.
+//   f-leaf-2, so f-leaf-2 gains a child and must become an aggregate.
+//
+// Bug history: the ORIGINAL bug left f-leaf-2 kind:'leaf' with a child, so its
+// derived area was [0,20]x[0,10] (own ∪ child) ⊋ union of children — a false
+// negative. The FIRST (lossy) fix converted f-leaf-2 to a SHAPELESS aggregate,
+// which satisfied 派生集約=子の和 BUT SILENTLY DROPPED f-leaf-2's own [0,10] strip
+// from the map (実機データ損失: 元形状−子の和 vanished; checkAggregateShapes only
+// checks inter-child gaps, never 元形状, so nothing complained).
+//
+// FR-37 (the real spec / current 正): buildProposalForLeaves now runs 直轄領自動生成
+// — f-leaf-2's 元形状 − 子の和 (= its [0,10] strip) becomes a NEW 直轄領 末端地物
+// inserted as a child, THEN f-leaf-2 is converted to a shapeless aggregate. So the
+// top aggregate STILL spans [0,20]x[0,10] (nothing lost) and the invariant holds.
+// These tests assert 元形状 IS preserved (via the 直轄領), NOT discarded — the
+// diagnosis's correction of the two誤 regression tests that locked the lossy fix.
 // ===========================================================================
 
 const SEED_REPRO = 5004;
@@ -1483,11 +1501,20 @@ function buildDirectControlFixture(): { features: Feature[]; vstore: VertexStore
   };
 }
 
-describe(`U08 直轄化 末端→集約 regression (seed=${SEED_REPRO})`, () => {
-  it('直轄化 onto an existing leaf converts it to a shapeless aggregate (派生集約=子の和 holds)', () => {
+describe(`U08 直轄化 → FR-37 直轄領自動生成 regression (seed=${SEED_REPRO})`, () => {
+  it('直轄化 onto an existing leaf generates a 直轄領 preserving 元形状 (FR-37, no data loss)', () => {
     const { features, vstore } = buildDirectControlFixture();
+    const aggId = asFeatureId('f-agg-1');
     const leaf2 = asFeatureId('f-leaf-2');
     const leaf3 = asFeatureId('f-leaf-3');
+
+    // Pre-change areas: the top aggregate spans BOTH strips [0,20]x[0,10]; f-leaf-2's own
+    // footprint is [0,10]x[0,10] (the strip the lossy fix silently dropped).
+    const before = buildForest(features);
+    const aggAreaBefore = resolveFeatureArea(before, vstore, aggId);
+    const leaf2FootprintBefore = resolveFeatureArea(before, vstore, leaf2);
+    expect(aggAreaBefore.status).toBe('ok');
+    expect(leaf2FootprintBefore.status).toBe('ok');
 
     const result = buildAffiliationProposal(features, leaf3, parentExisting(leaf2), {
       idState: createIdGeneratorState(0, 1000),
@@ -1496,37 +1523,55 @@ describe(`U08 直轄化 末端→集約 regression (seed=${SEED_REPRO})`, () => 
     });
     expect(result.status, JSON.stringify(result)).toBe('proposal');
     if (result.status !== 'proposal') return;
+    const { nextFeatures: next, newVertices, createdIds } = result.proposal;
 
-    const next = result.proposal.nextFeatures;
+    // FR-37 minted new vertices for the 直轄領 末端地物; merge them so the new leaf resolves.
+    expect(newVertices.length).toBeGreaterThan(0);
+    const merged = createVertexStore([...vstore.byId.values(), ...newVertices]);
 
-    // f-leaf-2 must now be a SHAPELESS aggregate (no `shape` field), not a leaf.
+    // f-leaf-2 is now a SHAPELESS aggregate (no `shape` field), not a leaf.
     const newParent = next.find((f) => f.id === leaf2);
-    expect(newParent).toBeDefined();
     expect(newParent?.kind).toBe('aggregate');
     expect((newParent as unknown as { shape?: unknown }).shape).toBeUndefined();
 
-    // Tree: f-agg-1 -> f-leaf-2 -> f-leaf-3.
+    // It has TWO children: the reparented target f-leaf-3 AND a NEW 直轄領 末端地物
+    // (createdIds carries the 直轄領 id). Pre-FR-37 lossy fix left ONLY [f-leaf-3].
     const forest = buildForest(next);
-    expect(directChildIds(forest, leaf2)).toEqual([leaf3]);
+    const children = directChildIds(forest, leaf2);
+    expect(children).toContain(leaf3);
+    expect(children).toHaveLength(2);
+    const ddId = children.find((id) => id !== leaf3)!;
+    expect(createdIds).toContain(ddId);
+    expect(next.find((f) => f.id === ddId)?.kind).toBe('leaf'); // 直轄領 = shape-bearing 末端.
 
-    // 派生集約=子の和: f-leaf-2's derived area == union of its children (f-leaf-3),
-    // i.e. exactly [10,20]x[0,10], NOT [0,20]x[0,10] (the pre-fix overflow).
-    const parentArea = resolveFeatureArea(forest, vstore, leaf2);
-    const childArea = resolveFeatureArea(forest, vstore, leaf3);
-    expect(parentArea.status).toBe('ok');
-    expect(childArea.status).toBe('ok');
-    if (parentArea.status === 'ok' && childArea.status === 'ok') {
-      expect(areasEqualWithinTolerance(parentArea.area, childArea.area)).toBe(true);
+    // 直轄領 area == f-leaf-2's ORIGINAL footprint [0,10]x[0,10] (元形状 preserved).
+    const ddArea = resolveFeatureArea(forest, merged, ddId);
+    expect(ddArea.status).toBe('ok');
+    if (ddArea.status === 'ok' && leaf2FootprintBefore.status === 'ok') {
+      expect(areasEqualWithinTolerance(ddArea.area, leaf2FootprintBefore.area)).toBe(true);
     }
 
-    // And the whole committed state passes every U08 invariant (no false negative).
-    assertFeatureSetInvariants(next, vstore);
+    // THE data-loss regression guard: the top aggregate STILL spans [0,20]x[0,10]
+    // (= 元形状 ∪ 子の和), i.e. exactly its pre-直轄化 area. NOTHING vanished.
+    const aggAreaAfter = resolveFeatureArea(forest, merged, aggId);
+    expect(aggAreaAfter.status).toBe('ok');
+    if (aggAreaAfter.status === 'ok' && aggAreaBefore.status === 'ok') {
+      expect(areasEqualWithinTolerance(aggAreaAfter.area, aggAreaBefore.area)).toBe(true);
+    }
+
+    // And the whole committed state passes every U08 invariant.
+    assertFeatureSetInvariants(next, merged);
   });
 
-  it('自治化 (parentCreate under an existing leaf) also converts that leaf', () => {
+  it('自治化 (parentCreate under an existing leaf) also generates a 直轄領 (FR-37)', () => {
     const { features, vstore } = buildDirectControlFixture();
+    const aggId = asFeatureId('f-agg-1');
     const leaf2 = asFeatureId('f-leaf-2');
     const leaf3 = asFeatureId('f-leaf-3');
+
+    const before = buildForest(features);
+    const aggAreaBefore = resolveFeatureArea(before, vstore, aggId);
+    const leaf2FootprintBefore = resolveFeatureArea(before, vstore, leaf2);
 
     const result = buildAffiliationProposal(
       features,
@@ -1540,14 +1585,35 @@ describe(`U08 直轄化 末端→集約 regression (seed=${SEED_REPRO})`, () => 
     );
     expect(result.status, JSON.stringify(result)).toBe('proposal');
     if (result.status !== 'proposal') return;
+    const { nextFeatures: next, newVertices } = result.proposal;
+    const merged = createVertexStore([...vstore.byId.values(), ...newVertices]);
 
-    const next = result.proposal.nextFeatures;
-    // The intermediate aggregate 'mid' ends up under f-leaf-2, so f-leaf-2 becomes
-    // a parent and MUST be converted to a shapeless aggregate.
+    // The intermediate aggregate 'mid' ends up under f-leaf-2, so f-leaf-2 becomes a
+    // parent and MUST be converted to a shapeless aggregate — and FR-37 preserves its
+    // footprint as a 直轄領 sibling of 'mid'.
     const newParent = next.find((f) => f.id === leaf2);
     expect(newParent?.kind).toBe('aggregate');
     expect((newParent as unknown as { shape?: unknown }).shape).toBeUndefined();
+    expect(newVertices.length).toBeGreaterThan(0);
 
-    assertFeatureSetInvariants(next, vstore);
+    const forest = buildForest(next);
+    // f-leaf-2's children: the intermediate aggregate 'mid' + the 直轄領 末端地物 (leaf).
+    const children = directChildIds(forest, leaf2);
+    expect(children).toHaveLength(2);
+    const ddId = children.find((id) => next.find((f) => f.id === id)?.kind === 'leaf');
+    expect(ddId).toBeDefined();
+    const ddArea = resolveFeatureArea(forest, merged, ddId!);
+    expect(ddArea.status).toBe('ok');
+    if (ddArea.status === 'ok' && leaf2FootprintBefore.status === 'ok') {
+      expect(areasEqualWithinTolerance(ddArea.area, leaf2FootprintBefore.area)).toBe(true);
+    }
+
+    // NOTHING vanished: the top aggregate area is unchanged by the 自治化.
+    const aggAreaAfter = resolveFeatureArea(forest, merged, aggId);
+    if (aggAreaAfter.status === 'ok' && aggAreaBefore.status === 'ok') {
+      expect(areasEqualWithinTolerance(aggAreaAfter.area, aggAreaBefore.area)).toBe(true);
+    }
+
+    assertFeatureSetInvariants(next, merged);
   });
 });
