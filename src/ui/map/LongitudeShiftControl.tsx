@@ -25,7 +25,7 @@ export interface LongitudeShiftControlProps {
    * pushes the new center into the camera (教訓 5.16: zoom applied once, not here).
    */
   readonly onShift: (shift: number) => void;
-  /** Jump the center to a named preset (本初子午線中心 / 太平洋中心). */
+  /** Jump the center to a longitude preset (0度中心 / 180度中心). */
   readonly onPreset: (preset: CenterLonPreset) => void;
 }
 
@@ -34,16 +34,16 @@ const SHIFT_SLIDER_RANGE = 10;
 
 // Compact preset labels for the上部バー (short visible text keeps the bar one row).
 const PRESET_LABELS: Readonly<Record<CenterLonPreset, string>> = {
-  [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心',
-  [CENTER_LON_PRESET.Pacific]: '太平洋中心',
+  [CENTER_LON_PRESET.PrimeMeridian]: '0度中心',
+  [CENTER_LON_PRESET.Pacific]: '180度中心',
 };
 
-// HB3-2: name the longitude each preset centers on (the user wondered what "太平洋"
-// meant). Kept as the button's `title` tooltip so the上部バー stays compact while the
-// clarification is one hover away.
+// HB3-2→2026-07-12 実機FB: labels are the longitude values themselves (デーレ世界に
+// 地球の地名は存在しないため、基準経線は経度値で呼ぶ)。The action phrasing is kept
+// as the button's `title` tooltip so the 上部バー stays compact.
 const PRESET_TITLES: Readonly<Record<CenterLonPreset, string>> = {
-  [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心（経度0°）',
-  [CENTER_LON_PRESET.Pacific]: '太平洋中心（経度180°）',
+  [CENTER_LON_PRESET.PrimeMeridian]: '中心経度を0°にする',
+  [CENTER_LON_PRESET.Pacific]: '中心経度を180°にする',
 };
 
 // HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on release), NOT

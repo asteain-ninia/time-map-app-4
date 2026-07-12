@@ -17,7 +17,7 @@
 //      selection, not NaN/empty), drag it, gate camera + anchor ordering finite and
 //      that the move does not corrupt the feature count. Then op∘逆op via Ctrl+Z.
 //   D. LONGITUDE SHIFT (FR-12): drag the 経度シフト slider right then left, click the
-//      ◀/▶ shift buttons, and toggle the 本初子午線/太平洋 presets. Gate
+//      ◀/▶ shift buttons, and toggle the 0度/180度 presets. Gate
 //      center-lon-readout never NaN/Infinity and camera hooks finite. Metamorphic:
 //      preset A -> preset B -> preset A returns the readout to its original value.
 //   E. CONTEXT MENU (FR-96): right-click on the map in View and Edit modes; gate the
@@ -556,8 +556,8 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await checkCamera(page, 'after-lon-buttons');
 
         // Preset round-trip A -> B -> A should restore the readout (metamorphic).
-        const presetA = page.getByRole('button', { name: '本初子午線中心' });
-        const presetB = page.getByRole('button', { name: '太平洋中心' });
+        const presetA = page.getByRole('button', { name: '0度中心', exact: true });
+        const presetB = page.getByRole('button', { name: '180度中心', exact: true });
         if ((await presetA.count()) > 0 && (await presetB.count()) > 0) {
           await presetA.click().catch(() => undefined);
           await page.waitForTimeout(60);

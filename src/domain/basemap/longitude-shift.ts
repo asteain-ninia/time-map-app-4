@@ -63,10 +63,10 @@ export function applyLongitudeShift(
   return centerLon + shiftToLonDelta(shift, zoom);
 }
 
-// --- Center-longitude presets (FR-12 本初子午線中心 / 太平洋中心) ------------
+// --- Center-longitude presets (FR-12 0度中心 / 180度中心) --------------------
 
 /**
- * Named center-longitude presets (spec FR-12: 本初子午線中心 / 太平洋中心 等). The
+ * Named center-longitude presets (spec FR-12: 0度中心 / 180度中心 等). The
  * value is the representative center longitude in [−180, 180); the caller sets the
  * continuous center to this (a representative value is itself a valid continuous
  * scalar). Frozen so the UI buttons and any test share one list (教訓 5.19).

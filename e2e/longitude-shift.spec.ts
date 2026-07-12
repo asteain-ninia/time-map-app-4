@@ -71,7 +71,7 @@ test.describe('FR-12: 経度シフト control is mounted and moves the live came
     }
   });
 
-  test('the 太平洋中心 preset jumps the center longitude to 180°', async () => {
+  test('the 180度中心 preset jumps the center longitude to 180°', async () => {
     const { app, page } = await launchApp();
     try {
       const inputLayer = page.getByTestId('map-input-layer');
@@ -79,15 +79,15 @@ test.describe('FR-12: 経度シフト control is mounted and moves the live came
       await expect(inputLayer).toHaveAttribute('data-pan-x', /.+/);
 
       // The Pacific-centered preset sets the continuous center to 180°.
-      await page.getByRole('button', { name: '太平洋中心' }).click();
+      await page.getByRole('button', { name: '180度中心', exact: true }).click();
       await expect
         .poll(async () => Number(await inputLayer.getAttribute('data-pan-x')))
         .toBeCloseTo(180, 3);
       // The readout folds the seam: continuous 180 reads canonically as "180°".
       await expect(readout).toContainText('180°');
 
-      // The 本初子午線中心 preset returns it to 0° (metamorphic round-trip).
-      await page.getByRole('button', { name: '本初子午線中心' }).click();
+      // The 0度中心 preset returns it to 0° (metamorphic round-trip).
+      await page.getByRole('button', { name: '0度中心', exact: true }).click();
       await expect
         .poll(async () => Number(await inputLayer.getAttribute('data-pan-x')))
         .toBeCloseTo(0, 3);

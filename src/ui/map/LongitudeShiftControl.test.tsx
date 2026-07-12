@@ -88,11 +88,11 @@ describe('LongitudeShiftControl', () => {
     render(
       <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={onPreset} />,
     );
-    // HB3-2: labels now name the centered longitude (e.g.「太平洋中心（経度180°）」),
-    // so match on the stable prefix rather than the full parenthetical text.
-    await user.click(screen.getByText(/^本初子午線中心/));
+    // 2026-07-12 実機FB: labels are the longitude values themselves (「0度中心」/
+    // 「180度中心」— デーレ世界に地球の地名は使わない)。Match on the stable prefix.
+    await user.click(screen.getByText(/^0度中心/));
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.PrimeMeridian);
-    await user.click(screen.getByText(/^太平洋中心/));
+    await user.click(screen.getByText(/^180度中心/));
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.Pacific);
   });
 });
