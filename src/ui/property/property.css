@@ -305,3 +305,56 @@
   padding: 8px;
   border-top: 1px solid var(--c-border);
 }
+
+/* --- 詳細文書エディタ（FR-98 後段, サイドバー） ------------------------------ */
+.detail-document {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-document__modes {
+  display: flex;
+  gap: 4px;
+}
+
+.detail-document__modes button {
+  font: inherit;
+  padding: 3px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.detail-document__modes button[aria-pressed='true'] {
+  background: var(--c-chrome);
+  border-color: var(--c-accent);
+}
+
+.detail-document textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.detail-document__empty,
+.detail-document__message {
+  margin: 0;
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.detail-document__save {
+  align-self: flex-start;
+  font: inherit;
+  padding: 5px 10px;
+  background: var(--c-accent);
+  color: #fff;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+}

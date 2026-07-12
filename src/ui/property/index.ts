@@ -32,6 +32,10 @@ export {
 } from './AnchorTimeBar';
 export { DetailPanel, type DetailPanelProps } from './DetailPanel';
 export {
+  DetailDocumentSection,
+  type DetailDocumentSectionProps,
+} from './DetailDocumentSection';
+export {
   DetailPanels,
   type DetailPanelsProps,
   type DetailPanelsController,
@@ -50,8 +54,18 @@ export type {
   AnchorIntervalEditDispatch,
   AnchorIntervalEditIntent,
   AnchorIntervalOp,
+  DetailDocumentDispatch,
+  DetailDocumentEditIntent,
 } from './contracts';
 export { ANCHOR_INTERVAL_OP } from './contracts';
+
+// Pure logic: 詳細文書 edit plan — WRITE guard / no-op / canonical empty (FR-98)
+export {
+  DETAIL_DOCUMENT_PLAN,
+  type DetailDocumentPlan,
+  type DetailDocumentPlanKind,
+  planDetailDocumentEdit,
+} from './detail-document';
 
 // Pure logic: selection-display judgment (FR-83, 教訓 5.10 / 5.29)
 export {
@@ -124,4 +138,8 @@ export {
 } from './interval-edit';
 
 // Strings + 種別の日本語表示ラベル (表示層の単一写像, 要件定義書 §4)
-export { PROPERTY_STRINGS, featureKindJaLabel } from './messages';
+export {
+  PROPERTY_STRINGS,
+  featureKindJaLabel,
+  detailDocumentTooLongMessage,
+} from './messages';

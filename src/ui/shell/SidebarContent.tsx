@@ -49,6 +49,8 @@ import {
   PropertyPanel,
   PROPERTY_STRINGS,
   type AnchorSeriesLookup,
+  type AssetResolver,
+  type DetailDocumentDispatch,
   type EditDispatch,
   type AnchorIntervalEditDispatch,
   type FeatureLookup,
@@ -107,6 +109,16 @@ export interface SidebarContentDeps<S> {
    * from {@link editDispatch}, which only rewrites the snapshot, never the interval.
    */
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
+  /**
+   * FR-98 後段: the 詳細文書 edit dispatch (live-detail-document.ts). The composition
+   * root wires the real ONE-undo-unit bridge; when omitted the panel's 詳細文書
+   * section stays a sanitized read-only preview (honest-stub discipline — no dead
+   * 保存 control). DISTINCT from {@link editDispatch}: it rewrites only the record's
+   * optional detailDocument field, never the attributes/color.
+   */
+  readonly detailDocumentDispatch?: DetailDocumentDispatch;
+  /** FR-98 / FR-02: ZIP-internal asset resolution for the 詳細文書 preview. */
+  readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
@@ -136,6 +148,8 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     calendar,
     editDispatch,
     anchorIntervalDispatch,
+    detailDocumentDispatch,
+    assetResolver,
     onOpenDetail,
     onDeleteFeature,
     onFocusFeatureCamera,
@@ -178,6 +192,8 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         editDispatch={dispatch}
         calendar={calendar}
         {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
+        {...(detailDocumentDispatch ? { detailDocumentDispatch } : {})}
+        {...(assetResolver ? { assetResolver } : {})}
         {...(onOpenDetail ? { onOpenDetail } : {})}
         {...(onDeleteFeature ? { onDeleteFeature } : {})}
       />
@@ -223,6 +239,8 @@ function PropertyPanelHost<S>(props: {
   readonly editDispatch: EditDispatch;
   readonly calendar: Calendar;
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
+  readonly detailDocumentDispatch?: DetailDocumentDispatch;
+  readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
 }): JSX.Element {
@@ -337,6 +355,8 @@ function PropertyPanelHost<S>(props: {
       ownerLookup={ownerLookup}
       resolveAreaKm2={resolveAreaKm2}
       {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
+      {...(props.detailDocumentDispatch ? { detailDocumentDispatch: props.detailDocumentDispatch } : {})}
+      {...(props.assetResolver ? { assetResolver: props.assetResolver } : {})}
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
       {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
     />

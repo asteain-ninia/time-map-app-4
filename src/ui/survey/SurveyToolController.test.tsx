@@ -44,6 +44,7 @@ interface Harness {
   readonly cameraInput: MapCameraInput & {
     wheelCalls: number;
     downCalls: number;
+    beginPanCalls: { pressX: number; pressY: number; pointerId: number }[];
   };
   readonly onDrawingChange: ReturnType<typeof vi.fn>;
   readonly unmount: () => void;
@@ -63,6 +64,7 @@ function mountSurvey(initialMode: EditMode = EDIT_MODE.View): Harness {
   const cameraInput: Harness['cameraInput'] = {
     wheelCalls: 0,
     downCalls: 0,
+    beginPanCalls: [],
     wheel() {
       this.wheelCalls += 1;
     },
@@ -72,6 +74,13 @@ function mountSurvey(initialMode: EditMode = EDIT_MODE.View): Harness {
     pointerMove() {},
     pointerUp() {},
     pointerCancel() {},
+    beginPan(e, pressClientX, pressClientY) {
+      this.beginPanCalls.push({
+        pressX: pressClientX,
+        pressY: pressClientY,
+        pointerId: e.pointerId,
+      });
+    },
   };
   const onDrawingChange = vi.fn();
   // The production pair: the headless controller (shell overlay) + the map-cell
@@ -156,6 +165,89 @@ describe('SurveyToolController — click / drag discrimination (教訓 5.8)', ()
     const s = h.store.getState().survey;
     expect(s.draft).toBeNull();
     expect(s.lines).toHaveLength(0);
+    h.unmount();
+  });
+
+  // survey F1 (Codex HIGH) — a threshold-exceeded LEFT drag is DELEGATED to the
+  // camera as a pan (mapCameraInput.beginPan, anchored at the PRESS point), exactly
+  // once, and the consumed press can never also confirm a click. Before the fix the
+  // gesture was a dead zone: the click was suppressed AND no pan ever started.
+  it('閾値超えの左ドラッグは beginPan へ 1 回だけ委譲され、クリック確定しない (F1)', () => {
+    const h = mountSurvey();
+    act(() => h.store.getState().surveyEnable());
+
+    const dx = SURVEY_CLICK_MOVE_THRESHOLD_PX + 10;
+    act(() => {
+      fireEvent.pointerDown(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+      fireEvent.pointerMove(layer(), { clientX: 100 + dx, clientY: 50, pointerId: 1 });
+      // Further movement must NOT re-delegate (the press candidate was consumed).
+      fireEvent.pointerMove(layer(), { clientX: 100 + dx * 2, clientY: 50, pointerId: 1 });
+      fireEvent.pointerUp(layer(), { clientX: 100 + dx * 2, clientY: 50, button: 0, pointerId: 1 });
+    });
+
+    // Delegated ONCE, anchored at the ORIGINAL press position (catch-up pan).
+    // (jsdom does not thread pointerId through fireEvent, so only the anchor is
+    // asserted here; the id-matching guard is covered by the pointerId-mismatch
+    // no-op semantics of the press candidate itself.)
+    expect(h.cameraInput.beginPanCalls).toHaveLength(1);
+    expect(h.cameraInput.beginPanCalls[0]).toMatchObject({ pressX: 100, pressY: 50 });
+    // No click was confirmed by the drag.
+    const s = h.store.getState().survey;
+    expect(s.draft).toBeNull();
+    expect(s.lines).toHaveLength(0);
+
+    // A subsequent genuine click still measures (the delegation left no residue).
+    act(() => clickAt(10, 20));
+    expect(h.store.getState().survey.draft?.start).toEqual({ lon: 10, lat: 20 });
+    expect(h.cameraInput.beginPanCalls).toHaveLength(1);
+    h.unmount();
+  });
+
+  it('閾値未満の移動では beginPan は呼ばれずクリックが確定する (F1 対照)', () => {
+    const h = mountSurvey();
+    act(() => h.store.getState().surveyEnable());
+
+    const dx = SURVEY_CLICK_MOVE_THRESHOLD_PX - 1;
+    act(() => {
+      fireEvent.pointerDown(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+      fireEvent.pointerMove(layer(), { clientX: 100 + dx, clientY: 50, pointerId: 1 });
+      fireEvent.pointerUp(layer(), { clientX: 100 + dx, clientY: 50, button: 0, pointerId: 1 });
+    });
+
+    expect(h.cameraInput.beginPanCalls).toHaveLength(0);
+    // The click confirmed at the PRESS point (クリックした場所＝測った場所).
+    expect(h.store.getState().survey.draft?.start).toEqual({ lon: 100, lat: 50 });
+    h.unmount();
+  });
+
+  // survey F3 (Codex MED) — a pointer that LEAVES the bridge abandons its press
+  // candidate: 端で押下→離脱→再進入→元の押下位置近くで解放 must NOT confirm a
+  // stale click (the underlying map-input-layer applies the same leave rule).
+  it('pointerleave は press 候補を破棄する — 再進入後の解放はクリック確定しない (F3)', () => {
+    const h = mountSurvey();
+    act(() => h.store.getState().surveyEnable());
+
+    act(() => {
+      fireEvent.pointerDown(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+      fireEvent.pointerLeave(layer(), { pointerId: 1 });
+      // Re-enter and release right at the original press position.
+      fireEvent.pointerUp(layer(), { clientX: 101, clientY: 50, button: 0, pointerId: 1 });
+    });
+
+    const s = h.store.getState().survey;
+    expect(s.draft).toBeNull();
+    expect(s.lines).toHaveLength(0);
+    h.unmount();
+  });
+});
+
+describe('SurveyToolController — native context menu suppression (F2, Codex MED)', () => {
+  it('the bridge preventDefaults contextmenu so only the FR-96 custom menu shows', () => {
+    const h = mountSurvey();
+    act(() => h.store.getState().surveyEnable());
+    // fireEvent returns FALSE when preventDefault was called on the event.
+    const notPrevented = fireEvent.contextMenu(layer(), { clientX: 10, clientY: 20 });
+    expect(notPrevented).toBe(false);
     h.unmount();
   });
 });

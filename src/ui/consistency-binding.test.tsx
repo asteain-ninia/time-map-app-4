@@ -13,6 +13,7 @@ import {
   createLiveMergeBinding,
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
+  anchorIntervalRecolorTime,
   type DomainRoot,
 } from './consistency-binding';
 import {
@@ -1485,6 +1486,63 @@ describe('createAnchorIntervalCommandForRoot (HB3-12 — 存続期間編集 over
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason.code).toBe('anchorNotFound');
+  });
+
+  // fr100 — the auto-recolor ANCHOR TIME of an interval commit (コマンドの anchorTime;
+  // NOT store.currentTime). Owned beside the command builder so the two share one
+  // source; the App threads this into the ONE recordCommand recolor funnel.
+  describe('anchorIntervalRecolorTime (fr100 — 存続期間コミットの再配色時刻)', () => {
+    const FALLBACK = timePointYear(9999);
+
+    it('ChangeStart → the NEW start (the boundary that moved)', () => {
+      const { root, featureId, anchorId } = seededAt1000();
+      const t = anchorIntervalRecolorTime(
+        root,
+        buildChangeStartIntent(featureId, anchorId, timePointYear(1500)),
+        FALLBACK,
+      );
+      expect(t).toEqual(timePointYear(1500));
+    });
+
+    it('SetEnd(newEnd) → the new end (the feature stops being effective there)', () => {
+      const { root, featureId, anchorId } = seededAt1000();
+      const t = anchorIntervalRecolorTime(
+        root,
+        buildSetEndIntent(featureId, anchorId, timePointYear(1800)),
+        FALLBACK,
+      );
+      expect(t).toEqual(timePointYear(1800));
+    });
+
+    it('SetEnd(null=継続中) → the target anchor OWN start (resolved from the pre-edit root)', () => {
+      const { root, featureId, anchorId } = seededAt1000();
+      const t = anchorIntervalRecolorTime(
+        root,
+        buildSetEndIntent(featureId, anchorId, null),
+        FALLBACK,
+      );
+      expect(t).toEqual(timePointYear(1000));
+    });
+
+    it('Delete → the deleted anchor OWN start', () => {
+      const { root, featureId, anchorId } = seededAt1000();
+      const t = anchorIntervalRecolorTime(
+        root,
+        buildDeleteAnchorIntent(featureId, anchorId),
+        FALLBACK,
+      );
+      expect(t).toEqual(timePointYear(1000));
+    });
+
+    it('an unresolvable anchor falls back to the caller time (honest best-effort)', () => {
+      const { root, anchorId } = seededAt1000();
+      const t = anchorIntervalRecolorTime(
+        root,
+        buildDeleteAnchorIntent(asFeatureId('ghost'), anchorId),
+        FALLBACK,
+      );
+      expect(t).toEqual(FALLBACK);
+    });
   });
 });
 

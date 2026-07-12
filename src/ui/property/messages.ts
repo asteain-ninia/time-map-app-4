@@ -7,6 +7,7 @@
 // branch drift; the single table prevents it.
 
 import { FEATURE_KIND, type FeatureKind } from '../../domain/feature';
+import { MAX_DETAIL_DOCUMENT_LENGTH } from '../../domain/index';
 
 export const PROPERTY_STRINGS = {
   // -- selection-display cases (FR-83) ---------------------------------------
@@ -71,6 +72,16 @@ export const PROPERTY_STRINGS = {
   detailAttributesTitle: '属性',
   brokenImageAlt: '画像を表示できません',
 
+  // -- 詳細文書の編集 (FR-98 後段, サイドバー PropertyPanel) -------------------
+  /** The 閲覧 (sanitized preview) toggle of the詳細文書 editor. */
+  detailDocViewToggle: '閲覧',
+  /** The 編集 (raw Markdown textarea) toggle of the詳細文書 editor. */
+  detailDocEditToggle: '編集',
+  /** aria-label of the raw Markdown textarea. */
+  detailDocTextareaLabel: '詳細文書（Markdown）',
+  /** Shown when the詳細文書 has no content yet (preview placeholder). */
+  detailDocEmpty: '詳細文書はまだありません。',
+
   // -- 地物種別 (種別) の日本語表示ラベル (要件定義書 §4) --------------------
   // 詳細パネル等の「種別」行に出るドメイン kind の日本語名。ドメインの
   // featureKindLabel は enum 生値 (英語: point/line/leaf/aggregate) を返すため、
@@ -130,6 +141,17 @@ export function featureKindJaLabel(kind: FeatureKind): string {
  * shape whose vertices could not all resolve upstream) surfaces a dash rather than
  * "NaN km²" — the row is honest about an unresolvable value without crashing.
  */
+/**
+ * The WRITE-side over-length rejection for a 詳細文書 draft (FR-98). Shown BEFORE any
+ * dispatch (the domain RangeError is the last防波堤, not the UX). Names the actual and
+ * maximum lengths so the user knows how far over they are (honest, 教訓 5.26).
+ */
+export function detailDocumentTooLongMessage(length: number): string {
+  const max = MAX_DETAIL_DOCUMENT_LENGTH.toLocaleString('ja-JP');
+  const actual = length.toLocaleString('ja-JP');
+  return `詳細文書が長すぎるため保存できません（${actual} 文字 / 上限 ${max} 文字）。`;
+}
+
 export function formatAreaKm2(km2: number): string {
   if (!Number.isFinite(km2)) {
     return `— ${PROPERTY_STRINGS.areaUnit}`;

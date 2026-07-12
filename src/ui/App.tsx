@@ -19,8 +19,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
-import { EDIT_MODE } from './state/session';
-import { AppShell } from './shell';
+import { EDIT_MODE, type ToolId } from './state/session';
+import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import { TOOL_ID } from './shell/tools';
 import {
@@ -125,8 +125,10 @@ import {
 import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { COMMAND_ID } from './shell/commands';
-import { featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
-import { runEditDelete } from './vertex-delete';
+import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
+import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
+import { runUnshare } from './live-unshare';
+import { createDetailDocumentDispatch } from './live-detail-document';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { buildCommittedFeatures } from './map/committed-features';
@@ -135,6 +137,7 @@ import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles
 import {
   PointerDispatcher,
   NOOP_ADD_PORT,
+  POINTER_BUTTON,
   LongitudeShiftControl,
   GlobalDepthControl,
   type CameraPort,
@@ -144,12 +147,38 @@ import {
 import { buildForest } from '../domain/hierarchy/forest';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
-import { createLiveContextMenuPort, promoteHitToSelection } from './map/live-context-menu-port';
+import {
+  createLiveContextMenuPort,
+  promoteHitToSelection,
+  type ContextMenuRequest,
+} from './map/live-context-menu-port';
 import {
   MapContextMenu,
   type ContextMenuOpener,
 } from './map/MapContextMenu';
-import { type RectangleResolver, type NextTargetPreference } from '../domain/selection';
+// (fr96 本結線) the PURE right-click composition/dispatch (U36) + the live lookups
+// they read (単一真実源: the SAME resolveDisplayFor owners / shared-vertex derivation
+// the hit-test & renderer use, 教訓 5.29).
+import { composeMenuFor } from './map/context-menu-adapter';
+import {
+  FLOW_KIND,
+  dispatchMenuItem,
+  isBlocked,
+  sharedLookupFromSet,
+  type ContextMenuModel,
+  type MenuItemKind,
+  type NoMenu,
+} from '../domain/context-menu/index';
+import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
+import { resolveDisplayFor } from './map/display-resolution-cache';
+// (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
+import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
+import { assertNever } from '../domain/assert-never';
+import {
+  ownerLookupFromMap,
+  type RectangleResolver,
+  type NextTargetPreference,
+} from '../domain/selection';
 import { liveHitTestAt, drawnAreaAt, verticesInRectangle } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
@@ -347,6 +376,16 @@ export function App(): JSX.Element {
   // the mount registers its setter (bindContextMenuOpener below).
   const contextMenuOpenerRef = useRef<ContextMenuOpener | null>(null);
 
+  // fr96 (段階7 優先規則) — the LIVE suspended gate the right-click port reads. The
+  // truth is the SAME `shortcutsSuspended` OR-chain (modal || *Drawing, derived below
+  // near the modal/tool state) the global shortcut dispatcher stands down on (教訓
+  // 5.13 / 5.29 単一真実源); it is mirrored into this ref on every render so the
+  // imperatively-created port (built once in onMapMount) reads the CURRENT value per
+  // right-click without re-mounting the map (the cameraInputRef late-binding pattern).
+  // While suspended the port drops the request whole — no menu opens AND the live
+  // selection is untouched (a knife/merge/survey draft's own Esc keeps ownership).
+  const shortcutsSuspendedRef = useRef(false);
+
   // HB5-3 錨起点の視点合わせ — the「錨一覧」/ timeline-origin selection snaps the camera
   // onto the selected feature's world extent. Built in onMapMount (where `ports` — the
   // SINGLE camera write path — is in scope) and held behind a ref so the sidebar's
@@ -362,7 +401,12 @@ export function App(): JSX.Element {
   // (技術方針 2.3: the live input path stays off React re-render). Assigned by an
   // effect below once `recordCommit` exists; read by the edit-session `onReleased`.
   const recordCommitRef = useRef<
-    ((result: ProcessResult<DomainRoot>, preference?: NextTargetPreference) => void) | null
+    | ((
+        result: ProcessResult<DomainRoot>,
+        preference: NextTargetPreference | undefined,
+        anchorTime: TimePoint,
+      ) => void)
+    | null
   >(null);
 
   // The shared vertex-id minter, held behind a ref so the imperatively-created
@@ -947,7 +991,9 @@ export function App(): JSX.Element {
           outcome.proposal.snapshot.feature?.id ??
           outcome.proposal.snapshot.deletedFeatureId;
         const preference = featureId !== undefined ? { featureId } : undefined;
-        recordCommitRef.current?.(outcome.result, preference);
+        // fr100: the recolor anchor time is the PROPOSAL's own anchorTime (the time
+        // the drag confirm resolved at press/release) — the exact commit time.
+        recordCommitRef.current?.(outcome.result, preference, outcome.proposal.anchorTime);
       },
       // HB3-4: receive the live session on every transition (begin / each move / release
       // / cancel). Hold it as transient render state and schedule a frame so the dragged
@@ -986,6 +1032,11 @@ export function App(): JSX.Element {
         s.restoreSelection(promoteHitToSelection(s.selection, hit));
       },
       open: (request) => contextMenuOpenerRef.current?.open(request),
+      // fr96 段階7 優先規則: while a modal / tool draft owns the input, the right-click
+      // request is dropped WHOLE (neither promote nor open — live-context-menu-port).
+      // Read live through the ref so the port built once at mount always sees the
+      // current OR-chain value (教訓 5.6, never a stale capture).
+      suspended: () => shortcutsSuspendedRef.current,
     });
     const dispatcher = new PointerDispatcher({
       getMode: () => store.getState().mode,
@@ -1120,6 +1171,26 @@ export function App(): JSX.Element {
       },
       pointerCancel: (pointerId): void => {
         dispatcher.pointerCancel(pointerId);
+      },
+      // survey F1 — 測量中の左ドラッグをパンへ委譲する強制パン入口. The survey bridge
+      // discriminates its LEFT button by a movement threshold (a genuine click
+      // measures; a drag must pan); once the threshold is crossed it delegates the
+      // in-flight gesture HERE. We start the SAME dispatcher pan a middle-button
+      // press would: the normalized sample is re-tagged MIDDLE so decideDispatch's
+      // single PAN_BUTTONS table routes it to Pan in EVERY mode (単一真実源 — no
+      // second pan implementation in the bridge, 教訓 5.29), anchored at the
+      // ORIGINAL press position (the hysteresis pixels catch up on the next move).
+      // The bridge element is the capture target, and the dispatcher OWNS the
+      // release on every teardown path (the same capture discipline as pointerDown
+      // above); subsequent moves/ups flow through the ordinary forwarding.
+      beginPan: (e, pressClientX, pressClientY): void => {
+        flushRedraw();
+        const { x, y } = toSurface(pressClientX, pressClientY);
+        const n = PointerDispatcher.normalize(e, x, y);
+        dispatcher.pointerDown(
+          { ...n, button: POINTER_BUTTON.Middle },
+          (e.currentTarget as Element | null) ?? undefined,
+        );
       },
     };
 
@@ -1385,6 +1456,8 @@ export function App(): JSX.Element {
       pointerUp: (e, clientX, clientY) =>
         cameraInputRef.current?.pointerUp(e, clientX, clientY),
       pointerCancel: (pointerId) => cameraInputRef.current?.pointerCancel(pointerId),
+      beginPan: (e, pressClientX, pressClientY) =>
+        cameraInputRef.current?.beginPan?.(e, pressClientX, pressClientY),
     }),
     [],
   );
@@ -1492,17 +1565,34 @@ export function App(): JSX.Element {
   // committed state + CommandResult), so the derived result is exact regardless of
   // the stack. The committed domain becomes the new history root; we tag it so the
   // load/new subscription below does NOT mistake our own commit for an external swap.
+  //
+  // fr100 — the ONE auto-recolor funnel (FR-100 / FR-101): EVERY commit path in the
+  // app funnels through THIS callback, so wrapping here guarantees structure +
+  // auto-recolor land as ONE undo unit on every path (add / knife / merge / reparent
+  // / ring-edit / drill / edit-drag / property・スタイル edit — incl. autoColorEnabled
+  // トグル・パレット変更 — / 詳細文書 / vertex-delete / 全錨 delete / interval /
+  // unshare / conflict-modal commit), never a second漏斗 (教訓 5.13 / 5.29).
+  // `anchorTime` is REQUIRED and is the COMMAND's own commit/anchor time — NOT
+  // store.currentTime — because property-edit (editTime = selected anchor start) and
+  // interval edits commit at a time that can differ from the view time; each caller
+  // states its own (全コミット経路 threaded below). maybeComposeAutoRecolor SHORT-
+  // CIRCUITS to the unwrapped command when no auto-color target is effective at that
+  // time (the 722-feature all-manual実データ: nothing changes, no adjacency graph is
+  // ever built — the per-commit perf gate).
   const recordCommand = useCallback(
     (
       command: Command<DomainRoot>,
-      preference?: NextTargetPreference,
+      preference: NextTargetPreference | undefined,
+      anchorTime: TimePoint,
     ): void => {
-      const step = historyExecute(historyRef.current, command);
+      const wrapped = maybeComposeAutoRecolor(command, historyRef.current.state, anchorTime);
+      const step = historyExecute(historyRef.current, wrapped);
       historyRef.current = step.history;
       lastCommittedDomainRef.current = step.history.state;
       // Remember this commit's next-target preference so a later redo of the SAME
-      // command re-promotes it (第6波 redo-drops-selection-preference).
-      redoPreferenceRef.current.remember(command, preference);
+      // command re-promotes it (第6波 redo-drops-selection-preference). Keyed to the
+      // WRAPPED command — that is the exact object the history stack replays on redo.
+      redoPreferenceRef.current.remember(wrapped, preference);
       store.getState().applyCommandResult(step.history.state, step.result, preference);
       refreshUndoRedoEnabled();
     },
@@ -1512,10 +1602,11 @@ export function App(): JSX.Element {
   const recordCommit = useCallback(
     (
       result: ProcessResult<DomainRoot>,
-      preference?: NextTargetPreference,
+      preference: NextTargetPreference | undefined,
+      anchorTime: TimePoint,
     ): void => {
       if (result.status !== PROCESS_STATUS.Committed) return;
-      recordCommand(result.command, preference);
+      recordCommand(result.command, preference, anchorTime);
     },
     [recordCommand],
   );
@@ -1652,23 +1743,33 @@ export function App(): JSX.Element {
   //   • otherwise (no vertex selection, only an activeFeature) → the UNCHANGED U31
   //     全錨 delete (FR-79 / FR-85) recorded as ONE undo unit; an absent target builds
   //     no command (no幽霊 entry, 教訓 5.24).
-  useEffect(() => {
-    const deleteSelected = (): void => {
-      const s = store.getState();
-      // The ONE handler, delegating the branch to the single testable seam
-      // {@link runEditDelete} (単一真実源 5.29 / 5.34). All host effects are injected
-      // so the App effect holds no duplicated delete logic.
-      runEditDelete<DomainRoot>(s.selection, {
+  // The ONE delete funnel, delegating the branch to the single testable seam
+  // {@link runEditDelete} (単一真実源 5.29 / 5.34). All host effects are injected so
+  // the App holds no duplicated delete logic. Extracted as a callback (fr96) so the
+  // registry handler below AND the right-click「頂点を削除」dispatch drive the SAME
+  // funnel with an explicit selection — the FR-96 DeleteVertex intent names its own
+  // {owner, vertexIds} payload rather than re-reading the live selection (教訓 5.6:
+  // the menu fires exactly what it showed; no drift with a selection that moved).
+  const runDeleteFunnel = useCallback(
+    (selection: EditDeleteSelection): void => {
+      runEditDelete<DomainRoot>(selection, {
         getRoot: () => store.getState().domain,
         getTime: () => store.getState().currentTime,
         startProcess: (proposal) => vertexDeleteBinding.startProcess(proposal),
         applyResolutionsFor: (proposal) => vertexDeleteBinding.applyResolutionsFor(proposal),
-        recordCommit: (result, preference) => recordCommit(result, preference),
+        // fr100: the vertex-delete proposal anchors at getTime() = currentTime, read
+        // in the SAME synchronous run — the commit time IS the current time here.
+        recordCommit: (result, preference) =>
+          recordCommit(result, preference, store.getState().currentTime),
         openConflict: (result, apply, preference, clearVertexOwner) => {
           if (result.status !== PROCESS_STATUS.ConflictsPending) return;
           setConflictState({
             pending: result,
             applyResolutions: apply,
+            // fr100: stash the paused proposal's anchor time (= currentTime at this
+            // synchronous pause) so the eventual modal commit recolors at the SAME
+            // time the proposal anchored at, not whatever the clock shows later.
+            anchorTime: store.getState().currentTime,
             ...(preference !== undefined ? { preference } : {}),
             // Survive vertex-delete only: stash the owner to clear on commit (HOLE-1).
             ...(clearVertexOwner !== undefined ? { clearVertexOwner } : {}),
@@ -1679,9 +1780,20 @@ export function App(): JSX.Element {
         deleteFeatureAllAnchors: (featureId) => {
           const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
           if (command === null) return; // absent everywhere: no幽霊 entry (教訓 5.24)
-          recordCommand(command);
+          // fr100: the 全錨 delete has no single anchor time (it sweeps every anchor);
+          // the recolor evaluates at the CURRENT view time — the instant whose map the
+          // user watches the neighbours recolor on (documented best-effort choice).
+          recordCommand(command, undefined, store.getState().currentTime);
         },
       });
+    },
+    [store, recordCommand, recordCommit, vertexDeleteBinding],
+  );
+
+  useEffect(() => {
+    const deleteSelected = (): void => {
+      // The live selection is the target (Delete キー / 編集メニュー path).
+      runDeleteFunnel(store.getState().selection);
     };
     registry.register(COMMAND_ID.EditDelete, {
       run: deleteSelected,
@@ -1694,7 +1806,180 @@ export function App(): JSX.Element {
     return () => {
       registry.unregister(COMMAND_ID.EditDelete);
     };
-  }, [registry, store, recordCommand, recordCommit, vertexDeleteBinding]);
+  }, [registry, store, runDeleteFunnel]);
+
+  // --- fr96 右クリックメニューの本結線 (FR-96 / FR-33) -------------------------
+  //
+  // The U36 composition (composeMenuFor) + dispatch (dispatchMenuItem) were live and
+  // unit-tested, and the MapContextMenu mount already carried the DYNAMIC render path
+  // (composeFor/onSelectItem additive props) — but the App never supplied them, so a
+  // right-click still opened the LEGACY 2-item static menu (教訓 5.7 ロジックはあるが
+  // UI から呼ばれない). This block supplies the live lookups + the intent router so
+  // the dynamic menu composes from the SAME truth the renderer / hit-test resolve
+  // (resolveDisplayFor owners / sharedVertexIdsFor / featureByIdAt, 教訓 5.29) and
+  // every offered item fires the SAME flow the UI-button path runs (教訓 5.6).
+
+  // FR-33 unshare — the id-generation state the unshare launcher threads through its
+  // sequential mints. Session-local and monotonic; advanced via onIdStateAdvanced so
+  // a second unshare can never re-mint an id of the first (教訓 5.37). The tick is a
+  // monotonic integer source (never wall-clock alone — 教訓 5.37).
+  const unshareIdStateRef = useRef<IdGeneratorState>(createIdGeneratorState());
+  const unshareTickRef = useRef(0);
+  // 教訓 5.37 (5.37 重複チェック): EVERY project raw id — features / vertices / rings
+  // across ALL anchors — so an unshare-minted vertex id can collide with nothing that
+  // exists at ANY time. Derived by the SAME collectProjectRawIds the shared minter
+  // scans, memoized per root IDENTITY (the root is immutable; a commit swaps it).
+  const reservedRawIdsRef = useRef<{ root: DomainRoot | null; ids: ReadonlySet<string> }>({
+    root: null,
+    ids: new Set<string>(),
+  });
+  const getReservedRawIds = useCallback((): ReadonlySet<string> => {
+    const root = store.getState().domain;
+    if (reservedRawIdsRef.current.root !== root) {
+      reservedRawIdsRef.current = { root, ids: collectProjectRawIds(root) };
+    }
+    return reservedRawIdsRef.current.ids;
+  }, [store]);
+
+  // FR-33 共有解除 — run the live unshare launcher (live-unshare.ts). The ports are
+  // the App's existing seams: store 直読 getRoot/getTime, the SAME pure applyProposal
+  // the edit binding applies a FeatureSnapshot with (U44 applyEditProposal — reusing
+  // vertexDeleteBinding's ports, a createLiveEditBinding over the live root), and the
+  // whole-state-swap command recorded through the ONE history-record seam
+  // (recordCommand → historyExecute → applyCommandResult, whose U22 reresolve promotes
+  // the launcher-built preference — the new-id remap is already inside it).
+  const runUnshareIntent = useCallback(
+    (vertexIds: ReadonlySet<VertexId>, ownerFeatureId: FeatureId | null): void => {
+      runUnshare(
+        { vertexIds, ownerFeatureId },
+        {
+          getRoot: () => store.getState().domain,
+          getTime: () => store.getState().currentTime,
+          getIdState: () => unshareIdStateRef.current,
+          now: () => (unshareTickRef.current += 1),
+          // 必須 (教訓 5.37): the project-wide raw-id reservation set.
+          getReservedVertexIds: getReservedRawIds,
+          applyProposal: (root, proposal) => vertexDeleteBinding.ports.applyProposal(root, proposal),
+          // fr100: the unshare plan is built and committed at getTime() = currentTime
+          // in ONE synchronous run — that is the commit's anchor time.
+          recordCommit: (command, preference) =>
+            recordCommand(command, preference, store.getState().currentTime),
+          onIdStateAdvanced: (next) => {
+            unshareIdStateRef.current = next;
+          },
+        },
+      );
+    },
+    [store, getReservedRawIds, vertexDeleteBinding, recordCommand],
+  );
+
+  // fr96 — arm an edit tool from a menu intent (分割→ナイフ / 所属変更 / 結合). The
+  // SAME store transitions the toolbar buttons drive (単一真実源, 教訓 5.29): ensure
+  // 編集モード (the menu also opens in 追加モード — canEdit covers Add), then arm the
+  // tool WITH the current selection pinned so the just-right-clicked target stays
+  // selected across the reset契約 (教訓 5.11; setActiveTool clears by default).
+  const armEditTool = useCallback(
+    (tool: ToolId): void => {
+      const s = store.getState();
+      const retained = s.selection;
+      if (s.mode !== EDIT_MODE.Edit) s.setMode(EDIT_MODE.Edit);
+      store.getState().setActiveTool(tool, retained);
+    },
+    [store],
+  );
+
+  // fr96 EditProperties — focus the sidebar プロパティ tab through the tab's OWN
+  // switch path (the Sidebar owns its active-section state privately; driving its
+  // rendered tab button is the additive way to activate it without a shell edit —
+  // the same single path a user click takes, 教訓 5.29). The target feature was
+  // already promoted via setActiveFeature, so the panel resolves it on switch.
+  const focusPropertyTab = useCallback((): void => {
+    const tab = document.getElementById(`sidebar-tab-${SIDEBAR_SECTION.Properties}`);
+    if (tab instanceof HTMLElement) tab.click();
+  }, []);
+
+  // fr96 composeFor — assemble the U36 ComposeInput from the LIVE store snapshot at
+  // right-click time (store.getState() per request — never a stale capture, 教訓 5.6)
+  // and the three single-source lookups:
+  //   featureKindLookup ← featureByIdAt (the same effective-at-time feature the draw
+  //     / hit-test resolve);
+  //   ownerLookup       ← resolveDisplayFor(...).owners (the grabbable vertex→owner
+  //     map the hit-test grabs from — a cache HIT off the frame already resolved);
+  //   sharedLookup      ← sharedVertexIdsFor (the RAW depth-independent shared set the
+  //     FR-30 marker draws and the FR-33 unshare detaches — no drift, 教訓 5.29).
+  const composeContextMenuFor = useCallback(
+    (request: ContextMenuRequest): ContextMenuModel | NoMenu => {
+      const s = store.getState();
+      const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+      return composeMenuFor({
+        selection: s.selection,
+        mode: s.mode,
+        activeTool: s.activeTool,
+        hit: request.hit,
+        position: { x: request.clientX, y: request.clientY },
+        lookups: {
+          featureKindLookup: {
+            kindOf: (fid) => featureByIdAt(s.domain, s.currentTime, fid)?.kind ?? null,
+          },
+          ownerLookup: ownerLookupFromMap(resolution.owners),
+          sharedLookup: sharedLookupFromSet(sharedVertexIdsFor(resolution)),
+        },
+      });
+    },
+    [store],
+  );
+
+  // fr96 onSelectItem — route a chosen item through the PURE dispatch (drift guard:
+  // a disabled / stale item is BLOCKED there, 教訓 5.13) and launch the matching
+  // EXISTING flow — never a simplified side-path (教訓 5.6):
+  //   Delete           → the ONE COMMAND_ID.EditDelete funnel (地物全錨削除);
+  //   DeleteVertex     → the SAME runEditDelete vertex branch the live EditDelete
+  //                      takes, fed the intent's own {owner, vertexIds} payload;
+  //   EditProperties   → promote the target + focus the プロパティ tab;
+  //   Split / 所属変更 / 結合 → arm the matching edit tool (the flow's own session
+  //                      collects its targets from there);
+  //   Unshare          → the FR-33 live unshare launcher (ONE composite undo unit +
+  //                      owner-selection remap onto the minted ids).
+  const onSelectMenuItem = useCallback(
+    (itemKind: MenuItemKind, model: ContextMenuModel): void => {
+      const intent = dispatchMenuItem(itemKind, model);
+      if (isBlocked(intent)) return; // disabled / stale: never fires (教訓 5.13)
+      switch (intent.kind) {
+        case FLOW_KIND.Delete:
+          registry.dispatch(COMMAND_ID.EditDelete);
+          return;
+        case FLOW_KIND.DeleteVertex:
+          // The intent names its own owner + vertex set (the composed target), so the
+          // funnel deletes EXACTLY what the menu offered (教訓 5.6). activeFeature is
+          // irrelevant to the vertex branch (vertexIds ≠ 空 selects it).
+          runDeleteFunnel({
+            activeFeature: null,
+            vertexOwner: intent.ownerFeatureId,
+            vertexIds: intent.vertexIds,
+          });
+          return;
+        case FLOW_KIND.EditProperties:
+          store.getState().setActiveFeature(intent.featureId);
+          focusPropertyTab();
+          return;
+        case FLOW_KIND.Split:
+          armEditTool(TOOL_ID.EditKnife);
+          return;
+        case FLOW_KIND.ChangeAffiliation:
+          armEditTool(TOOL_ID.EditReparent);
+          return;
+        case FLOW_KIND.Merge:
+          armEditTool(TOOL_ID.EditMerge);
+          return;
+        case FLOW_KIND.Unshare:
+          runUnshareIntent(intent.vertexIds, intent.ownerFeatureId);
+          return;
+        default:
+          return assertNever(intent);
+      }
+    },
+    [store, registry, runDeleteFunnel, focusPropertyTab, armEditTool, runUnshareIntent],
+  );
 
   // HB5-4 選択解除 — Escape / 編集メニュー「選択解除」clears the active-feature + vertex
   // selection through the SINGLE U22 clear path (store.clearSelection → EMPTY_SELECTION;
@@ -1855,11 +2140,17 @@ export function App(): JSX.Element {
 
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
   // promote the new feature so selection re-resolves to it.
+  // fr100 note (add / knife / merge / reparent / ring-edit / drill): each controller
+  // builds its proposal with `anchorTime: () => store.getState().currentTime`,
+  // evaluated at CONFIRM, and its onCommitted callback runs SYNCHRONOUSLY inside that
+  // same confirm call — so currentTime read here equals the proposal's anchorTime
+  // (全コミット経路の確認). The property / interval / edit-drag paths, whose commit
+  // time CAN differ from the view time, thread their own explicit times instead.
   const onAddCommitted = useCallback(
     (result: ProcessResult<DomainRoot>, newFeatureId: FeatureId) => {
-      recordCommit(result, { featureId: newFeatureId });
+      recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // KNIFE COMMIT (C3 — 教訓 5.11 / U12): record as one history unit and promote the
@@ -1869,7 +2160,7 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>, snapshot: SplitSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const inheritorId = snapshot.touchedFeatureIds[0] ?? snapshot.inheritorFeatureId;
-      recordCommit(result, { featureId: inheritorId });
+      recordCommit(result, { featureId: inheritorId }, store.getState().currentTime);
       // HB3-17: the split is done — the knife is no longer in knife state, so
       // deactivate the tool (the toolbar button must not stay pressed/"active";
       // ツール状態とUI表示のデシンク). Preserve the just-promoted inheritor selection
@@ -1887,9 +2178,9 @@ export function App(): JSX.Element {
   const onMergeCommitted = useCallback(
     (result: ProcessResult<DomainRoot>, snapshot: MergeSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
-      recordCommit(result, { featureId: snapshot.resultFeatureId });
+      recordCommit(result, { featureId: snapshot.resultFeatureId }, store.getState().currentTime);
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // REPARENT COMMIT (教訓 5.11 / U12): record as one history unit and keep selection on
@@ -1900,9 +2191,13 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>, snapshot: AffiliationSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const targetId = snapshot.targetIds[0];
-      recordCommit(result, targetId !== undefined ? { featureId: targetId } : undefined);
+      recordCommit(
+        result,
+        targetId !== undefined ? { featureId: targetId } : undefined,
+        store.getState().currentTime,
+      );
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // RING-EDIT COMMIT (教訓 5.11 / U12): record as one history unit. For an add / a
@@ -1914,9 +2209,13 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>, snapshot: RingFeatureSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const fid = snapshot.feature?.id;
-      recordCommit(result, fid !== undefined ? { featureId: fid } : undefined);
+      recordCommit(
+        result,
+        fid !== undefined ? { featureId: fid } : undefined,
+        store.getState().currentTime,
+      );
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // DRILL COMMIT (教訓 5.11 / U12): record as one history unit and promote the NEW
@@ -1927,9 +2226,9 @@ export function App(): JSX.Element {
   const onDrillCommitted = useCallback(
     (result: ProcessResult<DomainRoot>, snapshot: DrillSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
-      recordCommit(result, { featureId: snapshot.newFeature.id });
+      recordCommit(result, { featureId: snapshot.newFeature.id }, store.getState().currentTime);
     },
-    [recordCommit],
+    [recordCommit, store],
   );
 
   // U35 — the conflict-resolution modal seam. When add / knife confirmation pauses
@@ -1985,6 +2284,9 @@ export function App(): JSX.Element {
     ringEditDrawing ||
     drillDrawing ||
     surveyDrafting;
+  // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
+  // every render, so the imperative port always sees the current value — 教訓 5.6).
+  shortcutsSuspendedRef.current = shortcutsSuspended;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -2038,6 +2340,9 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: hostBootstrap.applyResolutionsFor(proposal),
+        // fr100: the paused PROPOSAL's own anchor time — the modal commit recolors at
+        // the time the edit anchors at, not whatever the view shows later.
+        anchorTime: proposal.anchorTime,
         // 教訓 5.11: promote the added feature once the conflict commit lands.
         preference: { featureId: proposal.featureId },
       });
@@ -2055,6 +2360,7 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: knifeBootstrap.applyResolutionsFor(proposal),
+        anchorTime: proposal.anchorTime,
         preference: { featureId: inheritorId },
       });
     },
@@ -2069,6 +2375,7 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: mergeBootstrap.applyResolutionsFor(proposal),
+        anchorTime: proposal.anchorTime,
         preference: { featureId: proposal.snapshot.resultFeatureId },
       });
     },
@@ -2084,6 +2391,7 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: reparentBootstrap.applyResolutionsFor(proposal),
+        anchorTime: proposal.anchorTime,
         ...(targetId !== undefined ? { preference: { featureId: targetId } } : {}),
       });
     },
@@ -2100,6 +2408,7 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: ringEditBootstrap.applyResolutionsFor(proposal),
+        anchorTime: proposal.anchorTime,
         ...(fid !== undefined ? { preference: { featureId: fid } } : {}),
       });
     },
@@ -2114,6 +2423,7 @@ export function App(): JSX.Element {
       setConflictState({
         pending: result,
         applyResolutions: drillBootstrap.applyResolutionsFor(proposal),
+        anchorTime: proposal.anchorTime,
         preference: { featureId: proposal.snapshot.newFeature.id },
       });
     },
@@ -2124,7 +2434,13 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>) => {
       // Forward the paused edit's selection preference so the modal commit promotes
       // the same feature a direct commit would (教訓 5.11; was being dropped).
-      recordCommit(result, conflictState?.preference);
+      // fr100: recolor at the PAUSED proposal's anchor time (stashed on the conflict
+      // state) — the fallback current time covers only a legacy-shaped state.
+      recordCommit(
+        result,
+        conflictState?.preference,
+        conflictState?.anchorTime ?? store.getState().currentTime,
+      );
       // Survive vertex-delete (bughunt5 HOLE-1): the deleted vertex ids linger in the
       // selection because reresolve cannot prune them (makeCommand reports deletion at
       // feature-history level only). Clear them in the SAME order the DIRECT survive
@@ -2238,7 +2554,10 @@ export function App(): JSX.Element {
         const proposal = createEditProposal(intent.featureId, intent.editTime, snapshot);
         const result = propertyEditBinding.startProcess(proposal);
         if (result.status === PROCESS_STATUS.Committed) {
-          recordCommit(result, { featureId: intent.featureId });
+          // fr100: a property edit (incl. autoColorEnabled トグル / パレット変更)
+          // commits at the EDIT-TARGET anchor's start — which can differ from the
+          // view time — so the recolor anchors at intent.editTime (コマンドの時刻).
+          recordCommit(result, { featureId: intent.featureId }, intent.editTime);
           return;
         }
         if (result.status === PROCESS_STATUS.Rejected) {
@@ -2249,6 +2568,26 @@ export function App(): JSX.Element {
         throw new Error('属性の編集を適用できませんでした。');
       },
     }),
+    [store, propertyEditBinding, recordCommit],
+  );
+
+  // FR-98 後段 — the 詳細文書 edit dispatch (live-detail-document.ts). propertyEdit
+  // Dispatch と同型: withDetailDocument (planDetailDocumentEdit 経由) → complete-state
+  // FeatureSnapshot → createEditProposal(featureId, editTime, …) → the SAME
+  // propertyEditBinding.startProcess attribute edits run → Committed ⇒ recordCommit =
+  // ONE undo unit (教訓 5.11). The WRITE guard (MAX_DETAIL_DOCUMENT_LENGTH) and the
+  // no-op guard live in the ONE plan the sidebar section also consults (教訓 5.29);
+  // a Rejected result throws so the panel surfaces 保存に失敗 honestly (HB-3).
+  const detailDocumentDispatch = useMemo(
+    () =>
+      createDetailDocumentDispatch({
+        getRoot: () => store.getState().domain,
+        startProcess: (proposal) => propertyEditBinding.startProcess(proposal),
+        // fr100: the dispatch names its own commit time (= intent.editTime — the
+        // edit-target anchor's start, which can differ from the view time).
+        recordCommit: (result, preference, anchorTime) =>
+          recordCommit(result, preference, anchorTime),
+      }),
     [store, propertyEditBinding, recordCommit],
   );
 
@@ -2265,7 +2604,9 @@ export function App(): JSX.Element {
     (featureId: FeatureId): void => {
       const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
       if (command === null) return;
-      recordCommand(command);
+      // fr100: same choice as the menu/Delete-key 全錨 delete — no single anchor
+      // time exists, so the recolor evaluates at the current view time.
+      recordCommand(command, undefined, store.getState().currentTime);
     },
     [store, recordCommand],
   );
@@ -2286,11 +2627,19 @@ export function App(): JSX.Element {
   const anchorIntervalDispatch = useMemo<AnchorIntervalEditDispatch>(
     () => ({
       dispatchAnchorInterval: (intent) => {
-        const result = createAnchorIntervalCommandForRoot(store.getState().domain, intent);
+        const root = store.getState().domain;
+        const result = createAnchorIntervalCommandForRoot(root, intent);
         if (!result.ok) {
           throw new Error(intervalRejectionMessage(result.reason));
         }
-        recordCommand(result.command, { featureId: intent.featureId });
+        // fr100: an interval edit's commit time is the BOUNDARY the op moved (new
+        // start / new end / the deleted anchor's own start) — NOT the view time; the
+        // recolor time is resolved by the single helper beside the command builder.
+        recordCommand(
+          result.command,
+          { featureId: intent.featureId },
+          anchorIntervalRecolorTime(root, intent, store.getState().currentTime),
+        );
       },
     }),
     [store, recordCommand],
@@ -2324,6 +2673,11 @@ export function App(): JSX.Element {
         onOpenDetail,
         editDispatch: propertyEditDispatch,
         anchorIntervalDispatch,
+        // FR-98 後段: the 詳細文書 editor in the sidebar property panel (the floating
+        // DetailPanel stays view-only). The preview resolves no assets yet (the same
+        // honest NO_ASSET_RESOLVER the detail panels use — 文書内画像アセットは別タスク).
+        detailDocumentDispatch,
+        assetResolver: NO_ASSET_RESOLVER,
         onDeleteFeature: propertyDeleteFeature,
         onFocusFeatureCamera: focusCameraOnFeature,
       }),
@@ -2333,6 +2687,7 @@ export function App(): JSX.Element {
       onOpenDetail,
       propertyEditDispatch,
       anchorIntervalDispatch,
+      detailDocumentDispatch,
       propertyDeleteFeature,
       focusCameraOnFeature,
     ],
@@ -2420,7 +2775,16 @@ export function App(): JSX.Element {
               state={detailPanels}
               featureLookup={detailFeatureLookup}
               assetResolver={NO_ASSET_RESOLVER}
-              detailDocumentOf={() => ''}
+              // FR-98: the LIVE detail document, resolved at the CURRENT time per call
+              // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
+              // never a stale capture, 教訓 5.6). Was an honest '' stub until the
+              // FR-98 editor landed; the floating panel itself stays VIEW-ONLY (the
+              // edit surface is the sidebar PropertyPanel).
+              detailDocumentOf={(fid) =>
+                featuresAt(store.getState().domain, store.getState().currentTime).find(
+                  (f) => f.id === fid,
+                )?.detailDocument ?? ''
+              }
               onClose={(id) => setDetailPanels((s) => closeDetailPanel(s, id))}
               onSelectFeature={(fid) => store.getState().setActiveFeature(fid)}
             />
@@ -2453,6 +2817,13 @@ export function App(): JSX.Element {
               store={store}
               registry={registry}
               bindOpener={bindContextMenuOpener}
+              // fr96 本結線 — the DYNAMIC path: compose the U36 model per request from
+              // the LIVE store + single-source lookups, and route a chosen item to its
+              // existing flow (dispatchMenuItem → registry / runEditDelete / armEditTool
+              // / runUnshare). Supplying these flips the mount off the LEGACY 2-item
+              // static render (教訓 5.7 の完了トリガー).
+              composeFor={composeContextMenuFor}
+              onSelectItem={onSelectMenuItem}
             />
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
                 the ファイル menu / shortcut commands on the SAME registry the shell
@@ -2909,6 +3280,13 @@ interface ConflictPending {
   readonly pending: ConflictsPendingResult<DomainRoot>;
   readonly applyResolutions: ApplyResolutions<DomainRoot>;
   /**
+   * fr100: the PAUSED proposal's anchor time, stashed so the eventual modal commit
+   * recolors at the SAME time the edit anchors at (コマンドの anchorTime — the view
+   * time cannot drift while the modal owns input, but the proposal time is the
+   * truth). Optional only for backward shape-compat; every setter supplies it.
+   */
+  readonly anchorTime?: TimePoint;
+  /**
    * The selection preference for the eventual commit (教訓 5.11). A direct add /
    * knife commit promotes the new feature / inheritor; a commit that went THROUGH
    * the conflict modal must promote the SAME element, so we carry it from the
@@ -3110,6 +3488,7 @@ import {
   createLiveAffiliationBinding,
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
+  anchorIntervalRecolorTime,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';

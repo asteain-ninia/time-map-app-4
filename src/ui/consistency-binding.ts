@@ -1114,3 +1114,31 @@ export function createAnchorIntervalCommandForRoot(
   // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
   return { ok: true, command: createCompositeCommand('interval', [swap]) };
 }
+
+/**
+ * FR-100 — the auto-recolor ANCHOR TIME for a 存続期間編集 commit: the time at which
+ * the commit's structural change takes effect on the map (コマンドの anchorTime; NOT
+ * store.currentTime — an interval edit's effective time can differ from the view
+ * time). The recolor funnel evaluates adjacency at ONE instant, so we pick the
+ * boundary the op moved:
+ *   - ChangeStart → the NEW start (the feature newly appears / stops appearing there);
+ *   - SetEnd(newEnd≠null) → the new end (the feature stops being effective from it);
+ *   - SetEnd(null=継続中) / Delete → the target anchor's OWN start, resolved from the
+ *     PRE-edit root (the earliest instant the op's effect is observable);
+ *   - unresolvable anchor → `fallback` (the caller's current time — the honest
+ *     best-effort default; the op itself is rejected upstream in that case anyway).
+ * Pure; owned here beside {@link createAnchorIntervalCommandForRoot} so the command
+ * and its recolor time share one source (教訓 5.29 / 5.30).
+ */
+export function anchorIntervalRecolorTime(
+  root: DomainRoot,
+  intent: AnchorIntervalEditIntent,
+  fallback: TimePoint,
+): TimePoint {
+  if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) return intent.newStart;
+  if (intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null) return intent.newEnd;
+  const entry = root.histories
+    .find((h) => h.featureId === intent.featureId)
+    ?.series.entries.find((e) => e.anchor.id === intent.anchorId);
+  return entry?.start ?? fallback;
+}

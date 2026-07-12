@@ -218,6 +218,22 @@ export interface MapCameraInput {
   pointerUp(e: PointerEvent, clientX: number, clientY: number): void;
   /** A pointer cancel → drop any pan transient for this pointer. */
   pointerCancel(pointerId: number): void;
+  /**
+   * survey F1 — DELEGATE an in-flight LEFT gesture to the dispatcher's pan machinery
+   * (the ONE pan implementation, 教訓 5.29 — never a second camera path in a bridge).
+   * A bridge whose left button is CLICK-vs-PAN discriminated by a movement threshold
+   * (the survey layer: a genuine click measures, a drag pans) calls this the moment
+   * the threshold is crossed, passing the CURRENT move event `e` (its pointerId keys
+   * the pan) and the ORIGINAL PRESS position in client coords — the pan anchors at
+   * the press point, so the hysteresis pixels are caught up on the next move (no
+   * dead-zone jump). The implementation re-tags the press as a MIDDLE button so the
+   * dispatcher's PAN_BUTTONS table routes it to Pan in EVERY mode, and hands the
+   * bridge element as the capture target (the dispatcher owns release on every
+   * teardown path). Subsequent moves/ups flow through the ordinary pointerMove /
+   * pointerUp forwarding. OPTIONAL: only bridges with a left-pan hysteresis need it
+   * (the knife/add bridges own their left button outright); absent ⇒ no delegation.
+   */
+  beginPan?(e: PointerEvent, pressClientX: number, pressClientY: number): void;
 }
 
 /** A camera-input port that does nothing (pre-mount / tests without a renderer). */
@@ -227,4 +243,5 @@ export const NOOP_MAP_CAMERA_INPUT: MapCameraInput = {
   pointerMove(): void {},
   pointerUp(): void {},
   pointerCancel(): void {},
+  beginPan(): void {},
 };

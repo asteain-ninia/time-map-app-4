@@ -119,6 +119,32 @@ export type AnchorIntervalEditIntent =
     };
 
 /**
+ * The 詳細文書 (FR-98) edit dispatch port — DISTINCT from {@link EditDispatch}: a
+ * detail-document save rewrites ONLY the feature's optional `detailDocument` field
+ * (withDetailDocument) at the edit-target anchor's start time, through the SAME
+ * complete-state snapshot → U13 → ONE undo unit path an attribute edit takes
+ * (propertyEditDispatch と同型). The panel assembles the intent; the host wires the
+ * real bridge (live-detail-document.ts) and tests assert the dispatched intent.
+ */
+export interface DetailDocumentDispatch {
+  dispatchDetailDocument(intent: DetailDocumentEditIntent): void;
+}
+
+/**
+ * The 詳細文書 edit intent (FR-98). `detailDocument` is the RAW Markdown draft;
+ * '' clears the document (the domain normalizes it to ABSENT — one canonical empty
+ * form, feature.ts normalizeDetailDocument). The edit time is the edit-target
+ * anchor's start (教訓 5.15 — the same editTime discipline PropertyEditIntent uses).
+ */
+export interface DetailDocumentEditIntent {
+  readonly featureId: FeatureId;
+  /** The edit time = the current edit-target anchor's start time (教訓 5.15). */
+  readonly editTime: TimePoint;
+  /** The raw Markdown detail document ('' ⇒ cleared / absent). */
+  readonly detailDocument: string;
+}
+
+/**
  * The edit intent the property panel hands to the command base. It names the
  * target feature, the edit TIME (always the current edit-target anchor's start
  * time — context上の時刻, never system time, 教訓 5.15), and the new values.

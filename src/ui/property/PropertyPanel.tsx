@@ -19,6 +19,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { resolveAt, type AnchorEntry } from '../../domain/anchor-series';
+import type { TimePoint } from '../../domain/time/time-point';
 import type { PaletteThemeId } from '../../domain/coloring';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
@@ -34,10 +35,13 @@ import { DELETE_TARGET_KIND } from '../../domain/deletion';
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
+import { DetailDocumentSection } from './DetailDocumentSection';
 import type {
   AnchorIntervalEditDispatch,
   AnchorIntervalEditIntent,
   AnchorSeriesLookup,
+  AssetResolver,
+  DetailDocumentDispatch,
   EditDispatch,
   FeatureLookup,
   PropertyEditValues,
@@ -63,6 +67,19 @@ export interface PropertyPanelProps<S> {
    */
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
   readonly calendar: Calendar;
+  /**
+   * FR-98 後段: the 詳細文書 edit dispatch. When wired AND the form is editable the
+   * panel shows the 詳細文書 editor section (閲覧/編集切替 + 明示保存); when omitted
+   * the section stays the sanitized read-only preview (honest-stub discipline — no
+   * dead 保存 control, 教訓 5.7). The dispatch mirrors editDispatch: ONE undo unit
+   * at the edit-target anchor's start time.
+   */
+  readonly detailDocumentDispatch?: DetailDocumentDispatch;
+  /**
+   * FR-98 / FR-02: resolves ZIP-internal image references for the 詳細文書 preview.
+   * Defaults to "no asset resolves" (safe broken image) when the host has none.
+   */
+  readonly assetResolver?: AssetResolver;
   /**
    * Resolve the owner of a vertex (U22 / U03). Used to evaluate the RAW owner set
    * for the display judgment (教訓 5.10). Defaults to "no owner" so a host that
@@ -108,10 +125,18 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     anchorLookup,
     editDispatch,
     anchorIntervalDispatch,
+    detailDocumentDispatch,
     calendar,
     onOpenDetail,
     onDeleteFeature,
   } = props;
+
+  // FR-98: preview asset resolution — default to "nothing resolves" (safe broken
+  // image, never a raw external fetch) when the host wired none.
+  const assetResolver = useMemo<AssetResolver>(
+    () => props.assetResolver ?? { resolveAsset: () => null },
+    [props.assetResolver],
+  );
 
   // Raw selection inputs (教訓 5.10): each is read from the store's mirror of
   // U22's truth. The display judgment evaluates these raw values directly.
@@ -283,6 +308,44 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     decision.editable &&
     mode !== EDIT_MODE.View;
 
+  // FR-98 後段: save the 詳細文書 draft through the host dispatch (ONE undo unit at
+  // the edit-target anchor's start — the SAME editTime discipline handleSave uses,
+  // 教訓 5.15). The dispatch THROWS the pipeline's honest reason on a refused save;
+  // we surface its message (never a silent no-op). The over-length / no-op guards
+  // already ran in the section (planDetailDocumentEdit, 単一真実源).
+  const handleSaveDetail = useCallback(
+    (detailDocument: string, editTime: TimePoint): string | null => {
+      if (feature === null || detailDocumentDispatch === undefined) {
+        return `${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`;
+      }
+      try {
+        detailDocumentDispatch.dispatchDetailDocument({
+          featureId: feature.id,
+          editTime,
+          detailDocument,
+        });
+        return null;
+      } catch (err) {
+        return `${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`;
+      }
+    },
+    [feature, detailDocumentDispatch],
+  );
+
+  // FR-98: an object-reference (feature:) link in the preview promotes the target
+  // through the SAME store.setActiveFeature path every selection uses (教訓 5.29).
+  const handleSelectFromDocument = useCallback(
+    (featureId: FeatureId): void => {
+      store.getState().setActiveFeature(featureId);
+    },
+    [store],
+  );
+
+  // The 詳細文書 editor is editable under the SAME whole-form gate the rest of the
+  // panel uses (教訓 5.13) — and only when the host wired the dispatch (honest stub).
+  const detailDocEditable =
+    detailDocumentDispatch !== undefined && decision.editable && mode !== EDIT_MODE.View;
+
   return (
     <div className="property-panel" data-testid="property-panel">
       {feature === null ? (
@@ -335,6 +398,21 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                 : {})}
             />
           )}
+
+          {/* FR-98 後段: the 詳細文書 editor — the SIDEBAR is the edit surface (the
+              floating DetailPanel stays view-only). 閲覧 = the SAME sanitized
+              MarkdownView render path (FR-116); 編集 = raw Markdown textarea + 明示
+              保存. The editTime discipline is the panel's own (selectedEntry.start),
+              so a document save lands on the SAME anchor an attribute save would. */}
+          <DetailDocumentSection
+            feature={feature}
+            editable={detailDocEditable}
+            editTime={selectedEntry !== null ? selectedEntry.start : null}
+            anchorId={effectiveAnchorId}
+            assetResolver={assetResolver}
+            onSelectFeature={handleSelectFromDocument}
+            onSave={handleSaveDetail}
+          />
 
           {/* FR-85: the always-present「地物を削除」button for the shown feature. Routes
               through the host's onDeleteFeature (= the SAME U31 delete the menu/Delete-key

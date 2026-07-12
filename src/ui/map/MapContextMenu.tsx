@@ -128,8 +128,17 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
     return () => bindOpener(null);
   }, [bindOpener, opener]);
 
+  // STABLE close callback (fr96 結線バグ修正): the dynamic menu's dismiss effect keys
+  // its window listeners on `onClose`. An inline closure changed identity on EVERY
+  // parent re-render, so when the SAME keydown that should close the menu ALSO
+  // triggered a global shortcut that re-rendered the App (Escape → EditDeselect →
+  // clearSelection), React's effect cleanup REMOVED the menu's keydown listener
+  // mid-dispatch and re-added it — a listener removed during dispatch never fires, so
+  // the menu stayed open (実機 e2e で検出). A stable useCallback keeps the listeners
+  // registered once per open (教訓 5.2 全経路で破棄 — but never mid-dispatch).
+  const onClose = useCallback((): void => setEntry(null), []);
+
   if (entry === null) return null;
-  const onClose = (): void => setEntry(null);
 
   // LEGACY static path (composeFor absent) — the pre-existing render, unchanged.
   if (composeFor === undefined) {
@@ -180,15 +189,26 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
   const { request, model, registry, mode, onClose, onSelectItem } = props;
 
   // Close契機 mirrors ContextMenu.tsx (Escape + deferred outside pointerdown).
+  //
+  // Escape is CAPTURED (window capture phase) and stopped: while the menu is open it
+  // owns Escape — closing the menu, NOT deselecting. The global shortcut dispatcher
+  // (useShortcuts, a window BUBBLE listener) would otherwise run EditDeselect on the
+  // SAME keypress and wipe the very selection the right-click just promoted (段階7
+  // 優先規則の鍵盤版: the top-most surface owns the key, 教訓 5.13). Capture runs
+  // before every bubble listener, so the priority holds regardless of registration
+  // order.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
     };
     const onDown = (): void => onClose();
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
     const t = setTimeout(() => window.addEventListener('pointerdown', onDown), 0);
     return () => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onDown);
       clearTimeout(t);
     };

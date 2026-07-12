@@ -136,6 +136,27 @@ describe('MapContextMenu — DYNAMIC path (composeFor)', () => {
     expect(screen.queryByTestId('context-menu')).toBeNull();
   });
 
+  it('Escape closes the menu AND is stopped before window bubble listeners (鍵盤の段階7)', () => {
+    // The global shortcut dispatcher is a window BUBBLE keydown listener (useShortcuts:
+    // Escape=EditDeselect). While the menu is open it must NOT see the Escape that
+    // closes the menu — otherwise the same keypress deselects the feature the
+    // right-click just promoted (実機で検出: メニューが閉じず選択だけ消えた).
+    const bubbleSpy = vi.fn();
+    window.addEventListener('keydown', bubbleSpy);
+    try {
+      renderAndOpen({ composeFor: () => leafModel, onSelectItem: vi.fn() });
+      expect(screen.getByTestId('context-menu')).toBeInTheDocument();
+      fireEvent.keyDown(window, { key: 'Escape' });
+      expect(screen.queryByTestId('context-menu')).toBeNull();
+      expect(bubbleSpy).not.toHaveBeenCalled();
+      // A non-Escape key passes through untouched (the menu owns ONLY Escape).
+      fireEvent.keyDown(window, { key: 'a' });
+      expect(bubbleSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener('keydown', bubbleSpy);
+    }
+  });
+
   it('a NO_MENU model still opens a menu with ONLY the view command (item 5)', () => {
     renderAndOpen({ composeFor: () => NO_MENU, onSelectItem: vi.fn() });
     const menu = screen.getByTestId('context-menu');

@@ -229,6 +229,122 @@ test.describe('U37 — 測量モード結線 (FR-14 / FR-15 / FR-16)', () => {
     }
   });
 
+  // ---- survey レビュー修正 F1/F2/F4 の回帰ロック ------------------------------
+
+  test('F1: 測量ON中の左ドラッグはパンとして生きる（カメラが動き、クリック確定しない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+
+      const box = (await page.getByTestId('survey-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+
+      // The live camera mirrors on the map input layer (HB-1 観測フック).
+      const mapLayer = page.getByTestId('map-input-layer');
+      const before = {
+        panX: await mapLayer.getAttribute('data-pan-x'),
+        panY: await mapLayer.getAttribute('data-pan-y'),
+      };
+
+      // A REAL left drag across the survey bridge (well past the click threshold).
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx + 160, cy + 90, { steps: 8 });
+      await page.mouse.up();
+
+      // The camera moved (the drag was delegated to the ONE dispatcher pan path)…
+      await expect
+        .poll(async () => ({
+          panX: await mapLayer.getAttribute('data-pan-x'),
+          panY: await mapLayer.getAttribute('data-pan-y'),
+        }))
+        .not.toEqual(before);
+      // …and the gesture confirmed NOTHING (no start point, no line — 教訓 5.8).
+      await expect(page.getByTestId('survey-guide')).toContainText('始点');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('F2: 測量ON中の右クリックはカスタムメニューのみ（ネイティブ抑止）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+
+      const box = (await page.getByTestId('survey-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+
+      await page.mouse.click(cx, cy, { button: 'right' });
+      // The FR-96 custom menu opened (survey forwards the right press to the SAME
+      // dispatcher; no draft is in progress, so the suspended gate is open).
+      await expect(page.getByTestId('context-menu')).toBeVisible();
+      // The menu owns Escape (fr96): close it and the survey layer is still live.
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('context-menu')).toHaveCount(0);
+      await expect(page.getByTestId('survey-input-layer')).toBeVisible();
+
+      // NATIVE suppression (F2 regression lock): a contextmenu event dispatched at
+      // the survey BRIDGE is default-prevented by its own handler (the real click's
+      // contextmenu lands on the just-opened menu element, so the bridge handler is
+      // asserted directly — dispatchEvent returns false iff preventDefault ran).
+      const prevented = await page.evaluate(() => {
+        const el = document.querySelector('[data-testid="survey-input-layer"]');
+        if (el === null) return null;
+        const ev = new MouseEvent('contextmenu', {
+          bubbles: true,
+          cancelable: true,
+          clientX: 10,
+          clientY: 10,
+        });
+        return !el.dispatchEvent(ev);
+      });
+      expect(prevented).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('F4: ドラフト中に編集ツールを選ぶと survey が disable され入力レイヤが片付く', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+
+      const box = (await page.getByTestId('survey-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+
+      // One CONFIRMED line first (it must survive the disable — FR-15).
+      await page.mouse.click(cx - 80, cy - 40);
+      await page.mouse.click(cx + 80, cy + 40);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await expect.poll(async () => (await primitiveCounts(page)).line).toBe(2);
+
+      // Leave 表示専用 → 編集モード (mode switch cancels the DRAFT only; survey stays).
+      await page.getByTestId('mode-view').click();
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'true');
+
+      // Start a DRAFT, then arm an edit tool: the reset契約 disables survey — the
+      // bridge unmounts (the edit tool's own bridge is the only input layer) and the
+      // confirmed line stays drawn (draft 破棄・確定線 保持).
+      await page.mouse.click(cx - 10, cy - 10);
+      await expect(page.getByTestId('survey-guide')).toContainText('終点');
+      await page.getByTestId('tool-edit.knife').click();
+
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'false');
+      await expect(page.getByTestId('survey-input-layer')).toHaveCount(0);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await expect.poll(async () => (await primitiveCounts(page)).line).toBe(2);
+    } finally {
+      await app.close();
+    }
+  });
+
   test('世界端跨ぎ (+179°↔−179°) は最短側で測られ、線が分断しない', async () => {
     const { app, page } = await launchApp();
     try {

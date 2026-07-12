@@ -237,6 +237,18 @@ function SurveyInputLayer<S>(props: {
       if (e.button === 0) {
         // The LEFT button is survey input — never forwarded as a camera press.
         press = { pointerId: e.pointerId, x: e.clientX, y: e.clientY };
+        // survey F3 — capture the gesture on the bridge so the release lands HERE
+        // even off-element (stale-press hysteresis: without capture, 端で押下→離脱
+        // →再進入→解放 could confirm a click from a press the user abandoned). The
+        // guard covers environments without pointer capture (jsdom harnesses);
+        // the pointerleave clear below is the belt-and-suspenders fallback there.
+        if (typeof el.setPointerCapture === 'function') {
+          try {
+            el.setPointerCapture(e.pointerId);
+          } catch {
+            /* capture unavailable (already released / synthetic event) — leave が拾う */
+          }
+        }
         return;
       }
       mapCameraInput.pointerDown(e, e.clientX, e.clientY);
@@ -245,6 +257,21 @@ function SurveyInputLayer<S>(props: {
       // Forward every move so an in-flight middle-button pan keeps updating
       // (the dispatcher tracks only pointers IT started — a safe no-op else).
       mapCameraInput.pointerMove(e, e.clientX, e.clientY);
+      // survey F1 — 左ドラッグのパン委譲: the moment the in-flight LEFT gesture
+      // crosses the click threshold it is a CAMERA gesture (教訓 5.8), so delegate
+      // it to the dispatcher's own pan machinery (mapCameraInput.beginPan — the ONE
+      // pan implementation, anchored at the PRESS point so the hysteresis pixels
+      // catch up). The press candidate is consumed: the eventual release confirms
+      // nothing and only finalizes the pan through the ordinary pointerUp forward.
+      const p = press;
+      if (
+        p !== null &&
+        p.pointerId === e.pointerId &&
+        Math.hypot(e.clientX - p.x, e.clientY - p.y) >= SURVEY_CLICK_MOVE_THRESHOLD_PX
+      ) {
+        press = null;
+        mapCameraInput.beginPan?.(e, p.x, p.y);
+      }
       if (store.getState().survey.draft !== null) {
         scheduleHover(e.clientX, e.clientY);
       }
@@ -258,6 +285,8 @@ function SurveyInputLayer<S>(props: {
       const movedPx = Math.hypot(e.clientX - p.x, e.clientY - p.y);
       // A drag at/above the threshold is a camera gesture — confirm nothing
       // (教訓 5.8; the domain clickPoint is only ever called for a real click).
+      // (With the F1 delegation above the press is normally consumed at the
+      // threshold already; this residual guards a same-event race.)
       if (movedPx >= SURVEY_CLICK_MOVE_THRESHOLD_PX) return;
       // Confirm at the PRESS point:「クリックした場所＝測った場所」(教訓 5.29).
       store.getState().surveyClickPoint(screenToWorld(p.x, p.y));
@@ -266,6 +295,20 @@ function SurveyInputLayer<S>(props: {
       if (press !== null && press.pointerId === e.pointerId) press = null;
       mapCameraInput.pointerCancel(e.pointerId);
     };
+    // survey F3 — a pointer that LEAVES the bridge abandons its press candidate
+    // (the SAME rule the underlying map-input-layer applies via pointerLeave):
+    // without this, 端で押下→離脱→再進入→元の押下位置近くで解放 would confirm a
+    // stale click. With pointer capture (above) the leave rarely fires mid-gesture;
+    // this is the fallback for environments/paths without capture.
+    const onPointerLeave = (): void => {
+      press = null;
+    };
+    // survey F2 — suppress the NATIVE context menu on the bridge, the SAME way the
+    // underlying map-input-layer does (App onContextMenu): the bridge forwards the
+    // right pointerdown to the dispatcher, so OUR FR-96 menu is the only one shown —
+    // without this the OS menu popped over it (the bridge is a SIBLING above the
+    // map layer, so the map layer's own suppression never saw the event).
+    const onContextMenu = (e: MouseEvent): void => e.preventDefault();
     const onWheel = (e: WheelEvent): void => {
       // {passive:false} so preventDefault suppresses the page scroll and the
       // notch becomes a zoom (the knife bridge's native wheel pattern).
@@ -277,12 +320,16 @@ function SurveyInputLayer<S>(props: {
     el.addEventListener('pointermove', onPointerMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerCancel);
+    el.addEventListener('pointerleave', onPointerLeave);
+    el.addEventListener('contextmenu', onContextMenu);
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => {
       el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointermove', onPointerMove);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerCancel);
+      el.removeEventListener('pointerleave', onPointerLeave);
+      el.removeEventListener('contextmenu', onContextMenu);
       el.removeEventListener('wheel', onWheel);
       if (rafId !== null && typeof view.cancelAnimationFrame === 'function') {
         view.cancelAnimationFrame(rafId);
