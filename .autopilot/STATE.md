@@ -20,6 +20,14 @@
 
 ## 進捗ログ（新しい順・先頭追記）
 
+- 2026-07-12(第2便・日中): **実機FB第2弾(HB6)+データ損失級バグ根治**。体制継続(Fable指揮/Opus実装/Codex読取レビュー、指摘全件fix-forward)。ユーザー実機編纂の並走FB。コミット9本ローカル。
+  - **🔴実機報告「所属変更で地物消失」(raveienDisapper)を根治**(c167f4d+8af1ce3): 真因=形状持ち末端が子を得ると syncAggregateChildIds が無条件で形状破棄の集約化(FR-37 直轄領自動生成 promoteLeafToAggregate は実装済みなのに本番未結線のデッドコード=教訓5.7、しかも過去バグハントが形状破棄を「正」としてロック済みだった)。buildDirectDomainForLeaf を単一真実源に抽出し affiliation フローへ結線。意味論=派生面積は「元形状∪子の和」(1mmも失わない、をテスト固定)。Codexレビュー反映: 点/線親の ParentKind 拒否・頂点ストア無しfail-closed・穴中島の数値固定テスト。**検体 derle-world-full_raveienDisapper!.tmap はユーザー保全分。健全ファイル+バックアップ10世代あり実害なし**。
+  - **実機報告「結合が重たい」+検体の3.5倍肥大を根治**(035fcdd): applyMergeProposal 5,346msの99.7%=citesRemapped の O(履歴×remap×頂点) → referencedVertexIds×Set で **512ms(10.4×)**、結合コミット 8,953→3,658ms。**肥大=スナップショット頂点剪定漏れ**(step3のみ剪定、step1/2/4が抜け。worst: 参照3頂点に95,517格納)を pruneVertexStore 単一真実源へ横展開して根絶(offender復元で赤のプロパティテスト付き)。教訓=「スナップショット生成の全経路は pruneVertexStore(referencedVertexIds) を必ず通す」。申し送り: applyMovedVerticesToHistories に同クラス小規模残・肥大済みファイルの load 時痩身は round-trip 契約に関わるため別ユニット。
+  - **実機FB HB6**: 一覧共通コア SidebarRowList+名前フィルタ+件数+地物一覧の視点フィット / 経度シフトをメニューバー右(topBar スロット)へ移設=地図クリック横取りが原理的に不可能に(4730334)。**地球の地名「本初子午線/太平洋」を全廃**し経度値表記(0度中心/180度中心、FR-12/13 も更新。e2e は部分文字列衝突で exact:true 化)(1fa672b+0ee6717)。タブ1枚統合+現在時刻/通史トグルは testid 大改造のため設計案保留(コアは抽出済み)。
+  - **実機報告「背景地図の白帯」根治(データ側)**: 出界図の海色 rect が viewBox 内側に引っ込む作図余白が原因。derle-import/tools/raster-base-map.js に端画素クランプ延長を実装し PNG 再生成(端の白ピクセル0)。swap-basemap.js(マニフェスト無傷のベースマップ差替)を追加、derle-world.tmap 適用済み。**derle-world-full.tmap はアプリ使用中のため未適用(ユーザーのアプリ終了後に差替)**。
+  - 最終ゲート(8af1ce3 時点): typecheck(3構成)0 / lint 0 / **フル vitest 3,526件 0 failed**。ツリークリーン。
+  - 検収待ち: FR-37 の detach 意味論(leaf親直轄化→子detach後は「直轄領1つを持つ集約」のまま=FR-41整合だがUX要確認)/ HB5-1 タブ見出し「錨一覧」=ユーザーOK済み / HB5-3 パディング0.2=ユーザーOK済み。
+
 - 2026-07-12: **性能最適化セッション（ユーザー指示「本体の最適化をGO」「国境線の情報量を落とすくらいなら本体最適化」）+ 実機FB HB5 対応**。体制=Fable オーケストレータ / 実装 Opus subagent / 全ユニット Codex gpt-5.5 read-only 敵対レビュー（指摘は全件 fix-forward）。全コミット ローカル・push せず・各コミット時ゲート緑。ベンチ対象=derle-import/derle-world-full.tmap（722地物/99,314頂点、実データ）。
   - **ベンチ基盤**: `src/ui/map/derle-benchmark.test.ts`（3b2094b、DERLE_TMAP_DIR 必須=通常 npm test 非混入）。HEAD で赤だった e2e typecheck ゲートを修復（2468a2c）。
   - **FR-117 ログ永続を本番結線**（5a60a72）: `userData/logs/diagnostic-YYYY-MM-DD.jsonl`、7世代、フィールド/行16KB/日10MB の3段上限、main 側 normalizer、reject 握り潰しでフィードバックループ遮断。**以後の実機不具合はログで事後検証可能**。
