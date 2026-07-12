@@ -125,6 +125,8 @@ export {
   hasNoChildren,
   withParentId,
   withKindLabel,
+  withDetailDocument,
+  normalizeDetailDocument,
   withAttributes,
   withColor,
   withPointVertexId,

@@ -199,24 +199,36 @@ function serializeShape(shape: Shape): PersistedShape {
   return { rings: shape.rings.map(serializeRing) };
 }
 
-/** Serialize the common (kindLabel / parentId) optionals onto a plain object. */
+/** Serialize the common (kindLabel / parentId / detailDocument) optionals onto a plain object. */
 function serializeCommon(feature: Feature): {
   id: string;
   attributes: PersistedBasicAttributes;
   color: PersistedColorInfo;
   kindLabel?: string;
   parentId?: string;
+  detailDocument?: string;
 } {
-  const base = {
+  // exactOptionalPropertyTypes: attach each optional key only when present — an
+  // absent optional is OMITTED from the manifest, never written as `undefined`.
+  const out: {
+    id: string;
+    attributes: PersistedBasicAttributes;
+    color: PersistedColorInfo;
+    kindLabel?: string;
+    parentId?: string;
+    detailDocument?: string;
+  } = {
     id: idToString(feature.id),
     attributes: serializeAttributes(feature.attributes),
     color: serializeColor(feature.color),
   };
-  const withLabel =
-    feature.kindLabel === undefined ? base : { ...base, kindLabel: feature.kindLabel };
-  return feature.parentId === undefined
-    ? withLabel
-    : { ...withLabel, parentId: idToString(feature.parentId) };
+  if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
+  if (feature.parentId !== undefined) out.parentId = idToString(feature.parentId);
+  // 詳細文書 (FR-98): written verbatim when present. The domain never carries ''
+  // (constructors / withDetailDocument normalize it to absent), so serialize has
+  // no normalization of its own — one canonical empty form everywhere.
+  if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  return out;
 }
 
 function serializeFeature(feature: Feature): PersistedFeature {
@@ -401,14 +413,20 @@ function deserializeShape(shape: PersistedShape): Shape {
   return createShape(shape.rings.map(deserializeRing));
 }
 
-/** Rebuild the optional (kindLabel / parentId) common fields for a feature. */
+/** Rebuild the optional (kindLabel / parentId / detailDocument) common fields for a feature. */
 function deserializeOptional(feature: PersistedFeature): {
   kindLabel?: string;
   parentId?: FeatureId;
+  detailDocument?: string;
 } {
-  const out: { kindLabel?: string; parentId?: FeatureId } = {};
+  const out: { kindLabel?: string; parentId?: FeatureId; detailDocument?: string } = {};
   if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
   if (feature.parentId !== undefined) out.parentId = asFeatureId(feature.parentId);
+  // 詳細文書 (FR-98): passed through to the domain constructors, whose shared
+  // buildCommon normalizes a legacy/hand-crafted '' to ABSENT (canonical empty
+  // form) — so a manifest carrying `detailDocument: ''` loads identically to one
+  // without the key, and present-'' vs absent can never diverge in featuresEqual.
+  if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
   return out;
 }
 
@@ -593,6 +611,10 @@ function featuresEqual(a: Feature, b: Feature): boolean {
   if (!colorInfoEqual(a.color, b.color)) return false;
   if (a.kindLabel !== b.kindLabel) return false;
   if (a.parentId !== b.parentId) return false;
+  // 詳細文書 (FR-98): without this the round-trip identity criterion (受け入れ
+  // 基準7) would be blind to a dropped/altered document. '' never occurs (the
+  // domain normalizes it to absent), so strict === is the whole rule.
+  if (a.detailDocument !== b.detailDocument) return false;
   switch (a.kind) {
     case 'point':
       return a.vertexId === (b as typeof a).vertexId;

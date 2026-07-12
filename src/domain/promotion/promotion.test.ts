@@ -8,6 +8,7 @@ import { createCoordinate, type WorldCoordinate } from '../coordinate';
 import {
   FEATURE_KIND,
   createLeafFeature,
+  withDetailDocument,
   type AggregateFeature,
   type Feature,
   type LeafFeature,
@@ -190,6 +191,42 @@ describe('基準1 末端→集約遷移・属性引き継ぎ・形状破棄 (FR-
     expect(agg.attributes).toEqual(withLabel.attributes);
     expect(agg.childIds).toEqual([asFeatureId('c1')]);
     expect('shape' in agg).toBe(false);
+  });
+
+  it('promoteFeature は詳細文書 (FR-98) を昇格後も保持する (確定ドロップ地点の回帰)', () => {
+    // 昇格 (identity 保存の constructor 再構築) は kindLabel/parentId と同じ任意共有
+    // フィールド運搬規律に乗らなければならない。文書を持つ leaf を昇格しても文書が
+    // 消えないこと (教訓 5.7/5.17: サイレントなデータ損失の禁止)。
+    const doc = '# 元末端の詳細文書\n\n昇格後も残る。';
+    const { leaf } = rectLeaf('X', { lon0: 0, lat0: 0, lon1: 1, lat1: 1 }, '名', COLOR);
+    const withDoc = withDetailDocument(leaf, doc);
+    const agg = promoteFeature(withDoc, [asFeatureId('c1')]);
+    expect(agg.detailDocument).toBe(doc);
+  });
+
+  it('promoteLeafToAggregate (実昇格フロー) でも遷移地物の詳細文書が保持される (FR-98)', () => {
+    const doc = '**パルティア**の詳細。';
+    const parent = rectLeaf('P', { lon0: 0, lat0: 0, lon1: 10, lat1: 10 }, 'パルティア', COLOR);
+    const child = rectLeaf('C', { lon0: 0, lat0: 0, lon1: 5, lat1: 10 }, '子', COLOR2, 'P');
+    const parentLeaf = withDetailDocument(parent.leaf, doc);
+    const r = committed(
+      promoteLeafToAggregate({
+        features: [parentLeaf, child.leaf],
+        vertices: storeOf(parent.vertices, child.vertices),
+        targetId: asFeatureId('P'),
+        acquiredChildIds: [asFeatureId('C')],
+        idState: createIdGeneratorState(),
+        now: NOW,
+      }),
+    );
+    const promoted = feat(r.nextFeatures, 'P');
+    expect(promoted.kind).toBe(FEATURE_KIND.Aggregate);
+    expect(promoted.detailDocument).toBe(doc);
+    // 新規 mint (直轄領) には文書は付かない (absent が正しい)。
+    const ddId = r.outcome.directDomainFeatureId;
+    if (ddId !== undefined) {
+      expect('detailDocument' in feat(r.nextFeatures, ddId as unknown as string)).toBe(false);
+    }
   });
 });
 

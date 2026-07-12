@@ -16,6 +16,7 @@ import {
   createLeafFeature,
   createLineFeature,
   createPointFeature,
+  withDetailDocument,
   type Feature,
 } from '../feature';
 import { createGeoParams } from '../geo/geo-params';
@@ -63,6 +64,13 @@ export function squareLeaf(id: string, name: string, ox: number, oy: number, siz
   return { feature, vertices: verts };
 }
 
+/**
+ * A non-empty詳細文書 (FR-98) carried by the point-feature fixture so the
+ * round-trip suite PROVES the document is persisted and restored verbatim
+ * (kindLabel と同じ「載せて往復させる」証拠; the alpha-opacity fixture と同じ意図).
+ */
+export const FIXTURE_DETAIL_DOCUMENT = '# 首都\n\n**古都**の詳細文書。\n\n- 建都 0 年';
+
 /** A point feature referencing one vertex. */
 export function pointFeature(id: string, name: string, lon: number, lat: number) {
   const v = createVertex(asVertexId(`${id}-v`), createCoordinate(lon, lat));
@@ -71,7 +79,7 @@ export function pointFeature(id: string, name: string, lon: number, lat: number)
     createBasicAttributes(name, 0, 50),
     COLOR,
     v.id,
-    { kindLabel: '都市' },
+    { kindLabel: '都市', detailDocument: FIXTURE_DETAIL_DOCUMENT },
   );
   return { feature, vertex: v };
 }
@@ -121,9 +129,9 @@ export function singleAnchorHistory(
 
 /**
  * A complete, FULLY VALID project that exercises every persisted element: a
- * point (with kindLabel), a line, two non-overlapping leaves, an aggregate
- * parent over the two leaves, a leaf with a hole + enclave, multi-anchor series,
- * year-month-day times, settings, and a base-map ref.
+ * point (with kindLabel + 詳細文書 FR-98), a line, two non-overlapping leaves,
+ * an aggregate parent over the two leaves, a leaf with a hole + enclave,
+ * multi-anchor series, year-month-day times, settings, and a base-map ref.
  */
 export function richValidProject(): DomainProject {
   // Two disjoint leaves under an aggregate parent.
@@ -214,18 +222,33 @@ export function holedLeafHistory(): FeatureHistory {
 
 // --- fast-check generators (R7) ---------------------------------------------
 
-/** Generate a simple valid project: N disjoint square leaves, each its own history. */
+/**
+ * Generate a simple valid project: N disjoint square leaves, each its own history.
+ * Each leaf optionally carries an arbitrary詳細文書 (FR-98) — including the empty
+ * string, which `withDetailDocument` collapses to absent (canonical empty form) —
+ * so every persistence property test also proves the document round-trips.
+ */
 export function projectArb(): fc.Arbitrary<DomainProject> {
   return fc
     .integer({ min: 1, max: 4 })
-    .map((n) => {
+    .chain((n) =>
+      fc.tuple(
+        fc.constant(n),
+        fc.array(fc.option(fc.string({ maxLength: 30 }), { nil: undefined }), {
+          minLength: n,
+          maxLength: n,
+        }),
+      ),
+    )
+    .map(([n, documents]) => {
       const histories: FeatureHistory[] = [];
       for (let i = 0; i < n; i += 1) {
         const leaf = squareLeaf(`p-leaf-${i}`, `地物${i}`, i * 40, 0, 10);
+        const feature = withDetailDocument(leaf.feature, documents[i]);
         histories.push(
           singleAnchorHistory(
             `p-leaf-${i}`,
-            [leaf.feature],
+            [feature],
             createVertexStore(leaf.vertices),
             i * 10,
           ),

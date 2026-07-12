@@ -54,6 +54,23 @@ const point = createPointFeature(
 );
 void point;
 
+// FR-98: a domain feature carrying a 詳細文書 maps onto the schema-derived
+// PersistedFeature (the optional key is declared once, in the schema).
+const documented = createPointFeature(asFeatureId('g'), attrs, color, asVertexId('v'), {
+  detailDocument: '# 文書',
+});
+const pDocumented: PersistedFeature = {
+  kind: documented.kind,
+  id: documented.id as string,
+  attributes: pAttrs,
+  color: pColor,
+  vertexId: 'v',
+  ...(documented.detailDocument === undefined
+    ? {}
+    : { detailDocument: documented.detailDocument }),
+};
+void pDocumented;
+
 // The serializer's output is exactly the schema-derived Manifest; pulling out a
 // persisted feature / vertex from it must type-check against the derived types.
 const manifest = serialize(richValidProject());

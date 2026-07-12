@@ -203,7 +203,21 @@ export const shapeSchema = z
 // 不正状態を表現不能に (技術方針 2.10): an aggregate has NO `shape` key (its area
 // is the runtime union of children — FR-35); a leaf HAS a `shape`. `.strict()`
 // means a `shape` accidentally placed on an aggregate is REJECTED, and a
-// `childIds` on a leaf is REJECTED. kindLabel/parentId are optional (key-absent).
+// `childIds` on a leaf is REJECTED. kindLabel/parentId/detailDocument are
+// optional (key-absent).
+
+/**
+ * The maximum accepted length (in UTF-16 code units) of a詳細文書 (FR-98).
+ *
+ * SINGLE shared bound for BOTH sides of persistence (WRITE⊆READ, the same
+ * discipline `isPersistedYear` established): (1) the schema below enforces it at
+ * the READ boundary (`z.string().max(...)`), and (2) the FR-98 document editor
+ * MUST import THIS constant as its save-time (WRITE) guard. If the two bounds
+ * ever diverged with WRITE > READ, a user could save a document that makes the
+ * whole .tmap unloadable (manifest-level reject on next open — 全損). Keeping one
+ * exported constant makes that asymmetry unrepresentable.
+ */
+export const MAX_DETAIL_DOCUMENT_LENGTH = 100_000;
 
 const featureCommon = {
   id: idSchema,
@@ -211,6 +225,11 @@ const featureCommon = {
   color: colorInfoSchema,
   kindLabel: z.string().optional(),
   parentId: idSchema.optional(),
+  // 詳細文書 (FR-98) — optional (key-absent) so every pre-document manifest still
+  // parses (tmap/1 への optional 追記; alpha/palette/ui 追記と同型, version bump
+  // なし). The serializer never writes the key for an absent document, and the
+  // deserialize boundary collapses a legacy '' to absent (canonical empty form).
+  detailDocument: z.string().max(MAX_DETAIL_DOCUMENT_LENGTH).optional(),
 };
 
 export const pointFeatureSchema = z

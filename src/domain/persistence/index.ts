@@ -8,6 +8,9 @@
 // --- schema + derived types (FR-103 / FR-104 / FR-116) ----------------------
 export {
   SCHEMA_VERSION,
+  // FR-98 詳細文書: the ONE size bound shared by the schema (READ) and the
+  // document editor's save guard (WRITE⊆READ — see schema.ts doc comment).
+  MAX_DETAIL_DOCUMENT_LENGTH,
   coordinateSchema,
   vertexSchema,
   basicAttributesSchema,

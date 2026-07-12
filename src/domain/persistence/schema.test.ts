@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_DETAIL_DOCUMENT_LENGTH,
   PARSE_OUTCOME,
   SCHEMA_VERSION,
   isParsed,
@@ -200,6 +201,67 @@ describe('schema — logical completeness (受け入れ基準1, FR-103)', () => 
       );
       expect(hasVertexIdPath).toBe(true);
     }
+  });
+});
+
+describe('詳細文書 detailDocument (FR-98) — optional 追記 on tmap/1, WRITE⊆READ bound', () => {
+  /** The first persisted feature of the first history entry (as a mutable record). */
+  function firstFeature(clone: ReturnType<typeof structuredClone<ReturnType<typeof serialize>>>) {
+    return clone.histories[0]!.entries[0]!.anchor.snapshot.features[0]! as Record<
+      string,
+      unknown
+    >;
+  }
+
+  it('accepts a feature carrying a detailDocument (every variant shares featureCommon)', () => {
+    // The rich fixture already carries one on its point feature; ALSO place one on
+    // an aggregate to prove the key rides on the shared featureCommon, not one variant.
+    const clone = structuredClone(serialize(richValidProject()));
+    const aggHistory = clone.histories.find((h) => h.featureId === 'agg-1')!;
+    const agg = aggHistory.entries[0]!.anchor.snapshot.features.find(
+      (f) => f.kind === 'aggregate',
+    )! as Record<string, unknown>;
+    agg['detailDocument'] = '# 連邦\n\n集約にも文書が載る。';
+    expect(manifestSchema.safeParse(clone).success).toBe(true);
+  });
+
+  it('accepts a document of exactly MAX_DETAIL_DOCUMENT_LENGTH characters (READ boundary inclusive)', () => {
+    const clone = structuredClone(serialize(richValidProject()));
+    firstFeature(clone)['detailDocument'] = 'あ'.repeat(MAX_DETAIL_DOCUMENT_LENGTH);
+    expect(manifestSchema.safeParse(clone).success).toBe(true);
+  });
+
+  it('rejects a document longer than MAX_DETAIL_DOCUMENT_LENGTH with a path (WRITE⊆READ 非対称の防波堤)', () => {
+    // The SAME exported constant will guard the editor's save (WRITE) side; the
+    // schema (READ) side must never be narrower than the write side, or a saved
+    // .tmap could become unloadable (isPersistedYear が塞いだ非対称と同型).
+    const clone = structuredClone(serialize(richValidProject()));
+    firstFeature(clone)['detailDocument'] = 'a'.repeat(MAX_DETAIL_DOCUMENT_LENGTH + 1);
+    const parsed = manifestSchema.safeParse(clone);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      const hasDocPath = parsed.error.issues.some(
+        (issue) => issue.path[issue.path.length - 1] === 'detailDocument',
+      );
+      expect(hasDocPath).toBe(true);
+    }
+  });
+
+  it('still rejects unknown keys on a feature (strict 維持 — detailDocument is declared, not a loophole)', () => {
+    const clone = structuredClone(serialize(richValidProject()));
+    firstFeature(clone)['foo'] = 'evil';
+    expect(manifestSchema.safeParse(clone).success).toBe(false);
+  });
+
+  it('parses a pre-document manifest (key absent everywhere) — optional 追記, no version bump', () => {
+    const clone = structuredClone(serialize(richValidProject()));
+    for (const h of clone.histories)
+      for (const e of h.entries)
+        for (const f of e.anchor.snapshot.features) {
+          delete (f as Record<string, unknown>)['detailDocument'];
+        }
+    expect(clone.version).toBe(SCHEMA_VERSION); // still tmap/1 — no migration branch.
+    expect(manifestSchema.safeParse(clone).success).toBe(true);
   });
 });
 

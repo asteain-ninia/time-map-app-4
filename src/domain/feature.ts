@@ -2,8 +2,8 @@
 //
 // The discriminant is the literal `kind` field; a `switch` over features is
 // exhaustiveness-checked via `assertNever`. Each variant carries the shared
-// fields (id, attributes, color, optional kindLabel, optional parentId) plus
-// its own variant-specific data.
+// fields (id, attributes, color, optional kindLabel, optional parentId,
+// optional detailDocument) plus its own variant-specific data.
 //
 // KEY INVARIANTS expressed in the types:
 //   - Aggregate has NO `shape` field (FR-35). Its area is the runtime union of
@@ -20,6 +20,8 @@
 //     VertexId[]), never embedded (tech policy R6).
 //   - `kindLabel` (FR-40) is a free display-only string with no bearing on
 //     consistency checks.
+//   - `detailDocument` (FR-98) is a free raw-markdown string with no bearing on
+//     consistency checks; '' is normalized to absent (one canonical empty form).
 
 import { assertNever } from './assert-never';
 import type { BasicAttributes, ColorInfo } from './attributes';
@@ -46,6 +48,16 @@ export interface FeatureCommon {
   readonly kindLabel?: string;
   /** Parent in the forest (FR-34). Absent <=> this feature is top-level. */
   readonly parentId?: FeatureId;
+  /**
+   * 詳細文書 (FR-98): free raw-markdown text with NO bearing on consistency
+   * checks (kindLabel と完全同型の規律). Absent if not set; the empty string is
+   * NOT a representable state — every construction/update path normalizes ''
+   * to absent via {@link normalizeDetailDocument}, so equality / round-trip
+   * never has to distinguish「空文書」from「文書なし」. Living on FeatureCommon
+   * means the document is versioned PER ANCHOR SNAPSHOT, exactly like name and
+   * color (ユーザー確定済みの per-anchor 方針).
+   */
+  readonly detailDocument?: string;
 }
 
 /** FR-18: a single vertex. */
@@ -117,9 +129,26 @@ export type Feature = PointFeature | LineFeature | LeafFeature | AggregateFeatur
 // With exactOptionalPropertyTypes, "key absent" and "key present = undefined"
 // differ. These builders only attach optional keys when a value is provided.
 
-interface OptionalCommonFields {
+export interface OptionalCommonFields {
   readonly kindLabel?: string;
   readonly parentId?: FeatureId;
+  readonly detailDocument?: string;
+}
+
+/**
+ * Canonicalize a詳細文書 value: `''`(空文書) collapses to `undefined`(absent), so
+ * there is exactly ONE representation of「文書なし」everywhere (教訓 5.30 単一真実源).
+ * This is enforced at BOTH construction boundaries — {@link buildCommon} (which every
+ * constructor and the persistence deserializer funnel through, so even a hand-crafted
+ * manifest carrying `detailDocument: ''` loads as absent) and
+ * {@link withDetailDocument} (the in-memory update path) — so `featuresEqual` /
+ * round-trip identity never see a present-`''` vs absent mismatch. Exported for the
+ * FR-98 editor's no-op guard (draft と現文書の正規形比較).
+ */
+export function normalizeDetailDocument(detailDocument: string | undefined): string | undefined {
+  return detailDocument === undefined || detailDocument.length === 0
+    ? undefined
+    : detailDocument;
 }
 
 function buildCommon(
@@ -128,17 +157,40 @@ function buildCommon(
   color: ColorInfo,
   optional: OptionalCommonFields,
 ): FeatureCommon {
-  const base = { id, attributes, color };
-  if (optional.kindLabel !== undefined && optional.parentId !== undefined) {
-    return { ...base, kindLabel: optional.kindLabel, parentId: optional.parentId };
-  }
-  if (optional.kindLabel !== undefined) {
-    return { ...base, kindLabel: optional.kindLabel };
-  }
-  if (optional.parentId !== undefined) {
-    return { ...base, parentId: optional.parentId };
-  }
-  return base;
+  // exactOptionalPropertyTypes: attach an optional key ONLY when a value is
+  // provided — never write a present-`undefined` key.
+  const common: {
+    id: FeatureId;
+    attributes: BasicAttributes;
+    color: ColorInfo;
+    kindLabel?: string;
+    parentId?: FeatureId;
+    detailDocument?: string;
+  } = { id, attributes, color };
+  if (optional.kindLabel !== undefined) common.kindLabel = optional.kindLabel;
+  if (optional.parentId !== undefined) common.parentId = optional.parentId;
+  const detailDocument = normalizeDetailDocument(optional.detailDocument);
+  if (detailDocument !== undefined) common.detailDocument = detailDocument;
+  return common;
+}
+
+/**
+ * The optional common fields (kindLabel / parentId / detailDocument) a feature
+ * currently carries, as an {@link OptionalCommonFields} bag ready to feed back into
+ * a constructor. SINGLE source of the「identity を保存する feature 再構築は任意共有
+ * フィールドを全て運ぶ」rule (教訓 5.29 / 5.30): every constructor-based rebuild that
+ * PRESERVES a feature's identity (末端→集約の {@link toShapelessAggregate}, 昇格の
+ * promotion/promote.ts `promoteFeature`) defers here, so adding a new optional common
+ * field (as FR-98 detailDocument did) cannot silently drop it on one path while the
+ * others carry it. Newly MINTED features deliberately do NOT use this — a new feature
+ * starts with absent optionals.
+ */
+export function commonOptionalOf(feature: Feature): OptionalCommonFields {
+  const out: { kindLabel?: string; parentId?: FeatureId; detailDocument?: string } = {};
+  if (feature.kindLabel !== undefined) out.kindLabel = feature.kindLabel;
+  if (feature.parentId !== undefined) out.parentId = feature.parentId;
+  if (feature.detailDocument !== undefined) out.detailDocument = feature.detailDocument;
+  return out;
 }
 
 // --- Constructors -----------------------------------------------------------
@@ -219,10 +271,11 @@ export function hasNoChildren(feature: AggregateFeature): boolean {
   return feature.childIds.length === 0;
 }
 
-// --- withXxx: shared fields (id, attributes, color, kindLabel, parentId) ----
+// --- withXxx: shared fields (id, attributes, color, kindLabel, parentId,
+// detailDocument) ---------------------------------------------------------
 //
-// These preserve the concrete variant. parentId/kindLabel accept `undefined`
-// to clear the optional field (re-deriving top-level for parentId).
+// These preserve the concrete variant. parentId/kindLabel/detailDocument accept
+// `undefined` to clear the optional field (re-deriving top-level for parentId).
 
 export function withParentId<F extends Feature>(
   feature: F,
@@ -245,6 +298,25 @@ export function withKindLabel<F extends Feature>(
   delete next['kindLabel'];
   if (kindLabel !== undefined) {
     next['kindLabel'] = kindLabel;
+  }
+  return next as F;
+}
+
+/**
+ * Replace the詳細文書 (FR-98), preserving the concrete variant and every other
+ * field. `undefined` OR `''` clears the field (key removed entirely —
+ * {@link normalizeDetailDocument} is the single canonical-empty rule), so a
+ * present-but-empty document is unrepresentable.
+ */
+export function withDetailDocument<F extends Feature>(
+  feature: F,
+  detailDocument: string | undefined,
+): F {
+  const next: Record<string, unknown> = { ...feature };
+  delete next['detailDocument'];
+  const normalized = normalizeDetailDocument(detailDocument);
+  if (normalized !== undefined) {
+    next['detailDocument'] = normalized;
   }
   return next as F;
 }
@@ -288,36 +360,30 @@ export function withAggregateChildIds(
 
 /**
  * Convert a non-aggregate feature into a shapeless AggregateFeature, preserving
- * the shared fields (id, attributes, color, kindLabel, parentId) and adopting the
- * given child ids. This is the「末端→集約」transition (FR-35): the moment a feature
- * gains children it becomes an aggregate, whose area is the derived union of those
- * children (派生集約=子の和). Its own geometry (a leaf's `shape`, a point's
- * `vertexId`, a line's `vertexIds`) is DROPPED — an aggregate has no shape field,
- * so a former leaf can never silently keep a footprint beyond the union of its
- * children. An already-aggregate feature is returned with its child ids updated
+ * the shared fields (id, attributes, color, kindLabel, parentId, detailDocument)
+ * and adopting the given child ids. This is the「末端→集約」transition (FR-35): the
+ * moment a feature gains children it becomes an aggregate, whose area is the derived
+ * union of those children (派生集約=子の和). Its own geometry (a leaf's `shape`, a
+ * point's `vertexId`, a line's `vertexIds`) is DROPPED — an aggregate has no shape
+ * field, so a former leaf can never silently keep a footprint beyond the union of
+ * its children. An already-aggregate feature is returned with its child ids updated
  * (the conversion is idempotent on aggregates).
  *
  * 教訓 5.6: the trigger is the RESULT state (has children), not a creation path —
  * every flow that makes a feature a parent funnels through this single conversion.
+ * The optional common fields ride through {@link commonOptionalOf} (単一真実源) so
+ * this identity-preserving rebuild can never silently drop one of them (FR-98).
  */
 export function toShapelessAggregate(
   feature: Feature,
   childIds: readonly FeatureId[],
 ): AggregateFeature {
-  const optional: OptionalCommonFields =
-    feature.kindLabel !== undefined && feature.parentId !== undefined
-      ? { kindLabel: feature.kindLabel, parentId: feature.parentId }
-      : feature.kindLabel !== undefined
-        ? { kindLabel: feature.kindLabel }
-        : feature.parentId !== undefined
-          ? { parentId: feature.parentId }
-          : {};
   return createAggregateFeature(
     feature.id,
     feature.attributes,
     feature.color,
     childIds,
-    optional,
+    commonOptionalOf(feature),
   );
 }
 

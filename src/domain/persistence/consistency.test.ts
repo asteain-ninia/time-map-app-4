@@ -30,6 +30,7 @@ import { createCoordinate } from '../coordinate';
 import {
   createAggregateFeature,
   createLeafFeature,
+  withDetailDocument,
   type Feature,
 } from '../feature';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
@@ -57,7 +58,44 @@ describe('integrity — clean project (受け入れ基準6, 過剰検出なし)'
     expect(report.ok).toBe(true);
     expect(report.inconsistencies).toHaveLength(0);
   });
+
+  it('詳細文書 (FR-98) is never consulted — changing it leaves the report unchanged', () => {
+    // Regression (kindLabel FR-40 と同型, hierarchy/validate.ts:34 の規律): the
+    // document is display-only data with NO bearing on any consistency check.
+    // Attach a document to EVERY feature in every snapshot of a clean project and
+    // require the report to stay identical (still clean, nothing detected).
+    const before = checkConsistency(richValidProject(), CAL);
+    const documented = withDocumentedFeatures(richValidProject(), '# 文書\n\n整合性に無関係。');
+    const after = checkConsistency(documented, CAL);
+    expect(after.ok).toBe(before.ok);
+    expect(after.inconsistencies).toEqual(before.inconsistencies);
+  });
 });
+
+/** A copy of `project` where every feature of every snapshot carries `document`. */
+function withDocumentedFeatures(project: DomainProject, document: string): DomainProject {
+  return {
+    ...project,
+    histories: project.histories.map((h) => ({
+      featureId: h.featureId,
+      series: {
+        entries: h.series.entries.map((e) => ({
+          anchor: {
+            id: e.anchor.id,
+            snapshot: {
+              features: e.anchor.snapshot.features.map((f) =>
+                withDetailDocument(f, document),
+              ),
+              vertices: e.anchor.snapshot.vertices,
+            },
+          },
+          start: e.start,
+          end: e.end,
+        })),
+      },
+    })),
+  };
+}
 
 // --- (a) missing vertex reference -------------------------------------------
 

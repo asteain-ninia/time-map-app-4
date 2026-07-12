@@ -1,8 +1,11 @@
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 import { createBasicAttributes, createColorInfo } from './attributes';
 import { asFeatureId, asRingId, asVertexId } from './ids';
+import { promoteFeature } from './promotion/promote';
 import { createShape, createTerritoryRing } from './ring';
 import {
+  FEATURE_KIND,
   createAggregateFeature,
   createLeafFeature,
   createLineFeature,
@@ -11,14 +14,20 @@ import {
   featureKindLabel,
   hasNoChildren,
   isTopLevel,
+  normalizeDetailDocument,
   pruneVertexStore,
   referencedVertexIds,
+  toShapelessAggregate,
   withAggregateChildIds,
+  withAttributes,
+  withColor,
+  withDetailDocument,
   withKindLabel,
   withLeafShape,
   withLineVertexIds,
   withParentId,
   withPointVertexId,
+  type Feature,
 } from './feature';
 import { createVertex, createVertexStore } from './vertex';
 
@@ -137,6 +146,123 @@ describe('feature withXxx coverage', () => {
     });
     expect(f.kindLabel).toBe('capital');
     expect('kindLabel' in withKindLabel(f, undefined)).toBe(false);
+  });
+});
+
+describe('detailDocument (FR-98) — 詳細文書は kindLabel と同型の任意共有フィールド', () => {
+  const doc = '# ローマ\n\n**建国**は紀元前753年。';
+
+  it('withDetailDocument attaches the document and preserves every other field', () => {
+    const f = createLeafFeature(asFeatureId('f'), attrs, color, createShape(), {
+      kindLabel: '王国',
+      parentId: asFeatureId('p'),
+    });
+    const withDoc = withDetailDocument(f, doc);
+    expect(withDoc.detailDocument).toBe(doc);
+    expect(withDoc.kind).toBe(FEATURE_KIND.Leaf);
+    expect(withDoc.id).toBe(f.id);
+    expect(withDoc.attributes).toBe(f.attributes);
+    expect(withDoc.color).toBe(f.color);
+    expect(withDoc.kindLabel).toBe('王国');
+    expect(withDoc.parentId).toBe(asFeatureId('p'));
+    expect(withDoc.shape).toBe(f.shape);
+    // Input non-destructive.
+    expect('detailDocument' in f).toBe(false);
+  });
+
+  it('clearing with undefined removes the key entirely (exactOptionalPropertyTypes)', () => {
+    const f = withDetailDocument(
+      createLeafFeature(asFeatureId('f'), attrs, color, createShape()),
+      doc,
+    );
+    const cleared = withDetailDocument(f, undefined);
+    expect('detailDocument' in cleared).toBe(false);
+  });
+
+  it("'' is normalized to absent by withDetailDocument (one canonical empty form)", () => {
+    const f = withDetailDocument(
+      createLeafFeature(asFeatureId('f'), attrs, color, createShape()),
+      doc,
+    );
+    const cleared = withDetailDocument(f, '');
+    expect('detailDocument' in cleared).toBe(false);
+  });
+
+  it("'' is normalized to absent at the constructor boundary too (buildCommon)", () => {
+    const f = createLeafFeature(asFeatureId('f'), attrs, color, createShape(), {
+      detailDocument: '',
+    });
+    expect('detailDocument' in f).toBe(false);
+    const g = createPointFeature(asFeatureId('g'), attrs, color, asVertexId('v'), {
+      detailDocument: doc,
+    });
+    expect(g.detailDocument).toBe(doc);
+  });
+
+  it('normalizeDetailDocument is the single canonical-empty rule', () => {
+    expect(normalizeDetailDocument(undefined)).toBeUndefined();
+    expect(normalizeDetailDocument('')).toBeUndefined();
+    expect(normalizeDetailDocument(doc)).toBe(doc);
+  });
+
+  it('toShapelessAggregate carries the document across the 末端→集約 transition (FR-98 MUST)', () => {
+    const leaf = withDetailDocument(
+      createLeafFeature(asFeatureId('f'), attrs, color, createShape(), {
+        kindLabel: '王国',
+        parentId: asFeatureId('p'),
+      }),
+      doc,
+    );
+    const agg = toShapelessAggregate(leaf, [asFeatureId('c')]);
+    expect(agg.detailDocument).toBe(doc);
+    expect(agg.kindLabel).toBe('王国');
+    expect(agg.parentId).toBe(asFeatureId('p'));
+  });
+
+  it('promoteFeature carries the document across 昇格 (FR-98 MUST, confirmed drop site)', () => {
+    const leaf = withDetailDocument(
+      createLeafFeature(asFeatureId('f'), attrs, color, createShape()),
+      doc,
+    );
+    const agg = promoteFeature(leaf, [asFeatureId('c')]);
+    expect(agg.detailDocument).toBe(doc);
+  });
+
+  it('property: EVERY identity-preserving with系/遷移 application preserves detailDocument', () => {
+    // 機械検出 (教訓 5.7/5.17): the document must ride through ANY sequence of
+    // identity-preserving feature rebuilds — spread-based with系 AND the
+    // constructor-based aggregate transitions (toShapelessAggregate / promoteFeature).
+    const otherAttrs = createBasicAttributes('改名', 1, 99);
+    const otherColor = createColorInfo(false, '#a', '#b', '#c');
+    const someShape = createShape([createTerritoryRing(asRingId('r'), [])]);
+    const transitions: ReadonlyArray<(f: Feature) => Feature> = [
+      (f) => withParentId(f, asFeatureId('new-parent')),
+      (f) => withParentId(f, undefined),
+      (f) => withKindLabel(f, 'ラベル'),
+      (f) => withKindLabel(f, undefined),
+      (f) => withAttributes(f, otherAttrs),
+      (f) => withColor(f, otherColor),
+      (f) => (f.kind === FEATURE_KIND.Leaf ? withLeafShape(f, someShape) : f),
+      (f) =>
+        f.kind === FEATURE_KIND.Aggregate
+          ? withAggregateChildIds(f, [asFeatureId('c2')])
+          : toShapelessAggregate(f, [asFeatureId('c1')]),
+      (f) => (f.kind === FEATURE_KIND.Leaf ? promoteFeature(f, [asFeatureId('c1')]) : f),
+    ];
+    fc.assert(
+      fc.property(
+        fc.string({ minLength: 1, maxLength: 60 }),
+        fc.array(fc.integer({ min: 0, max: transitions.length - 1 }), { maxLength: 8 }),
+        (document, steps) => {
+          let f: Feature = withDetailDocument(
+            createLeafFeature(asFeatureId('f'), attrs, color, createShape()),
+            document,
+          );
+          for (const i of steps) f = transitions[i]!(f);
+          return f.detailDocument === document;
+        },
+      ),
+    );
   });
 });
 
