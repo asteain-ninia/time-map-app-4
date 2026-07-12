@@ -2328,7 +2328,7 @@ export function App(): JSX.Element {
              publishCameraHooks → updateCamera, which mirrors centerLon into the store
              truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to
              store.centerLon — reflects the new center. A preset jumps the continuous
-             center to the named longitude (本初子午線中心 0° / 太平洋中心 180°). */
+             center to the preset longitude (0度中心 / 180度中心). */
           <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
         }
         overlay={
