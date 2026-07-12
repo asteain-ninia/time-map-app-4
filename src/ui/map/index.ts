@@ -11,6 +11,11 @@ export {
 } from './LongitudeShiftControl';
 
 export {
+  GlobalDepthControl,
+  type GlobalDepthControlProps,
+} from './GlobalDepthControl';
+
+export {
   GridSettingsPanel,
   type GridSettings,
   type GridSettingsPanelProps,

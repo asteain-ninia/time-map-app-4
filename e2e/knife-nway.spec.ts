@@ -70,15 +70,20 @@ async function goView(page: Page): Promise<void> {
 }
 
 async function showFeaturesTab(page: Page): Promise<void> {
-  const tab = page.getByTestId('sidebar-tab-features');
+  // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab; 現在時刻 mode = 旧地物一覧.
+  const tab = page.getByTestId('sidebar-tab-list');
   if (await tab.isVisible().catch(() => false)) {
     await tab.click().catch(() => undefined);
+  }
+  const currentMode = page.getByTestId('list-mode-current');
+  if (await currentMode.isVisible().catch(() => false)) {
+    await currentMode.click().catch(() => undefined);
   }
 }
 
 async function featureListCount(page: Page): Promise<number> {
   await showFeaturesTab(page);
-  if ((await page.getByTestId('feature-list-empty').count()) > 0) return 0;
+  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }
 

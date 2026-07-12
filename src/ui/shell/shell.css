@@ -328,6 +328,42 @@ body {
 /* Sidebar list sections (HB-3): 地物一覧 / イベント一覧 rows. A flat, scrollable
  * list of selectable rows; the active row reads as a filled accent chip so the
  * current selection is visible at a glance (技術方針 5.5 flat / 過剰演出はしない). */
+/* HB6 一覧タブ統合: the 現在時刻 / 通史 mode toggle sits above the shared list core
+ * (SidebarRowList) inside the one「一覧」panel. The toggle buttons reuse the
+ * aria-pressed active styling of the list rows so the selected mode reads clearly. */
+.sidebar-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sidebar-list__modes {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+}
+
+.sidebar-list__mode {
+  flex: 1 1 auto;
+  font: inherit;
+  padding: 4px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.sidebar-list__mode:hover {
+  border-color: var(--c-accent);
+}
+
+.sidebar-list__mode[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
 .sidebar-list__items {
   list-style: none;
   margin: 0;
@@ -707,6 +743,95 @@ body {
 
 .longitude-shift button:hover {
   border-color: var(--c-accent);
+}
+
+/* FR-42 / FR-43 表示階層レベル (深度) control — a compact 上部バー strip BESIDE the
+ * 経度シフト (FR-43「グローバル深度スライダーと併存する」). Same normal-flow header row,
+ * never over the map input layer (教訓 5.14). Mirrors .longitude-shift so the two view
+ * controls read as one row and fold together on a narrow window (flex-wrap). */
+.global-depth {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px 0 0;
+  font-size: 12px;
+  /* A subtle left divider off the 経度シフト so the two controls read as distinct groups. */
+  border-left: 1px solid var(--c-border);
+  padding-left: 10px;
+}
+
+.global-depth__readout {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.global-depth__max {
+  font-weight: 400;
+  opacity: 0.7;
+}
+
+.global-depth__slider {
+  width: 120px;
+  height: 18px;
+  margin: 0;
+}
+
+.global-depth__buttons {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+/* The 個別フォーカス (FR-43) sub-group — shown only when a feature is selected / a focus
+ * is active; kept compact and on the same row. */
+.global-depth__focus {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.global-depth__focus-label {
+  font-weight: 600;
+}
+
+.global-depth__focus-depth,
+.global-depth__focus-emph {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+}
+
+.global-depth__focus-depth input[type='number'] {
+  width: 3.5em;
+  font: inherit;
+}
+
+/* Compact buttons for the 上部バー (深度 ± + フォーカス). */
+.global-depth button {
+  font: inherit;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.global-depth button:hover:not(:disabled) {
+  border-color: var(--c-accent);
+}
+
+.global-depth button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Tooltip bubble: shown on hover/focus (FR-112). */

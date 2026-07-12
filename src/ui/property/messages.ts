@@ -6,6 +6,8 @@
 // one-to-one (受け入れ基準 1, 教訓 5.29). Stringly-duplicated copies would let a
 // branch drift; the single table prevents it.
 
+import { FEATURE_KIND, type FeatureKind } from '../../domain/feature';
+
 export const PROPERTY_STRINGS = {
   // -- selection-display cases (FR-83) ---------------------------------------
   /** 空選択: nothing is selected. */
@@ -69,6 +71,17 @@ export const PROPERTY_STRINGS = {
   detailAttributesTitle: '属性',
   brokenImageAlt: '画像を表示できません',
 
+  // -- 地物種別 (種別) の日本語表示ラベル (要件定義書 §4) --------------------
+  // 詳細パネル等の「種別」行に出るドメイン kind の日本語名。ドメインの
+  // featureKindLabel は enum 生値 (英語: point/line/leaf/aggregate) を返すため、
+  // ユーザー可視表示にはこちらを使う (実機報告「種別: aggregate って何?」の根治)。
+  // kind 値そのものは不変・これは表示層の写像のみ。ユーザー編集可能な種別ラベル
+  // FR-40 (kindLabel, 例「都市」) とは別物 (混同しない)。
+  kindPoint: '点情報',
+  kindLine: '線情報',
+  kindLeaf: '末端地物',
+  kindAggregate: '集約地物',
+
   // -- decision messages (教訓 5.12) -----------------------------------------
   dismissMessage: '閉じる',
   saveFailedPrefix: '保存に失敗しました: ',
@@ -89,6 +102,26 @@ export const PROPERTY_STRINGS = {
    */
   editNotWired: '属性編集の保存はこのビルドでは未対応です。',
 } as const;
+
+/**
+ * 地物種別 (種別) をユーザー可視の日本語ラベルへ写像する (要件定義書 §4: 点情報 /
+ * 線情報 / 末端地物 / 集約地物). ドメインの kind 値 (point/line/leaf/aggregate) は
+ * 不変で、これは表示層のみの写像 — domain の featureKindLabel は enum 生値 (英語) を
+ * 返すため、詳細パネル等の「種別」表示にはこの関数を使う (単一真実源: 種別の日本語
+ * 表示はここだけ、教訓 5.29). `Record<FeatureKind, string>` なので kind の追加は
+ * コンパイルエラーで検出される (網羅性). ユーザー編集可能な種別ラベル FR-40
+ * (kindLabel) とは別物。
+ */
+const FEATURE_KIND_JA: Readonly<Record<FeatureKind, string>> = {
+  [FEATURE_KIND.Point]: PROPERTY_STRINGS.kindPoint,
+  [FEATURE_KIND.Line]: PROPERTY_STRINGS.kindLine,
+  [FEATURE_KIND.Leaf]: PROPERTY_STRINGS.kindLeaf,
+  [FEATURE_KIND.Aggregate]: PROPERTY_STRINGS.kindAggregate,
+};
+
+export function featureKindJaLabel(kind: FeatureKind): string {
+  return FEATURE_KIND_JA[kind];
+}
 
 /**
  * Format a shape area (km²) for the read-only 面積 row (FR-20). Mirrors the survey

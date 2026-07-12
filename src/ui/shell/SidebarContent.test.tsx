@@ -165,11 +165,12 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(within(panel).getByTestId('property-panel')).toBeInTheDocument();
   });
 
-  it('lists committed features in the 地物一覧 section', () => {
+  it('lists committed features in the 一覧 現在時刻 mode (旧地物一覧)', () => {
     const a = squareLeaf('f-a', '織田領');
     const root = withLeaf(emptyProject(), a, 1000);
     renderWith(root);
-    const list = screen.getByTestId('feature-list');
+    // 現在時刻 mode is the default; the unified list holds the feature rows.
+    const list = screen.getByTestId('unified-list');
     expect(within(list).getByText('織田領')).toBeInTheDocument();
   });
 
@@ -191,17 +192,21 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(within(panel).getByTestId('basic-info')).toBeInTheDocument();
   });
 
-  it('shows the empty-state guidance when there are no features / events', () => {
+  it('shows the empty-state guidance when there are no features / events (both modes)', () => {
     renderWith(emptyProject());
-    expect(screen.getByTestId('feature-list-empty')).toBeInTheDocument();
-    expect(screen.getByTestId('event-list-empty')).toBeInTheDocument();
+    // 現在時刻 (default): 地物 0件 → the shared empty state.
+    expect(screen.getByTestId('unified-list-empty')).toBeInTheDocument();
+    // 通史: 錨 0件 → same empty state after switching mode.
+    fireEvent.click(screen.getByTestId('list-mode-history'));
+    expect(screen.getByTestId('unified-list-empty')).toBeInTheDocument();
   });
 
-  it('lists each feature anchor as an event row', () => {
+  it('lists each feature anchor as a row in 通史 mode (旧錨一覧)', () => {
     const a = squareLeaf('f-a', '織田領');
     const root = withLeaf(emptyProject(), a, 1000);
     renderWith(root);
-    const list = screen.getByTestId('event-list');
+    fireEvent.click(screen.getByTestId('list-mode-history'));
+    const list = screen.getByTestId('unified-list');
     expect(within(list).getByText('織田領')).toBeInTheDocument();
   });
 
@@ -216,6 +221,7 @@ describe('SidebarContent — HB-3 wiring', () => {
     let root = withLeaf(emptyProject(), a, 1000); // anchor 1 @1000: 織田領
     root = renameLeafAt(root, a, '豊臣領', 1100); // anchor 2 @1100: 豊臣領
     renderWith(root);
+    fireEvent.click(screen.getByTestId('list-mode-history')); // 通史 mode holds the anchor rows.
 
     // The two anchor rows are keyed by anchor id (feature id @ anchor year).
     const firstRow = screen.getByTestId('event-list-item-anchor:f-a@1000');
@@ -237,12 +243,13 @@ describe('SidebarContent — HB-3 wiring', () => {
     const root = withLeaf(emptyProject(), a, 1000);
     renderWith(root);
 
-    // The 地物一覧 already shows the id fallback…
-    const features = screen.getByTestId('feature-list');
+    // 現在時刻 (default) already shows the id fallback…
+    const features = screen.getByTestId('unified-list');
     expect(within(features).getByText('f-5-4')).toBeInTheDocument();
 
-    // …and the イベント一覧 row must show the SAME visible id, never a blank button.
-    const events = screen.getByTestId('event-list');
+    // …and the 通史 row must show the SAME visible id, never a blank button.
+    fireEvent.click(screen.getByTestId('list-mode-history'));
+    const events = screen.getByTestId('unified-list');
     const row = within(events).getByText('f-5-4');
     expect(row).toBeInTheDocument();
     expect(row.textContent?.trim()).not.toBe('');
@@ -284,6 +291,7 @@ describe('SidebarContent — HB5-3 錨起点の視点合わせ', () => {
     const root = withLeaf(emptyProject(), a, 1000);
     const { store, focusCalls } = renderWithFocus(root, timePointYear(1500));
 
+    fireEvent.click(screen.getByTestId('list-mode-history')); // 通史 mode holds the 錨 rows.
     fireEvent.click(screen.getByTestId('event-list-item-anchor:f-a@1000'));
 
     // (a) selection + time synced through the store (single truth source, unchanged).
@@ -300,6 +308,7 @@ describe('SidebarContent — HB5-3 錨起点の視点合わせ', () => {
     const root = withLeaf(emptyProject(), a, 1000);
     // The default renderWith wires NO onFocusFeatureCamera.
     const { store } = renderWith(root);
+    fireEvent.click(screen.getByTestId('list-mode-history'));
     fireEvent.click(screen.getByTestId('event-list-item-anchor:f-a@1000'));
     expect(store.getState().activeFeature).toBe(a.feature.id);
     expect(store.getState().currentTime.year).toBe(1000);
@@ -333,43 +342,44 @@ describe('SidebarContent — A1 一覧フィルタ (検索)', () => {
   it('filters the 地物一覧 by name (partial match) and shows the 一致/全件 count', () => {
     let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
     root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
-    renderWith(root); // currentTime = 1000 → both features effective.
+    renderWith(root); // currentTime = 1000 → both features effective (現在時刻 mode default).
 
     // Both rows present; the count shows the total (no filter yet).
     expect(screen.getByTestId('feature-list-item-f-oda')).toBeInTheDocument();
     expect(screen.getByTestId('feature-list-item-f-toku')).toBeInTheDocument();
-    expect(screen.getByTestId('feature-list-count').textContent).toBe('2件');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('2件');
 
     // A partial name keeps only the matching row; the count reflects 一致 / 全件.
-    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+    fireEvent.change(screen.getByTestId('unified-list-filter'), {
       target: { value: '織田' },
     });
     expect(screen.getByTestId('feature-list-item-f-oda')).toBeInTheDocument();
     expect(screen.queryByTestId('feature-list-item-f-toku')).not.toBeInTheDocument();
-    expect(screen.getByTestId('feature-list-count').textContent).toBe('1 / 2件');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
   });
 
   it('shows the no-match message (not the empty state) when the filter excludes all rows', () => {
     const root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
     renderWith(root);
-    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+    fireEvent.change(screen.getByTestId('unified-list-filter'), {
       target: { value: 'zzzz' },
     });
-    // The rows are gone, a distinct no-match message shows (NOT feature-list-empty,
-    // which means「地物が0件」— here there IS data, it is just filtered out).
-    expect(screen.getByTestId('feature-list-no-match')).toBeInTheDocument();
-    expect(screen.queryByTestId('feature-list-empty')).not.toBeInTheDocument();
+    // The rows are gone, a distinct no-match message shows (NOT unified-list-empty,
+    // which means「0件」— here there IS data, it is just filtered out).
+    expect(screen.getByTestId('unified-list-no-match')).toBeInTheDocument();
+    expect(screen.queryByTestId('unified-list-empty')).not.toBeInTheDocument();
     expect(screen.queryByTestId('feature-list-item-f-oda')).not.toBeInTheDocument();
-    expect(screen.getByTestId('feature-list-count').textContent).toBe('0 / 1件');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('0 / 1件');
   });
 
-  it('filters the 錨一覧 by name too (shared core, same behaviour)', () => {
+  it('filters the 通史 mode by name too (shared core, same behaviour)', () => {
     let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
     root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
     renderWith(root);
+    fireEvent.click(screen.getByTestId('list-mode-history'));
 
-    expect(screen.getByTestId('event-list-count').textContent).toBe('2件');
-    fireEvent.change(screen.getByTestId('event-list-filter'), {
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('2件');
+    fireEvent.change(screen.getByTestId('unified-list-filter'), {
       target: { value: '徳川' },
     });
     expect(
@@ -378,18 +388,30 @@ describe('SidebarContent — A1 一覧フィルタ (検索)', () => {
     expect(
       screen.queryByTestId('event-list-item-anchor:f-oda@1000'),
     ).not.toBeInTheDocument();
-    expect(screen.getByTestId('event-list-count').textContent).toBe('1 / 2件');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
+  });
+
+  it('resets the name filter when switching mode (モードごとに現行を踏襲)', () => {
+    let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
+    root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
+    renderWith(root);
+    // Filter in 現在時刻, then switch to 通史: the filter is empty again (keyed remount).
+    fireEvent.change(screen.getByTestId('unified-list-filter'), { target: { value: '織田' } });
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
+    fireEvent.click(screen.getByTestId('list-mode-history'));
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('2件');
+    expect((screen.getByTestId('unified-list-filter') as HTMLInputElement).value).toBe('');
   });
 
   it('folds full-width / case so the 一覧フィルタ matches like the FR-99 検索 (整合)', () => {
     const root = withLeaf(emptyProject(), squareLeaf('f-rome', 'ROMA'), 1000);
     renderWith(root);
     // A full-width ｒ + lowercase query still matches 'ROMA' (NFKC + lowercase fold).
-    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+    fireEvent.change(screen.getByTestId('unified-list-filter'), {
       target: { value: 'ｒoma' },
     });
     expect(screen.getByTestId('feature-list-item-f-rome')).toBeInTheDocument();
-    expect(screen.getByTestId('feature-list-count').textContent).toBe('1 / 1件');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 1件');
   });
 });
 

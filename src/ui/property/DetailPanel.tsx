@@ -9,7 +9,6 @@
 // the document read-only; the edit form lives in the sidebar panel.
 
 import type { Feature } from '../../domain/feature';
-import { featureKindLabel } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
 
 import { DraggablePanel } from '../shell/DraggablePanel';
@@ -18,7 +17,7 @@ import { formatYear } from '../timeline/time-display';
 
 import type { AssetResolver } from './contracts';
 import { MarkdownView } from './MarkdownView';
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS, featureKindJaLabel } from './messages';
 
 export interface DetailPanelProps {
   readonly id: string;
@@ -63,7 +62,7 @@ export function DetailPanel(props: DetailPanelProps): JSX.Element {
             <dt>{PROPERTY_STRINGS.nameLabel}</dt>
             <dd>{feature.attributes.name}</dd>
             <dt>種別</dt>
-            <dd>{featureKindLabel(feature)}</dd>
+            <dd>{featureKindJaLabel(feature.kind)}</dd>
             <dt>{PROPERTY_STRINGS.startYearLabel}</dt>
             <dd>{formatYear(feature.attributes.startYear)}</dd>
             <dt>{PROPERTY_STRINGS.endYearLabel}</dt>

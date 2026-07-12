@@ -1,10 +1,11 @@
 // UI layer (U20 / shell): the right sidebar (FR-111).
 //
-// Three section "入れ物" — イベント一覧 / 地物一覧 / プロパティ — as switchable
-// tabs. This unit provides the sections and the switch only; each section's
-// content (event list, feature tree, property form) is filled by later units
-// (spec スコープ「やらないこと」). Section slots are passed as optional children
-// so a later unit injects content without this component knowing its shape.
+// TWO section "入れ物" — 一覧 / プロパティ — as switchable tabs (HB6: the former
+// 地物一覧 / 錨一覧 tabs are unified into ONE「一覧」tab whose 現在時刻 / 通史 mode
+// toggle lives inside its content slot). This unit provides the sections and the
+// switch only; each section's content (the unified list, the property form) is
+// filled by SidebarContent. Section slots are passed as optional children so the
+// content unit injects them without this component knowing their shape.
 
 import { useCallback, useState, type ReactNode } from 'react';
 
@@ -13,38 +14,37 @@ import { APP_STRINGS, SIDEBAR_SECTION_TITLES } from './strings';
 
 /** The sidebar section keys, in tab order. */
 export const SIDEBAR_SECTION = {
-  Events: 'events',
-  Features: 'features',
+  List: 'list',
   Properties: 'properties',
 } as const;
 
 export type SidebarSection = (typeof SIDEBAR_SECTION)[keyof typeof SIDEBAR_SECTION];
 
 export interface SidebarProps {
-  /** Optional content slots for each section (later units fill these). */
-  readonly eventsContent?: ReactNode;
-  readonly featuresContent?: ReactNode;
+  /**
+   * The unified「一覧」slot (HB6): 現在時刻(旧地物一覧) / 通史(旧錨一覧) の内部トグルを
+   * 持つ一覧。SidebarContent が組み立てて渡す。
+   */
+  readonly listContent?: ReactNode;
+  /** The プロパティ slot. */
   readonly propertiesContent?: ReactNode;
   /** Initial active section. Default: properties. */
   readonly initialSection?: SidebarSection;
 }
 
 const SECTION_ORDER: readonly SidebarSection[] = [
-  SIDEBAR_SECTION.Events,
-  SIDEBAR_SECTION.Features,
+  SIDEBAR_SECTION.List,
   SIDEBAR_SECTION.Properties,
 ];
 
 const SECTION_TITLE: Readonly<Record<SidebarSection, string>> = {
-  [SIDEBAR_SECTION.Events]: SIDEBAR_SECTION_TITLES.events,
-  [SIDEBAR_SECTION.Features]: SIDEBAR_SECTION_TITLES.features,
+  [SIDEBAR_SECTION.List]: SIDEBAR_SECTION_TITLES.list,
   [SIDEBAR_SECTION.Properties]: SIDEBAR_SECTION_TITLES.properties,
 };
 
 export function Sidebar(props: SidebarProps): JSX.Element {
   const {
-    eventsContent,
-    featuresContent,
+    listContent,
     propertiesContent,
     initialSection = SIDEBAR_SECTION.Properties,
   } = props;
@@ -65,8 +65,7 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   );
 
   const content: Record<SidebarSection, ReactNode> = {
-    [SIDEBAR_SECTION.Events]: eventsContent,
-    [SIDEBAR_SECTION.Features]: featuresContent,
+    [SIDEBAR_SECTION.List]: listContent,
     [SIDEBAR_SECTION.Properties]: propertiesContent,
   };
 

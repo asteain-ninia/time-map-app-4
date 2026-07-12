@@ -143,11 +143,17 @@ async function goView(page: Page): Promise<void> {
   await page.getByTestId('add-input-layer').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined);
 }
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
-  const tab = page.getByTestId(`sidebar-tab-${key}`);
+  // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 / 通史 modes).
+  const tabKey = key === 'properties' ? 'properties' : 'list';
+  const tab = page.getByTestId(`sidebar-tab-${tabKey}`);
   if (await tab.isVisible().catch(() => false)) await tab.click().catch(() => undefined);
+  if (key !== 'properties') {
+    const mode = page.getByTestId(key === 'features' ? 'list-mode-current' : 'list-mode-history');
+    if (await mode.isVisible().catch(() => false)) await mode.click().catch(() => undefined);
+  }
 }
 async function featureListCount(page: Page): Promise<number> {
-  const empty = page.getByTestId('feature-list-empty');
+  const empty = page.getByTestId('unified-list-empty');
   if ((await empty.count()) > 0) return 0;
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }

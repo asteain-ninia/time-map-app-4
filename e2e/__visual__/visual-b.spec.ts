@@ -79,7 +79,9 @@ async function handleCount(page: Page): Promise<number> {
   });
 }
 async function featureListCount(page: Page): Promise<number> {
-  if ((await page.getByTestId('feature-list-empty').count()) > 0) return 0;
+  // HB6: the 一覧 defaults to 現在時刻 mode (= 旧地物一覧), so feature-list-item-* rows are
+  // in the DOM without a mode switch; the empty-state testid is now unified-list-empty.
+  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }
 

@@ -79,10 +79,9 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
     expect(screen.queryByTestId('app-shell-topbar')).not.toBeInTheDocument();
   });
 
-  it('sidebar has the three sections (events / features / properties)', () => {
+  it('sidebar has the two sections (一覧 / プロパティ, HB6 統合)', () => {
     render(<AppShell store={makeStore()} />);
-    expect(screen.getByTestId('sidebar-tab-events')).toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-tab-features')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-tab-list')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-tab-properties')).toBeInTheDocument();
   });
 

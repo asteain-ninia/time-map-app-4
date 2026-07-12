@@ -30,13 +30,12 @@ test.describe('HB-3: 右サイドバーにプロパティ/地物/イベントパ
       const propertyPanel = propertiesPanel.getByTestId('property-panel');
       await expect(propertyPanel).toBeVisible();
 
-      // The 地物一覧 / イベント一覧 panels are mounted in their own slots.
-      await expect(
-        page.getByTestId('sidebar-panel-features').getByTestId('feature-list'),
-      ).toBeAttached();
-      await expect(
-        page.getByTestId('sidebar-panel-events').getByTestId('event-list'),
-      ).toBeAttached();
+      // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」slot with a 現在時刻 / 通史
+      // mode toggle. The unified list + both mode toggles are mounted in the panel.
+      const listPanel = page.getByTestId('sidebar-panel-list');
+      await expect(listPanel.getByTestId('list-mode-current')).toBeAttached();
+      await expect(listPanel.getByTestId('list-mode-history')).toBeAttached();
+      await expect(listPanel.getByTestId('unified-list')).toBeAttached();
     } finally {
       await app.close();
     }

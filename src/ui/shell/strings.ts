@@ -70,15 +70,12 @@ export const TOOL_LABELS = {
   'edit.drill': '穴あけ',
 } as const;
 
-/** Sidebar section titles (FR-111). HB3-28: the「イベント一覧」tab is renamed to
- * 「歴史アンカー一覧（年表）」 so it is not confused with the地物一覧 — it lists each
- * feature's history anchors (its 時間軸イベント), not the features themselves. */
+/** Sidebar section titles (FR-111). HB6: the former 地物一覧 / 錨一覧 tabs are unified
+ * into ONE「一覧」tab with a 現在時刻 / 通史 mode toggle (ユーザー GO 済) — so the sidebar
+ * is now「一覧」+「プロパティ」の2タブ構成. The two list modes (現在時刻=現在の年に存在
+ * する地物 = 旧地物一覧, 通史=全時刻の錨 = 旧錨一覧) live inside the one list panel. */
 export const SIDEBAR_SECTION_TITLES = {
-  // HB5-1 / HB5-2: shortened from「歴史アンカー一覧（年表）」and unified to the
-  // domain term「錨」(要件定義書 §3.11 歴史の錨). Parallels「地物一覧」as a tab title
-  // and stays distinct from the property panel's per-feature「歴史の錨」section.
-  events: '錨一覧',
-  features: '地物一覧',
+  list: '一覧',
   properties: 'プロパティ',
 } as const;
 
@@ -112,6 +109,12 @@ export const SIDEBAR_CONTENT_STRINGS = {
   countAll: (total: number): string => `${total}件`,
   /** 件数表示（絞り込み中）: 一致件数 / 総件数。 */
   countFiltered: (shown: number, total: number): string => `${shown} / ${total}件`,
+  // HB6 一覧タブ統合: モードトグル「現在時刻 / 通史」。現在時刻=現在の年に存在する地物
+  // (旧地物一覧), 通史=全時刻の錨 (旧錨一覧)。フィルタ・件数・視点フィット・選択挙動は
+  // モードごとに現行を踏襲。
+  listModeAria: '一覧の表示モード',
+  listModeCurrentLabel: '現在時刻',
+  listModeHistoryLabel: '通史',
 } as const;
 
 /**

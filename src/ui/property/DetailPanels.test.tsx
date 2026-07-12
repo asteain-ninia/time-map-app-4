@@ -7,7 +7,11 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
-import { createPointFeature, type Feature } from '../../domain/feature';
+import {
+  createAggregateFeature,
+  createPointFeature,
+  type Feature,
+} from '../../domain/feature';
 import { asFeatureId, asVertexId, type FeatureId } from '../../domain/ids';
 
 import type { AssetResolver, FeatureLookup } from './contracts';
@@ -52,6 +56,28 @@ describe('DetailPanels — 複数同時 / 個別ドラッグ / 個別閉じ (FR-
     );
     expect(screen.getByTestId(`panel-${panelIdFor(fA)}`)).toBeInTheDocument();
     expect(screen.getByTestId(`panel-${panelIdFor(fB)}`)).toBeInTheDocument();
+  });
+
+  it('種別 row shows the Japanese kind label, never the English enum 生値 (task (1))', () => {
+    // 実機報告「種別: aggregate って何?」— a 集約 feature must read「集約地物」, not "aggregate".
+    const aggId = asFeatureId('AGG');
+    const aggLookup: FeatureLookup = {
+      featureAt: (id) =>
+        id === aggId
+          ? createAggregateFeature(aggId, createBasicAttributes('連邦', 1, 2), color, [])
+          : null,
+    };
+    render(
+      <DetailPanels
+        state={openPanel({ panels: [] }, aggId, { x: 40, y: 40 })}
+        featureLookup={aggLookup}
+        assetResolver={noAssets}
+        detailDocumentOf={() => ''}
+        onClose={() => {}}
+      />,
+    );
+    expect(screen.getByText('集約地物')).toBeInTheDocument();
+    expect(screen.queryByText('aggregate')).toBeNull();
   });
 
   it('drags one panel by its header without moving the other (教訓 5.8)', () => {

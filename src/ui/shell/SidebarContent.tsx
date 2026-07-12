@@ -1,17 +1,19 @@
 // UI layer (U20 / shell): the LIVE sidebar content wiring (HB-3 root fix).
 //
 // HB-3 ROOT CAUSE (合成ルートの結線漏れ, 教訓 5.7「ロジックがあっても UI から呼ば
-// れず機能しない」): the three sidebar sections — イベント一覧 / 地物一覧 / プロパティ —
-// are pure "入れ物" in {@link Sidebar} that take their content through optional
-// slots (eventsContent / featuresContent / propertiesContent). The composition
-// root (App.tsx) mounted {@link AppShell} WITHOUT passing the `sidebar` prop, so
-// every slot stayed empty and the U32 {@link PropertyPanel} was never mounted at
-// all. (The "PropertyPanel が画面下部に無スタイルで並ぶ" symptom is the absence of
-// any styled host — the panel had no sidebar cell to live in, so nothing styled
-// it.) This module builds the three slots over the LIVE session store and hands
-// them to AppShell so they render INSIDE the sidebar with the existing
-// .sidebar__panel chrome (技術方針 2.5: the panels subscribe to the store; no
-// parallel truth lives here).
+// れず機能しない」): the sidebar sections — 一覧 / プロパティ — are pure "入れ物" in
+// {@link Sidebar} that take their content through optional slots (listContent /
+// propertiesContent). The composition root (App.tsx) mounted {@link AppShell}
+// WITHOUT passing the `sidebar` prop, so every slot stayed empty and the U32
+// {@link PropertyPanel} was never mounted at all. (The "PropertyPanel が画面下部に
+// 無スタイルで並ぶ" symptom is the absence of any styled host — the panel had no
+// sidebar cell to live in, so nothing styled it.) This module builds the slots over
+// the LIVE session store and hands them to AppShell so they render INSIDE the sidebar
+// with the existing .sidebar__panel chrome (技術方針 2.5: the panels subscribe to the
+// store; no parallel truth lives here).
+//
+// HB6: the former 地物一覧 / 錨一覧 tabs are unified into ONE「一覧」slot whose
+// 現在時刻(旧地物一覧) / 通史(旧錨一覧) mode toggle lives in {@link UnifiedListSection}.
 //
 // The lookups are LIVE over the committed DomainProject at the current time
 // (single truth source, 教訓 5.29): featureLookup / anchorLookup resolve against
@@ -155,15 +157,11 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   const anchorLookup = anchorLookupOf(getRoot);
 
   return {
-    eventsContent: (
-      <EventsSection
-        store={store}
-        getRoot={getRoot}
-        {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
-      />
-    ),
-    featuresContent: (
-      <FeaturesSection
+    // HB6: 地物一覧 + 錨一覧 を 1タブ「一覧」+ モードトグル(現在時刻/通史)へ統合
+    // (ユーザー GO 済). 現在時刻=旧地物一覧, 通史=旧錨一覧. 共通コア SidebarRowList を
+    // 両モードで共有し、モードごとにフィルタ・件数・選択挙動・視点フィットを現行踏襲。
+    listContent: (
+      <UnifiedListSection
         store={store}
         getRoot={getRoot}
         getTime={getTime}
@@ -468,120 +466,140 @@ function SidebarRowList(props: {
   );
 }
 
+/** The 一覧 tab's two display modes (HB6): 現在時刻(旧地物一覧) / 通史(旧錨一覧). */
+const LIST_MODE = {
+  /** 現在時刻: the features effective at the current year (旧地物一覧). */
+  Current: 'current',
+  /** 通史: every feature's history anchors across all time (旧錨一覧). */
+  History: 'history',
+} as const;
+
+type ListMode = (typeof LIST_MODE)[keyof typeof LIST_MODE];
+
 /**
- * 地物一覧 — the features effective at the current time (FR-111, 現在時刻モード).
- * Selecting a row promotes it through the SAME store.setActiveFeature path every
- * selection uses (no second selection source) AND fits the camera onto it (A1 — the
- * user's「地物一覧にも視点移動が欲しい」, the SAME focusCameraOnFeature path 錨一覧 uses).
- * The feature is by definition effective at the current time, so the fit resolves its
- * shape at現在時刻 with NO time sync (unlike 錨一覧). The active row is highlighted from
- * the live selection mirror (技術方針 2.5).
+ * 一覧 — the unified feature/anchor list (HB6, ユーザー GO 済). ONE panel with a
+ * 現在時刻 / 通史 mode toggle REPLACES the former 地物一覧 / 錨一覧 tabs (ユーザー:
+ * 「地物一覧と錨一覧ってほぼ同一の機能として実装できるのでは」). Both modes are the
+ * SAME「絞り込み可能な選択行リスト」(the SidebarRowList 共通コア); the mode only changes
+ * (a) the row-generation rule (現在時刻に存在する地物 か 通史の全錨) and (b) the select
+ * side-effect (通史 のみ時刻同期). フィルタ・件数・視点フィット・選択挙動はモードごとに
+ * 現行を踏襲 (単一真実源, 教訓 5.30).
+ *
+ * 現在時刻 (旧地物一覧): rows = the features effective now; selecting promotes through
+ * the SAME store.setActiveFeature path (no second selection source) AND fits the camera
+ * at 現在時刻 with NO time sync (A1「地物一覧にも視点移動が欲しい」). The active row is
+ * highlighted from the live selection mirror (技術方針 2.5).
+ *
+ * 通史 (旧錨一覧): rows = every feature's history anchors, each label resolved from ITS
+ * OWN anchor snapshot (教訓 5.29 — a rename at a non-first anchor stays visible). Selecting
+ * syncs the session time to the anchor start (教訓 5.6 / 5.15), promotes the owner, THEN
+ * fits the camera at that time (HB5-3). No independent time/selection source lives here.
  */
-function FeaturesSection<S>(props: {
+function UnifiedListSection<S>(props: {
   readonly store: StoreApi<SessionStore<S>>;
   readonly getRoot: () => DomainProject;
   readonly getTime: () => TimePoint;
-  /** A1: fit the camera on the row's feature after selecting (現在時刻で解決). */
   readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
 }): JSX.Element {
   const { store, getRoot, getTime, onFocusFeatureCamera } = props;
-  // Re-render on any committed-domain / time / selection change: reading these
-  // selectors subscribes this component, so the list below re-derives from the
-  // live root whenever they change (技術方針 2.5; single truth source 教訓 5.29).
+  const [mode, setMode] = useState<ListMode>(LIST_MODE.Current);
+
+  // Subscribe to committed-domain / time / selection so the rows re-derive from the live
+  // root whenever they change (技術方針 2.5; single truth source 教訓 5.29). The row
+  // builder reads the root/time FRESH through getRoot/getTime (never a stale capture,
+  // 教訓 5.6); these selectors gate the recompute.
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
   const activeFeature = useStore(store, (s) => s.activeFeature);
-  // The render reads `domain` / `currentTime` only to subscribe (the lookup reads
-  // them fresh through getRoot/getTime — never a stale capture, 教訓 5.6).
-  const features = featuresAt(getRoot(), getTime());
-  void domain;
-  void currentTime;
 
-  const rows: SidebarListRow[] = features.map((feature) => ({
-    key: feature.id as unknown as string,
-    testid: `feature-list-item-${feature.id as unknown as string}`,
-    label: featureLabel(feature),
-    pressed: activeFeature === feature.id,
-    onSelect: () => {
-      // Single selection path (unchanged), THEN the視点フィット (A1). The feature is
-      // effective now, so the host resolves featureBoundsAt at現在時刻 — no time sync.
-      store.getState().setActiveFeature(feature.id);
-      onFocusFeatureCamera?.(feature.id);
-    },
-  }));
+  const isCurrent = mode === LIST_MODE.Current;
 
-  return (
-    <SidebarRowList
-      listTestid="feature-list"
-      caption={SIDEBAR_CONTENT_STRINGS.featuresCaption}
-      emptyText={SIDEBAR_CONTENT_STRINGS.featuresEmpty}
-      filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
-      filterAria={SIDEBAR_CONTENT_STRINGS.featuresFilterAria}
-      rows={rows}
-    />
-  );
-}
-
-/**
- * 錨一覧 — every feature's history anchors (its 時間軸イベント) at-a-glance, grouped by
- * feature (FR-111 / FR-84, 通史モード). Each anchor row syncs the session time to its
- * start through the SAME store.setCurrentTime path the timeline uses (教訓 5.6 / 5.15),
- * promotes its owner feature, THEN fits the camera onto that feature at that time
- * (HB5-3). No independent time/selection source lives here.
- */
-function EventsSection<S>(props: {
-  readonly store: StoreApi<SessionStore<S>>;
-  readonly getRoot: () => DomainProject;
-  /** HB5-3: focus the camera on the row's feature after selecting + syncing time. */
-  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
-}): JSX.Element {
-  const { store, getRoot, onFocusFeatureCamera } = props;
-  const domain = useStore(store, (s) => s.domain);
-  void domain; // recompute the event rows when the committed domain changes.
-  const root = getRoot();
-  const rows: SidebarListRow[] = root.histories.flatMap((history) =>
-    history.series.entries.map((entry) => {
-      // Resolve EACH row's label from ITS OWN anchor's snapshot (the state
-      // effective AT that anchor's start, the same单一真実源 featuresAt/resolveAt
-      // read — 教訓 5.29). A rename committed at a NON-first anchor lives only in
-      // that later anchor's snapshot, so deriving every row from entries[0] hid it
-      // and showed the first name on every row. Defer to the domain's single
-      // fallback rule (教訓 5.30): an unnamed feature carries a present-but-blank
-      // name (''), so featureDisplayName trims and falls back to the id, matching
-      // the 地物一覧 so every event row carries a visible identifier.
-      const owner = entry.anchor.snapshot.features.find(
-        (f) => f.id === history.featureId,
-      );
-      const label = owner
-        ? featureDisplayName(owner)
-        : (history.featureId as unknown as string);
-      const anchorId = entry.anchor.id as unknown as string;
-      return {
-        key: `${history.featureId as unknown as string}:${anchorId}`,
-        testid: `event-list-item-${anchorId}`,
-        label,
-        pressed: false,
+  const rows: SidebarListRow[] = useMemo(() => {
+    if (isCurrent) {
+      // 現在時刻 (旧地物一覧): features effective at the current time; fit at 現在時刻, no sync.
+      return featuresAt(getRoot(), getTime()).map((feature) => ({
+        key: feature.id as unknown as string,
+        testid: `feature-list-item-${feature.id as unknown as string}`,
+        label: featureLabel(feature),
+        pressed: activeFeature === feature.id,
         onSelect: () => {
-          // Promote the feature + sync the time FIRST (unchanged single selection /
-          // time path), THEN focus the camera on the feature at that time (HB5-3). The
-          // camera write funnels through the host's single ports.writeCamera; only this
-          //錨導線 (+ the地物一覧導線) calls it, so a map-click selection never fits.
-          store.getState().setActiveFeature(history.featureId);
-          store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync);
-          onFocusFeatureCamera?.(history.featureId);
+          store.getState().setActiveFeature(feature.id);
+          onFocusFeatureCamera?.(feature.id);
         },
-      };
-    }),
-  );
+      }));
+    }
+    // 通史 (旧錨一覧): every feature's history anchors, each labelled from ITS OWN snapshot.
+    return getRoot().histories.flatMap((history) =>
+      history.series.entries.map((entry) => {
+        const owner = entry.anchor.snapshot.features.find(
+          (f) => f.id === history.featureId,
+        );
+        const label = owner
+          ? featureDisplayName(owner)
+          : (history.featureId as unknown as string);
+        const anchorId = entry.anchor.id as unknown as string;
+        return {
+          key: `${history.featureId as unknown as string}:${anchorId}`,
+          testid: `event-list-item-${anchorId}`,
+          label,
+          pressed: false,
+          onSelect: () => {
+            // Promote + sync the time FIRST (single selection / time path), THEN fit the
+            // camera at that time (HB5-3). Only this 錨導線 (+ the 地物導線) writes the
+            // camera, so a map-click selection never fits.
+            store.getState().setActiveFeature(history.featureId);
+            store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync);
+            onFocusFeatureCamera?.(history.featureId);
+          },
+        };
+      }),
+    );
+    // domain / currentTime are subscribe-gates (read fresh via getRoot/getTime, 教訓 5.6).
+  }, [isCurrent, getRoot, getTime, activeFeature, store, onFocusFeatureCamera, domain, currentTime]);
 
   return (
-    <SidebarRowList
-      listTestid="event-list"
-      caption={SIDEBAR_CONTENT_STRINGS.eventsCaption}
-      emptyText={SIDEBAR_CONTENT_STRINGS.eventsEmpty}
-      filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
-      filterAria={SIDEBAR_CONTENT_STRINGS.eventsFilterAria}
-      rows={rows}
-    />
+    <div className="sidebar-list-panel" data-testid="sidebar-list-panel">
+      <div
+        className="sidebar-list__modes"
+        role="group"
+        aria-label={SIDEBAR_CONTENT_STRINGS.listModeAria}
+      >
+        <button
+          type="button"
+          className="sidebar-list__mode"
+          data-testid="list-mode-current"
+          aria-pressed={isCurrent}
+          onClick={() => setMode(LIST_MODE.Current)}
+        >
+          {SIDEBAR_CONTENT_STRINGS.listModeCurrentLabel}
+        </button>
+        <button
+          type="button"
+          className="sidebar-list__mode"
+          data-testid="list-mode-history"
+          aria-pressed={!isCurrent}
+          onClick={() => setMode(LIST_MODE.History)}
+        >
+          {SIDEBAR_CONTENT_STRINGS.listModeHistoryLabel}
+        </button>
+      </div>
+      {/* Keyed by mode so the name filter resets on a mode switch — each mode keeps its
+          own filter/count (モードごとに現行を踏襲, 教訓 5.2). listTestid「unified-list」is
+          the single container; the row testids stay mode-semantic (feature-list-item-* /
+          event-list-item-*) so aggregate-select / hb3-12 等の消費側の検証意図を温存する。 */}
+      <SidebarRowList
+        key={mode}
+        listTestid="unified-list"
+        caption={isCurrent ? SIDEBAR_CONTENT_STRINGS.featuresCaption : SIDEBAR_CONTENT_STRINGS.eventsCaption}
+        emptyText={isCurrent ? SIDEBAR_CONTENT_STRINGS.featuresEmpty : SIDEBAR_CONTENT_STRINGS.eventsEmpty}
+        filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
+        filterAria={
+          isCurrent
+            ? SIDEBAR_CONTENT_STRINGS.featuresFilterAria
+            : SIDEBAR_CONTENT_STRINGS.eventsFilterAria
+        }
+        rows={rows}
+      />
+    </div>
   );
 }

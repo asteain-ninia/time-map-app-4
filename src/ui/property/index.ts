@@ -123,5 +123,5 @@ export {
   intervalRejectionMessage,
 } from './interval-edit';
 
-// Strings
-export { PROPERTY_STRINGS } from './messages';
+// Strings + 種別の日本語表示ラベル (表示層の単一写像, 要件定義書 §4)
+export { PROPERTY_STRINGS, featureKindJaLabel } from './messages';

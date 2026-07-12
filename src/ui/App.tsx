@@ -129,10 +129,14 @@ import {
   PointerDispatcher,
   NOOP_ADD_PORT,
   LongitudeShiftControl,
+  GlobalDepthControl,
   type CameraPort,
   type HitTester,
   type MapCameraInput,
 } from './map/index';
+import { buildForest } from '../domain/hierarchy/forest';
+import { maxDerivedDepth } from '../domain/hierarchy/depth';
+import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
 import { createLiveContextMenuPort, promoteHitToSelection } from './map/live-context-menu-port';
 import {
   MapContextMenu,
@@ -496,6 +500,25 @@ export function App(): JSX.Element {
         getPrimitiveCounts: (): E2EFrameSummary => ({ ...lastFrame }),
         /** Whether a live tool preview (FR-78 仮表示 overlay) is present this frame. */
         hasLivePreview: (): boolean => lastFrame.hasLivePreview,
+        /**
+         * FR-42 / FR-43: the number of DISTINCT features currently drawn, resolved
+         * through the SAME U34 display pipeline the map draws (buildCommittedFeatures
+         * with the live displayControl). A global-depth change rolls features up into
+         * their aggregate (fewer) or expands them into children (more), so a behavioural
+         * E2E asserts this count changes when the 階層深度 slider moves — the observable
+         * proof the depth UI is wired to the display resolution. Distinct feature ids
+         * (not primitive count) so a multipolygon aggregate counts as ONE feature.
+         */
+        getDrawnFeatureCount: (): number => {
+          const s = store.getState();
+          const drawn = buildCommittedFeatures(
+            s.domain,
+            s.currentTime,
+            s.activeFeature,
+            s.displayControl,
+          );
+          return new Set(drawn.map((f) => f.id)).size;
+        },
         /**
          * HB3-4: the WORLD positions of the active feature's VERTEX edit-handles in the
          * LAST drawn frame (preview positions during a live drag). A behavioural E2E
@@ -2328,8 +2351,18 @@ export function App(): JSX.Element {
              publishCameraHooks → updateCamera, which mirrors centerLon into the store
              truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to
              store.centerLon — reflects the new center. A preset jumps the continuous
-             center to the preset longitude (0度中心 / 180度中心). */
-          <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
+             center to the preset longitude (0度中心 / 180度中心).
+
+             FR-42 / FR-43 表示階層レベル (深度) 結線 (教訓 5.7 実機報告「表示する階層の
+             レベルを変更する UI なくないですか?」): the U34 setGlobalDepth /
+             setDisplayFocus / … actions + resolveDisplayFor were already implemented;
+             only this UI was missing. Mounted BESIDE 経度シフト so the two 上部バー view
+             controls 併存する (FR-43). Same normal-flow 上部バー row → never overlaps the
+             map input layer (教訓 5.14). */
+          <>
+            <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
+            <GlobalDepthPanel store={store} />
+          </>
         }
         overlay={
           <>
@@ -2713,6 +2746,102 @@ function LongitudeShiftPanel(props: {
       centerLon={centerLon}
       onShift={onShift}
       onPreset={onPreset}
+    />
+  );
+}
+
+/**
+ * FR-42 / FR-43 表示階層レベル (深度) panel: mounts the U34 {@link GlobalDepthControl}
+ * bound to the LIVE session store's displayControl slice (教訓 5.7 合成ルートの結線漏れ
+ * — the store's setGlobalDepth / setDisplayFocus / setFocusDepth / setFocusEmphasize /
+ * clearDisplayFocus and resolveDisplayFor were all implemented; only this UI was
+ * missing, exactly like FR-12 経度シフト once was).
+ *
+ * The truth is the store's `displayControl` (グローバル深度 N + 個別フォーカス M); the
+ * widget renders it and reports intent through the SAME store actions the display
+ * resolution reads (単一真実源, 教訓 5.29). A depth/focus write swaps `displayControl`
+ * wholesale, which the render subscription already redraws on (App line「s.displayControl
+ * === prevDisplay」guard) and buildCommittedFeatures re-derives from, so a slider move
+ * rolls features up / expands them with no second pipeline. FR-42 非干渉: this axis
+ * never touches mode/tool/selection.
+ *
+ * The slider's upper bound is the LIVE forest's max derivable depth (U08
+ * maxDerivedDepth over the area features effective now), so it reflects the actual
+ * hierarchy; 個別フォーカス targets the current selection (FR-43「選択中地物」).
+ */
+function GlobalDepthPanel(props: {
+  readonly store: ReturnType<typeof createSessionStore<DomainRoot>>;
+}): JSX.Element {
+  const { store } = props;
+  const displayControl = useStore(store, (s) => s.displayControl);
+  const domain = useStore(store, (s) => s.domain);
+  const currentTime = useStore(store, (s) => s.currentTime);
+  const activeFeature = useStore(store, (s) => s.activeFeature);
+
+  // The slider's upper bound: the maximum derivable depth over the LIVE area forest at
+  // the current time (FR-42 / FR-38). Memoized on (domain, currentTime) — a structural
+  // or time change re-derives it; a pure depth/focus change does not (教訓 5.3).
+  const maxDepth = useMemo(() => {
+    const areas = featuresAt(domain, currentTime).filter(
+      (f) => f.kind === FEATURE_KIND.Leaf || f.kind === FEATURE_KIND.Aggregate,
+    );
+    return maxDerivedDepth(buildForest(areas));
+  }, [domain, currentTime]);
+
+  // The focus target's short label (name→id fallback), or null when nothing is selected.
+  const activeFeatureLabel = useMemo(() => {
+    if (activeFeature === null) return null;
+    const f = featuresAt(domain, currentTime).find((x) => x.id === activeFeature);
+    return f ? featureDisplayName(f) : (activeFeature as unknown as string);
+  }, [activeFeature, domain, currentTime]);
+
+  const onGlobalDepth = useCallback(
+    (depth: number): void => {
+      store.getState().setGlobalDepth(depth);
+    },
+    [store],
+  );
+  // Apply 個別フォーカス onto the selected feature: deep-dive its 縦方向領域 at the
+  // current per-focus depth M AND emphasize it (FR-43 / FR-82). The user can then
+  // toggle emphasis / adjust M / clear. Reads the live selection fresh (教訓 5.6).
+  const onApplyFocus = useCallback((): void => {
+    const s = store.getState();
+    if (s.activeFeature === null) return;
+    s.setDisplayFocus({
+      originId: s.activeFeature,
+      depth: s.displayControl.focus.depth,
+      emphasize: true,
+    });
+  }, [store]);
+  const onFocusDepth = useCallback(
+    (depth: number): void => {
+      store.getState().setFocusDepth(depth);
+    },
+    [store],
+  );
+  const onEmphasize = useCallback(
+    (on: boolean): void => {
+      store.getState().setFocusEmphasize(on);
+    },
+    [store],
+  );
+  const onClearFocus = useCallback((): void => {
+    store.getState().clearDisplayFocus();
+  }, [store]);
+
+  return (
+    <GlobalDepthControl
+      globalDepth={displayControl.globalDepth}
+      maxDepth={maxDepth}
+      onGlobalDepth={onGlobalDepth}
+      activeFeatureLabel={activeFeatureLabel}
+      focusActive={displayControl.focus.originId !== null}
+      focusDepth={displayControl.focus.depth}
+      focusEmphasize={displayControl.focus.emphasize}
+      onApplyFocus={onApplyFocus}
+      onFocusDepth={onFocusDepth}
+      onEmphasize={onEmphasize}
+      onClearFocus={onClearFocus}
     />
   );
 }

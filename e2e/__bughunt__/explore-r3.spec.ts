@@ -217,16 +217,25 @@ async function clickMenuCommand(page: Page, menu: string, commandId: string): Pr
 // The sidebar defaults to the プロパティ tab, so 地物一覧 / イベント一覧 are hidden
 // until their tab is selected (Sidebar.tsx tabpanel hidden={active!==key}).
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
-  const tab = page.getByTestId(`sidebar-tab-${key}`);
+  // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
+  // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
+  const tabKey = key === 'properties' ? 'properties' : 'list';
+  const tab = page.getByTestId(`sidebar-tab-${tabKey}`);
   if (await tab.isVisible().catch(() => false)) {
     await tab.click().catch(() => undefined);
+  }
+  if (key !== 'properties') {
+    const mode = page.getByTestId(key === 'features' ? 'list-mode-current' : 'list-mode-history');
+    if (await mode.isVisible().catch(() => false)) {
+      await mode.click().catch(() => undefined);
+    }
   }
 }
 
 // Count the rows in the 地物一覧 (feature-list). Empty list => 0. Assumes the
 // features tab is already active (call showSidebarTab(page,'features') first).
 async function featureListCount(page: Page): Promise<number> {
-  const empty = page.getByTestId('feature-list-empty');
+  const empty = page.getByTestId('unified-list-empty');
   if ((await empty.count()) > 0) return 0;
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }
@@ -388,7 +397,7 @@ test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', 
       const rows = page.locator('[data-testid^="feature-list-item-"]');
       const rowCount = await rows.count();
       if (rowCount === 0) {
-        record('feature-list-empty-unexpected', 'feature list empty after committing 3 faces');
+        record('unified-list-empty-unexpected', 'feature list empty after committing 3 faces');
       }
       for (let i = 0; i < rowCount; i += 1) {
         const row = rows.nth(i);
