@@ -23,12 +23,12 @@
 
 import { createBasicAttributes, createColorInfo, type ColorInfo } from '../attributes';
 import {
+  FEATURE_KIND,
   createAggregateFeature,
   toShapelessAggregate,
   withAggregateChildIds,
   withParentId,
   type Feature,
-  type LeafFeature,
 } from '../feature';
 import { sweepAndPruneAnchor } from '../deletion/sweep';
 import { buildForest, directChildIds, hasChildren } from '../hierarchy/forest';
@@ -213,6 +213,23 @@ function realizeDecision(
             reject(AFFILIATION_REJECT.SameFeature, MSG_AFFILIATION_TARGET_MISSING, {
               newParentId: aboveParentId,
             }),
+          );
+        }
+        // 種別制限 (Codex fix 1): 点情報・線情報は面積を持たず新上位領域になれない
+        // (FR-35 集約=下位の和 / FR-37 直轄領=元形状−子の和)。直接 `existing` 経路は
+        // isLegalNewParent が同一述語で拒否するが、create→existing の「生成集約 vs 既存親」
+        // はそこを通らないため、実体化の各段でここで確定前に拒否する (循環・存在期間と
+        // 同じ扱い; さもないと点が子を得て FR-37 の形状解決で throw に到達する)。
+        if (
+          existingParent.kind === FEATURE_KIND.Point ||
+          existingParent.kind === FEATURE_KIND.Line
+        ) {
+          return rejectResult(
+            reject(
+              AFFILIATION_REJECT.ParentKind,
+              affiliationRejectMessage(AFFILIATION_REJECT.ParentKind),
+              { createdAggregateId: newId, newParentId: aboveParentId },
+            ),
           );
         }
         if (!existencePeriodsCompatible(aggregate, existingParent)) {
@@ -500,7 +517,25 @@ function generateDirectDomains(
 ): DirectDomainsResult {
   const store = options.vertexStore;
   if (store === undefined) {
-    // 位相のみ経路: 形状解決できないので FR-37 を適用できない (従来どおり)。
+    // 位相のみ経路 (頂点ストア未供給): FR-37 を適用できない。形状持ち末端 (非集約) が
+    // 子を持つ結果状態をこのまま確定すると、次段の syncAggregateChildIds が旧 lossy
+    // 変換 (形状破棄 = 元領域の沈黙消失、FR-37 が根治したデータ損失そのもの) を起こす
+    // ため、fail-closed で拒否する (Codex fix 2)。live UI (reparent bootstrap) は
+    // resolveStore を常時結線するため本拒否は到達しない — export 直呼びの保護柵。
+    // 形状喪失が起きないケース (親が集約のみ) は従来どおり位相のみで受理する。
+    const forest = buildForest(features);
+    const lossy = features.find(
+      (f) => f.kind !== FEATURE_KIND.Aggregate && directChildIds(forest, f.id).length > 0,
+    );
+    if (lossy !== undefined) {
+      return {
+        status: 'rejected',
+        rejection: reject('internal', MSG_AFFILIATION_INTERNAL, {
+          featureId: lossy.id,
+          stage: 'vertex-store-missing',
+        }),
+      };
+    }
     return { status: 'ok', features, newVertices: [], createdDomainIds: [], idState };
   }
 
@@ -526,10 +561,23 @@ function generateDirectDomains(
   const newVertices: Vertex[] = [];
   const createdDomainIds: FeatureId[] = [];
   for (const f of features) {
-    if (f.kind === 'aggregate') continue; // 集約は形状を持たない (FR-35)。
+    if (f.kind === FEATURE_KIND.Aggregate) continue; // 集約は形状を持たない (FR-35)。
     const childIds = directChildIds(forest, f.id);
     if (childIds.length === 0) continue; // 子なし末端は変換されない。
-    const result = buildDirectDomainForLeaf(f as LeafFeature, forest, childIds, store, ports);
+    if (f.kind !== FEATURE_KIND.Leaf) {
+      // 点情報・線情報が子を持つ状態は候補述語 (ParentKind, isLegalNewParent /
+      // realizeDecision) が確定前に拒否するためここには到達しない。破損入力への防御:
+      // 元形状が無く直轄領を生成できない (旧実装は resolveLeafShape で throw していた)
+      // ので、throw させず拒否する (Codex fix 1 の防御柵)。
+      return {
+        status: 'rejected',
+        rejection: reject('internal', MSG_AFFILIATION_INTERNAL, {
+          featureId: f.id,
+          stage: 'non-leaf-parent',
+        }),
+      };
+    }
+    const result = buildDirectDomainForLeaf(f, forest, childIds, store, ports);
     if (result.kind === 'unresolved') {
       // 元形状/子の和/差分が U06 で解決できなかった。直轄領なしでは元形状が沈黙裡に
       // 失われるため、データ損失を防いで拒否する (教訓 5.26)。

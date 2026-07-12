@@ -41,7 +41,7 @@ import { TOOL_ID } from '../shell/tools';
 import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 import { createLiveAffiliationBinding, type DomainRoot } from '../consistency-binding';
-import { featuresAt, leafShapeAt } from '../live-lookup';
+import { featuresAt, leafShapeAt, verticesAt } from '../live-lookup';
 import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
 
 import type { DrawPrimitive } from '../../render/map-renderer';
@@ -145,6 +145,12 @@ function mountReparent(): Harness {
 
   const resolveFeatures = () => featuresAt(store.getState().domain, store.getState().currentTime);
 
+  // The live vertex store at the anchor time — the SAME wiring App's reparent bootstrap
+  // binds (resolveStore → buildAffiliationProposal.vertexStore). Required for 直轄化 onto a
+  // LEAF parent: FR-37 直轄領自動生成 resolves the parent's 元形状 from it, and the store-less
+  // path now fail-closes (Codex fix 2) instead of silently discarding the parent's shape.
+  const resolveStore = () => verticesAt(store.getState().domain, store.getState().currentTime);
+
   // A click inside [0,2]² → leaf-a; inside [4,6]×[0,2] → leaf-b; else miss. HB3-16: this
   // mirrors the live `leafAtPoint` port — an INDIVIDUAL leaf is resolved per click, so two
   // siblings resolve to DISTINCT ids (the fix for HB3-15(b)).
@@ -182,6 +188,7 @@ function mountReparent(): Harness {
       store={store}
       startProcess={live.startProcess}
       resolveFeatures={resolveFeatures}
+      resolveStore={resolveStore}
       anchorTime={() => store.getState().currentTime}
       screenToWorld={screenToWorld}
       featureAtPoint={featureAtPoint}

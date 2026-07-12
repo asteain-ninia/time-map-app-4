@@ -1371,6 +1371,11 @@ const CANDIDATE_REJECTS = new Set<string>([
   AFFILIATION_REJECT.SameFeature,
   AFFILIATION_REJECT.Cycle,
   AFFILIATION_REJECT.ExistencePeriod,
+  // Codex fix 1: point/line parents are now a CANDIDATE-predicate reason too
+  // (isLegalNewParent rejects them; the picker hides them via the same predicate).
+  // The models here generate only leaf/aggregate features, so this never fires —
+  // listed for set-faithfulness to the predicate.
+  AFFILIATION_REJECT.ParentKind,
 ]);
 
 describe(`affiliation — picker ⇔ confirm single-source (seed=${SEED3})`, () => {

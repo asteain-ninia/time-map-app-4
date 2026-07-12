@@ -11,6 +11,8 @@ import { createCoordinate } from '../coordinate';
 import {
   createAggregateFeature,
   createLeafFeature,
+  createLineFeature,
+  createPointFeature,
   isTopLevel,
   type Feature,
 } from '../feature';
@@ -26,6 +28,7 @@ import {
   isLegalNewParent,
 } from './candidates';
 import {
+  parentCreate,
   parentCreateWithTerminal,
   parentExisting,
   parentNone,
@@ -465,6 +468,113 @@ describe('受け入れ基準4: 飛び地化を許容 (FR-49)', () => {
     const parent = agg('P');
     const r = buildAffiliationProposal([far1, child, parent], fid('child'), parentExisting(fid('P')), opts());
     expect(r.status).toBe('proposal'); // 拒否されない。
+  });
+});
+
+// --- 新上位領域の種別制限: 点情報・線情報は親になれない (FR-35/FR-37, Codex fix 1) ---
+//
+// 集約地物の面積は下位領域の和 (FR-35)、直轄領は「元形状 − 子の和」(FR-37)。点情報・
+// 線情報は面積 (元形状) を持たないため、子を持つと両方を原理的に満たせない。従来は
+// isLegalNewParent が循環・存在期間しか見ずドメイン境界を素通りし、FR-37 直轄領生成の
+// resolveLeafShape (shape === undefined) で throw に到達していた (反例: [point P, leaf C]
+// で C を P へ直轄化)。候補算出と確定前検証の同一述語 (教訓 5.26) で拒否する。
+
+describe('新上位領域の種別制限: 点情報・線情報は親になれない (ParentKind)', () => {
+  function pointLineFixture(): {
+    features: Feature[];
+    store: ReturnType<typeof createVertexStore>;
+  } {
+    const pv = createVertex(asVertexId('P-v'), createCoordinate(50, 50));
+    const lv0 = createVertex(asVertexId('Ln-v0'), createCoordinate(70, 70));
+    const lv1 = createVertex(asVertexId('Ln-v1'), createCoordinate(80, 80));
+    const point = createPointFeature(fid('P'), ATTRS('P'), COLOR, pv.id);
+    const line = createLineFeature(fid('Ln'), ATTRS('Ln'), COLOR, [lv0.id, lv1.id]);
+    const c = squareLeaf('C', 0, 0);
+    return {
+      features: [point, line, c.feature],
+      store: createVertexStore([pv, lv0, lv1, ...c.vertices]),
+    };
+  }
+
+  it('反例そのまま: leaf C を点情報 P へ直轄化 → throw せず ParentKind で拒否', () => {
+    const { features, store } = pointLineFixture();
+    const r = buildAffiliationProposal(features, fid('C'), parentExisting(fid('P')), opts({ vertexStore: store }));
+    expect(r.status).toBe(AFFILIATION_STATUS.Rejected);
+    if (r.status === AFFILIATION_STATUS.Rejected) {
+      expect(r.kind).toBe(AFFILIATION_REJECT.ParentKind);
+      expect(typeof r.message).toBe('string');
+      expect(r.message.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('線情報 Ln へ直轄化も同様に ParentKind で拒否', () => {
+    const { features, store } = pointLineFixture();
+    const r = buildAffiliationProposal(features, fid('C'), parentExisting(fid('Ln')), opts({ vertexStore: store }));
+    expect(r.status).toBe(AFFILIATION_STATUS.Rejected);
+    if (r.status === AFFILIATION_STATUS.Rejected) {
+      expect(r.kind).toBe(AFFILIATION_REJECT.ParentKind);
+    }
+  });
+
+  it('自治化 create→existing(点情報) も拒否 (中間集約を点の下に挿入させない)', () => {
+    const { features, store } = pointLineFixture();
+    const r = buildAffiliationProposal(
+      features,
+      fid('C'),
+      parentCreate({ name: 'mid' }, parentExisting(fid('P'))),
+      opts({ vertexStore: store }),
+    );
+    expect(r.status).toBe(AFFILIATION_STATUS.Rejected);
+    if (r.status === AFFILIATION_STATUS.Rejected) {
+      expect(r.kind).toBe(AFFILIATION_REJECT.ParentKind);
+    }
+  });
+
+  it('候補算出と確定前検証が同一述語で point/line を除外 (教訓 5.26)', () => {
+    const { features } = pointLineFixture();
+    const forest = buildForest(features);
+    const pVerdict = isLegalNewParent(forest, fid('C'), fid('P'));
+    const lnVerdict = isLegalNewParent(forest, fid('C'), fid('Ln'));
+    expect(pVerdict.ok).toBe(false);
+    if (!pVerdict.ok) expect(pVerdict.reason).toBe(AFFILIATION_REJECT.ParentKind);
+    expect(lnVerdict.ok).toBe(false);
+    if (!lnVerdict.ok) expect(lnVerdict.reason).toBe(AFFILIATION_REJECT.ParentKind);
+    const candidates = allowedParentCandidates(forest, fid('C')).map((c) => c.featureId);
+    expect(candidates).not.toContain(fid('P'));
+    expect(candidates).not.toContain(fid('Ln'));
+  });
+
+  it('点情報・線情報は対象 (子側) としては従来どおり合法', () => {
+    // 種別制限は親側のみ: 都市 (点) が国 (集約) に所属する等は正当。
+    const pv = createVertex(asVertexId('P-v'), createCoordinate(50, 50));
+    const point = createPointFeature(fid('P'), ATTRS('P'), COLOR, pv.id);
+    const features = [point, agg('A')];
+    const r = buildAffiliationProposal(features, fid('P'), parentExisting(fid('A')), opts());
+    expect(r.status).toBe('proposal');
+  });
+});
+
+// --- fail-closed: 形状持ち末端が子を得るのに vertexStore 未供給なら拒否 (Codex fix 2) ---
+//
+// live UI (reparent bootstrap) は resolveStore を常時結線するが、export された
+// buildAffiliationProposal を頂点ストア無しで呼ぶと、FR-37 直轄領を生成できず旧 lossy
+// 変換 (形状破棄 = 元領域の沈黙消失) がそのまま起きる。既定は拒否 (fail-closed)。
+// 形状喪失が起きないケース (親が集約) は従来どおり位相のみで受理される。
+
+describe('fail-closed: vertexStore 無しの直轄化はデータ損失を防いで拒否', () => {
+  it('store 無しで leaf 親へ直轄化 → 旧 lossy (形状破棄) ではなく拒否', () => {
+    const features = [leaf('parent'), leaf('child')];
+    const r = buildAffiliationProposal(features, fid('child'), parentExisting(fid('parent')), opts());
+    expect(r.status).toBe(AFFILIATION_STATUS.Rejected);
+    if (r.status === AFFILIATION_STATUS.Rejected) {
+      expect(r.kind).toBe('internal');
+    }
+  });
+
+  it('store 無しでも親が集約なら従来どおり受理 (形状喪失なし)', () => {
+    const features = [agg('A'), agg('B'), leaf('c', 'c', 0, 100, 'A')];
+    const r = buildAffiliationProposal(features, fid('c'), parentExisting(fid('B')), opts());
+    expect(r.status).toBe('proposal');
   });
 });
 

@@ -26,6 +26,10 @@ export const MSG_AFFILIATION_TARGET_MISSING =
 export const MSG_AFFILIATION_TARGET_KIND =
   '対象の種別では直接所属変更できません。下位領域を対象にしてください。';
 
+/** 候補種別が不正 (点情報・線情報は面積を持たず、新しい上位領域になれない)。 */
+export const MSG_AFFILIATION_PARENT_KIND =
+  '点情報・線情報は新しい上位領域に指定できません。面情報を指定してください。';
+
 /** 確定後の階層整合性検証に違反。 */
 export const MSG_AFFILIATION_HIERARCHY =
   '階層の整合性に違反するため、所属変更を確定できません。';
@@ -47,5 +51,7 @@ export function affiliationRejectMessage(kind: AffiliationRejectKind): string {
       return MSG_AFFILIATION_TARGET_MISSING;
     case AFFILIATION_REJECT.TargetKind:
       return MSG_AFFILIATION_TARGET_KIND;
+    case AFFILIATION_REJECT.ParentKind:
+      return MSG_AFFILIATION_PARENT_KIND;
   }
 }

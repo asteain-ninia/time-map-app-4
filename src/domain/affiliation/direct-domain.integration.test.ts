@@ -17,7 +17,8 @@ import { describe, expect, it } from 'vitest';
 import { createBasicAttributes, createColorInfo } from '../attributes';
 import { createCoordinate } from '../coordinate';
 import { createLeafFeature, type Feature, type LeafFeature } from '../feature';
-import { createShape, createHoleRing, createTerritoryRing } from '../ring';
+import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
+import { RING_KIND, createShape, createHoleRing, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../vertex';
 import { asFeatureId, asRingId, asVertexId, type FeatureId } from '../ids';
 import { createIdGeneratorState } from '../id-generator';
@@ -102,6 +103,48 @@ function smallLeaf(id: FeatureId): Added {
     createShape([ring]),
   );
   return { feature, vertices: verts };
+}
+
+/** A small leaf [45,55]² sitting INSIDE the large leaf's HOLE [40,60]² (穴の中の島 = f11 実ケース). */
+function islandLeaf(id: FeatureId): Added {
+  const verts = [
+    createVertex(asVertexId('I-0'), createCoordinate(45, 45)),
+    createVertex(asVertexId('I-1'), createCoordinate(55, 45)),
+    createVertex(asVertexId('I-2'), createCoordinate(55, 55)),
+    createVertex(asVertexId('I-3'), createCoordinate(45, 55)),
+  ];
+  const ring = createTerritoryRing(asRingId('I-rt'), verts.map((v) => v.id));
+  const feature = createLeafFeature(
+    id,
+    createBasicAttributes('島領', 0, 1000),
+    COLOR,
+    createShape([ring]),
+  );
+  return { feature, vertices: verts };
+}
+
+// --- 数値面積 (shoelace; 度² 平面) — 「元形状+子の面積」を数値で固定するための独立実装 ---
+
+function ringAreaAbs(ring: GeoRing): number {
+  let sum = 0;
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    const a = ring[i]!;
+    const b = ring[(i + 1) % n]!;
+    sum += a.lon * b.lat - b.lon * a.lat;
+  }
+  return Math.abs(sum) / 2;
+}
+
+/** 多重ポリゴンの総面積: 各片の外環 − 穴環 (非 seam の小フィクスチャ前提)。 */
+function multiPolygonArea(mp: GeoMultiPolygon): number {
+  let total = 0;
+  for (const poly of mp) {
+    poly.forEach((ring, i) => {
+      total += (i === 0 ? 1 : -1) * ringAreaAbs(ring);
+    });
+  }
+  return total;
 }
 
 /** Collect the effective feature set + merged vertex store of a live project at `at`. */
@@ -203,5 +246,89 @@ describe('FR-37 直轄領自動生成 — 穴あり大 leaf の下へ 小 leaf �
     expect(afterUndo.state).toBe(baseFeatures); // 直轄領も含めて完全に元へ戻る.
     const afterRedo = command.redo(afterUndo.state);
     expect(afterRedo.state).toBe(proposal.nextFeatures); // 再採番なし (教訓 5.20).
+  });
+
+  // --- f11 実ケース (Codex fix 3): 穴の中の島を直轄化 — 削りゼロの直轄領 ---------
+  //
+  // 最初のテストは子が親の実体部内 (overlap を削る) だが、実データ f11 の再現形は
+  // 「親の穴 [40,60]² の中に子 [45,55]² が浮かぶ島」。このとき 元形状 − 子の和 = 元形状
+  // そのもの (重なりゼロ = 削りゼロ) で、直轄領は穴ごと元形状を完全保存し、親の派生面積は
+  // 元形状 ∪ 子 = 元形状 + 子 (非重複和) へ「増える」(subdivision ではなく union 意味論)。
+  it('穴の中の島を直轄化: 直轄領=元形状そのもの (削りゼロ)、派生面積=元形状+子 (数値固定)', () => {
+    const lId = asFeatureId('L');
+    const iId = asFeatureId('I');
+    const L = holedLeaf(lId);
+    const I = islandLeaf(iId);
+
+    const baseFeatures: Feature[] = [L.feature, I.feature];
+    const baseStore = createVertexStore([...L.vertices, ...I.vertices]);
+
+    const beforeForest = buildForest(baseFeatures);
+    const lAreaBefore = resolveFeatureArea(beforeForest, baseStore, lId);
+    const iAreaBefore = resolveFeatureArea(beforeForest, baseStore, iId);
+    expect(lAreaBefore.status).toBe('ok');
+    expect(iAreaBefore.status).toBe('ok');
+    if (lAreaBefore.status !== 'ok' || iAreaBefore.status !== 'ok') return;
+    // フィクスチャの数値前提: 元 holed L = 100² − 20² = 9600、島 = 10² = 100。
+    expect(multiPolygonArea(lAreaBefore.area)).toBeCloseTo(9600, 6);
+    expect(multiPolygonArea(iAreaBefore.area)).toBeCloseTo(100, 6);
+
+    const result = buildAffiliationProposal(baseFeatures, iId, parentExisting(lId), {
+      idState: createIdGeneratorState(),
+      now: () => 1,
+      vertexStore: baseStore,
+    });
+    expect(result.status, JSON.stringify(result)).toBe('proposal');
+    if (result.status !== 'proposal') return;
+    const proposal = result.proposal;
+
+    const merged = createVertexStore([...baseStore.byId.values(), ...proposal.newVertices]);
+    const nextForest = buildForest(proposal.nextFeatures);
+    const lChildren = directChildIds(nextForest, lId);
+    expect(lChildren).toContain(iId);
+    expect(lChildren).toHaveLength(2);
+    const ddId = lChildren.find((id) => id !== iId)!;
+    const dd = proposal.nextFeatures.find((f) => f.id === ddId);
+    expect(dd?.kind).toBe('leaf');
+
+    // (a) 直轄領 = 元形状そのもの (削りゼロ): 面積が元 holed L と等価 (幾何等価 + 数値 9600)、
+    //     かつ穴が構造的に保存される (領土1 + 穴1)。
+    const ddArea = resolveFeatureArea(nextForest, merged, ddId);
+    expect(ddArea.status).toBe('ok');
+    if (ddArea.status !== 'ok') return;
+    expect(areasEqualWithinTolerance(ddArea.area, lAreaBefore.area)).toBe(true);
+    expect(multiPolygonArea(ddArea.area)).toBeCloseTo(9600, 6);
+    if (dd?.kind === 'leaf') {
+      const kinds = dd.shape.rings.map((r) => r.kind);
+      expect(kinds.filter((k) => k === RING_KIND.Territory)).toHaveLength(1);
+      expect(kinds.filter((k) => k === RING_KIND.Hole)).toHaveLength(1);
+    }
+
+    // (b) 親の派生面積 = 元形状 ∪ 子 = 元形状 + 子 (非重複和): 9600 + 100 = 9700 (数値固定)。
+    const lAreaAfter = resolveFeatureArea(nextForest, merged, lId);
+    expect(lAreaAfter.status).toBe('ok');
+    if (lAreaAfter.status !== 'ok') return;
+    expect(multiPolygonArea(lAreaAfter.area)).toBeCloseTo(
+      multiPolygonArea(lAreaBefore.area) + multiPolygonArea(iAreaBefore.area),
+      6,
+    );
+    expect(multiPolygonArea(lAreaAfter.area)).toBeCloseTo(9700, 6);
+
+    // U13 apply → FR-106 checkConsistency clean (島は直轄領の穴の中 = 重なりなし)。
+    let root = emptyProject();
+    for (const add of [L, I]) {
+      root = applyAddProposal(root, {
+        featureId: add.feature.id,
+        anchorTime: timePointYear(0),
+        snapshot: { feature: add.feature, vertices: [...add.vertices], sharedCandidateIds: new Map() },
+      });
+    }
+    const applied = applyAffiliationProposal(
+      root,
+      toAffiliationEditProposal(proposal, timePointYear(0)),
+      calendar,
+    );
+    const report = checkConsistency(applied, calendar);
+    expect(report.inconsistencies, JSON.stringify(report.inconsistencies)).toHaveLength(0);
   });
 });

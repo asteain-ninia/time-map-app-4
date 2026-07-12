@@ -16,7 +16,7 @@
 //
 // 下位領域列挙・循環判定は U08 (forest) の循環安全走査を経由し再実装しない。
 
-import { featureDisplayName, type Feature } from '../feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../feature';
 import { descendantIds, type Forest } from '../hierarchy/forest';
 import type { FeatureId } from '../ids';
 
@@ -32,6 +32,12 @@ export const AFFILIATION_REJECT = {
   TargetMissing: 'target-missing',
   /** 直接所属変更の対象種別が不正 (集約を直接張り替えようとした等)。 */
   TargetKind: 'target-kind',
+  /**
+   * 候補の種別が新上位領域になれない (点情報・線情報)。集約地物の面積は下位領域の和
+   * (FR-35)、直轄領は「元形状 − 子の和」(FR-37) であり、面積 (元形状) を持たない点・線が
+   * 子を持つと両方を原理的に満たせないため、親候補から種別で除外する。
+   */
+  ParentKind: 'parent-kind',
 } as const;
 
 export type AffiliationRejectKind =
@@ -90,6 +96,15 @@ export function isLegalNewParent(
   const candidate = forest.byId.get(candidateId);
   if (target === undefined) return illegal(AFFILIATION_REJECT.TargetMissing);
   if (candidate === undefined) return illegal(AFFILIATION_REJECT.SameFeature);
+
+  // 種別制限: 新上位領域は面積を持てる種別 (末端面=leaf / 集約=aggregate) に限る。
+  // 点情報・線情報は面積 (元形状) を持たないため、子を持つと「親領域=下位領域の和」
+  // (FR-35) を原理的に満たせず、FR-37 直轄領 (元形状−子の和) も生成できない。従来は
+  // ここを素通りして FR-37 の形状解決 (resolveLeafShape) で throw に到達していた
+  // (Codex fix 1)。候補算出と確定前検証の同一述語で拒否する (教訓 5.26)。
+  if (candidate.kind === FEATURE_KIND.Point || candidate.kind === FEATURE_KIND.Line) {
+    return illegal(AFFILIATION_REJECT.ParentKind);
+  }
 
   // 循環参照防止: 候補が対象の子孫 (孫含む) に入っていれば循環になる。
   // descendantIds は visited 集合で再入を遮断するため、壊れた (循環) データでも
