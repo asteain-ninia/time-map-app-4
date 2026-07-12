@@ -68,6 +68,16 @@ export interface LiveContextMenuPortDeps {
    * resolved client anchor + hit; a no-op until the mount wires it.
    */
   readonly open: (request: ContextMenuRequest) => void;
+  /**
+   * Whether the right-click menu is currently SUSPENDED (段階7 優先規則). Optional —
+   * absent ⇒ never suspended (the current App wiring). When it returns `true` the
+   * request is dropped ENTIRELY — neither `promoteHit` NOR `open` runs — so a
+   * right-click during a tool draft (knife/merge/…) or a modal does not open a
+   * competing edit menu AND does not silently mutate the selection out from under the
+   * in-progress gesture (教訓 5.2 / 5.13; the draft's own Esc owns cancellation). The
+   * App binds it to `shortcutsSuspended` (modal || *Drawing).
+   */
+  readonly suspended?: () => boolean;
 }
 
 /**
@@ -120,6 +130,11 @@ export function createLiveContextMenuPort(
 ): ContextMenuPort {
   return {
     request(point: ScreenPoint, hit: HitResult): void {
+      // 段階7 優先規則: while suspended (tool draft / modal) DROP the request whole —
+      // skip BOTH promoteHit AND open together, so no menu opens and the LIVE
+      // selection is left UNCHANGED (a stray promote during a knife draft would
+      // desync the session's own selection assumptions, 教訓 5.2 / 5.6).
+      if (deps.suspended?.() === true) return;
       // Promote the hit feature FIRST so the menu's command target is the
       // right-clicked feature (削除 etc.), exactly as a left click would select it
       // (単一の選択書き込み経路, 教訓 5.11). Empty space keeps the current selection.

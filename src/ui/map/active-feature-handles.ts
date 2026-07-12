@@ -51,11 +51,6 @@ import { unwrapRingClosed } from '../../domain/geo/seam';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import { RING_KIND } from '../../domain/ring';
-import {
-  buildReverseIndex,
-  createSharedVertexState,
-  type ContainerEntry,
-} from '../../domain/shared-vertex';
 import type { TimePoint } from '../../domain/time/time-point';
 import { createVertex, getVertex, setVertex, type VertexStore } from '../../domain/vertex';
 
@@ -70,7 +65,8 @@ import type {
   PointPrimitive,
 } from '../../render/map-renderer';
 
-import { resolveDisplayFor, type DisplayResolution } from './display-resolution-cache';
+import { resolveDisplayFor } from './display-resolution-cache';
+import { sharedVertexIdsFor } from './shared-vertex-derivation';
 
 /** The screen-fixed visual style of the live-drag PREVIEW outline (HB3-4 / FR-78). */
 export interface EditPreviewStyle {
@@ -253,72 +249,10 @@ function linePreview(
   };
 }
 
-// ---------------------------------------------------------------------------
-// FR-30 shared-vertex derivation (共有頂点の視覚区別).
-// ---------------------------------------------------------------------------
-//
-// A vertex is SHARED when ≥2 distinct shape references cite it (two features, or
-// two rings of one leaf). Sharing is DERIVED, never stored (単一真実源 / domain
-// shared-vertex §4.1), so we build the domain `SharedVertexState` from the SAME
-// resolved feature set + vertex store the handles are drawn against and read the
-// shared ids off its reverse index. This is faithful to the one derivation every
-// shared-vertex consumer uses (buildReverseIndex), so the visual can never drift
-// from linked-move behaviour.
-//
-// The set covers ALL features effective this frame (not just the active one): a
-// vertex the active feature shares with a NEIGHBOUR is shared even though the
-// neighbour's other citation lives in a different feature. Points reference a
-// single vertex but have no ShapeContainer in the domain model (only rings / line
-// paths are containers), so a point's vertex is only ever "shared" when a ring /
-// line also cites it — which is exactly the domain's own notion of sharing.
-
-/**
- * Every ring + line-path container of `features` as domain `ContainerEntry`s (the
- * input to a `SharedVertexState`). Leaf rings (territory / hole / enclave) and line
- * paths are the only ShapeContainers; points / aggregates contribute none.
- */
-function containersOf(features: readonly Feature[]): ContainerEntry[] {
-  const entries: ContainerEntry[] = [];
-  for (const f of features) {
-    if (f.kind === FEATURE_KIND.Line) {
-      entries.push({ container: { kind: 'line', featureId: f.id }, vertexIds: f.vertexIds });
-    } else if (f.kind === FEATURE_KIND.Leaf) {
-      for (const ring of f.shape.rings) {
-        entries.push({
-          container: { kind: 'ring', featureId: f.id, ringId: ring.id },
-          vertexIds: ring.vertexIds,
-        });
-      }
-    }
-  }
-  return entries;
-}
-
-// Per-frame memo (bughunt perf pattern, see display-resolution-cache): the shared
-// id set is a pure function of the resolved bundle identity — features + containers
-// do not change during a drag (only vertex BODIES move), so it is derived ONCE per
-// `resolveDisplayFor` generation and reused across frames of the same generation.
-// Keyed on the bundle's IDENTITY (a WeakMap, so an evicted generation is collected).
-const sharedIdCache = new WeakMap<DisplayResolution, ReadonlySet<VertexId>>();
-
-/**
- * The set of SHARED vertex ids across all features of `resolution` (FR-30), memoized
- * by the bundle's identity. Built from the domain `SharedVertexState` reverse index
- * (the single sharing derivation), so a vertex is "shared" iff ≥2 distinct shape
- * references cite it.
- */
-function sharedVertexIdsFor(resolution: DisplayResolution): ReadonlySet<VertexId> {
-  const cached = sharedIdCache.get(resolution);
-  if (cached !== undefined) return cached;
-  const state = createSharedVertexState(resolution.vertices, containersOf(resolution.features));
-  const index = buildReverseIndex(state);
-  const shared = new Set<VertexId>();
-  for (const [vid, refs] of index) {
-    if (refs.length >= 2) shared.add(vid);
-  }
-  sharedIdCache.set(resolution, shared);
-  return shared;
-}
+// FR-30 shared-vertex derivation (共有頂点の視覚区別) is the SAME single-source set the
+// FR-96 右クリック「共有解除」出し分け and the FR-33 共有解除本体 use, extracted to
+// `shared-vertex-derivation.sharedVertexIdsFor` so the visual marker can never drift from
+// the menu offering or the unshare target (教訓 5.29 二重実装禁止). See that module.
 
 /**
  * Build the edit-handle (+ live-drag preview) draw primitives for the ACTIVE feature at

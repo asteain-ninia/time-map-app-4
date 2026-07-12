@@ -249,6 +249,22 @@ function commonFeatureItems(): ContextMenuItem[] {
 }
 
 /**
+ * Common items for a VertexOnly single-owner target: プロパティ編集 ONLY — 削除 is
+ * DELIBERATELY OMITTED here (FR-96 Delete×VertexOnly 乖離解消). In a VertexOnly target
+ * there is no active feature; the live削除 funnel (COMMAND_ID.EditDelete → runEditDelete)
+ * branches on the vertex SELECTION and deletes the SELECTED VERTICES, whereas
+ * FLOW_KIND.Delete's intent names the OWNER FEATURE (contracts.ts). Offering 削除 here
+ * would show an item whose wired behaviour (頂点削除) diverges from its intent (地物削除).
+ * The other feature-wide items (プロパティ編集 / 分割 / 所属変更 / 結合) act on the resolved
+ * owner featureId directly and do NOT branch on the vertex selection, so they have NO
+ * divergence — they fire exactly what they name. 頂点削除 stays reachable via the Delete
+ * KEY and via right-clicking a vertex (which sets an active feature → Feature target).
+ */
+function vertexOnlyCommonItems(): ContextMenuItem[] {
+  return [enabledItem(MENU_ITEM_KIND.EditProperties)];
+}
+
+/**
  * Compose the context menu (FR-96). Returns {@link NO_MENU} when editing is not
  * permitted (教訓 5.13) or when nothing actionable is selected (教訓 5.10 /
  * 5.18); otherwise a model with the offered items in a stable order.
@@ -295,7 +311,8 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
       // reads the SAME kind, so an offered item always fires (出す=発火できる,
       // 受け入れ基準 6/8, 教訓 5.6).
       if (target.ownerFeatureId !== null && target.ownerFeatureKind !== null) {
-        items.push(...commonFeatureItems());
+        // NO 削除 here (FR-96 Delete×VertexOnly 乖離解消): see vertexOnlyCommonItems.
+        items.push(...vertexOnlyCommonItems());
         if (target.ownerFeatureKind === FEATURE_KIND.Leaf) {
           items.push(...filterByTool(leafFeatureItems(), input.toolKind));
         }

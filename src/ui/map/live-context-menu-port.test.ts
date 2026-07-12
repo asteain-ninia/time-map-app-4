@@ -110,6 +110,41 @@ describe('createLiveContextMenuPort (FR-96 right-click wiring, bughunt2)', () =>
   });
 });
 
+// --- 段階7 優先規則: suspended right-click drops the request whole (must_include #5) --
+// While a tool draft / modal is active the right-click must NOT open a menu AND must
+// NOT mutate the selection (a stray promoteHit would desync the in-progress gesture,
+// 教訓 5.2). Both side effects are skipped TOGETHER.
+
+describe('createLiveContextMenuPort — suspended gate (段階7)', () => {
+  function suspendedHarness(suspended: () => boolean): PortHarness {
+    const promoted: HitResult[] = [];
+    const opened: { clientX: number; clientY: number; hit: HitResult }[] = [];
+    const port = createLiveContextMenuPort({
+      surfaceToClient: (p: ScreenPoint) => ({ x: p.x + 100, y: p.y + 200 }),
+      promoteHit: (hit) => promoted.push(hit),
+      open: (req) => opened.push(req),
+      suspended,
+    });
+    return { promoted, opened, port };
+  }
+
+  it('suspended ⇒ a feature-body right-click neither promotes (selection unchanged) nor opens', () => {
+    const h = suspendedHarness(() => true);
+    h.port.request({ x: 30, y: 40 }, featureBodyHit(asFeatureId('f-1')));
+    // No promoteHit → the LIVE selection is left exactly as it was (段階7 / 教訓 5.2).
+    expect(h.promoted).toEqual([]);
+    expect(h.opened).toEqual([]);
+  });
+
+  it('not suspended ⇒ behaves normally (promotes + opens)', () => {
+    const h = suspendedHarness(() => false);
+    const hit = featureBodyHit(asFeatureId('f-1'));
+    h.port.request({ x: 30, y: 40 }, hit);
+    expect(h.promoted).toEqual([hit]);
+    expect(h.opened).toHaveLength(1);
+  });
+});
+
 // --- promoteHitToSelection — the right-click promote RULE (bughunt5 HOLE-2) ----
 // The degradation: a right-click feature-body promote set the active feature ONLY
 // and did NOT clear a stale vertex selection (from a prior rubber-band on ANOTHER

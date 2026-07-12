@@ -292,6 +292,26 @@ describe('resolveMenuTarget / compose — 受け入れ基準 8: UI 文脈優先�
     if (t.kind === MENU_TARGET_KIND.VertexOnly) expect(t.ownerFeatureId).toBe(fid('a'));
   });
 
+  it('単一所有 VertexOnly では 削除 を出さない (Delete×VertexOnly 乖離解消) が他の地物項目は出る', () => {
+    // FR-96: VertexOnly (アクティブ地物なし) では live削除ファネルが選択頂点を消すため、
+    // 地物削除を意味する 削除 項目は出さない。プロパティ編集/分割/所属変更/結合は所有地物へ
+    // 直接発火するので残る (乖離しない)。
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          vertexIds: new Set([vid('v1')]),
+          owners: new Map([[vid('v1'), fid('a')]]),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+        }),
+      ),
+    );
+    const ks = itemKinds(menu);
+    expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
+    expect(ks).toContain(MENU_ITEM_KIND.EditProperties);
+    expect(ks).toContain(MENU_ITEM_KIND.Split);
+    expect(ks).toContain(MENU_ITEM_KIND.ChangeAffiliation);
+  });
+
   it('所有者複数のとき地物全体操作 (分割/所属変更/結合) が出ない', () => {
     const menu = asMenu(
       composeContextMenu(
