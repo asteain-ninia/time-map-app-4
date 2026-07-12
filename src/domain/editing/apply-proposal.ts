@@ -46,6 +46,7 @@ import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } 
 import {
   FEATURE_KIND,
   pruneVertexStore,
+  referencedVertexIds,
   withLeafShape,
   withLineVertexIds,
   withPointVertexId,
@@ -455,8 +456,17 @@ function applyVertexRemapToHistories(
     const resolution = resolveAt(history.series, anchorTime, calendar);
     if (resolution.kind !== 'present') return history;
     const base = resolution.entry.anchor.snapshot;
+    // A5 perf: "does any feature in this snapshot cite a remapped OLD id" is the set
+    // intersection refs(f) ∩ keys(remap) ≠ ∅. Walk each feature's OWN vertex ids ONCE
+    // (referencedVertexIds — the single source of the「地物が参照する頂点 id」規則,
+    // 教訓 5.30) and test each against the remap Map in O(1). The prior form spread
+    // [...remap.keys()] into a fresh array PER FEATURE and scanned it with a per-oldId
+    // featureReferences (O(V)) walk — O(features × remap × V), which at the derle scale
+    // (remap≈10k re-minted union vertices × 722 histories) cost ~5.3 s per merge commit
+    // (実測: applyMergeProposal 5346ms→14.8ms without this step). Same equivalence the
+    // shared-vertex.ts transferSharing prune already uses (バグハント3). Behaviour-identical.
     const citesRemapped = base.features.some((f) =>
-      [...remap.keys()].some((oldId) => featureReferences(f, oldId)),
+      referencedVertexIds(f).some((vid) => remap.has(vid)),
     );
     if (!citesRemapped) return history;
 
@@ -469,7 +479,7 @@ function applyVertexRemapToHistories(
             ? effective.entry.anchor.snapshot
             : createAnchorSnapshot([], createVertexStore([]));
         const features = effBase.features.map((f) => repointThroughRemap(f, remap));
-        const store = remapVertexStore(effBase.vertices, remap, splitVertices, features);
+        const store = remapVertexStore(effBase.vertices, splitVertices, features);
         return anchorFor(features, store, history.featureId, anchorTime);
       },
       calendar,
@@ -478,44 +488,95 @@ function applyVertexRemapToHistories(
   });
 }
 
-/** Repoint every vertex citation in a feature through `remap` (old -> new). Pure. */
+/**
+ * Repoint every vertex citation in a feature through `remap` (old -> new). Pure.
+ *
+ * A5 perf: map each of the feature's OWN vertex ids through the remap in ONE pass
+ * (`remap.get(id) ?? id`), rebuilding the feature once, instead of iterating ALL remap
+ * entries and re-scanning the feature per entry (the prior form was O(remap × V) per
+ * feature — at the derle scale remap≈10k re-minted union vertices made each repointed
+ * neighbour cost ~10k×V). This is the SAME single-pass repoint the shared-vertex.ts
+ * transferSharing already uses (`entry.vertexIds.map((id) => remap.get(id) ?? id)`,
+ * 教訓 5.30 単一の真実源). Behaviour-identical: merge / split remaps map old ids to
+ * FRESHLY minted new ids (values are disjoint from keys — no chained A→B→C), so a
+ * single lookup yields exactly what the sequential per-entry rewrite produced, and an
+ * untouched feature keeps its object identity (unchanged ⇒ same object).
+ */
 function repointThroughRemap(feature: Feature, remap: VertexRemap): Feature {
-  let next = feature;
-  for (const [oldId, newId] of remap) {
-    if (oldId === newId) continue;
-    next = repointFeatureVertex(next, oldId, newId);
+  const mapId = (id: VertexId): VertexId => {
+    const to = remap.get(id);
+    return to !== undefined && to !== id ? to : id;
+  };
+  switch (feature.kind) {
+    case FEATURE_KIND.Point: {
+      const to = mapId(feature.vertexId);
+      return to === feature.vertexId
+        ? feature
+        : (withPointVertexId(feature as PointFeature, to) as Feature);
+    }
+    case FEATURE_KIND.Line: {
+      let changed = false;
+      const ids = feature.vertexIds.map((id) => {
+        const to = mapId(id);
+        if (to !== id) changed = true;
+        return to;
+      });
+      return changed ? (withLineVertexIds(feature as LineFeature, ids) as Feature) : feature;
+    }
+    case FEATURE_KIND.Leaf: {
+      const rings = (feature as LeafFeature).shape.rings;
+      let changed = false;
+      const nextRings: Ring[] = rings.map((ring) => {
+        let ringChanged = false;
+        const ids = ring.vertexIds.map((id) => {
+          const to = mapId(id);
+          if (to !== id) ringChanged = true;
+          return to;
+        });
+        if (!ringChanged) return ring;
+        changed = true;
+        return ring.kind === RING_KIND.Territory
+          ? withTerritoryRingVertexIds(ring, ids)
+          : withHoleRingVertexIds(ring, ids);
+      });
+      return changed
+        ? (withLeafShape(feature as LeafFeature, createShape(nextRings)) as Feature)
+        : feature;
+    }
+    case FEATURE_KIND.Aggregate:
+      return feature; // aggregates cite no vertices (FR-35).
+    default:
+      return feature;
   }
-  return next;
 }
 
 /**
- * Build the remapped snapshot's vertex store: carry the new ids' bodies in from the
- * split's minted vertices (single source of truth, R6), then prune old bodies that no
- * surviving feature cites any more (削除は参照掃除まで; 教訓5.21). The new bodies are the
- * canonical coordinate source for the re-minted shared vertices.
+ * Build the remapped snapshot's vertex store: overlay the re-minted vertex bodies onto the
+ * base store so every new id a repointed feature now cites resolves to a body, then PRUNE
+ * to exactly what the repointed `features` reference (referencedVertexIds — the single
+ * source of truth 波7/10/11 established, 教訓 5.30). The new bodies are the canonical
+ * coordinate source for the re-minted shared vertices.
+ *
+ * WHY the prune (実機報告「結合後 .tmap が 3.5× 肥大」の剪定欠落根治): pruning to referenced
+ * both drops the old bodies that were repointed away (削除は参照掃除まで, 教訓 5.21) AND drops
+ * the UNRELATED bodies `splitVertices` carries. For a MERGE the caller passes the WHOLE
+ * re-minted after-state store as `splitVertices` (~95k vertices at the derle scale), so
+ * without this prune every matching NEIGHBOUR snapshot baked in the full ~95k store — a
+ * leaf referencing 3 vertices stored 95,517 (実測), ballooning the saved file 25× AND
+ * seeding the very orphan bodies that raise a spurious VertexCoordinateDivergence (第7波).
+ * Mirrors the sibling create / split-inheritor / drill paths that already pruneVertexStore
+ * their snapshots (single真実源へ合流). `base` is already lean (loaded snapshots reference
+ * exactly what they store — 実測 maxGap=0), so the prune can only drop these orphans.
  */
 function remapVertexStore(
   base: VertexStore,
-  remap: VertexRemap,
   splitVertices: readonly Vertex[],
   features: readonly Feature[],
 ): VertexStore {
-  // Merge the split's minted vertex bodies over the base store so every new id a
-  // repointed feature now cites resolves to a body (no dangling refs).
-  const merged = createVertexStore([...base.byId.values(), ...splitVertices]);
-  const byId = new Map(merged.byId);
-  // Prune old bodies that were remapped away and are no longer referenced here.
-  for (const oldId of remap.keys()) {
-    const newId = remap.get(oldId);
-    if (newId === oldId) continue;
-    if (
-      byId.has(oldId) &&
-      !features.some((f) => featureReferences(f, oldId))
-    ) {
-      byId.delete(oldId);
-    }
-  }
-  return { byId };
+  // Overlay the re-minted bodies onto a copy of base (later-wins, matching createVertexStore).
+  const byId = new Map(base.byId);
+  for (const v of splitVertices) byId.set(v.id, v);
+  return pruneVertexStore({ byId }, features);
 }
 
 /**
@@ -1152,7 +1213,15 @@ function removeFeatureAtTime(
           ? effective.entry.anchor.snapshot
           : createAnchorSnapshot([], createVertexStore([]));
       const features = base.features.filter((f) => f.id !== featureId);
-      return anchorFor(features, base.vertices, history.featureId, anchorTime);
+      // Prune to what the REMAINING features reference (referencedVertexIds — single
+      // source of truth 波7/10/11, 教訓 5.30 / 削除は参照掃除まで 教訓 5.21): when the
+      // removed feature lived inside a multi-feature snapshot (a merged leaf that was a
+      // child of an aggregate's snapshot), its private boundary vertices would otherwise
+      // linger as orphans in that snapshot's store (実測: an aggregate storing 9,650
+      // vertices for 0 referenced after its child was merged away). Sibling-shared
+      // vertices are still cited by a remaining feature, so they are retained.
+      const store = pruneVertexStore(base.vertices, features);
+      return anchorFor(features, store, history.featureId, anchorTime);
     },
     calendar,
   );
@@ -1190,7 +1259,20 @@ function rewriteFeatureSnapshotAtTime(
           ? effective.entry.anchor.snapshot
           : createAnchorSnapshot([], createVertexStore([]));
       const features = computeEditedFeatures(base.features, featureId, after);
-      const store = createVertexStore([...base.vertices.byId.values(), ...extraVertices]);
+      // Prune to exactly what the rewritten features reference (referencedVertexIds —
+      // single source of truth 波7/10/11, 教訓 5.30). `extraVertices` is the merge's whole
+      // re-minted store (~95k at the derle scale); without this prune a SURVIVED (reparented)
+      // feature's snapshot baked in the full store = the .tmap 肥大 + divergence hazard, the
+      // same 剪定欠落 the sibling create path already guards (applyMergeProposal step 3).
+      // Prune to exactly what the rewritten features reference (referencedVertexIds —
+      // single source of truth 波7/10/11, 教訓 5.30). `extraVertices` is the merge's whole
+      // re-minted store (~95k at the derle scale); without this prune a SURVIVED (reparented)
+      // feature's snapshot baked in the full store = the .tmap 肥大 + divergence hazard, the
+      // same 剪定欠落 the sibling create path already guards (applyMergeProposal step 3).
+      const store = pruneVertexStore(
+        createVertexStore([...base.vertices.byId.values(), ...extraVertices]),
+        features,
+      );
       return anchorFor(features, store, history.featureId, anchorTime);
     },
     calendar,
@@ -1208,16 +1290,20 @@ function rewriteFeatureSnapshotAtTime(
  * so the SAME apply discipline (drop deleted / rewrite survived / create new, all by
  * time-correct containment past-edits) folds it into the live project. U28's domain
  * core ({@link buildAffiliationProposal}) already assembled the complete after-state
- * (`nextFeatures`) plus the lifecycle id partitions; aggregates are shapeless (FR-35),
- * so — unlike the merge slice — NO new vertices are minted (the reparent never rewrites
- * geometry), and the snapshot carries none.
+ * (`nextFeatures`) plus the lifecycle id partitions. Most reparents mint no geometry
+ * (aggregates are shapeless, FR-35), but FR-37 直轄領自動生成 (a 形状持ち末端 gaining
+ * children) creates ONE 直轄領 末端地物 carrying the parent's 元形状 as a NEW leaf with NEW
+ * vertices — those ride in `newVertices` (mirroring the merge slice's `nextVertices`) so the
+ * created 直轄領's history gets its bodies. A plain reparent carries an empty `newVertices`.
  */
 export interface AffiliationSnapshot {
   /** The expanded leaf targets whose parent was repointed (FR-48). */
   readonly targetIds: readonly FeatureId[];
-  /** The complete after-state effective feature set (new aggregates appended). */
+  /** The complete after-state effective feature set (new aggregates / 直轄領 appended). */
   readonly nextFeatures: readonly Feature[];
-  /** New上位領域 (aggregate) ids born by a `create` decision — get a fresh history. */
+  /** Vertices minted for FR-37 直轄領 末端地物 (empty for a plain reparent). */
+  readonly newVertices: readonly Vertex[];
+  /** New上位領域 (aggregate) + FR-37 直轄領 ids born here — each gets a fresh history. */
   readonly createdIds: readonly FeatureId[];
   /** Aggregates auto-pruned (emptied by the reparent) — removed at the anchor time. */
   readonly deletedIds: readonly FeatureId[];
@@ -1230,6 +1316,7 @@ export function toAffiliationSnapshot(proposal: AffiliationProposal): Affiliatio
   return {
     targetIds: proposal.targetIds,
     nextFeatures: proposal.nextFeatures,
+    newVertices: proposal.newVertices,
     createdIds: proposal.createdIds,
     deletedIds: proposal.deletedIds,
     survivedTouchedIds: proposal.survivedTouchedIds,
@@ -1269,8 +1356,10 @@ export function toAffiliationEditProposal(
  *     each gets a fresh single-entry history anchored at the anchor time.
  *
  * Each touched feature's after-state is taken from `snapshot.nextFeatures` (the single
- * source of truth the proposal assembled, 教訓 5.29). Aggregates are shapeless (FR-35),
- * so no vertices ride along. Pure: returns a NEW project.
+ * source of truth the proposal assembled, 教訓 5.29). Aggregates are shapeless (FR-35) so
+ * they carry no vertices, but a FR-37 直轄領 末端地物 (in `createdIds`) does — its private
+ * vertices ride in `snapshot.newVertices`, pruned into its own history (単一真実源 剪定,
+ * same as the merge slice's created path). Pure: returns a NEW project.
  */
 export function applyAffiliationProposal(
   root: DomainProject,
@@ -1288,8 +1377,11 @@ export function applyAffiliationProposal(
     histories = removeFeatureAtTime(histories, deletedId, anchorTime, calendar);
   }
 
-  // 2. Survived-but-touched (reparented targets + re-synced parents): rewrite in place
-  // with their after-state (parentId / childIds repointed by the proposal). No vertices.
+  // 2. Survived-but-touched (reparented targets + re-synced parents): rewrite in place with
+  // their after-state (parentId / childIds repointed by the proposal). A 形状持ち末端 that
+  // gained children becomes a shapeless aggregate here — it cites no vertices (its 元形状
+  // survives as the separate FR-37 直轄領 created in step 3), so its stale shape vertices
+  // are pruned; no new vertices ride into a survived feature.
   for (const survivedId of snapshot.survivedTouchedIds) {
     const after = afterById.get(survivedId);
     if (after === undefined) continue; // defensive: lifecycle set out of sync.
@@ -1303,11 +1395,15 @@ export function applyAffiliationProposal(
     );
   }
 
-  // 3. Created aggregates (new上位領域 / 中間階層): a fresh single-entry history each.
+  // 3. Created features (new上位領域 / 中間階層 aggregates + FR-37 直轄領 末端地物): a fresh
+  // single-entry history each. Prune `newVertices` to exactly what THIS created feature
+  // cites (単一真実源 剪定, same as the merge slice's createdIds path): a shapeless aggregate
+  // prunes to an empty store, a 直轄領 leaf keeps only its own new vertices.
   for (const createdId of snapshot.createdIds) {
     const created = afterById.get(createdId);
     if (created === undefined) continue;
-    const anchor = anchorFor([created], createVertexStore([]), createdId, anchorTime);
+    const vertexStore = pruneVertexStore(createVertexStore(snapshot.newVertices), [created]);
+    const anchor = anchorFor([created], vertexStore, createdId, anchorTime);
     const newHistory: FeatureHistory = {
       featureId: createdId,
       series: singleAnchorSeries(anchor, anchorTime),
@@ -1459,8 +1555,14 @@ function applyMovedVerticesToHistories(
     const resolution = resolveAt(history.series, anchorTime, calendar);
     if (resolution.kind !== 'present') return history;
     const base = resolution.entry.anchor.snapshot;
+    // A5 perf (same equivalence as applyVertexRemapToHistories.citesRemapped): the
+    // decision is refs(f) ∩ movedIds ≠ ∅. Walk each feature's own vertex ids ONCE and
+    // test each against the movedIds Set in O(1), instead of spreading [...movedIds] per
+    // feature and scanning it with a per-id featureReferences (O(V)) walk. A single-vertex
+    // drag is unaffected (movedIds=1); a multi-vertex drag no longer pays O(moved × V) per
+    // feature × every history. Behaviour-identical.
     const citesMoved = base.features.some((f) =>
-      [...movedIds].some((id) => featureReferences(f, id)),
+      referencedVertexIds(f).some((id) => movedIds.has(id)),
     );
     if (!citesMoved) return history;
 
