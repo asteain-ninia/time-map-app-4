@@ -32,12 +32,26 @@ export interface LongitudeShiftControlProps {
 /** Slider半幅: the slider runs [−SHIFT_SLIDER_RANGE, +SHIFT_SLIDER_RANGE]. */
 const SHIFT_SLIDER_RANGE = 10;
 
-// HB3-2: name the longitude each preset centers on, so 「太平洋中心」 reads as the
-// 経度180° preset (the user wondered what "太平洋" meant — clarify it inline).
+// Compact preset labels for the上部バー (short visible text keeps the bar one row).
 const PRESET_LABELS: Readonly<Record<CenterLonPreset, string>> = {
+  [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心',
+  [CENTER_LON_PRESET.Pacific]: '太平洋中心',
+};
+
+// HB3-2: name the longitude each preset centers on (the user wondered what "太平洋"
+// meant). Kept as the button's `title` tooltip so the上部バー stays compact while the
+// clarification is one hover away.
+const PRESET_TITLES: Readonly<Record<CenterLonPreset, string>> = {
   [CENTER_LON_PRESET.PrimeMeridian]: '本初子午線中心（経度0°）',
   [CENTER_LON_PRESET.Pacific]: '太平洋中心（経度180°）',
 };
+
+// HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on release), NOT
+// an absolute position — the numeric readout is the真値. Surfaced BOTH as the hidden hint
+// paragraph (a11y / regression) AND the slider's `title` tooltip so the compact上部バー
+// keeps the clarification without spending a row on it.
+const SHIFT_HINT =
+  'スライダーは相対シフト（離すと中央へ戻ります）。現在の中心経度は上の数値が真値です。';
 
 export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.Element {
   const { centerLon, onShift, onPreset } = props;
@@ -63,15 +77,17 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
 
       {/* HB3-1: the slider is a RELATIVE jog (momentary; snaps back to center on
           release), NOT an absolute position — that is why the thumb does not track
-          the center. The真値 is the numeric readout above. Say so explicitly so the
-          fixed thumb no longer reads as "out of sync with the actual value". */}
+          the center. The真値 is the numeric readout above. Kept in the DOM (a11y /
+          regression) but hidden in the compact上部バー (see shell.css); the same text
+          is on the slider's `title` so the clarification is one hover away. */}
       <p className="longitude-shift__hint" data-testid="longitude-shift-hint">
-        スライダーは相対シフト（離すと中央へ戻ります）。現在の中心経度は上の数値が真値です。
+        {SHIFT_HINT}
       </p>
 
       <input
         type="range"
         aria-label="経度シフト"
+        title={SHIFT_HINT}
         min={-SHIFT_SLIDER_RANGE}
         max={SHIFT_SLIDER_RANGE}
         step={0.1}
@@ -103,6 +119,7 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
           <button
             key={preset}
             type="button"
+            title={PRESET_TITLES[preset]}
             onClick={() => onPreset(preset)}
           >
             {PRESET_LABELS[preset]}

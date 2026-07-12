@@ -97,10 +97,21 @@ export const SIDEBAR_CONTENT_STRINGS = {
   eventsEmpty: '歴史の錨がありません。地物の履歴がここに表示されます。',
   // HB3-28: captions explaining what each list shows + how the two differ (the
   // user asked「イベント一覧と地物一覧の違いは？」). 地物一覧 = features effective at the
-  // current year; 歴史アンカー一覧 = every feature's history anchors across time.
-  featuresCaption: '現在の年に存在する地物の一覧です。行を選ぶとその地物を選択します。',
+  // current year (現在時刻モード); 錨一覧 = every feature's history anchors across time
+  // (通史モード). Both captions now note that選ぶと視点も合う (A1: 地物一覧 にも視点移動).
+  featuresCaption: '現在の年に存在する地物の一覧です。行を選ぶとその地物を選択し、地図の視点を合わせます。',
   eventsCaption:
-    '各地物の歴史の錨（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択します。',
+    '全時刻の歴史の錨（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択して視点を合わせます。',
+  // A1 一覧フィルタ (ユーザー要望「一覧に検索が欲しい」). 地物一覧・錨一覧共通の名前部分一致
+  // フィルタ。件数表示は絞り込み前=全件、絞り込み中=一致/全件。
+  filterPlaceholder: '名前で絞り込み',
+  featuresFilterAria: '地物一覧を名前で絞り込み',
+  eventsFilterAria: '錨一覧を名前で絞り込み',
+  noMatch: '絞り込み条件に一致する項目がありません。',
+  /** 件数表示（絞り込みなし）: 総件数のみ。 */
+  countAll: (total: number): string => `${total}件`,
+  /** 件数表示（絞り込み中）: 一致件数 / 総件数。 */
+  countFiltered: (shown: number, total: number): string => `${shown} / ${total}件`,
 } as const;
 
 /**

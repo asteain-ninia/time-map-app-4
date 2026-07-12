@@ -304,6 +304,93 @@ describe('SidebarContent — HB5-3 錨起点の視点合わせ', () => {
     expect(store.getState().activeFeature).toBe(a.feature.id);
     expect(store.getState().currentTime.year).toBe(1000);
   });
+
+  // A1 (ユーザー要望「地物一覧にも視点移動が欲しい」): a 地物一覧 row must ALSO focus the
+  // camera through the SAME onFocusFeatureCamera path 錨一覧 uses. The feature is effective
+  // NOW, so it selects + fits WITHOUT a time sync (unlike錨一覧, which snaps the time first).
+  it('clicking a 地物一覧 row selects the feature AND focuses the camera, with no time sync (A1)', () => {
+    const a = squareLeaf('f-a', '織田領'); // effective [1000,1100]
+    const root = withLeaf(emptyProject(), a, 1000);
+    // Start the session WITHIN the feature's interval so it appears in the 地物一覧.
+    const { store, focusCalls } = renderWithFocus(root, timePointYear(1050));
+
+    fireEvent.click(screen.getByTestId('feature-list-item-f-a'));
+
+    // Selection promoted through the single store path; the time is UNCHANGED (no sync).
+    expect(store.getState().activeFeature).toBe(a.feature.id);
+    expect(store.getState().currentTime.year).toBe(1050);
+    // The camera focus fired ONCE for the row's feature, at the current (unchanged) time.
+    expect(focusCalls).toHaveLength(1);
+    expect(focusCalls[0]!.id).toBe('f-a');
+    expect(focusCalls[0]!.timeYearAtCall).toBe(1050);
+  });
+});
+
+// A1 一覧フィルタ (ユーザー要望「一覧に検索が欲しい」): the shared list core adds a name
+// partial-match filter with a live count, to BOTH the 地物一覧 and the 錨一覧 (共通コア). The
+// filter folds width/case identically to the FR-99 search so the two agree (整合).
+describe('SidebarContent — A1 一覧フィルタ (検索)', () => {
+  it('filters the 地物一覧 by name (partial match) and shows the 一致/全件 count', () => {
+    let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
+    root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
+    renderWith(root); // currentTime = 1000 → both features effective.
+
+    // Both rows present; the count shows the total (no filter yet).
+    expect(screen.getByTestId('feature-list-item-f-oda')).toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-item-f-toku')).toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-count').textContent).toBe('2件');
+
+    // A partial name keeps only the matching row; the count reflects 一致 / 全件.
+    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+      target: { value: '織田' },
+    });
+    expect(screen.getByTestId('feature-list-item-f-oda')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-list-item-f-toku')).not.toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-count').textContent).toBe('1 / 2件');
+  });
+
+  it('shows the no-match message (not the empty state) when the filter excludes all rows', () => {
+    const root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
+    renderWith(root);
+    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+      target: { value: 'zzzz' },
+    });
+    // The rows are gone, a distinct no-match message shows (NOT feature-list-empty,
+    // which means「地物が0件」— here there IS data, it is just filtered out).
+    expect(screen.getByTestId('feature-list-no-match')).toBeInTheDocument();
+    expect(screen.queryByTestId('feature-list-empty')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('feature-list-item-f-oda')).not.toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-count').textContent).toBe('0 / 1件');
+  });
+
+  it('filters the 錨一覧 by name too (shared core, same behaviour)', () => {
+    let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
+    root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
+    renderWith(root);
+
+    expect(screen.getByTestId('event-list-count').textContent).toBe('2件');
+    fireEvent.change(screen.getByTestId('event-list-filter'), {
+      target: { value: '徳川' },
+    });
+    expect(
+      screen.getByTestId('event-list-item-anchor:f-toku@1000'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId('event-list-item-anchor:f-oda@1000'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId('event-list-count').textContent).toBe('1 / 2件');
+  });
+
+  it('folds full-width / case so the 一覧フィルタ matches like the FR-99 検索 (整合)', () => {
+    const root = withLeaf(emptyProject(), squareLeaf('f-rome', 'ROMA'), 1000);
+    renderWith(root);
+    // A full-width ｒ + lowercase query still matches 'ROMA' (NFKC + lowercase fold).
+    fireEvent.change(screen.getByTestId('feature-list-filter'), {
+      target: { value: 'ｒoma' },
+    });
+    expect(screen.getByTestId('feature-list-item-f-rome')).toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-count').textContent).toBe('1 / 1件');
+  });
 });
 
 // FR-20 / FR-35 — the property panel's 面積（km²）row over the LIVE host wiring. The

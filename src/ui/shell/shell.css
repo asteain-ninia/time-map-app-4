@@ -74,6 +74,16 @@ body {
 
 .app-shell__menubar {
   grid-row: 1;
+  /* FR-12 経度シフト の上部表示: the menu bar row hosts BOTH the menus (left) and the
+   * 経度シフト control (right). Kept in this existing row — NOT a new grid row — so the
+   * tool-overlay grids (.add-tool / .knife-tool / …) still mirror .app-shell's 4-row
+   * template exactly (add-input-layout.test.tsx の mirror 契約) with zero overlay churn. */
+  display: flex;
+  align-items: stretch;
+  /* Fill the whole bar with chrome so the area beside the menus (where 経度シフト sits)
+   * matches the dark menu band; .menubar provides its own bg on the left. */
+  background: var(--c-chrome);
+  color: var(--c-chrome-text);
 }
 
 .app-shell__main {
@@ -144,6 +154,20 @@ body {
 .app-shell__timeline {
   background: var(--c-surface);
   border-top: 1px solid var(--c-border);
+}
+
+/* FR-12 経度シフト の上部表示: a compact strip on the RIGHT of the menu bar row
+ * (margin-left:auto pushes it past the menus). The strip can shrink (flex: 0 1 auto) and
+ * its control wraps (flex-wrap on .longitude-shift), so a narrow window folds the control
+ * onto a second line — the `auto` menu-bar row grows and the `1fr` map row absorbs it —
+ * rather than pushing a shell-level horizontal scrollbar (ux-cluster「no spurious
+ * scrollbars」lock). At the 800px min-width the menus + control fit on one line. */
+.app-shell__topbar {
+  margin-left: auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  color: var(--c-chrome-text);
 }
 
 /* Menu bar: a single horizontal dark band (FR-111). The five menus sit in a row
@@ -351,6 +375,39 @@ body {
   color: var(--c-text-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+/* A1 一覧フィルタ: a name filter row above the items (地物一覧 / 錨一覧 共通). The input
+   grows; a muted count sits to its right (絞り込み前=全件, 絞り込み中=一致/全件). */
+.sidebar-list__filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.sidebar-list__filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  padding: 4px 6px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+}
+
+.sidebar-list__filter-input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.sidebar-list__count {
+  flex: 0 0 auto;
+  color: var(--c-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Status bar: a thin bottom strip. */
@@ -588,35 +645,24 @@ body {
   pointer-events: auto;
 }
 
-/* FR-12 経度シフト control: a small floating panel in the bottom-left of the MAP
- * AREA (anchored to .map-area__overlay, so it never overlaps the timeline / status
- * bar). Positioned away from the toolbar so it does not cover feature ops. */
+/* FR-12 経度シフト control — RELOCATED to the上部バー (ユーザー要望「経度シフトを上部表示
+ * に。現状の表示は邪魔」; app-3 の経度コンパスに倣った compact な横並び上部表示). It is now a
+ * NORMAL flow element inside .app-shell__topbar, NOT a `.map-area__overlay` child — so the
+ * HB-15 / 8d1ce75 pointer-events trap is GONE by construction: the control never sits over
+ * the map input layer, so it cannot swallow map body clicks (教訓 5.14). No `pointer-events`
+ * juggling is needed anymore. `flex-wrap` lets it fold onto a second line on the narrowest
+ * window rather than forcing a shell horizontal scrollbar (ux-cluster overflow lock). */
 .longitude-shift {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  /* Keep the panel compact in the corner so it covers as little of the map as
-   * possible (HB-15: its box used to stretch ~526px across the map's lower half). */
-  max-width: 240px;
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #888;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  /* No vertical padding: the control must stay within the menu-bar row's height so the
+   * top bar does not grow the header (which would shrink the map / sidebar). Horizontal
+   * padding only, plus a small right margin off the window edge. */
+  padding: 0 10px 0 0;
   font-size: 12px;
-  /* HB-15 REGRESSION FIX (編集モードで地物本体をクリックしても選択できない): this panel is a
-   * direct child of `.map-area__overlay`, whose `> *` rule re-enables pointer events on the
-   * WHOLE child box. The HB3-1 readout + hint + wide preset buttons grew the box to ~526×174,
-   * so it sat over the map's lower-centre and SWALLOWED every body click there — the pointer
-   * never reached the map-input-layer / dispatcher, so the hit-test never ran. The container
-   * (and its text) are now click-through; only the actual controls (slider / buttons) below
-   * re-enable input, exactly like the knife/merge/reparent tool overlays (教訓 5.14 透明な
-   * 背面層は背面の操作を奪わない). pointer-events is inherited, so the readout/hint paragraph
-   * inherit `none` and the map stays selectable behind them. */
-  pointer-events: none;
 }
 
 .longitude-shift__readout {
@@ -624,18 +670,43 @@ body {
   white-space: nowrap;
 }
 
+/* HB3-1 clarification text: the info is preserved in the DOM + surfaced via the slider's
+ * `title` tooltip, but hidden in the compact上部バー so the jog + readout fit one row
+ * (app-3 の経度コンパスも同様に注記テキストは持たない). */
+.longitude-shift__hint {
+  display: none;
+}
+
 .longitude-shift__buttons,
 .longitude-shift__presets {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: row;
+  align-items: center;
   gap: 4px;
 }
 
-/* Only the interactive controls take pointer input back from the click-through
- * container above (HB-15). Everything else in the panel lets map clicks fall through. */
-.longitude-shift input[type='range'],
+/* The relative-jog slider: keep it compact (a wide slider would dominate the bar) and
+ * bounded in height + margin so it never grows the menu-bar row. */
+.longitude-shift input[type='range'] {
+  width: 120px;
+  height: 18px;
+  margin: 0;
+}
+
+/* Compact buttons for the上部バー (相対ジョグ ◀▶ + presets). */
 .longitude-shift button {
-  pointer-events: auto;
+  font: inherit;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.longitude-shift button:hover {
+  border-color: var(--c-accent);
 }
 
 /* Tooltip bubble: shown on hover/focus (FR-112). */

@@ -20,7 +20,7 @@
 // SAME store.setActiveFeature path every selection uses (no second selection
 // source); the property panel then re-resolves to it automatically.
 
-import { useCallback, useMemo } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -109,11 +109,14 @@ export interface SidebarContentDeps<S> {
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   /**
-   * HB5-3: focus the camera on the feature just selected from an錨 row (錨一覧起点).
-   * Called AFTER the row promotes the feature + syncs the time, so the host resolves
-   * the feature's shape at the錨の開始 time and frames the view onto it through the
-   * single camera write path. Omitted (tests / pre-mount) → the錨 click still selects
-   * + syncs time, only the camera does not move (honest absence, no crash).
+   * Focus the camera on the feature just selected from a一覧 row (錨一覧 HB5-3 AND
+   * 地物一覧 A1 — both導線 share the SAME fit path, the user's「地物一覧にも視点移動が
+   * 欲しい」). Called AFTER the row promotes the feature (地物一覧) / promotes + syncs
+   * the time (錨一覧), so the host resolves the feature's shape at the effective time
+   * and frames the view through the single camera write path (ports.writeCamera).
+   * Omitted (tests / pre-mount) → the row still selects (+ syncs time for錨), only the
+   * camera does not move (honest absence, no crash). A map-click selection routes
+   * through the live-selection-port, never here, so a map click never fits the view.
    */
   readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
 }
@@ -159,7 +162,14 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
       />
     ),
-    featuresContent: <FeaturesSection store={store} getRoot={getRoot} getTime={getTime} />,
+    featuresContent: (
+      <FeaturesSection
+        store={store}
+        getRoot={getRoot}
+        getTime={getTime}
+        {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
+      />
+    ),
     propertiesContent: (
       <PropertyPanelHost<S>
         store={store}
@@ -341,17 +351,140 @@ function PropertyPanelHost<S>(props: {
 const featureLabel = featureDisplayName;
 
 /**
- * 地物一覧 — the list of features effective at the current time (FR-111). Selecting
- * a row promotes it through the SAME store.setActiveFeature path every selection
- * uses (no second selection source); the property panel re-resolves to it. The
- * active row is highlighted from the live selection mirror (技術方針 2.5).
+ * Fold rule for the一覧フィルタ, IDENTICAL to the FR-99 feature search normalize
+ * (discovery/search.ts `fold`): NFKC + lowercase, so絞り込み matches the SAME way検索
+ * does — a全角／半角・大文字小文字 difference never hides a row (整合, 教訓 5.19 表示
+ * 文字列で判定しない). Kept a primitive one-liner rather than crossing the shell→
+ * discovery layer boundary; if the search fold rule changes, this must track it.
+ */
+function foldName(s: string): string {
+  return s.normalize('NFKC').toLowerCase();
+}
+
+/**
+ * One selectable row in a sidebar一覧 (地物一覧 / 錨一覧 共通コア). The caller builds
+ * the row + its select side-effect; the shared list owns the chrome / filter / count.
+ */
+interface SidebarListRow {
+  /** React key (+ filter iteration identity). */
+  readonly key: string;
+  /** The row button's data-testid — 既存 e2e 契約を温存 (feature-list-item-* / event-list-item-*). */
+  readonly testid: string;
+  /** The visible AND filterable label (feature display name, 名前部分一致 の対象). */
+  readonly label: string;
+  /** aria-pressed 状態 (地物一覧 は現在選択中の地物を強調; 錨一覧 は常に false). */
+  readonly pressed: boolean;
+  /** 行選択時の副作用 (選択 [+ 時刻同期] + 視点フィット) を呼び出し側が組み立てる。 */
+  readonly onSelect: () => void;
+}
+
+/**
+ * 地物一覧 と 錨一覧 の共通コア (ユーザー要望「地物一覧と錨一覧ってほぼ同一の機能として
+ * 実装できるのでは」). 両者はともに「絞り込み可能な選択行リスト」で、違いは (a) 行の生成
+ * 規則 = 現在時刻に存在する地物か 通史の全錨か、(b) 選択時副作用 = 時刻同期の有無、の2点
+ * だけ。ここに共通の見た目・名前フィルタ・件数表示・空状態を1箇所へ集約する (単一の真実源、
+ * 教訓 5.30 過少共有の戒め)。
+ *
+ * 表示モード「現在時刻 / 通史」は既存のタブ2枚で表現する (地物一覧 = 現在時刻に存在する地物、
+ * 錨一覧 = 全時刻の錨 = 通史)。タブを1枚へ統合してモードトグルにする案も可能だが、
+ * feature-list / event-list / sidebar-tab-* 等の既存 testid を多数の e2e が参照しており、
+ * 統合は testid 契約を壊すため、暫定決定として「2タブ維持 + 内部コア共通化」を採る (完了報告)。
+ *
+ * フィルタ: 名前部分一致 (foldName 正規化)。IME 対応 — 制御 input の value をそのまま述語に
+ * 使うだけで、変換確定後の onChange で自然に反映される (キー単位の割り込み処理をしないので、
+ * 変換中の未確定文字列を壊さない)。件数: 絞り込みなし=全件、絞り込み中=一致/全件。
+ */
+function SidebarRowList(props: {
+  readonly listTestid: string;
+  readonly caption: string;
+  readonly emptyText: string;
+  readonly filterPlaceholder: string;
+  readonly filterAria: string;
+  readonly rows: readonly SidebarListRow[];
+}): JSX.Element {
+  const { listTestid, caption, emptyText, filterPlaceholder, filterAria, rows } = props;
+  const [query, setQuery] = useState('');
+
+  const trimmed = query.trim();
+  const filtered =
+    trimmed === ''
+      ? rows
+      : rows.filter((r) => foldName(r.label).includes(foldName(trimmed)));
+
+  return (
+    <div className="sidebar-list" data-testid={listTestid}>
+      <p className="sidebar-list__caption" data-testid={`${listTestid}-caption`}>
+        {caption}
+      </p>
+      {rows.length === 0 ? (
+        <p className="sidebar-list__empty" data-testid={`${listTestid}-empty`}>
+          {emptyText}
+        </p>
+      ) : (
+        <>
+          <div className="sidebar-list__filter">
+            <input
+              type="search"
+              className="sidebar-list__filter-input"
+              data-testid={`${listTestid}-filter`}
+              aria-label={filterAria}
+              placeholder={filterPlaceholder}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+            <span
+              className="sidebar-list__count"
+              data-testid={`${listTestid}-count`}
+            >
+              {trimmed === ''
+                ? SIDEBAR_CONTENT_STRINGS.countAll(rows.length)
+                : SIDEBAR_CONTENT_STRINGS.countFiltered(filtered.length, rows.length)}
+            </span>
+          </div>
+          {filtered.length === 0 ? (
+            <p className="sidebar-list__empty" data-testid={`${listTestid}-no-match`}>
+              {SIDEBAR_CONTENT_STRINGS.noMatch}
+            </p>
+          ) : (
+            <ul className="sidebar-list__items">
+              {filtered.map((row) => (
+                <li key={row.key}>
+                  <button
+                    type="button"
+                    className="sidebar-list__item"
+                    aria-pressed={row.pressed}
+                    data-testid={row.testid}
+                    onClick={row.onSelect}
+                  >
+                    {row.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * 地物一覧 — the features effective at the current time (FR-111, 現在時刻モード).
+ * Selecting a row promotes it through the SAME store.setActiveFeature path every
+ * selection uses (no second selection source) AND fits the camera onto it (A1 — the
+ * user's「地物一覧にも視点移動が欲しい」, the SAME focusCameraOnFeature path 錨一覧 uses).
+ * The feature is by definition effective at the current time, so the fit resolves its
+ * shape at現在時刻 with NO time sync (unlike 錨一覧). The active row is highlighted from
+ * the live selection mirror (技術方針 2.5).
  */
 function FeaturesSection<S>(props: {
   readonly store: StoreApi<SessionStore<S>>;
   readonly getRoot: () => DomainProject;
   readonly getTime: () => TimePoint;
+  /** A1: fit the camera on the row's feature after selecting (現在時刻で解決). */
+  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
 }): JSX.Element {
-  const { store, getRoot, getTime } = props;
+  const { store, getRoot, getTime, onFocusFeatureCamera } = props;
   // Re-render on any committed-domain / time / selection change: reading these
   // selectors subscribes this component, so the list below re-derives from the
   // live root whenever they change (技術方針 2.5; single truth source 教訓 5.29).
@@ -364,43 +497,37 @@ function FeaturesSection<S>(props: {
   void domain;
   void currentTime;
 
+  const rows: SidebarListRow[] = features.map((feature) => ({
+    key: feature.id as unknown as string,
+    testid: `feature-list-item-${feature.id as unknown as string}`,
+    label: featureLabel(feature),
+    pressed: activeFeature === feature.id,
+    onSelect: () => {
+      // Single selection path (unchanged), THEN the視点フィット (A1). The feature is
+      // effective now, so the host resolves featureBoundsAt at現在時刻 — no time sync.
+      store.getState().setActiveFeature(feature.id);
+      onFocusFeatureCamera?.(feature.id);
+    },
+  }));
+
   return (
-    <div className="sidebar-list" data-testid="feature-list">
-      <p className="sidebar-list__caption" data-testid="feature-list-caption">
-        {SIDEBAR_CONTENT_STRINGS.featuresCaption}
-      </p>
-      {features.length === 0 ? (
-        <p className="sidebar-list__empty" data-testid="feature-list-empty">
-          {SIDEBAR_CONTENT_STRINGS.featuresEmpty}
-        </p>
-      ) : (
-        <ul className="sidebar-list__items">
-          {features.map((feature) => (
-            <li key={feature.id as unknown as string}>
-              <button
-                type="button"
-                className="sidebar-list__item"
-                aria-pressed={activeFeature === feature.id}
-                data-testid={`feature-list-item-${feature.id as unknown as string}`}
-                onClick={() => store.getState().setActiveFeature(feature.id)}
-              >
-                {featureLabel(feature)}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <SidebarRowList
+      listTestid="feature-list"
+      caption={SIDEBAR_CONTENT_STRINGS.featuresCaption}
+      emptyText={SIDEBAR_CONTENT_STRINGS.featuresEmpty}
+      filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
+      filterAria={SIDEBAR_CONTENT_STRINGS.featuresFilterAria}
+      rows={rows}
+    />
   );
 }
 
 /**
- * イベント一覧 — every feature's history anchors (its 時間軸イベント) at-a-glance,
- * grouped by feature (FR-111 / FR-84). Each anchor row syncs the session time to
- * its start through the SAME store.setCurrentTime path the timeline uses (教訓
- * 5.6 / 5.15), and promotes its owner feature, so jumping to an event re-resolves
- * the property panel to that feature at that time. No independent time/selection
- * source lives here.
+ * 錨一覧 — every feature's history anchors (its 時間軸イベント) at-a-glance, grouped by
+ * feature (FR-111 / FR-84, 通史モード). Each anchor row syncs the session time to its
+ * start through the SAME store.setCurrentTime path the timeline uses (教訓 5.6 / 5.15),
+ * promotes its owner feature, THEN fits the camera onto that feature at that time
+ * (HB5-3). No independent time/selection source lives here.
  */
 function EventsSection<S>(props: {
   readonly store: StoreApi<SessionStore<S>>;
@@ -412,7 +539,7 @@ function EventsSection<S>(props: {
   const domain = useStore(store, (s) => s.domain);
   void domain; // recompute the event rows when the committed domain changes.
   const root = getRoot();
-  const rows = root.histories.flatMap((history) =>
+  const rows: SidebarListRow[] = root.histories.flatMap((history) =>
     history.series.entries.map((entry) => {
       // Resolve EACH row's label from ITS OWN anchor's snapshot (the state
       // effective AT that anchor's start, the same单一真実源 featuresAt/resolveAt
@@ -428,51 +555,33 @@ function EventsSection<S>(props: {
       const label = owner
         ? featureDisplayName(owner)
         : (history.featureId as unknown as string);
+      const anchorId = entry.anchor.id as unknown as string;
       return {
-        featureId: history.featureId,
-        anchorId: entry.anchor.id as unknown as string,
-        start: entry.start,
-        name: label,
+        key: `${history.featureId as unknown as string}:${anchorId}`,
+        testid: `event-list-item-${anchorId}`,
+        label,
+        pressed: false,
+        onSelect: () => {
+          // Promote the feature + sync the time FIRST (unchanged single selection /
+          // time path), THEN focus the camera on the feature at that time (HB5-3). The
+          // camera write funnels through the host's single ports.writeCamera; only this
+          //錨導線 (+ the地物一覧導線) calls it, so a map-click selection never fits.
+          store.getState().setActiveFeature(history.featureId);
+          store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync);
+          onFocusFeatureCamera?.(history.featureId);
+        },
       };
     }),
   );
 
   return (
-    <div className="sidebar-list" data-testid="event-list">
-      <p className="sidebar-list__caption" data-testid="event-list-caption">
-        {SIDEBAR_CONTENT_STRINGS.eventsCaption}
-      </p>
-      {rows.length === 0 ? (
-        <p className="sidebar-list__empty" data-testid="event-list-empty">
-          {SIDEBAR_CONTENT_STRINGS.eventsEmpty}
-        </p>
-      ) : (
-        <ul className="sidebar-list__items">
-          {rows.map((row) => (
-            <li key={`${row.featureId as unknown as string}:${row.anchorId}`}>
-              <button
-                type="button"
-                className="sidebar-list__item"
-                data-testid={`event-list-item-${row.anchorId}`}
-                onClick={() => {
-                  // Promote the feature + sync the time FIRST (unchanged single
-                  // selection / time path), THEN focus the camera on the feature at
-                  // that time (HB5-3). The camera write funnels through the host's
-                  // single ports.writeCamera; this錨導線 is the only caller, so a
-                  // map-click selection never moves the view.
-                  store.getState().setActiveFeature(row.featureId);
-                  store
-                    .getState()
-                    .setCurrentTime(row.start, TIME_CHANGE_SOURCE.AnchorSync);
-                  onFocusFeatureCamera?.(row.featureId);
-                }}
-              >
-                {row.name}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <SidebarRowList
+      listTestid="event-list"
+      caption={SIDEBAR_CONTENT_STRINGS.eventsCaption}
+      emptyText={SIDEBAR_CONTENT_STRINGS.eventsEmpty}
+      filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
+      filterAria={SIDEBAR_CONTENT_STRINGS.eventsFilterAria}
+      rows={rows}
+    />
   );
 }

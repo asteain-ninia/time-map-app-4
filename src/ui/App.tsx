@@ -2313,16 +2313,17 @@ export function App(): JSX.Element {
         suspended={shortcutsSuspended}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
-        mapOverlay={
+        topBar={
           /* FR-12 INTEGRATION (教訓 5.7 合成ルートの結線漏れ / 教訓 5.16 倍率の二重適用
-             防止): mount the U18 経度シフト control ANCHORED TO THE MAP AREA (not the
-             whole-shell overlay, which would overlap the timeline / status bar and
-             steal their clicks) and wire it to the SAME renderer camera the U40
-             pan/wheel path writes (rendererRef → writeCamera), so a shift / preset
-             actually moves the map center. The widget existed + was unit-tested but
-             was never mounted — the FR-12 feature was user-unreachable (bughunt2).
-             The widget reports a RAW shift操作量; the zoom is applied ONCE here via
-             applyLongitudeShift against the LIVE camera zoom (the domain multiplies,
+             防止): mount the U18 経度シフト control in the上部バー (ユーザー要望「経度シフト
+             を上部表示に。現状の表示は邪魔」). It USED to float over the MAP AREA
+             (.map-area__overlay bottom-left), where its box swallowed map body clicks
+             (HB-15 / 8d1ce75); the上部バー is a normal flow row that never overlaps the
+             map input layer, so that pointer-events trap is gone by construction (教訓
+             5.14). Wired to the SAME renderer camera the U40 pan/wheel path writes
+             (rendererRef → writeCamera), so a shift / preset actually moves the map
+             center. The widget reports a RAW shift操作量; the zoom is applied ONCE here
+             via applyLongitudeShift against the LIVE camera zoom (the domain multiplies,
              never the widget, 教訓 5.16). writeCamera fires onCameraChange →
              publishCameraHooks → updateCamera, which mirrors centerLon into the store
              truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to

@@ -57,6 +57,28 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
     }
   });
 
+  it('renders the topBar slot as a flow row above the main area (not over the map)', () => {
+    // A2 (ユーザー要望「経度シフトを上部表示に」): the top bar is a NORMAL shell row, NOT a
+    // map overlay — so it can never sit over the map input layer / steal its clicks the
+    // way the old .map-area__overlay 経度シフト panel did (教訓 5.14 / HB-15 / 8d1ce75).
+    render(<AppShell store={makeStore()} topBar={<div data-testid="top-widget" />} />);
+    const widget = screen.getByTestId('top-widget');
+    expect(widget).toBeInTheDocument();
+    // It lives in the top-bar row…
+    expect(screen.getByTestId('app-shell-topbar')).toContainElement(widget);
+    // …NOT inside the map area / map overlay (which would risk the pointer-events trap).
+    expect(screen.getByTestId('map-area')).not.toContainElement(widget);
+    const mapOverlay = screen.queryByTestId('map-overlay');
+    if (mapOverlay !== null) {
+      expect(mapOverlay).not.toContainElement(widget);
+    }
+  });
+
+  it('omits the top-bar row when no topBar slot is provided (collapses)', () => {
+    render(<AppShell store={makeStore()} />);
+    expect(screen.queryByTestId('app-shell-topbar')).not.toBeInTheDocument();
+  });
+
   it('sidebar has the three sections (events / features / properties)', () => {
     render(<AppShell store={makeStore()} />);
     expect(screen.getByTestId('sidebar-tab-events')).toBeInTheDocument();

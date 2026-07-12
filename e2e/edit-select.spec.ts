@@ -105,17 +105,30 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
     }
   });
 
-  // HB-15 OVERLAY REGRESSION: the bottom-left 経度シフト panel (a child of
-  // `.map-area__overlay`, whose `> *` rule re-enables pointer events) grew to ~526×174
-  // with the HB3-1 readout + hint + wide preset buttons and sat over the map's lower
-  // centre. Every body click there hit the panel's TEXT, never the map-input-layer /
-  // dispatcher — so 編集モードで地物本体をクリックしても選択できなかった (the hit-test never
-  // ran). The panel is now click-through except on its controls. This locks that a click
-  // ON the readout TEXT falls through to the map underneath.
-  test('経度シフトパネルのテキスト上のクリックは地図へ貫通する (HB-15 オーバーレイ回帰)', async () => {
+  // A2 / HB-15 回帰: the 経度シフト control was RELOCATED out of the map overlay to the
+  // 上部バー (menu-bar row, ユーザー要望「経度シフトを上部表示に。現状の表示は邪魔」). The
+  // original HB-15 bug — the bottom-left panel over the map (a `.map-area__overlay` child)
+  // swallowed body clicks so 編集モードで地物本体をクリックしても選択できなかった — is now
+  // IMPOSSIBLE BY CONSTRUCTION: the control no longer sits over the map input layer, so it
+  // cannot intercept map clicks (教訓 5.14 重なる UI は入力層も設計する — here the overlap is
+  // removed outright). This locks (a) the control is geometrically ABOVE the map area, and
+  // (b) a click at the map's FORMER panel spot (bottom-left) reaches the map and clears the
+  // selection — proving nothing intercepts there anymore.
+  test('経度シフトは地図オーバーレイから撤去され地図クリックを奪わない (A2 / HB-15 回帰)', async () => {
     const { app, page } = await launchApp();
     try {
-      // Commit one face at the CENTRE (the readout sits bottom-left, away from it).
+      // (a) The control lives in the 上部バー, NOT over the map: its box is at/above the
+      // map area's top edge (no vertical overlap ⇒ it cannot cover any map click target).
+      const control = page.getByTestId('longitude-shift');
+      await expect(control).toBeVisible();
+      const mapLayer = page.getByTestId('map-input-layer');
+      const cBox = (await control.boundingBox())!;
+      const mBox = (await mapLayer.boundingBox())!;
+      expect(cBox.y + cBox.height).toBeLessThanOrEqual(mBox.y + 1);
+
+      // (b) Behavioural: commit one face at the CENTRE, select it, then click the map's
+      // BOTTOM-LEFT (where the old panel sat). With no overlay there, the click reaches the
+      // empty map and CLEARS the selection (the HB-15 symptom would have blocked it).
       await enterAddArea(page);
       const addLayer = page.getByTestId('add-input-layer');
       await expect(addLayer).toBeVisible();
@@ -141,13 +154,9 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
 
-      // Click ON the 経度シフト readout TEXT. The empty map is behind it (the only face is
-      // at the centre), so a CLICK-THROUGH lands on empty space and CLEARS the selection.
-      // If the panel swallowed the click (the regression), the selection would NOT change.
-      const readout = page.getByTestId('center-lon-readout');
-      await expect(readout).toBeVisible();
-      const rb = (await readout.boundingBox())!;
-      await page.mouse.click(rb.x + rb.width / 2, rb.y + rb.height / 2);
+      // Click the map's bottom-left (the old 経度シフト panel location; empty now). The
+      // click reaches the map and clears the selection — nothing intercepts there anymore.
+      await page.mouse.click(mBox.x + 40, mBox.y + mBox.height - 40);
       await expect(activeFeature).toHaveText('');
     } finally {
       await app.close();

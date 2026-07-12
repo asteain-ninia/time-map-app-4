@@ -33,6 +33,15 @@ export interface AppShellProps<S> {
   readonly sizeStore?: MapSizeStore;
   /** Sidebar section content slots (later units fill these). */
   readonly sidebar?: SidebarProps;
+  /**
+   * Top-bar slot: a full-width horizontal strip BELOW the menu bar and ABOVE the
+   * main row (FR-12 経度シフト の上部表示, ユーザー要望「経度シフトを上部表示に」). Unlike
+   * `mapOverlay` (which floats over the map and historically stole map clicks —
+   * HB-15 / 8d1ce75), this is a NORMAL flow row in the shell grid, so it can never
+   * sit over the map input layer or trap pointer events (教訓 5.14). Empty ⇒ the row
+   * collapses (auto height).
+   */
+  readonly topBar?: ReactNode;
   /** Bottom timeline slot (U21 mounts the Timeline here). */
   readonly timeline?: ReactNode;
   /** Status bar content slot. */
@@ -64,6 +73,7 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
   const {
     store,
     sidebar,
+    topBar,
     timeline,
     status,
     onMapMount,
@@ -88,6 +98,16 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     <div className="app-shell" data-testid="app-shell">
       <header className="app-shell__menubar">
         <MenuBar registry={registry} mode={mode} />
+        {/* FR-12 経度シフト の上部表示 (ユーザー要望): a compact strip on the RIGHT of the
+            menu bar row — a NORMAL flow element, NOT a map overlay, so it cannot cover
+            the map or steal its clicks the way the old .map-area__overlay panel did
+            (教訓 5.14 / HB-15 / 8d1ce75). Nested in this existing row (not a new grid
+            row) so the tool-overlay grids still mirror .app-shell exactly. */}
+        {topBar != null && (
+          <div className="app-shell__topbar" data-testid="app-shell-topbar">
+            {topBar}
+          </div>
+        )}
       </header>
 
       <div className="app-shell__main">

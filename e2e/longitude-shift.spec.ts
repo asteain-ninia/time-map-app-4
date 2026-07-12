@@ -24,8 +24,9 @@ test.describe('FR-12: 経度シフト control is mounted and moves the live came
   test('the longitude-shift control + readout are present in the live app', async () => {
     const { app, page } = await launchApp();
     try {
-      // The control is mounted in the front overlay (regression lock: it was
-      // user-unreachable before — no testid anywhere in the running app).
+      // The control is mounted in the上部バー / menu-bar row (relocated from the old
+      // .map-area__overlay bottom-left panel — A2「経度シフトを上部表示に」). Regression
+      // lock: it was user-unreachable before — no testid anywhere in the running app.
       const control = page.getByTestId('longitude-shift');
       await expect(control).toBeAttached();
       const readout = page.getByTestId('center-lon-readout');
