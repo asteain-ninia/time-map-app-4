@@ -345,3 +345,53 @@ describe('maybeComposeAutoRecolor — short-circuit + trigger (教訓 5.6 / perf
     expect(isCompositeCommand(cmd)).toBe(false);
   });
 });
+
+describe('maybeComposeAutoRecolor — FR-100 type changes fire (Codex HIGH #2)', () => {
+  const VIDS = ['a1', 'a2', 'a3'];
+
+  it('recolors when a property edit turns auto-color OFF→ON with unchanged geometry (FR-100)', () => {
+    const baseline = rootWith([
+      historyAt(leafFeature('A', VIDS, color(false, '#123456')), VIDS), // manual
+    ]);
+    const postRoot = rootWith([
+      historyAt(leafFeature('A', VIDS, color(true, '#123456')), VIDS), // auto ON, same geometry
+    ]);
+    const cmd = maybeComposeAutoRecolor(swapCommand(baseline, postRoot), baseline, T);
+    expect(isCompositeCommand(cmd)).toBe(true); // 即再配色 despite identical adjacency
+    const a = featureByIdAt(cmd.execute(baseline).state, T, asFeatureId('A'))!;
+    expect(a.color.autoColorEnabled).toBe(true);
+    expect(a.color.fillColor).toBe(DEFAULT_BASE_COLORS[0]); // isolated → palette[0]
+  });
+
+  it('recolors when the palette changes while auto-color is ON (FR-109)', () => {
+    const baseline = rootWith(
+      [historyAt(leafFeature('A', VIDS, color(true, DEFAULT_BASE_COLORS[0]!)), VIDS)],
+      uiSettingsWith('default', []), // → DEFAULT palette
+    );
+    const postRoot = rootWith(
+      [historyAt(leafFeature('A', VIDS, color(true, DEFAULT_BASE_COLORS[0]!)), VIDS)],
+      uiSettingsWith('ocean', ['#111111', '#222222']), // different base colours
+    );
+    const cmd = maybeComposeAutoRecolor(swapCommand(baseline, postRoot), baseline, T);
+    expect(isCompositeCommand(cmd)).toBe(true); // palette change re-resolves the auto colour
+    expect(fillOf(cmd.execute(baseline).state, 'A')).toBe('#111111'); // NEW palette index 0
+  });
+
+  it('an auto feature avoids a MANUAL neighbour whose fill is a palette colour (FR-101)', () => {
+    // A auto (starts #000000); B manual with fill == palette[0]. A precedes B in id
+    // order → would greedily take palette[0] and collide. baseline non-adjacent.
+    const baseline = rootWith([
+      historyAt(leafFeature('A', ['a1', 'a2', 'a3', 'a4'], color(true, '#000000')), ['a1', 'a2', 'a3', 'a4']),
+      historyAt(leafFeature('B', ['b1', 'b2', 'b3', 'b4'], color(false, DEFAULT_BASE_COLORS[0]!)), ['b1', 'b2', 'b3', 'b4']),
+    ]);
+    const postRoot = rootWith([
+      historyAt(leafFeature('A', ['a1', 's1', 's2', 'a4'], color(true, '#000000')), ['a1', 's1', 's2', 'a4']),
+      historyAt(leafFeature('B', ['s1', 'b2', 'b3', 's2'], color(false, DEFAULT_BASE_COLORS[0]!)), ['s1', 'b2', 'b3', 's2']),
+    ]);
+    const cmd = maybeComposeAutoRecolor(swapCommand(baseline, postRoot), baseline, T);
+    expect(isCompositeCommand(cmd)).toBe(true);
+    const exec = cmd.execute(baseline);
+    expect(fillOf(exec.state, 'A')).not.toBe(DEFAULT_BASE_COLORS[0]); // avoids manual B's colour
+    expect(fillOf(exec.state, 'B')).toBe(DEFAULT_BASE_COLORS[0]); // B manual, untouched
+  });
+});

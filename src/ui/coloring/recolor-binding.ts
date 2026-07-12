@@ -28,13 +28,14 @@ import {
   type AdjacencyTransition,
   type FeatureColorPort,
   type Palette,
+  type PaletteTransition,
   DEFAULT_PALETTE,
   composeWithRecolor,
   createPalette,
 } from '../../domain/coloring';
 import { buildAdjacencyFromLeaves } from '../../domain/coloring/adjacency-from-features';
-import { rewriteFeatureSnapshotAtTime } from '../../domain/editing/apply-proposal';
-import { FEATURE_KIND, withColor as setFeatureColor } from '../../domain/feature';
+import { rewriteFeatureColorAtTime } from '../../domain/editing/apply-proposal';
+import { FEATURE_KIND } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import { getCalendar, type Calendar } from '../../domain/time/calendar';
@@ -61,15 +62,16 @@ export function paletteFromRoot(root: DomainRoot): Palette {
  * Adapt the DomainRoot to the recolor adapter's {@link FeatureColorPort}, resolving
  * every read/write at `time` (the commit anchor time) with `calendar`.
  *
- * `withColor` writes the recoloured feature into its history FROM `time` via
- * {@link rewriteFeatureSnapshotAtTime} (a past-edit: it updates the anchor starting
- * at `time` or inserts one there, leaving earlier anchors untouched — an in-place
- * effective-entry swap would retro-pollute the colour before `time`). The new root
- * is `{ ...root, histories }` so uiSettings/settings/baseMap all SURVIVE (a
- * `{ histories, settings, baseMap }` literal would silently drop uiSettings). When
- * the feature is not effective at `time` the rewrite is a no-op and the root is
- * returned unchanged — colorOf reports `null` for exactly those, so the planner
- * never targets one, keeping plan and state in agreement.
+ * `withColor` writes the colour into the feature's history FROM `time` via the
+ * narrow {@link rewriteFeatureColorAtTime} (a past-edit: it updates the anchor
+ * starting at `time` or inserts one there, leaving earlier anchors untouched — an
+ * in-place effective-entry swap would retro-pollute the colour before `time`). That
+ * helper takes only a `ColorInfo` (never a whole Feature), so a foreign id or a
+ * dangling reference cannot be smuggled in. The new root is `{ ...root, histories }`
+ * so uiSettings/settings/baseMap all SURVIVE (a `{ histories, settings, baseMap }`
+ * literal would silently drop uiSettings). When the feature is not effective at
+ * `time` the root is returned unchanged — colorOf reports `null` for exactly those,
+ * so the planner never targets one, keeping plan and state in agreement.
  */
 export function domainRootColorPort(time: TimePoint, calendar: Calendar): FeatureColorPort<DomainRoot> {
   return {
@@ -88,10 +90,10 @@ export function domainRootColorPort(time: TimePoint, calendar: Calendar): Featur
       return enabled;
     },
     withColor(root: DomainRoot, id: FeatureId, color: ColorInfo): DomainRoot {
-      const feature = featureByIdAt(root, time, id);
-      if (feature === undefined) return root; // not effective at `time` — lossless no-op.
-      const recolored = setFeatureColor(feature, color);
-      const histories = rewriteFeatureSnapshotAtTime(root.histories, id, recolored, [], time, calendar);
+      // Guard the lossless no-op identity contract: an absent feature returns the
+      // SAME root (colorOf reports null for it, so it is never planned anyway).
+      if (featureByIdAt(root, time, id) === undefined) return root;
+      const histories = rewriteFeatureColorAtTime(root.histories, id, color, time, calendar);
       return { ...root, histories };
     },
   };
@@ -123,9 +125,15 @@ function hasAutoColorTargetAt(root: DomainRoot, time: TimePoint): boolean {
  *
  * Flow: apply the command to get the post-structure root; if no auto-color target
  * is effective there, return the command untouched (no adjacency work). Otherwise
- * derive the before/after same-layer adjacency graphs and hand them to the domain
- * composeWithRecolor, which recolours IFF the adjacency signature changed and packs
- * structure + recolor into one composite (教訓 5.6 / 5.20 / 5.25).
+ * derive the before/after same-layer adjacency graphs + before/after palettes and
+ * hand them to the domain composeWithRecolor, which recolours IFF a recolor INPUT
+ * changed — adjacency, the auto-target set (FR-100 OFF→ON), the palette (FR-109), or
+ * a manual neighbour's fixed colour — and packs structure + recolor into one
+ * composite (教訓 5.6 / 5.20 / 5.25).
+ *
+ * The short-circuit here keys on the POST root having any auto target: an OFF→ON /
+ * palette-change commit makes `postRoot` carry a target, so it is not skipped; only
+ * an all-manual project (every DERLE feature autoColorEnabled=false) is skipped.
  */
 export function maybeComposeAutoRecolor(
   command: Command<DomainRoot>,
@@ -140,11 +148,15 @@ export function maybeComposeAutoRecolor(
     previous: buildAdjacencyFromLeaves(featuresAt(baseline, time), verticesAt(baseline, time)),
     current: buildAdjacencyFromLeaves(featuresAt(postRoot, time), verticesAt(postRoot, time)),
   };
+  const palettes: PaletteTransition = {
+    previous: paletteFromRoot(baseline),
+    current: paletteFromRoot(postRoot),
+  };
   return composeWithRecolor(
     command,
     baseline,
     transition,
-    paletteFromRoot(postRoot),
+    palettes,
     domainRootColorPort(time, calendar),
   );
 }

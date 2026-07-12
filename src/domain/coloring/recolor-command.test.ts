@@ -19,10 +19,11 @@ import {
 import { asFeatureId, type FeatureId } from '../ids';
 
 import { buildAdjacencyGraph } from './adjacency';
-import { DEFAULT_PALETTE } from './palette';
+import { DEFAULT_BASE_COLORS, DEFAULT_PALETTE, createPalette } from './palette';
 import {
   type AdjacencyTransition,
   type FeatureColorPort,
+  type PaletteTransition,
   composeWithRecolor,
 } from './recolor-command';
 
@@ -52,6 +53,9 @@ const port: FeatureColorPort<TestState> = {
 
 const A = asFeatureId('A');
 const B = asFeatureId('B');
+
+/** No palette change between before/after (the common structural-commit case). */
+const samePalette: PaletteTransition = { previous: DEFAULT_PALETTE, current: DEFAULT_PALETTE };
 
 function manualColor(): ColorInfo {
   // auto-color ON but a clearly non-plan starting color, so a recolor changes it.
@@ -105,7 +109,7 @@ describe('composeWithRecolor — single undo unit (FR-94 / AC6)', () => {
       structuralCommand(),
       baselineState(),
       adjacent,
-      DEFAULT_PALETTE,
+      samePalette,
       port,
     );
     expect(isCompositeCommand(cmd)).toBe(true);
@@ -113,7 +117,7 @@ describe('composeWithRecolor — single undo unit (FR-94 / AC6)', () => {
 
   it('execute applies BOTH structure and the recolor; undo reverts BOTH atomically', () => {
     const base = baselineState();
-    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, DEFAULT_PALETTE, port);
+    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, samePalette, port);
 
     const afterExec = cmd.execute(base);
     // structure applied
@@ -134,7 +138,7 @@ describe('composeWithRecolor — single undo unit (FR-94 / AC6)', () => {
 
   it('redo re-applies the SAME colors (deterministic replay, 教訓 5.20)', () => {
     const base = baselineState();
-    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, DEFAULT_PALETTE, port);
+    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, samePalette, port);
     const exec = cmd.execute(base);
     const undo = cmd.undo(exec.state);
     const redo = cmd.redo(undo.state);
@@ -145,7 +149,7 @@ describe('composeWithRecolor — single undo unit (FR-94 / AC6)', () => {
 
   it('the composite touched set covers the recolored features (教訓 5.23)', () => {
     const base = baselineState();
-    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, DEFAULT_PALETTE, port);
+    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, samePalette, port);
     const exec = cmd.execute(base);
     expect(exec.result.touched.has(A)).toBe(true);
     expect(exec.result.touched.has(B)).toBe(true);
@@ -158,7 +162,7 @@ describe('composeWithRecolor — result-state trigger (教訓 5.6 / 5.25)', () =
       structuralCommand(),
       baselineState(),
       unchanged,
-      DEFAULT_PALETTE,
+      samePalette,
       port,
     );
     // No adjacency change → returned structural command unwrapped (no composite).
@@ -167,7 +171,7 @@ describe('composeWithRecolor — result-state trigger (教訓 5.6 / 5.25)', () =
 
   it('an unchanged-adjacency command leaves colors untouched on execute', () => {
     const base = baselineState();
-    const cmd = composeWithRecolor(structuralCommand(), base, unchanged, DEFAULT_PALETTE, port);
+    const cmd = composeWithRecolor(structuralCommand(), base, unchanged, samePalette, port);
     const exec = cmd.execute(base);
     expect(exec.state.colors.get('A')!.fillColor).toBe('#000000');
     expect(exec.state.colors.get('B')!.fillColor).toBe('#000000');
@@ -181,8 +185,96 @@ describe('composeWithRecolor — result-state trigger (教訓 5.6 / 5.25)', () =
         ['B', false],
       ]),
     };
-    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, DEFAULT_PALETTE, port);
+    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, samePalette, port);
     // Adjacency changed but nothing is colorable → single structural unit.
     expect(isCompositeCommand(cmd)).toBe(false);
+  });
+});
+
+describe('composeWithRecolor — manual neighbour is a fixed-colour constraint (Codex HIGH #1)', () => {
+  it('an auto feature avoids a MANUAL neighbour whose fill IS a palette colour', () => {
+    // A=auto (first in id order → would greedily take index 0 = palette[0]); B is
+    // MANUAL with fillColor === palette[0]. Without pinning, A and B would share
+    // that colour despite being adjacent. With pinning, A skips it.
+    const base: TestState = {
+      colors: new Map<string, ColorInfo>([
+        ['A', createColorInfo(true, '#000000', '#000000', '#000000')], // auto, non-plan start
+        ['B', createColorInfo(false, DEFAULT_BASE_COLORS[0]!, DEFAULT_BASE_COLORS[0]!, '#000000')],
+      ]),
+      autoEnabled: new Map<string, boolean>([
+        ['A', true],
+        ['B', false], // manual: a fixed-colour pin, not recoloured
+      ]),
+      structureTag: 'before',
+    };
+    const cmd = composeWithRecolor(structuralCommand(), base, adjacent, samePalette, port);
+    const exec = cmd.execute(base);
+    const fillA = exec.state.colors.get('A')!.fillColor;
+    expect(fillA).not.toBe(DEFAULT_BASE_COLORS[0]); // did NOT collide with manual B
+    expect(fillA).toBe(DEFAULT_BASE_COLORS[1]); // took the next palette colour instead
+    expect(exec.state.colors.get('B')!.fillColor).toBe(DEFAULT_BASE_COLORS[0]); // B untouched
+  });
+});
+
+describe('composeWithRecolor — FR-100 type changes fire despite unchanged adjacency (Codex HIGH #2)', () => {
+  const isolatedAB: AdjacencyTransition = {
+    previous: buildAdjacencyGraph([A, B], []),
+    current: buildAdjacencyGraph([A, B], []),
+  };
+
+  /** A structural command that toggles A's auto-color OFF→ON (geometry unchanged). */
+  function enableAutoOnA(): Command<TestState> {
+    const apply = (s: TestState): CommandOutcome<TestState> => ({
+      state: {
+        ...s,
+        autoEnabled: new Map<string, boolean>([...s.autoEnabled, ['A', true]]),
+        structureTag: 'after',
+      },
+      result: createCommandResult({ survived: [A] }),
+    });
+    const revert = (s: TestState): CommandOutcome<TestState> => ({
+      state: {
+        ...s,
+        autoEnabled: new Map<string, boolean>([...s.autoEnabled, ['A', false]]),
+        structureTag: 'before',
+      },
+      result: createCommandResult({ survived: [A] }),
+    });
+    return { kind: STRUCT_KIND, label: 'auto ON', execute: apply, redo: apply, undo: revert };
+  }
+
+  it('recolors on auto-color OFF→ON even when adjacency is unchanged (FR-100 即再配色)', () => {
+    const base: TestState = {
+      colors: new Map<string, ColorInfo>([['A', createColorInfo(false, '#000000', '#000000', '#000000')]]),
+      autoEnabled: new Map<string, boolean>([['A', false]]),
+      structureTag: 'before',
+    };
+    const single: AdjacencyTransition = {
+      previous: buildAdjacencyGraph([A], []),
+      current: buildAdjacencyGraph([A], []),
+    };
+    const cmd = composeWithRecolor(enableAutoOnA(), base, single, samePalette, port);
+    expect(isCompositeCommand(cmd)).toBe(true); // OFF→ON fired a recolor
+    const exec = cmd.execute(base);
+    expect(exec.state.colors.get('A')!.autoColorEnabled).toBe(true);
+    expect(exec.state.colors.get('A')!.fillColor).toBe(DEFAULT_BASE_COLORS[0]); // now auto-coloured
+  });
+
+  it('recolors on a palette change while ON even when adjacency is unchanged (FR-109)', () => {
+    const base = baselineState(); // A,B auto ON at #000000, isolated
+    const otherPalette = createPalette('ocean', ['#111111', '#222222', '#333333']);
+    const palettes: PaletteTransition = { previous: DEFAULT_PALETTE, current: otherPalette };
+    const cmd = composeWithRecolor(structuralCommand(), base, isolatedAB, palettes, port);
+    expect(isCompositeCommand(cmd)).toBe(true); // palette change fired a recolor
+    const exec = cmd.execute(base);
+    // A,B isolated → both index 0 in the NEW palette → its first colour.
+    expect(exec.state.colors.get('A')!.fillColor).toBe('#111111');
+    expect(exec.state.colors.get('B')!.fillColor).toBe('#111111');
+  });
+
+  it('does NOT recolor a pure time-move (adjacency, targets, palette, pins all equal)', () => {
+    const base = baselineState();
+    const cmd = composeWithRecolor(structuralCommand(), base, isolatedAB, samePalette, port);
+    expect(isCompositeCommand(cmd)).toBe(false); // nothing relevant changed (教訓 5.25)
   });
 });

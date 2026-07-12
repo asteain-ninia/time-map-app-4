@@ -47,6 +47,7 @@ import {
   FEATURE_KIND,
   pruneVertexStore,
   referencedVertexIds,
+  withColor,
   withLeafShape,
   withLineVertexIds,
   withPointVertexId,
@@ -55,6 +56,7 @@ import {
   type LineFeature,
   type PointFeature,
 } from '../feature';
+import type { ColorInfo } from '../attributes';
 import {
   createVertex,
   createVertexStore,
@@ -1239,7 +1241,7 @@ function removeFeatureAtTime(
  * resolves. Past-edits in place, preserving siblings; appends the feature when the
  * effective snapshot did not already hold it. Pure.
  */
-export function rewriteFeatureSnapshotAtTime(
+function rewriteFeatureSnapshotAtTime(
   histories: readonly FeatureHistory[],
   featureId: FeatureId,
   after: Feature,
@@ -1273,6 +1275,54 @@ export function rewriteFeatureSnapshotAtTime(
         createVertexStore([...base.vertices.byId.values(), ...extraVertices]),
         features,
       );
+      return anchorFor(features, store, history.featureId, anchorTime);
+    },
+    calendar,
+  );
+  return histories.map((h, i) =>
+    i === index ? { featureId: history.featureId, series: updatedSeries } : h,
+  );
+}
+
+/**
+ * Recolour `featureId` FROM `anchorTime` — the narrow, safe entry point the U33
+ * auto-recolor binding uses (FR-100 / FR-101). Unlike the general snapshot rewrite
+ * it takes only a `ColorInfo`, never a whole `Feature`, so a caller cannot inject a
+ * foreign feature id (`after.id !== featureId`) or dangling vertex references: it
+ * looks up the EXISTING feature effective at `anchorTime` inside its own history
+ * snapshot and rewrites ONLY its colour, carrying no new vertices. A past-edit, so
+ * anchors before `anchorTime` keep their colour (an in-place effective-entry swap
+ * would retro-pollute earlier slots — FR-55). When the feature is not effective at
+ * the time the histories are returned unchanged (a lossless no-op). Pure.
+ */
+export function rewriteFeatureColorAtTime(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  color: ColorInfo,
+  anchorTime: TimePoint,
+  calendar: Calendar,
+): readonly FeatureHistory[] {
+  const found = findHistoryContainingIn(histories, featureId, anchorTime, calendar);
+  if (found === undefined) return histories;
+  const { index, history } = found;
+  const updatedSeries = applyPastEdit(
+    history.series,
+    anchorTime,
+    (effective): Anchor => {
+      const base =
+        effective.kind === 'present'
+          ? effective.entry.anchor.snapshot
+          : createAnchorSnapshot([], createVertexStore([]));
+      const target = base.features.find((f) => f.id === featureId);
+      // Recolour the EXISTING feature in place only; never append a foreign one
+      // (what makes the narrow signature safe — no id / geometry escape hatch).
+      const features =
+        target === undefined
+          ? base.features
+          : base.features.map((f) => (f.id === featureId ? withColor(f, color) : f));
+      // Colour-only edit: the referenced vertices are unchanged, so reuse the base
+      // store pruned to exactly what the features cite (identical set; no orphan).
+      const store = pruneVertexStore(base.vertices, features);
       return anchorFor(features, store, history.featureId, anchorTime);
     },
     calendar,

@@ -72,6 +72,7 @@ export {
 export {
   type FeatureColorPort,
   type AdjacencyTransition,
+  type PaletteTransition,
   RECOLOR_COMMAND_KIND,
   RECOLOR_COMMAND_LABEL,
   composeWithRecolor,
