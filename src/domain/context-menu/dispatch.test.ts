@@ -244,6 +244,60 @@ describe('dispatchMenuItem — 受け入れ基準 3: 共有解除は所有者一
   });
 });
 
+describe('dispatchMenuItem — 頂点を削除 (FR-88, 地物削除との乖離解消)', () => {
+  it('Feature 対象 + 頂点選択 → DeleteVertex (所有 + 選択頂点)', () => {
+    // leafModel の Feature 対象は vertexIds {v1} を持つ。
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.DeleteVertex)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.DeleteVertex, model);
+    expect(r).toEqual({
+      kind: FLOW_KIND.DeleteVertex,
+      ownerFeatureId: fid('a'),
+      vertexIds: new Set([vid('v1')]),
+    });
+  });
+
+  it('VertexOnly 単一所有 → DeleteVertex (所有 + 選択頂点)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.VertexOnly,
+      ownerFeatureId: fid('a'),
+      ownerFeatureKind: FEATURE_KIND.Leaf,
+      vertexIds: new Set([vid('v1'), vid('v2')]),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.DeleteVertex)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.DeleteVertex, model);
+    expect(r).toEqual({
+      kind: FLOW_KIND.DeleteVertex,
+      ownerFeatureId: fid('a'),
+      vertexIds: new Set([vid('v1'), vid('v2')]),
+    });
+  });
+
+  it('頂点選択が無い Feature の DeleteVertex はブロック (削除=地物 が出る条件)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.Feature,
+      featureId: fid('a'),
+      featureKind: FEATURE_KIND.Leaf,
+      vertexIds: new Set(),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.DeleteVertex)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.DeleteVertex, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+  });
+});
+
 describe('dispatchMenuItem — 共有解除は選択全体でなく共有部分集合のみを渡す', () => {
   it('Feature 対象でも非共有頂点は U11 へ渡さない', () => {
     const target: MenuTarget = {

@@ -499,6 +499,15 @@ function referencedVertexIds(state: SharedVertexState): ReadonlySet<VertexId> {
 
 export interface ShareOptions {
   readonly validators?: readonly ResultValidator[];
+  /**
+   * Additional raw ids to EXCLUDE when minting a new vertex id (unshare / shared-edge
+   * cut). The mint already skips ids present in this state's vertex store, but that store
+   * is only the CURRENT slice a caller built — ids elsewhere in the project/history are
+   * NOT visible to it. A caller that mints against a live project MUST pass the
+   * project-wide raw id set here so a fresh id can never collide with an id effective at
+   * another time (教訓 5.37 重複チェック). Membership-tested only; never mutated.
+   */
+  readonly reservedIds?: ReadonlySet<string>;
 }
 
 export function shareVertices(
@@ -689,9 +698,13 @@ export function unshareReference(
     };
   }
 
-  // Mint a new id (skip ids already used as vertex ids).
+  // Mint a new id (skip ids already used as vertex ids AND any caller-supplied
+  // project-wide reservation — the state's store is only the current slice, 教訓 5.37).
   const existing = new Set<string>();
   for (const id of state.vertices.byId.keys()) existing.add(id);
+  if (options.reservedIds !== undefined) {
+    for (const id of options.reservedIds) existing.add(id);
+  }
   const generated = nextRawId('v', idState, now, existing);
   const newId = asVertexId(generated.value);
   const newVertex = createVertex(newId, original.coordinate);

@@ -136,9 +136,13 @@ describe('MapContextMenu — DYNAMIC path (composeFor)', () => {
     expect(screen.queryByTestId('context-menu')).toBeNull();
   });
 
-  it('a NO_MENU model opens nothing (view-only / nothing actionable)', () => {
+  it('a NO_MENU model still opens a menu with ONLY the view command (item 5)', () => {
     renderAndOpen({ composeFor: () => NO_MENU, onSelectItem: vi.fn() });
-    expect(screen.queryByTestId('context-menu')).toBeNull();
+    const menu = screen.getByTestId('context-menu');
+    // No domain edit items, but the view-axis command stays available (a view-only
+    // right-click can return to editing — matches the legacy always-a-menu behaviour).
+    expect(menu.querySelector('[data-item-kind]')).toBeNull();
+    expect(menu.querySelector(`[data-command="${COMMAND_ID.ViewToggleViewMode}"]`)).not.toBeNull();
   });
 });
 

@@ -112,29 +112,9 @@ const CASES: ReadonlyArray<{ readonly name: string; readonly input: ComposeInput
       kinds: new Map([[fid('a'), FEATURE_KIND.Line]]),
     }),
   },
-  {
-    name: 'multi-owner shared vertex (unshare only)',
-    input: build({
-      vertexIds: new Set([vid('v1'), vid('v2')]),
-      owners: new Map([
-        [vid('v1'), fid('a')],
-        [vid('v2'), fid('b')],
-      ]),
-      kinds: new Map([
-        [fid('a'), FEATURE_KIND.Leaf],
-        [fid('b'), FEATURE_KIND.Leaf],
-      ]),
-      shared: new Set([vid('v1')]),
-    }),
-  },
-  {
-    name: 'unknown-owner shared vertex (unshare only)',
-    input: build({
-      vertexIds: new Set([vid('v1')]),
-      owners: new Map(),
-      shared: new Set([vid('v1')]),
-    }),
-  },
+  // NOTE: multi-owner / unknown-owner shared selections are NO LONGER actionable menus
+  // (共有解除 is owner-qualified; without a confirmed owner the composer returns NO_MENU),
+  // so they are not among the CASES the "every enabled item dispatches" invariant scans.
 ];
 
 describe('compose ↔ dispatch — 出す=発火できる (受け入れ基準 5.6/6/8, drift なし)', () => {
@@ -211,32 +191,21 @@ describe('受け入れ基準 12: 構造変更後の選択再解決の橋渡し (
     expect(result.created.has(fid('merged'))).toBe(true);
   });
 
-  it('共有解除完了 (単一所有): 切り離した共有頂点が所有地物下で保持される', () => {
-    const before = withActiveFeature(EMPTY_SELECTION, null);
+  it('共有解除: bridge は空の preference を返す (剥がした新 id を知らない → launcher が remap)', () => {
+    // OWNER-QUALIFIED unshare は所有者に新 id v' を与える。bridge は intent から新 id を
+    // 名指せないため空を返し、実際の remap は live-unshare が行う (reresolve-bridge.ts 参照)。
     const intent = {
       kind: FLOW_KIND.Unshare,
       vertexIds: new Set([vid('v1')]),
       ownerFeatureId: fid('a'),
     };
-    const result = createCommandResult({ survived: [fid('a'), vid('v1')], created: [vid('v1b')] });
+    expect(nextTargetPreferenceFor(intent)).toEqual({});
+    // 空 preference + 削除なし → 既存選択はプルーンのみで維持される (固定全クリアでない)。
+    const before = replaceVertices(EMPTY_SELECTION, fid('a'), new Set([vid('v1')]));
+    const result = createCommandResult({ survived: [fid('a')], created: [vid('v1b')] });
     const after = reresolveAfterStructureChange(before, result, nextTargetPreferenceFor(intent));
     expect(after.vertexOwner).toBe(fid('a'));
     expect(after.vertexIds).toEqual(new Set([vid('v1')]));
-  });
-
-  it('共有解除完了 (多所有/owner=null): preference は空でプルーンのみ (全クリアでない)', () => {
-    const before = replaceVertices(EMPTY_SELECTION, fid('a'), new Set([vid('v1'), vid('v2')]));
-    const intent = {
-      kind: FLOW_KIND.Unshare,
-      vertexIds: new Set([vid('v1')]),
-      ownerFeatureId: null,
-    };
-    expect(nextTargetPreferenceFor(intent)).toEqual({});
-    const result = createCommandResult({ survived: [fid('a'), vid('v1'), vid('v2')] });
-    const after = reresolveAfterStructureChange(before, result, nextTargetPreferenceFor(intent));
-    // 既存の選択はプルーンされず維持 (固定全クリアでない)。
-    expect(after.vertexOwner).toBe(fid('a'));
-    expect(after.vertexIds).toEqual(new Set([vid('v1'), vid('v2')]));
   });
 
   it('プロパティ編集: 構造変更でないので preference は空', () => {

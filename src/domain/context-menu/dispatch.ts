@@ -96,6 +96,31 @@ function vertexOnlyOwner(target: MenuTarget): FeatureId | null {
 }
 
 /**
+ * The owner + selected vertices a 頂点を削除 acts on (FR-88). A Feature target names its
+ * own id as owner; a VertexOnly target names its single owner. Returns null when there
+ * is no vertex selection or no resolvable owner (the caller blocks) — this is exactly
+ * when the composer offered 削除(地物) or nothing instead (no drift, 教訓 5.6).
+ */
+function deleteVertexTargetOf(
+  target: MenuTarget,
+): { readonly ownerFeatureId: FeatureId; readonly vertexIds: ReadonlySet<VertexId> } | null {
+  switch (target.kind) {
+    case MENU_TARGET_KIND.Feature:
+      return target.vertexIds.size > 0
+        ? { ownerFeatureId: target.featureId, vertexIds: target.vertexIds }
+        : null;
+    case MENU_TARGET_KIND.VertexOnly:
+      return target.ownerFeatureId !== null && target.vertexIds.size > 0
+        ? { ownerFeatureId: target.ownerFeatureId, vertexIds: target.vertexIds }
+        : null;
+    case MENU_TARGET_KIND.None:
+      return null;
+    default:
+      return assertNever(target);
+  }
+}
+
+/**
  * The shared vertices to unshare: ONLY the共有頂点部分集合 the composer resolved
  * onto the target (§4.3), never the whole selection — so U11 never receives a
  * non-shared vertex as an unshare target (contracts payload「≥1 shared」). The
@@ -170,6 +195,11 @@ export function dispatchMenuItem(
     case MENU_ITEM_KIND.Delete: {
       if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
       return { kind: FLOW_KIND.Delete, featureId: ft.featureId, featureKind: ft.featureKind };
+    }
+    case MENU_ITEM_KIND.DeleteVertex: {
+      const dv = deleteVertexTargetOf(model.target);
+      if (dv === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.DeleteVertex, ownerFeatureId: dv.ownerFeatureId, vertexIds: dv.vertexIds };
     }
     case MENU_ITEM_KIND.EditProperties: {
       if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);

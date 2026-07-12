@@ -87,10 +87,16 @@ const MAP_MENU_ITEMS: readonly ContextMenuItem[] = [
   },
 ];
 
-/** One open-menu entry: the request plus the (frozen-at-open) composed model, if dynamic. */
+/** One open-menu entry: the request plus the (frozen-at-open) composed model, if any. */
 interface MenuEntry {
   readonly request: ContextMenuRequest;
-  /** The composed model, or `null` for the legacy static render. */
+  /**
+   * The composed model, or `null`. `null` means the legacy static render (composeFor
+   * absent) OR a dynamic NO_MENU (composeFor present but nothing actionable) — the two
+   * are told apart in render by whether `composeFor` was supplied. A dynamic NO_MENU
+   * STILL opens: the view-axis command (表示専用モード切替) stays available so a view-only
+   * right-click can return to editing, matching the legacy always-a-menu behaviour.
+   */
   readonly model: ContextMenuModel | null;
 }
 
@@ -105,15 +111,11 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
         setEntry({ request: req, model: null }); // legacy static render
         return;
       }
-      const model = composeFor(req);
-      // NO_MENU (view-only / nothing actionable) opens nothing at all (教訓 5.13 / 5.18).
-      if (model.kind !== 'menu') {
-        setEntry(null);
-        return;
-      }
       // Freeze the model AT OPEN so a later store change cannot drift the menu (the
-      // dispatch's findItem/enabled guard is the second防御, dispatch.ts).
-      setEntry({ request: req, model });
+      // dispatch's findItem/enabled guard is the second防御, dispatch.ts). A NO_MENU
+      // still opens (model: null) so the trailing view command is shown (item 5).
+      const composed = composeFor(req);
+      setEntry({ request: req, model: composed.kind === 'menu' ? composed : null });
     },
     [composeFor],
   );
@@ -130,7 +132,7 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
   const onClose = (): void => setEntry(null);
 
   // LEGACY static path (composeFor absent) — the pre-existing render, unchanged.
-  if (entry.model === null) {
+  if (composeFor === undefined) {
     return (
       <ContextMenu
         x={entry.request.clientX}
@@ -143,7 +145,7 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
     );
   }
 
-  // DYNAMIC path — render the composed domain items + a trailing view-axis command.
+  // DYNAMIC path — the composed domain items (empty when NO_MENU) + a trailing view command.
   return (
     <DynamicContextMenu
       request={entry.request}
@@ -158,7 +160,8 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
 
 interface DynamicContextMenuProps {
   readonly request: ContextMenuRequest;
-  readonly model: ContextMenuModel;
+  /** The composed model, or `null` for a NO_MENU (only the trailing view command shows). */
+  readonly model: ContextMenuModel | null;
   readonly registry: CommandRegistry;
   readonly mode: EditMode;
   readonly onClose: () => void;
@@ -204,7 +207,7 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
       style={{ position: 'fixed', left: request.clientX, top: request.clientY }}
       onPointerDown={(e) => e.stopPropagation()}
     >
-      {model.items.map((item) => {
+      {(model?.items ?? []).map((item) => {
         const disabledTitle = item.enabled ? undefined : disableReasonMessage(item.disableReason);
         return (
           <li key={item.kind} role="none">
@@ -217,7 +220,7 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
               aria-disabled={!item.enabled}
               title={disabledTitle}
               onClick={() => {
-                if (!item.enabled) return;
+                if (!item.enabled || model === null) return;
                 onSelectItem?.(item.kind, model);
                 onClose();
               }}

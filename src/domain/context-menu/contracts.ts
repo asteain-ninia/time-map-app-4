@@ -57,8 +57,15 @@ export type { FeatureKind };
 // (spec §2.2 / §4.6).
 
 export const FLOW_KIND = {
-  /** U31 delete flow — target feature (point/line/leaf/aggregate). FR-85. */
+  /** U31 delete flow — the WHOLE target feature (point/line/leaf/aggregate). FR-85.
+   *  Offered ONLY when no vertex is selected (a body/empty right-click), so its intent
+   *  and the wired EditDelete behaviour agree (地物削除). */
   Delete: 'delete',
+  /** FR-88 頂点削除 — delete the SELECTED vertices of their owner (reshapes / may drop the
+   *  feature below threshold). Offered when a vertex selection exists (a vertex
+   *  right-click or a carried-forward marquee), so 削除 never silently deletes the whole
+   *  feature when the user targeted vertices (data-loss guard). */
+  DeleteVertex: 'deleteVertex',
   /** Open the property-edit UI for the target feature. */
   EditProperties: 'editProperties',
   /** U11 unshare — the shared vertices to detach. FR-33. */
@@ -81,6 +88,13 @@ export type FlowKind = (typeof FLOW_KIND)[keyof typeof FLOW_KIND];
  */
 export type DispatchIntent =
   | { readonly kind: typeof FLOW_KIND.Delete; readonly featureId: FeatureId; readonly featureKind: FeatureKind }
+  | {
+      readonly kind: typeof FLOW_KIND.DeleteVertex;
+      /** The owner whose selected vertices are deleted (FR-81 single owner). */
+      readonly ownerFeatureId: FeatureId;
+      /** The vertices to delete (the current selection set). */
+      readonly vertexIds: ReadonlySet<VertexId>;
+    }
   | { readonly kind: typeof FLOW_KIND.EditProperties; readonly featureId: FeatureId; readonly featureKind: FeatureKind }
   | {
       readonly kind: typeof FLOW_KIND.Unshare;
@@ -94,10 +108,13 @@ export type DispatchIntent =
        */
       readonly vertexIds: ReadonlySet<VertexId>;
       /**
-       * The single owning feature when the selection resolves to one (a hint for
-       * selection re-resolution); `null` for multi/unknown-owner shared vertices.
-       * U11 does not require this to perform the unshare (it derives the shape
-       * reference per vertex), so owner-uniqueness is not a precondition.
+       * The CONFIRMED owner whose reference is detached (owner-qualified unshare):
+       * that owner gets a fresh same-coordinate copy while every OTHER citer keeps the
+       * shared vertex, so the owner is fully separated from ALL neighbours in one op
+       * (右クリック「共有解除」= この所有者の参照を1つ剥がす). The composer offers 共有解除
+       * ONLY when the owner is resolvable (active feature, or a single-owner vertex
+       * context), so a multi/unknown-owner selection never dispatches an unshare that
+       * would dangle the selection. `null` is a defensive residual the launcher no-ops.
        */
       readonly ownerFeatureId: FeatureId | null;
     }

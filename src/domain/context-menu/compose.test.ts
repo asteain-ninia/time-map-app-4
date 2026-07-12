@@ -292,10 +292,10 @@ describe('resolveMenuTarget / compose — 受け入れ基準 8: UI 文脈優先�
     if (t.kind === MENU_TARGET_KIND.VertexOnly) expect(t.ownerFeatureId).toBe(fid('a'));
   });
 
-  it('単一所有 VertexOnly では 削除 を出さない (Delete×VertexOnly 乖離解消) が他の地物項目は出る', () => {
+  it('単一所有 VertexOnly では 地物全体削除でなく 頂点を削除 を出す (乖離解消) + 他の地物項目', () => {
     // FR-96: VertexOnly (アクティブ地物なし) では live削除ファネルが選択頂点を消すため、
-    // 地物削除を意味する 削除 項目は出さない。プロパティ編集/分割/所属変更/結合は所有地物へ
-    // 直接発火するので残る (乖離しない)。
+    // 地物削除を意味する 削除 は出さず、頂点を削除 を出す (乖離解消)。プロパティ編集/分割/
+    // 所属変更/結合は所有地物へ直接発火するので残る。
     const menu = asMenu(
       composeContextMenu(
         build({
@@ -307,35 +307,30 @@ describe('resolveMenuTarget / compose — 受け入れ基準 8: UI 文脈優先�
     );
     const ks = itemKinds(menu);
     expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
+    expect(ks).toContain(MENU_ITEM_KIND.DeleteVertex);
     expect(ks).toContain(MENU_ITEM_KIND.EditProperties);
     expect(ks).toContain(MENU_ITEM_KIND.Split);
     expect(ks).toContain(MENU_ITEM_KIND.ChangeAffiliation);
   });
 
-  it('所有者複数のとき地物全体操作 (分割/所属変更/結合) が出ない', () => {
-    const menu = asMenu(
-      composeContextMenu(
-        build({
-          vertexIds: new Set([vid('v1'), vid('v2')]),
-          owners: new Map([
-            [vid('v1'), fid('a')],
-            [vid('v2'), fid('b')],
-          ]),
-          kinds: new Map([
-            [fid('a'), FEATURE_KIND.Leaf],
-            [fid('b'), FEATURE_KIND.Leaf],
-          ]),
-          shared: new Set([vid('v1')]),
-        }),
-      ),
+  it('所有者複数 (owner 不確定) では共有解除を出さない → 項目0件 → メニューなし (owner-null dangling guard)', () => {
+    // 共有解除は OWNER-QUALIFIED: 確定した所有者がいなければ選択の再解決が remap できない
+    // ため、多所有選択にはメニューを出さない (FR-96 owner-null 対策)。
+    const result = composeContextMenu(
+      build({
+        vertexIds: new Set([vid('v1'), vid('v2')]),
+        owners: new Map([
+          [vid('v1'), fid('a')],
+          [vid('v2'), fid('b')],
+        ]),
+        kinds: new Map([
+          [fid('a'), FEATURE_KIND.Leaf],
+          [fid('b'), FEATURE_KIND.Leaf],
+        ]),
+        shared: new Set([vid('v1')]),
+      }),
     );
-    const ks = itemKinds(menu);
-    expect(ks).not.toContain(MENU_ITEM_KIND.Split);
-    expect(ks).not.toContain(MENU_ITEM_KIND.ChangeAffiliation);
-    expect(ks).not.toContain(MENU_ITEM_KIND.Merge);
-    expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
-    // 共有解除は頂点単位で成立しうる (§4.3)。
-    expect(ks).toContain(MENU_ITEM_KIND.Unshare);
+    expect(result).toBe(NO_MENU);
   });
 
   it('所有者複数かつ共有頂点なし → 項目0件 → メニューなし', () => {
@@ -356,15 +351,15 @@ describe('resolveMenuTarget / compose — 受け入れ基準 8: UI 文脈優先�
     expect(result).toBe(NO_MENU);
   });
 
-  it('所有者不明 (dangling vertex) は Unknown 扱いで地物全体操作を出さない', () => {
+  it('所有者不明 (dangling vertex) は Unknown 扱い → owner 不確定なので共有解除も出ない → メニューなし', () => {
     const input = build({
       vertexIds: new Set([vid('v1')]),
       owners: new Map(), // 解決不能 → Unknown
       shared: new Set([vid('v1')]),
     });
     expect(input.vertexContext.kind).toBe(CONTEXT_KIND.Unknown);
-    const menu = asMenu(composeContextMenu(input));
-    expect(itemKinds(menu)).toEqual([MENU_ITEM_KIND.Unshare]);
+    // OWNER-QUALIFIED 共有解除: 所有者不明では剥がす参照を確定できないため出さない。
+    expect(composeContextMenu(input)).toBe(NO_MENU);
   });
 
   it('アクティブ地物が解決できない場合は対象なし (既定へ落ちない, 教訓 5.4)', () => {

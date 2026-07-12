@@ -12,30 +12,39 @@
 // builder + a thin run-orchestration over injected ports, so the App composition
 // root stays thin and the whole thing is Vitest-testable without env (技術方針 2.5).
 //
+// SEMANTICS — OWNER-QUALIFIED (右クリック「共有解除」= この所有者の参照を1つ剥がす):
+//   The unshare is always performed against a CONFIRMED owner (the active feature, or the
+//   single owner of a vertex selection). For each requested shared vertex we detach the
+//   OWNER's own reference: the OWNER gets a fresh same-coordinate copy `v'`, while EVERY
+//   other citer keeps the original `v`. So the owner is fully separated from ALL its
+//   neighbours in ONE operation (a 3-owner vertex A/B/C: unsharing owner A gives A `v'`,
+//   B & C keep sharing `v`). Complete un-weld = repeat per owner (1 op = 1 owner). The
+//   composer offers 共有解除 ONLY when the owner is resolvable, so a multi/unknown-owner
+//   selection never reaches here with `ownerFeatureId === null` (defensively no-op'd).
+//
+// SELECTION RE-RESOLUTION (受け入れ基準 12, 教訓 5.11):
+//   The owner's selection is REMAPPED onto the new `v'` ids: `v'` is `created`, the owner
+//   feature `survived`, and the preference {owner → new ids} promotes them. The
+//   reresolve-bridge cannot name the minted ids from the intent, so this launcher builds
+//   the preference itself (see reresolve-bridge.ts's Unshare note).
+//
 // UNDO ATOMICITY (design gate — U13 は複数 feature を1提案で受けない):
 //   `EditProposal`/`createEditProposal` key on ONE `featureId` + ONE
-//   `FeatureSnapshot.feature` (consistency/types.ts), so a multi-vertex unshare that
-//   touches SEVERAL features cannot be a single `startProcess`. Verified: U13 does NOT
-//   batch features. So — per the gate — the undo-atomicity design is CHANGED: this
-//   module applies each touched feature's snapshot through the injected pure
-//   `applyProposal` (= U44 `applyEditProposal`) to build the final root, then wraps the
-//   baseline→final delta in ONE whole-state-swap {@link Command} recorded as a single
+//   `FeatureSnapshot.feature` (consistency/types.ts), so an unshare cannot be a single
+//   `startProcess`. Verified: U13 does NOT batch features. So the undo-atomicity design
+//   is CHANGED: this module applies each touched feature's snapshot through the injected
+//   pure `applyProposal` (= U44 `applyEditProposal`) to build the final root, then wraps
+//   the baseline→final delta in ONE whole-state-swap {@link Command} recorded as a single
 //   composite undo unit (the SAME shape createDeleteFeatureCommandForRoot uses, FR-73 /
 //   FR-94). This bypasses U13's spatial/time convergence, which is CORRECT for unshare:
 //   the op mints a same-coordinate vertex and rewrites one id reference — coordinates are
-//   unchanged (shared-vertex §4.6.4), so no overlap can appear and no temporal validity
-//   changes. The common single-owner case touches ONE feature (one snapshot); the
-//   multi/unknown-owner case touches several, still ONE undo unit.
+//   unchanged (shared-vertex §4.6.4), so no overlap appears and temporal validity is
+//   unchanged. Owner-qualified unshare touches exactly ONE feature (the owner).
 //
-// WHICH REFERENCE IS DETACHED (selection preservation, 教訓 5.11):
-//   For each shared vertex we detach a reference that does NOT belong to the intent's
-//   owner (when the owner is known), so the OWNER keeps citing the ORIGINAL vertex id
-//   and the new same-coordinate vertex goes to the neighbour. This is what makes the
-//   owner's original vertex a SURVIVOR, matching the reresolve-bridge contract
-//   (context-menu/consistency.test.ts: unshare (single owner) keeps {owner → original
-//   vertices} selected, the new id is `created`). A self-share (a vertex cited twice by
-//   ONE feature) has no non-owner reference; we then detach one of its references — the
-//   owner still cites the vertex via the OTHER reference, so it survives all the same.
+// ID COLLISION (教訓 5.37): the mint must avoid EVERY project raw id, not just the current
+//   time slice. The caller supplies the project-wide reserved id set (`reservedVertexIds`),
+//   threaded into `unshareReference` so a fresh id can never collide with an id effective
+//   at another time / a loaded id.
 
 import {
   FEATURE_KIND,
@@ -45,7 +54,13 @@ import {
   type LeafFeature,
   type LineFeature,
 } from '../domain/feature';
-import { createShape, withHoleRingVertexIds, withTerritoryRingVertexIds, RING_KIND, type Ring } from '../domain/ring';
+import {
+  createShape,
+  withHoleRingVertexIds,
+  withTerritoryRingVertexIds,
+  RING_KIND,
+  type Ring,
+} from '../domain/ring';
 import {
   buildReverseIndex,
   containerKey,
@@ -58,17 +73,13 @@ import {
 } from '../domain/shared-vertex';
 import { buildSnapshot, type FeatureSnapshot } from '../domain/editing/index';
 import { createEditProposal, type EditProposal } from '../domain/consistency/index';
-import {
-  createCommandResult,
-  type CommandResult,
-} from '../domain/command/result';
+import { createCommandResult, type CommandResult } from '../domain/command/result';
 import {
   createCompositeCommand,
   defineCommandKind,
   type Command,
   type CommandOutcome,
 } from '../domain/command/index';
-import { FLOW_KIND, bridgeReresolve } from '../domain/context-menu/index';
 import type { NextTargetPreference } from '../domain/selection/index';
 import {
   createIdGeneratorState,
@@ -87,7 +98,7 @@ import { featureByIdAt, featuresAt, verticesAt } from './live-lookup';
 export interface UnshareIntent {
   /** The SHARED vertices to detach (≥1) — only the shared subset (contracts §payload). */
   readonly vertexIds: ReadonlySet<VertexId>;
-  /** The single owner when the selection resolved to one, else null (multi/unknown). */
+  /** The CONFIRMED owner whose reference is detached; `null` is a defensive no-op. */
   readonly ownerFeatureId: FeatureId | null;
 }
 
@@ -98,18 +109,16 @@ export interface UnshareSnapshot {
 }
 
 /**
- * The pure PLAN for an unshare: per-touched-feature snapshots plus the change sets a
- * whole-state-swap command needs. `null` (no plan) means a no-op — no shared vertex to
- * detach — so the caller records NO command (no幽霊 undo, 教訓 5.24).
+ * The pure PLAN for an unshare: the owner's reshaped after-state plus the change sets a
+ * whole-state-swap command needs. `null` (no plan) means a no-op — no shared vertex the
+ * owner cites — so the caller records NO command (no幽霊 undo, 教訓 5.24).
  */
 export interface UnsharePlan {
-  /** One entry per feature whose ring/line lost a shared citation (never the owner). */
+  /** The owner feature's reshaped snapshot (the only touched feature; owner-qualified). */
   readonly snapshots: readonly UnshareSnapshot[];
-  /** The feature ids of {@link snapshots} (the reshaped neighbours). */
+  /** The feature ids of {@link snapshots} (= the owner). */
   readonly touchedFeatureIds: readonly FeatureId[];
-  /** The ORIGINAL detached vertices — they SURVIVE (still cited by the owner). */
-  readonly survivedVertexIds: readonly VertexId[];
-  /** The freshly minted same-coordinate vertices (one per detached reference). */
+  /** The freshly minted same-coordinate vertices the owner now cites (the remap target). */
   readonly createdVertexIds: readonly VertexId[];
   /** The advanced id-generator state for the caller to thread forward. */
   readonly nextIdState: IdGeneratorState;
@@ -123,23 +132,21 @@ export interface UnshareContext {
   readonly idState: IdGeneratorState;
   /** A monotonic-ish integer source for the id mints (injected, 教訓 5.15 / 5.37). */
   readonly now: TimeSource;
+  /** EVERY project raw id, so a minted id avoids ids effective at another time (教訓 5.37). */
+  readonly reservedVertexIds: ReadonlySet<string>;
 }
 
 /**
- * Pick the reference to DETACH for a shared vertex: prefer one NOT owned by
- * `ownerFeatureId` so the owner keeps citing the original vertex (selection
- * preservation, see the module note). Falls back to the first reference for a
- * self-share / unknown owner. `refs` has ≥2 entries (the caller filtered to shared).
+ * The OWNER's reference to a shared vertex — the one detached so the owner gets `v'` and
+ * every other citer keeps `v` (owner-qualified, see the module note). Returns `null` when
+ * the owner does not cite this vertex (a stale / cross-feature selection): that vertex is
+ * then skipped. `refs` has ≥2 entries (the caller filtered to shared).
  */
-function pickDetachReference(
+function pickOwnerReference(
   refs: readonly ShapeReference[],
-  ownerFeatureId: FeatureId | null,
-): ShapeReference {
-  if (ownerFeatureId !== null) {
-    const foreign = refs.find((r) => r.container.featureId !== ownerFeatureId);
-    if (foreign !== undefined) return foreign;
-  }
-  return refs[0]!; // refs.length >= 2 by construction
+  ownerFeatureId: FeatureId,
+): ShapeReference | null {
+  return refs.find((r) => r.container.featureId === ownerFeatureId) ?? null;
 }
 
 /** Selected vertex ids in a deterministic order (so a redo replays identically). */
@@ -147,8 +154,6 @@ function orderedTargets(
   vertexIds: ReadonlySet<VertexId>,
   index: ReadonlyMap<VertexId, readonly ShapeReference[]>,
 ): VertexId[] {
-  // Iterate the reverse index's key order (deterministic build order) and keep only
-  // the ones actually requested — a set has no inherent order, the index does.
   const out: VertexId[] = [];
   for (const vid of index.keys()) {
     if (vertexIds.has(vid)) out.push(vid);
@@ -192,14 +197,17 @@ function rebuildLine(feature: LineFeature, state: SharedVertexState): LineFeatur
 }
 
 /**
- * Build the pure unshare plan (FR-33): detach one reference per shared vertex through
- * the domain {@link unshareReference}, then materialise each touched feature as a
- * {@link FeatureSnapshot}. Returns `null` when nothing in `intent.vertexIds` is
- * actually shared at the current time (no-op / stale). Pure — reads the live root at
- * the anchor time only; never writes state.
+ * Build the pure unshare plan (FR-33): detach the OWNER's reference per shared vertex
+ * through the domain {@link unshareReference}, then materialise the owner as a
+ * {@link FeatureSnapshot}. Returns `null` when the owner is unknown, or nothing the owner
+ * cites in `intent.vertexIds` is actually shared at the current time (no-op / stale).
+ * Pure — reads the live root at the anchor time only; never writes state.
  */
 export function buildUnsharePlan(ctx: UnshareContext, intent: UnshareIntent): UnsharePlan | null {
-  if (intent.vertexIds.size === 0) return null;
+  const owner = intent.ownerFeatureId;
+  // Owner-qualified: no confirmed owner ⇒ no unshare (owner-null dangling guard).
+  if (owner === null || intent.vertexIds.size === 0) return null;
+
   const root = ctx.getRoot();
   const time = ctx.getTime();
   const features = featuresAt(root, time);
@@ -208,35 +216,38 @@ export function buildUnsharePlan(ctx: UnshareContext, intent: UnshareIntent): Un
   const state0 = createSharedVertexState(vertices, containersOf(features));
   const index0 = buildReverseIndex(state0);
 
-  // Choose ONE reference to detach per requested vertex that is actually shared (≥2
-  // references). The (container, position) refs stay valid across the sequential
-  // unshares below: each unshare rewrites only its own slot (same array length), so a
-  // later target's slot is untouched (バグハント3 index-once discipline).
+  // Choose the OWNER's reference to detach per requested vertex that the owner cites AND
+  // is actually shared (≥2 references). The (container, position) refs stay valid across
+  // the sequential unshares below: each unshare rewrites only its own slot (same array
+  // length), so a later target's slot is untouched (バグハント3 index-once discipline).
   const detach: { readonly vertexId: VertexId; readonly reference: ShapeReference }[] = [];
   for (const vid of orderedTargets(intent.vertexIds, index0)) {
     const refs = referencesOf(state0, vid, index0);
     if (refs.length < 2) continue; // not shared → skip (dispatch already filtered, defensive)
-    detach.push({ vertexId: vid, reference: pickDetachReference(refs, intent.ownerFeatureId) });
+    const ownerRef = pickOwnerReference(refs, owner);
+    if (ownerRef === null) continue; // owner does not cite this vertex → not its to unshare
+    detach.push({ vertexId: vid, reference: ownerRef });
   }
-  if (detach.length === 0) return null; // nothing shared → no-op (no幽霊, 教訓 5.24)
+  if (detach.length === 0) return null; // nothing to detach → no-op (no幽霊, 教訓 5.24)
 
-  // Apply the detaches sequentially, threading the id-generator state forward.
+  // Apply the detaches sequentially, threading the id-generator state forward. The mint
+  // excludes EVERY project raw id (教訓 5.37) so a fresh id never collides across time.
   let state = state0;
   let idState = ctx.idState;
-  const survivedVertexIds: VertexId[] = [];
   const createdVertexIds: VertexId[] = [];
   const createdByFeature = new Map<FeatureId, VertexId[]>();
   const touchedFeatureOrder: FeatureId[] = [];
   for (const { vertexId, reference } of detach) {
-    const res = unshareReference(state, vertexId, reference, idState, ctx.now);
+    const res = unshareReference(state, vertexId, reference, idState, ctx.now, {
+      reservedIds: ctx.reservedVertexIds,
+    });
     if (res.result.status !== SHARED_VERTEX_OUTCOME.Applied || res.newVertexId === undefined) {
       continue; // defensive: coordinates unchanged so a reject is not expected here
     }
     state = res.result.state;
     idState = res.idState;
-    survivedVertexIds.push(vertexId);
     createdVertexIds.push(res.newVertexId);
-    const fid = reference.container.featureId;
+    const fid = reference.container.featureId; // === owner (we detached the owner's ref)
     const list = createdByFeature.get(fid);
     if (list === undefined) {
       createdByFeature.set(fid, [res.newVertexId]);
@@ -247,7 +258,7 @@ export function buildUnsharePlan(ctx: UnshareContext, intent: UnshareIntent): Un
   }
   if (createdVertexIds.length === 0) return null;
 
-  // Materialise each touched (neighbour) feature as a complete-state snapshot: its
+  // Materialise each touched feature (the owner) as a complete-state snapshot: its
   // reshaped record + the new same-coordinate vertex bodies its containers now cite.
   const snapshots: UnshareSnapshot[] = [];
   for (const fid of touchedFeatureOrder) {
@@ -269,7 +280,6 @@ export function buildUnsharePlan(ctx: UnshareContext, intent: UnshareIntent): Un
   return {
     snapshots,
     touchedFeatureIds: snapshots.map((s) => s.featureId),
-    survivedVertexIds,
     createdVertexIds,
     nextIdState: idState,
   };
@@ -283,10 +293,12 @@ const UNSHARE_COMMIT_KIND = defineCommandKind('u36-unshare-commit');
 export interface UnsharePorts {
   readonly getRoot: () => DomainProject;
   readonly getTime: () => TimePoint;
-  /** The current app id-generation state (project-wide collision-safe, 教訓 5.37). */
+  /** The current app id-generation state. */
   readonly getIdState: () => IdGeneratorState;
   /** Monotonic integer source for id mints. */
   readonly now: TimeSource;
+  /** EVERY project raw id (project-wide collision reservation, 教訓 5.37). Required. */
+  readonly getReservedVertexIds: () => ReadonlySet<string>;
   /** Apply ONE feature snapshot to the root WITHOUT recording history (= U44 applyEditProposal). */
   readonly applyProposal: (
     root: DomainProject,
@@ -303,27 +315,20 @@ export interface UnsharePorts {
 
 /**
  * Build the whole-state-swap command + its lifecycle {@link CommandResult} for an
- * unshare (the SAME shape createDeleteFeatureCommandForRoot uses). `survived` lists the
- * owner (so the reresolve preference's owner is a survivor), the reshaped neighbours,
- * and the ORIGINAL detached vertices; `created` lists the new same-coordinate vertices;
- * nothing is deleted (the original vertices keep ≥1 citation). Undo is symmetric
- * (教訓 5.23): the created ids become deleted, the rest survive.
+ * unshare (the SAME shape createDeleteFeatureCommandForRoot uses). `survived` = the
+ * reshaped owner; `created` = the new same-coordinate vertices the owner now cites;
+ * nothing is deleted (the original vertices keep their other citations). Undo is
+ * symmetric (教訓 5.23): the created ids become deleted, the owner survives.
  */
 function buildUnshareCommand(
   baseline: DomainProject,
   finalState: DomainProject,
   plan: UnsharePlan,
-  ownerFeatureId: FeatureId | null,
 ): { readonly command: Command<DomainProject>; readonly result: CommandResult } {
-  const survived = new Set<FeatureId | VertexId>([
-    ...plan.touchedFeatureIds,
-    ...plan.survivedVertexIds,
-  ]);
-  if (ownerFeatureId !== null) survived.add(ownerFeatureId);
+  const survived = new Set<FeatureId>(plan.touchedFeatureIds);
   const created = new Set<VertexId>(plan.createdVertexIds);
 
   const forward: CommandResult = createCommandResult({ survived, created });
-  // Undo: the minted vertices are removed (created → deleted); everything else survives.
   const backward: CommandResult = createCommandResult({
     survived,
     deleted: created,
@@ -351,16 +356,34 @@ function buildUnshareCommand(
 }
 
 /**
+ * Derive the selection re-resolution preference for an unshare: REMAP the owner's vertex
+ * selection onto the fresh `v'` ids (受け入れ基準 12, 教訓 5.11). The bridge cannot name
+ * the minted ids, so the launcher builds this itself. Empty when nothing was minted.
+ */
+function unshareRemapPreference(
+  ownerFeatureId: FeatureId,
+  createdVertexIds: readonly VertexId[],
+): NextTargetPreference {
+  if (createdVertexIds.length === 0) return {};
+  return { vertexSelection: { ownerFeatureId, vertexIds: new Set(createdVertexIds) } };
+}
+
+/**
  * Run FR-33 共有解除 against the live root (the ONE handler the右クリック「共有解除」
- * drives). Builds the pure plan, applies each touched feature's snapshot to assemble
- * the final root, records ONE whole-state-swap undo unit, and re-resolves the selection
- * from the SAME reresolve-bridge the other flows use (教訓 5.6 / 5.11). Returns the
- * forward {@link CommandResult} (for callers/tests), or `null` for a no-op (nothing
- * shared → no command, no幽霊 undo entry, 教訓 5.24).
+ * drives). Builds the pure plan, applies the owner's snapshot to assemble the final root,
+ * records ONE whole-state-swap undo unit, and re-resolves the selection by REMAPPING the
+ * owner's vertices onto the new `v'` ids. Returns the forward {@link CommandResult} (for
+ * callers/tests), or `null` for a no-op (nothing shared / no owner → no幽霊, 教訓 5.24).
  */
 export function runUnshare(intent: UnshareIntent, ports: UnsharePorts): CommandResult | null {
   const plan = buildUnsharePlan(
-    { getRoot: ports.getRoot, getTime: ports.getTime, idState: ports.getIdState(), now: ports.now },
+    {
+      getRoot: ports.getRoot,
+      getTime: ports.getTime,
+      idState: ports.getIdState(),
+      now: ports.now,
+      reservedVertexIds: ports.getReservedVertexIds(),
+    },
     intent,
   );
   if (plan === null) return null;
@@ -372,19 +395,11 @@ export function runUnshare(intent: UnshareIntent, ports: UnsharePorts): CommandR
     finalState = ports.applyProposal(finalState, createEditProposal(featureId, time, snapshot));
   }
 
-  const { command, result } = buildUnshareCommand(
-    baseline,
-    finalState,
-    plan,
-    intent.ownerFeatureId,
-  );
+  const { command, result } = buildUnshareCommand(baseline, finalState, plan);
   ports.onIdStateAdvanced?.(plan.nextIdState);
 
-  // Re-resolve selection through the SAME bridge the UI-button path uses (受け入れ基準 12).
-  const { preference } = bridgeReresolve(
-    { kind: FLOW_KIND.Unshare, vertexIds: intent.vertexIds, ownerFeatureId: intent.ownerFeatureId },
-    result,
-  );
+  // owner is non-null here (buildUnsharePlan returned a non-null plan ⇒ owner confirmed).
+  const preference = unshareRemapPreference(intent.ownerFeatureId!, plan.createdVertexIds);
   ports.recordCommit(command, preference);
   return result;
 }

@@ -240,28 +240,20 @@ function leafFeatureItems(): ContextMenuItem[] {
   ];
 }
 
-/** Feature-wide common items: 削除・プロパティ編集 (any of 点/線/面). */
-function commonFeatureItems(): ContextMenuItem[] {
-  return [
-    enabledItem(MENU_ITEM_KIND.Delete),
-    enabledItem(MENU_ITEM_KIND.EditProperties),
-  ];
-}
-
 /**
- * Common items for a VertexOnly single-owner target: プロパティ編集 ONLY — 削除 is
- * DELIBERATELY OMITTED here (FR-96 Delete×VertexOnly 乖離解消). In a VertexOnly target
- * there is no active feature; the live削除 funnel (COMMAND_ID.EditDelete → runEditDelete)
- * branches on the vertex SELECTION and deletes the SELECTED VERTICES, whereas
- * FLOW_KIND.Delete's intent names the OWNER FEATURE (contracts.ts). Offering 削除 here
- * would show an item whose wired behaviour (頂点削除) diverges from its intent (地物削除).
- * The other feature-wide items (プロパティ編集 / 分割 / 所属変更 / 結合) act on the resolved
- * owner featureId directly and do NOT branch on the vertex selection, so they have NO
- * divergence — they fire exactly what they name. 頂点削除 stays reachable via the Delete
- * KEY and via right-clicking a vertex (which sets an active feature → Feature target).
+ * The削除 item, granularity chosen to MATCH what the live delete funnel
+ * (COMMAND_ID.EditDelete → runEditDelete) will actually do given the selection (教訓
+ * 5.6, 出す=起きる):
+ *   - a vertex selection is present → 頂点を削除 (FR-88 頂点削除, reshapes the feature);
+ *   - no vertex selection → 削除 (地物全体, FR-85 全錨削除).
+ * This is the Delete×VertexOnly / vertex-hit 乖離解消: 削除 never shows「地物削除」when the
+ * user has vertices selected (would be data loss), and 頂点を削除 never shows when the
+ * whole feature is the target.
  */
-function vertexOnlyCommonItems(): ContextMenuItem[] {
-  return [enabledItem(MENU_ITEM_KIND.EditProperties)];
+function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
+  return hasVertexSelection
+    ? enabledItem(MENU_ITEM_KIND.DeleteVertex)
+    : enabledItem(MENU_ITEM_KIND.Delete);
 }
 
 /**
@@ -289,38 +281,41 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
 
   switch (target.kind) {
     case MENU_TARGET_KIND.Feature: {
-      // 共通項目 (点/線/面いずれでも).
-      items.push(...commonFeatureItems());
+      // 共通項目 (点/線/面いずれでも): 削除 vs 頂点を削除 by whether vertices are selected.
+      items.push(deleteItemFor(target.vertexIds.size > 0));
+      items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
       // 面情報項目: leaf(末端) ONLY (教訓 5.25). Aggregate gets NO 分割; its
       // affiliation/merge出し分けは U28/U30 契約に委ねるため、ここでは leaf に限
       // って面情報項目を出す (受け入れ基準 2).
       if (target.featureKind === FEATURE_KIND.Leaf) {
         items.push(...filterByTool(leafFeatureItems(), input.toolKind));
       }
-      // 共有解除: even with a feature target, shared頂点が選択集合に含まれれば出す.
-      // The shared subset was resolved once on the target (教訓 5.29).
+      // 共有解除: a Feature target ALWAYS names a resolvable owner (the active feature),
+      // so unshare is owner-qualified — offered whenever a shared頂点 is in the selection.
       if (target.sharedVertexIds.size > 0) {
         items.push(enabledItem(MENU_ITEM_KIND.Unshare));
       }
       break;
     }
     case MENU_TARGET_KIND.VertexOnly: {
-      // No single feature target if owner unknown/multi → no feature-wide items
-      // (受け入れ基準 8). Only when a single owner names a leaf do面情報項目 apply.
-      // The owner kind was resolved once on the target (教訓 5.19); the dispatch
-      // reads the SAME kind, so an offered item always fires (出す=発火できる,
-      // 受け入れ基準 6/8, 教訓 5.6).
+      // A VertexOnly target only acts when a SINGLE owner resolves (受け入れ基準 8):
+      //   - owner unknown/multi → NO feature-wide items AND NO 共有解除. 共有解除 is
+      //     OWNER-QUALIFIED (右クリック「共有解除」= この所有者の参照を剥がす): without a
+      //     confirmed owner the reresolve cannot remap the selection (owner-null dangling
+      //     guard), so it is not offered at all → NO_MENU for a multi/unknown selection.
+      //   - single owner → 頂点を削除 (a VertexOnly always has a vertex selection) +
+      //     プロパティ編集 + (leaf面情報) + 共有解除(if shared). The owner kind was resolved
+      //     once on the target (教訓 5.19); the dispatch reads the SAME owner/kind so every
+      //     offered item fires (出す=発火できる, 受け入れ基準 6/8, 教訓 5.6).
       if (target.ownerFeatureId !== null && target.ownerFeatureKind !== null) {
-        // NO 削除 here (FR-96 Delete×VertexOnly 乖離解消): see vertexOnlyCommonItems.
-        items.push(...vertexOnlyCommonItems());
+        items.push(enabledItem(MENU_ITEM_KIND.DeleteVertex));
+        items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
         if (target.ownerFeatureKind === FEATURE_KIND.Leaf) {
           items.push(...filterByTool(leafFeatureItems(), input.toolKind));
         }
-      }
-      // 共有解除 is vertex-level: offered whenever the set holds≥1 shared頂点,
-      // even with multi/unknown owner (§4.3).
-      if (target.sharedVertexIds.size > 0) {
-        items.push(enabledItem(MENU_ITEM_KIND.Unshare));
+        if (target.sharedVertexIds.size > 0) {
+          items.push(enabledItem(MENU_ITEM_KIND.Unshare));
+        }
       }
       break;
     }

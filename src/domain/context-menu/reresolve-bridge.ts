@@ -20,7 +20,6 @@
 
 import type { CommandResult } from '../command/result';
 import type { NextTargetPreference } from '../selection/reresolve';
-import type { FeatureId, VertexId } from '../ids';
 
 import { FLOW_KIND, type DispatchIntent } from './contracts';
 
@@ -48,12 +47,11 @@ import { FLOW_KIND, type DispatchIntent } from './contracts';
  *     selected, otherwise re-resolution prunes it and the shell re-selects the
  *     created merged feature from the result's `created` set (the shell knows the
  *     new id; the bridge cannot name an id it did not mint).
- *   - Unshare: the SHARED vertices were detached; their owner feature survives.
- *     Prefer the (still-existing) shared vertices under their owner so the user
- *     keeps the detached vertices selected — but ONLY when the owner is known
- *     (single-owner selection). For a multi/unknown-owner unshare no single owner
- *     can be named, so an empty preference is returned and re-resolution simply
- *     prunes any deleted vertex (no blanket clear).
+ *   - Unshare: owner-qualified — the OWNER gets fresh same-coordinate copies (new ids),
+ *     the other citers keep the original. The new ids are NOT in the intent, so this
+ *     bridge cannot name them; the LAUNCHER (live-unshare) owns the remap of the owner's
+ *     selection onto the new ids. The bridge returns the empty preference (re-resolution
+ *     merely prunes, never blanket-clears).
  *
  * The mapping never re-implements re-resolution (that is U22's job, 教訓 5.29);
  * it only chooses WHICH surviving element is the next target.
@@ -62,6 +60,11 @@ export function nextTargetPreferenceFor(intent: DispatchIntent): NextTargetPrefe
   switch (intent.kind) {
     case FLOW_KIND.Delete:
       // Target removed; name no next element (re-resolution prunes the deleted id).
+      return {};
+    case FLOW_KIND.DeleteVertex:
+      // The selected vertices are removed; the vertex-delete funnel (runEditDelete) owns
+      // its own re-resolution (keeps the feature active, clears the vertex set), so the
+      // bridge names nothing (re-resolution prunes the deleted vertex ids, 教訓 5.11).
       return {};
     case FLOW_KIND.EditProperties:
       // Not a structure change — nothing to promote.
@@ -77,22 +80,17 @@ export function nextTargetPreferenceFor(intent: DispatchIntent): NextTargetPrefe
       // the created merged feature from result.created (an id the bridge can't name).
       return { featureId: intent.seedFeatureId };
     case FLOW_KIND.Unshare:
-      // Keep the detached shared vertices selected under their owner — only when a
-      // single owner is known (multi/unknown → empty preference).
-      return unsharePreference(intent.ownerFeatureId, intent.vertexIds);
+      // Owner-qualified unshare gives the OWNER fresh same-coordinate copies (new ids the
+      // bridge cannot name from the intent alone — the intent carries the ORIGINAL ids,
+      // which now belong to the OTHER citers). The LAUNCHER (live-unshare) owns the remap:
+      // it knows the minted ids and re-resolves the owner's selection onto them. So the
+      // bridge names nothing here (re-resolution merely prunes, never blanket-clears).
+      return {};
     default: {
       const _never: never = intent;
       return _never;
     }
   }
-}
-
-function unsharePreference(
-  ownerFeatureId: FeatureId | null,
-  vertexIds: ReadonlySet<VertexId>,
-): NextTargetPreference {
-  if (ownerFeatureId === null || vertexIds.size === 0) return {};
-  return { vertexSelection: { ownerFeatureId, vertexIds: new Set(vertexIds) } };
 }
 
 /**

@@ -14,8 +14,10 @@
 import { FLOW_KIND, type FlowKind } from './contracts';
 
 export const MENU_ITEM_KIND = {
-  /** 共通: 削除 → U31. */
+  /** 共通: 削除 (地物全体) → U31. Offered only when NO vertex is selected. */
   Delete: 'delete',
+  /** 頂点削除 (選択頂点) → FR-88 vertex-delete. Offered when a vertex selection exists. */
+  DeleteVertex: 'deleteVertex',
   /** 共通: プロパティ編集 → open property editor. */
   EditProperties: 'editProperties',
   /** 共有頂点: 共有解除 → U11. */
@@ -33,6 +35,7 @@ export type MenuItemKind = (typeof MENU_ITEM_KIND)[keyof typeof MENU_ITEM_KIND];
 /** The flow each item kind dispatches to (one-to-one; 教訓 5.19). */
 export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.Delete]: FLOW_KIND.Delete,
+  [MENU_ITEM_KIND.DeleteVertex]: FLOW_KIND.DeleteVertex,
   [MENU_ITEM_KIND.EditProperties]: FLOW_KIND.EditProperties,
   [MENU_ITEM_KIND.Unshare]: FLOW_KIND.Unshare,
   [MENU_ITEM_KIND.Split]: FLOW_KIND.Split,
@@ -43,6 +46,7 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
 /** Japanese user-facing label per item kind (FR-115). */
 export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   [MENU_ITEM_KIND.Delete]: '削除',
+  [MENU_ITEM_KIND.DeleteVertex]: '頂点を削除',
   [MENU_ITEM_KIND.EditProperties]: 'プロパティ編集',
   [MENU_ITEM_KIND.Unshare]: '共有解除',
   [MENU_ITEM_KIND.Split]: '分割',

@@ -130,7 +130,7 @@ describe('context-menu-adapter — live lookup wiring (実ドメイン結線の�
     expect(featureKindLookup.kindOf(asFeatureId('ghost'))).toBeNull();
   });
 
-  it('right-click a shared border vertex (VertexOnly single owner) → 共有解除 offered, 削除 not', () => {
+  it('right-click a shared border vertex (VertexOnly single owner) → 共有解除 + 頂点を削除, 地物削除なし', () => {
     const root = borderShareProject();
     // No active feature; the shared vertex is selected (its owner resolves to one leaf).
     const owner = liveLookups(root).ownerLookup.ownerOf(VS)!;
@@ -138,17 +138,29 @@ describe('context-menu-adapter — live lookup wiring (実ドメイン結線の�
     const ks = kinds(compose(root, selection, { hit: vertexHit(owner, VS) }));
     expect(ks).toContain(MENU_ITEM_KIND.Unshare);
     expect(ks).toContain(MENU_ITEM_KIND.EditProperties);
-    // Delete×VertexOnly 乖離解消: no 削除 in a VertexOnly target.
+    // 乖離解消: a vertex selection shows 頂点を削除, never the whole-feature 削除.
+    expect(ks).toContain(MENU_ITEM_KIND.DeleteVertex);
     expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
   });
 
-  it('active leaf with the shared vertex selected → 削除 + 共有解除 + 面情報', () => {
+  it('active leaf with the shared vertex SELECTED → 頂点を削除 (not 地物削除) + 共有解除 + 面情報', () => {
     const root = borderShareProject();
     const selection = replaceVertices(withActiveFeature(EMPTY_SELECTION, A), A, new Set([VS]));
-    const ks = kinds(compose(root, selection, { hit: featureBodyHit(A) }));
-    expect(ks).toContain(MENU_ITEM_KIND.Delete);
+    const ks = kinds(compose(root, selection, { hit: vertexHit(A, VS) }));
+    // Vertices are selected → 頂点を削除 (matches EditDelete's vertex branch), NOT 削除.
+    expect(ks).toContain(MENU_ITEM_KIND.DeleteVertex);
+    expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
     expect(ks).toContain(MENU_ITEM_KIND.Split);
     expect(ks).toContain(MENU_ITEM_KIND.Unshare);
+  });
+
+  it('active leaf, NO vertex selection (body right-click) → 地物削除 (削除), not 頂点を削除', () => {
+    const root = borderShareProject();
+    const selection = withActiveFeature(EMPTY_SELECTION, A);
+    const ks = kinds(compose(root, selection, { hit: featureBodyHit(A) }));
+    expect(ks).toContain(MENU_ITEM_KIND.Delete);
+    expect(ks).not.toContain(MENU_ITEM_KIND.DeleteVertex);
+    expect(ks).toContain(MENU_ITEM_KIND.Split);
   });
 
   it('view mode → NO_MENU (canEdit=false, 教訓 5.13 一括無効化)', () => {
