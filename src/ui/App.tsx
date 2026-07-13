@@ -161,19 +161,19 @@ import {
 // the hit-test & renderer use, 教訓 5.29).
 import { composeMenuFor } from './map/context-menu-adapter';
 import {
-  FLOW_KIND,
-  dispatchMenuItem,
-  isBlocked,
   sharedLookupFromSet,
   type ContextMenuModel,
   type MenuItemKind,
   type NoMenu,
 } from '../domain/context-menu/index';
+// (fr96 / Codex F1b) the item → flow LAUNCH routing seam (dispatchMenuItem + the
+// EditProperties live-existence guard live THERE, Vitest-pinned; App only injects
+// its live effects as ports — vertex-delete.ts の同型).
+import { launchMenuItem } from './context-menu-launch';
 import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
 import { resolveDisplayFor } from './map/display-resolution-cache';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
-import { assertNever } from '../domain/assert-never';
 import {
   ownerLookupFromMap,
   type RectangleResolver,
@@ -1893,9 +1893,18 @@ export function App(): JSX.Element {
   // rendered tab button is the additive way to activate it without a shell edit —
   // the same single path a user click takes, 教訓 5.29). The target feature was
   // already promoted via setActiveFeature, so the panel resolves it on switch.
+  // Codex F3: an absent tab is surfaced LOUDLY (honest failure, 教訓 5.12) — a shell
+  // testid rename must not silently degrade this導線. An explicit tab-state API is a
+  // shell change and stays backlog.
   const focusPropertyTab = useCallback((): void => {
     const tab = document.getElementById(`sidebar-tab-${SIDEBAR_SECTION.Properties}`);
-    if (tab instanceof HTMLElement) tab.click();
+    if (tab instanceof HTMLElement) {
+      tab.click();
+      return;
+    }
+    console.warn(
+      'fr96: プロパティタブ (sidebar-tab-properties) が見つからないため、タブ切替をスキップしました。',
+    );
   }, []);
 
   // fr96 composeFor — assemble the U36 ComposeInput from the LIVE store snapshot at
@@ -1929,54 +1938,33 @@ export function App(): JSX.Element {
     [store],
   );
 
-  // fr96 onSelectItem — route a chosen item through the PURE dispatch (drift guard:
-  // a disabled / stale item is BLOCKED there, 教訓 5.13) and launch the matching
-  // EXISTING flow — never a simplified side-path (教訓 5.6):
+  // fr96 onSelectItem — delegate to the launch seam (context-menu-launch.ts): the
+  // PURE dispatch drift guard, the FLOW→TOOL_ID mapping, AND the Codex F1b
+  // EditProperties live-existence guard all live THERE (Vitest-pinned); this
+  // callback only injects the App's live effects as ports:
   //   Delete           → the ONE COMMAND_ID.EditDelete funnel (地物全錨削除);
   //   DeleteVertex     → the SAME runEditDelete vertex branch the live EditDelete
   //                      takes, fed the intent's own {owner, vertexIds} payload;
-  //   EditProperties   → promote the target + focus the プロパティ tab;
+  //   EditProperties   → (live-existence checked) promote + focus プロパティ tab;
   //   Split / 所属変更 / 結合 → arm the matching edit tool (the flow's own session
   //                      collects its targets from there);
   //   Unshare          → the FR-33 live unshare launcher (ONE composite undo unit +
   //                      owner-selection remap onto the minted ids).
   const onSelectMenuItem = useCallback(
     (itemKind: MenuItemKind, model: ContextMenuModel): void => {
-      const intent = dispatchMenuItem(itemKind, model);
-      if (isBlocked(intent)) return; // disabled / stale: never fires (教訓 5.13)
-      switch (intent.kind) {
-        case FLOW_KIND.Delete:
-          registry.dispatch(COMMAND_ID.EditDelete);
-          return;
-        case FLOW_KIND.DeleteVertex:
-          // The intent names its own owner + vertex set (the composed target), so the
-          // funnel deletes EXACTLY what the menu offered (教訓 5.6). activeFeature is
-          // irrelevant to the vertex branch (vertexIds ≠ 空 selects it).
-          runDeleteFunnel({
-            activeFeature: null,
-            vertexOwner: intent.ownerFeatureId,
-            vertexIds: intent.vertexIds,
-          });
-          return;
-        case FLOW_KIND.EditProperties:
-          store.getState().setActiveFeature(intent.featureId);
+      launchMenuItem(itemKind, model, {
+        getRoot: () => store.getState().domain,
+        getTime: () => store.getState().currentTime,
+        dispatchEditDelete: () => registry.dispatch(COMMAND_ID.EditDelete),
+        deleteVertices: (ownerFeatureId, vertexIds) =>
+          runDeleteFunnel({ activeFeature: null, vertexOwner: ownerFeatureId, vertexIds }),
+        openProperties: (featureId) => {
+          store.getState().setActiveFeature(featureId);
           focusPropertyTab();
-          return;
-        case FLOW_KIND.Split:
-          armEditTool(TOOL_ID.EditKnife);
-          return;
-        case FLOW_KIND.ChangeAffiliation:
-          armEditTool(TOOL_ID.EditReparent);
-          return;
-        case FLOW_KIND.Merge:
-          armEditTool(TOOL_ID.EditMerge);
-          return;
-        case FLOW_KIND.Unshare:
-          runUnshareIntent(intent.vertexIds, intent.ownerFeatureId);
-          return;
-        default:
-          return assertNever(intent);
-      }
+        },
+        armEditTool,
+        unshare: (vertexIds, ownerFeatureId) => runUnshareIntent(vertexIds, ownerFeatureId),
+      });
     },
     [store, registry, runDeleteFunnel, focusPropertyTab, armEditTool, runUnshareIntent],
   );
@@ -2273,6 +2261,16 @@ export function App(): JSX.Element {
   // U37: an in-progress survey DRAFT owns the keyboard (its OWN Escape cancels the
   // draft; a stray global Delete during a measurement must not hit the selection).
   const [surveyDrafting, setSurveyDrafting] = useState(false);
+  // Codex F1a: an OPEN right-click menu owns the keyboard too. Without this, Ctrl+Z
+  // fired THROUGH the open menu and could delete the very feature the FROZEN menu
+  // model still offers — a following EditProperties click then promoted a nonexistent
+  // id (stale-menu 再現経路). Reported up by MapContextMenu via onOpenChange (the
+  // onDrawingChange 同型); the menu's own Escape is a capture-phase listener and thus
+  // suspension-independent (メニューを閉じるだけ — 選択は消さない). Side-effect by
+  // design: while a menu is open the right-click PORT is suspended as well, so a
+  // second right-click only closes the menu (outside-pointerdown) without opening a
+  // new one — modal-consistent input ownership (段階7).
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
@@ -2283,7 +2281,8 @@ export function App(): JSX.Element {
     reparentDrawing ||
     ringEditDrawing ||
     drillDrawing ||
-    surveyDrafting;
+    surveyDrafting ||
+    contextMenuOpen;
   // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
   // every render, so the imperative port always sees the current value — 教訓 5.6).
   shortcutsSuspendedRef.current = shortcutsSuspended;
@@ -2716,144 +2715,24 @@ export function App(): JSX.Element {
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
         mapOverlay={
-          /* U37 測量の入力ブリッジ (教訓 5.14 / 5.29): mounted INSIDE the map cell
-             (.map-area__overlay) so its client rect equals the canvas' box by
-             construction — it never covers the 上部バー controls / toolbar /
-             timeline, and "clicked here ⇒ measured here" shares the renderer's
-             one transform. Renders nothing while 測量モード is OFF. */
-          <SurveyMapBridge
-            store={store}
-            screenToWorld={screenToWorld}
-            mapCameraInput={mapCameraInput}
-          />
-        }
-        topBar={
-          /* FR-12 INTEGRATION (教訓 5.7 合成ルートの結線漏れ / 教訓 5.16 倍率の二重適用
-             防止): mount the U18 経度シフト control in the上部バー (ユーザー要望「経度シフト
-             を上部表示に。現状の表示は邪魔」). It USED to float over the MAP AREA
-             (.map-area__overlay bottom-left), where its box swallowed map body clicks
-             (HB-15 / 8d1ce75); the上部バー is a normal flow row that never overlaps the
-             map input layer, so that pointer-events trap is gone by construction (教訓
-             5.14). Wired to the SAME renderer camera the U40 pan/wheel path writes
-             (rendererRef → writeCamera), so a shift / preset actually moves the map
-             center. The widget reports a RAW shift操作量; the zoom is applied ONCE here
-             via applyLongitudeShift against the LIVE camera zoom (the domain multiplies,
-             never the widget, 教訓 5.16). writeCamera fires onCameraChange →
-             publishCameraHooks → updateCamera, which mirrors centerLon into the store
-             truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to
-             store.centerLon — reflects the new center. A preset jumps the continuous
-             center to the preset longitude (0度中心 / 180度中心).
+          /* 教訓 5.14 / 5.29 — EVERY map-covering tool input bridge is mounted INSIDE
+             the map cell (.map-area__overlay) so its client rect equals the canvas'
+             box BY CONSTRUCTION: it can never cover the 上部バー controls / toolbar /
+             timeline, and "clicked here ⇒ acted here" shares the renderer's one
+             transform.
 
-             FR-42 / FR-43 表示階層レベル (深度) 結線 (教訓 5.7 実機報告「表示する階層の
-             レベルを変更する UI なくないですか?」): the U34 setGlobalDepth /
-             setDisplayFocus / … actions + resolveDisplayFor were already implemented;
-             only this UI was missing. Mounted BESIDE 経度シフト so the two 上部バー view
-             controls 併存する (FR-43). Same normal-flow 上部バー row → never overlaps the
-             map input layer (教訓 5.14). */
+             第6工程 ROOT FIX: the six tool controllers used to live in the FULL-SHELL
+             overlay with a scaffold grid that MIRRORED the shell's rows — but the
+             mirror's empty `auto` rows collapse to 0, so every bridge spanned the
+             whole shell height in the map column (実測 y=0..800 vs map 32..569),
+             stealing the 階層深度ボタン clicks (depth-control e2e) and covering the
+             timeline band. Anchoring them here removes that class of drift outright
+             (the survey bridge already used this design). */
           <>
-            <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
-            <GlobalDepthPanel store={store} />
-            {/* U37 測量モード (FR-14/15/16 結線): the 補助モード toggle + クリア +
-                読取パネル, mounted in the SAME normal-flow 上部バー row as the two
-                view controls above — it never overlaps the map input layer (教訓
-                5.14) and is NOT gated on editability (View でも使える, U37 §2.1). */}
-            <SurveyControls store={store} />
-          </>
-        }
-        overlay={
-          <>
-            {/* Observability marker (回帰観点 E2E): mirrors the live selection truth
-                (store.selection.activeFeature) so a regression test can assert the
-                inheritor stays selected after a split (教訓 5.11). Hidden; it holds
-                NO truth — it只 reflects the store (技術方針 2.5). */}
-            <ActiveFeatureMarker store={store} />
-            {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
-                per feature, showing all attributes (dl) + an empty document-body stub.
-                Selecting from a panel promotes through the SAME store.setActiveFeature
-                path every selection uses (no second selection source, 教訓 5.29). */}
-            <DetailPanels
-              state={detailPanels}
-              featureLookup={detailFeatureLookup}
-              assetResolver={NO_ASSET_RESOLVER}
-              // FR-98: the LIVE detail document, resolved at the CURRENT time per call
-              // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
-              // never a stale capture, 教訓 5.6). Was an honest '' stub until the
-              // FR-98 editor landed; the floating panel itself stays VIEW-ONLY (the
-              // edit surface is the sidebar PropertyPanel).
-              detailDocumentOf={(fid) =>
-                featuresAt(store.getState().domain, store.getState().currentTime).find(
-                  (f) => f.id === fid,
-                )?.detailDocument ?? ''
-              }
-              onClose={(id) => setDetailPanels((s) => closeDetailPanel(s, id))}
-              onSelectFeature={(fid) => store.getState().setActiveFeature(fid)}
-            />
-            {/* HB-10 観測フック (Ctrl+Y redo の挙動 E2E): mirror the live undo/redo
-                stack availability into hidden markers (既存 app-active-feature 方式).
-                A behavioural test commits→undo→Ctrl+Y redo and asserts these flip,
-                proving Ctrl+Y truly runs redo. The App re-renders on every history
-                change (setHistoryVersion), so these read historyRef live; they hold
-                NO truth — pure mirrors (技術方針 2.5). */}
-            <span data-testid="app-can-undo" hidden>
-              {historyCanUndo(historyRef.current) ? '1' : '0'}
-            </span>
-            <span data-testid="app-can-redo" hidden>
-              {historyCanRedo(historyRef.current) ? '1' : '0'}
-            </span>
-            {/* HB-4 観測フック (回帰観点 E2E): mirror the live session mode + active
-                tool truth (store.mode / store.activeTool) into hidden data-testid
-                markers so a behavioural test can assert the 表示専用→編集 transition
-                actually flips the mode and activates the edit tools (既存
-                app-active-feature マーカーと同方式). They hold NO truth — pure mirrors
-                of the store (技術方針 2.5). */}
-            <SessionModeMarker store={store} />
-            {/* BUGHUNT2 ROOT FIX — the FR-96 right-click context menu mount. Bridges
-                the live context-menu port (createLiveContextMenuPort in onMapMount) to
-                the U20 ContextMenu component, bound to the LIVE registry + session
-                mode so each item's enabled state comes from the SAME resolveCommandEnabled
-                the menu bar / shortcuts use (教訓 5.13). Was unreachable: the port was
-                NOOP_CONTEXT_MENU_PORT, so right-click opened nothing. */}
-            <MapContextMenu<DomainRoot>
+            <SurveyMapBridge
               store={store}
-              registry={registry}
-              bindOpener={bindContextMenuOpener}
-              // fr96 本結線 — the DYNAMIC path: compose the U36 model per request from
-              // the LIVE store + single-source lookups, and route a chosen item to its
-              // existing flow (dispatchMenuItem → registry / runEditDelete / armEditTool
-              // / runUnshare). Supplying these flips the mount off the LEGACY 2-item
-              // static render (教訓 5.7 の完了トリガー).
-              composeFor={composeContextMenuFor}
-              onSelectItem={onSelectMenuItem}
-            />
-            {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
-                the ファイル menu / shortcut commands on the SAME registry the shell
-                dispatches, drives the FR-107 unsaved warning + FR-106 repair modals,
-                reflects loaded / repaired projects into the store, supplies the
-                FR-10 zoom clamp range to U17, and intercepts window-close with the
-                quit guard. All file I/O routes through U15's typed IPC
-                (window.timeMapApi); the renderer never touches fs (FR-02). */}
-            <FileOpsController
-              store={store}
-              registry={registry}
-              calendar={calendar}
-              supplyZoomRange={supplyZoomRange}
-              registerWindowClose={registerWindowClose}
-              registerDropTarget={registerDropTarget}
-              onBaseMapImageChange={handleBaseMapImageChange}
-              onModalOpenChange={setFileModalOpen}
-            />
-            {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
-                (設定 / 検索) と ヘルプ (バージョン情報 / ショートカット一覧 / 診断情報)
-                command handlers on the SAME registry the menu + shortcuts dispatch,
-                and render the views they open. Before this the five ids were
-                未登録==無効 — the menu items rendered permanently grayed (HB-4 class
-                of dead command). The handlers are torn down on unmount (useEffect
-                cleanup unregister). 設定 reuses the U38 dialog bound to the live
-                store; the rest are minimal views over existing pure logic. */}
-            <HelpToolsController
-              store={store}
-              registry={registry}
-              onModalOpenChange={setHelpModalOpen}
+              screenToWorld={screenToWorld}
+              mapCameraInput={mapCameraInput}
             />
             <AddToolControllerWithParents
               store={store}
@@ -2974,6 +2853,148 @@ export function App(): JSX.Element {
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
             />
+          </>
+        }
+        topBar={
+          /* FR-12 INTEGRATION (教訓 5.7 合成ルートの結線漏れ / 教訓 5.16 倍率の二重適用
+             防止): mount the U18 経度シフト control in the上部バー (ユーザー要望「経度シフト
+             を上部表示に。現状の表示は邪魔」). It USED to float over the MAP AREA
+             (.map-area__overlay bottom-left), where its box swallowed map body clicks
+             (HB-15 / 8d1ce75); the上部バー is a normal flow row that never overlaps the
+             map input layer, so that pointer-events trap is gone by construction (教訓
+             5.14). Wired to the SAME renderer camera the U40 pan/wheel path writes
+             (rendererRef → writeCamera), so a shift / preset actually moves the map
+             center. The widget reports a RAW shift操作量; the zoom is applied ONCE here
+             via applyLongitudeShift against the LIVE camera zoom (the domain multiplies,
+             never the widget, 教訓 5.16). writeCamera fires onCameraChange →
+             publishCameraHooks → updateCamera, which mirrors centerLon into the store
+             truth in ONE set() (単一真実源, 教訓 5.29), so the readout — bound to
+             store.centerLon — reflects the new center. A preset jumps the continuous
+             center to the preset longitude (0度中心 / 180度中心).
+
+             FR-42 / FR-43 表示階層レベル (深度) 結線 (教訓 5.7 実機報告「表示する階層の
+             レベルを変更する UI なくないですか?」): the U34 setGlobalDepth /
+             setDisplayFocus / … actions + resolveDisplayFor were already implemented;
+             only this UI was missing. Mounted BESIDE 経度シフト so the two 上部バー view
+             controls 併存する (FR-43). Same normal-flow 上部バー row → never overlaps the
+             map input layer (教訓 5.14). */
+          <>
+            <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
+            <GlobalDepthPanel store={store} />
+            {/* U37 測量モード (FR-14/15/16 結線): the 補助モード toggle + クリア +
+                読取パネル, mounted in the SAME normal-flow 上部バー row as the two
+                view controls above — it never overlaps the map input layer (教訓
+                5.14) and is NOT gated on editability (View でも使える, U37 §2.1). */}
+            <SurveyControls store={store} />
+          </>
+        }
+        overlay={
+          <>
+            {/* Observability marker (回帰観点 E2E): mirrors the live selection truth
+                (store.selection.activeFeature) so a regression test can assert the
+                inheritor stays selected after a split (教訓 5.11). Hidden; it holds
+                NO truth — it只 reflects the store (技術方針 2.5). */}
+            <ActiveFeatureMarker store={store} />
+            {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
+                per feature, showing all attributes (dl) + an empty document-body stub.
+                Selecting from a panel promotes through the SAME store.setActiveFeature
+                path every selection uses (no second selection source, 教訓 5.29). */}
+            <DetailPanels
+              state={detailPanels}
+              featureLookup={detailFeatureLookup}
+              assetResolver={NO_ASSET_RESOLVER}
+              // FR-98: the LIVE detail document, resolved at the CURRENT time per call
+              // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
+              // never a stale capture, 教訓 5.6). Was an honest '' stub until the
+              // FR-98 editor landed; the floating panel itself stays VIEW-ONLY (the
+              // edit surface is the sidebar PropertyPanel).
+              detailDocumentOf={(fid) =>
+                featuresAt(store.getState().domain, store.getState().currentTime).find(
+                  (f) => f.id === fid,
+                )?.detailDocument ?? ''
+              }
+              onClose={(id) => setDetailPanels((s) => closeDetailPanel(s, id))}
+              onSelectFeature={(fid) => store.getState().setActiveFeature(fid)}
+            />
+            {/* HB-10 観測フック (Ctrl+Y redo の挙動 E2E): mirror the live undo/redo
+                stack availability into hidden markers (既存 app-active-feature 方式).
+                A behavioural test commits→undo→Ctrl+Y redo and asserts these flip,
+                proving Ctrl+Y truly runs redo. The App re-renders on every history
+                change (setHistoryVersion), so these read historyRef live; they hold
+                NO truth — pure mirrors (技術方針 2.5). */}
+            <span data-testid="app-can-undo" hidden>
+              {historyCanUndo(historyRef.current) ? '1' : '0'}
+            </span>
+            <span data-testid="app-can-redo" hidden>
+              {historyCanRedo(historyRef.current) ? '1' : '0'}
+            </span>
+            {/* HB-4 観測フック (回帰観点 E2E): mirror the live session mode + active
+                tool truth (store.mode / store.activeTool) into hidden data-testid
+                markers so a behavioural test can assert the 表示専用→編集 transition
+                actually flips the mode and activates the edit tools (既存
+                app-active-feature マーカーと同方式). They hold NO truth — pure mirrors
+                of the store (技術方針 2.5). */}
+            <SessionModeMarker store={store} />
+            {/* BUGHUNT2 ROOT FIX — the FR-96 right-click context menu mount. Bridges
+                the live context-menu port (createLiveContextMenuPort in onMapMount) to
+                the U20 ContextMenu component, bound to the LIVE registry + session
+                mode so each item's enabled state comes from the SAME resolveCommandEnabled
+                the menu bar / shortcuts use (教訓 5.13). Was unreachable: the port was
+                NOOP_CONTEXT_MENU_PORT, so right-click opened nothing. */}
+            <MapContextMenu<DomainRoot>
+              store={store}
+              registry={registry}
+              bindOpener={bindContextMenuOpener}
+              // fr96 本結線 — the DYNAMIC path: compose the U36 model per request from
+              // the LIVE store + single-source lookups, and route a chosen item to its
+              // existing flow (dispatchMenuItem → registry / runEditDelete / armEditTool
+              // / runUnshare). Supplying these flips the mount off the LEGACY 2-item
+              // static render (教訓 5.7 の完了トリガー).
+              composeFor={composeContextMenuFor}
+              onSelectItem={onSelectMenuItem}
+              // Codex F1a: menu-open suspension boundary (onDrawingChange 同型) — an
+              // open menu ORs into shortcutsSuspended so Ctrl+Z 等 cannot mutate the
+              // domain out from under the frozen menu model.
+              onOpenChange={setContextMenuOpen}
+            />
+            {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
+                the ファイル menu / shortcut commands on the SAME registry the shell
+                dispatches, drives the FR-107 unsaved warning + FR-106 repair modals,
+                reflects loaded / repaired projects into the store, supplies the
+                FR-10 zoom clamp range to U17, and intercepts window-close with the
+                quit guard. All file I/O routes through U15's typed IPC
+                (window.timeMapApi); the renderer never touches fs (FR-02). */}
+            <FileOpsController
+              store={store}
+              registry={registry}
+              calendar={calendar}
+              supplyZoomRange={supplyZoomRange}
+              registerWindowClose={registerWindowClose}
+              registerDropTarget={registerDropTarget}
+              onBaseMapImageChange={handleBaseMapImageChange}
+              onModalOpenChange={setFileModalOpen}
+            />
+            {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
+                (設定 / 検索) と ヘルプ (バージョン情報 / ショートカット一覧 / 診断情報)
+                command handlers on the SAME registry the menu + shortcuts dispatch,
+                and render the views they open. Before this the five ids were
+                未登録==無効 — the menu items rendered permanently grayed (HB-4 class
+                of dead command). The handlers are torn down on unmount (useEffect
+                cleanup unregister). 設定 reuses the U38 dialog bound to the live
+                store; the rest are minimal views over existing pure logic. */}
+            <HelpToolsController
+              store={store}
+              registry={registry}
+              onModalOpenChange={setHelpModalOpen}
+            />
+            {/* 第6工程 NOTE: the six TOOL controllers (add / knife / merge / reparent /
+                ring-edit / drill) moved to the map-anchored `mapOverlay` slot above —
+                their transparent input bridges must inherit the REAL map cell box.
+                They used to live HERE in the full-shell overlay with a shell-grid
+                MIRROR whose empty auto rows collapsed, so each bridge spanned the
+                whole shell height in the map column and covered the 上部バー
+                (階層深度ボタン横取り) and timeline bands (教訓 5.14 / depth-control
+                e2e). Only shell-scoped things remain here: markers, modals, panels. */}
             {/* U37 INTEGRATION (教訓 5.7 / 5.2): the survey-mode controller, bound to
                 the SAME store. It is HEADLESS and mounted ALWAYS (even while survey is
                 OFF) so the confirmed survey lines keep drawing through the dedicated

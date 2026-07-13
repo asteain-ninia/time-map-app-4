@@ -72,6 +72,17 @@ export interface MapContextMenuProps<S> {
   readonly composeFor?: ComposeContextMenuFor;
   /** DYNAMIC path: called with the chosen item + the frozen model (dispatch routing). */
   readonly onSelectItem?: OnSelectMenuItem;
+  /**
+   * Codex F1a — the menu-open SUSPENSION boundary (the onDrawingChange 同型 the tool
+   * controllers use): reports `true` while a menu entry is open and `false` when it
+   * closes OR the mount unmounts (教訓 5.2 全経路で破棄). The App ORs it into
+   * `shortcutsSuspended`, so the global shortcut dispatcher STANDS DOWN while a menu
+   * owns the screen — a Ctrl+Z through an open menu could delete the very target the
+   * frozen model still offers (stale EditProperties 再現経路). The menu's own Escape
+   * is capture-phase and suspension-independent, so「Escape はメニューを閉じるだけ」
+   * は保たれる.
+   */
+  readonly onOpenChange?: ((open: boolean) => void) | undefined;
 }
 
 /**
@@ -101,9 +112,19 @@ interface MenuEntry {
 }
 
 export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | null {
-  const { store, registry, bindOpener, composeFor, onSelectItem } = props;
+  const { store, registry, bindOpener, composeFor, onSelectItem, onOpenChange } = props;
   const mode = useStore(store, (s) => s.mode);
   const [entry, setEntry] = useState<MenuEntry | null>(null);
+
+  // Codex F1a: mirror the open/closed boundary up (the tool controllers'
+  // onDrawingChange pattern). Cleanup clears the flag on close AND unmount so a
+  // torn-down mount never leaves the global dispatcher suspended (教訓 5.2).
+  const menuOpen = entry !== null;
+  useEffect(() => {
+    if (onOpenChange === undefined) return;
+    onOpenChange(menuOpen);
+    return () => onOpenChange(false);
+  }, [menuOpen, onOpenChange]);
 
   const open = useCallback(
     (req: ContextMenuRequest): void => {

@@ -17,7 +17,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { DrawPrimitive } from '../../render/map-renderer';
-import type { MapCameraInput } from '../map/index';
+import {
+  EMPTY_HIT_TESTER,
+  NOOP_ADD_PORT,
+  NOOP_CONTEXT_MENU_PORT,
+  NOOP_SELECTION_PORT,
+  POINTER_BUTTON,
+  PointerDispatcher,
+  type MapCameraInput,
+} from '../map/index';
+import type { Camera, Viewport } from '../../render';
 import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE, asToolId, type EditMode } from '../state/session';
 
@@ -234,6 +243,102 @@ describe('SurveyToolController — click / drag discrimination (教訓 5.8)', ()
       fireEvent.pointerUp(layer(), { clientX: 101, clientY: 50, button: 0, pointerId: 1 });
     });
 
+    const s = h.store.getState().survey;
+    expect(s.draft).toBeNull();
+    expect(s.lines).toHaveLength(0);
+    h.unmount();
+  });
+});
+
+// Codex F2 (survey 単発ムーブの空振り) — the threshold-crossing move itself must
+// already PAN: the bridge delegates (beginPan) BEFORE forwarding the move, so a
+// down → ONE big move → up gesture moves the camera. Locked against a REAL
+// PointerDispatcher + camera port (the same machinery App wires), because a
+// call-order regression is invisible to a call-counting fake.
+describe('SurveyToolController — 単発ムーブのパン (Codex F2, real dispatcher)', () => {
+  function mountRealPanSurvey(): {
+    store: StoreApi<SessionStore<S>>;
+    center: () => { lon: number; lat: number };
+    unmount: () => void;
+  } {
+    let camera: Camera = { centerLon: 0, centerLat: 0, zoom: 2 };
+    const viewport: Viewport = { widthCss: 800, heightCss: 600, devicePixelRatio: 1 };
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.View,
+      camera: {
+        read: () => ({ camera, viewport }),
+        write: (c) => {
+          camera = c;
+        },
+      },
+      hitTester: EMPTY_HIT_TESTER,
+      selection: NOOP_SELECTION_PORT,
+      add: NOOP_ADD_PORT,
+      contextMenu: NOOP_CONTEXT_MENU_PORT,
+    });
+    // The App's MapCameraInput wiring, with an identity client→surface transform
+    // (the test has no real map rect): beginPan re-tags the sample as MIDDLE so the
+    // dispatcher's PAN_BUTTONS table starts a pan in every mode (App.tsx と同型).
+    const cameraInput: MapCameraInput = {
+      wheel: (x, y, deltaY, deltaMode) => dispatcher.wheel({ x, y, deltaY, deltaMode }),
+      pointerDown: (e, x, y) => {
+        if (e.button === 0) return;
+        dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y));
+      },
+      pointerMove: (e, x, y) =>
+        dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true)),
+      pointerUp: (e, x, y) => dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y)),
+      pointerCancel: (pointerId) => dispatcher.pointerCancel(pointerId),
+      beginPan: (e, pressX, pressY) => {
+        dispatcher.pointerDown({
+          ...PointerDispatcher.normalize(e, pressX, pressY),
+          button: POINTER_BUTTON.Middle,
+        });
+      },
+    };
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'd0' },
+      initial: { mode: EDIT_MODE.View },
+    });
+    const utils = render(
+      <>
+        <SurveyToolController store={store} drawSink={{ drawSurvey() {} }} />
+        <SurveyMapBridge
+          store={store}
+          screenToWorld={screenToWorld}
+          mapCameraInput={cameraInput}
+        />
+      </>,
+    );
+    return {
+      store,
+      center: () => ({ lon: camera.centerLon, lat: camera.centerLat }),
+      unmount: utils.unmount,
+    };
+  }
+
+  it('down→単発 move(閾値超)→up でカメラが動く（跨いだムーブ自身が delta を適用）', () => {
+    const h = mountRealPanSurvey();
+    act(() => h.store.getState().surveyEnable());
+    expect(h.center()).toEqual({ lon: 0, lat: 0 });
+
+    act(() => {
+      fireEvent.pointerDown(layer(), { clientX: 100, clientY: 50, button: 0, pointerId: 1 });
+      // ONE move, well past the threshold — no further moves before release.
+      fireEvent.pointerMove(layer(), {
+        clientX: 160,
+        clientY: 50,
+        pointerId: 1,
+        buttons: 1,
+      });
+      fireEvent.pointerUp(layer(), { clientX: 160, clientY: 50, button: 0, pointerId: 1 });
+    });
+
+    // The camera panned by the press→current delta (60px / zoom 2 = 30° of lon;
+    // direction is the pan math's own — only the magnitude is asserted here) and
+    // no survey click was confirmed (教訓 5.8).
+    expect(Math.abs(h.center().lon)).toBeCloseTo(30, 5);
+    expect(h.center().lat).toBeCloseTo(0, 5);
     const s = h.store.getState().survey;
     expect(s.draft).toBeNull();
     expect(s.lines).toHaveLength(0);

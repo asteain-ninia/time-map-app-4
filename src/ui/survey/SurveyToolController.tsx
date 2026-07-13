@@ -254,15 +254,18 @@ function SurveyInputLayer<S>(props: {
       mapCameraInput.pointerDown(e, e.clientX, e.clientY);
     };
     const onPointerMove = (e: PointerEvent): void => {
-      // Forward every move so an in-flight middle-button pan keeps updating
-      // (the dispatcher tracks only pointers IT started — a safe no-op else).
-      mapCameraInput.pointerMove(e, e.clientX, e.clientY);
       // survey F1 — 左ドラッグのパン委譲: the moment the in-flight LEFT gesture
       // crosses the click threshold it is a CAMERA gesture (教訓 5.8), so delegate
       // it to the dispatcher's own pan machinery (mapCameraInput.beginPan — the ONE
       // pan implementation, anchored at the PRESS point so the hysteresis pixels
       // catch up). The press candidate is consumed: the eventual release confirms
       // nothing and only finalizes the pan through the ordinary pointerUp forward.
+      //
+      // Codex F2 — the delegation runs BEFORE the move forward below: the pan must
+      // exist when THIS move reaches the dispatcher, so the very move that crossed
+      // the threshold already applies its press→current delta. Forward-first left a
+      // one-move hole — a single big move + release panned NOTHING (the forward hit
+      // a dispatcher with no pan record, and beginPan alone moves no camera).
       const p = press;
       if (
         p !== null &&
@@ -272,6 +275,10 @@ function SurveyInputLayer<S>(props: {
         press = null;
         mapCameraInput.beginPan?.(e, p.x, p.y);
       }
+      // Forward every move so an in-flight pan (middle-button OR the left-pan just
+      // delegated above) keeps updating (the dispatcher tracks only pointers IT
+      // started — a safe no-op else).
+      mapCameraInput.pointerMove(e, e.clientX, e.clientY);
       if (store.getState().survey.draft !== null) {
         scheduleHover(e.clientX, e.clientY);
       }

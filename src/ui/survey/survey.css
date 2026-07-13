@@ -32,9 +32,21 @@
   color: #fff;
 }
 
+/* 第6工程 (B2): the control labels never letter-wrap under flex pressure — their
+   boxes are part of the topbar's fixed occupancy. */
+.survey-controls button {
+  white-space: nowrap;
+}
+
 .survey-controls__guide {
   color: inherit;
   opacity: 0.85;
+  /* 第6工程 (B2 fixed occupancy): the two guide strings (始点/終点) differ in
+     length; the box is sized to the LONGER one so a phase change never re-wraps
+     the menu-bar row mid-gesture (the map cell must not move between the two
+     survey clicks — 世界端跨ぎ e2e). */
+  display: inline-block;
+  min-width: 24em;
 }
 
 .survey-controls__readout {
@@ -48,10 +60,20 @@
   font-weight: 600;
 }
 
+/* 第6工程 (B2 fixed occupancy): each readout row reserves its MAXIMUM realistic
+   width, so placeholder '—' vs measured values — and the 度分秒/十進/両方 format
+   switch — never change the block's occupied size (the reserved boxes cover the
+   widest 'both' rendering; content only ever varies INSIDE them). */
+.survey-controls__distance {
+  display: inline-block;
+  min-width: 14em;
+}
+
 .survey-controls__coord {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  min-width: 30em;
 }
 
 .survey-controls__coord-label {

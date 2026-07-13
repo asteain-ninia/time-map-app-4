@@ -1,8 +1,11 @@
 // U34 / FR-42 グローバル階層深度スライダー + FR-43 個別フォーカス — presentational
 // control unit tests. Locks: (a) the depth slider / ± buttons report intent through
-// onGlobalDepth clamped to [0, max(maxDepth,1)]; (b) the 個別フォーカス section is a
-// selection-gated control (教訓 5.7: hidden with no target); (c) apply / depth-M /
-// emphasize / clear each drive their callback.
+// onGlobalDepth clamped to [0, max(maxDepth,1)]; (b) the 個別フォーカス group is
+// ALWAYS rendered at a constant width with DISABLED (never hidden) controls when
+// their precondition is absent (第6工程 B2: the 上部バー's occupied width must not
+// depend on the selection — a selection-driven re-wrap of the menu-bar row used to
+// shift the whole map cell 28px); (c) apply / depth-M / emphasize / clear each
+// drive their callback.
 
 /// <reference types="@testing-library/jest-dom" />
 
@@ -65,19 +68,29 @@ describe('GlobalDepthControl — グローバル階層深度スライダー (FR-
   });
 });
 
-describe('GlobalDepthControl — 個別フォーカス (FR-43, selection-gated)', () => {
-  it('hides the focus section when nothing is selected and no focus is active (教訓 5.7)', () => {
+describe('GlobalDepthControl — 個別フォーカス (FR-43, 常設・disabled ゲート)', () => {
+  it('第6工程 B2: 無選択でもグループは常設 — apply は disabled placeholder、下位は disabled', () => {
+    // The group must OCCUPY THE SAME WIDTH regardless of selection so the 上部バー
+    // never re-wraps on select/deselect (the 28px map-cell jump root). Controls
+    // disable — they never disappear.
     renderControl({ activeFeatureLabel: null, focusActive: false });
-    expect(screen.queryByTestId('depth-focus')).toBeNull();
+    expect(screen.getByTestId('depth-focus')).toBeInTheDocument();
+    const apply = screen.getByTestId('depth-focus-apply');
+    expect(apply).toBeDisabled();
+    expect(apply).toHaveTextContent('深掘り対象なし');
+    expect(screen.getByTestId('depth-focus-depth')).toBeDisabled();
+    expect(screen.getByTestId('depth-focus-emphasize')).toBeDisabled();
+    expect(screen.getByTestId('depth-focus-clear')).toBeDisabled();
   });
 
   it('offers「深掘り」for the selected feature and reports onApplyFocus', () => {
     const props = renderControl({ activeFeatureLabel: '神聖ラヴェイエ帝国', focusActive: false });
     const apply = screen.getByTestId('depth-focus-apply');
+    expect(apply).toBeEnabled();
     expect(apply).toHaveTextContent('神聖ラヴェイエ帝国');
-    // No focus yet → no depth-M / emphasize / clear controls (no dead control).
-    expect(screen.queryByTestId('depth-focus-clear')).toBeNull();
-    expect(screen.queryByTestId('depth-focus-depth')).toBeNull();
+    // No focus yet → depth-M / emphasize / clear stay DISABLED (常設, never hidden).
+    expect(screen.getByTestId('depth-focus-clear')).toBeDisabled();
+    expect(screen.getByTestId('depth-focus-depth')).toBeDisabled();
     fireEvent.click(apply);
     expect(props.onApplyFocus).toHaveBeenCalledTimes(1);
   });

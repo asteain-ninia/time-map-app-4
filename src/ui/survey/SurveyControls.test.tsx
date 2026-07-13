@@ -207,9 +207,20 @@ describe('SurveyControls — 読取パネル (FR-14 距離 / FR-16 度分秒+十
     unmount();
   });
 
-  it('shows NO readout when there is nothing to measure (教訓 5.18 explicit null)', () => {
+  it('第6工程 B2: 測量ONで読取パネルは即・常設マウント（未計測は — placeholder）', () => {
+    // Fixed occupancy: the readout mounts WITH survey mode, never mid-gesture (the
+    // old mount-on-measure re-wrapped the 上部バー between the two survey clicks and
+    // shifted the map cell — 世界端跨ぎ e2e). Nothing measured yet ⇒ honest dashes.
     const { store, unmount } = mountControls();
     act(() => store.getState().surveyEnable());
+    expect(screen.getByTestId('survey-readout')).toBeInTheDocument();
+    expect(screen.getByTestId('survey-eq-distance')).toHaveTextContent('—');
+    expect(screen.getByTestId('survey-start-dms')).toHaveTextContent('—');
+    unmount();
+  });
+
+  it('shows NO readout while survey is OFF and nothing was measured (教訓 5.18)', () => {
+    const { unmount } = mountControls();
     expect(screen.queryByTestId('survey-readout')).toBeNull();
     unmount();
   });

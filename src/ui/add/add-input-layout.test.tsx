@@ -3,16 +3,23 @@
 //
 // WHY THIS EXISTS: the integration test (AddToolController.test.tsx) drives the
 // flow in jsdom by dispatching pointer events DIRECTLY onto the bridge element. It
-// never lays out the page, so it stays green even if the bridge has NO geometry and
-// would, in the real Electron app, sit as a 0×0 block in the corner instead of over
-// the map — a classic「テスト緑・実アプリ壊れ」gap. host-ports.screenToWorld converts
-// pointer coords against the CANVAS rect, so the bridge MUST share that rect or
+// never lays out the page, so it stays green even if the bridge has NO geometry —
+// a classic「テスト緑・実アプリ壊れ」gap. host-ports.screenToWorld converts pointer
+// coords against the CANVAS rect, so the bridge MUST share that rect or
 // "clicked here ≠ placed here" (教訓 5.29).
 //
-// This test pins the CSS contract that guarantees the alignment WITHOUT a browser:
-// the add overlay mirrors the shell grid and the input bridge is placed on the SAME
-// cell as the canvas. It fails if the .add-tool / .add-tool__input rules are removed
-// or drift away from the shell's map cell — exactly the blocker that was filed.
+// THE CONTRACT (第6工程 map-anchored design): the add-tool scaffold is mounted
+// through AppShell's `mapOverlay` slot INSIDE the real map cell (.map-area__overlay,
+// inset:0 of .app-shell__map). The scaffold and its input bridge are `inset:0`, so
+// the bridge inherits the canvas box BY CONSTRUCTION.
+//
+// The PREVIOUS contract (a full-shell overlay grid that MIRRORED the shell's
+// rows/columns) was structurally broken and is deliberately LOCKED OUT here: the
+// mirror's empty `auto` rows collapse to 0, so the "map cell" spanned the whole
+// shell height — the transparent bridge covered the 上部バー band (stealing the
+// 階層深度 button clicks, depth-control e2e) and the timeline band (実測 y=0..800
+// vs map 32..569). This test now FAILS if anyone reintroduces a grid mirror on the
+// scaffold or drops the map-anchored inset contract.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -40,43 +47,36 @@ function decl(body: string, prop: string): string | undefined {
   return m ? m[1]?.replace(/\s+/g, ' ').trim() : undefined;
 }
 
-describe('U23 add-input bridge layout contract (教訓 5.14 / 5.29)', () => {
+describe('U23 add-input bridge layout contract (教訓 5.14 / 5.29, 第6工程 map-anchored)', () => {
   it('defines the .add-tool and .add-tool__input rules (the missing-CSS blocker)', () => {
-    // The blocker filed: no CSS for .add-tool / .add-tool__input anywhere in src.
     expect(() => ruleBody('.add-tool')).not.toThrow();
     expect(() => ruleBody('.add-tool__input')).not.toThrow();
   });
 
-  it('.add-tool overlays the shell and mirrors the shell map-cell grid exactly', () => {
+  it('.add-tool is a map-anchored inset:0 scaffold — NEVER a shell-grid mirror', () => {
     const addTool = ruleBody('.add-tool');
-    const shell = ruleBody('.app-shell');
-    const main = ruleBody('.app-shell__main');
 
-    // It must fill the overlay (which is inset:0 over the whole shell).
+    // Fills its mount (.map-area__overlay, which is inset:0 of the map cell).
     expect(decl(addTool, 'position')).toBe('absolute');
     expect(decl(addTool, 'inset')).toBe('0');
-    expect(decl(addTool, 'display')).toBe('grid');
 
-    // The map cell's box = shell ROW geometry × main-row COLUMN geometry. The add
-    // overlay must reproduce BOTH or the "map cell" won't coincide with
-    // .app-shell__map (and therefore the canvas) — 教訓 5.29.
-    expect(decl(addTool, 'grid-template-rows')).toBe(decl(shell, 'grid-template-rows'));
-    expect(decl(addTool, 'grid-template-columns')).toBe(decl(main, 'grid-template-columns'));
+    // The broken mirror-grid design is locked OUT: a display:grid scaffold with
+    // shell-mirroring templates put the bridge over the 上部バー / timeline bands
+    // (empty auto rows collapse to 0 — the depth-control interception root).
+    expect(decl(addTool, 'display')).toBeUndefined();
+    expect(decl(addTool, 'grid-template-rows')).toBeUndefined();
+    expect(decl(addTool, 'grid-template-columns')).toBeUndefined();
 
     // The scaffold itself is transparent to input; only its children take events.
     expect(decl(addTool, 'pointer-events')).toBe('none');
   });
 
-  it('.add-tool__input sits on the SAME grid cell as .app-shell__map and takes input', () => {
+  it('.add-tool__input fills the scaffold (inset:0) and takes input', () => {
     const input = ruleBody('.add-tool__input');
-    const map = ruleBody('.app-shell__map');
-
-    // .app-shell__map is grid-column 2 (the fluid central map column), grid-row 2
-    // (the main row). The bridge MUST occupy the identical cell so its client rect
-    // equals the canvas rect to the pixel.
-    expect(decl(map, 'grid-column')).toBe('2');
-    expect(decl(input, 'grid-column')).toBe('2');
-    expect(decl(input, 'grid-row')).toBe('2');
+    expect(decl(input, 'position')).toBe('absolute');
+    expect(decl(input, 'inset')).toBe('0');
+    expect(decl(input, 'grid-row')).toBeUndefined();
+    expect(decl(input, 'grid-column')).toBeUndefined();
 
     // It must actually receive pointer events (placeAt / preview), and not let the
     // browser swallow drawing strokes as pan/zoom gestures.
@@ -84,10 +84,17 @@ describe('U23 add-input bridge layout contract (教訓 5.14 / 5.29)', () => {
     expect(decl(input, 'touch-action')).toBe('none');
   });
 
-  it('the shell map cell is the fluid central column (origin shared with the canvas)', () => {
-    // Guards the precondition the bridge relies on: the map cell is column 2 of the
-    // main row, and host-ports converts against the canvas inside that cell.
-    const main = ruleBody('.app-shell__main');
-    expect(decl(main, 'grid-template-columns')).toContain('1fr');
+  it('the map-anchored mount exists and the scaffold stays pass-through inside it', () => {
+    // .map-area__overlay is the map-cell-scoped mount (inset:0 of .map-area).
+    const overlay = ruleBody('.map-area__overlay');
+    expect(decl(overlay, 'position')).toBe('absolute');
+    expect(decl(overlay, 'inset')).toBe('0');
+
+    // The generic `.map-area__overlay > *` opt-in re-enables pointer events on every
+    // overlay child; the TOOL SCAFFOLD exception must win over it, or the transparent
+    // scaffold becomes a click shield over the whole map (教訓 5.14).
+    const exception =
+      /\.map-area__overlay\s*>\s*\.add-tool[^{]*\{[^}]*pointer-events:\s*none/m;
+    expect(exception.test(shellCss)).toBe(true);
   });
 });

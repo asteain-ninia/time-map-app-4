@@ -36,6 +36,12 @@ export const SURVEY_STRINGS = {
   formatDms: '度分秒',
   /** Format switch: 十進 only. */
   formatDecimal: '十進',
+  /**
+   * Placeholder for a not-yet-measured value (第6工程 B2 fixed occupancy): the
+   * readout mounts WITH survey mode (never mid-gesture), showing dashes until a
+   * subject pair exists — an honest「未計測」display, not a fabricated 0 (教訓 5.26).
+   */
+  noValue: '—',
 } as const;
 
 /** Format a distance (km) for display, e.g. `1,234.56 km`. */

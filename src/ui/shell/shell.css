@@ -167,6 +167,14 @@ body {
   min-width: 0;
   display: flex;
   align-items: center;
+  /* 第6工程: the topbar's fixed-occupancy controls (個別フォーカス常設 + 測量読取)
+   * exceed one line at common window widths — the topbar folds its OWN content
+   * onto further lines (constant per window size, since every control now has a
+   * selection-independent box) instead of squeezing the MENUS into vertical
+   * letter-wrap. justify-content keeps the folded rows right-aligned. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 2px;
   color: var(--c-chrome-text);
 }
 
@@ -181,6 +189,9 @@ body {
   color: var(--c-chrome-text);
   padding: 0 4px;
   user-select: none;
+  /* 第6工程: the menus never shrink below their intrinsic width — a wide topbar
+   * folds ITSELF (flex-wrap above); it must not letter-wrap the menu labels. */
+  flex-shrink: 0;
 }
 
 .menubar__menu {
@@ -681,6 +692,20 @@ body {
   pointer-events: auto;
 }
 
+/* 第6工程: the TOOL SCAFFOLDS (add / knife / merge / reparent / ring-edit / drill)
+ * are map-anchored overlay children, but each is a TRANSPARENT inset:0 scaffold
+ * whose interactive children re-enable input individually (教訓 5.14). The generic
+ * `> *` opt-in above must NOT turn the whole scaffold into a click shield over the
+ * map — this higher-specificity exception keeps the scaffolds pass-through. */
+.map-area__overlay > .add-tool,
+.map-area__overlay > .knife-tool,
+.map-area__overlay > .merge-tool,
+.map-area__overlay > .reparent-tool,
+.map-area__overlay > .ring-edit-tool,
+.map-area__overlay > .drill-tool {
+  pointer-events: none;
+}
+
 /* FR-12 経度シフト control — RELOCATED to the上部バー (ユーザー要望「経度シフトを上部表示
  * に。現状の表示は邪魔」; app-3 の経度コンパスに倣った compact な横並び上部表示). It is now a
  * NORMAL flow element inside .app-shell__topbar, NOT a `.map-area__overlay` child — so the
@@ -785,14 +810,33 @@ body {
   gap: 4px;
 }
 
-/* The 個別フォーカス (FR-43) sub-group — shown only when a feature is selected / a focus
- * is active; kept compact and on the same row. */
+/* The 個別フォーカス (FR-43) sub-group.
+ *
+ * 第6工程 (B2 root fix): ALWAYS rendered with a CONSTANT width. It used to appear
+ * only while a feature was selected, so selecting/deselecting changed the 上部バー's
+ * occupied width — the menu-bar row (auto) then folded/unfolded a second line and
+ * the WHOLE MAP CELL jumped 28px on every selection change (5c72420 の測量コントロール
+ * 追加で余白が尽きて顕在化; depth-control / human-bugs-3 / resize-coord /
+ * aggregate-select / edit-drag-preview の共通根). The topbar's width must depend on
+ * the WINDOW SIZE only, never on the selection — so the group always occupies the
+ * same box and its controls disable (not disappear) when their precondition is
+ * absent. The apply button's label carries the feature name, so it is ellipsized at
+ * a FIXED width (title= holds the full name). */
 .global-depth__focus {
   display: flex;
   flex-direction: row;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
+}
+
+/* Fixed-width, ellipsized 深掘り button: the label varies per feature name, but the
+ * occupied width must not (B2 invariant — no selection-driven topbar re-wrap). */
+.global-depth__focus-apply {
+  width: 11em;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
@@ -871,43 +915,41 @@ body {
 
 /* --- U23 add-tool overlay (FR-76 / FR-78, 教訓 5.14 / 5.29) ------------------
  *
- * The add-tool controller is mounted inside .app-shell__overlay, which spans the
- * WHOLE shell (inset:0). The provisional map-input bridge (.add-tool__input) must
- * cover ONLY the central map area and share the canvas' exact client rect, so that
- * "clicked here ⇒ placed here" cannot diverge (教訓 5.29: host-ports.screenToWorld
- * converts against the canvas rect). We get that for free by giving .add-tool the
- * SAME CSS grid as .app-shell and placing the input bridge on the map cell — its
- * client rect then equals .app-shell__map (and therefore the canvas) to the pixel,
- * with no JS measurement.
+ * MAP-ANCHORED (第6工程 root fix). The add-tool controller is mounted through
+ * AppShell's `mapOverlay` slot INSIDE the real map cell (.map-area__overlay,
+ * inset:0 of .app-shell__map) — the SAME anchoring the survey bridge uses — so the
+ * provisional map-input bridge (.add-tool__input) inherits the canvas' exact
+ * client rect BY CONSTRUCTION and "clicked here ⇒ placed here" cannot diverge
+ * (教訓 5.29: host-ports.screenToWorld converts against the canvas rect).
  *
- * .add-tool itself carries no pointer-events of its own (it is a transparent grid
+ * The PREVIOUS design mounted the scaffold in the full-shell .app-shell__overlay
+ * with a grid that MIRRORED the shell's rows/columns. That mirror was structurally
+ * broken: the mirror's `auto` rows are EMPTY and collapse to 0, so the "map cell"
+ * spanned the ENTIRE shell height — the transparent bridge covered the menubar/
+ * 上部バー band (stealing the 階層深度 button clicks, depth-control e2e) and the
+ * timeline band (実測: bridge y=0..800 vs map 32..569). Anchoring inside the map
+ * cell removes the whole class of drift (教訓 5.14: the shell.css note on
+ * .map-area__overlay is exactly this design).
+ *
+ * .add-tool itself carries no pointer-events of its own (it is a transparent
  * scaffold over the map); only its interactive children (.add-tool__input while
  * drawing, and .add-tool__controls / form) take input (教訓 5.14: 透明な層が背面の
- * 操作を奪わない). */
+ * 操作を奪わない). The pointer-events:none must WIN over the generic
+ * `.map-area__overlay > *` opt-in — see the scaffold exception rule beside
+ * .map-area__overlay. */
 .add-tool {
   position: absolute;
   inset: 0;
-  display: grid;
-  /* The map cell's vertical extent is the shell's main row (row 2); its
-   * horizontal extent is the 3-column split that lives INSIDE .app-shell__main
-   * (toolbar | map | sidebar). So the rows mirror .app-shell and the columns
-   * mirror .app-shell__main — together they reproduce .app-shell__map's box. */
-  grid-template-rows: auto 1fr auto auto;
-  /* Mirror .app-shell__main's FIXED side widths so the col-2 bridge equals the
-   * real map cell to the pixel (no spill over the toolbar / sidebar). */
-  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
   pointer-events: none;
 }
 
-/* The transparent pointer bridge: covers the central map cell exactly (row 2,
- * col 2 = .app-shell__map), so every map click hits it and is forwarded to the
+/* The transparent pointer bridge: fills the map cell (its parent scaffold is
+ * inset:0 of .map-area), so every map click hits it and is forwarded to the
  * add hook (placeAt / preview). touch-action:none keeps drawing strokes from
  * being swallowed by the browser's default pan/zoom gestures. */
 .add-tool__input {
-  grid-row: 2;
-  grid-column: 2;
-  /* Fill the map cell; min-height:0 lets the 1fr track size it correctly. */
-  min-height: 0;
+  position: absolute;
+  inset: 0;
   pointer-events: auto;
   touch-action: none;
   /* The bridge is invisible; it exists only to receive pointer events. */
@@ -920,11 +962,11 @@ body {
  * merge / reparent all sit bottom-center), so every tool's 確定 button is in the
  * same place. It must take input itself (sits over the bridge). */
 .add-tool__controls {
-  grid-row: 2;
-  grid-column: 2;
-  align-self: end;
-  justify-self: center;
-  margin: 0 0 16px;
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
   pointer-events: auto;
   display: flex;
   flex-wrap: wrap;
@@ -954,10 +996,10 @@ body {
 .add-tool > .add-property-form,
 .add-tool > [data-testid='add-conflict-paused'],
 .add-tool > [data-testid='add-rejected'] {
-  grid-row: 2;
-  grid-column: 2;
-  align-self: center;
-  justify-self: center;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
   pointer-events: auto;
   background: #fff;
   border: 1px solid #888;

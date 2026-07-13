@@ -87,6 +87,7 @@ function renderAndOpen(
       }}
       {...(props.composeFor ? { composeFor: props.composeFor } : {})}
       {...(props.onSelectItem ? { onSelectItem: props.onSelectItem } : {})}
+      {...(props.onOpenChange ? { onOpenChange: props.onOpenChange } : {})}
     />,
   );
   act(() => {
@@ -109,6 +110,18 @@ describe('MapContextMenu — DYNAMIC path (composeFor)', () => {
     expect(menu.querySelector(`[data-item-kind="${MENU_ITEM_KIND.Unshare}"]`)).not.toBeNull();
     // The trailing view-axis command.
     expect(menu.querySelector(`[data-command="${COMMAND_ID.ViewToggleViewMode}"]`)).not.toBeNull();
+  });
+
+  it('onOpenChange reports the open/closed boundary (Codex F1a suspension 境界)', () => {
+    // The App ORs this into shortcutsSuspended (the onDrawingChange 同型): true at
+    // open, false at close — and the capture-phase Escape STILL closes the menu
+    // while suspended (the menu's own key handling is suspension-independent).
+    const onOpenChange = vi.fn();
+    renderAndOpen({ composeFor: () => leafModel, onSelectItem: vi.fn(), onOpenChange });
+    expect(onOpenChange).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByTestId('context-menu')).toBeNull();
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
   });
 
   it('a disabled item (結合) is inert and shows its Japanese disable reason', () => {

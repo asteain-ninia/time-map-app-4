@@ -172,4 +172,52 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
       await app.close();
     }
   });
+
+  // Codex F1a 回帰ロック — メニュー表示中はグローバルショートカットが suspend される:
+  // 開いたメニューを貫通する Ctrl+Z は、凍結モデルが指す対象そのものを undo で消し得た
+  // (→ stale EditProperties)。suspend 後は Ctrl+Z が不発で、対象は生き残り、開いた
+  // メニューの EditProperties は正常に発火する（positive path）。Escape はメニューの
+  // capture 専有のまま（suspend と独立 — メニューを閉じるだけ、選択は消さない）。
+  test('メニュー表示中の Ctrl+Z は不発（suspend）— 対象は残り EditProperties が正常動作', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('app-shell')).toBeVisible();
+      const { faceId, cx, cy } = await commitSquareFace(page);
+      await enterEditMode(page);
+
+      // undo 可能な履歴が 1 つある状態でメニューを開く。
+      await expect(page.getByTestId('app-can-undo')).toHaveText('1');
+      await page.mouse.click(cx, cy, { button: 'right' });
+      const menu = page.getByTestId('context-menu');
+      await expect(menu).toBeVisible();
+
+      // メニュー表示中の Ctrl+Z: グローバル EditUndo は suspend されて不発 —
+      // undo スタックは減らず、対象地物はドメインに残る。メニューも開いたまま。
+      await page.keyboard.press('Control+z');
+      await page.waitForTimeout(400);
+      await expect(page.getByTestId('app-can-undo')).toHaveText('1');
+      await expect(menu).toBeVisible();
+
+      // そのまま EditProperties を発火（positive path: live 存在検証を通過し、
+      // プロパティタブへフォーカス+対象選択）。
+      await menu.locator('[data-item-kind="editProperties"]').click();
+      await expect(menu).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(page.getByTestId('sidebar-tab-properties')).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      // 基本情報フォームが対象を表示（存在する地物が選択された証左）。
+      await expect(
+        page.getByTestId('sidebar-panel-properties').getByTestId('basic-info'),
+      ).toBeVisible();
+
+      // メニューを閉じた後は suspend が解け、Ctrl+Z が通常どおり効く（境界の解除）。
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('app-can-undo')).toHaveText('0');
+    } finally {
+      await app.close();
+    }
+  });
 });

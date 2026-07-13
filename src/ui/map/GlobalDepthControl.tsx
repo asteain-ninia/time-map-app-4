@@ -74,9 +74,17 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
     if (next !== globalDepth) onGlobalDepth(next);
   };
 
-  // The 個別フォーカス section needs a target: a live selection to apply onto, OR an
-  // already-active focus to adjust/clear. No selection + no focus ⇒ hidden (教訓 5.7).
-  const showFocus = activeFeatureLabel !== null || focusActive;
+  // 第6工程 (B2 root fix): the 個別フォーカス group is ALWAYS rendered at a CONSTANT
+  // width — its controls DISABLE (never disappear) when their precondition is absent.
+  // The previous selection-gated render made the 上部バー's occupied width depend on
+  // the SELECTION: selecting/deselecting re-wrapped the menu-bar row (auto height)
+  // and the whole MAP CELL jumped 28px (depth-control / human-bugs-3 / resize-coord
+  // / aggregate-select / edit-drag-preview の共通根 — 5c72420 の測量コントロール追加で
+  // 上部バーの余白が尽きて顕在化). Layout may depend on the WINDOW SIZE only, never
+  // on the selection. A disabled affordance with an honest hint is not a dead
+  // control (教訓 5.7 の趣旨は「配線されず機能しない UI を作らない」— these are fully
+  // wired and enable exactly when their precondition holds).
+  const canApplyFocus = activeFeatureLabel !== null;
 
   return (
     <div className="global-depth" data-testid="global-depth">
@@ -117,61 +125,65 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
         </button>
       </div>
 
-      {showFocus && (
-        <div className="global-depth__focus" data-testid="depth-focus">
-          <span className="global-depth__focus-label">{DISPLAY_CONTROL_STRINGS.focusLabel}</span>
+      {/* ALWAYS rendered, constant width (B2 invariant — see canApplyFocus note).
+          The apply button's label carries the feature name, so it is ellipsized at a
+          FIXED width (.global-depth__focus-apply); title= holds the full label. */}
+      <div className="global-depth__focus" data-testid="depth-focus">
+        <span className="global-depth__focus-label">{DISPLAY_CONTROL_STRINGS.focusLabel}</span>
 
-          {activeFeatureLabel !== null && (
-            <button
-              type="button"
-              data-testid="depth-focus-apply"
-              title={activeFeatureLabel}
-              onClick={onApplyFocus}
-            >
-              {focusActive ? `${activeFeatureLabel} に切替` : `${activeFeatureLabel} を深掘り`}
-            </button>
-          )}
+        <button
+          type="button"
+          className="global-depth__focus-apply"
+          data-testid="depth-focus-apply"
+          disabled={!canApplyFocus}
+          title={activeFeatureLabel ?? DISPLAY_CONTROL_STRINGS.focusNoTargetHint}
+          onClick={onApplyFocus}
+        >
+          {activeFeatureLabel === null
+            ? DISPLAY_CONTROL_STRINGS.focusNoTargetLabel
+            : focusActive
+              ? `${activeFeatureLabel} に切替`
+              : `${activeFeatureLabel} を深掘り`}
+        </button>
 
-          {/* The per-focus depth M + emphasis + clear only make sense while a focus is
-              live (教訓 5.7: no dead control when nothing is focused). */}
-          {focusActive && (
-            <>
-              <label className="global-depth__focus-depth">
-                <span>{DISPLAY_CONTROL_STRINGS.focusDepthLabel}</span>
-                <input
-                  type="number"
-                  data-testid="depth-focus-depth"
-                  aria-label={DISPLAY_CONTROL_STRINGS.focusDepthLabel}
-                  min={0}
-                  step={1}
-                  value={focusDepth}
-                  onChange={(e) =>
-                    onFocusDepth(Math.max(0, Math.round(Number(e.target.value))))
-                  }
-                />
-              </label>
+        {/* The per-focus depth M + emphasis + clear enable only while a focus is
+            live — disabled (not hidden) otherwise, so the group's width is constant. */}
+        <label className="global-depth__focus-depth">
+          <span>{DISPLAY_CONTROL_STRINGS.focusDepthLabel}</span>
+          <input
+            type="number"
+            data-testid="depth-focus-depth"
+            aria-label={DISPLAY_CONTROL_STRINGS.focusDepthLabel}
+            min={0}
+            step={1}
+            disabled={!focusActive}
+            value={focusDepth}
+            onChange={(e) =>
+              onFocusDepth(Math.max(0, Math.round(Number(e.target.value))))
+            }
+          />
+        </label>
 
-              <label className="global-depth__focus-emph">
-                <input
-                  type="checkbox"
-                  data-testid="depth-focus-emphasize"
-                  checked={focusEmphasize}
-                  onChange={(e) => onEmphasize(e.target.checked)}
-                />
-                <span>{DISPLAY_CONTROL_STRINGS.emphasizeLabel}</span>
-              </label>
+        <label className="global-depth__focus-emph">
+          <input
+            type="checkbox"
+            data-testid="depth-focus-emphasize"
+            disabled={!focusActive}
+            checked={focusEmphasize}
+            onChange={(e) => onEmphasize(e.target.checked)}
+          />
+          <span>{DISPLAY_CONTROL_STRINGS.emphasizeLabel}</span>
+        </label>
 
-              <button
-                type="button"
-                data-testid="depth-focus-clear"
-                onClick={onClearFocus}
-              >
-                {DISPLAY_CONTROL_STRINGS.clearFocusLabel}
-              </button>
-            </>
-          )}
-        </div>
-      )}
+        <button
+          type="button"
+          data-testid="depth-focus-clear"
+          disabled={!focusActive}
+          onClick={onClearFocus}
+        >
+          {DISPLAY_CONTROL_STRINGS.clearFocusLabel}
+        </button>
+      </div>
     </div>
   );
 }

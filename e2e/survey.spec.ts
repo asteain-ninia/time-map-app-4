@@ -219,11 +219,15 @@ test.describe('U37 — 測量モード結線 (FR-14 / FR-15 / FR-16)', () => {
       await expect(page.getByTestId('survey-line-count')).toHaveText('2');
       await expect.poll(async () => (await primitiveCounts(page)).line).toBe(4);
 
-      // ---- クリア erases EVERYTHING (the only line-emptying path, FR-15).
+      // ---- クリア erases EVERYTHING (the only line-emptying path, FR-15). The
+      // readout stays MOUNTED while survey is ON (第6工程 B2 fixed occupancy — it
+      // mounts with the mode toggle, never mid-gesture) but honestly reads 未計測
+      // (— placeholder): no fabricated value survives the clear.
       await page.getByTestId('survey-clear').click();
       await expect(page.getByTestId('survey-line-count')).toHaveText('0');
       await expect.poll(async () => (await primitiveCounts(page)).line).toBe(0);
-      await expect(page.getByTestId('survey-readout')).toHaveCount(0);
+      await expect(page.getByTestId('survey-eq-distance')).toContainText('—');
+      await expect(page.getByTestId('survey-start-dms')).toContainText('—');
     } finally {
       await app.close();
     }

@@ -639,10 +639,14 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // =====================================================================
       const sHalf = 70;
       const sReach = sHalf + 40;
-      const sx = Math.max(b.x + sReach + 12, Math.min(b.x + b.width - sReach - 12, cx + 240));
-      const syMin = b.y + sReach + 12;
-      const syMax = b.y + b.height - (sReach + 12);
-      const sy = Math.min(syMax, Math.max(syMin, cy + 250));
+      // 第6工程: the map cell is SHORTER now (the fixed-occupancy 上部バー holds two
+      // lines at the e2e window width), so the old lower-band placement (cy+250)
+      // saturated its clamp INTO the centre deep-nest cluster's footprint and the
+      // commit spatially conflicted. Pin the split scene to the TOP-RIGHT corner —
+      // provably clear of the centre nest (x ≤ cx+230) AND the lower-left exclave
+      // cluster at any map height ≥ the FR-114 minimum.
+      const sx = b.x + b.width - sReach - 12;
+      const sy = b.y + sReach + 12;
       const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       if (baseRes !== 'committed') {

@@ -101,26 +101,41 @@ export function SurveyControls<S>(props: SurveyControlsProps<S>): JSX.Element {
         </span>
       )}
 
-      {readout !== null && (
+      {/* 第6工程 (B2 fixed-occupancy): the readout is mounted from the moment survey
+          mode turns ON (placeholder '—' values until something is measured), NOT when
+          the first measurement appears. Mount-on-measure made the 上部バー's occupied
+          size jump MID-GESTURE (the hover after the first click mounted this whole
+          block → the menu-bar row re-wrapped → the map cell shifted → the second
+          click landed on the wrong world point; 世界端跨ぎ e2e). The 上部バー's
+          occupancy may change on the EXPLICIT mode toggle, never from measurement
+          state; the CSS min-widths on guide/distance/coord fix each row's box across
+          content / format changes. After survey OFF the readout stays only while a
+          measured value remains (確定線, FR-15). */}
+      {(survey.active || readout !== null) && (
         <div className="survey-controls__readout" data-testid="survey-readout">
           <span className="survey-controls__title">{SURVEY_STRINGS.panelTitle}</span>
           <span className="survey-controls__distance" data-testid="survey-eq-distance">
             {SURVEY_STRINGS.equirectangularLabel}:{' '}
-            {formatDistanceKm(readout.equirectangularKm)}
+            {readout !== null
+              ? formatDistanceKm(readout.equirectangularKm)
+              : SURVEY_STRINGS.noValue}
           </span>
           <span className="survey-controls__distance" data-testid="survey-gc-distance">
-            {SURVEY_STRINGS.greatCircleLabel}: {formatDistanceKm(readout.greatCircleKm)}
+            {SURVEY_STRINGS.greatCircleLabel}:{' '}
+            {readout !== null
+              ? formatDistanceKm(readout.greatCircleKm)
+              : SURVEY_STRINGS.noValue}
           </span>
           <CoordinateReadout
             label={SURVEY_STRINGS.startPointLabel}
             testId="survey-start"
-            display={readout.startDisplay}
+            display={readout !== null ? readout.startDisplay : null}
             format={format}
           />
           <CoordinateReadout
             label={SURVEY_STRINGS.endPointLabel}
             testId="survey-end"
-            display={readout.endDisplay}
+            display={readout !== null ? readout.endDisplay : null}
             format={format}
           />
           <span className="survey-controls__format" role="group" aria-label={SURVEY_STRINGS.formatLabel}>
@@ -139,7 +154,8 @@ export function SurveyControls<S>(props: SurveyControlsProps<S>): JSX.Element {
 function CoordinateReadout(props: {
   readonly label: string;
   readonly testId: string;
-  readonly display: CoordinateDisplay;
+  /** `null` = nothing measured yet — placeholder dashes (fixed occupancy, B2). */
+  readonly display: CoordinateDisplay | null;
   readonly format: CoordFormat;
 }): JSX.Element {
   const { label, testId, display, format } = props;
@@ -148,12 +164,16 @@ function CoordinateReadout(props: {
       <span className="survey-controls__coord-label">{label}</span>
       {(format === 'both' || format === 'dms') && (
         <span data-testid={`${testId}-dms`}>
-          {display.latDms} / {display.lonDms}
+          {display !== null
+            ? `${display.latDms} / ${display.lonDms}`
+            : SURVEY_STRINGS.noValue}
         </span>
       )}
       {(format === 'both' || format === 'decimal') && (
         <span data-testid={`${testId}-decimal`}>
-          {display.latDecimal} / {display.lonDecimal}
+          {display !== null
+            ? `${display.latDecimal} / ${display.lonDecimal}`
+            : SURVEY_STRINGS.noValue}
         </span>
       )}
     </span>

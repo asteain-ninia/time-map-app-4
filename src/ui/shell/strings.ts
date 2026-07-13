@@ -136,6 +136,15 @@ export const DISPLAY_CONTROL_STRINGS = {
   emphasizeLabel: '縦方向領域を強調',
   /** Clear-focus action label (教訓 5.2). */
   clearFocusLabel: 'フォーカス解除',
+  /**
+   * 深掘り button placeholder while NOTHING is selected (第6工程 B2). The focus group
+   * is ALWAYS rendered at a constant width — controls disable, never disappear — so
+   * the 上部バー's occupied width cannot depend on the selection (a selection-driven
+   * re-wrap of the menu-bar row used to shift the whole map cell 28px).
+   */
+  focusNoTargetLabel: '深掘り対象なし',
+  /** Title/hint for the disabled 深掘り button (why it is disabled). */
+  focusNoTargetHint: '地物を選択すると深掘りできます',
 } as const;
 
 /** Tooltip text (操作ガイド, FR-112 / FR-115), keyed by command/tool id. */

@@ -1,31 +1,27 @@
 /* U26 — knife-tool chrome styles (FR-90 / FR-92 / FR-93, 教訓 5.14 input layers). */
 
-/* The knife-tool is mounted inside .app-shell__overlay (inset:0, whole shell). Like
-   the add-tool (shell.css), it carries the SAME CSS grid as the shell so its input
-   bridge covers ONLY the central map cell — sharing the canvas' exact client rect so
-   "clicked here ⇒ cut here" cannot diverge (教訓 5.29: screenToWorld converts against
-   the canvas rect). The scaffold itself takes no pointer events; only the bridge does. */
+/* The knife-tool is MAP-ANCHORED (AppShell mapOverlay — 第6工程: the old full-shell
+   shell-grid mirror collapsed its empty auto rows and covered the 上部バー/timeline
+   bands). Like the add-tool (shell.css), the scaffold is inset:0 of the map cell so
+   its input bridge shares the canvas' exact client rect and "clicked here ⇒ cut here"
+   cannot diverge (教訓 5.29: screenToWorld converts against the canvas rect). The
+   scaffold itself takes no pointer events; only the bridge does. */
 .knife-tool {
   position: absolute;
   inset: 0;
-  display: grid;
-  grid-template-rows: auto 1fr auto auto;
-  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
   pointer-events: none;
 }
 
-/* The transparent map-input bridge: covers the central map cell exactly (row 2,
-   col 2 = .app-shell__map) while selecting / drawing and captures pointer events,
+/* The transparent map-input bridge: fills the map cell exactly (the scaffold is
+   inset:0 of .map-area) while selecting / drawing and captures pointer events,
    forwarding them to the hook. Removed the moment the session ends, so it never
    steals input outside a knife op (教訓 5.14). */
 .knife-tool__input {
-  grid-row: 2;
-  grid-column: 2;
-  min-height: 0;
-  /* position:relative so z-index applies — it must sit BELOW the floating controls
-     / guide (z-index 40) so the 確定 button is clickable, not shadowed by the
-     transparent bridge (教訓 5.14: 透明な層が操作を奪わない). */
-  position: relative;
+  /* z-index keeps the bridge BELOW the floating controls / guide (z-index 40) so
+     the 確定 button is clickable, not shadowed by the transparent bridge
+     (教訓 5.14: 透明な層が操作を奪わない). */
+  position: absolute;
+  inset: 0;
   z-index: 1;
   cursor: crosshair;
   pointer-events: auto;
