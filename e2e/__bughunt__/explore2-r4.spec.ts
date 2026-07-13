@@ -52,6 +52,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { assertClickable } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -338,10 +339,29 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // =====================================================================
       // 1. CONFLICT — three-face overlap; CANCEL path then APPLY path.
       // =====================================================================
-      const f1 = await commitFaceMaybeConflict(page, cx - 60, cy - 40, 110);
+      // 第7工程: the overlap cluster is anchored from the LIVE box. The old anchor
+      // (map centre) put f2's bottom corners (cy+60+110) onto the map-anchored
+      // bottom-centre tool-controls strip, eating the clicks (add-vertex-drop →
+      // complete disabled). Anchor ≈0.42h keeps every cluster corner clear of the
+      // strip while preserving the exact overlap topology (offsets unchanged).
+      const clY = b.y + Math.round(0.42 * b.height);
+      const clusterCorners: ReadonlyArray<readonly [number, number]> = (
+        [
+          [cx - 60, clY - 40, 110],
+          [cx + 90, clY + 60, 110],
+          [cx + 10, clY + 10, 130],
+        ] as const
+      ).flatMap(([fcx, fcy, half]) => [
+        [fcx - half, fcy - half],
+        [fcx + half, fcy - half],
+        [fcx + half, fcy + half],
+        [fcx - half, fcy + half],
+      ]);
+      assertClickable(b, clusterCorners, { avoidTopChrome: false, name: 'r4-conflict-cluster' });
+      const f1 = await commitFaceMaybeConflict(page, cx - 60, clY - 40, 110);
       if (f1 !== 'committed') record('conflict-setup', `first face: ${f1}`);
       await checkCamera(page, 'after-f1');
-      const f2 = await commitFaceMaybeConflict(page, cx + 90, cy + 60, 110);
+      const f2 = await commitFaceMaybeConflict(page, cx + 90, clY + 60, 110);
       await shot(page, 'two-faces');
       if (f2 === 'conflict') {
         // The 2nd already overlaps the 1st; resolve+apply to set a clean base.
@@ -363,7 +383,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       const countBeforeCancel = await featureListCount(page);
 
       // A THIRD face that straddles both -> should fire the conflict modal.
-      const f3 = await commitFaceMaybeConflict(page, cx + 10, cy + 10, 130);
+      const f3 = await commitFaceMaybeConflict(page, cx + 10, clY + 10, 130);
       await shot(page, 'third-face-overlap');
       if (f3 === 'conflict') {
         record('conflict-modal-fired', 'three-face overlap真に paused on conflict modal');
@@ -395,7 +415,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         }
 
         // --- APPLY path: re-fire and RESOLVE every row, then apply.
-        const f3b = await commitFaceMaybeConflict(page, cx + 10, cy + 10, 130);
+        const f3b = await commitFaceMaybeConflict(page, cx + 10, clY + 10, 130);
         if (f3b === 'conflict') {
           const n2 = await gateConflictModal(page, 'apply-conflict');
           // Resolve: choose the FIRST policy radio per row (2 radios/row a|b).

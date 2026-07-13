@@ -49,6 +49,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -387,11 +388,23 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       const countBeforeNest = await featureListCount(page);
 
       // Root face (large, centred), then shrinking children each inside the prior.
+      // 第7工程: the nest is placed from the LIVE box via the shared scene solver —
+      // the old centre anchor with half=220 dropped its bottom corners onto the
+      // map-anchored bottom-centre tool-controls strip (clicks eaten → nest-rejected
+      // at level 0). half=150 keeps the FULL depth-6 chain (L5 half ≈ 29px, corners
+      // still distinct); depth semantics unchanged.
       const DEPTH = 6;
-      let half = 220;
+      const nest = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.42,
+        half: 150,
+        avoidTopChrome: false, // the nest phase is pure add — no tool guide mounts
+        name: 'r1-nest',
+      });
+      let half = 150;
       let level = 0;
       for (; level < DEPTH; level += 1) {
-        const res = await commitFace(page, cx, cy, half, {
+        const res = await commitFace(page, nest.cx, nest.cy, half, {
           chooseLastParent: level > 0, // root has no parent; children nest in prior
           name: `nest-L${level}`,
         });
@@ -451,13 +464,21 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // it cancels conflicts and only counts committed faces (gridConflicts).
       const sHalf = 80;
       // A pierce only needs to clear the face's edges; keep the reach modest so the
-      // cut endpoints stay inside the layer with the base low in the viewport.
+      // cut endpoints stay inside the layer.
       const sReach = sHalf + 40;
-      const sx = cx; // horizontally centred — guaranteed inside the layer
-      const syMin = b.y + sReach + 12; // keep the upward pierce on canvas
-      const syMax = b.y + b.height - (sReach + 12); // keep the downward pierce on canvas
-      // Just below the nest's lower edge (≈cy+220), clamped inside the layer.
-      const sy = Math.min(syMax, Math.max(syMin, cy + 240));
+      // 第7工程: RIGHT lane via the shared scene solver — clear of the centred nest
+      // (x ≤ nest.cx+150+…) AND fully outside the bottom-centre tool-controls strip,
+      // so the base's corners and the vertical pierce endpoints all land on canvas.
+      const splitScene = placeSquareScene(b, {
+        fx: 0.9,
+        fy: 0.5,
+        half: sHalf,
+        pierce: sReach,
+        avoidTopChrome: true, // knife guide mounts over this scene
+        name: 'r1-split-base',
+      });
+      const sx = splitScene.cx;
+      const sy = splitScene.cy;
       const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       // GATE: the split-base MUST commit, else B never reaches knife/merge (the very
@@ -693,14 +714,18 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       await showSidebarTab(page, 'features');
       const countBeforeGrid = await featureListCount(page);
 
-      // A 5×5-ish grid of small squares offset so none overlap (avoids the
-      // conflict modal). Step bigger than 2*half. Keep them inside the viewport.
-      const HALF = 22;
-      const STEP = 70;
+      // A 5×5 grid of small squares offset so none overlap (avoids the conflict
+      // modal). Step bigger than 2*half. 第7工程: the grid lives in the LEFT band —
+      // clear of the centred nest (x ≥ nest.cx−150−10), the right-lane split scene,
+      // AND above the bottom-centre controls strip — so all 25 cells' corner clicks
+      // land on canvas (the old lower-half anchor dropped whole rows onto the strip
+      // / below the shorter map). 25 cells preserved (perf 規模は不変).
+      const HALF = 20;
+      const STEP = 60;
       const COLS = 5;
       const ROWS = 5;
-      const gx0 = cx - ((COLS - 1) * STEP) / 2;
-      const gy0 = cy + 60; // lower half, away from the nest
+      const gx0 = b.x + SCENE_MARGIN + HALF + 2;
+      const gy0 = b.y + SCENE_MARGIN + HALF + 4;
       let placed = 0;
       let gridConflicts = 0;
       for (let r = 0; r < ROWS; r += 1) {

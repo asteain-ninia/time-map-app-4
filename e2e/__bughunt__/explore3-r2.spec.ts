@@ -59,6 +59,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -428,11 +429,25 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // =====================================================================
       const countBeforeNest = await checkParity(page, 'before-nest');
 
+      // 第7工程: the nest is placed from the LIVE box via the shared scene solver —
+      // the old centre anchor with half=210 dropped its bottom corners onto the
+      // map-anchored bottom-centre tool-controls strip. half=150 keeps the FULL
+      // depth-5 chain (L4 half ≈ 36px); depth semantics unchanged. The reparent /
+      // vertex phases below are nest-relative and follow automatically.
       const DEPTH = 5;
-      let half = 210;
+      const nest = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.42,
+        half: 150,
+        avoidTopChrome: false, // pure-add phase — no tool guide mounts
+        name: 'r2-nest',
+      });
+      const ncx = nest.cx;
+      const ncy = nest.cy;
+      let half = 150;
       let level = 0;
       for (; level < DEPTH; level += 1) {
-        const res = await commitFace(page, cx, cy, half, {
+        const res = await commitFace(page, ncx, ncy, half, {
           chooseLastParent: level > 0,
           name: `nest-L${level}`,
         });
@@ -466,11 +481,11 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
         // The deepest faces are concentric around (cx,cy). Click near the centre to
         // pick up the smallest (deepest) face, then click further out (a shallower
         // ancestor ring) to retarget its parent. Re-using the live导线 (no bypass).
-        await page.mouse.click(cx, cy); // pick deepest (centre)
+        await page.mouse.click(ncx, ncy); // pick deepest (centre)
         const selBefore = await activeFeature(page);
         await page.waitForTimeout(90);
         // Click an outer ring offset to nominate a different ancestor.
-        await page.mouse.click(cx + Math.round(half * 1.4), cy);
+        await page.mouse.click(ncx + Math.round(half * 1.4), ncy);
         await page.waitForTimeout(120);
         // A reparent may surface a confirm/conflict; recover without crashing.
         if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
@@ -506,14 +521,14 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
         // faces are concentric; the deepest face corner sits near (cx±halfInner).
         // half currently holds the NEXT (un-committed) shrink; recompute the last
         // committed inner half from the depth reached.
-        let innerHalf = 210;
+        let innerHalf = 150; // 第7工程: tracks the nest's new L0 half
         for (let i = 1; i < reachedDepth; i += 1) innerHalf = Math.round(innerHalf * 0.7);
-        await page.mouse.click(cx, cy); // select the deepest face
+        await page.mouse.click(ncx, ncy); // select the deepest face
         const vSelBefore = await activeFeature(page);
         // Grab its top-left corner and drag it inward (smaller) — must stay a valid
         // simple polygon contained by its parent (live validators gate self-cross).
-        const vx = cx - innerHalf;
-        const vy = cy - innerHalf;
+        const vx = ncx - innerHalf;
+        const vy = ncy - innerHalf;
         await page.mouse.move(vx, vy);
         await page.mouse.down();
         await page.mouse.move(vx + 18, vy + 18, { steps: 6 });
@@ -553,10 +568,19 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // =====================================================================
       const sHalf = 78;
       const sReach = sHalf + 40;
-      const sx = cx;
-      const syMin = b.y + sReach + 12;
-      const syMax = b.y + b.height - (sReach + 12);
-      const sy = Math.min(syMax, Math.max(syMin, cy + 250));
+      // 第7工程: RIGHT lane via the shared scene solver — clear of the centred nest
+      // AND fully outside the bottom-centre tool-controls strip, so the base's
+      // corners and every vertical pierce endpoint land on canvas.
+      const splitScene = placeSquareScene(b, {
+        fx: 0.9,
+        fy: 0.5,
+        half: sHalf,
+        pierce: sReach,
+        avoidTopChrome: true, // knife guide mounts over this scene
+        name: 'r2-split-base',
+      });
+      const sx = splitScene.cx;
+      const sy = splitScene.cy;
       const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       if (baseRes !== 'committed') {
@@ -748,12 +772,16 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // =====================================================================
       const countBeforeGrid = await checkParity(page, 'before-grid');
 
-      const HALF = 20;
-      const STEP = 66;
+      // 第7工程: the grid lives in the TOP-LEFT band — clear of the centred nest, the
+      // right-lane split scene, and the bottom-centre controls strip — so every cell's
+      // corner clicks land on canvas. 24 cells preserved (perf 規模は不変); STEP/HALF
+      // shrink only the geometry (still non-overlapping: STEP > 2×HALF).
+      const HALF = 18;
+      const STEP = 50;
       const COLS = 6;
       const ROWS = 4;
-      const gx0 = cx - ((COLS - 1) * STEP) / 2;
-      const gy0 = cy + 50;
+      const gx0 = b.x + SCENE_MARGIN + HALF + 2;
+      const gy0 = b.y + SCENE_MARGIN + HALF + 6;
       let placed = 0;
       let gridConflicts = 0;
       for (let r = 0; r < ROWS; r += 1) {

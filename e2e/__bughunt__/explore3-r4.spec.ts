@@ -66,6 +66,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { SCENE_MARGIN, assertClickable, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -487,11 +488,23 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // =====================================================================
       const countBeforeNest = await checkParity(page, 'before-nest');
 
+      // 第7工程: the nest is placed from the LIVE box via the shared scene solver —
+      // the old centre anchor with half=250 dropped its bottom corners BELOW the
+      // shorter map (timeline band) and its upper phases degraded from level 0.
+      // half=150 keeps the FULL depth-8 chain (L7 half ≈ 18px, corners distinct);
+      // depth semantics unchanged.
       const DEPTH = 8;
-      let half = 250;
+      const nest = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.42,
+        half: 150,
+        avoidTopChrome: false, // pure-add phase — no tool guide mounts
+        name: 'r4-nest',
+      });
+      let half = 150;
       let level = 0;
       for (; level < DEPTH; level += 1) {
-        const res = await commitFace(page, cx, cy, half, {
+        const res = await commitFace(page, nest.cx, nest.cy, half, {
           chooseLastParent: level > 0,
           name: `nest-L${level}`,
         });
@@ -524,12 +537,31 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // =====================================================================
       // B. MULTI-HOLE EXCLAVE → REPARENT ONE HOLE OUT, THEN KNIFE THE PARENT.
       // =====================================================================
-      const exHalf = 170;
-      const exReach = exHalf + 50;
-      const exYmin = b.y + exReach + 12;
-      const exYmax = b.y + b.height - (exReach + 12);
-      const exCy = Math.min(exYmax, Math.max(exYmin, cy + 230));
-      const exCx = Math.max(b.x + exReach + 12, Math.min(b.x + b.width - exReach - 12, cx - 230));
+      // 第7工程: LEFT lane via the shared scene solver — clear of the centred nest
+      // (x ≤ nest.cx−150−10) and the bottom-centre controls strip. exHalf 170→130 so
+      // the lane fits BOTH the nest clearance and the in-box HORIZONTAL pierce
+      // (endpoints exCx±exReach asserted below); the phase semantics (2 holes,
+      // hole-reparent-out, split-with-hole) are unchanged.
+      const exHalf = 130;
+      const exReach = exHalf + 30;
+      const exScene = placeSquareScene(b, {
+        fx: 0.19,
+        fy: 0.45,
+        half: exHalf,
+        avoidTopChrome: true, // reparent / knife guides mount over this scene
+        name: 'r4-exclave',
+      });
+      const exCx = Math.max(exScene.cx, b.x + SCENE_MARGIN + exReach);
+      const exCy = exScene.cy;
+      // The horizontal pierce endpoints (B2) must land on hittable canvas too.
+      assertClickable(
+        b,
+        [
+          [exCx - exReach, exCy - 8],
+          [exCx + exReach, exCy - 8],
+        ],
+        { avoidTopChrome: true, name: 'r4-exclave-pierce' },
+      );
 
       const bigRes = await commitFace(page, exCx, exCy, exHalf, { name: 'exclave-parent' });
       if (bigRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
@@ -578,7 +610,7 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
           record('reparent-target-malformed', `reparent-target="${tgtMarker}"`);
         }
         // New parent = the deep-nest cluster centre (a different subtree entirely).
-        await page.mouse.click(cx, cy);
+        await page.mouse.click(nest.cx, nest.cy);
         await page.waitForTimeout(120);
         const parMarker = ((await page.getByTestId('reparent-parent').textContent().catch(() => '')) ?? '').trim();
         if (/NaN|Infinity/.test(parMarker)) record('reparent-parent-malformed', `reparent-parent="${parMarker}"`);
@@ -653,10 +685,19 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // =====================================================================
       const sHalf = 95;
       const sReach = sHalf + 45;
-      const sx = Math.max(b.x + sReach + 12, Math.min(b.x + b.width - sReach - 12, cx + 250));
-      const syMin = b.y + sReach + 12;
-      const syMax = b.y + b.height - (sReach + 12);
-      const sy = Math.min(syMax, Math.max(syMin, cy + 250));
+      // 第7工程: RIGHT lane via the shared scene solver — clear of the nest / exclave
+      // and outside the bottom-centre controls strip; the five vertical pierce
+      // columns (sx±44) stay right of the strip too.
+      const splitScene = placeSquareScene(b, {
+        fx: 0.9,
+        fy: 0.5,
+        half: sHalf,
+        pierce: sReach,
+        avoidTopChrome: true, // knife guide mounts over this scene
+        name: 'r4-split-base',
+      });
+      const sx = splitScene.cx;
+      const sy = splitScene.cy;
       const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       if (baseRes !== 'committed') {

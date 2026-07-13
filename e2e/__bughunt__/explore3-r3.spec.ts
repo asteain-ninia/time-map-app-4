@@ -68,6 +68,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -455,11 +456,21 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // =====================================================================
       const countBeforeNest = await checkParity(page, 'before-nest');
 
+      // 第7工程: the nest is placed from the LIVE box via the shared scene solver —
+      // half=230 only cleared the map-anchored bottom-centre controls strip by ~2px
+      // (razor-thin); half=150 keeps the FULL depth-6 chain with real clearance.
       const DEPTH = 6;
-      let half = 230;
+      const nest = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.42,
+        half: 150,
+        avoidTopChrome: false, // pure-add phase — no tool guide mounts
+        name: 'r3-nest',
+      });
+      let half = 150;
       let level = 0;
       for (; level < DEPTH; level += 1) {
-        const res = await commitFace(page, cx, cy, half, {
+        const res = await commitFace(page, nest.cx, nest.cy, half, {
           chooseLastParent: level > 0,
           name: `nest-L${level}`,
         });
@@ -493,7 +504,7 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
         await shot(page, 'reparent-armed');
         // First click: target = the deepest face (centre). Second click: a shallower
         // ancestor ring offset → the new parent.
-        await page.mouse.click(cx, cy);
+        await page.mouse.click(nest.cx, nest.cy);
         await page.waitForTimeout(90);
         const tgtMarker = ((await page.getByTestId('reparent-target').textContent().catch(() => '')) ?? '').trim();
         if (tgtMarker === '') {
@@ -501,7 +512,7 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
         } else if (/NaN|Infinity|undefined|null/.test(tgtMarker)) {
           record('reparent-target-malformed', `reparent-target="${tgtMarker}"`);
         }
-        await page.mouse.click(cx + Math.round(half * 1.8), cy);
+        await page.mouse.click(nest.cx + Math.round(half * 1.8), nest.cy);
         await page.waitForTimeout(120);
         const parMarker = ((await page.getByTestId('reparent-parent').textContent().catch(() => '')) ?? '').trim();
         if (/NaN|Infinity/.test(parMarker)) record('reparent-parent-malformed', `reparent-parent="${parMarker}"`);
@@ -540,14 +551,24 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // B. MULTI-HOLE EXCLAVE: a big parent with TWO nested inner regions, then
       //    (B1) vertex-edit an inner ring and (B2) knife-split through the holes.
       // =====================================================================
-      // Place this scene in the LOWER band so it never overlaps the deep-nest
-      // cluster (no spurious conflict modal). Big parent + two inner faces.
-      const exHalf = 170;
-      const exReach = exHalf + 50;
-      const exYmin = b.y + exReach + 12;
-      const exYmax = b.y + b.height - (exReach + 12);
-      const exCy = Math.min(exYmax, Math.max(exYmin, cy + 230));
-      const exCx = Math.max(b.x + exReach + 12, Math.min(b.x + b.width - exReach - 12, cx - 220));
+      // 第7工程: LEFT lane via the shared scene solver — clear of the centred nest
+      // and the bottom-centre controls strip, with the B2 vertical pierce endpoints
+      // solved onto hittable canvas (the old lower-band clamp saturated into the
+      // controls strip and the scene degraded softly). exHalf 170→130 keeps the
+      // phase semantics (2 holes, vertex-drag, split-through-holes) at a size the
+      // lane can actually host.
+      const exHalf = 130;
+      const exReach = exHalf + 30;
+      const exScene = placeSquareScene(b, {
+        fx: 0.19,
+        fy: 0.45,
+        half: exHalf,
+        pierce: exReach,
+        avoidTopChrome: true, // vertex/knife guides mount over this scene
+        name: 'r3-exclave',
+      });
+      const exCx = exScene.cx;
+      const exCy = exScene.cy;
 
       const bigRes = await commitFace(page, exCx, exCy, exHalf, { name: 'exclave-parent' });
       if (bigRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
@@ -639,14 +660,20 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // =====================================================================
       const sHalf = 70;
       const sReach = sHalf + 40;
-      // 第6工程: the map cell is SHORTER now (the fixed-occupancy 上部バー holds two
-      // lines at the e2e window width), so the old lower-band placement (cy+250)
-      // saturated its clamp INTO the centre deep-nest cluster's footprint and the
-      // commit spatially conflicted. Pin the split scene to the TOP-RIGHT corner —
-      // provably clear of the centre nest (x ≤ cx+230) AND the lower-left exclave
-      // cluster at any map height ≥ the FR-114 minimum.
-      const sx = b.x + b.width - sReach - 12;
-      const sy = b.y + sReach + 12;
+      // 第7工程 (第6工程の TOP-RIGHT ピン留めを共有ソルバへ集約): RIGHT lane via the
+      // shared scene solver — clear of the centre nest and the left-lane exclave, and
+      // fully outside the bottom-centre controls strip; every vertical pierce column
+      // (sx / sx−32 / sx−16) stays right of the strip too.
+      const splitScene = placeSquareScene(b, {
+        fx: 0.92,
+        fy: 0.2,
+        half: sHalf,
+        pierce: sReach,
+        avoidTopChrome: true, // knife guide mounts over this scene
+        name: 'r3-split-base',
+      });
+      const sx = splitScene.cx;
+      const sy = splitScene.cy;
       const baseRes = await commitFace(page, sx, sy, sHalf, { name: 'split-base' });
       if (baseRes === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       if (baseRes !== 'committed') {

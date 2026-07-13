@@ -25,6 +25,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp } from '../helpers';
+import { placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -429,7 +430,22 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       await handleConflictModalIfPresent(page);
 
       // --- Knife split full live flow (fresh target) ----------------------------
-      const splitTarget = await commitFace(page, cx, cy + 120, 85);
+      // 第7工程: the split scene is placed from the LIVE box (ratio anchor) with the
+      // knife pierce endpoints solved clear of the bottom-centre tool-controls strip
+      // — the old fixed offset (cy+120, ±130) put the lower corners/cut end onto the
+      // map-anchored chrome / below the shorter map, and the corner clicks dropped.
+      // RIGHT lane (fx≈0.92): clear of the centre grand/parent/child cluster
+      // (…x≤cx+50+…≈640) AND the moved 'other' face (…x≤≈850), so the fresh target
+      // commits without a spurious spatial conflict.
+      const splitScene = placeSquareScene(b, {
+        fx: 0.92,
+        fy: 0.5,
+        half: 85,
+        pierce: 85 + 24,
+        avoidTopChrome: true,
+        name: 'r2-split-target',
+      });
+      const splitTarget = await commitFace(page, splitScene.cx, splitScene.cy, 85);
       await shot(page, 'split-target-added');
       if (splitTarget === '') record('add-empty', 'split target empty after commit');
       await enterEdit(page);
@@ -438,9 +454,9 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
         await knifeBtn.click();
         const knifeLayer = page.getByTestId('knife-input-layer');
         if (await knifeLayer.isVisible().catch(() => false)) {
-          await page.mouse.click(cx, cy + 120); // select target
-          await page.mouse.click(cx + 2, cy + 120 - 130); // cut start above
-          await page.mouse.click(cx - 3, cy + 120 + 130); // cut end below
+          await page.mouse.click(splitScene.cx, splitScene.cy); // select target
+          await page.mouse.click(splitScene.cx + 2, splitScene.cutTopY); // cut start above
+          await page.mouse.click(splitScene.cx - 3, splitScene.cutBottomY); // cut end below
           const cutCount = page.getByTestId('knife-cut-count');
           const cc = (await cutCount.textContent())?.trim();
           if (cc !== '2') record('knife-cut-count', `expected 2 cut points, got ${cc}`);
