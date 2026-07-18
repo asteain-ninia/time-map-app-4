@@ -1,0 +1,18 @@
+/* U18 — グリッド表示 topBar toggle (FR-13). A FIXED, static control: its occupied
+   width depends only on its constant label (nowrap), never on selection / measurement
+   state, preserving the 上部バー占有幅=ウィンドウ幅のみ invariant (a4f6be9). Mirrors the
+   survey-controls topBar conventions (aria-pressed highlight + nowrap label). */
+.grid-toggle {
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+}
+
+.grid-toggle__button {
+  white-space: nowrap;
+}
+
+.grid-toggle__button[aria-pressed='true'] {
+  background: #1565c0;
+  color: #fff;
+}

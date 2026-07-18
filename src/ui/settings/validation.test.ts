@@ -149,6 +149,18 @@ describe('validateProjectSettings (FR-109, 受け入れ基準 7 / 8)', () => {
     expect(validateProjectSettings(projectOf({ gridOpacity: 1 })).ok).toBe(true);
   });
 
+  // FR-13 グリッド ON/OFF切替 (受け入れ基準 9): gridVisible is a boolean.
+  it('accepts gridVisible true and false (FR-13 boolean 受理)', () => {
+    expect(validateProjectSettings(projectOf({ gridVisible: true })).ok).toBe(true);
+    expect(validateProjectSettings(projectOf({ gridVisible: false })).ok).toBe(true);
+  });
+
+  it('rejects a non-boolean gridVisible (defensive; schema z.boolean() と対応)', () => {
+    const bad = projectOf({ gridVisible: 'yes' as unknown as boolean });
+    expect(errorFields(validateProjectSettings(bad))).toContain('gridVisible');
+    expect(validateProjectSettings(bad).ok).toBe(false);
+  });
+
   it('rejects occupancy threshold outside [0,1]', () => {
     expect(errorFields(validateProjectSettings(projectOf({ areaLabelOccupancyThreshold: 2 })))).toContain('areaLabelOccupancyThreshold');
     expect(validateProjectSettings(projectOf({ areaLabelOccupancyThreshold: 0.5 })).ok).toBe(true);

@@ -40,6 +40,10 @@ export function toPersistedUiSettings(live: LiveSettings): UiSettings {
       flattening: p.flattening,
       timelineMinYear: p.timelineMinYear,
       timelineMaxYear: p.timelineMaxYear,
+      // FR-13: WRITE the grid-visibility flag ALWAYS (the store value is always
+      // present) so a saved manifest carries it — 常時書き + optional-read discipline
+      // (WRITE⊆READ). The back-compat default lives on the READ side below.
+      gridVisible: p.gridVisible,
       gridSpacingDeg: p.gridSpacingDeg,
       gridColor: p.gridColor,
       gridOpacity: p.gridOpacity,
@@ -76,6 +80,11 @@ export function fromPersistedUiSettings(ui: UiSettings): LiveSettings {
       flattening: p.flattening,
       timelineMinYear: p.timelineMinYear,
       timelineMaxYear: p.timelineMaxYear,
+      // FR-13 後方互換: an older manifest's `ui` block has NO gridVisible key —
+      // default to true (欠落=可視) so an existing .tmap loads with the graticule
+      // shown, exactly as before this setting existed. THE single default-fill point
+      // for the store (the alpha-opacity 既定補完と同型).
+      gridVisible: p.gridVisible ?? true,
       gridSpacingDeg: p.gridSpacingDeg,
       gridColor: p.gridColor,
       gridOpacity: p.gridOpacity,

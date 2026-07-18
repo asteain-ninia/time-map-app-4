@@ -12,7 +12,7 @@ import {
 // deserialize is persistence-internal (not re-exported from the barrel, 受け入れ
 // 基準8 / R8); the round-trip test reaches it from ./serialize directly, which is
 // exempt from the boundary lint rule as a persistence-module file.
-import { deserialize, type DomainProject } from './serialize';
+import { deserialize, type DomainProject, type UiSettings } from './serialize';
 import { FIXTURE_DETAIL_DOCUMENT, projectArb, richValidProject } from './fixtures';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
 import { createAnchorEntry } from '../anchor-series';
@@ -214,6 +214,76 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
         return result.outcome === PARSE_OUTCOME.Ok;
       }),
     );
+  });
+
+  // FR-13 グリッド ON/OFF — the visibility flag round-trips through the FULL manifest
+  // boundary (serialize → JSON → parse → deserialize), and a pre-FR13 `ui` block (the
+  // flag stripped) still parses (optional 追記, 後方互換). The store-side default-fill
+  // (欠落=可視) is the bridge's job — pinned in ui-settings-bridge.test.ts.
+  function uiSettingsWith(over: Partial<{ gridVisible: boolean }>): UiSettings {
+    return {
+      project: {
+        projectName: 'g',
+        projectDescription: 'd',
+        equatorLengthKm: 40000,
+        flattening: 0.0034,
+        timelineMinYear: 0,
+        timelineMaxYear: 100,
+        gridSpacingDeg: 10,
+        gridColor: '#abcdef',
+        gridOpacity: 0.5,
+        baseMapId: '@preset/equirectangular-world',
+        areaLabelOccupancyThreshold: 0.3,
+        newAreaAutoColorDefault: false,
+        defaultPaletteTheme: 'default',
+        customPalette: [],
+        zoomMin: 1,
+        zoomMax: 50,
+        ...over,
+      },
+      app: {
+        snapDistancePx: 50,
+        renderFps: 60,
+        vertexMarkerCap: 500,
+        showConflictGuide: true,
+        undoStackSize: 100,
+      },
+    };
+  }
+
+  it('round-trips uiSettings.gridVisible through the JSON boundary (FR-13 save→load 保存)', () => {
+    for (const gridVisible of [true, false]) {
+      const project: DomainProject = {
+        ...richValidProject(),
+        uiSettings: uiSettingsWith({ gridVisible }),
+      };
+      const parsed = parseManifest(JSON.parse(JSON.stringify(serialize(project))));
+      expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+      if (parsed.outcome === PARSE_OUTCOME.Ok) {
+        const restored = deserialize(parsed.manifest);
+        expect(restored.uiSettings?.project.gridVisible).toBe(gridVisible);
+        expect(projectsEqual(project, restored)).toBe(true);
+      }
+    }
+  });
+
+  it('parses a pre-FR13 ui block (gridVisible stripped) — the key stays absent on restore', () => {
+    const project: DomainProject = {
+      ...richValidProject(),
+      uiSettings: uiSettingsWith({ gridVisible: true }),
+    };
+    const json = JSON.parse(JSON.stringify(serialize(project))) as {
+      ui?: { project: Record<string, unknown> };
+    };
+    delete json.ui!.project['gridVisible'];
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome === PARSE_OUTCOME.Ok) {
+      const restored = deserialize(parsed.manifest);
+      // deserialize carries it faithfully (absent → absent); the 欠落=可視 store default
+      // is applied by the load bridge, not here (ui-settings-bridge.test.ts).
+      expect('gridVisible' in (restored.uiSettings?.project ?? {})).toBe(false);
+    }
   });
 
   it('golden: a document-less project serializes byte-identically to the pre-FR98 manifest', () => {

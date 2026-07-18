@@ -151,6 +151,67 @@ describe('composeFrame', () => {
     });
   });
 
+  // FR-13 ON/OFF切替 (受け入れ基準 9): the grid layer is driven by `gridEnabled`. It was
+  // hard-coded `true` (グリッドを消せない — 結線の穴); now false ⇒ NO grid primitives, and
+  // true / omitted ⇒ the graticule is present (明示的空 vs 描画, 教訓 5.18).
+  describe('grid ON/OFF (FR-13 gridEnabled)', () => {
+    it('gridEnabled=false draws NO grid primitives (no gridline, no grid label)', () => {
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        gridEnabled: false,
+      });
+      expect(prims.some((p) => p.kind === 'gridline')).toBe(false);
+      // An empty project's ONLY label primitives are graticule labels, so none remain.
+      expect(prims.some((p) => p.kind === 'label')).toBe(false);
+    });
+
+    it('gridEnabled=true draws the graticule', () => {
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        gridEnabled: true,
+      });
+      expect(prims.some((p) => p.kind === 'gridline')).toBe(true);
+    });
+
+    it('omitting gridEnabled defaults to ON (backward compatible)', () => {
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [],
+        overlay: [],
+        camera: CAMERA,
+        viewport: VIEWPORT,
+      });
+      expect(prims.some((p) => p.kind === 'gridline')).toBe(true);
+    });
+
+    it('gridEnabled=false still draws committed features + overlay (only the grid is gone)', () => {
+      const overlay: DrawPrimitive[] = [
+        { kind: 'point', at: { lon: 0, lat: 0 }, radiusPx: 4, fill: '#f00' },
+      ];
+      const prims = composeFrame({
+        baseImage: null,
+        committed: [point('pt-1', 10, 20)],
+        overlay,
+        camera: CAMERA,
+        viewport: VIEWPORT,
+        gridEnabled: false,
+      });
+      expect(prims.some((p) => p.kind === 'gridline')).toBe(false);
+      // The committed point feature is still drawn…
+      expect(prims.some((p) => p.kind === 'point' && p.fill === STYLE.fill)).toBe(true);
+      // …and the overlay is still on top (only the grid layer was suppressed).
+      expect(prims[prims.length - 1]).toBe(overlay[0]);
+    });
+  });
+
   it('reflects a CHANGED committed set in the batch (time-change reflection)', () => {
     const before = composeFrame({
       baseImage: null,

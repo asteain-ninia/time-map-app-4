@@ -159,6 +159,15 @@ export interface CreateAddHostPortsOptions {
    */
   readonly gridStyle?: () => GridStyle;
   /**
+   * Return whether the graticule is currently VISIBLE (FR-13 ON/OFF切替 / FR-109).
+   * Read on every composite so a project-setting toggle reflects at once when the
+   * host redraws (教訓 5.35, the SAME即時反映 mechanism as {@link gridStyle}). The
+   * composition root derives this from `projectSettings.gridVisible` (settings.ts).
+   * Defaults to `true` (可視) when absent (legacy callers / pre-mount) — without it
+   * the grid was hard-coded ON and could not be turned off (結線の穴, 教訓 5.7).
+   */
+  readonly gridVisible?: () => boolean;
+  /**
    * Notified after every live camera change (pan / wheel zoom, HB-1). The
    * composition root uses it to mirror the live pan offset + zoom into DOM
    * observation hooks (data-pan-x / data-pan-y / data-zoom) so a behavioural E2E
@@ -410,6 +419,14 @@ export interface FrameInputs {
    * setting so a panel change reflects in the draw (単一真実源, 教訓 5.29).
    */
   readonly grid?: GridStyle;
+  /**
+   * Graticule ON/OFF (FR-13 ON/OFF切替, 受け入れ基準 9). When `false` the grid layer
+   * emits NO primitives (buildGridPrimitives の enabled=false → 明示的空, 教訓 5.18);
+   * defaults to `true` (可視) so legacy callers / pre-mount keep drawing the grid.
+   * The composition root supplies the live project setting `gridVisible` so a toggle
+   * reflects in the draw on the next redraw (単一真実源, 教訓 5.35).
+   */
+  readonly gridEnabled?: boolean;
 }
 
 /**
@@ -449,7 +466,10 @@ export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
   }
   primitives.push(
     ...buildGridPrimitives(
-      true,
+      // FR-13 ON/OFF: was hard-coded `true` (the grid could not be turned off). Now
+      // driven by the live `gridVisible` project setting (default true = 可視 when the
+      // caller omits it). enabled=false ⇒ NO grid primitives (明示的空, 教訓 5.18).
+      inputs.gridEnabled ?? true,
       inputs.grid ?? DEFAULT_GRID_STYLE,
       inputs.camera,
       inputs.viewport,
@@ -610,6 +630,9 @@ export function createAddHostPorts(
       viewport,
       thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
       grid: options.gridStyle?.() ?? DEFAULT_GRID_STYLE,
+      // FR-13 ON/OFF: read the live gridVisible setting so a toggle reflects on the
+      // next redraw (default true when the getter is absent — legacy callers).
+      gridEnabled: options.gridVisible?.() ?? true,
     });
     renderer.drawBatch({ primitives });
     // HB3-9 観測フック: summarise the frame ACTUALLY drawn (per-kind primitive counts +

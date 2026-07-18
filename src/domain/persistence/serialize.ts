@@ -695,6 +695,9 @@ function uiSettingsEqual(a: UiSettings | undefined, b: UiSettings | undefined): 
     pa.flattening !== pb.flattening ||
     pa.timelineMinYear !== pb.timelineMinYear ||
     pa.timelineMaxYear !== pb.timelineMaxYear ||
+    // FR-13: compare the optional grid-visibility flag too (absent==absent equal),
+    // so projectsEqual is not blind to a gridVisible difference (sibling of gridOpacity).
+    pa.gridVisible !== pb.gridVisible ||
     pa.gridSpacingDeg !== pb.gridSpacingDeg ||
     pa.gridColor !== pb.gridColor ||
     pa.gridOpacity !== pb.gridOpacity ||

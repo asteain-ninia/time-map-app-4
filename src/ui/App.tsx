@@ -140,10 +140,12 @@ import {
   POINTER_BUTTON,
   LongitudeShiftControl,
   GlobalDepthControl,
+  GridToggleControl,
   type CameraPort,
   type HitTester,
   type MapCameraInput,
 } from './map/index';
+import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -642,6 +644,12 @@ export function App(): JSX.Element {
           opacity: ps.gridOpacity,
         };
       },
+      // FR-13 グリッド ON/OFF 即時反映: derive the LIVE graticule visibility from the
+      // project setting so the topBar toggle / SettingsDialog checkbox reflect on the
+      // next redraw. Read live per composite — never a stale capture (教訓 5.6 / 5.35).
+      // The redraw-on-settings subscription below tracks gridVisible so a toggle fires
+      // a redraw at once (buildGridPrimitives(false,…) → 明示的空, 教訓 5.18).
+      gridVisible: (): boolean => store.getState().projectSettings.gridVisible,
       // HB-1 観測フック: mirror the LIVE camera into DOM data-* attributes on the
       // map input layer so a behavioural E2E can read the pan offset + zoom and
       // assert they actually changed (既存 app-active-feature マーカーと同方式). The
@@ -1268,6 +1276,10 @@ export function App(): JSX.Element {
     let prevGridSpacing = store.getState().projectSettings.gridSpacingDeg;
     let prevGridColor = store.getState().projectSettings.gridColor;
     let prevGridOpacity = store.getState().projectSettings.gridOpacity;
+    // FR-13 ON/OFF 即時反映: a gridVisible toggle feeds the host's gridVisible getter,
+    // so it MUST trigger a redraw too — otherwise the getter is never re-read and the
+    // grid appears/disappears only on the next unrelated input (教訓 5.35 / 5.7).
+    let prevGridVisible = store.getState().projectSettings.gridVisible;
     const unsubscribe = store.subscribe((s) => {
       // FR-110: a live renderFps change re-arms the per-frame budget (the cap is
       // fixed at scheduler construction, so setFps rebuilds it). This is NOT gated by
@@ -1281,6 +1293,7 @@ export function App(): JSX.Element {
       const gridSpacing = s.projectSettings.gridSpacingDeg;
       const gridColor = s.projectSettings.gridColor;
       const gridOpacity = s.projectSettings.gridOpacity;
+      const gridVisible = s.projectSettings.gridVisible;
       if (
         s.domain === prevDomain &&
         s.currentTime === prevTime &&
@@ -1290,7 +1303,8 @@ export function App(): JSX.Element {
         areaThreshold === prevAreaThreshold &&
         gridSpacing === prevGridSpacing &&
         gridColor === prevGridColor &&
-        gridOpacity === prevGridOpacity
+        gridOpacity === prevGridOpacity &&
+        gridVisible === prevGridVisible
       ) {
         return;
       }
@@ -1303,6 +1317,7 @@ export function App(): JSX.Element {
       prevGridSpacing = gridSpacing;
       prevGridColor = gridColor;
       prevGridOpacity = gridOpacity;
+      prevGridVisible = gridVisible;
       requestRedraw();
     });
     return () => {
@@ -2881,6 +2896,13 @@ export function App(): JSX.Element {
           <>
             <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
             <GlobalDepthPanel store={store} />
+            {/* FR-13 グリッド ON/OFF 結線 (教訓 5.7 結線漏れ): the グリッド表示 quick-toggle,
+                mounted in the SAME normal-flow 上部バー row beside the other view controls.
+                A FIXED, static button (constant-width label) so it does NOT make the row's
+                占有幅 depend on selection/measurement state — preserving the topBar 不変量
+                (a4f6be9). Bound to the LIVE store; a toggle re-reads the host's gridVisible
+                getter on the next redraw (即時反映). */}
+            <GridToggleControl store={store} />
             {/* U37 測量モード (FR-14/15/16 結線): the 補助モード toggle + クリア +
                 読取パネル, mounted in the SAME normal-flow 上部バー row as the two
                 view controls above — it never overlaps the map input layer (教訓

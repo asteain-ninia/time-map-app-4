@@ -60,6 +60,7 @@ describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () 
       '扁平率',
       'タイムライン最小年',
       'タイムライン最大年',
+      'グリッドを表示',
       'グリッド間隔',
       'グリッド色',
       'グリッド不透明度',
@@ -226,6 +227,25 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
     // …and currentTime (5000) was outside the new range, clamped to the lower bound.
     expect(s.currentTime).toEqual(timePointYear(20000));
     expect(s.projectDirty).toBe(true);
+  });
+
+  // FR-13 グリッド ON/OFF切替 (受け入れ基準 9): the checkbox reflects the live setting,
+  // toggles the draft, and persists through the SAME validate→updateProjectSetting
+  // confirm flow — dirty-marking the project like every other project field (FR-109).
+  it('toggles gridVisible via the checkbox and persists on confirm', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    const checkbox = screen.getByTestId('settings-grid-visible');
+    // Default is 可視 (checked).
+    expect(checkbox).toBeChecked();
+
+    fireEvent.click(checkbox); // uncheck → hide grid
+    fireEvent.click(screen.getByTestId('settings-save'));
+
+    const s = store.getState();
+    expect(s.projectSettings.gridVisible).toBe(false);
+    expect(s.projectDirty).toBe(true);
+    expect(s.lastSettingsChange?.scope).toBe('project');
   });
 
   it('a confirmed FPS change reflects immediately and is clamped at the store (受け入れ基準 2)', () => {

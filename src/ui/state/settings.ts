@@ -64,6 +64,13 @@ export interface ProjectSettings {
   readonly timelineMinYear: number;
   /** Inclusive timeline upper bound (year). */
   readonly timelineMaxYear: number;
+  /**
+   * Grid (graticule) ON/OFF visibility (FR-13 ON/OFF切替, 受け入れ基準 9). A PROJECT
+   * setting in the SAME括り as the grid spacing / color / opacity (FR-109 永続プロジ
+   * ェクト設定) — 既定 true (可視). `false` suppresses the graticule entirely
+   * (buildGridPrimitives の enabled=false → 明示的空フレーム, 教訓 5.18).
+   */
+  readonly gridVisible: boolean;
   /** Grid line spacing in degrees. */
   readonly gridSpacingDeg: number;
   readonly gridColor: ColorHex;
@@ -140,6 +147,7 @@ export const PROJECT_SETTING_KEYS = [
   'flattening',
   'timelineMinYear',
   'timelineMaxYear',
+  'gridVisible',
   'gridSpacingDeg',
   'gridColor',
   'gridOpacity',
@@ -275,6 +283,8 @@ export const DEFAULT_PROJECT_SETTINGS: ProjectSettings = {
   // FR-66 / U38 受け入れ基準 4・5: タイムライン既定範囲は 0 年〜10000 年。
   timelineMinYear: 0,
   timelineMaxYear: 10000,
+  // FR-13: the graticule is visible by default (既定 true = 可視).
+  gridVisible: true,
   gridSpacingDeg: 10,
   gridColor: '#888888',
   gridOpacity: 0.5,

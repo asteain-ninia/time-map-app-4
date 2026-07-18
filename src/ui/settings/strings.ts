@@ -37,6 +37,8 @@ export const PROJECT_FIELD_STRINGS = {
   flattening: '扁平率',
   timelineMinYear: 'タイムライン最小年',
   timelineMaxYear: 'タイムライン最大年',
+  // FR-13 グリッド ON/OFF切替 (受け入れ基準 9).
+  gridVisible: 'グリッドを表示',
   gridSpacingDeg: 'グリッド間隔',
   gridColor: 'グリッド色',
   gridOpacity: 'グリッド不透明度',

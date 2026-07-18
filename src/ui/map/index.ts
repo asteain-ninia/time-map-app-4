@@ -21,6 +21,13 @@ export {
   type GridSettingsPanelProps,
 } from './GridSettingsPanel';
 
+// FR-13 グリッド ON/OFF: the 上部バー グリッド表示 quick-toggle (store-connected).
+export {
+  GridToggleControl,
+  GRID_TOGGLE_STRINGS,
+  type GridToggleControlProps,
+} from './GridToggleControl';
+
 // U40: mode-aware pointer dispatch + pan/zoom for the central map (FR-09).
 //
 // The pure decision/threshold logic (decideDispatch / drag threshold / pan

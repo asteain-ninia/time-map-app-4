@@ -306,6 +306,20 @@ function ProjectTab(props: {
         />
       </label>
 
+      {/* FR-13 グリッド ON/OFF切替 (受け入れ基準 9): a checkbox in the SAME grid group
+          as 間隔/色/不透明度 (FR-109 永続プロジェクト設定). Rides the existing
+          validation→updateProjectSetting confirm flow like every other project field. */}
+      <label>
+        <input
+          type="checkbox"
+          data-testid="settings-grid-visible"
+          aria-label={PROJECT_FIELD_STRINGS.gridVisible}
+          checked={d.gridVisible}
+          onChange={(e) => set('gridVisible', e.target.checked)}
+        />
+        {PROJECT_FIELD_STRINGS.gridVisible}
+      </label>
+
       <label>
         {PROJECT_FIELD_STRINGS.gridSpacingDeg}
         <select

@@ -520,6 +520,12 @@ export const uiProjectSettingsSchema = z
     flattening: finiteNumber,
     timelineMinYear: yearSchema,
     timelineMaxYear: yearSchema,
+    // FR-13 グリッド ON/OFF (受け入れ基準 9). Optional for BACK-COMPAT: a manifest
+    // written before this field existed (a `ui` block without gridVisible — e.g. an
+    // existing derle-world.tmap) still parses, and the load bridge fills the default
+    // true (欠落=可視) — the alpha/palette 追記と同型の optional 追記 (version bump なし).
+    // z.boolean() fully validates the value; no superRefine needed.
+    gridVisible: z.boolean().optional(),
     gridSpacingDeg: finiteNumber,
     gridColor: colorHexSchema,
     gridOpacity: finiteNumber,

@@ -114,6 +114,7 @@ export const REJECTION = {
   // Derived from the single GRID_SPACINGS_DEG list (HB3-23) so the message can never
   // drift from the actual allowed spacings when the list changes.
   gridSpacing: `グリッド間隔は ${GRID_SPACINGS_DEG.join('・')} 度のいずれかを選んでください。`,
+  gridVisibleType: 'グリッド表示は ON / OFF のいずれかで指定してください。',
   gridOpacityRange: 'グリッド不透明度は 0 から 1 の範囲で入力してください。',
   occupancyRange: '面情報ラベル表示閾値は 0 から 1 の範囲で入力してください。',
   fpsRange: `描画更新頻度は ${String(MIN_RENDER_FPS)} から ${String(MAX_RENDER_FPS)} FPS の範囲で入力してください。`,
@@ -165,6 +166,13 @@ export function validateProjectSettings(
 
   if (!isGridSpacing(draft.gridSpacingDeg)) {
     errors.push({ field: 'gridSpacingDeg', message: REJECTION.gridSpacing });
+  }
+
+  // FR-13 グリッド ON/OFF: the visibility flag must be a boolean. Defensive (the UI
+  // checkbox always yields a boolean), mirroring the persistence schema's z.boolean()
+  // so the form and the file agree an off-type value is rejected (書込⊆読込).
+  if (typeof draft.gridVisible !== 'boolean') {
+    errors.push({ field: 'gridVisible', message: REJECTION.gridVisibleType });
   }
 
   if (!isFiniteNumber(draft.gridOpacity)) {

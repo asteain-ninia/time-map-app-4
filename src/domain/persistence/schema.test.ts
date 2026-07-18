@@ -326,6 +326,31 @@ describe('ui settings — semantic range/order enforcement (bug-hunt regression)
     expect(manifestSchema.safeParse(manifest).success).toBe(true);
   });
 
+  // FR-13 グリッド ON/OFF: gridVisible is an OPTIONAL boolean in the `ui` block. A
+  // pre-FR13 manifest (validUi has no gridVisible) parses (欠落=可視, 後方互換), and a
+  // present boolean — true or false — is accepted.
+  it('accepts a ui block without gridVisible (pre-FR13) and with a boolean gridVisible', () => {
+    // The base validUi() carries NO gridVisible — the pre-FR13 back-compat case.
+    expect(manifestSchema.safeParse(manifestWithUi(() => {})).success).toBe(true);
+
+    const withTrue = manifestWithUi((ui) => {
+      ui.project.gridVisible = true;
+    });
+    expect(manifestSchema.safeParse(withTrue).success).toBe(true);
+
+    const withFalse = manifestWithUi((ui) => {
+      ui.project.gridVisible = false;
+    });
+    expect(manifestSchema.safeParse(withFalse).success).toBe(true);
+  });
+
+  it('rejects a non-boolean gridVisible (z.boolean())', () => {
+    const bad = manifestWithUi((ui) => {
+      ui.project.gridVisible = 'yes';
+    });
+    expect(manifestSchema.safeParse(bad).success).toBe(false);
+  });
+
   it('rejects timelineMinYear >= timelineMaxYear (reversed / zero-width range)', () => {
     const reversed = manifestWithUi((ui) => {
       ui.project.timelineMinYear = 2000;
