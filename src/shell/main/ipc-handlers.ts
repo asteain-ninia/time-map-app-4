@@ -35,6 +35,8 @@ export interface DialogPort {
   showSaveDialog: () => Promise<string | undefined>;
   /** Open an open dialog (Load); `undefined` = cancelled. */
   showOpenDialog: () => Promise<string | undefined>;
+  /** Open an IMAGE open-dialog (FR-04 base-map差し替え); `undefined` = cancelled. */
+  showOpenImageDialog: () => Promise<string | undefined>;
 }
 
 /** File read port: read raw bytes; rejects/throws are caught by the handler. */
@@ -134,6 +136,23 @@ async function readAndParse(deps: IpcDeps, path: string): Promise<LoadResponse> 
   return response;
 }
 
+/**
+ * FR-04 base-map差し替え: open an IMAGE dialog, read the chosen file and return its
+ * raw bytes. A cancelled dialog OR a read failure resolves `null` (honest no-op — the
+ * renderer flow then does nothing), never a throw. The renderer validates the bytes
+ * (PNG / JPEG header + dimension caps) before adopting them, so no format check is
+ * needed here — main is only the dialog + `fs` read boundary (FR-02).
+ */
+export async function handleOpenImage(deps: IpcDeps): Promise<Uint8Array | null> {
+  const path = await deps.dialog.showOpenImageDialog();
+  if (path === undefined) return null;
+  try {
+    return await deps.readFile.readFile(path);
+  } catch {
+    return null;
+  }
+}
+
 /** Push auto-save config (interval/generations) into the scheduler (FR-108). */
 export function handleConfigureAutoSave(
   deps: IpcDeps,
@@ -177,6 +196,8 @@ export function registerIpcHandlers(deps: IpcDeps): void {
   deps.registrar(IPC_CHANNEL.Load, (() => handleLoad(deps)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.LoadDropped, ((_event: never, p: string) =>
     handleLoadDropped(deps, p)) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.OpenImage, (() =>
+    handleOpenImage(deps)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.ConfigureAutoSave, ((_event: never, c: AutoSaveConfig) =>
     handleConfigureAutoSave(deps, c)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.AppendLog, ((_event: never, record: DiagnosticLogRecord) =>

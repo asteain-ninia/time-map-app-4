@@ -52,12 +52,16 @@ export const PROJECT_FIELD_STRINGS = {
   zoomMax: '最大ズーム倍率',
 } as const;
 
-/** Base-map controls (FR-109; replacement itself is delegated to U18). */
+/** Base-map controls (FR-04 / FR-109; replacement runs through the host runner). */
 export const BASEMAP_STRINGS = {
-  /** Button that hands the replacement request to U18 (起動点のみ). */
+  /** Button that hands the replacement request to the host (起動点のみ). */
   replace: 'ベースマップを差し替え…',
-  /** Note clarifying that U18 performs the actual replacement. */
-  note: '差し替え後の補正やフォールバックは描画側で処理されます。',
+  /**
+   * Note clarifying the FR-04 contract: only the image is swapped — the current
+   * projection / range (正距円筒メタ) is kept, so features stay aligned. Unreadable
+   * images are rejected and the current map is kept.
+   */
+  note: '同一投影・範囲を前提に画像のみを差し替えます（PNG / JPEG）。読み込めない画像は適用されません。',
 } as const;
 
 /** Custom-palette management controls (FR-109 / FR-102). */

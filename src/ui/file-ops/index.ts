@@ -95,8 +95,20 @@ export {
   type WindowCloseHook,
   type FileDropHandlers,
   type DropTargetHook,
+  type BasemapReplaceHook,
   FileOpsController,
 } from './FileOpsController';
+
+// --- FR-04 base-map差し替え seam (pure decision) ----------------------------
+export {
+  type BasemapReplacePorts,
+  type BasemapReplaceOutcome,
+  type BasemapReplaceOutcomeKind,
+  BASEMAP_REPLACE_OUTCOME,
+  BASEMAP_REPLACE_REJECT_NOTICE,
+  REPLACED_BASEMAP_SOURCE,
+  runBasemapReplace,
+} from './basemap-replace';
 
 // --- file-operation command handlers (FR-105 / A) ---------------------------
 export {

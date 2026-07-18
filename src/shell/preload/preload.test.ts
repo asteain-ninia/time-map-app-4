@@ -55,6 +55,7 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
       'load',
       'loadDropped',
       'onAutoSaveTick',
+      'openImage',
       'save',
       'saveAs',
     ]);
@@ -97,6 +98,12 @@ describe('each API method invokes the correct shared channel (受け入れ基準
     const api = buildApi();
     await api.loadDropped('/dropped/x.tmap');
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.LoadDropped, '/dropped/x.tmap');
+  });
+
+  it('openImage → IPC_CHANNEL.OpenImage (no args, FR-04)', async () => {
+    const api = buildApi();
+    await api.openImage();
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.OpenImage);
   });
 
   it('configureAutoSave → IPC_CHANNEL.ConfigureAutoSave with the config', async () => {

@@ -36,6 +36,10 @@ export function buildApi(): TimeMapApi {
       ipcRenderer.invoke(IPC_CHANNEL.Load) as Promise<LoadResponse>,
     loadDropped: (droppedPath: string): Promise<LoadResponse> =>
       ipcRenderer.invoke(IPC_CHANNEL.LoadDropped, droppedPath) as Promise<LoadResponse>,
+    // FR-04 ベースマップ差し替え: main opens the image dialog + reads the file; the
+    // renderer receives only the bytes (or null on cancel / read-failure).
+    openImage: (): Promise<Uint8Array | null> =>
+      ipcRenderer.invoke(IPC_CHANNEL.OpenImage) as Promise<Uint8Array | null>,
     configureAutoSave: (config: AutoSaveConfig): Promise<ConfigureAutoSaveResponse> =>
       ipcRenderer.invoke(IPC_CHANNEL.ConfigureAutoSave, config) as Promise<ConfigureAutoSaveResponse>,
     // One-way main→renderer event subscription. We wrap `ipcRenderer.on` so the

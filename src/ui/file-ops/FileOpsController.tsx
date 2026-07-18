@@ -52,6 +52,7 @@ import {
   type SaveContext,
 } from './save-context';
 import { dropLoadCommand } from './file-commands';
+import { runBasemapReplace } from './basemap-replace';
 import { UnsavedWarningDialog } from './UnsavedWarningDialog';
 import { RepairDialog } from './RepairDialog';
 import type { RepairChoices } from './repair-flow';
@@ -93,6 +94,17 @@ export interface FileDropHandlers {
  */
 export type DropTargetHook = (handlers: FileDropHandlers) => (() => void) | void;
 
+/**
+ * Register the FR-04 base-map REPLACE runner with the host (the settings dialog's
+ * 差し替えボタン invokes it through the host). The host stores the supplied `run` and
+ * calls it when the user requests a replacement; `run` picks an image via U15 IPC,
+ * guards it, and on a valid pick swaps the store domain baseMap + retains the SAVE
+ * bytes + pushes the DISPLAY bytes. Returns an optional cleanup run on unmount. This
+ * mirrors {@link WindowCloseHook}: the controller owns the capability (it holds the
+ * asset refs + the IPC api), the host holds the trigger.
+ */
+export type BasemapReplaceHook = (run: () => Promise<void>) => (() => void) | void;
+
 export interface FileOpsControllerProps {
   /** The U16 session store holding the DomainProject + UI settings. */
   readonly store: StoreApi<SessionStore<DomainProject>>;
@@ -132,6 +144,15 @@ export interface FileOpsControllerProps {
    * truth). Optional so the standalone controller test needs no renderer.
    */
   readonly onBaseMapImageChange?: (image: Uint8Array) => void;
+  /**
+   * FR-04 — register the base-map REPLACE runner with the host (the settings dialog's
+   * 差し替えボタン triggers it). The controller owns the runner because it holds BOTH
+   * the retained SAVE bytes (loadedAssetsRef → 保存往復) and the DISPLAY push
+   * (onBaseMapImageChange → 即時再描画) AND the store domain — the three sinks a
+   * replacement must update together (単一真実源). Optional so the standalone controller
+   * test can omit it.
+   */
+  readonly registerBasemapReplace?: BasemapReplaceHook;
 }
 
 /** The pending unsaved-warning modal (a resolver the dialog feeds the choice to). */
@@ -544,6 +565,46 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     );
     return typeof cleanup === 'function' ? cleanup : undefined;
   }, [ports, registerWindowClose, runExclusive]);
+
+  // --- FR-04 base-map差し替え runner registration ---------------------------
+  //
+  // Register the replace RUNNER with the host (the settings dialog's差し替えボタン
+  // triggers it). The controller is the natural owner: it holds BOTH the retained
+  // SAVE bytes (loadedAssetsRef, re-shipped by buildSaveRequest → assets/basemap.img)
+  // and the DISPLAY push (onBaseMapImageChangeRef → App.handleBaseMapImageChange →
+  // 即時再描画), plus the store domain + the U15 IPC api — the exact set a replacement
+  // must update in lock-step (単一真実源 — no divergent bytes copy). The pure decision
+  // (pick → guard → keep meta / mark source) lives in {@link runBasemapReplace}; here
+  // we only wire the live effect ports. No-op when the IPC bridge is absent (jsdom).
+  const registerBasemapReplace = props.registerBasemapReplace;
+  useEffect(() => {
+    if (api === null || registerBasemapReplace === undefined) return undefined;
+    const run = (): Promise<void> =>
+      runBasemapReplace({
+        // main opens the image dialog + reads the file; renderer gets bytes | null.
+        pickImageBytes: () => api.openImage(),
+        getBaseMap: () => store.getState().domain.baseMap,
+        applyReplacement: ({ source, meta, bytes }) => {
+          // (1) swap the domain baseMap reference — marks projectDirty (教訓 5.36) and
+          //     drives the host getter to re-resolve preset→user on the next composite.
+          const domain = store.getState().domain;
+          store.getState().setDomainState({ ...domain, baseMap: { source, meta } });
+          // (2) retain the bytes for the SAVE round-trip (BUG #6 asset plumbing): the
+          //     next save ships them into assets/basemap.img, so a later load reflects
+          //     the replaced map (task §フェーズ1-3 保存/ロード往復).
+          loadedAssetsRef.current = { ...loadedAssetsRef.current, baseMapImage: bytes };
+          // (3) push the bytes to the renderer for immediate repaint through the SAME
+          //     onBaseMapImageChange path load / 新規 use (教訓 5.35 即時反映).
+          onBaseMapImageChangeRef.current?.(bytes);
+        },
+        // FR-115: a rejected image surfaces its日本語 reason on the existing alert sink.
+        notify: (message: string) => {
+          if (typeof globalThis.alert === 'function') globalThis.alert(message);
+        },
+      }).then(() => undefined);
+    const cleanup = registerBasemapReplace(run);
+    return typeof cleanup === 'function' ? cleanup : undefined;
+  }, [api, store, registerBasemapReplace]);
 
   // --- supply the camera clamp range to U17 on every settings change (FR-10) -
   useEffect(() => {

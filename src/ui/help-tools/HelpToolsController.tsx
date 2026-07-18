@@ -78,6 +78,14 @@ export interface HelpToolsControllerProps {
    * onKeyDown, which a native window listener ignores). Fires on every open/close.
    */
   readonly onModalOpenChange?: (open: boolean) => void;
+  /**
+   * FR-04 — hand the base-map差し替え REQUEST to the host (App wires it to the U39
+   * FileOpsController's replace runner). Threaded straight into the U38 設定ダイアログ's
+   * `onRequestBasemapReplace`起動点; when absent the dialog's差し替えボタン stays disabled
+   * (受け入れ基準: 結線が無ければ死んだボタン, 教訓 5.7). This controller performs no
+   * replacement itself — it only forwards the request.
+   */
+  readonly onRequestBasemapReplace?: () => void;
 }
 
 /**
@@ -140,8 +148,18 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
     case HELP_VIEW.Settings:
       // The full U38 dialog, bound to the live store slice. It owns its own draft /
       // confirm / cancel; onClose returns to None (its cancel + Esc + backdrop all
-      // route through here). Base-map replacement is U18's — not wired here.
-      return <SettingsDialog store={store.getState()} onClose={close} />;
+      // route through here). FR-04: the差し替えボタン起動点 is forwarded to the host's
+      // replace runner (App → U39 FileOpsController); the dialog performs no
+      // replacement itself (受け入れ基準 1).
+      return (
+        <SettingsDialog
+          store={store.getState()}
+          onClose={close}
+          {...(props.onRequestBasemapReplace !== undefined
+            ? { onRequestBasemapReplace: props.onRequestBasemapReplace }
+            : {})}
+        />
+      );
     case HELP_VIEW.Search:
       return <SearchView store={store} onClose={close} />;
     case HELP_VIEW.About:

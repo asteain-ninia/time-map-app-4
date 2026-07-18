@@ -59,6 +59,7 @@ import {
   type WindowCloseHook,
   type DropTargetHook,
   type FileDropHandlers,
+  type BasemapReplaceHook,
 } from './file-ops/index';
 import type { ZoomRange } from '../render/camera';
 
@@ -338,6 +339,27 @@ export function App(): JSX.Element {
     return () => {
       quitGuardRef.current = null;
     };
+  }, []);
+
+  // FR-04 ベースマップ差し替え結線 — the FileOpsController registers its replace RUNNER
+  // here (it owns the retained save bytes + the display push + the IPC api); the
+  // settings dialog's差し替えボタン invokes it through `onRequestBasemapReplace`. Held
+  // behind a ref so a registration does not re-render (the registerWindowClose
+  // pattern, 技術方針 2.3). Null until the controller registers / after unmount
+  // (教訓 5.2 全経路で破棄).
+  const basemapReplaceRef = useRef<(() => Promise<void>) | null>(null);
+  const registerBasemapReplace: BasemapReplaceHook = useCallback((run) => {
+    basemapReplaceRef.current = run;
+    return () => {
+      basemapReplaceRef.current = null;
+    };
+  }, []);
+  // The stable request handler threaded to the settings dialog (via HelpToolsController).
+  // Always defined so the button is ENABLED in the live app — the runner registers on
+  // controller mount, before the user can open 設定 (FR-109 起動点). A silent no-op when
+  // no runner is registered (no U15 IPC bridge — honest degrade, never a crash).
+  const handleRequestBasemapReplace = useCallback((): void => {
+    void basemapReplaceRef.current?.();
   }, []);
 
   // D&D 読み込み (FR-105): the file-ops controller exposes the drop handlers; we bind
@@ -2994,6 +3016,7 @@ export function App(): JSX.Element {
               registerWindowClose={registerWindowClose}
               registerDropTarget={registerDropTarget}
               onBaseMapImageChange={handleBaseMapImageChange}
+              registerBasemapReplace={registerBasemapReplace}
               onModalOpenChange={setFileModalOpen}
             />
             {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
@@ -3007,6 +3030,7 @@ export function App(): JSX.Element {
             <HelpToolsController
               store={store}
               registry={registry}
+              onRequestBasemapReplace={handleRequestBasemapReplace}
               onModalOpenChange={setHelpModalOpen}
             />
             {/* 第6工程 NOTE: the six TOOL controllers (add / knife / merge / reparent /

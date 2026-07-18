@@ -30,6 +30,14 @@ export const IPC_CHANNEL = {
   Load: 'tmap:load',
   /** Drag & drop load — renderer hands a dropped absolute path to main (FR-105). */
   LoadDropped: 'tmap:load-dropped',
+  /**
+   * FR-04 ベースマップ差し替え: main opens an IMAGE open-dialog (PNG / JPEG), reads
+   * the chosen file and returns its raw bytes. The renderer validates + adopts them
+   * (image-only replacement, 投影/範囲は維持). Cancel / read-failure resolves `null`
+   * so the flow is an honest no-op. Main opens the dialog (spec §やること: ダイアログ
+   * 起動はメイン側) — the renderer never touches `fs` (FR-02 サンドボックス).
+   */
+  OpenImage: 'tmap:open-image',
   /** Push the auto-save interval / generation cap from settings into main. */
   ConfigureAutoSave: 'tmap:configure-auto-save',
   /**
@@ -175,6 +183,13 @@ export interface TimeMapApi {
   readonly saveAs: (req: SaveRequest) => Promise<SaveResponse>;
   readonly load: () => Promise<LoadResponse>;
   readonly loadDropped: (droppedPath: string) => Promise<LoadResponse>;
+  /**
+   * FR-04: open a native IMAGE dialog (PNG / JPEG), read the chosen file and return
+   * its raw bytes for a base-map replacement. Resolves `null` when the user cancels
+   * OR the read fails — the renderer flow then does nothing (honest no-op). Main owns
+   * the dialog + the `fs` read; the renderer only receives bytes (FR-02).
+   */
+  readonly openImage: () => Promise<Uint8Array | null>;
   readonly configureAutoSave: (config: AutoSaveConfig) => Promise<ConfigureAutoSaveResponse>;
   /**
    * Subscribe to the one-way auto-save tick (main→renderer). The renderer wires

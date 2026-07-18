@@ -47,7 +47,10 @@ import {
   type FileDropHandlers,
   type DropTargetHook,
   type WindowCloseHook,
+  type BasemapReplaceHook,
 } from './FileOpsController';
+import { REPLACED_BASEMAP_SOURCE } from './basemap-replace';
+import { PRESET_BASEMAP_ID } from '../../domain/basemap/index';
 import { buildEmptyProject } from './save-context';
 import { REPAIR_OUTCOME } from './repair-flow';
 import { REPAIR_STRINGS } from './strings';
@@ -68,8 +71,20 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
     appendLog: vi.fn(async () => {}),
+    openImage: vi.fn(async (): Promise<Uint8Array | null> => null),
     ...overrides,
   };
+}
+
+/** A minimal valid PNG header (sig + IHDR 4096×2048) that passes the image guard. */
+function validPng(): Uint8Array {
+  const b = new Uint8Array(24);
+  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  b.set([0x00, 0x00, 0x00, 0x0d], 8);
+  b.set([0x49, 0x48, 0x44, 0x52], 12);
+  b.set([0x00, 0x00, 0x10, 0x00], 16); // width 4096
+  b.set([0x00, 0x00, 0x08, 0x00], 20); // height 2048
+  return b;
 }
 
 /** A LoadResponse that succeeds, carrying a fresh empty-project manifest. */
@@ -960,6 +975,97 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage.length).toBe(0);
     expect(savedReq!.attachments).toHaveLength(0);
+  });
+});
+
+describe('FR-04 base-map差し替え runner (registerBasemapReplace)', () => {
+  it('a valid image swaps the store baseMap (source+meta+dirty), pushes display bytes, and saves them', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const png = validPng();
+    let savedReq: SaveRequest | null = null;
+    const api = makeApi({
+      openImage: vi.fn(async () => png),
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+    });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    const onBaseMapImageChange = vi.fn();
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace}
+        onBaseMapImageChange={onBaseMapImageChange}
+      />,
+    );
+
+    // The runner registered on mount — an enabled起動点, not a dead button (教訓 5.7).
+    expect(run).not.toBeNull();
+
+    await act(async () => { await run!(); });
+
+    const s = store.getState();
+    // A preset project adopts the user marker source (so resolveDisplayedBasemap → user)…
+    expect(s.domain.baseMap.source).toBe(REPLACED_BASEMAP_SOURCE);
+    // … the meta is KEPT (座標契約 v2 — full-world for a preset project) …
+    expect(s.domain.baseMap.meta).toEqual({ lonWest: -180, lonEast: 180, latNorth: 90, latSouth: -90 });
+    // … projectDirty is set (教訓 5.36) …
+    expect(s.projectDirty).toBe(true);
+    // … and the display bytes were pushed for immediate repaint (即時反映).
+    expect(onBaseMapImageChange).toHaveBeenCalledWith(png);
+
+    // 保存往復: the next save ships the replaced bytes into the .tmap base-map asset.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReq).not.toBeNull());
+    expect(savedReq!.baseMapImage).toBe(png);
+  });
+
+  it('cancel (openImage → null) leaves the project unchanged (no dirty, no display push)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ openImage: vi.fn(async () => null) });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    const onBaseMapImageChange = vi.fn();
+    render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace} onBaseMapImageChange={onBaseMapImageChange} />,
+    );
+
+    await act(async () => { await run!(); });
+
+    const s = store.getState();
+    expect(s.domain.baseMap.source).toBe(PRESET_BASEMAP_ID); // unchanged
+    expect(s.projectDirty).toBe(false);
+    expect(onBaseMapImageChange).not.toHaveBeenCalled();
+  });
+
+  it('an unreadable image is rejected: notify + no change (適用前に拒否, honest)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ openImage: vi.fn(async () => new Uint8Array([1, 2, 3, 4])) });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    const onBaseMapImageChange = vi.fn();
+    const alertSpy = vi.fn();
+    vi.stubGlobal('alert', alertSpy);
+    render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace} onBaseMapImageChange={onBaseMapImageChange} />,
+    );
+
+    await act(async () => { await run!(); });
+
+    const s = store.getState();
+    expect(s.domain.baseMap.source).toBe(PRESET_BASEMAP_ID); // unchanged
+    expect(s.projectDirty).toBe(false);
+    expect(onBaseMapImageChange).not.toHaveBeenCalled();
+    expect(alertSpy).toHaveBeenCalledTimes(1); // FR-115 honest notify
+    vi.unstubAllGlobals();
   });
 });
 

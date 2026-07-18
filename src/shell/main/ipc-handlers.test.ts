@@ -19,6 +19,7 @@ import {
   handleConfigureAutoSave,
   handleLoad,
   handleLoadDropped,
+  handleOpenImage,
   handleSave,
   handleSaveAs,
   registerIpcHandlers,
@@ -92,6 +93,7 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
     dialog: {
       showSaveDialog: vi.fn(async () => '/d/new.tmap'),
       showOpenDialog: vi.fn(async () => '/d/open.tmap'),
+      showOpenImageDialog: vi.fn(async () => '/d/pic.png'),
     },
     readFile: { readFile: vi.fn(async () => buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] })) },
     saveEnv,
@@ -206,7 +208,11 @@ describe('handlers take shared args and return shared return types (受け入れ
 
   it('Save returns cancelled when the dialog is dismissed', async () => {
     const { deps } = makeDeps({
-      dialog: { showSaveDialog: vi.fn(async () => undefined), showOpenDialog: vi.fn(async () => undefined) },
+      dialog: {
+        showSaveDialog: vi.fn(async () => undefined),
+        showOpenDialog: vi.fn(async () => undefined),
+        showOpenImageDialog: vi.fn(async () => undefined),
+      },
     });
     const res = await handleSave(deps, makeSaveReq());
     expect(res.ok).toBe(false);
@@ -243,6 +249,38 @@ describe('handlers take shared args and return shared return types (受け入れ
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toBe('read-failed');
+  });
+
+  it('OpenImage opens the image dialog, reads the chosen file, returns its bytes (FR-04)', async () => {
+    const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const { deps } = makeDeps({
+      readFile: { readFile: vi.fn(async () => imageBytes) },
+    });
+    const res = await handleOpenImage(deps);
+    expect(res).toBe(imageBytes);
+    expect(deps.dialog.showOpenImageDialog).toHaveBeenCalledTimes(1);
+    expect(deps.readFile.readFile).toHaveBeenCalledWith('/d/pic.png');
+  });
+
+  it('OpenImage returns null when the image dialog is cancelled (no read)', async () => {
+    const { deps } = makeDeps({
+      dialog: {
+        showSaveDialog: vi.fn(async () => undefined),
+        showOpenDialog: vi.fn(async () => undefined),
+        showOpenImageDialog: vi.fn(async () => undefined),
+      },
+    });
+    const res = await handleOpenImage(deps);
+    expect(res).toBeNull();
+    expect(deps.readFile.readFile).not.toHaveBeenCalled();
+  });
+
+  it('OpenImage returns null (not a throw) when the image read fails (FR-04 honest no-op)', async () => {
+    const { deps } = makeDeps({
+      readFile: { readFile: vi.fn(async () => { throw new Error('EACCES'); }) },
+    });
+    const res = await handleOpenImage(deps);
+    expect(res).toBeNull();
   });
 
   it('ConfigureAutoSave forwards the settings-derived config (FR-108)', () => {

@@ -226,6 +226,15 @@ function wireIpc(): void {
         });
         return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
       },
+      // FR-04 base-map差し替え: an IMAGE open-dialog (PNG / JPEG — the formats the
+      // renderer guard accepts). No security flag relaxed; main only reads the file.
+      showOpenImageDialog: async () => {
+        const result = await dialog.showOpenDialog({
+          properties: ['openFile'],
+          filters: [{ name: 'image', extensions: ['png', 'jpg', 'jpeg'] }],
+        });
+        return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
+      },
     },
     readFile: { readFile: (path) => readFile(path) },
     saveEnv: buildSaveEnv(),

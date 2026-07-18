@@ -166,6 +166,32 @@ describe('dispatching each command opens its view (the 結線)', () => {
     expect(screen.queryByTestId('settings-dialog')).not.toBeInTheDocument();
   });
 
+  it('FR-04: threads onRequestBasemapReplace into the settings dialog起動点 (enabled + click)', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const onRequestBasemapReplace = vi.fn();
+    render(
+      <HelpToolsController
+        store={store}
+        registry={registry}
+        onRequestBasemapReplace={onRequestBasemapReplace}
+      />,
+    );
+    dispatch(registry, COMMAND_ID.ToolsSettings);
+    const button = screen.getByTestId('settings-basemap-replace');
+    expect(button).toBeEnabled(); // wired ⇒ live起動点, not a dead button (教訓 5.7)
+    fireEvent.click(button);
+    expect(onRequestBasemapReplace).toHaveBeenCalledTimes(1);
+  });
+
+  it('FR-04 regression: without a handler the差し替えボタン stays disabled', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.ToolsSettings);
+    expect(screen.getByTestId('settings-basemap-replace')).toBeDisabled();
+  });
+
   it('ToolsSearch opens the search panel and runs a search over the visible母集合', () => {
     const store = makeStore();
     const registry = new CommandRegistry();
