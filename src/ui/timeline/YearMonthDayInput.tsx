@@ -15,6 +15,7 @@ import { useCallback, useState } from 'react';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 import {
+  EMPTY_YMD_DRAFT,
   draftFromTimePoint,
   parseYmdDraft,
   ymdErrorMessage,
@@ -26,8 +27,18 @@ export interface YearMonthDayInputProps {
   readonly title: string;
   /** The calendar used for validation (U02). */
   readonly calendar: Calendar;
-  /** Initial value (the field syncs to this when it changes via `key`/remount). */
-  readonly initialValue: TimePoint;
+  /**
+   * Initial value (the field syncs to this when it changes via `key`/remount).
+   *
+   * `null` models an OPEN-ENDED value (継続中, FR-70 F2): a CLEARABLE field (one with
+   * {@link onClear}) seeded with `null` starts in the OPEN state — the date fields are
+   * empty + disabled and a「継続中」indicator shows, so an untouched confirm can never
+   * emit a FABRICATED concrete TimePoint. Emitting a concrete value requires the explicit
+   * 「終了を指定」action ({@link specifyLabel}). A REQUIRED field (no `onClear`, e.g. the
+   * timeline direct-jump) is always seeded with a concrete TimePoint, so its DOM/behaviour
+   * is byte-for-byte unchanged (加算的 optional — the `null` path is unreachable there).
+   */
+  readonly initialValue: TimePoint | null;
   /**
    * Confirm handler. Always receives the COMPLETE TimePoint at the granularity
    * the user specified (教訓 5.16: 完全値で一度だけ受け渡し). Called only when
@@ -35,14 +46,23 @@ export interface YearMonthDayInputProps {
    */
   readonly onConfirm: (point: TimePoint) => void;
   /**
-   * When true, an explicit "未設定" choice is offered that confirms `null`
-   * (used by the 存在期間 end time, FR-70). When omitted, the field is required.
+   * When set, an explicit "未設定" choice is offered that confirms `null` (used by the
+   * 存在期間 end time, FR-70). Its presence ALSO enables the open-ended (`null`
+   * {@link initialValue}) modeling above. When omitted, the field is required.
    */
   readonly onClear?: () => void;
   /** Label for the confirm button (default 「反映」). */
   readonly confirmLabel?: string;
   /** Label for the clear button (default 「未設定」; e.g. 「継続中にする」for存続期間 end). */
   readonly clearLabel?: string;
+  /**
+   * FR-70 (F2): label for the「開放端を具体日付にする」action shown WHILE the field is
+   * open-ended (default 「終了を指定」). Clicking it reveals empty date fields so the user
+   * types the end explicitly — a concrete end is emitted ONLY after this deliberate step.
+   */
+  readonly specifyLabel?: string;
+  /** FR-70 (F2): text shown while the field is open-ended (default 「継続中」). */
+  readonly openStateLabel?: string;
   /**
    * Optional test id root. When set, the wrapper uses it (instead of the default
    * 'ymd-input') and each control gets a derived `${testId}-year|month|day|...`
@@ -59,15 +79,35 @@ export interface YearMonthDayInputProps {
  * (教訓 5.12).
  */
 export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
-  const { title, calendar, initialValue, onConfirm, onClear, confirmLabel, clearLabel, testId } =
-    props;
+  const {
+    title,
+    calendar,
+    initialValue,
+    onConfirm,
+    onClear,
+    confirmLabel,
+    clearLabel,
+    specifyLabel,
+    openStateLabel,
+    testId,
+  } = props;
 
   // Derive a per-control test id when a root is provided (list context), else omit
   // the attribute so the timeline field's DOM stays byte-for-byte unchanged.
   const tid = (suffix: string): string | undefined =>
     testId !== undefined ? `${testId}-${suffix}` : undefined;
 
-  const [draft, setDraft] = useState<YmdDraft>(() => draftFromTimePoint(initialValue));
+  // OPEN-ENDED (継続中) modeling (FR-70 F2): a CLEARABLE field seeded with `null` starts
+  // open — the date entry is gated behind an explicit「終了を指定」so an untouched confirm
+  // cannot fabricate a concrete end. A required field (no onClear) is always seeded
+  // concrete, so `specifying` is true from the start and none of the open-state UI shows —
+  // its DOM/behaviour is unchanged.
+  const clearable = onClear !== undefined;
+  const startsOpen = clearable && initialValue === null;
+  const [specifying, setSpecifying] = useState<boolean>(!startsOpen);
+  const [draft, setDraft] = useState<YmdDraft>(() =>
+    initialValue !== null ? draftFromTimePoint(initialValue) : EMPTY_YMD_DRAFT,
+  );
   const [error, setError] = useState<string | null>(null);
 
   // Re-typing in any field clears the prior error (同種の再入力, 教訓 5.12) but
@@ -79,6 +119,10 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
   }, []);
 
   const handleConfirm = useCallback(() => {
+    // While OPEN-ENDED (継続中, not yet specifying) confirm must emit NOTHING — the value
+    // stays open until the user explicitly chooses「終了を指定」(FR-70 F2 存続期間データ
+    // 保護). The button is also disabled in this state; this guard is the invariant.
+    if (!specifying) return;
     const parsed = parseYmdDraft(draft, calendar);
     if (!parsed.ok) {
       setError(ymdErrorMessage(parsed.error));
@@ -86,13 +130,24 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
     }
     setError(null);
     onConfirm(parsed.point);
-  }, [draft, calendar, onConfirm]);
+  }, [specifying, draft, calendar, onConfirm]);
 
   const handleClear = useCallback(() => {
     if (onClear === undefined) return;
     setError(null);
+    // 継続中にする returns the field to the OPEN state (F2). This matters when the value
+    // was ALREADY open (open→終了を指定→継続中にする): the caller's keyed remount does not
+    // fire (end stays null), so the local `specifying` toggle must reset here too.
+    setSpecifying(false);
     onClear();
   }, [onClear]);
+
+  // Reveal the date entry for an open-ended field (FR-70 F2). The draft stays EMPTY so the
+  // user types the end explicitly — no fabricated default is ever emitted.
+  const handleSpecify = useCallback(() => {
+    setError(null);
+    setSpecifying(true);
+  }, []);
 
   return (
     <div className="ymd-input" data-testid={testId ?? 'ymd-input'}>
@@ -105,6 +160,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             aria-label={`${title} 年`}
             data-testid={tid('year')}
             value={draft.yearText}
+            disabled={!specifying}
             onChange={(e) => patch({ yearText: e.target.value })}
           />
         </label>
@@ -116,7 +172,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             aria-label={`${title} 月`}
             data-testid={tid('month')}
             value={draft.monthText}
-            disabled={!draft.monthSpecified}
+            disabled={!specifying || !draft.monthSpecified}
             onChange={(e) => patch({ monthText: e.target.value })}
           />
           <button
@@ -124,6 +180,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             aria-pressed={!draft.monthSpecified}
             aria-label={`${title} 月 未指定`}
             data-testid={tid('month-toggle')}
+            disabled={!specifying}
             onClick={() =>
               patch(
                 draft.monthSpecified
@@ -143,7 +200,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             aria-label={`${title} 日`}
             data-testid={tid('day')}
             value={draft.dayText}
-            disabled={!draft.monthSpecified || !draft.daySpecified}
+            disabled={!specifying || !draft.monthSpecified || !draft.daySpecified}
             onChange={(e) => patch({ dayText: e.target.value })}
           />
           <button
@@ -151,7 +208,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             aria-pressed={!draft.daySpecified}
             aria-label={`${title} 日 未指定`}
             data-testid={tid('day-toggle')}
-            disabled={!draft.monthSpecified}
+            disabled={!specifying || !draft.monthSpecified}
             onClick={() =>
               patch(draft.daySpecified ? { daySpecified: false } : { daySpecified: true })
             }
@@ -161,6 +218,15 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
         </label>
       </div>
 
+      {/* FR-70 (F2): while open-ended, an explicit「継続中」indicator makes the empty +
+          disabled date fields honest (未指定=値なし, 教訓 5.18) — the field carries NO
+          fabricated concrete date. */}
+      {!specifying && (
+        <div className="ymd-input__open" data-testid={tid('open')}>
+          {openStateLabel ?? '継続中'}
+        </div>
+      )}
+
       {error !== null && (
         <div className="ymd-input__error" role="alert" data-testid={tid('error')}>
           {error}
@@ -168,9 +234,23 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
       )}
 
       <div className="ymd-input__actions">
-        <button type="button" data-testid={tid('confirm')} onClick={handleConfirm}>
+        {/* 反映 stays present (stable DOM) but is DISABLED while open-ended so an
+            untouched confirm can never emit a fabricated concrete TimePoint (F2). */}
+        <button
+          type="button"
+          data-testid={tid('confirm')}
+          disabled={!specifying}
+          onClick={handleConfirm}
+        >
           {confirmLabel ?? '反映'}
         </button>
+        {/* The deliberate「終了を指定」step reveals empty date fields — a concrete end is
+            emitted ONLY after the user chooses to give the open interval one (F2). */}
+        {!specifying && (
+          <button type="button" data-testid={tid('specify')} onClick={handleSpecify}>
+            {specifyLabel ?? '終了を指定'}
+          </button>
+        )}
         {onClear !== undefined && (
           <button type="button" data-testid={tid('clear')} onClick={handleClear}>
             {clearLabel ?? '未設定'}

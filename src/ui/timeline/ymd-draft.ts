@@ -108,6 +108,13 @@ export function parseYmdDraft(draft: YmdDraft, calendar: Calendar): YmdParseResu
   // Day only matters when month is also specified (year < yearMonth < ymd).
   if (!draft.monthSpecified) {
     const point = timePointYear(year);
+    // F3: validate the year-only point too — the year range bound (±MAX_YEAR) applies at
+    // EVERY granularity, but this branch used to return BEFORE validating while the
+    // month/day branches below validate. Routing it through the SAME U02 `validate` keeps
+    // the shared component's contract consistent for BOTH the timeline direct-jump and
+    // the property存続期間 field (教訓 5.30 コアを共有 / 5.5 依存状態は変化ごと再導出).
+    const v = validate(point, calendar);
+    if (!v.ok) return { ok: false, error: v.error };
     return { ok: true, point, granularity: 'year' };
   }
 

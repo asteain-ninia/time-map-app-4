@@ -4,12 +4,15 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { useMemo } from 'react';
 import { describe, expect, it, vi } from 'vitest';
+import { useStore } from 'zustand';
 
 import { createAnchor, createAnchorSnapshot } from '../../domain/anchor';
 import {
   type AnchorSeries,
   createAnchorEntry,
+  setEnd,
 } from '../../domain/anchor-series';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createCoordinate, type WorldCoordinate } from '../../domain/coordinate';
@@ -935,5 +938,151 @@ describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第1
     expect(intents[0]!.attributes.startYear).toBe(-1000000);
     expect(intents[0]!.attributes.endYear).toBe(1000000);
     expect(screen.queryByTestId('save-message')).not.toBeInTheDocument();
+  });
+});
+
+// F1 (FR-70 Codex 敵対レビュー, HIGH — 存続期間データ安全): after a 存続期間 edit the panel
+// must RE-DERIVE the shown series. Production memoizes the anchorLookup with a STABLE
+// identity (SidebarContent.anchorLookupOf(getRoot) is built ONCE in buildSidebarContent,
+// whose useMemo deps EXCLUDE the domain) and the host (PropertyPanelHost) re-renders the
+// panel on every committed-domain swap. Keying the panel's `series` memo only to
+// [anchorLookup, targetFeatureId] therefore FROZE it at the pre-edit series: a「継続中に
+// する」that stored end=null still displayed the old bounded end, and re-「反映」re-closed
+// it (data corruption). This harness mirrors production: a STABLE live-store anchorLookup
+// + a host subscribed to the domain, driving a REAL setEnd through the store swap. It can
+// NOT be caught by the AnchorList-only harness (which feeds the series via React state).
+describe('PropertyPanel — 存続期間編集後の series 再導出 (F1, HIGH — production wiring)', () => {
+  const fF = asFeatureId('F');
+  const vF = asVertexId('F-v1');
+
+  // A minimal live domain: exactly the slice the production anchorLookup reads
+  // (root.histories[].series), so setDomainState can swap it while selection/time hold.
+  type LiveDomain = {
+    readonly histories: readonly { readonly featureId: FeatureId; readonly series: AnchorSeries }[];
+  };
+
+  function boundedSeries(): AnchorSeries {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return {
+      entries: [
+        createAnchorEntry(
+          createAnchor(asAnchorId('a1'), snap),
+          timePointYear(1000),
+          timePointYear(2000),
+        ),
+      ],
+    };
+  }
+
+  function featureFF(): Feature {
+    return createPointFeature(fF, createBasicAttributes('継続テスト', 1000, 2000), color, vF);
+  }
+
+  function makeLiveStore() {
+    return createSessionStore<LiveDomain>({
+      initialDomain: { histories: [{ featureId: fF, series: boundedSeries() }] },
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeFeature: fF,
+        currentTime: timePointYear(1500),
+      },
+    });
+  }
+
+  // Mirrors SidebarContent.PropertyPanelHost: (1) a STABLE anchorLookup reading the LIVE
+  // store domain (identity fixed across swaps — memoized on [store], NOT the domain), (2)
+  // a host subscription to `domain` so the panel re-renders on a commit, and (3) a real
+  // setEnd dispatch that swaps the domain via setDomainState (selection/time preserved).
+  function LiveHost(props: { readonly store: ReturnType<typeof makeLiveStore> }): JSX.Element {
+    const { store } = props;
+    useStore(store, (s) => s.domain); // re-render the host (hence the panel) on a swap
+
+    const anchorLookup = useMemo<AnchorSeriesLookup>(
+      () => ({
+        anchorSeriesOf: (id) =>
+          store.getState().domain.histories.find((h) => h.featureId === id)?.series ?? null,
+      }),
+      [store],
+    );
+    const liveFeatureLookup = useMemo<FeatureLookup>(
+      () => ({ featureAt: (id) => (id === fF ? featureFF() : null) }),
+      [],
+    );
+    const anchorIntervalDispatch = useMemo<AnchorIntervalEditDispatch>(
+      () => ({
+        dispatchAnchorInterval: (intent) => {
+          if (intent.op !== ANCHOR_INTERVAL_OP.SetEnd) return;
+          const root = store.getState().domain;
+          const history = root.histories.find((h) => h.featureId === intent.featureId);
+          if (history === undefined) return;
+          const result = setEnd(history.series, intent.anchorId, intent.newEnd, cal);
+          if (!result.ok) throw new Error('rejected');
+          store.getState().setDomainState({
+            histories: root.histories.map((h) =>
+              h.featureId === intent.featureId
+                ? { featureId: h.featureId, series: result.series }
+                : h,
+            ),
+          });
+        },
+      }),
+      [store],
+    );
+
+    return (
+      <PropertyPanel<LiveDomain>
+        store={store}
+        featureLookup={liveFeatureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        anchorIntervalDispatch={anchorIntervalDispatch}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />
+    );
+  }
+
+  it('after 継続中にする the anchor row re-derives to 継続中 (was frozen at the old bounded end)', () => {
+    const store = makeLiveStore();
+    render(<LiveHost store={store} />);
+
+    // The a1 row initially shows its bounded end (…2000年).
+    const rowBefore = screen.getByTestId('anchor-row-a1');
+    expect(rowBefore).toHaveTextContent('2000');
+    expect(rowBefore).not.toHaveTextContent(PROPERTY_STRINGS.openEndLabel);
+
+    // 継続中にする through the wired dispatch → the domain now stores end=null.
+    act(() => {
+      fireEvent.click(screen.getByTestId('anchor-interval-end-a1-clear'));
+    });
+
+    // The store IS updated…
+    expect(store.getState().domain.histories[0]!.series.entries[0]!.end).toBeNull();
+    // …and the panel's series memo RE-DERIVED: the row shows 継続中, not the frozen 2000年.
+    const rowAfter = screen.getByTestId('anchor-row-a1');
+    expect(rowAfter).toHaveTextContent(PROPERTY_STRINGS.openEndLabel);
+    expect(rowAfter).not.toHaveTextContent('2000');
+  });
+
+  it('re-「反映」on the end after 継続中にする does NOT re-close the interval (round-trip safe, F1+F2)', () => {
+    const store = makeLiveStore();
+    render(<LiveHost store={store} />);
+
+    // Make the anchor 継続中.
+    act(() => {
+      fireEvent.click(screen.getByTestId('anchor-interval-end-a1-clear'));
+    });
+    expect(store.getState().domain.histories[0]!.series.entries[0]!.end).toBeNull();
+
+    // The re-seeded end editor now models 継続中 directly (F2): 反映 is disabled, and
+    // clicking it dispatches NO concrete setEnd — the open interval stays open. Before the
+    // fixes the panel showed the frozen bounded end (F1), so 反映 re-dispatched setEnd and
+    // silently re-closed the interval (存続期間データ破損).
+    const confirm = screen.getByTestId('anchor-interval-end-a1-confirm');
+    expect(confirm).toBeDisabled();
+    act(() => {
+      fireEvent.click(confirm);
+    });
+    expect(store.getState().domain.histories[0]!.series.entries[0]!.end).toBeNull();
   });
 });

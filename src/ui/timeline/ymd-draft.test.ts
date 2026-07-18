@@ -95,6 +95,33 @@ describe('validation routes through U02', () => {
     expect(r.ok).toBe(true);
     if (r.ok) expect(r.point).toEqual(timePointYear(-44));
   });
+
+  // F3 (FR-70 Codex 敵対レビュー, MED — 共有コンポーネント契約の整合): a YEAR-ONLY draft
+  // must route through the SAME U02 validate the month/day paths already use. Before the
+  // fix parseYmdDraft returned `timePointYear(year)` for a year-only draft WITHOUT
+  // validating, so an out-of-range year (±100万年超) was reported ok — the timeline jump
+  // fired onConfirm with no range error (useTimeline then clamped) while the property
+  // 存続期間 field only got rejected later by U09, an inconsistent shared contract.
+  it('rejects a year-only draft whose year exceeds +MAX_YEAR (F3: 年のみでも U02 検証)', () => {
+    const r = parseYmdDraft(draft({ yearText: '1000001', monthSpecified: false }), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe('year-out-of-range');
+  });
+
+  it('rejects a year-only draft below -MAX_YEAR (F3)', () => {
+    const r = parseYmdDraft(draft({ yearText: '-1000001', monthSpecified: false }), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe('year-out-of-range');
+  });
+
+  it('still accepts a year-only draft AT the ±MAX_YEAR boundary (guard not over-broad)', () => {
+    expect(parseYmdDraft(draft({ yearText: '1000000', monthSpecified: false }), cal).ok).toBe(
+      true,
+    );
+    expect(parseYmdDraft(draft({ yearText: '-1000000', monthSpecified: false }), cal).ok).toBe(
+      true,
+    );
+  });
 });
 
 describe('error messages are Japanese (FR-115)', () => {

@@ -130,17 +130,24 @@ describe('AnchorIntervalEditor — re-seeds draft after a successful edit (bughu
     expect(endYear().value).toBe('1700');
   });
 
-  it('re-seeds to start+1 when the end is CLEARED (継続中にする)', () => {
+  it('re-seeds to the OPEN (継続中) state when the end is CLEARED — no fabricated date (F2)', () => {
     render(<Harness initial={{ entries: [entryA(1000, 1500), entryB()] }} />);
     expect(endYear().value).toBe('1500');
+    expect(endConfirm()).toBeEnabled();
 
     act(() => {
       fireEvent.click(endClear());
     });
 
-    // Cleared end → open-ended; the editor re-seeds the end-year draft to start+1
-    // (the default the editor uses for an open-ended entry).
-    expect(endYear().value).toBe('1001');
+    // Cleared end → 継続中 (open-ended). The editor re-seeds to the OPEN state, NOT a
+    // fabricated 1001 (the pre-fix `entry.end ?? timePointYear(start+1)` bug): the year
+    // field is empty + disabled, a「継続中」indicator shows, and 反映 is disabled — so an
+    // untouched 反映 can never re-close the interval (存続期間データ保護, F2).
+    expect(endYear().value).toBe('');
+    expect(endYear()).toBeDisabled();
+    expect(screen.getByTestId('anchor-interval-end-a1-open')).toHaveTextContent('継続中');
+    expect(endConfirm()).toBeDisabled();
+    expect(screen.getByTestId('anchor-interval-end-a1-specify')).toBeInTheDocument();
   });
 
   it('re-seeds month/day after a successful yearMonthDay changeStart (granularity-aware key)', () => {
@@ -158,6 +165,79 @@ describe('AnchorIntervalEditor — re-seeds draft after a successful edit (bughu
     expect(startYear().value).toBe('1000');
     expect(startMonth().value).toBe('3');
     expect(startDay().value).toBe('15');
+  });
+});
+
+// F2 (FR-70 Codex 敵対レビュー, HIGH — 存続期間データ保護): an open-ended (end=null / 継続
+// 中) anchor must NOT be shown as a fabricated concrete date (the pre-fix editor seeded
+// `entry.end ?? timePointYear(entry.start.year + 1)`, so a 継続中 anchor displayed e.g.
+// 1001年 and an untouched「反映」dispatched setEnd(1001), silently CLOSING the open
+// interval). The end editor now models `null` directly: while open the date fields are
+// empty/disabled with「継続中」shown and 反映 disabled; emitting a concrete end requires
+// the explicit「終了を指定」action.
+describe('AnchorIntervalEditor — 開放端(継続中)は具体日付を捏造しない (F2)', () => {
+  function renderWithSpy(): AnchorIntervalEditIntent[] {
+    const intents: AnchorIntervalEditIntent[] = [];
+    render(
+      <AnchorList
+        series={{ entries: [entryA(1000, 1500), entryB()] }}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+        featureId={fid}
+        onEditInterval={(i) => {
+          intents.push(i);
+          return null;
+        }}
+      />,
+    );
+    return intents;
+  }
+
+  // a2 (entryB) is 2000..null — an already-open anchor, so its end field starts open.
+  const endYearB = () => screen.getByTestId('anchor-interval-end-a2-year') as HTMLInputElement;
+  const endConfirmB = () => screen.getByTestId('anchor-interval-end-a2-confirm');
+  const endClearB = () => screen.getByTestId('anchor-interval-end-a2-clear');
+  const endSpecifyB = () => screen.getByTestId('anchor-interval-end-a2-specify');
+
+  it('an already-open (end=null) anchor shows 継続中 and does NOT emit setEnd on 反映 (偽1001 を出さない)', () => {
+    const intents = renderWithSpy();
+    // The end field must NOT seed a fabricated 2001 for the open a2.
+    expect(endYearB().value).toBe('');
+    expect(endYearB()).toBeDisabled();
+    expect(screen.getByTestId('anchor-interval-end-a2-open')).toHaveTextContent('継続中');
+
+    // 反映 is disabled while open; clicking dispatches NOTHING — the open interval is
+    // never silently closed (the core F2 data-safety guarantee).
+    expect(endConfirmB()).toBeDisabled();
+    fireEvent.click(endConfirmB());
+    expect(intents).toHaveLength(0);
+  });
+
+  it('「終了を指定」then a year + 反映 emits a concrete setEnd (explicit close only)', () => {
+    const intents = renderWithSpy();
+    fireEvent.click(endSpecifyB()); // explicit intent to give the open anchor an end
+    expect(endYearB()).toBeEnabled();
+    fireEvent.change(endYearB(), { target: { value: '2500' } });
+    fireEvent.click(endConfirmB());
+
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    expect(intent.op).toBe(ANCHOR_INTERVAL_OP.SetEnd);
+    if (intent.op === ANCHOR_INTERVAL_OP.SetEnd) {
+      expect(intent.newEnd).toEqual(timePointYear(2500));
+    }
+  });
+
+  it('「継続中にする」on an open anchor dispatches setEnd(null) (keeps 継続中)', () => {
+    const intents = renderWithSpy();
+    fireEvent.click(endClearB());
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    expect(intent.op).toBe(ANCHOR_INTERVAL_OP.SetEnd);
+    if (intent.op === ANCHOR_INTERVAL_OP.SetEnd) {
+      expect(intent.newEnd).toBeNull();
+    }
   });
 });
 

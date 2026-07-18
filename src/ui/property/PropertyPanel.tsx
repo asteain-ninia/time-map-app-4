@@ -144,6 +144,13 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const vertexIds = useStore(store, (s) => s.selection.vertexIds);
   const mode = useStore(store, (s) => s.mode);
   const currentTime = useStore(store, (s) => s.currentTime);
+  // The committed domain root (F1). Subscribed here so the panel re-renders on a
+  // committed-domain swap AND so the `series` memo below can key on it — a 存続期間 edit
+  // (changeStart / setEnd / deleteAnchor) swaps the root but leaves the selection + the
+  // current time unchanged, and the production `anchorLookup` has a STABLE identity across
+  // that swap (built once in buildSidebarContent, deps exclude domain). Without a domain
+  // dep the series memo would keep the PRE-edit series (教訓 5.5: 依存状態は変化ごと再導出).
+  const domain = useStore(store, (s) => s.domain);
 
   const ownerLookup = useMemo(
     () => props.ownerLookup ?? ownerLookupFromMap(new Map()),
@@ -183,9 +190,22 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     () => (targetFeatureId !== null ? featureLookup.featureAt(targetFeatureId) : null),
     [featureLookup, targetFeatureId, currentTime],
   );
+  // `domain` IS a dep (F1, Codex 敵対レビュー): the production AnchorSeriesLookup
+  // (SidebarContent.anchorLookupOf) reads `getRoot().histories[…].series` LIVE, but its
+  // object identity is STABLE across a committed-domain swap (built once in
+  // buildSidebarContent, whose memo deps exclude the domain). A 存続期間 edit swaps the
+  // root while the SAME feature stays selected at the SAME time, so keying this memo only
+  // to [anchorLookup, targetFeatureId] froze `series` at the pre-edit value — the anchor
+  // list showed the old start/end, the per-anchor editor never re-seeded (its granularity
+  // key reads the stale entry.start/end), and re-「反映」on an end that had just been
+  // cleared re-dispatched the stale bounded end, silently RE-CLOSING an open interval
+  // (存続期間データ破損). Re-resolving on `domain` keeps `series` = the CURRENT committed
+  // series (教訓 5.5). The downstream AnchorList editor is keyed to the entry's start/end,
+  // so a same-series re-render (no interval change) yields an equal key and preserves any
+  // in-progress editor draft.
   const series = useMemo(
     () => (targetFeatureId !== null ? anchorLookup.anchorSeriesOf(targetFeatureId) : null),
-    [anchorLookup, targetFeatureId],
+    [anchorLookup, targetFeatureId, domain],
   );
 
   // FR-20 / FR-35: the DERIVED area (km²) of the target 面 feature — a 末端 (leaf)

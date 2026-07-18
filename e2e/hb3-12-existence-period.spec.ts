@@ -84,6 +84,28 @@ function startField(panel: Locator, suffix: string): Locator {
     .first();
 }
 
+/** Locate a control of the per-anchor 存続期間 終了 editor (same derivation as startField). */
+function endField(panel: Locator, suffix: string): Locator {
+  return panel
+    .locator(`[data-testid^="anchor-interval-end-"][data-testid$="-${suffix}"]`)
+    .first();
+}
+
+/** Open the (collapsed) 存続期間 disclosure so its inputs become visible. */
+async function openIntervalEditor(panel: Locator): Promise<void> {
+  const summary = panel.locator('details.anchor-interval > summary').first();
+  await expect(summary).toBeVisible();
+  await summary.click();
+}
+
+/** Enter 編集モード, reselect the first feature, and open its 存続期間 editor. */
+async function reselectAndOpenEditor(page: Page, panel: Locator): Promise<void> {
+  await showFeaturesTab(page);
+  await page.locator('[data-testid^="feature-list-item-"]').first().click();
+  await showPropertiesTab(page);
+  await openIntervalEditor(panel);
+}
+
 /** Jump the time cursor to a precise year via the 直接ジャンプ (YearMonthDayInput). */
 async function jumpToYear(page: Page, year: number): Promise<void> {
   const yearInput = page.getByLabel('直接ジャンプ 年', { exact: true });
@@ -188,6 +210,55 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // タイムバー表示 names the start with month/day too (same formatTimePoint source).
       await panel.getByTestId('anchor-mode-timebar').click();
       await expect(panel.getByTestId('timebar-edge-min')).toContainText('300年6月15日');
+    } finally {
+      await app.close();
+    }
+  });
+
+  // F2 (FR-70 Codex 敵対レビュー, HIGH — 存続期間データ保護): a 継続中 (open-ended, end=null)
+  // anchor must NOT show a fabricated concrete end, and an untouched「反映」must NOT close
+  // it. A concrete end lands ONLY via the explicit「終了を指定」step; 継続中にする reopens
+  // it. This drives the WHOLE flow on real hardware through the store swap.
+  test('F2: 開放端(継続中)は偽の日付を出さず、明示「終了を指定」でのみ閉じ、継続中にするで開き直せる', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('app-shell')).toBeVisible();
+
+      // Commit ONE face (anchored at year 0, OPEN-ENDED end=null) and confirm present at 0.
+      await commitOneFace(page);
+      await jumpToYear(page, 0);
+      expect(await featureListCount(page)).toBe(1);
+
+      await enterEditMode(page);
+      const panel = page.getByTestId('sidebar-panel-properties');
+      await reselectAndOpenEditor(page, panel);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+
+      // The 終了 field of an open-ended anchor shows「継続中」(NO fabricated date), 反映 is
+      // DISABLED, and「終了を指定」is offered — an untouched 反映 can never close it (F2).
+      await expect(endField(panel, 'open')).toHaveText('継続中');
+      await expect(endField(panel, 'confirm')).toBeDisabled();
+      await expect(endField(panel, 'specify')).toBeVisible();
+
+      // Give it a concrete end = 3000 ONLY after the explicit「終了を指定」step.
+      await endField(panel, 'specify').click();
+      await expect(endField(panel, 'year')).toBeEnabled();
+      await endField(panel, 'year').fill('3000');
+      await endField(panel, 'confirm').click();
+
+      // AFTER 3000 the feature is gone (the explicit end applied); at 1000 it still exists.
+      await jumpToYear(page, 4000);
+      await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(0);
+      await jumpToYear(page, 1000);
+      await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(1);
+
+      // Round-trip: reselect, the end is now concrete (3000);「継続中にする」reopens it, so
+      // AFTER 3000 the feature exists again (open-ended round-trip, no data loss).
+      await reselectAndOpenEditor(page, panel);
+      await endField(panel, 'clear').click();
+      await jumpToYear(page, 4000);
+      await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(1);
     } finally {
       await app.close();
     }

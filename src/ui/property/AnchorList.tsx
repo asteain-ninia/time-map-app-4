@@ -20,7 +20,7 @@ import { useState } from 'react';
 import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
-import { timePointYear, type TimePoint } from '../../domain/time/time-point';
+import type { TimePoint } from '../../domain/time/time-point';
 
 import { formatTimePoint } from '../timeline/time-display';
 import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
@@ -164,10 +164,6 @@ function AnchorIntervalEditor(props: {
     setMessage(onEditInterval(intent));
   };
 
-  // Seed the 終了 field when the anchor is open-ended: default to one year after the
-  // start (the previous editor's default), so 反映 without touching it sets a sane end.
-  const endSeed: TimePoint = entry.end ?? timePointYear(entry.start.year + 1);
-
   return (
     <details className="anchor-interval" data-testid={`anchor-interval-${anchorId}`}>
       <summary>{PROPERTY_STRINGS.intervalEditTitle}</summary>
@@ -186,9 +182,15 @@ function AnchorIntervalEditor(props: {
       <YearMonthDayInput
         title={PROPERTY_STRINGS.intervalEndTitle}
         calendar={calendar}
-        initialValue={endSeed}
+        // F2: pass the entry's ACTUAL end — `null` (継続中) is modeled directly by the
+        // shared input (empty/disabled fields + 継続中 indicator, no fabricated date).
+        // A concrete end is dispatched ONLY after the explicit「終了を指定」step, so an
+        // open interval is never silently closed by an untouched「反映」.
+        initialValue={entry.end}
         confirmLabel={PROPERTY_STRINGS.intervalApplyLabel}
         clearLabel={PROPERTY_STRINGS.intervalClearEndLabel}
+        specifyLabel={PROPERTY_STRINGS.intervalSpecifyEndLabel}
+        openStateLabel={PROPERTY_STRINGS.openEndLabel}
         testId={`anchor-interval-end-${anchorId}`}
         onConfirm={(point) => run(buildSetEndIntent(featureId, anchorId, point))}
         onClear={() => run(buildSetEndIntent(featureId, anchorId, null))}

@@ -68,6 +68,12 @@ export const PROPERTY_STRINGS = {
   intervalApplyLabel: '反映',
   /** Clear the end (open-ended / 継続中, U09 setEnd null). */
   intervalClearEndLabel: '継続中にする',
+  /**
+   * FR-70 (F2): switch an open-ended (継続中) end into concrete date entry. Required
+   * before a non-null end TimePoint can be dispatched, so a 継続中 anchor is never
+   * silently closed by an untouched「反映」(存続期間データ保護).
+   */
+  intervalSpecifyEndLabel: '終了を指定',
   /** Delete this anchor (U09 deleteAnchor). */
   intervalDeleteLabel: 'この錨を削除',
   /** Title for the per-anchor存続期間 editor disclosure. */
