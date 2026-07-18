@@ -130,6 +130,37 @@ describe('受け入れ基準 2: domain bridge via subscribe', () => {
     expect(s.projectDirty).toBe(false);
   });
 
+  it('replaceBaseMap (FR-04): swaps domain + marks dirty + bumps the replace nonce, WITHOUT a whole-state reset', () => {
+    // F2: a base-map replace is a base-map-only edit, not an external load/new. It must
+    // mark the project dirty (教訓 5.36) and SIGNAL itself (basemapReplaceNonce) so the
+    // history owner (App) preserves the edit undo/redo stacks — but it must NOT discard
+    // selection / tool / mode the way resetToDomain (load/new) does.
+    const store = makeStore(undefined, {
+      activeFeature: f('A'),
+      mode: EDIT_MODE.Edit,
+      activeTool: asToolId('add'),
+    });
+    expect(store.getState().basemapReplaceNonce).toBe(0);
+
+    store.getState().replaceBaseMap({ tag: 'basemap-swapped' });
+
+    const s = store.getState();
+    expect(s.domain.tag).toBe('basemap-swapped');
+    // A base-map replace dirties the project (like any edit).
+    expect(s.projectDirty).toBe(true);
+    // The distinguishing signal: the monotonic nonce bumped (App reads it to preserve
+    // history instead of re-rooting).
+    expect(s.basemapReplaceNonce).toBe(1);
+    // The session state is NOT reset (this is not a load/new whole-state swap).
+    expect(s.activeFeature).toEqual(f('A'));
+    expect(s.mode).toBe(EDIT_MODE.Edit);
+    expect(s.activeTool).toBe(asToolId('add'));
+
+    // A second replace bumps the nonce again (each replace is a distinct signal).
+    store.getState().replaceBaseMap({ tag: 'basemap-swapped-2' });
+    expect(store.getState().basemapReplaceNonce).toBe(2);
+  });
+
   it('re-resolves selection from a command result (NOT a blanket clear, 教訓 5.11)', () => {
     const store = makeStore(undefined, {
       activeFeature: f('A'),

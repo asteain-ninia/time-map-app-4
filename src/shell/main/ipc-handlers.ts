@@ -9,6 +9,7 @@
 // (受け入れ基準7 / 開発ガイド §5.41). `registerIpcHandlers` is what main/index.ts
 // calls with the real Electron bindings.
 
+import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 import { DEFAULT_MAX_GENERATIONS } from '../io/backup';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
@@ -42,6 +43,13 @@ export interface DialogPort {
 /** File read port: read raw bytes; rejects/throws are caught by the handler. */
 export interface ReadFilePort {
   readFile: (path: string) => Promise<Uint8Array>;
+  /**
+   * The file's SIZE in bytes without reading its contents (a `stat`). FR-04 uses it
+   * to enforce the base-map byte cap BEFORE reading a picked image, so a multi-GB
+   * file is never read + structured-cloned across IPC only to be rejected in the
+   * renderer (handleOpenImage). Rejects/throws are caught by the handler (honest null).
+   */
+  statSize: (path: string) => Promise<number>;
 }
 
 /** A holder for the "current document path" so plain Save targets it (FR-105). */
@@ -138,15 +146,28 @@ async function readAndParse(deps: IpcDeps, path: string): Promise<LoadResponse> 
 
 /**
  * FR-04 base-map差し替え: open an IMAGE dialog, read the chosen file and return its
- * raw bytes. A cancelled dialog OR a read failure resolves `null` (honest no-op — the
+ * raw bytes. A cancelled dialog OR any failure resolves `null` (honest no-op — the
  * renderer flow then does nothing), never a throw. The renderer validates the bytes
  * (PNG / JPEG header + dimension caps) before adopting them, so no format check is
  * needed here — main is only the dialog + `fs` read boundary (FR-02).
+ *
+ * F3 (pre-read size cap): the picked file is `stat`-ed and REJECTED past
+ * {@link MAX_BASE_MAP_IMAGE_BYTES} BEFORE it is read — a multi-GB file must never be
+ * read into main + structured-cloned across IPC only to be rejected by the renderer
+ * guard. The cap is the SAME single-source bound the renderer guard uses (教訓 5.29).
+ *
+ * F5 (honest-null contract): the dialog pick, the stat, and the read all sit in ONE
+ * try, so a picker / stat FAILURE resolves null too — not just a read failure. The
+ * dialog await used to sit outside the try, so a picker rejection propagated across
+ * the IPC boundary instead of degrading to the honest no-op every other failure gives.
  */
 export async function handleOpenImage(deps: IpcDeps): Promise<Uint8Array | null> {
-  const path = await deps.dialog.showOpenImageDialog();
-  if (path === undefined) return null;
   try {
+    const path = await deps.dialog.showOpenImageDialog();
+    if (path === undefined) return null;
+    // Stat first: enforce the byte cap before the read/IPC transfer (F3).
+    const sizeBytes = await deps.readFile.statSize(path);
+    if (sizeBytes > MAX_BASE_MAP_IMAGE_BYTES) return null;
     return await deps.readFile.readFile(path);
   } catch {
     return null;

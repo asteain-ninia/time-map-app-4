@@ -60,6 +60,19 @@ export const MAX_IMAGE_DIMENSION_PX = 32768;
 export const MIN_IMAGE_DIMENSION_PX = 2;
 
 /**
+ * Maximum accepted base-map image FILE size in bytes (64 MB). The real project data
+ * (a 4096×2048 PNG) is ~2 orders of magnitude below this; anything larger is not a
+ * plausible base map. This is the SINGLE SOURCE (教訓 §4 / 5.29 単一真実源) for the
+ * byte cap enforced at BOTH boundaries a base-map image crosses: the main process
+ * stats a picked file and refuses to read past this before the bytes ever cross IPC
+ * (FR-04 / ipc-handlers.handleOpenImage), and the renderer's untrusted-byte guard
+ * (base-map-image-guard.checkBaseMapImageBytes, which re-exports this) caps a `.tmap`
+ * base-map entry before decode. Kept in the domain layer so the shell (main) can
+ * import it WITHOUT depending on the renderer/ui layer.
+ */
+export const MAX_BASE_MAP_IMAGE_BYTES = 64 * 1024 * 1024;
+
+/**
  * A base-map image descriptor that has ALREADY passed boundary validation
  * (FR-116 / NFR 5.5): finite, positive, in-range integer pixel dimensions. The
  * domain format logic consumes only this validated shape — it never sees raw,

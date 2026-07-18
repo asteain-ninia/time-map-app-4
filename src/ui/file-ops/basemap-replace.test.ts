@@ -121,3 +121,80 @@ describe('runBasemapReplace — no-op / rejection paths', () => {
     expect(applyReplacement).not.toHaveBeenCalled();
   });
 });
+
+describe('runBasemapReplace — F4 async decode validation (header-valid but undecodable)', () => {
+  it('rejects a header-valid image whose bytes do NOT actually decode: no apply, notify', async () => {
+    // A truncated PNG passes the sync header guard (signature + IHDR dims) yet fails a
+    // real createImageBitmap decode. It must be rejected BEFORE the project asset is
+    // mutated, so no downstream save persists a broken base map (task F4 / Codex 規律).
+    const applyReplacement = vi.fn();
+    const notices: string[] = [];
+    const outcome = await runBasemapReplace({
+      pickImageBytes: async () => pngHeaderBytes(),
+      getBaseMap: () => PRESET_BASEMAP,
+      applyReplacement,
+      notify: (m) => notices.push(m),
+      // The sync guard passes; the async decode proves the bytes are NOT decodable.
+      decodeProbe: async () => false,
+    });
+
+    expect(outcome.status).toBe(BASEMAP_REPLACE_OUTCOME.Rejected);
+    if (outcome.status === BASEMAP_REPLACE_OUTCOME.Rejected) {
+      expect(outcome.reason).toBe('undecodable');
+    }
+    expect(applyReplacement).not.toHaveBeenCalled(); // the asset is never touched
+    expect(notices).toEqual([BASEMAP_REPLACE_REJECT_NOTICE]); // FR-115 honest reason
+  });
+
+  it('applies when the decode probe PROVES the bytes decode (probe is awaited before apply)', async () => {
+    const probeOrder: string[] = [];
+    const outcome = await runBasemapReplace({
+      pickImageBytes: async () => pngHeaderBytes(),
+      getBaseMap: () => PRESET_BASEMAP,
+      applyReplacement: () => probeOrder.push('apply'),
+      decodeProbe: async (_bytes, mimeType) => {
+        probeOrder.push(`probe:${mimeType}`);
+        return true;
+      },
+    });
+
+    expect(outcome.status).toBe(BASEMAP_REPLACE_OUTCOME.Applied);
+    // The decode probe runs (with the guard's sniffed MIME) and PRECEDES the apply.
+    expect(probeOrder).toEqual(['probe:image/png', 'apply']);
+  });
+
+  it('default probe: with a decoder present that THROWS, the image is rejected (real decode gate)', async () => {
+    // Exercise the built-in default probe (no injected decodeProbe): a decoder that
+    // throws on these bytes must yield a rejection, proving the default actually runs a
+    // decode rather than trusting the header.
+    const applyReplacement = vi.fn();
+    const createImageBitmap = vi.fn(async () => { throw new Error('decode failed'); });
+    vi.stubGlobal('createImageBitmap', createImageBitmap);
+    try {
+      const outcome = await runBasemapReplace({
+        pickImageBytes: async () => pngHeaderBytes(),
+        getBaseMap: () => PRESET_BASEMAP,
+        applyReplacement,
+      });
+      expect(outcome.status).toBe(BASEMAP_REPLACE_OUTCOME.Rejected);
+      expect(createImageBitmap).toHaveBeenCalledTimes(1);
+      expect(applyReplacement).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('default probe: with NO decoder available (node), it does NOT block (renderer enforces)', async () => {
+    // In an environment without createImageBitmap (node/jsdom unit env) the default
+    // probe cannot run the decode and so must NOT reject — the real renderer, which has
+    // the decoder, is where the gate bites. This keeps the seam usable in node tests.
+    const applyReplacement = vi.fn();
+    const outcome = await runBasemapReplace({
+      pickImageBytes: async () => pngHeaderBytes(),
+      getBaseMap: () => PRESET_BASEMAP,
+      applyReplacement,
+    });
+    expect(outcome.status).toBe(BASEMAP_REPLACE_OUTCOME.Applied);
+    expect(applyReplacement).toHaveBeenCalledTimes(1);
+  });
+});

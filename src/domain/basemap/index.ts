@@ -11,6 +11,7 @@ export {
   MAX_CORRECTABLE_ASPECT_FACTOR,
   MAX_IMAGE_DIMENSION_PX,
   MIN_IMAGE_DIMENSION_PX,
+  MAX_BASE_MAP_IMAGE_BYTES,
   type ValidatedImageDescriptor,
   IMAGE_VALIDATION_ERROR,
   type ImageValidationError,

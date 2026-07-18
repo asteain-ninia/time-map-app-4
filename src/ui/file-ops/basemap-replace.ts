@@ -22,6 +22,7 @@
 
 import {
   checkBaseMapImageBytes,
+  BASE_MAP_IMAGE_REJECTION,
   type BaseMapImageCheck,
   type BaseMapImageRejection,
 } from '../map/base-map-image-guard';
@@ -104,6 +105,43 @@ export interface BasemapReplacePorts {
    * image accepted here displays and one明白に不正 is rejected identically (単一真実源).
    */
   readonly checkBytes?: (bytes: Uint8Array) => BaseMapImageCheck;
+  /**
+   * F4 async decode probe: PROVE the picked bytes actually decode to an image (the
+   * sync {@link checkBytes} only parses the header, so a truncated / corrupt but
+   * header-valid PNG/JPEG passes it yet fails a real decode). Resolves `true` when the
+   * bytes decode, `false` when they do NOT. Defaults to {@link probeImageDecodable}
+   * (a `createImageBitmap` decode); in an environment WITHOUT a decoder (node/jsdom
+   * unit tests) the default does not block, because the real renderer — which has the
+   * decoder — is where the gate bites. Injected explicitly in unit tests to exercise
+   * both verdicts without a DOM.
+   */
+  readonly decodeProbe?: (bytes: Uint8Array, mimeType: string) => Promise<boolean>;
+}
+
+/**
+ * Default {@link BasemapReplacePorts.decodeProbe} (F4): prove the picked bytes decode
+ * before the replacement mutates the project. Uses the renderer's `createImageBitmap`.
+ * In an environment without a decoder (node/jsdom) it CANNOT run the decode and so
+ * returns `true` (does not block — the real renderer enforces it; unit tests inject an
+ * explicit probe). A decode failure resolves `false`, never throws.
+ */
+export async function probeImageDecodable(
+  bytes: Uint8Array,
+  mimeType: string,
+): Promise<boolean> {
+  if (typeof createImageBitmap !== 'function') return true;
+  try {
+    // Copy into a fresh ArrayBuffer-backed view before wrapping in a Blob so the
+    // decode sees exactly this range even for a view over a larger/shared buffer
+    // (mirrors the host's decode adapter).
+    const copy = new Uint8Array(bytes.length);
+    copy.set(bytes);
+    const bitmap = await createImageBitmap(new Blob([copy], { type: mimeType }));
+    (bitmap as { close?: () => void }).close?.();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** A source that means「preset / まだユーザー画像なし」(→ needs the user marker). */
@@ -112,10 +150,13 @@ function isPresetOrEmpty(source: string): boolean {
 }
 
 /**
- * Run the FR-04 base-map replacement over the injected ports. Pure control flow:
+ * Run the FR-04 base-map replacement over the injected ports. Control flow:
  *   1. pick bytes; `null` ⇒ Cancelled (無変更, honest no-op);
- *   2. guard the bytes; reject ⇒ notify + Rejected (適用前に拒否, no half asset);
- *   3. KEEP the current meta (座標契約 v2 — 投影/範囲維持; a preset project already
+ *   2. sync-guard the bytes (size / header / dimensions); reject ⇒ notify + Rejected
+ *      (適用前に拒否, no half asset);
+ *   3. async decode-probe the bytes (F4); undecodable ⇒ notify + Rejected — a header-
+ *      valid but truncated/corrupt image is rejected BEFORE it is adopted + saved;
+ *   4. KEEP the current meta (座標契約 v2 — 投影/範囲維持; a preset project already
  *      carries the全世界 equirectangular meta, so keeping it IS the preset default),
  *      keep a user `source` or stamp {@link REPLACED_BASEMAP_SOURCE} for a preset one,
  *      then apply. Returns the outcome for the caller / tests (教訓 5.26).
@@ -133,6 +174,23 @@ export async function runBasemapReplace(
     // touched, so no downstream save can persist a broken base map (Codex 規律).
     ports.notify?.(BASEMAP_REPLACE_REJECT_NOTICE);
     return { status: BASEMAP_REPLACE_OUTCOME.Rejected, reason: check.reason };
+  }
+
+  // F4: the sync guard only parsed the HEADER. Prove the bytes actually DECODE before
+  // mutating anything — a truncated / corrupt but header-valid PNG/JPEG passes the
+  // guard yet fails a real decode, and (pre-fix) was adopted + dirtied + SAVED as a
+  // broken asset (the display silently fell back to the preset via resolveDisplayedBasemap,
+  // but the on-disk bytes were still broken). Reject BEFORE applyReplacement so no half
+  // asset is ever persisted; the host's resolveDisplayedBasemap fallback stays as the
+  // second line of defence for any image that slips through (二重防御). Runs once, only
+  // for header-accepted bytes.
+  const decodable = await (ports.decodeProbe ?? probeImageDecodable)(bytes, check.mimeType);
+  if (!decodable) {
+    ports.notify?.(BASEMAP_REPLACE_REJECT_NOTICE);
+    return {
+      status: BASEMAP_REPLACE_OUTCOME.Rejected,
+      reason: BASE_MAP_IMAGE_REJECTION.Undecodable,
+    };
   }
 
   const current = ports.getBaseMap();

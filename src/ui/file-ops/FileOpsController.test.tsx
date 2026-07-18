@@ -1024,6 +1024,89 @@ describe('FR-04 base-map差し替え runner (registerBasemapReplace)', () => {
     expect(savedReq!.baseMapImage).toBe(png);
   });
 
+  it('F2: a valid replace uses the history-preserving store path (bumps basemapReplaceNonce, not a whole-state swap)', async () => {
+    // F2: the replace must go through store.replaceBaseMap (which signals a base-map
+    // replace so App preserves the edit undo/redo stacks), NOT the bare setDomainState
+    // that App would read as an external load/new and re-root the history on.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ openImage: vi.fn(async () => validPng()) });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace} onBaseMapImageChange={vi.fn()} />,
+    );
+    expect(store.getState().basemapReplaceNonce).toBe(0);
+
+    await act(async () => { await run!(); });
+
+    // The base-map-only replace path ran (nonce bumped) — the history-preserving signal.
+    expect(store.getState().basemapReplaceNonce).toBe(1);
+    expect(store.getState().domain.baseMap.source).toBe(REPLACED_BASEMAP_SOURCE);
+  });
+
+  it('F1: a basemap replace is DROPPED while a load holds the file-ops mutex (repair dialog open)', async () => {
+    // The repro: an inconsistent Open suspends at the repair dialog, HOLDING the mutex.
+    // A registered replace runner firing now must be serialized behind it (dropped),
+    // never interleave — otherwise it overwrites the load's captured asset bytes and the
+    // final reflect leaves domain(B) but display/save bytes(R) (資産とドメインの取り違え).
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const openImage = vi.fn(async () => validPng());
+    const api = makeApi({ load: vi.fn(async () => brokenLoad()), openImage });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace} onBaseMapImageChange={vi.fn()} />,
+    );
+
+    // Open an inconsistent project → repair dialog opens and the load flow suspends here.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+
+    // Replace fires while the mutex is held → dropped: the picker never opens and the
+    // store base map is untouched (no asset/domain take behind the open dialog).
+    await act(async () => { await run!(); });
+    expect(openImage).not.toHaveBeenCalled();
+    expect(store.getState().domain.baseMap.source).not.toBe(REPLACED_BASEMAP_SOURCE);
+    expect(store.getState().basemapReplaceNonce).toBe(0);
+    // The repair interaction is intact.
+    expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument();
+  });
+
+  it('F1: a load is DROPPED while a basemap replace holds the mutex (never interleave)', async () => {
+    // The other direction: a replace suspended at its image picker HOLDS the mutex, so a
+    // concurrent Open is serialized behind it (no transport fetched) rather than running
+    // a load flow that races the in-flight replace.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let resolveImage!: (b: Uint8Array | null) => void;
+    const openImage = vi.fn(() => new Promise<Uint8Array | null>((res) => { resolveImage = res; }));
+    const load = vi.fn(async () => okLoad());
+    const api = makeApi({ openImage, load });
+    let run: (() => Promise<void>) | null = null;
+    const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
+    render(
+      <FileOpsController store={store} registry={registry} api={api} calendar={CAL}
+        registerBasemapReplace={registerBasemapReplace} onBaseMapImageChange={vi.fn()} />,
+    );
+
+    // Start the replace; it suspends at the image picker, holding the mutex.
+    let runPromise!: Promise<void>;
+    await act(async () => { runPromise = run!(); await Promise.resolve(); });
+    await waitFor(() => expect(openImage).toHaveBeenCalledTimes(1));
+
+    // A load dispatched now must be dropped (mutex held) — no transport fetched.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    expect(load).not.toHaveBeenCalled();
+
+    // Finish the replace so the mutex releases (clean teardown).
+    await act(async () => { resolveImage(validPng()); await runPromise; });
+    expect(store.getState().domain.baseMap.source).toBe(REPLACED_BASEMAP_SOURCE);
+  });
+
   it('cancel (openImage → null) leaves the project unchanged (no dirty, no display push)', async () => {
     const store = makeStore();
     const registry = new CommandRegistry();

@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { serialize } from '../../domain/persistence/serialize';
 import { richValidProject } from '../../domain/persistence/fixtures';
+import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 import { buildTmap } from '../io/tmap';
 import {
   IPC_CHANNEL,
@@ -95,7 +96,11 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
       showOpenDialog: vi.fn(async () => '/d/open.tmap'),
       showOpenImageDialog: vi.fn(async () => '/d/pic.png'),
     },
-    readFile: { readFile: vi.fn(async () => buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] })) },
+    readFile: {
+      readFile: vi.fn(async () => buildTmap({ manifest: serialize(richValidProject()), baseMapImage: baseMap, attachments: [] })),
+      // Small by default so the FR-04 pre-read size cap (handleOpenImage) is a no-op.
+      statSize: vi.fn(async () => 1024),
+    },
     saveEnv,
     currentPath: {
       get: () => cur,
@@ -243,7 +248,7 @@ describe('handlers take shared args and return shared return types (受け入れ
 
   it('Load returns read-failed (not a throw) when the file cannot be read', async () => {
     const { deps } = makeDeps({
-      readFile: { readFile: vi.fn(async () => { throw new Error('ENOENT'); }) },
+      readFile: { readFile: vi.fn(async () => { throw new Error('ENOENT'); }), statSize: vi.fn(async () => 1024) },
     });
     const res = await handleLoadDropped(deps, '/missing.tmap');
     expect(res.ok).toBe(false);
@@ -254,7 +259,7 @@ describe('handlers take shared args and return shared return types (受け入れ
   it('OpenImage opens the image dialog, reads the chosen file, returns its bytes (FR-04)', async () => {
     const imageBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
     const { deps } = makeDeps({
-      readFile: { readFile: vi.fn(async () => imageBytes) },
+      readFile: { readFile: vi.fn(async () => imageBytes), statSize: vi.fn(async () => imageBytes.length) },
     });
     const res = await handleOpenImage(deps);
     expect(res).toBe(imageBytes);
@@ -277,10 +282,65 @@ describe('handlers take shared args and return shared return types (受け入れ
 
   it('OpenImage returns null (not a throw) when the image read fails (FR-04 honest no-op)', async () => {
     const { deps } = makeDeps({
-      readFile: { readFile: vi.fn(async () => { throw new Error('EACCES'); }) },
+      readFile: { readFile: vi.fn(async () => { throw new Error('EACCES'); }), statSize: vi.fn(async () => 1024) },
     });
     const res = await handleOpenImage(deps);
     expect(res).toBeNull();
+  });
+
+  it('F3: OpenImage stats the file and REJECTS an oversized image BEFORE reading it (no unbounded read/IPC clone)', async () => {
+    // A multi-GB pick must never be readFile()'d + structured-cloned across IPC only
+    // to be rejected in the renderer: the main side stats first and refuses past the
+    // 64 MB cap, returning null (honest no-op) without touching readFile.
+    const readFile = vi.fn(async () => new Uint8Array([1, 2, 3]));
+    const statSize = vi.fn(async () => MAX_BASE_MAP_IMAGE_BYTES + 1);
+    const { deps } = makeDeps({ readFile: { readFile, statSize } });
+
+    const res = await handleOpenImage(deps);
+
+    expect(res).toBeNull();
+    expect(statSize).toHaveBeenCalledWith('/d/pic.png');
+    expect(readFile).not.toHaveBeenCalled(); // the giant file was never read
+  });
+
+  it('F3: OpenImage reads a file exactly AT the cap (boundary is inclusive)', async () => {
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const readFile = vi.fn(async () => bytes);
+    const statSize = vi.fn(async () => MAX_BASE_MAP_IMAGE_BYTES); // == cap → allowed
+    const { deps } = makeDeps({ readFile: { readFile, statSize } });
+
+    const res = await handleOpenImage(deps);
+
+    expect(res).toBe(bytes);
+    expect(readFile).toHaveBeenCalledWith('/d/pic.png');
+  });
+
+  it('F5: OpenImage returns null (not a reject) when the PICKER itself fails (honest-null contract)', async () => {
+    // The dialog port throwing must resolve null across IPC, not reject — the same
+    // honest no-op a cancel / read failure yields. Regression: the dialog await used
+    // to sit OUTSIDE the try, so a picker rejection propagated across the IPC boundary.
+    const { deps } = makeDeps({
+      dialog: {
+        showSaveDialog: vi.fn(async () => undefined),
+        showOpenDialog: vi.fn(async () => undefined),
+        showOpenImageDialog: vi.fn(async () => { throw new Error('picker crashed'); }),
+      },
+    });
+
+    await expect(handleOpenImage(deps)).resolves.toBeNull();
+    expect(deps.readFile.readFile).not.toHaveBeenCalled();
+  });
+
+  it('F5: OpenImage returns null (not a reject) when the stat itself fails', async () => {
+    const { deps } = makeDeps({
+      readFile: {
+        readFile: vi.fn(async () => new Uint8Array([1])),
+        statSize: vi.fn(async () => { throw new Error('ENOENT'); }),
+      },
+    });
+
+    await expect(handleOpenImage(deps)).resolves.toBeNull();
+    expect(deps.readFile.readFile).not.toHaveBeenCalled();
   });
 
   it('ConfigureAutoSave forwards the settings-derived config (FR-108)', () => {

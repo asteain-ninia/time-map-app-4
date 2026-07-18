@@ -574,37 +574,51 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // and the DISPLAY push (onBaseMapImageChangeRef → App.handleBaseMapImageChange →
   // 即時再描画), plus the store domain + the U15 IPC api — the exact set a replacement
   // must update in lock-step (単一真実源 — no divergent bytes copy). The pure decision
-  // (pick → guard → keep meta / mark source) lives in {@link runBasemapReplace}; here
-  // we only wire the live effect ports. No-op when the IPC bridge is absent (jsdom).
+  // (pick → guard → decode-probe → keep meta / mark source) lives in {@link runBasemapReplace};
+  // here we only wire the live effect ports. No-op when the IPC bridge is absent (jsdom).
+  //
+  // F1 (concurrency): the WHOLE replace runs through `runExclusive` (the SAME file-ops
+  // mutex as 開く/新規/D&D/終了ガード), so it is serialized against load/save/new and can
+  // NEVER interleave with an in-flight destructive flow. Without this, a replace firing
+  // while a load's 修復/未保存 dialog is suspended would overwrite the load's captured
+  // asset bytes (loadedAssetsRef) + display push, so the final reflect left domain(B) but
+  // save/display bytes(R) — 資産とドメインの取り違え, next save writing R into B. A replace
+  // that lands while the latch is held is dropped (no-op; the button re-dispatches).
   const registerBasemapReplace = props.registerBasemapReplace;
   useEffect(() => {
     if (api === null || registerBasemapReplace === undefined) return undefined;
     const run = (): Promise<void> =>
-      runBasemapReplace({
-        // main opens the image dialog + reads the file; renderer gets bytes | null.
-        pickImageBytes: () => api.openImage(),
-        getBaseMap: () => store.getState().domain.baseMap,
-        applyReplacement: ({ source, meta, bytes }) => {
-          // (1) swap the domain baseMap reference — marks projectDirty (教訓 5.36) and
-          //     drives the host getter to re-resolve preset→user on the next composite.
-          const domain = store.getState().domain;
-          store.getState().setDomainState({ ...domain, baseMap: { source, meta } });
-          // (2) retain the bytes for the SAVE round-trip (BUG #6 asset plumbing): the
-          //     next save ships them into assets/basemap.img, so a later load reflects
-          //     the replaced map (task §フェーズ1-3 保存/ロード往復).
-          loadedAssetsRef.current = { ...loadedAssetsRef.current, baseMapImage: bytes };
-          // (3) push the bytes to the renderer for immediate repaint through the SAME
-          //     onBaseMapImageChange path load / 新規 use (教訓 5.35 即時反映).
-          onBaseMapImageChangeRef.current?.(bytes);
-        },
-        // FR-115: a rejected image surfaces its日本語 reason on the existing alert sink.
-        notify: (message: string) => {
-          if (typeof globalThis.alert === 'function') globalThis.alert(message);
-        },
-      }).then(() => undefined);
+      runExclusive(() =>
+        runBasemapReplace({
+          // main opens the image dialog + reads the file; renderer gets bytes | null.
+          pickImageBytes: () => api.openImage(),
+          getBaseMap: () => store.getState().domain.baseMap,
+          applyReplacement: ({ source, meta, bytes }) => {
+            // (1) swap the domain baseMap reference via the HISTORY-PRESERVING store path
+            //     (F2): replaceBaseMap marks projectDirty (教訓 5.36), drives the host
+            //     getter to re-resolve preset→user on the next composite, AND signals a
+            //     base-map replace so App keeps the edit undo/redo stacks (does NOT re-root
+            //     the history as it would for an external load/new). Read the domain live
+            //     (post-decode-probe) so no stale capture races a concurrent edit.
+            const domain = store.getState().domain;
+            store.getState().replaceBaseMap({ ...domain, baseMap: { source, meta } });
+            // (2) retain the bytes for the SAVE round-trip (BUG #6 asset plumbing): the
+            //     next save ships them into assets/basemap.img, so a later load reflects
+            //     the replaced map (task §フェーズ1-3 保存/ロード往復).
+            loadedAssetsRef.current = { ...loadedAssetsRef.current, baseMapImage: bytes };
+            // (3) push the bytes to the renderer for immediate repaint through the SAME
+            //     onBaseMapImageChange path load / 新規 use (教訓 5.35 即時反映).
+            onBaseMapImageChangeRef.current?.(bytes);
+          },
+          // FR-115: a rejected image surfaces its日本語 reason on the existing alert sink.
+          notify: (message: string) => {
+            if (typeof globalThis.alert === 'function') globalThis.alert(message);
+          },
+        }),
+      ).then(() => undefined);
     const cleanup = registerBasemapReplace(run);
     return typeof cleanup === 'function' ? cleanup : undefined;
-  }, [api, store, registerBasemapReplace]);
+  }, [api, store, registerBasemapReplace, runExclusive]);
 
   // --- supply the camera clamp range to U17 on every settings change (FR-10) -
   useEffect(() => {

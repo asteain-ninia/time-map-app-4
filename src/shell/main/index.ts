@@ -1,4 +1,4 @@
-import { copyFile, readdir, readFile, rm } from 'node:fs/promises';
+import { copyFile, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
@@ -236,7 +236,12 @@ function wireIpc(): void {
         return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
       },
     },
-    readFile: { readFile: (path) => readFile(path) },
+    readFile: {
+      readFile: (path) => readFile(path),
+      // FR-04 pre-read size cap: the file's size without reading it (handleOpenImage
+      // stats a picked base-map image and refuses past the 64 MB cap before the read).
+      statSize: (path) => stat(path).then((s) => s.size),
+    },
     saveEnv: buildSaveEnv(),
     currentPath,
     applyAutoSaveConfig,

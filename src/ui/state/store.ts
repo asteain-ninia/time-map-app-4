@@ -195,6 +195,17 @@ export interface SessionStoreState<S> {
   readonly projectDirty: boolean;
   /** The most recent settings change, for subscriber notification (教訓 5.35). */
   readonly lastSettingsChange: SettingsChange | null;
+  /**
+   * Monotonic counter bumped ONLY by {@link SessionStoreActions.replaceBaseMap} (FR-04
+   * base-map差し替え). The history owner (App) observes the domain reference change
+   * through its store subscription and cannot otherwise tell a base-map-only replace
+   * from an external whole-state swap (file LOAD / NEW), which it re-roots the edit
+   * history on. A change in this counter alongside a domain swap identifies the replace
+   * so App PRESERVES the undo/redo stacks instead of destroying them (F2, 教訓 5.6:
+   * detect on the resulting state, not the input path). Starts at 0; never reset by a
+   * load/new (a stale-vs-new compare is all App needs, not an absolute value).
+   */
+  readonly basemapReplaceNonce: number;
 }
 
 // --- Actions ----------------------------------------------------------------
@@ -231,6 +242,18 @@ export interface SessionStoreActions<S> {
   ): void;
   /** Replace the domain-state reference without a command result (e.g. load). */
   setDomainState(nextDomain: S): void;
+  /**
+   * FR-04 base-map差し替え: swap the domain reference for a BASE-MAP-ONLY replacement
+   * and mark the project dirty (like any edit, 教訓 5.36), AND bump
+   * {@link SessionStoreState.basemapReplaceNonce} so the history owner (App) knows this
+   * is a replace — NOT an external load/new — and PRESERVES the edit undo/redo stacks
+   * (F2). Unlike {@link resetToDomain} it does NOT discard selection / tool / mode /
+   * focus: a replace changes only the base map, not the features/vertices a selection
+   * points at, so the in-progress edit context must survive. The caller supplies a
+   * domain whose ONLY change from the current one is `baseMap` (the pure decision lives
+   * in file-ops/basemap-replace; this action is the single store sink).
+   */
+  replaceBaseMap(nextDomain: S): void;
   /**
    * Whole-state replacement for a LOAD / NEW (教訓 5.2 全経路で破棄 / 5.22 確定後のみ).
    * Swaps the domain AND atomically discards every piece of session state tied to
@@ -821,6 +844,7 @@ export function createSessionStore<S>(
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
     lastSettingsChange: null,
+    basemapReplaceNonce: 0,
 
     // -- bridge --------------------------------------------------------------
     applyCommandResult(nextDomain, result, preference) {
@@ -983,6 +1007,20 @@ export function createSessionStore<S>(
       // clear the flag with markProjectSaved() in the SAME transition (教訓 5.36),
       // so a clean load/new ends with projectDirty=false while an edit leaves it true.
       set({ domain: nextDomain, projectDirty: true });
+    },
+
+    replaceBaseMap(nextDomain) {
+      // FR-04: a base-map-only replace. Dirty like any edit (教訓 5.36) AND bump the
+      // nonce so App's history subscription treats it as a replace (preserve the edit
+      // undo/redo stacks) rather than an external whole-state swap (re-root) — F2. It
+      // deliberately does NOT touch selection / tool / mode / focus (a base-map swap
+      // changes no features/vertices), so an in-progress edit context survives. The
+      // nonce and the domain swap land in ONE transition so App observes them together.
+      set({
+        domain: nextDomain,
+        projectDirty: true,
+        basemapReplaceNonce: get().basemapReplaceNonce + 1,
+      });
     },
 
     resetToDomain(nextDomain) {

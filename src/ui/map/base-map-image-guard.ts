@@ -22,14 +22,15 @@
 // silently (既存規約 読込失敗→プリセット). Pure, framework-free byte parsing — unit
 // tested in node without a DOM.
 
-import { validateImageDescriptor } from '../../domain/basemap/index';
+import { validateImageDescriptor, MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 
 /**
- * Maximum accepted base-map image FILE size in bytes (64 MB). The real project data
- * (a 4096×2048 PNG) is ~2 orders of magnitude below this; anything larger is not a
- * plausible base map and is rejected before the bytes are handed to a decoder.
+ * Maximum accepted base-map image FILE size in bytes (64 MB). Re-exported from the
+ * domain (single source, 教訓 5.29) so this guard and the main-process pre-read cap
+ * (ipc-handlers.handleOpenImage) share ONE bound; the value lives in the domain layer
+ * so the shell can import it without depending on the renderer/ui layer.
  */
-export const MAX_BASE_MAP_IMAGE_BYTES = 64 * 1024 * 1024;
+export { MAX_BASE_MAP_IMAGE_BYTES };
 
 /**
  * Maximum accepted DECODED pixel surface (width × height). 16384×8192 — the largest
@@ -51,6 +52,15 @@ export const BASE_MAP_IMAGE_REJECTION = {
   MalformedHeader: 'malformedHeader',
   /** Declared dimensions out of bounds (per-axis domain caps or the pixel cap). */
   BadDimensions: 'badDimensions',
+  /**
+   * Header-valid but the bytes do NOT actually decode to an image (FR-04 差し替え):
+   * a truncated / corrupt PNG-or-JPEG whose signature + dimension header pass this
+   * sync guard yet fail a real `createImageBitmap` decode. Never produced by
+   * {@link checkBaseMapImageBytes} itself (it does no decode); it is the verdict the
+   * FR-04 replace flow's async decode probe returns so a broken image is rejected
+   * BEFORE it is adopted + saved as a half asset (see file-ops/basemap-replace).
+   */
+  Undecodable: 'undecodable',
 } as const;
 
 export type BaseMapImageRejection =

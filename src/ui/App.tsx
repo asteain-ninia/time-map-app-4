@@ -125,6 +125,7 @@ import {
 } from '../domain/command/history';
 import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
+import { reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
 import { COMMAND_ID } from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
@@ -1578,6 +1579,12 @@ export function App(): JSX.Element {
   // to that new baseline (its old stack cannot apply to the new project).
   const lastCommittedDomainRef = useRef<DomainRoot>(store.getState().domain);
 
+  // F2: the last base-map-replace nonce we have processed. The load/new re-root
+  // subscription below compares the LIVE store nonce against this to tell a base-map
+  // REPLACE (FR-04, preserve the edit undo/redo stacks) from an external whole-state
+  // swap (file load / new, re-root the history). Bumped only by store.replaceBaseMap.
+  const lastBasemapReplaceNonceRef = useRef<number>(store.getState().basemapReplaceNonce);
+
   // 第6波 redo-drops-selection-preference: the selection preference a commit
   // promotes (次対象昇格 — the created / merged / reparented feature) is a UI-layer
   // value the pure Command does NOT carry, so a plain redo (which replays the
@@ -2028,25 +2035,40 @@ export function App(): JSX.Element {
     };
   }, [registry, store]);
 
-  // Reset the history on an EXTERNAL whole-state swap (file load / new). A subscribe
-  // bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live domain
-  // to the last domain we committed; a mismatch we did not author is a load/new, so
-  // we re-root the history there (its old stack is meaningless — 教訓 5.22).
+  // Reconcile the history on a store domain swap we did NOT author via a command. A
+  // subscribe bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live
+  // domain to the last domain we committed; a mismatch we did not author is either a
+  // base-map REPLACE (FR-04) or an external whole-state swap (file load / new):
+  //   - a base-map replace (store basemapReplaceNonce bumped) PRESERVES the edit
+  //     undo/redo stacks and only rebases the current root onto the new domain, so the
+  //     replace does not destroy edit history and is itself non-undoable (F2);
+  //   - an external load / new re-roots a fresh history (its old stack is meaningless
+  //     against the new project — 教訓 5.22).
+  // The pure branch lives in reconcileHistoryOnExternalDomainSwap (教訓 5.41).
   useEffect(() => {
     return store.subscribe((s) => {
       if (s.domain === lastCommittedDomainRef.current) return;
       lastCommittedDomainRef.current = s.domain;
-      // Re-root at the CONFIGURED undo-stack depth (FR-74), read live so a load that
-      // hydrated a different undoStackSize re-roots at the loaded project's limit.
-      historyRef.current = createHistory(s.domain, s.appSettings.undoStackSize);
+      // A base-map replace bumps the nonce in the SAME transition as the domain swap.
+      const isBasemapReplace = s.basemapReplaceNonce !== lastBasemapReplaceNonceRef.current;
+      lastBasemapReplaceNonceRef.current = s.basemapReplaceNonce;
+      // Preserve (replace) or re-root at the CONFIGURED undo-stack depth (FR-74, read
+      // live so a load that hydrated a different undoStackSize re-roots at its limit).
+      historyRef.current = reconcileHistoryOnExternalDomainSwap({
+        current: historyRef.current,
+        nextDomain: s.domain,
+        undoStackSize: s.appSettings.undoStackSize,
+        isBasemapReplace,
+      });
       refreshUndoRedoEnabled();
-      // 教訓 5.2 全経路で破棄: a whole-state swap (load / new / drag-drop) invalidates
-      // any paused-conflict modal — its pending result + applyResolutions are bound
-      // to the OLD proposal AND the OLD root, so a 確定/取消 against the new project
-      // would replay a foreign baseline (mismatched feature/vertex ids) into
-      // recordCommit/reArmActiveTool. Atomically dismiss the modal on the same swap
-      // that re-roots the history so no stale binding can survive the load.
-      setConflictState(null);
+      // 教訓 5.2 全経路で破棄: an EXTERNAL whole-state swap (load / new / drag-drop)
+      // invalidates any paused-conflict modal — its pending result + applyResolutions
+      // are bound to the OLD proposal AND the OLD root, so a 確定/取消 against the new
+      // project would replay a foreign baseline (mismatched feature/vertex ids) into
+      // recordCommit/reArmActiveTool. Atomically dismiss the modal on the same swap that
+      // re-roots the history so no stale binding can survive the load. A base-map replace
+      // changes NO features/vertices, so it must NOT dismiss an in-progress conflict modal.
+      if (!isBasemapReplace) setConflictState(null);
     });
   }, [store, refreshUndoRedoEnabled]);
 
