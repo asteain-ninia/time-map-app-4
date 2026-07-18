@@ -19,8 +19,11 @@
 //      (new parent), and commit through the reparent-confirm BUTTON (r3-2 only
 //      clicked twice and relied on auto-commit; the confirm-button path was
 //      untouched). Gates: reparent-target / reparent-parent markers populate &
-//      stay finite; forest count-stable across the move (地物一覧==診断, single
-//      truth source); selection valid; no console.error/NaN; no stranded modal.
+//      stay finite; feature count follows the FR-36/37 invariant (a COMMITTED
+//      reparent over an add-built nest materialises one 直轄領 per promoted
+//      shaped-leaf ancestor = +(depth-1); an uncommitted / rejected confirm is
+//      count-stable) with 地物一覧==診断 (single truth source); selection valid;
+//      no console.error/NaN; no stranded modal.
 //
 //   B. MULTI-HOLE EXCLAVE: one big parent face with TWO nested inner faces (two
 //      "holes"/飛び地 regions), then (B1) VERTEX-EDIT one inner ring, and (B2)
@@ -58,7 +61,8 @@
 //   - 錨列の昇順・非重複 (anchor rows time-sorted, non-overlapping, NaN-free)
 //   - knife split: +1 per cut; merge: -1; undo∘op back; op∘逆op restore (metamorphic)
 //   - playback: timeline-current monotone non-decreasing & finite while playing
-//   - reparent: count-stable restructure (no feature created/destroyed)
+//   - reparent: count follows FR-36/37 (committed ⇒ +1 直轄領 per promoted
+//     shaped-leaf ancestor; rejected / uncommitted ⇒ count-stable)
 //   - save→load reachability + dirty flag (no native dialog fired)
 
 import { mkdirSync } from 'node:fs';
@@ -529,17 +533,53 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
           // reparent (selecting then unable to confirm) surfaces.
           record('reparent-no-parent', 'second reparent click resolved no new-parent; confirm not enabled');
         }
+        let reparentConflict = false;
         if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
+          reparentConflict = true;
           record('reparent-conflict', 'reparent surfaced conflict modal');
           await page.getByTestId('conflict-cancel').click().catch(() => undefined);
         }
         await clearStuckModals(page, 'after-reparent');
+        // A domain rejection keeps the tool mounted and shows reparent-message;
+        // a successful commit resets the flow with no message. Read it BEFORE
+        // checkParity (whose goView unmounts the tool and clears the message).
+        const rejectionMsg = confirmEnabled
+          ? (((await page.getByTestId('reparent-message').textContent().catch(() => '')) ?? '').trim())
+          : '';
+        if (rejectionMsg !== '') record('reparent-rejected', `confirm rejected: "${rejectionMsg}"`);
         await checkCamera(page, 'after-reparent');
         await shot(page, 'reparented');
         const countAfterReparent = await checkParity(page, 'after-reparent');
-        // A reparent is a STRUCTURE move: feature count must NOT change.
-        if (countAfterReparent !== countAfterNest) {
-          record('reparent-count-change', `reparent changed feature count ${countAfterNest} -> ${countAfterReparent} (restructure should be count-stable)`);
+        // FR-36/FR-37 invariant — a COMMITTED reparent here is NOT count-stable.
+        // The nest was built by ADD-with-parent, which leaves every ancestor as a
+        // SHAPED LEAF that has children (the tolerated 末端→集約 transition state;
+        // see resolve-shape.ts and the 'leaf-with-children' consistency finding).
+        // The affiliation commit normalises the WHOLE result state (単一真実源):
+        // each such leaf is promoted to an aggregate (FR-36) and its 元形状−子の和
+        // is materialised as ONE new 直轄領 leaf (FR-37) — without that, converting
+        // the parent to a shapeless aggregate would silently drop its own footprint
+        // (the raveienDisapper data-loss class FR-37 root-cured). A strictly nested
+        // depth-D chain has D-1 such ancestors, so a committed reparent yields
+        // exactly +(D-1) features (6→11 at D=6: verified deterministically at the
+        // domain layer, triage 2026-07-19 — one 直轄領 per promoted ancestor, undo
+        // exact, checkConsistency clean, count-stable ever after). An uncommitted
+        // (confirm disabled), conflicted, or rejected reparent must stay stable.
+        const committed = confirmEnabled && !reparentConflict && rejectionMsg === '';
+        const expectedAfterReparent = committed
+          ? countAfterNest + Math.max(0, reachedDepth - 1)
+          : countAfterNest;
+        record(
+          'reparent-count',
+          `count ${countAfterNest} -> ${countAfterReparent} (committed=${committed}, expected=${expectedAfterReparent})`,
+        );
+        if (countAfterReparent !== expectedAfterReparent) {
+          record(
+            'reparent-count-invariant',
+            `reparent moved feature count ${countAfterNest} -> ${countAfterReparent}; expected ${expectedAfterReparent} ` +
+              (committed
+                ? `(committed: +${Math.max(0, reachedDepth - 1)} FR-37 直轄領, one per promoted shaped-leaf ancestor)`
+                : '(not committed: count-stable)'),
+          );
         }
       }
 

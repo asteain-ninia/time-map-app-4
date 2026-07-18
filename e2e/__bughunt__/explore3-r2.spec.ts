@@ -500,10 +500,15 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
         await checkCamera(page, 'after-reparent');
         await shot(page, 'reparented');
         const countAfterReparent = await checkParity(page, 'after-reparent');
-        // A reparent is a STRUCTURE move: it must NOT change the feature count
-        // (no feature created/destroyed). Single-truth-source must stay consistent.
+        // This phase only PICKS target + parent (two clicks) and never presses
+        // reparent-confirm, so no commit happens and the count must stay stable.
+        // NOTE (triage 2026-07-19): a COMMITTED reparent is NOT count-stable in
+        // general — the affiliation commit normalises shaped-leaf-with-children
+        // ancestors via FR-36/FR-37 (one 直轄領 per promoted ancestor, +(depth-1)
+        // over an add-built nest). explore3-r3 drives the confirm button and
+        // gates that invariant; here stability only asserts "picks don't commit".
         if (countAfterReparent !== countAfterNest) {
-          record('reparent-count-change', `reparent changed feature count ${countAfterNest} -> ${countAfterReparent} (restructure should be count-stable)`);
+          record('reparent-count-change', `reparent picks (no confirm) changed feature count ${countAfterNest} -> ${countAfterReparent} (picking alone must not commit/restructure)`);
         }
       }
 
