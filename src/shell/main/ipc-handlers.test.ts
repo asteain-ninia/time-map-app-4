@@ -315,6 +315,26 @@ describe('handlers take shared args and return shared return types (受け入れ
     expect(readFile).toHaveBeenCalledWith('/d/pic.png');
   });
 
+  it('F3 (TOCTOU): OpenImage re-checks the READ length and rejects bytes that grew past the cap after stat', async () => {
+    // The stat says the file is within the cap, but between stat and read the file
+    // GROWS past it (a concurrent writer). Without a post-read length re-check, main
+    // would return oversized bytes over IPC (unbounded main memory / IPC clone) and
+    // rely on the renderer guard to reject them later. Re-check the ACTUAL read length
+    // against the SAME single-source cap and return null (honest no-op) so oversized
+    // bytes never cross the IPC boundary. The read result is a length-faked stand-in so
+    // the test asserts the cap logic WITHOUT a real 64 MB allocation (only `.length` is
+    // consulted by the guard, and the oversized bytes must never be returned anyway).
+    const oversized = { length: MAX_BASE_MAP_IMAGE_BYTES + 1 } as unknown as Uint8Array;
+    const readFile = vi.fn(async () => oversized);
+    const statSize = vi.fn(async () => 1024); // stat under cap → passes the pre-read gate
+    const { deps } = makeDeps({ readFile: { readFile, statSize } });
+
+    const res = await handleOpenImage(deps);
+
+    expect(res).toBeNull(); // the grown-past-cap bytes are NOT sent over IPC
+    expect(readFile).toHaveBeenCalledWith('/d/pic.png');
+  });
+
   it('F5: OpenImage returns null (not a reject) when the PICKER itself fails (honest-null contract)', async () => {
     // The dialog port throwing must resolve null across IPC, not reject — the same
     // honest no-op a cancel / read failure yields. Regression: the dialog await used

@@ -44,3 +44,45 @@ export function reconcileHistoryOnExternalDomainSwap<S>(params: {
   // External whole-state swap (load/new): the old stack cannot apply to the new project.
   return createHistory(nextDomain, undoStackSize);
 }
+
+/**
+ * F2 TRUE FIX (Codex re-review) — graft the LIVE base map onto a CAPTURED undo/redo
+ * result state so a base-map REPLACE is genuinely non-undoable.
+ *
+ * WHY reconcile alone is not enough: {@link reconcileHistoryOnExternalDomainSwap}
+ * rebases only the history ROOT state onto the replaced domain. But the undo/redo
+ * commands are WHOLE-STATE SWAPS (consistency-binding `makeCommand`): each `undo`/`redo`
+ * ignores its live input and returns a route CAPTURED at commit time, still carrying the
+ * base map that was current THEN. After `edit → replace(B1) → undo`, the undo command
+ * returns its captured `{ …, baseMap: B0 }`, so B0 came back and the replaced B1 was
+ * lost — the replace was NOT actually non-undoable (the FR-04 契約). The bytes that back
+ * the map (display `baseMapImageRef` / save `loadedAssetsRef`) live OUTSIDE the domain
+ * snapshot and are NOT touched by undo/redo, so only `domain.baseMap` (source/meta)
+ * regressed — leaving the retained B1 bytes inconsistent with a B0 source (display falls
+ * back to the preset; a save writes a B0 manifest over B1 bytes).
+ *
+ * The fix: before applying an undo/redo result to the store, replace the captured
+ * route's `baseMap` with the store's LIVE one. A replace is defined non-undoable, so the
+ * CURRENT base map must survive every feature-edit undo/redo. This is a pure decision
+ * (教訓 5.41) so it is unit-tested without rendering App.
+ *
+ * Identity contract: when no replace intervened the captured route ALREADY carries the
+ * live base map (edits preserve `baseMap` by reference), so `captured.baseMap ===
+ * live.baseMap` and the captured object is returned UNCHANGED (same reference) — an
+ * ordinary undo/redo is byte-for-byte the pre-fix behaviour, busting no memo/subscription
+ * with a value-equal-but-new object. Only an actual replace (a new `baseMap` reference)
+ * grafts, and a run of replaces always grafts to the LATEST live map.
+ */
+export function graftLiveBaseMap<S extends { readonly baseMap: unknown }>(
+  captured: S,
+  live: S,
+): S {
+  // Reference identity is the exact signal: a replace mints a NEW baseMap object
+  // (store.replaceBaseMap), while every feature edit preserves it by reference. So an
+  // unchanged reference means "no replace since capture" → a genuine no-op.
+  if (captured.baseMap === live.baseMap) return captured;
+  // Only `baseMap` is swapped; `live` is the same domain type S, so its `baseMap` is a
+  // valid S['baseMap']. The generic spread widens the field to `unknown`, so we assert
+  // the reconstructed object back to S (sound: same field, same source type).
+  return { ...captured, baseMap: live.baseMap } as S;
+}

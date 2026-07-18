@@ -122,10 +122,11 @@ import {
   canRedo as historyCanRedo,
   withLimit as historyWithLimit,
   type History,
+  type HistoryStep,
 } from '../domain/command/history';
 import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
-import { reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
+import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
 import { COMMAND_ID } from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
@@ -1663,17 +1664,47 @@ export function App(): JSX.Element {
   // through the store and bumps the gate. `canRun` gates on stack availability so
   // an empty stack disables the menu item AND the shortcut together (FR-74).
   useEffect(() => {
+    // F2 TRUE FIX (Codex re-review): apply an undo/redo history step to the store,
+    // GRAFTING the LIVE base map onto the captured route so a base-map REPLACE (FR-04)
+    // is genuinely NON-undoable. The undo/redo commands are whole-state swaps that
+    // ignore their live input and return a route CAPTURED at commit time — carrying the
+    // base map that was current THEN (consistency-binding makeCommand). Without this
+    // graft, `edit → replace(B1) → undo` restored the captured B0 base map, so B1 was
+    // lost while the retained display (baseMapImageRef) / save (loadedAssetsRef) BYTES —
+    // which live OUTSIDE the domain snapshot and are NOT touched by undo/redo — stayed
+    // on B1 (an inconsistent B0-source-over-B1-bytes state). Grafting the live
+    // domain.baseMap keeps the CURRENT map across every feature-edit undo/redo, so all
+    // three references agree. A genuine NO-OP when no replace intervened
+    // (graftLiveBaseMap returns the captured state by identity), so ordinary undo/redo is
+    // byte-for-byte the pre-fix path — historyRef.current keeps the same history object,
+    // lastCommittedDomainRef the same reference, and no extra allocation/redraw happens.
+    // Runs on the SAME transition family that applyUndoRedoResult commits, and because
+    // lastCommittedDomainRef.current is set to the grafted domain BEFORE applyUndoRedoResult
+    // commits it, the reconcile subscription sees `s.domain === lastCommittedDomainRef`
+    // and does not mistake our own grafted undo/redo for an external swap.
+    const applyHistoryStep = (
+      step: HistoryStep<DomainRoot>,
+      preference: NextTargetPreference | undefined,
+    ): void => {
+      const grafted = graftLiveBaseMap(step.history.state, store.getState().domain);
+      // Keep historyRef.current.state in lock-step with the grafted domain so the
+      // history root === the store domain (a later edit's auto-recolor baseline and the
+      // next external-swap reconcile both read historyRef.current.state). Identity-stable
+      // when the graft was a no-op (same history object reused).
+      historyRef.current =
+        grafted === step.history.state ? step.history : { ...step.history, state: grafted };
+      lastCommittedDomainRef.current = grafted;
+      store.getState().applyUndoRedoResult(grafted, step.result, preference);
+      refreshUndoRedoEnabled();
+    };
     const runUndo = (): void => {
       const step = historyUndo(historyRef.current);
       if (step.history === historyRef.current) return; // empty stack: no-op
-      historyRef.current = step.history;
-      lastCommittedDomainRef.current = step.history.state;
       // bughunt (全 undo 後の dirty 解消): an undo recomputes projectDirty against the
       // last SAVED baseline (applyUndoRedoResult) instead of forcing it true, so undoing
       // back to the saved state clears the unsaved-changes warning. An ordinary edit
       // still dirties through applyCommandResult (recordCommand) — that path is unchanged.
-      store.getState().applyUndoRedoResult(step.history.state, step.result);
-      refreshUndoRedoEnabled();
+      applyHistoryStep(step, undefined);
     };
     const runRedo = (): void => {
       // Recover the preference the commit promoted for the command redo re-applies
@@ -1684,12 +1715,9 @@ export function App(): JSX.Element {
       );
       const step = historyRedo(historyRef.current);
       if (step.history === historyRef.current) return;
-      historyRef.current = step.history;
-      lastCommittedDomainRef.current = step.history.state;
       // Symmetric to runUndo: a redo recomputes dirty against the saved baseline (redoing
       // away from the saved state re-dirties; redoing back onto it stays clean).
-      store.getState().applyUndoRedoResult(step.history.state, step.result, preference);
-      refreshUndoRedoEnabled();
+      applyHistoryStep(step, preference);
     };
     registry.register(COMMAND_ID.EditUndo, {
       run: runUndo,

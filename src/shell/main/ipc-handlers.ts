@@ -155,6 +155,10 @@ async function readAndParse(deps: IpcDeps, path: string): Promise<LoadResponse> 
  * {@link MAX_BASE_MAP_IMAGE_BYTES} BEFORE it is read — a multi-GB file must never be
  * read into main + structured-cloned across IPC only to be rejected by the renderer
  * guard. The cap is the SAME single-source bound the renderer guard uses (教訓 5.29).
+ * The READ length is re-checked against the SAME cap AFTER the read (TOCTOU): the file
+ * can GROW between the stat and the read (a concurrent writer), so a stat-passing file
+ * could still read back oversized — returning it would send unbounded bytes across IPC.
+ * On a post-read overflow we return null (honest no-op), never the oversized bytes.
  *
  * F5 (honest-null contract): the dialog pick, the stat, and the read all sit in ONE
  * try, so a picker / stat FAILURE resolves null too — not just a read failure. The
@@ -168,7 +172,12 @@ export async function handleOpenImage(deps: IpcDeps): Promise<Uint8Array | null>
     // Stat first: enforce the byte cap before the read/IPC transfer (F3).
     const sizeBytes = await deps.readFile.statSize(path);
     if (sizeBytes > MAX_BASE_MAP_IMAGE_BYTES) return null;
-    return await deps.readFile.readFile(path);
+    const bytes = await deps.readFile.readFile(path);
+    // Re-check the ACTUAL read length (F3 TOCTOU): the file may have grown between the
+    // stat and the read, so a stat-passing pick can still read back oversized. Never
+    // return oversized bytes across IPC — the renderer guard would reject them anyway.
+    if (bytes.length > MAX_BASE_MAP_IMAGE_BYTES) return null;
+    return bytes;
   } catch {
     return null;
   }
