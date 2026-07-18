@@ -628,7 +628,7 @@ export function App(): JSX.Element {
       }),
       // FR-13 / FR-109 グリッド即時反映: derive the LIVE graticule style from the
       // project settings (gridSpacingDeg / gridColor / gridOpacity) so a
-      // GridSettingsPanel change reflects on the next redraw. The host hard-coded
+      // SettingsDialog change reflects on the next redraw. The host hard-coded
       // DEFAULT_GRID_STYLE before, so the panel truth never reached the draw
       // (bughunt: グリッド設定が地図描画に反映されない). The emphasis/width/label-font
       // fields stay at the DEFAULT (not user-settable, 受け入れ基準 8); only the three

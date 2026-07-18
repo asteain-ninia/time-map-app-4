@@ -153,7 +153,7 @@ export interface CreateAddHostPortsOptions {
    * opacity reflects at once when the host redraws (教訓 5.35, the SAME即時反映
    * mechanism as {@link labelThresholds}). The composition root derives this from
    * `projectSettings.gridSpacingDeg / gridColor / gridOpacity` (settings.ts) so the
-   * GridSettingsPanel truth reaches the draw — without it the grid drew with a fixed
+   * SettingsDialog truth reaches the draw — without it the grid drew with a fixed
    * {@link DEFAULT_GRID_STYLE} and panel changes were invisible. Defaults to
    * {@link DEFAULT_GRID_STYLE} when absent (legacy callers / pre-mount).
    */

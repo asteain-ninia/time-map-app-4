@@ -1,9 +1,12 @@
 // UI layer (U18 / map widgets): public barrel.
 //
-// The longitude shift widget (FR-12) and the grid settings panel (FR-13 / FR-109).
+// The longitude shift widget (FR-12) and the grid ON/OFF quick-toggle (FR-13).
 // Both are presentational + callback-driven React components; the truth (center
 // longitude, grid project settings) lives in U16's store, and the zoom-dependent
 // shift conversion is applied once in the domain/wiring (教訓 5.16), not here.
+// The full grid settings (間隔/色/不透明度/表示 = FR-13 / FR-109) are edited in the
+// SettingsDialog; the earlier standalone GridSettingsPanel was never mounted and
+// has been removed (教訓 5.7: no unwired duplicate surface for the same truth).
 
 export {
   LongitudeShiftControl,
@@ -14,12 +17,6 @@ export {
   GlobalDepthControl,
   type GlobalDepthControlProps,
 } from './GlobalDepthControl';
-
-export {
-  GridSettingsPanel,
-  type GridSettings,
-  type GridSettingsPanelProps,
-} from './GridSettingsPanel';
 
 // FR-13 グリッド ON/OFF: the 上部バー グリッド表示 quick-toggle (store-connected).
 export {
