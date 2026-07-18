@@ -21,14 +21,34 @@
 //
 // Pure & framework-free.
 
-import { normalizeSeries } from '../anchor-series';
-import type { Feature } from '../feature';
-import { FEATURE_KIND, withAggregateChildIds, withParentId } from '../feature';
+import { createAnchor, createAnchorSnapshot } from '../anchor';
+import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import type { Feature, LeafFeature } from '../feature';
+import {
+  FEATURE_KIND,
+  createLeafFeature,
+  pruneVertexStore,
+  withAggregateChildIds,
+  withParentId,
+} from '../feature';
 import { buildForest, directChildIds } from '../hierarchy/forest';
-import { HIERARCHY_VIOLATION } from '../hierarchy/validate';
+import { resolveFeatureArea } from '../hierarchy/resolve-shape';
+import { HIERARCHY_VIOLATION, areasEqualWithinTolerance } from '../hierarchy/validate';
+import { buildDirectDomainForLeaf, promoteFeature, type DirectDomainMintPorts } from '../promotion';
+import { createIdGeneratorState, nextRawId } from '../id-generator';
 import type { Calendar } from '../time/calendar';
-import { asVertexId, type FeatureId, type VertexId } from '../ids';
-import { createVertex, type Vertex } from '../vertex';
+import { compare } from '../time/normalized';
+import type { TimePoint } from '../time/time-point';
+import {
+  asAnchorId,
+  asFeatureId,
+  asRingId,
+  asVertexId,
+  idToString,
+  type FeatureId,
+  type VertexId,
+} from '../ids';
+import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../vertex';
 import { coordinatesEqual } from '../coordinate';
 import { checkConsistency, INCONSISTENCY, type Inconsistency } from './consistency';
 import type { DomainProject, FeatureHistory } from './serialize';
@@ -46,6 +66,11 @@ export const REPAIR_OPTION = {
   ReconcileChildIds: 'reconcile-child-ids',
   /** 形状保持規則違反 → 当該地物を除外する。 */
   DropShapeRoleFeature: 'drop-shape-role-feature',
+  /**
+   * 形状保持規則違反（子を持つ末端 = FR-35 末端→集約 過渡状態）→ FR-37 直轄領（元形状−子の和）
+   * を実体化して当該末端を集約地物へ昇格する（面積保存・地物削除ゼロの非破壊修復）。
+   */
+  MaterializeDirectDomain: 'materialize-direct-domain',
   /** リング階層不整合（穴の親不在・包含/交差違反など）→ 当該地物を除外する。 */
   DropRingHierarchyFeature: 'drop-ring-hierarchy-feature',
   /** 末端排他違反 / 錨間オーバーラップ → 当該地物の一方を除外する。 */
@@ -80,6 +105,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.ReconcileChildIds]:
     '集約地物の下位領域一覧（childIds）を、各地物の親参照（parentId）に合わせて再構築します。',
   [REPAIR_OPTION.DropShapeRoleFeature]: '形状の規則に違反している地物を読み込みから除外します。',
+  [REPAIR_OPTION.MaterializeDirectDomain]:
+    '直轄領（元の形状から下位領域を除いた領域）を生成して集約化し、元の領域を保持したまま修復します（地物は削除しません）。',
   [REPAIR_OPTION.DropRingHierarchyFeature]:
     'リング階層（領土と穴の入れ子関係・包含）が壊れている地物を読み込みから除外します。',
   [REPAIR_OPTION.DropOverlappingFeature]: '重なっている地物の一方を読み込みから除外します。',
@@ -92,6 +119,15 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.ReconcileVertexCoordinate]:
     '同一の頂点が歴史間で異なる座標を持つとき、最初に現れた座標へすべて揃えます。',
 };
+
+/**
+ * The ShapePreservation sub-cause code for「子を持つ末端」— MUST match the literal
+ * `detectShapePreservation` emits in consistency.ts (`detail: 'leaf-with-children'`).
+ * Kept here as a named constant so the repair branch is not a bare magic string; the
+ * materialisation test exercises it against a REAL checkConsistency report, so any
+ * drift from consistency.ts's literal is caught (単一の検出点で固定).
+ */
+const SHAPE_DETAIL_LEAF_WITH_CHILDREN = 'leaf-with-children';
 
 /**
  * The repair options offered for one inconsistency (1 つ以上, 受け入れ基準5). The
@@ -121,6 +157,20 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
       }
       return [opt(REPAIR_OPTION.DetachToTopLevel), opt(REPAIR_OPTION.DropTopologyFeature)];
     case INCONSISTENCY.ShapePreservation:
+      // A declared LEAF that has ACQUIRED children (detail=leaf-with-children) is the
+      // FR-35 末端→集約 過渡状態 the add flow legitimately leaves behind (resolve-shape /
+      // leaf-with-children-footprint pin it as a valid mid-state). It can be repaired
+      // NON-DESTRUCTIVELY by materialising its FR-37 直轄領 (元形状 − 子の和) as a new 末端
+      // child and promoting the leaf to a shapeless aggregate — 面積保存・地物削除ゼロ, the
+      // same canonicalisation the 所属変更 commit performs. Offered FIRST (recommended);
+      // Drop stays as a last-resort fallback. Other shape sub-causes (leaf-empty-shape /
+      // aggregate-no-children) carry NO shape to materialise, so they keep Drop only.
+      if (inc.detail === SHAPE_DETAIL_LEAF_WITH_CHILDREN) {
+        return [
+          opt(REPAIR_OPTION.MaterializeDirectDomain),
+          opt(REPAIR_OPTION.DropShapeRoleFeature),
+        ];
+      }
       return [opt(REPAIR_OPTION.DropShapeRoleFeature)];
     case INCONSISTENCY.RingHierarchyInvalid:
       return [opt(REPAIR_OPTION.DropRingHierarchyFeature)];
@@ -400,6 +450,265 @@ function dropOneOfPair(project: DomainProject, ids: readonly FeatureId[]): Domai
   return first === undefined ? project : dropFeatures(project, [first]);
 }
 
+// --- FR-37 直轄領 materialisation (NON-DESTRUCTIVE leaf-with-children repair) -----
+//
+// A declared LEAF that has ACQUIRED children (ShapePreservation detail=leaf-with-children)
+// is the FR-35 末端→集約 過渡状態 the add flow legitimately leaves behind (resolve-shape /
+// leaf-with-children-footprint pin it as a valid mid-state). At load it trips
+// ShapePreservation, and the ONLY prior repair was DropShapeRoleFeature = DELETE the parent
+// = 元領域 (元形状 − 子の和) の沈黙損失 (実ユーザーデータ損失). This repair instead does what the
+// 所属変更 commit does at FR-37: materialise the 直轄領 (元形状 − 子の和) as a NEW 末端地物 child
+// and promote the leaf to a shapeless aggregate — 面積保存・地物削除ゼロ.
+//
+// SINGLE SOURCE OF TRUTH (教訓 5.29): the 直轄領 geometry is built by the promotion unit's
+// buildDirectDomainForLeaf (resolveLeafShape + 子の和 + seam 整列 差分 + buildDirectDomainShape)
+// and the leaf→aggregate transition by promoteFeature — this module re-implements NO boolean
+// ops / no geometry.
+//
+// ID SAFETY (最重要, 教訓 5.37 / 5.20): every minted id (直轄領 feature/vertex/ring) comes from
+// a DETERMINISTIC generator SEEDED with EVERY raw id already in the project (collectRawIds,
+// the domain twin of App の collectProjectRawIds) plus a FIXED time source, so the output is a
+// pure, idempotent function of the input and every new id is DISJOINT from all existing ids.
+// The 直轄領 feature id is minted ONCE and reused at every anchor the leaf is a
+// leaf-with-children at, so a MULTI-ANCHOR leaf yields ONE 直轄領 identity whose history spans
+// exactly the matching existence intervals; untouched anchors keep their own snapshot (FR-55).
+//
+// AREA GUARD (面積保存): checkAggregateShapes does NOT compare an aggregate against a former
+// leaf shape (its own comment: inter-child gap のみ), so a rewrap / reparent bug would pass
+// load-time re-validation while SILENTLY losing area — the exact bug class this repair exists to
+// fix. We therefore assert resolveFeatureArea(leaf) is unchanged (within U08 tolerance) BEFORE
+// committing each anchor; any mismatch / unresolved geometry BAILS the whole repair (returns the
+// project UNCHANGED). applyRepairChecked then reports it Unresolved and the Drop fallback remains,
+// so an imperfect materialisation can never corrupt or lose data (教訓 5.22 / 5.26).
+
+/** Collect EVERY raw feature / vertex / ring id anywhere in the project (採番衝突回避 種). */
+function collectRawIds(project: DomainProject): Set<string> {
+  const ids = new Set<string>();
+  for (const history of project.histories) {
+    ids.add(idToString(history.featureId));
+    for (const entry of history.series.entries) {
+      const snap = entry.anchor.snapshot;
+      for (const v of snap.vertices.byId.keys()) ids.add(idToString(v));
+      for (const f of snap.features) {
+        ids.add(idToString(f.id));
+        if (f.kind === FEATURE_KIND.Point) ids.add(idToString(f.vertexId));
+        else if (f.kind === FEATURE_KIND.Line) {
+          for (const vid of f.vertexIds) ids.add(idToString(vid));
+        } else if (f.kind === FEATURE_KIND.Leaf) {
+          for (const ring of f.shape.rings) {
+            ids.add(idToString(ring.id));
+            for (const vid of ring.vertexIds) ids.add(idToString(vid));
+          }
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+/** The combined EFFECTIVE state at `atTime`, matching the consistency check's view. */
+function effectiveStateAt(
+  project: DomainProject,
+  atTime: TimePoint,
+  calendar: Calendar,
+): { readonly features: readonly Feature[]; readonly store: VertexStore } {
+  const features: Feature[] = [];
+  const seen = new Set<FeatureId>();
+  const vertices: Vertex[] = [];
+  for (const h of project.histories) {
+    const res = resolveAt(h.series, atTime, calendar);
+    if (res.kind !== 'present') continue;
+    const snap = res.entry.anchor.snapshot;
+    for (const f of snap.features) {
+      if (seen.has(f.id)) continue; // dedup by id (one feature owns one effective state).
+      seen.add(f.id);
+      features.push(f);
+    }
+    for (const v of snap.vertices.byId.values()) vertices.push(v);
+  }
+  return { features, store: createVertexStore(vertices) };
+}
+
+/** A deterministic anchor id for a materialised 直轄領 entry (unique per leaf id + start). */
+function directDomainAnchorId(ddId: FeatureId, start: TimePoint): string {
+  return `repair-dd:${idToString(ddId)}@${timePointKey(start)}`;
+}
+
+function timePointKey(tp: TimePoint): string {
+  switch (tp.granularity) {
+    case 'year':
+      return String(tp.year);
+    case 'yearMonth':
+      return `${tp.year}-${tp.month}`;
+    case 'yearMonthDay':
+      return `${tp.year}-${tp.month}-${tp.day}`;
+  }
+}
+
+/** One anchor-entry rewrite: promote the leaf to its aggregate in a specific snapshot. */
+interface LeafPromotion {
+  readonly historyIndex: number;
+  readonly entryIndex: number;
+  readonly promoted: Feature;
+}
+
+/** One 直轄領 existence interval: the materialised leaf + its private vertices, [start,end). */
+interface DirectDomainInterval {
+  readonly start: TimePoint;
+  readonly end: TimePoint | null;
+  readonly directDomain: LeafFeature;
+  readonly vertices: readonly Vertex[];
+}
+
+/**
+ * Materialise the FR-37 直轄領 for a leaf-with-children inconsistency: at every anchor the
+ * target leaf is a declared leaf that has children, replace the leaf with its shapeless
+ * aggregate and generate a 直轄領 (元形状 − 子の和) child. Returns a NEW project (教訓 5.22);
+ * on ANY unresolved geometry / area mismatch it returns the input project UNCHANGED so the
+ * re-validation guard reports Unresolved rather than committing a lossy result.
+ */
+function materializeDirectDomain(
+  project: DomainProject,
+  inc: Inconsistency,
+  calendar: Calendar,
+): DomainProject {
+  const targetId = inc.featureIds[0];
+  if (targetId === undefined) return project;
+
+  // Deterministic, project-disjoint id minting (教訓 5.37 / 5.20 / NFR 5.8): the generator
+  // starts fresh, reads a FIXED time source, and skips every id already in the project, so
+  // the result is a pure idempotent function of the input and every new id is disjoint.
+  const reserved = collectRawIds(project);
+  let gen = createIdGeneratorState();
+  const now = (): number => 0;
+  const mint = (prefix: string): string => {
+    const r = nextRawId(prefix, gen, now, reserved);
+    gen = r.state;
+    reserved.add(r.value);
+    return r.value;
+  };
+  // ONE 直轄領 feature identity for this leaf, reused across every anchor (多錨: 単一同一性).
+  const ddId = asFeatureId(mint('f'));
+  const ports: DirectDomainMintPorts = {
+    nextVertexId: () => asVertexId(mint('v')),
+    nextRingId: () => asRingId(mint('r')),
+    nextFeatureId: () => asFeatureId(mint('f')),
+  };
+
+  const promotions: LeafPromotion[] = [];
+  const intervals: DirectDomainInterval[] = [];
+
+  for (let hi = 0; hi < project.histories.length; hi += 1) {
+    const history = project.histories[hi]!;
+    for (let ei = 0; ei < history.series.entries.length; ei += 1) {
+      const entry = history.series.entries[ei]!;
+      const here = entry.anchor.snapshot.features.find((f) => f.id === targetId);
+      if (here === undefined || here.kind !== FEATURE_KIND.Leaf) continue; // not a leaf here.
+
+      const atTime = entry.start;
+      const { features, store } = effectiveStateAt(project, atTime, calendar);
+      const forest = buildForest(features);
+      const childIds = directChildIds(forest, targetId);
+      if (childIds.length === 0) continue; // not a leaf-with-children at this anchor.
+
+      const leaf = features.find((f) => f.id === targetId);
+      if (leaf === undefined || leaf.kind !== FEATURE_KIND.Leaf) return project; // defensive.
+
+      // 面積 BEFORE: a declared leaf-with-children resolves to 元形状 ∪ 子の和 (resolve-shape).
+      const areaBefore = resolveFeatureArea(forest, store, targetId);
+      if (areaBefore.status !== 'ok') return project;
+
+      // 直轄領 geometry via the promotion unit's single source of truth (教訓 5.29).
+      const built = buildDirectDomainForLeaf(leaf, forest, childIds, store, ports);
+      if (built.kind === 'unresolved') return project; // 差分解決不能 → bail (元形状の沈黙損失防止).
+
+      let directDomain: LeafFeature | undefined;
+      let newVertices: readonly Vertex[] = [];
+      let promotedChildIds: readonly FeatureId[] = childIds;
+      if (built.kind === 'domain') {
+        // Re-mint the 直轄領 under the ONE stable ddId (multi-anchor identity), keeping its
+        // attributes / color / shape and parenting it to the promoted leaf.
+        directDomain = createLeafFeature(
+          ddId,
+          built.directDomain.attributes,
+          built.directDomain.color,
+          built.directDomain.shape,
+          { parentId: targetId },
+        );
+        newVertices = built.newVertices;
+        promotedChildIds = [...childIds, ddId];
+      }
+      // built.kind === 'empty' → 子が親を完全被覆 → pure aggregate, no 直轄領 needed.
+
+      const promoted = promoteFeature(leaf, promotedChildIds);
+
+      // 面積 AFTER = union(直轄領, 子) = 元形状 ∪ 子の和. Assert it equals BEFORE (面積保存 guard):
+      // checkAggregateShapes will not catch an area loss here, so this is the sole guard.
+      const afterFeatures: Feature[] = features.map((f) => (f.id === targetId ? promoted : f));
+      if (directDomain !== undefined) afterFeatures.push(directDomain);
+      const afterStore =
+        directDomain !== undefined
+          ? createVertexStore([...store.byId.values(), ...newVertices])
+          : store;
+      const areaAfter = resolveFeatureArea(buildForest(afterFeatures), afterStore, targetId);
+      if (areaAfter.status !== 'ok') return project;
+      if (!areasEqualWithinTolerance(areaBefore.area, areaAfter.area)) return project; // 面積損失 → bail.
+
+      promotions.push({ historyIndex: hi, entryIndex: ei, promoted });
+      if (directDomain !== undefined) {
+        intervals.push({ start: entry.start, end: entry.end, directDomain, vertices: newVertices });
+      }
+    }
+  }
+
+  if (promotions.length === 0) return project; // the leaf was never a leaf-with-children.
+
+  const promotionByKey = new Map<string, Feature>();
+  for (const p of promotions) promotionByKey.set(`${p.historyIndex}:${p.entryIndex}`, p.promoted);
+
+  // Rewrite each affected anchor snapshot: swap the leaf for its aggregate and prune the now-
+  // unreferenced shape vertices (削除は参照掃除まで 教訓 5.21; the aggregate cites no vertices,
+  // its 元形状 survives as the separate 直轄領 history). Untouched anchors keep referential
+  // identity (FR-55). Spread preserves optional project fields (uiSettings; see repair.ts spread).
+  const histories: FeatureHistory[] = project.histories.map((history, hi) => {
+    if (!promotions.some((p) => p.historyIndex === hi)) return history;
+    const entries = history.series.entries.map((entry, ei) => {
+      const promoted = promotionByKey.get(`${hi}:${ei}`);
+      if (promoted === undefined) return entry;
+      const snap = entry.anchor.snapshot;
+      const features = snap.features.map((f) => (f.id === targetId ? promoted : f));
+      return {
+        anchor: {
+          id: entry.anchor.id,
+          snapshot: createAnchorSnapshot(features, pruneVertexStore(snap.vertices, features)),
+        },
+        start: entry.start,
+        end: entry.end,
+      };
+    });
+    return { featureId: history.featureId, series: { entries } };
+  });
+
+  // Append the 直轄領 as its OWN history (mirrors the 所属変更 apply's createdIds path): one
+  // anchor per matching existence interval, ordered by start so the series is valid.
+  if (intervals.length > 0) {
+    const entries = [...intervals]
+      .sort((a, b) => compare(a.start, b.start, calendar))
+      .map((iv) => {
+        const store = pruneVertexStore(createVertexStore([...iv.vertices]), [iv.directDomain]);
+        const anchor = createAnchor(
+          asAnchorId(directDomainAnchorId(ddId, iv.start)),
+          createAnchorSnapshot([iv.directDomain], store),
+        );
+        return createAnchorEntry(anchor, iv.start, iv.end);
+      });
+    histories.push({ featureId: ddId, series: { entries } });
+  }
+
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  return { ...project, histories };
+}
+
 /**
  * Apply the chosen repair option for one inconsistency, returning a NEW project
  * (教訓5.22: the input is never mutated). Unknown / mismatched option↔kind pairs
@@ -427,6 +736,8 @@ export function applyRepair(
     case REPAIR_OPTION.DropShapeRoleFeature:
     case REPAIR_OPTION.DropRingHierarchyFeature:
       return dropFeatures(project, inc.featureIds);
+    case REPAIR_OPTION.MaterializeDirectDomain:
+      return materializeDirectDomain(project, inc, calendar);
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);
     case REPAIR_OPTION.ReconcileChildIds:
