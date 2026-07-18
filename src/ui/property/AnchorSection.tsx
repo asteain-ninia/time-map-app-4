@@ -77,6 +77,7 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
       {mode === ANCHOR_VIEW_MODE.List ? (
         <AnchorList
           series={series}
+          calendar={calendar}
           selectedAnchorId={selectedAnchorId}
           onSelectAnchor={onSelectAnchor}
           {...(featureId !== undefined && onEditInterval !== undefined

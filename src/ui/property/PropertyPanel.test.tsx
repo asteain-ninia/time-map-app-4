@@ -474,17 +474,17 @@ function renderPanelWithInterval(
   );
 }
 
-describe('PropertyPanel — 存続期間編集 wiring (HB3-12, 教訓 5.7)', () => {
-  it('反映 on 開始年 dispatches a changeStart intent for that anchor', () => {
+describe('PropertyPanel — 存続期間編集 wiring (HB3-12 / FR-70, 教訓 5.7)', () => {
+  it('反映 on 開始 dispatches a changeStart intent for that anchor', () => {
     const intents: AnchorIntervalEditIntent[] = [];
     const store = makeStore({ active: true });
     renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
 
-    // seriesFor() anchor a1 starts 1560; edit it to 1500 and 反映.
-    fireEvent.change(screen.getByTestId('anchor-interval-start-a1'), {
+    // seriesFor() anchor a1 starts 1560年1月1日; edit the year to 1500 and 反映.
+    fireEvent.change(screen.getByTestId('anchor-interval-start-a1-year'), {
       target: { value: '1500' },
     });
-    fireEvent.click(screen.getByTestId('anchor-interval-apply-start-a1'));
+    fireEvent.click(screen.getByTestId('anchor-interval-start-a1-confirm'));
 
     expect(intents).toHaveLength(1);
     const intent = intents[0]!;
@@ -496,16 +496,52 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12, 教訓 5.7)', () 
     }
   });
 
-  it('反映 on 終了年 dispatches a setEnd intent; 継続中にする clears it (null)', () => {
+  it('FR-70: editing the 開始 day dispatches a yearMonthDay start (月日粒度が届く)', () => {
     const intents: AnchorIntervalEditIntent[] = [];
     const store = makeStore({ active: true });
     renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
 
-    fireEvent.change(screen.getByTestId('anchor-interval-end-a1'), {
+    // a1 seeds as 1560年1月1日 (month/day already 指定); change the day to 15.
+    fireEvent.change(screen.getByTestId('anchor-interval-start-a1-day'), {
+      target: { value: '15' },
+    });
+    fireEvent.click(screen.getByTestId('anchor-interval-start-a1-confirm'));
+
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) {
+      expect(intent.newStart.granularity).toBe('yearMonthDay');
+      expect(intent.newStart).toEqual(timePointYearMonthDay(1560, 1, 15));
+    }
+  });
+
+  it('FR-70: turning 月 未指定 dispatches a year-granularity start (後方互換)', () => {
+    const intents: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+
+    // a1 seeds yearMonthDay(1560,1,1); 月を未指定に戻す (日も未指定になる) → 年粒度.
+    fireEvent.click(screen.getByTestId('anchor-interval-start-a1-month-toggle'));
+    fireEvent.click(screen.getByTestId('anchor-interval-start-a1-confirm'));
+
+    expect(intents).toHaveLength(1);
+    const intent = intents[0]!;
+    if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) {
+      expect(intent.newStart.granularity).toBe('year');
+      expect(intent.newStart).toEqual(timePointYear(1560));
+    }
+  });
+
+  it('反映 on 終了 dispatches a setEnd intent; 継続中にする clears it (null)', () => {
+    const intents: AnchorIntervalEditIntent[] = [];
+    const store = makeStore({ active: true });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+
+    fireEvent.change(screen.getByTestId('anchor-interval-end-a1-year'), {
       target: { value: '1570' },
     });
-    fireEvent.click(screen.getByTestId('anchor-interval-apply-end-a1'));
-    fireEvent.click(screen.getByTestId('anchor-interval-clear-end-a1'));
+    fireEvent.click(screen.getByTestId('anchor-interval-end-a1-confirm'));
+    fireEvent.click(screen.getByTestId('anchor-interval-end-a1-clear'));
 
     expect(intents).toHaveLength(2);
     const setEndIntent = intents[0]!;
@@ -541,7 +577,7 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12, 教訓 5.7)', () 
         throw new Error('存続期間を変更できません: テスト拒否');
       },
     });
-    fireEvent.click(screen.getByTestId('anchor-interval-apply-start-a1'));
+    fireEvent.click(screen.getByTestId('anchor-interval-start-a1-confirm'));
     expect(screen.getByTestId('anchor-interval-message-a1')).toHaveTextContent(
       'テスト拒否',
     );

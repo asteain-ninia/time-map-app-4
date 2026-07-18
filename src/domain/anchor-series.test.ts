@@ -28,7 +28,11 @@ import { createCoordinate } from './coordinate';
 import { createPointFeature } from './feature';
 import { getCalendar } from './time/calendar';
 import { asAnchorId, asFeatureId, asVertexId } from './ids';
-import { timePointYear, timePointYearMonth } from './time/time-point';
+import {
+  timePointYear,
+  timePointYearMonth,
+  timePointYearMonthDay,
+} from './time/time-point';
 import { createVertex, createVertexStore } from './vertex';
 
 const cal = getCalendar('gregorian');
@@ -398,6 +402,58 @@ describe('invalid TimePoint rejection at the series-op boundary (no aliasing)', 
     expect(() =>
       applyPastEdit(s, timePointYearMonth(2024, 13), () => makeAnchor(2, '-c'), cal),
     ).toThrow(RangeError);
+  });
+});
+
+// --- FR-70: mixed-granularity ordering routes through complete() at day resolution ---
+//
+// STUDY-path regression: every U09 comparison goes through compare() → normalize() →
+// complete() (unspecified month/day → 1月1日), so start/end carrying month/day are
+// ordered at DAY resolution — not year-only. These lock that a day-level violation is
+// caught and a day-level valid interval is accepted, and that granularities mix.
+describe('mixed-granularity ordering (FR-70)', () => {
+  function seededYmd(startYmd: AnchorEntry): AnchorSeries {
+    return normalizeSeries([startYmd], cal);
+  }
+
+  it('setEnd rejects an end EARLIER in the same year/month (day-level compare)', () => {
+    const s = seededYmd(createAnchorEntry(makeAnchor(1, '-a'), timePointYearMonthDay(500, 3, 15)));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYearMonthDay(500, 3, 10), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endNotAfterStart');
+  });
+
+  it('setEnd ACCEPTS an end LATER in the same year/month (day-level compare)', () => {
+    const s = seededYmd(createAnchorEntry(makeAnchor(1, '-a'), timePointYearMonthDay(500, 3, 15)));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYearMonthDay(500, 3, 20), cal);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.series.entries[0]!.end).toEqual(timePointYearMonthDay(500, 3, 20));
+  });
+
+  it('changeStart rejects moving the start to/past its OWN bounded end at day resolution', () => {
+    const s = seededYmd(
+      createAnchorEntry(
+        makeAnchor(1, '-a'),
+        timePointYearMonthDay(500, 3, 10),
+        timePointYearMonthDay(500, 3, 20),
+      ),
+    );
+    const r = changeStart(s, s.entries[0]!.anchor.id, timePointYearMonthDay(500, 3, 25), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('startNotBeforeEnd');
+  });
+
+  it('compares ACROSS granularities: a year-only start completes to 1月1日', () => {
+    // start = 500 (year) completes to 500年1月1日; an end of 500年1月1日 is the SAME
+    // instant → not strictly after → endNotAfterStart.
+    const s = seededYmd(createAnchorEntry(makeAnchor(1, '-a'), timePointYear(500)));
+    const r = setEnd(s, s.entries[0]!.anchor.id, timePointYearMonthDay(500, 1, 1), cal);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason.code).toBe('endNotAfterStart');
+
+    // …but 500年1月2日 IS strictly after the completed start → accepted.
+    const ok2 = setEnd(s, s.entries[0]!.anchor.id, timePointYearMonthDay(500, 1, 2), cal);
+    expect(ok2.ok).toBe(true);
   });
 });
 

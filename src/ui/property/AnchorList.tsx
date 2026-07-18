@@ -19,9 +19,11 @@ import { useState } from 'react';
 
 import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
-import { timePointYear } from '../../domain/time/time-point';
+import type { Calendar } from '../../domain/time/calendar';
+import { timePointYear, type TimePoint } from '../../domain/time/time-point';
 
 import { formatTimePoint } from '../timeline/time-display';
+import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
 
 import type { AnchorIntervalEditIntent } from './contracts';
 import {
@@ -31,8 +33,22 @@ import {
 } from './interval-edit';
 import { PROPERTY_STRINGS } from './messages';
 
+/** A granularity-aware key fragment for a TimePoint (remount/re-seed after an edit). */
+function timePointKey(point: TimePoint): string {
+  switch (point.granularity) {
+    case 'year':
+      return `y${point.year}`;
+    case 'yearMonth':
+      return `ym${point.year}-${point.month}`;
+    case 'yearMonthDay':
+      return `ymd${point.year}-${point.month}-${point.day}`;
+  }
+}
+
 export interface AnchorListProps {
   readonly series: AnchorSeries;
+  /** Calendar used to validate月日 input in the per-anchor存続期間 editor (FR-70, U02). */
+  readonly calendar: Calendar;
   /** The currently selected edit-target anchor id, or null. */
   readonly selectedAnchorId: AnchorId | null;
   /** Select an anchor as the edit target (syncs current time to its start). */
@@ -48,7 +64,7 @@ export interface AnchorListProps {
 }
 
 export function AnchorList(props: AnchorListProps): JSX.Element {
-  const { series, selectedAnchorId, onSelectAnchor, featureId, onEditInterval } = props;
+  const { series, calendar, selectedAnchorId, onSelectAnchor, featureId, onEditInterval } = props;
 
   if (series.entries.length === 0) {
     return (
@@ -89,18 +105,20 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
 
             {editable && (
               // The editor seeds its local draft from the entry's CURRENT start/end
-              // at mount ONLY (year granularity). A successful changeStart / setEnd /
-              // clear-end re-renders this list from the live root with the NEW interval,
-              // but the editor's draft would keep showing the PRE-edit value. Key the
-              // editor on the entry's current start & end years so an interval change
-              // REMOUNTS it — re-seeding the draft from the new stored value (the same
-              // "re-seed draft from source" contract the direct-jump field uses). The
-              // open-ended end (`null`) is keyed as 'open' so 継続中にする also re-seeds.
+              // at mount ONLY. A successful changeStart / setEnd / clear-end re-renders
+              // this list from the live root with the NEW interval, but the editor's
+              // draft would keep showing the PRE-edit value. Key the editor on the
+              // entry's current start & end (granularity-aware, so a月日-only change
+              // also differs) so an interval change REMOUNTS it — re-seeding the draft
+              // from the new stored value (the same "re-seed draft from source"
+              // contract the direct-jump field uses). The open-ended end (`null`) is
+              // keyed as 'open' so 継続中にする also re-seeds.
               <AnchorIntervalEditor
-                key={`${entry.anchor.id}-${entry.start.year}-${
-                  entry.end === null ? 'open' : entry.end.year
+                key={`${entry.anchor.id}-${timePointKey(entry.start)}-${
+                  entry.end === null ? 'open' : timePointKey(entry.end)
                 }`}
                 entry={entry}
+                calendar={calendar}
                 featureId={featureId}
                 soleAnchor={soleAnchor}
                 onEditInterval={onEditInterval}
@@ -114,90 +132,67 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
 }
 
 /**
- * Per-anchor存続期間 editor (HB3-12). Edits the anchor's 開始年 (U09 changeStart) and
- * 終了年 (U09 setEnd, with a 継続中にする to clear it), and offers この錨を削除 (U09
+ * Per-anchor存続期間 editor (HB3-12 / FR-70). Edits the anchor's 開始 (U09 changeStart)
+ * and 終了 (U09 setEnd, with 継続中にする to clear it), and offers この錨を削除 (U09
  * deleteAnchor — disabled for the sole anchor so the feature stays resolvable, INV-5).
  * Each control assembles the typed intent and hands it to `onEditInterval`; the U09 op
  * runs in the command base (single truth source). A rejection message is held inline.
  *
- * Year inputs are seeded from the entry's CURRENT start/end (year granularity — the UI
- * edits whole years, consistent with 基本情報's 開始年/終了年). The draft is local UI
- * state; a successful op re-renders the series from the live root so the row reflects the
- * new interval and the editor re-seeds.
+ * 開始/終了 both use the SHARED {@link YearMonthDayInput} (the SAME component + pure
+ * parse/validate core the timeline direct-jump uses, 教訓 5.30) so年月日粒度が選べる
+ * (FR-70): month/day left「未指定」falls back to a coarser TimePoint (year / yearMonth),
+ * preserving byte-for-byte the previous 年のみ behaviour (後方互換). Out-of-range /
+ * malformed月日 are rejected INSIDE that input (ymdErrorMessage) before any dispatch;
+ * a domain-level rejection (start≥end, …) surfaces here (intervalRejectionMessage). The
+ * end field's onClear dispatches setEnd(null) = 継続中 (open-ended). The whole editor
+ * is seeded from the entry's CURRENT start/end at mount; a successful op remounts it via
+ * the granularity-aware key upstream so the draft re-seeds.
  */
 function AnchorIntervalEditor(props: {
   readonly entry: AnchorEntry;
+  readonly calendar: Calendar;
   readonly featureId: FeatureId;
   readonly soleAnchor: boolean;
   readonly onEditInterval: (intent: AnchorIntervalEditIntent) => string | null;
 }): JSX.Element {
-  const { entry, featureId, soleAnchor, onEditInterval } = props;
+  const { entry, calendar, featureId, soleAnchor, onEditInterval } = props;
   const anchorId = entry.anchor.id;
 
-  const [startYear, setStartYear] = useState<number>(entry.start.year);
-  const [endYear, setEndYear] = useState<number>(
-    entry.end === null ? entry.start.year + 1 : entry.end.year,
-  );
   const [message, setMessage] = useState<string | null>(null);
 
   const run = (intent: AnchorIntervalEditIntent): void => {
     setMessage(onEditInterval(intent));
   };
 
+  // Seed the 終了 field when the anchor is open-ended: default to one year after the
+  // start (the previous editor's default), so 反映 without touching it sets a sane end.
+  const endSeed: TimePoint = entry.end ?? timePointYear(entry.start.year + 1);
+
   return (
     <details className="anchor-interval" data-testid={`anchor-interval-${anchorId}`}>
       <summary>{PROPERTY_STRINGS.intervalEditTitle}</summary>
 
-      <div className="anchor-interval__row">
-        <label className="anchor-interval__field">
-          <span>{PROPERTY_STRINGS.startYearEditLabel}</span>
-          <input
-            type="number"
-            aria-label={`${PROPERTY_STRINGS.startYearEditLabel} (${anchorId})`}
-            data-testid={`anchor-interval-start-${anchorId}`}
-            value={startYear}
-            onChange={(e) => setStartYear(Number(e.target.value))}
-          />
-        </label>
-        <button
-          type="button"
-          data-testid={`anchor-interval-apply-start-${anchorId}`}
-          onClick={() =>
-            run(buildChangeStartIntent(featureId, anchorId, timePointYear(startYear)))
-          }
-        >
-          {PROPERTY_STRINGS.intervalApplyLabel}
-        </button>
-      </div>
+      <p className="anchor-interval__hint">{PROPERTY_STRINGS.intervalGranularityHint}</p>
 
-      <div className="anchor-interval__row">
-        <label className="anchor-interval__field">
-          <span>{PROPERTY_STRINGS.endYearEditLabel}</span>
-          <input
-            type="number"
-            aria-label={`${PROPERTY_STRINGS.endYearEditLabel} (${anchorId})`}
-            data-testid={`anchor-interval-end-${anchorId}`}
-            value={endYear}
-            onChange={(e) => setEndYear(Number(e.target.value))}
-          />
-        </label>
-        <button
-          type="button"
-          data-testid={`anchor-interval-apply-end-${anchorId}`}
-          onClick={() =>
-            run(buildSetEndIntent(featureId, anchorId, timePointYear(endYear)))
-          }
-        >
-          {PROPERTY_STRINGS.intervalApplyLabel}
-        </button>
-        <button
-          type="button"
-          data-testid={`anchor-interval-clear-end-${anchorId}`}
-          onClick={() => run(buildSetEndIntent(featureId, anchorId, null))}
-        >
-          {PROPERTY_STRINGS.intervalClearEndLabel}
-        </button>
-      </div>
+      <YearMonthDayInput
+        title={PROPERTY_STRINGS.intervalStartTitle}
+        calendar={calendar}
+        initialValue={entry.start}
+        confirmLabel={PROPERTY_STRINGS.intervalApplyLabel}
+        testId={`anchor-interval-start-${anchorId}`}
+        onConfirm={(point) => run(buildChangeStartIntent(featureId, anchorId, point))}
+      />
+
+      <YearMonthDayInput
+        title={PROPERTY_STRINGS.intervalEndTitle}
+        calendar={calendar}
+        initialValue={endSeed}
+        confirmLabel={PROPERTY_STRINGS.intervalApplyLabel}
+        clearLabel={PROPERTY_STRINGS.intervalClearEndLabel}
+        testId={`anchor-interval-end-${anchorId}`}
+        onConfirm={(point) => run(buildSetEndIntent(featureId, anchorId, point))}
+        onClear={() => run(buildSetEndIntent(featureId, anchorId, null))}
+      />
 
       <button
         type="button"

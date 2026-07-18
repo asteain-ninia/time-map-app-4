@@ -133,7 +133,6 @@ export {
   buildChangeStartIntent,
   buildSetEndIntent,
   buildDeleteAnchorIntent,
-  yearToTimePoint,
   intervalRejectionMessage,
 } from './interval-edit';
 

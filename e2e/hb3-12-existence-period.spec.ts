@@ -23,7 +23,7 @@ import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 
 import { commitOneFace, launchApp } from './helpers';
 
@@ -72,6 +72,18 @@ async function featureListCount(page: Page): Promise<number> {
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }
 
+/**
+ * Locate a control of the per-anchor 存続期間 開始 editor. FR-70 replaced the year-only
+ * input with the SHARED YearMonthDayInput, which derives its control ids as
+ * `anchor-interval-start-<anchorId>-<suffix>` (year / month / month-toggle / day /
+ * day-toggle / confirm). The anchor id is derived, so match by prefix + suffix.
+ */
+function startField(panel: Locator, suffix: string): Locator {
+  return panel
+    .locator(`[data-testid^="anchor-interval-start-"][data-testid$="-${suffix}"]`)
+    .first();
+}
+
 /** Jump the time cursor to a precise year via the 直接ジャンプ (YearMonthDayInput). */
 async function jumpToYear(page: Page, year: number): Promise<void> {
   const yearInput = page.getByLabel('直接ジャンプ 年', { exact: true });
@@ -114,15 +126,10 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       const summary = propertiesPanel.locator('details.anchor-interval > summary').first();
       await expect(summary).toBeVisible();
       await summary.click();
-      const startInput = propertiesPanel
-        .locator('[data-testid^="anchor-interval-start-"]')
-        .first();
+      const startInput = startField(propertiesPanel, 'year');
       await expect(startInput).toBeVisible();
       await startInput.fill('5000');
-      await propertiesPanel
-        .locator('[data-testid^="anchor-interval-apply-start-"]')
-        .first()
-        .click();
+      await startField(propertiesPanel, 'confirm').click();
 
       // --- 4. THE PROOF: at year 1000 (before the new start) the feature is HIDDEN. ---
       await jumpToYear(page, 1000);
@@ -132,6 +139,55 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // --- 5. At year 6000 (after the new start) the feature is SHOWN again. ---
       await jumpToYear(page, 6000);
       await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('FR-70: 開始に月日(300年6月15日)を入れて保存→錨ラベル・タイムバーに月日反映→再選択で往復', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('app-shell')).toBeVisible();
+
+      // Commit ONE face (anchored at year 0) and confirm it is present at year 0.
+      await commitOneFace(page);
+      await jumpToYear(page, 0);
+      expect(await featureListCount(page)).toBe(1);
+
+      // Enter 編集モード and reselect the feature.
+      await enterEditMode(page);
+      await showFeaturesTab(page);
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+
+      // Open the 存続期間 editor and set 開始 = 300年6月15日 (year + month + day).
+      await showPropertiesTab(page);
+      const panel = page.getByTestId('sidebar-panel-properties');
+      const summary = panel.locator('details.anchor-interval > summary').first();
+      await expect(summary).toBeVisible();
+      await summary.click();
+      await startField(panel, 'year').fill('300');
+      await startField(panel, 'month-toggle').click(); // 未指定 → 指定
+      await startField(panel, 'month').fill('6');
+      await startField(panel, 'day-toggle').click(); // 未指定 → 指定
+      await startField(panel, 'day').fill('15');
+      await startField(panel, 'confirm').click();
+
+      // Jump INSIDE the new interval (year 400) — the feature is present again and its
+      // anchor row now carries the month/day (round-trip through the REAL store swap).
+      await jumpToYear(page, 400);
+      await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(1);
+      await showFeaturesTab(page);
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await showPropertiesTab(page);
+
+      // 錨ラベル (list view) reflects the stored 年月日.
+      await expect(panel.getByText('300年6月15日').first()).toBeVisible();
+
+      // タイムバー表示 names the start with month/day too (same formatTimePoint source).
+      await panel.getByTestId('anchor-mode-timebar').click();
+      await expect(panel.getByTestId('timebar-edge-min')).toContainText('300年6月15日');
     } finally {
       await app.close();
     }

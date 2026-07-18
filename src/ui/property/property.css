@@ -214,22 +214,16 @@
   user-select: none;
 }
 
-.anchor-interval__row {
-  display: flex;
-  align-items: flex-end;
-  gap: 6px;
+/* FR-70: 開始/終了 use the shared YearMonthDayInput (年月日粒度). Give each a little
+   breathing room; the field/input layout itself is owned by the .ymd-input styles. */
+.anchor-interval .ymd-input {
   margin-top: 6px;
 }
 
-.anchor-interval__field {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.anchor-interval__field input {
-  width: 8ch;
-  font-variant-numeric: tabular-nums;
+.anchor-interval__hint {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--c-text-muted);
 }
 
 .anchor-interval__delete {

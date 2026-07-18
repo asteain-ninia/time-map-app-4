@@ -55,6 +55,15 @@ export const PROPERTY_STRINGS = {
   startYearEditLabel: '開始年',
   /** Edit the anchor's disappear-year (U09 setEnd). */
   endYearEditLabel: '終了年',
+  /** Title of the 開始 year/month/day input (FR-70 — shared YearMonthDayInput). */
+  intervalStartTitle: '開始',
+  /** Title of the 終了 year/month/day input (FR-70 — shared YearMonthDayInput). */
+  intervalEndTitle: '終了',
+  /**
+   * Hint under the存続期間 editor: month/day are optional; leaving 未指定 keeps the
+   * coarser granularity (年のみ / 年月まで) — 空欄=未指定を明示 (FR-70, 教訓 5.18).
+   */
+  intervalGranularityHint: '月・日は「未指定」で省略できます（年のみ／年月まで）。',
   /** Apply the existence-period edit. */
   intervalApplyLabel: '反映',
   /** Clear the end (open-ended / 継続中, U09 setEnd null). */

@@ -12,7 +12,8 @@
 import type { RejectReason } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
-import { timePointYear } from '../../domain/time/time-point';
+
+import { ymdErrorMessage } from '../timeline/ymd-draft';
 
 import {
   ANCHOR_INTERVAL_OP,
@@ -46,15 +47,16 @@ export function buildDeleteAnchorIntent(
   return { featureId, anchorId, op: ANCHOR_INTERVAL_OP.Delete };
 }
 
-/** Build a year-only TimePoint from a UI year number (the form edits whole years). */
-export function yearToTimePoint(year: number): TimePoint {
-  return timePointYear(year);
-}
-
 /**
  * Map a U09 {@link RejectReason} to a single Japanese message (教訓 5.26). The reason
  * is the domain's own testable value; the UI never re-derives the constraint, it only
  * renders it — so a branch's message and its condition stay one-to-one (教訓 5.29).
+ *
+ * FR-70: the comparison messages are granularity-neutral (「開始/終了」より後・前, not
+ * 「開始年/終了年」) because start/end may now carry月日, so a day-level violation
+ * (500年3月15日 vs 500年3月10日) reads correctly. The `invalidTime` case delegates to
+ * {@link ymdErrorMessage} — the SAME月日範囲メッセージ the input surfaces — so the range
+ * text has one source (教訓 5.29) whether it is caught at the field or at the domain 砦.
  */
 export function intervalRejectionMessage(reason: RejectReason): string {
   const body = ((): string => {
@@ -64,13 +66,13 @@ export function intervalRejectionMessage(reason: RejectReason): string {
       case 'anchorNotFound':
         return '対象の錨が見つかりません。';
       case 'endNotAfterStart':
-        return '終了年は開始年より後にしてください。';
+        return '終了は開始より後にしてください。';
       case 'endBeyondNextEnd':
-        return '終了年は次の錨の開始年より前にしてください。';
+        return '終了は次の錨の開始より前にしてください。';
       case 'startNotBeforeEnd':
-        return '開始年はこの錨の終了年より前にしてください。';
+        return '開始はこの錨の終了より前にしてください。';
       case 'invalidTime':
-        return '指定された年がこの暦法で扱える範囲を超えています。';
+        return ymdErrorMessage(reason.error);
     }
   })();
   return `${PROPERTY_STRINGS.intervalEditFailedPrefix}${body}`;

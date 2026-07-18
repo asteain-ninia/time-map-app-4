@@ -41,6 +41,15 @@ export interface YearMonthDayInputProps {
   readonly onClear?: () => void;
   /** Label for the confirm button (default 「反映」). */
   readonly confirmLabel?: string;
+  /** Label for the clear button (default 「未設定」; e.g. 「継続中にする」for存続期間 end). */
+  readonly clearLabel?: string;
+  /**
+   * Optional test id root. When set, the wrapper uses it (instead of the default
+   * 'ymd-input') and each control gets a derived `${testId}-year|month|day|...`
+   * id — needed when several inputs coexist (the per-anchor存続期間 list, FR-70).
+   * Omitted for the single timeline jump field, whose DOM is left unchanged.
+   */
+  readonly testId?: string;
 }
 
 /**
@@ -50,7 +59,13 @@ export interface YearMonthDayInputProps {
  * (教訓 5.12).
  */
 export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
-  const { title, calendar, initialValue, onConfirm, onClear, confirmLabel } = props;
+  const { title, calendar, initialValue, onConfirm, onClear, confirmLabel, clearLabel, testId } =
+    props;
+
+  // Derive a per-control test id when a root is provided (list context), else omit
+  // the attribute so the timeline field's DOM stays byte-for-byte unchanged.
+  const tid = (suffix: string): string | undefined =>
+    testId !== undefined ? `${testId}-${suffix}` : undefined;
 
   const [draft, setDraft] = useState<YmdDraft>(() => draftFromTimePoint(initialValue));
   const [error, setError] = useState<string | null>(null);
@@ -80,7 +95,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
   }, [onClear]);
 
   return (
-    <div className="ymd-input" data-testid="ymd-input">
+    <div className="ymd-input" data-testid={testId ?? 'ymd-input'}>
       <div className="ymd-input__title">{title}</div>
       <div className="ymd-input__fields">
         <label className="ymd-input__field">
@@ -88,6 +103,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           <input
             type="number"
             aria-label={`${title} 年`}
+            data-testid={tid('year')}
             value={draft.yearText}
             onChange={(e) => patch({ yearText: e.target.value })}
           />
@@ -98,6 +114,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           <input
             type="number"
             aria-label={`${title} 月`}
+            data-testid={tid('month')}
             value={draft.monthText}
             disabled={!draft.monthSpecified}
             onChange={(e) => patch({ monthText: e.target.value })}
@@ -106,6 +123,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             type="button"
             aria-pressed={!draft.monthSpecified}
             aria-label={`${title} 月 未指定`}
+            data-testid={tid('month-toggle')}
             onClick={() =>
               patch(
                 draft.monthSpecified
@@ -123,6 +141,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
           <input
             type="number"
             aria-label={`${title} 日`}
+            data-testid={tid('day')}
             value={draft.dayText}
             disabled={!draft.monthSpecified || !draft.daySpecified}
             onChange={(e) => patch({ dayText: e.target.value })}
@@ -131,6 +150,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
             type="button"
             aria-pressed={!draft.daySpecified}
             aria-label={`${title} 日 未指定`}
+            data-testid={tid('day-toggle')}
             disabled={!draft.monthSpecified}
             onClick={() =>
               patch(draft.daySpecified ? { daySpecified: false } : { daySpecified: true })
@@ -142,18 +162,18 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
       </div>
 
       {error !== null && (
-        <div className="ymd-input__error" role="alert">
+        <div className="ymd-input__error" role="alert" data-testid={tid('error')}>
           {error}
         </div>
       )}
 
       <div className="ymd-input__actions">
-        <button type="button" onClick={handleConfirm}>
+        <button type="button" data-testid={tid('confirm')} onClick={handleConfirm}>
           {confirmLabel ?? '反映'}
         </button>
         {onClear !== undefined && (
-          <button type="button" onClick={handleClear}>
-            未設定
+          <button type="button" data-testid={tid('clear')} onClick={handleClear}>
+            {clearLabel ?? '未設定'}
           </button>
         )}
       </div>
