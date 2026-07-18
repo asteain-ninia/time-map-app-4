@@ -739,6 +739,32 @@ export function createSessionStore<S>(
   let savedProjectSettings: ProjectSettings | null = null;
   let savedAppSettings: AppSettings | null = null;
 
+  // The BASE-MAP BYTES half of the saved / clean baseline (F2 確認レビュー 点4:
+  // byte-only 背景地図差し替えの dirty 取りこぼし). The base-map IMAGE BYTES live
+  // OUTSIDE the domain snapshot — App holds them (baseMapImageRef 表示 /
+  // loadedAssetsRef 保存) and the domain carries only baseMap.source/meta. So the
+  // injected `domainEquals` (App wires projectsEqual → baseMapsEqual) compares the base
+  // map by source/meta ONLY, never the bytes. A replace that KEEPS source/meta (an
+  // already-user project swapped for different bytes: basemap-replace stamps
+  // REPLACED_BASEMAP_SOURCE only for a preset/empty project, else preserves source/meta)
+  // changes ONLY the bytes — invisible to `domainEquals`. Without this flag, an
+  // undo / redo AFTER such a replace found the domain value-equal to the saved baseline
+  // and FALSELY cleared projectDirty (applyUndoRedoResult), so the unsaved byte
+  // replacement read as saved and was lost on close. The store therefore keeps this
+  // boolean: the base-map bytes MAY differ from the saved file since the last save. It
+  // is SET true by the ONLY in-session path that changes the bytes while leaving the
+  // domain value-equal ({@link SessionStoreActions.replaceBaseMap}) and CLEARED false by
+  // EVERY clean-baseline path (a real save → markProjectSaved, and the LOAD / NEW
+  // reflects) — the SAME sites that (re)establish `savedDomain`, since a save persists
+  // the current bytes and a load/new installs a fresh bytes baseline. An undo / redo
+  // NEVER clears it (only a real save persists the bytes), so it survives the dirty
+  // RECOMPUTATION and is OR-ed into the clean check there. Like `savedDomain` it lives as
+  // a closure variable (internal bookkeeping no subscriber renders): projectDirty stays
+  // the single store-state dirty TRUTH the unsaved-changes guard reads — this only feeds
+  // its recomputation. It cannot be a bytes SNAPSHOT (the store never sees the external
+  // bytes), so it is a since-save-dirty boolean rather than a `savedDomain`-style value.
+  let baseMapBytesDirtySinceSave = false;
+
   // Build the initial selection TRUTH (U22 SelectionState) from the test/init
   // overrides, then derive the mirrors from it — there is no second source.
   let initialSelection: SelectionState = EMPTY_SELECTION;
@@ -766,6 +792,12 @@ export function createSessionStore<S>(
       savedDomain = domain;
       savedProjectSettings = get().projectSettings;
       savedAppSettings = get().appSettings;
+      // A save persists the current base-map bytes and a LOAD / NEW installs a fresh
+      // bytes baseline, so at every clean baseline the bytes match the saved file —
+      // clear the byte-replace dirty flag (F2 点4). Every savedDomain-writing site does
+      // this; hydrateSettings / reflectLoadedProject (which set savedDomain directly,
+      // not via this helper) clear it explicitly for the same reason.
+      baseMapBytesDirtySinceSave = false;
     };
 
     // True when the LIVE settings still match the saved baseline (both halves).
@@ -946,10 +978,18 @@ export function createSessionStore<S>(
       // (a setting changed after the last save) MUST stay dirty here — comparing
       // the domain alone falsely cleared it and silently discarded the settings
       // edit from the unsaved-changes guard's view.
+      // A byte-only base-map replace since the last save (kept source/meta) is
+      // INVISIBLE to domainEquals (bytes live outside the domain), so it must be OR-ed
+      // in here: if the bytes diverge from the saved file the project is NOT clean, even
+      // when the domain and settings both value-match the baseline (F2 点4 — the
+      // previous hole). This recompute NEVER clears the flag (it only reads it); only a
+      // real save / LOAD / NEW clears it, so the byte divergence survives every
+      // undo / redo until the bytes are actually persisted.
       const clean =
         savedDomain !== null &&
         domainEquals(nextDomain, savedDomain) &&
-        settingsMatchSaved();
+        settingsMatchSaved() &&
+        !baseMapBytesDirtySinceSave;
       // COMMIT THE DOMAIN FIRST (第11波 Fix C, #4=#5): symmetric with
       // applyCommandResult (694-754). The injected existence resolver reads the LIVE
       // committed root (App wires getRoot = () => store.getState().domain), so the
@@ -1016,6 +1056,15 @@ export function createSessionStore<S>(
       // deliberately does NOT touch selection / tool / mode / focus (a base-map swap
       // changes no features/vertices), so an in-progress edit context survives. The
       // nonce and the domain swap land in ONE transition so App observes them together.
+      //
+      // F2 点4: a replace may change ONLY the IMAGE BYTES (kept source/meta for an
+      // already-user project), which live OUTSIDE the domain snapshot and so are
+      // invisible to `domainEquals`. Mark the bytes-since-save flag so a later
+      // undo / redo does NOT falsely clear projectDirty (see the flag declaration).
+      // Only a real save clears it; setting projectDirty=true here is the immediate
+      // dirty, the flag is what carries the byte divergence THROUGH the undo/redo
+      // recomputation.
+      baseMapBytesDirtySinceSave = true;
       set({
         domain: nextDomain,
         projectDirty: true,
@@ -1471,6 +1520,10 @@ export function createSessionStore<S>(
       savedDomain = get().domain;
       savedProjectSettings = effectiveProject;
       savedAppSettings = effectiveApp;
+      // Clean baseline: the current base-map bytes ARE the saved file's — clear the
+      // byte-replace dirty flag (F2 点4; same as captureSavedBaseline, which this path
+      // does not use because it sets savedDomain directly).
+      baseMapBytesDirtySinceSave = false;
       const timelinePatch = deriveTimelineState(
         effectiveProject,
         get().currentTime,
@@ -1511,6 +1564,10 @@ export function createSessionStore<S>(
       savedDomain = nextDomain;
       savedProjectSettings = effectiveProject;
       savedAppSettings = effectiveApp;
+      // Clean baseline: a LOAD / NEW installs a fresh base-map bytes baseline — clear the
+      // byte-replace dirty flag (F2 点4; same as captureSavedBaseline, which this atomic
+      // reflect does not use because it sets savedDomain directly).
+      baseMapBytesDirtySinceSave = false;
       // resetToDomain clears the selection to EMPTY before hydrate derives the range,
       // so derive against EMPTY_SELECTION (the post-reset selection) — preserving the
       // exact result of the previous resetToDomain → hydrateSettings ordering.

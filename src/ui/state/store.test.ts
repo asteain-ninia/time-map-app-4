@@ -789,6 +789,149 @@ describe('受け入れ基準 4: settings boundary + immediate reflection', () =>
     });
   });
 
+  // --- F2 確認レビュー 点4: byte-only base-map replace dirty tracking ----------
+  //
+  // The base-map IMAGE BYTES live OUTSIDE the domain snapshot: App holds them
+  // (baseMapImageRef 表示 / loadedAssetsRef 保存) and the domain carries only
+  // baseMap.source/meta. So the injected domainEquals (App wires projectsEqual →
+  // baseMapsEqual) compares the base map by source/meta ONLY, never the bytes. A replace
+  // of an ALREADY-user project with different bytes KEEPS source/meta (basemap-replace
+  // stamps REPLACED_BASEMAP_SOURCE only for a preset/empty project, else preserves
+  // source/meta), so ONLY the bytes change — invisible to domainEquals. Pre-fix, an
+  // undo/redo AFTER such a replace found the domain value-equal to the saved baseline and
+  // FALSELY cleared projectDirty (applyUndoRedoResult), so the unsaved byte replacement
+  // read as saved and was lost on close. The store keeps a baseMapBytesDirtySinceSave
+  // flag: SET by replaceBaseMap, CLEARED by EVERY clean baseline (save + LOAD / NEW),
+  // NEVER cleared by an undo/redo, and OR-ed into the undo/redo clean check. These tests
+  // pin all three points (set / clear / OR) so a missing one (= wrong-clean or
+  // wrong-dirty) is caught.
+  describe('byte-only base-map replace dirty tracking (F2 review 点4)', () => {
+    // Same value-equality helper as the undo/redo bughunt block: a byte-only replace
+    // keeps the SAME tag (source/meta unchanged), so domainEquals cannot see it.
+    function replaceStore() {
+      return createSessionStore<TestDomain>({
+        initialDomain: { tag: 'd0' },
+        domainEquals: (a, b) => a.tag === b.tag,
+      });
+    }
+    const edit = createCommandResult({ created: [f('A')] });
+    const undoResult = createCommandResult({ deleted: [f('A')] });
+
+    // CORE (the previous hole, set + OR): a byte-only replace whose source/meta are
+    // UNCHANGED (same tag) must keep the project dirty across an edit + undo.
+    // domainEquals(d0,d0)=true would falsely clear it; the byte-since-save flag holds
+    // dirty until an actual save. Pre-fix this is the failing (red) case.
+    it('a byte-only replace stays dirty across an edit + undo (previous hole)', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved(); // clean saved baseline at d0 (already-user map).
+      expect(store.getState().projectDirty).toBe(false);
+
+      // Replace the base-map BYTES only — source/meta (hence the tag) are unchanged.
+      store.getState().replaceBaseMap({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(true);
+
+      // Edit a feature, then undo it back to the saved domain value (d0).
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+
+      // The unsaved byte replacement must SURVIVE the undo: domainEquals(d0,d0)=true but
+      // the bytes still differ from the saved file, so the project stays dirty.
+      expect(store.getState().projectDirty).toBe(true);
+    });
+
+    // CLEAR (save): a save persists the bytes (buildSaveRequest ships loadedAssetsRef →
+    // assets/basemap.img), so markProjectSaved clears the byte flag; the project is then
+    // clean and a later edit + undo returns to clean (the flag is not re-armed).
+    it('a save after a byte-only replace clears dirty, and a later edit + undo returns clean', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved();
+      store.getState().replaceBaseMap({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(true);
+
+      // Save persists the new bytes → clean (the byte flag is cleared).
+      store.getState().markProjectSaved();
+      expect(store.getState().projectDirty).toBe(false);
+
+      // A later edit + undo back to the saved domain reads clean (byte flag stays false):
+      // the only dirt was the edit, which was undone.
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    // CLEAR (LOAD): reflectLoadedProject is a fresh baseline with its own on-disk bytes,
+    // so it clears the byte flag — a later edit + undo on the loaded project reads clean.
+    it('a LOAD (reflectLoadedProject) clears the byte-replace flag', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved();
+      store.getState().replaceBaseMap({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(true);
+
+      store.getState().reflectLoadedProject({ tag: 'd0' }, {});
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    // CLEAR (NEW): resetToDomain is the whole-state NEW path; it likewise clears the flag.
+    it('a NEW (resetToDomain) clears the byte-replace flag', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved();
+      store.getState().replaceBaseMap({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(true);
+
+      store.getState().resetToDomain({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    // CLEAR (settings hydrate): hydrateSettings also establishes a clean baseline (it
+    // writes savedDomain and clears projectDirty), so it must clear the byte flag too —
+    // the same invariant every savedDomain-writing path shares.
+    it('a settings hydrate (hydrateSettings) clears the byte-replace flag', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved();
+      store.getState().replaceBaseMap({ tag: 'd0' });
+      expect(store.getState().projectDirty).toBe(true);
+
+      store.getState().hydrateSettings({});
+      expect(store.getState().projectDirty).toBe(false);
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    // 回帰: a normal edit + undo WITHOUT any replace is unaffected — the byte flag is
+    // never armed, so an undo back to the saved domain still reads clean (no wrong-dirty).
+    it('a normal edit + undo without a replace still reads clean (flag not falsely armed)', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved();
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      expect(store.getState().projectDirty).toBe(true);
+      store.getState().applyUndoRedoResult({ tag: 'd0' }, undoResult);
+      expect(store.getState().projectDirty).toBe(false);
+    });
+
+    // 二重で安全: a replace that ALSO changes source/meta (preset→user: the tag differs)
+    // is dirty through domainEquals too — the domain compare and the flag agree, so it
+    // stays dirty across an edit + undo exactly as before the fix.
+    it('a source/meta-changing replace stays dirty across an edit + undo (domain compare + flag)', () => {
+      const store = replaceStore();
+      store.getState().markProjectSaved(); // baseline at d0.
+      // A preset→user replace changes source (→ a different tag than the saved d0).
+      store.getState().replaceBaseMap({ tag: 'd-user' });
+      store.getState().applyCommandResult({ tag: 'd1' }, edit);
+      // Undo returns to the post-replace state d-user, which differs from the saved d0.
+      store.getState().applyUndoRedoResult({ tag: 'd-user' }, undoResult);
+      expect(store.getState().projectDirty).toBe(true);
+    });
+  });
+
   // --- 第11波 Fix C (#4=#5): applyUndoRedoResult anchor-level re-validation -----
   //
   // Symmetric with the 第10波 #5 guard on applyCommandResult (see above): a
