@@ -50,7 +50,12 @@ import {
 } from '../ids';
 import { createVertex, createVertexStore, type Vertex, type VertexStore } from '../vertex';
 import { coordinatesEqual } from '../coordinate';
-import { checkConsistency, INCONSISTENCY, type Inconsistency } from './consistency';
+import {
+  checkConsistency,
+  INCONSISTENCY,
+  SHAPE_DETAIL_LEAF_WITH_CHILDREN,
+  type Inconsistency,
+} from './consistency';
 import type { DomainProject, FeatureHistory } from './serialize';
 
 // --- repair option descriptors ----------------------------------------------
@@ -119,15 +124,6 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.ReconcileVertexCoordinate]:
     '同一の頂点が歴史間で異なる座標を持つとき、最初に現れた座標へすべて揃えます。',
 };
-
-/**
- * The ShapePreservation sub-cause code for「子を持つ末端」— MUST match the literal
- * `detectShapePreservation` emits in consistency.ts (`detail: 'leaf-with-children'`).
- * Kept here as a named constant so the repair branch is not a bare magic string; the
- * materialisation test exercises it against a REAL checkConsistency report, so any
- * drift from consistency.ts's literal is caught (単一の検出点で固定).
- */
-const SHAPE_DETAIL_LEAF_WITH_CHILDREN = 'leaf-with-children';
 
 /**
  * The repair options offered for one inconsistency (1 つ以上, 受け入れ基準5). The

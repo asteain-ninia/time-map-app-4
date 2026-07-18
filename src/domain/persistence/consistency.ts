@@ -210,6 +210,15 @@ function detectTreeTopology(features: readonly Feature[], atTime: TimePoint): In
 
 // --- (c) shape-preservation rule (末端=形状あり / 集約=形状なし) ------------
 
+/**
+ * The `detail` code for a leaf-with-children ShapePreservation finding (a leaf that
+ * acquired children — the FR-35 末端→集約 mid-state). The SINGLE source of this
+ * literal: the repair layer imports it to branch on the SAME value it is emitted
+ * with, so a change here can never silently stop the non-destructive
+ * MaterializeDirectDomain repair from being offered (教訓5.29 単一真実源).
+ */
+export const SHAPE_DETAIL_LEAF_WITH_CHILDREN = 'leaf-with-children';
+
 function detectShapePreservation(features: readonly Feature[], atTime: TimePoint): Inconsistency[] {
   const forest = buildForest(features);
   const out: Inconsistency[] = [];
@@ -245,7 +254,7 @@ function detectShapePreservation(features: readonly Feature[], atTime: TimePoint
         featureIds: [feature.id],
         featureNames: namesOf(features, [feature.id]),
         atTime,
-        detail: 'leaf-with-children',
+        detail: SHAPE_DETAIL_LEAF_WITH_CHILDREN,
       });
     }
   }
