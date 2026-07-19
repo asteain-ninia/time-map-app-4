@@ -665,6 +665,22 @@ function deriveTimelineState(
 
 // --- Store factory ----------------------------------------------------------
 
+/**
+ * The injected FR-113 visibility port (Codex F2 — the selection-heal sibling of
+ * {@link DisplayGrabbabilityResolver}). Answers "is this feature VISIBLE under the given
+ * display filter at (time, control)?" so the store can deselect an active feature the
+ * filter just hid WITHOUT re-implementing any visibility rule (単一解決, 教訓 5.29). The
+ * composition root binds it to `isFeatureVisibleUnderFilter` over the live root.
+ */
+export interface FilterVisibilityResolver {
+  isVisible(
+    featureId: FeatureId,
+    filter: FilterState,
+    time: TimePoint,
+    control: DisplayControl,
+  ): boolean;
+}
+
 export interface CreateSessionStoreOptions<S> {
   /** The initial immutable domain state (the truth root). */
   readonly initialDomain: S;
@@ -729,6 +745,17 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly readDomainPalette?: (domain: S) => PaletteSelection | undefined;
   /**
+   * FR-113 (Codex F2) — is `featureId` VISIBLE under a candidate display `filter` at
+   * `(time, control)`? Injected so a filter change that hides the ACTIVE feature (or a
+   * vertex-selection owner) can IMMEDIATELY deselect it (不変条件: 非表示地物は選択からも
+   * 消える — the selection-heal sibling of grabbability, but keyed on FR-113 visibility not
+   * grabbability). The store never inspects the opaque domain `S` — the composition root
+   * wires this to the SAME resolveFilteredDisplay verdict the draw / hit / tool-target paths
+   * read (単一解決, 教訓 5.29). When OMITTED the filter-visibility heal is SKIPPED (honest
+   * absence — framework-free tests that never hide the active feature are unaffected).
+   */
+  readonly filterVisibility?: FilterVisibilityResolver;
+  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -771,6 +798,9 @@ export function createSessionStore<S>(
   // May be undefined: the palette mirror is then SKIPPED (honest absence — the store
   // never reaches into the opaque domain to read a palette itself; FR-109 follow-up).
   const readDomainPalette = options.readDomainPalette;
+  // May be undefined: the FR-113 filter-visibility selection heal is then SKIPPED (honest
+  // absence — the store never resolves visibility itself; Codex F2).
+  const filterVisibility = options.filterVisibility;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
@@ -979,7 +1009,44 @@ export function createSessionStore<S>(
       if (liveFeatureIds === undefined) return;
       const cur = get().filter;
       const next = reconcileToLiveFeatures(cur, liveFeatureIds());
-      if (next !== cur) set({ filter: next });
+      if (next !== cur) commitFilter(next);
+    };
+
+    // The FR-113 filter-change funnel (Codex F2, mirror of commitDisplayControl): commit a
+    // CHANGED filter AND, in the SAME set(), heal the selection if the new filter HIDES the
+    // active feature (or a vertex-selection owner). This makes「非表示にした地物は即座に選択
+    // からも消える」— not "after the next click" — enforcing the unifying invariant in ONE
+    // place so every filter mutation (the 5 setters + the reconcile shim) shares the rule
+    // (教訓 5.6 / 5.29, no scattered per-action checks). The visibility judgment is the
+    // injected {@link FilterVisibilityResolver} (the SAME resolveFilteredDisplay verdict the
+    // draw / hit / tool-target paths read); with no resolver injected the heal is skipped
+    // (honest absence). Selection is re-derived ONLY when it actually changed (identity
+    // stability — an opacity/種別-on write with a visible active feature is a pure filter set).
+    const commitFilter = (nextFilter: FilterState): void => {
+      const s = get();
+      let sel = s.selection;
+      if (filterVisibility !== undefined) {
+        const { currentTime, displayControl } = s;
+        if (
+          sel.activeFeature !== null &&
+          !filterVisibility.isVisible(sel.activeFeature, nextFilter, currentTime, displayControl)
+        ) {
+          // The active feature is now hidden → drop it AND its vertices (the whole primary
+          // selection disappears with the feature).
+          sel = withoutVertexSet(withActiveFeature(sel, null));
+        }
+        if (
+          sel.vertexOwner !== null &&
+          !filterVisibility.isVisible(sel.vertexOwner, nextFilter, currentTime, displayControl)
+        ) {
+          // A vertex-only selection whose owner is now hidden → drop the vertices.
+          sel = withoutVertexSet(sel);
+        }
+      }
+      set({
+        filter: nextFilter,
+        ...(sel !== s.selection ? selectionPatch(sel) : {}),
+      });
     };
 
     return {
@@ -1540,19 +1607,21 @@ export function createSessionStore<S>(
     setFilterKindVisible(axis, visible) {
       const cur = get().filter;
       if (cur.kindVisible[axis] === visible) return;
-      set({ filter: setKindVisible(cur, axis, visible) });
+      commitFilter(setKindVisible(cur, axis, visible));
     },
 
     setFilterDepthThreshold(threshold) {
       const cur = get().filter;
       if (cur.depthThreshold === threshold) return;
-      set({ filter: setDepthThreshold(cur, threshold) });
+      commitFilter(setDepthThreshold(cur, threshold));
     },
 
     setFilterOpacity(opacity) {
       const cur = get().filter;
       if (cur.opacity === opacity) return;
-      set({ filter: setOpacity(cur, opacity) });
+      // Opacity never changes visibility (visible is kind/depth/hidden/present, not opacity),
+      // so commitFilter's heal is a no-op here — routed through it only for the single funnel.
+      commitFilter(setOpacity(cur, opacity));
     },
 
     setFeatureHidden(featureId, hidden) {
@@ -1561,13 +1630,14 @@ export function createSessionStore<S>(
       // state, preserves the reference (avoids a value-equal-but-new filter busting memos).
       const prev = cur.individual.get(featureId);
       if ((prev?.hidden ?? false) === hidden) return;
-      set({ filter: setIndividualHidden(cur, featureId, hidden) });
+      // THE F2 case: hiding the active feature deselects it in the SAME transition (commitFilter).
+      commitFilter(setIndividualHidden(cur, featureId, hidden));
     },
 
     showAllHiddenFeatures() {
       const cur = get().filter;
       const next = clearIndividualOverrides(cur);
-      if (next !== cur) set({ filter: next });
+      if (next !== cur) commitFilter(next); // un-hiding only widens visibility → no heal
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

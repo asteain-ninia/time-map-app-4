@@ -10,15 +10,26 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCommandResult } from '../../domain/command/result';
-import { asFeatureId, type FeatureId } from '../../domain/ids';
-import { DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS } from '../discovery/index';
+import { asFeatureId, asVertexId, type FeatureId, type VertexId } from '../../domain/ids';
+import { DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS, type FilterState } from '../discovery/index';
 
-import { createSessionStore } from './store';
+import { createSessionStore, type FilterVisibilityResolver } from './store';
 
 interface TestDomain {
   readonly tag: string;
 }
 const f = (s: string): FeatureId => asFeatureId(s);
+const v = (s: string): VertexId => asVertexId(s);
+
+/**
+ * A fake FR-113 visibility resolver (Codex F2): a feature is invisible iff the candidate
+ * filter FORCE-HIDES it (individual override). Stands in for isFeatureVisibleUnderFilter —
+ * enough to exercise the store's commitFilter heal funnel over an opaque domain.
+ */
+const HIDE_BY_INDIVIDUAL: FilterVisibilityResolver = {
+  isVisible: (featureId: FeatureId, filter: FilterState): boolean =>
+    !(filter.individual.get(featureId)?.hidden ?? false),
+};
 
 /** A store with a MUTABLE injected live-feature-id set (drives the reconcile funnel). */
 function storeWithLive(initialLive: FeatureId[]) {
@@ -140,5 +151,74 @@ describe('FR-113 filter slice — reconcile funnel (削除 id 剪定, 教訓 5.5
     store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({ deleted: [f('C')] }));
     expect(store.getState().filter).toBe(before);
     expect(store.getState().filter.individual.has(f('A'))).toBe(true);
+  });
+});
+
+describe('FR-113 filter slice — selection heal on filter change (Codex F2)', () => {
+  it('hiding the ACTIVE feature deselects it IMMEDIATELY (not after the next click)', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { activeFeature: f('A') },
+    });
+    expect(store.getState().activeFeature).toBe(f('A'));
+    store.getState().setFeatureHidden(f('A'), true);
+    // The active feature disappears from the selection in the SAME transition.
+    expect(store.getState().activeFeature).toBeNull();
+    // ...and the filter still records the hide (session state intact).
+    expect(store.getState().filter.individual.get(f('A'))?.hidden).toBe(true);
+  });
+
+  it('hiding a DIFFERENT feature leaves the active selection untouched', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { activeFeature: f('A') },
+    });
+    store.getState().setFeatureHidden(f('B'), true);
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('a vertex-only selection whose OWNER is hidden drops the vertices', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) } },
+    });
+    expect(store.getState().vertexSelection).not.toBeNull();
+    store.getState().setFeatureHidden(f('B'), true);
+    expect(store.getState().vertexSelection).toBeNull();
+  });
+
+  it('WITHOUT a filterVisibility resolver the heal is skipped (honest absence)', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      initial: { activeFeature: f('A') },
+    });
+    store.getState().setFeatureHidden(f('A'), true);
+    // No resolver → no heal → the (now hidden) feature stays selected.
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('opacity change never deselects a visible active feature (identity preserved)', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { activeFeature: f('A') },
+    });
+    const selBefore = store.getState().selection;
+    store.getState().setFilterOpacity(0.5);
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().selection).toBe(selBefore); // no selection churn
+  });
+
+  it('the heal never marks the project dirty (session-only)', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { activeFeature: f('A') },
+    });
+    store.getState().setFeatureHidden(f('A'), true);
+    expect(store.getState().projectDirty).toBe(false);
   });
 });

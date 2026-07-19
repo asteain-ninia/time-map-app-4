@@ -49,6 +49,7 @@ import {
 import {
   clearFilteredDisplayCache,
   computeFilteredDisplay,
+  isFeatureVisibleUnderFilter,
   resolveFilteredDisplay,
 } from './filtered-display';
 
@@ -206,6 +207,48 @@ describe('resolveFilteredDisplay — FR-42 N と FR-113 M の順次合成 (ユ�
     const filter = setDepthThreshold(DEFAULT_FILTER_STATE, 0);
     const fd = computeFilteredDisplay(resolutionAt(N0), filter)!;
     expect(fd.visibleIds.has(AGG)).toBe(true);
+  });
+});
+
+describe('isFeatureVisibleUnderFilter — raw-leaf tool/list/heal gate (F1/F2/F3)', () => {
+  it('inert filter → every feature is visible', () => {
+    expect(isFeatureVisibleUnderFilter(resolutionAt(N1), DEFAULT_FILTER_STATE, LEAF_A)).toBe(true);
+    expect(isFeatureVisibleUnderFilter(resolutionAt(N0), DEFAULT_FILTER_STATE, LEAF_A)).toBe(true);
+  });
+
+  it('個別非表示 leaf → false; a sibling → true (drawn Real at N=1)', () => {
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, LEAF_A, true);
+    const res = resolutionAt(N1);
+    expect(isFeatureVisibleUnderFilter(res, filter, LEAF_A)).toBe(false);
+    expect(isFeatureVisibleUnderFilter(res, filter, LEAF_B)).toBe(true);
+  });
+
+  it('raw-leaf semantics: an FR-42 aggregation-OMITTED leaf STAYS targetable unless FR-113 hides it', () => {
+    // At N=0 both leaves roll into agg-1 (Omitted, not in the drawn母集合). individual-hide
+    // leaf-b: leaf-a (aggregated but NOT hidden) is still visible-for-tools (HB3-16 preserved),
+    // leaf-b (individually hidden) is rejected.
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, LEAF_B, true);
+    const res = resolutionAt(N0);
+    expect(res.resolved.shapes.some((s) => s.featureId === LEAF_A)).toBe(false); // omitted
+    expect(isFeatureVisibleUnderFilter(res, filter, LEAF_A)).toBe(true); // still targetable
+    expect(isFeatureVisibleUnderFilter(res, filter, LEAF_B)).toBe(false); // FR-113 hidden
+  });
+
+  it('種別オフ(面) hides an aggregated leaf too (raw kind axis)', () => {
+    const filter = setKindVisible(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Area, false);
+    expect(isFeatureVisibleUnderFilter(resolutionAt(N0), filter, LEAF_A)).toBe(false);
+    expect(isFeatureVisibleUnderFilter(resolutionAt(N1), filter, LEAF_A)).toBe(false);
+  });
+
+  it('深度フィルタ applies to the leaf OWN depth (M=0 hides depth-1 leaf, M=1 keeps it)', () => {
+    const res = resolutionAt(N1);
+    expect(isFeatureVisibleUnderFilter(res, setDepthThreshold(DEFAULT_FILTER_STATE, 0), LEAF_A)).toBe(false);
+    expect(isFeatureVisibleUnderFilter(res, setDepthThreshold(DEFAULT_FILTER_STATE, 1), LEAF_A)).toBe(true);
+  });
+
+  it('a feature absent from the generation → not visible (明示的空)', () => {
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, LEAF_A, true);
+    expect(isFeatureVisibleUnderFilter(resolutionAt(N1), filter, 'ghost' as unknown as typeof LEAF_A)).toBe(false);
   });
 });
 

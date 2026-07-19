@@ -34,11 +34,14 @@ import {
 import type { HandlePrimitive, LinePrimitive } from '../../render/map-renderer';
 import type { DisplayControlInput } from '../../render/display-pipeline';
 
+import { DEFAULT_FILTER_STATE, setIndividualHidden } from '../discovery/index';
+
 import {
   buildActiveFeatureHandlePrimitives,
   buildEditPreviewPrimitives,
 } from './active-feature-handles';
 import { clearDisplayResolutionCache } from './display-resolution-cache';
+import { clearFilteredDisplayCache } from './filtered-display';
 
 const DISPLAY: DisplayControlInput = {
   globalDepth: 0,
@@ -58,7 +61,10 @@ function leafProject() {
   return { root, leaf };
 }
 
-afterEach(() => clearDisplayResolutionCache());
+afterEach(() => {
+  clearDisplayResolutionCache();
+  clearFilteredDisplayCache();
+});
 
 function handles(prims: readonly { kind: string }[]): HandlePrimitive[] {
   return prims.filter((p): p is HandlePrimitive => p.kind === 'handle');
@@ -91,6 +97,40 @@ describe('buildActiveFeatureHandlePrimitives (HB3-9 static handles)', () => {
     expect(
       buildActiveFeatureHandlePrimitives(root, timePointYear(0), null, DISPLAY),
     ).toEqual([]);
+  });
+
+  it('FR-113 (F2): draws NO handles when the display filter HIDES the active feature', () => {
+    const { root } = leafProject();
+    const hidden = setIndividualHidden(DEFAULT_FILTER_STATE, asFeatureId('leaf-1'), true);
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      hidden,
+    );
+    // Hidden active feature ⇒ no handles drawn (不変条件: 非表示地物にはハンドルが出ない).
+    expect(prims).toEqual([]);
+  });
+
+  it('FR-113 (F2): the DEFAULT (inert) filter leaves handles unchanged (zero overhead)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+    );
+    expect(vertexHandles(prims)).toHaveLength(4);
   });
 });
 

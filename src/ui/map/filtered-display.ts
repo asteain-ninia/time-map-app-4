@@ -34,6 +34,7 @@
 
 import { FEATURE_KIND } from '../../domain/feature';
 import { derivedDepths, isDepthUndefined } from '../../domain/hierarchy';
+import type { Forest } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 import {
   isFilterInert,
@@ -44,6 +45,29 @@ import {
 } from '../discovery/index';
 
 import type { DisplayResolution } from './display-resolution-cache';
+
+// Derived-depth (U08) memo, keyed by the immutable `Forest` reference. `derivedDepths`
+// is O(n); a `Forest` is a pure function of the (root, time) generation and is shared by
+// the display-resolution cache, so the SAME reference recurs across frames / consumers.
+// Memoizing by that reference lets the FR-113 depth axis (computeFilteredDisplay) AND the
+// raw-leaf targetability check (isFeatureVisibleUnderFilter) share ONE depth pass per
+// generation (教訓 5.30 二重計算回避). A WeakMap GC's the entry with its forest.
+const depthsByForest = new WeakMap<Forest, ReadonlyMap<FeatureId, number>>();
+
+/** The derived-depth map for `forest`, memoized by forest identity (shared, see above). */
+function depthsFor(forest: Forest): ReadonlyMap<FeatureId, number> {
+  const cached = depthsByForest.get(forest);
+  if (cached !== undefined) return cached;
+  const depths = derivedDepths(forest);
+  depthsByForest.set(forest, depths);
+  return depths;
+}
+
+/** A feature's FR-113 depth: its derived depth, or `null` when undefined/cyclic/absent. */
+function depthOf(forest: Forest, id: FeatureId): number | null {
+  const d = depthsFor(forest).get(id);
+  return d === undefined || isDepthUndefined(d) ? null : d;
+}
 
 /**
  * The resolved FR-113 verdicts for one frame's drawn candidates. `displayById` maps
@@ -119,15 +143,11 @@ export function computeFilteredDisplay(
   // Derived depth (U08) is the SAME single source FR-42 already used; compute it here
   // ONLY when a depth axis is active — an inert-on-depth filter never consults meta.depth
   // (visibility.passesDepth / isEmphasized short-circuit on null thresholds), so we do
-  // not pay the O(n) pass otherwise (教訓 5.30 過剰計算の戒め).
+  // not pay the O(n) pass otherwise (教訓 5.30 過剰計算の戒め). Shared, forest-keyed memo.
   const needDepth =
     filter.depthThreshold !== null || filter.emphasizedDepth !== null;
-  const depths = needDepth ? derivedDepths(forest) : undefined;
-  const depthOf = (id: FeatureId): number | null => {
-    if (depths === undefined) return null;
-    const d = depths.get(id);
-    return d === undefined || isDepthUndefined(d) ? null : d;
-  };
+  const areaDepth = (id: FeatureId): number | null =>
+    needDepth ? depthOf(forest, id) : null;
 
   const displayById = new Map<FeatureId, ResolvedFeatureDisplay>();
   const visibleIds = new Set<FeatureId>();
@@ -143,7 +163,7 @@ export function computeFilteredDisplay(
     const meta: FeatureDisplayMeta = {
       id: shape.featureId,
       kind,
-      depth: depthOf(shape.featureId),
+      depth: areaDepth(shape.featureId),
     };
     const verdict = resolveFeatureDisplay(filter, meta, true);
     displayById.set(shape.featureId, verdict);
@@ -166,6 +186,51 @@ export function computeFilteredDisplay(
   }
 
   return { displayById, visibleIds };
+}
+
+/**
+ * Whether `featureId` is FR-113-VISIBLE — the single verdict every SIDE-PATH that
+ * acquires or retains a feature (tool target 取得 F1, selection heal F2, sidebar 一覧 F3)
+ * gates on, so「非表示の地物は描画・当たり・検索・一覧・ツール取得・選択のすべてから一貫して
+ * 消える」holds (Codex 整合性ギャップ, 教訓 5.29 単一解決).
+ *
+ * It layers FR-113 on the RAW feature, INDEPENDENT of FR-42 aggregation:
+ *   - a feature that IS drawn (point / line / verdict-Real area) reuses the SAME
+ *     {@link resolveFilteredDisplay} verdict the renderer / hit-test read (no drift);
+ *   - a feature NOT in the drawn母集合 — an FR-42 aggregation-OMITTED leaf — is judged on
+ *     its OWN kind + derived depth via the SAME `resolveFeatureDisplay`, so 種別オフ /
+ *     個別非表示 / 深度フィルタ hide it while an aggregated-but-not-FR-113-hidden leaf STAYS
+ *     visible-for-tools (raw-leaf semantics preserved: merge/reparent/ring/drill must still
+ *     target a child inside an aggregate at N=0 — HB3-16 — as long as it is not FR-113 hidden).
+ *
+ * Inert filter ⇒ always visible (zero overhead). A feature absent from the current
+ * generation ⇒ not visible (教訓 5.18 明示的空).
+ */
+export function isFeatureVisibleUnderFilter(
+  resolution: DisplayResolution,
+  filter: FilterState,
+  featureId: FeatureId,
+): boolean {
+  if (isFilterInert(filter)) return true;
+  // Drawn feature → reuse its verdict (the single judgment shared with draw / hit).
+  const filtered = resolveFilteredDisplay(resolution, filter);
+  if (filtered !== null) {
+    const drawn = filtered.displayById.get(featureId);
+    if (drawn !== undefined) return drawn.visible;
+  }
+  // Not drawn (aggregation-omitted leaf) → evaluate FR-113 on the RAW feature.
+  const feature =
+    resolution.areaFeaturesById.get(featureId) ??
+    resolution.features.find((f) => f.id === featureId);
+  if (feature === undefined) return false;
+  const needDepth =
+    filter.depthThreshold !== null || filter.emphasizedDepth !== null;
+  const depth = needDepth ? depthOf(resolution.forest, featureId) : null;
+  return resolveFeatureDisplay(
+    filter,
+    { id: featureId, kind: feature.kind, depth },
+    true,
+  ).visible;
 }
 
 /**

@@ -80,11 +80,39 @@ async function commitSquareFace(page: Page): Promise<{ faceId: string; cx: numbe
   return { faceId, cx, cy };
 }
 
+/** Commit one square face centred at (cx,cy) with half-extent `half` (4 real clicks). */
+async function commitFaceAt(page: Page, cx: number, cy: number, half: number): Promise<void> {
+  await enterAddArea(page);
+  const addLayer = page.getByTestId('add-input-layer');
+  await expect(addLayer).toBeVisible();
+  for (const [dx, dy] of [
+    [-half, -half],
+    [half, -half],
+    [half, half],
+    [-half, half],
+  ] as const) {
+    await page.mouse.click(cx + dx, cy + dy);
+  }
+  await page.getByTestId('add-complete').click();
+  await page.getByTestId('add-save').click();
+  await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+}
+
 async function readDrawnCount(page: Page): Promise<number> {
   return page.evaluate(() => {
     const e2e = (window as unknown as { __E2E__?: { getDrawnFeatureCount: () => number } }).__E2E__;
     if (e2e === undefined) throw new Error('__E2E__ not ready');
     return e2e.getDrawnFeatureCount();
+  });
+}
+
+/** The live vertex-handle count of the ACTIVE feature (Codex F2 — 0 when hidden/deselected). */
+async function readVertexHandleCount(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getVertexHandlePositions?: () => readonly unknown[] };
+    }).__E2E__;
+    return e2e?.getVertexHandlePositions ? e2e.getVertexHandlePositions().length : -1;
   });
 }
 
@@ -140,8 +168,15 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const hideItem = menu.locator('[data-item-kind="hideFeature"]');
       await expect(hideItem).toBeVisible();
       await expect(hideItem).toHaveText('この地物を非表示');
+      // The right-click PROMOTED the feature into the selection (教訓 5.11).
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
       await hideItem.click();
       await expect(menu).toHaveCount(0);
+
+      // Codex F2: hiding the ACTIVE feature deselects it IMMEDIATELY (the store heal) — not
+      // "after the next click" — AND its edit handles vanish (0), even before any further click.
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      await expect.poll(async () => readVertexHandleCount(page)).toBe(0);
 
       // The feature is now culled from the drawn set.
       await expect.poll(async () => readDrawnCount(page)).toBeLessThan(withArea);
@@ -149,13 +184,18 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
-      // 「個別非表示 1 件を全て再表示」→ the area is drawn (and selectable) again.
+      // Codex F3: the hidden feature's 一覧 row is gone (list母集合 == draw / search 母集合).
       await revealFilterPanel(page);
+      await expect(page.getByTestId(`feature-list-item-${faceId}`)).toHaveCount(0);
+
+      // 「個別非表示 1 件を全て再表示」→ the area is drawn (and selectable) again.
       const showAll = page.getByTestId('display-filter-show-all');
       await expect(showAll).toBeEnabled();
       await expect(showAll).toContainText('1 件');
       await showAll.click();
       await expect.poll(async () => readDrawnCount(page)).toBe(withArea);
+      // F3: the row is back too.
+      await expect(page.getByTestId(`feature-list-item-${faceId}`)).toHaveCount(1);
       await enterEditMode(page);
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
@@ -215,6 +255,46 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const depthInput = page.getByTestId('display-filter-depth');
       await expect(depthInput).toHaveValue('0');
       await expect.poll(async () => readDrawnCount(page)).toBeLessThan(n1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('Codex F1: an FR-113-hidden leaf is NOT a merge target (raw-leaf tool-acquisition gate)', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('app-shell')).toBeVisible();
+      await waitForE2E(page);
+
+      // Two non-overlapping top-level faces, left & right of centre.
+      const mapInput = page.getByTestId('map-input-layer');
+      const m0 = (await mapInput.boundingBox())!;
+      const cx = m0.x + m0.width / 2;
+      const cy = m0.y + m0.height / 2;
+      await commitFaceAt(page, cx - 150, cy, 70);
+      await commitFaceAt(page, cx + 150, cy, 70);
+
+      // Hide the LEFT face via 右クリック「この地物を非表示」.
+      await enterEditMode(page);
+      await page.mouse.click(cx - 150, cy, { button: 'right' });
+      const menu = page.getByTestId('context-menu');
+      await expect(menu).toBeVisible();
+      await menu.locator('[data-item-kind="hideFeature"]').click();
+      await expect(menu).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(''); // F2 heal
+
+      // Arm 結合(merge). Clicking the HIDDEN left face adds NO target (F1: leafAtPoint result
+      // rejected by the FR-113 gate); the VISIBLE right face does — count 0 → 0 → 1.
+      const mergeTool = page.getByTestId('tool-edit.merge');
+      await expect(mergeTool).toBeEnabled();
+      await mergeTool.click();
+      await expect(mergeTool).toHaveAttribute('aria-pressed', 'true');
+      const targetCount = page.getByTestId('merge-target-count');
+      await page.mouse.click(cx - 150, cy); // hidden → rejected
+      await expect(targetCount).toHaveText('0');
+      await page.mouse.click(cx + 150, cy); // visible → 1 target
+      await expect(targetCount).toHaveText('1');
     } finally {
       await app.close();
     }

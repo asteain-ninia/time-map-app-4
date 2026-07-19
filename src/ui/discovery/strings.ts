@@ -38,6 +38,9 @@ export const FILTER_STRINGS = {
   individualHint: '選んだ地物だけを個別に非表示にできます。',
   /** 「個別非表示 n 件を全て再表示」button label (n = 現在の個別非表示件数). */
   showAllHiddenLabel: (count: number): string => `個別非表示 ${count} 件を全て再表示`,
+  /** Tooltip on a 通史(錨)一覧 row whose feature is hidden at the current time (FR-113). */
+  hiddenListRowTitle:
+    '現在の表示制御で非表示のため選択できません。表示フィルタを解除すると選択できます。',
   // 不透明度 (FR-113)
   opacityLabel: '不透明度',
   opacityHint:

@@ -44,7 +44,9 @@ import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
 import { DisplayFilterPanel } from '../discovery/DisplayFilterPanel';
+import { FILTER_STRINGS } from '../discovery/index';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
+import { isFeatureVisibleUnderFilter } from '../map/filtered-display';
 import { type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import {
   PropertyPanel,
@@ -398,6 +400,14 @@ interface SidebarListRow {
   readonly label: string;
   /** aria-pressed 状態 (地物一覧 は現在選択中の地物を強調; 錨一覧 は常に false). */
   readonly pressed: boolean;
+  /**
+   * FR-113 (Codex F3): the row is 選択/フィット不可 (a 通史 row whose feature is hidden at
+   * the current time — the current-time 一覧 removes such rows outright instead). Renders a
+   * disabled button with {@link disabledTitle}; `onSelect` also no-ops defensively.
+   */
+  readonly disabled?: boolean;
+  /** Tooltip explaining why the row is disabled (FR-113). */
+  readonly disabledTitle?: string;
   /** 行選択時の副作用 (選択 [+ 時刻同期] + 視点フィット) を呼び出し側が組み立てる。 */
   readonly onSelect: () => void;
 }
@@ -478,6 +488,8 @@ function SidebarRowList(props: {
                     className="sidebar-list__item"
                     aria-pressed={row.pressed}
                     data-testid={row.testid}
+                    disabled={row.disabled === true}
+                    {...(row.disabledTitle !== undefined ? { title: row.disabledTitle } : {})}
                     onClick={row.onSelect}
                   >
                     {row.label}
@@ -537,26 +549,46 @@ function UnifiedListSection<S>(props: {
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
   const activeFeature = useStore(store, (s) => s.activeFeature);
+  // FR-113 (Codex F3): the 一覧 母集合 must agree with draw / hit — a hidden feature drops
+  // its row. Subscribe to the filter + displayControl so a filter change re-derives the list.
+  const filter = useStore(store, (s) => s.filter);
+  const displayControl = useStore(store, (s) => s.displayControl);
 
   const isCurrent = mode === LIST_MODE.Current;
 
   const rows: SidebarListRow[] = useMemo(() => {
+    // The SAME single FR-113 verdict the draw / hit / tool-target paths use (単一解決,
+    // 教訓 5.29). Reuses the resolveDisplayFor memo (a HIT off the live frame). Raw-feature
+    // visibility (not the drawn-set visibleIds), so an FR-42 aggregation-omitted child stays
+    // listed while a 個別非表示 / 種別 / 深度 feature is removed — the invariant without an
+    // FR-42 list-behaviour change.
+    const resolution = resolveDisplayFor(getRoot(), getTime(), displayControl);
+    const visible = (featureId: FeatureId): boolean =>
+      isFeatureVisibleUnderFilter(resolution, filter, featureId);
+
     if (isCurrent) {
-      // 現在時刻 (旧地物一覧): features effective at the current time; fit at 現在時刻, no sync.
-      return featuresAt(getRoot(), getTime()).map((feature) => ({
-        key: feature.id as unknown as string,
-        testid: `feature-list-item-${feature.id as unknown as string}`,
-        label: featureLabel(feature),
-        pressed: activeFeature === feature.id,
-        onSelect: () => {
-          store.getState().setActiveFeature(feature.id);
-          onFocusFeatureCamera?.(feature.id);
-        },
-      }));
+      // 現在時刻 (旧地物一覧): FR-113-visible features effective now; a hidden feature's row
+      // is removed outright (行ごと非表示 — 一貫 with draw / search, not a disabled row).
+      return featuresAt(getRoot(), getTime())
+        .filter((feature) => visible(feature.id))
+        .map((feature) => ({
+          key: feature.id as unknown as string,
+          testid: `feature-list-item-${feature.id as unknown as string}`,
+          label: featureLabel(feature),
+          pressed: activeFeature === feature.id,
+          onSelect: () => {
+            store.getState().setActiveFeature(feature.id);
+            onFocusFeatureCamera?.(feature.id);
+          },
+        }));
     }
     // 通史 (旧錨一覧): every feature's history anchors, each labelled from ITS OWN snapshot.
-    return getRoot().histories.flatMap((history) =>
-      history.series.entries.map((entry) => {
+    // A row whose feature is hidden at the CURRENT time is DISABLED (選択/フィット不可) — the
+    // minimal, honest handling of the cross-time case (applying anchor-time visibility per row
+    // is out of scope; 個別非表示 / 種別 off are time-independent so this covers the common case).
+    return getRoot().histories.flatMap((history) => {
+      const hidden = !visible(history.featureId);
+      return history.series.entries.map((entry) => {
         const owner = entry.anchor.snapshot.features.find(
           (f) => f.id === history.featureId,
         );
@@ -569,7 +601,11 @@ function UnifiedListSection<S>(props: {
           testid: `event-list-item-${anchorId}`,
           label,
           pressed: false,
+          ...(hidden ? { disabled: true, disabledTitle: FILTER_STRINGS.hiddenListRowTitle } : {}),
           onSelect: () => {
+            // FR-113 (F3): a hidden feature's row never selects / syncs / fits (defensive —
+            // the button is disabled too).
+            if (hidden) return;
             // Promote + sync the time FIRST (single selection / time path), THEN fit the
             // camera at that time (HB5-3). Only this 錨導線 (+ the 地物導線) writes the
             // camera, so a map-click selection never fits.
@@ -578,10 +614,10 @@ function UnifiedListSection<S>(props: {
             onFocusFeatureCamera?.(history.featureId);
           },
         };
-      }),
-    );
+      });
+    });
     // domain / currentTime are subscribe-gates (read fresh via getRoot/getTime, 教訓 5.6).
-  }, [isCurrent, getRoot, getTime, activeFeature, store, onFocusFeatureCamera, domain, currentTime]);
+  }, [isCurrent, getRoot, getTime, activeFeature, store, onFocusFeatureCamera, domain, currentTime, filter, displayControl]);
 
   return (
     <div className="sidebar-list-panel" data-testid="sidebar-list-panel">

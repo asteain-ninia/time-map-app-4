@@ -1447,6 +1447,21 @@ describe('liveHitTestAt — FR-113 display filter (hidden features are click-thr
     expect(hit.kind).toBe(HIT_KIND.FeatureBody);
     if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
   });
+
+  it('F2: a hidden ACTIVE feature exposes NO grabbable handles (activeHandles gated)', () => {
+    // The active feature's OWN handles are normally probed even for aggregation-omitted
+    // leaves (FR-87); but an FR-113-HIDDEN active feature must expose none — so clicking
+    // its vertex resolves to EMPTY, not a Vertex hit (defense-in-depth for the heal).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const corner = { lon: 0, lat: 0 };
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, a.feature.id, true);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, filter, activeFeature: a.feature.id, point: toScreen(corner) },
+      corner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Empty);
+  });
 });
 
 /** Clear the shared display / filter memos between cases (fresh roots make this defensive). */

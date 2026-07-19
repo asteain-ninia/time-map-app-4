@@ -92,7 +92,7 @@ import {
   vertexOwners,
   type DisplayResolution,
 } from './display-resolution-cache';
-import { resolveFilteredDisplay } from './filtered-display';
+import { isFeatureVisibleUnderFilter, resolveFilteredDisplay } from './filtered-display';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
@@ -1055,8 +1055,20 @@ export function liveHitTestAt(
   // the SAME pattern to vertices). `computeHandles` returns EMPTY_HANDLES for an aggregate
   // (no own shape, FR-35) and skips unresolved vertices, so an aggregate / undrawn active
   // feature contributes nothing.
+  //
+  // FR-113 (Codex F2, defense in depth): an active feature the display filter HIDES draws
+  // no handles (active-feature-handles), so it must expose none for grabbing either — the
+  // selection-heal normally deselects a hidden active feature, but 描画==ヒットの深層防御 as
+  // there. Gated on the RAW-feature FR-113 verdict (not the drawn-set visibleIds), so an
+  // aggregation-omitted active leaf's handles stay grabbable while a 個別非表示 / 種別 / 深度
+  // hidden one does not (単一解決, 教訓 5.29).
+  const activeForHandles =
+    activeFeature != null &&
+    !isFeatureVisibleUnderFilter(resolution, input.filter ?? DEFAULT_FILTER_STATE, activeFeature)
+      ? null
+      : activeFeature;
   const activeHandles = resolveActiveHandles(
-    activeFeature,
+    activeForHandles,
     features,
     areaFeaturesById,
     vertices,

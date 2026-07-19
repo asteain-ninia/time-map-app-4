@@ -65,7 +65,10 @@ import type {
   PointPrimitive,
 } from '../../render/map-renderer';
 
+import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
+
 import { resolveDisplayFor } from './display-resolution-cache';
+import { isFeatureVisibleUnderFilter } from './filtered-display';
 import { sharedVertexIdsFor } from './shared-vertex-derivation';
 
 /** The screen-fixed visual style of the live-drag PREVIEW outline (HB3-4 / FR-78). */
@@ -295,9 +298,14 @@ export function buildActiveFeatureHandlePrimitives(
   style?: EditHandleStyle,
   previewStyle?: EditPreviewStyle,
   cap?: number,
+  filter: FilterState = DEFAULT_FILTER_STATE,
 ): DrawPrimitive[] {
   if (activeFeature === null) return [];
   const resolution = resolveDisplayFor(root, time, displayControl);
+  // FR-113 (Codex F2, defense in depth): an active feature the display filter HIDES draws
+  // no handles — even if the selection-heal has not yet run, 描画==ヒットで hidden 地物には
+  // ハンドルが出ない (不変条件). Inert filter ⇒ always visible ⇒ unchanged (zero overhead).
+  if (!isFeatureVisibleUnderFilter(resolution, filter, activeFeature)) return [];
   const { features, areaFeaturesById, vertices } = resolution;
   // The active feature among the features effective at `time`. Points / lines are in
   // `features`; leaves / aggregates are additionally indexed in `areaFeaturesById`

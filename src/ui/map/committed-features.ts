@@ -128,17 +128,21 @@ function buildAreas(
 ): EvaluatedFeature[] {
   const presentationFor: PresentationFor = (shape) => {
     const feature = areaFeaturesById.get(shape.featureId);
+    const verdict = filtered === null ? undefined : filtered.displayById.get(shape.featureId);
     // FR-113 opacity (default 1 when no filter / feature visible at full opacity). The
     // verdict already dims non-emphasized features when emphasis is active (visibility.ts).
-    const opacity = filtered === null ? 1 : filtered.displayById.get(shape.featureId)?.opacity ?? 1;
+    const opacity = verdict?.opacity ?? 1;
     const style = feature ? styleOf(feature.color, opacity) : FALLBACK_STYLE;
     const selected = shape.featureId === selectedId;
     return {
       style,
       label: feature ? labelOf(feature) : '',
-      // FR-82 selection + FR-43 emphasis both paint the highlight color; the ring
-      // structure never changes (教訓 5.25 — single shape resolution).
-      selected: selected || shape.emphasized,
+      // FR-82 selection + FR-43 focus-emphasis (shape.emphasized) + FR-113 filter-emphasis
+      // (verdict.emphasized) all paint the highlight color; the ring structure never changes
+      // (教訓 5.25 — single shape resolution). Selection wins by construction (OR); the FR-113
+      // emphasis verdict is DEFAULT-inert (no emphasis UI yet), so this is behaviour-neutral
+      // today and completes the resolution→draw path for Phase 2 (Codex F4).
+      selected: selected || shape.emphasized || verdict?.emphasized === true,
     };
   };
   // No filter → the EXACT prior path (byte-identical draw batch, zero overhead).
@@ -290,12 +294,16 @@ export function computeCommittedFeatures(
     // FR-113 cull + opacity: a hidden point/line is dropped from the batch (never drawn /
     // hit / searched, 教訓 5.29); a visible one's per-feature opacity folds into its style.
     let filterOpacity = 1;
+    let filterEmphasized = false;
     if (filtered !== null) {
       const verdict = filtered.displayById.get(feature.id);
       if (verdict === undefined || !verdict.visible) continue;
       filterOpacity = verdict.opacity;
+      filterEmphasized = verdict.emphasized;
     }
-    const selected = feature.id === selectedId;
+    // FR-82 selection OR FR-113 filter-emphasis paint the highlight (selection wins by OR;
+    // filterEmphasized is DEFAULT-inert with no emphasis UI, so behaviour-neutral — Codex F4).
+    const selected = feature.id === selectedId || filterEmphasized;
     const style = styleOf(feature.color, filterOpacity);
     const label = labelOf(feature);
     switch (feature.kind) {

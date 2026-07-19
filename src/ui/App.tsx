@@ -178,6 +178,7 @@ import {
 import { launchMenuItem } from './context-menu-launch';
 import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
 import { resolveDisplayFor } from './map/display-resolution-cache';
+import { isFeatureVisibleUnderFilter } from './map/filtered-display';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
 // (FR-109 follow-up) the undoable default-palette change command — routed through the
@@ -300,6 +301,21 @@ export function App(): JSX.Element {
                 defaultPaletteTheme: domain.uiSettings.project.defaultPaletteTheme,
                 customPalette: domain.uiSettings.project.customPalette,
               },
+        // FR-113 (Codex F2): the selection-heal visibility port. Binds the store's filter
+        // heal to the SAME single FR-113 verdict (isFeatureVisibleUnderFilter) the draw /
+        // hit / tool-target paths read, over the live root (via the getRoot ref) at the
+        // (time, control) the store passes. So hiding the ACTIVE feature deselects it at once.
+        filterVisibility: {
+          isVisible: (featureId, filter, time, control) => {
+            const getRoot = liveRootRef.current;
+            const root = getRoot !== null ? getRoot() : buildEmptyProject();
+            return isFeatureVisibleUnderFilter(
+              resolveDisplayFor(root, time, control),
+              filter,
+              featureId,
+            );
+          },
+        },
       }),
     [],
   );
@@ -762,6 +778,8 @@ export function App(): JSX.Element {
           undefined,
           undefined,
           s.appSettings.vertexMarkerCap,
+          // FR-113 (Codex F2): suppress handles for an active feature the filter hides.
+          s.filter,
         );
       },
       // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
@@ -2201,6 +2219,22 @@ export function App(): JSX.Element {
     });
   }, [store, refreshUndoRedoEnabled]);
 
+  // FR-113 (Codex F1): the tool-target 取得 gate. merge / reparent / ring-edit / drill pick
+  // an INDIVIDUAL leaf via `leafAtPoint` (raw-leaf semantics — a child inside an aggregate
+  // must stay pickable at N=0, HB3-16), so they do NOT go through the knife's drawnAreaAt
+  // filter. This gate layers the SAME single FR-113 verdict (isFeatureVisibleUnderFilter)
+  // on the raw leaf, so a 個別非表示 / 種別オフ / 深度フィルタ leaf is NOT tool-targetable
+  // while an aggregated-but-visible leaf still is (不変条件: 非表示地物はツール取得からも消える,
+  // 教訓 5.29). Reads the live root / time / displayControl / filter (never a stale capture).
+  const isToolTargetVisible = useCallback(
+    (featureId: FeatureId): boolean => {
+      const s = store.getState();
+      const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+      return isFeatureVisibleUnderFilter(resolution, s.filter, featureId);
+    },
+    [store],
+  );
+
   // U26 INTEGRATION (教訓 5.7 / 5.2): the knife-tool controller is mounted in the
   // SAME shell overlay, bound to the SAME store, so selecting 編集モード→ナイフ starts
   // a session, map-input clicks drive対象面選択 / 分断線入力 / 閉線確定, the继承先 modal +
@@ -2244,8 +2278,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
+        isToolTargetVisible,
       ),
-    [store, sharedMint],
+    [store, sharedMint, isToolTargetVisible],
   );
 
   // U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool bootstrap mirrors the merge one —
@@ -2260,8 +2295,9 @@ export function App(): JSX.Element {
       createReparentBootstrap(
         () => store.getState().domain,
         () => store.getState().currentTime,
+        isToolTargetVisible,
       ),
-    [store],
+    [store, isToolTargetVisible],
   );
 
   // U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) bootstrap mirrors the
@@ -2275,8 +2311,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
+        isToolTargetVisible,
       ),
-    [store, sharedMint],
+    [store, sharedMint, isToolTargetVisible],
   );
 
   // U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成) bootstrap mirrors
@@ -2292,8 +2329,9 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
+        isToolTargetVisible,
       ),
-    [store, sharedMint],
+    [store, sharedMint, isToolTargetVisible],
   );
 
   // ADD COMMIT (教訓 5.11 / U12): record the committed add as one history unit and
@@ -2820,9 +2858,15 @@ export function App(): JSX.Element {
   // fit resolves the feature's shape at the錨の開始 time and writes the camera through
   // the single ports.writeCamera path. Only this錨導線 calls it — a map-click
   // selection routes through the live-selection-port and never moves the view.
-  const focusCameraOnFeature = useCallback((featureId: FeatureId): void => {
-    fitCameraToFeatureRef.current?.(featureId);
-  }, []);
+  const focusCameraOnFeature = useCallback(
+    (featureId: FeatureId): void => {
+      // FR-113 (Codex F3, defensive): never fit the camera to an FR-113-hidden feature —
+      // the list rows are already gated, this guards any direct caller (単一解決 reuse).
+      if (!isToolTargetVisible(featureId)) return;
+      fitCameraToFeatureRef.current?.(featureId);
+    },
+    [isToolTargetVisible],
+  );
 
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
   // 一覧) INTO the shell's sidebar slot (教訓 5.7 合成ルートの結線漏れ). The slots were
@@ -3872,6 +3916,7 @@ function createRingEditBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
+  isVisibleTarget: (featureId: FeatureId) => boolean,
 ): RingEditBootstrap<DomainRoot> {
   // Ids minted through the SAME shared minter add / knife / merge use (finding 3): one
   // generator + a project-wide reservation set, so a ring-edit-minted id (the new hole
@@ -3891,8 +3936,12 @@ function createRingEditBootstrap(
   const resolveFeature: RingResolveFeature = (featureId): Feature | undefined =>
     featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
   const resolveStore: RingResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
-  const featureAtPoint: RingFeatureAtPoint = (point): FeatureId | null =>
-    leafAtPoint(getRoot(), getTime(), point);
+  // FR-113 (Codex F1): reject an FR-113-hidden leaf so a 個別非表示 / 種別オフ / 深度 leaf
+  // is never a ring-edit target (raw-leaf picking preserved; only visibility layered on).
+  const featureAtPoint: RingFeatureAtPoint = (point): FeatureId | null => {
+    const leafId = leafAtPoint(getRoot(), getTime(), point);
+    return leafId !== null && isVisibleTarget(leafId) ? leafId : null;
+  };
 
   // U44 — the LIVE U13 binding for ring-edit (FR-22/24 は U13 スタブを回避できる大きな
   // 利点): confirmRingEdit → confirmRelease → ConsistencyPorts<DomainRoot,
@@ -3948,6 +3997,7 @@ function createDrillBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
+  isVisibleTarget: (featureId: FeatureId) => boolean,
 ): DrillBootstrap<DomainRoot> {
   // Ids minted through the SAME shared minter add / knife / merge / ring-edit use
   // (finding 3): one generator + a project-wide reservation set, so a drill-minted id
@@ -3969,8 +4019,11 @@ function createDrillBootstrap(
   const resolveFeature: DrillResolveFeature = (featureId): Feature | undefined =>
     featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
   const resolveStore: DrillResolveStore = (): VertexStore => verticesAt(getRoot(), getTime());
-  const featureAtPoint: DrillFeatureAtPoint = (point): FeatureId | null =>
-    leafAtPoint(getRoot(), getTime(), point);
+  // FR-113 (Codex F1): reject an FR-113-hidden leaf as a drill target (raw-leaf preserved).
+  const featureAtPoint: DrillFeatureAtPoint = (point): FeatureId | null => {
+    const leafId = leafAtPoint(getRoot(), getTime(), point);
+    return leafId !== null && isVisibleTarget(leafId) ? leafId : null;
+  };
 
   // U44 — the LIVE U13 binding for drill. The proposal handed to startProcess is ALREADY
   // a U13 EditProposal<DrillSnapshot> (toDrillEditProposal ran in the hook), so the swap
@@ -4023,6 +4076,7 @@ function createMergeBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
+  isVisibleTarget: (featureId: FeatureId) => boolean,
 ): MergeBootstrap<DomainRoot> {
   // Ids minted through the SAME shared minter the add / knife bootstraps use (finding
   // 3): one generator + a project-wide reservation set, so a merge-minted id (the new
@@ -4050,8 +4104,12 @@ function createMergeBootstrap(
   // 選ぶ違和感(旧 bughunt の懸念)は HB3-15(c) のツール専用ハイライト(resolveLeafShape →
   // buildMergeHighlight)で「選んだ leaf が地図上に見える」ことで解消する(両方セットで実装)。
   // 単一真実源: leafAtPoint と下の resolveLeafShape は同じ live-lookup を使う (教訓 5.6/5.29)。
-  const featureAtPoint: MergeFeatureAtPoint = (point): FeatureId | null =>
-    leafAtPoint(getRoot(), getTime(), point);
+  // FR-113 (Codex F1): reject an FR-113-hidden leaf as a merge target (raw-leaf preserved —
+  // an aggregated-but-visible child is still targetable; only 個別非表示 / 種別 / 深度 hide it).
+  const featureAtPoint: MergeFeatureAtPoint = (point): FeatureId | null => {
+    const leafId = leafAtPoint(getRoot(), getTime(), point);
+    return leafId !== null && isVisibleTarget(leafId) ? leafId : null;
+  };
   const resolveLeafShape = (featureId: FeatureId): GeoMultiPolygon | undefined =>
     leafShapeAt(getRoot(), getTime(), featureId) ?? undefined;
 
@@ -4106,6 +4164,7 @@ interface ReparentBootstrap<S> {
 function createReparentBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
+  isVisibleTarget: (featureId: FeatureId) => boolean,
 ): ReparentBootstrap<DomainRoot> {
   // LIVE live-lookup ports (P0-B): the features effective at the CURRENT time, read at
   // call time so a load / time move / edit is reflected without a stale capture (教訓
@@ -4130,8 +4189,12 @@ function createReparentBootstrap(
   // 別 id へ解決するのでこれが解消する(別の上位領域へ移す操作が成立)。描画されていない leaf を
   // 選ぶ違和感は HB3-15(c) のツール専用ハイライト(resolveLeafShape → buildReparentHighlight)
   // で見えるようにすることで解消(両方セットで実装)。単一真実源 (教訓 5.6 / 5.29)。
-  const featureAtPoint: ReparentFeatureAtPoint = (point): FeatureId | null =>
-    leafAtPoint(getRoot(), getTime(), point);
+  // FR-113 (Codex F1): reject an FR-113-hidden leaf as a reparent target / new-parent
+  // (raw-leaf preserved; only 個別非表示 / 種別 / 深度 hide it).
+  const featureAtPoint: ReparentFeatureAtPoint = (point): FeatureId | null => {
+    const leafId = leafAtPoint(getRoot(), getTime(), point);
+    return leafId !== null && isVisibleTarget(leafId) ? leafId : null;
+  };
   const resolveLeafShape = (featureId: FeatureId): GeoMultiPolygon | undefined =>
     leafShapeAt(getRoot(), getTime(), featureId) ?? undefined;
 

@@ -37,6 +37,7 @@ import {
   FEATURE_KIND_AXIS,
   kindAxisOf,
   searchFeatures,
+  setEmphasizedIds,
   setIndividualHidden,
   setKindVisible,
   setOpacity,
@@ -445,5 +446,19 @@ describe('buildCommittedFeatures — FR-113 display filter', () => {
     expect(searchFeatures(corpus, 'A国').hits.map((h) => h.featureId)).toContain(
       'leaf-1' as unknown as FeatureId,
     );
+  });
+
+  it('F4: filter-emphasis composes into the draw highlight (selected) flag; others do not', () => {
+    // The FR-113 emphasis verdict (verdict.emphasized) now reaches the draw highlight, so
+    // the resolution→draw path is complete for Phase 2. No selection → the only highlight is
+    // the emphasized feature (leaf-1); the non-emphasized point stays un-highlighted.
+    const root = project();
+    const filter = setEmphasizedIds(DEFAULT_FILTER_STATE, ['leaf-1' as unknown as FeatureId]);
+    const drawn = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter);
+    expect(drawn.find((f) => f.id === 'leaf-1')?.selected).toBe(true);
+    expect(drawn.find((f) => f.id === 'pt-1')?.selected).toBe(false);
+    // DEFAULT filter → no emphasis → nothing highlighted (behaviour-neutral by default).
+    const plain = buildCommittedFeatures(root, YEAR, null, DISPLAY);
+    expect(plain.find((f) => f.id === 'leaf-1')?.selected).toBe(false);
   });
 });

@@ -174,6 +174,26 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(within(list).getByText('織田領')).toBeInTheDocument();
   });
 
+  it('FR-113 (Codex F3): 個別非表示 removes the feature row from the 現在時刻 一覧; 全て再表示 restores it', () => {
+    const a = squareLeaf('f-a', '織田領', 0, 0);
+    const b = squareLeaf('f-b', '徳川領', 10, 0);
+    let root = withLeaf(emptyProject(), a, 1000);
+    root = withLeaf(root, b, 1000);
+    const { store } = renderWith(root);
+    expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-item-f-b')).toBeInTheDocument();
+
+    // Hide f-a via the display filter → its LIST row disappears (不変条件: 非表示は一覧からも
+    // 消える), while f-b stays. The list母集合 now agrees with draw / hit / search.
+    act(() => store.getState().setFeatureHidden(a.feature.id, true));
+    expect(screen.queryByTestId('feature-list-item-f-a')).not.toBeInTheDocument();
+    expect(screen.getByTestId('feature-list-item-f-b')).toBeInTheDocument();
+
+    // 全て再表示 → the row returns.
+    act(() => store.getState().showAllHiddenFeatures());
+    expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
+  });
+
   it('selecting a feature row promotes it through the store and the panel shows its fields', () => {
     const a = squareLeaf('f-a', '織田領');
     const root = withLeaf(emptyProject(), a, 1000);
