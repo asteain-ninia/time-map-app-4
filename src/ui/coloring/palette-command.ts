@@ -113,6 +113,17 @@ export function createPaletteChangeCommand(
   const base: UiSettings = root.uiSettings ?? materialize();
   if (paletteMatches(base.project, palette)) return null; // 教訓 5.24 no phantom entry
 
+  // UNDO BASELINE (Codex F2): when the root ALREADY carries uiSettings, undo restores it
+  // verbatim. When it does NOT (a pre-`ui` project), the undo target is the root with a
+  // MATERIALISED uiSettings carrying the UNCHANGED (pre-change) palette — semantically
+  // the same settings made explicit. Without this, undo would restore the uiSettings-less
+  // root, the store mirror (readDomainPalette) would return undefined and SKIP, leaving
+  // store.projectSettings on the NEW palette — so a save after undo persists the UNDONE
+  // palette. Materialising the baseline makes undo reflect the OLD palette back into the
+  // store (redo still restores the NEW palette via finalState).
+  const baseline: DomainRoot =
+    root.uiSettings === undefined ? { ...root, uiSettings: base } : root;
+
   const finalState: DomainRoot = {
     ...root,
     uiSettings: {
@@ -124,5 +135,5 @@ export function createPaletteChangeCommand(
       },
     },
   };
-  return makePaletteSwapCommand(root, finalState);
+  return makePaletteSwapCommand(baseline, finalState);
 }

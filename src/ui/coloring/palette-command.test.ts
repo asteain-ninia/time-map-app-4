@@ -82,22 +82,30 @@ describe('createPaletteChangeCommand — writes the 2 palette fields as a swap (
     expect(redo.state.uiSettings?.project.customPalette).toEqual(['#abcdef']);
   });
 
-  it('materializes uiSettings from the fallback when the root has none (pre-ui project)', () => {
+  it('materializes uiSettings on BOTH sides when the root has none (pre-ui project) — F2', () => {
     const root = rootWith(); // no uiSettings (pre-ui manifest)
     const cmd = createPaletteChangeCommand(
       root,
       { defaultPaletteTheme: 'ocean', customPalette: ['#010203'] },
-      () => uiSettingsWith('default', []),
+      () => uiSettingsWith('default', []), // OLD palette = default/[]
     );
     expect(cmd).not.toBeNull();
     const next = cmd!.execute(root).state;
-    // The finalState now CARRIES a materialized uiSettings with the NEW palette…
+    // The finalState CARRIES a materialized uiSettings with the NEW palette…
     expect(next.uiSettings).toBeDefined();
     expect(next.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
     expect(next.uiSettings?.project.customPalette).toEqual(['#010203']);
-    // …and undo restores the ORIGINAL uiSettings-less baseline (by identity).
-    expect(cmd!.undo(next).state).toBe(root);
-    expect(cmd!.undo(next).state.uiSettings).toBeUndefined();
+    // …AND (F2 fix) undo restores a MATERIALISED baseline carrying the UNCHANGED
+    // (pre-change) palette — NOT the uiSettings-less root. Only then does the store
+    // mirror (readDomainPalette) reflect the OLD palette back on undo; otherwise the
+    // mirror skips (undefined) and a save after undo persists the UNDONE palette.
+    const undoState = cmd!.undo(next).state;
+    expect(undoState.uiSettings).toBeDefined();
+    expect(undoState.uiSettings?.project.defaultPaletteTheme).toBe('default');
+    expect(undoState.uiSettings?.project.customPalette).toEqual([]);
+    // The non-uiSettings fields still round-trip by identity through the baseline.
+    expect(undoState.histories).toBe(root.histories);
+    expect(undoState.settings).toBe(root.settings);
   });
 
   it('no-op guard: returns null when the palette is unchanged (present uiSettings)', () => {

@@ -567,7 +567,13 @@ function rewriteFeatureAtTime(
   // adjust leaf as a child); only the feature inside the snapshot was trimmed.
   const newHistory: FeatureHistory = { featureId: history.featureId, series: newSeries };
   const histories = state.histories.map((h, i) => (i === index ? newHistory : h));
-  return { histories, settings: state.settings, baseMap: state.baseMap };
+  // SPREAD to preserve ALL of state's fields — including the optional
+  // DomainProject.uiSettings (FR-109/110). Rebuilding as a `{ histories, settings,
+  // baseMap }` literal silently DROPS uiSettings, so a conflict-resolution difference
+  // write-back on a loaded project carrying a persisted palette would lose it — then
+  // paletteFromRoot falls back to DEFAULT and a later auto-recolor paints with the
+  // wrong palette (Codex F1; mirrors apply-proposal's withHistories spread).
+  return { ...state, histories };
 }
 
 // --- factories --------------------------------------------------------------
@@ -963,11 +969,12 @@ export function createDeleteFeatureCommandForRoot(
     histories.push({ featureId: history.featureId, series: { entries } });
   });
 
-  const finalState: DomainRoot = {
-    histories,
-    settings: root.settings,
-    baseMap: root.baseMap,
-  };
+  // SPREAD to preserve ALL of root's fields — including the optional
+  // DomainProject.uiSettings (FR-109/110). A `{ histories, settings, baseMap }` literal
+  // silently DROPS uiSettings, so a 全錨削除 on a loaded project carrying a persisted
+  // palette would lose it — paletteFromRoot then falls back to DEFAULT and the delete's
+  // own auto-recolor (and every later one) paints with the wrong palette (Codex F1).
+  const finalState: DomainRoot = { ...root, histories };
 
   // The lifecycle delta drives selection re-resolution (教訓 5.11): a feature
   // present in the baseline histories but absent from the final ones was DELETED

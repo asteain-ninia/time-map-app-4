@@ -18,7 +18,9 @@ import {
   redo as historyRedo,
   type History,
 } from '../../domain/command/history';
+import type { Command } from '../../domain/command/index';
 import * as adjacencyModule from '../../domain/coloring/adjacency-from-features';
+import { DEFAULT_BASE_COLORS } from '../../domain/coloring';
 import { createLeafFeature, type Feature } from '../../domain/feature';
 import { createGeoParams } from '../../domain/geo/geo-params';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../../domain/ids';
@@ -39,6 +41,7 @@ import { createSessionStore, type SessionStore } from '../state/store';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS, type PaletteSelection } from '../state/settings';
 import type { StoreApi } from 'zustand/vanilla';
 
+import { createDeleteFeatureCommandForRoot } from '../consistency-binding';
 import { createPaletteChangeCommand } from './palette-command';
 import { maybeComposeAutoRecolor } from './recolor-binding';
 
@@ -60,6 +63,13 @@ const BASEMAP = {
 function uiSettingsDefault(): UiSettings {
   return {
     project: { ...DEFAULT_PROJECT_SETTINGS, defaultPaletteTheme: 'default', customPalette: [] },
+    app: { ...DEFAULT_APP_SETTINGS },
+  };
+}
+
+function uiSettingsOcean(): UiSettings {
+  return {
+    project: { ...DEFAULT_PROJECT_SETTINGS, defaultPaletteTheme: 'ocean', customPalette: ['#112244', '#334466'] },
     app: { ...DEFAULT_APP_SETTINGS },
   };
 }
@@ -91,6 +101,32 @@ function rootWithLeaf(auto: boolean): DomainProject {
   };
 }
 
+/** A single auto leaf project with NO uiSettings (a pre-`ui` manifest) — F2. */
+function rootNoUiWithLeaf(): DomainProject {
+  return {
+    histories: [leafHistoryAt('A', ['a1', 'a2', 'a3'], color(true, '#000000'))],
+    settings: SETTINGS,
+    baseMap: BASEMAP,
+  };
+}
+
+/**
+ * Two ISOLATED auto leaves under a given uiSettings palette. A is pre-coloured with
+ * `aFill`; B is a separate (non-adjacent) leaf to delete. Used to prove a delete keeps
+ * the palette AND does not spuriously recolour A to DEFAULT (F1).
+ */
+function rootWithTwoLeaves(uiSettings: UiSettings, aFill: string): DomainProject {
+  return {
+    histories: [
+      leafHistoryAt('A', ['a1', 'a2', 'a3'], color(true, aFill)),
+      leafHistoryAt('B', ['b1', 'b2', 'b3'], color(true, '#000000')),
+    ],
+    settings: SETTINGS,
+    baseMap: BASEMAP,
+    uiSettings,
+  };
+}
+
 /** Reconstruct App.tsx's recordCommand / undo-redo funnel over a live store + history. */
 function makeFunnel(initialDomain: DomainProject) {
   const store: StoreApi<SessionStore<DomainProject>> = createSessionStore<DomainProject>({
@@ -116,8 +152,10 @@ function makeFunnel(initialDomain: DomainProject) {
       appSettings: store.getState().appSettings,
     });
 
-  const commitPalette = (palette: PaletteSelection): boolean => {
-    const command = createPaletteChangeCommand(store.getState().domain, palette, materialize);
+  // The generic App recordCommand funnel: wrap with the auto-recolor, execute into the
+  // history, reflect through applyCommandResult (mirror included). Any command path
+  // (palette / delete / …) goes through here, so the recolor + mirror behave identically.
+  const commitCommand = (command: Command<DomainProject> | null): boolean => {
     if (command === null) return false;
     const wrapped = maybeComposeAutoRecolor(command, history.state, T);
     const step = historyExecute(history, wrapped);
@@ -125,6 +163,8 @@ function makeFunnel(initialDomain: DomainProject) {
     store.getState().applyCommandResult(step.history.state, step.result, undefined);
     return true;
   };
+  const commitPalette = (palette: PaletteSelection): boolean =>
+    commitCommand(createPaletteChangeCommand(store.getState().domain, palette, materialize));
   const undo = (): void => {
     const step = historyUndo(history);
     if (step.history === history) return;
@@ -137,7 +177,7 @@ function makeFunnel(initialDomain: DomainProject) {
     history = step.history;
     store.getState().applyUndoRedoResult(step.history.state, step.result, undefined);
   };
-  return { store, commitPalette, undo, redo };
+  return { store, commitPalette, commitCommand, undo, redo };
 }
 
 function fillOf(root: DomainProject, id: string): string {
@@ -227,5 +267,69 @@ describe('save round-trip — palette + recoloured fills persist (STUDY item 4)'
     expect(fillOf(restored, 'A')).toBe('#112244');
     // Full structural round-trip identity holds.
     expect(projectsEqual(restored, domainToSave)).toBe(true);
+  });
+});
+
+describe('F1 — a delete keeps the palette; the recolor stays ocean (not DEFAULT)', () => {
+  it('deleting a feature preserves uiSettings so paletteFromRoot stays ocean (no spurious recolor)', () => {
+    clearLiveLookupCache();
+    // A is a pre-coloured ocean[0] auto leaf; B is a separate leaf to delete.
+    const { store, commitCommand } = makeFunnel(
+      rootWithTwoLeaves(uiSettingsOcean(), '#112244'),
+    );
+    expect(fillOf(store.getState().domain, 'A')).toBe('#112244'); // ocean[0]
+
+    // Delete B through the SAME recordCommand funnel (maybeComposeAutoRecolor runs).
+    expect(
+      commitCommand(createDeleteFeatureCommandForRoot(store.getState().domain, asFeatureId('B'))),
+    ).toBe(true);
+
+    // F1: the delete's finalState must KEEP uiSettings=ocean. Pre-fix it dropped them →
+    // paletteFromRoot(postRoot)=DEFAULT → the ocean→DEFAULT transition spuriously
+    // recoloured A to DEFAULT_BASE_COLORS[0]. Post-fix: palette unchanged, A stays ocean.
+    expect(store.getState().domain.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+    expect(fillOf(store.getState().domain, 'A')).toBe('#112244'); // still ocean[0]
+    expect(fillOf(store.getState().domain, 'A')).not.toBe(DEFAULT_BASE_COLORS[0]); // NOT default
+    // The store mirror stayed ocean too (readDomainPalette saw a uiSettings-present root).
+    expect(store.getState().projectSettings.defaultPaletteTheme).toBe('ocean');
+  });
+});
+
+describe('F2 — pre-ui project: palette undo restores the OLD palette to store + save (既知 wart 解消)', () => {
+  it('undo reverts the store palette to DEFAULT and a save persists the OLD palette; redo re-applies', () => {
+    clearLiveLookupCache();
+    const { store, commitPalette, undo, redo } = makeFunnel(rootNoUiWithLeaf()); // no uiSettings
+
+    // Commit ocean: the leaf recolours to ocean[0] and the store mirror → ocean.
+    expect(commitPalette(OCEAN)).toBe(true);
+    expect(fillOf(store.getState().domain, 'A')).toBe('#112244');
+    expect(store.getState().projectSettings.defaultPaletteTheme).toBe('ocean');
+
+    // Undo: F2 — the command's baseline was materialised with the OLD (default) palette,
+    // so the mirror reflects it back. Pre-fix the baseline was the uiSettings-less root,
+    // the mirror SKIPPED, and the store stayed on ocean.
+    undo();
+    expect(store.getState().projectSettings.defaultPaletteTheme).toBe('default');
+    expect(store.getState().projectSettings.customPalette).toEqual([]);
+    expect(fillOf(store.getState().domain, 'A')).toBe('#000000'); // colour reverted too
+
+    // A save after undo persists the OLD palette (default), NOT the undone ocean.
+    const s = store.getState();
+    const restored = manifestToProject(
+      serialize({
+        ...s.domain,
+        uiSettings: toPersistedUiSettings({
+          projectSettings: s.projectSettings,
+          appSettings: s.appSettings,
+        }),
+      }),
+    );
+    expect(restored.uiSettings?.project.defaultPaletteTheme).toBe('default');
+    expect(restored.uiSettings?.project.customPalette).toEqual([]);
+
+    // Redo re-applies ocean (palette + recolour + mirror).
+    redo();
+    expect(store.getState().projectSettings.defaultPaletteTheme).toBe('ocean');
+    expect(fillOf(store.getState().domain, 'A')).toBe('#112244');
   });
 });

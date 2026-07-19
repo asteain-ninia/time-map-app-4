@@ -39,6 +39,8 @@ import { createVertex, type Vertex } from '../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../domain/ids';
 import { createGeoParams } from '../domain/geo/geo-params';
 import type { AddSnapshot } from '../domain/add/index';
+import type { UiSettings } from '../domain/persistence/index';
+import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from './state/settings';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
@@ -1617,5 +1619,92 @@ describe('wired 編集→削除 / Delete key deletes the active feature (bughunt
     expect(dispatchChord(deleteChord, keymap, registry, EDIT_MODE.View)).toBe(
       DISPATCH_RESULT.Disabled,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F1 regression (Codex HIGH): the UI-layer root reconstructions in
+// consistency-binding.ts MUST preserve DomainProject.uiSettings (FR-109/110) —
+// the same class apply-proposal.ts's withHistories already spreads for. Two
+// sites rebuilt the root as a `{ histories, settings, baseMap }` literal,
+// silently DROPPING uiSettings:
+//   - rewriteFeatureAtTime (:570, U06 difference write-back on conflict resolution)
+//   - createDeleteFeatureCommandForRoot (:966, 全錨削除)
+// On a loaded project carrying a persisted palette (ocean), that drop made
+// paletteFromRoot fall back to DEFAULT_PALETTE (recolor-binding.ts:55) and, since
+// readDomainPalette returns undefined for a uiSettings-less root, the store mirror
+// SKIPPED — so a later auto-recolor painted with DEFAULT and a save wrote
+// "ocean 設定 + default 色" to disk. These FAIL on the pre-fix literals.
+const UI_OCEAN: UiSettings = {
+  project: {
+    ...DEFAULT_PROJECT_SETTINGS,
+    defaultPaletteTheme: 'ocean',
+    customPalette: ['#112244', '#334466'],
+  },
+  app: { ...DEFAULT_APP_SETTINGS },
+};
+function withUi(project: DomainRoot): DomainRoot {
+  return { ...project, uiSettings: UI_OCEAN };
+}
+
+describe('F1 — consistency-binding root reconstructions preserve uiSettings (FR-109/110)', () => {
+  it('conflict-resolution difference write-back keeps uiSettings (rewriteFeatureAtTime :570)', () => {
+    let n = 0;
+    let root = withUi(emptyProject());
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
+      nextRingId: () => asRingId(`rr-${(n += 1)}`),
+    });
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const first = binding.startProcess(
+      createEditProposal(a.feature.id, timePointYear(1000), addSnapshot(a.feature, a.vertices)),
+    );
+    expect(first.status).toBe(PROCESS_STATUS.Committed);
+    if (first.status === PROCESS_STATUS.Committed) root = first.state;
+    // The add preserved uiSettings (guarded by apply-proposal's own regression).
+    expect(root.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+
+    const b = squareLeaf('f-b', 'vb', 1, 1); // overlaps f-a → conflict + difference trim
+    const proposal = createEditProposal(
+      b.feature.id,
+      timePointYear(1000),
+      addSnapshot(b.feature, b.vertices),
+    );
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    const committed = binding.applyResolutionsFor(proposal)([
+      { conflictId: conflict.id, priorityFeatureId: a.feature.id, adjustFeatureId: b.feature.id },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    // THE FIX: the difference write-back must carry uiSettings through (was dropped by
+    // the `{ histories, settings, baseMap }` literal). Red on the pre-fix code.
+    const finalState = committed.command.execute(root).state;
+    expect(finalState.uiSettings).toBeDefined();
+    expect(finalState.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+    expect(finalState.uiSettings?.project.customPalette).toEqual(['#112244', '#334466']);
+  });
+
+  it('全錨削除 (createDeleteFeatureCommandForRoot :966) keeps uiSettings — execute AND undo', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root: DomainRoot = applyAddProposal(withUi(emptyProject()), {
+      featureId: a.feature.id,
+      anchorTime: timePointYear(1000),
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    expect(root.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+
+    const cmd = createDeleteFeatureCommandForRoot(root, a.feature.id);
+    expect(cmd).not.toBeNull();
+    // THE FIX: the whole-state-swap finalState must not drop uiSettings. Red on pre-fix.
+    const out = cmd!.execute(root);
+    expect(out.state.uiSettings).toBeDefined();
+    expect(out.state.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+    // Symmetric: undo restores the original root (uiSettings intact).
+    expect(cmd!.undo(out.state).state.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
   });
 });
