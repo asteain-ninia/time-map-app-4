@@ -137,6 +137,27 @@ export type AppSettingKey = keyof AppSettings;
 export type SettingKey = ProjectSettingKey | AppSettingKey;
 
 /**
+ * The two project-settings fields that source the auto-recolor engine's palette
+ * (FR-109 follow-up): the default palette theme + the custom base colours. They
+ * are carried together because a palette CHANGE is committed as ONE undoable
+ * command (root.uiSettings.project) that also drives an immediate auto-recolor —
+ * NOT a plain non-undoable per-key store write like the other project settings.
+ * Picked from {@link ProjectSettings} so the two shapes can never drift.
+ */
+export type PaletteSelection = Pick<ProjectSettings, 'defaultPaletteTheme' | 'customPalette'>;
+
+/** The palette 2-key set, single-sourced for the confirm branch (教訓 5.19). */
+export const PALETTE_SETTING_KEYS = [
+  'defaultPaletteTheme',
+  'customPalette',
+] as const satisfies readonly ProjectSettingKey[];
+
+/** Whether a project key is one of the two palette fields (undoable-command routed). */
+export function isPaletteSettingKey(key: ProjectSettingKey): boolean {
+  return key === 'defaultPaletteTheme' || key === 'customPalette';
+}
+
+/**
  * Every project setting key, frozen. Used to classify a key and to assert the
  * project/app partition is exhaustive and disjoint (受け入れ基準 4).
  */

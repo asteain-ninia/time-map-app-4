@@ -32,6 +32,8 @@ import {
   SHORTCUTS_STRINGS,
 } from '../shell/index';
 import { SettingsDialog } from '../settings/index';
+import type { SettingsStorePort } from '../settings/index';
+import type { PaletteSelection } from '../state/settings';
 import {
   searchFeatures,
   reevaluateResult,
@@ -86,6 +88,15 @@ export interface HelpToolsControllerProps {
    * replacement itself — it only forwards the request.
    */
   readonly onRequestBasemapReplace?: () => void;
+  /**
+   * FR-109 follow-up (ユーザー裁定) — commit a default-palette change as ONE UNDOABLE
+   * command (App wires it to the recordCommand funnel, so the palette change + its
+   * auto-recolor land in the same undo unit). Merged into the U38 設定ダイアログ's injected
+   * store port as `commitPaletteChange`; when absent the dialog falls back to the plain
+   * (non-undoable) per-key updateProjectSetting write for the palette (受け入れ基準: 結線
+   * が無ければ従来経路, never a crash). This controller only forwards the seam.
+   */
+  readonly onCommitPaletteChange?: (palette: PaletteSelection) => void;
 }
 
 /**
@@ -145,21 +156,32 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
   const close = (): void => setView(HELP_VIEW.None);
 
   switch (view) {
-    case HELP_VIEW.Settings:
+    case HELP_VIEW.Settings: {
       // The full U38 dialog, bound to the live store slice. It owns its own draft /
       // confirm / cancel; onClose returns to None (its cancel + Esc + backdrop all
       // route through here). FR-04: the差し替えボタン起動点 is forwarded to the host's
       // replace runner (App → U39 FileOpsController); the dialog performs no
       // replacement itself (受け入れ基準 1).
+      // Merge the LIVE store slice with the FR-109 undoable palette seam into ONE
+      // injected port (the store owns the settings truth + the non-undoable per-key
+      // writes; commitPaletteChange is App's recordCommand funnel). Only attach the
+      // seam when provided (exactOptionalPropertyTypes: never write `undefined`).
+      const settingsPort: SettingsStorePort = {
+        ...store.getState(),
+        ...(props.onCommitPaletteChange !== undefined
+          ? { commitPaletteChange: props.onCommitPaletteChange }
+          : {}),
+      };
       return (
         <SettingsDialog
-          store={store.getState()}
+          store={settingsPort}
           onClose={close}
           {...(props.onRequestBasemapReplace !== undefined
             ? { onRequestBasemapReplace: props.onRequestBasemapReplace }
             : {})}
         />
       );
+    }
     case HELP_VIEW.Search:
       return <SearchView store={store} onClose={close} />;
     case HELP_VIEW.About:

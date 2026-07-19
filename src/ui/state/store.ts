@@ -69,6 +69,7 @@ import type { DisplayGrabbabilityResolver } from './grabbability';
 import {
   type AppSettingKey,
   type AppSettings,
+  type PaletteSelection,
   type ProjectSettingKey,
   type ProjectSettings,
   type SettingsScope,
@@ -710,6 +711,24 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly liveFeatureIds?: () => ReadonlySet<FeatureId>;
   /**
+   * FR-109 follow-up — read the palette 2-field selection (defaultPaletteTheme /
+   * customPalette) out of the opaque domain root's persisted UI settings, or
+   * `undefined` when the root carries no uiSettings (a pre-`ui` project). Injected so
+   * the store can NARROWLY mirror a palette CHANGE that a command committed INTO the
+   * domain (root.uiSettings — the auto-recolor engine's palette source) back into the
+   * live `projectSettings` the settings dialog draft + the save-time overlay
+   * (toPersistedUiSettings) read — keeping the two in lock-step WITHOUT the store
+   * reaching into `S` (spec 依存: ルート状態を不変に受け渡す; mirror of {@link domainEquals}).
+   * Applied at the applyCommandResult / applyUndoRedoResult seam in BOTH directions so
+   * a commit and its undo/redo stay symmetric (教訓 5.23). ONLY the two palette fields
+   * are reflected — every other projectSettings field stays store-owned (never
+   * clobbered). When the reader returns `undefined` (no uiSettings) the palette is left
+   * untouched (store-owned), so an unrelated command that carries no uiSettings can
+   * never reset it. When OMITTED entirely the mirror is skipped (honest absence —
+   * opaque-domain tests that never change a palette).
+   */
+  readonly readDomainPalette?: (domain: S) => PaletteSelection | undefined;
+  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -749,6 +768,9 @@ export function createSessionStore<S>(
   // May be undefined: the FR-113 filter reconcile is then SKIPPED (honest absence —
   // the store never inspects the opaque domain to derive the live feature set itself).
   const liveFeatureIds = options.liveFeatureIds;
+  // May be undefined: the palette mirror is then SKIPPED (honest absence — the store
+  // never reaches into the opaque domain to read a palette itself; FR-109 follow-up).
+  const readDomainPalette = options.readDomainPalette;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
@@ -867,11 +889,43 @@ export function createSessionStore<S>(
     // back to saved must still read CLEAN. Comparing all keys (isAppNoOp) falsely
     // reported settings-dirty and fired the unsaved-changes guard on quit. The
     // PROJECT half has no analogous cosmetic exception, so it compares all keys.
-    const settingsMatchSaved = (): boolean =>
+    // `projectOverride` lets a caller compare the POST-write projectSettings that a
+    // SAME-set() change (the FR-109 palette mirror below) is about to commit, rather
+    // than the pre-set live value — otherwise an undo back to the saved palette would
+    // read the still-live NEW palette and falsely report dirty (the applyUndoRedoResult
+    // ordering). Absent ⇒ the live value, the original behaviour.
+    const settingsMatchSaved = (projectOverride?: ProjectSettings): boolean =>
       savedProjectSettings !== null &&
       savedAppSettings !== null &&
-      isProjectNoOp(savedProjectSettings, get().projectSettings) &&
+      isProjectNoOp(savedProjectSettings, projectOverride ?? get().projectSettings) &&
       isDocumentAffectingAppNoOp(savedAppSettings, get().appSettings);
+
+    // FR-109 follow-up — NARROWLY reflect a domain-committed palette change
+    // (root.uiSettings.project's two palette fields) into the live projectSettings, so
+    // the settings-dialog draft + the save-time overlay (toPersistedUiSettings) read the
+    // SAME palette the auto-recolor engine coloured with (二重真実源の解消). Returns the
+    // SAME reference when nothing changed — no injected reader, a root with no uiSettings
+    // (palette left store-owned), or values already equal — so the common edit / undo /
+    // redo path neither allocates nor re-notifies. NEVER touches any non-palette field
+    // (他の projectSettings 欄はクロバーしない). Called at the applyCommandResult AND
+    // applyUndoRedoResult seams so both directions stay symmetric (教訓 5.23).
+    const mirrorPaletteFromDomain = (current: ProjectSettings, nextDomain: S): ProjectSettings => {
+      if (readDomainPalette === undefined) return current;
+      const palette = readDomainPalette(nextDomain);
+      if (palette === undefined) return current; // no uiSettings — palette stays store-owned
+      if (
+        palette.defaultPaletteTheme === current.defaultPaletteTheme &&
+        current.customPalette.length === palette.customPalette.length &&
+        palette.customPalette.every((c, i) => c === current.customPalette[i])
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        defaultPaletteTheme: palette.defaultPaletteTheme,
+        customPalette: [...palette.customPalette],
+      };
+    };
 
     // Commit a CHANGED display-control value AND heal the vertex selection against it
     // in ONE set() (選択 heal の対称性: the display-axis sibling of setCurrentTime's
@@ -982,10 +1036,19 @@ export function createSessionStore<S>(
       // reflects a fully-coherent post-commit state on its own (domain + focus +
       // feature-history-level re-resolved selection); the anchor-level tightening
       // below only ever REMOVES a ghost, never adds one.
+      // FR-109 follow-up: NARROWLY mirror a palette change the command committed into
+      // the domain (root.uiSettings) back into the live projectSettings, in the SAME
+      // set() so the two never drift. A no-op (same reference) for every non-palette
+      // command — the common case allocates / notifies nothing extra.
+      const curProjectSettings = get().projectSettings;
+      const nextProjectSettings = mirrorPaletteFromDomain(curProjectSettings, nextDomain);
       set({
         domain: nextDomain,
         projectDirty: true,
         displayControl: nextDisplayControl,
+        ...(nextProjectSettings !== curProjectSettings
+          ? { projectSettings: nextProjectSettings }
+          : {}),
         ...selectionPatch(reresolved),
       });
       // 第10波 #5: reresolveAfterStructureChange works at the FEATURE-HISTORY level
@@ -1061,10 +1124,18 @@ export function createSessionStore<S>(
       // previous hole). This recompute NEVER clears the flag (it only reads it); only a
       // real save / LOAD / NEW clears it, so the byte divergence survives every
       // undo / redo until the bytes are actually persisted.
+      // FR-109 follow-up: mirror the restored palette (root.uiSettings) into the live
+      // projectSettings — SYMMETRIC with applyCommandResult so an undo/redo of a palette
+      // command moves the store's palette in lock-step (教訓 5.23). `clean` MUST compare
+      // this POST-mirror value (not the pre-set live palette), else undoing a palette
+      // change back to the saved palette would read the still-live NEW palette and stay
+      // falsely dirty. A no-op (same reference) for every non-palette undo/redo.
+      const curProjectSettings = get().projectSettings;
+      const nextProjectSettings = mirrorPaletteFromDomain(curProjectSettings, nextDomain);
       const clean =
         savedDomain !== null &&
         domainEquals(nextDomain, savedDomain) &&
-        settingsMatchSaved() &&
+        settingsMatchSaved(nextProjectSettings) &&
         !baseMapBytesDirtySinceSave;
       // COMMIT THE DOMAIN FIRST (第11波 Fix C, #4=#5): symmetric with
       // applyCommandResult (694-754). The injected existence resolver reads the LIVE
@@ -1079,6 +1150,9 @@ export function createSessionStore<S>(
         domain: nextDomain,
         projectDirty: !clean,
         displayControl: nextDisplayControl,
+        ...(nextProjectSettings !== curProjectSettings
+          ? { projectSettings: nextProjectSettings }
+          : {}),
         ...selectionPatch(next),
       });
       // 第11波 Fix C (#4=#5): the sibling of the 第10波 #5 heal on applyCommandResult.

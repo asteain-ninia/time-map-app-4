@@ -180,6 +180,11 @@ import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
 import { resolveDisplayFor } from './map/display-resolution-cache';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
+// (FR-109 follow-up) the undoable default-palette change command — routed through the
+// SAME recordCommand funnel so a palette change + its auto-recolor land as ONE undo unit.
+import { createPaletteChangeCommand } from './coloring/palette-command';
+import { toPersistedUiSettings } from './file-ops/ui-settings-bridge';
+import type { PaletteSelection } from './state/settings';
 import {
   ownerLookupFromMap,
   type RectangleResolver,
@@ -282,6 +287,19 @@ export function App(): JSX.Element {
           const root = getRoot !== null ? getRoot() : buildEmptyProject();
           return new Set<FeatureId>(root.histories.map((h) => h.featureId));
         },
+        // FR-109 follow-up: read the palette 2 fields out of the committed root's
+        // uiSettings so the store can mirror a palette command's change back into the
+        // live projectSettings (settings dialog + save overlay source). undefined when
+        // the root carries no uiSettings (a pre-`ui` project) — the store then leaves the
+        // palette store-owned. The ONLY place App reaches into DomainProject.uiSettings
+        // for the store (mirror of projectsEqual → uiSettingsEqual).
+        readDomainPalette: (domain) =>
+          domain.uiSettings === undefined
+            ? undefined
+            : {
+                defaultPaletteTheme: domain.uiSettings.project.defaultPaletteTheme,
+                customPalette: domain.uiSettings.project.customPalette,
+              },
       }),
     [],
   );
@@ -1688,6 +1706,31 @@ export function App(): JSX.Element {
       recordCommand(result.command, preference, anchorTime);
     },
     [recordCommand],
+  );
+
+  // FR-109 follow-up (ユーザー裁定): commit a default-palette change (defaultPaletteTheme
+  // / customPalette) as ONE UNDOABLE command through the SAME recordCommand funnel every
+  // other edit uses — so maybeComposeAutoRecolor detects the PaletteTransition and the
+  // auto-recolor rides in the SAME undo unit (Ctrl+Z reverts palette + colours together).
+  // The command writes the two fields INTO root.uiSettings.project (the recolor engine's
+  // palette source); when the root has no uiSettings (a pre-`ui` project) it materialises
+  // one from the LIVE store settings (toPersistedUiSettings) so every other uiSettings
+  // field agrees. The no-op guard (createPaletteChangeCommand → null) drops a phantom
+  // entry when the palette is unchanged. The anchor time is the current view time — the
+  // instant the recolor's adjacency is evaluated at. The settings dialog's confirm routes
+  // ONLY the palette pair here (its other changed keys stay the non-undoable store path).
+  const commitPaletteChange = useCallback(
+    (palette: PaletteSelection): void => {
+      const command = createPaletteChangeCommand(store.getState().domain, palette, () =>
+        toPersistedUiSettings({
+          projectSettings: store.getState().projectSettings,
+          appSettings: store.getState().appSettings,
+        }),
+      );
+      if (command === null) return; // unchanged palette — no undo entry (教訓 5.24)
+      recordCommand(command, undefined, store.getState().currentTime);
+    },
+    [store, recordCommand],
   );
 
   // Keep the edit-session's commit-handler ref pointed at the current recordCommit.
@@ -3121,6 +3164,7 @@ export function App(): JSX.Element {
               store={store}
               registry={registry}
               onRequestBasemapReplace={handleRequestBasemapReplace}
+              onCommitPaletteChange={commitPaletteChange}
               onModalOpenChange={setHelpModalOpen}
             />
             {/* 第6工程 NOTE: the six TOOL controllers (add / knife / merge / reparent /

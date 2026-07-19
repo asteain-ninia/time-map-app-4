@@ -346,6 +346,87 @@ describe('custom palette management (FR-109 / FR-102)', () => {
   });
 });
 
+// FR-109 follow-up (ユーザー裁定): the palette pair is routed to the UNDOABLE
+// commitPaletteChange command, NOT the per-key updateProjectSetting store write — because
+// the palette feeds the recolor engine's root.uiSettings source. A non-palette key in the
+// SAME confirm still takes the ordinary store path (両方反映).
+describe('palette confirm routes to the undoable command seam (FR-109 follow-up)', () => {
+  /** A port whose per-key write is spied and whose palette seam is a stub. */
+  function spyPort(store: StoreApi<SessionStore<TestDomain>>): {
+    port: SettingsStorePort;
+    updateProjectSetting: ReturnType<typeof vi.fn>;
+    commitPaletteChange: ReturnType<typeof vi.fn>;
+  } {
+    const s = store.getState();
+    const updateProjectSetting = vi.fn(s.updateProjectSetting);
+    const commitPaletteChange = vi.fn();
+    return {
+      port: {
+        projectSettings: s.projectSettings,
+        appSettings: s.appSettings,
+        updateProjectSetting: updateProjectSetting as SettingsStorePort['updateProjectSetting'],
+        setProjectTimelineRangeYears: s.setProjectTimelineRangeYears,
+        updateAppSetting: s.updateAppSetting,
+        commitPaletteChange,
+      },
+      updateProjectSetting,
+      commitPaletteChange,
+    };
+  }
+
+  it('a palette-only change fires commitPaletteChange ONCE and no palette updateProjectSetting', () => {
+    const store = makeStore();
+    const { port, updateProjectSetting, commitPaletteChange } = spyPort(store);
+    render(<SettingsDialog store={port} onClose={() => {}} />);
+
+    fireEvent.click(screen.getByTestId('settings-palette-add')); // customPalette draft → ['#000000']
+    fireEvent.click(screen.getByTestId('settings-save'));
+
+    expect(commitPaletteChange).toHaveBeenCalledTimes(1);
+    expect(commitPaletteChange).toHaveBeenCalledWith({
+      defaultPaletteTheme: DEFAULT_PROJECT_SETTINGS.defaultPaletteTheme,
+      customPalette: ['#000000'],
+    });
+    // The palette must NOT also flow through the non-undoable per-key store write.
+    const paletteKeyWrites = updateProjectSetting.mock.calls.filter(
+      ([key]) => key === 'customPalette' || key === 'defaultPaletteTheme',
+    );
+    expect(paletteKeyWrites).toHaveLength(0);
+  });
+
+  it('palette + a non-palette key: palette→command, the other→updateProjectSetting (両方反映)', () => {
+    const store = makeStore();
+    const { port, updateProjectSetting, commitPaletteChange } = spyPort(store);
+    render(<SettingsDialog store={port} onClose={() => {}} />);
+
+    fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '12345' } });
+    fireEvent.click(screen.getByTestId('settings-palette-add'));
+    fireEvent.click(screen.getByTestId('settings-save'));
+
+    // Palette → undoable command.
+    expect(commitPaletteChange).toHaveBeenCalledTimes(1);
+    // The non-palette key → ordinary store path, and it actually reflected.
+    expect(updateProjectSetting).toHaveBeenCalledWith('equatorLengthKm', 12345);
+    expect(store.getState().projectSettings.equatorLengthKm).toBe(12345);
+    // …and no palette key leaked into the per-key path.
+    expect(
+      updateProjectSetting.mock.calls.some(
+        ([key]) => key === 'customPalette' || key === 'defaultPaletteTheme',
+      ),
+    ).toBe(false);
+  });
+
+  it('falls back to updateProjectSetting for the palette when the seam is absent', () => {
+    // The default portFrom carries NO commitPaletteChange: the palette persists via the
+    // ordinary (non-undoable) per-key path, preserving the pre-existing behaviour.
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('settings-palette-add'));
+    fireEvent.click(screen.getByTestId('settings-save'));
+    expect(store.getState().projectSettings.customPalette).toEqual(['#000000']);
+  });
+});
+
 describe('base-map replace起動点 (受け入れ基準 1)', () => {
   it('invokes the host request handler (U18 does the replacement)', () => {
     const store = makeStore();

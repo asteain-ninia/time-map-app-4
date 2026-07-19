@@ -19,9 +19,11 @@ import { useCallback, useState } from 'react';
 import type {
   AppSettingKey,
   AppSettings,
+  PaletteSelection,
   ProjectSettingKey,
   ProjectSettings,
 } from '../state/settings';
+import { isPaletteSettingKey } from '../state/settings';
 
 import { changedAppKeys, changedProjectKeys } from './diff';
 import {
@@ -56,6 +58,18 @@ export interface SettingsStorePort {
   setProjectTimelineRangeYears(minYear: number, maxYear: number): void;
   /** U16: write ONE app setting (app-level persistence, notifies, 教訓 5.35). */
   updateAppSetting<K extends AppSettingKey>(key: K, value: AppSettings[K]): void;
+  /**
+   * FR-109 follow-up (ユーザー裁定): commit the default-palette change
+   * (defaultPaletteTheme / customPalette) as ONE UNDOABLE command that also drives an
+   * immediate auto-recolor, INSTEAD of the plain non-undoable `updateProjectSetting`
+   * write. The two palette fields feed the recolor engine's palette source
+   * (root.uiSettings.project) — a per-key store write never reaches it, so it would not
+   * re-colour. The composition root wires this to App's recordCommand funnel (structure
+   * + auto-recolor as one undo unit). OPTIONAL: when the seam is ABSENT (a unit test /
+   * host that does not exercise undo) the confirm path falls back to per-key
+   * updateProjectSetting for the palette, preserving the pre-existing behaviour.
+   */
+  commitPaletteChange?(palette: PaletteSelection): void;
 }
 
 // --- Confirm outcome (テスト可能な戻り値, 教訓 5.26) --------------------------
@@ -165,8 +179,19 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
     // key. The whole draft is already validated above (min < max), so the pair is
     // safe. `changedProject` (the returned order) is unchanged for observability.
     const timelineChanged = changedProject.some(isTimelineKey);
+    // FR-109 follow-up (ユーザー裁定): the two palette keys are routed to the UNDOABLE
+    // commitPaletteChange command (which also auto-recolors) — the SAME atomic-branch
+    // shape the timeline pair uses — INSTEAD of the per-key updateProjectSetting write,
+    // because the palette feeds the recolor engine's root.uiSettings source (a store
+    // write never reaches it). `changedProject` (the returned observability list) still
+    // lists the palette keys, exactly like the timeline keys. When the seam is absent
+    // (a host/test that does not exercise undo) they fall through to the per-key path.
+    const commitPaletteChange = store.commitPaletteChange;
+    const routePaletteAsCommand =
+      commitPaletteChange !== undefined && changedProject.some(isPaletteSettingKey);
     for (const key of changedProject) {
       if (isTimelineKey(key)) continue; // handled atomically below
+      if (routePaletteAsCommand && isPaletteSettingKey(key)) continue; // one undoable command below
       // Per-scope routing: project settings dirty-mark the document (教訓 5.36).
       writeProject(store, projectV.value, key);
     }
@@ -175,6 +200,12 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
         projectV.value.timelineMinYear,
         projectV.value.timelineMaxYear,
       );
+    }
+    if (routePaletteAsCommand) {
+      commitPaletteChange({
+        defaultPaletteTheme: projectV.value.defaultPaletteTheme,
+        customPalette: projectV.value.customPalette,
+      });
     }
     for (const key of changedApp) {
       writeApp(store, appV.value, key);
