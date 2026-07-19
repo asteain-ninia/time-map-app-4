@@ -85,12 +85,14 @@ import type { WorldCoordinate } from '../../domain/coordinate';
 import type { ResolvedDisplayShape } from '../../domain/display';
 import { pointInPolygon, POINT_LOCATION } from '../../domain/geometry/predicates';
 import type { DisplayControlInput } from '../../render/display-pipeline';
+import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
 import {
   resolveDisplayFor,
   lineFullyResolved,
   vertexOwners,
   type DisplayResolution,
 } from './display-resolution-cache';
+import { resolveFilteredDisplay } from './filtered-display';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
@@ -111,6 +113,15 @@ export interface LiveHitTestInput {
    * (the same default the store and renderer use).
    */
   readonly displayControl?: DisplayControlInput;
+  /**
+   * The FR-113 display filter (種別 / 深度 / 個別非表示 / 不透明度) THIS frame drew with.
+   * The hit-test restricts its candidates to the SAME visible母集合 the renderer drew
+   * (committed-features culls the same set), so a feature hidden by the filter is not
+   * selectable and a click falls through to whatever is drawn beneath it (教訓 5.29 単一
+   * 解決 —「消したのに掴める」対概念矛盾を作らない). When omitted / inert (the default),
+   * the hit-test considers every drawn feature exactly as before (zero overhead).
+   */
+  readonly filter?: FilterState;
   /** World → surface screen px (the SAME transform the renderer drew with). */
   readonly toScreen: ProjectToScreen;
   /**
@@ -369,9 +380,14 @@ function drawnAreaAtPoint(
   areas: readonly ResolvedDisplayShape[],
   worldPoint: WorldCoordinate,
   wrap: WrapFrame,
+  visibleIds: ReadonlySet<FeatureId> | null,
 ): FeatureId | null {
   let hit: FeatureId | null = null;
   for (const area of areas) {
+    // FR-113: a hidden area is CLICK-THROUGH — it is not drawn, so a click passes it to
+    // whatever visible area is drawn beneath (単一解決: draw == hit). `visibleIds === null`
+    // (inert / no filter) means every area is a candidate, unchanged (教訓 5.29).
+    if (visibleIds !== null && !visibleIds.has(area.featureId)) continue;
     if (areaContainsPoint(area, worldPoint, wrap)) hit = area.featureId; // later (top) area wins
   }
   return hit;
@@ -733,12 +749,16 @@ function drawnAreaAtPointIndexed(
   hitIndex: HitIndex,
   worldPoint: WorldCoordinate,
   wrap: WrapFrame,
+  visibleIds: ReadonlySet<FeatureId> | null,
 ): FeatureId | null {
   const candidates = areaCandidates(hitIndex, worldPoint, wrap);
-  if (candidates === null) return drawnAreaAtPoint(areas, worldPoint, wrap);
+  if (candidates === null) return drawnAreaAtPoint(areas, worldPoint, wrap, visibleIds);
   let hit: FeatureId | null = null;
   for (const i of candidates) {
     const area = areas[i]!;
+    // FR-113 click-through for hidden areas (see drawnAreaAtPoint) — applied identically
+    // in the indexed path so the index result stays byte-identical to the full scan.
+    if (visibleIds !== null && !visibleIds.has(area.featureId)) continue;
     if (areaContainsPoint(area, worldPoint, wrap)) hit = area.featureId; // later (top) area wins
   }
   return hit;
@@ -755,6 +775,13 @@ export interface DrawnAreaAtPointInput {
    * drawn. When omitted, falls back to N=0 / no focus (the renderer default).
    */
   readonly displayControl?: DisplayControlInput | undefined;
+  /**
+   * The FR-113 display filter the frame drew with. A hidden area is CLICK-THROUGH here
+   * too, so the knife's 対象面探索 never resolves to a feature the map does not draw
+   * (単一真実源 — draw == hit == split target). Omitted / inert ⇒ every drawn area is a
+   * candidate (unchanged).
+   */
+  readonly filter?: FilterState | undefined;
   /**
    * The camera + viewport the frame drew with, used to enumerate the EXACT ±360°
    * wrap turns the renderer painted each area at (`wrapTurnsForLonSpan`). When
@@ -795,6 +822,9 @@ export function drawnAreaAt(
   // the cursor window margin is just the default grab radius (over-includes ≤1 turn, never
   // under-includes a containing replica — see drawnLonOffsets TAIL-LATENCY CLAMP).
   const wrap = buildWrapFrame(input.wrap, worldPoint.lon, DEFAULT_HIT_RADIUS_PX);
+  // FR-113: exclude filter-hidden areas from the split-target search (draw == hit target).
+  const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
+  const visibleIds = filtered === null ? null : filtered.visibleIds;
   // Narrow the O(全エリア) point-in-polygon scan through the SAME broad-phase area index the
   // main hit-test uses (S3c). The candidate set is a superset run in array order, so the
   // result equals the full scan exactly (単一真実源 — same areaContainsPoint).
@@ -803,6 +833,7 @@ export function drawnAreaAt(
     getHitIndex(resolution),
     worldPoint,
     wrap,
+    visibleIds,
   );
 }
 
@@ -817,6 +848,12 @@ export interface VerticesInRectangleInput {
    * by a rubber-band either). When omitted, falls back to N=0 / no focus (the default).
    */
   readonly displayControl?: DisplayControlInput | undefined;
+  /**
+   * The FR-113 display filter the frame drew with. A rubber-band never selects the
+   * vertices of a filter-hidden feature (its handles are not drawn), matching the click
+   * hit-test's母集合 (単一真実源, 描画 ⊇ ヒット). Omitted / inert ⇒ unchanged.
+   */
+  readonly filter?: FilterState | undefined;
   /**
    * The camera + viewport the frame drew with. Supplied so the rubber-band enumerates the
    * SAME ±360° wrap turns the renderer painted each vertex at (`wrapTurnsForLonSpan`, via
@@ -874,7 +911,12 @@ export function verticesInRectangle(
   const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
   // The SAME (root, time, control) resolution committed-features draws and liveHitTestAt
   // grabs against: `owners` is the grabbable vertex → owner map, `vertices` the store.
-  const { owners, vertices } = resolveDisplayFor(input.root, input.time, control);
+  const resolution = resolveDisplayFor(input.root, input.time, control);
+  const { owners, vertices } = resolution;
+  // FR-113: a filter-hidden owner exposes no grabbable vertex (same母集合 the click path
+  // and the renderer use), so its vertices are excluded from the rubber-band (教訓 5.29).
+  const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
+  const visibleIds = filtered === null ? null : filtered.visibleIds;
   const lonMin = a.lon < b.lon ? a.lon : b.lon;
   const lonMax = a.lon < b.lon ? b.lon : a.lon;
   const latMin = a.lat < b.lat ? a.lat : b.lat;
@@ -903,6 +945,7 @@ export function verticesInRectangle(
   let owner: FeatureId | null = null;
   const inside = new Set<VertexId>();
   for (const [vertexId, featureId] of owners) {
+    if (visibleIds !== null && !visibleIds.has(featureId)) continue;
     const v = getVertex(vertices, vertexId);
     if (v === undefined) continue;
     const c = v.coordinate;
@@ -989,6 +1032,12 @@ export function liveHitTestAt(
   const resolution = resolveDisplayFor(root, time, control);
   const { features, areaFeaturesById, vertices, resolved, owners } = resolution;
   const areas = resolved.shapes;
+  // FR-113 visible母集合 for THIS (resolution, filter) — the SAME single verdict the
+  // renderer culled with (committed-features), so「描画されている == 掴める」holds and a
+  // hidden feature is never picked (教訓 5.29 単一解決, 部分結線禁止). `null` = inert / no
+  // filter → every drawn candidate is grabbable, exactly as before (zero overhead).
+  const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
+  const visibleIds = filtered === null ? null : filtered.visibleIds;
   // The broad-phase spatial index for this (root, time, control) generation — built lazily
   // on the first hit-test and shared across the generation's pointer stream (S3c). It
   // narrows the two full scans below (vertex proximity + area containment) to the handful
@@ -1028,6 +1077,9 @@ export function liveHitTestAt(
   const vertexCands = vertexCandidates(hitIndex, worldPoint, wrap);
   if (vertexCands === null) {
     for (const [vertexId, featureId] of owners) {
+      // FR-113: an owner hidden by the filter exposes no grabbable vertex (its shape is
+      // not drawn), so its vertices are skipped — same母集合 the renderer drew (教訓 5.29).
+      if (visibleIds !== null && !visibleIds.has(featureId)) continue;
       const v = getVertex(vertices, vertexId);
       if (v === undefined) continue;
       const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
@@ -1038,6 +1090,7 @@ export function liveHitTestAt(
     }
   } else {
     for (const ref of vertexCands) {
+      if (visibleIds !== null && !visibleIds.has(ref.featureId)) continue;
       const v = getVertex(vertices, ref.vertexId);
       if (v === undefined) continue;
       const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
@@ -1112,6 +1165,9 @@ export function liveHitTestAt(
   let bestBody: FeatureId | null = null;
   bestDistSq = radiusSq;
   for (const f of features) {
+    // FR-113: a hidden point / line is not drawn, so it is not a body candidate — the
+    // click resolves to whatever visible feature is beneath it (単一解決, 教訓 5.29).
+    if (visibleIds !== null && !visibleIds.has(f.id)) continue;
     if (f.kind === FEATURE_KIND.Point) {
       const v = getVertex(vertices, f.vertexId);
       if (v === undefined) continue;
@@ -1200,7 +1256,7 @@ export function liveHitTestAt(
   //    Probed AFTER point / line bodies because areas are painted UNDERNEATH them
   //    (reverse draw order — see step 2). For an aggregate this is the AGGREGATE's
   //    集約形状 → the aggregate is selected, never a hidden child leaf.
-  const area = drawnAreaAtPointIndexed(areas, hitIndex, worldPoint, wrap);
+  const area = drawnAreaAtPointIndexed(areas, hitIndex, worldPoint, wrap, visibleIds);
   if (area !== null) return featureBodyHit(area);
 
   return EMPTY_HIT;

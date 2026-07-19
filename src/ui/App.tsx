@@ -49,6 +49,7 @@ import {
   logSessionStart,
   resolveDiagnosticLogSink,
   wireGlobalErrorHandlers,
+  type FilterState,
 } from './discovery/index';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
@@ -271,6 +272,16 @@ export function App(): JSX.Element {
           const getRoot = liveRootRef.current;
           return getRoot !== null ? getRoot() : buildEmptyProject();
         }),
+        // FR-113 (U41): the live set of ALL feature ids (feature-history level) so the
+        // store can prune the display filter's 個別非表示 / 強調 ids after a structure
+        // change (reconcileToLiveFeatures). Reads the live root through the SAME getRoot
+        // ref the existence resolver uses (never a stale capture, 教訓 5.6) — run AFTER a
+        // commit it sees the just-committed feature set.
+        liveFeatureIds: () => {
+          const getRoot = liveRootRef.current;
+          const root = getRoot !== null ? getRoot() : buildEmptyProject();
+          return new Set<FeatureId>(root.histories.map((h) => h.featureId));
+        },
       }),
     [],
   );
@@ -593,6 +604,9 @@ export function App(): JSX.Element {
             s.currentTime,
             s.activeFeature,
             s.displayControl,
+            // FR-113: the count reflects the display filter too (面オフ → fewer drawn),
+            // so the display-filter E2E asserts the count changes on a kind/depth toggle.
+            s.filter,
           );
           return new Set(drawn.map((f) => f.id)).size;
         },
@@ -640,6 +654,12 @@ export function App(): JSX.Element {
           s.currentTime,
           s.activeFeature,
           s.displayControl,
+          // FR-113: the session display filter (種別/深度/個別非表示/不透明度) culls +
+          // opacity-composes the drawn batch. DEFAULT is inert, so an untouched filter
+          // draws byte-identically (perf 鉄則). A change swaps `filter` wholesale, which
+          // the redraw subscription tracks (s.filter === prevFilter guard) so the next
+          // composite re-derives (教訓 5.5).
+          s.filter,
         );
       },
       // FR-86 / FR-109: the area-label occupancy threshold is a project setting; the
@@ -843,6 +863,10 @@ export function App(): JSX.Element {
             // drawn == what is hit). The display-control comes from the store, the
             // same slice committed-features feeds buildDisplayAreas with.
             displayControl: s.displayControl,
+            // FR-113: restrict the hit母集合 to the SAME visible set the renderer culled
+            // to, so a filter-hidden feature is not selectable and a click falls through
+            // to whatever is drawn beneath (教訓 5.29 単一解決 — draw == hit). Inert default.
+            filter: s.filter,
             // Forward projector for the screen-px vertex / point / line proximity,
             // from the SAME camera/viewport the frame drew with (単一真実源).
             toScreen: (w) => projectWorldToScreen(w, camera, viewport),
@@ -887,6 +911,9 @@ export function App(): JSX.Element {
             root: s.domain,
             time: s.currentTime,
             displayControl: s.displayControl,
+            // FR-113: a rubber-band never grabs a filter-hidden feature's vertices
+            // (same母集合 as the click hit-test / renderer — 単一真実源).
+            filter: s.filter,
             wrap: { camera, viewport },
           },
           a,
@@ -1291,6 +1318,11 @@ export function App(): JSX.Element {
     // would not draw its handles until some other tracked input changed (教訓 5.5).
     let prevRedrawMode = store.getState().mode;
     let prevDisplay = store.getState().displayControl;
+    // FR-113: a display-filter change (種別/深度/個別非表示/不透明度) swaps `filter`
+    // wholesale and must re-run the committedFeatures getter so the cull / opacity
+    // reflects on the next composite — otherwise the getter is never re-read and the
+    // filter change is invisible (教訓 5.7 / 5.35, same discipline as displayControl).
+    let prevFilter = store.getState().filter;
     let prevAreaThreshold =
       store.getState().projectSettings.areaLabelOccupancyThreshold;
     // FR-13 / FR-109 グリッド即時反映: the grid spacing / color / opacity project
@@ -1324,6 +1356,7 @@ export function App(): JSX.Element {
         s.activeFeature === prevActive &&
         s.mode === prevRedrawMode &&
         s.displayControl === prevDisplay &&
+        s.filter === prevFilter &&
         areaThreshold === prevAreaThreshold &&
         gridSpacing === prevGridSpacing &&
         gridColor === prevGridColor &&
@@ -1337,6 +1370,7 @@ export function App(): JSX.Element {
       prevActive = s.activeFeature;
       prevRedrawMode = s.mode;
       prevDisplay = s.displayControl;
+      prevFilter = s.filter;
       prevAreaThreshold = areaThreshold;
       prevGridSpacing = gridSpacing;
       prevGridColor = gridColor;
@@ -2036,6 +2070,9 @@ export function App(): JSX.Element {
         },
         armEditTool,
         unshare: (vertexIds, ownerFeatureId) => runUnshareIntent(vertexIds, ownerFeatureId),
+        // FR-113 個別非表示: force-hide the right-clicked feature through the session
+        // display filter (no domain mutation / history / dirty). Works in View mode too.
+        hideFeature: (featureId) => store.getState().setFeatureHidden(featureId, true),
       });
     },
     [store, registry, runDeleteFunnel, focusPropertyTab, armEditTool, runUnshareIntent],
@@ -2144,6 +2181,9 @@ export function App(): JSX.Element {
         // the wrap frame from the SAME live render camera/viewport the frame drew at, so
         // ナイフの対象面選択 agrees with both the renderer and the main hit-test.
         () => store.getState().displayControl,
+        // FR-113: exclude filter-hidden areas from the split-target search so ナイフの
+        // 対象面選択 agrees with what is drawn / hit (単一真実源, 描画==ヒット==分割対象).
+        () => store.getState().filter,
         () => rendererRef.current?.readCamera(),
       ),
     [store, sharedMint],
@@ -3691,6 +3731,7 @@ function createKnifeBootstrap(
   getTime: () => TimePoint,
   mint: SharedIdMint,
   getDisplayControl: () => DisplayControlInput,
+  getFilter: () => FilterState,
   getWrap: () => KnifeWrapFrame,
 ): KnifeBootstrap<DomainRoot> {
   // Ids are minted through the SAME shared minter the add bootstrap uses (finding
@@ -3729,6 +3770,7 @@ function createKnifeBootstrap(
         root: getRoot(),
         time: getTime(),
         displayControl: getDisplayControl(),
+        filter: getFilter(),
         wrap: getWrap(),
       },
       point,

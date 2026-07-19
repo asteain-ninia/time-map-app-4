@@ -55,6 +55,13 @@ export interface MenuLaunchPorts {
     vertexIds: ReadonlySet<VertexId>,
     ownerFeatureId: FeatureId | null,
   ) => void;
+  /**
+   * FR-113 個別非表示 — force-hide the target feature via the session display filter
+   * (store.setFeatureHidden). DISPLAY-only: no domain mutation, no history, no dirty, so
+   * — unlike every flow above — it needs no live-existence guard (a stale id is a
+   * harmless no-op override that reconcileToLiveFeatures prunes on the next edit).
+   */
+  readonly hideFeature: (featureId: FeatureId) => void;
 }
 
 /**
@@ -101,6 +108,11 @@ export function launchMenuItem(
       // A stale unshare target is a no-op inside buildUnsharePlan (owner does not
       // cite / not shared ⇒ null plan, no幽霊 undo — 教訓 5.24).
       ports.unshare(intent.vertexIds, intent.ownerFeatureId);
+      return;
+    case FLOW_KIND.HideFeature:
+      // FR-113 個別非表示 — session display state only (no live-existence guard needed;
+      // see MenuLaunchPorts.hideFeature). The store's reconcile prunes a stale id later.
+      ports.hideFeature(intent.featureId);
       return;
     default:
       return assertNever(intent);

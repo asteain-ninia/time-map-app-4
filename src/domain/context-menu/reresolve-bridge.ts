@@ -69,6 +69,12 @@ export function nextTargetPreferenceFor(intent: DispatchIntent): NextTargetPrefe
     case FLOW_KIND.EditProperties:
       // Not a structure change — nothing to promote.
       return {};
+    case FLOW_KIND.HideFeature:
+      // FR-113 個別非表示 is a DISPLAY-only op: it produces no CommandResult and never
+      // routes through reresolveAfterStructureChange (launchMenuItem calls the store's
+      // setFeatureHidden directly). This arm exists only for exhaustiveness — nothing to
+      // promote (the selection is untouched by hiding a feature).
+      return {};
     case FLOW_KIND.Split:
       // Prefer the split source; survives iff it remained one of the pieces.
       return { featureId: intent.featureId };

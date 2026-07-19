@@ -36,6 +36,8 @@ export const FILTER_STRINGS = {
   individualLabel: '個別地物の表示',
   individualHideLabel: 'この地物を非表示',
   individualHint: '選んだ地物だけを個別に非表示にできます。',
+  /** 「個別非表示 n 件を全て再表示」button label (n = 現在の個別非表示件数). */
+  showAllHiddenLabel: (count: number): string => `個別非表示 ${count} 件を全て再表示`,
   // 不透明度 (FR-113)
   opacityLabel: '不透明度',
   opacityHint:

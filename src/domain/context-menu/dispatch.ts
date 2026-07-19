@@ -240,6 +240,13 @@ export function dispatchMenuItem(
         ownerFeatureId: us.ownerFeatureId,
       };
     }
+    case MENU_ITEM_KIND.HideFeature: {
+      // FR-113 個別非表示 — a display-only op on the target feature. Reuses the SAME
+      // feature-target resolution the edit items use (composer offered it only for a
+      // resolvable single feature, so this fires exactly what was shown, 教訓 5.6).
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.HideFeature, featureId: ft.featureId };
+    }
     default:
       return assertNever(itemKind);
   }

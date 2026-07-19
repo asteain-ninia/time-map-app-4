@@ -28,6 +28,12 @@ export const MENU_ITEM_KIND = {
   ChangeAffiliation: 'changeAffiliation',
   /** 面情報: 結合 → U30. */
   Merge: 'merge',
+  /**
+   * 表示制御: この地物を非表示 → U41 (FR-113 個別非表示). A DISPLAY-only op — it hides
+   * the target from the map/hit/search母集合 without touching the domain, so it is
+   * offered even in 表示専用モード (View), unlike the edit items above.
+   */
+  HideFeature: 'hideFeature',
 } as const;
 
 export type MenuItemKind = (typeof MENU_ITEM_KIND)[keyof typeof MENU_ITEM_KIND];
@@ -41,6 +47,7 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.Split]: FLOW_KIND.Split,
   [MENU_ITEM_KIND.ChangeAffiliation]: FLOW_KIND.ChangeAffiliation,
   [MENU_ITEM_KIND.Merge]: FLOW_KIND.Merge,
+  [MENU_ITEM_KIND.HideFeature]: FLOW_KIND.HideFeature,
 };
 
 /** Japanese user-facing label per item kind (FR-115). */
@@ -52,6 +59,7 @@ export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   [MENU_ITEM_KIND.Split]: '分割',
   [MENU_ITEM_KIND.ChangeAffiliation]: '所属変更',
   [MENU_ITEM_KIND.Merge]: '結合',
+  [MENU_ITEM_KIND.HideFeature]: 'この地物を非表示',
 };
 
 // --- Disabled reasons (出るが無効=グレーアウト, spec §2.1 / §4.4) ------------

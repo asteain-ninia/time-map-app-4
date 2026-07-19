@@ -32,8 +32,10 @@ export {
   setEmphasizedKinds,
   setEmphasizedDepth,
   clearEmphasis,
+  clearIndividualOverrides,
   reconcileToLiveFeatures,
   emphasisActive,
+  isFilterInert,
 } from './filter-state';
 
 // the single display-state resolution (教訓 5.29)

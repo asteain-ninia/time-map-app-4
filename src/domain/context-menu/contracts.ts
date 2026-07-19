@@ -76,6 +76,13 @@ export const FLOW_KIND = {
   ChangeAffiliation: 'changeAffiliation',
   /** U30 merge — the LEAF feature seeded as the FIRST merge target. FR-50. */
   Merge: 'merge',
+  /**
+   * U41 個別非表示 (FR-113) — force-hide the target feature from the display/hit/search
+   * 母集合. DISPLAY-only (session state), so it carries only the target id and, unlike
+   * every flow above, is offered even in 表示専用モード (the shell binds it to the store's
+   * setFeatureHidden — no domain mutation, no history, no dirty).
+   */
+  HideFeature: 'hideFeature',
 } as const;
 
 export type FlowKind = (typeof FLOW_KIND)[keyof typeof FLOW_KIND];
@@ -124,6 +131,11 @@ export type DispatchIntent =
       readonly kind: typeof FLOW_KIND.Merge;
       /** The leaf feature seeded as the first merge target (U30 collects more). */
       readonly seedFeatureId: FeatureId;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.HideFeature;
+      /** The feature to force-hide from the display (FR-113 個別非表示). */
+      readonly featureId: FeatureId;
     };
 
 // --- Shared-vertex判定 lookup (FR-33, single source — 教訓 5.10 / 5.29) ------

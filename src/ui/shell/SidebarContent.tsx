@@ -43,6 +43,7 @@ import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
+import { DisplayFilterPanel } from '../discovery/DisplayFilterPanel';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
 import { type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 import {
@@ -175,12 +176,17 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     // (ユーザー GO 済). 現在時刻=旧地物一覧, 通史=旧錨一覧. 共通コア SidebarRowList を
     // 両モードで共有し、モードごとにフィルタ・件数・選択挙動・視点フィットを現行踏襲。
     listContent: (
-      <UnifiedListSection
-        store={store}
-        getRoot={getRoot}
-        getTime={getTime}
-        {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
-      />
+      <>
+        <UnifiedListSection
+          store={store}
+          getRoot={getRoot}
+          getTime={getTime}
+          {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
+        />
+        {/* FR-113 表示制御フィルタ (U41): mounted in the 一覧 slot (a display control over
+            which features the list / map show). NOT in the topBar (占有不変量 a4f6be9). */}
+        <DisplayFilterPanel<S> store={store} />
+      </>
     ),
     propertiesContent: (
       <PropertyPanelHost<S>

@@ -51,6 +51,18 @@ import { getCalendar, type Calendar } from '../../domain/time/calendar';
 import { compareNormalized, normalize } from '../../domain/time/normalized';
 import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
+import {
+  DEFAULT_FILTER_STATE,
+  clearIndividualOverrides,
+  reconcileToLiveFeatures,
+  setDepthThreshold,
+  setIndividualHidden,
+  setKindVisible,
+  setOpacity,
+  type FeatureKindAxis,
+  type FilterState,
+} from '../discovery/index';
+
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
 import type { DisplayGrabbabilityResolver } from './grabbability';
@@ -183,6 +195,19 @@ export interface SessionStoreState<S> {
    * LOAD / NEW (U37 §4.5).
    */
   readonly survey: SurveyState;
+
+  // -- display-control filter (FR-113, U41) ----------------------------------
+  /**
+   * The session-only display filter (種別 / 階層深度 / 個別非表示 / 不透明度 + 強調).
+   * A SEPARATE axis from mode/tool/selection AND from FR-42 displayControl: it only
+   * changes「どう見えるか」(which drawn features / at what opacity), NEVER the domain
+   * truth or the FR-42 aggregation. Like {@link survey} it is NON-persisted (never in
+   * the .tmap schema), never marks the project dirty, and is discarded wholesale on a
+   * LOAD / NEW (受け入れ基準1, U41). The draw / hit-test / search母集合 all read the
+   * SINGLE verdict this slice feeds resolveFilteredDisplay (教訓 5.29). DEFAULT is inert
+   * (全表示・不透明度1.0・強調なし) so an untouched filter costs the render path nothing.
+   */
+  readonly filter: FilterState;
 
   // -- settings (FR-109 / FR-110) --------------------------------------------
   readonly projectSettings: ProjectSettings;
@@ -353,6 +378,18 @@ export interface SessionStoreActions<S> {
   surveyCancelDraft(): void;
   /** Clear ALL survey results (確定線 + draft) — the only line-emptying path. */
   surveyClear(): void;
+
+  // display-control filter (FR-113, U41) — session-only, no projectDirty / domain touch
+  /** FR-113 種別軸: toggle a kind (点/線/面) on the display filter. */
+  setFilterKindVisible(axis: FeatureKindAxis, visible: boolean): void;
+  /** FR-113 階層深度軸: show features whose derived depth ≤ threshold; null = axis off. */
+  setFilterDepthThreshold(threshold: number | null): void;
+  /** FR-113 不透明度: the display opacity applied to passing features (already clamped). */
+  setFilterOpacity(opacity: number): void;
+  /** FR-113 個別地物軸: force-hide / unhide ONE feature (右クリック「この地物を非表示」). */
+  setFeatureHidden(featureId: FeatureId, hidden: boolean): void;
+  /** FR-113: clear EVERY 個別非表示 override (「個別非表示 n 件を全て再表示」). */
+  showAllHiddenFeatures(): void;
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
@@ -659,6 +696,20 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly grabbability?: DisplayGrabbabilityResolver;
   /**
+   * The live set of ALL feature ids that currently EXIST in the project (across all
+   * time — the feature-history level, NOT effective-at-time). Injected so the store can
+   * prune the FR-113 display filter's per-feature parts (個別非表示 / 強調 id) after any
+   * structure-changing command via {@link reconcileToLiveFeatures} — the SAME
+   * "derive from the live母集合, not gated on the input path" discipline the selection
+   * heal uses (教訓 5.5/5.6). The store never reaches into the opaque domain `S` itself
+   * (spec 依存: ルート状態を不変に受け渡す), so the composition root supplies this thunk
+   * bound to the live root (mirror of {@link ExistenceResolver}). Read live per call —
+   * the reconcile runs AFTER the domain commit so it sees the just-committed feature set.
+   * When OMITTED the filter reconcile is SKIPPED (honest absence — framework-free tests
+   * that never delete a hidden/emphasized feature are unaffected).
+   */
+  readonly liveFeatureIds?: () => ReadonlySet<FeatureId>;
+  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -676,6 +727,7 @@ export interface CreateSessionStoreOptions<S> {
       | 'camera'
       | 'centerLon'
       | 'displayControl'
+      | 'filter'
       | 'projectSettings'
       | 'appSettings'
     >
@@ -694,6 +746,9 @@ export function createSessionStore<S>(
   // May be undefined: display re-validation is then SKIPPED everywhere (honest
   // absence — no fabricated "always owned" truth; see the option doc).
   const grabbability = options.grabbability;
+  // May be undefined: the FR-113 filter reconcile is then SKIPPED (honest absence —
+  // the store never inspects the opaque domain to derive the live feature set itself).
+  const liveFeatureIds = options.liveFeatureIds;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
@@ -856,6 +911,23 @@ export function createSessionStore<S>(
       t: TimePoint,
     ): SelectionState => revalidateDisplay(sel, t, get().displayControl);
 
+    // The FR-113 filter reconcile funnel (教訓 5.5/5.6, mirror of the selection heal):
+    // after ANY structure-changing command commits, prune the display filter's per-feature
+    // parts (個別非表示 / 強調 id) against the LIVE feature母集合 so a deleted feature's id
+    // can never dangle (and — via undo/redo replaying a recorded id — re-attach to a
+    // DIFFERENT feature later, cross-domain display-state corruption; see
+    // reconcileToLiveFeatures). MUST run AFTER the domain commit so `liveFeatureIds()`
+    // reads the just-committed feature set (same ordering as the existence heal). Folded
+    // into its own set() ONLY when the filter actually changed (reconcileToLiveFeatures
+    // returns the SAME reference when nothing was pruned — the common case — so no spurious
+    // redraw / memo bust). Skipped entirely when no resolver is injected (honest absence).
+    const reconcileFilterToLive = (): void => {
+      if (liveFeatureIds === undefined) return;
+      const cur = get().filter;
+      const next = reconcileToLiveFeatures(cur, liveFeatureIds());
+      if (next !== cur) set({ filter: next });
+    };
+
     return {
     // -- initial state -------------------------------------------------------
     domain: options.initialDomain,
@@ -872,6 +944,7 @@ export function createSessionStore<S>(
     centerLon: init.centerLon ?? 0,
     displayControl: init.displayControl ?? DEFAULT_DISPLAY_CONTROL,
     survey: initialSurveyState(),
+    filter: init.filter ?? DEFAULT_FILTER_STATE,
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
@@ -951,6 +1024,9 @@ export function createSessionStore<S>(
       if (healed !== reresolved) {
         set(selectionPatch(healed));
       }
+      // FR-113 (教訓 5.5/5.6): prune the display filter's per-feature ids against the
+      // just-committed live feature set — a deleted 個別非表示 / 強調 target must not dangle.
+      reconcileFilterToLive();
     },
 
     applyUndoRedoResult(nextDomain, result, preference) {
@@ -1039,6 +1115,10 @@ export function createSessionStore<S>(
       if (healed !== next) {
         set(selectionPatch(healed));
       }
+      // FR-113 (教訓 5.5/5.6): symmetric with applyCommandResult — an undo / redo that
+      // drops a feature (or replays a recorded id) reconciles the filter's per-feature
+      // ids against the live母集合 so a stale 個別非表示 / 強調 id can never re-attach.
+      reconcileFilterToLive();
     },
 
     setDomainState(nextDomain) {
@@ -1100,6 +1180,11 @@ export function createSessionStore<S>(
         // U37 §4.5: the survey slice (確定線 + draft + active) belongs to the OLD
         // project's session — discard it wholesale on a LOAD / NEW (教訓 5.2).
         survey: initialSurveyState(),
+        // FR-113: the display filter (種別/深度/個別非表示/不透明度) is OLD-project session
+        // state too — reset to the inert DEFAULT on a LOAD / NEW (受け入れ基準1, 教訓 5.2).
+        // DEFAULT_FILTER_STATE is a module const, so an already-default filter keeps its
+        // reference (no memo churn on a fresh load).
+        filter: DEFAULT_FILTER_STATE,
         ...selectionPatch(EMPTY_SELECTION),
       });
     },
@@ -1367,6 +1452,50 @@ export function createSessionStore<S>(
       if (next !== cur) set({ survey: next });
     },
 
+    // -- display-control filter (FR-113, U41): INDEPENDENT session axis ------
+    // Every setter writes ONLY `filter` (never domain / selection / projectDirty /
+    // displayControl), so a filter change cannot disturb an in-progress edit and is
+    // never a persisted / dirty-marking change (受け入れ基準1). Each defers to the pure
+    // filter-state.ts helper (単一真実源 — no filter logic re-implemented here). A NO-OP
+    // write returns WITHOUT set() so the `filter` reference is preserved — the display
+    // memos (resolveFilteredDisplay / buildCommittedFeatures) and the Canvas redraw
+    // subscription key on filter IDENTITY, so an unchanged value must not look like a
+    // new generation (教訓 5.29 — the SAME identity-stability discipline as the
+    // displayControl setters). The reconcile of the id-keyed parts on structure change
+    // lives in applyCommandResult / applyUndoRedoResult (reconcileFilterToLive).
+    setFilterKindVisible(axis, visible) {
+      const cur = get().filter;
+      if (cur.kindVisible[axis] === visible) return;
+      set({ filter: setKindVisible(cur, axis, visible) });
+    },
+
+    setFilterDepthThreshold(threshold) {
+      const cur = get().filter;
+      if (cur.depthThreshold === threshold) return;
+      set({ filter: setDepthThreshold(cur, threshold) });
+    },
+
+    setFilterOpacity(opacity) {
+      const cur = get().filter;
+      if (cur.opacity === opacity) return;
+      set({ filter: setOpacity(cur, opacity) });
+    },
+
+    setFeatureHidden(featureId, hidden) {
+      const cur = get().filter;
+      // No-op guard: unhiding a feature with no override, or setting the same hidden
+      // state, preserves the reference (avoids a value-equal-but-new filter busting memos).
+      const prev = cur.individual.get(featureId);
+      if ((prev?.hidden ?? false) === hidden) return;
+      set({ filter: setIndividualHidden(cur, featureId, hidden) });
+    },
+
+    showAllHiddenFeatures() {
+      const cur = get().filter;
+      const next = clearIndividualOverrides(cur);
+      if (next !== cur) set({ filter: next });
+    },
+
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----
     updateProjectSetting(key, value) {
       const scope = classifySettingKey(key);
@@ -1592,6 +1721,9 @@ export function createSessionStore<S>(
         displayControl: clearedFocusControl(get().displayControl),
         // U37 §4.5: discard the survey slice wholesale (same as resetToDomain).
         survey: initialSurveyState(),
+        // FR-113: reset the display filter to the inert DEFAULT (same as resetToDomain —
+        // OLD-project session state, 受け入れ基準1, 教訓 5.2).
+        filter: DEFAULT_FILTER_STATE,
         // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }

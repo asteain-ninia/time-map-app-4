@@ -102,13 +102,18 @@ describe('composeContextMenu — 受け入れ基準 1: メニュー表示条件'
 });
 
 describe('composeContextMenu — 受け入れ基準 2: オブジェクト種類による動的変化', () => {
-  it('点情報: 共通項目が出て面情報項目が出ない', () => {
+  it('点情報: 共通項目が出て面情報項目が出ない (+ FR-113 個別非表示)', () => {
     const menu = asMenu(
       composeContextMenu(
         build({ activeFeature: fid('p'), kinds: new Map([[fid('p'), FEATURE_KIND.Point]]) }),
       ),
     );
-    expect(itemKinds(menu)).toEqual([MENU_ITEM_KIND.Delete, MENU_ITEM_KIND.EditProperties]);
+    // 共通 (削除・プロパティ編集) + 表示制御 (個別非表示, 常に末尾). 面情報項目 (分割等) は出ない。
+    expect(itemKinds(menu)).toEqual([
+      MENU_ITEM_KIND.Delete,
+      MENU_ITEM_KIND.EditProperties,
+      MENU_ITEM_KIND.HideFeature,
+    ]);
   });
 
   it('線情報: 共通項目のみ、面情報項目なし', () => {
@@ -253,18 +258,45 @@ describe('composeContextMenu — 受け入れ基準 5: 項目の種別識別子�
 });
 
 describe('composeContextMenu — 受け入れ基準 7: 表示専用モードの一括無効化', () => {
-  it('canEdit=false なら同じ判定でメニュー自体を生成しない (項目0件)', () => {
-    const result = composeContextMenu(
-      build({
-        canEdit: false,
-        activeFeature: fid('a'),
-        kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
-        vertexIds: new Set([vid('v1')]),
-        owners: new Map([[vid('v1'), fid('a')]]),
-        shared: new Set([vid('v1')]),
-      }),
+  it('canEdit=false なら編集項目を一括無効化する (削除/編集/分割/共有解除は出さない)', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          canEdit: false,
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+          vertexIds: new Set([vid('v1')]),
+          owners: new Map([[vid('v1'), fid('a')]]),
+          shared: new Set([vid('v1')]),
+        }),
+      ),
     );
-    expect(result).toBe(NO_MENU);
+    // 教訓 5.13: EDIT 項目は表示専用モードで一括無効化 — 一切出さない。
+    const ks = itemKinds(menu);
+    expect(ks).not.toContain(MENU_ITEM_KIND.Delete);
+    expect(ks).not.toContain(MENU_ITEM_KIND.DeleteVertex);
+    expect(ks).not.toContain(MENU_ITEM_KIND.EditProperties);
+    expect(ks).not.toContain(MENU_ITEM_KIND.Split);
+    expect(ks).not.toContain(MENU_ITEM_KIND.Unshare);
+  });
+
+  it('FR-113: 表示専用モードでも「個別非表示」(表示専用の操作) だけは出る (ユーザー裁定 View でも可)', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          canEdit: false,
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+        }),
+      ),
+    );
+    // 個別非表示 は表示状態のみ変える (ドメイン非改変) ので View でも可 — 唯一残る項目。
+    expect(itemKinds(menu)).toEqual([MENU_ITEM_KIND.HideFeature]);
+  });
+
+  it('表示専用モード + 対象解決不能 (アクティブなし・頂点空) はメニューを出さない', () => {
+    // 個別非表示 も対象地物が要る — 何も選択が無ければ表示専用でも NO_MENU。
+    expect(composeContextMenu(build({ canEdit: false }))).toBe(NO_MENU);
   });
 });
 

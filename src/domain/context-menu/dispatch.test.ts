@@ -53,6 +53,33 @@ function leafModel(extra: Partial<ContextMenuModel> = {}): ContextMenuModel {
   };
 }
 
+describe('dispatchMenuItem — FR-113 個別非表示 (HideFeature)', () => {
+  it('この地物を非表示 → HideFeature 意図 (対象 feature id)', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.HideFeature)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.HideFeature, model);
+    expect(r).toEqual({ kind: FLOW_KIND.HideFeature, featureId: fid('a') });
+  });
+
+  it('対象 feature が解決できなければブロック (multi/unknown owner の VertexOnly)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.VertexOnly,
+      ownerFeatureId: null,
+      ownerFeatureKind: null,
+      vertexIds: new Set([vid('v1')]),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.HideFeature)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.HideFeature, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+  });
+});
+
 describe('dispatchMenuItem — 受け入れ基準 6: 既存フローへのディスパッチ', () => {
   it('削除 → U31 削除フロー (対象 feature + kind)', () => {
     const r = dispatchMenuItem(MENU_ITEM_KIND.Delete, leafModel());

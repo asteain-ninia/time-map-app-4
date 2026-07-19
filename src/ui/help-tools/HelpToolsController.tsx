@@ -253,9 +253,18 @@ function HelpModal(props: {
  */
 function buildSearchCorpus(store: StoreApi<SessionStore<DomainProject>>): SearchableFeature[] {
   const s = store.getState();
-  // The drawn set (display-control honoured). Its `id` is the feature id; `label`
-  // is the feature name; `kind` is the coarse render kind ('point'|'line'|'area').
-  const drawn = buildCommittedFeatures(s.domain, s.currentTime, s.activeFeature, s.displayControl);
+  // The drawn set (display-control AND FR-113 display-filter honoured — the corpus IS
+  // the visible母集合). Passing `s.filter` means a feature hidden by the filter (種別
+  // オフ / 深度 / 個別非表示) is culled from the drawn batch and so never enters the
+  // search corpus — search results = what is drawn (教訓 5.3 / 5.29, no second母集合).
+  // Its `id` is the feature id; `label` is the name; `kind` the coarse render kind.
+  const drawn = buildCommittedFeatures(
+    s.domain,
+    s.currentTime,
+    s.activeFeature,
+    s.displayControl,
+    s.filter,
+  );
   // Source features at the current time, indexed for attribute enrichment.
   const byId = new Map<string, Feature>(
     featuresAt(s.domain, s.currentTime).map((f) => [f.id as unknown as string, f]),

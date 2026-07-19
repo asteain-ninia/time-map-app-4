@@ -46,7 +46,11 @@ import { unwrapLonSequence } from '../../domain/geo/longitude';
 import type { ResolvedDisplayShapes } from '../../domain/display';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
-import { toEvaluatedAreas, type PresentationFor } from '../../render/display-bridge';
+import {
+  toEvaluatedArea,
+  toEvaluatedAreas,
+  type PresentationFor,
+} from '../../render/display-bridge';
 import { withOpacity } from '../../render/grid-layer';
 import type {
   EvaluatedFeature,
@@ -54,8 +58,10 @@ import type {
   EvaluatedPoint,
   FeatureStyle,
 } from '../../render/feature-layer';
+import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
 
 import { resolveDisplayFor } from './display-resolution-cache';
+import { resolveFilteredDisplay, type FilteredDisplay } from './filtered-display';
 
 /**
  * Fold a persisted fill alpha (FR-97 / U33 / HB3-13) into the CSS color string the
@@ -69,12 +75,25 @@ function withAlpha(color: string, opacity: number): string {
   return opacity >= 1 ? color : withOpacity(color, opacity);
 }
 
-/** Map a domain `ColorInfo` (FR-100/101) to U19's render `FeatureStyle`. */
-function styleOf(color: ColorInfo): FeatureStyle {
+/**
+ * Map a domain `ColorInfo` (FR-100/101) to U19's render `FeatureStyle`, folding in the
+ * FR-113 display opacity (`filterOpacity`, default 1 = no filter). The FR-113 opacity
+ * MULTIPLIES into each channel's alpha BEFORE it is baked, because `withOpacity` only
+ * rewrites an `#rrggbb` string — applying it to an already-`rgba(…)` fill (the persisted
+ * fillOpacity case) would be a no-op. Multiplying the source alphas instead composes the
+ * two opacities correctly (persisted × filter). With `filterOpacity === 1` every channel
+ * reduces to the EXACT prior value (fill = withAlpha(fillColor, fillOpacity), stroke =
+ * borderColor, selectedColor = withAlpha(selectedColor, selectedOpacity)), so the
+ * default / inert-filter draw is byte-for-byte unchanged (perf 鉄則 完全短絡).
+ */
+function styleOf(color: ColorInfo, filterOpacity = 1): FeatureStyle {
   return {
-    fill: withAlpha(color.fillColor, color.fillOpacity),
-    stroke: color.borderColor,
-    selectedColor: withAlpha(color.selectedColor, color.selectedOpacity),
+    fill: withAlpha(color.fillColor, color.fillOpacity * filterOpacity),
+    stroke:
+      filterOpacity >= 1
+        ? color.borderColor
+        : withOpacity(color.borderColor, filterOpacity),
+    selectedColor: withAlpha(color.selectedColor, color.selectedOpacity * filterOpacity),
   };
 }
 
@@ -105,10 +124,14 @@ function buildAreas(
   resolved: ResolvedDisplayShapes,
   areaFeaturesById: ReadonlyMap<FeatureId, Feature>,
   selectedId: FeatureId | null,
+  filtered: FilteredDisplay | null,
 ): EvaluatedFeature[] {
   const presentationFor: PresentationFor = (shape) => {
     const feature = areaFeaturesById.get(shape.featureId);
-    const style = feature ? styleOf(feature.color) : FALLBACK_STYLE;
+    // FR-113 opacity (default 1 when no filter / feature visible at full opacity). The
+    // verdict already dims non-emphasized features when emphasis is active (visibility.ts).
+    const opacity = filtered === null ? 1 : filtered.displayById.get(shape.featureId)?.opacity ?? 1;
+    const style = feature ? styleOf(feature.color, opacity) : FALLBACK_STYLE;
     const selected = shape.featureId === selectedId;
     return {
       style,
@@ -118,7 +141,18 @@ function buildAreas(
       selected: selected || shape.emphasized,
     };
   };
-  return toEvaluatedAreas(resolved, presentationFor);
+  // No filter → the EXACT prior path (byte-identical draw batch, zero overhead).
+  if (filtered === null) return toEvaluatedAreas(resolved, presentationFor);
+  // FR-113 cull: a shape whose feature is not in the visible母集合 (kind off / depth
+  // filtered / individually hidden) is dropped from the draw batch — never drawn, and
+  // (single truth源) never hit / searched either (教訓 5.29). The verdict is the SAME
+  // one the hit-test reads off `resolveFilteredDisplay`.
+  const out: EvaluatedFeature[] = [];
+  for (const shape of resolved.shapes) {
+    if (!filtered.visibleIds.has(shape.featureId)) continue;
+    out.push(toEvaluatedArea(shape, presentationFor(shape)));
+  }
+  return out;
 }
 
 /** Style used only if a resolved area's source feature cannot be found (defensive). */
@@ -155,6 +189,7 @@ export function buildCommittedFeatures(
   time: TimePoint,
   selectedId: FeatureId | null,
   displayControl: DisplayControlInput,
+  filter: FilterState = DEFAULT_FILTER_STATE,
 ): EvaluatedFeature[] {
   for (let i = 0; i < outputCache.length; i += 1) {
     const entry = outputCache[i]!;
@@ -162,7 +197,8 @@ export function buildCommittedFeatures(
       entry.root === root &&
       entry.time === time &&
       entry.selectedId === selectedId &&
-      entry.control === displayControl
+      entry.control === displayControl &&
+      entry.filter === filter
     ) {
       // Promote to most-recently-used so the live generation, hit most often (every
       // camera-only frame), is the last to be evicted.
@@ -173,18 +209,20 @@ export function buildCommittedFeatures(
       return entry.value;
     }
   }
-  const value = computeCommittedFeatures(root, time, selectedId, displayControl);
-  outputCache.push({ root, time, selectedId, control: displayControl, value });
+  const value = computeCommittedFeatures(root, time, selectedId, displayControl, filter);
+  outputCache.push({ root, time, selectedId, control: displayControl, filter, value });
   if (outputCache.length > OUTPUT_CACHE_CAPACITY) outputCache.shift();
   return value;
 }
 
-/** One built-batch memo entry: the four identity keys plus the batch they produced. */
+/** One built-batch memo entry: the five identity keys plus the batch they produced. */
 interface OutputCacheEntry {
   readonly root: DomainProject;
   readonly time: TimePoint;
   readonly selectedId: FeatureId | null;
   readonly control: DisplayControlInput;
+  /** The FR-113 display-filter slice (session-only; DEFAULT is inert). */
+  readonly filter: FilterState;
   readonly value: EvaluatedFeature[];
 }
 
@@ -217,6 +255,7 @@ export function computeCommittedFeatures(
   time: TimePoint,
   selectedId: FeatureId | null,
   displayControl: DisplayControlInput,
+  filter: FilterState = DEFAULT_FILTER_STATE,
 ): EvaluatedFeature[] {
   // The SHARED resolution: featuresAt / verticesAt / forest / U34-resolved shapes,
   // computed ONCE and reused by the live hit-test for this same (root, time,
@@ -229,23 +268,35 @@ export function computeCommittedFeatures(
   // feature list AND re-allocating an O(n) Map over all area features a second time per
   // generation (bughunt3 — the cache and this draw path no longer each run the identical
   // O(n) leaf/aggregate scan, and a selection toggle no longer rebuilds the lookup Map).
-  const { features, areaFeaturesById, vertices, resolved } = resolveDisplayFor(
-    root,
-    time,
-    displayControl,
-  );
+  const resolution = resolveDisplayFor(root, time, displayControl);
+  const { features, areaFeaturesById, vertices, resolved } = resolution;
+
+  // FR-113 verdicts for THIS (resolution, filter) — the SAME single computation the
+  // live hit-test reads (教訓 5.29 単一解決): `null` when the filter is inert (default),
+  // in which case every branch below takes its EXACT prior path (byte-identical draw,
+  // zero overhead — the perf 鉄則). When non-null it culls hidden features and folds the
+  // per-feature opacity into the style.
+  const filtered = resolveFilteredDisplay(resolution, filter);
 
   // Areas (面情報) through U34 —集約形状 / depth / focus honoured. The by-id presentation
   // lookup is the cache's SELECTION-INDEPENDENT `areaFeaturesById`, built once per
   // generation, so a selection toggle re-runs only the cheap per-shape mapping, not the
   // O(n) Map construction over all area features (bughunt3).
-  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeaturesById, selectedId);
+  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeaturesById, selectedId, filtered);
 
   // Points / lines directly: they have no hierarchy rollup (no own area), so the
   // area pipeline would resolve them to an empty shape and never draw them.
   for (const feature of features) {
+    // FR-113 cull + opacity: a hidden point/line is dropped from the batch (never drawn /
+    // hit / searched, 教訓 5.29); a visible one's per-feature opacity folds into its style.
+    let filterOpacity = 1;
+    if (filtered !== null) {
+      const verdict = filtered.displayById.get(feature.id);
+      if (verdict === undefined || !verdict.visible) continue;
+      filterOpacity = verdict.opacity;
+    }
     const selected = feature.id === selectedId;
-    const style = styleOf(feature.color);
+    const style = styleOf(feature.color, filterOpacity);
     const label = labelOf(feature);
     switch (feature.kind) {
       case FEATURE_KIND.Point: {

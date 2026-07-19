@@ -163,10 +163,18 @@ describe('context-menu-adapter — live lookup wiring (実ドメイン結線の�
     expect(ks).toContain(MENU_ITEM_KIND.Split);
   });
 
-  it('view mode → NO_MENU (canEdit=false, 教訓 5.13 一括無効化)', () => {
+  it('view mode → 編集項目は一括無効化、FR-113 個別非表示 のみ残る (ユーザー裁定 View でも可)', () => {
     const root = borderShareProject();
     const selection = withActiveFeature(EMPTY_SELECTION, A);
-    expect(compose(root, selection, { mode: EDIT_MODE.View, hit: featureBodyHit(A) })).toBe(NO_MENU);
+    // canEdit=false: every EDIT item suppressed (教訓 5.13); the display-only 個別非表示
+    // (ドメイン非改変) survives so a browsing user can declutter (ユーザー裁定).
+    const ks = kinds(compose(root, selection, { mode: EDIT_MODE.View, hit: featureBodyHit(A) }));
+    expect(ks).toEqual([MENU_ITEM_KIND.HideFeature]);
+  });
+
+  it('view mode + 選択なし → NO_MENU (対象が無ければ個別非表示も出せない)', () => {
+    const root = borderShareProject();
+    expect(compose(root, EMPTY_SELECTION, { mode: EDIT_MODE.View })).toBe(NO_MENU);
   });
 
   it('knife tool active → 分割 dropped (受け入れ基準 4)', () => {

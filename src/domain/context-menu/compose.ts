@@ -257,21 +257,46 @@ function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
 }
 
 /**
- * Compose the context menu (FR-96). Returns {@link NO_MENU} when editing is not
- * permitted (教訓 5.13) or when nothing actionable is selected (教訓 5.10 /
- * 5.18); otherwise a model with the offered items in a stable order.
+ * The feature a 表示制御 (hide) item can target: a Feature target's own id, or a
+ * single-owner VertexOnly target's resolved owner. Returns null for a multi/unknown
+ * owner or a None target — the SAME condition {@link dispatchMenuItem}'s
+ * `featureTargetOf` resolves, so 出す=発火できる (教訓 5.6). 個別非表示 is display-only,
+ * so it does NOT depend on the owner KIND (unlike 分割/所属変更); but keeping the
+ * condition aligned with featureTargetOf (owner id AND kind) keeps compose/dispatch in
+ * lock-step and avoids offering an item the dispatch would block.
+ */
+function hideableFeatureId(target: MenuTarget): FeatureId | null {
+  switch (target.kind) {
+    case MENU_TARGET_KIND.Feature:
+      return target.featureId;
+    case MENU_TARGET_KIND.VertexOnly:
+      return target.ownerFeatureId !== null && target.ownerFeatureKind !== null
+        ? target.ownerFeatureId
+        : null;
+    case MENU_TARGET_KIND.None:
+      return null;
+    default:
+      return assertNever(target);
+  }
+}
+
+/**
+ * Compose the context menu (FR-96 / FR-113). Returns {@link NO_MENU} when nothing
+ * actionable is selected (教訓 5.10 / 5.18); otherwise a model with the offered items
+ * in a stable order.
+ *
+ * EDIT items (削除・プロパティ編集・面情報・共有解除) require editing permission — in
+ * 表示専用モード (canEdit=false) they are ALL suppressed (教訓 5.13 一括無効化). The
+ * DISPLAY-only 個別非表示 (FR-113 この地物を非表示) is a session display op, not an edit,
+ * so it is offered even in View mode for any resolvable single-feature target — the ONE
+ * item that survives the view-only gate (ユーザー裁定: View モードでも可).
  *
  * Order: common (削除・プロパティ編集) → 面情報 (分割・所属変更・結合, leaf only)
- * → 共有解除 (when shared vertices present). The tool kind is part of the input
- * (FR-96): the knife tool, already in a split session, omits the redundant 分割
- * item (受け入れ基準 4: 項目集合がツール種類で変わる).
+ * → 共有解除 (when shared vertices present) → 個別非表示 (display, last). The tool kind
+ * is part of the input (FR-96): the knife tool, already in a split session, omits the
+ * redundant 分割 item (受け入れ基準 4: 項目集合がツール種類で変わる).
  */
 export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMenu {
-  // 教訓 5.13: ONE gate for the whole function — view-only ⇒ no menu, zero items.
-  if (!input.canEdit) {
-    return NO_MENU;
-  }
-
   const target = resolveMenuTarget(input);
   if (target.kind === MENU_TARGET_KIND.None) {
     return NO_MENU; // 空選択: メニューを構成しない (受け入れ基準 1).
@@ -279,53 +304,64 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
 
   const items: ContextMenuItem[] = [];
 
-  switch (target.kind) {
-    case MENU_TARGET_KIND.Feature: {
-      // 共通項目 (点/線/面いずれでも): 削除 vs 頂点を削除 by whether vertices are selected.
-      items.push(deleteItemFor(target.vertexIds.size > 0));
-      items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
-      // 面情報項目: leaf(末端) ONLY (教訓 5.25). Aggregate gets NO 分割; its
-      // affiliation/merge出し分けは U28/U30 契約に委ねるため、ここでは leaf に限
-      // って面情報項目を出す (受け入れ基準 2).
-      if (target.featureKind === FEATURE_KIND.Leaf) {
-        items.push(...filterByTool(leafFeatureItems(), input.toolKind));
-      }
-      // 共有解除: a Feature target ALWAYS names a resolvable owner (the active feature),
-      // so unshare is owner-qualified — offered whenever a shared頂点 is in the selection.
-      if (target.sharedVertexIds.size > 0) {
-        items.push(enabledItem(MENU_ITEM_KIND.Unshare));
-      }
-      break;
-    }
-    case MENU_TARGET_KIND.VertexOnly: {
-      // A VertexOnly target only acts when a SINGLE owner resolves (受け入れ基準 8):
-      //   - owner unknown/multi → NO feature-wide items AND NO 共有解除. 共有解除 is
-      //     OWNER-QUALIFIED (右クリック「共有解除」= この所有者の参照を剥がす): without a
-      //     confirmed owner the reresolve cannot remap the selection (owner-null dangling
-      //     guard), so it is not offered at all → NO_MENU for a multi/unknown selection.
-      //   - single owner → 頂点を削除 (a VertexOnly always has a vertex selection) +
-      //     プロパティ編集 + (leaf面情報) + 共有解除(if shared). The owner kind was resolved
-      //     once on the target (教訓 5.19); the dispatch reads the SAME owner/kind so every
-      //     offered item fires (出す=発火できる, 受け入れ基準 6/8, 教訓 5.6).
-      if (target.ownerFeatureId !== null && target.ownerFeatureKind !== null) {
-        items.push(enabledItem(MENU_ITEM_KIND.DeleteVertex));
+  // 編集項目: 教訓 5.13 — 表示専用モード (canEdit=false) では一括無効化 (0 件). Only the
+  // display-only 個別非表示 below survives view-only.
+  if (input.canEdit) {
+    switch (target.kind) {
+      case MENU_TARGET_KIND.Feature: {
+        // 共通項目 (点/線/面いずれでも): 削除 vs 頂点を削除 by whether vertices are selected.
+        items.push(deleteItemFor(target.vertexIds.size > 0));
         items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
-        if (target.ownerFeatureKind === FEATURE_KIND.Leaf) {
+        // 面情報項目: leaf(末端) ONLY (教訓 5.25). Aggregate gets NO 分割; its
+        // affiliation/merge出し分けは U28/U30 契約に委ねるため、ここでは leaf に限
+        // って面情報項目を出す (受け入れ基準 2).
+        if (target.featureKind === FEATURE_KIND.Leaf) {
           items.push(...filterByTool(leafFeatureItems(), input.toolKind));
         }
+        // 共有解除: a Feature target ALWAYS names a resolvable owner (the active feature),
+        // so unshare is owner-qualified — offered whenever a shared頂点 is in the selection.
         if (target.sharedVertexIds.size > 0) {
           items.push(enabledItem(MENU_ITEM_KIND.Unshare));
         }
+        break;
       }
-      break;
+      case MENU_TARGET_KIND.VertexOnly: {
+        // A VertexOnly target only acts when a SINGLE owner resolves (受け入れ基準 8):
+        //   - owner unknown/multi → NO feature-wide items AND NO 共有解除. 共有解除 is
+        //     OWNER-QUALIFIED (右クリック「共有解除」= この所有者の参照を剥がす): without a
+        //     confirmed owner the reresolve cannot remap the selection (owner-null dangling
+        //     guard), so it is not offered at all.
+        //   - single owner → 頂点を削除 (a VertexOnly always has a vertex selection) +
+        //     プロパティ編集 + (leaf面情報) + 共有解除(if shared). The owner kind was resolved
+        //     once on the target (教訓 5.19); the dispatch reads the SAME owner/kind so every
+        //     offered item fires (出す=発火できる, 受け入れ基準 6/8, 教訓 5.6).
+        if (target.ownerFeatureId !== null && target.ownerFeatureKind !== null) {
+          items.push(enabledItem(MENU_ITEM_KIND.DeleteVertex));
+          items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
+          if (target.ownerFeatureKind === FEATURE_KIND.Leaf) {
+            items.push(...filterByTool(leafFeatureItems(), input.toolKind));
+          }
+          if (target.sharedVertexIds.size > 0) {
+            items.push(enabledItem(MENU_ITEM_KIND.Unshare));
+          }
+        }
+        break;
+      }
+      default:
+        // None was returned before the switch; the residual union is never here.
+        return assertNever(target);
     }
-    default:
-      // None was returned before the switch; the residual union is never here.
-      return assertNever(target);
   }
 
-  // メニュー項目 0 件 (例: vertex-only + multi-owner + 共有頂点なし) は出さない
-  // (教訓 5.18: 件数で判定). 何も操作できない右クリックではメニューを開かない.
+  // 個別非表示 (FR-113, 表示制御) — display-only, offered REGARDLESS of canEdit for any
+  // resolvable single-feature target. Placed LAST so the edit item order is unchanged.
+  if (hideableFeatureId(target) !== null) {
+    items.push(enabledItem(MENU_ITEM_KIND.HideFeature));
+  }
+
+  // メニュー項目 0 件 (例: view-only + owner 不確定, または vertex-only + multi-owner +
+  // 共有頂点なし) は出さない (教訓 5.18: 件数で判定). 何も操作できない右クリックではメニュー
+  // を開かない.
   if (items.length === 0) {
     return NO_MENU;
   }

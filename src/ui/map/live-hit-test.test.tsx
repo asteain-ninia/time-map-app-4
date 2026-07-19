@@ -4,7 +4,7 @@
 // resolution reuses live-lookup's featuresAt/verticesAt/leafAtPoint, so what is hit
 // matches what is drawn / resolved (二重真実源を作らない, 教訓 5.29).
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   liveHitTestAt,
@@ -12,6 +12,14 @@ import {
   multiPolygonLonSpan,
   verticesInRectangle,
 } from './live-hit-test';
+import {
+  DEFAULT_FILTER_STATE,
+  FEATURE_KIND_AXIS,
+  setIndividualHidden,
+  setKindVisible,
+} from '../discovery/index';
+import { clearDisplayResolutionCache } from './display-resolution-cache';
+import { clearFilteredDisplayCache } from './filtered-display';
 import type { GeoMultiPolygon } from '../../domain/geometry/index';
 import { HIT_KIND } from '../../domain/selection';
 import type { DomainRoot } from '../consistency-binding';
@@ -1386,3 +1394,65 @@ describe('verticesInRectangle (FR-80 rubber-band)', () => {
     });
   });
 });
+
+// FR-113 — a filter-hidden feature is NOT selectable (draw == hit == 単一解決): the click
+// falls through to whatever is drawn beneath it, and re-showing restores selectability.
+describe('liveHitTestAt — FR-113 display filter (hidden features are click-through)', () => {
+  const time = timePointYear(1000);
+
+  afterEachClearCaches();
+
+  it('個別非表示: clicking a hidden stand-alone leaf selects nothing (消したのに掴めない)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0); // [0,4]×[0,4]
+    const root = commit(emptyProject(), a, 1000);
+    const centre = { lon: 2, lat: 2 };
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, a.feature.id, true);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, filter, point: toScreen(centre) },
+      centre,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Empty);
+  });
+
+  it('種別オフ: hiding the POINT over an area makes the click fall through to the AREA body', () => {
+    const area = bigSquareLeaf('f-area', 'var', 0, 0, 10); // [0,10]²
+    const point = pointFeature('f-pt', 'vpt', 5, 5); // drawn on top, inside the area
+    let root = commit(emptyProject(), area, 1000);
+    root = commit(root, point, 1000);
+    const at = { lon: 5, lat: 5 };
+
+    // Baseline (no filter): the point (its vertex) is grabbed.
+    const plain = liveHitTestAt({ root, time, toScreen, point: toScreen(at) }, at);
+    expect(plain.kind).toBe(HIT_KIND.Vertex);
+    if (plain.kind === HIT_KIND.Vertex) expect(plain.featureId).toBe(point.feature.id);
+
+    // 点オフ: the point is not drawn → not grabbable → the click resolves to the AREA body.
+    const filter = setKindVisible(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Point, false);
+    const hit = liveHitTestAt({ root, time, toScreen, filter, point: toScreen(at) }, at);
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(area.feature.id);
+  });
+
+  it('再表示: un-hiding a feature makes it selectable again (復活)', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const centre = { lon: 2, lat: 2 };
+    const hidden = setIndividualHidden(DEFAULT_FILTER_STATE, a.feature.id, true);
+    expect(
+      liveHitTestAt({ root, time, toScreen, filter: hidden, point: toScreen(centre) }, centre).kind,
+    ).toBe(HIT_KIND.Empty);
+    // Re-show (hidden:false) → the body is grabbable once more.
+    const shown = setIndividualHidden(hidden, a.feature.id, false);
+    const hit = liveHitTestAt({ root, time, toScreen, filter: shown, point: toScreen(centre) }, centre);
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+  });
+});
+
+/** Clear the shared display / filter memos between cases (fresh roots make this defensive). */
+function afterEachClearCaches(): void {
+  afterEach(() => {
+    clearFilteredDisplayCache();
+    clearDisplayResolutionCache();
+  });
+}

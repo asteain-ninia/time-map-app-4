@@ -33,6 +33,16 @@ import type { FeatureHistory } from '../../domain/persistence/serialize';
 import type { DisplayControlInput } from '../../render/display-pipeline';
 import * as displayBridge from '../../render/display-bridge';
 import {
+  DEFAULT_FILTER_STATE,
+  FEATURE_KIND_AXIS,
+  kindAxisOf,
+  searchFeatures,
+  setIndividualHidden,
+  setKindVisible,
+  setOpacity,
+  type SearchableFeature,
+} from '../discovery/index';
+import {
   buildCommittedFeatures,
   clearCommittedFeaturesCache,
 } from './committed-features';
@@ -40,6 +50,7 @@ import {
   clearDisplayResolutionCache,
   resolveDisplayFor,
 } from './display-resolution-cache';
+import { clearFilteredDisplayCache } from './filtered-display';
 
 // Default display control: global depth 0 (top-level rollup), no focus. A root
 // leaf with no children draws directly at N=0 (it IS its own top-level区).
@@ -69,6 +80,7 @@ function project(): DomainProject {
 afterEach(() => {
   clearCommittedFeaturesCache();
   clearDisplayResolutionCache();
+  clearFilteredDisplayCache();
   vi.restoreAllMocks();
 });
 
@@ -355,5 +367,83 @@ describe('buildCommittedFeatures area lookup (bughunt3: no Map rebuild per selec
     const cleared = buildCommittedFeatures(root, time, null, DISPLAY);
     expect(resolveDisplayFor(root, time, DISPLAY).areaFeaturesById).toBe(mapBefore);
     expect(cleared.find((f) => f.id === 'leaf-1')?.selected).toBe(false);
+  });
+});
+
+// FR-113 表示制御フィルタ — the draw batch culls hidden features and composes opacity, and
+// the DEFAULT (inert) filter is a complete short-circuit (byte-identical batch, perf 鉄則).
+describe('buildCommittedFeatures — FR-113 display filter', () => {
+  const YEAR = timePointYear(100); // both pt-1 (point) and leaf-1 (area) effective
+
+  it('DEFAULT filter draws the EXACT same batch as no filter (完全短絡, zero overhead)', () => {
+    const root = project();
+    const noArg = buildCommittedFeatures(root, YEAR, null, DISPLAY);
+    const explicitDefault = buildCommittedFeatures(root, YEAR, null, DISPLAY, DEFAULT_FILTER_STATE);
+    // Same inert key ⇒ the SAME memoized array reference — the filter path never ran.
+    expect(explicitDefault).toBe(noArg);
+    expect(new Set(noArg.map((f) => f.id))).toEqual(new Set(['pt-1', 'leaf-1']));
+  });
+
+  it('面オフ: the area primitive disappears; the point stays', () => {
+    const root = project();
+    const filter = setKindVisible(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Area, false);
+    const drawn = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter);
+    const ids = new Set(drawn.map((f) => f.id));
+    expect(ids.has('leaf-1')).toBe(false);
+    expect(ids.has('pt-1')).toBe(true);
+    expect(drawn.filter((f) => f.kind === 'area')).toHaveLength(0);
+  });
+
+  it('点オフ: the point disappears; the area stays (re-enabling restores it)', () => {
+    const root = project();
+    const off = setKindVisible(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Point, false);
+    expect(new Set(buildCommittedFeatures(root, YEAR, null, DISPLAY, off).map((f) => f.id))).toEqual(
+      new Set(['leaf-1']),
+    );
+    // Re-enabling (back to a value-equal default) draws the point again.
+    const back = setKindVisible(off, FEATURE_KIND_AXIS.Point, true);
+    expect(new Set(buildCommittedFeatures(root, YEAR, null, DISPLAY, back).map((f) => f.id))).toEqual(
+      new Set(['pt-1', 'leaf-1']),
+    );
+  });
+
+  it('個別非表示: hiding pt-1 drops exactly it from the batch', () => {
+    const root = project();
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, 'pt-1' as unknown as FeatureId, true);
+    const ids = new Set(buildCommittedFeatures(root, YEAR, null, DISPLAY, filter).map((f) => f.id));
+    expect(ids.has('pt-1')).toBe(false);
+    expect(ids.has('leaf-1')).toBe(true);
+  });
+
+  it('不透明度: folds the filter opacity into the fill alpha (× persisted fillOpacity)', () => {
+    const root = project();
+    // Fixture fillOpacity is 0.5 (#102030); filter 0.5 → baked alpha 0.5 × 0.5 = 0.25.
+    const filter = setOpacity(DEFAULT_FILTER_STATE, 0.5);
+    const leaf = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter).find((f) => f.id === 'leaf-1');
+    expect(leaf?.kind).toBe('area');
+    expect(leaf?.style.fill).toBe('rgba(16, 32, 48, 0.25)');
+  });
+
+  it('検索母集合: a hidden feature disappears from the search corpus (drawn set = corpus)', () => {
+    // The search corpus (HelpToolsController.buildSearchCorpus) is built from THIS drawn
+    // batch, so culling a feature here removes it from search too (単一母集合, 教訓 5.3).
+    const root = project();
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, 'pt-1' as unknown as FeatureId, true);
+    // Mirror buildSearchCorpus: map the filtered drawn batch → SearchableFeature by id/name.
+    const corpus: SearchableFeature[] = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter).map(
+      (d) => ({
+        id: d.id as unknown as FeatureId,
+        kind: d.kind === 'point' ? kindAxisOf('point') : d.kind === 'line' ? kindAxisOf('line') : kindAxisOf('leaf'),
+        name: d.label,
+        description: '',
+        attributes: [],
+      }),
+    );
+    // pt-1 (name「首都」) is hidden → not in the corpus → not a search hit.
+    expect(searchFeatures(corpus, '首都').hits).toHaveLength(0);
+    // The visible leaf「A国」is still found.
+    expect(searchFeatures(corpus, 'A国').hits.map((h) => h.featureId)).toContain(
+      'leaf-1' as unknown as FeatureId,
+    );
   });
 });

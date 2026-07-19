@@ -205,3 +205,42 @@ export function emphasisActive(state: FilterState): boolean {
     state.emphasizedDepth !== null
   );
 }
+
+/**
+ * Clear EVERY individual override (個別非表示 n 件を全て再表示 — the sidebar's
+ * bulk "show all again" action). Returns the SAME reference when nothing is
+ * overridden so an already-empty state does not churn the display memos
+ * (identity stability, 教訓 5.29). Emphasis axes / opacity / kind toggles are
+ * untouched — only the per-feature override map is emptied.
+ */
+export function clearIndividualOverrides(state: FilterState): FilterState {
+  if (state.individual.size === 0) return state;
+  return { ...state, individual: new Map() };
+}
+
+/**
+ * Whether the filter is INERT — i.e. {@link resolveFeatureDisplay} would return
+ * `{ visible: true, opacity: OPACITY_MAX, emphasized: false }` for EVERY feature,
+ * so the draw / hit / search母集合 are exactly what they are with no filter at all.
+ *
+ * This is the COMPLETE short-circuit gate (技術方針 NFR 5.5 / 教訓 5.30 過少共有の
+ * 戒めの逆 — ここは「既定状態でゼロ overhead」を守る単一判定): the display pipeline
+ * consults it ONCE per (resolution, filter) generation and, when inert, skips the
+ * per-feature resolution AND the O(n) derived-depth pass entirely, so the default
+ * FilterState (全表示・不透明度1.0・強調なし) never regresses the hot draw path.
+ *
+ * Inert iff: opacity is full AND no depth axis AND every kind visible AND no
+ * emphasis (set/kind/depth or per-feature) AND no per-feature force-hide.
+ */
+export function isFilterInert(state: FilterState): boolean {
+  if (state.opacity !== OPACITY_MAX) return false;
+  if (state.depthThreshold !== null) return false;
+  for (const axis of ALL_FEATURE_KIND_AXES) {
+    if (!state.kindVisible[axis]) return false;
+  }
+  if (emphasisActive(state)) return false;
+  for (const override of state.individual.values()) {
+    if (override.hidden || override.emphasized) return false;
+  }
+  return true;
+}

@@ -82,6 +82,7 @@ function makePorts(root: DomainProject): {
     openProperties: [],
     armEditTool: [],
     unshare: [],
+    hideFeature: [],
   };
   const track =
     (name: string) =>
@@ -96,6 +97,7 @@ function makePorts(root: DomainProject): {
     openProperties: track('openProperties'),
     armEditTool: track('armEditTool'),
     unshare: track('unshare'),
+    hideFeature: track('hideFeature'),
   };
   return { ports, calls };
 }
@@ -164,5 +166,27 @@ describe('launchMenuItem — flow routing (fr96)', () => {
     const model = modelForA(); // no vertex selection → no DeleteVertex item
     launchMenuItem(MENU_ITEM_KIND.DeleteVertex, model, ports);
     for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
+  });
+});
+
+describe('launchMenuItem — FR-113 個別非表示 (HideFeature, no live-existence guard)', () => {
+  /** modelForA + the display-only HideFeature item (frozen at menu open). */
+  const modelWithHide = (): ContextMenuModel => {
+    const base = modelForA();
+    return { ...base, items: [...base.items, enabledItem(MENU_ITEM_KIND.HideFeature)] };
+  };
+
+  it('LIVE target: hideFeature fires with the feature id', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.HideFeature, modelWithHide(), ports);
+    expect(calls['hideFeature']).toEqual([[A]]);
+  });
+
+  it('STALE target: hideFeature STILL fires (display-only; the store reconcile prunes it)', () => {
+    // Unlike EditProperties (which no-ops on a stale target), 個別非表示 is a harmless
+    // session override — it fires regardless, and reconcileToLiveFeatures drops it later.
+    const { ports, calls } = makePorts(rootWithA(false));
+    launchMenuItem(MENU_ITEM_KIND.HideFeature, modelWithHide(), ports);
+    expect(calls['hideFeature']).toEqual([[A]]);
   });
 });
