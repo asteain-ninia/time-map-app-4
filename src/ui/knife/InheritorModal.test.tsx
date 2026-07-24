@@ -11,27 +11,35 @@ import { InheritorModal } from './InheritorModal';
 
 afterEach(() => cleanup());
 
-/** Two simple square pieces (a unit square and a shifted one) for the preview. */
+/**
+ * Two simple square pieces for the preview.
+ *
+ * HB4-1: this fixture used to sit at lat 0〜1, i.e. touching the equator. That
+ * made the (broken) `+lat` path space and the `-lat` viewBox窓 degenerately
+ * adjacent, so a latitude-dependent rendering bug could never surface here. The
+ * band is now closed inside the northern hemisphere (lat 30〜31) so any future
+ * coordinate-space drift shows up instead of hiding at y=0.
+ */
 const PIECES: readonly GeoMultiPolygon[] = [
   [
     [
       [
-        { lon: 0, lat: 0 },
-        { lon: 1, lat: 0 },
-        { lon: 1, lat: 1 },
-        { lon: 0, lat: 1 },
-        { lon: 0, lat: 0 },
+        { lon: 0, lat: 30 },
+        { lon: 1, lat: 30 },
+        { lon: 1, lat: 31 },
+        { lon: 0, lat: 31 },
+        { lon: 0, lat: 30 },
       ],
     ],
   ],
   [
     [
       [
-        { lon: 2, lat: 0 },
-        { lon: 3, lat: 0 },
-        { lon: 3, lat: 1 },
-        { lon: 2, lat: 1 },
-        { lon: 2, lat: 0 },
+        { lon: 2, lat: 30 },
+        { lon: 3, lat: 30 },
+        { lon: 3, lat: 31 },
+        { lon: 2, lat: 31 },
+        { lon: 2, lat: 30 },
       ],
     ],
   ],
@@ -85,5 +93,34 @@ describe('InheritorModal keyboard a11y (第5次バグハント / a11y)', () => {
     first.focus();
     fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(last);
+  });
+
+  // HB4-1: this suite only ever exercised keyboard behaviour, so「四角だけ出る」
+  // (every piece falling outside the viewBox) went unnoticed. One drawing
+  // assertion over the now northern-hemisphere fixture closes that gap here too.
+  it('每片が viewBox 内に描かれる (HB4-1 —「四角だけ出る」回帰ロック)', () => {
+    renderModal();
+    const raw = screen.getByTestId('knife-preview').getAttribute('viewBox') ?? '';
+    const [, vy, , vh] = raw.trim().split(/\s+/).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+    for (let i = 0; i < PIECES.length; i += 1) {
+      const d = screen.getByTestId(`knife-preview-${String(i)}`).getAttribute('d') ?? '';
+      // 数値パターンは指数表記を受けること: `pathFor` は `${-c.lat}` 補間なので
+      // |lat| < 1e-6 の頂点は `-1e-7` と出る。`-?[\d.]+` だとそれを `-1` と誤読し、
+      // 下の内包アサーションが嘘をつく(HB4-1 レビュー指摘 #3)。
+      const num = String.raw`-?[\d.]+(?:[eE][-+]?\d+)?`;
+      const ys = [...d.matchAll(new RegExp(String.raw`[ML]\s*${num}\s+(${num})`, 'g'))].map((m) =>
+        Number(m[1]),
+      );
+      expect(ys.length, `piece ${String(i)} has no path points`).toBeGreaterThan(0);
+      for (const y of ys) {
+        expect(y).toBeGreaterThanOrEqual(vy);
+        expect(y).toBeLessThanOrEqual(vy + vh);
+      }
+    }
   });
 });

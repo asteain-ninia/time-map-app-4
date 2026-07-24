@@ -69,14 +69,23 @@ function boundsOf(...mps: readonly GeoMultiPolygon[]): {
   return { minX, minY, w: Math.max(maxX - minX, 1e-6), h: Math.max(maxY - minY, 1e-6) };
 }
 
-/** Outer-ring path data (preview only; holes omitted for the thumbnail). */
+/**
+ * Outer-ring path data (preview only; holes omitted for the thumbnail).
+ *
+ * HB4-1: emitted in the **-lat space** — the SAME space as `viewBox` and the
+ * `knife-smaller-box` rect. Writing `+lat` here while the viewBox窓 is `-lat`
+ * put every non-equator-straddling piece OUTSIDE the viewBox, so only the red
+ * dashed box was drawn (「四角だけ出る」). -lat also makes SVG's y-down render
+ * north-up directly, so NO CSS flip is applied on the <svg> (a flip on top of
+ * -lat would be a double inversion = upside down).
+ */
 function pathFor(mp: GeoMultiPolygon): string {
   const parts: string[] = [];
   for (const poly of mp) {
     const outer = poly[0];
     if (outer === undefined || outer.length === 0) continue;
     const d = outer
-      .map((c, i) => `${i === 0 ? 'M' : 'L'}${c.lon} ${c.lat}`)
+      .map((c, i) => `${i === 0 ? 'M' : 'L'}${c.lon} ${-c.lat}`)
       .join(' ');
     parts.push(`${d} Z`);
   }
@@ -104,7 +113,8 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
   }, []);
 
   const b = boundsOf(...pieces);
-  // SVG y grows downward; flip lat so north is up in the preview.
+  // SVG y grows downward; negate lat so north is up in the preview. EVERY child
+  // of the <svg> (paths + rect) must be emitted in this same -lat space (HB4-1).
   const viewBox = `${b.minX} ${-(b.minY + b.h)} ${b.w} ${b.h}`;
   const smallerMp = pieces[smallestIndex] ?? pieces[0] ?? [];
   const sb = boundsOf(smallerMp);
@@ -145,8 +155,9 @@ export function InheritorModal(props: InheritorModalProps): JSX.Element {
           width={PREVIEW_PX}
           height={PREVIEW_PX}
           viewBox={viewBox}
-          // Flip y so latitude points up (the data is lat-up, SVG is y-down).
-          style={{ transform: 'scaleY(-1)' }}
+          // NO CSS scaleY(-1) here (HB4-1): the geometry is already emitted in
+          // -lat space, which makes SVG's y-down render north-up. A CSS flip on
+          // top of that would invert the preview upside down.
         >
           {pieces.map((mp, i) => (
             <path
