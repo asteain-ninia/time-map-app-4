@@ -101,6 +101,55 @@ describe('addEnclave (FR-22 飛び地作成 — mirror of addHole)', () => {
     }
   });
 
+  // U-C 到達可能性: an enclave drawn INSIDE one of the face's holes is the 領土→穴→領土
+  // half of FR-24's alternation. Parented at TOP LEVEL it would sit inside the outer
+  // territory and be rejected as enclaves-overlap, i.e. the structure would be
+  // unconstructible from any UI path; the command must attach it to the enclosing HOLE.
+  it('parents an enclave drawn inside a hole to that hole (FR-24 領土→穴→領土)', () => {
+    const { feature, vertices } = squareWithHoleLeaf();
+    // Strictly inside H0 ([40,60]²) — the hole void, i.e. NOT solid fill (enclave mode).
+    const verts = [coord(45, 45), coord(55, 45), coord(50, 55)];
+    const res = addEnclave(feature, verts, idPorts('e'), vertices);
+    expect(res.status).toBe(RING_COMMAND_STATUS.Ok);
+    if (res.status !== RING_COMMAND_STATUS.Ok) return;
+    const territories = res.feature.shape.rings.filter((r) => r.kind === RING_KIND.Territory);
+    expect(territories).toHaveLength(2);
+    const added = territories.find((t) => t.id !== rid('T0'));
+    expect(added?.parentRingId).toBe(rid('H0'));
+    // Still ONE feature (FR-23). An Ok status already means the shared U07 gate passed
+    // (commitIfValid), i.e. the alternation + containment hold for this parent link.
+    expect(res.feature.id).toBe(feature.id);
+    expect(res.vertices).toHaveLength(3);
+  });
+
+  // 敵対レビュー HIGH: the hole-parent lookup only inspects the FIRST vertex, so a ring
+  // whose remaining vertices escape the hole must still be stopped — by the shared U07
+  // gate, not by a second inside/outside rule here. Before the U07 containment mirror
+  // existed this confirmed OK and persisted a nested territory sticking out of its hole.
+  it('rejects an enclave whose first vertex is in a hole but whose body escapes it', () => {
+    const { feature, vertices } = squareWithHoleLeaf();
+    // (45,45) is inside H0 ([40,60]²); the other two are far outside it, overlapping
+    // T0's solid fill.
+    const verts = [coord(45, 45), coord(95, 45), coord(45, 95)];
+    const res = addEnclave(feature, verts, idPorts('e'), vertices);
+    expect(res.status).toBe(RING_COMMAND_STATUS.Rejected);
+    if (res.status !== RING_COMMAND_STATUS.Rejected) return;
+    expect(res.reason).toBe(RING_REJECT.HierarchyInvalid);
+    expect(res.validation?.valid).toBe(false);
+  });
+
+  it('keeps an enclave drawn clear of the face at top level (no parent)', () => {
+    const { feature, vertices } = squareWithHoleLeaf();
+    const verts = [coord(200, 0), coord(300, 0), coord(250, 100)];
+    const res = addEnclave(feature, verts, idPorts('e'), vertices);
+    expect(res.status).toBe(RING_COMMAND_STATUS.Ok);
+    if (res.status !== RING_COMMAND_STATUS.Ok) return;
+    const added = res.feature.shape.rings
+      .filter((r) => r.kind === RING_KIND.Territory)
+      .find((t) => t.id !== rid('T0'));
+    expect(added?.parentRingId).toBeUndefined();
+  });
+
   it('addRing dispatches by auto-classified mode (both branches reachable)', () => {
     const { feature, vertices } = squareLeaf();
     const holeRes = addRing(feature, RING_ADD_MODE.Hole, [coord(40, 40), coord(60, 40), coord(50, 60)], vertices, idPorts('h'));

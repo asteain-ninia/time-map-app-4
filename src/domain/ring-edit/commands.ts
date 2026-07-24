@@ -193,6 +193,45 @@ function enclosingTerritoryFor(
   return best;
 }
 
+/**
+ * Whether `point` lies strictly inside `ring`'s own boundary, ignoring any ring
+ * nested in it. Reuses {@link isPointInSolidFill} over a single-ring probe shape —
+ * the SAME predicate + coordinate pipeline (unwrap / quantize) every other
+ * containment answer in this unit comes from, so no second inside/outside rule is
+ * introduced (単一の真実源 §4).
+ */
+function ringContainsPoint(ring: Ring, store: VertexStore, point: WorldCoordinate): boolean {
+  const probe = createShape([createTerritoryRing(ring.id, ring.vertexIds)]);
+  return isPointInSolidFill(probe, store, point);
+}
+
+/**
+ * The DEEPEST HOLE ring whose void contains `point`, or undefined when the point is
+ * in no hole of this face. This is the parent an ENCLAVE drawn inside a hole must
+ * take: FR-24's invariant is 領土→穴→領土→…, so a territory ring sitting in a hole is
+ * that hole's CHILD, never a second top-level territory (as a top-level ring it would
+ * overlap the outer territory and be rejected as enclaves-overlap). Deepest wins so a
+ * hole punched into an enclave claims a point over the outer territory's hole.
+ */
+function enclosingHoleFor(
+  shape: Shape,
+  store: VertexStore,
+  point: WorldCoordinate,
+): Ring | undefined {
+  let best: Ring | undefined;
+  let bestDepth = -1;
+  for (const ring of shape.rings) {
+    if (ring.kind !== RING_KIND.Hole) continue;
+    if (!ringContainsPoint(ring, store, point)) continue;
+    const depth = parentDepthOf(shape, ring);
+    if (depth > bestDepth) {
+      best = ring;
+      bestDepth = depth;
+    }
+  }
+  return best;
+}
+
 /** A copy of `ring` re-rooted as top-level, for single-territory containment probes. */
 function toTopLevel(ring: TerritoryRing): TerritoryRing {
   return createTerritoryRing(ring.id, ring.vertexIds);
@@ -261,12 +300,17 @@ export function addHole(
 
 /**
  * Add an ENCLAVE (飛び地) ring to the target leaf (FR-22 飛び地作成モード / FR-23).
- * An enclave is a separate OUTER territory ring of the SAME face — a top-level
- * territory (no parent). The role + non-overlap with the other outer rings is
- * re-checked by the shared validation gate (FR-25 飛び地非重複 / 教訓 5.26). Mints
- * one vertex per drafted coordinate. Adds NO feature and NO anchor (FR-23). The
- * exact mirror of {@link addHole}: implemented and tested in its own right (教訓
- * 2.10 — neither member of the対概念 is skipped).
+ * An enclave is a separate territory ring of the SAME face, placed by WHERE the
+ * first drafted vertex fell — the mirror of {@link addHole}'s parent lookup:
+ *   - clear of the face ⇒ a TOP-LEVEL territory (a detached 飛び地);
+ *   - inside one of the face's HOLES ⇒ that hole's CHILD territory, which is what
+ *     FR-24's 領土→穴→領土 alternation calls for (a top-level ring there would sit
+ *     inside the outer territory and be rejected as enclaves-overlap, making the
+ *     structure unconstructible).
+ * The role + containment + non-overlap are re-checked by the shared validation gate
+ * (FR-25 飛び地非重複 / 教訓 5.26). Mints one vertex per drafted coordinate. Adds NO
+ * feature and NO anchor (FR-23). Implemented and tested in its own right (教訓 2.10 —
+ * neither member of the対概念 is skipped).
  */
 export function addEnclave(
   feature: LeafFeature,
@@ -275,9 +319,15 @@ export function addEnclave(
   store: VertexStore,
 ): RingCommandResult {
   if (vertices.length < 3) return reject(RING_REJECT.TooFewVertices);
+  const first = vertices[0];
+  if (first === undefined) return reject(RING_REJECT.TooFewVertices);
 
+  const parentHole = enclosingHoleFor(feature.shape, store, first);
   const built = mintRingVertices(vertices, ids);
-  const enclaveRing = createTerritoryRing(ids.nextRingId(), built.vertexIds);
+  const enclaveRing =
+    parentHole === undefined
+      ? createTerritoryRing(ids.nextRingId(), built.vertexIds)
+      : createTerritoryRing(ids.nextRingId(), built.vertexIds, parentHole.id);
   const shape = createShape([...feature.shape.rings, enclaveRing]);
   const nextStore = withVertices(store, built.vertices);
   return commitIfValid(feature, shape, nextStore, built.vertices);

@@ -153,7 +153,17 @@ export function RingEditToolController<S>(
     (fid: FeatureId) => store.getState().setActiveFeature(fid),
     [store],
   );
-  const clearTargetSelection = useCallback(() => store.getState().clearSelection(), [store]);
+  // CANCEL = leave the tool (Escape / キャンセル). Un-promoting the target alone left the
+  // toolbar button `aria-pressed=true` while the session was disarmed, so pressing the
+  // SAME button again ran the store's press-toggle (tool → null) instead of re-arming —
+  // the tool could only be revived by detouring through another tool. Releasing
+  // `activeTool` here keeps the toolbar's pressed state and the session's armed state
+  // ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源), so the next press always re-arms.
+  // `setActiveTool(null)` runs the store's own selection reset契約, which subsumes the
+  // target un-promotion.
+  const releaseToolOnCancel = useCallback(() => {
+    store.getState().setActiveTool(null);
+  }, [store]);
 
   const ring = useRingEditTool<S>({
     resolveFeature,
@@ -165,7 +175,7 @@ export function RingEditToolController<S>(
     startProcess,
     onCommitted,
     onTargetSelected: promoteTargetSelection,
-    onCancelled: clearTargetSelection,
+    onCancelled: releaseToolOnCancel,
     ...(onConflicts ? { onConflicts } : {}),
   });
 
@@ -344,7 +354,11 @@ export function RingEditToolController<S>(
               <input
                 type="checkbox"
                 data-testid="ring-edit-gridsnap"
-                checked={ring.draft?.gridSnap ?? false}
+                /* The hook's toggle — NOT the draft's copy — is the state source: the
+                   checkbox is live BEFORE a target face is picked (no draft yet) and
+                   must not silently snap back to unchecked. The hook keeps the running
+                   draft in sync with it (単一の真実源). */
+                checked={ring.gridSnap}
                 onChange={(e) => ring.setGridSnap(e.target.checked)}
               />
               {RING_EDIT_STRINGS.gridSnap}

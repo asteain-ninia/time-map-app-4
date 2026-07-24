@@ -9,9 +9,20 @@ export const RING_EDIT_STRINGS = {
   /** Guide: pick the target face whose rings to edit (no face selected yet). */
   guideSelectTarget: '穴 / 飛び地を編集する面をクリックで選択してください。',
   /** Guide while placing the new ring's vertices (add sub-mode, face chosen). */
-  guideDrawRing: '穴 / 飛び地の頂点をクリックで追加してください（3 点以上で確定できます）。',
+  guideDrawRing:
+    '穴 / 飛び地の頂点をクリックで追加してください（面の内側なら穴、外側なら飛び地。3 点以上で確定できます）。',
+  /** Guide: pick the face whose ring to delete (delete sub-mode, no face chosen yet). */
+  guideSelectDeleteTarget: '穴 / 領土リングを削除する面をクリックで選択してください。',
   /** Guide in the delete sub-mode: click inside a ring to remove it. */
   guideDeleteRing: '削除する穴 / 領土リングの内側をクリックしてください。',
+  /**
+   * The target-selection click missed every face (教訓 5.12: 無反応にしない). The
+   * production hit-test is 穴透過, so the 面 must be picked on its SOLID fill — a
+   * click in a hole void or off the map surfaces this instead of doing nothing.
+   */
+  faceNotFound: '面が見つかりませんでした。編集する面の塗りつぶし部分をクリックしてください。',
+  /** The clicked feature was not an individual leaf face (aggregate / point / line). */
+  selectLeafTarget: '末端地物を選択してください。',
   /** Confirm the drafted ring (穴 / 飛び地). */
   confirmRing: 'リングを確定',
   /** 最後の頂点を取り消す (FR-78). */

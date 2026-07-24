@@ -4,10 +4,12 @@
 // UI layer: holds the TRANSIENT ring-edit state (the pure {@link RingAddDraft} for
 // the add sub-mode + the add/delete sub-mode + a message) and DRIVES the whole
 // interaction by delegating every decision to the pure U25 domain transitions —
-// start → select target face → (add) classify first click hole/enclave → place ≥3
-// vertices / undo → confirm ⇒ addRing → snapshot → confirmRingEdit(U24→U13); or
-// (delete) click a ring ⇒ deleteHoleRing / deleteTerritoryRing → snapshot →
-// confirmRingEdit. It NEVER re-implements ring geometry / hierarchy and never mutates
+// start → select target face → (add) place ≥3 vertices, the FIRST of which classifies
+// hole/enclave / undo → confirm ⇒ addRing → snapshot → confirmRingEdit(U24→U13); or
+// (delete) select target face → click a ring ⇒ deleteHoleRing / deleteTerritoryRing →
+// snapshot → confirmRingEdit. Target selection is its OWN click in BOTH sub-modes —
+// that split is what makes 飛び地追加 / 穴リング削除 reachable under the production
+// 穴透過 hit-test (see {@link UseRingEditToolActions.handleClick}). It NEVER re-implements ring geometry / hierarchy and never mutates
 // shared domain state before confirm (教訓 5.22 確定までの非破壊). The domain add /
 // delete commands + confirm path already existed and were unit-tested; this hook is
 // the消費する ui コンシューマ that makes them reachable from the UI (教訓 5.7).
@@ -151,6 +153,22 @@ export interface UseRingEditToolState {
   readonly draft: RingAddDraft | null;
   /** The chosen target face id (null while still選択中). */
   readonly targetId: FeatureId | null;
+  /**
+   * The grid-snap toggle (FR-78). This — NOT `draft?.gridSnap` — is the state SOURCE
+   * the chrome's checkbox reflects: the toggle is meaningful before a target face is
+   * picked (no draft yet) and must survive draft discard/restart. `setGridSnap` keeps
+   * the live draft in sync with it, so the two can never disagree (単一の真実源).
+   *
+   * CONTRACT — deliberately OUTSIDE the reset契約 (教訓 5.2): grid snap is a USER
+   * PREFERENCE, not transient interaction state. It carries no geometry, no target and
+   * no draft, so it cannot leak an in-progress operation into the next one, and it is
+   * permanently VISIBLE in the checkbox whenever the tool chrome is up — the failure
+   * mode 5.2 guards against (invisible残存 that silently changes the next operation's
+   * result) cannot occur. It therefore survives commit / cancel / sub-mode switch /
+   * tool switch, mirroring the add tool's "carry the current grid-snap preference
+   * forward" (useAddTool.start). Pinned by a test so this is a decision, not a drift.
+   */
+  readonly gridSnap: boolean;
   /** The per-state Japanese guide (FR-92). */
   readonly guide: string;
   /** A rejection / info message kept until a meaningful event (教訓 5.12). null = none. */
@@ -170,9 +188,13 @@ export interface UseRingEditToolActions {
    * A LEFT click. `featureIdAtPoint` is the controller's own hit-test result (the
    * feature id under the click, or null), passed in so the hook stays free of any
    * point→id geometry — mirrors the knife/merge split where the controller owns
-   * `featureAtPoint` and the hook drives the state machine (教訓 5.14 / 5.33). Once a
-   * target face is chosen the id is ignored and the click acts on that face (vertex
-   * placement in add, ring hit-test in delete).
+   * `featureAtPoint` and the hook drives the state machine (教訓 5.14 / 5.33).
+   *
+   * It is consulted ONLY while no target face is chosen (phase 1). Once a face IS
+   * chosen the id is ignored entirely and the click acts on that face — vertex
+   * placement in add (so a 飛び地 can be drawn clean OUTSIDE the face), ring
+   * containment in delete (so a HOLE's interior, which the 穴透過 hit-test reports as
+   * a miss, still picks that hole ring).
    */
   handleClick(point: WorldCoordinate, featureIdAtPoint: FeatureId | null): void;
   /** Update the cursor-follow preview (add draft; high-frequency, render-sink direct). */
@@ -278,6 +300,8 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   // The SINGLE reset契約 every exit path funnels through (教訓 5.2). Drops the draft,
   // the delete target and the message together; `armed` (tool-active) is kept unless a
   // full stop is requested by the caller (start / resetForSwitch set it explicitly).
+  // `gridSnap` is INTENTIONALLY not reset — it is a user preference, not transient
+  // interaction state (see UseRingEditToolState.gridSnap for the full contract).
   const discard = useCallback(() => {
     setDraft(resetDraft());
     setDeleteTargetId(null);
@@ -411,45 +435,73 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     [resolveStore, runConfirm],
   );
 
+  // Pick the target face from a click (the ONE target-acquisition path both sub-modes
+  // share). Returns the resolved leaf, or undefined after surfacing WHY it failed —
+  // never a silent no-op (教訓 5.12: 判断できる理由を必ず出す).
+  const acquireTarget = useCallback(
+    (featureIdAtPoint: FeatureId | null): LeafFeature | undefined => {
+      if (featureIdAtPoint === null) {
+        setMessage(RING_EDIT_STRINGS.faceNotFound);
+        return undefined;
+      }
+      const leaf = resolveTargetLeaf(featureIdAtPoint);
+      if (leaf === undefined) {
+        setMessage(RING_EDIT_STRINGS.selectLeafTarget);
+        return undefined;
+      }
+      onTargetSelected?.(featureIdAtPoint);
+      setMessage(null);
+      return leaf;
+    },
+    [resolveTargetLeaf, onTargetSelected],
+  );
+
+  // A LEFT click. TWO PHASES in BOTH sub-modes (到達可能性の要, FR-22 / FR-24):
+  //
+  //   phase 1 — TARGET: the click must hit a leaf face, so it is resolved through the
+  //     host hit-test. That hit-test is 穴透過 (`leafAtPoint`), i.e. it only ever
+  //     answers for the face's SOLID fill.
+  //   phase 2 — ACT: every later click acts on the CHOSEN face and is deliberately
+  //     hit-test INDEPENDENT — the hook already knows which face it edits, and the
+  //     geometry question ("solid or not", "which ring contains this") is answered by
+  //     the domain against that face's own rings.
+  //
+  // Collapsing the two phases into one click (the previous design) made half of FR-22 /
+  // FR-24 UNREACHABLE: a first click had to BOTH hit the face (穴透過 ⇒ inside the
+  // solid) AND land outside the solid to mean 飛び地 — mutually exclusive — and a
+  // delete click inside a hole void resolved to no face at all, so the hole ring could
+  // never be picked. Splitting them makes 穴 / 飛び地 / 穴削除 / 飛び地削除 all reachable
+  // with plain clicks, and matches the guide copy the tool already showed.
   const handleClick = useCallback(
     (point: WorldCoordinate, featureIdAtPoint: FeatureId | null) => {
       if (!armed) return;
       if (subMode === RING_EDIT_SUBMODE.Add) {
-        // Draft in progress ⇒ add a vertex to it; else this click picks the target face.
-        if (draft !== null) {
-          const leaf = resolveTargetLeaf(draft.targetFeatureId);
-          if (leaf === undefined) {
-            // The target vanished (time move / delete) — abandon the stale draft.
-            setMessage(RING_REJECT_MESSAGES['target-not-found']);
-            discard();
-            return;
-          }
-          placeAddVertex(leaf, point);
+        if (draft === null) {
+          // Phase 1: pick the face; NO vertex is placed by the selection click.
+          const leaf = acquireTarget(featureIdAtPoint);
+          if (leaf === undefined) return;
+          setDraft(startDraft(leaf.id, gridSnap));
           return;
         }
-        if (featureIdAtPoint === null) return;
-        const leaf = resolveTargetLeaf(featureIdAtPoint);
+        // Phase 2: a ring vertex — anywhere. The FIRST one classifies 穴 / 飛び地 by
+        // geometry (classifyFirstClick over the target face's shape), so a click in a
+        // hole void or clean outside the face is an ENCLAVE instead of a dropped click.
+        const leaf = resolveTargetLeaf(draft.targetFeatureId);
         if (leaf === undefined) {
-          setMessage('末端地物を選択してください。');
+          // The target vanished (time move / delete) — abandon the stale draft.
+          setMessage(RING_REJECT_MESSAGES['target-not-found']);
+          discard();
           return;
         }
-        onTargetSelected?.(featureIdAtPoint);
         placeAddVertex(leaf, point);
         return;
       }
-      // Delete sub-mode: first click picks the target face; subsequent clicks target rings.
+      // Delete sub-mode — the same two phases.
       const targetId = deleteTargetId;
       if (targetId === null) {
-        if (featureIdAtPoint === null) return;
-        const leaf = resolveTargetLeaf(featureIdAtPoint);
-        if (leaf === undefined) {
-          setMessage('末端地物を選択してください。');
-          return;
-        }
-        setDeleteTargetId(featureIdAtPoint);
-        onTargetSelected?.(featureIdAtPoint);
-        setMessage(null);
-        deleteRingAt(leaf, point);
+        const leaf = acquireTarget(featureIdAtPoint);
+        if (leaf === undefined) return;
+        setDeleteTargetId(leaf.id);
         return;
       }
       const leaf = resolveTargetLeaf(targetId);
@@ -458,9 +510,23 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
         setDeleteTargetId(null);
         return;
       }
+      // Phase 2: the ring under the click is decided by the face's OWN ring containment
+      // (ringAtPoint), never by the 穴透過 hit-test — that is what makes 穴リング削除
+      // reachable at all.
       deleteRingAt(leaf, point);
     },
-    [armed, subMode, draft, deleteTargetId, resolveTargetLeaf, placeAddVertex, deleteRingAt, discard, onTargetSelected],
+    [
+      armed,
+      subMode,
+      draft,
+      gridSnap,
+      deleteTargetId,
+      acquireTarget,
+      resolveTargetLeaf,
+      placeAddVertex,
+      deleteRingAt,
+      discard,
+    ],
   );
 
   const updatePreviewAction = useCallback((point: WorldCoordinate) => {
@@ -506,16 +572,25 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   const targetId: FeatureId | null =
     draft?.targetFeatureId ?? deleteTargetId ?? null;
 
+  // Both sub-modes report SelectingTarget until a face is chosen, so the flow the chrome
+  // (and an e2e probe) reads always states WHICH phase the click will run — 単一の真実源
+  // with the guide below.
   const flow: RingEditFlow = useMemo(() => {
     if (!armed) return RING_EDIT_FLOW.Idle;
-    if (subMode === RING_EDIT_SUBMODE.Delete) return RING_EDIT_FLOW.Deleting;
+    if (subMode === RING_EDIT_SUBMODE.Delete) {
+      return deleteTargetId !== null ? RING_EDIT_FLOW.Deleting : RING_EDIT_FLOW.SelectingTarget;
+    }
     return draft !== null ? RING_EDIT_FLOW.Drafting : RING_EDIT_FLOW.SelectingTarget;
-  }, [armed, subMode, draft]);
+  }, [armed, subMode, draft, deleteTargetId]);
 
   const guide = useMemo(() => {
-    if (subMode === RING_EDIT_SUBMODE.Delete) return RING_EDIT_STRINGS.guideDeleteRing;
+    if (subMode === RING_EDIT_SUBMODE.Delete) {
+      return deleteTargetId !== null
+        ? RING_EDIT_STRINGS.guideDeleteRing
+        : RING_EDIT_STRINGS.guideSelectDeleteTarget;
+    }
     return draft !== null ? RING_EDIT_STRINGS.guideDrawRing : RING_EDIT_STRINGS.guideSelectTarget;
-  }, [subMode, draft]);
+  }, [subMode, draft, deleteTargetId]);
 
   const canConfirm = draft !== null && draft.vertices.length >= 3;
 
@@ -524,6 +599,7 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     subMode,
     draft,
     targetId,
+    gridSnap,
     guide,
     message,
     canConfirm,

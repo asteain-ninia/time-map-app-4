@@ -13,9 +13,11 @@
 //      flips territory ↔ hole, and every outermost (parentless) ring is a
 //      territory. Validated with a *structured* result (violations enumerated),
 //      so real-time and pre-commit checks share one return value (教訓5.26).
-//   2. Geometric containment / non-crossing / non-overlap (FR-25): a hole fully
-//      inside its parent without crossing it; siblings (same parent) not crossing;
-//      enclaves (separate top-level territories) not overlapping each other.
+//   2. Geometric containment / non-crossing / non-overlap (FR-25): every child ring
+//      fully inside its parent without crossing it (a hole inside its territory AND
+//      a nested territory inside its hole — 対概念 both checked); siblings (same
+//      parent) not crossing; enclaves (separate top-level territories) not
+//      overlapping each other.
 //   3. Deletion reorganization (FR-24): deleting a hole or a territory ring and
 //      re-attaching its descendants so the alternation is preserved — one pure
 //      function `(Shape, RingId) -> Shape` whose return value alone captures the
@@ -138,6 +140,10 @@ export const RING_VIOLATION = {
   HoleNotContained: 'hole-not-contained',
   /** A hole's boundary crosses its parent territory's boundary. */
   HoleCrossesParent: 'hole-crosses-parent',
+  /** A nested territory (穴の中の飛び地) is not fully inside its parent hole. */
+  NestedTerritoryNotContained: 'nested-territory-not-contained',
+  /** A nested territory's boundary crosses its parent hole's boundary. */
+  NestedTerritoryCrossesParent: 'nested-territory-crosses-parent',
   /** Two sibling rings (same parent) cross / overlap each other. */
   SiblingsOverlap: 'siblings-overlap',
   /** Two top-level territories (enclaves of the same feature) overlap. */
@@ -491,7 +497,9 @@ export interface RingGeometryOptions {
 
 /**
  * Validate FR-25 geometry for an entire shape against a vertex store:
- *   - each hole fully contained in its parent territory and not crossing it;
+ *   - each ring with a parent fully contained in that parent and not crossing it —
+ *     BOTH members of the対概念: a hole inside its territory AND a nested territory
+ *     (穴の中の飛び地) inside its hole;
  *   - sibling rings (same parent) do not overlap each other;
  *   - top-level territories (enclaves of one feature) do not overlap each other.
  *
@@ -515,25 +523,45 @@ export function validateGeometry(
   const violations: RingViolation[] = [];
   const applyBboxReject = options?.exhaustive !== true;
 
-  // (a) hole containment + non-crossing of parent.
+  // (a) child containment + non-crossing of parent, for EVERY ring that has a parent.
+  //
+  //     対概念 (教訓 2.10) — the rule has TWO members and BOTH are checked here:
+  //       - a HOLE must lie inside its parent TERRITORY;
+  //       - a NESTED TERRITORY (穴の中の飛び地) must lie inside its parent HOLE.
+  //     Checking only the first left the 領土→穴→領土 structure半分未検証: pass (b)
+  //     compares rings that SHARE a parent, so a hole holding a single enclave has no
+  //     comparison partner and an enclave poking out of its hole into the surrounding
+  //     solid passed every check. The parent link is the same claim in both directions
+  //     ("I am inside this ring"), so it is verified with the same predicates.
   for (const ring of shape.rings) {
-    if (ring.kind !== RING_KIND.Hole) continue;
-    const parent = byId.get(ring.parentRingId);
+    const parentId = parentIdOf(ring);
+    if (parentId === undefined) continue; // top-level: nothing to be contained in
+    const parent = byId.get(parentId);
     if (parent === undefined) continue; // structural defect, reported elsewhere
+    // A parent of the SAME role is an alternation defect owned by validateAlternation;
+    // "contained in" is meaningless there, so we do not pile a geometry violation on it.
+    if (parent.kind === ring.kind) continue;
     // Resolve the pair in a SHARED world turn: the parent is the reference and the
-    // hole is aligned to it, so a hole whose vertex list merely starts on the
+    // child is aligned to it, so a child whose vertex list merely starts on the
     // opposite seam side from the parent is not judged ~360° away (R3 fix).
     const pair = resolveAlignedPair(store, parent, ring);
     if (pair === undefined) continue;
-    const [parentGeo, holeGeo] = pair;
-    // Compute the crossing verdict ONCE and reuse it: when the hole does not cross,
-    // containment reduces to "no hole vertex strictly outside the parent" — the old
-    // `ringContains` re-ran this same O(hole·parent) crossing test a second time
+    const [parentGeo, childGeo] = pair;
+    const kinds =
+      ring.kind === RING_KIND.Hole
+        ? ([RING_VIOLATION.HoleCrossesParent, RING_VIOLATION.HoleNotContained] as const)
+        : ([
+            RING_VIOLATION.NestedTerritoryCrossesParent,
+            RING_VIOLATION.NestedTerritoryNotContained,
+          ] as const);
+    // Compute the crossing verdict ONCE and reuse it: when the child does not cross,
+    // containment reduces to "no child vertex strictly outside the parent" — the old
+    // `ringContains` re-ran this same O(child·parent) crossing test a second time
     // (over the huge parent coastline), which was pure waste (完全不変 to drop it).
-    if (ringsProperlyCross(holeGeo, parentGeo, applyBboxReject)) {
-      violations.push(violation(RING_VIOLATION.HoleCrossesParent, ring.id, parent.id));
-    } else if (!noInnerVertexOutside(parentGeo, holeGeo)) {
-      violations.push(violation(RING_VIOLATION.HoleNotContained, ring.id, parent.id));
+    if (ringsProperlyCross(childGeo, parentGeo, applyBboxReject)) {
+      violations.push(violation(kinds[0], ring.id, parent.id));
+    } else if (!noInnerVertexOutside(parentGeo, childGeo)) {
+      violations.push(violation(kinds[1], ring.id, parent.id));
     }
   }
 

@@ -1436,29 +1436,125 @@ function descendantsLeafFirst(shape: Shape, rootId: RingId): readonly RingId[] {
     .map((x) => x.id);
 }
 
-/** The clearance the rich generator leaves around a hole/enclave inside its cell.
- * A child's half-W is 0.3*cellWidth and it sits at the cell center, so the gap to
- * the nearest cell edge is 0.2*cellWidth on each side. The smallest cellWidth in
- * the generator (territory halfW>=10, margin 0.15, up to 3 holes) is
- * 2*(10-1.5)/3 ≈ 5.67, gap ≈ 1.13. A nudge bounded well under that can never push
- * a subtree out of its cell nor make siblings touch. We use a conservative cap. */
-const SAFE_NUDGE = 0.4;
+/**
+ * Upper CAP on a nudge (only binding for a ring that has neither a parent nor a
+ * sibling, where the geometry imposes no bound of its own).
+ *
+ * This used to be the whole story: a single hand-picked constant justified by the
+ * clearance at the SHALLOWEST level of the rich generator (territory halfW>=10 ⇒
+ * gap ≈1.13). That justification does not survive nesting. Rings shrink ~0.17–0.51×
+ * per level, so a level-3 inner hole sits inside a parent of halfW ≈0.29 with a
+ * clearance ≈0.09 — a fifth of this constant — and the grow campaign shrinks further
+ * still (each added child is 0.2× its parent). The property "a nudge within the
+ * clearance preserves every invariant" was therefore being asserted for nudges that
+ * are NOT within the clearance; it only stayed green because the sampled runs never
+ * happened to pick a deep target together with a large offset. (Exposed when U07's
+ * containment check gained its missing nested-territory half: shrinking immediately
+ * walked into an offset that pushes a deep ring out of its parent — a genuine
+ * violation the old bound permitted.)
+ *
+ * The bound is now DERIVED from the actual geometry per target ({@link nudgeClearance}),
+ * which is both sound at every depth and STRONGER near the root (where it allows
+ * offsets far bigger than 0.4).
+ */
+const NUDGE_CAP = 0.4;
 
-/** A fifth-campaign edit command. */
+/** Fraction of the derived clearance a nudge is allowed to consume. Strictly < 1 so
+ * the moved subtree keeps a real margin (never a boundary-contact coin-flip). */
+const NUDGE_FRACTION = 0.5;
+
+type Bounds = { minLon: number; maxLon: number; minLat: number; maxLat: number };
+
+/** Axis-aligned bounds of a ring's whole SUBTREE (every ring in this campaign's
+ * generators is an axis-aligned rectangle, so bounds are exact geometry). */
+function subtreeBounds(state: EditState, ringId: RingId): Bounds | undefined {
+  const ids = subtreeRingIds(state.shape, ringId);
+  let out: Bounds | undefined;
+  for (const r of state.shape.rings) {
+    if (!ids.has(r.id)) continue;
+    const b = ringBounds(state.store, r);
+    if (b === undefined) continue;
+    out =
+      out === undefined
+        ? b
+        : {
+            minLon: Math.min(out.minLon, b.minLon),
+            maxLon: Math.max(out.maxLon, b.maxLon),
+            minLat: Math.min(out.minLat, b.minLat),
+            maxLat: Math.max(out.maxLat, b.maxLat),
+          };
+  }
+  return out;
+}
+
+/**
+ * The largest rigid translation magnitude that PROVABLY keeps `ringId`'s subtree
+ * inside its parent and clear of its siblings — the real precondition of the
+ * "sub-clearance nudge" property, read off the actual rectangles instead of guessed:
+ *   - vs the PARENT: the smallest of the four axis distances from the subtree's box
+ *     to the parent's box, so any offset below it leaves the subtree contained;
+ *   - vs each SIBLING: the LARGER of the two axis gaps between the boxes. Two boxes
+ *     are disjoint as soon as ONE axis separates them, so keeping the offset below
+ *     the widest separating gap keeps that axis separating (the narrow axis may
+ *     close — that alone is not an overlap).
+ * Non-siblings need no term: the subtree stays inside its parent, and everything
+ * outside the parent is separated by the parent's own containment.
+ */
+function nudgeClearance(state: EditState, ringId: RingId): number {
+  const self = subtreeBounds(state, ringId);
+  const ring = state.shape.rings.find((r) => r.id === ringId);
+  if (self === undefined || ring === undefined) return 0;
+  let limit = Number.POSITIVE_INFINITY;
+
+  const parentId = ring.parentRingId;
+  if (parentId !== undefined) {
+    const parent = state.shape.rings.find((r) => r.id === parentId);
+    const p = parent === undefined ? undefined : ringBounds(state.store, parent);
+    if (p === undefined) return 0; // unresolvable parent: refuse to move at all
+    limit = Math.min(
+      limit,
+      self.minLon - p.minLon,
+      p.maxLon - self.maxLon,
+      self.minLat - p.minLat,
+      p.maxLat - self.maxLat,
+    );
+  }
+
+  for (const other of state.shape.rings) {
+    if (other.id === ringId) continue;
+    if (other.parentRingId !== parentId) continue; // siblings only
+    const o = subtreeBounds(state, other.id);
+    if (o === undefined) continue;
+    const gapLon = Math.max(o.minLon - self.maxLon, self.minLon - o.maxLon);
+    const gapLat = Math.max(o.minLat - self.maxLat, self.minLat - o.maxLat);
+    limit = Math.min(limit, Math.max(gapLon, gapLat));
+  }
+
+  if (!Number.isFinite(limit)) return NUDGE_CAP; // no parent, no sibling: cap only
+  return Math.max(0, Math.min(NUDGE_CAP, limit));
+}
+
+/** Scale a generated offset FRACTION (|f| <= 1) into the target's real clearance. */
+function scaledNudge(state: EditState, ringId: RingId, fraction: number): number {
+  return fraction * NUDGE_FRACTION * nudgeClearance(state, ringId);
+}
+
+/** A fifth-campaign edit command. `fLon` / `fLat` are FRACTIONS of the target's
+ * derived clearance (see {@link scaledNudge}), not absolute degrees. */
 type EditCommand5 =
   | { readonly tag: 'delete-any'; readonly sel: number }
   | {
       readonly tag: 'nudge-any';
       readonly sel: number;
-      readonly dLon: number;
-      readonly dLat: number;
+      readonly fLon: number;
+      readonly fLat: number;
     }
   | { readonly tag: 'save-load' }
   | { readonly tag: 'delete-absent-noop' };
 
 function editCommand5Arb(): fc.Arbitrary<EditCommand5> {
   const nudge = (): fc.Arbitrary<number> =>
-    fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true });
+    fc.double({ min: -1, max: 1, noNaN: true, noDefaultInfinity: true });
   const sel = (): fc.Arbitrary<number> =>
     fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
   return fc.oneof(
@@ -1466,8 +1562,8 @@ function editCommand5Arb(): fc.Arbitrary<EditCommand5> {
     fc.record({
       tag: fc.constant('nudge-any' as const),
       sel: sel(),
-      dLon: nudge(),
-      dLat: nudge(),
+      fLon: nudge(),
+      fLat: nudge(),
     }),
     fc.record({ tag: fc.constant('save-load' as const) }),
     fc.record({ tag: fc.constant('delete-absent-noop' as const) }),
@@ -1482,8 +1578,8 @@ describe('alternation (seed=22002): subtree-nudge + extract + leaf-first deletio
           fc
             .record({
               sel: fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true }),
-              dLon: fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true }),
-              dLat: fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true }),
+              fLon: fc.double({ min: -1, max: 1, noNaN: true, noDefaultInfinity: true }),
+              fLat: fc.double({ min: -1, max: 1, noNaN: true, noDefaultInfinity: true }),
             })
             .map((op) => ({ shape, store, op })),
         ),
@@ -1491,13 +1587,17 @@ describe('alternation (seed=22002): subtree-nudge + extract + leaf-first deletio
           const targetId = pickAny(shape, op.sel);
           if (targetId === undefined) return;
           const state: EditState = { shape, store };
-          const moved = translateAnySubtree(state, targetId, op.dLon, op.dLat);
+          // The offset is a FRACTION of this target's OWN clearance, so the property's
+          // precondition ("within the clearance") holds at every nesting depth.
+          const dLon = scaledNudge(state, targetId, op.fLon);
+          const dLat = scaledNudge(state, targetId, op.fLat);
+          const moved = translateAnySubtree(state, targetId, dLon, dLat);
           // A rigid nudge within the cell clearance keeps EVERY focal invariant:
           // containment, sibling/enclave non-overlap, simplicity, finiteness.
           assertFullBundle({ shape, store: moved });
           // op∘inverse: nudge back by the negated offset restores coordinates
           // (float add-then-subtract, so within a tight epsilon, not bit-exact).
-          const back = translateAnySubtree({ shape, store: moved }, targetId, -op.dLon, -op.dLat);
+          const back = translateAnySubtree({ shape, store: moved }, targetId, -dLon, -dLat);
           for (const v of store.byId.values()) {
             const rv = back.byId.get(v.id);
             expect(rv).not.toBeUndefined();
@@ -1621,11 +1721,13 @@ describe('alternation (seed=22002): subtree-nudge + extract + leaf-first deletio
                 const targetId = pickAny(state.shape, cmd.sel);
                 if (targetId === undefined) break;
                 const beforeStore = state.store;
-                const moved = translateAnySubtree(state, targetId, cmd.dLon, cmd.dLat);
+                const dLon = scaledNudge(state, targetId, cmd.fLon);
+                const dLat = scaledNudge(state, targetId, cmd.fLat);
+                const moved = translateAnySubtree(state, targetId, dLon, dLat);
                 state = { shape: state.shape, store: moved };
                 assertFullBundle(state);
                 // UNDO∘op: nudge back restores prior coordinates (tight epsilon).
-                const back = translateAnySubtree(state, targetId, -cmd.dLon, -cmd.dLat);
+                const back = translateAnySubtree(state, targetId, -dLon, -dLat);
                 for (const v of beforeStore.byId.values()) {
                   const rv = back.byId.get(v.id);
                   expect(rv?.coordinate.lon).toBeCloseTo(v.coordinate.lon, 9);
@@ -1864,7 +1966,7 @@ type EditCommand6 =
   | { readonly tag: 'add-hole'; readonly sel: number }
   | { readonly tag: 'add-enclave'; readonly sel: number }
   | { readonly tag: 'delete-any'; readonly sel: number }
-  | { readonly tag: 'nudge-any'; readonly sel: number; readonly dLon: number; readonly dLat: number }
+  | { readonly tag: 'nudge-any'; readonly sel: number; readonly fLon: number; readonly fLat: number }
   | { readonly tag: 'anchor-insert'; readonly value: number }
   | { readonly tag: 'anchor-remove'; readonly sel: number }
   | { readonly tag: 'save-load' };
@@ -1873,7 +1975,7 @@ function editCommand6Arb(): fc.Arbitrary<EditCommand6> {
   const sel = (): fc.Arbitrary<number> =>
     fc.double({ min: 0, max: 1, noNaN: true, noDefaultInfinity: true });
   const nudge = (): fc.Arbitrary<number> =>
-    fc.double({ min: -SAFE_NUDGE, max: SAFE_NUDGE, noNaN: true, noDefaultInfinity: true });
+    fc.double({ min: -1, max: 1, noNaN: true, noDefaultInfinity: true });
   return fc.oneof(
     fc.record({ tag: fc.constant('add-hole' as const), sel: sel() }),
     fc.record({ tag: fc.constant('add-enclave' as const), sel: sel() }),
@@ -1881,8 +1983,8 @@ function editCommand6Arb(): fc.Arbitrary<EditCommand6> {
     fc.record({
       tag: fc.constant('nudge-any' as const),
       sel: sel(),
-      dLon: nudge(),
-      dLat: nudge(),
+      fLon: nudge(),
+      fLat: nudge(),
     }),
     fc.record({ tag: fc.constant('anchor-insert' as const), value: fc.integer({ min: -50, max: 50 }) }),
     fc.record({ tag: fc.constant('anchor-remove' as const), sel: sel() }),
@@ -2079,20 +2181,21 @@ describe('alternation (seed=22003): GROW (add hole/enclave) + anchor series + me
                 const targetId = pickAny(state.shape, cmd.sel);
                 if (targetId === undefined) break;
                 const beforeStore = state.store;
-                const moved = translateAnySubtree(
-                  { shape: state.shape, store: state.store },
-                  targetId,
-                  cmd.dLon,
-                  cmd.dLat,
-                );
+                const editState: EditState = { shape: state.shape, store: state.store };
+                // Fractions of the target's OWN clearance: the grow stream keeps adding
+                // children at 0.2× their parent, so any fixed absolute bound would
+                // eventually exceed the real clearance and assert a false property.
+                const dLon = scaledNudge(editState, targetId, cmd.fLon);
+                const dLat = scaledNudge(editState, targetId, cmd.fLat);
+                const moved = translateAnySubtree(editState, targetId, dLon, dLat);
                 state = { ...state, store: moved };
                 assertGrowBundle(state);
                 // op∘inverse: nudge back restores prior coordinates (tight epsilon).
                 const back = translateAnySubtree(
                   { shape: state.shape, store: state.store },
                   targetId,
-                  -cmd.dLon,
-                  -cmd.dLat,
+                  -dLon,
+                  -dLat,
                 );
                 for (const v of beforeStore.byId.values()) {
                   const rv = back.byId.get(v.id);

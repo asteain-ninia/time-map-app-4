@@ -163,6 +163,77 @@ describe('validateGeometry (FR-25): hole containment & non-crossing', () => {
   });
 });
 
+// 対概念 (教訓 2.10): the containment rule has TWO members — a hole inside its parent
+// territory, and a NESTED TERRITORY (穴の中の飛び地) inside its parent hole. Only the
+// first was checked, so a nested territory could stick out of its hole into the
+// surrounding solid and nothing caught it: the sibling/enclave pass (b) only compares
+// rings that SHARE a parent, and a hole holding a single enclave has no partner to
+// compare against. FR-24's 領土→穴→領土 structure is meaningless if the inner territory
+// is not actually inside the hole it claims as parent.
+describe('validateGeometry (FR-25): NESTED territory containment in its parent hole', () => {
+  it('succeeds when the nested territory is fully inside its parent hole', () => {
+    const store = storeFrom({
+      ...squareCoords('t', 0, 0, 100),
+      ...squareCoords('h', 40, 40, 20), // hole [40,60]²
+      ...squareCoords('e', 45, 45, 10), // enclave [45,55]², inside the hole
+    });
+    const t = createTerritoryRing(rid('t1'), squareVertexIds('t'));
+    const h = createHoleRing(rid('h1'), squareVertexIds('h'), rid('t1'));
+    const e = createTerritoryRing(rid('e1'), squareVertexIds('e'), rid('h1'));
+    expect(validateGeometry(createShape([t, h, e]), store).valid).toBe(true);
+  });
+
+  it('fails when the nested territory pokes out of its parent hole into the solid', () => {
+    const store = storeFrom({
+      ...squareCoords('t', 0, 0, 100),
+      ...squareCoords('h', 40, 40, 20), // hole [40,60]²
+      ...squareCoords('e', 45, 45, 50), // enclave [45,95]² — escapes the hole
+    });
+    const t = createTerritoryRing(rid('t1'), squareVertexIds('t'));
+    const h = createHoleRing(rid('h1'), squareVertexIds('h'), rid('t1'));
+    const e = createTerritoryRing(rid('e1'), squareVertexIds('e'), rid('h1'));
+    const res = validateGeometry(createShape([t, h, e]), store);
+    expect(res.valid).toBe(false);
+    const v = res.violations.find((x) => x.ringId === 'e1');
+    expect([
+      RING_VIOLATION.NestedTerritoryNotContained,
+      RING_VIOLATION.NestedTerritoryCrossesParent,
+    ]).toContain(v?.kind);
+    expect(v?.relatedRingId).toBe('h1');
+  });
+
+  it('fails when the nested territory lies entirely outside its parent hole', () => {
+    // No boundary crossing at all (disjoint), so only the vertex-containment half
+    // can catch it — the mirror of the hole "not contained" case.
+    const store = storeFrom({
+      ...squareCoords('t', 0, 0, 100),
+      ...squareCoords('h', 40, 40, 20),
+      ...squareCoords('e', 70, 70, 10), // disjoint from the hole
+    });
+    const t = createTerritoryRing(rid('t1'), squareVertexIds('t'));
+    const h = createHoleRing(rid('h1'), squareVertexIds('h'), rid('t1'));
+    const e = createTerritoryRing(rid('e1'), squareVertexIds('e'), rid('h1'));
+    const res = validateGeometry(createShape([t, h, e]), store);
+    expect(res.valid).toBe(false);
+    const v = res.violations.find((x) => x.ringId === 'e1');
+    expect(v?.kind).toBe(RING_VIOLATION.NestedTerritoryNotContained);
+    expect(v?.relatedRingId).toBe('h1');
+  });
+
+  it('does not double-report a ring whose parent link already breaks alternation', () => {
+    // territory → territory is an ALTERNATION defect; validateAlternation owns it.
+    // The geometry pass must not pile a containment violation on top of it.
+    const store = storeFrom({
+      ...squareCoords('t', 0, 0, 100),
+      ...squareCoords('u', 200, 200, 10), // nowhere near t
+    });
+    const t = createTerritoryRing(rid('t1'), squareVertexIds('t'));
+    const u = createTerritoryRing(rid('t2'), squareVertexIds('u'), rid('t1'));
+    const res = validateGeometry(createShape([t, u]), store);
+    expect(res.violations.filter((v) => v.ringId === 't2')).toHaveLength(0);
+  });
+});
+
 describe('validateGeometry (FR-25): sibling non-overlap', () => {
   it('succeeds when two sibling holes are separate', () => {
     const store = storeFrom({

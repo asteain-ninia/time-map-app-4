@@ -4,11 +4,11 @@
 // under src/domain/ring-edit. THIS test is the layer-crossing verification the lens
 // flags as missing: it mounts the REAL RingEditToolController over ONE session store
 // and drives the whole flow through the actual UI —
-//   - FR-22: tool select → target click (which is the first ring vertex + auto-classify)
-//     → cut-point clicks → 確定 runs addRing and drives the injected U24→U13 process
-//     (the COMPLETE trigger is wired and fires — 教訓 5.7);
-//   - FR-24: delete sub-mode → click inside a hole ring → deleteHoleRing drives the same
-//     confirm; a last-territory delete drops the feature;
+//   - FR-22: tool select → target-face click → ring-vertex clicks (the first one
+//     auto-classifies 穴 / 飛び地) → 確定 runs addRing and drives the injected U24→U13
+//     process (the COMPLETE trigger is wired and fires — 教訓 5.7);
+//   - FR-24: delete sub-mode → target-face click → click inside a hole ring →
+//     deleteHoleRing drives the same confirm; a last-territory delete drops the feature;
 //   - a rejection surfaces a Japanese message and does NOT confirm (教訓 5.22);
 //   - the transient draft is discarded on every exit path (Escape / tool switch / sub-mode
 //     switch) and the render batch is pushed to the sink + cleared on discard (教訓 5.2).
@@ -186,6 +186,17 @@ function clickInput(lon: number, lat: number): void {
   fireEvent.pointerDown(layer, { clientX: lon, clientY: lat, button: 0 });
 }
 
+/**
+ * Phase 1 of every ring-edit interaction: pick the target FACE with its own click
+ * (教訓 U-C 到達可能性). The later clicks are hit-test independent, which is what makes
+ * 飛び地追加 (a first vertex OUTSIDE the face) and 穴リング削除 (a click in the hole void,
+ * where the production 穴透過 hit-test reports a miss) reachable at all — see
+ * ring-edit-reachability.test.tsx. Selecting places NO vertex.
+ */
+function selectTargetFace(): void {
+  clickInput(2, 2);
+}
+
 // --- FR-22: add a HOLE (first click in solid) → confirm drives U13 ------------
 
 describe('RingEditToolController — hole/enclave add (FR-22)', () => {
@@ -202,18 +213,21 @@ describe('RingEditToolController — hole/enclave add (FR-22)', () => {
     const h = mountRing();
     activateRing(h.store);
     expect(h.store.getState().activeFeature).toBeNull();
-    // A first click in the SOLID fill (e.g. (2,2)) picks the target AND starts a hole draft.
-    clickInput(2, 2);
+    // A click in the SOLID fill (e.g. (2,2)) picks the target face (phase 1) — it starts
+    // the draft but places NO vertex; the ring's own vertices come from the next clicks.
+    selectTargetFace();
     expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
     h.unmount();
   });
 
   it('a hole draft (first click in solid) confirms via addRing → U13', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace(); // phase 1: the target face
     // Three clicks INSIDE the hole void ([5,15]²) are OUTSIDE the solid → would be enclave;
     // instead place a small hole INSIDE the solid ring (between outer 0..20 and hole 5..15).
-    clickInput(1, 1); // first click in solid fill → hole mode
+    clickInput(1, 1); // first RING click in solid fill → hole mode
     clickInput(3, 1);
     clickInput(2, 3);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('3');
@@ -229,6 +243,7 @@ describe('RingEditToolController — hole/enclave add (FR-22)', () => {
   it('undo removes the last placed vertex (FR-78)', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     clickInput(3, 1);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
@@ -240,6 +255,7 @@ describe('RingEditToolController — hole/enclave add (FR-22)', () => {
   it('confirm is disabled below 3 vertices', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     clickInput(3, 1);
     expect(screen.getByTestId('ring-edit-confirm')).toBeDisabled();
@@ -277,10 +293,11 @@ describe('RingEditToolController — grid snap quantizes placed vertices (FR-78)
     // Fine 1° graticule so the snapped points are inside the solid fill (not degenerate).
     act(() => h.store.getState().updateProjectSetting('gridSpacingDeg', 1));
     activateRing(h.store);
-    // Enable the grid-snap draft toggle, then place the ring.
+    // Enable the grid-snap draft toggle, then pick the face and place the ring.
     act(() => {
       fireEvent.click(screen.getByTestId('ring-edit-gridsnap'));
     });
+    selectTargetFace();
     for (const [lon, lat] of rawClicks) clickInput(lon, lat);
     fireEvent.click(screen.getByTestId('ring-edit-confirm'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
@@ -298,6 +315,7 @@ describe('RingEditToolController — grid snap quantizes placed vertices (FR-78)
     act(() => h.store.getState().updateProjectSetting('gridSpacingDeg', 1));
     activateRing(h.store);
     // Leave grid snap OFF (default): the same raw clicks must NOT be quantized.
+    selectTargetFace();
     for (const [lon, lat] of rawClicks) clickInput(lon, lat);
     fireEvent.click(screen.getByTestId('ring-edit-confirm'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
@@ -319,6 +337,7 @@ describe('RingEditToolController — ring delete (FR-24)', () => {
     // Switch to delete sub-mode.
     fireEvent.click(screen.getByTestId('ring-edit-submode'));
     expect(screen.getByTestId('ring-edit-guide').textContent).toContain('削除');
+    selectTargetFace(); // phase 1: the face whose ring is deleted
     // Click inside the hole void ([5,15]²) → the deepest containing ring is the hole.
     clickInput(10, 10);
     expect(h.startProcess).toHaveBeenCalledTimes(1);
@@ -329,15 +348,15 @@ describe('RingEditToolController — ring delete (FR-24)', () => {
     const h = mountRing();
     activateRing(h.store);
     fireEvent.click(screen.getByTestId('ring-edit-submode'));
-    // First click picks the target face (inside the solid) — deletes the territory ring
-    // it lands in. Use a point in solid fill for the first (target) click at (1,1): that
-    // deletes the outer territory (last territory → FeatureDeleted). Instead verify the
-    // no-ring path: pick target then click far outside on the SAME face is impossible
-    // (featureAtPoint gates), so assert the in-hole delete path already covered above and
-    // here assert a second click outside any ring on the chosen face is a miss message.
-    clickInput(10, 10); // target + delete hole (commits)
-    // After the commit the session re-arms clean; the message stays null.
-    expect(screen.queryByTestId('ring-edit-message')).not.toBeInTheDocument();
+    selectTargetFace(); // phase 1: the face
+    // Phase 2 is hit-test INDEPENDENT, so a click far outside the face still reaches
+    // deleteRingAt — where ringAtPoint finds no containing ring. That branch must say
+    // WHY (教訓 5.12) and must NOT drive U13.
+    clickInput(80, 80);
+    expect(screen.getByTestId('ring-edit-message').textContent).toContain(
+      '対象のリングが見つかりませんでした',
+    );
+    expect(h.startProcess).not.toHaveBeenCalled();
     h.unmount();
   });
 });
@@ -348,6 +367,7 @@ describe('RingEditToolController — transient state discarded on every exit pat
   it('Escape cancels the in-progress draft', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
     act(() => {
@@ -360,6 +380,7 @@ describe('RingEditToolController — transient state discarded on every exit pat
   it('switching away from the ring tool discards a draft in progress and clears the overlay', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     clickInput(3, 1);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
@@ -369,6 +390,7 @@ describe('RingEditToolController — transient state discarded on every exit pat
     expect(h.drawSink.batches[h.drawSink.batches.length - 1]).toBe(0);
     // Re-activating starts a FRESH session (no carried-over vertices).
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('1');
     h.unmount();
@@ -377,12 +399,35 @@ describe('RingEditToolController — transient state discarded on every exit pat
   it('toggling the sub-mode discards the current draft (教訓 5.2)', () => {
     const h = mountRing();
     activateRing(h.store);
+    selectTargetFace();
     clickInput(1, 1);
     clickInput(3, 1);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
     fireEvent.click(screen.getByTestId('ring-edit-submode')); // → delete
     fireEvent.click(screen.getByTestId('ring-edit-submode')); // → add (fresh)
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
+    h.unmount();
+  });
+
+  // The ONE piece of state deliberately EXCLUDED from the reset契約 — pinned so the
+  // exclusion is a decision, not a drift (敵対レビュー LOW: 契約が暗黙だった).
+  // Grid snap is a user PREFERENCE: it carries no geometry/target/draft and is always
+  // visible in the checkbox, so it cannot silently leak an operation into the next one.
+  it('grid snap is a PREFERENCE: it survives sub-mode switch and tool switch (not reset)', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    act(() => {
+      fireEvent.click(screen.getByTestId('ring-edit-gridsnap'));
+    });
+    expect(screen.getByTestId('ring-edit-gridsnap')).toBeChecked();
+    // A sub-mode switch (a discard path) drops the draft but keeps the preference.
+    fireEvent.click(screen.getByTestId('ring-edit-submode')); // → delete
+    fireEvent.click(screen.getByTestId('ring-edit-submode')); // → add
+    expect(screen.getByTestId('ring-edit-gridsnap')).toBeChecked();
+    // A full tool switch (resetForSwitch) + re-arm (start) likewise keeps it.
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditSelect));
+    activateRing(h.store);
+    expect(screen.getByTestId('ring-edit-gridsnap')).toBeChecked();
     h.unmount();
   });
 });
@@ -403,6 +448,7 @@ describe('RingEditToolController — バグハント第11波 (#3/#6): focus guar
   }
 
   function drawTwoVertices(): void {
+    selectTargetFace();
     clickInput(1, 1);
     clickInput(3, 1);
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
