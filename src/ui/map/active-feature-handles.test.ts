@@ -34,10 +34,16 @@ import {
 import type { HandlePrimitive, LinePrimitive } from '../../render/map-renderer';
 import type { DisplayControlInput } from '../../render/display-pipeline';
 
-import { DEFAULT_FILTER_STATE, setIndividualHidden } from '../discovery/index';
+import {
+  DEFAULT_FILTER_STATE,
+  setFeatureEmphasized,
+  setIndividualHidden,
+} from '../discovery/index';
 
 import {
+  DEFAULT_CONTEXT_OUTLINE_STYLE,
   buildActiveFeatureHandlePrimitives,
+  buildContextOutlinePrimitives,
   buildEditPreviewPrimitives,
 } from './active-feature-handles';
 import { clearDisplayResolutionCache } from './display-resolution-cache';
@@ -74,6 +80,10 @@ function vertexHandles(prims: readonly { kind: string }[]): HandlePrimitive[] {
 }
 function lines(prims: readonly { kind: string }[]): LinePrimitive[] {
   return prims.filter((p): p is LinePrimitive => p.kind === 'line');
+}
+/** The LAST index of a primitive kind, or -1 — for whole-frame 描画順 assertions. */
+function lastIndexOfKind(prims: readonly { kind: string }[], kind: string): number {
+  return prims.reduce((acc, p, i) => (p.kind === kind ? i : acc), -1);
 }
 
 describe('buildActiveFeatureHandlePrimitives (HB3-9 static handles)', () => {
@@ -958,6 +968,334 @@ describe('buildActiveFeatureHandlePrimitives (FR-110 cap は選択リングを�
       { selectedVertexIds: new Set(), ownerFeatureId: null },
     );
     expect(prims).toHaveLength(0);
+  });
+});
+
+// FR-82 本体 —「頂点選択コンテキスト地物は点線アウトライン」。86948d7 は暫定で
+// 「非active オーナーは頂点ハンドルのみ」に留めており、点線アウトラインは未実装だった
+// (domain/selection/visual.ts の分類は存在するのに描画消費者ゼロ = 教訓 5.7 の型)。
+// どの地物を点線にするかの判定は classifyVisual に一本化してある (二重実装禁止)。
+describe('buildActiveFeatureHandlePrimitives (FR-82 点線アウトライン)', () => {
+  /** Dashed line primitives only (the FR-82 context outline). */
+  function dashed(prims: readonly { kind: string }[]): LinePrimitive[] {
+    return lines(prims).filter((l) => l.dashPx !== undefined);
+  }
+
+  it('アクティブ地物なし + 頂点選択オーナー → そのオーナーの輪郭が点線で描かれる', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      null,
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('leaf-1-0')]),
+        ownerFeatureId: asFeatureId('leaf-1'),
+      },
+    );
+    const outline = dashed(prims);
+    expect(outline).toHaveLength(1);
+    // 閉じた四角形の輪郭 (4 頂点 + 閉じ点)。
+    expect(outline[0]!.points).toHaveLength(5);
+    expect(outline[0]!.points[0]).toEqual(outline[0]!.points[4]);
+    expect(outline[0]!.dashPx).toEqual(DEFAULT_CONTEXT_OUTLINE_STYLE.dashPx);
+    expect(outline[0]!.stroke).toBe(DEFAULT_CONTEXT_OUTLINE_STYLE.stroke);
+    // 描画順 (教訓 5.14): 輪郭はハンドルより先 = 下に描かれる。
+    const firstHandle = prims.findIndex((p) => p.kind === 'handle');
+    const outlineAt = prims.findIndex((p) => p.kind === 'line');
+    expect(outlineAt).toBeGreaterThanOrEqual(0);
+    expect(outlineAt).toBeLessThan(firstHandle);
+  });
+
+  it('オーナー == アクティブ地物 → 点線は出ない (合成規則: 選択スタイル優先)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'), // active == owner
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('leaf-1-0')]),
+        ownerFeatureId: asFeatureId('leaf-1'),
+      },
+    );
+    expect(dashed(prims)).toHaveLength(0);
+    expect(lines(prims)).toHaveLength(0);
+  });
+
+  it('アクティブ L + オーナー R → 点線は R だけを囲む (L はアクティブ表示のまま)', () => {
+    const root = sharedCornerProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-L'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('rv1')]),
+        ownerFeatureId: asFeatureId('leaf-R'),
+      },
+    );
+    const outline = dashed(prims);
+    expect(outline).toHaveLength(1);
+    // R の四隅 (10,0),(20,0),(20,10),(10,10) — L の (0,0) は含まれない。
+    const lons = outline[0]!.points.map((p) => p.lon);
+    expect(Math.min(...lons)).toBe(10);
+    expect(Math.max(...lons)).toBe(20);
+  });
+
+  // 敵対レビュー MEDIUM（実バグ）— 描画順の主張がフレーム全体では成り立っていなかった。
+  // featureHandlePrimitives 内の「outline を先に push = ハンドルの下」は同一地物内でしか
+  // 効かず、コンテキスト地物 B の primitives は アクティブ地物 A の primitives の後ろに
+  // 丸ごと積まれていた。「A がアクティブ・B の頂点を選択」はまさに FR-30 共有頂点で A と B
+  // が境界を接している場面で起きるので、B の点線は A のハンドルが並ぶ共有境界の上を通り、
+  // widthPx=2 のシアン点線が grab target を横切って覆う（描画==ヒットの可読性が壊れる）。
+  it('点線は A のハンドルより下 — 輪郭群はフレーム全体でハンドル群より先に積まれる', () => {
+    const root = sharedCornerProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-L'), // A = アクティブ
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('shared-v')]), // 共有境界上の頂点
+        ownerFeatureId: asFeatureId('leaf-R'), // B = コンテキスト地物
+      },
+    );
+    expect(dashed(prims)).toHaveLength(1);
+    expect(lastIndexOfKind(prims, 'line')).toBeLessThan(
+      prims.findIndex((p) => p.kind === 'handle'),
+    );
+  });
+
+  it('ライブドラッグ中のプレビュー輪郭も B のハンドルより下に敷かれる', () => {
+    // A を頂点ドラッグしながら B の頂点を選択している状態。オレンジのプレビュー輪郭も
+    // シアンの点線も「形をなぞる線」で、どちらも掴める点の下に居なければならない。
+    const root = sharedCornerProject();
+    const session = updateDrag(
+      beginDrag(
+        {
+          tool: EDIT_TOOL.VertexMove,
+          featureId: asFeatureId('leaf-L'),
+          vertexId: asVertexId('lv0'),
+        } as const,
+        { lon: 0, lat: 0 },
+      ),
+      { preview: { lon: -3, lat: -4 } },
+    );
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-L'),
+      DISPLAY,
+      session,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('rv1')]),
+        ownerFeatureId: asFeatureId('leaf-R'),
+      },
+    );
+    // A のプレビュー輪郭 (実線) と B の点線の 2 本。
+    expect(lines(prims)).toHaveLength(2);
+    expect(dashed(prims)).toHaveLength(1);
+    expect(lastIndexOfKind(prims, 'line')).toBeLessThan(
+      prims.findIndex((p) => p.kind === 'handle'),
+    );
+  });
+
+  // FR-113 dim と編集アフォーダンスの関係 — 意図的な設計判断の固定 (敵対レビュー MEDIUM に
+  // 対する裁定)。強調フィルタで淡くなるのは「地物の本体描画」であり、掴める点とその帰属を
+  // 示す編集アフォーダンス（ハンドル・選択リング・点線アウトライン）は dim の対象外。
+  // 根拠: FR-113 の当たり判定母集合は verdict.visible であって opacity ではない
+  //（filtered-display.isFeatureVisibleUnderFilter）ので、淡い地物の頂点も普通に掴める。
+  // その掴める操作のフィードバックを 0.25 倍にすると「どの地物を掴んでいるのか見えない」
+  // 状態が復活する（86948d7 と FR-110 cap 免除が塞いだ不可視そのもの）。
+  it('強調フィルタで dim されたオーナーでも点線とハンドルはフル濃度のまま', () => {
+    const root = sharedCornerProject();
+    // L を強調 ⇒ R は非強調側なので DIM_OPACITY_FACTOR で薄く描かれる（本体描画は淡い）。
+    const emphasized = setFeatureEmphasized(
+      DEFAULT_FILTER_STATE,
+      asFeatureId('leaf-L'),
+      true,
+    );
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      null,
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      emphasized,
+      {
+        selectedVertexIds: new Set([asVertexId('rv1')]),
+        ownerFeatureId: asFeatureId('leaf-R'),
+      },
+    );
+    const outline = dashed(prims);
+    expect(outline).toHaveLength(1);
+    expect(outline[0]!.stroke).toBe(DEFAULT_CONTEXT_OUTLINE_STYLE.stroke);
+    expect(outline[0]!.widthPx).toBe(DEFAULT_CONTEXT_OUTLINE_STYLE.widthPx);
+    const ringed = vertexHandles(prims).filter((h) => h.ring !== undefined);
+    expect(ringed).toHaveLength(1);
+    expect(ringed[0]!.ring!.stroke).toBe(DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke);
+  });
+
+  it('選択が空ならオーナーが指名されていても点線は出ない (教訓 5.18)', () => {
+    const root = sharedCornerProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-L'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      { selectedVertexIds: new Set(), ownerFeatureId: asFeatureId('leaf-R') },
+    );
+    expect(dashed(prims)).toHaveLength(0);
+  });
+
+  it('FR-113: 表示フィルタで隠れたオーナーには点線も出ない', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      null,
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      setIndividualHidden(DEFAULT_FILTER_STATE, asFeatureId('leaf-1'), true),
+      {
+        selectedVertexIds: new Set([asVertexId('leaf-1-0')]),
+        ownerFeatureId: asFeatureId('leaf-1'),
+      },
+    );
+    expect(prims).toHaveLength(0);
+  });
+
+  it('FR-110 cap を超えたオーナーでも点線アウトラインは残る (cap は頂点ハンドルの門)', () => {
+    // cap は「頂点数に比例するハンドル群」を抑える perf guard。地物ごとに 1 本の輪郭は
+    // 確定描画が既に払っているコストと同等で、これを消すと「どの地物の頂点を掴んでいるか」
+    // が完全に不可視になる (86948d7 が塞いだ無反応の再発)。
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      null,
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      1, // 4 > 1
+      DEFAULT_FILTER_STATE,
+      {
+        selectedVertexIds: new Set([asVertexId('leaf-1-0')]),
+        ownerFeatureId: asFeatureId('leaf-1'),
+      },
+    );
+    expect(dashed(prims)).toHaveLength(1);
+    // 選択済み頂点のハンドルだけが cap を生き残る (既存契約)。
+    expect(vertexHandles(prims)).toHaveLength(1);
+  });
+
+  it('点情報のオーナーには点線を出さない (輪郭が無い — リングだけが状態を語る)', () => {
+    const pt = pointFeature('pt-1', '首都', 50, 30);
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory('pt-1', [pt.feature], createVertexStore([pt.vertex]), 0),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      null,
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      { selectedVertexIds: new Set([pt.vertex.id]), ownerFeatureId: asFeatureId('pt-1') },
+    );
+    expect(lines(prims)).toHaveLength(0);
+    // ハンドル自体は出る (86948d7 の挙動は不変) — 点線が無いだけ。
+    expect(vertexHandles(prims).filter((h) => h.ring !== undefined)).toHaveLength(1);
+  });
+});
+
+describe('buildContextOutlinePrimitives (FR-82 輪郭トレースは preview と同じ単一源)', () => {
+  it('線情報を点線の折れ線としてトレースする', () => {
+    const va = createVertex(asVertexId('cl-a'), createCoordinate(10, 20));
+    const vb = createVertex(asVertexId('cl-b'), createCoordinate(30, 25));
+    const line = createLineFeature(
+      asFeatureId('ctx-line'),
+      createBasicAttributes('線', 0, 50),
+      createColorInfo(true, '#abcdef', '#fedcba', '#012345'),
+      [va.id, vb.id],
+    );
+    const out = lines(buildContextOutlinePrimitives(line, createVertexStore([va, vb])));
+    expect(out).toHaveLength(1);
+    expect(out[0]!.points.map((p) => p.lon)).toEqual([10, 30]);
+    expect(out[0]!.dashPx).toEqual(DEFAULT_CONTEXT_OUTLINE_STYLE.dashPx);
+  });
+
+  it('シームを跨ぐ環も preview と同一の連続化を通す (単一真実源)', () => {
+    const rv = [
+      createVertex(asVertexId('cs-0'), createCoordinate(170, 0)),
+      createVertex(asVertexId('cs-1'), createCoordinate(-170, 0)),
+      createVertex(asVertexId('cs-2'), createCoordinate(-170, 10)),
+      createVertex(asVertexId('cs-3'), createCoordinate(170, 10)),
+    ];
+    const ring = createTerritoryRing(asRingId('cs-r'), rv.map((v) => v.id));
+    const leaf = createLeafFeature(
+      asFeatureId('ctx-seam-leaf'),
+      createBasicAttributes('環礁', 0, 100),
+      COLOR,
+      createShape([ring]),
+    );
+    const store = createVertexStore(rv);
+    const outline = lines(buildContextOutlinePrimitives(leaf, store))[0]!;
+    const preview = lines(buildEditPreviewPrimitives(leaf, store))[0]!;
+    // 同じトレーサ = 同じ点列。違うのはスタイル (点線) だけ。
+    expect(outline.points).toEqual(preview.points);
+    expect(maxAdjacentGap(outline.points)).toBeLessThanOrEqual(180);
+  });
+
+  it('点情報は輪郭を持たないので何も出さない (教訓 5.18 非存在は描画指示に現れない)', () => {
+    const pt = pointFeature('ctx-pt', '首都', 50, 30);
+    expect(
+      buildContextOutlinePrimitives(pt.feature, createVertexStore([pt.vertex])),
+    ).toEqual([]);
   });
 });
 

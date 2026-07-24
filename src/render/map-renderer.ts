@@ -50,6 +50,19 @@ export interface LinePrimitive {
   /** Constant on-screen stroke width in CSS pixels (NOT derived from zoom). */
   readonly widthPx: number;
   readonly stroke: string;
+  /**
+   * OPTIONAL dash pattern in CSS px — `[dash, gap, …]`, the Canvas `setLineDash`
+   * convention (FR-82 点線アウトライン: the 頂点選択コンテキスト地物 is outlined with a
+   * DASHED stroke so it reads as a different selection state from the solid active
+   * highlight). Screen-fixed like `widthPx`: the segment lengths are CSS px and are
+   * never multiplied by zoom (FR-17), so the dash rhythm is identical at every scale.
+   *
+   * Undefined ⇒ a SOLID stroke, i.e. exactly the previous pixels for every existing
+   * line (教訓 5.18: the absent value is a named default, not a special case). The
+   * backend must RESTORE the solid state after the stroke so the pattern cannot leak
+   * into the next primitive of the same frame.
+   */
+  readonly dashPx?: readonly number[];
 }
 
 /**

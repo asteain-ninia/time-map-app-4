@@ -594,6 +594,8 @@ export function App(): JSX.Element {
       shape: number;
       point: number;
       line: number;
+      /** FR-82 点線アウトライン (頂点選択コンテキスト地物) drawn this frame. */
+      dashedLine: number;
       preview: number;
       hasLivePreview: boolean;
       vertexHandlePositions: readonly { readonly lon: number; readonly lat: number }[];
@@ -604,6 +606,7 @@ export function App(): JSX.Element {
       shape: 0,
       point: 0,
       line: 0,
+      dashedLine: 0,
       preview: 0,
       hasLivePreview: false,
       vertexHandlePositions: [],

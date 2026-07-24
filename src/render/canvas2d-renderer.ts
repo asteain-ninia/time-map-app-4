@@ -357,7 +357,14 @@ export class Canvas2DMapRenderer implements MapRenderer {
     this.tracePath(p.points, lonOffset);
     ctx.lineWidth = p.widthPx; // screen-fixed (FR-17).
     ctx.strokeStyle = p.stroke;
+    // FR-82 点線アウトライン: an OPTIONAL dash, applied for THIS stroke only and restored
+    // to solid immediately after — the same restore作法 as the label lineJoin / textAlign
+    // (a leaked dash would silently dash the next polygon border or the next frame's
+    // lines, which set lineWidth/strokeStyle per call but not the dash). An omitted
+    // `dashPx` never touches the dash state at all, so an existing line is byte-identical.
+    if (p.dashPx !== undefined) ctx.setLineDash([...p.dashPx]);
     ctx.stroke();
+    if (p.dashPx !== undefined) ctx.setLineDash([]);
   }
 
   private drawGridLine(p: GridLinePrimitive, lonOffset: number): void {

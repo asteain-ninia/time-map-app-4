@@ -51,6 +51,10 @@ import { unwrapLonSequence } from '../../domain/geo/longitude';
 import { unwrapRingClosed } from '../../domain/geo/seam';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
+import {
+  FEATURE_HIGHLIGHT,
+  classifyFeatureHighlights,
+} from '../../domain/selection';
 import { RING_KIND } from '../../domain/ring';
 import type { TimePoint } from '../../domain/time/time-point';
 import { createVertex, getVertex, setVertex, type VertexStore } from '../../domain/vertex';
@@ -181,32 +185,49 @@ export function buildEditPreviewPrimitives(
   style: EditPreviewStyle = DEFAULT_EDIT_PREVIEW_STYLE,
 ): DrawPrimitive[] {
   const out: DrawPrimitive[] = [];
-  switch (feature.kind) {
-    case FEATURE_KIND.Point: {
-      const v = getVertex(store, feature.vertexId);
-      if (v === undefined) break;
+  if (feature.kind === FEATURE_KIND.Point) {
+    const v = getVertex(store, feature.vertexId);
+    if (v !== undefined) {
       out.push({
         kind: 'point',
         at: { lon: v.coordinate.lon, lat: v.coordinate.lat },
         radiusPx: style.pointRadiusPx,
         fill: style.pointFill,
       } satisfies PointPrimitive);
-      break;
     }
+    return out;
+  }
+  for (const polyline of outlinePolylines(feature, store)) {
+    out.push(linePrimitive(polyline, style.stroke, style.widthPx));
+  }
+  return out;
+}
+
+/**
+ * The OUTLINE polylines of a feature in world coordinates: one per drawn ring for a leaf
+ * (territory / hole, each CLOSED by repeating its first point), one for a line, none for a
+ * point (a point has no outline) or an aggregate (no own shape, FR-35).
+ *
+ * SINGLE SOURCE (技術方針 R3 / 教訓 5.29): both the live-drag preview outline (HB3-4) and
+ * the FR-82 頂点選択コンテキスト地物 outline trace the SAME polylines — they differ only in
+ * STYLE (solid accent vs. dashed). Keeping one tracer is what makes the seam handling
+ * below impossible to get right in one place and wrong in the other.
+ *
+ * Seam parity with the COMMITTED draw (FR-07 / HB-14): a line goes through U04's
+ * `unwrapLonSequence` (the exact helper committed-features.ts uses) and a ring through
+ * U05's `unwrapRingClosed` (the helper the area path's unwrapShape → alignMultiPolygon
+ * funnels through), so a ±180-straddling feature traces the SHORT way round exactly like
+ * its confirmed geometry, never a ~358° world-crossing span. Latitude is never wrapped.
+ */
+function outlinePolylines(
+  feature: Feature,
+  store: VertexStore,
+): { lon: number; lat: number }[][] {
+  const out: { lon: number; lat: number }[][] = [];
+  switch (feature.kind) {
     case FEATURE_KIND.Line: {
       const points = resolveRing(feature.vertexIds, store);
-      if (points.length >= 2) {
-        // Seam parity with the COMMITTED line path (committed-features.ts:292 /
-        // HB-14 / FR-07): a line whose vertices straddle ±180 is stored as folded
-        // representatives (e.g. 179 next to -179). The render layer's LinePrimitive
-        // contract requires CONTINUOUS-scalar longitudes, so a raw folded pair would
-        // trace the seam THE LONG WAY (a ~358° world-crossing span) — the committed
-        // draw does not. We delegate to U04's single ±360° unwrap source
-        // (`unwrapLonSequence`, never re-derived — 技術方針 R3 単一真実源), the EXACT
-        // helper committed-features uses, so the preview outline matches the confirmed
-        // geometry vertex-for-vertex. Latitude is never wrapped.
-        out.push(linePreview(unwrapLonPoints(points), style));
-      }
+      if (points.length >= 2) out.push(unwrapLonPoints(points));
       break;
     }
     case FEATURE_KIND.Leaf: {
@@ -214,25 +235,64 @@ export function buildEditPreviewPrimitives(
         if (ring.kind !== RING_KIND.Territory && ring.kind !== RING_KIND.Hole) continue;
         const points = resolveRing(ring.vertexIds, store);
         if (points.length < 2) continue;
-        // Seam parity with the COMMITTED area path (resolve-display-shapes.unwrapShape
-        // → alignMultiPolygon → unwrapRingClosed): a seam-crossing ring stored as
-        // folded representatives must be made continuous across EVERY edge — the
-        // implicit closing edge (last → first) included — or the preview outline spans
-        // ~358° per crossing edge while the confirmed fill does not. We funnel each
-        // ring through U05's CLOSED-ring unwrap (`unwrapRingClosed`, the single source
-        // the area path uses — never re-derived), THEN close it (append the unwrapped
-        // first vertex) so the polygon outline reads the short way round.
         const unwrapped = unwrapRingClosedPoints(points);
-        const closed = [...unwrapped, unwrapped[0]!];
-        out.push(linePreview(closed, style));
+        out.push([...unwrapped, unwrapped[0]!]);
       }
       break;
     }
     default:
-      // Aggregate: no own shape (FR-35) — nothing to preview.
+      // Point (no outline) / Aggregate (no own shape, FR-35) — nothing to trace.
       break;
   }
   return out;
+}
+
+/**
+ * The screen-fixed style of the FR-82 頂点選択コンテキスト地物 outline (点線アウトライン).
+ * All measurements are CSS px (FR-17): the dash rhythm is identical at every zoom.
+ */
+export interface ContextOutlineStyle {
+  /** Outline stroke color. */
+  readonly stroke: string;
+  /** Outline stroke width in CSS px (screen-fixed, FR-17). */
+  readonly widthPx: number;
+  /** Dash pattern `[dash, gap, …]` in CSS px — what makes it a 点線 (FR-82). */
+  readonly dashPx: readonly number[];
+}
+
+/**
+ * The default FR-82 context outline: a CYAN dashed stroke. The hue is the same family the
+ * selection uses at vertex scale (`DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke`), so
+ *「これは選択に関係する地物」reads consistently; the DASH is what separates it from the
+ * ACTIVE feature's solid highlight (FR-82 lists the two as distinct states) and from the
+ * ORANGE solid live-drag preview outline.
+ */
+export const DEFAULT_CONTEXT_OUTLINE_STYLE: ContextOutlineStyle = {
+  stroke: '#00e5ff',
+  widthPx: 2,
+  dashPx: [6, 4],
+};
+
+/**
+ * Build the FR-82「頂点選択コンテキスト地物は点線アウトライン」primitives for ONE feature:
+ * a DASHED polyline per drawn ring (territory / hole) of a leaf, or along a line's
+ * vertices. A point feature yields NOTHING — it has no outline to dash, and its selected
+ * vertex already carries the FR-80/82 ring, so inventing a marker here would put a second,
+ * different encoding of the same state on screen.
+ *
+ * Geometry comes from {@link outlinePolylines} — the SAME tracer the live-drag preview
+ * uses — so the dashed outline sits exactly on the drawn shape (including across the ±180
+ * seam) and can never drift from it. Pure: a fresh array; inputs are never mutated.
+ */
+export function buildContextOutlinePrimitives(
+  feature: Feature,
+  store: VertexStore,
+  style: ContextOutlineStyle = DEFAULT_CONTEXT_OUTLINE_STYLE,
+): DrawPrimitive[] {
+  return outlinePolylines(feature, store).map((polyline) => ({
+    ...linePrimitive(polyline, style.stroke, style.widthPx),
+    dashPx: style.dashPx,
+  }));
 }
 
 function resolveRing(
@@ -274,16 +334,23 @@ function unwrapRingClosedPoints(
   return unwrapped.map((c) => ({ lon: c.lon, lat: c.lat }));
 }
 
-function linePreview(
+/**
+ * A screen-fixed (FR-17) polyline primitive over already-unwrapped world points.
+ *
+ * OWNERSHIP: `points` is ADOPTED, not copied. Both call sites feed it a FRESH array built
+ * by {@link outlinePolylines} this very frame (the unwrap helpers allocate new point
+ * objects), so the extra `points.map(…)` copy this used to make was pure churn: for an
+ * n-vertex feature it allocated a second n-object array on EVERY frame the selection
+ * outline was drawn (敵対レビュー LOW — GC 圧のみ, no behaviour change). `LinePrimitive.points`
+ * is `readonly` and the renderer only reads it, so adoption is safe — but a future caller
+ * must NOT pass an array it keeps mutating.
+ */
+function linePrimitive(
   points: readonly { lon: number; lat: number }[],
-  style: EditPreviewStyle,
+  stroke: string,
+  widthPx: number,
 ): LinePrimitive {
-  return {
-    kind: 'line',
-    points: points.map((p) => ({ lon: p.lon, lat: p.lat })),
-    widthPx: style.widthPx,
-    stroke: style.stroke,
-  };
+  return { kind: 'line', points, widthPx, stroke };
 }
 
 /**
@@ -410,12 +477,15 @@ function highlightFor(
  *
  * FR-82 頂点選択コンテキスト地物: when the selection's owner is NOT the active feature (the
  * U22 vertex branch does not promote it — and with no active feature at all this used to
- * draw nothing whatsoever), the owner's VERTEX handles are drawn too, with the ring on the
- * selected ones. Its edge handles are NOT drawn: FR-87 makes an edge midpoint grabbable
- * only for the active feature, so drawing one would break 描画==ヒット.
+ * draw nothing whatsoever), the owner is drawn with (a) a DASHED OUTLINE around its shape —
+ * the「点線アウトライン」FR-82 names — and (b) its VERTEX handles, ringed on the selected
+ * ones. Its edge handles are NOT drawn: FR-87 makes an edge midpoint grabbable only for the
+ * active feature, so drawing one would break 描画==ヒット. The ACTIVE feature never gets the
+ * dashed outline even when it also owns the vertex selection (合成規則: 選択スタイル優先 —
+ * the two FR-82 feature states never stack on one feature).
  *
  * Pure over `(root, time, activeFeature, displayControl, session, style, previewStyle,
- * cap, filter, selection)`.
+ * cap, filter, selection, contextOutlineStyle)`.
  */
 export function buildActiveFeatureHandlePrimitives(
   root: DomainProject,
@@ -428,6 +498,7 @@ export function buildActiveFeatureHandlePrimitives(
   cap?: number,
   filter: FilterState = DEFAULT_FILTER_STATE,
   selection: HandleSelectionInput = NO_HANDLE_SELECTION,
+  contextOutlineStyle: ContextOutlineStyle = DEFAULT_CONTEXT_OUTLINE_STYLE,
 ): DrawPrimitive[] {
   // FR-82 頂点選択コンテキスト地物 — the SECOND feature this layer may have to draw.
   //
@@ -444,18 +515,21 @@ export function buildActiveFeatureHandlePrimitives(
   // an edge midpoint grabbable ONLY for the active feature, so drawing one here would put
   // a handle on screen that cannot be grabbed (描画==ヒット を壊す). Vertex handles have no
   // such asymmetry — every drawn feature's vertices are grabbable — so they stay honest.
-  const owner = selection.ownerFeatureId ?? null;
-  const contextOwner =
-    owner !== null && owner !== activeFeature && (selection.selectedVertexIds?.size ?? 0) > 0
-      ? owner
-      : null;
+  //
+  // WHICH feature that is, is NOT decided here: we ask `classifyFeatureHighlights` —
+  // i.e. `domain/selection/visual.classifyVisual`, the ONE FR-82 classifier — and read the
+  // feature it marks `Context`. Before this the builder re-derived「オーナーが active で
+  // ないなら文脈地物」locally while the classifier held the same rule in the domain with no
+  // consumer at all (教訓 5.7 / 二重実装禁止). Now the dashed outline, the context owner's
+  // handles and the classification are one decision.
+  const contextOwner = contextFeatureOf(activeFeature, selection);
   if (activeFeature === null && contextOwner === null) return [];
 
   const resolution = resolveDisplayFor(root, time, displayControl);
-  const out: DrawPrimitive[] = [];
+  const parts: FeatureHandleParts[] = [];
   if (activeFeature !== null) {
-    out.push(
-      ...featureHandlePrimitives(resolution, filter, activeFeature, {
+    parts.push(
+      featureHandleParts(resolution, filter, activeFeature, {
         session,
         style,
         previewStyle,
@@ -466,8 +540,8 @@ export function buildActiveFeatureHandlePrimitives(
     );
   }
   if (contextOwner !== null) {
-    out.push(
-      ...featureHandlePrimitives(resolution, filter, contextOwner, {
+    parts.push(
+      featureHandleParts(resolution, filter, contextOwner, {
         // A live edit drag is owned by the ACTIVE feature's path; the context owner draws
         // its committed positions only (no preview outline, no drag ring from a session).
         session: null,
@@ -476,11 +550,55 @@ export function buildActiveFeatureHandlePrimitives(
         cap,
         selection,
         includeEdges: false,
+        // FR-82 本体: …and its shape is traced with the DASHED outline that names it as the
+        // 頂点選択コンテキスト地物 (the active feature never gets one — see contextFeatureOf).
+        contextOutline: contextOutlineStyle,
       }),
     );
   }
+
+  // 描画順は FRAME 単位で決める (教訓 5.14) — 敵対レビュー MEDIUM（実バグ）.
+  //
+  // Every shape-tracing LINE (the FR-82 dashed context outline, the HB3-4 live-drag preview
+  // outline) goes down FIRST, for ALL features, and only then every HANDLE. Laying each
+  // feature's own outline under its own handles is NOT enough: the primitives were pushed
+  // feature-by-feature, so the context owner B's dashed outline landed on top of the ACTIVE
+  // feature A's whole handle set. That is not a rare frame — 「A がアクティブ・B の頂点を
+  // 選択」 is exactly the FR-30 共有頂点 situation where A and B touch, so B's outline runs
+  // along the shared boundary A's handles sit on and a 2px dashed stroke crosses the grab
+  // targets. Grab targets must stay the topmost thing in this layer (描画==ヒットの可読性).
+  const out: DrawPrimitive[] = [];
+  for (const part of parts) out.push(...part.under);
+  for (const part of parts) out.push(...part.handles);
   return out;
 }
+
+/**
+ * The feature that must be drawn as the FR-82 頂点選択コンテキスト地物, or null.
+ *
+ * Delegates the decision to the domain classifier (`classifyFeatureHighlights` →
+ * `classifyVisual`) and picks the id it marks {@link FEATURE_HIGHLIGHT.Context}: an owner
+ * with a NON-EMPTY selection that is NOT the active feature (an active feature reads as
+ * Active only — 合成規則: 選択スタイル優先, never a dashed overlay on top of it). Keeping
+ * the rule in the domain means the drawn outline and the classification cannot disagree
+ * (教訓 5.29). Returns null when nothing classifies as Context.
+ */
+function contextFeatureOf(
+  activeFeature: FeatureId | null,
+  selection: HandleSelectionInput,
+): FeatureId | null {
+  const highlights = classifyFeatureHighlights({
+    activeFeature,
+    vertexOwner: selection.ownerFeatureId ?? null,
+    vertexIds: selection.selectedVertexIds ?? EMPTY_VERTEX_IDS,
+  });
+  for (const [featureId, highlight] of highlights) {
+    if (highlight === FEATURE_HIGHLIGHT.Context) return featureId;
+  }
+  return null;
+}
+
+const EMPTY_VERTEX_IDS: ReadonlySet<VertexId> = new Set<VertexId>();
 
 /** Per-feature options for {@link featureHandlePrimitives}. */
 interface FeatureHandleOptions {
@@ -491,30 +609,53 @@ interface FeatureHandleOptions {
   readonly selection: HandleSelectionInput;
   /** FR-87 edge (add-vertex) handles — active feature only (see the call sites). */
   readonly includeEdges: boolean;
+  /**
+   * FR-82 点線アウトライン: the style to trace this feature's shape with when it is the
+   * 頂点選択コンテキスト地物. Undefined ⇒ no outline (the active feature's path), i.e. the
+   * primitives are exactly what they were before (教訓 5.18: absence is a named default).
+   */
+  readonly contextOutline?: ContextOutlineStyle;
 }
 
 /**
- * Build the handle (+ live-drag preview) primitives for ONE feature of the resolved
- * display bundle. Returns [] when the feature is filter-hidden, not effective at the
- * resolved time, or has nothing to draw (教訓 5.18 absence-not-crash).
+ * ONE feature's contribution, split by DEPTH so the caller can interleave several features
+ * correctly: `under` is the shape-tracing lines (FR-82 dashed context outline, HB3-4 live
+ * preview outline) and `handles` is the grab targets. The caller emits every `under` before
+ * any `handles` (see the 描画順 note in {@link buildActiveFeatureHandlePrimitives}) — the
+ * split exists precisely because a per-feature ordering cannot express that.
  */
-function featureHandlePrimitives(
+interface FeatureHandleParts {
+  /** Shape-tracing lines — always drawn BENEATH every feature's handles. */
+  readonly under: readonly DrawPrimitive[];
+  /** Grab targets (vertex / edge handles) — always on top. */
+  readonly handles: readonly DrawPrimitive[];
+}
+
+const NO_PARTS: FeatureHandleParts = { under: [], handles: [] };
+
+/**
+ * Build the handle (+ live-drag preview / FR-82 outline) primitives for ONE feature of the
+ * resolved display bundle, split into {@link FeatureHandleParts}. Both halves are empty when
+ * the feature is filter-hidden, not effective at the resolved time, or has nothing to draw
+ * (教訓 5.18 absence-not-crash).
+ */
+function featureHandleParts(
   resolution: DisplayResolution,
   filter: FilterState,
   featureId: FeatureId,
   options: FeatureHandleOptions,
-): DrawPrimitive[] {
+): FeatureHandleParts {
   // FR-113 (Codex F2, defense in depth): a feature the display filter HIDES draws no
   // handles — even if the selection-heal has not yet run, 描画==ヒットで hidden 地物には
   // ハンドルが出ない (不変条件). Inert filter ⇒ always visible ⇒ unchanged (zero overhead).
-  if (!isFeatureVisibleUnderFilter(resolution, filter, featureId)) return [];
+  if (!isFeatureVisibleUnderFilter(resolution, filter, featureId)) return NO_PARTS;
   const { features, areaFeaturesById, vertices } = resolution;
   // The feature among those effective at `time`. Points / lines are in `features`;
   // leaves / aggregates are additionally indexed in `areaFeaturesById` (the by-id lookup
   // the draw path already built — reuse it, no second O(n) scan).
   const committed =
     areaFeaturesById.get(featureId) ?? features.find((f) => f.id === featureId);
-  if (committed === undefined) return [];
+  if (committed === undefined) return NO_PARTS;
 
   // HB3-4: a live drag of THIS feature previews its moved geometry. The session is only
   // applied when it targets this feature, so a stale session for another feature can never
@@ -550,28 +691,53 @@ function featureHandlePrimitives(
   // feature's edit invisible: you could still grab and drag a vertex (the hit-test is not
   // capped) with zero feedback. The survivors are bounded by the selection size, so the
   // perf guard the cap exists for is intact.
+  // FR-82 点線アウトライン — an `under` primitive: the caller draws every feature's `under`
+  // beneath every feature's handles (教訓 5.14 描画順, now decided per FRAME — see
+  // {@link buildActiveFeatureHandlePrimitives}).
+  //
+  // FR-113 dim は編集アフォーダンスに掛けない (敵対レビュー MEDIUM への裁定): a filter-dimmed
+  // feature draws its BODY at `verdict.opacity` (committed-features.ts bakes it into the
+  // colour), but this outline — like every handle, ring and 共有頂点 fill in this layer —
+  // stays at full strength. FR-113's grab-ability母集合 is `verdict.visible`, NOT opacity
+  // (filtered-display.isFeatureVisibleUnderFilter), so a dimmed feature's vertices are
+  // fully grabbable; fading the ONE mark that says WHICH feature you are grabbing to 0.25
+  // would restore the「どの地物を掴んでいるのか分からない」invisibility that 86948d7 and the
+  // FR-110 cap exemption below exist to end. Locked by a test.
+  //
+  // It is also NOT subject to the FR-110 cap below: the cap guards work that scales with
+  // VERTEX COUNT (one handle primitive per vertex), whereas this is ONE polyline per ring —
+  // the same order of path work the committed shape already pays for the very same feature
+  // every frame.
+  const under: DrawPrimitive[] =
+    options.contextOutline === undefined
+      ? []
+      : buildContextOutlinePrimitives(feature, previewStore, options.contextOutline);
+
   if (options.cap !== undefined && all.vertices.length > options.cap) {
     const ringed = handles.vertices.filter((v) => isRingedVertex(v.vertexId, highlight));
-    if (ringed.length === 0) return [];
-    return buildEditHandlePrimitives(
-      { vertices: ringed, edges: [] },
-      options.style,
-      sharedVertexIdsFor(resolution),
-      highlight,
-    );
+    if (ringed.length === 0) return { under, handles: [] };
+    return {
+      under,
+      handles: buildEditHandlePrimitives(
+        { vertices: ringed, edges: [] },
+        options.style,
+        sharedVertexIdsFor(resolution),
+        highlight,
+      ),
+    };
   }
 
   const hasHandles =
     handles !== EMPTY_HANDLES &&
     (handles.vertices.length > 0 || handles.edges.length > 0);
-  if (!hasHandles && live === null) return [];
+  if (!hasHandles && live === null) return { under, handles: [] };
 
-  const out: DrawPrimitive[] = [];
-  // The preview outline draws UNDER the handles so the grab targets stay on top (教訓
-  // 5.14 描画順). Only present during a live drag.
+  // The live-drag preview outline is a shape tracer too, so it joins `under` — the grab
+  // targets stay on top of EVERY outline in the frame, not just this feature's.
   if (live !== null) {
-    out.push(...buildEditPreviewPrimitives(feature, previewStore, options.previewStyle));
+    under.push(...buildEditPreviewPrimitives(feature, previewStore, options.previewStyle));
   }
+  const out: DrawPrimitive[] = [];
   if (hasHandles) {
     // FR-30: pass the SHARED vertex id set so a vertex cited by ≥2 shape references
     // (this feature + a neighbour, or two rings of this leaf) draws in the distinct
@@ -588,5 +754,5 @@ function featureHandlePrimitives(
       ),
     );
   }
-  return out;
+  return { under, handles: out };
 }

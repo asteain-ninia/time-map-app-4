@@ -19,6 +19,7 @@ import {
 import {
   FEATURE_HIGHLIGHT,
   VERTEX_HIGHLIGHT,
+  classifyFeatureHighlights,
   classifyVisual,
 } from './visual';
 import { coord, fid, owners, vid, vidSet } from './fixtures';
@@ -42,6 +43,24 @@ describe('visual classification (FR-82, 教訓 5.29)', () => {
       ctx,
     );
     expect(cls.features.get(fid('A'))).toBe(FEATURE_HIGHLIGHT.Context);
+  });
+
+  // FR-82 は「アクティブ地物」と「頂点選択コンテキスト地物」を別々の視覚状態として並べて
+  // 規定しており、後者を「アクティブ地物が無いときだけ」に限定していない。U22 の頂点分岐は
+  // オーナーを activeFeature へ昇格させないので、A をアクティブにしたまま B の頂点を掴む状態は
+  // 実際に起こる (handle 層はその B のハンドルを描く)。その B が無強調のままだと「どの地物の
+  // 頂点を掴んでいるのか」が画面から読めない。
+  it('active A + 別地物 B の頂点選択 → A:Active と B:Context が同時に立つ', () => {
+    const ctx: VertexContext = analyzeVertexContext(
+      vidSet('B-v0'),
+      ownerLookupFromMap(owners(['B-v0', 'B'])),
+    );
+    const cls = classifyVisual(
+      withVertexSet(withActiveFeature(EMPTY_SELECTION, fid('A')), fid('B'), vidSet('B-v0')),
+      ctx,
+    );
+    expect(cls.features.get(fid('A'))).toBe(FEATURE_HIGHLIGHT.Active);
+    expect(cls.features.get(fid('B'))).toBe(FEATURE_HIGHLIGHT.Context);
   });
 
   it('an active feature is NOT downgraded to Context for the same feature', () => {
@@ -203,5 +222,60 @@ describe('visual classification (FR-82, 教訓 5.29)', () => {
       VERTEX_HIGHLIGHT.Marker,
     ]);
     expect(all.size).toBe(5);
+  });
+});
+
+// FR-82 点線アウトラインの結線アダプタ。描画側 (render/ui) は SelectionState/VertexContext
+// ではなく (activeFeature, vertexOwner, vertexIds) の三つ組でしか選択を持っていないので、
+// 「その三つ組から地物ハイライトを引く」入口を分類器の側に一つだけ置く。判定そのものは
+// classifyVisual に委譲する — 描画側で第二の規則を書かない (教訓 5.29 二重実装禁止)。
+describe('classifyFeatureHighlights (描画側アダプタ, FR-82)', () => {
+  it('アクティブ地物のみ → Active だけ', () => {
+    const m = classifyFeatureHighlights({
+      activeFeature: fid('A'),
+      vertexOwner: null,
+      vertexIds: vidSet(),
+    });
+    expect(m.get(fid('A'))).toBe(FEATURE_HIGHLIGHT.Active);
+    expect(m.size).toBe(1);
+  });
+
+  it('アクティブ無し + オーナー B の頂点選択 → B:Context', () => {
+    const m = classifyFeatureHighlights({
+      activeFeature: null,
+      vertexOwner: fid('B'),
+      vertexIds: vidSet('B-v0'),
+    });
+    expect(m.get(fid('B'))).toBe(FEATURE_HIGHLIGHT.Context);
+    expect(m.size).toBe(1);
+  });
+
+  it('アクティブ A + 別オーナー B → A:Active と B:Context', () => {
+    const m = classifyFeatureHighlights({
+      activeFeature: fid('A'),
+      vertexOwner: fid('B'),
+      vertexIds: vidSet('B-v0'),
+    });
+    expect(m.get(fid('A'))).toBe(FEATURE_HIGHLIGHT.Active);
+    expect(m.get(fid('B'))).toBe(FEATURE_HIGHLIGHT.Context);
+  });
+
+  it('アクティブ A + 同じ A のオーナー → Active が勝ち Context は立たない (合成規則)', () => {
+    const m = classifyFeatureHighlights({
+      activeFeature: fid('A'),
+      vertexOwner: fid('A'),
+      vertexIds: vidSet('A-v0'),
+    });
+    expect(m.get(fid('A'))).toBe(FEATURE_HIGHLIGHT.Active);
+    expect(m.size).toBe(1);
+  });
+
+  it('オーナーはあるが選択集合が空 → Context は立たない (教訓 5.18 空は空)', () => {
+    const m = classifyFeatureHighlights({
+      activeFeature: null,
+      vertexOwner: fid('B'),
+      vertexIds: vidSet(),
+    });
+    expect(m.size).toBe(0);
   });
 });

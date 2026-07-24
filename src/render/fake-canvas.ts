@@ -35,6 +35,17 @@ export class FakeContext2D {
   fills: { style: string; rule: string }[] = [];
   /** Each stroke call records its strokeStyle (paired with lineWidths by index). */
   strokes: string[] = [];
+  /**
+   * FR-82 点線: the dash pattern IN FORCE at each `stroke` (paired with `strokes` by
+   * index). Recording it at stroke time — not just the raw setLineDash calls — is what
+   * lets a test prove the dash applied to the intended stroke AND that it was cleared
+   * before the next one (a leaked dash would show up as a non-empty entry here).
+   */
+  strokeDashes: number[][] = [];
+  /** Every `setLineDash` call, in order (the restore作法 is observable). */
+  setLineDashes: number[][] = [];
+  /** The dash pattern currently in force (canvas default = solid). */
+  private lineDash: number[] = [];
   closePaths = 0;
   drawImages: { x: number; y: number; w: number; h: number }[] = [];
   /** The image SOURCE of each `drawImage` call (S7: assert WHICH base map was drawn). */
@@ -75,9 +86,17 @@ export class FakeContext2D {
   fill(rule?: string): void {
     this.fills.push({ style: this.fillStyle, rule: rule ?? 'nonzero' });
   }
+  setLineDash(segments: number[]): void {
+    this.lineDash = [...segments];
+    this.setLineDashes.push([...segments]);
+  }
+  getLineDash(): number[] {
+    return [...this.lineDash];
+  }
   stroke(): void {
     this.lineWidths.push(this.lineWidth);
     this.strokes.push(this.strokeStyle);
+    this.strokeDashes.push([...this.lineDash]);
   }
   fillText(text: string, x: number, y: number, maxWidth?: number): void {
     this.fonts.push(this.font);

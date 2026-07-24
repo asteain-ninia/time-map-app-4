@@ -7,8 +7,11 @@
 //
 //   - ActiveFeature  : the active feature → thick cyan outline + cyan fill.
 //   - ContextFeature : the (non-active) single-owner context feature → dashed
-//                      outline (the auxiliary highlight when there is no active
-//                      feature, FR-82).
+//                      outline (FR-82). It is INDEPENDENT of the active feature:
+//                      it stands whenever the vertex-selection owner is not the
+//                      active feature — including while another feature IS active
+//                      (see {@link classifyFeatures} for the rule and why the older
+//                      「アクティブ地物が無いときだけ」reading was wrong).
 //   - SelectedVertex : a vertex in the selection set (not currently dragging).
 //   - DraggingVertex : a selected vertex currently being moved (a further-
 //                      distinguished style, FR-82).
@@ -19,9 +22,16 @@
 // only categories — and never paints holes or special-cases enclaves (FR-21):
 // it classifies feature/vertex IDENTITIES, leaving ring/hole geometry to U19.
 //
-// NOTE (FR-110 cap wiring): this classifier is currently NOT connected to the
-// renderer (no production consumer feeds its FR-79 markers into a draw path yet;
-// it is retained for future wiring). The LIVE FR-110 vertexMarkerCap gate is
+// WIRED (FR-82 点線アウトライン): the FEATURE half of this classification IS now a live
+// render input. `classifyFeatureHighlights` (below) is the entry point the handle/outline
+// layer (`ui/map/active-feature-handles`) calls every frame to ask WHICH feature gets the
+// dashed 頂点選択コンテキスト outline; the answer comes from `classifyVisual` itself, so
+// the drawn outline and the classification cannot drift (教訓 5.29). The VERTEX half
+// (Marker/Selected/Dragging) is still applied on the handle path — see the two notes below.
+//
+// NOTE (FR-110 cap wiring): the FR-79 MARKER half of this classifier still has no
+// production consumer (no draw path feeds `MarkerInput` yet; retained for future
+// wiring). The LIVE FR-110 vertexMarkerCap gate is
 // applied on the handle path — `ui/map/active-feature-handles.ts`
 // (buildActiveFeatureHandlePrimitives) — which is the path that actually draws the
 // active feature's per-vertex handles today. The `cap` field on {@link MarkerInput}
@@ -49,13 +59,17 @@
 
 import type { FeatureId, VertexId } from '../ids';
 
-import { CONTEXT_KIND, type VertexContext } from './context';
+import { CONTEXT_KIND, EMPTY_CONTEXT, type VertexContext } from './context';
 import { POINTER_PHASE, type SelectionState } from './state';
 
 export const FEATURE_HIGHLIGHT = {
   /** Thick cyan outline + cyan fill (FR-82). */
   Active: 'active',
-  /** Dashed outline; auxiliary highlight when no active feature (FR-82). */
+  /**
+   * Dashed outline for the 頂点選択コンテキスト地物 (FR-82) — the feature that OWNS the
+   * vertex selection while not being the active feature. NOT conditional on the absence
+   * of an active feature (see {@link classifyFeatures}).
+   */
   Context: 'context',
 } as const;
 
@@ -128,18 +142,8 @@ export function classifyVisual(
   context: VertexContext,
   markers: MarkerInput = NO_MARKERS,
 ): VisualClassification {
-  const features = new Map<FeatureId, FeatureHighlight>();
+  const features = classifyFeatures(state.activeFeature, context);
   const vertices = new Map<VertexId, VertexHighlight>();
-
-  // Feature highlights ------------------------------------------------------
-  // Active feature: thick cyan + fill (FR-82). Highest priority.
-  if (state.activeFeature !== null) {
-    features.set(state.activeFeature, FEATURE_HIGHLIGHT.Active);
-  } else if (context.kind === CONTEXT_KIND.Single) {
-    // Context feature highlight is auxiliary: only shown when NO active feature
-    // (FR-82). It never overrides an active highlight for the same feature.
-    features.set(context.ownerFeatureId, FEATURE_HIGHLIGHT.Context);
-  }
 
   // Vertex markers (FR-79): the active feature's full vertex set, half-
   // transparent. Laid down first so selected/dragging override them. FR-110
@@ -167,4 +171,88 @@ export function classifyVisual(
   }
 
   return { features, vertices };
+}
+
+/**
+ * The FEATURE half of the classification — the ONE place the FR-82 feature rule lives.
+ * Both {@link classifyVisual} and {@link classifyFeatureHighlights} funnel through it, so
+ * the draw path and the full classification can never disagree (教訓 5.29 二重実装禁止).
+ *
+ * Active feature → thick cyan outline + fill; 頂点選択コンテキスト地物 → dashed outline.
+ * The two states are SEPARATE in FR-82 (it lists them side by side, not as alternatives)
+ * and genuinely co-occur: U22's HIT_KIND.Vertex branch does not promote the owner to
+ * activeFeature, so「A がアクティブ・B の頂点を掴んでいる」is a reachable state and the
+ * handle layer already draws B's handles there. The ONE composition rule is that ACTIVE
+ * WINS for the SAME feature (選択スタイル優先, never overlaid): a feature that is both
+ * active and the vertex-selection owner reads as Active only, so a dashed outline always
+ * means exactly「アクティブ地物ではない、頂点選択の所有地物」.
+ *
+ * DO NOT restore the older「Context はアクティブ地物が無いときだけ」rule (敵対レビュー LOW
+ * が記録した仕様変更). 要件定義書 FR-82 enumerates 「アクティブ地物は太いシアン…、頂点選択
+ * コンテキスト地物は点線アウトライン、選択済み頂点とドラッグ中頂点を別スタイルで区別」as
+ * PARALLEL states and never makes the dashed outline conditional on there being no active
+ * feature; the narrower rule was an implementation-local reading that made the reachable
+ * 「A がアクティブ・B の頂点を選択」frame (FR-30 共有頂点の常態) draw B as nothing at all.
+ * The only composition rule is ACTIVE-wins-per-feature, above.
+ */
+function classifyFeatures(
+  activeFeature: FeatureId | null,
+  context: VertexContext,
+): Map<FeatureId, FeatureHighlight> {
+  const features = new Map<FeatureId, FeatureHighlight>();
+  if (activeFeature !== null) {
+    features.set(activeFeature, FEATURE_HIGHLIGHT.Active);
+  }
+  if (context.kind === CONTEXT_KIND.Single && context.ownerFeatureId !== activeFeature) {
+    features.set(context.ownerFeatureId, FEATURE_HIGHLIGHT.Context);
+  }
+  return features;
+}
+
+/**
+ * The selection triple a DRAW consumer actually holds. The render / handle path keeps the
+ * selection as `(activeFeature, vertexOwner, vertexIds)` — the exact three fields the store
+ * exposes — not as a `SelectionState` + a resolved {@link VertexContext}. This is the shape
+ * {@link classifyFeatureHighlights} accepts.
+ */
+export interface FeatureHighlightInput {
+  /** The active feature (FR-79), or null. */
+  readonly activeFeature: FeatureId | null;
+  /** `selection.vertexOwner` — the single owner of the vertex set (FR-81), or null. */
+  readonly vertexOwner: FeatureId | null;
+  /** `selection.vertexIds` — the selected vertices (FR-80). */
+  readonly vertexIds: ReadonlySet<VertexId>;
+}
+
+/**
+ * The FEATURE-level FR-82 highlights for the draw path (アクティブ地物 / 頂点選択コンテキスト
+ * 地物). This is the wiring entry point that turned {@link classifyVisual} from a classifier
+ * with ZERO render consumers (教訓 5.7 ロジックはあるが UI から呼ばれない) into the single
+ * source the outline drawing reads.
+ *
+ * It does NOT re-decide anything: it lifts the caller's triple into a {@link VertexContext}
+ * and returns {@link classifyFeatures} — the SAME function `classifyVisual` uses for its
+ * feature half — so the「どの地物が点線か」rule exists exactly once (教訓 5.29 二重実装禁止).
+ * `vertexOwner` with a non-empty set IS the FR-81 Single context by construction: the store
+ * maintains that invariant (`withVertexSet`: owner non-null iff the set is non-empty) and
+ * the owner it holds was itself produced by `analyzeVertexContext`, so no second ownership
+ * analysis (and no vertex→owner lookup) is needed or performed here.
+ *
+ * It deliberately does NOT go through `classifyVisual`'s VERTEX half: this runs on EVERY
+ * composed frame, and the vertex maps are O(selection set) work whose result the draw path
+ * here would throw away (a rectangle selection can hold thousands of ids, and unlike the
+ * handle set that work is not under the FR-110 cap).
+ */
+export function classifyFeatureHighlights(
+  input: FeatureHighlightInput,
+): ReadonlyMap<FeatureId, FeatureHighlight> {
+  const context: VertexContext =
+    input.vertexOwner === null || input.vertexIds.size === 0
+      ? EMPTY_CONTEXT
+      : {
+          kind: CONTEXT_KIND.Single,
+          ownerFeatureId: input.vertexOwner,
+          vertexIds: input.vertexIds,
+        };
+  return classifyFeatures(input.activeFeature, context);
 }

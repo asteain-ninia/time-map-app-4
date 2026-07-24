@@ -273,6 +273,13 @@ export interface FrameSummary {
   readonly point: number;
   /** Line primitives drawn this frame (線情報 polylines). */
   readonly line: number;
+  /**
+   * Of those, the DASHED ones (FR-82 点線アウトライン = 頂点選択コンテキスト地物). Counted
+   * separately because「線が 1 本増えた」cannot distinguish the context outline from any
+   * other polyline, and the dash IS the requirement: only a per-dash count makes a
+   * behavioural E2E of FR-82 non-vacuous. Always ≤ `line`.
+   */
+  readonly dashedLine: number;
   /** Tool-overlay (仮表示 / preview) primitives drawn this frame (add / knife draft). */
   readonly preview: number;
   /** True iff any live preview (tool overlay) primitive is present this frame. */
@@ -646,6 +653,7 @@ export function createAddHostPorts(
       let shape = 0;
       let point = 0;
       let line = 0;
+      let dashedLine = 0;
       const vertexHandlePositions: { lon: number; lat: number }[] = [];
       for (const p of primitives) {
         switch (p.kind) {
@@ -668,6 +676,8 @@ export function createAddHostPorts(
             break;
           case 'line':
             line += 1;
+            // FR-82: the dash channel is what makes a line the 頂点選択コンテキスト outline.
+            if (p.dashPx !== undefined) dashedLine += 1;
             break;
           default:
             break;
@@ -682,6 +692,7 @@ export function createAddHostPorts(
         shape,
         point,
         line,
+        dashedLine,
         preview: overlay.length,
         hasLivePreview: overlay.length > 0 || editPreview,
         vertexHandlePositions,

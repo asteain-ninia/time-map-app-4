@@ -24,6 +24,8 @@ interface PrimitiveCounts {
   shape: number;
   point: number;
   line: number;
+  /** FR-82 点線アウトライン (頂点選択コンテキスト地物) drawn this frame. */
+  dashedLine: number;
   preview: number;
   hasLivePreview: boolean;
 }
@@ -41,6 +43,7 @@ async function primitiveCounts(page: Page): Promise<PrimitiveCounts> {
         shape: -1,
         point: -1,
         line: -1,
+        dashedLine: -1,
         preview: -1,
         hasLivePreview: false,
       };
@@ -233,6 +236,96 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       await expect.poll(async () => (await primitiveCounts(page)).handle, {
         message:
           '選択解除は再描画されなければならない (selection を watch しないと古いハンドルが残る)',
+      }).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // FR-82 本体の回帰ロック —「頂点選択コンテキスト地物は点線アウトライン」。
+  //
+  // 86948d7 は選択頂点リング (シアン) / ドラッグ中リング (橙) までは実装したが、FR-82 が
+  // 並記するもう一つの視覚状態=「頂点選択の所有地物を点線で囲む」は未実装のままだった:
+  // domain/selection/visual.ts の classifyVisual が Context を分類していながら描画消費者が
+  // ゼロ (教訓 5.7「ロジックはあるが UI から呼ばれない」= HB3-9 と同型の欠陥)。ユーザ側の
+  // 症状は「頂点は光るが、どの地物の頂点なのかが画面から読めない」。
+  //
+  // 観測は __E2E__ の dashedLine (dashPx を持つ line プリミティブ数) — 「線が 1 本増えた」
+  // では他の折れ線と区別できず、点線であること自体が要件なので、破線チャンネルを直接数える。
+  // 単体テストでは踏めない: 分類 → プリミティブ → レンダラの各層が緑でも、App からの結線
+  // (選択オーナー供給・selection watch による再描画) が切れていれば画面は無反応になる。
+  test('頂点を選ぶと所有地物が点線で囲まれ、アクティブ化/選択解除で消える', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await expect
+        .poll(async () => page.evaluate(() => typeof (window as unknown as {
+          __E2E__?: unknown;
+        }).__E2E__))
+        .toBe('object');
+
+      await enterAddArea(page);
+      const addLayer = page.getByTestId('add-input-layer');
+      await expect(addLayer).toBeVisible();
+      const ab = await addLayer.boundingBox();
+      expect(ab).not.toBeNull();
+      const a = ab!;
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      const corners: ReadonlyArray<readonly [number, number]> = [
+        [cx - 120, cy - 120],
+        [cx + 120, cy - 120],
+        [cx + 120, cy + 120],
+        [cx - 120, cy + 120],
+      ];
+      for (const [px, py] of corners) await page.mouse.click(px, py);
+      await page.getByTestId('add-complete').click();
+      await page.getByTestId('add-save').click();
+
+      const activeFeature = page.getByTestId('app-active-feature');
+      await expect(activeFeature).toHaveText(/\S/);
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+
+      // 編集モードに入ると選択は破棄され (教訓 5.2)、点線は 0 本。
+      await enterEditMode(page);
+      await expect(activeFeature).toHaveText('');
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine).toBe(0);
+
+      // (1) アクティブ地物ゼロのまま頂点を直接クリック → 所有地物が点線で囲まれる。
+      const [vx, vy] = corners[0]!;
+      await page.mouse.click(vx, vy);
+      await expect(page.getByTestId('app-active-vertex-owner')).toHaveText(faceId);
+      await expect(activeFeature).toHaveText(''); // FR-82 の別状態 (昇格していない)
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine, {
+        message:
+          'FR-82: 頂点選択コンテキスト地物は点線アウトラインで囲まれなければならない',
+      }).toBeGreaterThanOrEqual(1);
+      // 頂点ハンドル (86948d7 の挙動) は据え置きで共存する。
+      await expect.poll(async () => (await primitiveCounts(page)).handle)
+        .toBeGreaterThanOrEqual(4);
+
+      // (2) 同じ地物の本体をクリックしてアクティブ地物にすると、点線は消える。
+      //     FR-82 の二つの地物状態は同一地物に重畳しない (合成規則: 選択スタイル優先) —
+      //     アクティブ表示のまま点線も出ると「別状態」の区別が読めなくなる。
+      await page.mouse.click(cx, cy);
+      await expect(activeFeature).toHaveText(faceId);
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine, {
+        message: 'アクティブ地物には点線を重ねない (FR-82 の二状態は排他)',
+      }).toBe(0);
+
+      // (3) 空白クリックで選択解除 → 点線もハンドルも消える (再描画されること自体の確認)。
+      await page.mouse.click(a.x + 8, a.y + 8);
+      await expect(activeFeature).toHaveText('');
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine).toBe(0);
+      await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
+
+      // (4) 再度頂点を選び直してから View モードへ → 編集モード外では点線も出ない
+      //     (このレイヤ全体が編集モードのゲート下にある)。
+      await page.mouse.click(vx, vy);
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine)
+        .toBeGreaterThanOrEqual(1);
+      await page.getByTestId('mode-view').click();
+      await expect.poll(async () => (await primitiveCounts(page)).dashedLine, {
+        message: '点線アウトラインは編集モードのゲート下にある',
       }).toBe(0);
     } finally {
       await app.close();

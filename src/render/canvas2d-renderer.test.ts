@@ -94,6 +94,76 @@ describe('FR-17: line width and label font are constant on screen across zoom', 
   });
 });
 
+// FR-82 点線アウトライン — the `dashPx` channel on a LinePrimitive. Optional by design
+// (省略時 = 現挙動): every pre-existing line must keep stroking SOLID, and a dashed line
+// must not leak its pattern into the next stroke of the same frame (状態復元作法 — the
+// same discipline as the label lineJoin / textAlign restores).
+describe('FR-82: LinePrimitive.dashPx (点線アウトライン)', () => {
+  const seg = (dashPx?: readonly number[]) => ({
+    kind: 'line' as const,
+    points: [
+      { lon: -10, lat: 0 },
+      { lon: 10, lat: 0 },
+    ],
+    widthPx: 2,
+    stroke: '#00e5ff',
+    ...(dashPx === undefined ? {} : { dashPx }),
+  });
+
+  it('omitting dashPx strokes SOLID and never touches the dash state (既定は無変化)', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    r.drawBatch({ primitives: [seg()] });
+    expect(surface.ctx.strokes).toHaveLength(1);
+    expect(surface.ctx.strokeDashes[0]).toEqual([]);
+    expect(surface.ctx.setLineDashes).toEqual([]);
+  });
+
+  it('dashPx is in force for that line stroke', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    r.drawBatch({ primitives: [seg([6, 4])] });
+    expect(surface.ctx.strokeDashes[0]).toEqual([6, 4]);
+  });
+
+  it('the dash is RESTORED afterwards: a later solid line in the SAME frame is solid', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    r.drawBatch({ primitives: [seg([6, 4]), seg()] });
+    expect(surface.ctx.strokeDashes[0]).toEqual([6, 4]);
+    expect(surface.ctx.strokeDashes[1]).toEqual([]);
+    expect(surface.ctx.getLineDash()).toEqual([]);
+  });
+
+  it('a polygon/shape stroke after a dashed line is NOT dashed (leak guard)', () => {
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    r.drawBatch({
+      primitives: [
+        seg([6, 4]),
+        {
+          kind: 'polygon',
+          ring: [
+            { lon: 0, lat: 0 },
+            { lon: 5, lat: 0 },
+            { lon: 5, lat: 5 },
+          ],
+          fill: '#123456',
+          stroke: '#000',
+          strokeWidthPx: 1,
+        },
+      ],
+    });
+    expect(surface.ctx.strokeDashes[0]).toEqual([6, 4]);
+    expect(surface.ctx.strokeDashes[1]).toEqual([]);
+  });
+
+  it('the dash is applied to EVERY seam replica of a wrapped dashed line (FR-07)', () => {
+    // A wide zoom-out draws the primitive once per ±360° turn; each replica must be
+    // dashed (a restore placed at the wrong level would leave replicas 2..n solid).
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 0.5 });
+    r.drawBatch({ primitives: [seg([6, 4])] });
+    expect(surface.ctx.strokes.length).toBeGreaterThan(1);
+    for (const d of surface.ctx.strokeDashes) expect(d).toEqual([6, 4]);
+  });
+});
+
 describe('V1 判読性: label offsetPx / align / baseline', () => {
   it('defaults to the canvas defaults so existing (feature) labels are unaffected', () => {
     const batch: RenderBatch = {

@@ -79,6 +79,8 @@ export {
   type VisualClassification,
   type MarkerInput,
   classifyVisual,
+  type FeatureHighlightInput,
+  classifyFeatureHighlights,
 } from './visual';
 
 // Re-resolution after structure / time / display-control changes (教訓 5.11 / 5.5).
