@@ -94,6 +94,91 @@ describe('FR-17: line width and label font are constant on screen across zoom', 
   });
 });
 
+describe('V1 判読性: label offsetPx / align / baseline', () => {
+  it('defaults to the canvas defaults so existing (feature) labels are unaffected', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        // wrap:false ⇒ exactly one pass, so index 0 is the identity-turn draw.
+        {
+          kind: 'label',
+          at: { lon: 0, lat: 0 },
+          text: 'X',
+          fontPx: 12,
+          fill: '#000',
+          wrap: false,
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 1 });
+    r.drawBatch(batch);
+    // No offset ⇒ drawn exactly at the projected anchor (viewport centre).
+    expect(surface.ctx.fillTexts[0]!.x).toBeCloseTo(400, 6);
+    expect(surface.ctx.fillTexts[0]!.y).toBeCloseTo(300, 6);
+    expect(surface.ctx.textAligns[0]).toBe('left');
+    expect(surface.ctx.textBaselines[0]).toBe('alphabetic');
+  });
+
+  it('applies the screen-space offset and the declared alignment', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'label',
+          at: { lon: 0, lat: 0 },
+          text: '0°',
+          fontPx: 11,
+          fill: '#000',
+          halo: '#fff',
+          offsetPx: { x: 6, y: -4 },
+          align: 'center',
+          baseline: 'middle',
+          wrap: false,
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 1 });
+    r.drawBatch(batch);
+    expect(surface.ctx.fillTexts[0]!.x).toBeCloseTo(406, 6);
+    expect(surface.ctx.fillTexts[0]!.y).toBeCloseTo(296, 6);
+    // The halo stroke uses the SAME offset placement as the fill (they must overlap).
+    expect(surface.ctx.strokeTexts[0]!.x).toBeCloseTo(406, 6);
+    expect(surface.ctx.strokeTexts[0]!.y).toBeCloseTo(296, 6);
+    expect(surface.ctx.textAligns[0]).toBe('center');
+    expect(surface.ctx.textBaselines[0]).toBe('middle');
+  });
+
+  it('restores the canvas text defaults after drawing (no leak into later draws)', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'label',
+          at: { lon: 0, lat: 0 },
+          text: 'A',
+          fontPx: 11,
+          fill: '#000',
+          align: 'center',
+          baseline: 'top',
+          wrap: false,
+        },
+        {
+          kind: 'label',
+          at: { lon: 0, lat: 0 },
+          text: 'B',
+          fontPx: 11,
+          fill: '#000',
+          wrap: false,
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 1 });
+    r.drawBatch(batch);
+    expect(surface.ctx.textAligns[1]).toBe('left');
+    expect(surface.ctx.textBaselines[1]).toBe('alphabetic');
+    // …and the context itself is left at the defaults for whatever draws next.
+    expect(surface.ctx.textAlign).toBe('left');
+    expect(surface.ctx.textBaseline).toBe('alphabetic');
+  });
+});
+
 describe('HB3-9 / FR-17: edit handle markers draw at constant on-screen size', () => {
   it('keeps the vertex-handle disc radius fixed while the position moves with zoom', () => {
     const batch: RenderBatch = {
@@ -140,6 +225,55 @@ describe('HB3-9 / FR-17: edit handle markers draw at constant on-screen size', (
     expect(surface.ctx.rects).toHaveLength(1);
     expect(surface.ctx.rects[0]!.w).toBe(7); // 2 * radiusPx, screen-fixed
     expect(surface.ctx.arcs).toHaveLength(0); // an edge handle is a square, not a disc
+  });
+
+  it('strokes the FR-82 selection RING outside the disc at a screen-fixed radius', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'handle',
+          at: { lon: 10, lat: 5 },
+          radiusPx: 5,
+          fill: '#ffd54a',
+          stroke: '#0a66c2',
+          strokeWidthPx: 1.5,
+          handleKind: 'vertex',
+          ring: { radiusPx: 8, stroke: '#00e5ff', widthPx: 2 },
+        },
+      ],
+    };
+    const a = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    a.r.drawBatch(batch);
+    const b = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 16 });
+    b.r.drawBatch(batch);
+    // Two arcs per ringed handle: the disc (r=5) then the ring (r=8), both screen-fixed.
+    expect(a.surface.ctx.arcs.map((arc) => arc.r)).toEqual([5, 8]);
+    expect(b.surface.ctx.arcs.map((arc) => arc.r)).toEqual([5, 8]);
+    // The ring is concentric with the disc (same projected centre).
+    expect(a.surface.ctx.arcs[1]!.x).toBe(a.surface.ctx.arcs[0]!.x);
+    expect(a.surface.ctx.arcs[1]!.y).toBe(a.surface.ctx.arcs[0]!.y);
+    // …and stroked in the ring's own colour/width (composed OVER the fill, not replacing).
+    expect(a.surface.ctx.strokes).toContain('#00e5ff');
+    expect(a.surface.ctx.lineWidths).toContain(2);
+  });
+
+  it('draws no ring arc when the handle carries no selection ring', () => {
+    const batch: RenderBatch = {
+      primitives: [
+        {
+          kind: 'handle',
+          at: { lon: 10, lat: 5 },
+          radiusPx: 5,
+          fill: '#fff',
+          stroke: '#0a66c2',
+          strokeWidthPx: 1.5,
+          handleKind: 'vertex',
+        },
+      ],
+    };
+    const { r, surface } = makeRenderer({ centerLon: 0, centerLat: 0, zoom: 4 });
+    r.drawBatch(batch);
+    expect(surface.ctx.arcs).toHaveLength(1);
   });
 });
 

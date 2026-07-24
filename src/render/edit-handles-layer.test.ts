@@ -129,3 +129,105 @@ describe('buildEditHandlePrimitives shared-vertex distinction (FR-30)', () => {
     }
   });
 });
+
+// --- FR-80 / FR-82 選択頂点・ドラッグ中頂点の視覚区別 --------------------------------
+//
+// The four quadrants the highlight must keep separable (共有 × 選択 の直交性):
+//   非選択・非共有 / 選択・非共有 / 非選択・共有 / 選択∧共有 / ドラッグ中。
+// The highlight is a COMPOSABLE outer ring — it must NEVER replace `fill`, because the
+// FR-30 shared-vertex amber lives in `fill` and both facts have to stay readable.
+
+function vh(prims: readonly { kind: string }[]): HandlePrimitive[] {
+  return prims
+    .filter((p): p is HandlePrimitive => p.kind === 'handle')
+    .filter((h) => h.handleKind === 'vertex');
+}
+
+describe('buildEditHandlePrimitives selected/dragging vertex distinction (FR-80/FR-82)', () => {
+  it('gives a SELECTED vertex a selection ring and leaves a non-selected one ringless', () => {
+    const prims = buildEditHandlePrimitives(
+      sampleHandles(),
+      DEFAULT_EDIT_HANDLE_STYLE,
+      undefined,
+      { selectedVertexIds: new Set([asVertexId('v1')]) },
+    );
+    const [selected, plain] = vh(prims);
+    expect(selected!.ring).toEqual({
+      radiusPx:
+        DEFAULT_EDIT_HANDLE_STYLE.vertexRadiusPx + DEFAULT_EDIT_HANDLE_STYLE.selectedRing.gapPx,
+      stroke: DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke,
+      widthPx: DEFAULT_EDIT_HANDLE_STYLE.selectedRing.widthPx,
+    });
+    expect(plain!.ring).toBeUndefined();
+  });
+
+  it('keeps the FR-30 shared amber FILL on a vertex that is BOTH shared and selected', () => {
+    const prims = buildEditHandlePrimitives(
+      sampleHandles(),
+      DEFAULT_EDIT_HANDLE_STYLE,
+      new Set([asVertexId('v1')]),
+      { selectedVertexIds: new Set([asVertexId('v1')]) },
+    );
+    const both = vh(prims)[0]!;
+    // 共有∧選択: the fill still says "shared", the ring says "selected" (両方読める).
+    expect(both.fill).toBe(DEFAULT_EDIT_HANDLE_STYLE.sharedVertexFill);
+    expect(both.ring?.stroke).toBe(DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke);
+  });
+
+  it('gives a DRAGGING vertex a distinct ring from a merely selected one (FR-82 別スタイル)', () => {
+    const prims = buildEditHandlePrimitives(
+      sampleHandles(),
+      DEFAULT_EDIT_HANDLE_STYLE,
+      undefined,
+      {
+        selectedVertexIds: new Set([asVertexId('v1'), asVertexId('v2')]),
+        draggingVertexIds: new Set([asVertexId('v1')]),
+      },
+    );
+    const [dragging, selected] = vh(prims);
+    expect(dragging!.ring).toEqual({
+      radiusPx:
+        DEFAULT_EDIT_HANDLE_STYLE.vertexRadiusPx + DEFAULT_EDIT_HANDLE_STYLE.draggingRing.gapPx,
+      stroke: DEFAULT_EDIT_HANDLE_STYLE.draggingRing.stroke,
+      widthPx: DEFAULT_EDIT_HANDLE_STYLE.draggingRing.widthPx,
+    });
+    // Dragging wins over Selected (the more specific category, 単一の分類順序).
+    expect(dragging!.ring).not.toEqual(selected!.ring);
+    expect(selected!.ring?.stroke).toBe(DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke);
+  });
+
+  it('never rings an EDGE handle (only vertices carry selection state)', () => {
+    const prims = buildEditHandlePrimitives(
+      sampleHandles(),
+      DEFAULT_EDIT_HANDLE_STYLE,
+      undefined,
+      { selectedVertexIds: new Set([asVertexId('v1'), asVertexId('v2')]) },
+    );
+    const edge = prims
+      .filter((p): p is HandlePrimitive => p.kind === 'handle')
+      .find((h) => h.handleKind === 'edge')!;
+    expect(edge.ring).toBeUndefined();
+  });
+
+  it('emits no rings at all when no highlight input is supplied (default unchanged)', () => {
+    for (const h of vh(buildEditHandlePrimitives(sampleHandles()))) {
+      expect(h.ring).toBeUndefined();
+    }
+  });
+
+  it('keeps the selection ring STRICTLY OUTSIDE the disc so the fill stays visible', () => {
+    // 合成可能な強調の不変条件: ring radius > handle radius (never an over-paint).
+    expect(DEFAULT_EDIT_HANDLE_STYLE.selectedRing.gapPx).toBeGreaterThan(0);
+    expect(DEFAULT_EDIT_HANDLE_STYLE.draggingRing.gapPx).toBeGreaterThan(
+      DEFAULT_EDIT_HANDLE_STYLE.selectedRing.gapPx,
+    );
+    // And the three hues never collide (normal / shared / selected / dragging).
+    const hues = new Set([
+      DEFAULT_EDIT_HANDLE_STYLE.vertexFill,
+      DEFAULT_EDIT_HANDLE_STYLE.sharedVertexFill,
+      DEFAULT_EDIT_HANDLE_STYLE.selectedRing.stroke,
+      DEFAULT_EDIT_HANDLE_STYLE.draggingRing.stroke,
+    ]);
+    expect(hues.size).toBe(4);
+  });
+});

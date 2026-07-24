@@ -140,6 +140,29 @@ export interface HandlePrimitive {
   readonly strokeWidthPx: number;
   /** Which structural element this handle targets (FR-87). */
   readonly handleKind: 'vertex' | 'edge';
+  /**
+   * FR-80 / FR-82 選択ハイライト: an OPTIONAL concentric ring stroked OUTSIDE the handle
+   * marker. It is deliberately a SEPARATE channel from `fill`, because `fill` already
+   * carries the FR-30 共有頂点 distinction — replacing the fill to show "selected" would
+   * destroy the "shared" information, and a vertex can be BOTH. Composing an outer ring
+   * over an unchanged fill keeps both facts readable at once (共有∧選択). Undefined ⇒ no
+   * ring (the ordinary, unselected handle — unchanged pixels).
+   */
+  readonly ring?: HandleRing;
+}
+
+/**
+ * The screen-fixed selection RING around a handle (FR-82). `radiusPx` is the ring's own
+ * CSS-px radius (larger than the handle's `radiusPx`, so it never over-paints the fill);
+ * it is NOT multiplied by zoom (FR-17), exactly like every other handle measurement.
+ */
+export interface HandleRing {
+  /** Ring radius in CSS px (screen-fixed, FR-17). Strictly greater than the handle's. */
+  readonly radiusPx: number;
+  /** Ring stroke color (the category hue: selected vs. dragging). */
+  readonly stroke: string;
+  /** Ring stroke width in CSS px (screen-fixed, FR-17). */
+  readonly widthPx: number;
 }
 
 /** A text label anchored at a world point, drawn at a constant on-screen font px (FR-17). */
@@ -156,6 +179,28 @@ export interface LabelPrimitive {
    * keeps it legible over any background. Undefined ⇒ no halo (grid labels opt out).
    */
   readonly halo?: string;
+  /**
+   * Screen-space nudge (CSS px) applied to the PROJECTED anchor before the text is
+   * drawn (V1 判読性). Screen-fixed like `fontPx` (FR-17): it is added after the world→
+   * screen transform, so it never scales with zoom. This is what lets a graticule label
+   * sit BESIDE / BELOW its own line instead of on top of it, and lets the ±90° parallel
+   * labels be clamped back inside the canvas. Undefined ⇒ `{x:0, y:0}` — the anchor
+   * itself, i.e. the original behaviour for every feature label (教訓 5.18: the absent
+   * value is a named default, not a special case).
+   */
+  readonly offsetPx?: { readonly x: number; readonly y: number };
+  /**
+   * Horizontal text anchoring. Undefined ⇒ `'left'`, the Canvas 2D default, so an
+   * existing label's pixels are unchanged. Grid meridian labels use `'center'` so the
+   * number reads as centred on its own meridian.
+   */
+  readonly align?: CanvasTextAlign;
+  /**
+   * Vertical text anchoring. Undefined ⇒ `'alphabetic'`, the Canvas 2D default. Declared
+   * explicitly by the renderer (rather than inherited from whatever ran before) so the
+   * placement is deterministic frame to frame.
+   */
+  readonly baseline?: CanvasTextBaseline;
   /**
    * Opt out of the seam turn-loop (see {@link GridLinePrimitive.wrap}). Grid labels
    * are anchored at continuous-span longitudes already, so re-tiling would stack

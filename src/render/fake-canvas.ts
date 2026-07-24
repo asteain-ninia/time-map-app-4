@@ -22,6 +22,9 @@ export class FakeContext2D {
   lineWidths: number[] = [];
   fonts: string[] = [];
   fillTexts: { text: string; x: number; y: number; maxWidth?: number }[] = [];
+  /** The `textAlign` / `textBaseline` in force at each `fillText` (V1 判読性). */
+  textAligns: string[] = [];
+  textBaselines: string[] = [];
   /** Each `strokeText` call (HB3-26 label halo, drawn under the fill text). */
   strokeTexts: { text: string; x: number; y: number; maxWidth?: number }[] = [];
   moveTos: { x: number; y: number }[] = [];
@@ -43,6 +46,9 @@ export class FakeContext2D {
   lineWidth = 0;
   lineJoin = '';
   font = '';
+  /** Seeded to the real canvas defaults so a "restored" assertion is meaningful. */
+  textAlign = 'left';
+  textBaseline = 'alphabetic';
 
   setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void {
     this.setTransforms.push([a, b, c, d, e, f]);
@@ -75,6 +81,8 @@ export class FakeContext2D {
   }
   fillText(text: string, x: number, y: number, maxWidth?: number): void {
     this.fonts.push(this.font);
+    this.textAligns.push(this.textAlign);
+    this.textBaselines.push(this.textBaseline);
     this.fillTexts.push(maxWidth === undefined ? { text, x, y } : { text, x, y, maxWidth });
   }
   strokeText(text: string, x: number, y: number, maxWidth?: number): void {

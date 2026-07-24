@@ -27,6 +27,25 @@
 // active feature's per-vertex handles today. The `cap` field on {@link MarkerInput}
 // below intentionally mirrors that gate so the two stay consistent when this
 // classifier is eventually wired (not double-applied — only one path draws).
+//
+// NOTE (FR-80/82 selected/dragging wiring): the SelectedVertex / DraggingVertex
+// distinction IS live on screen, but it is applied on that same handle path — the
+// store hands `selection.vertexIds` + `selection.vertexOwner` (FR-81: the ring is
+// applied only to the OWNER's handles, since a vertex id is a global key and a
+// 共有頂点 is cited by several features) to `buildActiveFeatureHandlePrimitives`,
+// which maps them to an outer highlight RING via `render/edit-handles-layer`. Until
+// this classifier is wired, that path is the ONE place the vertex highlight is
+// decided (never both — 二重実装禁止), and it deliberately reuses the SAME precedence
+// declared here (Dragging > Selected > none) so the two can never disagree when they
+// do converge. The cap exemption below holds there too: the handle path keeps the
+// ringed vertices when the FR-79-style full handle set is capped away.
+//
+// DRAGGING (FR-82): the live consumer derives「いま動いている頂点」from the in-flight
+// DragSession (one vertex per gesture today), NOT from `transient.phase ===
+// VertexDrag` — that transient is armed on the mere PRESS and covers the whole
+// selection set, so using it would paint stationary vertices as "moving". When the
+// FR-80 multi-vertex simultaneous move gets a live path, its gesture truth is what
+// should feed the dragging set (and this classifier's rule below converges with it).
 
 import type { FeatureId, VertexId } from '../ids';
 

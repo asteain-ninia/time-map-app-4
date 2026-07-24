@@ -207,6 +207,7 @@ import {
   type ScreenPoint,
 } from '../render';
 import { createRedrawScheduler } from './map/redraw-scheduler';
+import { redrawWatch, redrawWatchChanged } from './map/redraw-watch';
 import type { Camera as RenderCamera } from '../render/camera';
 import type { WorldCoordinate } from '../domain/coordinate';
 import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
@@ -780,6 +781,35 @@ export function App(): JSX.Element {
           s.appSettings.vertexMarkerCap,
           // FR-113 (Codex F2): suppress handles for an active feature the filter hides.
           s.filter,
+          // FR-80/82 選択頂点ハイライトの結線: the U22 selection truth reaches the DRAW path
+          // here. Without it the handle layer had no selection input at all, so selecting a
+          // vertex produced ZERO pixel change (実機接写ペアが md5 一致) even though the
+          // selection state itself was correct — the classification lived in
+          // domain/selection/visual with no render consumer (教訓 5.7).
+          //
+          // `vertexOwner` rides along because a vertex id is a GLOBAL VertexStore key and
+          // FR-30 共有頂点 means a neighbour cites the same id: without the owner the ring
+          // leaked onto the active feature's copy of a vertex selected on ANOTHER feature
+          // (FR-81 一owner). It is also what lets the builder draw the FR-82 頂点選択
+          // コンテキスト地物 when the owner is not the active feature.
+          //
+          // NO `draggingVertexIds` FROM HERE (敵対レビュー MEDIUM): the orange ring means
+          // 「この頂点はいま動いている」. The live edit path moves exactly ONE vertex
+          // (edit-session-adapter's targetFromHit builds a single-vertex VertexMove /
+          // EdgeAdd target), and the builder already derives that one from the live
+          // DragSession, so its ring can never disagree with the previewed position.
+          // Handing the WHOLE selection set as "dragging" painted v2/v3 orange at their
+          // committed positions while only v1 moved — and U22's VertexDrag transient is
+          // armed on the mere press, so even a zero-move click turned the set orange. It is
+          // also never observable here: the live selection port drives PointerDown and
+          // PointerUp inside ONE `end()` call, so the store only ever sees the IDLE
+          // transient. FR-80 多頂点同時移動 is still supported by the builder's own
+          // `draggingVertexIds` input — it should be fed by whoever implements the live
+          // multi-vertex drag, from that gesture's truth.
+          {
+            selectedVertexIds: s.selection.vertexIds,
+            ownerFeatureId: s.selection.vertexOwner,
+          },
         );
       },
       // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
@@ -1346,32 +1376,17 @@ export function App(): JSX.Element {
     // The Canvas subscribes to the store directly, OFF the React render path
     // (技術方針 2.3 / 2.5). A redraw after a tool overlay draw is idempotent (it
     // re-composites with the same last overlay), so there is no double-source risk.
-    let prevDomain = store.getState().domain;
-    let prevTime = store.getState().currentTime;
-    let prevActive = store.getState().activeFeature;
-    // HB3-9: the edit-handles layer is gated on 編集 mode, so a mode change (View↔Edit↔
-    // Add) must trigger a redraw — otherwise entering 編集 with a feature already selected
-    // would not draw its handles until some other tracked input changed (教訓 5.5).
-    let prevRedrawMode = store.getState().mode;
-    let prevDisplay = store.getState().displayControl;
-    // FR-113: a display-filter change (種別/深度/個別非表示/不透明度) swaps `filter`
-    // wholesale and must re-run the committedFeatures getter so the cull / opacity
-    // reflects on the next composite — otherwise the getter is never re-read and the
-    // filter change is invisible (教訓 5.7 / 5.35, same discipline as displayControl).
-    let prevFilter = store.getState().filter;
-    let prevAreaThreshold =
-      store.getState().projectSettings.areaLabelOccupancyThreshold;
-    // FR-13 / FR-109 グリッド即時反映: the grid spacing / color / opacity project
-    // settings feed the host's gridStyle getter, so a change MUST trigger a redraw
-    // too — otherwise the getter is never re-read and the panel change is invisible
-    // (bughunt root: the subscription watched only the threshold among settings keys).
-    let prevGridSpacing = store.getState().projectSettings.gridSpacingDeg;
-    let prevGridColor = store.getState().projectSettings.gridColor;
-    let prevGridOpacity = store.getState().projectSettings.gridOpacity;
-    // FR-13 ON/OFF 即時反映: a gridVisible toggle feeds the host's gridVisible getter,
-    // so it MUST trigger a redraw too — otherwise the getter is never re-read and the
-    // grid appears/disappears only on the next unrelated input (教訓 5.35 / 5.7).
-    let prevGridVisible = store.getState().projectSettings.gridVisible;
+    // WHICH state changes need a composite is decided by ONE pure, unit-tested function
+    // (`map/redraw-watch`) instead of a hand-maintained列 of `let prevX` variables. That
+    //列 DRIFTED from what the host getters actually read — twice: the FR-13 grid settings
+    // (gridStyle) and then the FR-80/82 vertex selection (editHandles). Selecting a vertex
+    // does NOT change `activeFeature` (U22's HIT_KIND.Vertex branch leaves it alone by
+    // design — FR-82 has a distinct「頂点選択コンテキスト地物」state), so on an already-active
+    // feature EVERY previously-watched value stayed identical → early return → no redraw →
+    // the FR-82 selection ring appeared only when some unrelated input moved. The watch set
+    // now lives next to its own regression test, and its invariant is stated once there:
+    // every value a getter reads MUST appear in it (教訓 5.35 / 5.7).
+    let prevWatch = redrawWatch(store.getState());
     const unsubscribe = store.subscribe((s) => {
       // FR-110: a live renderFps change re-arms the per-frame budget (the cap is
       // fixed at scheduler construction, so setFps rebuilds it). This is NOT gated by
@@ -1381,37 +1396,9 @@ export function App(): JSX.Element {
         renderFps = s.appSettings.renderFps;
         redrawScheduler.setFps(renderFps);
       }
-      const areaThreshold = s.projectSettings.areaLabelOccupancyThreshold;
-      const gridSpacing = s.projectSettings.gridSpacingDeg;
-      const gridColor = s.projectSettings.gridColor;
-      const gridOpacity = s.projectSettings.gridOpacity;
-      const gridVisible = s.projectSettings.gridVisible;
-      if (
-        s.domain === prevDomain &&
-        s.currentTime === prevTime &&
-        s.activeFeature === prevActive &&
-        s.mode === prevRedrawMode &&
-        s.displayControl === prevDisplay &&
-        s.filter === prevFilter &&
-        areaThreshold === prevAreaThreshold &&
-        gridSpacing === prevGridSpacing &&
-        gridColor === prevGridColor &&
-        gridOpacity === prevGridOpacity &&
-        gridVisible === prevGridVisible
-      ) {
-        return;
-      }
-      prevDomain = s.domain;
-      prevTime = s.currentTime;
-      prevActive = s.activeFeature;
-      prevRedrawMode = s.mode;
-      prevDisplay = s.displayControl;
-      prevFilter = s.filter;
-      prevAreaThreshold = areaThreshold;
-      prevGridSpacing = gridSpacing;
-      prevGridColor = gridColor;
-      prevGridOpacity = gridOpacity;
-      prevGridVisible = gridVisible;
+      const watch = redrawWatch(s);
+      if (!redrawWatchChanged(prevWatch, watch)) return;
+      prevWatch = watch;
       requestRedraw();
     });
     return () => {

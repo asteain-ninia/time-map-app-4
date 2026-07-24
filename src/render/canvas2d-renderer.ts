@@ -78,6 +78,15 @@ const DEFAULT_VIEWPORT: Viewport = {
  */
 export const MAX_LABEL_WIDTH_PX = 240;
 
+/**
+ * The Canvas 2D text-anchoring defaults. Named (not inlined) because they are used
+ * twice per label — once as the fallback for an undeclared `align`/`baseline`, once as
+ * the post-draw restore — and those two MUST be the same value or a declared alignment
+ * would leak into the next label (V1 判読性).
+ */
+const DEFAULT_TEXT_ALIGN: CanvasTextAlign = 'left';
+const DEFAULT_TEXT_BASELINE: CanvasTextBaseline = 'alphabetic';
+
 export class Canvas2DMapRenderer implements MapRenderer {
   private readonly ctx: CanvasRenderingContext2D;
   private readonly surface: CanvasSurface;
@@ -309,6 +318,7 @@ export class Canvas2DMapRenderer implements MapRenderer {
       ctx.lineWidth = p.strokeWidthPx;
       ctx.strokeStyle = p.stroke;
       ctx.stroke();
+      this.drawHandleRing(p, x, y);
       return;
     }
     // Filled disc for a vertex (move / delete) handle.
@@ -318,6 +328,25 @@ export class Canvas2DMapRenderer implements MapRenderer {
     ctx.fill();
     ctx.lineWidth = p.strokeWidthPx;
     ctx.strokeStyle = p.stroke;
+    ctx.stroke();
+    this.drawHandleRing(p, x, y);
+  }
+
+  /**
+   * Stroke the FR-82 selection RING concentric with (and OUTSIDE) an already-painted
+   * handle marker. Drawn LAST so the highlight reads over the marker's own outline, and
+   * as a stroke-only ring so the handle's `fill` — which carries the FR-30 共有頂点 hue —
+   * stays fully visible underneath (合成可能な強調: 共有∧選択 が両方読める). Screen-fixed
+   * (FR-17): the ring radius / width are CSS px, never multiplied by zoom.
+   */
+  private drawHandleRing(p: HandlePrimitive, x: number, y: number): void {
+    const ring = p.ring;
+    if (ring === undefined) return;
+    const ctx = this.ctx;
+    ctx.beginPath();
+    ctx.arc(x, y, ring.radiusPx, 0, Math.PI * 2);
+    ctx.lineWidth = ring.widthPx;
+    ctx.strokeStyle = ring.stroke;
     ctx.stroke();
   }
 
@@ -390,10 +419,21 @@ export class Canvas2DMapRenderer implements MapRenderer {
   }
 
   private drawLabel(p: LabelPrimitive, lonOffset: number): void {
-    const { x, y } = this.project(p.at, lonOffset);
+    const anchor = this.project(p.at, lonOffset);
+    // V1 判読性: the screen-space nudge is applied AFTER projection and is NOT scaled by
+    // zoom (FR-17, same discipline as fontPx). Halo and fill share the same placement so
+    // the outline stays registered under the glyphs.
+    const x = anchor.x + (p.offsetPx?.x ?? 0);
+    const y = anchor.y + (p.offsetPx?.y ?? 0);
     const ctx = this.ctx;
     // fontPx is screen-fixed (FR-17): the font is set in CSS px, never zoomed.
     ctx.font = `${p.fontPx}px sans-serif`;
+    // V1 判読性: set the text anchoring EXPLICITLY rather than inheriting the canvas
+    // default implicitly — a grid label that must read centred under its meridian, or
+    // lifted off its parallel, needs a declared align/baseline. Undefined falls back to
+    // the canvas defaults, so every pre-existing label draws exactly as before.
+    ctx.textAlign = p.align ?? DEFAULT_TEXT_ALIGN;
+    ctx.textBaseline = p.baseline ?? DEFAULT_TEXT_BASELINE;
     // HB3-26: draw the halo FIRST (a contrasting outline) so the fill text on top stays
     // legible over a same-colored background. Rounded joins avoid spiky corners.
     if (p.halo !== undefined) {
@@ -408,6 +448,11 @@ export class Canvas2DMapRenderer implements MapRenderer {
     }
     ctx.fillStyle = p.fill;
     ctx.fillText(p.text, x, y, MAX_LABEL_WIDTH_PX);
+    // Restore the canvas text defaults (same作法 as the lineJoin restore above): a
+    // declared align/baseline must not leak into the NEXT label — or the next frame —
+    // which would silently re-place every label that relies on the default.
+    ctx.textAlign = DEFAULT_TEXT_ALIGN;
+    ctx.textBaseline = DEFAULT_TEXT_BASELINE;
   }
 
   private drawBaseMap(p: BaseMapPrimitive, lonOffset: number): void {

@@ -59,6 +59,7 @@ export {
   type PolygonShapePrimitive,
   type GridLinePrimitive,
   type HandlePrimitive,
+  type HandleRing,
   type LabelPrimitive,
   type BaseMapPrimitive,
   type HitTestResult,
@@ -175,6 +176,8 @@ export {
 // selected feature, composited only in 編集 mode with an active feature. No Canvas API.
 export {
   type EditHandleStyle,
+  type VertexRingStyle,
+  type HandleHighlightInput,
   DEFAULT_EDIT_HANDLE_STYLE,
   buildEditHandlePrimitives,
 } from './edit-handles-layer';

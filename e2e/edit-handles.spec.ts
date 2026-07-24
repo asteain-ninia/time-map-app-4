@@ -162,4 +162,80 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       await app.close();
     }
   });
+
+  // 敵対レビュー回帰ロック (FR-80 / FR-82 / 教訓 5.7 / 5.35) — 頂点選択だけが変わる導線。
+  //
+  // 二つの実バグを同時に締める。どちらも「頂点選択は成立しているのに画面が変わらない」
+  // という同じ症状で、単体テストでは踏めない結線側の欠陥:
+  //
+  //   (1) FR-82 頂点選択コンテキスト地物: U22 の頂点分岐は activeFeature を昇格させない
+  //       (FR-82 はアクティブ地物と別状態として定義している) 一方、ハンドル層は
+  //       activeFeature が null なら即 [] を返していた。よって「編集モードで最初に頂点を
+  //       直接クリックする」= 最も素直な導線で、選択は store に入るのにハンドルもリングも
+  //       0 個 = 完全な無反応だった。
+  //   (2) 再描画購読の watch 漏れ: 唯一の再描画購読は selection を一切 watch していな
+  //       かったので、activeFeature が既に不変な状態で選択だけが変わる遷移 (ここでは
+  //       空白クリックによる選択解除) はフレームを更新せず、古いハンドルが残り続けた。
+  //
+  // どちらも実際に描かれたフレーム (__E2E__ プリミティブ数) でしか観測できない。
+  test('アクティブ地物なしで頂点を直接クリックすると所有地物のハンドルが出て、空白クリックで消える', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await expect
+        .poll(async () => page.evaluate(() => typeof (window as unknown as {
+          __E2E__?: unknown;
+        }).__E2E__))
+        .toBe('object');
+
+      await enterAddArea(page);
+      const addLayer = page.getByTestId('add-input-layer');
+      await expect(addLayer).toBeVisible();
+      const ab = await addLayer.boundingBox();
+      expect(ab).not.toBeNull();
+      const a = ab!;
+      const cx = a.x + a.width / 2;
+      const cy = a.y + a.height / 2;
+      const corners: ReadonlyArray<readonly [number, number]> = [
+        [cx - 120, cy - 120],
+        [cx + 120, cy - 120],
+        [cx + 120, cy + 120],
+        [cx - 120, cy + 120],
+      ];
+      for (const [px, py] of corners) await page.mouse.click(px, py);
+      await page.getByTestId('add-complete').click();
+      await page.getByTestId('add-save').click();
+
+      const activeFeature = page.getByTestId('app-active-feature');
+      await expect(activeFeature).toHaveText(/\S/);
+      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+
+      // 編集モードに入ると選択は破棄され (教訓 5.2)、ハンドルは 0。
+      await enterEditMode(page);
+      await expect(activeFeature).toHaveText('');
+      await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
+
+      // (1) アクティブ地物ゼロのまま、頂点を直接クリック。activeFeature は空のままで、
+      //     頂点選択だけが立つ — その所有地物の頂点ハンドルが描かれなければならない。
+      const [vx, vy] = corners[0]!;
+      await page.mouse.click(vx, vy);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText(/\S/);
+      await expect(page.getByTestId('app-active-vertex-owner')).toHaveText(faceId);
+      await expect(activeFeature).toHaveText(''); // 昇格していない = FR-82 の別状態
+      await expect.poll(async () => (await primitiveCounts(page)).handle, {
+        message:
+          '頂点選択の所有地物には頂点ハンドル (と選択リング) が描かれる — 0 なら選択が不可視',
+      }).toBeGreaterThanOrEqual(4);
+
+      // (2) 空白クリックで選択解除。activeFeature も mode も表示制御も不変で、変わるのは
+      //     selection だけ — それでもフレームは更新され、ハンドルは消えなければならない。
+      await page.mouse.click(a.x + 8, a.y + 8);
+      await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      await expect.poll(async () => (await primitiveCounts(page)).handle, {
+        message:
+          '選択解除は再描画されなければならない (selection を watch しないと古いハンドルが残る)',
+      }).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
 });
