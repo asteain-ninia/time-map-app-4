@@ -20,8 +20,8 @@
 import { EDIT_TOOL, type DragSession } from '../../domain/editing/drag-session';
 import { dragDelta } from '../../domain/editing/drag-session';
 import {
+  moveDraggedVertexSet,
   moveFeatureVertices,
-  moveVertexTo,
 } from '../../domain/editing/move';
 import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
 import { createVertex } from '../../domain/vertex';
@@ -70,13 +70,25 @@ export function buildEditSnapshot(
   const store = verticesAt(root, time);
 
   if (session.target.tool === EDIT_TOOL.VertexMove) {
-    const moved = moveVertexTo(session.target.vertexId, store, session.preview);
+    // FR-80: the primary lands on its final (slid / snapped) preview and every companion
+    // rides the SAME vector — ONE snapshot, therefore ONE consistency process and ONE
+    // undo unit (FR-80「単一の編集操作として扱う」). The vector math is the domain's
+    // single source (`moveDraggedVertexSet`), shared verbatim with the live preview store
+    // in active-feature-handles, so what the user saw mid-drag is what commits (教訓 5.29).
+    const moved = moveDraggedVertexSet(
+      session.target.vertexId,
+      session.companionVertexIds,
+      store,
+      session.preview,
+    );
     if (moved === undefined) return buildSnapshot({ vertices: [] });
     // 受け入れ基準12 / FR-31: forward a snap that survived to release as the decided
     // share pair so the apply op collapses the dragged vertex onto its target (the
     // SINGLE U24→U11 hand-off; decideSharePairAtRelease drops a lapsed candidate).
+    // The share pair names the PRIMARY only — companions never snap (see the adapter's
+    // applyMove), so a multi-vertex drag can share at most the grabbed vertex.
     const sharePair = decideSharePairAtRelease(session);
-    return buildSnapshot({ feature, vertices: [moved], sharePair });
+    return buildSnapshot({ feature, vertices: moved, sharePair });
   }
 
   if (session.target.tool === EDIT_TOOL.FeatureMove) {

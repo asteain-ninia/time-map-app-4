@@ -47,6 +47,7 @@ export {
   updateDrag,
   isNoOp,
   dragDelta,
+  movingVertexIds,
   discardDrag,
 } from './drag-session';
 
@@ -67,6 +68,7 @@ export {
   featureVertexIds,
   moveFeatureVertices,
   moveVertexSet,
+  moveDraggedVertexSet,
   moveVertexTo,
 } from './move';
 

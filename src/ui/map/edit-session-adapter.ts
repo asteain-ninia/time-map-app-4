@@ -40,6 +40,7 @@ import {
   constrainSlide,
   decideSnap,
   discardDrag,
+  movingVertexIds,
   updateDrag,
   type BoundaryEdge,
   type CandidateTerminal,
@@ -54,7 +55,9 @@ import {
 } from '../../domain/editing';
 import {
   HIT_KIND,
+  companionVertexIdsFor,
   type HitResult,
+  type SelectionState,
 } from '../../domain/selection';
 import type { ConsistencyPorts } from '../../domain/consistency';
 import type { WorldCoordinate } from '../../domain/coordinate';
@@ -113,6 +116,17 @@ export interface EditSessionAdapterDeps<S> {
   readonly featureMoveAllowed?: (
     hit: Extract<HitResult, { kind: typeof HIT_KIND.FeatureBody }>,
   ) => boolean;
+  /**
+   * The LIVE U22 vertex selection (FR-80 複数頂点同時移動), read fresh at PRESS. When a
+   * press grabs a vertex that is IN this selection (and the selection belongs to the
+   * grabbed feature — FR-81 一owner), the whole set becomes ONE rigid drag: the grabbed
+   * vertex is the primary and the rest ride along as `companionVertexIds`. The rule
+   * itself is U22's {@link companionVertexIdsFor}, not re-derived here (教訓 5.29).
+   *
+   * Omitted (unit tests / hosts with no selection truth) ⇒ every vertex press is the
+   * legacy single-vertex move; nothing else about the gesture changes.
+   */
+  readonly vertexSelection?: () => SelectionState;
   /** The anchor time the edit confirms at (FR-59). */
   readonly anchorTime: () => TimePoint;
   /** The current domain state to validate the release against. */
@@ -194,11 +208,21 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
   function targetFromHit(hit: HitResult): DragTarget | null {
     if (hit.kind === HIT_KIND.Vertex) {
       const ringId = deps.ringIdForVertex?.(hit);
+      // FR-80: a press ON a vertex of the current selection drags the WHOLE set as one
+      // rigid body / one edit operation. The companions are COMMITTED ids (they came out
+      // of the U22 selection, which only ever holds drawn, committed vertices), which is
+      // exactly what the HB4-2 「moves with this drag」 obstacle filter requires.
+      const selection = deps.vertexSelection?.();
+      const companionVertexIds =
+        selection === undefined
+          ? undefined
+          : companionVertexIdsFor(selection, hit.featureId, hit.vertexId);
       return {
         tool: EDIT_TOOL.VertexMove,
         featureId: hit.featureId,
         vertexId: hit.vertexId,
         ...(ringId !== undefined ? { ringId } : {}),
+        ...(companionVertexIds !== undefined ? { companionVertexIds } : {}),
       };
     }
     if (hit.kind === HIT_KIND.FeatureBody) {
@@ -237,6 +261,35 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
    * taken only when the deps are injected AND the gesture drags a single vertex with
    * a known id (constrainSlide / decideSnap are vertex-relative; feature-move shifts
    * every vertex by one vector and has no single dragged point to slide / snap).
+   *
+   * FR-80 × FR-89/FR-31 — WHO SLIDES AND SNAPS IN A MULTI-VERTEX DRAG (暫定決定, the
+   * requirements fix the move ("同一ベクトル") but not the constraint semantics): the
+   * PRIMARY (the vertex the user grabbed) alone is the slide / snap subject, and the
+   * companions are a rigid body carried by the primary's resulting displacement. This
+   * is the only reading that keeps 「選択セット全体を同一ベクトル」 true — per-vertex
+   * constraints would move different vertices by different amounts and shear the
+   * selection — and it keeps `draggedVertexId` the single truth for snap / 共有化
+   * (教訓 5.29).
+   *
+   * KNOWN GAP — NOT A DECISION THIS LAYER MAY MAKE ALONE (FR-80 fix-forward review, HIGH):
+   * `neighboursAt` is queried around the PRIMARY's preview only, and `constrainSlide`
+   * constrains that one point, so in an N-vertex drag N−1 vertices pass through NO
+   * FR-28 collision and NO FR-89 containment check at all. A companion CAN be committed
+   * inside a neighbouring terminal (grab v0 of a 2-vertex selection and drag east; the
+   * query never sees the terminal that v1 lands in). FR-28/FR-89 are must 要件, and the
+   * live edit binding's `detectSpatial` is `() => []` (consistency-binding
+   * createLiveEditBinding), so nothing behind this catches it either — for SINGLE-vertex
+   * drags `constrainSlide` alone is what upholds the requirement, and that is exactly
+   * what the companions skip.
+   *
+   * This is NOT closable inside this adapter: honouring both 「同一ベクトル」 and the
+   * exclusion requires constraining the set's DELTA — the intersection over all moving
+   * vertices of the admissible motions along the gesture vector — which is a
+   * `constrainSlide` signature change (it takes one point today), plus a neighbour query
+   * over the union of the moving vertices' neighbourhoods (whose per-frame cost has to be
+   * designed, not stumbled into). Until that lands the guarantee is: the GRABBED vertex is
+   * excluded; the rest ride along unchecked. Recorded as an open decision rather than
+   * silently blessed — 教訓 5.7 forbids claiming a rule the UI does not actually run.
    */
   function applyMove(live: DragSession, preview: WorldCoordinate): DragSession {
     const canSlideSnap =
@@ -259,14 +312,16 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       candidates: neighbours.candidates,
       ...(neighbours.containment !== undefined ? { containment: neighbours.containment } : {}),
     });
-    // Screen-proximity snap on the CONSTRAINED position (FR-31): the dragged vertex
-    // itself is excluded so it never snaps to its own pre-move id.
+    // Screen-proximity snap on the CONSTRAINED position (FR-31): every vertex that MOVES
+    // with this gesture is excluded, so the primary never snaps to its own pre-move id —
+    // nor (FR-80) onto one of its own companions, which would collapse the selection onto
+    // itself and share two vertices of ONE feature into a single point.
     const snap: SnapDecision | null = decideSnap({
       draggedPosition: slid.position,
       candidates: neighbours.snapCandidates,
       snapDistancePx: deps.snapDistancePx!(),
       toScreen: deps.worldToScreen!,
-      exclude: new Set([live.draggedVertexId!]),
+      exclude: movingVertexIds(live),
     });
     return updateDrag(live, {
       preview: slid.position,

@@ -179,6 +179,41 @@ export function addVertices(
   return withVertexSet(state, ownerFeatureId, next);
 }
 
+/**
+ * FR-80 複数頂点同時移動 — the OTHER selected vertices that ride along when the vertex
+ * `vertexId` of `featureId` is grabbed and dragged, or undefined when the gesture is a
+ * plain single-vertex move.
+ *
+ * THE RULE (one place, so the live drag path and any future caller cannot drift —
+ * 教訓 5.29): the set rides along ONLY when the grabbed vertex is itself IN the current
+ * selection AND that selection is owned by the feature being grabbed (FR-81 一owner).
+ * Grabbing an UNSELECTED vertex — even while other vertices are selected — is therefore
+ * a plain single-vertex move, matching the release-time reducer, whose VertexDrag branch
+ * is only ever armed by a press ON a selected vertex.
+ *
+ * WHY THE OWNER CHECK IS LOAD-BEARING, not defensive: a vertex id is a key in the GLOBAL
+ * vertex store and FR-30 共有頂点 means a neighbouring feature cites the SAME id. Without
+ * it, selecting 地物 B's vertices and then grabbing 地物 A's copy of a shared vertex would
+ * drag B's whole selection along. `vertexOwner` is `FeatureId | null` — a selection can
+ * never span two owners — so a "selection across several features" case cannot arise here.
+ *
+ * The primary is EXCLUDED from the result (it is named separately by the gesture), and an
+ * otherwise-empty result is reported as undefined: "no companions" is ONE value (教訓 5.18).
+ */
+export function companionVertexIdsFor(
+  state: SelectionState,
+  featureId: FeatureId,
+  vertexId: VertexId,
+): ReadonlySet<VertexId> | undefined {
+  if (state.vertexOwner !== featureId) return undefined;
+  if (!state.vertexIds.has(vertexId)) return undefined;
+  const out = new Set<VertexId>();
+  for (const id of state.vertexIds) {
+    if (id !== vertexId) out.add(id);
+  }
+  return out.size === 0 ? undefined : out;
+}
+
 /** Set the active feature (0/1; pass `null` to clear). */
 export function withActiveFeature(
   state: SelectionState,

@@ -49,6 +49,7 @@
 // live camera). The SAME live-lookup helpers the hit-test / draw / snapshot use resolve
 // the geometry, so what slides == what is drawn == what is committed (単一真実源, 教訓 5.29).
 
+import { moveDraggedVertexSet, movingVertexIds as movingVertexIdsOf } from '../../domain/editing';
 import type {
   BoundaryEdge,
   CandidateTerminal,
@@ -198,25 +199,45 @@ function resolveTerminalGeometry(
 }
 
 /**
+ * Where each MOVING vertex sits THIS FRAME, keyed by id (FR-80). Built by the SAME
+ * `moveDraggedVertexSet` the live preview store and the release snapshot use, so the
+ * shape the constraint is computed against is byte-for-byte the shape that is drawn and
+ * committed (単一真実源, 教訓 5.29/5.30).
+ */
+type MovingPositions = ReadonlyMap<string, WorldCoordinate>;
+
+/**
  * A ring set rebuilt AT THE PREVIEW: its resolved rings with every MOVING vertex
- * replaced by the drag's preview position (HB4-2).
+ * replaced by ITS OWN position this frame (HB4-2 / FR-80).
+ *
+ * PER-VERTEX, NEVER "all moving vertices → the primary's preview" (FR-80 fix-forward):
+ * with a multi-vertex selection the parent ring can carry SEVERAL moving vertices (a
+ * rectangle select routinely grabs both hole and territory vertices of one leaf), and
+ * substituting the primary's preview for each of them collapsed them onto ONE point —
+ * a self-intersecting / degenerate parent polygon that is not the shape the drag
+ * actually produces. `constrainSlide` then classified the dragged point against a
+ * fiction: either no crossing was found and the drag froze at the press point (the
+ * `pos = start` fallback), or a companion was let out of the real parent region
+ * (FR-89 violation). The positions therefore come from {@link MovingPositions}.
  *
  * USED ONLY for the INVERSE {@link ParentContainment} region — the parent ring the
  * dragged hole/enclave vertex must stay INSIDE. When the parent ring itself references
- * the dragged vertex (診断 H3), the parent boundary deforms with the drag, so the wall
+ * a moving vertex (診断 H3), the parent boundary deforms with the drag, so the wall
  * the vertex must stay within is the parent's NEW loop, not its stale committed one.
  *
  * It is deliberately NOT used to build {@link CandidateTerminal} polygons any more — see
  * the candidate assembly in {@link createNeighboursQuery} for why a deforming neighbour
  * contributes NO containment polygon at all (HB4-2 review #1/#2).
  *
- * `preview` MUST already be on the world quantization grid: {@link constrainSlide}
- * quantizes its target before every point-in-polygon test, so a raw (sub-grid) preview
- * spliced into the ring puts the polygon's own vertex up to half a grid cell away from
- * the point being classified, and the exact-arithmetic predicate then answers Inside /
- * Outside where the true answer is Boundary (HB4-2 review #1). One grid, one truth.
+ * The PRIMARY's position in that map MUST already be on the world quantization grid:
+ * {@link constrainSlide} quantizes its target before every point-in-polygon test, so a
+ * raw (sub-grid) preview spliced into the ring puts the polygon's own vertex up to half
+ * a grid cell away from the point being classified, and the exact-arithmetic predicate
+ * then answers Inside / Outside where the true answer is Boundary (HB4-2 review #1).
+ * One grid, one truth. (Companions are never the classified point, so they only need to
+ * be where the commit will put them.)
  *
- * The substituted point is expressed in the RING's ±360° longitude frame (nearest
+ * Each substituted point is expressed in the RING's ±360° longitude frame (nearest
  * branch to the coordinate it replaces), so a neighbour stored on the far side of the
  * antimeridian keeps a coherent outline instead of being torn 360° apart (R3).
  *
@@ -226,10 +247,9 @@ function resolveTerminalGeometry(
 function previewPolygon(
   polygon: GeoPolygon,
   polygonVertexIds: readonly (readonly VertexId[])[] | undefined,
-  moving: MovingVertexIds,
-  preview: WorldCoordinate,
+  movingPositions: MovingPositions,
 ): GeoPolygon {
-  if (polygonVertexIds === undefined || moving.size === 0) return polygon;
+  if (polygonVertexIds === undefined || movingPositions.size === 0) return polygon;
   let anyChanged = false;
   const rings: GeoRing[] = [];
   for (let r = 0; r < polygon.length; r += 1) {
@@ -244,8 +264,9 @@ function previewPolygon(
     for (let i = 0; i < ring.length; i += 1) {
       const at = ring[i]!;
       const id = ids[i];
-      if (id !== undefined && moving.has(id)) {
-        next.push(alignedToBranch(preview, at));
+      const movedTo = id === undefined ? undefined : movingPositions.get(id);
+      if (movedTo !== undefined) {
+        next.push(alignedToBranch(movedTo, at));
         ringChanged = true;
       } else {
         next.push(at);
@@ -256,6 +277,33 @@ function previewPolygon(
   }
   return anyChanged ? rings : polygon;
 }
+
+/**
+ * The position of every vertex that MOVES this frame, by the SAME rule the preview store
+ * and the release snapshot apply (`moveDraggedVertexSet`): the primary at `previewOnGrid`,
+ * each companion at its own committed position plus the primary's displacement (FR-80
+ * 同一ベクトル). One implementation of the move, consumed everywhere (教訓 5.29/5.30).
+ *
+ * A gesture with NO resolvable primary body — an EDGE-ADD, whose reserved vertex is not
+ * in the committed store yet — still previews that one id at `previewOnGrid`, which is
+ * exactly the pre-FR-80 behaviour (and it names no committed ring, so it substitutes
+ * nothing). A feature-move names no moving vertex at all: the empty map.
+ */
+function movingPositionsFor(
+  session: DragSession,
+  store: VertexStore,
+  previewOnGrid: WorldCoordinate,
+): MovingPositions {
+  const primary = session.draggedVertexId;
+  if (primary === undefined) return EMPTY_MOVING_POSITIONS;
+  const moved = moveDraggedVertexSet(primary, session.companionVertexIds, store, previewOnGrid);
+  if (moved === undefined) return new Map([[primary as string, previewOnGrid]]);
+  const out = new Map<string, WorldCoordinate>();
+  for (const v of moved) out.set(v.id, v.coordinate);
+  return out;
+}
+
+const EMPTY_MOVING_POSITIONS: MovingPositions = new Map<string, WorldCoordinate>();
 
 /**
  * `p` expressed in the ±360° longitude branch NEAREST to `ref`. A drag frame moves a
@@ -317,7 +365,7 @@ function containmentFor(
   ringId: RingId | undefined,
   store: VertexStore,
   moving: MovingVertexIds,
-  preview: WorldCoordinate,
+  movingPositions: MovingPositions,
 ): ParentContainment | undefined {
   if (ringId === undefined) return undefined;
   const rings = feature.shape.rings;
@@ -333,13 +381,15 @@ function containmentFor(
   if (parent === undefined) return undefined;
   const parentRing = ringCoordinates(parent, store);
   if (parentRing === undefined || parentRing.length < 3) return undefined;
-  // HB4-2 (診断 H3, the literal 自辺 case): when the PARENT ring itself references the
-  // dragged vertex — a hole ring that touches the territory it is punched into — the
-  // parent boundary moves with the drag too. Apply the identical per-vertex rule as for
-  // other terminals: incident parent edges are not obstacles, and the parent outline is
-  // taken at its PREVIEW shape, not its stale committed one.
+  // HB4-2 (診断 H3, the literal 自辺 case): when the PARENT ring itself references a
+  // vertex that moves — a hole ring that touches the territory it is punched into, or
+  // (FR-80) a companion of the grabbed vertex sitting on the parent ring — the parent
+  // boundary moves with the drag too. Apply the identical per-vertex rule as for other
+  // terminals: incident parent edges are not obstacles, and the parent outline is taken
+  // at its PREVIEW shape (each moving vertex at ITS OWN new position), not its stale
+  // committed one and not collapsed onto the primary.
   const parentIds: readonly (readonly VertexId[])[] = [parent.vertexIds];
-  const polygon = previewPolygon([parentRing], parentIds, moving, preview);
+  const polygon = previewPolygon([parentRing], parentIds, movingPositions);
   return {
     featureId: feature.id,
     polygon,
@@ -501,10 +551,14 @@ export function createNeighboursQuery(
     // confirm path, not by this per-frame query. When FR-80 widens this Set, widen it
     // with COMMITTED vertex ids; edge-add needs its own explicit decision rather than
     // falling out of this one.
-    const movingVertexIds: MovingVertexIds =
-      session.draggedVertexId === undefined
-        ? NO_MOVING_VERTICES
-        : new Set<string>([session.draggedVertexId]);
+    //
+    // FR-80 (now): the widening is `movingVertexIdsOf`, and it honours that scope note —
+    // companions come from the U22 selection set, which holds only DRAWN, COMMITTED
+    // vertices, and an edge-add's reserved id can never acquire companions (only a
+    // VertexMove target carries them). So every id added here really does name geometry
+    // that deforms this frame, which is precisely the licence to stop treating its
+    // incident edges as walls.
+    const movingVertexIds: MovingVertexIds = movingVertexIdsOf(session);
 
     // The query rectangle: a point around the preview, widened by the snap world
     // margin (so a vertex within the screen snap distance but outside the terminal
@@ -614,7 +668,14 @@ export function createNeighboursQuery(
     const ringId =
       'ringId' in session.target ? session.target.ringId : undefined;
     let containment: ParentContainment | undefined;
-    if (draggedFeature !== undefined && draggedFeature.kind === FEATURE_KIND.Leaf) {
+    // `ringId === undefined` (point / line / feature-move) can never produce a
+    // containment — checking it here as well keeps the per-frame `movingPositionsFor`
+    // allocation off the common non-leaf path (containmentFor's own guard is unchanged).
+    if (
+      ringId !== undefined &&
+      draggedFeature !== undefined &&
+      draggedFeature.kind === FEATURE_KIND.Leaf
+    ) {
       // ON THE GRID (HB4-2 review #1): the preview spliced into the parent ring must be
       // the SAME value `constrainSlide` will classify against it, and `constrainSlide`
       // quantizes its target first. Feeding the raw sub-grid preview here put the
@@ -628,7 +689,7 @@ export function createNeighboursQuery(
         ringId,
         store,
         movingVertexIds,
-        quantizeCoordinate(preview),
+        movingPositionsFor(session, store, quantizeCoordinate(preview)),
       );
     }
 

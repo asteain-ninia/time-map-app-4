@@ -343,6 +343,18 @@ function onPointerUp(
       // Confirmed move: emit ONE spec covering the WHOLE selection set ×同一
       // ベクトル (FR-80 / FR-94). The reducer does not change coordinates; U24
       // applies the move as a single edit/undo unit.
+      //
+      // NOT THE LIVE RULE — DO NOT WIRE THIS WITHOUT RECONCILING IT (FR-80 fix-forward
+      // review, LOW): the FR-80 move that actually runs is U24's drag session
+      // (`domain/editing/move.moveDraggedVertexSet`, driven by `edit-session-adapter`),
+      // and its vector is the PRIMARY VERTEX's displacement — target − the grabbed
+      // vertex's committed position — NOT the pointer displacement `deltaBetween(origin,
+      // at)` used here. The two differ by the grab offset (up to the handle hit radius).
+      // This spec is currently UNREACHABLE (a non-empty press never enters
+      // `live-selection-port`'s drag branch), so nothing consumes the discrepancy today;
+      // wiring it as-is would make the SAME gesture move the set by a different amount
+      // depending on the path. Either delete this emit or feed it the primary's committed
+      // position — 単一真実源 forbids keeping two definitions of one rule alive.
       const spec: SimultaneousMoveSpec = {
         vertexIds: new Set(cleared.vertexIds),
         delta,

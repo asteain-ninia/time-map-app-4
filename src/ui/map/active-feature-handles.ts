@@ -38,10 +38,11 @@ import { computeHandles, EMPTY_HANDLES, type EditHandles } from '../../domain/ed
 import {
   EDIT_TOOL,
   dragDelta,
+  movingVertexIds,
   type DragSession,
 } from '../../domain/editing/drag-session';
 import { addVertexToLeafRing, addVertexToLine } from '../../domain/editing/edit-ops';
-import { moveFeatureVertices, moveVertexTo } from '../../domain/editing/move';
+import { moveDraggedVertexSet, moveFeatureVertices } from '../../domain/editing/move';
 import {
   FEATURE_KIND,
   type Feature,
@@ -57,7 +58,13 @@ import {
 } from '../../domain/selection';
 import { RING_KIND } from '../../domain/ring';
 import type { TimePoint } from '../../domain/time/time-point';
-import { createVertex, getVertex, setVertex, type VertexStore } from '../../domain/vertex';
+import {
+  createVertex,
+  getVertex,
+  setVertex,
+  setVertices,
+  type VertexStore,
+} from '../../domain/vertex';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
 import {
@@ -117,19 +124,31 @@ export function previewVertexStore(
   session: DragSession,
 ): VertexStore {
   if (session.target.tool === EDIT_TOOL.VertexMove) {
-    const moved = moveVertexTo(session.target.vertexId, store, session.preview);
-    return moved === undefined ? store : setVertex(store, moved);
+    // FR-80: the primary AND its companions preview together, by the SAME vector the
+    // release snapshot will commit (`moveDraggedVertexSet` is the one implementation —
+    // 教訓 5.29/5.30), so a multi-vertex drag shows the whole selection following the
+    // cursor instead of one vertex tearing away from the rest.
+    const moved = moveDraggedVertexSet(
+      session.target.vertexId,
+      session.companionVertexIds,
+      store,
+      session.preview,
+    );
+    if (moved === undefined) return store;
+    // ONE store copy for the WHOLE set (`setVertices`), not one per moved vertex: this
+    // runs on EVERY pointermove frame against `verticesAt(root, time)` — the entire
+    // project's vertices at that time (99,314 for derle) — so folding the per-vertex
+    // `setVertex` here cost O(選択頂点数 × 全頂点数) map-entry copies per frame and blew
+    // the 16.6ms budget for any sizeable FR-80 selection (FR-110's marker cap is applied
+    // AFTER this, so it does not protect it).
+    return setVertices(store, moved);
   }
   if (session.target.tool === EDIT_TOOL.FeatureMove) {
     const delta = dragDelta(session);
-    let next = store;
-    for (const v of moveFeatureVertices(feature, store, {
-      dLon: delta.dLon,
-      dLat: delta.dLat,
-    })) {
-      next = setVertex(next, v);
-    }
-    return next;
+    return setVertices(
+      store,
+      moveFeatureVertices(feature, store, { dLon: delta.dLon, dLat: delta.dLat }),
+    );
   }
   // EdgeAdd (FR-87): the new vertex is materialised on the edge at confirm time, but the
   // in-flight drag previews it at `session.preview` so a NEW vertex handle follows the
@@ -421,10 +440,14 @@ function highlightFor(
           : { draggingVertexIds: selection.draggingVertexIds }),
       }
     : NO_HIGHLIGHT;
-  const liveVertex = live?.draggedVertexId;
-  if (liveVertex === undefined) return base;
+  if (live === null || live.draggedVertexId === undefined) return base;
+  // FR-80: the ring goes on EVERY vertex this gesture is moving — the grabbed one plus
+  // its companions — from `movingVertexIds`, the SAME union the slide/snap obstacle
+  // filter and (via moveDraggedVertexSet) the preview positions are derived from. So an
+  // orange ring appears on a vertex if and only if that vertex is actually in motion and
+  // is actually drawn at its preview position (単一真実源, 教訓 5.29).
   const dragging = new Set<VertexId>(base.draggingVertexIds ?? []);
-  dragging.add(liveVertex);
+  for (const id of movingVertexIds(live)) dragging.add(id);
   return { ...base, draggingVertexIds: dragging };
 }
 

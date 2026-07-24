@@ -52,6 +52,22 @@ export type DragTarget =
       readonly vertexId: VertexId;
       /** The ring the vertex belongs to (leaf only). */
       readonly ringId?: RingId;
+      /**
+       * FR-80 複数頂点同時移動: the OTHER selected vertices that move RIGIDLY with
+       * `vertexId` by the same vector, as ONE edit operation. Excludes `vertexId`
+       * itself (the primary is named once, by `vertexId` — 教訓 5.29 単一真実源).
+       *
+       * COMMITTED IDS ONLY (HB4-2 SCOPE): these ids widen the per-frame "moves with
+       * this drag" set that {@link createNeighboursQuery} uses to drop non-obstacle
+       * edges. A RESERVED id (an edge-add's not-yet-materialised vertex) must never
+       * appear here — it names no committed ring, and mixing reservations into that
+       * set would start erasing static edges of neighbouring features.
+       *
+       * The primary alone stays the single truth for snap / slide / 共有化候補
+       * ({@link DragSession.draggedVertexId}); companions never snap or slide on
+       * their own (see the adapter's applyMove).
+       */
+      readonly companionVertexIds?: ReadonlySet<VertexId>;
     }
   | {
       readonly tool: typeof EDIT_TOOL.EdgeAdd;
@@ -89,6 +105,13 @@ export interface DragSession {
   readonly target: DragTarget;
   /** The vertex being dragged for vertex-move / edge-add (undefined for feature-move). */
   readonly draggedVertexId?: VertexId;
+  /**
+   * FR-80: the COMMITTED vertex ids that ride along with {@link draggedVertexId} by the
+   * same vector (never containing the primary itself). Absent when the gesture moves a
+   * single vertex — the overwhelmingly common case, so every existing session value and
+   * every reader that ignores this field behaves exactly as before.
+   */
+  readonly companionVertexIds?: ReadonlySet<VertexId>;
   readonly start: WorldCoordinate;
   readonly preview: WorldCoordinate;
   readonly slide: SlideState;
@@ -119,13 +142,60 @@ export function beginDrag(target: DragTarget, pressAt: WorldCoordinate): DragSes
   // decideSharePairAtRelease can promote a surviving snap to a share pair (受け入れ
   // 基準6 最終項 / FR-89). Feature-move has no single dragged vertex (undefined).
   if (target.tool === EDIT_TOOL.VertexMove) {
-    return { ...base, draggedVertexId: target.vertexId };
+    // FR-80: normalise the companion set ONCE, here, so no downstream reader has to
+    // re-check the two invariants it depends on (教訓 5.29): the primary is never also
+    // a companion (it is already named by `draggedVertexId`, and double-counting it
+    // would move it twice through the rigid-delta path), and an EMPTY set is absent
+    // rather than an empty object — "no companions" is one value, not two.
+    const companions = withoutPrimary(target.companionVertexIds, target.vertexId);
+    return companions === undefined
+      ? { ...base, draggedVertexId: target.vertexId }
+      : { ...base, draggedVertexId: target.vertexId, companionVertexIds: companions };
   }
   if (target.tool === EDIT_TOOL.EdgeAdd) {
     return { ...base, draggedVertexId: target.newVertexId };
   }
   return base;
 }
+
+/**
+ * `ids` without `primary`, or undefined when nothing is left (FR-80 normalisation).
+ * Returns a defensive COPY so a caller's live selection set cannot mutate under the
+ * transient session mid-gesture (教訓 5.17 値オブジェクト).
+ */
+function withoutPrimary(
+  ids: ReadonlySet<VertexId> | undefined,
+  primary: VertexId,
+): ReadonlySet<VertexId> | undefined {
+  if (ids === undefined || ids.size === 0) return undefined;
+  const out = new Set<VertexId>();
+  for (const id of ids) {
+    if (id !== primary) out.add(id);
+  }
+  return out.size === 0 ? undefined : out;
+}
+
+/**
+ * Every vertex id that MOVES with this drag frame (FR-80 / HB4-2 D56): the primary
+ * dragged vertex plus its companions. The ONE place this union is formed, so the
+ * slide/snap obstacle filter, the preview store and the drag-ring highlight can never
+ * disagree about which points are in motion (教訓 5.29 単一真実源).
+ *
+ * Empty for a feature-move (no single dragged vertex). For an EDGE-ADD it holds only
+ * the RESERVED id, which no committed ring references — unchanged from before, and the
+ * reason companions are committed-only (see {@link DragTarget} companionVertexIds).
+ */
+export function movingVertexIds(session: DragSession): ReadonlySet<VertexId> {
+  const primary = session.draggedVertexId;
+  if (primary === undefined) return EMPTY_VERTEX_IDS;
+  const companions = session.companionVertexIds;
+  if (companions === undefined || companions.size === 0) return new Set<VertexId>([primary]);
+  const out = new Set<VertexId>(companions);
+  out.add(primary);
+  return out;
+}
+
+const EMPTY_VERTEX_IDS: ReadonlySet<VertexId> = new Set<VertexId>();
 
 // --- MOVE: update the transient preview (教訓5.22 軽量・破壊更新しない) --------
 

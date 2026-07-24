@@ -38,6 +38,7 @@ export {
   replaceVertices,
   toggleVertex,
   addVertices,
+  companionVertexIdsFor,
   withActiveFeature,
   withTransient,
   discardTransient,

@@ -831,9 +831,14 @@ export function App(): JSX.Element {
           // armed on the mere press, so even a zero-move click turned the set orange. It is
           // also never observable here: the live selection port drives PointerDown and
           // PointerUp inside ONE `end()` call, so the store only ever sees the IDLE
-          // transient. FR-80 多頂点同時移動 is still supported by the builder's own
-          // `draggingVertexIds` input — it should be fed by whoever implements the live
-          // multi-vertex drag, from that gesture's truth.
+          // transient.
+          //
+          // FR-80 多頂点同時移動 (now live) still does NOT change that: the builder derives
+          // the ring set from the GESTURE's own truth — `movingVertexIds(session)`, the same
+          // union that positions the preview — so every orange vertex is one that is really
+          // in motion and really drawn at its preview position. Feeding the selection set
+          // from here would re-introduce exactly the defect above (rings on vertices that a
+          // mere press, or a single-vertex drag, leaves standing still).
           {
             selectedVertexIds: s.selection.vertexIds,
             ownerFeatureId: s.selection.vertexOwner,
@@ -1110,6 +1115,14 @@ export function App(): JSX.Element {
       featureMoveAllowed: (hit) =>
         store.getState().activeTool === TOOL_ID.EditMove &&
         store.getState().selection.activeFeature === hit.featureId,
+      // FR-80 複数頂点同時移動の結線: the LIVE U22 vertex selection, read fresh at PRESS.
+      // Grabbing a vertex that is IN the selection turns the drag into ONE rigid move of
+      // the whole set (the adapter asks U22's own companionVertexIdsFor — the rule is not
+      // duplicated here). Without this dep the live path could only ever move the single
+      // grabbed vertex, so 矩形/Shift で選んだ複数頂点はドラッグしても1点しか動かなかった
+      // (教訓 5.7 — the reducer's release-time SimultaneousMoveSpec was unreachable because
+      // a非空 press never enters live-selection-port's drag branch).
+      vertexSelection: () => store.getState().selection,
       anchorTime: () => store.getState().currentTime,
       currentState: () => store.getState().domain,
       ports: editBinding.ports,

@@ -59,6 +59,7 @@ export {
   getVertex,
   hasVertex,
   setVertex,
+  setVertices,
   removeVertex,
 } from './vertex';
 
@@ -648,6 +649,7 @@ export {
   replaceVertices,
   toggleVertex,
   addVertices,
+  companionVertexIdsFor,
   withActiveFeature,
   withTransient,
   discardTransient,
@@ -720,6 +722,7 @@ export {
   updateDrag,
   isNoOp,
   dragDelta,
+  movingVertexIds,
   discardDrag,
   type FeatureEditResult,
   type SelectionDelta,
@@ -734,6 +737,7 @@ export {
   featureVertexIds,
   moveFeatureVertices,
   moveVertexSet,
+  moveDraggedVertexSet,
   moveVertexTo,
   type FeatureSnapshot,
   RELEASE_OUTCOME,

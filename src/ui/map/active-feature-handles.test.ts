@@ -703,6 +703,51 @@ describe('buildActiveFeatureHandlePrimitives (FR-80/82 selected-vertex highlight
     }
   });
 
+  it('rings EVERY vertex a LIVE multi-vertex session is moving, at its preview position (FR-80)', () => {
+    const { root } = leafProject();
+    // 掴んだのは leaf-1-0 (0,0)、随伴は leaf-1-3 (0,10)。プレビュー (3,4) ⇒ 変位 (+3,+4)。
+    const session = updateDrag(
+      beginDrag(
+        {
+          tool: EDIT_TOOL.VertexMove,
+          featureId: asFeatureId('leaf-1'),
+          vertexId: asVertexId('leaf-1-0'),
+          companionVertexIds: new Set([asVertexId('leaf-1-3')]),
+        } as const,
+        { lon: 0, lat: 0 },
+      ),
+      { preview: { lon: 3, lat: 4 } },
+    );
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      session,
+    );
+    const vh = vertexHandles(prims);
+    const ringed = vh.filter((h) => h.ring !== undefined);
+    // 主頂点 (3,4) と随伴頂点 (0,10)+(3,4) = (3,14) の 2 つだけがドラッグ中リングを持つ。
+    expect(ringed).toHaveLength(2);
+    for (const h of ringed) {
+      expect(h.ring!.stroke).toBe(DEFAULT_EDIT_HANDLE_STYLE.draggingRing.stroke);
+    }
+    // リングは「今動いている頂点」= プレビュー位置に描かれる (リングと位置は同一真実源)。
+    expect(ringed.map((h) => ({ lon: h.at.lon, lat: h.at.lat })).sort((a, b) => a.lat - b.lat))
+      .toEqual([
+        { lon: 3, lat: 4 },
+        { lon: 3, lat: 14 },
+      ]);
+    // 非選択の 2 頂点はコミット位置のまま、リングなし。
+    expect(vh.filter((h) => h.ring === undefined).map((h) => ({ lon: h.at.lon, lat: h.at.lat })))
+      .toEqual(
+        expect.arrayContaining([
+          { lon: 10, lat: 0 },
+          { lon: 10, lat: 10 },
+        ]),
+      );
+  });
+
   it('ignores selected ids that belong to another feature (no phantom rings)', () => {
     const { root } = leafProject();
     const prims = buildActiveFeatureHandlePrimitives(

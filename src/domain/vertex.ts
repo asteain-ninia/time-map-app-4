@@ -78,6 +78,27 @@ export function setVertex(store: VertexStore, vertex: Vertex): VertexStore {
   return { byId };
 }
 
+/**
+ * Insert or replace MANY vertices in ONE pass, returning a new store (the input is
+ * never mutated — 教訓 5.17). Copying the backing map ONCE is the whole point: a live
+ * drag preview writes every moving vertex per frame (FR-80 複数頂点同時移動 / FR-88
+ * 地物移動), and folding {@link setVertex} over the set re-copied the WHOLE store per
+ * moved vertex — O(moved × store) per frame, i.e. ~10^7 entry copies for a 500-vertex
+ * selection over the derle-scale store (99,314 頂点), far past the 60FPS budget. The
+ * per-vertex helper stays for single writes; this is the bulk seam every fold used.
+ *
+ * Returns the store BY REFERENCE when `vertices` is empty (教訓 5.18: "nothing moved"
+ * is a real value, and it must not allocate).
+ */
+export function setVertices(store: VertexStore, vertices: Iterable<Vertex>): VertexStore {
+  let byId: Map<VertexId, Vertex> | undefined;
+  for (const vertex of vertices) {
+    byId ??= new Map(store.byId);
+    byId.set(vertex.id, vertex);
+  }
+  return byId === undefined ? store : { byId };
+}
+
 /** Remove a vertex by ID, returning a new store. */
 export function removeVertex(store: VertexStore, id: VertexId): VertexStore {
   if (!store.byId.has(id)) {
