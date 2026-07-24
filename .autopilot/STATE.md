@@ -18,8 +18,24 @@
 | HB5-1 | サイドバータブ見出し=「錨一覧」（旧「歴史アンカー一覧（年表）」） | 実装済（e56ae17） | 見出し3文字案で良いか |
 | HB5-3 | 錨一覧クリックの視点フィット: padding 0.2・zoomMin/Max クランプ・地図クリックでは不動 | 実装済（e56ae17） | パディング率・発動条件で良いか |
 | PAL-1 | パレット変更の自動再配色は**現在時刻からの past-edit**（rewriteFeatureColorAtTime の一貫時刻意味論。過去の錨の色は不変） | 実装済（68806ee） | 多錨 auto 地物で「全時系列を塗り直す」べきか、現在時刻からで良いか（全時系列は錨ごと隣接評価が要る別設計） |
+| N725-1 | 選択頂点=シアン #00e5ff 外周リング（円盤+3px/幅2）・ドラッグ中=橙 #ff8a00（+5.5px/幅2.5）。塗り置換でなく合成方式（共有琥珀と両立）。非activeオーナーの頂点選択時は頂点ハンドルのみ描画。cap超過でもリング付き頂点は残す | 実装済（86948d7） | 色・半径・方式で良いか。FR-82「点線アウトライン」本体は未実装（申し送り） |
+| N725-2 | リング編集は2フェーズ導線（1クリック目=対象面選択のみ→以降のクリックで描画/削除）。FR-22「最初のクリック位置で自動判定」は*リングの最初の頂点*と解釈 | 実装済（8950639） | 2フェーズで良いか。drill は融合クリックのまま（一貫性を揃えるか） |
+| N725-3 | ring-edit の gridSnap はツール切替を跨いで保持されるユーザー設定（reset 契約の対象外と決定・明文化済） | 実装済（8950639） | 保持で良いか（一時状態に戻すか） |
+| N725-4 | グリッドラベル最小画面間隔 48px（既定10°の初期ズームは20°刻み表示・zoom1.2-1.6帯は60°刻み）。halo=gridOpacity 線形比例。端ラベルは重なり回避>完全画面内 | 実装済（86948d7） | 密度・比例則で良いか |
+| N725-5 | FR-82 要件文の「アクティブ地物=太いシアン」は陳腐化（実装は FR-97 整合の per-feature selectedColor。実挙動が正と判断） | 要件側未修正 | 要件定義書の文言を実装に合わせて更新するか |
+| N725-6 | 視覚記録スクショ（screenshots/ 直下・__visual__/b-*）は e2e 実行毎に再生成されチャーン源。今夜は revert 儀式+b-* のみ現ビルドへ更新（beaaa44） | 運用のみ | gitignore 化 or 毎回コミット更新のどちらにするか |
 
 ## 進捗ログ（新しい順・先頭追記）
+
+- 2026-07-25(夜間自律・トークン燃やし・実行中→このエントリは 05:10 チェックポイント): **HB4-1/HB4-2(7/3 実機報告)根治 + スクショ検証ライン + 確定欠陥3ユニット根治。コミット6本、フルゲート全緑(vitest 3,982 / e2e 110/110)**。
+  - **体制(新)**: Fable 指揮(メイン)/実装 **claude-opus-5**(7/24 リリース。workflow agent() の model にフルID指定で動作することを実験確立。alias `opus` は 4.8 のまま)/レビュー全ユニット Codex 敵対(fix-forward)。ベストプラクティス調査→メモリ night-burn-playbook.md に恒久化。ハートビート(実時刻+モデル降格検知)を各フェーズ境界で実行。
+  - `3e584c6` **HB4-2 頂点滑り自辺 根治**: 除外が地物単位のみ→頂点ID単位へ(leafShapePieces で ID 運搬・「変形する片は candidate を出さない」・containment は quantize 済 preview で組み直し)。レビューが初回実装の HIGH 2件(raw/quantized 5e-8 ズレで実機無効・組み直し輪郭が start 内包→押下点固着)を捕捉し fix-forward。slide.ts はバイト同一。テスト13本。
+  - `d7e6a04` **HB4-1 ナイフプレビュー四角のみ 根治**: InheritorModal の SVG 座標空間不一致(viewBox=-lat/path=+lat)。「四角」の正体=FR-93 の knife-smaller-box rect。-lat 一本化+CSS 再反転の2経路封鎖+北向き三角の視覚固定 e2e(knife-preview-north.spec.ts)。
+  - **スクショ検証ライン(ユーザー今回指示)**: driver A 実駆動(A1-A6 完走・a-01..18)+driver B 画像判定(b-01..09)+疑い所見の現HEAD再検証。**成果: 確定欠陥3(選択頂点ハイライト非存在/リング編集到達不能/グリッドラベル判読性破綻)・PASS 確認9系統(FR-20/30/45/87/88 等)・誤検出 close 2(undo シアン=色役割の誤読・右クリメニュー2項目=旧ビルド遺物)**。b-* 画像は 7/3 旧ビルド遺物と確定→現ビルドへ更新(`beaaa44`)。
+  - `8950639` **U-C リング編集到達不能 根治(FR-22/24)**: 2フェーズ導線化(対象選択とリング描画クリックの分離)。飛び地の生クリック到達・穴リング削除・穴内飛び地(enclosingHoleFor)・cancel 再アーム。レビューHIGH→validateGeometry の対概念欠落(入れ子領土⊂親穴)を単一真実源側で修正(新違反種別2)。bughunt property の偽前提(SAFE_NUDGE 固定)も是正。driver-a.spec.ts を実機ゲートへ昇格。
+  - `86948d7` **U-A 選択頂点ハイライト実装(FR-80/82)+U-D グリッドラベル可読性根治(FR-13)**(レンダラ primitive 拡張共有のため同一コミット): U-A=HandlePrimitive ring チャネル(選択シアン/ドラッグ橙)。レビュー6件全実バグ→全修正(**再描画購読の欠落=手書き watch 12本を redraw-watch.ts へ置換**・非activeオーナー・EdgeAdd 新頂点=HB3-4 既存欠陥根治含む)。非空虚性を「修正を外すと e2e 赤」で実測。U-D=ラベル間引き(step を強調線周期の約数へ切上げ=+360°パン点滅も根治)+offsetPx/align/baseline+halo。スイープテスト23本。
+  - **最終ゲート**: typecheck 3構成 0 / lint 0 errors / フル vitest **3,982 passed** / フル e2e **110/110**(10.9m・ux-cluster ベースライン再生成儀式→バイト同一で不変を確認)。
+  - **次セッション申し送り**: FR-82 点線アウトライン本体(classifyVisual 未結線)/FR-80 複数頂点同時移動のライブ経路/knife・drill の cancel→再アーム非対称(ring-edit のみ修正済)/ナイフ対象強調×集約表示の不一致(HB4-1 診断の副次発見: App.tsx drawnAreaAt vs leafShapeAt。現データはフラットで無害・階層作成で顕在化)/赤道が画面外の縦パンで経線ラベル全消滅(従来挙動)/コンテキストメニュー width:100% 美観+viewport clamp(LOW)/e2e/__visual__/v2-undo-style.spec.ts の恒久化判断。
 
 - 2026-07-20(自律・**完了**): **FR-113 表示制御フィルタ全結線 + パレット変更 undoable 化 — 設計判断2件のユーザー裁定を受けて実装**。裁定=①FR-42(畳む)とFR-113(隠す)は競合せず順次合成/②パレットは undoable。体制=Fable指揮(メイン専用温存)/実装 Opus subagent/レビュー全ユニット Codex(fix-forward)。コミット6本ローカル。**最終ゲート全緑: フル vitest 3,864/0・typecheck 3構成 0・lint 0・フル e2e 102/102**。ツリー清潔。
   - **FR-113**(80bf795+b79cade): filter-state/visibility(実装済未結線)を全経路へ。単一解決 memo `resolveFilteredDisplay`(resolution 後の第2段・(resolution,filter) identity LRU)を描画(cull+opacity乗算)・ヒット(3プローブ+knife+矩形)・検索(描画バッチ推移)が共有。**既定状態は isFilterInert→null で完全短絡=同一メモ参照**(722地物 127ms 予算に加算ゼロ、テスト固定)。深度は FR-42 N 適用後の表示集合に M を適用(N展開×M の空白=定義済み挙動)。UI=サイドバー DisplayFilterPanel+右クリック「この地物を非表示」(View でも可、compose の View→NO_MENU 前提を hide-only へ)。レビュー4件 fix: **不変条件「非表示地物は描画・当たり・検索・一覧・ツール取得・選択から一貫して消える」**を脇道へ — `isFeatureVisibleUnderFilter`(raw-leaf 意味論保持=集約下 leaf は掴める・visibleIds 直用だと N=0 で merge/reparent 崩壊する罠を回避)で merge/reparent/ring/drill のターゲット取得ガード、heal 漏斗 `commitFilter`(隠した瞬間に選択解除、全フィルタアクション+reconcile が通過)、一覧行フィルタ+通史行 disabled+カメラフィット guard、emphasis verdict を描画強調へ合成(UI は Phase 2)。
