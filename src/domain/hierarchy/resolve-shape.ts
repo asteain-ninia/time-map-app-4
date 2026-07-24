@@ -94,6 +94,56 @@ function resolveRingCoords(ring: Ring, store: VertexStore): GeoRing | undefined 
  * 形状=和 check unions over.
  */
 export function resolveLeafShape(shape: Shape, store: VertexStore): GeoMultiPolygon | undefined {
+  const pieces = leafShapePieces(shape);
+  if (pieces === undefined) return undefined;
+  return resolveShapePieces(pieces, store);
+}
+
+/**
+ * The COORDINATE-RESOLUTION half of {@link resolveLeafShape}, taking the ring grouping
+ * {@link leafShapePieces} already produced. Exposed so a caller that needs BOTH the
+ * grouping (for vertex identity) and the resolved coordinates does not have to run the
+ * grouping twice — {@link resolveLeafShape} re-derives it internally, so calling both
+ * on the same shape rebuilt every hole bucket and re-walked every ring (HB4-2 review #4;
+ * a per-drag/per-time cost at the 5,000-terminal scale, not a per-frame one).
+ *
+ * Same contract as {@link resolveLeafShape}: undefined when any referenced vertex is
+ * missing from the store (片落とし禁止 — no partially resolved piece, 教訓5.1).
+ */
+export function resolveShapePieces(
+  pieces: readonly (readonly Ring[])[],
+  store: VertexStore,
+): GeoMultiPolygon | undefined {
+  const out: GeoRing[][] = [];
+  for (const piece of pieces) {
+    const rings: GeoRing[] = [];
+    for (const ring of piece) {
+      const coords = resolveRingCoords(ring, store);
+      if (coords === undefined) return undefined;
+      rings.push(coords);
+    }
+    out.push(rings);
+  }
+  return out;
+}
+
+/**
+ * The RING GROUPING behind {@link resolveLeafShape}, WITHOUT resolving coordinates:
+ * each top-level TERRITORY ring paired with its direct HOLE children, in exactly the
+ * piece order and per-piece ring order {@link resolveLeafShape} emits (index i of the
+ * result corresponds to polygon piece i; index r within a piece to ring r).
+ *
+ * Exposed so a caller that needs VERTEX IDENTITY alongside the resolved coordinates
+ * (HB4-2: "is this boundary edge incident to the vertex the user is dragging?" cannot
+ * be answered from coordinates — two distinct vertices may sit at the same position,
+ * and a shared vertex is shared by ID, not by proximity) can walk the SAME grouping
+ * instead of re-deriving a second, drift-prone one (単一真実源 / 教訓5.29).
+ *
+ * Returns undefined under exactly the same hierarchy defect {@link resolveLeafShape}
+ * refuses on (a hole whose parentRingId names no territory ring) — a shape that would
+ * silently drop a hole is unresolvable, not partially resolvable (教訓5.1).
+ */
+export function leafShapePieces(shape: Shape): readonly (readonly Ring[])[] | undefined {
   const holesByParent = new Map<string, Ring[]>();
   const territories: Ring[] = [];
   // Every territory ring's id — the only ids a hole may legitimately hang under.
@@ -126,17 +176,11 @@ export function resolveLeafShape(shape: Shape, store: VertexStore): GeoMultiPoly
     }
   }
 
-  const pieces: GeoRing[][] = [];
+  const pieces: Ring[][] = [];
   for (const territory of territories) {
-    const outer = resolveRingCoords(territory, store);
-    if (outer === undefined) return undefined;
-    const piece: GeoRing[] = [outer];
+    const piece: Ring[] = [territory];
     const holes = holesByParent.get(territory.id) ?? [];
-    for (const hole of holes) {
-      const holeCoords = resolveRingCoords(hole, store);
-      if (holeCoords === undefined) return undefined;
-      piece.push(holeCoords);
-    }
+    for (const hole of holes) piece.push(hole);
     pieces.push(piece);
   }
   return pieces;

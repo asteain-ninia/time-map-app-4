@@ -32,6 +32,8 @@ export {
   type ShapeResolutionFailure,
   type ShapeResolution,
   resolveLeafShape,
+  leafShapePieces,
+  resolveShapePieces,
   resolveFeatureArea,
 } from './resolve-shape';
 
