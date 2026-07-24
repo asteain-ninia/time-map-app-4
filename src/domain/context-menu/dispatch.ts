@@ -247,6 +247,18 @@ export function dispatchMenuItem(
       if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
       return { kind: FLOW_KIND.HideFeature, featureId: ft.featureId };
     }
+    case MENU_ITEM_KIND.EmphasizeFeature:
+    case MENU_ITEM_KIND.UnemphasizeFeature: {
+      // FR-113 Phase 2 強調 — display-only, same feature-target resolution as 個別非表示.
+      // The chosen ITEM decides the direction, so the intent says exactly what the label
+      // promised (「この地物を強調」⇒ true /「強調を解除」⇒ false, 教訓 5.6).
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return {
+        kind: FLOW_KIND.SetFeatureEmphasis,
+        featureId: ft.featureId,
+        emphasized: itemKind === MENU_ITEM_KIND.EmphasizeFeature,
+      };
+    }
     default:
       return assertNever(itemKind);
   }

@@ -66,9 +66,21 @@ function passesDepth(state: FilterState, meta: FeatureDisplayMeta): boolean {
   return meta.depth <= state.depthThreshold;
 }
 
-/** Is the feature emphasized by ANY active emphasis (set / kind / depth)? */
-function isEmphasized(state: FilterState, meta: FeatureDisplayMeta): boolean {
-  if (state.emphasizedIds.has(meta.id)) return true;
+/**
+ * Is the feature emphasized by a channel OTHER than the per-feature `emphasizedIds` set —
+ * i.e. the 種別軸 / 深度軸 (or the legacy per-feature override flag)?
+ *
+ * This is the HALF of the emphasis judgement that the右クリック「この地物を強調」/「強調を
+ * 解除」item CANNOT change: that item writes `emphasizedIds` only. The context menu asks
+ * this (through filtered-display → the adapter's AxisEmphasisLookup) to decide whether the
+ * item would be a visual no-op and must therefore be shown DISABLED (出す=起きる, 教訓 5.6).
+ * Exported so the menu and the draw path share ONE definition of「別軸で強調されている」
+ * rather than each re-deriving it (教訓 5.29).
+ */
+export function isEmphasizedByOtherAxis(
+  state: FilterState,
+  meta: FeatureDisplayMeta,
+): boolean {
   if (state.emphasizedKinds.has(kindAxisOf(meta.kind))) return true;
   if (
     state.emphasizedDepth !== null &&
@@ -77,7 +89,12 @@ function isEmphasized(state: FilterState, meta: FeatureDisplayMeta): boolean {
   ) {
     return true;
   }
-  return false;
+  return state.individual.get(meta.id)?.emphasized === true;
+}
+
+/** Is the feature emphasized by ANY active emphasis (set / kind / depth / override)? */
+function isEmphasized(state: FilterState, meta: FeatureDisplayMeta): boolean {
+  return state.emphasizedIds.has(meta.id) || isEmphasizedByOtherAxis(state, meta);
 }
 
 /**
@@ -111,9 +128,12 @@ export function resolveFeatureDisplay(
     };
   }
 
-  const emphasized =
-    isEmphasized(state, meta) || override?.emphasized === true;
-  const anyEmphasis = emphasisActive(state) || hasIndividualEmphasis(state);
+  // `emphasized` folds EVERY channel (set / kind / depth / per-feature override) through
+  // the one `isEmphasized`; `emphasisActive` is the matching whole-state predicate over the
+  // SAME channels, so「この地物は強調されているか」and「強調中か」can never disagree (the
+  // asymmetry that made the panel's escape hatch unreachable for the override channel).
+  const emphasized = isEmphasized(state, meta);
+  const anyEmphasis = emphasisActive(state);
 
   // Dim non-emphasized features only while emphasis is active (受け入れ基準1).
   const opacity =
@@ -122,14 +142,6 @@ export function resolveFeatureDisplay(
       : state.opacity;
 
   return { featureId: meta.id, visible: true, opacity, emphasized };
-}
-
-/** True if any per-feature override carries an emphasis flag. */
-function hasIndividualEmphasis(state: FilterState): boolean {
-  for (const override of state.individual.values()) {
-    if (override.emphasized) return true;
-  }
-  return false;
 }
 
 /**

@@ -31,6 +31,8 @@ export {
   setEmphasizedIds,
   setEmphasizedKinds,
   setEmphasizedDepth,
+  setFeatureEmphasized,
+  setKindEmphasized,
   clearEmphasis,
   clearIndividualOverrides,
   reconcileToLiveFeatures,
@@ -44,6 +46,7 @@ export {
   DIM_OPACITY_FACTOR,
   type ResolvedFeatureDisplay,
   resolveFeatureDisplay,
+  isEmphasizedByOtherAxis,
   resolveVisible,
   visibleIdSet,
 } from './visibility';

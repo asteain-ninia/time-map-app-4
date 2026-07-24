@@ -23,7 +23,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { SessionStore } from '../state/store';
 
 import { FEATURE_KIND_AXIS, type FeatureKindAxis } from './axes';
-import { OPACITY_MAX, OPACITY_MIN } from './filter-state';
+import { emphasisActive, OPACITY_MAX, OPACITY_MIN } from './filter-state';
 import { FILTER_STRINGS } from './strings';
 import { validateDepthThreshold, validateOpacity } from './validation';
 
@@ -62,6 +62,12 @@ export function DisplayFilterPanel<S>(props: {
 
   const depthActive = filter.depthThreshold !== null;
 
+  // FR-113 Phase 2: whether ANY emphasis (種別 / 個別地物 / 深度) is in effect — the SINGLE
+  // predicate from filter-state.ts (the widget re-implements no state logic, 教訓 5.29). It
+  // drives the「強調をすべて解除」escape hatch's enablement, so a 強調 set from ANYWHERE
+  // (右クリック「この地物を強調」included) is escapable from this panel.
+  const anyEmphasis = emphasisActive(filter);
+
   const onOpacity = (raw: number): void => {
     const result = validateOpacity(raw);
     if (result.ok) store.getState().setFilterOpacity(result.value);
@@ -97,6 +103,42 @@ export function DisplayFilterPanel<S>(props: {
           </label>
         ))}
       </fieldset>
+
+      {/* 強調軸 — 種別 (FR-113 Phase 2): 点/線/面 を強調し、それ以外を淡く表示する。
+          可視軸 (上) と対称の UI 言語だが独立した軸で、強調は可視性を変えない。
+          深度強調 (emphasizedDepth) は Phase 3 のため、ここには出さない。 */}
+      <fieldset className="display-filter__emphasize-kinds">
+        <legend>{FILTER_STRINGS.emphasizeKindGroupLabel}</legend>
+        {KIND_ROWS.map((row) => (
+          <label
+            key={row.axis}
+            className="display-filter__kind"
+            title={FILTER_STRINGS.emphasizeKindGroupHint}
+          >
+            <input
+              type="checkbox"
+              data-testid={`display-filter-emphasize-${row.testid}`}
+              checked={filter.emphasizedKinds.has(row.axis)}
+              onChange={(e) =>
+                store.getState().setFilterKindEmphasized(row.axis, e.target.checked)
+              }
+            />
+            <span>{row.label}</span>
+          </label>
+        ))}
+        <p className="display-filter__emphasize-hint">{FILTER_STRINGS.emphasizeHint}</p>
+      </fieldset>
+
+      {/* 強調の脱出口 (FR-113 Phase 2): どの軸で強調していても1操作で戻れる。強調中のみ活性。 */}
+      <button
+        type="button"
+        className="display-filter__clear-emphasis"
+        data-testid="display-filter-clear-emphasis"
+        disabled={!anyEmphasis}
+        onClick={() => store.getState().clearAllEmphasis()}
+      >
+        {FILTER_STRINGS.emphasizeClearAllLabel}
+      </button>
 
       {/* 不透明度 (FR-113) */}
       <label className="display-filter__opacity" title={FILTER_STRINGS.opacityHint}>

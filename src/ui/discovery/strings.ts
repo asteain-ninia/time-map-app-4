@@ -49,7 +49,16 @@ export const FILTER_STRINGS = {
   emphasizeLabel: '強調表示',
   emphasizeHint:
     '指定した種別・階層・地物集合を強調し、それ以外を減衰（淡く）表示します。強調は一時的な見え方で、保存対象のスタイルは変更しません。',
+  /** 右クリック「強調を解除」/ 個別地物の強調解除 (対象1件). */
   emphasizeClearLabel: '強調を解除',
+  /** 右クリック「この地物を強調」(individualHideLabel と対称の個別地物操作). */
+  emphasizeFeatureLabel: 'この地物を強調',
+  /** パネルの種別強調トグル群 (kindGroupLabel と対称). */
+  emphasizeKindGroupLabel: '種別を強調',
+  emphasizeKindGroupHint:
+    '選んだ種別を強調し、それ以外の地物を淡く表示します。表示/非表示とは別の軸です。',
+  /** 強調の脱出口 — 種別・地物のどの強調も一括で解除する (強調中のみ活性). */
+  emphasizeClearAllLabel: '強調をすべて解除',
 } as const;
 
 /** Search UI labels, help and query-format examples (FR-113 / FR-118). */

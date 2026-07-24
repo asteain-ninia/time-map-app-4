@@ -116,6 +116,23 @@ async function readVertexHandleCount(page: Page): Promise<number> {
   });
 }
 
+/**
+ * The color each DRAWN feature is ACTUALLY PAINTED with (renderer `activeColor`: the
+ * selection colour when highlighted, else the opacity-baked fill). Because it reports the
+ * PAINTED colour — not `style.fill` — a comparison against a baseline captured in the SAME
+ * selection state can see BOTH「他が淡くなる」AND a regression that repaints an emphasized
+ * feature in the selection colour.
+ */
+async function readDrawnFills(page: Page): Promise<Record<string, string>> {
+  return page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getDrawnFeatureFills: () => Record<string, string> };
+    }).__E2E__;
+    if (e2e === undefined) throw new Error('__E2E__ not ready');
+    return e2e.getDrawnFeatureFills();
+  });
+}
+
 async function waitForE2E(page: Page): Promise<void> {
   await expect
     .poll(async () => page.evaluate(() => typeof (window as unknown as { __E2E__?: unknown }).__E2E__))
@@ -255,6 +272,116 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const depthInput = page.getByTestId('display-filter-depth');
       await expect(depthInput).toHaveValue('0');
       await expect.poll(async () => readDrawnCount(page)).toBeLessThan(n1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('FR-113 Phase 2: 右クリック強調 → 他が淡くなる / 種別強調 / 重なりは無効化 / 強調をすべて解除', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('app-shell')).toBeVisible();
+      await waitForE2E(page);
+
+      // Two non-overlapping top-level faces (left & right of centre) so「強調した方だけが
+      // 濃く、他方が淡く」 is observable in the REAL draw batch.
+      const mapInput = page.getByTestId('map-input-layer');
+      const m0 = (await mapInput.boundingBox())!;
+      const cx = m0.x + m0.width / 2;
+      const cy = m0.y + m0.height / 2;
+      await commitFaceAt(page, cx - 150, cy, 70);
+      const leftId = ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
+      await commitFaceAt(page, cx + 150, cy, 70);
+      const rightId = ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
+      expect(leftId).not.toBe('');
+      expect(rightId).not.toBe(leftId);
+
+      const plain = await readDrawnFills(page);
+      expect(Object.keys(plain)).toEqual(expect.arrayContaining([leftId, rightId]));
+
+      // --- 1. 右クリック「この地物を強調」→ the OTHER face dims, the target's paint is unchanged. ---
+      await enterEditMode(page);
+      await page.mouse.click(cx - 150, cy, { button: 'right' });
+      const menu = page.getByTestId('context-menu');
+      await expect(menu).toBeVisible();
+      const emphasize = menu.locator('[data-item-kind="emphasizeFeature"]');
+      await expect(emphasize).toBeVisible();
+      await expect(emphasize).toHaveText('この地物を強調');
+      // 種別/深度の強調は掛かっていない → 押せば見た目が変わるので ENABLED.
+      await expect(emphasize).toBeEnabled();
+      // 非強調時は「強調を解除」は出ない (排他).
+      await expect(menu.locator('[data-item-kind="unemphasizeFeature"]')).toHaveCount(0);
+      // 右クリックは対象を選択へ昇格させる (教訓 5.11) ので、選択色の影響を切り分けるため
+      // 「この選択状態での」基準色をここで採る。以降の比較は強調の効果だけを見る.
+      const beforeEmphasis = await readDrawnFills(page);
+      await emphasize.click();
+      await expect(menu).toHaveCount(0);
+
+      await expect
+        .poll(async () => (await readDrawnFills(page))[rightId])
+        .not.toBe(beforeEmphasis[rightId]); // 他の地物が淡くなった (dim others)
+      // 強調対象の実塗色は不変 = 強調は選択色を流用しない (FR-82 の選択表示と混同しない).
+      expect((await readDrawnFills(page))[leftId]).toBe(beforeEmphasis[leftId]);
+      // 強調は可視性を変えない — 描画数は不変.
+      expect(Object.keys(await readDrawnFills(page)).length).toBe(Object.keys(plain).length);
+
+      // --- 2. 再度の右クリックでは「強調を解除」に入れ替わる (compose の動的出し分け). ---
+      await page.mouse.click(cx - 150, cy, { button: 'right' });
+      await expect(menu).toBeVisible();
+      const unemphasize = menu.locator('[data-item-kind="unemphasizeFeature"]');
+      await expect(unemphasize).toBeVisible();
+      await expect(unemphasize).toHaveText('強調を解除');
+      await expect(unemphasize).toBeEnabled();
+      await expect(menu.locator('[data-item-kind="emphasizeFeature"]')).toHaveCount(0);
+      await unemphasize.click();
+      await expect(menu).toHaveCount(0);
+      await expect
+        .poll(async () => (await readDrawnFills(page))[rightId])
+        .toBe(beforeEmphasis[rightId]);
+
+      // --- 3. パネルの種別強調 (面) → 面が強調され、脱出口が活性化する. ---
+      await revealFilterPanel(page);
+      const clearEmphasis = page.getByTestId('display-filter-clear-emphasis');
+      await expect(clearEmphasis).toBeDisabled(); // 強調が無いので押せない
+      const emphasizeArea = page.getByTestId('display-filter-emphasize-area');
+      await expect(emphasizeArea).not.toBeChecked();
+      // この選択状態での基準色 (左面が選択中) — 種別強調の前後で比較する.
+      const beforeKindEmphasis = await readDrawnFills(page);
+      await emphasizeArea.check();
+      await expect(clearEmphasis).toBeEnabled();
+      // 可視軸は無傷 (強調と可視は別軸) — 面の表示チェックは入ったまま、描画数も不変.
+      await expect(page.getByTestId('display-filter-kind-area')).toBeChecked();
+      expect(Object.keys(await readDrawnFills(page)).length).toBe(Object.keys(plain).length);
+      // 面を種別強調しても「全ての面が選択色になる」ことは起きない: 両面とも強調対象なので
+      // 淡くなるものが無く、実塗色は基準のまま (未選択の右面が選択色に化けたら赤).
+      await expect
+        .poll(async () => (await readDrawnFills(page))[rightId])
+        .toBe(beforeKindEmphasis[rightId]);
+      expect((await readDrawnFills(page))[leftId]).toBe(beforeKindEmphasis[leftId]);
+
+      // --- 3b. 種別強調と重なる個別強調は「出す≠起きる」→ 項目は出るが無効 + 理由付き. ---
+      await page.mouse.click(cx - 150, cy, { button: 'right' });
+      await expect(menu).toBeVisible();
+      const overlapped = menu.locator('[data-item-kind="emphasizeFeature"]');
+      await expect(overlapped).toBeVisible();
+      await expect(overlapped).toBeDisabled();
+      await expect(overlapped).toHaveAttribute('title', /強調をすべて解除/);
+      // 個別非表示 は別概念なので有効なまま (無効化が波及していない).
+      await expect(menu.locator('[data-item-kind="hideFeature"]')).toBeEnabled();
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+
+      // --- 4. 「強調をすべて解除」→ 元の見え方へ戻り、トグルも解除される. ---
+      await clearEmphasis.click();
+      await expect(emphasizeArea).not.toBeChecked();
+      await expect(clearEmphasis).toBeDisabled();
+      await expect
+        .poll(async () => (await readDrawnFills(page))[rightId])
+        .toBe(beforeKindEmphasis[rightId]);
+      await expect
+        .poll(async () => (await readDrawnFills(page))[leftId])
+        .toBe(beforeKindEmphasis[leftId]);
     } finally {
       await app.close();
     }

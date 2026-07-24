@@ -83,6 +83,7 @@ function makePorts(root: DomainProject): {
     armEditTool: [],
     unshare: [],
     hideFeature: [],
+    setFeatureEmphasized: [],
   };
   const track =
     (name: string) =>
@@ -98,6 +99,7 @@ function makePorts(root: DomainProject): {
     armEditTool: track('armEditTool'),
     unshare: track('unshare'),
     hideFeature: track('hideFeature'),
+    setFeatureEmphasized: track('setFeatureEmphasized'),
   };
   return { ports, calls };
 }
@@ -188,5 +190,40 @@ describe('launchMenuItem — FR-113 個別非表示 (HideFeature, no live-existe
     const { ports, calls } = makePorts(rootWithA(false));
     launchMenuItem(MENU_ITEM_KIND.HideFeature, modelWithHide(), ports);
     expect(calls['hideFeature']).toEqual([[A]]);
+  });
+});
+
+describe('launchMenuItem — FR-113 Phase 2 強調 (SetFeatureEmphasis, 個別非表示と対称)', () => {
+  const modelWith = (kind: typeof MENU_ITEM_KIND.EmphasizeFeature | typeof MENU_ITEM_KIND.UnemphasizeFeature): ContextMenuModel => {
+    const base = modelForA();
+    return { ...base, items: [...base.items, enabledItem(kind)] };
+  };
+
+  it('この地物を強調 → setFeatureEmphasized(id, true)', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, modelWith(MENU_ITEM_KIND.EmphasizeFeature), ports);
+    expect(calls['setFeatureEmphasized']).toEqual([[A, true]]);
+  });
+
+  it('強調を解除 → setFeatureEmphasized(id, false)', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(
+      MENU_ITEM_KIND.UnemphasizeFeature,
+      modelWith(MENU_ITEM_KIND.UnemphasizeFeature),
+      ports,
+    );
+    expect(calls['setFeatureEmphasized']).toEqual([[A, false]]);
+  });
+
+  it('STALE target: it STILL fires (display-only; the store reconcile prunes the id)', () => {
+    const { ports, calls } = makePorts(rootWithA(false));
+    launchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, modelWith(MENU_ITEM_KIND.EmphasizeFeature), ports);
+    expect(calls['setFeatureEmphasized']).toEqual([[A, true]]);
+  });
+
+  it('モデルに無い項目は一切発火しない (frozen model の drift guard)', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, modelForA(), ports); // 強調項目なし
+    for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
   });
 });

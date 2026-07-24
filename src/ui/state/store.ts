@@ -53,10 +53,13 @@ import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 import {
   DEFAULT_FILTER_STATE,
+  clearEmphasis,
   clearIndividualOverrides,
   reconcileToLiveFeatures,
   setDepthThreshold,
+  setFeatureEmphasized,
   setIndividualHidden,
+  setKindEmphasized,
   setKindVisible,
   setOpacity,
   type FeatureKindAxis,
@@ -391,6 +394,12 @@ export interface SessionStoreActions<S> {
   setFeatureHidden(featureId: FeatureId, hidden: boolean): void;
   /** FR-113: clear EVERY 個別非表示 override (「個別非表示 n 件を全て再表示」). */
   showAllHiddenFeatures(): void;
+  /** FR-113 Phase 2 種別強調軸: emphasize / un-emphasize a kind (点/線/面) — others dim. */
+  setFilterKindEmphasized(axis: FeatureKindAxis, emphasized: boolean): void;
+  /** FR-113 Phase 2 個別強調: 右クリック「この地物を強調」/「強調を解除」. */
+  setFeatureEmphasized(featureId: FeatureId, emphasized: boolean): void;
+  /** FR-113 Phase 2: clear EVERY emphasis axis (「強調をすべて解除」— the escape hatch). */
+  clearAllEmphasis(): void;
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
@@ -1638,6 +1647,31 @@ export function createSessionStore<S>(
       const cur = get().filter;
       const next = clearIndividualOverrides(cur);
       if (next !== cur) commitFilter(next); // un-hiding only widens visibility → no heal
+    },
+
+    // -- FR-113 Phase 2 強調軸 -----------------------------------------------
+    // Emphasis NEVER changes `visible` (resolveFeatureDisplay dims non-emphasized features
+    // by DIM_OPACITY_FACTOR but keeps them visible / hit-testable / searchable), so the
+    // commitFilter heal is always a no-op here — the emphasis actions are routed through it
+    // anyway so there stays exactly ONE filter-write funnel (教訓 5.6, cf. setFilterOpacity).
+    // The pure helpers own the identity-stability guard (a no-op write returns the SAME
+    // state), so an unchanged value never bumps the filter reference (教訓 5.29).
+    setFilterKindEmphasized(axis, emphasized) {
+      const cur = get().filter;
+      const next = setKindEmphasized(cur, axis, emphasized);
+      if (next !== cur) commitFilter(next);
+    },
+
+    setFeatureEmphasized(featureId, emphasized) {
+      const cur = get().filter;
+      const next = setFeatureEmphasized(cur, featureId, emphasized);
+      if (next !== cur) commitFilter(next);
+    },
+
+    clearAllEmphasis() {
+      const cur = get().filter;
+      const next = clearEmphasis(cur);
+      if (next !== cur) commitFilter(next);
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

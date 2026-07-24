@@ -34,11 +34,26 @@ export const MENU_ITEM_KIND = {
    * offered even in 表示専用モード (View), unlike the edit items above.
    */
   HideFeature: 'hideFeature',
+  /**
+   * 表示制御: この地物を強調 → U41 (FR-113 Phase 2). DISPLAY-only like 個別非表示 — it adds
+   * the target to the session 強調集合 (others dim), so it is offered even in 表示専用モード.
+   * MUTUALLY EXCLUSIVE with {@link MENU_ITEM_KIND.UnemphasizeFeature}: the composer offers
+   * whichever matches the target's CURRENT emphasis, so the shown label always names what
+   * will happen (出す=起きる, 教訓 5.6).
+   */
+  EmphasizeFeature: 'emphasizeFeature',
+  /** 表示制御: 強調を解除 → U41 (FR-113 Phase 2). The 強調中 counterpart of the above. */
+  UnemphasizeFeature: 'unemphasizeFeature',
 } as const;
 
 export type MenuItemKind = (typeof MENU_ITEM_KIND)[keyof typeof MENU_ITEM_KIND];
 
-/** The flow each item kind dispatches to (one-to-one; 教訓 5.19). */
+/**
+ * The flow each item kind dispatches to (教訓 5.19). Every kind resolves to EXACTLY one
+ * flow, so an item shown for delete can never dispatch to merge. The mapping is not
+ * injective: 強調 / 強調解除 are two items over ONE flow (SetFeatureEmphasis) whose
+ * `emphasized` payload discriminates them — see {@link FLOW_KIND.SetFeatureEmphasis}.
+ */
 export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.Delete]: FLOW_KIND.Delete,
   [MENU_ITEM_KIND.DeleteVertex]: FLOW_KIND.DeleteVertex,
@@ -48,6 +63,8 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.ChangeAffiliation]: FLOW_KIND.ChangeAffiliation,
   [MENU_ITEM_KIND.Merge]: FLOW_KIND.Merge,
   [MENU_ITEM_KIND.HideFeature]: FLOW_KIND.HideFeature,
+  [MENU_ITEM_KIND.EmphasizeFeature]: FLOW_KIND.SetFeatureEmphasis,
+  [MENU_ITEM_KIND.UnemphasizeFeature]: FLOW_KIND.SetFeatureEmphasis,
 };
 
 /** Japanese user-facing label per item kind (FR-115). */
@@ -60,6 +77,8 @@ export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   [MENU_ITEM_KIND.ChangeAffiliation]: '所属変更',
   [MENU_ITEM_KIND.Merge]: '結合',
   [MENU_ITEM_KIND.HideFeature]: 'この地物を非表示',
+  [MENU_ITEM_KIND.EmphasizeFeature]: 'この地物を強調',
+  [MENU_ITEM_KIND.UnemphasizeFeature]: '強調を解除',
 };
 
 // --- Disabled reasons (出るが無効=グレーアウト, spec §2.1 / §4.4) ------------
@@ -71,6 +90,13 @@ export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
 export const DISABLE_REASON = {
   /** 結合は2つ以上の対象が必要 (FR-52). Seeded with one → disabled with this reason. */
   MergeNeedsMoreTargets: 'mergeNeedsMoreTargets',
+  /**
+   * FR-113 Phase 2: the target is ALREADY emphasized by the 種別/深度 axis, so toggling its
+   * per-feature 強調 membership would change nothing on screen (出す≠起きる). The item is
+   * shown DISABLED with this reason instead of being offered as a no-op — the panel's
+   * 「強調をすべて解除」is the escape, and the reason says so (教訓 5.6).
+   */
+  EmphasisFromOtherAxis: 'emphasisFromOtherAxis',
 } as const;
 
 export type DisableReason =
@@ -80,6 +106,8 @@ export type DisableReason =
 export const DISABLE_REASON_MESSAGE: Readonly<Record<DisableReason, string>> = {
   [DISABLE_REASON.MergeNeedsMoreTargets]:
     '結合には2つ以上の対象が必要です。結合する相手を追加してください。',
+  [DISABLE_REASON.EmphasisFromOtherAxis]:
+    'この地物は種別または階層深度の強調で既に強調されているため、個別の強調/解除では見た目が変わりません。表示制御フィルタの「強調をすべて解除」で解除してください。',
 };
 
 /**

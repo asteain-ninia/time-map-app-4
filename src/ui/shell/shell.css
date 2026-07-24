@@ -1033,7 +1033,10 @@ body {
   line-height: 1.5;
 }
 
-.display-filter__kinds {
+/* 可視軸と強調軸 (FR-113 Phase 2) は同じ UI 言語 — 同じ枠・同じ行レイアウト。強調枠だけは
+   ヒント行を内包するので折り返しを許す。 */
+.display-filter__kinds,
+.display-filter__emphasize-kinds {
   display: flex;
   gap: 12px;
   margin: 0;
@@ -1042,10 +1045,23 @@ body {
   border-radius: var(--radius);
 }
 
-.display-filter__kinds legend {
+.display-filter__emphasize-kinds {
+  flex-wrap: wrap;
+}
+
+.display-filter__kinds legend,
+.display-filter__emphasize-kinds legend {
   padding: 0 4px;
   color: var(--c-text-muted);
   font-size: 11px;
+}
+
+.display-filter__emphasize-hint {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .display-filter__kind,
@@ -1082,7 +1098,8 @@ body {
   border-radius: var(--radius);
 }
 
-.display-filter__show-all {
+.display-filter__show-all,
+.display-filter__clear-emphasis {
   align-self: flex-start;
   font: inherit;
   font-size: 12px;
@@ -1094,7 +1111,8 @@ body {
   cursor: pointer;
 }
 
-.display-filter__show-all:disabled {
+.display-filter__show-all:disabled,
+.display-filter__clear-emphasis:disabled {
   opacity: 0.5;
   cursor: default;
 }

@@ -21,6 +21,9 @@ export {
   sharedLookupFromSet,
   type FeatureKindLookup,
   featureKindLookupFromMap,
+  type AxisEmphasisLookup,
+  NO_AXIS_EMPHASIS,
+  axisEmphasisLookupFromSet,
 } from './contracts';
 
 // Item kinds, Japanese labels, disable reasons, item value (FR-115, 教訓 5.19).

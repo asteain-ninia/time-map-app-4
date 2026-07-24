@@ -639,8 +639,15 @@ export interface BuildOptions {
   readonly lod?: boolean;
 }
 
-/** The active color for a feature: selectedColor when selected, else fill (FR-82). */
-function activeColor(style: FeatureStyle, selected: boolean): string {
+/**
+ * The active color for a feature: selectedColor when selected, else fill (FR-82).
+ *
+ * Exported as the SINGLE definition of「実際に塗られる色」so an observer (the E2E render hook)
+ * reports what the renderer paints rather than the raw `style.fill` — a mirror that answered
+ * `style.fill` could never see a regression that swapped the paint to `selectedColor`
+ * (教訓 5.29 単一の真実源; the observation must read the same rule as the paint).
+ */
+export function activeColor(style: FeatureStyle, selected: boolean): string {
   return selected ? style.selectedColor : style.fill;
 }
 

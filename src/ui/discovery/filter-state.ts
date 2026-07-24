@@ -46,7 +46,7 @@ export interface IndividualOverride {
  *                         `null` ⇒ no depth filter (all depths pass this axis).
  *   - `individual`      : per-feature overrides (force-hide / emphasize).
  *   - `opacity`         : the display opacity applied to passing features.
- *   - `emphasisActive`  : true when ANY emphasis is in effect (kind/depth/set);
+ *   - `emphasisActive`  : true when ANY emphasis is in effect (set/kind/depth/override);
  *                         when true, non-emphasized features are dimmed.
  *   - `emphasizedKinds` : kind-axes to emphasize (others dim).
  *   - `emphasizedDepth` : emphasize features at/above this depth, or `null`.
@@ -130,6 +130,47 @@ export function setEmphasizedKinds(
   return { ...state, emphasizedKinds: new Set(kinds) };
 }
 
+/**
+ * Emphasize / un-emphasize ONE feature (FR-113 Phase 2 — 右クリック「この地物を強調」/
+ * 「強調を解除」). `emphasizedIds` is THE per-feature emphasis channel the operation UI
+ * writes (the {@link IndividualOverride.emphasized} flag is a legacy resolution input with
+ * no writer — keeping ONE writable channel is what lets {@link emphasisActive} and
+ * {@link reconcileToLiveFeatures} stay the single truth for「強調中か」).
+ *
+ * Identity-stable: a no-op write (emphasizing an already-emphasized feature, or clearing a
+ * feature that was never emphasized) returns the SAME reference so the display memos
+ * (resolveFilteredDisplay / the Canvas redraw subscription) do not see a new generation
+ * (教訓 5.29, the same discipline as {@link clearIndividualOverrides}).
+ */
+export function setFeatureEmphasized(
+  state: FilterState,
+  featureId: FeatureId,
+  emphasized: boolean,
+): FilterState {
+  if (state.emphasizedIds.has(featureId) === emphasized) return state;
+  const next = new Set(state.emphasizedIds);
+  if (emphasized) next.add(featureId);
+  else next.delete(featureId);
+  return { ...state, emphasizedIds: next };
+}
+
+/**
+ * Emphasize / un-emphasize ONE kind axis (FR-113 Phase 2 — パネルの種別強調トグル). The
+ * mirror of {@link setKindVisible} on the EMPHASIS axis: strictly orthogonal to visibility
+ * (emphasizing 面 never changes `kindVisible[面]`). Identity-stable on a no-op write.
+ */
+export function setKindEmphasized(
+  state: FilterState,
+  axis: FeatureKindAxis,
+  emphasized: boolean,
+): FilterState {
+  if (state.emphasizedKinds.has(axis) === emphasized) return state;
+  const next = new Set(state.emphasizedKinds);
+  if (emphasized) next.add(axis);
+  else next.delete(axis);
+  return { ...state, emphasizedKinds: next };
+}
+
 /** Emphasize features at/above a depth, or `null` to clear depth emphasis. */
 export function setEmphasizedDepth(
   state: FilterState,
@@ -138,13 +179,35 @@ export function setEmphasizedDepth(
   return { ...state, emphasizedDepth: depth };
 }
 
-/** Clear every emphasis (set / kind / depth) — others stop dimming. */
+/**
+ * Clear EVERY emphasis channel (set / kind / depth / per-feature override) — others stop
+ * dimming. This is the panel's「強調をすべて解除」escape hatch: ONE action leaves the
+ * dimmed-others mode no matter which channel got it there. It is the exact inverse of
+ * {@link emphasisActive} — every channel that predicate counts is cleared here, so
+ * `emphasisActive(clearEmphasis(s)) === false` for ANY state (no unreachable dimmed mode).
+ * Visibility (`individual[].hidden`) / opacity / kind toggles are untouched (別軸).
+ *
+ * Identity-stable: returns the SAME reference when no emphasis is active, so pressing it
+ * (or a defensive call) on an already-plain state never churns the display memos (教訓 5.29).
+ */
 export function clearEmphasis(state: FilterState): FilterState {
+  if (!emphasisActive(state)) return state;
+  // Strip the override emphasis flag while PRESERVING each override's `hidden` (個別非表示 is
+  // the visibility axis and must survive「強調をすべて解除」).
+  let individual = state.individual;
+  for (const override of state.individual.values()) {
+    if (!override.emphasized) continue;
+    const next = new Map<FeatureId, IndividualOverride>();
+    for (const [id, o] of state.individual) next.set(id, { ...o, emphasized: false });
+    individual = next;
+    break;
+  }
   return {
     ...state,
     emphasizedKinds: new Set(),
     emphasizedDepth: null,
     emphasizedIds: new Set(),
+    individual,
   };
 }
 
@@ -199,11 +262,19 @@ export function reconcileToLiveFeatures(
  * the plain opacity (受け入れ基準1: 強調が無いときは減衰しない).
  */
 export function emphasisActive(state: FilterState): boolean {
-  return (
-    state.emphasizedIds.size > 0 ||
-    state.emphasizedKinds.size > 0 ||
-    state.emphasizedDepth !== null
-  );
+  if (state.emphasizedIds.size > 0) return true;
+  if (state.emphasizedKinds.size > 0) return true;
+  if (state.emphasizedDepth !== null) return true;
+  // The per-feature override flag is a FOURTH emphasis channel (a legacy resolution input
+  // with no writer today). It MUST be counted here: `resolveFeatureDisplay` dims others
+  // for it and `isFilterInert` treats it as non-inert, so leaving it out made「強調中か」
+  // two different predicates — a state that visibly dims others while `clearEmphasis` and
+  // the panel's「強調をすべて解除」button both consider it inert (no escape hatch). ONE
+  // predicate over ALL FOUR channels (教訓 5.29 単一判定).
+  for (const override of state.individual.values()) {
+    if (override.emphasized) return true;
+  }
+  return false;
 }
 
 /**
@@ -238,9 +309,11 @@ export function isFilterInert(state: FilterState): boolean {
   for (const axis of ALL_FEATURE_KIND_AXES) {
     if (!state.kindVisible[axis]) return false;
   }
+  // `emphasisActive` now covers ALL FOUR emphasis channels including the per-feature
+  // override flag, so the loop below only has to check the VISIBILITY axis (個別非表示).
   if (emphasisActive(state)) return false;
   for (const override of state.individual.values()) {
-    if (override.hidden || override.emphasized) return false;
+    if (override.hidden) return false;
   }
   return true;
 }

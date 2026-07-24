@@ -37,6 +37,7 @@ import { derivedDepths, isDepthUndefined } from '../../domain/hierarchy';
 import type { Forest } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 import {
+  isEmphasizedByOtherAxis,
   isFilterInert,
   resolveFeatureDisplay,
   type FeatureDisplayMeta,
@@ -231,6 +232,40 @@ export function isFeatureVisibleUnderFilter(
     { id: featureId, kind: feature.kind, depth },
     true,
   ).visible;
+}
+
+/**
+ * Whether `featureId` is emphasized by a channel OTHER than the per-feature `emphasizedIds`
+ * set (種別軸 / 深度軸 / per-feature override flag) — the judgement the右クリック
+ * 「この地物を強調」/「強調を解除」item CANNOT change, because it writes `emphasizedIds` only.
+ *
+ * The context menu (App → `AxisEmphasisLookup` → U36 compose) offers the item DISABLED when
+ * this is true, so an already-axis-emphasized target never gets a label promising a change
+ * that would not happen (出す=起きる, 教訓 5.6). The rule itself is the discovery layer's ONE
+ * {@link isEmphasizedByOtherAxis} — this function only supplies the SAME per-feature meta
+ * (kind + derived depth) the draw path resolves with (教訓 5.29 単一解決), for a drawn feature
+ * or an FR-42 aggregation-omitted raw leaf alike, mirroring
+ * {@link isFeatureVisibleUnderFilter}. A feature absent from the current generation ⇒ false.
+ */
+export function isEmphasizedByOtherAxisUnderFilter(
+  resolution: DisplayResolution,
+  filter: FilterState,
+  featureId: FeatureId,
+): boolean {
+  if (isFilterInert(filter)) return false;
+  const feature =
+    resolution.areaFeaturesById.get(featureId) ??
+    resolution.features.find((f) => f.id === featureId);
+  if (feature === undefined) return false;
+  // Depth is consulted only when a depth axis is active (same short-circuit as the batch).
+  const needDepth =
+    filter.depthThreshold !== null || filter.emphasizedDepth !== null;
+  const depth = needDepth ? depthOf(resolution.forest, featureId) : null;
+  return isEmphasizedByOtherAxis(filter, {
+    id: featureId,
+    kind: feature.kind,
+    depth,
+  });
 }
 
 /**

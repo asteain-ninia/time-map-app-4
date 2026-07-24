@@ -62,6 +62,13 @@ export interface MenuLaunchPorts {
    * harmless no-op override that reconcileToLiveFeatures prunes on the next edit).
    */
   readonly hideFeature: (featureId: FeatureId) => void;
+  /**
+   * FR-113 Phase 2 強調 — add/remove the target from the session 強調集合
+   * (store.setFeatureEmphasized). DISPLAY-only, exactly like {@link hideFeature}: no domain
+   * mutation, no history, no dirty, no live-existence guard (a stale id is a harmless
+   * session override that reconcileToLiveFeatures prunes on the next structure change).
+   */
+  readonly setFeatureEmphasized: (featureId: FeatureId, emphasized: boolean) => void;
 }
 
 /**
@@ -113,6 +120,11 @@ export function launchMenuItem(
       // FR-113 個別非表示 — session display state only (no live-existence guard needed;
       // see MenuLaunchPorts.hideFeature). The store's reconcile prunes a stale id later.
       ports.hideFeature(intent.featureId);
+      return;
+    case FLOW_KIND.SetFeatureEmphasis:
+      // FR-113 Phase 2 強調/強調解除 — one arm for both items; the intent's `emphasized`
+      // carries the direction the composer showed (see MenuLaunchPorts.setFeatureEmphasized).
+      ports.setFeatureEmphasized(intent.featureId, intent.emphasized);
       return;
     default:
       return assertNever(intent);

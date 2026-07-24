@@ -6,7 +6,9 @@ import { FEATURE_KIND_AXIS } from './axes';
 import {
   DEFAULT_FILTER_STATE,
   setDepthThreshold,
+  setEmphasizedDepth,
   setEmphasizedIds,
+  setKindEmphasized,
   setIndividualHidden,
   setKindVisible,
   setOpacity,
@@ -14,6 +16,7 @@ import {
 } from './filter-state';
 import {
   DIM_OPACITY_FACTOR,
+  isEmphasizedByOtherAxis,
   resolveFeatureDisplay,
   resolveVisible,
   visibleIdSet,
@@ -99,5 +102,50 @@ describe('resolveVisible / visibleIdSet (検索・描画母集合, 教訓 5.3)',
     expect(ids.has(A)).toBe(true);
     expect(ids.has(B)).toBe(false);
     expect(ids.has(C)).toBe(true);
+  });
+});
+
+// FR-113 Phase 2 — 「個別チャネル以外で強調されているか」の単一判定 (compose の無効化根拠).
+//
+// 右クリックの強調/強調解除項目が書けるのは `emphasizedIds` だけ。種別/深度軸で既に強調されて
+// いる対象では、その項目を押しても見た目が変わらない (出す≠起きる)。その判定はここ一箇所。
+describe('isEmphasizedByOtherAxis — 個別集合を除いた強調チャネル (教訓 5.29 単一判定)', () => {
+  it('個別集合だけの強調は「別軸」ではない (項目は有効のまま)', () => {
+    const state = setEmphasizedIds(DEFAULT_FILTER_STATE, [A]);
+    expect(isEmphasizedByOtherAxis(state, meta(A, 'point', null))).toBe(false);
+    // ただし解決全体としては強調されている.
+    expect(resolveFeatureDisplay(state, meta(A, 'point', null), true).emphasized).toBe(true);
+  });
+
+  it('種別軸の強調は「別軸」— 対象の種別に一致するときだけ true', () => {
+    const state = setKindEmphasized(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Area, true);
+    expect(isEmphasizedByOtherAxis(state, meta(A, 'leaf', 0))).toBe(true);
+    expect(isEmphasizedByOtherAxis(state, meta(B, 'point', null))).toBe(false);
+  });
+
+  it('深度軸の強調は「別軸」— 閾値以上の深度だけ true', () => {
+    const state = setEmphasizedDepth(DEFAULT_FILTER_STATE, 2);
+    expect(isEmphasizedByOtherAxis(state, meta(A, 'leaf', 3))).toBe(true);
+    expect(isEmphasizedByOtherAxis(state, meta(B, 'leaf', 1))).toBe(false);
+  });
+
+  it('individual[].emphasized も「別軸」(個別集合とは別チャネル)', () => {
+    const state: FilterState = {
+      ...DEFAULT_FILTER_STATE,
+      individual: new Map([[A, { hidden: false, emphasized: true }]]),
+    };
+    expect(isEmphasizedByOtherAxis(state, meta(A, 'point', null))).toBe(true);
+  });
+
+  it('強調判定は「個別集合 ∪ 別軸」— 二つの述語が同じ真実を分割している', () => {
+    const state = setKindEmphasized(
+      setEmphasizedIds(DEFAULT_FILTER_STATE, [B]),
+      FEATURE_KIND_AXIS.Area,
+      true,
+    );
+    for (const m of [meta(A, 'leaf', 0), meta(B, 'point', null), meta(C, 'line', null)]) {
+      const union = state.emphasizedIds.has(m.id) || isEmphasizedByOtherAxis(state, m);
+      expect(resolveFeatureDisplay(state, m, true).emphasized).toBe(union);
+    }
   });
 });

@@ -33,6 +33,7 @@ import type { FeatureId, VertexId } from '../ids';
 import {
   FEATURE_KIND,
   MENU_TOOL_KIND,
+  type AxisEmphasisLookup,
   type FeatureKind,
   type FeatureKindLookup,
   type MenuToolKind,
@@ -82,6 +83,34 @@ export interface ComposeInput {
   readonly featureKindLookup: FeatureKindLookup;
   /** Single source for "is this vertex shared" (FR-33, 教訓 5.29). */
   readonly sharedLookup: SharedVertexLookup;
+  /**
+   * The session's PER-FEATURE 強調集合 (FR-113 Phase 2 — the store's
+   * `filter.emphasizedIds`, handed in verbatim: this is a VALUE, not a re-derivation).
+   * It decides WHICH of the mutually-exclusive 強調 / 強調解除 items is offered — the exact
+   * channel the item writes, so the LABEL always names the membership it will flip.
+   *
+   * It does NOT decide whether that item is ENABLED: the PAINTED emphasis is the union of
+   * this set with the 種別/深度 axes, so a target already emphasized by an axis would not
+   * change appearance either way. {@link ComposeInput.axisEmphasisLookup} is the second
+   * axis of that 3-state出し分け (see it for the full rule).
+   */
+  readonly emphasizedFeatureIds: ReadonlySet<FeatureId>;
+  /**
+   * "Is this feature emphasized by a channel OTHER than {@link emphasizedFeatureIds}?"
+   * (FR-113 Phase 2 — the 種別/深度 強調軸, derived by the caller from the SAME resolution
+   * the map paints, 教訓 5.29).
+   *
+   * WHY: the 強調/強調解除 item writes the PER-FEATURE channel only, while what the user
+   * SEES is the union. With 面 種別強調 ON, adding an area to (or removing it from) the
+   * per-feature set dims/undims nothing — the label would promise an effect that never
+   * happens (出す≠起きる, 教訓 5.6). So the pair is offered in THREE states, not two:
+   *   - not axis-emphasized, not in the set → 「この地物を強調」 ENABLED;
+   *   - not axis-emphasized, in the set     → 「強調を解除」 ENABLED;
+   *   - axis-emphasized (either membership) → the same label, SHOWN-BUT-DISABLED with
+   *     {@link DISABLE_REASON.EmphasisFromOtherAxis} pointing at the panel's
+   *     「強調をすべて解除」— the ONE action that does clear the 種別/深度 axis.
+   */
+  readonly axisEmphasisLookup: AxisEmphasisLookup;
 }
 
 // --- Resolved menu target (UI 文脈優先, 教訓 5.3 / 5.4) ----------------------
@@ -257,15 +286,15 @@ function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
 }
 
 /**
- * The feature a 表示制御 (hide) item can target: a Feature target's own id, or a
- * single-owner VertexOnly target's resolved owner. Returns null for a multi/unknown
- * owner or a None target — the SAME condition {@link dispatchMenuItem}'s
- * `featureTargetOf` resolves, so 出す=発火できる (教訓 5.6). 個別非表示 is display-only,
- * so it does NOT depend on the owner KIND (unlike 分割/所属変更); but keeping the
+ * The feature a 表示制御 item (個別非表示 / 強調 / 強調解除) can target: a Feature target's
+ * own id, or a single-owner VertexOnly target's resolved owner. Returns null for a
+ * multi/unknown owner or a None target — the SAME condition {@link dispatchMenuItem}'s
+ * `featureTargetOf` resolves, so 出す=発火できる (教訓 5.6). These ops are display-only,
+ * so they do NOT depend on the owner KIND (unlike 分割/所属変更); but keeping the
  * condition aligned with featureTargetOf (owner id AND kind) keeps compose/dispatch in
  * lock-step and avoids offering an item the dispatch would block.
  */
-function hideableFeatureId(target: MenuTarget): FeatureId | null {
+function displayControlFeatureId(target: MenuTarget): FeatureId | null {
   switch (target.kind) {
     case MENU_TARGET_KIND.Feature:
       return target.featureId;
@@ -287,12 +316,12 @@ function hideableFeatureId(target: MenuTarget): FeatureId | null {
  *
  * EDIT items (削除・プロパティ編集・面情報・共有解除) require editing permission — in
  * 表示専用モード (canEdit=false) they are ALL suppressed (教訓 5.13 一括無効化). The
- * DISPLAY-only 個別非表示 (FR-113 この地物を非表示) is a session display op, not an edit,
- * so it is offered even in View mode for any resolvable single-feature target — the ONE
- * item that survives the view-only gate (ユーザー裁定: View モードでも可).
+ * DISPLAY-only 表示制御 items (FR-113 個別非表示 + Phase 2 強調/強調解除) are session display
+ * ops, not edits, so they are offered even in View mode for any resolvable single-feature
+ * target — the items that survive the view-only gate (ユーザー裁定: View モードでも可).
  *
  * Order: common (削除・プロパティ編集) → 面情報 (分割・所属変更・結合, leaf only)
- * → 共有解除 (when shared vertices present) → 個別非表示 (display, last). The tool kind
+ * → 共有解除 (when shared vertices present) → 表示制御 (個別非表示 → 強調/強調解除, last). The tool kind
  * is part of the input (FR-96): the knife tool, already in a split session, omits the
  * redundant 分割 item (受け入れ基準 4: 項目集合がツール種類で変わる).
  */
@@ -353,10 +382,24 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
     }
   }
 
-  // 個別非表示 (FR-113, 表示制御) — display-only, offered REGARDLESS of canEdit for any
-  // resolvable single-feature target. Placed LAST so the edit item order is unchanged.
-  if (hideableFeatureId(target) !== null) {
+  // 表示制御項目 (FR-113) — display-only, offered REGARDLESS of canEdit for any resolvable
+  // single-feature target. Placed LAST so the edit item order is unchanged. 個別非表示 first,
+  // then the 強調 pair: exactly ONE of 「この地物を強調」/「強調を解除」 is offered, its LABEL
+  // chosen by the target's CURRENT membership in the per-feature 強調集合 (the channel the
+  // item writes) and its ENABLED state by whether the 種別/深度軸 already emphasizes it —
+  // an axis-emphasized target would not change appearance either way, so the item is shown
+  // DISABLED with the reason instead of firing a no-op (出す=起きる, 教訓 5.6).
+  const displayTargetId = displayControlFeatureId(target);
+  if (displayTargetId !== null) {
     items.push(enabledItem(MENU_ITEM_KIND.HideFeature));
+    const emphasisItemKind = input.emphasizedFeatureIds.has(displayTargetId)
+      ? MENU_ITEM_KIND.UnemphasizeFeature
+      : MENU_ITEM_KIND.EmphasizeFeature;
+    items.push(
+      input.axisEmphasisLookup.isEmphasizedByOtherAxis(displayTargetId)
+        ? disabledItem(emphasisItemKind, DISABLE_REASON.EmphasisFromOtherAxis)
+        : enabledItem(emphasisItemKind),
+    );
   }
 
   // メニュー項目 0 件 (例: view-only + owner 不確定, または vertex-only + multi-owner +

@@ -106,6 +106,99 @@ describe('FR-113 filter slice — initial + actions', () => {
   });
 });
 
+// FR-113 Phase 2 — the emphasis actions the 種別強調トグル / 右クリック「この地物を強調」/
+// 「強調をすべて解除」 drive. Each defers to the pure filter-state helper (no state logic in
+// the UI or the store body), is identity-stable on a no-op, never marks the project dirty,
+// and never HIDES anything (emphasis only dims others) so the selection is never healed away.
+describe('FR-113 Phase 2 filter slice — emphasis actions', () => {
+  it('setFilterKindEmphasized emphasizes a kind axis via the pure helper', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Area, true);
+    expect(store.getState().filter.emphasizedKinds.has(FEATURE_KIND_AXIS.Area)).toBe(true);
+    expect(store.getState().filter.emphasizedKinds.has(FEATURE_KIND_AXIS.Point)).toBe(false);
+    // 可視軸は無傷 (強調と可視は直交).
+    expect(store.getState().filter.kindVisible[FEATURE_KIND_AXIS.Area]).toBe(true);
+
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Area, false);
+    expect(store.getState().filter.emphasizedKinds.size).toBe(0);
+  });
+
+  it('a no-op kind-emphasis write preserves the filter REFERENCE (identity stability)', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    const before = store.getState().filter;
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Line, false); // already off
+    expect(store.getState().filter).toBe(before);
+  });
+
+  it('setFeatureEmphasized adds then removes ONE id (右クリック 強調 / 強調を解除)', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setFeatureEmphasized(f('X'), true);
+    expect(store.getState().filter.emphasizedIds.has(f('X'))).toBe(true);
+    store.getState().setFeatureEmphasized(f('X'), false);
+    expect(store.getState().filter.emphasizedIds.has(f('X'))).toBe(false);
+  });
+
+  it('a no-op per-feature emphasis write preserves the filter REFERENCE', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    const before = store.getState().filter;
+    store.getState().setFeatureEmphasized(f('X'), false); // never emphasized
+    expect(store.getState().filter).toBe(before);
+  });
+
+  it('clearAllEmphasis clears EVERY emphasis axis and is a no-op when none is active', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    const pristine = store.getState().filter;
+    store.getState().clearAllEmphasis(); // nothing emphasized → same reference
+    expect(store.getState().filter).toBe(pristine);
+
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Area, true);
+    store.getState().setFeatureEmphasized(f('X'), true);
+    store.getState().clearAllEmphasis();
+    expect(store.getState().filter.emphasizedKinds.size).toBe(0);
+    expect(store.getState().filter.emphasizedIds.size).toBe(0);
+    expect(store.getState().filter.emphasizedDepth).toBeNull();
+  });
+
+  it('emphasis never hides a feature → the active selection is NOT healed away', () => {
+    const store = createSessionStore<TestDomain>({
+      initialDomain: { tag: 'd0' },
+      filterVisibility: HIDE_BY_INDIVIDUAL,
+      initial: { activeFeature: f('A') },
+    });
+    const selBefore = store.getState().selection;
+    store.getState().setFeatureEmphasized(f('B'), true);
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Point, true);
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().selection).toBe(selBefore); // no selection churn
+  });
+
+  it('NO emphasis action marks the project dirty (session-only, 受け入れ基準1)', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Area, true);
+    store.getState().setFeatureEmphasized(f('X'), true);
+    store.getState().clearAllEmphasis();
+    expect(store.getState().projectDirty).toBe(false);
+  });
+
+  it('a structure change prunes a dangling EMPHASIZED id (reconcile 漏斗, 教訓 5.5/5.6)', () => {
+    const { store, setLive } = storeWithLive([f('A'), f('B')]);
+    store.getState().setFeatureEmphasized(f('A'), true);
+    store.getState().setFeatureEmphasized(f('B'), true);
+    setLive([f('B')]); // A deleted
+    store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({ deleted: [f('A')] }));
+    expect(store.getState().filter.emphasizedIds.has(f('A'))).toBe(false);
+    expect(store.getState().filter.emphasizedIds.has(f('B'))).toBe(true);
+  });
+
+  it('undo/redo prunes a dangling EMPHASIZED id too (symmetric)', () => {
+    const { store, setLive } = storeWithLive([f('A')]);
+    store.getState().setFeatureEmphasized(f('A'), true);
+    setLive([]);
+    store.getState().applyUndoRedoResult({ tag: 'd1' }, createCommandResult({ deleted: [f('A')] }));
+    expect(store.getState().filter.emphasizedIds.has(f('A'))).toBe(false);
+  });
+});
+
 describe('FR-113 filter slice — LOAD / NEW reset (教訓 5.2)', () => {
   it('resetToDomain resets the filter to the inert DEFAULT', () => {
     const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });

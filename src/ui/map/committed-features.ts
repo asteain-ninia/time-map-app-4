@@ -52,6 +52,7 @@ import {
   type PresentationFor,
 } from '../../render/display-bridge';
 import { withOpacity } from '../../render/grid-layer';
+import { activeColor } from '../../render/feature-layer';
 import type {
   EvaluatedFeature,
   EvaluatedLine,
@@ -137,12 +138,17 @@ function buildAreas(
     return {
       style,
       label: feature ? labelOf(feature) : '',
-      // FR-82 selection + FR-43 focus-emphasis (shape.emphasized) + FR-113 filter-emphasis
-      // (verdict.emphasized) all paint the highlight color; the ring structure never changes
-      // (教訓 5.25 — single shape resolution). Selection wins by construction (OR); the FR-113
-      // emphasis verdict is DEFAULT-inert (no emphasis UI yet), so this is behaviour-neutral
-      // today and completes the resolution→draw path for Phase 2 (Codex F4).
-      selected: selected || shape.emphasized || verdict?.emphasized === true,
+      // FR-82 selection + FR-43 focus-emphasis (shape.emphasized) paint the highlight color;
+      // the ring structure never changes (教訓 5.25 — single shape resolution).
+      //
+      // FR-113 filter-emphasis (verdict.emphasized) deliberately does NOT: its visual
+      // language is「強調したものが目立ち、それ以外が淡くなる」— carried ENTIRELY by dimming
+      // the others through `opacity` above (DIM_OPACITY_FACTOR). Painting emphasized features
+      // with `selectedColor` too would make 種別強調(面) repaint EVERY area in the selection
+      // colour, so「今どれが選択中か」became unreadable the moment a kind axis was emphasized
+      // (Phase 2 made that verdict user-reachable). Selection stays the ONE thing the
+      // selection colour means.
+      selected: selected || shape.emphasized,
     };
   };
   // No filter → the EXACT prior path (byte-identical draw batch, zero overhead).
@@ -217,6 +223,25 @@ export function buildCommittedFeatures(
   outputCache.push({ root, time, selectedId, control: displayControl, filter, value });
   if (outputCache.length > OUTPUT_CACHE_CAPACITY) outputCache.shift();
   return value;
+}
+
+/**
+ * The color each drawn feature is ACTUALLY PAINTED with, keyed by feature id — the E2E
+ * render-observation mapping (`window.__E2E__.getDrawnFeatureFills`), extracted here as a
+ * pure function so its truthfulness is Vitest-pinned rather than living un-tested in App.
+ *
+ * It resolves through the renderer's OWN {@link activeColor}, not the raw `style.fill`:
+ * a highlighted feature is painted in `style.selectedColor`, so a hook that reported
+ * `style.fill` would be blind to any regression that repaints features with the selection
+ * colour — exactly the FR-113 強調 regression this observation exists to catch (教訓 5.29).
+ * The FR-113 display opacity is already baked into both channels of the style.
+ */
+export function drawnFeatureFills(
+  drawn: readonly EvaluatedFeature[],
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const f of drawn) out[f.id] = activeColor(f.style, f.selected);
+  return out;
 }
 
 /** One built-batch memo entry: the five identity keys plus the batch they produced. */
@@ -294,16 +319,17 @@ export function computeCommittedFeatures(
     // FR-113 cull + opacity: a hidden point/line is dropped from the batch (never drawn /
     // hit / searched, 教訓 5.29); a visible one's per-feature opacity folds into its style.
     let filterOpacity = 1;
-    let filterEmphasized = false;
     if (filtered !== null) {
       const verdict = filtered.displayById.get(feature.id);
       if (verdict === undefined || !verdict.visible) continue;
       filterOpacity = verdict.opacity;
-      filterEmphasized = verdict.emphasized;
     }
-    // FR-82 selection OR FR-113 filter-emphasis paint the highlight (selection wins by OR;
-    // filterEmphasized is DEFAULT-inert with no emphasis UI, so behaviour-neutral — Codex F4).
-    const selected = feature.id === selectedId || filterEmphasized;
+    // FR-82 selection ALONE paints the highlight colour. FR-113 強調 is expressed by dimming
+    // the OTHERS (the verdict's opacity, folded into `style` below) — never by repainting the
+    // emphasized feature in the selection colour, which since Phase 2 (種別強調 点/線 is
+    // reachable from the panel) would turn every point/line of an emphasized kind into a
+    // look-alike of the active selection. Same rule as the area path above.
+    const selected = feature.id === selectedId;
     const style = styleOf(feature.color, filterOpacity);
     const label = labelOf(feature);
     switch (feature.kind) {

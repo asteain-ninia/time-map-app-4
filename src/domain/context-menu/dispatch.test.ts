@@ -53,6 +53,57 @@ function leafModel(extra: Partial<ContextMenuModel> = {}): ContextMenuModel {
   };
 }
 
+// FR-113 Phase 2 — 強調 / 強調解除 share ONE flow (SetFeatureEmphasis) discriminated by the
+// `emphasized` payload, so the launcher has a single arm and the two items can never route
+// to different effects than their labels promise.
+describe('dispatchMenuItem — FR-113 Phase 2 強調 (SetFeatureEmphasis)', () => {
+  it('この地物を強調 → SetFeatureEmphasis(emphasized=true) 意図', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.EmphasizeFeature)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, model);
+    expect(r).toEqual({
+      kind: FLOW_KIND.SetFeatureEmphasis,
+      featureId: fid('a'),
+      emphasized: true,
+    });
+  });
+
+  it('強調を解除 → SetFeatureEmphasis(emphasized=false) 意図', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.UnemphasizeFeature)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.UnemphasizeFeature, model);
+    expect(r).toEqual({
+      kind: FLOW_KIND.SetFeatureEmphasis,
+      featureId: fid('a'),
+      emphasized: false,
+    });
+  });
+
+  it('対象 feature が解決できなければブロック (multi/unknown owner の VertexOnly)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.VertexOnly,
+      ownerFeatureId: null,
+      ownerFeatureKind: null,
+      vertexIds: new Set([vid('v1')]),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.EmphasizeFeature)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+  });
+
+  it('モデルに無い項目は発火しない (frozen model の drift guard)', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.EmphasizeFeature)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.UnemphasizeFeature, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.ItemNotInModel);
+  });
+});
+
 describe('dispatchMenuItem — FR-113 個別非表示 (HideFeature)', () => {
   it('この地物を非表示 → HideFeature 意図 (対象 feature id)', () => {
     const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.HideFeature)] });

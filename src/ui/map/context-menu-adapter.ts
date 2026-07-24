@@ -25,6 +25,7 @@
 import {
   MENU_TOOL_KIND,
   composeContextMenu,
+  type AxisEmphasisLookup,
   type ComposeInput,
   type ContextMenuModel,
   type FeatureKindLookup,
@@ -33,6 +34,7 @@ import {
   type NoMenu,
   type SharedVertexLookup,
 } from '../../domain/context-menu/index';
+import type { FeatureId } from '../../domain/ids';
 import {
   EMPTY_CONTEXT,
   HIT_KIND,
@@ -82,6 +84,20 @@ export interface ComposeInputArgs {
   /** Where the menu opens (screen pixels). */
   readonly position: MenuPosition;
   readonly lookups: MenuLookups;
+  /**
+   * The session filter's per-feature 強調集合 (`store.filter.emphasizedIds`), passed through
+   * verbatim — the SAME value the draw path resolves emphasis from, so the offered
+   * 強調/強調解除 item can never disagree with what the map shows (FR-113 Phase 2, 教訓 5.29).
+   */
+  readonly emphasizedFeatureIds: ReadonlySet<FeatureId>;
+  /**
+   * "Is this feature already emphasized by the 種別/深度軸?" — derived by the caller from
+   * the SAME FR-113 verdicts the map paints (`resolveFilteredDisplay`), MINUS the
+   * per-feature集合 above. It decides whether the 強調/強調解除 item is enabled or
+   * shown-disabled (see {@link ComposeInput.axisEmphasisLookup}); required (not optional)
+   * so the App cannot silently forget it and regress to the 出す≠起きる 2-state出し分け.
+   */
+  readonly axisEmphasisLookup: AxisEmphasisLookup;
 }
 
 /**
@@ -91,7 +107,16 @@ export interface ComposeInputArgs {
  * is the ONE permission predicate. Pure.
  */
 export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
-  const { selection, mode, activeTool, hit, position, lookups } = args;
+  const {
+    selection,
+    mode,
+    activeTool,
+    hit,
+    position,
+    lookups,
+    emphasizedFeatureIds,
+    axisEmphasisLookup,
+  } = args;
   const vertexContext =
     selection.vertexIds.size === 0
       ? EMPTY_CONTEXT
@@ -107,6 +132,8 @@ export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
     canEdit: canEdit(mode),
     featureKindLookup: lookups.featureKindLookup,
     sharedLookup: lookups.sharedLookup,
+    emphasizedFeatureIds,
+    axisEmphasisLookup,
   };
 }
 

@@ -22,6 +22,7 @@ import { FEATURE_KIND, type FeatureKind } from '../feature';
 import {
   MENU_TOOL_KIND,
   FLOW_KIND,
+  axisEmphasisLookupFromSet,
   featureKindLookupFromMap,
   sharedLookupFromSet,
   type MenuToolKind,
@@ -41,6 +42,10 @@ interface BuildOpts {
   readonly owners?: ReadonlyMap<VertexId, FeatureId>;
   readonly shared?: ReadonlySet<VertexId>;
   readonly toolKind?: MenuToolKind;
+  /** FR-113 Phase 2: the session's per-feature 強調集合 (drives 強調 vs 強調解除). */
+  readonly emphasized?: ReadonlySet<FeatureId>;
+  /** FR-113 Phase 2: features already emphasized by the 種別/深度軸 (drives 無効化). */
+  readonly emphasizedByAxis?: ReadonlySet<FeatureId>;
 }
 
 function build(opts: BuildOpts): ComposeInput {
@@ -58,6 +63,10 @@ function build(opts: BuildOpts): ComposeInput {
     canEdit: true,
     featureKindLookup: featureKindLookupFromMap(opts.kinds ?? new Map()),
     sharedLookup: sharedLookupFromSet(opts.shared ?? new Set()),
+    emphasizedFeatureIds: opts.emphasized ?? new Set<FeatureId>(),
+    axisEmphasisLookup: axisEmphasisLookupFromSet(
+      opts.emphasizedByAxis ?? new Set<FeatureId>(),
+    ),
   };
 }
 
@@ -110,6 +119,37 @@ const CASES: ReadonlyArray<{ readonly name: string; readonly input: ComposeInput
       vertexIds: new Set([vid('v1')]),
       owners: new Map([[vid('v1'), fid('a')]]),
       kinds: new Map([[fid('a'), FEATURE_KIND.Line]]),
+    }),
+  },
+  {
+    // FR-113 Phase 2: an ALREADY-emphasized target swaps 強調 → 強調解除; that item must
+    // dispatch too (the un-emphasize arm is not a dead offer).
+    name: 'active leaf ALREADY emphasized (強調解除 offered)',
+    input: build({
+      activeFeature: fid('a'),
+      kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+      emphasized: new Set([fid('a')]),
+    }),
+  },
+  {
+    name: 'single-owner vertex context, owner ALREADY emphasized',
+    input: build({
+      vertexIds: new Set([vid('v1')]),
+      owners: new Map([[vid('v1'), fid('a')]]),
+      kinds: new Map([[fid('a'), FEATURE_KIND.Line]]),
+      emphasized: new Set([fid('a')]),
+    }),
+  },
+  {
+    // FR-113 Phase 2 (overlap): the 種別/深度軸 already emphasizes the target, so the
+    // 強調 item comes back DISABLED. Included so the invariant scan also covers a state
+    // where a 表示制御 item is shown-but-disabled — the remaining enabled items must all
+    // still dispatch (the disabled one is skipped by the loop, never a dead ENABLED offer).
+    name: 'active leaf emphasized by the 種別軸 (強調項目が無効化される)',
+    input: build({
+      activeFeature: fid('a'),
+      kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+      emphasizedByAxis: new Set([fid('a')]),
     }),
   },
   // NOTE: multi-owner / unknown-owner shared selections are NO LONGER actionable menus

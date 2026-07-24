@@ -135,7 +135,7 @@ import { runUnshare } from './live-unshare';
 import { createDetailDocumentDispatch } from './live-detail-document';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
-import { buildCommittedFeatures } from './map/committed-features';
+import { buildCommittedFeatures, drawnFeatureFills } from './map/committed-features';
 import { featureBoundsAt } from './map/feature-bounds';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
@@ -178,7 +178,10 @@ import {
 import { launchMenuItem } from './context-menu-launch';
 import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
 import { resolveDisplayFor } from './map/display-resolution-cache';
-import { isFeatureVisibleUnderFilter } from './map/filtered-display';
+import {
+  isEmphasizedByOtherAxisUnderFilter,
+  isFeatureVisibleUnderFilter,
+} from './map/filtered-display';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
 // (FR-109 follow-up) the undoable default-palette change command — routed through the
@@ -644,6 +647,29 @@ export function App(): JSX.Element {
             s.filter,
           );
           return new Set(drawn.map((f) => f.id)).size;
+        },
+        /**
+         * FR-113 Phase 2: the color each drawn feature is ACTUALLY PAINTED with, keyed by
+         * feature id — resolved through the SAME buildCommittedFeatures the map draws (live
+         * filter included) and the renderer's OWN `activeColor` rule (`style.selectedColor`
+         * when the feature is highlighted, else the fill). The FR-113 opacity is BAKED into
+         * the string (`#rrggbb` when fully opaque, `rgba(…)` once dimmed), so a behavioural
+         * E2E can prove「強調した地物以外が淡くなる」from the REAL draw batch rather than from
+         * the store — AND can see a regression that repaints an emphasized feature in the
+         * selection colour (a `style.fill` mirror never could). Read-only observation; the
+         * mapping itself is the Vitest-pinned pure `drawnFeatureFills`.
+         */
+        getDrawnFeatureFills: (): Record<string, string> => {
+          const s = store.getState();
+          return drawnFeatureFills(
+            buildCommittedFeatures(
+              s.domain,
+              s.currentTime,
+              s.activeFeature,
+              s.displayControl,
+              s.filter,
+            ),
+          );
         },
         /**
          * HB3-4: the WORLD positions of the active feature's VERTEX edit-handles in the
@@ -2087,6 +2113,18 @@ export function App(): JSX.Element {
           ownerLookup: ownerLookupFromMap(resolution.owners),
           sharedLookup: sharedLookupFromSet(sharedVertexIdsFor(resolution)),
         },
+        // FR-113 Phase 2: the LIVE per-feature 強調集合 decides WHICH of「この地物を強調」/
+        // 「強調を解除」the menu offers — read from the SAME store slice the draw path
+        // resolves emphasis from, at right-click time (never a stale capture, 教訓 5.6).
+        emphasizedFeatureIds: s.filter.emphasizedIds,
+        // ...and the 種別/深度軸 decides whether that item is ENABLED. The axis verdict comes
+        // from the SAME FR-113 resolution the map paints (教訓 5.29 単一解決) with the
+        // per-feature集合 factored out, so an axis-emphasized target gets the shown-but-
+        // disabled item rather than a no-op toggle (出す=起きる, 教訓 5.6).
+        axisEmphasisLookup: {
+          isEmphasizedByOtherAxis: (fid) =>
+            isEmphasizedByOtherAxisUnderFilter(resolution, s.filter, fid),
+        },
       });
     },
     [store],
@@ -2121,6 +2159,10 @@ export function App(): JSX.Element {
         // FR-113 個別非表示: force-hide the right-clicked feature through the session
         // display filter (no domain mutation / history / dirty). Works in View mode too.
         hideFeature: (featureId) => store.getState().setFeatureHidden(featureId, true),
+        // FR-113 Phase 2 強調/強調解除: session display filter only (no domain mutation /
+        // history / dirty). Works in View mode too, symmetric with 個別非表示.
+        setFeatureEmphasized: (featureId, emphasized) =>
+          store.getState().setFeatureEmphasized(featureId, emphasized),
       });
     },
     [store, registry, runDeleteFunnel, focusPropertyTab, armEditTool, runUnshareIntent],

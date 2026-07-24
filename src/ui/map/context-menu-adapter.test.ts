@@ -14,13 +14,21 @@ import { asFeatureId, asRingId, asVertexId, type FeatureId, type VertexId } from
 import { createShape, createTerritoryRing } from '../../domain/ring';
 import { createVertex, createVertexStore } from '../../domain/vertex';
 import {
+  DISABLE_REASON,
   MENU_ITEM_KIND,
   NO_MENU,
+  type AxisEmphasisLookup,
   type ContextMenuModel,
   type FeatureKindLookup,
   type NoMenu,
   type SharedVertexLookup,
 } from '../../domain/context-menu/index';
+import {
+  DEFAULT_FILTER_STATE,
+  FEATURE_KIND_AXIS,
+  setKindEmphasized,
+  type FilterState,
+} from '../discovery/index';
 import {
   EMPTY_SELECTION,
   HIT_KIND,
@@ -38,6 +46,7 @@ import { EDIT_MODE, DEFAULT_DISPLAY_CONTROL, type EditMode, type ToolId } from '
 import { TOOL_ID } from '../shell/tools';
 
 import { clearDisplayResolutionCache, resolveDisplayFor } from './display-resolution-cache';
+import { clearFilteredDisplayCache, isEmphasizedByOtherAxisUnderFilter } from './filtered-display';
 import { sharedVertexIdsFor } from './shared-vertex-derivation';
 import { clearLiveLookupCache, featureByIdAt } from '../live-lookup';
 import { composeMenuFor, toMenuToolKind, type MenuLookups } from './context-menu-adapter';
@@ -91,10 +100,30 @@ function liveLookups(root: DomainProject): MenuLookups {
   return { featureKindLookup, sharedLookup, ownerLookup };
 }
 
+/**
+ * The LIVE axis-emphasis lookup — the SAME `isEmphasizedByOtherAxisUnderFilter` App injects,
+ * over the SAME resolution the map paints. Wiring it (rather than a stub) is what proves the
+ * menu's 強調項目 enabled-state actually tracks the panel's 種別/深度 強調 (FR-113 Phase 2).
+ */
+function liveAxisEmphasis(root: DomainProject, filter: FilterState): AxisEmphasisLookup {
+  const resolution = resolveDisplayFor(root, TIME, DEFAULT_DISPLAY_CONTROL);
+  return {
+    isEmphasizedByOtherAxis: (fid: FeatureId) =>
+      isEmphasizedByOtherAxisUnderFilter(resolution, filter, fid),
+  };
+}
+
 function compose(
   root: DomainProject,
   selection: SelectionState,
-  opts: { mode?: EditMode; tool?: ToolId | null; hit?: HitResult } = {},
+  opts: {
+    mode?: EditMode;
+    tool?: ToolId | null;
+    hit?: HitResult;
+    emphasized?: ReadonlySet<FeatureId>;
+    /** The live FR-113 filter state backing the axis-emphasis lookup (default = inert). */
+    filter?: FilterState;
+  } = {},
 ): ContextMenuModel | NoMenu {
   return composeMenuFor({
     selection,
@@ -103,7 +132,15 @@ function compose(
     hit: opts.hit ?? { kind: HIT_KIND.Empty },
     position: { x: 5, y: 6 },
     lookups: liveLookups(root),
+    emphasizedFeatureIds: opts.emphasized ?? new Set<FeatureId>(),
+    axisEmphasisLookup: liveAxisEmphasis(root, opts.filter ?? DEFAULT_FILTER_STATE),
   });
+}
+
+/** The composed item matching `kind`, or undefined (for enabled/disableReason assertions). */
+function itemOf(model: ContextMenuModel | NoMenu, kind: string) {
+  if (model === NO_MENU || model.kind !== 'menu') return undefined;
+  return model.items.find((i) => i.kind === kind);
 }
 
 function kinds(model: ContextMenuModel | NoMenu): string[] {
@@ -113,6 +150,7 @@ function kinds(model: ContextMenuModel | NoMenu): string[] {
 
 beforeEach(() => {
   clearDisplayResolutionCache();
+  clearFilteredDisplayCache();
   clearLiveLookupCache();
 });
 
@@ -166,10 +204,49 @@ describe('context-menu-adapter — live lookup wiring (実ドメイン結線の�
   it('view mode → 編集項目は一括無効化、FR-113 個別非表示 のみ残る (ユーザー裁定 View でも可)', () => {
     const root = borderShareProject();
     const selection = withActiveFeature(EMPTY_SELECTION, A);
-    // canEdit=false: every EDIT item suppressed (教訓 5.13); the display-only 個別非表示
-    // (ドメイン非改変) survives so a browsing user can declutter (ユーザー裁定).
+    // canEdit=false: every EDIT item suppressed (教訓 5.13); the display-only 個別非表示 /
+    // 強調 (ドメイン非改変) survive so a browsing user can declutter (ユーザー裁定).
     const ks = kinds(compose(root, selection, { mode: EDIT_MODE.View, hit: featureBodyHit(A) }));
-    expect(ks).toEqual([MENU_ITEM_KIND.HideFeature]);
+    expect(ks).toEqual([MENU_ITEM_KIND.HideFeature, MENU_ITEM_KIND.EmphasizeFeature]);
+  });
+
+  it('FR-113 Phase 2: 強調中の地物なら「強調を解除」に入れ替わる (実結線)', () => {
+    const root = borderShareProject();
+    const selection = withActiveFeature(EMPTY_SELECTION, A);
+    const ks = kinds(
+      compose(root, selection, {
+        mode: EDIT_MODE.View,
+        hit: featureBodyHit(A),
+        emphasized: new Set([A]),
+      }),
+    );
+    expect(ks).toEqual([MENU_ITEM_KIND.HideFeature, MENU_ITEM_KIND.UnemphasizeFeature]);
+  });
+
+  // FR-113 Phase 2 (出す≠起きる の潰し込み, 実結線): the panel's 面 種別強調 already emphasizes
+  // leaf A, so flipping A's PER-FEATURE membership would dim/undim nothing. The item must come
+  // back SHOWN-BUT-DISABLED with the reason — driven here through the LIVE
+  // isEmphasizedByOtherAxisUnderFilter over the real resolution, not a stub.
+  it('FR-113 Phase 2: パネルで面を種別強調中なら「この地物を強調」は無効化されて理由が付く (実結線)', () => {
+    const root = borderShareProject();
+    const selection = withActiveFeature(EMPTY_SELECTION, A);
+    const filter = setKindEmphasized(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Area, true);
+    const model = compose(root, selection, { hit: featureBodyHit(A), filter });
+    const item = itemOf(model, MENU_ITEM_KIND.EmphasizeFeature);
+    expect(item?.enabled).toBe(false);
+    expect(item !== undefined && item.enabled === false ? item.disableReason : null).toBe(
+      DISABLE_REASON.EmphasisFromOtherAxis,
+    );
+    // 個別非表示 は別概念なので有効なまま (無効化が波及していない).
+    expect(itemOf(model, MENU_ITEM_KIND.HideFeature)?.enabled).toBe(true);
+  });
+
+  it('FR-113 Phase 2: 点/線の種別強調は面地物の強調項目を無効化しない (軸は種別ごと)', () => {
+    const root = borderShareProject();
+    const selection = withActiveFeature(EMPTY_SELECTION, A);
+    const filter = setKindEmphasized(DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS.Point, true);
+    const model = compose(root, selection, { hit: featureBodyHit(A), filter });
+    expect(itemOf(model, MENU_ITEM_KIND.EmphasizeFeature)?.enabled).toBe(true);
   });
 
   it('view mode + 選択なし → NO_MENU (対象が無ければ個別非表示も出せない)', () => {
@@ -189,6 +266,8 @@ describe('context-menu-adapter — live lookup wiring (実ドメイン結線の�
         hit: featureBodyHit(A),
         position: { x: 0, y: 0 },
         lookups: liveLookups(root),
+        emphasizedFeatureIds: new Set<FeatureId>(),
+        axisEmphasisLookup: liveAxisEmphasis(root, DEFAULT_FILTER_STATE),
       }),
     );
     expect(selectKs).toContain(MENU_ITEM_KIND.Split);

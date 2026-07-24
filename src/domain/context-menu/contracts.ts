@@ -83,6 +83,15 @@ export const FLOW_KIND = {
    * setFeatureHidden — no domain mutation, no history, no dirty).
    */
   HideFeature: 'hideFeature',
+  /**
+   * U41 個別強調 (FR-113 Phase 2) — add / remove the target feature from the session's
+   * 強調集合 (others dim by DIM_OPACITY_FACTOR). DISPLAY-only, exactly like
+   * {@link FLOW_KIND.HideFeature}: no domain mutation, no history, no dirty, and offered
+   * even in 表示専用モード. ONE flow serves BOTH menu items (「この地物を強調」/「強調を
+   * 解除」) — the `emphasized` payload says which, so the launcher has a single arm and the
+   * two items can never route to different effects than their labels promise.
+   */
+  SetFeatureEmphasis: 'setFeatureEmphasis',
 } as const;
 
 export type FlowKind = (typeof FLOW_KIND)[keyof typeof FLOW_KIND];
@@ -136,6 +145,13 @@ export type DispatchIntent =
       readonly kind: typeof FLOW_KIND.HideFeature;
       /** The feature to force-hide from the display (FR-113 個別非表示). */
       readonly featureId: FeatureId;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.SetFeatureEmphasis;
+      /** The feature whose 強調 membership changes (FR-113 Phase 2). */
+      readonly featureId: FeatureId;
+      /** true = 「この地物を強調」, false = 「強調を解除」 (the item that was shown). */
+      readonly emphasized: boolean;
     };
 
 // --- Shared-vertex判定 lookup (FR-33, single source — 教訓 5.10 / 5.29) ------
@@ -171,4 +187,33 @@ export function featureKindLookupFromMap(
   kinds: ReadonlyMap<FeatureId, FeatureKind>,
 ): FeatureKindLookup {
   return { kindOf: (featureId) => kinds.get(featureId) ?? null };
+}
+
+// --- Axis-emphasis lookup (FR-113 Phase 2 出す=起きる, 教訓 5.6 / 5.29) --------
+//
+// 強調 has TWO independent channels: the per-feature集合 the右クリック item writes
+// (`ComposeInput.emphasizedFeatureIds`) and the 種別/深度 axes the panel writes. The
+// PAINTED emphasis is their UNION (visibility.ts `isEmphasized`). When an axis ALREADY
+// emphasizes the target, toggling the per-feature membership changes NOTHING on screen —
+// so an ENABLED 強調/強調解除 item there would promise an effect that never happens.
+//
+// The composer asks this injected port "is this feature emphasized by a channel OTHER
+// than the per-feature集合 right now?" and, when true, offers the item SHOWN-BUT-DISABLED
+// with {@link DISABLE_REASON.EmphasisFromOtherAxis} instead of omitting it (discoverable +
+// explains the panel's「強調をすべて解除」escape). The truth is derived by the caller from
+// the SAME resolution the map paints (never re-derived here — 教訓 5.29).
+export interface AxisEmphasisLookup {
+  isEmphasizedByOtherAxis(featureId: FeatureId): boolean;
+}
+
+/** The "no axis emphasis anywhere" lookup — the inert default for tests / thin adapters. */
+export const NO_AXIS_EMPHASIS: AxisEmphasisLookup = {
+  isEmphasizedByOtherAxis: () => false,
+};
+
+/** Build an axis-emphasis lookup from a plain set (used by tests / thin adapters). */
+export function axisEmphasisLookupFromSet(
+  emphasizedByAxis: ReadonlySet<FeatureId>,
+): AxisEmphasisLookup {
+  return { isEmphasizedByOtherAxis: (featureId) => emphasizedByAxis.has(featureId) };
 }

@@ -38,6 +38,7 @@ import {
   kindAxisOf,
   searchFeatures,
   setEmphasizedIds,
+  setEmphasizedKinds,
   setIndividualHidden,
   setKindVisible,
   setOpacity,
@@ -46,6 +47,7 @@ import {
 import {
   buildCommittedFeatures,
   clearCommittedFeaturesCache,
+  drawnFeatureFills,
 } from './committed-features';
 import {
   clearDisplayResolutionCache,
@@ -448,17 +450,57 @@ describe('buildCommittedFeatures — FR-113 display filter', () => {
     );
   });
 
-  it('F4: filter-emphasis composes into the draw highlight (selected) flag; others do not', () => {
-    // The FR-113 emphasis verdict (verdict.emphasized) now reaches the draw highlight, so
-    // the resolution→draw path is complete for Phase 2. No selection → the only highlight is
-    // the emphasized feature (leaf-1); the non-emphasized point stays un-highlighted.
+  // FR-113 Phase 2 強調の視覚言語: 「強調したものが目立ち、それ以外が淡くなる」は減衰(opacity)
+  // だけで表現する。強調地物を selectedColor で塗り直すと、パネルで面を種別強調した瞬間に
+  // 全ての面が選択色になり「今どれが選択中か」が読めなくなる (FR-82 と衝突)。
+  it('FR-113 強調は他を淡くするだけで、強調地物を選択色に塗り替えない (FR-82 と混同しない)', () => {
     const root = project();
     const filter = setEmphasizedIds(DEFAULT_FILTER_STATE, ['leaf-1' as unknown as FeatureId]);
     const drawn = buildCommittedFeatures(root, YEAR, null, DISPLAY, filter);
-    expect(drawn.find((f) => f.id === 'leaf-1')?.selected).toBe(true);
-    expect(drawn.find((f) => f.id === 'pt-1')?.selected).toBe(false);
-    // DEFAULT filter → no emphasis → nothing highlighted (behaviour-neutral by default).
+    const leaf = drawn.find((f) => f.id === 'leaf-1');
+    const pt = drawn.find((f) => f.id === 'pt-1');
+    // 選択していないのだから、強調しても highlight フラグは立たない.
+    expect(leaf?.selected).toBe(false);
+    expect(pt?.selected).toBe(false);
+    // 強調側は素の塗りのまま / 非強調側だけが DIM_OPACITY_FACTOR で淡くなる.
     const plain = buildCommittedFeatures(root, YEAR, null, DISPLAY);
-    expect(plain.find((f) => f.id === 'leaf-1')?.selected).toBe(false);
+    expect(leaf?.style.fill).toBe(plain.find((f) => f.id === 'leaf-1')?.style.fill);
+    expect(pt?.style.fill).not.toBe(plain.find((f) => f.id === 'pt-1')?.style.fill);
+  });
+
+  it('種別強調で全ての面が選択色になったりしない — 選択中の地物だけが選択色 (退行ロック)', () => {
+    const root = project();
+    // 面を種別強調 ON + 点を選択中: 選択色を持つのは選択中の点だけ.
+    const filter = setEmphasizedKinds(DEFAULT_FILTER_STATE, [FEATURE_KIND_AXIS.Area]);
+    const drawn = buildCommittedFeatures(
+      root,
+      YEAR,
+      'pt-1' as unknown as FeatureId,
+      DISPLAY,
+      filter,
+    );
+    const fills = drawnFeatureFills(drawn);
+    const leaf = drawn.find((f) => f.id === 'leaf-1')!;
+    const pt = drawn.find((f) => f.id === 'pt-1')!;
+    expect(leaf.selected).toBe(false);
+    expect(pt.selected).toBe(true);
+    // 実際に塗られる色: 面は素の塗り、選択中の点だけが selectedColor.
+    expect(fills['leaf-1']).toBe(leaf.style.fill);
+    expect(fills['pt-1']).toBe(pt.style.selectedColor);
+    expect(fills['leaf-1']).not.toBe(leaf.style.selectedColor);
+  });
+
+  // 観測フックの正直さ (E2E が空振りしないこと): style.fill ではなく実際に塗られる色を返す.
+  it('drawnFeatureFills は実描画色 (activeColor) を返す — 選択地物は selectedColor', () => {
+    const root = project();
+    const drawn = buildCommittedFeatures(root, YEAR, 'leaf-1' as unknown as FeatureId, DISPLAY);
+    const fills = drawnFeatureFills(drawn);
+    const leaf = drawn.find((f) => f.id === 'leaf-1')!;
+    const pt = drawn.find((f) => f.id === 'pt-1')!;
+    expect(leaf.selected).toBe(true);
+    expect(fills['leaf-1']).toBe(leaf.style.selectedColor);
+    expect(fills['leaf-1']).not.toBe(leaf.style.fill);
+    // 非選択地物は素の塗り (不透明度が焼き込まれた fill).
+    expect(fills['pt-1']).toBe(pt.style.fill);
   });
 });
