@@ -153,6 +153,17 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
 
+  // W3-AB — CANCEL = leave the tool (Escape / キャンセル). Merge was one of the two tools
+  // W3-B's「cancel → 同一ボタン再アーム」対称化 never reached: its cancel only reset the
+  // session, leaving `activeTool` = EditMerge (toolbar `aria-pressed=true`) with no session,
+  // so pressing the SAME button again ran the store's press-toggle (tool → null) and nothing
+  // happened — a dead button until the user detoured through another tool. Releasing
+  // `activeTool` here keeps the toolbar's pressed state and the session's armed state ONE
+  // truth (教訓 5.2 全経路で破棄 + 単一の真実源). Same規約 as knife / drill / ring-edit.
+  const releaseToolOnCancel = useCallback(() => {
+    store.getState().setActiveTool(null);
+  }, [store]);
+
   const merge = useMergeTool<S>({
     resolveFeatures,
     resolveStore,
@@ -160,6 +171,7 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     ids,
     startProcess,
     onCommitted,
+    onCancelled: releaseToolOnCancel,
     ...(onConflicts ? { onConflicts } : {}),
   });
 

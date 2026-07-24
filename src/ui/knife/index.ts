@@ -31,5 +31,6 @@ export {
   type KnifeDrawSink,
   type ScreenToWorld,
   type FeatureAtPoint,
+  type ResolveLeafShape,
   type CircleWorldRadius,
 } from './KnifeToolController';

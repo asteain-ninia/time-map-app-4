@@ -74,6 +74,14 @@ const committed: ProcessResult<S> = {
   command: noopCommand,
 };
 
+/** A U13 outcome that pauses the session for the U35 conflict flow (FR-62). */
+const conflictsPending: ProcessResult<S> = {
+  status: PROCESS_STATUS.ConflictsPending,
+  conflicts: [],
+  unresolvedConflictIds: [],
+  trialState: NEXT_STATE,
+};
+
 const ATTRS = createBasicAttributes('target', 0, 100);
 const COLOR = createColorInfo(true, '#fff', '#0f0', '#000');
 const DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -149,7 +157,6 @@ function mountKnife(
       anchorTime={() => ANCHOR}
       screenToWorld={screenToWorld}
       featureAtPoint={featureAtPoint}
-      targetShape={undefined}
       drawSink={drawSink}
       defaultColor={DEFAULT_COLOR}
     />,
@@ -330,6 +337,95 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
   });
 });
 
+// --- W3-B: キャンセル後の再アーム (ring-edit 8950639 と対称) ---------------------
+//
+// CANCEL = ツールから出る. 対象選択の解除だけでは toolbar の aria-pressed が true のまま
+// セッションだけ武装解除された状態が残り、同じボタンをもう一度押すとストアの press-toggle
+// (tool → null) が走って「何も起きない」= 別ツールを経由しないと復活できなかった。
+// `setActiveTool(null)` に一本化して toolbar の押下状態と session の armed を単一真実源に
+// する (教訓 5.2 全経路で破棄 + 単一の真実源)。ring-edit と同じ規約。
+
+describe('KnifeToolController — キャンセルはツール選択も解除して再アームできる (W3-B)', () => {
+  it('キャンセル(Escape)で activeTool が null になり、同じツールの再選択で復活する', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
+    expect(h.store.getState().activeTool).toBeNull();
+
+    // Re-selecting the SAME tool re-arms a fresh session (the 実機 repro: the user
+    // pressed the same button again and nothing happened).
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditKnife));
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    clickInput(5, 5);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('0');
+    h.unmount();
+  });
+
+  it('分断線キャンセルボタンも同じくツール選択を解除する (単一の解除経路)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    fireEvent.click(screen.getByTestId('knife-cancel'));
+    expect(h.store.getState().activeTool).toBeNull();
+    expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('継承先モーダルのキャンセルも同じ経路 (再アーム可能)', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-modal-cancel'));
+    expect(h.store.getState().activeTool).toBeNull();
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditKnife));
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    h.unmount();
+  });
+
+  // W3-AB fix-forward (レビュー LOW): while the U35 conflict modal is open the MODAL owns
+  // Escape (its own useModalKeydown → onConflictCancel → the host's reArmActiveTool). The
+  // tool-side Escape listener stayed live through ConflictPaused, so an Escape that missed
+  // the dialog's React handler ran `knife.cancel()` → `setActiveTool(null)` UNDER the still
+  // open modal; the later reArmActiveTool then read `activeTool === null` and toggled
+  // null→null, so the tool never came back after the conflict was resolved.
+  it('ConflictPaused 中の Escape はツールを解除しない (競合モーダルが Esc の持ち主)', () => {
+    const h = mountKnife(conflictsPending);
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    fireEvent.click(screen.getByTestId('add-save'));
+    expect(screen.getByTestId('knife-conflict-paused')).toBeInTheDocument();
+
+    // Fire from a NON-editable element: the 非継承側 form is still mounted (the session
+    // stays in EnteringProperties while paused) and its autofocused text input would
+    // otherwise trip the focus guard, masking the listener entirely.
+    (document.activeElement as HTMLElement | null)?.blur();
+    act(() => {
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+    });
+    // The session stays paused and the tool stays armed, so the host's reArmActiveTool
+    // (which reads `activeTool` at conflict close) still has a tool to restore.
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(screen.getByTestId('knife-conflict-paused')).toBeInTheDocument();
+    h.unmount();
+  });
+});
+
 // バグハント第11波 #3/#6 — the knife controller's OWN window keydown listener (Escape /
 // Ctrl+Z, live while a session runs) MUST honour the SAME focus guard the global
 // dispatcher does (教訓 5.13 single predicate). The timeline year field / sidebar inputs
@@ -477,8 +573,7 @@ describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store ca
         anchorTime={() => ANCHOR}
         screenToWorld={screenToWorld}
         featureAtPoint={featureAtPoint}
-        targetShape={undefined}
-        drawSink={drawSink}
+          drawSink={drawSink}
         defaultColor={DEFAULT_COLOR}
       />,
     );
@@ -603,8 +698,7 @@ describe('KnifeToolController — a wheel-notch zoom change does NOT re-render o
           anchorTime={() => ANCHOR}
           screenToWorld={screenToWorld}
           featureAtPoint={featureAtPoint}
-          targetShape={undefined}
-          drawSink={drawSink}
+              drawSink={drawSink}
           defaultColor={DEFAULT_COLOR}
         />
       </>,

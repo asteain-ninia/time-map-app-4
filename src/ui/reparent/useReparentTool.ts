@@ -85,6 +85,16 @@ export interface UseReparentToolOptions<S> {
     result: ProcessResult<S>,
     proposal: EditProposal<AffiliationSnapshot>,
   ) => void;
+  /**
+   * Run the host's EXPLICIT-CANCEL contract (Escape / キャンセルボタン) — the composition
+   * root releases `activeTool` here, exactly as knife / drill / ring-edit do (W3-AB).
+   * Without it the toolbar button stayed `aria-pressed=true` while the session was
+   * disarmed, so pressing the SAME button again ran the store's press-toggle
+   * (tool → null) and「何も起きない」= a dead button until another tool was visited.
+   * NOT called on `resetForSwitch` (tool/mode switch already cleared) nor on
+   * `clearSelection` (which keeps the session and only returns to pick-target).
+   */
+  readonly onCancelled?: (() => void) | undefined;
 }
 
 // --- The transient flow state (discriminated; 技術方針 2.1) -------------------
@@ -159,6 +169,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
   const resolveStore = options.resolveStore;
   const onCommitted = options.onCommitted;
   const onConflicts = options.onConflicts;
+  const onCancelled = options.onCancelled;
 
   const [flow, setFlow] = useState<ReparentFlow>(REPARENT_FLOW.Idle);
   const [targetId, setTargetId] = useState<FeatureId | null>(null);
@@ -180,9 +191,14 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     reset(REPARENT_FLOW.Idle);
   }, [reset]);
 
+  // W3-AB: an EXPLICIT cancel also leaves the tool (the host releases `activeTool`), so the
+  // toolbar's pressed state and the session's armed state stay ONE truth and the next press
+  // of the SAME button re-arms (教訓 5.2 全経路で破棄 + 単一の真実源). Same規約 as knife /
+  // drill / ring-edit / merge; `resetForSwitch` deliberately does NOT run it.
   const cancel = useCallback((): void => {
     reset(REPARENT_FLOW.Idle);
-  }, [reset]);
+    onCancelled?.();
+  }, [reset, onCancelled]);
 
   const clearSelection = useCallback((): void => {
     setTargetId(null);

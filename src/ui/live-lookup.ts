@@ -415,8 +415,9 @@ export function leafAtPoint(
 
 /**
  * The resolved multipolygon shape of the leaf `featureId` at `time`, for the knife /
- * merge / reparent target emphasis (App.tsx `useKnifeTargetShape`, the merge /
- * reparent `resolveLeafShape` props), or undefined when it is absent / not a leaf.
+ * merge / reparent target emphasis (the knife / merge / reparent `resolveLeafShape`
+ * ports — each tool resolves ITS OWN target through this one function), or undefined
+ * when it is absent / not a leaf.
  *
  * SEAM CONTINUITY (bughunt #12 Fix B — 単一真実源, 技術方針 R3): `resolveLeafShape`
  * returns RAW stored representatives, so a leaf straddling the antimeridian comes back

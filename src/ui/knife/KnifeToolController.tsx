@@ -18,7 +18,10 @@
 //   - wires Escape→cancel and Ctrl+Z→undo (FR-78);
 //   - feeds `buildKnifePrimitives(state)` to the injected render sink on every state
 //     change so the overlay / target emphasis / cut preview / 固定円 are drawn (FR-90
-//     / FR-92), and re-uses U23's property form for非継承側プロパティ入力 (FR-93).
+//     / FR-92), and re-uses U23's property form for非継承側プロパティ入力 (FR-93). The
+//     対象面強調 geometry is resolved from THIS session's own `targetId` through the
+//     injected `resolveLeafShape` — the same live-lookup the host's `featureAtPoint`
+//     picks from — so 強調 == クリックで取得した対象 (W3-A 単一真実源, 教訓 5.29).
 //
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
@@ -76,6 +79,14 @@ export type ScreenToWorld = (clientX: number, clientY: number) => WorldCoordinat
 /** Resolve the feature id under a click (host hit-test; U22/U10). null = miss. */
 export type FeatureAtPoint = (point: WorldCoordinate) => FeatureId | null;
 
+/**
+ * Resolve a target leaf id → its resolved shape for the対象面強調 (host live-lookup
+ * `leafShapeAt`; W3-A). It is the SAME live-lookup source {@link FeatureAtPoint}
+ * (`leafAtPoint`) picks from, so 強調される形 == クリックで取得した対象 == 実際に切られる
+ * 形 (単一真実源, 教訓 5.29 — mirrors the merge / reparent `resolveLeafShape` port).
+ */
+export type ResolveLeafShape = (featureId: FeatureId) => GeoMultiPolygon | undefined;
+
 /** The fixed-circle screen radius in world degrees at the current zoom (FR-17). */
 export type CircleWorldRadius = () => number;
 
@@ -95,8 +106,11 @@ export interface KnifeToolControllerProps<S> {
   readonly screenToWorld: ScreenToWorld;
   /** Feature id under a world point (host hit-test). */
   readonly featureAtPoint: FeatureAtPoint;
-  /** The selected target leaf's resolved shape (for render emphasis). */
-  readonly targetShape: GeoMultiPolygon | undefined;
+  /**
+   * Resolve the TOOL'S OWN target leaf id → its shape for the対象面強調 (W3-A).
+   * Omitted ⇒ no emphasis is drawn (a host without a live domain).
+   */
+  readonly resolveLeafShape?: ResolveLeafShape | undefined;
   /** The provisional-knife render sink (U17). */
   readonly drawSink: KnifeDrawSink;
   /**
@@ -142,7 +156,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     anchorTime,
     screenToWorld,
     featureAtPoint,
-    targetShape,
+    resolveLeafShape,
     drawSink,
     onConflicts,
     defaultColor,
@@ -168,16 +182,25 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
   // HB3-6 / HB3-18: when the knife picks a (leaf) target, promote it into the store
   // selection through the SAME setActiveFeature path every selection uses (no second
-  // selection source, 教訓 5.29). useKnifeTargetShape keys on activeFeature, so this
-  // both surfaces the target-emphasis shape AND draws it in the selection color.
+  // selection source, 教訓 5.29), so the target is also drawn in the selection color and
+  // is the Delete / property-panel subject. The対象面強調 geometry does NOT come from this
+  // selection — it is resolved from the tool's own target below (W3-A 単一真実源).
   const promoteTargetSelection = useCallback(
     (fid: FeatureId) => store.getState().setActiveFeature(fid),
     [store],
   );
-  // HB3-6/18 review fix: on cancel, drop the promoted target from the host selection
-  // so a cancelled knife target does not stay highlighted / Delete-able (the commit
-  // path keeps selection via onCommitted, so this fires only on explicit cancel).
-  const clearTargetSelection = useCallback(() => store.getState().clearSelection(), [store]);
+  // W3-B — CANCEL = leave the tool (Escape / キャンセル / モーダルの取消 / 拒否の dismiss).
+  // Un-promoting the target alone left the toolbar button `aria-pressed=true` while the
+  // session was disarmed, so pressing the SAME button again ran the store's press-toggle
+  // (tool → null) instead of re-arming — the knife could only be revived by detouring
+  // through another tool. Releasing `activeTool` here keeps the toolbar's pressed state
+  // and the session's armed state ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源), so the
+  // next press always re-arms. `setActiveTool(null)` runs the store's own selection reset
+  // 契約, which subsumes the HB3-6/18 target un-promotion (a cancelled knife target must
+  // not stay highlighted / Delete-able). Same規約 as ring-edit (8950639).
+  const releaseToolOnCancel = useCallback(() => {
+    store.getState().setActiveTool(null);
+  }, [store]);
 
   const knife = useKnifeTool<S>({
     resolveFeature,
@@ -187,9 +210,80 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     startProcess,
     onCommitted,
     onTargetSelected: promoteTargetSelection,
-    onCancelled: clearTargetSelection,
+    onCancelled: releaseToolOnCancel,
     ...(onConflicts ? { onConflicts } : {}),
   });
+
+  // --- W3-A: the対象面強調 geometry. THE TOOL'S OWN target (`knife.state.targetId`) is
+  // the single source — NOT the store's `activeFeature`. The old App-level hook keyed the
+  // emphasis on the selection, which (a) drew an amber "target" over a leftover selection
+  // while the knife was still ASKING for a target, and (b) drifted from the click's own
+  // resolution: 対象取得 went through the display-resolved `drawnAreaAt` (the drawn
+  // AGGREGATE id) while the emphasis went through the raw-leaf `leafShapeAt`, so at the
+  // default 集約表示 the highlight either vanished (FR-35 shapeless aggregate) or lit up
+  // the parent's OWN footprint somewhere else entirely (FR-37 直轄領構成). Resolving the
+  // tool's own target through the SAME live-lookup the host's `featureAtPoint` picks from
+  // makes 強調 == クリックで取得した対象 == 実際に切られる形 (単一真実源, 教訓 5.29;
+  // merge / reparent already do exactly this, HB3-15(c) / HB3-16).
+  //
+  // Memoized on the session state so a camera-only re-render (this controller subscribes
+  // to `zoom` for the固定円) never re-resolves the geometry — camera stays off the
+  // shape-resolution path (技術方針 2.3).
+  //
+  // W3-AB fix-forward (レビュー HIGH「取得済み target が時刻/FR-113 に追随しない」): the
+  // memo ALSO keys on the live inputs the injected `resolveLeafShape` reads at call time —
+  // 時刻 / domain / FR-113 filter / display-control. The removed `useKnifeTargetShape` hook
+  // subscribed to the store and so re-resolved on those; keying only on the session state
+  // FROZE the emphasis at acquisition, so a timeline move left the user looking at the OLD
+  // instant's shape while 確定 cut at `anchorTime()` = the CURRENT time (強調 ≠ 実際に切られ
+  // る形 — the exact defect W3-A claimed to close), and a 個別非表示 left a hidden feature
+  // emphasised and splittable. `camera` is deliberately NOT among the keys: the gate stays a
+  // SKIP for camera and a PASS-THROUGH for everything the resolution actually depends on
+  // (the invariant the deleted knife-target-shape.test.tsx pinned as「skip, not freeze」).
+  const liveTime = useStore(store, (s) => s.currentTime);
+  const liveDomain = useStore(store, (s) => s.domain);
+  const liveFilter = useStore(store, (s) => s.filter);
+  const liveDisplayControl = useStore(store, (s) => s.displayControl);
+  const knifeState = knife.state;
+  const targetShape = useMemo((): GeoMultiPolygon | undefined => {
+    if (
+      knifeState.phase === KNIFE_PHASE.Inactive ||
+      knifeState.phase === KNIFE_PHASE.SelectingTarget
+    ) {
+      return undefined;
+    }
+    return resolveLeafShape?.(knifeState.targetId);
+  }, [
+    knifeState,
+    resolveLeafShape,
+    // Live resolution inputs (read INSIDE the port; listed so the memo tracks them).
+    liveTime,
+    liveDomain,
+    liveFilter,
+    liveDisplayControl,
+  ]);
+
+  // W3-AB fix-forward: when the target stops resolving (FR-113 hidden / no longer effective
+  // at the current time), the session must not keep a ghost target — drop back to 対象選択
+  // with the tool still ARMED, mirroring the store's own heal (setFeatureHidden deselects the
+  // active feature in the SAME transition; setCurrentTime revalidates it). Without this the
+  // knife would sit in DrawingCut over an invisible feature. Skipped when the host bound no
+  // `resolveLeafShape` (a host without a live domain resolves nothing by design) and while
+  // ConflictPaused (the host's conflict flow owns the session until it commits / cancels).
+  const dropTarget = knife.dropTarget;
+  const knifeFlow = knife.flow;
+  useEffect(() => {
+    if (resolveLeafShape === undefined) return;
+    if (knifeFlow === KNIFE_FLOW.Idle || knifeFlow === KNIFE_FLOW.ConflictPaused) return;
+    if (
+      knifeState.phase === KNIFE_PHASE.Inactive ||
+      knifeState.phase === KNIFE_PHASE.SelectingTarget
+    ) {
+      return;
+    }
+    if (targetShape !== undefined) return;
+    dropTarget();
+  }, [knifeState, knifeFlow, targetShape, resolveLeafShape, dropTarget]);
 
   // --- 教訓 5.2 全経路で破棄: the knife is "active" iff edit.knife is the tool in
   // 編集モード. When that CHANGES, funnel through start / resetForSwitch so no
@@ -217,9 +311,16 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     );
   }, [knife.state, targetShape, zoom, drawSink, style]);
 
-  // --- Keyboard: Escape→cancel, Ctrl+Z→undo (FR-78). Active while a session runs.
+  // --- Keyboard: Escape→cancel, Ctrl+Z→undo (FR-78). Active while a session runs, EXCEPT
+  // while the U35 conflict modal owns the screen (ConflictPaused): there the MODAL owns Esc
+  // (its own `useModalKeydown` → onConflictCancel → the host's `reArmActiveTool`). Leaving
+  // this listener live let an Escape that missed the dialog's React handler run
+  // `knife.cancel()` → `setActiveTool(null)` while the modal stayed open; the later
+  // `reArmActiveTool` then read `activeTool === null` and toggled null→null, so the tool did
+  // NOT come back after the conflict was resolved (W3-AB レビュー LOW). Same規約 as merge,
+  // which already skips Esc while its FR-52 dialog is open.
   useEffect(() => {
-    if (knife.flow === KNIFE_FLOW.Idle) return;
+    if (knife.flow === KNIFE_FLOW.Idle || knife.flow === KNIFE_FLOW.ConflictPaused) return;
     const onKey = (e: KeyboardEvent): void => {
       // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
       // keyboard (timeline year field / sidebar input) — let native Escape /

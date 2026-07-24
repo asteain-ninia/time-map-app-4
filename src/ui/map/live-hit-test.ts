@@ -796,17 +796,22 @@ export interface DrawnAreaAtPointInput {
  * display-control, i.e. the EXACT set the renderer draws and the main hit-test
  * (`liveHitTestAt`) area branch picks (単一真実源).
  *
- * WHY THIS EXISTS (bughunt — ナイフの対象面探索が displayControl を無視): the knife
- * `featureAtPoint` port previously used the raw `live-lookup.leafAtPoint`, which
- * tests every committed leaf body regardless of what is drawn. With the default
- * N=0 the map shows top-level AGGREGATES rolled up and OMITS the child leaves, so
- * clicking an aggregate body returned a HIDDEN child leaf as the split target
- * (描画されていないものが選ばれる, 二重真実源). Routing the knife through THIS lookup —
- * the same `drawnAreas` + `drawnAreaAtPoint` `liveHitTestAt` uses — makes 対象面選択
- * agree with both the renderer and the main hit-test: a body click resolves to the
- * AGGREGATE the user sees (which the hook's LEAF gate then rejects as unsplittable),
- * never to an undrawn child leaf. Aggregate vs leaf is the display verdict's job;
- * this returns whichever feature the user actually SEES under the cursor.
+ * WHY THIS EXISTS (bughunt — 対象面探索が displayControl を無視): a raw
+ * `live-lookup.leafAtPoint` tests every committed leaf body regardless of what is
+ * drawn. With the default N=0 the map shows top-level AGGREGATES rolled up and OMITS
+ * the child leaves, so a click on an aggregate body resolves to a HIDDEN child leaf
+ * (描画されていないものが選ばれる, 二重真実源). THIS lookup — the same `drawnAreas` +
+ * `drawnAreaAtPoint` `liveHitTestAt` uses — answers「カーソル下でユーザーが実際に
+ * 見ている地物は何か」: at N=0 that is the AGGREGATE, honouring the store's
+ * display-control, the FR-113 filter and the renderer's ±360° wrap turns. It backs the
+ * main click hit-test / selection (描画==ヒット).
+ *
+ * NOT the tool-target lookup (HB3-16 / W3-A): 結合 / 所属変更 / リング編集 / 穴あけ /
+ * ナイフ are LEAF operations whose target must stay reachable while the map is
+ * aggregated, so they pick through the raw `leafAtPoint` + an FR-113 visibility gate and
+ * draw their OWN target emphasis (resolved from the SAME `leafShapeAt`), which is what
+ * makes an aggregated-but-picked leaf visible. Using THIS function for a tool target
+ * would return a shapeless aggregate (FR-35) — unsplittable and un-emphasizable.
  */
 export function drawnAreaAt(
   input: DrawnAreaAtPointInput,

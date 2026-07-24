@@ -307,6 +307,61 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
   });
 });
 
+// --- W3-AB fix-forward: キャンセル後の再アーム (knife / drill / ring-edit と対称) --------
+//
+// W3-B は knife / drill を ring-edit と同じ `setActiveTool(null)` に揃えたが merge /
+// reparent は `onCancelled` フックすら持たず、cancel が `reset(Idle)` だけだった。
+// コントローラは Idle で `return null` なので、キャンセル後は **activeTool が EditMerge の
+// まま(toolbar は aria-pressed=true)でセッションだけ消える** — 同じボタンをもう一度押すと
+// ストアの press-toggle が tool→null を走らせて「何も起きない」。knife/drill で潰したのと
+// 完全に同一の dead-button バグが 2 ツールに残っていた (規約が 5 ツール中 3 でしか成立して
+// いなかった)。
+describe('MergeToolController — キャンセルはツール選択も解除して再アームできる (W3-AB)', () => {
+  it('Escape で activeTool が null になり、同じツールの再選択で復活する', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('1');
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
+    // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
+    expect(h.store.getState().activeTool).toBeNull();
+
+    // 実機 repro: the user pressed the SAME button again and nothing happened.
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditMerge));
+    expect(screen.getByTestId('merge-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('0');
+    h.unmount();
+  });
+
+  it('キャンセルボタンも同じ経路 (単一の解除経路)', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    fireEvent.click(screen.getByTestId('merge-cancel'));
+    expect(h.store.getState().activeTool).toBeNull();
+    expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('FR-52 ダイアログの取消 (cancelChoose) はツールを解除しない (対象選択へ戻るだけ)', () => {
+    // cancelChoose は「セッションを畳む」ではなく「選択へ戻る」なので cancel とは別経路。
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    clickInput(3, 1);
+    fireEvent.click(screen.getByTestId('merge-confirm'));
+    expect(screen.getByTestId('merge-options-dialog')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('merge-options-cancel'));
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditMerge);
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('2');
+    h.unmount();
+  });
+});
+
 // bughunt-review — the e63c8b9 global-shortcut suspension MISSED the merge flow. The
 // FR-52 MergeOptionsDialog (opened at MERGE_FLOW.Choosing) is a real keyboard-owning
 // modal that handles ONLY Esc via React onKeyDown, transparent to the global window

@@ -492,20 +492,22 @@ describe('liveHitTestAt', () => {
     });
   });
 
-  // --- bughunt: ナイフの対象面探索が表示解決(displayControl)を無視して裏の非表示 leaf を選べる ---
+  // --- drawnAreaAt は「ユーザーが見ている地物」を返す (表示解決 displayControl に従う) ---
   //
-  // The knife `featureAtPoint` port (App.createKnifeBootstrap) USED to call
-  // live-lookup.leafAtPoint, which tests every committed leaf body regardless of what is
+  // `live-lookup.leafAtPoint` tests every committed leaf body regardless of what is
   // DRAWN. With the default N=0 集約表示 the renderer draws the parent's 集約形状 and OMITS
-  // the children — yet a click on the aggregate body returned a HIDDEN child leaf as the
-  // split target (描画されていないものが選ばれる, 二重真実源). The fix routes the knife
-  // through `drawnAreaAt` — the SAME resolveDisplayControl-based drawn-area set the
-  // renderer fills and the main hit-test (`liveHitTestAt`) picks (単一真実源). These
-  // assertions pin that drawnAreaAt obeys the display control exactly: a body click in a
-  // hidden child's footprint resolves to the AGGREGATE the user sees (which the hook's
-  // LEAF gate then rejects as unsplittable), never the undrawn child leaf — and once the
-  // child is expanded, drawnAreaAt returns the child leaf so it becomes a valid target.
-  describe('drawnAreaAt — knife featureAtPoint honours displayControl (単一真実源)', () => {
+  // the children, so a raw-leaf lookup answers with a HIDDEN child leaf. `drawnAreaAt` —
+  // the SAME resolveDisplayControl-based drawn-area set the renderer fills and the main
+  // click hit-test (`liveHitTestAt`) picks — answers with the AGGREGATE the user actually
+  // SEES (単一真実源: 描画==ヒット). These assertions pin that contract exactly: a body
+  // click in a hidden child's footprint resolves to the aggregate, and once the child is
+  // expanded (N high enough) the SAME click resolves to the child leaf.
+  //
+  // NOTE (HB3-16 / W3-A): this is the CLICK-SELECTION rule, NOT the tool-target rule. The
+  // leaf tools (knife / merge / reparent / ring-edit / drill) pick through the raw
+  // `leafAtPoint` + an FR-113 visibility gate so a leaf inside an aggregate stays directly
+  // targetable at N=0, and each draws its own target emphasis from the same `leafShapeAt`.
+  describe('drawnAreaAt — 描画されている地物を返す (displayControl に従う, 単一真実源)', () => {
     /** An aggregate `agg` over two child leaves at [0,4]² and [6,10]² (parented). */
     function aggregateHierarchy(): {
       root: DomainRoot;
@@ -543,11 +545,12 @@ describe('liveHitTestAt', () => {
         inChildA,
       );
       expect(fid).toBe(aggId);
-      // Regression guard: the OLD leafAtPoint returned the hidden child leaf here.
+      // The raw-leaf lookup (leafAtPoint, the TOOL-target rule) returns the child here —
+      // this drawn-area rule must NOT (描画==ヒット for the click-selection path).
       expect(fid).not.toBe(childAId);
     });
 
-    it('expanded (N high enough) resolves the child LEAF (a valid split target)', () => {
+    it('expanded (N high enough) resolves the child LEAF (it is drawn on its own)', () => {
       const { root, childAId } = aggregateHierarchy();
       const expandedControl = {
         globalDepth: 5, // deeper than the children → they draw their OWN shape

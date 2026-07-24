@@ -378,6 +378,55 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
   });
 });
 
+// --- W3-AB fix-forward: キャンセル後の再アーム (knife / drill / ring-edit / merge と対称) --
+//
+// W3-B は knife / drill を ring-edit と同じ `setActiveTool(null)` に揃えたが reparent は
+// `onCancelled` フックすら持たず、cancel が `reset(Idle)` だけだった。コントローラは Idle で
+// `return null` なので、キャンセル後は activeTool が EditReparent のまま(toolbar は
+// aria-pressed=true)でセッションだけ消え、同じボタンをもう一度押すとストアの press-toggle が
+// tool→null を走らせて「何も起きない」。knife/drill で潰したのと同一の dead-button バグ。
+describe('ReparentToolController — キャンセルはツール選択も解除して再アームできる (W3-AB)', () => {
+  it('Escape で activeTool が null になり、同じツールの再選択で復活する', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
+    expect(h.store.getState().activeTool).toBeNull();
+
+    // 実機 repro: the user pressed the SAME button again and nothing happened.
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditReparent));
+    expect(screen.getByTestId('reparent-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('reparent-target').textContent).toBe('');
+    h.unmount();
+  });
+
+  it('キャンセルボタンも同じ経路 (単一の解除経路)', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    fireEvent.click(screen.getByTestId('reparent-cancel'));
+    expect(h.store.getState().activeTool).toBeNull();
+    expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('選択クリア (reparent-clear) はツールを解除しない (対象選択へ戻るだけ)', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    fireEvent.click(screen.getByTestId('reparent-clear'));
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditReparent);
+    expect(screen.getByTestId('reparent-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('reparent-target').textContent).toBe('');
+    h.unmount();
+  });
+});
+
 // bughunt-review — the e63c8b9 global-shortcut suspension MISSED the reparent flow too.
 // While a reparent session owns the keyboard, a global window-level Ctrl+Z would fire
 // EditUndo straight through to a domain op. This block mounts the REAL production graph

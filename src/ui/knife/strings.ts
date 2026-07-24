@@ -32,6 +32,16 @@ export const KNIFE_STRINGS = {
   conflictPaused: '空間競合の解決待ちです。',
 } as const;
 
+/**
+ * The 判断用メッセージ shown when the acquired target stops being a valid split target
+ * mid-session (FR-113 個別非表示 / 種別オフ, or a time move to an instant where it is not
+ * effective). The knife returns to 対象選択 with the tool still armed — the user did not
+ * cancel, the target simply left the visible世界 (W3-AB fix-forward; 教訓 5.12 なぜ進めない
+ * かを日本語で伝える).
+ */
+export const KNIFE_TARGET_GONE_MESSAGE =
+  '対象の末端地物が表示されなくなったため、対象選択に戻りました。';
+
 /** The developer-report hint appended to internal-error messages (FR-117). */
 export const KNIFE_REPORT_HINT = 'お手数ですが開発者へ報告してください。';
 

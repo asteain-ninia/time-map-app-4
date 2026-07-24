@@ -70,6 +70,14 @@ const committed: ProcessResult<S> = {
   command: noopCommand,
 };
 
+/** A U13 outcome that pauses the session for the U35 conflict flow (FR-62). */
+const conflictsPending: ProcessResult<S> = {
+  status: PROCESS_STATUS.ConflictsPending,
+  conflicts: [],
+  unresolvedConflictIds: [],
+  trialState: NEXT_STATE,
+};
+
 const ATTRS = createBasicAttributes('target', 0, 100);
 const COLOR = createColorInfo(true, '#fff', '#0f0', '#000');
 const DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
@@ -288,6 +296,73 @@ describe('DrillToolController — transient state discarded on every exit path',
     activateDrill(h.store);
     clickInput(2, 2);
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
+    h.unmount();
+  });
+});
+
+// --- W3-B: キャンセル後の再アーム (ring-edit 8950639 / knife と対称) ---------------
+//
+// CANCEL = ツールから出る. 対象選択の解除だけでは toolbar の aria-pressed が true のまま
+// セッションだけ武装解除された状態が残り、同じボタンをもう一度押すとストアの press-toggle
+// (tool → null) が走って「何も起きない」= 別ツールを経由しないと復活できなかった。
+// `setActiveTool(null)` に一本化して toolbar の押下状態と session の armed を単一真実源に
+// する (教訓 5.2 全経路で破棄 + 単一の真実源)。
+
+describe('DrillToolController — キャンセルはツール選択も解除して再アームできる (W3-B)', () => {
+  it('キャンセル(Escape)で activeTool が null になり、同じツールの再選択で復活する', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    clickInput(2, 2);
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
+    // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
+    expect(h.store.getState().activeTool).toBeNull();
+
+    // Re-selecting the SAME tool re-arms a fresh session (the 実機 repro).
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditDrill));
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    clickInput(2, 2);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
+    h.unmount();
+  });
+
+  it('キャンセルボタンも同じくツール選択を解除する (単一の解除経路)', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    clickInput(2, 2);
+    clickInput(10, 2);
+    fireEvent.click(screen.getByTestId('drill-cancel'));
+    expect(h.store.getState().activeTool).toBeNull();
+    expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  // W3-AB fix-forward (レビュー LOW): while the U35 conflict modal is open the MODAL owns
+  // Escape. The tool-side listener stayed live through ConflictPaused, so an Escape that
+  // missed the dialog ran `drill.cancel()` → `setActiveTool(null)` UNDER the open modal and
+  // the host's later reArmActiveTool had `activeTool === null` — nothing to restore. Mirrors
+  // the knife regression.
+  it('ConflictPaused 中の Escape はツールを解除しない (競合モーダルが Esc の持ち主)', () => {
+    const h = mountDrill(conflictsPending);
+    activateDrill(h.store);
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    expect(screen.getByTestId('drill-conflict-paused')).toBeInTheDocument();
+
+    // Fire from a NON-editable element: the property form is still mounted while paused
+    // and its autofocused text input would otherwise trip the focus guard.
+    (document.activeElement as HTMLElement | null)?.blur();
+    act(() => {
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+    });
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditDrill);
+    expect(screen.getByTestId('drill-conflict-paused')).toBeInTheDocument();
     h.unmount();
   });
 });

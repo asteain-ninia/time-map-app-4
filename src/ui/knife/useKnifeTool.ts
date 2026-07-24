@@ -59,7 +59,7 @@ import {
   type SplitSnapshot,
 } from '../../domain/knife/index';
 
-import { withReportHint } from './strings';
+import { KNIFE_TARGET_GONE_MESSAGE, withReportHint } from './strings';
 
 // --- Layer-crossing ports (the contracts; 教訓 5.33 / 5.34) ------------------
 
@@ -164,6 +164,14 @@ export interface UseKnifeToolActions {
   confirmInheritor(): void;
   /** SAVE非継承側 props → assemble proposal → U13 (教訓 5.7 完了トリガー). */
   save(props: { attributes: BasicAttributes; color: ColorInfo; kindLabel?: string }): void;
+  /**
+   * The acquired target stopped being a valid split target (it went FR-113-hidden, or
+   * the time moved to an instant where it is not effective). Return to 対象選択 with a
+   * Japanese explanation, keeping the tool ARMED — the mirror of the store's own
+   * activeFeature heal (setCurrentTime → revalidateForTime / setFeatureHidden →
+   * deselect). NOT a cancel: the user did not ask to leave the knife (W3-AB).
+   */
+  dropTarget(): void;
   /** Cancel the whole operation; discard ALL transient state (Escape; 教訓 5.2). */
   cancel(): void;
   /** Run the reset契約 on an external tool/mode switch (教訓 5.2 (d)/(e)). */
@@ -350,6 +358,26 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
   }, [discard, onCancelled]);
   const resetForSwitch = useCallback(() => discard(), [discard]);
 
+  // W3-AB fix-forward: the acquired target went FR-113-hidden / stopped existing at the
+  // current time. The visibility gate must be a SKIP that keeps working, not a one-shot
+  // check at the click — otherwise the emphasis freezes on a shape the user can no longer
+  // see and 確定 would split a hidden feature (不変条件「非表示地物はツール取得からも
+  // 消える」の破れ). Return to 対象選択 (tool stays ARMED — the user did not cancel) with a
+  // message, mirroring the store's own selection heal. Idle / SelectingTarget hold no
+  // target, so the call is a no-op there (idempotent: the host effect may fire twice).
+  const dropTarget = useCallback(() => {
+    if (
+      state.phase === KNIFE_PHASE.Inactive ||
+      state.phase === KNIFE_PHASE.SelectingTarget
+    ) {
+      return;
+    }
+    setState(startKnife());
+    setConflictPaused(false);
+    setRejected(false);
+    setMessage(KNIFE_TARGET_GONE_MESSAGE);
+  }, [state.phase]);
+
   // --- Derived view -------------------------------------------------------
   const flow: KnifeFlow = useMemo(() => {
     if (rejected) return KNIFE_FLOW.Rejected;
@@ -392,6 +420,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     selectInheritor,
     confirmInheritor,
     save,
+    dropTarget,
     cancel,
     resetForSwitch,
   };

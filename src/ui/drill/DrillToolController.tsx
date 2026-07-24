@@ -152,7 +152,17 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     (fid: FeatureId) => store.getState().setActiveFeature(fid),
     [store],
   );
-  const clearTargetSelection = useCallback(() => store.getState().clearSelection(), [store]);
+  // W3-B — CANCEL = leave the tool (Escape / キャンセル / 拒否の dismiss). Un-promoting the
+  // target alone left the toolbar button `aria-pressed=true` while the session was
+  // disarmed, so pressing the SAME button again ran the store's press-toggle (tool → null)
+  // instead of re-arming — the drill could only be revived by detouring through another
+  // tool. Releasing `activeTool` here keeps the toolbar's pressed state and the session's
+  // armed state ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源), so the next press always
+  // re-arms. `setActiveTool(null)` runs the store's own selection reset契約, which subsumes
+  // the target un-promotion. Same規約 as ring-edit (8950639) / knife.
+  const releaseToolOnCancel = useCallback(() => {
+    store.getState().setActiveTool(null);
+  }, [store]);
 
   const drill = useDrillTool<S>({
     resolveFeature,
@@ -162,7 +172,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     startProcess,
     onCommitted,
     onTargetSelected: promoteTargetSelection,
-    onCancelled: clearTargetSelection,
+    onCancelled: releaseToolOnCancel,
     ...(onConflicts ? { onConflicts } : {}),
   });
 
@@ -191,10 +201,14 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     );
   }, [drill.region, drill.preview, drawSink, style]);
 
-  // --- Keyboard: Escape→cancel, Ctrl+Z→undo vertex (FR-78). Active while a session runs.
+  // --- Keyboard: Escape→cancel, Ctrl+Z→undo vertex (FR-78). Active while a session runs,
+  // EXCEPT while the U35 conflict modal owns the screen (ConflictPaused): there the MODAL
+  // owns Esc, and a tool-side cancel would release `activeTool` under the open modal so the
+  // host's later `reArmActiveTool` had nothing to restore (W3-AB レビュー LOW; mirrors knife
+  // and merge's FR-52 dialog exclusion).
   const onDrawingChange = props.onDrawingChange;
   useEffect(() => {
-    if (drill.flow === DRILL_FLOW.Idle) return;
+    if (drill.flow === DRILL_FLOW.Idle || drill.flow === DRILL_FLOW.ConflictPaused) return;
     const onKey = (e: KeyboardEvent): void => {
       // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
       // keyboard (timeline year field / sidebar input) — let native Escape /

@@ -49,7 +49,6 @@ import {
   logSessionStart,
   resolveDiagnosticLogSink,
   wireGlobalErrorHandlers,
-  type FilterState,
 } from './discovery/index';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
@@ -194,7 +193,7 @@ import {
   type RectangleResolver,
   type NextTargetPreference,
 } from '../domain/selection';
-import { liveHitTestAt, drawnAreaAt, verticesInRectangle } from './map/live-hit-test';
+import { liveHitTestAt, verticesInRectangle } from './map/live-hit-test';
 import { createLiveSelectionPort } from './map/live-selection-port';
 import { createEditSessionPort } from './map/edit-session-adapter';
 import {
@@ -927,8 +926,10 @@ export function App(): JSX.Element {
     // click on a vertex / feature actually selects (教訓 5.7 合成ルートの結線漏れ). The
     // hit-test reuses the renderer's box-corrected screen↔world (HB-7) AND
     // live-lookup's featuresAt / verticesAt AND the SAME display-control-resolved drawn
-    // area set the U26 knife featureAtPoint port now uses (drawnAreaAt) — 二重真実源を
-    // 作らない, 教訓 5.29).
+    // area set the renderer fills (drawnAreaAt) — 二重真実源を作らない, 教訓 5.29. (The
+    // TOOL target ports — knife / merge / reparent / ring-edit / drill — deliberately use
+    // the raw-leaf `leafAtPoint` instead: a leaf inside an aggregate must stay directly
+    // targetable at N=0, and each tool draws its own target emphasis, HB3-16 / W3-A.)
     //
     // Surface screen point → world (renderer inverse against the live camera/viewport
     // the frame drew with). Shared by the hit-test and the selection port so a click
@@ -2282,17 +2283,12 @@ export function App(): JSX.Element {
         () => store.getState().domain,
         () => store.getState().currentTime,
         sharedMint,
-        // 対象面探索を描画解決と同じ単一真実源にする (bughunt): the display-control comes
-        // from the SAME store slice committed-features feeds buildDisplayAreas with, and
-        // the wrap frame from the SAME live render camera/viewport the frame drew at, so
-        // ナイフの対象面選択 agrees with both the renderer and the main hit-test.
-        () => store.getState().displayControl,
-        // FR-113: exclude filter-hidden areas from the split-target search so ナイフの
-        // 対象面選択 agrees with what is drawn / hit (単一真実源, 描画==ヒット==分割対象).
-        () => store.getState().filter,
-        () => rendererRef.current?.readCamera(),
+        // W3-A: 対象取得は生リーフ (`leafAtPoint`) + FR-113 可視ゲート — merge / reparent /
+        // ring-edit / drill と同じ単一の取得規約 (HB3-16). 対象面強調も同じ live-lookup
+        // (`leafShapeAt`) 由来なので、取得と強調が食い違わない。
+        isToolTargetVisible,
       ),
-    [store, sharedMint],
+    [store, sharedMint, isToolTargetVisible],
   );
 
   // U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool bootstrap mirrors the knife one —
@@ -2699,11 +2695,6 @@ export function App(): JSX.Element {
     reArmActiveTool();
   }, [reArmActiveTool]);
 
-  // Live target-shape for the knife emphasis (FR-92): the resolved shape of the
-  // currently-selected leaf at the current time, recomputed on selection / time /
-  // domain change via a store subscription mirrored into React state.
-  const knifeTargetShape = useKnifeTargetShape(store);
-
   // HB3-11 — feature detail panels (FR-99後段). The U32 DetailPanels + open-panel
   // model existed and were unit-tested, but the property panel's「詳細」button's
   // onOpenDetail was never wired into the composition root, so detail display did
@@ -2998,7 +2989,7 @@ export function App(): JSX.Element {
               anchorTime={() => store.getState().currentTime}
               screenToWorld={screenToWorld}
               featureAtPoint={knifeBootstrap.featureAtPoint}
-              targetShape={knifeTargetShape}
+              resolveLeafShape={knifeBootstrap.resolveLeafShape}
               drawSink={knifeDrawSink}
               mapCameraInput={mapCameraInput}
               defaultColor={KNIFE_DEFAULT_COLOR}
@@ -3597,61 +3588,14 @@ function shapeForConflictParticipant(
   return shape ?? conflict.overlap;
 }
 
-/**
- * Mirror the currently-selected leaf's resolved shape into React state for the
- * knife target emphasis (FR-92). Recomputed on selection / time / domain change
- * via a store subscription (技術方針 2.5: React 外のストアを subscribe で監視), so the
- * highlight tracks the live truth without a parallel selection source (教訓 5.29).
- *
- * IMPORTANT (技術方針 2.3「camera は React 描画パスに乗せない」, bughunt 再発防止):
- * the bare store subscription fires on EVERY set(), and a pan / wheel emits two
- * camera set()s per frame (updateCamera + setCenterLon, App.tsx cameraPort.write).
- * `leafShapeAt` allocates a fresh GeoMultiPolygon every call, so an unconditional
- * `setShape(compute())` handed React a NEW reference each camera frame and forced
- * a per-frame re-render of App + KnifeToolController while a leaf was selected —
- * putting camera changes on the React render path. We therefore GUARD on the only
- * inputs `leafShapeAt` reads (activeFeature / currentTime / domain) and skip the
- * recompute when none of them changed, so a camera-only set() is a no-op here.
- */
-export function useKnifeTargetShape(
-  store: ReturnType<typeof createSessionStore<DomainRoot>>,
-): GeoMultiPolygon | undefined {
-  const [shape, setShape] = useState<GeoMultiPolygon | undefined>(undefined);
-  useEffect(() => {
-    /** The leaf-shape inputs; identity-compared to gate the recompute. */
-    const inputsOf = (
-      s: ReturnType<typeof store.getState>,
-    ): { fid: FeatureId | null; time: TimePoint; domain: DomainRoot } => ({
-      fid: s.activeFeature,
-      time: s.currentTime,
-      domain: s.domain,
-    });
-    const compute = (
-      fid: FeatureId | null,
-      time: TimePoint,
-    ): GeoMultiPolygon | undefined => {
-      if (fid === null) return undefined;
-      return leafShapeAt(store.getState().domain, time, fid) ?? undefined;
-    };
-    let prev = inputsOf(store.getState());
-    setShape(compute(prev.fid, prev.time));
-    return store.subscribe(() => {
-      const next = inputsOf(store.getState());
-      // Camera-only set()s leave fid/time/domain identical — skip the recompute
-      // (and the re-render it would cause) so pan/zoom stays off the render path.
-      if (
-        next.fid === prev.fid &&
-        next.time === prev.time &&
-        next.domain === prev.domain
-      ) {
-        return;
-      }
-      prev = next;
-      setShape(compute(next.fid, next.time));
-    });
-  }, [store]);
-  return shape;
-}
+// W3-A: the knife 対象面強調 no longer mirrors the store selection into React state.
+// The emphasis is resolved INSIDE KnifeToolController from the tool's OWN target
+// (`knife.state.targetId` → the host's `resolveLeafShape`), the same live-lookup the
+// 対象取得 (`leafAtPoint`) picks from — one truth for「取得した対象」と「強調される形」
+// (教訓 5.29), and no App-level store.subscribe on the camera-hot path at all
+// (技術方針 2.3「camera は React 描画パスに乗せない」: the removed hook had to GUARD
+// against per-frame recomputes; the resolution now happens only when the tool's
+// session state changes).
 
 // --- The add bootstrap (id ports + the U13 seam) ----------------------------
 
@@ -3823,19 +3767,17 @@ import type {
   ResolveVertexStore,
   StartSplitProcess,
   FeatureAtPoint,
+  ResolveLeafShape as KnifeResolveLeafShape,
 } from './knife/index';
 import type { SplitIdPorts, SplitSnapshot } from '../domain/knife/index';
-import type { DisplayControlInput } from '../render/display-pipeline';
-import type { Camera, Viewport } from '../render';
 
-/** A snapshot of the camera/viewport the frame drew with (for the knife wrap probe). */
-type KnifeWrapFrame = { readonly camera: Camera; readonly viewport: Viewport } | undefined;
-
-interface KnifeBootstrap<S> {
+export interface KnifeBootstrap<S> {
   readonly ids: SplitIdPorts;
   readonly resolveFeature: ResolveFeature;
   readonly resolveStore: ResolveVertexStore;
   readonly featureAtPoint: FeatureAtPoint;
+  /** Resolve a target id → its leaf shape at the current time (W3-A 対象面強調). */
+  readonly resolveLeafShape: KnifeResolveLeafShape;
   readonly startProcess: StartSplitProcess<S>;
   /** Build the U35 apply-resolutions adapter bound to ONE paused split proposal. */
   readonly applyResolutionsFor: (
@@ -3843,13 +3785,11 @@ interface KnifeBootstrap<S> {
   ) => ApplyResolutions<S>;
 }
 
-function createKnifeBootstrap(
+export function createKnifeBootstrap(
   getRoot: () => DomainRoot,
   getTime: () => TimePoint,
   mint: SharedIdMint,
-  getDisplayControl: () => DisplayControlInput,
-  getFilter: () => FilterState,
-  getWrap: () => KnifeWrapFrame,
+  isVisibleTarget: (featureId: FeatureId) => boolean,
 ): KnifeBootstrap<DomainRoot> {
   // Ids are minted through the SAME shared minter the add bootstrap uses (finding
   // 3): a single generator + a project-wide reservation set, so a knife-minted id
@@ -3867,31 +3807,47 @@ function createKnifeBootstrap(
   // detection can never disagree about which feature is where (二重真実源を作らない,
   // 教訓 5.29). resolveStore returns the vertices effective at the same time so the
   // hook's geometry (checkSplittable / executeSplit) resolves against real coords.
+  // FR-113 (W3-AB fix-forward): the visibility gate is NOT just an acquisition-time
+  // filter. `resolveFeature` backs the confirm / save geometry path, so leaving it
+  // ungated let a target acquired while visible stay splittable after the user hid it
+  // (個別非表示 / 種別オフ) — the very 不変条件「非表示地物はツール取得からも消える
+  // (描画==ヒット==分割対象)」W3-A declared. Gating it here makes the invariant hold for
+  // the WHOLE session, not just the click (多重防御: the controller also drops such a
+  // target, but the geometry path must never depend on that).
   const resolveFeature: ResolveFeature = (featureId): Feature | undefined =>
-    featuresAt(getRoot(), getTime()).find((f) => f.id === featureId);
+    isVisibleTarget(featureId)
+      ? featuresAt(getRoot(), getTime()).find((f) => f.id === featureId)
+      : undefined;
   const resolveStore: ResolveVertexStore = (): VertexStore => verticesAt(getRoot(), getTime());
-  // 対象面探索は描画解決と同じ単一真実源 (bughunt: ナイフが displayControl を無視して
-  // 裏の非表示 leaf を選べた). The previous `leafAtPoint` tested every committed leaf
-  // body regardless of what was drawn, so with the default N=0 集約表示 a click on an
-  // aggregate body returned a HIDDEN child leaf as the split target (描画されていない
-  // ものが選ばれる, 二重真実源). We now route through `drawnAreaAt` — the SAME
-  // `resolveDisplayControl`-based drawn-area set the renderer (committed-features) fills
-  // and the main hit-test (`liveHitTestAt`) picks — honouring the store's display-control
-  // and the renderer's ±360° wrap turns. A body click resolves to the AGGREGATE the user
-  // SEES (which the hook's LEAF gate then rejects as unsplittable), never an undrawn child
-  // leaf. Read at call time so a load / time move / depth-slider change is reflected
-  // without a stale capture (教訓 5.6 / 5.29).
-  const featureAtPoint: FeatureAtPoint = (point): FeatureId | null =>
-    drawnAreaAt(
-      {
-        root: getRoot(),
-        time: getTime(),
-        displayControl: getDisplayControl(),
-        filter: getFilter(),
-        wrap: getWrap(),
-      },
-      point,
-    );
+  // W3-A: 対象面探索は INDIVIDUAL LEAF を拾う `leafAtPoint` — merge / reparent / ring-edit
+  // / drill と同じ規約 (HB3-16 と同型). ナイフだけが表示解決の `drawnAreaAt` に残っていて、
+  // 「取得した対象(描かれている集約体 id)」と「強調表示(生リーフ形状 leafShapeAt)」が別解決
+  // = 二重真実源だった。既定の集約表示 (N=0) で症状が出る:
+  //   - FR-35 の真の集約体(shapeless)を返すと leafShapeAt が undefined → 強調ゼロ、かつ
+  //     hook の LEAF ゲートに必ず弾かれて分割そのものが到達不能 (深度を上げるまで切れない);
+  //   - FR-37 の直轄領構成(子を持つ末端)では丸め先の親 id が返り、強調されるのは親の生形状
+  //     = クリックした場所と別の場所が光る (hb4-1-b2-child-click.png)。
+  // FR-44「集約地物は直接分割できない」は「集約体を対象にして拒否する」ではなく「クリック
+  // 位置の末端リーフへ解決する」で満たす (HB3-16 前例: 集約表示中でも集約体の下の個別リーフ
+  // を直接ターゲットにできなければならない)。描かれていないリーフを選ぶ違和感は、下の
+  // `resolveLeafShape` によるツール側の対象面強調で「選んだ形が地図上に見える」ことで解消
+  // する(両方セットで意味を持つ)。hook の LEAF ゲートは多重防御として残す。
+  // FR-113 (Codex F1): 個別非表示 / 種別オフ / 深度フィルタで隠れたリーフは対象から外す
+  // (描画==ヒット==分割対象)。Read at call time (教訓 5.6 / 5.29)。
+  const featureAtPoint: FeatureAtPoint = (point): FeatureId | null => {
+    const leafId = leafAtPoint(getRoot(), getTime(), point);
+    return leafId !== null && isVisibleTarget(leafId) ? leafId : null;
+  };
+  // 単一真実源: 対象取得 (`leafAtPoint`) と対象面強調 (`leafShapeAt`) は同じ live-lookup
+  // 由来なので、強調される形 == クリックで取得した対象 == 実際に切られる形。
+  // W3-AB fix-forward: the SAME FR-113 gate `featureAtPoint` applies, so「取得できない形は
+  // 強調もされない」— the emphasis and the acquisition share ONE visibility verdict, and a
+  // target hidden AFTER acquisition resolves to `undefined` (which the controller reads as
+  // 「対象が消えた」and returns to 対象選択).
+  const resolveLeafShape: KnifeResolveLeafShape = (featureId) =>
+    isVisibleTarget(featureId)
+      ? (leafShapeAt(getRoot(), getTime(), featureId) ?? undefined)
+      : undefined;
 
   // U44 — the LIVE U13 binding for split. The proposal is ALREADY a U13
   // EditProposal<SplitSnapshot> (toEditProposal ran in the hook), so the swap is
@@ -3911,6 +3867,7 @@ function createKnifeBootstrap(
     resolveFeature,
     resolveStore,
     featureAtPoint,
+    resolveLeafShape,
     startProcess,
     applyResolutionsFor,
   };
