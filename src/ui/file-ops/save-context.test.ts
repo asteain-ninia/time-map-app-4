@@ -7,6 +7,7 @@ import {
   buildNewProjectContext,
   contextAfterSave,
   contextForLoadedFile,
+  contextWithoutSaveTarget,
   markDirty,
   needsSaveAs,
 } from './save-context';
@@ -64,5 +65,27 @@ describe('markDirty + contextAfterSave (baseline 一致, 教訓 5.24)', () => {
     expect(saved.dirty).toBe(false);
     // After the first save the project no longer needs 名前を付けて保存.
     expect(needsSaveAs(saved)).toBe(false);
+  });
+});
+
+describe('contextWithoutSaveTarget (HIGH-2 fail-safe: 宛先を取り下げて次の保存を saveAs へ)', () => {
+  it('nulls savePath + backupTarget so needsSaveAs becomes true, keeping everything else', () => {
+    const loaded = contextForLoadedFile({
+      path: '/tmp/b.tmap',
+      metadata: { name: '世界B', description: 'd' },
+      baseMapId: 'user-map',
+    });
+    expect(needsSaveAs(loaded)).toBe(false);
+
+    const retracted = contextWithoutSaveTarget(loaded);
+    expect(retracted.savePath).toBeNull();
+    expect(retracted.backupTarget).toBeNull();
+    // A retracted destination routes the next 保存 → 名前を付けて保存 (fresh destination).
+    expect(needsSaveAs(retracted)).toBe(true);
+    // Only the destination is retracted — metadata / baseMap / dirty / guard are untouched.
+    expect(retracted.metadata).toEqual(loaded.metadata);
+    expect(retracted.baseMapId).toBe(loaded.baseMapId);
+    expect(retracted.dirty).toBe(loaded.dirty);
+    expect(retracted.exitGuardEnabled).toBe(loaded.exitGuardEnabled);
   });
 });

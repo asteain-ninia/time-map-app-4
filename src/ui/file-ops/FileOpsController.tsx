@@ -48,6 +48,7 @@ import {
   buildNewProjectContext,
   contextAfterSave,
   contextForLoadedFile,
+  contextWithoutSaveTarget,
   needsSaveAs,
   type SaveContext,
 } from './save-context';
@@ -137,11 +138,14 @@ export interface FileOpsControllerProps {
   /**
    * S7 出界図 結線 — forward the DISPLAYED project's base-map image bytes to the renderer
    * host (App caches them and hands them to the map renderer's `baseMap` getter). Called
-   * on every 破壊的置換: a successful load pushes the file's `baseMapImage` bytes (the
-   * project map, feature-aligned) so the renderer paints it instead of the bundled
-   * preset; a 新規 pushes empty bytes so it reverts to the preset (FR-03). The SAME
-   * reference `loadedAssetsRef` retains for save round-trip is forwarded (no divergent
-   * truth). Optional so the standalone controller test needs no renderer.
+   * on every COMMITTED 破壊的置換: a load that actually reached the domain pushes the
+   * file's `baseMapImage` bytes (the project map, feature-aligned) so the renderer paints
+   * it instead of the bundled preset; a 新規 pushes empty bytes so it reverts to the
+   * preset (FR-03). A load the user aborted at the FR-106 repair dialog pushes NOTHING —
+   * display and retained bytes are promoted together, after the domain commits (UC1), so
+   * the map never shows a project the store does not hold. The SAME reference
+   * `loadedAssetsRef` retains for save round-trip is forwarded (no divergent truth).
+   * Optional so the standalone controller test needs no renderer.
    */
   readonly onBaseMapImageChange?: (image: Uint8Array) => void;
   /**
@@ -203,16 +207,60 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // asset — permanently losing the loaded map image on round-trip. The renderer is
   // the only place that holds these bytes after a load, so we retain them here and
   // re-ship them on save until the live asset units rebind the base map. A new /
-  // empty project carries no assets (empty image + no attachments). The ref is
-  // updated ONLY on a successful load (in the api-load wrappers below) and reset on
-  // a new-project init, mirroring the save context's lifecycle (教訓 5.36 同時初期化).
-  const loadedAssetsRef = useRef<{ baseMapImage: Uint8Array; attachments: readonly NamedAsset[] }>({
+  // empty project carries no assets (empty image + no attachments). The ref holds the
+  // assets of the COMMITTED project only: it is updated when a load reflects into the
+  // domain (promotePendingAssets, see the staging holder below) or when FR-04 replaces
+  // the base map, and reset on a new-project init, mirroring the save context's
+  // lifecycle (教訓 5.36 同時初期化).
+  /** The asset bytes belonging to one project (the save round-trip payload). */
+  interface LoadedAssets {
+    readonly baseMapImage: Uint8Array;
+    readonly attachments: readonly NamedAsset[];
+  }
+  const loadedAssetsRef = useRef<LoadedAssets>({
     baseMapImage: new Uint8Array(),
     attachments: [],
   });
   const resetLoadedAssets = useCallback(() => {
     loadedAssetsRef.current = { baseMapImage: new Uint8Array(), attachments: [] };
   }, []);
+
+  // UC1 (data-loss) fix — the STAGING holder for a load's asset bytes.
+  //
+  // The capture seam (below) is the ONLY place the renderer ever sees the raw
+  // `LoadResponse.baseMapImage` / `.attachments` (the load-adapter strips them, BUG #6),
+  // but that seam fires the moment the IPC read succeeds — LONG BEFORE the flow knows
+  // whether the file will actually become the live project. Between the two lie the
+  // FR-106 repair dialog, its retry, and the reject branches, EVERY one of which can end
+  // the load with the domain untouched. Writing `loadedAssetsRef` (the SAVE bytes) and
+  // pushing the DISPLAY bytes at the capture seam therefore left, on a repair 中止:
+  //   - the domain on the PREVIOUS project, but the retained assets on the NEW file, so
+  //     the next 保存 / 自動保存 wrote 旧 manifest + 新 asset into one `.tmap` — a
+  //     corrupt, self-inconsistent file (the manifest's base-map/attachment references
+  //     no longer describe the embedded bytes);
+  //   - the displayed base map flipped to the file the user just refused to open.
+  // So the capture is now TWO-STAGE: the seam only STAGES the bytes here, and
+  // {@link promotePendingAssets} moves them into `loadedAssetsRef` + pushes the display
+  // ONLY from `reflectProject`, i.e. after the domain is committed (教訓 5.22 確定後のみ
+  // 反映). Every non-reflecting exit — 修復中止 / 二度目も Unresolved / reject / cancel /
+  // 例外 — discards the staged capture, leaving the previous project's assets AND display
+  // untouched (教訓 5.2 全経路で破棄). 保存 is deliberately NOT gated by the file-ops
+  // mutex, so a Ctrl+S while the repair dialog is open must read the committed assets too
+  // — staging (not overwriting) is what makes that read honest.
+  const pendingAssetsRef = useRef<LoadedAssets | null>(null);
+
+  // UC1 round-2 保存「宛先」の遅延昇格 — the STAGING holder for a load's commit TOKEN.
+  //
+  // main no longer promotes the save target on a successful read; it stages `{token,path}`
+  // and hands the token back on `LoadResponse.commitToken`. This ref stages that token IN
+  // LOCKSTEP with the asset bytes (same capture seam, same discard points), and it is
+  // committed back to main (`api.commitLoadedPath`) from the SAME commit point that
+  // promotes the assets — reflectProject, i.e. after the domain is confirmed. So a load
+  // aborted at the FR-106 repair dialog (or one that throws at reflect) never moves the
+  // save destination onto the file the user refused to open (the HIGH data-loss path:
+  // A を開く→不整合 B→修復中止→Ctrl+S が B.tmap を A の内容で上書き破壊). `null` = nothing
+  // staged (a no-op to promote / discard), mirroring `pendingAssetsRef`.
+  const pendingLoadTokenRef = useRef<string | null>(null);
 
   // S7 出界図 結線 — the latest onBaseMapImageChange callback, held in a ref so the
   // asset-capture wrapper (inside the `host` memo) and the new-project init (inside an
@@ -221,6 +269,56 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // render so it never goes stale.
   const onBaseMapImageChangeRef = useRef(props.onBaseMapImageChange);
   onBaseMapImageChangeRef.current = props.onBaseMapImageChange;
+
+  /**
+   * UC1 — drop a STAGED (not yet committed) capture. Called on every load exit that did
+   * not reflect: 修復中止 / 二度目も Unresolved / reject / cancel / 例外 (the exclusive
+   * runner's `finally` makes this total for every load entry). A no-op when nothing is
+   * staged, so it is safe to call unconditionally (教訓 5.2 全経路で破棄).
+   */
+  const discardPendingAssets = useCallback(() => {
+    pendingAssetsRef.current = null;
+    // UC1 round-2: the staged save-destination token is discarded together with the
+    // assets, so a non-reflecting load never commits its path either (同・全経路で破棄).
+    pendingLoadTokenRef.current = null;
+  }, []);
+
+  /**
+   * UC1 — PROMOTE the staged capture to the committed assets: the SAVE bytes
+   * (`loadedAssetsRef`, re-shipped by buildSaveRequest) and the DISPLAY push
+   * (`onBaseMapImageChange`, S7) move together, in ONE step, from the SAME staged
+   * reference (単一真実源 — no divergent bytes copy). This is the ONLY promotion site and
+   * it runs ONLY from `reflectProject` AFTER the store transition committed, so a load
+   * that never reaches the domain can never leave its bytes behind. Clearing the stage
+   * first makes a second reflect in the same flow a no-op rather than a re-push.
+   */
+  const promotePendingAssets = useCallback(() => {
+    const staged = pendingAssetsRef.current;
+    if (staged === null) {
+      // UC1 invariant (LOW#1): reflectProject runs ONLY from a committed load, and every
+      // load that reaches reflect first STAGED its capture at the capturingApi seam — so a
+      // null stage HERE is the mirror image of the leak this two-stage design prevents: a
+      // reflect that has no captured bytes to promote. It is NOT fatal (the domain is
+      // already committed; the display simply keeps the previous project's base map, which
+      // is the safe direction), so we deliberately do NOT throw. We surface a DEV-only
+      // warning so a future wiring regression — a reflect path that skipped the capture
+      // seam — is caught in development instead of silently dropping the display update.
+      if (import.meta.env.DEV) {
+        console.warn(
+          '[file-ops] promotePendingAssets: reflect committed but no staged capture; ' +
+            'asset/display promotion skipped (UC1 invariant surfaced — not fatal).',
+        );
+      }
+      return;
+    }
+    pendingAssetsRef.current = null;
+    loadedAssetsRef.current = staged;
+    // S7: display the loaded PROJECT base-map image (feature-aligned) instead of the
+    // preset. Forwards the SAME bytes reference retained above (no copy); the renderer
+    // host decodes it once and paints it under the grid. Empty bytes (a project saved
+    // without a base-map image) resolve to the preset in the host.
+    onBaseMapImageChangeRef.current?.(staged.baseMapImage);
+  }, []);
 
   // The EXACT store snapshot that was serialized into the in-flight save request.
   // A save serializes a snapshot at save START (buildSaveRequest); the IPC write is
@@ -244,6 +342,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     readonly appSettings: SessionStore<DomainProject>['appSettings'];
   }
   const savedSnapshotRef = useRef<SavedSnapshot | null>(null);
+
+  // MED (save/load レース) symmetric guard — the SaveContext captured at save START.
+  // buildSaveRequest snapshots it; onSaved applies the save's path/backupTarget update
+  // ONLY if the context is still that exact reference. If a load reflected DURING the
+  // async write it swapped in the loaded file's context (a new reference), and rolling
+  // that back onto this (older) save's path would desync the renderer from main — which
+  // already keeps the loaded destination via its own load-commit generation guard. This
+  // is the renderer half of the two-sided fix (main: loadCommitCounter; here: identity).
+  const saveStartContextRef = useRef<SaveContext | null>(null);
 
   // Clear the single dirty source ONLY if NO change landed during the save's async
   // write to ANY slice the save persisted (domain + projectSettings + appSettings).
@@ -292,9 +399,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         return await op();
       } finally {
         opInFlightRef.current = false;
+        // UC1: the TOTAL discard point for a staged asset capture. Every load entry
+        // (開く / D&D) runs through here, so whatever path the flow took — reflected
+        // (already promoted), 修復中止, 二度目も Unresolved, reject, cancel, or a throw —
+        // no un-committed bytes survive the operation (教訓 5.2 全経路で破棄). A flow that
+        // promoted has already cleared the stage, so this is then a no-op.
+        discardPendingAssets();
       }
     },
-    [],
+    [discardPendingAssets],
   );
 
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
@@ -304,24 +417,35 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // --- the live host capabilities (each is a dependency-unit API) -----------
   const host: FileOpsHost | null = useMemo(() => {
     if (api === null) return null;
-    // BUG #6 fix (capture half): wrap the U15 load calls so a successful load RETAINS
-    // its asset bytes in loadedAssetsRef before the load-adapter strips them (the
-    // adapter keeps only path + manifest). This is the only seam where the renderer
-    // sees the raw `LoadResponse.baseMapImage` / `.attachments`; without retaining
-    // them here the bytes are gone by the time a save assembles its request. A failed
-    // / cancelled load leaves the retained assets untouched (no destructive replace
-    // happened). All other api members pass through unchanged.
+    // BUG #6 fix (capture half): wrap the U15 load calls so a successful load KEEPS its
+    // asset bytes before the load-adapter strips them (the adapter keeps only path +
+    // manifest). This is the only seam where the renderer sees the raw
+    // `LoadResponse.baseMapImage` / `.attachments`; without keeping them here the bytes
+    // are gone by the time a save assembles its request.
+    //
+    // UC1 fix (the two-stage half): the seam only STAGES them. Success HERE means "the
+    // file was read", NOT "this project is now live" — the FR-106 repair dialog, its
+    // retry and the reject branches all still lie ahead and any of them can end the load
+    // with the domain unchanged. Committing the bytes at this point produced a `.tmap`
+    // whose manifest (old project) and assets (new file) came from DIFFERENT projects on
+    // the next save. `promotePendingAssets` (called from reflectProject, 確定後) is the
+    // only writer of the committed assets + display; a failed / cancelled / repair-aborted
+    // load leaves both untouched. All other api members pass through unchanged.
     const captureAssets = (response: LoadResponse): LoadResponse => {
       if (response.ok) {
-        loadedAssetsRef.current = {
+        pendingAssetsRef.current = {
           baseMapImage: response.baseMapImage,
           attachments: response.attachments,
         };
-        // S7: display the loaded PROJECT base-map image (feature-aligned) instead of the
-        // preset. Forward the SAME bytes reference retained above (単一真実源, no copy);
-        // the renderer host decodes it once and paints it under the grid. Empty bytes
-        // (a project saved without a base-map image) resolve to the preset in the host.
-        onBaseMapImageChangeRef.current?.(response.baseMapImage);
+        // UC1 round-2: stage the save-destination token beside the assets — both are
+        // promoted from reflectProject and discarded on every non-reflecting exit, so the
+        // destination moves iff the load reaches the domain. A response without a token
+        // (defensive / non-production) stages null → the commit is a safe no-op.
+        pendingLoadTokenRef.current = response.commitToken ?? null;
+      } else {
+        // A transport failure ends this load here: nothing to promote (the runner's
+        // finally is the belt-and-braces discard for every other exit).
+        discardPendingAssets();
       }
       return response;
     };
@@ -342,6 +466,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         projectSettings: state.projectSettings,
         appSettings: state.appSettings,
       };
+      // MED (save/load レース): snapshot the save context at START so onSaved can tell
+      // whether a load reflected (swapped the context reference) during the async write.
+      saveStartContextRef.current = contextRef.current;
       // 二重真実源 fix: the user settings live in the U16 store, NOT in
       // domain.settings, so serialize(domain) alone would drop every settings-panel
       // change (zoom / timeline / grid / label / palette …). Fold the LIVE store
@@ -374,10 +501,20 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
       onSaved: (path: string) => {
-        // Path / backupTarget update ALWAYS happens (it is independent of dirty):
-        // a successful write established this file as the save target regardless of
-        // whether a later edit re-dirtied the document (finding 2 切り離し).
-        applyContext(contextAfterSave(contextRef.current, path));
+        // Path / backupTarget update happens independently of dirty: a successful write
+        // establishes this file as the save target regardless of whether a later edit
+        // re-dirtied the document (finding 2 切り離し).
+        //
+        // MED (save/load レース) symmetric guard: apply it ONLY if a load did NOT reflect
+        // during this save's async write. buildSaveRequest snapshotted the context at save
+        // start; a load that committed in between swapped contextRef to the loaded file's
+        // context (a new reference). Rolling THAT back to this older save's path would
+        // desync the renderer from main, which already keeps the loaded destination via its
+        // own generation guard. A normal edit / settings change does NOT touch the context
+        // (only new / load / save do), so the common path still applies here.
+        if (contextRef.current === saveStartContextRef.current) {
+          applyContext(contextAfterSave(contextRef.current, path));
+        }
         // Clear dirty ONLY if no edit OR settings change landed during the async
         // write (lost-edit guard): markClean compares the live domain AND both
         // settings slices to the serialized snapshot.
@@ -453,6 +590,57 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             baseMapId: project.baseMap.source,
           }),
         );
+        // UC1: the domain is COMMITTED (reflectLoadedProject is atomic and would have
+        // thrown/rolled back otherwise), so — and only so — this file's asset bytes
+        // become the retained SAVE bytes and the DISPLAYED base map. Placed AFTER the
+        // store transition so an invalid project that rolls back keeps the previous
+        // project's assets AND display (教訓 5.22 確定後のみ反映).
+        //
+        // ORDER RATIONALE (LOW#2 — corrected): the display push in App
+        // (handleBaseMapImageChange) does a SYNCHRONOUS paint — it calls
+        // `rendererRef.current.redraw()` directly, NOT the U19 redraw-scheduler (rAF), so
+        // it is NOT "collapsed into one rAF frame" with the domain-swap redraw. What makes
+        // the new order correct is that the bytes are pushed AFTER the domain commit: that
+        // synchronous paint therefore sees a domain and base-map bytes that already agree,
+        // so the base-map host resolves the desired image key once. Pushing the bytes
+        // before/independent of the commit could paint an intermediate frame whose domain
+        // still names the OLD base map while the bytes are the NEW one — a wasted decode of
+        // a mismatched desiredKey. Confirmed-then-push removes that wasted intermediate.
+        promotePendingAssets();
+        // UC1 round-2: the domain is committed, so promote the SAVE DESTINATION too —
+        // echo the staged token back to main, which moves `currentPath` onto this file
+        // (the SAME commit point as the asset promotion).
+        //
+        // IPC ORDER DEPENDENCY (documented, 所見明文化): this commit is NOT awaited by the
+        // load flow — a plain Save that follows is a separate user action. Correctness in the
+        // happy path relies on per-renderer IPC send-order: both this commit and any later
+        // save invoke are sent from THIS renderer in program order, so main processes the
+        // commit (moving `currentPath` onto this file) BEFORE the save writes. We do not,
+        // and cannot from here, order against a save that main is already mid-write on.
+        //
+        // HIGH-2 fail-safe (救済): the renderer has ALREADY adopted this file's path
+        // (contextForLoadedFile above), but if the commit itself FAILS at main (reject /
+        // throw), main's `currentPath` never moved onto it — so a following plain 保存 would
+        // atomic-write THIS project's content to the PREVIOUS file's path (誤宛先=data-loss).
+        // On failure we therefore RETRACT the renderer's save target (savePath→null) so the
+        // next 保存 routes to 名前を付けて保存 (needsSaveAs=true) and main asks for a fresh
+        // destination — it can never silently target the wrong file. Guarded by context
+        // identity: retract ONLY if no later new/load/save swapped the context (that newer
+        // context established its own correct destination and must not be clobbered).
+        const commitToken = pendingLoadTokenRef.current;
+        pendingLoadTokenRef.current = null;
+        if (commitToken !== null) {
+          const committedContext = contextRef.current;
+          void (async () => {
+            try {
+              await api.commitLoadedPath(commitToken);
+            } catch {
+              if (contextRef.current === committedContext) {
+                applyContext(contextWithoutSaveTarget(contextRef.current));
+              }
+            }
+          })();
+        }
       },
       notify: (message: string) => {
         // FR-115: a Japanese notice. Surfaced through the host's alert hook; the
@@ -461,7 +649,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       },
       calendar,
     };
-  }, [api, store, calendar, applyContext, markClean]);
+  }, [api, store, calendar, applyContext, markClean, promotePendingAssets, discardPendingAssets]);
 
   const ports: FileCommandPorts | null = useMemo(
     () => (host === null ? null : buildFileCommandPorts(host)),

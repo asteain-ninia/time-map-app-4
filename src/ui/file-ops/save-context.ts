@@ -125,6 +125,20 @@ export function markDirty(context: SaveContext): SaveContext {
 }
 
 /**
+ * Clear the SAVE TARGET from a context so the next 保存 routes to 名前を付けて保存
+ * (HIGH-2 fail-safe). Used when the renderer already adopted a loaded file's path but
+ * main's `currentPath` was NOT actually promoted onto it (the load-commit IPC failed):
+ * a plain 保存 would then atomic-write THIS project's content to the PREVIOUS file's path.
+ * Nulling `savePath` (and its mirror `backupTarget`) makes {@link needsSaveAs} true, so
+ * main is asked for a fresh destination instead of silently targeting the wrong file. The
+ * rest of the context (metadata / baseMapId / dirty / exit guard) is untouched — only the
+ * destination is retracted. Returns a new value (immutable).
+ */
+export function contextWithoutSaveTarget(context: SaveContext): SaveContext {
+  return { ...context, savePath: null, backupTarget: null };
+}
+
+/**
  * Whether a 保存 must route to 名前を付けて保存 (spec §A): true when the save path is
  * undetermined (a new project that has never been saved). Single decision the save
  * command consults so both the menu 保存 and the guard's 保存 branch agree (教訓 5.30).

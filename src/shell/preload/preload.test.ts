@@ -51,6 +51,7 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
     const keys = Object.keys(api).sort();
     expect(keys).toEqual([
       'appendLog',
+      'commitLoadedPath',
       'configureAutoSave',
       'load',
       'loadDropped',
@@ -124,6 +125,12 @@ describe('each API method invokes the correct shared channel (受け入れ基準
     };
     await api.appendLog(record);
     expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.AppendLog, record);
+  });
+
+  it('commitLoadedPath → IPC_CHANNEL.CommitLoadedPath with the token (UC1 round-2)', async () => {
+    const api = buildApi();
+    await api.commitLoadedPath('tok-42');
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CommitLoadedPath, 'tok-42');
   });
 });
 

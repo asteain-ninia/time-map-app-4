@@ -88,15 +88,31 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
   // lost-edit guard compares against, because no later save started in between.
   let saveChain: Promise<unknown> = Promise.resolve();
 
-  const performSave = async (which: 'save' | 'saveAs'): Promise<boolean> => {
-    // buildSaveRequest captures the snapshot the lost-edit guard compares against;
-    // it MUST run inside the serialized section (immediately before the awaited IPC
-    // call), so the snapshot reflects the state at THIS save's actual start, not at
-    // the moment the command was dispatched while an earlier save was still in
-    // flight (otherwise a change made between dispatch and turn would be missed).
+  // `intent` is the caller's ASK, not the final destination:
+  //   - 'saveAs' — an explicit 名前を付けて保存: ALWAYS writes through the Save-As dialog.
+  //   - 'save'   — a plain 保存: "write to the current target, or 名前を付けて保存 if there
+  //                is none". The save-vs-saveAs decision for this intent is re-evaluated at
+  //                SERIALIZED EXECUTION time (below), NOT fixed at dispatch.
+  const performSave = async (intent: 'save' | 'saveAs'): Promise<boolean> => {
+    // HIGH-1 根治 — re-evaluate the DESTINATION at the moment this (possibly queued) save
+    // actually runs. A plain 保存 that was dispatched while an earlier save was in flight is
+    // queued behind it; between its dispatch and its turn a破壊的 context swap (新規 / load,
+    // savePath=null) can land. Deciding save vs saveAs at DISPATCH would then run this queued
+    // save as a plain `save`, atomic-writing the NEW project's manifest/assets to the OLD
+    // file's currentPath in main — silent data-loss. Consulting host.needsSaveAs() HERE makes
+    // such a queued save fall to 名前を付けて保存 (main asks for a fresh destination) instead, so
+    // it can never overwrite the superseded file. An explicit 'saveAs' intent is unconditional.
+    //
+    // needsSaveAs() and buildSaveRequest() BOTH read the LIVE store, synchronously and with no
+    // intervening await, so the destination decision and the serialized snapshot always
+    // describe the SAME live context (no split read). buildSaveRequest captures the snapshot
+    // the lost-edit guard compares against; it MUST run inside the serialized section
+    // (immediately before the awaited IPC call), so the snapshot reflects the state at THIS
+    // save's actual start, not at dispatch time (otherwise a change made between dispatch and
+    // turn would be missed).
+    const useSaveAs = intent === 'saveAs' || host.needsSaveAs();
     const req = host.buildSaveRequest();
-    const res: SaveResponse =
-      which === 'saveAs' ? await host.api.saveAs(req) : await host.api.save(req);
+    const res: SaveResponse = useSaveAs ? await host.api.saveAs(req) : await host.api.save(req);
     if (res.ok) {
       host.onSaved(res.path);
       return true;
@@ -107,11 +123,11 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     return false;
   };
 
-  const runSave = (which: 'save' | 'saveAs'): Promise<boolean> => {
+  const runSave = (intent: 'save' | 'saveAs'): Promise<boolean> => {
     // Append to the chain so saves run strictly one-at-a-time. A prior save's
     // failure/rejection must NOT poison the chain, so we swallow it (catch) before
     // queueing the next save; this save's own outcome is still returned faithfully.
-    const result = saveChain.then(() => performSave(which));
+    const result = saveChain.then(() => performSave(intent));
     saveChain = result.catch(() => undefined);
     return result;
   };
@@ -124,8 +140,10 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
       isDirty: host.isDirty,
       promptUnsaved: host.promptUnsaved,
       // The guard's 保存 branch routes through the SAME save decision the menu uses
-      // (過少共有しない: one save path), 名前を付けて保存 when needed.
-      save: () => runSave(host.needsSaveAs() ? 'saveAs' : 'save'),
+      // (過少共有しない: one save path). It passes the plain 'save' intent; the
+      // save-vs-名前を付けて保存 choice is made at serialized EXECUTION time by performSave
+      // (HIGH-1), so it stays correct even if the context changes before the save runs.
+      save: () => runSave('save'),
     },
     save: () => runSave('save'),
     saveAs: () => runSave('saveAs'),

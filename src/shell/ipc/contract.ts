@@ -80,6 +80,16 @@ export const IPC_CHANNEL = {
    * ({@link CloseVerdict})。invoke の戻り値は ack のみで、判定そのものは payload。
    */
   CloseResponse: 'tmap:close-response',
+  /**
+   * UC1 round-2 保存「宛先」の遅延昇格 — RENDERER→MAIN invoke: 読み込みが実際に
+   * ドメインへ反映された **commit point**（reflectProject 成功 = 確定後）で、レンダラは
+   * その読み込みの {@link LoadResponse.commitToken} を返し「この読み込み先を現在の保存先
+   * へ昇格してよい」と告げる。main は読み取り成功だけでは currentPath を昇格せず、保留
+   * トークンと一致した時だけ昇格する（FR-107 の ACK 分離と同じ commit-point 思想）。
+   * これにより「A を開く→不整合 B を開く→修復中止→Ctrl+S」で、開くのを拒否した B.tmap を
+   * A の内容で丸ごと上書き破壊する経路を断つ（読み取り成功=即昇格を廃止）。
+   */
+  CommitLoadedPath: 'tmap:commit-loaded-path',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
@@ -140,6 +150,16 @@ export type LoadResponse =
       readonly manifest: Manifest;
       readonly baseMapImage: Uint8Array;
       readonly attachments: readonly NamedAsset[];
+      /**
+       * UC1 round-2 保存宛先の遅延昇格: an opaque token main mints per successful read.
+       * Main STAGES `{ token, path }` instead of promoting the save target on read; the
+       * renderer echoes this token back via {@link TimeMapApi.commitLoadedPath} at the
+       * commit point (reflectProject 成功) so main promotes `currentPath` to `path` ONLY
+       * for a load that actually reached the domain. Optional so every non-production
+       * `LoadResponse` construction (tests / fixtures) stays valid; when absent the
+       * renderer simply skips the commit (a safe degrade — save keeps the prior target).
+       */
+      readonly commitToken?: string;
     }
   | { readonly ok: false; readonly reason: 'cancelled' }
   | {
@@ -275,4 +295,16 @@ export interface TimeMapApi {
    * logging path can never crash. NEVER leaves the machine (local userData only).
    */
   readonly appendLog: (record: DiagnosticLogRecord) => Promise<void>;
+  /**
+   * UC1 round-2 保存宛先の遅延昇格: commit a loaded file as the current save target.
+   * Called from the renderer's load commit point (reflectProject 成功 = ドメイン確定,
+   * the SAME point that promotes the loaded asset bytes) with the read's
+   * {@link LoadResponse.commitToken}. Main promotes `currentPath` to the staged path
+   * ONLY when the token matches its pending entry (and comes from the same window that
+   * initiated the load, 所見3), so a load aborted at the FR-106 repair dialog — or one
+   * that never reached the domain — never moves the save destination. Best-effort:
+   * fire-and-forget; a plain Save that follows is a separate action and IPC send-order
+   * guarantees main sees this commit first.
+   */
+  readonly commitLoadedPath: (token: string) => Promise<void>;
 }

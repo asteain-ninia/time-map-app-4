@@ -43,6 +43,11 @@ export function buildApi(): TimeMapApi {
       ipcRenderer.invoke(IPC_CHANNEL.Load) as Promise<LoadResponse>,
     loadDropped: (droppedPath: string): Promise<LoadResponse> =>
       ipcRenderer.invoke(IPC_CHANNEL.LoadDropped, droppedPath) as Promise<LoadResponse>,
+    // UC1 round-2 保存宛先の遅延昇格: at the renderer's load commit point, echo the read's
+    // commitToken so main promotes currentPath ONLY for a load that reached the domain
+    // (read成功=即昇格を廃止 — 修復中止したファイルを Ctrl+S で上書きしない).
+    commitLoadedPath: (token: string): Promise<void> =>
+      ipcRenderer.invoke(IPC_CHANNEL.CommitLoadedPath, token) as Promise<void>,
     // FR-04 ベースマップ差し替え: main opens the image dialog + reads the file; the
     // renderer receives only the bytes (or null on cancel / read-failure).
     openImage: (): Promise<Uint8Array | null> =>

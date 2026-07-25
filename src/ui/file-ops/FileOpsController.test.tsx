@@ -75,6 +75,8 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     onCloseRequest: vi.fn(() => () => {}),
     appendLog: vi.fn(async () => {}),
     openImage: vi.fn(async (): Promise<Uint8Array | null> => null),
+    // UC1 round-2: the renderer commits a loaded file's token at the reflect commit point.
+    commitLoadedPath: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -254,6 +256,67 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
     // No edit during the (immediate) write ⇒ dirty cleared.
     await waitFor(() => expect(store.getState().projectDirty).toBe(false));
+  });
+});
+
+describe('キュー済み保存の宛先は直列化「実行時」に再評価する (HIGH-1: dispatch 時固定の data-loss 回帰)', () => {
+  it('保存A in-flight → 保存B キュー → 新規(discard) → A完了 → キュー保存は旧A.tmapへ plain-save せず saveAs へ落ちる', async () => {
+    // The repro Codex flagged: a plain 保存 that queues behind an in-flight save fixes its
+    // save/saveAs decision AT DISPATCH. If a破壊的 context swap (新規, savePath=null) lands
+    // while it waits, running it as a plain `save` would atomic-write the NEW empty project's
+    // manifest/assets to the PREVIOUS file's currentPath (旧 A.tmap) in main — silent
+    // data-loss. The destination MUST be re-evaluated at serialized EXECUTION time so the
+    // queued save falls to 名前を付けて保存 (main asks for a fresh destination) instead.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const saveResolvers: Array<(r: SaveResponse) => void> = [];
+    const saveReqs: SaveRequest[] = [];
+    const save = vi.fn((req: SaveRequest) => {
+      saveReqs.push(req);
+      return new Promise<SaveResponse>((resolve) => { saveResolvers.push(resolve); });
+    });
+    const saveAsReqs: SaveRequest[] = [];
+    const saveAs = vi.fn(async (req: SaveRequest) => {
+      saveAsReqs.push(req);
+      return { ok: true as const, path: '/tmp/saveas.tmap' };
+    });
+    // Establish the save target via a CLEAN load (savePath=/tmp/a.tmap, dirty cleared), so a
+    // following 保存 routes as a plain `save`, exactly the queued path under test.
+    const load = vi.fn(async (): Promise<LoadResponse> => ({
+      ok: true,
+      path: '/tmp/a.tmap',
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: new Uint8Array(),
+      attachments: [],
+      commitToken: 'tok-a',
+    }));
+    const api = makeApi({ save, saveAs, load });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // 1) Load A → the established (never-nulled) save target is /tmp/a.tmap.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+
+    // 2) 保存A: needsSaveAs=false at dispatch → plain save, held in-flight (deferred).
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+
+    // 3) 保存B: also needsSaveAs=false at dispatch → queued behind A (not started yet).
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    expect(save).toHaveBeenCalledTimes(1);
+
+    // 4) 新規プロジェクト: a破壊的 context swap — savePath becomes null, domain empties. (The
+    //    project is clean here, so the guard proceeds without a警告.)
+    await act(async () => { registry.dispatch(COMMAND_ID.FileNew); });
+
+    // 5) 保存A completes → the chain advances and the QUEUED 保存B now actually runs.
+    await act(async () => { saveResolvers[0]!({ ok: true, path: '/tmp/a.tmap' }); });
+
+    // 6) The queued save re-checks the LIVE context (savePath=null) at execution and falls to
+    //    名前を付けて保存 — it does NOT plain-save the new project onto 旧 A.tmap. Only 保存A ever
+    //    did a plain save; the queued one is a saveAs.
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+    expect(save).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -978,6 +1041,497 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage.length).toBe(0);
     expect(savedReq!.attachments).toHaveLength(0);
+  });
+});
+
+describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在 .tmap = 旧manifest+新asset の回帰)', () => {
+  const BYTES_A = new Uint8Array([0xa1, 0xa2, 0xa3]);
+  const BYTES_B = new Uint8Array([0xb1, 0xb2, 0xb3]);
+  const ATTACH_A = [{ name: 'a.png', bytes: new Uint8Array([1, 1, 1]) }];
+  const ATTACH_B = [{ name: 'b.png', bytes: new Uint8Array([2, 2, 2]) }];
+
+  /** A clean project A carrying its own asset bytes (the ESTABLISHED project). */
+  function cleanLoadA(): LoadResponse {
+    return {
+      ok: true,
+      path: '/tmp/a.tmap',
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: BYTES_A,
+      attachments: ATTACH_A,
+    };
+  }
+
+  /** An INCONSISTENT project B carrying different asset bytes (the repair-gated load). */
+  function brokenLoadB(): LoadResponse {
+    const base = brokenLoad();
+    // brokenLoad is an ok transport by construction; the guard keeps the narrowing total.
+    if (!base.ok) throw new Error('brokenLoad must be a successful transport');
+    return {
+      ok: true,
+      path: base.path,
+      manifest: base.manifest,
+      baseMapImage: BYTES_B,
+      attachments: ATTACH_B,
+    };
+  }
+
+  /**
+   * Mount the controller with a queued `load` (A then B), capturing every save
+   * request and every DISPLAY push so both halves of the leak are observable.
+   */
+  function mountWithQueue(responses: readonly LoadResponse[]): {
+    registry: CommandRegistry;
+    api: TimeMapApi;
+    savedReqs: SaveRequest[];
+    pushes: Uint8Array[];
+  } {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const queue = [...responses];
+    const savedReqs: SaveRequest[] = [];
+    const pushes: Uint8Array[] = [];
+    const record = (req: SaveRequest): SaveResponse => {
+      savedReqs.push(req);
+      return { ok: true as const, path: '/tmp/a.tmap' };
+    };
+    const api = makeApi({
+      load: vi.fn(async () => queue.shift() ?? ({ ok: false as const, reason: 'cancelled' as const })),
+      save: vi.fn(async (req: SaveRequest) => record(req)),
+      saveAs: vi.fn(async (req: SaveRequest) => record(req)),
+    });
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        onBaseMapImageChange={(image) => pushes.push(image)}
+      />,
+    );
+    return { registry, api, savedReqs, pushes };
+  }
+
+  /** Pick the first repair option in every row, then click 修復して読み込む. */
+  async function chooseAllAndApply(): Promise<void> {
+    for (const radio of screen.getAllByRole('radio')) fireEvent.click(radio);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('repair-apply'));
+    });
+  }
+
+  it('修復ダイアログを中止した読み込みは、保存 asset も表示も直前プロジェクトのまま (混在 .tmap を作らない)', async () => {
+    const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
+
+    // 1) Load A (clean) — reflected, so its assets are the established ones.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    expect(pushes).toEqual([BYTES_A]);
+
+    // 2) Load B (inconsistent) → the repair dialog opens, then the user 中止s it.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    await act(async () => { fireEvent.click(screen.getByTestId('repair-abort')); });
+    await waitFor(() =>
+      expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
+    );
+
+    // 3) The next save must write A's manifest AND A's assets — never a mix.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.manifest.histories).toHaveLength(0); // still project A (domain never swapped)
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+
+    // 4) …and the DISPLAY never flipped to B's base map (視覚バグの半面).
+    expect(pushes).toEqual([BYTES_A]);
+  });
+
+  it('修復ダイアログ表示中の保存も、まだ確定していない新 asset を混ぜない', async () => {
+    const { registry, api, savedReqs } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+
+    // 保存 is NOT gated by the file-ops mutex, so a Ctrl+S while the repair dialog is
+    // open assembles a request RIGHT NOW — it must still describe project A entirely.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+  });
+
+  it('二度とも Unresolved で読み込みが中断した時も、直前プロジェクトの asset のまま', async () => {
+    const stillBroken = {
+      ok: false as const,
+      inconsistencies: [
+        { kind: 'shape-preservation' as const, featureIds: [], featureNames: ['A'], detail: 'x' },
+      ],
+    };
+    applyOutcomeQueue.push(
+      { outcome: REPAIR_OUTCOME.Unresolved, project: buildEmptyProject(), remaining: stillBroken },
+      { outcome: REPAIR_OUTCOME.Unresolved, project: buildEmptyProject(), remaining: stillBroken },
+    );
+    const alertSpy = vi.spyOn(globalThis, 'alert').mockImplementation(() => {});
+    const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    await chooseAllAndApply(); // 1st: Unresolved → retry dialog
+    await waitFor(() => expect(screen.getByTestId('repair-unresolved')).toBeInTheDocument());
+    await chooseAllAndApply(); // 2nd: Unresolved → explicit abort
+    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith(REPAIR_STRINGS.abortedUnresolved));
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+    expect(pushes).toEqual([BYTES_A]);
+    alertSpy.mockRestore();
+  });
+
+  it('修復を適用して確定したら、新ファイルの asset が昇格する (保存 bytes + 表示 push)', async () => {
+    applyOutcomeQueue.push({ outcome: REPAIR_OUTCOME.Applied, project: buildEmptyProject() });
+    const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    await chooseAllAndApply(); // Applied → reflected → the assets are now B's
+    await waitFor(() =>
+      expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
+    );
+
+    expect(pushes).toEqual([BYTES_A, BYTES_B]);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
+  });
+
+  it('D&D 経路でも同じ: 修復中止したドロップは旧 asset / 旧表示を保つ (教訓 5.6 同一フロー)', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const savedReqs: SaveRequest[] = [];
+    const pushes: Uint8Array[] = [];
+    const record = (req: SaveRequest): SaveResponse => {
+      savedReqs.push(req);
+      return { ok: true as const, path: '/tmp/a.tmap' };
+    };
+    const api = makeApi({
+      load: vi.fn(async () => cleanLoadA()),
+      loadDropped: vi.fn(async () => brokenLoadB()),
+      save: vi.fn(async (req: SaveRequest) => record(req)),
+      saveAs: vi.fn(async (req: SaveRequest) => record(req)),
+    });
+    let handlers: FileDropHandlers | null = null;
+    const registerDropTarget: DropTargetHook = (h) => { handlers = h; return () => {}; };
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        registerDropTarget={registerDropTarget}
+        onBaseMapImageChange={(image) => pushes.push(image)}
+      />,
+    );
+
+    // Establish project A through the menu load, then DROP the inconsistent file B.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    const dropEvent = {
+      preventDefault: vi.fn(),
+      dataTransfer: { files: [Object.assign(new File([], 'b.tmap'), { path: '/abs/b.tmap' })] },
+    };
+    await act(async () => { handlers!.onDrop(dropEvent as unknown as React.DragEvent); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    await act(async () => { fireEvent.click(screen.getByTestId('repair-abort')); });
+    await waitFor(() =>
+      expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
+    );
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+    expect(pushes).toEqual([BYTES_A]);
+  });
+
+  it('ファイルダイアログのキャンセル (ok:false) は既存どおり旧 asset を無傷で残す', async () => {
+    const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA()]);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    // The queue is empty now, so the 2nd Open resolves `cancelled`.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(2));
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+    expect(pushes).toEqual([BYTES_A]);
+  });
+
+  // --- LOW#3: three previously-unpinned interactions ------------------------
+
+  it('LOW#3(a): loadDropped の成功経路は新 asset を保存に載せ、宛先トークンをコミットする', async () => {
+    // The D&D success path is the mirror of the menu load: a dropped file that reflects
+    // must (1) retain its bytes for the save round-trip AND (2) commit its save-destination
+    // token (UC1 round-2) so a following Ctrl+S targets THIS file.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const savedReqs: SaveRequest[] = [];
+    const pushes: Uint8Array[] = [];
+    const dropped: LoadResponse = {
+      ok: true,
+      path: '/tmp/dropped.tmap',
+      manifest: serialize(buildEmptyProject()), // consistent ⇒ reflects directly
+      baseMapImage: BYTES_B,
+      attachments: ATTACH_B,
+      commitToken: 'tok-drop',
+    };
+    const api = makeApi({
+      loadDropped: vi.fn(async () => dropped),
+      save: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.tmap' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.tmap' }; }),
+    });
+    let handlers: FileDropHandlers | null = null;
+    const registerDropTarget: DropTargetHook = (h) => { handlers = h; return () => {}; };
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        registerDropTarget={registerDropTarget}
+        onBaseMapImageChange={(image) => pushes.push(image)}
+      />,
+    );
+
+    const dropEvent = {
+      preventDefault: vi.fn(),
+      dataTransfer: { files: [Object.assign(new File([], 'd.tmap'), { path: '/abs/d.tmap' })] },
+    };
+    await act(async () => { handlers!.onDrop(dropEvent as unknown as React.DragEvent); });
+    await waitFor(() => expect(api.loadDropped).toHaveBeenCalledWith('/abs/d.tmap'));
+    // Reflected ⇒ the dropped bytes are the DISPLAY + the destination token committed.
+    await waitFor(() => expect(pushes).toEqual([BYTES_B]));
+    expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-drop');
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
+  });
+
+  it('LOW#3(b): 修復ダイアログ表示中に発火した2度目の開くは B の staged capture を破棄しない (runExclusive 早期 return)', async () => {
+    // A dropped/menu 2nd open while the repair dialog owns the mutex early-returns from
+    // runExclusive BEFORE its finally — so it must NOT run discardPendingAssets and wipe
+    // the suspended load's staged capture. If it did, applying B's repair would find a
+    // null stage and promote NOTHING (B's assets lost, display not updated).
+    applyOutcomeQueue.push({ outcome: REPAIR_OUTCOME.Applied, project: buildEmptyProject() });
+    const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
+
+    // 1) A established.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    // 2) B inconsistent → repair dialog opens, B staged, mutex held.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    expect(api.load).toHaveBeenCalledTimes(2);
+    // 3) A 2nd open WHILE the dialog is up → dropped by the mutex (no transport fetched,
+    //    and crucially no discard of B's stage — the early return skips the finally).
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    expect(api.load).toHaveBeenCalledTimes(2);
+    // 4) Apply B's repair → B's stage SURVIVED the dropped op, so B's assets promote.
+    await chooseAllAndApply();
+    await waitFor(() => expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument());
+    expect(pushes).toEqual([BYTES_A, BYTES_B]);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
+  });
+
+  it('LOW#3(c): reflect が例外を投げた読み込みは stage を破棄し、次の保存へ持ち越さない (runExclusive finally)', async () => {
+    // If the store transition throws (bughunt2: an inverted timeline rolls back and the
+    // store stays on the previous project), promotePendingAssets is never reached, so the
+    // runExclusive finally must discard the staged capture — otherwise the failed load's
+    // bytes would leak into the NEXT save (混在 .tmap) and its token could later commit.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const savedReqs: SaveRequest[] = [];
+    const pushes: Uint8Array[] = [];
+    const record = (req: SaveRequest): SaveResponse => { savedReqs.push(req); return { ok: true as const, path: '/tmp/a.tmap' }; };
+    // Queue: A clean (establishes assets), then B whose reflect throws.
+    const loadB: LoadResponse = {
+      ok: true,
+      path: '/tmp/b.tmap',
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: BYTES_B,
+      attachments: ATTACH_B,
+    };
+    const queue: LoadResponse[] = [cleanLoadA(), loadB];
+    const api = makeApi({
+      load: vi.fn(async () => queue.shift() ?? ({ ok: false as const, reason: 'cancelled' as const })),
+      save: vi.fn(async (req: SaveRequest) => record(req)),
+      saveAs: vi.fn(async (req: SaveRequest) => record(req)),
+    });
+    render(
+      <FileOpsController
+        store={store}
+        registry={registry}
+        api={api}
+        calendar={CAL}
+        onBaseMapImageChange={(image) => pushes.push(image)}
+      />,
+    );
+
+    // 1) A established.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    expect(pushes).toEqual([BYTES_A]);
+
+    // 2) B: make the store transition throw. A `void runExclusive(...)` command swallows
+    //    the rejection in production (a global error handler nets it); here we swallow the
+    //    one expected unhandled rejection so it does not fail the run, then assert the
+    //    OBSERVABLE guarantee (stage discarded).
+    const reflectSpy = vi
+      .spyOn(store.getState(), 'reflectLoadedProject')
+      .mockImplementation(() => { throw new Error('inverted timeline rolls back'); });
+    const swallow = (e: PromiseRejectionEvent): void => { e.preventDefault(); };
+    globalThis.addEventListener('unhandledrejection', swallow);
+    const onNodeRej = (): void => {};
+    process.on('unhandledRejection', onNodeRej);
+    try {
+      await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+      await waitFor(() => expect(reflectSpy).toHaveBeenCalledTimes(1));
+    } finally {
+      globalThis.removeEventListener('unhandledrejection', swallow);
+      process.off('unhandledRejection', onNodeRej);
+      reflectSpy.mockRestore();
+    }
+
+    // The reflect threw ⇒ B never promoted: display stayed on A, and a save carries A's
+    // assets, NOT B's (the failed load left no residue).
+    expect(pushes).toEqual([BYTES_A]);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
+    expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
+  });
+});
+
+describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛先を安全側へ倒す', () => {
+  /** A clean load that reflects directly, carrying a commit token to be echoed back. */
+  function okLoadWithToken(token: string, path = '/tmp/b.tmap'): LoadResponse {
+    return {
+      ok: true,
+      path,
+      manifest: serialize(buildEmptyProject()),
+      baseMapImage: new Uint8Array(),
+      attachments: [],
+      commitToken: token,
+    };
+  }
+
+  it('commit が reject したら savePath を退避し、次の保存は saveAs へ落ちる（B の内容を A へ書かない）', async () => {
+    // The SPECULATIVE data-loss path: reflectProject has ALREADY adopted B's path in the
+    // renderer, but the commit that moves main's currentPath onto B FAILS. main still points
+    // at the previous file A, so a following plain 保存 would write B's content onto A. The
+    // fail-safe retracts the renderer's save target on the commit failure so the next 保存
+    // routes to 名前を付けて保存 instead — main asks for a fresh destination, never A.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let rejectCommit!: (e: unknown) => void;
+    const commitLoadedPath = vi.fn(
+      () => new Promise<void>((_resolve, reject) => { rejectCommit = reject; }),
+    );
+    const api = makeApi({ load: vi.fn(async () => okLoadWithToken('tok-b')), commitLoadedPath });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // Load B (clean → reflects). The commit token is echoed back at the reflect commit point.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(commitLoadedPath).toHaveBeenCalledWith('tok-b'));
+
+    // The commit REJECTS at main — currentPath never moved onto B. The catch retracts the
+    // renderer's save target (synchronously applies the new context).
+    await act(async () => { rejectCommit(new Error('commit failed')); await Promise.resolve(); });
+
+    // A following 保存 must route to 名前を付けて保存 (needsSaveAs=true), NOT a plain save to a
+    // stale target — so B's content can never be silently written to A.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it('非退行: commit が成功した通常経路は宛先を保持し、次の保存は plain save のまま', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    // Default commitLoadedPath mock resolves — the happy path.
+    const api = makeApi({ load: vi.fn(async () => okLoadWithToken('tok-ok')) });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-ok'));
+    // Let the (resolving) commit settle — no retraction must happen on success.
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+    // The loaded file's path is retained, so 保存 stays a plain save to that path.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    expect(api.saveAs).not.toHaveBeenCalled();
+  });
+
+  it('reject が後続の load による context 差し替え後に届いても、新しい宛先を巻き戻さない（identity ガード）', async () => {
+    // If a SECOND load establishes a new (correct) destination before the first load's commit
+    // rejects, the stale rejection must NOT retract that newer context's save target. The
+    // context-identity guard makes the retraction a no-op once the context has moved on.
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let rejectFirst!: (e: unknown) => void;
+    let firstCommitSeen = false;
+    const commitLoadedPath = vi.fn((token: string) => {
+      if (token === 'tok-first') {
+        firstCommitSeen = true;
+        return new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+      }
+      return Promise.resolve();
+    });
+    const loads: LoadResponse[] = [
+      okLoadWithToken('tok-first', '/tmp/first.tmap'),
+      okLoadWithToken('tok-second', '/tmp/second.tmap'),
+    ];
+    const api = makeApi({
+      load: vi.fn(async () => loads.shift() ?? ({ ok: false as const, reason: 'cancelled' as const })),
+      commitLoadedPath,
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+
+    // First load reflects; its commit is left pending.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(firstCommitSeen).toBe(true));
+    // Second load reflects and establishes the NEW correct destination (/tmp/second.tmap),
+    // swapping the context reference. Its commit resolves.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
+    await waitFor(() => expect(commitLoadedPath).toHaveBeenCalledWith('tok-second'));
+
+    // Now the FIRST load's commit rejects late — the context has already moved on, so the
+    // guard makes the retraction a no-op: the second file's destination is preserved.
+    await act(async () => { rejectFirst(new Error('late failure')); await Promise.resolve(); });
+
+    // 保存 still targets the second (correct) file as a plain save — not saveAs.
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
+    expect(api.saveAs).not.toHaveBeenCalled();
   });
 });
 

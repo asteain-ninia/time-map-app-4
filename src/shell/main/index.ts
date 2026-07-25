@@ -22,7 +22,14 @@ import {
   type ApplicationMenuApi,
 } from './app-menu';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
-import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
+import {
+  registerIpcHandlers,
+  type CurrentPathRef,
+  type IpcDeps,
+  type LoadCommitCounterRef,
+  type PendingLoadEntry,
+  type PendingLoadPathRef,
+} from './ipc-handlers';
 import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
@@ -296,6 +303,23 @@ function createWindow(): void {
 let currentDocumentPath: string | undefined;
 
 /**
+ * UC1 round-2: the STAGED load destination (one slot). A successful read stages
+ * `{ token, path, senderId }` here instead of promoting {@link currentDocumentPath}; the
+ * renderer commits the token at its load commit point to promote it. Uncommitted (e.g.
+ * a repair-aborted load) it just lingers until the next load overwrites it and is never
+ * read by Save (which reads {@link currentDocumentPath}).
+ */
+let pendingLoadPathEntry: PendingLoadEntry | undefined;
+
+/**
+ * MED (save/load レース): monotonic count of load commits that moved the save target. A
+ * save captures it at start and skips its own `currentPath` promotion if it advanced
+ * during the write — so a stale save never rolls the destination back onto a file a
+ * concurrent load just superseded.
+ */
+let loadCommitCount = 0;
+
+/**
  * FR-117 診断ログの環境。`wireIpc` が起動時（app ready 後 — `app.getPath` を使うため）
  * に一度だけ設定し、close ガードのログ（{@link logCloseGuard}）も同じ 1 個を読む
  * （単一の真実源: ログ先が 2 つに割れない）。設定前は `undefined` = ファイル出力なし。
@@ -343,6 +367,25 @@ function wireIpc(): void {
     get: () => currentDocumentPath,
     set: (path) => {
       currentDocumentPath = path;
+    },
+  };
+
+  // UC1 round-2: the staged load-destination holder + per-load token source. The real
+  // `randomUUID` makes the commit token unguessable, so only the renderer that received
+  // it (via LoadResponse.commitToken) can promote the save target.
+  const pendingLoadPath: PendingLoadPathRef = {
+    get: () => pendingLoadPathEntry,
+    set: (entry) => {
+      pendingLoadPathEntry = entry;
+    },
+  };
+
+  // MED (save/load レース): the load-commit generation counter shared by runSave (captures
+  // at start) and handleCommitLoadedPath (bumps on a destructive load commit).
+  const loadCommitCounter: LoadCommitCounterRef = {
+    get: () => loadCommitCount,
+    bump: () => {
+      loadCommitCount += 1;
     },
   };
 
@@ -413,6 +456,9 @@ function wireIpc(): void {
     },
     saveEnv: buildSaveEnv(),
     currentPath,
+    pendingLoadPath,
+    newLoadToken: () => randomUUID(),
+    loadCommitCounter,
     applyAutoSaveConfig,
     get maxGenerations(): number {
       return maxGenerations;

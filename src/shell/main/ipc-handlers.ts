@@ -70,6 +70,48 @@ export interface CurrentPathRef {
   set: (path: string | undefined) => void;
 }
 
+/**
+ * UC1 round-2: one STAGED load destination. A successful read no longer promotes the
+ * current save target; it stages `{ token, path }` here and hands `token` back to the
+ * renderer. Only when the renderer commits that token from its load commit point
+ * (reflectProject 成功) does {@link handleCommitLoadedPath} promote `currentPath` to
+ * `path`. `senderId` records the webContents that initiated the load so the commit can
+ * be verified to come from the same window (所見3 event.sender 検証, the FR-107 流儀).
+ */
+export interface PendingLoadEntry {
+  readonly token: string;
+  readonly path: string;
+  /**
+   * The `webContents.id` that initiated the load, when threaded (所見3 検証用). Explicitly
+   * allows `undefined` (exactOptionalPropertyTypes) so a direct handler call without an
+   * event — the unit-test path — can stage the entry without a sender, in which case the
+   * commit falls back to token-only verification.
+   */
+  readonly senderId?: number | undefined;
+}
+
+/** A single-slot holder for the STAGED (not yet committed) load destination. */
+export interface PendingLoadPathRef {
+  get: () => PendingLoadEntry | undefined;
+  set: (entry: PendingLoadEntry | undefined) => void;
+}
+
+/**
+ * MED (save/load レースの宛先巻き戻し): a monotonic counter BUMPED every time a load
+ * commit moves the save target ({@link handleCommitLoadedPath}). A save captures it at
+ * START and, on completion, promotes `currentPath` to its own target ONLY if the counter
+ * is unchanged. This stops a save that was in flight when a destructive load committed
+ * from rolling the save destination BACK onto the just-superseded file: the load commit
+ * is the more-recent truth about "which file is the live project", so a stale save's
+ * completion must not clobber it. Symmetric with the renderer's onSaved context guard.
+ */
+export interface LoadCommitCounterRef {
+  /** Read the current load-commit count (a save captures this at its start). */
+  get: () => number;
+  /** Bump — called on each load commit that moves the save target (a破壊的置換). */
+  bump: () => void;
+}
+
 /** Everything the receiver needs, injected so it runs without Electron. */
 export interface IpcDeps {
   readonly registrar: IpcRegistrar;
@@ -77,6 +119,25 @@ export interface IpcDeps {
   readonly readFile: ReadFilePort;
   readonly saveEnv: SaveEnv;
   readonly currentPath: CurrentPathRef;
+  /**
+   * UC1 round-2: the STAGED load-destination holder. `readAndParse` writes it (never
+   * `currentPath` directly) on a successful read; `handleCommitLoadedPath` promotes it
+   * to `currentPath` only when the renderer echoes the matching token at its commit point.
+   */
+  readonly pendingLoadPath: PendingLoadPathRef;
+  /**
+   * UC1 round-2: mint a fresh, unguessable token per successful load (合成ルートで
+   * `randomUUID` を束縛). The token is handed to the renderer via `LoadResponse.commitToken`
+   * and echoed back to commit the save destination — so only the window that received it
+   * can move the target (the token is the primary guard; senderId is defense-in-depth).
+   */
+  readonly newLoadToken: () => string;
+  /**
+   * MED (save/load レース): the load-commit generation counter. `runSave` captures it at
+   * save start and skips its own `currentPath` promotion if a load committed (bumped it)
+   * during the async write — so a stale save never rolls the destination back.
+   */
+  readonly loadCommitCounter: LoadCommitCounterRef;
   /** Apply auto-save config (interval/generations) — wired to the scheduler. */
   readonly applyAutoSaveConfig: (config: AutoSaveConfig) => void;
   /** Generation cap to use for backups; settings-driven (既定 10). */
@@ -125,6 +186,12 @@ export async function handleSaveAs(deps: IpcDeps, req: SaveRequest): Promise<Sav
 }
 
 async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise<SaveResponse> {
+  // MED (save/load レース): snapshot the load-commit generation at save START. If a load
+  // commits (a破壊的置換) during the awaited write, the counter advances and this save must
+  // NOT promote its own (now-stale) target — the load commit is the more-recent truth
+  // about which file is live. The file at `target` is still written correctly (that is
+  // what THIS save was for); we only suppress the `currentPath` move-back.
+  const commitGenAtStart = deps.loadCommitCounter.get();
   // Awaited: the save pipeline's file I/O is now async (node:fs/promises) so the
   // main-process event loop is not frozen during a save (bughunt4). The handler
   // resolves only after the awaited atomic write + backup complete.
@@ -138,7 +205,9 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
     },
     deps.maxGenerations ?? DEFAULT_MAX_GENERATIONS,
   );
-  if (result.ok) deps.currentPath.set(target);
+  if (result.ok && deps.loadCommitCounter.get() === commitGenAtStart) {
+    deps.currentPath.set(target);
+  }
   // Strip the internal `backup` field before returning over IPC (contract shape).
   return result.ok
     ? { ok: true, path: result.path }
@@ -146,21 +215,26 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
 }
 
 /** Load: open a dialog, read bytes, route through the Zod boundary (FR-105). */
-export async function handleLoad(deps: IpcDeps): Promise<LoadResponse> {
+export async function handleLoad(deps: IpcDeps, senderId?: number): Promise<LoadResponse> {
   const path = await deps.dialog.showOpenDialog();
   if (path === undefined) return { ok: false, reason: 'cancelled' };
-  return readAndParse(deps, path);
+  return readAndParse(deps, path, senderId);
 }
 
 /** Drag & drop load: the dropped absolute path is read + validated (FR-105). */
 export async function handleLoadDropped(
   deps: IpcDeps,
   droppedPath: string,
+  senderId?: number,
 ): Promise<LoadResponse> {
-  return readAndParse(deps, droppedPath);
+  return readAndParse(deps, droppedPath, senderId);
 }
 
-async function readAndParse(deps: IpcDeps, path: string): Promise<LoadResponse> {
+async function readAndParse(
+  deps: IpcDeps,
+  path: string,
+  senderId?: number,
+): Promise<LoadResponse> {
   let bytes: Uint8Array;
   try {
     bytes = await deps.readFile.readFile(path);
@@ -168,8 +242,50 @@ async function readAndParse(deps: IpcDeps, path: string): Promise<LoadResponse> 
     return { ok: false, reason: 'read-failed', message: READ_FAILED_MSG };
   }
   const response = loadTmapBytes(path, bytes);
-  if (response.ok) deps.currentPath.set(path);
-  return response;
+  if (!response.ok) return response;
+  // UC1 round-2 commit-point (HIGH): DO NOT promote the current save target here. A
+  // successful read only means the file PARSED — the renderer may still abort at the
+  // FR-106 repair dialog (or the load may throw at reflect), in which case the domain,
+  // the assets AND the displayed map stay on the PREVIOUS project (round-1). If we
+  // promoted `currentPath` on read, a subsequent Ctrl+S — which the renderer routes as a
+  // plain Save because its own load context never changed — would atomic-write the
+  // PREVIOUS project's content onto the file the user just refused to open, destroying
+  // it, and there is no IPC to roll `currentPath` back. Instead STAGE the path under a
+  // fresh token and hand the token back; the renderer commits it (CommitLoadedPath) ONLY
+  // from reflectProject — the SAME commit point that promotes the loaded asset bytes — so
+  // the save destination moves iff the load actually became the live project.
+  const token = deps.newLoadToken();
+  deps.pendingLoadPath.set({ token, path, senderId });
+  return { ...response, commitToken: token };
+}
+
+/**
+ * UC1 round-2 commit-point: promote the STAGED load destination to the current save
+ * target, but ONLY when the committing renderer echoes the exact token main minted for
+ * that load AND (所見3 event.sender 検証) the commit comes from the window that initiated
+ * it. A stale / mismatched token — a load the user aborted at the repair dialog, a stage
+ * already replaced by a later load, or a duplicate commit — is ignored; the pending entry
+ * is NEVER consulted by Save (that reads `currentPath`), so an uncommitted stage is inert
+ * until the next load overwrites it. Idempotent: the entry is cleared on promotion.
+ */
+export function handleCommitLoadedPath(
+  deps: IpcDeps,
+  token: unknown,
+  senderId: number,
+): void {
+  const pending = deps.pendingLoadPath.get();
+  if (
+    pending !== undefined &&
+    typeof token === 'string' &&
+    pending.token === token &&
+    (pending.senderId === undefined || pending.senderId === senderId)
+  ) {
+    deps.currentPath.set(pending.path);
+    deps.pendingLoadPath.set(undefined);
+    // MED: a load commit moved the save target — advance the generation so any save that
+    // was in flight when this happened does NOT roll `currentPath` back on completion.
+    deps.loadCommitCounter.bump();
+  }
 }
 
 /**
@@ -251,9 +367,16 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     handleSave(deps, req)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.SaveAs, ((_event: never, req: SaveRequest) =>
     handleSaveAs(deps, req)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.Load, (() => handleLoad(deps)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.LoadDropped, ((_event: never, p: string) =>
-    handleLoadDropped(deps, p)) as (...args: never[]) => unknown);
+  // 所見3: the load handlers read event.sender.id and stage it with the pending path so
+  // the later CommitLoadedPath can verify the commit comes from the same window.
+  deps.registrar(IPC_CHANNEL.Load, ((event: IpcSenderEvent) =>
+    handleLoad(deps, event.sender.id)) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.LoadDropped, ((event: IpcSenderEvent, p: string) =>
+    handleLoadDropped(deps, p, event.sender.id)) as (...args: never[]) => unknown);
+  // UC1 round-2 保存宛先の遅延昇格: the renderer commits a staged load path (event.sender.id
+  // は要求元検証に使う — 所見3 の流儀).
+  deps.registrar(IPC_CHANNEL.CommitLoadedPath, ((event: IpcSenderEvent, token: unknown) =>
+    handleCommitLoadedPath(deps, token, event.sender.id)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.OpenImage, (() =>
     handleOpenImage(deps)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.ConfigureAutoSave, ((_event: never, c: AutoSaveConfig) =>
