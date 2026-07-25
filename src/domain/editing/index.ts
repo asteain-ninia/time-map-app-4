@@ -23,8 +23,15 @@ export {
   type SlideBoundary,
   type SlideResult,
   type SlideInput,
+  type MovingVertexConstraint,
+  type SetSlideInput,
+  type SetSlideResult,
   constrainSlide,
+  constrainSetSlide,
+  setDeltaAdmitsSnap,
 } from './slide';
+
+export { type RigidDelta, rigidMoveDelta } from './rigid-delta';
 
 export {
   type ScreenXY,

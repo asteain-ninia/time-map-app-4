@@ -26,8 +26,9 @@
 // 連続接触, FR-28). Each pass re-narrows nothing (the caller supplies the candidate
 // edge set once for the frame); convergence is by a small fixed iteration cap.
 
-import type { WorldCoordinate } from '../coordinate';
-import { quantizeCoordinate } from '../geometry/quantize';
+import { createCoordinate, type WorldCoordinate } from '../coordinate';
+import { quantizeCoordinate, quantizeScalar } from '../geometry/quantize';
+import { rigidMoveDelta } from './rigid-delta';
 import {
   pointInPolygon,
   POINT_LOCATION,
@@ -88,6 +89,26 @@ export interface ParentContainment {
    * same way as a slide along another terminal's boundary.
    */
   readonly edges: readonly BoundaryEdge[];
+  /**
+   * (N725-9 必須1-c) The parent region as a function of the SET-DELTA OFFSET applied to the
+   * moving vertices: the COMMITTED parent ring with every vertex that moves with the gesture
+   * translated by `offset`, and stationary vertices left in place. Present only on a
+   * COMPANION's containment (the per-frame neighbour query knows which parent vertices are in
+   * the moving set); absent on a single-point slide, where {@link polygon} is the fixed shape.
+   *
+   * WHY IT EXISTS: {@link polygon} is baked at the FULL set delta. Using it for the
+   * point-in-polygon containment test while the admissible scale is STILL being searched
+   * judged a companion against a parent already collapsed to its end-of-frame shape — so a
+   * companion whose committed position is legally inside the committed parent read Outside a
+   * shrunken full-delta parent and FALSELY abstained, dragging its FR-28 obstacle check down
+   * with it (N725-9 敵対レビュー HIGH「棄権の巻き添え」). Evaluated at the SAME offset the point
+   * is placed at, the premise holds at offset 0 and the constraint stays exact along the ray.
+   *
+   * The analytic {@link edges} are NOT rebuilt: the caller supplies only edges between two
+   * STATIONARY parent vertices (incident-to-moving edges are dropped by the HB4-2 filter), so
+   * their geometry is offset-independent and {@link firstContact} against them stays valid.
+   */
+  readonly regionAtScaledDelta?: (offset: { readonly lon: number; readonly lat: number }) => GeoPolygon;
 }
 
 /** The identifier of the boundary the vertex is sliding along (render highlight). */
@@ -197,7 +218,14 @@ interface Contact {
   readonly edge: BoundaryEdge;
 }
 
-/** Find the earliest proper crossing of [start,target] among the candidate edges. */
+/** Find the earliest proper crossing of [start,target] among the candidate edges.
+ *
+ * SPECULATIVE (N725-9 敵対レビュー, 挙動継承): a segment that ENTERS a candidate exactly through
+ * a vertex (an Endpoint touch, excluded at t≈0/1) and EXITS through an edge interior (a Proper
+ * crossing) is detected by the Proper exit, so the set path handles it identically to the
+ * single-vertex {@link constrainSlide}. This mixed entry/exit case is therefore INHERITED, not
+ * newly reasoned for the set — its correctness is exactly the single-vertex one, no more.
+ */
 function firstContact(
   start: WorldCoordinate,
   target: WorldCoordinate,
@@ -646,4 +674,510 @@ export function constrainSlide(input: SlideInput): SlideResult {
     boundaries,
     collided: collided || boundaries.length > 0,
   };
+}
+
+// ---------------------------------------------------------------------------
+// N725-9 — THE SET-DELTA CONSTRAINT (FR-80 × FR-28 / FR-89)
+// ---------------------------------------------------------------------------
+//
+// WHAT IT SOLVES: {@link constrainSlide} constrains ONE point. In an N-vertex rigid
+// drag (FR-80 複数頂点同時移動) the other N−1 vertices passed through no FR-28 collision
+// and no FR-89 containment check at all, so a companion could be committed strictly
+// inside a neighbouring terminal (the adapter's former KNOWN GAP; the live edit binding's
+// `detectSpatial` is `() => []`, so nothing behind it caught that either).
+//
+// THE RULE (裁定 N725-9 / N725-10, 2026-07-25) —「方向は主頂点、量は集合の交叉」:
+//   - the PRIMARY keeps the direction authority: it slides and snaps exactly as today,
+//     yielding the gesture's rigid vector d (its own displacement from its COMMITTED
+//     position, measured by the single {@link rigidMoveDelta} rule);
+//   - every moving vertex holds an authority over the AMOUNT only: it may shrink the
+//     shared vector by a scalar s in [0,1], never bend it. 「選択セット全体を同一ベクトル」
+//     therefore stays literally true and no shear can arise.
+//
+// WHY A SCALAR IS ENOUGH (the maths): let A_i = { d : the segment [p_i, p_i+d] crosses
+// none of vertex i's obstacle edges, p_i+d is in no candidate's strict interior, and (if
+// it has one) p_i+d stays inside its parent region }. Each A_i is STAR-SHAPED about the
+// origin: p_i is legal by the committed FR-28/FR-89 invariant, and a segment that crosses
+// no boundary keeps every one of its points on the legal side (Jordan). So the restriction
+// of A_i to the ray {t*d} is a closed interval [0, t_i], and the intersection over i of
+// A_i, restricted to that ray, is [0, min_i t_i]. t_i is exactly what {@link firstContact}
+// already computes — analytic, no search.
+// PRECONDITION for the star-shape argument: for every terminal that is hit, ALL of its
+// edges are supplied (the caller's polygonEdges emits a hit terminal's whole outline, it
+// never clips edges to the query box). A partial edge set would break the argument.
+//
+// WHY NOT A PURE SCALAR CLAMP OF THE WHOLE GESTURE: `constrainSlide` bends the motion
+// (tangential slide), so reducing it to "how far along start→target" would make a single
+// vertex STOP at a wall instead of sliding along it — the FR-28 UX and the 23 slide tests.
+// Hence two phases: phase 1 is today's slide verbatim, phase 2 only shrinks its result.
+
+/**
+ * One vertex that MOVES with the gesture, with the obstacle sets narrowed around ITS OWN
+ * swept path. The primary is described by {@link SetSlideInput} itself; this type carries
+ * the companions.
+ *
+ * `from` is the vertex's COMMITTED position — the point the shared delta is measured from
+ * and the point that is legal by precondition. (Note the deliberate asymmetry with the
+ * primary, whose own slide is still measured from the PRESS point `start`: `updateDrag`
+ * never advances `start`, and changing that would change single-vertex behaviour.)
+ *
+ * HB4-2 discipline is the CALLER's, and it is one set for the whole gesture: an edge
+ * incident to ANY moving vertex is a wall for NO moving vertex (the set translates
+ * rigidly), and a polygon piece that references a moving vertex supplies no candidate.
+ */
+export interface MovingVertexConstraint {
+  /** Identity, for diagnostics / dedupe. Never used as geometry (R3 seam / 診断 H5). */
+  readonly vertexId: string;
+  /** The vertex's committed position. Legal by the committed FR-28 / FR-89 invariant. */
+  readonly from: WorldCoordinate;
+  readonly edges: readonly BoundaryEdge[];
+  readonly candidates: readonly CandidateTerminal[];
+  readonly containment?: ParentContainment;
+}
+
+/** {@link constrainSlide}'s input plus the rest of the rigid set (FR-80). */
+export interface SetSlideInput extends SlideInput {
+  /**
+   * The PRIMARY's committed position — the origin the shared delta is measured from.
+   * It differs from {@link SlideInput.start} (the press point) by the grab offset, so
+   * naming it explicitly is required: the slide is judged from the press point, the
+   * rigid vector is measured from the committed position (the same asymmetry
+   * `moveDraggedVertexSet` already has).
+   */
+  readonly primaryFrom: WorldCoordinate;
+  /** The companions. EMPTY ⇒ this is a single-vertex drag and nothing changes at all. */
+  readonly companions: readonly MovingVertexConstraint[];
+}
+
+export interface SetSlideResult extends SlideResult {
+  /**
+   * The vector every moving vertex (primary included) is displaced by, from its own
+   * committed position — exactly what `moveDraggedVertexSet` re-derives from
+   * {@link SlideResult.position}.
+   */
+  readonly delta: { readonly dLon: number; readonly dLat: number };
+  /** True iff a companion (or the re-checked chord) shortened the gesture this frame. */
+  readonly retracted: boolean;
+}
+
+interface ScaleLimit {
+  readonly scale: number;
+  /** The boundary that imposed {@link scale}, for the slide highlight. */
+  readonly edge?: BoundaryEdge;
+}
+
+/**
+ * The parent containment REGION when the moving set is displaced by `offset` (N725-9 必須1-c).
+ * Falls back to the fixed {@link ParentContainment.polygon} when the containment carries no
+ * scale-rebuild — a single-point slide, or a test parent with no moving vertex on it.
+ */
+function containmentRegionAt(
+  containment: ParentContainment,
+  offset: { lon: number; lat: number },
+): GeoPolygon {
+  return containment.regionAtScaledDelta === undefined
+    ? containment.polygon
+    : containment.regionAtScaledDelta(offset);
+}
+
+/** True iff `p` is strictly OUTSIDE the containment region evaluated at displacement `offset`. */
+function isOutsideContainmentAt(
+  p: WorldCoordinate,
+  containment: ParentContainment,
+  offset: { lon: number; lat: number },
+): boolean {
+  return pointInPolygon(p, containmentRegionAt(containment, offset)) === POINT_LOCATION.Outside;
+}
+
+const ZERO_OFFSET = { lon: 0, lat: 0 } as const;
+
+/**
+ * Whether each invariant is ENFORCEABLE for a moving vertex, decided at its COMMITTED position
+ * (offset 0). A premise is BROKEN when the committed data already violates that invariant —
+ * `from` sits inside an obstacle, or outside its committed parent — and then the invariant is
+ * NOT enforced (necessarily 棄権, to avoid the HB4-2 固着 failure). Decided per invariant, so a
+ * broken parent premise never silences the FR-28 obstacle check (必須1-a). The SAME flags are
+ * used by phase 2 and the R2 re-check, so the two never disagree about who abstains.
+ */
+function premisesOf(
+  from: WorldCoordinate,
+  candidates: readonly CandidateTerminal[],
+  containment: ParentContainment | undefined,
+): { readonly enforceCandidates: boolean; readonly enforceContainment: boolean } {
+  return {
+    enforceCandidates: isInsideAnyCandidate(from, candidates) === undefined,
+    enforceContainment:
+      containment !== undefined && !isOutsideContainmentAt(from, containment, ZERO_OFFSET),
+  };
+}
+
+/**
+ * True iff the already-displaced point `moved` keeps every ENFORCED invariant satisfied. FR-89
+ * is judged on the parent region at `offset` (the set delta applied to the moving set, 必須1-c),
+ * and each invariant is checked only when its premise held at the committed position (必須1-a,
+ * `premises`). `moved` is passed already-placed so the PRIMARY (placed absolutely) and a
+ * COMPANION (placed at `from + offset`) share one legality rule.
+ */
+function movedPointLegal(
+  moved: WorldCoordinate,
+  candidates: readonly CandidateTerminal[],
+  containment: ParentContainment | undefined,
+  offset: { lon: number; lat: number },
+  premises: { readonly enforceCandidates: boolean; readonly enforceContainment: boolean },
+): boolean {
+  if (premises.enforceCandidates && isInsideAnyCandidate(moved, candidates) !== undefined) {
+    return false;
+  }
+  if (
+    premises.enforceContainment &&
+    containment !== undefined &&
+    isOutsideContainmentAt(moved, containment, offset)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The largest s <= `hi` for which `legalAtScale(s)` holds, by bounded bisection on the ray.
+ * Used for the GRAZE / denormal case the analytic crossing cannot see (the endpoint reads
+ * illegal without a PROPER crossing). 40 halvings of a <=360 deg span reach ~3e-10 — far
+ * below the 1e-7 world grid, so the answer is exact at committed resolution.
+ *
+ * It bisects on the SCALE (not on a fixed point set), because the parent containment region
+ * is itself a function of s (必須1-c): each `legalAtScale(mid)` evaluates the moved point
+ * against the parent shape at THAT scale. `s = 0` is legal by precondition — the committed
+ * position, judged only on the premises that actually hold.
+ */
+function largestLegalScaleBy(legalAtScale: (s: number) => boolean, hi: number): number {
+  if (legalAtScale(hi)) return hi;
+  let lo = 0;
+  let high = hi;
+  for (let i = 0; i < 40; i += 1) {
+    const mid = (lo + high) / 2;
+    if (legalAtScale(mid)) lo = mid;
+    else high = mid;
+  }
+  return lo;
+}
+
+/**
+ * How far along the shared vector `d` this vertex may travel: `max{ s in [0, hi] :
+ * from + s*d is legal }`, plus the boundary that stopped it.
+ *
+ * ANALYTIC FIRST, bisection only as a fallback: the earliest crossing of the swept
+ * segment against the obstacle edges (and, when present, against the parent boundary the
+ * vertex must not leave) is exactly {@link firstContact}'s parameter. The endpoint is then
+ * re-tested, because a graze / denormal target can read illegal WITHOUT producing a proper
+ * crossing (the U24 fuzz CEX class); only then do we bisect.
+ *
+ * CONTAINMENT IS ANALYTIC TOO, despite the parent ring's shape depending on s: an edge
+ * whose BOTH endpoints move translates with the set (never an obstacle), and an edge with
+ * ONE moving endpoint is already dropped by the HB4-2 incident filter. What remains are
+ * edges between two STATIONARY vertices, whose geometry does not depend on s at all. Only
+ * the terminal point-in-polygon test is s-dependent, and that is what the endpoint re-test
+ * and the caller's final re-check cover.
+ *
+ * PRECONDITION FAILURE IS NOT A BLANKET VETO, BUT IT IS PER-INVARIANT (必須1-a): FR-28
+ * (candidates) and FR-89 (parent containment) guard DIFFERENT invariants, so a broken premise
+ * on one must not silence the other. If `from` is already inside an obstacle (corrupt data) we
+ * cannot bound the FR-28 side — abstain THERE only. If `from` already reads outside its
+ * committed parent (a parent that deformed out from under it) we cannot bound the FR-89 side —
+ * abstain THERE only. Abstaining on BOTH at once (the former `if (!legal(from)) return
+ * {scale: hi}`) let a broken parent premise wave a companion straight through an obstacle
+ * (N725-9 敵対レビュー HIGH「棄権の巻き添え」). Returning 0 was never an option either: it would
+ * FREEZE the drag at the press point, the exact HB4-2 固着 failure.
+ */
+function admissibleScale(
+  from: WorldCoordinate,
+  d: { lon: number; lat: number },
+  hi: number,
+  edges: readonly BoundaryEdge[],
+  candidates: readonly CandidateTerminal[],
+  containment: ParentContainment | undefined,
+): ScaleLimit {
+  if (hi <= 0) return { scale: 0 };
+  const at = (s: number): WorldCoordinate => ({
+    lon: from.lon + d.lon * s,
+    lat: from.lat + d.lat * s,
+  });
+  const insideCandidate = (p: WorldCoordinate): boolean =>
+    isInsideAnyCandidate(p, candidates) !== undefined;
+  // (必須1-c) The parent region at the scale being probed: moving parent vertices at
+  // `committed + s·d`, so at s=0 it is the committed parent (where `from` is legal by the
+  // FR-89 invariant) and it deforms along the ray exactly as the gesture deforms it.
+  const outsideParentAt = (s: number, p: WorldCoordinate): boolean =>
+    containment !== undefined &&
+    isOutsideContainmentAt(p, containment, { lon: d.lon * s, lat: d.lat * s });
+
+  // (必須1-a) SEPARATE premises: enforce each invariant only where ITS premise holds — the
+  // SAME flags the R2 re-check uses (single source, {@link premisesOf}).
+  const { enforceCandidates, enforceContainment } = premisesOf(from, candidates, containment);
+
+  const target = at(hi);
+  let scale = hi;
+  let edge: BoundaryEdge | undefined;
+
+  if (enforceCandidates) {
+    const otherContact = firstContact(from, target, edges);
+    if (otherContact !== undefined) {
+      scale = otherContact.t * hi;
+      edge = otherContact.edge;
+    }
+  }
+  if (enforceContainment) {
+    // The parent edges are between two STATIONARY vertices (incident-to-moving edges are
+    // dropped by the caller's HB4-2 filter), so their geometry is s-independent and this
+    // analytic crossing is valid even though the point-in-polygon region deforms with s.
+    const parentContact = firstContact(from, target, containment!.edges);
+    if (parentContact !== undefined && parentContact.t * hi < scale) {
+      scale = parentContact.t * hi;
+      edge = parentContact.edge;
+    }
+  }
+
+  // Endpoint / graze re-test (the U24 fuzz CEX class): a crossing the analytic firstContact
+  // cannot see. Each invariant is re-tested ONLY where its premise held, on the s-consistent
+  // parent shape — so a legitimately-inside `from` is never blocked by the full-delta parent.
+  const legalAtScale = (s: number): boolean => {
+    const p = at(s);
+    if (enforceCandidates && insideCandidate(p)) return false;
+    if (enforceContainment && outsideParentAt(s, p)) return false;
+    return true;
+  };
+  if (!legalAtScale(scale)) {
+    const safe = largestLegalScaleBy(legalAtScale, scale);
+    if (safe < scale) {
+      scale = safe;
+      if (edge === undefined) {
+        const all = containment === undefined ? edges : [...edges, ...containment.edges];
+        edge = nearestParentEdge(at(scale), all);
+      }
+    }
+  }
+  return edge === undefined ? { scale } : { scale, edge };
+}
+
+/**
+ * How many times the shortened scale may be halved when the QUANTIZED delta fails the
+ * final invariant re-check. Quantization moves a point by at most half a grid cell
+ * (5e-8 deg), so one or two rungs already cover any realistic residue; the ladder ends at
+ * delta = 0, which is unconditionally legal.
+ */
+const QUANTIZED_RETRY_RUNGS = 4;
+
+/**
+ * Constrain a RIGID multi-vertex move (FR-80) so that EVERY moving vertex — not just the
+ * grabbed one — honours FR-28 排他 and FR-89 親領域包含, without ever breaking the
+ * 「同一ベクトル」 invariant.
+ *
+ * Phase 1 is {@link constrainSlide} on the primary, UNCHANGED. Phase 2 shrinks the
+ * resulting rigid vector to the intersection of every moving vertex's admissible interval
+ * along that vector. Phase 2b re-checks the PRIMARY against the shortened CHORD: the
+ * phase-1 vector is bent by tangential sliding, so a shortened straight chord can cut a
+ * corner the slid polyline went around.
+ *
+ * NO COMPANIONS ⇒ the {@link constrainSlide} result is returned BY VALUE, untouched: a
+ * single-vertex drag is bit-for-bit what it was before this function existed (the
+ * strongest non-regression gate we can state).
+ *
+ * QUANTIZATION (HB4-2 教訓, 案A「デルタを量子化する」): when the gesture IS shortened, the
+ * shared delta — not the individual positions — is snapped to the world grid, so every
+ * moving vertex receives the identical vector and rigidity survives the rounding
+ * (quantizing positions per vertex would introduce up to 5e-8 of shear). When it is NOT
+ * shortened, nothing is quantized here at all, so the primary keeps landing on its slid /
+ * snapped position bit-for-bit (`moveDraggedVertexSet`'s EXACTNESS rule).
+ *
+ * SEAM (R3): the scale is applied to a delta whose branch was already fixed by
+ * {@link rigidMoveDelta}. Multiplying by s in [0,1] can never change that branch, so the
+ * whole-turn semantics are preserved. The order is FIXED — take the shortest delta, THEN
+ * scale; never re-derive a shortest delta from an already-scaled vector.
+ *
+ * Pure. 技術方針 R2「判定後に不変条件を再チェック」 is honoured at the end: the committed
+ * delta is re-validated for EVERY moving vertex, with a halving ladder down to zero.
+ */
+export function constrainSetSlide(input: SetSlideInput): SetSlideResult {
+  const base = constrainSlide(input);
+  const { companions, primaryFrom } = input;
+  const measured = rigidMoveDelta(primaryFrom, base.position);
+  const asDelta = { dLon: measured.dLon, dLat: measured.dLat };
+
+  // Single-vertex drag (and the degenerate zero-motion frame): today's answer, verbatim.
+  if (companions.length === 0) {
+    return { ...base, delta: asDelta, retracted: false };
+  }
+  const d = { lon: measured.dLon, lat: measured.dLat };
+  if (len(d) < EPS) {
+    return { ...base, delta: asDelta, retracted: false };
+  }
+
+  // PHASE 2 — the intersection over the companions. Each is capped by the running
+  // minimum, so a vertex can only ever tighten the answer (and the search is cheaper).
+  let scale = 1;
+  let blocker: BoundaryEdge | undefined;
+  for (const companion of companions) {
+    const limit = admissibleScale(
+      companion.from,
+      d,
+      scale,
+      companion.edges,
+      companion.candidates,
+      companion.containment,
+    );
+    if (limit.scale < scale) {
+      scale = limit.scale;
+      // LOW#1: a tighter limit with NO edge (a graze-based cap) must not ERASE the blocker a
+      // prior companion already recorded — keep the last real edge for the slide highlight.
+      blocker = limit.edge ?? blocker;
+    }
+    if (scale <= 0) {
+      scale = 0;
+      break;
+    }
+  }
+
+  // PHASE 2b — the shortened chord re-checked against the PRIMARY's own obstacles. The
+  // phase-1 vector is a BENT path (contact point + tangential slide); the straight chord
+  // p0 → p0 + s*d is not the path the primary actually took, so it can cut a corner.
+  if (scale < 1) {
+    const primaryLimit = admissibleScale(
+      primaryFrom,
+      d,
+      scale,
+      input.edges,
+      input.candidates,
+      input.containment,
+    );
+    if (primaryLimit.scale < scale) {
+      scale = primaryLimit.scale;
+      blocker = primaryLimit.edge ?? blocker;
+    }
+  }
+
+  // R2 FINAL RE-CHECK on the value that will actually be committed. The admissible scales
+  // were computed on the RAW ray; the committed points are `from + quantized(s*d)`, up to
+  // half a grid cell away. Validate that exact expression for every moving vertex and, if
+  // it fails, halve the scale a bounded number of times before conceding the frame
+  // (delta = 0 keeps every vertex at its committed position, which is legal by
+  // precondition — the set-level analogue of `constrainSlide`'s `pos = start`).
+  // The delta the COMMIT will apply is not literally `quantized(s*d)`: the session carries
+  // one value (the primary's `position`), and `moveDraggedVertexSet` re-derives the
+  // companions' vector from it as `position − primaryFrom`, whose floating-point rounding
+  // can differ from the value we scaled by a ULP. The point predicates are EXACT
+  // arithmetic, so a companion parked ON a boundary could flip to Inside on that ULP. We
+  // therefore build the candidate position first and re-derive the delta the SAME way the
+  // move will, then validate THAT (単一真実源 — one vector, derived once).
+  const trialAt = (
+    s: number,
+  ): { position: WorldCoordinate; delta: { dLon: number; dLat: number } } => {
+    // LOW#2: quantize the pullback frame's primary position ONTO the world grid (not merely
+    // its per-component delta), so the committed primary sits on the same grid the
+    // point-in-polygon predicate and `constrainSlide` classify against (格子保証).
+    const position = quantizeCoordinate(
+      createCoordinate(
+        primaryFrom.lon + quantizeScalar(d.lon * s),
+        primaryFrom.lat + quantizeScalar(d.lat * s),
+      ),
+    );
+    const applied = rigidMoveDelta(primaryFrom, position);
+    return { position, delta: { dLon: applied.dLon, dLat: applied.dLat } };
+  };
+  // Premise flags for every moving vertex, decided ONCE at their committed positions, so the
+  // R2 re-check enforces exactly the invariants phase 2 enforced (必須1-a): a companion whose
+  // committed data is genuinely broken (outside its own committed parent) stays abstained here
+  // too rather than being frozen at delta 0.
+  const primaryPremises = premisesOf(primaryFrom, input.candidates, input.containment);
+  const companionPremises = companions.map((c) => premisesOf(c.from, c.candidates, c.containment));
+  // True iff `position` (primary) and every companion at `from + delta` are legal, each judged
+  // on its OWN s-consistent parent region at the applied offset (必須1-c) so the re-check never
+  // re-introduces the full-delta parent it was meant to remove.
+  const movingSetLegal = (
+    position: WorldCoordinate,
+    delta: { dLon: number; dLat: number },
+  ): boolean => {
+    const offset = { lon: delta.dLon, lat: delta.dLat };
+    if (!movedPointLegal(position, input.candidates, input.containment, offset, primaryPremises)) {
+      return false;
+    }
+    for (let i = 0; i < companions.length; i += 1) {
+      const c = companions[i]!;
+      const moved = { lon: c.from.lon + delta.dLon, lat: c.from.lat + delta.dLat };
+      if (!movedPointLegal(moved, c.candidates, c.containment, offset, companionPremises[i]!)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const legalTrial = (s: number): ReturnType<typeof trialAt> | undefined => {
+    const trial = trialAt(s);
+    return movingSetLegal(trial.position, trial.delta) ? trial : undefined;
+  };
+
+  // (必須1-b) NO early bypass of the R2 re-check. When nothing shrank in phase 2/2b the
+  // committed value is the primary's slide result VERBATIM (exactness — no quantization) and
+  // the companions ride the full `measured` delta; but a moving vertex may have ABSTAINED on a
+  // broken premise or been missed by the analytic crossing, so the FULL delta must still be
+  // validated for every moving vertex on its s-consistent region. Only when it holds do we
+  // return phase 1 BY VALUE (bit-identical to the single-vertex path); otherwise we retract
+  // through the halving ladder like any other constrained frame.
+  if (scale >= 1) {
+    if (movingSetLegal(base.position, asDelta)) {
+      return { ...base, delta: asDelta, retracted: false };
+    }
+    scale = 1;
+  }
+
+  let committed: ReturnType<typeof trialAt> | undefined;
+  let rungScale = scale;
+  for (let rung = 0; rung < QUANTIZED_RETRY_RUNGS; rung += 1) {
+    committed = legalTrial(rungScale);
+    if (committed !== undefined) break;
+    rungScale /= 2;
+  }
+  const finalDelta = committed?.delta ?? { dLon: 0, dLat: 0 };
+  const position = committed?.position ?? createCoordinate(primaryFrom.lon, primaryFrom.lat);
+
+  // BOUNDARY/COLLISION CONSISTENCY, the set-level restatement of the single-vertex rule
+  // (「滑ったと報告するなら実際に変位していること」): a zero delta leaves EVERY moving
+  // vertex exactly where it was committed, so no boundary is being ridden.
+  if (finalDelta.dLon === 0 && finalDelta.dLat === 0) {
+    return { position, boundaries: [], collided: false, delta: finalDelta, retracted: true };
+  }
+
+  const boundaries: SlideBoundary[] = [...base.boundaries];
+  if (blocker !== undefined) {
+    boundaries.push({ featureId: blocker.featureId, edgeKey: blocker.edgeKey });
+  }
+  return { position, boundaries, collided: true, delta: finalDelta, retracted: true };
+}
+
+/**
+ * True iff displacing EVERY companion by the vector `primaryFrom → snapPosition` keeps it
+ * legal — no candidate's strict interior (FR-28 排他) and inside its own s-consistent parent
+ * region (FR-89 親領域包含).
+ *
+ * The adapter uses this to decide whether a surviving share-snap of the PRIMARY may carry the
+ * whole rigid set (裁定 N725-10「移動ベクトル = 主頂点変位」, 必須3). A share-snap welds the
+ * primary onto its target vertex, so at commit the whole set is displaced by
+ * d_snap = snapPosition − primaryFrom — NOT by the retracted preview delta. If d_snap would
+ * push a companion into an obstacle, the snap must be DROPPED (拘束 > スナップ) rather than
+ * shearing the set (the primary jumping to the pin while the companions stay put breaks
+ * 「同一ベクトル」). Measured with the SAME {@link rigidMoveDelta} rule the move applies
+ * (単一真実源). Pure.
+ */
+export function setDeltaAdmitsSnap(
+  primaryFrom: WorldCoordinate,
+  snapPosition: WorldCoordinate,
+  companions: readonly MovingVertexConstraint[],
+): boolean {
+  const delta = rigidMoveDelta(primaryFrom, snapPosition);
+  const offset = { lon: delta.dLon, lat: delta.dLat };
+  for (const companion of companions) {
+    const moved = { lon: companion.from.lon + delta.dLon, lat: companion.from.lat + delta.dLat };
+    const premises = premisesOf(companion.from, companion.candidates, companion.containment);
+    if (!movedPointLegal(moved, companion.candidates, companion.containment, offset, premises)) {
+      return false;
+    }
+  }
+  return true;
 }

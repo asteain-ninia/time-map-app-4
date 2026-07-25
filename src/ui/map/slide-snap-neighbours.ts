@@ -49,11 +49,16 @@
 // live camera). The SAME live-lookup helpers the hit-test / draw / snapshot use resolve
 // the geometry, so what slides == what is drawn == what is committed (単一真実源, 教訓 5.29).
 
-import { moveDraggedVertexSet, movingVertexIds as movingVertexIdsOf } from '../../domain/editing';
+import {
+  moveDraggedVertexSet,
+  movingVertexIds as movingVertexIdsOf,
+  rigidMoveDelta,
+} from '../../domain/editing';
 import type {
   BoundaryEdge,
   CandidateTerminal,
   DragSession,
+  MovingVertexConstraint,
   ParentContainment,
   SnapCandidate,
 } from '../../domain/editing';
@@ -70,7 +75,7 @@ import type { RingId, VertexId } from '../../domain/ids';
 import { getVertex, type VertexStore } from '../../domain/vertex';
 import { quantizeCoordinate } from '../../domain/geometry/quantize';
 import { leafShapePieces, resolveShapePieces } from '../../domain/hierarchy/resolve-shape';
-import { multiPolygonBBox, type BBox } from '../../domain/spatial/bbox';
+import { expandBBox, multiPolygonBBox, type BBox } from '../../domain/spatial/bbox';
 import { SpatialIndex, type IndexEntry } from '../../domain/spatial/rtree';
 import { complete, completeEquals, type CompleteTimePoint } from '../../domain/time/time-point';
 import { featuresAt, verticesAt } from '../live-lookup';
@@ -390,10 +395,27 @@ function containmentFor(
   // committed one and not collapsed onto the primary.
   const parentIds: readonly (readonly VertexId[])[] = [parent.vertexIds];
   const polygon = previewPolygon([parentRing], parentIds, movingPositions);
+  // (N725-9 必須1-c) The parent region as a function of the SET-DELTA OFFSET: the COMMITTED
+  // ring with each moving parent vertex translated by that offset (stationary vertices left
+  // in place). The set constraint (admissibleScale / the R2 re-check) evaluates the
+  // point-in-polygon containment at the SAME offset it is probing, instead of against the
+  // parent already baked to its full-delta shape — so a companion whose committed position is
+  // legally inside the committed parent is never FALSELY judged Outside and made to abstain
+  // (N725-9 敵対レビュー HIGH「棄権の巻き添え」). `polygon` (full-delta) is kept for the primary's
+  // phase-1 constrainSlide, which does not scan the ray. SEAM (R3): the committed ring is in
+  // its stored ±360° frame; a companion queried on a far branch is a residual (pre-existing).
+  const committedRing = parentRing;
+  const movingMask = parent.vertexIds.map((vid) => moving.has(vid));
+  const regionAtScaledDelta = (offset: { lon: number; lat: number }): GeoPolygon => [
+    committedRing.map((c, i) =>
+      movingMask[i] === true ? { lon: c.lon + offset.lon, lat: c.lat + offset.lat } : c,
+    ),
+  ];
   return {
     featureId: feature.id,
     polygon,
     edges: ringEdges(feature.id, `parent:${parentRingId}`, polygon[0]!, parent.vertexIds, moving),
+    regionAtScaledDelta,
   };
 }
 
@@ -487,6 +509,166 @@ function createNeighboursBuildMemo(): (root: DomainProject, time: TimePoint) => 
     cachedTime = completed;
     return cached;
   };
+}
+
+// ---------------------------------------------------------------------------
+// N725-9 集合デルタ拘束 — the COMPANION side of the per-frame obstacle query
+// ---------------------------------------------------------------------------
+//
+// The primary path above narrows around ONE preview point. FR-80 moves N vertices by one
+// vector, and FR-28/FR-89 must hold for all of them (裁定 N725-9), so each companion needs
+// its own obstacle bundle. The cost of that is DESIGNED, not stumbled into:
+//
+//  (A) INDEX SEARCHES ARE CONSTANT IN N. Every moving vertex travels the SAME delta, so
+//      its swept box is a TRANSLATE of every other's. One union box over the whole set,
+//      probed in the three ±360° frames, is 3 searches regardless of N — the memoized
+//      RBush itself is already built once per drag (it is a pure function of (root, time)).
+//  (B) DEGENERATE SELECTIONS FALL BACK, THEY DO NOT DEGRADE. A rectangle-select scattered
+//      across the map makes the union box far larger than the sum of the individual boxes,
+//      which would haul in terminals nobody is near. When that ratio blows past
+//      {@link UNION_AREA_SLACK} we probe per vertex (3N cheap O(log n) searches) instead.
+//      What we never do is give up the constraint because N is large — that is exactly the
+//      教訓 5.7 shape (a rule the UI stops running) this whole change exists to remove.
+//      SPECULATIVE (N725-9 敵対レビュー, 未計測): the per-vertex fallback then assigns pieces to
+//      vertices, an N × (near-pieces) product. The `lowerBoundByMinY` range scan keeps that
+//      near-linear for a COMPACT selection, but a selection scattered across MANY dense
+//      neighbourhoods has no measured upper bound yet. Recorded as a known unquantified edge,
+//      not a fixed defect — the coastline perf guard below exercises the compact-dense case only.
+//  (C) GEOMETRY IS MATERIALISED ONCE PER PIECE, not once per (piece, vertex): the HB4-2
+//      moving-vertex filter is one set for the whole gesture, so one edge list serves every
+//      companion. Per-vertex work is then only an AABB test per near piece.
+//  (D) SEAM (R3): each companion receives the geometry expressed in ITS OWN ±360° branch.
+
+/** How much bigger than the sum of the per-vertex boxes the union may be before we
+ * stop using it (a scattered selection). Chosen loose: overlapping boxes make the sum
+ * an over-count, so a dense selection is nowhere near this. */
+const UNION_AREA_SLACK = 16;
+
+/**
+ * A box PROVABLY containing everything a moving vertex can sweep through this frame.
+ *
+ * The committed vector is NOT the raw cursor vector: `constrainSlide` may deflect it
+ * (tangential slide), so a box hugging the straight line `from → from + rawDelta` is not
+ * conservative — a slide that turns a corner would leave it. What IS bounded is the
+ * DISTANCE: every tangential step is a projection, so the slid position never gets farther
+ * from the PRESS point than the raw target is (`|slid − start| ≤ |target − start| = reach`).
+ * Hence the destination lies in the disc of radius `reach` centred at `from + (start −
+ * primaryFrom)` — the vertex's own copy of the press point — and the swept segment lies in
+ * the union of that disc with `from`. This box is that union, plus `pad` for the
+ * quantization the constraint applies at both ends.
+ *
+ * `reach` MUST be the RAW (un-wrapped) start→preview distance, not the shortest-wrapped
+ * gesture (必須2 / MED-3): `constrainSlide` has no longitude wrapping, so on a ±360° seam
+ * crossing it sweeps the LONG way and `|slid − start|` is the raw magnitude. A wrapped reach
+ * collapses to a fraction of a degree there and this box would no longer contain the sweep.
+ * See the caller. (For a non-seam drag raw == wrapped, so this is only ever wider, never
+ * narrower, than the previous behaviour — the common case is unchanged.)
+ *
+ * Deliberately NOT widened by the snap margin: the snap margin sizes the SNAP candidate
+ * pre-filter, and using it here would be both unsound for a fast drag (reach can exceed it)
+ * and needlessly wide for a slow one (reach is usually a fraction of it).
+ */
+function reachBox(
+  from: WorldCoordinate,
+  pressOffsetLon: number,
+  pressOffsetLat: number,
+  reach: number,
+  pad: number,
+): BBox {
+  const anchorLon = from.lon + pressOffsetLon;
+  const anchorLat = from.lat + pressOffsetLat;
+  return expandBBox(
+    {
+      minX: Math.min(from.lon, anchorLon - reach),
+      minY: Math.min(from.lat, anchorLat - reach),
+      maxX: Math.max(from.lon, anchorLon + reach),
+      maxY: Math.max(from.lat, anchorLat + reach),
+    },
+    pad,
+  );
+}
+
+/**
+ * Slack added to every {@link reachBox}: the constraint quantizes coordinates onto the
+ * 1e-7 world grid (half a cell = 5e-8 of movement), so a few grid cells of margin makes
+ * the box conservative with respect to that rounding as well.
+ */
+const REACH_BOX_PAD = 1e-6;
+
+function unionBox(boxes: readonly BBox[]): BBox | undefined {
+  let acc: BBox | undefined;
+  for (const b of boxes) {
+    acc =
+      acc === undefined
+        ? b
+        : {
+            minX: Math.min(acc.minX, b.minX),
+            minY: Math.min(acc.minY, b.minY),
+            maxX: Math.max(acc.maxX, b.maxX),
+            maxY: Math.max(acc.maxY, b.maxY),
+          };
+  }
+  return acc;
+}
+
+function boxArea(b: BBox): number {
+  return Math.max(0, b.maxX - b.minX) * Math.max(0, b.maxY - b.minY);
+}
+
+/** `b` translated along longitude only (latitude is never periodic — FR-05). */
+function shiftBox(b: BBox, dx: number): BBox {
+  return { minX: b.minX + dx, minY: b.minY, maxX: b.maxX + dx, maxY: b.maxY };
+}
+
+/** One near polygon PIECE with its geometry materialised once for the whole set (C). */
+interface NearPiece {
+  readonly featureId: string;
+  readonly bbox: BBox;
+  readonly edges: readonly BoundaryEdge[];
+  /** Absent when this piece deforms with the drag (HB4-2: no point-in-polygon guard). */
+  readonly candidate: CandidateTerminal | undefined;
+}
+
+/**
+ * Index of the first piece whose `bbox.minY` is >= `threshold`, in a list sorted by
+ * `bbox.minY`. Plain binary search — it exists so the per-vertex assignment scans a RANGE
+ * of near pieces rather than all of them (the N × pieces term of the frame budget).
+ */
+function lowerBoundByMinY(pieces: readonly NearPiece[], threshold: number): number {
+  let lo = 0;
+  let hi = pieces.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (pieces[mid]!.bbox.minY < threshold) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+function translatePolygon(polygon: GeoPolygon, dx: number): GeoPolygon {
+  return polygon.map((ring) => ring.map((c) => ({ lon: c.lon + dx, lat: c.lat })));
+}
+
+/**
+ * `vertexId → owning ring id` for the dragged leaf, so a COMPANION's FR-89 parent region
+ * can be resolved in O(1) per frame. Memoized on the (immutable) feature object: the
+ * committed feature record is a value object that only changes when the domain root does,
+ * which is also when {@link createNeighboursBuildMemo} rebuilds. `ringIdForLeafVertex`
+ * (edit-session-snapshot) walks every ring per call and must NOT be used per frame.
+ */
+const ringIdByVertexMemo = new WeakMap<LeafFeature, ReadonlyMap<string, RingId>>();
+
+function ringIdByVertex(feature: LeafFeature): ReadonlyMap<string, RingId> {
+  const cached = ringIdByVertexMemo.get(feature);
+  if (cached !== undefined) return cached;
+  const built = new Map<string, RingId>();
+  for (const ring of feature.shape.rings) {
+    for (const vid of ring.vertexIds) {
+      if (!built.has(vid as unknown as string)) built.set(vid as unknown as string, ring.id);
+    }
+  }
+  ringIdByVertexMemo.set(feature, built);
+  return built;
 }
 
 /**
@@ -667,35 +849,242 @@ export function createNeighboursQuery(
     // read it through the discriminant so the union stays type-safe.
     const ringId =
       'ringId' in session.target ? session.target.ringId : undefined;
+    const draggedLeaf =
+      draggedFeature !== undefined && draggedFeature.kind === FEATURE_KIND.Leaf
+        ? draggedFeature
+        : undefined;
+    // ON THE GRID (HB4-2 review #1): the preview spliced into a parent ring must be the
+    // SAME value `constrainSlide` will classify against it, and `constrainSlide` quantizes
+    // its target first. Feeding the raw sub-grid preview here put the polygon's own vertex
+    // up to 5e-8 off the point being tested, so the exact predicate answered Outside where
+    // the truth is Boundary — and the containment pass, having correctly dropped the
+    // incident parent edges, then found no crossing to slide along and pinned the vertex at
+    // the press point for the whole gesture. 単一真実源: one grid, both ends of the compare.
+    // LOW#3: quantize LAZILY (??=) — a point / line drag with no containment and no
+    // companions never needs it, so the unconditional `quantizeCoordinate(preview)` widened
+    // the throw surface (a non-finite preview) onto paths that do not use the grid value.
+    let previewOnGridCache: WorldCoordinate | undefined;
+    const previewOnGrid = (): WorldCoordinate =>
+      (previewOnGridCache ??= quantizeCoordinate(preview));
+    let movingPositionsCache: MovingPositions | undefined;
+    const movingPositions = (): MovingPositions => {
+      movingPositionsCache ??= movingPositionsFor(session, store, previewOnGrid());
+      return movingPositionsCache;
+    };
+
     let containment: ParentContainment | undefined;
     // `ringId === undefined` (point / line / feature-move) can never produce a
     // containment — checking it here as well keeps the per-frame `movingPositionsFor`
     // allocation off the common non-leaf path (containmentFor's own guard is unchanged).
-    if (
-      ringId !== undefined &&
-      draggedFeature !== undefined &&
-      draggedFeature.kind === FEATURE_KIND.Leaf
-    ) {
-      // ON THE GRID (HB4-2 review #1): the preview spliced into the parent ring must be
-      // the SAME value `constrainSlide` will classify against it, and `constrainSlide`
-      // quantizes its target first. Feeding the raw sub-grid preview here put the
-      // polygon's own vertex up to 5e-8 off the point being tested, so the exact
-      // predicate answered Outside where the truth is Boundary — and the containment
-      // pass, having correctly dropped the incident parent edges, then found no crossing
-      // to slide along and pinned the vertex at the press point for the whole gesture.
-      // 単一真実源: one quantization grid, applied at both ends of the comparison.
+    if (ringId !== undefined && draggedLeaf !== undefined) {
       containment = containmentFor(
-        draggedFeature,
+        draggedLeaf,
         ringId,
         store,
         movingVertexIds,
-        movingPositionsFor(session, store, quantizeCoordinate(preview)),
+        movingPositions(),
       );
     }
 
-    return containment === undefined
-      ? { edges, candidates, snapCandidates }
-      : { edges, candidates, snapCandidates, containment };
+    // N725-9: the COMPANION obstacle bundles (FR-80 × FR-28/FR-89). Built only for a
+    // gesture that actually carries companions, so a single-vertex drag allocates nothing
+    // and the adapter keeps taking the pre-N725-9 path (bit-identical behaviour).
+    const companionIds = session.companionVertexIds;
+    const primaryId = session.draggedVertexId;
+    let movingSet: SlideSnapNeighbours['movingSet'];
+    if (companionIds !== undefined && companionIds.size > 0 && primaryId !== undefined) {
+      const primaryVertex = getVertex(store, primaryId);
+      if (primaryVertex !== undefined) {
+        const primaryFrom = primaryVertex.coordinate;
+        // The GRAB OFFSET: the slide is judged from the PRESS point, the rigid vector is
+        // measured from the committed position, and the two differ by up to the handle hit
+        // radius. Measured on the shortest-wrapped longitude so a press on a ±360° wrap
+        // replica does not report a 360° offset (R3).
+        const pressOffset = rigidMoveDelta(primaryFrom, session.start);
+        // How far the constrained position can travel from the press point this frame (see
+        // {@link reachBox}). Measured on the same grid the constraint quantizes to.
+        //
+        // 必須2 (MED-3 whole-turn): the reach is the RAW (un-wrapped) start→preview distance,
+        // NOT the shortest-wrapped gesture. `constrainSlide` has no longitude wrapping — on a
+        // ±360° seam crossing it works the LONG way round (start 179.9° → target −179.9° is a
+        // −359.8° motion to it), so the actual swept distance is the raw one. The wrapped
+        // gesture collapses to a fraction of a degree there and undersized every companion
+        // probe box, letting a companion sweep clear through an obstacle its box never saw.
+        // The raw distance is exactly the projection bound |slid − start| ≤ |target − start|
+        // the box relies on; it never UNDER-covers (raw ≥ wrapped always) and for a non-seam
+        // drag raw == wrapped, so the common case is bit-identical.
+        const gridPreview = previewOnGrid();
+        const reach = Math.hypot(
+          gridPreview.lon - session.start.lon,
+          gridPreview.lat - session.start.lat,
+        );
+
+        const movers: { readonly id: string; readonly from: WorldCoordinate }[] = [];
+        for (const id of companionIds) {
+          const v = getVertex(store, id);
+          if (v === undefined) continue; // unresolved companion: it commits nothing either.
+          movers.push({ id: v.id as unknown as string, from: v.coordinate });
+        }
+
+        const boxOf = (from: WorldCoordinate): BBox =>
+          reachBox(from, pressOffset.dLon, pressOffset.dLat, reach, REACH_BOX_PAD);
+        const perVertexBoxes = movers.map((m) => boxOf(m.from));
+        // The PRIMARY rides the same vector, so its swept box belongs in the union too
+        // (phase 2b re-checks the shortened chord against the primary's own obstacles).
+        const allBoxes = [...perVertexBoxes, boxOf(primaryFrom)];
+        const union = unionBox(allBoxes);
+        const sumArea = allBoxes.reduce((acc, b) => acc + boxArea(b), 0);
+        const probeBoxes =
+          union !== undefined && boxArea(union) <= UNION_AREA_SLACK * sumArea
+            ? [union] // (A) constant number of searches
+            : allBoxes; // (B) scattered selection: per-vertex probes, never a give-up
+
+        // Materialise each near piece ONCE for the whole set (C).
+        const pieces: NearPiece[] = [];
+        if (entries.length > 0) {
+          const seenTerminal = new Set<string>();
+          for (const box of probeBoxes) {
+            for (const lon of [0, LONGITUDE_PERIOD, -LONGITUDE_PERIOD]) {
+              for (const hit of index.search(shiftBox(box, lon))) {
+                const near = hit.ref;
+                if (near.featureId === draggedFeatureId) continue;
+                if (seenTerminal.has(near.featureId)) continue;
+                seenTerminal.add(near.featureId);
+                const deformsNear = referencesAny(near.ownedVertexIds, movingVertexIds);
+                const nearMoving = deformsNear ? movingVertexIds : NO_MOVING_VERTICES;
+                for (let p = 0; p < near.polygons.length; p += 1) {
+                  const raw = near.polygons[p]!;
+                  const ids = near.vertexIds[p];
+                  const pieceBox = multiPolygonBBox([raw]);
+                  if (pieceBox === undefined) continue;
+                  pieces.push({
+                    featureId: near.featureId,
+                    bbox: pieceBox,
+                    edges: polygonEdges(near.featureId, p, raw, ids, nearMoving),
+                    candidate: pieceReferencesMoving(ids, nearMoving)
+                      ? undefined
+                      : { featureId: near.featureId, polygon: raw },
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        // Order the near pieces by latitude ONCE so each moving vertex scans a RANGE of
+        // them instead of all of them. Latitude is the non-periodic axis (FR-05), so it is
+        // the one that admits a total order; `maxPieceHeight` bounds how far BACK from a
+        // box's own minY an overlapping piece can start, which makes that range contiguous.
+        // Without this the assignment is moving-vertices × near-pieces, and a long thin
+        // selection running alongside many neighbours (a coastline) hits exactly that
+        // product — the frame cost measurably doubled at 500 × 400.
+        pieces.sort((a, b) => a.bbox.minY - b.bbox.minY);
+        let maxPieceHeight = 0;
+        for (const piece of pieces) {
+          const h = piece.bbox.maxY - piece.bbox.minY;
+          if (h > maxPieceHeight) maxPieceHeight = h;
+        }
+
+        const containmentByRing = new Map<string, ParentContainment | undefined>();
+        const containmentOf = (vertexId: string): ParentContainment | undefined => {
+          if (draggedLeaf === undefined) return undefined;
+          const rid = ringIdByVertex(draggedLeaf).get(vertexId);
+          if (rid === undefined) return undefined;
+          const key = rid as unknown as string;
+          if (containmentByRing.has(key)) return containmentByRing.get(key);
+          const built = containmentFor(
+            draggedLeaf,
+            rid,
+            store,
+            movingVertexIds,
+            movingPositions(),
+          );
+          containmentByRing.set(key, built);
+          return built;
+        };
+
+        const companions: MovingVertexConstraint[] = movers.map((mover, i) => {
+          const box = perVertexBoxes[i]!;
+          const cEdges: BoundaryEdge[] = [];
+          const cCandidates: CandidateTerminal[] = [];
+          const firstPiece = lowerBoundByMinY(pieces, box.minY - maxPieceHeight);
+          for (let pi = firstPiece; pi < pieces.length; pi += 1) {
+            const piece = pieces[pi]!;
+            const pb = piece.bbox;
+            if (pb.minY > box.maxY) break; // sorted by minY: nothing further can overlap.
+            if (pb.maxY < box.minY) continue;
+            // (D) SEAM: find the ±360° frame in which this piece is near THIS vertex, and
+            // hand the geometry over expressed in the vertex's own frame — `constrainSlide`
+            // has no longitude wrapping of its own, so geometry 360° away would silently
+            // never intersect anything. A piece cannot be near the same point in two
+            // frames, so the first match wins.
+            //
+            // Written out (rather than calling the shared `bboxesIntersect` over three
+            // shifted boxes) because this is THE inner loop of the whole feature;
+            // allocating three boxes per iteration cost measurably more than the
+            // comparisons themselves. The predicate is the identical inclusive-overlap
+            // test, restated on the two axes with the ±360° offsets folded in.
+            let shift: number;
+            if (box.minX <= pb.maxX && box.maxX >= pb.minX) shift = 0;
+            else if (
+              box.minX + LONGITUDE_PERIOD <= pb.maxX &&
+              box.maxX + LONGITUDE_PERIOD >= pb.minX
+            ) {
+              shift = LONGITUDE_PERIOD;
+            } else if (
+              box.minX - LONGITUDE_PERIOD <= pb.maxX &&
+              box.maxX - LONGITUDE_PERIOD >= pb.minX
+            ) {
+              shift = -LONGITUDE_PERIOD;
+            } else continue;
+
+            // 必須5 (MED-1): push edges in a LOOP, never `push(...piece.edges)`. A coastline /
+            // dense piece can carry thousands of edges, and the spread both allocates an
+            // arguments array per piece AND risks the call-argument cap; the loop keeps the
+            // per-frame GC pressure flat (the dense-selection fixture's chief cost).
+            if (shift === 0) {
+              for (const e of piece.edges) cEdges.push(e);
+              if (piece.candidate !== undefined) cCandidates.push(piece.candidate);
+            } else {
+              for (const e of piece.edges) {
+                cEdges.push({
+                  featureId: e.featureId,
+                  edgeKey: e.edgeKey,
+                  a: { lon: e.a.lon - shift, lat: e.a.lat },
+                  b: { lon: e.b.lon - shift, lat: e.b.lat },
+                });
+              }
+              if (piece.candidate !== undefined) {
+                cCandidates.push({
+                  featureId: piece.candidate.featureId,
+                  polygon: translatePolygon(piece.candidate.polygon, -shift),
+                });
+              }
+            }
+          }
+          const own = containmentOf(mover.id);
+          return own === undefined
+            ? { vertexId: mover.id, from: mover.from, edges: cEdges, candidates: cCandidates }
+            : {
+                vertexId: mover.id,
+                from: mover.from,
+                edges: cEdges,
+                candidates: cCandidates,
+                containment: own,
+              };
+        });
+
+        if (companions.length > 0) movingSet = { primaryFrom, companions };
+      }
+    }
+
+    return {
+      edges,
+      candidates,
+      snapCandidates,
+      ...(containment !== undefined ? { containment } : {}),
+      ...(movingSet !== undefined ? { movingSet } : {}),
+    };
   };
 }
 

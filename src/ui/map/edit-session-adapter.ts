@@ -37,18 +37,22 @@ import {
   EDIT_TOOL,
   beginDrag,
   confirmRelease,
+  constrainSetSlide,
   constrainSlide,
   decideSnap,
   discardDrag,
   movingVertexIds,
+  setDeltaAdmitsSnap,
   updateDrag,
   type BoundaryEdge,
   type CandidateTerminal,
   type DragSession,
   type DragTarget,
   type FeatureSnapshot,
+  type MovingVertexConstraint,
   type ParentContainment,
   type ReleaseOutcome,
+  type SlideResult,
   type SnapCandidate,
   type SnapDecision,
   type WorldToScreen,
@@ -84,6 +88,17 @@ export interface SlideSnapNeighbours {
    * (受け入れ基準6 第4項 / FR-89); absent for a plain outer-ring / line / point vertex.
    */
   readonly containment?: ParentContainment;
+  /**
+   * FR-80 × FR-28/FR-89 (N725-9 集合デルタ拘束): the REST of the rigidly moving set —
+   * the primary's committed origin plus one obstacle bundle per COMPANION vertex,
+   * narrowed around that companion's own swept path. Present only when the gesture
+   * actually carries companions; a single-vertex drag omits it entirely and the adapter
+   * then runs the pre-N725-9 code path unchanged.
+   */
+  readonly movingSet?: {
+    readonly primaryFrom: WorldCoordinate;
+    readonly companions: readonly MovingVertexConstraint[];
+  };
 }
 
 /**
@@ -262,34 +277,48 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
    * a known id (constrainSlide / decideSnap are vertex-relative; feature-move shifts
    * every vertex by one vector and has no single dragged point to slide / snap).
    *
-   * FR-80 × FR-89/FR-31 — WHO SLIDES AND SNAPS IN A MULTI-VERTEX DRAG (暫定決定, the
-   * requirements fix the move ("同一ベクトル") but not the constraint semantics): the
-   * PRIMARY (the vertex the user grabbed) alone is the slide / snap subject, and the
-   * companions are a rigid body carried by the primary's resulting displacement. This
-   * is the only reading that keeps 「選択セット全体を同一ベクトル」 true — per-vertex
-   * constraints would move different vertices by different amounts and shear the
-   * selection — and it keeps `draggedVertexId` the single truth for snap / 共有化
-   * (教訓 5.29).
+   * FR-80 × FR-89/FR-31 — WHO SLIDES AND SNAPS IN A MULTI-VERTEX DRAG (裁定 N725-9 /
+   * N725-10, 2026-07-25; the requirements fix the move ("同一ベクトル") but not the
+   * constraint semantics, so this was decided): the PRIMARY (the vertex the user grabbed)
+   * alone is the slide / snap subject — it owns the DIRECTION — and the companions are a
+   * rigid body carried by the primary's resulting displacement. Letting a companion slide
+   * on its own would move different vertices by different amounts and shear the selection,
+   * and it keeps `draggedVertexId` the single truth for snap / 共有化 (教訓 5.29).
    *
-   * KNOWN GAP — NOT A DECISION THIS LAYER MAY MAKE ALONE (FR-80 fix-forward review, HIGH):
-   * `neighboursAt` is queried around the PRIMARY's preview only, and `constrainSlide`
-   * constrains that one point, so in an N-vertex drag N−1 vertices pass through NO
-   * FR-28 collision and NO FR-89 containment check at all. A companion CAN be committed
-   * inside a neighbouring terminal (grab v0 of a 2-vertex selection and drag east; the
-   * query never sees the terminal that v1 lands in). FR-28/FR-89 are must 要件, and the
-   * live edit binding's `detectSpatial` is `() => []` (consistency-binding
-   * createLiveEditBinding), so nothing behind this catches it either — for SINGLE-vertex
-   * drags `constrainSlide` alone is what upholds the requirement, and that is exactly
-   * what the companions skip.
+   * What the companions DO own is the AMOUNT: they can shrink the shared vector so the
+   * whole set stops short of an obstacle. See the N725-9 note below — that half of the
+   * semantics was an open gap until it was implemented.
    *
-   * This is NOT closable inside this adapter: honouring both 「同一ベクトル」 and the
-   * exclusion requires constraining the set's DELTA — the intersection over all moving
-   * vertices of the admissible motions along the gesture vector — which is a
-   * `constrainSlide` signature change (it takes one point today), plus a neighbour query
-   * over the union of the moving vertices' neighbourhoods (whose per-frame cost has to be
-   * designed, not stumbled into). Until that lands the guarantee is: the GRABBED vertex is
-   * excluded; the rest ride along unchecked. Recorded as an open decision rather than
-   * silently blessed — 教訓 5.7 forbids claiming a rule the UI does not actually run.
+   * CLOSED — N725-9 集合デルタ拘束 (裁定 2026-07-25, 実装済み). The former KNOWN GAP was:
+   * `neighboursAt` was queried around the PRIMARY's preview only and `constrainSlide`
+   * constrains one point, so in an N-vertex drag N−1 vertices passed through NO FR-28
+   * collision and NO FR-89 containment check — a companion could be committed strictly
+   * inside a neighbouring terminal (grab v0 of a 2-vertex selection, drag east, and the
+   * query never saw the terminal v1 lands in). FR-28/FR-89 are must 要件 and the live edit
+   * binding's `detectSpatial` is `() => []`, so nothing behind this caught it either.
+   *
+   * THE DECISION —「方向は主頂点、量は集合の交叉」: the primary still slides and snaps
+   * alone (it owns the DIRECTION); every moving vertex may only SHRINK the resulting rigid
+   * vector by a scalar s ∈ [0,1] (it owns a share of the AMOUNT). The committed motion is
+   * s* · d where s* is the intersection over all moving vertices of their admissible
+   * intervals along d. 「選択セット全体を同一ベクトル」 stays literally true — no companion
+   * ever gets a vector of its own, so no shear — and one pass suffices (no fixed-point
+   * iteration). The maths and the star-shape argument that makes a scalar sufficient live
+   * with the implementation, {@link constrainSetSlide}.
+   *
+   * WHAT THIS LAYER DOES ABOUT IT: nothing but sequencing. The obstacle bundles per
+   * companion arrive as `neighbours.movingSet` (the U10 query's job), the intersection is
+   * the domain's job, and this adapter only (a) routes to `constrainSetSlide` when the
+   * gesture actually has companions and (b) decides the snap AFTER the retraction — see
+   * the snap call below for why that ordering is the requirement, not a detail.
+   *
+   * RESIDUAL RISK, recorded rather than hidden: a moving vertex whose COMMITTED position
+   * already violates FR-28/FR-89 (corrupt or repaired data) ABSTAINS from the intersection
+   * instead of vetoing the gesture — freezing every drag of a damaged feature would be the
+   * HB4-2 押下点固着 failure all over again. And the ±360° seam hole in the neighbour
+   * query's PRIMARY path (edges/candidates are emitted in their stored longitude frame) is
+   * pre-existing and untouched here; the companion path added by N725-9 does align to the
+   * queried vertex's branch.
    */
   function applyMove(live: DragSession, preview: WorldCoordinate): DragSession {
     const canSlideSnap =
@@ -304,27 +333,72 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
     }
 
     const neighbours = deps.neighboursAt!(preview, live);
-    // Edge slide: constrain the raw preview against near boundaries (FR-28 / FR-89).
-    const slid = constrainSlide({
+    const movingSet = neighbours.movingSet;
+    const slideInput = {
       start: live.start,
       target: preview,
       edges: neighbours.edges,
       candidates: neighbours.candidates,
       ...(neighbours.containment !== undefined ? { containment: neighbours.containment } : {}),
-    });
+    };
+    // Edge slide: constrain the raw preview against near boundaries (FR-28 / FR-89).
+    // FR-80: when the gesture carries companions, the SET's delta is constrained
+    // (N725-9) — `constrainSetSlide` runs the identical single-point slide first and only
+    // then shrinks its vector, so a drag with no companions is byte-identical either way.
+    const slid: SlideResult =
+      movingSet === undefined || movingSet.companions.length === 0
+        ? constrainSlide(slideInput)
+        : constrainSetSlide({
+            ...slideInput,
+            primaryFrom: movingSet.primaryFrom,
+            companions: movingSet.companions,
+          });
     // Screen-proximity snap on the CONSTRAINED position (FR-31): every vertex that MOVES
     // with this gesture is excluded, so the primary never snaps to its own pre-move id —
     // nor (FR-80) onto one of its own companions, which would collapse the selection onto
     // itself and share two vertices of ONE feature into a single point.
-    const snap: SnapDecision | null = decideSnap({
+    //
+    // N725-9 条件 (i): "constrained" now includes the SET retraction, and the snap is
+    // decided on the RETRACTED position deliberately. A snap means「主頂点が候補の上に
+    // 正確に乗る」— it is promoted to a share pair at release (decideSharePairAtRelease).
+    // Deciding it on the pre-retraction position would let a companion's wall pull the
+    // primary off the candidate while the share pair survived, welding two vertices
+    // together at a point neither of them occupies. One position, one judgement.
+    let snap: SnapDecision | null = decideSnap({
       draggedPosition: slid.position,
       candidates: neighbours.snapCandidates,
       snapDistancePx: deps.snapDistancePx!(),
       toScreen: deps.worldToScreen!,
       exclude: movingVertexIds(live),
     });
+
+    // N725-9 必須3 — SNAP MUST NOT BREAK RIGIDITY. A surviving share-snap welds the PRIMARY
+    // onto its target vertex at release (decideSharePairAtRelease → applySharePair prunes the
+    // primary body onto the target), so the whole set is committed displaced by
+    // d_snap = snapPos − primaryFrom — NOT by the retracted preview delta. If the primary
+    // preview was pulled back by a companion's wall (slid.position ≠ snapPos), leaving the
+    // companions on the retracted vector while the primary jumps to the pin SHEARS the set,
+    // breaking 「移動ベクトル = 主頂点変位」 (裁定 N725-10). So in a MULTI-VERTEX drag we
+    // reconcile: re-validate d_snap against every companion —
+    //   - all legal ⇒ the effective preview BECOMES snapPos, so `moveDraggedVertexSet` carries
+    //     the companions by the same d_snap and the set stays rigid (同一ベクトル維持);
+    //   - some companion would be pushed into an obstacle ⇒ DROP the snap (拘束 > スナップ),
+    //     keeping the retracted preview and letting the set stop short instead.
+    // A single-vertex drag (no companions) keeps today's behaviour verbatim.
+    let previewOut = slid.position;
+    if (snap !== null && movingSet !== undefined && movingSet.companions.length > 0) {
+      const snapVertexId = snap.vertexId;
+      const snapTarget = neighbours.snapCandidates.find((c) => c.vertexId === snapVertexId);
+      if (snapTarget !== undefined) {
+        if (setDeltaAdmitsSnap(movingSet.primaryFrom, snapTarget.position, movingSet.companions)) {
+          previewOut = snapTarget.position; // rigid: companions ride d_snap, primary welds to it.
+        } else {
+          snap = null; // constraint wins: the snap cannot carry the set legally, so drop it.
+        }
+      }
+    }
     return updateDrag(live, {
-      preview: slid.position,
+      preview: previewOut,
       slide: { boundaries: slid.boundaries, collided: slid.collided },
       snap,
     });

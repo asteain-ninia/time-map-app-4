@@ -16,8 +16,7 @@ import {
 } from '../feature';
 import type { VertexId } from '../ids';
 import { createCoordinate, type WorldCoordinate } from '../coordinate';
-import { shortestLonDeltaDeg } from '../geo/longitude';
-import { LONGITUDE_PERIOD } from '../geo/seam';
+import { rigidMoveDelta } from './rigid-delta';
 import type { VertexMoveDelta } from '../selection/contracts';
 
 // Route through `createCoordinate` (not a raw literal) so the move shares the
@@ -155,19 +154,10 @@ export function moveDraggedVertexSet(
 ): readonly Vertex[] | undefined {
   const primary = getVertex(store, primaryId);
   if (primary === undefined) return undefined;
-  const rawDLon = target.lon - primary.coordinate.lon;
-  const wrappedDLon = shortestLonDeltaDeg(primary.coordinate.lon, target.lon);
-  // Did the gesture's RAW longitude delta carry a whole ±360° turn? Compared with a
-  // half-period tolerance, NOT with `===`: `shortestLonDeltaDeg` folds through a modulo,
-  // so even a plainly-in-range delta comes back a few ULPs off its raw self, and an
-  // exact comparison would mistake that rounding for a seam crossing.
-  const wholeTurns = Math.abs(rawDLon - wrappedDLon) >= LONGITUDE_PERIOD / 2;
-  const delta: VertexMoveDelta = {
-    // No turn ⇒ use the RAW delta: it is already the shortest one, and it is EXACT, so
-    // the companions shift by bit-for-bit the primary's displacement (perfect rigidity).
-    dLon: wholeTurns ? wrappedDLon : rawDLon,
-    dLat: target.lat - primary.coordinate.lat,
-  };
+  // THE rigid-vector rule lives in ./rigid-delta so the set-slide constraint
+  // (constrainSetSlide) measures the very same vector this move applies (教訓 5.29).
+  const { dLon, dLat, wholeTurns } = rigidMoveDelta(primary.coordinate, target);
+  const delta: VertexMoveDelta = { dLon, dLat };
   // Same branch ⇒ keep `target` verbatim (see EXACTNESS above); otherwise re-place the
   // primary on the branch its own shortest delta names, so 1 頂点 and N 頂点 obey ONE rule.
   const moved = wholeTurns
