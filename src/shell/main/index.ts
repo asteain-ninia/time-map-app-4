@@ -23,6 +23,7 @@ import {
 } from './app-menu';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
+import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
 // Electron main process. Shell layer may import domain only (never ui/render).
@@ -41,6 +42,37 @@ const SMOKE_TIMEOUT_MS = 30_000;
 // alive so the test can interact with the renderer (U43 / 技術方針 2.14). No
 // security flag is relaxed (sandbox / contextIsolation / nodeIntegration unchanged).
 const E2E_TEST = process.env['E2E_TEST'] === '1';
+
+// --- ユニット U3: 単一インスタンスロック（lost-update 根治 / v3 同型）-------------
+//
+// 二重起動して同じ .tmap を開くと「後勝ち保存」で先の編集が消える（本アプリ最後の
+// 既知データ損失経路）。**起動最初期**（whenReady / createWindow より前）にロックを取り、
+// 取れなければ即 quit する。判定ロジックは Electron-free な ./single-instance に置き（単体
+// テスト済み）、ここは実物 app / BrowserWindow の束縛だけを行う（開発ガイド §5.41 合成ルート）。
+//
+// 🔴 共有 userData ゲート（最重要）: Playwright の `_electron.launch` はアプリを起動する際に
+// `--user-data-dir` を渡さない（playwright-core .../electron/loader.js 実測: chromium スイッチ
+// のみ追加）。したがって E2E/SMOKE の複数 Electron 起動は **既定 userData を共有** する。
+// requestSingleInstanceLock は userData パス単位のロックなので、この環境でロックを取ると
+// 連続する（あるいは並列 worker の）起動が互いのロックを奪って殺し合い、フル e2e が壊滅する。
+// よって E2E/SMOKE では skipLock=true で **ロックを一切取らない**（製品挙動は不変）。ロック
+// 挙動自体は single-instance.test.ts（app モック）で状態機械レベルに固定している。
+//
+// 不変条件（FR-107 close ガードとの非干渉）: 取得失敗時の app.quit() は **ウィンドウ生成前** に
+// 起きるため、close ガード（createWindow で window に貼る）は一切関与しない。
+const shouldBootApp = acquireSingleInstanceLock({
+  app,
+  skipLock: E2E_TEST || SMOKE_TEST,
+  // 2つ目の起動を検知したら 1つ目の（唯一の）ウィンドウを前面化する（v3 同型: minimized
+  // なら restore → focus）。§7.4 非目標により argv の .tmap パス処理は行わない（focus のみ）。
+  onSecondInstance: () => {
+    const primary = BrowserWindow.getAllWindows()[0];
+    if (primary !== undefined) revealWindow(primary);
+  },
+  log: (message) => {
+    console.warn(message);
+  },
+});
 
 function smokeFail(reason: string): void {
   console.error(`[smoke] FAIL: ${reason}`);
@@ -429,24 +461,29 @@ function wireApplicationMenu(): void {
   installApplicationMenu(menuApi, process.platform);
 }
 
-app.whenReady().then(() => {
-  // Before any window exists — the default menu must never be live (data-loss root fix).
-  wireApplicationMenu();
-  wireIpc();
-  createWindow();
+// U3: ロックを取れなかった 2つ目のプロセスは whenReady を待たず（ウィンドウを作らず）に
+// 終了へ向かう。ここを通るのは 1つ目のプロセス、または共有 userData でロックをスキップした
+// E2E/SMOKE だけ（`shouldBootApp === true`）。
+if (shouldBootApp) {
+  app.whenReady().then(() => {
+    // Before any window exists — the default menu must never be live (data-loss root fix).
+    wireApplicationMenu();
+    wireIpc();
+    createWindow();
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+      }
+    });
+  }, (error: unknown) => {
+    if (SMOKE_TEST) {
+      smokeFail(`whenReady rejected: ${String(error)}`);
+      return;
     }
+    app.quit();
   });
-}, (error: unknown) => {
-  if (SMOKE_TEST) {
-    smokeFail(`whenReady rejected: ${String(error)}`);
-    return;
-  }
-  app.quit();
-});
+}
 
 // FR-107 close ブリッジ × アプリ終了経路の整合.
 //
