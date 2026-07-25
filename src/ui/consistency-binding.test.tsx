@@ -22,7 +22,11 @@ import {
   REJECTION_KIND,
 } from '../domain/consistency/index';
 import { applyAddProposal, deriveAnchorId } from '../domain/editing/apply-proposal';
-import { featuresAt } from './live-lookup';
+import { featuresAt, featureByIdAt, verticesAt } from './live-lookup';
+import { sharedVertexIdsOf } from './map/shared-vertex-derivation';
+import { checkConsistency } from '../domain/persistence/consistency';
+import { isCompositeCommand } from '../domain/command/index';
+import type { TimePoint } from '../domain/time/time-point';
 import {
   buildChangeStartIntent,
   buildSetEndIntent,
@@ -1706,5 +1710,422 @@ describe('F1 — consistency-binding root reconstructions preserve uiSettings (F
     expect(out.state.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
     // Symmetric: undo restores the original root (uiSettings intact).
     expect(cmd!.undo(out.state).state.uiSettings?.project.defaultPaletteTheme).toBe('ocean');
+  });
+});
+
+// ===========================================================================
+// HB3-10 — 競合解決後の共有頂点溶接 (conflict-resolution vertex weld)
+// ===========================================================================
+//
+// REQUIREMENT (ユーザー裁定): after a spatial conflict is resolved, the ADJUST
+// feature's trimmed boundary is rebuilt from the U06 `difference` output. Those
+// output coordinates that coincide (on the U06 quantization grid — the ONE shared
+// tolerance; no new epsilon is invented) with an existing vertex of the PRIORITY
+// feature must REFERENCE that feature's VertexId (a real共有頂点 — FR-30 琥珀 /
+// FR-31 連動移動) instead of minting a fresh independent vertex that merely happens
+// to sit at the same place. Before this change `shapeFromMultiPolygon` re-minted
+// EVERY boundary coordinate unconditionally, so the resolved boundary was two
+// coincident-but-unlinked vertex runs: dragging one side tore the boundary open.
+//
+// The weld sources are, in priority order, the PRIORITY leaf's vertices and the
+// ADJUST leaf's OWN vertices — never a third feature (that would manufacture
+// sharing the user never asked for). Including the adjust's own vertices keeps a
+// multi-round convergence from re-minting (and thereby destroying) the previous
+// round's weld and the adjust's pre-existing shares (FR-95 継続規則の解決への拡張).
+describe('HB3-10 共有頂点溶接 — 競合解決の調整後境界が優先地物の頂点を共有参照する', () => {
+  const T = timePointYear(1000);
+  const gregorian = getCalendar('gregorian');
+
+  /** An axis-aligned rectangle leaf with explicit corners (CCW from (x0,y0)). */
+  function rectLeaf(
+    idRaw: string,
+    vPrefix: string,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+  ): { feature: LeafFeature; vertices: Vertex[] } {
+    const corners: readonly (readonly [number, number])[] = [
+      [x0, y0],
+      [x1, y0],
+      [x1, y1],
+      [x0, y1],
+    ];
+    const vertices = corners.map((c, i) =>
+      createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]!, lat: c[1]! }),
+    );
+    const ring = createTerritoryRing(
+      asRingId(`r-${idRaw}`),
+      vertices.map((v) => v.id),
+    );
+    const feature = createLeafFeature(
+      asFeatureId(idRaw),
+      createBasicAttributes(idRaw, 0, 0),
+      color,
+      createShape([ring]),
+    );
+    return { feature, vertices };
+  }
+
+  /** A live add binding over a mutable root cell, with the id ports injected. */
+  function makeBinding(getRoot: () => DomainRoot) {
+    let n = 0;
+    return createLiveAddBinding({
+      getRoot,
+      nextVertexId: () => asVertexId(`rv-${(n += 1)}`),
+      nextRingId: () => asRingId(`rr-${(n += 1)}`),
+    });
+  }
+
+  /** Every VertexId a leaf's rings cite at `time` (as raw strings). */
+  function leafVertexIdsAt(root: DomainRoot, time: TimePoint, id: string): string[] {
+    const f = featureByIdAt(root, time, asFeatureId(id));
+    if (f === undefined || f.kind !== 'leaf') return [];
+    return referencedVertexIds(f).map(String);
+  }
+
+  /** The vertex bodies stored in `featureId`'s OWN history snapshot at `time`. */
+  function ownSnapshotStore(root: DomainRoot, featureId: string, time: TimePoint) {
+    const history = root.histories.find((h) => String(h.featureId) === featureId);
+    if (history === undefined) return undefined;
+    const at = resolveAt(history.series, time, gregorian);
+    return at.kind === 'present' ? at.entry.anchor.snapshot.vertices : undefined;
+  }
+
+  const sortedSharedIds = (root: DomainRoot, time: TimePoint): string[] =>
+    [...sharedVertexIdsOf(verticesAt(root, time), featuresAt(root, time))].map(String).sort();
+
+  it('溶接する: 調整後境界の一致頂点が優先地物と同一 VertexId を共有する (核心)', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // Priority f-a = [0,2]×[0,2]; its corners va-1 = (2,0) and va-2 = (2,2).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const seeded = binding.startProcess(
+      createEditProposal(a.feature.id, T, addSnapshot(a.feature, a.vertices)),
+    );
+    expect(seeded.status).toBe(PROCESS_STATUS.Committed);
+    if (seeded.status === PROCESS_STATUS.Committed) root = seeded.state;
+
+    // Adjust f-b = [1,3]×[0,2] — overlaps f-a on [1,2]×[0,2]. The difference is
+    // [2,3]×[0,2], whose left corners are EXACTLY f-a's (2,0) and (2,2).
+    const b = rectLeaf('f-b', 'vb', 1, 0, 3, 2);
+    const proposal = createEditProposal(b.feature.id, T, addSnapshot(b.feature, b.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    // An INDEPENDENT structural snapshot (a distinct object graph, NOT the reference
+    // the command captures) of the pre-resolution root, so the FR-94 undo assertion
+    // below is a genuine DEEP comparison and not the tautology of comparing the
+    // command's own captured baseline to itself (LOW-3).
+    const baseline = structuredClone(root);
+    const committed = binding.applyResolutionsFor(proposal)([
+      { conflictId: conflict.id, priorityFeatureId: a.feature.id, adjustFeatureId: b.feature.id },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    // (1) The trimmed adjust cites the PRIORITY's own vertex ids at the shared edge.
+    const bIds = leafVertexIdsAt(root, T, 'f-b');
+    expect(bIds).toContain('va-1');
+    expect(bIds).toContain('va-2');
+    // The priority itself is untouched (all four of its own ids still cited).
+    expect(leafVertexIdsAt(root, T, 'f-a').sort()).toEqual(['va-0', 'va-1', 'va-2', 'va-3']);
+
+    // (2) FR-30 の琥珀表示・FR-31 連動移動の根拠となる導出が「共有」と判定する。
+    expect(sortedSharedIds(root, T)).toEqual(['va-1', 'va-2']);
+
+    // (3) No dangling reference: f-b's OWN snapshot store carries the welded bodies,
+    // byte-identical to the priority's (教訓5.31 / FR-106(a) は per-snapshot 判定).
+    const bStore = ownSnapshotStore(root, 'f-b', T)!;
+    expect(bStore.byId.get(asVertexId('va-1'))).toEqual(
+      createVertex(asVertexId('va-1'), { lon: 2, lat: 0 }),
+    );
+    expect(bStore.byId.get(asVertexId('va-2'))).toEqual(
+      createVertex(asVertexId('va-2'), { lon: 2, lat: 2 }),
+    );
+
+    // (4) FR-106: the welded project stays load-clean (0 findings).
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+
+    // (5) FR-94: ONE indivisible undo unit whose undo restores the pre-resolution
+    // project — deep-compared against the INDEPENDENT `baseline` snapshot, so a broken
+    // round-trip (or an in-place mutation of the baseline) would fail here (LOW-3).
+    expect(isCompositeCommand(committed.command)).toBe(true);
+    expect(committed.command.undo(root).state).toEqual(baseline);
+  });
+
+  it('一致頂点ゼロ: 優先地物の頂点と重ならない境界は独立頂点のまま (溶接しすぎない)', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // Priority f-a = [0,2]². Adjust f-c = [1,3]×[0.5,1.5] — a THIN band whose
+    // difference [2,3]×[0.5,1.5] touches f-a's right EDGE but at NO f-a vertex.
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const seeded = binding.startProcess(
+      createEditProposal(a.feature.id, T, addSnapshot(a.feature, a.vertices)),
+    );
+    if (seeded.status === PROCESS_STATUS.Committed) root = seeded.state;
+
+    const c = rectLeaf('f-c', 'vc', 1, 0.5, 3, 1.5);
+    const proposal = createEditProposal(c.feature.id, T, addSnapshot(c.feature, c.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    const committed = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: c.feature.id,
+      },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    // NO priority vertex id leaked into the adjust, and NOTHING is shared.
+    const cIds = leafVertexIdsAt(root, T, 'f-c');
+    for (const vid of ['va-0', 'va-1', 'va-2', 'va-3']) expect(cIds).not.toContain(vid);
+    expect(sortedSharedIds(root, T)).toEqual([]);
+    // The adjust's OWN untouched right-hand corners keep their original ids
+    // (weld source (B): the adjust's own vertices, so a round never re-mints them).
+    expect(cIds).toContain('vc-1');
+    expect(cIds).toContain('vc-2');
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+  });
+
+  it('複数一致 + 多ピース: 優先地物が調整地物を二分しても両断片の一致角が溶接される', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // Priority f-p = [1,3]×[0,2] sits INSIDE the span of adjust f-w = [0,4]×[0,2],
+    // so difference(f-w, f-p) = [0,1]×[0,2] ∪ [3,4]×[0,2] — TWO pieces, and all
+    // FOUR of f-p's corners are boundary vertices of the result.
+    const p = rectLeaf('f-p', 'vp', 1, 0, 3, 2);
+    const seeded = binding.startProcess(
+      createEditProposal(p.feature.id, T, addSnapshot(p.feature, p.vertices)),
+    );
+    if (seeded.status === PROCESS_STATUS.Committed) root = seeded.state;
+
+    const w = rectLeaf('f-w', 'vw', 0, 0, 4, 2);
+    const proposal = createEditProposal(w.feature.id, T, addSnapshot(w.feature, w.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    const committed = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: p.feature.id,
+        adjustFeatureId: w.feature.id,
+      },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    const wIds = leafVertexIdsAt(root, T, 'f-w');
+    for (const vid of ['vp-0', 'vp-1', 'vp-2', 'vp-3']) expect(wIds).toContain(vid);
+    expect(sortedSharedIds(root, T)).toEqual(['vp-0', 'vp-1', 'vp-2', 'vp-3']);
+    // 片落とし禁止 (教訓5.1): both surviving pieces are still there.
+    const wf = featureByIdAt(root, T, asFeatureId('f-w'));
+    expect(wf?.kind).toBe('leaf');
+    if (wf?.kind !== 'leaf') return;
+    expect(wf.shape.rings.length).toBe(2);
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+  });
+
+  it('R2 (HB4-2 同型): 優先頂点が非グリッド raw 座標でも量子化キーで溶接される', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // f-a's right edge sits 4e-9° off the quantization grid — LESS than half a grid
+    // cell (5e-8°), so `difference` snaps it to exactly 2.0 in its output while the
+    // STORED priority vertex keeps the raw 2.000000004. Comparing raw-vs-quantized
+    // would never match (the HB4-2 failure mode); the weld key must quantize BOTH.
+    const off = 2 + 4e-9;
+    const a = rectLeaf('f-a', 'va', 0, 0, off, 2);
+    const seeded = binding.startProcess(
+      createEditProposal(a.feature.id, T, addSnapshot(a.feature, a.vertices)),
+    );
+    if (seeded.status === PROCESS_STATUS.Committed) root = seeded.state;
+
+    const b = rectLeaf('f-b', 'vb', 1, 0, 3, 2);
+    const proposal = createEditProposal(b.feature.id, T, addSnapshot(b.feature, b.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    const committed = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: b.feature.id,
+      },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    const bIds = leafVertexIdsAt(root, T, 'f-b');
+    expect(bIds).toContain('va-1');
+    expect(bIds).toContain('va-2');
+    // The welded body is the priority's ORIGINAL value object — the priority's own
+    // geometry must not be nudged onto the grid by the weld (教訓 HB4-2), and both
+    // snapshots must hold the SAME body (⇒ no VertexCoordinateDivergence).
+    expect(ownSnapshotStore(root, 'f-b', T)!.byId.get(asVertexId('va-1'))?.coordinate.lon).toBe(off);
+    expect(ownSnapshotStore(root, 'f-a', T)!.byId.get(asVertexId('va-1'))?.coordinate.lon).toBe(off);
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+  });
+
+  it('多錨: 解決は錨時刻以降だけを書き換え、それ以前の錨は溶接前の独立頂点のまま', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // f-b is born at year 500 (alone → no conflict), f-a at year 1000 overlapping it.
+    const b = rectLeaf('f-b', 'vb', 1, 0, 3, 2);
+    const seedB = binding.startProcess(
+      createEditProposal(b.feature.id, timePointYear(500), addSnapshot(b.feature, b.vertices)),
+    );
+    expect(seedB.status).toBe(PROCESS_STATUS.Committed);
+    if (seedB.status === PROCESS_STATUS.Committed) root = seedB.state;
+
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const proposal = createEditProposal(a.feature.id, T, addSnapshot(a.feature, a.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    // f-a is the PRIORITY, f-b the ADJUST — the write-back INSERTS a new anchor in
+    // f-b's series at year 1000 (applyPastEdit), leaving the year-500 anchor alone.
+    const committed = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: b.feature.id,
+      },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    // Year 1000: welded.
+    expect(leafVertexIdsAt(root, T, 'f-b')).toContain('va-1');
+    // Year 500: the ORIGINAL anchor — original ids, original geometry, and NO body
+    // of the priority's vertices leaked into that snapshot's store.
+    const early = timePointYear(500);
+    expect(leafVertexIdsAt(root, early, 'f-b')).toEqual(['vb-0', 'vb-1', 'vb-2', 'vb-3']);
+    expect([...ownSnapshotStore(root, 'f-b', early)!.byId.keys()].map(String).sort()).toEqual([
+      'vb-0',
+      'vb-1',
+      'vb-2',
+      'vb-3',
+    ]);
+    expect(sortedSharedIds(root, early)).toEqual([]);
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+  });
+
+  it('多ラウンド: 2つの優先地物へ順に trim しても前ラウンドの溶接が消えない', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // Priorities f-a = [0,2]×[0,2] and f-b = [10,12]×[0,2]; the wide adjust f-n =
+    // [1,11]×[0,2] overlaps BOTH, so it is trimmed twice in one apply. Round 2 must
+    // NOT re-mint the boundary round 1 welded (weld source (B) = the adjust's own).
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const ra = binding.startProcess(
+      createEditProposal(a.feature.id, T, addSnapshot(a.feature, a.vertices)),
+    );
+    if (ra.status === PROCESS_STATUS.Committed) root = ra.state;
+    const b = squareLeaf('f-b', 'vb', 10, 0);
+    const rb = binding.startProcess(
+      createEditProposal(b.feature.id, T, addSnapshot(b.feature, b.vertices)),
+    );
+    if (rb.status === PROCESS_STATUS.Committed) root = rb.state;
+
+    const n = rectLeaf('f-n', 'vn', 1, 0, 11, 2);
+    const proposal = createEditProposal(n.feature.id, T, addSnapshot(n.feature, n.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    expect(pending.conflicts.length).toBe(2);
+    const committed = binding.applyResolutionsFor(proposal)(
+      pending.conflicts.map((conflict) => ({
+        conflictId: conflict.id,
+        priorityFeatureId:
+          conflict.a.featureId === n.feature.id ? conflict.b.featureId : conflict.a.featureId,
+        adjustFeatureId: n.feature.id,
+      })),
+    );
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    // BOTH priorities' shared corners survive on the twice-trimmed adjust.
+    const nIds = leafVertexIdsAt(root, T, 'f-n');
+    expect(nIds).toContain('va-1'); // (2,0)
+    expect(nIds).toContain('va-2'); // (2,2)
+    expect(nIds).toContain('vb-0'); // (10,0)
+    expect(nIds).toContain('vb-3'); // (10,2)
+    expect(sortedSharedIds(root, T)).toEqual(['va-1', 'va-2', 'vb-0', 'vb-3']);
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
+  });
+
+  it('傍観地物ガード: 第三の隣接地物は溶接候補に含めない (M8 — 優先/調整のみを溶接源とする)', () => {
+    let root = emptyProject();
+    const binding = makeBinding(() => root);
+
+    // Priority f-p = [0,4]². Bystander f-by = [4,5]×[0,2] — touches f-p ONLY along the
+    // zero-area edge x=4 (boundary contact ≠ overlap, FR-26 → no conflict) and, the
+    // load-bearing part, owns a vertex at (4,2). Adjust f-adj = [2,6]²; overlaps ONLY
+    // f-p (on [2,4]²), and difference(f-adj, f-p) is the L-shape whose boundary passes
+    // through (4,2) — a coordinate NEITHER conflict participant owns. Correct code
+    // MINTS a fresh vertex there; a mutant that widened the weld-candidate set to a
+    // third feature (M8) would instead cite the bystander's vby-3, leaking an unrelated
+    // feature's id into the trimmed boundary and manufacturing sharing no one asked for.
+    const p = rectLeaf('f-p', 'vp', 0, 0, 4, 4);
+    const rp = binding.startProcess(
+      createEditProposal(p.feature.id, T, addSnapshot(p.feature, p.vertices)),
+    );
+    expect(rp.status).toBe(PROCESS_STATUS.Committed);
+    if (rp.status === PROCESS_STATUS.Committed) root = rp.state;
+
+    const by = rectLeaf('f-by', 'vby', 4, 0, 5, 2);
+    const rby = binding.startProcess(
+      createEditProposal(by.feature.id, T, addSnapshot(by.feature, by.vertices)),
+    );
+    // The pure edge touch with f-p is NOT an overlap — the bystander commits, no conflict.
+    expect(rby.status).toBe(PROCESS_STATUS.Committed);
+    if (rby.status === PROCESS_STATUS.Committed) root = rby.state;
+
+    const adj = rectLeaf('f-adj', 'vadj', 2, 2, 6, 6);
+    const proposal = createEditProposal(adj.feature.id, T, addSnapshot(adj.feature, adj.vertices));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+    // ONLY the priority overlaps the adjust; the bystander's edge touch is not a conflict.
+    expect(pending.conflicts.length).toBe(1);
+    const committed = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: pending.conflicts[0]!.id,
+        priorityFeatureId: p.feature.id,
+        adjustFeatureId: adj.feature.id,
+      },
+    ]);
+    expect(committed.status).toBe(PROCESS_STATUS.Committed);
+    if (committed.status !== PROCESS_STATUS.Committed) return;
+    root = committed.command.execute(root).state;
+
+    const adjIds = leafVertexIdsAt(root, T, 'f-adj');
+    // The LEGITIMATE weld still fires: the L-shape's inner corner (4,4) cites the
+    // PRIORITY's own vp-2 — so this is not a vacuous "welded nothing" pass.
+    expect(adjIds).toContain('vp-2');
+    // But NO bystander vertex id leaks into the trimmed adjust ring (kills M8)…
+    for (const vid of ['vby-0', 'vby-1', 'vby-2', 'vby-3']) expect(adjIds).not.toContain(vid);
+    // …and the derived sharing set names ONLY the priority weld, never the bystander.
+    const shared = sortedSharedIds(root, T);
+    for (const id of shared) expect(id).not.toMatch(/^vby-/);
+    expect(shared).toEqual(['vp-2']);
+    expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
   });
 });

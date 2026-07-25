@@ -84,17 +84,18 @@ import {
 import { detectTerminalOverlaps } from '../domain/spatial/index';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
-import { quantizeCoordinate } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
 import {
   featureDisplayName,
   pruneVertexStore,
+  referencedVertexIds,
   withLeafShape,
   type Feature,
   type LeafFeature,
 } from '../domain/feature';
 import { createHoleRing, createShape, createTerritoryRing, type Ring } from '../domain/ring';
-import { createVertex, createVertexStore, type Vertex } from '../domain/vertex';
+import { createVertexStore, getVertex, type Vertex, type VertexStore } from '../domain/vertex';
+import { buildWeldIndex, weldRingVertices, type WeldIndex } from '../domain/vertex-weld';
 import type { TimePoint } from '../domain/time/time-point';
 
 /** The live domain truth root the binding threads through every port (U14). */
@@ -404,21 +405,50 @@ function makeCommand(
 
 // --- U06 difference write-back (applyResolution) ----------------------------
 
-/** Rebuild a leaf shape from a GeoMultiPolygon, minting ids via the access ports. */
+/**
+ * The vertex BODIES a feature's shape cites, resolved against `store`. Ids the
+ * store cannot resolve are skipped (they cannot be weld candidates — a body-less id
+ * would dangle in the write-back snapshot); an aggregate cites none.
+ */
+function vertexBodiesOf(feature: Feature, store: VertexStore): Vertex[] {
+  const out: Vertex[] = [];
+  for (const id of referencedVertexIds(feature)) {
+    const vertex = getVertex(store, id);
+    if (vertex !== undefined) out.push(vertex);
+  }
+  return out;
+}
+
+/**
+ * Rebuild a leaf shape from a GeoMultiPolygon, minting ids via the access ports —
+ * EXCEPT where a boundary coordinate WELDS onto an existing vertex of `weld`, in
+ * which case that vertex's id is cited and its body carried along (HB3-10).
+ *
+ * The weld decision (coordinate-identity key, the same-ring participation guard,
+ * body carry-forward) lives entirely in the pure domain module `vertex-weld.ts`;
+ * this adapter only supplies the candidates and stores the result, so the rule
+ * cannot drift from the knife / merge / drill id-reuse convention (単一真実源).
+ */
 function shapeFromMultiPolygon(
   mp: GeoMultiPolygon,
   nextVertexId: () => VertexId,
   nextRingId: () => RingId,
+  weld: WeldIndex,
 ): { shape: ReturnType<typeof createShape>; vertices: Vertex[] } | undefined {
   const vertices: Vertex[] = [];
   const rings: Ring[] = [];
 
-  // Materialise ONE GeoJSON ring into a fresh vertex run + its ids. Returns
-  // undefined for a degenerate ring (<3 vertices) so the caller can skip it.
+  // Materialise ONE GeoJSON ring into its vertex run + ids: each coordinate is
+  // either welded onto an existing vertex or minted fresh. Returns undefined for a
+  // degenerate ring (<3 vertices) so the caller can skip it.
   const buildRing = (coords: GeoMultiPolygon[number][number]): VertexId[] | undefined => {
     const vertexIds: VertexId[] = [];
-    for (const c of coords) {
-      const v = createVertex(nextVertexId(), quantizeCoordinate(c));
+    // The welded bodies MUST be pushed alongside the minted ones: rewriteFeatureAtTime
+    // prunes the written-back snapshot store to what its features cite, and an id with
+    // no body in THAT snapshot is silently dropped (feature.ts pruneVertexStore) —
+    // which would make the whole adjust feature unresolvable (教訓 5.31 / FR-106(a),
+    // whose missing-vertex check is per-SNAPSHOT, not over the cross-history concat).
+    for (const v of weldRingVertices(coords, weld, nextVertexId)) {
       vertices.push(v);
       vertexIds.push(v.id);
     }
@@ -491,7 +521,26 @@ function applyResolutionAt(
       // user picks a different priority rather than silently deleting a feature.
       return undefined;
     }
-    const built = shapeFromMultiPolygon(diff.result, nextVertexId, nextRingId);
+    // HB3-10 — WELD the trimmed boundary onto the vertices that are already there,
+    // instead of re-minting the whole ring. The candidate order IS the precedence:
+    //   (A) the PRIORITY leaf — the requirement itself. Its boundary is what the
+    //       adjust feature was cut back to, so every difference-output coordinate
+    //       lying on it is literally the priority's own vertex; citing the SAME
+    //       VertexId is what makes the new common edge a real 共有頂点 (FR-30 琥珀 /
+    //       FR-31 連動移動) rather than two coincident-but-independent runs that a
+    //       later drag would tear apart (and re-open the resolved overlap).
+    //   (B) the ADJUST leaf ITSELF — its untouched corners must keep their identity.
+    //       The convergence loop trims the SAME adjust against several priorities in
+    //       one apply (orchestrator U13), so without (B) round 2 would re-mint the
+    //       whole ring and DESTROY round 1's weld, along with any pre-existing share
+    //       the adjust already had (the FR-95 継続規則, extended to resolution).
+    // Deliberately NOT a third feature: welding against an unrelated neighbour that
+    // merely touches the result would manufacture linkage the user never asked for.
+    const weld = buildWeldIndex([
+      vertexBodiesOf(priority, vertices),
+      vertexBodiesOf(adjust, vertices),
+    ]);
+    const built = shapeFromMultiPolygon(diff.result, nextVertexId, nextRingId, weld);
     if (built === undefined) return undefined;
 
     const trimmed: LeafFeature = withLeafShape(adjust, built.shape);
