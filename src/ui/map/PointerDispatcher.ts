@@ -165,7 +165,13 @@ interface ActivePointer {
   editing: boolean;
 }
 
-const DEFAULT_WHEEL_FACTOR = 1.1;
+/**
+ * The multiplicative zoom step of ONE wheel notch (zoom in on scroll up). Exported
+ * because the keyboard zoom (表示 → 拡大 / 縮小) expresses its own step as an integer
+ * number of THESE notches rather than owning a second zoom-rate constant
+ * (keyboard-zoom.ts, 単一真実源).
+ */
+export const WHEEL_ZOOM_FACTOR = 1.1;
 
 export class PointerDispatcher {
   private readonly opts: PointerDispatcherOptions;
@@ -175,7 +181,7 @@ export class PointerDispatcher {
 
   constructor(opts: PointerDispatcherOptions) {
     this.opts = opts;
-    this.wheelFactor = opts.wheelZoomFactor ?? DEFAULT_WHEEL_FACTOR;
+    this.wheelFactor = opts.wheelZoomFactor ?? WHEEL_ZOOM_FACTOR;
   }
 
   /** Whether any pointer is currently driving a pan (test/instrumentation). */

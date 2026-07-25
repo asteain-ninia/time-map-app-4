@@ -1,7 +1,7 @@
 import { copyFile, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, type MenuItemConstructorOptions } from 'electron';
 
 import { MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH } from '../../domain/window-constants';
 import {
@@ -15,6 +15,12 @@ import {
   pruneDiagnosticLogs,
 } from '../io';
 import type { DiagnosticLogEnv, SaveEnv } from '../io';
+import {
+  devToolsBindingEnabled,
+  installApplicationMenu,
+  isDevToolsChord,
+  type ApplicationMenuApi,
+} from './app-menu';
 import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
@@ -90,9 +96,11 @@ function createWindow(): void {
     // FR-114: 800×600 minimum, from the single shared constant (domain).
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
-    // HB3-24 [暫定]: hide the native OS menu bar by default (the app's own メニューバー
-    // is the primary surface); Alt reveals it momentarily so native accelerators are
-    // not lost entirely (ユーザー: ネイティブツールバーは消して良さそう, 中間策).
+    // HB3-24: hide the native OS menu bar (the app's own メニューバー is the primary
+    // surface). NOTE: on win32/linux `wireApplicationMenu` now removes the application
+    // menu ENTIRELY, so there is nothing left for Alt to reveal and this flag is a
+    // belt-and-braces no-op there; it still matters on darwin (minimal menu) and it
+    // keeps the window from ever flashing a native bar if a menu is reintroduced.
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -119,6 +127,17 @@ function createWindow(): void {
   // Offline-only: load the dev server in development, bundled HTML otherwise.
   // No external URLs are ever loaded.
   const devServerUrl = process.env['ELECTRON_RENDERER_URL'];
+
+  // 開発時のみ DevTools 導線を戻す（既定メニュー撤去で toggleDevTools ロールが消えたため）。
+  // 製品ビルド（loadFile 経路）では入らないので、閉鎖はそのまま。判定は app-menu.ts の純粋関数。
+  if (devToolsBindingEnabled(devServerUrl)) {
+    window.webContents.on('before-input-event', (_event, input) => {
+      if (isDevToolsChord(input)) {
+        window.webContents.toggleDevTools();
+      }
+    });
+  }
+
   if (devServerUrl !== undefined) {
     void window.loadURL(devServerUrl);
   } else {
@@ -254,7 +273,40 @@ function wireIpc(): void {
   registerIpcHandlers(deps);
 }
 
+/**
+ * Bind the pure {@link installApplicationMenu} decision to Electron's real `Menu`
+ * (開発ガイド §5.41 — the composition root supplies the live collaborators). This MUST
+ * run before the first window: while Electron's DEFAULT application menu is installed it
+ * owns Ctrl+R / Ctrl+Shift+R (reload — **編集中プロジェクトが吹き飛ぶ**), Ctrl+W (close),
+ * Ctrl+0 / Ctrl+± (PAGE zoom — breaks the FR-16 座標対応) and Ctrl+Shift+I, and it eats
+ * those chords before the renderer ever sees a keydown (実測: Ctrl+0 never reached the
+ * app → D58).
+ *
+ * ⚠️ 誤解防止 — これは FR-107 終了確認ガードの**修理ではない**: 未保存確認は今も
+ * ×ボタン / Alt+F4 / タスクバー / OS シャットダウンの**全経路で迂回される**。
+ * `createWindow` に `window.on('close')` は無く、`app.on('before-quit')` も無く、
+ * `window-all-closed` は無条件に `app.quit()` する。renderer 側 `quitGuardRef`
+ * (App.tsx) は FileOpsController から代入されるだけで、**main から呼ぶ経路が未実装**。
+ * ここで消えたのは「Ctrl+W という一経路」だけで、残る HIGH リスクの本命は
+ * main の `close` を preventDefault → IPC で renderer のガードを await → 許可時のみ
+ * one-shot フラグ付きで再 close するブリッジ（未実装）。
+ */
+function wireApplicationMenu(): void {
+  const menuApi: ApplicationMenuApi<Menu> = {
+    // The template is role-only, so it is structurally a subset of Electron's
+    // MenuItemConstructorOptions; the cast is confined to this single binding point.
+    buildFromTemplate: (template) =>
+      Menu.buildFromTemplate(template as readonly MenuItemConstructorOptions[] as MenuItemConstructorOptions[]),
+    setApplicationMenu: (menu) => {
+      Menu.setApplicationMenu(menu);
+    },
+  };
+  installApplicationMenu(menuApi, process.platform);
+}
+
 app.whenReady().then(() => {
+  // Before any window exists — the default menu must never be live (data-loss root fix).
+  wireApplicationMenu();
   wireIpc();
   createWindow();
 

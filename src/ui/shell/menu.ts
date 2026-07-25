@@ -103,7 +103,22 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
     title: MENU_TITLES.view,
     items: [
       item(COMMAND_ID.ViewToggleViewMode),
-      item(COMMAND_ID.ViewZoomIn, { key: '=', ctrlOrMeta: true }),
+      // 拡大: 表示ラベルは「Ctrl++」（formatShortcut が '=' を '+' として見せる = 慣用表記）。
+      // ラベル通りの打鍵を **全配列で** 受けるため、shift 有無と '=' / '+' の 4 通りを別名
+      // 登録する（HB-10 の redo と同じ extraShortcuts 機構 = 宣言の単一真実源, 教訓 5.33）:
+      //   - US 配列: '+' は Shift+= なので keydown は key='+' / shiftKey=true で届く。
+      //   - JIS 配列: '=' 自体が Shift+「-」なので、素の `mod+=` は **原理的に発生し得ない** —
+      //     shift 別名が無いと日本語キーボードでは拡大がキーボードから一切実行できなかった
+      //     (縮小 Ctrl+- は無修飾キーなので動く = 非対称な穴)。
+      item(
+        COMMAND_ID.ViewZoomIn,
+        { key: '=', ctrlOrMeta: true },
+        [
+          { key: '=', ctrlOrMeta: true, shift: true },
+          { key: '+', ctrlOrMeta: true },
+          { key: '+', ctrlOrMeta: true, shift: true },
+        ],
+      ),
       item(COMMAND_ID.ViewZoomOut, { key: '-', ctrlOrMeta: true }),
       // 全体表示: Ctrl+Home —「原点/全体へ戻る」の慣用キー. It collides with none of the
       // app's own bindings (a test asserts chord uniqueness across the whole menu tree)

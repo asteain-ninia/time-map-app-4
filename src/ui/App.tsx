@@ -140,6 +140,7 @@ import {
   featureBoundsAt,
   type AllFeaturesBoundsOptions,
 } from './map/feature-bounds';
+import { keyboardZoomCamera, type ZoomDirection } from './map/keyboard-zoom';
 import {
   CURSOR_READOUT_INTERVAL_MS,
   CursorPositionStore,
@@ -489,6 +490,15 @@ export function App(): JSX.Element {
   // application menu owns as `resetZoom` and never delivers to the renderer) reaches the
   // LIVE camera without re-mounting the map. A no-op until the map mounts.
   const fitCameraToAllRef = useRef<(() => void) | null>(null);
+
+  // 拡大 / 縮小 (COMMAND_ID.ViewZoomIn / ViewZoomOut, Ctrl+= / Ctrl+-) — the SAME
+  // late-binding pattern: bound inside `onMapMount` where `ports` (the single camera
+  // write path) is in scope. menu.ts declared these chords from the start but NO handler
+  // was ever registered (教訓 5.7), and Electron's default application menu owned the
+  // same chords as **page** zoom — which changes the CSS px scale and breaks the FR-16
+  // 座標対応. With the default menu removed (shell/main/app-menu.ts) the chords reach the
+  // renderer and land on the MAP zoom, through the same U17 step math the wheel uses.
+  const zoomMapRef = useRef<((direction: ZoomDirection) => void) | null>(null);
 
   // The cursor's live world position behind the status-bar readout (FR-111). Held OUTSIDE
   // React (technical policy 2.3): the map pointermove path pushes into it at input rate
@@ -974,6 +984,18 @@ export function App(): JSX.Element {
       }
       const bounds = allFeaturesBoundsAt(s.domain, s.currentTime, options);
       ports.writeCamera(cameraForFit(bounds, viewport, { range: ports.effectiveZoomRange() }));
+    };
+
+    // 拡大 / 縮小 — the keyboard/menu counterpart of the wheel notch. `keyboardZoomCamera`
+    // is the SAME U17 `zoomStepAtCursor` step + FR-10 clamp the wheel runs through, only
+    // anchored at the viewport centre instead of the cursor, and the result is written
+    // through the SAME single `ports.writeCamera` path (単一真実源, 教訓 5.29) so it mirrors
+    // into the U16 store camera via onCameraChange exactly like a wheel zoom.
+    zoomMapRef.current = (direction: ZoomDirection): void => {
+      const { camera, viewport } = ports.readCamera();
+      ports.writeCamera(
+        keyboardZoomCamera(camera, viewport, direction, ports.effectiveZoomRange()),
+      );
     };
 
     // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
@@ -1593,6 +1615,14 @@ export function App(): JSX.Element {
       ports.dispose();
       rendererRef.current = null;
       cameraInputRef.current = null;
+      // 教訓 5.2 全経路で破棄 — the camera-driving runners close over the now-disposed
+      // `ports`. Left non-null they keep their commands' `canRun` true, so 表示 → 拡大 /
+      // 縮小 / 全体表示 would render ENABLED and call readCamera/writeCamera on a
+      // disposed host. Nulling them makes those commands honestly disabled until a
+      // remount re-binds them (setup runs AFTER this cleanup, so a remount re-assigns).
+      zoomMapRef.current = null;
+      fitCameraToAllRef.current = null;
+      fitCameraToFeatureRef.current = null;
       // HB3-9: drop the render-observation hook so a remount re-installs a fresh one
       // bound to the new renderer (no stale closure over the disposed host).
       if (e2eWindow !== null && '__E2E__' in e2eWindow) {
@@ -2037,6 +2067,20 @@ export function App(): JSX.Element {
     });
     return () => {
       registry.unregister(COMMAND_ID.ViewFitAll);
+    };
+  }, [registry]);
+
+  // 拡大 / 縮小 (COMMAND_ID.ViewZoomIn / ViewZoomOut) — register the 表示メニュー rows +
+  // the Ctrl+= / Ctrl+- accelerators on the SAME registry, so the menu row and the chord
+  // are ONE behaviour (教訓 5.13). These chords were declared in menu.ts but never
+  // registered, so both導線 were silent no-ops (and the OS menu stole them as page zoom).
+  useEffect(() => {
+    const canRun = (): boolean => zoomMapRef.current !== null;
+    registry.register(COMMAND_ID.ViewZoomIn, { run: () => zoomMapRef.current?.('in'), canRun });
+    registry.register(COMMAND_ID.ViewZoomOut, { run: () => zoomMapRef.current?.('out'), canRun });
+    return () => {
+      registry.unregister(COMMAND_ID.ViewZoomIn);
+      registry.unregister(COMMAND_ID.ViewZoomOut);
     };
   }, [registry]);
 
