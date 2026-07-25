@@ -121,6 +121,15 @@ export {
   quitGuard,
 } from './file-commands';
 
+// --- FR-107 close ブリッジ: main の close 照会 → 未保存確認ガードの起動経路 -----
+export {
+  type QuitGuardRunner,
+  type CloseRequestApi,
+  closeVerdictWithoutGuard,
+  resolveCloseRequestApi,
+  wireWindowCloseBridge,
+} from './close-bridge';
+
 // --- centralised Japanese strings (FR-115) ----------------------------------
 export {
   UNSAVED_STRINGS,

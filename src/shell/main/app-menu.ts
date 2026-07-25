@@ -5,10 +5,10 @@
 //   - Ctrl+R / Ctrl+Shift+R = リロード → **編集中プロジェクトが吹き飛ぶ**（未保存確認も
 //     出ない）。データ損失の直接原因。
 //   - Ctrl+W = ウィンドウを閉じる → 未保存確認を経ずに閉じる一経路。
-//     ⚠️ この単位は FR-107 終了確認ガードを**直していない**: main に `window.on('close')`
-//     ブリッジが無いため、× / Alt+F4 / タスクバー / OS シャットダウンでは今も未保存確認が
-//     出ない（残る HIGH リスク。詳細は main/index.ts の wireApplicationMenu コメント）。
-//     ここで塞がるのは Ctrl+W という一経路のみ。
+//     ⚠️ 責務の境界: この単位が塞ぐのは「Ctrl+W というキーの所有権」だけ。× / Alt+F4 /
+//     タスクバー / OS シャットダウンの未保存確認は FR-107 close ブリッジ
+//     (main/close-guard.ts + createWindow の `window.on('close')`) が担当する。
+//     どちらが欠けても別経路が空くので、両方が必要。
 //   - Ctrl+0 / Ctrl+= / Ctrl+- = **ページ** ズーム → CSS px 尺度が変わり FR-16 の
 //     座標対応（画面 px ↔ 経緯度）と地図ズームの単一真実源が壊れる。
 //   - Ctrl+Shift+I = DevTools。

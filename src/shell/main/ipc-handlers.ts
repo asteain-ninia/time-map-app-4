@@ -16,6 +16,7 @@ import { saveTmap, type SaveEnv } from '../io/save';
 import {
   IPC_CHANNEL,
   type AutoSaveConfig,
+  type CloseResponseAck,
   type ConfigureAutoSaveResponse,
   type DiagnosticLogRecord,
   type IpcChannel,
@@ -29,6 +30,17 @@ export type IpcRegistrar = (
   channel: IpcChannel,
   handler: (...args: never[]) => unknown,
 ) => void;
+
+/**
+ * The subset of Electron's `IpcMainInvokeEvent` the close-bridge handlers read:
+ * the sender webContents' numeric id. Used to verify a close ACK / verdict comes
+ * from the window that was actually asked (所見3 event.sender 検証) — a defensive
+ * measure in the single-window app so a different webContents cannot spoof a
+ * requestId and drive another window's close.
+ */
+interface IpcSenderEvent {
+  readonly sender: { readonly id: number };
+}
 
 /** Dialog port: returns a chosen path or `undefined` when the user cancels. */
 export interface DialogPort {
@@ -75,6 +87,22 @@ export interface IpcDeps {
    * implementation swallows write failures, so this must never reject.
    */
   readonly appendDiagnosticLog: (record: DiagnosticLogRecord) => Promise<void>;
+  /**
+   * FR-107 close ブリッジ: レンダラの終了確認判定（{@link CloseVerdict} 形の生
+   * payload）の受け口。合成ルートで close ガードのハブ (close-guard.ts) に束縛する。
+   * payload は **信用しない** ので検証はハブ側で行う（main はレンダラ入力を素通し
+   * しない）。ここに置くのは「ipcMain.handle の登録は 1 箇所に集約する」ため
+   * （ウィンドウ再作成でハンドラが多重登録されない）。
+   */
+  readonly acceptCloseVerdict: (payload: unknown, senderId: number) => void;
+  /**
+   * FR-107 close ブリッジ: レンダラの **受領 ACK**（{@link CloseAckPayload} 形の生
+   * payload）の受け口。判定より前に届き、close ガードが「生きた購読者が居る」ことを
+   * 確定する（購読者不在を短い ACK タイムアウトで検出する — close-guard.ts の ADR）。
+   * verdict と同じく検証はハブ側。`senderId` は応答を送った webContents.id（所見3
+   * event.sender 検証: 要求を発行したウィンドウからの応答のみ受理する）。
+   */
+  readonly acceptCloseAck: (payload: unknown, senderId: number) => void;
 }
 
 const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
@@ -232,4 +260,47 @@ export function registerIpcHandlers(deps: IpcDeps): void {
     handleConfigureAutoSave(deps, c)) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.AppendLog, ((_event: never, record: DiagnosticLogRecord) =>
     handleAppendLog(deps, record)) as (...args: never[]) => unknown);
+  // 所見3: close ブリッジの受け口だけ event.sender.id を読む（要求元 webContents の検証用）。
+  deps.registrar(IPC_CHANNEL.CloseAck, ((event: IpcSenderEvent, payload: unknown) =>
+    handleCloseAck(deps, payload, event.sender.id)) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.CloseResponse, ((event: IpcSenderEvent, payload: unknown) =>
+    handleCloseResponse(deps, payload, event.sender.id)) as (...args: never[]) => unknown);
+}
+
+/**
+ * FR-107 close ブリッジ: レンダラの **受領 ACK** を close ガードへ渡す（受信側）。
+ * verdict と同じ流儀: 解釈・検証はガード側の責務、ここは素通しの継ぎ目で、ガードが
+ * throw してもレンダラへ例外を返さない（ack は常に `{ok:true}`）。
+ */
+export function handleCloseAck(
+  deps: IpcDeps,
+  payload: unknown,
+  senderId: number,
+): CloseResponseAck {
+  try {
+    deps.acceptCloseAck(payload, senderId);
+  } catch {
+    // 握りつぶす（handleCloseResponse と同じ理由）。ガード側は自前でログする。
+  }
+  return { ok: true };
+}
+
+/**
+ * FR-107 close ブリッジ: レンダラの終了確認判定を close ガードへ渡す（受信側）。
+ * 判定の解釈・検証はガード側（close-guard.ts）の責務なので、ここは素通しの継ぎ目。
+ * ガード側が throw してもレンダラへ例外を返さない: 応答の invoke が reject すると
+ * preload 側の送信が失敗したように見え、原因の切り分けが濁る。ack は常に `{ok:true}`
+ * で、「閉じる/閉じない」は ack ではなく payload と main の状態機械が決める。
+ */
+export function handleCloseResponse(
+  deps: IpcDeps,
+  payload: unknown,
+  senderId: number,
+): CloseResponseAck {
+  try {
+    deps.acceptCloseVerdict(payload, senderId);
+  } catch {
+    // 握りつぶす（上記コメント）。ガード側は自前でログする。
+  }
+  return { ok: true };
 }

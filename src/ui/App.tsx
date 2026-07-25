@@ -55,6 +55,8 @@ import { projectsEqual } from '../domain/persistence/index';
 import {
   FileOpsController,
   buildEmptyProject,
+  closeVerdictWithoutGuard,
+  wireWindowCloseBridge,
   type SupplyZoomRange,
   type WindowCloseHook,
   type DropTargetHook,
@@ -395,9 +397,7 @@ export function App(): JSX.Element {
   }, [logger, store]);
 
   // Window-close interception (FR-107 終了確認ガード): the controller registers the
-  // quit guard; the host stores it so a later shell-side close event can await it.
-  // Until the Electron close event is bridged (shell seam), the runner is held
-  // here so the contract is real and the guard logic is observable / testable.
+  // quit guard; the host stores it so the shell-side close event can await it.
   const quitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
   const registerWindowClose: WindowCloseHook = useCallback((runGuard) => {
     quitGuardRef.current = runGuard;
@@ -405,6 +405,34 @@ export function App(): JSX.Element {
       quitGuardRef.current = null;
     };
   }, []);
+
+  // FR-107 ROOT FIX (教訓 5.7 合成ルートの結線漏れ) — the runner registered above used
+  // to sit in this ref with NO caller: main had no `window.on('close')` bridge, so
+  // × / Alt+F4 / タスクバー / OS シャットダウン closed the window with the unsaved
+  // warning fully bypassed (残 HIGH). Subscribe to main's close enquiry (U15
+  // `timeMapApi.onCloseRequest`) and answer with THIS guard's verdict; main
+  // preventDefaults the close and re-closes only on `true` (close-guard.ts).
+  // The bridge reads the ref LIVE on every request (no stale capture) and is
+  // fail-closed (未登録 / 例外 / 非 boolean → 閉じない). It is a no-op without the
+  // preload bridge (vitest / jsdom), so component tests are unaffected.
+  //
+  // FALLBACK (ブリック回避, fail-closed は保ったまま): the controller lives INSIDE the
+  // ErrorBoundary, so a caught render error unmounts it and leaves NO runner — with a
+  // bare fail-closed answer the window would then be permanently unclosable. When no
+  // runner is registered we answer from the SAME single dirty basis the guard itself
+  // reads (store.projectDirty): clean ⇒ allow (there is nothing to protect, so this is
+  // never a data-losing decision), dirty ⇒ refuse (unchanged fail-closed contract).
+  useEffect(
+    () =>
+      wireWindowCloseBridge(
+        globalThis,
+        () =>
+          quitGuardRef.current ??
+          ((): Promise<boolean> =>
+            Promise.resolve(closeVerdictWithoutGuard(store.getState().projectDirty))),
+      ),
+    [store],
+  );
 
   // FR-04 ベースマップ差し替え結線 — the FileOpsController registers its replace RUNNER
   // here (it owns the retained save bytes + the display push + the IPC api); the

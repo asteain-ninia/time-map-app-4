@@ -58,9 +58,42 @@ export const IPC_CHANNEL = {
    * main writes to the local disk only (FR-02 オフライン・ローカルのみ).
    */
   AppendLog: 'tmap:append-log',
+  /**
+   * FR-107 close ブリッジ — one-way MAIN→RENDERER event: ウィンドウの close 要求
+   * (× / Alt+F4 / タスクバー / OS シャットダウン) が来たので、レンダラは未保存確認
+   * ガード (quitGuard) を走らせ、その判定を {@link IPC_CHANNEL.CloseResponse} に
+   * **同じ requestId 付きで** 返す。main は preventDefault して応答を待ち、許可の時
+   * だけ one-shot で再 close する（close-guard.ts）。`AutoSaveTick` と同じ
+   * `send`/`on` の一方向イベントなので `ipcMain.handle` の受信側は持たない。
+   */
+  CloseRequest: 'tmap:close-request',
+  /**
+   * FR-107 close ブリッジ — RENDERER→MAIN: 1 件の close 要求に対する **受領 ACK**
+   * ({@link CloseAckPayload})。preload は CloseRequest を受けた時点で（判定より前に・
+   * 同期的に）これを送る。ACK が届く = 生きた購読者が実在する、の証。main は短い ACK
+   * タイムアウトで「購読者不在」を検出し、その時だけ確認を省略して閉じる（close-guard.ts の
+   * ADR: 片方向 rendererLoaded ラッチによる fail-OPEN / fail-CLOSED の両方を根治する要）。
+   */
+  CloseAck: 'tmap:close-ack',
+  /**
+   * FR-107 close ブリッジ — RENDERER→MAIN: 1 件の close 要求に対する判定
+   * ({@link CloseVerdict})。invoke の戻り値は ack のみで、判定そのものは payload。
+   */
+  CloseResponse: 'tmap:close-response',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
+
+/**
+ * 一方向 MAIN→RENDERER イベントのチャネル（`webContents.send` / `ipcRenderer.on`)。
+ * `invoke` の往復ではないので **受信側 `ipcMain.handle` を持たない** — 受信側の
+ * 「契約の全チャネルにハンドラがあるか」テストはこの一覧を除外して比較する
+ * (教訓 5.33: 除外リストをテストに直書きせず、契約 1 箇所で宣言する)。
+ */
+export const MAIN_TO_RENDERER_CHANNELS: readonly IpcChannel[] = [
+  IPC_CHANNEL.AutoSaveTick,
+  IPC_CHANNEL.CloseRequest,
+];
 
 // --- payload shapes ---------------------------------------------------------
 
@@ -166,6 +199,32 @@ export interface DiagnosticLogRecordContext {
 }
 
 /**
+ * FR-107 close ブリッジ: 1 件の close 要求に対するレンダラの判定。`requestId` は
+ * main が発行した要求 ID をそのまま返す（失効した応答 — タイムアウト後に遅れて
+ * 届いたもの等 — を main 側で確実に捨てるため）。`allow: true` の時だけ閉じる。
+ */
+export interface CloseVerdict {
+  readonly requestId: string;
+  /** true = 閉じてよい（未保存確認を通過）。false = 閉じない。 */
+  readonly allow: boolean;
+}
+
+/**
+ * FR-107 close ブリッジ: close 要求に対する **受領 ACK**。判定（allow）は持たない —
+ * 「生きた購読者が居る」ことだけを、判定が出るより前に main へ即報せる（close-guard.ts の
+ * 購読者不在検出）。`requestId` は main が発行した要求 ID をそのまま返す。
+ */
+export interface CloseAckPayload {
+  readonly requestId: string;
+}
+
+/**
+ * {@link IPC_CHANNEL.CloseResponse} / {@link IPC_CHANNEL.CloseAck} の ack（判定・受領
+ * そのものは payload 側で、invoke の戻り値は「main が受け取った」ことだけを表す）。
+ */
+export type CloseResponseAck = { readonly ok: true };
+
+/**
  * Unsubscribe handle returned by a one-way event subscription. Calling it
  * detaches the listener so the renderer can clean up (e.g. on unmount).
  */
@@ -199,6 +258,15 @@ export interface TimeMapApi {
    * directly, so this typed wrapper is the ONLY way it can hear the tick.
    */
   readonly onAutoSaveTick: (listener: () => void) => Unsubscribe;
+  /**
+   * FR-107 終了確認ガードの起動経路。main が close を preventDefault した上でこの
+   * イベントを送るので、レンダラは `runGuard()`（= 未保存確認 3 択ガード）を走らせ、
+   * その結果を preload が {@link IPC_CHANNEL.CloseResponse} で main へ返す。
+   * `runGuard` が reject / throw した場合も preload は **false（閉じない）** を返す
+   * — 例外で「閉じる」方向へ倒さない（fail-closed）。返り値の {@link Unsubscribe}
+   * でリスナを外せる（アンマウント時の多重購読防止）。
+   */
+  readonly onCloseRequest: (runGuard: () => Promise<boolean>) => Unsubscribe;
   /**
    * Append ONE diagnostic log entry to the local JSONL file (FR-117 / FR-02).
    * Wired as the {@link DiagnosticLogger} sink in the renderer. Best-effort: the

@@ -10,6 +10,7 @@ import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 import { buildTmap } from '../io/tmap';
 import {
   IPC_CHANNEL,
+  MAIN_TO_RENDERER_CHANNELS,
   type AutoSaveConfig,
   type DiagnosticLogRecord,
   type IpcChannel,
@@ -110,6 +111,9 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
     },
     applyAutoSaveConfig: vi.fn(),
     appendDiagnosticLog: vi.fn(async () => {}),
+    // FR-107 close ブリッジ: レンダラの終了確認判定 / 受領 ACK の受け口（既定は捨てる spy）.
+    acceptCloseVerdict: vi.fn(),
+    acceptCloseAck: vi.fn(),
     ...overrides,
   };
   return { deps, disk, saveCalls };
@@ -124,16 +128,21 @@ describe('IPC channel names come from the shared contract (受け入れ基準4)'
       },
     });
     registerIpcHandlers(deps);
-    // AutoSaveTick is a one-way main→renderer `send` EVENT (preload subscribes via
-    // ipcRenderer.on), not an `invoke` round-trip — so it has no ipcMain.handle
-    // handler. The invoke-handler set is the contract minus the event channel.
+    // The one-way main→renderer `send` EVENT channels (AutoSaveTick, FR-107
+    // CloseRequest — preload subscribes via ipcRenderer.on) are not `invoke`
+    // round-trips, so they have no ipcMain.handle handler. The exclusion list is
+    // the CONTRACT's own (MAIN_TO_RENDERER_CHANNELS), not a literal repeated here:
+    // a new event channel is declared in ONE place (教訓 5.33), and a new
+    // request/response channel without a handler still fails this equality.
     const expected = new Set<IpcChannel>(
-      Object.values(IPC_CHANNEL).filter((channel) => channel !== IPC_CHANNEL.AutoSaveTick),
+      Object.values(IPC_CHANNEL).filter(
+        (channel) => !MAIN_TO_RENDERER_CHANNELS.includes(channel),
+      ),
     );
     expect(registered).toEqual(expected);
   });
 
-  it('the AutoSaveTick event channel is NOT registered as an invoke handler', () => {
+  it('the one-way event channels are NOT registered as invoke handlers', () => {
     const registered = new Set<IpcChannel>();
     const { deps } = makeDeps({
       registrar: (channel) => {
@@ -142,6 +151,99 @@ describe('IPC channel names come from the shared contract (受け入れ基準4)'
     });
     registerIpcHandlers(deps);
     expect(registered.has(IPC_CHANNEL.AutoSaveTick)).toBe(false);
+    for (const channel of MAIN_TO_RENDERER_CHANNELS) {
+      expect(registered.has(channel), channel).toBe(false);
+    }
+    expect(MAIN_TO_RENDERER_CHANNELS).toContain(IPC_CHANNEL.AutoSaveTick);
+    expect(MAIN_TO_RENDERER_CHANNELS).toContain(IPC_CHANNEL.CloseRequest);
+  });
+
+  // FR-107 close ブリッジ（受信側）: レンダラのガード判定は **この一箇所** から
+  // close ガードへ渡る。ハンドラが payload を素通しし、必ず ack を返すこと。
+  it('CloseResponse hands the renderer verdict to the close guard and acks', async () => {
+    const accept = vi.fn();
+    const handlers = new Map<IpcChannel, (...args: never[]) => unknown>();
+    const { deps } = makeDeps({
+      acceptCloseVerdict: accept,
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler);
+      },
+    });
+    registerIpcHandlers(deps);
+    const handler = handlers.get(IPC_CHANNEL.CloseResponse);
+    expect(handler).toBeDefined();
+    const verdict = { requestId: 'req-1', allow: true };
+    // 所見3: 受信側は event.sender.id を読み、判定と一緒にガードへ渡す（要求元検証）.
+    const ack = await (handler as (event: unknown, payload: unknown) => unknown)(
+      { sender: { id: 7 } },
+      verdict,
+    );
+    expect(accept).toHaveBeenCalledWith(verdict, 7);
+    expect(ack).toEqual({ ok: true });
+  });
+
+  // FR-107 close ブリッジ（受信側・受領 ACK）: 判定より前に届く ACK も **この一箇所** から
+  // ガードへ渡り、必ず ack を返す（購読者不在検出のため main が待てる状態にする）。
+  it('CloseAck hands the renderer receipt to the close guard and acks', async () => {
+    const acceptAck = vi.fn();
+    const handlers = new Map<IpcChannel, (...args: never[]) => unknown>();
+    const { deps } = makeDeps({
+      acceptCloseAck: acceptAck,
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler);
+      },
+    });
+    registerIpcHandlers(deps);
+    const handler = handlers.get(IPC_CHANNEL.CloseAck);
+    expect(handler).toBeDefined();
+    const payload = { requestId: 'req-1' };
+    // 所見3: 受領 ACK も event.sender.id と一緒にガードへ渡る（要求元検証）.
+    const ack = await (handler as (event: unknown, payload: unknown) => unknown)(
+      { sender: { id: 9 } },
+      payload,
+    );
+    expect(acceptAck).toHaveBeenCalledWith(payload, 9);
+    expect(ack).toEqual({ ok: true });
+  });
+
+  it('CloseAck never throws back into the renderer (guard errors are contained)', async () => {
+    const handlers = new Map<IpcChannel, (...args: never[]) => unknown>();
+    const { deps } = makeDeps({
+      acceptCloseAck: () => {
+        throw new Error('close guard exploded');
+      },
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler);
+      },
+    });
+    registerIpcHandlers(deps);
+    const handler = handlers.get(IPC_CHANNEL.CloseAck) as (
+      event: unknown,
+      payload: unknown,
+    ) => unknown;
+    await expect(
+      Promise.resolve(handler({ sender: { id: 1 } }, { requestId: 'x' })),
+    ).resolves.toEqual({ ok: true });
+  });
+
+  it('CloseResponse never throws back into the renderer (guard errors are contained)', async () => {
+    const handlers = new Map<IpcChannel, (...args: never[]) => unknown>();
+    const { deps } = makeDeps({
+      acceptCloseVerdict: () => {
+        throw new Error('close guard exploded');
+      },
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler);
+      },
+    });
+    registerIpcHandlers(deps);
+    const handler = handlers.get(IPC_CHANNEL.CloseResponse) as (
+      event: unknown,
+      payload: unknown,
+    ) => unknown;
+    await expect(
+      Promise.resolve(handler({ sender: { id: 1 } }, { requestId: 'x', allow: false })),
+    ).resolves.toEqual({ ok: true });
   });
 
   it('a renamed channel would break the set equality (偶然一致に頼らない)', () => {

@@ -21,6 +21,7 @@ import {
   isDevToolsChord,
   type ApplicationMenuApi,
 } from './app-menu';
+import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import { registerIpcHandlers, type CurrentPathRef, type IpcDeps } from './ipc-handlers';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
 
@@ -89,6 +90,42 @@ function attachSmokeProbes(window: BrowserWindow): void {
   });
 }
 
+// --- FR-107 close ブリッジ (終了確認ガードの起動経路) ------------------------
+//
+// ここが「× / Alt+F4 / タスクバー / OS シャットダウンで未保存確認が出ない」残 HIGH の
+// 根治点。判断ロジックは Electron-free な ./close-guard に置き（単体テスト済み）、
+// ここは実物（BrowserWindow / webContents / app / タイマー / ログ）の束縛だけを行う
+// （開発ガイド §5.41 合成ルート）。ハブは **モジュール 1 個**: `ipcMain.handle` は
+// チャネルごとに 1 回しか登録できないので、応答の受け口は wireIpc の 1 箇所に集約し、
+// 要求 ID でウィンドウごとのガードへ振り分ける（ウィンドウ再作成でも多重登録なし）。
+const closeGuardHub = createCloseGuardHub({
+  newRequestId: () => randomUUID(),
+  setTimer: (fn, ms) => setTimeout(fn, ms),
+  clearTimer: (timer) => {
+    clearTimeout(timer as NodeJS.Timeout);
+  },
+  log: (message) => {
+    logCloseGuard(message);
+  },
+});
+
+/**
+ * close ガードの診断ログ 1 行。コンソール（開発・E2E で観測可能）と FR-117 の
+ * ローカル診断ログの両方へ流す。ファイル側は best-effort（起動前・書き込み失敗でも
+ * 終了判断には影響させない — ログの失敗でウィンドウが閉じられなくなってはならない）。
+ */
+function logCloseGuard(message: string): void {
+  console.warn(message);
+  const env = diagnosticLogEnv;
+  if (env === undefined) return;
+  void appendDiagnosticLog(env, {
+    level: 'warning',
+    message,
+    recordedAtMs: Date.now(),
+    context: { summary: 'close-guard' },
+  }).catch(() => undefined);
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1280,
@@ -119,6 +156,78 @@ function createWindow(): void {
   if (SMOKE_TEST) {
     attachSmokeProbes(window);
   }
+
+  // FR-107: 未保存確認を通さずに閉じさせない。close は既定で preventDefault し、
+  // レンダラのガードが許可した時だけ one-shot で再 close する（close-guard.ts）。
+  // リスナはこの window インスタンスに閉じているので、ウィンドウ再作成（activate）や
+  // dev リロードで多重登録されない（'closed' で dispose し、保留とタイマーを畳む）。
+  const closeGuard = closeGuardHub.attach({
+    requestGuard: (requestId) => {
+      window.webContents.send(IPC_CHANNEL.CloseRequest, requestId);
+    },
+    closeWindow: () => {
+      window.close();
+    },
+    quitApp: () => {
+      app.quit();
+    },
+    // **物理的な** 生存だけを見る。「購読者が生きているか（照会に答え得るか）」は
+    // ここでは判定しない — それは即時 ACK でやる（close-guard.ts の ADR: 旧
+    // rendererLoaded 片方向ラッチは中断ナビゲーションで恒久 false になり fail-OPEN を
+    // 生んだ / did-finish-load 後の購読者不在で fail-CLOSED wedge を生んだ）。破棄済み /
+    // クラッシュ済みなら照会しても無駄なので即 allow する用途に限る。
+    rendererReachable: () =>
+      !window.isDestroyed() &&
+      !window.webContents.isDestroyed() &&
+      !window.webContents.isCrashed(),
+    // 所見3 event.sender 検証: この window の webContents.id。ハブは要求を送った先の id を
+    // 控え、ACK / 判定がこの id から来たものだけ受理する（別 webContents の詐称応答を無視）。
+    senderId: () => window.webContents.id,
+    // 所見1 HIGH: ACK タイムアウト（レンダラがフリーズ or 購読者不在で ACK が返らない）時に
+    // レンダラ不要の **ネイティブ確認ダイアログ** を出す（既定=[キャンセル]=閉じない）。旧実装は
+    // ここで黙って閉じ、巨大 checkConsistency 等でフリーズした未保存レンダラをデータ損失させて
+    // いた（fail-closed 契約の破れ）。ユーザーが「終了する」を明示選択した時だけ閉じる。
+    //   ⚠️ E2E / SMOKE ではモーダルダイアログが Playwright / 自動終了から操作できず、全 spec の
+    //   teardown がタイムアウトまで固まる。この環境では即 true（従来の allowWithoutRenderer 相当
+    //   = ACK が無ければ閉じる）に倒す。× 経路の close ブリッジ本体は e2e/close-guard.spec.ts で
+    //   実測でき、ACK タイムアウト経路（生きた renderer では発火しない）は close-guard.test.ts の
+    //   単体テストで状態機械レベルに固定している。
+    confirmUnresponsiveClose: async () => {
+      if (E2E_TEST || SMOKE_TEST) return true;
+      const { response } = await dialog.showMessageBox(window, {
+        type: 'warning',
+        buttons: ['キャンセル', '終了する'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+        title: 'アプリが応答していません',
+        message: 'アプリが応答していません。',
+        detail: '未保存の変更があれば失われる可能性があります。終了しますか？',
+      });
+      // response は buttons のインデックス（0=キャンセル / 1=終了する）。
+      return response === 1;
+    },
+  });
+  window.on('close', (event) => {
+    if (closeGuard.onCloseAttempt() === CLOSE_DECISION.Block) {
+      event.preventDefault();
+    }
+  });
+  // 照会中に document 破棄が始まったら（ナビゲーション / 再読み込み）、その照会は虚空へ
+  // 行く。ガードは中止して idle へ戻す（**自動では閉じない** = 中断ナビゲーションで
+  // fail-open しない。所見1 の核心）。照会中でなければ no-op。
+  window.webContents.on('did-start-loading', () => {
+    closeGuard.noteRendererReloading();
+  });
+  // 照会中にレンダラが落ちたら、未保存データはプロセスごと失われているので確認を省略して
+  // 閉じる（ダイアログのまま window が固まらない）。照会中でなければ no-op（通常操作中の
+  // クラッシュで勝手に閉じない）。
+  window.webContents.on('render-process-gone', () => {
+    closeGuard.noteRendererGone();
+  });
+  window.on('closed', () => {
+    closeGuard.dispose();
+  });
 
   window.on('ready-to-show', () => {
     window.show();
@@ -153,6 +262,13 @@ function createWindow(): void {
 // in ./ipc-handlers (Electron-free, unit-tested); this only supplies the live
 // bindings (開発ガイド §5.41).
 let currentDocumentPath: string | undefined;
+
+/**
+ * FR-117 診断ログの環境。`wireIpc` が起動時（app ready 後 — `app.getPath` を使うため）
+ * に一度だけ設定し、close ガードのログ（{@link logCloseGuard}）も同じ 1 個を読む
+ * （単一の真実源: ログ先が 2 つに割れない）。設定前は `undefined` = ファイル出力なし。
+ */
+let diagnosticLogEnv: DiagnosticLogEnv | undefined;
 
 function buildSaveEnv(): SaveEnv {
   return {
@@ -203,8 +319,10 @@ function wireIpc(): void {
   // user sees on real hardware are actually persisted to disk (previously the logger
   // was constructed with NO sink, so nothing reached the filesystem). Old generations
   // are pruned once at startup (best-effort — never blocks launch).
-  const diagnosticLogEnv = buildDiagnosticLogEnv();
-  void pruneDiagnosticLogs(diagnosticLogEnv);
+  // Set the module-level single source (the close-guard logger reads the SAME env).
+  diagnosticLogEnv = buildDiagnosticLogEnv();
+  const logEnv = diagnosticLogEnv;
+  void pruneDiagnosticLogs(logEnv);
 
   // The auto-save scheduler drives the renderer to perform a save through the
   // same typed channel (the renderer owns the live manifest/asset bytes). Its
@@ -267,7 +385,17 @@ function wireIpc(): void {
     get maxGenerations(): number {
       return maxGenerations;
     },
-    appendDiagnosticLog: (record) => appendDiagnosticLog(diagnosticLogEnv, record),
+    appendDiagnosticLog: (record) => appendDiagnosticLog(logEnv, record),
+    // FR-107 close ブリッジ: レンダラの終了確認判定をガードのハブへ渡す（受け口は
+    // ここ 1 箇所 = ipcMain.handle の多重登録なし）。payload の検証はハブ側。
+    acceptCloseVerdict: (payload, senderId) => {
+      closeGuardHub.acceptVerdict(payload, senderId);
+    },
+    // FR-107 close ブリッジ: レンダラの **受領 ACK** を同じハブへ渡す（購読者不在検出）。
+    // senderId（event.sender.id）も渡し、要求元ウィンドウからの応答か検証する（所見3）。
+    acceptCloseAck: (payload, senderId) => {
+      closeGuardHub.acceptAck(payload, senderId);
+    },
   };
 
   registerIpcHandlers(deps);
@@ -282,14 +410,11 @@ function wireIpc(): void {
  * those chords before the renderer ever sees a keydown (実測: Ctrl+0 never reached the
  * app → D58).
  *
- * ⚠️ 誤解防止 — これは FR-107 終了確認ガードの**修理ではない**: 未保存確認は今も
- * ×ボタン / Alt+F4 / タスクバー / OS シャットダウンの**全経路で迂回される**。
- * `createWindow` に `window.on('close')` は無く、`app.on('before-quit')` も無く、
- * `window-all-closed` は無条件に `app.quit()` する。renderer 側 `quitGuardRef`
- * (App.tsx) は FileOpsController から代入されるだけで、**main から呼ぶ経路が未実装**。
- * ここで消えたのは「Ctrl+W という一経路」だけで、残る HIGH リスクの本命は
- * main の `close` を preventDefault → IPC で renderer のガードを await → 許可時のみ
- * one-shot フラグ付きで再 close するブリッジ（未実装）。
+ * ⚠️ 適用範囲 — この単位が塞ぐのは「Ctrl+W という一経路」だけ。× / Alt+F4 / タスクバー
+ * / OS シャットダウンの未保存確認は **FR-107 close ブリッジ**（`createWindow` の
+ * `window.on('close')` → `closeGuardHub` → レンダラの 3 択ガード → 許可時のみ one-shot
+ * 再 close）が担当する。両者は独立: メニュー撤去はキー所有権の話、close ブリッジは
+ * ウィンドウ終了の話で、どちらが欠けても別経路が空く。
  */
 function wireApplicationMenu(): void {
   const menuApi: ApplicationMenuApi<Menu> = {
@@ -323,7 +448,31 @@ app.whenReady().then(() => {
   app.quit();
 });
 
+// FR-107 close ブリッジ × アプリ終了経路の整合.
+//
+// `app.quit()`（darwin の Cmd+Q / 明示終了）は before-quit の **後に** 各ウィンドウの
+// close を発火する。その close も上のガードを通るので、未保存確認は quit 経路でも
+// 迂回されない。ここでは「この close は quit 由来だ」とハブに記録するだけ: 許可された
+// ときガードは `window.close()` ではなく `app.quit()` を再発行するので、close を
+// preventDefault して中断された quit がそのまま再開する（darwin で window-all-closed
+// が quit しない差異も吸収できる）。拒否されたらフラグはハブ側で畳まれる。
+//
+// ⚠️ E2E ハーネスの脱出口（製品挙動は変えない）: Playwright の `electronApp.close()` は
+// main で `app.quit()` を評価して **プロセス終了を待つ**。未保存状態で終わる既存 spec の
+// teardown がガードに阻まれると、全 spec がタイムアウトまで固まる（テスト基盤の都合）。
+// E2E_TEST の時だけ quit 由来の close を素通しにする。× / Alt+F4 相当（`window.close()`）
+// は素通ししないので、close ブリッジ本体は e2e/close-guard.spec.ts で実測できる。
+app.on('before-quit', () => {
+  if (E2E_TEST) {
+    closeGuardHub.forceAllow('E2E teardown (app.quit)');
+    return;
+  }
+  closeGuardHub.noteQuitRequested();
+});
+
 app.on('window-all-closed', () => {
+  // ここに来るのは close ガードが許可した後だけ（拒否・無応答なら window は生きている）。
+  // したがって無条件 quit のままで未保存確認は迂回されない。
   if (process.platform !== 'darwin') {
     app.quit();
   }

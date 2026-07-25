@@ -55,6 +55,7 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
       'load',
       'loadDropped',
       'onAutoSaveTick',
+      'onCloseRequest',
       'openImage',
       'save',
       'saveAs',
@@ -155,5 +156,145 @@ describe('onAutoSaveTick subscribes to the one-way tick channel (FR-108 / 受け
     unsubscribe();
     expect(removeListener).toHaveBeenCalledTimes(1);
     expect(removeListener).toHaveBeenCalledWith(IPC_CHANNEL.AutoSaveTick, wrapped);
+  });
+});
+
+// FR-107 close ブリッジ（公開側）: main→renderer の CloseRequest を受け、レンダラの
+// 未保存確認ガードを走らせ、その判定を CloseResponse で **同じ requestId 付きで**
+// 返す往復。ここが繋がるまで × / Alt+F4 / OS シャットダウンは無条件に閉じていた。
+describe('onCloseRequest bridges the FR-107 quit guard across the boundary', () => {
+  /** Fire the wrapped ipcRenderer.on listener as main would (event, requestId). */
+  function fireCloseRequest(requestId: string): void {
+    const wrapped = on.mock.calls[0]![1] as (event: unknown, id: string) => void;
+    wrapped({ sender: {} }, requestId);
+  }
+
+  it('subscribes on the shared CloseRequest channel', () => {
+    const api = buildApi();
+    api.onCloseRequest(() => Promise.resolve(true));
+    expect(on).toHaveBeenCalledTimes(1);
+    expect(on.mock.calls[0]![0]).toBe(IPC_CHANNEL.CloseRequest);
+  });
+
+  it('sends an immediate CloseAck (受領 ACK) with the SAME requestId, before the verdict', async () => {
+    // 所見1/2 根治の核心: 判定を走らせる前に「生きた購読者が居る」ことを即報せる。ACK は
+    // 判定より先に送られ、CloseResponse は後から来る（main が購読者不在を検出できる）。
+    const api = buildApi();
+    // 判定は解決させず宙吊りにして、ACK が verdict を待たずに送られることを示す.
+    api.onCloseRequest(() => new Promise<boolean>(() => undefined));
+    fireCloseRequest('req-77');
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CloseAck, { requestId: 'req-77' });
+    });
+    // 宙吊りの判定なので CloseResponse はまだ送られていない（ACK と判定は分離されている）.
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC_CHANNEL.CloseResponse,
+      expect.objectContaining({ requestId: 'req-77' }),
+    );
+  });
+
+  it('does NOT send a CloseAck for a request without a string id', () => {
+    const api = buildApi();
+    api.onCloseRequest(() => Promise.resolve(true));
+    const wrapped = on.mock.calls[0]![1] as (event: unknown, id?: unknown) => void;
+    wrapped({ sender: {} }, 42);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('runs the guard and answers CloseResponse with the SAME requestId (allow)', async () => {
+    const api = buildApi();
+    const guard = vi.fn(() => Promise.resolve(true));
+    api.onCloseRequest(guard);
+    fireCloseRequest('req-42');
+    // The response is sent from an async continuation; flush the microtask queue.
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CloseResponse, {
+        requestId: 'req-42',
+        allow: true,
+      });
+    });
+    expect(guard).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers allow:false when the guard refuses (未保存 → 閉じない)', async () => {
+    const api = buildApi();
+    api.onCloseRequest(() => Promise.resolve(false));
+    fireCloseRequest('req-7');
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CloseResponse, {
+        requestId: 'req-7',
+        allow: false,
+      });
+    });
+  });
+
+  it('answers allow:false when the guard THROWS (fail-closed, 応答は必ず返す)', async () => {
+    const api = buildApi();
+    api.onCloseRequest(() => {
+      throw new Error('renderer guard exploded');
+    });
+    fireCloseRequest('req-9');
+    // Critical: a thrown guard must still ANSWER (otherwise main only times out).
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.CloseResponse, {
+        requestId: 'req-9',
+        allow: false,
+      });
+    });
+  });
+
+  it('ignores a request without a string id (main は必ず ID を送る)', () => {
+    const api = buildApi();
+    api.onCloseRequest(() => Promise.resolve(true));
+    const wrapped = on.mock.calls[0]![1] as (event: unknown, id?: unknown) => void;
+    wrapped({ sender: {} }, 42);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('returns an Unsubscribe detaching the exact listener', () => {
+    const api = buildApi();
+    const unsubscribe = api.onCloseRequest(() => Promise.resolve(true));
+    const wrapped = on.mock.calls[0]![1] as () => void;
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC_CHANNEL.CloseRequest, wrapped);
+  });
+
+  // 所見2 [MED] 複数 onCloseRequest 購読者の先勝ち防止. 2 回目の登録は 1 本目を解除して
+  // から貼る（latest-wins）ので、購読は常に最新の 1 本だけ。複数購読者が各自 ACK / 判定を
+  // 送って main が先着の allow:true で閉じる（未保存を握る購読者の判定が無視される）事故を封じる。
+  it('所見2: onCloseRequest は単一購読に制限する（2 回目の登録で 1 本目を解除 = latest-wins）', async () => {
+    const api = buildApi();
+    const first = vi.fn(() => Promise.resolve(true));
+    const second = vi.fn(() => Promise.resolve(true));
+
+    api.onCloseRequest(first);
+    const firstWrapped = on.mock.calls[0]![1] as (event: unknown, id: string) => void;
+    api.onCloseRequest(second);
+    const secondWrapped = on.mock.calls[1]![1] as (event: unknown, id: string) => void;
+
+    // 2 本目の登録時に 1 本目のリスナが必ず解除される（実 Electron では以後発火しない）.
+    expect(removeListener).toHaveBeenCalledWith(IPC_CHANNEL.CloseRequest, firstWrapped);
+    expect(on).toHaveBeenCalledTimes(2);
+
+    // 最新の購読だけが走る（先勝ちが起きない）.
+    secondWrapped({ sender: {} }, 'req-1');
+    await vi.waitFor(() => {
+      expect(second).toHaveBeenCalledTimes(1);
+    });
+    expect(first).not.toHaveBeenCalled();
+  });
+
+  it('所見2: 単一購読でも unsubscribe 後に再購読できる（解除で現行参照が落ちる）', () => {
+    const api = buildApi();
+    const unsubscribe = api.onCloseRequest(() => Promise.resolve(true));
+    const firstWrapped = on.mock.calls[0]![1] as () => void;
+    unsubscribe();
+    expect(removeListener).toHaveBeenCalledWith(IPC_CHANNEL.CloseRequest, firstWrapped);
+    removeListener.mockClear();
+
+    // 解除済みなので再購読は 1 本目を二重解除しない（現行参照は落ちている）.
+    api.onCloseRequest(() => Promise.resolve(true));
+    expect(removeListener).not.toHaveBeenCalled();
+    expect(on).toHaveBeenCalledTimes(2);
   });
 });
