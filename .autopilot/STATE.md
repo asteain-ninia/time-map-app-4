@@ -38,7 +38,9 @@
   - `ce53ecc` **実機検証カット A7-A10**: 集約表示×ナイフ「クリックした子だけ光る」画素実証(Δ+90.8)・時刻追随・KNIFE_TARGET_GONE・4ツール×2経路の再アーム12レコード全true。スクショ17枚(a-19..35)目視合格。
   - `b79ba8d` **FR-80 複数頂点同時移動ライブ経路**(新機能・従来は死コードで多頂点移動自体が不可): 主頂点+随伴の剛体移動を単一セッション化。レビュー6件全事実→実バグ3件修正(containment 退化・1075ms/frame→一桁ms・±360分裂)。🔴随伴の FR-28/89 拘束は KNOWN GAP=N725-9 裁定待ち。
   - **体制の学び(メモリ night-burn-playbook に反映済)**: 「実装 claude-opus-5 + 全ユニット Codex+自己敵対レビュー + fix-forward」が全7ユニットで実バグを捕捉(誤指摘は僅少・レビュー網が HIGH 級を4件阻止)。スクショ実機検証(driver A 方式+画素差分)が「テスト緑でも見えないバグ」(ハイライト非存在・到達不能・ラベル判読不能)の発見器として決定的に有効。
-  - 補足: e2e/__visual__/v2-undo-style.spec.ts は d70adf9 に同乗コミット(V2 検証の恒久回帰 spec として採用)。次セッションの残キュー: N725-9 集合デルタ拘束設計 / SimultaneousMoveSpec 死コードの一本化判断 / FR-79 マーカー半分の結線 / drill 融合クリック導線 / 単発低コスト改善(全体表示復帰/ステータス座標)。
+  - `93fd410` **全体表示コマンド(Ctrl+Home)+カーソル座標表示**(D43 余力キュー消化・最終ユニット): レビュー9件全実バグ fix-forward(経度 union の seam/+360 破綻=実測 span 947° まで・trailing 復活・ツールブリッジ上で座標死=実機赤検証・FR-113 非表示を枠に入れる 等)。🔴**重要発見: Electron 既定アプリケーションメニューが Ctrl+R(=編集中データ喪失リスク)/Ctrl+W/Ctrl+0/±(ページズーム=FR-16 座標破壊)/Ctrl+Shift+I を所有**。Menu.setApplicationMenu(null)+view.zoomIn/Out ハンドラ登録の別ユニットが根本対応=次セッション最優先候補。
+  - **セッション最終ゲート: typecheck 3構成 0 / lint 0 errors / フル vitest 4,169 / フル e2e 120/120**。ツリー清潔(未追跡は探索スクショのみ)。コミット12本+docs 3本。
+  - 補足: e2e/__visual__/v2-undo-style.spec.ts は d70adf9 に同乗コミット(V2 検証の恒久回帰 spec として採用)。次セッションの残キュー: **Electron 既定メニュー無効化(Ctrl+R データ損失リスク・上記)** / N725-9 集合デルタ拘束設計 / SimultaneousMoveSpec 死コードの一本化判断 / FR-79 マーカー半分の結線 / drill 融合クリック導線。
   - **体制(新)**: Fable 指揮(メイン)/実装 **claude-opus-5**(7/24 リリース。workflow agent() の model にフルID指定で動作することを実験確立。alias `opus` は 4.8 のまま)/レビュー全ユニット Codex 敵対(fix-forward)。ベストプラクティス調査→メモリ night-burn-playbook.md に恒久化。ハートビート(実時刻+モデル降格検知)を各フェーズ境界で実行。
   - `3e584c6` **HB4-2 頂点滑り自辺 根治**: 除外が地物単位のみ→頂点ID単位へ(leafShapePieces で ID 運搬・「変形する片は candidate を出さない」・containment は quantize 済 preview で組み直し)。レビューが初回実装の HIGH 2件(raw/quantized 5e-8 ズレで実機無効・組み直し輪郭が start 内包→押下点固着)を捕捉し fix-forward。slide.ts はバイト同一。テスト13本。
   - `d7e6a04` **HB4-1 ナイフプレビュー四角のみ 根治**: InheritorModal の SVG 座標空間不一致(viewBox=-lat/path=+lat)。「四角」の正体=FR-93 の knife-smaller-box rect。-lat 一本化+CSS 再反転の2経路封鎖+北向き三角の視覚固定 e2e(knife-preview-north.spec.ts)。
