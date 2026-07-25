@@ -11,7 +11,7 @@
 | ID | 暫定決定（現行の既定値） | 実装状況 | 要確認 |
 | --- | --- | --- | --- |
 | HB3-1 | 中心経度=相対ジョグ維持＋数値常時表示（絶対経度入力UIは無し） | 実装済（`.longitude-shift`） | 相対ジョグ方式で良いか（絶対指定は不要か） |
-| HB3-10 | 競合解決後、調整後境界を優先地物の既存頂点へ**共有頂点化(溶接)**＝新規要件 | **未実装**（将来 / 現状は溶接せず独立頂点） | **裁定済 7/25: 実装する**（次セッションキュー・中規模） |
+| HB3-10 | 競合解決後、調整後境界を優先地物の既存頂点へ**共有頂点化(溶接)**＝新規要件 | **実装済**（defc950・量子化グリッド一致キー・当事者2地物限定） | close（7/25 裁定→同日実装） |
 | HB3-12 | 存続期間の単一真実源=錨列。属性 start/end(FR-97) は錨列の導出 | **編集UI実装済**（278dba6: changeStart/setEnd を property dispatch から） | 属性 start/end を「導出・表示専用」とすべきか／今回の「編集可＝錨列を駆動」で良いか（現状は後者） |
 | HB3-23 | グリッド間隔 0.1° まで対応（0.1°広域は「グリッドなし」へ degrade） | 実装済（26a8b71） | ほぼ確定。広域 degrade で良いか |
 | HB3-24 | Electron 既定メニュー autoHideMenuBar:true（Alt 一時表示）＋本番最小化 | 実装済 | **裁定済 7/25: 受容**（3e93972 で既定メニュー撤去→Alt 一時表示は消滅・自前メニューバー FR-111 が唯一の導線） |
@@ -26,10 +26,22 @@
 | N725-6 | 視覚記録スクショ（screenshots/ 直下・__visual__/b-*）は e2e 実行毎に再生成されチャーン源。今夜は revert 儀式+b-* のみ現ビルドへ更新（beaaa44） | 運用のみ | **裁定済 7/25: gitignore 化**（運用ユニット・キュー。追跡中の記録画像は untrack） |
 | N725-7 | FR-113 強調の視覚言語=「他を淡くする」のみ（強調地物に selectedColor を流用しない。種別強調で全地物が選択色になり選択判別不能のため撤去）。FR-43 focus-emphasis は selectedColor のまま=**強調の視覚言語が FR-43 と FR-113 で異なる** | 実装済（9f71043） | **裁定済 7/25: 現状維持（2系統）で確定**（disabled+理由文の脱出口設計も込みで確定） |
 | N725-8 | FR-82 点線=シアン #00e5ff/幅2/dash[6,4]。アクティブと同一地物なら選択スタイル優先・別地物なら両方表示。点情報/集約は対象外。FR-110 cap・FR-113 dim の対象外（帰属表示の可視性優先） | 実装済（6aac04f） | **裁定済 7/25: これで確定**（要件文明文化は N725-5 の docs ユニットに同乗） |
-| N725-9 | 🔴FR-80 複数頂点ライブ移動の**随伴頂点は FR-28/89 の slide/衝突拘束を通らない**（constrainSlide は1点入力・ドラッグ確定経路の detectSpatial は空=単一頂点でも砦は constrainSlide のみ）。両立には「集合デルタ拘束」の constrainSlide 設計変更が必要 | KNOWN GAP 文書化済（b79ba8d の ADR） | **裁定済 7/25: 集合デルタ拘束を実装する**（次セッション最優先級・レシピは b79ba8d ADR） |
+| N725-9 | 🔴FR-80 複数頂点ライブ移動の**随伴頂点は FR-28/89 の slide/衝突拘束を通らない**（constrainSlide は1点入力・ドラッグ確定経路の detectSpatial は空=単一頂点でも砦は constrainSlide のみ）。両立には「集合デルタ拘束」の constrainSlide 設計変更が必要 | **実装済**（d3066ae・constrainSetSlide=方向は主頂点/量は集合の交叉・snap は拘束優先） | close（7/25 裁定→同日実装。既知上限: 海岸線型大量選択で 27ms/frame） |
 | N725-10 | FR-80 ライブ経路の暫定: 滑り/スナップは主頂点のみ・随伴は同一ベクトル剛体移動。主頂点は自随伴へスナップしない。移動ベクトル=主頂点変位（ポインタ変位でない）。edge-add に随伴なし | 実装済（b79ba8d） | **裁定済 7/25: 意味論確定**（拘束のみ N725-9 裁定で集合デルタへ拡張） |
 
 ## 進捗ログ（新しい順・先頭追記）
+
+- 2026-07-25 午後(13:29-18:00 リミット付き燃やし・**完了**): **裁定キュー7件中6件消化+Codex 全体レビュー(初)の HIGH 3件全根治。コード9コミット、最終ゲート フル vitest 4,312→4,344 / フル e2e 129/129 全緑**。体制=Fable 指揮/実装 claude-opus-5(workflow+Agent)/全ユニット多層敵対レビュー(自己 opus-5 → Codex 差分)fix-forward。
+  - **Codex 全体レビュー**(ユーザー指示の「全体を見せるやつ」・524k tokens): HIGH3=close 未結線(→U1)/修復キャンセルの混在 .tmap(→UC1)/atomic short-write(→UC2)。全て同日根治。清潔判定=applyCommandResult 対称性・Electron 基本フラグ・Zod ロード境界。**未対応 MED 群は下記申し送り**。
+  - `6b3cb75` **FR-107 close ブリッジ**(残 HIGH 根治・3ラウンド): ACK/verdict 分離状態機械。レビュー網が fail-OPEN(中断ナビで恒久 false→確認省略)/×恒久無効/選択無言破棄+ラッチ孤児/ACK タイムアウト誤クローズ(Codex)を全部コミット前に阻止。e2e 5本(fail-OPEN probe 恒久化込み)。
+  - `8420fdf` **atomicWrite short-write 封鎖**: bytesWritten ループ+進捗ゼロ即エラー。Node 本体 writeFile が同理由でループする一次証拠付き。position 引数ミュータント殺傷テスト。
+  - `f6b5310` **単一インスタンスロック**(7/3 保留に決着・v3 同型): 起動最初期 requestSingleInstanceLock・second-instance で前面化。E2E は共有 userData のためスキップ(実査済み)。**実機二重起動プローブ合格**(2つ目即終了 code=0)。
+  - `defc950` **HB3-10 共有頂点溶接**(6月から保留に決着): 競合解決の difference 書き戻しで量子化グリッド一致頂点を共有参照。当事者2地物限定(bystander mutation 殺傷)・±180 冪等キー・FR-94 自動成立。
+  - `7623d87` **UC1 ロード確定前の状態昇格バグ族**(3ラウンド・Codex 発): asset/表示の2段階化+保存宛先 commit-point IPC(修復中止→Ctrl+S が拒否した B.tmap を A 内容で上書きする実測破壊経路を封鎖)+save/load レース両側ガード+キュー保存 which 実行時再評価+commit 失敗時 SaveAs 退避。
+  - `d3066ae` **N725-9 集合デルタ拘束**(最優先裁定・2ラウンド): constrainSetSlide(方向=主頂点/量=集合の交叉・原点星型性の証明付き)。round-1 自己レビューがライブ実測で HIGH(穴+親同時選択で棄権が FR-28 巻き添え+早期 return が最終再チェックバイパス)+MED4 を捕捉→全根治。snap は拘束優先(d_snap 全随伴検証)。
+  - `8ff22a2`+`ea3c5aa` スクショ 312枚 untrack(N725-6)/`9b35add` FR-82 要件文更新(N725-5/8/1)。
+  - 🔴**インフラ事故と教訓**(メモリ night-burn-playbook に恒久化済み): workflow 管理 worktree の自動掃除が node_modules junction を辿り本体を半壊(npm install で復旧・全ゲート再緑)。以後は自己管理 worktree+junction は rmdir で先に外す運用。もう1件: ハーネス環境の ELECTRON_RUN_AS_NODE=1 で手動 electron 起動が素 Node 化(実機プローブ前に env 除去)。
+  - **申し送り(次セッション・優先順)**: (1)**U5 drill 2フェーズ化**(N725-2 裁定済・唯一の未消化キュー) (2)**editBinding/vertexDeleteBinding/propertyEditBinding に id ポート未注入=これらの経路で競合解決が構造的に不可能**(U4 study 発見・consistency-binding.ts:467 が常に undefined 返却) (3)シーム跨ぎ重複の競合解決が convergence-failure の行き止まり(検出→提示→必ず失敗。U4 レビューが再現手順付きで実証) (4)Codex 全体レビュー MED 群: main IPC 保存側 runtime validation 欠如/zip・サイズ上限なし(巨大ファイルで main 停止)/geometry invariants O(n²)(10万頂点で固まる)/dev URL・sender allowlist(sender 検証は FR-107/UC1 で部分導入済み)/AddTool onCommitted fallback の funnel 迂回(SPECULATIVE)/App.tsx 4,187行の境界分離(LOW) (5)knife/merge/drill の私設 coordKey ±180 非冪等(溶接キーは修正済み・3箇所は継承規約のまま) (6)U2 perf 既知上限=海岸線型大量選択 27ms/frame(16.6ms 予算超え・散在選択フォールバックの N×P 未計測) (7)FR-107 既知ギャップ=quit 再発行実機未検証/ACK タイムアウト→ネイティブダイアログ経路の e2e 不可/多重ウィンドウ quitRequested 畳み込み (8)UC1 既知限界=commit と save の厳密同時断面は IPC send-order 依存。
 
 - 2026-07-25 昼(起床後・**ユーザー裁定12件を反映**): AskUser 3ラウンドで要確認リストを一斉裁定。**確定(close)**: PAL-1(現在時刻から)/N725-1(選択リング)/N725-4(ラベル密度)/N725-7(強調2系統維持)/N725-8(点線)/N725-10(FR-80意味論)/HB3-24(Alt消滅受容)。**実装決定→次セッションキュー(優先順)**: (1)FR-107 close ブリッジ(裁定不要の残HIGH) (2)N725-9 **集合デルタ拘束**(FR-80随伴のFR-28/89遵守) (3)**単一インスタンスロック**(v3同型・7/3保留に決着) (4)**HB3-10 共有頂点溶接**(6月から保留に決着・中規模) (5)drill の2フェーズ化(N725-2) (6)FR-82等の要件文更新(N725-5・N725-8同乗・docs) (7)視覚記録スクショの gitignore 化(N725-6)。未裁定で既定継続: N725-3(gridSnap ツール跨ぎ保持)。 **HB4-1/HB4-2(7/3 実機報告)根治 + スクショ検証ライン + 確定欠陥3ユニット + FR-113 P2 + ナイフ整合 + FR-82 点線 + FR-80 複数頂点ライブ移動。コミット11本+docs、最終ゲート全緑(vitest 4,131 / e2e 全量)**。前半(〜05:10)の詳細は下記、後半:
   - `9f71043` **FR-113 Phase 2 emphasis UI 全結線**: 種別強調トグル+右クリック強調(3状態出し分け=軸強調中 disabled+理由文)+全解除。レビュー5件全実バグ fix-forward — 強調の selectedColor 流用撤去(N725-7)・emphasisActive 4チャネル化+clearEmphasis 完全逆操作・E2E フックは実塗色。display-filter e2e 4/4。
