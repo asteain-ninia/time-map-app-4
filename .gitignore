@@ -11,3 +11,7 @@ playwright-report/
 # Cross-model review scratch (codex-delegate / 手書きレビュー依頼). Never tracked — these
 # are throwaway prompts/outputs and were a source of repo clutter (D36 hygiene sweep).
 .tooling/_rev*.txt
+
+# e2e 実行毎に再生成される記録スクショ(証跡・非ベースライン)。真のベースラインは e2e/*-snapshots/ (追跡維持)。
+# N725-6 ユーザー裁定(2026-07-25): チャーン源のため untrack+ignore 化。
+screenshots/
