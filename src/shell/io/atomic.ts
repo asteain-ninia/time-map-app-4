@@ -51,7 +51,15 @@ export type AtomicWriteResult =
 export interface FsOps {
   /** Open `path` for writing, returning an opaque descriptor handle. */
   open: (path: string) => Promise<unknown>;
-  /** Write the full buffer to the descriptor. */
+  /**
+   * Write the FULL buffer to the descriptor. The contract is all-or-reject: an
+   * implementation MUST keep writing until every byte is accepted — the OS may
+   * accept only part of a buffer per call (POSIX short write) — and must reject
+   * if it cannot finish. Resolving after a PARTIAL write is forbidden: the
+   * procedure below would then fsync and rename a TRUNCATED temp file over the
+   * existing target (see `nodeFsOps.write`). An EMPTY payload may issue no
+   * write call at all (`open` with 'w' already truncated the file).
+   */
   write: (handle: unknown, data: Uint8Array) => Promise<void>;
   /** Flush the descriptor's content to durable storage (fsync). */
   fsync: (handle: unknown) => Promise<void>;
@@ -73,7 +81,32 @@ export interface FsOps {
 export const nodeFsOps: FsOps = {
   open: (path) => fsOpen(path, 'w'),
   write: async (handle, data) => {
-    await (handle as FileHandle).write(data);
+    // SHORT WRITES ARE REAL. `FileHandle.write` resolves as soon as the OS
+    // accepted SOME bytes and reports how many in `bytesWritten`; nothing
+    // guarantees a single call takes the whole buffer (POSIX `write(2)` may
+    // stop early on large payloads, signals, quota or network volumes — Node's
+    // own `writeFile` loops on `bytesWritten` for exactly this reason). If we
+    // trusted one call, a TRUNCATED temp file would then be fsync'd and
+    // atomically renamed over the good target, and the next save's backup
+    // rotation would carry that corruption into the generations too. So: write
+    // until every byte is accepted, resuming at the first unwritten byte.
+    const file = handle as FileHandle;
+    let offset = 0;
+    while (offset < data.length) {
+      // offset/length address the REMAINING bytes of the same buffer — no copy.
+      const { bytesWritten } = await file.write(data, offset, data.length - offset);
+      // No progress means we would spin forever; fail fast instead. Written as
+      // `!(n > 0)` so a NaN/garbage count is rejected too rather than silently
+      // ending the loop with a partial file. `atomicWrite` turns this throw into
+      // an ok:false result, removes the temp and preserves the existing target
+      // (確定まで破壊しない, 教訓5.22).
+      if (!(bytesWritten > 0)) {
+        throw new Error(
+          `write made no progress after ${offset} of ${data.length} bytes (the descriptor accepted no bytes; a full volume would reject with ENOSPC instead)`,
+        );
+      }
+      offset += bytesWritten;
+    }
   },
   fsync: async (handle) => {
     await (handle as FileHandle).sync();
