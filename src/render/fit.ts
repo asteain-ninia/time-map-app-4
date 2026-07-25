@@ -16,6 +16,7 @@
 // clamped to the world's physical [−90, 90] via the single `clampLat` boundary.
 
 import { clampLat, clampZoom, type Camera, type Viewport, type ZoomRange } from './camera';
+import { initialCamera } from './vtransform';
 
 /**
  * A world-space axis-aligned bounding box in the SAME continuous (lon, lat)
@@ -95,4 +96,33 @@ export function cameraForBounds(
   const zoom = clampZoom(Math.min(zoomForLon, zoomForLat), options.range);
 
   return { centerLon, centerLat, zoom };
+}
+
+/**
+ * The camera for a fit that may have NOTHING to frame: `bounds` when there is an
+ * extent, else the FR-11 既定視点 (`initialCamera` — world fit, center 0/0) with the
+ * SAME zoom clamp applied. The 表示 →「全体表示」command uses it, so its two branches
+ * cannot diverge on the FR-10 clamp policy (単一真実源).
+ *
+ * The clamp on the fallback is load-bearing (review fix). `initialCamera` is a pure
+ * viewport→camera proposal and knows nothing of the user's zoomMin/zoomMax, so writing
+ * it RAW could:
+ *   - strand the camera OUTSIDE `effectiveZoomRange` when the settings' zoomMax is below
+ *     this viewport's world-fit zoom (the schema allows it) — the defect class
+ *     canvas2d-renderer already fixed once, where a stranded zoom makes the next wheel
+ *     notch clamp in the OPPOSITE direction to the gesture; and
+ *   - write zoom 0 when called before layout (`fitWorldZoom` reports 0 for an unmeasured
+ *     viewport by design), which draws nothing until the next notch.
+ * Routing it through `clampZoom` maps both cases into the allowed window.
+ *
+ * Pure; `bounds === null` is the explicit「枠にすべき物が無い」input (教訓 5.18 明示的空).
+ */
+export function cameraForFit(
+  bounds: WorldBounds | null,
+  viewport: Viewport,
+  options: FitOptions = {},
+): Camera {
+  if (bounds !== null) return cameraForBounds(bounds, viewport, options);
+  const world = initialCamera(viewport);
+  return { ...world, zoom: clampZoom(world.zoom, options.range) };
 }

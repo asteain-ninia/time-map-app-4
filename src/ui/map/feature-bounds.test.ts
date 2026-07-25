@@ -15,6 +15,8 @@ import { createShape, createTerritoryRing } from '../../domain/ring';
 import { createVertex, type Vertex } from '../../domain/vertex';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createGeoParams } from '../../domain/geo/geo-params';
+import { wrapLonDeg } from '../../domain/geo/longitude';
+import { WORLD_LON_SPAN_DEG } from '../../render';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import { createEditProposal } from '../../domain/consistency/index';
 import type { AddSnapshot } from '../../domain/add/index';
@@ -22,7 +24,7 @@ import type { DomainProject } from '../../domain/persistence/index';
 import { timePointYear } from '../../domain/time/time-point';
 
 import { clearLiveLookupCache } from '../live-lookup';
-import { featureBoundsAt } from './feature-bounds';
+import { allFeaturesBoundsAt, featureBoundsAt } from './feature-bounds';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 const T = timePointYear(1000);
@@ -48,6 +50,17 @@ function addFeature(
 ): DomainProject {
   const snapshot: AddSnapshot = { feature, vertices, sharedCandidateIds: new Map() };
   return applyAddProposal(root, createEditProposal(feature.id, T, snapshot));
+}
+
+/** Same as {@link addFeature} but anchors the feature at an ARBITRARY time. */
+function addFeatureAtTime(
+  root: DomainProject,
+  feature: Parameters<typeof addFeature>[1],
+  vertices: Vertex[],
+  time: ReturnType<typeof timePointYear>,
+): DomainProject {
+  const snapshot: AddSnapshot = { feature, vertices, sharedCandidateIds: new Map() };
+  return applyAddProposal(root, createEditProposal(feature.id, time, snapshot));
 }
 
 /** A square leaf with corners offset from (0,0), side `side`. */
@@ -190,5 +203,174 @@ describe('featureBoundsAt (HB5-3)', () => {
     );
     const root = addFeature(emptyProject(), aggregate, []);
     expect(featureBoundsAt(root, T, aggregate.id)).toBeNull();
+  });
+});
+
+// --- 全体表示 (fit-all) ------------------------------------------------------
+//
+// The 表示 → 全体表示 command frames EVERY feature effective at the current time.
+// It reuses the SAME per-feature extent resolution as the 錨一覧 fit (featureBoundsAt),
+// so a shape that frames correctly from the anchor list frames correctly here too
+// (単一真実源 — no second bbox derivation).
+describe('allFeaturesBoundsAt (全体表示)', () => {
+  it('returns null for a project with no features at the time', () => {
+    clearLiveLookupCache();
+    expect(allFeaturesBoundsAt(emptyProject(), T)).toBeNull();
+  });
+
+  it('unions the extents of every feature effective at the time', () => {
+    clearLiveLookupCache();
+    const a = squareLeaf('fa', 0, 0, 2); // [0,2]×[0,2]
+    const b = squareLeaf('fb', 10, 4, 2); // [10,12]×[4,6]
+    let root = addFeature(emptyProject(), a.feature, a.vertices);
+    root = addFeature(root, b.feature, b.vertices);
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.minLon).toBeCloseTo(0, 6);
+    expect(bounds!.maxLon).toBeCloseTo(12, 6);
+    expect(bounds!.minLat).toBeCloseTo(0, 6);
+    expect(bounds!.maxLat).toBeCloseTo(6, 6);
+  });
+
+  it('ignores features NOT effective at the time', () => {
+    clearLiveLookupCache();
+    const now = squareLeaf('now', 0, 0, 2); // [0,2]×[0,2], anchored at T
+    const later = squareLeaf('later', 50, 50, 2);
+    const laterFeature: LeafFeature = {
+      ...later.feature,
+      attributes: createBasicAttributes('later', 2000, 2100),
+    };
+    let root = addFeature(emptyProject(), now.feature, now.vertices);
+    // Anchored only at year 2000 — it has no state at T, so it must not contribute.
+    root = addFeatureAtTime(root, laterFeature, later.vertices, timePointYear(2000));
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    // Only the 1000..1100 square contributes; the 2000..2100 one is out of time.
+    expect(bounds!.maxLon).toBeCloseTo(2, 6);
+    expect(bounds!.maxLat).toBeCloseTo(2, 6);
+  });
+
+  it('covers point and line features too (not only areas)', () => {
+    clearLiveLookupCache();
+    const v = createVertex(asVertexId('apv'), { lon: -20, lat: -8 });
+    const point = createPointFeature(
+      asFeatureId('apt'),
+      createBasicAttributes('apt', 1000, 1100),
+      color,
+      v.id,
+    );
+    const leaf = squareLeaf('al', 0, 0, 2);
+    let root = addFeature(emptyProject(), leaf.feature, leaf.vertices);
+    root = addFeature(root, point, [v]);
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.minLon).toBeCloseTo(-20, 6);
+    expect(bounds!.minLat).toBeCloseTo(-8, 6);
+    expect(bounds!.maxLon).toBeCloseTo(2, 6);
+    expect(bounds!.maxLat).toBeCloseTo(2, 6);
+  });
+
+  it('an aggregate adds nothing beyond its children (no double counting)', () => {
+    clearLiveLookupCache();
+    const a = squareLeaf('ga', 0, 0, 2);
+    const b = squareLeaf('gb', 2, 0, 2);
+    const childA: LeafFeature = { ...a.feature, parentId: asFeatureId('gagg') };
+    const childB: LeafFeature = { ...b.feature, parentId: asFeatureId('gagg') };
+    const aggregate = createAggregateFeature(
+      asFeatureId('gagg'),
+      createBasicAttributes('gagg', 1000, 1100),
+      color,
+      [childA.id, childB.id],
+    );
+    let root = addFeature(emptyProject(), childA, a.vertices);
+    root = addFeature(root, childB, b.vertices);
+    root = addFeature(root, aggregate, []);
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.minLon).toBeCloseTo(0, 6);
+    expect(bounds!.maxLon).toBeCloseTo(4, 6);
+    expect(bounds!.minLat).toBeCloseTo(0, 6);
+    expect(bounds!.maxLat).toBeCloseTo(2, 6);
+  });
+
+  // --- CROSS-FEATURE seam alignment (review fix HIGH) -----------------------
+  //
+  // `featureBoundsAt` aligns each feature's OWN box to a continuous run, but the
+  // union across features must ALSO be taken on a common branch: a plain
+  // Math.min/Math.max over independently-aligned boxes frames the LONG way around
+  // the seam, and a box carrying whole +360k turns (an infinite-scroll click never
+  // folds longitude — U03) produces a span WIDER than the world.
+  it('unions two features across the antimeridian the SHORT way', () => {
+    clearLiveLookupCache();
+    const east = squareLeaf('sa', 176, 0, 2); // [176,178]
+    const west = squareLeaf('sb', -179, 0, 2); // [-179,-177]
+    let root = addFeature(emptyProject(), east.feature, east.vertices);
+    root = addFeature(root, west.feature, west.vertices);
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    // The two squares are ~5° apart ACROSS the seam: 176..183 (or the equivalent
+    // −184..−177 branch), i.e. a 7° span — NOT the 357° long way round.
+    expect(bounds!.maxLon - bounds!.minLon).toBeCloseTo(7, 6);
+    // Either branch folds to the same representative center, near the seam.
+    const center = (bounds!.minLon + bounds!.maxLon) / 2;
+    expect(wrapLonDeg(center)).toBeCloseTo(179.5, 6);
+  });
+
+  it('unions a +360-turn replica onto the SAME branch as its neighbour', () => {
+    clearLiveLookupCache();
+    // Drawn while scrolling east: the stored longitude carries one whole turn, yet
+    // the renderer paints it at exactly the same place as the lon≈10 square.
+    const home = squareLeaf('ta', 10, 0, 2); // [10,12]
+    const turned = squareLeaf('tb', 370, 0, 2); // [370,372] == [10,12] on screen
+    let root = addFeature(emptyProject(), home.feature, home.vertices);
+    root = addFeature(root, turned.feature, turned.vertices);
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    // Same place ⇒ the union is the 2° square, not a 362° band.
+    expect(bounds!.maxLon - bounds!.minLon).toBeCloseTo(2, 6);
+    const center = (bounds!.minLon + bounds!.maxLon) / 2;
+    expect(wrapLonDeg(center)).toBeCloseTo(11, 6);
+  });
+
+  it('never returns a longitude span WIDER than the world', () => {
+    clearLiveLookupCache();
+    // Features every 45° all the way round, some stored with +360k turns.
+    let root = emptyProject();
+    for (let i = 0; i < 8; i += 1) {
+      const lon = i * 45 + (i % 2 === 0 ? 720 : 0);
+      const leaf = squareLeaf(`w${i}`, lon, 0, 2);
+      root = addFeature(root, leaf.feature, leaf.vertices);
+    }
+    const bounds = allFeaturesBoundsAt(root, T);
+    expect(bounds).not.toBeNull();
+    expect(bounds!.maxLon - bounds!.minLon).toBeLessThanOrEqual(WORLD_LON_SPAN_DEG);
+  });
+
+  // --- FR-113 visibility (review fix MEDIUM) -------------------------------
+  //
+  // 全体表示 must frame what is DRAWN. A feature hidden by the FR-113 filter /
+  // 個別非表示 is never painted, so including its extent would zoom out onto empty
+  // space (「絞り込みで1地物だけ表示中なのに全体表示すると全世界へ引く」).
+  it('skips features the caller reports as NOT visible', () => {
+    clearLiveLookupCache();
+    const near = squareLeaf('va', 0, 0, 2); // [0,2]×[0,2]
+    const far = squareLeaf('vb', 100, 40, 2); // [100,102]×[40,42]
+    let root = addFeature(emptyProject(), near.feature, near.vertices);
+    root = addFeature(root, far.feature, far.vertices);
+    const bounds = allFeaturesBoundsAt(root, T, {
+      isVisible: (id) => id !== far.feature.id,
+    });
+    expect(bounds).not.toBeNull();
+    expect(bounds!.minLon).toBeCloseTo(0, 6);
+    expect(bounds!.maxLon).toBeCloseTo(2, 6);
+    expect(bounds!.minLat).toBeCloseTo(0, 6);
+    expect(bounds!.maxLat).toBeCloseTo(2, 6);
+  });
+
+  it('returns null when NOTHING is visible under the filter', () => {
+    clearLiveLookupCache();
+    const leaf = squareLeaf('vc', 0, 0, 2);
+    const root = addFeature(emptyProject(), leaf.feature, leaf.vertices);
+    expect(allFeaturesBoundsAt(root, T, { isVisible: () => false })).toBeNull();
   });
 });

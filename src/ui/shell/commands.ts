@@ -24,6 +24,12 @@ export const COMMAND_ID = {
   ViewToggleViewMode: 'view.toggleViewMode',
   ViewZoomIn: 'view.zoomIn',
   ViewZoomOut: 'view.zoomOut',
+  /**
+   * 全体表示: frame the camera so EVERY feature effective at the current time fits
+   * (現在の視点から一発で全体へ戻る). Reuses the 錨一覧 fit calculation applied to the
+   * whole-project extent; with no features it returns to the FR-11 既定視点.
+   */
+  ViewFitAll: 'view.fitAll',
   ToolsSettings: 'tools.settings',
   /** Open the feature search UI (U41 / FR-113). Registered by the discovery unit. */
   ToolsSearch: 'tools.search',

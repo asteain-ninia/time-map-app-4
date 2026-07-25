@@ -469,6 +469,13 @@ body {
   min-height: 22px;
 }
 
+/* Cursor 経緯度 readout (FR-111): tabular digits so the text does not jitter in width
+   as the cursor moves, and nowrap so it never wraps the thin strip into two lines. */
+.statusbar__coords {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 /* Timeline: pad the panel so its controls do not sit flush against the edge. */
 .timeline {
   padding: 8px 12px;

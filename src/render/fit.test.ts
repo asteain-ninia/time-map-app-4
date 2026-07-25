@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Viewport } from './camera';
-import { cameraForBounds, DEFAULT_FIT_PADDING_RATIO } from './fit';
+import { cameraForBounds, cameraForFit, DEFAULT_FIT_PADDING_RATIO } from './fit';
 
 const vp = (widthCss: number, heightCss: number): Viewport => ({
   widthCss,
@@ -106,5 +106,42 @@ describe('cameraForBounds (HB5-3 錨起点の視点合わせ)', () => {
     );
     expect(Number.isFinite(cam.zoom)).toBe(true);
     expect(cam.zoom).toBeGreaterThan(0);
+  });
+});
+
+// --- cameraForFit: the bounds-or-default entry point -------------------------
+//
+// Review fix: the「全体表示」command frames a bbox when there IS one, and falls back to
+// the FR-11 既定視点 when the project has no (visible) feature. The two branches must
+// obey the SAME FR-10 zoom clamp — the raw `initialCamera` bypassed it, so a project
+// with zero features could strand the camera OUTSIDE effectiveZoomRange (the exact
+// defect class canvas2d-renderer already fixed once: a stranded zoom makes the next
+// wheel notch clamp in the WRONG direction), and a pre-layout call wrote zoom 0.
+describe('cameraForFit (全体表示: bounds があればフィット、無ければ既定視点)', () => {
+  it('matches cameraForBounds when bounds are given', () => {
+    const bounds = { minLon: -10, maxLon: 10, minLat: -2, maxLat: 6 };
+    const range = { minZoom: 0.5, maxZoom: 50 };
+    expect(cameraForFit(bounds, vp(400, 400), { range })).toEqual(
+      cameraForBounds(bounds, vp(400, 400), { range }),
+    );
+  });
+
+  it('falls back to the FR-11 world-fit view when bounds are null', () => {
+    const cam = cameraForFit(null, vp(720, 360), { range: { minZoom: 0.1, maxZoom: 100 } });
+    expect(cam.centerLon).toBe(0);
+    expect(cam.centerLat).toBe(0);
+    // fitWorldZoom(720x360) = min(720/360, 360/180) = 2, inside the range.
+    expect(cam.zoom).toBeCloseTo(2, 9);
+  });
+
+  it('CLAMPS the fallback zoom into the range (never strands the camera outside it)', () => {
+    // zoomMax below the world-fit zoom: the fallback must land ON the max, not above it.
+    const cam = cameraForFit(null, vp(720, 360), { range: { minZoom: 0.5, maxZoom: 1 } });
+    expect(cam.zoom).toBe(1);
+  });
+
+  it('never writes zoom 0 from an unmeasured viewport (pre-layout call)', () => {
+    const cam = cameraForFit(null, vp(0, 0), { range: { minZoom: 0.25, maxZoom: 100 } });
+    expect(cam.zoom).toBe(0.25);
   });
 });

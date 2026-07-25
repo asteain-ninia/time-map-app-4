@@ -135,7 +135,17 @@ import { createDetailDocumentDispatch } from './live-detail-document';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { buildCommittedFeatures, drawnFeatureFills } from './map/committed-features';
-import { featureBoundsAt } from './map/feature-bounds';
+import {
+  allFeaturesBoundsAt,
+  featureBoundsAt,
+  type AllFeaturesBoundsOptions,
+} from './map/feature-bounds';
+import {
+  CURSOR_READOUT_INTERVAL_MS,
+  CursorPositionStore,
+} from './shell/cursor-position';
+import { CursorCoordinateStatus } from './shell/CursorCoordinateStatus';
+import { BROWSER_CLOCK, throttleTrailing } from './shell/map-resize';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
   PointerDispatcher,
@@ -181,6 +191,9 @@ import {
   isEmphasizedByOtherAxisUnderFilter,
   isFeatureVisibleUnderFilter,
 } from './map/filtered-display';
+// FR-113 INERT fast path: an untouched filter needs no per-feature visibility gate at all
+// (全体表示 then pays nothing for the母集合 check — the zero-overhead default rule).
+import { isFilterInert } from './discovery/index';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
 // (FR-109 follow-up) the undoable default-palette change command — routed through the
@@ -206,6 +219,7 @@ import {
   worldToScreen as projectWorldToScreen,
   screenToWorld as unprojectScreenToWorld,
   cameraForBounds,
+  cameraForFit,
   type ScreenPoint,
 } from '../render';
 import { createRedrawScheduler } from './map/redraw-scheduler';
@@ -469,6 +483,27 @@ export function App(): JSX.Element {
   // the live-selection-port and never here), so a map click never moves the view.
   const fitCameraToFeatureRef = useRef<((featureId: FeatureId) => void) | null>(null);
 
+  // 全体表示 (COMMAND_ID.ViewFitAll) — the SAME late-binding pattern as the anchor fit
+  // above: bound inside `onMapMount` where `ports` (the single camera write path) is in
+  // scope, so the 表示メニュー / Ctrl+Home 導線 (D58 — NOT Ctrl+0, which Electron's default
+  // application menu owns as `resetZoom` and never delivers to the renderer) reaches the
+  // LIVE camera without re-mounting the map. A no-op until the map mounts.
+  const fitCameraToAllRef = useRef<(() => void) | null>(null);
+
+  // The cursor's live world position behind the status-bar readout (FR-111). Held OUTSIDE
+  // React (technical policy 2.3): the map pointermove path pushes into it at input rate
+  // and only the small `CursorCoordinateStatus` node subscribes, so a mouse move never
+  // re-renders the shell.
+  //
+  // A REF, not a useMemo (review fix): React may DISCARD a useMemo cache, and a re-created
+  // store would silently split the wiring — the subscriber (`CursorCoordinateStatus`) would
+  // read the NEW store while `onMapMount`'s already-installed pointermove kept pushing into
+  // the OLD one, killing the readout permanently. A ref is the documented home for a
+  // mutable instance that must survive every render (MapSizeStore uses the same discipline).
+  const cursorPositionStoreRef = useRef<CursorPositionStore | null>(null);
+  cursorPositionStoreRef.current ??= new CursorPositionStore();
+  const cursorPositionStore = cursorPositionStoreRef.current;
+
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
   // calls the CURRENT `recordCommit` without re-mounting the map on every render
@@ -515,6 +550,18 @@ export function App(): JSX.Element {
       '[data-testid="map-input-layer"]',
     );
     const hookTarget: HTMLElement = inputLayer ?? el;
+
+    // The map CELL (.map-area) — the ANCESTOR of the canvas mount, the input layer AND the
+    // overlay layer. The FR-111 cursor readout hooks HERE, not on the input layer (review
+    // fix): a tool input bridge (追加 / 切断 / 併合 / 再所属 / 測量) is a SIBLING of the input
+    // layer that sits ABOVE it, so a move over a bridge never reaches the input layer and
+    // entering a bridge fires the input layer's own `pointerleave` — the readout went blank
+    // in exactly the modes that need coordinates most (測量 = FR-16, 作図). A move over ANY
+    // of those layers bubbles to the cell, and the cell's `pointerleave` fires only when the
+    // pointer really leaves the map cell, so 「地図の上か否か」is judged once against the map
+    // region itself. A new tool overlay is covered automatically (no per-tool 結線 to forget,
+    // 教訓 5.7 部分結線禁止).
+    const mapCell: HTMLElement = el.parentElement ?? hookTarget;
 
     // HB3-4 ROOT FIX — the LIVE edit-drag preview. The U24 drag session held the moved
     // geometry as a transient (教訓 5.22: a drag never mutates committed state), but the
@@ -901,6 +948,34 @@ export function App(): JSX.Element {
       ports.writeCamera(camera);
     };
 
+    // 全体表示 — frame every feature that is DRAWN at the current time. Deliberately the
+    // SAME fit as the錨一覧導線 above (cameraForBounds + DEFAULT_FIT_PADDING_RATIO ≈20%/side
+    // + the effective FR-10 zoom clamp — `cameraForFit` is that fit plus the 地物ゼロ
+    // fallback, so BOTH branches obey the clamp), only with the WHOLE-project extent
+    // instead of one feature's, and written through the SAME single `ports.writeCamera`
+    // path so it mirrors into the U16 store camera truth via onCameraChange (単一真実源,
+    // 教訓 5.29). 地物ゼロ / 全部非表示 ⇒ the FR-11 既定視点 (world fit).
+    //
+    // FR-113 母集合 (review fix): the extent counts only features the map actually PAINTS.
+    // committed-features drops anything outside `visibleIds`, so framing a 絞り込みで
+    // 非表示 feature would zoom out onto empty space (絞り込みで1地物だけ表示中なのに
+    // 全世界へ引く). The gate is the SAME single verdict the draw / hit / 一覧 / ツール取得
+    // read (isFeatureVisibleUnderFilter), and it is not even consulted on an INERT filter
+    // (the common case pays nothing — no resolution, no per-feature call).
+    fitCameraToAllRef.current = (): void => {
+      const s = store.getState();
+      const { viewport } = ports.readCamera();
+      let options: AllFeaturesBoundsOptions = {};
+      if (!isFilterInert(s.filter)) {
+        const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+        options = {
+          isVisible: (featureId) => isFeatureVisibleUnderFilter(resolution, s.filter, featureId),
+        };
+      }
+      const bounds = allFeaturesBoundsAt(s.domain, s.currentTime, options);
+      ports.writeCamera(cameraForFit(bounds, viewport, { range: ports.effectiveZoomRange() }));
+    };
+
     // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
     // pure dispatcher + pan/zoom math existed (PointerDispatcher / pan / VTransform)
     // but the composition root never CONNECTED them to the real viewport, so a drag
@@ -1229,6 +1304,33 @@ export function App(): JSX.Element {
       return { x: clientX - box.left, y: clientY - box.top };
     };
 
+    // FR-111 ステータスバーのカーソル座標 — the throttled bridge from the map pointer
+    // path to the React-external cursor store. TRAILING throttle (the SAME
+    // `throttleTrailing` the map-resize path uses — no new throttle implementation):
+    // at most one publish per interval AND the last position of a burst always lands,
+    // so the readout is live but a 60Hz move cannot cause 60 React renders/s
+    // (再レンダー爆発の抑止; the store additionally drops no-change sets).
+    // `cursorReadoutDisposed` closes the ONE hole a trailing throttle opens: its final
+    // timer can fire AFTER this map unmounts, and `ports.screenToWorld` would then read
+    // a disposed renderer/canvas (教訓 5.2 全経路で破棄). The flag makes that late call a
+    // no-op; the cleanup below also clears the readout so no stale coordinate lingers.
+    //
+    // The OTHER hole a trailing throttle opens is shorter-lived but hit constantly (review
+    // fix): the pointer can LEAVE the map inside the interval, and the pending trailing
+    // call would then land AFTER `clear()` and resurrect the last coordinate for a cursor
+    // that is no longer over the map (a real mouse exceeds 100Hz, so「素早く地図外へ抜ける」
+    // always raced it). `publishCursorPosition.cancel()` on every leave / teardown drops
+    // that pending call, so 地図外 = 非表示 holds unconditionally rather than by luck.
+    let cursorReadoutDisposed = false;
+    const publishCursorPosition = throttleTrailing(
+      (clientX: number, clientY: number): void => {
+        if (cursorReadoutDisposed) return;
+        cursorPositionStore.set(ports.screenToWorld(clientX, clientY));
+      },
+      CURSOR_READOUT_INTERVAL_MS,
+      BROWSER_CLOCK,
+    );
+
     const onPointerDown = (e: PointerEvent): void => {
       // STALE-FRAME HIT-TEST FIX (bughunt round-2): drain any throttled redraw NOW so
       // the pixels match the live store state BEFORE the hit-test runs. The hit-test
@@ -1253,6 +1355,23 @@ export function App(): JSX.Element {
       const { x, y } = toSurface(e.clientX, e.clientY);
       dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
     };
+    // FR-111 ステータスバーのカーソル座標 — on the map CELL (see `mapCell` above) so it sees
+    // moves over the input layer AND over any tool bridge. Pushes into the React-EXTERNAL
+    // cursor store, THROTTLED, so a 60Hz move cannot drive 60 React renders/s (only the
+    // tiny readout node subscribes; the throttle caps the actual work regardless of how
+    // many layers the event bubbles through). The unproject reuses the renderer's
+    // box-corrected screen→world (the SAME transform the hit-test uses, 教訓 5.29) so
+    //「表示された座標」==「掴める座標」.
+    const onCursorMove = (e: PointerEvent): void => {
+      publishCursorPosition(e.clientX, e.clientY);
+    };
+    const onCursorLeave = (): void => {
+      // 地図外では非表示 (the readout falls back to the default status label). Drop any
+      // PENDING trailing publish FIRST — otherwise it lands after this clear and puts the
+      // stale coordinate back (see the throttle note above).
+      publishCursorPosition.cancel();
+      cursorPositionStore.clear();
+    };
     const onPointerUp = (e: PointerEvent): void => {
       const { x, y } = toSurface(e.clientX, e.clientY);
       // The dispatcher releases the pan's pointer capture itself (it owns the
@@ -1262,7 +1381,9 @@ export function App(): JSX.Element {
     const onPointerCancel = (e: PointerEvent): void => {
       dispatcher.pointerCancel(e.pointerId);
     };
-    const onPointerLeave = (): void => dispatcher.pointerLeave();
+    const onPointerLeave = (): void => {
+      dispatcher.pointerLeave();
+    };
     // BUGHUNT2 ROOT FIX (FR-96) — suppress the NATIVE browser/OS context menu on the
     // map so OUR right-click menu (opened from the pointerdown above) is the only one
     // shown. Without this the default contextmenu would pop over the custom menu. The
@@ -1284,6 +1405,10 @@ export function App(): JSX.Element {
     hookTarget.addEventListener('contextmenu', onContextMenu);
     // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
     hookTarget.addEventListener('wheel', onWheel, { passive: false });
+    // The cursor readout listens on the map CELL (above the input layer AND the tool
+    // overlays in the DOM tree), so it survives a tool bridge taking over the surface.
+    mapCell.addEventListener('pointermove', onCursorMove);
+    mapCell.addEventListener('pointerleave', onCursorLeave);
 
     // ROOT FIX (bughunt: 追加/ナイフ描画中は中ボタンパンとホイールズームが効かない) —
     // expose the camera-only entry points of THIS dispatcher to the tool overlays.
@@ -1455,6 +1580,16 @@ export function App(): JSX.Element {
       hookTarget.removeEventListener('pointerleave', onPointerLeave);
       hookTarget.removeEventListener('contextmenu', onContextMenu);
       hookTarget.removeEventListener('wheel', onWheel);
+      mapCell.removeEventListener('pointermove', onCursorMove);
+      mapCell.removeEventListener('pointerleave', onCursorLeave);
+      // Stop the cursor readout BEFORE disposing the host: a trailing throttle call
+      // must not reach the disposed renderer, and the status bar must not keep showing
+      // the last coordinate of a map that no longer exists. Cancel the pending call AND
+      // keep the flag: cancel drops the timer we know about, the flag is the belt-and-
+      // braces guard for any call already in flight (教訓 5.2 全経路で破棄).
+      publishCursorPosition.cancel();
+      cursorReadoutDisposed = true;
+      cursorPositionStore.clear();
       ports.dispose();
       rendererRef.current = null;
       cameraInputRef.current = null;
@@ -1464,7 +1599,11 @@ export function App(): JSX.Element {
         delete (e2eWindow as { __E2E__?: unknown }).__E2E__;
       }
     };
-  }, [store]);
+    // `cursorPositionStore` is listed for honesty even though it is ref-backed and
+    // therefore never changes identity: had it stayed a useMemo, a discarded cache would
+    // have re-created it WITHOUT re-mounting the map, leaving these listeners pushing into
+    // the abandoned store while the readout subscribed to the new one.
+  }, [store, cursorPositionStore]);
 
   // Bridge the {@link MapContextMenu} mount's open-setter to the imperative live
   // context-menu port (assigned to the opener ref the port reads). Stable so the
@@ -1882,6 +2021,24 @@ export function App(): JSX.Element {
       registry.unregister(COMMAND_ID.ViewToggleViewMode);
     };
   }, [registry, store]);
+
+  // 全体表示 (COMMAND_ID.ViewFitAll) — register the 表示メニュー / Ctrl+Home handler (the
+  // chord lives in menu.ts; D58 records why it is NOT Ctrl+0) on the
+  // SAME registry the menu + the global shortcut dispatcher read (教訓 5.13 単一の権限/
+  // 真実源), so the menu row and the accelerator are one behaviour and enable/disable
+  // together. The work itself is the late-bound `fitCameraToAllRef` (assigned in
+  // onMapMount, where the single camera write path is in scope). `canRun` gates on the
+  // map actually being mounted, so before mount the menu row is greyed rather than a
+  // silent no-op (未登録==無効 と同じ体験, commands.ts の規約).
+  useEffect(() => {
+    registry.register(COMMAND_ID.ViewFitAll, {
+      run: () => fitCameraToAllRef.current?.(),
+      canRun: () => fitCameraToAllRef.current !== null,
+    });
+    return () => {
+      registry.unregister(COMMAND_ID.ViewFitAll);
+    };
+  }, [registry]);
 
   // BUGHUNT2 ROOT FIX — register the 編集→削除 (EditDelete) command on the SAME
   // registry the 編集 menu + the Delete accelerator dispatch (教訓 5.13 単一の権限/
@@ -2964,6 +3121,12 @@ export function App(): JSX.Element {
         suspended={shortcutsSuspended}
         onMapMount={onMapMount}
         timeline={<Timeline store={store} />}
+        /* FR-111 ステータスバー — the live cursor 経緯度 readout. Bound to the
+           React-EXTERNAL cursor store the map pointermove path pushes into, so the
+           60Hz input rate re-renders THIS node only (技術方針 2.3). Off the map it
+           renders the SAME 準備完了 label the bare status bar shows, so the idle
+           status bar is unchanged. */
+        status={<CursorCoordinateStatus store={cursorPositionStore} />}
         mapOverlay={
           /* 教訓 5.14 / 5.29 — EVERY map-covering tool input bridge is mounted INSIDE
              the map cell (.map-area__overlay) so its client rect equals the canvas'

@@ -96,4 +96,36 @@ describe('throttleTrailing (NFR 5.1)', () => {
     expect(fn).toHaveBeenCalledTimes(2);
     expect(fn).toHaveBeenLastCalledWith(2);
   });
+
+  // Review fix: a trailing throttle keeps a PENDING call that outlives the reason the
+  // caller was throttling. The cursor readout hits this — pointermove, pointermove,
+  // then the pointer leaves the map: without a cancel the pending trailing call lands
+  // AFTER the leave and resurrects a coordinate for a cursor that is gone.
+  it('cancel() discards a pending trailing call', () => {
+    const { clock, advance } = fakeClock();
+    const fn = vi.fn();
+    const throttled = throttleTrailing<[number]>(fn, 100, clock);
+    throttled(1); // leading, runs now
+    throttled(2); // within interval -> pending
+    throttled.cancel();
+    advance(100);
+    expect(fn).toHaveBeenCalledTimes(1); // the pending (2) never lands
+    expect(fn).toHaveBeenLastCalledWith(1);
+  });
+
+  it('cancel() is idempotent and leaves the throttle usable', () => {
+    const { clock, advance } = fakeClock();
+    const fn = vi.fn();
+    const throttled = throttleTrailing<[number]>(fn, 100, clock);
+    throttled.cancel(); // nothing pending -> no-op
+    throttled.cancel();
+    throttled(1);
+    expect(fn).toHaveBeenCalledTimes(1);
+    // A cancel does NOT reset the interval: a later call inside it still coalesces,
+    // and the throttle still delivers that trailing call when not cancelled.
+    throttled(2);
+    advance(100);
+    expect(fn).toHaveBeenCalledTimes(2);
+    expect(fn).toHaveBeenLastCalledWith(2);
+  });
 });

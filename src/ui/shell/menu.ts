@@ -105,6 +105,15 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
       item(COMMAND_ID.ViewToggleViewMode),
       item(COMMAND_ID.ViewZoomIn, { key: '=', ctrlOrMeta: true }),
       item(COMMAND_ID.ViewZoomOut, { key: '-', ctrlOrMeta: true }),
+      // 全体表示: Ctrl+Home —「原点/全体へ戻る」の慣用キー. It collides with none of the
+      // app's own bindings (a test asserts chord uniqueness across the whole menu tree)
+      // AND deliberately avoids Ctrl+0, which Electron's DEFAULT application menu owns
+      // as its resetZoom role accelerator and therefore never delivers to the renderer
+      // (実測: Ctrl+0 では data-zoom が動かない). The Ctrl modifier also keeps it clear of
+      // a BARE Home, which a focused range input (timeline slider) uses natively — the
+      // focus guard only stands down for TEXT inputs (focus-guard.ts). Declared HERE so
+      // it reaches the keymap AND the ショートカット一覧 from one source (教訓 5.33).
+      item(COMMAND_ID.ViewFitAll, { key: 'Home', ctrlOrMeta: true }),
     ],
   },
   {

@@ -17,6 +17,17 @@ export {
   SIDEBAR_SECTION,
 } from './Sidebar';
 export { StatusBar, type StatusBarProps } from './StatusBar';
+export {
+  CursorCoordinateStatus,
+  type CursorCoordinateStatusProps,
+} from './CursorCoordinateStatus';
+export {
+  CursorPositionStore,
+  cursorCoordinateText,
+  CURSOR_READOUT_INTERVAL_MS,
+  type CursorWorldPosition,
+  type CursorPositionListener,
+} from './cursor-position';
 
 // --- operability primitives -------------------------------------------------
 export { Tooltip, type TooltipProps } from './Tooltip';

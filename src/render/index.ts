@@ -46,6 +46,7 @@ export {
   type FitOptions,
   DEFAULT_FIT_PADDING_RATIO,
   cameraForBounds,
+  cameraForFit,
 } from './fit';
 
 // The renderer-independent drawing contract + batch / hit-test shapes.

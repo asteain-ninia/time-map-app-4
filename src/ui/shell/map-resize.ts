@@ -62,11 +62,28 @@ export interface ThrottleClock {
   clearTimer: (handle: unknown) => void;
 }
 
+/**
+ * A trailing throttle handle: callable, plus {@link Throttled.cancel} to drop a
+ * still-pending trailing call.
+ */
+export interface Throttled<A extends unknown[]> {
+  (...args: A): void;
+  /**
+   * Discard the pending trailing call (and its timer) WITHOUT invoking it. Needed
+   * whenever the reason for the last call can END before the trailing edge fires: the
+   * status-bar cursor readout publishes on pointermove but the pointer can LEAVE the map
+   * inside the interval, and a trailing call landing after that leave would resurrect a
+   * coordinate for a cursor that is no longer there (a discarded value, not a dropped
+   * one — 教訓 5.2 全経路で破棄). Idempotent; the throttle stays usable afterwards.
+   */
+  cancel: () => void;
+}
+
 export function throttleTrailing<A extends unknown[]>(
   fn: (...args: A) => void,
   intervalMs: number,
   clock: ThrottleClock,
-): (...args: A) => void {
+): Throttled<A> {
   let lastRun = Number.NEGATIVE_INFINITY;
   let timer: unknown = null;
   let pending: A | null = null;
@@ -76,7 +93,7 @@ export function throttleTrailing<A extends unknown[]>(
     fn(...args);
   };
 
-  return (...args: A): void => {
+  const throttled = (...args: A): void => {
     const elapsed = clock.now() - lastRun;
     if (elapsed >= intervalMs) {
       if (timer !== null) {
@@ -100,6 +117,16 @@ export function throttleTrailing<A extends unknown[]>(
       }, intervalMs - elapsed);
     }
   };
+
+  throttled.cancel = (): void => {
+    pending = null;
+    if (timer !== null) {
+      clock.clearTimer(timer);
+      timer = null;
+    }
+  };
+
+  return throttled;
 }
 
 /** The default browser-backed clock (used by the React hook, not by tests). */
