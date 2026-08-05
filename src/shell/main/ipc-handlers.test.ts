@@ -740,3 +740,58 @@ describe('読込のサイズ上限 (stat 事前拒否 / Codex MED「巨大ファ
     expect(res.ok).toBe(true);
   });
 });
+
+// U15 sender allowlist (Codex MED) — 信頼できない sender の invoke は inert 拒否になる。
+describe('sender allowlist (isTrustedSender / Codex MED)', () => {
+  function registeredHandlers(deps: IpcDeps): Map<IpcChannel, (...args: unknown[]) => unknown> {
+    const handlers = new Map<IpcChannel, (...args: unknown[]) => unknown>();
+    registerIpcHandlers({
+      ...deps,
+      registrar: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    });
+    return handlers;
+  }
+  const evt = (id: number): { sender: { id: number } } => ({ sender: { id } });
+
+  it('信頼 sender の Save は通り、非信頼 sender は cancelled 拒否でディスクに触れない', async () => {
+    const { deps, disk, saveCalls } = makeDeps({ isTrustedSender: (id) => id === 7 });
+    const handlers = registeredHandlers(deps);
+    const save = handlers.get(IPC_CHANNEL.Save)!;
+
+    const refused = (await save(evt(99), makeSaveReq())) as { ok: boolean; reason?: string };
+    expect(refused.ok).toBe(false);
+    expect(refused.reason).toBe('cancelled');
+    expect(saveCalls).toHaveLength(0);
+    expect(disk.size).toBe(0);
+
+    const accepted = (await save(evt(7), makeSaveReq())) as { ok: boolean };
+    expect(accepted.ok).toBe(true);
+    expect(disk.size).toBeGreaterThan(0);
+  });
+
+  it('非信頼 sender の Load / OpenImage / CommitLoadedPath も inert 拒否になる', async () => {
+    const { deps } = makeDeps({ isTrustedSender: () => false });
+    const handlers = registeredHandlers(deps);
+
+    const load = (await handlers.get(IPC_CHANNEL.Load)!(evt(1))) as { ok: boolean };
+    expect(load.ok).toBe(false);
+    expect(deps.readFile.readFile).not.toHaveBeenCalled();
+
+    const image = await handlers.get(IPC_CHANNEL.OpenImage)!(evt(1));
+    expect(image).toBeNull();
+
+    // 非信頼 sender の commit は保存宛先を動かさない。
+    deps.pendingLoadPath.set({ token: 't', path: '/x.tmap' });
+    handlers.get(IPC_CHANNEL.CommitLoadedPath)!(evt(1), 't');
+    expect(deps.currentPath.get()).toBeUndefined();
+  });
+
+  it('isTrustedSender 未指定なら従来どおり全 sender を受理する (後方互換)', async () => {
+    const { deps } = makeDeps();
+    const handlers = registeredHandlers(deps);
+    const res = (await handlers.get(IPC_CHANNEL.Load)!(evt(123))) as { ok: boolean };
+    expect(res.ok).toBe(true);
+  });
+});

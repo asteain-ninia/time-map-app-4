@@ -166,6 +166,14 @@ export interface IpcDeps {
    * event.sender 検証: 要求を発行したウィンドウからの応答のみ受理する）。
    */
   readonly acceptCloseAck: (payload: unknown, senderId: number) => void;
+  /**
+   * U15 sender allowlist (Codex MED): true iff the invoking `event.sender` is one
+   * of OUR app windows' webContents. Every invoke handler is gated on it — an
+   * untrusted sender (devtools, an injected frame) gets an inert refusal (a
+   * cancelled/no-op response, never a throw). Optional: absent (unit tests /
+   * legacy callers) ⇒ every sender is trusted, preserving prior behaviour.
+   */
+  readonly isTrustedSender?: (senderId: number) => boolean;
 }
 
 const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
@@ -420,31 +428,48 @@ export async function handleAppendLog(
  * added to the contract without a handler (or vice versa) fails (受け入れ基準4).
  */
 export function registerIpcHandlers(deps: IpcDeps): void {
-  deps.registrar(IPC_CHANNEL.Save, ((_event: never, req: SaveRequest) =>
-    handleSave(deps, req)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.SaveAs, ((_event: never, req: SaveRequest) =>
-    handleSaveAs(deps, req)) as (...args: never[]) => unknown);
+  // U15 sender allowlist (Codex MED): every invoke handler is gated on the sender's
+  // webContents id. An untrusted sender gets the channel's inert refusal value —
+  // never a throw (a rejected invoke would surface as a preload failure and muddy
+  // diagnosis, the handleCloseResponse 流儀).
+  const trusted = (event: IpcSenderEvent): boolean =>
+    deps.isTrustedSender === undefined || deps.isTrustedSender(event.sender.id);
+  const REFUSED = { ok: false, reason: 'cancelled' } as const;
+
+  deps.registrar(IPC_CHANNEL.Save, ((event: IpcSenderEvent, req: SaveRequest) =>
+    trusted(event) ? handleSave(deps, req) : REFUSED) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.SaveAs, ((event: IpcSenderEvent, req: SaveRequest) =>
+    trusted(event) ? handleSaveAs(deps, req) : REFUSED) as (...args: never[]) => unknown);
   // 所見3: the load handlers read event.sender.id and stage it with the pending path so
   // the later CommitLoadedPath can verify the commit comes from the same window.
   deps.registrar(IPC_CHANNEL.Load, ((event: IpcSenderEvent) =>
-    handleLoad(deps, event.sender.id)) as (...args: never[]) => unknown);
+    trusted(event) ? handleLoad(deps, event.sender.id) : REFUSED) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.LoadDropped, ((event: IpcSenderEvent, p: string) =>
-    handleLoadDropped(deps, p, event.sender.id)) as (...args: never[]) => unknown);
+    trusted(event) ? handleLoadDropped(deps, p, event.sender.id) : REFUSED) as (...args: never[]) => unknown);
   // UC1 round-2 保存宛先の遅延昇格: the renderer commits a staged load path (event.sender.id
   // は要求元検証に使う — 所見3 の流儀).
   deps.registrar(IPC_CHANNEL.CommitLoadedPath, ((event: IpcSenderEvent, token: unknown) =>
-    handleCommitLoadedPath(deps, token, event.sender.id)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.OpenImage, (() =>
-    handleOpenImage(deps)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.ConfigureAutoSave, ((_event: never, c: AutoSaveConfig) =>
-    handleConfigureAutoSave(deps, c)) as (...args: never[]) => unknown);
-  deps.registrar(IPC_CHANNEL.AppendLog, ((_event: never, record: DiagnosticLogRecord) =>
-    handleAppendLog(deps, record)) as (...args: never[]) => unknown);
+    trusted(event)
+      ? handleCommitLoadedPath(deps, token, event.sender.id)
+      : undefined) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.OpenImage, ((event: IpcSenderEvent) =>
+    trusted(event) ? handleOpenImage(deps) : null) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.ConfigureAutoSave, ((event: IpcSenderEvent, c: AutoSaveConfig) =>
+    trusted(event)
+      ? handleConfigureAutoSave(deps, c)
+      : { ok: true }) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.AppendLog, ((event: IpcSenderEvent, record: DiagnosticLogRecord) =>
+    trusted(event) ? handleAppendLog(deps, record) : undefined) as (...args: never[]) => unknown);
   // 所見3: close ブリッジの受け口だけ event.sender.id を読む（要求元 webContents の検証用）。
+  // The hub verifies the sender AGAIN against the window it queried (defense in depth).
   deps.registrar(IPC_CHANNEL.CloseAck, ((event: IpcSenderEvent, payload: unknown) =>
-    handleCloseAck(deps, payload, event.sender.id)) as (...args: never[]) => unknown);
+    trusted(event)
+      ? handleCloseAck(deps, payload, event.sender.id)
+      : { ok: true }) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.CloseResponse, ((event: IpcSenderEvent, payload: unknown) =>
-    handleCloseResponse(deps, payload, event.sender.id)) as (...args: never[]) => unknown);
+    trusted(event)
+      ? handleCloseResponse(deps, payload, event.sender.id)
+      : { ok: true }) as (...args: never[]) => unknown);
 }
 
 /**

@@ -21,6 +21,7 @@ import {
   isDevToolsChord,
   type ApplicationMenuApi,
 } from './app-menu';
+import { isAllowedNavigation, isTrustedDevServerUrl } from './renderer-entry';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import {
   registerIpcHandlers,
@@ -273,8 +274,34 @@ function createWindow(): void {
   });
 
   // Offline-only: load the dev server in development, bundled HTML otherwise.
-  // No external URLs are ever loaded.
-  const devServerUrl = process.env['ELECTRON_RENDERER_URL'];
+  // No external URLs are ever loaded. Codex MED「dev URL」: the env-supplied dev
+  // URL is ACCEPTED ONLY when it is a loopback http origin (renderer-entry.ts) —
+  // a poisoned ELECTRON_RENDERER_URL must not point the preload-armed window at a
+  // remote origin; anything untrusted falls back to the bundled file entry.
+  const rawDevServerUrl = process.env['ELECTRON_RENDERER_URL'];
+  const devServerUrl = isTrustedDevServerUrl(rawDevServerUrl) ? rawDevServerUrl : undefined;
+
+  // Navigation lockdown (same MED): new windows are always denied, and in-page
+  // navigation is allowed only for the dev server's own origin (HMR full reload).
+  // In production every will-navigate is denied — the app never legitimately
+  // navigates, and a stray file drop outside the dropzone must not replace the
+  // document (the typed drop path goes through LoadDropped, not navigation).
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!isAllowedNavigation(url, devServerUrl)) {
+      event.preventDefault();
+    }
+  });
+
+  // U15 sender allowlist (Codex MED): register this window's webContents as a
+  // trusted IPC sender for the invoke handlers; dropped on close. DevTools /
+  // any other webContents never enters the set. The id is captured NOW — the
+  // webContents is already destroyed inside the 'closed' handler.
+  const senderId = window.webContents.id;
+  trustedSenderIds.add(senderId);
+  window.on('closed', () => {
+    trustedSenderIds.delete(senderId);
+  });
 
   // 開発時のみ DevTools 導線を戻す（既定メニュー撤去で toggleDevTools ロールが消えたため）。
   // 製品ビルド（loadFile 経路）では入らないので、閉鎖はそのまま。判定は app-menu.ts の純粋関数。
@@ -301,6 +328,14 @@ function createWindow(): void {
 // in ./ipc-handlers (Electron-free, unit-tested); this only supplies the live
 // bindings (開発ガイド §5.41).
 let currentDocumentPath: string | undefined;
+
+/**
+ * U15 sender allowlist (Codex MED): the webContents ids of OUR app windows. The
+ * invoke handlers accept a request only from a sender in this set — any other
+ * webContents (devtools, a hypothetical injected frame) gets an inert refusal.
+ * Maintained by createWindow (add on create / remove on 'closed'); read live.
+ */
+const trustedSenderIds = new Set<number>();
 
 /**
  * UC1 round-2: the STAGED load destination (one slot). A successful read stages
@@ -474,6 +509,9 @@ function wireIpc(): void {
     acceptCloseAck: (payload, senderId) => {
       closeGuardHub.acceptAck(payload, senderId);
     },
+    // U15 sender allowlist (Codex MED): only OUR app windows' webContents may drive
+    // the invoke handlers (createWindow maintains the live set).
+    isTrustedSender: (senderId) => trustedSenderIds.has(senderId),
   };
 
   registerIpcHandlers(deps);
