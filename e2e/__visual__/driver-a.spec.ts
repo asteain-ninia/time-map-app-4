@@ -802,8 +802,10 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await page.waitForTimeout(250);
       await shot(page, 'a-08-drill-before');
 
-      // The region: a square well inside the face. The FIRST click picks the target
-      // 末端 AND becomes region vertex #1 (useDrillTool.handleClick).
+      // TWO PHASES (N725-2 裁定): the FIRST click picks the target末端 only (no vertex),
+      // then each region corner is an explicit vertex click (useDrillTool.handleClick).
+      await page.mouse.click(cx, cy); // phase 1: target selection
+      await page.waitForTimeout(90);
       const region: ReadonlyArray<readonly [number, number]> = [
         [cx - 60, cy - 60],
         [cx + 60, cy - 60],

@@ -132,9 +132,13 @@ export interface UseDrillToolActions {
    * A LEFT click. `featureIdAtPoint` is the controller's own hit-test result (the
    * feature id under the click, or null), passed in so the hook stays free of any
    * point→id geometry — mirrors the knife/ring-edit split where the controller owns
-   * `featureAtPoint` and the hook drives the state machine (教訓 5.14 / 5.33). The
-   * FIRST click picks the target末端 face (LEAF gate); each subsequent click adds a
-   * region vertex.
+   * `featureAtPoint` and the hook drives the state machine (教訓 5.14 / 5.33).
+   *
+   * TWO PHASES (N725-2 裁定 2026-07-25: ring-edit と同型に揃える): the FIRST click
+   * picks the target末端 face ONLY (LEAF gate; no region vertex is placed by the
+   * selection click); each SUBSEQUENT click adds a region vertex — deliberately
+   * hit-test independent, so a vertex can sit in a hole void or outside the face
+   * (the domain rejects an escaping region at save, not the click).
    */
   handleClick(point: WorldCoordinate, featureIdAtPoint: FeatureId | null): void;
   /** Update the cursor-follow preview (region draft). */
@@ -238,8 +242,10 @@ export function useDrillTool<S>(options: UseDrillToolOptions<S>): UseDrillTool {
         setMessage(DRILL_STRINGS.notLeaf);
         return;
       }
+      // Phase 1 (N725-2): the selection click picks the face and places NO vertex —
+      // the region starts empty and every vertex is an explicit phase-2 click.
       setTargetId(featureIdAtPoint);
-      setRegion([point]);
+      setRegion([]);
       setMessage(null);
       onTargetSelected?.(featureIdAtPoint);
     },

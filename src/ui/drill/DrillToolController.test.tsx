@@ -170,9 +170,10 @@ function clickInput(lon: number, lat: number): void {
   fireEvent.pointerDown(layer, { clientX: lon, clientY: lat, button: 0 });
 }
 
-/** Select the target + draw a valid inside region ([2,2]-[10,2]-[6,10]), leaving the form up. */
+/** Select the target (phase 1, no vertex) then draw a valid inside region ([2,2]-[10,2]-[6,10]). */
 function selectAndDrawRegion(): void {
-  clickInput(2, 2); // first click picks the target末端 face AND is the first region vertex
+  clickInput(5, 5); // phase 1 (N725-2): picks the target末端 face ONLY — no region vertex
+  clickInput(2, 2);
   clickInput(10, 2);
   clickInput(6, 10);
 }
@@ -188,18 +189,21 @@ describe('DrillToolController — 穴あけによる新地物生成 (FR-45)', ()
     h.unmount();
   });
 
-  it('selecting a leaf target promotes it into the store selection', () => {
+  it('selecting a leaf target promotes it into the store selection and places NO vertex (N725-2)', () => {
     const h = mountDrill();
     activateDrill(h.store);
     expect(h.store.getState().activeFeature).toBeNull();
-    clickInput(2, 2); // first click in the solid fill picks the target
+    clickInput(2, 2); // phase 1: the click in the solid fill picks the target ONLY
     expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    // 2-phase (ring-edit と同型): the selection click is NOT the first region vertex.
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('0');
     h.unmount();
   });
 
   it('confirm is disabled below 3 region vertices and enabled at 3', () => {
     const h = mountDrill();
     activateDrill(h.store);
+    clickInput(5, 5); // phase 1: target selection only
     clickInput(2, 2);
     clickInput(10, 2);
     expect(screen.getByTestId('drill-confirm')).toBeDisabled();
@@ -212,6 +216,7 @@ describe('DrillToolController — 穴あけによる新地物生成 (FR-45)', ()
   it('undo removes the last placed region vertex (FR-78)', () => {
     const h = mountDrill();
     activateDrill(h.store);
+    clickInput(5, 5); // phase 1: target selection only
     clickInput(2, 2);
     clickInput(10, 2);
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
@@ -253,8 +258,9 @@ describe('DrillToolController — rejection surfaces the domain message (教訓 
   it('a region that escapes the target末端 is rejected with the domain Japanese文言', () => {
     const h = mountDrill();
     activateDrill(h.store);
-    // First click picks the target; then place two more vertices, one OUTSIDE the target
+    // Phase 1 picks the target; then place three vertices, one OUTSIDE the target
     // ([25,25] is beyond [0,20]²) so the region is not contained → NotContained reject.
+    clickInput(5, 5); // phase 1: target selection only
     clickInput(2, 2);
     clickInput(10, 2);
     clickInput(25, 25); // outside the featureAtPoint gate does not matter — draft adds it
@@ -285,6 +291,7 @@ describe('DrillToolController — transient state discarded on every exit path',
   it('switching away from the drill tool discards a draft and clears the overlay', () => {
     const h = mountDrill();
     activateDrill(h.store);
+    clickInput(5, 5); // phase 1: target selection only
     clickInput(2, 2);
     clickInput(10, 2);
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
@@ -292,8 +299,11 @@ describe('DrillToolController — transient state discarded on every exit path',
     expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
     // The render sink got a final EMPTY batch on discard (overlay cleared).
     expect(h.drawSink.batches[h.drawSink.batches.length - 1]).toBe(0);
-    // Re-activating starts a FRESH session (no carried-over vertices).
+    // Re-activating starts a FRESH session (no carried-over target/vertices): the
+    // first click is phase-1 target selection again, then a vertex lands as #1.
     activateDrill(h.store);
+    clickInput(5, 5);
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('0');
     clickInput(2, 2);
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
     h.unmount();
@@ -322,12 +332,13 @@ describe('DrillToolController — キャンセルはツール選択も解除し�
     // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
     expect(h.store.getState().activeTool).toBeNull();
 
-    // Re-selecting the SAME tool re-arms a fresh session (the 実機 repro).
+    // Re-selecting the SAME tool re-arms a fresh session (the 実機 repro). The first
+    // click is phase-1 target selection (N725-2: no vertex placed).
     act(() => h.store.getState().setActiveTool(TOOL_ID.EditDrill));
     expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
     clickInput(2, 2);
     expect(h.store.getState().activeFeature).toBe(TARGET_ID);
-    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('0');
     h.unmount();
   });
 
@@ -383,7 +394,8 @@ describe('DrillToolController — バグハント第11波 (#3/#6): focus guard o
   }
 
   function drawTwoRegionVertices(): void {
-    clickInput(2, 2); // picks the target末端 face AND is the first region vertex
+    clickInput(5, 5); // phase 1 (N725-2): picks the target末端 face only
+    clickInput(2, 2);
     clickInput(10, 2);
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
   }
