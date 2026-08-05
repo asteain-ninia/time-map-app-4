@@ -75,11 +75,10 @@ export function vertexCoordKey(coord: WorldCoordinate): string {
   // key differently and fail to weld (LOW-1). This reuses U04 `wrapLonDeg`'s single
   // boundary convention (+180 → −180); NO new epsilon and no second tolerance.
   //
-  // 申し送り: the private `coordKey` in knife / merge / drill (each unit's proposal.ts)
-  // is the same `quantize(normalize(c))` shape and carries the SAME latent seam
-  // non-idempotency. They are deliberately NOT touched here — an inherited convention
-  // in another unit's regression domain; folding them belongs to the eventual
-  // single-source extraction this module anticipates, not to this weld patch.
+  // 2026-08-06 根治済: the private `coordKey` in knife / merge / drill (each unit's
+  // proposal.ts) now DELEGATES to this function — the latent seam non-idempotency
+  // they inherited (double fold without the trailing re-normalize) is folded into
+  // this single source, as this module anticipated.
   const q = normalizeCoordinate(quantizeCoordinate(normalizeCoordinate(coord)));
   return `${q.lon},${q.lat}`;
 }
@@ -163,7 +162,15 @@ export function weldRingVertices(
       out.push(existing);
       continue;
     }
-    out.push(createVertex(mintVertexId(), quantizeCoordinate(coord)));
+    // Mint at the REPRESENTATIVE branch (same triple fold as vertexCoordKey): the
+    // caller's boolean op may run in an ALIGNED continuous frame (seam-crossing
+    // operands anchored onto one common branch, R3), so an output coordinate can be
+    // lon 190° — but every STORED leaf vertex is representative (resolveLeafShape
+    // re-aligns on read; merge/proposal stores the same fold). For a non-seam input
+    // the fold is the identity, so the common case is byte-unchanged.
+    out.push(
+      createVertex(mintVertexId(), normalizeCoordinate(quantizeCoordinate(normalizeCoordinate(coord)))),
+    );
   }
   return out;
 }

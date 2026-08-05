@@ -2129,3 +2129,185 @@ describe('HB3-10 共有頂点溶接 — 競合解決の調整後境界が優先�
     expect(checkConsistency(root, gregorian).inconsistencies).toEqual([]);
   });
 });
+
+// U4 study fix — the EDIT binding (edit-drag / vertex-delete / property edit / ring-edit
+// confirm) must carry the U06 id minters: applyResolutionAt refuses EVERY resolution when
+// nextVertexId/nextRingId are absent (return undefined), so a spatial conflict raised on
+// those paths was a structural dead-end — the modal offered priorities but Apply always
+// failed. App.tsx now injects the shared minters into all four createLiveEditBinding
+// call sites; this locks the behaviour at the binding layer for both wirings.
+describe('createLiveEditBinding — conflict resolution needs the id minters (U4 study fix)', () => {
+  const T = timePointYear(1000);
+
+  /** Seed two disjoint leaves (f-a at [0,2]², f-b at [3,5]×[0,2]) into one root. */
+  function seedTwoLeaves(): {
+    root: DomainRoot;
+    a: ReturnType<typeof squareLeaf>;
+    b: ReturnType<typeof squareLeaf>;
+  } {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 3, 0);
+    let root = applyAddProposal(emptyProject(), {
+      featureId: a.feature.id,
+      anchorTime: T,
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+    root = applyAddProposal(root, {
+      featureId: b.feature.id,
+      anchorTime: T,
+      snapshot: addSnapshot(b.feature, b.vertices),
+    });
+    return { root, a, b };
+  }
+
+  /** A FeatureSnapshot moving f-b two degrees west so it overlaps f-a in x∈[1,2]. */
+  function overlappingMoveSnapshot(b: ReturnType<typeof squareLeaf>): {
+    feature: LeafFeature;
+    vertices: Vertex[];
+  } {
+    const moved = b.vertices.map((v) =>
+      createVertex(v.id, { lon: v.coordinate.lon - 2, lat: v.coordinate.lat }),
+    );
+    return { feature: b.feature, vertices: moved };
+  }
+
+  it('WITH minters: an edit-drag overlap pends, then a priority/adjust policy commits (行き止まり解消)', () => {
+    const { root, a, b } = seedTwoLeaves();
+    let n = 0;
+    const binding = createLiveEditBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`ev-${(n += 1)}`),
+      nextRingId: () => asRingId(`er-${(n += 1)}`),
+    });
+    const proposal = createEditProposal(b.feature.id, T, overlappingMoveSnapshot(b));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    const outcome = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: conflict.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: b.feature.id,
+      },
+    ]);
+    // THE fix proof: the resolution APPLIES (previously refused unconditionally).
+    expect(outcome.status).toBe(PROCESS_STATUS.Committed);
+    if (outcome.status !== PROCESS_STATUS.Committed) return;
+    const result = outcome.command.execute(root);
+    // Both features survive — f-b is trimmed back, not deleted — and the resolved
+    // root is internally consistent.
+    const after = featuresAt(result.state, T).map((f) => f.id);
+    expect(after).toContain(a.feature.id);
+    expect(after).toContain(b.feature.id);
+    expect(checkConsistency(result.state, getCalendar('gregorian')).inconsistencies).toEqual([]);
+  });
+
+  it('WITHOUT minters (the old wiring): the same policy is refused — documents the dead-end the fix removes', () => {
+    const { root, a, b } = seedTwoLeaves();
+    const binding = createLiveEditBinding({ getRoot: () => root });
+    const proposal = createEditProposal(b.feature.id, T, overlappingMoveSnapshot(b));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    const outcome = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: conflict.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: b.feature.id,
+      },
+    ]);
+    expect(outcome.status).not.toBe(PROCESS_STATUS.Committed);
+  });
+});
+
+// U4 review 根治 — シーム(±180°)跨ぎ重複の競合解決は「検出→提示→必ず convergence-failure」
+// の行き止まりだった: applyResolutionAt の difference が operand を共通 world-turn へ整列
+// せず (resolveLeafShape は各地物を自身の branch へ unwrap する)、シーム跨ぎの adjust と
+// priority は連続フレームで ~360° 離れて評価され、difference が何も削らない → 書き戻し後の
+// 再検出で同じ重複 → maxRounds 到達で失敗、が毎回成立していた。整列 (alignMultiPolygon /
+// referenceLonForMultiPolygon の単一真実源、D35 の残り1経路) を挟んだことで解決が適用できる。
+describe('applyResolutionsFor — シーム跨ぎ重複の解決が収束する (U4 review 根治)', () => {
+  const T = timePointYear(1000);
+
+  /** A 2°×2° leaf from explicit representative corner lons. */
+  function leafFromLons(
+    idRaw: string,
+    vPrefix: string,
+    lons: readonly [number, number],
+  ): { feature: LeafFeature; vertices: Vertex[] } {
+    const [w, e] = lons;
+    const corners: readonly (readonly [number, number])[] = [
+      [w, 0],
+      [e, 0],
+      [e, 2],
+      [w, 2],
+    ];
+    const vertices = corners.map((c, i) =>
+      createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0], lat: c[1] }),
+    );
+    const ring = createTerritoryRing(asRingId(`r-${idRaw}`), vertices.map((v) => v.id));
+    const feature = createLeafFeature(
+      asFeatureId(idRaw),
+      createBasicAttributes(idRaw, 0, 0),
+      color,
+      createShape([ring]),
+    );
+    return { feature, vertices };
+  }
+
+  it('シーム跨ぎ adjust (179..181) × 西枝 priority (-179.5..-177.5) の重複が解決 Committed になる', () => {
+    // Priority a: [-179.5,-177.5]×[0,2] (west branch, no seam crossing itself).
+    // Adjust b: crosses the seam — stored corners 179 / −179 unwrap to [179,181].
+    // Geometric overlap: [180.5,181]×[0,2] (b's east edge ∩ a's west strip).
+    const a = leafFromLons('f-sa', 'vsa', [-179.5, -177.5]);
+    let root = applyAddProposal(emptyProject(), {
+      featureId: a.feature.id,
+      anchorTime: T,
+      snapshot: addSnapshot(a.feature, a.vertices),
+    });
+
+    let n = 0;
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`sv-${(n += 1)}`),
+      nextRingId: () => asRingId(`sr-${(n += 1)}`),
+    });
+
+    const b = leafFromLons('f-sb', 'vsb', [179, -179]);
+    const proposal = createEditProposal(b.feature.id, T, addSnapshot(b.feature, b.vertices));
+    const pending = binding.startProcess(proposal);
+    // U10's seam-aware detection sees the cross-seam overlap (D34 root cause A側は済).
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    const outcome = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: conflict.id,
+        priorityFeatureId: a.feature.id,
+        adjustFeatureId: b.feature.id,
+      },
+    ]);
+    // THE fix proof: previously convergence-failure (difference removed nothing —
+    // operands ~360° apart), now the aligned difference trims and the loop converges.
+    expect(outcome.status).toBe(PROCESS_STATUS.Committed);
+    if (outcome.status !== PROCESS_STATUS.Committed) return;
+
+    root = outcome.command.execute(root).state;
+    // Both survive; the adjust is trimmed, not deleted.
+    const after = featuresAt(root, T).map((f) => f.id);
+    expect(after).toContain(a.feature.id);
+    expect(after).toContain(b.feature.id);
+    // Every stored vertex is REPRESENTATIVE ([-180,180)) — the aligned continuous
+    // (>180°) difference output must not leak into the persisted store.
+    for (const v of verticesAt(root, T).byId.values()) {
+      expect(v.coordinate.lon).toBeGreaterThanOrEqual(-180);
+      expect(v.coordinate.lon).toBeLessThan(180);
+    }
+    expect(checkConsistency(root, getCalendar('gregorian')).inconsistencies).toEqual([]);
+  });
+});

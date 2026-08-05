@@ -85,6 +85,7 @@ import { detectTerminalOverlaps } from '../domain/spatial/index';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
 import { difference, isOk } from '../domain/geometry/index';
 import { isMultiPolygonEmpty, type GeoMultiPolygon } from '../domain/geometry/types';
+import { alignMultiPolygon, referenceLonForMultiPolygon } from '../domain/geo/index';
 import {
   featureDisplayName,
   pruneVertexStore,
@@ -514,7 +515,19 @@ function applyResolutionAt(
     const priorityArea = resolveLeafShape(priority.shape, vertices);
     if (adjustArea === undefined || priorityArea === undefined) return undefined;
 
-    const diff = difference(adjustArea, priorityArea);
+    // R3 / audit root cause A (シーム跨ぎ収束失敗の根治): resolveLeafShape unwraps each
+    // feature onto ITS OWN world turn, so a seam-crossing adjust and its priority can
+    // sit ~360° apart in the continuous frame. Differenced as-is the op removes
+    // NOTHING (operands disjoint) → the write-back re-detects the same overlap next
+    // round → convergence-failure, every time — the U4 review dead-end. Anchor BOTH
+    // operands onto ONE common branch through the single alignment source of truth
+    // before the op (the same pattern merge / drill / U10 / display use, D35).
+    // Single-branch (non-seam) inputs make this the identity — common case unchanged.
+    const ref = referenceLonForMultiPolygon(adjustArea);
+    const diff = difference(
+      alignMultiPolygon(adjustArea, ref),
+      alignMultiPolygon(priorityArea, ref),
+    );
     if (!isOk(diff)) return undefined;
     if (isMultiPolygonEmpty(diff.result)) {
       // The adjust feature is fully covered — there is nothing left; refuse so the
