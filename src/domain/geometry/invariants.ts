@@ -116,6 +116,87 @@ function bboxesOverlap(a: Bbox, b: Bbox): boolean {
   return a.minLon < b.maxLon && b.minLon < a.maxLon && a.minLat < b.maxLat && b.minLat < a.maxLat;
 }
 
+// --- cross-ring edge-pair sweep (Codex perf MED: O(n·m) 全対 → sort-and-sweep) --
+
+/** A tagged edge record for the two-ring sweep: which ring + index + AABB. */
+interface TaggedEdge {
+  readonly side: 0 | 1;
+  readonly index: number;
+  readonly minLon: number;
+  readonly maxLon: number;
+  readonly minLat: number;
+  readonly maxLat: number;
+}
+
+function taggedEdgesOf(ring: GeoRing, side: 0 | 1, out: TaggedEdge[]): void {
+  const n = ring.length;
+  for (let i = 0; i < n; i += 1) {
+    const p = ring[i];
+    const q = ring[(i + 1) % n];
+    if (p === undefined || q === undefined) continue;
+    out.push({
+      side,
+      index: i,
+      minLon: p.lon < q.lon ? p.lon : q.lon,
+      maxLon: p.lon > q.lon ? p.lon : q.lon,
+      minLat: p.lat < q.lat ? p.lat : q.lat,
+      maxLat: p.lat > q.lat ? p.lat : q.lat,
+    });
+  }
+}
+
+/**
+ * Enumerate the CROSS-ring edge pairs whose AABBs overlap, via one sort-and-sweep
+ * over both rings' lon intervals, calling `test(a1,a2,b1,b2)` (always ring-a edge
+ * first) until it returns true. Replaces the previous all-pairs O(n·m) loops
+ * (Codex MED「geometry invariants O(n²) — 10万頂点で固まる」): spread-out real
+ * rings drop to near-linear pair counts; a pathological all-spanning ring can
+ * still degrade — exactness over speed (R2). Transient sort only, no index (the
+ * U06 spec's RBush 禁止 is about cross-shape candidate narrowing, not the inner
+ * enumeration of one exact check). Touching AABBs are KEPT (strict rejects), so
+ * boundary-contact pairs always reach `test`.
+ */
+function anyCrossRingEdgePair(
+  a: GeoRing,
+  b: GeoRing,
+  test: (
+    a1: GeoRing[number],
+    a2: GeoRing[number],
+    b1: GeoRing[number],
+    b2: GeoRing[number],
+  ) => boolean,
+): boolean {
+  const edges: TaggedEdge[] = [];
+  taggedEdgesOf(a, 0, edges);
+  taggedEdgesOf(b, 1, edges);
+  edges.sort((x, y) => x.minLon - y.minLon);
+  const m = edges.length;
+  const an = a.length;
+  const bn = b.length;
+  for (let x = 0; x < m; x += 1) {
+    const ex = edges[x];
+    if (ex === undefined) continue;
+    for (let y = x + 1; y < m; y += 1) {
+      const ey = edges[y];
+      if (ey === undefined) continue;
+      if (ey.minLon > ex.maxLon) break; // sorted: no later lon overlap possible
+      if (ey.side === ex.side) continue; // cross-ring pairs only
+      if (ey.minLat > ex.maxLat || ey.maxLat < ex.minLat) continue;
+      const ea = ex.side === 0 ? ex : ey;
+      const eb = ex.side === 0 ? ey : ex;
+      const a1 = a[ea.index];
+      const a2 = a[(ea.index + 1) % an];
+      const b1 = b[eb.index];
+      const b2 = b[(eb.index + 1) % bn];
+      if (a1 === undefined || a2 === undefined || b1 === undefined || b2 === undefined) {
+        continue;
+      }
+      if (test(a1, a2, b1, b2)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Twice the SIGNED area of a ring (shoelace). Sign encodes winding:
  * positive = counter-clockwise (interior on the LEFT of each directed edge),
@@ -156,8 +237,6 @@ function ringSignedAreaX2(ring: GeoRing): number {
  * coordinate-scale-dependent offset probe.
  */
 export function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean {
-  const an = a.length;
-  const bn = b.length;
   // Interior-side sign per ring: +1 if interior is on the LEFT of each directed
   // edge (CCW winding), -1 if on the RIGHT (CW winding). A degenerate (zero-area)
   // ring has no interior side and cannot coincide-overlap.
@@ -167,34 +246,30 @@ export function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean
   const sideA = wa > 0 ? 1 : -1;
   const sideB = wb > 0 ? 1 : -1;
 
-  for (let i = 0; i < an; i += 1) {
-    const a1 = a[i];
-    const a2 = a[(i + 1) % an];
-    if (a1 === undefined || a2 === undefined) continue;
-    for (let j = 0; j < bn; j += 1) {
-      const b1 = b[j];
-      const b2 = b[(j + 1) % bn];
-      if (b1 === undefined || b2 === undefined) continue;
-      if (segmentsIntersect(a1, a2, b1, b2).relation !== SEGMENT_RELATION.Collinear) {
-        continue;
-      }
-      // The two edges are collinear and overlap along a positive-length run.
-      // Each ring's inward normal along its edge is leftNormal(dir) scaled by its
-      // winding sign. The edges are parallel; if they point the SAME way the
-      // shared direction is identical, if OPPOSITE the directions are negated.
-      const dax = a2.lon - a1.lon;
-      const day = a2.lat - a1.lat;
-      const dbx = b2.lon - b1.lon;
-      const dby = b2.lat - b1.lat;
-      // Sign of the dot product tells whether the two edge directions are aligned
-      // (+) or anti-aligned (-) along the shared line.
-      const sameDir = dax * dbx + day * dby >= 0 ? 1 : -1;
-      // Interiors land on the same geometric side of the shared line iff the
-      // inward-normal directions agree once relative edge orientation is folded in.
-      if (sideA === sideB * sameDir) return true;
+  // Candidate pairs come from the shared sort-and-sweep (Codex perf MED); the
+  // per-pair decision below is unchanged.
+  return anyCrossRingEdgePair(a, b, (a1, a2, b1, b2) => {
+    if (a1 === undefined || a2 === undefined || b1 === undefined || b2 === undefined) {
+      return false;
     }
-  }
-  return false;
+    if (segmentsIntersect(a1, a2, b1, b2).relation !== SEGMENT_RELATION.Collinear) {
+      return false;
+    }
+    // The two edges are collinear and overlap along a positive-length run.
+    // Each ring's inward normal along its edge is leftNormal(dir) scaled by its
+    // winding sign. The edges are parallel; if they point the SAME way the
+    // shared direction is identical, if OPPOSITE the directions are negated.
+    const dax = a2.lon - a1.lon;
+    const day = a2.lat - a1.lat;
+    const dbx = b2.lon - b1.lon;
+    const dby = b2.lat - b1.lat;
+    // Sign of the dot product tells whether the two edge directions are aligned
+    // (+) or anti-aligned (-) along the shared line.
+    const sameDir = dax * dbx + day * dby >= 0 ? 1 : -1;
+    // Interiors land on the same geometric side of the shared line iff the
+    // inward-normal directions agree once relative edge orientation is folded in.
+    return sideA === sideB * sameDir;
+  });
 }
 
 /**
@@ -210,34 +285,41 @@ export function ringsBoundaryCoincidentSameSide(a: GeoRing, b: GeoRing): boolean
  * Both rings are assumed already validated as simple (caller checks checkRing).
  */
 function ringsOverlap(a: GeoRing, b: GeoRing): boolean {
-  const an = a.length;
-  const bn = b.length;
-  for (let i = 0; i < an; i += 1) {
-    const a1 = a[i];
-    const a2 = a[(i + 1) % an];
-    if (a1 === undefined || a2 === undefined) continue;
-    for (let j = 0; j < bn; j += 1) {
-      const b1 = b[j];
-      const b2 = b[(j + 1) % bn];
-      if (b1 === undefined || b2 === undefined) continue;
-      if (segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper) {
-        return true;
-      }
-    }
-  }
+  if (anyProperCrossing(a, b)) return true;
   // No proper crossing: check nesting. A vertex of one ring strictly inside the
-  // other means one contains the other (overlapping interiors).
+  // other means one contains the other (overlapping interiors). A per-vertex bbox
+  // reject skips the O(edges) pointInPolygon for vertices that cannot be inside
+  // (Codex perf MED — the common boundary-adjacent case pays almost nothing).
   const aPoly: GeoPolygon = [a];
   const bPoly: GeoPolygon = [b];
+  const abb = ringBbox(a);
+  const bbb = ringBbox(b);
   for (const v of a) {
+    if (bbb !== undefined && !pointInBbox(v, bbb)) continue;
     if (pointInPolygon(v, bPoly) === POINT_LOCATION.Inside) return true;
   }
   for (const v of b) {
+    if (abb !== undefined && !pointInBbox(v, abb)) continue;
     if (pointInPolygon(v, aPoly) === POINT_LOCATION.Inside) return true;
   }
   // No proper crossing and no strictly-Inside vertex: a fully/partly coincident
   // boundary (identical duplicate ring) still overlaps — detect it explicitly.
   return ringsBoundaryCoincidentSameSide(a, b);
+}
+
+/** True iff `p` lies inside-or-on the bbox (a point strictly outside cannot be Inside the ring). */
+function pointInBbox(p: { lon: number; lat: number }, bb: Bbox): boolean {
+  return p.lon >= bb.minLon && p.lon <= bb.maxLon && p.lat >= bb.minLat && p.lat <= bb.maxLat;
+}
+
+/** True iff any cross-ring edge pair Proper-crosses (sweep-pruned enumeration). */
+function anyProperCrossing(a: GeoRing, b: GeoRing): boolean {
+  return anyCrossRingEdgePair(a, b, (a1, a2, b1, b2) => {
+    if (a1 === undefined || a2 === undefined || b1 === undefined || b2 === undefined) {
+      return false;
+    }
+    return segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper;
+  });
 }
 
 /**
@@ -411,25 +493,17 @@ function piecesSolidOverlap(
   polyB: GeoPolygon,
   outerB: GeoRing,
 ): boolean {
-  const an = outerA.length;
-  const bn = outerB.length;
-  for (let i = 0; i < an; i += 1) {
-    const a1 = outerA[i];
-    const a2 = outerA[(i + 1) % an];
-    if (a1 === undefined || a2 === undefined) continue;
-    for (let j = 0; j < bn; j += 1) {
-      const b1 = outerB[j];
-      const b2 = outerB[(j + 1) % bn];
-      if (b1 === undefined || b2 === undefined) continue;
-      if (segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper) {
-        return true;
-      }
-    }
-  }
+  if (anyProperCrossing(outerA, outerB)) return true;
+  // Vertex-in-solid nesting probes, with a per-vertex bbox reject on the other
+  // piece's OUTER ring (a vertex strictly outside that bbox cannot be Inside).
+  const bbA = ringBbox(outerA);
+  const bbB = ringBbox(outerB);
   for (const v of outerA) {
+    if (bbB !== undefined && !pointInBbox(v, bbB)) continue;
     if (pointInPolygon(v, polyB) === POINT_LOCATION.Inside) return true;
   }
   for (const v of outerB) {
+    if (bbA !== undefined && !pointInBbox(v, bbA)) continue;
     if (pointInPolygon(v, polyA) === POINT_LOCATION.Inside) return true;
   }
   // Edge pokes through a concave hole notch of the other piece: an outer edge of
@@ -451,24 +525,10 @@ function piecesSolidOverlap(
  * so this returns false for it.
  */
 function outerRingCrossesHoleOf(outer: GeoRing, poly: GeoPolygon): boolean {
-  const on = outer.length;
   for (let h = 1; h < poly.length; h += 1) {
     const hole = poly[h];
     if (hole === undefined) continue;
-    const hn = hole.length;
-    for (let i = 0; i < on; i += 1) {
-      const a1 = outer[i];
-      const a2 = outer[(i + 1) % on];
-      if (a1 === undefined || a2 === undefined) continue;
-      for (let j = 0; j < hn; j += 1) {
-        const b1 = hole[j];
-        const b2 = hole[(j + 1) % hn];
-        if (b1 === undefined || b2 === undefined) continue;
-        if (segmentsIntersect(a1, a2, b1, b2).relation === SEGMENT_RELATION.Proper) {
-          return true;
-        }
-      }
-    }
+    if (anyProperCrossing(outer, hole)) return true;
   }
   return false;
 }

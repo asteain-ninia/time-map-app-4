@@ -252,51 +252,86 @@ function collinearSharedEndpointOnly(
 
 // --- self-intersection ------------------------------------------------------
 
+/** An edge record for the sort-and-sweep pruning (index + its AABB). */
+interface SweepEdge {
+  readonly index: number;
+  readonly minLon: number;
+  readonly maxLon: number;
+  readonly minLat: number;
+  readonly maxLat: number;
+}
+
+/** Build the ring's defined edges with their AABBs, sorted by `minLon`. */
+function sortedRingEdges(ring: GeoRing): SweepEdge[] {
+  const n = ring.length;
+  const edges: SweepEdge[] = [];
+  for (let i = 0; i < n; i += 1) {
+    const a = ring[i];
+    const b = ring[(i + 1) % n];
+    if (a === undefined || b === undefined) continue;
+    edges.push({
+      index: i,
+      minLon: a.lon < b.lon ? a.lon : b.lon,
+      maxLon: a.lon > b.lon ? a.lon : b.lon,
+      minLat: a.lat < b.lat ? a.lat : b.lat,
+      maxLat: a.lat > b.lat ? a.lat : b.lat,
+    });
+  }
+  edges.sort((x, y) => x.minLon - y.minLon);
+  return edges;
+}
+
 /**
  * True iff the ring's edges cross one another (a non-simple polygon).
  * Adjacent edges share an endpoint by construction; that shared endpoint is NOT
  * counted as a self-intersection. A proper crossing between non-adjacent edges,
  * or a collinear overlap between non-adjacent edges, IS a self-intersection.
  *
- * O(n²) over edges — exact, no spatial index (that pre-filtering is the upper
- * layer's job, spec §やらないこと). Rings with < 3 edges cannot self-intersect.
+ * ENUMERATION (Codex perf MED「O(n²) — 10万頂点で固まる」根治): the candidate edge
+ * pairs are pruned by a SORT-AND-SWEEP over the edges' lon intervals — sort by
+ * `minLon` once, then for each edge test only the later edges whose interval
+ * still overlaps in lon (plus a lat AABB reject). Real (coastline-shaped) rings
+ * have short, spatially spread edges, so the pair count drops from n²/2 to
+ * near-linear; a pathological ring (every edge spanning the full lon range) can
+ * still degrade to O(n²) — exactness always wins over speed (R2). This is an
+ * INTERNAL transient sort, not a spatial index: the U06 spec's「やらないこと」
+ * (RBush による候補絞り込みは上位の責務) prohibits cross-shape candidate
+ * narrowing, not an implementation detail inside one exact predicate. The exact
+ * decision per pair is byte-identical to the naive scan (`segmentsIntersect`),
+ * and the boolean result is order-independent, so behaviour is unchanged.
  *
- * A cheap per-edge AABB reject runs before the (now robust, hence costlier)
- * `segmentsIntersect` call: two edges whose bounding boxes do not overlap cannot
- * intersect, so the expensive exact predicate is skipped. This is a constant-
- * factor optimization only — it builds NO index and keeps the O(n²) contract — so
- * it stays within the spec boundary while cutting the dominant cost on large rings.
+ * Adjacent pairs are never lost to pruning: they share a vertex, so their lon
+ * intervals always overlap and the lat reject (strict inequalities) cannot drop
+ * a touching pair.
  */
 export function ringSelfIntersects(ring: GeoRing): boolean {
   const n = ring.length;
   if (n < 3) return false;
-  for (let i = 0; i < n; i += 1) {
-    const a1 = ring[i];
-    const a2 = ring[(i + 1) % n];
-    if (a1 === undefined || a2 === undefined) continue;
-    const aMinLon = a1.lon < a2.lon ? a1.lon : a2.lon;
-    const aMaxLon = a1.lon > a2.lon ? a1.lon : a2.lon;
-    const aMinLat = a1.lat < a2.lat ? a1.lat : a2.lat;
-    const aMaxLat = a1.lat > a2.lat ? a1.lat : a2.lat;
-    for (let j = i + 1; j < n; j += 1) {
-      // Skip edges that share a vertex (adjacent edges, and the wrap-around pair
-      // joining the last edge to the first).
+  const edges = sortedRingEdges(ring);
+  const m = edges.length;
+  for (let x = 0; x < m; x += 1) {
+    const ea = edges[x];
+    if (ea === undefined) continue;
+    for (let y = x + 1; y < m; y += 1) {
+      const eb = edges[y];
+      if (eb === undefined) continue;
+      // Sweep cut: sorted by minLon, so once an edge starts past ea's right end
+      // no later edge can overlap ea in lon.
+      if (eb.minLon > ea.maxLon) break;
+      // Lat AABB reject (strict: touching boxes are kept, so shared-vertex pairs
+      // always reach the exact predicate).
+      if (eb.minLat > ea.maxLat || eb.maxLat < ea.minLat) continue;
+      const i = ea.index < eb.index ? ea.index : eb.index;
+      const j = ea.index < eb.index ? eb.index : ea.index;
+      // Edges that share a vertex: the consecutive pair and the wrap-around pair
+      // joining the last edge to the first.
       const adjacent = j === i + 1 || (i === 0 && j === n - 1);
+      const a1 = ring[i];
+      const a2 = ring[(i + 1) % n];
       const b1 = ring[j];
       const b2 = ring[(j + 1) % n];
-      if (b1 === undefined || b2 === undefined) continue;
-      // AABB reject: non-overlapping edge boxes cannot intersect. Adjacent edges
-      // (handled specially below) always share a vertex so their boxes touch —
-      // never skipped here.
-      if (!adjacent) {
-        if (
-          (b1.lon < b2.lon ? b1.lon : b2.lon) > aMaxLon ||
-          (b1.lon > b2.lon ? b1.lon : b2.lon) < aMinLon ||
-          (b1.lat < b2.lat ? b1.lat : b2.lat) > aMaxLat ||
-          (b1.lat > b2.lat ? b1.lat : b2.lat) < aMinLat
-        ) {
-          continue;
-        }
+      if (a1 === undefined || a2 === undefined || b1 === undefined || b2 === undefined) {
+        continue;
       }
       const rel = segmentsIntersect(a1, a2, b1, b2).relation;
       if (adjacent) {
