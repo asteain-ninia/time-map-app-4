@@ -35,7 +35,7 @@ import {
   type ParentCandidate,
 } from '../../domain/add/index';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
+import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
@@ -91,12 +91,15 @@ export interface AddToolControllerProps<S> {
   readonly mapCameraInput?: MapCameraInput | undefined;
   /**
    * Host commit handler (教訓 5.11): swap the new domain state in and re-resolve
-   * selection from the new feature id. The controller forwards `applyCommandResult`
-   * by default if the host omits this.
+   * selection from the new feature id. REQUIRED (Codex SPECULATIVE 根治): the old
+   * optional default wrote `applyCommandResult` straight into the store, silently
+   * BYPASSING the host's single commit funnel (recordCommit → undo 履歴 + FR-100
+   * 自動配色合成 + dirty 追跡). The live composite always supplied its own handler
+   * so the default was dead code in production — but a future mount omitting the
+   * prop would have skipped history recording without any signal. Making the prop
+   * required moves that mistake to compile time.
    */
-  readonly onCommitted?:
-    | ((result: ProcessResult<S>, newFeatureId: FeatureId) => void)
-    | undefined;
+  readonly onCommitted: (result: ProcessResult<S>, newFeatureId: FeatureId) => void;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
   readonly onConflicts?: ((result: ProcessResult<S>, proposal: AddProposal) => void) | undefined;
   /**
@@ -155,27 +158,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const gridSpacingRaw = useStore(store, (s) => s.projectSettings.gridSpacingDeg);
   const gridSpacing = coerceGridSpacing(gridSpacingRaw);
 
-  // The host commit handler: default to the store's own command-result path so
-  // selection is re-resolved from the new feature id (教訓 5.11). The store write
-  // stays the single path (単一の真実源). U13's committed result carries the new
-  // state AND the single composite command; we replay the command against the
-  // PRE-commit domain to derive the touched/created CommandResult, then swap in
-  // the committed state and promote the new feature as the next active target.
-  const onCommitted = useCallback(
-    (result: ProcessResult<S>, newFeatureId: FeatureId) => {
-      if (props.onCommitted) {
-        props.onCommitted(result, newFeatureId);
-        return;
-      }
-      if (result.status === PROCESS_STATUS.Committed) {
-        const commandResult = result.command.execute(store.getState().domain).result;
-        store.getState().applyCommandResult(result.state, commandResult, {
-          featureId: newFeatureId,
-        });
-      }
-    },
-    [props, store],
-  );
+  // The host commit handler is REQUIRED (Codex SPECULATIVE 根治): the controller
+  // never writes the store itself — every commit goes through the host's single
+  // funnel (App: recordCommit → undo 履歴 + FR-100 自動配色 + dirty)。
+  const onCommitted = props.onCommitted;
 
   const add = useAddTool<S>({
     currentTime,

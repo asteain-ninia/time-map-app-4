@@ -87,6 +87,7 @@ function mountWithCamera(): {
           screenToWorld={screenToWorld}
           drawSink={drawSink}
           mapCameraInput={mapCameraInput}
+          onCommitted={() => {}}
         />
       }
     />,

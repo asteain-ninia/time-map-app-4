@@ -67,6 +67,24 @@ const committed: ProcessResult<S> = {
 // Identity screen→world so a click at (lon*1, lat*1) lands at that world point.
 const screenToWorld: ScreenToWorld = (clientX, clientY) => ({ lon: clientX, lat: clientY });
 
+/**
+ * The host commit handler (`onCommitted` is now REQUIRED — Codex SPECULATIVE 根治:
+ * the controller no longer carries a store-writing default that bypassed the host
+ * funnel). This test host replicates the minimal commit reflection the removed
+ * default performed: replay the command for its CommandResult, swap in the
+ * committed state, promote the new feature.
+ */
+function hostCommit(store: StoreApi<SessionStore<S>>) {
+  return (result: ProcessResult<S>, newFeatureId: ReturnType<typeof asFeatureId>): void => {
+    if (result.status === PROCESS_STATUS.Committed) {
+      const commandResult = result.command.execute(store.getState().domain).result;
+      store.getState().applyCommandResult(result.state, commandResult, {
+        featureId: newFeatureId,
+      });
+    }
+  };
+}
+
 interface Harness {
   readonly store: StoreApi<SessionStore<S>>;
   readonly startProcess: ReturnType<typeof vi.fn>;
@@ -115,6 +133,7 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
           nextRingId={() => asRingId(`r${++r}`)}
           screenToWorld={screenToWorld}
           drawSink={drawSink}
+          onCommitted={hostCommit(store)}
         />
       }
     />,
@@ -343,6 +362,7 @@ describe('U23 bughunt3 (H2): Ctrl+Z does NOT double-fire while drawing', () => {
               screenToWorld={screenToWorld}
               drawSink={{ drawAdd: () => {} }}
               onDrawingChange={setAddDrawing}
+              onCommitted={hostCommit(store)}
             />
           }
         />
