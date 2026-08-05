@@ -40,6 +40,24 @@ export interface ExtractedTmap {
   readonly attachments: readonly NamedAsset[];
 }
 
+/**
+ * Size caps (Codex 全体レビュー MED「zip・サイズ上限なし — 巨大ファイルで main 停止」).
+ * The container cap bounds what the IPC layer will even READ from disk (statで事前
+ * 拒否 — a multi-GB pick must never freeze main's event loop in unzipSync); the
+ * per-entry cap bounds what unzipSync will EXPAND (zip-bomb: a tiny container can
+ * declare a huge originalSize — the fflate filter rejects it BEFORE decompression).
+ * Both are far above any legitimate project (実測 derle 実データ=数十MB級) so a real
+ * file is never rejected; they exist to keep a pathological file from stalling main.
+ */
+export const MAX_TMAP_BYTES = 1024 * 1024 * 1024; // 1 GiB (container / stat cap)
+export const MAX_TMAP_ENTRY_BYTES = 512 * 1024 * 1024; // 512 MiB (expanded per entry)
+
+/** Optional cap overrides for {@link readTmap} (tests inject small values). */
+export interface ReadTmapCaps {
+  readonly maxContainerBytes?: number;
+  readonly maxEntryBytes?: number;
+}
+
 /** Why reading a `.tmap` failed (corrupt zip / missing required entry / bad JSON). */
 export type ReadTmapResult =
   | { readonly ok: true; readonly contents: ExtractedTmap }
@@ -75,15 +93,45 @@ export function buildTmap(contents: TmapContents): Uint8Array {
  * caller can map them to a 拒否理由 (受け入れ基準5). The manifest is returned as
  * raw `unknown` — validation happens at the parse boundary, not here.
  */
-export function readTmap(bytes: Uint8Array): ReadTmapResult {
+export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapResult {
+  const maxContainer = caps.maxContainerBytes ?? MAX_TMAP_BYTES;
+  const maxEntry = caps.maxEntryBytes ?? MAX_TMAP_ENTRY_BYTES;
+  // Container cap — a belt at the byte layer (the IPC handler stat-rejects earlier,
+  // but every caller of this pure adapter gets the same bound).
+  if (bytes.length > maxContainer) {
+    return {
+      ok: false,
+      reason: 'corrupt',
+      message: `ファイルが大きすぎます（上限 ${Math.floor(maxContainer / (1024 * 1024))} MB）。`,
+    };
+  }
   let entries: Record<string, Uint8Array>;
+  // Zip-bomb guard: fflate's filter sees each entry's DECLARED expanded size
+  // (originalSize) BEFORE decompression, so a tiny container declaring a huge entry
+  // is rejected without ever allocating/expanding it (main は停止しない).
+  let oversizedEntry: string | undefined;
   try {
-    entries = unzipSync(bytes);
+    entries = unzipSync(bytes, {
+      filter: (file) => {
+        if (file.originalSize > maxEntry) {
+          oversizedEntry = file.name;
+          return false;
+        }
+        return true;
+      },
+    });
   } catch (error) {
     return {
       ok: false,
       reason: 'corrupt',
       message: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (oversizedEntry !== undefined) {
+    return {
+      ok: false,
+      reason: 'corrupt',
+      message: `エントリ ${oversizedEntry} が大きすぎます（上限 ${Math.floor(maxEntry / (1024 * 1024))} MB）。`,
     };
   }
 

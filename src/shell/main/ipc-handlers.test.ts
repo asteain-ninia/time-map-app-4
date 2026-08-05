@@ -677,3 +677,66 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
     expect(deps.currentPath.get()).toBe('/A.tmap');
   });
 });
+
+// Codex 全体レビュー MED 対処 — 保存側 runtime validation と読込サイズ上限。
+describe('保存側 runtime validation (validateSaveRequest / Codex MED)', () => {
+  it('壊れた manifest の保存要求は write-failed で拒否され、ディスクに書かれない', async () => {
+    const { deps, disk, saveCalls } = makeDeps();
+    const bad: SaveRequest = {
+      ...makeSaveReq(),
+      manifest: { garbage: true } as unknown as SaveRequest['manifest'],
+    };
+    const res = await handleSaveAs(deps, bad);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('write-failed');
+    expect(saveCalls).toHaveLength(0);
+    expect(disk.size).toBe(0);
+  });
+
+  it('パス区切りを含む添付資産名は拒否される (ZIP エントリパス逸脱の封鎖)', async () => {
+    const { deps, saveCalls } = makeDeps();
+    const bad: SaveRequest = {
+      ...makeSaveReq(),
+      attachments: [{ name: '../evil.png', bytes: new Uint8Array([1]) }],
+    };
+    const res = await handleSaveAs(deps, bad);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('write-failed');
+    if (res.reason !== 'write-failed') return;
+    expect(res.message).toContain('添付資産名');
+    expect(saveCalls).toHaveLength(0);
+  });
+
+  it('正当な保存要求は従来どおり書ける (validation は素通り)', async () => {
+    const { deps, disk } = makeDeps();
+    const res = await handleSaveAs(deps, makeSaveReq());
+    expect(res.ok).toBe(true);
+    expect(disk.size).toBeGreaterThan(0);
+  });
+});
+
+describe('読込のサイズ上限 (stat 事前拒否 / Codex MED「巨大ファイルで main 停止」)', () => {
+  it('上限超過の .tmap は read 前に read-failed で拒否され readFile は呼ばれない', async () => {
+    const { deps } = makeDeps({
+      readFile: {
+        readFile: vi.fn(async () => new Uint8Array()),
+        statSize: vi.fn(async () => 2 * 1024 * 1024 * 1024), // 2 GiB > 1 GiB cap
+      },
+    });
+    const res = await handleLoad(deps);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('read-failed');
+    if (res.reason !== 'read-failed') return;
+    expect(res.message).toContain('大きすぎます');
+    expect(deps.readFile.readFile).not.toHaveBeenCalled();
+  });
+
+  it('上限内の .tmap は従来どおり読める (stat は素通り)', async () => {
+    const { deps } = makeDeps();
+    const res = await handleLoad(deps);
+    expect(res.ok).toBe(true);
+  });
+});

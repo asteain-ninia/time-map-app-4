@@ -10,9 +10,11 @@
 // calls with the real Electron bindings.
 
 import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
+import { isParsed, parseManifest } from '../../domain/persistence/boundary';
 import { DEFAULT_MAX_GENERATIONS } from '../io/backup';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
+import { MAX_TMAP_BYTES, MAX_TMAP_ENTRY_BYTES } from '../io/tmap';
 import {
   IPC_CHANNEL,
   type AutoSaveConfig,
@@ -167,6 +169,48 @@ export interface IpcDeps {
 }
 
 const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
+const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.floor(MAX_TMAP_BYTES / (1024 * 1024))} MB）。`;
+
+/**
+ * Codex 全体レビュー MED「main IPC 保存側 runtime validation 欠如」への対処: the
+ * renderer-supplied {@link SaveRequest} is UNTRUSTED at this boundary (a renderer
+ * bug — or a compromised renderer — must not make main atomic-write a file the
+ * loader would then reject, 教訓6.4.15 片側shim の再発防止). Checks, in order:
+ *   1. structural shape (bytes are real Uint8Arrays; attachments well-formed),
+ *   2. attachment names: non-empty, no path separators / `..` (a hostile name
+ *      would otherwise become a ZIP entry path outside `assets/attachments/`),
+ *   3. per-entry byte caps (the SAME caps the reader enforces — WRITE⊆READ),
+ *   4. the manifest round-trips through the SAME Zod boundary the loader uses
+ *      (parseManifest): never write a `.tmap` that cannot be re-opened.
+ * Returns a Japanese message on failure, or `null` when the request is sound.
+ */
+export function validateSaveRequest(req: SaveRequest): string | null {
+  if (typeof req !== 'object' || req === null) return '保存要求の形式が不正です。';
+  if (!(req.baseMapImage instanceof Uint8Array)) return '保存要求の形式が不正です。';
+  if (req.baseMapImage.length > MAX_TMAP_ENTRY_BYTES) {
+    return '背景地図画像が大きすぎるため保存できません。';
+  }
+  if (!Array.isArray(req.attachments)) return '保存要求の形式が不正です。';
+  for (const asset of req.attachments) {
+    if (typeof asset !== 'object' || asset === null) return '保存要求の形式が不正です。';
+    const { name, bytes } = asset as { name: unknown; bytes: unknown };
+    if (typeof name !== 'string' || name.length === 0) return '保存要求の形式が不正です。';
+    if (name.includes('/') || name.includes('\\') || name === '..' || name.includes('..')) {
+      return `添付資産名が不正です: ${name}`;
+    }
+    if (!(bytes instanceof Uint8Array)) return '保存要求の形式が不正です。';
+    if (bytes.length > MAX_TMAP_ENTRY_BYTES) {
+      return `添付資産 ${name} が大きすぎるため保存できません。`;
+    }
+  }
+  // WRITE⊆READ symmetry: the exact Zod boundary the loader runs. Rejecting here is
+  // strictly better than writing a file the user can never re-open (第6波 HIGH の
+  // 「自分の正当ファイルが二度と開けない」と同じ非対称クラスの封鎖).
+  if (!isParsed(parseManifest(req.manifest))) {
+    return '保存データが検証に失敗しました。お手数ですが開発者へ報告してください。';
+  }
+  return null;
+}
 
 // --- the handler implementations (exported for direct unit testing) ---------
 
@@ -186,6 +230,11 @@ export async function handleSaveAs(deps: IpcDeps, req: SaveRequest): Promise<Sav
 }
 
 async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise<SaveResponse> {
+  // Runtime boundary validation (Codex MED): never hand untrusted renderer bytes /
+  // manifest straight to the atomic writer. Rejecting BEFORE the write means the
+  // on-disk file (and its backups) are untouched by a malformed request.
+  const invalid = validateSaveRequest(req);
+  if (invalid !== null) return { ok: false, reason: 'write-failed', message: invalid };
   // MED (save/load レース): snapshot the load-commit generation at save START. If a load
   // commits (a破壊的置換) during the awaited write, the counter advances and this save must
   // NOT promote its own (now-stale) target — the load commit is the more-recent truth
@@ -237,6 +286,14 @@ async function readAndParse(
 ): Promise<LoadResponse> {
   let bytes: Uint8Array;
   try {
+    // Size cap BEFORE the read (Codex MED「巨大ファイルで main 停止」— the
+    // handleOpenImage F3 pattern): a multi-GB pick/drop must never be read into
+    // main + structured-cloned across IPC + fed to unzipSync. readTmap re-checks
+    // the actual byte length (TOCTOU belt) and bounds each entry's EXPANSION.
+    const sizeBytes = await deps.readFile.statSize(path);
+    if (sizeBytes > MAX_TMAP_BYTES) {
+      return { ok: false, reason: 'read-failed', message: FILE_TOO_LARGE_MSG };
+    }
     bytes = await deps.readFile.readFile(path);
   } catch {
     return { ok: false, reason: 'read-failed', message: READ_FAILED_MSG };

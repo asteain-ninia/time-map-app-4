@@ -112,3 +112,38 @@ describe('readTmap rejects corrupt / incomplete inputs (受け入れ基準5)', (
     expect(read.reason).toBe('corrupt');
   });
 });
+
+// Codex 全体レビュー MED — サイズ上限 (container / zip-bomb) の回帰ロック。
+describe('readTmap size caps (Codex MED)', () => {
+  it('rejects a container larger than the cap without unzipping', () => {
+    const big = new Uint8Array(64);
+    const res = readTmap(big, { maxContainerBytes: 32 });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('corrupt');
+    expect(res.message).toContain('大きすぎます');
+  });
+
+  it('rejects an entry whose EXPANDED size exceeds the cap (zip-bomb guard)', () => {
+    const bytes = buildTmap({
+      manifest: { v: 1 },
+      baseMapImage: new Uint8Array(100), // expands to 100 bytes > cap 10
+      attachments: [],
+    });
+    const res = readTmap(bytes, { maxEntryBytes: 10 });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('corrupt');
+    expect(res.message).toContain('大きすぎます');
+  });
+
+  it('caps leave a normal round-trip untouched (default caps)', () => {
+    const bytes = buildTmap({
+      manifest: { v: 1 },
+      baseMapImage: new Uint8Array([9, 9]),
+      attachments: [{ name: 'a.png', bytes: new Uint8Array([1]) }],
+    });
+    const res = readTmap(bytes);
+    expect(res.ok).toBe(true);
+  });
+});
