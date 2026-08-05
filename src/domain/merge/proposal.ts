@@ -28,6 +28,7 @@
 import { createBasicAttributes, type BasicAttributes, type ColorInfo } from '../attributes';
 import { quantizeCoordinate } from '../geometry/index';
 import { alignMultiPolygon, normalizeCoordinate, referenceLonForMultiPolygon } from '../geo/index';
+import { vertexCoordKey } from '../vertex-weld';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
 import {
@@ -185,10 +186,13 @@ interface BuiltShape {
  * 点 (190° と −170°) が同じキーに落ちるよう先に正規化することで、旧→新対応 (buildRemap)
  * と頂点重複集約が world-turn ズレで取りこぼされないようにする。旧頂点は既に
  * representative なので正規化は恒等。
+ *
+ * 実装は U11 溶接キー {@link vertexCoordKey} へ委譲 (申し送り根治): 旧私設キーは
+ * quantize が経度をちょうど +180 へ丸め上げるケースで非冪等だった。三重 fold の
+ * 単一真実源に畳むことでシーム境界でも同一点が同一キーに落ちる。
  */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(normalizeCoordinate(c));
-  return `${q.lon},${q.lat}`;
+  return vertexCoordKey(c);
 }
 
 interface RawRing {

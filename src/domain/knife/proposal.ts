@@ -23,6 +23,7 @@ import type { BasicAttributes, ColorInfo } from '../attributes';
 import { type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from '../geometry/index';
 import { normalizeCoordinate } from '../geo/index';
+import { vertexCoordKey } from '../vertex-weld';
 import type { GeoMultiPolygon } from '../geometry/types';
 import {
   createLeafFeature,
@@ -132,10 +133,14 @@ interface BuiltShape {
  * (190° と −170°) が同じキーに落ちるよう先に正規化することで、旧→新対応 (buildRemap)
  * と頂点重複集約が world-turn ズレで取りこぼされないようにする (merge/proposal.ts
  * coordKey と単一真実源)。旧頂点は既に representative なので正規化は恒等。
+ *
+ * 実装は U11 溶接キー {@link vertexCoordKey} へ委譲 (申し送り根治): 旧私設キーは
+ * quantize が経度をちょうど +180 へ丸め上げるケースで非冪等 (179.99999996→"180,…" /
+ * −180→"−180,…" が別キー) だった。三重 fold (normalize→quantize→normalize) の単一
+ * 真実源に畳むことでシーム境界でも同一点が同一キーに落ちる。
  */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(normalizeCoordinate(c));
-  return `${q.lon},${q.lat}`;
+  return vertexCoordKey(c);
 }
 
 /** A raw ring carried from the boolean output with its minted id + coordinates. */

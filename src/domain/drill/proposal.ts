@@ -24,6 +24,7 @@ import type { BasicAttributes, ColorInfo } from '../attributes';
 import { type WorldCoordinate } from '../coordinate';
 import { quantizeCoordinate } from '../geometry/index';
 import { normalizeCoordinate } from '../geo/index';
+import { vertexCoordKey } from '../vertex-weld';
 import type { GeoMultiPolygon } from '../geometry/types';
 import {
   createLeafFeature,
@@ -89,10 +90,13 @@ interface BuiltShape {
  * 先に normalize することで、原末端の未変更外周頂点との突き合わせ (buildExistingSeed) が
  * world-turn ズレで取りこぼされない (knife/merge の coordKey と単一真実源)。旧頂点は既に
  * representative なので normalize は恒等。
+ *
+ * 実装は U11 溶接キー {@link vertexCoordKey} へ委譲 (申し送り根治): 旧私設キーは
+ * quantize が経度をちょうど +180 へ丸め上げるケースで非冪等だった。三重 fold の
+ * 単一真実源に畳むことでシーム境界でも同一点が同一キーに落ちる。
  */
 function coordKey(c: WorldCoordinate): string {
-  const q = quantizeCoordinate(normalizeCoordinate(c));
-  return `${q.lon},${q.lat}`;
+  return vertexCoordKey(c);
 }
 
 /**
