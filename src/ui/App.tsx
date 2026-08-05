@@ -562,6 +562,14 @@ export function App(): JSX.Element {
   // from the SAME `sharedMint` add / knife use (below), so an edge-add-minted id can
   // collide with neither stored data nor another tool's output (教訓 5.37 重複チェック).
   const nextVertexIdRef = useRef<(() => VertexId) | null>(null);
+  // U4 study — the RING-id twin of the vertex minter ref above, for the U06 conflict-
+  // resolution write-back of the EDIT bindings (edit-drag / vertex-delete / property
+  // edit). Those bindings are created inside onMapMount (before `sharedMint` is in
+  // scope), so they reach the shared minter lazily through this ref, exactly like the
+  // edge-add vertex minter. Without BOTH minters applyResolutionAt refuses every
+  // resolution (consistency-binding: undefined ⇒ return undefined) — conflict
+  // resolution was structurally impossible on those paths.
+  const nextRingIdRef = useRef<(() => RingId) | null>(null);
 
   // The latest zoom CLAMP range (FR-10). The file-ops controller pushes it on
   // every settings change; we cache it so a range set BEFORE the map mounts is
@@ -1184,6 +1192,12 @@ export function App(): JSX.Element {
     // decision can collapse a surviving snap onto its target (受け入れ基準6/12).
     const editBinding = createLiveEditBinding({
       getRoot: () => store.getState().domain,
+      // U4 study fix — the U06 difference write-back minters (shared project-wide
+      // series via the lazy refs; assigned from sharedMint before any pointer event
+      // can fire). Without them every conflict resolution on the edit-drag path was
+      // refused (applyResolutionAt ⇒ undefined = 解決不能の行き止まり).
+      nextVertexId: () => nextVertexIdRef.current!(),
+      nextRingId: () => nextRingIdRef.current!(),
     });
     const editSnapshotCtx = {
       getRoot: () => store.getState().domain,
@@ -1847,6 +1861,7 @@ export function App(): JSX.Element {
   // ref indirection lets the map's imperatively-created edit-session port reserve ids
   // through the SAME series add / knife use without re-mounting on a minter change.
   nextVertexIdRef.current = () => asVertexId(sharedMint('v'));
+  nextRingIdRef.current = () => asRingId(sharedMint('r'));
 
   const hostBootstrap = useMemo(
     () => createAddBootstrap<DomainRoot>(() => store.getState().domain, sharedMint),
@@ -2142,8 +2157,15 @@ export function App(): JSX.Element {
   // base detectSpatial with the REAL detectSpatialAt(proposal), so the FR-88 完了時
   // 整合性維持プロセス (時間整合 + 制約 + 空間競合検出) genuinely fires on the delete.
   const vertexDeleteBinding = useMemo(
-    () => createLiveEditBinding({ getRoot: () => store.getState().domain }),
-    [store],
+    () =>
+      createLiveEditBinding({
+        getRoot: () => store.getState().domain,
+        // U4 study fix — id minters for the U06 resolution write-back (shared series;
+        // without them a vertex-delete conflict could never be resolved, only Cancelled).
+        nextVertexId: () => asVertexId(sharedMint('v')),
+        nextRingId: () => asRingId(sharedMint('r')),
+      }),
+    [store, sharedMint],
   );
 
   // FR-87 / FR-88 頂点削除 — the run branches on the LIVE selection (single funnel,
@@ -2996,8 +3018,17 @@ export function App(): JSX.Element {
   // and records ONE U12 undo unit. A Rejected result throws so the form surfaces 保存に失敗
   // rather than a silent no-op (HB-3 honest-failure discipline).
   const propertyEditBinding = useMemo(
-    () => createLiveEditBinding({ getRoot: () => store.getState().domain }),
-    [store],
+    () =>
+      createLiveEditBinding({
+        getRoot: () => store.getState().domain,
+        // U4 study fix — id minters for the U06 resolution write-back (shared series).
+        // A pure attribute edit has unchanged geometry so a conflict is unlikely, but
+        // the binding contract (DomainRootAccess) should never hand U13 a pipeline
+        // whose resolution arm is structurally dead.
+        nextVertexId: () => asVertexId(sharedMint('v')),
+        nextRingId: () => asRingId(sharedMint('r')),
+      }),
+    [store, sharedMint],
   );
   const propertyEditDispatch = useMemo<EditDispatch>(
     () => ({
@@ -4026,7 +4057,7 @@ function createAddBootstrap<S>(getRoot: () => S, mint: SharedIdMint): AddBootstr
 
 import type { VertexStore } from '../domain/vertex';
 import { withAttributes, withColor, type Feature } from '../domain/feature';
-import type { FeatureId, VertexId } from '../domain/ids';
+import type { FeatureId, RingId, VertexId } from '../domain/ids';
 import type {
   ResolveFeature,
   ResolveVertexStore,
@@ -4199,7 +4230,14 @@ function createRingEditBootstrap(
   // FeatureSnapshot> = the SAME live `createLiveEditBinding` the edit-session drag
   // confirm uses (applyProposal = applyEditProposal). So an add-hole / delete-ring
   // actually reaches Committed, exactly like an edit-mode vertex drag.
-  const live = createLiveEditBinding({ getRoot: () => getRoot() });
+  const live = createLiveEditBinding({
+    getRoot: () => getRoot(),
+    // U4 study fix — the ring-edit confirm CAN surface a spatial conflict (a new
+    // enclave/hole ring against a neighbour); the U06 resolution write-back needs the
+    // SAME shared minters the bootstrap's RingIdPorts use (one series, 教訓 5.37).
+    nextVertexId: ids.nextVertexId,
+    nextRingId: ids.nextRingId,
+  });
   const ports = live.ports;
   // The hook's StartRingEditProcess is the confirm entry: assemble the ONE complete-
   // state proposal (snapshot) and drive U24→U13. add / delete are always a real change
