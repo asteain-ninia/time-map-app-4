@@ -746,11 +746,31 @@ body {
 }
 
 .longitude-shift__buttons,
-.longitude-shift__presets {
+.longitude-shift__presets,
+.longitude-shift__absolute {
   display: flex;
   flex-direction: row;
   align-items: center;
   gap: 4px;
+}
+
+/* HB3-1 絶対経度入力: compact number field so the jog + readout + absolute jump all
+ * fit the one-row上部バー (folds with the rest via .longitude-shift flex-wrap). */
+.longitude-shift__absolute input[type='number'] {
+  width: 64px;
+  height: 22px;
+  margin: 0;
+  padding: 0 4px;
+  font: inherit;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: 3px;
+}
+
+.longitude-shift__absolute button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* The relative-jog slider: keep it compact (a wide slider would dominate the bar) and

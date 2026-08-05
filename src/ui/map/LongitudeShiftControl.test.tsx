@@ -16,14 +16,14 @@ import { LongitudeShiftControl } from './LongitudeShiftControl';
 describe('LongitudeShiftControl', () => {
   it('shows the current center longitude readout (受け入れ基準 11)', () => {
     render(
-      <LongitudeShiftControl centerLon={170} onShift={vi.fn()} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={170} onShift={vi.fn()} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     expect(screen.getByTestId('center-lon-readout')).toHaveTextContent('170°E');
   });
 
   it('readout folds a continuous scalar across the seam (R3)', () => {
     render(
-      <LongitudeShiftControl centerLon={190} onShift={vi.fn()} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={190} onShift={vi.fn()} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     // continuous 190 → -170 → 170°W.
     expect(screen.getByTestId('center-lon-readout')).toHaveTextContent('170°W');
@@ -33,7 +33,7 @@ describe('LongitudeShiftControl', () => {
     const onShift = vi.fn();
     const user = userEvent.setup();
     render(
-      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     await user.click(screen.getByLabelText('右へシフト'));
     expect(onShift).toHaveBeenCalledWith(1);
@@ -44,7 +44,7 @@ describe('LongitudeShiftControl', () => {
   it('the slider reports its drag amount as a shift', () => {
     const onShift = vi.fn();
     render(
-      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     fireEvent.change(screen.getByLabelText('経度シフト'), { target: { value: '3' } });
     expect(onShift).toHaveBeenCalledWith(3);
@@ -53,7 +53,7 @@ describe('LongitudeShiftControl', () => {
   it('a continuous drag reports INCREMENTAL deltas, not summed absolutes (Codex medium #8)', () => {
     const onShift = vi.fn();
     render(
-      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     const slider = screen.getByLabelText('経度シフト');
     // A native drag emits several change events with ABSOLUTE thumb positions.
@@ -72,7 +72,7 @@ describe('LongitudeShiftControl', () => {
   it('snaps the thumb back to 0 when the gesture ends (受け入れ基準 14)', () => {
     const onShift = vi.fn();
     render(
-      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} />,
+      <LongitudeShiftControl centerLon={0} onShift={onShift} onPreset={vi.fn()} onSetCenter={vi.fn()} />,
     );
     const slider = screen.getByLabelText('経度シフト') as HTMLInputElement;
     fireEvent.change(slider, { target: { value: '6' } });
@@ -86,7 +86,7 @@ describe('LongitudeShiftControl', () => {
     const onPreset = vi.fn();
     const user = userEvent.setup();
     render(
-      <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={onPreset} />,
+      <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={onPreset} onSetCenter={vi.fn()} />,
     );
     // 2026-07-12 実機FB: labels are the longitude values themselves (「0度中心」/
     // 「180度中心」— デーレ世界に地球の地名は使わない)。Match on the stable prefix.
@@ -94,5 +94,44 @@ describe('LongitudeShiftControl', () => {
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.PrimeMeridian);
     await user.click(screen.getByText(/^180度中心/));
     expect(onPreset).toHaveBeenCalledWith(CENTER_LON_PRESET.Pacific);
+  });
+
+  it('絶対経度入力: 移動 button fires onSetCenter with the parsed value and clears the draft (HB3-1)', async () => {
+    const onSetCenter = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={vi.fn()} onSetCenter={onSetCenter} />,
+    );
+    const input = screen.getByTestId('center-lon-absolute-input') as HTMLInputElement;
+    await user.type(input, '135.5');
+    await user.click(screen.getByLabelText('指定経度へ移動'));
+    expect(onSetCenter).toHaveBeenCalledWith(135.5);
+    // The draft clears after a commit: the readout stays the only truth.
+    expect(input.value).toBe('');
+  });
+
+  it('絶対経度入力: Enter commits, out-of-range folds via the domain (190 → -170)', async () => {
+    const onSetCenter = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={vi.fn()} onSetCenter={onSetCenter} />,
+    );
+    const input = screen.getByTestId('center-lon-absolute-input');
+    await user.type(input, '190{Enter}');
+    expect(onSetCenter).toHaveBeenCalledTimes(1);
+    expect(onSetCenter.mock.calls[0]?.[0]).toBeCloseTo(-170, 10);
+  });
+
+  it('絶対経度入力: empty / invalid draft disables the commit and never fires (HB3-1)', async () => {
+    const onSetCenter = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <LongitudeShiftControl centerLon={0} onShift={vi.fn()} onPreset={vi.fn()} onSetCenter={onSetCenter} />,
+    );
+    const button = screen.getByLabelText('指定経度へ移動') as HTMLButtonElement;
+    // Empty draft: the commit button is disabled and Enter is a no-op.
+    expect(button.disabled).toBe(true);
+    await user.type(screen.getByTestId('center-lon-absolute-input'), '{Enter}');
+    expect(onSetCenter).not.toHaveBeenCalled();
   });
 });

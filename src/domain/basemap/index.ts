@@ -70,6 +70,7 @@ export {
   type CenterLonPreset,
   CENTER_LON_PRESET_VALUE,
   centerLonForPreset,
+  parseAbsoluteCenterLon,
   representativeCenterLon,
   formatCenterLonDisplay,
 } from './longitude-shift';

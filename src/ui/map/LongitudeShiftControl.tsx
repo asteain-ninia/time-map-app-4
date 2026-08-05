@@ -15,6 +15,7 @@ import {
   CENTER_LON_PRESET,
   type CenterLonPreset,
   formatCenterLonDisplay,
+  parseAbsoluteCenterLon,
 } from '../../domain/basemap/index';
 
 export interface LongitudeShiftControlProps {
@@ -27,6 +28,12 @@ export interface LongitudeShiftControlProps {
   readonly onShift: (shift: number) => void;
   /** Jump the center to a longitude preset (0度中心 / 180度中心). */
   readonly onPreset: (preset: CenterLonPreset) => void;
+  /**
+   * Jump the center to an ABSOLUTE longitude (HB3-1 裁定 2026-08-06: 直接入力)。
+   * The value is already parsed/folded by the domain (`parseAbsoluteCenterLon`);
+   * the wiring pushes it into the camera verbatim, same as a preset.
+   */
+  readonly onSetCenter: (centerLon: number) => void;
 }
 
 /** Slider半幅: the slider runs [−SHIFT_SLIDER_RANGE, +SHIFT_SLIDER_RANGE]. */
@@ -53,8 +60,14 @@ const PRESET_TITLES: Readonly<Record<CenterLonPreset, string>> = {
 const SHIFT_HINT =
   'スライダーは相対シフト（離すと中央へ戻ります）。現在の中心経度は上の数値が真値です。';
 
+// HB3-1 (裁定 2026-08-06): absolute center-longitude input. Kept as ONE hint string
+// shared by the input and the commit button (`title` tooltips) so the compact上部バー
+// spends no visible row on the explanation.
+const ABSOLUTE_HINT =
+  '中心経度を度数で直接指定（東経が正・±180°の範囲外は折り返し）。Enter または「移動」で反映します。';
+
 export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.Element {
-  const { centerLon, onShift, onPreset } = props;
+  const { centerLon, onShift, onPreset, onSetCenter } = props;
 
   // The slider is a MOMENTARY control whose truth is the center longitude, not the
   // thumb. A native range drag fires many `change` events with ABSOLUTE thumb
@@ -67,6 +80,20 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
 
   const reset = (): void => {
     if (thumb !== 0) setThumb(0);
+  };
+
+  // Absolute-input DRAFT text. The parse/fold rule lives in the domain
+  // (`parseAbsoluteCenterLon`, single source); `null` disables the commit action so
+  // an empty/invalid draft can never fire a jump. The draft is cleared after a
+  // commit: the readout above stays the ONLY truth of the current center (same
+  // philosophy as the momentary jog slider).
+  const [absoluteDraft, setAbsoluteDraft] = useState('');
+  const parsedAbsolute = parseAbsoluteCenterLon(absoluteDraft);
+
+  const commitAbsolute = (): void => {
+    if (parsedAbsolute === null) return;
+    onSetCenter(parsedAbsolute);
+    setAbsoluteDraft('');
   };
 
   return (
@@ -125,6 +152,34 @@ export function LongitudeShiftControl(props: LongitudeShiftControlProps): JSX.El
             {PRESET_LABELS[preset]}
           </button>
         ))}
+      </div>
+
+      {/* HB3-1 (裁定 2026-08-06): absolute longitude jump — type a degree value and
+          commit with Enter or the 移動 button. Complements (does not replace) the
+          relative jog above. */}
+      <div className="longitude-shift__absolute">
+        <input
+          type="number"
+          aria-label="中心経度を指定"
+          title={ABSOLUTE_HINT}
+          placeholder="経度"
+          step={0.1}
+          value={absoluteDraft}
+          data-testid="center-lon-absolute-input"
+          onChange={(e) => setAbsoluteDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitAbsolute();
+          }}
+        />
+        <button
+          type="button"
+          aria-label="指定経度へ移動"
+          title={ABSOLUTE_HINT}
+          disabled={parsedAbsolute === null}
+          onClick={commitAbsolute}
+        >
+          移動
+        </button>
       </div>
     </div>
   );

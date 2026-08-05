@@ -96,6 +96,24 @@ export function centerLonForPreset(preset: CenterLonPreset): number {
 }
 
 /**
+ * Parse the 絶対経度指定 text-input value (HB3-1 裁定 2026-08-06: 相対ジョグに加え
+ * 中心経度の直接入力を提供する) into a continuous center longitude, or `null` when
+ * the text is not a finite number (empty / whitespace / non-numeric — the caller
+ * disables the commit action rather than guessing). Out-of-range values are folded
+ * through U05's `wrapLonDeg` (single source, R3) — e.g. "190" means 170°W — because
+ * a representative value is itself a valid continuous scalar (same contract as
+ * {@link centerLonForPreset}). Pure.
+ */
+export function parseAbsoluteCenterLon(raw: string): number | null {
+  const trimmed = raw.trim();
+  // Number('') === 0, so the empty guard must come BEFORE the conversion.
+  if (trimmed === '') return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return null;
+  return wrapLonDeg(value);
+}
+
+/**
  * The display-time representative center longitude (spec FR-12 §現在の中心経度を
  * 数値表示): fold the continuous center into [−180, 180) via U05's `wrapLonDeg`
  * (single source, R3) so the numeric readout is canonical near the seam. Pure.

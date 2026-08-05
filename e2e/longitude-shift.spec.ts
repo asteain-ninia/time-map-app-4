@@ -96,4 +96,36 @@ test.describe('FR-12: 経度シフト control is mounted and moves the live came
       await app.close();
     }
   });
+
+  test('絶対経度入力 jumps the center to the typed longitude (HB3-1 裁定 2026-08-06)', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const inputLayer = page.getByTestId('map-input-layer');
+      const readout = page.getByTestId('center-lon-readout');
+      await expect(inputLayer).toHaveAttribute('data-pan-x', /.+/);
+
+      // Type an absolute longitude and commit with the 移動 button: the live camera
+      // center jumps to exactly that longitude (same writeCamera path as a preset).
+      const absolute = page.getByTestId('center-lon-absolute-input');
+      await absolute.fill('90');
+      await page.getByRole('button', { name: '指定経度へ移動' }).click();
+      await expect
+        .poll(async () => Number(await inputLayer.getAttribute('data-pan-x')))
+        .toBeCloseTo(90, 3);
+      await expect(readout).toContainText('90°E');
+      // The draft clears after the jump — the readout stays the only truth.
+      await expect(absolute).toHaveValue('');
+
+      // Enter commits too, and an out-of-range value folds through the seam
+      // (250 → 110°W) rather than rejecting or over-rotating.
+      await absolute.fill('250');
+      await absolute.press('Enter');
+      await expect
+        .poll(async () => Number(await inputLayer.getAttribute('data-pan-x')))
+        .toBeCloseTo(-110, 3);
+      await expect(readout).toContainText('110°W');
+    } finally {
+      await app.close();
+    }
+  });
 });

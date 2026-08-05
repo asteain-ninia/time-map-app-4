@@ -3682,11 +3682,25 @@ function LongitudeShiftPanel(props: {
     [rendererRef],
   );
 
+  // HB3-1 (裁定 2026-08-06): absolute longitude jump. The widget passes a value the
+  // domain already parsed/folded (`parseAbsoluteCenterLon`), so this writes it
+  // verbatim through the SAME camera path as a preset (単一真実源, 教訓 5.29).
+  const onSetCenter = useCallback(
+    (nextCenterLon: number): void => {
+      const ports = rendererRef.current;
+      if (ports === null) return;
+      const { camera } = ports.readCamera();
+      ports.writeCamera({ ...camera, centerLon: nextCenterLon });
+    },
+    [rendererRef],
+  );
+
   return (
     <LongitudeShiftControl
       centerLon={centerLon}
       onShift={onShift}
       onPreset={onPreset}
+      onSetCenter={onSetCenter}
     />
   );
 }
