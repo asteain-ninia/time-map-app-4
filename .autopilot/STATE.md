@@ -19,7 +19,7 @@
 | HB5-3 | 錨一覧クリックの視点フィット: padding 0.2・zoomMin/Max クランプ・地図クリックでは不動 | 実装済（e56ae17） | **裁定済 8/6: この動きで確定**（余白2割・一覧クリック時のみ発動） — close |
 | PAL-1 | パレット変更の自動再配色は**現在時刻からの past-edit**（rewriteFeatureColorAtTime の一貫時刻意味論。過去の錨の色は不変） | 実装済（68806ee） | **裁定済 7/25: 現在時刻からの past-edit で確定** |
 | N725-1 | 選択頂点=シアン #00e5ff 外周リング（円盤+3px/幅2）・ドラッグ中=橙 #ff8a00（+5.5px/幅2.5）。塗り置換でなく合成方式（共有琥珀と両立）。非activeオーナーの頂点選択時は頂点ハンドルのみ描画。cap超過でもリング付き頂点は残す | 実装済（86948d7） | **裁定済 7/25: このままで確定**（点線本体も 6aac04f で実装済） |
-| N725-2 | リング編集は2フェーズ導線（1クリック目=対象面選択のみ→以降のクリックで描画/削除）。FR-22「最初のクリック位置で自動判定」は*リングの最初の頂点*と解釈 | 実装済（8950639） | **裁定済 7/25: 2フェーズ確定+drill も2フェーズへ揃える**（キュー） |
+| N725-2 | リング編集は2フェーズ導線（1クリック目=対象面選択のみ→以降のクリックで描画/削除）。FR-22「最初のクリック位置で自動判定」は*リングの最初の頂点*と解釈 | 実装済（8950639・**drill も 8/6 に2フェーズ化済**） | close（7/25 裁定→drill 分は 8/6 実装で全消化） |
 | N725-3 | ring-edit の gridSnap はツール切替を跨いで保持されるユーザー設定（reset 契約の対象外と決定・明文化済） | 実装済（8950639） | **裁定済 8/6: 保持で確定** — close |
 | N725-4 | グリッドラベル最小画面間隔 48px（既定10°の初期ズームは20°刻み表示・zoom1.2-1.6帯は60°刻み）。halo=gridOpacity 線形比例。端ラベルは重なり回避>完全画面内 | 実装済（86948d7） | **裁定済 7/25: この密度で確定** |
 | N725-5 | FR-82 要件文の「アクティブ地物=太いシアン」は陳腐化（実装は FR-97 整合の per-feature selectedColor。実挙動が正と判断） | 要件側未修正 | **裁定済 7/25: 更新する**（docs ユニット・キュー） |
@@ -30,6 +30,19 @@
 | N725-10 | FR-80 ライブ経路の暫定: 滑り/スナップは主頂点のみ・随伴は同一ベクトル剛体移動。主頂点は自随伴へスナップしない。移動ベクトル=主頂点変位（ポインタ変位でない）。edge-add に随伴なし | 実装済（b79ba8d） | **裁定済 7/25: 意味論確定**（拘束のみ N725-9 裁定で集合デルタへ拡張） |
 
 ## 進捗ログ（新しい順・先頭追記）
+
+- 2026-08-06 深夜(**移設後初の実装セッション・完了**): **7/25 申し送りキューを全消化+起床後裁定6件反映 — コード9コミット+視覚ベースライン再生成、最終ゲート typecheck 3構成 0 / lint 0 errors / フル vitest 4,383 (+39・skip 4 は DERLE_TMAP_DIR 実データ不在ベンチ) / フル e2e 130/130 (+1)**。開発機は旧PC(tatuk)→本PC(asteain-ninia・e:\WORKSPACE\time-map-app-4)へ移設済み。
+  - **裁定(ユーザー対話・8/6)**: HB3-1=絶対経度入力を実装 / HB3-12・HB3-23・HB5-1・HB5-3・N725-3=現状確定で close。**裁定待ちゼロ**。
+  - `d4e7fbc` **HB3-1 絶対経度入力**(上部バーに入力欄+移動ボタン・parseAbsoluteCenterLon で ±180 折り返し・Enter/ボタン確定・e2e 込み) / `417b579` 視覚ベースライン3枚を本PCで再生成(**旧PCとのフォント描画差で変更前から不一致だったことを stash 切り分けで実証** — sidebar×2/timeline。shell 分は HB3-1 の意図的変化で d4e7fbc に同乗)
+  - `6609db3` **drill 2フェーズ化**(N725-2 裁定の残キュー消化・1クリック目=対象面選択のみ・driver-a A4 追随)
+  - `6356e9d` **申し送り(2)根治**: 編集系4バインディング(edit-drag/vertex-delete/property-edit/**ring-edit も対象と判明**)へ共有 id ミンター注入。applyResolutionAt の無条件 undefined(=競合解決の構造的不可能)を解消。ミンター有=Committed/無=拒否の両側回帰テスト。
+  - `c4a4fb6` **申し送り(3)根治**: シーム跨ぎ重複の convergence-failure。真因=applyResolutionAt の difference が **D35 シーム整列横展開から漏れていた唯一の boolean-ops 経路**(operand が ~360° 離れて評価され何も削れず→再検出→maxRounds 失敗)。alignMultiPolygon/referenceLonForMultiPolygon 単一真実源で整列+weldRingVertices の採番を代表座標 fold 化。**修正を外すと RED を実測**(テストの決定性確認済)。
+  - `bed0471` **申し送り(5)根治**: knife/merge/drill の私設 coordKey を U11 vertexCoordKey(三重fold)へ委譲 — quantize が +180 へ丸め上げるケースの非冪等を解消。
+  - `34a2533` **Codex MED×2(main I/O)**: 保存側 runtime validation(WRITE⊆READ の Zod 対称=読めないファイルを書かない・添付資産名のパス逸脱封鎖・エントリ上限)+.tmap 読込の stat 事前拒否(1 GiB)+zip-bomb filter(512 MiB/エントリ・fflate filter で伸長前拒否)。
+  - `5108814` **Codex MED(invariants O(n²))**: 全対列挙をソートスイープ化(自己交差+全ペア判定)。10万頂点のフル invariant チェックが分級→0.1s 級。旧ナイーブ実装をリファレンスに等価性800ケース+性能スモークで固定。
+  - `4a65573` **Codex MED(dev URL/sender)**: ELECTRON_RENDERER_URL を loopback http 限定(renderer-entry.ts 純関数)・will-navigate dev=同一オリジンのみ/本番=全拒否・setWindowOpenHandler=deny・U15 invoke 全チャネルに sender allowlist(自窓 webContents.id のみ・inert 拒否)。
+  - `9fc0cef` **Codex SPECULATIVE 裁定=根治**: AddToolController の onCommitted 既定 fallback(store 直書きで recordCommit ファネル迂回)を撤去し必須 prop 化(コンパイル時封鎖)。
+  - **残余(実装対象外の既知事項・次セッション判断)**: (a)U2 perf 既知上限=海岸線型大量選択 27ms/frame(N725-9 記録のまま・拘束意味論を壊すリスクと引き換えの最適化は未着手) (b)FR-107 quit 再発行の実機未検証/ACK タイムアウト→ネイティブダイアログ経路の e2e 不可(単体で状態機械固定済)/多重ウィンドウ quitRequested 畳み込み(単一インスタンスロック下で実害低) (c)UC1 既知限界=commit と save の厳密同時断面は IPC send-order 依存 (d)App.tsx 境界分離(LOW) (e)TODO.md T1(bughunt 件名復元)は素材 transcript が旧PCにあり**本PCでは実施不可** / T2 は 6月の 529 失敗分で新シード再走の価値は要判断。
 
 - 2026-07-25 午後(13:29-18:00 リミット付き燃やし・**完了**): **裁定キュー7件中6件消化+Codex 全体レビュー(初)の HIGH 3件全根治。コード9コミット、最終ゲート フル vitest 4,312→4,344 / フル e2e 129/129 全緑**。体制=Fable 指揮/実装 claude-opus-5(workflow+Agent)/全ユニット多層敵対レビュー(自己 opus-5 → Codex 差分)fix-forward。
   - **Codex 全体レビュー**(ユーザー指示の「全体を見せるやつ」・524k tokens): HIGH3=close 未結線(→U1)/修復キャンセルの混在 .tmap(→UC1)/atomic short-write(→UC2)。全て同日根治。清潔判定=applyCommandResult 対称性・Electron 基本フラグ・Zod ロード境界。**未対応 MED 群は下記申し送り**。
