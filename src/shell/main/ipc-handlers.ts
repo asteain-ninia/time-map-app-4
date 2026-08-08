@@ -254,6 +254,12 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
   // 展開後「合計」も読込側 (MAX_TMAP_TOTAL_BYTES) と対称に検査 (Sol 2周目 #2):
   // 各エントリは上限内でも合計が読込上限を超えるファイルは「保存できたのに
   // 二度と開けない」— WRITE⊆READ の破れをここで塞ぐ。
+  //
+  // 残余 (Sol 3周目 #3・受容): これは展開後データの合計であり、生成される ZIP は
+  // これに数百バイトのヘッダ/ディレクトリ overhead を足したサイズになる。両上限が
+  // 同じ 1 GiB のため、展開合計がちょうど 1 GiB 近傍の場合のみ「保存成功→読込側の
+  // コンテナ上限をわずかに超過」が起こり得る。実データは数十MB級でこの境界には
+  // 到達せず、overhead 分を引いた別上限を設けるのは局所的すぎるため導入しない。
   totalBytes += manifestBytes;
   if (totalBytes > maxTotal) {
     return 'プロジェクト全体のサイズが大きすぎるため保存できません。';
