@@ -14,7 +14,7 @@ import { isParsed, parseManifest } from '../../domain/persistence/boundary';
 import { DEFAULT_MAX_GENERATIONS } from '../io/backup';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
-import { MAX_TMAP_BYTES, MAX_TMAP_ENTRY_BYTES } from '../io/tmap';
+import { MAX_TMAP_BYTES, MAX_TMAP_ENTRY_BYTES, type ReadTmapCaps } from '../io/tmap';
 import {
   IPC_CHANNEL,
   type AutoSaveConfig,
@@ -185,17 +185,24 @@ const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.fl
  * bug — or a compromised renderer — must not make main atomic-write a file the
  * loader would then reject, 教訓6.4.15 片側shim の再発防止). Checks, in order:
  *   1. structural shape (bytes are real Uint8Arrays; attachments well-formed),
- *   2. attachment names: non-empty, no path separators / `..` (a hostile name
- *      would otherwise become a ZIP entry path outside `assets/attachments/`),
- *   3. per-entry byte caps (the SAME caps the reader enforces — WRITE⊆READ),
+ *   2. attachment names: non-empty, no path separators, and not the special `.` /
+ *      `..` SEGMENTS (a hostile name would otherwise become a ZIP entry path
+ *      outside `assets/attachments/`). A mere `..` SUBSTRING (e.g. `map..v2.png`)
+ *      is a legal basename once separators are banned, so it is NOT rejected
+ *      (Sol review #5: the reader accepts such names — reject would strand them),
+ *   3. per-entry byte caps INCLUDING the manifest JSON itself (Sol review #4:
+ *      the reader caps the manifest entry too, so an over-cap manifest would
+ *      save fine yet never re-open — the exact WRITE⊆READ break this guards),
  *   4. the manifest round-trips through the SAME Zod boundary the loader uses
  *      (parseManifest): never write a `.tmap` that cannot be re-opened.
  * Returns a Japanese message on failure, or `null` when the request is sound.
+ * `caps` is test-injectable; production uses the reader's own constants.
  */
-export function validateSaveRequest(req: SaveRequest): string | null {
+export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): string | null {
+  const maxEntry = caps.maxEntryBytes ?? MAX_TMAP_ENTRY_BYTES;
   if (typeof req !== 'object' || req === null) return '保存要求の形式が不正です。';
   if (!(req.baseMapImage instanceof Uint8Array)) return '保存要求の形式が不正です。';
-  if (req.baseMapImage.length > MAX_TMAP_ENTRY_BYTES) {
+  if (req.baseMapImage.length > maxEntry) {
     return '背景地図画像が大きすぎるため保存できません。';
   }
   if (!Array.isArray(req.attachments)) return '保存要求の形式が不正です。';
@@ -203,13 +210,26 @@ export function validateSaveRequest(req: SaveRequest): string | null {
     if (typeof asset !== 'object' || asset === null) return '保存要求の形式が不正です。';
     const { name, bytes } = asset as { name: unknown; bytes: unknown };
     if (typeof name !== 'string' || name.length === 0) return '保存要求の形式が不正です。';
-    if (name.includes('/') || name.includes('\\') || name === '..' || name.includes('..')) {
+    if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
       return `添付資産名が不正です: ${name}`;
     }
     if (!(bytes instanceof Uint8Array)) return '保存要求の形式が不正です。';
-    if (bytes.length > MAX_TMAP_ENTRY_BYTES) {
+    if (bytes.length > maxEntry) {
       return `添付資産 ${name} が大きすぎるため保存できません。`;
     }
+  }
+  // The manifest ENTRY cap (Sol review #4): measured on the SAME JSON bytes the
+  // writer will embed (strToU8(JSON.stringify(...)) in buildTmap). Buffer.byteLength
+  // counts UTF-8 bytes without materialising them. A cyclic / non-serializable
+  // manifest throws here — reject rather than let buildTmap crash mid-save.
+  let manifestBytes: number;
+  try {
+    manifestBytes = Buffer.byteLength(JSON.stringify(req.manifest), 'utf8');
+  } catch {
+    return '保存データが検証に失敗しました。お手数ですが開発者へ報告してください。';
+  }
+  if (manifestBytes > maxEntry) {
+    return 'プロジェクトデータが大きすぎるため保存できません。';
   }
   // WRITE⊆READ symmetry: the exact Zod boundary the loader runs. Rejecting here is
   // strictly better than writing a file the user can never re-open (第6波 HIGH の

@@ -26,6 +26,7 @@ import {
   handleSave,
   handleSaveAs,
   registerIpcHandlers,
+  validateSaveRequest,
   type IpcDeps,
   type PendingLoadEntry,
 } from './ipc-handlers';
@@ -793,5 +794,39 @@ describe('sender allowlist (isTrustedSender / Codex MED)', () => {
     const handlers = registeredHandlers(deps);
     const res = (await handlers.get(IPC_CHANNEL.Load)!(evt(123))) as { ok: boolean };
     expect(res.ok).toBe(true);
+  });
+});
+
+// GPT-5.6 Sol レビュー #4/#5 — 保存検証の過不足の是正。
+describe('validateSaveRequest — Sol レビュー #4/#5 の是正', () => {
+  it('#5: 連続ピリオドを含むだけの正当な添付名 (map..final.png) は受理される', async () => {
+    const { deps, disk } = makeDeps();
+    const ok: SaveRequest = {
+      ...makeSaveReq(),
+      attachments: [{ name: 'map..final.png', bytes: new Uint8Array([1]) }],
+    };
+    const res = await handleSaveAs(deps, ok);
+    expect(res.ok).toBe(true);
+    expect(disk.size).toBeGreaterThan(0);
+  });
+
+  it('#5: 特殊セグメントそのもの (`..` / `.`) と区切り文字入りは引き続き拒否', () => {
+    for (const name of ['..', '.', 'a/b.png', 'a\\b.png']) {
+      const bad: SaveRequest = {
+        ...makeSaveReq(),
+        attachments: [{ name, bytes: new Uint8Array([1]) }],
+      };
+      expect(validateSaveRequest(bad)).not.toBeNull();
+    }
+  });
+
+  it('#4: manifest の JSON バイト長がエントリ上限を超える保存は拒否 (WRITE⊆READ 対称)', () => {
+    const req = makeSaveReq();
+    // Inject a small cap: the fixture manifest's own JSON is far larger than 64B.
+    const message = validateSaveRequest(req, { maxEntryBytes: 64 });
+    expect(message).not.toBeNull();
+    expect(message).toContain('大きすぎる');
+    // With the real cap the same manifest passes (regression guard for legit saves).
+    expect(validateSaveRequest(req)).toBeNull();
   });
 });

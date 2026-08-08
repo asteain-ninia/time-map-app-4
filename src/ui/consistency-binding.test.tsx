@@ -2311,3 +2311,89 @@ describe('applyResolutionsFor — シーム跨ぎ重複の解決が収束する 
     expect(checkConsistency(root, getCalendar('gregorian')).inconsistencies).toEqual([]);
   });
 });
+
+// GPT-5.6 Sol レビュー #3 — 多成分 adjust のシーム競合: 参照経度を第1片から取る方式だと
+// (第1片の平均が 0 付近のとき) ±180 窓の両端がシームを挟む operand を ~360° 離れたまま
+// にし、検出済み競合が again 解決不能になる。per-piece 参照で根治したことをロックする。
+describe('applyResolutionsFor — 多成分 adjust のシーム跨ぎ片も解決できる (Sol review #3)', () => {
+  const T = timePointYear(1000);
+
+  it('第1片が経度0付近+第2片がシーム跨ぎ(東起点) × 西起点 priority の競合が Committed になる', () => {
+    // Priority a: WEST-anchored seam-hugging square — stored order starts at −179.2,
+    // so its own unwrap sits on the −180 branch (mean ≈ −179.8).
+    const aVerts = [
+      [-179.2, 0],
+      [-179.2, 2],
+      [179.6, 2],
+      [179.6, 0],
+    ].map((c, i) => createVertex(asVertexId(`vpa-${i}`), { lon: c[0]!, lat: c[1]! }));
+    const aRing = createTerritoryRing(asRingId('r-pa'), aVerts.map((v) => v.id));
+    const aFeature = createLeafFeature(
+      asFeatureId('f-pa'),
+      createBasicAttributes('f-pa', 0, 0),
+      color,
+      createShape([aRing]),
+    );
+    let root = applyAddProposal(emptyProject(), {
+      featureId: aFeature.id,
+      anchorTime: T,
+      snapshot: addSnapshot(aFeature, aVerts),
+    });
+
+    let n = 0;
+    const binding = createLiveAddBinding({
+      getRoot: () => root,
+      nextVertexId: () => asVertexId(`mv-${(n += 1)}`),
+      nextRingId: () => asRingId(`mr-${(n += 1)}`),
+    });
+
+    // Adjust b: TWO territory pieces — piece1 symmetric about lon 0 (mean 0, the
+    // review's trigger), piece2 EAST-anchored seam-hugging (overlaps a in
+    // [179.6, 180.4] ≡ [−180.4, −179.2]).
+    const p1Verts = [
+      [-1, 10],
+      [1, 10],
+      [1, 12],
+      [-1, 12],
+    ].map((c, i) => createVertex(asVertexId(`vb1-${i}`), { lon: c[0]!, lat: c[1]! }));
+    const p2Verts = [
+      [179.2, 0],
+      [-179.6, 0],
+      [-179.6, 2],
+      [179.2, 2],
+    ].map((c, i) => createVertex(asVertexId(`vb2-${i}`), { lon: c[0]!, lat: c[1]! }));
+    const bShape = createShape([
+      createTerritoryRing(asRingId('r-b1'), p1Verts.map((v) => v.id)),
+      createTerritoryRing(asRingId('r-b2'), p2Verts.map((v) => v.id)),
+    ]);
+    const bFeature = createLeafFeature(
+      asFeatureId('f-b2p'),
+      createBasicAttributes('f-b2p', 0, 0),
+      color,
+      bShape,
+    );
+    const proposal = createEditProposal(bFeature.id, T, addSnapshot(bFeature, [...p1Verts, ...p2Verts]));
+    const pending = binding.startProcess(proposal);
+    expect(pending.status).toBe(PROCESS_STATUS.ConflictsPending);
+    if (pending.status !== PROCESS_STATUS.ConflictsPending) return;
+
+    const conflict = pending.conflicts[0]!;
+    const outcome = binding.applyResolutionsFor(proposal)([
+      {
+        conflictId: conflict.id,
+        priorityFeatureId: aFeature.id,
+        adjustFeatureId: bFeature.id,
+      },
+    ]);
+    // Fix proof: with the OLD single whole-multipolygon reference (piece1's mean 0)
+    // this was convergence-failure — the seam piece and the priority stayed ~360°
+    // apart. Per-piece references keep the overlap representable → Committed.
+    expect(outcome.status).toBe(PROCESS_STATUS.Committed);
+    if (outcome.status !== PROCESS_STATUS.Committed) return;
+    root = outcome.command.execute(root).state;
+    const after = featuresAt(root, T).map((f) => f.id);
+    expect(after).toContain(aFeature.id);
+    expect(after).toContain(bFeature.id);
+    expect(checkConsistency(root, getCalendar('gregorian')).inconsistencies).toEqual([]);
+  });
+});

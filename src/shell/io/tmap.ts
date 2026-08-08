@@ -51,11 +51,15 @@ export interface ExtractedTmap {
  */
 export const MAX_TMAP_BYTES = 1024 * 1024 * 1024; // 1 GiB (container / stat cap)
 export const MAX_TMAP_ENTRY_BYTES = 512 * 1024 * 1024; // 512 MiB (expanded per entry)
+/** Cap on the SUMMED expanded size of all entries (GPT-5.6 Sol review #2: many
+ *  individually-passing entries must not add up to an OOM). */
+export const MAX_TMAP_TOTAL_BYTES = 1024 * 1024 * 1024; // 1 GiB (expanded total)
 
 /** Optional cap overrides for {@link readTmap} (tests inject small values). */
 export interface ReadTmapCaps {
   readonly maxContainerBytes?: number;
   readonly maxEntryBytes?: number;
+  readonly maxTotalBytes?: number;
 }
 
 /** Why reading a `.tmap` failed (corrupt zip / missing required entry / bad JSON). */
@@ -105,16 +109,35 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
       message: `ファイルが大きすぎます（上限 ${Math.floor(maxContainer / (1024 * 1024))} MB）。`,
     };
   }
+  const maxTotal = caps.maxTotalBytes ?? MAX_TMAP_TOTAL_BYTES;
+  const entryTooLarge = (name: string): ReadTmapResult => ({
+    ok: false,
+    reason: 'corrupt',
+    message: `エントリ ${name} が大きすぎます（上限 ${Math.floor(maxEntry / (1024 * 1024))} MB）。`,
+  });
+  const totalTooLarge: ReadTmapResult = {
+    ok: false,
+    reason: 'corrupt',
+    message: `展開後の合計サイズが大きすぎます（上限 ${Math.floor(maxTotal / (1024 * 1024))} MB）。`,
+  };
   let entries: Record<string, Uint8Array>;
-  // Zip-bomb guard: fflate's filter sees each entry's DECLARED expanded size
-  // (originalSize) BEFORE decompression, so a tiny container declaring a huge entry
-  // is rejected without ever allocating/expanding it (main は停止しない).
+  // Zip-bomb guard, first line: fflate's filter sees each entry's DECLARED expanded
+  // size (originalSize) BEFORE decompression, so an honestly-declared huge entry —
+  // or an honestly-declared set whose SUM is huge (Sol review #2) — is rejected
+  // without ever expanding it.
   let oversizedEntry: string | undefined;
+  let declaredTotal = 0;
+  let declaredTotalExceeded = false;
   try {
     entries = unzipSync(bytes, {
       filter: (file) => {
         if (file.originalSize > maxEntry) {
           oversizedEntry = file.name;
+          return false;
+        }
+        declaredTotal += file.originalSize;
+        if (declaredTotal > maxTotal) {
+          declaredTotalExceeded = true;
           return false;
         }
         return true;
@@ -127,12 +150,19 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
       message: error instanceof Error ? error.message : String(error),
     };
   }
-  if (oversizedEntry !== undefined) {
-    return {
-      ok: false,
-      reason: 'corrupt',
-      message: `エントリ ${oversizedEntry} が大きすぎます（上限 ${Math.floor(maxEntry / (1024 * 1024))} MB）。`,
-    };
+  if (oversizedEntry !== undefined) return entryTooLarge(oversizedEntry);
+  if (declaredTotalExceeded) return totalTooLarge;
+  // Second line (Sol review #1): the DECLARED size is attacker-controlled — a forged
+  // central directory can under-declare. Re-verify the ACTUAL expanded lengths.
+  // Residual (documented): a forged-small declaration still makes fflate process the
+  // whole deflate stream synchronously (output truncated, memory bounded); that CPU
+  // cost is bounded by the container cap above, and the truncated data then fails
+  // the manifest/asset consumers — a hostile file only corrupts itself.
+  let actualTotal = 0;
+  for (const [entryName, entryBytes] of Object.entries(entries)) {
+    if (entryBytes.length > maxEntry) return entryTooLarge(entryName);
+    actualTotal += entryBytes.length;
+    if (actualTotal > maxTotal) return totalTooLarge;
   }
 
   const manifestBytes = entries[MANIFEST_ENTRY];

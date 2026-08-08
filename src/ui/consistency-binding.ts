@@ -522,14 +522,27 @@ function applyResolutionAt(
     // round → convergence-failure, every time — the U4 review dead-end. Anchor BOTH
     // operands onto ONE common branch through the single alignment source of truth
     // before the op (the same pattern merge / drill / U10 / display use, D35).
-    // Single-branch (non-seam) inputs make this the identity — common case unchanged.
-    const ref = referenceLonForMultiPolygon(adjustArea);
-    const diff = difference(
-      alignMultiPolygon(adjustArea, ref),
-      alignMultiPolygon(priorityArea, ref),
-    );
-    if (!isOk(diff)) return undefined;
-    if (isMultiPolygonEmpty(diff.result)) {
+    //
+    // PER-PIECE reference (GPT-5.6 Sol review #3): a single whole-multipolygon ref
+    // (the first piece's mean) breaks when the adjust has pieces on DIFFERENT
+    // branches — with piece-1 near lon 0 the ±180 window edges split a seam-hugging
+    // piece (+179.8) from a seam-hugging priority (−179.8), leaving them ~360°
+    // apart and the conflict unresolvable again. Differencing each adjust piece in
+    // ITS OWN frame (priority re-aligned per piece) keeps every real overlap within
+    // <180° of the piece's mean, where the window cannot split it. Pieces are
+    // disjoint by invariant, so per-piece difference ∪-composed equals the whole
+    // difference. Single-piece / non-seam inputs are the identity — case unchanged.
+    const trimmedPieces: GeoMultiPolygon[number][] = [];
+    for (const piece of adjustArea) {
+      const pieceRef = referenceLonForMultiPolygon([piece]);
+      const diff = difference(
+        alignMultiPolygon([piece], pieceRef),
+        alignMultiPolygon(priorityArea, pieceRef),
+      );
+      if (!isOk(diff)) return undefined;
+      trimmedPieces.push(...diff.result);
+    }
+    if (isMultiPolygonEmpty(trimmedPieces)) {
       // The adjust feature is fully covered — there is nothing left; refuse so the
       // user picks a different priority rather than silently deleting a feature.
       return undefined;
@@ -553,7 +566,7 @@ function applyResolutionAt(
       vertexBodiesOf(priority, vertices),
       vertexBodiesOf(adjust, vertices),
     ]);
-    const built = shapeFromMultiPolygon(diff.result, nextVertexId, nextRingId, weld);
+    const built = shapeFromMultiPolygon(trimmedPieces, nextVertexId, nextRingId, weld);
     if (built === undefined) return undefined;
 
     const trimmed: LeafFeature = withLeafShape(adjust, built.shape);

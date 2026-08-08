@@ -93,7 +93,8 @@ const persistenceBoundary = {
 
 export default tseslint.config(
   {
-    ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**'],
+    // derle-import: 実データ再構築の一回性ツール+データ置き場(別セッション産・アプリコード外)。
+    ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', 'derle-import/**'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

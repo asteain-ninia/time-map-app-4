@@ -147,3 +147,23 @@ describe('readTmap size caps (Codex MED)', () => {
     expect(res.ok).toBe(true);
   });
 });
+
+// GPT-5.6 Sol レビュー #2 — 展開後「合計」サイズ上限(個別には通る複数エントリの合算 OOM 封鎖)。
+describe('readTmap total-size cap (Sol review #2)', () => {
+  it('rejects when the SUMMED expanded size exceeds the total cap', () => {
+    const bytes = buildTmap({
+      manifest: { v: 1 },
+      baseMapImage: new Uint8Array(40),
+      attachments: [
+        { name: 'a.png', bytes: new Uint8Array(40) },
+        { name: 'b.png', bytes: new Uint8Array(40) },
+      ],
+    });
+    // Each entry is well under the per-entry cap (60) but the sum exceeds 100.
+    const res = readTmap(bytes, { maxEntryBytes: 60, maxTotalBytes: 100 });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('corrupt');
+    expect(res.message).toContain('合計');
+  });
+});

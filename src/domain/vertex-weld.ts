@@ -47,7 +47,7 @@
 // `checkConsistency` detects. This module trusts its inputs and does not re-validate
 // them (単一真実源: one consistency authority, not a second copy here).
 
-import type { WorldCoordinate } from './coordinate';
+import { createCoordinate, type WorldCoordinate } from './coordinate';
 import { normalizeCoordinate } from './geo/seam';
 import { quantizeCoordinate } from './geometry/quantize';
 import type { VertexId } from './ids';
@@ -162,15 +162,21 @@ export function weldRingVertices(
       out.push(existing);
       continue;
     }
-    // Mint at the REPRESENTATIVE branch (same triple fold as vertexCoordKey): the
-    // caller's boolean op may run in an ALIGNED continuous frame (seam-crossing
-    // operands anchored onto one common branch, R3), so an output coordinate can be
-    // lon 190° — but every STORED leaf vertex is representative (resolveLeafShape
-    // re-aligns on read; merge/proposal stores the same fold). For a non-seam input
-    // the fold is the identity, so the common case is byte-unchanged.
-    out.push(
-      createVertex(mintVertexId(), normalizeCoordinate(quantizeCoordinate(normalizeCoordinate(coord)))),
-    );
+    // Mint at the REPRESENTATIVE branch: the caller's boolean op may run in an
+    // ALIGNED continuous frame (seam-crossing operands anchored onto one common
+    // branch, R3), so an output coordinate can be lon 190° — but every STORED leaf
+    // vertex is representative (resolveLeafShape re-aligns on read; merge/proposal
+    // stores the same fold). The trailing seam re-fold (+180 → −180, matching
+    // vertexCoordKey's convention) is an EXACT branch swap, deliberately NOT a
+    // third `normalizeCoordinate` call: the wrap arithmetic can nudge a grid-
+    // snapped longitude off the quantization grid by float error (Sol review #6 —
+    // e.g. 12.3456789 → 12.345678899999939), breaking the「minted vertices are on
+    // the grid / non-seam is byte-unchanged」contract. Only an exact +180 (the one
+    // non-representative value quantize can round UP to) is re-folded, by literal
+    // substitution — no arithmetic, no drift.
+    const snapped = quantizeCoordinate(normalizeCoordinate(coord));
+    const body = snapped.lon === 180 ? createCoordinate(-180, snapped.lat) : snapped;
+    out.push(createVertex(mintVertexId(), body));
   }
   return out;
 }

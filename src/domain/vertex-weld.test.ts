@@ -20,7 +20,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { createCoordinate } from './coordinate';
-import { QUANTIZE_SCALE } from './geometry/quantize';
+import { normalizeCoordinate } from './geo/seam';
+import { QUANTIZE_SCALE, quantizeCoordinate } from './geometry/quantize';
 import { asVertexId } from './ids';
 import { createVertex, type Vertex } from './vertex';
 import {
@@ -202,5 +203,41 @@ describe('weldRingVertices — one Vertex per coordinate, bodies carried verbati
     const mint = minter();
     expect(weldRingVertices([], index, mint)).toEqual([]);
     expect(String(mint())).toBe('r-1'); // the port was never called before now
+  });
+});
+
+// GPT-5.6 Sol レビュー #6 — 新規採番座標はグリッド上・非シームはバイト同一のまま。
+describe('weldRingVertices minted-body exactness (Sol review #6)', () => {
+  it('a fractional non-seam coordinate is minted BYTE-IDENTICAL to its quantized value', () => {
+    let n = 0;
+    const out = weldRingVertices(
+      [
+        { lon: 12.3456789, lat: 5.1 },
+        { lon: -0.0000001, lat: -89.9999999 },
+      ],
+      EMPTY_WELD_INDEX,
+      () => asVertexId(`m-${(n += 1)}`),
+    );
+    for (const [i, v] of out.entries()) {
+      const q = quantizeCoordinate(normalizeCoordinate([
+        { lon: 12.3456789, lat: 5.1 },
+        { lon: -0.0000001, lat: -89.9999999 },
+      ][i]!));
+      // The stored body is EXACTLY the grid-snapped value — no trailing wrap
+      // arithmetic drift (12.3456789 must not become 12.345678899999939).
+      expect(v.coordinate.lon).toBe(q.lon);
+      expect(v.coordinate.lat).toBe(q.lat);
+    }
+  });
+
+  it('a longitude that quantizes to exactly +180 is re-folded to the representative −180 (exact swap)', () => {
+    let n = 0;
+    const out = weldRingVertices(
+      [{ lon: 179.99999996, lat: 10 }],
+      EMPTY_WELD_INDEX,
+      () => asVertexId(`m-${(n += 1)}`),
+    );
+    expect(out[0]!.coordinate.lon).toBe(-180);
+    expect(out[0]!.coordinate.lat).toBe(10);
   });
 });
