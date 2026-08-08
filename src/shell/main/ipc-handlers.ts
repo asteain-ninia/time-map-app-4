@@ -14,7 +14,20 @@ import { isParsed, parseManifest } from '../../domain/persistence/boundary';
 import { DEFAULT_MAX_GENERATIONS } from '../io/backup';
 import { loadTmapBytes } from '../io/load';
 import { saveTmap, type SaveEnv } from '../io/save';
-import { MAX_TMAP_BYTES, MAX_TMAP_ENTRY_BYTES, type ReadTmapCaps } from '../io/tmap';
+import { ATTACHMENTS_DIR } from '../io/entry-paths';
+import {
+  MAX_TMAP_BYTES,
+  MAX_TMAP_ENTRY_BYTES,
+  MAX_TMAP_TOTAL_BYTES,
+  type ReadTmapCaps,
+} from '../io/tmap';
+
+/**
+ * ZIP のファイル名フィールドは 65,535 バイト(UTF-8)が仕様上限。超過は zipSync が
+ * throw して保存 IPC が例外終了するため(Sol 2周目 #3)、添付名は
+ * `assets/attachments/` プレフィックスを足してもこの上限に収まる長さに制限する。
+ */
+const MAX_ATTACHMENT_NAME_BYTES = 65535 - Buffer.byteLength(ATTACHMENTS_DIR, 'utf8');
 import {
   IPC_CHANNEL,
   type AutoSaveConfig,
@@ -200,12 +213,14 @@ const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.fl
  */
 export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): string | null {
   const maxEntry = caps.maxEntryBytes ?? MAX_TMAP_ENTRY_BYTES;
+  const maxTotal = caps.maxTotalBytes ?? MAX_TMAP_TOTAL_BYTES;
   if (typeof req !== 'object' || req === null) return '保存要求の形式が不正です。';
   if (!(req.baseMapImage instanceof Uint8Array)) return '保存要求の形式が不正です。';
   if (req.baseMapImage.length > maxEntry) {
     return '背景地図画像が大きすぎるため保存できません。';
   }
   if (!Array.isArray(req.attachments)) return '保存要求の形式が不正です。';
+  let totalBytes = req.baseMapImage.length;
   for (const asset of req.attachments) {
     if (typeof asset !== 'object' || asset === null) return '保存要求の形式が不正です。';
     const { name, bytes } = asset as { name: unknown; bytes: unknown };
@@ -213,10 +228,15 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
     if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
       return `添付資産名が不正です: ${name}`;
     }
+    // ZIP 仕様のファイル名上限 (Sol 2周目 #3): 超過は zipSync throw → IPC 例外終了。
+    if (Buffer.byteLength(name, 'utf8') > MAX_ATTACHMENT_NAME_BYTES) {
+      return `添付資産名が長すぎます: ${name.slice(0, 32)}…`;
+    }
     if (!(bytes instanceof Uint8Array)) return '保存要求の形式が不正です。';
     if (bytes.length > maxEntry) {
       return `添付資産 ${name} が大きすぎるため保存できません。`;
     }
+    totalBytes += bytes.length;
   }
   // The manifest ENTRY cap (Sol review #4): measured on the SAME JSON bytes the
   // writer will embed (strToU8(JSON.stringify(...)) in buildTmap). Buffer.byteLength
@@ -230,6 +250,13 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
   }
   if (manifestBytes > maxEntry) {
     return 'プロジェクトデータが大きすぎるため保存できません。';
+  }
+  // 展開後「合計」も読込側 (MAX_TMAP_TOTAL_BYTES) と対称に検査 (Sol 2周目 #2):
+  // 各エントリは上限内でも合計が読込上限を超えるファイルは「保存できたのに
+  // 二度と開けない」— WRITE⊆READ の破れをここで塞ぐ。
+  totalBytes += manifestBytes;
+  if (totalBytes > maxTotal) {
+    return 'プロジェクト全体のサイズが大きすぎるため保存できません。';
   }
   // WRITE⊆READ symmetry: the exact Zod boundary the loader runs. Rejecting here is
   // strictly better than writing a file the user can never re-open (第6波 HIGH の
@@ -272,16 +299,30 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
   // Awaited: the save pipeline's file I/O is now async (node:fs/promises) so the
   // main-process event loop is not frozen during a save (bughunt4). The handler
   // resolves only after the awaited atomic write + backup complete.
-  const result = await saveTmap(
-    deps.saveEnv,
-    target,
-    {
-      manifest: req.manifest,
-      baseMapImage: req.baseMapImage,
-      attachments: req.attachments,
-    },
-    deps.maxGenerations ?? DEFAULT_MAX_GENERATIONS,
-  );
+  //
+  // Belt (Sol 2周目 #3): a residual throw anywhere in the pipeline (e.g. a ZIP
+  // builder limit the validation missed) must surface as the CONTRACT's
+  // write-failed response, never as an IPC promise rejection the renderer cannot
+  // classify.
+  let result: Awaited<ReturnType<typeof saveTmap>>;
+  try {
+    result = await saveTmap(
+      deps.saveEnv,
+      target,
+      {
+        manifest: req.manifest,
+        baseMapImage: req.baseMapImage,
+        attachments: req.attachments,
+      },
+      deps.maxGenerations ?? DEFAULT_MAX_GENERATIONS,
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'write-failed',
+      message: `保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
   if (result.ok && deps.loadCommitCounter.get() === commitGenAtStart) {
     deps.currentPath.set(target);
   }

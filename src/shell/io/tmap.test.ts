@@ -167,3 +167,57 @@ describe('readTmap total-size cap (Sol review #2)', () => {
     expect(res.message).toContain('合計');
   });
 });
+
+// Sol レビュー2周目 #1 — サイズ宣言を書き換えたファイルでも「実測」で打ち切れること。
+// 旧実装(unzipSync)は宣言値でしか制御できず、宣言を小さく書き換えたエントリの展開
+// 作業量を制限できなかった。streaming 化後は実際の出力バイト数で中断する。
+describe('readTmap streaming caps count ACTUAL bytes, not declared sizes (Sol round-2 #1)', () => {
+  /** Patch every size-declaration field for the given entry name to `forged`. */
+  function forgeDeclaredSize(zip: Uint8Array, entryName: string, forged: number): Uint8Array {
+    const out = zip.slice();
+    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    const nameBytes = new TextEncoder().encode(entryName);
+    const matchName = (at: number, len: number): boolean => {
+      if (len !== nameBytes.length) return false;
+      for (let i = 0; i < len; i += 1) if (out[at + i] !== nameBytes[i]) return false;
+      return true;
+    };
+    for (let i = 0; i + 4 <= out.length; i += 1) {
+      const sig = view.getUint32(i, true);
+      if (sig === 0x04034b50) {
+        // local file header: uncompressed size at +22, name at +30 (len at +26).
+        const nameLen = view.getUint16(i + 26, true);
+        if (matchName(i + 30, nameLen)) view.setUint32(i + 22, forged, true);
+      } else if (sig === 0x02014b50) {
+        // central directory: uncompressed size at +24, name at +46 (len at +28).
+        const nameLen = view.getUint16(i + 28, true);
+        if (matchName(i + 46, nameLen)) view.setUint32(i + 24, forged, true);
+      }
+    }
+    return out;
+  }
+
+  it('an entry whose declared size is rewritten tiny is STILL rejected by its actual size', () => {
+    const bytes = buildTmap({
+      manifest: { v: 1 },
+      baseMapImage: new Uint8Array(5000), // actual 5000 bytes; declaration forged to 8
+      attachments: [],
+    });
+    const forged = forgeDeclaredSize(bytes, 'assets/basemap.img', 8);
+    const res = readTmap(forged, { maxEntryBytes: 1000 });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('corrupt');
+    expect(res.message).toContain('大きすぎます');
+  });
+
+  it('the same honest file passes when the actual size is under the cap', () => {
+    const bytes = buildTmap({
+      manifest: { v: 1 },
+      baseMapImage: new Uint8Array(500),
+      attachments: [],
+    });
+    const res = readTmap(bytes, { maxEntryBytes: 1000 });
+    expect(res.ok).toBe(true);
+  });
+});

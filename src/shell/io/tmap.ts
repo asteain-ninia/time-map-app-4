@@ -12,7 +12,7 @@
 // is the load adapter's job through `parseManifest` (R8 / 受け入れ基準5). This
 // adapter only deals with bytes ↔ entries; structural trust never starts here.
 
-import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { strFromU8, strToU8, Unzip, UnzipInflate, UnzipPassThrough, zipSync } from 'fflate';
 
 import type { NamedAsset } from '../ipc/contract';
 import {
@@ -120,49 +120,77 @@ export function readTmap(bytes: Uint8Array, caps: ReadTmapCaps = {}): ReadTmapRe
     reason: 'corrupt',
     message: `展開後の合計サイズが大きすぎます（上限 ${Math.floor(maxTotal / (1024 * 1024))} MB）。`,
   };
-  let entries: Record<string, Uint8Array>;
-  // Zip-bomb guard, first line: fflate's filter sees each entry's DECLARED expanded
-  // size (originalSize) BEFORE decompression, so an honestly-declared huge entry —
-  // or an honestly-declared set whose SUM is huge (Sol review #2) — is rejected
-  // without ever expanding it.
-  let oversizedEntry: string | undefined;
-  let declaredTotal = 0;
-  let declaredTotalExceeded = false;
+  // 展開サイズ上限 — STREAMING enforcement (Sol review 2周目 #1 根治). The previous
+  // `unzipSync` designs could not truly bound the work: the size a ZIP DECLARES
+  // (central directory) is under the file author's control, and `unzipSync` keeps
+  // processing an entry's whole deflate stream even when the declared output buffer
+  // is smaller — so neither a declared-size filter nor an after-the-fact length
+  // check bounds CPU (実測: 宣言 8B に改変した 64 MiB エントリでも全ストリームを同期
+  // 処理). fflate's streaming `Unzip` + sync `UnzipInflate` emits the ACTUAL output
+  // in chunks as it inflates; counting those chunks and THROWING from `ondata`
+  // unwinds the synchronous `push` immediately — decompression work is bounded by
+  // the caps regardless of what the file claims about itself. Entries outside the
+  // `.tmap` layout (never consumed) are not even started.
+  class CapExceeded extends Error {
+    constructor(readonly verdict: ReadTmapResult) {
+      super('tmap-cap-exceeded');
+    }
+  }
+  // Structural gate (受け入れ基準5): the streaming `Unzip` — unlike `unzipSync` —
+  // does NOT throw on non-ZIP bytes; it simply discovers no entries and we would
+  // fall through to a misleading `missing-entry`. A real `.tmap` always begins with
+  // a ZIP local-file-header signature (`PK\x03\x04`); the only other valid start is
+  // an empty-archive end-of-central-directory (`PK\x05\x06`), which has no manifest
+  // and is corrupt for our purposes too. Anything else is corrupt, reported as such.
+  const looksLikeZip =
+    bytes.length >= 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06));
+  if (!looksLikeZip) {
+    return { ok: false, reason: 'corrupt', message: 'ZIP 形式ではありません。' };
+  }
+  const entries: Record<string, Uint8Array> = {};
+  let actualTotal = 0;
   try {
-    entries = unzipSync(bytes, {
-      filter: (file) => {
-        if (file.originalSize > maxEntry) {
-          oversizedEntry = file.name;
-          return false;
+    const unzip = new Unzip((file) => {
+      const name = file.name;
+      const wanted =
+        name === MANIFEST_ENTRY || name === BASEMAP_ENTRY || attachmentNameOf(name) !== undefined;
+      if (!wanted) return; // not started ⇒ not decompressed (層外エントリは仕事ゼロ).
+      const chunks: Uint8Array[] = [];
+      let written = 0;
+      file.ondata = (err, chunk, final) => {
+        if (err) throw err;
+        written += chunk.length;
+        actualTotal += chunk.length;
+        if (written > maxEntry) throw new CapExceeded(entryTooLarge(name));
+        if (actualTotal > maxTotal) throw new CapExceeded(totalTooLarge);
+        chunks.push(chunk);
+        if (final) {
+          const whole = new Uint8Array(written);
+          let offset = 0;
+          for (const c of chunks) {
+            whole.set(c, offset);
+            offset += c.length;
+          }
+          entries[name] = whole;
         }
-        declaredTotal += file.originalSize;
-        if (declaredTotal > maxTotal) {
-          declaredTotalExceeded = true;
-          return false;
-        }
-        return true;
-      },
+      };
+      file.start();
     });
+    // Deflate (zipSync's default) + stored entries; any other method makes
+    // `start()` throw, which the catch below maps to a corrupt rejection.
+    unzip.register(UnzipInflate);
+    unzip.register(UnzipPassThrough);
+    unzip.push(bytes, true);
   } catch (error) {
+    if (error instanceof CapExceeded) return error.verdict;
     return {
       ok: false,
       reason: 'corrupt',
       message: error instanceof Error ? error.message : String(error),
     };
-  }
-  if (oversizedEntry !== undefined) return entryTooLarge(oversizedEntry);
-  if (declaredTotalExceeded) return totalTooLarge;
-  // Second line (Sol review #1): the DECLARED size is attacker-controlled — a forged
-  // central directory can under-declare. Re-verify the ACTUAL expanded lengths.
-  // Residual (documented): a forged-small declaration still makes fflate process the
-  // whole deflate stream synchronously (output truncated, memory bounded); that CPU
-  // cost is bounded by the container cap above, and the truncated data then fails
-  // the manifest/asset consumers — a hostile file only corrupts itself.
-  let actualTotal = 0;
-  for (const [entryName, entryBytes] of Object.entries(entries)) {
-    if (entryBytes.length > maxEntry) return entryTooLarge(entryName);
-    actualTotal += entryBytes.length;
-    if (actualTotal > maxTotal) return totalTooLarge;
   }
 
   const manifestBytes = entries[MANIFEST_ENTRY];

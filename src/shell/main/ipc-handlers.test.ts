@@ -830,3 +830,38 @@ describe('validateSaveRequest — Sol レビュー #4/#5 の是正', () => {
     expect(validateSaveRequest(req)).toBeNull();
   });
 });
+
+// Sol レビュー2周目 #2/#3 — 保存側の合計上限と添付名長。
+describe('validateSaveRequest — Sol round-2 #2/#3', () => {
+  it('#2: 各エントリは上限内でも合計が読込上限を超える保存は拒否 (WRITE⊆READ)', () => {
+    const req: SaveRequest = {
+      ...makeSaveReq(),
+      baseMapImage: new Uint8Array(60),
+      attachments: [
+        { name: 'a.png', bytes: new Uint8Array(60) },
+        { name: 'b.png', bytes: new Uint8Array(60) },
+      ],
+    };
+    const message = validateSaveRequest(req, { maxEntryBytes: 100_000, maxTotalBytes: 150 });
+    expect(message).not.toBeNull();
+    expect(message).toContain('全体のサイズ');
+    // 実キャップでは同じ要求が通る(正当保存の非退行)。
+    expect(validateSaveRequest(req)).toBeNull();
+  });
+
+  it('#3: ZIP 名前フィールド上限を超える添付名は拒否され、IPC 例外にならない', async () => {
+    const longName = 'a'.repeat(65_517);
+    const bad: SaveRequest = {
+      ...makeSaveReq(),
+      attachments: [{ name: longName, bytes: new Uint8Array([1]) }],
+    };
+    expect(validateSaveRequest(bad)).toContain('長すぎます');
+    // ハンドラ経由でも contract どおりの write-failed で返る(promise rejection しない)。
+    const { deps, saveCalls } = makeDeps();
+    const res = await handleSaveAs(deps, bad);
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.reason).toBe('write-failed');
+    expect(saveCalls).toHaveLength(0);
+  });
+});
