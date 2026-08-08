@@ -31,6 +31,13 @@
 
 ## 進捗ログ（新しい順・先頭追記）
 
+- 2026-08-08(**GPT-5.6 Sol 外部レビューラウンド・完了**): ユーザー指示「GPT-5.6 Sol を呼び出した外部レビューを念のため」→ codex-delegate.sh --mode review -m gpt-5.6-sol(read-only)で 8/6 セッションの10コミットを敵対レビュー。**所見 HIGH2/MED3/LOW1 の6件全件を実在確認のうえ同日根治**(`a752e73`)。総評は NEEDS-FIX→全消化。最終ゲート: typecheck 3構成 0 / lint 0 errors / **フル vitest 4,390 / フル e2e 130/130**。
+  - HIGH: zip-bomb filter の申告サイズ偽装回避(実測 belt 追加+残余 CPU 有界性を明文化) / 展開後**合計**サイズ無制限(MAX_TMAP_TOTAL_BYTES 申告+実測の二重強制)
+  - MED: **多成分 adjust のシーム解決不能**(第1片基準の参照経度が ±180 窓の両端で operand を分断→per-piece 参照化。旧実装 RED の回帰テスト付き) / manifest の保存時サイズ検査欠如(WRITE⊆READ 完全化) / 添付名 '..' 部分一致の過剰拒否(正当 basename が保存不能だった→完全一致のみ)
+  - LOW: weld 採番の三重 fold が非シーム座標をグリッドから外す浮動小数点ドリフト(算術なしの厳密 +180→−180 置換へ)
+  - レビュー側「指摘なし」確認済み観点: 単成分シーム両側/多周回・weld body 契約・遅延 ref/ID 系列/redo・スイープ break 条件と引数順・sender allowlist と D&D/HMR/E2E ライフサイクル・drill 2フェーズ/onCommitted 網羅・絶対経度入力。
+  - 付随: 別セッション産の untracked `derle-import/`(実データ再構築ツール+derle .tmap)が `eslint .` を赤にしていたため eslint ignores へ追加(ファイル自体は非破壊で温存)。当該セッションにより **DERLE_TMAP_DIR=e:/WORKSPACE/time-map-app-4/derle-import で実データベンチが本PCでも実行可能**になった(既定では従来どおり skip 4)。
+
 - 2026-08-06 深夜(**移設後初の実装セッション・完了**): **7/25 申し送りキューを全消化+起床後裁定6件反映 — コード9コミット+視覚ベースライン再生成、最終ゲート typecheck 3構成 0 / lint 0 errors / フル vitest 4,383 (+39・skip 4 は DERLE_TMAP_DIR 実データ不在ベンチ) / フル e2e 130/130 (+1)**。開発機は旧PC(tatuk)→本PC(asteain-ninia・e:\WORKSPACE\time-map-app-4)へ移設済み。
   - **裁定(ユーザー対話・8/6)**: HB3-1=絶対経度入力を実装 / HB3-12・HB3-23・HB5-1・HB5-3・N725-3=現状確定で close。**裁定待ちゼロ**。
   - `d4e7fbc` **HB3-1 絶対経度入力**(上部バーに入力欄+移動ボタン・parseAbsoluteCenterLon で ±180 折り返し・Enter/ボタン確定・e2e 込み) / `417b579` 視覚ベースライン3枚を本PCで再生成(**旧PCとのフォント描画差で変更前から不一致だったことを stash 切り分けで実証** — sidebar×2/timeline。shell 分は HB3-1 の意図的変化で d4e7fbc に同乗)
