@@ -3,11 +3,37 @@
 // (offscreen, E2E_TEST=1, sandbox kept on) lives in one place (単一の真実源).
 
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
 import { expect } from '@playwright/test';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * 隔離した userData ディレクトリ (ワーカープロセスごとに 1 つ)。
+ *
+ * WHY: Playwright の `_electron.launch` は `--user-data-dir` を渡さないので、放っておくと
+ * E2E は **利用者が実際に使っているアプリと同じ userData** を使う。実害は 2 つあった:
+ *   1. 実データ汚染 — 設定・診断ログ (FR-117 は userData/logs へ書く)・キャッシュを、
+ *      130 本のテストが本番の置き場所に書き込む。
+ *   2. 起動時エラー — テスト中に利用者がアプリを起動すると GPU シェーダーキャッシュの
+ *      フォルダを奪い合い、`Unable to move the cache: アクセスが拒否されました (0x5)` /
+ *      `Gpu Cache Creation failed` が出る (機能影響はないが実機報告として上がった)。
+ *
+ * ワーカー**プロセスごと**に 1 つにするのは、同一ワーカー内で再起動するテスト
+ * (保存 → 再起動 → 読込 のような持続性の検証) が userData を跨いで壊れないようにするため。
+ * ワーカー間は別ディレクトリなので並列実行でも衝突しない。プロセス終了時に破棄する。
+ */
+const userDataDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-userdata-'));
+process.on('exit', () => {
+  try {
+    rmSync(userDataDir, { recursive: true, force: true });
+  } catch {
+    // 後始末の失敗はテスト結果に影響させない (一時ディレクトリは OS が回収する)。
+  }
+});
 
 export interface LaunchedApp {
   readonly app: ElectronApplication;
@@ -34,7 +60,14 @@ export async function launchApp(): Promise<LaunchedApp> {
   childEnv['E2E_TEST'] = '1';
 
   const app = await electron.launch({
-    args: ['.', '--disable-gpu', '--no-sandbox', '--disable-software-rasterizer'],
+    args: [
+      '.',
+      // 利用者の実 userData を汚さず、同時起動ともキャッシュを奪い合わない (上の注記)。
+      `--user-data-dir=${userDataDir}`,
+      '--disable-gpu',
+      '--no-sandbox',
+      '--disable-software-rasterizer',
+    ],
     cwd: projectRoot,
     env: childEnv,
   });

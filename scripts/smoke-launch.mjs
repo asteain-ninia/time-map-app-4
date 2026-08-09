@@ -14,11 +14,24 @@
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const require = createRequire(import.meta.url);
 const electronPath = require('electron');
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+// 隔離した userData (e2e/helpers.ts と同じ理由): スモークが利用者の実 userData —
+// 設定・診断ログ (FR-117)・GPU キャッシュ — を触らないようにする。
+const userDataDir = mkdtempSync(join(tmpdir(), 'tmap-smoke-userdata-'));
+process.on('exit', () => {
+  try {
+    rmSync(userDataDir, { recursive: true, force: true });
+  } catch {
+    // 後始末の失敗は結果に影響させない。
+  }
+});
 
 const HARD_TIMEOUT_MS = 60_000;
 
@@ -30,7 +43,13 @@ delete env.ELECTRON_RUN_AS_NODE;
 
 const child = spawn(
   electronPath,
-  ['.', '--disable-gpu', '--no-sandbox', '--disable-software-rasterizer'],
+  [
+    '.',
+    `--user-data-dir=${userDataDir}`,
+    '--disable-gpu',
+    '--no-sandbox',
+    '--disable-software-rasterizer',
+  ],
   { cwd: projectRoot, env, stdio: ['ignore', 'pipe', 'pipe'] },
 );
 
