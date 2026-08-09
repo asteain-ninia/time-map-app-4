@@ -29,6 +29,7 @@ import {
   type Forest,
 } from '../hierarchy/forest';
 import { derivedDepth, isDepthUndefined } from '../hierarchy/depth';
+import { FEATURE_KIND } from '../feature';
 import type { FeatureId } from '../ids';
 
 // --- per-feature display decision (the中間表現 handed to U19) ----------------
@@ -101,12 +102,27 @@ export function classifyAtThreshold(
   depth: number,
   threshold: number,
   featureHasChildren: boolean,
+  ownsShape = true,
 ): DisplayVerdict {
   if (isDepthUndefined(depth)) return DISPLAY_VERDICT.Omitted;
   if (depth > threshold) return DISPLAY_VERDICT.Omitted;
   if (depth === threshold) {
     return featureHasChildren ? DISPLAY_VERDICT.Aggregate : DISPLAY_VERDICT.Real;
   }
+  // d < T — EXPANDED: the drawing DESCENDS to this feature's children (仕様 U34 §31
+  // 「d < N の集約地物: …その地物の子をさらに展開できる…より深い階層の描画へ降りる」、
+  // 括弧書きで「集約地物自体の派生形状ではなく」と明記)。
+  //
+  // A pure 集約地物 owns NO shape of its own (FR-35: its area IS the union of its
+  // children), so drawing it here would paint that union ON TOP of the very children
+  // that are also drawn — covering them and, because the hit-test shares this drawable
+  // set (教訓 5.29), ABSORBING every click meant for a child. 実データ(デーレ共和国+63州)
+  // で再現: 深度を上げても子が一切選べない。The area is already fully carried by the
+  // children, so the expanded aggregate contributes nothing but an occluding duplicate.
+  //
+  // A LEAF that has acquired children (FR-35 の末端→集約 中間状態) is DIFFERENT: it owns
+  // real rings that its children do not carry, so it keeps drawing its own shape.
+  if (featureHasChildren && !ownsShape) return DISPLAY_VERDICT.Omitted;
   return DISPLAY_VERDICT.Real;
 }
 
@@ -239,7 +255,16 @@ export function buildDisplayDecisions(input: DisplayDecisionInput): DisplayDecis
     const depth = input.depths?.get(featureId) ?? derivedDepth(forest, featureId);
     const inRegion = focusActive && region.has(featureId);
     const threshold = inRegion ? focus.depth : globalThreshold;
-    const verdict = classifyAtThreshold(depth, threshold, hasChildren(forest, featureId));
+    // `ownsShape`: does this feature carry geometry its children do NOT? A pure
+    // 集約地物 does not (FR-35 その領域は子の和); every other kind does. Read from the
+    // forest's own feature map so the decision needs no extra input (単一真実源).
+    const ownsShape = forest.byId.get(featureId)?.kind !== FEATURE_KIND.Aggregate;
+    const verdict = classifyAtThreshold(
+      depth,
+      threshold,
+      hasChildren(forest, featureId),
+      ownsShape,
+    );
     const emphasized = inRegion && focus.emphasize;
 
     decisions.set(

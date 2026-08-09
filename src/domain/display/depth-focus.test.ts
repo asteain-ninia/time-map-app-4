@@ -139,8 +139,10 @@ describe('buildDisplayDecisions — global depth only (FR-42)', () => {
   it('N=1: depth-1 features are terminal; root2->leafC (a leaf) draws its own shape', () => {
     const forest = sampleForest();
     const d = buildDisplayDecisions({ forest, globalThreshold: 1 });
-    // root expands (d=0 < 1 => Real), mid is terminal aggregate (d=1, has kids).
-    expect(d.get(fid('root'))?.verdict).toBe(DISPLAY_VERDICT.Real);
+    // root は展開されるので自身は描かれない (仕様 U34 §31「より深い階層の描画へ降りる」/
+    // 集約地物は自前の形状を持たず、その領域は子が担う — 親を描くと子を覆い、
+    // 描画集合を共有するヒットテストが子のクリックを奪う)。
+    expect(d.get(fid('root'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
     expect(d.get(fid('mid'))?.verdict).toBe(DISPLAY_VERDICT.Aggregate);
     expect(d.get(fid('mid'))?.rollUpTargetId).toBe(fid('mid'));
     // mid's children are below the terminal: omitted.
@@ -148,18 +150,30 @@ describe('buildDisplayDecisions — global depth only (FR-42)', () => {
     expect(d.get(fid('leafB'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
     // leafC is depth 1 with NO children -> Real (own shape), not aggregate.
     expect(d.get(fid('leafC'))?.verdict).toBe(DISPLAY_VERDICT.Real);
-    expect(d.get(fid('root2'))?.verdict).toBe(DISPLAY_VERDICT.Real);
+    // root2 も展開済みの集約なので描かれない (leafC がその領域を担う)。
+    expect(d.get(fid('root2'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
   });
 
-  it('N at forest max: every feature draws its real shape (leaves) / expanded', () => {
+  it('N at forest max: 末端が実形状で描かれ、展開済みの集約は描かれない', () => {
     const forest = sampleForest();
     const d = buildDisplayDecisions({ forest, globalThreshold: 2 });
     expect(d.get(fid('leafA'))?.verdict).toBe(DISPLAY_VERDICT.Real);
     expect(d.get(fid('leafB'))?.verdict).toBe(DISPLAY_VERDICT.Real);
-    // No feature is omitted at max depth.
-    for (const dec of d.values()) {
-      expect(dec.verdict).not.toBe(DISPLAY_VERDICT.Omitted);
-    }
+    expect(d.get(fid('leafC'))?.verdict).toBe(DISPLAY_VERDICT.Real);
+    // 展開された集約 (root/mid/root2) は自身を描かない — 領域は子が担う。
+    expect(d.get(fid('root'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
+    expect(d.get(fid('mid'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
+    expect(d.get(fid('root2'))?.verdict).toBe(DISPLAY_VERDICT.Omitted);
+    // 描かれるのは末端だけで、面は重複しない (クリックは必ず末端に当たる)。
+    expect(drawableIds(d)).toEqual([fid('leafA'), fid('leafB'), fid('leafC')]);
+  });
+
+  it('子を持つ末端地物 (FR-35 中間状態) は展開されても自身の実形状を描く', () => {
+    // 集約と違い、末端地物は子が担わない自前のリングを持つので描き続ける。
+    const forest = buildForest([leaf('host'), leaf('kid', 'host')]);
+    const d = buildDisplayDecisions({ forest, globalThreshold: 1 });
+    expect(d.get(fid('host'))?.verdict).toBe(DISPLAY_VERDICT.Real);
+    expect(d.get(fid('kid'))?.verdict).toBe(DISPLAY_VERDICT.Real);
   });
 
   it('accepts a precomputed depth map (U08 derivedDepths) and agrees with self-compute', () => {
@@ -217,8 +231,9 @@ describe('buildDisplayDecisions — focus coexists with global (FR-43)', () => {
       focus: { originId: fid('mid'), depth: 2, emphasize: true },
     });
     // Vertical region of mid = {root, mid, leafA, leafB} -> follow M=2.
-    expect(d.get(fid('root'))?.verdict).toBe(DISPLAY_VERDICT.Real); // 0 < 2
-    expect(d.get(fid('mid'))?.verdict).toBe(DISPLAY_VERDICT.Real); // 1 < 2
+    // root / mid は展開済みの集約なので自身は描かれず、領域は leafA/leafB が担う。
+    expect(d.get(fid('root'))?.verdict).toBe(DISPLAY_VERDICT.Omitted); // 0 < 2 (展開)
+    expect(d.get(fid('mid'))?.verdict).toBe(DISPLAY_VERDICT.Omitted); // 1 < 2 (展開)
     expect(d.get(fid('leafA'))?.verdict).toBe(DISPLAY_VERDICT.Real); // 2 == 2 leaf
     expect(d.get(fid('leafB'))?.verdict).toBe(DISPLAY_VERDICT.Real);
     // Outside the region follows N=0: root2 aggregate, leafC omitted.

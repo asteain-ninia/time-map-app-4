@@ -1,0 +1,26 @@
+# derle-import の生成物は追跡しない。追跡するのは「再生成に必要なもの」だけ:
+#   tools/ ・ README.md ・ world-rect.json ・ イラレ出界図BUR080809.svg (元データ)
+#
+# 以下はすべて上記から再生成できる (README「再現コマンド」参照)。中間データだけで
+# 19 MB あり、GitHub リモートのあるリポジトリに毎回積むのは割に合わない。
+
+# visualizer 抽出の中間データ (各 9〜10 MB)
+borders.json
+borders-states.json
+
+# ベースマップ資産 (SVG から再生成)
+basemap-vector.json
+basemap.png
+
+# 成果物の .tmap。アプリで編集する実データでもあるため、追跡すると編集のたびに
+# ツリーが汚れる。再生成手順は README にある。
+*.tmap
+
+# アプリの自動バックアップ (FR: 自動保存/バックアップが吐く)
+*.tmap.bak.*
+
+# 目視確認・調査用に焼いた画像と一時ダンプ
+preview*.png
+crop-*.png
+*-overlay.png
+agg-shapes.json
