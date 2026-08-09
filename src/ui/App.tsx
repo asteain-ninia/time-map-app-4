@@ -868,7 +868,10 @@ export function App(): JSX.Element {
       // This is the prerequisite for HB3-4 (drag preview) / HB3-8 (move 排他). The
       // feature + vertex store come from the SAME resolveDisplayFor bundle the draw /
       // hit-test share, so a handle sits exactly on the drawn vertex (教訓 5.29).
-      editHandles: () => {
+      // FR-110 視野内カウント: `view` はこのフレームを合成する camera/viewport そのもの。
+      // ハンドルビルダーへ渡し、視野内の頂点だけを生成・カウントさせる (デカい地物も
+      // ズームインすれば cap を下回り編集できる)。
+      editHandles: (view) => {
         const s = store.getState();
         if (s.mode !== EDIT_MODE.Edit) return [];
         // HB3-6/18 review fix: tools with their OWN overlay (ナイフ / 結合 / 所属変更) promote a
@@ -936,6 +939,9 @@ export function App(): JSX.Element {
             selectedVertexIds: s.selection.vertexIds,
             ownerFeatureId: s.selection.vertexOwner,
           },
+          // contextOutlineStyle は既定のまま (undefined ⇒ default 適用)
+          undefined,
+          view,
         );
       },
       // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight

@@ -1427,3 +1427,135 @@ describe('buildActiveFeatureHandlePrimitives (FR-87 EdgeAdd の新頂点プレ�
     expect(vertexHandles(prims).some((h) => h.ring !== undefined)).toBe(false);
   });
 });
+
+// FR-110 視野内カウント (HandleView) — cap は「視野内に描くハンドル数」に掛かる。
+// view を渡すと視野外の頂点/辺ハンドルは生成されず、cap 判定も視野内個数で行われる
+// (デカい地物もズームインすれば編集できる)。view なしは従来どおり全数カウント。
+describe('buildActiveFeatureHandlePrimitives (FR-110 視野内カウント HandleView)', () => {
+  // viewport 100×100 / zoom 10px/deg / 中心 (0,0): square(0,0..10,10) の頂点のうち
+  // (0,0) だけが画面内 (±32px マージン含む)。(10,0)→x150 / (10,10)→(150,-50) /
+  // (0,10)→y-50 は全て外。辺中点は (5,0)→(100,50) と (0,5)→(50,0) の 2 つが内。
+  const VIEW = {
+    camera: { centerLon: 0, centerLat: 0, zoom: 10 },
+    viewport: { widthCss: 100, heightCss: 100, devicePixelRatio: 1 },
+  };
+
+  it('view があると視野内のハンドルだけが生成される', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      undefined,
+      undefined,
+      VIEW,
+    );
+    expect(vertexHandles(prims)).toHaveLength(1);
+    expect(handles(prims)).toHaveLength(3); // 頂点1 + 辺中点2
+  });
+
+  it('cap は視野内個数に掛かる: 総頂点数 > cap でも視野内 <= cap なら描画される', () => {
+    const { root } = leafProject(); // 総頂点 4
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      2, // 4 > 2 だが視野内は 1
+      DEFAULT_FILTER_STATE,
+      undefined,
+      undefined,
+      VIEW,
+    );
+    expect(vertexHandles(prims)).toHaveLength(1);
+    // 同条件で view なしなら従来どおり全抑制 (回帰確認)
+    const without = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      2,
+    );
+    expect(handles(without)).toHaveLength(0);
+  });
+
+  it('視野内個数が cap を超えたら従来どおり全抑制 (しきい値であって先頭 N ではない)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      0, // 視野内 1 > 0
+      DEFAULT_FILTER_STATE,
+      undefined,
+      undefined,
+      VIEW,
+    );
+    expect(handles(prims)).toHaveLength(0);
+  });
+
+  it('選択済み頂点は視野外でも生き残る (常時スタイル契約は視野フィルタより優先)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      {
+        // (10,10) = 視野外の頂点を選択
+        selectedVertexIds: new Set([asVertexId('leaf-1-2')]),
+        ownerFeatureId: asFeatureId('leaf-1'),
+      },
+      undefined,
+      VIEW,
+    );
+    // 視野外 (10,10) の選択頂点のハンドルが位置で確認できること
+    expect(
+      vertexHandles(prims).some((h) => h.at.lon === 10 && h.at.lat === 10),
+    ).toBe(true);
+    expect(vertexHandles(prims)).toHaveLength(2); // 視野内 1 + 選択済み視野外 1
+  });
+
+  it('ワールドラップ: 1 周先のカメラからも同じ頂点が視野内と判定される (FR-07)', () => {
+    const { root } = leafProject();
+    const prims = buildActiveFeatureHandlePrimitives(
+      root,
+      timePointYear(0),
+      asFeatureId('leaf-1'),
+      DISPLAY,
+      null,
+      undefined,
+      undefined,
+      undefined,
+      DEFAULT_FILTER_STATE,
+      undefined,
+      undefined,
+      {
+        camera: { centerLon: 360, centerLat: 0, zoom: 10 },
+        viewport: { widthCss: 100, heightCss: 100, devicePixelRatio: 1 },
+      },
+    );
+    expect(vertexHandles(prims)).toHaveLength(1);
+  });
+});

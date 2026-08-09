@@ -43,6 +43,13 @@ import {
   checkBaseMapImageBytes,
   type BaseMapImageCheck,
 } from '../map/base-map-image-guard';
+import { parseVectorBaseMap, type VectorBaseMap } from '../../domain/basemap/vector';
+import {
+  bakeVectorBaseMap,
+  prepareVectorBaseMap,
+  type PreparedVectorBaseMap,
+} from '../../render/vector-base-map';
+import { planVectorBake, type VectorBakePlan } from '../map/vector-base-map-cache';
 
 /**
  * The inputs to resolve the displayed PROJECT base-map for one composite (S7 出界図
@@ -124,6 +131,16 @@ interface DesiredBaseMap {
   readonly key: string;
   /** The guard's sniffed MIME for a decodable user map; null for the preset. */
   readonly mimeType: string | null;
+  /**
+   * The VECTOR base map when the asset bytes carry one (FR-03 ベクター背景) — see
+   * `domain/basemap/vector`. Present ⇒ the base layer is BAKED from vector at the
+   * live camera instead of decoding a raster, so it never blurs under zoom and the
+   * bake is cheaper than decoding a stored image (実測 19.8ms vs 162ms). null ⇒ the
+   * unchanged raster path.
+   */
+  readonly vector: VectorBaseMap | null;
+  /** The bake plan (which world rect at which pixel size) for a vector base map. */
+  readonly bake: VectorBakePlan | null;
 }
 
 /**
@@ -196,8 +213,16 @@ export interface CreateAddHostPortsOptions {
    * (教訓 5.5). Defaults to none when absent (legacy callers / pre-mount). The handles
    * draw ABOVE the committed features but UNDER the tool overlay (FR-78 仮表示 stays on
    * top), matching the back-to-front layer contract.
+   *
+   * FR-110 視野内カウント: the getter receives the SAME camera/viewport the frame
+   * composes with, so the builder can filter handles to the visible view and apply the
+   * 表示上限 to the VISIBLE count (デカい地物もズームインすれば編集できる) without a
+   * second camera truth source (教訓 5.29).
    */
-  readonly editHandles?: () => readonly DrawPrimitive[];
+  readonly editHandles?: (view: {
+    readonly camera: Camera;
+    readonly viewport: Viewport;
+  }) => readonly DrawPrimitive[];
   /**
    * Whether a LIVE edit-drag preview is in flight THIS frame (HB3-4). The edit preview
    * (a vertex / feature following the cursor) is composited INSIDE the {@link editHandles}
@@ -591,6 +616,12 @@ export function createAddHostPorts(
   let nextBaseBytesId = 1;
   const baseBytesChecks = new WeakMap<Uint8Array, BaseMapImageCheck>();
   const decodedUserImages = new WeakMap<Uint8Array, Promise<CanvasImageSource | null>>();
+  // ベクター背景: バイト列 → 検証結果 / Path2D 化済みデータ。参照キーなので、地図が
+  // 差し替わればどちらも自然に破棄される (全破棄の裁定を型で担保)。
+  const vectorParses = new WeakMap<Uint8Array, VectorBaseMap | null>();
+  const vectorPrepared = new WeakMap<Uint8Array, PreparedVectorBaseMap>();
+  /** 焼き付け先キャンバス (寸法が同じなら使い回す)。 */
+  let bakeCanvas: HTMLCanvasElement | null = null;
   const decodeBaseMap = options.decodeBaseMapImage ?? decodeBaseMapBitmap;
   const loadPresetImage: LoadPresetBaseMapImage =
     options.loadPresetBaseMapImage ?? loadPresetBaseMap;
@@ -631,8 +662,10 @@ export function createAddHostPorts(
       survey: lastSurvey,
       // HB3-9: the active feature's edit handles, recomputed fresh per frame so they
       // re-project against the live camera and stay screen-fixed (FR-17). Empty when
-      // not editing / no active feature (the getter returns []).
-      editHandles: options.editHandles?.() ?? [],
+      // not editing / no active feature (the getter returns []). FR-110 視野内カウント:
+      // the getter receives THIS frame's camera/viewport (the same pair the composite
+      // uses) so the visible-handle filter and the drawn frame agree by construction.
+      editHandles: options.editHandles?.({ camera, viewport }) ?? [],
       camera,
       viewport,
       thresholds: options.labelThresholds?.() ?? DEFAULT_LABEL_THRESHOLDS,
@@ -720,6 +753,54 @@ export function createAddHostPorts(
     return id;
   };
 
+  // ベクター背景 — バイト列の検証結果を参照ごとに 1 度だけ計算する (JSON.parse + Zod は
+  // 2MB 級で数十 ms なので、desiredBaseMap が毎フレーム走る以上キャッシュ必須)。
+  // `null` は「ベクターではない」= ラスター経路、を意味し、それも記憶する。
+  const vectorBaseMapFor = (bytes: Uint8Array): VectorBaseMap | null => {
+    let parsed = vectorParses.get(bytes);
+    if (parsed === undefined) {
+      parsed = parseVectorBaseMap(bytes);
+      vectorParses.set(bytes, parsed);
+    }
+    return parsed;
+  };
+
+  /**
+   * ベクター背景を焼いてキャンバスを返す (焼けない環境では null)。
+   *
+   * Path2D の生成 (`prepareVectorBaseMap`) はバイト列ごとに 1 度だけ行い、以後の焼き直しは
+   * 塗り直すだけにする。焼き付け先キャンバスも寸法が同じなら使い回す (確保と GC を避ける)。
+   * ベクターデータが変われば `vectorPrepared` の鍵 (バイト列参照) が変わるので全破棄になる
+   * (ユーザー裁定「ベクター地図が更新されたときは全破棄」)。
+   */
+  const bakeVectorToCanvas = (
+    map: VectorBaseMap,
+    bytes: Uint8Array,
+    plan: VectorBakePlan,
+  ): CanvasImageSource | null => {
+    const doc = mount.ownerDocument;
+    const view = doc.defaultView;
+    if (view === null || typeof view.Path2D !== 'function') return null;
+    let prepared = vectorPrepared.get(bytes);
+    if (prepared === undefined) {
+      prepared = prepareVectorBaseMap(map, (d) => new view.Path2D(d));
+      vectorPrepared.set(bytes, prepared);
+    }
+    if (
+      bakeCanvas === null ||
+      bakeCanvas.width !== plan.widthPx ||
+      bakeCanvas.height !== plan.heightPx
+    ) {
+      bakeCanvas = doc.createElement('canvas');
+      bakeCanvas.width = plan.widthPx;
+      bakeCanvas.height = plan.heightPx;
+    }
+    const ctx = bakeCanvas.getContext('2d');
+    if (ctx === null) return null;
+    bakeVectorBaseMap(ctx, prepared, plan.rect, plan.widthPx, plan.heightPx);
+    return bakeCanvas;
+  };
+
   // S7 — the untrusted-byte guard verdict, cached per bytes reference (Codex #3). The
   // header scan is O(bytes) worst case and desiredBaseMap runs per composite, so the
   // verdict must be computed once per load, never per frame.
@@ -740,6 +821,26 @@ export function createAddHostPorts(
   // identity, so the bytes-before-reflect window cannot pin a stale placement).
   const desiredBaseMap = (read: () => BaseMapInput): DesiredBaseMap => {
     const input = read();
+    // VECTOR FIRST: the base-map asset slot carries EITHER a raster image OR a vector
+    // map; `parseVectorBaseMap` returns null for anything that is not our validated
+    // JSON (it early-exits on the first byte), so the raster path below is untouched
+    // for every existing project.
+    const vector = input.bytes.length > 0 ? vectorBaseMapFor(input.bytes) : null;
+    if (vector !== null) {
+      // The baked rect follows the LIVE camera, so the key carries the bake plan:
+      // panning inside the padded rect and zooming within one level keep the SAME key
+      // (no re-bake), while leaving either re-bakes exactly once for the new region.
+      // A different vector asset changes `baseBytesIdFor`, which drops every cache.
+      const bake = planVectorBake(renderer.getCamera(), renderer.getViewport());
+      return {
+        input,
+        resolved: { kind: DISPLAYED_BASEMAP.User, source: input.source, meta: input.meta },
+        key: `vector:${baseBytesIdFor(input.bytes)}:${bake.key}`,
+        mimeType: null,
+        vector,
+        bake,
+      };
+    }
     const check = input.bytes.length > 0 ? checkedBaseBytes(input.bytes) : null;
     const loadable = check !== null && check.ok;
     const resolved = resolveDisplayedBasemap(input.source, loadable);
@@ -758,6 +859,8 @@ export function createAddHostPorts(
       resolved,
       key,
       mimeType: check !== null && check.ok ? check.mimeType : null,
+      vector: null,
+      bake: null,
     };
   };
 
@@ -790,6 +893,12 @@ export function createAddHostPorts(
   const resolveDisplayImage = async (
     desired: DesiredBaseMap,
   ): Promise<{ image: CanvasImageSource | null; meta: EquirectangularMeta }> => {
+    if (desired.vector !== null && desired.bake !== null) {
+      const baked = bakeVectorToCanvas(desired.vector, desired.input.bytes, desired.bake);
+      if (baked !== null) return { image: baked, meta: desired.bake.rect };
+      // Bake unavailable (no canvas support) → fall through to the preset.
+      return { image: await loadPreset(), meta: PRESET_BASEMAP_META };
+    }
     if (desired.resolved.kind === DISPLAYED_BASEMAP.User && desired.mimeType !== null) {
       const decoded = await decodeUserBytes(desired.input.bytes, desired.mimeType);
       if (decoded !== null) return { image: decoded, meta: desired.input.meta };

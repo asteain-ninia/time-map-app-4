@@ -67,6 +67,7 @@ import {
 } from '../../domain/vertex';
 
 import type { DisplayControlInput } from '../../render/display-pipeline';
+import { worldToScreen, wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import {
   buildEditHandlePrimitives,
   isRingedVertex,
@@ -522,6 +523,7 @@ export function buildActiveFeatureHandlePrimitives(
   filter: FilterState = DEFAULT_FILTER_STATE,
   selection: HandleSelectionInput = NO_HANDLE_SELECTION,
   contextOutlineStyle: ContextOutlineStyle = DEFAULT_CONTEXT_OUTLINE_STYLE,
+  view?: HandleView,
 ): DrawPrimitive[] {
   // FR-82 頂点選択コンテキスト地物 — the SECOND feature this layer may have to draw.
   //
@@ -559,6 +561,7 @@ export function buildActiveFeatureHandlePrimitives(
         cap,
         selection,
         includeEdges: true,
+        view,
       }),
     );
   }
@@ -573,6 +576,7 @@ export function buildActiveFeatureHandlePrimitives(
         cap,
         selection,
         includeEdges: false,
+        view,
         // FR-82 本体: …and its shape is traced with the DASHED outline that names it as the
         // 頂点選択コンテキスト地物 (the active feature never gets one — see contextFeatureOf).
         contextOutline: contextOutlineStyle,
@@ -638,6 +642,72 @@ interface FeatureHandleOptions {
    * primitives are exactly what they were before (教訓 5.18: absence is a named default).
    */
   readonly contextOutline?: ContextOutlineStyle;
+  /** FR-110 視野内カウント: the live camera view, when supplied (see {@link HandleView}). */
+  readonly view: HandleView | undefined;
+}
+
+/**
+ * The live camera view the FR-110 handle path filters against (視野内の頂点だけを描き、
+ * cap も視野内の個数に掛ける). Supplied per composite by the composition root — the
+ * SAME camera/viewport the frame composes with, so the filtered set and the drawn
+ * frame can never disagree. Absent (legacy callers / tests) ⇒ no filtering and the
+ * cap applies to the feature's TOTAL vertex count, exactly as before.
+ */
+export interface HandleView {
+  readonly camera: Camera;
+  readonly viewport: Viewport;
+}
+
+/**
+ * Margin (CSS px) around the viewport within which a handle still counts as visible,
+ * so a handle whose disc/ring straddles the screen edge pops in before its center
+ * enters (radius + ring + stroke comfortably covered).
+ */
+const HANDLE_VIEW_MARGIN_PX = 32;
+
+/**
+ * Filter an {@link EditHandles} set to the handles visible in `view` (FR-110 視野内
+ * カウント). A handle is kept when its world anchor projects into the viewport
+ * (±margin) on ANY world-wrap replica turn (FR-07 無限横スクロール — the same
+ * wrapTurnsForLonSpan the renderer's clip uses, so filter and draw agree at the seam).
+ * RINGED (selected / dragging) vertices are kept REGARDLESS of visibility: their
+ * always-styled contract (domain/selection/visual.ts) predates this filter and their
+ * count is bounded by the selection size.
+ */
+function filterHandlesToView(
+  handles: EditHandles,
+  view: HandleView,
+  highlight: HandleHighlightInput,
+): EditHandles {
+  const { camera, viewport } = view;
+  // Candidate wrap turns for ANY longitude on screen (computed once, not per vertex).
+  const turns = wrapTurnsForLonSpan(-180, 180, camera, viewport);
+  const maxX = viewport.widthCss + HANDLE_VIEW_MARGIN_PX;
+  const maxY = viewport.heightCss + HANDLE_VIEW_MARGIN_PX;
+  const inView = (at: { readonly lon: number; readonly lat: number }): boolean => {
+    for (const turn of turns) {
+      const s = worldToScreen(
+        { lon: at.lon + 360 * turn, lat: at.lat },
+        camera,
+        viewport,
+      );
+      if (
+        s.x >= -HANDLE_VIEW_MARGIN_PX &&
+        s.x <= maxX &&
+        s.y >= -HANDLE_VIEW_MARGIN_PX &&
+        s.y <= maxY
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+  return {
+    vertices: handles.vertices.filter(
+      (v) => isRingedVertex(v.vertexId, highlight) || inView(v.position),
+    ),
+    edges: handles.edges.filter((e) => inView(e.midpoint)),
+  };
 }
 
 /**
@@ -697,9 +767,20 @@ function featureHandleParts(
   // render builder so an aggregate feature simply draws no handles.
   const all = computeHandles(feature, previewStore);
   const highlight = highlightFor(options.selection, live, featureId);
-  const handles: EditHandles = options.includeEdges
+  const unfiltered: EditHandles = options.includeEdges
     ? all
     : { vertices: all.vertices, edges: [] };
+  // FR-110 視野内カウント: when the composition root supplies the live view, only the
+  // handles visible in the viewport (±margin) are built AND counted against the cap —
+  // so a huge feature (デカい国ほど重要) becomes editable simply by zooming in: the
+  // visible vertex count drops under the cap even though the feature owns tens of
+  // thousands. Off-screen vertices still pay one project-and-test each (数十 ns/頂点,
+  // arithmetic only), but the O(visible) primitive build + draw is what the cap guards.
+  // Without a view (legacy callers / tests) nothing changes: cap on the total count.
+  const handles: EditHandles =
+    options.view === undefined
+      ? unfiltered
+      : filterHandlesToView(unfiltered, options.view, highlight);
 
   // FR-110 表示上限 (vertexMarkerCap) — the perf gate. When the feature owns MORE vertices
   // than `cap` (count = one vertex handle per vertex), the FR-79 style「全頂点ぶんのハンドル」
@@ -736,8 +817,13 @@ function featureHandleParts(
       ? []
       : buildContextOutlinePrimitives(feature, previewStore, options.contextOutline);
 
-  if (options.cap !== undefined && all.vertices.length > options.cap) {
-    const ringed = handles.vertices.filter((v) => isRingedVertex(v.vertexId, highlight));
+  // FR-110 の cap は「表示上限」— view があるときは視野内に入る頂点ハンドル数に掛ける
+  // (ズームインすれば視野内個数が cap を下回り、巨大地物も編集できる)。view が無い
+  // 従来経路では全頂点数に掛かる (挙動不変)。
+  if (options.cap !== undefined && handles.vertices.length > options.cap) {
+    const ringed = unfiltered.vertices.filter((v) =>
+      isRingedVertex(v.vertexId, highlight),
+    );
     if (ringed.length === 0) return { under, handles: [] };
     return {
       under,
