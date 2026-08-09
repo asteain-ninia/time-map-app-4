@@ -217,6 +217,13 @@ export interface DisplayShapeCache {
   store: VertexStore | undefined;
 }
 
+/**
+ * Upper bound on retained geometry entries. Entries are cheap references to already
+ * -resolved shapes; the cap exists only so a long session with many distinct roll-up
+ * targets cannot grow the map without limit. Well above any real project's area count.
+ */
+export const GEOMETRY_CACHE_CAPACITY = 4096;
+
 /** Create an empty {@link DisplayShapeCache}. */
 export function createDisplayShapeCache(): DisplayShapeCache {
   return { entries: new Map(), forest: undefined, store: undefined };
@@ -395,6 +402,21 @@ export function resolveDisplayShapes(
   }
 
   if (cache !== undefined && nextEntries !== undefined) {
+    // RETAIN entries this run did not need, up to {@link GEOMETRY_CACHE_CAPACITY}
+    // (実データ由来の実測): dropping them made the EXPENSIVE aggregate unions
+    // (デーレ共和国 = 63 子の和で約 2.4 秒) evaporate the moment the user raised the
+    // 階層深度 slider — at depth ≥ 1 an expanded aggregate is Omitted, so its entry
+    // vanished, and coming back (or moving the timeline afterwards) paid the whole
+    // union again. Retention is SAFE because validity never rested on "was it used
+    // last run": a carried-over entry is either covered by the whole-cache fast path
+    // (identical forest+store) or re-validated per source against a fresh subtree
+    // snapshot. Capacity keeps the map bounded on a long session.
+    if (nextEntries.size < GEOMETRY_CACHE_CAPACITY) {
+      for (const [sourceId, entry] of cache.entries) {
+        if (nextEntries.size >= GEOMETRY_CACHE_CAPACITY) break;
+        if (!nextEntries.has(sourceId)) nextEntries.set(sourceId, entry);
+      }
+    }
     cache.entries = nextEntries;
     // Record the forest + store these entries were resolved against so the NEXT run can
     // take the whole-cache fast path when it hands back the identical pair (bughunt3).

@@ -204,6 +204,60 @@ export function leafShapePieces(shape: Shape): readonly (readonly Ring[])[] | un
  * intact — 教訓5.1). A pure aggregate (kind === Aggregate, no shape field — FR-35)
  * has no own area, so its derived area stays exactly the union of children.
  */
+/**
+ * Union a set of sibling areas into one, PAIRWISE in a balanced tree rather than by
+ * folding them one-at-a-time into a running accumulator.
+ *
+ * WHY (実データ由来の性能修正): the linear fold `acc = acc ∪ child` makes the
+ * accumulator grow toward the WHOLE parent area, and every one of the k children then
+ * pays a boolean op against that ever-growing boundary — total work ≈ k × |result|,
+ * i.e. quadratic in the child count. On the real derle data (デーレ共和国 = 63 州, 約
+ * 5万頂点) that single resolution measured **2.3 秒**, which the user feels as a freeze
+ * on the first frame after load. Unioning pairwise makes each edge participate in
+ * ~log₂(k) ops instead of ~k, so the same result costs ≈ |result| × log₂(k).
+ *
+ * Union is associative and commutative, so the RESULT is unchanged — only the order
+ * of operations differs (property-tested by the existing hierarchy/union suites).
+ *
+ * SEAM (R3, 根本原因 A): each operand is resolved from RAW stored representatives, so
+ * two seam-adjacent areas can sit ~360° apart. Every pair is anchored onto ONE common
+ * branch through the single alignment source of truth BEFORE the op — exactly as the
+ * fold did, just applied per pair (and again at each higher level of the tree).
+ *
+ * EMPTY operands are dropped first: `x ∪ ∅ = x`, so they only cost ops.
+ */
+function unionAreasPairwise(
+  areas: readonly GeoMultiPolygon[],
+  featureId: FeatureId,
+): ShapeResolution {
+  let level: GeoMultiPolygon[] = areas.filter((a) => a.length > 0);
+  if (level.length === 0) return ok(EMPTY_MULTI_POLYGON);
+  while (level.length > 1) {
+    const next: GeoMultiPolygon[] = [];
+    for (let i = 0; i < level.length; i += 2) {
+      const a = level[i]!;
+      const b = level[i + 1];
+      if (b === undefined) {
+        // Odd one out: carries to the next level untouched.
+        next.push(a);
+        continue;
+      }
+      const ref = a.length > 0 ? referenceLonForMultiPolygon(a) : referenceLonForMultiPolygon(b);
+      const merged = union(alignMultiPolygon(a, ref), alignMultiPolygon(b, ref));
+      if (merged.status === BOOLEAN_OP_STATUS.Rejected) {
+        return failed({
+          kind: SHAPE_RESOLUTION_FAILURE.UnionRejected,
+          featureId,
+          violations: merged.violations,
+        });
+      }
+      next.push(merged.result);
+    }
+    level = next;
+  }
+  return ok(level[0] ?? EMPTY_MULTI_POLYGON);
+}
+
 export function resolveFeatureArea(
   forest: Forest,
   store: VertexStore,
@@ -222,7 +276,13 @@ export function resolveFeatureArea(
     readonly featureId: FeatureId;
     readonly childIds: readonly FeatureId[];
     childIndex: number;
-    acc: GeoMultiPolygon;
+    /**
+     * The operands of THIS frame's union: the feature's own footprint first (FR-35
+     * 末端→集約 transition; EMPTY for a pure aggregate), then each completed child
+     * area. They are unioned as a balanced tree when the frame completes — see
+     * {@link unionAreasPairwise} for why not a running fold.
+     */
+    readonly parts: GeoMultiPolygon[];
   }
 
   const feature0 = forest.byId.get(featureId);
@@ -243,7 +303,7 @@ export function resolveFeatureArea(
   if (root0Own.status === 'failed') return root0Own;
 
   const stack: Frame[] = [
-    { featureId, childIds: root0Children, childIndex: 0, acc: root0Own.area },
+    { featureId, childIds: root0Children, childIndex: 0, parts: [root0Own.area] },
   ];
   // The area a just-completed child frame contributes to its parent's union.
   let completedArea: GeoMultiPolygon | undefined;
@@ -251,38 +311,19 @@ export function resolveFeatureArea(
   while (stack.length > 0) {
     const frame = stack[stack.length - 1]!;
 
-    // Fold a child's completed area into this frame's running union (片落とし禁止).
+    // Collect a child's completed area as an operand (片落とし禁止). The union itself
+    // happens once, pairwise, when the frame completes — see unionAreasPairwise.
     if (completedArea !== undefined) {
-      // R3 seam alignment (audit root cause A): each leaf area is resolved from RAW
-      // stored representatives, so a child whose territory straddles the seam (or
-      // whose vertex list merely starts on the opposite seam side from the
-      // accumulator) sits ~360° away from the running union. Unioned as-is, two
-      // seam-adjacent children (e.g. +179 and −179, geometrically ~2° apart) are
-      // ~358° apart and the union scatters them across the whole map instead of
-      // joining them. Anchor BOTH operands onto ONE common branch (the accumulator's
-      // outer-ring reference, falling back to the child's when the accumulator is
-      // empty) through the single alignment source of truth before the op. For
-      // single-branch (non-seam) inputs the alignment is the identity.
-      const ref =
-        frame.acc.length > 0
-          ? referenceLonForMultiPolygon(frame.acc)
-          : referenceLonForMultiPolygon(completedArea);
-      const merged = union(alignMultiPolygon(frame.acc, ref), alignMultiPolygon(completedArea, ref));
+      frame.parts.push(completedArea);
       completedArea = undefined;
-      if (merged.status === BOOLEAN_OP_STATUS.Rejected) {
-        return failed({
-          kind: SHAPE_RESOLUTION_FAILURE.UnionRejected,
-          featureId: frame.featureId,
-          violations: merged.violations,
-        });
-      }
-      frame.acc = merged.result;
     }
 
     if (frame.childIndex >= frame.childIds.length) {
-      // All children unioned: this frame's area is done; hand it to the parent.
+      // All children collected: union them as a balanced tree and hand the result up.
       stack.pop();
-      completedArea = frame.acc;
+      const merged = unionAreasPairwise(frame.parts, frame.featureId);
+      if (merged.status === 'failed') return merged;
+      completedArea = merged.area;
       continue;
     }
 
@@ -312,7 +353,7 @@ export function resolveFeatureArea(
         featureId: childId,
         childIds: grandChildren,
         childIndex: 0,
-        acc: childOwn.area,
+        parts: [childOwn.area],
       });
       continue;
     }
