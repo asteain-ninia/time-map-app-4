@@ -194,7 +194,7 @@ export interface SessionStoreState<S> {
    * (specs/U37 §2.1 — never a fourth EDIT_MODE). The store holds ONE domain
    * {@link SurveyState} and the actions below only call the pure domain
    * transitions (単一真実源 — no survey logic re-implemented here). This slice is
-   * a NON-persisted temporary display (FR-15): it never reaches the `.tmap`
+   * a NON-persisted temporary display (FR-15): it never reaches the `.gimoza`
    * schema, never marks the project dirty, and is discarded wholesale on a
    * LOAD / NEW (U37 §4.5).
    */
@@ -206,7 +206,7 @@ export interface SessionStoreState<S> {
    * A SEPARATE axis from mode/tool/selection AND from FR-42 displayControl: it only
    * changes「どう見えるか」(which drawn features / at what opacity), NEVER the domain
    * truth or the FR-42 aggregation. Like {@link survey} it is NON-persisted (never in
-   * the .tmap schema), never marks the project dirty, and is discarded wholesale on a
+   * the .gimoza schema), never marks the project dirty, and is discarded wholesale on a
    * LOAD / NEW (受け入れ基準1, U41). The draw / hit-test / search母集合 all read the
    * SINGLE verdict this slice feeds resolveFilteredDisplay (教訓 5.29). DEFAULT is inert
    * (全表示・不透明度1.0・強調なし) so an untouched filter costs the render path nothing.

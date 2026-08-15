@@ -29,7 +29,7 @@ const BACKUP_INFIX = '.bak.';
  * lexicographically-sortable decimal so string compare == chronological compare;
  * the sequence (also zero-padded) breaks ties (教訓5.37).
  *
- * Shape: `<baseName>.bak.<ts13>-<seq4>` e.g. `world.tmap.bak.0001718870400000-0003`
+ * Shape: `<baseName>.bak.<ts13>-<seq4>` e.g. `world.gimoza.bak.0001718870400000-0003`
  */
 export function backupName(baseName: string, timestampMs: number, sequence: number): string {
   const ts = String(Math.trunc(timestampMs)).padStart(16, '0');

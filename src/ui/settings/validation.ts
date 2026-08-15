@@ -39,7 +39,7 @@ import { validateZoomLimits } from '../file-ops/zoom-limit';
 // The persistence load schema (READ side) enforces every persisted year as an
 // integer within ±MAX_YEAR (yearSchema). The timeline-range confirm path (WRITE
 // side) MUST reject the same set, or a value the form accepts but the schema
-// rejects is saved and makes the .tmap un-loadable on reopen (教訓 6.4.15 片側 shim).
+// rejects is saved and makes the .gimoza un-loadable on reopen (教訓 6.4.15 片側 shim).
 // Both sides share the ONE predicate + bound below (単一の真実源).
 import { MAX_YEAR, isPersistedYear } from '../../domain/time/validate';
 

@@ -24,7 +24,7 @@ describe('loadTransportFrom (U15 LoadResponse → LoadTransport, 教訓 5.33)', 
   it('success → ok transport carrying a ParseResult Ok with the validated manifest', () => {
     const response: LoadResponse = {
       ok: true,
-      path: '/tmp/p.tmap',
+      path: '/tmp/p.gimoza',
       manifest: MANIFEST,
       baseMapImage: new Uint8Array(),
       attachments: [],
@@ -32,7 +32,7 @@ describe('loadTransportFrom (U15 LoadResponse → LoadTransport, 教訓 5.33)', 
     const transport = loadTransportFrom(response);
     expect(transport.ok).toBe(true);
     if (transport.ok) {
-      expect(transport.path).toBe('/tmp/p.tmap');
+      expect(transport.path).toBe('/tmp/p.gimoza');
       expect(transport.parse.outcome).toBe(PARSE_OUTCOME.Ok);
     }
     // End-to-end: an Ok parse + empty report reflects directly.

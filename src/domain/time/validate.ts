@@ -63,7 +63,7 @@ function isInteger(n: number): boolean {
  * year leaf (anchor start/end, attribute start/end, timeline bounds). Exported so
  * the UI settings validator (WRITE side) can reject exactly what the load schema
  * (READ side) rejects — otherwise a timeline year the form accepts but the schema
- * rejects gets saved into the .tmap and makes the file un-loadable on reopen
+ * rejects gets saved into the .gimoza and makes the file un-loadable on reopen
  * (教訓 6.4.15 片側 shim の防止 / round-trip 整合・書込⊆読込).
  */
 export function isPersistedYear(n: number): boolean {

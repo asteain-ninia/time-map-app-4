@@ -1,5 +1,5 @@
 // 実データでの (1) 階層深度ごとの描画/選択の挙動 と (2) 表示解決のキャッシュ効きを実測する。
-//   npx vite-node derle-import/tools/diagnose-perf-depth.ts -- derle-world-full.tmap
+//   npx vite-node derle-import/tools/diagnose-perf-depth.ts -- derle-world-full.gimoza
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -11,7 +11,7 @@ import { resolveDisplayFor } from '../../src/ui/map/display-resolution-cache';
 import { drawnAreaAt } from '../../src/ui/map/live-hit-test';
 import type { DisplayControlInput } from '../../src/render/display-pipeline';
 
-const name = process.argv[2] ?? 'derle-world-full.tmap';
+const name = process.argv[2] ?? 'derle-world-full.gimoza';
 const bytes = new Uint8Array(readFileSync(resolve('derle-import', name)));
 const r = readTmap(bytes);
 if (!r.ok) throw new Error(r.message);

@@ -64,8 +64,8 @@ function makeStore(): StoreApi<SessionStore<DomainProject>> {
 /** A stub TimeMapApi where each call's outcome is overridable per test. */
 function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
   return {
-    save: vi.fn(async (): Promise<SaveResponse> => ({ ok: true, path: '/tmp/p.tmap' })),
-    saveAs: vi.fn(async (): Promise<SaveResponse> => ({ ok: true, path: '/tmp/p.tmap' })),
+    save: vi.fn(async (): Promise<SaveResponse> => ({ ok: true, path: '/tmp/p.gimoza' })),
+    saveAs: vi.fn(async (): Promise<SaveResponse> => ({ ok: true, path: '/tmp/p.gimoza' })),
     load: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     loadDropped: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
@@ -95,7 +95,7 @@ function validPng(): Uint8Array {
 /** A LoadResponse that succeeds, carrying a fresh empty-project manifest. */
 function okLoad(): LoadResponse {
   const manifest: Manifest = serialize(buildEmptyProject());
-  return { ok: true, path: '/tmp/loaded.tmap', manifest, baseMapImage: new Uint8Array(), attachments: [] };
+  return { ok: true, path: '/tmp/loaded.gimoza', manifest, baseMapImage: new Uint8Array(), attachments: [] };
 }
 
 afterEach(() => {
@@ -158,7 +158,7 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     act(() => { store.getState().setDomainState(buildEmptyProject()); });
 
     // Now the IPC write completes.
-    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.tmap' }); });
+    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.gimoza' }); });
 
     // The post-write state contains the mid-save edit, which is NOT on disk, so
     // dirty MUST stay set — the edit is not silently marked saved.
@@ -192,7 +192,7 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     act(() => { store.getState().updateProjectSetting('zoomMax', 35); });
 
     // The IPC write (carrying zoomMax=20) completes.
-    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.tmap' }); });
+    await act(async () => { resolveSave({ ok: true, path: '/tmp/p.gimoza' }); });
 
     // The mid-save setting (zoomMax=35) is NOT on disk, so dirty MUST stay set —
     // the setting change is not silently marked saved.
@@ -233,13 +233,13 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
 
     // A completes. Its snapshot held zoomMax=20, but the live store is now zoomMax=30,
     // so A's completion must NOT clear dirty.
-    await act(async () => { resolvers[0]!({ ok: true, path: '/tmp/p.tmap' }); });
+    await act(async () => { resolvers[0]!({ ok: true, path: '/tmp/p.gimoza' }); });
     expect(store.getState().projectDirty).toBe(true);
 
     // Now B actually starts (the chain advanced) and completes; its snapshot matches
     // the live state (zoomMax=30, no further change), so dirty clears.
     await waitFor(() => expect(save).toHaveBeenCalledTimes(2));
-    await act(async () => { resolvers[1]!({ ok: true, path: '/tmp/p.tmap' }); });
+    await act(async () => { resolvers[1]!({ ok: true, path: '/tmp/p.gimoza' }); });
     await waitFor(() => expect(store.getState().projectDirty).toBe(false));
   });
 
@@ -260,11 +260,11 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
 });
 
 describe('キュー済み保存の宛先は直列化「実行時」に再評価する (HIGH-1: dispatch 時固定の data-loss 回帰)', () => {
-  it('保存A in-flight → 保存B キュー → 新規(discard) → A完了 → キュー保存は旧A.tmapへ plain-save せず saveAs へ落ちる', async () => {
+  it('保存A in-flight → 保存B キュー → 新規(discard) → A完了 → キュー保存は旧A.gimozaへ plain-save せず saveAs へ落ちる', async () => {
     // The repro Codex flagged: a plain 保存 that queues behind an in-flight save fixes its
     // save/saveAs decision AT DISPATCH. If a破壊的 context swap (新規, savePath=null) lands
     // while it waits, running it as a plain `save` would atomic-write the NEW empty project's
-    // manifest/assets to the PREVIOUS file's currentPath (旧 A.tmap) in main — silent
+    // manifest/assets to the PREVIOUS file's currentPath (旧 A.gimoza) in main — silent
     // data-loss. The destination MUST be re-evaluated at serialized EXECUTION time so the
     // queued save falls to 名前を付けて保存 (main asks for a fresh destination) instead.
     const store = makeStore();
@@ -278,13 +278,13 @@ describe('キュー済み保存の宛先は直列化「実行時」に再評価�
     const saveAsReqs: SaveRequest[] = [];
     const saveAs = vi.fn(async (req: SaveRequest) => {
       saveAsReqs.push(req);
-      return { ok: true as const, path: '/tmp/saveas.tmap' };
+      return { ok: true as const, path: '/tmp/saveas.gimoza' };
     });
-    // Establish the save target via a CLEAN load (savePath=/tmp/a.tmap, dirty cleared), so a
+    // Establish the save target via a CLEAN load (savePath=/tmp/a.gimoza, dirty cleared), so a
     // following 保存 routes as a plain `save`, exactly the queued path under test.
     const load = vi.fn(async (): Promise<LoadResponse> => ({
       ok: true,
-      path: '/tmp/a.tmap',
+      path: '/tmp/a.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: new Uint8Array(),
       attachments: [],
@@ -293,7 +293,7 @@ describe('キュー済み保存の宛先は直列化「実行時」に再評価�
     const api = makeApi({ save, saveAs, load });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
-    // 1) Load A → the established (never-nulled) save target is /tmp/a.tmap.
+    // 1) Load A → the established (never-nulled) save target is /tmp/a.gimoza.
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
 
@@ -310,10 +310,10 @@ describe('キュー済み保存の宛先は直列化「実行時」に再評価�
     await act(async () => { registry.dispatch(COMMAND_ID.FileNew); });
 
     // 5) 保存A completes → the chain advances and the QUEUED 保存B now actually runs.
-    await act(async () => { saveResolvers[0]!({ ok: true, path: '/tmp/a.tmap' }); });
+    await act(async () => { saveResolvers[0]!({ ok: true, path: '/tmp/a.gimoza' }); });
 
     // 6) The queued save re-checks the LIVE context (savePath=null) at execution and falls to
-    //    名前を付けて保存 — it does NOT plain-save the new project onto 旧 A.tmap. Only 保存A ever
+    //    名前を付けて保存 — it does NOT plain-save the new project onto 旧 A.gimoza. Only 保存A ever
     //    did a plain save; the queued one is a saveAs.
     await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
     expect(save).toHaveBeenCalledTimes(1);
@@ -501,7 +501,7 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     const dropEvent = {
       preventDefault: vi.fn(),
       dataTransfer: {
-        files: [Object.assign(new File([], 'p.tmap'), { path: '/abs/p.tmap' })],
+        files: [Object.assign(new File([], 'p.gimoza'), { path: '/abs/p.gimoza' })],
       },
     };
     await act(async () => {
@@ -509,7 +509,7 @@ describe('ドラッグ＆ドロップ読み込み: same flow as the menu load (F
     });
     // The drop is a valid drop target (preventDefault) and routes through loadDropped.
     expect(dropEvent.preventDefault).toHaveBeenCalled();
-    await waitFor(() => expect(loadDropped).toHaveBeenCalledWith('/abs/p.tmap'));
+    await waitFor(() => expect(loadDropped).toHaveBeenCalledWith('/abs/p.gimoza'));
     // D&D goes through the SAME reflect path as the menu load (reflectLoadedProject).
     await waitFor(() => expect(reflect).toHaveBeenCalledTimes(1));
   });
@@ -643,7 +643,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     let savedManifest: Manifest | null = null;
     const saveAs = vi.fn(async (req: SaveRequest): Promise<SaveResponse> => {
       savedManifest = req.manifest;
-      return { ok: true, path: '/tmp/p.tmap' };
+      return { ok: true, path: '/tmp/p.gimoza' };
     });
     const api = makeApi({ saveAs });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
@@ -677,7 +677,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     const apiA = makeApi({
       saveAs: vi.fn(async (req: SaveRequest) => {
         savedManifest = req.manifest;
-        return { ok: true as const, path: '/tmp/p.tmap' };
+        return { ok: true as const, path: '/tmp/p.gimoza' };
       }),
     });
     render(<FileOpsController store={storeA} registry={registryA} api={apiA} calendar={CAL} />);
@@ -698,7 +698,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     const apiB = makeApi({
       load: vi.fn(async () => ({
         ok: true as const,
-        path: '/tmp/p.tmap',
+        path: '/tmp/p.gimoza',
         manifest: savedManifest!,
         baseMapImage: new Uint8Array(),
         attachments: [],
@@ -738,7 +738,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     const api = makeApi({
       load: vi.fn(async () => ({
         ok: true as const,
-        path: '/tmp/other.tmap',
+        path: '/tmp/other.gimoza',
         manifest: serialize(loadedWithUi),
         baseMapImage: new Uint8Array(),
         attachments: [],
@@ -752,7 +752,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
   });
 
   it('loading a pre-`ui` (old-format) project resets settings to DEFAULTS, not the previous project (持ち越し防止)', async () => {
-    // Regression (bughunt): an old-format .tmap carries NO uiSettings. The domain
+    // Regression (bughunt): an old-format .gimoza carries NO uiSettings. The domain
     // swap does not touch the settings slices, and an empty `{}` hydrate keeps the
     // CURRENT settings — so a previous project's edited zoom/grid/timeline settings
     // used to leak into the freshly-loaded old-format project. The load path must
@@ -782,7 +782,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
     const api = makeApi({
       load: vi.fn(async () => ({
         ok: true as const,
-        path: '/tmp/old.tmap',
+        path: '/tmp/old.gimoza',
         manifest: oldManifest,
         baseMapImage: new Uint8Array(),
         attachments: [],
@@ -984,7 +984,7 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     const attachmentBytes = new Uint8Array([9, 8, 7]);
     const loaded: LoadResponse = {
       ok: true,
-      path: '/tmp/loaded.tmap',
+      path: '/tmp/loaded.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: mapBytes,
       attachments: [{ name: 'attach-1.png', bytes: attachmentBytes }],
@@ -995,8 +995,8 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
       // After a load the project has a path, but force Save As-free path by capturing
       // whichever the save routes through; loaded files use save() (path set on reflect
       // only via contextForLoadedFile). Capture both to be robust.
-      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.tmap' }; }),
-      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.tmap' }; }),
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.gimoza' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/loaded.gimoza' }; }),
     });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
@@ -1021,13 +1021,13 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     const api = makeApi({
       load: vi.fn(async () => ({
         ok: true as const,
-        path: '/tmp/loaded.tmap',
+        path: '/tmp/loaded.gimoza',
         manifest: serialize(buildEmptyProject()),
         baseMapImage: mapBytes,
         attachments: [],
       })),
-      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
-      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
     });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
@@ -1044,7 +1044,7 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
   });
 });
 
-describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在 .tmap = 旧manifest+新asset の回帰)', () => {
+describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在 .gimoza = 旧manifest+新asset の回帰)', () => {
   const BYTES_A = new Uint8Array([0xa1, 0xa2, 0xa3]);
   const BYTES_B = new Uint8Array([0xb1, 0xb2, 0xb3]);
   const ATTACH_A = [{ name: 'a.png', bytes: new Uint8Array([1, 1, 1]) }];
@@ -1054,7 +1054,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
   function cleanLoadA(): LoadResponse {
     return {
       ok: true,
-      path: '/tmp/a.tmap',
+      path: '/tmp/a.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: BYTES_A,
       attachments: ATTACH_A,
@@ -1092,7 +1092,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     const pushes: Uint8Array[] = [];
     const record = (req: SaveRequest): SaveResponse => {
       savedReqs.push(req);
-      return { ok: true as const, path: '/tmp/a.tmap' };
+      return { ok: true as const, path: '/tmp/a.gimoza' };
     };
     const api = makeApi({
       load: vi.fn(async () => queue.shift() ?? ({ ok: false as const, reason: 'cancelled' as const })),
@@ -1119,7 +1119,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     });
   }
 
-  it('修復ダイアログを中止した読み込みは、保存 asset も表示も直前プロジェクトのまま (混在 .tmap を作らない)', async () => {
+  it('修復ダイアログを中止した読み込みは、保存 asset も表示も直前プロジェクトのまま (混在 .gimoza を作らない)', async () => {
     const { registry, api, savedReqs, pushes } = mountWithQueue([cleanLoadA(), brokenLoadB()]);
 
     // 1) Load A (clean) — reflected, so its assets are the established ones.
@@ -1221,7 +1221,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     const pushes: Uint8Array[] = [];
     const record = (req: SaveRequest): SaveResponse => {
       savedReqs.push(req);
-      return { ok: true as const, path: '/tmp/a.tmap' };
+      return { ok: true as const, path: '/tmp/a.gimoza' };
     };
     const api = makeApi({
       load: vi.fn(async () => cleanLoadA()),
@@ -1247,7 +1247,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
     const dropEvent = {
       preventDefault: vi.fn(),
-      dataTransfer: { files: [Object.assign(new File([], 'b.tmap'), { path: '/abs/b.tmap' })] },
+      dataTransfer: { files: [Object.assign(new File([], 'b.gimoza'), { path: '/abs/b.gimoza' })] },
     };
     await act(async () => { handlers!.onDrop(dropEvent as unknown as React.DragEvent); });
     await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
@@ -1292,7 +1292,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     const pushes: Uint8Array[] = [];
     const dropped: LoadResponse = {
       ok: true,
-      path: '/tmp/dropped.tmap',
+      path: '/tmp/dropped.gimoza',
       manifest: serialize(buildEmptyProject()), // consistent ⇒ reflects directly
       baseMapImage: BYTES_B,
       attachments: ATTACH_B,
@@ -1300,8 +1300,8 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     };
     const api = makeApi({
       loadDropped: vi.fn(async () => dropped),
-      save: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.tmap' }; }),
-      saveAs: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.tmap' }; }),
+      save: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.gimoza' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReqs.push(req); return { ok: true as const, path: '/tmp/dropped.gimoza' }; }),
     });
     let handlers: FileDropHandlers | null = null;
     const registerDropTarget: DropTargetHook = (h) => { handlers = h; return () => {}; };
@@ -1318,10 +1318,10 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
 
     const dropEvent = {
       preventDefault: vi.fn(),
-      dataTransfer: { files: [Object.assign(new File([], 'd.tmap'), { path: '/abs/d.tmap' })] },
+      dataTransfer: { files: [Object.assign(new File([], 'd.gimoza'), { path: '/abs/d.gimoza' })] },
     };
     await act(async () => { handlers!.onDrop(dropEvent as unknown as React.DragEvent); });
-    await waitFor(() => expect(api.loadDropped).toHaveBeenCalledWith('/abs/d.tmap'));
+    await waitFor(() => expect(api.loadDropped).toHaveBeenCalledWith('/abs/d.gimoza'));
     // Reflected ⇒ the dropped bytes are the DISPLAY + the destination token committed.
     await waitFor(() => expect(pushes).toEqual([BYTES_B]));
     expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-drop');
@@ -1365,16 +1365,16 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     // If the store transition throws (bughunt2: an inverted timeline rolls back and the
     // store stays on the previous project), promotePendingAssets is never reached, so the
     // runExclusive finally must discard the staged capture — otherwise the failed load's
-    // bytes would leak into the NEXT save (混在 .tmap) and its token could later commit.
+    // bytes would leak into the NEXT save (混在 .gimoza) and its token could later commit.
     const store = makeStore();
     const registry = new CommandRegistry();
     const savedReqs: SaveRequest[] = [];
     const pushes: Uint8Array[] = [];
-    const record = (req: SaveRequest): SaveResponse => { savedReqs.push(req); return { ok: true as const, path: '/tmp/a.tmap' }; };
+    const record = (req: SaveRequest): SaveResponse => { savedReqs.push(req); return { ok: true as const, path: '/tmp/a.gimoza' }; };
     // Queue: A clean (establishes assets), then B whose reflect throws.
     const loadB: LoadResponse = {
       ok: true,
-      path: '/tmp/b.tmap',
+      path: '/tmp/b.gimoza',
       manifest: serialize(buildEmptyProject()),
       baseMapImage: BYTES_B,
       attachments: ATTACH_B,
@@ -1432,7 +1432,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
 
 describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛先を安全側へ倒す', () => {
   /** A clean load that reflects directly, carrying a commit token to be echoed back. */
-  function okLoadWithToken(token: string, path = '/tmp/b.tmap'): LoadResponse {
+  function okLoadWithToken(token: string, path = '/tmp/b.gimoza'): LoadResponse {
     return {
       ok: true,
       path,
@@ -1507,8 +1507,8 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
       return Promise.resolve();
     });
     const loads: LoadResponse[] = [
-      okLoadWithToken('tok-first', '/tmp/first.tmap'),
-      okLoadWithToken('tok-second', '/tmp/second.tmap'),
+      okLoadWithToken('tok-first', '/tmp/first.gimoza'),
+      okLoadWithToken('tok-second', '/tmp/second.gimoza'),
     ];
     const api = makeApi({
       load: vi.fn(async () => loads.shift() ?? ({ ok: false as const, reason: 'cancelled' as const })),
@@ -1519,7 +1519,7 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
     // First load reflects; its commit is left pending.
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(firstCommitSeen).toBe(true));
-    // Second load reflects and establishes the NEW correct destination (/tmp/second.tmap),
+    // Second load reflects and establishes the NEW correct destination (/tmp/second.gimoza),
     // swapping the context reference. Its commit resolves.
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(commitLoadedPath).toHaveBeenCalledWith('tok-second'));
@@ -1543,8 +1543,8 @@ describe('FR-04 base-map差し替え runner (registerBasemapReplace)', () => {
     let savedReq: SaveRequest | null = null;
     const api = makeApi({
       openImage: vi.fn(async () => png),
-      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
-      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.tmap' }; }),
+      save: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
+      saveAs: vi.fn(async (req: SaveRequest) => { savedReq = req; return { ok: true as const, path: '/tmp/p.gimoza' }; }),
     });
     let run: (() => Promise<void>) | null = null;
     const registerBasemapReplace: BasemapReplaceHook = (r) => { run = r; return () => {}; };
@@ -1575,7 +1575,7 @@ describe('FR-04 base-map差し替え runner (registerBasemapReplace)', () => {
     // … and the display bytes were pushed for immediate repaint (即時反映).
     expect(onBaseMapImageChange).toHaveBeenCalledWith(png);
 
-    // 保存往復: the next save ships the replaced bytes into the .tmap base-map asset.
+    // 保存往復: the next save ships the replaced bytes into the .gimoza base-map asset.
     await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage).toBe(png);
@@ -1753,5 +1753,5 @@ function brokenLoad(): LoadResponse {
     },
   };
   const manifest: Manifest = serialize(project);
-  return { ok: true, path: '/tmp/broken.tmap', manifest, baseMapImage: new Uint8Array(), attachments: [] };
+  return { ok: true, path: '/tmp/broken.gimoza', manifest, baseMapImage: new Uint8Array(), attachments: [] };
 }

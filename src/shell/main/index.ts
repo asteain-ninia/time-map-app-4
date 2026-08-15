@@ -53,7 +53,7 @@ const E2E_TEST = process.env['E2E_TEST'] === '1';
 
 // --- ユニット U3: 単一インスタンスロック（lost-update 根治 / v3 同型）-------------
 //
-// 二重起動して同じ .tmap を開くと「後勝ち保存」で先の編集が消える（本アプリ最後の
+// 二重起動して同じ .gimoza を開くと「後勝ち保存」で先の編集が消える（本アプリ最後の
 // 既知データ損失経路）。**起動最初期**（whenReady / createWindow より前）にロックを取り、
 // 取れなければ即 quit する。判定ロジックは Electron-free な ./single-instance に置き（単体
 // テスト済み）、ここは実物 app / BrowserWindow の束縛だけを行う（開発ガイド §5.41 合成ルート）。
@@ -72,7 +72,7 @@ const shouldBootApp = acquireSingleInstanceLock({
   app,
   skipLock: E2E_TEST || SMOKE_TEST,
   // 2つ目の起動を検知したら 1つ目の（唯一の）ウィンドウを前面化する（v3 同型: minimized
-  // なら restore → focus）。§7.4 非目標により argv の .tmap パス処理は行わない（focus のみ）。
+  // なら restore → focus）。§7.4 非目標により argv の .gimoza パス処理は行わない（focus のみ）。
   onSecondInstance: () => {
     const primary = BrowserWindow.getAllWindows()[0];
     if (primary !== undefined) revealWindow(primary);
@@ -463,13 +463,13 @@ function wireIpc(): void {
     },
     dialog: {
       showSaveDialog: async () => {
-        const result = await dialog.showSaveDialog({ filters: [{ name: 'tmap', extensions: ['tmap'] }] });
+        const result = await dialog.showSaveDialog({ filters: [{ name: 'gimoza', extensions: ['gimoza'] }] });
         return result.canceled ? undefined : result.filePath;
       },
       showOpenDialog: async () => {
         const result = await dialog.showOpenDialog({
           properties: ['openFile'],
-          filters: [{ name: 'tmap', extensions: ['tmap'] }],
+          filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
         });
         return result.canceled || result.filePaths.length === 0 ? undefined : result.filePaths[0];
       },

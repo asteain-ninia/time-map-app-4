@@ -1,5 +1,5 @@
-// 生成 .tmap の checkConsistency 不整合の詳細を出力する (vite-node で実行)。
-//   npx vite-node derle-import/tools/diagnose-consistency.ts -- derle-world-full.tmap
+// 生成 .gimoza の checkConsistency 不整合の詳細を出力する (vite-node で実行)。
+//   npx vite-node derle-import/tools/diagnose-consistency.ts -- derle-world-full.gimoza
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -13,7 +13,7 @@ import {
 } from '../../src/domain/persistence';
 import { getCalendar } from '../../src/domain/time/calendar';
 
-const name = process.argv[2] ?? 'derle-world-full.tmap';
+const name = process.argv[2] ?? 'derle-world-full.gimoza';
 const bytes = new Uint8Array(readFileSync(resolve('derle-import', name)));
 
 const r = readTmap(bytes);

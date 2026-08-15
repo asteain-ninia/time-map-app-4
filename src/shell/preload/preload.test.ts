@@ -98,8 +98,8 @@ describe('each API method invokes the correct shared channel (受け入れ基準
 
   it('loadDropped → IPC_CHANNEL.LoadDropped with the dropped path', async () => {
     const api = buildApi();
-    await api.loadDropped('/dropped/x.tmap');
-    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.LoadDropped, '/dropped/x.tmap');
+    await api.loadDropped('/dropped/x.gimoza');
+    expect(invoke).toHaveBeenCalledWith(IPC_CHANNEL.LoadDropped, '/dropped/x.gimoza');
   });
 
   it('openImage → IPC_CHANNEL.OpenImage (no args, FR-04)', async () => {

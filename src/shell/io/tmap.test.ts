@@ -1,4 +1,4 @@
-// U15 受け入れ基準1: .tmap (ZIP) round-trip — manifest + base-map + 複数添付画像
+// U15 受け入れ基準1: .gimoza (ZIP) round-trip — manifest + base-map + 複数添付画像
 // が欠落・破損なく往復できる。エントリパス規約が単一の真実源であること。
 
 import { zipSync } from 'fflate';

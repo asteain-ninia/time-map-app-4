@@ -285,7 +285,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       // type=number ゆえ巨大整数・負巨大・小数を受理し、createBasicAttributes /
       // edit-intent / edit binding はいずれも年を検証しないので Committed→保存成功
       // まで通る。しかし READ 側 schema.ts の yearSchema (= 同じ ±MAX_YEAR / 整数
-      // 境界) が load 時に範囲外年で manifest 全体を Invalid 拒否 → .tmap が二度と
+      // 境界) が load 時に範囲外年で manifest 全体を Invalid 拒否 → .gimoza が二度と
       // 開けず全損する（書込⊆読込の非対称）。タイムライン年 (settings/validation)
       // と同一の単一真実源 isPersistedYear で WRITE 前に弾き、既存 honest-failure
       // 経路（返り値を save-message 表示）に乗せる。第二の年ルールは作らない。

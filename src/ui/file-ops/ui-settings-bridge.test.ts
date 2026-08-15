@@ -4,8 +4,8 @@
 // (FR-109 / FR-110). These pin the FR-13 gridVisible discipline:
 //   (a) round-trip store→persisted→store preserves gridVisible (true AND false);
 //   (b) WRITE always outputs gridVisible (常時書き, from the store value);
-//   (c) a persisted `ui` block WITHOUT gridVisible — an existing pre-FR13 .tmap
-//       (derle-world.tmap 等) — hydrates to the store with gridVisible=true
+//   (c) a persisted `ui` block WITHOUT gridVisible — an existing pre-FR13 .gimoza
+//       (derle-world.gimoza 等) — hydrates to the store with gridVisible=true
 //       (欠落=可視, the single back-compat default-fill point).
 
 import { describe, expect, it } from 'vitest';
@@ -42,7 +42,7 @@ describe('ui-settings bridge — gridVisible persistence (FR-13)', () => {
   });
 
   it('READ defaults gridVisible to true when the `ui` block omits it (後方互換, 欠落=可視)', () => {
-    // Simulate an existing pre-FR13 .tmap: a valid `ui` block WITHOUT gridVisible.
+    // Simulate an existing pre-FR13 .gimoza: a valid `ui` block WITHOUT gridVisible.
     const persisted = toPersistedUiSettings({
       projectSettings: DEFAULT_PROJECT_SETTINGS,
       appSettings: DEFAULT_APP_SETTINGS,

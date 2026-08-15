@@ -88,7 +88,7 @@ describe('validateProjectSettings (FR-109, 受け入れ基準 7 / 8)', () => {
   });
 
   // 第6波バグハント HIGH/data-loss: 書込側(この検証)は yearSchema(読込側)と同じ境界
-  // (整数・±MAX_YEAR=±1,000,000)で拒否しないと、フォームが受理した年が .tmap に保存され
+  // (整数・±MAX_YEAR=±1,000,000)で拒否しないと、フォームが受理した年が .gimoza に保存され
   // 次回ロードで manifest 全体が Invalid 拒否=自分の正当ファイルが二度と開けない(書込⊄読込)。
   it('rejects a timeline year beyond ±MAX_YEAR (書込⊆読込: 保存ファイルの再ロード不能を防ぐ)', () => {
     const overMax = validateProjectSettings(projectOf({ timelineMinYear: 0, timelineMaxYear: 1_000_001 }));

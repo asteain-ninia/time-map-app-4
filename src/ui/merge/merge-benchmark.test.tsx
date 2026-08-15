@@ -1,16 +1,16 @@
 // REAL-DATA merge-flow benchmark for the derle world map (A5 — 実機報告「結合が重たい」).
 //
-// PURPOSE: the間引かない実データ `derle-world-full.tmap`（722 地物・共有頂点 99,314）で
+// PURPOSE: the間引かない実データ `derle-world-full.gimoza`（722 地物・共有頂点 99,314）で
 // ユーザーが「地物の結合(merge)操作が重たい」と報告した。結合フロー全体
 // (buildMergeProposal → applyMergeProposal → 整合性検証(spatial) → undo command 生成) の
 // どの層が支配的かを実測で確定するため、UI(React) を起動せず純 TS 層でホットスポットを
-// 計測する。比較用に間引き版 `derle-world.tmap`（16,546）も同じ計測にかける。
+// 計測する。比較用に間引き版 `derle-world.gimoza`（16,546）も同じ計測にかける。
 //
 // STYLE (既存 derle-benchmark.test.ts の流儀を踏襲): 壁時計を CI で ASSERT しない
 // (マシン依存)。performance.now() で各項目ウォームアップ 1 + 計測 3 回の中央値を
 // console.log する。数値そのものが成果物 (親エージェントが生データとして扱う)。
 //
-// CI SAFETY: .tmap のパスは環境変数 `DERLE_TMAP_DIR` から読み、未設定/欠落なら test.skip
+// CI SAFETY: .gimoza のパスは環境変数 `DERLE_TMAP_DIR` から読み、未設定/欠落なら test.skip
 // (CI で赤にならない・通常 `npm run test` に本ベンチが混入しない)。実行例:
 //   DERLE_TMAP_DIR=C:/!WORKSPACE/time-map-app/derle-import \
 //     npx vitest run src/ui/merge/merge-benchmark.test.ts
@@ -64,8 +64,8 @@ import { featuresAt, verticesAt, clearLiveLookupCache } from '../live-lookup';
 const TMAP_DIR = process.env.DERLE_TMAP_DIR;
 
 const CASES = [
-  { key: 'full', file: 'derle-world-full.tmap', note: '99,314 shared vertices' },
-  { key: 'simplified', file: 'derle-world.tmap', note: '16,546 shared vertices' },
+  { key: 'full', file: 'derle-world-full.gimoza', note: '99,314 shared vertices' },
+  { key: 'simplified', file: 'derle-world.gimoza', note: '16,546 shared vertices' },
 ] as const;
 
 /** All derle features are present at every time (verified in derle-benchmark). */
@@ -315,7 +315,7 @@ function runFile(caseKey: string, filePath: string, note: string): void {
   // Every anchor snapshot's vertex store must hold ONLY the vertices its features
   // reference (referencedVertexIds — the single source of truth 波7/10/11 established).
   // A snapshot storing far more than it references is orphan bloat that (a) balloons the
-  // .tmap on save and (b) is a latent VertexCoordinateDivergence hazard (第7波).
+  // .gimoza on save and (b) is a latent VertexCoordinateDivergence hazard (第7波).
   section('2b. snapshot vertex bloat (stored vs referenced per anchor snapshot)');
   const baselineAudit = auditSnapshotBloat(project);
   const trialAudit = auditSnapshotBloat(trialState);

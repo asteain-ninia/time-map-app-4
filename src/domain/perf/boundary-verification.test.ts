@@ -1,5 +1,5 @@
 // U42 — verification lens over the E2E-unstable DOMAIN boundaries
-// (受け入れ基準 5 / 教訓 5.41): 外部地図入力 (FR-04) + .tmap 往復 (FR-103).
+// (受け入れ基準 5 / 教訓 5.41): 外部地図入力 (FR-04) + .gimoza 往復 (FR-103).
 //
 // These boundaries are hard to drive deterministically through Playwright (they
 // open OS dialogs / read files / touch fs), so per 教訓 5.41 they are double-fixed
@@ -53,9 +53,9 @@ describe('外部地図適合判定 純粋判定 (FR-04, verification lens)', () 
   });
 });
 
-// --- 保存・読込 往復 (FR-103): the E2E saves→loads a .tmap; pure lens here. ------
+// --- 保存・読込 往復 (FR-103): the E2E saves→loads a .gimoza; pure lens here. ------
 
-describe('.tmap 往復シリアライズ 純粋判定 (FR-103, verification lens)', () => {
+describe('.gimoza 往復シリアライズ 純粋判定 (FR-103, verification lens)', () => {
   it('a rich project round-trips losslessly (E2E: 保存→読込 で論理的完全復元)', () => {
     const project = richValidProject();
     const restored = manifestToProject(serialize(project));

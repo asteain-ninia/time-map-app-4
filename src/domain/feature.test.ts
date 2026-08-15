@@ -219,7 +219,7 @@ describe('detailDocument (FR-98) — 詳細文書は kindLabel と同型の任�
     expect(g.detailDocument).toBe(atMax);
   });
 
-  it('rejects an over-MAX document loudly AT BIRTH (WRITE⊆READ — never a saved-but-unloadable .tmap)', () => {
+  it('rejects an over-MAX document loudly AT BIRTH (WRITE⊆READ — never a saved-but-unloadable .gimoza)', () => {
     // Reject it at birth (createCoordinate の非有限拒否と同じ規律): an in-memory
     // feature carrying a document the persistence schema would reject must be
     // unrepresentable. Without this throw, withDetailDocument(feature,

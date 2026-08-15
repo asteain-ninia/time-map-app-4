@@ -86,7 +86,7 @@ export const IPC_CHANNEL = {
    * その読み込みの {@link LoadResponse.commitToken} を返し「この読み込み先を現在の保存先
    * へ昇格してよい」と告げる。main は読み取り成功だけでは currentPath を昇格せず、保留
    * トークンと一致した時だけ昇格する（FR-107 の ACK 分離と同じ commit-point 思想）。
-   * これにより「A を開く→不整合 B を開く→修復中止→Ctrl+S」で、開くのを拒否した B.tmap を
+   * これにより「A を開く→不整合 B を開く→修復中止→Ctrl+S」で、開くのを拒否した B.gimoza を
    * A の内容で丸ごと上書き破壊する経路を断つ（読み取り成功=即昇格を廃止）。
    */
   CommitLoadedPath: 'tmap:commit-loaded-path',
@@ -110,7 +110,7 @@ export const MAIN_TO_RENDERER_CHANNELS: readonly IpcChannel[] = [
 /**
  * A save request carries the already-serialized manifest (a plain, JSON-safe
  * value produced by U14 `serialize`) plus the binary assets to embed in the
- * `.tmap` ZIP: the base-map image and the attached document images. The
+ * `.gimoza` ZIP: the base-map image and the attached document images. The
  * renderer never touches `fs`; it ships bytes through this typed channel and
  * main performs the atomic write.
  */

@@ -97,7 +97,7 @@ describe('formatDiagnosticLogLine (JSONL 1 行 1 エントリ)', () => {
 describe('diagnosticLogDateKey / selectDiagnosticLogsToDelete (世代保持)', () => {
   it('extracts the sortable date key, ignoring non-log names', () => {
     expect(diagnosticLogDateKey('diagnostic-2026-07-12.jsonl')).toBe('2026-07-12');
-    expect(diagnosticLogDateKey('world.tmap')).toBeUndefined();
+    expect(diagnosticLogDateKey('world.gimoza')).toBeUndefined();
     expect(diagnosticLogDateKey('diagnostic-2026-07-12.txt')).toBeUndefined();
   });
 
@@ -113,7 +113,7 @@ describe('diagnosticLogDateKey / selectDiagnosticLogsToDelete (世代保持)', (
   });
 
   it('deletes nothing when under the cap, and ignores unrelated files', () => {
-    const names = ['diagnostic-2026-07-12.jsonl', 'readme.txt', 'world.tmap'];
+    const names = ['diagnostic-2026-07-12.jsonl', 'readme.txt', 'world.gimoza'];
     expect(selectDiagnosticLogsToDelete(names, DEFAULT_DIAGNOSTIC_LOG_GENERATIONS)).toEqual([]);
   });
 

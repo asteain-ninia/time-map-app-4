@@ -46,7 +46,7 @@ const FAKE_PROJECT = { histories: [], settings: {}, baseMap: {} } as unknown as 
 const CLEAN_REPORT: ConsistencyReport = { ok: true, inconsistencies: [] };
 const okTransport = (): LoadTransport => ({
   ok: true,
-  path: '/tmp/x.tmap',
+  path: '/tmp/x.gimoza',
   parse: { outcome: PARSE_OUTCOME.Ok, manifest: {} as Manifest },
 });
 
@@ -100,8 +100,8 @@ describe('openCommand / dropLoadCommand (教訓 5.6 同一ガード・同一フ�
   it('D&D: SAME guard + SAME completion as menu load (reflects on empty report)', async () => {
     const reflectProject = vi.fn();
     const loadDropped = vi.fn(() => Promise.resolve(okTransport()));
-    await dropLoadCommand(makePorts({ reflectProject, loadDropped }), '/dropped/a.tmap');
-    expect(loadDropped).toHaveBeenCalledWith('/dropped/a.tmap');
+    await dropLoadCommand(makePorts({ reflectProject, loadDropped }), '/dropped/a.gimoza');
+    expect(loadDropped).toHaveBeenCalledWith('/dropped/a.gimoza');
     expect(reflectProject).toHaveBeenCalledOnce();
   });
 
@@ -125,7 +125,7 @@ describe('openCommand / dropLoadCommand (教訓 5.6 同一ガード・同一フ�
     const reflectProject = vi.fn();
     const transport: LoadTransport = {
       ok: true,
-      path: '/tmp/x.tmap',
+      path: '/tmp/x.gimoza',
       parse: {
         outcome: PARSE_OUTCOME.VersionIncompatible,
         foundVersion: '0',

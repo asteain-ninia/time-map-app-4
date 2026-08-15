@@ -12,15 +12,20 @@ borders-states.json
 basemap-vector.json
 basemap.png
 
-# 成果物の .tmap。アプリで編集する実データでもあるため、追跡すると編集のたびに
+# 成果物の .gimoza。アプリで編集する実データでもあるため、追跡すると編集のたびに
 # ツリーが汚れる。再生成手順は README にある。
-*.tmap
+*.gimoza
 
 # アプリの自動バックアップ (FR: 自動保存/バックアップが吐く)
-*.tmap.bak.*
+*.gimoza.bak.*
 
 # 目視確認・調査用に焼いた画像と一時ダンプ
 preview*.png
 crop-*.png
 *-overlay.png
 agg-shapes.json
+
+# 新旧比較の調査で焼いた図と計測データ
+compare-*.png
+compare-*.json
+diff-*.png

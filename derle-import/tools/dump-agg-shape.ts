@@ -10,7 +10,7 @@ import { timePointYear } from '../../src/domain/time/time-point';
 import { resolveDisplayFor } from '../../src/ui/map/display-resolution-cache';
 import type { DisplayControlInput } from '../../src/render/display-pipeline';
 
-const bytes = new Uint8Array(readFileSync(resolve('derle-import', 'derle-world-full.tmap')));
+const bytes = new Uint8Array(readFileSync(resolve('derle-import', 'derle-world-full.gimoza')));
 const r = readTmap(bytes);
 if (!r.ok) throw new Error(r.message);
 const parsed = parseManifest(r.contents.manifest);

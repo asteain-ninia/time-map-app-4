@@ -10,7 +10,7 @@
 // Two state slots are kept DELIBERATELY separate (spec §4.2 / 教訓 5.2):
 //   1. `lines` — the CONFIRMED survey lines (+ their markers). These persist
 //      across mode toggles and are cleared ONLY by `clear`. They are a temporary,
-//      NON-persisted UI display (FR-15): never written to the `.tmap` schema.
+//      NON-persisted UI display (FR-15): never written to the `.gimoza` schema.
 //   2. `draft` — the in-progress draft (start point clicked, end not yet). This
 //      is discarded on EVERY path: confirm, cancel, clear, tool switch, mode
 //      switch / survey-mode exit. Confusing the two slots is the named pitfall

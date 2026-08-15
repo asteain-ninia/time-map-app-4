@@ -1,13 +1,13 @@
 // 単一インスタンスロック（ユニット U3 / lost-update 根治）.
 //
-// アプリを二重起動して同じ .tmap を開くと「後勝ち保存」で先の編集が消える。これが本
+// アプリを二重起動して同じ .gimoza を開くと「後勝ち保存」で先の編集が消える。これが本
 // アプリ最後の既知データ損失経路（単一インスタンスロック欠如）だった。ユーザー裁定
 // (2026-07-25) により v3(time-map-app-3 src/main/index.ts + src/main/projectOpen.ts)
 // 同型で実装する。挙動:
 //   - 起動最初期に app.requestSingleInstanceLock() を呼ぶ。取れなければ **ウィンドウを
 //     1 枚も作る前に** app.quit()（2つ目のプロセスは静かに終了）。
 //   - 取れたら second-instance で既存ウィンドウを前面化する（minimized なら restore →
-//     focus）。§7.4 非目標（OS 関連付け起動なし）のため argv の .tmap パス処理は不要 —
+//     focus）。§7.4 非目標（OS 関連付け起動なし）のため argv の .gimoza パス処理は不要 —
 //     v3 の findProjectPathArg / sendProjectPathToWindow 分岐は持ち込まず focus のみ。
 //
 // この単位は Electron を import しない純粋ロジック（開発ガイド §5.41 — main のロジックは
@@ -28,7 +28,7 @@ export interface SingleInstanceApp {
 
 /**
  * 前面化に必要な `BrowserWindow` の構造的部分集合（v3 projectOpen.ts の
- * ProjectOpenWindow 相当だが、.tmap パス送出を除いた reveal 専用の最小形）。
+ * ProjectOpenWindow 相当だが、.gimoza パス送出を除いた reveal 専用の最小形）。
  */
 export interface RevealableWindow {
   isMinimized(): boolean;

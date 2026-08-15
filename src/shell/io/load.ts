@@ -1,4 +1,4 @@
-// U15 — the LOAD adapter: read `.tmap` bytes → extract → MANDATORY Zod parse
+// U15 — the LOAD adapter: read `.gimoza` bytes → extract → MANDATORY Zod parse
 // boundary → typed result (R8 / FR-104 / FR-116 / 受け入れ基準5).
 //
 // This is the ONLY path that turns file bytes into a domain-bound manifest, and
@@ -22,7 +22,7 @@ import type { LoadResponse } from '../ipc/contract';
 import { readTmap } from './tmap';
 
 /**
- * Decode + validate `.tmap` bytes into a {@link LoadResponse}. Order:
+ * Decode + validate `.gimoza` bytes into a {@link LoadResponse}. Order:
  *   1. unzip + extract (readTmap) — corrupt/missing-entry → reject;
  *   2. parseManifest (Zod boundary) — version/schema mismatch → reject, NEVER
  *      migrate (spec §やらないこと);

@@ -1,9 +1,9 @@
 // REAL-DATA hotspot benchmark for the derle world map (NFR 5.1 / 5.2 / 5.8).
 //
 // PURPOSE (次の最適化ユニットの対象決定材料): the間引かない実データ
-// `derle-world-full.tmap`（722 地物・共有頂点 99,314）はアプリで実用速度が出ない、と
+// `derle-world-full.gimoza`（722 地物・共有頂点 99,314）はアプリで実用速度が出ない、と
 // 報告された。どの層が支配的かを実測で確定するため、UI(React)を起動せず純 TS 層 +
-// fake-canvas でホットスポットを計測する。比較用に間引き版 `derle-world.tmap`
+// fake-canvas でホットスポットを計測する。比較用に間引き版 `derle-world.gimoza`
 // （共有頂点 16,546）も同じ計測にかける。
 //
 // STYLE (既存ベンチ流儀の踏襲): feature-benchmark.test.ts / spatial/benchmark.test.ts と
@@ -11,7 +11,7 @@
 // 各項目ウォームアップ 1 回 + 計測 3 回の中央値を console.log する。数値そのものが
 // 成果物（親エージェントが生データとして扱う）。
 //
-// CI SAFETY: .tmap のパスは環境変数 `DERLE_TMAP_DIR` から読み、未設定またはファイルが
+// CI SAFETY: .gimoza のパスは環境変数 `DERLE_TMAP_DIR` から読み、未設定またはファイルが
 // 無ければ test.skip（CI で赤にならない）。フォールバック既定値は置かない — 置くと
 // このマシンでは通常の `npm run test` に本ベンチ（数分）が毎回混入する
 // (Codex レビュー指摘 #6)。実行例:
@@ -93,8 +93,8 @@ import { liveHitTestAt } from './live-hit-test';
 const TMAP_DIR = process.env.DERLE_TMAP_DIR;
 
 const CASES = [
-  { key: 'full', file: 'derle-world-full.tmap', note: '99,314 shared vertices' },
-  { key: 'simplified', file: 'derle-world.tmap', note: '16,546 shared vertices' },
+  { key: 'full', file: 'derle-world-full.gimoza', note: '99,314 shared vertices' },
+  { key: 'simplified', file: 'derle-world.gimoza', note: '16,546 shared vertices' },
 ] as const;
 
 /** The map surface the app measures at (matches the synthetic harness VP). */

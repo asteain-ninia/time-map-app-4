@@ -14,7 +14,7 @@ import {
   type BackupFsOps,
 } from './backup';
 
-const BASE = 'world.tmap';
+const BASE = 'world.gimoza';
 
 describe('backup naming (受け入れ基準3)', () => {
   it('default generation cap is 10', () => {
@@ -36,8 +36,8 @@ describe('backup naming (受け入れ基準3)', () => {
   });
 
   it('non-backup names yield no key', () => {
-    expect(backupKeyOf(BASE, 'world.tmap')).toBeUndefined();
-    expect(backupKeyOf(BASE, 'other.tmap.bak.0001-0000')).toBeUndefined();
+    expect(backupKeyOf(BASE, 'world.gimoza')).toBeUndefined();
+    expect(backupKeyOf(BASE, 'other.gimoza.bak.0001-0000')).toBeUndefined();
   });
 });
 

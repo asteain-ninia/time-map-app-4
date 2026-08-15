@@ -81,7 +81,7 @@ export function fromPersistedUiSettings(ui: UiSettings): LiveSettings {
       timelineMinYear: p.timelineMinYear,
       timelineMaxYear: p.timelineMaxYear,
       // FR-13 後方互換: an older manifest's `ui` block has NO gridVisible key —
-      // default to true (欠落=可視) so an existing .tmap loads with the graticule
+      // default to true (欠落=可視) so an existing .gimoza loads with the graticule
       // shown, exactly as before this setting existed. THE single default-fill point
       // for the store (the alpha-opacity 既定補完と同型).
       gridVisible: p.gridVisible ?? true,

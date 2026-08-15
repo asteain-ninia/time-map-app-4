@@ -1,5 +1,5 @@
 // 「デーレ共和国を選択すると待たされる」の内訳を実データで計測する。
-//   npx vite-node derle-import/tools/diagnose-selection.ts -- derle-world-full.tmap
+//   npx vite-node derle-import/tools/diagnose-selection.ts -- derle-world-full.gimoza
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -14,7 +14,7 @@ import { buildFeaturePrimitives, initialCamera, DEFAULT_SCREEN_SIZES, DEFAULT_LA
 import type { DisplayControlInput } from '../../src/render/display-pipeline';
 import type { Viewport } from '../../src/render';
 
-const name = process.argv[2] ?? 'derle-world-full.tmap';
+const name = process.argv[2] ?? 'derle-world-full.gimoza';
 const bytes = new Uint8Array(readFileSync(resolve('derle-import', name)));
 const r = readTmap(bytes);
 if (!r.ok) throw new Error(r.message);

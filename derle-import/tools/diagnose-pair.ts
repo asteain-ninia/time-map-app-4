@@ -1,11 +1,11 @@
 // area-165 / area-660 の穴構造を照合するデバッグスクリプト。
-//   npx vite-node derle-import/tools/diagnose-pair.ts -- derle-world.tmap area-165 area-660
+//   npx vite-node derle-import/tools/diagnose-pair.ts -- derle-world.gimoza area-165 area-660
 
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 
-const name = process.argv[2] ?? 'derle-world.tmap';
+const name = process.argv[2] ?? 'derle-world.gimoza';
 const idA = process.argv[3] ?? 'area-165';
 const idB = process.argv[4] ?? 'area-660';
 

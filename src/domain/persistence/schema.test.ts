@@ -234,7 +234,7 @@ describe('詳細文書 detailDocument (FR-98) — optional 追記 on tmap/1, WRI
   it('rejects a document longer than MAX_DETAIL_DOCUMENT_LENGTH with a path (WRITE⊆READ 非対称の防波堤)', () => {
     // The SAME exported constant will guard the editor's save (WRITE) side; the
     // schema (READ) side must never be narrower than the write side, or a saved
-    // .tmap could become unloadable (isPersistedYear が塞いだ非対称と同型).
+    // .gimoza could become unloadable (isPersistedYear が塞いだ非対称と同型).
     const clone = structuredClone(serialize(richValidProject()));
     firstFeature(clone)['detailDocument'] = 'a'.repeat(MAX_DETAIL_DOCUMENT_LENGTH + 1);
     const parsed = manifestSchema.safeParse(clone);

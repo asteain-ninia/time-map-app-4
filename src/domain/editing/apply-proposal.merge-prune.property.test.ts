@@ -1,4 +1,4 @@
-// A5 / 実機報告「結合後の .tmap が 3.5× 肥大 + 操作が重い」の回帰ロック。
+// A5 / 実機報告「結合後の .gimoza が 3.5× 肥大 + 操作が重い」の回帰ロック。
 //
 // ROOT CAUSE (剪定欠落): applyMergeProposal の 3 経路 (step1 removeFeatureAtTime /
 // step2 rewriteFeatureSnapshotAtTime / step4 applyVertexRemapToHistories→remapVertexStore)

@@ -73,7 +73,7 @@ function makeFakeFs(
   };
 }
 
-const TARGET = '/dir/world.tmap';
+const TARGET = '/dir/world.gimoza';
 const DATA = new Uint8Array([1, 2, 3, 4]);
 
 describe('atomicWrite success path (受け入れ基準2)', () => {

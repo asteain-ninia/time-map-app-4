@@ -1,4 +1,4 @@
-// U15 — shell I/O public barrel. The `.tmap` ZIP read/write adapters, atomic
+// U15 — shell I/O public barrel. The `.gimoza` ZIP read/write adapters, atomic
 // write, generation backup, auto-save scheduler, the load (Zod-boundary) adapter
 // and the save pipeline — exported together so the persistence-IO surface moves
 // as one change unit (教訓5.31).

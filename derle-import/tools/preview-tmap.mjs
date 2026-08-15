@@ -1,7 +1,7 @@
-// 生成した .tmap の目視確認用プレビュー PNG を作る。
+// 生成した .gimoza の目視確認用プレビュー PNG を作る。
 // manifest を読み、ベースマップの上に面情報 (穴は evenodd で抜く) を重ね描きする。
 //
-// 実行: node derle-import/tools/preview-tmap.mjs [derle-world.tmap]
+// 実行: node derle-import/tools/preview-tmap.mjs [derle-world.gimoza]
 // 出力: derle-import/preview.png
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -12,7 +12,7 @@ import { chromium } from 'playwright';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const IMPORT_DIR = resolve(here, '..');
-const tmapName = process.argv[2] ?? 'derle-world.tmap';
+const tmapName = process.argv[2] ?? 'derle-world.gimoza';
 
 const entries = unzipSync(new Uint8Array(readFileSync(resolve(IMPORT_DIR, tmapName))));
 const manifest = JSON.parse(strFromU8(entries['manifest.json']));

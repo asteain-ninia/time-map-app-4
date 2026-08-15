@@ -26,7 +26,7 @@ import { type TimePoint, timePointYear } from '../../domain/time/time-point';
 
 /**
  * Where a setting lives. Project settings are part of the project document
- * (dirty-tracked, saved into the `.tmap`); app settings are persisted at the
+ * (dirty-tracked, saved into the `.gimoza`); app settings are persisted at the
  * application level (independent of any project). This discriminant is the
  * single source of truth for save-context routing (教訓 5.36).
  */

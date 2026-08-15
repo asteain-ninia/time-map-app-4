@@ -559,7 +559,7 @@ function repointThroughRemap(feature: Feature, remap: VertexRemap): Feature {
  * source of truth 波7/10/11 established, 教訓 5.30). The new bodies are the canonical
  * coordinate source for the re-minted shared vertices.
  *
- * WHY the prune (実機報告「結合後 .tmap が 3.5× 肥大」の剪定欠落根治): pruning to referenced
+ * WHY the prune (実機報告「結合後 .gimoza が 3.5× 肥大」の剪定欠落根治): pruning to referenced
  * both drops the old bodies that were repointed away (削除は参照掃除まで, 教訓 5.21) AND drops
  * the UNRELATED bodies `splitVertices` carries. For a MERGE the caller passes the WHOLE
  * re-minted after-state store as `splitVertices` (~95k vertices at the derle scale), so
@@ -1264,12 +1264,12 @@ function rewriteFeatureSnapshotAtTime(
       // Prune to exactly what the rewritten features reference (referencedVertexIds —
       // single source of truth 波7/10/11, 教訓 5.30). `extraVertices` is the merge's whole
       // re-minted store (~95k at the derle scale); without this prune a SURVIVED (reparented)
-      // feature's snapshot baked in the full store = the .tmap 肥大 + divergence hazard, the
+      // feature's snapshot baked in the full store = the .gimoza 肥大 + divergence hazard, the
       // same 剪定欠落 the sibling create path already guards (applyMergeProposal step 3).
       // Prune to exactly what the rewritten features reference (referencedVertexIds —
       // single source of truth 波7/10/11, 教訓 5.30). `extraVertices` is the merge's whole
       // re-minted store (~95k at the derle scale); without this prune a SURVIVED (reparented)
-      // feature's snapshot baked in the full store = the .tmap 肥大 + divergence hazard, the
+      // feature's snapshot baked in the full store = the .gimoza 肥大 + divergence hazard, the
       // same 剪定欠落 the sibling create path already guards (applyMergeProposal step 3).
       const store = pruneVertexStore(
         createVertexStore([...base.vertices.byId.values(), ...extraVertices]),

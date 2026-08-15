@@ -48,6 +48,15 @@ import {
  * The one schema version this build understands (FR-104). A manifest whose
  * `version` is not exactly this value is treated as INCOMPATIBLE by the parse
  * entry point (warned / rejected, never migrated — spec §やらないこと).
+ *
+ * 値が `tmap/1` のままである理由（保存ファイルの拡張子を `.gimoza` に改めた後も
+ * 据え置く）: この文字列はユーザーに見えない**内部の識別子**であり、既存の保存
+ * ファイルのマニフェスト先頭に literal として書き込まれている。ここを `gimoza/1`
+ * 等に変えると、上記のとおり version が完全一致しない manifest は INCOMPATIBLE
+ * として拒否される（マイグレーションは仕様上やらない）ため、既に保存済みの
+ * ファイルが一律で読めなくなるだけで、得られるものが無い。よって「アプリ名は
+ * gimoza・`tmap` は開発時のコードネーム」という改名は拡張子と表示上の名前に留め、
+ * このスキーマ版文字列は意図的に変更しない。
  */
 export const SCHEMA_VERSION = 'tmap/1' as const;
 
@@ -522,7 +531,7 @@ export const uiProjectSettingsSchema = z
     timelineMaxYear: yearSchema,
     // FR-13 グリッド ON/OFF (受け入れ基準 9). Optional for BACK-COMPAT: a manifest
     // written before this field existed (a `ui` block without gridVisible — e.g. an
-    // existing derle-world.tmap) still parses, and the load bridge fills the default
+    // existing derle-world.gimoza) still parses, and the load bridge fills the default
     // true (欠落=可視) — the alpha/palette 追記と同型の optional 追記 (version bump なし).
     // z.boolean() fully validates the value; no superRefine needed.
     gridVisible: z.boolean().optional(),

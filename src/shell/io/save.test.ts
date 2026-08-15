@@ -73,11 +73,11 @@ function makeMemoryEnv(): {
   return { env, disk };
 }
 
-const TARGET = '/proj/world.tmap';
+const TARGET = '/proj/world.gimoza';
 const baseMap = new Uint8Array([5, 5, 5]);
 
 describe('saveTmap end-to-end (受け入れ基準1/2/7)', () => {
-  it('writes a .tmap that loads back to the same manifest (round-trip)', async () => {
+  it('writes a .gimoza that loads back to the same manifest (round-trip)', async () => {
     const { env, disk } = makeMemoryEnv();
     const manifest = serialize(richValidProject());
 
@@ -126,7 +126,7 @@ describe('repeated saves keep ≤ maxGenerations backups (受け入れ基準3)',
     }
     const backups = [...disk.keys()]
       .map((p) => p.slice(p.lastIndexOf('/') + 1))
-      .filter((name) => backupKeyOf('world.tmap', name) !== undefined);
+      .filter((name) => backupKeyOf('world.gimoza', name) !== undefined);
     expect(backups.length).toBe(10);
   });
 });

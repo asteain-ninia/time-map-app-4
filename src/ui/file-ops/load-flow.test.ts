@@ -31,7 +31,7 @@ const NONEMPTY_REPORT: ConsistencyReport = {
 };
 
 function transportOk(parse: ParseResult): LoadTransport {
-  return { ok: true, path: '/tmp/p.tmap', parse };
+  return { ok: true, path: '/tmp/p.gimoza', parse };
 }
 
 describe('classifyLoad (single load flow, 教訓 5.6 / FR-104 / FR-106)', () => {

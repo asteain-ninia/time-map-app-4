@@ -1,5 +1,5 @@
-// S7 base-map byte guard (Codex review #3 — 非信頼 .tmap 画像バイトの資源枯渇防御).
-// The .tmap ZIP is untrusted external input: a small compressed entry can declare a
+// S7 base-map byte guard (Codex review #3 — 非信頼 .gimoza 画像バイトの資源枯渇防御).
+// The .gimoza ZIP is untrusted external input: a small compressed entry can declare a
 // huge pixel surface (decompression/decode bomb) and exhaust renderer memory/CPU at
 // `createImageBitmap`. The guard runs BEFORE any decode: byte-size cap, PNG/JPEG
 // format allow-list (header signature), lightweight header dimension parse, and

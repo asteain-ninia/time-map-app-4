@@ -35,12 +35,12 @@ describe('buildNewProjectContext (教訓 5.36 / 受け入れ基準 4 同時初�
 describe('contextForLoadedFile (load establishes a fresh baseline)', () => {
   it('adopts path + backup target, carries metadata/baseMap, clean dirty', () => {
     const ctx = contextForLoadedFile({
-      path: '/tmp/world.tmap',
+      path: '/tmp/world.gimoza',
       metadata: { name: '世界A', description: 'desc' },
       baseMapId: 'user-map',
     });
-    expect(ctx.savePath).toBe('/tmp/world.tmap');
-    expect(ctx.backupTarget).toBe('/tmp/world.tmap');
+    expect(ctx.savePath).toBe('/tmp/world.gimoza');
+    expect(ctx.backupTarget).toBe('/tmp/world.gimoza');
     expect(ctx.metadata).toEqual({ name: '世界A', description: 'desc' });
     expect(ctx.baseMapId).toBe('user-map');
     expect(ctx.dirty).toBe(false);
@@ -59,9 +59,9 @@ describe('markDirty + contextAfterSave (baseline 一致, 教訓 5.24)', () => {
 
   it('contextAfterSave adopts the saved path as path+backup and clears dirty', () => {
     const dirty = markDirty(buildNewProjectContext());
-    const saved = contextAfterSave(dirty, '/tmp/new.tmap');
-    expect(saved.savePath).toBe('/tmp/new.tmap');
-    expect(saved.backupTarget).toBe('/tmp/new.tmap');
+    const saved = contextAfterSave(dirty, '/tmp/new.gimoza');
+    expect(saved.savePath).toBe('/tmp/new.gimoza');
+    expect(saved.backupTarget).toBe('/tmp/new.gimoza');
     expect(saved.dirty).toBe(false);
     // After the first save the project no longer needs 名前を付けて保存.
     expect(needsSaveAs(saved)).toBe(false);
@@ -71,7 +71,7 @@ describe('markDirty + contextAfterSave (baseline 一致, 教訓 5.24)', () => {
 describe('contextWithoutSaveTarget (HIGH-2 fail-safe: 宛先を取り下げて次の保存を saveAs へ)', () => {
   it('nulls savePath + backupTarget so needsSaveAs becomes true, keeping everything else', () => {
     const loaded = contextForLoadedFile({
-      path: '/tmp/b.tmap',
+      path: '/tmp/b.gimoza',
       metadata: { name: '世界B', description: 'd' },
       baseMapId: 'user-map',
     });

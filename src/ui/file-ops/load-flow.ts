@@ -30,7 +30,7 @@ export const LOAD_TRANSPORT_REASON = {
   Cancelled: 'cancelled',
   /** The file could not be read (I/O error). */
   ReadFailed: 'read-failed',
-  /** The `.tmap` container is broken / cannot be unzipped. */
+  /** The `.gimoza` container is broken / cannot be unzipped. */
   Corrupt: 'corrupt',
   /**
    * The file was read but its manifest failed Zod / version validation. Carries

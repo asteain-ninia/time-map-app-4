@@ -37,7 +37,7 @@ export interface SaveEnv {
 }
 
 /**
- * Save `contents` as a `.tmap` to `targetPath`: assemble the ZIP, atomically
+ * Save `contents` as a `.gimoza` to `targetPath`: assemble the ZIP, atomically
  * write it, then create a timestamped generation backup capped at
  * `maxGenerations`. A write failure is returned as `ok:false` WITHOUT touching
  * the existing file (atomicWrite guarantee). A backup failure does NOT fail the

@@ -293,7 +293,7 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
     // generated ONCE and verified byte-identical against the pre-FR98 serializer
     // (commit 28b692a~1) on this exact project; any serializer change that reorders
     // keys, adds a key to a doc-less feature, or alters number formatting fails here
-    // loudly instead of silently changing every .tmap on disk. The project is built
+    // loudly instead of silently changing every .gimoza on disk. The project is built
     // INLINE (not from shared fixtures) so fixture drift cannot move the golden.
     const vertices = [
       createVertex(asVertexId('g-v0'), createCoordinate(0, 0)),

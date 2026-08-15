@@ -115,7 +115,7 @@ export const PROPERTY_STRINGS = {
    * 開始年 / 終了年 が永続化可能な整数範囲（±100万年）外のときの保存拒否理由
    * (bughunt 第12波 #2). WRITE 側でこれを弾かないと、フォームは受理しても READ 側
    * schema (yearSchema = 同じ isPersistedYear 境界) が load 時に manifest 全体を
-   * 拒否し .tmap が二度と開けなくなる（書込⊆読込の非対称）。タイムライン年と同一の
+   * 拒否し .gimoza が二度と開けなくなる（書込⊆読込の非対称）。タイムライン年と同一の
    * 単一真実源 isPersistedYear で判定する。
    */
   yearOutOfRange:

@@ -87,7 +87,7 @@ export default defineConfig({
       // so it runs in node without a DOM. The add-tool React operation tests are
       // `.test.tsx` (jsdom; covered by the .tsx glob below).
       'src/ui/add/**/*.test.ts',
-      // U15 shell IO + typed-IPC pure-logic tests: .tmap ZIP build/read,
+      // U15 shell IO + typed-IPC pure-logic tests: .gimoza ZIP build/read,
       // atomic write (temp→fsync→rename) with an injected fs port, generation
       // backup naming/selection, auto-save scheduler with a fake clock, the
       // load Zod-boundary adapter, the save pipeline, and the両側 IPC contract

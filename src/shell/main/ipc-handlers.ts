@@ -207,7 +207,7 @@ const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.fl
  *      the reader caps the manifest entry too, so an over-cap manifest would
  *      save fine yet never re-open — the exact WRITE⊆READ break this guards),
  *   4. the manifest round-trips through the SAME Zod boundary the loader uses
- *      (parseManifest): never write a `.tmap` that cannot be re-opened.
+ *      (parseManifest): never write a `.gimoza` that cannot be re-opened.
  * Returns a Japanese message on failure, or `null` when the request is sound.
  * `caps` is test-injectable; production uses the reader's own constants.
  */

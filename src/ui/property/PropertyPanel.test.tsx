@@ -876,11 +876,11 @@ describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1
   });
 });
 
-// bughunt 第12波 #2 (HIGH — .tmap 全損防止): the基本情報 開始年/終了年 inputs (type=number)
+// bughunt 第12波 #2 (HIGH — .gimoza 全損防止): the基本情報 開始年/終了年 inputs (type=number)
 // accept huge / negative-huge / fractional years. createBasicAttributes / edit-intent /
 // the edit binding never validate the year, so a Committed save succeeds — but the READ
 // side schema (yearSchema = int within ±MAX_YEAR, the SAME isPersistedYear bound the
-// timeline WRITE side already enforces) rejects the WHOLE manifest on load, so the .tmap
+// timeline WRITE side already enforces) rejects the WHOLE manifest on load, so the .gimoza
 // can never be reopened (書込⊆読込 asymmetry). handleSave now guards with the SAME
 // isPersistedYear (single truth source) and returns an honest save-failure message.
 describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第12波 #2, HIGH)', () => {
@@ -913,7 +913,7 @@ describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第1
       fireEvent.change(screen.getByLabelText(fieldLabel), { target: { value: badValue } });
       fireEvent.click(screen.getByTestId('save-button'));
 
-      // The edit must NOT dispatch (would otherwise become an un-loadable .tmap).
+      // The edit must NOT dispatch (would otherwise become an un-loadable .gimoza).
       expect(intents).toHaveLength(0);
       // The failure surfaces honestly through the existing save-message path.
       const msg = screen.getByTestId('save-message');

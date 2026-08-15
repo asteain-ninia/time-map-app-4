@@ -102,8 +102,8 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
   const deps: IpcDeps = {
     registrar: () => {},
     dialog: {
-      showSaveDialog: vi.fn(async () => '/d/new.tmap'),
-      showOpenDialog: vi.fn(async () => '/d/open.tmap'),
+      showSaveDialog: vi.fn(async () => '/d/new.gimoza'),
+      showOpenDialog: vi.fn(async () => '/d/open.gimoza'),
       showOpenImageDialog: vi.fn(async () => '/d/pic.png'),
     },
     readFile: {
@@ -278,12 +278,12 @@ describe('IPC channel names come from the shared contract (受け入れ基準4)'
 describe('handlers take shared args and return shared return types (受け入れ基準4/6)', () => {
   it('Save reaches the I/O adapter and writes the file', async () => {
     const { deps, disk, saveCalls } = makeDeps();
-    // No current path → opens Save dialog → /d/new.tmap.
+    // No current path → opens Save dialog → /d/new.gimoza.
     const res = await handleSave(deps, makeSaveReq());
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.path).toBe('/d/new.tmap');
-    expect(disk.has('/d/new.tmap')).toBe(true);
+    expect(res.path).toBe('/d/new.gimoza');
+    expect(disk.has('/d/new.gimoza')).toBe(true);
     expect(saveCalls.length).toBeGreaterThan(0); // atomic write port was used
   });
 
@@ -315,12 +315,12 @@ describe('handlers take shared args and return shared return types (受け入れ
     const res = await promise;
     expect(settled).toBe(true);
     expect(res.ok).toBe(true);
-    expect(disk.has('/d/new.tmap')).toBe(true);
+    expect(disk.has('/d/new.gimoza')).toBe(true);
   });
 
   it('Save targets the current path on subsequent saves (no dialog)', async () => {
     const { deps } = makeDeps();
-    await handleSave(deps, makeSaveReq()); // sets current = /d/new.tmap
+    await handleSave(deps, makeSaveReq()); // sets current = /d/new.gimoza
     const dialog = deps.dialog.showSaveDialog as ReturnType<typeof vi.fn>;
     dialog.mockClear();
     const res2 = await handleSave(deps, makeSaveReq());
@@ -354,19 +354,19 @@ describe('handlers take shared args and return shared return types (受け入れ
     const res = await handleLoad(deps);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.path).toBe('/d/open.tmap');
+    expect(res.path).toBe('/d/open.gimoza');
     expect(res.manifest.version).toBe('tmap/1');
     expect(deps.dialog.showOpenDialog).toHaveBeenCalledTimes(1);
   });
 
   it('LoadDropped reads the dropped path directly (D&D, FR-105)', async () => {
     const { deps } = makeDeps();
-    const res = await handleLoadDropped(deps, '/dropped/file.tmap');
+    const res = await handleLoadDropped(deps, '/dropped/file.gimoza');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.path).toBe('/dropped/file.tmap');
+    expect(res.path).toBe('/dropped/file.gimoza');
     // read used the dropped path, dialog NOT used.
-    expect(deps.readFile.readFile).toHaveBeenCalledWith('/dropped/file.tmap');
+    expect(deps.readFile.readFile).toHaveBeenCalledWith('/dropped/file.gimoza');
     expect(deps.dialog.showOpenDialog).not.toHaveBeenCalled();
   });
 
@@ -374,7 +374,7 @@ describe('handlers take shared args and return shared return types (受け入れ
     const { deps } = makeDeps({
       readFile: { readFile: vi.fn(async () => { throw new Error('ENOENT'); }), statSize: vi.fn(async () => 1024) },
     });
-    const res = await handleLoadDropped(deps, '/missing.tmap');
+    const res = await handleLoadDropped(deps, '/missing.gimoza');
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.reason).toBe('read-failed');
@@ -528,13 +528,13 @@ describe('handlers take shared args and return shared return types (受け入れ
 // UC1 round-2 保存「宛先」の遅延昇格 (HIGH): a successful READ must NOT promote the save
 // target. The target moves only when the renderer commits the load's token at its commit
 // point (reflectProject 成功). This severs the destructive path「A を開く→不整合 B を開く
-// →修復中止→Ctrl+S が拒否した B.tmap を A の内容で丸ごと上書き破壊する」.
+// →修復中止→Ctrl+S が拒否した B.gimoza を A の内容で丸ごと上書き破壊する」.
 describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛先になる (HIGH)', () => {
   const SENDER = 7;
 
   it('読み取り成功だけでは currentPath を昇格しない（即昇格を廃止）', async () => {
     const { deps } = makeDeps();
-    const res = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const res = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     // The path is STAGED (a token is handed back), not promoted.
@@ -542,53 +542,53 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
     expect(deps.currentPath.get()).toBeUndefined();
     expect(deps.pendingLoadPath.get()).toEqual({
       token: res.commitToken,
-      path: '/A.tmap',
+      path: '/A.gimoza',
       senderId: SENDER,
     });
   });
 
   it('コミットするとその読み込み先が保存宛先になる（往復が保たれる）', async () => {
     const { deps } = makeDeps();
-    const res = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const res = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     if (!res.ok) return;
     handleCommitLoadedPath(deps, res.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
     // The stage is cleared on promotion (idempotent: a second commit is a no-op).
     expect(deps.pendingLoadPath.get()).toBeUndefined();
     handleCommitLoadedPath(deps, res.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
   });
 
   it('RED→GREEN: A を開いてコミット→不整合 B を開いて修復中止（未コミット）→保存は A に書き、B を壊さない', async () => {
     const { deps, disk } = makeDeps();
 
     // 1) Open A and COMMIT it (a clean load reached the domain) → A is the save target.
-    const resA = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const resA = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     if (!resA.ok) return;
     handleCommitLoadedPath(deps, resA.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
 
     // 2) Open the inconsistent B. Its read succeeds and STAGES the destination, but the
     //    user aborts at the FR-106 repair dialog, so the renderer NEVER commits B's token.
-    const resB = await handleLoadDropped(deps, '/B.tmap', SENDER);
+    const resB = await handleLoadDropped(deps, '/B.gimoza', SENDER);
     expect(resB.ok).toBe(true);
     // The save target is UNMOVED by the mere read of B (the bug this fixes: it used to
-    // become /B.tmap here, so the next plain Save overwrote it).
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    // become /B.gimoza here, so the next plain Save overwrote it).
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
 
     // 3) Ctrl+S — a plain Save (the renderer's load context never changed): it writes to
-    //    the CURRENT target, which must still be A. B.tmap is left untouched.
+    //    the CURRENT target, which must still be A. B.gimoza is left untouched.
     const saved = await handleSave(deps, makeSaveReq());
     expect(saved.ok).toBe(true);
     if (!saved.ok) return;
-    expect(saved.path).toBe('/A.tmap');
-    expect(disk.has('/A.tmap')).toBe(true);
-    expect(disk.has('/B.tmap')).toBe(false); // the file the user refused to open is intact
+    expect(saved.path).toBe('/A.gimoza');
+    expect(disk.has('/A.gimoza')).toBe(true);
+    expect(disk.has('/B.gimoza')).toBe(false); // the file the user refused to open is intact
   });
 
   it('別ウィンドウ (senderId 不一致) からのコミットは昇格しない (所見3 event.sender 検証)', async () => {
     const { deps } = makeDeps();
-    const res = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const res = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     if (!res.ok) return;
     handleCommitLoadedPath(deps, res.commitToken, SENDER + 1); // a different webContents
     expect(deps.currentPath.get()).toBeUndefined();
@@ -597,26 +597,26 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
 
   it('失効したトークン（後続ロードが stage を差し替えた後の遅延コミット）は無視される', async () => {
     const { deps } = makeDeps();
-    const resA = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const resA = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     if (!resA.ok) return;
     // A later load overwrites the single pending slot before A's (delayed) commit arrives.
-    const resB = await handleLoadDropped(deps, '/B.tmap', SENDER);
+    const resB = await handleLoadDropped(deps, '/B.gimoza', SENDER);
     if (!resB.ok) return;
     // A's stale token no longer matches the pending (which is now B's) → no promotion.
     handleCommitLoadedPath(deps, resA.commitToken, SENDER);
     expect(deps.currentPath.get()).toBeUndefined();
     // B's own token still commits correctly.
     handleCommitLoadedPath(deps, resB.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/B.tmap');
+    expect(deps.currentPath.get()).toBe('/B.gimoza');
   });
 
   it('MED (save/load レース): 保存の in-flight 中にロードが確定したら、保存完了は宛先を巻き戻さない', async () => {
     const { deps, disk } = makeDeps();
     // Establish A as the current save target (a committed load).
-    const resA = await handleLoadDropped(deps, '/A.tmap', SENDER);
+    const resA = await handleLoadDropped(deps, '/A.gimoza', SENDER);
     if (!resA.ok) return;
     handleCommitLoadedPath(deps, resA.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
 
     // A SLOW save to A: gate fsync so a load can commit while the write is parked.
     let releaseFsync!: () => void;
@@ -635,21 +635,21 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
         },
       },
     };
-    const savePromise = handleSave(slowDeps, makeSaveReq()); // captures target = /A.tmap
+    const savePromise = handleSave(slowDeps, makeSaveReq()); // captures target = /A.gimoza
 
-    // While the save is parked, a NEW load (B) commits → currentPath = /B.tmap.
-    const resB = await handleLoadDropped(deps, '/B.tmap', SENDER);
+    // While the save is parked, a NEW load (B) commits → currentPath = /B.gimoza.
+    const resB = await handleLoadDropped(deps, '/B.gimoza', SENDER);
     if (!resB.ok) return;
     handleCommitLoadedPath(deps, resB.commitToken, SENDER);
-    expect(deps.currentPath.get()).toBe('/B.tmap');
+    expect(deps.currentPath.get()).toBe('/B.gimoza');
 
     // Release the save: it still writes A (that is what this save was for) but MUST NOT
     // roll the destination back — the load commit is the more-recent truth.
     releaseFsync();
     const saved = await savePromise;
     expect(saved.ok).toBe(true);
-    expect(disk.has('/A.tmap')).toBe(true); // the save wrote its own file correctly
-    expect(deps.currentPath.get()).toBe('/B.tmap'); // destination NOT rolled back to A
+    expect(disk.has('/A.gimoza')).toBe(true); // the save wrote its own file correctly
+    expect(deps.currentPath.get()).toBe('/B.gimoza'); // destination NOT rolled back to A
   });
 
   it('registerIpcHandlers wires CommitLoadedPath and threads event.sender.id (所見3)', async () => {
@@ -666,7 +666,7 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
       event: unknown,
       p: string,
     ) => Promise<{ ok: boolean; commitToken?: string }>;
-    const res = await loadHandler({ sender: { id: 3 } }, '/A.tmap');
+    const res = await loadHandler({ sender: { id: 3 } }, '/A.gimoza');
     expect(res.ok).toBe(true);
     expect(deps.currentPath.get()).toBeUndefined(); // not promoted on read
 
@@ -675,7 +675,7 @@ describe('UC1 round-2: 読み込み先はコミットされて初めて保存宛
       token: unknown,
     ) => unknown;
     commitHandler({ sender: { id: 3 } }, res.commitToken);
-    expect(deps.currentPath.get()).toBe('/A.tmap');
+    expect(deps.currentPath.get()).toBe('/A.gimoza');
   });
 });
 
@@ -719,7 +719,7 @@ describe('保存側 runtime validation (validateSaveRequest / Codex MED)', () =>
 });
 
 describe('読込のサイズ上限 (stat 事前拒否 / Codex MED「巨大ファイルで main 停止」)', () => {
-  it('上限超過の .tmap は read 前に read-failed で拒否され readFile は呼ばれない', async () => {
+  it('上限超過の .gimoza は read 前に read-failed で拒否され readFile は呼ばれない', async () => {
     const { deps } = makeDeps({
       readFile: {
         readFile: vi.fn(async () => new Uint8Array()),
@@ -735,7 +735,7 @@ describe('読込のサイズ上限 (stat 事前拒否 / Codex MED「巨大ファ
     expect(deps.readFile.readFile).not.toHaveBeenCalled();
   });
 
-  it('上限内の .tmap は従来どおり読める (stat は素通り)', async () => {
+  it('上限内の .gimoza は従来どおり読める (stat は素通り)', async () => {
     const { deps } = makeDeps();
     const res = await handleLoad(deps);
     expect(res.ok).toBe(true);
@@ -784,7 +784,7 @@ describe('sender allowlist (isTrustedSender / Codex MED)', () => {
     expect(image).toBeNull();
 
     // 非信頼 sender の commit は保存宛先を動かさない。
-    deps.pendingLoadPath.set({ token: 't', path: '/x.tmap' });
+    deps.pendingLoadPath.set({ token: 't', path: '/x.gimoza' });
     handlers.get(IPC_CHANNEL.CommitLoadedPath)!(evt(1), 't');
     expect(deps.currentPath.get()).toBeUndefined();
   });

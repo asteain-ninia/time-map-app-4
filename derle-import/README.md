@@ -1,7 +1,7 @@
 # derle-import — デーレ界地図のインポート (2026-08-09 最新地図+階層化)
 
 `../derle-map-visualizer` のポリゴン抽出ロジック(実物をヘッドレス Chromium で駆動)を使い、
-デーレ界の国ポリゴンを抽出して time-map-app-4 の `.tmap` に変換したもの。
+デーレ界の国ポリゴンを抽出して time-map-app-4 の `.gimoza` に変換したもの。
 旧PC(tatuk)にあった derle-import 一式はこの PC に移設されていないため、ここでゼロから再構築した。
 
 **元データ**: `イラレ出界図BUR080809.svg`(ユーザーが 2026-08-09 に .ai から書き出した最新版。
@@ -20,16 +20,16 @@
 
 | ファイル | 内容 |
 | --- | --- |
-| `derle-world-full.tmap` | フル解像度 (履歴 777・末端 858・集約 3・共有頂点 73,553・2.5 MB)。**正準データ** |
-| `derle-world.tmap` | 間引き版 (共有頂点 30,541・1.5 MB)。ベンチ/軽量編集用 |
-| `basemap-vector.json` | **ベクター背景地図** (2.05 MB)。.tmap のベースマップ資産に入る |
+| `derle-world-full.gimoza` | フル解像度 (履歴 777・末端 858・集約 3・共有頂点 73,553・2.5 MB)。**正準データ** |
+| `derle-world.gimoza` | 間引き版 (共有頂点 30,541・1.5 MB)。ベンチ/軽量編集用 |
+| `basemap-vector.json` | **ベクター背景地図** (2.05 MB)。.gimoza のベースマップ資産に入る |
 | `イラレ出界図BUR080809.svg` | 元データ (最新版の複製) |
 | `basemap.png` | 旧ラスター背景 8192×4096 (--raster-basemap 用。既定では未使用) |
 | `borders.json` | visualizer 抽出の中間データ (点/辺/ポリゴン/国タイプ) |
 | `world-rect.json` | SVG 内の世界矩形定義 (座標変換の単一真実源) |
 | `preview.png` | 目視確認用プレビュー |
 
-両 `.tmap` とも `checkConsistency` **完全クリーン (ok=true, 不整合 0)** を確認済み。
+両 `.gimoza` とも `checkConsistency` **完全クリーン (ok=true, 不整合 0)** を確認済み。
 検証はリポジトリ既存の実データベンチで可能:
 
 ```
@@ -59,7 +59,7 @@ DERLE_TMAP_DIR=e:/WORKSPACE/time-map-app-4/derle-import npx vitest run src/ui/ma
    `preview-vector-basemap.mjs` で焼いた結果を目視確認できる。
    - **なぜベクターか (実測)**: 8192×4096 PNG のデコード+初回描画 = **162 ms** に対し、同じ地形を
      ベクターから焼くのは **世界全体 19.8 ms / 10倍ズーム 5.6 ms**（GPU 完了待ちを 1px 読み戻しで
-     同期して計測）。**焼く方が読むより速い**うえ、拡大してもぼやけず、.tmap も小さくなる。
+     同期して計測）。**焼く方が読むより速い**うえ、拡大してもぼやけず、.gimoza も小さくなる。
    - アプリ側は画面より一回り大きい範囲を裏キャンバスに焼いて貼り、ズーム段階が変わるか
      余白を出たときだけ焼き直す（`src/ui/map/vector-base-map-cache.ts`）。
 3. `raster-base-map.mjs` — 従来のラスター背景 (8192×4096 PNG)。`build-tmap.mjs --raster-basemap`
@@ -104,7 +104,7 @@ DERLE_TMAP_DIR=e:/WORKSPACE/time-map-app-4/derle-import npx vitest run src/ui/ma
    収束するまで繰り返す(実測: フル版は 1 ラウンド・間引き版は 2 ラウンドで収束し 15 面を原型維持)。
    引数なし = フル版、`--target-vertices=N` = 間引き版。**両方ともこのドライバで作る**。
 6. `diagnose-consistency.ts` / `diagnose-pair.ts` — vite-node で実行する検証補助。
-7. `preview-tmap.mjs` — .tmap を重ね描きした PNG を出力。
+7. `preview-tmap.mjs` — .gimoza を重ね描きした PNG を出力。
 
 再現コマンド:
 

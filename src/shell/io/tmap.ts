@@ -1,4 +1,10 @@
-// U15 — the `.tmap` ZIP container read/write ADAPTERS (技術方針 2.12 / FR-103).
+// 命名について: 本ファイル名およびこの層の識別子にある「Tmap」は、アプリの正式名称
+// である「gimoza」と同じものを指す。`tmap` は開発初期のコードネームで、保存ファイル
+// の拡張子は `.gimoza` に統一済みだが、内部識別子 (`readTmap` / `buildTmap` /
+// `TmapContents` / このファイル名など) はコードネーム時代の名残としてそのまま残して
+// ある。つまり「Tmap = gimoza」であり、両者に意味の違いはない。
+//
+// U15 — the `.gimoza` ZIP container read/write ADAPTERS (技術方針 2.12 / FR-103).
 //
 // PURE & Electron-free (受け入れ基準7): `buildTmap` assembles a ZIP byte array
 // from a manifest value + binary assets; `readTmap` parses ZIP bytes back into
@@ -32,7 +38,7 @@ export interface TmapContents {
   readonly attachments: readonly NamedAsset[];
 }
 
-/** What {@link readTmap} extracts from a `.tmap` byte stream. */
+/** What {@link readTmap} extracts from a `.gimoza` byte stream. */
 export interface ExtractedTmap {
   /** The raw, NOT-yet-validated manifest (parsed JSON). */
   readonly manifest: unknown;
@@ -62,7 +68,7 @@ export interface ReadTmapCaps {
   readonly maxTotalBytes?: number;
 }
 
-/** Why reading a `.tmap` failed (corrupt zip / missing required entry / bad JSON). */
+/** Why reading a `.gimoza` failed (corrupt zip / missing required entry / bad JSON). */
 export type ReadTmapResult =
   | { readonly ok: true; readonly contents: ExtractedTmap }
   | { readonly ok: false; readonly reason: 'corrupt'; readonly message: string }
@@ -74,7 +80,7 @@ export type ReadTmapResult =
     };
 
 /**
- * Assemble a `.tmap` ZIP byte array from the manifest + assets (FR-103). The
+ * Assemble a `.gimoza` ZIP byte array from the manifest + assets (FR-103). The
  * manifest JSON entry is written first (its `version`先頭 is preserved by the
  * serializer). Attachments are placed under the shared attachments directory.
  * Pure: same input → same bytes (fflate `zipSync` with default settings).
@@ -91,7 +97,7 @@ export function buildTmap(contents: TmapContents): Uint8Array {
 }
 
 /**
- * Extract the manifest + assets from `.tmap` bytes (FR-103). Never throws for
+ * Extract the manifest + assets from `.gimoza` bytes (FR-103). Never throws for
  * the expected failure paths: a corrupt ZIP, a missing required entry, or
  * malformed manifest JSON all return a discriminated `ok:false` result so the
  * caller can map them to a 拒否理由 (受け入れ基準5). The manifest is returned as

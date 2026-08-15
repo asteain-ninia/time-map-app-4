@@ -4,7 +4,7 @@
 // string of its own. A round-trip test changes ONE side and proves it breaks
 // (受け入れ基準1).
 //
-// Layout inside a `.tmap` ZIP container:
+// Layout inside a `.gimoza` ZIP container:
 //   manifest.json            — the manifest JSON (FR-103/104), version先頭
 //   assets/basemap.img       — the base-map image bytes (FR-103)
 //   assets/attachments/<name>— each attached document image (FR-103)

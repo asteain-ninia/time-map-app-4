@@ -203,7 +203,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // The base-map image and attachment bytes live ONLY on the IPC `LoadResponse`
   // (they are NOT part of `DomainProject`, which carries just a `baseMap.source`
   // reference). Previously `buildSaveRequest` shipped `new Uint8Array()` / `[]` for
-  // them, so the FIRST save overwrote the on-disk `.tmap` with a zero-byte base-map
+  // them, so the FIRST save overwrote the on-disk `.gimoza` with a zero-byte base-map
   // asset — permanently losing the loaded map image on round-trip. The renderer is
   // the only place that holds these bytes after a load, so we retain them here and
   // re-ship them on save until the live asset units rebind the base map. A new /
@@ -235,7 +235,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // the load with the domain untouched. Writing `loadedAssetsRef` (the SAVE bytes) and
   // pushing the DISPLAY bytes at the capture seam therefore left, on a repair 中止:
   //   - the domain on the PREVIOUS project, but the retained assets on the NEW file, so
-  //     the next 保存 / 自動保存 wrote 旧 manifest + 新 asset into one `.tmap` — a
+  //     the next 保存 / 自動保存 wrote 旧 manifest + 新 asset into one `.gimoza` — a
   //     corrupt, self-inconsistent file (the manifest's base-map/attachment references
   //     no longer describe the embedded bytes);
   //   - the displayed base map flipped to the file the user just refused to open.
@@ -258,7 +258,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // promotes the assets — reflectProject, i.e. after the domain is confirmed. So a load
   // aborted at the FR-106 repair dialog (or one that throws at reflect) never moves the
   // save destination onto the file the user refused to open (the HIGH data-loss path:
-  // A を開く→不整合 B→修復中止→Ctrl+S が B.tmap を A の内容で上書き破壊). `null` = nothing
+  // A を開く→不整合 B→修復中止→Ctrl+S が B.gimoza を A の内容で上書き破壊). `null` = nothing
   // staged (a no-op to promote / discard), mirroring `pendingAssetsRef`.
   const pendingLoadTokenRef = useRef<string | null>(null);
 
@@ -426,7 +426,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     // UC1 fix (the two-stage half): the seam only STAGES them. Success HERE means "the
     // file was read", NOT "this project is now live" — the FR-106 repair dialog, its
     // retry and the reject branches all still lie ahead and any of them can end the load
-    // with the domain unchanged. Committing the bytes at this point produced a `.tmap`
+    // with the domain unchanged. Committing the bytes at this point produced a `.gimoza`
     // whose manifest (old project) and assets (new file) came from DIFFERENT projects on
     // the next save. `promotePendingAssets` (called from reflectProject, 確定後) is the
     // only writer of the committed assets + display; a failed / cancelled / repair-aborted

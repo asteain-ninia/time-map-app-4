@@ -1,13 +1,13 @@
 // S7 — pre-decode guard for UNTRUSTED project base-map image bytes (Codex review #3).
 //
-// The .tmap ZIP is external input: its base-map entry can be a decompression /
+// The .gimoza ZIP is external input: its base-map entry can be a decompression /
 // decode bomb — a few KB of compressed data declaring a gigantic pixel surface that
 // exhausts renderer memory/CPU the moment `createImageBitmap` inflates it. The shell
 // IO layer is deliberately NOT touched (the renderer boundary defence is sufficient
 // and keeps one guard, not two); this module is that defence, run by the render host
 // BEFORE any decode:
 //   1. byte-size cap ({@link MAX_BASE_MAP_IMAGE_BYTES}),
-//   2. format ALLOW-LIST via header signature (PNG / JPEG only — the formats a .tmap
+//   2. format ALLOW-LIST via header signature (PNG / JPEG only — the formats a .gimoza
 //      user base map is stored as; anything else, incl. SVG, resolves to the preset,
 //      so no script-bearing format ever reaches a decoder),
 //   3. lightweight header parse of the declared dimensions (PNG IHDR / JPEG SOF —

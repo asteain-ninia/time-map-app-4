@@ -66,7 +66,7 @@ export const MIN_IMAGE_DIMENSION_PX = 2;
  * byte cap enforced at BOTH boundaries a base-map image crosses: the main process
  * stats a picked file and refuses to read past this before the bytes ever cross IPC
  * (FR-04 / ipc-handlers.handleOpenImage), and the renderer's untrusted-byte guard
- * (base-map-image-guard.checkBaseMapImageBytes, which re-exports this) caps a `.tmap`
+ * (base-map-image-guard.checkBaseMapImageBytes, which re-exports this) caps a `.gimoza`
  * base-map entry before decode. Kept in the domain layer so the shell (main) can
  * import it WITHOUT depending on the renderer/ui layer.
  */

@@ -1,7 +1,7 @@
-// borders.json (derle-map-visualizer 抽出結果) → time-map-app-4 の .tmap を生成する。
+// borders.json (derle-map-visualizer 抽出結果) → time-map-app-4 の .gimoza を生成する。
 //
-//   node derle-import/tools/build-tmap.mjs                        → derle-world-full.tmap
-//   node derle-import/tools/build-tmap.mjs --target-vertices=16500 → derle-world.tmap (間引き版)
+//   node derle-import/tools/build-tmap.mjs                        → derle-world-full.gimoza
+//   node derle-import/tools/build-tmap.mjs --target-vertices=16500 → derle-world.gimoza (間引き版)
 //
 // 変換内容:
 //   1. SVG 座標 → 経緯度 (世界矩形 = 海色レクト、world-rect.json 参照)
@@ -11,7 +11,7 @@
 //      (穴リングは内包ポリゴンと同じ頂点 ID を共有 → 末端排他が厳密に成立)
 //   4. _国名 レイヤーのラベル位置 → 点包含で国名を割り当て
 //   5. 各ポリゴン = 末端地物 1 つ = 単一錨 (year 0 〜 open-end) の履歴
-//   6. manifest + basemap.png を fflate で ZIP 化 (.tmap)
+//   6. manifest + basemap.png を fflate で ZIP 化 (.gimoza)
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -47,7 +47,7 @@ const keepNearPairs = (args.get('keep-near') ?? '')
   .split(',')
   .filter((s) => s.includes(':'))
   .map((s) => s.split(':').map(Number));
-const outName = args.get('out') ?? (targetVertices ? 'derle-world.tmap' : 'derle-world-full.tmap');
+const outName = args.get('out') ?? (targetVertices ? 'derle-world.gimoza' : 'derle-world-full.gimoza');
 
 // --- 入力 -------------------------------------------------------------------
 // 面データ: 州境界込み抽出 (borders-states.json) があればそれを使い、国レベル抽出
@@ -1313,7 +1313,7 @@ const manifest = {
   },
 };
 
-// --- 7. ZIP (.tmap) ----------------------------------------------------------
+// --- 7. ZIP (.gimoza) ----------------------------------------------------------
 const tmap = zipSync({
   'manifest.json': strToU8(JSON.stringify(manifest)),
   'assets/basemap.img': new Uint8Array(baseMapAsset),

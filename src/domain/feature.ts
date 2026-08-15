@@ -146,7 +146,7 @@ export interface OptionalCommonFields {
  *   - WRITE: every domain construction/update path funnels through
  *     {@link normalizeDetailDocument}, which REJECTS an over-long document at
  *     birth (RangeError) — so an in-memory feature the schema would refuse to
- *     load back is unrepresentable, and「保存できたが二度と開けない .tmap」
+ *     load back is unrepresentable, and「保存できたが二度と開けない .gimoza」
  *     (manifest-level reject on next open = 全損) cannot be produced.
  *   - READ: `persistence/schema.ts` enforces the SAME constant as
  *     `z.string().max(...)` at the load boundary (and re-exports it), so the two
