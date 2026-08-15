@@ -6,7 +6,8 @@
 // guard → apply) is unit-testable without Electron / a native dialog / the renderer
 // (教訓 5.41 純粋な決定はテスト可能な関数へ).
 //
-// It mirrors the EXTERNAL derle-import/tools/swap-basemap.js contract used off-app:
+// It mirrors the off-app base-map swap contract (formerly derle-import/tools/swap-basemap.js;
+// the import pipeline now lives in ../derle-map-visualizer — see derle-import/README.md):
 // keep the project's base-map META (座標契約 v2 — 投影/範囲を維持) and swap only the
 // IMAGE bytes (ユーザー方針: 一旦出界図の様式で決め打ち). The bytes are validated with
 // the SAME untrusted-image guard the renderer host runs before decode
