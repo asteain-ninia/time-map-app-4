@@ -93,8 +93,10 @@ const persistenceBoundary = {
 
 export default tseslint.config(
   {
-    // derle-import: 実データ再構築の一回性ツール+データ置き場(別セッション産・アプリコード外)。
-    ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', 'derle-import/**'],
+    // derle-import: デーレ界の実データ置き場と、その .gimoza を調べる補助(アプリコード外)。
+    // `_*`: 調査・検証のために一時的に置く使い捨てスクリプト(.gitignore 済み)。
+    //   これを除外していないと、調査のたびに lint が数百件赤くなって本物の指摘が埋もれる。
+    ignores: ['out/**', 'dist/**', 'build/**', 'node_modules/**', 'derle-import/**', '_*'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
