@@ -7,8 +7,10 @@
 このディレクトリに残っているのは**データと、出来上がった `.gimoza` を調べる補助**だけ。
 
 **元データ**: `イラレ出界図BUR080809.svg`（ユーザーが 2026-08-09 に .ai から書き出したもの。
-`derle-map-visualizer` 同梱の 1/13 版ではない）。国名ラベルは 89 → 126 件に増えており、
-不明国の括弧付きラベルなども入っている。
+それ以前の 1/13 版に比べ国名ラベルが 89 → 126 件に増えており、不明国の括弧付きラベルなども入っている）。
+**`derle-map-visualizer` が同梱しているものと同一**（2026-08-16 に visualizer 側も同版へ差し替えた。
+改行コードだけが違い、揃えると内容が完全一致することを確認済み）。どちらを読み込んでも結果は同じなので、
+取り違えを気にする必要はない。
 
 ## ファイル
 
@@ -49,10 +51,14 @@ node derle-import/tools/rebuild.mjs --target-vertices=16500 # 間引き版
 
 ## 検証
 
+**作り直した新しいファイル（`-2026-08-16` 付き）を検査すること。**
+下のコマンドの `-2026-08-16` を外すと 2026-08-09 版のほうを検査してしまい、
+新版を確かめたつもりで旧版に「問題なし」と出る。
+
 整合性チェック（両 `.gimoza` とも `ok=true` / 不整合 0 であること）:
 
 ```
-npx vite-node derle-import/tools/diagnose-consistency.ts derle-world-full.gimoza
+npx vite-node derle-import/tools/diagnose-consistency.ts derle-world-full-2026-08-16.gimoza
 ```
 
 実データベンチ:
@@ -64,8 +70,11 @@ DERLE_TMAP_DIR=e:/WORKSPACE/time-map-app-4/derle-import npx vitest run src/ui/ma
 階層が正しく組めているかは次で確認する（フル版と間引き版で集約 3・子の数が一致すること）:
 
 ```
-node derle-import/tools/inspect-hierarchy.mjs derle-import/derle-world-full.gimoza derle-import/derle-world.gimoza
+node derle-import/tools/inspect-hierarchy.mjs derle-import/derle-world-full-2026-08-16.gimoza derle-import/derle-world-2026-08-16.gimoza
 ```
+
+このツールは「履歴の数」と「地物の数」を別々に出す。集約の子は親のスナップショットにも入るので、
+id で畳んだ地物の数のほうが多くなる。**版を比べるときは、どちらの数を見ているかを揃えること。**
 
 `tools/` に残してあるのは、`rebuild.mjs` 以外はいずれも**出来上がった `.gimoza` を調べる**ためのもの:
 
