@@ -17,6 +17,7 @@
 | `イラレ出界図BUR080809.svg` | 元データ | する |
 | `derle-world-full.gimoza` | フル解像度。**正準データ** | しない |
 | `derle-world.gimoza` | 間引き版。ベンチ・軽量編集用 | しない |
+| `derle-world-full-2026-08-16.gimoza` / `derle-world-2026-08-16.gimoza` | 新しいパイプラインで作り直したもの。**上の 2 つは上書きしていない**（アプリで編集している可能性があるため）。中身を確かめて問題なければ差し替える | しない |
 | `world-rect.json` | SVG 内の世界矩形（座標変換の値。現在は visualizer が SVG から直読するため参照用） | する |
 | `borders.json` / `borders-states.json` | 旧パイプラインの中間データ（2026-08-09 の抽出結果。再生成には不要） | しない |
 | `basemap-vector.json` / `basemap.png` | 背景地図の資産（`.gimoza` に同梱されるので単体では不要） | しない |
