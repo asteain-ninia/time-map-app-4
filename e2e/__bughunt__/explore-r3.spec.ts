@@ -326,6 +326,12 @@ test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', 
       // --- Settings zoom-clamp round-trip (FR-10 / FR-109) ---------------------
       // Shrink [min,max] to a narrow window, save, then wheel-zoom hard and assert
       // the live data-zoom stays inside the clamp and finite.
+      //
+      // **編集モードへ移ってから開く**。ズーム上下限はプロジェクト設定（＝保存ファイルの
+      // 中身）なので、「読むだけ」では入力ごと無効になる（K-6 / 所有者の裁定「読むだけ＝
+      // 直せない」）。View のまま `fill()` すると、編集できるようになるのを待って
+      // タイムアウトする。設定を閉じたあとは直後の `goView(page)` が表示専用へ戻す。
+      await leaveViewMode(page);
       if (await clickMenuCommand(page, 'tools', 'tools.settings')) {
         await expect(page.getByTestId('settings-dialog')).toBeVisible();
         await page.getByTestId('settings-tab-project').click().catch(() => undefined);
