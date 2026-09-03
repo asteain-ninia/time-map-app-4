@@ -14,6 +14,202 @@
   gap: 12px;
 }
 
+/* --- 見出しと編集時刻バッジ（上端に固定）と保存列（下端に固定） ------------
+ *
+ * 設計書 §C.6 / 実装計画 増分 2 の中身 1d。**保存ボタンが初期表示の外にあって
+ * 誰も見なかった**（実測で offsetTop 755.8px に対し表示高 362px、BH1-03）。行き先が
+ * 読める保存ボタンを作っても、見えていなければ意味がない。
+ *
+ * スクロールする器はサイドバー側の `.sidebar__panel`（overflow: auto）なので、
+ * sticky の基準もそこになる。パネルの中身が短いときはそもそもスクロールしないので
+ * 普通の行として並ぶ。 */
+.property-panel__head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 0 6px;
+  background: var(--c-surface);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.property-panel__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.property-panel__name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.property-panel__kind {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+/* 編集時刻バッジ（常時・固定枠）。行き先が変わっても **高さが変わらない**ことが
+ * 大事で、中身で寸法が動くと下のフォームが跳ねる（K-3 と同じ型の事故）。 */
+.property-panel__badge {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.property-panel__badge-time {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--c-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.property-panel__badge-sep {
+  flex: 0 0 auto;
+}
+
+.property-panel__badge-note {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 行き先ごとの色分け。押す前に「これは新しく作る側だ」と分かるようにする。 */
+.property-panel__badge[data-plan='newAnchor'] .property-panel__badge-time,
+.property-panel__badge[data-plan='newAnchor'] .property-panel__badge-note {
+  color: var(--c-accent);
+}
+
+.property-panel__badge[data-plan='featureAbsent'],
+.property-panel__badge[data-plan='notYearAligned'] {
+  color: var(--c-danger, #c0392b);
+}
+
+.property-panel__save-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0 2px;
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-border);
+}
+
+.property-panel__save-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.property-panel__save-row .basic-info__save {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+}
+
+/* 「この年に錨を作る」（Ctrl+K）。保存とは別の操作なので、目立ち方を変える。 */
+.property-panel__create-anchor {
+  align-self: stretch;
+  font: inherit;
+  padding: 5px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px dashed var(--c-accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.property-panel__round-year {
+  flex: 0 0 auto;
+  font: inherit;
+  padding: 5px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+/* 押せない理由は **脇に常時** 出す（設計書 §D.3 / §H.5）。 */
+.property-panel__save-reason {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--c-danger, #c0392b);
+}
+
+/* N-04: 打ちかけの内容を捨てる前の確認。 */
+.property-panel__draft-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+  background: var(--c-accent-weak);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+}
+
+.property-panel__draft-confirm p {
+  margin: 0;
+}
+
+.property-panel__draft-confirm-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.property-panel__draft-confirm-buttons button {
+  font: inherit;
+  padding: 4px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+/* まとめ役の子（実データで 86 件）の断り書き。 */
+.property-panel__inherited {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--c-text-muted);
+  background: var(--c-panel);
+  border-radius: var(--radius);
+}
+
+.property-panel__inherited button {
+  align-self: flex-start;
+  font: inherit;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
 .property-panel__guidance {
   margin: 0;
   color: var(--c-text-muted);
@@ -141,17 +337,52 @@
   gap: 8px;
 }
 
+/* 錨表（実装計画 増分 2 の中身 5 / 設計書 §C.6 の規模規則）。
+ *
+ * **行の高さを 28px に固定する**のは見た目の話ではなく、仮想スクロールの前提である。
+ * 高さが可変だと「何行目が見えているか」を計算できない。値は AnchorList.tsx の
+ * ANCHOR_ROW_HEIGHT と **同じ数** でなければならず、その一致は契約テストが守る。 */
 .anchor-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: block;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .anchor-list__item {
   list-style: none;
+  height: 28px;
+}
+
+.anchor-list__spacer {
+  list-style: none;
+}
+
+.anchor-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.anchor-list__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+.anchor-list__expand {
+  margin-left: auto;
+  font: inherit;
+  padding: 2px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
 }
 
 /* The actual selectable row is the button (.anchor-list__row); the selected
@@ -159,9 +390,12 @@
  * aria-pressed). */
 .anchor-list__row {
   width: 100%;
+  height: 28px;
+  box-sizing: border-box;
   text-align: left;
   font: inherit;
-  padding: 4px 8px;
+  font-size: 11px;
+  padding: 2px 6px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border);
@@ -170,6 +404,24 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow: hidden;
+}
+
+/* 差分の文（「名前が変わった: A → B」）。行を押し広げないよう min-width: 0 を忘れない
+ * （教訓 5.50）。 */
+.anchor-list__diff {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--c-text-muted);
+}
+
+.anchor-list__end {
+  flex: 0 0 auto;
+  color: var(--c-text-muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .anchor-list__row:hover {

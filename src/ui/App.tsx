@@ -138,7 +138,6 @@ import { COMMAND_ID } from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
 import { runUnshare } from './live-unshare';
-import { createDetailDocumentDispatch } from './live-detail-document';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
 import { buildCommittedFeatures, drawnFeatureFills } from './map/committed-features';
@@ -156,7 +155,7 @@ import { registerE2eHarnessAction } from './e2e/harness';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
 import { StatusMessageStore } from './shell/status-message';
-import { commandLabelJa, RESULT_STRINGS } from './shell/command-result';
+import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
 import { DeleteConfirmDialog } from './property/DeleteConfirmDialog';
 import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
@@ -180,6 +179,11 @@ import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
+import { findHistoryContaining } from '../domain/editing/apply-proposal';
+import { compare as compareTimePoints } from '../domain/time/normalized';
+import { toYearPoint } from '../domain/time/time-point';
+import { EDIT_PLAN_STRINGS, isYearAligned } from './property/index';
+import { formatYear } from './timeline/time-display';
 import {
   createLiveContextMenuPort,
   promoteHitToSelection,
@@ -2548,6 +2552,30 @@ export function App(): JSX.Element {
     [store],
   );
 
+  /**
+   * 「この年に錨を作る」を **鍵盤・メニュー・右クリック・素性欄の 4 経路から同じ 1 本へ
+   * 流す**入口（増分 2 の中身 3。教訓 5.13 / 5.30）。可否の判定はコマンドの
+   * `canRun` に 1 つだけあるので、ここに 2 つ目の判定を書かない。
+   *
+   * `dispatch` が偽を返したときは **黙って終わらせない**。右クリックの項目は
+   * 純粋な域の compose が錨の系列を知らないため「押せる形」で出ることがあり、
+   * そのとき「押したのに何も起きない」になる。理由を状態行へ出す（設計書 §H.5）。
+   */
+  const requestCreateAnchorHere = useCallback(
+    (featureId: FeatureId): void => {
+      const live = store.getState();
+      live.setActiveFeature(featureId);
+      if (registry.dispatch(COMMAND_ID.EditCreateAnchorHere)) return;
+      const at = live.currentTime;
+      statusMessageStore.failure(
+        isYearAligned(at)
+          ? EDIT_PLAN_STRINGS.createAnchorHereDisabledReason(formatYear(at.year))
+          : EDIT_PLAN_STRINGS.reasonNotYearAligned(formatTimePoint(at), formatYear(at.year)),
+      );
+    },
+    [store, registry, statusMessageStore],
+  );
+
   // fr96 onSelectItem — delegate to the launch seam (context-menu-launch.ts): the
   // PURE dispatch drift guard, the FLOW→TOOL_ID mapping, AND the Codex F1b
   // EditProperties live-existence guard all live THERE (Vitest-pinned); this
@@ -2572,6 +2600,15 @@ export function App(): JSX.Element {
           store.getState().setActiveFeature(featureId);
           focusPropertyTab();
         },
+        // 増分 2 の中身 3「この年に錨を作る」(FR-57 / 設計書 §D.3): 右クリックからも
+        // **既存のコマンド 1 本**を投げるだけにする。まず対象を選び (zustand の set は同期なので、
+        // 次の行の dispatch は必ずこの選択を見る)、そのうえで COMMAND_ID.EditCreateAnchorHere を
+        // 投げる。「その年に錨が無いときだけ効く」「年ちょうどのときだけ効く」の判定は
+        // そのコマンドの canRun 1 か所にあり、右クリック用の 2 つ目の判定は書かない
+        // (教訓 5.13 / 5.30)。既に錨がある年なら canRun が偽なので何も起きない
+        // (幽霊の取り消しを作らない、教訓 5.24)。読むだけのときは編集項目そのものが
+        // 組み立てられない (compose の canEdit 一括無効化) ので、この経路には来ない。
+        createAnchorHere: requestCreateAnchorHere,
         armEditTool,
         unshare: (vertexIds, ownerFeatureId) => runUnshareIntent(vertexIds, ownerFeatureId),
         // FR-113 個別非表示: force-hide the right-clicked feature through the session
@@ -3169,19 +3206,46 @@ export function App(): JSX.Element {
   // fixed-order U13 pipeline add/knife/move use (createLiveEditBinding → applyEditProposal),
   // and records ONE U12 undo unit. A Rejected result throws so the form surfaces 保存に失敗
   // rather than a silent no-op (HB-3 honest-failure discipline).
-  const propertyEditBinding = useMemo(
-    () =>
-      createLiveEditBinding({
-        getRoot: () => store.getState().domain,
-        // U4 study fix — id minters for the U06 resolution write-back (shared series).
-        // A pure attribute edit has unchanged geometry so a conflict is unlikely, but
-        // the binding contract (DomainRootAccess) should never hand U13 a pipeline
-        // whose resolution arm is structurally dead.
-        nextVertexId: () => asVertexId(sharedMint('v')),
-        nextRingId: () => asRingId(sharedMint('r')),
-      }),
-    [store, sharedMint],
+  // 素性の保存は行き先で **意味がまるで違う**（増分 2 / 設計書 §D.3）ので、状態行に出す
+  // 操作名も分ける。束ねは label ごとに 1 つずつ作る（label は束ねの生成時に固定される）。
+  const propertyEditBindings = useMemo(() => {
+    const access = {
+      getRoot: () => store.getState().domain,
+      // U4 study fix — id minters for the U06 resolution write-back (shared series).
+      // A pure attribute edit has unchanged geometry so a conflict is unlikely, but
+      // the binding contract (DomainRootAccess) should never hand U13 a pipeline
+      // whose resolution arm is structurally dead.
+      nextVertexId: () => asVertexId(sharedMint('v')),
+      nextRingId: () => asRingId(sharedMint('r')),
+    };
+    return {
+      overwrite: createLiveEditBinding(access, UI_COMMAND_LABEL.EditOverwrite),
+      newAnchor: createLiveEditBinding(access, UI_COMMAND_LABEL.EditNewAnchor),
+      createAnchor: createLiveEditBinding(access, UI_COMMAND_LABEL.CreateAnchor),
+    };
+  }, [store, sharedMint]);
+  /**
+   * その時刻ちょうどに錨があるか（＝この保存は上書きか、新設か）。**編集が実際に
+   * 書き込まれる系列**をドメインと同じ `findHistoryContaining` で引いて判定する
+   * （まとめ役の子は親の系列に書かれる、設計書 §C.6 / 教訓 5.30 単一真実源）。
+   */
+  const anchorExistsAt = useCallback(
+    (featureId: FeatureId, at: TimePoint): boolean => {
+      const root = store.getState().domain;
+      const found = findHistoryContaining(root, featureId, at, calendar);
+      if (found === undefined) return false;
+      return found.history.series.entries.some(
+        (e) => compareTimePoints(e.start, at, calendar) === 0,
+      );
+    },
+    [store, calendar],
   );
+
+  /**
+   * 素性の保存（増分 2）。**編集時刻は現在時刻**で、パネルが年へ丸めて渡してくる
+   * （設計書 §D.3 / 裁定 §N-2 の (A)）。保存の対象は名前・種別ラベル・見た目・詳細文書の
+   * 4 つ（§C.6）で、1 回の押下＝1 つの取り消し単位に収まる。
+   */
   const propertyEditDispatch = useMemo<EditDispatch>(
     () => ({
       dispatchEdit: (intent) => {
@@ -3192,26 +3256,34 @@ export function App(): JSX.Element {
           throw new Error('編集対象が現在の時刻に存在しません。');
         }
         const v = intent.attributes;
-        const nextFeature = withColor(
-          withAttributes(feature, createBasicAttributes(v.name, v.startYear, v.endYear)),
-          createColorInfo(
-            v.autoColorEnabled,
-            v.fillColor,
-            v.selectedColor,
-            v.borderColor,
-            v.paletteTheme,
-            v.fillOpacity,
-            v.selectedOpacity,
+        const nextFeature = withDetailDocument(
+          withKindLabel(
+            withColor(
+              withAttributes(feature, createBasicAttributes(v.name, v.startYear, v.endYear)),
+              createColorInfo(
+                v.autoColorEnabled,
+                v.fillColor,
+                v.selectedColor,
+                v.borderColor,
+                v.paletteTheme,
+                v.fillOpacity,
+                v.selectedOpacity,
+              ),
+            ),
+            // 空文字 = 付いていない（ドメインが absent へ正規化する唯一の空の形）。
+            v.kindLabel === '' ? undefined : v.kindLabel,
           ),
+          v.detailDocument,
         );
         // Attribute / style edit: geometry is unchanged, so no vertex body moves.
         const snapshot: FeatureSnapshot = { feature: nextFeature, vertices: [] };
         const proposal = createEditProposal(intent.featureId, intent.editTime, snapshot);
-        const result = propertyEditBinding.startProcess(proposal);
+        const binding = anchorExistsAt(intent.featureId, intent.editTime)
+          ? propertyEditBindings.overwrite
+          : propertyEditBindings.newAnchor;
+        const result = binding.startProcess(proposal);
         if (result.status === PROCESS_STATUS.Committed) {
-          // fr100: a property edit (incl. autoColorEnabled トグル / パレット変更)
-          // commits at the EDIT-TARGET anchor's start — which can differ from the
-          // view time — so the recolor anchors at intent.editTime (コマンドの時刻).
+          // fr100: the recolor anchors at intent.editTime (コマンドの時刻).
           recordCommit(result, { featureId: intent.featureId }, intent.editTime);
           return;
         }
@@ -3223,27 +3295,31 @@ export function App(): JSX.Element {
         throw new Error('属性の編集を適用できませんでした。');
       },
     }),
-    [store, propertyEditBinding, recordCommit],
+    [store, propertyEditBindings, recordCommit, anchorExistsAt],
   );
 
-  // FR-98 後段 — the 詳細文書 edit dispatch (live-detail-document.ts). propertyEdit
-  // Dispatch と同型: withDetailDocument (planDetailDocumentEdit 経由) → complete-state
-  // FeatureSnapshot → createEditProposal(featureId, editTime, …) → the SAME
-  // propertyEditBinding.startProcess attribute edits run → Committed ⇒ recordCommit =
-  // ONE undo unit (教訓 5.11). The WRITE guard (MAX_DETAIL_DOCUMENT_LENGTH) and the
-  // no-op guard live in the ONE plan the sidebar section also consults (教訓 5.29);
-  // a Rejected result throws so the panel surfaces 保存に失敗 honestly (HB-3).
-  const detailDocumentDispatch = useMemo(
-    () =>
-      createDetailDocumentDispatch({
-        getRoot: () => store.getState().domain,
-        startProcess: (proposal) => propertyEditBinding.startProcess(proposal),
-        // fr100: the dispatch names its own commit time (= intent.editTime — the
-        // edit-target anchor's start, which can differ from the view time).
-        recordCommit: (result, preference, anchorTime) =>
-          recordCommit(result, preference, anchorTime),
-      }),
-    [store, propertyEditBinding, recordCommit],
+  /**
+   * 「この年に錨を作る」（Ctrl+K, 実装計画 増分 2 の中身 3 / 設計書 §D.3）。
+   *
+   * **保存ボタンとは別のコマンドである。** 素性欄の保存は `isNoOpEdit` の関門を持ち、
+   * 値が同じなら dispatch しない（教訓 5.24: 幽霊の取り消しを作らない）。だから
+   * 「1500 年から同じ姿が続くことを記録したい」は保存ボタンでは表せず、専用の経路が
+   * 要る（設計書 §O の GPT V6）。中身は「現在時刻の実効スナップショットをそのまま
+   * 新しい錨にする」＝ 値を変えない編集案を `applyPastEdit` へ通すことである。
+   * 取り消しは 1 手（既存の recordCommit がそのまま 1 単位にする）。
+   */
+  const createAnchorHere = useCallback(
+    (featureId: FeatureId, at: TimePoint): void => {
+      const feature = featuresAt(store.getState().domain, at).find((f) => f.id === featureId);
+      if (feature === undefined) return;
+      const snapshot: FeatureSnapshot = { feature, vertices: [] };
+      const proposal = createEditProposal(featureId, at, snapshot);
+      const result = propertyEditBindings.createAnchor.startProcess(proposal);
+      if (result.status === PROCESS_STATUS.Committed) {
+        recordCommit(result, { featureId }, at);
+      }
+    },
+    [store, propertyEditBindings, recordCommit],
   );
 
   // FR-85 — the プロパティタブ「地物を削除」button. The {@link DeleteFeatureButton}
@@ -3257,6 +3333,36 @@ export function App(): JSX.Element {
   // absent target builds no command (no幽霊 entry, 教訓 5.24). Undo restores it.
   // 素性欄のボタンは自分で確認ダイアログを出してから呼ぶので、ここは合流点だけを呼ぶ
   // （3 経路とも同じ `DeleteConfirmDialog` と同じ結果の文言を通る = A8）。
+  // 増分 2 の中身 3 — 「この年に錨を作る」（Ctrl+K）の登録。保存ボタンとは別の
+  // コマンドで、**値を変えていなくても錨を 1 本増やす**（素性欄の `isNoOpEdit` に飲まれない）。
+  // 押せるのは「地物を選んでいて」かつ「現在時刻にまだ錨が無い」ときだけで、既にある年で
+  // 押しても何も増えない（幽霊の取り消しを作らない、教訓 5.24）。年ちょうどでない時刻でも
+  // 押せない — 錨の開始は年だけで記録する（U-14）。読むだけでの防ぐは permissions.ts の
+  // EDITING_COMMANDS が一括で行う（教訓 5.13 — ここに 2 つ目の判定を書かない）。
+  useEffect(() => {
+    registry.register(COMMAND_ID.EditCreateAnchorHere, {
+      run: () => {
+        const live = store.getState();
+        const featureId = live.selection.activeFeature;
+        if (featureId === null) return;
+        const at = live.currentTime;
+        if (!isYearAligned(at)) return;
+        createAnchorHere(featureId, toYearPoint(at));
+      },
+      canRun: () => {
+        const live = store.getState();
+        const featureId = live.selection.activeFeature;
+        if (featureId === null) return false;
+        const at = live.currentTime;
+        if (!isYearAligned(at)) return false;
+        return !anchorExistsAt(featureId, toYearPoint(at));
+      },
+    });
+    return () => {
+      registry.unregister(COMMAND_ID.EditCreateAnchorHere);
+    };
+  }, [registry, store, createAnchorHere, anchorExistsAt]);
+
   const propertyDeleteFeature = commitFeatureDelete;
 
   // HB3-12 — 地物の存続期間編集. The U09 ops (changeStart / setEnd / deleteAnchor) that
@@ -3330,18 +3436,23 @@ export function App(): JSX.Element {
         // FR-98 後段: the 詳細文書 editor in the sidebar property panel (the floating
         // DetailPanel stays view-only). The preview resolves no assets yet (the same
         // honest NO_ASSET_RESOLVER the detail panels use — 文書内画像アセットは別タスク).
-        detailDocumentDispatch,
         assetResolver: NO_ASSET_RESOLVER,
         onDeleteFeature: propertyDeleteFeature,
+        // 増分 2 の中身 3: 素性欄の「この年に錨を作る」を、メニューと Ctrl+K と
+        // **同じコマンド 1 本**へ繋ぐ（権限の関門も可否の判定もそこで 1 回だけ
+        // 行われる、教訓 5.13 / 5.30）。選ばれている地物に対して動くので、押す前に
+        // その地物を選び直す（素性欄が出している地物と選択は同じはずだが、
+        // 頃合いの差で食い違うのを防ぐ）。
+        onCreateAnchorHere: requestCreateAnchorHere,
         onFocusFeatureCamera: focusCameraOnFeature,
       }),
     [
       store,
+      requestCreateAnchorHere,
       calendar,
       onOpenDetail,
       propertyEditDispatch,
       anchorIntervalDispatch,
-      detailDocumentDispatch,
       propertyDeleteFeature,
       focusCameraOnFeature,
     ],
@@ -4256,7 +4367,13 @@ function createAddBootstrap<S>(getRoot: () => S, mint: SharedIdMint): AddBootstr
 // --- The knife bootstrap (id ports + domain-lookup stubs + the U13 seam) -----
 
 import type { VertexStore } from '../domain/vertex';
-import { withAttributes, withColor, type Feature } from '../domain/feature';
+import {
+  withAttributes,
+  withColor,
+  withDetailDocument,
+  withKindLabel,
+  type Feature,
+} from '../domain/feature';
 import type { FeatureId, RingId, VertexId } from '../domain/ids';
 import type {
   ResolveFeature,

@@ -1,16 +1,28 @@
 // UI layer (U32 / property panel): the sidebar property panel (FR-83 / FR-84 /
-// FR-97 / FR-99前段 / FR-60).
+// FR-97 / FR-99前段 / FR-60 / FR-57).
 //
 // The main panel. It SUBSCRIBES to the session store (U16) for the raw selection
 // (active feature id + the vertex set + its owner lookup) and the edit mode, then
 // runs the SINGLE display judgment (selection-display.decideDisplay) over the raw
-// IDs (教訓 5.10). From the resolved edit-target feature it shows基本情報
-// (BasicInfoForm) and the anchor section (list / 時間バー). Selecting an anchor:
-//   1. records it as the edit target (local UI state, the UI文脈, 教訓 5.4), and
-//   2. syncs the session current time to the anchor's START via the SAME
-//      setCurrentTime action every other time path uses (教訓 5.6 / 5.15) — this
-//      unit creates NO independent time-write path.
-// Saving uses the selected anchor's start time as the edit time (教訓 5.15).
+// IDs (教訓 5.10).
+//
+// **編集時刻は常に現在時刻である**（増分 2 の中核。設計書 §D.3 / 裁定 §N-2 の (A)）。
+// 以前は「選択中の錨の開始時刻」に保存が効いていたので、画面の真ん中に「1200年」と
+// 出ていても保存すると **0 年の錨が黙って書き換わり**、「1500 年から国名が変わった」を
+// 記録する手段が画面に 1 つも無かった（現状分析 C2(a)、FR-57 must と FR-84 should の
+// 衝突）。いまは:
+//   - 保存の行き先（上書きか、新しい錨か、押せないか）を {@link decideEditPlan} が決め、
+//     **押す前に**編集時刻バッジと保存ボタンの文言で見せる。
+//   - 渡す時刻は年へ丸める（錨の開始に月日を焼き付けない、U-14）。
+//   - まとめ役の子は自分の系列を持たないので、**編集が実際に書き込まれる系列**
+//     （親の系列）を `governingSeriesOf` で引いて判定する（設計書 §C.6 / §N-15）。
+//
+// 下書き（名前・種別ラベル・見た目・詳細文書）は **このパネルが 1 つだけ持つ**。保存列は
+// 素性欄の下端に固定してあり（設計書 §C.6 / C7）、1 回の押下で 4 つとも確定する
+// （N-46: 「押さないと保存されない」場所が 2 つあった状態を 1 つに揃えた）。
+//
+// 錨を選ぶと現在時刻がその錨の開始時刻へ同期する（FR-84 前半は維持）。これは今までと
+// 同じ単一経路 setCurrentTime を通る（教訓 5.6 / 5.15）。
 //
 // The panel holds NO map-draw state in React (技術方針 2.3); it reads the store.
 
@@ -18,9 +30,10 @@ import { useCallback, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import { resolveAt, type AnchorEntry } from '../../domain/anchor-series';
+import { resolveAt, type AnchorEntry, type AnchorSeries } from '../../domain/anchor-series';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { PaletteThemeId } from '../../domain/coloring';
+import { featureDisplayName } from '../../domain/feature';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
@@ -29,9 +42,11 @@ import { isPersistedYear } from '../../domain/time/validate';
 import { canEdit } from '../shell/permissions';
 import type { SessionStore } from '../state/store';
 import { TIME_CHANGE_SOURCE } from '../state/store';
+import { formatTimePoint, formatYear } from '../timeline/time-display';
 
 import { DELETE_TARGET_KIND } from '../../domain/deletion';
 
+import { relevantEntriesFor } from './anchor-diff';
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
@@ -41,13 +56,20 @@ import type {
   AnchorIntervalEditIntent,
   AnchorSeriesLookup,
   AssetResolver,
-  DetailDocumentDispatch,
   EditDispatch,
   FeatureLookup,
+  GoverningAnchorSeries,
   PropertyEditValues,
 } from './contracts';
-import { buildEditIntent } from './edit-intent';
-import { PROPERTY_STRINGS } from './messages';
+import { DETAIL_DOCUMENT_PLAN, planDetailDocumentEdit } from './detail-document';
+import { buildEditIntent, isNoOpEdit, propertyValuesEqual, valuesFromFeature } from './edit-intent';
+import {
+  decideEditPlan,
+  EDIT_PLAN_KIND,
+  EDIT_PLAN_STRINGS,
+  type EditPlan,
+} from './edit-plan';
+import { PROPERTY_STRINGS, detailDocumentTooLongMessage, featureKindJaLabel } from './messages';
 import {
   DISPLAY_KIND,
   decideDisplay,
@@ -68,14 +90,6 @@ export interface PropertyPanelProps<S> {
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
   readonly calendar: Calendar;
   /**
-   * FR-98 後段: the 詳細文書 edit dispatch. When wired AND the form is editable the
-   * panel shows the 詳細文書 editor section (閲覧/編集切替 + 明示保存); when omitted
-   * the section stays the sanitized read-only preview (honest-stub discipline — no
-   * dead 保存 control, 教訓 5.7). The dispatch mirrors editDispatch: ONE undo unit
-   * at the edit-target anchor's start time.
-   */
-  readonly detailDocumentDispatch?: DetailDocumentDispatch;
-  /**
    * FR-98 / FR-02: resolves ZIP-internal image references for the 詳細文書 preview.
    * Defaults to "no asset resolves" (safe broken image) when the host has none.
    */
@@ -91,6 +105,15 @@ export interface PropertyPanelProps<S> {
   /** FR-85: delete the feature shown in the panel (the「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   /**
+   * 「この年に錨を作る」（Ctrl+K, 実装計画 増分 2 の中身 3 / 設計書 §D.3）の
+   * 素性欄側の入口。**保存ボタンとは別のコマンド**で、値を変えていなくても錨を
+   * 1 本増やす（保存は `isNoOpEdit` の関門で何もしないので、この経路が無いと
+   * 「1500 年から同じ姿が続く」を記録できない）。ホストはこれを
+   * `COMMAND_ID.EditCreateAnchorHere` の 1 本に繋ぐ（権限の関門も可否の判定も
+   * そこで 1 回だけ行われる、教訓 5.13 / 5.30）。未配線ならボタンを出さない。
+   */
+  readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
+  /**
    * Palette themes for the U33「スタイル」section dropdown (from settings, FR-109).
    * Forwarded to the basic-info form's StyleSection. When omitted the form falls
    * back to the feature's own theme so the section still renders.
@@ -98,25 +121,51 @@ export interface PropertyPanelProps<S> {
   readonly paletteThemes?: readonly PaletteThemeId[];
   /**
    * FR-20 / FR-35: resolve a feature's 面積（km²）by id, computed by the HOST from
-   * the LIVE domain + current time + FR-109 geoParams. Returns the km² area of the
-   * feature's U08 derived shape — a 末端 (leaf) feature's own resolved shape OR an
-   * 集約 (aggregate) feature's child-union (single truth source: the same
-   * `resolveFeatureArea` the map draws through + the geodesy area kernel). Returns
-   * `undefined` for a point / line (no area), for an unresolvable / childless shape,
-   * or when the id is unknown — the panel then shows NO 面積 row (honest-stub, no
-   * fabricated value).
+   * the LIVE domain + current time + FR-109 geoParams. Returns `undefined` for a
+   * point / line, an unresolvable shape, or an unknown id — the panel then shows NO
+   * 面積 row (honest-stub, no fabricated value).
    *
    * WHY A BY-ID PORT (not a resolved shape prop): the panel keys its resolved
-   * feature to the target ID (教訓 5.2) so a structural edit (vertex add/delete)
-   * that keeps the SAME id does not churn the form draft — but that also means the
-   * memoized `feature` object does NOT change reference on such an edit, so an area
-   * derived from it would go STALE. The host owns reactivity (it subscribes to the
-   * committed domain / time / geoParams) and hands a FRESH resolver each render, so
-   * the panel's area re-derives against the LIVE shape after every structural /
-   * settings change (教訓 5.3, no stale cache) while the draft stays keyed to the id.
+   * feature to the target ID (教訓 5.2) so a structural edit that keeps the SAME id
+   * does not churn the form draft — but that also means the memoized `feature`
+   * object does NOT change reference on such an edit, so an area derived from it
+   * would go STALE. The host owns reactivity and hands a FRESH resolver each render.
    */
   readonly resolveAreaKm2?: (featureId: FeatureId) => number | undefined;
 }
+
+/** 打ちかけの下書きが捨てられそうになったときに握っておく文脈（N-04）。 */
+interface DraftOrigin {
+  readonly featureId: FeatureId;
+  readonly anchorId: AnchorId | null;
+  readonly time: TimePoint;
+  readonly featureName: string;
+}
+
+/** 下書きの種（作り直しの判定に使う）。 */
+interface DraftSeed {
+  /** 種を作ったときの編集対象（地物 × 錨 × 年）。 */
+  readonly key: string;
+  /** 種になった値（＝そのときの確定済みの姿）。 */
+  readonly baseline: PropertyEditValues;
+  /** 打ちかけを「元の場所へ戻す」ために覚えておく文脈。 */
+  readonly origin: DraftOrigin | null;
+}
+
+const EMPTY_VALUES: PropertyEditValues = {
+  name: '',
+  kindLabel: '',
+  detailDocument: '',
+  startYear: 0,
+  endYear: 0,
+  autoColorEnabled: false,
+  fillColor: '',
+  fillOpacity: 1,
+  selectedColor: '',
+  selectedOpacity: 1,
+  borderColor: '',
+  paletteTheme: '',
+};
 
 export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const {
@@ -125,10 +174,10 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     anchorLookup,
     editDispatch,
     anchorIntervalDispatch,
-    detailDocumentDispatch,
     calendar,
     onOpenDetail,
     onDeleteFeature,
+    onCreateAnchorHere,
   } = props;
 
   // FR-98: preview asset resolution — default to "nothing resolves" (safe broken
@@ -145,11 +194,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const mode = useStore(store, (s) => s.mode);
   const currentTime = useStore(store, (s) => s.currentTime);
   // The committed domain root (F1). Subscribed here so the panel re-renders on a
-  // committed-domain swap AND so the `series` memo below can key on it — a 存続期間 edit
-  // (changeStart / setEnd / deleteAnchor) swaps the root but leaves the selection + the
-  // current time unchanged, and the production `anchorLookup` has a STABLE identity across
-  // that swap (built once in buildSidebarContent, deps exclude domain). Without a domain
-  // dep the series memo would keep the PRE-edit series (教訓 5.5: 依存状態は変化ごと再導出).
+  // committed-domain swap AND so the memos below can key on it — an edit swaps the
+  // root but leaves the selection + the current time unchanged, and the production
+  // lookups have a STABLE identity across that swap (教訓 5.5).
   const domain = useStore(store, (s) => s.domain);
 
   const ownerLookup = useMemo(
@@ -163,86 +210,55 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   );
 
   const targetFeatureId = targetFeatureIdOf(decision);
-  // Memoize the resolved feature/series by the target feature ID (教訓 5.2 /
-  // 5.12). The display judgment can re-run with a NEW selection object that names
-  // the SAME feature (e.g. a vertex-context target after setCurrentTime →
-  // revalidateForTime rebuilds the vertex Set with a fresh reference, src/domain/
-  // selection/reresolve.ts). Resolving inline would yield a NEW feature object on
-  // every such render, churning BasicInfoForm's baseline and wiping an in-progress
-  // draft / a held decision message. Keying to the ID keeps the reference stable
-  // across selection-object churn that does not actually change the target.
-  //
-  // `currentTime` IS a dep (bughunt 第12波 #1): the production FeatureLookup
-  // (SidebarContent.featureLookupOf) resolves `featuresAt(getRoot(), getTime())`,
-  // a TIME-DEPENDENT snapshot — a多錨 feature shows a DIFFERENT full-state
-  // (name / 開始終了年 / 色) at each anchor. The composition root memoizes the
-  // lookup WITHOUT currentTime, so its reference is stable across a time move;
-  // keying this memo only to `[featureLookup, targetFeatureId]` (both stable when
-  // the same多錨 id stays selected across a time change) froze `feature` at the
-  // selection-time snapshot (e.g. 100年 Alpha) even after the current time — and
-  // therefore the edit-target anchor / editTime — advanced (e.g. 200年 Beta). A
-  // save then wrote the frozen Alpha attributes onto Beta, DESTROYING Beta.
-  // Re-resolving on currentTime keeps `feature` = the CURRENT anchor snapshot, the
-  // single truth source the editTime already points at. A time move WITHIN one
-  // anchor yields an id-equal snapshot; the draft re-seed downstream is keyed to
-  // the edit-target ANCHOR (not this object), so such churn does not wipe a draft.
-  //
-  // `domain` も dep である（A9 / BH1-01 の根治）。**すぐ下の `series` に同じ手当てを
-  // した理由がそのまま `feature` にも当てはまる**のに、こちらだけ抜けていた。本番の
-  // FeatureLookup（`SidebarContent.featureLookupOf`）は `featuresAt(getRoot(), getTime())`
-  // を LIVE に読むが、**オブジェクトの同一性は確定済みドメインの差し替えをまたいで
-  // 変わらない**（`buildSidebarContent` の memo の deps にドメインが入っていない）。
-  // したがって「同じ地物を選んだまま、同じ時刻のまま、ドメインだけが差し替わる」変化
-  // ——取り消し（Ctrl+Z）・やり直し・外部からの読み込み——では、この memo の鍵
-  // `[featureLookup, targetFeatureId, currentTime]` が 3 つとも動かず、`feature` が
-  // 編集前の姿で **凍る**。素性欄は取り消したはずの名前を出し続け、そのまま「保存」を
-  // 押すと取り消した編集が復活した（実データで再現）。`domain` を鍵に混ぜると、
-  // ドメインが動いた瞬間に解決し直される（教訓 5.5「依存する状態は変化時に再検証する」）。
-  //
-  // 下流の `BasicInfoForm` は **値の署名** で下書きの作り直しを決めるので、ドメインが
-  // 動いても中身が同じ再解決（選択のゆらぎ）では打鍵が消えない。
+  // Memoize the resolved feature by the target feature ID (教訓 5.2 / 5.12), with
+  // `currentTime` AND `domain` as deps: the production FeatureLookup resolves
+  // `featuresAt(getRoot(), getTime())` but its object identity is stable across both
+  // a time move and a committed-domain swap, so without these deps the panel froze
+  // at the selection-time snapshot (bughunt 第12波 #1 / A9 = BH1-01).
   const feature = useMemo(
     () => (targetFeatureId !== null ? featureLookup.featureAt(targetFeatureId) : null),
     [featureLookup, targetFeatureId, currentTime, domain],
   );
-  // `domain` IS a dep (F1, Codex 敵対レビュー): the production AnchorSeriesLookup
-  // (SidebarContent.anchorLookupOf) reads `getRoot().histories[…].series` LIVE, but its
-  // object identity is STABLE across a committed-domain swap (built once in
-  // buildSidebarContent, whose memo deps exclude the domain). A 存続期間 edit swaps the
-  // root while the SAME feature stays selected at the SAME time, so keying this memo only
-  // to [anchorLookup, targetFeatureId] froze `series` at the pre-edit value — the anchor
-  // list showed the old start/end, the per-anchor editor never re-seeded (its granularity
-  // key reads the stale entry.start/end), and re-「反映」on an end that had just been
-  // cleared re-dispatched the stale bounded end, silently RE-CLOSING an open interval
-  // (存続期間データ破損). Re-resolving on `domain` keeps `series` = the CURRENT committed
-  // series (教訓 5.5). The downstream AnchorList editor is keyed to the entry's start/end,
-  // so a same-series re-render (no interval change) yields an equal key and preserves any
-  // in-progress editor draft.
-  const series = useMemo(
+
+  // 自分の系列（無いこともある = まとめ役の子）。`domain` が dep なのは上と同じ理由
+  // （存続期間の編集は根を差し替えるが選択も時刻も動かさない、教訓 5.5）。
+  const ownSeries = useMemo<AnchorSeries | null>(
     () => (targetFeatureId !== null ? anchorLookup.anchorSeriesOf(targetFeatureId) : null),
     [anchorLookup, targetFeatureId, domain],
   );
 
-  // FR-20 / FR-35: the DERIVED area (km²) of the target 面 feature — a 末端 (leaf)
-  // feature's own resolved shape OR an 集約 (aggregate) feature's child-union. The
-  // computation is the HOST's (it subscribes to the live domain / time / geoParams
-  // and owns the single truth source `resolveFeatureArea` + geodesy area kernel);
-  // this unit only asks by ID and displays the result (honest-stub — no fabricated
-  // value; the row is absent when the port is unwired or returns `undefined`).
-  //
-  // KEYED TO THE TARGET ID, NOT the resolved `feature` OBJECT: the panel keeps the
-  // `feature` reference stable across selection-object churn that names the same
-  // target (see the memo above), so it does NOT change on a structural edit that
-  // keeps the id — an area derived from it would stay STALE (bughunt review 穴1). We
-  // instead re-run the host resolver, whose reference the host swaps each render for
-  // the live domain / time / FR-109 settings, so the area re-derives after every
-  // structural / settings change (教訓 5.3). A point / line, an unresolvable or
-  // childless shape, or an unknown id yields `undefined` ⇒ BasicInfoForm shows no row.
+  // **編集が実際に書き込まれる系列**（設計書 §C.6 / 裁定 §N-15）。ホストが口を配線して
+  // いなければ自分の系列で代用する（honest stub）。
+  const governing = useMemo<GoverningAnchorSeries | null>(() => {
+    if (targetFeatureId === null) return null;
+    const resolved = anchorLookup.governingSeriesOf?.(targetFeatureId, currentTime) ?? null;
+    if (resolved !== null) return resolved;
+    if (ownSeries === null) return null;
+    return {
+      series: ownSeries,
+      ownerFeatureId: targetFeatureId,
+      ownerName: null,
+      effectiveSize: null,
+    };
+  }, [anchorLookup, targetFeatureId, currentTime, domain, ownSeries]);
+
+  // 錨表に出す系列。自分の系列があればそのまま、借り物（親の系列）ならその子に関わる錨だけ
+  // に絞る（裁定 §N-15 の (A)。親の系列をそのまま出すと 60 人ぶんの他人の変化が混ざる）。
+  const inherited = governing !== null && governing.ownerName !== null;
+  const displaySeries = useMemo<AnchorSeries | null>(() => {
+    if (governing === null) return ownSeries;
+    if (!inherited) return governing.series;
+    if (targetFeatureId === null) return null;
+    // 表示専用の見かけの系列。U09 の不変条件を主張しないので、存続期間の編集には
+    // 渡さない（下の intervalEditable が自分の系列のときだけ真になる）。
+    return { entries: relevantEntriesFor(governing.series.entries, targetFeatureId) };
+  }, [governing, inherited, ownSeries, targetFeatureId]);
+
+  // FR-20 / FR-35: the DERIVED area (km²). KEYED TO THE TARGET ID, NOT the resolved
+  // `feature` OBJECT, so a structural edit that keeps the id still re-derives (教訓 5.3).
   const { resolveAreaKm2 } = props;
   const areaKm2 = useMemo<number | undefined>(() => {
-    if (targetFeatureId === null || resolveAreaKm2 === undefined) {
-      return undefined;
-    }
+    if (targetFeatureId === null || resolveAreaKm2 === undefined) return undefined;
     return resolveAreaKm2(targetFeatureId);
   }, [targetFeatureId, resolveAreaKm2]);
 
@@ -251,36 +267,27 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const [selectedAnchorId, setSelectedAnchorId] = useState<AnchorId | null>(null);
   const [anchorKey, setAnchorKey] = useState<FeatureId | null>(null);
   if (anchorKey !== targetFeatureId) {
-    // Selection changed: reset the transient edit-target (教訓 5.2). Done during
-    // render (no effect) so the first paint already reflects the reset.
     setAnchorKey(targetFeatureId);
     setSelectedAnchorId(null);
   }
 
-  // The edit-target anchor: the user's EXPLICIT pick, else (HB3-14) the anchor in
-  // EFFECT at the current time. The residual「属性編集の保存が必ず失敗」friction was the
-  // save guard rejecting with「錨が選択されていません」when a feature was selected but no
-  // anchor hand-picked — selecting a feature now defaults the edit target to the
-  // current-time anchor so 名前変更→保存 works immediately. An explicit pick still wins,
-  // and a time with NO effective anchor (before the feature exists / in an enclave)
-  // still has no target. `resolveAt` is U(anchor-series)'s OWN §5.8 rule — the single
-  // truth source, never re-implemented here (教訓 5.29).
+  // 錨表で目立たせる錨: 利用者が明示的に選んだもの、無ければ現在時刻で実効なもの。
+  // **編集時刻はこれではなく現在時刻である**（増分 2）。ここは「どの行に印を付けるか」
+  // と「下書きをいつ作り直すか」の目印にだけ使う。
   const effectiveAnchorId = useMemo<AnchorId | null>(() => {
-    if (selectedAnchorId !== null) return selectedAnchorId;
-    if (series === null) return null;
-    const r = resolveAt(series, currentTime, calendar);
+    if (displaySeries === null) return null;
+    if (
+      selectedAnchorId !== null &&
+      displaySeries.entries.some((e) => e.anchor.id === selectedAnchorId)
+    ) {
+      return selectedAnchorId;
+    }
+    const r = resolveAt(displaySeries, currentTime, calendar);
     return r.kind === 'present' ? r.entry.anchor.id : null;
-  }, [selectedAnchorId, series, currentTime, calendar]);
-
-  // The selected entry (for the edit time). The series is the single source.
-  const selectedEntry = useMemo<AnchorEntry | null>(() => {
-    if (series === null || effectiveAnchorId === null) return null;
-    return series.entries.find((e) => e.anchor.id === effectiveAnchorId) ?? null;
-  }, [series, effectiveAnchorId]);
+  }, [selectedAnchorId, displaySeries, currentTime, calendar]);
 
   // 教訓 5.6 / 5.15: anchor selection syncs the session current time to the
-  // anchor START via the SAME setCurrentTime action every time path uses. No
-  // independent time-write path exists in this unit.
+  // anchor START via the SAME setCurrentTime action every time path uses.
   const handleSelectAnchor = useCallback(
     (entry: AnchorEntry) => {
       setSelectedAnchorId(entry.anchor.id);
@@ -289,40 +296,153 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [store],
   );
 
-  // Save: the edit time is the selected anchor's start (教訓 5.15). The no-op
-  // guard lives in BasicInfoForm; here we assemble + dispatch the intent.
-  const handleSave = useCallback(
-    (values: PropertyEditValues): string | null => {
-      if (feature === null || selectedEntry === null) {
-        return `${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`;
-      }
-      // WRITE 側の年境界ガード (bughunt 第12波 #2). 基本情報の開始年/終了年は
-      // type=number ゆえ巨大整数・負巨大・小数を受理し、createBasicAttributes /
-      // edit-intent / edit binding はいずれも年を検証しないので Committed→保存成功
-      // まで通る。しかし READ 側 schema.ts の yearSchema (= 同じ ±MAX_YEAR / 整数
-      // 境界) が load 時に範囲外年で manifest 全体を Invalid 拒否 → .gimoza が二度と
-      // 開けず全損する（書込⊆読込の非対称）。タイムライン年 (settings/validation)
-      // と同一の単一真実源 isPersistedYear で WRITE 前に弾き、既存 honest-failure
-      // 経路（返り値を save-message 表示）に乗せる。第二の年ルールは作らない。
-      if (!isPersistedYear(values.startYear) || !isPersistedYear(values.endYear)) {
-        return `${PROPERTY_STRINGS.saveFailedPrefix}${PROPERTY_STRINGS.yearOutOfRange}`;
-      }
-      try {
-        const intent = buildEditIntent(feature, selectedEntry.start, values);
-        editDispatch.dispatchEdit(intent);
-        return null;
-      } catch (err) {
-        return `${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`;
-      }
-    },
-    [feature, selectedEntry, editDispatch],
+  // --- 保存の行き先（設計書 §D.3 の表） -------------------------------------
+  const editPlan: EditPlan = useMemo(
+    () =>
+      decideEditPlan({
+        currentTime,
+        series: governing?.series ?? null,
+        featurePresent: feature !== null,
+        calendar,
+        snapshotSize: governing?.effectiveSize ?? null,
+      }),
+    [currentTime, governing, feature, calendar],
   );
 
-  // HB3-12: dispatch a存続期間編集 intent (changeStart / setEnd / deleteAnchor) through
-  // the host's command bridge. The dispatch THROWS the domain's own rejection reason on
-  // a refused op (sole-anchor delete, start≥end, …); we surface its message so the row
-  // editor shows why, never a silent no-op (教訓 5.7 / 5.26). Returns null on success
-  // (the swap re-resolves selection + the series re-renders from the live root).
+  // --- 下書き（名前・種別ラベル・見た目・詳細文書の 4 つ、設計書 §C.6） --------
+  const baseline = useMemo<PropertyEditValues>(
+    () => (feature === null ? EMPTY_VALUES : valuesFromFeature(feature)),
+    [feature],
+  );
+  /** いま打っている場所（打ちかけを「元へ戻す」ために覚えておく、N-04）。 */
+  const origin = useMemo<DraftOrigin | null>(() => {
+    if (targetFeatureId === null || feature === null) return null;
+    return {
+      featureId: targetFeatureId,
+      anchorId: effectiveAnchorId,
+      time: currentTime,
+      featureName: featureDisplayName(feature),
+    };
+  }, [targetFeatureId, feature, effectiveAnchorId, currentTime]);
+  // 編集対象の同一性: 地物 × 錨 × **年**。年を鍵に入れるのは、錨が 1 本しか無い地物でも
+  // 「1200 年で打って 1500 年へ移った」ら保存の行き先が変わるからである（N-04）。
+  const editTargetKey = `${String(targetFeatureId ?? '')}|${String(effectiveAnchorId ?? '')}|${String(
+    currentTime.year,
+  )}`;
+
+  // 初回の種も **打っている場所を覚える**。null のままにしていたときは、選んでから
+  // 一度も対象が変わっていない状態で打ちかけを捨てていた（N-04 が効かない）。
+  const [seed, setSeed] = useState<DraftSeed>({ key: editTargetKey, baseline, origin });
+  const [draft, setDraft] = useState<PropertyEditValues>(baseline);
+  // 教訓 5.12: the save-failure / validation message is dedicated state. It is
+  // cleared by ONLY three契機 — a same-operation re-save attempt, an explicit
+  // dismiss, or a妥当値での再保存成功.
+  const [message, setMessage] = useState<string | null>(null);
+  // N-04: 打ちかけを捨てる前の確認。null なら確認は出ていない。
+  const [pendingDiscard, setPendingDiscard] = useState<DraftOrigin | null>(null);
+
+  // 「打ちかけの内容がある」＝ **種にした姿とも、いまの確定済みの姿とも違う**こと。
+  // 片方だけで判定すると、**保存の直後に確認が出てしまう**。保存で錨が 1 本増えると
+  // 編集対象（地物×錨×年）が変わるので、「対象が変わったかつ下書きが種と違う」になるが、
+  // その下書きは **いま保存した内容そのもの** で、失われるものは何も無い。
+  const dirty =
+    !propertyValuesEqual(draft, seed.baseline) && !propertyValuesEqual(draft, baseline);
+
+  if (pendingDiscard === null && seed.key !== editTargetKey) {
+    // 編集対象そのものが変わった（別の地物・別の錨・別の年）。
+    if (dirty && seed.origin !== null) {
+      // **打ちかけがあるなら捨てない**。確認を出して利用者に決めてもらう（N-04）。
+      // 本設計は時刻を動かす頻度が上がるので、黙って消すと被害が比例して増える。
+      setPendingDiscard(seed.origin);
+    } else {
+      setSeed({ key: editTargetKey, baseline, origin });
+      setDraft(baseline);
+    }
+  } else if (pendingDiscard === null && !propertyValuesEqual(seed.baseline, baseline)) {
+    // 同じ編集対象のまま、確定済みの姿だけが変わった（取り消し・やり直し・外部読み込み）。
+    // **こちらは黙って追従する**のが正しい向きである（A9 / BH1-01。ドメインの巻き戻しは
+    // 打ちかけより強い）。追従しないと、取り消したはずの名前が保存で復活した。
+    setSeed({ key: editTargetKey, baseline, origin });
+    setDraft(baseline);
+  }
+
+  const patchDraft = useCallback((next: Partial<PropertyEditValues>) => {
+    setDraft((prev) => ({ ...prev, ...next }));
+  }, []);
+
+  const patchDetailDocument = useCallback(
+    (next: string) => {
+      patchDraft({ detailDocument: next });
+    },
+    [patchDraft],
+  );
+
+  /** 打ちかけを捨てて、いまの編集対象へ作り直す。 */
+  const discardDraft = useCallback(() => {
+    setPendingDiscard(null);
+    setSeed({ key: editTargetKey, baseline, origin });
+    setDraft(baseline);
+    // 判断用のメッセージは残す（教訓 5.12: 3 つの契機に「対象の変更」は入らない）。
+  }, [editTargetKey, baseline, origin]);
+
+  /** 打ちかけを続けるために、打っていた場所へ戻る。 */
+  const returnToDraftOrigin = useCallback(() => {
+    const origin = pendingDiscard;
+    setPendingDiscard(null);
+    if (origin === null) return;
+    const state = store.getState();
+    if (origin.featureId !== targetFeatureId) state.setActiveFeature(origin.featureId);
+    state.setCurrentTime(origin.time, TIME_CHANGE_SOURCE.AnchorSync);
+  }, [pendingDiscard, store, targetFeatureId]);
+
+  // --- 保存 ------------------------------------------------------------------
+  const handleSave = useCallback(() => {
+    if (feature === null) {
+      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`);
+      return;
+    }
+    if (editPlan.editTime === null) {
+      setMessage(
+        `${PROPERTY_STRINGS.saveFailedPrefix}${editPlan.reason ?? 'この年には保存できません。'}`,
+      );
+      return;
+    }
+    // WRITE 側の年境界ガード (bughunt 第12波 #2). 基本情報の開始年/終了年は type=number
+    // ゆえ巨大整数・負巨大・小数を受理し、READ 側 schema.ts の yearSchema が load 時に
+    // 範囲外年で manifest 全体を Invalid 拒否 → .gimoza が二度と開けず全損する。
+    if (!isPersistedYear(draft.startYear) || !isPersistedYear(draft.endYear)) {
+      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${PROPERTY_STRINGS.yearOutOfRange}`);
+      return;
+    }
+    // FR-98 の WRITE ガード（長すぎる詳細文書）。ドメインの RangeError は最後の防波堤で
+    // あって UX ではない。判定は単一真実源 planDetailDocumentEdit を通す（教訓 5.29）。
+    const docPlan = planDetailDocumentEdit(feature, draft.detailDocument);
+    if (docPlan.kind === DETAIL_DOCUMENT_PLAN.TooLong) {
+      setMessage(detailDocumentTooLongMessage(docPlan.length));
+      return;
+    }
+    // 教訓 5.24: no-op guard. 値が同じ保存は dispatch しない（幽霊の取り消しを作らない）。
+    // **Ctrl+K（この年に錨を作る）はこの関門に飲まれない別のコマンド**である（設計書 §D.3）。
+    if (isNoOpEdit(feature, draft)) {
+      setMessage(null);
+      return;
+    }
+    try {
+      editDispatch.dispatchEdit(buildEditIntent(feature, editPlan.editTime, draft));
+      setMessage(null);
+    } catch (err) {
+      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`);
+    }
+  }, [feature, editPlan, draft, editDispatch]);
+
+  /** 年ちょうどでないときに、その年へ丸める（設計書 §D.3 の表の 4 行目）。 */
+  const handleRoundToYear = useCallback(() => {
+    const rounded = editPlan.roundedTime;
+    if (rounded === null) return;
+    store.getState().setCurrentTime(rounded, TIME_CHANGE_SOURCE.NumericJump);
+  }, [editPlan.roundedTime, store]);
+
+  // HB3-12: dispatch a存続期間編集 intent through the host's command bridge.
   const handleEditInterval = useCallback(
     (intent: AnchorIntervalEditIntent): string | null => {
       if (anchorIntervalDispatch === undefined) return null;
@@ -337,39 +457,13 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   );
 
   // 教訓 5.13 / K-6: 権限の判定は `permissions.ts` の canEdit(mode) **1 本** に寄せる。
-  // ここは以前 `mode !== EDIT_MODE.View` を素で書いていて（同じ式が 3 か所に散っていた）、
-  // 「判定点は 1 か所」という自己申告が事実でなかった。式そのものは canEdit と同じなので
-  // 意味は変わらない — 変わるのは「モードの境界を書く場所が 1 つになる」ことである。
   const editingAllowed = canEdit(mode);
+  const editable = decision.editable && editingAllowed;
 
-  // The存続期間 editor is shown only when the host wired the dispatch AND the feature is
-  // editable (whole-form gate, 教訓 5.13) — no dead control in view mode / pre-binding.
+  // 存続期間の編集は **自分の系列** のときだけ（借り物の親の系列を、子の画面から
+  // 書き換えさせない。§C.6 の「まとめ役の子の錨」は読むための表示である）。
   const intervalEditable =
-    anchorIntervalDispatch !== undefined && decision.editable && editingAllowed;
-
-  // FR-98 後段: save the 詳細文書 draft through the host dispatch (ONE undo unit at
-  // the edit-target anchor's start — the SAME editTime discipline handleSave uses,
-  // 教訓 5.15). The dispatch THROWS the pipeline's honest reason on a refused save;
-  // we surface its message (never a silent no-op). The over-length / no-op guards
-  // already ran in the section (planDetailDocumentEdit, 単一真実源).
-  const handleSaveDetail = useCallback(
-    (detailDocument: string, editTime: TimePoint): string | null => {
-      if (feature === null || detailDocumentDispatch === undefined) {
-        return `${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`;
-      }
-      try {
-        detailDocumentDispatch.dispatchDetailDocument({
-          featureId: feature.id,
-          editTime,
-          detailDocument,
-        });
-        return null;
-      } catch (err) {
-        return `${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`;
-      }
-    },
-    [feature, detailDocumentDispatch],
-  );
+    anchorIntervalDispatch !== undefined && editable && !inherited && ownSeries !== null;
 
   // FR-98: an object-reference (feature:) link in the preview promotes the target
   // through the SAME store.setActiveFeature path every selection uses (教訓 5.29).
@@ -380,10 +474,15 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [store],
   );
 
-  // The 詳細文書 editor is editable under the SAME whole-form gate the rest of the
-  // panel uses (教訓 5.13) — and only when the host wired the dispatch (honest stub).
-  const detailDocEditable =
-    detailDocumentDispatch !== undefined && decision.editable && editingAllowed;
+  /** 本物の存続期間（U-23: 正本は錨の並び）を 1 行にする。 */
+  const existenceLabel = useMemo<string | undefined>(() => {
+    if (displaySeries === null || displaySeries.entries.length === 0) return undefined;
+    const first = displaySeries.entries[0];
+    const last = displaySeries.entries[displaySeries.entries.length - 1];
+    if (first === undefined || last === undefined) return undefined;
+    const end = last.end === null ? PROPERTY_STRINGS.existenceOpenEnd : formatTimePoint(last.end);
+    return `${formatTimePoint(first.start)} → ${end}`;
+  }, [displaySeries]);
 
   return (
     <div className="property-panel" data-testid="property-panel">
@@ -391,6 +490,33 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
         <GuidanceMessage decision={decision} />
       ) : (
         <>
+          {/* 見出しと編集時刻バッジ。**スクロールしても消えない**（設計書 §C.6）。 */}
+          <div className="property-panel__head" data-testid="property-panel-head">
+            <div className="property-panel__title">
+              <span className="property-panel__name" data-testid="property-title-name">
+                {featureDisplayName(feature)}
+              </span>
+              <span className="property-panel__kind" data-testid="property-title-kind">
+                {featureKindJaLabel(feature.kind)}
+              </span>
+            </div>
+            <div
+              className="property-panel__badge"
+              data-testid="edit-time-badge"
+              data-plan={editPlan.kind}
+            >
+              <span className="property-panel__badge-time" data-testid="edit-time-badge-time">
+                {editPlan.badgeTime}
+              </span>
+              <span className="property-panel__badge-sep" aria-hidden="true">
+                {EDIT_PLAN_STRINGS.badgeSeparator}
+              </span>
+              <span className="property-panel__badge-note" data-testid="edit-time-badge-note">
+                {editPlan.badgeNote}
+              </span>
+            </div>
+          </div>
+
           <div className="property-panel__actions">
             <button
               type="button"
@@ -403,32 +529,37 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
           <BasicInfoForm
             feature={feature}
-            editable={decision.editable && editingAllowed}
-            editTime={selectedEntry !== null ? selectedEntry.start : null}
-            // The edit-target ANCHOR identity (bughunt 第12波 #1). The form re-seeds
-            // its draft when this changes so a time move that advances the
-            // effective anchor (e.g. 100年 a1 → 200年 a2) re-seeds from the CURRENT
-            // anchor's snapshot rather than carrying the prior anchor's edited
-            // values onto it. `null` when no anchor is effective (before the
-            // feature exists / in an enclave). This EXTENDS the selection boundary
-            // (教訓 5.2) from 地物 to 地物×錨; a same-feature-same-anchor re-resolve
-            // (selection-object churn) keeps the same key and PRESERVES the draft.
-            anchorId={effectiveAnchorId}
+            editable={editable}
+            values={draft}
+            onChange={patchDraft}
             {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
             {...(areaKm2 !== undefined ? { areaKm2 } : {})}
-            onSave={(values) => handleSave(values)}
+            {...(existenceLabel !== undefined ? { existenceLabel } : {})}
           />
 
-          {series !== null && (
+          {/* まとめ役の子（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
+              をやめ、誰が持っているかを書いて、その子に関わる錨だけを出す（§C.6 / §N-15）。 */}
+          {inherited && governing !== null && (
+            <p className="property-panel__inherited" data-testid="inherited-anchor-notice">
+              <span>{PROPERTY_STRINGS.inheritedAnchorNotice(governing.ownerName ?? '')}</span>
+              <button
+                type="button"
+                data-testid="inherited-anchor-owner"
+                onClick={() => store.getState().setActiveFeature(governing.ownerFeatureId)}
+              >
+                {PROPERTY_STRINGS.inheritedAnchorGoToOwner}
+              </button>
+            </p>
+          )}
+
+          {displaySeries !== null && (
             <AnchorSection
-              // Feature-scoped key so React REMOUNTS the section on a target
-              // change, resetting its transient view-mode (List/TimeBar) state —
-              // the reset the section's own doc comment promises via "keyed
-              // remount upstream" (教訓 5.2: a selection change discards transient
-              // UI state). Without it the chosen mode persisted (stale) across
-              // feature switches.
+              // Feature-scoped key so React REMOUNTS the section on a target change,
+              // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
               key={targetFeatureId ?? 'none'}
-              series={series}
+              series={displaySeries}
+              featureIdForDiff={feature.id}
+              currentTime={currentTime}
               calendar={calendar}
               selectedAnchorId={effectiveAnchorId}
               onSelectAnchor={handleSelectAnchor}
@@ -438,38 +569,127 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             />
           )}
 
-          {/* FR-98 後段: the 詳細文書 editor — the SIDEBAR is the edit surface (the
-              floating DetailPanel stays view-only). 閲覧 = the SAME sanitized
-              MarkdownView render path (FR-116); 編集 = raw Markdown textarea + 明示
-              保存. The editTime discipline is the panel's own (selectedEntry.start),
-              so a document save lands on the SAME anchor an attribute save would. */}
           <DetailDocumentSection
+            // 下書きの作り直しは編集対象（地物×錨×年）が変わったときだけ。パネルが
+            // 下書きを持つので、ここは key で閲覧/編集の一時状態だけ捨てる（教訓 5.2）。
+            key={`${String(targetFeatureId ?? 'none')}-${String(effectiveAnchorId ?? '')}`}
             feature={feature}
-            editable={detailDocEditable}
-            editTime={selectedEntry !== null ? selectedEntry.start : null}
-            anchorId={effectiveAnchorId}
+            editable={editable}
+            draft={draft.detailDocument}
+            onDraftChange={patchDetailDocument}
             assetResolver={assetResolver}
             onSelectFeature={handleSelectFromDocument}
-            onSave={handleSaveDetail}
           />
 
-          {/* FR-85: the always-present「地物を削除」button for the shown feature. Routes
-              through the host's onDeleteFeature (= the SAME U31 delete the menu/Delete-key
-              use). Only mounted when the host wired a handler (honest-stub discipline).
-
-              N-03 / K-6: このボタンだけが権限の関門を素通りしていて、**表示専用モードでも
-              押せた**。値を変える入力 10 個は全部 disabled なのに、いちばん取り返しのつかない
-              操作だけが生きている状態だった。他の 3 か所とまったく同じ判定を渡す。 */}
+          {/* FR-85: the always-present「地物を削除」button for the shown feature.
+              N-03 / K-6: このボタンだけが権限の関門を素通りしていて表示専用でも押せた。 */}
           {onDeleteFeature !== undefined && (
             <DeleteFeatureButton
               target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
               onConfirm={onDeleteFeature}
-              editable={decision.editable && editingAllowed}
-              /* A8: 確認に「対象: ◯◯」を出す。名前の出ない確認は「何を消すのか」が
-                 分からないので確認の体をなさない。他の 2 経路も同じ形で出す。 */
+              editable={editable}
               featureName={feature.attributes.name}
             />
           )}
+
+          {/* 保存列。**素性欄の下端に固定**する（設計書 §C.6 / C7）。現物は保存ボタンの
+              offsetTop が 755.8px で初期表示（高さ 362px）の外にあり、誰も見なかった
+              （BH1-03）。押す前に行き先が読める文言はここに出る。 */}
+          <div className="property-panel__save-bar" data-testid="property-save-bar">
+            {pendingDiscard !== null && (
+              <div
+                className="property-panel__draft-confirm"
+                role="alertdialog"
+                aria-label={PROPERTY_STRINGS.draftDiscardTitle}
+                data-testid="draft-discard-confirm"
+              >
+                <p>
+                  {PROPERTY_STRINGS.draftDiscardBody(
+                    PROPERTY_STRINGS.draftOrigin(
+                      pendingDiscard.featureName,
+                      formatYear(pendingDiscard.time.year),
+                    ),
+                  )}
+                </p>
+                <div className="property-panel__draft-confirm-buttons">
+                  <button
+                    type="button"
+                    data-testid="draft-discard-keep"
+                    onClick={returnToDraftOrigin}
+                  >
+                    {PROPERTY_STRINGS.draftDiscardKeep}
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="draft-discard-drop"
+                    onClick={discardDraft}
+                  >
+                    {PROPERTY_STRINGS.draftDiscardDrop}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {message !== null && (
+              <div className="basic-info__message" role="alert" data-testid="save-message">
+                <span>{message}</span>
+                <button
+                  type="button"
+                  aria-label={PROPERTY_STRINGS.dismissMessage}
+                  onClick={() => setMessage(null)}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
+            {editPlan.reason !== null && (
+              <p className="property-panel__save-reason" data-testid="save-disabled-reason">
+                {editPlan.reason}
+              </p>
+            )}
+
+            {/* 「この年に錨を作る」（Ctrl+K）。**現在時刻に錨が無いときだけ**出す
+                （設計書 §D.3）。値を変えない保存は何もしないので、「この年から同じ姿が
+                続く」を記録するにはこの入口が要る。 */}
+            {editable &&
+              onCreateAnchorHere !== undefined &&
+              editPlan.kind === EDIT_PLAN_KIND.NewAnchor && (
+                <button
+                  type="button"
+                  className="property-panel__create-anchor"
+                  data-testid="create-anchor-here"
+                  onClick={() => onCreateAnchorHere(feature.id)}
+                >
+                  {EDIT_PLAN_STRINGS.createAnchorHereLabel(formatYear(currentTime.year))}
+                </button>
+              )}
+
+            {editable && (
+              <div className="property-panel__save-row">
+                <button
+                  type="button"
+                  className="basic-info__save"
+                  data-testid="save-button"
+                  disabled={!editPlan.savable || pendingDiscard !== null}
+                  onClick={handleSave}
+                >
+                  {editPlan.saveLabel}
+                </button>
+                {editPlan.kind === EDIT_PLAN_KIND.NotYearAligned &&
+                  editPlan.roundedTime !== null && (
+                    <button
+                      type="button"
+                      className="property-panel__round-year"
+                      data-testid="round-to-year-button"
+                      onClick={handleRoundToYear}
+                    >
+                      {EDIT_PLAN_STRINGS.roundToYearLabel(formatYear(currentTime.year))}
+                    </button>
+                  )}
+              </div>
+            )}
+          </div>
         </>
       )}
     </div>

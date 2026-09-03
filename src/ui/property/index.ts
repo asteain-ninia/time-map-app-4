@@ -54,8 +54,7 @@ export type {
   AnchorIntervalEditDispatch,
   AnchorIntervalEditIntent,
   AnchorIntervalOp,
-  DetailDocumentDispatch,
-  DetailDocumentEditIntent,
+  GoverningAnchorSeries,
 } from './contracts';
 export { ANCHOR_INTERVAL_OP } from './contracts';
 
@@ -126,7 +125,45 @@ export {
 } from './detail-panels';
 
 // Pure logic: edit-intent + no-op guard (FR-97 / FR-84, 教訓 5.24 / 5.15)
-export { valuesFromFeature, isNoOpEdit, buildEditIntent } from './edit-intent';
+export {
+  valuesFromFeature,
+  isNoOpEdit,
+  buildEditIntent,
+  propertyValuesEqual,
+} from './edit-intent';
+
+// Pure logic: 保存の行き先 4 状態（設計書 §D.3 / 増分 2 の中身 2）
+export {
+  EDIT_PLAN_KIND,
+  EDIT_PLAN_STRINGS,
+  BYTES_PER_SNAPSHOT_VERTEX,
+  BYTES_PER_SNAPSHOT_FEATURE,
+  type EditPlan,
+  type EditPlanKind,
+  type EditPlanInput,
+  type AnchorSnapshotSize,
+  decideEditPlan,
+  estimateAnchorBytes,
+  formatApproximateBytes,
+  isYearAligned,
+  hasAnchorStartingAt,
+} from './edit-plan';
+
+// Pure logic: 錨どうしの差分（錨表の文 / まとめ役の子の選り分け、増分 2 の中身 4・5）
+export {
+  ANCHOR_CHANGE,
+  ANCHOR_DIFF_STRINGS,
+  type AnchorChange,
+  type AnchorChangeKind,
+  featureInSnapshot,
+  shapeChanged,
+  changesBetween,
+  changeSentence,
+  diffSentence,
+  isRelevantAnchor,
+  relevantEntriesFor,
+  anchorYearLabel,
+} from './anchor-diff';
 
 // Pure logic: 存続期間編集 intent assembly + rejection messaging (HB3-12, 教訓 5.26)
 export {

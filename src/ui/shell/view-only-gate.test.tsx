@@ -73,9 +73,9 @@ import { PROPERTY_STRINGS } from '../property/messages';
 import type {
   AnchorIntervalEditDispatch,
   AnchorSeriesLookup,
-  DetailDocumentDispatch,
   EditDispatch,
   FeatureLookup,
+  PropertyEditIntent,
 } from '../property/contracts';
 import { EDIT_MODE, type EditMode } from '../state/session';
 import { createSessionStore, type SessionStore } from '../state/store';
@@ -124,7 +124,6 @@ function sessionStore(mode: EditMode) {
 interface PanelWiring {
   readonly editDispatch?: EditDispatch;
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
-  readonly detailDocumentDispatch?: DetailDocumentDispatch;
   readonly onDeleteFeature?: (id: FeatureId) => void;
   /** 別窓での「詳細表示」要求（読むだけでも押せる側の観測口）。 */
   readonly onOpenDetail?: (id: FeatureId) => void;
@@ -143,9 +142,6 @@ function renderPanel(mode: EditMode, wiring: PanelWiring = {}): void {
       ownerLookup={ownerLookup}
       {...(wiring.anchorIntervalDispatch
         ? { anchorIntervalDispatch: wiring.anchorIntervalDispatch }
-        : {})}
-      {...(wiring.detailDocumentDispatch
-        ? { detailDocumentDispatch: wiring.detailDocumentDispatch }
         : {})}
       {...(wiring.onDeleteFeature ? { onDeleteFeature: wiring.onDeleteFeature } : {})}
       {...(wiring.onOpenDetail ? { onOpenDetail: wiring.onOpenDetail } : {})}
@@ -194,6 +190,8 @@ const EDITING_MENU_ITEMS: ReadonlySet<string> = new Set<string>([
   MENU_ITEM_KIND.Delete,
   MENU_ITEM_KIND.DeleteVertex,
   MENU_ITEM_KIND.EditProperties,
+  // FR-57「この年に錨を作る」も保存形式を書き換えるので編集項目に数える。
+  MENU_ITEM_KIND.CreateAnchorHere,
   MENU_ITEM_KIND.Unshare,
   MENU_ITEM_KIND.Split,
   MENU_ITEM_KIND.ChangeAffiliation,
@@ -292,11 +290,14 @@ const CHANGE_PATHS: readonly ChangePath[] = [
     canChange: (mode) => {
       const intents: unknown[] = [];
       renderPanel(mode, { editDispatch: { dispatchEdit: (i) => intents.push(i) } });
-      // 錨を選んで編集対象を確定させる（教訓 5.15: 編集時刻は選んだ錨の開始時刻）。
-      // 錨を選ぶこと自体は編集ではないので「読むだけ」でもできる。
+      // 錨の行を押すと現在時刻がその錨の開始（1560年1月1日）へ揃う。錨を選ぶこと自体は
+      // 編集ではないので「読むだけ」でもできる。
       fireEvent.click(screen.getByTestId('anchor-row-a1'));
-      const save = screen.queryByTestId('save-button');
+      const save = screen.queryByTestId('save-button') as HTMLButtonElement | null;
       if (save === null) return false;
+      // 押せない保存ボタンだと、押しても何も飛ばないので**この行が空振りする**
+      // （「読むだけで通らない」も「直せるなら通る」も同じ理由で false になってしまう）。
+      if (save.disabled) return false;
       fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
         target: { value: '羽柴領' },
       });
@@ -311,6 +312,10 @@ const CHANGE_PATHS: readonly ChangePath[] = [
       renderPanel(mode, {
         anchorIntervalDispatch: { dispatchAnchorInterval: (i) => intents.push(i) },
       });
+      // 増分 2 から、存続期間のエディタは **選んでいる錨 1 本ぶんだけ** 一覧の下に出る
+      // （行ごとに畳んだエディタを埋めると行の高さが変わり、錨が増えたときに持たない）。
+      // 錨を選ぶこと自体は編集ではないので、「読むだけ」でもここまでは進める。
+      fireEvent.click(screen.getByTestId('anchor-row-a1'));
       const year = screen.queryByTestId('anchor-interval-start-a1-year');
       const confirm = screen.queryByTestId('anchor-interval-start-a1-confirm');
       if (year === null || confirm === null) return false;
@@ -320,23 +325,24 @@ const CHANGE_PATHS: readonly ChangePath[] = [
     },
   },
   {
-    name: '⑨ 詳細文書の保存',
+    // 詳細文書に専用の保存ボタンがあった頃の名残ではない。増分 2 で保存の場所を素性欄の
+    // 下端の 1 本にまとめた（N-46）ので、本文も **同じ保存列** から確定する。経路として
+    // 別に残すのは、本文だけを直したときにも関門が効くことを見るためである。
+    name: '⑨ 詳細文書の保存（素性欄の保存列から）',
     canChange: (mode) => {
-      const intents: unknown[] = [];
-      renderPanel(mode, {
-        detailDocumentDispatch: { dispatchDetailDocument: (i) => intents.push(i) },
-      });
-      fireEvent.click(screen.getByTestId('anchor-row-a1'));
+      const intents: PropertyEditIntent[] = [];
+      renderPanel(mode, { editDispatch: { dispatchEdit: (i) => intents.push(i) } });
       const toEdit = screen.queryByTestId('detail-doc-mode-edit');
       if (toEdit === null) return false;
       fireEvent.click(toEdit);
       const textarea = screen.queryByTestId('detail-doc-textarea');
       if (textarea === null) return false;
       fireEvent.change(textarea, { target: { value: '書き足した本文' } });
-      const save = screen.queryByTestId('detail-doc-save');
-      if (save === null) return false;
+      const save = screen.queryByTestId('save-button') as HTMLButtonElement | null;
+      if (save === null || save.disabled) return false;
       fireEvent.click(save);
-      return intents.length > 0;
+      // 名前と同じ 1 つの意図に本文が載って飛ぶ（取り消しも 1 手）。
+      return intents.some((i) => i.attributes.detailDocument === '書き足した本文');
     },
   },
   {

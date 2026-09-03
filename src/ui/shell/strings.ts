@@ -43,6 +43,7 @@ export const MENU_ITEM_LABELS = {
   'edit.redo': 'やり直し',
   'edit.delete': '削除',
   'edit.deselect': '選択解除',
+  'edit.createAnchorHere': 'この年に錨を作る',
   'view.toggleViewMode': '表示専用モード切替',
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
@@ -179,6 +180,14 @@ export const SIDEBAR_CONTENT_STRINGS = {
   listModeAria: '一覧の表示モード',
   listModeCurrentLabel: '現在時刻',
   listModeHistoryLabel: '通史',
+  /**
+   * 通史の行に **年を付ける**（増分 2 の中身 5 / 現状分析 N-45）。行はこれまで
+   * 「その錨のスナップショットにおける地物名」しか運んでおらず、**どの年の記録なのかが
+   * 読めなかった**（同じ名前の行が錨の数だけ並ぶ）。
+   */
+  historyRowLabel: (year: string, name: string): string => `${year} — ${name}`,
+  /** 系列の持ち主の名前が引けなかったときの言い方（内部 id は画面に出さない、U-1）。 */
+  unknownOwnerName: '別の地物',
 } as const;
 
 /**

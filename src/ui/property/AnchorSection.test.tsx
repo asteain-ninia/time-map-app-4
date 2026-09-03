@@ -11,14 +11,19 @@ import {
   type AnchorSeries,
   createAnchorEntry,
 } from '../../domain/anchor-series';
-import { asAnchorId } from '../../domain/ids';
+import { asAnchorId, asFeatureId } from '../../domain/ids';
 import { getCalendar } from '../../domain/time/calendar';
-import { timePointYearMonthDay } from '../../domain/time/time-point';
+import { timePointYear, timePointYearMonthDay } from '../../domain/time/time-point';
 import { createVertexStore } from '../../domain/vertex';
 
 import { AnchorSection } from './AnchorSection';
 
 const cal = getCalendar('gregorian');
+// 増分 2 で錨の一覧に足した 2 つ。行に添える「その年に何が変わったか」を作る相手と、
+// 既定でどのあたりの錨を出すかを決める現在時刻である（どちらも一覧側の検査で見るので、
+// ここでは view の切替が壊れない最小の値を渡す）。
+const fid = asFeatureId('F');
+const now = timePointYear(1000);
 
 function series(): AnchorSeries {
   const snap = createAnchorSnapshot([], createVertexStore([]));
@@ -33,7 +38,14 @@ function series(): AnchorSeries {
 describe('AnchorSection — view切替 (FR-60)', () => {
   it('starts in list view and switches to time-bar view', () => {
     render(
-      <AnchorSection series={series()} calendar={cal} selectedAnchorId={null} onSelectAnchor={() => {}} />,
+      <AnchorSection
+        series={series()}
+        featureIdForDiff={fid}
+        currentTime={now}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={() => {}}
+      />,
     );
     expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
     expect(screen.queryByTestId('anchor-timebar')).not.toBeInTheDocument();
@@ -46,7 +58,14 @@ describe('AnchorSection — view切替 (FR-60)', () => {
   it('both views select an anchor through the SAME callback (受け入れ基準 7)', () => {
     const onSelect = vi.fn();
     render(
-      <AnchorSection series={series()} calendar={cal} selectedAnchorId={null} onSelectAnchor={onSelect} />,
+      <AnchorSection
+        series={series()}
+        featureIdForDiff={fid}
+        currentTime={now}
+        calendar={cal}
+        selectedAnchorId={null}
+        onSelectAnchor={onSelect}
+      />,
     );
     // From the list.
     fireEvent.click(screen.getByTestId('anchor-row-a1'));
@@ -64,6 +83,8 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
     render(
       <AnchorSection
         series={series()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -86,6 +107,8 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
     render(
       <AnchorSection
         series={series()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -119,6 +142,8 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
     render(
       <AnchorSection
         series={lateOpenEndedSeries()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -171,6 +196,8 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
     render(
       <AnchorSection
         series={thinBarSeries()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -191,6 +218,8 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
     render(
       <AnchorSection
         series={thinBarSeries()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -208,6 +237,8 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
     render(
       <AnchorSection
         series={series()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}
@@ -224,6 +255,8 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
     render(
       <AnchorSection
         series={thinBarSeries()}
+        featureIdForDiff={fid}
+        currentTime={now}
         calendar={cal}
         selectedAnchorId={null}
         onSelectAnchor={() => {}}

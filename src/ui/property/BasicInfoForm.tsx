@@ -1,28 +1,31 @@
 // UI layer (U32 / property panel): basic-info display + edit form (FR-97 / FR-99
 // 前段, 教訓 5.13 / 5.24 / 5.12).
 //
-// Shows the target feature's basic attributes (name・開始年・終了年) and color
-// info (自動配色許可・塗り色・選択時色・境界色). One `editable` judgment controls
-// the WHOLE form (教訓 5.13): in view mode every input is disabled and the save
-// button is hidden — there is no per-widget permission check. Saving builds the
-// edit intent through edit-intent.ts with the current edit-target anchor's start
-// time as the edit time (教訓 5.15) and a no-op guard (教訓 5.24). A save-failure
-// / validation message is held in dedicated state and is NOT cleared by unrelated
-//操作 (教訓 5.12) — including selecting a DIFFERENT地物 (spec 行188). The only
-// three clear契機 are: a同種操作の再試行 (re-save), an explicit閉じる (dismiss),
-// or a妥当値での再保存成功 (successful save). A target-feature change re-syncs the
-// draft (教訓 5.2 selection boundary) but PRESERVES the held message.
+// Shows the target feature's basic attributes (名前・種別ラベル)、派生の面積・存続期間、
+// and color info (自動配色許可・塗り色・選択時色・境界色). One `editable` judgment
+// controls the WHOLE form (教訓 5.13): in view mode every input is disabled — there is
+// no per-widget permission check.
+//
+// **下書きも保存ボタンも、ここには無い**（増分 2）。このフォームは
+// {@link PropertyEditValues} を受け取って表示し、変更を親へ返すだけの **制御された
+// フォーム** である。理由は 2 つ。
+//   1. 保存列は素性欄の**下端に固定**する（設計書 §C.6 / C7。現物は保存ボタンの
+//      `offsetTop` が 755.8px で初期表示の外にあり、誰も見なかった）。下端に置くには
+//      ボタンがフォームの外＝パネルの最後の子でなければならない。
+//   2. 保存の対象は名前・種別ラベル・見た目・**詳細文書**の 4 つで、詳細文書は別の
+//      セクションが持っている（設計書 §C.6 の「保存の対象」）。**押さないと保存され
+//      ない場所が 2 つある**状態（N-46）を 1 つに揃えるには、下書きを両方の上（パネル）
+//      で持つしかない。
+//
+// 「打ちかけの下書きをいつ捨てるか」（教訓 5.2 / 5.12 / N-04）もパネル側の責任になった。
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 
 import type { Feature } from '../../domain/feature';
-import type { AnchorId } from '../../domain/ids';
-import type { TimePoint } from '../../domain/time/time-point';
 
 import type { PaletteThemeId } from '../../domain/coloring';
 
 import type { PropertyEditValues } from './contracts';
-import { isNoOpEdit, valuesFromFeature } from './edit-intent';
 import { PROPERTY_STRINGS, formatAreaKm2 } from './messages';
 import { StyleSection } from './StyleSection';
 import { type StyleValues } from './style-section';
@@ -32,21 +35,10 @@ export interface BasicInfoFormProps {
   readonly feature: Feature;
   /** Whole-form edit gate (教訓 5.13). False = view-only. */
   readonly editable: boolean;
-  /** The edit time = current edit-target anchor's start time (教訓 5.15). */
-  readonly editTime: TimePoint | null;
-  /**
-   * The edit-target ANCHOR's id (bughunt 第12波 #1). The draft re-seeds when this
-   * changes — extending the selection boundary (教訓 5.2) from 地物 to 地物×錨. A
-   * 多錨 feature carries a DIFFERENT full-state snapshot at each anchor, so when a
-   * time move advances the effective anchor the form must re-seed from the CURRENT
-   * anchor's snapshot (the `feature` prop, re-resolved by the parent), never carry
-   * the prior anchor's edited values onto the new one (which would overwrite it on
-   * save). `null` when no anchor is effective. Distinct from `feature.id`: the SAME
-   * feature id spans every anchor, so id alone cannot detect an intra-feature
-   * anchor change. A same-feature-same-anchor re-resolve (selection-object churn)
-   * keeps this key stable and PRESERVES the draft.
-   */
-  readonly anchorId: AnchorId | null;
+  /** 表示・編集する下書きの値（親が持つ。単一真実源）。 */
+  readonly values: PropertyEditValues;
+  /** 下書きの一部を書き換える（親へ返す）。 */
+  readonly onChange: (next: Partial<PropertyEditValues>) => void;
   /**
    * Available palette themes for the U33「スタイル」section dropdown (FR-109).
    * Defaults to the current feature's theme alone when a host has not wired the
@@ -58,16 +50,15 @@ export interface BasicInfoFormProps {
    * edit time. A read-only display value the PARENT computes via the geodesy unit's
    * shapeAreaKm2 (単一真実源, src/domain/geo/geodesy.ts) — never re-derived here.
    * Present only for leaf features (point / line features carry no area, so the
-   * parent passes `undefined` and no 面積 row renders). Kept distinct from the
-   * label-occupancy projected area (px): the single truth source is geodesy km².
+   * parent passes `undefined` and no 面積 row renders).
    */
   readonly areaKm2?: number;
   /**
-   * Save handler. Receives the new values + edit time; returns an error message
-   * to display, or null on success. The PARENT owns dispatch so this component
-   * stays a thin form (the no-op guard runs here before calling).
+   * **本物の存続期間**（錨の並びが正本, U-23）を初期表示に出すための 1 行
+   * （「0年 → 継続中」）。飾りの開始年／終了年は畳んだ「詳しい属性」へ下ろした
+   * （裁定 §N-5 の (A)）。解決できないときは省く（値を捏造しない）。
    */
-  readonly onSave: (values: PropertyEditValues, editTime: TimePoint) => string | null;
+  readonly existenceLabel?: string;
 }
 
 /**
@@ -75,22 +66,8 @@ export interface BasicInfoFormProps {
  * attribute — autoColor / palette / fill / selected AND their透過度（アルファ,
  * U33 spec 行23-26 / AC1・AC5) — is bound to the SAME draft, so a style edit
  * (including a transparency slider drag) lands on the single anchor edit + undo
- * unit and is persisted (U33 AC1 / FR-59). There is no longer a section-local /
- * hardcoded opacity: the slider value is the persisted attribute.
+ * unit and is persisted (U33 AC1 / FR-59).
  */
-/**
- * 錨の中身の **値としての署名**（A9）。ドメインが動いた（取り消し・やり直し・外部差し替え）
- * ことを、オブジェクトの参照ではなく値で見分けるために使う。フィールドが増えても自動で
- * 効くよう、キーを並べ替えてから連結する（`JSON.stringify` はキーの並び順に依存する）。
- */
-function baselineSignature(values: PropertyEditValues): string {
-  const record = values as unknown as Record<string, unknown>;
-  return Object.keys(record)
-    .sort()
-    .map((key) => `${key}=${String(record[key])}`)
-    .join('|');
-}
-
 function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
   return {
     autoColorEnabled: draft.autoColorEnabled,
@@ -103,80 +80,13 @@ function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
 }
 
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
-  const { feature, editable, editTime, anchorId, areaKm2, onSave } = props;
+  const { feature, editable, values: draft, onChange, areaKm2, existenceLabel } = props;
   // Default the palette dropdown to the feature's current theme alone so the
   // section mounts even when the host has not wired the settings-provided list.
   const paletteThemes = useMemo(
     () => props.paletteThemes ?? [feature.color.paletteTheme],
     [props.paletteThemes, feature.color.paletteTheme],
   );
-
-  // The form syncs to the feature (the single baseline source, 教訓 5.24). A new
-  // feature / a changed feature re-syncs the draft.
-  const baseline = useMemo(() => valuesFromFeature(feature), [feature]);
-  const [draft, setDraft] = useState<PropertyEditValues>(baseline);
-  // 教訓 5.12: the save-failure / validation message is dedicated state. It is
-  // cleared by ONLY three契機 — a same-operation re-save attempt, an explicit
-  // dismiss, or a妥当値での再保存成功. It must NOT be cleared by無関係操作, and
-  // selecting a DIFFERENT feature is explicitly one such無関係操作 (spec 行188).
-  const [message, setMessage] = useState<string | null>(null);
-
-  // Re-sync the draft to the baseline when the EDIT TARGET changes (教訓 5.2: the
-  // selection-change boundary discards the transient draft). The edit target is
-  // 地物×錨, NOT地物 alone (bughunt 第12波 #1): a多錨 feature carries a DIFFERENT
-  // full-state snapshot at each anchor, so the key is `feature.id` AND the
-  // edit-target `anchorId`. Keyed to those IDENTIFIERS, not the baseline value
-  // object: a re-render that re-resolves the SAME feature+anchor to a
-  // fresh-but-equal object must NOT reset the draft (root cause of the U32 blocker
-  // — see PropertyPanel's memoized feature; and selection-object churn from
-  // revalidateForTime). But a time move that advances the effective anchor (a1 →
-  // a2) DOES change `anchorId`, so the draft re-seeds from the CURRENT anchor's
-  // snapshot rather than carrying the prior anchor's edited values onto save
-  // (which would overwrite the new anchor — the data-loss #1 guards against).
-  // Done during render via a key sentinel (no effect) so the first paint already
-  // reflects the re-sync. Crucially the held message is PRESERVED across the
-  // change: 教訓 5.12 does not list a target change among the three clear契機.
-  //
-  // **さらに「今の錨の中身そのもの」も鍵に入れる**（A9）。取り消し（Ctrl+Z）・やり直し・
-  // 外部からのドメイン差し替えは、地物 id も錨 id も変えずに **中身だけ** を巻き戻す。
-  // 識別子だけを鍵にしていたので、Ctrl+Z のあともフォームには取り消したはずの名前が
-  // 残り、そのまま保存すると **取り消した編集が復活していた**（実機で確認）。値の署名を
-  // 鍵に混ぜると、ドメインが動いた瞬間にフォームがそちらへ同期する。
-  //
-  // 値の **署名** であって参照ではない点が肝心である。親は再レンダーのたびに等しい別
-  // オブジェクトを作りうるので、参照で比べると打鍵のたびに下書きが捨てられる（U32 の
-  // 初期不具合そのもの）。署名が同じなら同期しないので、その経路は起きない。逆に
-  // 「打鍵中にドメインが動いたら打鍵内容は捨てられる」——これは正しい向きである
-  // （取り消し・やり直し・外部差し替えのほうが下書きより強い）。
-  const editTargetKey = `${feature.id as unknown as string} ${
-    anchorId === null ? '' : (anchorId as unknown as string)
-  } ${baselineSignature(baseline)}`;
-  const [syncedTargetKey, setSyncedTargetKey] = useState<string>(editTargetKey);
-  if (syncedTargetKey !== editTargetKey) {
-    setSyncedTargetKey(editTargetKey);
-    setDraft(baseline);
-  }
-
-  function patch(next: Partial<PropertyEditValues>): void {
-    setDraft((prev) => ({ ...prev, ...next }));
-  }
-
-  function handleSave(): void {
-    if (editTime === null) {
-      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}編集対象の錨が選択されていません。`);
-      return;
-    }
-    // 教訓 5.24: no-op guard. A confirm whose values equal the baseline does not
-    // dispatch (no ghost undo). The save message is cleared (同種操作の再試行).
-    if (isNoOpEdit(feature, draft)) {
-      setMessage(null);
-      return;
-    }
-    const error = onSave(draft, editTime);
-    // 教訓 5.12: a successful save (null) clears the message; a failure replaces
-    // it. Either way this is a same-operation outcome, the allowed clear契機.
-    setMessage(error);
-  }
 
   return (
     <section className="basic-info" data-testid="basic-info">
@@ -195,44 +105,52 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           aria-label={PROPERTY_STRINGS.nameLabel}
           value={draft.name}
           disabled={!editable}
-          onChange={(e) => patch({ name: e.target.value })}
+          onChange={(e) => onChange({ name: e.target.value })}
         />
       </label>
 
+      {/*
+        FR-40 — 種別ラベル（「州」「都市」など）。データ構造にも保存形式にも最初から
+        あるのに **入力欄がどこにも無かった**（現状.md R5）。保存の対象 4 つのうちの
+        1 つ（設計書 §C.6）なので、名前の隣に置く。空欄＝付いていない。
+      */}
       <label className="basic-info__field">
-        <span>{PROPERTY_STRINGS.startYearLabel}</span>
+        <span>{PROPERTY_STRINGS.kindLabelLabel}</span>
         <input
-          type="number"
-          aria-label={PROPERTY_STRINGS.startYearLabel}
-          value={draft.startYear}
+          type="text"
+          aria-label={PROPERTY_STRINGS.kindLabelLabel}
+          placeholder={PROPERTY_STRINGS.kindLabelPlaceholder}
+          value={draft.kindLabel}
           disabled={!editable}
-          onChange={(e) => patch({ startYear: Number(e.target.value) })}
-        />
-      </label>
-
-      <label className="basic-info__field">
-        <span>{PROPERTY_STRINGS.endYearLabel}</span>
-        <input
-          type="number"
-          aria-label={PROPERTY_STRINGS.endYearLabel}
-          value={draft.endYear}
-          disabled={!editable}
-          onChange={(e) => patch({ endYear: Number(e.target.value) })}
+          onChange={(e) => onChange({ kindLabel: e.target.value })}
         />
       </label>
 
       {/*
         FR-20: the 面積（km²）of a 面 (leaf) feature. A READ-ONLY derived row — no
         input, never part of the edit draft / save intent — computed by the parent
-        via the geodesy shapeAreaKm2 (単一真実源). Rendered only when the parent
-        supplies a value (leaf features); point / line features never show it. The
-        value re-derives when 赤道長・扁平率 (FR-109) or the shape changes because the
-        parent recomputes it from the live geoParams + resolved shape (教訓 5.3).
+        via the geodesy shapeAreaKm2 (単一真実源).
       */}
       {areaKm2 !== undefined && (
         <div className="basic-info__field basic-info__field--readonly" data-testid="area-row">
           <span>{PROPERTY_STRINGS.areaLabel}</span>
           <output data-testid="area-value">{formatAreaKm2(areaKm2)}</output>
+        </div>
+      )}
+
+      {/*
+        **本物の存続期間**（U-23: 正本は錨の並び）。初期表示に出るのはこれだけで、
+        飾りの開始年／終了年は下の「詳しい属性」へ下ろした（裁定 §N-5 の (A)）。
+        「1500 年に滅ぶ」を記録しようとして飾りの欄を直しても何も起きない、という
+        事故がこれで消える（現状分析 N-05 / BH1-11「終了年 9999」）。
+      */}
+      {existenceLabel !== undefined && (
+        <div
+          className="basic-info__field basic-info__field--readonly"
+          data-testid="existence-row"
+        >
+          <span>{PROPERTY_STRINGS.existenceLabel}</span>
+          <output data-testid="existence-value">{existenceLabel}</output>
         </div>
       )}
 
@@ -248,7 +166,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         paletteThemes={paletteThemes}
         sectionEnabled={editable}
         onChange={(next) =>
-          patch({
+          onChange({
             autoColorEnabled: next.autoColorEnabled,
             paletteTheme: next.paletteTheme,
             fillColor: next.fillColor,
@@ -269,34 +187,45 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
             aria-label={PROPERTY_STRINGS.borderColorLabel}
             value={draft.borderColor}
             disabled={!editable}
-            onChange={(e) => patch({ borderColor: e.target.value })}
+            onChange={(e) => onChange({ borderColor: e.target.value })}
           />
         </label>
       </fieldset>
 
-      {message !== null && (
-        <div className="basic-info__message" role="alert" data-testid="save-message">
-          <span>{message}</span>
-          <button
-            type="button"
-            aria-label={PROPERTY_STRINGS.dismissMessage}
-            onClick={() => setMessage(null)}
-          >
-            ×
-          </button>
-        </div>
-      )}
+      {/*
+        飾りの開始年／終了年（裁定 §N-5 の (A)）。**値は残す**（U-28「詳細パネルには
+        全属性を出す」は折りたたみの中でも守られる）が、初期表示からは下ろす。これらは
+        地物がいつ現れていつ消えるかを **一切動かさない** 表示専用の属性で、本物は上の
+        「続く」行（＝錨の並び）である。
+      */}
+      <details className="basic-info__advanced" data-testid="basic-info-advanced">
+        <summary data-testid="basic-info-advanced-summary">
+          {PROPERTY_STRINGS.advancedAttributesTitle}
+        </summary>
+        <p className="basic-info__advanced-hint">{PROPERTY_STRINGS.advancedAttributesHint}</p>
 
-      {editable && (
-        <button
-          type="button"
-          className="basic-info__save"
-          data-testid="save-button"
-          onClick={handleSave}
-        >
-          {PROPERTY_STRINGS.saveButton}
-        </button>
-      )}
+        <label className="basic-info__field">
+          <span>{PROPERTY_STRINGS.startYearLabel}</span>
+          <input
+            type="number"
+            aria-label={PROPERTY_STRINGS.startYearLabel}
+            value={draft.startYear}
+            disabled={!editable}
+            onChange={(e) => onChange({ startYear: Number(e.target.value) })}
+          />
+        </label>
+
+        <label className="basic-info__field">
+          <span>{PROPERTY_STRINGS.endYearLabel}</span>
+          <input
+            type="number"
+            aria-label={PROPERTY_STRINGS.endYearLabel}
+            value={draft.endYear}
+            disabled={!editable}
+            onChange={(e) => onChange({ endYear: Number(e.target.value) })}
+          />
+        </label>
+      </details>
     </section>
   );
 }

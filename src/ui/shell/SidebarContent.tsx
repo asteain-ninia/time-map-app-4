@@ -26,7 +26,8 @@ import { useCallback, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import type { AnchorSeries } from '../../domain/anchor-series';
+import { resolveAt, type AnchorSeries } from '../../domain/anchor-series';
+import { findHistoryContaining } from '../../domain/editing/apply-proposal';
 import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/feature';
 import { createGeoParams, type GeoParams } from '../../domain/geo/geo-params';
 import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
@@ -43,6 +44,7 @@ import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
+import { formatTimePoint } from '../timeline/time-display';
 import { DisplayFilterPanel } from '../discovery/DisplayFilterPanel';
 import { FILTER_STRINGS } from '../discovery/index';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
@@ -53,10 +55,10 @@ import {
   PROPERTY_STRINGS,
   type AnchorSeriesLookup,
   type AssetResolver,
-  type DetailDocumentDispatch,
   type EditDispatch,
   type AnchorIntervalEditDispatch,
   type FeatureLookup,
+  type GoverningAnchorSeries,
 } from '../property/index';
 
 import { SIDEBAR_CONTENT_STRINGS } from './strings';
@@ -83,11 +85,55 @@ function featureLookupOf(
  * on its {@link FeatureHistory} in the project root (U09); we return it whole so
  * the property panel DISPLAYS the series without re-deriving it (spec §やらないこと).
  */
-function anchorLookupOf(getRoot: () => DomainProject): AnchorSeriesLookup {
+function anchorLookupOf(getRoot: () => DomainProject, calendar: Calendar): AnchorSeriesLookup {
   return {
     anchorSeriesOf(featureId: FeatureId): AnchorSeries | null {
       const history = getRoot().histories.find((h) => h.featureId === featureId);
       return history?.series ?? null;
+    },
+    /**
+     * **編集が実際に書き込まれる系列**（設計書 §C.6「まとめ役の子の錨」/ 裁定 §N-15）。
+     *
+     * 実データの 775 地物のうち **86 件（3 つのまとめ役の子ぜんぶ）は自分の履歴を持たない**。
+     * `anchorSeriesOf` は `histories.find(h => h.featureId === id)` なので、この 86 件は
+     * 必ず null を返し、素性欄から錨の欄が丸ごと消えていた。ドメイン側の属性編集
+     * （`applyEditProposal`）は `findHistoryContaining` で **その時刻に自分を含む履歴**
+     * ＝親の系列へ書くので、画面もそこを見なければ「上書きなのか新設なのか」を正しく
+     * 言えない（教訓 5.46: 結果を実際に決めている経路を確かめる）。判定は**ドメインと
+     * 同じ関数**を呼ぶ（単一の真実源, 教訓 5.30）。
+     */
+    governingSeriesOf(featureId: FeatureId, at: TimePoint): GoverningAnchorSeries | null {
+      const root = getRoot();
+      const found = findHistoryContaining(root, featureId, at, calendar);
+      if (found === undefined) return null;
+      const owner = found.history;
+      const resolved = resolveAt(owner.series, at, calendar);
+      const effectiveSize =
+        resolved.kind === 'present'
+          ? {
+              featureCount: resolved.entry.anchor.snapshot.features.length,
+              vertexCount: resolved.entry.anchor.snapshot.vertices.byId.size,
+            }
+          : null;
+      if (owner.featureId === featureId) {
+        return {
+          series: owner.series,
+          ownerFeatureId: featureId,
+          ownerName: null,
+          effectiveSize,
+        };
+      }
+      // 借り物（親の系列）。持ち主の名前はその時刻の実効スナップショットから引く。
+      const ownerFeature =
+        resolved.kind === 'present'
+          ? resolved.entry.anchor.snapshot.features.find((f) => f.id === owner.featureId)
+          : undefined;
+      return {
+        series: owner.series,
+        ownerFeatureId: owner.featureId,
+        ownerName: ownerFeature === undefined ? SIDEBAR_CONTENT_STRINGS.unknownOwnerName : featureDisplayName(ownerFeature),
+        effectiveSize,
+      };
     },
   };
 }
@@ -112,19 +158,16 @@ export interface SidebarContentDeps<S> {
    * from {@link editDispatch}, which only rewrites the snapshot, never the interval.
    */
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
-  /**
-   * FR-98 後段: the 詳細文書 edit dispatch (live-detail-document.ts). The composition
-   * root wires the real ONE-undo-unit bridge; when omitted the panel's 詳細文書
-   * section stays a sanitized read-only preview (honest-stub discipline — no dead
-   * 保存 control). DISTINCT from {@link editDispatch}: it rewrites only the record's
-   * optional detailDocument field, never the attributes/color.
-   */
-  readonly detailDocumentDispatch?: DetailDocumentDispatch;
   /** FR-98 / FR-02: ZIP-internal asset resolution for the 詳細文書 preview. */
   readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the given feature (the property-panel「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
+  /**
+   * 「この年に錨を作る」（Ctrl+K, 増分 2 の中身 3）の素性欄側の入口。
+   * 合成ルートが同じコマンド 1 本へ繋ぐ（教訓 5.30）。
+   */
+  readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
   /**
    * Focus the camera on the feature just selected from a一覧 row (錨一覧 HB5-3 AND
    * 地物一覧 A1 — both導線 share the SAME fit path, the user's「地物一覧にも視点移動が
@@ -151,10 +194,10 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     calendar,
     editDispatch,
     anchorIntervalDispatch,
-    detailDocumentDispatch,
     assetResolver,
     onOpenDetail,
     onDeleteFeature,
+    onCreateAnchorHere,
     onFocusFeatureCamera,
   } = deps;
 
@@ -171,7 +214,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   };
 
   const featureLookup = featureLookupOf(getRoot, getTime);
-  const anchorLookup = anchorLookupOf(getRoot);
+  const anchorLookup = anchorLookupOf(getRoot, calendar);
 
   return {
     // HB6: 地物一覧 + 錨一覧 を 1タブ「一覧」+ モードトグル(現在時刻/通史)へ統合
@@ -200,10 +243,10 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         editDispatch={dispatch}
         calendar={calendar}
         {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
-        {...(detailDocumentDispatch ? { detailDocumentDispatch } : {})}
         {...(assetResolver ? { assetResolver } : {})}
         {...(onOpenDetail ? { onOpenDetail } : {})}
         {...(onDeleteFeature ? { onDeleteFeature } : {})}
+        {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
       />
     ),
   };
@@ -247,10 +290,10 @@ function PropertyPanelHost<S>(props: {
   readonly editDispatch: EditDispatch;
   readonly calendar: Calendar;
   readonly anchorIntervalDispatch?: AnchorIntervalEditDispatch;
-  readonly detailDocumentDispatch?: DetailDocumentDispatch;
   readonly assetResolver?: AssetResolver;
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
+  readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
 }): JSX.Element {
   const { store, getRoot, getTime } = props;
   // Subscribe to the pieces that must re-derive the shown area: the FR-109 geodesic
@@ -363,10 +406,10 @@ function PropertyPanelHost<S>(props: {
       ownerLookup={ownerLookup}
       resolveAreaKm2={resolveAreaKm2}
       {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
-      {...(props.detailDocumentDispatch ? { detailDocumentDispatch: props.detailDocumentDispatch } : {})}
       {...(props.assetResolver ? { assetResolver: props.assetResolver } : {})}
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
       {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
+      {...(props.onCreateAnchorHere ? { onCreateAnchorHere: props.onCreateAnchorHere } : {})}
     />
   );
 }
@@ -592,9 +635,10 @@ function UnifiedListSection<S>(props: {
         const owner = entry.anchor.snapshot.features.find(
           (f) => f.id === history.featureId,
         );
-        const label = owner
-          ? featureDisplayName(owner)
-          : (history.featureId as unknown as string);
+        const label = SIDEBAR_CONTENT_STRINGS.historyRowLabel(
+          formatTimePoint(entry.start),
+          owner ? featureDisplayName(owner) : (history.featureId as unknown as string),
+        );
         const anchorId = entry.anchor.id as unknown as string;
         return {
           key: `${history.featureId as unknown as string}:${anchorId}`,

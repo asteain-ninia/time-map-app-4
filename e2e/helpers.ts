@@ -354,6 +354,26 @@ export async function commitOneFace(page: Page): Promise<CommittedFace> {
 }
 
 // ---------------------------------------------------------------------------
+// 時刻を動かす
+// ---------------------------------------------------------------------------
+
+/**
+ * 現在時刻を指定の年へ飛ばす（直接ジャンプの入力欄経由）。
+ *
+ * **年だけを指定する**（月日は未指定のまま）ので、着地する現在時刻も年だけになる。
+ * 増分 2 以降は「年ちょうどでないと保存できない」ので、ここで月日を補ってはいけない。
+ * この手順は存続期間の spec に写しがあったものを helpers へ寄せたものである。
+ */
+export async function jumpToYear(page: Page, year: number): Promise<void> {
+  await page.getByLabel('直接ジャンプ 年', { exact: true }).fill(String(year));
+  // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。
+  await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
+  await expect(page.getByTestId('timeline-current')).toHaveText(
+    year < 0 ? `紀元前${String(-year)}年` : `${String(year)}年`,
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 実データの投入口 (E2E_TEST=1 のときだけ開く裏口。P-4)
 // ---------------------------------------------------------------------------
 

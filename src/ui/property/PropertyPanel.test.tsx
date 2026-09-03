@@ -302,10 +302,14 @@ describe('PropertyPanel — decision message persistence (教訓 5.12)', () => {
     expect(screen.queryByTestId('save-message')).not.toBeInTheDocument();
   });
 
-  it('a save-failure message survives selecting a DIFFERENT feature (spec 行188, 教訓 5.12)', () => {
+  it('別の地物を選んでも、保存失敗の文言は残る（教訓 5.12）', () => {
     // 受け入れ基準 5: a held decision message must NOT be cleared by無関係操作,
     // and別地物の選択 is explicitly such an操作. Only re-save / dismiss / 再保存成功
     // may clear it.
+    //
+    // **増分 2 で 1 段増えた**（N-04）: 打ちかけの内容があるまま別の地物を選ぶと
+    // **確認が出て下書きを抱えたままになる**ので、捨てると決めてから別の地物の姿になる。
+    // どちらの段階でも判断用の文言は消えないことを見る。
     const store = makeStore({ active: true });
     renderPanel(store, {
       dispatchEdit: () => {
@@ -319,12 +323,15 @@ describe('PropertyPanel — decision message persistence (教訓 5.12)', () => {
     fireEvent.click(screen.getByTestId('save-button'));
     expect(screen.getByTestId('save-message')).toBeInTheDocument();
 
-    // Select a DIFFERENT feature (a genuine target change). The form re-syncs to
-    // feature B's baseline, but the held message must REMAIN — this is not one of
-    // the three allowed clear契機.
     act(() => {
       store.getState().setActiveFeature(fB);
     });
+    // 打ちかけがあるので確認が出ている（N-04）。文言は残っている。
+    expect(screen.getByTestId('draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('save-message')).toBeInTheDocument();
+
+    // 捨てると別の地物の姿へ切り替わる。文言はそれでも消えない。
+    fireEvent.click(screen.getByTestId('draft-discard-drop'));
     expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('武田領');
     expect(screen.getByTestId('save-message')).toBeInTheDocument();
   });
@@ -503,11 +510,20 @@ describe('PropertyPanel — detail open (FR-99後段)', () => {
 // correct typed intent (the command-base then runs the U09 op — covered by
 // consistency-binding.test.tsx). The editor is gated on editable mode + a wired dispatch
 // (no dead control, 教訓 5.7 / 5.13).
+/**
+ * 存続期間エディタを見るための描画。
+ *
+ * **増分 2 で、エディタは「選ばれている錨 1 本ぶんだけ」一覧の下に出るようになった。**
+ * 錨表の行を 28px 固定にして仮想スクロールするためで、行の中に畳んだエディタを
+ * 埋めると行の高さが可変になって成り立たない（設計書 §C.6 の錨表の規模）。
+ * だからテストも「さわる錨を選ぶ」ところから始める——実利用の手順と同じである。
+ */
 function renderPanelWithInterval(
   store: ReturnType<typeof makeStore>,
   anchorIntervalDispatch: AnchorIntervalEditDispatch,
+  selectAnchor: 'a1' | 'a2' | null = 'a1',
 ) {
-  return render(
+  const view = render(
     <PropertyPanel
       store={store}
       featureLookup={featureLookup}
@@ -518,6 +534,10 @@ function renderPanelWithInterval(
       ownerLookup={ownerLookup}
     />,
   );
+  if (selectAnchor !== null && screen.queryByTestId(`anchor-row-${selectAnchor}`) !== null) {
+    fireEvent.click(screen.getByTestId(`anchor-row-${selectAnchor}`));
+  }
+  return view;
 }
 
 describe('PropertyPanel — 存続期間編集 wiring (HB3-12 / FR-70, 教訓 5.7)', () => {
@@ -605,7 +625,7 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12 / FR-70, 教訓 5.
   it('この錨を削除 dispatches a delete intent (series has >1 anchor so the button is enabled)', () => {
     const intents: AnchorIntervalEditIntent[] = [];
     const store = makeStore({ active: true });
-    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) });
+    renderPanelWithInterval(store, { dispatchAnchorInterval: (i) => intents.push(i) }, 'a2');
 
     const del = screen.getByTestId('anchor-interval-delete-a2');
     expect(del).toBeEnabled(); // 2-anchor series: not the sole anchor.
@@ -1085,14 +1105,15 @@ describe('PropertyPanel — 存続期間編集後の series 再導出 (F1, HIGH 
     );
   }
 
-  it('after 継続中にする the anchor row re-derives to 継続中 (was frozen at the old bounded end)', () => {
+  it('継続中にしたあと、錨の行と「続く」行の両方が作り直される（古い終了年で凍らない）', () => {
     const store = makeLiveStore();
     render(<LiveHost store={store} />);
 
     // The a1 row initially shows its bounded end (…2000年).
     const rowBefore = screen.getByTestId('anchor-row-a1');
     expect(rowBefore).toHaveTextContent('2000');
-    expect(rowBefore).not.toHaveTextContent(PROPERTY_STRINGS.openEndLabel);
+    // 本物の存続期間の行（増分 2 で初期表示へ出したもの。裁定 §N-5）も終わりを言っている。
+    expect(screen.getByTestId('existence-value')).toHaveTextContent('2000');
 
     // 継続中にする through the wired dispatch → the domain now stores end=null.
     act(() => {
@@ -1101,10 +1122,12 @@ describe('PropertyPanel — 存続期間編集後の series 再導出 (F1, HIGH 
 
     // The store IS updated…
     expect(store.getState().domain.histories[0]!.series.entries[0]!.end).toBeNull();
-    // …and the panel's series memo RE-DERIVED: the row shows 継続中, not the frozen 2000年.
-    const rowAfter = screen.getByTestId('anchor-row-a1');
-    expect(rowAfter).toHaveTextContent(PROPERTY_STRINGS.openEndLabel);
-    expect(rowAfter).not.toHaveTextContent('2000');
+    // …and the panel's series memo RE-DERIVED. 錨の行は終了年を言わなくなり、
+    // 「続く」行が継続中になる。**同じ系列から導く 2 つの表示が食い違わない**ことを見る。
+    expect(screen.getByTestId('anchor-row-a1')).not.toHaveTextContent('2000');
+    expect(screen.getByTestId('existence-value')).toHaveTextContent(
+      PROPERTY_STRINGS.existenceOpenEnd,
+    );
   });
 
   it('re-「反映」on the end after 継続中にする does NOT re-close the interval (round-trip safe, F1+F2)', () => {
@@ -1127,5 +1150,319 @@ describe('PropertyPanel — 存続期間編集後の series 再導出 (F1, HIGH 
       fireEvent.click(confirm);
     });
     expect(store.getState().domain.histories[0]!.series.entries[0]!.end).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 2 — 編集時刻の一本化と、行き先の明示
+// ---------------------------------------------------------------------------
+//
+// ここから下は実装計画 増分 2（設計書 §D.3 / 裁定 §N-2 の (A)）の受け入れ条件を
+// 固定する。**以前は保存が「選んでいる錨の開始年」に効いていた**ので、画面に 1200 年と
+// 出ていても 0 年の錨が黙って書き換わった。この変更は危険を裏返しにする（上書きの
+// つもりが錨を増やす）ので、裁定は「押す前に行き先を必ず見せる」ことを条件にしている。
+
+/** 現在時刻を指定してストアを作る（錨を選ばずに年を動かす経路を見るため）。 */
+function storeAt(time: TimePoint) {
+  return createSessionStore<Record<string, never>>({
+    initialDomain: {},
+    initial: { mode: EDIT_MODE.Edit, activeFeature: fA, currentTime: time },
+  });
+}
+
+describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-57）', () => {
+  it('錨の無い年で保存すると、**その年**を編集時刻として送る（錨の開始年ではない）', () => {
+    const intents: PropertyEditIntent[] = [];
+    // 系列の錨は 1560 と 1573。1200 年には錨が無い。
+    renderPanel(storeAt(timePointYear(1200)), { dispatchEdit: (i) => intents.push(i) });
+
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '尾張国' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.editTime).toEqual(timePointYear(1200));
+  });
+
+  it('送る時刻は **年だけ**（錨の開始に月日を焼き付けない、U-14）', () => {
+    const intents: PropertyEditIntent[] = [];
+    // 錨を選ぶと現在時刻は 1573年1月1日（年月日粒度）へ同期する。
+    renderPanel(makeStore({ active: true }), { dispatchEdit: (i) => intents.push(i) });
+    fireEvent.click(screen.getByTestId('anchor-row-a2'));
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '尾張国' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.editTime.granularity).toBe('year');
+    expect(intents[0]!.editTime).toEqual(timePointYear(1573));
+  });
+
+  it('保存の対象に種別ラベルと詳細文書が含まれる（設計書 §C.6 の「保存の対象」）', () => {
+    const intents: PropertyEditIntent[] = [];
+    renderPanel(storeAt(timePointYear(1200)), { dispatchEdit: (i) => intents.push(i) });
+
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.kindLabelLabel), {
+      target: { value: '国' },
+    });
+    fireEvent.click(screen.getByTestId('detail-doc-mode-edit'));
+    fireEvent.change(screen.getByTestId('detail-doc-textarea'), {
+      target: { value: '本文' },
+    });
+    fireEvent.click(screen.getByTestId('save-button'));
+
+    // **1 回の押下で 1 つの取り消し単位**（N-46: 保存の契機が 2 つに割れていた）。
+    expect(intents).toHaveLength(1);
+    expect(intents[0]!.attributes.kindLabel).toBe('国');
+    expect(intents[0]!.attributes.detailDocument).toBe('本文');
+  });
+
+  it('詳細文書に専用の保存ボタンは無い（N-46 を揃えた結果）', () => {
+    renderPanel(storeAt(timePointYear(1200)));
+    fireEvent.click(screen.getByTestId('detail-doc-mode-edit'));
+    expect(screen.queryByTestId('detail-doc-save')).not.toBeInTheDocument();
+  });
+});
+
+describe('増分 2 — 編集時刻バッジと保存ボタンの文言が 4 通りに変わる', () => {
+  it('①その年に錨がある ⇒ 上書きと書いてある', () => {
+    renderPanel(makeStore({ active: true }));
+    fireEvent.click(screen.getByTestId('anchor-row-a1')); // 1560 へ同期
+    expect(screen.getByTestId('save-button')).toHaveTextContent('1560年の錨を上書き保存');
+    expect(screen.getByTestId('edit-time-badge')).toHaveAttribute('data-plan', 'overwrite');
+  });
+
+  it('②その年に錨が無い ⇒ 新しく作ると書いてある', () => {
+    renderPanel(storeAt(timePointYear(1200)));
+    expect(screen.getByTestId('save-button')).toHaveTextContent('1200年に錨を作って保存');
+    expect(screen.getByTestId('edit-time-badge')).toHaveAttribute('data-plan', 'newAnchor');
+    expect(screen.getByTestId('edit-time-badge-note')).toHaveTextContent('錨を新しく作ります');
+  });
+
+  it('③年ちょうどでない ⇒ 押せない。理由と「年に丸める」が出る', () => {
+    const store = storeAt(timePointYearMonthDay(5080, 12, 31));
+    renderPanel(store);
+    expect(screen.getByTestId('save-button')).toBeDisabled();
+    expect(screen.getByTestId('save-disabled-reason')).toHaveTextContent('5080年12月31日');
+    expect(screen.getByTestId('edit-time-badge')).toHaveAttribute('data-plan', 'notYearAligned');
+
+    // 丸めると押せるようになる（「次の一手をボタンにする」、設計書 §H.5）。
+    fireEvent.click(screen.getByTestId('round-to-year-button'));
+    expect(store.getState().currentTime).toEqual(timePointYear(5080));
+    expect(screen.getByTestId('save-button')).toBeEnabled();
+    expect(screen.queryByTestId('save-disabled-reason')).not.toBeInTheDocument();
+  });
+
+  it('④その年に地物が無い ⇒ 押せない。理由が出る', () => {
+    // 実アプリでは時刻が動くと選択が外れるので、この状態は現在とどきにくいが、
+    // 「押せないなら理由を必ず出す」規則を素性欄側で固定しておく（増分 5 の裁定 3
+    // で「読むだけでも選べる」になると到達しやすくなる）。
+    const store = makeStore({ active: true });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{ featureAt: () => null }}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    // 地物が解決できないとパネルは案内文になる（現行の振る舞い）。
+    expect(screen.getByTestId('property-guidance')).toBeInTheDocument();
+    expect(screen.queryByTestId('save-button')).not.toBeInTheDocument();
+  });
+});
+
+describe('増分 2 — 打ちかけの内容は、時間を動かしても黙って消えない（N-04）', () => {
+  it('名前を打ちかけて時間を動かすと確認が出て、下書きは残る', () => {
+    const store = storeAt(timePointYear(1200));
+    renderPanel(store);
+
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '打ちかけ' },
+    });
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1500), TIME_CHANGE_SOURCE.Slider);
+    });
+
+    expect(screen.getByTestId('draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('打ちかけ');
+  });
+
+  it('「元の場所へ戻る」で、打っていた年へ戻って続きが打てる', () => {
+    const store = storeAt(timePointYear(1200));
+    renderPanel(store);
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '打ちかけ' },
+    });
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1500), TIME_CHANGE_SOURCE.Slider);
+    });
+
+    fireEvent.click(screen.getByTestId('draft-discard-keep'));
+    expect(store.getState().currentTime).toEqual(timePointYear(1200));
+    expect(screen.queryByTestId('draft-discard-confirm')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('打ちかけ');
+  });
+
+  it('「捨てる」で、移った先の姿へ作り直される', () => {
+    const store = storeAt(timePointYear(1200));
+    renderPanel(store);
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '打ちかけ' },
+    });
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1500), TIME_CHANGE_SOURCE.Slider);
+    });
+
+    fireEvent.click(screen.getByTestId('draft-discard-drop'));
+    expect(screen.queryByTestId('draft-discard-confirm')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('織田領');
+  });
+
+  it('打ちかけが無ければ確認は出ない（連拍で邪魔にならない）', () => {
+    const store = storeAt(timePointYear(1200));
+    renderPanel(store);
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1500), TIME_CHANGE_SOURCE.Slider);
+    });
+    expect(screen.queryByTestId('draft-discard-confirm')).not.toBeInTheDocument();
+  });
+});
+
+describe('増分 2 — まとめ役の子でも錨の欄が消えない（設計書 §C.6 / 裁定 §N-15）', () => {
+  const fChild = asFeatureId('child');
+  const fParent = asFeatureId('parent');
+  const vChild = asVertexId('child-v1');
+
+  function childNamed(name: string): Feature {
+    return createPointFeature(fChild, createBasicAttributes(name, 0, 9999), color, vChild);
+  }
+  function parentFeature(): Feature {
+    return createPointFeature(
+      fParent,
+      createBasicAttributes('デーレ共和国', 0, 9999),
+      color,
+      asVertexId('parent-v1'),
+    );
+  }
+
+  /** 親の系列: 0 年に子が現れ、1200 年に子が改名、2000 年は子に関係ない変化。 */
+  function parentSeries(): AnchorSeries {
+    const mk = (year: number, childName: string, parentName: string) =>
+      createAnchorEntry(
+        createAnchor(
+          asAnchorId(`p${String(year)}`),
+          createAnchorSnapshot(
+            [
+              childNamed(childName),
+              createPointFeature(
+                fParent,
+                createBasicAttributes(parentName, 0, 9999),
+                color,
+                asVertexId('parent-v1'),
+              ),
+            ],
+            createVertexStore([]),
+          ),
+        ),
+        timePointYear(year),
+        null,
+      );
+    return {
+      entries: [
+        mk(0, 'アアウェン州', 'デーレ共和国'),
+        mk(1200, '北アアウェン州', 'デーレ共和国'),
+        mk(2000, '北アアウェン州', 'デーレ連邦'),
+      ],
+    };
+  }
+
+  const inheritedLookup: AnchorSeriesLookup = {
+    // 子は **自分の系列を持たない**（実データの 86 件と同じ形）。
+    anchorSeriesOf: () => null,
+    governingSeriesOf: (id) =>
+      id === fChild
+        ? {
+            series: parentSeries(),
+            ownerFeatureId: fParent,
+            ownerName: 'デーレ共和国',
+            effectiveSize: { featureCount: 61, vertexCount: 3067 },
+          }
+        : null,
+  };
+
+  function renderChildPanel(time: TimePoint) {
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: fChild, currentTime: time },
+    });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{ featureAt: (id) => (id === fChild ? childNamed('北アアウェン州') : id === fParent ? parentFeature() : null) }}
+        anchorLookup={inheritedLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookupFromMap(new Map([[vChild, fChild]]))}
+      />,
+    );
+    return store;
+  }
+
+  it('錨の欄が出て、誰が歴史を持っているかを名前つきで書く', () => {
+    renderChildPanel(timePointYear(1200));
+    expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
+    expect(screen.getByTestId('inherited-anchor-notice')).toHaveTextContent('デーレ共和国');
+  });
+
+  it('**その子に関わる錨だけ**が出る（他人の変化を混ぜない）', () => {
+    renderChildPanel(timePointYear(1200));
+    expect(screen.getByTestId('anchor-row-p0')).toBeInTheDocument();
+    expect(screen.getByTestId('anchor-row-p1200')).toBeInTheDocument();
+    // 2000 年は親の改名だけなので、この子の画面には出ない。
+    expect(screen.queryByTestId('anchor-row-p2000')).not.toBeInTheDocument();
+  });
+
+  it('行に差分の文が出る（N-45）', () => {
+    renderChildPanel(timePointYear(1200));
+    expect(screen.getByTestId('anchor-diff-p1200')).toHaveTextContent('名前が変わった');
+  });
+
+  it('保存の行き先は **親の系列** で判定する（教訓 5.46）', () => {
+    // 1200 年には親の系列に錨がある ⇒ 上書き。子の系列だけを見ていたら
+    // （null なので）常に「新設」になり、画面が実際の振る舞いと食い違う。
+    renderChildPanel(timePointYear(1200));
+    expect(screen.getByTestId('edit-time-badge')).toHaveAttribute('data-plan', 'overwrite');
+  });
+
+  it('錨の無い年では、増える保存量の概算を添える（設計書 §A.3）', () => {
+    renderChildPanel(timePointYear(1500));
+    const badge = screen.getByTestId('edit-time-badge');
+    expect(badge).toHaveAttribute('data-plan', 'newAnchor');
+    expect(screen.getByTestId('edit-time-badge-note')).toHaveTextContent('ファイルが');
+    expect(screen.getByTestId('edit-time-badge-note')).toHaveTextContent('KB');
+  });
+
+  it('借り物の系列を子の画面から書き換えさせない（存続期間のエディタを出さない）', () => {
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: fChild, currentTime: timePointYear(1200) },
+    });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{ featureAt: () => childNamed('北アアウェン州') }}
+        anchorLookup={inheritedLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        anchorIntervalDispatch={{ dispatchAnchorInterval: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookupFromMap(new Map([[vChild, fChild]]))}
+      />,
+    );
+    expect(screen.queryByTestId('anchor-interval-p1200')).not.toBeInTheDocument();
   });
 });

@@ -221,13 +221,16 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(screen.getByTestId('unified-list-empty')).toBeInTheDocument();
   });
 
-  it('lists each feature anchor as a row in 通史 mode (旧錨一覧)', () => {
+  it('通史の行は錨 1 本につき 1 行で、**年と名前の両方**を載せる（増分 2 / N-45）', () => {
+    // 以前は名前しか載せていなかったので、**どの年の記録なのかが読めなかった**
+    // （同じ名前の行が錨の数だけ並ぶ）。
     const a = squareLeaf('f-a', '織田領');
     const root = withLeaf(emptyProject(), a, 1000);
     renderWith(root);
     fireEvent.click(screen.getByTestId('list-mode-history'));
-    const list = screen.getByTestId('unified-list');
-    expect(within(list).getByText('織田領')).toBeInTheDocument();
+    const row = screen.getByTestId('event-list-item-anchor:f-a@1000');
+    expect(row).toHaveTextContent('織田領');
+    expect(row).toHaveTextContent('1000年');
   });
 
   // Regression (BUGHUNT4): each event row must resolve its label from ITS OWN
@@ -249,8 +252,13 @@ describe('SidebarContent — HB-3 wiring', () => {
 
     // The OLD name shows on the first anchor's row; the NEW name on the second.
     // (The bug rendered the first name '織田領' on BOTH rows.)
-    expect(firstRow.textContent?.trim()).toBe('織田領');
-    expect(secondRow.textContent?.trim()).toBe('豊臣領');
+    // 増分 2 で行に年が付いたので、名前は含まれるかどうかで見る。
+    expect(firstRow).toHaveTextContent('織田領');
+    expect(firstRow).not.toHaveTextContent('豊臣領');
+    expect(firstRow).toHaveTextContent('1000年');
+    expect(secondRow).toHaveTextContent('豊臣領');
+    expect(secondRow).not.toHaveTextContent('織田領');
+    expect(secondRow).toHaveTextContent('1100年');
   });
 
   // Regression (BUGHUNT R3): an unnamed feature is the DEFAULT (the add form
@@ -269,9 +277,8 @@ describe('SidebarContent — HB-3 wiring', () => {
 
     // …and the 通史 row must show the SAME visible id, never a blank button.
     fireEvent.click(screen.getByTestId('list-mode-history'));
-    const events = screen.getByTestId('unified-list');
-    const row = within(events).getByText('f-5-4');
-    expect(row).toBeInTheDocument();
+    const row = screen.getByTestId('event-list-item-anchor:f-5-4@1000');
+    expect(row).toHaveTextContent('f-5-4');
     expect(row.textContent?.trim()).not.toBe('');
   });
 });

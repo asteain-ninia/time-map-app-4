@@ -13,6 +13,7 @@ import { useState } from 'react';
 import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
+import type { TimePoint } from '../../domain/time/time-point';
 
 import { AnchorList } from './AnchorList';
 import { AnchorTimeBar } from './AnchorTimeBar';
@@ -29,6 +30,13 @@ export type AnchorViewMode = (typeof ANCHOR_VIEW_MODE)[keyof typeof ANCHOR_VIEW_
 
 export interface AnchorSectionProps {
   readonly series: AnchorSeries;
+  /**
+   * 差分の文を作る相手（増分 2 の中身 5）。まとめ役の子を選んでいるときは **その子の
+   * id** で、`series` は親のものになる（設計書 §C.6「まとめ役の子の錨」）。
+   */
+  readonly featureIdForDiff: FeatureId;
+  /** 既定で出す範囲（現在時刻の前後）を決めるための現在時刻。 */
+  readonly currentTime: TimePoint;
   readonly calendar: Calendar;
   readonly selectedAnchorId: AnchorId | null;
   readonly onSelectAnchor: (entry: AnchorEntry) => void;
@@ -44,8 +52,16 @@ export interface AnchorSectionProps {
 }
 
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
-  const { series, calendar, selectedAnchorId, onSelectAnchor, featureId, onEditInterval } =
-    props;
+  const {
+    series,
+    featureIdForDiff,
+    currentTime,
+    calendar,
+    selectedAnchorId,
+    onSelectAnchor,
+    featureId,
+    onEditInterval,
+  } = props;
   const [mode, setMode] = useState<AnchorViewMode>(
     props.initialMode ?? ANCHOR_VIEW_MODE.List,
   );
@@ -77,6 +93,8 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
       {mode === ANCHOR_VIEW_MODE.List ? (
         <AnchorList
           series={series}
+          featureIdForDiff={featureIdForDiff}
+          currentTime={currentTime}
           calendar={calendar}
           selectedAnchorId={selectedAnchorId}
           onSelectAnchor={onSelectAnchor}

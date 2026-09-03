@@ -50,6 +50,15 @@ export const UI_COMMAND_LABEL = {
   Palette: 'palette',
   /** 頂点の共有解除。 */
   Unshare: 'unshare',
+  /**
+   * 素性の保存が **その年の錨を上書き** したとき（増分 2）。以前は上書きも新設も
+   * 同じ「素性の変更」で、**画面の年に何が起きたのか読み取れなかった**。
+   */
+  EditOverwrite: 'editOverwrite',
+  /** 素性の保存が **その年に錨を新しく作った** とき（増分 2）。 */
+  EditNewAnchor: 'editNewAnchor',
+  /** 値を変えずに「この年に錨を作る」（Ctrl+K, 増分 2 の中身 3）。 */
+  CreateAnchor: 'createAnchor',
 } as const;
 
 export type UiCommandLabel = (typeof UI_COMMAND_LABEL)[keyof typeof UI_COMMAND_LABEL];
@@ -72,6 +81,9 @@ const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
   [UI_COMMAND_LABEL.Interval]: '存続期間の変更',
   [UI_COMMAND_LABEL.Palette]: '配色の変更',
   [UI_COMMAND_LABEL.Unshare]: '頂点の共有解除',
+  [UI_COMMAND_LABEL.EditOverwrite]: 'その年の錨の上書き',
+  [UI_COMMAND_LABEL.EditNewAnchor]: 'その年への錨の新設',
+  [UI_COMMAND_LABEL.CreateAnchor]: 'この年の錨づくり',
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
   所属変更: '所属変更',
   地物の削除: '地物の削除',

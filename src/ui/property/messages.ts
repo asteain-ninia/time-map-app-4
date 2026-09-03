@@ -23,8 +23,25 @@ export const PROPERTY_STRINGS = {
   // -- basic info form (FR-97) -----------------------------------------------
   basicInfoTitle: '基本情報',
   nameLabel: '名前',
+  /**
+   * FR-40 の種別ラベル（「州」「都市」など利用者が自由に付ける表示用の文字列）。
+   * 地物種別（点情報/線情報/末端地物/集約地物）とは**別物**なので、ラベルもそれと
+   * 混ざらない言い方にする。
+   */
+  kindLabelLabel: '種別',
+  kindLabelPlaceholder: '例: 州・都市（空欄でも構いません）',
+  /** 本物の存続期間（錨の並びが正本, U-23）の行見出し。 */
+  existenceLabel: '続く',
+  /** 存続期間の「終わりが決まっていない」側の言い方。 */
+  existenceOpenEnd: '継続中',
+  /** 存続期間が解決できないとき（錨が引けない）に出す言い方。 */
+  existenceUnknown: '（記録がありません）',
   startYearLabel: '開始年',
   endYearLabel: '終了年',
+  /** 畳んだ「詳しい属性」。飾りの開始年・終了年をここへ下ろした（裁定 §N-5 の (A)）。 */
+  advancedAttributesTitle: '詳しい属性',
+  advancedAttributesHint:
+    'ここの開始年・終了年は表示用の属性です。地物がいつ現れていつ消えるかは、上の「続く」（歴史の錨の並び）が決めます。',
   /**
    * 面情報の面積 (FR-20). A read-only DERIVED value shown only for leaf (面) features:
    * the km² area of the resolved shape at the edit time, computed by the geodesy
@@ -49,6 +66,19 @@ export const PROPERTY_STRINGS = {
   viewModeTimeBar: '時間バー表示',
   openEndLabel: '継続中',
   editTargetBadge: '編集対象',
+  /** 錨表の見出しに出す本数。 */
+  anchorCount: (count: number): string => `${count.toLocaleString('ja-JP')} 本`,
+  /** 既定は現在時刻の前後だけを出しているので、隠れている本数を言って広げる口を出す。 */
+  anchorShowAll: (hidden: number): string =>
+    `全部見る（あと ${hidden.toLocaleString('ja-JP')} 本）`,
+  anchorShowNearby: '近くだけ見る',
+  /** 終わりが決まっている錨の行に添える。 */
+  anchorEndsAt: (end: string): string => `〜${end}`,
+  /** 親の名前が引けなかったときの言い方（内部 id は画面に出さない、U-1）。 */
+  unknownParentName: '別の地物',
+  /** 存続期間の操作は押した瞬間に効くことを明記する（N-46 を揃えた残り）。 */
+  intervalImmediateHint:
+    'ここの操作は押した瞬間に効きます（Ctrl+Z で元に戻せます）。',
 
   // -- 存続期間編集 (HB3-12, FR-54〜FR-59) ------------------------------------
   /** Edit the anchor's appear-year (U09 changeStart). */
@@ -96,6 +126,8 @@ export const PROPERTY_STRINGS = {
   detailDocTextareaLabel: '詳細文書（Markdown）',
   /** Shown when the詳細文書 has no content yet (preview placeholder). */
   detailDocEmpty: '詳細文書はまだありません。',
+  /** 詳細文書に専用の保存ボタンが無くなったことを言う（N-46 を揃えた結果）。 */
+  detailDocSaveHint: '名前や見た目と一緒に、下の保存ボタンで確定します。',
 
   // -- 地物種別 (種別) の日本語表示ラベル (要件定義書 §4) --------------------
   // 詳細パネル等の「種別」行に出るドメイン kind の日本語名。ドメインの
@@ -127,6 +159,33 @@ export const PROPERTY_STRINGS = {
    * the user is never told an edit landed when it did not (HB-3 Codex P1).
    */
   editNotWired: '属性編集の保存はこのビルドでは未対応です。',
+
+  // -- 打ちかけの下書きの扱い (N-04) -----------------------------------------
+  /**
+   * N-04: 打ちかけの文字が、錨を選ぶ・時間を動かすだけで**警告なく消えていた**。
+   * 本設計は時刻を動かす頻度が上がるので被害が比例して増える（実装計画 増分 2 の
+   * 中身 7）。捨てる前に必ず聞く。
+   */
+  draftDiscardTitle: '入力中の内容があります',
+  draftDiscardBody: (where: string): string =>
+    `${where}で入力した内容がまだ保存されていません。このままでは失われます。`,
+  draftDiscardKeep: '元の場所へ戻る',
+  draftDiscardDrop: '入力中の内容を捨てる',
+  /** 打ちかけの発生場所の言い方（地物名＋年）。 */
+  draftOrigin: (featureName: string, year: string): string => `${featureName}（${year}）`,
+
+  // -- まとめ役の子の錨 (設計書 §C.6 / 裁定 §N-15) ---------------------------
+  /**
+   * 自分の履歴を持たない地物（実データで 86 件 = 3 つのまとめ役の子ぜんぶ）を選んだ
+   * ときの断り書き。**錨の欄ごと消す**のをやめ、親の系列のうちその地物に関わる錨だけを
+   * その場に出す。
+   */
+  inheritedAnchorNotice: (ownerName: string): string =>
+    `この地物の歴史は親の「${ownerName}」が持っています。下の錨は、その系列のうちこの地物に関わるものだけです。`,
+  /** 親を選び直すボタン。 */
+  inheritedAnchorGoToOwner: '親を見る',
+  /** 親の系列にこの地物の変化が 1 つも無いとき。 */
+  inheritedAnchorNone: 'この地物に関わる変化は、まだ親の記録にありません。',
 } as const;
 
 /**

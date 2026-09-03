@@ -151,6 +151,12 @@ export type CreateLiveDrillBinding = (
 
 export type CreateLiveEditBinding = (
   access: DomainRootAccess,
+  /**
+   * 状態行に出す操作名の内部値（{@link UI_COMMAND_LABEL} の値）。省略すると
+   * 「素性の変更」。素性欄の保存は行き先（上書き / 新設）で意味が変わるので、
+   * 呼び出し側が使い分ける（増分 2 / 設計書 §H.5）。
+   */
+  label?: string,
 ) => LiveConsistencyBinding<FeatureSnapshot>;
 
 export type CreateLiveMergeBinding = (
@@ -811,14 +817,18 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
  * stale capture, 教訓 5.6) and never writes the store — the host's onCommitted owns
  * the single store-write path.
  */
-export const createLiveEditBinding: CreateLiveEditBinding = (access) => {
+export const createLiveEditBinding: CreateLiveEditBinding = (access, label) => {
   const ports: ConsistencyPorts<DomainRoot, FeatureSnapshot> = {
     applyProposal: (current, proposal) => applyEditProposal(current, proposal, calendar),
     checkTime: checkTimeOverExisting,
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Edit),
+    // **確定経路ごとに違う label**（増分 2）。素性欄の保存は「その年の錨を上書き」と
+    // 「その年に錨を新設」で意味がまるで違うのに、状態行にはどちらも「素性の変更を
+    // 行いました」としか出なかった。**何が起きたのか読み取れない**ので、呼び出し側が
+    // 行き先に合わせて label を渡す（既定は従来どおり素性の変更）。
+    makeCommand: labelledMakeCommand(label ?? UI_COMMAND_LABEL.Edit),
   };
   const spatialCache = createTerminalShapeCache();
   return {

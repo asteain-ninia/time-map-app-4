@@ -26,6 +26,11 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
     const v = valuesFromFeature(feature);
     expect(v).toEqual({
       name: '織田領',
+      // 種別ラベルと詳細文書も **保存の対象 4 つ** のうちの 2 つである（増分 2 /
+      // 設計書 §C.6）。付いていない状態は **空文字** で表す（ドメイン側では absent）。
+      // 唯一の空の形にしておかないと、no-op 判定が undefined と '' で食い違う。
+      kindLabel: '',
+      detailDocument: '',
       startYear: 1560,
       endYear: 1582,
       autoColorEnabled: true,
