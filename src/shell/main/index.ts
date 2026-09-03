@@ -53,6 +53,28 @@ const SMOKE_TIMEOUT_MS = 30_000;
 // security flag is relaxed (sandbox / contextIsolation / nodeIntegration unchanged).
 const E2E_TEST = process.env['E2E_TEST'] === '1';
 
+// Offscreen-only mode (E2E_OFFSCREEN=1): **オフスクリーン描画だけ**を有効にし、
+// E2E 専用の投入口（`window.timeMapE2E` / `window.__E2E_HARNESS__`）は **本番と同じく
+// 一切開かない** 第 3 の旗（F1）。
+//
+// なぜ要るのか: 「本番相当の起動では E2E の口が生えない」ことを実物で確かめる spec
+// （e2e/production-harness-absent.spec.ts）は、E2E_TEST を外して起動するしかない。
+// ところが オフスクリーンは E2E_TEST / SMOKE_TEST のときだけ有効なので、その spec だけが
+// **実ウィンドウを開く**（画面のある環境が要る＝ヘッドレスで意味を持たない）。旗を
+// 「露出を開ける」と「オフスクリーンで描く」の 2 つに分ければ、露出の検査は本番と同じ
+// 条件のままヘッドレスで走る。**この旗は additionalArguments に何も積まない**ので、
+// preload も renderer も何も公開しない（検査したい性質そのものは変わらない）。
+const E2E_OFFSCREEN = process.env['E2E_OFFSCREEN'] === '1';
+
+// E2E 専用の脱出口（F2）: 「名前を付けて保存」の行き先を、ネイティブの保存ダイアログを
+// 出さずに環境変数で決める。Playwright は OS のダイアログを操作できないので、これが
+// 無いと **保存の成功経路そのもの**（＝V12 ③「最終保存時刻が見える」）を実データ抜きで
+// 通せない（実データを開く spec でしか確かめられていなかった）。
+// **E2E_TEST=1 のときだけ**読む（本番では旗ごと存在しないので、production の挙動は不変）。
+const E2E_SAVE_AS_PATH: string | null = E2E_TEST
+  ? (process.env['E2E_SAVE_AS_PATH'] ?? null)
+  : null;
+
 // --- 表示名を gimoza に固定する（現状.md B3 / FR-115）-----------------------------
 //
 // アプリの正式名称は **gimoza**。`time-map-app-4`（package.json の `name`）は開発時の
@@ -101,7 +123,7 @@ app.setName(APP_DISPLAY_NAME);
 // 起きるため、close ガード（createWindow で window に貼る）は一切関与しない。
 const shouldBootApp = acquireSingleInstanceLock({
   app,
-  skipLock: E2E_TEST || SMOKE_TEST,
+  skipLock: E2E_TEST || SMOKE_TEST || E2E_OFFSCREEN,
   // 2つ目の起動を検知したら 1つ目の（唯一の）ウィンドウを前面化する（v3 同型: minimized
   // なら restore → focus）。§7.4 非目標により argv の .gimoza パス処理は行わない（focus のみ）。
   onSecondInstance: () => {
@@ -220,7 +242,7 @@ function createWindow(): void {
       // In smoke / E2E mode render offscreen so the launch + interaction path can
       // be verified without a display/compositor. This does not relax any security
       // flag (sandbox / contextIsolation / nodeIntegration stay as above).
-      ...(SMOKE_TEST || E2E_TEST ? { offscreen: true } : {}),
+      ...(SMOKE_TEST || E2E_TEST || E2E_OFFSCREEN ? { offscreen: true } : {}),
       // E2E 専用の投入口の旗（src/shell/ipc/e2e-harness.ts）: E2E_TEST=1 のときだけ preload の
       // process.argv に旗を積み、preload はそれを見て E2E ブリッジ（timeMapE2E）を公開する。
       // 本番では空配列 = 何も足さない = 何も露出しない。旗の中身は両側テストで固定済み。
@@ -498,6 +520,8 @@ function wireIpc(): void {
     },
     dialog: {
       showSaveDialog: async () => {
+        // F2: E2E だけ、ネイティブダイアログの代わりに指定された行き先を返す。
+        if (E2E_SAVE_AS_PATH !== null) return E2E_SAVE_AS_PATH;
         const result = await dialog.showSaveDialog({ filters: [{ name: 'gimoza', extensions: ['gimoza'] }] });
         return result.canceled ? undefined : result.filePath;
       },

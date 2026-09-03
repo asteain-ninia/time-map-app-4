@@ -6,10 +6,13 @@
 // **単体で緑でも組み上がると露出する**型の事故は起こりうる（旗の綴り違い・
 // additionalArguments の渡し忘れ・preload の差し替え）。ここが最後の砦になる。
 //
-// ⚠️ この spec だけは **オフスクリーンではない** 起動をする。オフスクリーンは
-// `SMOKE_TEST=1 || E2E_TEST=1` のときだけ有効で、SMOKE_TEST は did-finish-load で
-// app.exit(0) してしまうため観測に使えない。したがって本番相当を見るにはウィンドウが実際に
-// 出る起動しか無く、**画面のある環境が要る**（このリポジトリの E2E は実機で走らせる前提）。
+// **露出の旗と描画の旗を分けてある**（F1）。以前はオフスクリーンが
+// `SMOKE_TEST=1 || E2E_TEST=1` のときだけ有効だったため、この spec だけが実ウィンドウを
+// 開いていた（画面のある環境が要る＝ヘッドレスでは意味を持たない）。main に
+// `E2E_OFFSCREEN=1`（**オフスクリーンだけ有効・投入口の旗は積まない**）を足したので、
+// ここでは E2E_TEST / SMOKE_TEST を外したまま、描画だけオフスクリーンにして起動する。
+// 検査している性質（additionalArguments に旗が積まれない → preload が何も公開しない →
+// renderer が登録簿へ書かない）は本番とまったく同じである。
 // 起動は他の spec と同じく専用の userData で隔離するので、利用者の設定には触れない。
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -36,6 +39,8 @@ test.describe('本番相当の起動では E2E 専用の口が露出しない (P
     delete childEnv['ELECTRON_RUN_AS_NODE'];
     delete childEnv['E2E_TEST'];
     delete childEnv['SMOKE_TEST'];
+    // 描画だけオフスクリーンにする（投入口の旗は積まれない = 本番と同じ露出）。
+    childEnv['E2E_OFFSCREEN'] = '1';
 
     const app = await electron.launch({
       args: [

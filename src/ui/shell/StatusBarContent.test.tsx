@@ -32,6 +32,7 @@ interface RenderOptions {
   readonly canUndo?: boolean;
   readonly lastLabel?: string | null;
   readonly lastSavedAtMs?: number | null;
+  readonly autoSaveArmed?: boolean;
 }
 
 function renderStatus(opts: RenderOptions = {}) {
@@ -46,6 +47,7 @@ function renderStatus(opts: RenderOptions = {}) {
         messageStore={messageStore}
         undo={{ canUndo: opts.canUndo ?? false, lastLabel: opts.lastLabel ?? null }}
         lastSavedAtMs={opts.lastSavedAtMs ?? null}
+        autoSaveArmed={opts.autoSaveArmed ?? true}
       />
     </StatusBar>,
   );
@@ -134,5 +136,23 @@ describe('最終保存枠（設計書 §H.6 の表）', () => {
   it('保存できていれば時刻を出す', () => {
     renderStatus({ lastSavedAtMs: new Date(2026, 8, 3, 14, 3, 0).getTime() });
     expect(screen.getByTestId('statusbar-last-saved')).toHaveTextContent('最終保存 14:03');
+  });
+
+  it('自動保存が待機中なら、同じ枠に静かに断り書きが出る（A4-a）', () => {
+    // **書いていないことを黙っていると**「5 分ごとに保存されているはず」という誤解の
+    // まま作業が進む。自動保存は上書きする先を一度確認してから始まる。
+    renderStatus({ lastSavedAtMs: null, autoSaveArmed: false });
+    const frame = screen.getByTestId('statusbar-last-saved');
+    expect(frame).toHaveTextContent(STATUS_STRINGS.neverSaved);
+    expect(frame).toHaveTextContent(STATUS_STRINGS.autoSaveHold);
+    expect(frame).toHaveAttribute('data-auto-save-armed', 'false');
+    expect(frame).toHaveAttribute('title', STATUS_STRINGS.autoSaveHoldDetail);
+  });
+
+  it('自動保存が動ける状態なら断り書きは出ない', () => {
+    renderStatus({ lastSavedAtMs: new Date(2026, 8, 3, 14, 3, 0).getTime() });
+    const frame = screen.getByTestId('statusbar-last-saved');
+    expect(frame).not.toHaveTextContent(STATUS_STRINGS.autoSaveHold);
+    expect(frame).toHaveAttribute('data-auto-save-armed', 'true');
   });
 });

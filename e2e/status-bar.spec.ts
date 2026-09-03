@@ -35,8 +35,11 @@ test.describe('状態行の 5 枠と、アプリバーの素性（設計書 §C.
       await expect(page.getByTestId('statusbar-result')).toHaveText('（まだ何もしていません）');
       // 元に戻す: 起動直後は履歴が空なので「不可」。
       await expect(page.getByTestId('statusbar-undo')).toHaveText('元に戻す: 不可');
-      // 最終保存: このセッションではまだ保存していない。
-      await expect(page.getByTestId('statusbar-last-saved')).toHaveText('未保存');
+      // 最終保存: このセッションではまだ保存していない。保存先も未確定なので、
+      // 自動保存が待機中であることも同じ枠に静かに出る（A4-a）。
+      await expect(page.getByTestId('statusbar-last-saved')).toHaveText(
+        '未保存（自動保存は待機中）',
+      );
 
       // 状態行そのものは 28px 固定（端末の表示倍率で端数が出るので丸めて比べる）。
       const statusBox = (await page.getByTestId('statusbar').boundingBox())!;
@@ -88,6 +91,55 @@ test.describe('状態行の 5 枠と、アプリバーの素性（設計書 §C.
       await app.close();
     }
   });
+
+  test('名前を付けて保存すると、ファイル名・タイトル・最終保存時刻が揃って変わる（V12 ③・実データ不要）', async () => {
+    // **V12 ③「最終保存時刻が見える」は実データを開く spec でしか通っていなかった**（F2）。
+    // 実データが無い環境では丸ごと skip され、保存の成功経路が一度も走らない。ここでは
+    // 新規プロジェクトに 1 面だけ描いて、名前を付けて保存の経路で同じことを確かめる。
+    // 行き先は E2E 専用の脱出口（E2E_SAVE_AS_PATH）で渡す — Playwright は OS のネイティブ
+    // ダイアログを操作できないため。
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-saveas-'));
+    const target = join(workDir, 'e2e-save-as.gimoza');
+    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+    try {
+      await commitOneFace(page);
+      // **追加ツールを構えたままだと大域のショートカットが止まる**（作図中はツール自身が
+      // キーボードを持つ = bughunt3 H2）。Ctrl+S が届くように編集モードへ移る。
+      await enterEditMode(page);
+      await expect(page.getByTestId('statusbar-last-saved')).toContainText('未保存');
+      // 保存先が未確定のうちは自動保存も動けない（A4-a の静かな断り書き）。
+      await expect(page.getByTestId('statusbar-last-saved')).toHaveAttribute(
+        'data-auto-save-armed',
+        'false',
+      );
+
+      // 保存先が未確定なので Ctrl+S は「名前を付けて保存」へ落ちる（上書き確認は出ない）。
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('overwrite-dialog')).toHaveCount(0);
+
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+      await expect(page.getByTestId('statusbar-last-saved')).toHaveText(
+        /^最終保存 \d\d:\d\d$/,
+      );
+      await expect(page.getByTestId('app-identity-file')).toHaveText('e2e-save-as.gimoza');
+      await expect(page.getByTestId('app-identity-dirty')).toHaveCount(0);
+      expect(await page.title()).toBe('gimoza — e2e-save-as.gimoza');
+      // 利用者自身がネイティブダイアログで選んだ先なので「確認済み」= 自動保存が動ける（A7）。
+      await expect(page.getByTestId('statusbar-last-saved')).toHaveAttribute(
+        'data-auto-save-armed',
+        'true',
+      );
+      expect(existsSync(target)).toBe(true);
+
+      // 2 回目の Ctrl+S も聞かない（同じ先へ書く）。
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('overwrite-dialog')).toHaveCount(0);
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
 });
 
 test.describe('実データのコピーを開いてから上書き保存する（V12 の ①②③）', () => {
@@ -115,8 +167,11 @@ test.describe('実データのコピーを開いてから上書き保存する�
 
       // 読み込み直後は clean なので未保存の印は無い。
       await expect(page.getByTestId('app-identity-dirty')).toHaveCount(0);
-      // ③ このセッションではまだ保存していない。
-      await expect(page.getByTestId('statusbar-last-saved')).toHaveText('未保存');
+      // ③ このセッションではまだ保存していない。読み込んだ先への上書きはまだ確認して
+      // いないので、自動保存も待機中である（A4-a: 確認前の宛先には 1 バイトも書かない）。
+      await expect(page.getByTestId('statusbar-last-saved')).toHaveText(
+        '未保存（自動保存は待機中）',
+      );
 
       // --- 初回の上書きは確認される（Ctrl+S が黙って上書きしない）------------
       await page.keyboard.press('Control+s');

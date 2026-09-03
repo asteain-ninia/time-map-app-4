@@ -50,11 +50,15 @@ export function commandLabelJa(label: string | null | undefined): string {
 
 /** 状態行に出す結果の定型文（「何をしたか」を過去形で言い切る）。 */
 export const RESULT_STRINGS = {
-  /** 編集が通った。対象の名前が分かるときは添える。 */
+  /**
+   * 編集が通った。対象の名前が分かるときは添える。**「◯◯を行いました」の形にする**のは、
+   * 操作名が名詞（「素性の変更」「地物の削除」）だからで、「◯◯しました」と繋ぐと
+   * 「素性の変更しました」のような日本語にならない文になる。
+   */
   done: (labelJa: string, targetName?: string | null): string =>
     targetName === null || targetName === undefined || targetName === ''
-      ? `${labelJa}しました`
-      : `${targetName}: ${labelJa}しました`,
+      ? `${labelJa}を行いました`
+      : `${targetName}: ${labelJa}を行いました`,
   /** 取り消した。 */
   undone: (labelJa: string): string => `元に戻しました: ${labelJa}`,
   /** やり直した。 */

@@ -130,7 +130,7 @@ test.describe('全体表示 (Ctrl+Home / 表示メニュー)', () => {
 });
 
 test.describe('ステータスバーのカーソル座標', () => {
-  test('地図上では経緯度がライブ表示され、地図外では消える', async () => {
+  test('地図上では経緯度がライブ表示され、地図外では「—」に戻る（枠は残る）', async () => {
     const { app, page } = await launchApp();
     try {
       const statusbar = page.getByTestId('statusbar');

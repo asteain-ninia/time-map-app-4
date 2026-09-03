@@ -63,6 +63,12 @@ export interface LaunchOptions {
    * 試すために開けてある。既定の起動は 1 つも足さない。
    */
   readonly extraArgs?: readonly string[];
+  /**
+   * 子プロセスへ足す環境変数。`E2E_SAVE_AS_PATH`（名前を付けて保存の行き先を
+   * ネイティブダイアログ抜きで決める E2E 専用の脱出口）のように、**起動時にしか
+   * 効かない条件**を渡すために開けてある。既定は何も足さない。
+   */
+  readonly extraEnv?: Readonly<Record<string, string>>;
 }
 
 export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
@@ -77,6 +83,7 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   }
   delete childEnv['ELECTRON_RUN_AS_NODE'];
   childEnv['E2E_TEST'] = '1';
+  for (const [key, value] of Object.entries(options.extraEnv ?? {})) childEnv[key] = value;
 
   const app = await electron.launch({
     args: [

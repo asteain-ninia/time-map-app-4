@@ -57,9 +57,9 @@ describe('commandLabelJa（内部の英語を画面に出さない, U-1 / 教訓
 
 describe('RESULT_STRINGS（何をしたかを過去形で言い切る）', () => {
   it('対象の名前が分かるときは添え、分からなければ操作名だけ', () => {
-    expect(RESULT_STRINGS.done('所属変更', '南ケナ州')).toBe('南ケナ州: 所属変更しました');
-    expect(RESULT_STRINGS.done('所属変更', null)).toBe('所属変更しました');
-    expect(RESULT_STRINGS.done('所属変更', '')).toBe('所属変更しました');
+    expect(RESULT_STRINGS.done('所属変更', '南ケナ州')).toBe('南ケナ州: 所属変更を行いました');
+    expect(RESULT_STRINGS.done('所属変更', null)).toBe('所属変更を行いました');
+    expect(RESULT_STRINGS.done('所属変更', '')).toBe('所属変更を行いました');
   });
 
   it('取り消し・やり直しは操作名を出す', () => {
