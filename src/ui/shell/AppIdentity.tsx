@@ -13,6 +13,7 @@
 // 行とウィンドウタイトルは要件の文言に触れずに済む（AUDIT-DROPPED-REQUIREMENTS 自身が
 // 推奨している置き場所）。
 
+import { DIRTY_MARK } from './status-format';
 import { APP_IDENTITY_STRINGS } from './strings';
 
 export interface AppIdentityProps {
@@ -39,16 +40,24 @@ export function AppIdentity(props: AppIdentityProps): JSX.Element {
       <span className="app-identity__file" data-testid="app-identity-file">
         {props.fileName ?? APP_IDENTITY_STRINGS.unsavedNew}
       </span>
-      {props.dirty && (
-        <span
-          className="app-identity__dirty"
-          title={APP_IDENTITY_STRINGS.dirtyTitle}
-          aria-label={APP_IDENTITY_STRINGS.dirtyTitle}
-          data-testid="app-identity-dirty"
-        >
-          ●
-        </span>
-      )}
+      {/* 未保存の印。**枠は常に確保し、印だけを出し入れする**（B1）。以前は要素ごと
+          出し入れしていたので、印が付いた瞬間に素性表示の占有幅が広がり、上部バーの
+          折り返し段数が 1 つ増えて **地図が 34px 飛んだ**（窓幅 1340 / 1500 で実測）。
+          K-3 は「帯の中身が変わっても地図がずれない」なので、幅そのものを中身から
+          切り離す。読み上げと E2E から見えなくするため、印が無いときは
+          `aria-hidden` と `data-dirty="false"` を付ける（要素は在るが「無い」と読む）。 */}
+      <span
+        className="app-identity__dirty"
+        data-testid="app-identity-dirty-slot"
+        data-dirty={props.dirty ? 'true' : 'false'}
+        {...(props.dirty
+          ? { title: APP_IDENTITY_STRINGS.dirtyTitle, 'aria-label': APP_IDENTITY_STRINGS.dirtyTitle }
+          : { 'aria-hidden': true })}
+      >
+        {props.dirty && (
+          <span data-testid="app-identity-dirty">{DIRTY_MARK}</span>
+        )}
+      </span>
     </div>
   );
 }

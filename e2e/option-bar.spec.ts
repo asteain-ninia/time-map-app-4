@@ -174,10 +174,180 @@ test.describe('T-3 / 結合点 #1 — 行を足しても地図セルの入れ子
       expect(attached.cellTestid).toBe('map-area');
       expect(attached.isSibling).toBe(true);
       expect(attached.optionBarInsideMap).toBe(false);
+
       // 値が付いていること（フォールバックすると付かない＝静かに壊れる）。
-      expect(Number.isFinite(Number(attached.zoom))).toBe(true);
-      expect(Number.isFinite(Number(attached.panX))).toBe(true);
-      expect(Number.isFinite(Number(attached.panY))).toBe(true);
+      //
+      // **以前の検査は空振りだった**（B4）。`Number.isFinite(Number(attached.zoom))` は
+      // 属性が **無い**（`getAttribute` が null）ときも `Number(null) === 0` で真になるので、
+      // 属性が丸ごと消えても緑のままだった。守りたいのは「属性が在って、数として読める
+      // 文字列が入っている」ことなので、null を先に弾き、数値の形も見る
+      // （開発ガイド §5.49「わざと壊して赤くなるか」を満たすための最低条件）。
+      for (const [name, raw] of [
+        ['data-zoom', attached.zoom],
+        ['data-pan-x', attached.panX],
+        ['data-pan-y', attached.panY],
+      ] as const) {
+        expect(
+          raw,
+          `${name} が付いていない（属性ごと消えると 11 ファイルの検証が静かに壊れる）`,
+        ).not.toBeNull();
+        expect(raw, `${name} が空文字`).not.toBe('');
+        // 「12.5」「-3」「0」だけを通す（"abc" や "" は落ちる）。
+        expect(raw!, `${name} が数の形をしていない: ${String(raw)}`).toMatch(
+          /^-?\d+(\.\d+)?$/,
+        );
+        expect(Number.isFinite(Number(raw))).toBe(true);
+      }
+      // ズームは正の値（0 や負は「フォールバックで 0 を書いた」印）。
+      expect(Number(attached.zoom)).toBeGreaterThan(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K-3 の機械検査 その 2 — 窓幅・素性表示・タブ切替（B1 / B2 / B3）
+// ---------------------------------------------------------------------------
+//
+// **増分 1 の検証で実機に出た 2 つの症状**をここで固定する。
+//   ① 未保存の印「●」が付いた瞬間に、窓幅 1340 / 1500 で地図が 34px 飛ぶ
+//      （素性表示の占有幅が中身で変わり、上部バーの折り返し段数が 1 つ増える）。
+//   ② 「プロパティ」タブを押すと画面全体が 0.8px 左へずれて戻らない
+//      （主行の列が `1fr` で、各セルの `min-width` が効いて行の合計が窓幅を超える）。
+//
+// **測る対象は「守りたいものが動かないこと」**（開発ガイド §5.49）。帯そのものではなく
+// `map-area` の矩形を、**同じ窓幅の中で** 中身だけ変えて比べる。
+
+/** 実データにある、いちばん長い部類のファイル名（素性表示の最悪ケース）。 */
+const LONG_FILE_NAME = 'derle-world-full-2026-08-16.gimoza';
+
+const WIDTHS = [800, 1280, 1340, 1500, 1600] as const;
+
+/** アプリバーの素性表示の中身を DOM から差し替える（表示の最悪ケースを作る）。 */
+async function setIdentityText(page: Page, fileName: string): Promise<void> {
+  await page.evaluate((name) => {
+    const file = document.querySelector('[data-testid="app-identity-file"]');
+    if (file !== null) file.textContent = name;
+  }, fileName);
+}
+
+test.describe('K-3 の機械検査 — 窓幅ごとに、素性表示の中身とタブ切替で地図が動かない', () => {
+  test('未保存の印・長いファイル名・「プロパティ」タブの前後で map-area の矩形が完全一致する', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // 窓幅ごとの「素の」矩形をまず全部取る。
+      const baseline = new Map<number, { x: number; y: number; width: number; height: number }>();
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.waitForTimeout(150);
+        baseline.set(width, await mapAreaRect(page));
+      }
+
+      // --- ① 長いファイル名を入れる（素性表示の中身がいちばん長い状態） --------
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.waitForTimeout(150);
+        await setIdentityText(page, LONG_FILE_NAME);
+        await page.waitForTimeout(80);
+        expect(await mapAreaRect(page), `窓幅 ${width}: 長いファイル名で地図が動いた`).toEqual(
+          baseline.get(width),
+        );
+      }
+
+      // --- ② 未保存の印を実際に立てる（1 面を追加して確定する） ----------------
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.waitForTimeout(150);
+      await commitOneFace(page);
+      // ● は「枠は常にあり、中身だけ出入りする」形になっている（B1）。
+      await expect(page.getByTestId('app-identity-dirty')).toHaveCount(1);
+      await expect(page.getByTestId('app-identity-dirty-slot')).toHaveAttribute(
+        'data-dirty',
+        'true',
+      );
+
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.waitForTimeout(150);
+        await setIdentityText(page, LONG_FILE_NAME);
+        await page.waitForTimeout(80);
+        expect(
+          await mapAreaRect(page),
+          `窓幅 ${width}: 未保存の印が付いた瞬間に地図が動いた（実測 34px の再発）`,
+        ).toEqual(baseline.get(width));
+      }
+
+      // --- ③ 「プロパティ」タブを押す前後（0.8px 左ずれの再発） ----------------
+      for (const width of WIDTHS) {
+        await page.setViewportSize({ width, height: 800 });
+        await page.waitForTimeout(150);
+        const before = await mapAreaRect(page);
+        await page.getByTestId('sidebar-tab-properties').click();
+        await page.waitForTimeout(150);
+        expect(await mapAreaRect(page), `窓幅 ${width}: プロパティタブで地図が動いた`).toEqual(
+          before,
+        );
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.waitForTimeout(150);
+        expect(await mapAreaRect(page), `窓幅 ${width}: 一覧タブへ戻して地図が動いた`).toEqual(
+          before,
+        );
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('表示倍率 1.25 でも主行が窓幅を超えない（0.8px の左ずれの根）', async () => {
+    // **起動時にしか効かない条件**なので専用に立ち上げる。1280 の窓で
+    // 「120 + 中央 + 220」が 1280.8px に解決され、画面全体が 0.8px 左へずれていた。
+    const { app, page } = await launchApp({
+      extraArgs: ['--force-device-scale-factor=1.25'],
+    });
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.waitForTimeout(250);
+
+      const before = await mapAreaRect(page);
+      const overflow = await page.evaluate(() => ({
+        dpr: window.devicePixelRatio,
+        scrollW: document.documentElement.scrollWidth,
+        innerW: window.innerWidth,
+      }));
+      // 横スクロールが生えない = 行の合計が窓幅に収まっている。
+      expect(overflow.scrollW).toBeLessThanOrEqual(overflow.innerW);
+
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.waitForTimeout(200);
+      expect(await mapAreaRect(page), '表示倍率 1.25 でタブを押すと画面がずれた').toEqual(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('測量の ON / OFF は上部バーの段数を変える（既知の残り。OFF で必ず元へ戻る）', async () => {
+    // **これは「動かない」ことの検査ではない。** 測量の可変表示（案内文・距離・座標の
+    // 読み取り）はいまアプリバーに置かれていて、ON にすると段が増えて地図の上端が
+    // 下がる（実測: 窓幅 1280 で 155.2 → 242）。設計書 §B.4 / §B.5 はこれを
+    // 「個別フォーカスの 4 部品をアプリバーから降ろす（増分 5）」「確定部品を
+    // オプションバーへ移す（増分 3-4）」で解くとしており、増分 1 の範囲ではない。
+    //
+    // ここで固定するのは **可逆であること**（OFF に戻したら矩形が寸分違わず戻る）である。
+    // 残っている段差そのものは docs/現状.md に番号付きで記録してある。
+    const { app, page } = await launchApp();
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await page.waitForTimeout(200);
+      const off = await mapAreaRect(page);
+
+      await page.getByTestId('survey-toggle').click();
+      await page.waitForTimeout(200);
+      const on = await mapAreaRect(page);
+      expect(on.y, '測量 ON で上部バーの段が増える（既知）').toBeGreaterThan(off.y);
+
+      await page.getByTestId('survey-toggle').click();
+      await page.waitForTimeout(200);
+      expect(await mapAreaRect(page), '測量を OFF に戻したら矩形が元へ戻る').toEqual(off);
     } finally {
       await app.close();
     }

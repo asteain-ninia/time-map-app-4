@@ -35,6 +35,27 @@ function ruleBody(selector: string): string {
   return m[1] ?? '';
 }
 
+/**
+ * `@media (<condition>) { ... }` の中身をそのまま返す。`ruleBody` の `[^}]*` は
+ * 入れ子の `}` で止まってしまうので、こちらは括弧の対応を数えて切り出す。
+ */
+function mediaBlock(condition: string): string {
+  const esc = condition.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`@media\\s*\\(\\s*${esc}\\s*\\)\\s*\\{`);
+  const m = re.exec(shellCss);
+  if (m === null) throw new Error(`@media rule not found: ${condition}`);
+  let depth = 1;
+  let i = m.index + m[0].length;
+  const start = i;
+  while (i < shellCss.length && depth > 0) {
+    const ch = shellCss[i];
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth -= 1;
+    i += 1;
+  }
+  return shellCss.slice(start, i - 1);
+}
+
 /** 規則本体から `prop: value;` を 1 つ読む（空白は正規化）。 */
 function decl(body: string, prop: string): string | undefined {
   const re = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`, 'm');
@@ -60,13 +81,25 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     expect(decl(ruleBody('.option-bar__commit'), 'flex')).toBe('0 0 176px');
   });
 
-  it('伸縮するのは「次の一手」と「設定」だけで、どちらも縮みきれる', () => {
+  it('伸縮するのは「次の一手」と「設定」だけ', () => {
     expect(decl(ruleBody('.option-bar__next'), 'flex')).toBe('1 1 auto');
     // 設定欄は中身の量で決まるが、伸びて他を押し出すことはない（0 1 auto）。
     expect(decl(ruleBody('.option-bar__settings'), 'flex')).toBe('0 1 auto');
   });
 
+  it('設定欄には下限がある（「次の一手」が長くても部品 1 個ぶんは読める）', () => {
+    // 実測で捕まえた潰れ: 「次の一手」に長い拒否理由を入れると、`flex: 0 1 auto` の
+    // 設定欄が縮む側に回り、72px → 35px まで潰れて「吸着 ▾」が読めなくなった。
+    // 共有規則の `min-width: 0`（次項）をこの規則で上書きして下限を切る。ここが 0 に
+    // 戻ると同じ潰れが再発する。縮む役は `min-width: 0` のままの「次の一手」が持つ。
+    expect(decl(ruleBody('.option-bar__settings'), 'min-width')).toBe('72px');
+    expect(decl(ruleBody('.option-bar__next'), 'min-width')).toBeUndefined();
+  });
+
   it('5 区画すべてが min-width:0 + overflow:hidden（中身が枠を押し広げられない）', () => {
+    // 共有規則の宣言そのものを読む。設定欄だけは後続の個別規則が min-width を
+    // 上書きする（前項）が、それは「押し広げない」上限の話ではなく下限の話なので、
+    // ここが 0 であることは引き続き必要（中身の min-content が外へ効かない）。
     const shared = ruleBody(
       '.option-bar__tool,\n.option-bar__target,\n.option-bar__next,\n.option-bar__settings,\n.option-bar__commit',
     );
@@ -139,5 +172,66 @@ describe('シェルの行割り（オプションバーは地図セルの外の�
     expect(decl(ruleBody('.map-area__canvas-mount'), 'inset')).toBe('0');
     expect(decl(ruleBody('.map-area__input'), 'inset')).toBe('0');
     expect(shellCss).not.toMatch(/\.map-area[^{}]*\.option-bar/);
+  });
+});
+
+describe('アプリバーの素性表示と主行の列（K-3 / B1 / B2）', () => {
+  it('素性表示は固定幅（中身の長さで占有幅が変わらない）', () => {
+    // **未保存の印が付いた瞬間に地図が 34px 飛んだ**（窓幅 1340 / 1500 で実測）。
+    // 原因は素性表示が `flex: 0 0 auto` ＋ `max-width` で、実幅が中身で変わったこと。
+    // 中身が変わっても占有幅が動かない = 上部バーの折り返し段数が中身で変わらない。
+    const identity = ruleBody('.app-identity');
+    expect(decl(identity, 'flex')).toBe('0 0 var(--shell-identity-w)');
+    expect(decl(identity, 'width')).toBe('var(--shell-identity-w)');
+    expect(decl(identity, 'box-sizing')).toBe('border-box');
+    expect(decl(identity, 'overflow')).toBe('hidden');
+    expect(decl(identity, 'white-space')).toBe('nowrap');
+    // 幅そのものはシェルの変数 1 か所で決める。
+    expect(decl(ruleBody('.app-shell'), '--shell-identity-w')).toBe('240px');
+  });
+
+  it('未保存の印は「付いていなくても枠が残る」', () => {
+    // 要素ごと出し入れすると、印が付いた瞬間に素性表示が広がる。枠を常に確保して
+    // 中身だけ出し入れする（部品側は data-dirty で状態を出す）。
+    const dirty = ruleBody('.app-identity__dirty');
+    expect(decl(dirty, 'flex')).toBe('0 0 10px');
+    expect(decl(dirty, 'width')).toBe('10px');
+  });
+
+  it('主行の中央列は minmax(0, 1fr)、両脇のセルに min-width の下限を書かない', () => {
+    // **「プロパティ」タブを押すと画面全体が 0.8px 左へずれて戻らなかった**（実測、
+    // devicePixelRatio 1.25）。列が `1fr` で、各セルに書かれた `min-width` のほうが
+    // 下限として効き、行の合計が窓幅 1280 → 1280.8px になっていた（開発ガイド §5.50）。
+    expect(decl(ruleBody('.app-shell__main'), 'grid-template-columns')).toBe(
+      'var(--shell-toolbar-w) minmax(0, 1fr) var(--shell-sidebar-w)',
+    );
+    // 列幅の真実源は grid-template-columns 1 か所。セル側に同じ値を書かない。
+    expect(decl(ruleBody('.app-shell__map'), 'min-width')).toBe('0');
+    expect(decl(ruleBody('.app-shell__sidebar'), 'min-width')).toBe('0');
+  });
+});
+
+describe('狭い窓での状態行（D2 — 最小窓で「直前の結果」が潰れない）', () => {
+  it('「直前の結果」の枠に下限がある', () => {
+    // 800×600 では 座標 240 ＋ 縮尺 160 ＋ 取り消し 160 ＋ 最終保存 160 ＝ 720px を
+    // 固定枠が取り、いちばん大事な「直前の結果」が実測 28px まで潰れて 1 文字も
+    // 読めなかった。
+    expect(decl(ruleBody('.statusbar__frame--result'), 'min-width')).toBe('200px');
+  });
+
+  it('狭い窓では両端の 4 枠を詰める（枠を消さずに幅だけ詰める）', () => {
+    // V12 の合格条件（開いているファイル・未保存の印・最終保存時刻が見える）は
+    // 狭い窓でも守るので、`display: none` で消さずに幅を詰める。
+    const media = mediaBlock('max-width: 1180px');
+    expect(media).toContain('.statusbar__frame--coords');
+    expect(media).toContain('.statusbar__frame--scale');
+    expect(media).toContain('.statusbar__frame--undo');
+    expect(media).toContain('.statusbar__frame--saved');
+    expect(media).not.toContain('display: none');
+    // 800px で収まる合計であること（余白 20 ＋ 隙間 32 ＋ 4 枠 ＋ 下限 200 ≦ 800）。
+    const widths = [...media.matchAll(/flex:\s*0\s+0\s+(\d+)px/g)].map((m) => Number(m[1]));
+    expect(widths).toHaveLength(4);
+    const total = widths.reduce((a, b) => a + b, 0);
+    expect(total + 200 + 32 + 20).toBeLessThanOrEqual(800);
   });
 });

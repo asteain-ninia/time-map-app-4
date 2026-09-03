@@ -55,7 +55,17 @@ export interface LaunchedApp {
  * display. GPU/sandbox launch flags match the smoke runner so the headless CI box
  * boots deterministically. Returns once the renderer's first window is available.
  */
-export async function launchApp(): Promise<LaunchedApp> {
+/** {@link launchApp} の追加指定（既定は何も足さない）。 */
+export interface LaunchOptions {
+  /**
+   * Electron へ追加で渡す起動引数。表示倍率を変えた検査
+   * （`--force-device-scale-factor=1.25`）のように、**起動時にしか効かない条件**を
+   * 試すために開けてある。既定の起動は 1 つも足さない。
+   */
+  readonly extraArgs?: readonly string[];
+}
+
+export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
   // Build the child env from the current one, then DELETE the run-as-node leak.
   // Electron treats ELECTRON_RUN_AS_NODE as set even when empty (""), which makes
   // `require('electron')` in main return a path string instead of the app — and
@@ -76,6 +86,7 @@ export async function launchApp(): Promise<LaunchedApp> {
       '--disable-gpu',
       '--no-sandbox',
       '--disable-software-rasterizer',
+      ...(options.extraArgs ?? []),
     ],
     cwd: projectRoot,
     env: childEnv,

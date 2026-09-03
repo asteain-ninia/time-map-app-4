@@ -28,10 +28,28 @@ describe('AppIdentity（設計書 §H.6）', () => {
 
     rerender(<AppIdentity worldName="デーレ界" fileName="a.gimoza" dirty />);
     expect(screen.getByTestId('app-identity-dirty')).toBeInTheDocument();
-    expect(screen.getByTestId('app-identity-dirty')).toHaveAttribute(
+    expect(screen.getByTestId('app-identity-dirty-slot')).toHaveAttribute(
       'aria-label',
       APP_IDENTITY_STRINGS.dirtyTitle,
     );
+  });
+
+  it('印の **枠** は付いていないときも残る（K-3 / B1: 印の出し入れで地図をずらさない）', () => {
+    // **以前は要素ごと出し入れしていた。** 印が付いた瞬間に素性表示の占有幅が広がり、
+    // 上部バーの折り返し段数が 1 つ増えて地図が 34px 飛んだ（窓幅 1340 / 1500 で実測）。
+    // 幅は CSS が持つので、ここでは「枠の要素が両方の状態で在る」ことだけを見る
+    // （寸法そのものは E2E の K-3 検査が実寸で見る＝開発ガイド §5.49 の二段構え）。
+    const { rerender } = render(
+      <AppIdentity worldName="デーレ界" fileName="a.gimoza" dirty={false} />,
+    );
+    const slot = screen.getByTestId('app-identity-dirty-slot');
+    expect(slot).toBeInTheDocument();
+    expect(slot).toHaveAttribute('data-dirty', 'false');
+    // 印そのものは無く、読み上げからも外れている。
+    expect(slot).toHaveAttribute('aria-hidden', 'true');
+
+    rerender(<AppIdentity worldName="デーレ界" fileName="a.gimoza" dirty />);
+    expect(screen.getByTestId('app-identity-dirty-slot')).toHaveAttribute('data-dirty', 'true');
   });
 
   it('保存先が決まっていない新規は「（未保存の新規）」と出す（空欄にしない）', () => {

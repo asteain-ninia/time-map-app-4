@@ -60,6 +60,10 @@ body {
    * blocking modals inside the overlay still cover everything (教訓 5.14). */
   --shell-toolbar-w: 120px;
   --shell-sidebar-w: 220px;
+  /* アプリバーの素性表示の **固定** 占有幅（B1）。世界名・ファイル名・未保存の印の
+   * 長さで幅が変わると、上部バーの折り返し段数が中身で変わって地図の上端が動く。
+   * K-3 は「帯の中身が変わっても地図がずれない」なので、幅を中身から切り離す。 */
+  --shell-identity-w: 240px;
   display: grid;
   /* 行: メニュー / オプションバー / 主行 / 時刻レール / 状態行 (設計書 §B.1)。
    * オプションバーは **地図セルの外のシェル行** なので、地図セルの DOM の入れ子
@@ -113,8 +117,15 @@ body {
 .app-shell__main {
   grid-row: 3;
   display: grid;
-  /* left toolbar (fixed) | center map (fluid) | right sidebar (fixed). */
-  grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
+  /* left toolbar (fixed) | center map (fluid) | right sidebar (fixed).
+   *
+   * 中央は **`minmax(0, 1fr)`**（B2）。`1fr` の自動最小サイズは中身の min-content なので、
+   * サイドバーの `min-width: 220px` と地図セルの `min-width: 200px` が効いた状態で
+   * 端数が出ると、行全体が窓幅をわずかに超える。devicePixelRatio 1.25 の環境では
+   * それが 1280 → 1280.8px の食い違いになり、「プロパティ」タブを押した瞬間に
+   * 画面全体が 0.8px 左へずれて戻らなかった（実測）。トラックの最小を 0 にして、
+   * 中身の min-content が列幅に効く経路そのものを断つ（開発ガイド §5.50）。 */
+  grid-template-columns: var(--shell-toolbar-w) minmax(0, 1fr) var(--shell-sidebar-w);
   min-height: 0;
 }
 
@@ -123,21 +134,35 @@ body {
   min-width: 48px;
   /* HB-5: scroll ONLY when the content truly overflows vertically, and never
    * horizontally (a 1px sub-pixel rounding used to force a permanent horizontal
-   * scrollbar). overflow-x:hidden + overflow-y:auto removes the spurious bars. */
+   * scrollbar). overflow-x:hidden + overflow-y:auto removes the spurious bars.
+   *
+   * ここで隠していた「1px の丸め」の **出どころ** は主行の列幅だった（B2）。
+   * 列トラックが整数に解決されない環境（devicePixelRatio 1.25）では、各セルに
+   * 書かれた `min-width` のほうが下限として効き、行の合計が窓幅を 0.8px 超える。
+   * 根は `.app-shell__main` 側で断った（`minmax(0, 1fr)` ＋ 各セルの `min-width: 0`）ので、
+   * この `overflow-x: hidden` は「道具の帯そのものが横に溢れたとき」だけの守りになった。 */
   overflow-x: hidden;
   overflow-y: auto;
 }
 
 .app-shell__map {
   grid-column: 2;
-  min-width: 200px;
+  /* 同上（B2）: grid item の既定 `min-width: auto` と、ここに書いてあった 200px の
+   * 下限が、列トラックの解決値より大きくなると行が窓幅を超える。列幅は
+   * `grid-template-columns` の `minmax(0, 1fr)` が決める。 */
+  min-width: 0;
   min-height: 0;
   position: relative;
 }
 
 .app-shell__sidebar {
   grid-column: 3;
-  min-width: 220px;
+  /* **列幅（--shell-sidebar-w）と同じ値を書かない**（B2）。ここに `min-width: 220px` と
+   * 書いてあったせいで、列トラックが 220px ちょうどに解決されない環境（実測:
+   * devicePixelRatio 1.25 で 220.8px）では min-width のほうが下限として効き、
+   * 主行の合計が窓幅を 0.8px 超えて画面全体が左へずれた。列幅はグリッドの
+   * `grid-template-columns` が唯一の真実源で、ここは 0 まで縮んでよい。 */
+  min-width: 0;
   /* HB-5: same as the toolbar — vertical scroll on demand only, no horizontal bar. */
   overflow-x: hidden;
   overflow-y: auto;
@@ -536,9 +561,16 @@ body {
   flex: 0 0 160px;
 }
 
-/* 直前の結果だけが伸びる。長い理由は省略記号で切り、枠は動かさない。 */
+/* 直前の結果だけが伸びる。長い理由は省略記号で切り、枠は動かさない。
+ *
+ * **下限を切る**（D2）。800×600 では 座標 240 ＋ 縮尺 160 ＋ 取り消し 160 ＋ 最終保存 160
+ * ＝ 720px を固定枠が取ってしまい、いちばん大事な「直前の結果」が実測 28px まで潰れて
+ * 1 文字も読めなかった。下限を切ったうえで、狭い窓では **両端の 4 枠のほうを畳む**
+ * （下のメディアクエリ）。畳むだけで消さないのは、V12 の合格条件（開いているファイル・
+ * 未保存の印・最終保存時刻が常に見える）を狭い窓でも守るためである。 */
 .statusbar__frame--result {
   flex: 1 1 auto;
+  min-width: 200px;
 }
 
 .statusbar__frame--undo {
@@ -564,6 +596,27 @@ body {
   text-overflow: ellipsis;
 }
 
+/* 狭い窓（〜1180px）では、両端の 4 枠を詰めて「直前の結果」の幅を確保する（D2）。
+ * 800px の内訳: 余白 20 ＋ 隙間 32 ＋ 座標 160 ＋ 縮尺 120 ＋ 取り消し 110 ＋ 最終保存 120
+ * ＝ 562px。残る 238px が「直前の結果」に回り、下限 200px を満たす。 */
+@media (max-width: 1180px) {
+  .statusbar__frame--coords {
+    flex: 0 0 160px;
+  }
+
+  .statusbar__frame--scale {
+    flex: 0 0 120px;
+  }
+
+  .statusbar__frame--undo {
+    flex: 0 0 110px;
+  }
+
+  .statusbar__frame--saved {
+    flex: 0 0 120px;
+  }
+}
+
 /* 出すものが無い枠 (「—」「（まだ何もしていません）」)。枠は残すが読みの重みは落とす。 */
 .statusbar__muted {
   color: #9aa5b4;
@@ -576,6 +629,12 @@ body {
 
 .statusbar__value[data-tone='progress'] {
   color: #ffe08a;
+}
+
+/* 中立（やめた・何も変わらなかった）。**成功の緑では出さない** — 「保存をやめました」を
+ * 緑で出すと「保存できた」と読み違える（実機で読み違えた）。地の色のまま置く。 */
+.statusbar__value[data-tone='neutral'] {
+  color: inherit;
 }
 
 /* 「明示的に閉じる」だけが消す契機 (教訓 5.12 / K-7)。時間では消えない。 */
@@ -606,7 +665,12 @@ body {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: 360px;
+  /* **固定幅**（B1）。`max-width` だけでは中身の長さで実幅が変わる（実測 120px→…）ので、
+   * 伸びも縮みもしない箱にする。中身は省略記号で切る（下の world / file）。
+   * 未保存の印は下の `.app-identity__dirty` が常に枠を確保する。 */
+  flex: 0 0 var(--shell-identity-w);
+  width: var(--shell-identity-w);
+  box-sizing: border-box;
   padding: 0 12px;
   font-size: 12px;
   color: var(--c-chrome-text);
@@ -626,8 +690,13 @@ body {
   opacity: 0.6;
 }
 
+/* 未保存の印の **枠**。印が付いていなくても幅を占め続ける（B1）。要素ごと出し入れ
+ * すると、印が付いた瞬間に素性表示が広がって上部バーの折り返し段数が変わり、
+ * 地図が 34px 飛ぶ（窓幅 1340 / 1500 で実測）。 */
 .app-identity__dirty {
-  flex: none;
+  flex: 0 0 10px;
+  width: 10px;
+  text-align: center;
   color: #ffd166;
 }
 
@@ -642,8 +711,11 @@ body {
  *    折り返さない = 窓幅で地図の上端が上下する §1.3 の事故も起こさない)。
  *  - 道具名 112 / 対象 240 / 確定 176 は `flex: 0 0 <固定px>`。**対象欄は 0 件でも枠が残り**
  *    「（選んでいません）」が薄く出る。確定欄は確定の要らない道具のとき空の 176px として残る。
- *  - 伸縮するのは「次の一手」と「設定」だけで、どちらも `min-width: 0` + `overflow: hidden`。
- *    中身がどれだけ長くても外寸を押し広げられない。
+ *  - 伸縮するのは「次の一手」と「設定」だけで、どちらも `overflow: hidden`。中身がどれだけ
+ *    長くても外寸を押し広げられない (共有規則の `min-width: 0`)。
+ *  - ただし **設定欄だけは下限 72px を切る**。上限（押し広げない）だけを縛ると、
+ *    「次の一手」が長いときに設定欄が潰れて中の部品が読めなくなる (実測 72px → 35px)。
+ *    縮む役は `min-width: 0` のままの「次の一手」が引き受ける。
  */
 .option-bar {
   display: flex;
@@ -689,6 +761,15 @@ body {
 
 .option-bar__settings {
   flex: 0 1 auto;
+  /* **下限を切る**（共有規則の `min-width: 0` をここだけ上書きする）。設定欄は
+     `flex: 0 1 auto` なので、「次の一手」に長い文（拒否理由など）が入ると縮む側に回り、
+     実測で 72px → 35px まで潰れて「吸着 ▾」の文字が読めなくなった。72px は
+     **部品 1 個が読める最小幅**として決めた値: 12px の文字で「吸着」= 24px、
+     半角空白 + ▾ ≒ 16px、ボタンの左右 padding 20px（`.option-bar__commit-button` と同じ
+     4px 10px）と枠線 2px を足して約 62px。切りのいい 72px に丸めてある（潰れる前に実測した
+     自然幅と同じ）。ここに下限があっても帯の外寸は変わらない — 縮む余地は
+     `.option-bar__next`（`min-width: 0`）が持っているし、帯そのものは `overflow: hidden`。 */
+  min-width: 72px;
 }
 
 .option-bar__commit {
