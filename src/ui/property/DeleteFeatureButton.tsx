@@ -42,6 +42,15 @@ export interface DeleteFeatureButtonProps {
    * The host issues the U31 delete command + pushes one undo unit (FR-73 / 85).
    */
   readonly onConfirm: (featureId: FeatureId) => void;
+  /**
+   * 編集の権限（教訓 5.13 / K-6）。**この入力が無かったせいで、表示専用モードでも
+   * 「地物を削除」だけが押せていた**（N-03）。値を変える入力 10 個は全部 disabled なのに、
+   * いちばん取り返しのつかない操作だけが関門を素通りしていた。呼び出し側は
+   * `permissions.ts` の `canEdit(mode)` を渡す — ここで独自のモード判定を書かない
+   * （部品ごとに判定を書くと、見た目だけ非表示でショートカットや右クリックが残る）。
+   * 省略時は true（既存の呼び出しの意味を変えないため）。
+   */
+  readonly editable?: boolean;
 }
 
 /** Read the feature id out of a feature-bearing target, else null (None → null). */
@@ -60,16 +69,19 @@ function targetFeatureId(target: DeleteTarget): FeatureId | null {
 }
 
 export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Element {
-  const { target, onConfirm } = props;
+  const { target, onConfirm, editable = true } = props;
   const featureId = targetFeatureId(target);
-  const enabled = featureId !== null;
+  // 対象があること **かつ** 編集できること (FR-85 ＋ 教訓 5.13 / K-6)。
+  const enabled = featureId !== null && editable;
 
   const [confirming, setConfirming] = useState(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const openConfirm = useCallback(() => {
-    if (featureId !== null) setConfirming(true);
-  }, [featureId]);
+    // 権限が無いときは確認ダイアログすら開かない（disabled 属性だけに頼ると、
+    // 属性を外せる経路が 1 つでもあれば削除が通ってしまう）。
+    if (featureId !== null && editable) setConfirming(true);
+  }, [featureId, editable]);
 
   const cancel = useCallback(() => {
     // 教訓 5.22 / FR-85: cancel does nothing — no command, no history.
@@ -77,10 +89,12 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
   }, []);
 
   const confirm = useCallback(() => {
-    // Confirm only fires when a target exists (button was enabled to open).
-    if (featureId !== null) onConfirm(featureId);
+    // Confirm only fires when a target exists AND editing is permitted (the button
+    // was enabled to open). 権限は開くときと確定するときの両方で見る — ダイアログが
+    // 開いたまま「読むだけ」へ切り替わっても削除が通らないようにするため。
+    if (featureId !== null && editable) onConfirm(featureId);
     setConfirming(false);
-  }, [featureId, onConfirm]);
+  }, [featureId, editable, onConfirm]);
 
   // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the
   // shared trap (教訓 5.13 / 5.14), consistent with the app's other role=dialog modals

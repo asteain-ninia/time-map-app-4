@@ -231,6 +231,49 @@ describe('PropertyPanel — view-only mode (FR-99前段, 教訓 5.13)', () => {
     expect(screen.queryByTestId('save-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('view-only-notice')).toBeInTheDocument();
   });
+
+  it('N-03: 「地物を削除」も同じ関門で無効になる（K-6 の抜け道を塞ぐ）', () => {
+    // かつてはこのボタンだけが権限を素通りしていた（DeleteFeatureButton に権限の入力が
+    // 無く、PropertyPanel が onDeleteFeature を直接渡していた）。値を変える入力が全部
+    // disabled なのに、いちばん取り返しのつかない操作だけが生きている状態だった。
+    const onDeleteFeature = vi.fn();
+    render(
+      <PropertyPanel
+        store={makeStore({ active: true, mode: 'view' })}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        onDeleteFeature={onDeleteFeature}
+      />,
+    );
+    const button = within(screen.getByTestId('delete-feature')).getByRole('button', {
+      name: '地物を削除',
+    });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(onDeleteFeature).not.toHaveBeenCalled();
+  });
+
+  it('編集モードでは「地物を削除」が押せる（検査が空振りしていない証）', () => {
+    const onDeleteFeature = vi.fn();
+    render(
+      <PropertyPanel
+        store={makeStore({ active: true })}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        onDeleteFeature={onDeleteFeature}
+      />,
+    );
+    expect(
+      within(screen.getByTestId('delete-feature')).getByRole('button', { name: '地物を削除' }),
+    ).toBeEnabled();
+  });
 });
 
 describe('PropertyPanel — decision message persistence (教訓 5.12)', () => {

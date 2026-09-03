@@ -26,7 +26,7 @@ import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selecti
 import type { Calendar } from '../../domain/time/calendar';
 import { isPersistedYear } from '../../domain/time/validate';
 
-import { EDIT_MODE } from '../state/session';
+import { canEdit } from '../shell/permissions';
 import type { SessionStore } from '../state/store';
 import { TIME_CHANGE_SOURCE } from '../state/store';
 
@@ -321,12 +321,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [anchorIntervalDispatch],
   );
 
+  // 教訓 5.13 / K-6: 権限の判定は `permissions.ts` の canEdit(mode) **1 本** に寄せる。
+  // ここは以前 `mode !== EDIT_MODE.View` を素で書いていて（同じ式が 3 か所に散っていた）、
+  // 「判定点は 1 か所」という自己申告が事実でなかった。式そのものは canEdit と同じなので
+  // 意味は変わらない — 変わるのは「モードの境界を書く場所が 1 つになる」ことである。
+  const editingAllowed = canEdit(mode);
+
   // The存続期間 editor is shown only when the host wired the dispatch AND the feature is
   // editable (whole-form gate, 教訓 5.13) — no dead control in view mode / pre-binding.
   const intervalEditable =
-    anchorIntervalDispatch !== undefined &&
-    decision.editable &&
-    mode !== EDIT_MODE.View;
+    anchorIntervalDispatch !== undefined && decision.editable && editingAllowed;
 
   // FR-98 後段: save the 詳細文書 draft through the host dispatch (ONE undo unit at
   // the edit-target anchor's start — the SAME editTime discipline handleSave uses,
@@ -364,7 +368,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // The 詳細文書 editor is editable under the SAME whole-form gate the rest of the
   // panel uses (教訓 5.13) — and only when the host wired the dispatch (honest stub).
   const detailDocEditable =
-    detailDocumentDispatch !== undefined && decision.editable && mode !== EDIT_MODE.View;
+    detailDocumentDispatch !== undefined && decision.editable && editingAllowed;
 
   return (
     <div className="property-panel" data-testid="property-panel">
@@ -384,7 +388,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
           <BasicInfoForm
             feature={feature}
-            editable={decision.editable && mode !== EDIT_MODE.View}
+            editable={decision.editable && editingAllowed}
             editTime={selectedEntry !== null ? selectedEntry.start : null}
             // The edit-target ANCHOR identity (bughunt 第12波 #1). The form re-seeds
             // its draft when this changes so a time move that advances the
@@ -436,11 +440,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
           {/* FR-85: the always-present「地物を削除」button for the shown feature. Routes
               through the host's onDeleteFeature (= the SAME U31 delete the menu/Delete-key
-              use). Only mounted when the host wired a handler (honest-stub discipline). */}
+              use). Only mounted when the host wired a handler (honest-stub discipline).
+
+              N-03 / K-6: このボタンだけが権限の関門を素通りしていて、**表示専用モードでも
+              押せた**。値を変える入力 10 個は全部 disabled なのに、いちばん取り返しのつかない
+              操作だけが生きている状態だった。他の 3 か所とまったく同じ判定を渡す。 */}
           {onDeleteFeature !== undefined && (
             <DeleteFeatureButton
               target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
               onConfirm={onDeleteFeature}
+              editable={decision.editable && editingAllowed}
             />
           )}
         </>

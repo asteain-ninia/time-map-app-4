@@ -26,9 +26,15 @@ const CONTEXT: DeleteTarget = {
 };
 const NONE: DeleteTarget = { kind: DELETE_TARGET_KIND.None };
 
-function renderButton(target: DeleteTarget) {
+function renderButton(target: DeleteTarget, editable?: boolean) {
   const onConfirm = vi.fn();
-  render(<DeleteFeatureButton target={target} onConfirm={onConfirm} />);
+  render(
+    <DeleteFeatureButton
+      target={target}
+      onConfirm={onConfirm}
+      {...(editable === undefined ? {} : { editable })}
+    />,
+  );
   return { onConfirm };
 }
 
@@ -41,6 +47,21 @@ describe('DeleteFeatureButton (FR-85, 受け入れ基準 4)', () => {
   it('is enabled when the target is the active feature', () => {
     renderButton(ACTIVE);
     expect(screen.getByLabelText(DELETE_BUTTON_LABEL)).toBeEnabled();
+  });
+
+  it('editable=false では対象があっても無効（教訓 5.13 / K-6, N-03）', () => {
+    // N-03: 値を変える入力 10 個は全部 disabled なのに、いちばん取り返しのつかない
+    // 「地物を削除」だけが表示専用モードで押せていた。権限の入力が props に無かったのが
+    // 原因なので、その入力が実際に効くことをここで固定する。
+    renderButton(ACTIVE, false);
+    expect(screen.getByLabelText(DELETE_BUTTON_LABEL)).toBeDisabled();
+  });
+
+  it('editable=false のときは確認ダイアログすら開かない（disabled 頼みにしない）', () => {
+    const { onConfirm } = renderButton(ACTIVE, false);
+    fireEvent.click(screen.getByLabelText(DELETE_BUTTON_LABEL));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it('is enabled when the target is the vertex-context feature', () => {

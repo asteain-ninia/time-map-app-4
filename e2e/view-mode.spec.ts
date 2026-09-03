@@ -13,7 +13,15 @@
 
 import { test, expect } from '@playwright/test';
 
-import { addInputLayerBox, drawFace, launchApp, squareCorners } from './helpers';
+import {
+  addInputLayerBox,
+  commitOneFace,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  returnToViewMode,
+  squareCorners,
+} from './helpers';
 
 test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (live UI)', () => {
   test('boot in View: edit tools disabled, then the toolbar 表示専用 toggle enables 追加モード and a face is added via the real UI', async () => {
@@ -134,6 +142,50 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       // Tool buttons still carry their tooltip (regression: not all removed).
       const toolBtn = page.getByTestId('tool-add.point');
       await expect(page.getByTestId('tooltip').filter({ has: toolBtn })).toHaveCount(1);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03 の回帰)', () => {
+  // N-03 は「表示専用モードでも『地物を削除』だけが押せる」と報告されていたが、**実アプリ
+  // では今のところ届かない**。モードを切り替えると store.setMode が選択を捨てる（結合点 #6）
+  // ので、素性欄に地物が出ず、削除ボタンがそもそも描かれないためである。
+  //
+  // 欠陥は部品の契約のほうに実在した: DeleteFeatureButton は権限の入力を持たず、
+  // PropertyPanel も権限を渡さずに onDeleteFeature を直接呼んでいた。つまり **「読むだけ」で
+  // 地物が選ばれたまま素性欄が出る状態になった瞬間に押せるようになる**。設計書 §D.2 ★★ は
+  // まさにそれ（鍵を閉めても選択を保つ）を予定しているので、いま塞いでおく。部品の契約は
+  // src/ui/shell/view-only-gate.test.tsx の表と DeleteFeatureButton.test.tsx が固定する。
+  //
+  // 増分 5 で「鍵を閉めても選択を保つ」が入ったら、この test は「無効なボタンが出る」側へ
+  // 書き換えること（toHaveCount(0) → toBeDisabled()）。
+  test('表示専用では素性欄に地物が出ず、削除ボタンに手が届かない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // 削除の対象を 1 つ作って選ぶ。**モードを切り替えると選択は捨てられる**ので、
+      // 編集モードへ入ってから本体をクリックし直す。
+      const { faceId, cx, cy } = await commitOneFace(page);
+      await enterEditMode(page);
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+      const deleteButton = page.getByRole('button', { name: '地物を削除' });
+      await expect(deleteButton).toBeEnabled();
+
+      // 「読むだけ」へ。選択が捨てられ、素性欄は案内文になり、削除ボタンは消える。
+      await returnToViewMode(page);
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      await expect(deleteButton).toHaveCount(0);
+      await expect(page.getByRole('button', { name: '削除を確定' })).toHaveCount(0);
+
+      // 「直せる」へ戻して選び直すと、また押せる（検査が空振りしていない証）。
+      await enterEditMode(page);
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(deleteButton).toBeEnabled();
     } finally {
       await app.close();
     }
