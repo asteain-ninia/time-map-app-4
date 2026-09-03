@@ -1,0 +1,73 @@
+// E2E 専用の操作口（テストハーネス）— renderer 側の登録簿。
+//
+// `window.__E2E__`（App.tsx の onMapMount が生やす **観測** フック: 選択中の地物・描画
+// プリミティブ数など、読むだけの鏡）とは役割が違う。ここは **操作**（実データの読み込み
+// など、状態を変える入口）の置き場で、`window.__E2E_HARNESS__` に生える。
+//
+// 別のグローバルにしている理由: `__E2E__` は地図の mount/unmount のたびに App.tsx が
+// オブジェクトごと差し替え・削除する（App.tsx:711 / :1677）。他の部品がそこへ関数を足しても
+// 次の差し替えで消えるので、同居できない。App.tsx は UI 再設計で作り直される予定なので、
+// 作り直すときに観測フックもこの登録簿へ寄せてよい（申し送り）。
+//
+// 露出の門番: preload が E2E ブリッジ（`window.timeMapE2E`、src/shell/ipc/e2e-harness.ts）を
+// 公開しているときだけ登録する。ブリッジは main が E2E_TEST=1 のときにしか旗を積まないので、
+// 本番ビルドではこのモジュールを通っても window に何も生えない。
+//
+// 登録簿を部品ごとの直書きにしないのは、複数の部品が同じグローバルへ書くと互いに上書きし
+// 合うから（`__E2E__` と同じ罠）。ここが唯一の書き手で、登録・解除は部品の mount/unmount に
+// 揃える（教訓 5.2 一時的 UI 状態は全経路で破棄する）。
+
+import { readE2eHarnessBridge } from '../../shell/ipc/e2e-harness';
+
+/** renderer 側のグローバル名（`window.__E2E_HARNESS__`）。 */
+export const E2E_HARNESS_GLOBAL = '__E2E_HARNESS__';
+
+/**
+ * `loadProject` の結果。テストはこれを await して読み込みの完了を待つ。
+ * - 'loaded'     ドメインが読み込んだプロジェクトに差し替わった（reflect まで到達）
+ * - 'not-loaded' 拒否・修復中止・読み取り失敗などで現状維持のまま終わった
+ * - 'busy'       別の file 操作（開く/新規/D&D/終了ガード）が進行中で、落とされた
+ */
+export type LoadProjectOutcome = 'loaded' | 'not-loaded' | 'busy';
+
+/** ハーネスが提供する操作の一覧。足すときはここに型を足し、所有する部品が登録する。 */
+export interface E2eHarnessActions {
+  /**
+   * 絶対パスの .gimoza を、メニューの「開く」と同じ流れ（未保存ガード → 読込 → 修復判定 →
+   * reflect → 保存先の昇格）で読み込む。所有者: ui/file-ops/FileOpsController。
+   */
+  readonly loadProject: (projectPath: string) => Promise<LoadProjectOutcome>;
+}
+
+type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;
+
+/** preload の E2E ブリッジがある（= E2E_TEST=1 で起動した）か。 */
+export function isE2eHarnessEnabled(host: object): boolean {
+  return readE2eHarnessBridge(host) !== null;
+}
+
+/**
+ * 操作を 1 つ登録し、解除関数を返す。ブリッジが無ければ何もしない（解除も no-op）。
+ * 解除は「自分が登録した関数がまだ載っているとき」だけ外す — 別の登録に置き換わっていれば
+ * 触らない。最後の操作が外れたらグローバルごと消す（本番と同じ「何も無い」状態へ戻す）。
+ */
+export function registerE2eHarnessAction<K extends keyof E2eHarnessActions>(
+  host: object,
+  name: K,
+  action: E2eHarnessActions[K],
+): () => void {
+  if (!isE2eHarnessEnabled(host)) return () => undefined;
+  const h = host as HarnessHost;
+  h[E2E_HARNESS_GLOBAL] = { ...(h[E2E_HARNESS_GLOBAL] ?? {}), [name]: action };
+  return () => {
+    const live = h[E2E_HARNESS_GLOBAL];
+    if (live === undefined || live[name] !== action) return;
+    const rest: Partial<E2eHarnessActions> = { ...live };
+    delete rest[name];
+    if (Object.keys(rest).length === 0) {
+      delete h[E2E_HARNESS_GLOBAL];
+    } else {
+      h[E2E_HARNESS_GLOBAL] = rest;
+    }
+  };
+}

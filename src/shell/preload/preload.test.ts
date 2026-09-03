@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IPC_CHANNEL, type TimeMapApi } from '../ipc/contract';
+import { E2E_HARNESS_ARGV_FLAG, E2E_HARNESS_BRIDGE_KEY } from '../ipc/e2e-harness';
 
 // Mock electron so preload can be imported in node (no real bridge / renderer).
 // The spies are defined via vi.hoisted so they exist before the (hoisted)
@@ -36,7 +37,7 @@ vi.mock('electron', () => ({
 }));
 
 // Import AFTER the mock is registered.
-import { buildApi } from './index';
+import { buildApi, exposeE2eHarnessIfRequested } from './index';
 
 beforeEach(() => {
   invoke.mockClear();
@@ -303,5 +304,31 @@ describe('onCloseRequest bridges the FR-107 quit guard across the boundary', () 
     api.onCloseRequest(() => Promise.resolve(true));
     expect(removeListener).not.toHaveBeenCalled();
     expect(on).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('E2E 専用ブリッジ（timeMapE2E）は main が旗を積んだときだけ公開する', () => {
+  it('旗が無い argv（本番）では何も公開しない', () => {
+    const expose = vi.fn();
+    expect(exposeE2eHarnessIfRequested(['electron.exe', '--type=renderer'], expose)).toBe(false);
+    expect(expose).not.toHaveBeenCalled();
+  });
+
+  it('旗がある argv（E2E_TEST=1）では timeMapE2E に { harness: true } だけを公開する', () => {
+    const expose = vi.fn();
+    expect(exposeE2eHarnessIfRequested(['electron.exe', E2E_HARNESS_ARGV_FLAG], expose)).toBe(true);
+    expect(expose).toHaveBeenCalledTimes(1);
+    expect(expose).toHaveBeenCalledWith(E2E_HARNESS_BRIDGE_KEY, { harness: true });
+    // I/O を一切持たない印だけ（関数が 1 つも無い）。
+    const [, bridge] = expose.mock.calls[0] as [string, Record<string, unknown>];
+    expect(Object.values(bridge).every((v) => typeof v !== 'function')).toBe(true);
+  });
+
+  it('モジュール読み込み時（このテストの argv には旗が無い）は timeMapApi だけを公開している', () => {
+    // preload の top-level 副作用は import 時に 1 度だけ走る。beforeEach で mockClear される
+    // 前の履歴は読めないので、ここでは「旗なしで呼ぶと露出しない」を直接固定する。
+    const expose = vi.fn();
+    exposeE2eHarnessIfRequested(process.argv, expose);
+    expect(expose).not.toHaveBeenCalled();
   });
 });

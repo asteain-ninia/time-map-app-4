@@ -34,6 +34,7 @@ import {
 } from './ipc-handlers';
 import { acquireSingleInstanceLock, revealWindow } from './single-instance';
 import { IPC_CHANNEL, type AutoSaveConfig } from '../ipc/contract';
+import { e2eHarnessAdditionalArguments } from '../ipc/e2e-harness';
 
 // Electron main process. Shell layer may import domain only (never ui/render).
 
@@ -220,6 +221,10 @@ function createWindow(): void {
       // be verified without a display/compositor. This does not relax any security
       // flag (sandbox / contextIsolation / nodeIntegration stay as above).
       ...(SMOKE_TEST || E2E_TEST ? { offscreen: true } : {}),
+      // E2E 専用の投入口の旗（src/shell/ipc/e2e-harness.ts）: E2E_TEST=1 のときだけ preload の
+      // process.argv に旗を積み、preload はそれを見て E2E ブリッジ（timeMapE2E）を公開する。
+      // 本番では空配列 = 何も足さない = 何も露出しない。旗の中身は両側テストで固定済み。
+      additionalArguments: [...e2eHarnessAdditionalArguments(E2E_TEST)],
     },
   });
 

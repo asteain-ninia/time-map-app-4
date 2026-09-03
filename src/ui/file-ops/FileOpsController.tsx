@@ -29,6 +29,7 @@ import type { ZoomRange } from '../../render/camera';
 import type { SessionStore } from '../state/store';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
+import { registerE2eHarnessAction } from '../e2e/harness';
 
 import { buildFileCommandPorts, cameraZoomRange, type FileOpsHost } from './bridge';
 import {
@@ -853,6 +854,30 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     const cleanup = registerDropTarget({ onDragOver, onDrop });
     return typeof cleanup === 'function' ? cleanup : undefined;
   }, [registerDropTarget, onDragOver, onDrop]);
+
+  // --- E2E 専用の投入口 window.__E2E_HARNESS__.loadProject(path) -------------
+  // Playwright がネイティブダイアログ無しで実データ（.gimoza）を読み込むための口
+  // （docs/ui-redesign 報告 10 推奨 D / 報告 11 §7-8）。preload が E2E ブリッジを公開している
+  // （= main が E2E_TEST=1 で旗を積んだ）ときだけ登録され、本番ビルドでは何も生えない
+  // （src/shell/ipc/e2e-harness.ts / src/ui/e2e/harness.ts）。
+  // 経路は D&D と同一: `dropLoadCommand` を同じ相互排他ラッチの中で走らせるので、未保存
+  // ガード（FR-107）→ 読込 → 修復判定（FR-106）→ reflect → 保存先の昇格（commitLoadedPath）
+  // まで、メニューの「開く」と同じ流れを通る（教訓 5.6 同一フロー）。ここは path の出どころが
+  // File.path ではなく引数だという違いしかない。
+  // 戻り値はテストが完了を待つための印: 'loaded'（ドメインが差し替わった）/ 'not-loaded'
+  // （拒否・修復中止・失敗で現状維持）/ 'busy'（別の file 操作が進行中で落とされた）。
+  useEffect(() => {
+    if (ports === null) return undefined;
+    return registerE2eHarnessAction(globalThis, 'loadProject', async (projectPath) => {
+      const before = store.getState().domain;
+      const ran = await runExclusive(async () => {
+        await dropLoadCommand(ports, projectPath);
+        return true;
+      });
+      if (ran === undefined) return 'busy';
+      return store.getState().domain !== before ? 'loaded' : 'not-loaded';
+    });
+  }, [ports, runExclusive, store]);
 
   // bughunt3 (H1): mirror "a file-ops modal is open" up to the host so it suspends the
   // global shortcut dispatcher while the 未保存警告 / 修復 dialog owns the keyboard. The

@@ -1755,3 +1755,63 @@ function brokenLoad(): LoadResponse {
   const manifest: Manifest = serialize(project);
   return { ok: true, path: '/tmp/broken.gimoza', manifest, baseMapImage: new Uint8Array(), attachments: [] };
 }
+
+describe('E2E 専用の投入口 window.__E2E_HARNESS__.loadProject（E2E_TEST=1 のときだけ）', () => {
+  type HarnessWindow = {
+    timeMapE2E?: { harness: true };
+    __E2E_HARNESS__?: { loadProject?: (p: string) => Promise<string> };
+  };
+  const win = (): HarnessWindow => globalThis as unknown as HarnessWindow;
+
+  afterEach(() => {
+    delete win().timeMapE2E;
+    delete win().__E2E_HARNESS__;
+  });
+
+  it('preload のブリッジが無ければ（本番ビルド）window に何も生えない', () => {
+    render(
+      <FileOpsController store={makeStore()} registry={new CommandRegistry()} api={makeApi()} calendar={CAL} />,
+    );
+    expect(win().__E2E_HARNESS__).toBeUndefined();
+  });
+
+  it('ブリッジがあれば loadProject が生え、D&D と同じ loadDropped → reflect の流れで読み込んで "loaded" を返す', async () => {
+    win().timeMapE2E = { harness: true };
+    const store = makeStore();
+    const loadDropped = vi.fn(async () => okLoad());
+    const api = makeApi({ loadDropped });
+    const reflect = vi.spyOn(store.getState(), 'reflectLoadedProject');
+    const view = render(
+      <FileOpsController store={store} registry={new CommandRegistry()} api={api} calendar={CAL} />,
+    );
+
+    const loadProject = win().__E2E_HARNESS__?.loadProject;
+    expect(typeof loadProject).toBe('function');
+    let outcome = '';
+    await act(async () => {
+      outcome = await loadProject!('/abs/real.gimoza');
+    });
+    expect(loadDropped).toHaveBeenCalledWith('/abs/real.gimoza');
+    expect(reflect).toHaveBeenCalledTimes(1);
+    expect(outcome).toBe('loaded');
+
+    // unmount で登録が外れ、グローバルごと消える（教訓 5.2 全経路で破棄）。
+    view.unmount();
+    expect(win().__E2E_HARNESS__).toBeUndefined();
+  });
+
+  it('読み込みが成立しなかった（キャンセル相当）ときは "not-loaded" を返し、ドメインは現状維持', async () => {
+    win().timeMapE2E = { harness: true };
+    const store = makeStore();
+    const before = store.getState().domain;
+    const api = makeApi({ loadDropped: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })) });
+    render(<FileOpsController store={store} registry={new CommandRegistry()} api={api} calendar={CAL} />);
+
+    let outcome = '';
+    await act(async () => {
+      outcome = await win().__E2E_HARNESS__!.loadProject!('/abs/missing.gimoza');
+    });
+    expect(outcome).toBe('not-loaded');
+    expect(store.getState().domain).toBe(before);
+  });
+});

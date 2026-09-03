@@ -320,3 +320,59 @@ export async function commitOneFace(page: Page): Promise<CommittedFace> {
   return { faceId, cx, cy, corners };
 }
 
+// ---------------------------------------------------------------------------
+// 実データの投入口 (E2E_TEST=1 のときだけ開く裏口。P-4)
+// ---------------------------------------------------------------------------
+
+/**
+ * `window.__E2E_HARNESS__.loadProject(path)` の結果 (src/ui/e2e/harness.ts と同じ定義)。
+ * 'loaded' = ドメインが差し替わった / 'not-loaded' = 拒否・中止・失敗で現状維持 /
+ * 'busy' = 別の file 操作が進行中で落とされた。
+ */
+export type LoadProjectOutcome = 'loaded' | 'not-loaded' | 'busy';
+
+/**
+ * 絶対パスの .gimoza を、メニューの「開く」と同じ流れ (未保存ガード → 読込 → 修復判定 →
+ * reflect → 保存先の昇格) で読み込む。ネイティブダイアログは開かない。
+ *
+ * 口は renderer の `window.__E2E_HARNESS__.loadProject` — main が E2E_TEST=1 のときだけ
+ * preload に旗を渡し、preload が E2E ブリッジを公開し、FileOpsController がそれを見て登録する
+ * (src/shell/ipc/e2e-harness.ts)。`launchApp` は E2E_TEST=1 で起動するので、ここでは口が
+ * 生えるのを待ってから呼ぶ。読み込みの完了 (reflect まで) を待って結果を返す。
+ *
+ * ⚠️ 正準の実データ (derle-import/*.gimoza) を直接開かないこと。アプリは開いたファイルを
+ * 保存先として昇格するので、テスト中の保存や自動保存で正準ファイルを上書きしうる。必ず
+ * 一時ディレクトリへコピーしてから渡す (e2e/real-data.spec.ts の作法)。
+ */
+export async function loadProject(page: Page, projectPath: string): Promise<LoadProjectOutcome> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { loadProject?: unknown } }).__E2E_HARNESS__
+        ?.loadProject === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  return page.evaluate(async (p) => {
+    const harness = (
+      globalThis as {
+        __E2E_HARNESS__?: { loadProject?: (path: string) => Promise<LoadProjectOutcome> };
+      }
+    ).__E2E_HARNESS__;
+    if (harness?.loadProject === undefined) {
+      throw new Error('window.__E2E_HARNESS__.loadProject が無い (E2E_TEST=1 で起動したか)');
+    }
+    return harness.loadProject(p);
+  }, projectPath);
+}
+
+/**
+ * アプリを起動し、指定の .gimoza (絶対パス) を読み込んだ状態で返す。読み込めなければ
+ * その場で失敗する ('loaded' 以外は許さない — 不整合ファイルで修復ダイアログが出た場合も
+ * ここで止まるので、そういう spec は `launchApp` + `loadProject` を直接使う)。
+ */
+export async function launchAppWithProject(projectPath: string): Promise<LaunchedApp> {
+  const launched = await launchApp();
+  const outcome = await loadProject(launched.page, projectPath);
+  expect(outcome, `実データの読み込み結果 (${projectPath})`).toBe('loaded');
+  return launched;
+}

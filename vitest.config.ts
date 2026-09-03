@@ -113,6 +113,9 @@ export default defineConfig({
       // import only pure `.ts` (domain persistence/basemap + U16 settings), so they
       // run in node without a DOM.
       'src/ui/file-ops/**/*.test.ts',
+      // E2E 専用の操作口の登録簿 (ui/e2e/harness.ts): preload のブリッジが無ければ window に
+      // 何も生えない (本番の露出ゼロ) ことと、登録・解除の対称性を固定する。純粋 .ts なので node。
+      'src/ui/e2e/**/*.test.ts',
       // a11y shared-helper pure-logic tests: the tablist arrow-key traversal math
       // (第5次バグハント MEDIUM / a11y). Imports only pure `.ts` (no React/DOM), so
       // it runs in node. The focus-trap hook test is `.test.tsx` (jsdom; .tsx glob

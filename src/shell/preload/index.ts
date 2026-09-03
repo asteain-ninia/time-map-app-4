@@ -11,6 +11,11 @@ import {
   type TimeMapApi,
   type Unsubscribe,
 } from '../ipc/contract';
+import {
+  E2E_HARNESS_BRIDGE_KEY,
+  isE2eHarnessArgv,
+  type E2eHarnessBridge,
+} from '../ipc/e2e-harness';
 
 // U15 — preload EXPOSER side (開発ガイド §5.33 / 受け入れ基準4,6).
 //
@@ -126,5 +131,28 @@ export function buildApi(): TimeMapApi {
 const api: TimeMapApi = buildApi();
 
 contextBridge.exposeInMainWorld('timeMapApi', api);
+
+/**
+ * E2E 専用ブリッジ（src/shell/ipc/e2e-harness.ts）。main が E2E_TEST=1 のときだけ
+ * additionalArguments で積む旗が `argv` にある場合に限り、`timeMapE2E` を公開する。
+ * 公開するのは「ハーネスが有効」という印だけで I/O は一切持たない（読み込みは renderer 側が
+ * 既存の typed IPC を通す）。本番ビルドでは旗が無いので、この関数は何も公開しない。
+ * `expose` を引数に取るのは、テストで contextBridge をフェイクに差し替えて両側を固定するため。
+ * 戻り値は公開したかどうか。
+ */
+export function exposeE2eHarnessIfRequested(
+  argv: readonly string[],
+  expose: (key: string, value: E2eHarnessBridge) => void,
+): boolean {
+  if (!isE2eHarnessArgv(argv)) return false;
+  expose(E2E_HARNESS_BRIDGE_KEY, Object.freeze({ harness: true }));
+  return true;
+}
+
+// sandbox 付き preload でも `process.argv` は Electron が提供する（additionalArguments は
+// ここに積まれる）。旗が無ければ何もしない。
+exposeE2eHarnessIfRequested(process.argv, (key, value) => {
+  contextBridge.exposeInMainWorld(key, value);
+});
 
 export type { TimeMapApi };
