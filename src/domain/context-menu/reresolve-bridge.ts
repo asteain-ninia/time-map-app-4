@@ -69,6 +69,10 @@ export function nextTargetPreferenceFor(intent: DispatchIntent): NextTargetPrefe
     case FLOW_KIND.EditProperties:
       // Not a structure change — nothing to promote.
       return {};
+    case FLOW_KIND.CreateAnchorHere:
+      // FR-57「この年に錨を作る」— 地物の id も形も変わらず、錨（歴史の記録点）が 1 本増える
+      // だけなので、構造変更ではない。選び直す相手は無い（対象はそのまま選ばれ続ける）。
+      return {};
     case FLOW_KIND.SetFeatureEmphasis:
     case FLOW_KIND.HideFeature:
       // FR-113 個別非表示 / 強調 are DISPLAY-only ops: they produce no CommandResult and

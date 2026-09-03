@@ -48,6 +48,17 @@ export interface MenuLaunchPorts {
   ) => void;
   /** Promote the target + focus the プロパティ tab (called ONLY for a live target). */
   readonly openProperties: (featureId: FeatureId) => void;
+  /**
+   * FR-57「この年に錨を作る」（設計書 §D.3, 増分 2 の中身 3）— いま見ている年に、姿を変えずに
+   * 歴史の錨を 1 本足す。App 側は対象を選んでから既存のコマンド 1 本
+   * (`COMMAND_ID.EditCreateAnchorHere`) を投げるだけにするので、押せるかどうか（錨が既にある年か、
+   * 年ちょうどか、読むだけでないか）の判定はそのコマンドの `canRun` と権限の関門 1 か所に集まる
+   * （2 つ目の判定をここに書かない — 教訓 5.13 / 5.30）。
+   *
+   * 省略可。まだ繋いでいない呼び出し側（テストの薄い差し替えなど）では、この項目は何もしない
+   * 正直な空実装になる（黙って別の経路へ流さない）。
+   */
+  readonly createAnchorHere?: ((featureId: FeatureId) => void) | undefined;
   /** Arm an edit tool (分割→knife / 所属変更→reparent / 結合→merge), selection pinned. */
   readonly armEditTool: (tool: ToolId) => void;
   /** The FR-33 live unshare launcher (ONE composite undo unit + selection remap). */
@@ -102,6 +113,14 @@ export function launchMenuItem(
       ports.openProperties(intent.featureId);
       return;
     }
+    case FLOW_KIND.CreateAnchorHere:
+      // FR-57「この年に錨を作る」— 生きた対象かどうかの検査はここでは行わない。App 側は
+      // 対象を選んでから既存コマンドを投げ、そのコマンドの `canRun`（現在時刻に錨が無いか／
+      // 年ちょうどか）と権限の関門が 1 か所で決める（教訓 5.13）。消えた対象は
+      // createAnchorHere の中で「その時刻に居ない」ため何も起きない（幽霊の取り消しを作らない、
+      // 教訓 5.24）。ポートが繋がっていなければ何もしない。
+      ports.createAnchorHere?.(intent.featureId);
+      return;
     case FLOW_KIND.Split:
       ports.armEditTool(TOOL_ID.EditKnife);
       return;

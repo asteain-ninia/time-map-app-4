@@ -20,6 +20,12 @@ export const MENU_ITEM_KIND = {
   DeleteVertex: 'deleteVertex',
   /** 共通: プロパティ編集 → open property editor. */
   EditProperties: 'editProperties',
+  /**
+   * 共通: この年に錨を作る → `edit.createAnchorHere`（FR-57 / 設計書 §D.3・§I.3）。
+   * いま見ている年に、姿を変えずに歴史の錨を 1 本足す。素性欄の保存ボタンは値が同じなら
+   * 何もしないので、右クリックにもこの専用の入口を置く（実装計画 増分 2 の中身 3）。
+   */
+  CreateAnchorHere: 'createAnchorHere',
   /** 共有頂点: 共有解除 → U11. */
   Unshare: 'unshare',
   /** 面情報(末端): 分割 → U26. */
@@ -58,6 +64,7 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.Delete]: FLOW_KIND.Delete,
   [MENU_ITEM_KIND.DeleteVertex]: FLOW_KIND.DeleteVertex,
   [MENU_ITEM_KIND.EditProperties]: FLOW_KIND.EditProperties,
+  [MENU_ITEM_KIND.CreateAnchorHere]: FLOW_KIND.CreateAnchorHere,
   [MENU_ITEM_KIND.Unshare]: FLOW_KIND.Unshare,
   [MENU_ITEM_KIND.Split]: FLOW_KIND.Split,
   [MENU_ITEM_KIND.ChangeAffiliation]: FLOW_KIND.ChangeAffiliation,
@@ -72,6 +79,7 @@ export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   [MENU_ITEM_KIND.Delete]: '削除',
   [MENU_ITEM_KIND.DeleteVertex]: '頂点を削除',
   [MENU_ITEM_KIND.EditProperties]: 'プロパティ編集',
+  [MENU_ITEM_KIND.CreateAnchorHere]: 'この年に錨を作る',
   [MENU_ITEM_KIND.Unshare]: '共有解除',
   [MENU_ITEM_KIND.Split]: '分割',
   [MENU_ITEM_KIND.ChangeAffiliation]: '所属変更',
@@ -97,6 +105,12 @@ export const DISABLE_REASON = {
    * 「強調をすべて解除」is the escape, and the reason says so (教訓 5.6).
    */
   EmphasisFromOtherAxis: 'emphasisFromOtherAxis',
+  /**
+   * いま見ている年には既に錨がある（FR-57 / 設計書 §D.3）。もう 1 本足しても増えないので、
+   * 「この年に錨を作る」は出したまま無効にして理由を見せる（黙って消すと「なぜ出ないのか」が
+   * 分からず、有効のまま出すと「押しても何も起きない」になる — 出す=起きる, 教訓 5.6）。
+   */
+  AnchorAlreadyAtThisYear: 'anchorAlreadyAtThisYear',
 } as const;
 
 export type DisableReason =
@@ -108,6 +122,8 @@ export const DISABLE_REASON_MESSAGE: Readonly<Record<DisableReason, string>> = {
     '結合には2つ以上の対象が必要です。結合する相手を追加してください。',
   [DISABLE_REASON.EmphasisFromOtherAxis]:
     'この地物は種別または階層深度の強調で既に強調されているため、個別の強調/解除では見た目が変わりません。表示制御フィルタの「強調をすべて解除」で解除してください。',
+  [DISABLE_REASON.AnchorAlreadyAtThisYear]:
+    'すでにこの年に錨があります。いまの年の姿はその錨が記録しているので、新しく作る必要はありません。',
 };
 
 /**

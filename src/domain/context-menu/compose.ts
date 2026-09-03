@@ -9,7 +9,7 @@
 // 実源, drift防止).
 //
 // 出し分け規約 (FR-96):
-//   共通 (点/線/面いずれでも): 削除・プロパティ編集
+//   共通 (点/線/面いずれでも): 削除・プロパティ編集・この年に錨を作る
 //   共有頂点を1つ以上含む    : 共有解除
 //   面情報(末端=leaf)        : 分割・所属変更・結合
 //
@@ -111,6 +111,22 @@ export interface ComposeInput {
    *     「強調をすべて解除」— the ONE action that does clear the 種別/深度 axis.
    */
   readonly axisEmphasisLookup: AxisEmphasisLookup;
+  /**
+   * いま見ている年に、対象の地物の錨が既にあるか（FR-57 / 設計書 §D.3）。「この年に錨を作る」
+   * の有効・無効だけを決める、任意の入力である。
+   *
+   * なぜ任意（省略可）なのか。この関数は純粋で、錨の系列（履歴）を知らない。錨があるかどうかは
+   * ドメインの `findHistoryContaining` でしか出せず、それを compose に持ち込むと単一の真実源が
+   * 2 つに割れる（教訓 5.30）。そこで判定そのものは呼び出し側が行い、結果の真偽値だけを渡す形に
+   * した。渡さない呼び出し側（右クリック以外の組み立て）を壊さないため、既定は「有効で出す」。
+   *
+   * - 省略（undefined）: 有効で出す。押したときに App 側のコマンドの `canRun` が偽なら何も
+   *   起きない（判定は 1 か所のまま — 教訓 5.13。ここに 2 つ目の関門を作らない）。
+   * - `false`: 有効で出す（この年にはまだ錨が無い＝押せば 1 本増える）。
+   * - `true` のときだけ、{@link DISABLE_REASON.AnchorAlreadyAtThisYear} を付けて
+   *   出したまま無効にする（「押しても無反応」を避ける、出す=起きる, 教訓 5.6）。
+   */
+  readonly hasAnchorAtCurrentTime?: boolean | undefined;
 }
 
 // --- Resolved menu target (UI 文脈優先, 教訓 5.3 / 5.4) ----------------------
@@ -286,6 +302,25 @@ function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
 }
 
 /**
+ * 「この年に錨を作る」の項目（FR-57 / 設計書 §D.3・§I.3）。対象の地物が 1 つに定まるとき、
+ * つまりプロパティ編集を出すのと同じ条件で、その直後に置く。
+ *
+ * 出す・出さないの判定に「その年に錨があるか」は使わない。この関数は純粋で、錨の系列を知らない
+ * からである（判定はドメインの履歴を引かないと出せず、ここに持ち込むと真実源が 2 つに割れる —
+ * 教訓 5.30）。呼び出し側が {@link ComposeInput.hasAnchorAtCurrentTime} を渡してくれたときだけ、
+ * 既に錨がある年では「出したまま無効」にして理由を見せる（黙って消さず、押しても無反応にもしない
+ * — 出す=起きる, 教訓 5.6）。渡されなければ有効のまま出し、押したときの可否は App 側のコマンドの
+ * `canRun` 1 か所が決める（2 つ目の関門を書かない — 教訓 5.13）。
+ *
+ * 読むだけ（canEdit=false）ではメニューごと出ないので、ここに権限の判定は書かない（教訓 5.13）。
+ */
+function createAnchorHereItem(hasAnchorAtCurrentTime: boolean | undefined): ContextMenuItem {
+  return hasAnchorAtCurrentTime === true
+    ? disabledItem(MENU_ITEM_KIND.CreateAnchorHere, DISABLE_REASON.AnchorAlreadyAtThisYear)
+    : enabledItem(MENU_ITEM_KIND.CreateAnchorHere);
+}
+
+/**
  * The feature a 表示制御 item (個別非表示 / 強調 / 強調解除) can target: a Feature target's
  * own id, or a single-owner VertexOnly target's resolved owner. Returns null for a
  * multi/unknown owner or a None target — the SAME condition {@link dispatchMenuItem}'s
@@ -320,7 +355,7 @@ function displayControlFeatureId(target: MenuTarget): FeatureId | null {
  * ops, not edits, so they are offered even in View mode for any resolvable single-feature
  * target — the items that survive the view-only gate (ユーザー裁定: View モードでも可).
  *
- * Order: common (削除・プロパティ編集) → 面情報 (分割・所属変更・結合, leaf only)
+ * Order: common (削除・プロパティ編集・この年に錨を作る) → 面情報 (分割・所属変更・結合, leaf only)
  * → 共有解除 (when shared vertices present) → 表示制御 (個別非表示 → 強調/強調解除, last). The tool kind
  * is part of the input (FR-96): the knife tool, already in a split session, omits the
  * redundant 分割 item (受け入れ基準 4: 項目集合がツール種類で変わる).
@@ -341,6 +376,8 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
         // 共通項目 (点/線/面いずれでも): 削除 vs 頂点を削除 by whether vertices are selected.
         items.push(deleteItemFor(target.vertexIds.size > 0));
         items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
+        // FR-57 / 設計書 §D.3: プロパティ編集の直後に「この年に錨を作る」。
+        items.push(createAnchorHereItem(input.hasAnchorAtCurrentTime));
         // 面情報項目: leaf(末端) ONLY (教訓 5.25). Aggregate gets NO 分割; its
         // affiliation/merge出し分けは U28/U30 契約に委ねるため、ここでは leaf に限
         // って面情報項目を出す (受け入れ基準 2).
@@ -367,6 +404,9 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
         if (target.ownerFeatureId !== null && target.ownerFeatureKind !== null) {
           items.push(enabledItem(MENU_ITEM_KIND.DeleteVertex));
           items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
+          // FR-57 / 設計書 §D.3: プロパティ編集の直後に「この年に錨を作る」。対象が 1 つに
+          // 定まっているここでは、プロパティ編集と同じ相手（単一の所有地物）に錨を足せる。
+          items.push(createAnchorHereItem(input.hasAnchorAtCurrentTime));
           if (target.ownerFeatureKind === FEATURE_KIND.Leaf) {
             items.push(...filterByTool(leafFeatureItems(), input.toolKind));
           }

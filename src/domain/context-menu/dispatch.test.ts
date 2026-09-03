@@ -399,3 +399,78 @@ describe('dispatchMenuItem — 共有解除は選択全体でなく共有部分�
     }
   });
 });
+
+// FR-57 / 設計書 §D.3 — 「この年に錨を作る」の行き先。プロパティ編集と同じ対象解決
+// (対象地物 1 件) を使い、専用の流れ (CreateAnchorHere) へだけ流す。
+describe('dispatchMenuItem — FR-57 この年に錨を作る (CreateAnchorHere)', () => {
+  it('この年に錨を作る → CreateAnchorHere 意図 (対象 feature id)', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.CreateAnchorHere)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model);
+    expect(r).toEqual({ kind: FLOW_KIND.CreateAnchorHere, featureId: fid('a') });
+  });
+
+  it('他の流れ (プロパティ編集・削除・分割) へは流れない', () => {
+    const model = leafModel({ items: [enabledItem(MENU_ITEM_KIND.CreateAnchorHere)] });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model);
+    expect(isBlocked(r)).toBe(false);
+    if (!isBlocked(r)) {
+      expect(r.kind).not.toBe(FLOW_KIND.EditProperties);
+      expect(r.kind).not.toBe(FLOW_KIND.Delete);
+      expect(r.kind).not.toBe(FLOW_KIND.Split);
+    }
+  });
+
+  it('単一所有の頂点選択では、その所有地物へ流す (プロパティ編集と同じ相手)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.VertexOnly,
+      ownerFeatureId: fid('owner'),
+      ownerFeatureKind: FEATURE_KIND.Leaf,
+      vertexIds: new Set([vid('v1')]),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.CreateAnchorHere)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model);
+    expect(r).toEqual({ kind: FLOW_KIND.CreateAnchorHere, featureId: fid('owner') });
+  });
+
+  it('対象 feature が解決できなければブロック (多所有/所有者不明の頂点選択)', () => {
+    const target: MenuTarget = {
+      kind: MENU_TARGET_KIND.VertexOnly,
+      ownerFeatureId: null,
+      ownerFeatureKind: null,
+      vertexIds: new Set([vid('v1')]),
+      sharedVertexIds: new Set(),
+    };
+    const model: ContextMenuModel = {
+      kind: 'menu',
+      target,
+      position: POS,
+      items: [enabledItem(MENU_ITEM_KIND.CreateAnchorHere)],
+    };
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+  });
+
+  it('無効 (すでにこの年に錨がある) の項目は発火しない (教訓 5.13)', () => {
+    const model = leafModel({
+      items: [
+        disabledItem(MENU_ITEM_KIND.CreateAnchorHere, DISABLE_REASON.AnchorAlreadyAtThisYear),
+      ],
+    });
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model);
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.ItemDisabled);
+  });
+
+  it('モデルに無い項目は発火しない (古いモデルのドリフト防止)', () => {
+    const r = dispatchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, leafModel());
+    expect(isBlocked(r)).toBe(true);
+    if (isBlocked(r)) expect(r.blocked).toBe(DISPATCH_BLOCKED_KIND.ItemNotInModel);
+  });
+});

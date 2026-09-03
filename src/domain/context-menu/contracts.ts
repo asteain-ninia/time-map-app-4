@@ -68,6 +68,11 @@ export const FLOW_KIND = {
   DeleteVertex: 'deleteVertex',
   /** Open the property-edit UI for the target feature. */
   EditProperties: 'editProperties',
+  /**
+   * いま見ている年に、姿を変えずに歴史の錨を 1 本作る（FR-57 / 設計書 §D.3）。
+   * 保存ボタンは値が同じなら何もしないので、この経路が別に要る。
+   */
+  CreateAnchorHere: 'createAnchorHere',
   /** U11 unshare — the shared vertices to detach. FR-33. */
   Unshare: 'unshare',
   /** U26 split (knife) — the LEAF feature to split. FR-44 (末端地物限定). */
@@ -112,6 +117,11 @@ export type DispatchIntent =
       readonly vertexIds: ReadonlySet<VertexId>;
     }
   | { readonly kind: typeof FLOW_KIND.EditProperties; readonly featureId: FeatureId; readonly featureKind: FeatureKind }
+  | {
+      readonly kind: typeof FLOW_KIND.CreateAnchorHere;
+      /** いま見ている年に錨を 1 本足す相手（対象は 1 件に定まっているときだけ）。 */
+      readonly featureId: FeatureId;
+    }
   | {
       readonly kind: typeof FLOW_KIND.Unshare;
       /**

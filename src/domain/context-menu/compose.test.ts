@@ -50,6 +50,8 @@ interface BuildOpts {
   readonly emphasized?: ReadonlySet<FeatureId>;
   /** FR-113 Phase 2: features the 種別/深度軸 already emphasizes (the disabled-item axis). */
   readonly emphasizedByAxis?: ReadonlySet<FeatureId>;
+  /** FR-57: いま見ている年に錨があるか (「この年に錨を作る」の有効/無効だけを決める任意の入力)。 */
+  readonly hasAnchorAtCurrentTime?: boolean;
 }
 
 function build(opts: BuildOpts): ComposeInput {
@@ -71,6 +73,8 @@ function build(opts: BuildOpts): ComposeInput {
     axisEmphasisLookup: axisEmphasisLookupFromSet(
       opts.emphasizedByAxis ?? new Set<FeatureId>(),
     ),
+    // 未指定のときは ComposeInput でも未指定のまま渡す (既定 = 有効で出す, の分岐を潰さない)。
+    hasAnchorAtCurrentTime: opts.hasAnchorAtCurrentTime,
   };
 }
 
@@ -117,10 +121,12 @@ describe('composeContextMenu — 受け入れ基準 2: オブジェクト種類�
         build({ activeFeature: fid('p'), kinds: new Map([[fid('p'), FEATURE_KIND.Point]]) }),
       ),
     );
-    // 共通 (削除・プロパティ編集) + 表示制御 (個別非表示・強調, 常に末尾). 面情報項目 (分割等) は出ない。
+    // 共通 (削除・プロパティ編集・この年に錨を作る) + 表示制御 (個別非表示・強調, 常に末尾).
+    // 面情報項目 (分割等) は出ない。
     expect(itemKinds(menu)).toEqual([
       MENU_ITEM_KIND.Delete,
       MENU_ITEM_KIND.EditProperties,
+      MENU_ITEM_KIND.CreateAnchorHere,
       MENU_ITEM_KIND.HideFeature,
       MENU_ITEM_KIND.EmphasizeFeature,
     ]);
@@ -530,5 +536,139 @@ describe('resolveMenuTarget / compose — 受け入れ基準 8: UI 文脈優先�
   it('アクティブ地物が解決できない場合は対象なし (既定へ落ちない, 教訓 5.4)', () => {
     const result = composeContextMenu(build({ activeFeature: fid('ghost'), kinds: new Map() }));
     expect(result).toBe(NO_MENU);
+  });
+});
+
+// FR-57 / 設計書 §D.3・§I.3 — 右クリックの「この年に錨を作る」。
+//
+// いま見ている年に、姿を変えずに歴史の錨を 1 本足す入口。素性欄の保存ボタンは「値が同じなら
+// 何もしない」ので、値を変えずに「1500 年から同じ姿が続く」を記録するにはこの専用の入口が要る。
+// 出す条件はプロパティ編集と同じ（対象の地物が 1 つに定まるとき）で、位置はその直後。
+describe('composeContextMenu — FR-57: この年に錨を作る', () => {
+  const KINDS = [
+    ['面情報(末端)', FEATURE_KIND.Leaf],
+    ['点情報', FEATURE_KIND.Point],
+    ['線情報', FEATURE_KIND.Line],
+    ['集約地物', FEATURE_KIND.Aggregate],
+  ] as const;
+
+  for (const [name, kind] of KINDS) {
+    it(`${name}でも出る (プロパティ編集と同じ条件)`, () => {
+      const menu = asMenu(
+        composeContextMenu(build({ activeFeature: fid('f'), kinds: new Map([[fid('f'), kind]]) })),
+      );
+      const ks = itemKinds(menu);
+      expect(ks).toContain(MENU_ITEM_KIND.CreateAnchorHere);
+      // 位置はプロパティ編集の直後。
+      expect(ks.indexOf(MENU_ITEM_KIND.CreateAnchorHere)).toBe(
+        ks.indexOf(MENU_ITEM_KIND.EditProperties) + 1,
+      );
+    });
+  }
+
+  it('単一所有の頂点選択だけ (アクティブ地物なし) でも出る', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          vertexIds: new Set([vid('v1')]),
+          owners: new Map([[vid('v1'), fid('a')]]),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+        }),
+      ),
+    );
+    const ks = itemKinds(menu);
+    expect(ks).toContain(MENU_ITEM_KIND.CreateAnchorHere);
+    expect(ks.indexOf(MENU_ITEM_KIND.CreateAnchorHere)).toBe(
+      ks.indexOf(MENU_ITEM_KIND.EditProperties) + 1,
+    );
+  });
+
+  it('対象の地物が 1 つに定まらない選択では出ない (プロパティ編集と同じ条件)', () => {
+    // 所有者が複数の頂点選択 = 1 つの地物を名指せない → メニューごと出ない。
+    const result = composeContextMenu(
+      build({
+        vertexIds: new Set([vid('v1'), vid('v2')]),
+        owners: new Map([
+          [vid('v1'), fid('a')],
+          [vid('v2'), fid('b')],
+        ]),
+        kinds: new Map([
+          [fid('a'), FEATURE_KIND.Leaf],
+          [fid('b'), FEATURE_KIND.Leaf],
+        ]),
+      }),
+    );
+    expect(result).toBe(NO_MENU);
+  });
+
+  it('読むだけ (canEdit=false) ではメニューに出ない (編集項目の一括無効化)', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          canEdit: false,
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+        }),
+      ),
+    );
+    expect(itemKinds(menu)).not.toContain(MENU_ITEM_KIND.CreateAnchorHere);
+  });
+
+  it('この年に錨がまだ無い (false) なら有効で出る', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+          hasAnchorAtCurrentTime: false,
+        }),
+      ),
+    );
+    const item = menu.items.find((i) => i.kind === MENU_ITEM_KIND.CreateAnchorHere);
+    expect(item?.enabled).toBe(true);
+  });
+
+  it('この年に既に錨がある (true) なら、出したまま無効にして理由を付ける', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+          hasAnchorAtCurrentTime: true,
+        }),
+      ),
+    );
+    const item = menu.items.find((i) => i.kind === MENU_ITEM_KIND.CreateAnchorHere);
+    expect(item).toBeDefined();
+    expect(item?.enabled).toBe(false);
+    expect(item?.enabled === false ? item.disableReason : null).toBe(
+      DISABLE_REASON.AnchorAlreadyAtThisYear,
+    );
+  });
+
+  it('錨の有無を渡さない呼び出し側では有効のまま出る (既存の呼び出しを壊さない)', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({ activeFeature: fid('a'), kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]) }),
+      ),
+    );
+    expect(
+      menu.items.find((i) => i.kind === MENU_ITEM_KIND.CreateAnchorHere)?.enabled,
+    ).toBe(true);
+  });
+
+  it('錨の有無は他の項目には影響しない (プロパティ編集は有効のまま)', () => {
+    const menu = asMenu(
+      composeContextMenu(
+        build({
+          activeFeature: fid('a'),
+          kinds: new Map([[fid('a'), FEATURE_KIND.Leaf]]),
+          hasAnchorAtCurrentTime: true,
+        }),
+      ),
+    );
+    expect(menu.items.find((i) => i.kind === MENU_ITEM_KIND.EditProperties)?.enabled).toBe(
+      true,
+    );
   });
 });

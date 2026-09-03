@@ -209,6 +209,13 @@ export function dispatchMenuItem(
         featureKind: ft.featureKind,
       };
     }
+    case MENU_ITEM_KIND.CreateAnchorHere: {
+      // FR-57 / 設計書 §D.3「この年に錨を作る」— プロパティ編集と同じ対象解決（対象地物 1 件）。
+      // 意図が運ぶのは相手の id だけで、「いま見ている年」も「錨があるか」も shell 側が
+      // 生きた値から決める（純粋な dispatch は時刻を知らない）。
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.CreateAnchorHere, featureId: ft.featureId };
+    }
     case MENU_ITEM_KIND.Split: {
       if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
       // 分割 is leaf-only; the composer only offers it for a leaf target, so the

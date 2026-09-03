@@ -91,6 +91,9 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
         [{ key: 'z', ctrlOrMeta: true, shift: true }],
       ),
       item(COMMAND_ID.EditDelete, { key: 'Delete' }),
+      // 増分 2 の中身 3: 「この年に錨を作る」。現在時刻に錨が無いときだけ
+      // 押せる（canRun が決める）。値を変えずに錨だけを 1 本増やす専用の経路。
+      item(COMMAND_ID.EditCreateAnchorHere, { key: 'k', ctrlOrMeta: true }),
       // HB5-4: 選択解除. Escape clears the active-feature + vertex selection through
       // the SAME global dispatcher the other 編集 shortcuts use — which STANDS DOWN
       // while a modal / tool-draft owns the keyboard (shortcutsSuspended), so a tool

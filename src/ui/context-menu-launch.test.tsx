@@ -84,6 +84,7 @@ function makePorts(root: DomainProject): {
     unshare: [],
     hideFeature: [],
     setFeatureEmphasized: [],
+    createAnchorHere: [],
   };
   const track =
     (name: string) =>
@@ -100,6 +101,7 @@ function makePorts(root: DomainProject): {
     unshare: track('unshare'),
     hideFeature: track('hideFeature'),
     setFeatureEmphasized: track('setFeatureEmphasized'),
+    createAnchorHere: track('createAnchorHere'),
   };
   return { ports, calls };
 }
@@ -224,6 +226,57 @@ describe('launchMenuItem — FR-113 Phase 2 強調 (SetFeatureEmphasis, 個別�
   it('モデルに無い項目は一切発火しない (frozen model の drift guard)', () => {
     const { ports, calls } = makePorts(rootWithA(true));
     launchMenuItem(MENU_ITEM_KIND.EmphasizeFeature, modelForA(), ports); // 強調項目なし
+    for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
+  });
+});
+
+// FR-57 / 設計書 §D.3 — 右クリックの「この年に錨を作る」。App 側は「対象を選んでから既存の
+// コマンド 1 本を投げる」だけなので、この継ぎ目の仕事は「対象の id をポートへ渡す」ことに尽きる。
+// 押せるかどうか（その年に錨があるか・年ちょうどか・読むだけでないか）は 1 か所（コマンドの
+// canRun と権限の関門）が決めるので、ここでは 2 つ目の判定をしない（教訓 5.13）。
+describe('launchMenuItem — FR-57 この年に錨を作る (CreateAnchorHere)', () => {
+  /** modelForA に「この年に錨を作る」を足したもの（メニューを開いた時点で凍る）。 */
+  const modelWithCreateAnchor = (): ContextMenuModel => {
+    const base = modelForA();
+    return { ...base, items: [...base.items, enabledItem(MENU_ITEM_KIND.CreateAnchorHere)] };
+  };
+
+  it('この年に錨を作る → createAnchorHere ポートを対象の id で呼ぶ', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, modelWithCreateAnchor(), ports);
+    expect(calls['createAnchorHere']).toEqual([[A]]);
+    // 他の流れは動かない（プロパティ編集や削除へ流れない）。
+    expect(calls['openProperties']).toEqual([]);
+    expect(calls['dispatchEditDelete']).toEqual([]);
+    expect(calls['armEditTool']).toEqual([]);
+  });
+
+  it('無効の項目（すでにこの年に錨がある）は何も起こさない (教訓 5.13)', () => {
+    const base = modelForA();
+    const model: ContextMenuModel = {
+      ...base,
+      items: [
+        ...base.items,
+        disabledItem(MENU_ITEM_KIND.CreateAnchorHere, DISABLE_REASON.AnchorAlreadyAtThisYear),
+      ],
+    };
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, model, ports);
+    for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
+  });
+
+  it('モデルに無い項目は何も起こさない (古いモデルのドリフト防止)', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    launchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, modelForA(), ports);
+    for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
+  });
+
+  it('ポートが繋がっていない継ぎ目では何もしない (黙って別の経路へ流さない)', () => {
+    const { ports, calls } = makePorts(rootWithA(true));
+    const withoutPort: MenuLaunchPorts = { ...ports, createAnchorHere: undefined };
+    expect(() =>
+      launchMenuItem(MENU_ITEM_KIND.CreateAnchorHere, modelWithCreateAnchor(), withoutPort),
+    ).not.toThrow();
     for (const key of Object.keys(calls)) expect(calls[key]).toEqual([]);
   });
 });

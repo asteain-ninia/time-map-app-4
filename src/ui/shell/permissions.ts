@@ -48,6 +48,9 @@ const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   // HB5-4: 選択解除 is an edit-context action — disabled in 表示専用 mode together
   // with its Escape shortcut (教訓 5.13), so it fires only in 追加/編集 mode.
   COMMAND_ID.EditDeselect,
+  // 「この年に錨を作る」は保存形式を書き換えるので、読むだけでは押せない
+  // （増分 1 の関門を、増分 2 で増えた編集経路にも必ず通す）。
+  COMMAND_ID.EditCreateAnchorHere,
 ]);
 
 /** True if the command is an editing command gated by the permission axis. */

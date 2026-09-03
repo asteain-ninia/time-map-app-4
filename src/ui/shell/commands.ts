@@ -21,6 +21,14 @@ export const COMMAND_ID = {
   EditDelete: 'edit.delete',
   /** HB5-4: clear the active-feature + vertex selection (U22 clearSelection). */
   EditDeselect: 'edit.deselect',
+  /**
+   * 「この年に錨を作る」（増分 2 の中身 3 / 設計書 §D.3）。
+   *
+   * 保存ボタンとは **別のコマンド** である。素性欄の保存は「値が同じなら
+   * dispatch しない」関門を持つので（教訓 5.24）、「1500 年から同じ姿が続くことを
+   * 記録したい」は保存ボタンでは表せない（押しても無反応になる）。
+   */
+  EditCreateAnchorHere: 'edit.createAnchorHere',
   ViewToggleViewMode: 'view.toggleViewMode',
   ViewZoomIn: 'view.zoomIn',
   ViewZoomOut: 'view.zoomOut',
