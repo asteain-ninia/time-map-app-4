@@ -8,8 +8,10 @@ import {
   contextAfterSave,
   contextForLoadedFile,
   contextWithoutSaveTarget,
+  decideSaveAfterConfirm,
   markDirty,
   needsSaveAs,
+  SAVE_AFTER_CONFIRM,
 } from './save-context';
 
 describe('buildNewProjectContext (教訓 5.36 / 受け入れ基準 4 同時初期化)', () => {
@@ -87,5 +89,45 @@ describe('contextWithoutSaveTarget (HIGH-2 fail-safe: 宛先を取り下げて�
     expect(retracted.baseMapId).toBe(loaded.baseMapId);
     expect(retracted.dirty).toBe(loaded.dirty);
     expect(retracted.exitGuardEnabled).toBe(loaded.exitGuardEnabled);
+  });
+});
+
+describe('decideSaveAfterConfirm（上書き確認から戻ったときの行き先検査, A2）', () => {
+  const base = {
+    confirmed: true,
+    pathAtPrompt: '/tmp/a.gimoza',
+    generationAtPrompt: 7,
+    pathNow: '/tmp/a.gimoza',
+    generationNow: 7,
+  };
+
+  it('やめたときは書かない', () => {
+    expect(decideSaveAfterConfirm({ ...base, confirmed: false })).toBe(SAVE_AFTER_CONFIRM.Cancel);
+  });
+
+  it('何も起きていなければ（世代が同じ）そのまま保存する', () => {
+    expect(decideSaveAfterConfirm(base)).toBe(SAVE_AFTER_CONFIRM.Save);
+  });
+
+  it('確認の間に別のファイルへ切り替わったら中止する（致命の根）', () => {
+    // 画面で確認したのは a.gimoza なのに、押した時点の保存先は b.gimoza —— これを
+    // そのまま書くと「確認したファイルと実際に書かれるファイルが入れ替わる」。
+    expect(
+      decideSaveAfterConfirm({
+        ...base,
+        generationNow: 8,
+        pathNow: '/tmp/b.gimoza',
+      }),
+    ).toBe(SAVE_AFTER_CONFIRM.DestinationChanged);
+  });
+
+  it('保存先が未確定になっていても中止する（新規に切り替わった）', () => {
+    expect(
+      decideSaveAfterConfirm({ ...base, generationNow: 8, pathNow: null }),
+    ).toBe(SAVE_AFTER_CONFIRM.DestinationChanged);
+  });
+
+  it('世代だけ進んで行き先が同じなら保存してよい（保存の完了で世代が進む経路）', () => {
+    expect(decideSaveAfterConfirm({ ...base, generationNow: 9 })).toBe(SAVE_AFTER_CONFIRM.Save);
   });
 });

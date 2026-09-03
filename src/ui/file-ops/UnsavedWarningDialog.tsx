@@ -21,6 +21,13 @@ import { UNSAVED_STRINGS } from './strings';
 
 export interface UnsavedWarningDialogProps {
   /**
+   * いまの保存先の絶対パス（null = 保存先が未確定）。**「保存して続行」がどのファイルへ
+   * 書くのかを、押す前に見せる**（A3）。この枝は 開く / 新規 / ドラッグ＆ドロップ / × /
+   * Alt+F4 / OS シャットダウン の 6 経路すべてが通るのに、これまで行き先を一度も
+   * 見せていなかった（上書き確認も素通りしていた）。
+   */
+  readonly savePath?: string | null;
+  /**
    * Resolve the user's 3-choice. Wired to `runUnsavedGuard`'s `promptUnsaved`
    * port resolver: 保存 → Save, 保存せず続行 → Discard, キャンセル → Cancel. Esc
    * and the close button both resolve Cancel (キャンセル = keep current state,
@@ -35,7 +42,7 @@ export interface UnsavedWarningDialogProps {
 const INITIAL_POSITION = { x: 360, y: 220 } as const;
 
 export function UnsavedWarningDialog(props: UnsavedWarningDialogProps): JSX.Element {
-  const { onChoose, zIndex } = props;
+  const { onChoose, zIndex, savePath = null } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Esc resolves キャンセル (the safe default: keep state, protect unsaved data) and
@@ -68,6 +75,12 @@ export function UnsavedWarningDialog(props: UnsavedWarningDialogProps): JSX.Elem
         <div className="unsaved-dialog" data-testid="unsaved-dialog">
           <p className="unsaved-dialog__body" data-testid="unsaved-body">
             {UNSAVED_STRINGS.body}
+          </p>
+          {/* どこへ書くのかを押す前に見せる（A3）。同名ファイルの取り違えは
+              フルパスでしか見分けられないので、パスがあるときはそのまま出す。 */}
+          <p className="unsaved-dialog__path" data-testid="unsaved-destination">
+            {UNSAVED_STRINGS.destinationLabel}:{' '}
+            {savePath === null ? UNSAVED_STRINGS.destinationUndetermined : savePath}
           </p>
           <div className="unsaved-dialog__choices">
             <button

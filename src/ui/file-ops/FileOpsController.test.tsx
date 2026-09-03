@@ -868,7 +868,10 @@ describe('自動保存ティックの購読 (FR-108 / 受け入れ基準 3 — B
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
-  it('firing the tick performs a save through the SAME path as the menu (never-saved → Save As)', async () => {
+  it('保存先が未確定なら、ティックはネイティブの保存ダイアログを勝手に開かない (A4-a)', async () => {
+    // **以前はここで「名前を付けて保存」が開いていた。** 5 分ごとに作業の手を止めて
+    // OS のファイル選択が飛び出す挙動で、しかも利用者が一度も行き先を確かめていない
+    // ファイルへ書きに行く。自動保存は「確認済みの保存先へ静かに書く」だけにする。
     const store = makeStore();
     const registry = new CommandRegistry();
     let fireTick: (() => void) | null = null;
@@ -880,12 +883,11 @@ describe('自動保存ティックの購読 (FR-108 / 受け入れ基準 3 — B
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
     expect(fireTick).not.toBeNull();
-    // The main-side scheduler fires the tick: the renderer must now save. A fresh
-    // (never-saved) project routes 保存 → 名前を付けて保存 (no path yet), same as the menu.
     await act(async () => {
       fireTick!();
     });
-    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+    expect(api.saveAs).not.toHaveBeenCalled();
+    expect(api.save).not.toHaveBeenCalled();
   });
 
   it('the tick saves to the current path once the project has one (auto-save loop closes)', async () => {
@@ -896,13 +898,37 @@ describe('自動保存ティックの購読 (FR-108 / 受け入れ基準 3 — B
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
 
     // Establish a save path (a successful Save As) so later saves use save().
+    // 名前を付けて保存はネイティブダイアログで利用者自身が行き先を選ぶので、その先は
+    // 「確認済み」になる = 自動保存が動き出せる (A7)。
     await act(async () => { registry.dispatch(COMMAND_ID.FileSaveAs); });
     await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
 
-    // A subsequent auto-save tick saves to the established path, not Save As again.
+    // A4-b: 変更が無ければ書かない。ここで dirty を立てないとティックは空振りする。
+    await act(async () => { fireTick!(); });
+    expect(api.save).not.toHaveBeenCalled();
+
+    // 何か変えてから、もう一度ティックを起こす。
+    await act(async () => {
+      store.getState().updateProjectSetting('gridVisible', false);
+    });
     await act(async () => { fireTick!(); });
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
     expect(api.saveAs).toHaveBeenCalledTimes(1);
+  });
+
+  it('A4-b: 変更が無いティックはディスクへ書かない（更新時刻とバックアップ世代を無駄に動かさない）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let fireTick: (() => void) | null = null;
+    const api = makeApi({ onAutoSaveTick: vi.fn((l: () => void) => { fireTick = l; return () => {}; }) });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await act(async () => { registry.dispatch(COMMAND_ID.FileSaveAs); });
+    await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
+
+    await act(async () => { fireTick!(); });
+    await act(async () => { fireTick!(); });
+    await act(async () => { fireTick!(); });
+    expect(api.save).not.toHaveBeenCalled();
   });
 });
 
@@ -1170,11 +1196,20 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
 
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
+    // A1: 上書き確認は **確認を出している間だけ** 排他ラッチを取るので、修復ダイアログ
+    // が開いているところへ確認を重ねて出すことはできない（出すと 2 枚のダイアログが
+    // 同時に立ち、1 個目の約束が孤児になる）。ここでは A への上書きを先に確認だけ
+    // 済ませておき、修復ダイアログ中の Ctrl+S が **確認を挟まずに** 走る形にする。
+    await dispatchSave(registry);
+    await waitFor(() => expect(savedReqs).toHaveLength(1));
+    savedReqs.length = 0;
+
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
 
-    // 保存 is NOT gated by the file-ops mutex, so a Ctrl+S while the repair dialog is
-    // open assembles a request RIGHT NOW — it must still describe project A entirely.
+    // 保存 is NOT gated by the file-ops mutex (確認が要らない保存はラッチを取らない),
+    // so a Ctrl+S while the repair dialog is open assembles a request RIGHT NOW — it
+    // must still describe project A entirely.
     await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0);

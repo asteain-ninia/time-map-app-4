@@ -44,7 +44,9 @@ import {
   saveCommand,
   saveAsCommand,
   quitGuard,
+  SAVE_OUTCOME,
   type FileCommandPorts,
+  type SaveOutcome,
 } from './file-commands';
 import {
   buildEmptyProject,
@@ -52,7 +54,9 @@ import {
   contextAfterSave,
   contextForLoadedFile,
   contextWithoutSaveTarget,
+  decideSaveAfterConfirm,
   needsSaveAs,
+  SAVE_AFTER_CONFIRM,
   type SaveContext,
   type SaveStatus,
 } from './save-context';
@@ -228,12 +232,33 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const savedAtMsRef = useRef<number | null>(null);
   const onSaveStatusChangeRef = useRef(props.onSaveStatusChange);
   onSaveStatusChangeRef.current = props.onSaveStatusChange;
+
+  // このセッションで「上書きしてよい」と確認できた保存先。**確認は初回の 1 回だけ**にする
+  // （毎回聞くと確認が儀式になり、読まずに押すようになる）。ここに載るのは
+  //   (a) 利用者が上書き確認で「上書き保存する」を押した先
+  //   (b) 名前を付けて保存で利用者自身が選んだ先（main のネイティブダイアログが既に聞いている）
+  // の 2 つだけ。**自動保存では載せない** — 自動保存が先に走ったせいで確認が一度も出ない、
+  // という抜け道を作らないため。宣言がここにあるのは publishSaveStatus が読むからである。
+  const overwriteConfirmedRef = useRef<Set<string>>(new Set());
+
+  /** いまの保存先へ自動保存してよいか（A4-a: 確認前の宛先には 1 バイトも書かない）。 */
+  const autoSaveArmed = useCallback((): boolean => {
+    const path = contextRef.current.savePath;
+    return path !== null && overwriteConfirmedRef.current.has(path);
+  }, []);
+
   const publishSaveStatus = useCallback((): void => {
     onSaveStatusChangeRef.current?.({
       savePath: contextRef.current.savePath,
       savedAtMs: savedAtMsRef.current,
+      autoSaveArmed: autoSaveArmed(),
     });
-  }, []);
+  }, [autoSaveArmed]);
+
+  // 保存文脈の **世代番号**（A2 / A6）。新規・読み込み・保存のたびに 1 進む。
+  // 上書き確認の前後で「保存文脈が差し替わったか」を、参照の同一性ではなく数で言える
+  // ようにしておく（純粋な判定 decideSaveAfterConfirm へ渡すため）。
+  const contextGenRef = useRef(0);
 
   // 状態行の「直前の結果」枠（設計書 §H.5）。保存の成否をここへ書く。これまで成功は
   // どこにも出ず、失敗だけが OS の警告ボックスに出ていた（C6 / N-21）。
@@ -245,6 +270,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const applyContext = useCallback(
     (next: SaveContext) => {
       contextRef.current = next;
+      contextGenRef.current += 1;
       publishSaveStatus();
     },
     [publishSaveStatus],
@@ -472,13 +498,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
 
-  // このセッションで「上書きしてよい」と確認できた保存先。**確認は初回の 1 回だけ**にする
-  // （毎回聞くと確認が儀式になり、読まずに押すようになる）。ここに載るのは
-  //   (a) 利用者が上書き確認で「上書き保存する」を押した先
-  //   (b) 名前を付けて保存で利用者自身が選んだ先（main のネイティブダイアログが既に聞いている）
-  // の 2 つだけ。**自動保存では載せない** — 自動保存が先に走ったせいで確認が一度も出ない、
-  // という抜け道を作らないため。
-  const overwriteConfirmedRef = useRef<Set<string>>(new Set());
+  /**
+   * 上書き確認を通してから保存する関数の置き場（A3）。`ports` から作るのに `host` が
+   * 参照するので、参照の輪を切るために ref を挟む。実体はレンダーごとに入れ替わるが、
+   * 呼ばれるのは常に非同期の実行時なので「いつも最新」で正しい
+   * （`onSaveStatusChangeRef` と同じ作法）。
+   */
+  const saveWithOverwriteConfirmRef = useRef<(() => Promise<SaveOutcome>) | null>(null);
 
   // --- the live host capabilities (each is a dependency-unit API) -----------
   const host: FileOpsHost | null = useMemo(() => {
@@ -566,14 +592,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       api: capturingApi,
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
-      onSaved: (path: string) => {
-        // 保存できた時刻はセッションの事実として持つ（状態行の「最終保存 14:03」）。
-        savedAtMsRef.current = Date.now();
-        // 名前を付けて保存でここへ来たなら、行き先は利用者自身が main のネイティブ
-        // ダイアログで選んでいる（上書きの可否もそこで聞かれている）ので、以後この
-        // セッションではこの先への上書き確認を出さない。**自動保存や素の保存では
-        // 載せない** — 自動保存が先に走ったせいで確認が一度も出ない抜け道を作らないため。
-        if (saveStartContextRef.current !== null && needsSaveAs(saveStartContextRef.current)) {
+      onSaved: (path: string, info) => {
+        // A6 世代ガード: この保存が始まったときの保存文脈と、いまの保存文脈が同じか。
+        // 違えば「保存中に別のプロジェクトを開いた」ので、**この保存の結果を今の文書の
+        // 表示に混ぜてはいけない**（B を開いた直後に「B は今保存された」「保存しました（A）」
+        // と出て、B を保存済みと誤認したまま終了する事故が起きる）。
+        const sameDocument = contextRef.current === saveStartContextRef.current;
+
+        // 名前を付けて保存の **ネイティブダイアログを通ったか** で「確認済み」を決める（A7）。
+        // 以前は保存前の needsSaveAs で見ていたので、既に保存先があるプロジェクトからの
+        // 「名前を付けて保存」が載らず、直後の Ctrl+S でまた聞かれていた。**自動保存では
+        // 載せない** — ネイティブダイアログを通っていない自動保存はここで真にならない。
+        if (info.viaSaveAsDialog && info.origin === 'manual') {
           overwriteConfirmedRef.current.add(path);
         }
         // Path / backupTarget update happens independently of dirty: a successful write
@@ -587,7 +617,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // desync the renderer from main, which already keeps the loaded destination via its
         // own generation guard. A normal edit / settings change does NOT touch the context
         // (only new / load / save do), so the common path still applies here.
-        if (contextRef.current === saveStartContextRef.current) {
+        if (sameDocument) {
+          // 保存できた時刻は **同じ文書のときだけ** 動かす（A6）。古いファイルの保存完了が
+          // 新しく開いたファイルの「最終保存」を汚さないようにする。
+          savedAtMsRef.current = Date.now();
           applyContext(contextAfterSave(contextRef.current, path));
         }
         // Clear dirty ONLY if no edit OR settings change landed during the async
@@ -595,10 +628,17 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // settings slices to the serialized snapshot.
         markClean();
         // 保存先が動かなかった経路（レース時のガード）でも時刻は動くので、ここでも知らせる。
+        // 自動保存の「待機中 → 動いた」も含め、素性の変化はすべてここから上がる。
         publishSaveStatus();
-        statusMessagesRef.current?.success(
-          OVERWRITE_STRINGS.saved(fileNameOf(path) ?? path),
-        );
+        // A4-c: **自動保存の成功は「直前の結果」を書き替えない**（設計書 §H.5 の
+        // 「自分から消えない」/ 教訓 5.12: 利用者が次の判断に使う文言を、利用者が
+        // 起こしていない操作で上書きしない）。更新するのは「最終保存」枠だけ。
+        // A6: 別の文書へ移ったあとの完了も、いまの文書の状態行には書かない。
+        if (info.origin === 'manual' && sameDocument) {
+          statusMessagesRef.current?.success(
+            OVERWRITE_STRINGS.saved(fileNameOf(path) ?? path),
+          );
+        }
       },
       // The SINGLE dirty basis (spec §B): the store's projectDirty, set by BOTH
       // domain edits and project-setting changes (e.g. ズーム制限, FR-109). Reading
@@ -732,6 +772,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // shell's toast unit can replace this without touching the flow.
         if (typeof globalThis.alert === 'function') globalThis.alert(message);
       },
+      // A3: 未保存警告の「保存して続行」も上書き確認を通す。実体は下の runGuardedSave
+      // （ports から作るので参照の輪を ref で切る）。ここへ来る時点で既に破壊的置換の
+      // ラッチを握っているので、確認はラッチを取り直さない。
+      saveWithOverwriteConfirm: () =>
+        saveWithOverwriteConfirmRef.current?.() ?? Promise.resolve({ kind: SAVE_OUTCOME.Busy }),
       calendar,
     };
   }, [api, store, calendar, applyContext, markClean, promotePendingAssets, discardPendingAssets]);
@@ -748,6 +793,31 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // ファイルを扱う運用では取り違えが起きる。**このセッションでその先へ初めて上書きするときだけ**
   // 名前とフルパスを見せて聞く。保存先が決まっていない新規は従来どおり名前を付けて保存へ落ちる
   // ので、ここでは聞かない（main のネイティブダイアログが聞く）。
+  /**
+   * 保存の結末を状態行へ 1 か所で出す（A5）。**成功と失敗の唯一の常設の場所は状態行**
+   * なので、書き込み失敗を OS の警告ボックスにも出す二重通知はやめた（設計書 §H.5）。
+   * 「やめました」は成功の色味ではなく中立で出す（緑で出すと保存できたと読み違える）。
+   * 成功の文言は onSaved（ファイル名を知っている側）が出す。
+   */
+  const reportSaveOutcome = useCallback((outcome: SaveOutcome): void => {
+    switch (outcome.kind) {
+      case SAVE_OUTCOME.Saved:
+      case SAVE_OUTCOME.Busy:
+      case SAVE_OUTCOME.DestinationChanged:
+        return;
+      case SAVE_OUTCOME.Cancelled:
+        statusMessagesRef.current?.notice(OVERWRITE_STRINGS.cancelled);
+        return;
+      case SAVE_OUTCOME.WriteFailed:
+        statusMessagesRef.current?.failure(OVERWRITE_STRINGS.failedWith(outcome.message));
+        return;
+      default: {
+        const _never: never = outcome;
+        return _never;
+      }
+    }
+  }, []);
+
   const promptOverwrite = useCallback(
     (savePath: string) =>
       new Promise<boolean>((resolve) => {
@@ -762,25 +832,65 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     [],
   );
 
+  /**
+   * 上書き確認 → 保存 の 1 本道（A1 / A2 / A3 / A5）。
+   *
+   * `takeLatch` は「確認の間、他の破壊的操作を止めるラッチを自分で取るか」。
+   *   - true  … 利用者が 保存 を実行した経路（メニュー / Ctrl+S）。**確認を出している
+   *             間は 開く・新規・ドラッグ＆ドロップ・もう一度の保存・自動保存を全部
+   *             止める**。増分 1 の検証で見つかった唯一の「致命」は、確認中に別の
+   *             ファイルを読み込んでから「上書きする」を押すと、確認した先ではない
+   *             ファイルへ書けてしまうことだった。ラッチが取れなければ **落とす**
+   *             （確認ダイアログを二重に開かない＝1 個目の約束が孤児にならない）。
+   *   - false … 未保存警告の「保存して続行」から呼ばれた経路。**すでに同じラッチの中に
+   *             居る**ので取り直さない（取ると自分自身で詰まる）。
+   */
   const runGuardedSave = useCallback(
-    async (ports: FileCommandPorts): Promise<void> => {
-      const context = contextRef.current;
-      const savePath = context.savePath;
+    async (
+      ports: FileCommandPorts,
+      options: { readonly takeLatch: boolean },
+    ): Promise<SaveOutcome> => {
+      const savePath = contextRef.current.savePath;
       if (savePath !== null && !overwriteConfirmedRef.current.has(savePath)) {
-        const confirmed = await promptOverwrite(savePath);
-        if (!confirmed) {
-          statusMessagesRef.current?.success(OVERWRITE_STRINGS.cancelled);
-          return;
+        const generationAtPrompt = contextGenRef.current;
+        const confirmed = options.takeLatch
+          ? await runExclusive(() => promptOverwrite(savePath))
+          : await promptOverwrite(savePath);
+        // ラッチが取れずに落とした（別のファイル操作が進行中）。何も書かないし、
+        // 状態行にも書かない——利用者は最初のダイアログを見ているところである。
+        if (confirmed === undefined) return { kind: SAVE_OUTCOME.Busy };
+        const decision = decideSaveAfterConfirm({
+          confirmed,
+          pathAtPrompt: savePath,
+          generationAtPrompt,
+          pathNow: contextRef.current.savePath,
+          generationNow: contextGenRef.current,
+        });
+        if (decision === SAVE_AFTER_CONFIRM.Cancel) {
+          statusMessagesRef.current?.notice(OVERWRITE_STRINGS.cancelled);
+          return { kind: SAVE_OUTCOME.Cancelled };
+        }
+        if (decision === SAVE_AFTER_CONFIRM.DestinationChanged) {
+          statusMessagesRef.current?.failure(OVERWRITE_STRINGS.destinationChanged);
+          return { kind: SAVE_OUTCOME.DestinationChanged };
         }
         overwriteConfirmedRef.current.add(savePath);
+        // 「確認済み」が増えると自動保存が動き出せるようになるので、素性を上げ直す。
+        publishSaveStatus();
       }
       // 確認の間に読み込みが走って保存先が変わっている可能性があるので、needsSaveAs は
       // **いまの** context から取り直す（確認前の値を使うと別のファイルへ書きうる）。
-      const ok = await saveCommand(ports, needsSaveAs(contextRef.current));
-      if (!ok) statusMessagesRef.current?.failure(OVERWRITE_STRINGS.failed);
+      const outcome = await saveCommand(ports, needsSaveAs(contextRef.current));
+      reportSaveOutcome(outcome);
+      return outcome;
     },
-    [promptOverwrite],
+    [promptOverwrite, publishSaveStatus, reportSaveOutcome, runExclusive],
   );
+
+  // A3: 未保存警告の「保存して続行」が呼ぶ実体をここで差し込む。レンダーごとに最新へ
+  // 入れ替えるだけ（呼ばれるのは常に非同期の実行時なので、最新であることが正しい）。
+  saveWithOverwriteConfirmRef.current =
+    ports === null ? null : () => runGuardedSave(ports, { takeLatch: false });
 
   // --- register the ファイル menu commands on the U20 registry (教訓 5.6) -----
   useEffect(() => {
@@ -825,14 +935,14 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     registry.register(COMMAND_ID.FileOpen, {
       run: () => void runExclusive(() => openCommand(ports)),
     });
+    // A1: 保存は **確認の間だけ** ラッチを取る。確認が要らない（既に確認済みの先／
+    // 新規で名前を付けて保存へ落ちる）保存は、これまでどおりラッチを取らずに走る
+    // ——保存どうしの直列化は bridge の saveChain が担当する（lost-edit ガード）。
     registry.register(COMMAND_ID.FileSave, {
-      run: () => void runGuardedSave(ports),
+      run: () => void runGuardedSave(ports, { takeLatch: true }),
     });
     registry.register(COMMAND_ID.FileSaveAs, {
-      run: () =>
-        void saveAsCommand(ports).then((ok) => {
-          if (!ok) statusMessagesRef.current?.failure(OVERWRITE_STRINGS.failed);
-        }),
+      run: () => void saveAsCommand(ports).then(reportSaveOutcome),
     });
     return () => {
       registry.unregister(COMMAND_ID.FileNew);
@@ -840,7 +950,16 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       registry.unregister(COMMAND_ID.FileSave);
       registry.unregister(COMMAND_ID.FileSaveAs);
     };
-  }, [ports, registry, store, applyContext, resetLoadedAssets, runExclusive, runGuardedSave]);
+  }, [
+    ports,
+    registry,
+    store,
+    applyContext,
+    resetLoadedAssets,
+    runExclusive,
+    runGuardedSave,
+    reportSaveOutcome,
+  ]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
   // `projectDirty`, set by BOTH setDomainState / applyCommandResult (domain edits)
@@ -868,9 +987,20 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     // ordering (incl. tick-vs-manual) is handled by the bridge's saveChain queue.
     return api.onAutoSaveTick(() => {
       if (opInFlightRef.current) return;
-      void saveCommand(ports, needsSaveAs(contextRef.current));
+      // A4-a: **確認していない先には 1 バイトも書かない**。読み込んだファイルは、利用者が
+      // 一度も行き先を確かめていなくても自動保存でディスクへ書かれていた（取り違えた
+      // 正準ファイルが、確認ダイアログを見る前に上書き済みになる）。保存先が未確定なら
+      // ネイティブの保存ダイアログを勝手に開くのも同じ理由で止める（5 分ごとに作業が
+      // 止まる）。書かないことを黙っていると誤解のまま作業が進むので、状態行の
+      // 「最終保存」枠に静かに出しておく（publishSaveStatus の autoSaveArmed）。
+      if (!autoSaveArmed()) return;
+      // A4-b: 変更が無いなら書かない。dirty でなくても毎ティック書いていたので、
+      // 何も編集していない日でもファイルの更新時刻とバックアップ世代が動いていた。
+      if (!store.getState().projectDirty) return;
+      // A4-c: 自動保存は「直前の結果」を書き替えない別の口を通る（bridge の autoSave）。
+      void ports.autoSave();
     });
-  }, [api, ports]);
+  }, [api, ports, store, autoSaveArmed]);
 
   // --- window-close interception with the SAME quit guard (FR-107) ----------
   useEffect(() => {
@@ -1016,12 +1146,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // pending* state here is the single truth; we only reflect it (no duplicate flag).
   // Cleared on unmount so a torn-down controller never leaves the dispatcher suspended.
   const onModalOpenChange = props.onModalOpenChange;
+  const modalOpen =
+    pendingUnsaved !== null || pendingRepair !== null || pendingOverwrite !== null;
   useEffect(() => {
     if (onModalOpenChange === undefined) return undefined;
-    const open = pendingUnsaved !== null || pendingRepair !== null || pendingOverwrite !== null;
-    onModalOpenChange(open);
+    onModalOpenChange(modalOpen);
     return () => onModalOpenChange(false);
-  }, [pendingUnsaved, pendingRepair, pendingOverwrite, onModalOpenChange]);
+  }, [modalOpen, onModalOpenChange]);
 
   // The controller's container lives in the front overlay (pointer-events:none,
   // 教訓 5.14) so it never steals click / pan from the map. The D&D drop target is
@@ -1036,8 +1167,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
+      {/* A1: 破壊的な判断を聞いている間は、背後のクリックを通さない層を敷く
+          （教訓 5.14「重なる UI は入力を受ける層も同時に設計する」）。ダイアログの
+          外を押しても何も起きない = 聞かれていることに答えるまで先へ進めない。
+          道具の帯やメニューを押してドメインを動かせてしまう抜け道もここで塞がる。 */}
+      {modalOpen && (
+        <div className="file-ops-backdrop" data-testid="file-ops-backdrop" aria-hidden="true" />
+      )}
       {pendingUnsaved !== null && (
-        <UnsavedWarningDialog onChoose={pendingUnsaved.resolve} />
+        <UnsavedWarningDialog
+          onChoose={pendingUnsaved.resolve}
+          savePath={contextRef.current.savePath}
+        />
       )}
       {pendingOverwrite !== null && (
         <OverwriteConfirmDialog

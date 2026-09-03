@@ -11,7 +11,7 @@
 // 最終保存）は、実運用に踏み切れない不安への直接の答えである。
 //
 // **枠の幅は固定で、中身が空でも枠は残る**（K-3 と同じ規則。寸法は shell.css が単一の
-// 真実源で、寸法契約は status-bar-layout.test.ts が読む）。
+// 真実源で、寸法契約は shell-layout.test.ts が読む）。
 //
 // 再レンダーの粒度: 60Hz で動く値（カーソル座標・縮尺）は **それぞれの葉ノードだけ** が
 // 購読する（技術方針 2.3: React は 60FPS 経路を駆動しない）。座標は React 外の
@@ -46,6 +46,12 @@ export interface StatusBarContentProps<S> {
   readonly undo: UndoStatus;
   /** 最後に保存できた時刻（epoch ms）。null = このセッションでまだ保存していない。 */
   readonly lastSavedAtMs: number | null;
+  /**
+   * 自動保存が本体ファイルへ書ける状態か（A4-a）。false のときは「保存先が未確定」か
+   * 「その保存先への上書きをまだ確認していない」ので、自動保存は何もしない。既定は
+   * true（自動保存の素性を渡していないホストの表示を変えないため）。
+   */
+  readonly autoSaveArmed?: boolean;
 }
 
 /** 縮尺 1:N。ズームと赤道長からその場で導く（新しい真実源を作らない）。 */
@@ -101,8 +107,18 @@ function undoText(undo: UndoStatus): string {
   return `${STATUS_STRINGS.undoAvailablePrefix}${undo.lastLabel}${STATUS_STRINGS.undoShortcutSuffix}`;
 }
 
+/** 最終保存枠の中身。自動保存が待機中なら、その断り書きも同じ枠に出す。 */
+function lastSavedText(lastSavedAtMs: number | null, autoSaveArmed: boolean): string {
+  const saved =
+    lastSavedAtMs === null
+      ? STATUS_STRINGS.neverSaved
+      : `${STATUS_STRINGS.lastSavedPrefix}${formatClock(lastSavedAtMs)}`;
+  return autoSaveArmed ? saved : `${saved}${STATUS_STRINGS.autoSaveHold}`;
+}
+
 export function StatusBarContent<S>(props: StatusBarContentProps<S>): JSX.Element {
   const { store, cursorStore, messageStore, undo, lastSavedAtMs } = props;
+  const autoSaveArmed = props.autoSaveArmed ?? true;
 
   return (
     <>
@@ -125,10 +141,13 @@ export function StatusBarContent<S>(props: StatusBarContentProps<S>): JSX.Elemen
       </span>
 
       <span className="statusbar__frame statusbar__frame--saved">
-        <span className="statusbar__value" data-testid="statusbar-last-saved">
-          {lastSavedAtMs === null
-            ? STATUS_STRINGS.neverSaved
-            : `${STATUS_STRINGS.lastSavedPrefix}${formatClock(lastSavedAtMs)}`}
+        <span
+          className="statusbar__value"
+          data-testid="statusbar-last-saved"
+          data-auto-save-armed={autoSaveArmed ? 'true' : 'false'}
+          title={autoSaveArmed ? undefined : STATUS_STRINGS.autoSaveHoldDetail}
+        >
+          {lastSavedText(lastSavedAtMs, autoSaveArmed)}
         </span>
       </span>
     </>

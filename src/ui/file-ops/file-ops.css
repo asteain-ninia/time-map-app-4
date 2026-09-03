@@ -18,6 +18,19 @@
   pointer-events: none;
 }
 
+/* 破壊的な判断（未保存警告・上書き確認・修復）を聞いている間だけ敷く遮蔽層。
+ * 教訓 5.14「重なる UI は入力を受ける層も同時に設計する」の適用: ダイアログを出しても
+ * 背後のメニュー・道具・地図が押せたままだと、聞かれていることに答えないまま次の操作を
+ * 始められる（上書き確認中に別のファイルを読み込む、が実際に起きた）。答えるまで
+ * 背後を触れなくする。ダイアログ本体 (z-index 1000) より手前には出さない。 */
+.file-ops-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 900;
+  pointer-events: auto;
+  background: rgba(0, 0, 0, 0.25);
+}
+
 /* The dialogs (on the DraggablePanel vessel) re-capture pointer input so their
  * buttons are interactive (FR-106 / FR-107). */
 .unsaved-modal-root,

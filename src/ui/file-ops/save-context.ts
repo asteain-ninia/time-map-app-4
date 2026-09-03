@@ -83,6 +83,55 @@ export interface SaveStatus {
   readonly savePath: string | null;
   /** 最後に保存できた時刻（epoch ms）。null = このセッションでまだ保存していない。 */
   readonly savedAtMs: number | null;
+  /**
+   * 自動保存が本体ファイルへ書ける状態か（A4-a）。false のときは
+   * 「保存先が未確定」か「その保存先への上書きを利用者がまだ確認していない」ので、
+   * 自動保存はティックのたびに**黙って何もしない**。それを黙ったままにすると
+   * 「5 分ごとに保存されているはず」という誤解のまま作業が進むので、状態行の
+   * 最終保存の枠に静かに出す（設計書 §H.5: 状態は常設の場所に出す）。
+   */
+  readonly autoSaveArmed: boolean;
+}
+
+/**
+ * 上書き確認から戻ってきたときに、**本当にその先へ書いてよいか**を決める（A2）。
+ *
+ * 確認ダイアログを出している間にプロジェクトが差し替わりうる（読み込み・新規・
+ * ドラッグ＆ドロップ）。**確認したファイルと実際に書かれるファイルが入れ替わる**のが
+ * 増分 1 の検証で見つかった唯一の「致命」だった。だから確認を出した時点の保存先と
+ * 保存文脈の世代を控えておき、戻ってきたときに突き合わせる。世代が動いていなければ
+ * 何も起きていないので素通し、動いていたら**保存先が同じときだけ**書く。
+ */
+export const SAVE_AFTER_CONFIRM = {
+  /** そのまま保存してよい。 */
+  Save: 'save',
+  /** 利用者がやめた。 */
+  Cancel: 'cancel',
+  /** 確認の間に保存先が変わった。書かずに中止する。 */
+  DestinationChanged: 'destination-changed',
+} as const;
+
+export type SaveAfterConfirm = (typeof SAVE_AFTER_CONFIRM)[keyof typeof SAVE_AFTER_CONFIRM];
+
+export function decideSaveAfterConfirm(input: {
+  /** 利用者が「上書き保存する」を押したか。 */
+  readonly confirmed: boolean;
+  /** 確認を出したときの保存先。 */
+  readonly pathAtPrompt: string;
+  /** 確認を出したときの保存文脈の世代番号。 */
+  readonly generationAtPrompt: number;
+  /** いまの保存先。 */
+  readonly pathNow: string | null;
+  /** いまの保存文脈の世代番号。 */
+  readonly generationNow: number;
+}): SaveAfterConfirm {
+  if (!input.confirmed) return SAVE_AFTER_CONFIRM.Cancel;
+  // 世代が動いていない = 保存文脈は 1 度も差し替わっていない（＝同じファイル）。
+  if (input.generationNow === input.generationAtPrompt) return SAVE_AFTER_CONFIRM.Save;
+  // 世代が動いた。行き先が同じなら書いてよい（保存の完了で世代だけが進む経路がある）。
+  return input.pathNow === input.pathAtPrompt
+    ? SAVE_AFTER_CONFIRM.Save
+    : SAVE_AFTER_CONFIRM.DestinationChanged;
 }
 
 export function buildNewProjectContext(): SaveContext {

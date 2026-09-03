@@ -30,7 +30,10 @@ import {
   openCommand,
   quitGuard,
   saveCommand,
+  saveSucceeded,
+  SAVE_OUTCOME,
   type FileCommandPorts,
+  type SaveOutcome,
 } from './file-commands';
 import { REPAIR_STRINGS } from './strings';
 import { UNSAVED_CHOICE } from './unsaved-guard';
@@ -42,6 +45,8 @@ afterEach(() => {
 });
 
 const CAL = getCalendar('gregorian');
+/** 成功の結末（保存できた先つき）。ほとんどのテストはここを既定にする。 */
+const SAVED: SaveOutcome = { kind: SAVE_OUTCOME.Saved, path: '/tmp/x.gimoza' };
 const FAKE_PROJECT = { histories: [], settings: {}, baseMap: {} } as unknown as DomainProject;
 const CLEAN_REPORT: ConsistencyReport = { ok: true, inconsistencies: [] };
 const okTransport = (): LoadTransport => ({
@@ -57,8 +62,9 @@ function makePorts(over: Partial<FileCommandPorts> = {}): FileCommandPorts {
       promptUnsaved: () => Promise.resolve(UNSAVED_CHOICE.Cancel),
       save: () => Promise.resolve(true),
     },
-    save: () => Promise.resolve(true),
-    saveAs: () => Promise.resolve(true),
+    save: () => Promise.resolve(SAVED),
+    saveAs: () => Promise.resolve(SAVED),
+    autoSave: () => Promise.resolve(SAVED),
     load: () => Promise.resolve(okTransport()),
     loadDropped: () => Promise.resolve(okTransport()),
     toProject: () => FAKE_PROJECT,
@@ -73,20 +79,42 @@ function makePorts(over: Partial<FileCommandPorts> = {}): FileCommandPorts {
 
 describe('saveCommand (FR-105 保存 / 名前を付けて保存 委譲)', () => {
   it('saves to the current path when one exists', async () => {
-    const save = vi.fn(() => Promise.resolve(true));
-    const saveAs = vi.fn(() => Promise.resolve(true));
-    const ok = await saveCommand(makePorts({ save, saveAs }), false);
-    expect(ok).toBe(true);
+    const save = vi.fn(() => Promise.resolve(SAVED));
+    const saveAs = vi.fn(() => Promise.resolve(SAVED));
+    const outcome = await saveCommand(makePorts({ save, saveAs }), false);
+    expect(outcome).toEqual(SAVED);
     expect(save).toHaveBeenCalledOnce();
     expect(saveAs).not.toHaveBeenCalled();
   });
 
   it('delegates to 名前を付けて保存 when the path is undetermined', async () => {
-    const save = vi.fn(() => Promise.resolve(true));
-    const saveAs = vi.fn(() => Promise.resolve(true));
+    const save = vi.fn(() => Promise.resolve(SAVED));
+    const saveAs = vi.fn(() => Promise.resolve(SAVED));
     await saveCommand(makePorts({ save, saveAs }), true);
     expect(saveAs).toHaveBeenCalledOnce();
     expect(save).not.toHaveBeenCalled();
+  });
+
+  // A5: 真偽値ひとつでは「利用者がやめた」と「書けなかった」が区別できず、前者にも
+  // 状態行へ赤い「保存できませんでした」が出ていた。結末は種別で返る。
+  it('結末は種別で返る（やめた / 書けなかった を取り違えない）', async () => {
+    const cancelled = await saveCommand(
+      makePorts({ save: () => Promise.resolve({ kind: SAVE_OUTCOME.Cancelled } as const) }),
+      false,
+    );
+    expect(cancelled.kind).toBe(SAVE_OUTCOME.Cancelled);
+    expect(saveSucceeded(cancelled)).toBe(false);
+
+    const failed = await saveCommand(
+      makePorts({
+        save: () =>
+          Promise.resolve({ kind: SAVE_OUTCOME.WriteFailed, message: '書けません' } as const),
+      }),
+      false,
+    );
+    expect(failed).toEqual({ kind: SAVE_OUTCOME.WriteFailed, message: '書けません' });
+    expect(saveSucceeded(failed)).toBe(false);
+    expect(saveSucceeded(SAVED)).toBe(true);
   });
 });
 

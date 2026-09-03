@@ -25,6 +25,12 @@ export const STATUS_TONE = {
   Failure: 'failure',
   /** 進行中（確定が 500ms を超えたとき）。 */
   Progress: 'progress',
+  /**
+   * 中立（やめた・何も起きなかった）。**成功でも失敗でもない結末**を、成功の色味で
+   * 出さないために足した。「保存をやめました。ファイルは変わっていません。」を
+   * 緑で出すと「保存できた」と読み違える（実機で読み違えた）。
+   */
+  Neutral: 'neutral',
 } as const;
 
 export type StatusTone = (typeof STATUS_TONE)[keyof typeof STATUS_TONE];
@@ -69,6 +75,11 @@ export class StatusMessageStore {
   /** 進行中を出す。 */
   progress(text: string): void {
     this.set(text, STATUS_TONE.Progress);
+  }
+
+  /** 中立の結末を出す（やめた・何も変わらなかった）。 */
+  notice(text: string): void {
+    this.set(text, STATUS_TONE.Neutral);
   }
 
   set(text: string, tone: StatusTone): void {

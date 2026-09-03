@@ -31,6 +31,42 @@ import {
 import { REPAIR_STRINGS } from './strings';
 
 /**
+ * 保存の結末（設計書 §H.5 / 増分 1 の手直し A5）。
+ *
+ * これまで保存の戻りは **真偽値ひとつ**だった。そのため「利用者がネイティブの保存
+ * ダイアログを閉じた（＝何も起きていない）」と「ディスクに書けなかった（＝要対処）」が
+ * 区別できず、前者にも状態行へ赤い「保存できませんでした」が出ていた（実機で確認）。
+ * 結末を種別で返し、呼び出し側が色味と文言を選べるようにする。
+ *
+ * - `saved` … 書けた。`path` は実際に書いた先（名前を付けて保存では利用者が選んだ先）。
+ * - `cancelled` … 利用者がやめた（上書き確認の「やめる」／ネイティブダイアログを閉じた）。
+ * - `destination-changed` … 上書き確認の最中に保存先が変わったので中止した（A2）。
+ * - `busy` … 別のファイル操作が進行中で落とした（確認ダイアログを二重に開かないため）。
+ * - `write-failed` … 書き込みに失敗した。`message` は main が返した日本語の理由。
+ */
+export const SAVE_OUTCOME = {
+  Saved: 'saved',
+  Cancelled: 'cancelled',
+  DestinationChanged: 'destination-changed',
+  Busy: 'busy',
+  WriteFailed: 'write-failed',
+} as const;
+
+export type SaveOutcomeKind = (typeof SAVE_OUTCOME)[keyof typeof SAVE_OUTCOME];
+
+export type SaveOutcome =
+  | { readonly kind: typeof SAVE_OUTCOME.Saved; readonly path: string }
+  | { readonly kind: typeof SAVE_OUTCOME.Cancelled }
+  | { readonly kind: typeof SAVE_OUTCOME.DestinationChanged }
+  | { readonly kind: typeof SAVE_OUTCOME.Busy }
+  | { readonly kind: typeof SAVE_OUTCOME.WriteFailed; readonly message: string };
+
+/** 保存できたか（未保存ガードの「保存して続行」は成功したときだけ先へ進む）。 */
+export function saveSucceeded(outcome: SaveOutcome): boolean {
+  return outcome.kind === SAVE_OUTCOME.Saved;
+}
+
+/**
  * Ports the file commands depend on. Each maps 1:1 to a dependency unit's public
  * API (U15 typed IPC / U14 checks / domain reflect / U20 modals), fixed as a
  * contract so the App bridge wires the live ones and tests inject mocks (教訓 5.33).
@@ -40,10 +76,17 @@ export interface FileCommandPorts {
   readonly guard: UnsavedGuardPorts;
 
   // -- U15 typed IPC (FR-105) — the ONLY path to file I/O (FR-02 sandbox) ----
-  /** Save to the current path; resolves true on success (保存後 dirty 解消は caller). */
-  readonly save: () => Promise<boolean>;
-  /** 名前を付けて保存: main opens the dialog; resolves true on success. */
-  readonly saveAs: () => Promise<boolean>;
+  /** Save to the current path; resolves the OUTCOME (保存後 dirty 解消は caller). */
+  readonly save: () => Promise<SaveOutcome>;
+  /** 名前を付けて保存: main opens the dialog; resolves the OUTCOME. */
+  readonly saveAs: () => Promise<SaveOutcome>;
+  /**
+   * 自動保存の 1 回ぶん（FR-108）。**手動の保存と別の口にしてある**のは、成功しても
+   * 状態行の「直前の結果」を書き替えないためである（設計書 §H.5「自分から消えない」/
+   * 教訓 5.12: 利用者が次の判断に使う文言を、利用者が起こしていない操作で上書きしない）。
+   * 保存の直列化・宛先の決定・lost-edit ガードは手動と同一の経路を通る（教訓 5.6）。
+   */
+  readonly autoSave: () => Promise<SaveOutcome>;
   /** Load (main opens the open dialog). Resolves the transport result. */
   readonly load: () => Promise<LoadTransport>;
   /** D&D load: hand the dropped path to main. Resolves the transport result. */
@@ -76,22 +119,24 @@ export interface FileCommandPorts {
   readonly notify: (message: string) => void;
 }
 
-/** Whether the save (with 名前を付けて保存 委譲) eventually succeeded. */
-async function doSave(ports: FileCommandPorts, needsSaveAs: boolean): Promise<boolean> {
+/** The save (with 名前を付けて保存 委譲) outcome. */
+async function doSave(ports: FileCommandPorts, needsSaveAs: boolean): Promise<SaveOutcome> {
   return needsSaveAs ? ports.saveAs() : ports.save();
 }
 
 /**
  * The 保存 command (FR-105 / spec §A). When the save target is undetermined it
  * routes to 名前を付けて保存; otherwise it saves to the current path. Returns the
- * outcome so the caller updates dirty / path (the store update is the bridge's job).
+ * {@link SaveOutcome} so the caller updates dirty / path (the store update is the
+ * bridge's job) **and can tell「やめた」from「書けなかった」** — 真偽値ひとつでは
+ * 利用者がダイアログを閉じただけの中止まで「保存できませんでした」と赤く出ていた。
  */
-export function saveCommand(ports: FileCommandPorts, needsSaveAs: boolean): Promise<boolean> {
+export function saveCommand(ports: FileCommandPorts, needsSaveAs: boolean): Promise<SaveOutcome> {
   return doSave(ports, needsSaveAs);
 }
 
 /** The 名前を付けて保存 command (FR-105). */
-export function saveAsCommand(ports: FileCommandPorts): Promise<boolean> {
+export function saveAsCommand(ports: FileCommandPorts): Promise<SaveOutcome> {
   return ports.saveAs();
 }
 

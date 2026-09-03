@@ -27,7 +27,10 @@ export interface OverwriteConfirmDialogProps {
   readonly zIndex?: number;
 }
 
-const INITIAL_POSITION = { x: 360, y: 200 } as const;
+// 未保存警告 (x:360, y:220) と **重ならない位置**に置く。未保存警告の「保存して続行」は
+// 上書き確認を呼ぶので 2 枚が同時に出る（A3）。同じ位置に重ねると、どちらのボタンを
+// 押しているのか分からなくなる（教訓 5.14: 重なる UI は入力を受ける層まで設計する）。
+const INITIAL_POSITION = { x: 460, y: 320 } as const;
 
 export function OverwriteConfirmDialog(props: OverwriteConfirmDialogProps): JSX.Element {
   const { savePath, fileName, onDecide, zIndex } = props;

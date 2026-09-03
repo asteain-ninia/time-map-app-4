@@ -23,7 +23,7 @@ import type { LoadResponse, SaveRequest, SaveResponse, TimeMapApi } from '../../
 
 import { loadTransportFrom } from './load-adapter';
 import type { LoadStep, LoadTransport } from './load-flow';
-import type { FileCommandPorts } from './file-commands';
+import { SAVE_OUTCOME, saveSucceeded, type FileCommandPorts, type SaveOutcome } from './file-commands';
 import type { RepairChoices } from './repair-flow';
 import type { UnsavedChoice } from './unsaved-guard';
 import { zoomRangeOf, type ZoomRangeValue } from './zoom-limit';
@@ -41,8 +41,24 @@ export interface FileOpsHost {
   readonly buildSaveRequest: () => SaveRequest;
   /** Whether the current project still needs 名前を付けて保存 (no save path yet). */
   readonly needsSaveAs: () => boolean;
-  /** Adopt a successful save (update save path + clear dirty, spec §A 保存後). */
-  readonly onSaved: (path: string) => void;
+  /**
+   * Adopt a successful save (update save path + clear dirty, spec §A 保存後).
+   *
+   * `origin` は「誰が起こした保存か」（`'manual'` = 利用者の 保存 / 名前を付けて保存、
+   * `'auto'` = 自動保存のティック）。自動保存の成功で状態行の「直前の結果」を書き替えて
+   * しまうと、利用者が読もうとしていた拒否理由が 5 分後に勝手に消える（教訓 5.12）ので、
+   * 呼び出し先はこの値で出し分ける。
+   *
+   * `viaSaveAsDialog` は「main のネイティブな保存ダイアログを通ったか」。通っていれば
+   * 行き先は利用者自身が選んでおり、上書きの可否もそこで聞かれている——だから以後
+   * このセッションではその先への上書き確認を出さない。**保存前の needsSaveAs で
+   * 判定してはいけない**: 既に保存先があるプロジェクトからの「名前を付けて保存」は
+   * needsSaveAs が false なので載らず、直後の Ctrl+S でまた聞かれていた（A7）。
+   */
+  readonly onSaved: (
+    path: string,
+    info: { readonly origin: SaveOrigin; readonly viaSaveAsDialog: boolean },
+  ) => void;
   /** Is the project currently dirty? Single basis (spec §B / 教訓 5.24). */
   readonly isDirty: () => boolean;
   /** Show the 3-choice unsaved warning (U20 modal); resolves the choice (FR-107). */
@@ -60,9 +76,20 @@ export interface FileOpsHost {
   readonly reflectProject: (project: DomainProject, path: string) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
+  /**
+   * 未保存警告の「保存して続行」から呼ばれる保存（A3）。**上書き確認を通す**ので
+   * `save` とは別の口にしてある: これまでこの枝だけが確認を素通りして、読み込み元の
+   * ファイルを黙って上書きしていた（開く / 新規 / D&D / × / Alt+F4 / OS シャットダウンの
+   * 6 経路すべてがこの枝を通る）。確認ダイアログとセッションの「確認済み」集合を持って
+   * いるのはコントローラなので、ここでは口だけを定義して実体を注入してもらう。
+   */
+  readonly saveWithOverwriteConfirm: () => Promise<SaveOutcome>;
   /** The active calendar for consistency checks. */
   readonly calendar: Calendar;
 }
+
+/** 保存を起こしたのは誰か（自動保存は状態行の「直前の結果」を書き替えない）。 */
+export type SaveOrigin = 'manual' | 'auto';
 
 /** Reconstruct a DomainProject from a validated parse (U14 boundary, R8-safe). */
 function toProject(parse: Extract<LoadStep, { kind: 'reflect-direct' }>['parse']): DomainProject {
@@ -93,7 +120,10 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
   //   - 'save'   — a plain 保存: "write to the current target, or 名前を付けて保存 if there
   //                is none". The save-vs-saveAs decision for this intent is re-evaluated at
   //                SERIALIZED EXECUTION time (below), NOT fixed at dispatch.
-  const performSave = async (intent: 'save' | 'saveAs'): Promise<boolean> => {
+  const performSave = async (
+    intent: 'save' | 'saveAs',
+    origin: SaveOrigin,
+  ): Promise<SaveOutcome> => {
     // HIGH-1 根治 — re-evaluate the DESTINATION at the moment this (possibly queued) save
     // actually runs. A plain 保存 that was dispatched while an earlier save was in flight is
     // queued behind it; between its dispatch and its turn a破壊的 context swap (新規 / load,
@@ -114,20 +144,25 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     const req = host.buildSaveRequest();
     const res: SaveResponse = useSaveAs ? await host.api.saveAs(req) : await host.api.save(req);
     if (res.ok) {
-      host.onSaved(res.path);
-      return true;
+      host.onSaved(res.path, { origin, viaSaveAsDialog: useSaveAs });
+      return { kind: SAVE_OUTCOME.Saved, path: res.path };
     }
     // cancelled is NOT a failure to notify about (受け入れ基準 2: 保存キャンセル時は
-    // 元の操作を中止するだけ); a write failure is reported (FR-115).
-    if (res.reason === 'write-failed') host.notify(res.message);
-    return false;
+    // 元の操作を中止するだけ).
+    if (res.reason === 'write-failed') {
+      // A5: **`notify`（＝OS の警告ボックス）へは流さない**。同じ失敗が状態行にも出て
+      // いたので二重に知らせていた（設計書 §H.5「成功・失敗の唯一の常設の場所」に反する）。
+      // 理由の文字列を結末に載せて返し、状態行へ出すのは呼び出し側 1 か所に絞る。
+      return { kind: SAVE_OUTCOME.WriteFailed, message: res.message };
+    }
+    return { kind: SAVE_OUTCOME.Cancelled };
   };
 
-  const runSave = (intent: 'save' | 'saveAs'): Promise<boolean> => {
+  const runSave = (intent: 'save' | 'saveAs', origin: SaveOrigin = 'manual'): Promise<SaveOutcome> => {
     // Append to the chain so saves run strictly one-at-a-time. A prior save's
     // failure/rejection must NOT poison the chain, so we swallow it (catch) before
     // queueing the next save; this save's own outcome is still returned faithfully.
-    const result = saveChain.then(() => performSave(intent));
+    const result = saveChain.then(() => performSave(intent, origin));
     saveChain = result.catch(() => undefined);
     return result;
   };
@@ -140,13 +175,17 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
       isDirty: host.isDirty,
       promptUnsaved: host.promptUnsaved,
       // The guard's 保存 branch routes through the SAME save decision the menu uses
-      // (過少共有しない: one save path). It passes the plain 'save' intent; the
-      // save-vs-名前を付けて保存 choice is made at serialized EXECUTION time by performSave
-      // (HIGH-1), so it stays correct even if the context changes before the save runs.
-      save: () => runSave('save'),
+      // (過少共有しない: one save path) **and through the same 上書き確認** (A3): 未保存
+      // 警告の「保存して続行」だけが確認を素通りしていたので、開く / 新規 / D&D / × /
+      // Alt+F4 / OS シャットダウンの 6 経路が読み込み元を黙って上書きできていた。
+      // save-vs-名前を付けて保存 の決定は直列化された実行時に performSave が行う（HIGH-1）。
+      save: async () => saveSucceeded(await host.saveWithOverwriteConfirm()),
     },
     save: () => runSave('save'),
     saveAs: () => runSave('saveAs'),
+    // FR-108 自動保存: 直列化も宛先の決定も lost-edit ガードも手動と同一（教訓 5.6）。
+    // 違うのは「成功しても状態行の直前の結果を書き替えない」ことだけ。
+    autoSave: () => runSave('save', 'auto'),
     load: () => loadVia(() => host.api.load()),
     loadDropped: (droppedPath: string) => loadVia(() => host.api.loadDropped(droppedPath)),
     toProject,
