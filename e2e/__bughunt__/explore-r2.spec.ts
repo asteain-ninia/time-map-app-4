@@ -24,7 +24,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  enterEditMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 import { placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -103,11 +110,6 @@ async function modeOf(page: Page): Promise<string> {
   return ((await page.getByTestId('app-mode').textContent()) ?? '').trim();
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
 async function goView(page: Page): Promise<void> {
   const v = page.getByTestId('mode-view');
   if ((await v.getAttribute('aria-pressed')) !== 'true') {
@@ -117,26 +119,6 @@ async function goView(page: Page): Promise<void> {
     .getByTestId('add-input-layer')
     .waitFor({ state: 'detached', timeout: 4000 })
     .catch(() => record('overlay-stuck', 'add-input-layer still attached after returning to View'));
-}
-
-async function enterEdit(page: Page): Promise<void> {
-  await leaveView(page);
-  const e = page.getByTestId('mode-edit');
-  await expect(e).toBeEnabled();
-  if ((await e.getAttribute('aria-pressed')) !== 'true') await e.click();
-  await expect(e).toHaveAttribute('aria-pressed', 'true');
-}
-
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
 }
 
 // Commit one square face given a centre + half-size in screen px. Optionally pick
@@ -149,16 +131,8 @@ async function commitFace(
   half: number,
   parentIndex?: number,
 ): Promise<string> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vc = page.getByTestId('add-vertex-count');
   const vcText = (await vc.textContent())?.trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
@@ -248,7 +222,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
 
       // --- Aggressive mode/tool cycling (no crashes, mode marker tracks) ---------
       for (let i = 0; i < 2; i += 1) {
-        await leaveView(page);
+        await leaveViewMode(page);
         await page.getByTestId('mode-add').click();
         if ((await modeOf(page)) !== 'add') record('mode-marker-mismatch', `expected add, got ${await modeOf(page)}`);
         for (const t of ['tool-add.point', 'tool-add.line', 'tool-add.area']) {
@@ -295,7 +269,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       if (otherId === '') record('add-empty', 'other face id empty after commit');
 
       // --- Edit-tool interaction: select / vertex / move / reparent / merge ------
-      await enterEdit(page);
+      await enterEditMode(page);
       for (const t of [
         'tool-edit.select',
         'tool-edit.vertex',
@@ -388,7 +362,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
 
       // --- Repeated undo/redo metamorphic round-trips ---------------------------
       // 教訓 5.13: undo/redo are EDITING commands; must be in an editing mode.
-      await enterEdit(page);
+      await enterEditMode(page);
       const canUndo = page.getByTestId('app-can-undo');
       const canRedo = page.getByTestId('app-can-redo');
       const u0 = (await canUndo.textContent())?.trim();
@@ -448,7 +422,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       const splitTarget = await commitFace(page, splitScene.cx, splitScene.cy, 85);
       await shot(page, 'split-target-added');
       if (splitTarget === '') record('add-empty', 'split target empty after commit');
-      await enterEdit(page);
+      await enterEditMode(page);
       const knifeBtn = page.getByTestId('tool-edit.knife');
       if (await knifeBtn.isVisible()) {
         await knifeBtn.click();
@@ -494,7 +468,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       await shot(page, 'after-split');
 
       // --- Property / anchor panel observability (selection valid) --------------
-      await enterEdit(page);
+      await enterEditMode(page);
       await page.getByTestId('tool-edit.select').click();
       await page.mouse.click(cx - 150, cy + 10);
       const selForPanel = await activeFeature(page);

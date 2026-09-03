@@ -15,88 +15,16 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
-
-async function leaveView(page: Page): Promise<void> {
-  // The mode-view button toggles View↔Edit (setViewOnly), so clicking it from View lands
-  // in Edit mode. Only click it when actually in View (idempotent).
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-}
-
-async function enterAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') await addMode.click();
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-  // Re-arm robustly: the area tool may ALREADY be armed from a prior commit; clicking it
-  // then would DISARM it. Reset-then-arm so the add-input-layer is reliably present.
-  const areaTool = page.getByTestId('tool-add.area');
-  await expect(areaTool).toBeVisible();
-  if ((await areaTool.getAttribute('aria-pressed')) === 'true') await areaTool.click();
-  await areaTool.click();
-  await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
-}
-
-async function enterEditMode(page: Page): Promise<void> {
-  // Idempotent + no double-toggle: already-Edit → done; View → the view toggle lands in
-  // Edit; Add → the edit button switches. (mode-edit is disabled while in View, so we must
-  // route through the view toggle from there.)
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  } else {
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Commit one ~240px square face; returns its id + centre. */
-async function commitSquareFace(page: Page): Promise<{ faceId: string; cx: number; cy: number }> {
-  await enterAddArea(page);
-  const addLayer = page.getByTestId('add-input-layer');
-  await expect(addLayer).toBeVisible();
-  const box = (await addLayer.boundingBox())!;
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - 120, cy - 120],
-    [cx + 120, cy - 120],
-    [cx + 120, cy + 120],
-    [cx - 120, cy + 120],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
-  await page.getByTestId('add-complete').click();
-  await page.getByTestId('add-save').click();
-  const active = page.getByTestId('app-active-feature');
-  await expect(active).toHaveText(/\S/);
-  const faceId = ((await active.textContent()) ?? '').trim();
-  return { faceId, cx, cy };
-}
-
-/** Commit one square face centred at (cx,cy) with half-extent `half` (4 real clicks). */
-async function commitFaceAt(page: Page, cx: number, cy: number, half: number): Promise<void> {
-  await enterAddArea(page);
-  const addLayer = page.getByTestId('add-input-layer');
-  await expect(addLayer).toBeVisible();
-  for (const [dx, dy] of [
-    [-half, -half],
-    [half, -half],
-    [half, half],
-    [-half, half],
-  ] as const) {
-    await page.mouse.click(cx + dx, cy + dy);
-  }
-  await page.getByTestId('add-complete').click();
-  await page.getByTestId('add-save').click();
-  await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
-}
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  commitOneFace,
+  commitSquareFace,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  squareCorners,
+} from './helpers';
 
 async function readDrawnCount(page: Page): Promise<number> {
   return page.evaluate(() => {
@@ -153,7 +81,7 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(page.getByTestId('app-shell')).toBeVisible();
       await waitForE2E(page);
 
-      const { faceId, cx, cy } = await commitSquareFace(page);
+      const { faceId, cx, cy } = await commitOneFace(page);
       await revealFilterPanel(page);
 
       const withArea = await readDrawnCount(page);
@@ -228,34 +156,17 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(page.getByTestId('app-shell')).toBeVisible();
       await waitForE2E(page);
 
-      const addLayer = page.getByTestId('add-input-layer');
-      const active = page.getByTestId('app-active-feature');
-
       // PARENT face (left half) — committed first as a selectable parent.
-      await enterAddArea(page);
-      await expect(addLayer).toBeVisible();
-      const box = (await addLayer.boundingBox())!;
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
       const cx = box.x + box.width / 2;
       const cy = box.y + box.height / 2;
       const px = cx - 180;
-      for (const [dx, dy] of [[-60, -60], [60, -60], [60, 60], [-60, 60]] as const) {
-        await page.mouse.click(px + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      await expect(active).toHaveText(/\S/);
+      await drawFace(page, squareCorners(px, cy, 60));
 
       // CHILD face (right half), parented → the parent becomes a 集約 (FR-36/37).
       const ccx = cx + 100;
-      await enterAddArea(page);
-      await expect(addLayer).toBeVisible();
-      for (const [dx, dy] of [[-60, -60], [60, -60], [60, 60], [-60, 60]] as const) {
-        await page.mouse.click(ccx + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-parent').selectOption({ index: 1 });
-      await page.getByTestId('add-save').click();
-      await expect(active).toHaveText(/\S/);
+      await commitSquareFace(page, ccx, cy, 60, { parentIndex: 1 });
 
       // FR-42 N=1: expand the 集約 into its children (直轄領 + child) — MORE drawn.
       const n0 = await readDrawnCount(page);
@@ -290,10 +201,8 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const m0 = (await mapInput.boundingBox())!;
       const cx = m0.x + m0.width / 2;
       const cy = m0.y + m0.height / 2;
-      await commitFaceAt(page, cx - 150, cy, 70);
-      const leftId = ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
-      await commitFaceAt(page, cx + 150, cy, 70);
-      const rightId = ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
+      const leftId = await commitSquareFace(page, cx - 150, cy, 70);
+      const rightId = await commitSquareFace(page, cx + 150, cy, 70);
       expect(leftId).not.toBe('');
       expect(rightId).not.toBe(leftId);
 
@@ -399,8 +308,8 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const m0 = (await mapInput.boundingBox())!;
       const cx = m0.x + m0.width / 2;
       const cy = m0.y + m0.height / 2;
-      await commitFaceAt(page, cx - 150, cy, 70);
-      await commitFaceAt(page, cx + 150, cy, 70);
+      await commitSquareFace(page, cx - 150, cy, 70);
+      await commitSquareFace(page, cx + 150, cy, 70);
 
       // Hide the LEFT face via 右クリック「この地物を非表示」.
       await enterEditMode(page);

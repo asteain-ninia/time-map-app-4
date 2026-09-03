@@ -19,33 +19,16 @@
 
 import { test, expect } from '@playwright/test';
 
-import { launchApp } from './helpers';
-
-/** Leave View → 編集モード (no edit tool armed, so map clicks are plain selection). */
-async function enterEditMode(page: import('@playwright/test').Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const editMode = page.getByTestId('mode-edit');
-  await expect(editMode).toBeEnabled();
-  await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Enter 追加モード → 面ツール (the live add導線, no overlay bypass). */
-async function enterAddArea(page: import('@playwright/test').Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await page.getByTestId('tool-add.area').click();
-}
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  commitOneFace,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  squareCorners,
+  DEFAULT_FACE_HALF,
+} from './helpers';
 
 test.describe('HB-15 — 編集モードで頂点/地物を実クリックして選択できる', () => {
   test('クリックした既知頂点が選択され、地物本体クリックで地物が選択される', async () => {
@@ -54,31 +37,19 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
       // The add + map input layers share the SAME client box (both inset:0 over the
       // map cell), so the corner SCREEN positions computed now stay valid after we
       // switch to 編集モード and click them on the map input layer (camera unchanged).
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
+      // 入力層の box は「空白クリック」の座標にも使うので、面ツールを構えてから採る。
+      await armAddAreaTool(page);
+      const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
       const cy = a.y + a.height / 2;
       // Four DISTINCT corners of a ~240px square (the HB-7 path). The first corner is
       // the vertex we will later click in 編集モード.
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120],
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-
+      const corners = squareCorners(cx, cy, DEFAULT_FACE_HALF);
       // The add committed and selection re-resolved to the new face (教訓 5.11).
-      const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+      const faceId = await drawFace(page, corners);
       expect(faceId.length).toBeGreaterThan(0);
+
+      const activeFeature = page.getByTestId('app-active-feature');
 
       // 編集モード (plain selection). Click EMPTY space first to clear the post-commit
       // selection, so the subsequent vertex click is an unambiguous fresh selection.
@@ -129,25 +100,8 @@ test.describe('HB-15 — 編集モードで頂点/地物を実クリックして
       // (b) Behavioural: commit one face at the CENTRE, select it, then click the map's
       // BOTTOM-LEFT (where the old panel sat). With no overlay there, the click reaches the
       // empty map and CLEARS the selection (the HB-15 symptom would have blocked it).
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const a = (await addLayer.boundingBox())!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      for (const [dx, dy] of [
-        [-120, -120],
-        [120, -120],
-        [120, 120],
-        [-120, 120],
-      ] as const) {
-        await page.mouse.click(cx + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      const { faceId, cx, cy } = await commitOneFace(page);
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // 編集モード, then re-select the centre face so the selection is non-empty.
       await enterEditMode(page);

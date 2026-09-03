@@ -13,7 +13,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import { launchApp, enterEditMode, commitSquareFace } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
@@ -109,17 +109,6 @@ async function panelText(page: Page): Promise<string> {
   return ((await p.textContent()) ?? '').replace(/\s+/g, ' ').trim().slice(0, 160);
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-async function enterEditMode(page: Page): Promise<void> {
-  await leaveView(page);
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
 test.describe('V2 — 削除→Ctrl+Z 復活後の塗り色 (現HEAD)', () => {
   test('undo-restored face: measured fill vs selection state', async () => {
     test.setTimeout(300_000);
@@ -138,27 +127,7 @@ test.describe('V2 — 削除→Ctrl+Z 復活後の塗り色 (現HEAD)', () => {
       const half = 120;
 
       // ---- 1) commit ONE square 面 through the live add導線 -------------------
-      await leaveView(page);
-      const add = page.getByTestId('mode-add');
-      await expect(add).toBeEnabled();
-      if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-      const area = page.getByTestId('tool-add.area');
-      if ((await area.getAttribute('aria-pressed')) !== 'true') await area.click();
-      await expect(page.getByTestId('add-input-layer')).toBeVisible();
-      for (const [px, py] of [
-        [cx - half, cy - half],
-        [cx + half, cy - half],
-        [cx + half, cy + half],
-        [cx - half, cy + half],
-      ] as ReadonlyArray<readonly [number, number]>) {
-        await page.mouse.click(px, py);
-      }
-      const complete = page.getByTestId('add-complete');
-      await expect(complete).toBeEnabled();
-      await complete.click();
-      await page.getByTestId('add-save').click();
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/, { timeout: 10_000 });
-      const faceId = await activeFeature(page);
+      const faceId = await commitSquareFace(page, cx, cy, half);
       record('committed', `faceId="${faceId}" drawn=${await drawnCount(page)}`);
 
       // ---- 2) CALIBRATION A: just committed => SELECTED (active) -------------
@@ -255,23 +224,7 @@ test.describe('V2 — 削除→Ctrl+Z 復活後の塗り色 (現HEAD)', () => {
       const cy = Math.round(b.y + b.height / 2);
       const half = 120;
 
-      await leaveView(page);
-      const add = page.getByTestId('mode-add');
-      if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-      const area = page.getByTestId('tool-add.area');
-      if ((await area.getAttribute('aria-pressed')) !== 'true') await area.click();
-      await expect(page.getByTestId('add-input-layer')).toBeVisible();
-      for (const [px, py] of [
-        [cx - half, cy - half],
-        [cx + half, cy - half],
-        [cx + half, cy + half],
-        [cx - half, cy + half],
-      ] as ReadonlyArray<readonly [number, number]>) {
-        await page.mouse.click(px, py);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/, { timeout: 10_000 });
+      await commitSquareFace(page, cx, cy, half);
 
       await enterEditMode(page);
       const vtx = page.getByTestId('tool-edit.vertex');

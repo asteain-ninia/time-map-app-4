@@ -20,7 +20,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { commitOneFace, enterEditMode, launchApp } from './helpers';
 
 interface HandlePos {
   lon: number;
@@ -61,33 +61,6 @@ function nearest(handles: HandlePos[], target: HandlePos): HandlePos | null {
   return best;
 }
 
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-async function enterAddArea(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await page.getByTestId('tool-add.area').click();
-}
-
 test.describe('HB3-4 — 編集モードでドラッグ中に頂点がカーソルへ追従し release 後ジャンプしない', () => {
   test('頂点ハンドルを実ドラッグするとプレビューが追従し、解放後も移動先に留まる', async () => {
     const { app, page } = await launchApp();
@@ -99,28 +72,10 @@ test.describe('HB3-4 — 編集モードでドラッグ中に頂点がカーソ�
         .toBe('object');
 
       // 1) Commit a square 面 with four REAL corner clicks at known SCREEN positions.
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      const topLeft: readonly [number, number] = [cx - 120, cy - 120];
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        topLeft,
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      const { faceId, cx, cy, corners } = await commitOneFace(page);
+      const topLeft = corners[0]!; // 左上の角 = これから掴む頂点
 
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // 2) Enter 編集モード and REAL-click the body to select the face → handles draw.
       await enterEditMode(page);

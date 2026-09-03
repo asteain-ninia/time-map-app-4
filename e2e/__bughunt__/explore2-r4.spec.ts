@@ -51,7 +51,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  enterEditMode,
+  returnToViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 import { assertClickable } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -142,34 +149,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-  await page
-    .getByTestId('add-input-layer')
-    .waitFor({ state: 'detached', timeout: 4000 })
-    .catch(() => undefined);
-}
-
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
   // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
@@ -193,7 +172,7 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -267,16 +246,9 @@ async function commitFaceMaybeConflict(
   cy: number,
   half: number,
 ): Promise<'committed' | 'conflict' | 'rejected'> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  const corners = squareCorners(cx, cy, half);
+  await placeVertices(page, corners);
   const vcText = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
   const complete = page.getByTestId('add-complete');
@@ -378,7 +350,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       }
 
       // Domain count just before the cancel experiment.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeCancel = await featureListCount(page);
 
@@ -403,7 +375,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
           record('conflict-cancel-stuck', 'modal still open after cancel');
           await page.getByTestId('conflict-cancel').click().catch(() => undefined);
         }
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterCancel = await featureListCount(page);
         const diagAfterCancel = await diagFeatureCount(page);
@@ -452,7 +424,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         record('conflict-not-fired', `three-face overlap did NOT pause on conflict modal (result=${f3}); 同時刻 spatial conflict may be undetected`);
       }
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const listAfterConflict = await featureListCount(page);
       const diagAfterConflict = await diagFeatureCount(page);
@@ -537,7 +509,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // =====================================================================
       // 4. TIME-MOVE — 月/日 step units; forward∘back = identity (metamorphic).
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const timeBefore = (await diagFields(page)).time;
       const unitSelect = page.getByRole('combobox', { name: 'ステップ単位' });
       const back = page.getByRole('button', { name: /前へ戻る/ });
@@ -573,14 +545,14 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // =====================================================================
       //    UNDO 連打 — commit a face, pound undo/redo, gate undo∘op = identity.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeUndoOp = await featureListCount(page);
       const addRes = await commitFaceMaybeConflict(page, cx - 230, cy - 170, 70);
       if (addRes === 'conflict') {
         await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterAdd = await featureListCount(page);
 
@@ -594,9 +566,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         // op done: undo should be available.
         if ((await canUndo()) !== '1') record('undo-marker-not-set', 'app-can-undo != 1 after a committed add');
         // Pound Ctrl+Z several times (連打), then Ctrl+Y to redo once.
-        await leaveView(page);
-        const em = page.getByTestId('mode-edit');
-        if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
+        await enterEditMode(page);
         for (let i = 0; i < 4; i += 1) {
           await page.keyboard.press('Control+z');
           await page.waitForTimeout(50);
@@ -605,7 +575,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
           }
         }
         await checkCamera(page, 'after-undo-burst');
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterUndo = await featureListCount(page);
         // undo∘op = identity: the add is undone, count back to baseline.
@@ -614,14 +584,13 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         }
         // redo should now be available; Ctrl+Y restores the add.
         if ((await canRedo()) === '1') {
-          await leaveView(page);
-          if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
+          await enterEditMode(page);
           await page.keyboard.press('Control+y');
           await page.waitForTimeout(80);
           if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
             await page.getByTestId('conflict-cancel').click().catch(() => undefined);
           }
-          await goView(page);
+          await returnToViewMode(page);
           await showSidebarTab(page, 'features');
           const countAfterRedo = await featureListCount(page);
           if (countAfterRedo !== countAfterUndo + 1 && countAfterRedo !== countAfterAdd) {
@@ -641,7 +610,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // =====================================================================
       // 5. EXTREME ZOOM + PAN — zoom to clamp, then drag-pan hard 4 directions.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const lbox = await inputLayer.boundingBox();
       const wx = lbox ? lbox.x + lbox.width / 2 : cx;
       const wy = lbox ? lbox.y + lbox.height / 2 : cy;
@@ -688,7 +657,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // =====================================================================
       const dirtyNow = (await diagFields(page)).unsaved;
       if (dirtyNow !== 'あり') record('dirty-not-set', `after edits unsaved=${dirtyNow} (expected あり)`);
-      await goView(page);
+      await returnToViewMode(page);
       await page.getByTestId('menu-file').click();
       const fileItems = page.getByTestId('menu-items-file');
       if (await fileItems.isVisible().catch(() => false)) {
@@ -708,7 +677,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       await shot(page, 'file-menu');
 
       // Final parity + camera.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const finalList = await featureListCount(page);
       const finalDiag = await diagFeatureCount(page);

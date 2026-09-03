@@ -23,51 +23,19 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  returnToViewMode,
+  squareCorners,
+} from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
 mkdirSync(shotDir, { recursive: true });
-
-/** Land in 追加モード idempotently from any starting mode. */
-async function enterAddMode(page: Page): Promise<void> {
-  const addMode = page.getByTestId('mode-add');
-  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(addMode).toBeEnabled();
-    await addMode.click();
-  }
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Land in 編集モード idempotently from any starting mode. */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Return to View so the sidebar feature-list reflects the committed forest. */
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-}
 
 async function showFeaturesTab(page: Page): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab; 現在時刻 mode = 旧地物一覧.
@@ -95,33 +63,20 @@ test.describe('HB3-5/19 — ナイフの n-way 片チューザ: コーム切断�
       await expect(page.getByTestId('app-shell')).toBeVisible();
 
       // --- 1. Commit ONE face through the live add導線, capturing its on-screen box. ---
-      // Inline add (not commitOneFace) so we capture the EXACT screen box the face was
-      // drawn in (the add-input-layer rect) and reuse it for BOTH the knife target
-      // click and the comb cut — the face's screen position is left-of-map-centre on a
-      // wide window, so deriving the cut box from map-input-layer's centre misses it.
-      await enterAddMode(page);
-      await page.getByTestId('tool-add.area').click();
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const fb = (await addLayer.boundingBox())!;
+      // commitOneFace ではなく armAddAreaTool + drawFace を使うのは、面が描かれた
+      // EXACT な画面矩形 (add-input-layer の rect) を掴んで、ナイフの対象クリックと
+      // コーム切断の **両方** に使い回すため — 面の画面位置は横長ウィンドウでは
+      // 地図中央より左なので、map-input-layer の中心から切断箱を導くと外れる。
+      await armAddAreaTool(page);
+      const fb = await addInputLayerBox(page);
       const cx = fb.x + fb.width / 2;
       const cy = fb.y + fb.height / 2;
       const HALF = 120; // the face spans [cx±120, cy±120] = world [0,10]² (24px / world unit).
       const U = (HALF * 2) / 10; // px per world unit.
-      for (const [dx, dy] of [
-        [-HALF, -HALF],
-        [HALF, -HALF],
-        [HALF, HALF],
-        [-HALF, HALF],
-      ] as const) {
-        await page.mouse.click(cx + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+      await drawFace(page, squareCorners(cx, cy, HALF));
 
       // The pre-split forest count (should be 1 top-level face).
-      await goView(page);
+      await returnToViewMode(page);
       const countBefore = await featureListCount(page);
       expect(countBefore).toBe(1);
 
@@ -208,7 +163,7 @@ test.describe('HB3-5/19 — ナイフの n-way 片チューザ: コーム切断�
       await page.getByTestId('add-save').click();
 
       // --- 7. ASSERT the feature count grew by 2 (k+1 = 3 features from 1). ---
-      await goView(page);
+      await returnToViewMode(page);
       await expect
         .poll(async () => featureListCount(page), { timeout: 15_000 })
         .toBe(countBefore + 2);

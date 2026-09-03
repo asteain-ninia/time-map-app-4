@@ -16,7 +16,13 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  enterEditMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
@@ -86,18 +92,6 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 // --- mode / tool helpers (mirrors explore*/helpers) --------------------------
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
   await enterEditMode(page);
   const btn = page.getByTestId(`tool-edit.${tool}`);
@@ -115,22 +109,8 @@ async function showPropertiesTab(page: Page): Promise<void> {
 
 // Commit ONE square 面 (leaf) through the LIVE add導線, returning its committed id.
 async function commitFace(page: Page, cx: number, cy: number, half: number): Promise<string> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) !== 'true') await area.click();
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const complete = page.getByTestId('add-complete');
   await expect(complete).toBeEnabled();
   await complete.click();

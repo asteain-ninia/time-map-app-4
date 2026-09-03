@@ -58,7 +58,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  returnToViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -131,22 +138,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-  await page
-    .getByTestId('add-input-layer')
-    .waitFor({ state: 'detached', timeout: 4000 })
-    .catch(() => undefined);
-}
-
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
   // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
@@ -170,7 +161,7 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -212,7 +203,7 @@ async function diagUnsaved(page: Page): Promise<string> {
 
 // Single-truth-source parity: 地物一覧 must equal 診断 feature-count.
 async function checkParity(page: Page, where: string): Promise<number> {
-  await goView(page);
+  await returnToViewMode(page);
   await showSidebarTab(page, 'features');
   const list = await featureListCount(page);
   const diag = await diagFeatureCount(page);
@@ -246,18 +237,6 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
   }
 }
 
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 // Commit one square face. Optionally choose a parent (by the LAST option in the
 // add-parent select, i.e. the most-recently-added feature → deep nesting) and a
 // name. Returns the outcome.
@@ -268,16 +247,8 @@ async function commitFace(
   half: number,
   opts?: { readonly chooseLastParent?: boolean; readonly name?: string },
 ): Promise<'committed' | 'rejected' | 'conflict'> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vcText = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
   const complete = page.getByTestId('add-complete');
@@ -324,7 +295,7 @@ async function commitFace(
 }
 
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const edit = page.getByTestId('mode-edit');
   await expect(edit).toBeEnabled();
   if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
@@ -513,7 +484,7 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       }
 
       // Anchor ordering on the currently-selected feature.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'properties');
       await checkAnchorOrdering(page, 'after-reparent');
 
@@ -699,7 +670,7 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // =====================================================================
       // D. LONG TIMELINE PLAYBACK + ANCHOR ORDERING.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const playback = page.getByTestId('timeline-playback');
       if (await playback.isVisible().catch(() => false)) {
         const speed = page.getByRole('combobox', { name: '再生速度' });
@@ -768,7 +739,7 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       await checkCamera(page, 'after-playback');
 
       // Anchor ordering on the selected feature after the playback scrub.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'properties');
       await checkAnchorOrdering(page, 'after-playback');
 
@@ -812,7 +783,7 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       record('total-feature-count', `total features now ${countAfterGrid}`);
 
       // --- PERF: pan + zoom burst over the dense scene; time each leg. ----------
-      await goView(page);
+      await returnToViewMode(page);
       const lbox = await inputLayer.boundingBox();
       const wx = lbox ? lbox.x + lbox.width / 2 : cx;
       const wy = lbox ? lbox.y + lbox.height / 2 : cy;
@@ -886,7 +857,7 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // After an undo storm the dirty flag may be either state; only flag if the
       // diagnostics value is malformed (the real invariant is single-source sanity).
       if (!/^(あり|なし)$/.test(unsavedNow)) record('dirty-malformed', `unsaved="${unsavedNow}"`);
-      await goView(page);
+      await returnToViewMode(page);
       await page.getByTestId('menu-file').click();
       const fileItems = page.getByTestId('menu-items-file');
       if (await fileItems.isVisible().catch(() => false)) {

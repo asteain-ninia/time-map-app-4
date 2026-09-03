@@ -11,7 +11,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { launchApp, enterAddMode } from './helpers';
+import { launchApp, addInputLayerBox, armAddAreaTool, drawFace } from './helpers';
 import { COUNTRY_SHAPES, outerRingToPixels } from './fixtures/real-shapes';
 
 // One realistic, clearly-concave shape is enough to prove the live add flow
@@ -24,14 +24,8 @@ test.describe('realistic outlines commit through the live add flow', () => {
     expect(ITALY).toBeDefined();
     const { app, page } = await launchApp();
     try {
-      await enterAddMode(page);
-      await page.getByTestId('tool-add.area').click();
-
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const box = await addLayer.boundingBox();
-      expect(box).not.toBeNull();
-      const b = box!;
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
 
       // Fit Italy's outer ring into a centred ~60%-of-layer box so every vertex
       // lands comfortably inside the clickable input layer.
@@ -44,16 +38,10 @@ test.describe('realistic outlines commit through the live add flow', () => {
       });
       expect(pixels.length).toBeGreaterThanOrEqual(8); // a genuinely concave ring
 
-      for (const [px, py] of pixels) await page.mouse.click(px, py);
-
-      const complete = page.getByTestId('add-complete');
-      await expect(complete).toBeEnabled();
-      await complete.click();
-      await page.getByTestId('add-save').click();
-
       // The non-square outline committed: the live selection re-resolved to the
-      // new feature (hidden observability marker non-empty).
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+      // new feature (hidden observability marker non-empty) — drawFace が頂点 →
+      // 完了 → 保存 → 再解決待ち まで通す。
+      await drawFace(page, pixels);
     } finally {
       await app.close();
     }

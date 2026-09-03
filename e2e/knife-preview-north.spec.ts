@@ -23,38 +23,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { addInputLayerBox, armAddAreaTool, drawFace, enterEditMode, launchApp } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
 mkdirSync(shotDir, { recursive: true });
 
-/** Leave 閲覧モード so a tool mode can be entered. */
-async function leaveView(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') await viewToggle.click();
-}
-
-async function enterAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') await addMode.click();
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-  const areaTool = page.getByTestId('tool-add.area');
-  await expect(areaTool).toBeVisible();
-  if ((await areaTool.getAttribute('aria-pressed')) === 'true') await areaTool.click();
-  await areaTool.click();
-  await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
-}
-
 async function armKnife(page: Page): Promise<void> {
-  await leaveView(page);
-  const editMode = page.getByTestId('mode-edit');
-  await expect(editMode).toBeEnabled();
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
+  await enterEditMode(page);
   const knifeTool = page.getByTestId('tool-edit.knife');
   await expect(knifeTool).toBeEnabled();
   if ((await knifeTool.getAttribute('aria-pressed')) !== 'true') await knifeTool.click();
@@ -113,25 +89,18 @@ test.describe('HB4-1 — 継承先モーダルの分断プレビュー(北半球
       // --- 1. 画面中央より十分上に面を作る(既定カメラでは画面中央 = 緯度 0)。 ---
       // 形は **北を向いた三角形**。上下対称な矩形だと「北が上」かどうかが
       // スクショで判別できず、上下逆さのデグレを目視で見逃すため(診断 §6)。
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const b = (await addLayer.boundingBox())!;
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
       const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
       const top = cy - 200; // 頂点(北の尖り)
       const bottom = cy - 70; // 底辺(南)
-      for (const [px, py] of [
+      // drawFace が頂点数 3 の一致確認 → 完了 → 保存 → 選択の再解決待ちまで行う。
+      await drawFace(page, [
         [cx, top],
         [cx + 100, bottom],
         [cx - 100, bottom],
-      ] as const) {
-        await page.mouse.click(px, py);
-      }
-      await expect(page.getByTestId('add-vertex-count')).toHaveText('3');
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+      ] as const);
 
       // --- 2. 緯度帯が北半球に閉じている(= 旧バグの発火条件)ことを裏取りする。 ---
       const latBand = await page.evaluate(

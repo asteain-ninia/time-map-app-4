@@ -16,9 +16,16 @@
 // as pure unit lenses in src/domain/perf/*.test.ts — so the regression観点 is held
 // by the unit layer now and the E2E activates once the binding lands (教訓 5.41).
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  drawFace,
+  enterAddMode,
+  launchApp,
+  placeVertices,
+} from './helpers';
 
 test.describe('FR-01 — 時間軸に沿った状態再現が live shell で成立する', () => {
   // 依存ゲート: the U21 Timeline component is mounted into the composition root by
@@ -141,30 +148,11 @@ test.describe('FR-02 — オフライン完結: レンダラは外部発信し�
 // binding. Held NOW by the pure unit lenses in src/domain/perf (一時状態破棄 /
 // 選択維持 の判定は U23/U24/U26/U28/U30/U35 の単体で固定済み; ここは E2E 化の枠).
 
-// Enter 追加モード from the default View state: the toolbar's 表示専用 toggle is the
-// live導線 OUT of display-only (it lands in 編集モード), then 追加モード selects add.
-async function enterAddMode(page: import('@playwright/test').Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  // In View the add/edit toggles are disabled; leaving View enables them.
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-}
-
 // Place one vertex by clicking the transient add-input layer (the overlay layer
 // the controller mounts above the map while drawing — 教訓 5.14).
-async function placeOneVertex(page: import('@playwright/test').Page): Promise<void> {
-  const inputLayer = page.getByTestId('add-input-layer');
-  await expect(inputLayer).toBeVisible();
-  const box = await inputLayer.boundingBox();
-  expect(box).not.toBeNull();
-  const b = box!;
-  await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+async function placeOneVertex(page: Page): Promise<void> {
+  const b = await addInputLayerBox(page);
+  await placeVertices(page, [[b.x + b.width / 2, b.y + b.height / 2]]);
 }
 
 test.describe('回帰観点 — 一時状態の破棄 (教訓 5.2 / FR-78)', () => {
@@ -253,13 +241,8 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
       //    complete + save. The corners come from SCREEN pixels (screen→world), so
       //    the committed face carries non-integer world coordinates — exactly the
       //    input class that used to produce a seam sliver on split.
-      await enterAddMode(page);
-      await page.getByTestId('tool-add.area').click();
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
+      await armAddAreaTool(page);
+      const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
       const cy = a.y + a.height / 2;
       // A square ~240×240 px centred in the layer (odd offsets ⇒ non-integer world).
@@ -269,17 +252,9 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
         [cx + 119, cy + 121],
         [cx - 117, cy + 123],
       ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      const complete = page.getByTestId('add-complete');
-      await expect(complete).toBeEnabled();
-      await complete.click();
-      await page.getByTestId('add-save').click();
-
-      // The add committed and selection re-resolved to the new face (教訓 5.11).
+      // drawFace が 完了 → 保存 → 選択が新しい面へ再解決される (教訓 5.11) まで通す。
+      await drawFace(page, corners);
       const active = page.getByTestId('app-active-feature');
-      await expect(async () => {
-        expect(((await active.textContent()) ?? '').trim()).not.toBe('');
-      }).toPass();
 
       // 2. Enter 編集モード → ナイフ. Select the face by clicking its centre (live
       //    featureAtPoint), then draw a piercing cut from OUTSIDE the face (above)

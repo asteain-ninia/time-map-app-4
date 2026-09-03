@@ -23,7 +23,13 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  enterEditMode,
+  armAddAreaTool,
+  placeVertices,
+  commitFace,
+} from '../helpers';
 import { placeSquareScene, assertClickable, type SceneBox } from '../__bughunt__/scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -111,17 +117,6 @@ async function textOf(page: Page, testid: string): Promise<string> {
 }
 
 // --- mode / tool helpers ------------------------------------------------------
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  await leaveView(page);
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
   await enterEditMode(page);
   const btn = page.getByTestId(`tool-edit.${tool}`);
@@ -138,15 +133,8 @@ async function commitFaceAt(
   page: Page,
   corners: ReadonlyArray<readonly [number, number]>,
 ): Promise<string> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) !== 'true') await area.click();
-  await expect(page.getByTestId('add-input-layer')).toBeVisible();
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, corners);
   const complete = page.getByTestId('add-complete');
   await expect(complete).toBeEnabled();
   await complete.click();
@@ -354,45 +342,6 @@ async function vertexHandleWorldPositions(
     }).__E2E__;
     return e2e === undefined ? [] : e2e.getVertexHandlePositions();
   });
-}
-
-/** Arm 追加モード + 面ツール deterministically (reset-then-arm — a prior commit may leave it pressed). */
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  await expect(add).toHaveAttribute('aria-pressed', 'true');
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByTestId('add-input-layer')).toBeVisible();
-}
-
-/**
- * Commit ONE 面 through the LIVE add 導線, optionally choosing a 上位領域 (parent) in the
- * property form — the ONLY real 導線 that builds a hierarchy (FR-36 親→集約 + FR-37 直轄領
- * 自動生成). Returns the committed feature id.
- */
-async function commitFace(
-  page: Page,
-  corners: ReadonlyArray<readonly [number, number]>,
-  parentIndex?: number,
-): Promise<string> {
-  await armAddArea(page);
-  for (const [px, py] of corners) await page.mouse.click(px, py);
-  await expect(page.getByTestId('add-vertex-count')).toHaveText(String(corners.length));
-  await page.getByTestId('add-complete').click();
-  if (parentIndex !== undefined) {
-    const parentSelect = page.getByTestId('add-parent');
-    await expect(parentSelect).toBeVisible();
-    await parentSelect.selectOption({ index: parentIndex });
-  }
-  await page.getByTestId('add-save').click();
-  await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
-  return activeFeature(page);
 }
 
 /** Jump the time cursor to a precise year through the 直接ジャンプ field (FR-70 導線). */
@@ -1118,7 +1067,7 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
 
       const parentId = await commitFace(page, parentCorners);
       // index 1 = the only real parent candidate (index 0 = 親なし).
-      const childId = await commitFace(page, childCorners, 1);
+      const childId = await commitFace(page, childCorners, { parentIndex: 1 });
       record('a7-hierarchy', `parentId="${parentId}" childId="${childId}"`);
       expect(childId).not.toBe('');
       expect(childId).not.toBe(parentId);

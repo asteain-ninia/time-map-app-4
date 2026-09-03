@@ -15,32 +15,14 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
-
-async function leaveView(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-}
-
-async function enterAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
-    await addMode.click();
-  }
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-  const areaTool = page.getByTestId('tool-add.area');
-  await expect(areaTool).toBeVisible();
-  if ((await areaTool.getAttribute('aria-pressed')) === 'true') {
-    await areaTool.click();
-  }
-  await areaTool.click();
-  await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
-}
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  commitFace,
+  drawFace,
+  launchApp,
+  type ScreenPoint,
+} from './helpers';
 
 /** The distinct-feature count drawn through the live U34 display pipeline (depth honoured). */
 async function readDrawnCount(page: Page): Promise<number> {
@@ -81,57 +63,35 @@ test.describe('FR-42 — 階層深度スライダーで描画地物数が変化�
         )
         .toBe('object');
 
-      const addLayer = page.getByTestId('add-input-layer');
-      const activeFeature = page.getByTestId('app-active-feature');
-
-      await enterAddArea(page);
-      await expect(addLayer).toBeVisible();
-      const box = await addLayer.boundingBox();
-      expect(box).not.toBeNull();
-      const a = box!;
+      await armAddAreaTool(page);
+      const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
       const cy = a.y + a.height / 2;
 
       // PARENT face — a square on the LEFT half; committed first as a selectable parent.
       const px0 = cx - 180;
       const py0 = cy;
-      const parentCorners: ReadonlyArray<readonly [number, number]> = [
+      const parentCorners: ReadonlyArray<ScreenPoint> = [
         [px0 - 60, py0 - 60],
         [px0 + 60, py0 - 60],
         [px0 + 60, py0 + 60],
         [px0 - 60, py0 + 60],
       ];
-      for (const [px, py] of parentCorners) await page.mouse.click(px, py);
-      await expect(page.getByTestId('add-vertex-count')).toHaveText(
-        String(parentCorners.length),
-      );
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      await expect(activeFeature).toHaveText(/\S/);
+      await drawFace(page, parentCorners);
 
       // CHILD face — a DISJOINT square on the RIGHT half, parented to the parent. This
       // promotes the parent to a 集約 (FR-36) and auto-generates a 直轄領 for the parent's
       // original footprint (FR-37, disjoint difference). The 集約 now has 2 children.
       const ccx = cx + 100;
       const ccy = cy;
-      const childCorners: ReadonlyArray<readonly [number, number]> = [
+      const childCorners: ReadonlyArray<ScreenPoint> = [
         [ccx - 60, ccy - 60],
         [ccx + 60, ccy - 60],
         [ccx + 60, ccy + 60],
         [ccx - 60, ccy + 60],
       ];
-      await enterAddArea(page);
-      await expect(addLayer).toBeVisible();
-      for (const [px, py] of childCorners) await page.mouse.click(px, py);
-      await expect(page.getByTestId('add-vertex-count')).toHaveText(
-        String(childCorners.length),
-      );
-      await page.getByTestId('add-complete').click();
-      const parentSelect = page.getByTestId('add-parent');
-      await expect(parentSelect).toBeVisible();
-      await parentSelect.selectOption({ index: 1 }); // the only real parent (index 0 = 親なし)
-      await page.getByTestId('add-save').click();
-      await expect(activeFeature).toHaveText(/\S/);
+      // 上位領域は唯一の実 option (index 0 = 親なし)。
+      await commitFace(page, childCorners, { parentIndex: 1 });
 
       // N=0 (default): the top-level 集約 is rolled up; its children are omitted.
       const beforeCount = await readDrawnCount(page);

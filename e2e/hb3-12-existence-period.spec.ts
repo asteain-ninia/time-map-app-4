@@ -25,28 +25,13 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
-import { commitOneFace, launchApp } from './helpers';
+import { commitOneFace, enterEditMode, launchApp } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
 mkdirSync(shotDir, { recursive: true });
 
 /** Land in 編集モード idempotently from any starting mode. */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
 async function showFeaturesTab(page: Page): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab; 現在時刻 mode = 旧地物一覧.
   const tab = page.getByTestId('sidebar-tab-list');

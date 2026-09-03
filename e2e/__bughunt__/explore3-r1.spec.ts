@@ -48,7 +48,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  returnToViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -121,22 +128,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-  await page
-    .getByTestId('add-input-layer')
-    .waitFor({ state: 'detached', timeout: 4000 })
-    .catch(() => undefined);
-}
-
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
   // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
@@ -160,7 +151,7 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -224,18 +215,6 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
   }
 }
 
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 // Commit one square face. Optionally choose a parent (by the LAST option in the
 // add-parent select, i.e. the most-recently-added feature → deep nesting) and a
 // name. Returns the outcome.
@@ -246,16 +225,8 @@ async function commitFace(
   half: number,
   opts?: { readonly chooseLastParent?: boolean; readonly name?: string },
 ): Promise<'committed' | 'rejected' | 'conflict'> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vcText = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
   const complete = page.getByTestId('add-complete');
@@ -305,7 +276,7 @@ async function commitFace(
 }
 
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const edit = page.getByTestId('mode-edit');
   await expect(edit).toBeEnabled();
   if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
@@ -383,7 +354,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // =====================================================================
       // A. DEEP NESTING — chain of strictly-nested faces (forest depth).
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeNest = await featureListCount(page);
 
@@ -421,7 +392,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
         await activeFeature(page);
         await checkCamera(page, `nest-L${level}`);
         // Single-truth-source parity after EACH level.
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const list = await featureListCount(page);
         const diag = await diagFeatureCount(page);
@@ -438,7 +409,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       record('nest-depth-reached', `committed a nesting chain of depth ${reachedDepth}`);
 
       // Anchor ordering on the deepest selected feature.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'properties');
       await checkAnchorOrdering(page, 'after-deep-nest');
 
@@ -490,7 +461,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       expect(baseRes, 'split-base must commit so the knife-split×2→merge path is exercised').toBe('committed');
       await shot(page, 'split-base');
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeSplit = await featureListCount(page);
 
@@ -510,7 +481,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
           else record('knife-split-1', `first split outcome=${r1}`);
           await checkCamera(page, 'after-split-1');
 
-          await goView(page);
+          await returnToViewMode(page);
           await showSidebarTab(page, 'features');
           const afterSplit1 = await featureListCount(page);
           if (r1 === 'split' && afterSplit1 !== countBeforeSplit + 1) {
@@ -566,7 +537,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
         }
       }
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterSplits = await featureListCount(page);
       const diagAfterSplits = await diagFeatureCount(page);
@@ -615,7 +586,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
         await shot(page, 'merged');
         await checkCamera(page, 'after-merge');
 
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterMerge = await featureListCount(page);
         const diagAfterMerge = await diagFeatureCount(page);
@@ -633,7 +604,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // =====================================================================
       // C. LONG TIMELINE PLAYBACK — auto-advance several seconds, monotone gate.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const playback = page.getByTestId('timeline-playback');
       if (await playback.isVisible().catch(() => false)) {
         // Pick the fastest 再生速度 available so the run covers many years.
@@ -710,7 +681,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // D. LARGE-FEATURE-COUNT PERF — grid of small non-overlapping faces, then
       //    pan/zoom hard while all are drawn; time the interaction burst.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeGrid = await featureListCount(page);
 
@@ -745,7 +716,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       await shot(page, 'grid-placed');
       record('grid-placed', `placed ${placed}/${COLS * ROWS} grid faces (${gridConflicts} conflicts)`);
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterGrid = await featureListCount(page);
       const diagAfterGrid = await diagFeatureCount(page);
@@ -758,7 +729,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       record('total-feature-count', `total features now ${countAfterGrid}`);
 
       // --- PERF: pan + zoom burst over the dense scene; time each leg. ----------
-      await goView(page);
+      await returnToViewMode(page);
       const lbox = await inputLayer.boundingBox();
       const wx = lbox ? lbox.x + lbox.width / 2 : cx;
       const wy = lbox ? lbox.y + lbox.height / 2 : cy;
@@ -814,7 +785,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // =====================================================================
       const unsavedNow = await diagUnsaved(page);
       if (unsavedNow !== 'あり') record('dirty-not-set', `after edits unsaved=${unsavedNow} (expected あり)`);
-      await goView(page);
+      await returnToViewMode(page);
       await page.getByTestId('menu-file').click();
       const fileItems = page.getByTestId('menu-items-file');
       if (await fileItems.isVisible().catch(() => false)) {
@@ -834,7 +805,7 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       await shot(page, 'file-menu');
 
       // Final parity + camera.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const finalList = await featureListCount(page);
       const finalDiag = await diagFeatureCount(page);

@@ -16,7 +16,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, commitOneFace } from './helpers';
+import { launchApp, commitOneFace, enterEditMode } from './helpers';
 
 interface CameraHooks {
   readonly panX: number;
@@ -52,13 +52,6 @@ async function mapCentre(page: Page): Promise<{ x: number; y: number; w: number;
  * add tool stays armed after a commit — so a user reaching for the overview chord does
  * it from a non-drafting mode, and so does this spec.
  */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  await expect(editMode).toBeEnabled();
-  await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
 /** Move the camera FAR from wherever it is: several zoom-in notches plus a drag pan. */
 async function derangeCamera(page: Page): Promise<void> {
   const c = await mapCentre(page);

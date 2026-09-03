@@ -19,72 +19,11 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { commitSquareFace, enterEditMode, launchApp, returnToViewMode } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
 mkdirSync(shotDir, { recursive: true });
-
-/** Land in 追加モード idempotently from any starting mode. */
-async function enterAddMode(page: Page): Promise<void> {
-  const addMode = page.getByTestId('mode-add');
-  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(addMode).toBeEnabled();
-    await addMode.click();
-  }
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Land in 編集モード idempotently from any starting mode. */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Commit one square face centred at (cx,cy) with half-extent `half` (4 real clicks). */
-async function commitFaceAt(page: Page, cx: number, cy: number, half: number): Promise<void> {
-  await enterAddMode(page);
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click(); // re-arm fresh
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-  const addLayer = page.getByTestId('add-input-layer');
-  await expect(addLayer).toBeVisible();
-  for (const [dx, dy] of [
-    [-half, -half],
-    [half, -half],
-    [half, half],
-    [-half, half],
-  ] as const) {
-    await page.mouse.click(cx + dx, cy + dy);
-  }
-  await page.getByTestId('add-complete').click();
-  await page.getByTestId('add-save').click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-}
 
 async function showFeaturesTab(page: Page): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab; 現在時刻 mode = 旧地物一覧.
@@ -116,10 +55,10 @@ test.describe('FR-52 — 結合の上位領域・属性継承元を選ぶダイ�
       const m0 = (await mapInput.boundingBox())!;
       const cx = m0.x + m0.width / 2;
       const cy = m0.y + m0.height / 2;
-      await commitFaceAt(page, cx - 150, cy, 70);
-      await commitFaceAt(page, cx + 150, cy, 70);
+      await commitSquareFace(page, cx - 150, cy, 70);
+      await commitSquareFace(page, cx + 150, cy, 70);
 
-      await goView(page);
+      await returnToViewMode(page);
       const countBefore = await featureListCount(page);
       expect(countBefore).toBe(2);
 
@@ -160,7 +99,7 @@ test.describe('FR-52 — 結合の上位領域・属性継承元を選ぶダイ�
       await page.getByTestId('merge-options-confirm').click();
 
       // --- 7. ASSERT the feature count dropped (2 → 1: the two faces folded into one). ---
-      await goView(page);
+      await returnToViewMode(page);
       await expect
         .poll(async () => featureListCount(page), { timeout: 15_000 })
         .toBe(1);

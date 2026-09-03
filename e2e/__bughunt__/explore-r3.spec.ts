@@ -25,7 +25,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -99,11 +99,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
 async function goView(page: Page): Promise<void> {
   const v = page.getByTestId('mode-view');
   if ((await v.getAttribute('aria-pressed')) !== 'true') {
@@ -113,18 +108,6 @@ async function goView(page: Page): Promise<void> {
     .getByTestId('add-input-layer')
     .waitFor({ state: 'detached', timeout: 4000 })
     .catch(() => record('overlay-stuck', 'add-input-layer still attached after returning to View'));
-}
-
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
 }
 
 async function handleConflictModalIfPresent(page: Page): Promise<boolean> {
@@ -149,16 +132,8 @@ async function commitFace(
   half: number,
   parentIndex?: number,
 ): Promise<string> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vc = page.getByTestId('add-vertex-count');
   const vcText = (await vc.textContent())?.trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
@@ -459,7 +434,7 @@ test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', 
       await shot(page, 'interleave');
 
       // --- Undo/redo metamorphic (edit mode) -----------------------------------
-      await leaveView(page);
+      await leaveViewMode(page);
       const em = page.getByTestId('mode-edit');
       if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
       const canUndo = page.getByTestId('app-can-undo');

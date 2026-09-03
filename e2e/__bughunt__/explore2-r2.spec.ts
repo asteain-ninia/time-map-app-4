@@ -43,7 +43,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page, type Locator } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  returnToViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -115,22 +122,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-  await page
-    .getByTestId('add-input-layer')
-    .waitFor({ state: 'detached', timeout: 4000 })
-    .catch(() => undefined);
-}
-
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
   // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
@@ -154,7 +145,7 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -209,18 +200,6 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
   }
 }
 
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 // Commit one square face given a centre + half-size; choose an optional parent via
 // the live add-parent <select>. Returns 'committed' | 'rejected' | 'conflict'.
 async function commitFace(
@@ -230,16 +209,8 @@ async function commitFace(
   half: number,
   opts?: { readonly chooseParentIndex?: number; readonly name?: string },
 ): Promise<'committed' | 'rejected' | 'conflict'> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vc = page.getByTestId('add-vertex-count');
   const vcText = (await vc.textContent())?.trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
@@ -283,7 +254,7 @@ async function commitFace(
 }
 
 async function armKnife(page: Page): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const edit = page.getByTestId('mode-edit');
   await expect(edit).toBeEnabled();
   if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
@@ -325,7 +296,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       await shot(page, 'base-face');
       await checkCamera(page, 'after-base-face');
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeSplit = await featureListCount(page);
 
@@ -427,7 +398,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         }
 
         // The split should leave the count at countBeforeSplit + 1 (1 -> 2).
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterSplit = await featureListCount(page);
         const diagAfterSplit = await diagFeatureCount(page);
@@ -445,7 +416,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       // =====================================================================
       // B. PARENT/CHILD FOREST — add a child face with a parent from the select.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeChild = await featureListCount(page);
       // Add a small face offset away (avoid same-time overlap conflicts), choosing
@@ -457,7 +428,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
       await checkCamera(page, 'after-child-face');
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterChild = await featureListCount(page);
       const diagAfterChild = await diagFeatureCount(page);
@@ -516,7 +487,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       // =====================================================================
       // D. TIME EXTREMES + step round-trip (metamorphic fwd∘back=identity).
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const cur = page.getByTestId('timeline-current');
       const t0 = ((await cur.textContent()) ?? '').trim();
       if (/NaN|Infinity|undefined/.test(t0)) record('timeline-current-malformed', `t0="${t0}"`);
@@ -563,7 +534,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       // =====================================================================
       // E. DELETE ∘ UNDO = identity (op∘逆op): delete a face then undo.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeDel = await featureListCount(page);
       const flist = page.locator('[data-testid^="feature-list-item-"]');
@@ -571,13 +542,13 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         await flist.first().click();
         await page.waitForTimeout(100);
         const selBefore = await activeFeature(page);
-        await leaveView(page);
+        await leaveViewMode(page);
         const em = page.getByTestId('mode-edit');
         if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         // Delete via keyboard (the live Delete accelerator).
         await page.keyboard.press('Delete');
         await page.waitForTimeout(150);
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterDel = await featureListCount(page);
         if (countBeforeDel > 0 && countAfterDel !== countBeforeDel - 1) {
@@ -585,14 +556,14 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         }
         await shot(page, 'after-delete');
         // Undo the delete.
-        await leaveView(page);
+        await leaveViewMode(page);
         if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         await page.keyboard.press('Control+z');
         await page.waitForTimeout(180);
         if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
           await page.getByTestId('conflict-cancel').click().catch(() => undefined);
         }
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         const countAfterUndo = await featureListCount(page);
         if (countBeforeDel > 0 && countAfterUndo !== countBeforeDel) {
@@ -607,7 +578,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       }
 
       // Anchor ordering on the surviving selection.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const fl2 = page.locator('[data-testid^="feature-list-item-"]');
       if ((await fl2.count()) > 0) {

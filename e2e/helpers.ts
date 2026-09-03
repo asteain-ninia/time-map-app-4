@@ -1,6 +1,15 @@
 // U43 — shared E2E helper: launch the BUILT Electron app headless and return the
 // app handle + the renderer page. Every spec uses this so the launch contract
 // (offscreen, E2E_TEST=1, sandbox kept on) lives in one place (単一の真実源).
+//
+// 2026-09-03 (UI 再設計の下準備 P-1): 「モードに入る → 面ツール → 頂点を打つ → 完了 →
+// 保存」の手順もここへ一本化した。追加ツールの導線を作り直したとき、直す場所が
+// spec 28 本 → このファイル 1 箇所になる。spec 側は「どこに・どんな形を描くか」
+// (座標・頂点数・上位領域・名前) だけを渡す。
+//
+// モード切替の前提 (src/ui/shell/useShell.ts): mode-view は View↔Edit を切り替え、
+// mode-add / mode-edit は **同じモードを再選択すると View へ戻る** (toggleMode)。
+// したがってここの関数はすべて冪等 (既に押されていれば押さない) に書いてある。
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -89,57 +98,225 @@ export async function launchApp(): Promise<LaunchedApp> {
   return { app, page };
 }
 
+// ---------------------------------------------------------------------------
+// モード切替 (すべて冪等)
+// ---------------------------------------------------------------------------
+
 /**
- * Leave the default View mode and select 追加モード (add). In View the add/edit
- * toggles are disabled; toggling 表示専用 off enables them, then 追加モード arms add.
- * This is the SAME live導線 the regression suite drives (no overlay bypass).
+ * 表示専用 (View) を抜ける。View なら mode-view を押す (useShell.setViewOnly(false) は
+ * 編集モードに着地する)。View でなければ何もしない。
  */
-export async function enterAddMode(page: Page): Promise<void> {
+export async function leaveViewMode(page: Page): Promise<void> {
   const viewToggle = page.getByTestId('mode-view');
   await expect(viewToggle).toBeVisible();
   if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
     await viewToggle.click();
   }
+}
+
+/**
+ * 追加モードに入る。View を抜けてから mode-add を押す。既に追加モードなら押さない
+ * (再選択は View へ戻ってしまう)。This is the SAME live導線 the regression suite drives
+ * (no overlay bypass).
+ */
+export async function enterAddMode(page: Page): Promise<void> {
   const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
+  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
+  await leaveViewMode(page);
+  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
+    await expect(addMode).toBeEnabled();
+    await addMode.click();
+  }
   await expect(addMode).toHaveAttribute('aria-pressed', 'true');
 }
 
 /**
- * Commit ONE real 面 (face) feature through the LIVE add flow so it renders on the
- * map canvas (D23 evidence: a committed feature is genuinely drawn, not faked).
- * Drives the same press/click path a user does — 追加モード → 面ツール → 4 corners →
- * 完了 → 保存 — and waits until the live selection re-resolves to the new feature
- * (the committed-feature signal, 教訓 5.11). Returns once the feature is committed.
+ * 編集モードに入る。View を抜けると既定で編集モードに着地するので、着地していなければ
+ * mode-edit を押す。既に編集モードなら押さない (再選択は View へ戻ってしまう)。
  */
-export async function commitOneFace(page: Page): Promise<void> {
-  await enterAddMode(page);
-  await page.getByTestId('tool-add.area').click();
+export async function enterEditMode(page: Page): Promise<void> {
+  const editMode = page.getByTestId('mode-edit');
+  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
+  await leaveViewMode(page);
+  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
+    await expect(editMode).toBeEnabled();
+    await editMode.click();
+  }
+  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
+}
+
+/**
+ * 表示専用 (View) へ戻る。追加/ナイフの入力層 (地図セル全面の透明な層) が外れるのを
+ * best-effort で待つ — 残っていると以後のタイムライン・ツールバーのクリックを奪う。
+ * 待ちきれなくても失敗にはしない (探索用の spec は独自に記録する)。
+ */
+export async function returnToViewMode(page: Page): Promise<void> {
+  const viewToggle = page.getByTestId('mode-view');
+  if ((await viewToggle.getAttribute('aria-pressed')) !== 'true') {
+    await viewToggle.click().catch(() => undefined);
+  }
+  await page
+    .getByTestId('add-input-layer')
+    .waitFor({ state: 'detached', timeout: 4000 })
+    .catch(() => undefined);
+}
+
+// ---------------------------------------------------------------------------
+// 面を描く
+// ---------------------------------------------------------------------------
+
+/** 画面座標 (px)。`page.mouse.click` に渡す値。 */
+export type ScreenPoint = readonly [number, number];
+
+/** 追加ツールの入力層 (add-input-layer) の bounding box。可視になるまで待つ。 */
+export async function addInputLayerBox(
+  page: Page,
+): Promise<{ x: number; y: number; width: number; height: number }> {
   const addLayer = page.getByTestId('add-input-layer');
   await expect(addLayer).toBeVisible();
   const box = await addLayer.boundingBox();
   expect(box).not.toBeNull();
-  const b = box!;
-  const cx = b.x + b.width / 2;
-  const cy = b.y + b.height / 2;
-  // A square ~240×240 px centred in the layer (clearly visible on the canvas).
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - 120, cy - 120],
-    [cx + 120, cy - 120],
-    [cx + 120, cy + 120],
-    [cx - 120, cy + 120],
+  return box!;
+}
+
+/** 中心 (cx, cy) と半径 half (px) の正方形の 4 隅 (左上から時計回り)。 */
+export function squareCorners(cx: number, cy: number, half: number): readonly ScreenPoint[] {
+  return [
+    [cx - half, cy - half],
+    [cx + half, cy - half],
+    [cx + half, cy + half],
+    [cx - half, cy + half],
   ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+}
+
+/**
+ * 追加モードに入り、面ツール (tool-add.area) を **新しい描画セッションで** 構える。
+ * ツールボタンはトグルなので、前の確定後にまだ押されたままなら一度外してから押し直す
+ * (押されたまま続けると前のドラフトを引き継ぐ)。入力層が可視になるまで待って返る。
+ */
+export async function armAddAreaTool(page: Page): Promise<void> {
+  await enterAddMode(page);
+  const areaTool = page.getByTestId('tool-add.area');
+  await expect(areaTool).toBeVisible();
+  if ((await areaTool.getAttribute('aria-pressed')) === 'true') {
+    await areaTool.click(); // deselect → 前のセッションを捨てる
+  }
+  await areaTool.click(); // select → 新しい描画セッション
+  await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('add-input-layer')).toBeVisible();
+}
+
+/**
+ * 構え済みの追加ツールの入力層へ頂点を 1 つずつ実クリックで打つ (D23: 本物の
+ * ポインタ入力)。入力層が可視であることを先に確かめる — 未マウントの層への最初の
+ * クリックが落ちるのを防ぐ。
+ */
+export async function placeVertices(page: Page, points: ReadonlyArray<ScreenPoint>): Promise<void> {
+  await expect(page.getByTestId('add-input-layer')).toBeVisible();
+  for (const [px, py] of points) await page.mouse.click(px, py);
+}
+
+export interface DrawFaceOptions {
+  /**
+   * 頂点を打ったあと、隠しマーカー add-vertex-count が頂点数と一致することを確かめる
+   * (既定 true)。クリックが 1 つでも落ちると「完了」は押せても形が変わるので、ここで
+   * 早く・分かりやすく落とす。
+   */
+  readonly assertVertexCount?: boolean;
+  /** 完了後・保存前に、プロパティフォームの上位領域 (add-parent) を option の index で選ぶ。 */
+  readonly parentIndex?: number;
+  /** 完了後・保存前に、プロパティフォームの名前 (add-name) を入れる。 */
+  readonly name?: string;
+  /**
+   * 保存後、選択が新しい地物へ再解決される (app-active-feature が非空になる, 教訓 5.11)
+   * のを待つ (既定 true)。`toHaveText(/\S/)` は expect のタイムアウト (15s) で確実に
+   * 失敗する — bare `toPass()` はタイムアウト 0 で test の締切まで回り続ける。
+   */
+  readonly waitForSelection?: boolean;
+}
+
+/**
+ * 構え済みの面ツールへ頂点を打ち、完了 → (上位領域・名前) → 保存 まで通す。
+ * 返り値は確定した地物の id (`waitForSelection: false` のときは '')。
+ * 面ツールは呼び出し側が {@link armAddAreaTool} で構えておく (描画途中で再度構えると
+ * ドラフトがリセットされるため、ここでは構えない)。
+ */
+export async function drawFace(
+  page: Page,
+  corners: ReadonlyArray<ScreenPoint>,
+  opts: DrawFaceOptions = {},
+): Promise<string> {
+  await placeVertices(page, corners);
+  if (opts.assertVertexCount ?? true) {
+    await expect(page.getByTestId('add-vertex-count')).toHaveText(String(corners.length));
+  }
   const complete = page.getByTestId('add-complete');
   await expect(complete).toBeEnabled();
   await complete.click();
+  if (opts.parentIndex !== undefined) {
+    const parentSelect = page.getByTestId('add-parent');
+    await expect(parentSelect).toBeVisible();
+    await parentSelect.selectOption({ index: opts.parentIndex });
+  }
+  if (opts.name !== undefined) {
+    await page.getByTestId('add-name').fill(opts.name);
+  }
   await page.getByTestId('add-save').click();
-
-  // The add committed and the live selection re-resolved to the new face: the
-  // hidden observability marker is now non-empty (a real committed feature).
-  // `toHaveText(/\S/)` polls under the configured expect timeout (15s) and fails
-  // fast on a genuine miss — unlike a bare `toPass()`, which defaults to a 0
-  // timeout and would poll until the 60s test deadline.
-  await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+  if (!(opts.waitForSelection ?? true)) return '';
+  const activeFeature = page.getByTestId('app-active-feature');
+  await expect(activeFeature).toHaveText(/\S/);
+  return ((await activeFeature.textContent()) ?? '').trim();
 }
+
+/**
+ * 面を 1 つ確定する: 追加モード → 面ツール → 頂点クリック → 完了 → 保存
+ * (the LIVE add flow, so it renders on the map canvas — D23 evidence: a committed
+ * feature is genuinely drawn, not faked)。返り値は確定した地物の id。
+ */
+export async function commitFace(
+  page: Page,
+  corners: ReadonlyArray<ScreenPoint>,
+  opts: DrawFaceOptions = {},
+): Promise<string> {
+  await armAddAreaTool(page);
+  return drawFace(page, corners, opts);
+}
+
+/** 中心 (cx, cy)・半径 half (px) の正方形の面を 1 つ確定する。返り値は地物 id。 */
+export async function commitSquareFace(
+  page: Page,
+  cx: number,
+  cy: number,
+  half: number,
+  opts: DrawFaceOptions = {},
+): Promise<string> {
+  return commitFace(page, squareCorners(cx, cy, half), opts);
+}
+
+export interface CommittedFace {
+  /** 確定した地物の id (app-active-feature の値)。 */
+  readonly faceId: string;
+  /** 面の中心 (画面座標)。本体クリックの座標に使える。 */
+  readonly cx: number;
+  readonly cy: number;
+  /** 打った 4 隅 (画面座標)。頂点クリックの座標に使える。 */
+  readonly corners: readonly ScreenPoint[];
+}
+
+/** 既定の正方形の半径 (px)。入力層の中央に ~240×240 の面 (clearly visible on the canvas)。 */
+export const DEFAULT_FACE_HALF = 120;
+
+/**
+ * 入力層の中央に既定サイズ (~240×240 px) の正方形の面を 1 つ確定する。
+ * 「とにかく面が 1 つ要る」spec の入口。中心・4 隅・id を返す。
+ */
+export async function commitOneFace(page: Page): Promise<CommittedFace> {
+  await armAddAreaTool(page);
+  const b = await addInputLayerBox(page);
+  const cx = b.x + b.width / 2;
+  const cy = b.y + b.height / 2;
+  const corners = squareCorners(cx, cy, DEFAULT_FACE_HALF);
+  const faceId = await drawFace(page, corners);
+  return { faceId, cx, cy, corners };
+}
+

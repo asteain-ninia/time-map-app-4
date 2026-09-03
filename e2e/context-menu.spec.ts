@@ -14,66 +14,11 @@
 //      opens NOTHING and leaves the selection untouched (the 段階7 suspended gate =
 //      shortcutsSuspended OR-chain threaded into the live context-menu port).
 //
-// The add/edit導線 helpers mirror edit-select.spec.ts (単一真実源 of the E2E pattern).
+// 追加/編集の導線は e2e/helpers.ts に一本化してある (単一真実源)。
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
-
-/** Leave View → 編集モード (no edit tool armed, so map clicks are plain selection). */
-async function enterEditMode(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const editMode = page.getByTestId('mode-edit');
-  await expect(editMode).toBeEnabled();
-  await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Enter 追加モード → 面ツール (the live add導線, no overlay bypass). */
-async function enterAddArea(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await page.getByTestId('tool-add.area').click();
-}
-
-/** Commit one ~240px square face; returns its centre + the four corner screen points. */
-async function commitSquareFace(page: Page): Promise<{
-  faceId: string;
-  cx: number;
-  cy: number;
-  corners: ReadonlyArray<readonly [number, number]>;
-}> {
-  await enterAddArea(page);
-  const addLayer = page.getByTestId('add-input-layer');
-  await expect(addLayer).toBeVisible();
-  const box = (await addLayer.boundingBox())!;
-  const cx = box.x + box.width / 2;
-  const cy = box.y + box.height / 2;
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - 120, cy - 120],
-    [cx + 120, cy - 120],
-    [cx + 120, cy + 120],
-    [cx - 120, cy + 120],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
-  await page.getByTestId('add-complete').click();
-  await page.getByTestId('add-save').click();
-  const activeFeature = page.getByTestId('app-active-feature');
-  await expect(activeFeature).toHaveText(/\S/);
-  const faceId = ((await activeFeature.textContent()) ?? '').trim();
-  expect(faceId.length).toBeGreaterThan(0);
-  return { faceId, cx, cy, corners };
-}
+import { commitOneFace, enterEditMode, launchApp } from './helpers';
 
 /** The live vertex-handle count of the ACTIVE feature (the __E2E__ render hook). */
 async function vertexHandleCount(page: Page): Promise<number> {
@@ -91,7 +36,7 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('app-shell')).toBeVisible();
-      const { faceId, corners } = await commitSquareFace(page);
+      const { faceId, corners } = await commitOneFace(page);
 
       // 編集モード（素の選択）。setMode の reset契約で選択は一旦クリアされる。
       await enterEditMode(page);
@@ -132,7 +77,7 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('app-shell')).toBeVisible();
-      const { faceId, cx, cy } = await commitSquareFace(page);
+      const { faceId, cx, cy } = await commitOneFace(page);
 
       await enterEditMode(page);
 
@@ -183,7 +128,7 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('app-shell')).toBeVisible();
-      const { faceId, cx, cy } = await commitSquareFace(page);
+      const { faceId, cx, cy } = await commitOneFace(page);
       await enterEditMode(page);
 
       // undo 可能な履歴が 1 つある状態でメニューを開く。

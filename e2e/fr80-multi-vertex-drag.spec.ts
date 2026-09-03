@@ -20,7 +20,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { commitOneFace, enterEditMode, launchApp } from './helpers';
 
 interface HandlePos {
   lon: number;
@@ -53,31 +53,6 @@ function byLon(list: readonly HandlePos[]): HandlePos[] {
   return [...list].sort((a, b) => a.lon - b.lon);
 }
 
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  await expect(editMode).toBeEnabled();
-  await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-async function enterAddArea(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await page.getByTestId('tool-add.area').click();
-}
-
 /** A real multi-sample pointer drag (never one synthetic jump — the bug needs frames). */
 async function dragBy(
   page: Page,
@@ -107,28 +82,10 @@ test.describe('FR-80 — 矩形選択した複数頂点を掴むと選択セッ�
         )
         .toBe('object');
 
-      // 1) 実クリック 4 回で正方形の面を作成・保存。
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const box = await addLayer.boundingBox();
-      expect(box).not.toBeNull();
-      const a = box!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120], // 左上 (screen) = 北西
-        [cx + 120, cy - 120], // 右上 = 北東
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-
+      // 1) 実クリック 4 回で正方形の面を作成・保存 (入力層の中央に 240×240 px。
+      //    corners[0] が左上 (screen) = 北西、corners[1] が右上 = 北東)。
+      const { faceId, cx, cy } = await commitOneFace(page);
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // 2) 編集モードで面を実クリック選択 → ハンドルが描かれる。
       await enterEditMode(page);

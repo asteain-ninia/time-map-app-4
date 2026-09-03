@@ -5,42 +5,15 @@
 // で駆動し、結果を観測（DOM マーカー / ボタン状態 / __E2E__ 描画カウント）でアサートする
 // ＝「手動検証の自動化」。合成ショートカットでは捕れない結線退行をここで赤くする（教訓 5.7）。
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 
-import { commitOneFace, launchApp } from './helpers';
-
-/** Land in 追加モード idempotently from any starting mode (a second call while already
- *  in 追加モード must NOT toggle it back off — clicking an active mode toggle reverts it). */
-async function enterAddMode(page: Page): Promise<void> {
-  const addMode = page.getByTestId('mode-add');
-  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(addMode).toBeEnabled();
-    await addMode.click();
-  }
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Land in 編集モード idempotently from any starting mode. */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
+import {
+  commitOneFace,
+  commitSquareFace,
+  enterAddMode,
+  enterEditMode,
+  launchApp,
+} from './helpers';
 
 test.describe('HB3-21 — 点追加の確定ボタンは「点を確定」', () => {
   test('点ツールで1点置くと確定ボタン文言が「点を確定」になる', async () => {
@@ -67,28 +40,7 @@ test.describe('HB3-11 — 地物の「詳細」ボタンで詳細パネルが開
     const { app, page } = await launchApp();
     try {
       // Commit a face through the live add導線 (4 real corner clicks).
-      await enterAddMode(page);
-      await page.getByTestId('tool-add.area').click();
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      for (const [dx, dy] of [
-        [-120, -120],
-        [120, -120],
-        [120, 120],
-        [-120, 120],
-      ] as const) {
-        await page.mouse.click(cx + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
-      const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
+      const { faceId } = await commitOneFace(page);
 
       // The property panel (sidebar default) shows the 詳細 button for the selected
       // feature. Clicking it opens a detail panel for that feature (HB3-11 wiring).
@@ -191,27 +143,9 @@ test.describe('HB3-6/18 — ナイフで面をクリックすると対象とし�
   test('ナイフ武装→面クリックで対象が active feature になる', async () => {
     const { app, page } = await launchApp();
     try {
-      // Inline add (capture the layer box = the face's stable screen position).
-      await enterAddMode(page);
-      await page.getByTestId('tool-add.area').click();
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const a = (await addLayer.boundingBox())!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      for (const [dx, dy] of [
-        [-120, -120],
-        [120, -120],
-        [120, 120],
-        [-120, 120],
-      ] as const) {
-        await page.mouse.click(cx + dx, cy + dy);
-      }
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      // Add a face (返り値の cx, cy = 入力層の中心 = 面の安定した画面位置)。
+      const { faceId, cx, cy } = await commitOneFace(page);
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // Arm the knife (edit mode → knife tool). Entering edit clears the selection.
       await enterEditMode(page);
@@ -230,30 +164,6 @@ test.describe('HB3-6/18 — ナイフで面をクリックすると対象とし�
     }
   });
 });
-
-/** Commit one square face centred at (cx,cy) with the given half-size, via the live add導線.
- *  Re-arms 追加モード + 面ツール idempotently so a SECOND call (after a prior commit left the
- *  tool armed) toggles it OFF→ON for a fresh add session rather than disarming it. */
-async function commitFaceAt(page: Page, cx: number, cy: number, half: number): Promise<void> {
-  await enterAddMode(page);
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click(); // re-arm fresh
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-  const addLayer = page.getByTestId('add-input-layer');
-  await expect(addLayer).toBeVisible();
-  for (const [dx, dy] of [
-    [-half, -half],
-    [half, -half],
-    [half, half],
-    [-half, half],
-  ] as const) {
-    await page.mouse.click(cx + dx, cy + dy);
-  }
-  await page.getByTestId('add-complete').click();
-  await page.getByTestId('add-save').click();
-}
 
 test.describe('メタモルフィック — 地物の削除∘取消は恒等（bughunt delete-undo 所見のクリーン検証）', () => {
   test('地物を削除すると消え、Ctrl+Z の取消で同じ位置に復活して再選択できる', async () => {
@@ -301,8 +211,8 @@ test.describe('HB3-15/16 — 結合ツールは個別リーフ本体をクリッ
       const m0 = (await mapInput.boundingBox())!;
       const cx = m0.x + m0.width / 2;
       const cy = m0.y + m0.height / 2;
-      await commitFaceAt(page, cx - 150, cy, 70);
-      await commitFaceAt(page, cx + 150, cy, 70);
+      await commitSquareFace(page, cx - 150, cy, 70);
+      await commitSquareFace(page, cx + 150, cy, 70);
 
       // Arm the merge (結合) tool.
       await enterEditMode(page);

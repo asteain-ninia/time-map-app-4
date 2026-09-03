@@ -20,7 +20,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -102,11 +102,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
 // Return to View mode so transient tool input overlays (add-input-layer /
 // knife-input-layer, both inset:0 over the map cell) are unmounted and no longer
 // intercept pointer events meant for the timeline / toolbar.
@@ -121,18 +116,6 @@ async function goView(page: Page): Promise<void> {
   });
 }
 
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 // Commit one square face given a centre + half-size in screen px. Returns the
 // committed feature id (or '' if it never resolved). Records anomalies on the way.
 async function commitFace(
@@ -142,16 +125,8 @@ async function commitFace(
   half: number,
   parentIndex?: number,
 ): Promise<string> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vc = page.getByTestId('add-vertex-count');
   const vcText = (await vc.textContent())?.trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
@@ -196,7 +171,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       const cy = b.y + b.height / 2;
 
       // --- Mode / tool switching round-trip --------------------------------------
-      await leaveView(page);
+      await leaveViewMode(page);
       await page.getByTestId('mode-add').click();
       await shot(page, 'mode-add');
       for (const t of ['tool-add.point', 'tool-add.line', 'tool-add.area']) {
@@ -291,7 +266,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       // --- Undo / redo via keyboard ----------------------------------------------
       // 教訓 5.13: EditUndo/EditRedo are EDITING commands, disabled in View mode.
       // We must be in an editing mode for the keyboard shortcut to actually run.
-      await leaveView(page);
+      await leaveViewMode(page);
       const em0 = page.getByTestId('mode-edit');
       if ((await em0.getAttribute('aria-pressed')) !== 'true') await em0.click();
       const canUndo = page.getByTestId('app-can-undo');
@@ -328,7 +303,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       await commitFace(page, cx, cy - 30, 90);
       await shot(page, 'split-target-added');
       const editMode = page.getByTestId('mode-edit');
-      await leaveView(page);
+      await leaveViewMode(page);
       if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
       const knifeBtn = page.getByTestId('tool-edit.knife');
       if (await knifeBtn.isVisible()) {
@@ -379,7 +354,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       // --- Merge tool reachability ----------------------------------------------
       // Idempotent edit-mode entry (toggling would flip us back to View and hide
       // all tools — the merge tool then "disappears" as a spec artifact, not a bug).
-      await leaveView(page);
+      await leaveViewMode(page);
       if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
       const mergeBtn = page.getByTestId('tool-edit.merge');
       if (await mergeBtn.isVisible()) {

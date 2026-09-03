@@ -13,7 +13,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { addInputLayerBox, drawFace, launchApp, squareCorners } from './helpers';
 
 test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (live UI)', () => {
   test('boot in View: edit tools disabled, then the toolbar 表示専用 toggle enables 追加モード and a face is added via the real UI', async () => {
@@ -56,30 +56,14 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       await page.getByTestId('tool-add.area').click();
       await expect(page.getByTestId('app-active-tool')).toHaveText('add.area');
 
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const box = await addLayer.boundingBox();
-      expect(box).not.toBeNull();
-      const b = box!;
+      const b = await addInputLayerBox(page);
       const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120],
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-
-      const complete = page.getByTestId('add-complete');
-      await expect(complete).toBeEnabled();
-      await complete.click();
-      await page.getByTestId('add-save').click();
-
+      // 頂点クリック → 完了 → 保存 → 選択の再解決待ち は drawFace が担う。
       // The add committed and the live selection re-resolved to the new face: the
       // hidden observability marker is now non-empty (a real committed feature
       // through the live add binding — the editing path is fully reachable).
-      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+      await drawFace(page, squareCorners(cx, cy, 120));
     } finally {
       await app.close();
     }

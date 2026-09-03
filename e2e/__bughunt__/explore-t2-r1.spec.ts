@@ -65,7 +65,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  returnToViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -133,15 +140,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') await v.click().catch(() => undefined);
-  await page.getByTestId('add-input-layer').waitFor({ state: 'detached', timeout: 4000 }).catch(() => undefined);
-}
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 / 通史 modes).
   const tabKey = key === 'properties' ? 'properties' : 'list';
@@ -158,7 +156,7 @@ async function featureListCount(page: Page): Promise<number> {
   return page.locator('[data-testid^="feature-list-item-"]').count();
 }
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -208,7 +206,7 @@ async function diagCurrentTime(page: Page): Promise<string> {
 // list(@currentTime) vs diag(@currentTime) — both are evaluated at currentTime, so
 // they should agree when the view is on the same time. A mismatch is a真実源 desync.
 async function checkParity(page: Page, where: string): Promise<number> {
-  await goView(page);
+  await returnToViewMode(page);
   await showSidebarTab(page, 'features');
   const list = await featureListCount(page);
   const diag = await diagFeatureCount(page);
@@ -240,18 +238,6 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
   }
 }
 
-async function armAddArea(page: Page): Promise<void> {
-  await leaveView(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
-  const area = page.getByTestId('tool-add.area');
-  await expect(area).toBeVisible();
-  if ((await area.getAttribute('aria-pressed')) === 'true') await area.click();
-  await area.click();
-  await expect(area).toHaveAttribute('aria-pressed', 'true');
-}
-
 async function commitFace(
   page: Page,
   cx: number,
@@ -259,16 +245,8 @@ async function commitFace(
   half: number,
   opts?: { readonly chooseLastParent?: boolean; readonly name?: string },
 ): Promise<'committed' | 'rejected' | 'conflict'> {
-  await armAddArea(page);
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await armAddAreaTool(page);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const vcText = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
   const complete = page.getByTestId('add-complete');
@@ -310,7 +288,7 @@ async function commitFace(
 }
 
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const edit = page.getByTestId('mode-edit');
   await expect(edit).toBeEnabled();
   if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
@@ -435,7 +413,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const reached = level;
       record('nest-depth-reached', `nested chain depth ${reached}`);
       await shot(page, 'deep-nest');
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'properties');
       await checkAnchorOrdering(page, 'after-nest');
 
@@ -669,7 +647,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       record('grid-placed', `placed ${placed}/${COLS * ROWS} grid faces`);
       await shot(page, 'grid-placed');
 
-      await goView(page);
+      await returnToViewMode(page);
       const stepFwd = page.getByRole('button', { name: /次へ進む/ }).first();
       const stepBack = page.getByRole('button', { name: /前へ戻る/ }).first();
       const cur = page.getByTestId('timeline-current');
@@ -718,7 +696,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       } else {
         record('timeline-step-missing', 'step-forward button not visible');
       }
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'properties');
       await checkAnchorOrdering(page, 'after-scrub');
 
@@ -727,7 +705,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       // =====================================================================
       const unsavedNow = await diagUnsaved(page);
       if (unsavedNow !== 'あり') record('expected-dirty', `after edits unsaved="${unsavedNow}" (expected あり)`);
-      await goView(page);
+      await returnToViewMode(page);
       await page.getByTestId('menu-file').click();
       const fileItems = page.getByTestId('menu-items-file');
       if (await fileItems.isVisible().catch(() => false)) {
@@ -779,7 +757,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const cy = b.y + b.height / 2;
 
       const listCount = async (): Promise<number> => {
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         return featureListCount(page);
       };
@@ -941,7 +919,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const canRedo = page.getByTestId('app-can-redo');
       const r = async (): Promise<string> => ((await canRedo.textContent()) ?? '').trim();
       const count = async (): Promise<number> => {
-        await goView(page);
+        await returnToViewMode(page);
         await showSidebarTab(page, 'features');
         return featureListCount(page);
       };
@@ -1018,17 +996,8 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
 
       // Child strictly INSET (half=50, well inside the 180 parent), choosing the
       // parent via the add-parent select.
-      await armAddArea(page);
-      const layer = page.getByTestId('add-input-layer');
-      await expect(layer).toBeVisible();
-      const half = 50;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - half, cy - half],
-        [cx + half, cy - half],
-        [cx + half, cy + half],
-        [cx - half, cy + half],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
+      await armAddAreaTool(page);
+      await placeVertices(page, squareCorners(cx, cy, 50));
       const complete = page.getByTestId('add-complete');
       await complete.click();
       if ((await page.getByTestId('add-rejected').count()) > 0) {

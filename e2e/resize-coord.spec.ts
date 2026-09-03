@@ -22,21 +22,9 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, commitOneFace } from './helpers';
+import { launchApp, commitOneFace, enterEditMode } from './helpers';
 
 /** Leave View → 編集モード (no edit tool armed, so map clicks are plain selection). */
-async function enterEditMode(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const editMode = page.getByTestId('mode-edit');
-  await expect(editMode).toBeEnabled();
-  await editMode.click();
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
 /** The current centre of the map input layer's on-screen box. */
 async function mapCentre(page: Page): Promise<{ x: number; y: number; width: number; height: number }> {
   const inputLayer = page.getByTestId('map-input-layer');

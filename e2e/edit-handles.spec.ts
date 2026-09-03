@@ -16,7 +16,16 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  commitOneFace,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  squareCorners,
+  DEFAULT_FACE_HALF,
+} from './helpers';
 
 interface PrimitiveCounts {
   handle: number;
@@ -52,41 +61,6 @@ async function primitiveCounts(page: Page): Promise<PrimitiveCounts> {
   });
 }
 
-/**
- * Land in 編集モード (no edit tool armed → map clicks are plain selection), idempotently
- * from ANY starting mode. Clicking mode-view when in View lands in Edit (setViewOnly
- * default), so we only leave View if currently in View, and only click mode-edit when it
- * is not already pressed (clicking an already-active mode toggles back to View).
- */
-async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    // Leaving View-only lands in Edit by default — that may already be enough.
-    await viewToggle.click();
-  }
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
-  }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
-}
-
-/** Enter 追加モード → 面ツール (the live add導線). */
-async function enterAddArea(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
-  const addMode = page.getByTestId('mode-add');
-  await expect(addMode).toBeEnabled();
-  await addMode.click();
-  await page.getByTestId('tool-add.area').click();
-}
-
 test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが描画される', () => {
   test('面を選択するとハンドルが描かれ、選択解除/View で消える', async () => {
     const { app, page } = await launchApp();
@@ -100,28 +74,10 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
 
       // 1) Commit one 面 (face) through the LIVE add導線 with four REAL corner clicks,
       //    so its vertices live at known SCREEN positions under the live camera.
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
-      const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120],
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      const { faceId, cx, cy } = await commitOneFace(page);
+      expect(faceId.length).toBeGreaterThan(0);
 
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
-      expect(faceId.length).toBeGreaterThan(0);
 
       // 2) Enter 編集モード (which clears the post-commit selection, 教訓 5.2) and then
       //    REAL-click the face BODY centre to select it. The committed face becomes the
@@ -190,27 +146,15 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
         }).__E2E__))
         .toBe('object');
 
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
+      // 入力層の box は「空白クリック」の座標にも使うので、面ツールを構えてから採る。
+      await armAddAreaTool(page);
+      const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
       const cy = a.y + a.height / 2;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120],
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      const corners = squareCorners(cx, cy, DEFAULT_FACE_HALF);
+      const faceId = await drawFace(page, corners);
 
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // 編集モードに入ると選択は破棄され (教訓 5.2)、ハンドルは 0。
       await enterEditMode(page);
@@ -263,27 +207,15 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
         }).__E2E__))
         .toBe('object');
 
-      await enterAddArea(page);
-      const addLayer = page.getByTestId('add-input-layer');
-      await expect(addLayer).toBeVisible();
-      const ab = await addLayer.boundingBox();
-      expect(ab).not.toBeNull();
-      const a = ab!;
+      // 入力層の box は「空白クリック」の座標にも使うので、面ツールを構えてから採る。
+      await armAddAreaTool(page);
+      const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
       const cy = a.y + a.height / 2;
-      const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 120, cy - 120],
-        [cx + 120, cy - 120],
-        [cx + 120, cy + 120],
-        [cx - 120, cy + 120],
-      ];
-      for (const [px, py] of corners) await page.mouse.click(px, py);
-      await page.getByTestId('add-complete').click();
-      await page.getByTestId('add-save').click();
+      const corners = squareCorners(cx, cy, DEFAULT_FACE_HALF);
+      const faceId = await drawFace(page, corners);
 
       const activeFeature = page.getByTestId('app-active-feature');
-      await expect(activeFeature).toHaveText(/\S/);
-      const faceId = ((await activeFeature.textContent()) ?? '').trim();
 
       // 編集モードに入ると選択は破棄され (教訓 5.2)、点線は 0 本。
       await enterEditMode(page);

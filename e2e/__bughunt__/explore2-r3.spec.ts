@@ -47,7 +47,13 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page, type Locator } from '@playwright/test';
 
-import { launchApp } from '../helpers';
+import {
+  launchApp,
+  leaveViewMode,
+  returnToViewMode,
+  squareCorners,
+  placeVertices,
+} from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -119,22 +125,6 @@ async function activeFeature(page: Page): Promise<string> {
   return t;
 }
 
-async function leaveView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) === 'true') await v.click();
-}
-
-async function goView(page: Page): Promise<void> {
-  const v = page.getByTestId('mode-view');
-  if ((await v.getAttribute('aria-pressed')) !== 'true') {
-    await v.click().catch(() => undefined);
-  }
-  await page
-    .getByTestId('add-input-layer')
-    .waitFor({ state: 'detached', timeout: 4000 })
-    .catch(() => undefined);
-}
-
 async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properties'): Promise<void> {
   // HB6: 地物一覧 / 錨一覧 are unified into the「一覧」tab (現在時刻 = 旧地物一覧 /
   // 通史 = 旧錨一覧 のモードトグル). 'features' → 現在時刻, 'events' → 通史.
@@ -158,7 +148,7 @@ async function featureListCount(page: Page): Promise<number> {
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {
-  await goView(page);
+  await returnToViewMode(page);
   await page.getByTestId(`menu-${menu}`).click();
   const items = page.getByTestId(`menu-items-${menu}`);
   if (!(await items.isVisible().catch(() => false))) {
@@ -225,7 +215,7 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
 // Arm a given add-mode tool (point/line/area). Returns false if the tool button
 // was missing.
 async function armAddTool(page: Page, tool: 'point' | 'line' | 'area'): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const add = page.getByTestId('mode-add');
   await expect(add).toBeEnabled();
   if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
@@ -242,7 +232,7 @@ async function armAddTool(page: Page, tool: 'point' | 'line' | 'area'): Promise<
 
 // Arm an edit-mode tool (select/vertex/move/...). Returns false if missing.
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
-  await leaveView(page);
+  await leaveViewMode(page);
   const edit = page.getByTestId('mode-edit');
   await expect(edit).toBeEnabled();
   if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
@@ -259,15 +249,7 @@ async function armEditTool(page: Page, tool: string): Promise<boolean> {
 // Commit one square AREA face (used to set up edit/vertex targets).
 async function commitArea(page: Page, cx: number, cy: number, half: number, name?: string): Promise<'committed' | 'rejected' | 'conflict'> {
   if (!(await armAddTool(page, 'area'))) return 'rejected';
-  const layer = page.getByTestId('add-input-layer');
-  await expect(layer).toBeVisible();
-  const corners: ReadonlyArray<readonly [number, number]> = [
-    [cx - half, cy - half],
-    [cx + half, cy - half],
-    [cx + half, cy + half],
-    [cx - half, cy + half],
-  ];
-  for (const [px, py] of corners) await page.mouse.click(px, py);
+  await placeVertices(page, squareCorners(cx, cy, half));
   const complete = page.getByTestId('add-complete');
   await expect(complete).toBeEnabled();
   await complete.click();
@@ -315,7 +297,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // A. LINE-FEATURE ADD — grid-snap mid-draw + add-undo telescoping.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeLine = await featureListCount(page);
 
@@ -386,7 +368,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await shot(page, 'line-saved');
       }
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterLine = await featureListCount(page);
       const diagAfterLine = await diagFeatureCount(page);
@@ -400,7 +382,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // B. POINT-FEATURE ADD — single-click confirm.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforePoint = await featureListCount(page);
       if (await armAddTool(page, 'point')) {
@@ -434,7 +416,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await checkCamera(page, 'after-point');
         await shot(page, 'point-saved');
       }
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterPoint = await featureListCount(page);
       const diagAfterPoint = await diagFeatureCount(page);
@@ -455,12 +437,12 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       await shot(page, 'edit-target-area');
       await checkCamera(page, 'after-edit-target');
 
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeMove = await featureListCount(page);
 
       // Select the target via the feature list (the most recently added area).
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const flist = page.locator('[data-testid^="feature-list-item-"]');
       const nFeat = await flist.count();
@@ -500,7 +482,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       }
 
       // op∘逆op: undo the move, gate feature count unchanged & coords finite.
-      await leaveView(page);
+      await leaveViewMode(page);
       const em = page.getByTestId('mode-edit');
       if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
       await page.keyboard.press('Control+z');
@@ -509,7 +491,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
       await checkCamera(page, 'after-vertex-undo');
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countAfterMoveUndo = await featureListCount(page);
       if (countAfterMoveUndo !== countBeforeMove) {
@@ -524,7 +506,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // D. LONGITUDE SHIFT — slider + buttons + preset round-trip (A∘B∘A).
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       const lon = page.getByTestId('longitude-shift');
       if (await lon.isVisible().catch(() => false)) {
         const readout = page.getByTestId('center-lon-readout');
@@ -591,7 +573,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // E. CONTEXT MENU — right-click in View and Edit modes.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await page.mouse.click(cx + 40, cy + 40, { button: 'right' });
       await page.waitForTimeout(120);
       const ctx = page.getByTestId('context-menu');
@@ -613,7 +595,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       await checkCamera(page, 'after-context-view');
 
       // Edit-mode right-click on a feature.
-      await leaveView(page);
+      await leaveViewMode(page);
       const em2 = page.getByTestId('mode-edit');
       if ((await em2.getAttribute('aria-pressed')) !== 'true') await em2.click();
       await armEditTool(page, 'select');
@@ -639,7 +621,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // F. ANCHOR-MODE toggle (list <-> timebar) + save∘load reachability.
       // =====================================================================
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const fl3 = page.locator('[data-testid^="feature-list-item-"]');
       if ((await fl3.count()) > 0) {
@@ -677,7 +659,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       if (unsavedNow !== 'あり') {
         record('dirty-not-set', `after edits unsaved=${unsavedNow} (expected あり)`);
       }
-      await goView(page);
+      await returnToViewMode(page);
       await page.getByTestId('menu-file').click();
       const fileItems = page.getByTestId('menu-items-file');
       if (await fileItems.isVisible().catch(() => false)) {
@@ -697,7 +679,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       await shot(page, 'file-menu');
 
       // Final parity + camera.
-      await goView(page);
+      await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const finalList = await featureListCount(page);
       const finalDiag = await diagFeatureCount(page);
