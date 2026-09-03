@@ -93,6 +93,7 @@ import { getVertex, type Vertex } from '../domain/vertex';
 
 import { containersOf } from './map/shared-vertex-derivation';
 import { featureByIdAt, featuresAt, verticesAt } from './live-lookup';
+import { UI_COMMAND_LABEL } from './shell/command-result';
 
 /** The right-click「共有解除」payload (= FLOW_KIND.Unshare intent minus the tag). */
 export interface UnshareIntent {
@@ -337,7 +338,7 @@ function buildUnshareCommand(
 
   const swap: Command<DomainProject> = {
     kind: UNSHARE_COMMIT_KIND,
-    label: 'unshare',
+    label: UI_COMMAND_LABEL.Unshare,
     execute(state: DomainProject): CommandOutcome<DomainProject> {
       void state;
       return { state: finalState, result: forward };
@@ -352,7 +353,7 @@ function buildUnshareCommand(
     },
   };
   // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
-  return { command: createCompositeCommand('unshare', [swap]), result: forward };
+  return { command: createCompositeCommand(UI_COMMAND_LABEL.Unshare, [swap]), result: forward };
 }
 
 /**

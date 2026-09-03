@@ -75,6 +75,7 @@ import {
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
+import { UI_COMMAND_LABEL } from './shell/command-result';
 import { buildForest } from '../domain/hierarchy/forest';
 import {
   extractTerminalShapes,
@@ -299,6 +300,16 @@ function detectSpatialAt<Snapshot>(
 }
 
 /**
+ * 確定経路ごとの `makeCommand` を作る。ポートの形（baseline / finalState / touched）は
+ * U13 の契約なので変えず、label だけを束ねの側で固定する。
+ */
+function labelledMakeCommand(
+  label: string,
+): (baseline: DomainRoot, finalState: DomainRoot, touched: readonly FeatureId[]) => Command<DomainRoot> {
+  return (baseline, finalState, touched) => makeCommand(baseline, finalState, touched, label);
+}
+
+/**
  * Editing-constraint re-validation over the trial result state. The add / split
  * snapshot constructors already enforce shape validity (ring alternation,
  * positive area) at assembly time (U23 / U26), so there is no separate
@@ -317,11 +328,19 @@ function checkConstraints(resultState: DomainRoot): readonly unknown[] {
  * final state plus the touched feature ids; the command is a whole-state swap
  * (the domain root is immutable, so execute returns the captured final and undo
  * restores the captured baseline — a deterministic replay, 教訓 5.20).
+ *
+ * `label` は **確定経路ごとに違う**（{@link labelledMakeCommand}）。以前はこの関数を
+ * 共有する 6 つの束ね（追加・素性の変更・分割・穴あけ・結合・所属変更）が揃って
+ * `'edit'` を入れていたため、面を 1 つ追加しただけで状態行に「素性の変更を行いました」と
+ * 出て、**何をしたのかが読み取れなかった**（実データで確認）。値は
+ * `shell/command-result.ts` の {@link UI_COMMAND_LABEL} が唯一の定義箇所で、同じ
+ * module の写像表が画面へ出す日本語を決める（教訓 5.51 出口 1 か所で写像する）。
  */
 function makeCommand(
   baseline: DomainRoot,
   finalState: DomainRoot,
   touched: readonly FeatureId[],
+  label: string,
 ): Command<DomainRoot> {
   const baselineIds = new Set<FeatureId>(baseline.histories.map((h) => h.featureId));
   const finalIds = new Set<FeatureId>(finalState.histories.map((h) => h.featureId));
@@ -385,7 +404,7 @@ function makeCommand(
   // so the swap intent is explicit and the contract signature stays exact.
   const cmd: Command<DomainRoot> = {
     kind: LIVE_COMMIT_KIND,
-    label: 'edit',
+    label,
     execute(state: DomainRoot): CommandOutcome<DomainRoot> {
       void state;
       return { state: finalState, result: forward };
@@ -401,7 +420,7 @@ function makeCommand(
   };
   // Wrap in a composite so it is recorded as ONE undo unit consistently with the
   // rest of the system (isCompositeCommand-friendly; FR-94).
-  return createCompositeCommand('edit', [cmd]);
+  return createCompositeCommand(label, [cmd]);
 }
 
 // --- U06 difference write-back (applyResolution) ----------------------------
@@ -755,7 +774,7 @@ export const createLiveAddBinding: CreateLiveAddBinding = (access) => {
       return [];
     },
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Add),
   };
   // bughunt3: one incremental terminal-shape cache per binding, threaded through
   // every confirm / apply-resolutions over this binding so an edit re-resolves
@@ -799,7 +818,7 @@ export const createLiveEditBinding: CreateLiveEditBinding = (access) => {
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Edit),
   };
   const spatialCache = createTerminalShapeCache();
   return {
@@ -827,7 +846,7 @@ export const createLiveKnifeBinding: CreateLiveKnifeBinding = (access) => {
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Split),
   };
   const spatialCache = createTerminalShapeCache();
   return {
@@ -865,7 +884,7 @@ export const createLiveDrillBinding: CreateLiveDrillBinding = (access) => {
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Drill),
   };
   const spatialCache = createTerminalShapeCache();
   return {
@@ -905,7 +924,7 @@ export const createLiveMergeBinding: CreateLiveMergeBinding = (access) => {
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Merge),
   };
   const spatialCache = createTerminalShapeCache();
   return {
@@ -947,7 +966,7 @@ export const createLiveAffiliationBinding: CreateLiveAffiliationBinding = (acces
     checkConstraints,
     detectSpatial: () => [],
     applyResolution: () => undefined,
-    makeCommand,
+    makeCommand: labelledMakeCommand(UI_COMMAND_LABEL.Affiliation),
   };
   const spatialCache = createTerminalShapeCache();
   return {
@@ -1078,7 +1097,7 @@ export function createDeleteFeatureCommandForRoot(
 
   const swap: Command<DomainRoot> = {
     kind: DELETE_COMMIT_KIND,
-    label: 'delete',
+    label: UI_COMMAND_LABEL.Delete,
     execute(state: DomainRoot): CommandOutcome<DomainRoot> {
       void state;
       return { state: finalState, result: forward };
@@ -1094,7 +1113,7 @@ export function createDeleteFeatureCommandForRoot(
   };
   // Wrap in a composite so it records as ONE indivisible undo unit, consistent with
   // every other commit (isCompositeCommand-friendly; FR-73 / FR-94).
-  return createCompositeCommand('delete', [swap]);
+  return createCompositeCommand(UI_COMMAND_LABEL.Delete, [swap]);
 }
 
 // --- HB3-12 存続期間編集 → DomainRoot whole-state-swap (FR-54〜FR-59 / FR-73) -----
@@ -1179,7 +1198,7 @@ export function createAnchorIntervalCommandForRoot(
 
   const swap: Command<DomainRoot> = {
     kind: INTERVAL_COMMIT_KIND,
-    label: 'interval',
+    label: UI_COMMAND_LABEL.Interval,
     execute(state: DomainRoot): CommandOutcome<DomainRoot> {
       void state;
       return { state: finalState, result: forward };
@@ -1194,7 +1213,7 @@ export function createAnchorIntervalCommandForRoot(
     },
   };
   // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
-  return { ok: true, command: createCompositeCommand('interval', [swap]) };
+  return { ok: true, command: createCompositeCommand(UI_COMMAND_LABEL.Interval, [swap]) };
 }
 
 /**

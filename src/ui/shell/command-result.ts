@@ -19,16 +19,59 @@
 // 載っていなければ「編集しました」と出るだけで、内部の識別子が画面に漏れることはない。
 
 /**
+ * UI 側が `Command.label` に入れる内部の識別子の **全件**。ここが唯一の定義箇所で、
+ * 確定経路（`consistency-binding.ts` の 6 つの束ね・パレット・共有解除・削除・存続期間）が
+ * ここから取る。**直書きしない** — 直書きすると下の写像表に載らない値が生まれ、画面に
+ * 「編集」としか出なくなる（教訓 5.51 / 5.19）。
+ *
+ * **なぜ経路ごとに分けるのか**: 以前は追加・分割・穴あけ・結合・所属変更・素性の変更が
+ * すべて共通の `makeCommand` を通り、揃って `'edit'` を入れていた。そのため面を 1 つ
+ * 追加しただけで状態行に「素性の変更を行いました」と出て、**何をしたのかが読み取れなかった**
+ * （実データで確認）。
+ */
+export const UI_COMMAND_LABEL = {
+  /** 素性（名前・年代・色）の変更。 */
+  Edit: 'edit',
+  /** 地物の追加。 */
+  Add: 'add',
+  /** ナイフによる分割。 */
+  Split: 'split',
+  /** 穴あけ（深掘り）。 */
+  Drill: 'drill',
+  /** 地物どうしの結合。 */
+  Merge: 'merge',
+  /** 所属（上位領域）の変更。 */
+  Affiliation: 'affiliation',
+  /** 地物の削除。 */
+  Delete: 'delete',
+  /** 存続期間（開始年・終了年）の変更。 */
+  Interval: 'interval',
+  /** 既定配色・カスタムパレットの変更。 */
+  Palette: 'palette',
+  /** 頂点の共有解除。 */
+  Unshare: 'unshare',
+} as const;
+
+export type UiCommandLabel = (typeof UI_COMMAND_LABEL)[keyof typeof UI_COMMAND_LABEL];
+
+/**
  * `Command.label` → 画面に出す日本語。**キーは実際に埋められている値**であって、
- * 型やコメントの宣言ではない（§5.51: 値を見る）。
+ * 型やコメントの宣言ではない（§5.51: 値を見る）。UI 側は上の
+ * {@link UI_COMMAND_LABEL} が全件、ドメイン側は各コマンド module の定数が全件で、
+ * `command-result.test.ts` が **両方を走査して** 漏れが無いことを守る。
  */
 const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
-  // --- UI 側が内部の英語を入れている 5 か所 ---
-  edit: '素性の変更',
-  delete: '地物の削除',
-  interval: '存続期間の変更',
-  palette: '配色の変更',
-  unshare: '頂点の共有解除',
+  // --- UI 側（内部の英語。UI_COMMAND_LABEL の全件がここに載る） ---
+  [UI_COMMAND_LABEL.Edit]: '素性の変更',
+  [UI_COMMAND_LABEL.Add]: '地物の追加',
+  [UI_COMMAND_LABEL.Split]: '分割',
+  [UI_COMMAND_LABEL.Drill]: '穴あけ',
+  [UI_COMMAND_LABEL.Merge]: '結合',
+  [UI_COMMAND_LABEL.Affiliation]: '所属変更',
+  [UI_COMMAND_LABEL.Delete]: '地物の削除',
+  [UI_COMMAND_LABEL.Interval]: '存続期間の変更',
+  [UI_COMMAND_LABEL.Palette]: '配色の変更',
+  [UI_COMMAND_LABEL.Unshare]: '頂点の共有解除',
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
   所属変更: '所属変更',
   地物の削除: '地物の削除',

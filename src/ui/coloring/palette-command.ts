@@ -28,6 +28,7 @@ import {
 } from '../../domain/command/index';
 import type { DomainProject, UiSettings } from '../../domain/persistence/index';
 import type { PaletteSelection } from '../state/settings';
+import { UI_COMMAND_LABEL } from '../shell/command-result';
 
 /** The concrete live root the command swaps (== recolor-binding's DomainRoot). */
 export type DomainRoot = DomainProject;
@@ -67,7 +68,7 @@ function makePaletteSwapCommand(baseline: DomainRoot, finalState: DomainRoot): C
   const empty: CommandResult = createCommandResult({});
   const swap: Command<DomainRoot> = {
     kind: PALETTE_COMMIT_KIND,
-    label: 'palette',
+    label: UI_COMMAND_LABEL.Palette,
     execute(state: DomainRoot): CommandOutcome<DomainRoot> {
       void state;
       return { state: finalState, result: empty };
@@ -81,7 +82,7 @@ function makePaletteSwapCommand(baseline: DomainRoot, finalState: DomainRoot): C
       return { state: finalState, result: empty };
     },
   };
-  return createCompositeCommand('palette', [swap]);
+  return createCompositeCommand(UI_COMMAND_LABEL.Palette, [swap]);
 }
 
 /**
