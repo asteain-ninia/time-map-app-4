@@ -59,6 +59,8 @@ export interface RedrawWatchInput {
   /** HB3-6/18: 編集ハンドルは専用オーバーレイ系ツール中は描かれない → ツールも watch. */
   readonly activeTool: unknown;
   readonly displayControl: unknown;
+  /** FR-13 / K-6: グリッドのセッション限りの上書き（上部バーのトグルが書く）。 */
+  readonly gridVisibleOverride: unknown;
   /** FR-113 表示フィルタ (種別/深度/個別非表示/不透明度). */
   readonly filter: unknown;
   readonly projectSettings: {
@@ -91,6 +93,7 @@ export function redrawWatch(s: RedrawWatchInput): readonly unknown[] {
     s.mode,
     s.activeTool,
     s.displayControl,
+    s.gridVisibleOverride,
     s.filter,
     s.projectSettings.areaLabelOccupancyThreshold,
     s.projectSettings.gridSpacingDeg,

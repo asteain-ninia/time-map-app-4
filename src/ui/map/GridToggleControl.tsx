@@ -14,18 +14,23 @@
 // mounting it does NOT make the top-bar row's占有幅 depend on anything but the window
 // width. All user-visible text comes from GRID_TOGGLE_STRINGS (教訓 5.19).
 //
-// K-6「読むだけ」(教訓 5.13 / 所有者裁定「読むだけの間は保存ファイルの中身を書き換える
-// 操作をすべて止める」): このボタンは**見え方の切替に見えて、実体はプロジェクト設定
-// `gridVisible` の書き換え**である（FR-109 永続プロジェクト設定 = .gimoza に入り、押した
-// だけで未保存状態になる）。同じ「表示」でも、右クリックの個別非表示・強調（FR-113）は
-// セッション限りでファイルに残らないので「読むだけ」でも使える — 分かれ目は「見え方かどうか」
-// ではなく「保存ファイルに書くかどうか」。そこで表示専用モードでは無効化し、押下ハンドラ
-// でも同じ canEdit(mode) をもう一度確かめる（見た目だけの封鎖にしない）。
+// K-6「読むだけ」— **このボタンは保存ファイルに書かない**（2026-09-04 の再修正）。
+//
+// 一度は「実体がプロジェクト設定 `gridVisible` の書き換えだから、読むだけでは押させない」
+// としたが、それは裁定の片側しか見ていなかった。所有者の裁定は「読むだけ＝**選べる・読める**・
+// 直せない」であり、**起動直後は常に読むだけ**なので、開いて眺めるだけの人はグリッドを
+// 一度も消せなくなる（「読める」を損ねる）。
+//
+// そこで置き場を分けた。上部バーのこのトグルは **セッション限りの上書き**
+// （`SessionState.gridVisibleOverride`）だけを書く: `.gimoza` には入らず、未保存の印も
+// 立たない。保存される既定値を変えられるのは設定ダイアログの項目だけで、そちらは従来どおり
+// 編集の権限を要る。描画側は「上書きがあればそれ、無ければプロジェクト設定」で読む
+// （`App.tsx` の gridVisible ゲッター）。同じ形の先例が右クリックの個別非表示・強調
+// （FR-113、セッション限り）である。
 
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import { canEdit } from '../shell/permissions';
 import type { SessionStore } from '../state/store';
 
 /** All user-visible text for the grid toggle (教訓 5.19 表示文言は定数を経由する). */
@@ -53,10 +58,12 @@ export interface GridToggleControlProps<S> {
  */
 export function GridToggleControl<S>(props: GridToggleControlProps<S>): JSX.Element {
   const { store } = props;
-  const gridVisible = useStore(store, (s) => s.projectSettings.gridVisible);
-  // 権限の判定は shell の canEdit(mode) 1 本（教訓 5.13）。ここで `mode !== View` を
-  // 素書きしない — 素書きが散ったせいで K-6 の穴（削除ボタンだけ押せた）が生まれた。
-  const editable = useStore(store, (s) => canEdit(s.mode));
+  // 見せるかどうかの **実効値**: セッション限りの上書きがあればそれ、無ければ
+  // プロジェクト設定（描画側 `App.tsx` の gridVisible ゲッターと同じ規則）。
+  const gridVisible = useStore(
+    store,
+    (s) => s.gridVisibleOverride ?? s.projectSettings.gridVisible,
+  );
 
   return (
     <div className="grid-toggle" data-testid="grid-toggle-control">
@@ -66,12 +73,12 @@ export function GridToggleControl<S>(props: GridToggleControlProps<S>): JSX.Elem
         data-testid="grid-toggle"
         aria-pressed={gridVisible}
         aria-label={GRID_TOGGLE_STRINGS.ariaLabel}
-        title={editable ? GRID_TOGGLE_STRINGS.ariaLabel : GRID_TOGGLE_STRINGS.viewOnlyTitle}
-        disabled={!editable}
+        title={GRID_TOGGLE_STRINGS.ariaLabel}
         onClick={() => {
-          // 見た目（disabled）だけに頼らない: 書き込みの直前でもう一度確かめる（教訓 5.13）。
-          if (!editable) return;
-          store.getState().updateProjectSetting('gridVisible', !gridVisible);
+          // **セッション限りの上書きだけを書く**（K-6）。保存ファイルには入らないので
+          // 未保存の印も立たず、「読むだけ」でも押せる。保存される既定値を変えられるのは
+          // 設定ダイアログだけで、そちらは従来どおり編集の権限を要る。
+          store.getState().setGridVisibleOverride(!gridVisible);
         }}
       >
         {GRID_TOGGLE_STRINGS.label}

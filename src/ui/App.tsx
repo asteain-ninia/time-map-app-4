@@ -934,7 +934,13 @@ export function App(): JSX.Element {
       // next redraw. Read live per composite — never a stale capture (教訓 5.6 / 5.35).
       // The redraw-on-settings subscription below tracks gridVisible so a toggle fires
       // a redraw at once (buildGridPrimitives(false,…) → 明示的空, 教訓 5.18).
-      gridVisible: (): boolean => store.getState().projectSettings.gridVisible,
+      gridVisible: (): boolean => {
+        // FR-13 / K-6: **上書きがあればそれ、無ければプロジェクト設定**。上書きは
+        // 上部バーのトグルが書くセッション限りの値で、保存ファイルには入らない
+        // （`SessionState.gridVisibleOverride`）。読むだけのあいだも眺め方は変えられる。
+        const s = store.getState();
+        return s.gridVisibleOverride ?? s.projectSettings.gridVisible;
+      },
       // HB-1 観測フック: mirror the LIVE camera into DOM data-* attributes on the
       // map input layer so a behavioural E2E can read the pan offset + zoom and
       // assert they actually changed (既存 app-active-feature マーカーと同方式). The

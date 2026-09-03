@@ -399,20 +399,6 @@ const CHANGE_PATHS: readonly ChangePath[] = [
       return store.getState().projectSettings.timelineMaxYear === 4000;
     },
   },
-  {
-    name: '⑭ 上部バーのグリッド表示トグル（プロジェクト設定 gridVisible の書き換え）',
-    canChange: (mode) => {
-      // 「見え方の切替」に見えるが、実体は保存ファイルに入る設定の書き換えである。
-      // セッション限りの表示切替（右クリックの個別非表示・強調）とは分類が違う。
-      const store = sessionStore(mode);
-      render(<GridToggleControl store={store} />);
-      const button = screen.getByTestId('grid-toggle') as HTMLButtonElement;
-      if (button.disabled) return false;
-      const before = store.getState().projectSettings.gridVisible;
-      fireEvent.click(button);
-      return store.getState().projectSettings.gridVisible !== before;
-    },
-  },
 ];
 
 // --- 許可側の表（読むだけでも使えるべき部品） --------------------------------
@@ -420,8 +406,14 @@ const CHANGE_PATHS: readonly ChangePath[] = [
 // 禁止側だけを増やしていくと、いつか「読むこと」まで巻き添えで塞いでしまう。所有者裁定
 // の「読むだけ」＝**選べる・読める**・直せない、の前半を同じ表で固定する。ここに並ぶのは
 // どれも「保存ファイルに何も書かない」操作である — 分かれ目は「見え方かどうか」ではなく
-// 「保存ファイルに書くかどうか」（だから上部バーのグリッド表示は禁止側、右クリックの
-// 個別非表示・強調は許可側にいる）。
+// 「保存ファイルに書くかどうか」。
+//
+// **上部バーのグリッド表示トグルは、この分かれ目の使い方を一度誤った例である。** 実体が
+// プロジェクト設定の書き換えだったので禁止側へ入れたが、**起動直後は常に読むだけ**なので
+// 「開いて眺めるだけの人が一度もグリッドを消せない」状態になった（裁定の「読める」を
+// 損ねる）。直し方は関門をゆるめることではなく **置き場を分ける**ことで、トグルは
+// セッション限りの上書き（`gridVisibleOverride`）だけを書くようにした。だからいまは
+// 許可側にいる。保存ファイルへ書く経路（設定ダイアログのグリッド項目）は禁止側のまま。
 
 interface AllowedPath {
   /** 利用者から見た部品の名前。 */
@@ -450,6 +442,24 @@ function twoAnchorSeries(): AnchorSeries {
 }
 
 const ALLOWED_PATHS: readonly AllowedPath[] = [
+  {
+    name: '上部バーのグリッド表示トグル（セッション限りの見え方。保存ファイルに書かない）',
+    canUse: (mode) => {
+      const store = sessionStore(mode);
+      render(<GridToggleControl store={store} />);
+      const button = screen.getByTestId('grid-toggle') as HTMLButtonElement;
+      if (button.disabled) return false;
+      const before = store.getState().gridVisibleOverride ?? store.getState().projectSettings.gridVisible;
+      fireEvent.click(button);
+      const after = store.getState().gridVisibleOverride;
+      // 押せて、見え方が変わり、**保存ファイルにも未保存の印にも触っていない**こと。
+      return (
+        after === !before &&
+        store.getState().projectSettings.gridVisible === true &&
+        store.getState().projectDirty === false
+      );
+    },
+  },
   {
     name: '素性欄の「詳細表示」（別窓で読む）',
     canUse: (mode) => {

@@ -167,6 +167,24 @@ export interface SessionStoreState<S> {
   readonly mode: EditMode;
   readonly activeTool: ToolId | null;
 
+  /**
+   * グリッドを見せるかの **このセッションだけの上書き**（FR-13 / K-6）。
+   *
+   * `null` = 上書きなし＝プロジェクト設定 `projectSettings.gridVisible` に従う。
+   * `true` / `false` = そのセッションのあいだだけ、設定より優先して見せる／隠す。
+   *
+   * **なぜ別の置き場が要るのか**: グリッドの表示は「見え方」なのに、保存する既定値は
+   * プロジェクト設定（＝`.gimoza` に書かれ、押すだけで未保存の印が立つ）である。
+   * 所有者の裁定「読むだけ＝選べる・読める・直せない」に従って上部バーのトグルを
+   * プロジェクト設定へ書かせないようにすると、**起動直後は常に読むだけなので、
+   * 開いて眺めるだけの人は一度もグリッドを消せなくなる**（裁定の「読める」の趣旨に反する）。
+   * そこで上部バーのトグルは **この上書きだけ** を書く: 保存ファイルに書かず、未保存の印も
+   * 立てない。保存される既定値を変えられるのは設定ダイアログだけで、そちらは従来どおり
+   * 権限の関門を通る（教訓 5.36 プロジェクト設定とアプリ全体設定の境界の、第 3 の区分＝
+   * 「セッション限りの見え方」）。
+   */
+  readonly gridVisibleOverride: boolean | null;
+
   // -- time (FR-64 / FR-66 / FR-70) ------------------------------------------
   readonly currentTime: TimePoint;
   readonly lastTimeChangeSource: TimeChangeSource | null;
@@ -403,6 +421,11 @@ export interface SessionStoreActions<S> {
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
+  /**
+   * グリッドの見え方の **セッション限りの上書き**（FR-13 / K-6）。`null` で上書きを外す。
+   * 保存ファイルには書かず、未保存の印も立てない（{@link SessionState.gridVisibleOverride}）。
+   */
+  setGridVisibleOverride(next: boolean | null): void;
   /**
    * Write BOTH timeline-range bounds (timelineMinYear + timelineMaxYear) in ONE
    * transition (finding bughunt2). The per-key {@link updateProjectSetting} derives
@@ -1066,6 +1089,8 @@ export function createSessionStore<S>(
     vertexSelection: initialPatch.vertexSelection,
     mode: init.mode ?? EDIT_MODE.View,
     activeTool: init.activeTool ?? null,
+    // 起動直後は上書きなし（＝プロジェクト設定に従う）。
+    gridVisibleOverride: null,
     currentTime: init.currentTime ?? DEFAULT_TIMELINE_MIN,
     lastTimeChangeSource: null,
     timelineMin: DEFAULT_TIMELINE_MIN,
@@ -1672,6 +1697,16 @@ export function createSessionStore<S>(
       const cur = get().filter;
       const next = clearEmphasis(cur);
       if (next !== cur) commitFilter(next);
+    },
+
+    /**
+     * グリッドの見え方をこのセッションだけ上書きする（FR-13 / K-6）。
+     * **`projectDirty` を立てない・保存ファイルに書かない。** `null` で上書きを外し、
+     * プロジェクト設定の既定へ戻す。
+     */
+    setGridVisibleOverride(next) {
+      if (get().gridVisibleOverride === next) return;
+      set({ gridVisibleOverride: next });
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

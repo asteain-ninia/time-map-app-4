@@ -32,6 +32,7 @@ function baseState(): RedrawWatchInput {
     mode: 'edit',
     activeTool: null,
     displayControl: { tag: 'display' },
+    gridVisibleOverride: null,
     filter: { tag: 'filter' },
     projectSettings: {
       areaLabelOccupancyThreshold: 0.2,
@@ -118,6 +119,9 @@ describe('redrawWatch (Canvas 再描画の watch 集合)', () => {
       { ...s, projectSettings: { ...s.projectSettings, gridColor: '#ff0000' } },
       { ...s, projectSettings: { ...s.projectSettings, gridOpacity: 0.1 } },
       { ...s, projectSettings: { ...s.projectSettings, gridVisible: false } },
+      // FR-13 / K-6: 上部バーのトグルが書く **セッション限りの上書き**。ここを watch に
+      // 入れ忘れると、押しても線が消えない（設定は変わらないので他の watch も動かない）。
+      { ...s, gridVisibleOverride: false },
     ];
     for (const next of changed) {
       expect(redrawWatchChanged(redrawWatch(s), redrawWatch(next))).toBe(true);

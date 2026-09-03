@@ -18,7 +18,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, leaveViewMode } from './helpers';
+import { launchApp } from './helpers';
 
 /** The last-drawn-frame label-primitive count off the live __E2E__ render hook. */
 async function labelCount(page: Page): Promise<number> {
@@ -49,13 +49,8 @@ test.describe('FR-13 — グリッド ON/OFF 切替 結線', () => {
 
       const toggle = page.getByTestId('grid-toggle');
       await expect(toggle).toBeVisible();
-      // 起動直後は「読むだけ」なのでトグルは無効である（K-6 / C 群）。**グリッドの
-      // 表示切替は見た目の話に見えて、実体はプロジェクト設定 `gridVisible` の書き換え**で、
-      // 保存ファイルに入り未保存の印も立つ。裁定「読むだけ＝直せない」の分かれ目は
-      // 「見え方かどうか」ではなく「保存ファイルに書くかどうか」なので、ここは止まる。
-      // 置き場そのものの見直し（アプリ全体設定へ移す）は docs/現状.md B18。
-      await expect(toggle).toBeDisabled();
-      await leaveViewMode(page);
+      // **起動直後の「読むだけ」でも押せる**（K-6 の裁定「読むだけ＝選べる・読める」）。
+      // このトグルはセッション限りの見え方だけを書き、保存ファイルには入らない。
       await expect(toggle).toBeEnabled();
 
       // 既定: the grid is visible — graticule labels are drawn, the toggle is pressed.
@@ -71,6 +66,49 @@ test.describe('FR-13 — グリッド ON/OFF 切替 結線', () => {
       await toggle.click();
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
       await expect.poll(async () => labelCount(page)).toBeGreaterThan(0);
+
+      // **未保存の印が立たない**（保存ファイルに何も書いていない証）。
+      await expect(page.getByTestId('app-identity-dirty')).toHaveCount(0);
+      expect(await page.title()).not.toContain('●');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('FR-13 / K-6 — 読むだけでもグリッドは切り替えられ、保存ファイルは動かない', () => {
+  test('「読むだけ」のまま押せて、未保存にならず、帯の寸法も動かない（K-3）', async () => {
+    // 一度は「実体がプロジェクト設定の書き換えだから読むだけでは押させない」としたが、
+    // **起動直後は常に読むだけ**なので、開いて眺めるだけの人が一度もグリッドを消せなく
+    // なった。直し方は関門をゆるめることではなく置き場を分けることで、このトグルは
+    // セッション限りの上書きだけを書く（保存ファイルにも未保存の印にも触らない）。
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      // 起動直後は「読むだけ」である（この前提が崩れたらこの検査の意味も変わる）。
+      await expect(page.getByTestId('mode-view')).toHaveAttribute('aria-pressed', 'true');
+
+      const mapBefore = (await page.getByTestId('map-area').boundingBox())!;
+      const toggle = page.getByTestId('grid-toggle');
+      await expect(toggle).toBeEnabled();
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await expect.poll(async () => labelCount(page)).toBe(0);
+
+      // 保存ファイルに何も書いていない = 未保存の印が立たない。
+      await expect(page.getByTestId('app-identity-dirty')).toHaveCount(0);
+      expect(await page.title()).not.toContain('●');
+      // 読むだけのまま（トグルはモードを変えない）。
+      await expect(page.getByTestId('mode-view')).toHaveAttribute('aria-pressed', 'true');
+
+      // K-3: 帯の中身が変わっても地図セルの矩形は動かない。
+      expect(await page.getByTestId('map-area').boundingBox()).toEqual(mapBefore);
+
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      await expect.poll(async () => labelCount(page)).toBeGreaterThan(0);
+      expect(await page.getByTestId('map-area').boundingBox()).toEqual(mapBefore);
     } finally {
       await app.close();
     }
