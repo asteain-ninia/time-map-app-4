@@ -31,11 +31,13 @@ export {
   APP_NAME,
   DIRTY_MARK,
   METRES_PER_CSS_PX,
+  UNKNOWN_TIME,
   UNSAVED_NEW_PROJECT,
   buildWindowTitle,
   fileNameOf,
   formatClock,
   formatScale,
+  formatTimestamp,
   scaleDenominator,
   type WindowTitleInput,
 } from './status-format';

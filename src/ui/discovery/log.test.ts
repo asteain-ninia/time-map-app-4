@@ -55,6 +55,74 @@ describe('DiagnosticLogger (FR-117 ログ記録, 教訓 5.15 / 5.41)', () => {
   });
 });
 
+// D3-2 — 診断画面はロガーを購読する（教訓 5.35 共有リソース更新は全依存先へ通知する）。
+// 購読が無かったころは、画面を開いたまま新しいエラーが出ても欄に現れなかった。
+describe('DiagnosticLogger の購読（useSyncExternalStore の前提）', () => {
+  it('記録すると購読者へ知らせ、解除するとそれ以上来ない', () => {
+    const logger = new DiagnosticLogger({ clock: () => 0 });
+    const listener = vi.fn();
+    const off = logger.subscribe(listener);
+
+    logger.log(LOG_LEVEL.Error, 'a');
+    expect(listener).toHaveBeenCalledTimes(1);
+    logger.log(LOG_LEVEL.Error, 'b');
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    off();
+    logger.log(LOG_LEVEL.Error, 'c');
+    expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it('clear でも知らせる（開いたまま消したら欄も空になる）', () => {
+    const logger = new DiagnosticLogger({ clock: () => 0 });
+    const listener = vi.fn();
+    logger.subscribe(listener);
+
+    logger.log(LOG_LEVEL.Info, 'x');
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    logger.clear();
+    expect(listener).toHaveBeenCalledTimes(2);
+    expect(logger.getSnapshot()).toEqual([]);
+  });
+
+  it('すでに空なら clear は何もしない（通知もスナップショットの差し替えもしない）', () => {
+    const logger = new DiagnosticLogger({ clock: () => 0 });
+    const listener = vi.fn();
+    logger.subscribe(listener);
+    const before = logger.getSnapshot();
+
+    logger.clear();
+
+    expect(listener).not.toHaveBeenCalled();
+    expect(logger.getSnapshot()).toBe(before);
+  });
+
+  it('変化が無いあいだ getSnapshot は同じ配列を返し、記録すると別の配列になる', () => {
+    // ここが崩れる（毎回 [...entries] を返す）と `useSyncExternalStore` は
+    // 「毎レンダー値が変わった」と見なして無限ループする。
+    const logger = new DiagnosticLogger({ clock: () => 0 });
+    const first = logger.getSnapshot();
+    expect(logger.getSnapshot()).toBe(first);
+
+    logger.log(LOG_LEVEL.Warning, 'w');
+    const second = logger.getSnapshot();
+    expect(second).not.toBe(first);
+    expect(logger.getSnapshot()).toBe(second);
+    expect(second.map((e) => e.message)).toEqual(['w']);
+
+    // 既に配ったスナップショットは、あとから記録が増えても書き換わらない。
+    logger.log(LOG_LEVEL.Warning, 'w2');
+    expect(second).toHaveLength(1);
+  });
+
+  it('snapshot() は getSnapshot() と同じ値を返す（経路は 1 本）', () => {
+    const logger = new DiagnosticLogger({ clock: () => 0 });
+    logger.log(LOG_LEVEL.Info, 'x');
+    expect(logger.snapshot()).toBe(logger.getSnapshot());
+  });
+});
+
 describe('buildDiagnosticsSnapshot (FR-117 診断情報, FR-02 機微情報を含めない)', () => {
   it('combines the log with a non-sensitive overview (counts/flags only)', () => {
     const logger = new DiagnosticLogger({ clock: () => 5 });

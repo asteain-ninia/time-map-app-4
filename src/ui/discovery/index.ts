@@ -128,6 +128,7 @@ export {
   type LogEntry,
   type LogSink,
   type Clock,
+  type DiagnosticLogListener,
   type DiagnosticLoggerOptions,
   DEFAULT_LOG_CAPACITY,
   DiagnosticLogger,

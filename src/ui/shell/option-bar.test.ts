@@ -5,8 +5,10 @@
 //  2. **変化しなかった呼び出しでは通知もスナップショットの差し替えもしない**。ここが崩れると
 //     `useSyncExternalStore` が毎レンダー新しいスナップショットを見て無限ループになる。
 //     道具は頂点を打つたびに同じ文字列を押し込むので、実際に起きる。
-//  3. **設定欄の取り外しは自分が入れた部品にしか効かない**（教訓 5.2 の「一時的 UI 状態は
-//     全経路で破棄する」を、破棄が行きすぎないほうから固定する）。
+//  3. **設定欄の取り外しは自分が入れた登録にしか効かない**（教訓 5.2 の「一時的 UI 状態は
+//     全経路で破棄する」を、破棄が行きすぎないほうから固定する）。所有権は登録ごとの印で
+//     見るので、**同じ id に同じ node インスタンスを入れ直した**あとに古い後片付けが遅れて
+//     走っても、生きている登録は消えない。
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -138,6 +140,60 @@ describe('OptionBarStore — registerOptionSlot（設定欄の差し込み口）
     offA();
 
     expect(store.get().slots).toEqual([{ id: 'snap', node: 'B' }]);
+  });
+
+  it('同じ node インスタンスで登録し直したら、古い取り外しは新しい登録を消さない', () => {
+    // React の effect は「後片付け → 再実行」の順に走るとは限らない。同じ id で
+    // **同じ node インスタンス**を入れ直したあとに前の後片付けが遅れて走る、という
+    // 順序が起きる。所有権を node の同一性で見ていると `mine.node === node` が成立して
+    // しまい、生きている登録を巻き添えで消す（設定欄から「吸着 ▾」が黙って消える）。
+    const store = new OptionBarStore();
+    const node = 'snap-node'; // 2 回とも同じインスタンスを渡す
+    const offFirst = store.registerOptionSlot('snap', node);
+    const offSecond = store.registerOptionSlot('snap', node);
+
+    offFirst(); // 遅れて走った古い後片付け
+
+    expect(store.get().slots).toEqual([{ id: 'snap', node }]);
+
+    // 新しいほうの取り外しは効く（畳み忘れにはしない＝教訓 5.2）。
+    offSecond();
+    expect(store.get().slots).toEqual([]);
+  });
+
+  it('同じ id・同じ node の登録し直しでは通知が飛ばず、スナップショットも据え置かれる', () => {
+    // 道具が毎レンダー同じ部品を押し込んでも、購読者（OptionBar）を動かさないこと。
+    // ここで通知すると `useSyncExternalStore` が再レンダーし、描画中に登録する経路では
+    // 無限ループになる。
+    const store = new OptionBarStore();
+    const node = 'snap-node';
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.registerOptionSlot('snap', node);
+    expect(listener).toHaveBeenCalledTimes(1);
+    const first = store.get();
+
+    store.registerOptionSlot('snap', node);
+    store.registerOptionSlot('snap', node);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.get()).toBe(first);
+  });
+
+  it('取り外しを 2 回呼んでも 2 度目は何もしない（通知もしない）', () => {
+    const store = new OptionBarStore();
+    const listener = vi.fn();
+    const off = store.registerOptionSlot('snap', 'A');
+    store.subscribe(listener);
+
+    off();
+    expect(listener).toHaveBeenCalledTimes(1);
+    const after = store.get();
+
+    off();
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.get()).toBe(after);
   });
 
   it('reset で設定欄も空になる', () => {

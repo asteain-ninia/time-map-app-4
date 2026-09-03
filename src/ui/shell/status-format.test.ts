@@ -6,11 +6,13 @@ import {
   APP_NAME,
   DIRTY_MARK,
   METRES_PER_CSS_PX,
+  UNKNOWN_TIME,
   UNSAVED_NEW_PROJECT,
   buildWindowTitle,
   fileNameOf,
   formatClock,
   formatScale,
+  formatTimestamp,
   scaleDenominator,
 } from './status-format';
 
@@ -110,5 +112,28 @@ describe('formatClock — 最終保存の時刻', () => {
   it('午後も 24 時制で出す', () => {
     const t = new Date(2026, 8, 3, 14, 3, 0).getTime();
     expect(formatClock(t)).toBe('14:03');
+  });
+});
+
+describe('formatTimestamp — 診断情報の記録時刻', () => {
+  it('「年-月-日 時:分:秒」を 0 埋めで出す（ロケールに依らない固定の並び）', () => {
+    // `toLocaleString()` だと OS の地域・暦の設定しだいで「2026/9/4 14:03:07」にも
+    // 和暦にもなる。診断は環境をまたいで突き合わせる用途なので並びを固定する。
+    const t = new Date(2026, 8, 4, 14, 3, 7).getTime();
+    expect(formatTimestamp(t)).toBe('2026-09-04 14:03:07');
+  });
+
+  it('1 桁の月・日・時・分・秒がすべて 0 埋めされる', () => {
+    const t = new Date(2026, 0, 2, 3, 4, 5).getTime();
+    expect(formatTimestamp(t)).toBe('2026-01-02 03:04:05');
+  });
+
+  it('時:分は formatClock と同じ整形を使う（同じ整形を 2 か所に書かない）', () => {
+    const t = new Date(2026, 8, 4, 14, 3, 7).getTime();
+    expect(formatTimestamp(t)).toContain(formatClock(t));
+  });
+
+  it('読めない日時では「—」を返す', () => {
+    expect(formatTimestamp(Number.NaN)).toBe(UNKNOWN_TIME);
   });
 });

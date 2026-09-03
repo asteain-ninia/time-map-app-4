@@ -109,3 +109,28 @@ export function formatClock(epochMs: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
+
+/** 日時が読めないとき（NaN 等）に出す文字。`formatScale` の「—」と揃える。 */
+export const UNKNOWN_TIME = '—';
+
+/**
+ * 記録時刻（実時間）の完全表記「2026-09-04 14:03:07」。診断情報のログ 1 行がこれを使う。
+ *
+ * **`toLocaleString` を使わない。** この unit の方針は `groupDigits` の注記と同じで、
+ * 表示をロケール設定に委ねない。`toLocaleString()` は OS の地域と暦の設定しだいで
+ * 「2026/9/4 14:03:07」にも「R8/9/4 14:03:07」（和暦）にもなり、**環境によって違う文字が
+ * 出る**。診断情報は「いつ何が起きたか」を人が読んで突き合わせる用途なので、どの環境でも
+ * 同じ並び（年-月-日 時:分:秒・0 埋め・24 時制）で出す必要がある。
+ *
+ * 時:分は {@link formatClock} をそのまま使う（同じ整形を 2 か所に書かない）。秒まで出すのは、
+ * 連続して起きたエラーの前後関係がログ上で分かるようにするため。
+ */
+export function formatTimestamp(epochMs: number): string {
+  const d = new Date(epochMs);
+  if (Number.isNaN(d.getTime())) return UNKNOWN_TIME;
+  const yyyy = String(d.getFullYear()).padStart(4, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${yyyy}-${mo}-${dd} ${formatClock(epochMs)}:${ss}`;
+}

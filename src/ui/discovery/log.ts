@@ -63,6 +63,13 @@ export interface LogSink {
 /** Injected real-time clock (so tests are deterministic — 教訓 5.41). */
 export type Clock = () => number;
 
+/**
+ * 記録内容が変わったことだけを知らせる購読者（値は {@link DiagnosticLogger.getSnapshot}
+ * から取る＝スナップショットの経路は 1 本）。React の `useSyncExternalStore` にそのまま
+ * 渡せる形にしてある。
+ */
+export type DiagnosticLogListener = () => void;
+
 export interface DiagnosticLoggerOptions {
   /** Ring-buffer capacity (oldest entries drop). Default 100. */
   readonly capacity?: number;
@@ -80,12 +87,27 @@ export const DEFAULT_LOG_CAPACITY = 100;
  * single recording経路 the error pipeline (errors.ts) and any caller funnels
  * through (log(level, message, context)). Offline-only: it never sends anything
  * externally (FR-02); persistence is the injected local sink's concern.
+ *
+ * 記録が変わったことは {@link DiagnosticLogger.subscribe} で知らせ、値は
+ * {@link DiagnosticLogger.getSnapshot} で取る（React の `useSyncExternalStore` の 2 本立て。
+ * 診断情報の画面はこれで、開いたまま起きたエラーもその場で並ぶ）。
  */
 export class DiagnosticLogger {
   private readonly capacity: number;
   private readonly clock: Clock;
   private readonly sink: LogSink | undefined;
   private readonly entries: LogEntry[] = [];
+  private readonly listeners = new Set<DiagnosticLogListener>();
+
+  /**
+   * `getSnapshot` が返す配列の使い回し。**変化が無いあいだは同じ配列参照を返す**
+   * ために持つ（記録が変わったときだけ null に落として作り直す）。
+   *
+   * 毎回 `[...this.entries]` を返すと、`useSyncExternalStore` は「スナップショットが
+   * 毎レンダー変わった」と判断して再レンダーし続け、無限ループになる（React が
+   * 「The result of getSnapshot should be cached」と警告する形）。
+   */
+  private cachedSnapshot: readonly LogEntry[] | null = null;
 
   constructor(options: DiagnosticLoggerOptions = {}) {
     this.capacity = options.capacity ?? DEFAULT_LOG_CAPACITY;
@@ -110,6 +132,7 @@ export class DiagnosticLogger {
     if (this.entries.length > this.capacity) {
       this.entries.shift();
     }
+    this.cachedSnapshot = null;
     if (this.sink !== undefined) {
       try {
         this.sink.write(entry);
@@ -118,12 +141,43 @@ export class DiagnosticLogger {
         // caller's error handling (教訓 5.41 / FR-117). Swallowed by design.
       }
     }
+    // 記録し終えてから知らせる（購読者が読むのは確定後の内容だけ）。
+    this.emit();
     return entry;
   }
 
-  /** Snapshot of the recorded entries (newest last), for the diagnostics view. */
+  /**
+   * 記録内容が変わったら呼ばれる購読を登録する。戻り値は解除（教訓 5.35: 共有リソースを
+   * 更新したら依存先へ通知する）。
+   *
+   * **なぜ要るか**: 診断情報の画面は Zustand（地物数・未保存・作中時刻）しか購読して
+   * いなかったので、**画面を開いたまま新しいエラーが起きてもログ欄に現れなかった**。
+   * ロガーは React の外の可変オブジェクトなので、React へは購読でつなぐ
+   * （技術方針 2.5 / `useSyncExternalStore`）。
+   */
+  subscribe(listener: DiagnosticLogListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  /**
+   * `useSyncExternalStore` に渡すスナップショット。**記録が変わっていない限り、毎回
+   * 同じ配列参照を返す**（{@link cachedSnapshot}）。返す配列は内部バッファのコピーなので、
+   * 呼び出し側が持ち続けても、あとから記録が増えて中身が書き換わることはない。
+   */
+  getSnapshot(): readonly LogEntry[] {
+    this.cachedSnapshot ??= [...this.entries];
+    return this.cachedSnapshot;
+  }
+
+  /**
+   * Snapshot of the recorded entries (newest last), for the diagnostics view.
+   * {@link getSnapshot} と同じ値（同一性も同じ）を返す＝スナップショットの経路は 1 本。
+   */
   snapshot(): readonly LogEntry[] {
-    return [...this.entries];
+    return this.getSnapshot();
   }
 
   /** Number of currently-buffered entries. */
@@ -131,9 +185,21 @@ export class DiagnosticLogger {
     return this.entries.length;
   }
 
-  /** Clear the in-memory buffer (e.g. user-requested log reset). */
+  /**
+   * Clear the in-memory buffer (e.g. user-requested log reset). 空にしたことも
+   * 購読者へ知らせる（画面を開いたまま消したら欄も空になる）。**すでに空なら何もしない** —
+   * 変化が無いのに `cachedSnapshot` を作り直すと、返す配列の同一性が理由なく変わって
+   * `useSyncExternalStore` を無駄に動かすため。
+   */
   clear(): void {
+    if (this.entries.length === 0) return;
     this.entries.length = 0;
+    this.cachedSnapshot = null;
+    this.emit();
+  }
+
+  private emit(): void {
+    for (const listener of this.listeners) listener();
   }
 }
 
