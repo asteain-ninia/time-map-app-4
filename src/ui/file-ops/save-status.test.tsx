@@ -532,6 +532,95 @@ describe('未保存警告の「保存して続行」（A3）', () => {
   });
 });
 
+describe('未保存警告を出す 6 経路すべてが同じ上書き確認を通る（A3）', () => {
+  // 開く / 新規 / ドラッグ＆ドロップ / × / Alt+F4 / OS シャットダウン の 6 経路は、
+  // **すべて runUnsavedGuard の同じ「保存して続行」の枝**を通る（教訓 5.6 同一フロー）。
+  // 経路ごとに別のゲートを書いていないことを、入口の違う 4 つで実際に確かめる
+  // （× / Alt+F4 / OS シャットダウンは main から見ると同じ close 要求なので、
+  // registerWindowClose の 1 本で 3 経路ぶんになる）。
+  async function dirtyLoaded(extra: Partial<ControllerProps> = {}): Promise<{
+    store: StoreApi<SessionStore<DomainProject>>;
+    registry: CommandRegistry;
+    api: TimeMapApi;
+  }> {
+    const made = await renderWithLoadedProject(extra);
+    await act(async () => {
+      made.store.getState().updateProjectSetting('gridVisible', false);
+    });
+    return made;
+  }
+
+  it('開く', async () => {
+    const { registry, api } = await dirtyLoaded();
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpen);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unsaved-save'));
+    });
+    expect(screen.getByTestId('overwrite-dialog')).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it('新規', async () => {
+    const { registry, api } = await dirtyLoaded();
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileNew);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unsaved-save'));
+    });
+    expect(screen.getByTestId('overwrite-dialog')).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it('ドラッグ＆ドロップ', async () => {
+    const { registry, api } = await dirtyLoaded();
+    // D&D はコントローラの露出したハンドラを直接叩く（実ブラウザでは app-shell の
+    // root にバインドされている。ここは同じハンドラを呼ぶ）。
+    const dropzone = screen.getByTestId('file-ops-dropzone');
+    await act(async () => {
+      fireEvent.drop(dropzone, {
+        dataTransfer: { files: [Object.assign(new File([], 'x.gimoza'), { path: '/tmp/x.gimoza' })] },
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unsaved-save'));
+    });
+    expect(screen.getByTestId('overwrite-dialog')).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
+    void registry;
+  });
+
+  it('× / Alt+F4 / OS シャットダウン（main から見ると同じ close 要求）', async () => {
+    let runGuard: (() => Promise<boolean>) | null = null;
+    const { api } = await dirtyLoaded({
+      registerWindowClose: (run: () => Promise<boolean>) => {
+        runGuard = run;
+        return () => {};
+      },
+    });
+    expect(runGuard).not.toBeNull();
+    let closed: boolean | undefined;
+    await act(async () => {
+      void runGuard!().then((v) => {
+        closed = v;
+      });
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('unsaved-save'));
+    });
+    expect(screen.getByTestId('overwrite-dialog')).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
+
+    // 「やめる」を押したら保存もしないし、閉じもしない（未保存のまま終了しない）。
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('overwrite-cancel'));
+    });
+    await waitFor(() => expect(closed).toBe(false));
+  });
+});
+
 describe('名前を付けて保存の「確認済み」判定は intent で決める（A7）', () => {
   it('既に保存先があるプロジェクトからの 名前を付けて保存 でも、以後は聞かれない', async () => {
     // **以前は保存前の needsSaveAs で判定していた**ので、保存先が既にある
