@@ -78,7 +78,7 @@ function endField(panel: Locator, suffix: string): Locator {
 
 /** Open the (collapsed) 存続期間 disclosure so its inputs become visible. */
 async function openIntervalEditor(panel: Locator): Promise<void> {
-  const summary = panel.locator('details.anchor-interval > summary').first();
+  const summary = panel.locator('[data-testid^="anchor-interval-summary-"]').first();
   await expect(summary).toBeVisible();
   await summary.click();
 }
@@ -130,7 +130,7 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // anchor id is derived from the feature id + time, so match by the testid prefix.
       // It lives in a collapsed <details> disclosure — open it (click the summary, the
       // only one in the anchor list after a single commit) so its inputs become visible.
-      const summary = propertiesPanel.locator('details.anchor-interval > summary').first();
+      const summary = propertiesPanel.locator('[data-testid^="anchor-interval-summary-"]').first();
       await expect(summary).toBeVisible();
       await summary.click();
       const startInput = startField(propertiesPanel, 'year');
@@ -171,7 +171,7 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // Open the 存続期間 editor and set 開始 = 300年6月15日 (year + month + day).
       await showPropertiesTab(page);
       const panel = page.getByTestId('sidebar-panel-properties');
-      const summary = panel.locator('details.anchor-interval > summary').first();
+      const summary = panel.locator('[data-testid^="anchor-interval-summary-"]').first();
       await expect(summary).toBeVisible();
       await summary.click();
       await startField(panel, 'year').fill('300');

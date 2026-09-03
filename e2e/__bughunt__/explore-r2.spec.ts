@@ -177,7 +177,7 @@ async function handleConflictModalIfPresent(page: Page): Promise<boolean> {
   if ((await root.count()) === 0) return false;
   record('conflict-modal-opened', 'edit commit paused on the conflict-resolution modal');
   // Audit the policy radio labels (優先: <name>) for an empty feature name.
-  const labels = page.locator('.policy-choice__option');
+  const labels = page.getByTestId('policy-choice-option');
   const n = await labels.count();
   for (let i = 0; i < n; i += 1) {
     const txt = ((await labels.nth(i).textContent()) ?? '').trim();
@@ -187,7 +187,7 @@ async function handleConflictModalIfPresent(page: Page): Promise<boolean> {
     }
   }
   // Audit the row feature-name spans.
-  const featSpans = page.locator('.conflict-row__features');
+  const featSpans = page.getByTestId('conflict-row-features');
   const m = await featSpans.count();
   for (let i = 0; i < m; i += 1) {
     const txt = ((await featSpans.nth(i).textContent()) ?? '').trim();

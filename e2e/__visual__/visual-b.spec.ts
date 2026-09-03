@@ -312,7 +312,7 @@ test.describe('VISUAL-B — FR-20 面積 / FR-87 エッジ頂点追加 / FR-87-8
       record('context-open', `context-menu ${menuShown ? 'shown' : 'MISSING'}; active-vertex after right-click="${ctxVtx}"; handles=${handlesBeforeCtx}`);
       const ctx = page.getByTestId('context-menu');
       if (menuShown) {
-        const items = ctx.locator('.context-menu__item');
+        const items = ctx.getByTestId('context-menu-item');
         const labels: string[] = [];
         const n = await items.count();
         for (let i = 0; i < n; i += 1) labels.push(((await items.nth(i).textContent()) ?? '').trim());

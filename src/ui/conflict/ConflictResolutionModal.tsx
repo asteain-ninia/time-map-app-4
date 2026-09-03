@@ -259,7 +259,7 @@ export function ConflictResolutionModal<S>(
                       onClick={() => setFocusedId(row.conflictId)}
                     >
                       <span className="conflict-row__time">{row.timeLabel}</span>
-                      <span className="conflict-row__features">
+                      <span className="conflict-row__features" data-testid="conflict-row-features">
                         {row.featureNames[0]} ／ {row.featureNames[1]}
                       </span>
                       <span className="conflict-row__kind">{row.kindLabel}</span>
@@ -359,7 +359,7 @@ function PolicyChoice(props: {
   return (
     <div className="policy-choice">
       {[conflict.a, conflict.b].map((p) => (
-        <label key={p.featureId} className="policy-choice__option">
+        <label key={p.featureId} className="policy-choice__option" data-testid="policy-choice-option">
           <input
             type="radio"
             name={name}

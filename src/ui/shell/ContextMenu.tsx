@@ -74,6 +74,7 @@ export function ContextMenu(props: ContextMenuProps): JSX.Element {
               type="button"
               role="menuitem"
               className="context-menu__item"
+              data-testid="context-menu-item"
               data-command={it.commandId}
               disabled={!enabled}
               aria-disabled={!enabled}

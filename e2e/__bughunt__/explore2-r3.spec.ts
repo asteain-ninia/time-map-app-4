@@ -578,7 +578,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       await page.waitForTimeout(120);
       const ctx = page.getByTestId('context-menu');
       if ((await ctx.count()) > 0) {
-        const items = ctx.locator('.context-menu__item');
+        const items = ctx.getByTestId('context-menu-item');
         const nItems = await items.count();
         for (let i = 0; i < nItems; i += 1) {
           const t = ((await items.nth(i).textContent()) ?? '').trim();
@@ -603,7 +603,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       await page.waitForTimeout(120);
       const ctx2 = page.getByTestId('context-menu');
       if ((await ctx2.count()) > 0) {
-        const items = ctx2.locator('.context-menu__item');
+        const items = ctx2.getByTestId('context-menu-item');
         const nItems = await items.count();
         for (let i = 0; i < nItems; i += 1) {
           const t = ((await items.nth(i).textContent()) ?? '').trim();

@@ -166,7 +166,9 @@ function AnchorIntervalEditor(props: {
 
   return (
     <details className="anchor-interval" data-testid={`anchor-interval-${anchorId}`}>
-      <summary>{PROPERTY_STRINGS.intervalEditTitle}</summary>
+      <summary data-testid={`anchor-interval-summary-${anchorId}`}>
+        {PROPERTY_STRINGS.intervalEditTitle}
+      </summary>
 
       <p className="anchor-interval__hint">{PROPERTY_STRINGS.intervalGranularityHint}</p>
 

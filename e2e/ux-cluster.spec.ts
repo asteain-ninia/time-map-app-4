@@ -199,9 +199,9 @@ test.describe('HB-11 / HB-12 / HB-13 — タイムライン可読性 (labels + v
       const ticks = page.getByTestId('timeline-ticks');
       await expect(ticks).toBeVisible();
       // The unit caption makes the bare number row read as "years".
-      await expect(ticks.locator('.timeline__ticks-unit')).toHaveText(/年/);
+      await expect(ticks.getByTestId('timeline-ticks-unit')).toHaveText(/年/);
       // At least one tick label is rendered.
-      await expect(ticks.locator('.timeline__tick-label').first()).toBeVisible();
+      await expect(ticks.getByTestId('timeline-tick-label').first()).toBeVisible();
     } finally {
       await app.close();
     }
@@ -216,7 +216,6 @@ test.describe('HB-11 / HB-12 / HB-13 — タイムライン可読性 (labels + v
       await expect(page.getByTestId('timeline')).toBeVisible();
       await expect(page.getByTestId('timeline-markers')).toHaveCount(0);
       await expect(page.getByTestId('timeline-markers-hint')).toHaveCount(0);
-      await expect(page.locator('.timeline-markers')).toHaveCount(0);
       await expect(
         page.getByRole('button', { name: 'この時刻をブックマーク' }),
       ).toHaveCount(0);

@@ -256,6 +256,7 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
               type="button"
               role="menuitem"
               className="context-menu__item"
+              data-testid="context-menu-item"
               data-item-kind={item.kind}
               disabled={!item.enabled}
               aria-disabled={!item.enabled}
@@ -277,6 +278,7 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
           type="button"
           role="menuitem"
           className="context-menu__item"
+          data-testid="context-menu-item"
           data-command={COMMAND_ID.ViewToggleViewMode}
           disabled={!viewCommandEnabled}
           aria-disabled={!viewCommandEnabled}

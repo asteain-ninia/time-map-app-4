@@ -59,7 +59,7 @@ test.describe('HB-2 — ショートカット表記がプラットフォーム�
         await page.getByTestId(`menu-${menuKey}`).click();
         const items = page.getByTestId(`menu-items-${menuKey}`);
         await expect(items).toBeVisible();
-        const accels = items.locator('.menubar__item-accel');
+        const accels = items.locator('[data-testid^="menu-accel-"]');
         const count = await accels.count();
         for (let i = 0; i < count; i++) {
           const text = ((await accels.nth(i).textContent()) ?? '').toLowerCase();

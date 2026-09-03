@@ -22,6 +22,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
   return (
     <span
       className="tooltip"
+      data-testid="tooltip"
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -30,7 +31,7 @@ export function Tooltip(props: TooltipProps): JSX.Element {
       <span aria-describedby={id} title={text}>
         {children}
       </span>
-      <span role="tooltip" id={id} hidden={!open} className="tooltip__bubble">
+      <span role="tooltip" id={id} hidden={!open} className="tooltip__bubble" data-testid="tooltip-bubble">
         {text}
       </span>
     </span>

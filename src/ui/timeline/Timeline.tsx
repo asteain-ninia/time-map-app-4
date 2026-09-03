@@ -63,7 +63,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           構成。ラベルは中央寄せ(translateX -50%)し、両端は枠外にはみ出さないよう
           CSS で寄せる。間引きは generateTicks(目標本数)が担当する。 */}
       <div className="timeline__ticks" data-testid="timeline-ticks">
-        <span className="timeline__ticks-unit" aria-hidden="true">
+        <span className="timeline__ticks-unit" data-testid="timeline-ticks-unit" aria-hidden="true">
           単位: 年
         </span>
         {ticks.map((tick) => {
@@ -82,7 +82,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
               data-tick-year={tick.year}
             >
               <span className="timeline__tick-mark" aria-hidden="true" />
-              <span className="timeline__tick-label">{formatYear(tick.year)}</span>
+              <span className="timeline__tick-label" data-testid="timeline-tick-label">
+                {formatYear(tick.year)}
+              </span>
             </span>
           );
         })}

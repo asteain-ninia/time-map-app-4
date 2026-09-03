@@ -375,7 +375,7 @@ async function dismissTooltips(page: Page): Promise<void> {
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   const b = await page.getByTestId('map-input-layer').boundingBox();
   if (b !== null) await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
-  await expect(page.locator('.tooltip__bubble:not([hidden])')).toHaveCount(0);
+  await expect(page.locator('[data-testid="tooltip-bubble"]:not([hidden])')).toHaveCount(0);
 }
 
 /**

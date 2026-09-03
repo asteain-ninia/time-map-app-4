@@ -113,14 +113,15 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
   test('mode-toggle buttons have no tooltip and still work; tool tooltips remain (HB-16)', async () => {
     const { app, page } = await launchApp();
     try {
-      // No .tooltip wrapper or role="tooltip" bubble inside the mode group.
-      const modeGroup = page.locator('.toolbar__modes');
+      // No tooltip wrapper (data-testid="tooltip") or role="tooltip" bubble inside the mode group.
+      const modeGroup = page.getByTestId('toolbar-modes');
       await expect(modeGroup).toBeVisible();
-      await expect(modeGroup.locator('.tooltip')).toHaveCount(0);
+      await expect(modeGroup.getByTestId('tooltip')).toHaveCount(0);
       await expect(modeGroup.locator('[role="tooltip"]')).toHaveCount(0);
       // The mode buttons themselves are not wrapped by a tooltip container.
       for (const id of ['mode-view', 'mode-add', 'mode-edit']) {
-        await expect(page.getByTestId(id).locator('xpath=ancestor::*[contains(@class,"tooltip")]')).toHaveCount(0);
+        // 「このボタンを内側に持つツールチップの包み」が 0 個 (祖先に tooltip が無い)。
+        await expect(page.getByTestId('tooltip').filter({ has: page.getByTestId(id) })).toHaveCount(0);
       }
 
       // They still function: leave View via mode-view, then enter 追加モード.
@@ -132,7 +133,7 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
 
       // Tool buttons still carry their tooltip (regression: not all removed).
       const toolBtn = page.getByTestId('tool-add.point');
-      await expect(toolBtn.locator('xpath=ancestor::*[contains(@class,"tooltip")]')).toHaveCount(1);
+      await expect(page.getByTestId('tooltip').filter({ has: toolBtn })).toHaveCount(1);
     } finally {
       await app.close();
     }

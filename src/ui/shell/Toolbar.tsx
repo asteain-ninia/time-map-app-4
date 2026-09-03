@@ -27,7 +27,7 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
 
   return (
     <nav className="toolbar" aria-label="ツールバー" data-testid="toolbar">
-      <div className="toolbar__modes" role="group" aria-label="モード切替">
+      <div className="toolbar__modes" data-testid="toolbar-modes" role="group" aria-label="モード切替">
         {/* 表示専用 ↔ 編集 の出入り口 (FR-75 / 教訓 5.13): View mode disables the
             add/edit toggles, so this single control is the live導線 in/out of the
             display-only state. In View it enables editing (lands in 編集モード via
