@@ -186,9 +186,24 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // single truth source the editTime already points at. A time move WITHIN one
   // anchor yields an id-equal snapshot; the draft re-seed downstream is keyed to
   // the edit-target ANCHOR (not this object), so such churn does not wipe a draft.
+  //
+  // `domain` も dep である（A9 / BH1-01 の根治）。**すぐ下の `series` に同じ手当てを
+  // した理由がそのまま `feature` にも当てはまる**のに、こちらだけ抜けていた。本番の
+  // FeatureLookup（`SidebarContent.featureLookupOf`）は `featuresAt(getRoot(), getTime())`
+  // を LIVE に読むが、**オブジェクトの同一性は確定済みドメインの差し替えをまたいで
+  // 変わらない**（`buildSidebarContent` の memo の deps にドメインが入っていない）。
+  // したがって「同じ地物を選んだまま、同じ時刻のまま、ドメインだけが差し替わる」変化
+  // ——取り消し（Ctrl+Z）・やり直し・外部からの読み込み——では、この memo の鍵
+  // `[featureLookup, targetFeatureId, currentTime]` が 3 つとも動かず、`feature` が
+  // 編集前の姿で **凍る**。素性欄は取り消したはずの名前を出し続け、そのまま「保存」を
+  // 押すと取り消した編集が復活した（実データで再現）。`domain` を鍵に混ぜると、
+  // ドメインが動いた瞬間に解決し直される（教訓 5.5「依存する状態は変化時に再検証する」）。
+  //
+  // 下流の `BasicInfoForm` は **値の署名** で下書きの作り直しを決めるので、ドメインが
+  // 動いても中身が同じ再解決（選択のゆらぎ）では打鍵が消えない。
   const feature = useMemo(
     () => (targetFeatureId !== null ? featureLookup.featureAt(targetFeatureId) : null),
-    [featureLookup, targetFeatureId, currentTime],
+    [featureLookup, targetFeatureId, currentTime, domain],
   );
   // `domain` IS a dep (F1, Codex 敵対レビュー): the production AnchorSeriesLookup
   // (SidebarContent.anchorLookupOf) reads `getRoot().histories[…].series` LIVE, but its
