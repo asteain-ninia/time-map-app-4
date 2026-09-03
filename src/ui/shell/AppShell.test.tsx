@@ -199,9 +199,12 @@ describe('view-only bulk disabling (教訓 5.13, 受け入れ基準 9)', () => {
 describe('tooltips (FR-112, 受け入れ基準 6)', () => {
   it('shows a Japanese guide tooltip on a tool button hover', () => {
     render(<AppShell store={makeStore(EDIT_MODE.Add)} />);
+    const wrapper = screen
+      .getByTestId(`tool-${TOOL_ID.AddPoint}`)
+      .closest('.tooltip') as HTMLElement;
     const tip = screen.getByText('地図上に点地物を追加します');
     expect(tip).toHaveAttribute('hidden');
-    fireEvent.mouseEnter(tip.closest('.tooltip') as HTMLElement);
+    fireEvent.mouseEnter(wrapper);
     expect(tip).not.toHaveAttribute('hidden');
   });
 

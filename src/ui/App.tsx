@@ -3602,6 +3602,10 @@ export function App(): JSX.Element {
             <HelpToolsController
               store={store}
               registry={registry}
+              /* N-34: 診断情報のエラーログ欄は、ロガーもファイル沈め口も動いているのに
+                 **表示側だけ未結線**で固定の空文言を描いていた（G-19）。App が持っている
+                 唯一のロガーを渡すだけで生きる。 */
+              logger={logger}
               onRequestBasemapReplace={handleRequestBasemapReplace}
               onCommitPaletteChange={commitPaletteChange}
               onModalOpenChange={setHelpModalOpen}

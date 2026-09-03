@@ -44,7 +44,21 @@ import {
   type SearchableFeature,
   type SearchResult,
   MATCH_FIELD,
+  LOG_LEVEL,
+  DiagnosticLogger,
+  buildDiagnosticsSnapshot,
+  type LogLevel,
 } from '../discovery/index';
+
+/**
+ * 診断ログの種別の日本語ラベル（U-1: 内部の英語値を画面に出さない）。ログ自体は
+ * `LOG_LEVEL` の英語識別子で持つが、画面へはここを通してから出す（教訓 5.19）。
+ */
+const LOG_LEVEL_LABELS: Readonly<Record<LogLevel, string>> = {
+  [LOG_LEVEL.Info]: '情報',
+  [LOG_LEVEL.Warning]: '警告',
+  [LOG_LEVEL.Error]: 'エラー',
+};
 import { featuresAt } from '../live-lookup';
 import { buildCommittedFeatures } from '../map/committed-features';
 import type { Feature } from '../../domain/feature';
@@ -88,6 +102,13 @@ export interface HelpToolsControllerProps {
    * replacement itself — it only forwards the request.
    */
   readonly onRequestBasemapReplace?: () => void;
+  /**
+   * FR-117 診断情報のエラーログ（G-19 / N-34）。**ロガーは動いていてファイル沈め口も繋がって
+   * いるのに、パネルが固定の空文言を描いていた**（表示側だけ未結線）。App が持っている
+   * 唯一のロガーをここへ渡すと、記録済みのエラーがそのまま出る。渡されなければ従来どおり
+   * 空文言（honest stub — 嘘の「ログ 0 件」を出すよりは「未結線」を保つ）。
+   */
+  readonly logger?: DiagnosticLogger;
   /**
    * FR-109 follow-up (ユーザー裁定) — commit a default-palette change as ONE UNDOABLE
    * command (App wires it to the recordCommand funnel, so the palette change + its
@@ -194,7 +215,13 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
         />
       );
     case HELP_VIEW.Diagnostics:
-      return <DiagnosticsView store={store} onClose={close} />;
+      return (
+        <DiagnosticsView
+          store={store}
+          onClose={close}
+          {...(props.logger !== undefined ? { logger: props.logger } : {})}
+        />
+      );
     case HELP_VIEW.None:
     default:
       return null;
@@ -522,21 +549,34 @@ function ShortcutsView(props: {
               // per-command testid (shortcuts-panel-key-<id>); alias rows get a
               // chord-suffixed testid so every key cell is uniquely addressable and
               // no two share a data-testid (strict getByTestId stays unambiguous).
+              //
+              // N-35: **同じ表示になる打鍵は 1 行に畳む。** 拡大は dispatch 側の都合で
+              // 4 通り登録されている（US 配列と JIS 配列の両方で Ctrl++ を受けるため
+              // `=` と `+` × Shift の有無）が、表示では `=` も `+` も「+」になるので
+              // 「拡大 Ctrl++」と「拡大 Ctrl+Shift++」が 2 回ずつ並んでいた。畳むのは
+              // **表示側だけ**で、keymap に渡す別名は 1 つも減らさない（減らすと日本語
+              // キーボードで拡大がキーボードから実行できなくなる）。
               const seen = new Set<string>();
-              return entries.map((entry) => {
+              const shownChords = new Set<string>();
+              const rows: JSX.Element[] = [];
+              for (const entry of entries) {
                 const chordLabel = formatShortcut(entry.shortcut, platform);
+                const shownKey = `${entry.commandId}:${chordLabel}`;
+                if (shownChords.has(shownKey)) continue;
+                shownChords.add(shownKey);
                 const isPrimary = !seen.has(entry.commandId);
                 seen.add(entry.commandId);
                 const keyTestid = isPrimary
                   ? `shortcuts-panel-key-${entry.commandId}`
                   : `shortcuts-panel-key-${entry.commandId}-${chordLabel}`;
-                return (
-                  <tr key={`${entry.commandId}:${chordLabel}`} data-testid="shortcuts-panel-row">
+                rows.push(
+                  <tr key={shownKey} data-testid="shortcuts-panel-row">
                     <td>{entry.label}</td>
                     <td data-testid={keyTestid}>{chordLabel}</td>
-                  </tr>
+                  </tr>,
                 );
-              });
+              }
+              return rows;
             })()}
           </tbody>
         </table>
@@ -555,6 +595,7 @@ function currentTimeLabel(t: TimePoint): string {
 function DiagnosticsView(props: {
   readonly store: StoreApi<SessionStore<DomainProject>>;
   readonly onClose: () => void;
+  readonly logger?: DiagnosticLogger;
 }): JSX.Element {
   // A non-sensitive アプリ概況 derived from the live store (FR-117 / FR-02: counts +
   // flags only, never project content). featureCount = features effective NOW.
@@ -572,6 +613,19 @@ function DiagnosticsView(props: {
   );
   const hasUnsavedChanges = useStore(props.store, (s) => s.projectDirty);
   const currentTime = useStore(props.store, (s) => s.currentTime);
+
+  // 表示の単一入口は既存の buildDiagnosticsSnapshot（G-19）。ここで新しい集計は作らない。
+  // 新しい順に出す（直近のエラーがいちばん上）。
+  const entries =
+    props.logger === undefined
+      ? []
+      : [
+          ...buildDiagnosticsSnapshot(props.logger, {
+            featureCount,
+            hasUnsavedChanges,
+            currentTimeLabel: currentTimeLabel(currentTime),
+          }).log,
+        ].reverse();
 
   return (
     <HelpModal
@@ -596,9 +650,51 @@ function DiagnosticsView(props: {
 
       <section className="diagnostics-panel__log">
         <h3>{DIAGNOSTICS_STRINGS.logSectionTitle}</h3>
-        {/* No live error-log buffer is plumbed into this seam yet; show the empty
-            state (FR-117). The 概況 above is the actionable diagnostic today. */}
-        <p data-testid="diagnostics-empty-log">{DIAGNOSTICS_STRINGS.emptyLog}</p>
+        {/* N-34: ここは長らく固定の空文言を描いていた（ロガーもファイル沈め口も動いて
+            いるのに表示側だけ未結線）。ホストがロガーを渡していれば記録済みのエラーを
+            そのまま出す。ロガーが無い（渡されていない）ときは従来どおり空文言のまま。
+            **記録時刻（実時間）と操作時の作中時刻を並べる**のは、どちらか一方では
+            「いつ何をしていて起きたか」が復元できないため（教訓 5.15）。 */}
+        {entries.length === 0 ? (
+          <p data-testid="diagnostics-empty-log">{DIAGNOSTICS_STRINGS.emptyLog}</p>
+        ) : (
+          <ol className="diagnostics-panel__entries" data-testid="diagnostics-log">
+            {entries.map((entry, index) => (
+              <li
+                key={`${String(entry.recordedAtMs)}:${String(index)}`}
+                className="diagnostics-entry"
+                data-testid="diagnostics-log-entry"
+              >
+                <div className="diagnostics-entry__head">
+                  <span className="diagnostics-entry__level" data-testid="diagnostics-log-level">
+                    {LOG_LEVEL_LABELS[entry.level]}
+                  </span>
+                  <span className="diagnostics-entry__at">
+                    {new Date(entry.recordedAtMs).toLocaleString()}
+                  </span>
+                  {entry.context.contextTime !== undefined && (
+                    <span className="diagnostics-entry__at">
+                      {DIAGNOSTICS_STRINGS.fieldContextTime}: {entry.context.contextTime}
+                    </span>
+                  )}
+                </div>
+                <div className="diagnostics-entry__message" data-testid="diagnostics-log-message">
+                  {entry.message}
+                </div>
+                {entry.context.summary !== undefined && (
+                  <div className="diagnostics-entry__meta">
+                    {DIAGNOSTICS_STRINGS.fieldContext}: {entry.context.summary}
+                  </div>
+                )}
+                {entry.context.cause !== undefined && (
+                  <div className="diagnostics-entry__meta" data-testid="diagnostics-log-cause">
+                    {DIAGNOSTICS_STRINGS.fieldCause}: {entry.context.cause}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+        )}
       </section>
 
       <p className="diagnostics-panel__privacy">{DIAGNOSTICS_STRINGS.privacyNote}</p>

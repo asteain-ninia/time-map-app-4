@@ -1163,10 +1163,23 @@ body {
   display: inline-block;
 }
 
+/* 吹き出し（設計書 §H.2。N-01 / N-02 の直し）。
+ *
+ * `position: fixed` にしてあるのは、**所属する枠の `overflow` に切り取られないため**
+ * (N-02)。ツールレールは `overflow-x: hidden`（HB-5 の幽霊横スクロールバー対策で外せない）
+ * なので、幅 119.2px の枠に 144px の吹き出しを出すと右へ 30.8px 切れて操作ガイドが
+ * 「地物の所属を変更し…」で読めなかった。fixed は祖先の overflow では切り取られない
+ * （切り取るのは transform / filter / contain を持つ祖先だけで、シェルには無い）。
+ * 座標は Tooltip.tsx が開いた瞬間に計算して style で渡す。
+ *
+ * `pointer-events: none` は N-01 の直し。吹き出しはすぐ上のボタンの真上に出るので、
+ * これが無いと `elementFromPoint` が吹き出しを返し、**真上のボタンが押せなくなる**
+ * （「結合」の吹き出しが「所属変更」を、メニューの「保存」の吹き出しが「開く」を覆う）。 */
 .tooltip__bubble {
-  position: absolute;
-  bottom: 100%;
+  position: fixed;
   left: 0;
+  top: 0;
+  max-width: calc(100vw - 8px);
   background: #333;
   color: #fff;
   padding: 2px 6px;
@@ -1174,6 +1187,7 @@ body {
   white-space: nowrap;
   border-radius: 3px;
   z-index: 100;
+  pointer-events: none;
 }
 
 .context-menu {

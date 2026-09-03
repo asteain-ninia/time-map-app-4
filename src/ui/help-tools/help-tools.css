@@ -249,3 +249,45 @@
   align-items: center;
   margin-bottom: 6px;
 }
+
+/* --- 診断情報のエラーログ（FR-117 / N-34）----------------------------------
+ *
+ * 表示側だけが未結線で、ここは長らく「記録されたエラーはありません。」の固定文言だった。
+ * 1 件ずつ「種別・記録時刻（実時間）・操作時の作中時刻・本文・文脈・原因」を出す。
+ * 件数が増えても診断ダイアログが伸びきらないよう、この節の中だけでスクロールさせる。 */
+.diagnostics-panel__entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.diagnostics-entry {
+  border-bottom: 1px solid #ddd;
+  padding: 6px 0;
+}
+
+.diagnostics-entry__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: #5b6573;
+}
+
+.diagnostics-entry__level {
+  font-weight: 600;
+}
+
+.diagnostics-entry__message {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.diagnostics-entry__meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #5b6573;
+  overflow-wrap: anywhere;
+}
