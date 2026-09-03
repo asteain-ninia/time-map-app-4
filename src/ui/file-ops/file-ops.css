@@ -30,6 +30,15 @@
   max-width: 520px;
 }
 
+/* 上書き先のフルパス。同名ファイルの取り違えはここでしか見分けられないので、折り返して
+ * でも全部見せる（省略記号にすると肝心の差（フル版/間引き版）が消える）。 */
+.unsaved-dialog__path {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  overflow-wrap: anywhere;
+}
+
 .unsaved-dialog__choices,
 .repair-dialog__actions {
   display: flex;

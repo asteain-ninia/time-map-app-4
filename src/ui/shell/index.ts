@@ -18,6 +18,27 @@ export {
 } from './Sidebar';
 export { StatusBar, type StatusBarProps } from './StatusBar';
 export { OptionBar, type OptionBarProps } from './OptionBar';
+export { StatusBarContent, type StatusBarContentProps, type UndoStatus } from './StatusBarContent';
+export { AppIdentity, type AppIdentityProps } from './AppIdentity';
+export {
+  StatusMessageStore,
+  STATUS_TONE,
+  type StatusMessage,
+  type StatusTone,
+  type StatusMessageListener,
+} from './status-message';
+export {
+  APP_NAME,
+  DIRTY_MARK,
+  METRES_PER_CSS_PX,
+  UNSAVED_NEW_PROJECT,
+  buildWindowTitle,
+  fileNameOf,
+  formatClock,
+  formatScale,
+  scaleDenominator,
+  type WindowTitleInput,
+} from './status-format';
 export {
   OptionBarStore,
   type OptionBarState,

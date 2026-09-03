@@ -29,6 +29,8 @@ import type { ZoomRange } from '../../render/camera';
 import type { SessionStore } from '../state/store';
 import { DEFAULT_APP_SETTINGS, DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
+import { fileNameOf } from '../shell/status-format';
+import type { StatusMessageStore } from '../shell/status-message';
 import { registerE2eHarnessAction } from '../e2e/harness';
 
 import { buildFileCommandPorts, cameraZoomRange, type FileOpsHost } from './bridge';
@@ -52,11 +54,14 @@ import {
   contextWithoutSaveTarget,
   needsSaveAs,
   type SaveContext,
+  type SaveStatus,
 } from './save-context';
 import { dropLoadCommand } from './file-commands';
 import { runBasemapReplace } from './basemap-replace';
 import { UnsavedWarningDialog } from './UnsavedWarningDialog';
+import { OverwriteConfirmDialog } from './OverwriteConfirmDialog';
 import { RepairDialog } from './RepairDialog';
+import { OVERWRITE_STRINGS } from './strings';
 import type { RepairChoices } from './repair-flow';
 import type { UnsavedChoice } from './unsaved-guard';
 
@@ -158,11 +163,29 @@ export interface FileOpsControllerProps {
    * test can omit it.
    */
   readonly registerBasemapReplace?: BasemapReplaceHook;
+  /**
+   * 保存の素性（いまの保存先と、最後に保存できた時刻）をホストへ上げる（設計書 §H.6 / V12）。
+   * ここが唯一「どのファイルへ保存するのか」を知っている場所なのに、これまで外へ出す口が
+   * 無かったため、ウィンドウタイトルにも状態行にもファイル名が出せなかった。
+   * `onModalOpenChange` と同じ「上へ通知する」形にしてある。
+   */
+  readonly onSaveStatusChange?: (status: SaveStatus) => void;
+  /**
+   * 状態行の「直前の結果」枠（設計書 §H.5）。保存の成否をここへ書く。これまで成功は
+   * どこにも出ず、失敗だけが OS の警告ボックスに出ていた（C6 / N-21）。
+   */
+  readonly statusMessages?: StatusMessageStore;
 }
 
 /** The pending unsaved-warning modal (a resolver the dialog feeds the choice to). */
 interface PendingUnsaved {
   readonly resolve: (choice: UnsavedChoice) => void;
+}
+
+/** The pending overwrite confirmation (上書き先 + a resolver for the yes/no). */
+interface PendingOverwrite {
+  readonly savePath: string;
+  readonly resolve: (confirmed: boolean) => void;
 }
 
 /** The pending repair modal (the report to present + a resolver for the choices). */
@@ -195,9 +218,42 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   // `isDirty()` reads ONLY that flag, so the unsaved guard observes setting changes
   // and domain edits through one basis (受け入れ基準 2 全経路).
   const contextRef = useRef<SaveContext>(buildNewProjectContext());
-  const applyContext = useCallback((next: SaveContext) => {
-    contextRef.current = next;
+
+  // --- 保存の素性をホストへ上げる（設計書 §H.6 / V12）------------------------
+  //
+  // ここが唯一「どのファイルへ保存するのか」を知っている場所なのに、これまで外へ出す口が
+  // 無かったため、ウィンドウタイトルにも状態行にもファイル名が出せなかった。最後に保存できた
+  // 時刻は **セッションの事実** なので SaveContext には入れない（文書の属性ではない）。
+  // プロジェクトを開き直すと null に戻り、状態行は「未保存」を出す。
+  const savedAtMsRef = useRef<number | null>(null);
+  const onSaveStatusChangeRef = useRef(props.onSaveStatusChange);
+  onSaveStatusChangeRef.current = props.onSaveStatusChange;
+  const publishSaveStatus = useCallback((): void => {
+    onSaveStatusChangeRef.current?.({
+      savePath: contextRef.current.savePath,
+      savedAtMs: savedAtMsRef.current,
+    });
   }, []);
+
+  // 状態行の「直前の結果」枠（設計書 §H.5）。保存の成否をここへ書く。これまで成功は
+  // どこにも出ず、失敗だけが OS の警告ボックスに出ていた（C6 / N-21）。
+  const statusMessagesRef = useRef(props.statusMessages);
+  statusMessagesRef.current = props.statusMessages;
+
+  // 保存先が変わる唯一の経路（新規 / 読み込み / 保存）。ここを通ったら必ずホストへ知らせる
+  // ので、タイトルと状態行が古い保存先を映したままになることが構造的に起きない。
+  const applyContext = useCallback(
+    (next: SaveContext) => {
+      contextRef.current = next;
+      publishSaveStatus();
+    },
+    [publishSaveStatus],
+  );
+
+  // 初回のマウントで一度知らせる（保存先未確定の新規 = タイトルは「（未保存の新規）」）。
+  useEffect(() => {
+    publishSaveStatus();
+  }, [publishSaveStatus]);
 
   // BUG #6 (data-loss) fix — the loaded ASSET BYTES, retained between load and save.
   //
@@ -413,7 +469,16 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
 
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
   const [pendingRepair, setPendingRepair] = useState<PendingRepair | null>(null);
+  const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
+
+  // このセッションで「上書きしてよい」と確認できた保存先。**確認は初回の 1 回だけ**にする
+  // （毎回聞くと確認が儀式になり、読まずに押すようになる）。ここに載るのは
+  //   (a) 利用者が上書き確認で「上書き保存する」を押した先
+  //   (b) 名前を付けて保存で利用者自身が選んだ先（main のネイティブダイアログが既に聞いている）
+  // の 2 つだけ。**自動保存では載せない** — 自動保存が先に走ったせいで確認が一度も出ない、
+  // という抜け道を作らないため。
+  const overwriteConfirmedRef = useRef<Set<string>>(new Set());
 
   // --- the live host capabilities (each is a dependency-unit API) -----------
   const host: FileOpsHost | null = useMemo(() => {
@@ -502,6 +567,15 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
       onSaved: (path: string) => {
+        // 保存できた時刻はセッションの事実として持つ（状態行の「最終保存 14:03」）。
+        savedAtMsRef.current = Date.now();
+        // 名前を付けて保存でここへ来たなら、行き先は利用者自身が main のネイティブ
+        // ダイアログで選んでいる（上書きの可否もそこで聞かれている）ので、以後この
+        // セッションではこの先への上書き確認を出さない。**自動保存や素の保存では
+        // 載せない** — 自動保存が先に走ったせいで確認が一度も出ない抜け道を作らないため。
+        if (saveStartContextRef.current !== null && needsSaveAs(saveStartContextRef.current)) {
+          overwriteConfirmedRef.current.add(path);
+        }
         // Path / backupTarget update happens independently of dirty: a successful write
         // establishes this file as the save target regardless of whether a later edit
         // re-dirtied the document (finding 2 切り離し).
@@ -520,6 +594,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // write (lost-edit guard): markClean compares the live domain AND both
         // settings slices to the serialized snapshot.
         markClean();
+        // 保存先が動かなかった経路（レース時のガード）でも時刻は動くので、ここでも知らせる。
+        publishSaveStatus();
+        statusMessagesRef.current?.success(
+          OVERWRITE_STRINGS.saved(fileNameOf(path) ?? path),
+        );
       },
       // The SINGLE dirty basis (spec §B): the store's projectDirty, set by BOTH
       // domain edits and project-setting changes (e.g. ズーム制限, FR-109). Reading
@@ -584,6 +663,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
               }
             : fromPersistedUiSettings(project.uiSettings),
         );
+        // 開き直したら「このセッションではまだ保存していない」へ戻す（状態行は「未保存」）。
+        savedAtMsRef.current = null;
+        // 直前の結果もここで消える（設計書 §H.5 の消える条件③「プロジェクトを開き直したとき」）。
+        // 時間の経過や無関係な操作では消さない（教訓 5.12 / K-7）。
+        statusMessagesRef.current?.clear();
         applyContext(
           contextForLoadedFile({
             path,
@@ -657,6 +741,47 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     [host],
   );
 
+  // --- 上書き保存の前に行き先を見せる（設計書 §H.6 / 実装計画 増分 1 の中身 3）------
+  //
+  // **これまで Ctrl+S は確認なく読み込み元を上書きしていた**（V12）。実データの正準ファイルが
+  // 調査中に上書きされた実績があり（開発ガイド §5.48）、フル版と間引き版のように名前の似た
+  // ファイルを扱う運用では取り違えが起きる。**このセッションでその先へ初めて上書きするときだけ**
+  // 名前とフルパスを見せて聞く。保存先が決まっていない新規は従来どおり名前を付けて保存へ落ちる
+  // ので、ここでは聞かない（main のネイティブダイアログが聞く）。
+  const promptOverwrite = useCallback(
+    (savePath: string) =>
+      new Promise<boolean>((resolve) => {
+        setPendingOverwrite({
+          savePath,
+          resolve: (confirmed) => {
+            setPendingOverwrite(null);
+            resolve(confirmed);
+          },
+        });
+      }),
+    [],
+  );
+
+  const runGuardedSave = useCallback(
+    async (ports: FileCommandPorts): Promise<void> => {
+      const context = contextRef.current;
+      const savePath = context.savePath;
+      if (savePath !== null && !overwriteConfirmedRef.current.has(savePath)) {
+        const confirmed = await promptOverwrite(savePath);
+        if (!confirmed) {
+          statusMessagesRef.current?.success(OVERWRITE_STRINGS.cancelled);
+          return;
+        }
+        overwriteConfirmedRef.current.add(savePath);
+      }
+      // 確認の間に読み込みが走って保存先が変わっている可能性があるので、needsSaveAs は
+      // **いまの** context から取り直す（確認前の値を使うと別のファイルへ書きうる）。
+      const ok = await saveCommand(ports, needsSaveAs(contextRef.current));
+      if (!ok) statusMessagesRef.current?.failure(OVERWRITE_STRINGS.failed);
+    },
+    [promptOverwrite],
+  );
+
   // --- register the ファイル menu commands on the U20 registry (教訓 5.6) -----
   useEffect(() => {
     if (ports === null) return undefined;
@@ -679,6 +804,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           ? fromPersistedUiSettings(empty.uiSettings)
           : {},
       );
+      savedAtMsRef.current = null;
+      statusMessagesRef.current?.clear();
       applyContext(buildNewProjectContext());
       // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map /
       // attachment bytes from a previously-loaded project so 新規 after a load does not
@@ -699,16 +826,21 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       run: () => void runExclusive(() => openCommand(ports)),
     });
     registry.register(COMMAND_ID.FileSave, {
-      run: () => void saveCommand(ports, needsSaveAs(contextRef.current)),
+      run: () => void runGuardedSave(ports),
     });
-    registry.register(COMMAND_ID.FileSaveAs, { run: () => void saveAsCommand(ports) });
+    registry.register(COMMAND_ID.FileSaveAs, {
+      run: () =>
+        void saveAsCommand(ports).then((ok) => {
+          if (!ok) statusMessagesRef.current?.failure(OVERWRITE_STRINGS.failed);
+        }),
+    });
     return () => {
       registry.unregister(COMMAND_ID.FileNew);
       registry.unregister(COMMAND_ID.FileOpen);
       registry.unregister(COMMAND_ID.FileSave);
       registry.unregister(COMMAND_ID.FileSaveAs);
     };
-  }, [ports, registry, store, applyContext, resetLoadedAssets, runExclusive]);
+  }, [ports, registry, store, applyContext, resetLoadedAssets, runExclusive, runGuardedSave]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
   // `projectDirty`, set by BOTH setDomainState / applyCommandResult (domain edits)
@@ -886,10 +1018,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const onModalOpenChange = props.onModalOpenChange;
   useEffect(() => {
     if (onModalOpenChange === undefined) return undefined;
-    const open = pendingUnsaved !== null || pendingRepair !== null;
+    const open = pendingUnsaved !== null || pendingRepair !== null || pendingOverwrite !== null;
     onModalOpenChange(open);
     return () => onModalOpenChange(false);
-  }, [pendingUnsaved, pendingRepair, onModalOpenChange]);
+  }, [pendingUnsaved, pendingRepair, pendingOverwrite, onModalOpenChange]);
 
   // The controller's container lives in the front overlay (pointer-events:none,
   // 教訓 5.14) so it never steals click / pan from the map. The D&D drop target is
@@ -906,6 +1038,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     >
       {pendingUnsaved !== null && (
         <UnsavedWarningDialog onChoose={pendingUnsaved.resolve} />
+      )}
+      {pendingOverwrite !== null && (
+        <OverwriteConfirmDialog
+          savePath={pendingOverwrite.savePath}
+          fileName={fileNameOf(pendingOverwrite.savePath) ?? pendingOverwrite.savePath}
+          onDecide={pendingOverwrite.resolve}
+        />
       )}
       {pendingRepair !== null && (
         <RepairDialog

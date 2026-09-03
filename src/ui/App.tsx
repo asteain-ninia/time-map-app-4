@@ -147,8 +147,12 @@ import {
   CURSOR_READOUT_INTERVAL_MS,
   CursorPositionStore,
 } from './shell/cursor-position';
-import { CursorCoordinateStatus } from './shell/CursorCoordinateStatus';
 import { registerE2eHarnessAction } from './e2e/harness';
+import { AppIdentity } from './shell/AppIdentity';
+import { StatusBarContent } from './shell/StatusBarContent';
+import { StatusMessageStore } from './shell/status-message';
+import { buildWindowTitle, fileNameOf } from './shell/status-format';
+import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore } from './shell/option-bar';
@@ -564,6 +568,38 @@ export function App(): JSX.Element {
   const optionBarStoreRef = useRef<OptionBarStore | null>(null);
   optionBarStoreRef.current ??= new OptionBarStore();
   const optionBarStore = optionBarStoreRef.current;
+
+  // 状態行の「直前の結果」枠（設計書 §H.5）。成功も失敗も映す唯一の常設の場所で、
+  // **時間では消えない**（教訓 5.12 / K-7）。押し込む側はシェルの外に散らばるので、
+  // cursorPositionStore と同じく ref に置いた React 外の pub/sub にする。
+  const statusMessageStoreRef = useRef<StatusMessageStore | null>(null);
+  statusMessageStoreRef.current ??= new StatusMessageStore();
+  const statusMessageStore = statusMessageStoreRef.current;
+
+  // 保存の素性（いまの保存先と最後に保存できた時刻）。FileOpsController だけが知っている
+  // 事実を、ウィンドウタイトルと状態行が読めるようにここへ上げる（設計書 §H.6 / V12）。
+  // 保存は稀な操作なので React state でよい（60Hz の経路ではない）。
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ savePath: null, savedAtMs: null });
+
+  // ウィンドウタイトルとアプリバーの素性表示が読む 2 つ（設計書 §H.6）。どちらも稀にしか
+  // 変わらないので、細いセレクタで購読しておけば再レンダーの負担にならない。
+  // `projectDirty` は「未保存かどうか」の唯一の真実源で、ドメインの編集と
+  // プロジェクト設定の変更の両方が立てる（保存で下りる）。これまで画面に出ていたのは
+  // 診断ダイアログの中だけだった。
+  const projectDirty = useStore(store, (s) => s.projectDirty);
+  const worldName = useStore(store, (s) => s.projectSettings.projectName);
+  const openFileName = fileNameOf(saveStatus.savePath);
+
+  // ウィンドウタイトル（設計書 §H.6）。**書き換えるコードはこれまでリポジトリに 0 件**で、
+  // index.html の静的文字列のままだった。タスクバーやウィンドウ一覧から選ぶときはタイトル
+  // しか見えないので、画面の中と同じ 3 つ（世界名・ファイル名・未保存の印）を出す。
+  useEffect(() => {
+    document.title = buildWindowTitle({
+      worldName,
+      fileName: openFileName,
+      dirty: projectDirty,
+    });
+  }, [worldName, openFileName, projectDirty]);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -3262,7 +3298,29 @@ export function App(): JSX.Element {
            60Hz input rate re-renders THIS node only (技術方針 2.3). Off the map it
            renders the SAME 準備完了 label the bare status bar shows, so the idle
            status bar is unchanged. */
-        status={<CursorCoordinateStatus store={cursorPositionStore} />}
+        appIdentity={
+          <AppIdentity worldName={worldName} fileName={openFileName} dirty={projectDirty} />
+        }
+        status={
+          <StatusBarContent
+            store={store}
+            cursorStore={cursorPositionStore}
+            messageStore={statusMessageStore}
+            undo={{
+              canUndo: historyCanUndo(historyRef.current),
+              // 設計書 §C.8 は「元に戻せます: 南ケナ州の改名（Ctrl+Z）」まで出すとしているが、
+              // **いまの `Command.label` は画面に出せる語彙になっていない**。ドメイン側は
+              // 日本語（「所属変更」「地物の削除」「自動配色」）なのに、UI 側の 5 か所は
+              // 内部の英語（'edit' / 'delete' / 'interval' / 'palette' / 'unshare'）を渡して
+              // いて、そのまま出すと U-1「内部の英語値を画面に出さない」に反する。しかも
+              // 設計書の例は操作名だけでなく **対象の名前** も含んでおり、どの label も
+              // それを持っていない。語彙を揃えるのは全コミット経路に触る別の作業なので、
+              // ここでは可否だけを出す（現状.md へ申し送り）。
+              lastLabel: null,
+            }}
+            lastSavedAtMs={saveStatus.savedAtMs}
+          />
+        }
         mapOverlay={
           /* 教訓 5.14 / 5.29 — EVERY map-covering tool input bridge is mounted INSIDE
              the map cell (.map-area__overlay) so its client rect equals the canvas'
@@ -3530,6 +3588,8 @@ export function App(): JSX.Element {
               onBaseMapImageChange={handleBaseMapImageChange}
               registerBasemapReplace={registerBasemapReplace}
               onModalOpenChange={setFileModalOpen}
+              onSaveStatusChange={setSaveStatus}
+              statusMessages={statusMessageStore}
             />
             {/* HB-8 / HB-9 INTEGRATION (教訓 5.7 / 5.13): register the ツール
                 (設定 / 検索) と ヘルプ (バージョン情報 / ショートカット一覧 / 診断情報)

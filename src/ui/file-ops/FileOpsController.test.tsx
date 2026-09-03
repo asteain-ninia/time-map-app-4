@@ -104,6 +104,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+
+/**
+ * 保存を実行する。**上書き確認**（設計書 §H.6 / 実装計画 増分 1 の中身 3）が出たら
+ * 「上書き保存する」を押して先へ進める。保存先が未確定の新規では確認は出ない（名前を
+ * 付けて保存へ落ち、main のネイティブダイアログが聞く）。同じセッションで 2 回目以降の
+ * 同じ先への保存でも出ない（確認は初回だけ）。
+ */
+async function dispatchSave(reg: CommandRegistry): Promise<void> {
+  await act(async () => {
+    reg.dispatch(COMMAND_ID.FileSave);
+  });
+  const confirm = screen.queryAllByTestId('overwrite-confirm')[0];
+  if (confirm !== undefined) {
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+  }
+}
+
 describe('FileOpsController registers the ファイル commands on the U20 registry (受け入れ基準 1/6)', () => {
   it('registers New / Open / Save / Save As', () => {
     const store = makeStore();
@@ -151,7 +170,7 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     expect(store.getState().projectDirty).toBe(true);
 
     // Start the save (fresh project → Save As). It serializes the CURRENT domain.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
 
     // The user edits DURING the in-flight write: swap to a NEW domain reference.
@@ -184,7 +203,7 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     // Mark dirty via a project-SETTING change only (no domain edit) and start a save.
     act(() => { store.getState().updateProjectSetting('zoomMax', 20); });
     expect(store.getState().projectDirty).toBe(true);
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(saveAs).toHaveBeenCalledTimes(1));
 
     // The user changes ANOTHER project setting DURING the in-flight write. This
@@ -222,13 +241,13 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
 
     // Dirty via a setting, start save A.
     act(() => { store.getState().updateProjectSetting('zoomMax', 20); });
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 
     // Change a setting, then dispatch save B — but B must NOT start while A is still
     // in flight (serialized): save() is still called only once.
     act(() => { store.getState().updateProjectSetting('zoomMax', 30); });
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     expect(save).toHaveBeenCalledTimes(1); // B is queued behind A, not started
 
     // A completes. Its snapshot held zoomMax=20, but the live store is now zoomMax=30,
@@ -252,7 +271,7 @@ describe('保存中の編集は dirty を失わない (finding 2: lost-edit guar
     act(() => { store.getState().setDomainState(buildEmptyProject()); });
     expect(store.getState().projectDirty).toBe(true);
 
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
     // No edit during the (immediate) write ⇒ dirty cleared.
     await waitFor(() => expect(store.getState().projectDirty).toBe(false));
@@ -298,11 +317,11 @@ describe('キュー済み保存の宛先は直列化「実行時」に再評価�
     await waitFor(() => expect(load).toHaveBeenCalledTimes(1));
 
     // 2) 保存A: needsSaveAs=false at dispatch → plain save, held in-flight (deferred).
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
 
     // 3) 保存B: also needsSaveAs=false at dispatch → queued behind A (not started yet).
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     expect(save).toHaveBeenCalledTimes(1);
 
     // 4) 新規プロジェクト: a破壊的 context swap — savePath becomes null, domain empties. (The
@@ -685,7 +704,7 @@ describe('プロジェクト設定の永続化 + ロード時反映 (二重真�
       storeA.getState().updateProjectSetting('zoomMax', 25);
       storeA.getState().updateAppSetting('renderFps', 30);
     });
-    await act(async () => registryA.dispatch(COMMAND_ID.FileSave));
+    await dispatchSave(registryA);
     await waitFor(() => expect(savedManifest).not.toBeNull());
     cleanup();
 
@@ -1005,7 +1024,7 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(1));
 
     // Now save: the request must carry the LOADED bytes, not zero bytes.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage).toEqual(mapBytes);
     expect(savedReq!.baseMapImage.length).toBeGreaterThan(0);
@@ -1037,7 +1056,7 @@ describe('baseMapImage を load→save で保持 (BUG #6 — 0バイト書き込
     await act(async () => { registry.dispatch(COMMAND_ID.FileNew); });
 
     // Saving the new project must NOT re-ship the previous project's map bytes.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage.length).toBe(0);
     expect(savedReq!.attachments).toHaveLength(0);
@@ -1136,7 +1155,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     );
 
     // 3) The next save must write A's manifest AND A's assets — never a mix.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0); // still project A (domain never swapped)
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
@@ -1156,7 +1175,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
 
     // 保存 is NOT gated by the file-ops mutex, so a Ctrl+S while the repair dialog is
     // open assembles a request RIGHT NOW — it must still describe project A entirely.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
@@ -1186,7 +1205,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await chooseAllAndApply(); // 2nd: Unresolved → explicit abort
     await waitFor(() => expect(alertSpy).toHaveBeenCalledWith(REPAIR_STRINGS.abortedUnresolved));
 
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
@@ -1208,7 +1227,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     );
 
     expect(pushes).toEqual([BYTES_A, BYTES_B]);
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
@@ -1256,7 +1275,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
       expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument(),
     );
 
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.manifest.histories).toHaveLength(0);
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
@@ -1273,7 +1292,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await act(async () => { registry.dispatch(COMMAND_ID.FileOpen); });
     await waitFor(() => expect(api.load).toHaveBeenCalledTimes(2));
 
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
@@ -1326,7 +1345,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await waitFor(() => expect(pushes).toEqual([BYTES_B]));
     expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-drop');
 
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
@@ -1355,7 +1374,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     await chooseAllAndApply();
     await waitFor(() => expect(screen.queryByTestId('repair-modal-root')).not.toBeInTheDocument());
     expect(pushes).toEqual([BYTES_A, BYTES_B]);
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_B);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_B);
@@ -1423,7 +1442,7 @@ describe('UC1: asset は「ドメイン確定後」にだけ昇格する (混在
     // The reflect threw ⇒ B never promoted: display stayed on A, and a save carries A's
     // assets, NOT B's (the failed load left no residue).
     expect(pushes).toEqual([BYTES_A]);
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReqs).toHaveLength(1));
     expect(savedReqs[0]!.baseMapImage).toEqual(BYTES_A);
     expect(savedReqs[0]!.attachments).toEqual(ATTACH_A);
@@ -1468,7 +1487,7 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
 
     // A following 保存 must route to 名前を付けて保存 (needsSaveAs=true), NOT a plain save to a
     // stale target — so B's content can never be silently written to A.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(api.saveAs).toHaveBeenCalledTimes(1));
     expect(api.save).not.toHaveBeenCalled();
   });
@@ -1486,7 +1505,7 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
     // The loaded file's path is retained, so 保存 stays a plain save to that path.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
     expect(api.saveAs).not.toHaveBeenCalled();
   });
@@ -1529,7 +1548,7 @@ describe('HIGH-2 fail-safe: commitLoadedPath の失敗を握り潰さず、宛�
     await act(async () => { rejectFirst(new Error('late failure')); await Promise.resolve(); });
 
     // 保存 still targets the second (correct) file as a plain save — not saveAs.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(api.save).toHaveBeenCalledTimes(1));
     expect(api.saveAs).not.toHaveBeenCalled();
   });
@@ -1576,7 +1595,7 @@ describe('FR-04 base-map差し替え runner (registerBasemapReplace)', () => {
     expect(onBaseMapImageChange).toHaveBeenCalledWith(png);
 
     // 保存往復: the next save ships the replaced bytes into the .gimoza base-map asset.
-    await act(async () => { registry.dispatch(COMMAND_ID.FileSave); });
+    await dispatchSave(registry);
     await waitFor(() => expect(savedReq).not.toBeNull());
     expect(savedReq!.baseMapImage).toBe(png);
   });

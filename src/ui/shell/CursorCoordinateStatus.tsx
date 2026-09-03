@@ -3,9 +3,13 @@
 // Subscribes to the React-external {@link CursorPositionStore} via
 // `useSyncExternalStore`, so a 60Hz pointermove re-renders THIS node only — never the
 // shell around it (技術方針 2.3: React は 60FPS 経路を駆動しない). When the cursor is
-// not over the map (or the coordinate is 病的) the readout renders the SAME default
-// ready label the bare status bar shows, so「地図外では非表示」でありながらステータス
-// バーが空欄にならない (StatusBar 側の既定文言と一致 = 表示が二重管理にならない).
+// not over the map (or the coordinate is 病的) the readout renders「—」(設計書 §H.6 の
+// 表: 座標枠は地図の外では「—」)。**枠は残したまま中身だけ差し替える** ので、状態行の
+// 240px の座標枠がカーソルの位置で伸び縮みすることはない (K-3 と同じ規則)。
+//
+// 以前ここは「準備完了」を返していた。状態行が座標 1 項目だけだった頃は「空欄にしない」
+// ための措置として筋が通っていたが、5 枠になった今は他の枠が常に何かを出しているので、
+// 座標枠にだけアプリ全体の状態語が出るのは読み違いのもとになる。
 
 import { useSyncExternalStore } from 'react';
 
@@ -25,7 +29,11 @@ export function CursorCoordinateStatus(props: CursorCoordinateStatusProps): JSX.
   );
   const text = cursorCoordinateText(position);
   if (text === null) {
-    return <span className="statusbar__ready">{STATUS_STRINGS.ready}</span>;
+    return (
+      <span className="statusbar__muted" data-testid="statusbar-cursor-coords">
+        {STATUS_STRINGS.coordsAway}
+      </span>
+    );
   }
   return (
     <span className="statusbar__coords" data-testid="statusbar-cursor-coords">

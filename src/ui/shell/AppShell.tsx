@@ -43,6 +43,12 @@ export interface AppShellProps<S> {
    */
   readonly topBar?: ReactNode;
   /**
+   * アプリバーの素性表示スロット（設計書 §H.6: 世界名・ファイル名・未保存の印）。メニューの
+   * 右隣・`topBar` の左に置く。`topBar` と同じくメニューバー行の中の通常フロー要素なので、
+   * 地図には一切重ならない。
+   */
+  readonly appIdentity?: ReactNode;
+  /**
    * オプションバー行のスロット（設計書 §C.4）。アプリバーの下・主行の上に積む **地図セルの
    * 外のシェル行** なので、`mapOverlay` と違って地図セルの DOM の入れ子（結合点 #1 / T-3）に
    * 触れず、地図のクリックを奪うこともない（K-2 / K-4）。空なら行は潰れる（`topBar` と同じ）。
@@ -80,6 +86,7 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     store,
     sidebar,
     topBar,
+    appIdentity,
     optionBar,
     timeline,
     status,
@@ -105,6 +112,13 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     <div className="app-shell" data-testid="app-shell">
       <header className="app-shell__menubar">
         <MenuBar registry={registry} mode={mode} />
+        {/* 設計書 §H.6: どのファイルを開いていて未保存かどうかが常に見えるようにする。
+            メニューバー行の通常フロー要素なので、地図には重ならない。 */}
+        {appIdentity != null && (
+          <div className="app-shell__identity" data-testid="app-shell-identity">
+            {appIdentity}
+          </div>
+        )}
         {/* FR-12 経度シフト の上部表示 (ユーザー要望): a compact strip on the RIGHT of the
             menu bar row — a NORMAL flow element, NOT a map overlay, so it cannot cover
             the map or steal its clicks the way the old .map-area__overlay panel did

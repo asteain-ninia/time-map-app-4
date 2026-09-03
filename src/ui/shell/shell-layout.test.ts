@@ -1,4 +1,4 @@
-// オプションバーの寸法契約（K-3 / 設計書 §B.4）を CSS の実物で固定する。
+// オプションバーと状態行の寸法契約（K-3 / 設計書 §B.4 / §C.8）を CSS の実物で固定する。
 //
 // **なぜ CSS を直接読むのか**: K-3 が守りたいのは「選択のたびに帯の寸法が動いて地図が上下に
 // ずれない」こと。ところが jsdom はレイアウトを持たず `getBoundingClientRect()` が常に
@@ -80,6 +80,31 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     const button = ruleBody('.option-bar__commit-button');
     expect(decl(button, 'min-height')).toBe('30px');
     expect(decl(button, 'min-width')).toBe('60px');
+  });
+});
+
+describe('状態行の寸法契約（K-3 と同じ規則, 設計書 §C.8）', () => {
+  it('行は 28px 固定・折り返さない・はみ出さない', () => {
+    const bar = ruleBody('.statusbar');
+    expect(decl(bar, 'height')).toBe('28px');
+    expect(decl(bar, 'box-sizing')).toBe('border-box');
+    expect(decl(bar, 'flex-wrap')).toBe('nowrap');
+    expect(decl(bar, 'overflow')).toBe('hidden');
+  });
+
+  it('5 枠の幅は固定（座標 240 / 縮尺 160 / 直前の結果 1fr / 取り消し 160 / 最終保存 160）', () => {
+    expect(decl(ruleBody('.statusbar__frame--coords'), 'flex')).toBe('0 0 240px');
+    expect(decl(ruleBody('.statusbar__frame--scale'), 'flex')).toBe('0 0 160px');
+    expect(decl(ruleBody('.statusbar__frame--result'), 'flex')).toBe('1 1 auto');
+    expect(decl(ruleBody('.statusbar__frame--undo'), 'flex')).toBe('0 0 160px');
+    expect(decl(ruleBody('.statusbar__frame--saved'), 'flex')).toBe('0 0 160px');
+  });
+
+  it('枠は中身に押し広げられない（min-width:0 + overflow:hidden + nowrap）', () => {
+    const frame = ruleBody('.statusbar__frame');
+    expect(decl(frame, 'min-width')).toBe('0');
+    expect(decl(frame, 'overflow')).toBe('hidden');
+    expect(decl(frame, 'white-space')).toBe('nowrap');
   });
 });
 

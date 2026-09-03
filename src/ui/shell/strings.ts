@@ -87,9 +87,39 @@ export const SIDEBAR_SECTION_TITLES = {
   properties: 'プロパティ',
 } as const;
 
-/** Status bar placeholder labels. */
+/**
+ * 状態行の文言（設計書 §C.8 / §H.6 の 5 枠）。**枠の幅は固定で、中身が空でも枠は残る**
+ * ので、「出すものが無い」ときの文字もここに置く（空文字にすると枠が消えたように見える）。
+ */
 export const STATUS_STRINGS = {
+  /** 何も渡されていない状態行の既定（スロット未結線のときだけ出る）。 */
   ready: '準備完了',
+  /** 地図の外にカーソルがあるとき（設計書 §H.6 の表）。 */
+  coordsAway: '—',
+  /** 直前の結果がまだ無いとき。 */
+  noResult: '（まだ何もしていません）',
+  dismissResult: 'この結果を閉じる',
+  /** 元に戻す枠。操作名が取れるときは「元に戻せます: ◯◯（Ctrl+Z）」まで出す。 */
+  undoUnavailable: '元に戻す: 不可',
+  undoAvailable: '元に戻す: 可 Ctrl+Z',
+  undoAvailablePrefix: '元に戻せます: ',
+  undoShortcutSuffix: '（Ctrl+Z）',
+  /** 最終保存枠。 */
+  lastSavedPrefix: '最終保存 ',
+  neverSaved: '未保存',
+} as const;
+
+/**
+ * アプリバーの素性表示（設計書 §H.6）: 世界名・ファイル名・未保存の印。
+ * どのファイルを開いているのかが **常に見える** ようにするためのもので、
+ * 「保存したつもりが別のファイルだった」型の事故を構造的に減らす。
+ */
+export const APP_IDENTITY_STRINGS = {
+  ariaLabel: '開いている世界とファイル',
+  /** 保存先が決まっていない新規。 */
+  unsavedNew: '（未保存の新規）',
+  /** 未保存の印の読み上げ名（見た目は ● の 1 文字）。 */
+  dirtyTitle: '未保存の変更があります',
 } as const;
 
 /**

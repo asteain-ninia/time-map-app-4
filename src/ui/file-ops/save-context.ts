@@ -71,6 +71,20 @@ export interface SaveContext {
  * SAME transition as this context (受け入れ基準 4: 同時初期化), so neither half is
  * left stale.
  */
+/**
+ * ホストへ上げる「保存の素性」（設計書 §H.6 / V12）。ウィンドウタイトルと状態行が読む。
+ *
+ * `savePath` は SaveContext と同じ値の写しで、`savedAtMs` は **セッションの事実** である
+ * （文書の属性ではないので SaveContext には入れない）。プロジェクトを開き直すと null に戻る
+ * ——「このセッションでまだ一度も保存していない」を「未保存」と出すため。
+ */
+export interface SaveStatus {
+  /** いまの保存先の絶対パス。null = 保存先が決まっていない新規。 */
+  readonly savePath: string | null;
+  /** 最後に保存できた時刻（epoch ms）。null = このセッションでまだ保存していない。 */
+  readonly savedAtMs: number | null;
+}
+
 export function buildNewProjectContext(): SaveContext {
   return {
     savePath: null,

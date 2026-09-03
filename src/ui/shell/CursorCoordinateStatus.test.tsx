@@ -1,8 +1,8 @@
 // U20 / shell — ステータスバーのカーソル座標表示 (表示条件 + 再レンダー範囲).
 //
 // 契約:
-//   1. カーソル位置が未知 (地図外) のとき、ステータスバーは従来の既定文言のままである
-//      (プレースホルダとして 準備完了 を出す = 既存の視覚を変えない);
+//   1. カーソル位置が未知 (地図外) のとき、座標枠は「—」を出す (設計書 §H.6 の表)。
+//      枠は残したまま中身だけ差し替えるので、状態行の 240px の枠は動かない;
 //   2. 位置が入ると 十進 の緯度・経度が LIVE に出る (測量モードの整形関数を再利用);
 //   3. 更新は購読コンポーネントの中だけで起き、親 (シェル) を再レンダーしない
 //      (per-frame 負荷を増やさない = React 再レンダー爆発の抑止).
@@ -20,15 +20,16 @@ import { StatusBar } from './StatusBar';
 import { STATUS_STRINGS } from './strings';
 
 describe('CursorCoordinateStatus (FR-111 ステータスバー)', () => {
-  it('shows the default ready label while the cursor is off the map', () => {
+  it('地図の外では「—」を出す (枠は残す)', () => {
     const store = new CursorPositionStore();
     render(
       <StatusBar>
         <CursorCoordinateStatus store={store} />
       </StatusBar>,
     );
-    expect(screen.getByTestId('statusbar')).toHaveTextContent(STATUS_STRINGS.ready);
-    expect(screen.queryByTestId('statusbar-cursor-coords')).toBeNull();
+    expect(screen.getByTestId('statusbar-cursor-coords')).toHaveTextContent(
+      STATUS_STRINGS.coordsAway,
+    );
   });
 
   it('shows the 十進 latitude/longitude of the cursor position', () => {
@@ -44,10 +45,10 @@ describe('CursorCoordinateStatus (FR-111 ステータスバー)', () => {
     const readout = screen.getByTestId('statusbar-cursor-coords');
     expect(readout).toHaveTextContent(formatLatDecimal(35.6894));
     expect(readout).toHaveTextContent(formatLonDecimal(139.75));
-    expect(screen.getByTestId('statusbar')).not.toHaveTextContent(STATUS_STRINGS.ready);
+    expect(readout).not.toHaveTextContent(STATUS_STRINGS.coordsAway);
   });
 
-  it('goes back to the ready label when the cursor leaves the map', () => {
+  it('カーソルが地図を出ると「—」へ戻る', () => {
     const store = new CursorPositionStore();
     render(
       <StatusBar>
@@ -57,12 +58,15 @@ describe('CursorCoordinateStatus (FR-111 ステータスバー)', () => {
     act(() => {
       store.set({ lon: 1, lat: 2 });
     });
-    expect(screen.getByTestId('statusbar-cursor-coords')).toBeInTheDocument();
+    expect(screen.getByTestId('statusbar-cursor-coords')).not.toHaveTextContent(
+      STATUS_STRINGS.coordsAway,
+    );
     act(() => {
       store.clear();
     });
-    expect(screen.queryByTestId('statusbar-cursor-coords')).toBeNull();
-    expect(screen.getByTestId('statusbar')).toHaveTextContent(STATUS_STRINGS.ready);
+    expect(screen.getByTestId('statusbar-cursor-coords')).toHaveTextContent(
+      STATUS_STRINGS.coordsAway,
+    );
   });
 
   it('re-renders ONLY the readout, never the surrounding shell', () => {
