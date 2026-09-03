@@ -186,6 +186,27 @@ export type MenuTarget =
   | { readonly kind: typeof MENU_TARGET_KIND.None };
 
 /**
+ * 対象が 1 つに定まるときの地物 id。定まらなければ null。
+ *
+ * 左クリックと右クリックで「この年に錳を作る」の可否を **同じ地物に対して**
+ * 判定するための取り出し口である（増分 2 の手直し A5 / GPT#9）。組み立て側は
+ * 錳の系列を知らないので（純粋）、呼び出し側がこの id でドメインを引き、結果を
+ * {@link ComposeInput.hasAnchorAtCurrentTime} として戻す。{@link dispatchMenuItem} が
+ * 鍵にするのと **まったく同じ判定**（Feature なら自分、VertexOnly なら単一の
+ * 所有者）なので、出し分けと発火がずれない（出す=起きる, 教訓 5.6）。
+ */
+export function menuTargetFeatureId(target: MenuTarget): FeatureId | null {
+  switch (target.kind) {
+    case MENU_TARGET_KIND.Feature:
+      return target.featureId;
+    case MENU_TARGET_KIND.VertexOnly:
+      return target.ownerFeatureKind === null ? null : target.ownerFeatureId;
+    case MENU_TARGET_KIND.None:
+      return null;
+  }
+}
+
+/**
  * Resolve the menu target from the RAW selection (教訓 5.3 / 5.4 / 5.10). Active
  * feature wins; else a non-empty vertex set yields VertexOnly (with the single
  * owner if the context resolves to one); else None. The data source is never

@@ -663,6 +663,43 @@ describe('applyPastEdit (AC-4, FR-55/FR-57)', () => {
     expect(futureAfter.start).toEqual(futureBefore.start);
     expect(futureAfter.anchor.snapshot).toBe(futureBefore.anchor.snapshot);
   });
+
+  // 反証 F4: 錨 ID は「地物 × 開始時刻」から決定的に導かれる（apply-proposal の
+  // deriveAnchorId）。存続期間の編集で開始を動かした錨は **もともと居た年の id を
+  // 持ったまま**残るので、その年に新しい錨を作ると id が衝突し、normalizeSeries の
+  // keep-last が動かしたほうの錨を黙って消していた。
+  it('挿入する錨の id が既存と衝突するときは採番し直す（既存の錨を消さない、INV-6）', () => {
+    const moved = createAnchorEntry(makeAnchor(1, '-moved'), timePointYear(1500), null);
+    const first = createAnchorEntry(makeAnchor(9, '-first'), timePointYear(0), null);
+    const s = series(first, moved);
+    const collidingId = moved.anchor.id;
+
+    const next = applyPastEdit(
+      s,
+      timePointYear(1000),
+      () => createAnchor(collidingId, makeSnapshot(1000)),
+      cal,
+    );
+
+    // 3 本とも残る（1500 年の錨が黙って消えない）。
+    expect(next.entries.map((e) => e.start.year)).toEqual([0, 1000, 1500]);
+    // 動かした錨は元の id のまま、新しい錨は採番し直された id を持つ。
+    expect(next.entries[2]!.anchor.id).toBe(collidingId);
+    expect(next.entries[1]!.anchor.id).not.toBe(collidingId);
+    expect(String(next.entries[1]!.anchor.id)).toBe(`${String(collidingId)}#2`);
+    expect(validateSeries(next, cal).ok).toBe(true);
+  });
+
+  it('採番し直しは決定的（同じ入力なら同じ id ＝ やり直しで再生できる）', () => {
+    const moved = createAnchorEntry(makeAnchor(1, '-moved'), timePointYear(1500), null);
+    const s = series(createAnchorEntry(makeAnchor(9, '-first'), timePointYear(0), null), moved);
+    const run = (): string =>
+      String(
+        applyPastEdit(s, timePointYear(1000), () => createAnchor(moved.anchor.id, makeSnapshot(1)), cal)
+          .entries[1]!.anchor.id,
+      );
+    expect(run()).toBe(run());
+  });
 });
 
 // --- AC-6 / FR-59 full-state unitary update ---------------------------------

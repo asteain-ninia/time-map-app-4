@@ -31,8 +31,6 @@ describe('edit-intent (教訓 5.24 / 5.15)', () => {
       // 唯一の空の形にしておかないと、no-op 判定が undefined と '' で食い違う。
       kindLabel: '',
       detailDocument: '',
-      startYear: 1560,
-      endYear: 1582,
       autoColorEnabled: true,
       fillColor: '#111111',
       // 透過度（アルファ）は錨保存スタイル属性 (U33 spec 行23-26 / AC1・AC5)。明示

@@ -149,10 +149,20 @@ describe('初期表示に何を出すか（裁定 §N-5 の (A)）', () => {
     expect(advanced.open).toBe(false);
 
     // 値は捨てていない（U-28: 詳細パネルには全属性を出す）。畳んだ中にある。
-    const start = screen.getByLabelText(PROPERTY_STRINGS.startYearLabel);
-    const end = screen.getByLabelText(PROPERTY_STRINGS.endYearLabel);
+    const start = screen.getByTestId('decorative-start-year');
+    const end = screen.getByTestId('decorative-end-year');
     expect(advanced).toContainElement(start);
     expect(advanced).toContainElement(end);
+  });
+
+  // A7 / GPT#8: 保存の対象は名前・種別ラベル・見た目・詳細文書の 4 つ **だけ** と
+  // 契約したのに、この 2 欄は入力欄で、触ると現在年に新しい錨が立っていた。
+  it('飾りの年は入力欄ではなく読み取り専用の表示である（保存の対象に混ざらない）', () => {
+    renderForm();
+    expect(screen.queryByLabelText(PROPERTY_STRINGS.startYearLabel)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(PROPERTY_STRINGS.endYearLabel)).not.toBeInTheDocument();
+    expect(screen.getByTestId('decorative-start-year').tagName).toBe('OUTPUT');
+    expect(screen.getByTestId('decorative-end-year').tagName).toBe('OUTPUT');
   });
 
   it('本物の存続期間は 1 行として出る（渡されたときだけ）', () => {

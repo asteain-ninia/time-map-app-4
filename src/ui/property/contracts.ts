@@ -194,7 +194,16 @@ export interface PropertyEditIntent {
  *
  * 種別ラベルと詳細文書がここに載ったのは増分 2 である。前者は入力欄がどこにも無く
  * （現状.md R5）、後者は**別の保存ボタン**を持っていて「押さないと保存されない」場所が
- * 画面に 2 つあった（N-46）。1 回の押下＝1 つの取り消し単位に揃えた。 */
+ * 画面に 2 つあった（N-46）。1 回の押下＝1 つの取り消し単位に揃えた。
+ *
+ * **飾りの開始年／終了年はここに載せない**（増分 2 の手直し A7 / GPT#8）。載っていた
+ * ときは「表示専用の飾り」と説明した欄を触っただけで現在年に新しい錨が立ち、保存量と
+ * 取り消し履歴が増えていた。契約どおり保存の対象は 4 つだけにし、飾りの 2 欄は
+ * 読み取り専用の表示にした（値は地物が持っているものをそのまま出す）。
+ *
+ * この型は**ドメインの {@link CarriedAttributes} と同じ形**である（構造的に代入できる）。
+ * 保存した属性を後ろの錨へ引き継ぐ範囲の予告（A1）を、画面とドメインで同じ計算に
+ * 通すためである（教訓 5.29 単一の真実源）。 */
 export interface PropertyEditValues {
   readonly name: string;
   /**
@@ -203,8 +212,6 @@ export interface PropertyEditValues {
    * 「付いていない」を意味する（ドメイン側で absent へ正規化される）。
    */
   readonly kindLabel: string;
-  readonly startYear: number;
-  readonly endYear: number;
   readonly autoColorEnabled: boolean;
   readonly fillColor: string;
   /** 通常表示色の透過度（アルファ, 0..1）— a persisted style attribute (U33 AC1・AC5). */

@@ -3,7 +3,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { COMMAND_ID, CommandRegistry, isCommandId } from './commands';
+import { COMMAND_ID, COMMAND_REFUSAL, CommandRegistry, isCommandId } from './commands';
 
 describe('isCommandId', () => {
   it('recognises known ids and rejects unknown', () => {
@@ -50,5 +50,50 @@ describe('CommandRegistry (未登録 == 無効)', () => {
     r.register(COMMAND_ID.FileSave, { run: vi.fn() });
     r.unregister(COMMAND_ID.FileSave);
     expect(r.isRunnable(COMMAND_ID.FileSave)).toBe(false);
+  });
+});
+
+// 増分 2 の手直し A5 — 断ったことをコマンドの持ち主へ伝える口（バグ狩り #2 / 反証 F5）。
+//
+// メニュー項目は灰色になって理由を持てるが、鍵盤には灰色が無い。だから Ctrl+K を
+// 押しても「押せなかった」こと自体が見えなかった。**可否の判定は増やさず**、結果を
+// 伝えるだけの口を足した。
+describe('CommandRegistry — 断ったことを伝える（A5）', () => {
+  it('canRun が偽なら onRefused が呼ばれ、run は呼ばれない', () => {
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, { run, canRun: () => false, onRefused });
+
+    expect(registry.dispatch(COMMAND_ID.EditCreateAnchorHere)).toBe(false);
+    expect(run).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledWith(COMMAND_REFUSAL.NotRunnable);
+  });
+
+  it('走れたときは onRefused を呼ばない', () => {
+    const registry = new CommandRegistry();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, { run: () => {}, onRefused });
+    expect(registry.dispatch(COMMAND_ID.EditCreateAnchorHere)).toBe(true);
+    expect(onRefused).not.toHaveBeenCalled();
+  });
+
+  it('reportRefusal は実行せずに理由だけ伝える（権限で止まった経路のため）', () => {
+    const registry = new CommandRegistry();
+    const run = vi.fn();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, { run, onRefused });
+    registry.reportRefusal(COMMAND_ID.EditCreateAnchorHere, COMMAND_REFUSAL.ViewOnly);
+    expect(run).not.toHaveBeenCalled();
+    expect(onRefused).toHaveBeenCalledWith(COMMAND_REFUSAL.ViewOnly);
+  });
+
+  it('未登録・口が無いコマンドでは何もしない（例外にしない）', () => {
+    const registry = new CommandRegistry();
+    expect(() =>
+      registry.reportRefusal(COMMAND_ID.EditCreateAnchorHere, COMMAND_REFUSAL.NotRunnable),
+    ).not.toThrow();
+    registry.register(COMMAND_ID.EditUndo, { run: () => {}, canRun: () => false });
+    expect(() => registry.dispatch(COMMAND_ID.EditUndo)).not.toThrow();
   });
 });

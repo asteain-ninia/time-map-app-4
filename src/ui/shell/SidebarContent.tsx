@@ -169,6 +169,12 @@ export interface SidebarContentDeps<S> {
    */
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
   /**
+   * 素性欄の「打ちかけを捨てますか」の確認（N-04）が開閉したことを合成ルートへ伝える。
+   * 合成ルートはこれを `shortcutsSuspended` に OR して、確認が出ているあいだ
+   * Ctrl+K・Delete などの大域ショートカットを止める（増分 2 の手直し A4 (c)）。
+   */
+  readonly onDraftConfirmChange?: (open: boolean) => void;
+  /**
    * Focus the camera on the feature just selected from a一覧 row (錨一覧 HB5-3 AND
    * 地物一覧 A1 — both導線 share the SAME fit path, the user's「地物一覧にも視点移動が
    * 欲しい」). Called AFTER the row promotes the feature (地物一覧) / promotes + syncs
@@ -198,6 +204,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     onOpenDetail,
     onDeleteFeature,
     onCreateAnchorHere,
+    onDraftConfirmChange,
     onFocusFeatureCamera,
   } = deps;
 
@@ -247,6 +254,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onOpenDetail ? { onOpenDetail } : {})}
         {...(onDeleteFeature ? { onDeleteFeature } : {})}
         {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
+        {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
       />
     ),
   };
@@ -294,6 +302,7 @@ function PropertyPanelHost<S>(props: {
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
+  readonly onDraftConfirmChange?: (open: boolean) => void;
 }): JSX.Element {
   const { store, getRoot, getTime } = props;
   // Subscribe to the pieces that must re-derive the shown area: the FR-109 geodesic
@@ -410,6 +419,9 @@ function PropertyPanelHost<S>(props: {
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
       {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
       {...(props.onCreateAnchorHere ? { onCreateAnchorHere: props.onCreateAnchorHere } : {})}
+      {...(props.onDraftConfirmChange
+        ? { onDraftConfirmChange: props.onDraftConfirmChange }
+        : {})}
     />
   );
 }

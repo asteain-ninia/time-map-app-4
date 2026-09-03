@@ -55,7 +55,8 @@ export interface BasicInfoFormProps {
   readonly areaKm2?: number;
   /**
    * **本物の存続期間**（錨の並びが正本, U-23）を初期表示に出すための 1 行
-   * （「0年 → 継続中」）。飾りの開始年／終了年は畳んだ「詳しい属性」へ下ろした
+   * （「0年 → 継続中」。途中に存在しない期間があれば「0年 → 2000年、3000年 → 継続中」
+   * のように穴を隠さない）。飾りの開始年／終了年は畳んだ「詳しい属性」へ下ろした
    * （裁定 §N-5 の (A)）。解決できないときは省く（値を捏造しない）。
    */
   readonly existenceLabel?: string;
@@ -197,6 +198,11 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         全属性を出す」は折りたたみの中でも守られる）が、初期表示からは下ろす。これらは
         地物がいつ現れていつ消えるかを **一切動かさない** 表示専用の属性で、本物は上の
         「続く」行（＝錨の並び）である。
+
+        **読み取り専用にした**（増分 2 の手直し A7 / GPT#8）。保存の対象は名前・種別
+        ラベル・見た目・詳細文書の 4 つ **だけ** と契約したのに、この 2 欄が
+        {@link PropertyEditValues} に載っていたので、「表示専用の飾り」と説明した欄を
+        触っただけで現在年に新しい錨が立ち、保存量と取り消し履歴が増えていた。
       */}
       <details className="basic-info__advanced" data-testid="basic-info-advanced">
         <summary data-testid="basic-info-advanced-summary">
@@ -204,27 +210,15 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         </summary>
         <p className="basic-info__advanced-hint">{PROPERTY_STRINGS.advancedAttributesHint}</p>
 
-        <label className="basic-info__field">
+        <div className="basic-info__field basic-info__field--readonly">
           <span>{PROPERTY_STRINGS.startYearLabel}</span>
-          <input
-            type="number"
-            aria-label={PROPERTY_STRINGS.startYearLabel}
-            value={draft.startYear}
-            disabled={!editable}
-            onChange={(e) => onChange({ startYear: Number(e.target.value) })}
-          />
-        </label>
+          <output data-testid="decorative-start-year">{feature.attributes.startYear}</output>
+        </div>
 
-        <label className="basic-info__field">
+        <div className="basic-info__field basic-info__field--readonly">
           <span>{PROPERTY_STRINGS.endYearLabel}</span>
-          <input
-            type="number"
-            aria-label={PROPERTY_STRINGS.endYearLabel}
-            value={draft.endYear}
-            disabled={!editable}
-            onChange={(e) => onChange({ endYear: Number(e.target.value) })}
-          />
-        </label>
+          <output data-testid="decorative-end-year">{feature.attributes.endYear}</output>
+        </div>
       </details>
     </section>
   );

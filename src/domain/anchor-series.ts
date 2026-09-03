@@ -22,8 +22,8 @@
 //   INV-6 unique ids: no two entries share an AnchorId (the id is the routing
 //     key for every by-id edit; see validateSeries / indexOfAnchor below).
 
-import type { Anchor, AnchorSnapshot } from './anchor';
-import type { AnchorId } from './ids';
+import { createAnchor, type Anchor, type AnchorSnapshot } from './anchor';
+import { asAnchorId, idToString, type AnchorId } from './ids';
 import type { Calendar } from './time/calendar';
 import type { TimePoint } from './time/time-point';
 import { compare, compareNormalized, normalize, type Normalized } from './time/normalized';
@@ -482,8 +482,33 @@ export function applyPastEdit(
   // Insert a new anchor; inherit the state effective at baseTime.
   const effective = resolveAt(series, baseTime, calendar);
   const anchor = makeAnchor(effective);
-  const inserted = createAnchorEntry(anchor, baseTime, null);
+  // INV-6 を挿入の時点で守る。呼び出し側の id は「地物 × 開始時刻」から決定的に
+  // 導かれる（apply-proposal の deriveAnchorId）ので、**存続期間の編集で開始を
+  // 動かした錨**が、その錨がもともと居た年の id を持ったまま系列に残る。そこへ
+  // 同じ年で新しい錨を作ると id が衝突し、normalizeSeries の keep-last が
+  // **動かしたほうの錨を黙って消す**（反証 F4）。ここで決定的に採番し直せば、
+  // 取り消し／やり直しの再生でも同じ id になる（教訓 5.20）。
+  const anchorWithUniqueId = withUniqueAnchorId(series.entries, anchor);
+  const inserted = createAnchorEntry(anchorWithUniqueId, baseTime, null);
   return normalizeSeries([...series.entries, inserted], calendar);
+}
+
+/**
+ * 系列の中で一意な錨 ID を持つ {@link Anchor} を返す（INV-6）。既存の id と衝突する
+ * ときだけ `#2`, `#3` … を足す。**決定的**（入力の系列が同じなら結果も同じ）なので、
+ * redo は同じ id を再生する（教訓 5.20）。衝突しなければ入力をそのまま返す。
+ */
+export function withUniqueAnchorId(
+  entries: readonly AnchorEntry[],
+  anchor: Anchor,
+): Anchor {
+  const used = new Set<string>(entries.map((e) => idToString(e.anchor.id)));
+  const base = idToString(anchor.id);
+  if (!used.has(base)) return anchor;
+  for (let n = 2; ; n += 1) {
+    const candidate = `${base}#${String(n)}`;
+    if (!used.has(candidate)) return createAnchor(asAnchorId(candidate), anchor.snapshot);
+  }
 }
 
 // --- §5.6 start-time change (auto-reorganization) ---------------------------

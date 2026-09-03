@@ -4,7 +4,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { EDIT_MODE } from '../state/session';
-import { COMMAND_ID, CommandRegistry, type CommandId } from './commands';
+import { COMMAND_ID, COMMAND_REFUSAL, CommandRegistry, type CommandId } from './commands';
 import { STANDARD_MENUS } from './menu';
 import { buildDefaultKeymap } from './default-keymap';
 import {
@@ -252,5 +252,52 @@ describe('dispatchChord gating (受け入れ基準 7 / 9)', () => {
       dispatchChord(chord({ key: 'z', ctrlOrMeta: true }), km, r, EDIT_MODE.Edit),
     ).toBe(DISPATCH_RESULT.Ran);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+});
+
+// 増分 2 の手直し A5 — 鍵盤から断られたときも理由が出せること（バグ狩り #2 / 反証 F5）。
+describe('dispatchChord — 断った理由をコマンドの持ち主へ伝える', () => {
+  const keymap = buildDefaultKeymap();
+
+  it('「読むだけ」で止めたときは ViewOnly として伝える', () => {
+    const registry = new CommandRegistry();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, { run: () => {}, onRefused });
+    const result = dispatchChord(
+      chord({ key: 'k', ctrlOrMeta: true }),
+      keymap,
+      registry,
+      EDIT_MODE.View,
+    );
+    expect(result).toBe(DISPATCH_RESULT.Disabled);
+    expect(onRefused).toHaveBeenCalledWith(COMMAND_REFUSAL.ViewOnly);
+  });
+
+  it('canRun が偽で止めたときは NotRunnable として伝える', () => {
+    const registry = new CommandRegistry();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, {
+      run: () => {},
+      canRun: () => false,
+      onRefused,
+    });
+    const result = dispatchChord(
+      chord({ key: 'k', ctrlOrMeta: true }),
+      keymap,
+      registry,
+      EDIT_MODE.Edit,
+    );
+    expect(result).toBe(DISPATCH_RESULT.Disabled);
+    expect(onRefused).toHaveBeenCalledWith(COMMAND_REFUSAL.NotRunnable);
+  });
+
+  it('走れたときは伝えない', () => {
+    const registry = new CommandRegistry();
+    const onRefused = vi.fn();
+    registry.register(COMMAND_ID.EditCreateAnchorHere, { run: () => {}, onRefused });
+    expect(
+      dispatchChord(chord({ key: 'k', ctrlOrMeta: true }), keymap, registry, EDIT_MODE.Edit),
+    ).toBe(DISPATCH_RESULT.Ran);
+    expect(onRefused).not.toHaveBeenCalled();
   });
 });

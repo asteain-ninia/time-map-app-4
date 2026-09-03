@@ -34,14 +34,12 @@ export const PROPERTY_STRINGS = {
   existenceLabel: '続く',
   /** 存続期間の「終わりが決まっていない」側の言い方。 */
   existenceOpenEnd: '継続中',
-  /** 存続期間が解決できないとき（錨が引けない）に出す言い方。 */
-  existenceUnknown: '（記録がありません）',
   startYearLabel: '開始年',
   endYearLabel: '終了年',
   /** 畳んだ「詳しい属性」。飾りの開始年・終了年をここへ下ろした（裁定 §N-5 の (A)）。 */
   advancedAttributesTitle: '詳しい属性',
   advancedAttributesHint:
-    'ここの開始年・終了年は表示用の属性です。地物がいつ現れていつ消えるかは、上の「続く」（歴史の錨の並び）が決めます。',
+    'ここの開始年・終了年は表示用の属性で、直せません。地物がいつ現れていつ消えるかは、上の「続く」（歴史の錨の並び）が決めます。',
   /**
    * 面情報の面積 (FR-20). A read-only DERIVED value shown only for leaf (面) features:
    * the km² area of the resolved shape at the edit time, computed by the geodesy
@@ -76,6 +74,12 @@ export const PROPERTY_STRINGS = {
   anchorEndsAt: (end: string): string => `〜${end}`,
   /** 親の名前が引けなかったときの言い方（内部 id は画面に出さない、U-1）。 */
   unknownParentName: '別の地物',
+  /**
+   * 名前が空の地物の言い方。ドメインの `featureDisplayName` は名前が空のとき
+   * **内部 id** を返すので、そのまま出すと確認の本文や見出しに `f-5-4` が出る
+   * （U-1 違反）。出口 1 か所でこれに落とす（教訓 5.51）。
+   */
+  unnamedFeature: '名前のない地物',
   /** 存続期間の操作は押した瞬間に効くことを明記する（N-46 を揃えた残り）。 */
   intervalImmediateHint:
     'ここの操作は押した瞬間に効きます（Ctrl+Z で元に戻せます）。',
@@ -144,15 +148,6 @@ export const PROPERTY_STRINGS = {
   dismissMessage: '閉じる',
   saveFailedPrefix: '保存に失敗しました: ',
   /**
-   * 開始年 / 終了年 が永続化可能な整数範囲（±100万年）外のときの保存拒否理由
-   * (bughunt 第12波 #2). WRITE 側でこれを弾かないと、フォームは受理しても READ 側
-   * schema (yearSchema = 同じ isPersistedYear 境界) が load 時に manifest 全体を
-   * 拒否し .gimoza が二度と開けなくなる（書込⊆読込の非対称）。タイムライン年と同一の
-   * 単一真実源 isPersistedYear で判定する。
-   */
-  yearOutOfRange:
-    '開始年・終了年は ±100万年 の整数で入力してください（小数・範囲外は保存できません）。',
-  /**
    * Shown when a property edit is confirmed but no live edit-apply binding is
    * wired yet (the U13/属性編集 apply seam is unassigned new-domain work). The
    * save surfaces this honest error rather than reporting a silent success, so
@@ -184,8 +179,6 @@ export const PROPERTY_STRINGS = {
     `この地物の歴史は親の「${ownerName}」が持っています。下の錨は、その系列のうちこの地物に関わるものだけです。`,
   /** 親を選び直すボタン。 */
   inheritedAnchorGoToOwner: '親を見る',
-  /** 親の系列にこの地物の変化が 1 つも無いとき。 */
-  inheritedAnchorNone: 'この地物に関わる変化は、まだ親の記録にありません。',
 } as const;
 
 /**

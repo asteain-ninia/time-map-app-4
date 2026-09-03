@@ -295,12 +295,14 @@ const CHANGE_PATHS: readonly ChangePath[] = [
       fireEvent.click(screen.getByTestId('anchor-row-a1'));
       const save = screen.queryByTestId('save-button') as HTMLButtonElement | null;
       if (save === null) return false;
-      // 押せない保存ボタンだと、押しても何も飛ばないので**この行が空振りする**
-      // （「読むだけで通らない」も「直せるなら通る」も同じ理由で false になってしまう）。
-      if (save.disabled) return false;
+      // 増分 2 の手直し A6 から、**値を変えるまで保存ボタンは押せない**（無変更で押しても
+      // 黙って何も起きなかったのをやめた）。だから可否を見るのは名前を直した **あと**。
       fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
         target: { value: '羽柴領' },
       });
+      // 押せない保存ボタンだと、押しても何も飛ばないので**この行が空振りする**
+      // （「読むだけで通らない」も「直せるなら通る」も同じ理由で false になってしまう）。
+      if (save.disabled) return false;
       fireEvent.click(save);
       return intents.length > 0;
     },

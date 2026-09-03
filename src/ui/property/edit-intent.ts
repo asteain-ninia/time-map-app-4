@@ -39,8 +39,6 @@ export function propertyValuesEqual(a: PropertyEditValues, b: PropertyEditValues
     a.name === b.name &&
     a.kindLabel === b.kindLabel &&
     a.detailDocument === b.detailDocument &&
-    a.startYear === b.startYear &&
-    a.endYear === b.endYear &&
     a.autoColorEnabled === b.autoColorEnabled &&
     a.fillColor === b.fillColor &&
     a.fillOpacity === b.fillOpacity &&
@@ -65,8 +63,6 @@ export function valuesFromFeature(feature: Feature): PropertyEditValues {
     // （教訓 5.18: 空文字も値である）。
     kindLabel: feature.kindLabel ?? '',
     detailDocument: feature.detailDocument ?? '',
-    startYear: feature.attributes.startYear,
-    endYear: feature.attributes.endYear,
     autoColorEnabled: feature.color.autoColorEnabled,
     fillColor: feature.color.fillColor,
     fillOpacity: feature.color.fillOpacity,
@@ -88,7 +84,13 @@ export function isNoOpEdit(feature: Feature, next: PropertyEditValues): boolean 
   // 片方だけ直したときに「何も起きない」ようでは、保存の対象を 4 つと宣言した意味が無い。
   if ((feature.kindLabel ?? '') !== next.kindLabel) return false;
   if ((feature.detailDocument ?? '') !== next.detailDocument) return false;
-  const nextAttrs = createBasicAttributes(next.name, next.startYear, next.endYear);
+  // 飾りの開始年／終了年は保存の対象ではない（A7）ので、地物が持っている値をそのまま
+  // 使う。ここで下書きの値を混ぜると「触っていない飾りの年」で no-op 判定が動く。
+  const nextAttrs = createBasicAttributes(
+    next.name,
+    feature.attributes.startYear,
+    feature.attributes.endYear,
+  );
   const nextColor = createColorInfo(
     next.autoColorEnabled,
     next.fillColor,

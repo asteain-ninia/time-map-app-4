@@ -42,6 +42,7 @@ import {
 } from '../anchor-series';
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
+import { applyCarryForward, carriedAttributesOf } from './carry-forward';
 import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } from '../ids';
 import {
   FEATURE_KIND,
@@ -1513,6 +1514,14 @@ export function applyEditProposal(
   }
   const { index, history } = found;
 
+  // 引き継ぎ（A1 / 反証 F1）の材料は **編集前の**系列から採る。T の直前で効いていた
+  // 姿が「旧値」で、提案の地物が「新値」である。
+  const effectiveBefore = resolveAt(history.series, anchorTime, calendar);
+  const featureBefore =
+    effectiveBefore.kind === 'present'
+      ? (effectiveBefore.entry.anchor.snapshot.features.find((f) => f.id === featureId) ?? null)
+      : null;
+
   const updatedSeries = applyPastEdit(
     history.series,
     anchorTime,
@@ -1555,7 +1564,24 @@ export function applyEditProposal(
     return withHistories(root, histories);
   }
 
-  const newHistory: FeatureHistory = { featureId: history.featureId, series: updatedSeries };
+  // **保存した属性を前へ引き継ぐ**（A1 / 反証 F1）。錨は「その時点の全体の写し」なので、
+  // T より後ろの錨は直したはずの値の古い写しを持ったままであり、まとめ役の下で兄弟を
+  // 直した年に錨が立っていると、**そこから旧名が復活する**。引き継ぎは「その属性が
+  // 本当に変わる錨」で止まるので、記録された歴史は 1 つも壊さない（carry-forward.ts）。
+  // 形の編集（頂点だけを動かす保存）は属性が同じなので、この呼び出しは何もしない。
+  const carriedSeries =
+    featureBefore === null || snapshot.feature === undefined
+      ? updatedSeries
+      : applyCarryForward(
+          updatedSeries,
+          anchorTime,
+          featureId,
+          carriedAttributesOf(featureBefore),
+          carriedAttributesOf(snapshot.feature),
+          calendar,
+        );
+
+  const newHistory: FeatureHistory = { featureId: history.featureId, series: carriedSeries };
   let histories = root.histories.map((h, i) => (i === index ? newHistory : h));
 
   // 共有頂点移動の全履歴反映 (FR-59 一体編集 / 教訓5.20, Codex bug-hunt true-positive):

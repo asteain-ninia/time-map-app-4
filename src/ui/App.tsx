@@ -134,7 +134,7 @@ import {
 import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
-import { COMMAND_ID } from './shell/commands';
+import { COMMAND_ID, COMMAND_REFUSAL, type CommandRefusal } from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
 import { runUnshare } from './live-unshare';
@@ -2509,6 +2509,23 @@ export function App(): JSX.Element {
     );
   }, []);
 
+  /**
+   * その時刻ちょうどに錨があるか（＝この保存は上書きか、新設か）。**編集が実際に
+   * 書き込まれる系列**をドメインと同じ `findHistoryContaining` で引いて判定する
+   * （まとめ役の子は親の系列に書かれる、設計書 §C.6 / 教訓 5.30 単一真実源）。
+   */
+  const anchorExistsAt = useCallback(
+    (featureId: FeatureId, at: TimePoint): boolean => {
+      const root = store.getState().domain;
+      const found = findHistoryContaining(root, featureId, at, calendar);
+      if (found === undefined) return false;
+      return found.history.series.entries.some(
+        (e) => compareTimePoints(e.start, at, calendar) === 0,
+      );
+    },
+    [store, calendar],
+  );
+
   // fr96 composeFor — assemble the U36 ComposeInput from the LIVE store snapshot at
   // right-click time (store.getState() per request — never a stale capture, 教訓 5.6)
   // and the three single-source lookups:
@@ -2547,33 +2564,14 @@ export function App(): JSX.Element {
           isEmphasizedByOtherAxis: (fid) =>
             isEmphasizedByOtherAxisUnderFilter(resolution, s.filter, fid),
         },
+        // 「この年に錨を作る」の出し分け（増分 2 の手直し A5 / GPT#9）。組み立ては純粋で
+        // 錨の系列を知らないので、**対象の地物を組み立てと同じ判定で解いてから**ここで
+        // ドメインを引く。既に錨がある年では出したまま灰色にして理由を見せる
+        // （「押せる項目を押したら拒否される」をなくす、出す=起きる, 教訓 5.6）。
+        hasAnchorAt: (fid) => anchorExistsAt(fid, toYearPoint(s.currentTime)),
       });
     },
-    [store],
-  );
-
-  /**
-   * 「この年に錨を作る」を **鍵盤・メニュー・右クリック・素性欄の 4 経路から同じ 1 本へ
-   * 流す**入口（増分 2 の中身 3。教訓 5.13 / 5.30）。可否の判定はコマンドの
-   * `canRun` に 1 つだけあるので、ここに 2 つ目の判定を書かない。
-   *
-   * `dispatch` が偽を返したときは **黙って終わらせない**。右クリックの項目は
-   * 純粋な域の compose が錨の系列を知らないため「押せる形」で出ることがあり、
-   * そのとき「押したのに何も起きない」になる。理由を状態行へ出す（設計書 §H.5）。
-   */
-  const requestCreateAnchorHere = useCallback(
-    (featureId: FeatureId): void => {
-      const live = store.getState();
-      live.setActiveFeature(featureId);
-      if (registry.dispatch(COMMAND_ID.EditCreateAnchorHere)) return;
-      const at = live.currentTime;
-      statusMessageStore.failure(
-        isYearAligned(at)
-          ? EDIT_PLAN_STRINGS.createAnchorHereDisabledReason(formatYear(at.year))
-          : EDIT_PLAN_STRINGS.reasonNotYearAligned(formatTimePoint(at), formatYear(at.year)),
-      );
-    },
-    [store, registry, statusMessageStore],
+    [store, anchorExistsAt],
   );
 
   // fr96 onSelectItem — delegate to the launch seam (context-menu-launch.ts): the
@@ -2958,6 +2956,10 @@ export function App(): JSX.Element {
   // second right-click only closes the menu (outside-pointerdown) without opening a
   // new one — modal-consistent input ownership (段階7).
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  // A4 (c): 素性欄の「打ちかけを捨てますか」（N-04）が出ているあいだも鍵盤は確認のもの
+  // である。Ctrl+K で背後に錨が増えたり、Delete で対象そのものが消えたりしないようにする
+  // （教訓 5.14: 重なる UI は入力を受ける層も同時に設計する）。
+  const [draftConfirmOpen, setDraftConfirmOpen] = useState(false);
   const shortcutsSuspended =
     conflictState !== null ||
     helpModalOpen ||
@@ -2970,6 +2972,7 @@ export function App(): JSX.Element {
     drillDrawing ||
     surveyDrafting ||
     contextMenuOpen ||
+    draftConfirmOpen ||
     // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
     pendingDelete !== null;
   // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
@@ -3225,20 +3228,65 @@ export function App(): JSX.Element {
     };
   }, [store, sharedMint]);
   /**
-   * その時刻ちょうどに錨があるか（＝この保存は上書きか、新設か）。**編集が実際に
-   * 書き込まれる系列**をドメインと同じ `findHistoryContaining` で引いて判定する
-   * （まとめ役の子は親の系列に書かれる、設計書 §C.6 / 教訓 5.30 単一真実源）。
+   * 「この年に錨を作る」を **鍵盤・メニュー・右クリック・素性欄の 4 経路から同じ 1 本へ
+   * 流す**入口（増分 2 の中身 3。教訓 5.13 / 5.30）。
+   *
+   * **押せない理由を決めるのはこの 1 つの関数だけ**であり、コマンドの `canRun`、鍵盤から
+   * 断られたときの理由表示、右クリックの出し分けのすべてがこれを使う（増分 2 の手直し
+   * A5。教訓 5.30 過少共有と過剰共有）。戻り値は「断る理由」か null（押せる）。
+   * **権限（読むだけ）はここに入れない** — それは permissions.ts の EDITING_COMMANDS が
+   * 一括で行う（教訓 5.13。ここに 2 つ目の権限判定を書かない）。
    */
-  const anchorExistsAt = useCallback(
-    (featureId: FeatureId, at: TimePoint): boolean => {
-      const root = store.getState().domain;
-      const found = findHistoryContaining(root, featureId, at, calendar);
-      if (found === undefined) return false;
-      return found.history.series.entries.some(
-        (e) => compareTimePoints(e.start, at, calendar) === 0,
+  const createAnchorRefusalFor = useCallback(
+    (featureId: FeatureId | null): string | null => {
+      if (featureId === null) return EDIT_PLAN_STRINGS.createAnchorHereNoTarget;
+      const at = store.getState().currentTime;
+      if (!isYearAligned(at)) {
+        return EDIT_PLAN_STRINGS.reasonNotYearAligned(formatTimePoint(at), formatYear(at.year));
+      }
+      if (anchorExistsAt(featureId, toYearPoint(at))) {
+        return EDIT_PLAN_STRINGS.createAnchorHereDisabledReason(formatYear(at.year));
+      }
+      return null;
+    },
+    [store, anchorExistsAt],
+  );
+
+  /**
+   * 断った理由を状態行へ出す（設計書 §H.5「次の一手を見せる」）。**鍵盤から押しても
+   * 素性欄から押しても同じ文が出る**（バグ狩り #2 / 反証 F5: Ctrl+K が黙って終わっていた）。
+   */
+  const reportCreateAnchorRefusal = useCallback(
+    (reason: CommandRefusal): void => {
+      if (reason === COMMAND_REFUSAL.ViewOnly) {
+        statusMessageStore.failure(EDIT_PLAN_STRINGS.createAnchorHereViewOnly);
+        return;
+      }
+      statusMessageStore.failure(
+        createAnchorRefusalFor(store.getState().selection.activeFeature) ??
+          EDIT_PLAN_STRINGS.createAnchorHereNoTarget,
       );
     },
-    [store, calendar],
+    [store, statusMessageStore, createAnchorRefusalFor],
+  );
+
+  /**
+   * 素性欄のボタン・右クリック・メニューからの入口。**可否を確かめてから選択を動かす**
+   * （反証 F10: 先に選択を移していたので、断られたときだけ選択が動いて戻らなかった）。
+   */
+  const requestCreateAnchorHere = useCallback(
+    (featureId: FeatureId): void => {
+      const refusal = createAnchorRefusalFor(featureId);
+      if (refusal !== null) {
+        statusMessageStore.failure(refusal);
+        return;
+      }
+      store.getState().setActiveFeature(featureId);
+      if (registry.dispatch(COMMAND_ID.EditCreateAnchorHere)) return;
+      // ここへ来るのはコマンドが未登録のときだけ（canRun は上とまったく同じ判定）。
+      statusMessageStore.failure(EDIT_PLAN_STRINGS.createAnchorHereNoTarget);
+    },
+    [store, registry, statusMessageStore, createAnchorRefusalFor],
   );
 
   /**
@@ -3259,7 +3307,16 @@ export function App(): JSX.Element {
         const nextFeature = withDetailDocument(
           withKindLabel(
             withColor(
-              withAttributes(feature, createBasicAttributes(v.name, v.startYear, v.endYear)),
+              // 飾りの開始年／終了年は保存の対象ではない（A7 / GPT#8）。地物が持って
+              // いる値をそのまま持ち越す（画面では読み取り専用に出している）。
+              withAttributes(
+                feature,
+                createBasicAttributes(
+                  v.name,
+                  feature.attributes.startYear,
+                  feature.attributes.endYear,
+                ),
+              ),
               createColorInfo(
                 v.autoColorEnabled,
                 v.fillColor,
@@ -3345,23 +3402,19 @@ export function App(): JSX.Element {
         const live = store.getState();
         const featureId = live.selection.activeFeature;
         if (featureId === null) return;
-        const at = live.currentTime;
-        if (!isYearAligned(at)) return;
-        createAnchorHere(featureId, toYearPoint(at));
+        createAnchorHere(featureId, toYearPoint(live.currentTime));
       },
-      canRun: () => {
-        const live = store.getState();
-        const featureId = live.selection.activeFeature;
-        if (featureId === null) return false;
-        const at = live.currentTime;
-        if (!isYearAligned(at)) return false;
-        return !anchorExistsAt(featureId, toYearPoint(at));
-      },
+      // 可否は `createAnchorRefusalFor` 1 本に寄せた（増分 2 の手直し A5）。ここに
+      // 2 つ目の判定を書かない（教訓 5.30）。
+      canRun: () => createAnchorRefusalFor(store.getState().selection.activeFeature) === null,
+      // **黙って終わらせない。** 鍵盤（Ctrl+K）から断られたときも、素性欄のボタンや
+      // 右クリックと同じ文が状態行に出る（バグ狩り #2 / 反証 F5）。
+      onRefused: reportCreateAnchorRefusal,
     });
     return () => {
       registry.unregister(COMMAND_ID.EditCreateAnchorHere);
     };
-  }, [registry, store, createAnchorHere, anchorExistsAt]);
+  }, [registry, store, createAnchorHere, createAnchorRefusalFor, reportCreateAnchorRefusal]);
 
   const propertyDeleteFeature = commitFeatureDelete;
 
@@ -3444,6 +3497,8 @@ export function App(): JSX.Element {
         // その地物を選び直す（素性欄が出している地物と選択は同じはずだが、
         // 頃合いの差で食い違うのを防ぐ）。
         onCreateAnchorHere: requestCreateAnchorHere,
+        // A4 (c): 打ちかけの確認が出ているあいだ、大域ショートカットを止める。
+        onDraftConfirmChange: setDraftConfirmOpen,
         onFocusFeatureCamera: focusCameraOnFeature,
       }),
     [

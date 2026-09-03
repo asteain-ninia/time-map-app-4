@@ -25,6 +25,7 @@ import {
   formatApproximateBytes,
   hasAnchorStartingAt,
   isYearAligned,
+  saveEffectOf,
 } from './edit-plan';
 
 const cal = getCalendar('gregorian');
@@ -139,13 +140,54 @@ describe('保存の行き先 — 設計書 §D.3 の 4 状態', () => {
     expect(new Set(labels).size).toBe(labels.length);
   });
 
-  it('年ちょうどでないことは「地物がいない」より先に効く（保険は最優先）', () => {
+  it('「地物がいない」ほうが「年ちょうどでない」より先に効く（本当の理由を出す）', () => {
+    // 年へ丸めても保存できないので、「月日の付いた年には作れません」ではなく
+    // 「この年にはまだありません」が利用者にとっての本当の理由である。
     const p = plan({
       time: timePointYearMonthDay(5080, 12, 31),
       series: seriesAt(0),
       present: false,
     });
+    expect(p.kind).toBe(EDIT_PLAN_KIND.FeatureAbsent);
+    expect(p.reason).toContain('5080年12月31日');
+  });
+});
+
+describe('月日から始まる錨は、その開始にいるとき上書きできる（設計 B1 / GPT#1 / 反証 F9）', () => {
+  // 存続期間エディタは月日つきの開始を実際に作れる。錨を選ぶと現在時刻はその開始へ
+  // 同期するので、ここを「年ちょうど」で弾くと **その錨だけ永久に編集できない**。
+  it('1200年6月1日 に始まる錨を選んでいるときは上書きできる', () => {
+    const p = plan({
+      time: timePointYearMonthDay(1200, 6, 1),
+      series: seriesAt(0, [1200, 6, 1]),
+    });
+    expect(p.kind).toBe(EDIT_PLAN_KIND.Overwrite);
+    expect(p.savable).toBe(true);
+    expect(p.reason).toBeNull();
+  });
+
+  it('年ちょうどでないときは編集時刻を丸めない（既存の錨の月日をそのまま保つ）', () => {
+    const p = plan({
+      time: timePointYearMonthDay(1200, 6, 1),
+      series: seriesAt(0, [1200, 6, 1]),
+    });
+    expect(p.editTime).toEqual(timePointYearMonthDay(1200, 6, 1));
+  });
+
+  it('文言にも月日が出る（押す前にどの錨を直すか読める）', () => {
+    const p = plan({
+      time: timePointYearMonthDay(1200, 6, 1),
+      series: seriesAt(0, [1200, 6, 1]),
+    });
+    expect(p.badgeTime).toBe('1200年6月1日');
+    expect(p.saveLabel).toBe('1200年6月1日の錨を上書き保存');
+  });
+
+  it('同じ月日でも、そこに錨が無ければ今までどおり新設を止める', () => {
+    const p = plan({ time: timePointYearMonthDay(1200, 6, 1), series: seriesAt(0) });
     expect(p.kind).toBe(EDIT_PLAN_KIND.NotYearAligned);
+    expect(p.savable).toBe(false);
+    expect(p.roundedTime).toEqual(timePointYear(1200));
   });
 });
 
@@ -210,5 +252,42 @@ describe('formatApproximateBytes', () => {
   it('壊れた値でも数字を捏造しない', () => {
     expect(formatApproximateBytes(Number.NaN)).toBe('不明');
     expect(formatApproximateBytes(-1)).toBe('不明');
+  });
+});
+
+describe('保存の「効く範囲」を押す前に見せる（A1 / 反証 F1）', () => {
+  const overwrite = plan({ time: timePointYear(1000), series: seriesAt(0, 1000) });
+  const disabled = plan({ time: timePointYear(1000), series: seriesAt(0), present: false });
+
+  it('引き継ぎが無ければ、ボタンの文言は行き先だけ', () => {
+    const e = saveEffectOf(overwrite, [], null);
+    expect(e.saveLabel).toBe('1000年の錨を上書き保存');
+  });
+
+  it('引き継ぐ先が 2 件までなら、その年をそのまま並べる', () => {
+    const e = saveEffectOf(overwrite, ['2000年', '3000年'], null);
+    expect(e.saveLabel).toBe('1000年の錨を上書き保存（2000年・3000年の記録にも同じ値を入れます）');
+  });
+
+  it('引き継ぐ先が多いときは先頭 2 件と残りの本数にする（文言が窓からはみ出さない）', () => {
+    const e = saveEffectOf(overwrite, ['2000年', '3000年', '4000年', '5000年'], null);
+    expect(e.saveLabel).toBe(
+      '1000年の錨を上書き保存（2000年・3000年ほか 2 件の記録にも同じ値を入れます）',
+    );
+  });
+
+  it('「この姿がいつまで続くか」を必ず添える', () => {
+    expect(saveEffectOf(overwrite, [], '5000年').effectRange).toBe(
+      'この保存でできる姿は5000年まで続きます。',
+    );
+    expect(saveEffectOf(overwrite, [], null).effectRange).toBe(
+      'この保存でできる姿は、この先ずっと続きます。',
+    );
+  });
+
+  it('押せないときは範囲を出さない（起きないことを約束しない）', () => {
+    const e = saveEffectOf(disabled, ['2000年'], '3000年');
+    expect(e.effectRange).toBeNull();
+    expect(e.saveLabel).toBe(disabled.saveLabel);
   });
 });

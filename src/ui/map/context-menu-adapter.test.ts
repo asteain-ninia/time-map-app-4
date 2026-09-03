@@ -123,6 +123,8 @@ function compose(
     emphasized?: ReadonlySet<FeatureId>;
     /** The live FR-113 filter state backing the axis-emphasis lookup (default = inert). */
     filter?: FilterState;
+    /** 増分 2 の手直し A5: 「いま見ている年にこの地物の錨があるか」を引く口。 */
+    hasAnchorAt?: (featureId: FeatureId) => boolean;
   } = {},
 ): ContextMenuModel | NoMenu {
   return composeMenuFor({
@@ -134,6 +136,7 @@ function compose(
     lookups: liveLookups(root),
     emphasizedFeatureIds: opts.emphasized ?? new Set<FeatureId>(),
     axisEmphasisLookup: liveAxisEmphasis(root, opts.filter ?? DEFAULT_FILTER_STATE),
+    ...(opts.hasAnchorAt ? { hasAnchorAt: opts.hasAnchorAt } : {}),
   });
 }
 
@@ -283,5 +286,65 @@ describe('toMenuToolKind — tool class mapping (教訓 5.19)', () => {
     expect(toMenuToolKind(TOOL_ID.EditDrill)).toBe('shapeEdit');
     expect(toMenuToolKind(TOOL_ID.EditMerge)).toBe('select');
     expect(toMenuToolKind(null)).toBe('select');
+  });
+});
+
+// 増分 2 の手直し A5 / GPT#9 — 「この年に錨を作る」の出し分け。
+//
+// 旧: 組み立ては純粋で錨の系列を知らないので、既に錨がある年でも項目が有効で出て、
+// 押したあとに「すでにこの年に錨があります」と拒否されていた（BH2-02。完了報告は
+// 「配線できない」と書いていたが、対象の解決を取り出せば渡せるので事実誤認だった）。
+describe('この年に錨を作る — 既に錨がある年は出したまま灰色にする（A5 / GPT#9）', () => {
+  it('渡さなければ今までどおり有効で出る（honest stub）', () => {
+    const root = borderShareProject();
+    const model = compose(root, withActiveFeature(EMPTY_SELECTION, A));
+    expect(itemOf(model, MENU_ITEM_KIND.CreateAnchorHere)?.enabled).toBe(true);
+  });
+
+  it('その年に錨が無ければ有効', () => {
+    const root = borderShareProject();
+    const model = compose(root, withActiveFeature(EMPTY_SELECTION, A), {
+      hasAnchorAt: () => false,
+    });
+    expect(itemOf(model, MENU_ITEM_KIND.CreateAnchorHere)?.enabled).toBe(true);
+  });
+
+  it('その年に錨があれば灰色になり、理由が付く', () => {
+    const root = borderShareProject();
+    const model = compose(root, withActiveFeature(EMPTY_SELECTION, A), {
+      hasAnchorAt: () => true,
+    });
+    const item = itemOf(model, MENU_ITEM_KIND.CreateAnchorHere);
+    expect(item?.enabled).toBe(false);
+    expect(item !== undefined && item.enabled === false ? item.disableReason : null).toBe(
+      DISABLE_REASON.AnchorAlreadyAtThisYear,
+    );
+  });
+
+  it('可否を聞く相手は、組み立てが決めた「対象の地物」そのものである', () => {
+    // 出し分けと発火が同じ相手を見ていなければ「押せる項目を押したら拒否」に戻る。
+    const root = borderShareProject();
+    const asked: FeatureId[] = [];
+    compose(root, withActiveFeature(EMPTY_SELECTION, A), {
+      hasAnchorAt: (fid) => {
+        asked.push(fid);
+        return false;
+      },
+    });
+    expect(asked).toEqual([A]);
+  });
+
+  it('頂点だけを選んでいるときも、単一の所有者に対して聞く', () => {
+    const root = borderShareProject();
+    const owner = liveLookups(root).ownerLookup.ownerOf(VS)!;
+    const asked: FeatureId[] = [];
+    compose(root, replaceVertices(EMPTY_SELECTION, owner, new Set([VS])), {
+      hit: vertexHit(owner, VS),
+      hasAnchorAt: (fid) => {
+        asked.push(fid);
+        return false;
+      },
+    });
+    expect(asked).toEqual([owner]);
   });
 });

@@ -48,6 +48,7 @@ export {
   type MenuTargetKind,
   type MenuTarget,
   resolveMenuTarget,
+  menuTargetFeatureId,
   NO_MENU,
   type NoMenu,
   type ContextMenuModel,

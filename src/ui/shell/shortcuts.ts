@@ -8,7 +8,7 @@
 // editing shortcut and its menu item disable TOGETHER — no path where the menu
 // is greyed but the key still fires.
 
-import { CommandRegistry, type CommandId } from './commands';
+import { COMMAND_REFUSAL, CommandRegistry, type CommandId } from './commands';
 import { resolveCommandEnabled } from './permissions';
 import type { EditMode } from '../state/session';
 
@@ -197,11 +197,18 @@ export function dispatchChord(
   const commandId = keymap.resolve(chord);
   if (commandId === undefined) return DISPATCH_RESULT.Unbound;
 
-  const enabled = resolveCommandEnabled(commandId, {
-    runnable: registry.isRunnable(commandId),
-    mode,
-  });
-  if (!enabled) return DISPATCH_RESULT.Disabled;
+  const runnable = registry.isRunnable(commandId);
+  const enabled = resolveCommandEnabled(commandId, { runnable, mode });
+  if (!enabled) {
+    // 鍵盤には「灰色の項目」が無いので、断ったこと自体が見えない。コマンドの
+    // 持ち主が理由の口を出していれば、そこへ伝える（増分 2 の手直し A5 /
+    // バグ狩り #2。可否の判定は増やさない — ここは結果を伝えるだけ）。
+    registry.reportRefusal(
+      commandId,
+      runnable ? COMMAND_REFUSAL.ViewOnly : COMMAND_REFUSAL.NotRunnable,
+    );
+    return DISPATCH_RESULT.Disabled;
+  }
 
   registry.dispatch(commandId);
   return DISPATCH_RESULT.Ran;

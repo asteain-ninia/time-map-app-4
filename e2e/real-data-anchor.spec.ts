@@ -151,4 +151,70 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
       rmSync(workDir, { recursive: true, force: true });
     }
   });
+
+  test('兄弟を先に直しても、過去の年の改名が後ろの錨で巻き戻らない（A1 / 反証 F1）', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-inc2-carry-'));
+    const workingCopy = join(workDir, REAL_DATA_FILE);
+    copyFileSync(canonicalPath, workingCopy);
+    const canonicalBefore = statSync(canonicalPath);
+
+    const { app, page } = await launchAppWithProject(workingCopy);
+    try {
+      await enterEditMode(page);
+      const nameInput = page.getByTestId('basic-info').getByLabel('名前');
+
+      // ① まず **兄弟** を 2000 年と 3000 年で直す。親（デーレ共和国）の系列に錨が 2 本
+      //    立ち、その写しには アアウェン州 の **旧名** が入る。
+      // 一度選んだら選択は年をまたいでも保たれる（名前で選び直すと、改名済みの年では
+      // 元の名前で引けなくなる）。
+      await selectFeatureByName(page, '南ケナ州');
+      for (const [year, newName] of [[2000, '南ケナ公国'], [3000, '南ケナ王国']] as const) {
+        await jumpToYear(page, year);
+        await page.getByTestId('sidebar-tab-properties').click();
+        await nameInput.fill(newName);
+        await page.getByTestId('save-button').click();
+        await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+      }
+
+      // ② そのあと 1000 年で アアウェン州 を改名する。押す前に、後ろの 2 本にも同じ値が
+      //    入ることが読める。
+      await selectFeatureByName(page, CHILD_NAME);
+      await jumpToYear(page, 1000);
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(nameInput).toHaveValue(CHILD_NAME);
+      await nameInput.fill('北アアウェン州');
+      const save = page.getByTestId('save-button');
+      await expect(save).toContainText('2000年');
+      await expect(save).toContainText('3000年');
+      await save.click();
+      await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+
+      // ③ **2000 年でも 3000 年でも新しい名前**（旧版はここで旧名に戻っていた）。
+      for (const year of [2000, 3000]) {
+        await jumpToYear(page, year);
+        await page.getByTestId('sidebar-tab-properties').click();
+        await expect(nameInput).toHaveValue('北アアウェン州');
+      }
+
+      // ④ 1000 年より前は元のまま。兄弟の歴史も壊れていない。
+      await jumpToYear(page, 0);
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(nameInput).toHaveValue(CHILD_NAME);
+
+      await jumpToYear(page, 2000);
+      await selectFeatureByName(page, '南ケナ公国');
+      await expect(nameInput).toHaveValue('南ケナ公国');
+      await jumpToYear(page, 3000);
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(nameInput).toHaveValue('南ケナ王国');
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+
+    const canonicalAfter = statSync(canonicalPath);
+    expect(canonicalAfter.size).toBe(canonicalBefore.size);
+    expect(canonicalAfter.mtimeMs).toBe(canonicalBefore.mtimeMs);
+  });
 });

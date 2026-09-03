@@ -16,8 +16,11 @@
 //      である。錨を選ぶと現在時刻はその錨の開始時刻（実データ・テスト fixture ともに
 //      年月日で書かれうる）へ同期するので、粒度で判定すると**正しい年にいるのに保存が
 //      できなくなる**（教訓 5.19 の裏面: 値ではなく型で分岐すると意味を取り違える）。
-//   2. **保存に渡す時刻は年へ丸める。** 実データの錨 689 本はすべて年だけで始まる。
-//      年ちょうどの時刻から作る錨に月日を焼き付けない（U-14「月日を勝手に補わない」）。
+//   2. **年へ丸めるのは「新しい錨を作る」ときだけ。** 実データの錨 689 本はすべて
+//      年だけで始まるので、新しく作る錨に月日を焼き付けない（U-14「月日を勝手に
+//      補わない」）。**逆に、既にある錨の開始とちょうど同じ時刻にいるなら、その錨の
+//      粒度が年月日でも上書きを許す。** 丸めてから一致を見ると、月日つきの開始を
+//      持つ錨だけが永久に編集できなくなる（設計 B1 / GPT#1 / 反証 F9）。
 
 import type { AnchorSeries } from '../../domain/anchor-series';
 import type { Calendar } from '../../domain/time/calendar';
@@ -159,58 +162,124 @@ export const EDIT_PLAN_STRINGS = {
   /** この年に錨を作る（Ctrl+K）。 */
   createAnchorHereLabel: (year: string): string => `${year}に錨を作る`,
   createAnchorHereDisabledReason: (year: string): string => `${year}にはすでに錨があります。`,
+  /** 対象の地物が決まっていない（鍵盤から押したときに起きる）。 */
+  createAnchorHereNoTarget: '記録を作る地物が選ばれていません。地図か一覧で 1 つ選んでください。',
+  /** 「読むだけ」のとき（教訓 5.13 の一括無効化に、鍵盤経路でも文字を付ける）。 */
+  createAnchorHereViewOnly: 'いまは「読むだけ」です。鍵を開けると記録を作れます。',
+  /**
+   * 引き継ぎの予告（A1）。**押す前に、後ろのどの記録まで同じ値が入るかを見せる。**
+   * 数が多いときは先頭 2 件＋残りの本数にする（ボタンの文字が窓からはみ出さない）。
+   */
+  carryForwardSuffix: (years: readonly string[]): string => {
+    if (years.length === 0) return '';
+    if (years.length <= 2) return `（${years.join('・')}の記録にも同じ値を入れます）`;
+    const head = years.slice(0, 2).join('・');
+    return `（${head}ほか ${String(years.length - 2)} 件の記録にも同じ値を入れます）`;
+  },
+  /** 保存したあと、その姿がいつまで続くか（A1 の「この姿は 1500 年まで」）。 */
+  effectRangeUntil: (year: string): string => `この保存でできる姿は${year}まで続きます。`,
+  effectRangeOpen: 'この保存でできる姿は、この先ずっと続きます。',
+  /** 値が変わっていないのに保存を押させない（A6 / GPT#6）。 */
+  noChangeNote: '値が変わっていません。',
+  noChangeNoteWithCreateAnchor: (year: string): string =>
+    `値が変わっていません。この年に錨だけ作るなら［${year}に錨を作る］を押してください。`,
 } as const;
+
+/** 保存の「効く範囲」の表示（A1）。純粋なので単体で固定できる。 */
+export interface SaveEffect {
+  /** 保存ボタンの文言（引き継ぎがあるときは行き先を添える）。 */
+  readonly saveLabel: string;
+  /** ボタンの上に常時出す 1 行（押せるときだけ）。押せないときは null。 */
+  readonly effectRange: string | null;
+}
+
+/**
+ * 保存の行き先に「引き継ぎの範囲」を重ねる（A1。設計書 §D.3 の「危険と打ち消し方」）。
+ *
+ * `carriedYears` は **この保存が書き換える後ろの錨の年**、`nextDivergingYear` は
+ * **引き継ぎが済んだあと、その姿でなくなる最初の年**（無ければ null）。どちらも
+ * ドメインの `carryForwardTargets` / `nextDivergingEntry` から来る（画面が独自に
+ * 数え直さない、教訓 5.29）。
+ */
+export function saveEffectOf(
+  plan: EditPlan,
+  carriedYears: readonly string[],
+  nextDivergingYear: string | null,
+): SaveEffect {
+  if (!plan.savable) return { saveLabel: plan.saveLabel, effectRange: null };
+  return {
+    saveLabel: `${plan.saveLabel}${EDIT_PLAN_STRINGS.carryForwardSuffix(carriedYears)}`,
+    effectRange:
+      nextDivergingYear === null
+        ? EDIT_PLAN_STRINGS.effectRangeOpen
+        : EDIT_PLAN_STRINGS.effectRangeUntil(nextDivergingYear),
+  };
+}
 
 /** 保存の行き先を決める（設計書 §D.3 の表そのもの）。 */
 export function decideEditPlan(input: EditPlanInput): EditPlan {
   const { currentTime, series, featurePresent, calendar } = input;
+  const aligned = isYearAligned(currentTime);
   const yearLabel = formatYear(currentTime.year);
+  const fullLabel = formatTimePoint(currentTime);
+  // バッジの左は「いまどの時刻にいるか」なので、年ちょうどでないときは月日まで出す。
+  const timeLabel = aligned ? yearLabel : fullLabel;
 
-  // (1) 年ちょうどでない — レール由来の時刻は年へ丸めてあるので通常は起きないが、
-  // 月/日の 1 歩送りと直接ジャンプは今も細かい粒度を作れる。**保険として残す**
-  // （設計書 §D.3 の表の 4 行目 / §O の B-4）。
-  if (!isYearAligned(currentTime)) {
-    return {
-      kind: EDIT_PLAN_KIND.NotYearAligned,
-      savable: false,
-      editTime: null,
-      badgeTime: formatTimePoint(currentTime),
-      badgeNote: EDIT_PLAN_STRINGS.noteNotYearAligned,
-      saveLabel: EDIT_PLAN_STRINGS.saveLabelDisabled,
-      reason: EDIT_PLAN_STRINGS.reasonNotYearAligned(formatTimePoint(currentTime), yearLabel),
-      roundedTime: timePointYear(currentTime.year),
-      estimatedBytes: null,
-    };
-  }
-
-  const editTime = timePointYear(currentTime.year);
-
-  // (2) その年に地物がいない。
+  // (1) その時刻に地物がいない。**年ちょうどかどうかより先に見る**: 地物が居ないなら
+  // 年へ丸めても保存できないので、「月日の付いた年には作れません」より
+  // 「この年にはまだありません」のほうが利用者にとって本当の理由である。
   if (!featurePresent) {
     return {
       kind: EDIT_PLAN_KIND.FeatureAbsent,
       savable: false,
       editTime: null,
-      badgeTime: yearLabel,
+      badgeTime: timeLabel,
       badgeNote: EDIT_PLAN_STRINGS.noteFeatureAbsent,
       saveLabel: EDIT_PLAN_STRINGS.saveLabelDisabled,
-      reason: EDIT_PLAN_STRINGS.reasonFeatureAbsent(yearLabel),
+      reason: EDIT_PLAN_STRINGS.reasonFeatureAbsent(timeLabel),
       roundedTime: null,
       estimatedBytes: null,
     };
   }
 
-  // (3) その年ちょうどに錨がある ⇒ 上書き。
-  if (hasAnchorStartingAt(series, editTime, calendar)) {
+  // (2) **現在時刻ちょうどに錨がある ⇒ 粒度を問わず上書き。**
+  //
+  // 年ちょうどを要求するのは **新しい錨を作る側だけ**である（U-14「月日を勝手に
+  // 補わない」は、月日を *焼き付ける* ことの禁止であって、既にある月日つきの錨を
+  // *直せなくする* ことではない）。存続期間エディタは月日つきの開始を実際に作れるし、
+  // 錨を選べば現在時刻はその開始へ同期するので、ここを年ちょうどで弾くと
+  // **その錨だけ永久に編集できない**（設計 B1 / GPT#1 / 反証 F9）。
+  // 渡す時刻は丸めずそのまま。applyPastEdit は開始の一致で錨を引き当てるので、
+  // 既存の錨の月日はそのまま保たれる。
+  if (hasAnchorStartingAt(series, currentTime, calendar)) {
     return {
       kind: EDIT_PLAN_KIND.Overwrite,
       savable: true,
-      editTime,
-      badgeTime: yearLabel,
-      badgeNote: EDIT_PLAN_STRINGS.noteOverwrite(yearLabel),
-      saveLabel: EDIT_PLAN_STRINGS.saveLabelOverwrite(yearLabel),
+      // 年ちょうどなら今までどおり年へ丸める（比較は U02 が正規化するので、丸めても
+      // 同じ錨に当たる）。年ちょうどでないときだけ、そのままの時刻で錨を引き当てる。
+      editTime: aligned ? timePointYear(currentTime.year) : currentTime,
+      badgeTime: timeLabel,
+      badgeNote: EDIT_PLAN_STRINGS.noteOverwrite(timeLabel),
+      saveLabel: EDIT_PLAN_STRINGS.saveLabelOverwrite(timeLabel),
       reason: null,
       roundedTime: null,
+      estimatedBytes: null,
+    };
+  }
+
+  // (3) 年ちょうどでない — レール由来の時刻は年へ丸めてあるので通常は起きないが、
+  // 月/日の 1 歩送りと直接ジャンプは今も細かい粒度を作れる。**新設の保険として残す**
+  // （設計書 §D.3 の表の 4 行目 / §O の B-4）。
+  if (!aligned) {
+    return {
+      kind: EDIT_PLAN_KIND.NotYearAligned,
+      savable: false,
+      editTime: null,
+      badgeTime: fullLabel,
+      badgeNote: EDIT_PLAN_STRINGS.noteNotYearAligned,
+      saveLabel: EDIT_PLAN_STRINGS.saveLabelDisabled,
+      reason: EDIT_PLAN_STRINGS.reasonNotYearAligned(fullLabel, yearLabel),
+      roundedTime: timePointYear(currentTime.year),
       estimatedBytes: null,
     };
   }
@@ -221,7 +290,7 @@ export function decideEditPlan(input: EditPlanInput): EditPlan {
   return {
     kind: EDIT_PLAN_KIND.NewAnchor,
     savable: true,
-    editTime,
+    editTime: timePointYear(currentTime.year),
     badgeTime: yearLabel,
     badgeNote:
       estimatedBytes === null

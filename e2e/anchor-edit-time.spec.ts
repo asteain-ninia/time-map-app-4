@@ -163,8 +163,9 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       // その年で保存する（錨が 1 本増える）。
       await showProperties(page);
       const nameInput = page.getByTestId('basic-info').getByLabel('名前');
-      await expect(page.getByTestId('save-button')).toBeEnabled();
+      // A6: 値を変えるまで押せない。名前を直してから可否を見る。
       await nameInput.fill('スライダーで移った年');
+      await expect(page.getByTestId('save-button')).toBeEnabled();
       await page.getByTestId('save-button').click();
       await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(2);
 
@@ -201,8 +202,11 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await jumpToYear(page, 1500);
       await showProperties(page);
 
-      // **保存ボタンでは何も起きない**（値が同じなので no-op ガードに飲まれる、教訓 5.24）。
-      await page.getByTestId('save-button').click();
+      // **保存ボタンは押せない**（値が同じなので何も起きない、教訓 5.24）。旧版は押せる
+      // のに黙って何もしなかった（A6 / GPT#6）。いまは押せなくして、代わりの一手を出す。
+      await expect(page.getByTestId('save-button')).toBeDisabled();
+      await expect(page.getByTestId('save-no-change-note')).toContainText('値が変わっていません');
+      await expect(page.getByTestId('save-no-change-note')).toContainText('1500年に錨を作る');
       expect(await anchorRowCount(page)).toBe(1);
 
       // 素性欄の入口が出ている（現在時刻に錨が無いときだけ）。
@@ -254,8 +258,11 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('save-disabled-reason')).toContainText('1200年6月');
       await page.getByTestId('round-to-year-button').click();
       await expect(page.getByTestId('timeline-current')).toHaveText('1200年');
-      await expect(page.getByTestId('save-button')).toBeEnabled();
       await expect(page.getByTestId('save-disabled-reason')).toHaveCount(0);
+      // 丸めただけではまだ値が変わっていないので押せない（A6）。何か直せば押せる。
+      await expect(page.getByTestId('save-button')).toBeDisabled();
+      await page.getByTestId('basic-info').getByLabel('名前').fill('丸めたあとの名前');
+      await expect(page.getByTestId('save-button')).toBeEnabled();
     } finally {
       await app.close();
     }
@@ -280,6 +287,69 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
       await expect(page.getByTestId('draft-discard-confirm')).toHaveCount(0);
       await expect(nameInput).toHaveValue('打ちかけの名前');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('Ctrl+K を既に錨がある年で押すと、黙って終わらずに理由が出る（A5 / バグ狩り #2）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await faceSelectedInEditMode(page);
+      // 追加は 0 年で確定するので、0 年には既に錨がある。
+      const activeBefore = await page.getByTestId('app-active-feature').textContent();
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(activeBefore ?? '');
+      await page.keyboard.press('Control+k');
+      // 旧版は鍵盤経路だけ黙って終わっていた（右クリックと素性欄は理由を出していた）。
+      await expect(page.getByTestId('statusbar-result')).toContainText('すでに錨があります');
+      await showProperties(page);
+      expect(await anchorRowCount(page)).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('保存は後ろの錨にも同じ値を入れる範囲を、押す前に文字で見せる（A1）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await faceSelectedInEditMode(page);
+      const nameInput = page.getByTestId('basic-info').getByLabel('名前');
+
+      // 2000 年と 3000 年に「同じ姿のまま」の錨を作る（Ctrl+K の代わりに素性欄の入口）。
+      for (const year of [2000, 3000]) {
+        await jumpToYear(page, year);
+        await showProperties(page);
+        await page.getByTestId('create-anchor-here').click();
+        await expect(page.getByTestId('statusbar-result')).toContainText('錨づくり');
+      }
+      await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(3);
+
+      // 1000 年で改名する。**押す前に**「2000年・3000年 にも同じ値を入れる」と読める。
+      await jumpToYear(page, 1000);
+      await showProperties(page);
+      await nameInput.fill('あたらしい国');
+      const label = page.getByTestId('save-button');
+      await expect(label).toContainText('1000年に錨を作って保存');
+      await expect(label).toContainText('2000年');
+      await expect(label).toContainText('3000年');
+      await expect(page.getByTestId('save-effect-range')).toContainText('この先ずっと続きます');
+
+      await label.click();
+      await expect(page.getByTestId('save-message')).toHaveCount(0);
+
+      // 2000 年・3000 年でも新しい名前（後ろの錨で巻き戻らない、反証 F1）。
+      for (const year of [2000, 3000]) {
+        await jumpToYear(page, year);
+        await showProperties(page);
+        await expect(nameInput).toHaveValue('あたらしい国');
+      }
+      // 0 年は元のまま（前へは effect しない）。
+      await jumpToYear(page, 0);
+      await showProperties(page);
+      await expect(nameInput).not.toHaveValue('あたらしい国');
     } finally {
       await app.close();
     }

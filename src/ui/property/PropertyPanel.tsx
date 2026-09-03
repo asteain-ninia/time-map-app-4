@@ -24,20 +24,42 @@
 // 錨を選ぶと現在時刻がその錨の開始時刻へ同期する（FR-84 前半は維持）。これは今までと
 // 同じ単一経路 setCurrentTime を通る（教訓 5.6 / 5.15）。
 //
+// **打ちかけの下書きを、どの経路でどう扱うか**（K-5「一時状態は全経路で捨てる」。
+// 増分 2 の手直し A4 / GPT#2。捨てるのは全経路で同じ、聞くかどうかだけが経路ごとに違う）:
+//
+//   | 経路                                        | 下書き           | 確認 |
+//   | ------------------------------------------- | ---------------- | ---- |
+//   | 編集対象が変わる（別の地物・別の錨・別の年）| 捨てる前に聞く   | 出す |
+//   | 対象が解決できなくなった（選択解除・不在年）| 捨てる前に聞く   | 出す |
+//   | 自分の保存が成功した直後                    | 黙って追従       | 出さない（失われるものが無い、教訓 5.53） |
+//   | 取り消し／やり直し                          | 黙って捨てる     | 出さない（ドメインの巻き戻しのほうが強い） |
+//   | 鍵を「読むだけ」にする                      | 黙って捨てる     | 出さない（編集経路が閉じる） |
+//   | プロジェクトを開く／新規                    | 捨てる前に聞く   | 出す（下の注記） |
+//
+// **注記（プロジェクトの読み込み）**: 読み込みは選択を消すので、この画面からは
+// 「編集対象が変わった」と見分けが付かない。素性欄へ「いま読み込んだ」を伝える合図が
+// まだ無いためで、結果として確認が出る（捨てはする＝K-5 は守られる）。ただし
+// ［元の場所へ戻る］は新しいプロジェクトに居ない地物を選び直すので、
+// 「選択された地物が見つかりません」になる。合図を通すのは増分 6（現状.md に申し送り）。
+//
+// 確認が出ているあいだは **背後の編集経路をすべて止める**: 保存ボタン・存続期間の操作・
+// 地物の削除はこのパネルの中で、Ctrl+K / Delete などの鍵盤は `onDraftConfirmChange` で
+// ホストの `shortcutsSuspended` に載せて止める（教訓 5.14）。
+//
 // The panel holds NO map-draw state in React (技術方針 2.3); it reads the store.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { resolveAt, type AnchorEntry, type AnchorSeries } from '../../domain/anchor-series';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { PaletteThemeId } from '../../domain/coloring';
-import { featureDisplayName } from '../../domain/feature';
+import { featureDisplayName, type Feature } from '../../domain/feature';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
-import { isPersistedYear } from '../../domain/time/validate';
+import { carriedAttributesOf, carryForwardTargets, nextDivergingEntry } from '../../domain/editing/carry-forward';
 
 import { canEdit } from '../shell/permissions';
 import type { SessionStore } from '../state/store';
@@ -65,6 +87,7 @@ import { DETAIL_DOCUMENT_PLAN, planDetailDocumentEdit } from './detail-document'
 import { buildEditIntent, isNoOpEdit, propertyValuesEqual, valuesFromFeature } from './edit-intent';
 import {
   decideEditPlan,
+  saveEffectOf,
   EDIT_PLAN_KIND,
   EDIT_PLAN_STRINGS,
   type EditPlan,
@@ -132,6 +155,24 @@ export interface PropertyPanelProps<S> {
    * would go STALE. The host owns reactivity and hands a FRESH resolver each render.
    */
   readonly resolveAreaKm2?: (featureId: FeatureId) => number | undefined;
+  /**
+   * 打ちかけを捨てるかどうかの確認（N-04）が開いた／閉じたことをホストへ伝える
+   * （増分 2 の手直し A4 (c)）。ホストはこれを `shortcutsSuspended` に OR して、
+   * 確認が出ているあいだ Ctrl+K・Delete・Ctrl+Z などの大域ショートカットを止める。
+   * 右クリックメニューの `onOpenChange` と同じ形（教訓 5.14: 重なる UI は入力を
+   * 受ける層も同時に設計する）。未配線でも確認そのものは動く（honest stub）。
+   */
+  readonly onDraftConfirmChange?: (open: boolean) => void;
+}
+
+/**
+ * 画面に出す名前。`featureDisplayName` は名前が空のとき **内部 id** を返すので、
+ * そのまま出すと確認の本文や見出しに `f-5-4` が出る（U-1 違反 / A4 (d)）。
+ * 出口 1 か所で日本語へ落とす（教訓 5.51 の「出口で写像する」形）。
+ */
+function shownName(feature: Feature): string {
+  const shown = featureDisplayName(feature);
+  return shown === String(feature.id) ? PROPERTY_STRINGS.unnamedFeature : shown;
 }
 
 /** 打ちかけの下書きが捨てられそうになったときに握っておく文脈（N-04）。 */
@@ -156,8 +197,6 @@ const EMPTY_VALUES: PropertyEditValues = {
   name: '',
   kindLabel: '',
   detailDocument: '',
-  startYear: 0,
-  endYear: 0,
   autoColorEnabled: false,
   fillColor: '',
   fillOpacity: 1,
@@ -321,7 +360,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       featureId: targetFeatureId,
       anchorId: effectiveAnchorId,
       time: currentTime,
-      featureName: featureDisplayName(feature),
+      featureName: shownName(feature),
     };
   }, [targetFeatureId, feature, effectiveAnchorId, currentTime]);
   // 編集対象の同一性: 地物 × 錨 × **年**。年を鍵に入れるのは、錨が 1 本しか無い地物でも
@@ -340,31 +379,127 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const [message, setMessage] = useState<string | null>(null);
   // N-04: 打ちかけを捨てる前の確認。null なら確認は出ていない。
   const [pendingDiscard, setPendingDiscard] = useState<DraftOrigin | null>(null);
+  /**
+   * **自分が保存した直後の値**（教訓 5.53 の例外はこれ 1 つだけ）。保存が成功すると
+   * 錨が 1 本増えて編集対象（地物×錨×年）が変わるので、素の「種と違う」判定では
+   * 自分で保存した直後に「入力中の内容が失われます」と聞かれる。
+   *
+   * 旧: 「いまの確定済みの姿とも違う」を条件に足していた。しかしそれだと
+   * **0 年で A→B と打って、移動先 1200 年の確定名がたまたま B だったとき**、確認なしで
+   * 「0 年へ B を保存する」という意図が消えていた（GPT#2）。例外の相手を
+   * 「自分が保存した値」だけに絞ると、この穴が閉じる。
+   */
+  const [savedValues, setSavedValues] = useState<PropertyEditValues | null>(null);
 
-  // 「打ちかけの内容がある」＝ **種にした姿とも、いまの確定済みの姿とも違う**こと。
-  // 片方だけで判定すると、**保存の直後に確認が出てしまう**。保存で錨が 1 本増えると
-  // 編集対象（地物×錨×年）が変わるので、「対象が変わったかつ下書きが種と違う」になるが、
-  // その下書きは **いま保存した内容そのもの** で、失われるものは何も無い。
+  // 「打ちかけの内容がある」＝ **種にした姿と違う**こと（ただし自分の保存の直後を除く）。
   const dirty =
-    !propertyValuesEqual(draft, seed.baseline) && !propertyValuesEqual(draft, baseline);
+    !propertyValuesEqual(draft, seed.baseline) &&
+    !(savedValues !== null && propertyValuesEqual(draft, savedValues));
 
-  if (pendingDiscard === null && seed.key !== editTargetKey) {
-    // 編集対象そのものが変わった（別の地物・別の錨・別の年）。
+  // 鍵を「読むだけ」にしたら下書きは **黙って捨てる**（K-5 / GPT#2）。編集経路そのものが
+  // 閉じるので、開け直したときに古い打ちかけが復活してはいけない。確認を出さないのは、
+  // 利用者自身が閉じた操作だからである。
+  const [wasEditable, setWasEditable] = useState(canEdit(mode));
+  // 鍵を閉じると選択も外れる（store.setMode が一時状態を捨てる）ので、**同じ描画で**
+  // 「対象が変わった」の枝も成立してしまう。捨てたばかりのときは確認を出さない。
+  let discardedForLock = false;
+  if (wasEditable !== canEdit(mode)) {
+    setWasEditable(canEdit(mode));
+    if (!canEdit(mode)) {
+      discardedForLock = true;
+      setPendingDiscard(null);
+      setSeed({ key: editTargetKey, baseline, origin });
+      setDraft(baseline);
+      setSavedValues(null);
+    }
+  }
+
+  if (!discardedForLock && pendingDiscard === null && seed.key !== editTargetKey) {
+    // 編集対象そのものが変わった（別の地物・別の錨・別の年・地物が解決できなくなった）。
     if (dirty && seed.origin !== null) {
       // **打ちかけがあるなら捨てない**。確認を出して利用者に決めてもらう（N-04）。
       // 本設計は時刻を動かす頻度が上がるので、黙って消すと被害が比例して増える。
+      // 確認そのものは素性欄の枝の外に描く（地物が解決できないときにも出す、反証 F3）。
       setPendingDiscard(seed.origin);
     } else {
       setSeed({ key: editTargetKey, baseline, origin });
       setDraft(baseline);
+      setSavedValues(null);
     }
-  } else if (pendingDiscard === null && !propertyValuesEqual(seed.baseline, baseline)) {
-    // 同じ編集対象のまま、確定済みの姿だけが変わった（取り消し・やり直し・外部読み込み）。
-    // **こちらは黙って追従する**のが正しい向きである（A9 / BH1-01。ドメインの巻き戻しは
-    // 打ちかけより強い）。追従しないと、取り消したはずの名前が保存で復活した。
+  } else if (
+    !discardedForLock &&
+    pendingDiscard === null &&
+    !propertyValuesEqual(seed.baseline, baseline)
+  ) {
+    // 同じ編集対象のまま、確定済みの姿だけが変わった（取り消し・やり直し・外部読み込み・
+    // 鍵を「読むだけ」にしたあとの読み直し）。**こちらは黙って追従する**のが正しい向きで
+    // ある（A9 / BH1-01。ドメインの巻き戻しは打ちかけより強い）。追従しないと、取り消した
+    // はずの名前が保存で復活した。捨てる契機の表は module 冒頭にある（K-5）。
     setSeed({ key: editTargetKey, baseline, origin });
     setDraft(baseline);
+    setSavedValues(null);
   }
+
+  // --- 引き継ぎの予告（A1 / 反証 F1。設計書 §D.3 の「危険と打ち消し方」） ------
+  //
+  // 錨は「その時点の全体の写し」なので、T より後ろの錨は直す前の値の写しを持っている。
+  // 保存はその写しも「次にその属性が本当に変わる錨」まで新値へ引き継ぐ（ドメインの
+  // `applyCarryForward`）。**画面はその範囲を押す前に文字で見せる**。数え直さず、
+  // ドメインとまったく同じ純粋関数を呼ぶ（教訓 5.29）。
+  const carryPreview = useMemo(() => {
+    const editTime = editPlan.editTime;
+    if (feature === null || governing === null || editTime === null) {
+      return { targets: [] as readonly AnchorEntry[], diverging: null as AnchorEntry | null };
+    }
+    const before = carriedAttributesOf(feature);
+    return {
+      targets: carryForwardTargets(
+        governing.series.entries,
+        editTime,
+        feature.id,
+        before,
+        draft,
+        calendar,
+      ),
+      diverging: nextDivergingEntry(
+        governing.series.entries,
+        editTime,
+        feature.id,
+        before,
+        draft,
+        calendar,
+      ),
+    };
+  }, [feature, governing, editPlan.editTime, draft, calendar]);
+
+  const saveEffect = useMemo(
+    () =>
+      saveEffectOf(
+        editPlan,
+        carryPreview.targets.map((e) => formatTimePoint(e.start)),
+        carryPreview.diverging === null ? null : formatTimePoint(carryPreview.diverging.start),
+      ),
+    [editPlan, carryPreview],
+  );
+
+  // 教訓 5.24 の裏面（A6 / GPT#6）: 「1500年に錨を作って保存」と書いてあるボタンが、
+  // 値が同じだと黙って何もしない状態だった。**押せないことと、その代わりの一手を出す。**
+  const noOpDraft = feature !== null && isNoOpEdit(feature, draft);
+
+  // A4 (c): 確認が開いているあいだ、ホストは大域ショートカットを止める。開閉が変わった
+  // ときだけ伝える（描画のたびに呼ぶと親が無駄に再描画する）。
+  const { onDraftConfirmChange } = props;
+  const draftConfirmOpen = pendingDiscard !== null;
+  useEffect(() => {
+    onDraftConfirmChange?.(draftConfirmOpen);
+  }, [onDraftConfirmChange, draftConfirmOpen]);
+  useEffect(
+    () => () => {
+      // 素性欄が外れるときは必ず解除する（教訓 5.2: 一時状態は全経路で捨てる）。
+      onDraftConfirmChange?.(false);
+    },
+    [onDraftConfirmChange],
+  );
 
   const patchDraft = useCallback((next: Partial<PropertyEditValues>) => {
     setDraft((prev) => ({ ...prev, ...next }));
@@ -382,6 +517,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     setPendingDiscard(null);
     setSeed({ key: editTargetKey, baseline, origin });
     setDraft(baseline);
+    setSavedValues(null);
     // 判断用のメッセージは残す（教訓 5.12: 3 つの契機に「対象の変更」は入らない）。
   }, [editTargetKey, baseline, origin]);
 
@@ -407,13 +543,10 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       );
       return;
     }
-    // WRITE 側の年境界ガード (bughunt 第12波 #2). 基本情報の開始年/終了年は type=number
-    // ゆえ巨大整数・負巨大・小数を受理し、READ 側 schema.ts の yearSchema が load 時に
-    // 範囲外年で manifest 全体を Invalid 拒否 → .gimoza が二度と開けず全損する。
-    if (!isPersistedYear(draft.startYear) || !isPersistedYear(draft.endYear)) {
-      setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${PROPERTY_STRINGS.yearOutOfRange}`);
-      return;
-    }
+    // 旧: 基本情報の開始年/終了年に対する WRITE 側の年境界ガード (bughunt 第12波 #2)。
+    // **入力欄そのものを無くしたので不要になった**（A7 / GPT#8）。飾りの年は読み取り
+    // 専用になり、保存には地物が持っている値がそのまま載る（読み込み時の schema が
+    // 既に範囲を保証している）。
     // FR-98 の WRITE ガード（長すぎる詳細文書）。ドメインの RangeError は最後の防波堤で
     // あって UX ではない。判定は単一真実源 planDetailDocumentEdit を通す（教訓 5.29）。
     const docPlan = planDetailDocumentEdit(feature, draft.detailDocument);
@@ -430,6 +563,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     try {
       editDispatch.dispatchEdit(buildEditIntent(feature, editPlan.editTime, draft));
       setMessage(null);
+      // 教訓 5.53: 保存が成功すると編集対象（地物×錨×年）が変わる。**いま保存した値**
+      // だけを例外として覚えておき、次に対象が変わったときに黙って追従させる。
+      setSavedValues(draft);
     } catch (err) {
       setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`);
     }
@@ -462,8 +598,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   // 存続期間の編集は **自分の系列** のときだけ（借り物の親の系列を、子の画面から
   // 書き換えさせない。§C.6 の「まとめ役の子の錨」は読むための表示である）。
+  // 確認が出ているあいだは **背後の編集をすべて止める**（A4 (c) / GPT#2。教訓 5.14:
+  // 重なる UI は入力を受ける層も同時に設計する）。存続期間の操作・地物の削除・保存の
+  // 3 つはこの枝で、Ctrl+K と Delete などの鍵盤は下の `onDraftConfirmChange` で
+  // ホストの shortcutsSuspended に載せる。
   const intervalEditable =
-    anchorIntervalDispatch !== undefined && editable && !inherited && ownSeries !== null;
+    anchorIntervalDispatch !== undefined &&
+    editable &&
+    !inherited &&
+    ownSeries !== null &&
+    pendingDiscard === null;
 
   // FR-98: an object-reference (feature:) link in the preview promotes the target
   // through the SAME store.setActiveFeature path every selection uses (教訓 5.29).
@@ -486,6 +630,34 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   return (
     <div className="property-panel" data-testid="property-panel">
+      {/* N-04 の確認は **素性欄の枝の外**に描く。選択が外れた／その年に地物が居なく
+          なった経路でも打ちかけは失われうるのに、旧版は feature !== null の枝の中に
+          あったので確認そのものが出なかった（反証 F3）。 */}
+      {pendingDiscard !== null && (
+        <div
+          className="property-panel__draft-confirm"
+          role="alertdialog"
+          aria-label={PROPERTY_STRINGS.draftDiscardTitle}
+          data-testid="draft-discard-confirm"
+        >
+          <p>
+            {PROPERTY_STRINGS.draftDiscardBody(
+              PROPERTY_STRINGS.draftOrigin(
+                pendingDiscard.featureName,
+                formatYear(pendingDiscard.time.year),
+              ),
+            )}
+          </p>
+          <div className="property-panel__draft-confirm-buttons">
+            <button type="button" data-testid="draft-discard-keep" onClick={returnToDraftOrigin}>
+              {PROPERTY_STRINGS.draftDiscardKeep}
+            </button>
+            <button type="button" data-testid="draft-discard-drop" onClick={discardDraft}>
+              {PROPERTY_STRINGS.draftDiscardDrop}
+            </button>
+          </div>
+        </div>
+      )}
       {feature === null ? (
         <GuidanceMessage decision={decision} />
       ) : (
@@ -494,7 +666,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
           <div className="property-panel__head" data-testid="property-panel-head">
             <div className="property-panel__title">
               <span className="property-panel__name" data-testid="property-title-name">
-                {featureDisplayName(feature)}
+                {shownName(feature)}
               </span>
               <span className="property-panel__kind" data-testid="property-title-kind">
                 {featureKindJaLabel(feature.kind)}
@@ -587,7 +759,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             <DeleteFeatureButton
               target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
               onConfirm={onDeleteFeature}
-              editable={editable}
+              editable={editable && pendingDiscard === null}
               featureName={feature.attributes.name}
             />
           )}
@@ -596,40 +768,6 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               offsetTop が 755.8px で初期表示（高さ 362px）の外にあり、誰も見なかった
               （BH1-03）。押す前に行き先が読める文言はここに出る。 */}
           <div className="property-panel__save-bar" data-testid="property-save-bar">
-            {pendingDiscard !== null && (
-              <div
-                className="property-panel__draft-confirm"
-                role="alertdialog"
-                aria-label={PROPERTY_STRINGS.draftDiscardTitle}
-                data-testid="draft-discard-confirm"
-              >
-                <p>
-                  {PROPERTY_STRINGS.draftDiscardBody(
-                    PROPERTY_STRINGS.draftOrigin(
-                      pendingDiscard.featureName,
-                      formatYear(pendingDiscard.time.year),
-                    ),
-                  )}
-                </p>
-                <div className="property-panel__draft-confirm-buttons">
-                  <button
-                    type="button"
-                    data-testid="draft-discard-keep"
-                    onClick={returnToDraftOrigin}
-                  >
-                    {PROPERTY_STRINGS.draftDiscardKeep}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="draft-discard-drop"
-                    onClick={discardDraft}
-                  >
-                    {PROPERTY_STRINGS.draftDiscardDrop}
-                  </button>
-                </div>
-              </div>
-            )}
-
             {message !== null && (
               <div className="basic-info__message" role="alert" data-testid="save-message">
                 <span>{message}</span>
@@ -646,6 +784,26 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             {editPlan.reason !== null && (
               <p className="property-panel__save-reason" data-testid="save-disabled-reason">
                 {editPlan.reason}
+              </p>
+            )}
+
+            {/* **押す前に効く範囲を見せる**（A1 / 設計書 §D.3 の「危険と打ち消し方」）。
+                保存は後ろの錨が持つ「直す前の値の写し」も、次にその属性が本当に変わる
+                錨まで新値へ引き継ぐ。だから「いつまでこの姿が続くのか」を常に出す。 */}
+            {saveEffect.effectRange !== null && (
+              <p className="property-panel__save-effect" data-testid="save-effect-range">
+                {saveEffect.effectRange}
+              </p>
+            )}
+
+            {/* A6 / GPT#6: 値が変わっていないのに「錨を作って保存」と書いてあるボタンが
+                押せて、押しても黙って何も起きなかった。押せなくしたうえで、代わりの
+                一手（この年に錨だけ作る）を文字で出す。 */}
+            {editable && editPlan.savable && noOpDraft && (
+              <p className="property-panel__save-reason" data-testid="save-no-change-note">
+                {editPlan.kind === EDIT_PLAN_KIND.NewAnchor
+                  ? EDIT_PLAN_STRINGS.noChangeNoteWithCreateAnchor(formatYear(currentTime.year))
+                  : EDIT_PLAN_STRINGS.noChangeNote}
               </p>
             )}
 
@@ -671,10 +829,10 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                   type="button"
                   className="basic-info__save"
                   data-testid="save-button"
-                  disabled={!editPlan.savable || pendingDiscard !== null}
+                  disabled={!editPlan.savable || pendingDiscard !== null || noOpDraft}
                   onClick={handleSave}
                 >
-                  {editPlan.saveLabel}
+                  {saveEffect.saveLabel}
                 </button>
                 {editPlan.kind === EDIT_PLAN_KIND.NotYearAligned &&
                   editPlan.roundedTime !== null && (

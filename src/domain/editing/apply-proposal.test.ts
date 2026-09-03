@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { applyAddProposal, applyEditProposal, applyMergeProposal, applySplitProposal, deriveAnchorId } from './apply-proposal';
+import { applyAddProposal, applyEditProposal, applyMergeProposal, applySplitProposal, deriveAnchorId, findHistoryContaining } from './apply-proposal';
 import { createEditProposal } from '../consistency/types';
 import { MERGE_STATUS, buildMergeProposal, toMergeEditProposal } from '../merge/proposal';
 import { parentNone, propertyNew } from '../merge/decision';
@@ -25,7 +25,7 @@ import type { FeatureSnapshot } from './edit-flow';
 import { createShape, createTerritoryRing } from '../ring';
 import { createVertex, createVertexStore, setVertex, withVertexCoordinate } from '../vertex';
 import { createAnchor, createAnchorSnapshot } from '../anchor';
-import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import { changeStart, createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
 import { checkConsistency, INCONSISTENCY } from '../persistence/consistency';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../ids';
 import { isValidSeries } from '../anchor-series';
@@ -1143,5 +1143,151 @@ describe('applyMergeProposal', () => {
       (i) => i.kind === INCONSISTENCY.VertexCoordinateDivergence,
     );
     expect(divergence).toBeUndefined();
+  });
+});
+
+// --- 増分 2 の手直し: 保存の意味論 -------------------------------------------
+
+describe('applyEditProposal — 保存した属性を前へ引き継ぐ（A1 / 反証 F1）', () => {
+  // まとめ役（集約地物）の下では、兄弟を直すたびに **親の系列** に錨が立つ。その錨は
+  // 「その時点の全体の写し」なので、直していない子の **旧名** も一緒に写っている。
+  // 引き継ぎが無いと「1000 年で改名 → 2000 年で旧名に戻る」が起きる。
+  function aggregateProject(): {
+    root: DomainProject;
+    childA: ReturnType<typeof asFeatureId>;
+    childB: ReturnType<typeof asFeatureId>;
+    aggId: ReturnType<typeof asFeatureId>;
+  } {
+    const a = squareLeaf('c-a', ['va-1', 'va-2', 'va-3'], [0, 1, 2]);
+    const b = squareLeaf('c-b', ['vb-1', 'vb-2', 'vb-3'], [5, 6, 7]);
+    const childA = { ...a.feature, parentId: asFeatureId('agg'), attributes: createBasicAttributes('旧名', 0, 0) };
+    const childB = { ...b.feature, parentId: asFeatureId('agg'), attributes: createBasicAttributes('兄弟', 0, 0) };
+    const agg = createAggregateFeature(
+      asFeatureId('agg'),
+      createBasicAttributes('まとめ役', 0, 0),
+      color,
+      [childA.id, childB.id],
+    );
+    const store = createVertexStore([...a.vertices, ...b.vertices]);
+    const anchor = createAnchor(
+      deriveAnchorId(agg.id, timePointYear(0)),
+      createAnchorSnapshot([childA, childB, agg] as readonly Feature[], store),
+    );
+    const root: DomainProject = {
+      ...emptyProject(),
+      histories: [
+        {
+          featureId: agg.id,
+          series: normalizeSeries([createAnchorEntry(anchor, timePointYear(0), null)], calendar),
+        },
+      ],
+    };
+    return { root, childA: childA.id, childB: childB.id, aggId: agg.id };
+  }
+
+  function renameAt(
+    root: DomainProject,
+    featureId: ReturnType<typeof asFeatureId>,
+    year: number,
+    name: string,
+  ): DomainProject {
+    const at = timePointYear(year);
+    const found = findHistoryContaining(root, featureId, at, calendar)!;
+    const res = resolveAt(found.history.series, at, calendar);
+    if (res.kind !== 'present') throw new Error('居ない');
+    const f = res.entry.anchor.snapshot.features.find((x) => x.id === featureId)!;
+    const snapshot: FeatureSnapshot = {
+      feature: { ...f, attributes: createBasicAttributes(name, f.attributes.startYear, f.attributes.endYear) },
+      vertices: [],
+    };
+    return applyEditProposal(root, createEditProposal(featureId, at, snapshot), calendar);
+  }
+
+  function nameAt(
+    root: DomainProject,
+    featureId: ReturnType<typeof asFeatureId>,
+    year: number,
+  ): string | undefined {
+    const found = findHistoryContaining(root, featureId, timePointYear(year), calendar);
+    if (found === undefined) return undefined;
+    const res = resolveAt(found.history.series, timePointYear(year), calendar);
+    if (res.kind !== 'present') return undefined;
+    return res.entry.anchor.snapshot.features.find((f) => f.id === featureId)?.attributes.name;
+  }
+
+  it('兄弟を 2000 年で直したあと 1000 年で改名すると、2000 年でも 3000 年でも新名になる', () => {
+    const { root, childA, childB } = aggregateProject();
+    // ① 兄弟を 2000 年と 3000 年で直す（親の系列に錨が 2 本立つ）。
+    let p = renameAt(root, childB, 2000, '兄弟（改）');
+    p = renameAt(p, childB, 3000, '兄弟（再改）');
+    expect(nameAt(p, childA, 2000)).toBe('旧名');
+
+    // ② 1000 年で改名する。
+    p = renameAt(p, childA, 1000, '新名');
+
+    expect(nameAt(p, childA, 1000)).toBe('新名');
+    expect(nameAt(p, childA, 2000)).toBe('新名');
+    expect(nameAt(p, childA, 3000)).toBe('新名');
+    // 直前の年は変わらない。
+    expect(nameAt(p, childA, 500)).toBe('旧名');
+    // 兄弟の歴史は 1 つも壊れていない。
+    expect(nameAt(p, childB, 2000)).toBe('兄弟（改）');
+    expect(nameAt(p, childB, 3000)).toBe('兄弟（再改）');
+  });
+
+  it('本当に改名されている年より先へは引き継がない', () => {
+    const { root, childA } = aggregateProject();
+    let p = renameAt(root, childA, 2500, '中世の名前');
+    p = renameAt(p, childA, 1000, '新名');
+    expect(nameAt(p, childA, 1000)).toBe('新名');
+    expect(nameAt(p, childA, 2500)).toBe('中世の名前');
+  });
+});
+
+describe('applyEditProposal — 錨 ID の衝突で錨が黙って消えない（A2 / 反証 F4）', () => {
+  it('存続期間で開始を動かした錨があっても、元の年に新設して消えない', () => {
+    const { feature, vertices } = squareLeaf('f-x', ['vx-1', 'vx-2', 'vx-3'], [0, 1, 2]);
+    const named = { ...feature, attributes: createBasicAttributes('もとの名前', 0, 0) };
+    let root: DomainProject = applyAddProposal(emptyProject(), {
+      featureId: named.id,
+      anchorTime: timePointYear(0),
+      snapshot: { feature: named, vertices, sharedCandidateIds: new Map() } satisfies AddSnapshot,
+    });
+
+    const save = (year: number, name: string): void => {
+      const at = timePointYear(year);
+      const res = resolveAt(root.histories[0]!.series, at, calendar);
+      if (res.kind !== 'present') throw new Error('居ない');
+      const f = res.entry.anchor.snapshot.features.find((x) => x.id === named.id)!;
+      root = applyEditProposal(
+        root,
+        createEditProposal(named.id, at, {
+          feature: { ...f, attributes: createBasicAttributes(name, 0, 0) },
+          vertices: [],
+        } satisfies FeatureSnapshot),
+        calendar,
+      );
+    };
+
+    save(1000, '1000年の名前');
+    save(2000, '2000年の名前');
+
+    // 存続期間エディタで 1000 年の錨を 1500 年へ動かす（錨 ID は変わらない）。
+    const moved = changeStart(
+      root.histories[0]!.series,
+      deriveAnchorId(named.id, timePointYear(1000)),
+      timePointYear(1500),
+      calendar,
+    );
+    expect(moved.ok).toBe(true);
+    if (moved.ok !== true) return;
+    root = { ...root, histories: [{ featureId: named.id, series: moved.series }] };
+    expect(root.histories[0]!.series.entries.map((e) => e.start.year)).toEqual([0, 1500, 2000]);
+
+    // もう一度 1000 年で保存する（増分 2 以降は素性欄からこれができる）。
+    save(1000, 'もう一度 1000 年');
+
+    expect(root.histories[0]!.series.entries.map((e) => e.start.year)).toEqual([0, 1000, 1500, 2000]);
+    expect(isValidSeries(root.histories[0]!.series, calendar)).toBe(true);
   });
 });

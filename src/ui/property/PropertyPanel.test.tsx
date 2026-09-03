@@ -879,7 +879,7 @@ describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1
 
     // At time 100 the form shows the a1 snapshot (Alpha).
     expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('Alpha');
-    expect(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel)).toHaveValue(100);
+    expect(screen.getByTestId('decorative-start-year')).toHaveTextContent('100');
 
     // Move the current time forward to the a2 interval (as the timeline slider would).
     act(() => {
@@ -888,8 +888,8 @@ describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1
 
     // The form must now reflect the a2 snapshot (Beta), NOT the frozen Alpha.
     expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('Beta');
-    expect(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel)).toHaveValue(200);
-    expect(screen.getByLabelText(PROPERTY_STRINGS.endYearLabel)).toHaveValue(300);
+    expect(screen.getByTestId('decorative-start-year')).toHaveTextContent('200');
+    expect(screen.getByTestId('decorative-end-year')).toHaveTextContent('300');
   });
 
   it('editing ONE field after a time move saves the CURRENT anchor (Beta) attributes at editTime=200 — never the frozen Alpha', () => {
@@ -914,9 +914,7 @@ describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1
     expect(intent.attributes.name).toBe('Gamma');
     // …but EVERY un-edited field carries BETA's snapshot, NOT the frozen Alpha's.
     // Before the fix the draft/feature were frozen at Alpha, so these would be
-    // Alpha's 100/200/#aa* — overwriting Beta on save (the data-loss bug).
-    expect(intent.attributes.startYear).toBe(200);
-    expect(intent.attributes.endYear).toBe(300);
+    // Alpha's #aa* — overwriting Beta on save (the data-loss bug).
     expect(intent.attributes.fillColor).toBe('#00bb00');
     expect(intent.attributes.borderColor).toBe('#00bb22');
     expect(intent.featureId).toBe(fM);
@@ -939,14 +937,16 @@ describe('PropertyPanel — 多錨 time-move save integrity (bughunt 第12波 #1
   });
 });
 
-// bughunt 第12波 #2 (HIGH — .gimoza 全損防止): the基本情報 開始年/終了年 inputs (type=number)
-// accept huge / negative-huge / fractional years. createBasicAttributes / edit-intent /
-// the edit binding never validate the year, so a Committed save succeeds — but the READ
-// side schema (yearSchema = int within ±MAX_YEAR, the SAME isPersistedYear bound the
-// timeline WRITE side already enforces) rejects the WHOLE manifest on load, so the .gimoza
-// can never be reopened (書込⊆読込 asymmetry). handleSave now guards with the SAME
-// isPersistedYear (single truth source) and returns an honest save-failure message.
-describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第12波 #2, HIGH)', () => {
+// 増分 2 の手直し A7 / GPT#8 — 飾りの開始年／終了年は **保存の対象ではない**。
+//
+// 旧: この 2 欄は type=number の入力欄で、巨大整数・負巨大・小数を受理していた
+// （bughunt 第12波 #2。READ 側 schema が load 時に manifest 全体を拒否し .gimoza が
+// 二度と開けなくなる）。handleSave に isPersistedYear のガードを置いて塞いでいた。
+// 新: **入力欄そのものを無くした。** 設計書 §C.6 の契約（保存の対象は名前・種別ラベル・
+// 見た目・詳細文書の 4 つ）に型と画面を合わせたので、「表示専用の飾り」と説明した欄を
+// 触っただけで現在年に錨が立つ、という事故ごと消えている。値は U-28 に従って
+// 折りたたみの中に読み取り専用で出す。
+describe('PropertyPanel — 飾りの開始年／終了年は読み取り専用（A7 / GPT#8）', () => {
   function renderYearPanel(dispatch: EditDispatch) {
     const store = makeStore({ active: true });
     render(
@@ -962,45 +962,40 @@ describe('PropertyPanel — 基本情報 年境界 WRITE ガード (bughunt 第1
     fireEvent.click(screen.getByTestId('anchor-row-a1')); // establish an edit target
   }
 
-  it.each([
-    ['開始年 が範囲外（+5,000,000）', PROPERTY_STRINGS.startYearLabel, '5000000'],
-    ['終了年 が範囲外（+5,000,000）', PROPERTY_STRINGS.endYearLabel, '5000000'],
-    ['開始年 が負の範囲外（-5,000,000）', PROPERTY_STRINGS.startYearLabel, '-5000000'],
-    ['開始年 が小数（1.5）', PROPERTY_STRINGS.startYearLabel, '1.5'],
-  ])(
-    'rejects a save when %s → honest-failure message, NO dispatch (書込⊆読込)',
-    (_label, fieldLabel, badValue) => {
-      const intents: PropertyEditIntent[] = [];
-      renderYearPanel({ dispatchEdit: (i) => intents.push(i) });
+  it('入力欄が無い（触れないので範囲外の年を書き込めない）', () => {
+    renderYearPanel({ dispatchEdit: () => undefined });
+    expect(screen.queryByLabelText(PROPERTY_STRINGS.startYearLabel)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(PROPERTY_STRINGS.endYearLabel)).not.toBeInTheDocument();
+  });
 
-      fireEvent.change(screen.getByLabelText(fieldLabel), { target: { value: badValue } });
-      fireEvent.click(screen.getByTestId('save-button'));
+  it('値は畳んだ「詳しい属性」に読み取り専用で出る（U-28）', () => {
+    renderYearPanel({ dispatchEdit: () => undefined });
+    expect(screen.getByTestId('decorative-start-year')).toBeInTheDocument();
+    expect(screen.getByTestId('decorative-end-year')).toBeInTheDocument();
+  });
 
-      // The edit must NOT dispatch (would otherwise become an un-loadable .gimoza).
-      expect(intents).toHaveLength(0);
-      // The failure surfaces honestly through the existing save-message path.
-      const msg = screen.getByTestId('save-message');
-      expect(msg).toHaveTextContent(PROPERTY_STRINGS.yearOutOfRange);
-    },
-  );
-
-  it('accepts a save when both years are in range (±MAX_YEAR) — the guard is not over-broad', () => {
+  it('保存の意図に開始年／終了年は載らない（保存の対象は 4 つだけ）', () => {
     const intents: PropertyEditIntent[] = [];
     renderYearPanel({ dispatchEdit: (i) => intents.push(i) });
-
-    // A normal edit at the boundary must still save (MAX_YEAR = 1,000,000).
-    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.startYearLabel), {
-      target: { value: '-1000000' },
-    });
-    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.endYearLabel), {
-      target: { value: '1000000' },
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '新しい名前' },
     });
     fireEvent.click(screen.getByTestId('save-button'));
-
     expect(intents).toHaveLength(1);
-    expect(intents[0]!.attributes.startYear).toBe(-1000000);
-    expect(intents[0]!.attributes.endYear).toBe(1000000);
-    expect(screen.queryByTestId('save-message')).not.toBeInTheDocument();
+    expect(Object.keys(intents[0]!.attributes).sort()).toEqual(
+      [
+        'autoColorEnabled',
+        'borderColor',
+        'detailDocument',
+        'fillColor',
+        'fillOpacity',
+        'kindLabel',
+        'name',
+        'paletteTheme',
+        'selectedColor',
+        'selectedOpacity',
+      ].sort(),
+    );
   });
 });
 
@@ -1200,6 +1195,9 @@ describe('増分 2 — 編集時刻は常に現在時刻（設計書 §D.3 / FR-
     expect(intents[0]!.editTime).toEqual(timePointYear(1573));
   });
 
+  // A3: 上書きのときは、その錨の開始と同じ時刻をそのまま渡す（年ちょうどなら年へ
+  // 丸める＝上の 1 本）。**年ちょうどでない開始を持つ錨だけが編集できない**のを直した。
+
   it('保存の対象に種別ラベルと詳細文書が含まれる（設計書 §C.6 の「保存の対象」）', () => {
     const intents: PropertyEditIntent[] = [];
     renderPanel(storeAt(timePointYear(1200)), { dispatchEdit: (i) => intents.push(i) });
@@ -1248,11 +1246,16 @@ describe('増分 2 — 編集時刻バッジと保存ボタンの文言が 4 通
     expect(screen.getByTestId('save-disabled-reason')).toHaveTextContent('5080年12月31日');
     expect(screen.getByTestId('edit-time-badge')).toHaveAttribute('data-plan', 'notYearAligned');
 
-    // 丸めると押せるようになる（「次の一手をボタンにする」、設計書 §H.5）。
+    // 丸めると理由が消える（「次の一手をボタンにする」、設計書 §H.5）。
     fireEvent.click(screen.getByTestId('round-to-year-button'));
     expect(store.getState().currentTime).toEqual(timePointYear(5080));
-    expect(screen.getByTestId('save-button')).toBeEnabled();
     expect(screen.queryByTestId('save-disabled-reason')).not.toBeInTheDocument();
+    // まだ値を変えていないので押せない（A6）。何か直せば押せる。
+    expect(screen.getByTestId('save-no-change-note')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '尾張国' },
+    });
+    expect(screen.getByTestId('save-button')).toBeEnabled();
   });
 
   it('④その年に地物が無い ⇒ 押せない。理由が出る', () => {
@@ -1464,5 +1467,268 @@ describe('増分 2 — まとめ役の子でも錨の欄が消えない（設計
       />,
     );
     expect(screen.queryByTestId('anchor-interval-p1200')).not.toBeInTheDocument();
+  });
+});
+
+// 増分 2 の手直し A1 / A6 — 保存の「効く範囲」を押す前に見せる。
+//
+// 錨は「その時点の全体の写し」なので、いま見ている年より後ろの錨は **直す前の値の写し**
+// を持っている。保存はその写しも「次にその属性が本当に変わる錨」まで引き継ぐので、
+// **どこまで効くのかを押す前に文字で出す**（設計書 §D.3 の「危険と打ち消し方」）。
+describe('PropertyPanel — 保存の効く範囲を押す前に見せる（A1 / A6）', () => {
+  const fC = asFeatureId('C');
+  const vC = asVertexId('C-v');
+  const OLD = createPointFeature(
+    fC,
+    createBasicAttributes('旧名', 0, 0),
+    createColorInfo(false, '#111111', '#222222', '#333333'),
+    vC,
+  );
+  const RENAMED = createPointFeature(
+    fC,
+    createBasicAttributes('別の名前', 0, 0),
+    createColorInfo(false, '#111111', '#222222', '#333333'),
+    vC,
+  );
+
+  /** 0 年（旧名）・2000 年（旧名の写し）・3000 年（旧名の写し）・4000 年（本当の改名）。 */
+  function carrySeries(): AnchorSeries {
+    const withOld = createAnchorSnapshot([OLD], createVertexStore([]));
+    const withNew = createAnchorSnapshot([RENAMED], createVertexStore([]));
+    return {
+      entries: [
+        createAnchorEntry(createAnchor(asAnchorId('c0'), withOld), timePointYear(0), null),
+        createAnchorEntry(createAnchor(asAnchorId('c2000'), withOld), timePointYear(2000), null),
+        createAnchorEntry(createAnchor(asAnchorId('c3000'), withOld), timePointYear(3000), null),
+        createAnchorEntry(createAnchor(asAnchorId('c4000'), withNew), timePointYear(4000), null),
+      ],
+    };
+  }
+
+  const carryLookup: AnchorSeriesLookup = {
+    anchorSeriesOf: (id) => (id === fC ? carrySeries() : null),
+  };
+  const carryFeatureLookup: FeatureLookup = { featureAt: (id) => (id === fC ? OLD : null) };
+
+  function renderCarry(currentYear: number) {
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: {
+        mode: EDIT_MODE.Edit,
+        activeFeature: fC,
+        currentTime: timePointYear(currentYear),
+      },
+    });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={carryFeatureLookup}
+        anchorLookup={carryLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    return store;
+  }
+
+  it('改名すると、後ろの錨のうち書き換わるものがボタンに出る', () => {
+    renderCarry(1000);
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '新名' },
+    });
+    const label = screen.getByTestId('save-button').textContent ?? '';
+    expect(label).toContain('1000年に錨を作って保存');
+    expect(label).toContain('2000年');
+    expect(label).toContain('3000年');
+    // 本当に別の名前になっている 4000 年は書き換えない。
+    expect(label).not.toContain('4000年');
+  });
+
+  it('「この姿がいつまで続くか」を常に出す（引き継ぎが済んだあとの姿で見る）', () => {
+    renderCarry(1000);
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '新名' },
+    });
+    expect(screen.getByTestId('save-effect-range')).toHaveTextContent('4000年まで続きます');
+  });
+
+  it('値を変えていないときは保存を押せず、代わりの一手を出す（A6 / GPT#6）', () => {
+    renderCarry(1000);
+    expect(screen.getByTestId('save-button')).toBeDisabled();
+    expect(screen.getByTestId('save-no-change-note')).toHaveTextContent('値が変わっていません');
+    expect(screen.getByTestId('save-no-change-note')).toHaveTextContent('1000年に錨を作る');
+  });
+
+  it('上書きになる年では、代わりの一手に「錨を作る」を出さない（起きないことを言わない）', () => {
+    renderCarry(2000);
+    expect(screen.getByTestId('save-button')).toBeDisabled();
+    expect(screen.getByTestId('save-no-change-note')).toHaveTextContent('値が変わっていません。');
+    expect(screen.getByTestId('save-no-change-note')).not.toHaveTextContent('錨を作る');
+  });
+});
+
+// 増分 2 の手直し A4 — 打ちかけ（N-04）の状態機械。
+//
+// 旧版の穴は 3 つあった（反証 F3 / GPT#2）。
+//   (a) 確認 UI が「地物が解決できたとき」の枝の中にあり、**選択が外れる経路では出なかった**。
+//   (b) 「汚れている」を「種とも、いまの確定済みの姿とも違う」で定義していたので、
+//       移動先の確定値がたまたま打ちかけと同じだと、確認なしで意図が消えた。
+//   (c) 確認が出ているあいだ、背後の編集（存続期間・削除・保存）が止まっていなかった。
+describe('PropertyPanel — 打ちかけの状態機械（A4 / N-04）', () => {
+  function renderWithDraft(extra?: { onDraftConfirmChange?: (open: boolean) => void }) {
+    const store = makeStore({ active: true });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={{ dispatchEdit: () => {} }}
+        anchorIntervalDispatch={{ dispatchAnchorInterval: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+        onDeleteFeature={() => {}}
+        {...(extra?.onDraftConfirmChange
+          ? { onDraftConfirmChange: extra.onDraftConfirmChange }
+          : {})}
+      />,
+    );
+    fireEvent.click(screen.getByTestId('anchor-row-a1'));
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '打ちかけ' },
+    });
+    return store;
+  }
+
+  it('(a) 選択が外れて素性欄が案内文になっても、確認は描かれる', () => {
+    const store = renderWithDraft();
+    act(() => {
+      store.getState().clearSelection();
+    });
+    expect(screen.getByTestId('property-guidance')).toBeInTheDocument();
+    expect(screen.getByTestId('draft-discard-confirm')).toBeInTheDocument();
+  });
+
+  it('(b) 移動先の確定値がたまたま打ちかけと同じでも、意図は黙って消えない', () => {
+    // 100 年で「Alpha → Beta」と打ち、移動先 200 年の確定名が **たまたま Beta** の場合。
+    // 旧版は「いまの確定済みの姿と同じ」を理由に確認を出さず、「100 年に Beta を保存する」
+    // という意図だけが黙って消えていた（GPT#2）。
+    const fZ = asFeatureId('Z');
+    const vZ = asVertexId('Z-v');
+    const alpha = createPointFeature(fZ, createBasicAttributes('Alpha', 0, 0), color, vZ);
+    const beta = createPointFeature(fZ, createBasicAttributes('Beta', 0, 0), color, vZ);
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: fZ, currentTime: timePointYear(100) },
+    });
+    const emptySnap = createAnchorSnapshot([], createVertexStore([]));
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{
+          featureAt: (id) =>
+            id !== fZ ? null : store.getState().currentTime.year < 200 ? alpha : beta,
+        }}
+        anchorLookup={{
+          anchorSeriesOf: () => ({
+            entries: [
+              createAnchorEntry(
+                createAnchor(asAnchorId('z1'), emptySnap),
+                timePointYear(100),
+                timePointYear(200),
+              ),
+              createAnchorEntry(createAnchor(asAnchorId('z2'), emptySnap), timePointYear(200), null),
+            ],
+          }),
+        }}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: 'Beta' },
+    });
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(200), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    expect(screen.getByTestId('draft-discard-confirm')).toBeInTheDocument();
+  });
+
+  it('(c) 確認が出ているあいだは、保存・存続期間・削除がすべて止まる', () => {
+    const store = renderWithDraft();
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1590), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    expect(screen.getByTestId('draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('save-button')).toBeDisabled();
+    // 存続期間のエディタは丸ごと出ない（押す先が無い）。
+    expect(screen.queryByTestId('anchor-interval-a1')).not.toBeInTheDocument();
+    // 地物の削除ボタンは押せない。
+    expect(within(screen.getByTestId('delete-feature')).getByRole('button')).toBeDisabled();
+  });
+
+  it('(c) 確認の開閉をホストへ伝える（鍵盤の大域ショートカットを止めるため）', () => {
+    const seen: boolean[] = [];
+    const store = renderWithDraft({ onDraftConfirmChange: (open) => seen.push(open) });
+    expect(seen.at(-1)).toBe(false);
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1590), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    expect(seen.at(-1)).toBe(true);
+    fireEvent.click(screen.getByTestId('draft-discard-drop'));
+    expect(seen.at(-1)).toBe(false);
+  });
+
+  it('鍵を「読むだけ」にすると、打ちかけは黙って捨てられる（K-5）', () => {
+    // store.setMode は一時状態として選択も捨てる。だから素性欄は案内文になるが、
+    // **確認は出さない**（利用者自身が閉じた操作なので、聞く相手がいない）。
+    const store = renderWithDraft();
+    act(() => {
+      store.getState().setMode(EDIT_MODE.View);
+    });
+    expect(screen.queryByTestId('draft-discard-confirm')).not.toBeInTheDocument();
+    // 開け直して同じ地物を選び直しても、古い打ちかけは復活しない。
+    act(() => {
+      store.getState().setMode(EDIT_MODE.Edit);
+      store.getState().setActiveFeature(fA);
+    });
+    expect(screen.queryByTestId('draft-discard-confirm')).not.toBeInTheDocument();
+    expect(screen.getByLabelText(PROPERTY_STRINGS.nameLabel)).toHaveValue('織田領');
+  });
+
+  it('(d) 確認の本文に内部 id を出さない（U-1）', () => {
+    const nameless = createPointFeature(
+      asFeatureId('N'),
+      createBasicAttributes('', 0, 0),
+      color,
+      asVertexId('N-v'),
+    );
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: asFeatureId('N') },
+    });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{ featureAt: (id) => (id === asFeatureId('N') ? nameless : null) }}
+        anchorLookup={{ anchorSeriesOf: () => seriesFor() }}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    expect(screen.getByTestId('property-title-name')).toHaveTextContent(
+      PROPERTY_STRINGS.unnamedFeature,
+    );
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: '打ちかけ' },
+    });
+    act(() => {
+      store.getState().setCurrentTime(timePointYear(1590), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    const confirm = screen.getByTestId('draft-discard-confirm');
+    expect(confirm).toHaveTextContent(PROPERTY_STRINGS.unnamedFeature);
+    expect(confirm.textContent ?? '').not.toContain('N');
   });
 });

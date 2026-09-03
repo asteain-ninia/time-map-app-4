@@ -25,6 +25,8 @@
 import {
   MENU_TOOL_KIND,
   composeContextMenu,
+  menuTargetFeatureId,
+  resolveMenuTarget,
   type AxisEmphasisLookup,
   type ComposeInput,
   type ContextMenuModel,
@@ -98,6 +100,15 @@ export interface ComposeInputArgs {
    * so the App cannot silently forget it and regress to the 出す≠起きる 2-state出し分け.
    */
   readonly axisEmphasisLookup: AxisEmphasisLookup;
+  /**
+   * 「いま見ている年に、この地物の錳が既にあるか」を引く口（増分 2 の手直し A5 / GPT#9）。
+   *
+   * 組み立ては純粋で錳の系列を知らないので、**対象の地物 id をここで 1 回解いてから**
+   * 呼び出し側に聞く。渡さなければ今までどおり「有効で出す」（honest stub）。
+   * 実際に押したときの可否は App 側のコマンドの `canRun` 1 か所が決めるので、
+   * これは 2 つ目の関門ではなく「出し分けの材料」である（教訓 5.13 / 5.30）。
+   */
+  readonly hasAnchorAt?: ((featureId: FeatureId) => boolean) | undefined;
 }
 
 /**
@@ -142,5 +153,11 @@ export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
  * `composeFor`). Returns {@link ContextMenuModel} or {@link NoMenu} (view-only / empty).
  */
 export function composeMenuFor(args: ComposeInputArgs): ContextMenuModel | NoMenu {
-  return composeContextMenu(buildComposeInput(args));
+  const base = buildComposeInput(args);
+  if (args.hasAnchorAt === undefined) return composeContextMenu(base);
+  // 対象の地物を **組み立てと同じ判定**で解いてから、その年に錳があるかを聞く。
+  // こうしないと「押せる項目を押したあとですでに錳がありますと拒否される」になる（GPT#9）。
+  const featureId = menuTargetFeatureId(resolveMenuTarget(base));
+  if (featureId === null) return composeContextMenu(base);
+  return composeContextMenu({ ...base, hasAnchorAtCurrentTime: args.hasAnchorAt(featureId) });
 }

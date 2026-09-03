@@ -56,6 +56,16 @@ export function isCommandId(raw: string): raw is CommandId {
   return ALL_COMMAND_IDS.has(raw);
 }
 
+/** 断られた理由の種類（分岐識別子は定数を経由する、教訓 5.19）。 */
+export const COMMAND_REFUSAL = {
+  /** 登録されているが、いまの状態では動かせない（`canRun` が偽）。 */
+  NotRunnable: 'notRunnable',
+  /** 「読むだけ」なので編集経路が閉じている（教訓 5.13）。 */
+  ViewOnly: 'viewOnly',
+} as const;
+
+export type CommandRefusal = (typeof COMMAND_REFUSAL)[keyof typeof COMMAND_REFUSAL];
+
 /** A registered command: the side-effecting handler plus a dynamic enabled check. */
 export interface CommandHandler {
   /** Run the command. */
@@ -66,6 +76,16 @@ export interface CommandHandler {
    * command with no `canRun` is treated as runnable when registered.
    */
   readonly canRun?: () => boolean;
+  /**
+   * 断ったときに呼ばれる（任意）。**鍵盤から押して黙って終わるのをなくす**ための口で
+   * ある（増分 2 の手直し A5 / バグ狩り #2 / 反証 F5）。メニュー項目は灰色で理由を持てるが、
+   * 鍵盤には灰色が無いので、拒んだこと自体が見えなかった。
+   *
+   * これは **関門ではない**。可否の判定は `canRun` と `resolveCommandEnabled` の 2 つの
+   * 既存の場所に 1 つずつだけあり（教訓 5.13 / 5.30）、ここはその結果を利用者へ
+   * 伝えるだけである。
+   */
+  readonly onRefused?: (reason: CommandRefusal) => void;
 }
 
 /**
@@ -114,8 +134,20 @@ export class CommandRegistry {
   dispatch(id: CommandId): boolean {
     const handler = this.handlers.get(id);
     if (handler === undefined) return false;
-    if (handler.canRun !== undefined && !handler.canRun()) return false;
+    if (handler.canRun !== undefined && !handler.canRun()) {
+      handler.onRefused?.(COMMAND_REFUSAL.NotRunnable);
+      return false;
+    }
     handler.run();
     return true;
+  }
+
+  /**
+   * 断ったことをコマンドの持ち主へ伝える（実行はしない）。鍵盤の経路は権限の
+   * 関門（`resolveCommandEnabled`）で `dispatch` へ到達せずに終わることがあるので、
+   * その場合も理由を出せるように別の口を置く。未登録・口の無いコマンドには何もしない。
+   */
+  reportRefusal(id: CommandId, reason: CommandRefusal): void {
+    this.handlers.get(id)?.onRefused?.(reason);
   }
 }
