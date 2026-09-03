@@ -18,7 +18,7 @@ import {
   type Normalized,
 } from '../../domain/time/normalized';
 import {
-  complete,
+  timePointYear,
   timePointYearMonthDay,
   type CompleteTimePoint,
   type TimePoint,
@@ -148,9 +148,21 @@ export function timeToFraction(
 }
 
 /**
- * Maps a slider fraction in [0, 1] back to a COMPLETE year/month/day TimePoint
- * via U02 denormalize (FR-70: スカラーを完全値へ落とす). The fraction is
- * clamped; the result is always a concrete y/m/d point, never a fractional year.
+ * Maps a slider fraction in [0, 1] back to a TimePoint via U02 denormalize
+ * (FR-70: スカラーを完全値へ落とす). The fraction is clamped; the result is a
+ * concrete point, never a fractional year.
+ *
+ * **年に丸める**（実装計画 増分 2 の中身 1c / 設計書 §O の B-4）。10,000 年幅の
+ * レールでは 1px が約 6 年に当たるので、位置から復元した月日には意味が無い。それ
+ * なのに以前はここが `timePointYearMonthDay` を返しており、**スライダーを 1 回
+ * 触るだけで現在時刻が「5080年12月31日」になった**。編集時刻は現在時刻に一本化
+ * される（設計書 §D.3）ので、そのまま保存すると月日つきの錨が `.gimoza` に書か
+ * れる — 実データの錨 689 本はすべて年だけなので、U-14「月日を勝手に補わない」に
+ * 反するデータが増えることになる。**スカラーが時刻になる唯一の場所**であるここで
+ * 丸めておけば、下流のどの消費者も自衛しなくてよい（単一の真実源）。
+ *
+ * 月日を指定したい人の経路は塞がない: 直接ジャンプ欄（{@link
+ * YearMonthDayInput}）と 月/日 の 1 歩送りは今までどおり細かい粒度を作れる。
  */
 export function fractionToTime(
   fraction: number,
@@ -161,7 +173,7 @@ export function fractionToTime(
   const span = (range.max as number) - (range.min as number);
   const day = Math.round((range.min as number) + clamped * span);
   const c = denormalize(day as Normalized, calendar);
-  return timePointYearMonthDay(c.year, c.month, c.day);
+  return timePointYear(c.year);
 }
 
 // --- Tick marks --------------------------------------------------------------
@@ -239,13 +251,12 @@ export function clampToRange(
   const c = normalize(candidate, calendar);
   const lo = normalize(min, calendar);
   const hi = normalize(max, calendar);
-  if (compareNormalized(c, lo) < 0) return completeOf(min);
-  if (compareNormalized(c, hi) > 0) return completeOf(max);
+  // 端へ寄せるときは **境界の値をそのまま返す**（月日を補わない, U-14 / 教訓 5.18）。
+  // 以前はここだけ y/m/d へ展開していたので、範囲外へ送った瞬間に現在時刻へ
+  // 「1月1日」が生えた。セッションストア側の同じ役目の関数（store.ts の
+  // clampTimeToRange）は最初から境界をそのまま返しており、**同じ規則の写しが 2 つ
+  // あって片方だけ違う**状態だった（教訓 5.44）。丸めを入れる本増分で揃える。
+  if (compareNormalized(c, lo) < 0) return min;
+  if (compareNormalized(c, hi) > 0) return max;
   return candidate;
-}
-
-/** Resolves a TimePoint to a complete y/m/d point via U02 default completion. */
-function completeOf(point: TimePoint): TimePoint {
-  const c = complete(point);
-  return timePointYearMonthDay(c.year, c.month, c.day);
 }

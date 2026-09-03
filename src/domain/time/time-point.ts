@@ -86,3 +86,31 @@ export function complete(point: TimePoint): CompleteTimePoint {
 export function completeEquals(a: CompleteTimePoint, b: CompleteTimePoint): boolean {
   return a.year === b.year && a.month === b.month && a.day === b.day;
 }
+
+/**
+ * True iff the point pins down only the year (month and day are genuinely
+ * unspecified). The persisted data of this project is year-only — the real
+ * `.gimoza` carries 689 anchors and every one of them starts at a year — so a
+ * month/day-bearing time is the exception, not the norm (U-14「月日を勝手に
+ * 補わない」).
+ */
+export function isYearGranularity(point: TimePoint): boolean {
+  return point.granularity === 'year';
+}
+
+/**
+ * Truncates a point to its YEAR (月日を捨てる). The inverse operation does not
+ * exist — a year-only point genuinely has no month/day, so this is lossy on
+ * purpose (教訓 5.18: 未指定は値が無い状態であって既定値ではない).
+ *
+ * WHY THIS EXISTS: the timeline rail maps a slider position onto a whole-day
+ * scalar, so a single scrub of the 10,000-year slider produced a point like
+ * 「5080年12月31日」. Any edit saved at such a time would write an anchor whose
+ * start carries a fabricated month/day into the `.gimoza` — data the rest of the
+ * project never produces. Quantizing at the rail (the ONE place a scalar becomes
+ * a time) keeps the whole app on year granularity without asking every consumer
+ * to defend itself.
+ */
+export function toYearPoint(point: TimePoint): TimePoint {
+  return point.granularity === 'year' ? point : timePointYear(point.year);
+}

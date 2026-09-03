@@ -67,10 +67,20 @@ describe('range <-> slider fraction mapping', () => {
     expect(timeToFraction(timePointYear(20000), range, cal)).toBe(1);
   });
 
-  it('fractionToTime returns a COMPLETE y/m/d point (no fractional year, FR-70)', () => {
+  // 増分 2 の中身 1c: レール由来の時刻は **年に丸める**。以前はここが y/m/d を返して
+  // いたので、スライダーを 1 回触るだけで現在時刻が「5080年12月31日」になり、そのまま
+  // 保存すると月日つきの錨が `.gimoza` に書かれた（設計書 §O の B-4 / U-14）。
+  it('fractionToTime は年だけの点を返す（スカラーから月日を作らない）', () => {
     const point = fractionToTime(0.5, range, cal);
-    expect(point.granularity).toBe('yearMonthDay');
+    expect(point.granularity).toBe('year');
     expect(Number.isInteger(point.year)).toBe(true);
+    expect('month' in point).toBe(false);
+  });
+
+  it('どの位置でも月日は生えない（0 / 端 / 端の直前）', () => {
+    for (const f of [0, 0.0001, 0.3333, 0.9999, 1]) {
+      expect(fractionToTime(f, range, cal).granularity).toBe('year');
+    }
   });
 
   it('fraction round-trips to a value within the range', () => {
@@ -104,13 +114,19 @@ describe('clampToRange (U02 比較のみ)', () => {
   it('clamps below min and above max, passes through in-range values', () => {
     const min = timePointYear(0);
     const max = timePointYear(100);
-    expect(clampToRange(timePointYear(-50), min, max, cal)).toEqual(
-      timePointYearMonthDay(0, 1, 1),
-    );
-    expect(clampToRange(timePointYear(200), min, max, cal)).toEqual(
-      timePointYearMonthDay(100, 1, 1),
-    );
+    // 端へ寄せるときは **境界の値をそのまま返す**（月日を補わない, U-14）。以前は
+    // ここだけ y/m/d へ展開しており、ストア側の同じ役目の関数（store.ts の
+    // clampTimeToRange）と規則が食い違っていた（教訓 5.44 の写し）。
+    expect(clampToRange(timePointYear(-50), min, max, cal)).toEqual(min);
+    expect(clampToRange(timePointYear(200), min, max, cal)).toEqual(max);
     const inside = timePointYearMonthDay(50, 6, 15);
     expect(clampToRange(inside, min, max, cal)).toEqual(inside);
+  });
+
+  it('境界が年月日で与えられていれば、その粒度のまま返す（補いも切り捨てもしない）', () => {
+    const min = timePointYearMonthDay(0, 3, 4);
+    const max = timePointYearMonthDay(100, 5, 6);
+    expect(clampToRange(timePointYear(-50), min, max, cal)).toEqual(min);
+    expect(clampToRange(timePointYear(200), min, max, cal)).toEqual(max);
   });
 });

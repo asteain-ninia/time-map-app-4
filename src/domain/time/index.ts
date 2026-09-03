@@ -26,6 +26,8 @@ export {
   timePointYearMonthDay,
   complete,
   completeEquals,
+  isYearGranularity,
+  toYearPoint,
 } from './time-point';
 
 export {
