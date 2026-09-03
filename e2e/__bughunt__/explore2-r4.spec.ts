@@ -59,7 +59,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
+import { assertClickable, fitHalf, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -404,7 +404,9 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
         }
 
         // --- APPLY path: re-fire and RESOLVE every row, then apply.
-        const f3b = await commitFaceMaybeConflict(page, cx + 10, clY + 10, 130);
+        // 3 枚目の「やり直し」なので、位置も大きさも 1 枚目の f3 と同じでなければ
+        // 同じ重なりが再現しない。かたまりの解から取り直す。
+        const f3b = await commitFaceMaybeConflict(page, ...clusterFaces[2]);
         if (f3b === 'conflict') {
           const n2 = await gateConflictModal(page, 'apply-conflict');
           // Resolve: choose the FIRST policy radio per row (2 radios/row a|b).
@@ -565,7 +567,22 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       await returnToViewMode(page);
       await showSidebarTab(page, 'features');
       const countBeforeUndoOp = await featureListCount(page);
-      const addRes = await commitFaceMaybeConflict(page, cx - 230, cy - 170, 70);
+      // UI 再設計 増分 1: 地図セルが縦に縮み、固定の (cx-230, cy-170) では上の 2 隅が
+      // 地図の外（アプリバー）へ出てクリックが落ちていた。**箱から解いた左上のレーン**へ
+      // 置き直す（かたまりとは重ならない ＝ 単独で確定できる、という位相はそのまま）。
+      const undoHalf = fitHalf(b, 70, { avoidTopChrome: false, min: 40, name: 'r4-undo-face' });
+      const undoFace = placeSquareScene(b, {
+        fx: 0.2,
+        fy: 0.3,
+        half: undoHalf,
+        avoidTopChrome: false,
+        name: 'r4-undo-face',
+      });
+      assertClickable(b, squareCorners(undoFace.cx, undoFace.cy, undoHalf), {
+        avoidTopChrome: false,
+        name: 'r4-undo-face',
+      });
+      const addRes = await commitFaceMaybeConflict(page, undoFace.cx, undoFace.cy, undoHalf);
       if (addRes === 'conflict') {
         await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }

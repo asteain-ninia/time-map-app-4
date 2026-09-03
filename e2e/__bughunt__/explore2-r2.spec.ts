@@ -51,6 +51,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
+import { assertClickable, fitHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -285,13 +286,62 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       const box = await inputLayer.boundingBox();
       expect(box).not.toBeNull();
       const b = box!;
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
 
       // =====================================================================
       // A. KNIFE / SPLIT FLOW — commit a face, split it cleanly, gate forest.
       // =====================================================================
-      const c0 = await commitFace(page, cx, cy, 150);
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ（オプションバー
+      // 40px ＋ 状態行 22→28px ＋ アプリバーの折り返し）。中心から固定 px（half=150、
+      // 切り線 ±220/±230）で決めると、下の 2 隅と切り線の下端が地図に浮くツールの帯に
+      // 乗ってクリックが飲まれる。**要求した大きさをその箱で成り立つ最大値まで落とし、
+      // 中心も placeSquareScene に解かせる**（下限を割ったら fitHalf が落ちる）。
+      //
+      // 位相は不変: 「貫かない切り線」は面の下辺より下、「貫く切り線」は上下の辺の外、
+      // 子の面は base と離れている（重ならない）。どれも half から導く。
+      const baseHalf = fitHalf(b, 150, {
+        avoidTopChrome: true, // ナイフを構えると上部にガイドが出る
+        pierceExtra: 40,
+        min: 60,
+        name: 'r2-knife-base',
+      });
+      const baseReach = baseHalf + 40; // 切り線の端点は面の辺より外
+      const baseScene = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: baseHalf,
+        pierce: baseReach,
+        avoidTopChrome: true,
+        name: 'r2-knife-base',
+      });
+      const bcx = baseScene.cx;
+      const bcy = baseScene.cy;
+      // 子の面は base の左上へ、重ならない距離だけ離す（元の -260/-160 と half=60 の
+      // 「離れている」関係を、縮んだ base に合わせて相似に保つ）。
+      const childScale = baseHalf / 150;
+      const childHalf = Math.round(60 * childScale);
+      const childCx = bcx - Math.round(260 * childScale);
+      const childCy = bcy - Math.round(160 * childScale);
+      assertClickable(b, squareCorners(bcx, bcy, baseHalf), {
+        avoidTopChrome: false,
+        name: 'r2-knife-base-corners',
+      });
+      assertClickable(b, squareCorners(childCx, childCy, childHalf), {
+        avoidTopChrome: false,
+        name: 'r2-child-corners',
+      });
+      assertClickable(
+        b,
+        [
+          [bcx, bcy],
+          [bcx - baseReach, bcy + baseReach],
+          [bcx + baseReach, bcy + baseReach],
+          [bcx, baseScene.cutTopY],
+          [bcx, baseScene.cutBottomY],
+        ],
+        { avoidTopChrome: true, name: 'r2-knife-cuts' },
+      );
+
+      const c0 = await commitFace(page, bcx, bcy, baseHalf);
       if (c0 !== 'committed') record('knife-setup', `base face did not commit: ${c0}`);
       await shot(page, 'base-face');
       await checkCamera(page, 'after-base-face');
@@ -305,16 +355,18 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         const kLayer = page.getByTestId('knife-input-layer');
         const kbox = await kLayer.boundingBox();
         if (kbox) {
-          const kx = kbox.x + kbox.width / 2;
-          const ky = kbox.y + kbox.height / 2;
+          // 入力層の中心ではなく **置いた面の中心** を使う（面の中心は箱から解いた
+          // 位置にあり、地図セルの中心とは一致しない）。
+          const kx = bcx;
+          const ky = bcy;
 
           // --- Non-piercing cut first: gate the 日本語 rejection ("貫く"). -----
           // Select the target.
           await page.mouse.click(kx, ky);
           await page.waitForTimeout(80);
           // Two points both BELOW the face — does not pierce it.
-          await page.mouse.click(kx - 200, ky + 220);
-          await page.mouse.click(kx + 200, ky + 220);
+          await page.mouse.click(kx - baseReach, ky + baseReach);
+          await page.mouse.click(kx + baseReach, ky + baseReach);
           const confirmCut = page.getByTestId('knife-confirm-cut');
           if (await confirmCut.isVisible().catch(() => false)) {
             await confirmCut.click();
@@ -335,8 +387,8 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
           // --- Piercing cut: select again, draw a vertical cut through the face.
           await page.mouse.click(kx, ky);
           await page.waitForTimeout(80);
-          await page.mouse.click(kx, ky - 230); // above the face
-          await page.mouse.click(kx, ky + 230); // below the face -> pierces
+          await page.mouse.click(kx, baseScene.cutTopY); // above the face
+          await page.mouse.click(kx, baseScene.cutBottomY); // below the face -> pierces
           const cc = page.getByTestId('knife-confirm-cut');
           if (await cc.isVisible().catch(() => false)) {
             await cc.click();
@@ -421,7 +473,7 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       const countBeforeChild = await featureListCount(page);
       // Add a small face offset away (avoid same-time overlap conflicts), choosing
       // the first real parent option (index 1 — index 0 is usually the なし/none row).
-      const child = await commitFace(page, cx - 260, cy - 160, 60, { chooseParentIndex: 1, name: 'child-face' });
+      const child = await commitFace(page, childCx, childCy, childHalf, { chooseParentIndex: 1, name: 'child-face' });
       await shot(page, 'child-face');
       if (child === 'conflict') {
         record('child-conflict', 'child face add paused on conflict modal (unexpected, offset placement)');

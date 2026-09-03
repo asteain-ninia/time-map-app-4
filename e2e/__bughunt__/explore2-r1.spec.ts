@@ -41,6 +41,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
+import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -309,7 +310,42 @@ test.describe('BUGHUNT R2 — conflict flow / zoom-limit / save-load / undo連�
       // =====================================================================
       // 1. CONFLICT-RESOLUTION FLOW — two OVERLAPPING faces at the same time.
       // =====================================================================
-      const first = await commitFaceMaybeConflict(page, cx, cy, 110);
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ（オプションバー
+      // 40px ＋ 状態行 22→28px ＋ アプリバーの折り返し）。中心から固定 px で四隅を決めると
+      // 2 枚目の下辺が地図に浮くツールの帯に乗ってクリックが飲まれるので、**2 枚を 1 つの
+      // かたまりとして扱い、中心を placeSquareScene に解かせる**。ずらし量 (70, 40) と
+      // half=110 の比はそのまま = 「half より小さくずらして食い込ませる」重なりの位相は不変。
+      //
+      // 設計時の座標（かたまりの中心を原点とする px）:
+      //   1 枚目 (-35, -20) half 110 ／ 2 枚目 (+35, +20) half 110
+      const CLUSTER_REACH = 145; // 中心からいちばん遠い角までの距離 (35 + 110)
+      const clusterScale = Math.min(
+        1,
+        maxFeasibleHalf(b, { avoidTopChrome: false }) / CLUSTER_REACH,
+      );
+      const cs = (v: number): number => Math.round(v * clusterScale);
+      const cluster = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: cs(CLUSTER_REACH),
+        avoidTopChrome: false, // どちらも純粋な追加モード（上部ガイドは出ない）
+        name: 'r1-overlap-pair',
+      });
+      const ovHalf = cs(110);
+      const firstCx = cluster.cx + cs(-35);
+      const firstCy = cluster.cy + cs(-20);
+      const secondCx = cluster.cx + cs(35);
+      const secondCy = cluster.cy + cs(20);
+      assertClickable(
+        b,
+        [
+          ...squareCorners(firstCx, firstCy, ovHalf),
+          ...squareCorners(secondCx, secondCy, ovHalf),
+        ],
+        { avoidTopChrome: false, name: 'r1-overlap-pair' },
+      );
+
+      const first = await commitFaceMaybeConflict(page, firstCx, firstCy, ovHalf);
       await shot(page, 'first-face');
       if (first !== 'committed') {
         record('conflict-setup', `first face did not commit cleanly: ${first}`);
@@ -317,7 +353,7 @@ test.describe('BUGHUNT R2 — conflict flow / zoom-limit / save-load / undo連�
       await checkCamera(page, 'after-first-face');
 
       // Second face overlapping the first (shifted by < half so it intrudes).
-      const second = await commitFaceMaybeConflict(page, cx + 70, cy + 40, 110);
+      const second = await commitFaceMaybeConflict(page, secondCx, secondCy, ovHalf);
       await shot(page, 'second-face-overlap');
 
       if (second === 'conflict') {

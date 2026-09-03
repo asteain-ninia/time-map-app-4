@@ -73,6 +73,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
+import { SCENE_MARGIN, fitHalf, placeSquareScene, worldBand } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -384,7 +385,6 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       expect(box).not.toBeNull();
       const b = box!;
       const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
 
       const unsaved0 = await diagUnsaved(page);
       if (unsaved0 !== 'なし') record('boot-dirty', `boot unsaved=${unsaved0} (expected なし)`);
@@ -394,12 +394,31 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       // =====================================================================
       const c0 = await checkParity(page, 'before-nest');
       const DEPTH = 5;
-      let half = 230;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ（オプションバー
+      // 40px ＋ 状態行 22→28px ＋ アプリバーの折り返し）。half=230 の巣は上下 2 隅とも
+      // 地図の外へ出てクリックが落ち、深さ 0 で止まっていた。**要求した大きさをその箱で
+      // 成り立つ最大値まで落とし、中心も placeSquareScene に解かせる**（入れ子の深さと
+      // 0.74 倍の縮み方＝位相はそのまま）。
+      const nestHalf = fitHalf(b, 230, { avoidTopChrome: false, min: 100, name: 't2-nest' });
+      const nest = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: nestHalf,
+        avoidTopChrome: false, // 入れ子を積むのは純粋な追加モード（上部ガイドは出ない）
+        name: 't2-nest',
+      });
+      // 巣は中央、世界の帯も中央 — 左右に残るレーンの幅は同じ。ここに入る half なら
+      // 巣と重ならず、日付変更線もまたがない（またぐと反対の端の図形と world 座標で
+      // 重なって conflict になる）。
+      const laneRoom = Math.floor(
+        (nest.cx - nestHalf - 20 - (worldBand(b).left + SCENE_MARGIN)) / 2,
+      );
+      let half = nestHalf;
       let level = 0;
       const halves: number[] = [];
       for (; level < DEPTH; level += 1) {
         halves.push(half);
-        const res = await commitFace(page, cx, cy, half, { chooseLastParent: level > 0, name: `t2-L${level}` });
+        const res = await commitFace(page, nest.cx, nest.cy, half, { chooseLastParent: level > 0, name: `t2-L${level}` });
         if (res !== 'committed') {
           record('nest-stop', `level ${level} (half=${half}) outcome=${res}`);
           break;
@@ -429,8 +448,8 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
           });
           // Click a point inside the mid ring but OUTSIDE the deeper child so the
           // owner under the pointer is the middle child, then pierce it.
-          const px = cx + Math.round((midHalf + (halves[3] ?? midHalf * 0.74)) / 2 / 2);
-          const r = await knifeSplitVertical(page, px, cy, reach, 'nested-split');
+          const px = nest.cx + Math.round((midHalf + (halves[3] ?? midHalf * 0.74)) / 2 / 2);
+          const r = await knifeSplitVertical(page, px, nest.cy, reach, 'nested-split');
           await shot(page, 'nested-split');
           record('nested-knife', `nested middle-child split outcome=${r}`);
           await checkCamera(page, 'after-nested-split');
@@ -464,16 +483,30 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       // B. REPARENT a nested child elsewhere, then UNDO + REDO (op∘逆op).
       //    Build a separate small parent + child far from the nest cluster.
       // =====================================================================
-      const rpHalf = 150;
-      const rpReach = rpHalf + 30;
-      const rpCx = Math.max(b.x + rpReach + 12, Math.min(b.x + b.width - rpReach - 12, cx - 300));
-      const rpCy = Math.min(b.y + b.height - rpReach - 12, Math.max(b.y + rpReach + 12, cy + 250));
+      // UI 再設計 増分 1: 固定の (cx-300, cy+250) では下辺がツールの帯に乗り、左端が
+      // 日付変更線の外へ出て中央の巣と world 座標で重なっていた。**巣の左に残るレーン**へ
+      // 箱から解いて置き直す（巣とは別の部分木＝離れている、という位相はそのまま）。
+      // fx: 0 は「成り立ういちばん左」— placeSquareScene が世界の帯と余白で受け止める。
+      const rpHalf = Math.min(
+        fitHalf(b, 150, { avoidTopChrome: false, min: 50, name: 't2-rp-parent' }),
+        laneRoom,
+      );
+      const rpScene = placeSquareScene(b, {
+        fx: 0,
+        fy: 0.6,
+        half: rpHalf,
+        avoidTopChrome: false,
+        name: 't2-rp-parent',
+      });
+      const rpCx = rpScene.cx;
+      const rpCy = rpScene.cy;
+      const rpChildHalf = Math.max(12, Math.round((36 * rpHalf) / 150));
       const rpParent = await commitFace(page, rpCx, rpCy, rpHalf, { name: 't2-rp-parent' });
       if (rpParent === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       const rpChildPt: readonly [number, number] = [rpCx, rpCy];
       let rpChild: 'committed' | 'rejected' | 'conflict' = 'rejected';
       if (rpParent === 'committed') {
-        rpChild = await commitFace(page, rpChildPt[0], rpChildPt[1], 36, { chooseLastParent: true, name: 't2-rp-child' });
+        rpChild = await commitFace(page, rpChildPt[0], rpChildPt[1], rpChildHalf, { chooseLastParent: true, name: 't2-rp-child' });
         if (rpChild === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
       await shot(page, 'reparent-built');
@@ -486,7 +519,7 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
         if (tgt === '') record('reparent-no-target', 'reparent-target empty after clicking child');
         else if (/NaN|Infinity|undefined|null/.test(tgt)) record('reparent-target-malformed', `target="${tgt}"`);
         // New parent = nest cluster centre (different subtree).
-        await page.mouse.click(cx, cy);
+        await page.mouse.click(nest.cx, nest.cy);
         await page.waitForTimeout(120);
         const par = ((await page.getByTestId('reparent-parent').textContent().catch(() => '')) ?? '').trim();
         if (/NaN|Infinity/.test(par)) record('reparent-parent-malformed', `parent="${par}"`);
@@ -528,13 +561,13 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const beforeCycle = await checkParity(page, 'before-cycle');
       if (reached >= 3 && (await armEditTool(page, 'reparent'))) {
         // Target = an OUTER nest ring (click near its edge, away from inner rings).
-        const outerHalf = halves[0] ?? 230;
-        const outerEdgeX = cx + Math.round((outerHalf + (halves[1] ?? outerHalf * 0.74)) / 2);
-        await page.mouse.click(outerEdgeX, cy); // target = outer-ish ancestor
+        const outerHalf = halves[0] ?? nestHalf;
+        const outerEdgeX = nest.cx + Math.round((outerHalf + (halves[1] ?? outerHalf * 0.74)) / 2);
+        await page.mouse.click(outerEdgeX, nest.cy); // target = outer-ish ancestor
         await page.waitForTimeout(90);
         const tgt = ((await page.getByTestId('reparent-target').textContent().catch(() => '')) ?? '').trim();
         // New parent = the DEEPEST ring centre (a descendant of the target).
-        await page.mouse.click(cx, cy);
+        await page.mouse.click(nest.cx, nest.cy);
         await page.waitForTimeout(120);
         const par = ((await page.getByTestId('reparent-parent').textContent().catch(() => '')) ?? '').trim();
         const msg = ((await page.getByTestId('reparent-message').textContent().catch(() => '')) ?? '').trim();
@@ -564,10 +597,27 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       // D. MERGE two sibling slivers, then UNDO + REDO (op∘逆op on MERGE).
       //    Build a base face, knife it once, then merge the two halves back.
       // =====================================================================
-      const mHalf = 95;
+      // UI 再設計 増分 1: 固定の (cx+320, cy+250) では左下の隅がツールの帯に乗って
+      // クリックが落ちていた。**巣の右に残るレーン**へ箱から解いて置き直す。縦に貫く
+      // 切り線の両端も placeSquareScene に一緒に解かせる（1 回割って結合する、という
+      // 位相はそのまま）。fx: 1 は「成り立ういちばん右」。
+      const mHalf = Math.min(
+        fitHalf(b, 95, { avoidTopChrome: true, pierceExtra: 45, min: 40, name: 't2-merge-base' }),
+        laneRoom,
+      );
       const mReach = mHalf + 45;
-      const mx = Math.max(b.x + mReach + 12, Math.min(b.x + b.width - mReach - 12, cx + 320));
-      const my = Math.min(b.y + b.height - mReach - 12, Math.max(b.y + mReach + 12, cy + 250));
+      const mScene = placeSquareScene(b, {
+        fx: 1,
+        fy: 0.6,
+        half: mHalf,
+        pierce: mReach,
+        avoidTopChrome: true, // ナイフ／結合のガイドがこの場面の上に出る
+        name: 't2-merge-base',
+      });
+      const mx = mScene.cx;
+      const my = mScene.cy;
+      // 結合で左右の半分を選ぶクリックは、割れた辺の左右に half の半分ほど入った点。
+      const mPick = Math.max(6, Math.round(mHalf * 0.42));
       const mBase = await commitFace(page, mx, my, mHalf, { name: 't2-merge-base' });
       if (mBase === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       await shot(page, 'merge-base');
@@ -583,9 +633,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
         const beforeMerge = await checkParity(page, 'before-merge');
         if (splitOk && (await armEditTool(page, 'merge'))) {
           await shot(page, 'merge-armed');
-          await page.mouse.click(mx - 40, my);
+          await page.mouse.click(mx - mPick, my);
           await page.waitForTimeout(70);
-          await page.mouse.click(mx + 40, my);
+          await page.mouse.click(mx + mPick, my);
           await page.waitForTimeout(120);
           const tc = ((await page.getByTestId('merge-target-count').textContent().catch(() => '')) ?? '').trim();
           record('merge-target-count', `merge target-count="${tc}"`);
@@ -753,8 +803,6 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const box = await inputLayer.boundingBox();
       expect(box).not.toBeNull();
       const b = box!;
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
 
       const listCount = async (): Promise<number> => {
         await returnToViewMode(page);
@@ -767,10 +815,28 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const r = async (): Promise<string> => ((await canRedo.textContent()) ?? '').trim();
 
       // --- MERGE op∘逆op, hook-only -----------------------------------------
-      const mHalf = 100;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ。固定の
+      // half=100 / reach=145 では **縦に貫く切り線の下端**が地図に浮くツールの帯に乗って
+      // 飲まれ、分割が成立しなかった。要求した大きさをその箱で成り立つ最大値まで落とし、
+      // 中心と切り線の両端を placeSquareScene に解かせる（割って結合する位相は不変）。
+      const mHalf = fitHalf(b, 100, {
+        avoidTopChrome: true,
+        pierceExtra: 45,
+        min: 45,
+        name: 'iso-merge-base',
+      });
       const mReach = mHalf + 45;
-      const mx = cx;
-      const my = cy;
+      const mScene = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: mHalf,
+        pierce: mReach,
+        avoidTopChrome: true,
+        name: 'iso-merge-base',
+      });
+      const mx = mScene.cx;
+      const my = mScene.cy;
+      const mPick = Math.max(6, Math.round(mHalf * 0.45));
       const base = await commitFace(page, mx, my, mHalf, { name: 'iso-merge-base' });
       expect(base).toBe('committed');
       let splitOk = false;
@@ -785,9 +851,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
         const afterSplit = await listCount();
         rec('iso-after-split-count', `count after split = ${afterSplit}`);
         if (await armEditTool(page, 'merge')) {
-          await page.mouse.click(mx - 45, my);
+          await page.mouse.click(mx - mPick, my);
           await page.waitForTimeout(70);
-          await page.mouse.click(mx + 45, my);
+          await page.mouse.click(mx + mPick, my);
           await page.waitForTimeout(120);
           const mc = page.getByTestId('merge-confirm');
           if ((await mc.isVisible().catch(() => false)) && (await mc.isEnabled().catch(() => false))) {
@@ -828,19 +894,44 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
 
       // --- REPARENT op∘逆op, hook-only --------------------------------------
       // Build a fresh parent + child away from the merge cluster.
-      const pHalf = 130;
-      const pReach = pHalf + 30;
-      const pcx = Math.max(b.x + pReach + 12, Math.min(b.x + b.width - pReach - 12, cx - 330));
-      const pcy = Math.min(b.y + b.height - pReach - 12, Math.max(b.y + pReach + 12, cy - 240));
+      // UI 再設計 増分 1: 固定の cx±330 では **左右どちらの親も日付変更線をまたぎ**、
+      // 反対側どうしが world 座標で重なって 2 つ目の親が conflict で止まっていた
+      // （その開いたままのモーダルが次の追加を飲み、テストが落ちていた）。
+      // 中央の base の左右に残るレーンへ、世界の帯の内側で置き直す。
+      // fx: 0 / 1 は「成り立ういちばん左／右」— 帯と余白は placeSquareScene が見る。
+      const laneRoom = Math.floor(
+        (mx - mHalf - 20 - (worldBand(b).left + SCENE_MARGIN)) / 2,
+      );
+      const pHalf = Math.min(
+        fitHalf(b, 130, { avoidTopChrome: false, min: 45, name: 'iso-rp-parent' }),
+        laneRoom,
+      );
+      const pScene = placeSquareScene(b, {
+        fx: 0,
+        fy: 0.35,
+        half: pHalf,
+        avoidTopChrome: false,
+        name: 'iso-rp-parent',
+      });
+      const pcx = pScene.cx;
+      const pcy = pScene.cy;
+      const pChildHalf = Math.max(12, Math.round((34 * pHalf) / 130));
       const par = await commitFace(page, pcx, pcy, pHalf, { name: 'iso-rp-parent' });
       // A SECOND independent parent to receive the child (sibling subtree, not a
       // descendant — a clean legal reparent that must be count-stable).
-      const qcx = Math.max(b.x + pReach + 12, Math.min(b.x + b.width - pReach - 12, cx + 330));
-      const qcy = pcy;
+      const qScene = placeSquareScene(b, {
+        fx: 1,
+        fy: 0.35,
+        half: pHalf,
+        avoidTopChrome: false,
+        name: 'iso-rp-parent2',
+      });
+      const qcx = qScene.cx;
+      const qcy = qScene.cy;
       const par2 = await commitFace(page, qcx, qcy, pHalf, { name: 'iso-rp-parent2' });
       let child: 'committed' | 'rejected' | 'conflict' = 'rejected';
       if (par === 'committed') {
-        child = await commitFace(page, pcx, pcy, 34, { chooseLastParent: true, name: 'iso-rp-child' });
+        child = await commitFace(page, pcx, pcy, pChildHalf, { chooseLastParent: true, name: 'iso-rp-child' });
         if (child === 'conflict') await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
       if (child !== 'committed' || par2 !== 'committed') {
@@ -987,17 +1078,27 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
       const box = await inputLayer.boundingBox();
       expect(box).not.toBeNull();
       const b = box!;
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
 
       // Big parent.
-      const parent = await commitFace(page, cx, cy, 180, { name: 'na-parent' });
+      // UI 再設計 増分 1: 地図セルが縦に縮み、half=180 では下の 2 隅がツールの帯に乗って
+      // 親そのものが確定しなくなっていた。箱から解いた大きさに落とす（子は同じ比で
+      // 縮めるので「親の内側にきちんと収まる子」という位相は不変）。
+      const naHalf = fitHalf(b, 180, { avoidTopChrome: false, min: 80, name: 'na-parent' });
+      const naScene = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: naHalf,
+        avoidTopChrome: false,
+        name: 'na-parent',
+      });
+      const naChildHalf = Math.max(12, Math.round((50 * naHalf) / 180));
+      const parent = await commitFace(page, naScene.cx, naScene.cy, naHalf, { name: 'na-parent' });
       rec('na-parent', `parent outcome=${parent}`);
 
       // Child strictly INSET (half=50, well inside the 180 parent), choosing the
       // parent via the add-parent select.
       await armAddAreaTool(page);
-      await placeVertices(page, squareCorners(cx, cy, 50));
+      await placeVertices(page, squareCorners(naScene.cx, naScene.cy, naChildHalf));
       const complete = page.getByTestId('add-complete');
       await complete.click();
       if ((await page.getByTestId('add-rejected').count()) > 0) {

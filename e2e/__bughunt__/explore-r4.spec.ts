@@ -27,6 +27,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
+import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -296,20 +297,82 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
       const box = await inputLayer.boundingBox();
       expect(box).not.toBeNull();
       const b = box!;
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
 
       // --- Boot dirty flag should be clean -------------------------------------
       const unsaved0 = await diagUnsaved(page);
       if (unsaved0 !== 'なし') record('boot-dirty', `boot unsaved=${unsaved0} (expected なし)`);
 
       // --- Build features: a large face to split, plus a sibling to merge ------
-      const bigId = await commitFace(page, cx - 120, cy, 110);
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ（オプションバー
+      // 40px ＋ 状態行 22→28px ＋ アプリバーの折り返し）。**中心から固定 px で四隅を決めるのを
+      // やめ、箱の寸法から解く**。この場面は 4 つの面（分割する大きい面・離れた兄弟・
+      // 結合する隣り合う 2 面）と分割の切り線から成る 1 つの「かたまり」なので、
+      //   ・かたまり全体を、その箱で成り立つ大きさへ **相似に** 縮め（重なり／離れ／
+      //     隣接という位相はそのまま）、
+      //   ・中心は placeSquareScene に解かせる
+      // という形にする。以後シェルの高さが動いても数値を当て直さなくて済む。
+      //
+      // 設計時の座標（かたまりの中心を原点とする px。縦の到達距離 170 が効く）:
+      //   大きい面 (-100, -60) half 110 ／ 兄弟 (170, -60) half 70
+      //   隣り合う 2 面 y=+120 half 50、共有辺は x=+10
+      const CLUSTER_REACH = 170; // 中心からいちばん遠いクリック点（下段の下辺）までの距離
+      const clusterScale = Math.min(
+        1,
+        maxFeasibleHalf(b, { avoidTopChrome: false }) / CLUSTER_REACH,
+      );
+      const cs = (v: number): number => Math.round(v * clusterScale);
+      const cluster = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: cs(CLUSTER_REACH),
+        avoidTopChrome: false, // 面を置くのは純粋な追加モード（上部ガイドは出ない）
+        name: 'r4-cluster',
+      });
+      const bigHalf = cs(110);
+      const bigCx = cluster.cx + cs(-100);
+      const bigCy = cluster.cy + cs(-60);
+      const sibHalf = cs(70);
+      const sibCx = cluster.cx + cs(170);
+      const sibCy = bigCy;
+      // 結合する 2 面は **共有辺が本当に一致** していないといけない（結合の前提）。
+      // 中心を別々に丸めると 1px ずれて辺が合わなくなるので、共有辺の x から左右の
+      // 中心を導く（shareX ± half）。
+      const adjHalf = cs(50);
+      const adjShareX = cluster.cx + cs(10);
+      const adjCy = cluster.cy + cs(120);
+      // 分割の切り線は大きい面を横切る（両端は面の左右の辺より外）。
+      const cutReach = bigHalf + cs(30);
+      const cutTilt = cs(10);
+      // 追加モードの四隅は上部ガイドが無いので avoidTopChrome=false、
+      // ナイフ／結合を構えているあいだのクリックだけ上部の帯も避ける。
+      assertClickable(
+        b,
+        [
+          ...squareCorners(bigCx, bigCy, bigHalf),
+          ...squareCorners(sibCx, sibCy, sibHalf),
+          ...squareCorners(adjShareX - adjHalf, adjCy, adjHalf),
+          ...squareCorners(adjShareX + adjHalf, adjCy, adjHalf),
+        ],
+        { avoidTopChrome: false, name: 'r4-cluster-corners' },
+      );
+      assertClickable(
+        b,
+        [
+          [bigCx, bigCy],
+          [bigCx - cutReach, bigCy - cutTilt],
+          [bigCx + cutReach, bigCy + cutTilt],
+          [adjShareX - adjHalf, adjCy],
+          [adjShareX + adjHalf, adjCy],
+        ],
+        { avoidTopChrome: true, name: 'r4-cluster-tools' },
+      );
+
+      const bigId = await commitFace(page, bigCx, bigCy, bigHalf);
       await shot(page, 'big-added');
       if (bigId === '') record('add-empty', 'big face id empty after commit');
       await checkCamera(page, 'big-added');
 
-      const sibId = await commitFace(page, cx + 150, cy, 70);
+      const sibId = await commitFace(page, sibCx, sibCy, sibHalf);
       await shot(page, 'sibling-added');
       if (sibId === '') record('add-empty', 'sibling face id empty after commit');
 
@@ -361,7 +424,7 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
         const knifeInput = page.getByTestId('knife-input-layer');
         if (await knifeInput.isVisible().catch(() => false)) {
           // Click the centre of the big face to select it as the split target.
-          await page.mouse.click(cx - 120, cy);
+          await page.mouse.click(bigCx, bigCy);
           await page.waitForTimeout(150);
           const flow1 = (await knifeTool.getAttribute('data-flow')) ?? '';
           await shot(page, 'knife-target');
@@ -370,8 +433,8 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
           // The input layer is re-rendered per flow; re-query it.
           const drawLayer = page.getByTestId('knife-input-layer');
           if (await drawLayer.isVisible().catch(() => false)) {
-            await page.mouse.click(cx - 120 - 140, cy - 10);
-            await page.mouse.click(cx - 120 + 140, cy + 10);
+            await page.mouse.click(bigCx - cutReach, bigCy - cutTilt);
+            await page.mouse.click(bigCx + cutReach, bigCy + cutTilt);
             await page.waitForTimeout(150);
             const cutCount = ((await page.getByTestId('knife-cut-count').textContent()) ?? '').trim();
             if (cutCount !== '' && /NaN/.test(cutCount)) {
@@ -483,18 +546,19 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
       // MERGE (結合) FLOW — arm merge, select two adjacent faces, merge.
       // =========================================================================
       // First build two ADJACENT faces (sharing an edge) so a merge is valid.
-      const adjA = await commitFace(page, cx - 60, cy + 180, 50);
-      const adjB = await commitFace(page, cx + 40, cy + 180, 50);
+      // 共有辺 (adjShareX) から左右の中心を導いているので、縮めても辺は一致したまま。
+      const adjA = await commitFace(page, adjShareX - adjHalf, adjCy, adjHalf);
+      const adjB = await commitFace(page, adjShareX + adjHalf, adjCy, adjHalf);
       void adjA;
       void adjB;
       await shot(page, 'merge-pair-added');
       const mergeArmed = await armEditTool(page, 'edit.merge');
       if (mergeArmed) {
         // Select both faces (merge typically needs a multi-select). Click each.
-        await page.mouse.click(cx - 60, cy + 180);
+        await page.mouse.click(adjShareX - adjHalf, adjCy);
         await page.waitForTimeout(100);
         await page.keyboard.down('Shift');
-        await page.mouse.click(cx + 40, cy + 180);
+        await page.mouse.click(adjShareX + adjHalf, adjCy);
         await page.keyboard.up('Shift');
         await page.waitForTimeout(150);
         await shot(page, 'merge-selected');

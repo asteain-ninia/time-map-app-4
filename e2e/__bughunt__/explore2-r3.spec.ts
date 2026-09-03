@@ -54,6 +54,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
+import { SCENE_MARGIN, assertClickable, fitHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -288,8 +289,31 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       const box = await inputLayer.boundingBox();
       expect(box).not.toBeNull();
       const b = box!;
-      const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に約 74px 縮んだ（オプションバー
+      // 40px ＋ 状態行 22→28px ＋ アプリバーの折り返し）。中心から固定 px でクリック点を
+      // 作ると、面の下の 2 隅が地図に浮くツールの帯に乗って飲まれ、逃がしのクリックは
+      // 地図の外（アプリバー）へ出る。**この場面のクリック点をすべて箱から解く**。
+      //
+      // 位相は不変: 折れ線は面と同じ場所を通り、点は面から離れた空き地に置き、
+      // 右クリックは面の内側（中心とすこし内側）、逃がしは面の外側の空き地。
+      const areaHalf = fitHalf(b, 150, { avoidTopChrome: true, min: 70, name: 'r3-area' });
+      const areaScene = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.5,
+        half: areaHalf,
+        avoidTopChrome: true, // 頂点編集を構えると上部にガイドが出る
+        name: 'r3-area',
+      });
+      const cx = areaScene.cx;
+      const cy = areaScene.cy;
+      // 折れ線・点・逃がしの位置も half から導く（面との位置関係を保ったまま縮む）。
+      const zig = (v: number): number => Math.round((v * areaHalf) / 150);
+      // 点は面の右上の外側。地図の内側に必ず収まるよう、余白の内側へ丸め込む。
+      const pointX = Math.min(b.x + b.width - SCENE_MARGIN, cx + zig(300));
+      const pointY = Math.max(b.y + SCENE_MARGIN, cy - zig(200));
+      // メニューを閉じるための「何も無いところ」。面より上、地図の内側。
+      const voidX = cx;
+      const voidY = Math.max(b.y + SCENE_MARGIN, cy - areaHalf - 40);
 
       const unsaved0 = await diagUnsaved(page);
       if (unsaved0 !== 'なし') record('boot-dirty', `boot unsaved=${unsaved0} (expected なし)`);
@@ -310,12 +334,13 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         }
         // Draw 5 vertices along a zig-zag.
         const pts: ReadonlyArray<readonly [number, number]> = [
-          [cx - 220, cy - 60],
-          [cx - 110, cy + 40],
-          [cx, cy - 40],
-          [cx + 110, cy + 40],
-          [cx + 220, cy - 60],
+          [cx - zig(220), cy - zig(60)],
+          [cx - zig(110), cy + zig(40)],
+          [cx, cy - zig(40)],
+          [cx + zig(110), cy + zig(40)],
+          [cx + zig(220), cy - zig(60)],
         ];
+        assertClickable(b, pts, { avoidTopChrome: false, name: 'r3-zigzag' });
         for (const [px, py] of pts) await page.mouse.click(px, py);
         let vc = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
         if (vc !== '5') record('add-vertex-drop', `line: expected 5 vertices, got ${vc}`);
@@ -331,7 +356,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
           record('grid-snap-vertex-change', `toggling grid-snap changed vertex count ${before} -> ${after}`);
         }
         // Add one more vertex under grid-snap.
-        await page.mouse.click(cx + 260, cy + 20);
+        await page.mouse.click(cx + zig(260), cy + zig(20));
         vc = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
         if (vc !== '6') record('add-vertex-drop', `line+snap: expected 6 vertices, got ${vc}`);
 
@@ -389,7 +414,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         const layer = page.getByTestId('add-input-layer');
         await expect(layer).toBeVisible();
         // Single click places the point; complete/save may follow.
-        await page.mouse.click(cx + 300, cy - 200);
+        await page.mouse.click(pointX, pointY);
         await page.waitForTimeout(100);
         // A point may auto-advance to the property form, or expose complete.
         const complete = page.getByTestId('add-complete');
@@ -430,7 +455,11 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // =====================================================================
       // C. VERTEX EDIT / MOVE — make an area target, select a vertex, drag it.
       // =====================================================================
-      const areaRes = await commitArea(page, cx, cy, 150, 'edit-target');
+      assertClickable(b, squareCorners(cx, cy, areaHalf), {
+        avoidTopChrome: false,
+        name: 'r3-area-corners',
+      });
+      const areaRes = await commitArea(page, cx, cy, areaHalf, 'edit-target');
       if (areaRes === 'conflict') {
         await page.getByTestId('conflict-cancel').click().catch(() => undefined);
       }
@@ -455,8 +484,8 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       if (await armEditTool(page, 'vertex')) {
         await shot(page, 'vertex-tool-armed');
         // Click on a corner of the centred square (top-left corner area).
-        const vx = cx - 150;
-        const vy = cy - 150;
+        const vx = cx - areaHalf;
+        const vy = cy - areaHalf;
         await page.mouse.click(vx, vy);
         await page.waitForTimeout(120);
         const av = ((await page.getByTestId('app-active-vertex').textContent()) ?? '').trim();
@@ -574,7 +603,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
       // E. CONTEXT MENU — right-click in View and Edit modes.
       // =====================================================================
       await returnToViewMode(page);
-      await page.mouse.click(cx + 40, cy + 40, { button: 'right' });
+      await page.mouse.click(cx + zig(40), cy + zig(40), { button: 'right' });
       await page.waitForTimeout(120);
       const ctx = page.getByTestId('context-menu');
       if ((await ctx.count()) > 0) {
@@ -587,7 +616,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await shot(page, 'context-menu-view');
         // Dismiss by clicking elsewhere / Escape.
         await page.keyboard.press('Escape').catch(() => undefined);
-        await page.mouse.click(cx, cy - 250).catch(() => undefined);
+        await page.mouse.click(voidX, voidY).catch(() => undefined);
         await ctx.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {
           record('context-menu-stuck', 'view context-menu did not dismiss');
         });
@@ -611,7 +640,7 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         }
         await shot(page, 'context-menu-edit');
         await page.keyboard.press('Escape').catch(() => undefined);
-        await page.mouse.click(cx, cy - 250).catch(() => undefined);
+        await page.mouse.click(voidX, voidY).catch(() => undefined);
         await ctx2.waitFor({ state: 'detached', timeout: 3000 }).catch(() => {
           record('context-menu-stuck', 'edit context-menu did not dismiss');
         });
