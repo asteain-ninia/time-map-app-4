@@ -29,7 +29,7 @@ export const PROPERTY_STRINGS = {
    * 混ざらない言い方にする。
    */
   kindLabelLabel: '種別',
-  kindLabelPlaceholder: '例: 州・都市（空欄でも構いません）',
+  kindLabelPlaceholder: '例: 州・都市（空欄可）',
   /** 本物の存続期間（錨の並びが正本, U-23）の行見出し。 */
   existenceLabel: '続く',
   /** 存続期間の「終わりが決まっていない」側の言い方。 */

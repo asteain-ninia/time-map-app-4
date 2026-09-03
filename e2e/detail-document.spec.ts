@@ -1,15 +1,19 @@
 // fr98 回帰ロック — 詳細文書の編集UI behavioural E2E.
 //
-// THE POINT (FR-98 後段 / 教訓 5.7): the sidebar PropertyPanel now carries the
-// 詳細文書 editor (閲覧/編集切替 + 明示保存) wired to the ONE-undo-unit dispatch,
-// while the floating DetailPanel stays VIEW-ONLY and reads the LIVE committed
-// document (detailDocumentOf, 現在時刻で都度解決). This spec proves the whole loop
-// in the REAL built app:
+// THE POINT (FR-98 後段 / 教訓 5.7): the sidebar PropertyPanel carries the 詳細文書
+// editor (閲覧/編集切替), while the floating DetailPanel stays VIEW-ONLY and reads
+// the LIVE committed document (detailDocumentOf, 現在時刻で都度解決). This spec proves
+// the whole loop in the REAL built app:
 //
 //   編集→保存 → the floating 詳細パネル renders the sanitized document;
 //   Ctrl+Z    → the commit is ONE undo unit — the document reverts (view-only panel
 //               reflects the live truth);
 //   Ctrl+Y    → redo restores the same document.
+//
+// **増分 2 で保存ボタンの場所が変わった**（N-46）。以前は詳細文書に専用の保存
+// ボタンがあり、同じ画面に「押さないと保存されない」場所が 2 つあった。いまは
+// 名前・種別ラベル・見た目・詳細文書を **素性欄の下端の保存列 1 本** で確定するので、
+// 取り消しも 1 手のままである（この spec の Ctrl+Z / Ctrl+Y がそれを見ている）。
 
 import { test, expect } from '@playwright/test';
 
@@ -36,9 +40,12 @@ test.describe('fr98 — 詳細文書の編集（サイドバー編集面 + フ�
       const textarea = section.getByTestId('detail-doc-textarea');
       await expect(textarea).toBeVisible();
       await textarea.fill('**重要**な城の記録');
-      await section.getByTestId('detail-doc-save').click();
+      // セクションに専用の保存ボタンは無く、下端の保存列へ案内する（N-46）。
+      await expect(section.getByTestId('detail-doc-save')).toHaveCount(0);
+      await expect(section.getByTestId('detail-doc-save-hint')).toBeVisible();
+      await page.getByTestId('save-button').click();
       // Honest-failure discipline: a save error would surface a message; none here.
-      await expect(section.getByTestId('detail-doc-message')).toHaveCount(0);
+      await expect(page.getByTestId('save-message')).toHaveCount(0);
 
       // --- The floating 詳細パネル (view-only) renders the LIVE committed document. ---
       await page.getByTestId('open-detail-button').click();

@@ -210,7 +210,11 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
 
       // Ctrl+K は専用のコマンドなので、値が同じでも錨が 1 本増える。
       // 名前欄にフォーカスが残っていると打鍵が入力欄へ食われるので地図側へ移す。
+      // **送る前と後で選択が同じであることを見る**（開発ガイド §5.54。地図クリックは
+      // その場所の地物を選び直すので、違う地物に錨ができても検査は緑になりうる）。
+      const activeBefore = await page.getByTestId('app-active-feature').textContent();
       await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(activeBefore ?? '');
       await page.keyboard.press('Control+k');
       await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(2);
       await expect(page.getByTestId('statusbar-result')).toContainText('錨づくり');

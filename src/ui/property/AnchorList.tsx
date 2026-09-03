@@ -214,7 +214,13 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         className="anchor-list"
         data-testid="anchor-list"
         role="listbox"
-        style={{ height: `${ANCHOR_ROW_HEIGHT * ANCHOR_VISIBLE_ROWS}px` }}
+        // 高さは「見せる行数」と「実際の件数」の小さいほう。錨が 1 本しか無い地物で
+        // 336px の空箱を出さない（素性欄はそもそも縦に狭い）。
+        style={{
+          height: `${
+            ANCHOR_ROW_HEIGHT * Math.max(1, Math.min(ANCHOR_VISIBLE_ROWS, dataset.length))
+          }px`,
+        }}
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
       >
         {/* 上下の詰め物で「全件ぶんの高さ」を作る（スクロールバーの長さが実際の件数を表す）。 */}
