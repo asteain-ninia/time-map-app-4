@@ -42,6 +42,12 @@ export interface AppShellProps<S> {
    * collapses (auto height).
    */
   readonly topBar?: ReactNode;
+  /**
+   * オプションバー行のスロット（設計書 §C.4）。アプリバーの下・主行の上に積む **地図セルの
+   * 外のシェル行** なので、`mapOverlay` と違って地図セルの DOM の入れ子（結合点 #1 / T-3）に
+   * 触れず、地図のクリックを奪うこともない（K-2 / K-4）。空なら行は潰れる（`topBar` と同じ）。
+   */
+  readonly optionBar?: ReactNode;
   /** Bottom timeline slot (U21 mounts the Timeline here). */
   readonly timeline?: ReactNode;
   /** Status bar content slot. */
@@ -74,6 +80,7 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     store,
     sidebar,
     topBar,
+    optionBar,
     timeline,
     status,
     onMapMount,
@@ -101,14 +108,25 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
         {/* FR-12 経度シフト の上部表示 (ユーザー要望): a compact strip on the RIGHT of the
             menu bar row — a NORMAL flow element, NOT a map overlay, so it cannot cover
             the map or steal its clicks the way the old .map-area__overlay panel did
-            (教訓 5.14 / HB-15 / 8d1ce75). Nested in this existing row (not a new grid
-            row) so the tool-overlay grids still mirror .app-shell exactly. */}
+            (教訓 5.14 / HB-15 / 8d1ce75). この行にネストしている理由として以前「新しい
+            グリッド行を足すとツールオーバーレイのミラーが崩れるから」と書いていたが、その
+            ミラーは第6工程の ROOT FIX で撤去済みで、いまは行を足してよい（下の
+            app-shell__optionbar がその実例）。 */}
         {topBar != null && (
           <div className="app-shell__topbar" data-testid="app-shell-topbar">
             {topBar}
           </div>
         )}
       </header>
+
+      {/* 設計書 §C.4 のオプションバー行。地図セルの外の通常フロー行なので、地図の入力層を
+          覆うことも、地図セルの入れ子（T-3 の data-zoom/-pan-x/-pan-y の取り付け先）を
+          崩すこともない。 */}
+      {optionBar != null && (
+        <div className="app-shell__optionbar" data-testid="app-shell-optionbar">
+          {optionBar}
+        </div>
+      )}
 
       <div className="app-shell__main">
         <div className="app-shell__toolbar">

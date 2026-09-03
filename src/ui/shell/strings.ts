@@ -93,6 +93,19 @@ export const STATUS_STRINGS = {
 } as const;
 
 /**
+ * オプションバー（設計書 §C.4）の既定文言。道具が何も押し込んでいないときに出る。
+ * 「（選んでいません）」は対象欄 240px が 0 件でも枠を保つための文字（K-3）。確定欄は
+ * 文字を置かず、空の 176px として残す（設計書 §B.4）。
+ */
+export const OPTION_BAR_STRINGS = {
+  ariaLabel: 'オプションバー',
+  defaultToolName: '✦ 選ぶ',
+  noTarget: '（選んでいません）',
+  defaultNextStep: '地図か台帳から地物を選ぶ',
+  noSettings: '（設定なし）',
+} as const;
+
+/**
  * Sidebar list content strings (HB-3): empty-state guidance for the 地物一覧 /
  * イベント一覧 sections when the project has no features / anchors yet. Centralised
  * here (FR-115); no inline literals (教訓 5.19).

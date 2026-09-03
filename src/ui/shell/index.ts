@@ -17,6 +17,15 @@ export {
   SIDEBAR_SECTION,
 } from './Sidebar';
 export { StatusBar, type StatusBarProps } from './StatusBar';
+export { OptionBar, type OptionBarProps } from './OptionBar';
+export {
+  OptionBarStore,
+  type OptionBarState,
+  type OptionBarTarget,
+  type OptionBarSlot,
+  type OptionBarCommitButton,
+  type OptionBarListener,
+} from './option-bar';
 export {
   CursorCoordinateStatus,
   type CursorCoordinateStatusProps,

@@ -61,8 +61,18 @@ body {
   --shell-toolbar-w: 120px;
   --shell-sidebar-w: 220px;
   display: grid;
-  grid-template-rows: auto 1fr auto auto;
-  grid-template-columns: 1fr;
+  /* 行: メニュー / オプションバー / 主行 / 時刻レール / 状態行 (設計書 §B.1)。
+   * オプションバーは **地図セルの外のシェル行** なので、地図セルの DOM の入れ子
+   * (map-area > map-canvas-mount + map-input-layer) に一切触れない = onMapMount の
+   * querySelector と data-zoom/-pan-x/-pan-y の取り付け先 (T-3 / 結合点 #1) を崩さない。
+   * スロットを渡さなければその行は 0 高に潰れる (topBar と同じ作法)。 */
+  grid-template-rows: auto auto 1fr auto auto;
+  /* `1fr` ではなく `minmax(0, 1fr)`。`1fr` の自動最小サイズは「その行のいちばん長い中身の
+   * min-content」なので、折り返さない長い文字を持つ行が 1 本でもあると **列そのものが窓幅を
+   * 超えて広がり、地図セルまで一緒に広がる**（オプションバーの「次の一手」に長い拒否理由を
+   * 入れて実測: 地図セルが 940px → 2,254px、上端 y も 121 → 72 へ動いた）。K-3 は「選択の
+   * たびに地図がずれない」ことなので、行の中身が列幅に効く経路そのものを断つ。 */
+  grid-template-columns: minmax(0, 1fr);
   width: 100%;
   height: 100%;
   /* FR-114: full layout never collapses below 800×600. */
@@ -75,9 +85,14 @@ body {
 .app-shell__menubar {
   grid-row: 1;
   /* FR-12 経度シフト の上部表示: the menu bar row hosts BOTH the menus (left) and the
-   * 経度シフト control (right). Kept in this existing row — NOT a new grid row — so the
-   * tool-overlay grids (.add-tool / .knife-tool / …) still mirror .app-shell's 4-row
-   * template exactly (add-input-layout.test.tsx の mirror 契約) with zero overlay churn. */
+   * 経度シフト control (right).
+   *
+   * かつてここには「新しいグリッド行を足すとツールオーバーレイのミラーが崩れるので、この行の
+   * 中にネストする」という理由が書いてあったが、**そのミラーは第6工程の ROOT FIX で撤去されて
+   * いる**（`.add-tool` は inset:0 の地図アンカー式で、grid-template を持たないことを
+   * `add/add-input-layout.test.tsx` が固定している）。したがってシェルの行数はもう
+   * オーバーレイの制約ではない（実際、設計書 §C.4 のオプションバー行をこの下に足した）。
+   * 経度シフトがこの行に居るのは、いまはレイアウト上の選択にすぎない。 */
   display: flex;
   align-items: stretch;
   /* Fill the whole bar with chrome so the area beside the menus (where 経度シフト sits)
@@ -86,8 +101,17 @@ body {
   color: var(--c-chrome-text);
 }
 
-.app-shell__main {
+/* オプションバー行 (設計書 §C.4): 全幅 × 40px 固定。中身は道具が押し込む。
+ * grid item の既定 `min-width: auto` を 0 にして、中身の min-content が行の外へ効かない
+ * ようにする (上の minmax(0,1fr) と対で K-3 を守る)。 */
+.app-shell__optionbar {
   grid-row: 2;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-shell__main {
+  grid-row: 3;
   display: grid;
   /* left toolbar (fixed) | center map (fluid) | right sidebar (fixed). */
   grid-template-columns: var(--shell-toolbar-w) 1fr var(--shell-sidebar-w);
@@ -120,7 +144,7 @@ body {
 }
 
 .app-shell__timeline {
-  grid-row: 3;
+  grid-row: 4;
   /* HB-5: the timeline row is `auto`-sized; if its content (esp. the marker list)
    * grows it must scroll WITHIN the panel rather than push the shell and spawn a
    * page-level scrollbar. A bounded max-height + internal overflow keeps the
@@ -132,7 +156,7 @@ body {
 }
 
 .app-shell__statusbar {
-  grid-row: 4;
+  grid-row: 5;
 }
 
 /* --- Region chrome: menubar / toolbar / sidebar / statusbar ----------------
@@ -474,6 +498,103 @@ body {
 .statusbar__coords {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* --- オプションバー (設計書 §C.4 / §B.4) -------------------------------------
+ *
+ * 「いま持っている道具の、いまの状況」を 1 行で見せる帯。**寸法を選択状態に依存させない**
+ * (K-3) ことがこの規則の目的である。過去の守り方は「常に固定幅のボタンを出しっぱなしにして
+ * 無効化する」で、それが起動直後から灰色の部品が 400px 弱を占める原因になっていた (N-33)。
+ * ここでは **固定寸法の枠に入れて中身だけ差し替える** 形にする:
+ *
+ *  - 行の高さは 40px 固定。中身が増えても減っても動かない (`flex-wrap: nowrap` で
+ *    折り返さない = 窓幅で地図の上端が上下する §1.3 の事故も起こさない)。
+ *  - 道具名 112 / 対象 240 / 確定 176 は `flex: 0 0 <固定px>`。**対象欄は 0 件でも枠が残り**
+ *    「（選んでいません）」が薄く出る。確定欄は確定の要らない道具のとき空の 176px として残る。
+ *  - 伸縮するのは「次の一手」と「設定」だけで、どちらも `min-width: 0` + `overflow: hidden`。
+ *    中身がどれだけ長くても外寸を押し広げられない。
+ */
+.option-bar {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 10px;
+  background: var(--c-panel);
+  border-bottom: 1px solid var(--c-border);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.option-bar__tool,
+.option-bar__target,
+.option-bar__next,
+.option-bar__settings,
+.option-bar__commit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.option-bar__tool {
+  flex: 0 0 112px;
+  font-weight: 600;
+}
+
+.option-bar__target {
+  flex: 0 0 240px;
+}
+
+.option-bar__next {
+  flex: 1 1 auto;
+}
+
+.option-bar__settings {
+  flex: 0 1 auto;
+}
+
+.option-bar__commit {
+  flex: 0 0 176px;
+  justify-content: flex-end;
+}
+
+.option-bar__stage {
+  flex: none;
+  color: var(--c-text-muted);
+}
+
+.option-bar__target-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「（選んでいません）」「（設定なし）」: 枠は残すが読みの重みは落とす。 */
+.option-bar__muted {
+  color: var(--c-text-muted);
+}
+
+.option-bar__commit-button {
+  min-height: 30px;
+  min-width: 60px;
+  padding: 4px 10px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.option-bar__commit-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Timeline: pad the panel so its controls do not sit flush against the edge. */

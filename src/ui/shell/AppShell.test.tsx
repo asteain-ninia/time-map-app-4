@@ -79,6 +79,26 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
     expect(screen.queryByTestId('app-shell-topbar')).not.toBeInTheDocument();
   });
 
+  it('renders the optionBar slot as a flow row OUTSIDE the map cell (K-2 / K-4)', () => {
+    // 設計書 §C.4 のオプションバー。topBar と同じく **通常フローのシェル行** で、地図セルの
+    // 中には入らない。中に入れると (a) 地図の入力層を覆ってクリックを奪う (K-2 の 3 度の事故)
+    // (b) onMapMount の querySelector が前提にする入れ子を崩して data-zoom / data-pan-x /
+    // data-pan-y が **例外も警告も出さずに** 壊れる (T-3 / 結合点 #1)。
+    render(<AppShell store={makeStore()} optionBar={<div data-testid="option-widget" />} />);
+    const widget = screen.getByTestId('option-widget');
+    expect(screen.getByTestId('app-shell-optionbar')).toContainElement(widget);
+    expect(screen.getByTestId('map-area')).not.toContainElement(widget);
+    const mapOverlay = screen.queryByTestId('map-overlay');
+    if (mapOverlay !== null) {
+      expect(mapOverlay).not.toContainElement(widget);
+    }
+  });
+
+  it('omits the option-bar row when no optionBar slot is provided (collapses)', () => {
+    render(<AppShell store={makeStore()} />);
+    expect(screen.queryByTestId('app-shell-optionbar')).not.toBeInTheDocument();
+  });
+
   it('sidebar has the two sections (一覧 / プロパティ, HB6 統合)', () => {
     render(<AppShell store={makeStore()} />);
     expect(screen.getByTestId('sidebar-tab-list')).toBeInTheDocument();

@@ -148,6 +148,8 @@ import {
   CursorPositionStore,
 } from './shell/cursor-position';
 import { CursorCoordinateStatus } from './shell/CursorCoordinateStatus';
+import { OptionBar } from './shell/OptionBar';
+import { OptionBarStore } from './shell/option-bar';
 import { BROWSER_CLOCK, throttleTrailing } from './shell/map-resize';
 import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
@@ -541,6 +543,13 @@ export function App(): JSX.Element {
   const cursorPositionStoreRef = useRef<CursorPositionStore | null>(null);
   cursorPositionStoreRef.current ??= new CursorPositionStore();
   const cursorPositionStore = cursorPositionStoreRef.current;
+
+  // オプションバー（設計書 §C.4）の内容置き場。道具の実装が押し込み、OptionBar の 1 ノード
+  // だけが購読する。cursorPositionStore と同じ理由で ref に置く: useMemo は React が捨てうる
+  // ので、押し込む側と購読する側が別インスタンスに割れて無言で結線が切れる。
+  const optionBarStoreRef = useRef<OptionBarStore | null>(null);
+  optionBarStoreRef.current ??= new OptionBarStore();
+  const optionBarStore = optionBarStoreRef.current;
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -3229,6 +3238,10 @@ export function App(): JSX.Element {
         sidebar={sidebar}
         suspended={shortcutsSuspended}
         onMapMount={onMapMount}
+        /* 設計書 §C.4 のオプションバー。この増分では器と API だけで、中身は各道具が
+           後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か台帳から地物を
+           選ぶ／（設定なし）／空の確定欄」）。 */
+        optionBar={<OptionBar store={optionBarStore} />}
         timeline={<Timeline store={store} />}
         /* FR-111 ステータスバー — the live cursor 経緯度 readout. Bound to the
            React-EXTERNAL cursor store the map pointermove path pushes into, so the
