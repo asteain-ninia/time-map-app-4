@@ -79,7 +79,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { placeSquareScene } from './scene-layout';
+import { placeSquareScene, fitHalf } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -435,14 +435,23 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // half=230 only cleared the map-anchored bottom-centre controls strip by ~2px
       // (razor-thin); half=150 keeps the FULL depth-6 chain with real clearance.
       const DEPTH = 6;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ（オプションバー 40px ＋
+      // 状態行 22→28px ＋ アプリバーの折り返し）。**要求した大きさをそのまま使わず、
+      // その箱で成り立つ最大値まで落とす** — こうしておけば、以後シェルの高さが動くたびに
+      // ここの数値を当て直さなくて済む（下限を割ったら fitHalf が落ちる）。
+      const nestHalf = fitHalf(b, 150, {
+        avoidTopChrome: false,
+        min: 100,
+        name: 'r3-nest',
+      });
       const nest = placeSquareScene(b, {
         fx: 0.5,
         fy: 0.42,
-        half: 150,
+        half: nestHalf,
         avoidTopChrome: false, // pure-add phase — no tool guide mounts
         name: 'r3-nest',
       });
-      let half = 150;
+      let half = nestHalf;
       let level = 0;
       for (; level < DEPTH; level += 1) {
         const res = await commitFace(page, nest.cx, nest.cy, half, {
@@ -568,7 +577,9 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // controls strip and the scene degraded softly). exHalf 170→130 keeps the
       // phase semantics (2 holes, vertex-drag, split-through-holes) at a size the
       // lane can actually host.
-      const exHalf = 130;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const exHalf = fitHalf(b, 130, { avoidTopChrome: true, pierceExtra: 30, min: 60, name: 'r3-exclave' });
       const exReach = exHalf + 30;
       const exScene = placeSquareScene(b, {
         fx: 0.19,
@@ -669,7 +680,9 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // =====================================================================
       // C. CONSECUTIVE KNIFE SPLITS (3 in a row) → MERGE + UNDO/REDO metamorphic.
       // =====================================================================
-      const sHalf = 70;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const sHalf = fitHalf(b, 70, { avoidTopChrome: true, pierceExtra: 40, min: 45, name: 'r3-split' });
       const sReach = sHalf + 40;
       // 第7工程 (第6工程の TOP-RIGHT ピン留めを共有ソルバへ集約): RIGHT lane via the
       // shared scene solver — clear of the centre nest and the left-lane exclave, and

@@ -135,8 +135,9 @@ test.describe('ステータスバーのカーソル座標', () => {
     try {
       const statusbar = page.getByTestId('statusbar');
       await expect(statusbar).toBeVisible();
-      // 起動直後はカーソル位置が未知なので既定文言のまま.
-      await expect(page.getByTestId('statusbar-cursor-coords')).toHaveCount(0);
+      // 起動直後はカーソル位置が未知。**枠は残したまま**「—」を出す（設計書 §H.6 の表。
+      // 状態行が 5 枠になったので、枠ごと消すと座標欄だけ穴が空いて見える）。
+      await expect(page.getByTestId('statusbar-cursor-coords')).toHaveText('—');
 
       const c = await mapCentre(page);
       await page.mouse.move(c.x, c.y);
@@ -156,8 +157,7 @@ test.describe('ステータスバーのカーソル座標', () => {
       const toolbar = await page.getByTestId('app-shell').boundingBox();
       expect(toolbar).not.toBeNull();
       await page.mouse.move(toolbar!.x + 4, toolbar!.y + 4);
-      await expect(page.getByTestId('statusbar-cursor-coords')).toHaveCount(0);
-      await expect(statusbar).toHaveText(/準備完了/);
+      await expect(page.getByTestId('statusbar-cursor-coords')).toHaveText('—');
     } finally {
       await app.close();
     }

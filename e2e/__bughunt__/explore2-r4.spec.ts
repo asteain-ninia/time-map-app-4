@@ -59,7 +59,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { assertClickable } from './scene-layout';
+import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -316,24 +316,41 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       // bottom-centre tool-controls strip, eating the clicks (add-vertex-drop →
       // complete disabled). Anchor ≈0.42h keeps every cluster corner clear of the
       // strip while preserving the exact overlap topology (offsets unchanged).
-      const clY = b.y + Math.round(0.42 * b.height);
-      const clusterCorners: ReadonlyArray<readonly [number, number]> = (
-        [
-          [cx - 60, clY - 40, 110],
-          [cx + 90, clY + 60, 110],
-          [cx + 10, clY + 10, 130],
-        ] as const
-      ).flatMap(([fcx, fcy, half]) => [
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ。**重なりの形（位相）は
+      // 保ったまま、クラスタ全体を「その箱で成り立つ大きさ」へ相似に縮める。** 中心も
+      // placeSquareScene に解かせるので、以後シェルの高さが動いても当て直さなくて済む。
+      // 200 は元のクラスタの最大到達距離（|オフセット| + half）。
+      const CLUSTER_REACH = 200;
+      const clusterScale = Math.min(
+        1,
+        maxFeasibleHalf(b, { avoidTopChrome: false }) / CLUSTER_REACH,
+      );
+      const cs = (v: number): number => Math.round(v * clusterScale);
+      const cluster = placeSquareScene(b, {
+        fx: 0.5,
+        fy: 0.42,
+        half: cs(CLUSTER_REACH),
+        avoidTopChrome: false,
+        name: 'r4-conflict-cluster',
+      });
+      const clX = cluster.cx;
+      const clY = cluster.cy;
+      const clusterFaces = [
+        [clX + cs(-60), clY + cs(-40), cs(110)],
+        [clX + cs(90), clY + cs(60), cs(110)],
+        [clX + cs(10), clY + cs(10), cs(130)],
+      ] as const;
+      const clusterCorners: ReadonlyArray<readonly [number, number]> = clusterFaces.flatMap(([fcx, fcy, half]) => [
         [fcx - half, fcy - half],
         [fcx + half, fcy - half],
         [fcx + half, fcy + half],
         [fcx - half, fcy + half],
       ]);
       assertClickable(b, clusterCorners, { avoidTopChrome: false, name: 'r4-conflict-cluster' });
-      const f1 = await commitFaceMaybeConflict(page, cx - 60, clY - 40, 110);
+      const f1 = await commitFaceMaybeConflict(page, ...clusterFaces[0]);
       if (f1 !== 'committed') record('conflict-setup', `first face: ${f1}`);
       await checkCamera(page, 'after-f1');
-      const f2 = await commitFaceMaybeConflict(page, cx + 90, clY + 60, 110);
+      const f2 = await commitFaceMaybeConflict(page, ...clusterFaces[1]);
       await shot(page, 'two-faces');
       if (f2 === 'conflict') {
         // The 2nd already overlaps the 1st; resolve+apply to set a clean base.
@@ -355,7 +372,7 @@ test.describe('BUGHUNT R2 — conflict(cancel+apply) / settings(invalid+valid) /
       const countBeforeCancel = await featureListCount(page);
 
       // A THIRD face that straddles both -> should fire the conflict modal.
-      const f3 = await commitFaceMaybeConflict(page, cx + 10, clY + 10, 130);
+      const f3 = await commitFaceMaybeConflict(page, ...clusterFaces[2]);
       await shot(page, 'third-face-overlap');
       if (f3 === 'conflict') {
         record('conflict-modal-fired', 'three-face overlap真に paused on conflict modal');

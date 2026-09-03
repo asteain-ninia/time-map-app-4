@@ -73,7 +73,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { SCENE_MARGIN, assertClickable, placeSquareScene } from './scene-layout';
+import { SCENE_MARGIN, assertClickable, placeSquareScene, fitHalf } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -465,14 +465,23 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // half=150 keeps the FULL depth-8 chain (L7 half ≈ 18px, corners distinct);
       // depth semantics unchanged.
       const DEPTH = 8;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ（オプションバー 40px ＋
+      // 状態行 22→28px ＋ アプリバーの折り返し）。**要求した大きさをそのまま使わず、
+      // その箱で成り立つ最大値まで落とす** — こうしておけば、以後シェルの高さが動くたびに
+      // ここの数値を当て直さなくて済む（下限を割ったら fitHalf が落ちる）。
+      const nestHalf = fitHalf(b, 150, {
+        avoidTopChrome: false,
+        min: 100,
+        name: 'r4-nest',
+      });
       const nest = placeSquareScene(b, {
         fx: 0.5,
         fy: 0.42,
-        half: 150,
+        half: nestHalf,
         avoidTopChrome: false, // pure-add phase — no tool guide mounts
         name: 'r4-nest',
       });
-      let half = 150;
+      let half = nestHalf;
       let level = 0;
       for (; level < DEPTH; level += 1) {
         const res = await commitFace(page, nest.cx, nest.cy, half, {
@@ -513,7 +522,9 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // the lane fits BOTH the nest clearance and the in-box HORIZONTAL pierce
       // (endpoints exCx±exReach asserted below); the phase semantics (2 holes,
       // hole-reparent-out, split-with-hole) are unchanged.
-      const exHalf = 130;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const exHalf = fitHalf(b, 130, { avoidTopChrome: true, pierceExtra: 30, min: 60, name: 'r4-exclave' });
       const exReach = exHalf + 30;
       const exScene = placeSquareScene(b, {
         fx: 0.19,
@@ -654,7 +665,9 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
       // =====================================================================
       // C. FIVE CONSECUTIVE KNIFE SPLITS → CHAINED MERGE (two merges).
       // =====================================================================
-      const sHalf = 95;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const sHalf = fitHalf(b, 95, { avoidTopChrome: true, pierceExtra: 45, min: 55, name: 'r4-split' });
       const sReach = sHalf + 45;
       // 第7工程: RIGHT lane via the shared scene solver — clear of the nest / exclave
       // and outside the bottom-centre controls strip; the five vertical pierce

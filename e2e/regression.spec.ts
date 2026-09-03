@@ -244,13 +244,19 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
       await armAddAreaTool(page);
       const a = await addInputLayerBox(page);
       const cx = a.x + a.width / 2;
-      const cy = a.y + a.height / 2;
-      // A square ~240×240 px centred in the layer (odd offsets ⇒ non-integer world).
+      const cy = a.y + a.height * 0.45;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ（オプションバー 40px ＋
+      // 状態行 22→28px ＋ アプリバーの折り返し）。**固定 px の四隅は、地図の上下に浮く
+      // ツールの帯（上: ナイフのガイド / 下: 確定ボタンの列）に当たって落ちる**ので、
+      // 箱の高さから決める。奇数の端数は残す（画面 px → 世界座標が非整数になることが
+      // このテストの入力条件）。
+      const half = Math.min(110, Math.round(a.height * 0.17));
+      const pierce = half + 30;
       const corners: ReadonlyArray<readonly [number, number]> = [
-        [cx - 123, cy - 117],
-        [cx + 121, cy - 119],
-        [cx + 119, cy + 121],
-        [cx - 117, cy + 123],
+        [cx - half - 3, cy - half + 3],
+        [cx + half + 1, cy - half - 1],
+        [cx + half - 1, cy + half + 1],
+        [cx - half + 3, cy + half - 3],
       ];
       // drawFace が 完了 → 保存 → 選択が新しい面へ再解決される (教訓 5.11) まで通す。
       await drawFace(page, corners);
@@ -270,8 +276,8 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
       await page.mouse.click(cx, cy);
       // Draw the cut: two points, both OUTSIDE the face, the segment piercing it.
       // Slightly skewed x so the world coordinates are non-integer (screen-derived).
-      await page.mouse.click(cx + 2, cy - 180);
-      await page.mouse.click(cx - 3, cy + 180);
+      await page.mouse.click(cx + 2, cy - pierce);
+      await page.mouse.click(cx - 3, cy + pierce);
       await expect(page.getByTestId('knife-cut-count')).toHaveText('2');
 
       // 3. 確定 the cut → choose piece 0 as inheritor → confirm → save the非継承側.

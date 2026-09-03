@@ -5,7 +5,7 @@
 // `getBoundingClientRect()` が常に 0 を返すので、単体テストで矩形を比べても中身に関わらず
 // 一致し、**常に緑になって何も守らない**（設計書 §O の B-13 が「① と ② の矩形を測る」旧案を
 // 却下したのと同じ理由が、そのまま「jsdom で測る」にも当てはまる）。CSS の宣言そのものは
-// `src/ui/shell/option-bar-layout.test.ts` が固定し、ここは実寸を見る。
+// `src/ui/shell/shell-layout.test.ts` が固定し、ここは実寸を見る。
 //
 // 併せて T-3 / 結合点 #1 の確認をここに置く: **シェルに行を 1 本足したあとも**
 // `data-zoom` / `data-pan-x` / `data-pan-y` が同じ要素（map-canvas-mount の兄弟である
@@ -38,8 +38,9 @@ test.describe('オプションバーの枠（設計書 §C.4）', () => {
       const barBox = (await bar.boundingBox())!;
       const shellBox = (await page.getByTestId('app-shell').boundingBox())!;
 
-      // 高さ 40px 固定（設計書 §C.4）。
-      expect(barBox.height).toBe(40);
+      // 高さ 40px 固定（設計書 §C.4）。実測は端末の表示倍率で 1px 未満の端数が出るので
+      // 丸めて比べる（39.99999… で落ちても意味がない）。
+      expect(Math.round(barBox.height)).toBe(40);
       // 全幅（シェルと同じ幅・同じ左端）。
       expect(Math.round(barBox.width)).toBe(Math.round(shellBox.width));
       expect(Math.round(barBox.x)).toBe(Math.round(shellBox.x));
@@ -135,7 +136,7 @@ test.describe('K-3 の機械検査 — 地図セルの矩形は選択・道具�
 
       // 帯そのものも 40px のまま（折り返して 2 段にならない）。
       const barBox = (await page.getByTestId('option-bar').boundingBox())!;
-      expect(barBox.height).toBe(40);
+      expect(Math.round(barBox.height)).toBe(40);
       // 固定幅の枠が中身で広がっていない。
       expect(Math.round((await page.getByTestId('option-bar-target').boundingBox())!.width)).toBe(
         240,

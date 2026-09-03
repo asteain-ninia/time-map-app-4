@@ -38,9 +38,9 @@ test.describe('状態行の 5 枠と、アプリバーの素性（設計書 §C.
       // 最終保存: このセッションではまだ保存していない。
       await expect(page.getByTestId('statusbar-last-saved')).toHaveText('未保存');
 
-      // 状態行そのものは 28px 固定。
+      // 状態行そのものは 28px 固定（端末の表示倍率で端数が出るので丸めて比べる）。
       const statusBox = (await page.getByTestId('statusbar').boundingBox())!;
-      expect(statusBox.height).toBe(28);
+      expect(Math.round(statusBox.height)).toBe(28);
 
       // --- アプリバーの素性 --------------------------------------------------
       // 保存先が決まっていない新規なので「（未保存の新規）」。世界名は空なので出ない。

@@ -92,9 +92,13 @@ test.describe('HB4-1 — 継承先モーダルの分断プレビュー(北半球
       await armAddAreaTool(page);
       const b = await addInputLayerBox(page);
       const cx = b.x + b.width / 2;
-      const cy = b.y + b.height / 2;
-      const top = cy - 200; // 頂点(北の尖り)
-      const bottom = cy - 70; // 底辺(南)
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ。固定 px（cy-200 / cy-70）
+      // だと三角形の頂点が地図セルの外へ出て、切断の上端クリックがナイフのガイド帯
+      // （地図セル上端 +12..48）に当たって落ちる。箱の高さから決める。
+      // 条件は 2 つ: ①面全体が赤道（既定カメラでは地図セルの中央）より北 ②切断の端点
+      // （top-30 / bottom+30）がガイド帯と確定ボタンの帯を避ける。
+      const bottom = Math.round(b.y + b.height * 0.46); // 底辺(南) — 赤道より北
+      const top = Math.round(bottom - b.height * 0.22); // 頂点(北の尖り)
       // drawFace が頂点数 3 の一致確認 → 完了 → 保存 → 選択の再解決待ちまで行う。
       await drawFace(page, [
         [cx, top],

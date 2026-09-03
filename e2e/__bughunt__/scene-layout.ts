@@ -68,6 +68,22 @@ function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
 
+/**
+ * `v` を [lo, hi] に収めたうえで **整数に丸めても [lo, hi] からはみ出さない**値にする。
+ *
+ * WHY: クリック座標は最後に整数へ丸めている。素直に `Math.round(clamp(v, lo, hi))` にすると、
+ * 上限へ張り付いた値が丸めで最大 0.5px だけ外へ押し出され、四隅がクロムの帯へ食い込む
+ * （増分 1 で地図セルが縦に約 74px 縮み、cy が帯の上限ぎりぎりに張り付くようになったため
+ * 実際に 460.8 → 461 で 0.2px 食い込んで落ちた）。丸めたあとの整数レンジ側で clamp する。
+ */
+function snapInside(v: number, lo: number, hi: number): number {
+  const loI = Math.ceil(lo);
+  const hiI = Math.floor(hi);
+  // 帯の幅が 1px 未満で整数が 1 つも入らないときだけ、丸めるしかない。
+  if (loI > hiI) return Math.round(clamp(v, lo, hi));
+  return clamp(Math.round(v), loI, hiI);
+}
+
 export interface SquareSceneSpec {
   /** Horizontal anchor as a fraction of the box width (0..1). */
   readonly fx: number;
@@ -118,7 +134,9 @@ export function placeSquareScene(b: SceneBox, spec: SquareSceneSpec): PlacedSqua
       `scene-layout: "${name}" half=${half} exceeds the box width (${JSON.stringify(b)})`,
     );
   }
-  const cx = clamp(b.x + spec.fx * b.width, cxMin, cxMax);
+  // 先に整数へ確定させる（レーンがクロムの帯を外れるかの判定を、実際にクリックする
+  // 整数座標そのもので行うため。丸めで判定が裏返るのを防ぐ）。
+  const cx = snapInside(b.x + spec.fx * b.width, cxMin, cxMax);
 
   const bottom = bottomChromeBand(b);
   const top = topChromeBand(b);
@@ -154,14 +172,68 @@ export function placeSquareScene(b: SceneBox, spec: SquareSceneSpec): PlacedSqua
         `is empty for box=${JSON.stringify(b)} — shrink the scene or move its lane`,
     );
   }
-  const cy = clamp(b.y + spec.fy * b.height, cyMin, cyMax);
+  // 整数へ丸めても feasible な帯 [cyMin, cyMax] の中に残す。
+  // 丸めてから外へ 0.2px 押し出されると四隅がクロムの帯に食い込み、クリックが飲まれる
+  // （増分 1 で地図セルが縦に約 74px 縮み、cy が帯の上限に張り付くようになったため顕在化）。
+  const cy = snapInside(b.y + spec.fy * b.height, cyMin, cyMax);
 
   return {
-    cx: Math.round(cx),
-    cy: Math.round(cy),
-    cutTopY: Math.round(cy - reach),
-    cutBottomY: Math.round(cy + reach),
+    cx,
+    cy,
+    // 端点も「内側へ」丸める（reach が整数なら恒等、そうでなくても帯からはみ出さない）。
+    cutTopY: Math.ceil(cy - reach),
+    cutBottomY: Math.floor(cy + reach),
   };
+}
+
+/**
+ * その箱で成り立つ **いちばん大きい half**（クロムの帯を避けたうえで、四隅も pierce の
+ * 端点も余白の内側に入る最大値）。収まらなければ 0 以下を返す。
+ *
+ * WHY: シェルの行が増減するたびに地図セルの高さは変わる（UI 再設計では毎増分に変わる）。
+ * `placeSquareScene` は「収まらないなら黙って縮めずに落ちる」契約なので、**呼び出し側が
+ * その箱で成り立つ大きさを決められる**手段が要る。ここが無いと、シェルを 40px 動かすたびに
+ * 13 本の探索 spec の数値を手で当て直すことになる。
+ */
+export function maxFeasibleHalf(
+  b: SceneBox,
+  opts: { readonly avoidTopChrome: boolean; readonly pierceExtra?: number },
+): number {
+  const m = SCENE_MARGIN;
+  const extra = opts.pierceExtra ?? 0;
+  const bottomTop = bottomChromeBand(b).top;
+  const topBottom = topChromeBand(b).bottom;
+  // 上端: 余白（top クロムを避けるならその下端）から。下端: bottom クロムの上。
+  const upper = opts.avoidTopChrome ? Math.max(b.y + m, topBottom + m) : b.y + m;
+  const lower = bottomTop - m;
+  // reach = half + extra が上下に収まる最大の half。
+  return Math.floor((lower - upper) / 2) - extra;
+}
+
+/**
+ * 要求した half と、その箱で成り立つ最大の half の小さいほう。**下限を割ったら落とす**
+ * （黙って潰れた図形で探索を続けても意味が無い ＝ scene-layout の「静かに縮めない」方針）。
+ */
+export function fitHalf(
+  b: SceneBox,
+  requested: number,
+  opts: {
+    readonly avoidTopChrome: boolean;
+    readonly pierceExtra?: number;
+    readonly min: number;
+    readonly name: string;
+  },
+): number {
+  const feasible = maxFeasibleHalf(b, opts);
+  const half = Math.min(requested, feasible);
+  if (half < opts.min) {
+    throw new Error(
+      `scene-layout: "${opts.name}" は最小の half=${opts.min} すら入らない ` +
+        `(要求 ${requested}, 成立する最大 ${feasible}, box=${JSON.stringify(b)}) — ` +
+        `地図セルが小さくなりすぎている`,
+    );
+  }
+  return half;
 }
 
 /**

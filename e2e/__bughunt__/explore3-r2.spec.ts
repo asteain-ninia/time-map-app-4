@@ -66,7 +66,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
+import { SCENE_MARGIN, placeSquareScene, fitHalf } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -406,16 +406,25 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // depth-5 chain (L4 half ≈ 36px); depth semantics unchanged. The reparent /
       // vertex phases below are nest-relative and follow automatically.
       const DEPTH = 5;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ（オプションバー 40px ＋
+      // 状態行 22→28px ＋ アプリバーの折り返し）。**要求した大きさをそのまま使わず、
+      // その箱で成り立つ最大値まで落とす** — こうしておけば、以後シェルの高さが動くたびに
+      // ここの数値を当て直さなくて済む（下限を割ったら fitHalf が落ちる）。
+      const nestHalf = fitHalf(b, 150, {
+        avoidTopChrome: false,
+        min: 100,
+        name: 'r2-nest',
+      });
       const nest = placeSquareScene(b, {
         fx: 0.5,
         fy: 0.42,
-        half: 150,
+        half: nestHalf,
         avoidTopChrome: false, // pure-add phase — no tool guide mounts
         name: 'r2-nest',
       });
       const ncx = nest.cx;
       const ncy = nest.cy;
-      let half = 150;
+      let half = nestHalf;
       let level = 0;
       for (; level < DEPTH; level += 1) {
         const res = await commitFace(page, ncx, ncy, half, {
@@ -542,7 +551,9 @@ test.describe('BUGHUNT R3-2 — deep-nest reparent / nested vertex-edit / split�
       // =====================================================================
       // C. CONTINUOUS KNIFE SPLITS (3 in a row) → MERGE + UNDO metamorphic.
       // =====================================================================
-      const sHalf = 78;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const sHalf = fitHalf(b, 78, { avoidTopChrome: true, pierceExtra: 40, min: 50, name: 'r2-split' });
       const sReach = sHalf + 40;
       // 第7工程: RIGHT lane via the shared scene solver — clear of the centred nest
       // AND fully outside the bottom-centre tool-controls strip, so the base's

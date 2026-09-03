@@ -30,7 +30,7 @@ import {
   placeVertices,
   commitFace,
 } from '../helpers';
-import { placeSquareScene, assertClickable, type SceneBox } from '../__bughunt__/scene-layout';
+import { placeSquareScene, assertClickable, type SceneBox, fitHalf } from '../__bughunt__/scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
@@ -463,7 +463,9 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       record('map-box', JSON.stringify(box));
 
       // Scene: a 240×240 face, nudged right so the 飛び地 has clear canvas on its left.
-      const half = 120;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、その箱で成り立つ大きさまで落とす
+      // （下限を割ったら fitHalf が落ちる）。
+      const half = fitHalf(box, 120, { avoidTopChrome: true, min: 70, name: 'ring-face' });
       const scene = placeSquareScene(box, {
         fx: 0.6,
         fy: 0.45,
@@ -837,7 +839,13 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       const box = (await page.getByTestId('map-input-layer').boundingBox())!;
       // A 200×200 face with a 140px pierce: the only lane the live map cell leaves for
       // a cut whose BOTH endpoints stay on hittable canvas (the solver rejects 120/165).
-      const half = 100;
+      // UI 再設計 増分 1: 地図セルがさらに縮んだので、その箱で成り立つ大きさまで落とす。
+      const half = fitHalf(box, 100, {
+        avoidTopChrome: true,
+        pierceExtra: 40,
+        min: 55,
+        name: 'knife-face',
+      });
       const scene = placeSquareScene(box, {
         fx: 0.5,
         fy: 0.45,

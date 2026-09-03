@@ -56,7 +56,7 @@ import {
   squareCorners,
   placeVertices,
 } from '../helpers';
-import { SCENE_MARGIN, placeSquareScene } from './scene-layout';
+import { SCENE_MARGIN, placeSquareScene, fitHalf } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -365,14 +365,23 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // at level 0). half=150 keeps the FULL depth-6 chain (L5 half ≈ 29px, corners
       // still distinct); depth semantics unchanged.
       const DEPTH = 6;
+      // UI 再設計 増分 1: シェルに行が増えて地図セルが縦に縮んだ（オプションバー 40px ＋
+      // 状態行 22→28px ＋ アプリバーの折り返し）。**要求した大きさをそのまま使わず、
+      // その箱で成り立つ最大値まで落とす** — こうしておけば、以後シェルの高さが動くたびに
+      // ここの数値を当て直さなくて済む（下限を割ったら fitHalf が落ちる）。
+      const nestHalf = fitHalf(b, 150, {
+        avoidTopChrome: false,
+        min: 100,
+        name: 'r1-nest',
+      });
       const nest = placeSquareScene(b, {
         fx: 0.5,
         fy: 0.42,
-        half: 150,
-        avoidTopChrome: false, // the nest phase is pure add — no tool guide mounts
+        half: nestHalf,
+        avoidTopChrome: false, // pure-add phase — no tool guide mounts
         name: 'r1-nest',
       });
-      let half = 150;
+      let half = nestHalf;
       let level = 0;
       for (; level < DEPTH; level += 1) {
         const res = await commitFace(page, nest.cx, nest.cy, half, {
@@ -433,7 +442,9 @@ test.describe('BUGHUNT R3 — deep nesting / split×2→merge / long playback / 
       // canvas. (Per the recorded repro: "Re-place split-base at (cx, cy+offset) inside
       // the unobstructed map.") Phase D's grid already tolerates any residual overlap —
       // it cancels conflicts and only counts committed faces (gridConflicts).
-      const sHalf = 80;
+      // UI 再設計 増分 1: 地図セルが縦に縮んだので、要求した大きさをその箱で成り立つ
+      // 最大値まで落とす（下限を割ったら fitHalf が落ちる）。
+      const sHalf = fitHalf(b, 80, { avoidTopChrome: true, pierceExtra: 40, min: 50, name: 'r1-split' });
       // A pierce only needs to clear the face's edges; keep the reach modest so the
       // cut endpoints stay inside the layer.
       const sReach = sHalf + 40;
