@@ -286,7 +286,12 @@ describe('保存の素性と結果をホストへ上げる（V12 の ①②③�
     });
 
     // マウント直後は「保存先未確定・未保存・自動保存は待機中」。
-    expect(seen[0]).toEqual({ savePath: null, savedAtMs: null, autoSaveArmed: false });
+    expect(seen[0]).toEqual({
+      savePath: null,
+      savedAtMs: null,
+      autoSaveArmed: false,
+      destinationRetracted: false,
+    });
     // 読み込み後は保存先が確定し、まだこのセッションでは保存していない。
     const afterLoad = seen[seen.length - 1]!;
     expect(afterLoad.savePath).toBe(LOADED_PATH);

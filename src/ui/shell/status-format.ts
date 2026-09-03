@@ -19,6 +19,12 @@ export const APP_NAME = 'gimoza';
 /** 保存先が決まっていない新規プロジェクトの、ファイル名の代わりに出す文字。 */
 export const UNSAVED_NEW_PROJECT = '（未保存の新規）';
 
+/**
+ * 読み込みは成功したのに保存先の確定に失敗したときに、ファイル名の代わりに出す文字。
+ * 「（未保存の新規）」と区別する（読み込んだファイルが無かったことにされて見えるため）。
+ */
+export const DESTINATION_UNDETERMINED = '保存先: 未確定';
+
 /** 未保存の印。 */
 export const DIRTY_MARK = '●';
 
@@ -28,6 +34,8 @@ export interface WindowTitleInput {
   /** 保存先のファイル名（拡張子込み）。null なら「（未保存の新規）」。 */
   readonly fileName: string | null;
   readonly dirty: boolean;
+  /** 保存先を取り下げた状態か（読み込みは成功したが宛先の確定に失敗した）。 */
+  readonly destinationRetracted?: boolean;
 }
 
 /**
@@ -46,7 +54,10 @@ export function buildWindowTitle(input: WindowTitleInput): string {
   const parts: string[] = [APP_NAME];
   const world = input.worldName.trim();
   if (world.length > 0) parts.push(world);
-  parts.push(input.fileName ?? UNSAVED_NEW_PROJECT);
+  parts.push(
+    input.fileName ??
+      (input.destinationRetracted === true ? DESTINATION_UNDETERMINED : UNSAVED_NEW_PROJECT),
+  );
   const base = parts.join(' — ');
   return input.dirty ? `${base} ${DIRTY_MARK}` : base;
 }

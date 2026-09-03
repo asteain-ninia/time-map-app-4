@@ -13,7 +13,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, enterEditMode, commitSquareFace } from '../helpers';
+import { launchApp, enterEditMode, commitSquareFace, confirmDeleteIfAsked } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__visual__');
@@ -169,6 +169,8 @@ test.describe('V2 — 削除→Ctrl+Z 復活後の塗り色 (現HEAD)', () => {
       record('C-fill', await sampleFill(page, cx, cy));
       await shot(page, 'v2-025-selected-edit');
       await page.keyboard.press('Delete');
+      // A8: 地物の削除は 3 経路とも確認を通る（Delete キーもその 1 つ）。
+      await confirmDeleteIfAsked(page);
       await page.waitForTimeout(500);
       if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
         record('delete-conflict', 'conflict modal surfaced on delete');
@@ -234,6 +236,8 @@ test.describe('V2 — 削除→Ctrl+Z 復活後の塗り色 (現HEAD)', () => {
       record('V-selected', `active="${await activeFeature(page)}"`);
       record('V-fill-selected', await sampleFill(page, cx, cy));
       await page.keyboard.press('Delete');
+      // A8: 地物の削除は 3 経路とも確認を通る（Delete キーもその 1 つ）。
+      await confirmDeleteIfAsked(page);
       await page.waitForTimeout(500);
       record('V-deleted', `active="${await activeFeature(page)}" drawn=${await drawnCount(page)}`);
       await page.keyboard.press('Control+z');

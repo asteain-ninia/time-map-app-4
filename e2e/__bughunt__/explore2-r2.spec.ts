@@ -50,6 +50,7 @@ import {
   armAddAreaTool,
   squareCorners,
   placeVertices,
+  confirmDeleteIfAsked,
 } from '../helpers';
 import { assertClickable, fitHalf, placeSquareScene } from './scene-layout';
 
@@ -599,6 +600,8 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         // Delete via keyboard (the live Delete accelerator).
         await page.keyboard.press('Delete');
+        // A8: 地物の削除は確認を通る（3 経路で 1 つの確認）。
+        await confirmDeleteIfAsked(page);
         await page.waitForTimeout(150);
         await returnToViewMode(page);
         await showSidebarTab(page, 'features');

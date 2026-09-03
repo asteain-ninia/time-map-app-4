@@ -121,6 +121,21 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
 // ---------------------------------------------------------------------------
 
 /**
+ * 地物の削除の確認が出ていたら「削除」を押す（冪等）。
+ *
+ * **削除は 3 経路とも確認を通る**（増分 1 の手直し A8。所有者の裁定「消す前に何が起きるかを
+ * 必ず見せる」）。Delete キー・右クリックの「削除」・素性欄のボタンのどれも、同じ
+ * `DeleteConfirmDialog` を出してから消す。頂点の削除は別の操作なので確認は出ない
+ * ——だからこの関数は「出ていたら押す」形にしてあり、頂点削除の後に呼んでも何もしない。
+ */
+export async function confirmDeleteIfAsked(page: Page): Promise<void> {
+  const confirm = page.getByRole('button', { name: '削除を確定' });
+  if ((await confirm.count()) === 0) return;
+  await confirm.first().click();
+  await expect(confirm).toHaveCount(0);
+}
+
+/**
  * 表示専用 (View) を抜ける。View なら mode-view を押す (useShell.setViewOnly(false) は
  * 編集モードに着地する)。View でなければ何もしない。
  */

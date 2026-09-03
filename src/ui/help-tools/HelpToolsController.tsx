@@ -29,6 +29,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import { useModalKeydown } from '../a11y/index';
 import type { SessionStore } from '../state/store';
+import type { PaletteSelection } from '../state/settings';
 import {
   CommandRegistry,
   COMMAND_ID,
@@ -43,7 +44,6 @@ import {
 } from '../shell/index';
 import { SettingsDialog } from '../settings/index';
 import type { SettingsStorePort } from '../settings/index';
-import type { PaletteSelection } from '../state/settings';
 import {
   searchFeatures,
   reevaluateResult,

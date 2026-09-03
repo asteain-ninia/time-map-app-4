@@ -22,6 +22,12 @@ export interface AppIdentityProps {
   /** 保存先のファイル名（拡張子込み）。null なら「（未保存の新規）」。 */
   readonly fileName: string | null;
   readonly dirty: boolean;
+  /**
+   * 保存先を **取り下げた** 状態か。読み込みは成功したのに保存先の確定に失敗したときだけ
+   * 真になる。このとき「（未保存の新規）」と出すと、読み込んだはずのファイルが無かった
+   * ことにされたように見えるので、「保存先: 未確定」と出す。
+   */
+  readonly destinationRetracted?: boolean;
 }
 
 export function AppIdentity(props: AppIdentityProps): JSX.Element {
@@ -38,7 +44,10 @@ export function AppIdentity(props: AppIdentityProps): JSX.Element {
         </span>
       )}
       <span className="app-identity__file" data-testid="app-identity-file">
-        {props.fileName ?? APP_IDENTITY_STRINGS.unsavedNew}
+        {props.fileName ??
+          (props.destinationRetracted === true
+            ? APP_IDENTITY_STRINGS.destinationUndetermined
+            : APP_IDENTITY_STRINGS.unsavedNew)}
       </span>
       {/* 未保存の印。**枠は常に確保し、印だけを出し入れする**（B1）。以前は要素ごと
           出し入れしていたので、印が付いた瞬間に素性表示の占有幅が広がり、上部バーの

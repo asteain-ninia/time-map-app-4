@@ -22,6 +22,7 @@ import {
   armAddAreaTool,
   squareCorners,
   placeVertices,
+  confirmDeleteIfAsked,
 } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -257,6 +258,9 @@ test.describe('VISUAL-B — FR-20 面積 / FR-87 エッジ頂点追加 / FR-87-8
       const featForDelete = await activeFeature(page);
       record('feature-reselected', `active-feature="${featForDelete}"; active-vertex="${vtxBeforeFeatDelete}" (should be empty)`);
       await page.keyboard.press('Delete');
+      // A8: 地物の削除は 3 経路とも確認を通る（頂点削除には確認が無いので、この関数は
+      // 上の 頂点 Delete の後に呼んでも何もしない）。
+      await confirmDeleteIfAsked(page);
       await page.waitForTimeout(300);
       if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
         record('feature-delete-conflict', 'feature delete surfaced conflict modal');

@@ -603,6 +603,7 @@ export function App(): JSX.Element {
     savePath: null,
     savedAtMs: null,
     autoSaveArmed: false,
+    destinationRetracted: false,
   });
 
   // ウィンドウタイトルとアプリバーの素性表示が読む 2 つ（設計書 §H.6）。どちらも稀にしか
@@ -622,8 +623,9 @@ export function App(): JSX.Element {
       worldName,
       fileName: openFileName,
       dirty: projectDirty,
+      destinationRetracted: saveStatus.destinationRetracted,
     });
-  }, [worldName, openFileName, projectDirty]);
+  }, [worldName, openFileName, projectDirty, saveStatus.destinationRetracted]);
 
   // The latest U12 commit handler, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`, which runs once per map mount) always
@@ -3365,13 +3367,19 @@ export function App(): JSX.Element {
            選ぶ／（設定なし）／空の確定欄」）。 */
         optionBar={<OptionBar store={optionBarStore} />}
         timeline={<Timeline store={store} />}
-        /* FR-111 ステータスバー — the live cursor 経緯度 readout. Bound to the
-           React-EXTERNAL cursor store the map pointermove path pushes into, so the
-           60Hz input rate re-renders THIS node only (技術方針 2.3). Off the map it
-           renders the SAME 準備完了 label the bare status bar shows, so the idle
-           status bar is unchanged. */
+/* 状態行 5 枠（設計書 §C.8）。60Hz で動く値（カーソル座標・縮尺）は
+           **それぞれの葉ノードだけ** が購読するので、パンでは再レンダーが起きない
+           （技術方針 2.3）。座標は React の外の CursorPositionStore から来る。
+           地図の外へカーソルが出たときは、**枠を残して「—」だけを差し替える**
+           （増分 1 で状態行が 5 枠になった。以前ここに書いてあった「準備完了を出す」は
+           座標 1 項目だけだった頃の記述で、いまは CursorCoordinateStatus が「—」を返す）。 */
         appIdentity={
-          <AppIdentity worldName={worldName} fileName={openFileName} dirty={projectDirty} />
+          <AppIdentity
+            worldName={worldName}
+            fileName={openFileName}
+            dirty={projectDirty}
+            destinationRetracted={saveStatus.destinationRetracted}
+          />
         }
         status={
           <StatusBarContent
@@ -3381,13 +3389,13 @@ export function App(): JSX.Element {
             undo={{
               canUndo: historyCanUndo(historyRef.current),
               // 設計書 §C.8 は「元に戻せます: 南ケナ州の改名（Ctrl+Z）」まで出すとしているが、
-              // **いまの `Command.label` は画面に出せる語彙になっていない**。ドメイン側は
-              // 日本語（「所属変更」「地物の削除」「自動配色」）なのに、UI 側の 5 か所は
-              // 内部の英語（'edit' / 'delete' / 'interval' / 'palette' / 'unshare'）を渡して
-              // いて、そのまま出すと U-1「内部の英語値を画面に出さない」に反する。しかも
-              // 設計書の例は操作名だけでなく **対象の名前** も含んでおり、どの label も
-              // それを持っていない。語彙を揃えるのは全コミット経路に触る別の作業なので、
-              // ここでは可否だけを出す（現状.md へ申し送り）。
+              // ここではまだ **可否だけ** を出す。`Command.label` の語彙の混在（ドメイン側の
+              // 4 か所が日本語「所属変更」「地物の削除」「自動配色」「結合」、UI 側の 5 か所が
+              // 内部の英語 'edit' / 'delete' / 'interval' / 'palette' / 'unshare'）は
+              // `shell/command-result.ts` の写像表で解けるようになったが、設計書の例は
+              // 操作名だけでなく **対象の名前** も含んでおり、どの label もそれを持っていない。
+              // 対象の名前を運ぶのは全コミット経路に触る別の作業（現状.md へ申し送り）。
+              // なお「直前の結果」枠には、同じ写像表を通した操作名が既に出ている。
               lastLabel: null,
             }}
             lastSavedAtMs={saveStatus.savedAtMs}

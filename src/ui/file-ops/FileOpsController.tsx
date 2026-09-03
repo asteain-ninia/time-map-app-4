@@ -252,6 +252,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       savePath: contextRef.current.savePath,
       savedAtMs: savedAtMsRef.current,
       autoSaveArmed: autoSaveArmed(),
+      destinationRetracted: contextRef.current.destinationRetracted,
     });
   }, [autoSaveArmed]);
 

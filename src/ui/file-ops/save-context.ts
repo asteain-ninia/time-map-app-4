@@ -58,6 +58,15 @@ export interface SaveContext {
   readonly backupTarget: string | null;
   readonly dirty: boolean;
   readonly exitGuardEnabled: boolean;
+  /**
+   * 保存先を **取り下げた** 状態か（{@link contextWithoutSaveTarget}）。
+   *
+   * 読み込みは成功してドメインは差し替わったのに、保存先を main へ確定する通信に失敗した
+   * ときだけ真になる。`savePath` は null だが、**これは「新規プロジェクト」ではない**
+   * ——画面に「（未保存の新規）」と出すと、読み込んだはずのファイルが無かったことに
+   * されたように見える。「保存先: 未確定」と出し分けるための印である。
+   */
+  readonly destinationRetracted: boolean;
 }
 
 /**
@@ -91,6 +100,11 @@ export interface SaveStatus {
    * 最終保存の枠に静かに出す（設計書 §H.5: 状態は常設の場所に出す）。
    */
   readonly autoSaveArmed: boolean;
+  /**
+   * 保存先を取り下げた状態か（読み込みは成功したが、保存先の確定に失敗した）。
+   * 画面は「（未保存の新規）」ではなく「保存先: 未確定」と出す。
+   */
+  readonly destinationRetracted: boolean;
 }
 
 /**
@@ -144,6 +158,8 @@ export function buildNewProjectContext(): SaveContext {
     // 新規初期化を保存基点とみなす (clean, 教訓 5.24 baseline 一致).
     dirty: false,
     exitGuardEnabled: true,
+    // 保存先が無いのは「まだ決めていない」からで、取り下げたからではない。
+    destinationRetracted: false,
   };
 }
 
@@ -165,6 +181,7 @@ export function contextForLoadedFile(args: {
     backupTarget: args.path,
     dirty: false,
     exitGuardEnabled: true,
+    destinationRetracted: false,
   };
 }
 
@@ -179,6 +196,8 @@ export function contextAfterSave(context: SaveContext, savedPath: string): SaveC
     savePath: savedPath,
     backupTarget: savedPath,
     dirty: false,
+    // 書けたのだから宛先は確定している。
+    destinationRetracted: false,
   };
 }
 
@@ -198,7 +217,7 @@ export function markDirty(context: SaveContext): SaveContext {
  * destination is retracted. Returns a new value (immutable).
  */
 export function contextWithoutSaveTarget(context: SaveContext): SaveContext {
-  return { ...context, savePath: null, backupTarget: null };
+  return { ...context, savePath: null, backupTarget: null, destinationRetracted: true };
 }
 
 /**
