@@ -16,16 +16,12 @@
 // unit (教訓 5.24: the host's confirm handler guards no-op). The component does not
 // push history itself.
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 
-import { useModalKeydown } from '../a11y/index';
-import {
-  DELETE_TARGET_KIND,
-  type DeleteTarget,
-  MSG_DELETE_CONFIRM_BODY,
-  MSG_DELETE_CONFIRM_TITLE,
-} from '../../domain/deletion/index';
+import { DELETE_TARGET_KIND, type DeleteTarget } from '../../domain/deletion/index';
 import type { FeatureId } from '../../domain/ids';
+
+import { DeleteConfirmDialog } from './DeleteConfirmDialog';
 
 export const DELETE_BUTTON_LABEL = '地物を削除';
 
@@ -51,6 +47,11 @@ export interface DeleteFeatureButtonProps {
    * 省略時は true（既存の呼び出しの意味を変えないため）。
    */
   readonly editable?: boolean;
+  /**
+   * 消す対象の名前（分かるときだけ）。確認ダイアログに「対象: ◯◯」として出る（A8）。
+   * 名前を出さない確認は「何を消すのか」が分からないので確認の体をなさない。
+   */
+  readonly featureName?: string | null;
 }
 
 /** Read the feature id out of a feature-bearing target, else null (None → null). */
@@ -69,13 +70,12 @@ function targetFeatureId(target: DeleteTarget): FeatureId | null {
 }
 
 export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Element {
-  const { target, onConfirm, editable = true } = props;
+  const { target, onConfirm, editable = true, featureName = null } = props;
   const featureId = targetFeatureId(target);
   // 対象があること **かつ** 編集できること (FR-85 ＋ 教訓 5.13 / K-6)。
   const enabled = featureId !== null && editable;
 
   const [confirming, setConfirming] = useState(false);
-  const dialogRef = useRef<HTMLDivElement | null>(null);
 
   const openConfirm = useCallback(() => {
     // 権限が無いときは確認ダイアログすら開かない（disabled 属性だけに頼ると、
@@ -96,15 +96,9 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
     setConfirming(false);
   }, [featureId, editable, onConfirm]);
 
-  // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the
-  // shared trap (教訓 5.13 / 5.14), consistent with the app's other role=dialog modals
-  // (bughunt review #5: this confirmation lacked Esc / focus-on-mount / Tab トラップ).
-  const onKeyDown = useModalKeydown(dialogRef, cancel);
-
-  // Focus the dialog when it opens so Esc / Tab are captured (教訓 5.14).
-  useEffect(() => {
-    if (confirming) dialogRef.current?.focus();
-  }, [confirming]);
+  // 確認ダイアログの器そのものは {@link DeleteConfirmDialog} が持つ（A8）。Delete キーと
+  // 右クリックの「削除」も **同じ部品** を出すので、文言・Esc の扱い・フォーカスの罠・
+  // ボタンの並びが 3 経路で必ず一致する（教訓 5.6）。
 
   return (
     <div className="delete-feature" data-testid="delete-feature">
@@ -118,25 +112,7 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
       </button>
 
       {confirming ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label={MSG_DELETE_CONFIRM_TITLE}
-          className="delete-confirm"
-          tabIndex={-1}
-          ref={dialogRef}
-          onKeyDown={onKeyDown}
-        >
-          <p>{MSG_DELETE_CONFIRM_BODY}</p>
-          <div className="delete-confirm-actions">
-            <button type="button" aria-label="削除を確定" onClick={confirm}>
-              削除
-            </button>
-            <button type="button" aria-label="削除をキャンセル" onClick={cancel}>
-              キャンセル
-            </button>
-          </div>
-        </div>
+        <DeleteConfirmDialog featureName={featureName} onConfirm={confirm} onCancel={cancel} />
       ) : null}
     </div>
   );

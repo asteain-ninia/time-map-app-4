@@ -450,6 +450,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
               onConfirm={onDeleteFeature}
               editable={decision.editable && editingAllowed}
+              /* A8: 確認に「対象: ◯◯」を出す。名前の出ない確認は「何を消すのか」が
+                 分からないので確認の体をなさない。他の 2 経路も同じ形で出す。 */
+              featureName={feature.attributes.name}
             />
           )}
         </>

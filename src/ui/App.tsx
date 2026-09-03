@@ -36,6 +36,11 @@ import {
   type FeatureLookup as PropertyFeatureLookup,
 } from './property';
 import { Timeline } from './timeline/Timeline';
+// 作中時刻を画面・ログへ出す整形は U21 の `formatTimePoint` が単一の真実源
+// （紀元前の表記と、未指定の月日を捏造しない規約がここに集約されている）。
+// ここで `String(currentTime)` としていたものは、TimePoint がオブジェクトなので
+// 「[object Object]」になっていた（診断ログの作中時刻が全滅していた）。
+import { formatTimePoint } from './timeline/time-display';
 import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
 import './property/property.css';
@@ -151,6 +156,8 @@ import { registerE2eHarnessAction } from './e2e/harness';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
 import { StatusMessageStore } from './shell/status-message';
+import { commandLabelJa, RESULT_STRINGS } from './shell/command-result';
+import { DeleteConfirmDialog } from './property/DeleteConfirmDialog';
 import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
@@ -383,7 +390,7 @@ export function App(): JSX.Element {
     sessionMarkedRef.current = true;
     logSessionStart(logger, {
       version: __APP_VERSION__,
-      contextTimeLabel: String(store.getState().currentTime),
+      contextTimeLabel: formatTimePoint(store.getState().currentTime),
     });
   }, [logger, store]);
 
@@ -394,12 +401,13 @@ export function App(): JSX.Element {
   // notification surface (globalThis.alert — the sink FileOpsController.notify uses),
   // introducing NO new toast UI (§7.4 非目標). The uninstall runs on cleanup so a
   // re-mount (StrictMode double-invoke in dev) never leaks / double-installs listeners
-  // (教訓 5.2 全経路で破棄). The作中時刻 for the log context is the live現在時刻 numeric
-  // instant (non-sensitive, 教訓 5.15 — separate from the record's real-time stamp).
+  // (教訓 5.2 全経路で破棄). The作中時刻 for the log context is the live現在時刻 rendered
+  // through U21 の `formatTimePoint`（「紀元前27年」等。件数でも本文でもない非機微な値。
+  // 教訓 5.15 — 記録時刻＝実時間とは別のフィールドに入る）.
   useEffect(() => {
     const uninstall = wireGlobalErrorHandlers(window, {
       logger,
-      contextTimeLabel: () => String(store.getState().currentTime),
+      contextTimeLabel: () => formatTimePoint(store.getState().currentTime),
     });
     return uninstall;
   }, [logger, store]);
@@ -576,10 +584,26 @@ export function App(): JSX.Element {
   statusMessageStoreRef.current ??= new StatusMessageStore();
   const statusMessageStore = statusMessageStoreRef.current;
 
+  // 編集の結果を状態行へ渡す **唯一の口**（設計書 §H.5 / D1）。これまで「直前の結果」に
+  // 届いていたのは保存の成否だけで、追加・編集・削除・所属変更・結合・分割・穴あけ・
+  // スタイル変更・取り消し・やり直しは 1 つも出ていなかった（`recordCommand` という
+  // 1 本の漏斗を通っているのに、そこから結果が出ていなかった）。ここを通せば、
+  // あとから増える編集経路も自動で状態行に載る（教訓 5.6: 経路ごとに別の口を作らない）。
+  const announceResult = useCallback(
+    (text: string): void => {
+      statusMessageStore.success(text);
+    },
+    [statusMessageStore],
+  );
+
   // 保存の素性（いまの保存先と最後に保存できた時刻）。FileOpsController だけが知っている
   // 事実を、ウィンドウタイトルと状態行が読めるようにここへ上げる（設計書 §H.6 / V12）。
   // 保存は稀な操作なので React state でよい（60Hz の経路ではない）。
-  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ savePath: null, savedAtMs: null });
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({
+    savePath: null,
+    savedAtMs: null,
+    autoSaveArmed: false,
+  });
 
   // ウィンドウタイトルとアプリバーの素性表示が読む 2 つ（設計書 §H.6）。どちらも稀にしか
   // 変わらないので、細いセレクタで購読しておけば再レンダーの負担にならない。
@@ -2017,8 +2041,13 @@ export function App(): JSX.Element {
       redoPreferenceRef.current.remember(wrapped, preference);
       store.getState().applyCommandResult(step.history.state, step.result, preference);
       refreshUndoRedoEnabled();
+      // D1: 全編集経路がここを通るので、結果もここから 1 回だけ出す。語彙の混在
+      // （内部の英語 5 / 日本語 4）は `commandLabelJa` の写像表で出口 1 か所で解く
+      // （開発ガイド §5.51 / 現状.md B7）。対象の名前を運ぶのは別の作業なので、
+      // 名前を知っている呼び出し元（削除）だけが直後に自分の文言で上書きする。
+      announceResult(RESULT_STRINGS.done(commandLabelJa(wrapped.label)));
     },
-    [store, refreshUndoRedoEnabled],
+    [store, refreshUndoRedoEnabled, announceResult],
   );
 
   const recordCommit = useCallback(
@@ -2100,6 +2129,8 @@ export function App(): JSX.Element {
       refreshUndoRedoEnabled();
     };
     const runUndo = (): void => {
+      // D1: これから取り消される操作の名前は、**取り消す前の** undo スタックの先頭にある。
+      const undoneLabel = historyRef.current.undoStack.at(-1)?.label;
       const step = historyUndo(historyRef.current);
       if (step.history === historyRef.current) return; // empty stack: no-op
       // bughunt (全 undo 後の dirty 解消): an undo recomputes projectDirty against the
@@ -2107,6 +2138,7 @@ export function App(): JSX.Element {
       // back to the saved state clears the unsaved-changes warning. An ordinary edit
       // still dirties through applyCommandResult (recordCommand) — that path is unchanged.
       applyHistoryStep(step, undefined);
+      statusMessageStore.success(RESULT_STRINGS.undone(commandLabelJa(undoneLabel)));
     };
     const runRedo = (): void => {
       // Recover the preference the commit promoted for the command redo re-applies
@@ -2115,11 +2147,14 @@ export function App(): JSX.Element {
       const preference = redoPreferenceRef.current.preferenceForNextRedo(
         historyRef.current,
       );
+      // D1: やり直される操作の名前は、**やり直す前の** redo スタックの先頭にある。
+      const redoneLabel = historyRef.current.redoStack.at(-1)?.label;
       const step = historyRedo(historyRef.current);
       if (step.history === historyRef.current) return;
       // Symmetric to runUndo: a redo recomputes dirty against the saved baseline (redoing
       // away from the saved state re-dirties; redoing back onto it stays clean).
       applyHistoryStep(step, preference);
+      statusMessageStore.success(RESULT_STRINGS.redone(commandLabelJa(redoneLabel)));
     };
     registry.register(COMMAND_ID.EditUndo, {
       run: runUndo,
@@ -2133,7 +2168,7 @@ export function App(): JSX.Element {
       registry.unregister(COMMAND_ID.EditUndo);
       registry.unregister(COMMAND_ID.EditRedo);
     };
-  }, [registry, store, refreshUndoRedoEnabled]);
+  }, [registry, store, refreshUndoRedoEnabled, statusMessageStore]);
 
   // HB-4 ROOT FIX — register the 表示専用モード切替 (ViewToggleViewMode) command on the
   // SAME registry the 表示 menu + shortcuts dispatch (教訓 5.13 単一の権限/真実源).
@@ -2263,6 +2298,47 @@ export function App(): JSX.Element {
   // funnel with an explicit selection — the FR-96 DeleteVertex intent names its own
   // {owner, vertexIds} payload rather than re-reading the live selection (教訓 5.6:
   // the menu fires exactly what it showed; no drift with a selection that moved).
+  // A8 — 削除の確認を **3 経路で 1 つ**にする。
+  //
+  // **これまで確認があったのは素性欄のボタンだけだった。** Delete キーと右クリックの
+  // 「削除」は同じ「地物の全錨削除」を確認なしで即座に実行し、しかも画面には何も
+  // 出なかった（消えたことに気づかないまま作業が進む）。所有者の裁定は「消す前に何が
+  // 起きるかを必ず見せる」なので、どの経路も同じ `DeleteConfirmDialog` を通す。
+  // 影響の一覧（道連れになる集約地物・昇格する子）の本格版は増分 7 に入る。
+  const [pendingDelete, setPendingDelete] = useState<{
+    readonly featureId: FeatureId;
+    readonly name: string | null;
+  } | null>(null);
+
+  /** いま有効な地物の表示名（分からなければ null）。確認と結果の文言に使う。 */
+  const featureNameOf = useCallback(
+    (featureId: FeatureId): string | null => {
+      const s = store.getState();
+      return featureByIdAt(s.domain, s.currentTime, featureId)?.attributes.name ?? null;
+    },
+    [store],
+  );
+
+  /**
+   * 確認が済んだ削除を実行する（3 経路の合流点）。U31 の全錨削除を **1 つの取り消し
+   * 単位**として記録し、状態行に「〈名前〉を削除しました」を出す。対象が既に居ない
+   * ときは何もしない（幽霊の取り消し単位を作らない＝教訓 5.24）。
+   */
+  const commitFeatureDelete = useCallback(
+    (featureId: FeatureId): void => {
+      const name = featureNameOf(featureId);
+      const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
+      if (command === null) return;
+      // fr100: the 全錨 delete has no single anchor time (it sweeps every anchor);
+      // the recolor evaluates at the CURRENT view time.
+      recordCommand(command, undefined, store.getState().currentTime);
+      // recordCommand は「地物の削除しました」まで出すので、名前を知っているここが
+      // 「〈名前〉を削除しました」で上書きする（削除だけは何を消したかを名指しする）。
+      statusMessageStore.success(RESULT_STRINGS.deleted(name));
+    },
+    [store, recordCommand, featureNameOf, statusMessageStore],
+  );
+
   const runDeleteFunnel = useCallback(
     (selection: EditDeleteSelection): void => {
       runEditDelete<DomainRoot>(selection, {
@@ -2291,16 +2367,17 @@ export function App(): JSX.Element {
         clearVertexSelection: (featureId) =>
           store.getState().replaceVertexSelection(featureId, []),
         deleteFeatureAllAnchors: (featureId) => {
-          const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
-          if (command === null) return; // absent everywhere: no幽霊 entry (教訓 5.24)
-          // fr100: the 全錨 delete has no single anchor time (it sweeps every anchor);
-          // the recolor evaluates at the CURRENT view time — the instant whose map the
-          // user watches the neighbours recolor on (documented best-effort choice).
-          recordCommand(command, undefined, store.getState().currentTime);
+          // A8: Delete キー / 編集メニュー / 右クリックの「削除」は、ここで **確認を
+          // 挟む**（これまでは即座に消えていた）。実際の削除は commitFeatureDelete。
+          // 対象が既に居なければ確認も出さない（教訓 5.24 の no-op ガードを前倒し）。
+          if (createDeleteFeatureCommandForRoot(store.getState().domain, featureId) === null) {
+            return;
+          }
+          setPendingDelete({ featureId, name: featureNameOf(featureId) });
         },
       });
     },
-    [store, recordCommand, recordCommit, vertexDeleteBinding],
+    [store, recordCommit, vertexDeleteBinding, featureNameOf],
   );
 
   useEffect(() => {
@@ -2847,7 +2924,9 @@ export function App(): JSX.Element {
     ringEditDrawing ||
     drillDrawing ||
     surveyDrafting ||
-    contextMenuOpen;
+    contextMenuOpen ||
+    // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
+    pendingDelete !== null;
   // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
   // every render, so the imperative port always sees the current value — 教訓 5.6).
   shortcutsSuspendedRef.current = shortcutsSuspended;
@@ -3168,16 +3247,9 @@ export function App(): JSX.Element {
   // createDeleteFeatureCommandForRoot path the menu/Delete-key use (single delete truth
   // source, 教訓 5.30): it deletes the shown feature across 全錨 as ONE undo unit, and an
   // absent target builds no command (no幽霊 entry, 教訓 5.24). Undo restores it.
-  const propertyDeleteFeature = useCallback(
-    (featureId: FeatureId): void => {
-      const command = createDeleteFeatureCommandForRoot(store.getState().domain, featureId);
-      if (command === null) return;
-      // fr100: same choice as the menu/Delete-key 全錨 delete — no single anchor
-      // time exists, so the recolor evaluates at the current view time.
-      recordCommand(command, undefined, store.getState().currentTime);
-    },
-    [store, recordCommand],
-  );
+  // 素性欄のボタンは自分で確認ダイアログを出してから呼ぶので、ここは合流点だけを呼ぶ
+  // （3 経路とも同じ `DeleteConfirmDialog` と同じ結果の文言を通る = A8）。
+  const propertyDeleteFeature = commitFeatureDelete;
 
   // HB3-12 — 地物の存続期間編集. The U09 ops (changeStart / setEnd / deleteAnchor) that
   // move WHEN a feature appears / disappears on the time axis existed + were unit-tested,
@@ -3275,7 +3347,7 @@ export function App(): JSX.Element {
     // non-React paths are covered by the global handlers installed above.
     <ErrorBoundary
       logger={logger}
-      contextTimeLabel={() => String(store.getState().currentTime)}
+      contextTimeLabel={() => formatTimePoint(store.getState().currentTime)}
     >
     <div
       id="app-shell"
@@ -3319,6 +3391,9 @@ export function App(): JSX.Element {
               lastLabel: null,
             }}
             lastSavedAtMs={saveStatus.savedAtMs}
+            /* A4-a: 自動保存は上書き先を確認するまで本体ファイルに書かない。書いて
+               いないことを黙っていると誤解のまま作業が進むので、最終保存の枠に出す。 */
+            autoSaveArmed={saveStatus.autoSaveArmed}
           />
         }
         mapOverlay={
@@ -3578,6 +3653,20 @@ export function App(): JSX.Element {
                 FR-10 zoom clamp range to U17, and intercepts window-close with the
                 quit guard. All file I/O routes through U15's typed IPC
                 (window.timeMapApi); the renderer never touches fs (FR-02). */}
+            {/* A8: Delete キー / 編集メニュー / 右クリックの「削除」が出す確認。素性欄の
+                ボタンが出すものと **同じ部品・同じ文言** である（3 経路で 1 つ）。
+                「キャンセル」と Esc は何もしない（教訓 5.22 確定までドメインを壊さない）。 */}
+            {pendingDelete !== null && (
+              <DeleteConfirmDialog
+                featureName={pendingDelete.name}
+                onConfirm={() => {
+                  const target = pendingDelete.featureId;
+                  setPendingDelete(null);
+                  commitFeatureDelete(target);
+                }}
+                onCancel={() => setPendingDelete(null)}
+              />
+            )}
             <FileOpsController
               store={store}
               registry={registry}

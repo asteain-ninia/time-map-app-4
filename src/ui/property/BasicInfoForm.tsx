@@ -78,6 +78,19 @@ export interface BasicInfoFormProps {
  * unit and is persisted (U33 AC1 / FR-59). There is no longer a section-local /
  * hardcoded opacity: the slider value is the persisted attribute.
  */
+/**
+ * 錨の中身の **値としての署名**（A9）。ドメインが動いた（取り消し・やり直し・外部差し替え）
+ * ことを、オブジェクトの参照ではなく値で見分けるために使う。フィールドが増えても自動で
+ * 効くよう、キーを並べ替えてから連結する（`JSON.stringify` はキーの並び順に依存する）。
+ */
+function baselineSignature(values: PropertyEditValues): string {
+  const record = values as unknown as Record<string, unknown>;
+  return Object.keys(record)
+    .sort()
+    .map((key) => `${key}=${String(record[key])}`)
+    .join('|');
+}
+
 function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
   return {
     autoColorEnabled: draft.autoColorEnabled,
@@ -123,9 +136,21 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
   // Done during render via a key sentinel (no effect) so the first paint already
   // reflects the re-sync. Crucially the held message is PRESERVED across the
   // change: 教訓 5.12 does not list a target change among the three clear契機.
+  //
+  // **さらに「今の錨の中身そのもの」も鍵に入れる**（A9）。取り消し（Ctrl+Z）・やり直し・
+  // 外部からのドメイン差し替えは、地物 id も錨 id も変えずに **中身だけ** を巻き戻す。
+  // 識別子だけを鍵にしていたので、Ctrl+Z のあともフォームには取り消したはずの名前が
+  // 残り、そのまま保存すると **取り消した編集が復活していた**（実機で確認）。値の署名を
+  // 鍵に混ぜると、ドメインが動いた瞬間にフォームがそちらへ同期する。
+  //
+  // 値の **署名** であって参照ではない点が肝心である。親は再レンダーのたびに等しい別
+  // オブジェクトを作りうるので、参照で比べると打鍵のたびに下書きが捨てられる（U32 の
+  // 初期不具合そのもの）。署名が同じなら同期しないので、その経路は起きない。逆に
+  // 「打鍵中にドメインが動いたら打鍵内容は捨てられる」——これは正しい向きである
+  // （取り消し・やり直し・外部差し替えのほうが下書きより強い）。
   const editTargetKey = `${feature.id as unknown as string} ${
     anchorId === null ? '' : (anchorId as unknown as string)
-  }`;
+  } ${baselineSignature(baseline)}`;
   const [syncedTargetKey, setSyncedTargetKey] = useState<string>(editTargetKey);
   if (syncedTargetKey !== editTargetKey) {
     setSyncedTargetKey(editTargetKey);
