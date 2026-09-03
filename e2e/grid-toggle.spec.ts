@@ -18,7 +18,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { launchApp, leaveViewMode } from './helpers';
 
 /** The last-drawn-frame label-primitive count off the live __E2E__ render hook. */
 async function labelCount(page: Page): Promise<number> {
@@ -49,6 +49,14 @@ test.describe('FR-13 — グリッド ON/OFF 切替 結線', () => {
 
       const toggle = page.getByTestId('grid-toggle');
       await expect(toggle).toBeVisible();
+      // 起動直後は「読むだけ」なのでトグルは無効である（K-6 / C 群）。**グリッドの
+      // 表示切替は見た目の話に見えて、実体はプロジェクト設定 `gridVisible` の書き換え**で、
+      // 保存ファイルに入り未保存の印も立つ。裁定「読むだけ＝直せない」の分かれ目は
+      // 「見え方かどうか」ではなく「保存ファイルに書くかどうか」なので、ここは止まる。
+      // 置き場そのものの見直し（アプリ全体設定へ移す）は docs/現状.md B18。
+      await expect(toggle).toBeDisabled();
+      await leaveViewMode(page);
+      await expect(toggle).toBeEnabled();
 
       // 既定: the grid is visible — graticule labels are drawn, the toggle is pressed.
       await expect(toggle).toHaveAttribute('aria-pressed', 'true');
