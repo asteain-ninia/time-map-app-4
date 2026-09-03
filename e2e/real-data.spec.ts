@@ -51,7 +51,9 @@ test.describe('実データ (デーレ界) を E2E 専用の投入口で読み�
 
     const { app, page } = await launchAppWithProject(workingCopy);
     try {
-      // 読み込みが reflect まで通った証: 地物一覧の件数が実データどおり。
+      // 読み込みが reflect まで通った証: 地物一覧の件数が実データどおり。サイドバーは
+      // 「一覧」「プロパティ」の排他タブなので、先に「一覧」を開く (他の spec と同じ作法)。
+      await page.getByTestId('sidebar-tab-list').click();
       await expect(page.getByTestId('unified-list-count')).toHaveText(
         `${EXPECTED_FEATURE_COUNT}件`,
       );
@@ -62,6 +64,7 @@ test.describe('実データ (デーレ界) を E2E 専用の投入口で読み�
       await firstRow.click();
       await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
 
+      await page.getByTestId('sidebar-tab-properties').click();
       const basicInfo = page.getByTestId('sidebar-panel-properties').getByTestId('basic-info');
       await expect(basicInfo).toBeVisible();
       const nameField = basicInfo.getByLabel('名前');
