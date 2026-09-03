@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import { test, expect } from '@playwright/test';
 
-import { launchAppWithProject } from './helpers';
+import { launchAppWithProject, projectStats } from './helpers';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -29,8 +29,22 @@ const dataDir =
   resolve(dirname(fileURLToPath(import.meta.url)), '..', 'derle-import');
 const canonicalPath = join(dataDir, REAL_DATA_FILE);
 
-/** 2026-08-16 版の地物数 (docs/ui-redesign/調査/11-real-data.md §1)。作り直したら更新する。 */
+// 2026-08-16 版の実データの規模 (docs/ui-redesign/01-現状分析.md §7.1)。作り直したら更新する。
+// **以降の増分の受け入れ条件はこの数で書かれている** ので、ここが動いたら計画側も見直すこと。
+/** 地物の数 (id で畳んだ数。集約の子は親のスナップショットにも入るので錨列より多い)。 */
 const EXPECTED_FEATURE_COUNT = 775;
+/** 末端 772 / 集約 3。 */
+const EXPECTED_LEAF_COUNT = 772;
+const EXPECTED_AGGREGATE_COUNT = 3;
+/** 履歴 (錨列) の数と、錨の総数。全 689 本が 1 件ずつで、すべて「0 年 → 継続中」。 */
+const EXPECTED_HISTORY_COUNT = 689;
+const EXPECTED_ANCHOR_COUNT = 689;
+/** 表示名が完全に重複する地物: 「???州」10 件 + 「（奥サンテルラ不明国D）」2 件 = 12 件。 */
+const EXPECTED_DUPLICATE_NAMED_FEATURE_COUNT = 12;
+const EXPECTED_UNIQUE_NAME_COUNT = 765;
+/** いちばん頂点の多い地物。ハンドル上限 2,000 を超えるので印が 1 つも出ない (V9)。 */
+const HEAVIEST_FEATURE_NAME = 'ヴィオニア大陸付近の領域01';
+const HEAVIEST_FEATURE_VERTEX_COUNT = 2230;
 
 test.describe('実データ (デーレ界) を E2E 専用の投入口で読み込む', () => {
   test.skip(
@@ -70,6 +84,34 @@ test.describe('実データ (デーレ界) を E2E 専用の投入口で読み�
       const nameField = basicInfo.getByLabel('名前');
       await expect(nameField).toBeVisible();
       expect((await nameField.inputValue()).trim()).not.toBe('');
+
+      // --- 規模の観測 (T-2 の隠し観測 getProjectStats) -----------------------
+      // 画面から数えられないもの (錨の数・頂点数・表示名の重複) をここで固定する。
+      // 以降の増分の受け入れ条件は、この数を基準に実データで測る。
+      const stats = await projectStats(page);
+      expect(stats.featureCount).toBe(EXPECTED_FEATURE_COUNT);
+      expect(stats.leafCount).toBe(EXPECTED_LEAF_COUNT);
+      expect(stats.aggregateCount).toBe(EXPECTED_AGGREGATE_COUNT);
+
+      // 錨列 689 に対し地物 775。**集約の子は親のスナップショットにも入る** ので、
+      // id で畳んだ地物の数のほうが多い (現状分析 §7.1 の申し送り)。
+      expect(stats.historyCount).toBe(EXPECTED_HISTORY_COUNT);
+      expect(stats.anchorCount).toBe(EXPECTED_ANCHOR_COUNT);
+      expect(stats.historyCount).toBeLessThan(stats.featureCount);
+
+      // 表示名が完全に重複する 12 件。一覧の 1 行は名前しか運ばないので、この 12 件は
+      // **画面上で区別できない** (C4 の最も強い裏づけ)。
+      expect(stats.uniqueNameCount).toBe(EXPECTED_UNIQUE_NAME_COUNT);
+      expect(stats.duplicateNamedFeatureCount).toBe(EXPECTED_DUPLICATE_NAMED_FEATURE_COUNT);
+      expect(stats.duplicateNameGroups).toEqual([
+        { name: '???州', count: 10 },
+        { name: '（奥サンテルラ不明国D）', count: 2 },
+      ]);
+
+      // 2,230 頂点の地物。
+      expect(stats.heaviestFeature).not.toBeNull();
+      expect(stats.heaviestFeature!.name).toBe(HEAVIEST_FEATURE_NAME);
+      expect(stats.heaviestFeature!.vertexCount).toBe(HEAVIEST_FEATURE_VERTEX_COUNT);
     } finally {
       await app.close();
       rmSync(workDir, { recursive: true, force: true });

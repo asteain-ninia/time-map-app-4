@@ -365,6 +365,53 @@ export async function loadProject(page: Page, projectPath: string): Promise<Load
   }, projectPath);
 }
 
+/** 同じ表示名を持つ地物のかたまり (helpers 側の写し — src/ui/e2e/project-stats.ts が正)。 */
+export interface DuplicateNameGroup {
+  readonly name: string;
+  readonly count: number;
+}
+
+/** いま開いているプロジェクトの規模 (src/ui/e2e/project-stats.ts の ProjectStats)。 */
+export interface ProjectStats {
+  readonly historyCount: number;
+  readonly anchorCount: number;
+  readonly featureCount: number;
+  readonly leafCount: number;
+  readonly aggregateCount: number;
+  readonly uniqueNameCount: number;
+  readonly duplicateNameGroups: readonly DuplicateNameGroup[];
+  readonly duplicateNamedFeatureCount: number;
+  readonly heaviestFeature: {
+    readonly id: string;
+    readonly name: string;
+    readonly vertexCount: number;
+    readonly ringCount: number;
+  } | null;
+}
+
+/**
+ * いま開いているプロジェクトの規模を読む (T-2 の隠し観測)。一覧の行は名前しか運ばず、頂点数は
+ * 画面のどこにも出ないので、実データの規模を受け入れ条件にするにはこの口が要る。
+ */
+export async function projectStats(page: Page): Promise<ProjectStats> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { getProjectStats?: unknown } }).__E2E_HARNESS__
+        ?.getProjectStats === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  return page.evaluate(() => {
+    const harness = (
+      globalThis as { __E2E_HARNESS__?: { getProjectStats?: () => ProjectStats } }
+    ).__E2E_HARNESS__;
+    if (harness?.getProjectStats === undefined) {
+      throw new Error('window.__E2E_HARNESS__.getProjectStats が無い (E2E_TEST=1 で起動したか)');
+    }
+    return harness.getProjectStats();
+  });
+}
+
 /**
  * アプリを起動し、指定の .gimoza (絶対パス) を読み込んだ状態で返す。読み込めなければ
  * その場で失敗する ('loaded' 以外は許さない — 不整合ファイルで修復ダイアログが出た場合も

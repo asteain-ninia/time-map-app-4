@@ -18,6 +18,7 @@
 // 揃える（教訓 5.2 一時的 UI 状態は全経路で破棄する）。
 
 import { readE2eHarnessBridge } from '../../shell/ipc/e2e-harness';
+import type { ProjectStats } from './project-stats';
 
 /** renderer 側のグローバル名（`window.__E2E_HARNESS__`）。 */
 export const E2E_HARNESS_GLOBAL = '__E2E_HARNESS__';
@@ -37,6 +38,13 @@ export interface E2eHarnessActions {
    * reflect → 保存先の昇格）で読み込む。所有者: ui/file-ops/FileOpsController。
    */
   readonly loadProject: (projectPath: string) => Promise<LoadProjectOutcome>;
+  /**
+   * いま開いているプロジェクトの規模（錨列・錨・地物・表示名の重複・最大頂点数）を返す
+   * **読むだけ**の観測。所有者: ui/App。受け入れ条件が実データの規模で書かれている
+   * （775 行・重複名 12 件・2,230 頂点・錨 689 件）ので、画面から数えられないものを
+   * ここで数える（T-2: 隠し観測は足す一方にする）。
+   */
+  readonly getProjectStats: () => ProjectStats;
 }
 
 type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;

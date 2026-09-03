@@ -148,6 +148,8 @@ import {
   CursorPositionStore,
 } from './shell/cursor-position';
 import { CursorCoordinateStatus } from './shell/CursorCoordinateStatus';
+import { registerE2eHarnessAction } from './e2e/harness';
+import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore } from './shell/option-bar';
 import { BROWSER_CLOCK, throttleTrailing } from './shell/map-resize';
@@ -397,6 +399,18 @@ export function App(): JSX.Element {
     });
     return uninstall;
   }, [logger, store]);
+
+  // E2E 専用の規模観測（T-2）。受け入れ条件が実データの規模で書かれている（775 地物・
+  // 表示名の重複 12 件・2,230 頂点の地物・錨 689 件）のに、そのどれも画面からは数えられない
+  // ——一覧の行は名前しか運ばず、頂点数はどこにも出ない。ドメインの値をそのまま数える口を
+  // 1 つだけ開ける。E2E ブリッジが無い本番ビルドでは何も生えない（登録が no-op になる）。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'getProjectStats', () =>
+        projectStats(store.getState().domain),
+      ),
+    [store],
+  );
 
   // Window-close interception (FR-107 終了確認ガード): the controller registers the
   // quit guard; the host stores it so the shell-side close event can await it.
