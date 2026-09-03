@@ -1,3 +1,4 @@
+import { mkdirSync } from 'node:fs';
 import { copyFile, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -50,6 +51,35 @@ const SMOKE_TIMEOUT_MS = 30_000;
 // alive so the test can interact with the renderer (U43 / 技術方針 2.14). No
 // security flag is relaxed (sandbox / contextIsolation / nodeIntegration unchanged).
 const E2E_TEST = process.env['E2E_TEST'] === '1';
+
+// --- 表示名を gimoza に固定する（現状.md B3 / FR-115）-----------------------------
+//
+// アプリの正式名称は **gimoza**。`time-map-app-4`（package.json の `name`）は開発時の
+// コードネームで、利用者の目に触れてはいけない。Electron の `app.getName()` はその `name`
+// を既定値にするため、放っておくと **レンダラの `alert()` / `confirm()` が出すネイティブ
+// ダイアログのタイトル**（実機報告「ファイル読み込み失敗のタイトルが time-map-app-4」）や、
+// darwin のアプリメニュー（`{ role: 'appMenu' }` の「gimoza について」「gimoza を終了」）に
+// コードネームが出る。ready より前、かつ userData を使う最初の処理（下の単一インスタンス
+// ロック）より前に差し替える。
+//
+// 🔴 userData の実パスは従来のまま据え置く（最重要）。`app.getName()` を変えると
+// `app.getPath('userData')` の既定も `%APPDATA%/time-map-app-4` → `%APPDATA%/gimoza` へ
+// 移り、FR-117 の診断ログ（userData/logs）や Electron 自身のキャッシュの置き場が入れ替わって
+// 利用者には「設定が消えた」ように見える。名前は表示だけの問題なので、データを引っ越す理由が
+// ない。そこで **改名の前に解決済みの userData を読み、改名の後に同じ値へ固定し直す**。
+//   ⚠️ ここで `%APPDATA%/time-map-app-4` を literal で書かないのは、E2E / スモークが
+//   `--user-data-dir` で隔離した userData を渡してくるため（e2e/helpers.ts・
+//   scripts/smoke-launch.mjs）。読んだ値をそのまま書き戻す形なら、その隔離も壊さない。
+//   なお `app.setPath` は存在しないディレクトリを渡すと throw するので（Electron 公式ドキュメント）、
+//   初回起動に備えて先に作る。
+//   package.json に `productName: "gimoza"` を足す手もあるが、それだと **起動時点で既に**
+//   userData の既定が `%APPDATA%/gimoza` になってしまい、旧パスを literal で書き戻す羽目に
+//   なる（＝上の E2E 隔離を壊す）。名前の差し替えはここ 1 箇所に閉じる。
+const APP_DISPLAY_NAME = 'gimoza';
+const resolvedUserDataPath = app.getPath('userData');
+mkdirSync(resolvedUserDataPath, { recursive: true });
+app.setPath('userData', resolvedUserDataPath);
+app.setName(APP_DISPLAY_NAME);
 
 // --- ユニット U3: 単一インスタンスロック（lost-update 根治 / v3 同型）-------------
 //

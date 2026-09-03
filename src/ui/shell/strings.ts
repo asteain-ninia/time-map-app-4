@@ -7,9 +7,16 @@
 // these constants by key; no component hardcodes a literal string inline
 // (教訓 5.19: 分岐識別子・表示文言は定数を経由する).
 
-/** App-level / window title strings. */
+/**
+ * App-level / window title strings. アプリの正式名称は **gimoza**（`time-map-app-4` は
+ * 開発時のコードネームで、利用者には見せない — 現状.md B3）。
+ *
+ * ⚠️ 実際のウィンドウタイトルは `src/ui/index.html` の `<title>` が決める（BrowserWindow に
+ * `title` オプションを渡していないため、ページのタイトルがそのまま出る）。この定数を変えても
+ * ウィンドウタイトルは動かないので、名前を変えるときは index.html も一緒に直すこと。
+ */
 export const APP_STRINGS = {
-  title: 'time-map-app',
+  title: 'gimoza',
   mapAriaLabel: 'メインマップ領域',
   sidebarAriaLabel: 'サイドバー',
   toolbarAriaLabel: 'ツールバー',
@@ -189,7 +196,7 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
  */
 export const ABOUT_STRINGS = {
   title: 'バージョン情報',
-  appName: 'time-map-app',
+  appName: 'gimoza',
   versionLabel: 'バージョン',
   description: '時系列地図アプリケーション（オフライン完結）。',
   close: '閉じる',
