@@ -64,6 +64,30 @@ export function topChromeBand(b: SceneBox): Band {
   return { left: xc - 250, right: xc + 250, top: b.y, bottom: b.y + 48 };
 }
 
+/**
+ * 起動直後のカメラに写っている「世界そのもの」の帯（px）。この外側の余りは
+ * **日付変更線の向こう側が回り込んで描かれている**ので、そこへ図形を置くと
+ * 反対の端に置いた図形と world 座標で重なり、追加が conflict で止まる。
+ *
+ * WHY 箱から解けるのか: 起動時のカメラは世界 (経度 360° × 緯度 180°) 全体を地図セルに
+ * 収めるので、1 度あたりの px は `min(幅/360, 高さ/180)`。世界はセルの中央に置かれる。
+ * 実測 (増分 1 の箱 940×415.6) では高さ側が効いて世界の横幅は 831.2px、
+ * 経度 0° はセルの横中央 — この式どおりだった。
+ *
+ * WHY これが要るようになったか: 増分 1 でシェルに行が増えて地図セルが縦に約 74px 縮み、
+ * 「高さ/180」が効くようになった。つまり**世界の横幅がセルの幅より狭くなり**、
+ * セルの左右端が回り込み領域になった。以前は幅いっぱいが世界だったので問題にならず、
+ * 右端レーンに置いていた図形が増分 1 で左端の図形と衝突するようになった。
+ */
+export function worldBand(b: SceneBox): Band {
+  const perDeg = Math.min(b.width / 360, b.height / 180);
+  const halfW = (perDeg * 360) / 2;
+  const halfH = (perDeg * 180) / 2;
+  const xc = b.x + b.width / 2;
+  const yc = b.y + b.height / 2;
+  return { left: xc - halfW, right: xc + halfW, top: yc - halfH, bottom: yc + halfH };
+}
+
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
 }
@@ -127,11 +151,16 @@ export function placeSquareScene(b: SceneBox, spec: SquareSceneSpec): PlacedSqua
   const { half, name } = spec;
   const reach = spec.pierce ?? half;
 
-  const cxMin = b.x + m + half;
-  const cxMax = b.x + b.width - m - half;
+  // 余白の内側 **かつ** 世界の帯の内側（日付変更線をまたがない）。またぐと反対側の
+  // 図形と world 座標で重なり、追加が conflict で止まる（増分 1 で地図セルが縦に縮み、
+  // 世界の横幅がセルの幅より狭くなって初めて起きるようになった）。
+  const world = worldBand(b);
+  const cxMin = Math.max(b.x + m, world.left + m) + half;
+  const cxMax = Math.min(b.x + b.width - m, world.right - m) - half;
   if (cxMin > cxMax) {
     throw new Error(
-      `scene-layout: "${name}" half=${half} exceeds the box width (${JSON.stringify(b)})`,
+      `scene-layout: "${name}" half=${half} exceeds the world band inside the box ` +
+        `(world x∈[${Math.round(world.left)}, ${Math.round(world.right)}], box=${JSON.stringify(b)})`,
     );
   }
   // 先に整数へ確定させる（レーンがクロムの帯を外れるかの判定を、実際にクリックする
@@ -141,9 +170,11 @@ export function placeSquareScene(b: SceneBox, spec: SquareSceneSpec): PlacedSqua
   const bottom = bottomChromeBand(b);
   const top = topChromeBand(b);
 
-  // Base vertical band: the farthest click (pierce or corner) stays inside margins.
-  let cyMin = b.y + m + reach;
-  let cyMax = b.y + b.height - m - reach;
+  // Base vertical band: the farthest click (pierce or corner) stays inside margins
+  // （縦も世界の帯の内側に留める。今の箱では世界の高さ＝セルの高さなので実質は素通しだが、
+  //  セルが横長に戻れば極の外側が見えるようになるので、式のほうで先に塞いでおく）。
+  let cyMin = Math.max(b.y + m, world.top + m) + reach;
+  let cyMax = Math.min(b.y + b.height - m, world.bottom - m) - reach;
 
   // Bottom strip: corners must clear it unless the whole x-lane misses the strip.
   const laneClearOfBottom = cx + half < bottom.left - m || cx - half > bottom.right + m;

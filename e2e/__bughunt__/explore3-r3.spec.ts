@@ -600,11 +600,16 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
 
       // Two inner faces nested INSIDE the big parent (left & right "holes"/飛び地).
       let innerCommitted = 0;
+      // UI 再設計 増分 1: 親 (exHalf) が箱に合わせて小さくなったぶん、**内側の 2 面も
+      // 同じ比で縮める**。固定の ±70 / half=42 のままだと親 (今は half=93) からはみ出し、
+      // 「親の内側の 2 つの穴」という位相そのものが壊れる。
+      const innerScale = exHalf / 130; // 130 = この場面を設計したときの親の half
+      const innerHalf = Math.round(42 * innerScale);
+      const innerOff = Math.round(70 * innerScale);
       if (multiHoleOk) {
-        const innerHalf = 42;
         const innerOffsets: ReadonlyArray<readonly [number, number]> = [
-          [exCx - 70, exCy],
-          [exCx + 70, exCy],
+          [exCx - innerOff, exCy],
+          [exCx + innerOff, exCy],
         ];
         for (let i = 0; i < innerOffsets.length; i += 1) {
           const off = innerOffsets[i]!;
@@ -629,11 +634,10 @@ test.describe('BUGHUNT R3-3 — deep-nest reparent-confirm / multi-hole exclave 
       // --- B1: VERTEX-EDIT an inner ring. Select inner-1 (left) and drag a corner.
       if (innerCommitted > 0 && (await armEditTool(page, 'vertex'))) {
         await shot(page, 'exclave-vertex-armed');
-        const inX = exCx - 70;
+        const inX = exCx - innerOff;
         const inY = exCy;
         await page.mouse.click(inX, inY); // select inner-1
         const vSelBefore = await activeFeature(page);
-        const innerHalf = 42;
         const vx = inX - innerHalf;
         const vy = inY - innerHalf;
         await page.mouse.move(vx, vy);
