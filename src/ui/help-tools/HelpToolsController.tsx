@@ -15,7 +15,15 @@
 // ショートカット一覧 views built here over existing pure logic (U41 search/log,
 // U20 menu/shortcut formatters) — no new domain logic.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -24,12 +32,14 @@ import type { SessionStore } from '../state/store';
 import {
   CommandRegistry,
   COMMAND_ID,
+  canEdit,
   formatShortcut,
   detectPlatform,
   listShortcutEntries,
   type Platform,
   ABOUT_STRINGS,
   SHORTCUTS_STRINGS,
+  formatTimestamp,
 } from '../shell/index';
 import { SettingsDialog } from '../settings/index';
 import type { SettingsStorePort } from '../settings/index';
@@ -46,7 +56,7 @@ import {
   MATCH_FIELD,
   LOG_LEVEL,
   DiagnosticLogger,
-  buildDiagnosticsSnapshot,
+  type LogEntry,
   type LogLevel,
 } from '../discovery/index';
 
@@ -59,11 +69,15 @@ const LOG_LEVEL_LABELS: Readonly<Record<LogLevel, string>> = {
   [LOG_LEVEL.Warning]: '警告',
   [LOG_LEVEL.Error]: 'エラー',
 };
+// 作中時刻を文字にする整形は U21 の `formatTimePoint` が単一の真実源（紀元前の表記と、
+// 未指定の月日を捏造しない規約がここに集約されている）。診断情報の概況が持っていた
+// `${t.year}年` はその写しで、負の年が「-27年」になっていた（教訓 5.44 同名・同目的の
+// 写しを残さない）。React 部品を引かずに済むよう、barrel ではなく純関数の実体を指す。
+import { formatTimePoint } from '../timeline/time-display';
 import { featuresAt } from '../live-lookup';
 import { buildCommittedFeatures } from '../map/committed-features';
 import type { Feature } from '../../domain/feature';
 import type { FeatureId } from '../../domain/ids';
-import type { TimePoint } from '../../domain/time/time-point';
 import type { DomainProject } from '../../domain/persistence/index';
 
 /** Which help/tools view is currently open (only one at a time). */
@@ -134,6 +148,13 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
   const { store, registry } = props;
   const [view, setView] = useState<HelpView>(HELP_VIEW.None);
 
+  // K-6「読むだけ」(教訓 5.13 / 所有者裁定): 設定を**開く**ことは全モードで許す（読むだけ
+  // でも設定は読めるべき）が、開いた先の**プロジェクト設定**（＝保存ファイルの中身）は
+  // 表示専用モードでは触らせない。判定は shell の canEdit(mode) 1 本をそのまま引く
+  // （ここで独自のモード判定を書かない）。live 購読なので、ダイアログを開いたままモードを
+  // 切り替えても追従する。
+  const editable = useStore(store, (s) => canEdit(s.mode));
+
   // HB-8 / HB-9 — register all five handlers on the shared registry and tear them
   // down on unmount (the ViewToggleViewMode pattern). Each handler只 opens a view;
   // they carry no `canRun` gate (these are always-available help/tools commands,
@@ -196,6 +217,7 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
       return (
         <SettingsDialog
           store={settingsPort}
+          canEdit={editable}
           onClose={close}
           {...(props.onRequestBasemapReplace !== undefined
             ? { onRequestBasemapReplace: props.onRequestBasemapReplace }
@@ -587,10 +609,16 @@ function ShortcutsView(props: {
 
 // --- 診断情報 (HB-9 / FR-117) ------------------------------------------------
 
-/** Format a TimePoint as a year label for the diagnostics 概況 (簡潔; FR-117). */
-function currentTimeLabel(t: TimePoint): string {
-  return `${String(t.year)}年`;
-}
+/**
+ * ロガーが渡されていないときに `useSyncExternalStore` へ返す空のログ。
+ *
+ * **モジュール定数にするのが肝**。ここで `[]` を毎回作ると、返す値が毎レンダー
+ * 別物になって `useSyncExternalStore` が無限ループする。
+ */
+const EMPTY_LOG: readonly LogEntry[] = [];
+
+/** 同上。ロガーが無いときの「購読しない購読」。解除も何もしない。 */
+const NO_LOG_SUBSCRIPTION = (): void => undefined;
 
 function DiagnosticsView(props: {
   readonly store: StoreApi<SessionStore<DomainProject>>;
@@ -614,18 +642,31 @@ function DiagnosticsView(props: {
   const hasUnsavedChanges = useStore(props.store, (s) => s.projectDirty);
   const currentTime = useStore(props.store, (s) => s.currentTime);
 
-  // 表示の単一入口は既存の buildDiagnosticsSnapshot（G-19）。ここで新しい集計は作らない。
+  // ログも **購読**する（BUG #8 と同じ型の抜け）。概況の 3 つは Zustand を購読して
+  // いたが、ログ欄はロガーを 1 回読むだけだったので、**診断画面を開いたままエラーが
+  // 起きても欄に現れなかった**（ロガーは React の外の可変オブジェクトで、記録が増えても
+  // React には何も伝わらない）。ロガー側に生やした subscribe / getSnapshot を
+  // `useSyncExternalStore` でつなぐ（技術方針 2.5 / 教訓 5.35 共有リソース更新は全依存先へ
+  // 通知する）。getSnapshot は変化が無ければ同じ配列を返すので、ここは無限ループしない。
+  //
+  // buildDiagnosticsSnapshot（ログ＋概況を 1 個の値に束ねる書き出し用の関数）は
+  // **呼ぶたびに新しいオブジェクトを作る**ので `useSyncExternalStore` のスナップショットには
+  // 使えない。概況の 3 項目はもともとこの下の JSX が直接描いていて、束ねた値は使って
+  // いなかったため、ここではログの配列だけを購読して読む。
+  const logger = props.logger;
+  const subscribeLog = useCallback(
+    (onChange: () => void): (() => void) =>
+      logger === undefined ? NO_LOG_SUBSCRIPTION : logger.subscribe(onChange),
+    [logger],
+  );
+  const readLog = useCallback(
+    (): readonly LogEntry[] => (logger === undefined ? EMPTY_LOG : logger.getSnapshot()),
+    [logger],
+  );
+  const log = useSyncExternalStore(subscribeLog, readLog, readLog);
+
   // 新しい順に出す（直近のエラーがいちばん上）。
-  const entries =
-    props.logger === undefined
-      ? []
-      : [
-          ...buildDiagnosticsSnapshot(props.logger, {
-            featureCount,
-            hasUnsavedChanges,
-            currentTimeLabel: currentTimeLabel(currentTime),
-          }).log,
-        ].reverse();
+  const entries = useMemo(() => [...log].reverse(), [log]);
 
   return (
     <HelpModal
@@ -642,7 +683,7 @@ function DiagnosticsView(props: {
           <dt>地物数</dt>
           <dd data-testid="diagnostics-feature-count">{featureCount}</dd>
           <dt>{DIAGNOSTICS_STRINGS.fieldContextTime}</dt>
-          <dd data-testid="diagnostics-current-time">{currentTimeLabel(currentTime)}</dd>
+          <dd data-testid="diagnostics-current-time">{formatTimePoint(currentTime)}</dd>
           <dt>未保存の変更</dt>
           <dd data-testid="diagnostics-unsaved">{hasUnsavedChanges ? 'あり' : 'なし'}</dd>
         </dl>
@@ -670,7 +711,7 @@ function DiagnosticsView(props: {
                     {LOG_LEVEL_LABELS[entry.level]}
                   </span>
                   <span className="diagnostics-entry__at">
-                    {new Date(entry.recordedAtMs).toLocaleString()}
+                    {formatTimestamp(entry.recordedAtMs)}
                   </span>
                   {entry.context.contextTime !== undefined && (
                     <span className="diagnostics-entry__at">

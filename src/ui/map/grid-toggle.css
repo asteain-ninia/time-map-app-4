@@ -16,3 +16,12 @@
   background: #1565c0;
   color: #fff;
 }
+
+/* K-6「読むだけ」(教訓 5.13): このトグルは実体がプロジェクト設定 gridVisible の書き換え
+   なので、表示専用モードでは無効になる。aria-pressed の強調色だけが残ると「押せるのに
+   効かない」ように見えるので、上部バーの他の無効ボタン（.global-depth button:disabled）
+   と同じ薄さ・カーソルに揃える。 */
+.grid-toggle__button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

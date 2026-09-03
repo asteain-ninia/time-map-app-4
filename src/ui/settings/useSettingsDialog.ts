@@ -13,6 +13,20 @@
 // settings route through `updateProjectSetting` (dirty-marks the project document)
 // and app settings through `updateAppSetting` (app-level persistence); the two
 // save contexts are kept distinct (教訓 5.36 / 受け入れ基準 3).
+//
+// K-6「読むだけ」の関門（教訓 5.13 / 所有者裁定）。
+//
+// 教訓 5.13「表示専用モードでは編集経路を一括無効化する」(引用):「表示専用モードでは、
+// 編集 UI・編集メニュー項目・編集ショートカットを同じ権限判定で一括無効化する。**部品
+// ごとに個別判定を書くと、見た目だけ非表示でショートカットや右クリック操作が残る。**
+// モード境界は共通ヘルパーまたは状態機械で表現する。」
+//
+// 適用: 「読むだけ」の間、プロジェクト設定（＝保存ファイルの中身, FR-109, 教訓 5.36 の
+// 区分）は 1 件も書かない。判定は shell の `canEdit(mode)` **1 本**を `canEdit` 引数と
+// して受け取るだけで、この層は自前のモード判定を持たない。関門は「入力を disabled に
+// する」だけでは足りない（見た目を塞いでも、下書きを別経路で書き換えてから確定させれば
+// 通ってしまう）ので、**書き込みが起きるこの confirm() でもう一度確かめる**。
+// アプリ全体設定（FR-110）は所有者裁定どおり「読むだけ」でも変更できる。
 
 import { useCallback, useState } from 'react';
 
@@ -130,8 +144,17 @@ export type UseSettingsDialog = SettingsDialogState & SettingsDialogActions;
  * values (same source as the baseline used for the no-op diff, 教訓 5.24). The
  * caller re-mounts (or keys) the hook when the dialog opens so the draft is fresh
  * each time (教訓 5.2: a stale draft never leaks across opens).
+ *
+ * @param canEdit 編集してよいか（shell の `canEdit(mode)` をそのまま渡す）。false =
+ *   「読むだけ」。このときプロジェクト設定は 1 件も書かず、検証もしない（直せない値を
+ *   理由に「保存」全体を拒むと、変更できるはずのアプリ全体設定まで巻き添えになる）。
+ *   必須引数にしてあるのは、呼ぶ側に「どちらなのか」を必ず決めさせるためで、既定値を
+ *   与えて黙って編集可へ倒れる（＝関門が消える）事故を避ける（教訓 5.13）。
  */
-export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
+export function useSettingsDialog(
+  store: SettingsStorePort,
+  canEdit: boolean,
+): UseSettingsDialog {
   const [projectDraft, setProjectDraft] = useState<ProjectSettings>(store.projectSettings);
   const [appDraft, setAppDraft] = useState<AppSettings>(store.appSettings);
   const [errors, setErrors] = useState<readonly SettingsValidationError[]>([]);
@@ -139,6 +162,12 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
   const setProjectField = useCallback(
     <K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]) => {
       // Draft-only write (教訓 5.22). Errors are NOT cleared here (教訓 5.12).
+      //
+      // ここは「読むだけ」でも塞がない。下書きは確定するまで誰にも影響しないうえ、
+      // ここを塞ぐと関門が「下書きを書けないこと」に化けてしまい、本当の関門
+      // （confirm() の権限再確認）が効いているかどうかを試せなくなる。テストは
+      // わざとここから下書きを汚してから confirm() を呼び、1 件も書かれないことを
+      // 確かめている（見た目だけの封鎖になっていない証, 教訓 5.13）。
       setProjectDraft((d) => ({ ...d, [key]: value }));
     },
     [],
@@ -152,6 +181,39 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
   );
 
   const confirm = useCallback((): ConfirmResult => {
+    // K-6「読むだけ」の関門（教訓 5.13）。ここが**実際に書き込む唯一の場所**なので、
+    // 見た目（disabled）とは別にもう一度権限を確かめる。プロジェクト設定は 1 件も
+    // 書かず、検証もしない — 「読むだけ」では直しようがない値を理由に確定全体を
+    // 拒むと、裁定で「変更してよい」とされたアプリ全体設定まで保存できなくなる。
+    // 早期に分岐を分けているのは、以降の本流（プロジェクト側の検証・タイムライン
+    // ・パレットの原子的経路）を丸ごと飛ばすことを一目で見えるようにするため
+    // （教訓 5.9: 排他分岐が重要処理を黙って飛ばしていないか）。
+    if (!canEdit) {
+      const appOnlyV = validateAppSettings(appDraft);
+      if (!appOnlyV.ok) {
+        setErrors(appOnlyV.errors); // 教訓 5.12: 再確定まで理由を残す。
+        return {
+          status: CONFIRM_STATUS.Rejected,
+          changedProject: [],
+          changedApp: [],
+          errors: appOnlyV.errors,
+        };
+      }
+      const changedAppOnly = changedAppKeys(store.appSettings, appOnlyV.value);
+      for (const key of changedAppOnly) {
+        writeApp(store, appOnlyV.value, key);
+      }
+      setErrors([]);
+      return {
+        status:
+          changedAppOnly.length === 0 ? CONFIRM_STATUS.NoOp : CONFIRM_STATUS.Applied,
+        // 書いた鍵だけを返す（観測用）。プロジェクト側は「無かったこと」にするので空。
+        changedProject: [],
+        changedApp: changedAppOnly,
+        errors: [],
+      };
+    }
+
     // Re-validate at the confirm entry with the SAME pure functions (教訓 5.26).
     const projectV = validateProjectSettings(projectDraft);
     const appV = validateAppSettings(appDraft);
@@ -217,7 +279,7 @@ export function useSettingsDialog(store: SettingsStorePort): UseSettingsDialog {
         ? CONFIRM_STATUS.NoOp
         : CONFIRM_STATUS.Applied;
     return { status, changedProject, changedApp, errors: [] };
-  }, [projectDraft, appDraft, store]);
+  }, [projectDraft, appDraft, store, canEdit]);
 
   const cancel = useCallback(() => {
     // Discard the transient draft on the cancel path (教訓 5.2). Re-seed from the

@@ -224,6 +224,18 @@
   margin: 0 0 12px;
 }
 
+/* K-6「読むだけ」(教訓 5.13): プロジェクト設定タブの部品が全部無効になっている理由。
+   ただの補足 (__hint) より一段強く出す — 無効の理由が読めないと「壊れている」に見える。 */
+.settings-section__readonly {
+  font-size: 13px;
+  color: #664d03;
+  background: #fff3cd;
+  border: 1px solid #ffe69c;
+  border-radius: 4px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+
 .settings-dialog__footer {
   margin-top: 16px;
   display: flex;

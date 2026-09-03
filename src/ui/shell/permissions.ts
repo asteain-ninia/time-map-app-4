@@ -31,6 +31,15 @@ export function canEdit(mode: EditMode): boolean {
  * toggle, help, settings) are NOT in this set and stay available while viewing.
  * Membership is declared once here so menu items and shortcuts share it
  * (§4 単一の真実源).
+ *
+ * K-6 の但し書き: 「設定を開く」(ToolsSettings) は**この集合に入れない**。読むだけでも
+ * 設定は読めるべきだからで、代わりに開いた先のダイアログが同じ {@link canEdit} を受け取り、
+ * プロジェクト設定（＝保存ファイルの中身, FR-109）の部品と確定処理を塞ぐ。つまり
+ * 「コマンド 1 個丸ごと殺す」で足りる経路だけがここに載り、「入口は開けたまま中身の一部
+ * だけ塞ぐ」経路は同じ `canEdit` を引数で受け取る形で塞ぐ。**判定は 2 つに分かれていない**
+ * — どちらも下の {@link canEdit} 1 本を読む。設定ダイアログ以外の同類は上部バーの
+ * グリッド表示トグル (`ui/map/GridToggleControl.tsx`: 実体は projectSettings.gridVisible の
+ * 書き換え) で、これも同じ `canEdit` を引いて無効化している。
  */
 const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.EditUndo,

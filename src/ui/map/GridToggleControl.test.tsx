@@ -4,10 +4,16 @@
 // draft); a click flips it via updateProjectSetting (which dirty-marks the project and
 // the Canvas re-reads on the next redraw, 教訓 5.35). An external store change is
 // reflected too (proving the widget holds no second truth).
+//
+// K-6 (教訓 5.13): このトグルは**プロジェクト設定 gridVisible の書き換え**なので、
+// 「読むだけ」（表示専用モード）では無効になる。store の既定モードは「読むだけ」なので、
+// 書き換えを見る検査は明示的に編集モードの store を使う。無効側の固定は
+// `ui/shell/view-only-gate.test.tsx` の表が受け持つ（同じ性質を二重に書かない）。
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 
+import { EDIT_MODE } from '../state/session';
 import { createSessionStore } from '../state/store';
 
 import { GridToggleControl } from './GridToggleControl';
@@ -19,7 +25,10 @@ interface TestDomain {
 afterEach(() => cleanup());
 
 function makeStore() {
-  return createSessionStore<TestDomain>({ initialDomain: { tag: 'd' } });
+  return createSessionStore<TestDomain>({
+    initialDomain: { tag: 'd' },
+    initial: { mode: EDIT_MODE.Edit },
+  });
 }
 
 describe('GridToggleControl (FR-13 上部バー グリッド表示トグル)', () => {

@@ -28,12 +28,27 @@ import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import type { AddSnapshot } from '../../domain/add/index';
 import { timePointYear } from '../../domain/time/time-point';
 
+import { DiagnosticLogger, LOG_LEVEL } from '../discovery/index';
+
 import { HelpToolsController } from './HelpToolsController';
 
 afterEach(() => cleanup());
 
 function makeStore(): StoreApi<SessionStore<DomainProject>> {
   return createSessionStore<DomainProject>({ initialDomain: buildEmptyProject() });
+}
+
+/**
+ * K-6 (教訓 5.13): store の既定モードは「読むだけ」(EDIT_MODE.View) で、そのとき設定
+ * ダイアログのプロジェクト設定は触れない。プロジェクト設定を**書ける**ことを見る検査は
+ * この編集モードの store を使う。「読むだけでは書けない」側の固定は
+ * `ui/shell/view-only-gate.test.tsx` の表が本物の結線ごと受け持つ。
+ */
+function makeEditableStore(): StoreApi<SessionStore<DomainProject>> {
+  return createSessionStore<DomainProject>({
+    initialDomain: buildEmptyProject(),
+    initial: { mode: EDIT_MODE.Edit },
+  });
 }
 
 // --- helpers to build a project carrying a real leaf feature (for the bughunt3
@@ -148,7 +163,7 @@ describe('HB-8 / HB-9 — the ツール / ヘルプ commands are registered (no 
 
 describe('dispatching each command opens its view (the 結線)', () => {
   it('ToolsSettings opens the U38 settings dialog bound to the LIVE store', () => {
-    const store = makeStore();
+    const store = makeEditableStore();
     const registry = new CommandRegistry();
     render(<HelpToolsController store={store} registry={registry} />);
     expect(screen.queryByTestId('settings-dialog')).not.toBeInTheDocument();
@@ -167,7 +182,7 @@ describe('dispatching each command opens its view (the 結線)', () => {
   });
 
   it('FR-04: threads onRequestBasemapReplace into the settings dialog起動点 (enabled + click)', () => {
-    const store = makeStore();
+    const store = makeEditableStore();
     const registry = new CommandRegistry();
     const onRequestBasemapReplace = vi.fn();
     render(
@@ -185,7 +200,9 @@ describe('dispatching each command opens its view (the 結線)', () => {
   });
 
   it('FR-04 regression: without a handler the差し替えボタン stays disabled', () => {
-    const store = makeStore();
+    // 編集モードで見る — 「読むだけ」だと権限側の無効化と区別がつかず、この検査が
+    // 「結線が無いと死んだボタンになる」ことを示さなくなる（教訓 5.7）。
+    const store = makeEditableStore();
     const registry = new CommandRegistry();
     render(<HelpToolsController store={store} registry={registry} />);
     dispatch(registry, COMMAND_ID.ToolsSettings);
@@ -475,6 +492,72 @@ describe('BUG #8 — diagnostics count is reactive, not a frozen mount snapshot'
       store.getState().updateProjectSetting('equatorLengthKm', 12345);
     });
     expect(screen.getByTestId('diagnostics-unsaved')).toHaveTextContent('あり');
+  });
+});
+
+// D3 — 診断情報の 3 つの粗（増分 1 の検証で見つかったもの）。
+//
+//  1. ログ欄が **ロガーを購読していなかった**。概況の 3 項目だけが Zustand 購読で、ログは
+//     開いた瞬間に 1 回読むだけ。したがって **画面を開いたまま新しいエラーが起きても
+//     欄に現れなかった**（記録は増えているのに React に伝わらない）。
+//  2. 記録時刻が `toLocaleString()` だった。OS の地域・暦の設定しだいで「2026/9/4」にも
+//     和暦にもなる。診断は環境をまたいで突き合わせる用途なので固定の並びで出す。
+//  3. 概況の作中時刻が `${t.year}年` という写しで、紀元前が「-27年」になっていた。
+describe('D3 — 診断情報のログ欄はロガーを購読する / 時刻はロケールに依らない', () => {
+  /** 実時刻を固定したロガー（記録時刻の表示を文字で確かめられるようにする）。 */
+  function fixedLogger(): DiagnosticLogger {
+    const at = new Date(2026, 8, 4, 14, 3, 7).getTime();
+    return new DiagnosticLogger({ clock: () => at });
+  }
+
+  it('パネルを開いたまま記録されたエラーが、開き直さずに欄へ現れる', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const logger = fixedLogger();
+    render(<HelpToolsController store={store} registry={registry} logger={logger} />);
+    dispatch(registry, COMMAND_ID.HelpDiagnostics);
+
+    // 開いた時点では 0 件（空文言のまま）。
+    expect(screen.getByTestId('diagnostics-empty-log')).toBeInTheDocument();
+
+    // 開いたまま記録する（実際は非同期 IO の失敗などがここに来る）。
+    act(() => {
+      logger.log(LOG_LEVEL.Error, '保存に失敗しました', { contextTime: '紀元前27年' });
+    });
+
+    const rows = screen.getAllByTestId('diagnostics-log-entry');
+    expect(rows).toHaveLength(1);
+    expect(screen.getByTestId('diagnostics-log-message')).toHaveTextContent('保存に失敗しました');
+    // 記録時刻は「年-月-日 時:分:秒」の固定の並び（`toLocaleString` をやめた印）。
+    expect(rows[0]).toHaveTextContent('2026-09-04 14:03:07');
+    // 作中時刻は記録時刻とは別のフィールドとして並ぶ（教訓 5.15）。
+    expect(rows[0]).toHaveTextContent('紀元前27年');
+  });
+
+  it('開いたまま clear すると欄が空文言へ戻る', () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const logger = fixedLogger();
+    logger.log(LOG_LEVEL.Warning, '警告です');
+    render(<HelpToolsController store={store} registry={registry} logger={logger} />);
+    dispatch(registry, COMMAND_ID.HelpDiagnostics);
+    expect(screen.getAllByTestId('diagnostics-log-entry')).toHaveLength(1);
+
+    act(() => {
+      logger.clear();
+    });
+    expect(screen.getByTestId('diagnostics-empty-log')).toBeInTheDocument();
+  });
+
+  it('概況の作中時刻は U21 の整形を使う（紀元前が「-27年」にならない）', () => {
+    const store = createSessionStore<DomainProject>({
+      initialDomain: buildEmptyProject(),
+      initial: { currentTime: timePointYear(-27) },
+    });
+    const registry = new CommandRegistry();
+    render(<HelpToolsController store={store} registry={registry} />);
+    dispatch(registry, COMMAND_ID.HelpDiagnostics);
+    expect(screen.getByTestId('diagnostics-current-time')).toHaveTextContent('紀元前27年');
   });
 });
 

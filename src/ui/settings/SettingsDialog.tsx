@@ -11,6 +11,12 @@
 // The base-map control is only the REQUEST起動点 (FR-109): it invokes the host's
 // `onRequestBasemapReplace`, which forwards to U18; this dialog performs no
 // replacement / correction / fallback itself (spec §やらないこと, 受け入れ基準 1).
+//
+// K-6「読むだけ」(教訓 5.13 / 所有者裁定): 表示専用モードでは**プロジェクト設定タブの
+// 部品をすべて無効化**する（プロジェクト設定＝保存ファイルの中身）。アプリ全体設定タブ
+// は裁定どおり触れるままにし、「設定を読む」こと自体も止めない。無効化は見た目だけの
+// 封鎖にしない: 確定 (`useSettingsDialog(store, canEdit)` の confirm) と、ベースマップ
+// 差し替えの押下ハンドラの**両方**で同じ `canEdit` をもう一度確かめる。
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -50,6 +56,15 @@ export interface SettingsDialogProps {
   /** Close the dialog (host unmounts it). Called after confirm or cancel. */
   readonly onClose: () => void;
   /**
+   * K-6: プロジェクト設定を変更してよいか。shell の `canEdit(mode)`（唯一の権限判定,
+   * 教訓 5.13）をそのまま渡す。false =「読むだけ」: プロジェクト設定タブの部品は全部
+   * 無効になり、確定してもプロジェクト設定は 1 件も書かれない。アプリ全体設定
+   * （FR-110, 教訓 5.36 の区分で「プロジェクトに属さない」側）はこの値に関わらず変更
+   * できる。**必須**にしてあるのは、渡し忘れが黙って「編集可」へ倒れる（＝関門が消える）
+   * のを型で防ぐため。
+   */
+  readonly canEdit: boolean;
+  /**
    * Hand a base-map replacement REQUEST to U18 (FR-109 起動点のみ). Optional; when
    * absent the control is disabled. This dialog never performs the replacement.
    */
@@ -57,8 +72,8 @@ export interface SettingsDialogProps {
 }
 
 export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
-  const { store, onClose, onRequestBasemapReplace } = props;
-  const dialog = useSettingsDialog(store);
+  const { store, onClose, canEdit, onRequestBasemapReplace } = props;
+  const dialog = useSettingsDialog(store, canEdit);
   const [tab, setTab] = useState<SettingsTab>(SETTINGS_TAB.Project);
   const dialogRef = useRef<HTMLDivElement | null>(null);
 
@@ -166,6 +181,7 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
         <div className="settings-dialog__body">
           <ProjectTab
             dialog={dialog}
+            canEdit={canEdit}
             onRequestBasemapReplace={onRequestBasemapReplace}
             hidden={tab !== SETTINGS_TAB.Project}
           />
@@ -199,11 +215,13 @@ export function SettingsDialog(props: SettingsDialogProps): JSX.Element {
 
 function ProjectTab(props: {
   readonly dialog: ReturnType<typeof useSettingsDialog>;
+  /** K-6: false =「読むだけ」。このタブの部品はすべて無効になる（教訓 5.13）。 */
+  readonly canEdit: boolean;
   readonly onRequestBasemapReplace?: (() => void) | undefined;
   /** Hide (but keep mounted) when the app tab is active, so aria-controls stays valid. */
   readonly hidden: boolean;
 }): JSX.Element {
-  const { dialog, onRequestBasemapReplace, hidden } = props;
+  const { dialog, canEdit, onRequestBasemapReplace, hidden } = props;
   const d = dialog.projectDraft;
   const set = dialog.setProjectField;
 
@@ -211,6 +229,12 @@ function ProjectTab(props: {
     const n = Number(raw);
     set(key as never, n as never);
   };
+
+  // K-6: このタブの部品は 1 つ残らずこの 1 変数から disabled を引く（教訓 5.13「部品
+  // ごとに個別判定を書くと、見た目だけ非表示で…操作が残る」）。個別に条件を書き分けて
+  // よいのは「結線が無い」ことによる無効（ベースマップの起動点）だけで、それも権限側
+  // の判定と OR で重ねる。
+  const readOnly = !canEdit;
 
   return (
     <section
@@ -223,12 +247,20 @@ function ProjectTab(props: {
     >
       <p className="settings-section__hint">{SETTINGS_STRINGS.projectScopeHint}</p>
 
+      {/* K-6: なぜ触れないのかを画面に出す（無効化だけだと「壊れている」に見える）。 */}
+      {readOnly && (
+        <p className="settings-section__readonly" data-testid="settings-project-readonly">
+          {SETTINGS_STRINGS.projectReadOnlyHint}
+        </p>
+      )}
+
       <label>
         {PROJECT_FIELD_STRINGS.projectName}
         <input
           type="text"
           aria-label={PROJECT_FIELD_STRINGS.projectName}
           value={d.projectName}
+          disabled={readOnly}
           onChange={(e) => set('projectName', e.target.value)}
         />
       </label>
@@ -238,6 +270,7 @@ function ProjectTab(props: {
         <textarea
           aria-label={PROJECT_FIELD_STRINGS.projectDescription}
           value={d.projectDescription}
+          disabled={readOnly}
           onChange={(e) => set('projectDescription', e.target.value)}
         />
       </label>
@@ -248,6 +281,7 @@ function ProjectTab(props: {
           type="number"
           aria-label={PROJECT_FIELD_STRINGS.equatorLengthKm}
           value={d.equatorLengthKm}
+          disabled={readOnly}
           onChange={(e) => setNum('equatorLengthKm', e.target.value)}
         />
       </label>
@@ -259,6 +293,7 @@ function ProjectTab(props: {
           step="0.001"
           aria-label={PROJECT_FIELD_STRINGS.flattening}
           value={d.flattening}
+          disabled={readOnly}
           onChange={(e) => setNum('flattening', e.target.value)}
         />
       </label>
@@ -269,6 +304,7 @@ function ProjectTab(props: {
           type="number"
           aria-label={PROJECT_FIELD_STRINGS.timelineMinYear}
           value={d.timelineMinYear}
+          disabled={readOnly}
           onChange={(e) => setNum('timelineMinYear', e.target.value)}
         />
       </label>
@@ -279,6 +315,7 @@ function ProjectTab(props: {
           type="number"
           aria-label={PROJECT_FIELD_STRINGS.timelineMaxYear}
           value={d.timelineMaxYear}
+          disabled={readOnly}
           onChange={(e) => setNum('timelineMaxYear', e.target.value)}
         />
       </label>
@@ -291,6 +328,7 @@ function ProjectTab(props: {
           step="0.1"
           aria-label={PROJECT_FIELD_STRINGS.zoomMin}
           value={d.zoomMin}
+          disabled={readOnly}
           onChange={(e) => setNum('zoomMin', e.target.value)}
         />
       </label>
@@ -302,6 +340,7 @@ function ProjectTab(props: {
           step="0.1"
           aria-label={PROJECT_FIELD_STRINGS.zoomMax}
           value={d.zoomMax}
+          disabled={readOnly}
           onChange={(e) => setNum('zoomMax', e.target.value)}
         />
       </label>
@@ -315,6 +354,7 @@ function ProjectTab(props: {
           data-testid="settings-grid-visible"
           aria-label={PROJECT_FIELD_STRINGS.gridVisible}
           checked={d.gridVisible}
+          disabled={readOnly}
           onChange={(e) => set('gridVisible', e.target.checked)}
         />
         {PROJECT_FIELD_STRINGS.gridVisible}
@@ -325,6 +365,7 @@ function ProjectTab(props: {
         <select
           aria-label={PROJECT_FIELD_STRINGS.gridSpacingDeg}
           value={d.gridSpacingDeg}
+          disabled={readOnly}
           onChange={(e) => set('gridSpacingDeg', coerceGridSpacing(Number(e.target.value)))}
         >
           {GRID_SPACINGS_DEG.map((s) => (
@@ -341,6 +382,7 @@ function ProjectTab(props: {
           type="color"
           aria-label={PROJECT_FIELD_STRINGS.gridColor}
           value={d.gridColor}
+          disabled={readOnly}
           onChange={(e) => set('gridColor', e.target.value)}
         />
       </label>
@@ -354,18 +396,26 @@ function ProjectTab(props: {
           step={0.05}
           aria-label={PROJECT_FIELD_STRINGS.gridOpacity}
           value={d.gridOpacity}
+          disabled={readOnly}
           onChange={(e) => setNum('gridOpacity', e.target.value)}
         />
       </label>
 
-      {/* Base-map: REQUEST起動点 only; replacement is U18's (受け入れ基準 1). */}
+      {/* Base-map: REQUEST起動点 only; replacement is U18's (受け入れ基準 1).
+          K-6: 差し替えは保存ファイルの背景地図そのものを入れ替えるので「読むだけ」では
+          止める。無効化に加えて**押下ハンドラでも `canEdit` を確かめる** — 見た目を
+          塞ぐだけだと、この起動点に別経路（ショートカット・自動化・将来の再結線）が
+          生えたときに素通りする（教訓 5.13）。 */}
       <div className="settings-field settings-field--basemap">
         <span className="settings-field__label">{PROJECT_FIELD_STRINGS.baseMapId}</span>
         <button
           type="button"
           data-testid="settings-basemap-replace"
-          disabled={onRequestBasemapReplace === undefined}
-          onClick={() => onRequestBasemapReplace?.()}
+          disabled={readOnly || onRequestBasemapReplace === undefined}
+          onClick={() => {
+            if (readOnly) return;
+            onRequestBasemapReplace?.();
+          }}
         >
           {BASEMAP_STRINGS.replace}
         </button>
@@ -379,6 +429,7 @@ function ProjectTab(props: {
           step="0.01"
           aria-label={PROJECT_FIELD_STRINGS.areaLabelOccupancyThreshold}
           value={d.areaLabelOccupancyThreshold}
+          disabled={readOnly}
           onChange={(e) => setNum('areaLabelOccupancyThreshold', e.target.value)}
         />
       </label>
@@ -388,6 +439,7 @@ function ProjectTab(props: {
           type="checkbox"
           aria-label={PROJECT_FIELD_STRINGS.newAreaAutoColorDefault}
           checked={d.newAreaAutoColorDefault}
+          disabled={readOnly}
           onChange={(e) => set('newAreaAutoColorDefault', e.target.checked)}
         />
         {PROJECT_FIELD_STRINGS.newAreaAutoColorDefault}
@@ -398,6 +450,7 @@ function ProjectTab(props: {
         <select
           aria-label={PROJECT_FIELD_STRINGS.defaultPaletteTheme}
           value={d.defaultPaletteTheme}
+          disabled={readOnly}
           onChange={(e) => set('defaultPaletteTheme', e.target.value)}
         >
           {PALETTE_THEME_OPTIONS.map((t) => (
@@ -408,7 +461,7 @@ function ProjectTab(props: {
         </select>
       </label>
 
-      <CustomPaletteEditor dialog={dialog} />
+      <CustomPaletteEditor dialog={dialog} readOnly={readOnly} />
     </section>
   );
 }
@@ -417,8 +470,10 @@ function ProjectTab(props: {
 
 function CustomPaletteEditor(props: {
   readonly dialog: ReturnType<typeof useSettingsDialog>;
+  /** K-6: true =「読むだけ」。色の追加・変更・削除をすべて塞ぐ（教訓 5.13）。 */
+  readonly readOnly: boolean;
 }): JSX.Element {
-  const { dialog } = props;
+  const { dialog, readOnly } = props;
   const palette = dialog.projectDraft.customPalette;
 
   const setAt = (index: number, color: string): void => {
@@ -445,11 +500,13 @@ function CustomPaletteEditor(props: {
               type="color"
               aria-label={`カスタムパレット色 ${String(i + 1)}`}
               value={color}
+              disabled={readOnly}
               onChange={(e) => setAt(i, e.target.value)}
             />
             <button
               type="button"
               data-testid={`settings-palette-remove-${String(i)}`}
+              disabled={readOnly}
               onClick={() => removeAt(i)}
             >
               {PALETTE_STRINGS.remove}
@@ -457,7 +514,12 @@ function CustomPaletteEditor(props: {
           </li>
         ))}
       </ul>
-      <button type="button" data-testid="settings-palette-add" onClick={add}>
+      <button
+        type="button"
+        data-testid="settings-palette-add"
+        disabled={readOnly}
+        onClick={add}
+      >
         {PALETTE_STRINGS.add}
       </button>
     </fieldset>

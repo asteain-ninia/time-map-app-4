@@ -43,7 +43,7 @@ function portFrom(store: StoreApi<SessionStore<TestDomain>>): SettingsStorePort 
 describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () => {
   it('shows the project + app tabs as separate scopes', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     expect(screen.getByTestId('settings-tab-project')).toBeInTheDocument();
     expect(screen.getByTestId('settings-tab-app')).toBeInTheDocument();
     // Project tab is shown first.
@@ -52,7 +52,7 @@ describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () 
 
   it('renders every project field (FR-109 列挙網羅)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     for (const label of [
       'プロジェクト名',
       '説明',
@@ -75,7 +75,7 @@ describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () 
 
   it('renders every app field on the app tab (FR-110)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-tab-app'));
     expect(screen.getByLabelText('共有頂点スナップ距離 (px)')).toBeInTheDocument();
     expect(screen.getByLabelText('描画更新頻度 (FPS)')).toBeInTheDocument();
@@ -86,7 +86,7 @@ describe('SettingsDialog rendering (FR-109 / FR-110, 受け入れ基準 3)', () 
 describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
   it('wires each tab to its panel via id + aria-controls + aria-labelledby', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     const tab = screen.getByTestId('settings-tab-project');
     const panel = screen.getByTestId('settings-project');
     expect(tab).toHaveAttribute('id', 'settings-tab-project');
@@ -99,7 +99,7 @@ describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
   // neither tab's aria-controls points at a missing id. The IDREF targets always exist.
   it('renders BOTH panels always; the inactive one is hidden (no dangling aria-controls)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     const projectPanel = screen.getByTestId('settings-project');
     const appPanel = screen.getByTestId('settings-app');
     // Both aria-controls IDREF targets exist in the DOM…
@@ -121,7 +121,7 @@ describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
   // always rendered, review #3, so panel presence alone can no longer prove the switch).
   it('ArrowRight / ArrowLeft move the selected tab AND DOM focus (wrapping)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     const projectTab = screen.getByTestId('settings-tab-project');
     const appTab = screen.getByTestId('settings-tab-app');
 
@@ -146,7 +146,7 @@ describe('scope-tab keyboard a11y (WAI-ARIA tablist)', () => {
 describe('confirm routes to the correct scope (受け入れ基準 3 / 教訓 5.36)', () => {
   it('project edit dirty-marks the project document, not app-level', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
 
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '12345' } });
     fireEvent.click(screen.getByTestId('settings-save'));
@@ -163,7 +163,7 @@ describe('confirm routes to the correct scope (受け入れ基準 3 / 教訓 5.3
   // edit MUST dirty-mark the project so the change is not silently lost on quit.
   it('app edit dirty-marks the project (so the unsaved guard fires)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
 
     fireEvent.click(screen.getByTestId('settings-tab-app'));
     fireEvent.change(screen.getByLabelText('共有頂点スナップ距離 (px)'), { target: { value: '80' } });
@@ -182,7 +182,7 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
     const seen: number[] = [];
     store.subscribe((s) => seen.push(s.projectSettings.gridOpacity));
 
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('グリッド不透明度'), { target: { value: '0.2' } });
     fireEvent.click(screen.getByTestId('settings-save'));
 
@@ -205,7 +205,7 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
     store.getState().setCurrentTime(timePointYear(5000), TIME_CHANGE_SOURCE.Slider);
     // Also change a NON-timeline key that sorts BEFORE the timeline keys, to prove the
     // pre-fix partial-application (equatorLengthKm is written, timelineMaxYear is not).
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
 
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '12345' } });
     // Shift the whole window forward: both bounds valid (20000 < 30000).
@@ -234,7 +234,7 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
   // confirm flow — dirty-marking the project like every other project field (FR-109).
   it('toggles gridVisible via the checkbox and persists on confirm', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     const checkbox = screen.getByTestId('settings-grid-visible');
     // Default is 可視 (checked).
     expect(checkbox).toBeChecked();
@@ -250,7 +250,7 @@ describe('immediate reflection through the store subscription (FR-109 / FR-110)'
 
   it('a confirmed FPS change reflects immediately and is clamped at the store (受け入れ基準 2)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-tab-app'));
     fireEvent.change(screen.getByLabelText('描画更新頻度 (FPS)'), { target: { value: '30' } });
     fireEvent.click(screen.getByTestId('settings-save'));
@@ -262,7 +262,7 @@ describe('validation + rejection (FR-115, 教訓 5.12 / 5.26, 受け入れ基準
   it('rejects out-of-range FPS, shows the Japanese reason, leaves committed value untouched', () => {
     const store = makeStore();
     const onClose = vi.fn();
-    render(<SettingsDialog store={portFrom(store)} onClose={onClose} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={onClose} />);
     fireEvent.click(screen.getByTestId('settings-tab-app'));
     fireEvent.change(screen.getByLabelText('描画更新頻度 (FPS)'), { target: { value: '120' } });
     fireEvent.click(screen.getByTestId('settings-save'));
@@ -274,7 +274,7 @@ describe('validation + rejection (FR-115, 教訓 5.12 / 5.26, 受け入れ基準
 
   it('rejects min >= max year (FR-66) with the Japanese reason', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('タイムライン最小年'), { target: { value: '100' } });
     fireEvent.change(screen.getByLabelText('タイムライン最大年'), { target: { value: '50' } });
     fireEvent.click(screen.getByTestId('settings-save'));
@@ -283,7 +283,7 @@ describe('validation + rejection (FR-115, 教訓 5.12 / 5.26, 受け入れ基準
 
   it('the rejection message is NOT cleared by an unrelated edit (教訓 5.12)', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '0' } });
     fireEvent.click(screen.getByTestId('settings-save'));
     expect(screen.getByTestId('settings-errors')).toBeInTheDocument();
@@ -297,7 +297,7 @@ describe('validation + rejection (FR-115, 教訓 5.12 / 5.26, 受け入れ基準
 describe('draft discard + no-op guard (教訓 5.2 / 5.24, 受け入れ基準 6)', () => {
   it('cancel discards the draft: re-opening shows the committed value', () => {
     const store = makeStore();
-    const { unmount } = render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    const { unmount } = render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '99999' } });
     fireEvent.click(screen.getByTestId('settings-cancel'));
     expect(store.getState().projectSettings.equatorLengthKm).toBe(
@@ -306,7 +306,7 @@ describe('draft discard + no-op guard (教訓 5.2 / 5.24, 受け入れ基準 6)'
     unmount();
 
     // Re-open: the draft is fresh from the committed value (no leak, 教訓 5.2).
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     expect(screen.getByLabelText('赤道長 (km)')).toHaveValue(
       DEFAULT_PROJECT_SETTINGS.equatorLengthKm,
     );
@@ -315,7 +315,7 @@ describe('draft discard + no-op guard (教訓 5.2 / 5.24, 受け入れ基準 6)'
   it('a backdrop click discards the draft', () => {
     const store = makeStore();
     const onClose = vi.fn();
-    render(<SettingsDialog store={portFrom(store)} onClose={onClose} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={onClose} />);
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '777' } });
     fireEvent.click(screen.getByTestId('settings-backdrop'));
     expect(store.getState().projectSettings.equatorLengthKm).toBe(
@@ -328,7 +328,7 @@ describe('draft discard + no-op guard (教訓 5.2 / 5.24, 受け入れ基準 6)'
     const store = makeStore();
     const calls: unknown[] = [];
     store.subscribe(() => calls.push(1));
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-save'));
     expect(store.getState().projectDirty).toBe(false);
     expect(store.getState().lastSettingsChange).toBeNull();
@@ -339,7 +339,7 @@ describe('draft discard + no-op guard (教訓 5.2 / 5.24, 受け入れ基準 6)'
 describe('custom palette management (FR-109 / FR-102)', () => {
   it('adds and removes palette colors in the draft, persists on confirm', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-palette-add'));
     fireEvent.click(screen.getByTestId('settings-save'));
     expect(store.getState().projectSettings.customPalette).toHaveLength(1);
@@ -377,7 +377,7 @@ describe('palette confirm routes to the undoable command seam (FR-109 follow-up)
   it('a palette-only change fires commitPaletteChange ONCE and no palette updateProjectSetting', () => {
     const store = makeStore();
     const { port, updateProjectSetting, commitPaletteChange } = spyPort(store);
-    render(<SettingsDialog store={port} onClose={() => {}} />);
+    render(<SettingsDialog store={port} canEdit onClose={() => {}} />);
 
     fireEvent.click(screen.getByTestId('settings-palette-add')); // customPalette draft → ['#000000']
     fireEvent.click(screen.getByTestId('settings-save'));
@@ -397,7 +397,7 @@ describe('palette confirm routes to the undoable command seam (FR-109 follow-up)
   it('palette + a non-palette key: palette→command, the other→updateProjectSetting (両方反映)', () => {
     const store = makeStore();
     const { port, updateProjectSetting, commitPaletteChange } = spyPort(store);
-    render(<SettingsDialog store={port} onClose={() => {}} />);
+    render(<SettingsDialog store={port} canEdit onClose={() => {}} />);
 
     fireEvent.change(screen.getByLabelText('赤道長 (km)'), { target: { value: '12345' } });
     fireEvent.click(screen.getByTestId('settings-palette-add'));
@@ -420,7 +420,7 @@ describe('palette confirm routes to the undoable command seam (FR-109 follow-up)
     // The default portFrom carries NO commitPaletteChange: the palette persists via the
     // ordinary (non-undoable) per-key path, preserving the pre-existing behaviour.
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     fireEvent.click(screen.getByTestId('settings-palette-add'));
     fireEvent.click(screen.getByTestId('settings-save'));
     expect(store.getState().projectSettings.customPalette).toEqual(['#000000']);
@@ -434,6 +434,7 @@ describe('base-map replace起動点 (受け入れ基準 1)', () => {
     render(
       <SettingsDialog
         store={portFrom(store)}
+        canEdit
         onClose={() => {}}
         onRequestBasemapReplace={onRequest}
       />,
@@ -444,7 +445,7 @@ describe('base-map replace起動点 (受け入れ基準 1)', () => {
 
   it('disables the control when no handler is provided', () => {
     const store = makeStore();
-    render(<SettingsDialog store={portFrom(store)} onClose={() => {}} />);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
     expect(screen.getByTestId('settings-basemap-replace')).toBeDisabled();
   });
 });
@@ -453,9 +454,11 @@ describe('useSettingsDialog confirm outcome (教訓 5.26 テスト可能な戻�
   // A tiny harness component that exposes the hook's confirm() return value.
   function Harness(props: {
     readonly store: SettingsStorePort;
+    /** K-6: 省略時は「直せる」。false を渡すと「読むだけ」の関門を試せる。 */
+    readonly canEdit?: boolean;
     readonly onResult: (r: ReturnType<ReturnType<typeof useSettingsDialog>['confirm']>) => void;
   }): JSX.Element {
-    const dialog = useSettingsDialog(props.store);
+    const dialog = useSettingsDialog(props.store, props.canEdit ?? true);
     return (
       <div>
         <input
@@ -463,6 +466,12 @@ describe('useSettingsDialog confirm outcome (教訓 5.26 テスト可能な戻�
           type="number"
           value={dialog.projectDraft.equatorLengthKm}
           onChange={(e) => dialog.setProjectField('equatorLengthKm', Number(e.target.value))}
+        />
+        <input
+          aria-label="snap"
+          type="number"
+          value={dialog.appDraft.snapDistancePx}
+          onChange={(e) => dialog.setAppField('snapDistancePx', Number(e.target.value))}
         />
         <button type="button" data-testid="harness-confirm" onClick={() => props.onResult(dialog.confirm())}>
           go
@@ -498,5 +507,148 @@ describe('useSettingsDialog confirm outcome (教訓 5.26 テスト可能な戻�
     fireEvent.click(screen.getByTestId('harness-confirm'));
     expect(results[0]?.status).toBe(CONFIRM_STATUS.Rejected);
     expect(results[0]?.errors.some((e) => e.message === REJECTION.equatorNonPositive)).toBe(true);
+  });
+
+  // K-6「読むだけ」の関門は**見た目ではなく確定処理**にある（教訓 5.13）。ここでは入力を
+  // disabled にしない自前の harness からわざと下書きを汚し、それでも 1 件も書かれない
+  // ことを確かめる。画面側の disabled は view-only-gate.test.tsx の表が受け持つ。
+  it('「読むだけ」では、下書きを汚してから確定してもプロジェクト設定を 1 件も書かない', () => {
+    const store = makeStore();
+    const before = store.getState().projectSettings.equatorLengthKm;
+    const results: ReturnType<ReturnType<typeof useSettingsDialog>['confirm']>[] = [];
+    render(
+      <Harness store={portFrom(store)} canEdit={false} onResult={(r) => results.push(r)} />,
+    );
+    fireEvent.change(screen.getByLabelText('eq'), { target: { value: '9000' } });
+    fireEvent.click(screen.getByTestId('harness-confirm'));
+
+    expect(results[0]?.changedProject).toEqual([]);
+    expect(results[0]?.status).toBe(CONFIRM_STATUS.NoOp);
+    expect(store.getState().projectSettings.equatorLengthKm).toBe(before);
+    // 保存ファイルの中身を触っていないので「未保存」も立たない（教訓 5.36 の保存文脈）。
+    expect(store.getState().projectDirty).toBe(false);
+  });
+
+  it('「読むだけ」でもアプリ全体設定は確定できる（所有者裁定: プロジェクトに属さない設定は変更可）', () => {
+    const store = makeStore();
+    const results: ReturnType<ReturnType<typeof useSettingsDialog>['confirm']>[] = [];
+    render(
+      <Harness store={portFrom(store)} canEdit={false} onResult={(r) => results.push(r)} />,
+    );
+    fireEvent.change(screen.getByLabelText('snap'), { target: { value: '80' } });
+    fireEvent.click(screen.getByTestId('harness-confirm'));
+
+    expect(results[0]?.status).toBe(CONFIRM_STATUS.Applied);
+    expect(results[0]?.changedApp).toEqual(['snapDistancePx']);
+    expect(store.getState().appSettings.snapDistancePx).toBe(80);
+  });
+
+  it('「読むだけ」では、直せないプロジェクト値の巻き添えでアプリ全体設定まで拒否しない', () => {
+    // 下書きのプロジェクト値が不正でも、「読むだけ」ではそれを直す手段が画面に無い。
+    // ここで確定全体を拒むと、変更してよいはずのアプリ全体設定が永久に保存できなくなる。
+    const store = makeStore();
+    const results: ReturnType<ReturnType<typeof useSettingsDialog>['confirm']>[] = [];
+    render(
+      <Harness store={portFrom(store)} canEdit={false} onResult={(r) => results.push(r)} />,
+    );
+    fireEvent.change(screen.getByLabelText('eq'), { target: { value: '0' } }); // 不正な赤道長
+    fireEvent.change(screen.getByLabelText('snap'), { target: { value: '80' } });
+    fireEvent.click(screen.getByTestId('harness-confirm'));
+
+    expect(results[0]?.status).toBe(CONFIRM_STATUS.Applied);
+    expect(results[0]?.errors).toEqual([]);
+    expect(store.getState().appSettings.snapDistancePx).toBe(80);
+    // 不正だったプロジェクト値のほうは 1 件も書かれていない。
+    expect(results[0]?.changedProject).toEqual([]);
+    expect(store.getState().projectSettings.equatorLengthKm).toBe(
+      DEFAULT_PROJECT_SETTINGS.equatorLengthKm,
+    );
+  });
+});
+
+// K-6「読むだけ」の画面側（教訓 5.13 / 所有者裁定）。プロジェクト設定タブの部品は 1 つ
+// 残らず無効、アプリ全体設定タブは触れるまま、そして「設定を読む」こと自体は止めない。
+describe('K-6「読むだけ」ではプロジェクト設定に触れない（教訓 5.13 / 5.36）', () => {
+  /** プロジェクト設定タブの入力（＝保存ファイルに入る側）の全件。 */
+  const PROJECT_INPUT_LABELS: readonly string[] = [
+    'プロジェクト名',
+    '説明',
+    '赤道長 (km)',
+    '扁平率',
+    'タイムライン最小年',
+    'タイムライン最大年',
+    '最小ズーム倍率',
+    '最大ズーム倍率',
+    'グリッドを表示',
+    'グリッド間隔',
+    'グリッド色',
+    'グリッド不透明度',
+    '面情報ラベル表示閾値（画面占有率）',
+    '新規面の自動配色を既定で有効にする',
+    '既定パレットテーマ',
+  ];
+
+  it('プロジェクト設定の入力がすべて無効になり、理由が画面に出る', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} canEdit={false} onClose={() => {}} />);
+    for (const label of PROJECT_INPUT_LABELS) {
+      expect(screen.getByLabelText(label)).toBeDisabled();
+    }
+    expect(screen.getByTestId('settings-project-readonly')).toBeInTheDocument();
+  });
+
+  it('カスタムパレットの追加・変更・削除がすべて無効になる', () => {
+    const store = makeStore();
+    // 既存の色が 1 つある状態にして「色の変更」「削除」も見る（空だと行が出ない）。
+    store.getState().updateProjectSetting('customPalette', ['#123456']);
+    render(<SettingsDialog store={portFrom(store)} canEdit={false} onClose={() => {}} />);
+    expect(screen.getByTestId('settings-palette-add')).toBeDisabled();
+    expect(screen.getByTestId('settings-palette-remove-0')).toBeDisabled();
+    expect(screen.getByLabelText('カスタムパレット色 1')).toBeDisabled();
+  });
+
+  it('ベースマップの差し替えは、結線があっても無効で、押しても起動しない', () => {
+    const store = makeStore();
+    const onRequest = vi.fn();
+    render(
+      <SettingsDialog
+        store={portFrom(store)}
+        canEdit={false}
+        onClose={() => {}}
+        onRequestBasemapReplace={onRequest}
+      />,
+    );
+    const button = screen.getByTestId('settings-basemap-replace');
+    expect(button).toBeDisabled();
+    // 見た目だけの封鎖になっていないこと（教訓 5.13）: 押下経路でも弾く。
+    fireEvent.click(button);
+    expect(onRequest).not.toHaveBeenCalled();
+  });
+
+  it('アプリ全体設定の入力は「読むだけ」でも有効なまま', () => {
+    const store = makeStore();
+    render(<SettingsDialog store={portFrom(store)} canEdit={false} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId('settings-tab-app'));
+    for (const label of [
+      '共有頂点スナップ距離 (px)',
+      '描画更新頻度 (FPS)',
+      '全頂点マーカー表示上限',
+      'アンドゥ履歴の上限',
+      '重なり解決画面の使い方を表示する',
+    ]) {
+      expect(screen.getByLabelText(label)).toBeEnabled();
+    }
+  });
+
+  it('「直せる」ときは同じ入力がすべて有効で、理由の表示も出ない（検査が空振りしていない証）', () => {
+    const store = makeStore();
+    store.getState().updateProjectSetting('customPalette', ['#123456']);
+    render(<SettingsDialog store={portFrom(store)} canEdit onClose={() => {}} />);
+    for (const label of PROJECT_INPUT_LABELS) {
+      expect(screen.getByLabelText(label)).toBeEnabled();
+    }
+    expect(screen.getByTestId('settings-palette-add')).toBeEnabled();
+    expect(screen.getByTestId('settings-palette-remove-0')).toBeEnabled();
+    expect(screen.queryByTestId('settings-project-readonly')).toBeNull();
   });
 });
