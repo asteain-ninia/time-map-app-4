@@ -34,6 +34,8 @@
 // Pure & framework-free.
 
 import { referencedVertexIds, type Feature } from '../feature';
+import { assertNever } from '../assert-never';
+import type { AnchorSnapshot } from '../anchor';
 import type { Calendar } from '../time/calendar';
 import { compare, normalize } from '../time/normalized';
 import type { TimePoint } from '../time/time-point';
@@ -41,7 +43,7 @@ import { buildForest, directChildIds } from '../hierarchy/forest';
 import { checkAggregateShapes, HIERARCHY_VIOLATION, validateHierarchy } from '../hierarchy/validate';
 import { extractTerminalShapes } from '../spatial/terminals';
 import { detectTerminalOverlaps, type OverlapPair } from '../spatial/overlap';
-import { validateSeries } from '../anchor-series';
+import { validateSeries, type AnchorEntry } from '../anchor-series';
 import { validateRingHierarchy } from '../ring-hierarchy';
 import type { FeatureId, VertexId } from '../ids';
 import { idToString } from '../ids';
@@ -273,31 +275,47 @@ function detectShapePreservation(features: readonly Feature[], atTime: TimePoint
 // U07's single predicate per leaf here (単一真実源, 教訓5.30 — never re-implement the
 // ring checks) and surface ANY violation as one RingHierarchyInvalid per leaf.
 
-function detectRingHierarchy(
+/**
+ * 環階層が壊れている末端地物の「生の結果」。地物の形と頂点の座標だけから決まる
+ * (名前や色には一切依存しない) ので、形が同じ時刻断面のあいだで使い回せる —
+ * 報告文 (Inconsistency) はここから断面ごとに組み立て直す。
+ */
+interface RingHierarchyFinding {
+  readonly featureId: FeatureId;
+  /** 最初の違反の種別。違反があれば必ず入るが、防御的に undefined も許す。 */
+  readonly detail: string | undefined;
+}
+
+function findRingHierarchyViolations(
   features: readonly Feature[],
   vertices: VertexStore,
-  atTime: TimePoint,
-): Inconsistency[] {
-  const out: Inconsistency[] = [];
+): RingHierarchyFinding[] {
+  const out: RingHierarchyFinding[] = [];
   for (const feature of features) {
     if (feature.kind !== 'leaf') continue;
     const result = validateRingHierarchy(feature.shape, vertices);
     if (result.valid) continue;
     // The first violation kind is the machine sub-cause (e.g. dangling-parent,
     // hole-not-contained); every violation rides on the single inconsistency so
-    // the repair acts on the whole leaf rather than per-ring. exactOptionalPropertyTypes:
-    // only set `detail` when a sub-cause exists (a non-valid result always carries
-    // at least one violation, so this is defensive).
-    const detail = result.violations[0]?.kind;
-    out.push({
-      kind: INCONSISTENCY.RingHierarchyInvalid,
-      featureIds: [feature.id],
-      featureNames: namesOf(features, [feature.id]),
-      atTime,
-      ...(detail !== undefined ? { detail } : {}),
-    });
+    // the repair acts on the whole leaf rather than per-ring.
+    out.push({ featureId: feature.id, detail: result.violations[0]?.kind });
   }
   return out;
+}
+
+function ringHierarchyInconsistenciesFrom(
+  findings: readonly RingHierarchyFinding[],
+  features: readonly Feature[],
+  atTime: TimePoint,
+): Inconsistency[] {
+  // exactOptionalPropertyTypes: only set `detail` when a sub-cause exists.
+  return findings.map((f) => ({
+    kind: INCONSISTENCY.RingHierarchyInvalid,
+    featureIds: [f.featureId],
+    featureNames: namesOf(features, [f.featureId]),
+    atTime,
+    ...(f.detail !== undefined ? { detail: f.detail } : {}),
+  }));
 }
 
 // --- (d)+(g) terminal/anchor spatial overlap (delegated to U10) -------------
@@ -381,25 +399,36 @@ function detectVertexDivergence(
 
 // --- (e) aggregate = sum of children (delegated to U08) ---------------------
 
-function detectAggregateSum(
+/**
+ * 「まとめ役と子の面が食い違う」違反の生の結果 = 巻き込まれた地物 id の並び。形
+ * (親子関係・環・頂点座標) だけから決まるので、形が同じ時刻断面のあいだで使い回せる。
+ */
+function findAggregateGaps(
   features: readonly Feature[],
   vertices: VertexStore,
-  atTime: TimePoint,
-): Inconsistency[] {
+): (readonly FeatureId[])[] {
   const forest = buildForest(features);
   const violations = checkAggregateShapes(forest, vertices);
-  const out: Inconsistency[] = [];
+  const out: (readonly FeatureId[])[] = [];
   for (const v of violations) {
     if (v.kind !== HIERARCHY_VIOLATION.AggregateShapeMismatch) continue;
-    out.push({
-      kind: INCONSISTENCY.AggregateSumMismatch,
-      featureIds: v.featureIds,
-      featureNames: namesOf(features, v.featureIds),
-      atTime,
-      detail: 'inter-child-gap',
-    });
+    out.push(v.featureIds);
   }
   return out;
+}
+
+function aggregateSumInconsistenciesFrom(
+  gaps: readonly (readonly FeatureId[])[],
+  features: readonly Feature[],
+  atTime: TimePoint,
+): Inconsistency[] {
+  return gaps.map((featureIds) => ({
+    kind: INCONSISTENCY.AggregateSumMismatch,
+    featureIds,
+    featureNames: namesOf(features, featureIds),
+    atTime,
+    detail: 'inter-child-gap',
+  }));
 }
 
 // --- (g) inter-feature same-time spatial overlap ----------------------------
@@ -505,6 +534,179 @@ function detectDuplicateOwnerHistories(
   return out;
 }
 
+// --- 形が同じ時刻断面では幾何の検査を使い回す (B21 読み込みの遅さ) ------------
+//
+// 時刻断面の掃引は「錨が打たれた異なる時刻」の数だけ回る。実データ (履歴 689 本 /
+// 錨 739 個 / 異なる時刻 51) で 1 断面あたり約 1.2 秒、checkConsistency 全体で
+// 約 64 秒かかっていた。各検査を個別に計ったところ、内訳はほぼこの 3 つだった:
+//   detectTerminalOverlaps  629 ms/断面 (50.8%)
+//   checkAggregateShapes    573 ms/断面 (46.2%)
+//   validateRingHierarchy    22 ms/断面 ( 1.8%)
+// 残り (欠落頂点・木構造・形状保持・頂点座標の食い違い・断面の組み立て) は合計でも
+// 1 断面 15 ms 弱しかない。つまり重いのは「形」だけから決まる幾何の検査である。
+//
+// ところが断面が増える主因は形の変化ではない。名前・色・種別ラベル・詳細文書は錨
+// ごとに版を持つので、地物を 1 回改名するだけで錨が 1 個増え、断面も 1 本増える。
+// その断面は前の断面と地物の形も頂点の座標もまったく同じで、幾何の検査を掛け直して
+// も答えは変わらない。そこで断面の「形」を写した鍵を作り、鍵が一致したら幾何の
+// 結果を使い回す。
+//
+// 鍵に入れるのは、幾何の検査が実際に読む値だけ:
+//   - 地物: id / 種類 / 親 (parentId) / まとめ役の子一覧 (childIds) /
+//           点の頂点 id・線の頂点 id 列・面の環構成 (環 id・種別・親環・頂点 id 列)
+//   - 頂点: id と座標 (錨の頂点表の並び順のまま)
+// 親子関係は「形」ではないが、まとめ役の面は子の和で決まり、末端かどうかも子の有無
+// で決まる (extractTerminalShapes / checkAggregateShapes は forest を読む) ので、
+// 安全側に倒して鍵に入れる。childIds は今の 3 つの検査は読まない (forest は
+// parentId から作る) が、同じ理由で入れておく — 鍵を細かくしすぎても遅くなるだけで、
+// 見落としは起きない。
+//
+// 鍵に入れないのは名前・色・種別ラベル・詳細文書。どれも幾何にも親子関係にも効かない
+// (hierarchy/validate.ts も「種別ラベルは決して参照しない」と明記している)。名前は
+// 報告文には載るが、使い回すときは今の断面の地物から引き直すので古い名前は残らない。
+//
+// 使い回すのは幾何の「生の結果」(重なりの対・まとめ役の穴・環階層の違反) だけで、
+// 報告 (Inconsistency) は毎回その断面の atTime と地物名で組み立て直す。安い検査は
+// 使い回さず毎回そのまま走らせるので、形以外に依存する検査 (断面ごとの欠落頂点や
+// 頂点座標の食い違い) が鍵の粗さに巻き込まれることはない。
+
+/**
+ * 一つの時刻断面で「形」だけから決まる検査結果。ここから断面ごとに Inconsistency を
+ * 組み立て直すので、キャッシュ側は atTime も地物名も持たない。
+ */
+interface SliceGeometry {
+  readonly overlaps: readonly OverlapPair[];
+  readonly ringViolations: readonly RingHierarchyFinding[];
+  readonly aggregateGaps: readonly (readonly FeatureId[])[];
+}
+
+/**
+ * 掃引 1 回ぶんの覚え書き。checkConsistency の呼び出しごとに作って外へは漏らさない
+ * ので、この単位は純粋関数のままである (同じ入力なら同じ報告を返す)。
+ */
+interface SweepMemo {
+  /** 錨 → 形の番号。同じ錨が何本の断面から参照されても鍵は 1 度しか作らない。 */
+  readonly shapeIdOfEntry: Map<AnchorEntry, number>;
+  /** 形の鍵 → 形の番号。別の錨でも形が同じなら同じ番号になる (改名だけの錨がここで合流する)。 */
+  readonly shapeIdOfKey: Map<string, number>;
+  /** 断面の形の並び → 幾何の検査結果。 */
+  readonly geometryOfSlice: Map<string, SliceGeometry>;
+}
+
+function createSweepMemo(): SweepMemo {
+  return { shapeIdOfEntry: new Map(), shapeIdOfKey: new Map(), geometryOfSlice: new Map() };
+}
+
+/**
+ * 文字列を鍵に載せる形。長さを前置きするので、id にどんな文字 (区切りに使う文字を
+ * 含む) が入っていても別の並びと取り違えることがない。手で書き換えた壊れたファイルも
+ * 読み込みの対象なので、id が行儀よく英数字だとは仮定しない。
+ */
+function keyText(value: string): string {
+  return `${String(value.length)}:${value}`;
+}
+
+/** 数値を鍵に載せる形。String(-0) は "0" になってしまうので -0 だけ書き分ける。 */
+function keyNumber(value: number): string {
+  return Object.is(value, -0) ? '-0' : String(value);
+}
+
+/**
+ * 錨のスナップショットの「形」を写した鍵。上のコメントの通り、幾何の検査が読む値
+ * だけを、地物の並び順・頂点表の並び順のまま並べる。
+ */
+function shapeKeyOf(snapshot: AnchorSnapshot): string {
+  const parts: string[] = [];
+  for (const feature of snapshot.features) {
+    parts.push(
+      keyText(feature.id),
+      feature.kind,
+      feature.parentId === undefined ? '-' : keyText(feature.parentId),
+    );
+    switch (feature.kind) {
+      case 'point':
+        parts.push(keyText(feature.vertexId));
+        break;
+      case 'line':
+        parts.push(String(feature.vertexIds.length));
+        for (const vid of feature.vertexIds) parts.push(keyText(vid));
+        break;
+      case 'leaf':
+        parts.push(String(feature.shape.rings.length));
+        for (const ring of feature.shape.rings) {
+          parts.push(
+            ring.kind,
+            keyText(ring.id),
+            ring.parentRingId === undefined ? '-' : keyText(ring.parentRingId),
+            String(ring.vertexIds.length),
+          );
+          for (const vid of ring.vertexIds) parts.push(keyText(vid));
+        }
+        break;
+      case 'aggregate':
+        parts.push(String(feature.childIds.length));
+        for (const cid of feature.childIds) parts.push(keyText(cid));
+        break;
+      default:
+        assertNever(feature);
+    }
+  }
+  parts.push('#');
+  for (const vertex of snapshot.vertices.byId.values()) {
+    parts.push(keyText(vertex.id), keyNumber(vertex.coordinate.lon), keyNumber(vertex.coordinate.lat));
+  }
+  return parts.join(' ');
+}
+
+/**
+ * 錨 1 個ぶんの「形の番号」。同じ錨なら 2 度目からは鍵を作らず、形が同じ別の錨
+ * (属性だけ変えた錨) は同じ番号に合流する。
+ */
+function shapeIdOf(entry: AnchorEntry, memo: SweepMemo): number {
+  const known = memo.shapeIdOfEntry.get(entry);
+  if (known !== undefined) return known;
+  const key = shapeKeyOf(entry.anchor.snapshot);
+  let id = memo.shapeIdOfKey.get(key);
+  if (id === undefined) {
+    id = memo.shapeIdOfKey.size;
+    memo.shapeIdOfKey.set(key, id);
+  }
+  memo.shapeIdOfEntry.set(entry, id);
+  return id;
+}
+
+/** 「形」だけから決まる検査 3 つをまとめて走らせる。重いのはここだけ。 */
+function computeSliceGeometry(features: readonly Feature[], vertices: VertexStore): SliceGeometry {
+  return {
+    // (d)+(g) share ONE overlap computation over the same terminal shapes; expand
+    // into both report kinds (避: 同一 overlap 計算の二重実行).
+    overlaps: detectTerminalOverlapPairs(features, vertices),
+    ringViolations: findRingHierarchyViolations(features, vertices),
+    aggregateGaps: findAggregateGaps(features, vertices),
+  };
+}
+
+/**
+ * 形が前に見た断面と同じなら幾何の結果を使い回し、初めての形なら計算して覚える。
+ * `memo` が undefined のときは覚え書きを持たない断面 (＝掃引が 1 本しかなく、使い回す
+ * 相手がいない) なので、鍵を作らずそのまま計算する — 実データの 689 地物では鍵作りに
+ * 80 ms ほどかかるので、得のない場面で払わせない。
+ */
+function reuseOrComputeSliceGeometry(
+  features: readonly Feature[],
+  vertices: VertexStore,
+  shapeIds: readonly number[],
+  memo: SweepMemo | undefined,
+): SliceGeometry {
+  if (memo === undefined) return computeSliceGeometry(features, vertices);
+  const sliceKey = shapeIds.join(',');
+  const known = memo.geometryOfSlice.get(sliceKey);
+  if (known !== undefined) return known;
+  const computed = computeSliceGeometry(features, vertices);
+  memo.geometryOfSlice.set(sliceKey, computed);
+  return computed;
+}
+
 // --- the anchor-time sweep --------------------------------------------------
 //
 // Spatial / hierarchy checks are per-TIME-SLICE: at each distinct interval
@@ -554,6 +756,7 @@ function checkTimeSlice(
   histories: readonly FeatureHistory[],
   atTime: TimePoint,
   calendar: Calendar,
+  memo: SweepMemo | undefined,
 ): Inconsistency[] {
   const features: Feature[] = [];
   const allVertices: Vertex[] = [];
@@ -566,6 +769,9 @@ function checkTimeSlice(
   // are namespaced per feature, so a same-id vertex from another history would mask a
   // true dangling reference — FR-106(a) cross-history masking).
   const scopes: SnapshotScope[] = [];
+  // この断面に効いている錨たちの「形の番号」を、履歴の並び順のまま並べたもの。並び順
+  // まで同じなら、連結した頂点表 (同じ id は後勝ち) も地物の並びもそっくり同じになる。
+  const shapeIds: number[] = [];
   for (const h of histories) {
     const res = resolveAt(h.series, atTime, calendar);
     if (res.kind !== 'present') continue;
@@ -575,21 +781,23 @@ function checkTimeSlice(
     for (const v of hVertices) allVertices.push(v);
     perHistory.push({ featureId: h.featureId, vertices: hVertices });
     scopes.push({ features: snap.features, vertices: snap.vertices });
+    if (memo !== undefined) shapeIds.push(shapeIdOf(res.entry, memo));
   }
   const vertices: VertexStore = createVertexStore(allVertices);
 
-  // (d)+(g) share ONE overlap computation over the same terminal shapes; expand
-  // into both report kinds (避: 同一 overlap 計算の二重実行).
-  const overlaps = detectTerminalOverlapPairs(features, vertices);
+  // 形が前に見た断面と同じなら、重い幾何の検査 3 つは走らせずに結果を使い回す。
+  // 報告はこの断面の atTime と地物名で組み立て直すので、改名だけが違う断面でも
+  // 古い名前や古い時刻が出ることはない。
+  const geometry = reuseOrComputeSliceGeometry(features, vertices, shapeIds, memo);
 
   return [
     ...detectMissingVertices(scopes, atTime),
     ...detectTreeTopology(features, atTime),
     ...detectShapePreservation(features, atTime),
-    ...detectRingHierarchy(features, vertices, atTime),
-    ...terminalExclusionsFrom(overlaps, features, atTime),
-    ...detectAggregateSum(features, vertices, atTime),
-    ...anchorSpatialOverlapsFrom(overlaps, features, atTime),
+    ...ringHierarchyInconsistenciesFrom(geometry.ringViolations, features, atTime),
+    ...terminalExclusionsFrom(geometry.overlaps, features, atTime),
+    ...aggregateSumInconsistenciesFrom(geometry.aggregateGaps, features, atTime),
+    ...anchorSpatialOverlapsFrom(geometry.overlaps, features, atTime),
     ...detectVertexDivergence(perHistory, features, atTime),
   ];
 }
@@ -618,8 +826,13 @@ export function checkConsistency(project: DomainProject, calendar: Calendar): Co
   inconsistencies.push(...detectDuplicateOwnerHistories(project.histories));
 
   // (a)(b)(c)(d)(e)(g): per distinct anchor time-slice over the combined state.
-  for (const atTime of distinctAnchorTimes(project.histories, calendar)) {
-    inconsistencies.push(...checkTimeSlice(project.histories, atTime, calendar));
+  // 覚え書きはこの呼び出しの中だけで生き、掃引が終われば捨てられる (呼び出しをまたいだ
+  // 状態は持たない = 同じ入力なら常に同じ報告)。断面が 1 本しかないなら使い回す相手が
+  // いないので、覚え書きを持たない (形の鍵を作るぶんだけ損になる)。
+  const times = distinctAnchorTimes(project.histories, calendar);
+  const memo = times.length > 1 ? createSweepMemo() : undefined;
+  for (const atTime of times) {
+    inconsistencies.push(...checkTimeSlice(project.histories, atTime, calendar, memo));
   }
 
   return { ok: inconsistencies.length === 0, inconsistencies };
