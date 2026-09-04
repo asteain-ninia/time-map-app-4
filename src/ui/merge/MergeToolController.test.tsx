@@ -87,6 +87,15 @@ function rectLeaf(
     [ox + w, 2],
     [ox, 2],
   ];
+  return leafFromCorners(idRaw, vPrefix, corners);
+}
+
+/** Build a single-territory leaf from explicit [lon, lat] corners. */
+function leafFromCorners(
+  idRaw: string,
+  vPrefix: string,
+  corners: readonly (readonly number[])[],
+): { feature: LeafFeature; vertices: Vertex[] } {
   const vertices = corners.map((c, i) =>
     createVertex(asVertexId(`${vPrefix}-${i}`), { lon: c[0]!, lat: c[1]! }),
   );
@@ -117,6 +126,41 @@ function twoAdjacentLeaves(): DomainRoot {
   return project;
 }
 
+/**
+ * 経度 [-170,0] と [0,170] に広がる、辺を接した 2 つの横長の面 (緯度は [0,2])。途中に頂点が
+ * あるのでどちらも 1 辺は 90 度以下 ―― それぞれ単体では保存できる。だが論理和は一直線上に
+ * 並ぶ途中の頂点を落とすので、結合後の上下の辺が「1 本で 340 度」に化ける (N-51)。
+ */
+function twoWideLeaves(): DomainRoot {
+  const a = leafFromCorners('leaf-a', 'va', [
+    [-170, 0],
+    [-90, 0],
+    [0, 0],
+    [0, 2],
+    [-90, 2],
+    [-170, 2],
+  ]);
+  const b = leafFromCorners('leaf-b', 'vb', [
+    [0, 0],
+    [90, 0],
+    [170, 0],
+    [170, 2],
+    [90, 2],
+    [0, 2],
+  ]);
+  let project = applyAddProposal(emptyProject(), {
+    featureId: a.feature.id,
+    anchorTime: ANCHOR,
+    snapshot: { feature: a.feature, vertices: a.vertices, sharedCandidateIds: new Map() },
+  });
+  project = applyAddProposal(project, {
+    featureId: b.feature.id,
+    anchorTime: ANCHOR,
+    snapshot: { feature: b.feature, vertices: b.vertices, sharedCandidateIds: new Map() },
+  });
+  return project;
+}
+
 // Identity screen→world so a click at (clientX, clientY) lands at world (lon, lat).
 const screenToWorld: ScreenToWorld = (clientX, clientY) => ({ lon: clientX, lat: clientY });
 
@@ -127,9 +171,28 @@ interface Harness {
   readonly unmount: () => void;
 }
 
-function mountMerge(): Harness {
+/** 隣り合う 2 面 ([0,2]² と [2,4]×[0,2]) 用の当たり判定 (本番の leafAtPoint の代役)。 */
+const adjacentFeatureAtPoint: FeatureAtPoint = (p) => {
+  if (p.lat < 0 || p.lat > 2) return null;
+  if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
+  if (p.lon > 2 && p.lon <= 4) return asFeatureId('leaf-b');
+  return null;
+};
+
+/** 横長の 2 面 ([-170,0] と [0,170]) 用の当たり判定。 */
+const wideFeatureAtPoint: FeatureAtPoint = (p) => {
+  if (p.lat < 0 || p.lat > 2) return null;
+  if (p.lon >= -170 && p.lon < 0) return asFeatureId('leaf-a');
+  if (p.lon >= 0 && p.lon <= 170) return asFeatureId('leaf-b');
+  return null;
+};
+
+function mountMerge(
+  project: DomainRoot = twoAdjacentLeaves(),
+  featureAtPoint: FeatureAtPoint = adjacentFeatureAtPoint,
+): Harness {
   const store = createSessionStore<DomainRoot>({
-    initialDomain: twoAdjacentLeaves(),
+    initialDomain: project,
     initial: { mode: EDIT_MODE.Edit, activeTool: null },
   });
   // Park the timeline at the leaves' anchor year so they are effective (the merge
@@ -157,14 +220,9 @@ function mountMerge(): Harness {
   const resolveFeatures = () => featuresAt(store.getState().domain, store.getState().currentTime);
   const resolveStore = () => verticesAt(store.getState().domain, store.getState().currentTime);
 
-  // A click inside [0,2]² → leaf-a; inside [2,4]×[0,2] → leaf-b; else miss. HB3-16: this
-  // mirrors the live `leafAtPoint` port — an INDIVIDUAL leaf is resolved per click.
-  const featureAtPoint: FeatureAtPoint = (p) => {
-    if (p.lat < 0 || p.lat > 2) return null;
-    if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
-    if (p.lon > 2 && p.lon <= 4) return asFeatureId('leaf-b');
-    return null;
-  };
+  // The per-click leaf hit-test (HB3-16: this mirrors the live `leafAtPoint` port — an
+  // INDIVIDUAL leaf is resolved per click). Injected so a fixture with a different
+  // layout (横長の 2 面) can supply its own.
 
   // HB3-15(c): the live leaf-shape resolver (the SAME live-lookup the App bootstrap uses).
   const resolveLeafShape: ResolveLeafShape = (id) =>
@@ -515,6 +573,29 @@ describe('MergeToolController — バグハント第11波 (#6): focus guard on t
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
     expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
     button.remove();
+    h.unmount();
+  });
+});
+
+// --- 1 辺で経度 180 度以上を渡る結合 (N-51 / 技術方針 §6.8) -------------------
+
+describe('MergeToolController — 保存できない長さの辺は画面で断る (N-51)', () => {
+  it('横長の面どうしの結合は断られ、理由が日本語で出て地物は減らない', () => {
+    const h = mountMerge(twoWideLeaves(), wideFeatureAtPoint);
+    activateMerge(h.store);
+    expect(effectiveCount(h.store)).toBe(2);
+
+    clickInput(-50, 1); // leaf-a
+    clickInput(50, 1); // leaf-b
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('2');
+
+    fireEvent.click(screen.getByTestId('merge-confirm'));
+    fireEvent.click(screen.getByTestId('merge-options-confirm'));
+
+    // 論理和の結果が「1 本で 340 度」の辺を持つので確定しない ―― 何も変わらない (教訓 5.22)。
+    expect(effectiveCount(h.store)).toBe(2);
+    expect(screen.getByTestId('merge-message').textContent).toContain('世界を半周以上');
+    expect(screen.getByTestId('merge-message').textContent).toContain('別の組み合わせで結合');
     h.unmount();
   });
 });
