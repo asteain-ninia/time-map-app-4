@@ -22,7 +22,6 @@ import { createSessionStore } from './state/store';
 import { EDIT_MODE, type ToolId } from './state/session';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
-import { TOOL_ID } from './shell/tools';
 import {
   DetailPanels,
   EMPTY_DETAIL_PANELS,
@@ -81,7 +80,7 @@ import {
   parentCandidates as buildParentCandidates,
   type ParentCandidate,
 } from '../domain/add/index';
-import { createAddHostPorts, type AddHostPorts } from './add/host-ports';
+import type { AddHostPorts } from './add/host-ports';
 import {
   KnifeToolController,
   type KnifeDrawSink,
@@ -140,17 +139,8 @@ import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
 import { runUnshare } from './live-unshare';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
-import { buildCommittedFeatures, drawnFeatureFills } from './map/committed-features';
-import {
-  allFeaturesBoundsAt,
-  featureBoundsAt,
-  type AllFeaturesBoundsOptions,
-} from './map/feature-bounds';
-import { keyboardZoomCamera, type ZoomDirection } from './map/keyboard-zoom';
-import {
-  CURSOR_READOUT_INTERVAL_MS,
-  CursorPositionStore,
-} from './shell/cursor-position';
+import type { ZoomDirection } from './map/keyboard-zoom';
+import { CursorPositionStore } from './shell/cursor-position';
 import { registerE2eHarnessAction } from './e2e/harness';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
@@ -162,17 +152,10 @@ import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore } from './shell/option-bar';
-import { BROWSER_CLOCK, throttleTrailing } from './shell/map-resize';
-import { buildActiveFeatureHandlePrimitives } from './map/active-feature-handles';
 import {
-  PointerDispatcher,
-  NOOP_ADD_PORT,
-  POINTER_BUTTON,
   LongitudeShiftControl,
   GlobalDepthControl,
   GridToggleControl,
-  type CameraPort,
-  type HitTester,
   type MapCameraInput,
 } from './map/index';
 import './map/grid-toggle.css';
@@ -184,11 +167,7 @@ import { compare as compareTimePoints } from '../domain/time/normalized';
 import { toYearPoint } from '../domain/time/time-point';
 import { EDIT_PLAN_STRINGS, isYearAligned } from './property/index';
 import { formatYear } from './timeline/time-display';
-import {
-  createLiveContextMenuPort,
-  promoteHitToSelection,
-  type ContextMenuRequest,
-} from './map/live-context-menu-port';
+import type { ContextMenuRequest } from './map/live-context-menu-port';
 import {
   MapContextMenu,
   type ContextMenuOpener,
@@ -213,9 +192,6 @@ import {
   isEmphasizedByOtherAxisUnderFilter,
   isFeatureVisibleUnderFilter,
 } from './map/filtered-display';
-// FR-113 INERT fast path: an untouched filter needs no per-feature visibility gate at all
-// (全体表示 then pays nothing for the母集合 check — the zero-overhead default rule).
-import { isFilterInert } from './discovery/index';
 // (fr100) the U33 auto-recolor funnel wrapper — structure + recolor as ONE undo unit.
 import { maybeComposeAutoRecolor } from './coloring/recolor-binding';
 // (FR-109 follow-up) the undoable default-palette change command — routed through the
@@ -225,33 +201,17 @@ import { toPersistedUiSettings } from './file-ops/ui-settings-bridge';
 import type { PaletteSelection } from './state/settings';
 import {
   ownerLookupFromMap,
-  type RectangleResolver,
   type NextTargetPreference,
 } from '../domain/selection';
-import { liveHitTestAt, verticesInRectangle } from './map/live-hit-test';
-import { createLiveSelectionPort } from './map/live-selection-port';
-import { createEditSessionPort } from './map/edit-session-adapter';
+import type { FeatureSnapshot } from '../domain/editing/index';
+// 地図マウントの結線は 4 つに割ってある（描画 / 当たり判定 / 入力 / 観測）。onMapMount は
+// それらを順に呼んで繋ぐだけの骨組みで、規則そのものは各モジュールが 1 か所ずつ持つ。
+import { createMountHitTest } from './map/mount/hit-test';
+import { createMountInput } from './map/mount/input';
+import { createMountObservation } from './map/mount/observation';
+import { createMountRender } from './map/mount/render';
+import type { MountTransients } from './map/mount/shared';
 import {
-  buildEditSnapshot,
-  ringIdForLeafVertex,
-} from './map/edit-session-snapshot';
-import { createNeighboursQuery } from './map/slide-snap-neighbours';
-import { RELEASE_OUTCOME, type DragSession, type FeatureSnapshot } from '../domain/editing/index';
-import {
-  worldToScreen as projectWorldToScreen,
-  screenToWorld as unprojectScreenToWorld,
-  cameraForBounds,
-  cameraForFit,
-  type ScreenPoint,
-} from '../render';
-import { createRedrawScheduler } from './map/redraw-scheduler';
-import { redrawWatch, redrawWatchChanged } from './map/redraw-watch';
-import type { Camera as RenderCamera } from '../render/camera';
-import type { WorldCoordinate } from '../domain/coordinate';
-import { DEFAULT_LABEL_THRESHOLDS } from '../render/feature-layer';
-import { DEFAULT_GRID_STYLE, type GridStyle } from '../render/grid-layer';
-import {
-  coerceGridSpacing,
   applyLongitudeShift,
   centerLonForPreset,
   type CenterLonPreset,
@@ -675,29 +635,8 @@ export function App(): JSX.Element {
   const baseMapImageRef = useRef<Uint8Array>(new Uint8Array());
 
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
-    // HB-1 観測フック target. Resolved BEFORE the renderer is created because
-    // `createAddHostPorts` fires `onCameraChange` synchronously on its initial paint
-    // (to seed the hooks) — referencing `hookTarget` from inside that callback before
-    // it exists would be a temporal-dead-zone ReferenceError that crashes the mount.
-    // The pointer/wheel listeners attach to the map INPUT layer (教訓 5.14); if it is
-    // not present yet (defensive) we fall back to the canvas mount element.
-    const inputLayer = el.parentElement?.querySelector<HTMLElement>(
-      '[data-testid="map-input-layer"]',
-    );
-    const hookTarget: HTMLElement = inputLayer ?? el;
-
-    // The map CELL (.map-area) — the ANCESTOR of the canvas mount, the input layer AND the
-    // overlay layer. The FR-111 cursor readout hooks HERE, not on the input layer (review
-    // fix): a tool input bridge (追加 / 切断 / 併合 / 再所属 / 測量) is a SIBLING of the input
-    // layer that sits ABOVE it, so a move over a bridge never reaches the input layer and
-    // entering a bridge fires the input layer's own `pointerleave` — the readout went blank
-    // in exactly the modes that need coordinates most (測量 = FR-16, 作図). A move over ANY
-    // of those layers bubbles to the cell, and the cell's `pointerleave` fires only when the
-    // pointer really leaves the map cell, so 「地図の上か否か」is judged once against the map
-    // region itself. A new tool overlay is covered automatically (no per-tool 結線 to forget,
-    // 教訓 5.7 部分結線禁止).
-    const mapCell: HTMLElement = el.parentElement ?? hookTarget;
-
+    // 部品どうしをまたぐ「先に宣言して後から差し替える」参照は、この 1 個の箱にまとめる。
+    //
     // HB3-4 ROOT FIX — the LIVE edit-drag preview. The U24 drag session held the moved
     // geometry as a transient (教訓 5.22: a drag never mutates committed state), but the
     // adapter had no `onPreview` and the render layer had no consumer, so the committed
@@ -709,1068 +648,75 @@ export function App(): JSX.Element {
     // cursor every frame. It carries NO truth — the commit still flows through onReleased
     // → recordCommit (技術方針 2.5). `scheduleEditPreviewRedraw` is pointed at the redraw
     // scheduler once it exists (a no-op until then; the early base paint is synchronous).
-    let liveEditSession: DragSession | null = null;
-    let scheduleEditPreviewRedraw = (): void => {};
-
-    /** Reflect the live camera into the observation hooks (pan offset + zoom). */
-    const publishCameraHooks = (camera: RenderCamera): void => {
-      // Pan offset is the camera center displacement from the FR-11 origin (0,0);
-      // a drag changes it, so the E2E reads a before/after delta. Zoom is verbatim.
-      hookTarget.dataset['panX'] = String(camera.centerLon);
-      hookTarget.dataset['panY'] = String(camera.centerLat);
-      hookTarget.dataset['zoom'] = String(camera.zoom);
-      // ROOT FIX (bughunt: Knife の固定円半径/閉線判定が初期 zoom のまま stale) — mirror
-      // EVERY live render-camera change into the U16 store camera truth (技術方針 2.5:
-      // camera STATE is owned by the session store). This is the SINGLE mirror path
-      // for ALL camera changes — the FR-11 fit-all on first paint, the zero-size→
-      // measured re-fit, AND every pan/wheel through writeCamera — so subscribers that
-      // bind to store.camera (the U26 knife 固定円半径 / 閉線判定 zoom prop) always see
-      // the renderer's TRUE zoom, never the DEFAULT_CAMERA.zoom=1 placeholder that
-      // diverges from the actual fit zoom until the first interaction (二重真実源を
-      // 作らない, 教訓 5.29). Only the three transform fields the render camera carries
-      // are patched (the store Camera additionally has panX/panY).
-      const s = store.getState();
-      const cur = s.camera;
-      // ONE store transition per camera change: `updateCamera` mirrors `centerLon`
-      // into the top-level FR-12 longitude truth within the SAME set() (store.ts),
-      // so a live pan / wheel — the hottest path — fires the subscription once, not
-      // twice (updateCamera + setCenterLon). The guard also covers the centerLon
-      // mirror: if camera fields are unchanged then centerLon (== camera.centerLon)
-      // is too, so there is nothing to write.
-      if (
-        cur.zoom !== camera.zoom ||
-        cur.centerLon !== camera.centerLon ||
-        cur.centerLat !== camera.centerLat
-      ) {
-        s.updateCamera({
-          zoom: camera.zoom,
-          centerLon: camera.centerLon,
-          centerLat: camera.centerLat,
-        });
-      }
-    };
-
-    /**
-     * HB-14 観測フック: mirror the count of committed features that SURVIVED the
-     * period-aware view clip on the latest composite into `data-visible-feature-count`
-     * (既存 app-active-feature 方式). A behavioural E2E commits one area, then zooms in
-     * step by step and asserts this count never wrongly drops to 0 while the feature
-     * is still on screen (拡大すると地物が消える 再発防止). Holds NO truth — pure mirror.
-     */
-    const publishVisibleCountHook = (count: number): void => {
-      hookTarget.dataset['visibleFeatureCount'] = String(count);
-    };
-
-    // HB3-9 RENDER OBSERVATION HOOK (__E2E__). The bughunt lesson "Behavioral E2E
-    // standard" requires tests that observe the actual RENDER so a render-only bug
-    // (handles never drawn) is detectable from a real pointer-driven test — a synthetic
-    // shortcut cannot see it. We expose a small read-only window hook that mirrors (a)
-    // the live active feature id, (b) the live active tool id (the toolbar's aria-pressed
-    // tool), (c) the per-kind primitive counts of the LAST drawn frame (handle / label /
-    // preview / shape / point / line), and (d) whether a live tool preview is present.
-    // It holds NO truth — pure mirrors of the store + the last composed frame (技術方針
-    // 2.5). `frame` is updated by the host's onFrameComposed below.
-    type E2EFrameSummary = {
-      handle: number;
-      label: number;
-      shape: number;
-      point: number;
-      line: number;
-      /** FR-82 点線アウトライン (頂点選択コンテキスト地物) drawn this frame. */
-      dashedLine: number;
-      preview: number;
-      hasLivePreview: boolean;
-      vertexHandlePositions: readonly { readonly lon: number; readonly lat: number }[];
-    };
-    let lastFrame: E2EFrameSummary = {
-      handle: 0,
-      label: 0,
-      shape: 0,
-      point: 0,
-      line: 0,
-      dashedLine: 0,
-      preview: 0,
-      hasLivePreview: false,
-      vertexHandlePositions: [],
-    };
-    const e2eWindow = el.ownerDocument.defaultView as (Window & {
-      __E2E__?: unknown;
-    }) | null;
-    if (e2eWindow !== null) {
-      e2eWindow.__E2E__ = {
-        /** The live active feature id ('' when none). */
-        getActiveFeature: (): string =>
-          (store.getState().activeFeature as unknown as string | null) ?? '',
-        /** The live active tool id ('' when none) — the toolbar's aria-pressed tool. */
-        getActiveTool: (): string =>
-          (store.getState().activeTool as unknown as string | null) ?? '',
-        /** The live interaction mode ('view' / 'add' / 'edit'). */
-        getMode: (): string => store.getState().mode,
-        /** Per-kind primitive counts of the LAST drawn frame (handle/label/shape/point/line). */
-        getPrimitiveCounts: (): E2EFrameSummary => ({ ...lastFrame }),
-        /** Whether a live tool preview (FR-78 仮表示 overlay) is present this frame. */
-        hasLivePreview: (): boolean => lastFrame.hasLivePreview,
-        /**
-         * FR-42 / FR-43: the number of DISTINCT features currently drawn, resolved
-         * through the SAME U34 display pipeline the map draws (buildCommittedFeatures
-         * with the live displayControl). A global-depth change rolls features up into
-         * their aggregate (fewer) or expands them into children (more), so a behavioural
-         * E2E asserts this count changes when the 階層深度 slider moves — the observable
-         * proof the depth UI is wired to the display resolution. Distinct feature ids
-         * (not primitive count) so a multipolygon aggregate counts as ONE feature.
-         */
-        getDrawnFeatureCount: (): number => {
-          const s = store.getState();
-          const drawn = buildCommittedFeatures(
-            s.domain,
-            s.currentTime,
-            s.activeFeature,
-            s.displayControl,
-            // FR-113: the count reflects the display filter too (面オフ → fewer drawn),
-            // so the display-filter E2E asserts the count changes on a kind/depth toggle.
-            s.filter,
-          );
-          return new Set(drawn.map((f) => f.id)).size;
-        },
-        /**
-         * FR-113 Phase 2: the color each drawn feature is ACTUALLY PAINTED with, keyed by
-         * feature id — resolved through the SAME buildCommittedFeatures the map draws (live
-         * filter included) and the renderer's OWN `activeColor` rule (`style.selectedColor`
-         * when the feature is highlighted, else the fill). The FR-113 opacity is BAKED into
-         * the string (`#rrggbb` when fully opaque, `rgba(…)` once dimmed), so a behavioural
-         * E2E can prove「強調した地物以外が淡くなる」from the REAL draw batch rather than from
-         * the store — AND can see a regression that repaints an emphasized feature in the
-         * selection colour (a `style.fill` mirror never could). Read-only observation; the
-         * mapping itself is the Vitest-pinned pure `drawnFeatureFills`.
-         */
-        getDrawnFeatureFills: (): Record<string, string> => {
-          const s = store.getState();
-          return drawnFeatureFills(
-            buildCommittedFeatures(
-              s.domain,
-              s.currentTime,
-              s.activeFeature,
-              s.displayControl,
-              s.filter,
-            ),
-          );
-        },
-        /**
-         * HB3-4: the WORLD positions of the active feature's VERTEX edit-handles in the
-         * LAST drawn frame (preview positions during a live drag). A behavioural E2E
-         * asserts the dragged handle follows the cursor mid-drag and does NOT jump back
-         * to the committed position after release.
-         */
-        getVertexHandlePositions: (): readonly {
-          readonly lon: number;
-          readonly lat: number;
-        }[] => lastFrame.vertexHandlePositions.map((p) => ({ lon: p.lon, lat: p.lat })),
-        /**
-         * HB3-4: convert a CLIENT screen point to a world coordinate via the LIVE
-         * renderer inverse (the SAME transform the draw / hit-test use). Lets the drag
-         * E2E identify WHICH committed handle corresponds to a known screen corner,
-         * independent of the camera. Returns null before the renderer mounts.
-         */
-        screenToWorld: (
-          clientX: number,
-          clientY: number,
-        ): { readonly lon: number; readonly lat: number } | null =>
-          rendererRef.current?.screenToWorld(clientX, clientY) ?? null,
-      };
-    }
-
-    /** HB3-9: mirror the last composed frame's primitive summary into the __E2E__ hook. */
-    const publishFrameHook = (summary: E2EFrameSummary): void => {
-      lastFrame = summary;
-    };
-
-    // P0-A — feed the LIVE committed features into the renderer. The host reads
-    // this getter on every composite, so the latest committed domain resolved at
-    // the current time (with the live selection for FR-82) is what draws (single
-    // truth source — no copy of the domain in the renderer, 教訓 5.29 / 5.6).
-    const ports = createAddHostPorts(el, {
-      committedFeatures: () => {
-        const s = store.getState();
-        // Areas flow through U34 (集約 / depth / focus); points / lines directly
-        // (P0-A). The display-control comes from the store so the slider re-derives
-        // the batch on the next redraw (FR-42 / FR-43, 教訓 5.5).
-        return buildCommittedFeatures(
-          s.domain,
-          s.currentTime,
-          s.activeFeature,
-          s.displayControl,
-          // FR-113: the session display filter (種別/深度/個別非表示/不透明度) culls +
-          // opacity-composes the drawn batch. DEFAULT is inert, so an untouched filter
-          // draws byte-identically (perf 鉄則). A change swaps `filter` wholesale, which
-          // the redraw subscription tracks (s.filter === prevFilter guard) so the next
-          // composite re-derives (教訓 5.5).
-          s.filter,
-        );
-      },
-      // FR-86 / FR-109: the area-label occupancy threshold is a project setting; the
-      // point/line label thresholds are not user-settable (DEFAULT applies). Read
-      // live so a settings change reflects on the next redraw (教訓 5.35).
-      labelThresholds: () => ({
-        ...DEFAULT_LABEL_THRESHOLDS,
-        areaMinOccupancy:
-          store.getState().projectSettings.areaLabelOccupancyThreshold,
-      }),
-      // FR-13 / FR-109 グリッド即時反映: derive the LIVE graticule style from the
-      // project settings (gridSpacingDeg / gridColor / gridOpacity) so a
-      // SettingsDialog change reflects on the next redraw. The host hard-coded
-      // DEFAULT_GRID_STYLE before, so the panel truth never reached the draw
-      // (bughunt: グリッド設定が地図描画に反映されない). The emphasis/width/label-font
-      // fields stay at the DEFAULT (not user-settable, 受け入れ基準 8); only the three
-      // user settings are overlaid. Spacing is coerced to an allowed value so a stale
-      // setting can never produce an off-list spacing (教訓 5.18, 単一の coerce規則).
-      // Read live per composite — never a stale capture (教訓 5.6).
-      gridStyle: (): GridStyle => {
-        const ps = store.getState().projectSettings;
-        return {
-          ...DEFAULT_GRID_STYLE,
-          spacing: coerceGridSpacing(ps.gridSpacingDeg),
-          color: ps.gridColor,
-          opacity: ps.gridOpacity,
-        };
-      },
-      // FR-13 グリッド ON/OFF 即時反映: derive the LIVE graticule visibility from the
-      // project setting so the topBar toggle / SettingsDialog checkbox reflect on the
-      // next redraw. Read live per composite — never a stale capture (教訓 5.6 / 5.35).
-      // The redraw-on-settings subscription below tracks gridVisible so a toggle fires
-      // a redraw at once (buildGridPrimitives(false,…) → 明示的空, 教訓 5.18).
-      gridVisible: (): boolean => {
-        // FR-13 / K-6: **上書きがあればそれ、無ければプロジェクト設定**。上書きは
-        // 上部バーのトグルが書くセッション限りの値で、保存ファイルには入らない
-        // （`SessionState.gridVisibleOverride`）。読むだけのあいだも眺め方は変えられる。
-        const s = store.getState();
-        return s.gridVisibleOverride ?? s.projectSettings.gridVisible;
-      },
-      // HB-1 観測フック: mirror the LIVE camera into DOM data-* attributes on the
-      // map input layer so a behavioural E2E can read the pan offset + zoom and
-      // assert they actually changed (既存 app-active-feature マーカーと同方式). The
-      // attributes hold NO truth — they只 reflect the renderer camera (技術方針 2.5).
-      onCameraChange: (camera) => publishCameraHooks(camera),
-      // HB-14 観測フック: how many committed features survived this frame's clip.
-      onVisibleFeatureCount: (count) => publishVisibleCountHook(count),
-      // HB3-9 ROOT FIX — the EDIT HANDLES layer (FR-87). `computeHandles` was a dead
-      // domain value with NO render consumer (診断 HB3-9 / 教訓 5.7「ロジックはあるが UI
-      // から呼ばれない」): a user who selected a feature in 編集 mode saw no vertex /
-      // add-vertex handles and could not tell what to grab. We now evaluate it FRESH
-      // per composite for the active feature and feed the resulting screen-fixed
-      // (FR-17) handle primitives into the frame ABOVE the committed shape and UNDER the
-      // tool overlay. Gated to 編集 mode with an active feature; in every other state the
-      // getter returns [] so no handle draws (受け入れ基準: 非存在は描画指示に現れない).
-      // This is the prerequisite for HB3-4 (drag preview) / HB3-8 (move 排他). The
-      // feature + vertex store come from the SAME resolveDisplayFor bundle the draw /
-      // hit-test share, so a handle sits exactly on the drawn vertex (教訓 5.29).
-      // FR-110 視野内カウント: `view` はこのフレームを合成する camera/viewport そのもの。
-      // ハンドルビルダーへ渡し、視野内の頂点だけを生成・カウントさせる (デカい地物も
-      // ズームインすれば cap を下回り編集できる)。
-      editHandles: (view) => {
-        const s = store.getState();
-        if (s.mode !== EDIT_MODE.Edit) return [];
-        // HB3-6/18 review fix: tools with their OWN overlay (ナイフ / 結合 / 所属変更) promote a
-        // target into activeFeature for highlighting; the edit-handles layer must NOT also
-        // draw vertex/edge handles on that target during those tools (cosmetic bleed under
-        // the tool overlay). Handles belong to 選択 / 頂点編集 / 地物移動 only.
-        if (
-          s.activeTool === TOOL_ID.EditKnife ||
-          s.activeTool === TOOL_ID.EditMerge ||
-          s.activeTool === TOOL_ID.EditReparent ||
-          s.activeTool === TOOL_ID.EditRing ||
-          s.activeTool === TOOL_ID.EditDrill
-        ) {
-          return [];
-        }
-        // HB3-4: pass the LIVE drag session so the active feature's handles + a preview
-        // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
-        // and at the committed position otherwise. The builder ignores a session for a
-        // different feature (no stale bleed, 教訓 5.6).
-        // FR-110: thread appSettings.vertexMarkerCap (single source = U16) so the handle
-        // path is suppressed WHOLESALE for a pathologically large active feature (perf
-        // guard); the default cap (2000) leaves normal features unchanged.
-        return buildActiveFeatureHandlePrimitives(
-          s.domain,
-          s.currentTime,
-          s.activeFeature,
-          s.displayControl,
-          liveEditSession,
-          undefined,
-          undefined,
-          s.appSettings.vertexMarkerCap,
-          // FR-113 (Codex F2): suppress handles for an active feature the filter hides.
-          s.filter,
-          // FR-80/82 選択頂点ハイライトの結線: the U22 selection truth reaches the DRAW path
-          // here. Without it the handle layer had no selection input at all, so selecting a
-          // vertex produced ZERO pixel change (実機接写ペアが md5 一致) even though the
-          // selection state itself was correct — the classification lived in
-          // domain/selection/visual with no render consumer (教訓 5.7).
-          //
-          // `vertexOwner` rides along because a vertex id is a GLOBAL VertexStore key and
-          // FR-30 共有頂点 means a neighbour cites the same id: without the owner the ring
-          // leaked onto the active feature's copy of a vertex selected on ANOTHER feature
-          // (FR-81 一owner). It is also what lets the builder draw the FR-82 頂点選択
-          // コンテキスト地物 when the owner is not the active feature.
-          //
-          // NO `draggingVertexIds` FROM HERE (敵対レビュー MEDIUM): the orange ring means
-          // 「この頂点はいま動いている」. The live edit path moves exactly ONE vertex
-          // (edit-session-adapter's targetFromHit builds a single-vertex VertexMove /
-          // EdgeAdd target), and the builder already derives that one from the live
-          // DragSession, so its ring can never disagree with the previewed position.
-          // Handing the WHOLE selection set as "dragging" painted v2/v3 orange at their
-          // committed positions while only v1 moved — and U22's VertexDrag transient is
-          // armed on the mere press, so even a zero-move click turned the set orange. It is
-          // also never observable here: the live selection port drives PointerDown and
-          // PointerUp inside ONE `end()` call, so the store only ever sees the IDLE
-          // transient.
-          //
-          // FR-80 多頂点同時移動 (now live) still does NOT change that: the builder derives
-          // the ring set from the GESTURE's own truth — `movingVertexIds(session)`, the same
-          // union that positions the preview — so every orange vertex is one that is really
-          // in motion and really drawn at its preview position. Feeding the selection set
-          // from here would re-introduce exactly the defect above (rings on vertices that a
-          // mere press, or a single-vertex drag, leaves standing still).
-          {
-            selectedVertexIds: s.selection.vertexIds,
-            ownerFeatureId: s.selection.vertexOwner,
-          },
-          // contextOutlineStyle は既定のまま (undefined ⇒ default 適用)
-          undefined,
-          view,
-        );
-      },
-      // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
-      // for the active feature in 編集 mode. ORed into the frame's `hasLivePreview` so a
-      // behavioural E2E (and the __E2E__ hook) can assert the drag preview is live — the
-      // edit preview is composited in the editHandles layer (NOT the tool overlay), so it
-      // would otherwise not register in the overlay-derived preview count.
-      editPreviewActive: () => {
-        const s = store.getState();
-        return (
-          s.mode === EDIT_MODE.Edit &&
-          liveEditSession !== null &&
-          liveEditSession.target.featureId === s.activeFeature
-        );
-      },
-      // HB3-9 観測フック: mirror the last drawn frame's primitive summary into __E2E__.
-      onFrameComposed: (summary) => publishFrameHook(summary),
-      // S7 出界図 結線 (FR-03 / 教訓 5.7 合成ルートの結線漏れ) — resolve the DISPLAYED base
-      // map from the LIVE truth: the store domain's baseMap.source + meta (swapped on
-      // load / new) and the retained project base-map image bytes (baseMapImageRef,
-      // pushed by the file-ops controller on load / new). The host resolves these
-      // through the domain's single `resolveDisplayedBasemap` decision — a loaded user
-      // project (non-empty source WITH bytes) paints its OWN 4096×2048 image (perfectly
-      // feature-aligned), while a new / empty / preset-id project (or missing bytes)
-      // paints the bundled preset. Read live per composite so a load / new is followed
-      // on the next redraw (単一真実源 — never a stale copy, 教訓 5.6). This is the fix
-      // for the実機 report「海岸線と地物が南北にズレる」: the preset SVG's land was
-      // normalized to a different height than the project image, so features drew
-      // shifted; painting the project's own image removes the shift.
-      baseMap: () => {
-        const bm = store.getState().domain.baseMap;
-        return { source: bm.source, meta: bm.meta, bytes: baseMapImageRef.current };
-      },
-    });
-    rendererRef.current = ports;
-    // Apply any clamp range supplied before mount (FR-10 即時反映).
-    if (zoomRangeRef.current !== null) ports.setZoomRange(zoomRangeRef.current);
-
-    // HB5-3 錨起点の視点合わせ — frame the camera onto a feature's world extent. Bound
-    // here because `ports` (the SINGLE camera write path, 教訓 5.29) is in scope. Reads
-    // the LIVE root at the CURRENT time (the anchor-row click sets the time to the錨の
-    // 開始 FIRST via setCurrentTime, so this resolves the shape at that time), computes
-    // the fit against the renderer's OWN viewport + the effective FR-10 zoom clamp
-    // (zoomMin/zoomMax, fit-world floor applied), and writes through `ports.writeCamera`
-    // — the SAME path pan/wheel use, so it mirrors into the U16 store camera truth via
-    // onCameraChange (no二重真実源). A feature with no resolvable extent is a no-op.
-    fitCameraToFeatureRef.current = (featureId: FeatureId): void => {
-      const s = store.getState();
-      const bounds = featureBoundsAt(s.domain, s.currentTime, featureId);
-      if (bounds === null) return;
-      const { viewport } = ports.readCamera();
-      // paddingRatio defaults to DEFAULT_FIT_PADDING_RATIO (≈20% margin/side, HB5-3).
-      const camera = cameraForBounds(bounds, viewport, {
-        range: ports.effectiveZoomRange(),
-      });
-      ports.writeCamera(camera);
-    };
-
-    // 全体表示 — frame every feature that is DRAWN at the current time. Deliberately the
-    // SAME fit as the錨一覧導線 above (cameraForBounds + DEFAULT_FIT_PADDING_RATIO ≈20%/side
-    // + the effective FR-10 zoom clamp — `cameraForFit` is that fit plus the 地物ゼロ
-    // fallback, so BOTH branches obey the clamp), only with the WHOLE-project extent
-    // instead of one feature's, and written through the SAME single `ports.writeCamera`
-    // path so it mirrors into the U16 store camera truth via onCameraChange (単一真実源,
-    // 教訓 5.29). 地物ゼロ / 全部非表示 ⇒ the FR-11 既定視点 (world fit).
     //
-    // FR-113 母集合 (review fix): the extent counts only features the map actually PAINTS.
-    // committed-features drops anything outside `visibleIds`, so framing a 絞り込みで
-    // 非表示 feature would zoom out onto empty space (絞り込みで1地物だけ表示中なのに
-    // 全世界へ引く). The gate is the SAME single verdict the draw / hit / 一覧 / ツール取得
-    // read (isFeatureVisibleUnderFilter), and it is not even consulted on an INERT filter
-    // (the common case pays nothing — no resolution, no per-feature call).
-    fitCameraToAllRef.current = (): void => {
-      const s = store.getState();
-      const { viewport } = ports.readCamera();
-      let options: AllFeaturesBoundsOptions = {};
-      if (!isFilterInert(s.filter)) {
-        const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
-        options = {
-          isVisible: (featureId) => isFeatureVisibleUnderFilter(resolution, s.filter, featureId),
-        };
-      }
-      const bounds = allFeaturesBoundsAt(s.domain, s.currentTime, options);
-      ports.writeCamera(cameraForFit(bounds, viewport, { range: ports.effectiveZoomRange() }));
-    };
-
-    // 拡大 / 縮小 — the keyboard/menu counterpart of the wheel notch. `keyboardZoomCamera`
-    // is the SAME U17 `zoomStepAtCursor` step + FR-10 clamp the wheel runs through, only
-    // anchored at the viewport centre instead of the cursor, and the result is written
-    // through the SAME single `ports.writeCamera` path (単一真実源, 教訓 5.29) so it mirrors
-    // into the U16 store camera via onCameraChange exactly like a wheel zoom.
-    zoomMapRef.current = (direction: ZoomDirection): void => {
-      const { camera, viewport } = ports.readCamera();
-      ports.writeCamera(
-        keyboardZoomCamera(camera, viewport, direction, ports.effectiveZoomRange()),
-      );
-    };
-
-    // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
-    // pure dispatcher + pan/zoom math existed (PointerDispatcher / pan / VTransform)
-    // but the composition root never CONNECTED them to the real viewport, so a drag
-    // or wheel moved nothing (教訓 5.7「ロジックがあっても UI から呼ばれず機能しない」).
-    // We back the U40 CameraPort with the renderer's live camera (read/write through
-    // the host ports — the single camera the draw uses, 教訓 5.29) and attach the DOM
-    // listeners to the map INPUT layer (教訓 5.14). View-mode left/middle drag pans;
-    // the wheel does cursor-anchored zoom in EVERY mode. Selection / add are owned by
-    // their own input controllers, so those ports are honest no-ops here.
     // Drain a throttled redraw before a pointerdown hit-test so drawn == live state
     // (bughunt round-2: stale-frame hit-test window). Assigned once the redraw
     // scheduler is built below; a no-op until then (the early base paint is already
     // synchronous, so a press before the scheduler exists has nothing to flush).
-    let flushRedraw = (): void => {};
-    const cameraPort: CameraPort = {
-      read: () => ports.readCamera(),
-      write: (camera) => {
-        // The renderer is the camera the DRAW uses; writing it fires the host's
-        // onCameraChange (publishCameraHooks), which is the SINGLE place that mirrors
-        // the live render camera into the U16 store truth (技術方針 2.5: camera STATE
-        // is owned by the session store) AND the observation hooks. Routing the store
-        // mirror through onCameraChange — rather than duplicating it here — means the
-        // FR-11 fit-all initial camera and the zero-size re-fit also reach the store,
-        // not only pan/wheel, so subscribers (FR-12 中心経度 / FR-13 grid / U26 knife
-        // 固定円 zoom) never see the stale DEFAULT_CAMERA placeholder (二重真実源を
-        // 作らない, 教訓 5.29).
-        ports.writeCamera(camera);
-      },
-    };
-    // HB-15 ROOT FIX — wire the LIVE map click hit-test + selection so an edit-mode
-    // click on a vertex / feature actually selects (教訓 5.7 合成ルートの結線漏れ). The
-    // hit-test reuses the renderer's box-corrected screen↔world (HB-7) AND
-    // live-lookup's featuresAt / verticesAt AND the SAME display-control-resolved drawn
-    // area set the renderer fills (drawnAreaAt) — 二重真実源を作らない, 教訓 5.29. (The
-    // TOOL target ports — knife / merge / reparent / ring-edit / drill — deliberately use
-    // the raw-leaf `leafAtPoint` instead: a leaf inside an aggregate must stay directly
-    // targetable at N=0, and each tool draws its own target emphasis, HB3-16 / W3-A.)
-    //
-    // Surface screen point → world (renderer inverse against the live camera/viewport
-    // the frame drew with). Shared by the hit-test and the selection port so a click
-    // resolves and finalizes against the SAME coordinate (単一の真実源, 教訓 5.29).
-    const surfaceToWorld = (point: ScreenPoint): WorldCoordinate => {
-      const { camera, viewport } = ports.readCamera();
-      return unprojectScreenToWorld(point, camera, viewport);
-    };
-    // The hit-test resolves a surface-relative screen point to a U22 HitResult:
-    // nearest committed vertex within a screen-px grab radius (頂点優先), else the leaf
-    // body under the cursor (world containment, 穴透過), else a point/line near the
-    // cursor, else empty.
-    const hitTester: HitTester = {
-      hitTest: (point) => {
-        const s = store.getState();
-        const { camera, viewport } = ports.readCamera();
-        return liveHitTestAt(
-          {
-            root: s.domain,
-            time: s.currentTime,
-            // Codex #2: resolve the SAME display set the renderer drew (集約/実形状),
-            // so a click on an aggregate body selects the aggregate and a hidden
-            // child leaf / non-drawn vertex is never picked (単一真実源 — what is
-            // drawn == what is hit). The display-control comes from the store, the
-            // same slice committed-features feeds buildDisplayAreas with.
-            displayControl: s.displayControl,
-            // FR-113: restrict the hit母集合 to the SAME visible set the renderer culled
-            // to, so a filter-hidden feature is not selectable and a click falls through
-            // to whatever is drawn beneath (教訓 5.29 単一解決 — draw == hit). Inert default.
-            filter: s.filter,
-            // Forward projector for the screen-px vertex / point / line proximity,
-            // from the SAME camera/viewport the frame drew with (単一真実源).
-            toScreen: (w) => projectWorldToScreen(w, camera, viewport),
-            // The camera + viewport let the hit-test enumerate the EXACT ±360° wrap
-            // turns the renderer painted each drawable at (`wrapTurnsForLonSpan`), so a
-            // point/vertex/line/area shown only as a wrap replica is still grabbable
-            // (bughunt: 描画と hit-test の wrap 一致 — clip ⊇ draw ⊇ hit).
-            wrap: { camera, viewport },
-            // FR-87: the active feature exposes grabbable EDGE-midpoint handles, so a
-            // click on an edge midpoint returns an Edge hit (→ U24 EdgeAdd) rather than
-            // the body underneath. Only the selected feature draws edge handles, so we
-            // pass the SAME active-feature truth the handle draw path uses (単一真実源).
-            activeFeature: s.selection.activeFeature,
-            point,
-          },
-          // World coordinate of the click (renderer inverse) for the world-space leaf
-          // containment.
-          surfaceToWorld(point),
-        );
-      },
-    };
-    // The LIVE SelectionPort drives U22's OWN reducer over the store selection truth
-    // (restoreSelection) — so a body click promotes the feature AND clears the vertex
-    // set, a vertex click replaces / Shift-toggles, empty clears, exactly per U22
-    // (Codex P1: a setActiveFeature-only path wrongly left a stale vertex set). It
-    // re-implements no selection rule.
-    // FR-80 must (教訓 5.7 配線欠落) — the rubber-band RECTANGLE resolver: the vertices
-    // inside a drag rectangle come from the SAME live drawn-vertex lookup the click
-    // hit-test and the renderer use (`verticesInRectangle` over the shared display
-    // resolution — displayControl honoured, so an aggregated/omitted vertex is never
-    // rubber-band-selected, 単一真実源 5.29). Supplying it is what turns an empty-space
-    // drag into a range select instead of resolving to "nothing inside".
-    const rectangleResolver: RectangleResolver = {
-      verticesInRectangle: (a, b) => {
-        const s = store.getState();
-        // wrap: enumerate the SAME ±360° turns the renderer painted (wrapTurnsForLonSpan)
-        // so a vertex shown only as a wrap replica on a panned view is rubber-band
-        // selectable — parity with the click hit-test (単一真実源, 描画⊇クリック⊇矩形).
-        const { camera, viewport } = ports.readCamera();
-        return verticesInRectangle(
-          {
-            root: s.domain,
-            time: s.currentTime,
-            displayControl: s.displayControl,
-            // FR-113: a rubber-band never grabs a filter-hidden feature's vertices
-            // (same母集合 as the click hit-test / renderer — 単一真実源).
-            filter: s.filter,
-            wrap: { camera, viewport },
-          },
-          a,
-          b,
-        );
-      },
-    };
-    const selectionPort = createLiveSelectionPort(
-      {
-        getSelection: () => store.getState().selection,
-        restoreSelection: (sel) => store.getState().restoreSelection(sel),
-      },
-      surfaceToWorld,
-      rectangleResolver,
-    );
-    // ROOT FIX (bughunt: 実アプリで頂点/地物のドラッグ編集が PointerDispatcher に未結線 —
-    // confirmRelease 到達不能, 教訓5.7「ロジックがあっても UI から呼ばれず機能しない状態を
-    // 作らない」). The U24 drag-session adapter (createEditSessionPort) + its U13 binding
-    // (createLiveEditBinding) existed and were unit-tested, but the dispatcher was built
-    // WITHOUT an `editSession`, so an edit-mode left drag went only to U22 selection —
-    // and selection EXCLUDES a drag (live-selection-port: wasDrag ⇒ no select) — while
-    // the confirm trigger (confirmRelease → U13 → U12 undo unit) was never reached. We
-    // now WIRE the edit session: a vertex / active-feature-body handle drag runs U24's
-    // confirmRelease on release, commits ONE undo unit through the SAME recordCommit
-    // path adds / knives / conflict-resolutions use (教訓5.11), and re-resolves selection.
-    //
-    // The binding reads the LIVE root at process-start (getRoot, never a stale capture —
-    // 教訓5.6) and the after-state snapshot is built against the SAME committed root +
-    // current time the renderer / hit-test resolve against (単一真実源, 教訓5.29).
-    //
-    // HB3-20 ROOT FIX — the slide / snap LIGHT PATH is now WIRED (診断 HB3-20 / 教訓 5.7
-    // 「ロジックがあっても UI から呼ばれず機能しない」). The adapter's constrainSlide (排他)
-    // + decideSnap (滑り) + the release-time decideSharePairAtRelease (共有化, built into
-    // buildEditSnapshot) were live in the domain and unit-tested, but the three deps they
-    // need were INTENTIONALLY omitted here — so a dragged vertex tunnelled through a
-    // neighbour terminal and never snapped to / shared an adjacent boundary vertex. We now
-    // inject them: a U10 RBush near-candidate query (`createNeighboursQuery`, narrowed per
-    // frame around the preview — never an all-features scan, 教訓 5.3/5.4), the SAME
-    // world→screen transform the draw uses (so it snaps where it looks like it snaps,
-    // 単一真実源 5.29), and the live U16 snap distance (FR-110). With these present the
-    // adapter runs the slide + snap light path every move and confirmRelease's share-pair
-    // decision can collapse a surviving snap onto its target (受け入れ基準6/12).
-    const editBinding = createLiveEditBinding({
-      getRoot: () => store.getState().domain,
-      // U4 study fix — the U06 difference write-back minters (shared project-wide
-      // series via the lazy refs; assigned from sharedMint before any pointer event
-      // can fire). Without them every conflict resolution on the edit-drag path was
-      // refused (applyResolutionAt ⇒ undefined = 解決不能の行き止まり).
-      nextVertexId: () => nextVertexIdRef.current!(),
-      nextRingId: () => nextRingIdRef.current!(),
-    });
-    const editSnapshotCtx = {
-      getRoot: () => store.getState().domain,
-      getTime: () => store.getState().currentTime,
-    };
-    // The per-frame near-candidate query for the slide/snap light path (HB3-20). It
-    // resolves the LIVE committed domain at the current time, narrows to terminals near
-    // the preview via U10's RBush, and returns their boundary edges / polygons / snap
-    // vertices + the dragged hole/enclave vertex's parent containment (受け入れ基準6 第4項).
-    const neighboursQuery = createNeighboursQuery({
-      getRoot: () => store.getState().domain,
-      getTime: () => store.getState().currentTime,
-      // The screen snap distance (px) expressed in WORLD units at the current zoom —
-      // ONLY to widen the candidate query rectangle (the snap DECISION stays screen-space
-      // in decideSnap, FR-31). zoom is CSS px per degree, so world margin = px / zoom; a
-      // non-positive / unmeasured zoom yields 0 (no extra margin, exact-coincidence only).
-      snapWorldMargin: () => {
-        const { camera } = ports.readCamera();
-        if (!Number.isFinite(camera.zoom) || camera.zoom <= 0) return 0;
-        const px = store.getState().appSettings.snapDistancePx;
-        // HB3-20 review fix: this margin widens the near-candidate QUERY used for BOTH the
-        // snap AND the slide (排他) look-ahead. The snap DECISION uses snapDistancePx in
-        // decideSnap (screen-space), so we floor the QUERY window at a fixed look-ahead —
-        // disabling snap (snapDistancePx=0, a valid setting) must NOT also disable the slide
-        // collision look-ahead, or a fast drag could tunnel a vertex through a thin
-        // neighbour. Over-including candidates is safe: decideSnap with px=0 never snaps.
-        const queryPx = Math.max(Number.isFinite(px) && px > 0 ? px : 0, SLIDE_LOOKAHEAD_PX);
-        return queryPx / camera.zoom;
-      },
-    });
-    const editSession = createEditSessionPort<DomainRoot>({
-      // The dragged handle world position uses the SAME renderer inverse the hit-test
-      // and selection use, so the press / preview / release resolve against one camera.
-      screenToWorld: surfaceToWorld,
-      // The ring a dragged LEAF vertex belongs to (undefined for point / line), from
-      // the live feature at the current time (shared rule, edit-session-snapshot).
-      ringIdForVertex: (hit) =>
-        ringIdForLeafVertex(editSnapshotCtx, hit.featureId, hit.vertexId),
-      // FR-87: reserve the new vertex id for an edge-handle add through the SHARED
-      // project-wide minter (via the ref, assigned from sharedMint on every render
-      // before any pointer event can fire), so an edge-add id never collides with
-      // stored data or another tool's output (教訓 5.37). Supplying this dep is what
-      // makes the edge hit reachable; the adapter treats a caller with NO minter
-      // (undefined dep — e.g. a unit test) as "edge hit stays plain selection" via its
-      // own undefined-guard (教訓 5.7). In the live app the dep is always supplied.
-      nextVertexId: () => nextVertexIdRef.current!(),
-      // A feature-body hit begins a WHOLE-FEATURE move (受け入れ基準2 / FR-88) ONLY when
-      // (HB3-8 ユーザー確定=排他) the 地物移動 tool is active AND the body is the currently-
-      // selected active feature. Gating on EDIT_MOVE makes vertex-edit and feature-move
-      // MUTUALLY EXCLUSIVE: in 頂点編集 a body drag no longer moves the whole feature
-      // (ハンドル経由の頂点移動のみ) — that misfire (頂点編集中に地物移動が暴発) is the bug.
-      // A body click on a non-active feature, or in any non-move tool, stays plain U22
-      // selection (first click selects; switch to 地物移動 then drag to move).
-      featureMoveAllowed: (hit) =>
-        store.getState().activeTool === TOOL_ID.EditMove &&
-        store.getState().selection.activeFeature === hit.featureId,
-      // FR-80 複数頂点同時移動の結線: the LIVE U22 vertex selection, read fresh at PRESS.
-      // Grabbing a vertex that is IN the selection turns the drag into ONE rigid move of
-      // the whole set (the adapter asks U22's own companionVertexIdsFor — the rule is not
-      // duplicated here). Without this dep the live path could only ever move the single
-      // grabbed vertex, so 矩形/Shift で選んだ複数頂点はドラッグしても1点しか動かなかった
-      // (教訓 5.7 — the reducer's release-time SimultaneousMoveSpec was unreachable because
-      // a非空 press never enters live-selection-port's drag branch).
-      vertexSelection: () => store.getState().selection,
-      anchorTime: () => store.getState().currentTime,
-      currentState: () => store.getState().domain,
-      ports: editBinding.ports,
-      // Assemble the complete after-state snapshot from the live session (moved vertex
-      // bodies against the committed feature record / vertex store, 単一真実源). The snap
-      // that survived to release is promoted to a share pair inside buildEditSnapshot via
-      // decideSharePairAtRelease, so the dragged vertex collapses onto its target (HB3-20
-      // 共有化 / 受け入れ基準12).
-      buildSnapshot: (session) => buildEditSnapshot(editSnapshotCtx, session),
-      // --- HB3-20: slide / snap LIGHT PATH deps (受け入れ基準6 / 12) -----------------
-      // The SAME world→screen transform the draw / hit-test use (so the snap fires where
-      // it visually looks like it should, 単一真実源 5.29). decideSnap measures candidate
-      // proximity in SCREEN px, so the projection must be the live camera's.
-      worldToScreen: (world) => {
-        const { camera, viewport } = ports.readCamera();
-        return projectWorldToScreen(world, camera, viewport);
-      },
-      // The live U16 snap distance in screen px (FR-110). Read fresh so a settings change
-      // takes effect on the next drag (教訓 5.35); non-positive ⇒ decideSnap never snaps.
-      snapDistancePx: () => store.getState().appSettings.snapDistancePx,
-      // The U10 near-candidate query for one drag frame (constrainSlide + decideSnap
-      // inputs). Only called for a single-vertex drag (the adapter gates on a known
-      // draggedVertexId); feature-move has no single point to slide / snap.
-      neighboursAt: (preview, session) => neighboursQuery(preview, session),
-      // On a processed release, record the committed edit as ONE U12 undo unit and
-      // re-resolve selection to the edited feature (教訓5.11). A NoOp (zero-move / no
-      // change) records nothing; a rejection / conflict surfaces no commit here (the
-      // edit-session path has no conflict modal yet — detectSpatial returns none — so a
-      // rejection is simply not committed rather than silently corrupting state).
-      onReleased: (outcome) => {
-        if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
-        if (outcome.result.status !== PROCESS_STATUS.Committed) return;
-        const featureId =
-          outcome.proposal.snapshot.feature?.id ??
-          outcome.proposal.snapshot.deletedFeatureId;
-        const preference = featureId !== undefined ? { featureId } : undefined;
-        // fr100: the recolor anchor time is the PROPOSAL's own anchorTime (the time
-        // the drag confirm resolved at press/release) — the exact commit time.
-        recordCommitRef.current?.(outcome.result, preference, outcome.proposal.anchorTime);
-      },
-      // HB3-4: receive the live session on every transition (begin / each move / release
-      // / cancel). Hold it as transient render state and schedule a frame so the dragged
-      // vertex / feature is redrawn at its preview position and FOLLOWS the cursor. On
-      // release / cancel the session is null, so the next frame draws the committed
-      // geometry (release path already ran recordCommit). Carries NO truth — the redraw
-      // re-reads the store + this transient (技術方針 2.5 / 受け入れ基準8).
-      onPreview: (session) => {
-        liveEditSession = session;
-        scheduleEditPreviewRedraw();
-      },
-    });
-    // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
-    // right-button press the dispatcher calls this port (dispatch.ts:「Right button
-    // is always a context-menu request」); it promotes the hit feature into the LIVE
-    // selection through the SAME write path a left click uses (so 削除 etc. target the
-    // right-clicked feature, 教訓 5.11), converts the surface point back to client px
-    // for the position:fixed menu (the inverse of `toSurface`, same hookTarget rect —
-    // 単一の transform, 教訓 5.29), and opens the {@link MapContextMenu} React mount
-    // through the opener ref. Was NOOP_CONTEXT_MENU_PORT — right-click was a dead end.
-    const contextMenu = createLiveContextMenuPort({
-      surfaceToClient: (point) => {
-        const box = hookTarget.getBoundingClientRect();
-        return { x: point.x + box.left, y: point.y + box.top };
-      },
-      promoteHit: (hit) => {
-        const s = store.getState();
-        // Resolve the promoted selection with the SAME U22 builders a LEFT click uses
-        // (単一の選択書き込み経路, 教訓 5.11 / 5.29) and write it through the ONE
-        // restoreSelection seam: a feature-body hit makes it active AND clears any
-        // vertex selection (bughunt5 HOLE-2 — the setActiveFeature-only path left a
-        // stale vertex set, so a following 削除 wrongly targeted those vertices on
-        // ANOTHER feature; the left-click reducer path already cleared it), a vertex
-        // hit selects that feature + that single vertex (unchanged). Empty space is
-        // never reached here (the port skips promotion for an empty hit).
-        s.restoreSelection(promoteHitToSelection(s.selection, hit));
-      },
-      open: (request) => contextMenuOpenerRef.current?.open(request),
-      // fr96 段階7 優先規則: while a modal / tool draft owns the input, the right-click
-      // request is dropped WHOLE (neither promote nor open — live-context-menu-port).
-      // Read live through the ref so the port built once at mount always sees the
-      // current OR-chain value (教訓 5.6, never a stale capture).
-      suspended: () => shortcutsSuspendedRef.current,
-    });
-    const dispatcher = new PointerDispatcher({
-      getMode: () => store.getState().mode,
-      camera: cameraPort,
-      hitTester,
-      selection: selectionPort,
-      editSession,
-      add: NOOP_ADD_PORT,
-      contextMenu,
-      // FR-10 即時反映 / Codex medium #6: clamp the wheel zoom against the LIVE
-      // effective range (project-setting min/max + the renderer fit-world floor),
-      // read fresh per notch so a settings change reaches the wheel and the floor
-      // keeps the FR-11 fit-all initial camera in range (単一真実源 — the renderer's
-      // own clamp, not a second copy here).
-      getZoomRange: () => ports.effectiveZoomRange(),
-    });
-
-    // Convert a DOM event's client coords to surface-relative CSS px (the dispatcher
-    // works in surface space, matching the renderer transform — 教訓 5.29).
-    const toSurface = (clientX: number, clientY: number): { x: number; y: number } => {
-      const box = hookTarget.getBoundingClientRect();
-      return { x: clientX - box.left, y: clientY - box.top };
+    const transients: MountTransients = {
+      liveEditSession: null,
+      scheduleEditPreviewRedraw: (): void => {},
+      flushRedraw: (): void => {},
     };
 
-    // FR-111 ステータスバーのカーソル座標 — the throttled bridge from the map pointer
-    // path to the React-external cursor store. TRAILING throttle (the SAME
-    // `throttleTrailing` the map-resize path uses — no new throttle implementation):
-    // at most one publish per interval AND the last position of a burst always lands,
-    // so the readout is live but a 60Hz move cannot cause 60 React renders/s
-    // (再レンダー爆発の抑止; the store additionally drops no-change sets).
-    // `cursorReadoutDisposed` closes the ONE hole a trailing throttle opens: its final
-    // timer can fire AFTER this map unmounts, and `ports.screenToWorld` would then read
-    // a disposed renderer/canvas (教訓 5.2 全経路で破棄). The flag makes that late call a
-    // no-op; the cleanup below also clears the readout so no stale coordinate lingers.
-    //
-    // The OTHER hole a trailing throttle opens is shorter-lived but hit constantly (review
-    // fix): the pointer can LEAVE the map inside the interval, and the pending trailing
-    // call would then land AFTER `clear()` and resurrect the last coordinate for a cursor
-    // that is no longer over the map (a real mouse exceeds 100Hz, so「素早く地図外へ抜ける」
-    // always raced it). `publishCursorPosition.cancel()` on every leave / teardown drops
-    // that pending call, so 地図外 = 非表示 holds unconditionally rather than by luck.
-    let cursorReadoutDisposed = false;
-    const publishCursorPosition = throttleTrailing(
-      (clientX: number, clientY: number): void => {
-        if (cursorReadoutDisposed) return;
-        cursorPositionStore.set(ports.screenToWorld(clientX, clientY));
-      },
-      CURSOR_READOUT_INTERVAL_MS,
-      BROWSER_CLOCK,
-    );
-
-    const onPointerDown = (e: PointerEvent): void => {
-      // STALE-FRAME HIT-TEST FIX (bughunt round-2): drain any throttled redraw NOW so
-      // the pixels match the live store state BEFORE the hit-test runs. The hit-test
-      // reads LIVE store state + the live camera (hitTester.hitTest), but the redraw is
-      // FPS-capped, so when a frame is held back by the cap the store has advanced while
-      // the user still sees the OLD frame — a press would then resolve against the NEW
-      // feature set, not the visible one (『見える ≠ 掴める』). Flushing first restores
-      // drawn == state (clip ⊇ draw ⊇ hit) at the instant of the press; it honours the
-      // pending draw exactly once (no extra paint, 受け入れ基準 5) and is a no-op when no
-      // frame is pending, so it costs nothing on the common path.
-      flushRedraw();
-      const { x, y } = toSurface(e.clientX, e.clientY);
-      // Hand the capture target to the dispatcher so IT owns the pan's pointer
-      // capture lifecycle end to end: capture on pan-start, release on EVERY
-      // teardown path (release / cancel / mode-change abort). hookTarget is a
-      // stable background element, but routing capture through the dispatcher keeps
-      // the native and overlay-bridge paths under ONE capture discipline (教訓 5.2 /
-      // 5.29) rather than each re-implementing setPointerCapture/release.
-      dispatcher.pointerDown(PointerDispatcher.normalize(e, x, y), hookTarget);
-    };
-    const onPointerMove = (e: PointerEvent): void => {
-      const { x, y } = toSurface(e.clientX, e.clientY);
-      dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
-    };
-    // FR-111 ステータスバーのカーソル座標 — on the map CELL (see `mapCell` above) so it sees
-    // moves over the input layer AND over any tool bridge. Pushes into the React-EXTERNAL
-    // cursor store, THROTTLED, so a 60Hz move cannot drive 60 React renders/s (only the
-    // tiny readout node subscribes; the throttle caps the actual work regardless of how
-    // many layers the event bubbles through). The unproject reuses the renderer's
-    // box-corrected screen→world (the SAME transform the hit-test uses, 教訓 5.29) so
-    //「表示された座標」==「掴める座標」.
-    const onCursorMove = (e: PointerEvent): void => {
-      publishCursorPosition(e.clientX, e.clientY);
-    };
-    const onCursorLeave = (): void => {
-      // 地図外では非表示 (the readout falls back to the default status label). Drop any
-      // PENDING trailing publish FIRST — otherwise it lands after this clear and puts the
-      // stale coordinate back (see the throttle note above).
-      publishCursorPosition.cancel();
-      cursorPositionStore.clear();
-    };
-    const onPointerUp = (e: PointerEvent): void => {
-      const { x, y } = toSurface(e.clientX, e.clientY);
-      // The dispatcher releases the pan's pointer capture itself (it owns the
-      // capture lifecycle, set in pointerDown above) — no manual release here.
-      dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
-    };
-    const onPointerCancel = (e: PointerEvent): void => {
-      dispatcher.pointerCancel(e.pointerId);
-    };
-    const onPointerLeave = (): void => {
-      dispatcher.pointerLeave();
-    };
-    // BUGHUNT2 ROOT FIX (FR-96) — suppress the NATIVE browser/OS context menu on the
-    // map so OUR right-click menu (opened from the pointerdown above) is the only one
-    // shown. Without this the default contextmenu would pop over the custom menu. The
-    // dispatcher already drove the context-menu request on pointerdown; this only
-    // stops the default so the two never overlap.
-    const onContextMenu = (e: MouseEvent): void => e.preventDefault();
-    const onWheel = (e: WheelEvent): void => {
-      // Prevent the page from scrolling so a notch becomes a zoom, not a scroll.
-      e.preventDefault();
-      const { x, y } = toSurface(e.clientX, e.clientY);
-      dispatcher.wheel({ x, y, deltaY: e.deltaY, deltaMode: e.deltaMode });
-    };
-
-    hookTarget.addEventListener('pointerdown', onPointerDown);
-    hookTarget.addEventListener('pointermove', onPointerMove);
-    hookTarget.addEventListener('pointerup', onPointerUp);
-    hookTarget.addEventListener('pointercancel', onPointerCancel);
-    hookTarget.addEventListener('pointerleave', onPointerLeave);
-    hookTarget.addEventListener('contextmenu', onContextMenu);
-    // `passive: false` so `preventDefault` actually suppresses page scroll on wheel.
-    hookTarget.addEventListener('wheel', onWheel, { passive: false });
-    // The cursor readout listens on the map CELL (above the input layer AND the tool
-    // overlays in the DOM tree), so it survives a tool bridge taking over the surface.
-    mapCell.addEventListener('pointermove', onCursorMove);
-    mapCell.addEventListener('pointerleave', onCursorLeave);
-
-    // ROOT FIX (bughunt: 追加/ナイフ描画中は中ボタンパンとホイールズームが効かない) —
-    // expose the camera-only entry points of THIS dispatcher to the tool overlays.
-    // The tool input bridge sits above the map (教訓 5.14) and would otherwise eat
-    // the wheel / middle-button events; it now forwards them here so they reach the
-    // SAME live dispatcher the background listeners use (単一真実源 — one pan/zoom
-    // path, no drift). Client coords are converted to surface space with the SAME
-    // `toSurface` (hookTarget rect) the native listeners use, so "scroll here ⇒ zoom
-    // anchored here" cannot diverge between the two input surfaces (教訓 5.29). Left-
-    // button input is NOT routed here (it stays owned by the tool); only the wheel
-    // and non-left pointer interactions (the dispatcher's mode×button table gates
-    // which non-left button actually pans) flow through.
-    cameraInputRef.current = {
-      wheel: (clientX, clientY, deltaY, deltaMode): void => {
-        const { x, y } = toSurface(clientX, clientY);
-        dispatcher.wheel({ x, y, deltaY, deltaMode });
-      },
-      pointerDown: (e, clientX, clientY): void => {
-        // The tool owns the LEFT button (placement / cut input); never start a pan
-        // sequence for it here. Non-left presses (middle/right) go to the dispatcher,
-        // which decides pan vs context-menu from its mode×button table.
-        if (e.button === 0) return;
-        // Drain a throttled redraw before the dispatcher hit-tests (a right-button
-        // press resolves a context-menu hit), for the same『見える＝掴める』reason as
-        // the background pointerdown above (single flush rule).
-        flushRedraw();
-        const { x, y } = toSurface(clientX, clientY);
-        // Hand the OVERLAY bridge (the element the event fired on) to the dispatcher
-        // as the pan's capture target so a middle-button pan keeps tracking off the
-        // bridge (受け入れ基準 3 押下→移動→解放の連続保証). Crucially the dispatcher now
-        // OWNS the release on every teardown path: a mid-pan tool/mode switch fires
-        // onModeChange → abortAll, which releases this capture BEFORE the bridge can
-        // unmount on that switch (BUGHUNT2 root — was: capture left dangling, relying
-        // on the browser's implicit on-removal release / the eventual pointerup).
-        dispatcher.pointerDown(
-          PointerDispatcher.normalize(e, x, y),
-          e.currentTarget as Element | null ?? undefined,
-        );
-      },
-      pointerMove: (e, clientX, clientY): void => {
-        // A move with the left button held is a tool draw, not a pan — the dispatcher
-        // tracks only the pointers IT started (a left press never started one here),
-        // so an untracked move is a safe no-op. We still forward every move so an
-        // in-flight middle-button pan keeps updating.
-        const { x, y } = toSurface(clientX, clientY);
-        dispatcher.pointerMove(PointerDispatcher.normalize(e, x, y, true));
-      },
-      pointerUp: (e, clientX, clientY): void => {
-        const { x, y } = toSurface(clientX, clientY);
-        // The dispatcher releases the bridge's pointer capture itself (it owns the
-        // capture lifecycle, set in pointerDown above) — no manual release here.
-        dispatcher.pointerUp(PointerDispatcher.normalize(e, x, y));
-      },
-      pointerCancel: (pointerId): void => {
-        dispatcher.pointerCancel(pointerId);
-      },
-      // survey F1 — 測量中の左ドラッグをパンへ委譲する強制パン入口. The survey bridge
-      // discriminates its LEFT button by a movement threshold (a genuine click
-      // measures; a drag must pan); once the threshold is crossed it delegates the
-      // in-flight gesture HERE. We start the SAME dispatcher pan a middle-button
-      // press would: the normalized sample is re-tagged MIDDLE so decideDispatch's
-      // single PAN_BUTTONS table routes it to Pan in EVERY mode (単一真実源 — no
-      // second pan implementation in the bridge, 教訓 5.29), anchored at the
-      // ORIGINAL press position (the hysteresis pixels catch up on the next move).
-      // The bridge element is the capture target, and the dispatcher OWNS the
-      // release on every teardown path (the same capture discipline as pointerDown
-      // above); subsequent moves/ups flow through the ordinary forwarding.
-      beginPan: (e, pressClientX, pressClientY): void => {
-        flushRedraw();
-        const { x, y } = toSurface(pressClientX, pressClientY);
-        const n = PointerDispatcher.normalize(e, x, y);
-        dispatcher.pointerDown(
-          { ...n, button: POINTER_BUTTON.Middle },
-          (e.currentTarget as Element | null) ?? undefined,
-        );
-      },
-    };
-
-    // Abort any in-progress pan/selection on a mode OR active-tool change so a stale
-    // reference from the previous mode/tool cannot bleed into the next (教訓 5.2,
-    // 受け入れ基準 6). A tool switch (store.setActiveTool) runs the same reset契約 as
-    // setMode — it wipes the selection context — but leaves `mode` untouched, so
-    // watching `mode` alone let an in-flight edit-drag survive a mid-drag toolbar
-    // switch and still commit on release (bughunt root: the abort fired only on mode).
-    let prevMode = store.getState().mode;
-    let prevActiveTool = store.getState().activeTool;
-    const unsubscribeMode = store.subscribe((s) => {
-      if (s.mode === prevMode && s.activeTool === prevActiveTool) return;
-      prevMode = s.mode;
-      prevActiveTool = s.activeTool;
-      dispatcher.onModeChange();
+    // 観測（HB-1 / HB-14 / HB3-9）を最初に作る。取り付け先（`hookTarget` / `mapCell`）の
+    // 解決もここが持っており、`createAddHostPorts` は最初の描画で同期に `onCameraChange`
+    // を呼ぶので、`hookTarget` はレンダラより先に存在していなければならない。
+    const observation = createMountObservation({ el, store, rendererRef });
+    // 描画: レンダラホスト（何を描くかの getter 一式）+ カメラ操作 + 再描画スケジューラ。
+    const render = createMountRender({
+      el,
+      store,
+      transients,
+      rendererRef,
+      zoomRangeRef,
+      baseMapImageRef,
+      fitCameraToFeatureRef,
+      fitCameraToAllRef,
+      zoomMapRef,
+      publishCameraHooks: observation.publishCameraHooks,
+      publishVisibleCountHook: observation.publishVisibleCountHook,
+      publishFrameHook: observation.publishFrameHook,
     });
-    // FR-110 描画更新頻度: route EVERY store-driven redraw through the U19 redraw
-    // scheduler so the configured render FPS actually caps the draw rate (bughunt
-    // root: the FrameScheduler existed but was never instantiated, so renderFps was a
-    // dead setting — validated/clamped/persisted yet never reaching the draw loop,
-    // 教訓 5.7). The scheduler collapses N requests within one frame into ONE draw
-    // (受け入れ基準 5) and gates draws faster than the per-frame budget. A live
-    // renderFps change re-arms the cap via setFps (watched in the subscription below)
-    // so a settings confirm takes effect at once (FR-110 即時反映). The single-rAF
-    // throttle lives in U19; this is only the結線 (no second copy of the rule).
-    let renderFps = store.getState().appSettings.renderFps;
-    const redrawScheduler = createRedrawScheduler({
-      draw: () => ports.redraw(),
-      initialFps: renderFps,
+    // 当たり判定: クリック解決 → 選択 / 編集ドラッグ / 右クリックメニューの 4 つの口。
+    const hitTest = createMountHitTest({
+      store,
+      ports: render.ports,
+      hookTarget: observation.hookTarget,
+      transients,
+      nextVertexIdRef,
+      nextRingIdRef,
+      recordCommitRef,
+      contextMenuOpenerRef,
+      shortcutsSuspendedRef,
     });
-    const requestRedraw = (): void => redrawScheduler.request();
-    // Now that the scheduler exists, point the pre-declared flush at it so a
-    // pointerdown drains any pending throttled frame before the hit-test (drawn ==
-    // state, 『見える＝掴める』).
-    flushRedraw = (): void => redrawScheduler.flush();
-    // HB3-4: route the live edit-drag preview redraw through the SAME FPS-capped
-    // scheduler as every other high-frequency repaint, so a drag's per-move preview is
-    // coalesced/capped like pan/zoom (受け入れ基準5) — N moves within one frame collapse
-    // to ONE composite. The session is already stashed synchronously in onPreview, so a
-    // deferred frame reads the freshest preview (no lost update, 教訓 5.6).
-    scheduleEditPreviewRedraw = (): void => redrawScheduler.request();
-    // FR-110 ROOT FIX (bughunt round-2): route the host's OWN high-frequency repaints
-    // through the SAME scheduler. Pan/wheel (writeCamera), tool-draft moves (drawAdd /
-    // drawKnife) and resize (resyncViewport) previously called the synchronous full-frame
-    // recomposition on every input event, so those interactions — exactly the ones FR-110
-    // is meant to cap — repainted at raw input rate, bypassing the FrameScheduler that was
-    // wired only around the store-subscription redraw. Injecting the requester here makes
-    // the host defer its composite to `redrawScheduler.request()` (whose draw re-enters
-    // `ports.redraw()`), so N input events within one frame collapse to ONE composite and
-    // the configured render FPS caps the draw rate (受け入れ基準 5). The camera/overlay
-    // state is still written synchronously inside the host, so readCamera / hit-tests / the
-    // observation hooks see the live camera at once — only the pixels are throttled.
-    ports.setRedrawRequester(requestRedraw);
-    // Re-composite whenever the committed domain / current time / selection /
-    // display-control / label-threshold setting changes so an added / edited /
-    // split feature (or a slider / setting change) draws at once (P0-A / 教訓 5.5).
-    // The Canvas subscribes to the store directly, OFF the React render path
-    // (技術方針 2.3 / 2.5). A redraw after a tool overlay draw is idempotent (it
-    // re-composites with the same last overlay), so there is no double-source risk.
-    // WHICH state changes need a composite is decided by ONE pure, unit-tested function
-    // (`map/redraw-watch`) instead of a hand-maintained列 of `let prevX` variables. That
-    //列 DRIFTED from what the host getters actually read — twice: the FR-13 grid settings
-    // (gridStyle) and then the FR-80/82 vertex selection (editHandles). Selecting a vertex
-    // does NOT change `activeFeature` (U22's HIT_KIND.Vertex branch leaves it alone by
-    // design — FR-82 has a distinct「頂点選択コンテキスト地物」state), so on an already-active
-    // feature EVERY previously-watched value stayed identical → early return → no redraw →
-    // the FR-82 selection ring appeared only when some unrelated input moved. The watch set
-    // now lives next to its own regression test, and its invariant is stated once there:
-    // every value a getter reads MUST appear in it (教訓 5.35 / 5.7).
-    let prevWatch = redrawWatch(store.getState());
-    const unsubscribe = store.subscribe((s) => {
-      // FR-110: a live renderFps change re-arms the per-frame budget (the cap is
-      // fixed at scheduler construction, so setFps rebuilds it). This is NOT gated by
-      // the early-return below — a pure renderFps change re-arms the budget without
-      // forcing a redraw of unchanged content.
-      if (s.appSettings.renderFps !== renderFps) {
-        renderFps = s.appSettings.renderFps;
-        redrawScheduler.setFps(renderFps);
-      }
-      const watch = redrawWatch(s);
-      if (!redrawWatchChanged(prevWatch, watch)) return;
-      prevWatch = watch;
-      requestRedraw();
+    // 入力: U40 ディスパッチャ + DOM リスナー + ツールのオーバーレイへ渡すカメラ入口。
+    const input = createMountInput({
+      store,
+      ports: render.ports,
+      hookTarget: observation.hookTarget,
+      mapCell: observation.mapCell,
+      transients,
+      cursorPositionStore,
+      cameraInputRef,
+      hitTester: hitTest.hitTester,
+      selectionPort: hitTest.selectionPort,
+      editSession: hitTest.editSession,
+      contextMenu: hitTest.contextMenu,
     });
+    // ストア購読による再描画は最後に起こす（分割前と同じ位置 = 入力側のモード中断の購読
+    // より後）。購読の登録順と、ホスト自身の再描画が throttle に載る時点を分割前と揃える。
+    render.startRedrawScheduling();
+
+    // 後始末は「入力 → 描画 → 観測」の順で呼ぶ。分割前は 1 本の cleanup が
+    // 購読解除 → リスナー剥がし → カーソル読み取り停止 → ホスト破棄 → 遅延結線の解除
+    // と並んでいた。部品ごとの cleanup ではその並びを 1 行ずつ再現できないので、
+    // **同じ効き目になる並び**を選んである: 「カーソル読み取りの停止（入力側）が
+    // `ports.dispose()`（描画側）より前」という唯一の順序の制約は保たれている。
     return () => {
-      unsubscribe();
-      unsubscribeMode();
-      redrawScheduler.dispose();
-      hookTarget.removeEventListener('pointerdown', onPointerDown);
-      hookTarget.removeEventListener('pointermove', onPointerMove);
-      hookTarget.removeEventListener('pointerup', onPointerUp);
-      hookTarget.removeEventListener('pointercancel', onPointerCancel);
-      hookTarget.removeEventListener('pointerleave', onPointerLeave);
-      hookTarget.removeEventListener('contextmenu', onContextMenu);
-      hookTarget.removeEventListener('wheel', onWheel);
-      mapCell.removeEventListener('pointermove', onCursorMove);
-      mapCell.removeEventListener('pointerleave', onCursorLeave);
-      // Stop the cursor readout BEFORE disposing the host: a trailing throttle call
-      // must not reach the disposed renderer, and the status bar must not keep showing
-      // the last coordinate of a map that no longer exists. Cancel the pending call AND
-      // keep the flag: cancel drops the timer we know about, the flag is the belt-and-
-      // braces guard for any call already in flight (教訓 5.2 全経路で破棄).
-      publishCursorPosition.cancel();
-      cursorReadoutDisposed = true;
-      cursorPositionStore.clear();
-      ports.dispose();
-      rendererRef.current = null;
-      cameraInputRef.current = null;
-      // 教訓 5.2 全経路で破棄 — the camera-driving runners close over the now-disposed
-      // `ports`. Left non-null they keep their commands' `canRun` true, so 表示 → 拡大 /
-      // 縮小 / 全体表示 would render ENABLED and call readCamera/writeCamera on a
-      // disposed host. Nulling them makes those commands honestly disabled until a
-      // remount re-binds them (setup runs AFTER this cleanup, so a remount re-assigns).
-      zoomMapRef.current = null;
-      fitCameraToAllRef.current = null;
-      fitCameraToFeatureRef.current = null;
-      // HB3-9: drop the render-observation hook so a remount re-installs a fresh one
-      // bound to the new renderer (no stale closure over the disposed host).
-      if (e2eWindow !== null && '__E2E__' in e2eWindow) {
-        delete (e2eWindow as { __E2E__?: unknown }).__E2E__;
-      }
+      input.dispose();
+      render.dispose();
+      observation.dispose();
     };
     // `cursorPositionStore` is listed for honesty even though it is ref-backed and
     // therefore never changes identity: had it stayed a useMemo, a discarded cache would
@@ -3934,10 +2880,6 @@ const KNIFE_DEFAULT_COLOR = withFillOpacity(
   DEFAULT_NEW_FEATURE_FILL_OPACITY,
 );
 
-/** HB3-20 review fix: minimum near-candidate query look-ahead (screen px) so the
- *  slide (排他) collision check keeps working even when the user disables snapping
- *  (snapDistancePx=0). Converted to world units per frame via the live zoom. */
-const SLIDE_LOOKAHEAD_PX = 8;
 
 /** HB3-11: base screen position for the first detail panel (later panels cascade). */
 const DETAIL_PANEL_BASE_POS = { x: 160, y: 120 };
