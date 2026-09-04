@@ -29,7 +29,12 @@ import {
   buildSnapshot,
   decideSharePairAtRelease,
   type FeatureSnapshot,
+  type MovingRing,
 } from '../../domain/editing/edit-flow';
+import { movingVertexIds } from '../../domain/editing/drag-session';
+import { unwrapRing, unwrapRingClosed } from '../../domain/geo/seam';
+import { getVertex } from '../../domain/vertex';
+import type { WorldCoordinate } from '../../domain/coordinate';
 import type { Feature } from '../../domain/feature';
 import { FEATURE_KIND } from '../../domain/feature';
 import type { RingId, VertexId } from '../../domain/ids';
@@ -151,4 +156,59 @@ export function ringIdForLeafVertex(
     if (ring.vertexIds.includes(vertexId)) return ring.id;
   }
   return undefined;
+}
+
+/**
+ * 確定の関門（A5）が読む「動かす前のリング」を組み立てる（増分 3 の手直し 2 回目）。
+ *
+ * **なぜ要るのか**: 移動量だけを見る関門は、1 回の移動が 180 度未満でも
+ * **動かした先が隣の頂点から見て 180 度以上**になる形を通してしまう（実測: 160 度の
+ * 移動で経度差 211.8 度の辺ができ、そのまま保存された）。結果の辺そのものを
+ * `longEdgeStartIndexes`（追加の道具と同じ 1 本）に掛けるには、動かす前の並びが要る。
+ *
+ * **連続経度で返す**。保存されている代表値のままだと、日付変更線をまたぐ正しい地物
+ * （179 度 → −179 度）が 358 度の差に見えて誤爆する。画面に見えている並び＝連続へ
+ * 戻した列に対して測るのが、利用者の意図と一致する唯一の測り方である。
+ *
+ * **地物ごと動かすときは空を返す**。全部の頂点が同じだけ動くので、辺の長さは 1 本も
+ * 変わらない（測る意味が無い）。辺を持たない点情報も空である。
+ */
+export function buildMovingRings(
+  ctx: EditSnapshotContext,
+  session: DragSession,
+): readonly MovingRing[] {
+  if (session.target.tool === EDIT_TOOL.FeatureMove) return [];
+  const root = ctx.getRoot();
+  const time = ctx.getTime();
+  const feature = featureByIdAt(root, time, session.target.featureId);
+  if (feature === undefined) return [];
+  const store = verticesAt(root, time);
+  const moving = movingVertexIds(session);
+
+  const out: MovingRing[] = [];
+  const push = (ids: readonly VertexId[], closed: boolean): void => {
+    const coordinates: WorldCoordinate[] = [];
+    const movingIndexes: number[] = [];
+    for (const id of ids) {
+      const v = getVertex(store, id);
+      // 解けない頂点が 1 つでもあるリングは測らない（欠けた並びで測ると嘘になる）。
+      if (v === undefined) return;
+      coordinates.push(v.coordinate);
+      if (moving.has(id)) movingIndexes.push(coordinates.length - 1);
+    }
+    // 動く頂点が 1 つも無いリングは、このドラッグでは形が変わらない（教訓 5.18: 長さで決める）。
+    if (coordinates.length < 2 || movingIndexes.length === 0) return;
+    out.push({
+      coordinates: closed ? unwrapRingClosed(coordinates) : unwrapRing(coordinates),
+      closed,
+      movingIndexes,
+    });
+  };
+
+  if (feature.kind === FEATURE_KIND.Leaf) {
+    for (const ring of feature.shape.rings) push(ring.vertexIds, true);
+  } else if (feature.kind === FEATURE_KIND.Line) {
+    push(feature.vertexIds, false);
+  }
+  return out;
 }

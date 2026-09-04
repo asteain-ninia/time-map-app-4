@@ -139,9 +139,18 @@ export function clampZoom(zoom: number, range: ZoomRange = DEFAULT_ZOOM_RANGE): 
   return zoom;
 }
 
-/** Inclusive latitude bounds: the world spans −90° (south pole) .. +90° (north pole). */
-export const WORLD_LAT_MIN_DEG = -90;
-export const WORLD_LAT_MAX_DEG = 90;
+/**
+ * Inclusive latitude bounds: the world spans −90° (south pole) .. +90° (north pole).
+ *
+ * **定義はドメインの `geo/latitude.ts` 1 か所だけ**（増分 3 の手直し 2 回目）。ここは
+ * 再輸出である ―― 同じ ±90 を 2 か所に書くと、片方だけ直したときに「カメラは止まるのに
+ * 頂点は置ける」のような食い違いが生まれる（教訓 5.29 単一真実源）。
+ */
+export {
+  WORLD_LAT_MIN_DEG,
+  WORLD_LAT_MAX_DEG,
+} from '../domain/geo/latitude';
+import { clampWorldLat } from '../domain/geo/latitude';
 
 /**
  * Clamp a camera center latitude into the world's physical [−90, +90] range. Pure;
@@ -159,7 +168,5 @@ export const WORLD_LAT_MAX_DEG = 90;
  * Zoom behaviour is unchanged — only the bounded center latitude is affected.
  */
 export function clampLat(lat: number): number {
-  if (lat < WORLD_LAT_MIN_DEG) return WORLD_LAT_MIN_DEG;
-  if (lat > WORLD_LAT_MAX_DEG) return WORLD_LAT_MAX_DEG;
-  return lat;
+  return clampWorldLat(lat);
 }

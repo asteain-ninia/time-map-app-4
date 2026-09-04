@@ -258,6 +258,66 @@ describe('confirmRelease — 確定の関門（A5 / A6）', () => {
     expect(outcome.kind).toBe(RELEASE_OUTCOME.Refused);
   });
 
+  it('A5 2 回目: 移動量が 180 度未満でも、**移動後の辺**が半周以上になれば断る', () => {
+    // 実測（再検証 r6）: 160 度の移動で v0→v1 の経度差が 211.8 度の辺ができ、そのまま
+    // 保存された。移動量だけを見る関門では捕まらない ―― **結果の辺**を見る必要がある。
+    let session = beginDrag(vertexTarget, coord(0, 0));
+    session = updateDrag(session, { preview: coord(160, 0) }); // 移動量 160 度（180 未満）
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: ports(),
+      movingRings: [
+        {
+          // 動かす前の三角形（連続経度）。動くのは添字 0 の頂点だけ。
+          coordinates: [coord(-51.8, 0), coord(-103.6, 20), coord(-60, -20)],
+          closed: true,
+          movingIndexes: [0],
+        },
+      ],
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Refused);
+    if (outcome.kind !== RELEASE_OUTCOME.Refused) return;
+    expect(outcome.reason).toBe(EDIT_REFUSAL.LongDrag);
+  });
+
+  it('A5 2 回目: 同じ移動量でも、結果の辺が短ければ通す（誤爆させない）', () => {
+    let session = beginDrag(vertexTarget, coord(0, 0));
+    session = updateDrag(session, { preview: coord(160, 0) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: ports(),
+      movingRings: [
+        {
+          // 隣の頂点も遠くにあるので、160 度動かしても辺は 180 度に届かない。
+          coordinates: [coord(0, 0), coord(150, 20), coord(150, -20)],
+          closed: true,
+          movingIndexes: [0],
+        },
+      ],
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Processed);
+  });
+
+  it('A5 2 回目: 地物ごと動かすときは辺の長さが変わらない（リング無し＝移動量で見る）', () => {
+    let session = beginDrag(vertexTarget, coord(0, 0));
+    session = updateDrag(session, { preview: coord(100, 0) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: ports(),
+      movingRings: [],
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Processed);
+  });
+
   it('日付変更線をまたぐ**小さな**移動は断らない（誤爆させない）', () => {
     // 継ぎ目の地物を掴んで 0.4 度動かしただけ。ここを断ると継ぎ目の地物が編集できなくなる。
     let session = beginDrag(vertexTarget, coord(179.8, 10));

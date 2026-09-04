@@ -86,6 +86,7 @@ export {
   type ReleaseOutcome,
   EDIT_REFUSAL,
   type EditRefusalKind,
+  type MovingRing,
   type ReleaseInput,
   decideSharePairAtRelease,
   isFeatureUnchanged,

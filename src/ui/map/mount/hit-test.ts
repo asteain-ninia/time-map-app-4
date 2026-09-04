@@ -10,7 +10,11 @@ import type { AddHostPorts } from '../../add/host-ports';
 import { createLiveEditBinding } from '../../consistency-binding';
 import { TOOL_ID } from '../../shell/tools';
 import { createEditSessionPort } from '../edit-session-adapter';
-import { buildEditSnapshot, ringIdForLeafVertex } from '../edit-session-snapshot';
+import {
+  buildEditSnapshot,
+  buildMovingRings,
+  ringIdForLeafVertex,
+} from '../edit-session-snapshot';
 import { liveHitTestAt, verticesInRectangle } from '../live-hit-test';
 import {
   createLiveContextMenuPort,
@@ -33,6 +37,8 @@ import {
 import { PROCESS_STATUS, type ProcessResult } from '../../../domain/consistency/index';
 import type { WorldCoordinate } from '../../../domain/coordinate';
 import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
+import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
+import { getCalendar } from '../../../domain/time/calendar';
 import type { RingId, VertexId } from '../../../domain/ids';
 import type { NextTargetPreference, RectangleResolver } from '../../../domain/selection';
 import type { TimePoint } from '../../../domain/time/time-point';
@@ -42,6 +48,9 @@ import type { MountDomainRoot, MountStore, MountTransients } from './shared';
  *  slide (排他) collision check keeps working even when the user disables snapping
  *  (snapDistancePx=0). Converted to world units per frame via the live zoom. */
 const SLIDE_LOOKAHEAD_PX = 8;
+
+/** この合成で使う暦（`ui/live-lookup.ts` と同じ 1 本）。 */
+const MOUNT_CALENDAR = getCalendar('gregorian');
 
 /** `recordCommitRef` が持つ確定ハンドラの型（App.tsx 側の宣言と同型）。 */
 type RecordCommit = (
@@ -71,6 +80,15 @@ export interface MountHitTestOptions {
    * **無反応にしない**（設計書 §H.5 の「消えない結果表示」へ出す）。App.tsx が入れる。
    */
   readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
+  /**
+   * 共有頂点の移動を **その年より後ろの記録へも反映した**ことを画面へ出す口
+   * （増分 3 の手直し 2 回目 / A1）。1 回目の手直しで引き継ぎ自体は入れたが、
+   * **画面へ出す配線が無かった**ので、利用者から見ると「この年しか直っていない」と
+   * 思い込むままだった（現状分析 C1 と同じ「実体はあるが呼ばれない」型の欠陥）。
+   */
+  readonly announceCarryForwardRef?: MutableRefObject<
+    ((fromYear: number, toYear: number, anchorCount: number) => void) | null
+  >;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /** fr96 段階7 — 入力が別の持ち主にあるあいだ右クリック要求を捨てるための現在値。 */
@@ -310,6 +328,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     // decideSharePairAtRelease, so the dragged vertex collapses onto its target (HB3-20
     // 共有化 / 受け入れ基準12).
     buildSnapshot: (session) => buildEditSnapshot(editSnapshotCtx, session),
+    // A5: 確定の関門が「移動後の辺」を見るための、動かす前のリング（連続経度）。
+    movingRings: (session) => buildMovingRings(editSnapshotCtx, session),
     // --- HB3-20: slide / snap LIGHT PATH deps (受け入れ基準6 / 12) -----------------
     // The SAME world→screen transform the draw / hit-test use (so the snap fires where
     // it visually looks like it should, 単一真実源 5.29). decideSnap measures candidate
@@ -339,6 +359,13 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       }
       if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
       if (outcome.result.status !== PROCESS_STATUS.Committed) return;
+      // A1 の報せ: **記録する前の**プロジェクトで、この移動が後ろの年の記録を何本
+      // 書き換えるかを数える（判定は `applyEditProposal` と同じ 1 本を通る）。
+      const carried = reportVertexCarryForward(
+        store.getState().domain,
+        outcome.proposal,
+        MOUNT_CALENDAR,
+      );
       const featureId =
         outcome.proposal.snapshot.feature?.id ??
         outcome.proposal.snapshot.deletedFeatureId;
@@ -346,6 +373,15 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       // fr100: the recolor anchor time is the PROPOSAL's own anchorTime (the time
       // the drag confirm resolved at press/release) — the exact commit time.
       recordCommitRef.current?.(outcome.result, preference, outcome.proposal.anchorTime);
+      // 記録のあとに上書きする（既定の「素性の変更を行いました」より、こちらのほうが
+      // 何が起きたかを言っている）。0 本なら何も足さない ―― 起きなかったことは言わない。
+      if (carried.anchorCount > 0 && carried.firstYear !== null) {
+        options.announceCarryForwardRef?.current?.(
+          outcome.proposal.anchorTime.year,
+          carried.firstYear,
+          carried.anchorCount,
+        );
+      }
     },
     // HB3-4: receive the live session on every transition (begin / each move / release
     // / cancel). Hold it as transient render state and schedule a frame so the dragged

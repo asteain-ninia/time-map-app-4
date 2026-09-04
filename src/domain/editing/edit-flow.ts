@@ -25,9 +25,10 @@ import type { TimePoint } from '../time/time-point';
 import type { FeatureId, VertexId } from '../ids';
 import type { Feature } from '../feature';
 import type { Vertex } from '../vertex';
+import type { WorldCoordinate } from '../coordinate';
 import { coordinatesEqual } from '../coordinate';
 import { isWorldLatitude } from '../geo/latitude';
-import { MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
+import { longEdgeStartIndexes, MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
 import { dragDelta, isNoOp, type DragSession } from './drag-session';
 import type { SnapDecision } from './snap';
 
@@ -176,13 +177,65 @@ export type ReleaseOutcome<S> =
  *
  * **緯度は移動後の体で見る**。こちらは差ではなく位置そのものが世界の外かどうかである。
  */
-function refusalFor(session: DragSession, snapshot: FeatureSnapshot): EditRefusalKind | null {
-  const { dLon } = dragDelta(session);
-  if (Math.abs(dLon) >= MAX_EDGE_LON_SPAN_DEG) return EDIT_REFUSAL.LongDrag;
+function refusalFor(
+  session: DragSession,
+  snapshot: FeatureSnapshot,
+  movingRings: readonly MovingRing[] | undefined,
+): EditRefusalKind | null {
+  if (longEdgeAfterMove(session, movingRings)) return EDIT_REFUSAL.LongDrag;
   for (const v of snapshot.vertices) {
     if (!isWorldLatitude(v.coordinate.lat)) return EDIT_REFUSAL.OutsideWorld;
   }
   return null;
+}
+
+/**
+ * この移動で **保存できない長さの辺** ができるか。
+ *
+ * リングが渡されていれば、動く頂点にドラッグの変位を足した **結果の並び** を
+ * `longEdgeStartIndexes`（追加の道具と同じ 1 本）に掛ける。渡されていなければ、
+ * 1 回の移動量そのものが半周以上かどうかで粗く見る（それでも「意図が半周以上」は捕まる）。
+ */
+function longEdgeAfterMove(
+  session: DragSession,
+  movingRings: readonly MovingRing[] | undefined,
+): boolean {
+  const { dLon, dLat } = dragDelta(session);
+  if (movingRings === undefined || movingRings.length === 0) {
+    return Math.abs(dLon) >= MAX_EDGE_LON_SPAN_DEG;
+  }
+  for (const ring of movingRings) {
+    if (ring.movingIndexes.length === 0) continue;
+    const moving = new Set<number>(ring.movingIndexes);
+    const after = ring.coordinates.map((c, i) =>
+      moving.has(i) ? { lon: c.lon + dLon, lat: c.lat + dLat } : c,
+    );
+    if (longEdgeStartIndexes(after, ring.closed).length > 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 動かす前のリング 1 本を、**画面に見えているとおりの連続経度**で表したもの
+ * （増分 3 の手直し 2 回目 / A5）。確定の関門はこれに移動量を足して、
+ * **移動後の辺**が保存できる長さに収まるかを見る。
+ *
+ * **なぜ移動量だけでは足りないか**: 1 回の移動が 180 度未満でも、動かした先が隣の頂点から
+ * 見て 180 度以上になれば、保存して読み直したときに別の形になる（実測: 160 度の移動で
+ * 経度差 211.8 度の辺ができた）。**追加の道具と同じ 1 本**（`longEdgeStartIndexes`）で
+ * 結果の辺そのものを見る。
+ *
+ * **なぜ「連続経度」でなければならないか**: 保存されている代表値のままだと、日付変更線を
+ * またぐ正しい地物（179 度 → −179 度）が 358 度の差に見えて誤爆する。画面に見えている
+ * 並び＝連続へ戻した列に対して測るのが、利用者の意図と一致する唯一の測り方である。
+ */
+export interface MovingRing {
+  /** 動かす前の頂点の並び（連続経度）。添字は下の `movingIndexes` と対応する。 */
+  readonly coordinates: readonly WorldCoordinate[];
+  /** 面のリングなら真（最後の頂点から先頭へ戻る「閉じる辺」も数える）。線は偽。 */
+  readonly closed: boolean;
+  /** このドラッグで動く頂点の添字（空なら、このリングは移動の影響を受けない）。 */
+  readonly movingIndexes: readonly number[];
 }
 
 export interface ReleaseInput<S> {
@@ -200,6 +253,13 @@ export interface ReleaseInput<S> {
    * no move but the attribute changed). Default uses the drag {@link isNoOp}.
    */
   readonly forceChanged?: boolean;
+  /**
+   * 動かす前のリング（連続経度）と、そのうち動く頂点の添字（増分 3 の手直し 2 回目 / A5）。
+   * 渡されていれば **移動後の辺そのもの**を見る。渡されていなければ（単体テストや、
+   * リングを組み立てられない経路では）**1 回の移動量**で粗く見る ―― どちらも
+   * `domain/geo/long-edge.ts` の同じ述語を通す。
+   */
+  readonly movingRings?: readonly MovingRing[];
 }
 
 /**
@@ -216,7 +276,7 @@ export function confirmRelease<S>(input: ReleaseInput<S>): ReleaseOutcome<S> {
   }
 
   // 確定の関門（A5 / A6）。**記録する前**に見る（教訓 5.22 確定までの非破壊）。
-  const refusal = refusalFor(input.session, input.snapshot);
+  const refusal = refusalFor(input.session, input.snapshot, input.movingRings);
   if (refusal !== null) {
     return { kind: RELEASE_OUTCOME.Refused, reason: refusal };
   }

@@ -49,6 +49,7 @@ import {
   type DragSession,
   type DragTarget,
   type FeatureSnapshot,
+  type MovingRing,
   type MovingVertexConstraint,
   type ParentContainment,
   type ReleaseOutcome,
@@ -156,6 +157,11 @@ export interface EditSessionAdapterDeps<S> {
    * (so a surviving snap can become a share pair, 受け入れ基準12).
    */
   readonly buildSnapshot: (session: DragSession) => FeatureSnapshot;
+  /**
+   * 確定の関門（A5）が読む「動かす前のリング」（連続経度）。渡さなければ、関門は
+   * 1 回の移動量だけで粗く見る（増分 3 の手直し 2 回目。`buildMovingRings` が作る）。
+   */
+  readonly movingRings?: ((session: DragSession) => readonly MovingRing[]) | undefined;
   /**
    * Receive the U24 release outcome (no-op or processed) so the host can apply the
    * committed result (re-resolve selection from it, 教訓5.11) or surface a conflict
@@ -439,12 +445,14 @@ export function createEditSessionPort<S>(deps: EditSessionAdapterDeps<S>): EditS
       // drives U13. confirmRelease's own no-op guard (a drag back to start) still
       // applies, but a click never gets this far.
       session = applyMove(session, deps.screenToWorld(point));
+      const rings = deps.movingRings?.(session);
       const outcome = confirmRelease<S>({
         session,
         anchorTime: deps.anchorTime(),
         snapshot: deps.buildSnapshot(session),
         current: deps.currentState(),
         ports: deps.ports,
+        ...(rings === undefined ? {} : { movingRings: rings }),
       });
       // HB3-4: clear the live preview BEFORE applying the committed outcome, so the
       // host stops drawing the transient and the committed geometry (now updated by

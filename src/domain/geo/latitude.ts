@@ -30,7 +30,8 @@ export function isWorldLatitude(lat: number): boolean {
 
 /**
  * 緯度を世界の範囲へ切り詰める（**見え方のためだけ**に使う。記録する座標には使わない）。
- * `render/camera.ts` の `clampLat` はこれを呼ぶ ―― 境界の値の定義は 1 か所だけである。
+ * カメラの中心緯度を切り詰める `render/camera.ts` の `clampLat` はこれを呼ぶので、
+ * 境界の値（±90）の定義はこの module 1 か所だけである。
  */
 export function clampWorldLat(lat: number): number {
   if (lat < WORLD_LAT_MIN_DEG) return WORLD_LAT_MIN_DEG;

@@ -37,6 +37,7 @@ import { createHoleRing, createShape, createTerritoryRing } from '../../domain/r
 import { createVertex, createVertexStore, type VertexStore } from '../../domain/vertex';
 import { timePointYearMonthDay } from '../../domain/time/time-point';
 import {
+  EDIT_REFUSAL,
   RELEASE_OUTCOME,
   buildSnapshot,
   type ReleaseOutcome,
@@ -130,6 +131,12 @@ const committedOutcome: ReleaseOutcome<S> = {
   kind: RELEASE_OUTCOME.Processed,
   result: committed,
   proposal: createEditProposal(TARGET_ID, ANCHOR, buildSnapshot({ vertices: [] })),
+};
+
+/** 確定の関門（U24）が断ったときの結果（増分 3 の手直し 2 回目）。 */
+const refusedOutcome: ReleaseOutcome<S> = {
+  kind: RELEASE_OUTCOME.Refused,
+  reason: EDIT_REFUSAL.LongDrag,
 };
 
 function mountRing(outcome: ReleaseOutcome<S> = committedOutcome): Harness {
@@ -377,6 +384,37 @@ describe('RingEditToolController — 保存できない長さの辺は画面で�
     expect(h.startProcess).not.toHaveBeenCalled();
     expect(screen.getByTestId('ring-edit-message').textContent).toContain('世界を半周以上');
     expect(screen.getByTestId('ring-edit-message').textContent).toContain('途中に点を打って');
+    h.unmount();
+  });
+});
+
+describe('RingEditToolController — 世界の外と、確定の関門の断り（増分 3 の手直し 2 回目）', () => {
+  it('緯度 ±90 度の外を押しても頂点は増えず、理由が日本語で出る', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    clickInput(0, 120); // 北極の上（場所ではない）
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
+    expect(screen.getByTestId('ring-edit-message').textContent).toContain('世界の外');
+    // ±90 ちょうどは中（極そのものは場所である）。
+    clickInput(0, 90);
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('1');
+    h.unmount();
+  });
+
+  it('確定の関門が断ったら、下書きを黙って捨てずに理由を出す', () => {
+    // これまでは `Refused` を `discard()` に落としていたので、確定を押しても
+    // **何も起きず理由も出ない**（現状分析 C1 と同じ「無反応」）状態だった。
+    const h = mountRing(refusedOutcome);
+    activateRing(h.store);
+    selectTargetFace();
+    clickInput(1, 1);
+    clickInput(2, 1);
+    clickInput(2, 2);
+    fireEvent.click(screen.getByTestId('ring-edit-confirm'));
+    expect(screen.getByTestId('ring-edit-message').textContent).toContain('半周以上');
+    // 下書きは残る（直して確定し直せる）。
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('3');
     h.unmount();
   });
 });

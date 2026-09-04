@@ -44,7 +44,8 @@ import {
   type GeoPolygon,
 } from '../../domain/geometry/index';
 import type { FeatureSnapshot, ReleaseOutcome } from '../../domain/editing/index';
-import { RELEASE_OUTCOME } from '../../domain/editing/index';
+import { EDIT_REFUSAL, RELEASE_OUTCOME } from '../../domain/editing/index';
+import { isWorldLatitude } from '../../domain/geo/latitude';
 import {
   RING_COMMAND_STATUS,
   RING_DELETE_OUTCOME,
@@ -352,6 +353,17 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   const runConfirm = useCallback(
     (snapshot: FeatureSnapshot) => {
       const outcome = startProcess(snapshot, anchorTime(), current());
+      if (outcome.kind === RELEASE_OUTCOME.Refused) {
+        // **断られた理由を出す**（増分 3 の手直し 2 回目）。以前はここも `discard()` へ
+        // 落としていたので、確定の関門（世界の外・半周以上の辺）が働いても画面には
+        // 何も出ず、下書きだけが黙って消えた ―― 現状分析 C1 と同じ「無反応」である。
+        setMessage(
+          outcome.reason === EDIT_REFUSAL.LongDrag
+            ? RING_REJECT_MESSAGES['confirm-long-drag']
+            : RING_REJECT_MESSAGES['confirm-outside-world'],
+        );
+        return; // 下書きは残す（直して確定し直せる）。
+      }
       if (outcome.kind !== RELEASE_OUTCOME.Processed) {
         // NoOp: nothing changed (should not happen for add/delete which force changed);
         // discard the transient state so the tool re-arms cleanly (教訓 5.2).
@@ -377,6 +389,15 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   // --- Add sub-mode: place a vertex / classify the first click (教訓 5.7) ----------
   const placeAddVertex = useCallback(
     (leaf: LeafFeature, point: WorldCoordinate) => {
+      // **世界の外には置けない**（増分 3 の手直し 2 回目）。追加の道具と同じ関門を
+      // リング編集にも掛ける ―― 北極の上にも南極の下にも場所が無いのは道具によらない。
+      // 判定は **状態更新の外**で済ませる（React 18 の厳格モードは更新関数を 2 回呼ぶので、
+      // 更新関数の中で `setMessage` を呼ばない ―― `useAddTool` と同じ作法）。
+      // グリッドは緯度を動かさないので、寄せる前の値で見て差し支えない。
+      if (!isWorldLatitude(point.lat)) {
+        setMessage(RING_REJECT_MESSAGES['outside-world']);
+        return;
+      }
       setDraft((d) => {
         const base = d ?? startDraft(leaf.id, gridSnap);
         // FR-78 グリッドスナップ: quantize the placed coordinate through the SAME single
