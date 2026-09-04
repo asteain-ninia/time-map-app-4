@@ -23,7 +23,7 @@
 // 畳んだエディタを埋めると行の高さが可変になり、仮想スクロールが成り立たない。編集した
 // い錨を選んでから触る、という手順は「編集対象を選ぶ」という既存の意味とも合う。
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { AnchorEntry } from '../../domain/anchor-series';
 import type { AnchorSnapshot } from '../../domain/anchor';
@@ -129,6 +129,11 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
 
   const [expanded, setExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  // いまのスクロール位置を effect から読むための写し。state を直接 dep に入れると
+  // 「利用者がスクロールするたびに自動スクロールが割り込む」ことになる（C1）。
+  const scrollTopRef = useRef(0);
+  scrollTopRef.current = scrollTop;
   // 差分の文は錨 ID を鍵に使い回す（§C.6: 見えている行だけ計算する）。行の並びが差し替わったら
   // 捨てる — 同じ錨 ID でも中身が変わりうる（上書き保存はスナップショットを差し替える）。
   const diffCacheRef = useRef<{ rows: readonly AnchorRow[]; cache: Map<AnchorId, string> }>({
@@ -166,6 +171,70 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
       return sentence;
     },
     [dataset, featureIdForDiff],
+  );
+
+  // --- 選ばれている錨まで自動でスクロールする（C1 / バグ狩り #9 / GPT#10） -------
+  //
+  // 既定の母数は「現在時刻の前後 12 本」の 25 件で、窓には 12 行しか入らない。だから
+  // 中央の錨は 13 行目、末尾なら 25 行目になり、**開いた直後に選択中の錨が見えない**。
+  // 見えていないときだけ、その行が窓の真ん中へ来る位置へ動かす（利用者が自分で
+  // スクロールした位置とは喧嘩しない）。
+  const selectedIndex = useMemo(
+    () =>
+      selectedAnchorId === null
+        ? -1
+        : dataset.findIndex((r) => r.entry.anchor.id === selectedAnchorId),
+    [dataset, selectedAnchorId],
+  );
+  useEffect(() => {
+    if (selectedIndex < 0) return;
+    const firstVisible = Math.floor(scrollTopRef.current / ANCHOR_ROW_HEIGHT);
+    const lastVisible = firstVisible + ANCHOR_VISIBLE_ROWS - 1;
+    if (selectedIndex >= firstVisible && selectedIndex <= lastVisible) return;
+    const centred = Math.round(selectedIndex - (ANCHOR_VISIBLE_ROWS - 1) / 2);
+    const maxRow = Math.max(0, dataset.length - ANCHOR_VISIBLE_ROWS);
+    const next = Math.max(0, Math.min(centred, maxRow)) * ANCHOR_ROW_HEIGHT;
+    setScrollTop(next);
+    if (listRef.current !== null) listRef.current.scrollTop = next;
+  }, [selectedIndex, dataset.length]);
+
+  /**
+   * 矢印キー・Home・End で錨を選び替える（C1 / 反証 F8）。**仮想スクロールの窓の外にも
+   * 到達できる**ことが要点である。DOM に載っているのは見えている行だけなので、
+   * 「次の行の DOM を探して押す」形では窓の外へ出られない。母数の添字で動かす。
+   */
+  const moveSelection = useCallback(
+    (to: number): void => {
+      const clamped = Math.max(0, Math.min(to, dataset.length - 1));
+      const row = dataset[clamped];
+      if (row === undefined) return;
+      onSelectAnchor(row.entry);
+    },
+    [dataset, onSelectAnchor],
+  );
+
+  const onKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLUListElement>): void => {
+      const from = selectedIndex < 0 ? 0 : selectedIndex;
+      switch (e.key) {
+        case 'ArrowDown':
+          moveSelection(selectedIndex < 0 ? 0 : from + 1);
+          break;
+        case 'ArrowUp':
+          moveSelection(selectedIndex < 0 ? dataset.length - 1 : from - 1);
+          break;
+        case 'Home':
+          moveSelection(0);
+          break;
+        case 'End':
+          moveSelection(dataset.length - 1);
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+    },
+    [selectedIndex, dataset.length, moveSelection],
   );
 
   if (all.length === 0) {
@@ -222,6 +291,12 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         className="anchor-list"
         data-testid="anchor-list"
         role="listbox"
+        aria-label={PROPERTY_STRINGS.anchorSectionTitle}
+        ref={listRef}
+        // 矢印キー・Home・End で選び替える（C1 / 反証 F8）。行のボタンから上がってくる
+        // ので、枠そのものにも tabIndex を置いて「まだ何も押していない」状態でも効かせる。
+        tabIndex={0}
+        onKeyDown={onKeyDown}
         // 高さは「見せる行数」と「実際の件数」の小さいほう。錨が 1 本しか無い地物で
         // 336px の空箱を出さない（素性欄はそもそも縦に狭い）。
         style={{
@@ -231,9 +306,13 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         }}
         onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
       >
-        {/* 上下の詰め物で「全件ぶんの高さ」を作る（スクロールバーの長さが実際の件数を表す）。 */}
+        {/* 上下の詰め物で「全件ぶんの高さ」を作る（スクロールバーの長さが実際の件数を表す）。
+            listbox の子は option でなければならないので、詰め物と入れ物の li は
+            アクセシビリティの木から外す（role="presentation"）。中の button が option
+            そのものになる（C1）。 */}
         <li
           className="anchor-list__spacer"
+          role="presentation"
           aria-hidden="true"
           style={{ height: `${range.start * ANCHOR_ROW_HEIGHT}px` }}
         />
@@ -242,7 +321,7 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           const indexInDataset = range.start + i;
           const selected = entry.anchor.id === selectedAnchorId;
           return (
-            <li key={entry.anchor.id} className="anchor-list__item">
+            <li key={entry.anchor.id} className="anchor-list__item" role="presentation">
               <button
                 type="button"
                 role="option"
@@ -274,6 +353,7 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         })}
         <li
           className="anchor-list__spacer"
+          role="presentation"
           aria-hidden="true"
           style={{ height: `${Math.max(0, dataset.length - range.end) * ANCHOR_ROW_HEIGHT}px` }}
         />

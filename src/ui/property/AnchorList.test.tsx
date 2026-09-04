@@ -38,7 +38,14 @@ import { timePointYear, timePointYearMonthDay } from '../../domain/time/time-poi
 import { createVertexStore } from '../../domain/vertex';
 
 import { anchorRowsOf } from './anchor-diff';
-import { AnchorList } from './AnchorList';
+import {
+  ANCHOR_OVERSCAN_ROWS,
+  ANCHOR_ROW_HEIGHT,
+  ANCHOR_VISIBLE_ROWS,
+  AnchorList,
+  neighbourWindow,
+  visibleRange,
+} from './AnchorList';
 import { ANCHOR_INTERVAL_OP, type AnchorIntervalEditIntent } from './contracts';
 import { PROPERTY_STRINGS } from './messages';
 
@@ -428,5 +435,146 @@ describe('錨が極端に多い地物でも画面が持つ（実装計画 増分
     // 広げたので「近くだけ見る」に切り替わる＝全件が母数になっている。
     expect(screen.getByTestId('anchor-list-collapse')).toBeInTheDocument();
     expect(rowCount(container)).toBeLessThanOrEqual(25);
+  });
+});
+
+// 増分 2 の手直し C2 — 仮想スクロールの窓が **スクロール位置に追随している**ことを
+// 直接押さえる（反証 F12）。旧版の検査は「DOM の行数が 25 以下」しか見ていなかったので、
+// 「常に先頭 16 行を出す」実装に差し替えても緑のままだった。
+describe('visibleRange — スクロール位置に追随する（C2 / 反証 F12）', () => {
+  it('スクロールしていなければ先頭から', () => {
+    expect(visibleRange(5000, 0)).toEqual({ start: 0, end: ANCHOR_VISIBLE_ROWS + ANCHOR_OVERSCAN_ROWS * 2 });
+  });
+
+  it('スクロールすると窓が動く（先頭固定の実装ならここが赤くなる）', () => {
+    const at40 = visibleRange(5000, 40 * ANCHOR_ROW_HEIGHT);
+    expect(at40.start).toBeGreaterThan(0);
+    expect(at40.start).toBe(40 - ANCHOR_OVERSCAN_ROWS);
+    expect(at40.end).toBe(at40.start + ANCHOR_VISIBLE_ROWS + ANCHOR_OVERSCAN_ROWS * 2);
+
+    // さらにスクロールすればさらに進む（単調）。
+    const at100 = visibleRange(5000, 100 * ANCHOR_ROW_HEIGHT);
+    expect(at100.start).toBeGreaterThan(at40.start);
+  });
+
+  it('末尾では窓が件数に収まる（はみ出さない）', () => {
+    const atEnd = visibleRange(30, 1000 * ANCHOR_ROW_HEIGHT);
+    expect(atEnd.end).toBe(30);
+    expect(atEnd.start).toBe(30 - (ANCHOR_VISIBLE_ROWS + ANCHOR_OVERSCAN_ROWS * 2));
+  });
+
+  it('件数が窓より少なければ全件', () => {
+    expect(visibleRange(3, 0)).toEqual({ start: 0, end: 3 });
+  });
+});
+
+describe('neighbourWindow — 現在時刻の前後を切り出す（C2）', () => {
+  function rowsOfYears(years: readonly number[]) {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return anchorRowsOf(
+      years.map((y) =>
+        createAnchorEntry(createAnchor(asAnchorId(`w${String(y)}`), snap), timePointYear(y), null),
+      ),
+      fid,
+    );
+  }
+
+  it('現在時刻が動くと切り出す範囲も動く（固定の先頭 25 件ならここが赤くなる）', () => {
+    const years = Array.from({ length: 200 }, (_, i) => i);
+    const rows = rowsOfYears(years);
+    const early = neighbourWindow(rows, timePointYear(5), cal);
+    const late = neighbourWindow(rows, timePointYear(150), cal);
+    expect(early.offset).toBe(0);
+    expect(late.offset).toBeGreaterThan(100);
+    expect(late.rows[0]?.entry.start.year).toBe(late.offset);
+  });
+
+  it('件数が少なければ全件（offset は 0）', () => {
+    const rows = rowsOfYears([0, 10, 20]);
+    const w = neighbourWindow(rows, timePointYear(10), cal);
+    expect(w.rows).toHaveLength(3);
+    expect(w.offset).toBe(0);
+  });
+});
+
+// 増分 2 の手直し C1 — 選ばれている錨まで自動でスクロールし、鍵盤で窓の外へも行ける
+// （バグ狩り #9 / GPT#10 / 反証 F8）。
+describe('錨表の操作性（C1）', () => {
+  const BIG = 200;
+
+  function bigRows() {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    return anchorRowsOf(
+      Array.from({ length: BIG }, (_, i) =>
+        createAnchorEntry(createAnchor(asAnchorId(`k${String(i)}`), snap), timePointYear(i), null),
+      ),
+      fid,
+    );
+  }
+
+  function renderBig(selected: AnchorId | null, onSelect: (e: AnchorEntry) => void = () => {}) {
+    return render(
+      <AnchorList
+        rows={bigRows()}
+        featureIdForDiff={fid}
+        // 母数（現在時刻の前後 12 本）を 100 前後に寄せる。
+        currentTime={timePointYear(100)}
+        calendar={cal}
+        selectedAnchorId={selected}
+        onSelectAnchor={onSelect}
+      />,
+    );
+  }
+
+  it('選ばれている錨の行が、開いた直後から DOM に載っている（末尾側でも）', () => {
+    // 母数は 88..112 の 25 件。窓は 12 行なので、旧版では 112 の行は DOM に無かった。
+    renderBig(asAnchorId('k112'));
+    expect(screen.getByTestId('anchor-row-k112')).toBeInTheDocument();
+  });
+
+  it('選んでいなければ勝手にスクロールしない（先頭から出す）', () => {
+    renderBig(null);
+    expect(screen.getByTestId('anchor-row-k88')).toBeInTheDocument();
+  });
+
+  it('↓ で次の錨を選ぶ。仮想スクロールで DOM に無い行にも行ける（反証 F8）', () => {
+    const picked: AnchorEntry[] = [];
+    renderBig(asAnchorId('k100'), (e) => picked.push(e));
+    // 100 は母数の 13 番目（0 起点 12）。次は 101。
+    fireEvent.keyDown(screen.getByTestId('anchor-list'), { key: 'ArrowDown' });
+    expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k101')]);
+  });
+
+  it('↑ で前の錨を選ぶ', () => {
+    const picked: AnchorEntry[] = [];
+    renderBig(asAnchorId('k100'), (e) => picked.push(e));
+    fireEvent.keyDown(screen.getByTestId('anchor-list'), { key: 'ArrowUp' });
+    expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k99')]);
+  });
+
+  it('Home / End は母数の端へ跳ぶ（窓の外でも届く）', () => {
+    const picked: AnchorEntry[] = [];
+    renderBig(asAnchorId('k100'), (e) => picked.push(e));
+    const list = screen.getByTestId('anchor-list');
+    fireEvent.keyDown(list, { key: 'Home' });
+    fireEvent.keyDown(list, { key: 'End' });
+    expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k88'), asAnchorId('k112')]);
+  });
+
+  it('端では行き止まりになる（範囲の外へ出ない）', () => {
+    const picked: AnchorEntry[] = [];
+    renderBig(asAnchorId('k88'), (e) => picked.push(e));
+    fireEvent.keyDown(screen.getByTestId('anchor-list'), { key: 'ArrowUp' });
+    expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k88')]);
+  });
+
+  it('listbox の子は option になっている（入れ物の li は木から外す）', () => {
+    renderBig(asAnchorId('k100'));
+    const list = screen.getByTestId('anchor-list');
+    expect(list).toHaveAttribute('role', 'listbox');
+    for (const li of Array.from(list.querySelectorAll('li'))) {
+      expect(li.getAttribute('role')).toBe('presentation');
+    }
+    expect(list.querySelectorAll('[role="option"]').length).toBeGreaterThan(0);
   });
 });
