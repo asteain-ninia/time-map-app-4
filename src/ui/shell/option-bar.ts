@@ -144,6 +144,31 @@ export class OptionBarStore {
    */
   private readonly slotTokens = new Map<string, symbol>();
 
+  /**
+   * 設定欄の **並び順キー**。id ごとに「初めて登録されたとき 1 回だけ」単調増加の番号を
+   * 配り、`state.slots` は常にこの番号の小さい順に並べて公開する。
+   *
+   * **なぜ「載っている配列の中でその場で差し替える」だけでは足りないか**（増分 3 で
+   * 直したつもりが直っていなかった粗）: 同じ effect の依存が変わったとき、React は
+   * 「（古い登録の）後片付け → （新しい登録の）再実行」の順に走らせる。中身を更新して
+   * 登録し直すのはまさにこの経路である。だから登録し直す瞬間には、
+   * 古い後片付けが**先に**そのスロットを外し終えている。新しい登録から見ると配列に
+   * その id は載っていないので、「その場で差し替える」分岐は一度も通らず、必ず末尾へ
+   * 回る。結果、吸着の許容値を変えるたびに「吸着 ▾」が「1 つ戻す」の右へ飛ぶ。
+   * id ごとの番号を store 側が覚えていれば、いったん外れても同じ場所へ戻る。
+   *
+   * したがって **取り外し（unregister）では番号を捨てない**。捨てると、戻ってきた id が
+   * 新しい番号をもらって末尾へ行き、同じ症状に戻る。捨てるのは道具を降りる
+   * {@link reset} のときだけ（次の道具の設定欄は、その道具が入れた順に並ぶ）。
+   *
+   * 番号は描画にも `store.get()` の同一性にも関係しない内部の値なので、`slotTokens` と
+   * 同じく {@link OptionBarSlot} には入れない。
+   */
+  private readonly slotOrder = new Map<string, number>();
+
+  /** 次に配る並び順キー。単調増加させ、{@link reset} で 0 へ戻す。 */
+  private nextSlotOrder = 0;
+
   get(): OptionBarState {
     return this.state;
   }
@@ -194,6 +219,10 @@ export class OptionBarStore {
    * 同じ id・同じ node インスタンスで登録し直したときに、遅れて走った古い後片付けが
    * 生きている登録を消してしまうため（詳しくは `slotTokens` の注記）。
    *
+   * **並び順は「id ごとの並び順キー」で決める**（{@link slotOrder}）。配列の中でその場で
+   * 差し替える形では直らない ―― 登録し直す瞬間には古い後片付けが先に走っていて、
+   * 配列にその id は載っていないからである（詳しくは `slotOrder` の注記）。
+   *
    * また **変化が無ければ何もしない**（同じ id に同じ node が既に載っているとき）。
    * ここで無条件に `replace` すると、押し込むたびに購読者（OptionBar）が再レンダーし、
    * 描画中に呼ぶ経路では無限ループになる。印だけは新しいものへ差し替えるが、印は
@@ -208,11 +237,19 @@ export class OptionBarStore {
   registerOptionSlot(id: string, node: ReactNode): () => void {
     const token = Symbol(id);
     this.slotTokens.set(id, token);
+    // 並び順キーは **id につき 1 回だけ** 配る。2 回目以降（＝中身の更新）は最初の
+    // 番号をそのまま使うので、いったん外れてから戻ってきても元の場所へ戻る。
+    if (!this.slotOrder.has(id)) {
+      this.slotOrder.set(id, this.nextSlotOrder);
+      this.nextSlotOrder += 1;
+    }
 
     const unregister = (): void => {
       // 自分の登録が今も載っているときだけ外す（印の同一性で見る）。
       if (this.slotTokens.get(id) !== token) return;
       this.slotTokens.delete(id);
+      // 並び順キーはここでは **捨てない**。捨てると、中身の更新（外す → 入れ直す）の
+      // たびに新しい番号をもらって末尾へ回り、部品が左右へ飛ぶ。
       const current = this.state.slots;
       const remaining = current.filter((s) => s.id !== id);
       // reset() 等で既に消えていたら状態は動かさない（同一性を保つ）。
@@ -223,14 +260,23 @@ export class OptionBarStore {
     const at = this.state.slots.findIndex((s) => s.id === id);
     if (at >= 0 && this.state.slots[at]?.node === node) return unregister;
 
-    // **並び順は最初に入れた場所のまま**にする（増分 3 で見つけた粗）。差し替えのたびに
-    // 末尾へ回すと、設定欄の部品が中身の更新のたびに左右へ飛ぶ（例: 「吸着 ▾」が
-    // 許容値を変えるたびに「1 つ戻す」の右へ移動する）。
+    // **並び順は id ごとの番号で決める**。差し替えのたびに末尾へ回すと、設定欄の部品が
+    // 中身の更新のたびに左右へ飛ぶ（例: 「吸着 ▾」が許容値を変えるたびに「1 つ戻す」の
+    // 右へ移動する）。
     const next = [...this.state.slots];
     if (at >= 0) next[at] = { id, node };
     else next.push({ id, node });
+    next.sort((a, b) => this.slotOrderOf(a.id) - this.slotOrderOf(b.id));
     this.replace({ slots: next });
     return unregister;
+  }
+
+  /**
+   * 並び順キーを読む。番号が無い id は末尾へ回す（`registerOptionSlot` が必ず先に
+   * 配るので通らないはずの道だが、番号の有無で並びが不定にならないよう固定しておく）。
+   */
+  private slotOrderOf(id: string): number {
+    return this.slotOrder.get(id) ?? Number.MAX_SAFE_INTEGER;
   }
 
   /**
@@ -262,6 +308,10 @@ export class OptionBarStore {
     // 印も一緒に捨てる。残すと、reset のあとに遅れて走った古い後片付けが
     // 「自分のものが載っている」と誤判定しうる。
     this.slotTokens.clear();
+    // 並び順キーも捨てる。道具が替われば設定欄の顔ぶれも替わるので、前の道具が使った
+    // 番号を引きずると、次の道具の部品が「前の道具での順番」で並んでしまう。
+    this.slotOrder.clear();
+    this.nextSlotOrder = 0;
     if (this.state === EMPTY_STATE) return;
     this.state = EMPTY_STATE;
     this.emit();

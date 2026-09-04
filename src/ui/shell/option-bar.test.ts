@@ -1,6 +1,6 @@
 // オプションバーの内容ストア（設計書 §C.4）の単体テスト。
 //
-// 守る性質は 3 つ。
+// 守る性質は 4 つ。
 //  1. **4 本の API が押し込んだものがそのまま読める**（道具の実装が使う契約）。
 //  2. **変化しなかった呼び出しでは通知もスナップショットの差し替えもしない**。ここが崩れると
 //     `useSyncExternalStore` が毎レンダー新しいスナップショットを見て無限ループになる。
@@ -9,6 +9,10 @@
 //     全経路で破棄する」を、破棄が行きすぎないほうから固定する）。所有権は登録ごとの印で
 //     見るので、**同じ id に同じ node インスタンスを入れ直した**あとに古い後片付けが遅れて
 //     走っても、生きている登録は消えない。
+//  4. **設定欄の並び順は、その id を最初に入れた場所のまま**。中身が更新されるたびに部品が
+//     左右へ飛ばないこと。ここを見るテストは **必ず取り外しを挟んでから登録し直す**。
+//     挟まないと、並び順キーが無くても（配列の中でその場で差し替えるだけでも）緑になり、
+//     実際に起きる順序（後片付け → 再実行）での不具合を見逃す。
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -259,5 +263,66 @@ describe('OptionBarStore.registerOptionSlot — 並び順（増分 3 で見つ�
     store.registerOptionSlot('snap', 'A2');
     expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'undo']);
     expect(store.get().slots[0]?.node).toBe('A2');
+  });
+
+  // ここから下が **実際に起きる順序**。上の 2 本は「外さずに登録し直す」しか見ていないので、
+  // 並び順キーが無くても（配列の中でその場で差し替えるだけでも）緑になってしまう。
+  // 本物の経路では、同じ effect の依存が変わると React は「後片付け → 再実行」の順に走らせる。
+  // つまり登録し直す瞬間には古い後片付けが**先に**スロットを外し終えていて、新しい登録から
+  // 見ると配列にその id は載っていない。だから「その場で差し替える」分岐は一度も通らない。
+
+  it('外してから登録し直しても、元の場所へ戻る（後片付けを挟む本物の順序）', () => {
+    const store = new OptionBarStore();
+    const offSnap = store.registerOptionSlot('snap', 'A');
+    store.registerOptionSlot('undo', 'B');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'undo']);
+
+    offSnap(); // 古い登録の後片付け（React はこちらを先に走らせる）
+    expect(store.get().slots.map((s) => s.id)).toEqual(['undo']);
+
+    store.registerOptionSlot('snap', 'A2'); // 新しい登録
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'undo']);
+    expect(store.get().slots[0]?.node).toBe('A2');
+  });
+
+  it('中身の更新（外す→入れ直す）を繰り返しても、「吸着 ▾」は先頭のまま', () => {
+    // 吸着の許容値を 1px ずつ変えるように、同じ部品が何度も入れ替わる場面。
+    // 1 回でも末尾へ回ると、以後ずっと左右が入れ替わったままになる。
+    const store = new OptionBarStore();
+    let offSnap = store.registerOptionSlot('snap', '許容 8px');
+    store.registerOptionSlot('add-undo', '1 つ戻す');
+
+    for (const tolerance of ['許容 9px', '許容 10px', '許容 11px']) {
+      offSnap();
+      offSnap = store.registerOptionSlot('snap', tolerance);
+      expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'add-undo']);
+    }
+    expect(store.get().slots[0]?.node).toBe('許容 11px');
+  });
+
+  it('あとから入った部品は、外して入れ直しても後ろのまま', () => {
+    // ［1 つ戻す］は「描いている最中だけ」出るので、作図の途中で外れて戻る。
+    // 戻ってきたときに「吸着 ▾」より前へ出てはいけない。
+    const store = new OptionBarStore();
+    store.registerOptionSlot('snap', 'A');
+    const offUndo = store.registerOptionSlot('add-undo', 'B');
+
+    offUndo();
+    store.registerOptionSlot('add-undo', 'B2');
+
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'add-undo']);
+  });
+
+  it('reset で並び順キーも捨てる（次の道具は、その道具が入れた順に並ぶ）', () => {
+    // 道具を降りたら設定欄の顔ぶれも替わる。前の道具での順番を引きずると、次の道具が
+    // 「1 つ戻す → 吸着 ▾」の順に入れたのに前の道具の並びで出てしまう。
+    const store = new OptionBarStore();
+    store.registerOptionSlot('snap', 'A');
+    store.registerOptionSlot('add-undo', 'B');
+    store.reset();
+
+    store.registerOptionSlot('add-undo', 'B2');
+    store.registerOptionSlot('snap', 'A2');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['add-undo', 'snap']);
   });
 });
