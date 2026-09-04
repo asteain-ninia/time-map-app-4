@@ -8,13 +8,15 @@
 // wrap-replicates across the seam (FR-07) and keeps marker / line sizes constant.
 //
 // The provisional add visuals are drawn in a style VISUALLY DISTINCT from
-// confirmed features (spec §仮スタイル, FR-78): a dashed/accent stroke and accent
-// markers declared once here. For a FACE add, the CLOSING line (last vertex back
-// to the start) is drawn TRANSLUCENT (spec §クロージング線半透明) and only once a
-// ring is closable (≥3 vertices) — 教訓 5.18 (drawn only when the closing edge is
-// a real edge, not a degenerate self-loop). The render layer subscribes to the
-// session state directly so the 60FPS draw path never rides a React re-render
-// (技術方針 2.3 / 2.5).
+// confirmed features (spec §仮スタイル, FR-78), declared once here. For a FACE add,
+// the CLOSING line (last vertex back to the start) is drawn TRANSLUCENT and DASHED
+// (spec §クロージング線半透明) and only once a ring is closable (≥3 vertices) —
+// 教訓 5.18 (drawn only when the closing edge is a real edge, not a degenerate
+// self-loop). 増分 3 で足したもの（この見出しが古いまま残っていたので書き足した）:
+// **半透明の下塗り**（N-15。いま確定したらこうなる形）、**琥珀の輪**（吸着の予告）、
+// **赤い長辺**（N-51。1 辺で経度 180 度以上を渡る辺）。置いた辺は実線のままである。
+// The render layer subscribes to the session state directly so the 60FPS draw path
+// never rides a React re-render (技術方針 2.3 / 2.5).
 //
 // 教訓 5.25: the provisional preview edge (cursor-follow) is drawn for line / face
 // only — a point has no edge — and a face's closing line is NOT widened to lines
@@ -193,9 +195,13 @@ function closingPrimitives(session: AddSession, style: AddStyle): DrawPrimitive[
 }
 
 /**
- * N-15: 描いている最中の面の**塗り**（半透明）。3 頂点そろって初めて面になるので
- * {@link canConfirm} と同じ判定で出す。カーソルが動いている間は preview の点も
- * 輪郭に含めるので、「いま確定したらこの形になる」が塗りで読める。
+ * N-15: 描いている最中の面の**塗り**（半透明）。
+ *
+ * **`canConfirm` とは数え方が違う**（増分 3 の手直し。コメントが実物と食い違っていた）。
+ * ここはカーソルが乗っている preview の点も輪郭に**含めて** 3 点あるかを見るので、
+ * **置いた頂点 2 個＋カーソル 1 点でも塗りが出る** ―― 「いま確定したらこの形になる」を
+ * 見せるのが目的なので、それが正しい。`canConfirm`（`domain/add/session.ts`）は
+ * **置いた頂点だけ**を数えるので、この塗りが出ていても確定ボタンはまだ押せない。
  */
 function draftFillPrimitives(session: AddSession, style: AddStyle): DrawPrimitive[] {
   if (session.tool !== ADD_TOOL_KIND.Face) return [];
@@ -256,12 +262,19 @@ function snapRingPrimitives(session: AddSession, style: AddStyle): DrawPrimitive
 // --- Whole-session batch ----------------------------------------------------
 
 /**
- * Build the full provisional add primitive list from the session, back-to-front:
- * placed edges, then the translucent closing line (face), then the cursor preview
- * edge/marker, then the placed-vertex markers on top. A `null` session (no add in
- * progress) yields `[]` — a real, valid empty frame (教訓 5.18), never skipped by
- * a falsy short-circuit. All sizes are screen-fixed (FR-17); U17 transforms /
- * seam-replicates (FR-07).
+ * Build the full provisional add primitive list from the session, back-to-front
+ * (増分 3 で 4 段 → 7 段になった。列挙が古いまま残っていたのを直した):
+ *   1. 面の下塗り（N-15。いま確定したらこうなる形）
+ *   2. 置いた辺
+ *   3. 閉じる辺（面。半透明の破線）
+ *   4. カーソル追従の辺 / 目印
+ *   5. 半周以上を渡る辺の赤い描き直し（N-51）
+ *   6. 置いた頂点の目印
+ *   7. 吸着の予告（琥珀の輪。最前面 ―― 置かれる場所を隠さない）
+ *
+ * A `null` session (no add in progress) yields `[]` — a real, valid empty frame
+ * (教訓 5.18), never skipped by a falsy short-circuit. All sizes are screen-fixed
+ * (FR-17); U17 transforms / seam-replicates (FR-07).
  */
 export function buildAddPrimitives(
   session: AddSession | null,
