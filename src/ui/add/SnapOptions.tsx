@@ -29,6 +29,7 @@ import {
 } from 'react';
 
 import {
+  clampSnapTolerancePx,
   SNAP_TOLERANCE_MAX_PX,
   SNAP_TOLERANCE_MIN_PX,
   type SnapSettings,
@@ -40,6 +41,17 @@ import { ADD_STRINGS } from './strings';
 const VIEWPORT_MARGIN = 4;
 /** アンカーとの隙間（px）。 */
 const ANCHOR_GAP = 4;
+
+/**
+ * 許容値に入れられる範囲を、欄のそばに **目で見える形で** 出す文字列（「1〜50px」）。
+ *
+ * 数値は `session.ts` の定数から組み立てる。ここに 1 と 50 を書き写すと、範囲を変えた
+ * ときに画面の案内だけ古いまま残る（教訓 5.29 単一真実源）。
+ *
+ * **本来は `src/ui/add/strings.ts` へ移す**。この作業では strings.ts が別の人の編集中で
+ * 触れないため、暫定でここに置いてある。
+ */
+const SNAP_TOLERANCE_RANGE_TEXT = `${SNAP_TOLERANCE_MIN_PX}〜${SNAP_TOLERANCE_MAX_PX}px`;
 
 export interface SnapOptionsProps {
   readonly settings: SnapSettings;
@@ -62,10 +74,50 @@ export function SnapOptions(props: SnapOptionsProps): JSX.Element {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const panelId = useId();
 
+  // 許容値の欄に **打っている途中の文字**（null = 触っていない ＝ 設定の値をそのまま出す）。
+  //
+  // これが無いと、打つそばから値が書き換わる。欄を設定の値で直に描いていたので、
+  // 「50」を打とうとして「5」まで入れた時点で店（ストア）が `clampSnapTolerancePx` で
+  // 丸めた値を返し、次の 1 文字を打つ前に欄の中身が入れ替わっていた。**丸めるのは欄から
+  // 離れたとき（blur）だけ**にして、打っている間は打った文字をそのまま残す。
+  const [toleranceDraft, setToleranceDraft] = useState<string | null>(null);
+
   const close = useCallback(() => {
     setOpen(false);
     setPosition(null);
+    // 教訓 5.2: 一時的な入力途中の文字は、閉じる経路でも捨てる。
+    setToleranceDraft(null);
   }, []);
+
+  // 打っている間: 文字はそのまま残す。**すでに使える範囲に収まっている数**のときだけ
+  // 設定へ流す（丸めが起きないので欄は書き換わらない）。範囲の外や数でない文字は
+  // 欄から離れるまで待つ。
+  const onToleranceInput = useCallback(
+    (text: string): void => {
+      setToleranceDraft(text);
+      const parsed = Number(text);
+      if (text.trim() === '' || !Number.isInteger(parsed)) return;
+      if (parsed < SNAP_TOLERANCE_MIN_PX || parsed > SNAP_TOLERANCE_MAX_PX) return;
+      onChange({ tolerancePx: parsed });
+    },
+    [onChange],
+  );
+
+  // 欄から離れたとき: ここで初めて範囲へ丸める。丸め方は `session.ts` の
+  // `clampSnapTolerancePx` 1 か所に任せる（教訓 5.29）。数として読めない（空欄など）
+  // ときは既定へ落とさず、いまの値へ戻す ―― 空欄にしただけで 12 に化けると驚く。
+  const onToleranceBlur = useCallback((): void => {
+    const text = toleranceDraft;
+    setToleranceDraft(null);
+    if (text === null) return;
+    const parsed = Number(text);
+    const next =
+      text.trim() === '' || !Number.isFinite(parsed)
+        ? settings.tolerancePx
+        : clampSnapTolerancePx(parsed);
+    if (next === settings.tolerancePx) return;
+    onChange({ tolerancePx: next });
+  }, [toleranceDraft, settings.tolerancePx, onChange]);
 
   // 開いた直後に、アンカーの矩形と実寸から置き場所を決める（Tooltip と同じ作法）。
   useLayoutEffect(() => {
@@ -189,11 +241,17 @@ export function SnapOptions(props: SnapOptionsProps): JSX.Element {
             min={SNAP_TOLERANCE_MIN_PX}
             max={SNAP_TOLERANCE_MAX_PX}
             step={1}
-            value={settings.tolerancePx}
+            value={toleranceDraft ?? String(settings.tolerancePx)}
             disabled={!settings.enabled}
-            onChange={(e) => onChange({ tolerancePx: Number(e.target.value) })}
+            onChange={(e) => onToleranceInput(e.target.value)}
+            onBlur={onToleranceBlur}
           />
           {ADD_STRINGS.snapToleranceUnit}
+          {/* 入れられる範囲は画面に出す。`min` / `max` だけだと、外れた値を打って
+              離れた瞬間に黙って別の数へ変わり、理由が分からない。 */}
+          <span className="snap-options__note" data-testid="snap-tolerance-range">
+            {SNAP_TOLERANCE_RANGE_TEXT}
+          </span>
         </label>
 
         {gridSnap !== undefined && (

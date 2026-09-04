@@ -20,7 +20,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -121,6 +121,17 @@ export interface AddToolControllerProps<S> {
    * feature while the add chrome owns the interaction (single-source boundary).
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
+  /**
+   * **打ちかけの下書きを捨てたことを伝える口**（増分 3 の手直し D1。バグ狩り #6 /
+   * 反証 #7 / GPT #8・#10）。
+   *
+   * 道具を切り替える・別のファイルを開く・新規にする・読むだけにする、のどれでも
+   * 打ちかけの頂点は**黙って消えていた**。これらの経路は「セッションの外側で既に
+   * 遷移が済んでから」道具に届くので、遷移そのものを差し止めることはできない
+   * （差し止めは書き込みの手前に関門を置く仕事＝増分 5）。**せめて黙って消さない**
+   * ため、捨てた頂点の数をここから報せて状態行に出す。`count` は捨てた頂点の数。
+   */
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
   /** Face parent candidates at the current time (FR-77); host-resolved (U10/U08). */
   readonly parentCandidates?: readonly ParentCandidate[] | undefined;
   /**
@@ -186,6 +197,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     addDraft,
     style,
   } = props;
+  const onDraftDiscarded = props.onDraftDiscarded;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
   const mode = useStore(store, (s) => s.mode);
@@ -223,10 +235,22 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     mode === EDIT_MODE.Add ? addToolKindFor(activeTool) : null;
   const prevKindRef = useRef<AddToolKind | null>(null);
 
+  // 打ちかけの量（頂点の数）を写しで持つ。捨てる瞬間に「何を捨てたか」を言うために要る
+  // ―― 捨てたあとでは数えられない（教訓 5.18: 0 も真の値なので長さで見る）。
+  const draftSizeRef = useRef(0);
+  draftSizeRef.current =
+    add.phase === ADD_PHASE.PropertyForm
+      ? (add.draft?.vertices.length ?? 0)
+      : (add.session?.vertices.length ?? 0);
+
   useEffect(() => {
     const prev = prevKindRef.current;
     if (activeKind === prev) return;
     prevKindRef.current = activeKind;
+    // **黙って捨てない**（増分 3 の手直し D1）。ここへ届くころには道具もモードも既に
+    // 切り替わっているので遷移は止められないが、捨てた事実は報せられる。
+    const lost = draftSizeRef.current;
+    if (lost > 0) onDraftDiscarded?.(lost);
     if (activeKind === null) {
       // Left 追加モード or cleared the tool: discard the session (教訓 5.2 (d)/(e)).
       add.resetForSwitch();
@@ -239,18 +263,19 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     // transition, never on every render (`add`'s callbacks are stable enough here).
   }, [activeKind]);
 
-  // --- Re-arm after a commit (受け入れ基準 6「保存（確定）→ 再度追加開始」). A
-  // successful save discards the session (教訓 5.2) but the add tool stays
-  // selected, so the user is still in "adding面 mode" and expects a FRESH empty
-  // session to draw the next feature. When the flow has returned to Idle with no
-  // session yet an add tool is still active, start anew — the re-start clears any
-  // 残存, so the next session begins with zero vertices.
-  useEffect(() => {
-    if (activeKind === null) return;
-    if (add.phase === ADD_PHASE.Idle && add.session === null) {
-      add.start(activeKind);
-    }
-  }, [activeKind, add.phase, add.session, add.start]);
+  // --- 保存のあとは **待機（構えているが描いていない）** に戻す（増分 3 の手直し D3 / GPT #9）。
+  //
+  // 以前はここで空のセッションを即座に張り直していた。ところが「作図中」であるあいだ
+  // 追加の道具が **大域の取り消しを占有する**（`onDrawingChange(true)` がホストの
+  // ショートカットを止める）ので、**保存した直後に Ctrl+Z を押しても追加が取り消せなかった**
+  // ―― 空の下書きに対する Ctrl+Z はセッションを畳んで構え直すだけで終わる。設計書 §E.1 の
+  // V1/V2 が数えている「確定後 Ctrl+Z 1 手」に反する。
+  //
+  // いまは **道具を構えているが待機している**状態を持ち、最初の地図クリックで作図を始める
+  // （`onMapPointerDown`）。待機中は大域の取り消しが生きているので、Ctrl+Z は「いま保存した
+  // 追加」に効く。受け入れ基準 6「保存（確定）→ 再度追加開始」は、道具を構えたままで
+  // 次の 1 点を打てば作図が始まる、という形で満たされる。
+  const armed = activeKind !== null && add.phase === ADD_PHASE.Idle && add.session === null;
 
   // --- 教訓 5.5: re-validate the chosen face parent when the candidate set changes
   // (a time change can drop a covering parent). Runs only while a session exists.
@@ -281,6 +306,13 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         e.preventDefault();
+        // **3 点以上の打ちかけは確認してから捨てる**（増分 3 の手直し D1 / GPT #10）。
+        // Escape はいちばん押しやすい打鍵なので、閉じられる形（＝作り直すのに手間がかかる形）
+        // まで来ていたら 1 度聞く。1〜2 点は聞かない（押し直せば済む）。
+        if (add.canComplete) {
+          setPendingDiscard(true);
+          return;
+        }
         add.cancel();
         return;
       }
@@ -312,6 +344,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const onDrawingChange = props.onDrawingChange;
   useEffect(() => {
     if (onDrawingChange === undefined) return;
+    // 待機中（構えているが 1 点も打っていない）は **大域の取り消しを止めない**（D3 / GPT #9）。
+    // 止めると保存直後の Ctrl+Z が「いま保存した追加」に届かない。
     const drawing = add.phase !== ADD_PHASE.Idle;
     onDrawingChange(drawing);
     // On unmount, clear the flag so a torn-down controller never leaves the global
@@ -322,21 +356,58 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // --- Map-input handlers the host wires onto the input layer (教訓 5.14). A click
   // places a vertex (placeAt); pointer move updates the cursor-follow preview.
   const onMapPointerDown = useCallback(
-    (e: { clientX: number; clientY: number; button?: number }) => {
-      if (add.phase !== ADD_PHASE.Drawing) return;
+    (e: { clientX: number; clientY: number; button?: number; ctrlKey?: boolean }) => {
+      if (add.phase !== ADD_PHASE.Drawing && !armed) return;
       // Left button only (button 0 / unspecified in synthetic events).
       if (e.button !== undefined && e.button !== 0) return;
-      add.placeAt(screenToWorld(e.clientX, e.clientY));
+      // **待機からの 1 点目で作図を始める**（D3）。`start` は写しも同じ入力の中で
+      // 更新するので、続けて `placeAt` を呼んでよい。
+      if (armed && activeKind !== null) add.start(activeKind);
+      // `Ctrl` を押している間は吸着を切る（設計書 §I.2 / C6）。押した瞬間の状態を
+      // 打鍵の購読ではなくイベント自身から読むので、焦点がどこにあっても食い違わない。
+      add.placeAt(screenToWorld(e.clientX, e.clientY), e.ctrlKey === true);
     },
-    [add.phase, add.placeAt, screenToWorld],
+    [add.phase, add.placeAt, add.start, armed, activeKind, screenToWorld],
   );
 
+  // **カーソル移動は 1 フレームに 1 回へまとめる**（増分 3 の手直し D9 / GPT #11 / B34）。
+  // 移動のたびに吸着の当たり判定と React の状態更新が走る。実データ（頂点 70,268 個）で
+  // 許容 50px のときは 1 移動あたり 0.57ms（既定 12px では 0.08ms）を実測しており、
+  // 高頻度のマウスでは取りこぼしのない範囲で無駄が積み上がる。**最後の 1 件だけ**を
+  // 次の描画フレームで処理すれば、見え方は変わらないまま呼び出し回数が画面の更新回数に揃う。
+  const pendingMoveRef = useRef<{
+    clientX: number;
+    clientY: number;
+    ctrlKey: boolean;
+  } | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
+  const previewAt = add.preview;
+  useEffect(() => {
+    // 道具を降りる・部品が外れる全経路で予約を捨てる（教訓 5.2）。
+    return () => {
+      if (moveFrameRef.current !== null) cancelAnimationFrame(moveFrameRef.current);
+      moveFrameRef.current = null;
+      pendingMoveRef.current = null;
+    };
+  }, []);
   const onMapPointerMove = useCallback(
-    (e: { clientX: number; clientY: number }) => {
+    (e: { clientX: number; clientY: number; ctrlKey?: boolean }) => {
       if (add.phase !== ADD_PHASE.Drawing) return;
-      add.preview(screenToWorld(e.clientX, e.clientY));
+      pendingMoveRef.current = {
+        clientX: e.clientX,
+        clientY: e.clientY,
+        ctrlKey: e.ctrlKey === true,
+      };
+      if (moveFrameRef.current !== null) return; // すでに次のフレームを予約済み。
+      moveFrameRef.current = requestAnimationFrame(() => {
+        moveFrameRef.current = null;
+        const last = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (last === null) return;
+        previewAt(screenToWorld(last.clientX, last.clientY), last.ctrlKey);
+      });
     },
-    [add.phase, add.preview, screenToWorld],
+    [add.phase, previewAt, screenToWorld],
   );
 
   // --- Camera passthrough (bughunt: 追加描画中の中ボタンパン/ホイールズーム). The input
@@ -377,6 +448,13 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // **帯は 1 つの道具だけが持つ**（`OptionBarStore.claim`）。道具を構えた瞬間に持ち、
   // 降りた瞬間に手放す。手放しは自分が持っているときだけ効くので、別の道具が先に
   // 持っていたら空振りする（増分 1 の申し送り「reset を誰がいつ呼ぶか」への答え）。
+  // Escape で捨てる前の確認（D1）。増分 2 の N-04（素性欄の下書き）と同じ器の形にする。
+  const [pendingDiscard, setPendingDiscard] = useState(false);
+  useEffect(() => {
+    // 局面が変わったら確認は畳む（教訓 5.2: 一時状態は全経路で破棄する）。
+    if (add.phase === ADD_PHASE.Idle) setPendingDiscard(false);
+  }, [add.phase]);
+
   const optionOwnerRef = useRef<object | null>(null);
   useEffect(() => {
     if (optionBar === undefined) return;
@@ -429,12 +507,24 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const cancel = add.cancel;
   const undo = add.undo;
   const drawing = add.phase === ADD_PHASE.Drawing;
+  const inPropertyForm = add.phase === ADD_PHASE.PropertyForm;
+  const draftVertexCount = add.draft?.vertices.length ?? 0;
   useEffect(() => {
     if (optionBar === undefined || activeKind === null) return;
     optionBar.setToolName(toolNameFor(activeKind));
-    optionBar.setTarget(null, ADD_STRINGS.targetVertices(vertexCount));
+    // **対象欄と次の一手は局面で変わる**（増分 3 の手直し C2。設計 S3-4 / 反証 #6 /
+    // バグ狩り #5）。素性を入力している間も「頂点 N 個（未確定）」「もう 1 点打つか…」と
+    // 出ていたので、**画面が実際の局面と食い違っていた**（もう打てないし、確定は済んでいる）。
+    optionBar.setTarget(
+      null,
+      inPropertyForm
+        ? ADD_STRINGS.targetVerticesConfirmed(draftVertexCount)
+        : ADD_STRINGS.targetVertices(vertexCount),
+    );
     optionBar.setNextStep(
-      nextStepFor(activeKind, vertexCount, message, previewSharedId, featureNameOf),
+      inPropertyForm
+        ? (message ?? ADD_STRINGS.nextStepPropertyForm)
+        : nextStepFor(activeKind, vertexCount, message, previewSharedId, featureNameOf),
     );
     // **描いている最中だけ確定・やめるを出す**（地図の上に浮いていた頃は
     // `phase === Drawing` の中に置いてあった関門。帯へ移すときに落とさない）。
@@ -442,6 +532,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     // セッションの頂点だけが減り、**取り消したはずの頂点を含む形が保存される**。
     // 競合停止中に［やめる］を押せると、道具は畳まれるのにホストの競合ダイアログが
     // 開いたまま残る（状態が割れる）。
+    // **素性入力中も確定欄を空にしない**（C2 / S3-4）。空にすると「やめる」経路が
+    // 画面から消え、名前を打っている途中で下書きを捨てる手が Escape だけになる
+    // （その Escape も素性欄に焦点があると届かない）。保存は素性欄の［保存］が持つので、
+    // 帯には［やめる］だけを出す ―― 同じ働きのボタンを 2 か所に置くと、押した側で
+    // 結果が変わる余地が生まれる。
     optionBar.setCommit(
       drawing
         ? [
@@ -456,12 +551,16 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
             },
             { id: 'cancel', testId: 'add-cancel', label: ADD_STRINGS.cancel, onClick: cancel },
           ]
-        : [],
+        : inPropertyForm
+          ? [{ id: 'cancel', testId: 'add-cancel', label: ADD_STRINGS.cancel, onClick: cancel }]
+          : [],
     );
   }, [
     optionBar,
     activeKind,
     drawing,
+    inPropertyForm,
+    draftVertexCount,
     vertexCount,
     message,
     previewSharedId,
@@ -470,6 +569,19 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     completeShape,
     cancel,
   ]);
+
+  // 設定欄に「記録する年」を出す（増分 3 の手直し C3 / W-2）。**何年の姿として記録されるかは
+  // 押す前に見えていなければならない**（G-8 で 0 年固定をやめたが、見せるのは素性欄の中だけ
+  // だった ―― 形を描いている間は分からない）。
+  useEffect(() => {
+    if (optionBar === undefined || activeKind === null) return;
+    return optionBar.registerOptionSlot(
+      'add-year',
+      <span className="option-bar__muted" data-testid="add-record-year">
+        {ADD_STRINGS.recordYear(currentTime.year)}
+      </span>,
+    );
+  }, [optionBar, activeKind, currentTime.year]);
 
   // ［1 つ戻す］は設定欄へ置く（設計書 §C.4 の確定欄は［確定］［やめる］の 2 つで
   // 176px に収まる形なので、3 つ目を押し込むと文字が切れる）。打鍵 Ctrl+Z と同じ動作。
@@ -560,6 +672,15 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   return (
     <AddToolChrome
       add={add}
+      armed={armed}
+      pendingDiscard={pendingDiscard}
+      onKeepDraft={() => setPendingDiscard(false)}
+      onDiscardDraft={() => {
+        const lost = draftSizeRef.current;
+        setPendingDiscard(false);
+        add.cancel();
+        if (lost > 0) onDraftDiscarded?.(lost);
+      }}
       onMapPointerDown={onMapPointerDown}
       onMapPointerMove={onMapPointerMove}
       onMapWheel={onMapWheel}
@@ -575,8 +696,26 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
 interface AddToolChromeProps {
   readonly add: ReturnType<typeof useAddTool>;
-  readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
-  readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
+  /**
+   * 道具を構えているが、まだ 1 点も打っていない（増分 3 の手直し D3）。この間も地図の
+   * 入力を受ける必要がある ―― 最初のクリックで作図が始まるので。
+   */
+  readonly armed: boolean;
+  /** Escape で捨ててよいかを聞いている最中か（D1）。 */
+  readonly pendingDiscard: boolean;
+  readonly onKeepDraft: () => void;
+  readonly onDiscardDraft: () => void;
+  readonly onMapPointerDown: (e: {
+    clientX: number;
+    clientY: number;
+    button?: number;
+    ctrlKey?: boolean;
+  }) => void;
+  readonly onMapPointerMove: (e: {
+    clientX: number;
+    clientY: number;
+    ctrlKey?: boolean;
+  }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
   readonly onMapWheel: (e: {
     clientX: number;
@@ -606,8 +745,17 @@ interface AddToolChromeProps {
  * (受け入れ基準 3 連続保証), which the camera port performs via `e.currentTarget`.
  */
 function AddInputBridge(props: {
-  readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
-  readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
+  readonly onMapPointerDown: (e: {
+    clientX: number;
+    clientY: number;
+    button?: number;
+    ctrlKey?: boolean;
+  }) => void;
+  readonly onMapPointerMove: (e: {
+    clientX: number;
+    clientY: number;
+    ctrlKey?: boolean;
+  }) => void;
   readonly onMapWheel: (e: {
     clientX: number;
     clientY: number;
@@ -668,21 +816,28 @@ function AddInputBridge(props: {
       className="add-tool__input"
       data-testid="add-input-layer"
       onPointerDown={(e) =>
-        onMapPointerDown({ clientX: e.clientX, clientY: e.clientY, button: e.button })
+        onMapPointerDown({
+          clientX: e.clientX,
+          clientY: e.clientY,
+          button: e.button,
+          ctrlKey: e.ctrlKey,
+        })
       }
-      onPointerMove={(e) => onMapPointerMove({ clientX: e.clientX, clientY: e.clientY })}
+      onPointerMove={(e) =>
+        onMapPointerMove({ clientX: e.clientX, clientY: e.clientY, ctrlKey: e.ctrlKey })
+      }
     />
   );
 }
 
 function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
-  const { add } = props;
+  const { add, armed, pendingDiscard } = props;
 
-  if (add.phase === ADD_PHASE.Idle || add.session === null) {
+  if (!armed && (add.phase === ADD_PHASE.Idle || add.session === null)) {
     return null;
   }
 
-  const isLine = add.session.tool === ADD_TOOL_KIND.Line;
+  const isLine = add.session?.tool === ADD_TOOL_KIND.Line;
 
   return (
     <div className="add-tool" data-testid="add-tool" data-phase={add.phase}>
@@ -692,10 +847,13 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
           the camera-only events (wheel + non-left pointer) to the live map dispatcher
           so 中ボタンパン / ホイールズーム keep working while drawing (bughunt).
 
-          **増分 3 以降、地図に重なる DOM 部品はこの 1 枚だけである。** 確定・やめる・
-          1 つ戻す・グリッド・拒否の文はすべてオプションバー（シェルの行）へ移した
-          ので、K-2（地図のクリックを奪う）の事故が構造的に起こり得ない。 */}
-      {add.phase === ADD_PHASE.Drawing && (
+          **確定・やめる・1 つ戻す・グリッド・拒否の文はすべてオプションバー（シェルの行）
+          へ移した**ので、追加の道具そのものが地図に重ねる部品はこの 1 枚だけである。
+          ただし「地図に重なる DOM 部品はこれだけ」ではない（増分 3 の手直し C5 / W-4）:
+          この下の**競合停止の板**と**拒否の板**、それにナイフ・穴あけの新地物フォーム
+          （`ui/knife` / `ui/drill`、まだ地図の上に浮いている）と吸着 ▾ のポップオーバーが
+          ある。台帳は設計書 §B.5 に置いてあるので、部品を足したらそちらも直すこと。 */}
+      {(add.phase === ADD_PHASE.Drawing || armed) && (
         <AddInputBridge
           onMapPointerDown={props.onMapPointerDown}
           onMapPointerMove={props.onMapPointerMove}
@@ -715,6 +873,28 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
         </span>
       )}
 
+      {/* D1: 打ちかけを捨てる前の確認。増分 2 の N-04（素性欄の下書き）と同じ器の形。 */}
+      {pendingDiscard && (
+        <div
+          className="add-tool__confirm"
+          data-testid="add-draft-discard-confirm"
+          role="alertdialog"
+          aria-label={ADD_STRINGS.discardConfirmTitle}
+        >
+          <p>{ADD_STRINGS.discardConfirm(add.session?.vertices.length ?? 0)}</p>
+          <button
+            type="button"
+            data-testid="add-draft-discard-yes"
+            onClick={props.onDiscardDraft}
+          >
+            {ADD_STRINGS.discardConfirmYes}
+          </button>
+          <button type="button" data-testid="add-draft-discard-no" onClick={props.onKeepDraft}>
+            {ADD_STRINGS.discardConfirmNo}
+          </button>
+        </div>
+      )}
+
       {add.phase === ADD_PHASE.ConflictPaused && (
         <p data-testid="add-conflict-paused" role="status">
           {ADD_STRINGS.conflictPaused}
@@ -732,7 +912,7 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
 
       {/* Hidden marker used by integration tests to read the live vertex count. */}
       <span data-testid="add-vertex-count" hidden>
-        {add.session.vertices.length}
+        {add.session?.vertices.length ?? 0}
       </span>
       {isLine && <span data-testid="add-is-line" hidden />}
     </div>

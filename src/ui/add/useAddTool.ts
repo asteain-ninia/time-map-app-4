@@ -223,10 +223,15 @@ export interface UseAddToolState {
 export interface UseAddToolActions {
   /** Start a fresh add session for `tool` (spec §セッション開始). */
   start(tool: AddToolKind): void;
-  /** Place a vertex at a raw click (snap is applied here; FR-78 / FR-31). */
-  placeAt(raw: WorldCoordinate): void;
+  /**
+   * Place a vertex at a raw click (snap is applied here; FR-78 / FR-31).
+   * `suppressSnap` が真なら **既存の頂点への吸着を一時的に切る**（設計書 §I.2:
+   * `Ctrl` を押している間。増分 3 の手直し C6）。グリッドへの吸着は切らない
+   * ―― 切っているのは「他の地物に吸い寄せられること」だけである。
+   */
+  placeAt(raw: WorldCoordinate, suppressSnap?: boolean): void;
   /** Update the cursor-follow preview (high-frequency; FR-78). */
-  preview(raw: WorldCoordinate): void;
+  preview(raw: WorldCoordinate, suppressSnap?: boolean): void;
   /**
    * 吸着の予告だけを消す（カーソルの位置はそのまま）。**吸着の設定を変えた瞬間**に呼ぶ:
    * 設定を切ったのに琥珀の輪が残り続けると「切ったのに効いている」と読める（そのときは
@@ -309,22 +314,30 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       // Start replaces the slot — any残存 from a prior session is dropped
       // (教訓 5.2 (a)). Carry the current grid-snap preference forward.
       const prevGridSnap = session?.gridSnap ?? false;
+      const fresh = startSession(tool, prevGridSnap);
+      // **写しも同じ入力の中で更新する**（増分 3 の手直し D3）。保存のあとは待機に戻り、
+      // 最初の地図クリックで作図を始めるので、1 回の pointerdown の中で `start` →
+      // `placeAt` と続けて呼ぶ。React の state はこの入力が終わるまで反映されないので、
+      // 写しを先に更新しておかないと最初の 1 点が黙って落ちる（教訓 5.7 の型の欠陥）。
+      sessionRef.current = fresh;
       setDraft(null);
       setMessage(null);
       setMessageSticky(false);
-      setSession(startSession(tool, prevGridSnap));
+      setSession(fresh);
       setPhase(ADD_PHASE.Drawing);
     },
     [session],
   );
 
   const placeAt = useCallback(
-    (raw: WorldCoordinate) => {
+    (raw: WorldCoordinate, suppressSnap = false) => {
       const current = sessionRef.current;
       if (current === null) return;
       // Resolve the single snap priority: shared-vertex proximity > grid > raw
       // (spec §注意点). Proximity is delegated to U10/U24.
-      const proximity = resolveProximity?.(raw) ?? null;
+      // `Ctrl` を押している間は既存の頂点への吸着を切る（設計書 §I.2 / C6）。密な実データで
+      // 「その 1 点だけは吸着させたくない」ときに、設定を開かずに済ませるための逃げ道である。
+      const proximity = suppressSnap ? null : (resolveProximity?.(raw) ?? null);
       const resolved = resolveSnap({
         raw,
         gridSnap: current.gridSnap,
@@ -398,11 +411,11 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
   );
 
   const preview = useCallback(
-    (raw: WorldCoordinate) => {
+    (raw: WorldCoordinate, suppressSnap = false) => {
       // 予告（増分 3 / 設計書 §E.1 の V2）: **確定したらどこへ置かれるか**をカーソル移動の
       // たびに解く。共有相手が居るときだけ琥珀の輪が出る（`render/add-batch`）。
       // 供給元は R-tree 索引つきの当たり判定なので、1 移動あたりの費用は候補数に比例する。
-      const proximity = resolveProximity?.(raw) ?? null;
+      const proximity = suppressSnap ? null : (resolveProximity?.(raw) ?? null);
       const previewSnap: PreviewSnap | null =
         proximity === null
           ? null

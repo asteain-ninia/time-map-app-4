@@ -12,6 +12,7 @@
 
 import type { WorldCoordinate } from '../coordinate';
 import { longEdgeStartIndexes, MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
+import { ringIsCollinear } from '../geometry/invariants';
 import { ringSelfIntersects } from '../geometry/predicates';
 import type { GeoRing } from '../geometry/types';
 
@@ -67,6 +68,12 @@ export const SHAPE_REJECT = {
   TooFewVertices: 'too-few-vertices',
   /** The face ring self-intersects (FR-25 / 受け入れ基準 1). */
   SelfIntersecting: 'self-intersecting',
+  /**
+   * 面積が無い（増分 3 の手直し D7。バグ狩り #11）。3 点が一直線に並んだ形は
+   * **自己交差ではない**。取り違えると「交差しない形にしてください」と案内されて、
+   * 何を直せばよいのか分からない。
+   */
+  NoArea: 'no-area',
   /**
    * 1 辺で経度 180 度以上を渡っている（N-51 / 技術方針 §6.8）。
    *
@@ -146,7 +153,17 @@ export function confirmShape(session: AddSession): ConfirmResult {
   }
 
   if (session.tool === ADD_TOOL_KIND.Face) {
-    if (ringSelfIntersects(toGeoRing(session.vertices))) {
+    const ring = toGeoRing(session.vertices);
+    // **一直線を先に見分ける**（D7）。一直線に並んだ 3 点は自己交差ではないので、
+    // 順番を逆にすると「交差しない形にしてください」という的外れな案内になる
+    // （自己交差の判定は一直線も「交差」と答えるため）。
+    if (ringIsCollinear(ring)) {
+      return {
+        status: CONFIRM_STATUS.Rejected,
+        rejection: { kind: SHAPE_REJECT.NoArea },
+      };
+    }
+    if (ringSelfIntersects(ring)) {
       return {
         status: CONFIRM_STATUS.Rejected,
         rejection: { kind: SHAPE_REJECT.SelfIntersecting },

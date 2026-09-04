@@ -279,6 +279,31 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
     });
   });
 
+  it('C6: Ctrl を押している間は吸着を切る（設計書 §I.2）', () => {
+    const neighbour = asFeatureId('f-neighbour') as FeatureId;
+    const resolveProximity = vi.fn(() => ({
+      coordinate: C(4, 4),
+      sharedCandidateId: neighbour,
+      featureId: neighbour,
+      bodyCoordinate: C(4, 4),
+      vertexId: asVertexId('v-neighbour') as VertexId,
+    }));
+    const { result } = renderHook(() => useAddTool(withPorts({ resolveProximity })));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    // 押していないときは吸着する。
+    act(() => result.current.preview(C(5, 5)));
+    expect(result.current.session?.previewSnap).not.toBeNull();
+    // 押している間は予告も出ない（供給元も呼ばない）。
+    resolveProximity.mockClear();
+    act(() => result.current.preview(C(5, 5), true));
+    expect(result.current.session?.previewSnap).toBeNull();
+    expect(resolveProximity).not.toHaveBeenCalled();
+    // 置く点も吸着しない（押した場所そのままに落ちる）。
+    act(() => result.current.placeAt(C(5, 5), true));
+    expect(result.current.session?.vertices[0]?.coordinate).toEqual(C(5, 5));
+    expect(result.current.session?.vertices[0]?.sharedVertexId).toBeUndefined();
+  });
+
   it('吸着しないカーソル移動では予告が入らない', () => {
     const { result } = renderHook(() =>
       useAddTool(withPorts({ resolveProximity: () => null })),

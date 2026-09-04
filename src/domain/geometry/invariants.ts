@@ -217,6 +217,34 @@ function ringSignedAreaX2(ring: GeoRing): number {
 }
 
 /**
+ * その環の頂点が **全部 1 本の直線の上に並んでいる** か（増分 3 の手直し D7。バグ狩り #11）。
+ *
+ * 一直線に並んだ 3 点は面積を囲めない。ところが自己交差の判定はこれを「交差している」と
+ * 答えるので、利用者には「交差しない形状にしてください」と案内が出て、**何を直せばよいのか
+ * 分からない**（実データで実際にこの文が出た）。だから確定の関門では一直線を**先に**見分ける。
+ *
+ * 面積が 0 という条件では足りない: 対称な蝶結び（0,0）(2,2)(2,0)(0,2) は符号つき面積が
+ * ちょうど 0 になるが、これは正真正銘の自己交差であって「一直線」ではない。だから
+ * **共線性そのもの**を見る。判定は外積が 0 かどうかで、しきい値を持たない
+ * （量子化済みの座標に対して厳密。技術方針 R2）。
+ *
+ * 頂点が 3 個未満の環、および全部が同じ点の環も真（囲めない）。
+ */
+export function ringIsCollinear(ring: GeoRing): boolean {
+  if (ring.length < 3) return true;
+  const a = ring[0]!;
+  // 最初に見つかる「a と違う点」を通る直線を基準にする。1 つも無ければ全部同じ点である。
+  const b = ring.find((p) => p.lon !== a.lon || p.lat !== a.lat);
+  if (b === undefined) return true;
+  const dx = b.lon - a.lon;
+  const dy = b.lat - a.lat;
+  for (const c of ring) {
+    if ((c.lon - a.lon) * dy - (c.lat - a.lat) * dx !== 0) return false;
+  }
+  return true;
+}
+
+/**
  * True iff two rings share a positive-length boundary run AND keep their
  * interiors on the SAME geometric side of that shared line — the signature of a
  * coincident / boundary-overlapping pair (e.g. an identical duplicate piece, or a

@@ -1491,8 +1491,11 @@ body {
   gap: 8px;
 }
 
+/* 増分 3 の手直し D1: 打ちかけを捨てる前の確認も、競合停止・拒否の板と同じ見た目にする
+   （地図の真ん中に出る一時的な板。§B.5 の台帳に載せてある）。 */
 .add-tool > .add-property-form,
 .add-tool > [data-testid='add-conflict-paused'],
+.add-tool > [data-testid='add-draft-discard-confirm'],
 .add-tool > [data-testid='add-rejected'] {
   position: absolute;
   top: 50%;

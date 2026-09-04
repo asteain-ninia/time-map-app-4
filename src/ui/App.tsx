@@ -85,6 +85,7 @@ import {
 import type { AddHostPorts } from './add/host-ports';
 import { AddDraftStore } from './add/add-draft-store';
 import { createAddSnapPorts } from './add/snap-ports';
+import { ADD_STRINGS } from './add/strings';
 import type { Camera as RenderCameraInput, Viewport } from '../render';
 import {
   KnifeToolController,
@@ -2494,9 +2495,14 @@ export function App(): JSX.Element {
       // FR-113 (Codex F3, defensive): never fit the camera to an FR-113-hidden feature —
       // the list rows are already gated, this guards any direct caller (単一解決 reuse).
       if (!isToolTargetVisible(featureId)) return;
+      // **作図中は視点を飛ばさない**（増分 3 の手直し D2。バグ狩り #7）。打ちかけの下書きを
+      // 抱えたまま一覧の行を押すと、地図だけが世界の反対側へ飛び、そのあと打った点が
+      // **世界をまたぐ形**になった（下書きは残るので、利用者は何が起きたか分からない）。
+      // 一覧で選ぶこと自体は妨げない ―― 素性を見たいだけのことがあるので。
+      if (addDrawing) return;
       fitCameraToFeatureRef.current?.(featureId);
     },
-    [isToolTargetVisible],
+    [isToolTargetVisible, addDrawing],
   );
 
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント
@@ -2672,6 +2678,10 @@ export function App(): JSX.Element {
               onCommitted={onAddCommitted}
               onConflicts={onAddConflicts}
               onDrawingChange={setAddDrawing}
+              onDraftDiscarded={(count) => {
+                // D1: 打ちかけを黙って消さない（設計書 §H.5 の「直前の結果」へ報せる）。
+                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+              }}
             />
             <KnifeToolController<DomainRoot>
               store={store}

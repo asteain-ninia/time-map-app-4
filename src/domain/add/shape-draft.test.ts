@@ -72,6 +72,29 @@ describe('confirmShape (FR-76 minimum vertices)', () => {
     }
   });
 
+  it('D7: 一直線に並んだ 3 点は「面積がありません」で断る（自己交差ではない）', () => {
+    // バグ狩り #11: 実データで一直線の 3 点を確定すると「面の輪郭が自己交差しています。
+    // 交差しない形状にしてください。」と出ていた。何を直せばよいのか分からない案内である。
+    const r = confirmShape(withVertices(ADD_TOOL_KIND.Face, [[0, 0], [1, 1], [2, 2]]));
+    expect(r.status).toBe(CONFIRM_STATUS.Rejected);
+    if (r.status === CONFIRM_STATUS.Rejected) {
+      expect(r.rejection.kind).toBe(SHAPE_REJECT.NoArea);
+    }
+  });
+
+  it('D7: 同じ点を 3 つ打った形も「面積がありません」', () => {
+    const r = confirmShape(withVertices(ADD_TOOL_KIND.Face, [[1, 1], [1, 1], [1, 1]]));
+    expect(r.status).toBe(CONFIRM_STATUS.Rejected);
+    if (r.status === CONFIRM_STATUS.Rejected) {
+      expect(r.rejection.kind).toBe(SHAPE_REJECT.NoArea);
+    }
+  });
+
+  it('D7: ふつうの三角形は通る（一直線の判定が広すぎない）', () => {
+    const r = confirmShape(withVertices(ADD_TOOL_KIND.Face, [[0, 0], [2, 0], [1, 2]]));
+    expect(r.status).toBe(CONFIRM_STATUS.Ok);
+  });
+
   it('produces a draft whose coordinates match the placed vertices', () => {
     const r = confirmShape(withVertices(ADD_TOOL_KIND.Line, [[0, 0], [3, 4]]));
     if (r.status === CONFIRM_STATUS.Ok) {

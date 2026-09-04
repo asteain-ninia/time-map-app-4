@@ -162,6 +162,29 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
   return { store, startProcess, drawSink, drawCalls, proposals, committedInfo };
 }
 
+/**
+ * 描画フレームを手で進めるための差し替え（D9 の検査用）。実物の
+ * `requestAnimationFrame` は待ち時間が読めないので、予約を貯めて {@link runFrames} で
+ * 1 回だけ流す。レイアウトを持たない環境で寸法を測るのとは違い、これは
+ * 「呼び出し回数」を数えるだけなので永久に緑にはならない（教訓 5.49）。
+ */
+let frameQueue: FrameRequestCallback[] = [];
+function installFrameStub(): void {
+  frameQueue = [];
+  let id = 0;
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
+    frameQueue.push(cb);
+    id += 1;
+    return id;
+  }) as typeof globalThis.requestAnimationFrame;
+  globalThis.cancelAnimationFrame = (() => undefined) as typeof globalThis.cancelAnimationFrame;
+}
+function runFrames(): void {
+  const queued = frameQueue;
+  frameQueue = [];
+  for (const cb of queued) cb(0);
+}
+
 function selectTool(testId: string): void {
   act(() => {
     fireEvent.click(screen.getByTestId(testId));
@@ -589,5 +612,248 @@ describe('U23 integration: 確定したことを状態行へ伝える（増分 3
     act(() => fireEvent.click(screen.getByTestId('add-complete')));
     act(() => fireEvent.click(screen.getByTestId('add-save')));
     expect(h.committedInfo).toEqual([{ sharedVertexCount: 0 }]);
+  });
+});
+
+// --- 増分 3 の手直し: 局面に応じた帯（C2 / C3）と、保存後の待機（D3）と、
+//     カーソル移動のまとめ（D9）----------------------------------------------
+
+describe('U23 手直し: 局面に応じた帯（C2 / C3）', () => {
+  it('素性を入力している間は、対象欄が「確定済み」・次の一手が「名前を入れて…」になる', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    // 確定前は「未確定」で、次の一手は作図の案内。
+    expect(screen.getByTestId('option-bar-target')).toHaveTextContent('頂点 3 個（未確定）');
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    // 確定後は局面が変わる（もう頂点は打てないし、確定は済んでいる）。
+    expect(screen.getByTestId('option-bar-target')).toHaveTextContent('頂点 3 個（確定済み）');
+    expect(screen.getByTestId('option-bar-next-step')).toHaveTextContent(
+      '名前を入れて［保存］を押してください',
+    );
+  });
+
+  it('素性を入力している間も確定欄に［やめる］が残る（下書きを捨てる手が画面から消えない）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    const cancel = screen.getByTestId('add-cancel');
+    expect(cancel).toBeInTheDocument();
+    // ［確定］は消える（もう確定は済んでいる）。
+    expect(screen.queryByTestId('add-complete')).toBeNull();
+    act(() => fireEvent.click(cancel));
+    expect(screen.queryByTestId('add-property-form')).toBeNull();
+  });
+
+  it('設定欄に「記録する年」が出る（何年の姿になるかを押す前に見せる）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    expect(screen.getByTestId('add-record-year')).toHaveTextContent('記録する年: 1500年');
+  });
+});
+
+describe('U23 手直し D3: 保存のあとは待機に戻る（GPT #9）', () => {
+  it('保存の直後は作図中ではない（大域の取り消しを占有しない）', () => {
+    const drawing: boolean[] = [];
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: { mode: EDIT_MODE.Add, currentTime: timePointYearMonthDay(1500, 6, 20) },
+    });
+    const optionBar = new OptionBarStore();
+    const addDraft = new AddDraftStore();
+    let f = 0;
+    let v = 0;
+    let r = 0;
+    render(
+      <AppShell
+        store={store}
+        optionBar={<OptionBar store={optionBar} />}
+        sidebar={{ propertiesContent: <AddDraftForm store={addDraft} /> }}
+        overlay={
+          <AddToolController<S>
+            store={store}
+            startProcess={() => committed}
+            ids={{
+              nextFeatureId: () => asFeatureId(`f${++f}`),
+              nextVertexId: () => asVertexId(`v${++v}`),
+            }}
+            nextRingId={() => asRingId(`r${++r}`)}
+            screenToWorld={screenToWorld}
+            drawSink={{ drawAdd: () => undefined }}
+            optionBar={optionBar}
+            addDraft={addDraft}
+            onDrawingChange={(d) => drawing.push(d)}
+            onCommitted={(result, id) => hostCommit(store)(result, id)}
+          />
+        }
+      />,
+    );
+    selectTool('tool-add.point');
+    clickMap(1, 1);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    // **最後の報告が false**（＝待機。保存直後の Ctrl+Z が大域へ届く）。
+    expect(drawing[drawing.length - 1]).toBe(false);
+  });
+
+  it('待機のまま地図を押すと、その 1 点目から作図が始まる（受け入れ基準 6）', () => {
+    mountApp();
+    selectTool('tool-add.point');
+    clickMap(1, 1);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    // 保存後は下書きが 0 個で待機している。
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    // 1 点目を打つと作図が始まり、その点が落ちない（写しを先に更新している）。
+    clickMap(9, 9);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('1');
+  });
+});
+
+describe('U23 手直し D9: カーソル移動は 1 フレームに 1 回へまとめる', () => {
+  it('続けざまの移動でも、予告の解決は次の描画フレームで 1 回だけ走る', () => {
+    installFrameStub();
+    const resolved: number[] = [];
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: { mode: EDIT_MODE.Add, currentTime: timePointYearMonthDay(1500, 6, 20) },
+    });
+    const optionBar = new OptionBarStore();
+    const addDraft = new AddDraftStore();
+    let f = 0;
+    let v = 0;
+    let r = 0;
+    render(
+      <AppShell
+        store={store}
+        optionBar={<OptionBar store={optionBar} />}
+        sidebar={{ propertiesContent: <AddDraftForm store={addDraft} /> }}
+        overlay={
+          <AddToolController<S>
+            store={store}
+            startProcess={() => committed}
+            ids={{
+              nextFeatureId: () => asFeatureId(`f${++f}`),
+              nextVertexId: () => asVertexId(`v${++v}`),
+            }}
+            nextRingId={() => asRingId(`r${++r}`)}
+            screenToWorld={screenToWorld}
+            drawSink={{ drawAdd: () => undefined }}
+            optionBar={optionBar}
+            addDraft={addDraft}
+            resolveProximity={(raw) => {
+              resolved.push(raw.lon);
+              return null;
+            }}
+            onCommitted={(result, id) => hostCommit(store)(result, id)}
+          />
+        }
+      />,
+    );
+    selectTool('tool-add.area');
+    clickMap(0, 0); // 作図を始める（クリックの経路は間引かない）
+    const before = resolved.length;
+    const layer = screen.getByTestId('add-input-layer');
+    act(() => {
+      for (let i = 0; i < 20; i += 1) {
+        fireEvent.pointerMove(layer, { clientX: 10 + i, clientY: 10 });
+      }
+    });
+    // フレームが来るまでは 1 件も解いていない。
+    expect(resolved.length).toBe(before);
+    // 予約されたフレームを 1 回だけ流す。
+    act(() => {
+      runFrames();
+    });
+    expect(resolved.length).toBe(before + 1);
+    // 解いたのは **最後の 1 件**（取りこぼさない）。
+    expect(resolved[resolved.length - 1]).toBe(29);
+  });
+});
+
+describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', () => {
+  it('Escape は 3 点以上の打ちかけを確認してから捨てる', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    // まだ捨てていない（確認が出ている）。
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    // ［続ける］で下書きは残る。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    // ［捨てる］で初めて消える。
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+  });
+
+  it('1〜2 点の打ちかけは聞かずに捨てる（押し直せば済む量）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    // 捨てたあとは **待機**（道具は構えたまま、頂点 0 個）。次の 1 点で作図が始まる（D3）。
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+  });
+
+  it('道具を切り替えて打ちかけが消えるときは、捨てた数を報せる', () => {
+    const discarded: number[] = [];
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: { mode: EDIT_MODE.Add, currentTime: timePointYearMonthDay(1500, 6, 20) },
+    });
+    const optionBar = new OptionBarStore();
+    const addDraft = new AddDraftStore();
+    let f = 0;
+    let v = 0;
+    let r = 0;
+    render(
+      <AppShell
+        store={store}
+        optionBar={<OptionBar store={optionBar} />}
+        sidebar={{ propertiesContent: <AddDraftForm store={addDraft} /> }}
+        overlay={
+          <AddToolController<S>
+            store={store}
+            startProcess={() => committed}
+            ids={{
+              nextFeatureId: () => asFeatureId(`f${++f}`),
+              nextVertexId: () => asVertexId(`v${++v}`),
+            }}
+            nextRingId={() => asRingId(`r${++r}`)}
+            screenToWorld={screenToWorld}
+            drawSink={{ drawAdd: () => undefined }}
+            optionBar={optionBar}
+            addDraft={addDraft}
+            onDraftDiscarded={(n) => discarded.push(n)}
+            onCommitted={(result, id) => hostCommit(store)(result, id)}
+          />
+        }
+      />,
+    );
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    selectTool('tool-add.point'); // 別の道具へ切り替える
+    expect(discarded).toEqual([3]);
   });
 });

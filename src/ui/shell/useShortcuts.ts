@@ -17,7 +17,7 @@
 
 import { useEffect } from 'react';
 
-import type { CommandId, CommandRegistry } from './commands';
+import { COMMAND_ID, type CommandId, type CommandRegistry } from './commands';
 import type { EditMode } from '../state/session';
 import { editableTargetFromEvent, isEditableTarget } from './focus-guard';
 import {
@@ -62,6 +62,19 @@ export interface UseShortcutsOptions {
   readonly onSuspendedRefusal?: (id: CommandId) => void;
 }
 
+/**
+ * **文字を打っている最中でも通す打鍵**（増分 3 の手直し D4 / GPT #10）。
+ *
+ * 焦点が入力欄にあるとき、シェルの割り振りは原則として何もしない（native の文字編集を
+ * 邪魔しないため）。ところが保存だけは例外で、**名前を打っている最中に Ctrl+S が効かない**
+ * のは利用者から見れば不具合である（作図 → 名前入力 → 保存、という流れの途中でだけ
+ * 保存が死ぬ）。文字編集が使う打鍵と重ならないものだけをここに入れること。
+ */
+const EDITABLE_PASSTHROUGH: ReadonlySet<CommandId> = new Set<CommandId>([
+  COMMAND_ID.FileSave,
+  COMMAND_ID.FileSaveAs,
+]);
+
 export function useShortcuts(options: UseShortcutsOptions): void {
   const { keymap, registry, mode, suspended = false } = options;
   const alwaysAllowed = options.alwaysAllowed;
@@ -79,11 +92,25 @@ export function useShortcuts(options: UseShortcutsOptions): void {
     }
 
     const onKeyDown = (e: KeyboardEvent): void => {
+      const chord = keyChordFromEvent(e);
       // Focus guard: a text-editing element owns the keyboard — let the native
       // edit keys through, dispatching NOTHING and preventing NOTHING (#1/#4).
-      if (isEditableTarget(editableTargetFromEvent(e))) return;
+      //
+      // **ただし「文字を打っている最中でも必ず通す」打鍵がある**（増分 3 の手直し D4 /
+      // GPT #10）。保存（Ctrl+S / Ctrl+Shift+S）がそれで、名前を打っている最中だけ
+      // 保存が効かないのは利用者から見れば不具合である。文字編集の打鍵（Ctrl+Z・
+      // Ctrl+A・矢印…）とは衝突しないので、通しても native の編集を邪魔しない。
+      // 集合はこの module が持つ ―― 「止めている間に通す集合」（`alwaysAllowed`）とは
+      // **止める理由が違う**ので分ける（教訓 5.30: 制約が違うなら安易に共有しない）。
+      if (isEditableTarget(editableTargetFromEvent(e))) {
+        const id = keymap.resolve(chord);
+        if (id === undefined || !EDITABLE_PASSTHROUGH.has(id)) return;
+        if (suspended && alwaysAllowed?.has(id) !== true) return;
+        const passResult = dispatchChord(chord, keymap, registry, mode);
+        if (passResult !== DISPATCH_RESULT.Unbound) e.preventDefault();
+        return;
+      }
 
-      const chord = keyChordFromEvent(e);
       if (suspended) {
         // 止めている間は「通す集合」だけを見る。**それ以外は preventDefault もしない**
         // ので、道具が自分で登録した Escape / Ctrl+Z のリスナーはこれまでどおり届く

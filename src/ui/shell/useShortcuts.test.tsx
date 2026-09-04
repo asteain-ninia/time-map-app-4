@@ -193,3 +193,70 @@ describe('useShortcuts focus guard (バグハント第10波 #1 Delete / #4 Ctrl+
     expect(del).toHaveBeenCalledTimes(1);
   });
 });
+
+// --- 増分 3 の手直し D4（GPT #10）: 文字を打っている最中でも保存だけは通す -------
+//
+// 焦点が名前欄にあるあいだ、シェルの割り振りは原則として何もしない（native の文字編集を
+// 邪魔しないため）。ところが **保存だけは例外**にしないと、「形を描く → 名前を打つ →
+// 保存」という流れの途中でだけ Ctrl+S が死ぬ。文字編集が使う打鍵とは重ならない。
+
+describe('useShortcuts: 文字を打っている最中でも保存は通す（D4 / GPT #10）', () => {
+  afterEach(() => {
+    document.body.innerHTML = '';
+  });
+
+  function mountWithSave(): { save: ReturnType<typeof vi.fn>; undo: ReturnType<typeof vi.fn>; input: HTMLInputElement } {
+    const registry = new CommandRegistry();
+    const save = vi.fn();
+    const undo = vi.fn();
+    registry.register(COMMAND_ID.FileSave, { run: save });
+    registry.register(COMMAND_ID.EditUndo, { run: undo });
+    const input = document.createElement('input');
+    input.type = 'text';
+    document.body.appendChild(input);
+    input.focus();
+    renderHook(() =>
+      useShortcuts({ keymap: buildDefaultKeymap(), registry, mode: EDIT_MODE.Edit }),
+    );
+    return { save, undo, input };
+  }
+
+  it('名前欄に焦点があっても Ctrl+S はプロジェクト保存へ届く', () => {
+    const { save, input } = mountWithSave();
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it('保存以外は今までどおり通さない（native の文字編集を邪魔しない）', () => {
+    const { undo, input } = mountWithSave();
+    fireEvent.keyDown(input, { key: 'z', ctrlKey: true });
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('道具が鍵盤を持って止めているあいだは、通す集合に入っているときだけ届く', () => {
+    const registry = new CommandRegistry();
+    const save = vi.fn();
+    registry.register(COMMAND_ID.FileSave, { run: save });
+    const input = document.createElement('input');
+    input.type = 'text';
+    document.body.appendChild(input);
+    input.focus();
+    const { rerender } = renderHook(
+      ({ allowed }: { allowed: ReadonlySet<typeof COMMAND_ID.FileSave> | undefined }) =>
+        useShortcuts({
+          keymap: buildDefaultKeymap(),
+          registry,
+          mode: EDIT_MODE.Edit,
+          suspended: true,
+          ...(allowed === undefined ? {} : { alwaysAllowed: allowed }),
+        }),
+      { initialProps: { allowed: undefined as ReadonlySet<typeof COMMAND_ID.FileSave> | undefined } },
+    );
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    expect(save).not.toHaveBeenCalled();
+
+    rerender({ allowed: new Set([COMMAND_ID.FileSave]) });
+    fireEvent.keyDown(input, { key: 's', ctrlKey: true });
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+});

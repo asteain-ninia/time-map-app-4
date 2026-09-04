@@ -52,8 +52,23 @@ export const ADD_STRINGS = {
   toolNameFace: '▱ 面を描く',
   toolNameLine: '╱ 線を描く',
   toolNamePoint: '· 点を置く',
-  /** 対象欄（240px）。`{n}` は打った頂点の数。 */
+  /** 対象欄（240px）。`n` は打った頂点の数。 */
   targetVertices: (n: number): string => `頂点 ${n} 個（未確定）`,
+  /** 対象欄（240px）。形を確定したあと（素性を入力している局面）。 */
+  targetVerticesConfirmed: (n: number): string => `頂点 ${n} 個（確定済み）`,
+  /** 素性を入力している局面の「次の一手」（設計 S3-4）。 */
+  nextStepPropertyForm: '名前を入れて［保存］を押してください',
+  /** D1: 打ちかけを捨てる前の確認（Escape）。 */
+  discardConfirmTitle: '描きかけを捨てますか',
+  discardConfirm: (n: number): string =>
+    `描きかけの頂点が ${String(n)} 個あります。捨てますか？`,
+  discardConfirmYes: '捨てる',
+  discardConfirmNo: '続ける',
+  /** D1: 打ちかけが捨てられたことの報せ（状態行の「直前の結果」）。 */
+  draftDiscarded: (n: number): string => `描きかけの頂点 ${String(n)} 個を捨てました`,
+
+  /** 設定欄に出す「何年の姿として記録されるか」（G-8 / W-2）。 */
+  recordYear: (year: number): string => `記録する年: ${String(year)}年`,
 
   /**
    * FR-29 の拒否（現状は `return current` の無反応 ＝ 現状分析 C1）。
@@ -89,6 +104,12 @@ export const ADD_STRINGS = {
    */
   parentDoesNotContain:
     '選んだ上位領域は、いまこの形を含んでいません。上位領域を選び直すか、「上位領域なし」で保存してください。',
+
+  /**
+   * 面積が無い形（増分 3 の手直し D7。バグ狩り #11）。一直線に並んだ 3 点で
+   * 「自己交差しています」と案内されると、何を直せばよいのか分からない。
+   */
+  noAreaRefused: '面積がありません（3 点が一直線です）。どれか 1 点をずらしてください。',
 
   /** N-51: 1 辺で経度 180 度以上を渡る辺（技術方針 §6.8）。 */
   longEdgeRefused:
@@ -130,6 +151,8 @@ export function shapeRejectionMessage(rejection: ShapeRejection): string {
     }
     case SHAPE_REJECT.SelfIntersecting:
       return '面の輪郭が自己交差しています。交差しない形状にしてください。';
+    case SHAPE_REJECT.NoArea:
+      return ADD_STRINGS.noAreaRefused;
     case SHAPE_REJECT.LongEdge:
       return ADD_STRINGS.longEdgeRefused;
   }
