@@ -36,7 +36,7 @@ import {
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createCoordinate, type WorldCoordinate } from '../../domain/coordinate';
 import { createVertex, createVertexStore, getVertex } from '../../domain/vertex';
-import { createLeafFeature, createPointFeature } from '../../domain/feature';
+import { createLeafFeature, createLineFeature } from '../../domain/feature';
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createHoleRing, createShape, createTerritoryRing } from '../../domain/ring';
 import { POINT_LOCATION, pointInPolygon } from '../../domain/geometry/predicates';
@@ -484,14 +484,21 @@ describe('引き戻しが起きたフレームでは主頂点のスナップが�
         singleAnchorHistory(
           'pin',
           [
-            createPointFeature(
+            // **線**の頂点を的にする（増分 3 の手直し D6）。点情報は共有に参加しない
+            // （FR-30 が共有を定めているのは面情報と線情報だけ）ので、点情報を的に置くと
+            // この検査が「引き戻しでスナップが外れる」ではなく「そもそも候補に入らない」を
+            // 見てしまう。ここで見たいのは前者なので、線に置き換えた。
+            createLineFeature(
               asFeatureId('pin'),
               createBasicAttributes('目印', 0, 100),
               COLOR,
-              asVertexId('pin-v'),
+              [asVertexId('pin-v'), asVertexId('pin-v2')],
             ),
           ],
-          createVertexStore([createVertex(asVertexId('pin-v'), createCoordinate(12, 0))]),
+          createVertexStore([
+            createVertex(asVertexId('pin-v'), createCoordinate(12, 0)),
+            createVertex(asVertexId('pin-v2'), createCoordinate(60, 60)),
+          ]),
           0,
         ),
       ],
@@ -521,14 +528,18 @@ describe('引き戻しが起きたフレームでは主頂点のスナップが�
         singleAnchorHistory(
           'pin',
           [
-            createPointFeature(
+            // 上と同じ理由で **線** にする（点情報は共有に参加しない）。
+            createLineFeature(
               asFeatureId('pin'),
               createBasicAttributes('目印', 0, 100),
               COLOR,
-              asVertexId('pin-v'),
+              [asVertexId('pin-v'), asVertexId('pin-v2')],
             ),
           ],
-          createVertexStore([createVertex(asVertexId('pin-v'), createCoordinate(lon, lat))]),
+          createVertexStore([
+            createVertex(asVertexId('pin-v'), createCoordinate(lon, lat)),
+            createVertex(asVertexId('pin-v2'), createCoordinate(60, 60)),
+          ]),
           0,
         ),
       ],

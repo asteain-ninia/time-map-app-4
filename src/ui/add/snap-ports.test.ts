@@ -17,6 +17,7 @@ import { createEditProposal } from '../../domain/consistency/index';
 import { applyAddProposal } from '../../domain/editing/apply-proposal';
 import {
   createLeafFeature,
+  createPointFeature,
   withParentId,
   type Feature,
 } from '../../domain/feature';
@@ -78,6 +79,24 @@ function squareLeaf(
     createShape([ring]),
   );
   return { feature, vertices };
+}
+
+/** 点情報を 1 つ確定する（D6 の検査用）。 */
+function commitPoint(
+  root: DomainRoot,
+  idRaw: string,
+  vId: string,
+  lon: number,
+  lat: number,
+): DomainRoot {
+  const v = createVertex(asVertexId(vId), { lon, lat });
+  const feature = createPointFeature(
+    asFeatureId(idRaw),
+    createBasicAttributes(idRaw, 0, 0),
+    color,
+    v.id,
+  );
+  return commit(root, { feature, vertices: [v] });
 }
 
 function commit(root: DomainRoot, f: { feature: Feature; vertices: Vertex[] }): DomainRoot {
@@ -217,6 +236,20 @@ describe('createAddSnapPorts — FR-29 の末端判定', () => {
     const hit = ports.terminalAt({ lon: 0, lat: 0 });
     expect(hit?.featureId).toBe(asFeatureId('f-a'));
     expect(hit?.onBoundary).toBe(true);
+  });
+
+  it('D6: 点情報の頂点には吸着しない（司令塔の決定 3。所有者が覆せる）', () => {
+    // 国境の角を都市（点情報）と共有すると、国境を動かすたびに都市が動く。FR-30 が
+    // 共有を定めているのは「複数の面情報や線情報」であって点情報は入っていない。
+    const leaf = squareLeaf('f-a', 'v-a', 0, 0, 4);
+    let root = commit(emptyProject(), leaf);
+    root = commitPoint(root, 'pt-city', 'v-city', 2, 2);
+    const ports = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 10 });
+    // 都市の真上を狙っても吸着しない。
+    expect(ports.resolveProximity({ lon: 2, lat: 2 })).toBeNull();
+    // 面の角には今までどおり吸着する。
+    const onCorner = ports.resolveProximity({ lon: 0, lat: 0 });
+    expect(onCorner?.featureId).toBe(asFeatureId('f-a'));
   });
 
   it('どの面にも触れていない場所は null', () => {

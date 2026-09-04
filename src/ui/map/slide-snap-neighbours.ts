@@ -843,14 +843,21 @@ export function createNeighboursQuery(
       if (!withinMargin(c.position, preview, margin)) return;
       snapCandidates.push({ vertexId: c.vertexId, position: alignedToBranch(c.position, preview) });
     };
+    // **点情報は共有に参加しない**（増分 3 の手直し D6。司令塔の決定 3。所有者が覆せる）。
+    // FR-30 が共有を定めているのは「複数の面情報や線情報」であって点情報は入っていない。
+    // 国境の角を都市（点情報）と共有すると、国境を動かすたびに都市が動く ―― 点情報は
+    // 「そこにある 1 点」なので、他の地物に連動して動くのは意味が通らない。掴んでいる側が
+    // 点情報のときも同じ（向きを変えても連動は連動である）。
+    const draggedIsPoint = draggedFeature?.kind === FEATURE_KIND.Point;
     for (const f of features) {
       if (f.id === draggedFeatureId) continue;
+      if (draggedIsPoint || f.kind === FEATURE_KIND.Point) continue;
       if (f.kind === FEATURE_KIND.Leaf) {
         if (!nearFeatureIds.has(f.id)) continue; // only near terminals contribute vertices.
         for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
         continue;
       }
-      // Point / line: include vertices within the margin of the preview.
+      // Line: include vertices within the margin of the preview.
       for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
     }
 

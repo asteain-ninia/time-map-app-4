@@ -23,6 +23,9 @@ import {
   singleAnchorHistory,
 } from '../../domain/persistence/fixtures';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
+import { createBasicAttributes } from '../../domain/attributes';
+import { createPointFeature } from '../../domain/feature';
+import { createVertex } from '../../domain/vertex';
 import { beginDrag, EDIT_TOOL, type DragSession } from '../../domain/editing/drag-session';
 import { SpatialIndex } from '../../domain/spatial/rtree';
 
@@ -168,6 +171,41 @@ describe('createNeighboursQuery (HB3-20 slide/snap inputs)', () => {
     expect(target!.position.lon).toBeCloseTo(181, 9);
     // 画面上の距離が「見えているとおり」の 2 度ぶんになる（358 度ではない）。
     expect(Math.abs(target!.position.lon - 179)).toBeCloseTo(2, 9);
+  });
+
+  it('D6: 点情報の頂点は共有の候補にしない（国境を動かすと都市が動く、を起こさない）', () => {
+    // 司令塔の決定 3（所有者が覆せる）: FR-30 が共有を定めているのは「複数の面情報や
+    // 線情報」であって点情報は入っていない。
+    const a = squareLeaf('leaf-a', 'A国', 0, 0, 10);
+    const city = createPointFeature(
+      asFeatureId('pt-city'),
+      createBasicAttributes('都市', 0, 0),
+      a.feature.color,
+      asVertexId('pt-city-v'),
+    );
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory(
+          'leaf-a',
+          [a.feature, city],
+          createVertexStore([
+            ...a.vertices,
+            createVertex(asVertexId('pt-city-v'), { lon: 10.5, lat: 0 }),
+          ]),
+          0,
+        ),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const query = createNeighboursQuery({
+      getRoot: () => root,
+      getTime: () => timePointYear(0),
+      snapWorldMargin: () => 5,
+    });
+    const result = query({ lon: 10.4, lat: 0 }, vertexMoveSession());
+    const snapIds = result.snapCandidates.map((s) => s.vertexId as unknown as string);
+    expect(snapIds).not.toContain('pt-city-v');
   });
 
   it('excludes the dragged feature even when the preview is inside its own bbox', () => {

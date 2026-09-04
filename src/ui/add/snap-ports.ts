@@ -25,6 +25,7 @@
 
 import type { DomainProject } from '../../domain/persistence/index';
 import type { FeatureId } from '../../domain/ids';
+import { FEATURE_KIND } from '../../domain/feature';
 import { HIT_KIND } from '../../domain/selection/index';
 import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex } from '../../domain/vertex';
@@ -128,6 +129,12 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
       raw,
     );
     if (hit.kind !== HIT_KIND.Vertex) return null;
+    // **点情報の頂点には吸着しない**（増分 3 の手直し D6。司令塔の決定 3。所有者が覆せる）。
+    // FR-30 が共有を定めているのは「複数の面情報や線情報」であって点情報は入っていない。
+    // 国境の角を都市（点情報）と共有すると、国境を動かすたびに都市が動く。線の頂点には
+    // 吸着してよい（線と面が境界を共有するのは正しい使い方である）。
+    const owner = featureByIdAt(ctx.root, ctx.time, hit.featureId);
+    if (owner?.kind === FEATURE_KIND.Point) return null;
     const vertex = getVertex(verticesAt(ctx.root, ctx.time), hit.vertexId);
     if (vertex === undefined) return null;
     return {
