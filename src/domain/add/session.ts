@@ -21,7 +21,7 @@
 // with a falsy short-circuit. Callers test `vertices.length` / the parent kind.
 
 import type { WorldCoordinate } from '../coordinate';
-import type { FeatureId } from '../ids';
+import type { FeatureId, VertexId } from '../ids';
 
 // --- Add-tool kind (型・定数・ファクトリ経由; 教訓 5.19) ----------------------
 
@@ -102,16 +102,34 @@ export interface PlacedVertex {
   readonly coordinate: WorldCoordinate;
   /** The existing vertex this placement snapped onto, if any (FR-31 → FR-30共有). */
   readonly sharedCandidateId?: FeatureId | null;
+  /**
+   * 吸着先の **既存の頂点そのものの id**（FR-30〜33。増分 3 で足した）。
+   *
+   * **なぜ持ち主（`sharedCandidateId`）だけでは足りないのか**: このリポジトリで
+   * 「頂点を共有している」とは **2 つの地物が同じ `VertexId` を参照している**ことである
+   * （`editing/apply-proposal.ts` の `applySharePair` / `applyMovedVerticesToHistories`）。
+   * 持ち主の地物 id は「誰と共有することになるか」を言うだけで、**どの頂点か**を言わない
+   * ので、これだけでは新しい地物に同じ id を持たせられない。
+   *
+   * 増分 3 の着手時、実装計画は「配線だけで直る可能性がある」と書いていたが、現物では
+   * `AddSnapshot.sharedCandidateIds` を **誰も読んでいなかった**（構築するのはテストだけ）。
+   * つまり配線しても新しい地物は自前の新しい頂点を持つだけで、あとで隣の角を動かしても
+   * 追随しない。ここに既存の id を運び、`proposal.ts` がそれを **採番せずに使い回す**ことで
+   * 初めて「同じ角を共有する」が成立する。
+   */
+  readonly sharedVertexId?: VertexId | null;
 }
 
-/** Build a placed vertex (factory; only attaches the shared id when present). */
+/** Build a placed vertex (factory; only attaches the shared ids when present). */
 export function placedVertex(
   coordinate: WorldCoordinate,
   sharedCandidateId?: FeatureId | null,
+  sharedVertexId?: VertexId | null,
 ): PlacedVertex {
-  return sharedCandidateId == null
-    ? { coordinate }
-    : { coordinate, sharedCandidateId };
+  if (sharedCandidateId == null) return { coordinate };
+  return sharedVertexId == null
+    ? { coordinate, sharedCandidateId }
+    : { coordinate, sharedCandidateId, sharedVertexId };
 }
 
 // --- The whole add session --------------------------------------------------
@@ -136,6 +154,26 @@ export interface AddSession {
   readonly preview: WorldCoordinate | null;
   readonly gridSnap: boolean;
   readonly parent: ParentSelection;
+  /**
+   * 予告（増分 3 / 設計書 §E.1 の V2）: **いまカーソルが乗っている位置で確定したら
+   * どこへ置かれるか**。吸着が効いていれば吸着先の座標と、共有することになる既存頂点の
+   * 持ち主が入る。`preview`（生のカーソル位置）とは別に持つ ―― 描画は「押した場所」では
+   * なく「置かれる場所」に琥珀の輪を描く必要があるため。
+   *
+   * 決めるのは呼び出し側（U10/U24 の当たり判定 → `resolveSnap`）で、ここは結果を持つ
+   * だけである（この module は距離の判定を一切しない ―― spec §やらないこと）。
+   * 吸着していないカーソル移動では `sharedCandidateId` が null になる。
+   */
+  readonly previewSnap: PreviewSnap | null;
+}
+
+/**
+ * 予告 1 件。`coordinate` は確定したときに実際に置かれる座標（吸着後）、
+ * `sharedCandidateId` は共有することになる既存頂点の持ち主（吸着していなければ null）。
+ */
+export interface PreviewSnap {
+  readonly coordinate: WorldCoordinate;
+  readonly sharedCandidateId: FeatureId | null;
 }
 
 /**
@@ -153,6 +191,7 @@ export function startSession(tool: AddToolKind, gridSnap = false): AddSession {
     preview: null,
     gridSnap,
     parent: PARENT_UNSET,
+    previewSnap: null,
   };
 }
 
@@ -182,13 +221,16 @@ export function placeVertex(
   session: AddSession,
   coordinate: WorldCoordinate,
   sharedCandidateId?: FeatureId | null,
+  sharedVertexId?: VertexId | null,
 ): AddSession {
-  const v = placedVertex(coordinate, sharedCandidateId);
+  const v = placedVertex(coordinate, sharedCandidateId, sharedVertexId);
+  // 予告は「まだ置かれていない点」の話なので、置いた瞬間に捨てる（教訓 5.2: 一時状態は
+  // 全経路で破棄する）。次のカーソル移動が新しい予告を入れる。
   if (session.tool === ADD_TOOL_KIND.Point) {
     // A point holds exactly one vertex; re-click relocates it.
-    return { ...session, vertices: [v] };
+    return { ...session, vertices: [v], previewSnap: null };
   }
-  return { ...session, vertices: [...session.vertices, v] };
+  return { ...session, vertices: [...session.vertices, v], previewSnap: null };
 }
 
 /**
@@ -201,8 +243,9 @@ export function placeVertex(
 export function updatePreview(
   session: AddSession,
   coordinate: WorldCoordinate,
+  previewSnap: PreviewSnap | null = null,
 ): AddSession {
-  return { ...session, preview: coordinate };
+  return { ...session, preview: coordinate, previewSnap };
 }
 
 // --- Vertex undo (Ctrl+Z; FR-78, 取消が頂点 0 のときの振る舞い) --------------

@@ -66,6 +66,15 @@ export const SHAPE_REJECT = {
   TooFewVertices: 'too-few-vertices',
   /** The face ring self-intersects (FR-25 / 受け入れ基準 1). */
   SelfIntersecting: 'self-intersecting',
+  /**
+   * 1 辺で経度 180 度以上を渡っている（N-51 / 技術方針 §6.8）。
+   *
+   * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+   * **1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる**。これは不具合では
+   * なく保存形式の恒久的な表現限界なので、**書く側で止める以外に手が無い**。途中に点を
+   * 打てば（1 辺あたり 180 度未満になれば）同じ形が表現できる。
+   */
+  LongEdge: 'long-edge',
 } as const;
 
 export type ShapeRejectKind = (typeof SHAPE_REJECT)[keyof typeof SHAPE_REJECT];
@@ -76,6 +85,8 @@ export interface ShapeRejection {
   readonly required?: number;
   /** The actual count placed (for TooFewVertices). */
   readonly actual?: number;
+  /** 長すぎる辺の本数（LongEdge のときだけ。文言に出す）。 */
+  readonly longEdgeCount?: number;
 }
 
 export const CONFIRM_STATUS = {
@@ -86,6 +97,46 @@ export const CONFIRM_STATUS = {
 export type ConfirmResult =
   | { readonly status: typeof CONFIRM_STATUS.Ok; readonly draft: ShapeDraft }
   | { readonly status: typeof CONFIRM_STATUS.Rejected; readonly rejection: ShapeRejection };
+
+// --- 1 辺で経度 180 度以上を渡る辺（N-51 / 技術方針 §6.8）--------------------
+
+/**
+ * 1 辺で許される経度差の上限（度）。技術方針 §6.8:「読み込み側は隣り合う頂点の経度差が
+ * **180 度を超えたら** ±360 度ずらす」。ちょうど 180 度はどちら回りか決まらないので、
+ * **180 度以上を「渡れない」とみなす**（境界を安全側に倒す）。
+ */
+export const MAX_EDGE_LON_SPAN_DEG = 180;
+
+/**
+ * 経度差が {@link MAX_EDGE_LON_SPAN_DEG} 以上の辺の、**始点の添字**を返す。
+ *
+ * `closed` が真（面）のときは最後の頂点から先頭へ戻る「閉じる辺」も見る（その添字は
+ * `coordinates.length - 1`）。線・点は開いた列として見る。
+ *
+ * 単一の真実源（教訓 5.29）: 確定の関門（{@link confirmShape}）も、作図中に辺を赤くする
+ * 描画（`render/add-batch`）も、この 1 本を呼ぶ。「確定は止まるのに赤くならない」
+ * ような食い違いが構造的に起きない。
+ */
+export function longEdgeStartIndexes(
+  coordinates: readonly WorldCoordinate[],
+  closed: boolean,
+): readonly number[] {
+  const out: number[] = [];
+  const n = coordinates.length;
+  if (n < 2) return out;
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i += 1) {
+    const a = coordinates[i]!;
+    const b = coordinates[(i + 1) % n]!;
+    if (Math.abs(b.lon - a.lon) >= MAX_EDGE_LON_SPAN_DEG) out.push(i);
+  }
+  return out;
+}
+
+/** その道具の形が閉じるか（面だけが閉じる）。 */
+export function isClosedTool(kind: AddToolKind): boolean {
+  return kind === ADD_TOOL_KIND.Face;
+}
 
 // --- Validation -------------------------------------------------------------
 
@@ -126,6 +177,19 @@ export function confirmShape(session: AddSession): ConfirmResult {
         rejection: { kind: SHAPE_REJECT.SelfIntersecting },
       };
     }
+  }
+
+  // N-51: 1 辺で経度 180 度以上を渡る形は保存形式が表現できない（技術方針 §6.8）ので、
+  // ここで止める。面は閉じる辺も数える。点は辺を持たないので素通りする。
+  const longEdges = longEdgeStartIndexes(
+    session.vertices.map((v) => v.coordinate),
+    isClosedTool(session.tool),
+  );
+  if (longEdges.length > 0) {
+    return {
+      status: CONFIRM_STATUS.Rejected,
+      rejection: { kind: SHAPE_REJECT.LongEdge, longEdgeCount: longEdges.length },
+    };
   }
 
   return {

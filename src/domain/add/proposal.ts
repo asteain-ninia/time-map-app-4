@@ -121,7 +121,21 @@ interface BuiltGeometry {
   readonly sharedCandidateIds: Map<VertexId, FeatureId>;
 }
 
-/** Mint a vertex per draft coordinate, recording any shared-candidate linkage. */
+/**
+ * Mint a vertex per draft coordinate, recording any shared-candidate linkage.
+ *
+ * **吸着した頂点は採番しない（増分 3、FR-30〜33）**。このリポジトリで「頂点を共有して
+ * いる」とは **2 つの地物が同じ `VertexId` を参照している**ことなので、吸着先の既存の
+ * 頂点 id（`placed.sharedVertexId`）があるときは **新しく採番せずにその id をそのまま
+ * 使う**。こうすると新しい地物と隣の地物が同じ id を指すことになり、あとでどちらかの
+ * 角を動かすと（`applyMovedVerticesToHistories` が同じ id を挙げる全履歴へ新しい座標を
+ * 配るので）**もう一方も追随する** ―― 境界が裂けない。
+ *
+ * 頂点の**体**（座標）は共有の場合も `vertices` に入れる。新しい地物の錨のスナップショットは
+ * 「その時点の全体の写し」なので、参照している頂点の体が入っていないと読み直しの整合
+ * チェックに引っかかる。座標は吸着元からそのまま写した値なので、同じ id の 2 つの体は
+ * 必ず一致する（食い違いようがない）。
+ */
 function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
   const coords = draftCoordinates(draft);
   const vertices: Vertex[] = [];
@@ -132,10 +146,12 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
     // coords is derived 1:1 from draft.vertices, so `coordinate` is always present;
     // guard for noUncheckedIndexedAccess.
     if (coordinate === undefined) return;
-    const id = ids.nextVertexId();
+    const shared = placed.sharedCandidateId;
+    const sharedVertexId = placed.sharedVertexId;
+    // 吸着した頂点は既存の id を使い回す（＝共有になる）。していなければ採番する。
+    const id = sharedVertexId != null ? sharedVertexId : ids.nextVertexId();
     vertices.push(createVertex(id, coordinate));
     vertexIds.push(id);
-    const shared = placed.sharedCandidateId;
     if (shared != null) {
       sharedCandidateIds.set(id, shared);
     }

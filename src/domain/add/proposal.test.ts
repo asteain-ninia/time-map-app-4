@@ -148,3 +148,60 @@ describe('assembleAddProposal (FR-76 / FR-59 / 教訓 5.15)', () => {
     ).toThrow();
   });
 });
+
+// --- 増分 3: 吸着した頂点は「共有」になる（FR-30〜33 / V2 の合格条件 ②）----------
+//
+// このリポジトリで「頂点を共有している」＝ 2 つの地物が同じ VertexId を参照している
+// （`editing/apply-proposal.ts` の `applySharePair` / `applyMovedVerticesToHistories`）。
+// したがって、吸着した頂点は **採番せずに既存の id を使い回さなければならない**。
+// 使い回さないと、あとで隣の角を動かしてももう一方は動かず、境界が裂ける。
+
+describe('assembleAddProposal — 吸着した頂点の共有（増分 3）', () => {
+  it('吸着した頂点は既存の id をそのまま使う（新しく採番しない）', () => {
+    const existing = asVertexId('v-existing');
+    let session = startSession(ADD_TOOL_KIND.Face);
+    session = placeVertex(session, C(0, 0));
+    session = placeVertex(session, C(2, 0));
+    // 3 点目だけが既存の頂点へ吸着した。
+    session = placeVertex(session, C(1, 2), asFeatureId('f-neighbour'), existing);
+    const confirmed = confirmShape(session);
+    if (confirmed.status !== CONFIRM_STATUS.Ok) throw new Error('確定できるはず');
+
+    const proposal = assembleAddProposal({
+      draft: confirmed.draft,
+      properties,
+      parent: PARENT_TOP_LEVEL,
+      currentTime: timePointYearMonthDay(1500, 1, 1),
+      ids: makeIds().ids,
+      nextRingId: () => asRingId('r-1') as RingId,
+    });
+
+    const ids = proposal.snapshot.vertices.map((v) => v.id);
+    expect(ids).toContain(existing);
+    // 吸着した 1 個ぶんは採番していない（採番は 2 回だけ）。
+    expect(ids.filter((id) => id === existing)).toHaveLength(1);
+    // 体（座標）も入っている ―― 錨のスナップショットは参照する頂点の体を必ず持つ。
+    const body = proposal.snapshot.vertices.find((v) => v.id === existing);
+    expect(body?.coordinate).toEqual(C(1, 2));
+    // 共有相手の地物 id も助言として残る。
+    expect(proposal.snapshot.sharedCandidateIds.get(existing)).toBe(asFeatureId('f-neighbour'));
+  });
+
+  it('吸着していない頂点は今までどおり採番する', () => {
+    let session = startSession(ADD_TOOL_KIND.Line);
+    session = placeVertex(session, C(0, 0));
+    session = placeVertex(session, C(1, 1));
+    const confirmed = confirmShape(session);
+    if (confirmed.status !== CONFIRM_STATUS.Ok) throw new Error('確定できるはず');
+    const proposal = assembleAddProposal({
+      draft: confirmed.draft,
+      properties,
+      parent: PARENT_TOP_LEVEL,
+      currentTime: timePointYearMonthDay(1500, 1, 1),
+      ids: makeIds().ids,
+      nextRingId: () => asRingId('r-1') as RingId,
+    });
+    expect(proposal.snapshot.vertices).toHaveLength(2);
+    expect(proposal.snapshot.sharedCandidateIds.size).toBe(0);
+  });
+});

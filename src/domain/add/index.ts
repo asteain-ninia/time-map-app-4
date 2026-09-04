@@ -19,6 +19,7 @@ export {
   type PlacedVertex,
   placedVertex,
   type AddSession,
+  type PreviewSnap,
   startSession,
   resetSession,
   placeVertex,
@@ -36,6 +37,9 @@ export {
 export {
   type ShapeDraft,
   draftCoordinates,
+  MAX_EDGE_LON_SPAN_DEG,
+  longEdgeStartIndexes,
+  isClosedTool,
   SHAPE_REJECT,
   type ShapeRejectKind,
   type ShapeRejection,
