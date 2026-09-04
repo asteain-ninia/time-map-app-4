@@ -57,20 +57,39 @@ export interface AnchorSnapshotSize {
 }
 
 /**
- * 1 頂点・1 地物あたりの保存バイト数の目安。実データ
+ * 1 頂点・1 地物あたりの **圧縮前（manifest = JSON）** のバイト数の目安。実データ
  * （derle-world-full-2026-08-16.gimoza）を scripts/measure-anchor-growth.ts で
  * 実測して決めた係数で、**桁を合わせるための概算**である（正確な値を出すには実際に
  * ZIP を作るしかなく、押す前に見せる用途には重すぎる）。
+ *
+ * **どちら向きに外れるか**（2026-09-04 の実測）: 錨 689 本の「概算 ÷ 実測」は中央値
+ * 1.10・最小 0.98・最大 1.54 で、**97.8 % の錨で概算が実測を上回る**（＝小さい錨では
+ * 多めに出る）。判断材料になる大きな錨ではほぼ一致し、デーレ共和国の錨 1 本で 0.99、
+ * 50 回編集の実増分に当てても 0.99 だった。利用者を脅かす方向へ大きく外れることはない。
  */
 export const BYTES_PER_SNAPSHOT_VERTEX = 75;
 export const BYTES_PER_SNAPSHOT_FEATURE = 728;
 
-/** 錨 1 本ぶんの保存量の概算（バイト）。 */
+/**
+ * 圧縮前の量から **実ファイル（.gimoza = ZIP）の増分** を見積もる比。実測で
+ * 「デーレ共和国の錨 1 本 = 中身 270.0 KiB / 実ファイル 約 60.4 KiB」（0.224）、
+ * 50 本ぶんの実増分でも 0.224 だった。スナップショットは前の錨とほとんど同じ内容なので
+ * ZIP がよく効く。**画面に出すのはこちら**である — 利用者が気にするのは保存ファイルの
+ * 大きさであって、その中の JSON の大きさではない（設計書 §N-13 の書き直し）。
+ */
+export const COMPRESSED_SHARE_OF_SNAPSHOT = 0.224;
+
+/** 錨 1 本ぶんの保存量の概算（バイト、**圧縮前**）。 */
 export function estimateAnchorBytes(size: AnchorSnapshotSize): number {
   return (
     size.vertexCount * BYTES_PER_SNAPSHOT_VERTEX +
     size.featureCount * BYTES_PER_SNAPSHOT_FEATURE
   );
+}
+
+/** 錨 1 本ぶんで **保存ファイルが実際に増える量** の概算（バイト）。 */
+export function estimateAnchorFileBytes(size: AnchorSnapshotSize): number {
+  return Math.round(estimateAnchorBytes(size) * COMPRESSED_SHARE_OF_SNAPSHOT);
 }
 
 /** 概算バイト数を「約 306 KB」の形にする。1 KB 未満は言い切る。 */
@@ -116,7 +135,10 @@ export interface EditPlan {
   readonly reason: string | null;
   /** 「年に丸める」で飛ぶ先（年ちょうどでないときだけ）。 */
   readonly roundedTime: TimePoint | null;
-  /** 新しい錨で増える量の概算（新設のときだけ・材料があるときだけ）。 */
+  /**
+   * 新しい錨で **保存ファイルが増える量** の概算（新設のときだけ・材料があるときだけ）。
+   * 圧縮前の JSON の量ではない（設計書 §N-13）。
+   */
   readonly estimatedBytes: number | null;
 }
 
@@ -145,8 +167,12 @@ export const EDIT_PLAN_STRINGS = {
   badgeSeparator: '｜',
   noteOverwrite: (year: string): string => `${year}の錨を直します`,
   noteNewAnchor: '錨を新しく作ります',
+  /**
+   * **実ファイルの増分**で言う（設計書 §N-13 の書き直し）。旧版は圧縮前の JSON の量を
+   * 「ファイルが約 270 KB 増えます」と出していたので、実際の 4 倍以上に見えていた。
+   */
   noteNewAnchorWithCost: (bytes: string): string =>
-    `錨を新しく作ります（ファイルが${bytes}増えます）`,
+    `錨を新しく作ります（保存ファイルが${bytes}増えます）`,
   noteFeatureAbsent: 'この年にはまだありません',
   noteNotYearAligned: '月日の付いた年には記録を作れません',
   saveLabelOverwrite: (year: string): string => `${year}の錨を上書き保存`,
@@ -292,7 +318,7 @@ export function decideEditPlan(input: EditPlanInput): EditPlan {
 
   // (4) 錨が無い ⇒ その年に 1 本作る。増える量の概算を添える（§A.3 の「費用」）。
   const size = input.snapshotSize ?? null;
-  const estimatedBytes = size === null ? null : estimateAnchorBytes(size);
+  const estimatedBytes = size === null ? null : estimateAnchorFileBytes(size);
   return {
     kind: EDIT_PLAN_KIND.NewAnchor,
     savable: true,

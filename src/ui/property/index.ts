@@ -159,7 +159,6 @@ export {
   changeSentence,
   diffSentence,
   isRelevantAnchor,
-  relevantEntriesFor,
   anchorYearLabel,
 } from './anchor-diff';
 

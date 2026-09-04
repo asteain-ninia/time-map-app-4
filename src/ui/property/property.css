@@ -239,8 +239,7 @@
 }
 
 .property-panel__actions button,
-.basic-info__save,
-.anchor-section__switch button {
+.basic-info__save {
   font: inherit;
   padding: 5px 10px;
   background: var(--c-surface);
@@ -251,8 +250,7 @@
 }
 
 .property-panel__actions button:hover:not(:disabled),
-.basic-info__save:hover:not(:disabled),
-.anchor-section__switch button:hover:not(:disabled) {
+.basic-info__save:hover:not(:disabled) {
   border-color: var(--c-accent);
 }
 

@@ -35,7 +35,6 @@ import {
   diffSentence,
   existenceRunsOf,
   isRelevantAnchor,
-  relevantEntriesFor,
   shapeChanged,
 } from './anchor-diff';
 
@@ -209,7 +208,7 @@ describe('diffSentence — 行に添える日本語', () => {
   });
 });
 
-describe('relevantEntriesFor — まとめ役の子に関わる錨だけを選り分ける（裁定 §N-15）', () => {
+describe('anchorRowsOf（onlyRelevant） — まとめ役の子に関わる錨だけを選り分ける（裁定 §N-15）', () => {
   it('親の系列から、その子が変わった錨だけを残す', () => {
     const entries: readonly AnchorEntry[] = [
       entryAt(0, [pointNamed('アアウェン州'), siblingFeature()]),
@@ -224,7 +223,7 @@ describe('relevantEntriesFor — まとめ役の子に関わる錨だけを選�
         withAttributes(siblingFeature(), createBasicAttributes('改名した隣', 0, 9999)),
       ]),
     ];
-    const kept = relevantEntriesFor(entries, child);
+    const kept = anchorRowsOf(entries, child, { onlyRelevant: true }).map((r) => r.entry);
     expect(kept.map((e) => e.start.year)).toEqual([0, 2000]);
   });
 
@@ -236,7 +235,9 @@ describe('relevantEntriesFor — まとめ役の子に関わる錨だけを選�
       entryAt(1200, [pointNamed('B'), siblingFeature()]),
       entryAt(2000, [pointNamed('A'), siblingFeature()]),
     ];
-    expect(relevantEntriesFor(entries, child).map((e) => e.start.year)).toEqual([0, 1200, 2000]);
+    expect(
+      anchorRowsOf(entries, child, { onlyRelevant: true }).map((r) => r.entry.start.year),
+    ).toEqual([0, 1200, 2000]);
   });
 
   it('その子が 1 度も出てこない系列では空になる', () => {
@@ -244,7 +245,7 @@ describe('relevantEntriesFor — まとめ役の子に関わる錨だけを選�
       entryAt(0, [siblingFeature()]),
       entryAt(1200, [siblingFeature()]),
     ];
-    expect(relevantEntriesFor(entries, child)).toEqual([]);
+    expect(anchorRowsOf(entries, child, { onlyRelevant: true })).toEqual([]);
   });
 });
 
@@ -366,10 +367,11 @@ describe('anchorRowsOf — 前の錨を 1 か所で決める（B2）', () => {
     expect(rows[0]?.previous).toBeNull();
   });
 
-  it('relevantEntriesFor は同じ計算の薄い包みである', () => {
-    expect(relevantEntriesFor(entries, child)).toEqual(
-      anchorRowsOf(entries, child, { onlyRelevant: true }).map((r) => r.entry),
-    );
+  it('絞り込みは「行を作ってから残す」だけで、別の計算を持たない', () => {
+    const all = anchorRowsOf(entries, child);
+    const kept = anchorRowsOf(entries, child, { onlyRelevant: true });
+    // 残った行は、絞り込まないときの行の部分集合（同じ組がそのまま残る）。
+    for (const row of kept) expect(all).toContainEqual(row);
   });
 });
 

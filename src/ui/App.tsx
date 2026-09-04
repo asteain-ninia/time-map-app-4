@@ -2030,10 +2030,11 @@ export function App(): JSX.Element {
   // / ring-edit / drill / edit-drag / property・スタイル edit — incl. autoColorEnabled
   // トグル・パレット変更 — / 詳細文書 / vertex-delete / 全錨 delete / interval /
   // unshare / conflict-modal commit), never a second漏斗 (教訓 5.13 / 5.29).
-  // `anchorTime` is REQUIRED and is the COMMAND's own commit/anchor time — NOT
-  // store.currentTime — because property-edit (editTime = selected anchor start) and
-  // interval edits commit at a time that can differ from the view time; each caller
-  // states its own (全コミット経路 threaded below). maybeComposeAutoRecolor SHORT-
+  // `anchorTime` is REQUIRED and is the COMMAND's own commit/anchor time — NOT read
+  // from the store here — because each commit path states the time it actually wrote
+  // at. 素性の保存は **現在時刻**（増分 2 / 設計書 §D.3。以前は「選択中の錨の開始時刻」
+  // だったが、その契約はもう無い）、存続期間の編集は動かした錨の時刻で、どちらも
+  // 描画中の時刻とずれうる。各呼び出し元が自分の時刻を言う（全コミット経路 threaded below）。 maybeComposeAutoRecolor SHORT-
   // CIRCUITS to the unwrapped command when no auto-color target is effective at that
   // time (the 722-feature all-manual実データ: nothing changes, no adjacency graph is
   // ever built — the per-commit perf gate).

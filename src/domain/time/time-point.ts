@@ -88,17 +88,6 @@ export function completeEquals(a: CompleteTimePoint, b: CompleteTimePoint): bool
 }
 
 /**
- * True iff the point pins down only the year (month and day are genuinely
- * unspecified). The persisted data of this project is year-only — the real
- * `.gimoza` carries 689 anchors and every one of them starts at a year — so a
- * month/day-bearing time is the exception, not the norm (U-14「月日を勝手に
- * 補わない」).
- */
-export function isYearGranularity(point: TimePoint): boolean {
-  return point.granularity === 'year';
-}
-
-/**
  * Truncates a point to its YEAR (月日を捨てる). The inverse operation does not
  * exist — a year-only point genuinely has no month/day, so this is lossy on
  * purpose (教訓 5.18: 未指定は値が無い状態であって既定値ではない).

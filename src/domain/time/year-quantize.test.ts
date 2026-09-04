@@ -7,7 +7,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  isYearGranularity,
   timePointYear,
   timePointYearMonth,
   timePointYearMonthDay,
@@ -39,10 +38,3 @@ describe('toYearPoint（月日を捨てて年だけにする）', () => {
   });
 });
 
-describe('isYearGranularity', () => {
-  it('年だけのときだけ真', () => {
-    expect(isYearGranularity(timePointYear(1200))).toBe(true);
-    expect(isYearGranularity(timePointYearMonth(1200, 1))).toBe(false);
-    expect(isYearGranularity(timePointYearMonthDay(1200, 1, 1))).toBe(false);
-  });
-});

@@ -348,17 +348,6 @@ export function anchorRowsOf(
   return out;
 }
 
-/**
- * 親の系列から、その子に関わる錨だけを選り分ける（設計書 §C.6「まとめ役の子の錨」）。
- * {@link anchorRowsOf} の薄い包み — 「前の錨」の決め方は 1 か所しかない（B2）。
- */
-export function relevantEntriesFor(
-  entries: readonly AnchorEntry[],
-  featureId: FeatureId,
-): readonly AnchorEntry[] {
-  return anchorRowsOf(entries, featureId, { onlyRelevant: true }).map((r) => r.entry);
-}
-
 /** 行の左に出す年（「1200年」「継続中」は行の別の場所が持つ）。 */
 export function anchorYearLabel(entry: AnchorEntry): string {
   return formatTimePoint(entry.start);

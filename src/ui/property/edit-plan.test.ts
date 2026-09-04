@@ -22,6 +22,7 @@ import {
   EDIT_PLAN_KIND,
   decideEditPlan,
   estimateAnchorBytes,
+  estimateAnchorFileBytes,
   formatApproximateBytes,
   hasAnchorStartingAt,
   isYearAligned,
@@ -232,13 +233,22 @@ describe('新しい錨で増える量の概算（設計書 §A.3 / §D.3）', ()
     expect(p.estimatedBytes).toBeNull();
   });
 
-  it('デーレ共和国の実測（錨 1 本 = 約 270 KB）と桁が合う', () => {
+  it('デーレ共和国の実測（圧縮前で錨 1 本 = 約 270 KiB）と桁が合う', () => {
     // 実測: 地物 61・頂点 3,067 のスナップショットで 276,461 バイト
     // （scripts/measure-anchor-growth.ts）。概算はここから決めた係数なので、
     // **係数を勝手に変えたらここが落ちる**。
     const bytes = estimateAnchorBytes({ featureCount: 61, vertexCount: 3067 });
     expect(bytes).toBeGreaterThan(200_000);
     expect(bytes).toBeLessThan(350_000);
+  });
+
+  it('画面に出すのは **保存ファイルの増分**（圧縮後）である', () => {
+    // 実測: 同じ錨 1 本で .gimoza は約 60.4 KiB しか太らない（ZIP がよく効く）。
+    // 旧版は圧縮前の 270 KiB を「ファイルが」と言っていたので 4 倍以上に見えていた。
+    const file = estimateAnchorFileBytes({ featureCount: 61, vertexCount: 3067 });
+    expect(file).toBeGreaterThan(50_000);
+    expect(file).toBeLessThan(75_000);
+    expect(formatApproximateBytes(file)).toBe('約 60 KB');
   });
 });
 
