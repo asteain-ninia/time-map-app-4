@@ -206,12 +206,23 @@ describe('createAddSnapPorts — FR-29 の末端判定', () => {
     const hit = ports.terminalAt({ lon: 2, lat: 2 });
     expect(hit?.featureId).toBe(asFeatureId('f-a'));
     expect(hit?.name).toBe('f-a');
+    expect(hit?.onBoundary).toBe(false);
   });
 
-  it('境界の上は「内側」に数えない（吸着した点が自分で自分を塞がない）', () => {
+  it('境界の上は「内側」ではなく「線の上」として返る（増分 3 の手直し B1）', () => {
+    // 初版はここで null を返していた。断らない点は同じだが、**入れ子の見分けに使えない**
+    // ので、親の角へ吸着した瞬間に入れ子と認められなくなっていた（打つ順で結果が変わる）。
     const root = commit(emptyProject(), squareLeaf('f-a', 'v-a', 0, 0, 4));
     const ports = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 10 });
-    expect(ports.terminalAt({ lon: 0, lat: 0 })).toBeNull();
+    const hit = ports.terminalAt({ lon: 0, lat: 0 });
+    expect(hit?.featureId).toBe(asFeatureId('f-a'));
+    expect(hit?.onBoundary).toBe(true);
+  });
+
+  it('どの面にも触れていない場所は null', () => {
+    const root = commit(emptyProject(), squareLeaf('f-a', 'v-a', 0, 0, 4));
+    const ports = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 10 });
+    expect(ports.terminalAt({ lon: 50, lat: 50 })).toBeNull();
   });
 
   it('**子を持つ面の内側は塞がない**（排他検証と同じ定義＝子を持たない leaf）', () => {

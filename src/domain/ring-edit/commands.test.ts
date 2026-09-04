@@ -281,3 +281,67 @@ describe('delete — hole ring vs territory ring (FR-24 mirror pair)', () => {
     expect(missing.kind).toBe(RING_DELETE_OUTCOME.Rejected);
   });
 });
+
+// --- 1 辺で経度 180 度以上を渡る辺 (N-51 / 技術方針 §6.8) --------------------
+//
+// 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+// 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。追加の道具では既に
+// 断っているので、穴 / 飛び地の追加でも同じ関門を通す (教訓 5.29 単一真実源)。
+//
+// 下書きの頂点は **画面由来の連続経度** である (画面は横に無限に続くので ±180 度を越えた
+// 値がそのまま来る)。だから日付変更線をまたぐリングは 175° → 185° のように来るのであって、
+// 175° → −175° にはならない。代表値へ畳んでから数えると後者に見えて誤爆する。
+
+describe('addHole / addEnclave — 1 辺で経度 180 度以上を渡るリングは断る (N-51)', () => {
+  it('1 辺で 340 度を渡る穴は断られる', () => {
+    const { feature, vertices } = squareLeaf();
+    // (-170,50) → (170,50) の 1 辺で 340 度。頂点を採番する前に断られる。
+    const res = addHole(feature, [coord(-170, 50), coord(170, 50), coord(0, 90)], vertices, idPorts());
+    expect(res.status).toBe(RING_COMMAND_STATUS.Rejected);
+    if (res.status === RING_COMMAND_STATUS.Rejected) {
+      expect(res.reason).toBe(RING_REJECT.LongEdge);
+    }
+  });
+
+  it('1 辺で 340 度を渡る飛び地も断られる (対概念を漏らさない)', () => {
+    const { feature, vertices } = squareLeaf();
+    const res = addEnclave(
+      feature,
+      [coord(-170, -50), coord(170, -50), coord(0, -80)],
+      idPorts(),
+      vertices,
+    );
+    expect(res.status).toBe(RING_COMMAND_STATUS.Rejected);
+    if (res.status === RING_COMMAND_STATUS.Rejected) {
+      expect(res.reason).toBe(RING_REJECT.LongEdge);
+    }
+  });
+
+  it('先頭へ戻る閉じる辺が 340 度でも断られる', () => {
+    const { feature, vertices } = squareLeaf();
+    // 各辺は短いが、最後の頂点 (170) から先頭 (-170) へ戻る閉じる辺が 340 度。
+    const res = addEnclave(
+      feature,
+      [coord(-170, -50), coord(-150, -50), coord(150, -60), coord(170, -50)],
+      idPorts(),
+      vertices,
+    );
+    expect(res.status).toBe(RING_COMMAND_STATUS.Rejected);
+    if (res.status === RING_COMMAND_STATUS.Rejected) {
+      expect(res.reason).toBe(RING_REJECT.LongEdge);
+    }
+  });
+
+  it('日付変更線をまたぐ飛び地は断られない (誤爆防止)', () => {
+    const { feature, vertices } = squareLeaf();
+    // 画面は横に無限に続くので、日付変更線 (180 度) をまたいで描いたリングの経度は
+    // 175 → 185 と連続して届く。1 辺はどれも 10 度なので、これは断ってはいけない。
+    const res = addEnclave(
+      feature,
+      [coord(175, 0), coord(185, 0), coord(185, 10), coord(175, 10)],
+      idPorts(),
+      vertices,
+    );
+    expect(res.status).toBe(RING_COMMAND_STATUS.Ok);
+  });
+});

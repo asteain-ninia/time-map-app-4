@@ -43,6 +43,12 @@ import {
 import type { Calendar } from '../time/calendar';
 import type { TimePoint } from '../time/time-point';
 import { applyCarryForward, carriedAttributesOf } from './carry-forward';
+import {
+  applyVertexCarryForward,
+  movedVertexCarries,
+  vertexCarryForwardTargets,
+  type MovedVertexCarry,
+} from './vertex-carry-forward';
 import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } from '../ids';
 import {
   FEATURE_KIND,
@@ -1521,6 +1527,15 @@ export function applyEditProposal(
     effectiveBefore.kind === 'present'
       ? (effectiveBefore.entry.anchor.snapshot.features.find((f) => f.id === featureId) ?? null)
       : null;
+  // 頂点の引き継ぎ（増分 3 の手直し A1）の材料も **編集前の**写しから採る。旧座標は
+  // 「T の直前で効いていた体」であり、共有頂点なら同じ id の体はどの履歴でも同じなので、
+  // ここで 1 度引けば全履歴に使える（食い違っていたら、それは既に壊れたデータである）。
+  const beforeStore =
+    effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null;
+  const vertexCarries = movedVertexCarries(
+    movedVertices,
+    beforeBodiesOf(beforeStore, movedVertices),
+  );
 
   const updatedSeries = applyPastEdit(
     history.series,
@@ -1581,7 +1596,18 @@ export function applyEditProposal(
           calendar,
         );
 
-  const newHistory: FeatureHistory = { featureId: history.featureId, series: carriedSeries };
+  // **動かした頂点の座標を前へ引き継ぐ**（増分 3 の手直し A1 / 反証 #1 / GPT #1）。属性と
+  // 同じ理屈で、T より後ろの錨は動かす前の座標の古い写しを持っている。共有頂点を動かした
+  // とき、片方の国が後年に錨を持っていると、そこから **移動前の境界が復活する**。
+  // 引き継ぎは「その頂点が本当に動く錨」で止まるので、記録された歴史は 1 つも壊さない。
+  const carriedWithVertices = applyVertexCarryForward(
+    carriedSeries,
+    anchorTime,
+    vertexCarries,
+    calendar,
+  );
+
+  const newHistory: FeatureHistory = { featureId: history.featureId, series: carriedWithVertices };
   let histories = root.histories.map((h, i) => (i === index ? newHistory : h));
 
   // 共有頂点移動の全履歴反映 (FR-59 一体編集 / 教訓5.20, Codex bug-hunt true-positive):
@@ -1601,8 +1627,93 @@ export function applyEditProposal(
     anchorTime,
     calendar,
   );
+  // …そして **T より後ろ**へも同じ引き継ぎを配る（増分 3 の手直し A1）。上の 1 本は
+  // 「T の時点で効いている錨」しか触らないので、隣の国が 1500 年から現れる場合や、
+  // 1500 年に自分の錨を持っている場合に、そこで移動前の座標が復活していた。対象は
+  // **T より後ろに錨を持つ全履歴**である（T の時点に居なくても、後ろに居れば裂ける）。
+  histories = histories.map((h, i) =>
+    i === index
+      ? h // 対象の履歴は上で引き継ぎ済み。
+      : carryVertexForwardIn(h, anchorTime, vertexCarries, calendar),
+  );
   return withHistories(root, histories);
 }
+
+/** 1 つの履歴に頂点の引き継ぎを掛ける（変化が無ければ同じ値を返す）。 */
+function carryVertexForwardIn(
+  history: FeatureHistory,
+  anchorTime: TimePoint,
+  carries: readonly MovedVertexCarry[],
+  calendar: Calendar,
+): FeatureHistory {
+  const series = applyVertexCarryForward(history.series, anchorTime, carries, calendar);
+  return series === history.series ? history : { featureId: history.featureId, series };
+}
+
+/** 移動前の体を、いま効いている頂点表から引く（引けない id は入れない）。 */
+function beforeBodiesOf(
+  store: VertexStore | null,
+  movedVertices: readonly Vertex[],
+): ReadonlyMap<VertexId, WorldCoordinate> {
+  const out = new Map<VertexId, WorldCoordinate>();
+  if (store === null) return out;
+  for (const v of movedVertices) {
+    const held = getVertex(store, v.id);
+    if (held !== undefined) out.set(v.id, held.coordinate);
+  }
+  return out;
+}
+
+/**
+ * その編集が **いま見ている年より後ろの記録を何本書き換えるか**（増分 3 の手直し A1）。
+ * 状態行の「直前の結果」に「0 年の頂点の移動を 1500 年以降の記録にも反映しました」と
+ * 添えるための材料で、**判定は {@link applyEditProposal} と同じ 1 本**（`vertexCarryForwardTargets`）
+ * を通す ―― 画面が言うことと実際に書き換わる範囲が食い違いようがない（教訓 5.29）。
+ *
+ * 渡す `root` は **編集前**のプロジェクトである（旧座標がまだ入っている状態）。
+ */
+export function reportVertexCarryForward(
+  root: DomainProject,
+  proposal: EditProposal<FeatureSnapshot>,
+  calendar: Calendar,
+): VertexCarryForwardReport {
+  const { snapshot, featureId, anchorTime } = proposal;
+  const found = findHistoryContaining(root, featureId, anchorTime, calendar);
+  if (found === undefined) return NO_VERTEX_CARRY_FORWARD;
+  const effectiveBefore = resolveAt(found.history.series, anchorTime, calendar);
+  const carries = movedVertexCarries(
+    snapshot.vertices,
+    beforeBodiesOf(
+      effectiveBefore.kind === 'present' ? effectiveBefore.entry.anchor.snapshot.vertices : null,
+      snapshot.vertices,
+    ),
+  );
+  if (carries.length === 0) return NO_VERTEX_CARRY_FORWARD;
+  let anchorCount = 0;
+  let firstYear: number | null = null;
+  for (const history of root.histories) {
+    for (const entry of vertexCarryForwardTargets(
+      history.series.entries,
+      anchorTime,
+      carries,
+      calendar,
+    )) {
+      anchorCount += 1;
+      if (firstYear === null || entry.start.year < firstYear) firstYear = entry.start.year;
+    }
+  }
+  return { anchorCount, firstYear };
+}
+
+/** {@link reportVertexCarryForward} の結果。 */
+export interface VertexCarryForwardReport {
+  /** 書き換わる錨の数（全履歴の合計）。0 なら「この年より後ろには触らない」。 */
+  readonly anchorCount: number;
+  /** 書き換わる錨のうち、いちばん早い開始年。無ければ null。 */
+  readonly firstYear: number | null;
+}
+
+const NO_VERTEX_CARRY_FORWARD: VertexCarryForwardReport = { anchorCount: 0, firstYear: null };
 
 /**
  * 共有頂点移動の継続 (FR-59 / 教訓5.20): refresh the moved vertex bodies into EVERY history
@@ -1616,6 +1727,11 @@ export function applyEditProposal(
  * effective snapshot's vertex store (id → new coordinate) while leaving its features and
  * every untouched vertex unchanged. Histories that cite no moved id are returned untouched
  * (referential identity preserved), so a plain non-shared move costs nothing. Pure.
+ *
+ * **これは「T の時点」だけの話である**（増分 3 の手直し A1）。T より後ろの錨が持つ古い座標は
+ * `applyVertexCarryForward` が別に配る ―― こちらは「T の時点で効いている履歴」しか見ないので、
+ * 隣の国が後年から現れる場合を構造的に取りこぼす。2 本に分けてあるのは効かせる時点が違う
+ * ためで、判定の重複ではない。
  */
 function applyMovedVerticesToHistories(
   histories: readonly FeatureHistory[],

@@ -601,3 +601,50 @@ describe('executeSplit / smallerSide', () => {
     expect(executeSplit(feature, store, createOpenKnifeLine([c(-5, -5), c(15, -5)]))).toBeUndefined();
   });
 });
+
+// --- 1 辺で経度 180 度以上を渡る辺 (N-51 / 技術方針 §6.8) --------------------
+//
+// 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+// 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。追加の道具では既に
+// 断っているので、ナイフでも同じ関門を通す (増分 3 の手直し / 教訓 5.29 単一真実源)。
+
+/** 横に長いが 1 辺はどれも 90 度以下 ―― それ自体は保存できる面。 */
+function wideLeaf() {
+  return squareLeaf('wide', [
+    c(-170, 0),
+    c(-90, 0),
+    c(0, 0),
+    c(90, 0),
+    c(170, 0),
+    c(170, 10),
+    c(90, 10),
+    c(0, 10),
+    c(-90, 10),
+    c(-170, 10),
+  ]);
+}
+
+describe('checkSplittable — 1 辺で経度 180 度以上を渡る切り口は断る (N-51)', () => {
+  it('横長の面を横向きに切ると、外周が 1 本の長い辺に化けるので断られる', () => {
+    const { feature, store } = wideLeaf();
+    // 緯度 5 を西端の外から東端の外まで貫く分断線 (1 辺はどれも 90 度以下で引く)。
+    // 切った結果は [-170,170]×[0,5] などになるが、集合演算が一直線上に並ぶ途中の頂点を
+    // 落とすため、下辺が −170°→170° の「1 本で 340 度」になってしまう。
+    const line = createOpenKnifeLine([c(-175, 5), c(-90, 5), c(0, 5), c(90, 5), c(175, 5)]);
+    const res = checkSplittable(feature, store, line);
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.NotSplittable);
+    if (res.status === SPLIT_CHECK_STATUS.NotSplittable) {
+      expect(res.reason).toBe(SPLIT_REJECT.LongEdge);
+      expect(res.message).toBe(SPLIT_REJECT_MESSAGE[SPLIT_REJECT.LongEdge]);
+    }
+  });
+
+  it('日付変更線をまたぐ普通の面を切るのは断られない (誤爆防止)', () => {
+    // 代表値では 160° の隣に −170° が来る面 ―― 連続経度では [160,190] の幅 30 度の面で、
+    // 長い辺は 1 本も無い。畳んだ値のまま数えると 330 度に見えてしまうので、この形が
+    // 通ることを固定する (long-edge.ts の「入力は連続経度」の契約)。
+    const { feature, store } = squareLeaf('seam', [c(160, 0), c(-170, 0), c(-170, 10), c(160, 10)]);
+    const res = checkSplittable(feature, store, createOpenKnifeLine([c(175, -5), c(175, 15)]));
+    expect(res.status).toBe(SPLIT_CHECK_STATUS.Splittable);
+  });
+});

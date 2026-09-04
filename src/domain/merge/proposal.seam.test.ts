@@ -20,6 +20,7 @@ import {
   type MergeProposal,
 } from './proposal';
 import { parentNone, propertyNew } from './decision';
+import { MSG_MERGE_LONG_EDGE } from './messages';
 import { makeIdPorts, COLOR } from './fixtures';
 import { createBasicAttributes } from '../attributes';
 
@@ -324,5 +325,88 @@ describe('U30 結合 — 世界シーム整列 (root cause A 横展開)', () => 
     // 穴が 1 つ残り、その親が外環 (孤立穴の領土降格ではない) である。
     expect(holes.length).toBe(1);
     expect(holes[0]!.parentRingId).toBe(territories[0]!.id);
+  });
+});
+
+// --- 1 辺で経度 180 度以上を渡る辺 (N-51 / 技術方針 §6.8) --------------------
+//
+// 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+// 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。追加の道具では既に
+// 断っているので、結合でも同じ関門を通す (増分 3 の手直し / 教訓 5.29 単一真実源)。
+
+describe('U30 結合 — 1 辺で経度 180 度以上を渡る結果は断る (N-51)', () => {
+  it('横長の面どうしを結合すると、外周が 1 本の長い辺に化けるので断られる', () => {
+    // A は経度 [-170,0]、B は [0,170]。どちらも途中に頂点があるので 1 辺は 90 度以下 ――
+    // それぞれ単体では保存できる形である。ところが論理和は一直線上に並ぶ途中の頂点を
+    // 落とすので、結合後の下辺・上辺が −170°→170° の「1 本で 340 度」になってしまう。
+    const a = quadLeaf('wa', [
+      createCoordinate(-170, 0),
+      createCoordinate(-90, 0),
+      createCoordinate(0, 0),
+      createCoordinate(0, 10),
+      createCoordinate(-90, 10),
+      createCoordinate(-170, 10),
+    ]);
+    const b = quadLeaf('wb', [
+      createCoordinate(0, 0),
+      createCoordinate(90, 0),
+      createCoordinate(170, 0),
+      createCoordinate(170, 10),
+      createCoordinate(90, 10),
+      createCoordinate(0, 10),
+    ]);
+
+    const result = buildMergeProposal({
+      features: [a.feature, b.feature],
+      vertices: storeOf(a, b),
+      targetIds: [a.feature.id, b.feature.id],
+      atTime: 50,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({
+        attributes: createBasicAttributes('merged', 0, 100),
+        color: COLOR,
+      }),
+      ids: makeIdPorts('wide'),
+    });
+
+    expect(result.status).toBe(MERGE_STATUS.Rejected);
+    if (result.status === MERGE_STATUS.Rejected) {
+      expect(result.kind).toBe('long-edge');
+      expect(result.message).toBe(MSG_MERGE_LONG_EDGE);
+    }
+  });
+
+  it('日付変更線をまたいで隣り合う面どうしの結合は断られない (誤爆防止)', () => {
+    // 代表値では 175° の隣に −175° が来るが、連続経度では [160,190] の幅 30 度の 1 片で、
+    // 長い辺は 1 本も無い。畳んだ値のまま数えると 350 度に見えてしまうので、この形が
+    // 通ることを固定する (long-edge.ts の「入力は連続経度」の契約)。
+    const a = quadLeaf('sa', [
+      createCoordinate(160, 0),
+      createCoordinate(175, 0),
+      createCoordinate(175, 10),
+      createCoordinate(160, 10),
+    ]);
+    const b = quadLeaf('sb', [
+      createCoordinate(175, 0),
+      createCoordinate(-170, 0),
+      createCoordinate(-170, 10),
+      createCoordinate(175, 10),
+    ]);
+
+    const result = buildMergeProposal({
+      features: [a.feature, b.feature],
+      vertices: storeOf(a, b),
+      targetIds: [a.feature.id, b.feature.id],
+      atTime: 50,
+      parentDecision: parentNone,
+      propertyDecision: propertyNew({
+        attributes: createBasicAttributes('merged', 0, 100),
+        color: COLOR,
+      }),
+      ids: makeIdPorts('seam-ok'),
+    });
+
+    const proposal = proposalOf(result);
+    expect(territoryRingCount(proposal.nextFeatures, proposal.resultFeatureId)).toBe(1);
   });
 });

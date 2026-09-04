@@ -28,6 +28,7 @@
 import { createBasicAttributes, type BasicAttributes, type ColorInfo } from '../attributes';
 import { quantizeCoordinate } from '../geometry/index';
 import { alignMultiPolygon, normalizeCoordinate, referenceLonForMultiPolygon } from '../geo/index';
+import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import { vertexCoordKey } from '../vertex-weld';
 import { union, BOOLEAN_OP_STATUS } from '../geometry/boolean-ops';
 import type { GeoMultiPolygon, GeoRing } from '../geometry/types';
@@ -71,6 +72,7 @@ import {
 import {
   MSG_MERGE_INHERIT_SOURCE,
   MSG_MERGE_INTERNAL,
+  MSG_MERGE_LONG_EDGE,
   MSG_MERGE_UNION_REJECTED,
   mergeRejectMessage,
 } from './messages';
@@ -149,7 +151,18 @@ export interface MergeProposal {
 
 export interface MergeRejected {
   readonly status: typeof MERGE_STATUS.Rejected;
-  readonly kind: MergeRejectKind | 'union-rejected' | 'inherit-source' | 'hierarchy' | 'internal';
+  /**
+   * 機械可読な拒否種別。事前条件由来 ({@link MergeRejectKind}) に加え、組み立て段階で
+   * 起きうる拒否をここに並べる。`'long-edge'` は「1 辺で経度 180 度以上を渡る辺」ができた
+   * 場合 (N-51 / 技術方針 §6.8) — 保存形式が表現できない形なので確定させない。
+   */
+  readonly kind:
+    | MergeRejectKind
+    | 'union-rejected'
+    | 'long-edge'
+    | 'inherit-source'
+    | 'hierarchy'
+    | 'internal';
   readonly message: string;
   /** 機械可読詳細 (関与地物 ID 等)。 */
   readonly detail?: unknown;
@@ -612,6 +625,15 @@ function assembleLeafOnly(
   const unioned = unionLeafShapes(forest, vertices, targetIds);
   if (!unioned.ok) {
     return reject('union-rejected', MSG_MERGE_UNION_REJECTED, { targetIds });
+  }
+  // N-51 / 技術方針 §6.8: 1 辺で経度 180 度以上を渡る形は保存して読み直すと必ず別の形に
+  // なるので、頂点を採番する前にここで断る。`unioned.area` は `unionLeafShapes` が 1 本の
+  // 枝へ寄せた後の **連続経度** の値であり、代表値へ畳むのは buildShapeFromMultiPolygon の
+  // 中である。代表値の列に掛けると正常な日付変更線またぎ (179° → −179°) が 358° と出て
+  // 誤爆するので、必ず畳む前のこの位置で見る。述語は `domain/geo/long-edge.ts` の 1 本
+  // だけを呼ぶ (教訓 5.29 単一真実源)。
+  if (countLongEdgesInMultiPolygon(unioned.area) > 0) {
+    return reject('long-edge', MSG_MERGE_LONG_EDGE, { targetIds });
   }
   const built = buildShapeFromMultiPolygon(unioned.area, ids);
   if (!isAlternationValid(built.shape)) {

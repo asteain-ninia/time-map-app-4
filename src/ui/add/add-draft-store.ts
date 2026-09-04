@@ -23,8 +23,16 @@ import type { FeatureId } from '../../domain/ids';
 export interface AddDraftPrompt {
   /** どの道具の確定か（面のときだけ親領域を聞く＝FR-77）。 */
   readonly tool: AddToolKind;
-  /** 親領域の候補（面のときだけ。現在時刻に居る面＝FR-77）。 */
+  /**
+   * 上位領域の候補（面のときだけ）。**いま描いた形を丸ごと含む面**に絞ってある
+   * （増分 3 の手直し B2 / FR-77）。
+   */
   readonly parentCandidates: readonly ParentCandidate[];
+  /**
+   * 候補が 1 つに決まるときの既定（決まらなければ null）。入れ子として通した形が
+   * 黙って「上位領域なし」で保存されるのを防ぐ（GPT #4）。
+   */
+  readonly defaultParentId: FeatureId | null;
   /**
    * 年代の既定に使う「いま見ている年」（G-8 / 設計書 §C.2 の 27）。
    * これまでは `DEFAULT_START_YEAR = 0` の固定で、5080 年で追加しても 0 年になり、
@@ -77,6 +85,7 @@ function samePrompt(a: AddDraftPrompt | null, b: AddDraftPrompt | null): boolean
   return (
     a.tool === b.tool &&
     a.currentYear === b.currentYear &&
+    a.defaultParentId === b.defaultParentId &&
     a.parentCandidates === b.parentCandidates &&
     a.onChooseParent === b.onChooseParent &&
     a.onSave === b.onSave &&

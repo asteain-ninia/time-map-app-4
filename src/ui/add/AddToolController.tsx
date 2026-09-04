@@ -26,6 +26,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import {
   ADD_TOOL_KIND,
+  draftCoordinates,
   minVerticesFor,
   PARENT_TOP_LEVEL,
   parentSelection,
@@ -122,6 +123,12 @@ export interface AddToolControllerProps<S> {
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
   /** Face parent candidates at the current time (FR-77); host-resolved (U10/U08). */
   readonly parentCandidates?: readonly ParentCandidate[] | undefined;
+  /**
+   * FR-77 / GPT #3・#4: **いま描いた形を丸ごと含む面**の id。上位領域の候補をこれだけに
+   * 絞り、一意ならそれを既定にする（増分 3 の手直し B2）。渡されなければ従来どおり
+   * 「その時刻に居る面すべて」を並べる。
+   */
+  readonly facesContaining?: ((coordinates: readonly WorldCoordinate[]) => readonly FeatureId[]) | undefined;
   /** Nearest existing-vertex proximity resolver (FR-31; U10/U24). */
   readonly resolveProximity?: AddToolControllerOptionalPorts['resolveProximity'];
   /** FR-29: その座標がどの末端地物の内側か（U10。可否も文言もこの 1 本から作る）。 */
@@ -171,6 +178,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     drawSink,
     onConflicts,
     parentCandidates,
+    facesContaining,
     resolveProximity,
     terminalAt,
     featureNameOf,
@@ -203,6 +211,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     onConflicts,
     ...(resolveProximity ? { resolveProximity } : {}),
     ...(terminalAt ? { terminalAt } : {}),
+    ...(facesContaining ? { facesContaining } : {}),
   });
 
   // --- 教訓 5.2 全経路で破棄: the active add-tool kind is derived from the toolbar
@@ -487,6 +496,30 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const save = add.save;
   const phase = add.phase;
   const sessionTool = add.session?.tool;
+  const draft = add.draft;
+
+  // **上位領域の候補は「いま描いた形を丸ごと含む面」だけに絞る**（増分 3 の手直し B2。
+  // GPT #3・#4）。初版は「その時刻に居る面」を平らに全部並べていたので、実データでは
+  // 776 件が無関係に並び、しかも **入れ子として通した形が既定では「上位領域なし」で
+  // 保存され、最上位の面として重なり競合になった**。
+  //
+  // 一意に決まるときは **それを既定にする**（利用者が選び直さなくてよい）。0 件なら
+  // 従来どおり「上位領域なし」の 1 択で、複数なら選んでもらう。
+  const narrowedParents = useMemo<readonly ParentCandidate[]>(() => {
+    const all = parentCandidates ?? [];
+    if (facesContaining === undefined || draft === null) return all;
+    const containing = new Set<FeatureId>(facesContaining(draftCoordinates(draft)));
+    return all.filter((c) => containing.has(c.featureId));
+  }, [parentCandidates, facesContaining, draft]);
+
+  const soleParentId =
+    narrowedParents.length === 1 ? (narrowedParents[0]?.featureId ?? null) : null;
+  useEffect(() => {
+    if (phase !== ADD_PHASE.PropertyForm) return;
+    if (soleParentId === null) return;
+    chooseParent(parentSelection(soleParentId));
+  }, [phase, soleParentId, chooseParent]);
+
   useEffect(() => {
     if (addDraft === undefined) return;
     if (phase !== ADD_PHASE.PropertyForm || sessionTool === undefined) {
@@ -495,7 +528,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     }
     addDraft.set({
       tool: sessionTool,
-      parentCandidates: parentCandidates ?? [],
+      parentCandidates: narrowedParents,
+      defaultParentId: soleParentId,
       currentYear: currentTime.year,
       onChooseParent: (featureId: FeatureId | null) =>
         chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId)),
@@ -508,7 +542,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     addDraft,
     phase,
     sessionTool,
-    parentCandidates,
+    narrowedParents,
+    soleParentId,
     currentTime,
     chooseParent,
     save,

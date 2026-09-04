@@ -24,7 +24,7 @@ import {
 } from '../domain/time/time-point';
 import { createVertexStore, type Vertex, type VertexStore } from '../domain/vertex';
 import { resolveLeafShape } from '../domain/hierarchy/resolve-shape';
-import { alignMultiPolygon } from '../domain/geo/seam';
+import { alignMultiPolygon, LONGITUDE_PERIOD } from '../domain/geo/seam';
 import { pointInPolygon, POINT_LOCATION } from '../domain/geometry/predicates';
 import type { WorldCoordinate } from '../domain/coordinate';
 import type { GeoMultiPolygon } from '../domain/geometry/types';
@@ -214,6 +214,30 @@ interface LeafHitIndex {
  */
 const LEAF_BROAD_PHASE_EPS = 1e-9;
 
+/**
+ * 生の頂点から解いた末端の形を、**リングごとに連続経度へ戻した**もの（増分 3 の手直し A2）。
+ *
+ * `resolveLeafShape` は保存されている代表値をそのまま返すので、日付変更線をまたぐ地物は
+ * 経度が折り返された姿（例 `[179.6, 180.2, -179.9]`）で出てくる。この列をそのまま
+ * `pointInPolygon` に掛けると、**リングの中に 360 度の飛びがある別の多角形**を判定して
+ * しまい、画面に見えている形と当たり判定が食い違う（バグ狩り #1: 継ぎ目で吸着して作った面が
+ * ナイフ・FR-29・所属変更で「別の場所にある」ことになる）。
+ *
+ * 描画側（`resolve-display-shapes` の `unwrapShape`）と `leafShapeAt` は既に
+ * `alignMultiPolygon` で連続へ戻している。**当たり判定も同じ規則を通す**ことで、
+ * 描く・掴む・断るの 3 つが 1 つの形について同じ答えを出す（教訓 5.29 / 5.30）。
+ * 継ぎ目をまたがない地物では閉じた展開も寄せも恒等なので、従来と 1 ビットも変わらない。
+ */
+function resolveAlignedLeafShape(
+  shape: LeafFeature['shape'],
+  vertices: VertexStore,
+): GeoMultiPolygon | undefined {
+  const resolved = resolveLeafShape(shape, vertices);
+  if (resolved === undefined) return undefined;
+  // 破片ごとに、その破片自身の外周を基準に寄せる（飛び地は自分の周回を保つ＝片落とししない）。
+  return resolved.map((polygon) => alignMultiPolygon([polygon])[0]!);
+}
+
 /** Build the leaf-body index for `(root, time)` — one `resolveLeafShape` sweep + bboxes. */
 function buildLeafHitIndex(root: DomainProject, time: TimePoint): LeafHitIndex {
   const vertices = verticesAt(root, time);
@@ -225,7 +249,7 @@ function buildLeafHitIndex(root: DomainProject, time: TimePoint): LeafHitIndex {
   let order = 0;
   for (const f of featuresAt(root, time)) {
     if (f.kind !== FEATURE_KIND.Leaf) continue;
-    const shape = resolveLeafShape(f.shape, vertices);
+    const shape = resolveAlignedLeafShape(f.shape, vertices);
     if (shape !== undefined) {
       const box = multiPolygonBBox(shape);
       if (box !== undefined) {
@@ -273,6 +297,31 @@ function leafBodyContains(
 }
 
 /**
+ * その形の **どこに** 点があるか（増分 3 の手直し B1）。`leafBodyContains` が「内側だけ」を
+ * 見るのに対し、こちらは **境界の上**（リングの頂点や辺にちょうど乗っている）も区別して返す。
+ *
+ * **なぜ要るのか**: FR-29 の入れ子の見分けは「打った頂点が全部、同じ末端の内側**または
+ * 境界の上**なら入れ子」である（所有者裁定待ちの規則。設計 S3-2 の穴を塞いだ形）。
+ * 親の角へ吸着した頂点は必ず境界の上に載るので、境界を「内側でない」とだけ扱うと
+ * **吸着した瞬間に入れ子と認めてもらえなくなる**（打つ順で結果が変わる欠陥）。
+ * 判定そのものは同じ `pointInPolygon` 1 本なので、可否が 2 経路に割れない（教訓 5.29）。
+ */
+function leafBodyLocation(
+  shape: GeoMultiPolygon,
+  probes: readonly WorldCoordinate[],
+): 'inside' | 'boundary' | null {
+  let boundary = false;
+  for (const polygon of shape) {
+    for (const p of probes) {
+      const at = pointInPolygon(p, polygon);
+      if (at === POINT_LOCATION.Inside) return 'inside'; // 内側が最優先。
+      if (at === POINT_LOCATION.Boundary) boundary = true;
+    }
+  }
+  return boundary ? 'boundary' : null;
+}
+
+/**
  * The leaf candidates whose bbox contains one of the ±360° `point` replicas — a
  * conservative SUPERSET of the leaves the full scan would test-and-hit, returned in
  * scan (`order`) order so the later-wins tie-break is byte-identical. A probe with a
@@ -314,7 +363,7 @@ function leafAtPointFullScan(
   );
   let hit: FeatureId | null = null;
   for (const leaf of leaves) {
-    const shape = resolveLeafShape(leaf.shape, vertices);
+    const shape = resolveAlignedLeafShape(leaf.shape, vertices);
     if (shape === undefined) continue;
     if (leafBodyContains(shape, probes)) hit = leaf.id; // a later leaf on top wins
   }
@@ -391,10 +440,17 @@ export function leafAtPoint(
   // probe the click point in each ±360° longitude frame as well as the canonical
   // one. Testing the POINT at ±360 (rather than re-wrapping every polygon) covers
   // every replica with the same containment rule (穴透過 honoured). 単一真実源.
+  //
+  // **押した点を正準の周回へ折り返してから探る**（増分 3 の手直し A4。反証 #3）。
+  // 地図を東西へ 2 周以上パンすると `screenToWorld` が返す経度は 540 や −900 になる。
+  // 探るのは ±1 周ぶんだけなので、そのままでは **2 周目から先で照会が黙って外れる**
+  // （画面には地物が見えているのに FR-29 が断らなくなり、ナイフも対象を見つけられない）。
+  // 折り返しは丸ごとの回転数を引くだけなので、1 周以内では 1 ビットも変わらない。
+  const folded = foldToCanonicalTurn(point);
   const probes: WorldCoordinate[] = [
-    point,
-    { lon: point.lon + 360, lat: point.lat },
-    { lon: point.lon - 360, lat: point.lat },
+    folded,
+    { lon: folded.lon + LONGITUDE_PERIOD, lat: folded.lat },
+    { lon: folded.lon - LONGITUDE_PERIOD, lat: folded.lat },
   ];
   // The index-bypass path (test toggle) is the verbatim previous full scan.
   if (!leafIndexEnabled) return leafAtPointFullScan(root, time, probes);
@@ -407,10 +463,70 @@ export function leafAtPoint(
   // probe, so no probe can be inside its polygons), and later candidates still win.
   const hitIndex = leafIndexMemo.lookup(root, time);
   let hit: FeatureId | null = null;
-  for (const cand of leafCandidates(hitIndex, point)) {
+  for (const cand of leafCandidates(hitIndex, folded)) {
     if (leafBodyContains(cand.shape, probes)) hit = cand.featureId; // later leaf on top wins
   }
   return hit;
+}
+
+/** {@link leafAtPointIncludingBoundary} の結果。`onBoundary` が真なら「線の上」である。 */
+export interface LeafPointHit {
+  readonly featureId: FeatureId;
+  readonly onBoundary: boolean;
+}
+
+/**
+ * {@link leafAtPoint} と同じ探し方で、**境界の上も当たりとして返す**（増分 3 の手直し B1）。
+ *
+ * 内側の当たりが 1 つでもあればそちらが勝つ（`onBoundary: false`）。内側がどこにも無く、
+ * 境界の上に載っている末端があればそれを返す（`onBoundary: true`）。どちらも無ければ null。
+ * 索引・±360 度の複製・押した点の折り返しは `leafAtPoint` と**同じ 1 本**を通る。
+ */
+export function leafAtPointIncludingBoundary(
+  root: DomainProject,
+  time: TimePoint,
+  point: WorldCoordinate,
+): LeafPointHit | null {
+  const folded = foldToCanonicalTurn(point);
+  const probes: WorldCoordinate[] = [
+    folded,
+    { lon: folded.lon + LONGITUDE_PERIOD, lat: folded.lat },
+    { lon: folded.lon - LONGITUDE_PERIOD, lat: folded.lat },
+  ];
+  const vertices = verticesAt(root, time);
+  let inside: FeatureId | null = null;
+  let boundary: FeatureId | null = null;
+  const scan = (featureId: FeatureId, shape: GeoMultiPolygon): void => {
+    const at = leafBodyLocation(shape, probes);
+    if (at === 'inside') inside = featureId; // later leaf on top wins（描画順と同じ）
+    else if (at === 'boundary') boundary = featureId;
+  };
+  if (!leafIndexEnabled) {
+    for (const f of featuresAt(root, time)) {
+      if (f.kind !== FEATURE_KIND.Leaf) continue;
+      const shape = resolveAlignedLeafShape(f.shape, vertices);
+      if (shape !== undefined) scan(f.id, shape);
+    }
+  } else {
+    for (const cand of leafCandidates(leafIndexMemo.lookup(root, time), folded)) {
+      scan(cand.featureId, cand.shape);
+    }
+  }
+  if (inside !== null) return { featureId: inside, onBoundary: false };
+  if (boundary !== null) return { featureId: boundary, onBoundary: true };
+  return null;
+}
+
+/**
+ * 押した点を **正準の周回**（[-180, 180) を中心とする 1 周ぶん）へ折り返す（A4）。
+ * 丸ごとの回転数だけを引くので、緯度は触らず、経度も 1 周以内なら値が変わらない。
+ * 有限でない値はそのまま返す（下流の `pointInPolygon` はどのみち当たらない）。
+ */
+function foldToCanonicalTurn(point: WorldCoordinate): WorldCoordinate {
+  if (!Number.isFinite(point.lon)) return point;
+  const turns = Math.round(point.lon / LONGITUDE_PERIOD);
+  if (turns === 0) return point;
+  return { lon: point.lon - turns * LONGITUDE_PERIOD, lat: point.lat };
 }
 
 /**

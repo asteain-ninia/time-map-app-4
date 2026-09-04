@@ -32,6 +32,8 @@ import {
   createPointFeature,
   type Feature,
 } from '../feature';
+import { createCoordinate, type WorldCoordinate } from '../coordinate';
+import { LONGITUDE_PERIOD } from '../geo/seam';
 import type { FeatureId, RingId, VertexId } from '../ids';
 import { createShape, createTerritoryRing, type Shape } from '../ring';
 import type { TimePoint } from '../time/time-point';
@@ -135,12 +137,23 @@ interface BuiltGeometry {
  * 「その時点の全体の写し」なので、参照している頂点の体が入っていないと読み直しの整合
  * チェックに引っかかる。座標は吸着元からそのまま写した値なので、同じ id の 2 つの体は
  * 必ず一致する（食い違いようがない）。
+ *
+ * **周回をそろえる（増分 3 の手直し A2）**。吸着した頂点の体は相手の周回のまま入れる
+ * しかない（同じ id を指す 2 つの地物の体が食い違ってはいけない）。ところが下書きの座標は
+ * 「押した場所と同じ周回」に寄せてあるので、日付変更線の向こうで描いていると
+ * **吸着した 1 点だけが 360 度離れた値**になり、保存されるリングの中に 360 度の飛びが入る。
+ * 読み込み側はリングごとに連続へ戻すので形そのものは復元されるが、**当たり判定のように
+ * 生のリングをそのまま多角形として扱う経路**では別の形に見えてしまう（バグ狩り #1）。
+ * そこで **吸着した頂点の体を基準に、吸着していない頂点の体を同じ周回へ丸ごと寄せる**。
+ * こうすると保存されるリングは飛びの無い連続な列になり、共有頂点の体は 1 ビットも動かない。
  */
 function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
   const coords = draftCoordinates(draft);
   const vertices: Vertex[] = [];
   const vertexIds: VertexId[] = [];
   const sharedCandidateIds = new Map<VertexId, FeatureId>();
+  // 吸着した頂点の体に合わせるための、丸ごとの周回のずれ（0 か ±360 の倍数）。
+  const turnShift = sharedBodyTurnShift(draft, coords);
   draft.vertices.forEach((placed, index) => {
     const coordinate = coords[index];
     // coords is derived 1:1 from draft.vertices, so `coordinate` is always present;
@@ -150,11 +163,14 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
     const sharedVertexId = placed.sharedVertexId;
     // 吸着した頂点は既存の id を使い回す（＝共有になる）。していなければ採番する。
     const id = sharedVertexId != null ? sharedVertexId : ids.nextVertexId();
-    // **体は元の値で保存する。** `coordinate` は下書きの連続経度の枠へ寄せた値なので、
-    // 日付変更線をまたいで描いていると元の値と 360 度ちょうど食い違う。同じ id を指す
-    // 2 つの地物の体が食い違うと、読み込みの整合チェックが咎める。読み込み側はリングごと
-    // に連続へ戻すので、体が元の周回のままでも形は正しく復元される（技術方針 §6.1）。
-    const body = placed.sharedVertexCoordinate ?? coordinate;
+    // **吸着した頂点の体は元の値のまま**（同じ id を指す 2 つの地物の体が食い違うと、
+    // 読み込みの整合チェックが咎める）。**吸着していない頂点は、その体と同じ周回へ寄せる**
+    // ので、保存されるリングの中に 360 度の飛びが生まれない（増分 3 の手直し A2）。
+    const body =
+      placed.sharedVertexCoordinate ??
+      (turnShift === 0
+        ? coordinate
+        : createCoordinate(coordinate.lon + turnShift, coordinate.lat));
     vertices.push(createVertex(id, body));
     vertexIds.push(id);
     if (shared != null) {
@@ -162,6 +178,29 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
     }
   });
   return { vertices, vertexIds, sharedCandidateIds };
+}
+
+/**
+ * 吸着した頂点の体に合わせるための、リング全体の周回のずれ（増分 3 の手直し A2）。
+ *
+ * 下書きの座標は「押した場所と同じ周回」、吸着した頂点の体は「保存されている周回」である。
+ * 最初に見つかった吸着頂点でこの 2 つの差を丸ごとの回転数に丸め、**吸着していない頂点の体を
+ * その分だけずらす**。吸着が 1 つも無ければ 0（従来どおり下書きの値をそのまま保存する）。
+ *
+ * 2 つ以上の吸着頂点が別々の周回を指す形（1 つのリングが世界を 1 周以上する）は、そもそも
+ * N-51 の関門が通さないので、最初の 1 つで決めてよい。
+ */
+function sharedBodyTurnShift(
+  draft: ShapeDraft,
+  coords: readonly WorldCoordinate[],
+): number {
+  for (let i = 0; i < draft.vertices.length; i += 1) {
+    const body = draft.vertices[i]?.sharedVertexCoordinate;
+    const drawn = coords[i];
+    if (body == null || drawn === undefined) continue;
+    return LONGITUDE_PERIOD * Math.round((body.lon - drawn.lon) / LONGITUDE_PERIOD);
+  }
+  return 0;
 }
 
 function shapeFromRing(ringVertexIds: readonly VertexId[], ringId: RingId): Shape {

@@ -32,7 +32,7 @@ import {
 } from '../../../render';
 import { PROCESS_STATUS, type ProcessResult } from '../../../domain/consistency/index';
 import type { WorldCoordinate } from '../../../domain/coordinate';
-import { RELEASE_OUTCOME } from '../../../domain/editing/index';
+import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
 import type { RingId, VertexId } from '../../../domain/ids';
 import type { NextTargetPreference, RectangleResolver } from '../../../domain/selection';
 import type { TimePoint } from '../../../domain/time/time-point';
@@ -66,6 +66,11 @@ export interface MountHitTestOptions {
   readonly nextRingIdRef: MutableRefObject<(() => RingId) | null>;
   /** 確定した編集を 1 つの取り消し単位として記録する口。 */
   readonly recordCommitRef: MutableRefObject<RecordCommit | null>;
+  /**
+   * 確定の関門が断ったときに理由を画面へ出す口（増分 3 の手直し A5 / A6）。
+   * **無反応にしない**（設計書 §H.5 の「消えない結果表示」へ出す）。App.tsx が入れる。
+   */
+  readonly announceEditRefusalRef?: MutableRefObject<((reason: EditRefusalKind) => void) | null>;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /** fr96 段階7 — 入力が別の持ち主にあるあいだ右クリック要求を捨てるための現在値。 */
@@ -326,6 +331,12 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     // edit-session path has no conflict modal yet — detectSpatial returns none — so a
     // rejection is simply not committed rather than silently corrupting state).
     onReleased: (outcome) => {
+      // 断られたら理由を出す（A5 / A6）。何も記録されていないので、利用者から見ると
+      // 「離したのに何も起きない」になる ―― 理由を出さないと原因が分からない。
+      if (outcome.kind === RELEASE_OUTCOME.Refused) {
+        options.announceEditRefusalRef?.current?.(outcome.reason);
+        return;
+      }
       if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
       if (outcome.result.status !== PROCESS_STATUS.Committed) return;
       const featureId =

@@ -31,8 +31,10 @@ import { createBasicAttributes, createColorInfo } from '../../domain/attributes'
 import { createCoordinate } from '../../domain/coordinate';
 import {
   PROCESS_STATUS,
+  type EditProposal,
   type ProcessResult,
 } from '../../domain/consistency/index';
+import type { SplitSnapshot } from '../../domain/knife/index';
 import type { Command } from '../../domain/command/command';
 import { EMPTY_COMMAND_RESULT } from '../../domain/command/result';
 import { createLeafFeature, type Feature } from '../../domain/feature';
@@ -89,19 +91,46 @@ const ANCHOR = timePointYearMonthDay(1000, 1, 1);
 
 const TARGET_ID = asFeatureId('leaf');
 
-/** A [0,10]² leaf feature + its store. */
-function targetLeaf(): { feature: Feature; store: VertexStore } {
-  const coords = [
-    createCoordinate(0, 0),
-    createCoordinate(10, 0),
-    createCoordinate(10, 10),
-    createCoordinate(0, 10),
-  ];
+/** Build a single-territory leaf on TARGET_ID from an explicit coordinate ring. */
+function leafFrom(coords: readonly ReturnType<typeof createCoordinate>[]): {
+  feature: Feature;
+  store: VertexStore;
+} {
   const vids = coords.map((_, i) => asVertexId(`tv-${i}`));
   const vertices = coords.map((coord, i) => createVertex(vids[i]!, coord));
   const ring = createTerritoryRing(asRingId('tr-0'), vids);
   const feature = createLeafFeature(TARGET_ID, ATTRS, COLOR, createShape([ring]));
   return { feature, store: createVertexStore(vertices) };
+}
+
+/** A [0,10]² leaf feature + its store. */
+function targetLeaf(): { feature: Feature; store: VertexStore } {
+  return leafFrom([
+    createCoordinate(0, 0),
+    createCoordinate(10, 0),
+    createCoordinate(10, 10),
+    createCoordinate(0, 10),
+  ]);
+}
+
+/**
+ * 経度 −170°〜170° に広がる横長の面 (緯度は [0,10])。途中に頂点があるので 1 辺はどれも
+ * 90 度以下 ―― この面自体は保存できる。だが横向きに切ると、集合演算が一直線上に並ぶ
+ * 途中の頂点を落とすので、切り口と関係の無い外周が「1 本で 340 度」に化ける (N-51)。
+ */
+function wideTargetLeaf(): { feature: Feature; store: VertexStore } {
+  return leafFrom([
+    createCoordinate(-170, 0),
+    createCoordinate(-90, 0),
+    createCoordinate(0, 0),
+    createCoordinate(90, 0),
+    createCoordinate(170, 0),
+    createCoordinate(170, 10),
+    createCoordinate(90, 10),
+    createCoordinate(0, 10),
+    createCoordinate(-90, 10),
+    createCoordinate(-170, 10),
+  ]);
 }
 
 // Identity screen→world so a click at (clientX, clientY) lands at world (x, y).
@@ -123,8 +152,9 @@ interface Harness {
 
 function mountKnife(
   startResult: ProcessResult<S> = committed,
+  fixture: { feature: Feature; store: VertexStore } = targetLeaf(),
 ): Harness {
-  const { feature, store: vstore } = targetLeaf();
+  const { feature, store: vstore } = fixture;
   const store = createSessionStore<S>({
     initialDomain: { tag: 'initial' },
     initial: { mode: EDIT_MODE.Edit, activeTool: null },
@@ -283,6 +313,43 @@ describe('KnifeToolController — inheritor modal + save → U13 (受け入れ�
     // SAVE the form → the injected U13 adapter is called (受け入れ基準 5 / 教訓 5.7).
     fireEvent.submit(screen.getByTestId('add-property-form'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it('種別ラベルを入れると新しい地物に載る（フォームの入力を落とさない）', () => {
+    // 中継が `attributes` と `color` の 2 つだけを取り出していたため、利用者がフォームへ
+    // 入れた種別ラベルが黙って捨てられていた。追加の道具と同じく丸ごと渡す形に揃えた。
+    const h = mountKnife();
+    splitToModal(h);
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    act(() =>
+      fireEvent.change(screen.getByTestId('add-kind-label'), { target: { value: '国' } }),
+    );
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    const proposal = h.startProcess.mock.calls[0]![0] as EditProposal<SplitSnapshot>;
+    expect(proposal.snapshot.newFeature.kindLabel).toBe('国');
+    h.unmount();
+  });
+});
+
+// --- 1 辺で経度 180 度以上を渡る切り口 (N-51 / 技術方針 §6.8) -----------------
+
+describe('KnifeToolController — 保存できない長さの辺は画面で断る (N-51)', () => {
+  it('横長の面を横向きに切ると、断りの理由が日本語で出て継承先選択へ進まない', () => {
+    const h = mountKnife(committed, wideTargetLeaf());
+    activateKnife(h.store);
+    clickInput(5, 5); // 対象の面を選ぶ
+    // 緯度 5 を西の外から東の外まで貫く分断線 (1 辺はどれも 90 度以下で引く)。切った結果の
+    // 外周が「1 本で 340 度」になるので、保存できない形として断られる。
+    clickInput(-175, 5);
+    clickInput(-90, 5);
+    clickInput(0, 5);
+    clickInput(90, 5);
+    clickInput(175, 5);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.queryByTestId('knife-inheritor-dialog')).not.toBeInTheDocument();
+    expect(screen.getByTestId('knife-message').textContent).toContain('世界を半周以上');
+    expect(screen.getByTestId('knife-message').textContent).toContain('別の場所で切って');
     h.unmount();
   });
 });

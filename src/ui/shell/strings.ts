@@ -28,6 +28,22 @@ export const APP_STRINGS = {
    */
   addedWithSharedVertices: (count: number): string =>
     `地物を追加しました（既存の頂点 ${String(count)} 個を共有し、境界がつながりました）`,
+  /**
+   * 増分 3 の手直し A1: 共有した頂点を動かすと、**次にその頂点が本当に動く記録まで**
+   * 前へ引き継ぐ。何年の記録に効いたかを言わないと、利用者は「この年しか直っていない」と
+   * 思い込む（設計書 §H.5 は結果を過去形で言い切り、副次的な結果を丸括弧で添える書式）。
+   */
+  vertexCarriedForward: (fromYear: number, toYear: number, count: number): string =>
+    `${String(fromYear)}年の頂点の移動を、${String(toYear)}年以降の記録 ${String(count)} 件にも反映しました`,
+  /**
+   * 増分 3 の手直し A5: 1 回の移動で経度を半周以上動かした（技術方針 §6.8 / N-51）。
+   * 追加の道具が断るのと同じ規則を、編集にも効かせたときの文。
+   */
+  editRefusedLongDrag:
+    'この移動は世界を半周以上します。もっと小さく動かしてください（1 辺で経度 180 度以上は保存できません）。',
+  /** 増分 3 の手直し A6: 緯度 ±90 度の外（北極の上・南極の下）には場所が無い。 */
+  editRefusedOutsideWorld:
+    'そこは世界の外です（北緯 90 度より上・南緯 90 度より下には置けません）。地図の中へ動かしてください。',
   shortcutBusy: (label: string): string =>
     `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',

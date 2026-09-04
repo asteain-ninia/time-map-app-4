@@ -25,11 +25,13 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ADD_TOOL_KIND,
   CONFIRM_STATUS,
+  PARENT_SELECTION_KIND,
   PARENT_UNSET,
   UNDO_RESULT,
   assembleAddProposal,
   canConfirm,
   confirmShape,
+  draftCoordinates,
   isNestingInside,
   placeVertex,
   resetSession,
@@ -53,6 +55,7 @@ import {
   type ShapeRejection,
 } from '../../domain/add/index';
 import type { WorldCoordinate } from '../../domain/coordinate';
+import { isWorldLatitude } from '../../domain/geo/latitude';
 import type { GridSpacingDeg } from '../../domain/basemap/grid';
 import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, VertexId } from '../../domain/ids';
@@ -142,12 +145,36 @@ export interface UseAddToolOptions<S> {
    * 上の判定ができないので、**名前を `terminalAt` に変えて相手を返す形にした**。
    */
   readonly terminalAt?: ((coordinate: WorldCoordinate) => AddTerminalHit | null) | undefined;
+  /**
+   * FR-77 / GPT #3: **いま描いた形を丸ごと含む面**の id。保存の直前に「選んだ上位領域が
+   * 本当にこの形を含んでいるか」をもう一度確かめるために使う（増分 3 の手直し B2）。
+   *
+   * **なぜ確定時にもう一度見るのか**: 候補を絞ったのは形を確定した瞬間で、そのあと
+   * 名前を打っている間に年が動く／別の編集が入る、ということがありうる。確定の直前に
+   * 見直せば、**含んでいない面を上位領域として保存する**ことが構造的に起こらない。
+   * 渡されなければ確かめない（従来どおり）。
+   */
+  readonly facesContaining?:
+    | ((coordinates: readonly WorldCoordinate[]) => readonly FeatureId[])
+    | undefined;
 }
 
-/** FR-29 の当たり: どの末端地物の内側か（`name` は引けなければ null ―― U-1）。 */
+/** FR-29 の当たり: どの末端地物の内側／境界の上か（`name` は引けなければ null ―― U-1）。 */
 export interface AddTerminalHit {
   readonly featureId: FeatureId;
   readonly name: string | null;
+  /**
+   * 断り文に出す **その面の呼び方**（増分 3 の手直し B3）。上位領域と種別ラベルが引ければ
+   * 「デーレ共和国の州『ガロアミド州』」の形になる。引けなければ「『◯◯』」だけ。
+   * 名前がまったく引けなければ null。
+   */
+  readonly where?: string | null;
+  /**
+   * 内側ではなく **境界（線）の上**に載っているか（増分 3 の手直し B1）。
+   * 境界の上は FR-29 では断らない（隣どうしが角を共有するのは正しい使い方）が、
+   * 入れ子の見分けでは「その面の側」に数える。
+   */
+  readonly onBoundary?: boolean;
 }
 
 /**
@@ -242,6 +269,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     onConflicts,
     resolveProximity,
     terminalAt,
+    facesContaining,
   } = options;
 
   const [session, setSession] = useState<AddSession | null>(null);
@@ -316,19 +344,37 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const already =
         proximity !== null &&
         current.vertices.some((v) => v.sharedVertexId === proximity.vertexId);
-      if (already) {
+      // **線の道具では、始点へ戻る閉じた線を妨げない**（増分 3 の手直し D6）。同じ頂点を
+      // 2 回使うのを止めているのは「長さ 0 の辺を持つ環」を作らないためで、線が自分の
+      // 始点へ戻って輪になるのはそれとは別の、正しい形である。
+      const blocksReuse = already && current.tool !== ADD_TOOL_KIND.Line;
+      if (blocksReuse) {
         setMessage(ADD_STRINGS.snapAlreadyUsed);
+        setMessageSticky(false);
+        return;
+      }
+      // **世界の外には置けない**（増分 3 の手直し A6。バグ狩り #3）。北極の上にも南極の
+      // 下にも場所は無い。状態行が同じ場所で座標を「—」と出しているのに、クリックだけが
+      // 通っていた（緯度 118 度の四角形が実際に作れた）。切り詰めずに断る ―― 切り詰めると
+      // 押した場所と違う所に点が置かれる（黙って別の形になる）。
+      if (!isWorldLatitude(resolved.coordinate.lat)) {
+        setMessage(ADD_STRINGS.outsideWorldRefused);
         setMessageSticky(false);
         return;
       }
       const inside =
         current.tool === ADD_TOOL_KIND.Face ? (terminalAt?.(resolved.coordinate) ?? null) : null;
-      if (inside !== null && !isNestingInside(current, inside.featureId)) {
-        const name = inside.name;
+      // 境界（線）の上は断らない ―― 隣どうしが角を共有するのは正しい使い方である
+      // （FR-29 が塞ぐのは「内側」だけ）。入れ子の見分けには「その面の側」として数える。
+      const onBoundary = inside?.onBoundary === true;
+      if (inside !== null && !onBoundary && !isNestingInside(current, inside.featureId)) {
+        // `where`（上位領域と種別を添えた呼び方）が引ければそれを、無ければ名前だけを出す。
+        const where =
+          inside.where ?? (inside.name === null || inside.name === '' ? null : `「${inside.name}」`);
         setMessage(
-          name === null || name === ''
+          where === null || where === ''
             ? ADD_STRINGS.insideTerminalRefusedUnnamed
-            : ADD_STRINGS.insideTerminalRefused(name),
+            : ADD_STRINGS.insideTerminalRefused(where),
         );
         setMessageSticky(false);
         return; // placement blocked; keep state unchanged.
@@ -342,8 +388,9 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
               resolved.coordinate,
               resolved.sharedCandidateId,
               proximity?.vertexId ?? null,
-              inside?.featureId ?? null,
+              onBoundary ? null : (inside?.featureId ?? null),
               proximity?.bodyCoordinate ?? null,
+              onBoundary ? (inside?.featureId ?? null) : null,
             ),
       );
     },
@@ -438,6 +485,20 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const current = session;
       const confirmedDraft = draft;
       if (current === null || confirmedDraft === null) return;
+      // **保存の直前に上位領域を確かめ直す**（増分 3 の手直し B2 / GPT #3）。継ぎ目は
+      // 供給元（`facesContaining`）が ±360 度の複製まで見て解くので、ここでは結果を
+      // 使うだけである（同じ判定を書き直さない ―― 教訓 5.29）。
+      if (
+        facesContaining !== undefined &&
+        current.parent.kind === PARENT_SELECTION_KIND.Parent
+      ) {
+        const containing = facesContaining(draftCoordinates(confirmedDraft));
+        if (!containing.includes(current.parent.parentId)) {
+          setMessage(ADD_STRINGS.parentDoesNotContain);
+          setMessageSticky(true);
+          return; // 記録しない（教訓 5.22 確定までの非破壊）。
+        }
+      }
       const proposal = assembleAddProposal({
         draft: confirmedDraft,
         properties,
@@ -474,7 +535,18 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
           break;
       }
     },
-    [session, draft, currentTime, ids, nextRingId, startProcess, onCommitted, onConflicts, discard],
+    [
+      session,
+      draft,
+      currentTime,
+      ids,
+      nextRingId,
+      startProcess,
+      onCommitted,
+      onConflicts,
+      discard,
+      facesContaining,
+    ],
   );
 
   const resetForSwitch = useCallback(() => {

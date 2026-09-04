@@ -9,6 +9,7 @@ import {
   PARENT_UNSET,
   UNDO_RESULT,
   canConfirm,
+  isNestingInside,
   minVerticesFor,
   parentSelection,
   placeVertex,
@@ -167,5 +168,83 @@ describe('canConfirm (FR-76 完了可否)', () => {
     expect(canConfirm(f)).toBe(false);
     f = placeVertex(f, C(1, 1));
     expect(canConfirm(f)).toBe(true);
+  });
+});
+
+// --- 入れ子の見分け（増分 3 の手直し B1 / FR-29 の但し書き）--------------------
+//
+// 規則（司令塔の決定。所有者が覆せる）: 打った頂点が全部、**同じ末端の内側または境界の上**
+// なら入れ子とみなす。境界を数えるのが手直しで塞いだ穴で、これが無いと
+// 「親の角へ吸着した頂点」が入るたびに入れ子と認められず、**打つ順で結果が変わった**。
+
+describe('isNestingInside（入れ子の見分け。FR-29 の但し書き）', () => {
+  const PARENT = asFeatureId('f-parent');
+  const OTHER = asFeatureId('f-other');
+  const inside = (s: ReturnType<typeof startSession>, lon: number, lat: number, id = PARENT) =>
+    placeVertex(s, C(lon, lat), null, null, id, null, null);
+  const onBoundary = (s: ReturnType<typeof startSession>, lon: number, lat: number, id = PARENT) =>
+    placeVertex(s, C(lon, lat), null, null, null, null, id);
+  const outside = (s: ReturnType<typeof startSession>, lon: number, lat: number) =>
+    placeVertex(s, C(lon, lat));
+
+  it('頂点が 1 つも無ければ真（これから内側に描き始めるところ）', () => {
+    expect(isNestingInside(startSession(ADD_TOOL_KIND.Face), PARENT)).toBe(true);
+  });
+
+  it('全部その面の内側なら入れ子', () => {
+    let s = startSession(ADD_TOOL_KIND.Face);
+    s = inside(s, 1, 1);
+    s = inside(s, 2, 1);
+    expect(isNestingInside(s, PARENT)).toBe(true);
+  });
+
+  it('境界（線）の上に載った頂点も「その面の側」に数える', () => {
+    let s = startSession(ADD_TOOL_KIND.Face);
+    s = onBoundary(s, 0, 0); // 親の角へ吸着した点
+    s = inside(s, 1, 1);
+    expect(isNestingInside(s, PARENT)).toBe(true);
+  });
+
+  it('打つ順が変わっても結果が変わらない（境界の点が先でも後でも入れ子）', () => {
+    let a = startSession(ADD_TOOL_KIND.Face);
+    a = onBoundary(a, 0, 0);
+    a = inside(a, 1, 1);
+    a = inside(a, 2, 2);
+
+    let b = startSession(ADD_TOOL_KIND.Face);
+    b = inside(b, 1, 1);
+    b = inside(b, 2, 2);
+    b = onBoundary(b, 0, 0);
+
+    expect(isNestingInside(a, PARENT)).toBe(isNestingInside(b, PARENT));
+    expect(isNestingInside(a, PARENT)).toBe(true);
+  });
+
+  it('1 つでも外に打っていたら入れ子ではない（＝隣を描いていて誤って重ねた事故）', () => {
+    let s = startSession(ADD_TOOL_KIND.Face);
+    s = outside(s, 50, 50); // どの面にも触れていない海の上
+    s = inside(s, 1, 1);
+    expect(isNestingInside(s, PARENT)).toBe(false);
+  });
+
+  it('別の面の内側／境界は数えない（親をまたぐ形は入れ子ではない）', () => {
+    let s = startSession(ADD_TOOL_KIND.Face);
+    s = inside(s, 1, 1, OTHER);
+    s = inside(s, 2, 2, PARENT);
+    expect(isNestingInside(s, PARENT)).toBe(false);
+
+    let t = startSession(ADD_TOOL_KIND.Face);
+    t = onBoundary(t, 0, 0, OTHER);
+    t = inside(t, 2, 2, PARENT);
+    expect(isNestingInside(t, PARENT)).toBe(false);
+  });
+
+  it('穴の中（＝その面の外）に打った点は数えない', () => {
+    // 穴の内側は `pointInPolygon` が「面の外」と答えるので、供給元は内側の記録を付けない。
+    // ここではその結果（記録が付かない）を受けて偽になることを固定する。
+    let s = startSession(ADD_TOOL_KIND.Face);
+    s = inside(s, 1, 1);
+    s = outside(s, 3, 3); // 親の穴の中を押した
+    expect(isNestingInside(s, PARENT)).toBe(false);
   });
 });

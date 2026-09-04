@@ -10,8 +10,10 @@ import {
   isFeatureUnchanged,
   buildSnapshot,
   RELEASE_OUTCOME,
+  EDIT_REFUSAL,
   type FeatureSnapshot,
 } from './edit-flow';
+import { createVertex } from '../vertex';
 import { beginDrag, updateDrag, EDIT_TOOL, type DragTarget } from './drag-session';
 import { coord, fid, line, vid, rid } from './fixtures';
 import { timePointYear } from '../time/time-point';
@@ -213,5 +215,94 @@ describe('isFeatureUnchanged — attribute baseline (受け入れ基準10)', () 
   });
   it('a changed feature is detected', () => {
     expect(isFeatureUnchanged(line('L', ['a', 'b']), line('L', ['a', 'c']))).toBe(false);
+  });
+});
+
+// --- 確定の関門（増分 3 の手直し A5 / A6。反証 #4 / GPT #7 / バグ狩り #3）------
+//
+// 追加の道具は「1 辺で経度 180 度以上」と「緯度 ±90 度の外」を断るのに、編集は素通り
+// だった。断りは `NoOp`（何も変わっていないので黙って終わる）とは別の値で返し、
+// 画面が理由を出せるようにする（無反応にしない）。
+
+describe('confirmRelease — 確定の関門（A5 / A6）', () => {
+  const ports = () => recordingPorts({ applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 });
+
+  it('1 回の移動で経度を 180 度以上動かしたら断る（N-51 / 技術方針 §6.8）', () => {
+    const log: PortLog = { applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 };
+    let session = beginDrag(vertexTarget, coord(0, 0));
+    session = updateDrag(session, { preview: coord(191, 0) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: recordingPorts(log),
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Refused);
+    if (outcome.kind !== RELEASE_OUTCOME.Refused) return;
+    expect(outcome.reason).toBe(EDIT_REFUSAL.LongDrag);
+    // **何も記録しない**（教訓 5.22 確定までの非破壊）。
+    expect(log).toEqual({ applyProposal: 0, checkTime: 0, detectSpatial: 0, makeCommand: 0 });
+  });
+
+  it('180 度ちょうども断る（どちら回りか決まらないので安全側へ倒す）', () => {
+    let session = beginDrag(vertexTarget, coord(0, 0));
+    session = updateDrag(session, { preview: coord(180, 0) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: ports(),
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Refused);
+  });
+
+  it('日付変更線をまたぐ**小さな**移動は断らない（誤爆させない）', () => {
+    // 継ぎ目の地物を掴んで 0.4 度動かしただけ。ここを断ると継ぎ目の地物が編集できなくなる。
+    let session = beginDrag(vertexTarget, coord(179.8, 10));
+    session = updateDrag(session, { preview: coord(180.2, 10) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot,
+      current: { applied: 0 },
+      ports: ports(),
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Processed);
+  });
+
+  it('緯度 ±90 度の外へ動かしたら断る', () => {
+    let session = beginDrag(vertexTarget, coord(0, 80));
+    session = updateDrag(session, { preview: coord(0, 118) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot: buildSnapshot({
+        feature: line('L', ['a', 'b']),
+        vertices: [createVertex(vid('v0'), coord(0, 118))],
+      }),
+      current: { applied: 0 },
+      ports: ports(),
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Refused);
+    if (outcome.kind !== RELEASE_OUTCOME.Refused) return;
+    expect(outcome.reason).toBe(EDIT_REFUSAL.OutsideWorld);
+  });
+
+  it('±90 度ちょうどは通す（極そのものは場所である）', () => {
+    let session = beginDrag(vertexTarget, coord(0, 80));
+    session = updateDrag(session, { preview: coord(0, 90) });
+    const outcome = confirmRelease({
+      session,
+      anchorTime: timePointYear(0),
+      snapshot: buildSnapshot({
+        feature: line('L', ['a', 'b']),
+        vertices: [createVertex(vid('v0'), coord(0, 90))],
+      }),
+      current: { applied: 0 },
+      ports: ports(),
+    });
+    expect(outcome.kind).toBe(RELEASE_OUTCOME.Processed);
   });
 });

@@ -84,6 +84,8 @@ export {
   RELEASE_OUTCOME,
   type ReleaseOutcomeKind,
   type ReleaseOutcome,
+  EDIT_REFUSAL,
+  type EditRefusalKind,
   type ReleaseInput,
   decideSharePairAtRelease,
   isFeatureUnchanged,

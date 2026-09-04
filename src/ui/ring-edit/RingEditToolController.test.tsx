@@ -361,6 +361,26 @@ describe('RingEditToolController — ring delete (FR-24)', () => {
   });
 });
 
+// --- 1 辺で経度 180 度以上を渡るリング (N-51 / 技術方針 §6.8) -----------------
+
+describe('RingEditToolController — 保存できない長さの辺は画面で断る (N-51)', () => {
+  it('1 辺で経度 180 度以上を渡るリングを確定すると、断りの理由が日本語で出る', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    // 面の外から描き始めるので飛び地。1 本目の辺が −170° → 170° の 340 度になる ――
+    // 保存して読み直すと必ず別の形になるので、確定させずに理由を出す。
+    clickInput(-170, 50);
+    clickInput(170, 50);
+    clickInput(0, 70);
+    fireEvent.click(screen.getByTestId('ring-edit-confirm'));
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ring-edit-message').textContent).toContain('世界を半周以上');
+    expect(screen.getByTestId('ring-edit-message').textContent).toContain('途中に点を打って');
+    h.unmount();
+  });
+});
+
 // --- 一時状態全経路破棄 (教訓 5.2) --------------------------------------------
 
 describe('RingEditToolController — transient state discarded on every exit path', () => {

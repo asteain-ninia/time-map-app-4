@@ -84,19 +84,45 @@ const DEFAULT_COLOR = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 
 const TARGET_ID = asFeatureId('leaf');
 
-/** A solid [0,20]² territory leaf + its store (no hole, so an inside region drills). */
-function targetLeaf(): { feature: LeafFeature; store: VertexStore } {
-  const outer = [
-    createCoordinate(0, 0),
-    createCoordinate(20, 0),
-    createCoordinate(20, 20),
-    createCoordinate(0, 20),
-  ];
+/** Build a single-territory leaf on TARGET_ID from an explicit coordinate ring. */
+function leafFrom(
+  outer: readonly ReturnType<typeof createCoordinate>[],
+): { feature: LeafFeature; store: VertexStore } {
   const outerVids = outer.map((_, i) => asVertexId(`ov-${i}`));
   const vertices = outer.map((c, i) => createVertex(outerVids[i]!, c));
   const territory = createTerritoryRing(asRingId('tr-0'), outerVids);
   const feature = createLeafFeature(TARGET_ID, ATTRS, COLOR, createShape([territory]));
   return { feature, store: createVertexStore(vertices) };
+}
+
+/** A solid [0,20]² territory leaf + its store (no hole, so an inside region drills). */
+function targetLeaf(): { feature: LeafFeature; store: VertexStore } {
+  return leafFrom([
+    createCoordinate(0, 0),
+    createCoordinate(20, 0),
+    createCoordinate(20, 20),
+    createCoordinate(0, 20),
+  ]);
+}
+
+/**
+ * 経度 −170°〜170° に広がる横長の面 (緯度は [0,20])。途中に頂点があるので 1 辺はどれも
+ * 90 度以下 ―― この面自体は保存できる。だが穴をあけると、集合演算が一直線上に並ぶ途中の
+ * 頂点を落とすので、穴と関係の無い外周が「1 本で 340 度」に化ける (N-51)。
+ */
+function wideTargetLeaf(): { feature: LeafFeature; store: VertexStore } {
+  return leafFrom([
+    createCoordinate(-170, 0),
+    createCoordinate(-90, 0),
+    createCoordinate(0, 0),
+    createCoordinate(90, 0),
+    createCoordinate(170, 0),
+    createCoordinate(170, 20),
+    createCoordinate(90, 20),
+    createCoordinate(0, 20),
+    createCoordinate(-90, 20),
+    createCoordinate(-170, 20),
+  ]);
 }
 
 // Identity screen→world so a click at (clientX, clientY) lands at world (x, y).
@@ -116,8 +142,11 @@ interface Harness {
   readonly unmount: () => void;
 }
 
-function mountDrill(outcome: ProcessResult<S> = committed): Harness {
-  const { feature, store: vstore } = targetLeaf();
+function mountDrill(
+  outcome: ProcessResult<S> = committed,
+  fixture: { feature: LeafFeature; store: VertexStore } = targetLeaf(),
+): Harness {
+  const { feature, store: vstore } = fixture;
   const store = createSessionStore<S>({
     initialDomain: { tag: 'initial' },
     initial: { mode: EDIT_MODE.Edit, activeTool: null },
@@ -269,6 +298,44 @@ describe('DrillToolController — rejection surfaces the domain message (教訓 
     // startProcess is NOT reached (drillRegion rejected before U13); a message shows.
     expect(h.startProcess).not.toHaveBeenCalled();
     expect(screen.getByTestId('drill-message').textContent).toContain('内側');
+    h.unmount();
+  });
+
+  it('1 辺で経度 180 度以上を渡る結果になる穴あけは断られ、理由が日本語で出る (N-51)', () => {
+    // 横長の面に穴をあけると、穴と関係の無い外周が「1 本で 340 度」に化ける ―― 保存して
+    // 読み直すと必ず別の形になるので、確定させずに理由を出す。
+    const h = mountDrill(committed, wideTargetLeaf());
+    activateDrill(h.store);
+    clickInput(5, 5); // 対象の面を選ぶ (頂点は置かれない)
+    clickInput(-5, 5);
+    clickInput(5, 5);
+    clickInput(5, 15);
+    clickInput(-5, 15);
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.getByTestId('drill-message').textContent).toContain('世界を半周以上');
+    expect(screen.getByTestId('drill-message').textContent).toContain('別の場所に穴をあけて');
+    h.unmount();
+  });
+});
+
+// --- 新地物プロパティ入力の取りこぼし防止 -------------------------------------
+
+describe('DrillToolController — フォームの入力を落とさない', () => {
+  it('種別ラベルを入れると新しい地物に載る', () => {
+    // 中継が `attributes` と `color` の 2 つだけを取り出していたため、利用者がフォームへ
+    // 入れた種別ラベルが黙って捨てられていた。追加の道具と同じく丸ごと渡す形に揃えた。
+    const h = mountDrill();
+    activateDrill(h.store);
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+    act(() =>
+      fireEvent.change(screen.getByTestId('add-kind-label'), { target: { value: '国' } }),
+    );
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    const proposal = h.startProcess.mock.calls[0]![0] as EditProposal<DrillSnapshot>;
+    expect(proposal.snapshot.newFeature.kindLabel).toBe('国');
     h.unmount();
   });
 });

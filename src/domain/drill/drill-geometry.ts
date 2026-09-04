@@ -30,6 +30,7 @@
 
 import { type WorldCoordinate } from '../coordinate';
 import { alignMultiPolygon, referenceLonForMultiPolygon, unwrapRingAnchored } from '../geo/index';
+import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import {
   difference,
   intersection,
@@ -64,6 +65,20 @@ export const DRILL_REJECT = {
   Unresolvable: 'unresolvable',
   /** An unexpected internal inconsistency (dependency returned an impossible value). */
   Internal: 'internal-error',
+  /**
+   * 穴あけ後の形 (穴のあいた元地物 / 新しい地物) に「1 辺で経度 180 度以上を渡る辺」が
+   * ある (N-51 / 技術方針 §6.8)。
+   *
+   * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+   * 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。保存形式の恒久的な
+   * 表現限界なので、**書く側で止める以外に手が無い**。
+   *
+   * 横に長い面に穴をあけると、集合演算が一直線上に並ぶ途中の頂点を落とすため、穴と関係の
+   * ない外周が「1 本の長い辺」に化けることがある。追加の道具では同じ形を断っているので、
+   * ここで素通りさせると「追加では作れない形が穴あけでは作れる」という食い違いになる
+   * (増分 3 の手直し A5 / 教訓 5.29 単一真実源)。
+   */
+  LongEdge: 'long-edge',
 } as const;
 
 export type DrillRejectKind = (typeof DRILL_REJECT)[keyof typeof DRILL_REJECT];
@@ -242,6 +257,19 @@ export function checkDrillable(
   // 穴形成後の双方が最低 3 頂点で有効なポリゴンを成すこと (spec §やること).
   if (!everyOuterRingHasMinVertices(holedOriginal) || !everyOuterRingHasMinVertices(newRegion)) {
     return rejection(DRILL_REJECT.InvalidShape);
+  }
+
+  // N-51 / 技術方針 §6.8: 1 辺で経度 180 度以上を渡る形は保存して読み直すと必ず別の形に
+  // なるので、確定させずにここで断る。見ているのは `targetMp` / `regionPts` と同じ **連続
+  // 経度** の系 (R3 で 1 本の枝へ寄せた後) の値である。代表値 ([-180,180) へ畳んだ値) に
+  // 掛けると、正常な日付変更線またぎ (179° → −179°) が 358° と出て誤爆する。述語は
+  // `domain/geo/long-edge.ts` の 1 本だけを呼ぶ (教訓 5.29 単一真実源)。両側を見るのは
+  // 片方だけ保存できない形になる場合があるため (対概念を漏らさない — 教訓 2.10)。
+  if (
+    countLongEdgesInMultiPolygon(holedOriginal) > 0 ||
+    countLongEdgesInMultiPolygon(newRegion) > 0
+  ) {
+    return rejection(DRILL_REJECT.LongEdge);
   }
 
   return { status: DRILL_CHECK_STATUS.Drillable, holedOriginal, newRegion };

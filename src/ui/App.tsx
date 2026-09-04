@@ -214,6 +214,7 @@ import {
   type NextTargetPreference,
 } from '../domain/selection';
 import type { FeatureSnapshot } from '../domain/editing/index';
+import { EDIT_REFUSAL, type EditRefusalKind } from '../domain/editing/index';
 // 地図マウントの結線は 4 つに割ってある（描画 / 当たり判定 / 入力 / 観測）。onMapMount は
 // それらを順に呼んで繋ぐだけの骨組みで、規則そのものは各モジュールが 1 か所ずつ持つ。
 import { createMountHitTest } from './map/mount/hit-test';
@@ -622,6 +623,11 @@ export function App(): JSX.Element {
     | null
   >(null);
 
+  // 確定の関門が編集を断ったときに理由を状態行へ出す口（増分 3 の手直し A5 / A6）。
+  // `recordCommitRef` と同じく ref に置く ―― 編集セッションの口は地図マウント時に 1 度だけ
+  // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
+  const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
+
   // The shared vertex-id minter, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`) can RESERVE a new vertex id for an
   // FR-87 edge-add without re-mounting the map when the minter memo changes. Assigned
@@ -704,6 +710,7 @@ export function App(): JSX.Element {
       nextVertexIdRef,
       nextRingIdRef,
       recordCommitRef,
+      announceEditRefusalRef,
       contextMenuOpenerRef,
       shortcutsSuspendedRef,
     });
@@ -1075,6 +1082,16 @@ export function App(): JSX.Element {
 
   // Keep the edit-session's commit-handler ref pointed at the current recordCommit.
   recordCommitRef.current = recordCommit;
+
+  // 断りの理由を状態行の「直前の結果」へ（A5 / A6）。成功と同じ 1 つの枠に出す
+  // （設計書 §H.5: 失敗も同じ場所。無反応にしない）。
+  announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
+    statusMessageStore.failure(
+      reason === EDIT_REFUSAL.LongDrag
+        ? APP_STRINGS.editRefusedLongDrag
+        : APP_STRINGS.editRefusedOutsideWorld,
+    );
+  };
 
   // Register the U12 undo / redo commands on the SAME registry the menu + shortcuts
   // dispatch (single truth source, 教訓 5.13). Each applies the history step back
@@ -3013,7 +3030,11 @@ const NO_ASSET_RESOLVER: AssetResolver = { resolveAsset: () => null };
 function AddToolControllerWithParents(
   props: Omit<
     AddToolControllerProps<DomainRoot>,
-    'parentCandidates' | 'resolveProximity' | 'terminalAt' | 'featureNameOf'
+    | 'parentCandidates'
+    | 'resolveProximity'
+    | 'terminalAt'
+    | 'featureNameOf'
+    | 'facesContaining'
   > & {
     readonly readCamera: () => {
       readonly camera: RenderCameraInput;
@@ -3067,6 +3088,7 @@ function AddToolControllerWithParents(
       resolveProximity={snapPorts.resolveProximity}
       terminalAt={snapPorts.terminalAt}
       featureNameOf={snapPorts.featureNameOf}
+      facesContaining={snapPorts.facesContaining}
     />
   );
 }

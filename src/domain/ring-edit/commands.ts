@@ -26,6 +26,7 @@
 // tested explicitly — neither is left "同様" and skipped.
 
 import type { WorldCoordinate } from '../coordinate';
+import { hasLongEdge } from '../geo/long-edge';
 import {
   withLeafShape,
   type LeafFeature,
@@ -97,6 +98,16 @@ export const RING_REJECT = {
   HierarchyInvalid: 'hierarchy-invalid',
   /** The referenced ring / vertex / edge was not found in the target face. */
   TargetNotFound: 'target-not-found',
+  /**
+   * 描いたリングに「1 辺で経度 180 度以上を渡る辺」がある (N-51 / 技術方針 §6.8)。
+   *
+   * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+   * 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。これは不具合ではなく
+   * 保存形式の恒久的な表現限界なので、**書く側で止める以外に手が無い**。追加の道具では
+   * 同じ形を断っているので、ここで素通りさせると「追加では作れない形が穴 / 飛び地では
+   * 作れる」という食い違いになる (増分 3 の手直し A5 / 教訓 5.29 単一真実源)。
+   */
+  LongEdge: 'long-edge',
 } as const;
 
 export type RingRejectKind = (typeof RING_REJECT)[keyof typeof RING_REJECT];
@@ -143,6 +154,19 @@ function reject(reason: RingRejectKind, validation?: RingValidationResult): Ring
  */
 export function validateCandidate(shape: Shape, store: VertexStore): RingValidationResult {
   return validateRingHierarchy(shape, store);
+}
+
+/**
+ * 描かれたリングに「1 辺で経度 180 度以上を渡る辺」があるか (N-51 / 技術方針 §6.8)。
+ *
+ * 渡ってくる `vertices` は下書き (draft.vertices) が持つ **画面由来の連続経度** の列なので、
+ * そのまま述語へ掛けてよい。代表値 ([-180,180) へ畳んだ値) の列に掛けると、正常な日付
+ * 変更線またぎ (179° → −179°) が 358° と出て誤爆する。リングは必ず閉じるので閉じる辺
+ * (最後 → 先頭) も見る。判定そのものは `domain/geo/long-edge.ts` の 1 本だけを呼ぶ
+ * (教訓 5.29 単一真実源) — 穴と飛び地の双方が同じ 1 本を通る。
+ */
+function hasUnsavableLongEdge(vertices: readonly WorldCoordinate[]): boolean {
+  return hasLongEdge(vertices, true);
 }
 
 /** Apply the candidate shape to the leaf only if it passes U07 validation. */
@@ -283,6 +307,8 @@ export function addHole(
   if (vertices.length < 3) return reject(RING_REJECT.TooFewVertices);
   const first = vertices[0];
   if (first === undefined) return reject(RING_REJECT.TooFewVertices);
+  // N-51 / 技術方針 §6.8: 保存できない形は頂点を採番する前に断る (教訓 5.22 確定までの非破壊)。
+  if (hasUnsavableLongEdge(vertices)) return reject(RING_REJECT.LongEdge);
 
   const parent = enclosingTerritoryFor(feature.shape, store, first);
   if (parent === undefined) return reject(RING_REJECT.NoEnclosingTerritory);
@@ -321,6 +347,8 @@ export function addEnclave(
   if (vertices.length < 3) return reject(RING_REJECT.TooFewVertices);
   const first = vertices[0];
   if (first === undefined) return reject(RING_REJECT.TooFewVertices);
+  // N-51 / 技術方針 §6.8: 穴と同じ関門を飛び地にも通す (対概念を漏らさない — 教訓 2.10)。
+  if (hasUnsavableLongEdge(vertices)) return reject(RING_REJECT.LongEdge);
 
   const parentHole = enclosingHoleFor(feature.shape, store, first);
   const built = mintRingVertices(vertices, ids);

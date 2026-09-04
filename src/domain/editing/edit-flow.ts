@@ -26,7 +26,9 @@ import type { FeatureId, VertexId } from '../ids';
 import type { Feature } from '../feature';
 import type { Vertex } from '../vertex';
 import { coordinatesEqual } from '../coordinate';
-import { isNoOp, type DragSession } from './drag-session';
+import { isWorldLatitude } from '../geo/latitude';
+import { MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
+import { dragDelta, isNoOp, type DragSession } from './drag-session';
 import type { SnapDecision } from './snap';
 
 /**
@@ -123,17 +125,65 @@ export const RELEASE_OUTCOME = {
   NoOp: 'no-op',
   /** A proposal was assembled and U13 ran; carries the process result. */
   Processed: 'processed',
+  /**
+   * **確定の関門が断った**（増分 3 の手直し A5 / A6）。何も記録せず、理由だけを返す。
+   * `NoOp`（何も変わっていないので黙って終わる）とは別の値である ―― こちらは
+   * 「変わろうとしたが通せなかった」ので、**画面に理由を出さなければならない**
+   * （無反応にしない。設計書 §H.5 / G-23 の共通の出口）。
+   */
+  Refused: 'refused',
 } as const;
 
 export type ReleaseOutcomeKind = (typeof RELEASE_OUTCOME)[keyof typeof RELEASE_OUTCOME];
 
+/**
+ * 確定を断った理由（機械可読。文言は UI 層が持つ ―― 教訓 5.26 拒否理由は
+ * 「テストできる値」と「通知の文」の両方を返す）。
+ */
+export const EDIT_REFUSAL = {
+  /**
+   * N-51: 1 回の移動で経度を 180 度以上動かした（技術方針 §6.8）。保存形式は
+   * 「隣り合う頂点は最短方向で繋がっている」と仮定するので、この移動で生まれる辺は
+   * **保存して読み直すと必ず別の形になる**。追加の道具は同じ規則で断っており
+   * （`domain/add/shape-draft.ts` の `confirmShape`）、編集だけ素通りしていた（反証 #4）。
+   */
+  LongDrag: 'long-drag',
+  /**
+   * 緯度 ±90 度の外へ頂点を置こうとした（バグ狩り #3）。北極の上にも南極の下にも
+   * 場所は無い。状態行が同じ場所で座標を「—」と出しているのに操作だけ通っていた。
+   */
+  OutsideWorld: 'outside-world',
+} as const;
+
+export type EditRefusalKind = (typeof EDIT_REFUSAL)[keyof typeof EDIT_REFUSAL];
+
 export type ReleaseOutcome<S> =
   | { readonly kind: typeof RELEASE_OUTCOME.NoOp }
+  | { readonly kind: typeof RELEASE_OUTCOME.Refused; readonly reason: EditRefusalKind }
   | {
       readonly kind: typeof RELEASE_OUTCOME.Processed;
       readonly result: ProcessResult<S>;
       readonly proposal: EditProposal<FeatureSnapshot>;
     };
+
+/**
+ * 確定の関門（増分 3 の手直し A5 / A6）。通らなければ理由を返す（通れば null）。
+ *
+ * **経度は「1 回の移動の差」で見る**。保存されている座標どうしの差で見てはいけない ――
+ * 日付変更線をまたぐ正しい地物は代表値では 358 度離れて見えるので、それを断ると継ぎ目の
+ * 地物が 1 つも編集できなくなる。断るべきなのは **利用者が意図した移動が半周以上のとき**で、
+ * それはドラッグの押した点と離した点の差にそのまま表れる（`dragDelta`）。
+ *
+ * **緯度は移動後の体で見る**。こちらは差ではなく位置そのものが世界の外かどうかである。
+ */
+function refusalFor(session: DragSession, snapshot: FeatureSnapshot): EditRefusalKind | null {
+  const { dLon } = dragDelta(session);
+  if (Math.abs(dLon) >= MAX_EDGE_LON_SPAN_DEG) return EDIT_REFUSAL.LongDrag;
+  for (const v of snapshot.vertices) {
+    if (!isWorldLatitude(v.coordinate.lat)) return EDIT_REFUSAL.OutsideWorld;
+  }
+  return null;
+}
 
 export interface ReleaseInput<S> {
   readonly session: DragSession;
@@ -163,6 +213,12 @@ export function confirmRelease<S>(input: ReleaseInput<S>): ReleaseOutcome<S> {
   // No-op guard: a zero-move drag with no forced change does nothing (教訓5.24).
   if (!changed && input.snapshot.sharePair === undefined) {
     return { kind: RELEASE_OUTCOME.NoOp };
+  }
+
+  // 確定の関門（A5 / A6）。**記録する前**に見る（教訓 5.22 確定までの非破壊）。
+  const refusal = refusalFor(input.session, input.snapshot);
+  if (refusal !== null) {
+    return { kind: RELEASE_OUTCOME.Refused, reason: refusal };
   }
 
   const featureId = input.snapshot.deletedFeatureId ?? input.snapshot.feature?.id;

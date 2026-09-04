@@ -829,19 +829,29 @@ export function createNeighboursQuery(
     // owner is near the preview. We narrow to features that the bbox query selected
     // (areas) PLUS point/line features whose own vertex is within the margin — so a
     // point/line vertex can also be a share target without scanning every vertex.
+    //
+    // **候補は掴んでいる点と同じ周回で返す**（増分 3 の手直し A3。バグ狩り #2）。
+    // 近い／遠いの判定（`withinMargin`）は最短方向で見るので日付変更線の向こうの頂点も
+    // 拾えるが、返す座標を **保存されている周回のまま**にすると、この座標を画面へ写して
+    // 距離を測る `decideSnap` から見て **世界 1 周ぶん離れた点**になる（`worldToScreen` は
+    // 折り返さない）。結果、継ぎ目の向こうの相手には吸着が一度も効かず、既存の頂点を
+    // 動かして落としても **共有にならない**（ぴったり同じ座標のハンドルが 0 個になる）。
+    // ここで掴んでいる点の周回へ寄せておけば、距離も、集合ドラッグで採用される確定位置も
+    // 「見えているとおり」になる。共有の実体は頂点 id なので、周回を寄せても
+    // どの頂点と共有するかは変わらない。
+    const pushIfNear = (c: SnapCandidate): void => {
+      if (!withinMargin(c.position, preview, margin)) return;
+      snapCandidates.push({ vertexId: c.vertexId, position: alignedToBranch(c.position, preview) });
+    };
     for (const f of features) {
       if (f.id === draggedFeatureId) continue;
       if (f.kind === FEATURE_KIND.Leaf) {
         if (!nearFeatureIds.has(f.id)) continue; // only near terminals contribute vertices.
-        for (const c of featureSnapCandidates(f, store)) {
-          if (withinMargin(c.position, preview, margin)) snapCandidates.push(c);
-        }
+        for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
         continue;
       }
       // Point / line: include vertices within the margin of the preview.
-      for (const c of featureSnapCandidates(f, store)) {
-        if (withinMargin(c.position, preview, margin)) snapCandidates.push(c);
-      }
+      for (const c of featureSnapCandidates(f, store)) pushIfNear(c);
     }
 
     // Hole / enclave containment for the dragged vertex (FR-89), when applicable.

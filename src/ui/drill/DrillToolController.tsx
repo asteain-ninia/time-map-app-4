@@ -30,7 +30,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import type { BasicAttributes, ColorInfo } from '../../domain/attributes';
+import type { ColorInfo } from '../../domain/attributes';
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { EditProposal, ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId } from '../../domain/ids';
@@ -366,7 +366,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
         <NewFeatureForm
           defaultColor={defaultColor}
           currentYear={anchorTime().year}
-          onSave={(attributes, color) => drill.save({ attributes, color })}
+          onSave={(properties) => drill.save(properties)}
           onCancel={() => drill.cancel()}
         />
       )}
@@ -470,14 +470,19 @@ function DrillInputBridge(props: {
 // --- 新地物プロパティ入力 (re-uses U23's AddPropertyForm shape; FR-97) --------------
 //
 // The spec mandates RE-USING U23's面情報追加入力フロー for the新地物 (FR-97 / 教訓 5.30
-// 過少共有). U23's AddPropertyForm emits `AddProperties` (attributes + color). The上位
-// 領域は元末端から初期継承 (assembleDrillProposal, FR-45), so the parent selector is
-// hidden (showParent=false) and its result is forwarded to `drill.save`.
+// 過少共有). U23's AddPropertyForm emits `AddProperties` (基本属性 + 色 + 任意の種別
+// ラベル). The上位領域は元末端から初期継承 (assembleDrillProposal, FR-45), so the parent
+// selector is hidden (showParent=false) and its result is forwarded to `drill.save`.
+//
+// **フォームの戻り値は丸ごと渡す**。ここで `attributes` と `color` の 2 つだけを取り出す
+// 形にしていたため、利用者がフォームへ入れた**種別ラベルが黙って捨てられていた** (受け側の
+// `drill.save` も `newFeatureOptional` も最初から種別ラベルを受け取れる)。追加の道具
+// (AddToolController) と同じく `AddProperties` をそのまま流す形へ揃える。
 
 function NewFeatureForm(props: {
   readonly defaultColor: ColorInfo;
   readonly currentYear: number;
-  readonly onSave: (attributes: BasicAttributes, color: ColorInfo) => void;
+  readonly onSave: (properties: AddProperties) => void;
   readonly onCancel: () => void;
 }): JSX.Element {
   const { onSave, onCancel, currentYear } = props;
@@ -487,11 +492,12 @@ function NewFeatureForm(props: {
       <AddPropertyForm
         showParent={false}
         parentCandidates={[]}
+      defaultParentId={null}
         currentYear={currentYear}
         onChooseParent={() => {
           /* parent is inherited from the original末端 by the domain assembler (FR-45) */
         }}
-        onSave={(p: AddProperties) => onSave(p.attributes, p.color)}
+        onSave={(p: AddProperties) => onSave(p)}
         onCancel={onCancel}
       />
     </div>

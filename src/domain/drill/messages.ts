@@ -22,6 +22,10 @@ export const DRILL_REJECT_MESSAGE: Readonly<Record<DrillRejectKind, string>> = {
     '対象面の形状を取得できませんでした。',
   [DRILL_REJECT.Internal]:
     '内部エラーが発生しました。開発者へ報告してください。',
+  // 利用者は穴あけでは「途中に点を打つ」ことができないので、この道具で実際に取れる次の手
+  // 「別の場所に穴をあける」を書く (N-51 / 技術方針 §6.8。追加の道具の文言と同じ趣旨)。
+  [DRILL_REJECT.LongEdge]:
+    '穴あけ後の形が世界を半周以上します。別の場所に穴をあけてください（1 辺で経度 180 度以上は保存できません）。',
 };
 
 /** Resolve the Japanese message for a rejection kind (FR-115). */

@@ -46,6 +46,11 @@ export interface AddPropertyFormProps {
   /** The eligible face parents at the current time (FR-77). */
   readonly parentCandidates: readonly ParentCandidate[];
   /**
+   * 候補が 1 つに決まるときの既定（決まらなければ null）。増分 3 の手直し B2:
+   * 入れ子として通した形が黙って「上位領域なし」で保存されるのを防ぐ。
+   */
+  readonly defaultParentId: FeatureId | null;
+  /**
    * 年代の既定に使う「いま見ている年」（G-8）。開始年・終了年ともこの年から始める。
    * 固定の 0 年を入れない ―― 入れると必ず後始末が要る。
    */
@@ -59,7 +64,15 @@ export interface AddPropertyFormProps {
 }
 
 export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
-  const { showParent, parentCandidates, currentYear, onChooseParent, onSave, onCancel } = props;
+  const {
+    showParent,
+    parentCandidates,
+    defaultParentId,
+    currentYear,
+    onChooseParent,
+    onSave,
+    onCancel,
+  } = props;
   const [name, setName] = useState('');
   const [kindLabel, setKindLabel] = useState('');
 
@@ -118,7 +131,7 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
             onChange={(e) =>
               onChooseParent(e.target.value === '' ? null : (e.target.value as FeatureId))
             }
-            defaultValue=""
+            defaultValue={defaultParentId ?? ''}
           >
             <option value="">{ADD_STRINGS.parentNone}</option>
             {parentCandidates.map((c) => (
@@ -177,6 +190,7 @@ export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormPro
   return {
     showParent: prompt.tool === ADD_TOOL_KIND.Face,
     parentCandidates: prompt.parentCandidates,
+    defaultParentId: prompt.defaultParentId,
     currentYear: prompt.currentYear,
     onChooseParent: prompt.onChooseParent,
     onSave: prompt.onSave,

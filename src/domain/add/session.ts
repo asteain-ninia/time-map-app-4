@@ -130,6 +130,18 @@ export interface PlacedVertex {
    */
   readonly insideTerminalId?: FeatureId | null;
   /**
+   * この頂点が **どの末端地物の境界（線）の上に載ったか**（載っていなければ null）。
+   * 増分 3 の手直し B1（所有者の裁定待ちの規則を、穴を塞いで追認したもの）。
+   *
+   * **なぜ内側とは別に持つのか**: FR-29 が断るのは「他の面の**内側**」だけで、境界の上は
+   * 断らない（隣どうしが角を共有するのは正しい使い方）。ところが入れ子の見分けは
+   * 「打った頂点が全部、同じ面の**内側または境界の上**か」なので、**断らない側の事実も
+   * 覚えておかないと判定できない**。親の角へ吸着した頂点は必ず境界の上に載るので、
+   * これが無いと「親の角に吸着した瞬間、入れ子と認めてもらえなくなる」
+   * （しかも打つ順で結果が変わる）。
+   */
+  readonly boundaryTerminalId?: FeatureId | null;
+  /**
    * 吸着先の頂点の **保存されている座標**（＝体）。{@link coordinate} は押した位置と同じ
    * 周回へ寄せてあるので、日付変更線をまたいで描いていると 360 度ちょうど食い違う。
    * 共有頂点は 2 つの地物が同じ id を指すことなので、**保存する体は元の値でなければ
@@ -146,6 +158,7 @@ export function placedVertex(
   sharedVertexId?: VertexId | null,
   insideTerminalId?: FeatureId | null,
   sharedVertexCoordinate?: WorldCoordinate | null,
+  boundaryTerminalId?: FeatureId | null,
 ): PlacedVertex {
   // 任意の項は **1 つずつ独立に**付ける。まとめて分岐させると、片方だけ渡した呼び出しが
   // 来たときにもう片方が黙って落ちる（「吸着したのに共有にならない」形で現れる）。
@@ -154,18 +167,29 @@ export function placedVertex(
   if (sharedVertexId != null) out = { ...out, sharedVertexId };
   if (insideTerminalId != null) out = { ...out, insideTerminalId };
   if (sharedVertexCoordinate != null) out = { ...out, sharedVertexCoordinate };
+  if (boundaryTerminalId != null) out = { ...out, boundaryTerminalId };
   return out;
 }
 
 /**
  * その面を **まるごとその末端地物の中に描いているか**（＝入れ子を作っているか）。
  *
+ * 規則（司令塔の決定。**所有者が覆せる**。要件定義書 FR-29 の但し書き）:
+ *
+ * > 打った頂点が全部、**同じ末端の内側または境界の上**なら入れ子とみなす。
+ *
  * 打った頂点が 1 つも無ければ真（これから内側に描き始めるところ）。1 つでも「その面の
- * 内側ではない場所」に打っていたら偽 ―― そのときに別の面の内側へ頂点を入れるのは、
- * 隣を描いていて誤って重ねた FR-29 の事故である。
+ * 内側でも境界の上でもない場所」に打っていたら偽 ―― そのときに別の面の内側へ頂点を
+ * 入れるのは、隣を描いていて誤って重ねた FR-29 の事故である。
+ *
+ * **境界の上を数える**のが増分 3 の手直し（B1）で塞いだ穴である。初版は内側だけを数えて
+ * いたので、**親の角へ吸着した頂点**（必ず境界の上に載る）が入ると入れ子と認められず、
+ * さらに **打つ順で結果が変わった**（境界の頂点を先に打つと通り、後から打つと断られる）。
  */
 export function isNestingInside(session: AddSession, terminalId: FeatureId): boolean {
-  return session.vertices.every((v) => v.insideTerminalId === terminalId);
+  return session.vertices.every(
+    (v) => v.insideTerminalId === terminalId || v.boundaryTerminalId === terminalId,
+  );
 }
 
 // --- The whole add session --------------------------------------------------
@@ -260,6 +284,7 @@ export function placeVertex(
   sharedVertexId?: VertexId | null,
   insideTerminalId?: FeatureId | null,
   sharedVertexCoordinate?: WorldCoordinate | null,
+  boundaryTerminalId?: FeatureId | null,
 ): AddSession {
   const v = placedVertex(
     coordinate,
@@ -267,6 +292,7 @@ export function placeVertex(
     sharedVertexId,
     insideTerminalId,
     sharedVertexCoordinate,
+    boundaryTerminalId,
   );
   // 予告は「まだ置かれていない点」の話なので、置いた瞬間に捨てる（教訓 5.2: 一時状態は
   // 全経路で破棄する）。次のカーソル移動が新しい予告を入れる。

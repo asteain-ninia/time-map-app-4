@@ -7,9 +7,12 @@
 //
 // **新しい当たり判定を書かない**（教訓 5.29 / 5.30）。使うのは既にあるもの 2 つだけ:
 //
-//   - 近くの頂点 … `liveHitTestAt`（`ui/map/live-hit-test.ts`）。**地図が実際に描いた
-//     ものだけ**を候補にする（階層の深さ・表示フィルタ・±360 度の複製まで込み）ので、
-//     「見えている ＝ 吸着できる」が構造的に成り立つ。半径だけを吸着の許容 px に差し替える。
+//   - 近くの頂点 … `liveHitTestAt`（`ui/map/live-hit-test.ts`）。**描かれる候補の集合**を
+//     そのまま使う（階層の深さ・表示フィルタ・±360 度の複製まで込み）。ただし
+//     「見えている ＝ 吸着できる」は **厳密には成り立たない**: ハンドルの描画には上限
+//     （2,000 個）があり、上限を超えて 1 つも描かれない倍率でも当たり判定は候補を返す
+//     （バグ狩り #9 で実測）。予告の輪と地物名は出るので操作は追えるが、
+//     「描かれたものだけ」ではないことをここに書いておく。半径は吸着の許容 px に差し替える。
 //   - 他の面の内側か … `leafAtPoint`（`ui/live-lookup.ts`）。地図クリックの地物解決と
 //     同じ 1 本で、**境界の上の点は「内側」に数えない**（`pointInPolygon` が `Boundary` を
 //     `Inside` と区別する）。これは吸着にとって決定的で、既存の頂点にぴったり吸い付いた
@@ -30,10 +33,17 @@ import { worldToScreen } from '../../render/vtransform';
 import { createCoordinate, type WorldCoordinate } from '../../domain/coordinate';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 
-import { featureByIdAt, featuresAt, leafAtPoint, verticesAt } from '../live-lookup';
+import {
+  featureByIdAt,
+  featuresAt,
+  leafAtPointIncludingBoundary,
+  verticesAt,
+} from '../live-lookup';
 import { liveHitTestAt } from '../map/live-hit-test';
 import type { DisplayControl, SnapSettings } from '../state/session';
 import type { FilterState } from '../discovery/index';
+
+import type { LeafPointHit } from '../live-lookup';
 
 import type { AddProximityCandidate, AddTerminalHit } from './useAddTool';
 
@@ -60,12 +70,34 @@ export interface AddSnapPorts {
   /** FR-31: 許容内にある既存の頂点（無ければ null）。吸着が切ってあるときも null。 */
   readonly resolveProximity: (raw: WorldCoordinate) => AddProximityCandidate | null;
   /**
-   * FR-29: その点が **どの末端地物の内側か**（境界の上は内側に数えない。内側でなければ null）。
+   * FR-29: その点が **どの末端地物の内側か**（内側でも境界の上でもなければ null）。
    * 可否も断り文の名前も **この 1 回の解決**から作る（教訓 5.46: 判定を 2 経路に割らない）。
+   *
+   * **境界の上も返す**（増分 3 の手直し B1）。断るかどうかは内側のときだけだが、
+   * 入れ子の見分け（「打った頂点が全部、同じ末端の内側または境界の上か」）には
+   * 「どの面の線の上に載ったか」が要る ―― 親の角へ吸着した頂点は必ず境界の上に載るので、
+   * ここを落とすと **吸着した瞬間に入れ子と認められなくなる**。
    */
   readonly terminalAt: (coordinate: WorldCoordinate) => AddTerminalHit | null;
   /** 地物の表示名（吸着の予告「『◯◯』の頂点に合わせます」に使う）。 */
   readonly featureNameOf: (featureId: FeatureId) => string | null;
+  /**
+   * FR-77 / GPT #3・#4: **いま描いた形を丸ごと含む面**の id（古い順）。上位領域の候補を
+   * これだけに絞り、一意ならそれを既定にする。
+   *
+   * **なぜ必要か**: 初版の候補一覧は「その時刻に居る面 776 件」を平らに並べていたので、
+   * 利用者は自分の形と何の関係も無い面を上位領域に選べたし、逆に **入れ子として通した形が
+   * 既定では「上位領域なし」で保存され、最上位の面として重なり競合になった**。
+   *
+   * **数え方**: ある点を含む面は「その点に当たる末端」と「その先祖」で尽きる（集約地物の
+   * 実領域は子の和なので、子に当たらない点は親にも当たらない）。だから点ごとに末端を 1 回
+   * 引いて先祖をたどり、**全部の点に共通するもの**を返す。全域を走査して面ごとに実領域を
+   * 組み立てる（`resolveFeatureArea` を 776 回呼ぶ）必要はない。
+   * 境界の上に載った点も「含まれる」に数える（親の角へ吸着した頂点は必ず境界に載る）。
+   */
+  readonly facesContaining: (
+    coordinates: readonly WorldCoordinate[],
+  ) => readonly FeatureId[];
 }
 
 export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
@@ -128,11 +160,11 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
    *
    * クリック 1 回につき 1 度だけ走る（カーソル移動では呼ばない）。
    */
-  const terminalAt = (coordinate: WorldCoordinate): FeatureId | null => {
+  const terminalAt = (coordinate: WorldCoordinate): LeafPointHit | null => {
     const ctx = readContext();
-    const hit = leafAtPoint(ctx.root, ctx.time, coordinate);
+    const hit = leafAtPointIncludingBoundary(ctx.root, ctx.time, coordinate);
     if (hit === null) return null;
-    const hasChild = featuresAt(ctx.root, ctx.time).some((f) => f.parentId === hit);
+    const hasChild = featuresAt(ctx.root, ctx.time).some((f) => f.parentId === hit.featureId);
     return hasChild ? null : hit;
   };
 
@@ -144,11 +176,78 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
     return name === '' ? null : name;
   };
 
+  /**
+   * 断り文に出す **その面の呼び方**（増分 3 の手直し B3。バグ狩り #13）。
+   *
+   * 実データは集約地物の下に州が並ぶので、名前だけを出すと「ここは『ガロアミド州』の
+   * 内側です」となり、**どこの州なのかが分からない**（同名の州が別の国にもありうる）。
+   * 上位領域の名前と種別ラベルが引けるときは「デーレ共和国の州『ガロアミド州』」の形にする。
+   * 引けない項は黙って落とす（内部 id は出さない ―― U-1）。
+   */
+  const describeTerminal = (featureId: FeatureId): string | null => {
+    const name = featureNameOf(featureId);
+    if (name === null) return null;
+    const ctx = readContext();
+    const feature = featureByIdAt(ctx.root, ctx.time, featureId);
+    const kind = feature?.kindLabel ?? '';
+    const parentId = feature?.parentId;
+    const parentName = parentId === undefined ? null : featureNameOf(parentId);
+    if (parentName === null) return kind === '' ? `「${name}」` : `${kind}「${name}」`;
+    return kind === '' ? `${parentName}の「${name}」` : `${parentName}の${kind}「${name}」`;
+  };
+
+  /** その id の面と、その先祖を根まで（自分を含む）。 */
+  const selfAndAncestors = (
+    featureId: FeatureId,
+    parentOf: ReadonlyMap<FeatureId, FeatureId | undefined>,
+  ): FeatureId[] => {
+    const out: FeatureId[] = [];
+    const seen = new Set<FeatureId>();
+    let at: FeatureId | undefined = featureId;
+    while (at !== undefined && !seen.has(at)) {
+      seen.add(at); // 環になったデータでも止まる（教訓 5.28）。
+      out.push(at);
+      at = parentOf.get(at);
+    }
+    return out;
+  };
+
+  const facesContaining = (
+    coordinates: readonly WorldCoordinate[],
+  ): readonly FeatureId[] => {
+    if (coordinates.length === 0) return [];
+    const ctx = readContext();
+    const features = featuresAt(ctx.root, ctx.time);
+    const parentOf = new Map<FeatureId, FeatureId | undefined>(
+      features.map((f) => [f.id, f.parentId]),
+    );
+    let common: Set<FeatureId> | null = null;
+    for (const c of coordinates) {
+      const hit = leafAtPointIncludingBoundary(ctx.root, ctx.time, c);
+      if (hit === null) return []; // 1 点でもどの面にも入っていなければ、共通の親は無い。
+      const chain = new Set<FeatureId>(selfAndAncestors(hit.featureId, parentOf));
+      if (common === null) common = chain;
+      else for (const id of [...common]) if (!chain.has(id)) common.delete(id);
+      if (common.size === 0) return [];
+    }
+    if (common === null) return [];
+    // 並びは `featuresAt` の順（画面の一覧と同じ）に揃える。
+    const inCommon = common;
+    return features.filter((f) => inCommon.has(f.id)).map((f) => f.id);
+  };
+
   return {
     resolveProximity,
+    facesContaining,
     terminalAt: (coordinate) => {
-      const id = terminalAt(coordinate);
-      return id === null ? null : { featureId: id, name: featureNameOf(id) };
+      const hit = terminalAt(coordinate);
+      if (hit === null) return null;
+      return {
+        featureId: hit.featureId,
+        name: featureNameOf(hit.featureId),
+        where: describeTerminal(hit.featureId),
+        onBoundary: hit.onBoundary,
+      };
     },
     featureNameOf,
   };

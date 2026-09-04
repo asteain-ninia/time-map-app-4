@@ -135,6 +135,41 @@ describe('createNeighboursQuery (HB3-20 slide/snap inputs)', () => {
     expect(snapIds).toContain('leaf-b-0'); // (−179,0) is 2° from the (179,0) preview across the seam.
   });
 
+  it('A3 継ぎ目: 候補の座標は、掴んでいる点と同じ周回で返る（保存されている周回のままにしない）', () => {
+    // バグ狩り #2: 近い／遠いの判定は最短方向で見るので継ぎ目の向こうの頂点も候補に入るが、
+    // 座標を保存されている周回（−179）のまま返すと、画面へ写して距離を測る `decideSnap`
+    // から見て **世界 1 周ぶん離れた点**になる（`worldToScreen` は折り返さない）。
+    // つまり吸着が一度も効かず、既存の頂点を動かして落としても共有にならない。
+    const a = squareLeaf('leaf-a', 'A国', 0, 0, 10);
+    const b = squareLeaf('leaf-b', 'B国', -179, 0, 5);
+    const root: DomainProject = {
+      histories: [
+        singleAnchorHistory(
+          'leaf-a',
+          [a.feature, b.feature],
+          createVertexStore([...a.vertices, ...b.vertices]),
+          0,
+        ),
+      ],
+      settings: DEFAULT_SETTINGS,
+      baseMap: DEFAULT_BASEMAP,
+    };
+    const query = createNeighboursQuery({
+      getRoot: () => root,
+      getTime: () => timePointYear(0),
+      snapWorldMargin: () => 5,
+    });
+    const result = query({ lon: 179, lat: 0 }, vertexMoveSession());
+    const target = result.snapCandidates.find(
+      (s) => (s.vertexId as unknown as string) === 'leaf-b-0',
+    );
+    expect(target).toBeDefined();
+    // 保存されている体は −179。掴んでいる点（179）と同じ周回＝181 で返る。
+    expect(target!.position.lon).toBeCloseTo(181, 9);
+    // 画面上の距離が「見えているとおり」の 2 度ぶんになる（358 度ではない）。
+    expect(Math.abs(target!.position.lon - 179)).toBeCloseTo(2, 9);
+  });
+
   it('excludes the dragged feature even when the preview is inside its own bbox', () => {
     const { root } = twoLeafProject();
     const query = createNeighboursQuery({

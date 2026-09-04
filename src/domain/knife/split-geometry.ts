@@ -24,6 +24,7 @@
 
 import { coordinatesEqual, createCoordinate, type WorldCoordinate } from '../coordinate';
 import { LONGITUDE_PERIOD, unwrapRing } from '../geo/index';
+import { countLongEdgesInMultiPolygon } from '../geo/long-edge';
 import {
   difference,
   intersection,
@@ -73,6 +74,19 @@ export const SPLIT_REJECT = {
    * (HB3-5/19 G3). We reject rather than silently mis-process it.
    */
   SelfIntersectingCut: 'self-intersecting-cut',
+  /**
+   * 分割してできた形に「1 辺で経度 180 度以上を渡る辺」がある (N-51 / 技術方針 §6.8)。
+   *
+   * 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+   * 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。これは不具合ではなく
+   * 保存形式の恒久的な表現限界なので、**書く側で止める以外に手が無い**。
+   *
+   * 横に長い面を切ると、集合演算が一直線上に並ぶ途中の頂点を落とすため、切り口と関係の
+   * ない外周が「1 本の長い辺」に化けることがある。追加の道具では同じ形を断っているので、
+   * ここで素通りさせると「追加では作れない形がナイフでは作れる」という食い違いになる
+   * (増分 3 の手直し A5 / 教訓 5.29 単一真実源)。
+   */
+  LongEdge: 'long-edge',
 } as const;
 
 export type SplitRejectKind = (typeof SPLIT_REJECT)[keyof typeof SPLIT_REJECT];
@@ -86,6 +100,10 @@ export const SPLIT_REJECT_MESSAGE: Readonly<Record<SplitRejectKind, string>> = {
   [SPLIT_REJECT.Unresolvable]: '対象面の形状を取得できませんでした。',
   [SPLIT_REJECT.DegenerateLine]: '分断線の点が足りません。',
   [SPLIT_REJECT.SelfIntersectingCut]: '分断線が自己交差しています。交差しないように引き直してください。',
+  // 利用者はナイフでは頂点を打たないので「途中に点を打つ」とは言えない。この道具で実際に
+  // 取れる次の手は「別の場所で切る」なので、そう書く (追加の道具の文言と同じ趣旨)。
+  [SPLIT_REJECT.LongEdge]:
+    '切り口が世界を半周以上します。別の場所で切ってください（1 辺で経度 180 度以上は保存できません）。',
 };
 
 /** The minimum vertex count for a valid terminal polygon outer ring (FR-44). */
@@ -942,6 +960,17 @@ export function checkSplittable(
   for (const p of pieces) {
     if (!everyOuterRingHasMinVertices(p)) {
       return rejection(SPLIT_REJECT.TooFewVertices);
+    }
+  }
+
+  // N-51 / 技術方針 §6.8: 1 辺で経度 180 度以上を渡る形は保存して読み直すと必ず別の形に
+  // なるので、確定させずにここで断る。ここで見るのは `targetMp` / `linePts` と同じ **連続
+  // 経度** の系 (R3 で 1 本の枝へ寄せた後) の値である。代表値 ([-180,180) へ畳んだ値) に
+  // 掛けると、正常な日付変更線またぎ (179° → −179°) が 358° と出て誤爆する。述語は
+  // `domain/geo/long-edge.ts` の 1 本だけを呼ぶ (教訓 5.29 単一真実源)。
+  for (const p of pieces) {
+    if (countLongEdgesInMultiPolygon(p) > 0) {
+      return rejection(SPLIT_REJECT.LongEdge);
     }
   }
 

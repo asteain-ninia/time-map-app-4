@@ -204,4 +204,69 @@ describe('assembleAddProposal — 吸着した頂点の共有（増分 3）', ()
     expect(proposal.snapshot.vertices).toHaveLength(2);
     expect(proposal.snapshot.sharedCandidateIds.size).toBe(0);
   });
+
+  it('A2: 日付変更線の向こうで吸着すると、保存されるリングに 360 度の飛びを作らない', () => {
+    // バグ狩り #1。地図を日付変更線の向こうへパンして描いているので、下書きの座標は
+    // 180 度を越えた連続値（179.6 / 180.4 / 180.2）である。3 点目は隣の地物の頂点へ
+    // 吸着していて、その頂点の **保存されている体** は −179.8（別の周回）。
+    // 吸着した体は動かせない（同じ id を指す 2 つの地物の体が食い違ってはいけない）ので、
+    // **吸着していない 2 点の体を同じ周回へ寄せる**。
+    const existing = asVertexId('v-seam');
+    let session = startSession(ADD_TOOL_KIND.Face);
+    session = placeVertex(session, C(179.6, 0));
+    session = placeVertex(session, C(180.4, 0));
+    session = placeVertex(
+      session,
+      C(180.2, 2), // 押した位置と同じ周回へ寄せた値（下書きに入る値）
+      asFeatureId('f-neighbour'),
+      existing,
+      null,
+      C(-179.8, 2), // 保存されている体（相手の周回）
+    );
+    const confirmed = confirmShape(session);
+    if (confirmed.status !== CONFIRM_STATUS.Ok) throw new Error('確定できるはず');
+
+    const proposal = assembleAddProposal({
+      draft: confirmed.draft,
+      properties,
+      parent: PARENT_TOP_LEVEL,
+      currentTime: timePointYearMonthDay(1500, 1, 1),
+      ids: makeIds().ids,
+      nextRingId: () => asRingId('r-1') as RingId,
+    });
+
+    const lonById = new Map(proposal.snapshot.vertices.map((v) => [v.id, v.coordinate.lon]));
+    // 吸着した頂点の体は 1 ビットも動かない（共有の相手と食い違わせない）。
+    expect(lonById.get(existing)).toBe(-179.8);
+    // 残り 2 点は同じ周回（−180 側）へ寄っている。
+    const others = [...lonById.entries()].filter(([id]) => id !== existing).map(([, lon]) => lon);
+    expect(others).toHaveLength(2);
+    for (const lon of others) expect(lon).toBeLessThan(-179);
+
+    // 保存されるリングの中に 360 度の飛びが 1 つも無い（＝読み込み側が形を作り直さない）。
+    const ring = proposal.snapshot.vertices.map((v) => v.coordinate);
+    for (let i = 0; i < ring.length; i += 1) {
+      const a = ring[i]!;
+      const b = ring[(i + 1) % ring.length]!;
+      expect(Math.abs(b.lon - a.lon)).toBeLessThan(180);
+    }
+  });
+
+  it('A2: 吸着が 1 つも無ければ体は下書きの値のまま（従来どおり）', () => {
+    let session = startSession(ADD_TOOL_KIND.Face);
+    session = placeVertex(session, C(179.6, 0));
+    session = placeVertex(session, C(180.4, 0));
+    session = placeVertex(session, C(180.2, 2));
+    const confirmed = confirmShape(session);
+    if (confirmed.status !== CONFIRM_STATUS.Ok) throw new Error('確定できるはず');
+    const proposal = assembleAddProposal({
+      draft: confirmed.draft,
+      properties,
+      parent: PARENT_TOP_LEVEL,
+      currentTime: timePointYearMonthDay(1500, 1, 1),
+      ids: makeIds().ids,
+      nextRingId: () => asRingId('r-1') as RingId,
+    });
+    expect(proposal.snapshot.vertices.map((v) => v.coordinate.lon)).toEqual([179.6, 180.4, 180.2]);
+  });
 });

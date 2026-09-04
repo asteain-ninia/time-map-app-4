@@ -19,6 +19,7 @@ import {
   centralRegion,
   escapingRegion,
   freshIdPorts,
+  squareLeaf,
   unitSquare,
 } from './fixtures';
 
@@ -209,5 +210,64 @@ describe('複数片の保持 (受け入れ8 / 教訓5.1)', () => {
     );
     expect(isOk(back)).toBe(true);
     if (isOk(back)) expect(area(back.result)).toBeCloseTo(area(res.holedOriginal), 4);
+  });
+});
+
+// --- 1 辺で経度 180 度以上を渡る辺 (N-51 / 技術方針 §6.8) --------------------
+//
+// 保存形式は「隣り合う頂点は最短方向で繋がっている」と仮定して経度を連続量へ戻すので、
+// 1 辺で 180 度以上を渡る形は保存して読み直すと必ず別の形になる。追加の道具では既に
+// 断っているので、穴あけでも同じ関門を通す (増分 3 の手直し / 教訓 5.29 単一真実源)。
+
+/** 横に長いが 1 辺はどれも 90 度以下 ―― それ自体は保存できる面。 */
+function wideLeaf() {
+  return squareLeaf('wide', [
+    createCoordinate(-170, 0),
+    createCoordinate(-90, 0),
+    createCoordinate(0, 0),
+    createCoordinate(90, 0),
+    createCoordinate(170, 0),
+    createCoordinate(170, 10),
+    createCoordinate(90, 10),
+    createCoordinate(0, 10),
+    createCoordinate(-90, 10),
+    createCoordinate(-170, 10),
+  ]);
+}
+
+describe('checkDrillable — 1 辺で経度 180 度以上を渡る結果は断る (N-51)', () => {
+  it('横長の面に穴をあけると、外周が 1 本の長い辺に化けるので断られる', () => {
+    // 集合演算は一直線上に並ぶ途中の頂点を落とすため、穴と関係の無い上下の外周が
+    // −170°→170° の「1 本で 340 度」になってしまう ―― 保存して読み直すと別の形になる。
+    const { feature, store } = wideLeaf();
+    const res = checkDrillable(feature, store, [
+      createCoordinate(-5, 3),
+      createCoordinate(5, 3),
+      createCoordinate(5, 7),
+      createCoordinate(-5, 7),
+    ]);
+    expect(res.status).toBe(DRILL_CHECK_STATUS.NotDrillable);
+    if (res.status === DRILL_CHECK_STATUS.NotDrillable) {
+      expect(res.reason).toBe(DRILL_REJECT.LongEdge);
+    }
+  });
+
+  it('日付変更線をまたぐ普通の面に穴をあけるのは断られない (誤爆防止)', () => {
+    // 代表値では 160° の隣に −170° が来る面 ―― 連続経度では [160,190] の幅 30 度の面で、
+    // 長い辺は 1 本も無い。畳んだ値のまま数えると 330 度に見えてしまうので、この形が
+    // 通ることを固定する (long-edge.ts の「入力は連続経度」の契約)。
+    const { feature, store } = squareLeaf('seam', [
+      createCoordinate(160, 0),
+      createCoordinate(-170, 0),
+      createCoordinate(-170, 10),
+      createCoordinate(160, 10),
+    ]);
+    const res = checkDrillable(feature, store, [
+      createCoordinate(175, 3),
+      createCoordinate(-175, 3),
+      createCoordinate(-175, 7),
+      createCoordinate(175, 7),
+    ]);
+    expect(res.status).toBe(DRILL_CHECK_STATUS.Drillable);
   });
 });

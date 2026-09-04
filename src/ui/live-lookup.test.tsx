@@ -202,6 +202,53 @@ describe('live-lookup', () => {
     expect(leafAtPoint(root, timePointYear(1000), { lon: 0, lat: 1 })).toBeNull();
   });
 
+  it('A4: 地図を 2 周以上パンしても照会が外れない（押した点を正準の周回へ折り返す）', () => {
+    // 反証 #3: `screenToWorld` は連続経度を返すので、東へ 2 周パンすると経度は 721 になる。
+    // 探るのは ±1 周ぶんだけなので、折り返さないと 2 周目から先で **画面に見えている地物を
+    // 照会が見つけられなくなる**（FR-29 が黙って断らなくなり、ナイフも対象を取れない）。
+    const a = squareLeaf('f-turns', 'vt', 0, 0); // [0,2]×[0,2]
+    const root = withLeaf(emptyProject(), a, 1000);
+    const at = (lon: number) => leafAtPoint(root, timePointYear(1000), { lon, lat: 1 });
+    expect(at(1)).toBe(a.feature.id); // 0 周
+    expect(at(1 + 360)).toBe(a.feature.id); // 1 周
+    expect(at(1 + 720)).toBe(a.feature.id); // 2 周（折り返しが無いと null になっていた）
+    expect(at(1 + 1080)).toBe(a.feature.id); // 3 周
+    expect(at(1 - 720)).toBe(a.feature.id); // 西へ 2 周
+    // 何周しても「そこに無い」ものは無い。
+    expect(at(100 + 720)).toBeNull();
+  });
+
+  it('A2: 継ぎ目で吸着して作った面（リングに 360 度の飛びがある）も、見えているとおりに当たる', () => {
+    // バグ狩り #1: 吸着した頂点の体は相手の周回のまま入るので、日付変更線の向こうで描くと
+    // 保存されるリングが [179.6, 180.2, -179.9] のような姿になる（1 か所だけ 360 度離れる）。
+    // 描画は読み込み時にリングを連続へ戻すので正しい小さな三角形に見えるが、当たり判定が
+    // 生のリングをそのまま多角形として扱うと **世界をぐるりと回る別の形**を判定してしまい、
+    // ナイフ・FR-29・所属変更が「そこには無い」と答える。
+    const vertices = [
+      createVertex(asVertexId('vseam-0'), { lon: 179.6, lat: 0 }),
+      createVertex(asVertexId('vseam-1'), { lon: 180.4, lat: 0 }),
+      createVertex(asVertexId('vseam-2'), { lon: -179.8, lat: 2 }), // ＝ 180.2（相手の周回のまま）
+    ];
+    const ring = createTerritoryRing(
+      asRingId('r-seamtri'),
+      vertices.map((v) => v.id),
+    );
+    const feature = createLeafFeature(
+      asFeatureId('f-seamtri'),
+      createBasicAttributes('継ぎ目の橋', 0, 0),
+      color,
+      createShape([ring]),
+    );
+    const root = withLeaf(emptyProject(), { feature, vertices }, 1000);
+    const at = (lon: number, lat: number) => leafAtPoint(root, timePointYear(1000), { lon, lat });
+    // 三角形の内側（連続で見ると 180.0 付近）。押した周回がどちら側でも同じ答えになる。
+    expect(at(180, 0.4)).toBe(feature.id);
+    expect(at(-180, 0.4)).toBe(feature.id);
+    // 世界の反対側は当たらない（飛びをそのまま多角形として扱っていると、ここが当たった）。
+    expect(at(0, 0.4)).toBeNull();
+    expect(at(-90, 0.4)).toBeNull();
+  });
+
   // HB3-16 / HB3-15(b): leafAtPoint resolves an INDIVIDUAL child leaf even when those
   // leaves are children of an AGGREGATE parent (so only the aggregate is "displayed" at
   // N=0). This is the root the merge / reparent featureAtPoint ports now use (App.tsx),

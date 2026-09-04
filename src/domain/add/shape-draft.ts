@@ -11,6 +11,7 @@
 // `ShapeDraft` need not re-check the minimums (不正状態を表現不能, 技術方針 2.1).
 
 import type { WorldCoordinate } from '../coordinate';
+import { longEdgeStartIndexes, MAX_EDGE_LON_SPAN_DEG } from '../geo/long-edge';
 import { ringSelfIntersects } from '../geometry/predicates';
 import type { GeoRing } from '../geometry/types';
 
@@ -100,38 +101,12 @@ export type ConfirmResult =
 
 // --- 1 辺で経度 180 度以上を渡る辺（N-51 / 技術方針 §6.8）--------------------
 
-/**
- * 1 辺で許される経度差の上限（度）。技術方針 §6.8:「読み込み側は隣り合う頂点の経度差が
- * **180 度を超えたら** ±360 度ずらす」。ちょうど 180 度はどちら回りか決まらないので、
- * **180 度以上を「渡れない」とみなす**（境界を安全側に倒す）。
- */
-export const MAX_EDGE_LON_SPAN_DEG = 180;
-
-/**
- * 経度差が {@link MAX_EDGE_LON_SPAN_DEG} 以上の辺の、**始点の添字**を返す。
- *
- * `closed` が真（面）のときは最後の頂点から先頭へ戻る「閉じる辺」も見る（その添字は
- * `coordinates.length - 1`）。線・点は開いた列として見る。
- *
- * 単一の真実源（教訓 5.29）: 確定の関門（{@link confirmShape}）も、作図中に辺を赤くする
- * 描画（`render/add-batch`）も、この 1 本を呼ぶ。「確定は止まるのに赤くならない」
- * ような食い違いが構造的に起きない。
- */
-export function longEdgeStartIndexes(
-  coordinates: readonly WorldCoordinate[],
-  closed: boolean,
-): readonly number[] {
-  const out: number[] = [];
-  const n = coordinates.length;
-  if (n < 2) return out;
-  const last = closed ? n : n - 1;
-  for (let i = 0; i < last; i += 1) {
-    const a = coordinates[i]!;
-    const b = coordinates[(i + 1) % n]!;
-    if (Math.abs(b.lon - a.lon) >= MAX_EDGE_LON_SPAN_DEG) out.push(i);
-  }
-  return out;
-}
+// 述語そのものは `domain/geo/long-edge.ts` へ移した（増分 3 の手直し A5）。追加だけでなく
+// **編集・ナイフ・結合・穴あけ・リング編集の確定**も同じ 1 本を呼ぶ必要が出たためである
+// （反証 #4 / GPT #7: 追加では断られる形が、編集では作れてしまっていた）。ここからの
+// 再輸出は、既にこの名前で読んでいる呼び出し側（`render/add-batch` ほか）を折らないためで、
+// **定義は 1 か所しか無い**（教訓 5.29）。
+export { longEdgeStartIndexes, MAX_EDGE_LON_SPAN_DEG };
 
 /** その道具の形が閉じるか（面だけが閉じる）。 */
 export function isClosedTool(kind: AddToolKind): boolean {

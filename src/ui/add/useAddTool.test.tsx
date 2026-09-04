@@ -337,6 +337,64 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
     expect(result.current.message).toContain('コルニア');
   });
 
+  it('B3: 断り文には **上位領域と種別** を添える（同名の州がどこの州か分かるように）', () => {
+    let hit: {
+      featureId: FeatureId;
+      name: string | null;
+      where?: string | null;
+    } | null = null;
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(0, 0)));
+    hit = {
+      featureId: baaka,
+      name: 'ガロアミド州',
+      where: 'デーレ共和国の州「ガロアミド州」',
+    };
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.message).toContain('デーレ共和国の州「ガロアミド州」');
+    expect(result.current.message).toContain('内側');
+  });
+
+  it('B1: 境界（線）の上に載った頂点は断らず、入れ子の見分けでも「その面の側」に数える', () => {
+    // 親の角へ吸着した点は必ず境界の上に載る。初版はこれを「その面の側」に数えず、
+    // 次に内側へ打った瞬間に断っていた（＝吸着して入れ子を作る導線が死んでいた）。
+    let hit: {
+      featureId: FeatureId;
+      name: string | null;
+      onBoundary?: boolean;
+    } = { featureId: baaka, name: 'バアカ', onBoundary: true };
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(0, 0))); // 親の角へ吸着（境界の上）
+    expect(result.current.message).toBeNull();
+    hit = { featureId: baaka, name: 'バアカ', onBoundary: false };
+    act(() => result.current.placeAt(C(1, 1))); // 親の内側
+    act(() => result.current.placeAt(C(2, 1)));
+    expect(result.current.session?.vertices).toHaveLength(3);
+    expect(result.current.message).toBeNull();
+  });
+
+  it('A6: 緯度 ±90 度の外には置けない（理由が文字で出る）', () => {
+    const { result } = renderHook(() => useAddTool(withPorts({})));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(0, 118))); // 地図セルの上端。状態行の座標は「—」
+    expect(result.current.session?.vertices).toHaveLength(0);
+    expect(result.current.message).toContain('世界の外');
+    // ±90 ちょうどは中（極そのものは場所である）。
+    act(() => result.current.placeAt(C(0, 90)));
+    act(() => result.current.placeAt(C(1, -90)));
+    expect(result.current.session?.vertices).toHaveLength(2);
+  });
+
+  it('A6: 点・線でも世界の外には置けない（面だけの規則ではない）', () => {
+    const { result } = renderHook(() => useAddTool(withPorts({})));
+    act(() => result.current.start(ADD_TOOL_KIND.Point));
+    act(() => result.current.placeAt(C(0, -122)));
+    expect(result.current.session?.vertices).toHaveLength(0);
+    expect(result.current.message).toContain('世界の外');
+  });
+
   it('FR-29 は面だけ（教訓 5.25: 線・点へ広げない）', () => {
     let hit: { featureId: FeatureId; name: string | null } | null = null;
     const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
