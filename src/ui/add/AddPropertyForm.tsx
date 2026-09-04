@@ -15,7 +15,7 @@
 // 保存ボタンは `data-testid="add-save"` のまま **素性欄の保存ボタン**になる（T-1 の
 // 付け替え 2 件のうちの 1 件。役割「追加した地物の値を確定する」は変わらない）。
 
-import { useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   createBasicAttributes,
@@ -75,6 +75,17 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
   } = props;
   const [name, setName] = useState('');
   const [kindLabel, setKindLabel] = useState('');
+  // **上位領域の欄は「選ばれている値」を持つ**（増分 3 の手直し B2）。`defaultValue` だと
+  // 部品が載った瞬間の値しか効かない ―― 候補の絞り込みは形を確定した直後の 1 拍あとに
+  // 決まるので、既定が届いたときには欄はもう空のままだった（画面と実際の保存値が割れる）。
+  const [parentValue, setParentValue] = useState(defaultParentId ?? '');
+  const lastDefaultRef = useRef(defaultParentId);
+  if (lastDefaultRef.current !== defaultParentId) {
+    // 既定が変わったら（＝絞り込みが決まったら）欄も追従する。利用者が自分で選び直した
+    // あとは既定が変わらない限り触らない。
+    lastDefaultRef.current = defaultParentId;
+    setParentValue(defaultParentId ?? '');
+  }
 
   const submit = (): void => {
     // 年代は「いま見ている年」を継ぐ（G-8）。開始と終了に同じ年を入れるのは、
@@ -128,10 +139,11 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
           {ADD_STRINGS.fieldParent}
           <select
             data-testid="add-parent"
-            onChange={(e) =>
-              onChooseParent(e.target.value === '' ? null : (e.target.value as FeatureId))
-            }
-            defaultValue={defaultParentId ?? ''}
+            value={parentValue}
+            onChange={(e) => {
+              setParentValue(e.target.value);
+              onChooseParent(e.target.value === '' ? null : (e.target.value as FeatureId));
+            }}
           >
             <option value="">{ADD_STRINGS.parentNone}</option>
             {parentCandidates.map((c) => (
