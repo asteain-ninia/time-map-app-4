@@ -1,13 +1,21 @@
-// U23 — the post-shape property-input form (FR-76 / FR-97 / FR-77).
+// U23 — 追加を確定したあとの「新規の姿」の素性欄（FR-76 / FR-97 / FR-77、
+// 設計書 §C.2 の 27、N-15 / G-8）。
 //
-// Shown after the shape is confirmed (phase PropertyForm). Captures the new
-// feature's basic attributes + color (FR-97) and, for a face, the parent
-// selection (FR-77 親なし / 親面). Its SAVE button is the property-form完了
-// trigger the spec requires to be wired (教訓 5.7): it calls back with the
-// assembled {@link AddProperties}, which the controller hands to the hook's
-// `save` → U13. All text is Japanese (NFR 5.7); the strings live in strings.ts.
+// **置き場所が変わった（増分 3）**。以前は地図の真ん中に浮くフォームで、**いま描いた形を
+// 覆っていた**（実測 rect 375,259,431×134 ＝ N-15）。いまは右パネルの素性欄の位置に出す。
+// 地図を覆わないので、名前を入れながら形を確かめられる。差し込みは
+// {@link AddDraftStore}（道具 → 素性欄の細い口）を通す。
+//
+// **聞くものが増えた（G-8 / R5）**。以前は名前だけを聞き、年代は `DEFAULT_START_YEAR = 0`
+// の固定だった。5080 年で追加しても「開始年 0 / 終了年 0」になるので、**毎回あとから
+// プロパティ欄で打ち直す後始末**が要り、実測でタスク全体の 44%（17.2 秒）を占めていた。
+// いまは **いま見ている年をそのまま継ぐ**（画面にも出す）。**種別ラベルの欄**も足した
+// （R5。実データ 775 件は全件に種別ラベルが入っているのに、追加では付けられなかった）。
+//
+// 保存ボタンは `data-testid="add-save"` のまま **素性欄の保存ボタン**になる（T-1 の
+// 付け替え 2 件のうちの 1 件。役割「追加した地物の値を確定する」は変わらない）。
 
-import { useState } from 'react';
+import { useState, useSyncExternalStore, type ReactNode } from 'react';
 
 import {
   createBasicAttributes,
@@ -17,9 +25,10 @@ import {
   type BasicAttributes,
   type ColorInfo,
 } from '../../domain/attributes';
-import type { AddProperties, ParentCandidate } from '../../domain/add/index';
+import { ADD_TOOL_KIND, type AddProperties, type ParentCandidate } from '../../domain/add/index';
 import type { FeatureId } from '../../domain/ids';
 
+import type { AddDraftPrompt, AddDraftStore } from './add-draft-store';
 import { ADD_STRINGS } from './strings';
 
 // A sensible default color for a freshly-added feature (FR-97 auto-color on). HB3-13:
@@ -30,14 +39,17 @@ const DEFAULT_COLOR: ColorInfo = withFillOpacity(
   createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
   DEFAULT_NEW_FEATURE_FILL_OPACITY,
 );
-const DEFAULT_START_YEAR = 0;
-const DEFAULT_END_YEAR = 0;
 
 export interface AddPropertyFormProps {
   /** Show the parent selector (face only; FR-77). */
   readonly showParent: boolean;
   /** The eligible face parents at the current time (FR-77). */
   readonly parentCandidates: readonly ParentCandidate[];
+  /**
+   * 年代の既定に使う「いま見ている年」（G-8）。開始年・終了年ともこの年から始める。
+   * 固定の 0 年を入れない ―― 入れると必ず後始末が要る。
+   */
+  readonly currentYear: number;
   /** Choose a parent (null = 親なし / 最上位, FR-39). */
   readonly onChooseParent: (featureId: FeatureId | null) => void;
   /** SAVE — the property-form完了 trigger (教訓 5.7). */
@@ -47,16 +59,20 @@ export interface AddPropertyFormProps {
 }
 
 export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
-  const { showParent, parentCandidates, onChooseParent, onSave, onCancel } = props;
+  const { showParent, parentCandidates, currentYear, onChooseParent, onSave, onCancel } = props;
   const [name, setName] = useState('');
+  const [kindLabel, setKindLabel] = useState('');
 
   const submit = (): void => {
-    const attributes: BasicAttributes = createBasicAttributes(
-      name,
-      DEFAULT_START_YEAR,
-      DEFAULT_END_YEAR,
-    );
-    const properties: AddProperties = { attributes, color: DEFAULT_COLOR };
+    // 年代は「いま見ている年」を継ぐ（G-8）。開始と終了に同じ年を入れるのは、
+    // これまで 0 / 0 を入れていたのと同じ形（飾りの 2 欄。実際の存続は錨が決める）で、
+    // 変えたのは **値の出どころ**だけである。
+    const attributes: BasicAttributes = createBasicAttributes(name, currentYear, currentYear);
+    const trimmedKind = kindLabel.trim();
+    const properties: AddProperties =
+      trimmedKind === ''
+        ? { attributes, color: DEFAULT_COLOR }
+        : { attributes, color: DEFAULT_COLOR, kindLabel: trimmedKind };
     onSave(properties);
   };
 
@@ -69,7 +85,7 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
         submit();
       }}
     >
-      <h2>{ADD_STRINGS.formTitle}</h2>
+      <h2 className="add-property-form__title">{ADD_STRINGS.formTitle}</h2>
 
       <label className="add-property-form__field">
         {ADD_STRINGS.fieldName}
@@ -79,6 +95,18 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoFocus
+        />
+      </label>
+
+      {/* R5: 種別ラベル。実データは全 775 件が値を持っているのに、追加では付けられなかった。 */}
+      <label className="add-property-form__field">
+        {ADD_STRINGS.fieldKindLabel}
+        <input
+          type="text"
+          data-testid="add-kind-label"
+          value={kindLabel}
+          onChange={(e) => setKindLabel(e.target.value)}
+          placeholder={ADD_STRINGS.fieldKindLabelHint}
         />
       </label>
 
@@ -102,6 +130,12 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
         </label>
       )}
 
+      {/* G-8: 年代は「いま見ている年」を継ぐ。何年に記録されるのかを押す前に見せる
+          （黙って 0 年に入れない）。飾りの 2 欄なので読み取り専用で出す（増分 2 の A7）。 */}
+      <p className="add-property-form__era" data-testid="add-era">
+        {ADD_STRINGS.eraFromCurrent(currentYear)}
+      </p>
+
       <div className="add-property-form__actions">
         {/* SAVE — property-form完了 trigger (教訓 5.7). Enter also submits. */}
         <button type="submit" data-testid="add-save">
@@ -113,4 +147,39 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
       </div>
     </form>
   );
+}
+
+/**
+ * 素性欄の位置に、入力待ちがあれば **新規の姿**を、無ければ `children`（普段の素性欄）を
+ * 出す（設計書 §C.2 の 27）。
+ *
+ * **購読するのはこの 1 ノードだけ**である。追加の下書きは 60Hz で動く入力から来るので、
+ * シェル全体を再レンダーさせない（技術方針 2.3。`OptionBar` と同じ考え方）。
+ */
+export function AddDraftForm(props: {
+  readonly store: AddDraftStore;
+  readonly children?: ReactNode;
+}): JSX.Element | null {
+  const prompt = useSyncExternalStore(
+    (onChange) => props.store.subscribe(onChange),
+    () => props.store.get(),
+    () => props.store.get(),
+  );
+  if (prompt === null) return <>{props.children ?? null}</>;
+  return <AddPropertyForm {...addPromptToFormProps(prompt)} />;
+}
+
+/**
+ * 素性欄の位置に「新規の姿」を出す口（設計書 §C.2 の 27）。入力待ちが無ければ `null` を
+ * 返すので、呼び出し側は「あれば新規の姿、無ければ普段の素性欄」を書ける。
+ */
+export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormProps {
+  return {
+    showParent: prompt.tool === ADD_TOOL_KIND.Face,
+    parentCandidates: prompt.parentCandidates,
+    currentYear: prompt.currentYear,
+    onChooseParent: prompt.onChooseParent,
+    onSave: prompt.onSave,
+    onCancel: prompt.onCancel,
+  };
 }

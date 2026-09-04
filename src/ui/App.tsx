@@ -20,6 +20,8 @@ import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
 import { EDIT_MODE, type ToolId } from './state/session';
+import { TOOL_ID } from './shell/tools';
+import { APP_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
 import {
@@ -81,6 +83,9 @@ import {
   type ParentCandidate,
 } from '../domain/add/index';
 import type { AddHostPorts } from './add/host-ports';
+import { AddDraftStore } from './add/add-draft-store';
+import { createAddSnapPorts } from './add/snap-ports';
+import type { Camera as RenderCameraInput, Viewport } from '../render';
 import {
   KnifeToolController,
   type KnifeDrawSink,
@@ -133,7 +138,12 @@ import {
 import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
-import { COMMAND_ID, COMMAND_REFUSAL, type CommandRefusal } from './shell/commands';
+import {
+  COMMAND_ID,
+  COMMAND_REFUSAL,
+  type CommandId,
+  type CommandRefusal,
+} from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
 import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
 import { runUnshare } from './live-unshare';
@@ -541,6 +551,13 @@ export function App(): JSX.Element {
   optionBarStoreRef.current ??= new OptionBarStore();
   const optionBarStore = optionBarStoreRef.current;
 
+  // 追加を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
+  // 道具は地図セルの覆いの中、素性欄はサイドバーの中に居て React の木の上では兄弟ですら
+  // ないので、細い pub/sub を 1 本渡す。ref に置く理由は上の 2 つと同じ。
+  const addDraftStoreRef = useRef<AddDraftStore | null>(null);
+  addDraftStoreRef.current ??= new AddDraftStore();
+  const addDraftStore = addDraftStoreRef.current;
+
   // 状態行の「直前の結果」枠（設計書 §H.5）。成功も失敗も映す唯一の常設の場所で、
   // **時間では消えない**（教訓 5.12 / K-7）。押し込む側はシェルの外に散らばるので、
   // cursorPositionStore と同じく ref に置いた React 外の pub/sub にする。
@@ -759,6 +776,16 @@ export function App(): JSX.Element {
   const screenToWorld: ScreenToWorld = useCallback(
     (clientX, clientY) =>
       rendererRef.current?.screenToWorld(clientX, clientY) ?? { lon: clientX, lat: clientY },
+    [],
+  );
+  /**
+   * いま描いているカメラと画面の大きさ（増分 3 の吸着が「画面上の距離」を測るのに要る）。
+   * 地図がまだ載っていなければ null ―― そのときは吸着そのものが成り立たない。
+   * **描画と同じ 1 本**（`ports.readCamera`）を読む（教訓 5.29）。
+   */
+  const readCamera = useCallback(
+    (): { readonly camera: RenderCameraInput; readonly viewport: Viewport } | null =>
+      rendererRef.current?.readCamera() ?? null,
     [],
   );
   const drawSink: AddDrawSink = useMemo(
@@ -1907,21 +1934,50 @@ export function App(): JSX.Element {
   // である。Ctrl+K で背後に錨が増えたり、Delete で対象そのものが消えたりしないようにする
   // （教訓 5.14: 重なる UI は入力を受ける層も同時に設計する）。
   const [draftConfirmOpen, setDraftConfirmOpen] = useState(false);
-  const shortcutsSuspended =
+  // 鍵盤を持っているのが「ダイアログ」なのか「道具」なのかを分けて数える（増分 3）。
+  // 止める理由が違えば、止めている間に通してよいものも違う。
+  const modalOwnsKeyboard =
     conflictState !== null ||
     helpModalOpen ||
     fileModalOpen ||
+    contextMenuOpen ||
+    draftConfirmOpen ||
+    // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
+    pendingDelete !== null;
+  const toolOwnsKeyboard =
     addDrawing ||
     knifeDrawing ||
     mergeDrawing ||
     reparentDrawing ||
     ringEditDrawing ||
     drillDrawing ||
-    surveyDrafting ||
-    contextMenuOpen ||
-    draftConfirmOpen ||
-    // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
-    pendingDelete !== null;
+    surveyDrafting;
+  const shortcutsSuspended = modalOwnsKeyboard || toolOwnsKeyboard;
+  /**
+   * **道具が鍵盤を持っている間でも保存だけは通す**（増分 3。増分 1 の申し送り
+   * 「追加モードで入力層が出ているあいだは Ctrl+S が届かない」）。
+   *
+   * 作図中の下書きはプロジェクトの一部ではないので、保存しても失われるものは無い。
+   * 逆に**ダイアログが持っているときは通さない** ―― 確認の背後で保存が走ると、
+   * 「何に対して答えたのか」が分からなくなる。
+   */
+  const alwaysAllowedShortcuts =
+    toolOwnsKeyboard && !modalOwnsKeyboard ? SAVE_WHILE_TOOL_OWNS_KEYBOARD : undefined;
+  /**
+   * **止めている間に押された打鍵の理由を出す**（増分 3。現状.md B28 の第 2 の理由 /
+   * 「打ちかけの確認中に Ctrl+K を押したとき、止まるだけでなく理由を出す」）。
+   *
+   * ダイアログが鍵盤を持っているときだけ渡す。道具が持っているときは Escape / Ctrl+Z が
+   * 道具側で**実際に効いている**ので、断り文を出すと嘘になる。Escape（選択解除）は
+   * ダイアログ自身が閉じる打鍵なので黙って通す。
+   */
+  const onSuspendedShortcut = useCallback(
+    (id: CommandId): void => {
+      if (id === COMMAND_ID.EditDeselect) return; // Escape はダイアログを閉じる打鍵。
+      statusMessageStore.failure(APP_STRINGS.shortcutBusy(MENU_ITEM_LABELS[id]));
+    },
+    [statusMessageStore],
+  );
   // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
   // every render, so the imperative port always sees the current value — 教訓 5.6).
   shortcutsSuspendedRef.current = shortcutsSuspended;
@@ -2447,6 +2503,8 @@ export function App(): JSX.Element {
         // A4 (c): 打ちかけの確認が出ているあいだ、大域ショートカットを止める。
         onDraftConfirmChange: setDraftConfirmOpen,
         onFocusFeatureCamera: focusCameraOnFeature,
+        // 増分 3 / N-15: 追加を確定したあとの素性入力を **素性欄の位置**に出す。
+        addDraft: addDraftStore,
       }),
     [
       store,
@@ -2457,8 +2515,35 @@ export function App(): JSX.Element {
       anchorIntervalDispatch,
       propertyDeleteFeature,
       focusCameraOnFeature,
+      addDraftStore,
     ],
   );
+
+  // 追加の確定で「新規の姿」が開いたら、**プロパティタブへ寄せる**（増分 3 / 設計書
+  // §C.2 の 27）。一覧タブを見ている人には出た瞬間が見えないので、既存の 1 本
+  // （`focusPropertyTab`。利用者がタブを押すのと同じ経路）を使って寄せる。
+  useEffect(() => {
+    let wasOpen = addDraftStore.get() !== null;
+    return addDraftStore.subscribe((prompt) => {
+      const open = prompt !== null;
+      if (open && !wasOpen) focusPropertyTab();
+      wasOpen = open;
+    });
+  }, [addDraftStore, focusPropertyTab]);
+
+  // 増分 3 の中身 9: `Shift+F` で面を描く道具を構える（設計書 §I.2）。**メニューにも
+  // 載せてある**（`menu.ts`）ので、結合点 #10「メニューに載っているのに実体が登録
+  // されていない」を作らない。読むだけのときは `EDITING_COMMANDS` の関門が止める。
+  useEffect(() => {
+    registry.register(COMMAND_ID.ToolsAddFace, {
+      run: () => {
+        const s = store.getState();
+        if (s.mode !== EDIT_MODE.Add) s.setMode(EDIT_MODE.Add);
+        store.getState().setActiveTool(TOOL_ID.AddArea);
+      },
+    });
+    return () => registry.unregister(COMMAND_ID.ToolsAddFace);
+  }, [registry, store]);
 
   return (
     // U41 INTEGRATION (FR-117, 受け入れ基準3): wrap the whole shell in the React
@@ -2480,6 +2565,8 @@ export function App(): JSX.Element {
         registry={registry}
         sidebar={sidebar}
         suspended={shortcutsSuspended}
+        alwaysAllowedShortcuts={alwaysAllowedShortcuts}
+        onSuspendedShortcut={modalOwnsKeyboard ? onSuspendedShortcut : undefined}
         onMapMount={onMapMount}
         /* 設計書 §C.4 のオプションバー。この増分では器と API だけで、中身は各道具が
            後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か台帳から地物を
@@ -2549,8 +2636,11 @@ export function App(): JSX.Element {
               ids={hostBootstrap.ids}
               nextRingId={hostBootstrap.nextRingId}
               screenToWorld={screenToWorld}
+              readCamera={readCamera}
               drawSink={drawSink}
               mapCameraInput={mapCameraInput}
+              optionBar={optionBarStore}
+              addDraft={addDraftStore}
               onCommitted={onAddCommitted}
               onConflicts={onAddConflicts}
               onDrawingChange={setAddDrawing}
@@ -2875,6 +2965,18 @@ export function App(): JSX.Element {
 /** A sensible default color for a non-inherited split feature (FR-97 auto-color on). */
 // HB3-13: a knife-split's non-inherited piece is a NEW feature, so it gets the same
 // translucent default fill (0.7) as a freshly-added feature (単一真実源の既定値).
+/**
+ * 道具が鍵盤を持っている間でも通すコマンド（増分 3）。**保存だけ**である。
+ * 作図中の下書きはプロジェクトの一部ではないので、保存しても失われるものは無い。
+ * 取り消し（Ctrl+Z）と Escape はここに入れない ―― 作図中はその 2 つを **道具自身が
+ * 自分のリスナーで受けている**（頂点 1 つ戻す / 下書きを捨てる）ので、大域の側でも
+ * 走らせると 1 回の打鍵で 2 つ起きる（bughunt3 H2 の二重 undo）。
+ */
+const SAVE_WHILE_TOOL_OWNS_KEYBOARD: ReadonlySet<CommandId> = new Set<CommandId>([
+  COMMAND_ID.FileSave,
+  COMMAND_ID.FileSaveAs,
+]);
+
 const KNIFE_DEFAULT_COLOR = withFillOpacity(
   createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1'),
   DEFAULT_NEW_FEATURE_FILL_OPACITY,
@@ -2898,7 +3000,15 @@ const NO_ASSET_RESOLVER: AssetResolver = { resolveAsset: () => null };
  * and no hierarchy (=集約表示) could ever be built through the live UI.
  */
 function AddToolControllerWithParents(
-  props: Omit<AddToolControllerProps<DomainRoot>, 'parentCandidates'>,
+  props: Omit<
+    AddToolControllerProps<DomainRoot>,
+    'parentCandidates' | 'resolveProximity' | 'isInsideTerminal' | 'terminalNameAt' | 'featureNameOf'
+  > & {
+    readonly readCamera: () => {
+      readonly camera: RenderCameraInput;
+      readonly viewport: Viewport;
+    } | null;
+  },
 ): JSX.Element {
   const domain = useStore(props.store, (s) => s.domain);
   const currentTime = useStore(props.store, (s) => s.currentTime);
@@ -2910,7 +3020,45 @@ function AddToolControllerWithParents(
     const presentIds = new Set(present.filter(isFaceFeature).map((f) => f.id));
     return buildParentCandidates(present, (id) => presentIds.has(id));
   }, [domain, currentTime]);
-  return <AddToolController<DomainRoot> {...props} parentCandidates={candidates} />;
+
+  // C1 の配線（増分 3）: 吸着と FR-29 の関門の供給元。**ここが「実装コードに 1 つも
+  // 無い」と現状分析が書いた口である。** 中身は既にある当たり判定 2 本を呼ぶだけで、
+  // 新しい判定は書かない（`ui/add/snap-ports.ts`）。
+  //
+  // 世界はポートの中で **呼ばれるたびに読み直す**（`store.getState()`）。React の
+  // 依存で作り直す形にすると、下書き中に時刻や表示条件が変わったときに古い写しへ
+  // 吸着し続ける（教訓 5.3 / 5.5）。ポート自身は store 参照だけに依存するので同一性が
+  // 安定し、`useAddTool` の useCallback が毎レンダー作り直されることもない。
+  const { store } = props;
+  const readCamera = props.readCamera;
+  const snapPorts = useMemo(
+    () =>
+      createAddSnapPorts({
+        readContext: () => {
+          const s = store.getState();
+          return {
+            root: s.domain as DomainProject,
+            time: s.currentTime,
+            displayControl: s.displayControl,
+            filter: s.filter,
+            snap: s.snapSettings,
+          };
+        },
+        readCamera,
+      }),
+    [store, readCamera],
+  );
+
+  return (
+    <AddToolController<DomainRoot>
+      {...props}
+      parentCandidates={candidates}
+      resolveProximity={snapPorts.resolveProximity}
+      isInsideTerminal={snapPorts.isInsideTerminal}
+      terminalNameAt={snapPorts.terminalNameAt}
+      featureNameOf={snapPorts.featureNameOf}
+    />
+  );
 }
 
 /**

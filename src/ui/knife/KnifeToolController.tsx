@@ -439,6 +439,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     <KnifeToolChrome
       knife={knife}
       defaultColor={defaultColor}
+      currentYear={anchorTime().year}
       onMapPointerDown={onMapPointerDown}
       onMapWheel={onMapWheel}
       onMapCameraPointerDown={onMapCameraPointerDown}
@@ -454,6 +455,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 interface KnifeToolChromeProps<S> {
   readonly knife: ReturnType<typeof useKnifeTool<S>>;
   readonly defaultColor: ColorInfo;
+  /** 新しい地物の年代の既定に使う「いま見ている年」（G-8。0 年固定をやめた）。 */
+  readonly currentYear: number;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
   readonly onMapWheel: (e: {
@@ -548,7 +551,7 @@ function KnifeInputBridge(props: {
 }
 
 function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null {
-  const { knife, defaultColor } = props;
+  const { knife, defaultColor, currentYear } = props;
 
   if (knife.flow === KNIFE_FLOW.Idle) return null;
 
@@ -641,6 +644,7 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
       {entering && (
         <NonInheritedForm
           defaultColor={defaultColor}
+          currentYear={currentYear}
           onSave={(attributes, color) => knife.save({ attributes, color })}
           onCancel={() => knife.cancel()}
         />
@@ -675,16 +679,18 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
 
 function NonInheritedForm(props: {
   readonly defaultColor: ColorInfo;
+  readonly currentYear: number;
   readonly onSave: (attributes: BasicAttributes, color: ColorInfo) => void;
   readonly onCancel: () => void;
 }): JSX.Element {
-  const { onSave, onCancel } = props;
+  const { onSave, onCancel, currentYear } = props;
   return (
     <div className="knife-tool__props" data-testid="knife-props">
       <h3>{KNIFE_STRINGS.newFeatureProps}</h3>
       <AddPropertyForm
         showParent={false}
         parentCandidates={[]}
+        currentYear={currentYear}
         onChooseParent={() => {
           /* parent is inherited from the original by the domain assembler (FR-44) */
         }}

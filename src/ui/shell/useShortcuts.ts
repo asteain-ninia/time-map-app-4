@@ -17,7 +17,7 @@
 
 import { useEffect } from 'react';
 
-import type { CommandRegistry } from './commands';
+import type { CommandId, CommandRegistry } from './commands';
 import type { EditMode } from '../state/session';
 import { editableTargetFromEvent, isEditableTarget } from './focus-guard';
 import {
@@ -34,20 +34,73 @@ export interface UseShortcutsOptions {
   readonly mode: EditMode;
   /** When true, no shortcut is dispatched (e.g. a modal owns the keyboard). */
   readonly suspended?: boolean;
+  /**
+   * **止めている間でも通すコマンド**（増分 3。増分 1 の申し送り「追加モードで入力層が
+   * 出ているあいだは Ctrl+S が届かない」への答え）。
+   *
+   * 道具が鍵盤を持つ設計（作図中の Ctrl+Z は打った頂点を 1 つ戻す＝二重 undo を避けるため
+   * 大域の割り振りごと降ろす）は正しいが、**保存は道具に関係なく効いてほしい**。作図中の
+   * 下書きはプロジェクトの一部ではないので、保存しても失われるものは何も無い。
+   *
+   * **止めている理由を知っているのは呼び出し側だけ**なので、通す集合も呼び出し側が決める
+   * （道具が持っているときだけ渡し、ダイアログが持っているときは渡さない）。既定は空 ＝
+   * 従来どおり「止めている間は 1 つも通さない」。
+   */
+  readonly alwaysAllowed?: ReadonlySet<CommandId>;
+  /**
+   * **止めている間に「効かなかった」ことを伝える口**（増分 3。現状.md B28 の第 2 の理由）。
+   *
+   * 止めているあいだ、割り当てのある打鍵は押しても何も起きず **理由も出ない**。増分 2 の
+   * 手直しでコマンドに「断った理由を出す口」を足したが、リスナーごと降りている経路は
+   * そこへ到達しない（どのコマンドが呼ばれたのかを知る手がかりが無い）。ここで打鍵を
+   * 解いてから **実行せずに** 呼び出し側へ渡すと、状態行に理由を出せる。
+   *
+   * **渡してよいのは「ダイアログが鍵盤を持っているとき」だけ**である。道具が持っている
+   * ときは Escape / Ctrl+Z を道具自身が受けて**ちゃんと効いている**ので、断り文を出すと
+   * 嘘になる。
+   */
+  readonly onSuspendedRefusal?: (id: CommandId) => void;
 }
 
 export function useShortcuts(options: UseShortcutsOptions): void {
   const { keymap, registry, mode, suspended = false } = options;
+  const alwaysAllowed = options.alwaysAllowed;
+  const onSuspendedRefusal = options.onSuspendedRefusal;
 
   useEffect(() => {
-    if (suspended) return;
+    // 止めている間に何もすることが無いなら、従来どおりリスナーごと降りる（余計な
+    // keydown を一切増やさない）。
+    if (
+      suspended &&
+      (alwaysAllowed === undefined || alwaysAllowed.size === 0) &&
+      onSuspendedRefusal === undefined
+    ) {
+      return;
+    }
 
     const onKeyDown = (e: KeyboardEvent): void => {
       // Focus guard: a text-editing element owns the keyboard — let the native
       // edit keys through, dispatching NOTHING and preventing NOTHING (#1/#4).
       if (isEditableTarget(editableTargetFromEvent(e))) return;
 
-      const result = dispatchChord(keyChordFromEvent(e), keymap, registry, mode);
+      const chord = keyChordFromEvent(e);
+      if (suspended) {
+        // 止めている間は「通す集合」だけを見る。**それ以外は preventDefault もしない**
+        // ので、道具が自分で登録した Escape / Ctrl+Z のリスナーはこれまでどおり届く
+        // （ここで飲み込むと、道具の頂点取り消しが黙って死ぬ）。
+        const id = keymap.resolve(chord);
+        if (id === undefined) return;
+        if (alwaysAllowed?.has(id) === true) {
+          const allowedResult = dispatchChord(chord, keymap, registry, mode);
+          if (allowedResult !== DISPATCH_RESULT.Unbound) e.preventDefault();
+          return;
+        }
+        // 実行はしない。**理由だけ**を呼び出し側へ渡す（preventDefault もしない）。
+        onSuspendedRefusal?.(id);
+        return;
+      }
+
+      const result = dispatchChord(chord, keymap, registry, mode);
       // A bound chord is consumed whether it ran or was a disabled editing
       // shortcut — in view-only mode the keyboard edit path is closed, not
       // leaked (教訓 5.13). Unbound chords pass through.
@@ -60,5 +113,5 @@ export function useShortcuts(options: UseShortcutsOptions): void {
     return () => {
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [keymap, registry, mode, suspended]);
+  }, [keymap, registry, mode, suspended, alwaysAllowed, onSuspendedRefusal]);
 }

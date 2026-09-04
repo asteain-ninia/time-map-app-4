@@ -365,6 +365,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
       {entering && (
         <NewFeatureForm
           defaultColor={defaultColor}
+          currentYear={anchorTime().year}
           onSave={(attributes, color) => drill.save({ attributes, color })}
           onCancel={() => drill.cancel()}
         />
@@ -475,16 +476,18 @@ function DrillInputBridge(props: {
 
 function NewFeatureForm(props: {
   readonly defaultColor: ColorInfo;
+  readonly currentYear: number;
   readonly onSave: (attributes: BasicAttributes, color: ColorInfo) => void;
   readonly onCancel: () => void;
 }): JSX.Element {
-  const { onSave, onCancel } = props;
+  const { onSave, onCancel, currentYear } = props;
   return (
     <div className="drill-tool__props" data-testid="drill-props">
       <h3>{DRILL_STRINGS.newFeatureProps}</h3>
       <AddPropertyForm
         showParent={false}
         parentCandidates={[]}
+        currentYear={currentYear}
         onChooseParent={() => {
           /* parent is inherited from the original末端 by the domain assembler (FR-45) */
         }}

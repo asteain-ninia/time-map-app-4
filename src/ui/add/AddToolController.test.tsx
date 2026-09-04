@@ -45,6 +45,11 @@ import { EDIT_MODE } from '../state/session';
 import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 
+import { OptionBar } from '../shell/OptionBar';
+import { OptionBarStore } from '../shell/option-bar';
+
+import { AddDraftForm } from './AddPropertyForm';
+import { AddDraftStore } from './add-draft-store';
 import { AddToolController, type AddDrawSink, type ScreenToWorld } from './AddToolController';
 
 type S = { tag: string };
@@ -119,9 +124,16 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
   let v = 0;
   let r = 0;
 
+  // 増分 3: 道具の帯（確定・やめる・1 つ戻す・吸着 ▾）は **オプションバー**へ、確定後の
+  // 素性入力は **素性欄の位置**へ移った。実アプリと同じ器を用意して結線ごと検査する。
+  const optionBar = new OptionBarStore();
+  const addDraft = new AddDraftStore();
+
   render(
     <AppShell
       store={store}
+      optionBar={<OptionBar store={optionBar} />}
+      sidebar={{ propertiesContent: <AddDraftForm store={addDraft} /> }}
       overlay={
         <AddToolController<S>
           store={store}
@@ -133,6 +145,8 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
           nextRingId={() => asRingId(`r${++r}`)}
           screenToWorld={screenToWorld}
           drawSink={drawSink}
+          optionBar={optionBar}
+          addDraft={addDraft}
           onCommitted={hostCommit(store)}
         />
       }
@@ -469,5 +483,94 @@ describe('U23 バグハント第11波 (#3/#6): focus guard on the drawing keydow
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
     button.remove();
+  });
+});
+
+// --- 増分 3: オプションバーへの押し込みと「新規の姿」-------------------------
+
+describe('U23 integration: 道具の帯（設計書 §C.4 / 増分 3）', () => {
+  it('道具を構えると、道具名・対象・次の一手・確定が帯に出る', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    expect(screen.getByTestId('option-bar-tool')).toHaveTextContent('面を描く');
+    expect(screen.getByTestId('option-bar-target')).toHaveTextContent('頂点 0 個（未確定）');
+    expect(screen.getByTestId('option-bar-next-step')).toHaveTextContent('地図をクリック');
+    expect(screen.getByTestId('add-complete')).toBeInTheDocument();
+    expect(screen.getByTestId('add-cancel')).toBeInTheDocument();
+  });
+
+  it('頂点を打つと対象欄の数が増える（帯の中身が道具の状況を映す）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    expect(screen.getByTestId('option-bar-target')).toHaveTextContent('頂点 2 個（未確定）');
+  });
+
+  it('設定欄に「吸着 ▾」が差し込まれ、辺・交点は押せない形で理由が出る（§N-6 裁定待ち）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    expect(screen.getByTestId('option-snap-button')).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByTestId('option-snap-button')));
+    expect(screen.getByTestId('snap-vertex')).toBeEnabled();
+    expect(screen.getByTestId('snap-edge')).toBeDisabled();
+    expect(screen.getByTestId('snap-intersection')).toBeDisabled();
+    expect(screen.getByTestId('option-snap-panel')).toHaveTextContent('まだ使えません');
+  });
+
+  it('許容 px を変えるとセッションの設定が変わる（保存ファイルは汚さない）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    act(() => fireEvent.click(screen.getByTestId('option-snap-button')));
+    act(() => fireEvent.change(screen.getByTestId('snap-tolerance'), { target: { value: '20' } }));
+    expect(h.store.getState().snapSettings.tolerancePx).toBe(20);
+    expect(h.store.getState().projectDirty).toBe(false);
+  });
+
+  it('道具を降りると帯が空へ戻る（教訓 5.2: 一時状態は全経路で破棄）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    expect(screen.getByTestId('option-bar-tool')).toHaveTextContent('面を描く');
+    selectTool('tool-add.area'); // トグルなので外れる
+    expect(screen.getByTestId('option-bar-tool')).not.toHaveTextContent('面を描く');
+    expect(screen.queryByTestId('add-complete')).toBeNull();
+  });
+
+  it('確定すると「新規の姿」が素性欄の位置に出る（N-15: 地図の上には出ない）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    const form = screen.getByTestId('add-property-form');
+    expect(form).toBeInTheDocument();
+    // 地図セルの覆い（app-shell-overlay）の中には無い ＝ いま描いた形を覆わない。
+    expect(screen.getByTestId('app-shell-overlay').contains(form)).toBe(false);
+    // G-8: 年代は「いま見ている年」を継ぐ（現在時刻は 1500 年）。
+    expect(screen.getByTestId('add-era')).toHaveTextContent('1500年');
+    // R5: 種別ラベルの欄がある。
+    expect(screen.getByTestId('add-kind-label')).toBeInTheDocument();
+  });
+
+  it('種別ラベルを入れると提案に載る（R5）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.change(screen.getByTestId('add-kind-label'), { target: { value: '国' } }));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    expect(h.proposals[0]?.snapshot.feature.kindLabel).toBe('国');
+  });
+
+  it('年代は現在時刻の年を継ぐ（G-8: 0 年固定をやめた）', () => {
+    const h = mountApp();
+    selectTool('tool-add.point');
+    clickMap(1, 1);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    expect(h.proposals[0]?.snapshot.feature.attributes.startYear).toBe(1500);
   });
 });

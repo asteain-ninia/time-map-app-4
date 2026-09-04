@@ -78,7 +78,7 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
             key={button.id}
             type="button"
             className="option-bar__commit-button"
-            data-testid={`option-bar-commit-${button.id}`}
+            data-testid={button.testId ?? `option-bar-commit-${button.id}`}
             disabled={button.disabled ?? false}
             onClick={button.onClick}
           >

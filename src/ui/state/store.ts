@@ -92,10 +92,13 @@ import {
   type DisplayControl,
   type DisplayFocus,
   type EditMode,
+  type SnapSettings,
   type ToolId,
   type VertexSelectionContext,
+  clampSnapTolerancePx,
   DEFAULT_CAMERA,
   DEFAULT_DISPLAY_CONTROL,
+  DEFAULT_SNAP_SETTINGS,
   EDIT_MODE,
   NO_DISPLAY_FOCUS,
   vertexSelectionContextOf,
@@ -184,6 +187,26 @@ export interface SessionStoreState<S> {
    * 「セッション限りの見え方」）。
    */
   readonly gridVisibleOverride: boolean | null;
+
+  /**
+   * 作図中の吸着の設定（増分 3 / 設計書 §C.4 の「吸着 ▾」／§N-6）。
+   *
+   * **`appSettings.snapDistancePx`（FR-31 の 50px）とは別に持つ。** 理由は 2 つある。
+   *
+   *  1. **効く場面が違う**（教訓 5.30 過剰共有の戒め）。`snapDistancePx` が効くのは
+   *     「既にある頂点を掴んで引きずり、離した場所で共有にする」＝ 利用者が意図して
+   *     狙いを定める操作である。こちらが効くのは「新しい形を描くクリック 1 回ごと」で、
+   *     狙っていない場所まで巻き込まれる。実データで測ると、50px は地図の 52〜73% を
+   *     吸着で覆う（`scripts/measure-snap-tolerance.ts`）ので、同じ値では使えない。
+   *  2. **FR-31 の 50px をどうするかは裁定待ち**（設計書 §N-6）。`snapDistancePx` は
+   *     `.gimoza` に保存される値なので、裁定の前に既定を書き換えると既存ファイルの
+   *     意味が静かに変わる。
+   *
+   * **保存ファイルには書かない・未保存の印も立てない**（`gridVisibleOverride` と同じ
+   * 「セッション限りの見え方」。教訓 5.36）。設定ダイアログへ載せて永続化するかは
+   * 増分 8D（設定）で決める。
+   */
+  readonly snapSettings: SnapSettings;
 
   // -- time (FR-64 / FR-66 / FR-70) ------------------------------------------
   readonly currentTime: TimePoint;
@@ -426,6 +449,11 @@ export interface SessionStoreActions<S> {
    * 保存ファイルには書かず、未保存の印も立てない（{@link SessionState.gridVisibleOverride}）。
    */
   setGridVisibleOverride(next: boolean | null): void;
+  /**
+   * 作図中の吸着の設定を部分更新する（増分 3 / 設計書 §C.4）。
+   * **`projectDirty` を立てない・保存ファイルに書かない**（{@link SessionState.snapSettings}）。
+   */
+  setSnapSettings(patch: Partial<SnapSettings>): void;
   /**
    * Write BOTH timeline-range bounds (timelineMinYear + timelineMaxYear) in ONE
    * transition (finding bughunt2). The per-key {@link updateProjectSetting} derives
@@ -1091,6 +1119,7 @@ export function createSessionStore<S>(
     activeTool: init.activeTool ?? null,
     // 起動直後は上書きなし（＝プロジェクト設定に従う）。
     gridVisibleOverride: null,
+    snapSettings: DEFAULT_SNAP_SETTINGS,
     currentTime: init.currentTime ?? DEFAULT_TIMELINE_MIN,
     lastTimeChangeSource: null,
     timelineMin: DEFAULT_TIMELINE_MIN,
@@ -1707,6 +1736,31 @@ export function createSessionStore<S>(
     setGridVisibleOverride(next) {
       if (get().gridVisibleOverride === next) return;
       set({ gridVisibleOverride: next });
+    },
+
+    /**
+     * 作図中の吸着の設定（増分 3）。**`projectDirty` を立てない・保存ファイルに書かない。**
+     * 許容値は {@link clampSnapTolerancePx} で必ず使える範囲へ収める（0 や NaN が入ると
+     * 「吸着が黙って死ぬ」形で現れ、原因が吸着の実装に見える）。
+     */
+    setSnapSettings(patch) {
+      const current = get().snapSettings;
+      const next: SnapSettings = {
+        enabled: patch.enabled ?? current.enabled,
+        vertex: patch.vertex ?? current.vertex,
+        tolerancePx:
+          patch.tolerancePx === undefined
+            ? current.tolerancePx
+            : clampSnapTolerancePx(patch.tolerancePx),
+      };
+      if (
+        next.enabled === current.enabled &&
+        next.vertex === current.vertex &&
+        next.tolerancePx === current.tolerancePx
+      ) {
+        return;
+      }
+      set({ snapSettings: next });
     },
 
     // -- settings (classify -> save context -> notify, 教訓 5.35 / 5.36) ----

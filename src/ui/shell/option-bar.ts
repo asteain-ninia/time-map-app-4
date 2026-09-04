@@ -22,8 +22,17 @@ import type { ReactNode } from 'react';
 
 /** 確定欄（176px）に並ぶボタン 1 個。中身は道具が決める。 */
 export interface OptionBarCommitButton {
-  /** 道具の中で一意な識別子（React の key と `data-testid` の末尾になる）。 */
+  /** 道具の中で一意な識別子（React の key と、既定の `data-testid` の末尾になる）。 */
   readonly id: string;
+  /**
+   * `data-testid` をそのまま指定する（既定は `option-bar-commit-<id>`）。
+   *
+   * **役割が同じ testid を持ち越すための口である**（T-1「`data-testid` は役割で維持し、
+   * 改名しない」）。追加の道具の確定ボタンは地図の上からこの帯へ引っ越したが、役割は
+   * 「作図を確定する」のままなので `add-complete` を持ち越す。**新しい道具は指定せず、
+   * 既定の名前を使うこと**（testid を無闇に増やさない）。
+   */
+  readonly testId?: string;
   /** 画面に出る日本語のラベル（U-8: 見えるラベルを付ける。FR-115）。 */
   readonly label: string;
   readonly onClick: () => void;
@@ -86,6 +95,7 @@ function commitEqual(
     const y = b[i]!;
     if (
       x.id !== y.id ||
+      x.testId !== y.testId ||
       x.label !== y.label ||
       x.onClick !== y.onClick ||
       (x.disabled ?? false) !== (y.disabled ?? false)
@@ -104,6 +114,23 @@ function commitEqual(
 export class OptionBarStore {
   private state: OptionBarState = EMPTY_STATE;
   private readonly listeners = new Set<OptionBarListener>();
+
+  /**
+   * いま帯を持っている道具の印（{@link claim}）。増分 1 の申し送り
+   * 「`reset()` を誰がいつ呼ぶかが未定。呼ぶ責任の所在を決めずに道具側から押し込み始めると、
+   * 道具をまたいで古い中身が残る」への答えである。
+   *
+   * **決めた規則は 3 行**:
+   *   1. 帯は **1 つの道具だけが持つ**。持ったらその瞬間に中身は空へ戻る。
+   *   2. 手放しは **自分が持っているときだけ**効く（あとから別の道具が持っていたら空振り）。
+   *   3. 押し込み（4 本の API）は持ち主かどうかを見ない ―― 見ると「持っていないのに
+   *      押し込んだ」が黙って消えて原因を追えなくなる。押し込む側が持つ、が規約である。
+   *
+   * 2 の理由は {@link registerOptionSlot} の印と同じ（React の effect は「後片付け →
+   * 再実行」の順に走るとは限らないので、遅れて走った古い後片付けが生きている登録を
+   * 消してしまう）。
+   */
+  private owner: unknown = null;
 
   /**
    * 設定欄の「いま載っている登録」の印。id ごとに **登録 1 回につき 1 個の Symbol** を
@@ -200,6 +227,30 @@ export class OptionBarStore {
     next.push({ id, node });
     this.replace({ slots: next });
     return unregister;
+  }
+
+  /**
+   * 帯を「持つ」。道具が構えられたときに 1 回呼ぶ。**持った瞬間に中身は空へ戻る**ので、
+   * 前の道具が残した道具名・対象・次の一手が持ち越されることはない（教訓 5.2）。
+   *
+   * 戻り値は手放す関数で、**自分がまだ持っているときだけ**空へ戻す。道具の effect の
+   * 後片付けにそのまま置ける。
+   *
+   * @param owner 呼び出しごとに別物になる印（`Symbol()` など）を渡す。
+   */
+  claim(owner: object): () => void {
+    this.owner = owner;
+    this.reset();
+    return () => {
+      if (this.owner !== owner) return; // 既に別の道具が持っている ⇒ 何もしない。
+      this.owner = null;
+      this.reset();
+    };
+  }
+
+  /** いま誰かが帯を持っているか（検査用。描画には使わない）。 */
+  hasOwner(): boolean {
+    return this.owner !== null;
   }
 
   /** 道具を降りるときの一括クリア（教訓 5.2: 一時的 UI 状態は全経路で破棄する）。 */

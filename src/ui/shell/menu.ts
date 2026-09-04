@@ -138,6 +138,11 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
     key: MENU_KEY.Tools,
     title: MENU_TITLES.tools,
     items: [
+      // 増分 3 の中身 9: 面を描く道具を鍵盤から構える（設計書 §I.2）。
+      // **`F` は「選んでいるものに視点を合わせる」なので `Shift+F`**。
+      // メニューと keymap の両方へ届くよう、ここ 1 か所で宣言する（結合点 #10:
+      // 「メニューには載っているのに実体が登録されていない」を作らない）。
+      item(COMMAND_ID.ToolsAddFace, { key: 'f', shift: true }),
       item(COMMAND_ID.ToolsSettings),
       // U41 (FR-113): feature search, registered through the same基盤 (教訓 5.30).
       item(COMMAND_ID.ToolsSearch, { key: 'f', ctrlOrMeta: true }),

@@ -51,6 +51,10 @@ const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   // 「この年に錨を作る」は保存形式を書き換えるので、読むだけでは押せない
   // （増分 1 の関門を、増分 2 で増えた編集経路にも必ず通す）。
   COMMAND_ID.EditCreateAnchorHere,
+  // 「面を描く」道具を構えるのは編集経路そのもの（構えた先で地物が増える）。
+  // 読むだけでは押せない（K-6。増分 1 で塞いだ 10 経路と同じ関門を、増分 3 で
+  // 増えた鍵盤の経路にも必ず通す）。
+  COMMAND_ID.ToolsAddFace,
 ]);
 
 /** True if the command is an editing command gated by the permission axis. */

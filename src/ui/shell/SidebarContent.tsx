@@ -44,6 +44,8 @@ import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt, verticesAt } from '../live-lookup';
+import { AddDraftForm } from '../add/AddPropertyForm';
+import type { AddDraftStore } from '../add/add-draft-store';
 import { formatTimePoint } from '../timeline/time-display';
 import { DisplayFilterPanel } from '../discovery/DisplayFilterPanel';
 import { FILTER_STRINGS } from '../discovery/index';
@@ -185,6 +187,13 @@ export interface SidebarContentDeps<S> {
    * through the live-selection-port, never here, so a map click never fits the view.
    */
   readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
+  /**
+   * 追加の道具が「形を確定したので素性を入れてほしい」と言ってくる口（増分 3 /
+   * N-15 / 設計書 §C.2 の 27）。入力待ちのあいだ、素性欄の位置には**新規の姿**が出る。
+   *
+   * これが無い（テストなど）ときは従来どおり素性欄だけを出す。
+   */
+  readonly addDraft?: AddDraftStore;
 }
 
 /**
@@ -206,6 +215,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     onCreateAnchorHere,
     onDraftConfirmChange,
     onFocusFeatureCamera,
+    addDraft,
   } = deps;
 
   const dispatch: EditDispatch = editDispatch ?? {
@@ -240,7 +250,11 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         <DisplayFilterPanel<S> store={store} />
       </>
     ),
-    propertiesContent: (
+    // 素性欄の位置は 2 つの姿を持つ（設計書 §C.2 の 27）。
+    //  - ふだん … 選んでいる地物の素性欄
+    //  - 追加を確定した直後 … **新規の姿**（名前・種別ラベル・親・年代）
+    // 地図の真ん中に浮くフォームをやめたので、**いま描いた形を覆わない**（N-15）。
+    propertiesContent: addDraft === undefined ? (
       <PropertyPanelHost<S>
         store={store}
         getRoot={getRoot}
@@ -256,6 +270,24 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
         {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
       />
+    ) : (
+      <AddDraftForm store={addDraft}>
+        <PropertyPanelHost<S>
+        store={store}
+        getRoot={getRoot}
+        getTime={getTime}
+        featureLookup={featureLookup}
+        anchorLookup={anchorLookup}
+        editDispatch={dispatch}
+        calendar={calendar}
+        {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
+        {...(assetResolver ? { assetResolver } : {})}
+        {...(onOpenDetail ? { onOpenDetail } : {})}
+        {...(onDeleteFeature ? { onDeleteFeature } : {})}
+          {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
+          {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
+        />
+      </AddDraftForm>
     ),
   };
 }

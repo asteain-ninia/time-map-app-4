@@ -14,7 +14,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { SessionStore } from '../state/store';
-import { CommandRegistry } from './commands';
+import { CommandRegistry, type CommandId } from './commands';
 import { MapSizeStore } from './map-resize';
 import { buildDefaultKeymap } from './default-keymap';
 import { useShortcuts } from './useShortcuts';
@@ -79,6 +79,17 @@ export interface AppShellProps<S> {
    * fired global undo). Defaults to false (always live).
    */
   readonly suspended?: boolean;
+  /**
+   * 止めている間でも通すコマンド（増分 3）。**道具が鍵盤を持っているとき**だけ呼び出し側が
+   * 渡す（保存は道具に関係なく効いてほしい ―― 増分 1 の申し送り）。ダイアログが持って
+   * いるときは渡さない。
+   */
+  readonly alwaysAllowedShortcuts?: ReadonlySet<CommandId> | undefined;
+  /**
+   * 止めている間に「効かなかった」ことを伝える口（増分 3）。**ダイアログが鍵盤を
+   * 持っているときだけ**呼び出し側が渡す。
+   */
+  readonly onSuspendedShortcut?: ((id: CommandId) => void) | undefined;
 }
 
 export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
@@ -94,6 +105,8 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     overlay,
     mapOverlay,
     suspended = false,
+    alwaysAllowedShortcuts,
+    onSuspendedShortcut,
   } = props;
 
   const registry = useMemo(() => props.registry ?? new CommandRegistry(), [props.registry]);
@@ -106,7 +119,14 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
   // (教訓 5.13). The host SUSPENDS it (bughunt3) while a modal owns the keyboard or
   // an Add/Knife tool is mid-drawing, so global EditUndo/EditDelete neither leak
   // THROUGH a modal (H1) nor double-fire alongside the tool's own Ctrl+Z (H2).
-  useShortcuts({ keymap, registry, mode, suspended });
+  useShortcuts({
+    keymap,
+    registry,
+    mode,
+    suspended,
+    ...(alwaysAllowedShortcuts ? { alwaysAllowed: alwaysAllowedShortcuts } : {}),
+    ...(onSuspendedShortcut ? { onSuspendedRefusal: onSuspendedShortcut } : {}),
+  });
 
   return (
     <div className="app-shell" data-testid="app-shell">

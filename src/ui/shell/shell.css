@@ -809,6 +809,67 @@ body {
   cursor: default;
 }
 
+/* --- 吸着 ▾ ポップオーバー（設計書 §C.4 / 増分 3）--------------------------
+ *
+ * 帯（`.option-bar`）は `overflow: hidden` なので、`position: absolute` で下へ伸ばすと
+ * 切れる。`position: fixed` にすると **祖先の overflow では切り取られない**（切り取るのは
+ * transform / filter / contain を持つ祖先だけで、シェルにはそれが無い ―― Tooltip と同じ
+ * 確認済みの前提）。座標は開いた瞬間にアンカーの矩形から出す（`SnapOptions.tsx`）。
+ *
+ * **K-2**: 背面を覆う板は置かない。開いている間に入力を受けるのはこのパネルの矩形だけで、
+ * その外側は地図の入力層にそのまま届く。閉じるのは document の pointerdown を捕まえる形。 */
+.snap-options__button {
+  min-height: 26px;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.snap-options__panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 200px;
+  padding: 10px 12px;
+  background: var(--c-panel);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.snap-options__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.snap-options__row--disabled {
+  color: var(--c-text-muted);
+}
+
+.snap-options__note {
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--c-text-muted);
+  font-size: 11px;
+}
+
+.snap-options__number {
+  width: 56px;
+  padding: 2px 4px;
+  font-size: 12px;
+}
+
 /* Timeline: pad the panel so its controls do not sit flush against the edge. */
 .timeline {
   padding: 8px 12px;

@@ -228,3 +228,109 @@ describe('grid snap + parent selection (FR-77 / FR-78)', () => {
     expect(rec.last?.snapshot.feature.parentId).toBeUndefined();
   });
 });
+
+// --- 増分 3: 吸着（FR-31）と FR-29 の断り ------------------------------------
+
+describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
+  const neighbour = asFeatureId('f-neighbour') as FeatureId;
+  const neighbourVertex = asVertexId('v-neighbour') as VertexId;
+
+  function withPorts(extra: Partial<UseAddToolOptions<S>>): UseAddToolOptions<S> {
+    return { ...makeOptions(() => committed), ...extra };
+  }
+
+  it('吸着すると、置かれる座標が吸着先になり、共有する頂点の id が残る', () => {
+    const resolveProximity = vi.fn(() => ({
+      coordinate: C(4, 4),
+      featureId: neighbour,
+      vertexId: neighbourVertex,
+    }));
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ resolveProximity })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    // 押したのは (5, 5) だが、吸着先の (4, 4) に置かれる。
+    act(() => result.current.placeAt(C(5, 5)));
+    const placed = result.current.session?.vertices[0];
+    expect(placed?.coordinate).toEqual(C(4, 4));
+    expect(placed?.sharedCandidateId).toBe(neighbour);
+    // **どの頂点か**まで持つ（これが無いと共有頂点にならない）。
+    expect(placed?.sharedVertexId).toBe(neighbourVertex);
+  });
+
+  it('カーソルを動かすと、置かれる場所の予告が入る（琥珀の輪の元）', () => {
+    const resolveProximity = vi.fn(() => ({
+      coordinate: C(4, 4),
+      featureId: neighbour,
+      vertexId: neighbourVertex,
+    }));
+    const { result } = renderHook(() => useAddTool(withPorts({ resolveProximity })));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.preview(C(5, 5)));
+    expect(result.current.session?.preview).toEqual(C(5, 5));
+    expect(result.current.session?.previewSnap).toEqual({
+      coordinate: C(4, 4),
+      sharedCandidateId: neighbour,
+    });
+  });
+
+  it('吸着しないカーソル移動では予告が入らない', () => {
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ resolveProximity: () => null })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.preview(C(5, 5)));
+    expect(result.current.session?.previewSnap).toBeNull();
+  });
+
+  it('FR-29: 他の面の内側は断り、**理由が文字で出る**（現状は無反応だった）', () => {
+    const { result } = renderHook(() =>
+      useAddTool(
+        withPorts({
+          isInsideTerminal: () => true,
+          terminalNameAt: () => 'バアカ',
+        }),
+      ),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.session?.vertices).toHaveLength(0);
+    expect(result.current.message).toContain('バアカ');
+    expect(result.current.message).toContain('内側');
+  });
+
+  it('FR-29: 名前が引けなくても、内部 id ではなく一般の文で断る（U-1）', () => {
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ isInsideTerminal: () => true, terminalNameAt: () => null })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.message).toContain('既存の面の内側');
+  });
+
+  it('FR-29 は面だけ（教訓 5.25: 線・点へ広げない）', () => {
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ isInsideTerminal: () => true, terminalNameAt: () => 'バアカ' })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Line));
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.session?.vertices).toHaveLength(1);
+    expect(result.current.message).toBeNull();
+  });
+
+  it('断ったあと、置ける場所を押すと理由が消える（教訓 5.12 の裏面: 意味のある契機で消す）', () => {
+    let inside = true;
+    const { result } = renderHook(() =>
+      useAddTool(
+        withPorts({ isInsideTerminal: () => inside, terminalNameAt: () => 'バアカ' }),
+      ),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.message).not.toBeNull();
+    inside = false;
+    act(() => result.current.placeAt(C(9, 9)));
+    expect(result.current.message).toBeNull();
+    expect(result.current.session?.vertices).toHaveLength(1);
+  });
+});

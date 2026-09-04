@@ -203,3 +203,45 @@ describe('OptionBarStore — registerOptionSlot（設定欄の差し込み口）
     expect(store.get().slots).toEqual([]);
   });
 });
+
+// --- 帯の持ち主（増分 3。増分 1 の申し送り「reset を誰がいつ呼ぶか」への答え）------
+
+describe('OptionBarStore.claim — 帯は 1 つの道具だけが持つ', () => {
+  it('持った瞬間に中身が空へ戻る（前の道具の残りが持ち越されない）', () => {
+    const store = new OptionBarStore();
+    store.setToolName('▱ 面を描く');
+    store.setNextStep('もう 1 点打つか、Enter で閉じて確定します');
+
+    const owner = Symbol('別の道具');
+    store.claim(owner as unknown as object);
+
+    expect(store.get().toolName).toBeNull();
+    expect(store.get().nextStep).toBeNull();
+  });
+
+  it('手放しは自分が持っているときだけ効く', () => {
+    const store = new OptionBarStore();
+    const first = Symbol('道具A');
+    const release = store.claim(first as unknown as object);
+
+    // 別の道具が持ってから、遅れて A の後片付けが走る。
+    const second = Symbol('道具B');
+    store.claim(second as unknown as object);
+    store.setToolName('✂ 分ける');
+    release();
+
+    // B の中身は消えない（空振りする）。
+    expect(store.get().toolName).toBe('✂ 分ける');
+    expect(store.hasOwner()).toBe(true);
+  });
+
+  it('自分が持っているまま手放すと空へ戻り、持ち主も居なくなる', () => {
+    const store = new OptionBarStore();
+    const owner = Symbol('道具');
+    const release = store.claim(owner as unknown as object);
+    store.setToolName('▱ 面を描く');
+    release();
+    expect(store.get().toolName).toBeNull();
+    expect(store.hasOwner()).toBe(false);
+  });
+});

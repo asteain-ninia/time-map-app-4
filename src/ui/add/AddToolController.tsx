@@ -38,7 +38,7 @@ import type { WorldCoordinate } from '../../domain/coordinate';
 import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
 import type { SessionStore } from '../state/store';
-import { EDIT_MODE } from '../state/session';
+import { EDIT_MODE, type SnapSettings } from '../state/session';
 
 import { coerceGridSpacing } from '../../domain/basemap/grid';
 import { buildAddPrimitives, type AddStyle } from '../../render/add-batch';
@@ -46,8 +46,10 @@ import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import type { OptionBarStore } from '../shell/option-bar';
 
-import { AddPropertyForm } from './AddPropertyForm';
+import { AddDraftStore } from './add-draft-store';
+import { SnapOptions } from './SnapOptions';
 import { ADD_STRINGS } from './strings';
 import { addToolKindFor } from './tool-kind';
 import { ADD_PHASE, useAddTool, type StartAddProcess } from './useAddTool';
@@ -119,15 +121,34 @@ export interface AddToolControllerProps<S> {
   readonly resolveProximity?: AddToolControllerOptionalPorts['resolveProximity'];
   /** Whether a coordinate is inside a terminal feature (FR-29; U10). */
   readonly isInsideTerminal?: AddToolControllerOptionalPorts['isInsideTerminal'];
+  /** FR-29 で断った相手の名前（文言だけに使う。可否は `isInsideTerminal` 1 本が決める）。 */
+  readonly terminalNameAt?: AddToolControllerOptionalPorts['terminalNameAt'];
+  /**
+   * 地物の表示名を引く（増分 3）。吸着の予告「『アルラーク国』の頂点に合わせます」に使う。
+   * 引けなければ内部 id は**出さない**（U-1）。
+   */
+  readonly featureNameOf?: ((featureId: FeatureId) => string | null) | undefined;
+  /**
+   * オプションバー（設計書 §C.4）。道具名・対象・次の一手・設定・確定をここへ押し込む。
+   * **確定ボタンは地図の中に置かない**（K-2 の事故が構造的に起こり得ない ―― U-10 の
+   * 「全ツールで同じ場所」は帯の確定欄 176px が引き受ける）。
+   */
+  readonly optionBar?: OptionBarStore | undefined;
+  /**
+   * 形を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
+   * 地図の真ん中に浮くフォームをやめるための細い橋である。
+   */
+  readonly addDraft?: AddDraftStore | undefined;
   /** Provisional draw style override (e.g. project theme). */
   readonly style?: AddStyle | undefined;
 }
 
 interface AddToolControllerOptionalPorts {
   readonly resolveProximity?:
-    | ((raw: WorldCoordinate) => import('../../domain/add/index').ProximityCandidate | null)
+    | ((raw: WorldCoordinate) => import('./useAddTool').AddProximityCandidate | null)
     | undefined;
   readonly isInsideTerminal?: ((coordinate: WorldCoordinate) => boolean) | undefined;
+  readonly terminalNameAt?: ((coordinate: WorldCoordinate) => string | null) | undefined;
 }
 
 /**
@@ -148,6 +169,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     parentCandidates,
     resolveProximity,
     isInsideTerminal,
+    terminalNameAt,
+    featureNameOf,
+    optionBar,
+    addDraft,
     style,
   } = props;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
@@ -163,6 +188,8 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // funnel (App: recordCommit → undo 履歴 + FR-100 自動配色 + dirty)。
   const onCommitted = props.onCommitted;
 
+  const snapSettings = useStore(store, (s) => s.snapSettings);
+
   const add = useAddTool<S>({
     currentTime,
     gridSpacing,
@@ -173,6 +200,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     onConflicts,
     ...(resolveProximity ? { resolveProximity } : {}),
     ...(isInsideTerminal ? { isInsideTerminal } : {}),
+    ...(terminalNameAt ? { terminalNameAt } : {}),
   });
 
   // --- 教訓 5.2 全経路で破棄: the active add-tool kind is derived from the toolbar
@@ -324,15 +352,151 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     [mapCameraInput],
   );
 
-  // Render the provisional-add chrome (complete trigger + property form) plus the
-  // transient map-input layer, which sits in the shell overlay ABOVE the map and
-  // captures pointer events while an add is in progress (教訓 5.14): the input
-  // layer forwards press→placeAt and move→preview, and is removed the moment the
-  // session ends, so it never steals input outside an add.
+  // --- オプションバー（設計書 §C.4）へ押し込む（増分 3）------------------------
+  //
+  // **帯は 1 つの道具だけが持つ**（`OptionBarStore.claim`）。道具を構えた瞬間に持ち、
+  // 降りた瞬間に手放す。手放しは自分が持っているときだけ効くので、別の道具が先に
+  // 持っていたら空振りする（増分 1 の申し送り「reset を誰がいつ呼ぶか」への答え）。
+  const optionOwnerRef = useRef<object | null>(null);
+  useEffect(() => {
+    if (optionBar === undefined) return;
+    if (activeKind === null) return;
+    const owner = {};
+    optionOwnerRef.current = owner;
+    const release = optionBar.claim(owner);
+    return () => {
+      optionOwnerRef.current = null;
+      release();
+    };
+  }, [optionBar, activeKind]);
+
+  const setSnapSettings = useCallback(
+    (patch: Partial<SnapSettings>): void => {
+      store.getState().setSnapSettings(patch);
+    },
+    [store],
+  );
+  const toggleGridSnap = add.toggleGridSnap;
+  const gridSnap = add.session?.gridSnap;
+
+  // 設定欄（吸着 ▾）。差し込みは登録ごとの印で所有権を見るので、道具が入れ替わっても
+  // 生きている登録を巻き添えで消さない。
+  useEffect(() => {
+    if (optionBar === undefined || activeKind === null) return;
+    return optionBar.registerOptionSlot(
+      'snap',
+      <SnapOptions
+        settings={snapSettings}
+        onChange={setSnapSettings}
+        gridSnap={gridSnap}
+        onGridSnapChange={toggleGridSnap}
+      />,
+    );
+  }, [optionBar, activeKind, snapSettings, setSnapSettings, gridSnap, toggleGridSnap]);
+
+  // 道具名 / 対象 / 次の一手 / 確定。**押し込む側が持ち主である**のが規約なので、
+  // 持っていないときは押し込まない。
+  const vertexCount = add.session?.vertices.length ?? 0;
+  const previewSharedId = add.session?.previewSnap?.sharedCandidateId ?? null;
+  const message = add.message;
+  const canComplete = add.canComplete;
+  const completeShape = add.completeShape;
+  const cancel = add.cancel;
+  const undo = add.undo;
+  useEffect(() => {
+    if (optionBar === undefined || activeKind === null) return;
+    optionBar.setToolName(toolNameFor(activeKind));
+    optionBar.setTarget(null, ADD_STRINGS.targetVertices(vertexCount));
+    optionBar.setNextStep(
+      nextStepFor(activeKind, vertexCount, message, previewSharedId, featureNameOf),
+    );
+    optionBar.setCommit([
+      {
+        id: 'complete',
+        // T-1: 役割は「作図を確定する」のまま。地図の上から帯へ引っ越しただけなので
+        // testid を持ち越す（実装計画 §3 の中身 8 が明示した付け替え 2 件のうちの 1 件）。
+        testId: 'add-complete',
+        label: completeLabelFor(activeKind),
+        disabled: !canComplete,
+        onClick: completeShape,
+      },
+      { id: 'cancel', testId: 'add-cancel', label: ADD_STRINGS.cancel, onClick: cancel },
+    ]);
+  }, [
+    optionBar,
+    activeKind,
+    vertexCount,
+    message,
+    previewSharedId,
+    featureNameOf,
+    canComplete,
+    completeShape,
+    cancel,
+  ]);
+
+  // ［1 つ戻す］は設定欄へ置く（設計書 §C.4 の確定欄は［確定］［やめる］の 2 つで
+  // 176px に収まる形なので、3 つ目を押し込むと文字が切れる）。打鍵 Ctrl+Z と同じ動作。
+  useEffect(() => {
+    if (optionBar === undefined || activeKind === null) return;
+    return optionBar.registerOptionSlot(
+      'add-undo',
+      <button
+        type="button"
+        className="option-bar__commit-button"
+        data-testid="add-undo"
+        disabled={vertexCount === 0}
+        onClick={undo}
+      >
+        {ADD_STRINGS.undoVertex}
+      </button>,
+    );
+  }, [optionBar, activeKind, vertexCount, undo]);
+
+  // --- 形の確定後の素性入力を右パネルへ渡す（N-15 / 設計書 §C.2 の 27）-----------
+  //
+  // 地図の真ん中に浮くフォームをやめる。**いま描いた形を覆わない**のが要点である。
+  const chooseParent = add.chooseParent;
+  const save = add.save;
+  const phase = add.phase;
+  const sessionTool = add.session?.tool;
+  useEffect(() => {
+    if (addDraft === undefined) return;
+    if (phase !== ADD_PHASE.PropertyForm || sessionTool === undefined) {
+      addDraft.set(null);
+      return;
+    }
+    addDraft.set({
+      tool: sessionTool,
+      parentCandidates: parentCandidates ?? [],
+      currentYear: currentTime.year,
+      onChooseParent: (featureId: FeatureId | null) =>
+        chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId)),
+      onSave: (properties: AddProperties) => save(properties),
+      onCancel: cancel,
+    });
+    // 道具が外れる・下書きが消える全経路で必ず閉じる（教訓 5.2）。
+    return () => addDraft.set(null);
+  }, [
+    addDraft,
+    phase,
+    sessionTool,
+    parentCandidates,
+    currentTime,
+    chooseParent,
+    save,
+    cancel,
+  ]);
+
+  // Render the provisional-add chrome plus the transient map-input layer, which sits
+  // in the shell overlay ABOVE the map and captures pointer events while an add is in
+  // progress (教訓 5.14): the input layer forwards press→placeAt and move→preview, and
+  // is removed the moment the session ends, so it never steals input outside an add.
+  //
+  // **確定・やめる・1 つ戻す・吸着はもう地図の上に無い**（増分 3）。全部オプションバーへ
+  // 移したので、地図に重なる DOM 部品は入力ブリッジ 1 枚だけになった（K-2）。
   return (
     <AddToolChrome
       add={add}
-      parentCandidates={parentCandidates ?? []}
       onMapPointerDown={onMapPointerDown}
       onMapPointerMove={onMapPointerMove}
       onMapWheel={onMapWheel}
@@ -348,7 +512,6 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
 interface AddToolChromeProps {
   readonly add: ReturnType<typeof useAddTool>;
-  readonly parentCandidates: readonly ParentCandidate[];
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   readonly onMapPointerMove: (e: { clientX: number; clientY: number }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
@@ -450,13 +613,12 @@ function AddInputBridge(props: {
 }
 
 function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
-  const { add, parentCandidates } = props;
+  const { add } = props;
 
   if (add.phase === ADD_PHASE.Idle || add.session === null) {
     return null;
   }
 
-  const isFace = add.session.tool === ADD_TOOL_KIND.Face;
   const isLine = add.session.tool === ADD_TOOL_KIND.Line;
 
   return (
@@ -465,7 +627,11 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
           to the hook. It sits in the overlay above the map (教訓 5.14) ONLY while
           an add is in progress, so it never steals input otherwise. It ALSO forwards
           the camera-only events (wheel + non-left pointer) to the live map dispatcher
-          so 中ボタンパン / ホイールズーム keep working while drawing (bughunt). */}
+          so 中ボタンパン / ホイールズーム keep working while drawing (bughunt).
+
+          **増分 3 以降、地図に重なる DOM 部品はこの 1 枚だけである。** 確定・やめる・
+          1 つ戻す・グリッド・拒否の文はすべてオプションバー（シェルの行）へ移した
+          ので、K-2（地図のクリックを奪う）の事故が構造的に起こり得ない。 */}
       {add.phase === ADD_PHASE.Drawing && (
         <AddInputBridge
           onMapPointerDown={props.onMapPointerDown}
@@ -478,61 +644,12 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
         />
       )}
 
-      {/* COMPLETE trigger (line/face) — 教訓 5.7 完了トリガー. Point confirms on a
-          single click, but we still expose complete for explicit confirmation. */}
-      {add.phase === ADD_PHASE.Drawing && (
-        <div className="add-tool__controls" data-testid="add-controls">
-          <button
-            type="button"
-            data-testid="add-complete"
-            disabled={!add.canComplete}
-            onClick={() => add.completeShape()}
-          >
-            {isFace
-              ? ADD_STRINGS.completeFace
-              : isLine
-                ? ADD_STRINGS.completeLine
-                : ADD_STRINGS.completePoint}
-          </button>
-          <button
-            type="button"
-            data-testid="add-undo"
-            disabled={add.session.vertices.length === 0}
-            onClick={() => add.undo()}
-          >
-            {ADD_STRINGS.undoVertex}
-          </button>
-          <button type="button" data-testid="add-cancel" onClick={() => add.cancel()}>
-            {ADD_STRINGS.cancel}
-          </button>
-          <label className="add-tool__grid">
-            <input
-              type="checkbox"
-              data-testid="add-grid-snap"
-              checked={add.session.gridSnap}
-              onChange={(e) => add.toggleGridSnap(e.target.checked)}
-            />
-            {ADD_STRINGS.gridSnap}
-          </label>
-          {add.message !== null && (
-            <p className="add-tool__message" data-testid="add-message" role="alert">
-              {add.message}
-            </p>
-          )}
-        </div>
-      )}
-
-      {/* SAVE trigger (property form) — 教訓 5.7 完了トリガー. */}
-      {add.phase === ADD_PHASE.PropertyForm && (
-        <AddPropertyForm
-          showParent={isFace}
-          parentCandidates={parentCandidates}
-          onChooseParent={(featureId) =>
-            add.chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId))
-          }
-          onSave={(properties: AddProperties) => add.save(properties)}
-          onCancel={() => add.cancel()}
-        />
+      {/* 拒否・案内の文は **オプションバーの「次の一手」**が出す（設計書 §H.5 / G-23 の
+          共通の出口）。ここは観測用の隠しマーカーとして残す（T-2: 隠し観測は足す一方）。 */}
+      {add.message !== null && (
+        <span data-testid="add-message" hidden>
+          {add.message}
+        </span>
       )}
 
       {add.phase === ADD_PHASE.ConflictPaused && (
@@ -557,6 +674,62 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
       {isLine && <span data-testid="add-is-line" hidden />}
     </div>
   );
+}
+
+// --- オプションバーへ出す文言（設計書 §C.4 の表）------------------------------
+
+function toolNameFor(kind: AddToolKind): string {
+  switch (kind) {
+    case ADD_TOOL_KIND.Face:
+      return ADD_STRINGS.toolNameFace;
+    case ADD_TOOL_KIND.Line:
+      return ADD_STRINGS.toolNameLine;
+    case ADD_TOOL_KIND.Point:
+      return ADD_STRINGS.toolNamePoint;
+  }
+}
+
+function completeLabelFor(kind: AddToolKind): string {
+  switch (kind) {
+    case ADD_TOOL_KIND.Face:
+      return ADD_STRINGS.completeFace;
+    case ADD_TOOL_KIND.Line:
+      return ADD_STRINGS.completeLine;
+    case ADD_TOOL_KIND.Point:
+      return ADD_STRINGS.completePoint;
+  }
+}
+
+/**
+ * 「次の一手」欄の文（設計書 §C.4 / §H.5）。優先順位は 1 つに決めてある:
+ *
+ *   1. **断った理由**があればそれ（G-23 の 87 件の出口。無反応をなくすのが目的なので、
+ *      案内より強い）。
+ *   2. **吸着の予告**（「『アルラーク国』の頂点に合わせます」。V2 の合格条件 ①の文字側）。
+ *   3. ふつうの案内。
+ */
+function nextStepFor(
+  kind: AddToolKind,
+  vertexCount: number,
+  message: string | null,
+  previewSharedId: FeatureId | null,
+  featureNameOf: ((featureId: FeatureId) => string | null) | undefined,
+): string {
+  if (message !== null) return message;
+  if (previewSharedId !== null) {
+    const name = featureNameOf?.(previewSharedId) ?? null;
+    return name === null || name === ''
+      ? ADD_STRINGS.snapPreviewUnnamed
+      : ADD_STRINGS.snapPreview(name);
+  }
+  switch (kind) {
+    case ADD_TOOL_KIND.Face:
+      return vertexCount === 0 ? ADD_STRINGS.nextStepFaceEmpty : ADD_STRINGS.nextStepFace;
+    case ADD_TOOL_KIND.Line:
+      return vertexCount === 0 ? ADD_STRINGS.nextStepLineEmpty : ADD_STRINGS.nextStepLine;
+    case ADD_TOOL_KIND.Point:
+      return ADD_STRINGS.nextStepPoint;
+  }
 }
 
 // Re-export for callers that bind the input layer at the shell level.

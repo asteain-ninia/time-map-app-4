@@ -38,6 +38,18 @@ export const COMMAND_ID = {
    * whole-project extent; with no features it returns to the FR-11 既定視点.
    */
   ViewFitAll: 'view.fitAll',
+  /**
+   * 「面を描く」道具を構える（増分 3 の中身 9 / 設計書 §I.2）。
+   *
+   * **`F` ではなく `Shift+F`** である。`F` は「選んでいるものに視点を合わせる」
+   * （`view.fitSelection`）に取ってあるので衝突する。設計書 §C.3 の図と §E.1 の
+   * V1・V2 の手順も `Shift+F` に統一されている。
+   *
+   * 実体は「追加モードへ入って面ツールを構える」で、**モードのボタンを 2 回押すのと
+   * 同じ経路を通る**（道具 1 段への作り直しは増分 5）。読むだけでは押せない
+   * （`EDITING_COMMANDS` に載せる ―― K-6）。
+   */
+  ToolsAddFace: 'tools.addFace',
   ToolsSettings: 'tools.settings',
   /** Open the feature search UI (U41 / FR-113). Registered by the discovery unit. */
   ToolsSearch: 'tools.search',

@@ -159,3 +159,57 @@ export const DEFAULT_CAMERA: Camera = {
   panX: 0,
   panY: 0,
 };
+
+// --- 作図中の吸着の設定（増分 3 / 設計書 §C.4 の「吸着 ▾」・§N-6）-------------
+
+/**
+ * 作図中（面・線・点を描いている最中）の吸着の設定。
+ *
+ * **辺・交点への吸着はここに無い。** ドメインの `src/domain/add/snap.ts` の優先順位は
+ * 「呼び出し側が解決済みの近接候補（FR-31）→ グリッド（FR-78）→ 生座標」の 3 段だけで、
+ * 辺も交点も概念として存在しない。やるならドメインの新規実装で、しかも §N-6 の裁定待ち
+ * なので、画面には灰色の項目として置くだけで、設定としては持たない（**持っていない値を
+ * 設定として置くと「入れたのに効かない」になる**）。
+ */
+export interface SnapSettings {
+  /** 吸着そのものの ON/OFF。OFF なら押した場所にそのまま置く。 */
+  readonly enabled: boolean;
+  /** 既存の頂点へ吸着する（いま効くのはこれだけ）。 */
+  readonly vertex: boolean;
+  /** 許容（画面上の px）。この距離までの頂点を候補にする。 */
+  readonly tolerancePx: number;
+}
+
+/** 許容値の下限・上限（px）。上限は FR-31 の条文の 50px に合わせる。 */
+export const SNAP_TOLERANCE_MIN_PX = 1;
+export const SNAP_TOLERANCE_MAX_PX = 50;
+
+/**
+ * 許容値の既定 **12px**（設計書 §N-6 の 3 案を実データで比べて決めた。
+ * 根拠は `scripts/measure-snap-tolerance.ts` の出力と `docs/ui-redesign/進捗/増分3.md` §4）。
+ *
+ * 要点だけ:
+ *  - 許容値は「**どの頂点に付くか**」を決めない。選ばれるのは常に最近傍 1 個なので、
+ *    許容を広げても付く相手は変わらない（実測: 狙った頂点が最近傍になる割合は
+ *    許容 12px でも 50px でも同じで、**ズームだけ**で決まる ―― 全体表示 20% / ×4 で 59% /
+ *    ×16 で 99%）。
+ *  - 許容値が決めるのは「**付くか付かないか**」＝ 地図のどれだけの面積が吸着に食われるか。
+ *    実データ（バアカ・アルラーク国）で、50px は地図の **52〜73%** を覆う。12px なら
+ *    **6〜37%** に収まる。
+ */
+export const DEFAULT_SNAP_TOLERANCE_PX = 12;
+
+export const DEFAULT_SNAP_SETTINGS: SnapSettings = {
+  enabled: true,
+  vertex: true,
+  tolerancePx: DEFAULT_SNAP_TOLERANCE_PX,
+};
+
+/**
+ * 許容値を使える範囲へ収める。**非有限値は既定へ落とす**（0 や NaN をそのまま通すと
+ * 「吸着が黙って効かない」形で現れ、原因が吸着の実装に見える ―― 教訓 5.46）。
+ */
+export function clampSnapTolerancePx(raw: number): number {
+  if (!Number.isFinite(raw)) return DEFAULT_SNAP_TOLERANCE_PX;
+  return Math.min(SNAP_TOLERANCE_MAX_PX, Math.max(SNAP_TOLERANCE_MIN_PX, Math.round(raw)));
+}

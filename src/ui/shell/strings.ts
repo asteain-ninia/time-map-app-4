@@ -17,6 +17,13 @@
  */
 export const APP_STRINGS = {
   title: 'gimoza',
+  /**
+   * 止めている間に押された打鍵の断り文（増分 3 / 現状.md B28）。**押しても何も
+   * 起きない**を無くすためのもので、「何が起きたか → なぜか → 次に何をするか」の順
+   * （設計書 §H.5）。
+   */
+  shortcutBusy: (label: string): string =>
+    `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',
   sidebarAriaLabel: 'サイドバー',
   toolbarAriaLabel: 'ツールバー',
@@ -48,6 +55,7 @@ export const MENU_ITEM_LABELS = {
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
   'view.fitAll': '全体表示',
+  'tools.addFace': '面を描く',
   'tools.settings': '設定',
   'tools.search': '地物を検索',
   'help.about': 'バージョン情報',
