@@ -392,6 +392,15 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         e.preventDefault();
+        // **確認の板が開いていたら、まずそれを閉じる**（設計書 §D.4「Esc の階段」）。
+        // 階段は「いちばん手前のものから 1 つずつ閉じる」なので、板が出ている間の
+        // Escape は「このままにする」と同じ意味になる（元へ戻す動きも走る）。
+        const pending = pendingRef.current;
+        if (pending !== null) {
+          pending.keep?.();
+          setPendingDiscard(null);
+          return;
+        }
         // **確定できる点数以上の打ちかけは確認してから捨てる**（設計書 §D.2 / D1）。
         // Escape はいちばん押しやすい打鍵なので、確定できる形（＝作り直すのに手間がかかる
         // 形）まで来ていたら 1 度聞く。それ未満は聞かない（押し直せば済む）。

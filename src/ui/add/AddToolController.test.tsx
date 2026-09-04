@@ -809,6 +809,24 @@ describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', (
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
   });
 
+  it('確認の板が出ている間の Escape は、まずその板を閉じる（設計書 §D.4 Esc の階段）', () => {
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    // 2 回目の Escape は **板を閉じるだけ**（下書きは残る）。階段は 1 段ずつ降りる。
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+  });
+
   it('1〜2 点の打ちかけは聞かずに捨てる（押し直せば済む量）', () => {
     mountApp();
     selectTool('tool-add.area');
