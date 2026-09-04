@@ -25,13 +25,11 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   ADD_TOOL_KIND,
   CONFIRM_STATUS,
-  PARENT_SELECTION_KIND,
   PARENT_UNSET,
   UNDO_RESULT,
   assembleAddProposal,
   canConfirm,
   confirmShape,
-  draftCoordinates,
   isNestingInside,
   placeVertex,
   resetSession,
@@ -145,18 +143,6 @@ export interface UseAddToolOptions<S> {
    * 上の判定ができないので、**名前を `terminalAt` に変えて相手を返す形にした**。
    */
   readonly terminalAt?: ((coordinate: WorldCoordinate) => AddTerminalHit | null) | undefined;
-  /**
-   * FR-77 / GPT #3: **いま描いた形を丸ごと含む面**の id。保存の直前に「選んだ上位領域が
-   * 本当にこの形を含んでいるか」をもう一度確かめるために使う（増分 3 の手直し B2）。
-   *
-   * **なぜ確定時にもう一度見るのか**: 候補を絞ったのは形を確定した瞬間で、そのあと
-   * 名前を打っている間に年が動く／別の編集が入る、ということがありうる。確定の直前に
-   * 見直せば、**含んでいない面を上位領域として保存する**ことが構造的に起こらない。
-   * 渡されなければ確かめない（従来どおり）。
-   */
-  readonly facesContaining?:
-    | ((coordinates: readonly WorldCoordinate[]) => readonly FeatureId[])
-    | undefined;
 }
 
 /** FR-29 の当たり: どの末端地物の内側／境界の上か（`name` は引けなければ null ―― U-1）。 */
@@ -274,7 +260,6 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     onConflicts,
     resolveProximity,
     terminalAt,
-    facesContaining,
   } = options;
 
   const [session, setSession] = useState<AddSession | null>(null);
@@ -509,20 +494,10 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const current = session;
       const confirmedDraft = draft;
       if (current === null || confirmedDraft === null) return;
-      // **保存の直前に上位領域を確かめ直す**（増分 3 の手直し B2 / GPT #3）。継ぎ目は
-      // 供給元（`facesContaining`）が ±360 度の複製まで見て解くので、ここでは結果を
-      // 使うだけである（同じ判定を書き直さない ―― 教訓 5.29）。
-      if (
-        facesContaining !== undefined &&
-        current.parent.kind === PARENT_SELECTION_KIND.Parent
-      ) {
-        const containing = facesContaining(draftCoordinates(confirmedDraft));
-        if (!containing.includes(current.parent.parentId)) {
-          setMessage(ADD_STRINGS.parentDoesNotContain);
-          setMessageSticky(true);
-          return; // 記録しない（教訓 5.22 確定までの非破壊）。
-        }
-      }
+      // **保存の直前に包含を確かめ直すことはしない**（GPT #3 への答え）。集約地物の実領域は
+      // 子の和なので、**親自身の形の外に子が居てよい**（V8「新しい上位領域を作る」はその形で
+      // ある）。含んでいることは上位領域である条件ではないので、ここで断ると正しい手順を
+      // 塞ぐ。含む面が 1 つに決まるときに既定にする（`AddToolController`）だけにとどめた。
       const proposal = assembleAddProposal({
         draft: confirmedDraft,
         properties,
@@ -569,7 +544,6 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       onCommitted,
       onConflicts,
       discard,
-      facesContaining,
     ],
   );
 

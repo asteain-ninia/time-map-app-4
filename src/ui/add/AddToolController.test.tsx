@@ -857,3 +857,57 @@ describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', (
     expect(discarded).toEqual([3]);
   });
 });
+
+describe('U23 手直し: 置く動作は、予約されたカーソル移動より後に効かない', () => {
+  it('断りの理由が、あとから走るカーソル移動に消されない（D9 と D1 の順序）', () => {
+    installFrameStub();
+    const store = createSessionStore<S>({
+      initialDomain: { tag: 'initial' },
+      initial: { mode: EDIT_MODE.Add, currentTime: timePointYearMonthDay(1500, 6, 20) },
+    });
+    const optionBar = new OptionBarStore();
+    const addDraft = new AddDraftStore();
+    let f = 0;
+    let v = 0;
+    let r = 0;
+    render(
+      <AppShell
+        store={store}
+        optionBar={<OptionBar store={optionBar} />}
+        sidebar={{ propertiesContent: <AddDraftForm store={addDraft} /> }}
+        overlay={
+          <AddToolController<S>
+            store={store}
+            startProcess={() => committed}
+            ids={{
+              nextFeatureId: () => asFeatureId(`f${++f}`),
+              nextVertexId: () => asVertexId(`v${++v}`),
+            }}
+            nextRingId={() => asRingId(`r${++r}`)}
+            screenToWorld={screenToWorld}
+            drawSink={{ drawAdd: () => undefined }}
+            optionBar={optionBar}
+            addDraft={addDraft}
+            onCommitted={(result, id) => hostCommit(store)(result, id)}
+          />
+        }
+      />,
+    );
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    // カーソルを動かして 1 フレーム分を予約したまま、緯度の外を押して断らせる。
+    const layer = screen.getByTestId('add-input-layer');
+    act(() => {
+      fireEvent.pointerMove(layer, { clientX: 5, clientY: 5 });
+    });
+    act(() => {
+      fireEvent.pointerDown(layer, { clientX: 0, clientY: 200, button: 0 });
+    });
+    expect(screen.getByTestId('option-bar-next-step')).toHaveTextContent('世界の外');
+    // 予約が残っていれば、ここで走って理由を消してしまう。捨てているので消えない。
+    act(() => {
+      runFrames();
+    });
+    expect(screen.getByTestId('option-bar-next-step')).toHaveTextContent('世界の外');
+  });
+});

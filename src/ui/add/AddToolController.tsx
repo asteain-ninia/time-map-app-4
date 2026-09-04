@@ -223,7 +223,6 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     onConflicts,
     ...(resolveProximity ? { resolveProximity } : {}),
     ...(terminalAt ? { terminalAt } : {}),
-    ...(facesContaining ? { facesContaining } : {}),
   });
 
   // --- 教訓 5.2 全経路で破棄: the active add-tool kind is derived from the toolbar
@@ -355,11 +354,27 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
   // --- Map-input handlers the host wires onto the input layer (教訓 5.14). A click
   // places a vertex (placeAt); pointer move updates the cursor-follow preview.
+  const pendingMoveRef = useRef<{
+    clientX: number;
+    clientY: number;
+    ctrlKey: boolean;
+  } | null>(null);
+  const moveFrameRef = useRef<number | null>(null);
+
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number; ctrlKey?: boolean }) => {
       if (add.phase !== ADD_PHASE.Drawing && !armed) return;
       // Left button only (button 0 / unspecified in synthetic events).
       if (e.button !== undefined && e.button !== 0) return;
+      // **予約されているカーソル移動を捨てる**（D9 の間引きと置く動作の順序）。押した瞬間に
+      // 未処理の移動が残っていると、置いたあとでそれが走り、**置いたときに出した断りの理由を
+      // 「カーソルが動いた」とみなして消してしまう**（実アプリの E2E がこれで落ちた）。
+      // 置く動作は、それより前のカーソル移動をすべて置き換える。
+      if (moveFrameRef.current !== null) {
+        cancelAnimationFrame(moveFrameRef.current);
+        moveFrameRef.current = null;
+      }
+      pendingMoveRef.current = null;
       // **待機からの 1 点目で作図を始める**（D3）。`start` は写しも同じ入力の中で
       // 更新するので、続けて `placeAt` を呼んでよい。
       if (armed && activeKind !== null) add.start(activeKind);
@@ -375,12 +390,6 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 許容 50px のときは 1 移動あたり 0.57ms（既定 12px では 0.08ms）を実測しており、
   // 高頻度のマウスでは取りこぼしのない範囲で無駄が積み上がる。**最後の 1 件だけ**を
   // 次の描画フレームで処理すれば、見え方は変わらないまま呼び出し回数が画面の更新回数に揃う。
-  const pendingMoveRef = useRef<{
-    clientX: number;
-    clientY: number;
-    ctrlKey: boolean;
-  } | null>(null);
-  const moveFrameRef = useRef<number | null>(null);
   const previewAt = add.preview;
   useEffect(() => {
     // 道具を降りる・部品が外れる全経路で予約を捨てる（教訓 5.2）。
@@ -610,22 +619,25 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const sessionTool = add.session?.tool;
   const draft = add.draft;
 
-  // **上位領域の候補は「いま描いた形を丸ごと含む面」だけに絞る**（増分 3 の手直し B2。
-  // GPT #3・#4）。初版は「その時刻に居る面」を平らに全部並べていたので、実データでは
-  // 776 件が無関係に並び、しかも **入れ子として通した形が既定では「上位領域なし」で
-  // 保存され、最上位の面として重なり競合になった**。
+  // **いま描いた形を丸ごと含む面が 1 つに決まるなら、それを上位領域の既定にする**
+  //（増分 3 の手直し B2。GPT #4）。**入れ子として通した形が既定では「上位領域なし」で
+  // 保存され、最上位の面として重なり競合になっていた**のが直したかった害である。
   //
-  // 一意に決まるときは **それを既定にする**（利用者が選び直さなくてよい）。0 件なら
-  // 従来どおり「上位領域なし」の 1 択で、複数なら選んでもらう。
-  const narrowedParents = useMemo<readonly ParentCandidate[]>(() => {
+  // **候補の一覧そのものは絞らない。** 一度は「丸ごと含む面だけ」に絞ったが、それでは
+  // **離れた場所にある子を持つ上位領域**（集約地物の実領域は子の和なので、親自身の形の
+  // 外に子が居てよい ―― V8「新しい上位領域を作る」はまさにこの形）が選べなくなる。
+  // 実際、既存の探索・回帰の 5 本がその手順を踏んでいて落ちた。**含んでいることは
+  // 上位領域である条件ではない**ので、絞るのは誤りだった（GPT #3 の「保存直前に包含を
+  // 再検証する」も同じ理由で入れていない）。
+  const containingParents = useMemo<readonly ParentCandidate[]>(() => {
     const all = parentCandidates ?? [];
-    if (facesContaining === undefined || draft === null) return all;
+    if (facesContaining === undefined || draft === null) return [];
     const containing = new Set<FeatureId>(facesContaining(draftCoordinates(draft)));
     return all.filter((c) => containing.has(c.featureId));
   }, [parentCandidates, facesContaining, draft]);
 
   const soleParentId =
-    narrowedParents.length === 1 ? (narrowedParents[0]?.featureId ?? null) : null;
+    containingParents.length === 1 ? (containingParents[0]?.featureId ?? null) : null;
   useEffect(() => {
     if (phase !== ADD_PHASE.PropertyForm) return;
     if (soleParentId === null) return;
@@ -640,7 +652,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     }
     addDraft.set({
       tool: sessionTool,
-      parentCandidates: narrowedParents,
+      parentCandidates: parentCandidates ?? [],
       defaultParentId: soleParentId,
       currentYear: currentTime.year,
       onChooseParent: (featureId: FeatureId | null) =>
@@ -654,7 +666,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     addDraft,
     phase,
     sessionTool,
-    narrowedParents,
+    parentCandidates,
     soleParentId,
     currentTime,
     chooseParent,
