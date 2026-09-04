@@ -21,14 +21,16 @@
 // vs map 32..569). This test now FAILS if anyone reintroduces a grid mirror on the
 // scaffold or drops the map-anchored inset contract.
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { readSourceText } from '../../test-support/read-source-text';
+
+// 改行は `readSourceText` が LF に揃える（CRLF のチェックアウトで規則の照合が外れないように）。
 const here = dirname(fileURLToPath(import.meta.url));
-const shellCss = readFileSync(resolve(here, '../shell/shell.css'), 'utf8');
+const shellCss = readSourceText(resolve(here, '../shell/shell.css'));
 
 /** Extract the body `{ ... }` of the FIRST rule whose selector exactly matches. */
 function ruleBody(selector: string): string {

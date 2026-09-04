@@ -34,7 +34,6 @@
 //      通ることを mutation で実測済み。捕まえるのは向きテストのみ)。
 //   #3 d 属性パーサが指数表記を誤読する — 数値パターンを拡張し専用ケースを追加。
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -42,6 +41,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
 import type { GeoMultiPolygon } from '../../domain/geometry/types';
+import { readSourceText } from '../../test-support/read-source-text';
 
 import { InheritorModal } from './InheritorModal';
 
@@ -290,10 +290,8 @@ describe('HB4-1 — 継承先モーダルのプレビュー片が viewBox 内に
 // に切り替えてもインライン style と同じ結果しか返らず、穴は塞がらない)。
 // よって **CSS ソースそのもの**を不変条件にする。実ブラウザ側の合成結果は
 // e2e/knife-preview-north.spec.ts が `getComputedStyle` で照合する。
-const knifeCss = readFileSync(
-  resolve(dirname(fileURLToPath(import.meta.url)), 'knife.css'),
-  'utf8',
-);
+// 改行は `readSourceText` が LF に揃える（knife.css は実際に CRLF で置かれている）。
+const knifeCss = readSourceText(resolve(dirname(fileURLToPath(import.meta.url)), 'knife.css'));
 
 /** `selector { body }` の組を全て返す(セレクタはカンマ区切りのまま). */
 function cssRules(css: string): readonly { selector: string; body: string }[] {

@@ -661,12 +661,21 @@ describe('集合デルタのフレーム毎コスト', () => {
     };
   }
 
-  it('海岸線型 (随伴 400 × 静止末端 400 × 160 辺/末端 ≒ 64k 辺) の 1 フレームが桁退化しない', () => {
-    // 必須5 (MED-1): 従来の 300ms ガードは出荷フィクスチャの実測 17.6ms の 17 倍で、しかも
-    // 最悪配置ですらなかった (空クエリに近い)。ここでは細長い末端が随伴列に沿って走る「海岸線型」
-    // = 実際に「頂点 × 近傍片」割り当てを踏む配置に置き換え、閾値は「実測中央値の 3-4 倍」に
-    // 締める (桁退化を検出できる誠実な値)。壁時計 60FPS は CI でアサートしない (マシン依存)。
-    const { root, companions } = bulkProject(400, 400, 160);
+  /**
+   * 1 フレーム（近傍クエリ + 集合拘束）を走らせる関数を作る。返す値はすべて **数え上げ**で、
+   * 実行時間は測らない（理由は下の it のコメント）。
+   *
+   * `edgesPerCompanion` が退化の指標である。正しい実装では、各随伴は自分の掃過箱に重なる
+   * 末端の辺だけを受け取るので、静止末端が何枚あっても 1 随伴あたりの本数は局所の地形で
+   * 決まる定数（このフィクスチャでは実測 240 本）。「随伴 × 近傍片」の掛け算に退化すると、
+   * 近傍集合まるごと（同 26,800 本 = 112 倍）を全員が受け取る。
+   */
+  function frameRunner(
+    companionCount: number,
+    obstacleCount: number,
+    ringSize: number,
+  ): (lon: number) => { edgesPerCompanion: number; sane: boolean } {
+    const { root, companions } = bulkProject(companionCount, obstacleCount, ringSize);
     const query = createNeighboursQuery({
       getRoot: () => root,
       getTime: () => TIME,
@@ -682,9 +691,9 @@ describe('集合デルタのフレーム毎コスト', () => {
       },
       { lon: 0, lat: 0 },
     );
-    query(createCoordinate(0.1, 0), session); // 索引構築 (ドラッグ全体で 1 回) を除外
+    query(createCoordinate(0.1, 0), session); // 索引構築 (ドラッグ全体で 1 回) を済ませておく
 
-    const runFrame = (lon: number): { edgesSeen: boolean; finite: boolean } => {
+    return (lon: number) => {
       const neighbours = query(createCoordinate(lon, 0), session);
       const movingSet = neighbours.movingSet!;
       const slid = constrainSetSlide({
@@ -695,32 +704,74 @@ describe('集合デルタのフレーム毎コスト', () => {
         primaryFrom: movingSet.primaryFrom,
         companions: movingSet.companions,
       });
+      let edgeTotal = 0;
+      for (const c of movingSet.companions) edgeTotal += c.edges.length;
       return {
-        edgesSeen: movingSet.companions.length === 400 && movingSet.companions.some((c) => c.edges.length > 0),
-        finite: Number.isFinite(slid.position.lon),
+        edgesPerCompanion: edgeTotal / Math.max(1, movingSet.companions.length),
+        // 掃過箱が実際に障害物を掴み、拘束が有限値を返していること
+        // （空クエリを測って安心しない）。
+        sane:
+          movingSet.companions.length === companionCount &&
+          movingSet.companions.some((c) => c.edges.length > 0) &&
+          Number.isFinite(slid.position.lon),
       };
     };
+  }
 
-    // 中央値をとる (単発の GC スパイクに閾値が振られないように)。
-    const samples: number[] = [];
-    let sane = true;
-    for (let i = 0; i < 5; i += 1) {
-      const started = performance.now();
-      const out = runFrame(0.2 + i * 1e-4);
-      samples.push(performance.now() - started);
-      sane = sane && out.edgesSeen && out.finite;
+  it('海岸線型 (随伴 400 × 静止末端 400 × 160 辺/末端 ≒ 64k 辺) の 1 フレームが桁退化しない', () => {
+    // **なぜ「1 フレーム 90ms 以内」という書き方をやめたか**
+    //   従来はここに「実測中央値 < 90ms」と絶対時間で書いていた。このファイル単体なら通るが、
+    //   `npm run test` の全件同時実行（テストファイルごとに別プロセスが並ぶ）では同じ処理が
+    //   実測 136ms まで伸びて落ちた。閾値を上げても測っているのは「そのときのマシンの空き
+    //   具合」であって、守りたい性質そのものではない。
+    //
+    //   「4 倍にしたら 4 倍で済む（掛け算なら 16 倍）」という **比** も試したが、この機械では
+    //   比も負荷で動いた: 何もしていないときは 3.9〜4.6 倍なのに、CPU を 24 本埋めた状態では
+    //   9.5〜10.7 倍まで伸びる（大きい側ほど余分に遅くなるので、負荷は比では相殺されない）。
+    //   退化した実装の 15.2 倍との間隔が足りず、これも同時実行では割れる。
+    //
+    //   そこで時計を捨て、同じ回帰を **数え上げ**で押さえる。どちらも負荷では 1 も動かない。
+    //     ① 随伴 1 点あたりが受け取る近傍の辺の本数（掃過箱で絞れているか）
+    //        実測: 正しい実装 240 本 / 退化させた実装 26,800 本。上限はその間を大きく空けて
+    //        1,000 本（掃過箱や余白の設計変更で多少増えても誤検知せず、退化は必ず捕まる幅）。
+    //     ② ドラッグ中に索引を組み直していないこと（bulkLoad が 1 回も呼ばれない）
+    //        索引の作り直しはフレーム毎コストが桁で増える典型で、旧 90ms ガードが拾えていた
+    //        もう 1 つの型。これも呼び出し回数で直接見る。
+    //
+    //   なお 60FPS（16.6ms/frame）に収まるかどうかは、ここでは主張しない（マシン依存）。
+    //   深い最適化は本 fix のスコープ外 = 既知の性能上限として記録（ADR / 報告）。
+    const bulkLoad = vi.spyOn(SpatialIndex.prototype, 'bulkLoad');
+    try {
+      const runFrame = frameRunner(400, 400, 160);
+      bulkLoad.mockClear(); // 暖機フレームでの 1 回目の構築は数えない
+
+      let sane = true;
+      let edgesPerCompanion = 0;
+      for (let i = 0; i < 3; i += 1) {
+        const out = runFrame(0.2 + i * 1e-4);
+        sane = sane && out.sane;
+        edgesPerCompanion = out.edgesPerCompanion;
+      }
+
+      expect(sane).toBe(true);
+
+      expect(
+        edgesPerCompanion,
+        `随伴 1 点あたりの近傍の辺が ${edgesPerCompanion.toFixed(0)} 本。` +
+          `掃過箱に重なる末端だけを配る形が崩れ、近傍集合まるごとを全員に配っている疑い` +
+          `（随伴 × 近傍片の掛け算）。`,
+      ).toBeLessThan(1000);
+
+      expect(
+        bulkLoad.mock.calls.length,
+        'ドラッグ中のフレームで索引を組み直している（memo が効いていない）。',
+      ).toBe(0);
+    } finally {
+      bulkLoad.mockRestore();
     }
-    samples.sort((a, b) => a - b);
-    const median = samples[Math.floor(samples.length / 2)]!;
-
-    // 掃過箱が実際に障害物を掴み、拘束が有限値を返していること (空クエリを測って安心しない)。
-    expect(sane).toBe(true);
-    // 開発機 実測: 海岸線型 (≒64k 辺) 1 フレームの中央値 ≒ 22ms (近傍クエリ + 集合拘束)。
-    // 閾値はその ~4 倍 = 90ms。「頂点 × 近傍片」割り当てが線形→二次に退化すれば桁で超える一方、
-    // 通常の機差 (CI が 2-3 倍遅い程度) では割れない誠実な値。深い最適化 (16.6ms/frame 予算内へ
-    // 収める) は本 fix のスコープ外 = 既知の性能上限として記録 (ADR / 報告)。
-    expect(median).toBeLessThan(90);
-  });
+    // 退化した実装ではこのテストが 1 フレーム 0.8 秒近くかかるので、時間切れではなく上の
+    // 説明つきで赤くなるよう既定 (5 秒) より長い上限を置く。
+  }, 20_000);
 
   it('広域に散った選択 (union 箱が退化) でも各随伴が自分の障害物を受け取る', () => {
     // 随伴 2 点を lat 0 と lat 500 に離して置く。union 箱の面積は個別箱の総和の

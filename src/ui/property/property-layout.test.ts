@@ -12,16 +12,17 @@
 //   ③ 錨表の行の高さが可変になった ⇒ 仮想スクロールの計算が成り立たなくなる。
 //   ④ 行の高さの数字が CSS と TypeScript でずれた ⇒ 見えている行数がずれ、DOM 行数が増える。
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
 import { ANCHOR_ROW_HEIGHT } from './AnchorList';
+import { readSourceText } from '../../test-support/read-source-text';
 
+// 改行は `readSourceText` が LF に揃える（CRLF のチェックアウトで規則の照合が外れないように）。
 const here = dirname(fileURLToPath(import.meta.url));
-const css = readFileSync(resolve(here, 'property.css'), 'utf8');
+const css = readSourceText(resolve(here, 'property.css'));
 
 /** セレクタが完全一致する最初の規則の本体を取り出す（shell-layout.test.ts と同じ作法）。 */
 function ruleBody(selector: string): string {

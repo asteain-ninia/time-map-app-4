@@ -11,14 +11,17 @@
 // 具体的には ①行の高さが可変になった ②`flex-wrap` が復活した ③区画が伸縮するように
 // なった ④`overflow: hidden` が外れて中身が枠を押し広げられるようになった、の 4 つ。
 
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { readSourceText } from '../../test-support/read-source-text';
+
+// 改行は `readSourceText` が LF に揃える。この作業ツリーは CRLF と LF が混ざり、しかも
+// その違いは git の差分に現れないので、揃えないと複数行セレクタの照合が環境次第で外れる。
 const here = dirname(fileURLToPath(import.meta.url));
-const shellCss = readFileSync(resolve(here, 'shell.css'), 'utf8');
+const shellCss = readSourceText(resolve(here, 'shell.css'));
 
 /**
  * セレクタ（またはセレクタ列の先頭）が完全一致する最初の規則の本体 `{ ... }` を取り出す。
@@ -87,12 +90,15 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     expect(decl(ruleBody('.option-bar__settings'), 'flex')).toBe('0 1 auto');
   });
 
-  it('設定欄には下限がある（「次の一手」が長くても部品 1 個ぶんは読める）', () => {
+  it('設定欄には下限がある（「次の一手」が長くても部品 2 個ぶんは読める）', () => {
     // 実測で捕まえた潰れ: 「次の一手」に長い拒否理由を入れると、`flex: 0 1 auto` の
     // 設定欄が縮む側に回り、72px → 35px まで潰れて「吸着 ▾」が読めなくなった。
     // 共有規則の `min-width: 0`（次項）をこの規則で上書きして下限を切る。ここが 0 に
     // 戻ると同じ潰れが再発する。縮む役は `min-width: 0` のままの「次の一手」が持つ。
-    expect(decl(ruleBody('.option-bar__settings'), 'min-width')).toBe('72px');
+    //
+    // 下限は **いま実際に載っている 2 部品**（吸着 ▾ と［1 つ戻す］）が並ぶ幅で決める
+    // （増分 3 の手直し C1）。1 部品ぶん（72px）だと［1 つ戻す］が切り落とされた。
+    expect(decl(ruleBody('.option-bar__settings'), 'min-width')).toBe('136px');
     expect(decl(ruleBody('.option-bar__next'), 'min-width')).toBeUndefined();
   });
 
