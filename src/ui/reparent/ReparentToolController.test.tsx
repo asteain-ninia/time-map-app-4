@@ -37,6 +37,7 @@ import { applyAddProposal } from '../../domain/editing/apply-proposal';
 
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import { OptionBarStore } from '../shell/option-bar';
 import { TOOL_ID } from '../shell/tools';
 import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
@@ -125,6 +126,8 @@ interface Harness {
   readonly store: StoreApi<SessionStore<DomainRoot>>;
   /** The LAST highlight batch the controller pushed to the render sink (HB3-15(c)). */
   readonly lastHighlight: () => readonly DrawPrimitive[];
+  /** オプションバー（設計書 §C.4）。対象欄への押し込みを見るために持たせる。 */
+  readonly optionBar: OptionBarStore;
   readonly unmount: () => void;
 }
 
@@ -183,6 +186,10 @@ function mountReparent(): Harness {
     });
   };
 
+  // オプションバー（設計書 §C.4）。本番の合成ルートでは `ToolOptionBar` が持っている
+  // 同じ帯を渡す（この道具は持たずに対象欄だけを押し込む）。
+  const optionBar = new OptionBarStore();
+
   const utils = render(
     <ReparentToolController<DomainRoot>
       store={store}
@@ -194,11 +201,12 @@ function mountReparent(): Harness {
       featureAtPoint={featureAtPoint}
       resolveLeafShape={resolveLeafShape}
       drawSink={drawSink}
+      optionBar={optionBar}
       onCommitted={onCommitted}
     />,
   );
 
-  return { store, lastHighlight: () => highlight, unmount: utils.unmount };
+  return { store, lastHighlight: () => highlight, optionBar, unmount: utils.unmount };
 }
 
 function activateReparent(store: StoreApi<SessionStore<DomainRoot>>): void {
@@ -559,6 +567,93 @@ describe('ReparentToolController — バグハント第11波 (#6): focus guard o
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
     expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
     button.remove();
+    h.unmount();
+  });
+});
+
+// 実機の欠陥（増分 4）: 「所属」を構えると、地物を選んでもオプションバーの対象欄が
+// 「（選んでいません）」のままだった。この道具は自前の選択（`targetId`）を持ち、セッションの
+// `activeFeature` を書かないので、帯を持っている `ToolOptionBar` からは見えない。だから
+// **この道具が自分で対象欄へ押し込む**。ここで釘を打つのは 3 つ:
+//   1. 対象を選ぶと、その地物の名前と種類が対象欄に出る（`describeOptionBarTarget` の書式）;
+//   2. 選択をクリアすると空へ戻る;
+//   3. 道具を降りる・部品が外れる、どの経路でも空へ戻る（教訓 5.2 全経路で破棄）。
+describe('ReparentToolController — オプションバーの対象欄（設計書 §C.4）', () => {
+  it('対象を選ぶと帯の対象欄にその名前が出る', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    // 構えただけでは何も選んでいない（器が「（選んでいません）」を出す）。
+    expect(h.optionBar.get().target.name).toBeNull();
+
+    clickInput(1, 1); // leaf-a を対象に選ぶ
+    expect(h.optionBar.get().target).toEqual({ stage: null, name: 'leaf-a（末端地物）' });
+    h.unmount();
+  });
+
+  it('移し先を選んでも、対象欄は「所属を変える地物」のまま', () => {
+    // 対象欄は「いま何を相手にしているか」を出す枠なので、変える側（leaf-a）を出し続ける。
+    // 移し先は地図の色分け（HB3-15(c)）と案内文が受け持つ。
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1); // leaf-a = 対象
+    clickInput(5, 1); // leaf-b = 移し先
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    h.unmount();
+  });
+
+  it('「選択をクリア」で対象欄が空へ戻る', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    fireEvent.click(screen.getByTestId('reparent-clear'));
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('道具を降りると対象欄が空へ戻る', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    act(() => {
+      h.store.getState().setActiveTool(null);
+    });
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('キャンセル（Escape）でも対象欄が空へ戻る', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('部品ごと外れても対象欄が空へ戻る（教訓 5.2 全経路で破棄）', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    h.unmount();
+    expect(h.optionBar.get().target.name).toBeNull();
+  });
+
+  it('帯を奪わない（`claim` しない）― 持ち主は ToolOptionBar のまま', () => {
+    // 押し込みの API は持ち主を見ない規約（`option-bar.ts` の claim 注記 3）。ここで
+    // `claim` すると帯が空へ戻り、`ToolOptionBar` が入れた道具名まで消える。
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.hasOwner()).toBe(false);
     h.unmount();
   });
 });

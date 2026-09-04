@@ -221,6 +221,16 @@ export const EDIT_TOOL_STRINGS = {
    */
   targetWithKindLabel: (name: string, kind: string, kindLabel: string): string =>
     `${name}（${kind}・${kindLabel}）`,
+  /**
+   * **複数を相手にする道具**（結ぶ）の対象欄。1 件目の説明のうしろに、残りが何件あるかを
+   * 添える（「アアウェン州（末端地物・州） ほか 2 件」）。何件選んだのかが読めないと、
+   * 結合してから「1 つ入れ忘れていた」に気づくことになる。
+   *
+   * 1 件のときはこれを使わず名前だけを出す ―― 「ほか 0 件」は読み手を戸惑わせる
+   * （教訓 5.18: 空の枝は文言のほうで畳む）。
+   */
+  targetWithMore: (first: string, rest: number): string =>
+    `${first} ほか ${String(rest)} 件`,
 } as const;
 
 /**

@@ -322,7 +322,10 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       // (spec §注意点). Proximity is delegated to U10/U24.
       // `Ctrl` を押している間は既存の頂点への吸着を切る（設計書 §I.2 / C6）。密な実データで
       // 「その 1 点だけは吸着させたくない」ときに、設定を開かずに済ませるための逃げ道である。
-      const proximity = suppressSnap ? null : (resolveProximity?.(raw) ?? null);
+      const proximity =
+        suppressSnap || !toolCanShare(current.tool)
+          ? null
+          : (resolveProximity?.(raw) ?? null);
       const resolved = resolveSnap({
         raw,
         gridSnap: current.gridSnap,
@@ -342,10 +345,17 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const already =
         proximity !== null &&
         current.vertices.some((v) => v.sharedVertexId === proximity.vertexId);
-      // **線の道具では、始点へ戻る閉じた線を妨げない**（増分 3 の手直し D6）。同じ頂点を
-      // 2 回使うのを止めているのは「長さ 0 の辺を持つ環」を作らないためで、線が自分の
-      // 始点へ戻って輪になるのはそれとは別の、正しい形である。
-      const blocksReuse = already && current.tool !== ADD_TOOL_KIND.Line;
+      // **線の道具では、始点へ戻る閉じた線だけを妨げない**（増分 3 の手直し D6。
+      // 2 回目の手直しで**始点だけ**に絞った）。同じ頂点を 2 回使うのを止めているのは
+      // 「長さ 0 の辺を持つ環」を作らないためで、線が自分の**始点**へ戻って輪になるのは
+      // それとは別の、正しい形である。途中の頂点への出戻りまで通すと、直前に打った点を
+      // もう一度押しただけで長さ 0 の辺ができる。
+      const reusesStart =
+        proximity !== null &&
+        current.tool === ADD_TOOL_KIND.Line &&
+        current.vertices.length >= 2 &&
+        current.vertices[0]?.sharedVertexId === proximity.vertexId;
+      const blocksReuse = already && !reusesStart;
       if (blocksReuse) {
         setMessage(ADD_STRINGS.snapAlreadyUsed);
         setMessageSticky(false);
@@ -400,7 +410,11 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       // 予告（増分 3 / 設計書 §E.1 の V2）: **確定したらどこへ置かれるか**をカーソル移動の
       // たびに解く。共有相手が居るときだけ琥珀の輪が出る（`render/add-batch`）。
       // 供給元は R-tree 索引つきの当たり判定なので、1 移動あたりの費用は候補数に比例する。
-      const proximity = suppressSnap ? null : (resolveProximity?.(raw) ?? null);
+      const previewTool = sessionRef.current?.tool;
+      const proximity =
+        suppressSnap || previewTool === undefined || !toolCanShare(previewTool)
+          ? null
+          : (resolveProximity?.(raw) ?? null);
       const previewSnap: PreviewSnap | null =
         proximity === null
           ? null
@@ -578,6 +592,19 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
 }
 
 // --- helpers ----------------------------------------------------------------
+
+/**
+ * その道具が **共有頂点を作ってよいか**（増分 3 の手直し 2 回目 / 司令塔の決定 3）。
+ *
+ * 点情報は共有に参加しない ―― FR-30 が共有を定めているのは「複数の面情報や線情報」で
+ * あって点情報は入っていないし、都市（点情報）が国境の角と繋がって一緒に動くのは
+ * 意味が通らない。**相手側の除外**（面・線が点情報の頂点に吸着しない）は供給元
+ * `ui/add/snap-ports.ts` が持ち、**自分側の除外**（点の道具が面・線の頂点に吸着しない）が
+ * これである。両側を塞がないと、向きを変えれば同じ連動が作れてしまう。
+ */
+function toolCanShare(tool: AddToolKind): boolean {
+  return tool !== ADD_TOOL_KIND.Point;
+}
 
 function rejectionToMessage(rejection: ShapeRejection): string {
   return shapeRejectionMessage(rejection);

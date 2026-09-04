@@ -10,6 +10,16 @@
 // 中身が要るので後の増分に回す。ただし **間違った内容が出たままにしない** のが目的なので、
 // 道具を構えたら必ず `claim` して帯を空へ戻してから押し込む（残りの 3 区画は既定へ戻る）。
 //
+// **実機で見つかった 2 つの穴**（この部品で塞ぐ）:
+//   A. **編集モードに入った直後（まだ道具を構えていない）に地物を選んでも対象欄が変わらない**。
+//      帯を持つ条件が「名前のある編集道具を構えている」だったので、道具が null の間は
+//      誰も帯を持たず、選んだ地物の名前がどこにも出なかった。→ 帯を持つ条件を
+//      **「編集モードであること」** に広げる（下の `holdsBar`）。
+//   B. **「所属」と「結ぶ」だけ対象欄が「（選んでいません）」のまま**。この 2 つは自前の
+//      選択（`useReparentTool` の `targetId` / `useMergeTool` の `targetIds`）を持ち、
+//      セッションの `activeFeature` を書かない。→ この 2 つについては **対象を押し込まない**
+//      （下の `TOOLS_WITH_OWN_TARGET`）。道具側が自分で押し込む。
+//
 // **帯の所有権**（`option-bar.ts` の `claim` の注記）:
 //   1. 帯は 1 つの道具だけが持つ。持った瞬間に中身は空へ戻る。
 //   2. 手放しは自分が持っているときだけ効く。
@@ -17,6 +27,8 @@
 //      モードは排他なので「追加モードの道具」と「編集モードの道具」が同時に構えられる
 //      ことはなく、React は「（全部の）後片付け → （全部の）effect」の順に走らせるので、
 //      道具を持ち替えた瞬間も「前の道具が手放す → 次の道具が持つ」の順になる。
+//   4. 押し込みは持ち主を見ない規約なので、**「所属」「結ぶ」は `claim` せずに対象だけを
+//      押し込む**。帯の持ち主はこの部品のままで、道具名・設定・確定はここが面倒を見る。
 //
 // **描画するものは無い**（`null` を返す）。帯の見た目は `OptionBar.tsx` が持ち、ここは
 // 押し込むだけの配線である。合成ルートの好きな場所へ 1 つだけ置けばよい。
@@ -32,12 +44,33 @@ import type { TimePoint } from '../../domain/time/time-point';
 // `ui/property/index.ts` ではなく `messages.ts` を直に読むのは、index 経由だと
 // PropertyPanel → `shell/permissions` と輪になるため（messages.ts はドメインしか読まない）。
 import { featureKindJaLabel } from '../property/messages';
-import { EDIT_MODE } from '../state/session';
+import { EDIT_MODE, type ToolId } from '../state/session';
 import type { SessionStore } from '../state/store';
 
 import type { OptionBarStore } from './option-bar';
 import { EDIT_TOOL_STRINGS } from './strings';
-import { editToolName } from './tools';
+import { TOOL_ID, editToolName } from './tools';
+
+/**
+ * **対象欄を自分で押し込む道具**の一覧（穴 B）。ここに載っている道具については、この部品は
+ * 対象を押し込まない。
+ *
+ * **なぜこの 2 つだけ別扱いなのか**: 「所属」と「結ぶ」は自前の選択機構を持つ ――
+ * `useReparentTool` の `targetId`（変更する地物）と `useMergeTool` の `targetIds`
+ * （結合する地物の集合）である。どちらも **セッションの `activeFeature` を書かない**
+ * ので、`activeFeature` から作るこの部品の対象欄は常に null になる。にもかかわらず
+ * ここが毎回 null を押し込むと、道具側が入れた名前を **上書きして消してしまう**
+ * （押し込みは持ち主を見ない規約＝`option-bar.ts` の `claim` 注記 3）。他の 6 つの道具は
+ * `activeFeature` を書くので、ここが押し込むほうが 1 か所で済む。
+ *
+ * 判定を道具 id の表 1 つに寄せてあるのは、道具ごとに `if` を散らすと「自前の選択を
+ * 持つ道具を足したのに、ここへ足し忘れて対象欄が消える」が起きるため（教訓 5.19 /
+ * 5.29: 分岐は 1 か所の表で持つ）。
+ */
+const TOOLS_WITH_OWN_TARGET: ReadonlySet<ToolId> = new Set<ToolId>([
+  TOOL_ID.EditReparent,
+  TOOL_ID.EditMerge,
+]);
 
 export interface ToolOptionBarProps<S> {
   /** セッションストア（U16）。道具・モード・選択・年・ドメインをここから読む。 */
@@ -88,41 +121,63 @@ export function ToolOptionBar<S>(props: ToolOptionBarProps<S>): null {
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
 
-  // 帯を持つ条件: **編集モードで、名前の付いた編集道具を構えている**こと。
-  // `editToolName` は編集道具にしか名前を持たないので、追加モードの点・線・面では
-  // null になる。モードも併せて見るのは、道具だけが残ったまま表示専用へ落ちる経路
-  // （`setMode` は道具も畳むが、規則を 1 か所に頼らない）で持ち続けないためである。
-  const toolName =
-    mode === EDIT_MODE.Edit && activeTool !== null ? editToolName(activeTool) : null;
+  // 帯を持つ条件: **編集モードであること**（穴 A）。道具を構えていなくても持つ ――
+  // 編集モードに入った直後に地図や一覧から地物を選んだときも、対象欄にその名前を出す
+  // ためである。追加モードと表示専用モードでは持たない（追加は `AddToolController` の
+  // 持ち場、表示専用はそもそも道具が無い）。
+  const holdsBar = mode === EDIT_MODE.Edit;
+
+  // 道具名。道具を構えていなければ null。`editToolName` は編集道具にしか名前を持たない
+  // ので、万一 追加の道具 id が残っていても null になる。
+  //
+  // **道具が無いときに何を押し込むか**: `null` を押し込む＝**器の既定に任せる**。
+  // 既定の「✦ 選ぶ」を同じ文字列でここからも押し込むこともできるが、そうすると同じ
+  // 文言が器（`OPTION_BAR_STRINGS.defaultToolName`）と道具の 2 か所に載り、片方だけ
+  // 直したときに割れる（教訓 5.29）。器が既に「何も押されていなければ既定を出す」と
+  // 決めているので、ここは黙って任せるほうが真実源が 1 本で済む。
+  const toolName = holdsBar && activeTool !== null ? editToolName(activeTool) : null;
+
+  // 自前の選択を持つ道具（所属・結ぶ）を構えているか（穴 B）。構えているあいだ、
+  // 対象欄は **道具側が押し込む**ので、ここは触らない。
+  const toolPushesOwnTarget = activeTool !== null && TOOLS_WITH_OWN_TARGET.has(activeTool);
 
   // いま選んでいる地物の説明。選んでいなければ null（器が「（選んでいません）」を出す）。
+  // 所属・結ぶのときは **引きもしない** ―― 押し込まないので引くだけ無駄である
+  // （押し込まないという規律そのものは下の effect にある。同じ条件がここに出るのは
+  // 重複ではなく、「押し込まない ⇒ 引かない」という順接の帰結）。
   const targetName =
-    toolName === null || activeFeature === null
+    !holdsBar || toolPushesOwnTarget || activeFeature === null
       ? null
       : describeTargetOf(resolveFeature(domain, currentTime, activeFeature));
 
   // --- 帯を持つ / 手放す ------------------------------------------------------
   //
   // 道具が替わるたびに持ち直す（`claim` はその瞬間に中身を空へ戻すので、前の道具が
-  // 残した道具名・対象・次の一手・設定・確定は持ち越されない＝教訓 5.2）。道具を外す・
-  // モードを離れる（`toolName` が null になる）と後片付けが走り、帯は空へ戻る。
+  // 残した道具名・対象・次の一手・設定・確定は持ち越されない＝教訓 5.2）。**道具を外した
+  // だけでは手放さない**（編集モードのあいだは持ったまま、道具名だけが既定へ戻る）。
+  // モードを離れると後片付けが走り、帯は空へ戻る。
   useEffect(() => {
-    if (toolName === null) return;
+    if (!holdsBar) return;
     const owner = {};
     return optionBar.claim(owner);
-  }, [optionBar, toolName]);
+    // `activeTool` を依存に入れるのは、道具の持ち替えで claim を踏み直して帯を空へ
+    // 戻すため（前の道具が入れた設定欄・確定ボタンを持ち越さない）。
+  }, [optionBar, holdsBar, activeTool]);
 
   // --- 道具名と対象を押し込む -------------------------------------------------
   //
-  // **押し込む側が持ち主である**のが規約なので、持っていないとき（`toolName === null`）は
+  // **押し込む側が持ち主である**のが規約なので、持っていないとき（編集モードでない）は
   // 押し込まない。対象は選んでいないときも null を押し込む ―― 選択を外した瞬間に
   // 前の名前が残らないようにするためで、`setTarget` は変化が無ければ何もしない。
   useEffect(() => {
-    if (toolName === null) return;
+    if (!holdsBar) return;
     optionBar.setToolName(toolName);
+    // 所属・結ぶのときは対象を触らない。ここで null を押すと、道具側が入れた
+    // 「いま相手にしているもの」を毎回消してしまう（上の表の注記）。
+    if (toolPushesOwnTarget) return;
     // 段階表示（「手順 1/3」）を持つのは複数段の道具だけなので、ここでは常に null。
     optionBar.setTarget(null, targetName);
-  }, [optionBar, toolName, targetName]);
+  }, [optionBar, holdsBar, toolName, toolPushesOwnTarget, targetName]);
 
   return null;
 }

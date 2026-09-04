@@ -83,18 +83,27 @@ export interface AddSnapPorts {
   /** 地物の表示名（吸着の予告「『◯◯』の頂点に合わせます」に使う）。 */
   readonly featureNameOf: (featureId: FeatureId) => string | null;
   /**
-   * FR-77 / GPT #3・#4: **いま描いた形を丸ごと含む面**の id（古い順）。上位領域の候補を
-   * これだけに絞り、一意ならそれを既定にする。
+   * FR-77 / GPT #4: **いま描いた形を丸ごと含む面**の id を、**内側から外側の順**で返す。
+   * 呼び出し側は先頭（＝最も内側の面）を上位領域の既定にする。
    *
-   * **なぜ必要か**: 初版の候補一覧は「その時刻に居る面 776 件」を平らに並べていたので、
-   * 利用者は自分の形と何の関係も無い面を上位領域に選べたし、逆に **入れ子として通した形が
-   * 既定では「上位領域なし」で保存され、最上位の面として重なり競合になった**。
+   * **なぜ必要か**: **入れ子として通した形が、既定では「上位領域なし」で保存され、
+   * 最上位の面として重なり競合になっていた**（GPT #4）。**候補の一覧は絞らない**
+   * ―― 離れた場所にある子を持つ上位領域（集約地物の実領域は子の和なので、親自身の形の
+   * 外に子が居てよい）も選べる必要があるため。
+   *
+   * **なぜ「一意なら」ではなく「最も内側」か**（増分 3 の手直し 2 回目）。含む面は
+   * ふつう 1 つではない ―― 2 人目の子は「1 人目の子（の中に描いたなら）＋親」、
+   * 修復で集約化したあとは「親 直轄領＋親」のように **必ず 2 つ以上**になる。
+   * 「一意なら」だと **最初の子のときしか既定が入らず**、2 人目以降は黙って
+   * 「上位領域なし」で保存されていた（実測）。いちばん内側を選べば、利用者が
+   * 「その面の中に描いた」と思っている面がそのまま入る。
    *
    * **数え方**: ある点を含む面は「その点に当たる末端」と「その先祖」で尽きる（集約地物の
    * 実領域は子の和なので、子に当たらない点は親にも当たらない）。だから点ごとに末端を 1 回
    * 引いて先祖をたどり、**全部の点に共通するもの**を返す。全域を走査して面ごとに実領域を
    * 組み立てる（`resolveFeatureArea` を 776 回呼ぶ）必要はない。
    * 境界の上に載った点も「含まれる」に数える（親の角へ吸着した頂点は必ず境界に載る）。
+   * **子を持っている面も数える**（末端でなくなっても、自分の形の中にあることは変わらない）。
    */
   readonly facesContaining: (
     coordinates: readonly WorldCoordinate[],
@@ -229,18 +238,24 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
       features.map((f) => [f.id, f.parentId]),
     );
     let common: Set<FeatureId> | null = null;
+    // 1 点目の連なり（末端 → 先祖）を **並びの基準**にする。先頭がいちばん内側である。
+    let innermostFirst: readonly FeatureId[] = [];
     for (const c of coordinates) {
       const hit = leafAtPointIncludingBoundary(ctx.root, ctx.time, c);
       if (hit === null) return []; // 1 点でもどの面にも入っていなければ、共通の親は無い。
-      const chain = new Set<FeatureId>(selfAndAncestors(hit.featureId, parentOf));
-      if (common === null) common = chain;
-      else for (const id of [...common]) if (!chain.has(id)) common.delete(id);
+      const chain = selfAndAncestors(hit.featureId, parentOf);
+      if (common === null) {
+        common = new Set<FeatureId>(chain);
+        innermostFirst = chain;
+      } else {
+        const here = new Set<FeatureId>(chain);
+        for (const id of [...common]) if (!here.has(id)) common.delete(id);
+      }
       if (common.size === 0) return [];
     }
     if (common === null) return [];
-    // 並びは `featuresAt` の順（画面の一覧と同じ）に揃える。
     const inCommon = common;
-    return features.filter((f) => inCommon.has(f.id)).map((f) => f.id);
+    return innermostFirst.filter((id) => inCommon.has(id));
   };
 
   return {

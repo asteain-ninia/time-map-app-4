@@ -279,6 +279,56 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
     });
   });
 
+  it('o: 点の道具は面・線の頂点に吸着しない（司令塔の決定 3。所有者が覆せる）', () => {
+    const resolveProximity = vi.fn(() => ({
+      coordinate: C(4, 4),
+      sharedCandidateId: asFeatureId('f-neighbour') as FeatureId,
+      featureId: asFeatureId('f-neighbour') as FeatureId,
+      bodyCoordinate: C(4, 4),
+      vertexId: asVertexId('v-neighbour') as VertexId,
+    }));
+    const { result } = renderHook(() => useAddTool(withPorts({ resolveProximity })));
+    act(() => result.current.start(ADD_TOOL_KIND.Point));
+    act(() => result.current.preview(C(5, 5)));
+    expect(result.current.session?.previewSnap).toBeNull();
+    act(() => result.current.placeAt(C(5, 5)));
+    expect(result.current.session?.vertices[0]?.coordinate).toEqual(C(5, 5));
+    expect(result.current.session?.vertices[0]?.sharedVertexId).toBeUndefined();
+    // 供給元も呼ばない（都市が国境の角と繋がる余地を残さない）。
+    expect(resolveProximity).not.toHaveBeenCalled();
+    // 面の道具では今までどおり吸着する（道具ごとの規則であることを示す）。
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.preview(C(5, 5)));
+    expect(result.current.session?.previewSnap).not.toBeNull();
+  });
+
+  it('o: 線が同じ頂点を使い直せるのは **始点だけ**（途中の出戻りは長さ 0 の辺になる）', () => {
+    const v1 = asVertexId('v-1') as VertexId;
+    const v2 = asVertexId('v-2') as VertexId;
+    let target = v1;
+    const resolveProximity = vi.fn(() => ({
+      coordinate: C(0, 0),
+      sharedCandidateId: asFeatureId('f-n') as FeatureId,
+      featureId: asFeatureId('f-n') as FeatureId,
+      bodyCoordinate: C(0, 0),
+      vertexId: target,
+    }));
+    const { result } = renderHook(() => useAddTool(withPorts({ resolveProximity })));
+    act(() => result.current.start(ADD_TOOL_KIND.Line));
+    act(() => result.current.placeAt(C(0, 0))); // 始点（v-1 に吸着）
+    target = v2;
+    act(() => result.current.placeAt(C(1, 1))); // 2 点目（v-2 に吸着）
+    expect(result.current.session?.vertices).toHaveLength(2);
+    // **2 点目をもう一度**押しても増えない（長さ 0 の辺になるので断る）。
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.session?.vertices).toHaveLength(2);
+    expect(result.current.message).toContain('もう使っています');
+    // **始点**へ戻るのは通す（閉じた線は正しい形）。
+    target = v1;
+    act(() => result.current.placeAt(C(0, 0)));
+    expect(result.current.session?.vertices).toHaveLength(3);
+  });
+
   it('C6: Ctrl を押している間は吸着を切る（設計書 §I.2）', () => {
     const neighbour = asFeatureId('f-neighbour') as FeatureId;
     const resolveProximity = vi.fn(() => ({

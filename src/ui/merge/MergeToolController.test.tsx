@@ -35,6 +35,7 @@ import { applyAddProposal } from '../../domain/editing/apply-proposal';
 
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import { OptionBarStore } from '../shell/option-bar';
 import { TOOL_ID } from '../shell/tools';
 import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
@@ -168,6 +169,8 @@ interface Harness {
   readonly store: StoreApi<SessionStore<DomainRoot>>;
   /** The LAST highlight batch the controller pushed to the render sink (HB3-15(c)). */
   readonly lastHighlight: () => readonly DrawPrimitive[];
+  /** オプションバー（設計書 §C.4）。対象欄への押し込みを見るために持たせる。 */
+  readonly optionBar: OptionBarStore;
   readonly unmount: () => void;
 }
 
@@ -246,6 +249,10 @@ function mountMerge(
     });
   };
 
+  // オプションバー（設計書 §C.4）。本番の合成ルートでは `ToolOptionBar` が持っている
+  // 同じ帯を渡す（この道具は持たずに対象欄だけを押し込む）。
+  const optionBar = new OptionBarStore();
+
   const utils = render(
     <MergeToolController<DomainRoot>
       store={store}
@@ -258,11 +265,12 @@ function mountMerge(
       featureAtPoint={featureAtPoint}
       resolveLeafShape={resolveLeafShape}
       drawSink={drawSink}
+      optionBar={optionBar}
       onCommitted={onCommitted}
     />,
   );
 
-  return { store, lastHighlight: () => highlight, unmount: utils.unmount };
+  return { store, lastHighlight: () => highlight, optionBar, unmount: utils.unmount };
 }
 
 function activateMerge(store: StoreApi<SessionStore<DomainRoot>>): void {
@@ -596,6 +604,127 @@ describe('MergeToolController — 保存できない長さの辺は画面で断�
     expect(effectiveCount(h.store)).toBe(2);
     expect(screen.getByTestId('merge-message').textContent).toContain('世界を半周以上');
     expect(screen.getByTestId('merge-message').textContent).toContain('別の組み合わせで結合');
+    h.unmount();
+  });
+});
+
+// --- オプションバーの対象欄 (設計書 §C.4) ------------------------------------
+//
+// 実機の欠陥（増分 4）: 「結ぶ」を構えると、地物を選んでもオプションバーの対象欄が
+// 「（選んでいません）」のままだった。この道具は自前の選択（`targetIds`）を持ち、セッションの
+// `activeFeature` を書かないので、帯を持っている `ToolOptionBar` からは見えない。だから
+// **この道具が自分で対象欄へ押し込む**。結合は **複数** を相手にするので、何件選んだのかが
+// 読める文にする（1 件なら名前だけ、2 件以上なら「◯◯ ほか N 件」）。
+
+/** 横に並んだ 3 つの面 ([0,2] / [2,4] / [4,6]、緯度は [0,2])。件数の文を見るための材料。 */
+function threeAdjacentLeaves(): DomainRoot {
+  const parts = [
+    rectLeaf('leaf-a', 'va', 0, 2),
+    rectLeaf('leaf-b', 'vb', 2, 2),
+    rectLeaf('leaf-c', 'vc', 4, 2),
+  ];
+  let project = emptyProject();
+  for (const part of parts) {
+    project = applyAddProposal(project, {
+      featureId: part.feature.id,
+      anchorTime: ANCHOR,
+      snapshot: { feature: part.feature, vertices: part.vertices, sharedCandidateIds: new Map() },
+    });
+  }
+  return project;
+}
+
+/** 3 つ並んだ面の当たり判定。 */
+const threeFeatureAtPoint: FeatureAtPoint = (p) => {
+  if (p.lat < 0 || p.lat > 2) return null;
+  if (p.lon >= 0 && p.lon <= 2) return asFeatureId('leaf-a');
+  if (p.lon > 2 && p.lon <= 4) return asFeatureId('leaf-b');
+  if (p.lon > 4 && p.lon <= 6) return asFeatureId('leaf-c');
+  return null;
+};
+
+describe('MergeToolController — オプションバーの対象欄（設計書 §C.4）', () => {
+  it('1 件だけ選んだときは、その地物の名前と種類だけが出る', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    // 構えただけでは何も選んでいない（器が「（選んでいません）」を出す）。
+    expect(h.optionBar.get().target.name).toBeNull();
+
+    clickInput(1, 1); // leaf-a
+    expect(h.optionBar.get().target).toEqual({ stage: null, name: 'leaf-a（末端地物）' });
+    h.unmount();
+  });
+
+  it('2 件以上選ぶと、何件選んだかが分かる文になる', () => {
+    const h = mountMerge(threeAdjacentLeaves(), threeFeatureAtPoint);
+    activateMerge(h.store);
+
+    clickInput(1, 1); // leaf-a
+    clickInput(3, 1); // leaf-b
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物） ほか 1 件');
+
+    clickInput(5, 1); // leaf-c
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物） ほか 2 件');
+
+    // 外すと件数も戻る（「ほか 0 件」にはしない）。
+    clickInput(5, 1); // leaf-c を外す
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物） ほか 1 件');
+    h.unmount();
+  });
+
+  it('「選択をクリア」で対象欄が空へ戻る', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    clickInput(3, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物） ほか 1 件');
+
+    fireEvent.click(screen.getByTestId('merge-clear'));
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('道具を降りると対象欄が空へ戻る', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    act(() => {
+      h.store.getState().setActiveTool(null);
+    });
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('キャンセル（Escape）でも対象欄が空へ戻る', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('部品ごと外れても対象欄が空へ戻る（教訓 5.2 全経路で破棄）', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+
+    h.unmount();
+    expect(h.optionBar.get().target.name).toBeNull();
+  });
+
+  it('帯を奪わない（`claim` しない）― 持ち主は ToolOptionBar のまま', () => {
+    // 押し込みの API は持ち主を見ない規約（`option-bar.ts` の claim 注記 3）。ここで
+    // `claim` すると帯が空へ戻り、`ToolOptionBar` が入れた道具名まで消える。
+    const h = mountMerge();
+    activateMerge(h.store);
+    clickInput(1, 1);
+    expect(h.optionBar.hasOwner()).toBe(false);
     h.unmount();
   });
 });

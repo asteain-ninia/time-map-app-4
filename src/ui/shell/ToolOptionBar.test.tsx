@@ -7,6 +7,11 @@
 //   3. **追加モードでは帯を奪わない**（`AddToolController` が押し込んだ中身が残る）;
 //   4. 道具を外す・モードを離れると帯が空へ戻る（教訓 5.2 全経路で破棄）。
 //
+// 実機でさらに 2 つ穴が見つかったので、それも釘で留める:
+//   5. **道具を構えていなくても**（編集モードに入った直後）、地物を選べば対象欄に出る;
+//   6. **「所属」「結ぶ」を構えているあいだは対象を押し込まない** ―― この 2 つは自前の
+//      選択を持ち、自分で押し込む。ここが毎回 null で上書きすると、その値が消える。
+//
 // 帯の **見た目** は `OptionBar.test.tsx` が持つので、ここは `OptionBarStore` の
 // 中身だけを見る（同じことを 2 か所で測らない）。
 
@@ -201,6 +206,104 @@ describe('ToolOptionBar — 対象欄（240px）', () => {
   });
 });
 
+describe('ToolOptionBar — 道具を構えていなくても帯を持つ（穴 A）', () => {
+  it('編集モードで道具を構えていなくても、地物を選ぶと対象欄に出る', () => {
+    // 実機の欠陥そのもの: 編集モードに入った直後（道具は null）に地図や一覧から地物を
+    // 選んでも、対象欄が「（選んでいません）」のままだった。
+    const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: null });
+    const optionBar = mount(store);
+
+    // 帯は持っている。道具名は押し込まず、器の既定（「✦ 選ぶ」）に任せる。
+    expect(optionBar.hasOwner()).toBe(true);
+    expect(optionBar.get().toolName).toBeNull();
+    expect(optionBar.get().target.name).toBeNull();
+
+    act(() => {
+      store.getState().setActiveFeature(AAWEN.id);
+    });
+
+    expect(optionBar.get().target).toEqual({
+      stage: null,
+      name: 'アアウェン州（末端地物・州）',
+    });
+  });
+
+  it('道具を構えていないときに選択を外すと、対象欄も空へ戻る', () => {
+    const store = makeStore({
+      mode: EDIT_MODE.Edit,
+      activeTool: null,
+      activeFeature: AAWEN.id,
+    });
+    const optionBar = mount(store);
+    expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
+
+    act(() => {
+      store.getState().setActiveFeature(null);
+    });
+    expect(optionBar.get().target.name).toBeNull();
+  });
+});
+
+describe('ToolOptionBar — 自前の選択を持つ道具の対象は押し込まない（穴 B）', () => {
+  // 「所属」「結ぶ」は自前の選択（`targetId` / `targetIds`）を持ち、セッションの
+  // `activeFeature` を書かない。ここが毎回 null を押し込むと、その道具が入れた値を
+  // 消してしまう（押し込みは持ち主を見ない規約）。
+  const table: readonly (readonly [ToolId, string])[] = [
+    [TOOL_ID.EditReparent, EDIT_TOOL_STRINGS.reparent],
+    [TOOL_ID.EditMerge, EDIT_TOOL_STRINGS.merge],
+  ];
+
+  for (const [tool, toolName] of table) {
+    it(`「${toolName}」を構えているとき、対象は押し込まない（道具名は押し込む）`, () => {
+      const store = makeStore({
+        mode: EDIT_MODE.Edit,
+        activeTool: tool,
+        activeFeature: AAWEN.id,
+      });
+      const optionBar = mount(store);
+
+      // 道具名はこの部品が押し込む（帯の持ち主はこちらのまま）。
+      expect(optionBar.get().toolName).toBe(toolName);
+      // 対象は押し込まない ―― `activeFeature` が指す地物の名前は出ない。
+      expect(optionBar.get().target.name).toBeNull();
+    });
+
+    it(`「${toolName}」が自分で入れた対象を、あとから消さない`, () => {
+      const store = makeStore({
+        mode: EDIT_MODE.Edit,
+        activeTool: tool,
+        activeFeature: null,
+      });
+      const optionBar = mount(store);
+
+      // その道具が自分で押し込んだ状態を作る（本番は各コントローラの effect）。
+      optionBar.setTarget(null, '道具が入れた対象');
+
+      // セッション側の選択が動いても、押し込んだ値は残る（消されない）。
+      act(() => {
+        store.getState().setActiveFeature(AAWEN.id);
+      });
+      expect(optionBar.get().target.name).toBe('道具が入れた対象');
+
+      act(() => {
+        store.getState().setActiveFeature(NORTH.id);
+      });
+      expect(optionBar.get().target.name).toBe('道具が入れた対象');
+    });
+  }
+
+  it('他の 6 つの道具は今までどおり押し込む（別扱いはこの 2 つだけ）', () => {
+    const store = makeStore({
+      mode: EDIT_MODE.Edit,
+      activeTool: TOOL_ID.EditKnife,
+      activeFeature: AAWEN.id,
+    });
+    const optionBar = mount(store);
+
+    expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
+  });
+});
+
 describe('ToolOptionBar — 追加の道具と喧嘩しない', () => {
   it('追加モードでは claim しない（追加の道具が押し込んだ中身を奪わない）', () => {
     const store = makeStore({ mode: EDIT_MODE.Add, activeTool: TOOL_ID.AddArea });
@@ -273,7 +376,7 @@ describe('ToolOptionBar — 合成ルートの繋ぎ方（App.tsx が渡す形�
 });
 
 describe('ToolOptionBar — 降りたら空へ戻る（教訓 5.2）', () => {
-  it('道具を外すと帯が空へ戻る', () => {
+  it('道具を外すと中身は空へ戻るが、編集モードのあいだは帯を持ったままにする', () => {
     const store = makeStore({
       mode: EDIT_MODE.Edit,
       activeTool: TOOL_ID.EditKnife,
@@ -286,9 +389,12 @@ describe('ToolOptionBar — 降りたら空へ戻る（教訓 5.2）', () => {
       store.getState().setActiveTool(null);
     });
 
+    // 道具名は既定へ、対象も空へ（道具の持ち替えは選択も畳む＝`setActiveTool` の契約）。
     expect(optionBar.get().toolName).toBeNull();
     expect(optionBar.get().target).toEqual({ stage: null, name: null });
-    expect(optionBar.hasOwner()).toBe(false);
+    // **帯は持ったまま**。道具を構えていなくても地物を選べば対象欄に出す必要があるので、
+    // 帯を持つ条件は「編集モードであること」に広げてある（穴 A）。
+    expect(optionBar.hasOwner()).toBe(true);
   });
 
   it('編集モードを離れると帯が空へ戻る', () => {

@@ -252,6 +252,38 @@ describe('createAddSnapPorts — FR-29 の末端判定', () => {
     expect(onCorner?.featureId).toBe(asFeatureId('f-a'));
   });
 
+  it('B2: 形を含む面を **内側から外側の順** で返す（2 人目以降の子でも既定が決まる）', () => {
+    // 実測（再検証 r3）: 「一意なら既定」だと、含む面が「1 人目の子＋親」の 2 つに
+    // なる 2 人目以降で既定が入らず、黙って「上位領域なし」で保存されていた。
+    const parent = squareLeaf('f-parent', 'v-p', 0, 0, 10);
+    let root = commit(emptyProject(), parent);
+    const childBase = squareLeaf('f-child', 'v-c', 2, 2, 6); // 親の内側
+    root = commit(root, { feature: withParentId(childBase.feature, asFeatureId('f-parent')), vertices: childBase.vertices });
+    const ports = portsFor(root, { centerLon: 5, centerLat: 5, zoom: 10 });
+    // 子の内側の点だけで描いた形は「子 → 親」の順に返る。
+    const inChild = ports.facesContaining([
+      { lon: 4, lat: 4 },
+      { lon: 6, lat: 4 },
+      { lon: 5, lat: 6 },
+    ]);
+    expect(inChild).toEqual([asFeatureId('f-child'), asFeatureId('f-parent')]);
+    // 親の内側だが子の外の点だけなら「親」だけ。
+    const inParentOnly = ports.facesContaining([
+      { lon: 1, lat: 1 },
+      { lon: 1.5, lat: 1 },
+      { lon: 1, lat: 1.5 },
+    ]);
+    expect(inParentOnly).toEqual([asFeatureId('f-parent')]);
+    // またぐ形（子の中と、子の外＝親だけ）は共通の「親」だけになる。
+    const straddling = ports.facesContaining([
+      { lon: 4, lat: 4 },
+      { lon: 1, lat: 1 },
+    ]);
+    expect(straddling).toEqual([asFeatureId('f-parent')]);
+    // 1 点でも外に出たら空。
+    expect(ports.facesContaining([{ lon: 4, lat: 4 }, { lon: 50, lat: 50 }])).toEqual([]);
+  });
+
   it('どの面にも触れていない場所は null', () => {
     const root = commit(emptyProject(), squareLeaf('f-a', 'v-a', 0, 0, 4));
     const ports = portsFor(root, { centerLon: 2, centerLat: 2, zoom: 10 });

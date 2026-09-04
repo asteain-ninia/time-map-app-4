@@ -39,8 +39,10 @@ import {
 import type { WorldCoordinate } from '../../domain/coordinate';
 import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
+import type { TimePoint } from '../../domain/time/time-point';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE, type SnapSettings } from '../state/session';
+import { TIME_CHANGE_SOURCE } from '../state/store';
 
 import { coerceGridSpacing } from '../../domain/basemap/grid';
 import { buildAddPrimitives, type AddStyle } from '../../render/add-batch';
@@ -55,6 +57,16 @@ import { SnapOptions } from './SnapOptions';
 import { ADD_STRINGS } from './strings';
 import { addToolKindFor } from './tool-kind';
 import { ADD_PHASE, useAddTool, type StartAddProcess } from './useAddTool';
+
+/**
+ * 打ちかけを捨ててよいかを聞いている最中の状態（増分 3 の手直し / D1）。
+ * `reason` は**何が起きて聞いているか**（文言と、捨てたあとの一手が変わる）。
+ * `keep` は「このままにする」を選んだときに**元へ戻す**動き（年を戻す・選択を戻す）。
+ */
+interface PendingDiscard {
+  readonly reason: 'escape' | 'time' | 'select';
+  readonly keep?: () => void;
+}
 
 // --- Injected ports (the layer-crossing contracts; 教訓 5.33) ----------------
 
@@ -132,12 +144,20 @@ export interface AddToolControllerProps<S> {
    * ため、捨てた頂点の数をここから報せて状態行に出す。`count` は捨てた頂点の数。
    */
   readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /**
+   * 一覧から地物を選んだあと、**下書きを片付けてから**視点をその地物へ合わせる口
+   * （増分 3 の手直し 2 回目 / D1。設計書 §D.2）。作図中は視点を飛ばさない（バグ狩り #7）
+   * が、**下書きを捨てたなら合わせてよい** ―― 捨てたあとに視点だけ動かないのは、
+   * 「行を押したのに何も起きない」に見える。
+   */
+  readonly onFocusSelection?: (() => void) | undefined;
   /** Face parent candidates at the current time (FR-77); host-resolved (U10/U08). */
   readonly parentCandidates?: readonly ParentCandidate[] | undefined;
   /**
-   * FR-77 / GPT #3・#4: **いま描いた形を丸ごと含む面**の id。上位領域の候補をこれだけに
-   * 絞り、一意ならそれを既定にする（増分 3 の手直し B2）。渡されなければ従来どおり
-   * 「その時刻に居る面すべて」を並べる。
+   * FR-77 / GPT #4: **いま描いた形を丸ごと含む面**の id を、**内側から外側の順**で返す口。
+   * 先頭（いちばん内側）を上位領域の**既定**にする（増分 3 の手直し B2）。
+   * **候補の一覧は絞らない** ―― 含んでいることは上位領域である条件ではないため。
+   * 渡されなければ既定を決めない（利用者が選ぶ）。
    */
   readonly facesContaining?: ((coordinates: readonly WorldCoordinate[]) => readonly FeatureId[]) | undefined;
   /** Nearest existing-vertex proximity resolver (FR-31; U10/U24). */
@@ -198,6 +218,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     style,
   } = props;
   const onDraftDiscarded = props.onDraftDiscarded;
+  const onFocusSelection = props.onFocusSelection;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
   const mode = useStore(store, (s) => s.mode);
@@ -276,6 +297,72 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 次の 1 点を打てば作図が始まる、という形で満たされる。
   const armed = activeKind !== null && add.phase === ADD_PHASE.Idle && add.session === null;
 
+  // --- D1: 年が動いた / 一覧で別の地物を選んだ（設計書 §D.2）--------------------
+  //
+  // どちらも **作図の外側で起きる遷移**で、打ちかけの下書きはその年・その選択のもとで
+  // 打たれている。年が変われば吸着した相手が居ないかもしれないし（GPT #8）、一覧で
+  // 選び直したなら利用者の関心はもう別の地物にある。**黙って残さない・黙って消さない。**
+  const currentTimeKey = `${String(currentTime.year)}/${currentTime.granularity}`;
+  const prevTimeRef = useRef<{ key: string; value: TimePoint }>({
+    key: currentTimeKey,
+    value: currentTime,
+  });
+  const activeFeature = useStore(store, (s) => s.activeFeature);
+  const prevActiveRef = useRef<FeatureId | null>(activeFeature);
+
+  const cancelAction = add.cancel;
+  const canCompleteNow = add.canComplete;
+  const hasDraftNow =
+    (add.session?.vertices.length ?? 0) > 0 || add.phase === ADD_PHASE.PropertyForm;
+
+  useEffect(() => {
+    const prev = prevTimeRef.current;
+    if (prev.key === currentTimeKey) return;
+    const before = prev.value;
+    prevTimeRef.current = { key: currentTimeKey, value: currentTime };
+    if (!hasDraftNow) return;
+    if (pendingRef.current !== null) return; // すでに聞いている最中。
+    if (canCompleteNow) {
+      setPendingDiscard({
+        reason: 'time',
+        // 「このままにする」＝年を戻す。下書きは打った年のものなので、年だけ進めて
+        // 残すと「別の年の頂点で作った形」を保存することになる（GPT #8）。
+        keep: () => {
+          // 元の年へ戻す。**数値ジャンプと同じ入口**を通すので、選択の再検証も
+          // 今までどおり走る（教訓 5.29: 時刻を動かす経路を増やさない）。
+          store.getState().setCurrentTime(before, TIME_CHANGE_SOURCE.NumericJump);
+        },
+      });
+      return;
+    }
+    const lost = draftSizeRef.current;
+    cancelAction();
+    if (lost > 0) onDraftDiscarded?.(lost);
+  }, [currentTimeKey, currentTime, hasDraftNow, canCompleteNow, cancelAction, onDraftDiscarded, store]);
+
+  useEffect(() => {
+    const prev = prevActiveRef.current;
+    if (prev === activeFeature) return;
+    prevActiveRef.current = activeFeature;
+    if (activeFeature === null) return; // 選択を外しただけ。
+    if (!hasDraftNow) return;
+    if (pendingRef.current !== null) return;
+    if (canCompleteNow) {
+      // 「このままにする」＝選択を戻す（視点も動かさない）。
+      setPendingDiscard({
+        reason: 'select',
+        keep: () => {
+          store.getState().setActiveFeature(prev);
+        },
+      });
+      return;
+    }
+    const lost = draftSizeRef.current;
+    cancelAction();
+    if (lost > 0) onDraftDiscarded?.(lost);
+    onFocusSelection?.();
+  }, [activeFeature, hasDraftNow, canCompleteNow, cancelAction, onDraftDiscarded, onFocusSelection, store]);
+
   // --- 教訓 5.5: re-validate the chosen face parent when the candidate set changes
   // (a time change can drop a covering parent). Runs only while a session exists.
   useEffect(() => {
@@ -305,11 +392,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        // **3 点以上の打ちかけは確認してから捨てる**（増分 3 の手直し D1 / GPT #10）。
-        // Escape はいちばん押しやすい打鍵なので、閉じられる形（＝作り直すのに手間がかかる形）
-        // まで来ていたら 1 度聞く。1〜2 点は聞かない（押し直せば済む）。
+        // **確定できる点数以上の打ちかけは確認してから捨てる**（設計書 §D.2 / D1）。
+        // Escape はいちばん押しやすい打鍵なので、確定できる形（＝作り直すのに手間がかかる
+        // 形）まで来ていたら 1 度聞く。それ未満は聞かない（押し直せば済む）。
         if (add.canComplete) {
-          setPendingDiscard(true);
+          setPendingDiscard({ reason: 'escape' });
           return;
         }
         add.cancel();
@@ -457,11 +544,19 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // **帯は 1 つの道具だけが持つ**（`OptionBarStore.claim`）。道具を構えた瞬間に持ち、
   // 降りた瞬間に手放す。手放しは自分が持っているときだけ効くので、別の道具が先に
   // 持っていたら空振りする（増分 1 の申し送り「reset を誰がいつ呼ぶか」への答え）。
-  // Escape で捨てる前の確認（D1）。増分 2 の N-04（素性欄の下書き）と同じ器の形にする。
-  const [pendingDiscard, setPendingDiscard] = useState(false);
+  // 捨てる前の確認（D1。増分 2 の N-04（素性欄の下書き）と同じ器の形）。
+  //
+  // **閾値は「確定できる点数」**（設計書 §D.2）。それ以上なら聞く（作り直すのに手間が
+  // かかる形なので）、以下なら黙って捨てずに **報せて**片付ける。
+  //
+  // `keep` は「このままにする」を選んだときに元へ戻す動き（年を戻す等）。無ければ
+  // 何も戻さない（Escape のように、そもそも何も変わっていない経路）。
+  const [pendingDiscard, setPendingDiscard] = useState<PendingDiscard | null>(null);
+  const pendingRef = useRef<PendingDiscard | null>(null);
+  pendingRef.current = pendingDiscard;
   useEffect(() => {
     // 局面が変わったら確認は畳む（教訓 5.2: 一時状態は全経路で破棄する）。
-    if (add.phase === ADD_PHASE.Idle) setPendingDiscard(false);
+    if (add.phase === ADD_PHASE.Idle) setPendingDiscard(null);
   }, [add.phase]);
 
   const optionOwnerRef = useRef<object | null>(null);
@@ -619,7 +714,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const sessionTool = add.session?.tool;
   const draft = add.draft;
 
-  // **いま描いた形を丸ごと含む面が 1 つに決まるなら、それを上位領域の既定にする**
+  // **いま描いた形を丸ごと含む面のうち、いちばん内側のものを上位領域の既定にする**
   //（増分 3 の手直し B2。GPT #4）。**入れ子として通した形が既定では「上位領域なし」で
   // 保存され、最上位の面として重なり競合になっていた**のが直したかった害である。
   //
@@ -629,20 +724,24 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // 実際、既存の探索・回帰の 5 本がその手順を踏んでいて落ちた。**含んでいることは
   // 上位領域である条件ではない**ので、絞るのは誤りだった（GPT #3 の「保存直前に包含を
   // 再検証する」も同じ理由で入れていない）。
-  const containingParents = useMemo<readonly ParentCandidate[]>(() => {
-    const all = parentCandidates ?? [];
-    if (facesContaining === undefined || draft === null) return [];
-    const containing = new Set<FeatureId>(facesContaining(draftCoordinates(draft)));
-    return all.filter((c) => containing.has(c.featureId));
+  //
+  // **「一意なら」ではなく「いちばん内側」**（2 回目の手直し）。含む面はふつう 1 つでは
+  // ない ―― 2 人目の子は「1 人目の子＋親」、修復で集約化したあとは「親 直轄領＋親」の
+  // ように必ず 2 つ以上になる。一意を求めると **最初の子のときしか既定が入らず**、
+  // 2 人目以降は黙って「上位領域なし」で保存されていた（実測）。
+  const defaultParentId = useMemo<FeatureId | null>(() => {
+    if (facesContaining === undefined || draft === null) return null;
+    const known = new Set<FeatureId>((parentCandidates ?? []).map((c) => c.featureId));
+    // `facesContaining` は内側から外側の順。候補一覧に居る（＝その年に選べる）
+    // いちばん内側のものを採る。
+    return facesContaining(draftCoordinates(draft)).find((id) => known.has(id)) ?? null;
   }, [parentCandidates, facesContaining, draft]);
 
-  const soleParentId =
-    containingParents.length === 1 ? (containingParents[0]?.featureId ?? null) : null;
   useEffect(() => {
     if (phase !== ADD_PHASE.PropertyForm) return;
-    if (soleParentId === null) return;
-    chooseParent(parentSelection(soleParentId));
-  }, [phase, soleParentId, chooseParent]);
+    if (defaultParentId === null) return;
+    chooseParent(parentSelection(defaultParentId));
+  }, [phase, defaultParentId, chooseParent]);
 
   useEffect(() => {
     if (addDraft === undefined) return;
@@ -653,7 +752,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     addDraft.set({
       tool: sessionTool,
       parentCandidates: parentCandidates ?? [],
-      defaultParentId: soleParentId,
+      defaultParentId,
       currentYear: currentTime.year,
       onChooseParent: (featureId: FeatureId | null) =>
         chooseParent(featureId === null ? PARENT_TOP_LEVEL : parentSelection(featureId)),
@@ -667,7 +766,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     phase,
     sessionTool,
     parentCandidates,
-    soleParentId,
+    defaultParentId,
     currentTime,
     chooseParent,
     save,
@@ -686,12 +785,18 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       add={add}
       armed={armed}
       pendingDiscard={pendingDiscard}
-      onKeepDraft={() => setPendingDiscard(false)}
+      onKeepDraft={() => {
+        pendingDiscard?.keep?.();
+        setPendingDiscard(null);
+      }}
       onDiscardDraft={() => {
         const lost = draftSizeRef.current;
-        setPendingDiscard(false);
+        const reason = pendingDiscard?.reason;
+        setPendingDiscard(null);
         add.cancel();
         if (lost > 0) onDraftDiscarded?.(lost);
+        // 一覧で選んだのなら、片付けたあとで視点を合わせる（設計書 §D.2）。
+        if (reason === 'select') onFocusSelection?.();
       }}
       onMapPointerDown={onMapPointerDown}
       onMapPointerMove={onMapPointerMove}
@@ -713,8 +818,8 @@ interface AddToolChromeProps {
    * 入力を受ける必要がある ―― 最初のクリックで作図が始まるので。
    */
   readonly armed: boolean;
-  /** Escape で捨ててよいかを聞いている最中か（D1）。 */
-  readonly pendingDiscard: boolean;
+  /** 捨ててよいかを聞いている最中の理由（聞いていなければ null。D1）。 */
+  readonly pendingDiscard: PendingDiscard | null;
   readonly onKeepDraft: () => void;
   readonly onDiscardDraft: () => void;
   readonly onMapPointerDown: (e: {
@@ -886,14 +991,19 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
       )}
 
       {/* D1: 打ちかけを捨てる前の確認。増分 2 の N-04（素性欄の下書き）と同じ器の形。 */}
-      {pendingDiscard && (
+      {pendingDiscard !== null && (
         <div
           className="add-tool__confirm"
           data-testid="add-draft-discard-confirm"
           role="alertdialog"
           aria-label={ADD_STRINGS.discardConfirmTitle}
         >
-          <p>{ADD_STRINGS.discardConfirm(add.session?.vertices.length ?? 0)}</p>
+          <p>
+            {ADD_STRINGS.discardConfirm(
+              add.session?.vertices.length ?? 0,
+              pendingDiscard.reason,
+            )}
+          </p>
           <button
             type="button"
             data-testid="add-draft-discard-yes"

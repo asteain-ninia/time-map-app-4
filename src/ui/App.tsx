@@ -630,6 +630,13 @@ export function App(): JSX.Element {
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
 
+  // 共有頂点の移動を「その年より後ろの記録へも反映した」ことを報せる口
+  // （増分 3 の手直し 2 回目 / A1）。引き継ぎ自体は 1 回目で入れたが、**画面へ出す配線が
+  // 無かった**ので、利用者から見ると「この年しか直っていない」と思い込むままだった。
+  const announceCarryForwardRef = useRef<
+    ((fromYear: number, toYear: number, anchorCount: number) => void) | null
+  >(null);
+
   // The shared vertex-id minter, held behind a ref so the imperatively-created
   // edit-session port (built in `onMapMount`) can RESERVE a new vertex id for an
   // FR-87 edge-add without re-mounting the map when the minter memo changes. Assigned
@@ -713,6 +720,7 @@ export function App(): JSX.Element {
       nextRingIdRef,
       recordCommitRef,
       announceEditRefusalRef,
+      announceCarryForwardRef,
       contextMenuOpenerRef,
       shortcutsSuspendedRef,
     });
@@ -1087,6 +1095,14 @@ export function App(): JSX.Element {
 
   // 断りの理由を状態行の「直前の結果」へ（A5 / A6）。成功と同じ 1 つの枠に出す
   // （設計書 §H.5: 失敗も同じ場所。無反応にしない）。
+  announceCarryForwardRef.current = (
+    fromYear: number,
+    toYear: number,
+    anchorCount: number,
+  ): void => {
+    announceResult(APP_STRINGS.vertexCarriedForward(fromYear, toYear, anchorCount));
+  };
+
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
     statusMessageStore.failure(
       reason === EDIT_REFUSAL.LongDrag
@@ -2491,6 +2507,18 @@ export function App(): JSX.Element {
   // fit resolves the feature's shape at the錨の開始 time and writes the camera through
   // the single ports.writeCamera path. Only this錨導線 calls it — a map-click
   // selection routes through the live-selection-port and never moves the view.
+  /**
+   * いま選んでいる地物へ視点を合わせる（増分 3 の手直し 2 回目 / D1）。作図中は
+   * `focusCameraOnFeature` が視点を止めるので、**下書きを片付けた追加の道具**が
+   * このあとで呼び直す（設計書 §D.2「捨てる（確認つき）＋カメラを合わせる」）。
+   */
+  const focusCameraOnSelection = useCallback((): void => {
+    const featureId = store.getState().activeFeature;
+    if (featureId === null) return;
+    if (!isToolTargetVisible(featureId)) return;
+    fitCameraToFeatureRef.current?.(featureId);
+  }, [store, isToolTargetVisible]);
+
   const focusCameraOnFeature = useCallback(
     (featureId: FeatureId): void => {
       // FR-113 (Codex F3, defensive): never fit the camera to an FR-113-hidden feature —
@@ -2691,6 +2719,7 @@ export function App(): JSX.Element {
                 // D1: 打ちかけを黙って消さない（設計書 §H.5 の「直前の結果」へ報せる）。
                 statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
               }}
+              onFocusSelection={focusCameraOnSelection}
             />
             <KnifeToolController<DomainRoot>
               store={store}
@@ -2726,6 +2755,7 @@ export function App(): JSX.Element {
               resolveLeafShape={mergeBootstrap.resolveLeafShape}
               drawSink={mergeDrawSink}
               mapCameraInput={mapCameraInput}
+              optionBar={optionBarStore}
               onCommitted={onMergeCommitted}
               onConflicts={onMergeConflicts}
               onDrawingChange={setMergeDrawing}
@@ -2747,6 +2777,7 @@ export function App(): JSX.Element {
               resolveLeafShape={reparentBootstrap.resolveLeafShape}
               drawSink={reparentDrawSink}
               mapCameraInput={mapCameraInput}
+              optionBar={optionBarStore}
               onCommitted={onReparentCommitted}
               onConflicts={onReparentConflicts}
               onDrawingChange={setReparentDrawing}
@@ -3022,6 +3053,12 @@ export function App(): JSX.Element {
 const SAVE_WHILE_TOOL_OWNS_KEYBOARD: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.FileSave,
   COMMAND_ID.FileSaveAs,
+  // **ファイルを開く・新規も通す**（増分 3 の手直し 2 回目）。メニューの「新規」は
+  // 作図中でも動くのに **Ctrl+N だけが無反応**で、同じ操作が入口によって効いたり効かな
+  // かったりしていた（実測）。どちらも打ちかけの下書きより外側の操作で、未保存の確認は
+  // ファイル側が別に持っている。
+  COMMAND_ID.FileNew,
+  COMMAND_ID.FileOpen,
 ]);
 
 const KNIFE_DEFAULT_COLOR = withFillOpacity(

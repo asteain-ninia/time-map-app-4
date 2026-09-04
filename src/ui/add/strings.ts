@@ -58,10 +58,22 @@ export const ADD_STRINGS = {
   targetVerticesConfirmed: (n: number): string => `頂点 ${n} 個（確定済み）`,
   /** 素性を入力している局面の「次の一手」（設計 S3-4）。 */
   nextStepPropertyForm: '名前を入れて［保存］を押してください',
-  /** D1: 打ちかけを捨てる前の確認（Escape）。 */
+  /**
+   * D1: 打ちかけを捨てる前の確認。**何が起きて聞いているか**で文を変える（設計書 §D.2）。
+   * 「捨てますか？」だけでは、利用者は自分が何をしたせいか分からない。
+   */
   discardConfirmTitle: '描きかけを捨てますか',
-  discardConfirm: (n: number): string =>
-    `描きかけの頂点が ${String(n)} 個あります。捨てますか？`,
+  discardConfirm: (n: number, reason: 'escape' | 'time' | 'select'): string => {
+    const head = `描きかけの頂点が ${String(n)} 個あります。`;
+    switch (reason) {
+      case 'time':
+        return `${head}年を動かすと捨てることになります（打った頂点はいまの年のものです）。捨てますか？`;
+      case 'select':
+        return `${head}一覧で別の地物を選ぶと捨てることになります。捨てますか？`;
+      case 'escape':
+        return `${head}捨てますか？`;
+    }
+  },
   discardConfirmYes: '捨てる',
   discardConfirmNo: '続ける',
   /** D1: 打ちかけが捨てられたことの報せ（状態行の「直前の結果」）。 */

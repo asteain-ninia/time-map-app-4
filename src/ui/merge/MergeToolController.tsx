@@ -30,6 +30,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { WorldCoordinate } from '../../domain/coordinate';
 import type { EditProposal, ProcessResult } from '../../domain/consistency/index';
+import type { Feature } from '../../domain/feature';
 import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
 import type { MergeSnapshot, MergeIdPorts } from '../../domain/merge/index';
@@ -39,6 +40,9 @@ import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import type { OptionBarStore } from '../shell/option-bar';
+import { EDIT_TOOL_STRINGS } from '../shell/strings';
+import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 
@@ -110,6 +114,16 @@ export interface MergeToolControllerProps<S> {
   readonly drawSink?: MergeDrawSink | undefined;
   /** Forward camera-only events (wheel + non-left pointer) to the live dispatcher. */
   readonly mapCameraInput?: MapCameraInput | undefined;
+  /**
+   * オプションバー（設計書 §C.4）。渡すと、いま選んでいる結合対象を **対象欄へ押し込む**
+   * （1 件なら名前だけ、2 件以上なら「◯◯ ほか 2 件」）。渡さなくても道具は動く
+   * （帯が出ないだけ）ので任意 ―― 帯を持たない単体テストや、まだ帯を結線していない
+   * 合成ルートのため。
+   *
+   * 帯を **持つ** のは `ToolOptionBar`（道具名・設定・確定はあちら）で、ここは対象欄
+   * だけを押し込む。詳しくは下の押し込み effect の注記。
+   */
+  readonly optionBar?: OptionBarStore | undefined;
   /** Host commit handler (教訓 5.11): swap state + re-resolve selection to the result. */
   readonly onCommitted?: ((result: ProcessResult<S>, snapshot: MergeSnapshot) => void) | undefined;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
@@ -247,6 +261,48 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     drawSink.drawHighlight(buildMergeHighlight({ targetShapes: shapes }));
   }, [merge.targetIds, resolveLeafShape, drawSink]);
 
+  // --- オプションバーの対象欄（設計書 §C.4）------------------------------------
+  //
+  // **なぜこの道具が自分で押し込むのか**: 結合は `targetIds` という自前の選択（複数）を
+  // 持ち、セッションストアの `activeFeature` を書かない。だから帯を持っている
+  // `ToolOptionBar` からは「いま何を相手にしているか」が見えず、実機では「結ぶ」を
+  // 構えているあいだ対象欄が「（選んでいません）」のままだった。`ToolOptionBar` は
+  // この道具（と「所属」）については対象を押し込まない約束なので、ここが唯一の押し込み手。
+  //
+  // **`claim` はしない**。帯の持ち主は `ToolOptionBar` のままで、道具名「∪ 結ぶ」も
+  // あちらが押し込んでいる。押し込みの API は持ち主を見ない規約なので、持たずに押し込める
+  // （`option-bar.ts` の `claim` 注記 3）。ここで `claim` すると帯が空へ戻り、道具名まで
+  // 消えてしまう。
+  //
+  // **何件選んだかを出す**のがこの道具の肝である（1 件なら名前だけ、2 件以上なら
+  // 「◯◯ ほか 2 件」）。件数が読めないと、結合してから「1 つ入れ忘れていた」に気づく。
+  //
+  // **消す経路**（選択をクリア・道具を降りる・モードを離れる・確定して選び直しへ戻る）
+  // では null を押し込んで空へ戻す（教訓 5.2 全経路で破棄）。どれも `targetIds` が空へ
+  // 戻る経路なので、この 1 本の effect が全部を賄う。ただし **自分が押し込んだ覚えが
+  // あるときだけ**消す ―― 何も押していないのに null を押すと、別の道具が入れた名前を
+  // 巻き添えで消しうる。
+  const optionBar = props.optionBar;
+  const pushedTargetRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (optionBar === undefined) return;
+    const name = describeMergeTargets(resolveFeatures(), merge.targetIds);
+    if (name === null && pushedTargetRef.current === null) return;
+    pushedTargetRef.current = name;
+    optionBar.setTarget(null, name);
+  }, [optionBar, merge.targetIds, resolveFeatures]);
+
+  // 部品ごと外れるときも消す（教訓 5.2: 一時的な表示は全経路で畳む）。上の effect の
+  // 後片付けに書くと、選ぶたびに「消す → 入れ直す」で帯が 1 度空になるので分ける。
+  useEffect(
+    () => () => {
+      if (optionBar === undefined || pushedTargetRef.current === null) return;
+      pushedTargetRef.current = null;
+      optionBar.setTarget(null, null);
+    },
+    [optionBar],
+  );
+
   // --- Map-input handler: a LEFT click resolves the feature under it and toggles it
   // into / out of the target set. The overlay never steals other input — the input
   // layer sits above the map and forwards here only while a merge session runs.
@@ -357,6 +413,31 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
       </div>
     </div>
   );
+}
+
+/**
+ * 帯の対象欄に出す説明。**複数を相手にする道具**なので、1 件目の説明のうしろに残りの
+ * 件数を添える（「アアウェン州（末端地物・州） ほか 2 件」）。1 件のときは名前だけ
+ * （「ほか 0 件」は読み手を戸惑わせる）。
+ *
+ * 1 件目の書式は `ToolOptionBar` が公開している {@link describeOptionBarTarget}
+ * （「名前（種類・種別ラベル）」）をそのまま使う ―― 対象欄の書き方と種類の日本語は
+ * 1 か所に置き、道具ごとに写像表を作り直さない（教訓 5.29）。
+ *
+ * 0 件、または 1 件目がその年に居なくて引けないときは null（内部 id は画面に出さない、
+ * U-1。器が「（選んでいません）」を出す）。
+ */
+function describeMergeTargets(
+  features: readonly Feature[],
+  targetIds: readonly FeatureId[],
+): string | null {
+  const first = targetIds[0];
+  if (first === undefined) return null;
+  const feature = features.find((f) => f.id === first);
+  if (feature === undefined) return null;
+  const firstName = describeOptionBarTarget(feature);
+  const rest = targetIds.length - 1;
+  return rest === 0 ? firstName : EDIT_TOOL_STRINGS.targetWithMore(firstName, rest);
 }
 
 /**

@@ -100,7 +100,13 @@ interface Harness {
   readonly committedInfo: ({ readonly sharedVertexCount: number } | undefined)[];
 }
 
-function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness {
+function mountApp(
+  resultFor: () => ProcessResult<S> = () => committed,
+  extra: {
+    readonly onDraftDiscarded?: (count: number) => void;
+    readonly onFocusSelection?: () => void;
+  } = {},
+): Harness {
   const store = createSessionStore<S>({
     initialDomain: { tag: 'initial' },
     initial: {
@@ -154,6 +160,8 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
             committedInfo.push(info);
             hostCommit(store)(result, id);
           }}
+          {...(extra.onDraftDiscarded ? { onDraftDiscarded: extra.onDraftDiscarded } : {})}
+          {...(extra.onFocusSelection ? { onFocusSelection: extra.onFocusSelection } : {})}
         />
       }
     />,
@@ -909,5 +917,81 @@ describe('U23 手直し: 置く動作は、予約されたカーソル移動よ�
       runFrames();
     });
     expect(screen.getByTestId('option-bar-next-step')).toHaveTextContent('世界の外');
+  });
+});
+
+// --- 2 回目の手直し D1: 年が動く / 一覧で選び直す（設計書 §D.2）------------------
+//
+// どちらも作図の外側で起きる遷移で、打ちかけの下書きはその年・その選択のもとで打たれて
+// いる。閾値は **確定できる点数** ―― それ以上なら聞き、それ未満なら報せて片付ける。
+
+describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
+  it('確定できる点数まで打っていたら、年を動かす前に確認する（「続ける」で年も戻る）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5); // 3 点＝面は確定できる
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1800, 1, 1), 'numericJump');
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('add-draft-discard-confirm').textContent).toContain('年を動かす');
+    // 「続ける」＝下書きを残し、**年も元へ戻す**（打った頂点はいまの年のものだから）。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    expect(h.store.getState().currentTime.year).toBe(1500);
+  });
+
+  it('確定できる点数に届いていなければ、聞かずに捨てて報せる', () => {
+    const discarded: number[] = [];
+    const h = mountApp(undefined, { onDraftDiscarded: (n) => discarded.push(n) });
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0); // 2 点＝まだ確定できない
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1800, 1, 1), 'numericJump');
+    });
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    expect(discarded).toEqual([2]);
+    // 年は進んだまま（利用者がやりたかったのは年を動かすことである）。
+    expect(h.store.getState().currentTime.year).toBe(1800);
+  });
+});
+
+describe('U23 手直し 2 回目 D1: 一覧で別の地物を選んだときの下書き', () => {
+  it('確定できる点数まで打っていたら確認し、捨てたら視点を合わせる', () => {
+    const focused: number[] = [];
+    const h = mountApp(undefined, { onFocusSelection: () => focused.push(1) });
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => {
+      h.store.getState().setActiveFeature(asFeatureId('f-other'));
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm').textContent).toContain('一覧で別の地物');
+    expect(focused).toHaveLength(0); // まだ視点は動かさない
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    expect(focused).toHaveLength(1); // 片付けてから合わせる
+  });
+
+  it('確定できる点数に届いていなければ、捨てて報せて、そのまま視点を合わせる', () => {
+    const focused: number[] = [];
+    const discarded: number[] = [];
+    const h = mountApp(undefined, {
+      onFocusSelection: () => focused.push(1),
+      onDraftDiscarded: (n) => discarded.push(n),
+    });
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    act(() => {
+      h.store.getState().setActiveFeature(asFeatureId('f-other'));
+    });
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(discarded).toEqual([1]);
+    expect(focused).toHaveLength(1);
   });
 });
