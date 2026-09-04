@@ -392,26 +392,26 @@ describe('PropertyPanel — context-feature anchor select (FR-84, 教訓 5.2 / 5
   });
 });
 
-describe('PropertyPanel — AnchorSection view-mode reset on feature switch (BUG B, 教訓 5.2)', () => {
-  it('switching the target feature remounts AnchorSection, resetting its view mode to List', () => {
-    // The section's transient view mode (List/TimeBar) is documented as "reset on
-    // selection change via the keyed remount upstream". The panel must therefore
-    // mount <AnchorSection key={targetFeatureId}> so a feature switch REMOUNTS it.
-    // Without the key the chosen mode persisted (stale) across features.
+describe('PropertyPanel — 錨の欄は地物を切り替えると作り直される (BUG B, 教訓 5.2)', () => {
+  it('地物を切り替えると錨の欄が作り直され、一時状態が引き継がれない', () => {
+    // 錨の欄は一時的な UI 状態（スクロール位置など）を持つので、地物が変わったら
+    // 作り直す（<AnchorSection key={targetFeatureId}>）。
+    // **増分 2 の手直し E1 で時間バー表示の切替そのものを外した**ので、旧版が見ていた
+    // 「切り替えたモードが次の地物へ持ち越されない」は、時間バーが素性欄から
+    // 無くなったことの検査に置き換わっている。
     const store = makeStore({ active: true });
     renderPanel(store);
 
-    // Default = list view. Switch to the time-bar view on feature A.
     expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('anchor-mode-timebar'));
-    expect(screen.getByTestId('anchor-timebar')).toBeInTheDocument();
-    expect(screen.queryByTestId('anchor-list')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-mode-timebar')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-timebar')).not.toBeInTheDocument();
 
-    // Switch to a DIFFERENT feature: the section must remount back to list view.
+    // 別の地物へ移っても錨の欄は出る（作り直しの key は残してある）。
     act(() => {
       store.getState().setActiveFeature(fB);
     });
     expect(screen.getByTestId('anchor-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-mode-timebar')).not.toBeInTheDocument();
     expect(screen.queryByTestId('anchor-timebar')).not.toBeInTheDocument();
   });
 });

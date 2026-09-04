@@ -755,7 +755,6 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
               key={targetFeatureId ?? 'none'}
               rows={anchorRows}
-              series={displaySeries}
               featureIdForDiff={feature.id}
               currentTime={currentTime}
               calendar={calendar}

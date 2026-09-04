@@ -77,7 +77,7 @@ test.describe('HB3-14 — 属性編集（名前）を保存すると反映され
 
       // Select the (only) anchor so the edit has a target time (FR-59 — an attribute
       // edit is anchored; the save guard rejects with 「錨が選択されていません」 otherwise).
-      await page.getByTestId('anchor-mode-list').click();
+      // 素性欄の錨の欄はリスト（表）だけになった（増分 2 の手直し E1）。切替は無い。
       await page.locator('[data-testid^="anchor-row-"]').first().click();
 
       // The basic-info form is now editable (edit mode + selected feature). Change the

@@ -148,8 +148,18 @@ export function AnchorTimeBar(props: AnchorTimeBarProps): JSX.Element {
         style={{ position: 'relative', width: view.pixelLength }}
         onWheel={handleWheel}
       >
-        {series.entries.map((entry) => {
-          const segment = barSegment(entry.start, entry.end, view, calendar);
+        {series.entries.map((entry, index) => {
+          // **バーの右端は「この錨の終わり」ではなく「次の錨の始まり」で切る**
+          // （増分 2 の手直し E1 / バグ狩り #8）。錨の end は「その地物が消える時刻」で
+          // あり、**開いたまま（null）が普通**である。entry.end をそのまま渡すと、
+          // 2 本以上ある錨が全部「継続中」として右端まで伸び、重なって読めなくなる。
+          // U09 の意味では、ある錨が効いているのは「次の錨が始まるまで」なので、
+          // end が無ければ次の錨の開始で切る（無ければ本当に継続中）。
+          const next = series.entries[index + 1];
+          const segmentEnd = entry.end ?? next?.start ?? null;
+          const segment = barSegment(entry.start, segmentEnd, view, calendar);
+          // 「継続中」の表示（aria-label と一覧の行）は **entry.end** のまま。ここで
+          // 切っているのは描く幅だけで、データの意味は変えていない。
           const showLabel = shouldShowLabel(segment, view);
           const selected = entry.anchor.id === selectedAnchorId;
           // Unconditional accessible name (WCAG 4.1.2): a thin bar (<占有率閾値)

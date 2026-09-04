@@ -21,8 +21,6 @@ export { BasicInfoForm, type BasicInfoFormProps } from './BasicInfoForm';
 export {
   AnchorSection,
   type AnchorSectionProps,
-  ANCHOR_VIEW_MODE,
-  type AnchorViewMode,
 } from './AnchorSection';
 export { AnchorList, type AnchorListProps } from './AnchorList';
 export {

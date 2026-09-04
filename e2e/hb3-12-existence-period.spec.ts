@@ -192,9 +192,13 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // 錨ラベル (list view) reflects the stored 年月日.
       await expect(panel.getByText('300年6月15日').first()).toBeVisible();
 
-      // タイムバー表示 names the start with month/day too (same formatTimePoint source).
-      await panel.getByTestId('anchor-mode-timebar').click();
-      await expect(panel.getByTestId('timebar-edge-min')).toContainText('300年6月15日');
+      // 旧: タイムバー表示に切り替えて同じ月日が出ることを見ていた。**増分 2 の手直し
+      // E1 で素性欄から時間バー表示を外した**（バグ狩り #8 / 裁定 §N-8 の推奨 (A)）ので、
+      // 月日が同じ 1 つの写像（formatTimePoint）から出ていることは錨表の行で見る。
+      await expect(panel.getByTestId('anchor-mode-timebar')).toHaveCount(0);
+      await expect(panel.locator('[data-testid^="anchor-row-"]').first()).toContainText(
+        '300年6月15日',
+      );
     } finally {
       await app.close();
     }

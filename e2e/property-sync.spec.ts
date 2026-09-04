@@ -32,7 +32,7 @@ test.describe('A9 — 取り消しで素性欄がドメインへ追従する', (
       await expect(activeFeature).toHaveText(faceId);
 
       // 属性の編集は錨に対して行う（FR-59）ので、錨を 1 つ選んでおく。
-      await page.getByTestId('anchor-mode-list').click();
+      // 素性欄の錨の欄はリスト（表）だけになった（増分 2 の手直し E1）。切替は無い。
       await page.locator('[data-testid^="anchor-row-"]').first().click();
 
       const nameInput = page.getByTestId('basic-info').getByLabel('名前');

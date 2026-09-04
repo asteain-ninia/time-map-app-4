@@ -1,39 +1,30 @@
-// UI layer (U32 / property panel): the anchor section with view切替 (FR-60 /
-// FR-84).
+// UI layer (U32 / property panel): the anchor section (FR-84).
 //
-// Wraps the anchor LIST view and 時間バー view behind a switch control. The
-// switch state is local UI state (transient, reset on selection change via the
-// keyed remount upstream). BOTH views share the SAME `onSelectAnchor` callback,
-// so selecting an anchor from either view takes the single edit-target-selection
-// → current-time-sync path (受け入れ基準 7, 教訓 5.6). The view mode is a typed
-// constant, not a bare string (教訓 5.19).
+// **素性欄の「時間バー表示」の切替を外した**（増分 2 の手直し E1 / バグ狩り #8 /
+// 裁定 §N-8 の推奨 (A)）。条文 FR-60（could）は 2 種類の切替を求めているが、実物は
+//   - 錨が 2 本以上あると全部のバーが「継続中」として右端まで伸びて重なる、
+//   - 幅 480px 固定なので幅 280px の欄からはみ出す、
+//   - 目盛りに月日が出る（実データの錨はすべて年だけ）、
+// という状態で、読めるものになっていなかった。時間バーは **下の時刻レール（増分 6）**
+// が担い、素性欄はリスト（表）だけにする。同じものが 2 か所にあると「どちらが正か」で
+// 迷う、という §N-8 の理由もそのまま当てはまる。
+//
+// 部品（`AnchorTimeBar` / `timebar.ts`）は **増分 6 で流用するので残してある**。
+// バーの右端を「次の錨の始まり」で切る誤りだけはこの手直しで直した（AnchorTimeBar.tsx）。
 
-import { useState } from 'react';
-
-import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
+import type { AnchorEntry } from '../../domain/anchor-series';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import type { AnchorRow } from './anchor-diff';
 import { AnchorList } from './AnchorList';
-import { AnchorTimeBar } from './AnchorTimeBar';
 import type { AnchorIntervalEditIntent } from './contracts';
 import { PROPERTY_STRINGS } from './messages';
-
-/** The two anchor-display modes (FR-60). A typed constant (教訓 5.19). */
-export const ANCHOR_VIEW_MODE = {
-  List: 'list',
-  TimeBar: 'timeBar',
-} as const;
-
-export type AnchorViewMode = (typeof ANCHOR_VIEW_MODE)[keyof typeof ANCHOR_VIEW_MODE];
 
 export interface AnchorSectionProps {
   /** 錨表に出す行（錨とその「前の錨」の組、B2）。 */
   readonly rows: readonly AnchorRow[];
-  /** 時間バー表示に渡す系列（FR-60。増分 6 の時刻レールへ移す予定）。 */
-  readonly series: AnchorSeries;
   /**
    * 差分の文を作る相手（増分 2 の中身 5）。まとめ役の子を選んでいるときは **その子の
    * id** で、`series` は親のものになる（設計書 §C.6「まとめ役の子の錨」）。
@@ -44,7 +35,6 @@ export interface AnchorSectionProps {
   readonly calendar: Calendar;
   readonly selectedAnchorId: AnchorId | null;
   readonly onSelectAnchor: (entry: AnchorEntry) => void;
-  readonly initialMode?: AnchorViewMode;
   /**
    * HB3-12: the target feature id (routing for存続期間 intents). Present only when the
    * host wired the存続期間 dispatch AND the form is editable; its presence (with
@@ -58,7 +48,6 @@ export interface AnchorSectionProps {
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
   const {
     rows,
-    series,
     featureIdForDiff,
     currentTime,
     calendar,
@@ -67,54 +56,24 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
     featureId,
     onEditInterval,
   } = props;
-  const [mode, setMode] = useState<AnchorViewMode>(
-    props.initialMode ?? ANCHOR_VIEW_MODE.List,
-  );
 
   return (
     <section className="anchor-section" data-testid="anchor-section">
       <div className="anchor-section__header">
         <h3>{PROPERTY_STRINGS.anchorSectionTitle}</h3>
-        <div className="anchor-section__switch" role="group" aria-label={PROPERTY_STRINGS.anchorSectionTitle}>
-          <button
-            type="button"
-            aria-pressed={mode === ANCHOR_VIEW_MODE.List}
-            data-testid="anchor-mode-list"
-            onClick={() => setMode(ANCHOR_VIEW_MODE.List)}
-          >
-            {PROPERTY_STRINGS.viewModeList}
-          </button>
-          <button
-            type="button"
-            aria-pressed={mode === ANCHOR_VIEW_MODE.TimeBar}
-            data-testid="anchor-mode-timebar"
-            onClick={() => setMode(ANCHOR_VIEW_MODE.TimeBar)}
-          >
-            {PROPERTY_STRINGS.viewModeTimeBar}
-          </button>
-        </div>
       </div>
 
-      {mode === ANCHOR_VIEW_MODE.List ? (
-        <AnchorList
-          rows={rows}
-          featureIdForDiff={featureIdForDiff}
-          currentTime={currentTime}
-          calendar={calendar}
-          selectedAnchorId={selectedAnchorId}
-          onSelectAnchor={onSelectAnchor}
-          {...(featureId !== undefined && onEditInterval !== undefined
-            ? { featureId, onEditInterval }
-            : {})}
-        />
-      ) : (
-        <AnchorTimeBar
-          series={series}
-          calendar={calendar}
-          selectedAnchorId={selectedAnchorId}
-          onSelectAnchor={onSelectAnchor}
-        />
-      )}
+      <AnchorList
+        rows={rows}
+        featureIdForDiff={featureIdForDiff}
+        currentTime={currentTime}
+        calendar={calendar}
+        selectedAnchorId={selectedAnchorId}
+        onSelectAnchor={onSelectAnchor}
+        {...(featureId !== undefined && onEditInterval !== undefined
+          ? { featureId, onEditInterval }
+          : {})}
+      />
     </section>
   );
 }

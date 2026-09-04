@@ -62,8 +62,6 @@ export const PROPERTY_STRINGS = {
   // -- anchor list / time bar (FR-84 / FR-60) --------------------------------
   anchorSectionTitle: '歴史の錨',
   anchorListEmpty: 'この地物には歴史の錨がありません。',
-  viewModeList: 'リスト表示',
-  viewModeTimeBar: '時間バー表示',
   openEndLabel: '継続中',
   editTargetBadge: '編集対象',
   /** 錨表の見出しに出す本数。 */
