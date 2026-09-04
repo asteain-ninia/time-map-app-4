@@ -1,6 +1,12 @@
 // 増分 2 の探索的バグ狩り（実装計画 §0.3 / §2 末尾）。
 //
-// **異常を見つけたら記録して続ける**（既存の探索用 spec と同じ作法）。ここは「壊れて
+// **異常を見つけたら記録して続け、最後に落とす**（増分 2 の手直し G4 / GPT#13）。
+// 旧版は `[異常]` を標準出力へ流すだけで最後に検査していなかったので、回帰が起きても
+// 全緑になりえた（手で出力を読まない限り気づけない）。観察（[観察]）はそのまま残し、
+// **[異常] が 1 行でもあれば赤くする**。既知で保留する事象があるときは、下の
+// KNOWN_ANOMALIES に理由つきで載せ、突き合わせる（黙って無視しない）。
+//
+// ここは「壊れて
 // いないことを証明する」場所ではなく、**実データで新しい経路を掃いて観察を集める**
 // 場所である。集めた観察は完了報告（docs/ui-redesign/進捗/増分2.md）へ写す。
 //
@@ -29,6 +35,19 @@ import {
   loadProject,
   projectStats,
 } from '../helpers';
+
+/**
+ * **保留して構わない既知の [異常]**（前方一致で突き合わせる）。空なら「異常はゼロで
+ * なければならない」。ここへ載せるときは、現状.md の項目番号を必ず添える。
+ */
+const KNOWN_ANOMALIES: readonly string[] = [];
+
+/** [異常] の行だけを取り出し、既知の一覧に無いものを返す。 */
+function unexpectedAnomalies(observations: readonly string[]): readonly string[] {
+  return observations
+    .filter((o) => o.startsWith('[異常]'))
+    .filter((o) => !KNOWN_ANOMALIES.some((known) => o.startsWith(known)));
+}
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -107,23 +126,33 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
           await page.getByTestId('sidebar-tab-properties').click();
 
           // ① 保存ボタンの文言と、実際に起きることが食い違わないか。
+          //
+          // **数える相手を取り違えない**（増分 2 の手直し G4 で直した観察の誤り）。
+          // まとめ役の子では、錨表の行は「親の系列のうち **この子に関わる** 錨」なので、
+          // 兄弟が既に作った年へ上書きするときも **行は 1 増える**（その年がこの子にとって
+          // 変化の年になるため）。ボタンの文言が約束しているのは
+          // **プロジェクト全体の錨が増えるかどうか**である。
           const label = (await page.getByTestId('save-button').textContent()) ?? '';
           const rowsBefore = await page.locator('[data-testid^="anchor-row-"]').count();
+          const anchorsBefore = (await projectStats(page)).anchorCount;
           latest = `${original}・${String(year)}`;
           await nameInput.fill(latest);
           await page.getByTestId('save-button').click();
           await expect(page.getByTestId('save-message')).toHaveCount(0);
           const rowsAfter = await page.locator('[data-testid^="anchor-row-"]').count();
+          const anchorsAfter = (await projectStats(page)).anchorCount;
 
           const saidCreate = label.includes('作って保存');
-          if (saidCreate && rowsAfter !== rowsBefore + 1) {
+          const expectedAnchors = saidCreate ? anchorsBefore + 1 : anchorsBefore;
+          if (anchorsAfter !== expectedAnchors) {
             observations.push(
-              `[異常] ${original} ${String(year)}年: 「作って保存」と書いてあったのに錨の行が ${String(rowsBefore)} → ${String(rowsAfter)}`,
+              `[異常] ${original} ${String(year)}年: 「${saidCreate ? '作って保存' : '上書き保存'}」と書いてあったのに錨の総数が ${String(anchorsBefore)} → ${String(anchorsAfter)}`,
             );
           }
-          if (!saidCreate && rowsAfter !== rowsBefore) {
+          // その年はこの子にとって「変化の年」になるので、錨表の行は必ず 1 増える。
+          if (rowsAfter !== rowsBefore + 1) {
             observations.push(
-              `[異常] ${original} ${String(year)}年: 「上書き保存」と書いてあったのに錨の行が ${String(rowsBefore)} → ${String(rowsAfter)}`,
+              `[異常] ${original} ${String(year)}年: 改名したのに錨表の行が ${String(rowsBefore)} → ${String(rowsAfter)}`,
             );
           }
 
@@ -255,6 +284,9 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
     const canonicalAfter = statSync(canonicalPath);
     expect(canonicalAfter.size).toBe(canonicalBefore.size);
     expect(canonicalAfter.mtimeMs).toBe(canonicalBefore.mtimeMs);
+
+    // **[異常] が 1 行でもあれば落ちる**（G4 / GPT#13）。
+    expect(unexpectedAnomalies(observations)).toEqual([]);
   });
 
   test('合成データで年をまたいで刻んでも、錨表と存続期間と一覧が食い違わない', async () => {
@@ -312,5 +344,7 @@ test.describe('増分 2 の探索 — 実データのコピーで年をまたい
       console.log(['--- 増分 2 探索（合成データ）の観察 ---', ...observations].join('\n'));
       await app.close();
     }
+
+    expect(unexpectedAnomalies(observations)).toEqual([]);
   });
 });

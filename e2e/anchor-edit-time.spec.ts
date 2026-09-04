@@ -24,6 +24,15 @@ import { unzipSync, strFromU8 } from 'fflate';
 
 import { commitOneFace, enterEditMode, jumpToYear, launchApp } from './helpers';
 
+/**
+ * 鍵盤ショートカットを送る前にフォーカスを入力欄から外す（開発ガイド §5.54）。
+ * **地図は押さない** — 地図クリックはその場所の地物を選び直すので、違う地物に効いた
+ * まま検査が緑になりうる。状態行の表示は押しても何も起きない。
+ */
+async function blurForShortcut(page: Page): Promise<void> {
+  await page.getByTestId('statusbar-result').click();
+}
+
 /** 素性欄タブを開く（サイドバーは排他タブ）。 */
 async function showProperties(page: Page): Promise<void> {
   await page.getByTestId('sidebar-tab-properties').click();
@@ -196,7 +205,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
     test.setTimeout(120_000);
     const { app, page } = await launchApp();
     try {
-      const { cx, cy } = await faceSelectedInEditMode(page);
+      await faceSelectedInEditMode(page);
       expect(await anchorRowCount(page)).toBe(1);
 
       await jumpToYear(page, 1500);
@@ -213,11 +222,11 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('create-anchor-here')).toHaveText('1500年に錨を作る');
 
       // Ctrl+K は専用のコマンドなので、値が同じでも錨が 1 本増える。
-      // 名前欄にフォーカスが残っていると打鍵が入力欄へ食われるので地図側へ移す。
-      // **送る前と後で選択が同じであることを見る**（開発ガイド §5.54。地図クリックは
-      // その場所の地物を選び直すので、違う地物に錨ができても検査は緑になりうる）。
+      // 名前欄にフォーカスが残っていると打鍵が入力欄へ食われるので、**押しても何も
+      // 起きない場所**（状態行）へフォーカスを移す（開発ガイド §5.54）。
+      // 送る前と後で選択が同じであることも見る（同）。
       const activeBefore = await page.getByTestId('app-active-feature').textContent();
-      await page.mouse.click(cx, cy);
+      await blurForShortcut(page);
       await expect(page.getByTestId('app-active-feature')).toHaveText(activeBefore ?? '');
       await page.keyboard.press('Control+k');
       await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(2);
@@ -228,7 +237,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('create-anchor-here')).toHaveCount(0);
 
       // **取り消しは 1 手**。
-      await page.mouse.click(cx, cy);
+      await blurForShortcut(page);
       await page.keyboard.press('Control+z');
       await expect(page.getByTestId('statusbar-result')).toContainText('元に戻しました');
       await showProperties(page);
@@ -296,10 +305,10 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
     test.setTimeout(120_000);
     const { app, page } = await launchApp();
     try {
-      const { cx, cy } = await faceSelectedInEditMode(page);
+      await faceSelectedInEditMode(page);
       // 追加は 0 年で確定するので、0 年には既に錨がある。
       const activeBefore = await page.getByTestId('app-active-feature').textContent();
-      await page.mouse.click(cx, cy);
+      await blurForShortcut(page);
       await expect(page.getByTestId('app-active-feature')).toHaveText(activeBefore ?? '');
       await page.keyboard.press('Control+k');
       // 旧版は鍵盤経路だけ黙って終わっていた（右クリックと素性欄は理由を出していた）。
