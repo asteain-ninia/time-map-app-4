@@ -46,8 +46,10 @@ export function StyleSection(props: StyleSectionProps): JSX.Element {
   }
 
   return (
-    <section className="style-section" data-testid="style-section">
-      <h3>{STYLE_STRINGS.sectionTitle}</h3>
+    /* 増分 2 の手直し D2 / 設計書 §C.6: 素性欄の節は畳める。初期は折りたたみで、
+       初期表示には見出し・編集時刻バッジ・素性の数行・保存列だけが出る。 */
+    <details className="style-section" data-testid="style-section">
+      <summary data-testid="style-section-summary">{STYLE_STRINGS.sectionTitle}</summary>
 
       <label className="style-section__field">
         <span>{STYLE_STRINGS.autoColorLabel}</span>
@@ -129,6 +131,6 @@ export function StyleSection(props: StyleSectionProps): JSX.Element {
           />
         </label>
       </fieldset>
-    </section>
+    </details>
   );
 }

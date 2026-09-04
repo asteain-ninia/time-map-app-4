@@ -55,8 +55,12 @@ export function DetailDocumentSection(props: DetailDocumentSectionProps): JSX.El
   const showEditor = editable && editing;
 
   return (
-    <section className="detail-document" data-testid="detail-document-section">
-      <h3>{PROPERTY_STRINGS.detailDocumentTitle}</h3>
+    /* 増分 2 の手直し D2 / 設計書 §C.6: 節は畳める。初期は折りたたみで、畳んだままでも
+       中身の量が読めるように見出しに字数を添える（「▸ 詳細文書（0 字）」）。 */
+    <details className="detail-document" data-testid="detail-document-section">
+      <summary data-testid="detail-document-summary">
+        {PROPERTY_STRINGS.detailDocumentTitleWithLength(draft.length)}
+      </summary>
 
       {editable && (
         <div
@@ -111,6 +115,6 @@ export function DetailDocumentSection(props: DetailDocumentSectionProps): JSX.El
           {PROPERTY_STRINGS.detailDocEmpty}
         </p>
       )}
-    </section>
+    </details>
   );
 }

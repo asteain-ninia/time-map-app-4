@@ -17,7 +17,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { commitOneFace, launchApp } from './helpers';
+import { commitOneFace, launchApp, openPropertySection } from './helpers';
 
 test.describe('fr98 — 詳細文書の編集（サイドバー編集面 + フローティング閲覧面）', () => {
   test('編集→保存→詳細パネルに反映→undo で戻る→redo で再適用', async () => {
@@ -34,6 +34,8 @@ test.describe('fr98 — 詳細文書の編集（サイドバー編集面 + フ�
       // --- 編集→保存 (sidebar 編集面). ---
       const section = page.getByTestId('detail-document-section');
       await expect(section).toBeVisible();
+      // 節は初期は折りたたみ（増分 2 の手直し D2 / 設計書 §C.6）。開いてから中を見る。
+      await openPropertySection(page, 'detail-document-section');
       // Empty document → the preview placeholder shows first (honest empty).
       await expect(section.getByTestId('detail-doc-empty')).toBeVisible();
       await section.getByTestId('detail-doc-mode-edit').click();

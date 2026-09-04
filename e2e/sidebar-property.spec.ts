@@ -14,7 +14,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { commitOneFace, launchApp } from './helpers';
+import { commitOneFace, launchApp, openPropertySection } from './helpers';
 
 test.describe('HB-3: 右サイドバーにプロパティ/地物/イベントパネルが結線される', () => {
   test('the sidebar mounts the three panels and the PropertyPanel is inside it', async () => {
@@ -59,6 +59,41 @@ test.describe('HB-3: 右サイドバーにプロパティ/地物/イベントパ
       // guidance message) — the 名前 input.
       const nameField = basicInfo.getByLabel('名前');
       await expect(nameField).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 2 の手直し D1 — 素性欄に **横スクロールバーが出ない**（バグ狩り #10 / 設計 A3）。
+  //
+  // これは jsdom では測れない（レイアウトが無く矩形が常に 0、開発ガイド §5.49）。実測では
+  // 内容幅 182px の欄に 233px の中身が入っており、犯人は fieldset の既定
+  // `min-inline-size: min-content` を持つ `.style-section__color` だった。
+  // **画像ではなく寸法で押さえる**（基準画像は不具合が写ったまま固定されうる）。
+  test('素性欄に横スクロールが出ない（畳んだ状態でも開いた状態でも）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await commitOneFace(page);
+      const propertiesPanel = page.getByTestId('sidebar-panel-properties');
+      const panel = propertiesPanel.getByTestId('property-panel');
+      await expect(panel).toBeVisible();
+
+      const overflow = async (): Promise<{ scrollWidth: number; clientWidth: number }> =>
+        panel.evaluate((el) => ({
+          scrollWidth: el.scrollWidth,
+          clientWidth: el.clientWidth,
+        }));
+
+      const collapsed = await overflow();
+      expect(collapsed.clientWidth).toBeGreaterThan(0);
+      expect(collapsed.scrollWidth).toBeLessThanOrEqual(collapsed.clientWidth);
+
+      // 節を全部開いても収まる（見た目の節に色見本とスライダーが入る）。
+      for (const id of ['style-section', 'anchor-section', 'detail-document-section']) {
+        await openPropertySection(page, id);
+      }
+      const opened = await overflow();
+      expect(opened.scrollWidth).toBeLessThanOrEqual(opened.clientWidth);
     } finally {
       await app.close();
     }

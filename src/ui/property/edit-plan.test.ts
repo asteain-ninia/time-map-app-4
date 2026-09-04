@@ -276,13 +276,10 @@ describe('保存の「効く範囲」を押す前に見せる（A1 / 反証 F1�
     );
   });
 
-  it('「この姿がいつまで続くか」を必ず添える', () => {
-    expect(saveEffectOf(overwrite, [], '5000年').effectRange).toBe(
-      'この保存でできる姿は5000年まで続きます。',
-    );
-    expect(saveEffectOf(overwrite, [], null).effectRange).toBe(
-      'この保存でできる姿は、この先ずっと続きます。',
-    );
+  it('「この姿がいつまで続くか」は、具体的な年で言えるときだけ出す', () => {
+    expect(saveEffectOf(overwrite, [], '5000年').effectRange).toBe('この姿は5000年まで続きます。');
+    // この先ずっと続くなら出さない（いつも同じことを言う行で保存列を太らせない）。
+    expect(saveEffectOf(overwrite, [], null).effectRange).toBeNull();
   });
 
   it('押せないときは範囲を出さない（起きないことを約束しない）', () => {

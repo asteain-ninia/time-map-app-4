@@ -118,6 +118,9 @@ export const PROPERTY_STRINGS = {
   openDetailButton: '詳細表示',
   detailPanelTitlePrefix: '詳細: ',
   detailDocumentTitle: '詳細文書',
+  /** 畳んだ節の見出し（設計書 §C.6 の「▸ 詳細文書（0 字）」）。 */
+  detailDocumentTitleWithLength: (length: number): string =>
+    `${'詳細文書'}（${length.toLocaleString('ja-JP')} 字）`,
   detailAttributesTitle: '属性',
   brokenImageAlt: '画像を表示できません',
 

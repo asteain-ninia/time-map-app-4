@@ -176,9 +176,12 @@ export const EDIT_PLAN_STRINGS = {
     const head = years.slice(0, 2).join('・');
     return `（${head}ほか ${String(years.length - 2)} 件の記録にも同じ値を入れます）`;
   },
-  /** 保存したあと、その姿がいつまで続くか（A1 の「この姿は 1500 年まで」）。 */
-  effectRangeUntil: (year: string): string => `この保存でできる姿は${year}まで続きます。`,
-  effectRangeOpen: 'この保存でできる姿は、この先ずっと続きます。',
+  /**
+   * 保存したあと、その姿がいつまで続くか（A1 の「この姿は 1500 年まで」）。
+   * **この先ずっと続くときは出さない**（素性欄は幅 280px・縦も狭いので、いつも同じことを
+   * 言う行で保存列を太らせない。行き先そのものはボタンの文言が言っている）。
+   */
+  effectRangeUntil: (year: string): string => `この姿は${year}まで続きます。`,
   /** 値が変わっていないのに保存を押させない（A6 / GPT#6）。 */
   noChangeNote: '値が変わっていません。',
   noChangeNoteWithCreateAnchor: (year: string): string =>
@@ -189,7 +192,10 @@ export const EDIT_PLAN_STRINGS = {
 export interface SaveEffect {
   /** 保存ボタンの文言（引き継ぎがあるときは行き先を添える）。 */
   readonly saveLabel: string;
-  /** ボタンの上に常時出す 1 行（押せるときだけ）。押せないときは null。 */
+  /**
+   * ボタンの上に出す 1 行。**「この姿がいつまで続くか」が具体的な年で言えるときだけ**
+   * 出す。押せないとき・この先ずっと続くときは null（何も出さない）。
+   */
   readonly effectRange: string | null;
 }
 
@@ -211,7 +217,7 @@ export function saveEffectOf(
     saveLabel: `${plan.saveLabel}${EDIT_PLAN_STRINGS.carryForwardSuffix(carriedYears)}`,
     effectRange:
       nextDivergingYear === null
-        ? EDIT_PLAN_STRINGS.effectRangeOpen
+        ? null
         : EDIT_PLAN_STRINGS.effectRangeUntil(nextDivergingYear),
   };
 }

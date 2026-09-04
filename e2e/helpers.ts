@@ -364,6 +364,20 @@ export async function commitOneFace(page: Page): Promise<CommittedFace> {
  * 増分 2 以降は「年ちょうどでないと保存できない」ので、ここで月日を補ってはいけない。
  * この手順は存続期間の spec に写しがあったものを helpers へ寄せたものである。
  */
+/**
+ * 素性欄の畳んだ節を開く（増分 2 の手直し D2 / 設計書 §C.6）。
+ *
+ * 節（見た目・歴史の錨・詳細文書・詳しい属性）は **初期は折りたたみ** なので、中の
+ * 部品を押す検査は先にここを通す。既に開いていれば何もしない（何度呼んでも同じ）。
+ */
+export async function openPropertySection(page: Page, testId: string): Promise<void> {
+  const section = page.getByTestId(testId);
+  const open = await section.evaluate((el) => (el as HTMLDetailsElement).open);
+  if (open) return;
+  await section.locator('summary').first().click();
+  await expect(section).toHaveJSProperty('open', true);
+}
+
 export async function jumpToYear(page: Page, year: number): Promise<void> {
   await page.getByLabel('直接ジャンプ 年', { exact: true }).fill(String(year));
   // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。

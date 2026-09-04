@@ -13,6 +13,7 @@ import {
   enterAddMode,
   enterEditMode,
   launchApp,
+  openPropertySection,
 } from './helpers';
 
 test.describe('HB3-21 — 点追加の確定ボタンは「点を確定」', () => {
@@ -78,6 +79,8 @@ test.describe('HB3-14 — 属性編集（名前）を保存すると反映され
       // Select the (only) anchor so the edit has a target time (FR-59 — an attribute
       // edit is anchored; the save guard rejects with 「錨が選択されていません」 otherwise).
       // 素性欄の錨の欄はリスト（表）だけになった（増分 2 の手直し E1）。切替は無い。
+      // 節は初期は折りたたみなので開いてから押す（同 D2）。
+      await openPropertySection(page, 'anchor-section');
       await page.locator('[data-testid^="anchor-row-"]').first().click();
 
       // The basic-info form is now editable (edit mode + selected feature). Change the

@@ -335,7 +335,9 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(label).toContainText('1000年に錨を作って保存');
       await expect(label).toContainText('2000年');
       await expect(label).toContainText('3000年');
-      await expect(page.getByTestId('save-effect-range')).toContainText('この先ずっと続きます');
+      // この先ずっと同じ姿になるので、「いつまで続くか」の行は出ない（出すのは
+      // 具体的な年で言えるときだけ）。
+      await expect(page.getByTestId('save-effect-range')).toHaveCount(0);
 
       await label.click();
       await expect(page.getByTestId('save-message')).toHaveCount(0);

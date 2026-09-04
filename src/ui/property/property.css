@@ -12,6 +12,22 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 素性欄の中身が窓幅を超えて広がらないようにする（増分 2 の手直し D1 /
+   * バグ狩り #10 / 設計 A3）。実測では 182px の欄に 233px の中身が入っていて、
+   * **常に横スクロールバーが出ていた**。原因は下の .style-section__color（fieldset の
+   * 既定 min-inline-size: min-content と、縮まない flex の中身）である。
+   * flex/grid の子は既定の min-width: auto で「中身の min-content より小さくならない」
+   * ので、収めたい入れ物には min-width: 0 を必ず付ける（教訓 5.50）。
+   *
+   * **`overflow-x: hidden` は使わない。** それを書くと overflow-y が visible から auto へ
+   * 格上げされ、この要素自身がスクロールの器になる。すると下端に固定した保存列の
+   * sticky の基準がサイドバーからここへ移り、**保存ボタンが初期表示から出て行く**
+   * （BH1-03 の再発）。収めるのは min-width: 0 だけで足りる。 */
+  min-width: 0;
+}
+
+.property-panel > * {
+  min-width: 0;
 }
 
 /* --- 見出しと編集時刻バッジ（上端に固定）と保存列（下端に固定） ------------
@@ -259,6 +275,12 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-width: 0;
+}
+
+.basic-info > *,
+.style-section > * {
+  min-width: 0;
 }
 
 .basic-info__field,
@@ -307,34 +329,82 @@
 
 /* --- スタイルセクション ----------------------------------------------------- */
 .style-section {
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+  min-width: 0;
+}
+
+.style-section[open] {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  border-top: 1px solid var(--c-border);
-  padding-top: 8px;
 }
 
-.style-section__color,
+/* **横スクロールの犯人はここだった**（増分 2 の手直し D1 / バグ狩り #10）。
+ * fieldset は既定で `min-inline-size: min-content` を持つので、中身（色見本 +
+ * スライダー）の最小幅そのままに広がる。実測 231px で、欄の内容幅 182px を超えていた。
+ * min-inline-size と min-width の両方を 0 にし、入りきらないときは折り返す。 */
+.style-section__color {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-inline-size: 0;
+  min-width: 0;
+}
+
+.style-section__color > input[type='color'] {
+  flex: 0 0 auto;
+}
+
 .style-section__opacity {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex: 1 1 80px;
+  min-width: 0;
+}
+
+/* スライダーは既定幅（約 129px）を持つので、min-width: 0 を付けないと縮まない。 */
+.style-section__opacity input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+}
+
+.basic-info__field input,
+.basic-info__field textarea,
+.style-section__field input,
+.style-section__field select {
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* --- 錨（アンカー）セクション ---------------------------------------------- */
 .anchor-section {
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+  min-width: 0;
+}
+
+/* 畳める節の見出し（増分 2 の手直し D2 / 設計書 §C.6）。3 つの節（見た目・歴史の錨・
+ * 詳細文書）で同じ見た目にする。 */
+.style-section > summary,
+.anchor-section > summary,
+.detail-document > summary,
+.basic-info__advanced > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.anchor-section[open] {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border-top: 1px solid var(--c-border);
-  padding-top: 8px;
-}
-
-.anchor-section__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 /* 錨表（実装計画 増分 2 の中身 5 / 設計書 §C.6 の規模規則）。
@@ -554,6 +624,12 @@
 
 /* --- 詳細文書エディタ（FR-98 後段, サイドバー） ------------------------------ */
 .detail-document {
+  border-top: 1px solid var(--c-border);
+  padding-top: 8px;
+  min-width: 0;
+}
+
+.detail-document[open] {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -604,3 +680,4 @@
   border-radius: var(--radius);
   cursor: pointer;
 }
+

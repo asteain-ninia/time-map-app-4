@@ -25,7 +25,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp } from './helpers';
+import { commitOneFace, enterEditMode, launchApp, openPropertySection } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
@@ -76,8 +76,12 @@ function endField(panel: Locator, suffix: string): Locator {
     .first();
 }
 
-/** Open the (collapsed) 存続期間 disclosure so its inputs become visible. */
-async function openIntervalEditor(panel: Locator): Promise<void> {
+/**
+ * Open the (collapsed) 存続期間 disclosure so its inputs become visible.
+ * 増分 2 の手直し D2 から、その外側の「歴史の錨」の節も初期は折りたたみなので先に開く。
+ */
+async function openIntervalEditor(page: Page, panel: Locator): Promise<void> {
+  await openPropertySection(page, 'anchor-section');
   const summary = panel.locator('[data-testid^="anchor-interval-summary-"]').first();
   await expect(summary).toBeVisible();
   await summary.click();
@@ -88,7 +92,7 @@ async function reselectAndOpenEditor(page: Page, panel: Locator): Promise<void> 
   await showFeaturesTab(page);
   await page.locator('[data-testid^="feature-list-item-"]').first().click();
   await showPropertiesTab(page);
-  await openIntervalEditor(panel);
+  await openIntervalEditor(page, panel);
 }
 
 /** Jump the time cursor to a precise year via the 直接ジャンプ (YearMonthDayInput). */
@@ -130,6 +134,7 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // anchor id is derived from the feature id + time, so match by the testid prefix.
       // It lives in a collapsed <details> disclosure — open it (click the summary, the
       // only one in the anchor list after a single commit) so its inputs become visible.
+      await openPropertySection(page, 'anchor-section');
       const summary = propertiesPanel.locator('[data-testid^="anchor-interval-summary-"]').first();
       await expect(summary).toBeVisible();
       await summary.click();
@@ -171,6 +176,7 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // Open the 存続期間 editor and set 開始 = 300年6月15日 (year + month + day).
       await showPropertiesTab(page);
       const panel = page.getByTestId('sidebar-panel-properties');
+      await openPropertySection(page, 'anchor-section');
       const summary = panel.locator('[data-testid^="anchor-interval-summary-"]').first();
       await expect(summary).toBeVisible();
       await summary.click();

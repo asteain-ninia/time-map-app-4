@@ -58,10 +58,12 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
   } = props;
 
   return (
-    <section className="anchor-section" data-testid="anchor-section">
-      <div className="anchor-section__header">
-        <h3>{PROPERTY_STRINGS.anchorSectionTitle}</h3>
-      </div>
+    /* 増分 2 の手直し D2 / 設計書 §C.6: 節は畳める。初期は折りたたみ。畳んだままでも
+       本数が読めるように、見出しに本数を添える（「▸ 歴史の錨 1 本」）。 */
+    <details className="anchor-section" data-testid="anchor-section">
+      <summary data-testid="anchor-section-summary">
+        {PROPERTY_STRINGS.anchorSectionTitle} {PROPERTY_STRINGS.anchorCount(rows.length)}
+      </summary>
 
       <AnchorList
         rows={rows}
@@ -74,6 +76,6 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
           ? { featureId, onEditInterval }
           : {})}
       />
-    </section>
+    </details>
   );
 }

@@ -15,7 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp } from './helpers';
+import { commitOneFace, enterEditMode, launchApp, openPropertySection } from './helpers';
 
 const ORIGINAL = '同期テスト国';
 const RENAMED = '同期テスト国ZZZ';
@@ -33,6 +33,8 @@ test.describe('A9 — 取り消しで素性欄がドメインへ追従する', (
 
       // 属性の編集は錨に対して行う（FR-59）ので、錨を 1 つ選んでおく。
       // 素性欄の錨の欄はリスト（表）だけになった（増分 2 の手直し E1）。切替は無い。
+      // 節は初期は折りたたみなので開いてから押す（同 D2）。
+      await openPropertySection(page, 'anchor-section');
       await page.locator('[data-testid^="anchor-row-"]').first().click();
 
       const nameInput = page.getByTestId('basic-info').getByLabel('名前');
@@ -67,10 +69,12 @@ test.describe('A9 — 取り消しで素性欄がドメインへ追従する', (
       const nameAfterUndo = page.getByTestId('basic-info').getByLabel('名前');
       await expect(nameAfterUndo).toHaveValue(ORIGINAL);
 
-      // --- もう一度「保存」を押しても、取り消した名前は復活しない -------------
-      // 下書きが戻っているので、これは値の変わらない保存 = 何も起きない
-      // （教訓 5.24 の no-op ガード）。以前はここで RENAMED が書き戻されていた。
-      await page.getByTestId('save-button').click();
+      // --- もう一度「保存」を押そうとしても、取り消した名前は復活しない -------
+      // 下書きが戻っているので、これは値の変わらない保存になる。**増分 2 の手直し A6
+      // から、値が変わっていない保存は押せない**（旧版は押せて黙って何もしなかった）。
+      // 以前はここで RENAMED が書き戻されていた。
+      await expect(page.getByTestId('save-button')).toBeDisabled();
+      await expect(page.getByTestId('save-no-change-note')).toContainText('値が変わっていません');
       await expect(page.getByTestId('save-message')).toHaveCount(0);
       await expect(nameAfterUndo).toHaveValue(ORIGINAL);
 

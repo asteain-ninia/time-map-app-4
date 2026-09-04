@@ -1547,12 +1547,20 @@ describe('PropertyPanel — 保存の効く範囲を押す前に見せる（A1 /
     expect(label).not.toContain('4000年');
   });
 
-  it('「この姿がいつまで続くか」を常に出す（引き継ぎが済んだあとの姿で見る）', () => {
+  it('「この姿がいつまで続くか」を出す（引き継ぎが済んだあとの姿で見る）', () => {
     renderCarry(1000);
     fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
       target: { value: '新名' },
     });
     expect(screen.getByTestId('save-effect-range')).toHaveTextContent('4000年まで続きます');
+  });
+
+  it('この先ずっと同じ姿なら、その行は出さない（保存列を太らせない）', () => {
+    renderCarry(4500); // 4000 年より後ろ。これ以降に姿が変わる錨は無い。
+    fireEvent.change(screen.getByLabelText(PROPERTY_STRINGS.nameLabel), {
+      target: { value: 'さらに新しい名前' },
+    });
+    expect(screen.queryByTestId('save-effect-range')).not.toBeInTheDocument();
   });
 
   it('値を変えていないときは保存を押せず、代わりの一手を出す（A6 / GPT#6）', () => {
