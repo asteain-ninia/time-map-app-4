@@ -148,11 +148,16 @@ function previewPrimitives(session: AddSession, style: AddStyle): DrawPrimitive[
   const last = session.vertices[session.vertices.length - 1];
   const out: DrawPrimitive[] = [];
   if (last !== undefined) {
+    // N-51: **打つ前から赤くする。** 打ってから赤くなるのでは「途中に点を打ってください」
+    // の案内が手遅れになる（一度戻す手間が要る）。判定はドメインの 1 本を使う
+    // （確定の関門と同じ規則 ―― 教訓 5.29）。
+    const tooLong =
+      longEdgeStartIndexes([last.coordinate, session.preview], false).length > 0;
     out.push({
       kind: 'line',
       points: [toWorldPoint(last.coordinate), toWorldPoint(session.preview)],
-      widthPx: style.previewWidthPx,
-      stroke: style.edgeStroke,
+      widthPx: tooLong ? style.longEdgeWidthPx : style.previewWidthPx,
+      stroke: tooLong ? style.longEdgeStroke : style.edgeStroke,
     });
   }
   out.push({
@@ -204,8 +209,8 @@ function draftFillPrimitives(session: AddSession, style: AddStyle): DrawPrimitiv
  * N-51: 1 辺で経度 180 度以上を渡る辺を赤く塗り直す（技術方針 §6.8）。判定は
  * ドメインの {@link longEdgeStartIndexes} 1 本だけを呼ぶ（教訓 5.29 単一真実源）ので、
  * 「確定は止まるのに赤くならない」食い違いが起きない。**確定と同じ列**（打った頂点＋
- * 面なら閉じる辺）を見る。カーソル追従の preview 辺は確定の対象ではないので、
- * 別に下の {@link previewPrimitives} が見る。
+ * 面なら閉じる辺）を見る。カーソル追従の preview 辺は確定の対象ではないので
+ * {@link previewPrimitives} が同じ規則で別に見る（打つ前から赤くする）。
  */
 function longEdgePrimitives(session: AddSession, style: AddStyle): DrawPrimitive[] {
   const coords = session.vertices.map((v) => v.coordinate);

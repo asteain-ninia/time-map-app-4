@@ -23,6 +23,7 @@ export {
   startSession,
   resetSession,
   placeVertex,
+  isNestingInside,
   updatePreview,
   UNDO_RESULT,
   type UndoResultKind,

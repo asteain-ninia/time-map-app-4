@@ -27,14 +27,15 @@ import type { TimePoint } from '../../domain/time/time-point';
 import { getVertex } from '../../domain/vertex';
 import type { Camera, Viewport } from '../../render';
 import { worldToScreen } from '../../render/vtransform';
-import type { WorldCoordinate } from '../../domain/coordinate';
+import { createCoordinate, type WorldCoordinate } from '../../domain/coordinate';
+import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
 
-import { featureByIdAt, leafAtPoint, verticesAt } from '../live-lookup';
+import { featureByIdAt, featuresAt, leafAtPoint, verticesAt } from '../live-lookup';
 import { liveHitTestAt } from '../map/live-hit-test';
 import type { DisplayControl, SnapSettings } from '../state/session';
 import type { FilterState } from '../discovery/index';
 
-import type { AddProximityCandidate } from './useAddTool';
+import type { AddProximityCandidate, AddTerminalHit } from './useAddTool';
 
 /** 供給元が 1 回の問い合わせで要る「いまの世界」。呼び出しのたびに読み直す（教訓 5.3）。 */
 export interface AddSnapContext {
@@ -58,10 +59,11 @@ export interface AddSnapPortsDeps {
 export interface AddSnapPorts {
   /** FR-31: 許容内にある既存の頂点（無ければ null）。吸着が切ってあるときも null。 */
   readonly resolveProximity: (raw: WorldCoordinate) => AddProximityCandidate | null;
-  /** FR-29: その点が他の末端地物の**内側**か（境界の上は内側に数えない）。 */
-  readonly isInsideTerminal: (coordinate: WorldCoordinate) => boolean;
-  /** FR-29 の断り文に出す相手の名前（引けなければ null。内部 id は出さない＝U-1）。 */
-  readonly terminalNameAt: (coordinate: WorldCoordinate) => string | null;
+  /**
+   * FR-29: その点が **どの末端地物の内側か**（境界の上は内側に数えない。内側でなければ null）。
+   * 可否も断り文の名前も **この 1 回の解決**から作る（教訓 5.46: 判定を 2 経路に割らない）。
+   */
+  readonly terminalAt: (coordinate: WorldCoordinate) => AddTerminalHit | null;
   /** 地物の表示名（吸着の予告「『◯◯』の頂点に合わせます」に使う）。 */
   readonly featureNameOf: (featureId: FeatureId) => string | null;
 }
@@ -97,18 +99,41 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
     const vertex = getVertex(verticesAt(ctx.root, ctx.time), hit.vertexId);
     if (vertex === undefined) return null;
     return {
-      // 吸着先の **既存の頂点そのものの座標**を返す（近似ではない）。同じ値を新しい
-      // 地物の頂点にも入れるので、2 つの地物の角が画素どころか値として一致する。
-      coordinate: vertex.coordinate,
+      // **押した位置と同じ周回へ寄せて返す。** 当たり判定は ±360 度の複製まで見て
+      // 「見えているものは掴める」を成り立たせているが、保存されている座標は 1 つの周回に
+      // しかない。そのまま返すと、地図を日付変更線の向こうへパンして描いているときに
+      // 下書きの中で 360 度ちょうどの飛びが生まれ、**利用者から見れば小さな形なのに
+      // N-51 が「世界を半周以上します」と断る**（案内どおり途中に点を打っても直らない）。
+      coordinate: createCoordinate(
+        vertex.coordinate.lon +
+          LONGITUDE_PERIOD * Math.round((raw.lon - vertex.coordinate.lon) / LONGITUDE_PERIOD),
+        vertex.coordinate.lat,
+      ),
+      // 保存する体は **元の値**（共有頂点は同じ id を 2 つの地物が指すので、体が食い違って
+      // はいけない。読み込み側はリングごとに連続へ戻すので形は正しく復元される）。
+      bodyCoordinate: vertex.coordinate,
       featureId: hit.featureId,
       vertexId: hit.vertexId,
     };
   };
 
-  /** FR-29 の 1 回きりの解決。可否も名前もここから作る（二重真実源を作らない）。 */
+  /**
+   * FR-29 の 1 回きりの解決。可否も名前もここから作る（二重真実源を作らない）。
+   *
+   * **「末端地物」は子を持たない leaf である**（FR-27 の定義。ドメイン側の
+   * `spatial/terminals.ts` が「A feature is a terminal for exclusion purposes when it
+   * OWNS a shape and has no sub-regions — i.e. a childless LEAF」と書いている同じ規則）。
+   * 子を持つ面は排他検証の対象から外れているので、FR-29 でも塞がない ―― でないと
+   * 「排他違反にならない場所なのに頂点が置けない」という食い違いが生まれる。
+   *
+   * クリック 1 回につき 1 度だけ走る（カーソル移動では呼ばない）。
+   */
   const terminalAt = (coordinate: WorldCoordinate): FeatureId | null => {
     const ctx = readContext();
-    return leafAtPoint(ctx.root, ctx.time, coordinate);
+    const hit = leafAtPoint(ctx.root, ctx.time, coordinate);
+    if (hit === null) return null;
+    const hasChild = featuresAt(ctx.root, ctx.time).some((f) => f.parentId === hit);
+    return hasChild ? null : hit;
   };
 
   const featureNameOf = (featureId: FeatureId): string | null => {
@@ -121,10 +146,9 @@ export function createAddSnapPorts(deps: AddSnapPortsDeps): AddSnapPorts {
 
   return {
     resolveProximity,
-    isInsideTerminal: (coordinate) => terminalAt(coordinate) !== null,
-    terminalNameAt: (coordinate) => {
+    terminalAt: (coordinate) => {
       const id = terminalAt(coordinate);
-      return id === null ? null : featureNameOf(id);
+      return id === null ? null : { featureId: id, name: featureNameOf(id) };
     },
     featureNameOf,
   };

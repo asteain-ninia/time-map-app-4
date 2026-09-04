@@ -26,6 +26,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import {
   ADD_TOOL_KIND,
+  minVerticesFor,
   PARENT_TOP_LEVEL,
   parentSelection,
   type AddProperties,
@@ -119,10 +120,8 @@ export interface AddToolControllerProps<S> {
   readonly parentCandidates?: readonly ParentCandidate[] | undefined;
   /** Nearest existing-vertex proximity resolver (FR-31; U10/U24). */
   readonly resolveProximity?: AddToolControllerOptionalPorts['resolveProximity'];
-  /** Whether a coordinate is inside a terminal feature (FR-29; U10). */
-  readonly isInsideTerminal?: AddToolControllerOptionalPorts['isInsideTerminal'];
-  /** FR-29 で断った相手の名前（文言だけに使う。可否は `isInsideTerminal` 1 本が決める）。 */
-  readonly terminalNameAt?: AddToolControllerOptionalPorts['terminalNameAt'];
+  /** FR-29: その座標がどの末端地物の内側か（U10。可否も文言もこの 1 本から作る）。 */
+  readonly terminalAt?: AddToolControllerOptionalPorts['terminalAt'];
   /**
    * 地物の表示名を引く（増分 3）。吸着の予告「『アルラーク国』の頂点に合わせます」に使う。
    * 引けなければ内部 id は**出さない**（U-1）。
@@ -147,8 +146,9 @@ interface AddToolControllerOptionalPorts {
   readonly resolveProximity?:
     | ((raw: WorldCoordinate) => import('./useAddTool').AddProximityCandidate | null)
     | undefined;
-  readonly isInsideTerminal?: ((coordinate: WorldCoordinate) => boolean) | undefined;
-  readonly terminalNameAt?: ((coordinate: WorldCoordinate) => string | null) | undefined;
+  readonly terminalAt?:
+    | ((coordinate: WorldCoordinate) => import('./useAddTool').AddTerminalHit | null)
+    | undefined;
 }
 
 /**
@@ -168,8 +168,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     onConflicts,
     parentCandidates,
     resolveProximity,
-    isInsideTerminal,
-    terminalNameAt,
+    terminalAt,
     featureNameOf,
     optionBar,
     addDraft,
@@ -199,8 +198,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     onCommitted,
     onConflicts,
     ...(resolveProximity ? { resolveProximity } : {}),
-    ...(isInsideTerminal ? { isInsideTerminal } : {}),
-    ...(terminalNameAt ? { terminalNameAt } : {}),
+    ...(terminalAt ? { terminalAt } : {}),
   });
 
   // --- 教訓 5.2 全経路で破棄: the active add-tool kind is derived from the toolbar
@@ -273,6 +271,15 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         add.cancel();
         return;
       }
+      // **Enter で確定**（設計書 §I.2 の「作図中」の表 / 「次の一手」欄の案内文）。
+      // 案内している打鍵が実際に効かないのは、現状分析 C1 と同じ「文言だけがあって実体が
+      // 無い」型の欠陥である（教訓 5.7）。確定できない状態では押しても何も起きない
+      // （`completeShape` が形の関門で断り、理由を出す）。
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        add.completeShape();
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
         e.preventDefault();
         add.undo();
@@ -280,7 +287,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [add.phase, add.cancel, add.undo]);
+  }, [add.phase, add.cancel, add.undo, add.completeShape]);
 
   // --- bughunt3 (H2): report the in-progress add to the host so it suspends the
   // GLOBAL shortcut dispatcher while this controller owns Ctrl+Z. The global
@@ -370,11 +377,16 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     };
   }, [optionBar, activeKind]);
 
+  const clearPreviewSnap = add.clearPreviewSnap;
   const setSnapSettings = useCallback(
     (patch: Partial<SnapSettings>): void => {
       store.getState().setSnapSettings(patch);
+      // 設定を変えた瞬間に予告を捨てる（教訓 5.5: 依存する状態は変化時に再検証する）。
+      // 切ったのに琥珀の輪が残ると「切ったのに効いている」と読める ―― そのときカーソルは
+      // ポップオーバーの上なので、次の移動まで自然には消えない。
+      clearPreviewSnap();
     },
-    [store],
+    [store, clearPreviewSnap],
   );
   const toggleGridSnap = add.toggleGridSnap;
   const gridSnap = add.session?.gridSnap;
@@ -403,6 +415,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   const completeShape = add.completeShape;
   const cancel = add.cancel;
   const undo = add.undo;
+  const drawing = add.phase === ADD_PHASE.Drawing;
   useEffect(() => {
     if (optionBar === undefined || activeKind === null) return;
     optionBar.setToolName(toolNameFor(activeKind));
@@ -410,21 +423,32 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     optionBar.setNextStep(
       nextStepFor(activeKind, vertexCount, message, previewSharedId, featureNameOf),
     );
-    optionBar.setCommit([
-      {
-        id: 'complete',
-        // T-1: 役割は「作図を確定する」のまま。地図の上から帯へ引っ越しただけなので
-        // testid を持ち越す（実装計画 §3 の中身 8 が明示した付け替え 2 件のうちの 1 件）。
-        testId: 'add-complete',
-        label: completeLabelFor(activeKind),
-        disabled: !canComplete,
-        onClick: completeShape,
-      },
-      { id: 'cancel', testId: 'add-cancel', label: ADD_STRINGS.cancel, onClick: cancel },
-    ]);
+    // **描いている最中だけ確定・やめるを出す**（地図の上に浮いていた頃は
+    // `phase === Drawing` の中に置いてあった関門。帯へ移すときに落とさない）。
+    // 素性入力中に［1 つ戻す］を押せると、確定済みの下書き（`draft`）は据え置きのまま
+    // セッションの頂点だけが減り、**取り消したはずの頂点を含む形が保存される**。
+    // 競合停止中に［やめる］を押せると、道具は畳まれるのにホストの競合ダイアログが
+    // 開いたまま残る（状態が割れる）。
+    optionBar.setCommit(
+      drawing
+        ? [
+            {
+              id: 'complete',
+              // T-1: 役割は「作図を確定する」のまま。地図の上から帯へ引っ越しただけなので
+              // testid を持ち越す（実装計画 §3 の中身 8 が明示した付け替え 2 件の 1 件）。
+              testId: 'add-complete',
+              label: completeLabelFor(activeKind),
+              disabled: !canComplete,
+              onClick: completeShape,
+            },
+            { id: 'cancel', testId: 'add-cancel', label: ADD_STRINGS.cancel, onClick: cancel },
+          ]
+        : [],
+    );
   }, [
     optionBar,
     activeKind,
+    drawing,
     vertexCount,
     message,
     previewSharedId,
@@ -437,7 +461,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // ［1 つ戻す］は設定欄へ置く（設計書 §C.4 の確定欄は［確定］［やめる］の 2 つで
   // 176px に収まる形なので、3 つ目を押し込むと文字が切れる）。打鍵 Ctrl+Z と同じ動作。
   useEffect(() => {
-    if (optionBar === undefined || activeKind === null) return;
+    if (optionBar === undefined || activeKind === null || !drawing) return;
     return optionBar.registerOptionSlot(
       'add-undo',
       <button
@@ -450,7 +474,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         {ADD_STRINGS.undoVertex}
       </button>,
     );
-  }, [optionBar, activeKind, vertexCount, undo]);
+  }, [optionBar, activeKind, drawing, vertexCount, undo]);
 
   // --- 形の確定後の素性入力を右パネルへ渡す（N-15 / 設計書 §C.2 の 27）-----------
   //
@@ -678,6 +702,9 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
 
 // --- オプションバーへ出す文言（設計書 §C.4 の表）------------------------------
 
+/** 面が閉じられるようになる頂点数（ドメインの規則をそのまま引く）。 */
+const MIN_FACE_VERTICES = minVerticesFor(ADD_TOOL_KIND.Face);
+
 function toolNameFor(kind: AddToolKind): string {
   switch (kind) {
     case ADD_TOOL_KIND.Face:
@@ -724,7 +751,12 @@ function nextStepFor(
   }
   switch (kind) {
     case ADD_TOOL_KIND.Face:
-      return vertexCount === 0 ? ADD_STRINGS.nextStepFaceEmpty : ADD_STRINGS.nextStepFace;
+      if (vertexCount === 0) return ADD_STRINGS.nextStepFaceEmpty;
+      // 3 点そろうまでは閉じられないので、Enter を案内しない（押しても断られる）。
+      if (vertexCount < MIN_FACE_VERTICES) {
+        return ADD_STRINGS.nextStepFaceMore(MIN_FACE_VERTICES - vertexCount);
+      }
+      return ADD_STRINGS.nextStepFace;
     case ADD_TOOL_KIND.Line:
       return vertexCount === 0 ? ADD_STRINGS.nextStepLineEmpty : ADD_STRINGS.nextStepLine;
     case ADD_TOOL_KIND.Point:

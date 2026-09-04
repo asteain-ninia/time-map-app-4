@@ -233,6 +233,26 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   const featureLookup = featureLookupOf(getRoot, getTime);
   const anchorLookup = anchorLookupOf(getRoot, calendar);
 
+  // 素性欄（選んでいる地物の姿）。**組み立てるのは 1 回だけ**にする ―― 2 か所へ書き写すと、
+  // あとで受け渡すものを増やしたときに片方だけ直し忘れる（教訓 5.44 の型）。
+  const propertyPanel = (
+    <PropertyPanelHost<S>
+      store={store}
+      getRoot={getRoot}
+      getTime={getTime}
+      featureLookup={featureLookup}
+      anchorLookup={anchorLookup}
+      editDispatch={dispatch}
+      calendar={calendar}
+      {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
+      {...(assetResolver ? { assetResolver } : {})}
+      {...(onOpenDetail ? { onOpenDetail } : {})}
+      {...(onDeleteFeature ? { onDeleteFeature } : {})}
+      {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
+      {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
+    />
+  );
+
   return {
     // HB6: 地物一覧 + 錨一覧 を 1タブ「一覧」+ モードトグル(現在時刻/通史)へ統合
     // (ユーザー GO 済). 現在時刻=旧地物一覧, 通史=旧錨一覧. 共通コア SidebarRowList を
@@ -254,41 +274,12 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     //  - ふだん … 選んでいる地物の素性欄
     //  - 追加を確定した直後 … **新規の姿**（名前・種別ラベル・親・年代）
     // 地図の真ん中に浮くフォームをやめたので、**いま描いた形を覆わない**（N-15）。
-    propertiesContent: addDraft === undefined ? (
-      <PropertyPanelHost<S>
-        store={store}
-        getRoot={getRoot}
-        getTime={getTime}
-        featureLookup={featureLookup}
-        anchorLookup={anchorLookup}
-        editDispatch={dispatch}
-        calendar={calendar}
-        {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
-        {...(assetResolver ? { assetResolver } : {})}
-        {...(onOpenDetail ? { onOpenDetail } : {})}
-        {...(onDeleteFeature ? { onDeleteFeature } : {})}
-        {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
-        {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
-      />
-    ) : (
-      <AddDraftForm store={addDraft}>
-        <PropertyPanelHost<S>
-        store={store}
-        getRoot={getRoot}
-        getTime={getTime}
-        featureLookup={featureLookup}
-        anchorLookup={anchorLookup}
-        editDispatch={dispatch}
-        calendar={calendar}
-        {...(anchorIntervalDispatch ? { anchorIntervalDispatch } : {})}
-        {...(assetResolver ? { assetResolver } : {})}
-        {...(onOpenDetail ? { onOpenDetail } : {})}
-        {...(onDeleteFeature ? { onDeleteFeature } : {})}
-          {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
-          {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
-        />
-      </AddDraftForm>
-    ),
+    propertiesContent:
+      addDraft === undefined ? (
+        propertyPanel
+      ) : (
+        <AddDraftForm store={addDraft}>{propertyPanel}</AddDraftForm>
+      ),
   };
 }
 

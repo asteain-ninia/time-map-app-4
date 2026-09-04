@@ -3002,7 +3002,7 @@ const NO_ASSET_RESOLVER: AssetResolver = { resolveAsset: () => null };
 function AddToolControllerWithParents(
   props: Omit<
     AddToolControllerProps<DomainRoot>,
-    'parentCandidates' | 'resolveProximity' | 'isInsideTerminal' | 'terminalNameAt' | 'featureNameOf'
+    'parentCandidates' | 'resolveProximity' | 'terminalAt' | 'featureNameOf'
   > & {
     readonly readCamera: () => {
       readonly camera: RenderCameraInput;
@@ -3054,8 +3054,7 @@ function AddToolControllerWithParents(
       {...props}
       parentCandidates={candidates}
       resolveProximity={snapPorts.resolveProximity}
-      isInsideTerminal={snapPorts.isInsideTerminal}
-      terminalNameAt={snapPorts.terminalNameAt}
+      terminalAt={snapPorts.terminalAt}
       featureNameOf={snapPorts.featureNameOf}
     />
   );

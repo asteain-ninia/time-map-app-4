@@ -242,6 +242,7 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
   it('吸着すると、置かれる座標が吸着先になり、共有する頂点の id が残る', () => {
     const resolveProximity = vi.fn(() => ({
       coordinate: C(4, 4),
+      bodyCoordinate: C(4, 4),
       featureId: neighbour,
       vertexId: neighbourVertex,
     }));
@@ -261,6 +262,7 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
   it('カーソルを動かすと、置かれる場所の予告が入る（琥珀の輪の元）', () => {
     const resolveProximity = vi.fn(() => ({
       coordinate: C(4, 4),
+      bodyCoordinate: C(4, 4),
       featureId: neighbour,
       vertexId: neighbourVertex,
     }));
@@ -283,54 +285,77 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
     expect(result.current.session?.previewSnap).toBeNull();
   });
 
-  it('FR-29: 他の面の内側は断り、**理由が文字で出る**（現状は無反応だった）', () => {
-    const { result } = renderHook(() =>
-      useAddTool(
-        withPorts({
-          isInsideTerminal: () => true,
-          terminalNameAt: () => 'バアカ',
-        }),
-      ),
-    );
+  const baaka = asFeatureId('f-baaka') as FeatureId;
+  const kornia = asFeatureId('f-kornia') as FeatureId;
+
+  it('FR-29: 外に打ったあとで別の面の内側へ入れると断り、**理由が文字で出る**', () => {
+    // 隣を描いていて誤って重ねた事故＝ FR-29 が本当に止めたい形。
+    let hit: { featureId: FeatureId; name: string | null } | null = null;
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
     act(() => result.current.start(ADD_TOOL_KIND.Face));
-    act(() => result.current.placeAt(C(1, 1)));
-    expect(result.current.session?.vertices).toHaveLength(0);
+    act(() => result.current.placeAt(C(0, 0))); // 外側
+    hit = { featureId: baaka, name: 'バアカ' };
+    act(() => result.current.placeAt(C(1, 1))); // バアカの内側
+    expect(result.current.session?.vertices).toHaveLength(1);
     expect(result.current.message).toContain('バアカ');
     expect(result.current.message).toContain('内側');
   });
 
   it('FR-29: 名前が引けなくても、内部 id ではなく一般の文で断る（U-1）', () => {
-    const { result } = renderHook(() =>
-      useAddTool(withPorts({ isInsideTerminal: () => true, terminalNameAt: () => null })),
-    );
+    let hit: { featureId: FeatureId; name: string | null } | null = null;
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
     act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(0, 0)));
+    hit = { featureId: baaka, name: null };
     act(() => result.current.placeAt(C(1, 1)));
     expect(result.current.message).toContain('既存の面の内側');
   });
 
-  it('FR-29 は面だけ（教訓 5.25: 線・点へ広げない）', () => {
+  it('**入れ子は通す**: 全部の頂点が同じ面の内側なら断らない（親の中に子を描く）', () => {
     const { result } = renderHook(() =>
-      useAddTool(withPorts({ isInsideTerminal: () => true, terminalNameAt: () => 'バアカ' })),
+      useAddTool(withPorts({ terminalAt: () => ({ featureId: baaka, name: 'バアカ' }) })),
     );
-    act(() => result.current.start(ADD_TOOL_KIND.Line));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
     act(() => result.current.placeAt(C(1, 1)));
+    act(() => result.current.placeAt(C(2, 1)));
+    act(() => result.current.placeAt(C(2, 2)));
+    expect(result.current.session?.vertices).toHaveLength(3);
+    expect(result.current.message).toBeNull();
+  });
+
+  it('入れ子の途中で **別の面**の内側へ入ったら断る', () => {
+    let hit = { featureId: baaka, name: 'バアカ' as string | null };
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(1, 1)));
+    hit = { featureId: kornia, name: 'コルニア' };
+    act(() => result.current.placeAt(C(9, 9)));
     expect(result.current.session?.vertices).toHaveLength(1);
+    expect(result.current.message).toContain('コルニア');
+  });
+
+  it('FR-29 は面だけ（教訓 5.25: 線・点へ広げない）', () => {
+    let hit: { featureId: FeatureId; name: string | null } | null = null;
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
+    act(() => result.current.start(ADD_TOOL_KIND.Line));
+    act(() => result.current.placeAt(C(0, 0)));
+    hit = { featureId: baaka, name: 'バアカ' };
+    act(() => result.current.placeAt(C(1, 1)));
+    expect(result.current.session?.vertices).toHaveLength(2);
     expect(result.current.message).toBeNull();
   });
 
   it('断ったあと、置ける場所を押すと理由が消える（教訓 5.12 の裏面: 意味のある契機で消す）', () => {
-    let inside = true;
-    const { result } = renderHook(() =>
-      useAddTool(
-        withPorts({ isInsideTerminal: () => inside, terminalNameAt: () => 'バアカ' }),
-      ),
-    );
+    let hit: { featureId: FeatureId; name: string | null } | null = null;
+    const { result } = renderHook(() => useAddTool(withPorts({ terminalAt: () => hit })));
     act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.placeAt(C(0, 0)));
+    hit = { featureId: baaka, name: 'バアカ' };
     act(() => result.current.placeAt(C(1, 1)));
     expect(result.current.message).not.toBeNull();
-    inside = false;
+    hit = null;
     act(() => result.current.placeAt(C(9, 9)));
     expect(result.current.message).toBeNull();
-    expect(result.current.session?.vertices).toHaveLength(1);
+    expect(result.current.session?.vertices).toHaveLength(2);
   });
 });

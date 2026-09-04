@@ -27,10 +27,12 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   addInputLayerBox,
   armAddAreaTool,
+  besideSquareX,
   commitOneFace,
   launchApp,
   placeVertices,
   returnToViewMode,
+  DEFAULT_FACE_HALF,
 } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -69,10 +71,15 @@ test.describe('bughunt3 — グローバルショートカットはモーダル�
       expect(countBefore).toBe(1);
 
       // --- 2. Re-enter 追加モード, place 2 vertices of a NEW (uncommitted) face. ---
+      //
+      // **1 つ目の面の外側に置く**（増分 3 / FR-29）。`commitOneFace` は地図セルの中心に
+      // 半径 120px の正方形を置くので、その内側に頂点を打とうとすると「ここは〈名前〉の
+      // 内側です」で断られ、頂点が 1 つも増えない（＝この spec の主題である Ctrl+Z の
+      // 検査が始まらない）。
       await armAddAreaTool(page);
       const b = await addInputLayerBox(page);
-      const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
+      const cx = besideSquareX(b.x + b.width / 2, DEFAULT_FACE_HALF, 60);
       await placeVertices(page, [
         [cx - 60, cy - 60],
         [cx + 60, cy - 60],

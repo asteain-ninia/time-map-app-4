@@ -118,18 +118,54 @@ export interface PlacedVertex {
    * 初めて「同じ角を共有する」が成立する。
    */
   readonly sharedVertexId?: VertexId | null;
+  /**
+   * この頂点が**どの末端地物の内側に落ちたか**（内側でなければ null）。FR-29 の判定に使う。
+   *
+   * **なぜ覚えておくのか**: FR-29 は「他の末端地物の内部には頂点を設置できない」だが、
+   * この製品には **入れ子（親の面の中に子の面を描く）** という正しい使い方がある
+   * （`spatial/terminals.ts`: 子を持つ面は末端でなくなるので、子が付いた瞬間に重なりは
+   * 排他違反でなくなる）。両者を見分ける手掛かりは **「打った頂点が全部その面の内側か」**
+   * である。全部内側なら入れ子を作っている。1 つでも外にあるのに別の面の内側へ入ったら、
+   * それは隣国の作図を誤って重ねた FR-29 の事故である。判定にはこの記録が要る。
+   */
+  readonly insideTerminalId?: FeatureId | null;
+  /**
+   * 吸着先の頂点の **保存されている座標**（＝体）。{@link coordinate} は押した位置と同じ
+   * 周回へ寄せてあるので、日付変更線をまたいで描いていると 360 度ちょうど食い違う。
+   * 共有頂点は 2 つの地物が同じ id を指すことなので、**保存する体は元の値でなければ
+   * ならない**（読み込みの整合チェックが「同じ id なのに座標が違う」を咎める）。
+   * 読み込み側はリングごとに連続へ戻すので、形は正しく復元される。
+   */
+  readonly sharedVertexCoordinate?: WorldCoordinate | null;
 }
 
-/** Build a placed vertex (factory; only attaches the shared ids when present). */
+/** Build a placed vertex (factory; only attaches the optional fields when present). */
 export function placedVertex(
   coordinate: WorldCoordinate,
   sharedCandidateId?: FeatureId | null,
   sharedVertexId?: VertexId | null,
+  insideTerminalId?: FeatureId | null,
+  sharedVertexCoordinate?: WorldCoordinate | null,
 ): PlacedVertex {
-  if (sharedCandidateId == null) return { coordinate };
-  return sharedVertexId == null
-    ? { coordinate, sharedCandidateId }
-    : { coordinate, sharedCandidateId, sharedVertexId };
+  // 任意の項は **1 つずつ独立に**付ける。まとめて分岐させると、片方だけ渡した呼び出しが
+  // 来たときにもう片方が黙って落ちる（「吸着したのに共有にならない」形で現れる）。
+  let out: PlacedVertex = { coordinate };
+  if (sharedCandidateId != null) out = { ...out, sharedCandidateId };
+  if (sharedVertexId != null) out = { ...out, sharedVertexId };
+  if (insideTerminalId != null) out = { ...out, insideTerminalId };
+  if (sharedVertexCoordinate != null) out = { ...out, sharedVertexCoordinate };
+  return out;
+}
+
+/**
+ * その面を **まるごとその末端地物の中に描いているか**（＝入れ子を作っているか）。
+ *
+ * 打った頂点が 1 つも無ければ真（これから内側に描き始めるところ）。1 つでも「その面の
+ * 内側ではない場所」に打っていたら偽 ―― そのときに別の面の内側へ頂点を入れるのは、
+ * 隣を描いていて誤って重ねた FR-29 の事故である。
+ */
+export function isNestingInside(session: AddSession, terminalId: FeatureId): boolean {
+  return session.vertices.every((v) => v.insideTerminalId === terminalId);
 }
 
 // --- The whole add session --------------------------------------------------
@@ -222,8 +258,16 @@ export function placeVertex(
   coordinate: WorldCoordinate,
   sharedCandidateId?: FeatureId | null,
   sharedVertexId?: VertexId | null,
+  insideTerminalId?: FeatureId | null,
+  sharedVertexCoordinate?: WorldCoordinate | null,
 ): AddSession {
-  const v = placedVertex(coordinate, sharedCandidateId, sharedVertexId);
+  const v = placedVertex(
+    coordinate,
+    sharedCandidateId,
+    sharedVertexId,
+    insideTerminalId,
+    sharedVertexCoordinate,
+  );
   // 予告は「まだ置かれていない点」の話なので、置いた瞬間に捨てる（教訓 5.2: 一時状態は
   // 全経路で破棄する）。次のカーソル移動が新しい予告を入れる。
   if (session.tool === ADD_TOOL_KIND.Point) {

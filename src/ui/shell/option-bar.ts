@@ -220,11 +220,15 @@ export class OptionBarStore {
       this.replace({ slots: remaining });
     };
 
-    const existing = this.state.slots.find((s) => s.id === id);
-    if (existing !== undefined && existing.node === node) return unregister;
+    const at = this.state.slots.findIndex((s) => s.id === id);
+    if (at >= 0 && this.state.slots[at]?.node === node) return unregister;
 
-    const next = this.state.slots.filter((s) => s.id !== id);
-    next.push({ id, node });
+    // **並び順は最初に入れた場所のまま**にする（増分 3 で見つけた粗）。差し替えのたびに
+    // 末尾へ回すと、設定欄の部品が中身の更新のたびに左右へ飛ぶ（例: 「吸着 ▾」が
+    // 許容値を変えるたびに「1 つ戻す」の右へ移動する）。
+    const next = [...this.state.slots];
+    if (at >= 0) next[at] = { id, node };
+    else next.push({ id, node });
     this.replace({ slots: next });
     return unregister;
   }

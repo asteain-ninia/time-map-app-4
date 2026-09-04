@@ -340,6 +340,28 @@ export interface CommittedFace {
 export const DEFAULT_FACE_HALF = 120;
 
 /**
+ * **既に確定した正方形の面と重ならない、次の正方形の中心**を返す（増分 3 / FR-29）。
+ *
+ * 増分 3 で FR-29（他の末端地物の内部には頂点を設置できない）が**実際に効くようになった**。
+ * それまでは効いていなかったので、spec は 2 つ目の面を 1 つ目の真上に描いていられた。
+ * いまは黙って頂点が置けず「確定」が押せないまま終わるので、**2 つ目以降は前の面の外へ**
+ * 置く。左右に並べるのは、地図セルが縦に狭い（上下は帯に当たりやすい）ため。
+ *
+ * @param cx 直前の面の中心 x
+ * @param half 直前の面の半径（px）
+ * @param nextHalf 次の面の半径（px。既定は同じ）
+ * @param gap 面と面のあいだの隙間（px）
+ */
+export function besideSquareX(
+  cx: number,
+  half: number,
+  nextHalf: number = half,
+  gap = 16,
+): number {
+  return cx + half + gap + nextHalf;
+}
+
+/**
  * 入力層の中央に既定サイズ (~240×240 px) の正方形の面を 1 つ確定する。
  * 「とにかく面が 1 つ要る」spec の入口。中心・4 隅・id を返す。
  */

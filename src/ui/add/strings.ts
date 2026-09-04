@@ -43,6 +43,8 @@ export const ADD_STRINGS = {
   nextStepFace: 'もう 1 点打つか、Enter で閉じて確定します',
   /** 面を描き始める前（頂点 0 個）の案内。 */
   nextStepFaceEmpty: '地図をクリックすると頂点を置きます',
+  /** 面がまだ閉じられない（頂点 1〜2 個）ときの案内。`n` は足りない数。 */
+  nextStepFaceMore: (n: number): string => `あと ${String(n)} 点で閉じられます`,
   nextStepLine: 'Enter で確定します',
   nextStepLineEmpty: '地図をクリックすると頂点を置きます',
   nextStepPoint: '地図をクリックすると点を置きます',
@@ -61,6 +63,9 @@ export const ADD_STRINGS = {
     `ここは「${name}」の内側です。面の頂点は他の面の内側には置けません。外側を押すか、その面を分ける道具を使ってください。`,
   insideTerminalRefusedUnnamed:
     'ここは既存の面の内側です。面の頂点は他の面の内側には置けません。外側を押すか、その面を分ける道具を使ってください。',
+
+  /** 同じ頂点へ 2 回続けて吸着しようとしたとき（長さ 0 の辺を作らない）。 */
+  snapAlreadyUsed: 'その頂点はもう使っています。別の場所を押してください。',
 
   /** N-51: 1 辺で経度 180 度以上を渡る辺（技術方針 §6.8）。 */
   longEdgeRefused:

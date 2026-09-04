@@ -150,7 +150,12 @@ function buildGeometry(draft: ShapeDraft, ids: AddIdPorts): BuiltGeometry {
     const sharedVertexId = placed.sharedVertexId;
     // 吸着した頂点は既存の id を使い回す（＝共有になる）。していなければ採番する。
     const id = sharedVertexId != null ? sharedVertexId : ids.nextVertexId();
-    vertices.push(createVertex(id, coordinate));
+    // **体は元の値で保存する。** `coordinate` は下書きの連続経度の枠へ寄せた値なので、
+    // 日付変更線をまたいで描いていると元の値と 360 度ちょうど食い違う。同じ id を指す
+    // 2 つの地物の体が食い違うと、読み込みの整合チェックが咎める。読み込み側はリングごと
+    // に連続へ戻すので、体が元の周回のままでも形は正しく復元される（技術方針 §6.1）。
+    const body = placed.sharedVertexCoordinate ?? coordinate;
+    vertices.push(createVertex(id, body));
     vertexIds.push(id);
     if (shared != null) {
       sharedCandidateIds.set(id, shared);

@@ -347,9 +347,18 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
         await shot(page, 'line-drawn');
 
         // Toggle grid-snap MID-DRAW (must not drop or duplicate vertices).
+        //
+        // 増分 3: グリッドの切替は **オプションバーの「吸着 ▾」の中**へ移った。先に開かないと
+        // 押せない。`catch(() => undefined)` で握り潰していると「押せなくても緑」になり、
+        // 何も確かめていないのに確かめたつもりになる（教訓 5.49）ので、**押せたことを記録する**。
+        await page.getByTestId('option-snap-button').click();
         const snap = page.getByTestId('add-grid-snap');
+        if ((await snap.count()) === 0) {
+          record('grid-snap-missing', '吸着 ▾ を開いても add-grid-snap が無い');
+        }
         const before = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
         await snap.click().catch(() => undefined);
+        await page.keyboard.press('Escape'); // ポップオーバーを閉じる（作図は続く）
         await page.waitForTimeout(60);
         const after = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
         if (before !== after) {

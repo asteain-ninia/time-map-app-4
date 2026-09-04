@@ -830,6 +830,14 @@ body {
   white-space: nowrap;
 }
 
+/* **`hidden` は `display: flex` に負ける。** クラスの `display` は属性セレクタの
+   `[hidden] { display: none }` より優先度が高いので、明示的に打ち消さないと **閉じている
+   はずのパネルが 0,0 に居座って地図とタブのクリックを奪う**（実際に K-3 の E2E が
+   「一覧タブが押せない」で捕まえた ―― 教訓 5.14 の型）。 */
+.snap-options__panel[hidden] {
+  display: none;
+}
+
 .snap-options__panel {
   position: fixed;
   z-index: 60;
@@ -1428,6 +1436,49 @@ body {
 
 /* The property form / conflict / rejected chrome centres over the map cell and
  * takes input (it is the SAVE trigger surface — 教訓 5.7). */
+/* 「新規の姿」の素性欄（N-15 / 設計書 §C.2 の 27）。**サイドバーの素性欄の位置に出る**
+   ので、普段の素性欄と同じ縦並び・同じ余白にする。地図の上には出ない。
+   （ナイフ・穴あけの新地物フォームは同じ部品を地図の上で使っているので、下の
+   `.add-tool > .add-property-form` の規則はそちらのために残してある。） */
+.add-property-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  font-size: 12px;
+}
+
+.add-property-form__title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.add-property-form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.add-property-form__field input,
+.add-property-form__field select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.add-property-form__era {
+  margin: 0;
+  color: var(--c-text-muted);
+}
+
+.add-property-form__actions {
+  display: flex;
+  gap: 8px;
+}
+
 .add-tool > .add-property-form,
 .add-tool > [data-testid='add-conflict-paused'],
 .add-tool > [data-testid='add-rejected'] {

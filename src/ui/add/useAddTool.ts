@@ -30,6 +30,7 @@ import {
   assembleAddProposal,
   canConfirm,
   confirmShape,
+  isNestingInside,
   placeVertex,
   resetSession,
   resolveSnap,
@@ -118,18 +119,26 @@ export interface UseAddToolOptions<S> {
    */
   readonly resolveProximity?: ((raw: WorldCoordinate) => AddProximityCandidate | null) | undefined;
   /**
-   * Whether a resolved face-vertex would land inside a terminal feature (FR-29;
-   * U10-backed). Returns false for line/point (no exclusion) — but the hook also
-   * gates by tool kind, so a host may always answer the face question.
+   * FR-29: その座標が **どの末端地物の内側か**（内側でなければ null）。U10 の当たり判定が
+   * 供給する。線・点には排他が無いので、フックが道具の種類で先に振り分ける（教訓 5.25）。
+   *
+   * **真偽ではなく相手を返す**のは、可否の判定に相手の同一性が要るからである（増分 3）。
+   * 「他の末端の内側には置けない」を字面どおり全部塞ぐと、**親の面の中に子の面を描く**
+   * という正しい使い方まで塞がる（子が付いた瞬間に親は末端でなくなるので、その重なりは
+   * 排他違反ではない）。両者を見分けるには「打った頂点が全部**同じ**面の内側か」を見る
+   * 必要があり、そのためには相手が誰かを知らなければならない。名前も同じ 1 回の解決から
+   * 返すので、可否と文言が食い違いようがない（教訓 5.46）。
+   *
+   * 現状分析 C1 と設計書 §F.1 はこの口を `isInsideTerminal` と呼んでいる。真偽だけでは
+   * 上の判定ができないので、**名前を `terminalAt` に変えて相手を返す形にした**。
    */
-  readonly isInsideTerminal?: ((coordinate: WorldCoordinate) => boolean) | undefined;
-  /**
-   * FR-29 で断った相手の**名前**（増分 3）。断りの文に「ここは『バアカ』の内側です」と
-   * 出すためだけに使う。**可否を決めるのは {@link isInsideTerminal} 1 本**で、こちらは
-   * その結果を言葉にするだけである（判定を 2 つに割らない ―― 教訓 5.29）。供給元は
-   * 両方を **同じ 1 回の当たり判定**から作る。
-   */
-  readonly terminalNameAt?: ((coordinate: WorldCoordinate) => string | null) | undefined;
+  readonly terminalAt?: ((coordinate: WorldCoordinate) => AddTerminalHit | null) | undefined;
+}
+
+/** FR-29 の当たり: どの末端地物の内側か（`name` は引けなければ null ―― U-1）。 */
+export interface AddTerminalHit {
+  readonly featureId: FeatureId;
+  readonly name: string | null;
 }
 
 /**
@@ -142,6 +151,23 @@ export interface UseAddToolOptions<S> {
  */
 export interface AddProximityCandidate extends ProximityCandidate {
   readonly vertexId: VertexId;
+  /**
+   * 吸着先の頂点の **保存されている座標**（＝その頂点の「体」）。
+   *
+   * `coordinate`（{@link ProximityCandidate} 側）は **押した位置と同じ周回**へ寄せた値で、
+   * 下書きの連続経度の枠に合わせてある。地図を日付変更線の向こうへパンして描いていると、
+   * この 2 つは 360 度ちょうど食い違う。
+   *
+   * **どちらも要る**:
+   *  - 下書きには `coordinate`（周回を合わせた値）を入れる。入れないと隣の頂点との経度差が
+   *    355 度などになり、**利用者から見れば小さな形なのに N-51 で「世界を半周以上します」と
+   *    断られる**（しかも案内どおり途中に点を打っても直らない）。
+   *  - 保存する体には `bodyCoordinate`（元の値）を使う。共有頂点は 2 つの地物が同じ id を
+   *    指すことなので、**体が食い違ってはいけない**（読み込みの整合チェックが咎める）。
+   *    読み込み側はリングごとに ±360 度ずらして連続へ戻すので、体が元の周回のままでも
+   *    形は正しく復元される（技術方針 §6.1 / §6.8）。
+   */
+  readonly bodyCoordinate: WorldCoordinate;
 }
 
 // --- Hook state surface -----------------------------------------------------
@@ -165,6 +191,12 @@ export interface UseAddToolActions {
   placeAt(raw: WorldCoordinate): void;
   /** Update the cursor-follow preview (high-frequency; FR-78). */
   preview(raw: WorldCoordinate): void;
+  /**
+   * 吸着の予告だけを消す（カーソルの位置はそのまま）。**吸着の設定を変えた瞬間**に呼ぶ:
+   * 設定を切ったのに琥珀の輪が残り続けると「切ったのに効いている」と読める（そのときは
+   * カーソルがポップオーバーの上にあるので、次の移動まで消えない）。教訓 5.5。
+   */
+  clearPreviewSnap(): void;
   /** Undo the last placed vertex; at 0 vertices this cancels the add (FR-78). */
   undo(): void;
   /** Cancel the whole add; discard ALL transient state (Escape; 教訓 5.2). */
@@ -200,14 +232,23 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     onCommitted,
     onConflicts,
     resolveProximity,
-    isInsideTerminal,
-    terminalNameAt,
+    terminalAt,
   } = options;
 
   const [session, setSession] = useState<AddSession | null>(null);
   const [phase, setPhase] = useState<AddPhase>(ADD_PHASE.Idle);
   const [draft, setDraft] = useState<ShapeDraft | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  /**
+   * いま出ている文が **カーソルを動かしても消してはいけない**ものか（増分 3）。
+   *
+   * 出る文には 2 種類ある。①**押した場所についての案内**（「ここは〈バアカ〉の内側です」
+   * 「その頂点はもう使っています」）は、カーソルが動けば古くなるので消す ―― 残すと
+   * 「次の一手」欄を占領し続け、吸着の予告が出なくなる。②**確定を断った理由**
+   * （頂点が足りない・自己交差・世界を半周以上）は、次にどうするかを決めるための文なので
+   * **無関係な操作で消さない**（K-7 / 教訓 5.12）。
+   */
+  const [messageSticky, setMessageSticky] = useState(false);
 
   // クリック 1 回ぶんの判断（吸着 → FR-29 の関門）を **状態更新関数の外**で済ませるための
   // 写し。断りの文を出すには「置けなかった」ことを状態更新の外へ伝える必要があるが、
@@ -222,6 +263,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     setSession(resetSession()); // null
     setDraft(null);
     setMessage(null);
+    setMessageSticky(false);
     setPhase(ADD_PHASE.Idle);
   }, []);
 
@@ -232,6 +274,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const prevGridSnap = session?.gridSnap ?? false;
       setDraft(null);
       setMessage(null);
+      setMessageSticky(false);
       setSession(startSession(tool, prevGridSnap));
       setPhase(ADD_PHASE.Drawing);
     },
@@ -258,17 +301,28 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       // **断ったら理由を出す（増分 3）**。現状は `return current` の無反応で、押しても
       // 何も起きず理由も出なかった（現状分析 C1 の最後の項）。可否は
       // `isInsideTerminal` 1 本が決め、名前はその結果を言葉にするためだけに引く。
-      if (current.tool === ADD_TOOL_KIND.Face) {
-        const inside = isInsideTerminal?.(resolved.coordinate) ?? false;
-        if (inside) {
-          const name = terminalNameAt?.(resolved.coordinate) ?? null;
-          setMessage(
-            name === null || name === ''
-              ? ADD_STRINGS.insideTerminalRefusedUnnamed
-              : ADD_STRINGS.insideTerminalRefused(name),
-          );
-          return; // placement blocked; keep state unchanged.
-        }
+      // 同じ頂点へ 2 回続けて吸着させない（増分 3 のレビューで見つけた粗）。実データの
+      // 密度と 12px の許容では、隣を狙ったつもりで同じ頂点に付くことが起こりうる。
+      // 通すと **長さ 0 の辺**を持つ環ができ、自己交差の判定は素通りする。
+      const already =
+        proximity !== null &&
+        current.vertices.some((v) => v.sharedVertexId === proximity.vertexId);
+      if (already) {
+        setMessage(ADD_STRINGS.snapAlreadyUsed);
+        setMessageSticky(false);
+        return;
+      }
+      const inside =
+        current.tool === ADD_TOOL_KIND.Face ? (terminalAt?.(resolved.coordinate) ?? null) : null;
+      if (inside !== null && !isNestingInside(current, inside.featureId)) {
+        const name = inside.name;
+        setMessage(
+          name === null || name === ''
+            ? ADD_STRINGS.insideTerminalRefusedUnnamed
+            : ADD_STRINGS.insideTerminalRefused(name),
+        );
+        setMessageSticky(false);
+        return; // placement blocked; keep state unchanged.
       }
       setMessage(null);
       setSession((s) =>
@@ -279,10 +333,12 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
               resolved.coordinate,
               resolved.sharedCandidateId,
               proximity?.vertexId ?? null,
+              inside?.featureId ?? null,
+              proximity?.bodyCoordinate ?? null,
             ),
       );
     },
-    [gridSpacing, resolveProximity, isInsideTerminal, terminalNameAt],
+    [gridSpacing, resolveProximity, terminalAt],
   );
 
   const preview = useCallback(
@@ -295,12 +351,23 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
         proximity === null
           ? null
           : { coordinate: proximity.coordinate, sharedCandidateId: proximity.featureId };
+      // **押した場所についての案内**は、カーソルが動けば古いので捨てる（残すと
+      // 「次の一手」欄を占領し続け、吸着の予告が出なくなる）。**確定を断った理由**は
+      // 次の判断に使う文なので残す（K-7 / 教訓 5.12）。
+      setMessage((current) => (messageSticky ? current : null));
       setSession((current) =>
         current === null ? current : updatePreview(current, raw, previewSnap),
       );
     },
-    [resolveProximity],
+    [resolveProximity, messageSticky],
   );
+
+  const clearPreviewSnap = useCallback(() => {
+    setSession((current) => {
+      if (current === null || current.previewSnap === null) return current;
+      return { ...current, previewSnap: null };
+    });
+  }, []);
 
   const undo = useCallback(() => {
     if (session === null) return;
@@ -313,6 +380,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     }
     setSession(result.session);
     setMessage(null);
+    setMessageSticky(false);
   }, [session, discard]);
 
   const cancel = useCallback(() => {
@@ -343,10 +411,12 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
       const result = confirmShape(current);
       if (result.status === CONFIRM_STATUS.Rejected) {
         setMessage(rejectionToMessage(result.rejection));
+        setMessageSticky(true); // 確定を断った理由は、カーソルを動かしても消さない。
         return current; // stay in Drawing; nothing recorded (教訓 5.22).
       }
       setDraft(result.draft);
       setMessage(null);
+      setMessageSticky(false);
       setPhase(ADD_PHASE.PropertyForm);
       return current;
     });
@@ -388,6 +458,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
           setMessage(
             result.kind === 'internal-error' ? withReportHint(result.message) : result.message,
           );
+          setMessageSticky(true);
           setPhase(ADD_PHASE.Rejected);
           break;
       }
@@ -413,6 +484,7 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
     start,
     placeAt,
     preview,
+    clearPreviewSnap,
     undo,
     cancel,
     toggleGridSnap,

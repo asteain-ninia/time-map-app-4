@@ -117,9 +117,11 @@ describe('OptionBarStore — registerOptionSlot（設定欄の差し込み口）
     store.registerOptionSlot('depth', 'depth-v1');
     expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'depth']);
 
+    // 増分 3 で直した: 差し替えても **並び順は最初に入れた場所のまま**（末尾へ回さない）。
+    // 回すと、中身が更新されるたびに設定欄の部品が左右へ飛ぶ。
     store.registerOptionSlot('snap', 'snap-v2');
     const slots = store.get().slots;
-    expect(slots.map((s) => s.id)).toEqual(['depth', 'snap']);
+    expect(slots.map((s) => s.id)).toEqual(['snap', 'depth']);
     expect(slots.find((s) => s.id === 'snap')?.node).toBe('snap-v2');
   });
 
@@ -243,5 +245,19 @@ describe('OptionBarStore.claim — 帯は 1 つの道具だけが持つ', () => 
     release();
     expect(store.get().toolName).toBeNull();
     expect(store.hasOwner()).toBe(false);
+  });
+});
+
+describe('OptionBarStore.registerOptionSlot — 並び順（増分 3 で見つけた粗）', () => {
+  it('同じ id を差し替えても、並び順は最初に入れた場所のまま', () => {
+    const store = new OptionBarStore();
+    store.registerOptionSlot('snap', 'A');
+    store.registerOptionSlot('undo', 'B');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'undo']);
+
+    // 「吸着 ▾」の中身が更新される（許容値を変えた等）。末尾へ回ってはいけない。
+    store.registerOptionSlot('snap', 'A2');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'undo']);
+    expect(store.get().slots[0]?.node).toBe('A2');
   });
 });
