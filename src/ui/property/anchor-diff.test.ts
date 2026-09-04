@@ -15,10 +15,13 @@ import {
   createLeafFeature,
   createPointFeature,
   withAttributes,
+  withColor,
+  withDetailDocument,
   withKindLabel,
   withParentId,
   type Feature,
 } from '../../domain/feature';
+import { getCalendar } from '../../domain/time/calendar';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import { createShape, createTerritoryRing } from '../../domain/ring';
 import { timePointYear } from '../../domain/time/time-point';
@@ -27,8 +30,10 @@ import { createVertex, createVertexStore } from '../../domain/vertex';
 import {
   ANCHOR_CHANGE,
   ANCHOR_DIFF_STRINGS,
+  anchorRowsOf,
   changesBetween,
   diffSentence,
+  existenceRunsOf,
   isRelevantAnchor,
   relevantEntriesFor,
   shapeChanged,
@@ -67,8 +72,13 @@ function entryAt(year: number, features: readonly Feature[], coords?: Record<str
   );
 }
 
-const nameOf = (id: ReturnType<typeof asFeatureId>): string =>
+/**
+ * 親の名前を引く口。**前と後で別**（B4 / GPT#11）。ここでは同じ表を両方に渡すが、
+ * 別々に渡せることを型で固定しておく。
+ */
+const nameOfIn = (id: ReturnType<typeof asFeatureId>): string =>
   id === parent ? 'デーレ共和国' : '別の地物';
+const nameOf = { before: nameOfIn, after: nameOfIn };
 
 describe('changesBetween — その地物に何が起きたか', () => {
   it('最初の錨は「ここから記録が始まる」', () => {
@@ -169,10 +179,14 @@ describe('shapeChanged', () => {
 });
 
 describe('diffSentence — 行に添える日本語', () => {
-  it('変化が無ければ「変化はありません」', () => {
+  it('値を変えずに作った錨には、そのための文が出る（Ctrl+K / B1）', () => {
+    // 比べる語彙が保存の対象と同じ広さになったので、ここに残るのは本当に
+    // 「値を変えずに作った錨」だけである。「変化はありません」では何を記録したのか
+    // 分からないので、記録したことそのものを言う。
     const before = entryAt(0, [pointNamed('A')]);
     const after = entryAt(1200, [pointNamed('A')]);
     expect(diffSentence(before, after, child, nameOf)).toBe(ANCHOR_DIFF_STRINGS.noChange);
+    expect(ANCHOR_DIFF_STRINGS.noChange).toContain('同じ姿が続く');
   });
 
   it('複数の変化は 1 行に並べる', () => {
@@ -231,5 +245,187 @@ describe('relevantEntriesFor — まとめ役の子に関わる錨だけを選�
       entryAt(1200, [siblingFeature()]),
     ];
     expect(relevantEntriesFor(entries, child)).toEqual([]);
+  });
+});
+
+// 増分 2 の手直し B1 — 比べる語彙は「保存の対象」と同じ広さでなければならない
+// （バグ狩り #1 / GPT#3 / 設計 B4）。旧版は見た目・詳細文書・リング構成を見ていなかった
+// ので、それだけを直して作った錨が子の錨表から消え、行の文も嘘をついた。
+describe('changesBetween — 保存の対象を全部見る（B1）', () => {
+  it('見た目だけを直した錨も変化として拾う', () => {
+    const recolored = withColor(
+      pointNamed('アアウェン州'),
+      createColorInfo(true, '#ff0000', '#222222', '#333333'),
+    );
+    const before = entryAt(0, [pointNamed('アアウェン州')]);
+    const after = entryAt(1200, [recolored]);
+    expect(changesBetween(before, after, child, nameOf).map((c) => c.kind)).toEqual([
+      ANCHOR_CHANGE.Style,
+    ]);
+    expect(isRelevantAnchor(before, after, child)).toBe(true);
+    expect(diffSentence(before, after, child, nameOf)).toBe(ANCHOR_DIFF_STRINGS.style);
+  });
+
+  it('不透明度・パレット・自動配色の違いも見た目の変化である', () => {
+    const base = pointNamed('A');
+    const cases = [
+      createColorInfo(true, '#111111', '#222222', '#333333', 'default', 0.5, 1),
+      createColorInfo(true, '#111111', '#222222', '#333333', 'default', 1, 0.5),
+      createColorInfo(true, '#111111', '#222222', '#333333', 'muted'),
+      createColorInfo(false, '#111111', '#222222', '#333333'),
+    ];
+    for (const c of cases) {
+      const after = entryAt(1200, [withColor(base, c)]);
+      expect(changesBetween(entryAt(0, [base]), after, child, nameOf).map((x) => x.kind)).toEqual([
+        ANCHOR_CHANGE.Style,
+      ]);
+    }
+  });
+
+  it('詳細文書だけを直した錨も変化として拾う', () => {
+    const before = entryAt(0, [pointNamed('A')]);
+    const after = entryAt(1200, [withDetailDocument(pointNamed('A'), '本文')]);
+    expect(changesBetween(before, after, child, nameOf).map((c) => c.kind)).toEqual([
+      ANCHOR_CHANGE.DetailDocument,
+    ]);
+    expect(diffSentence(before, after, child, nameOf)).toBe(ANCHOR_DIFF_STRINGS.detailDocument);
+  });
+
+  it('リングの構成だけが変わった形も拾う（同じ頂点でも別の環に組み替えた）', () => {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    const oneRing = createLeafFeature(
+      child,
+      createBasicAttributes('面', 0, 9999),
+      color,
+      createShape([createTerritoryRing(asRingId('r1'), [v1, v2, v3])]),
+    );
+    // 同じ 3 頂点を、別の ID の環へ入れ替える（参照している頂点 id の平らな並びは同じ）。
+    const renamedRing = createLeafFeature(
+      child,
+      createBasicAttributes('面', 0, 9999),
+      color,
+      createShape([createTerritoryRing(asRingId('r2'), [v1, v2, v3])]),
+    );
+    expect(shapeChanged(oneRing, snap, renamedRing, snap)).toBe(true);
+  });
+
+  it('地物の種類が変わったら形の変化として拾う', () => {
+    const snap = createAnchorSnapshot([], createVertexStore([]));
+    const point = pointNamed('A');
+    const leaf = createLeafFeature(
+      child,
+      createBasicAttributes('A', 0, 9999),
+      color,
+      createShape([createTerritoryRing(asRingId('r1'), [v1])]),
+    );
+    expect(shapeChanged(point, snap, leaf, snap)).toBe(true);
+  });
+});
+
+// 増分 2 の手直し B4 — 親の名前は前後で別の口から引く（GPT#11）。
+describe('changesBetween — 親の名前は前後で別の口から引く（B4）', () => {
+  it('旧親の名前は前の錨から、新親の名前は後の錨から引く', () => {
+    const oldParent = asFeatureId('oldParent');
+    const before = entryAt(0, [withParentId(pointNamed('州'), oldParent)]);
+    const after = entryAt(1200, [withParentId(pointNamed('州'), parent)]);
+    const changes = changesBetween(before, after, child, {
+      before: (id) => (id === oldParent ? '古い親' : '（前の錨には居ない）'),
+      after: (id) => (id === parent ? '新しい親' : '（後の錨には居ない）'),
+    });
+    expect(changes).toEqual([
+      { kind: ANCHOR_CHANGE.Parent, before: '古い親', after: '新しい親' },
+    ]);
+  });
+});
+
+// 増分 2 の手直し B2 — 「前の錨」の決め方は 1 か所しかない。
+describe('anchorRowsOf — 前の錨を 1 か所で決める（B2）', () => {
+  const entries: readonly AnchorEntry[] = [
+    entryAt(0, [pointNamed('A'), siblingFeature()]),
+    // 1200: 兄弟だけが変わった ⇒ この子には関わらない
+    entryAt(1200, [
+      pointNamed('A'),
+      withAttributes(siblingFeature(), createBasicAttributes('改名した隣', 0, 9999)),
+    ]),
+    entryAt(2000, [
+      pointNamed('B'),
+      withAttributes(siblingFeature(), createBasicAttributes('改名した隣', 0, 9999)),
+    ]),
+  ];
+
+  it('絞り込んでも「前の錨」は元の系列の隣のまま', () => {
+    const rows = anchorRowsOf(entries, child, { onlyRelevant: true });
+    expect(rows.map((r) => r.entry.start.year)).toEqual([0, 2000]);
+    // 2000 の比較相手は **1200**（絞り込みで飛ばした錨）である。
+    expect(rows[1]?.previous?.start.year).toBe(1200);
+  });
+
+  it('絞り込まないときは全件が並び、先頭の前は null', () => {
+    const rows = anchorRowsOf(entries, child);
+    expect(rows.map((r) => r.entry.start.year)).toEqual([0, 1200, 2000]);
+    expect(rows[0]?.previous).toBeNull();
+  });
+
+  it('relevantEntriesFor は同じ計算の薄い包みである', () => {
+    expect(relevantEntriesFor(entries, child)).toEqual(
+      anchorRowsOf(entries, child, { onlyRelevant: true }).map((r) => r.entry),
+    );
+  });
+});
+
+// 増分 2 の手直し B3 — 「続く」行は親の系列そのものから出し、穴を隠さない
+// （設計 C4 / 反証 F7 / バグ狩り #7）。
+describe('existenceRunsOf — 穴のある存在期間（B3）', () => {
+  const cal = getCalendar('gregorian');
+
+  function bounded(year: number, end: number | null, features: readonly Feature[]) {
+    return createAnchorEntry(
+      createAnchor(
+        asAnchorId(`b${String(year)}`),
+        createAnchorSnapshot(features, createVertexStore([createVertex(v1, { lon: 0, lat: 0 })])),
+      ),
+      timePointYear(year),
+      end === null ? null : timePointYear(end),
+    );
+  }
+
+  it('繋がっている錨は 1 区間にまとめる', () => {
+    const runs = existenceRunsOf(
+      [bounded(0, 1200, [pointNamed('A')]), bounded(1200, null, [pointNamed('A')])],
+      child,
+      cal,
+    );
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.start.year).toBe(0);
+    expect(runs[0]?.end).toBeNull();
+  });
+
+  it('途中で終わって後から再開する並びは 2 区間になる（穴を隠さない）', () => {
+    const runs = existenceRunsOf(
+      [bounded(0, 2000, [pointNamed('A')]), bounded(3000, null, [pointNamed('A')])],
+      child,
+      cal,
+    );
+    expect(runs.map((r) => [r.start.year, r.end?.year ?? null])).toEqual([
+      [0, 2000],
+      [3000, null],
+    ]);
+  });
+
+  it('その地物が居ない錨でも区間が切れる（まとめ役の子の存在期間は親のそれと違う）', () => {
+    const runs = existenceRunsOf(
+      [
+        bounded(0, null, [pointNamed('A')]),
+        bounded(1000, null, [siblingFeature()]),
+        bounded(2000, null, [pointNamed('A')]),
+      ],
+      child,
+      cal,
+    );
+    expect(runs.map((r) => r.start.year)).toEqual([0, 2000]);
+  });
+
+  it('1 度も居なければ空（値を捏造しない）', () => {
+    expect(existenceRunsOf([bounded(0, null, [siblingFeature()])], child, cal)).toEqual([]);
   });
 });

@@ -37,6 +37,7 @@ import { getCalendar } from '../../domain/time/calendar';
 import { timePointYear, timePointYearMonthDay } from '../../domain/time/time-point';
 import { createVertexStore } from '../../domain/vertex';
 
+import { anchorRowsOf } from './anchor-diff';
 import { AnchorList } from './AnchorList';
 import { ANCHOR_INTERVAL_OP, type AnchorIntervalEditIntent } from './contracts';
 import { PROPERTY_STRINGS } from './messages';
@@ -107,7 +108,7 @@ function Harness(props: { initial: AnchorSeries; selected: AnchorId }): JSX.Elem
 
   return (
     <AnchorList
-      series={series}
+      rows={anchorRowsOf(series.entries, fid)}
       featureIdForDiff={fid}
       currentTime={now}
       calendar={cal}
@@ -199,7 +200,7 @@ function renderWithSpy(selected: AnchorId): AnchorIntervalEditIntent[] {
   const intents: AnchorIntervalEditIntent[] = [];
   render(
     <AnchorList
-      series={{ entries: [entryA(1000, 1500), entryB()] }}
+      rows={anchorRowsOf([entryA(1000, 1500), entryB()], fid)}
       featureIdForDiff={fid}
       currentTime={now}
       calendar={cal}
@@ -342,8 +343,8 @@ describe('錨の行には「その年に何が変わったか」が出る（現�
   it('最初の錨は「ここから記録が始まる」、次の錨は変わった中身を書く', () => {
     render(
       <AnchorList
-        series={{
-          entries: [
+        rows={anchorRowsOf(
+          [
             createAnchorEntry(
               createAnchor(asAnchorId('n1'), snapshotNamed('アアウェン州')),
               timePointYear(1000),
@@ -355,7 +356,8 @@ describe('錨の行には「その年に何が変わったか」が出る（現�
               null,
             ),
           ],
-        }}
+          fid,
+        )}
         featureIdForDiff={fid}
         currentTime={now}
         calendar={cal}
@@ -392,7 +394,7 @@ describe('錨が極端に多い地物でも画面が持つ（実装計画 増分
   function renderHuge(): HTMLElement {
     const { container } = render(
       <AnchorList
-        series={hugeSeries()}
+        rows={anchorRowsOf(hugeSeries().entries, fid)}
         featureIdForDiff={fid}
         currentTime={timePointYear(2500)}
         calendar={cal}

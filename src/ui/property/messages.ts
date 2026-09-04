@@ -34,6 +34,8 @@ export const PROPERTY_STRINGS = {
   existenceLabel: '続く',
   /** 存続期間の「終わりが決まっていない」側の言い方。 */
   existenceOpenEnd: '継続中',
+  /** 存続期間に穴があるときの区切り（「0年 → 2000年、3000年 → 継続中」）。 */
+  existenceRunSeparator: '、',
   startYearLabel: '開始年',
   endYearLabel: '終了年',
   /** 畳んだ「詳しい属性」。飾りの開始年・終了年をここへ下ろした（裁定 §N-5 の (A)）。 */

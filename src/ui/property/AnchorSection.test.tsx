@@ -16,6 +16,7 @@ import { getCalendar } from '../../domain/time/calendar';
 import { timePointYear, timePointYearMonthDay } from '../../domain/time/time-point';
 import { createVertexStore } from '../../domain/vertex';
 
+import { anchorRowsOf } from './anchor-diff';
 import { AnchorSection } from './AnchorSection';
 
 const cal = getCalendar('gregorian');
@@ -39,6 +40,7 @@ describe('AnchorSection — view切替 (FR-60)', () => {
   it('starts in list view and switches to time-bar view', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(series().entries, fid)}
         series={series()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -59,6 +61,7 @@ describe('AnchorSection — view切替 (FR-60)', () => {
     const onSelect = vi.fn();
     render(
       <AnchorSection
+        rows={anchorRowsOf(series().entries, fid)}
         series={series()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -82,6 +85,7 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
   it('shows the dynamic edge times and updates them on wheel zoom', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(series().entries, fid)}
         series={series()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -106,6 +110,7 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
   it('renders a bar per anchor with a label-visibility decision attribute', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(series().entries, fid)}
         series={series()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -141,6 +146,7 @@ describe('AnchorTimeBar — edges / gap / zoom / label (FR-60)', () => {
   it('a late-starting open-ended series keeps a non-degenerate axis span (BUG A)', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(lateOpenEndedSeries().entries, fid)}
         series={lateOpenEndedSeries()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -195,6 +201,7 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
   it('the thin bar (no visible label) still exposes an accessible name', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(thinBarSeries().entries, fid)}
         series={thinBarSeries()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -217,6 +224,7 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
   it('a wide bar (visible label shown) also carries an accessible name', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(thinBarSeries().entries, fid)}
         series={thinBarSeries()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -236,6 +244,7 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
   it('an open-ended bar names its end as 継続中 (same source as the list row)', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(series().entries, fid)}
         series={series()}
         featureIdForDiff={fid}
         currentTime={now}
@@ -254,6 +263,7 @@ describe('AnchorTimeBar — バー accessible name (Fix B / WCAG 4.1.2)', () => 
   it('the visible label gate is unchanged (wide shows text, thin hides it)', () => {
     render(
       <AnchorSection
+        rows={anchorRowsOf(thinBarSeries().entries, fid)}
         series={thinBarSeries()}
         featureIdForDiff={fid}
         currentTime={now}

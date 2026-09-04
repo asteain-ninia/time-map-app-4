@@ -1020,7 +1020,9 @@ describe('PropertyPanel — 存続期間編集後の series 再導出 (F1, HIGH 
   };
 
   function boundedSeries(): AnchorSeries {
-    const snap = createAnchorSnapshot([], createVertexStore([]));
+    // 「続く」行は **その地物がその錨に居るか** を見て区間を切る（B3）ので、
+    // スナップショットに当の地物を入れておく（本物の系列と同じ形）。
+    const snap = createAnchorSnapshot([featureFF()], createVertexStore([]));
     return {
       entries: [
         createAnchorEntry(
@@ -1730,5 +1732,44 @@ describe('PropertyPanel — 打ちかけの状態機械（A4 / N-04）', () => {
     const confirm = screen.getByTestId('draft-discard-confirm');
     expect(confirm).toHaveTextContent(PROPERTY_STRINGS.unnamedFeature);
     expect(confirm.textContent ?? '').not.toContain('N');
+  });
+});
+
+// 増分 2 の手直し B3 — 「続く」行は親の系列そのものから出し、穴を隠さない
+// （設計 C4 / 反証 F7 / バグ狩り #7）。旧版は「錨表に出している並び」の先頭と末尾しか
+// 見ていなかったので、途中で存在しない期間があっても 1 本に見せていた。
+describe('PropertyPanel — 「続く」行は穴を隠さない（B3）', () => {
+  const fH = asFeatureId('H');
+  const vH = asVertexId('H-v');
+  const featureH = createPointFeature(fH, createBasicAttributes('穴あき', 0, 0), color, vH);
+
+  function holedSeries(): AnchorSeries {
+    const snap = createAnchorSnapshot([featureH], createVertexStore([]));
+    return {
+      entries: [
+        createAnchorEntry(createAnchor(asAnchorId('h1'), snap), timePointYear(0), timePointYear(2000)),
+        createAnchorEntry(createAnchor(asAnchorId('h2'), snap), timePointYear(3000), null),
+      ],
+    };
+  }
+
+  it('途中に存在しない期間があると 2 区間で出る', () => {
+    const store = createSessionStore<Record<string, never>>({
+      initialDomain: {},
+      initial: { mode: EDIT_MODE.Edit, activeFeature: fH, currentTime: timePointYear(0) },
+    });
+    render(
+      <PropertyPanel
+        store={store}
+        featureLookup={{ featureAt: (id) => (id === fH ? featureH : null) }}
+        anchorLookup={{ anchorSeriesOf: () => holedSeries() }}
+        editDispatch={{ dispatchEdit: () => {} }}
+        calendar={cal}
+        ownerLookup={ownerLookup}
+      />,
+    );
+    const value = screen.getByTestId('existence-value');
+    expect(value).toHaveTextContent('0年 → 2000年');
+    expect(value).toHaveTextContent('3000年 → 継続中');
   });
 });

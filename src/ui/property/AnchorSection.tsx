@@ -15,6 +15,7 @@ import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
 
+import type { AnchorRow } from './anchor-diff';
 import { AnchorList } from './AnchorList';
 import { AnchorTimeBar } from './AnchorTimeBar';
 import type { AnchorIntervalEditIntent } from './contracts';
@@ -29,6 +30,9 @@ export const ANCHOR_VIEW_MODE = {
 export type AnchorViewMode = (typeof ANCHOR_VIEW_MODE)[keyof typeof ANCHOR_VIEW_MODE];
 
 export interface AnchorSectionProps {
+  /** 錨表に出す行（錨とその「前の錨」の組、B2）。 */
+  readonly rows: readonly AnchorRow[];
+  /** 時間バー表示に渡す系列（FR-60。増分 6 の時刻レールへ移す予定）。 */
   readonly series: AnchorSeries;
   /**
    * 差分の文を作る相手（増分 2 の中身 5）。まとめ役の子を選んでいるときは **その子の
@@ -53,6 +57,7 @@ export interface AnchorSectionProps {
 
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
   const {
+    rows,
     series,
     featureIdForDiff,
     currentTime,
@@ -92,7 +97,7 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
 
       {mode === ANCHOR_VIEW_MODE.List ? (
         <AnchorList
-          series={series}
+          rows={rows}
           featureIdForDiff={featureIdForDiff}
           currentTime={currentTime}
           calendar={calendar}

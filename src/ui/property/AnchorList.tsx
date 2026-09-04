@@ -25,7 +25,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react';
 
-import type { AnchorEntry, AnchorSeries } from '../../domain/anchor-series';
+import type { AnchorEntry } from '../../domain/anchor-series';
 import type { AnchorSnapshot } from '../../domain/anchor';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import type { Calendar } from '../../domain/time/calendar';
@@ -35,7 +35,7 @@ import type { TimePoint } from '../../domain/time/time-point';
 import { formatTimePoint } from '../timeline/time-display';
 import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
 
-import { diffSentence, featureInSnapshot } from './anchor-diff';
+import { diffSentence, featureInSnapshot, type AnchorRow } from './anchor-diff';
 import type { AnchorIntervalEditIntent } from './contracts';
 import {
   buildChangeStartIntent,
@@ -55,22 +55,22 @@ export const ANCHOR_NEIGHBOUR_COUNT = 12;
 
 /** 母数の切り出し（現在時刻の前後 {@link ANCHOR_NEIGHBOUR_COUNT} 本）。純粋。 */
 export function neighbourWindow(
-  entries: readonly AnchorEntry[],
+  rows: readonly AnchorRow[],
   currentTime: TimePoint,
   calendar: Calendar,
   neighbours: number = ANCHOR_NEIGHBOUR_COUNT,
-): { readonly entries: readonly AnchorEntry[]; readonly offset: number } {
-  if (entries.length <= neighbours * 2 + 1) return { entries, offset: 0 };
+): { readonly rows: readonly AnchorRow[]; readonly offset: number } {
+  if (rows.length <= neighbours * 2 + 1) return { rows, offset: 0 };
   // 現在時刻に最も近い（開始が現在時刻以下で最後の）錨を中心にする。全部が未来なら先頭。
   let center = 0;
-  for (let i = 0; i < entries.length; i += 1) {
-    const e = entries[i];
-    if (e === undefined) continue;
-    if (compare(e.start, currentTime, calendar) <= 0) center = i;
+  for (let i = 0; i < rows.length; i += 1) {
+    const r = rows[i];
+    if (r === undefined) continue;
+    if (compare(r.entry.start, currentTime, calendar) <= 0) center = i;
   }
-  const start = Math.max(0, Math.min(center - neighbours, entries.length - (neighbours * 2 + 1)));
-  const end = Math.min(entries.length, start + neighbours * 2 + 1);
-  return { entries: entries.slice(start, end), offset: start };
+  const start = Math.max(0, Math.min(center - neighbours, rows.length - (neighbours * 2 + 1)));
+  const end = Math.min(rows.length, start + neighbours * 2 + 1);
+  return { rows: rows.slice(start, end), offset: start };
 }
 
 /** 仮想スクロールで実際に DOM へ作る範囲。純粋。 */
@@ -86,10 +86,15 @@ export function visibleRange(
 }
 
 export interface AnchorListProps {
-  readonly series: AnchorSeries;
   /**
-   * 差分の文を作る相手。まとめ役の子を選んでいるときは **その子の id** で、系列は親の
-   * ものになる（設計書 §C.6「まとめ役の子の錨」）。
+   * 出す行（錨とその「前の錨」の組）。**「前の錨」は呼び出し側の {@link anchorRowsOf} が
+   * 1 か所で決める**（増分 2 の手直し B2）。旧版はここが `series` を受け取り、絞り込んだ
+   * あとの隣を「前の錨」にしていたので、選り分けの判定と行の文で根拠が食い違っていた。
+   */
+  readonly rows: readonly AnchorRow[];
+  /**
+   * 差分の文を作る相手。まとめ役の子を選んでいるときは **その子の id** で、行は親の
+   * 系列から来る（設計書 §C.6「まとめ役の子の錨」）。
    */
   readonly featureIdForDiff: FeatureId;
   /** 既定の母数（現在時刻の前後）を決めるための現在時刻。 */
@@ -112,7 +117,7 @@ export interface AnchorListProps {
 
 export function AnchorList(props: AnchorListProps): JSX.Element {
   const {
-    series,
+    rows,
     featureIdForDiff,
     currentTime,
     calendar,
@@ -124,40 +129,43 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
 
   const [expanded, setExpanded] = useState(false);
   const [scrollTop, setScrollTop] = useState(0);
-  // 差分の文は錨 ID を鍵に使い回す（§C.6: 見えている行だけ計算する）。系列が差し替わったら
+  // 差分の文は錨 ID を鍵に使い回す（§C.6: 見えている行だけ計算する）。行の並びが差し替わったら
   // 捨てる — 同じ錨 ID でも中身が変わりうる（上書き保存はスナップショットを差し替える）。
-  const diffCacheRef = useRef<{ series: AnchorSeries; cache: Map<AnchorId, string> }>({
-    series,
+  const diffCacheRef = useRef<{ rows: readonly AnchorRow[]; cache: Map<AnchorId, string> }>({
+    rows,
     cache: new Map(),
   });
-  if (diffCacheRef.current.series !== series) {
-    diffCacheRef.current = { series, cache: new Map() };
+  if (diffCacheRef.current.rows !== rows) {
+    diffCacheRef.current = { rows, cache: new Map() };
   }
 
-  const all = series.entries;
+  const all = rows;
   const window_ = useMemo(
-    () => (expanded ? { entries: all, offset: 0 } : neighbourWindow(all, currentTime, calendar)),
+    () => (expanded ? { rows: all, offset: 0 } : neighbourWindow(all, currentTime, calendar)),
     [expanded, all, currentTime, calendar],
   );
-  const dataset = window_.entries;
+  const dataset = window_.rows;
   const range = visibleRange(dataset.length, scrollTop);
 
   const sentenceFor = useCallback(
     (indexInDataset: number): string => {
-      const entry = dataset[indexInDataset];
-      if (entry === undefined) return '';
-      const cached = diffCacheRef.current.cache.get(entry.anchor.id);
+      const row = dataset[indexInDataset];
+      if (row === undefined) return '';
+      const cached = diffCacheRef.current.cache.get(row.entry.anchor.id);
       if (cached !== undefined) return cached;
-      // 「前の錨」は **元の系列の並び** から取る（母数を切り出しても前後関係は崩さない）。
-      const absolute = window_.offset + indexInDataset;
-      const previous = absolute === 0 ? null : (all[absolute - 1] ?? null);
-      const sentence = diffSentence(previous, entry, featureIdForDiff, (id) =>
-        parentNameIn(entry.anchor.snapshot, id),
-      );
-      diffCacheRef.current.cache.set(entry.anchor.id, sentence);
+      // 「前の錨」は行が持っている（母数を切り出しても前後関係は崩さない、B2）。
+      // **親の名前は前後で別のスナップショットから引く**（B4 / GPT#11）。
+      const sentence = diffSentence(row.previous, row.entry, featureIdForDiff, {
+        before: (id) =>
+          row.previous === null
+            ? PROPERTY_STRINGS.unknownParentName
+            : parentNameIn(row.previous.anchor.snapshot, id),
+        after: (id) => parentNameIn(row.entry.anchor.snapshot, id),
+      });
+      diffCacheRef.current.cache.set(row.entry.anchor.id, sentence);
       return sentence;
     },
-    [dataset, window_.offset, all, featureIdForDiff],
+    [dataset, featureIdForDiff],
   );
 
   if (all.length === 0) {
@@ -173,7 +181,7 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
   const selectedEntry =
     selectedAnchorId === null
       ? null
-      : (all.find((e) => e.anchor.id === selectedAnchorId) ?? null);
+      : (all.find((r) => r.entry.anchor.id === selectedAnchorId)?.entry ?? null);
   const hidden = all.length - dataset.length;
 
   return (
@@ -229,7 +237,8 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           aria-hidden="true"
           style={{ height: `${range.start * ANCHOR_ROW_HEIGHT}px` }}
         />
-        {dataset.slice(range.start, range.end).map((entry, i) => {
+        {dataset.slice(range.start, range.end).map((row, i) => {
+          const entry = row.entry;
           const indexInDataset = range.start + i;
           const selected = entry.anchor.id === selectedAnchorId;
           return (

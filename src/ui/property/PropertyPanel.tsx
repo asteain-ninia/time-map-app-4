@@ -68,7 +68,7 @@ import { formatTimePoint, formatYear } from '../timeline/time-display';
 
 import { DELETE_TARGET_KIND } from '../../domain/deletion';
 
-import { relevantEntriesFor } from './anchor-diff';
+import { anchorRowsOf, existenceRunsOf, type AnchorRow } from './anchor-diff';
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
@@ -281,17 +281,26 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     };
   }, [anchorLookup, targetFeatureId, currentTime, domain, ownSeries]);
 
-  // 錨表に出す系列。自分の系列があればそのまま、借り物（親の系列）ならその子に関わる錨だけ
+  // 錨表に出す行。自分の系列があればそのまま、借り物（親の系列）ならその子に関わる錨だけ
   // に絞る（裁定 §N-15 の (A)。親の系列をそのまま出すと 60 人ぶんの他人の変化が混ざる）。
+  //
+  // **選り分けの結果は「系列の同一性 × 地物」で使い回す**（増分 2 の手直し B4 / GPT#4）。
+  // 選り分けは親の全錨 × その子の形の比較なので、時刻を動かすだけで走らせてはいけない。
+  // `governing.series` はドメインが差し替わったときだけ新しい参照になる（ホストの
+  // `anchorSeriesOf` / `governingSeriesOf` が根から引き直す）ので、その参照と地物 id を
+  // 鍵にすれば「ドメインが変わったときだけ再計算」になる。
   const inherited = governing !== null && governing.ownerName !== null;
-  const displaySeries = useMemo<AnchorSeries | null>(() => {
-    if (governing === null) return ownSeries;
-    if (!inherited) return governing.series;
-    if (targetFeatureId === null) return null;
-    // 表示専用の見かけの系列。U09 の不変条件を主張しないので、存続期間の編集には
-    // 渡さない（下の intervalEditable が自分の系列のときだけ真になる）。
-    return { entries: relevantEntriesFor(governing.series.entries, targetFeatureId) };
+  const anchorRows = useMemo<readonly AnchorRow[]>(() => {
+    const source = governing?.series ?? ownSeries;
+    if (source === null || targetFeatureId === null) return [];
+    return anchorRowsOf(source.entries, targetFeatureId, { onlyRelevant: inherited });
   }, [governing, inherited, ownSeries, targetFeatureId]);
+
+  // 時間バー表示と存続期間の編集に渡す系列（表示専用の見かけの系列を作らない）。
+  const displaySeries = useMemo<AnchorSeries | null>(
+    () => governing?.series ?? ownSeries,
+    [governing, ownSeries],
+  );
 
   // FR-20 / FR-35: the DERIVED area (km²). KEYED TO THE TARGET ID, NOT the resolved
   // `feature` OBJECT, so a structural edit that keeps the id still re-derives (教訓 5.3).
@@ -315,15 +324,19 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // と「下書きをいつ作り直すか」の目印にだけ使う。
   const effectiveAnchorId = useMemo<AnchorId | null>(() => {
     if (displaySeries === null) return null;
+    // 目印を付ける相手は **錨表に出ている行** に限る（まとめ役の子では親の系列のうち
+    // その子に関わる錨だけが出る）。
     if (
       selectedAnchorId !== null &&
-      displaySeries.entries.some((e) => e.anchor.id === selectedAnchorId)
+      anchorRows.some((r) => r.entry.anchor.id === selectedAnchorId)
     ) {
       return selectedAnchorId;
     }
     const r = resolveAt(displaySeries, currentTime, calendar);
-    return r.kind === 'present' ? r.entry.anchor.id : null;
-  }, [selectedAnchorId, displaySeries, currentTime, calendar]);
+    if (r.kind !== 'present') return null;
+    const shown = anchorRows.some((row) => row.entry.anchor.id === r.entry.anchor.id);
+    return shown ? r.entry.anchor.id : null;
+  }, [selectedAnchorId, displaySeries, anchorRows, currentTime, calendar]);
 
   // 教訓 5.6 / 5.15: anchor selection syncs the session current time to the
   // anchor START via the SAME setCurrentTime action every time path uses.
@@ -618,15 +631,27 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     [store],
   );
 
-  /** 本物の存続期間（U-23: 正本は錨の並び）を 1 行にする。 */
+  /**
+   * 本物の存続期間（U-23: 正本は錨の並び）を 1 行にする（増分 2 の手直し B3）。
+   *
+   * **親の系列そのものから出す。** 旧版は「錨表に出している並び」（まとめ役の子では
+   * 絞り込んだあと）の先頭と末尾だけを見ていたので、子の存在期間ではなく「その子に
+   * 関わる錨の最初と最後」を出していた。さらに **途中に存在しない期間（穴）があっても
+   * 1 本に見せていた**（設計 C4 / 反証 F7 / バグ狩り #7）。いまは
+   * 「0年 → 2000年、3000年 → 継続中」のように穴を隠さない。
+   */
   const existenceLabel = useMemo<string | undefined>(() => {
-    if (displaySeries === null || displaySeries.entries.length === 0) return undefined;
-    const first = displaySeries.entries[0];
-    const last = displaySeries.entries[displaySeries.entries.length - 1];
-    if (first === undefined || last === undefined) return undefined;
-    const end = last.end === null ? PROPERTY_STRINGS.existenceOpenEnd : formatTimePoint(last.end);
-    return `${formatTimePoint(first.start)} → ${end}`;
-  }, [displaySeries]);
+    if (displaySeries === null || targetFeatureId === null) return undefined;
+    const runs = existenceRunsOf(displaySeries.entries, targetFeatureId, calendar);
+    if (runs.length === 0) return undefined;
+    return runs
+      .map((run) => {
+        const end =
+          run.end === null ? PROPERTY_STRINGS.existenceOpenEnd : formatTimePoint(run.end);
+        return `${formatTimePoint(run.start)} → ${end}`;
+      })
+      .join(PROPERTY_STRINGS.existenceRunSeparator);
+  }, [displaySeries, targetFeatureId, calendar]);
 
   return (
     <div className="property-panel" data-testid="property-panel">
@@ -729,6 +754,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               // Feature-scoped key so React REMOUNTS the section on a target change,
               // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
               key={targetFeatureId ?? 'none'}
+              rows={anchorRows}
               series={displaySeries}
               featureIdForDiff={feature.id}
               currentTime={currentTime}
