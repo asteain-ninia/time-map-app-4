@@ -420,15 +420,26 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
         proximity === null
           ? null
           : { coordinate: proximity.coordinate, sharedCandidateId: proximity.featureId };
+      // **いま押したらどうなるかを先に言う**（増分 3 の手直し B3）。カーソルが面の内側に
+      // 乗っている間は、それが「入れ子を作ることになる」のか「断られる」のかを次の一手へ
+      // 出す ―― 押してから断られるより、押す前に分かるほうが手数が少ない。
+      // 吸着の予告（琥珀の輪）より弱いので、吸着しているときは出さない。
+      const current = sessionRef.current;
+      const hovering =
+        proximity === null && current !== null && current.tool === ADD_TOOL_KIND.Face
+          ? (terminalAt?.(raw) ?? null)
+          : null;
+      const hoverNotice =
+        hovering === null || hovering.onBoundary === true
+          ? null
+          : hoverName(hovering, isNestingInside(current!, hovering.featureId));
       // **押した場所についての案内**は、カーソルが動けば古いので捨てる（残すと
       // 「次の一手」欄を占領し続け、吸着の予告が出なくなる）。**確定を断った理由**は
       // 次の判断に使う文なので残す（K-7 / 教訓 5.12）。
-      setMessage((current) => (messageSticky ? current : null));
-      setSession((current) =>
-        current === null ? current : updatePreview(current, raw, previewSnap),
-      );
+      setMessage((currentMessage) => (messageSticky ? currentMessage : hoverNotice));
+      setSession((s) => (s === null ? s : updatePreview(s, raw, previewSnap)));
     },
-    [resolveProximity, messageSticky],
+    [resolveProximity, terminalAt, messageSticky],
   );
 
   const clearPreviewSnap = useCallback(() => {
@@ -596,6 +607,23 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
 
 function rejectionToMessage(rejection: ShapeRejection): string {
   return shapeRejectionMessage(rejection);
+}
+
+/**
+ * カーソルが面の内側に乗っているときの予告（増分 3 の手直し B3）。入れ子になるなら
+ * 「このまま全部内側に打つと〜の中の領域になります」、そうでなければ**押したら断られる**
+ * ことを先に言う。文言は押したあとの断り文と同じ 1 か所から作る（食い違わせない）。
+ */
+function hoverName(hit: AddTerminalHit, nesting: boolean): string {
+  const where = hit.where ?? (hit.name === null || hit.name === '' ? null : `「${hit.name}」`);
+  if (nesting) {
+    return hit.name === null || hit.name === ''
+      ? ADD_STRINGS.insideTerminalNestingUnnamed
+      : ADD_STRINGS.insideTerminalNesting(hit.name);
+  }
+  return where === null
+    ? ADD_STRINGS.insideTerminalRefusedUnnamed
+    : ADD_STRINGS.insideTerminalRefused(where);
 }
 
 // Re-export the default parent (unset) for convenience at call sites.

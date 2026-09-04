@@ -400,6 +400,40 @@ describe('useAddTool — 吸着と FR-29 の断り（増分 3 / C1）', () => {
     expect(result.current.message).toBeNull();
   });
 
+  it('B3: カーソルを乗せている間に、次の一手を予告する（押す前に分かる）', () => {
+    let hit: {
+      featureId: FeatureId;
+      name: string | null;
+      where?: string | null;
+      onBoundary?: boolean;
+    } | null = null;
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ terminalAt: () => hit, resolveProximity: () => null })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+
+    // 1 点目を外に打ってから内側へカーソルを乗せる ＝ 押したら断られる。
+    act(() => result.current.placeAt(C(0, 0)));
+    hit = { featureId: baaka, name: 'バアカ', where: '「バアカ」' };
+    act(() => result.current.preview(C(1, 1)));
+    expect(result.current.message).toContain('内側には置けません');
+
+    // 面の外へ戻ると予告は消える。
+    hit = null;
+    act(() => result.current.preview(C(50, 50)));
+    expect(result.current.message).toBeNull();
+  });
+
+  it('B3: 入れ子になる場合は「中の領域になります」と予告する（断りではない）', () => {
+    const hit = { featureId: baaka, name: 'バアカ' as string | null };
+    const { result } = renderHook(() =>
+      useAddTool(withPorts({ terminalAt: () => hit, resolveProximity: () => null })),
+    );
+    act(() => result.current.start(ADD_TOOL_KIND.Face));
+    act(() => result.current.preview(C(1, 1)));
+    expect(result.current.message).toContain('中の領域になります');
+  });
+
   it('A6: 緯度 ±90 度の外には置けない（理由が文字で出る）', () => {
     const { result } = renderHook(() => useAddTool(withPorts({})));
     act(() => result.current.start(ADD_TOOL_KIND.Face));
