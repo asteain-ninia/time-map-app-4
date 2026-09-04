@@ -6,11 +6,17 @@
 //
 // 固定するもの:
 //   A1 年をまたいで共有した頂点が、後の年でも移動後の場所に居る（反証 #1 / GPT #1）
-//   A4 地図を 2 周以上パンしても FR-29 の照会が外れない（反証 #3）
-//   A5 1 回の移動で世界を半周以上動かすと断られ、理由が出る（反証 #4 / GPT #7）
-//   B2 入れ子で確定した地物の上位領域が既定でその親になり、保存しても保たれる（GPT #4）
+//   A5 移動後の辺が世界を半周以上になると断られ、理由が出る（反証 #4 / GPT #7）
+//   B2 入れ子で確定した地物の上位領域が既定で **いちばん内側の親** になり、
+//      2 人目・3 人目の子でも入り、保存しても保たれる（GPT #4）
 //   C1 確定欄の 2 つのボタンが 176px の枠に収まる（設計 S3-3）
 //   C5 吸着 ▾ を**閉じた**状態でも、地図セルのどこを押しても入力層に届く（教訓 5.56）
+//
+// **ここに入れなかったもの**:
+//   A4（地図を 2 周以上パンしても照会が外れない）… カメラの中心経度は代表の範囲へ
+//     折り返され、見えている経度の幅も 2 周に満たないので、**いまの実アプリでは
+//     2 周のパンが作れない**。0〜3 周は `src/ui/live-lookup.test.tsx` の
+//     「A4: 地図を 2 周以上パンしても照会が外れない」が直接固定している。
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -159,8 +165,8 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
     }
   });
 
-  test('B2: 入れ子で確定した面は、上位領域が既定で親になり、保存し直しても保たれる', async () => {
-    test.setTimeout(180_000);
+  test('B2: 上位領域は「いちばん内側の親」が既定になり、2 人目・3 人目でも入る', async () => {
+    test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-nest-'));
     const target = join(workDir, 'nested.gimoza');
     const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
@@ -169,32 +175,66 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       const b = await addInputLayerBox(page);
       const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
-      const parentId = await drawFace(page, squareCorners(cx, cy, 140), { name: '親' });
-      expect(parentId).not.toBe('');
 
-      // 親の内側にまるごと描く ＝ 入れ子。上位領域の候補は 1 つに決まるので既定になる。
+      // **面を 2 つ作る**（1 つだけだと「候補を絞っているか」を区別できない ―― 絞っても
+      // 絞らなくても選択肢は「なし＋その 1 件」で同じになる）。
+      const outsideId = await drawFace(page, squareCorners(cx - 260, cy, 60), { name: '外の面' });
       await armAddAreaTool(page);
-      await placeVertices(page, squareCorners(cx, cy, 50));
-      await page.getByTestId('add-complete').click();
-      const parentSelect = page.getByTestId('add-parent');
-      await expect(parentSelect).toBeVisible();
-      // **丸ごと含む面が 1 つに決まるので、それが既定で選ばれている**（GPT #4）。
-      // 候補の一覧そのものは絞らない ―― 離れた場所にある子を持つ上位領域も選べる必要がある
-      // （集約地物の実領域は子の和なので、親自身の形の外に子が居てよい）。
-      await expect(parentSelect.locator('option')).toHaveCount(2); // 「上位領域なし」＋この時刻に居る面 1 件
-      await expect(parentSelect).toHaveValue(parentId);
-      await page.getByTestId('add-name').fill('子');
-      await page.getByTestId('add-save').click();
+      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
+      expect(parentId).not.toBe('');
+      expect(outsideId).not.toBe(parentId);
+
+      /** 親の内側に子を描いて確定し、上位領域の欄の状態を返す。 */
+      const drawChild = async (
+        ccx: number,
+        ccy: number,
+        half: number,
+        name: string,
+      ): Promise<{ value: string; options: number }> => {
+        await armAddAreaTool(page);
+        await placeVertices(page, squareCorners(ccx, ccy, half));
+        await page.getByTestId('add-complete').click();
+        const select = page.getByTestId('add-parent');
+        await expect(select).toBeVisible();
+        const options = await select.locator('option').count();
+        const value = await select.inputValue();
+        await page.getByTestId('add-name').fill(name);
+        await page.getByTestId('add-save').click();
+        await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+        return { value, options };
+      };
+
+      // 1 人目: 親の中。既定は親。
+      const first = await drawChild(cx + 10, cy - 70, 35, '子1');
+      expect(first.value).toBe(parentId);
+      // **候補は絞られていない** ―― 親の中に居ないはずの「外の面」も選べる
+      //（＝「上位領域なし」＋「外の面」＋「親」の 3 件）。
+      expect(first.options).toBe(3);
+
+      // 2 人目: 親の中の別の場所。**ここが 1 回目の手直しで空になっていた**
+      //（含む面が「親」だけでも、当時の実装は「一意なら」を数え損ねる場面があった）。
+      const second = await drawChild(cx + 110, cy - 70, 35, '子2');
+      expect(second.value).toBe(parentId);
+
+      // 3 人目: **1 人目の中**に描く。含む面は「子1 → 親」の 2 つになるので、
+      // 「一意なら」では既定が入らない。**いちばん内側**＝子1 が入る。
+      const third = await drawChild(cx + 10, cy - 70, 12, '子3');
+      expect(third.value).not.toBe('');
+      expect(third.value).not.toBe(parentId);
 
       // 保存 → 書かれたファイルを直接読む（画面だけでは親が焼き付いたか分からない）。
       await page.keyboard.press('Control+s');
       await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
       expect(existsSync(target)).toBe(true);
-      const entries = unzipSync(new Uint8Array(readFileSync(target)));
-      const manifestBytes = entries['manifest.json'];
-      expect(manifestBytes).toBeDefined();
-      expect(strFromU8(manifestBytes!)).toContain(`"parentId":"${parentId}"`);
-
+      const manifest = strFromU8(
+        unzipSync(new Uint8Array(readFileSync(target)))['manifest.json']!,
+      );
+      // 子 3 つとも上位領域を持っている（黙って最上位で保存されていない）。
+      const parented = manifest.split('"parentId"').length - 1;
+      expect(parented).toBeGreaterThanOrEqual(3);
+      expect(manifest).toContain(`"parentId":"${parentId}"`);
+      // 3 人目の上位領域は 1 人目（＝いちばん内側）である。
+      expect(manifest).toContain(`"parentId":"${third.value}"`);
     } finally {
       await app.close();
       rmSync(workDir, { recursive: true, force: true });
