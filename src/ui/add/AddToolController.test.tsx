@@ -959,6 +959,28 @@ describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
     act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
     expect(h.store.getState().currentTime.year).toBe(1500);
+    // **板は閉じたままである**（3 回目の手直し）。年を戻したこと自体を見張りが
+    // 「新しい年の変化」と読むと板が開き直し、年が 1500 ⇄ 1800 を往復して
+    // 「捨てる」以外に抜け道が無くなる（実測 r2d）。
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+  });
+
+  it('「続ける」を何度繰り返しても板は開き直らない（年が往復しない）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    for (let i = 0; i < 3; i += 1) {
+      act(() => {
+        h.store.getState().setCurrentTime(timePointYearMonthDay(1800, 1, 1), 'numericJump');
+      });
+      expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+      act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+      expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+      expect(h.store.getState().currentTime.year).toBe(1500);
+    }
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
   });
 
   it('確定できる点数に届いていなければ、聞かずに捨てて報せる', () => {
@@ -994,6 +1016,29 @@ describe('U23 手直し 2 回目 D1: 一覧で別の地物を選んだときの�
     act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
     expect(focused).toHaveLength(1); // 片付けてから合わせる
+  });
+
+  it('「続ける」で選択を戻したとき、板は閉じたままで選択も往復しない', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    // **道具を構えたあとに別の地物を選んでおく**（道具を構えると選択は外れるので、
+    // 先に選んでも消える。選択が null → A のときは「選択を外しただけ」の枝を通って
+    // しまい、往復が起きない ―― 往復は「戻した先も実在する選択」のときに出る）。
+    act(() => {
+      h.store.getState().setActiveFeature(asFeatureId('f-first'));
+    });
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => {
+      h.store.getState().setActiveFeature(asFeatureId('f-other'));
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    // 年の経路と同じ理由（見張りが自分の後始末を新しい出来事と読まない）。
+    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
+    expect(h.store.getState().activeFeature).toBe(asFeatureId('f-first'));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
   });
 
   it('確定できる点数に届いていなければ、捨てて報せて、そのまま視点を合わせる', () => {

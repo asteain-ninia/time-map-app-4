@@ -248,6 +248,39 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
     // `docs/現状.md` に記録した。ここでは書き出しの側（上の manifest）までを固定する。
   });
 
+  test('D1: 作図中に年を動かすと確認が出て、「続ける」で板が閉じ年も元へ戻る', async () => {
+    test.setTimeout(180_000);
+    const { app, page } = await launchApp();
+    try {
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      // 確定できる点数（面は 3 点）まで打つ。
+      await placeVertices(page, squareCorners(cx, cy, 60));
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+
+      await jumpToYear(page, 1500);
+      const confirm = page.getByTestId('add-draft-discard-confirm');
+      await expect(confirm).toBeVisible();
+      await expect(confirm).toContainText('年を動かす');
+
+      // 「続ける」＝下書きを残し、年も元へ戻す。**板は閉じたままでなければならない**
+      // ―― 年を戻したこと自体を見張りが新しい変化と読むと、板が開き直って年が
+      // 0 ⇄ 1500 を往復し、「捨てる」以外に抜け道が無くなる（実測 r2d）。
+      await page.getByTestId('add-draft-discard-no').click();
+      await expect(confirm).toBeHidden();
+      await expect(page.getByTestId('timeline-current')).toHaveText('0年');
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+      // 少し待っても開き直らない（往復が起きていないことを見る）。
+      await page.waitForTimeout(700);
+      await expect(confirm).toBeHidden();
+      await expect(page.getByTestId('timeline-current')).toHaveText('0年');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('C1: 確定欄の 2 つのボタンは 176px の枠に収まる（自然幅の合計）', async () => {
     test.setTimeout(120_000);
     const { app, page } = await launchApp();

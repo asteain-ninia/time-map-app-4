@@ -319,10 +319,14 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     const prev = prevTimeRef.current;
     if (prev.key === currentTimeKey) return;
     const before = prev.value;
-    prevTimeRef.current = { key: currentTimeKey, value: currentTime };
-    if (!hasDraftNow) return;
-    if (pendingRef.current !== null) return; // すでに聞いている最中。
-    if (canCompleteNow) {
+    // **板が出ている間は「前の年」を進めない**（3 回目の手直し。実測 r2d）。
+    //
+    // 進めてしまうと、「続ける」で年を戻したときに **その戻り自体が新しい変化に見え**、
+    // 板が閉じないまま年が 0 ⇄ 1500 を往復し、抜け道が「捨てる」しか残らなかった
+    // （見張りが自分の後始末を新しい出来事と読む、という型の欠陥）。基準は
+    // **板を開く前の年**に留め、閉じる／捨てるまで動かさない。
+    if (pendingRef.current !== null) return;
+    if (hasDraftNow && canCompleteNow) {
       setPendingDiscard({
         reason: 'time',
         // 「このままにする」＝年を戻す。下書きは打った年のものなので、年だけ進めて
@@ -333,8 +337,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
           store.getState().setCurrentTime(before, TIME_CHANGE_SOURCE.NumericJump);
         },
       });
-      return;
+      return; // ここでは `prevTimeRef` を進めない（戻したときに素通りさせるため）。
     }
+    prevTimeRef.current = { key: currentTimeKey, value: currentTime };
+    if (!hasDraftNow) return;
     const lost = draftSizeRef.current;
     cancelAction();
     if (lost > 0) onDraftDiscarded?.(lost);
@@ -343,11 +349,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   useEffect(() => {
     const prev = prevActiveRef.current;
     if (prev === activeFeature) return;
-    prevActiveRef.current = activeFeature;
-    if (activeFeature === null) return; // 選択を外しただけ。
-    if (!hasDraftNow) return;
+    // 年の見張りと**同じ理由**で、板が出ている間は基準を進めない（3 回目の手直し）。
+    // 進めると「続ける」で選択を戻したときに板が開き直り、選択が往復する。
     if (pendingRef.current !== null) return;
-    if (canCompleteNow) {
+    if (activeFeature !== null && hasDraftNow && canCompleteNow) {
       // 「このままにする」＝選択を戻す（視点も動かさない）。
       setPendingDiscard({
         reason: 'select',
@@ -355,8 +360,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
           store.getState().setActiveFeature(prev);
         },
       });
-      return;
+      return; // ここでは `prevActiveRef` を進めない。
     }
+    prevActiveRef.current = activeFeature;
+    if (activeFeature === null) return; // 選択を外しただけ。
+    if (!hasDraftNow) return;
     const lost = draftSizeRef.current;
     cancelAction();
     if (lost > 0) onDraftDiscarded?.(lost);
