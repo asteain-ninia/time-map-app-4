@@ -299,6 +299,15 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       await checkCamera(page, 'after-redo');
 
       // --- Split (knife) a face: full live flow ----------------------------------
+      //
+      // **先に全体表示へ戻す**（増分 3 の手直し A6 で分かったこと）。上のパンでカメラが
+      // 南へ 90px ぶん動いており、そのままだと **地図セルの上のほうが緯度 90 度より北**に
+      // なる。北極の上には場所が無いので、追加の道具はそこへ打った頂点を断る
+      //（`docs/現状.md` の緯度の関門）。断られると頂点が 4 つそろわず、この先の分割が
+      // 始められない ―― 探索したいのは分割であってカメラではないので、視点を戻してから描く。
+      await page.keyboard.press('Control+Home');
+      await page.waitForTimeout(200);
+
       // Re-add a fresh face to split (state may have been mutated by undo/redo).
       await commitFace(page, cx, cy - 30, 90);
       await shot(page, 'split-target-added');

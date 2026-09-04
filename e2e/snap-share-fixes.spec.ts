@@ -178,8 +178,10 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       await page.getByTestId('add-complete').click();
       const parentSelect = page.getByTestId('add-parent');
       await expect(parentSelect).toBeVisible();
-      // **候補は「いま描いた形を丸ごと含む面」だけ**（実データでは 776 件が平らに並んでいた）。
-      await expect(parentSelect.locator('option')).toHaveCount(2); // 「上位領域なし」＋親 1 件
+      // **丸ごと含む面が 1 つに決まるので、それが既定で選ばれている**（GPT #4）。
+      // 候補の一覧そのものは絞らない ―― 離れた場所にある子を持つ上位領域も選べる必要がある
+      // （集約地物の実領域は子の和なので、親自身の形の外に子が居てよい）。
+      await expect(parentSelect.locator('option')).toHaveCount(2); // 「上位領域なし」＋この時刻に居る面 1 件
       await expect(parentSelect).toHaveValue(parentId);
       await page.getByTestId('add-name').fill('子');
       await page.getByTestId('add-save').click();
