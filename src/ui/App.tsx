@@ -86,6 +86,7 @@ import type { AddHostPorts } from './add/host-ports';
 import { AddDraftStore } from './add/add-draft-store';
 import { createAddSnapPorts } from './add/snap-ports';
 import { ADD_STRINGS } from './add/strings';
+import { ToolOptionBar } from './shell/ToolOptionBar';
 import type { Camera as RenderCameraInput, Viewport } from '../render';
 import {
   KnifeToolController,
@@ -2663,6 +2664,14 @@ export function App(): JSX.Element {
               store={store}
               screenToWorld={screenToWorld}
               mapCameraInput={mapCameraInput}
+            />
+            {/* 編集モードの 8 つの道具の帯（増分 3 の手直し C3）。DOM は 1 つも作らず、
+                道具名と対象だけをオプションバーへ押し込む。追加モードのときは帯を持たない
+                ので、`AddToolController` と喧嘩しない（`OptionBarStore.claim` の規約）。 */}
+            <ToolOptionBar<DomainRoot>
+              store={store}
+              optionBar={optionBarStore}
+              resolveFeature={featureByIdAt}
             />
             <AddToolControllerWithParents
               store={store}

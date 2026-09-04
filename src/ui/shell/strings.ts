@@ -180,6 +180,50 @@ export const OPTION_BAR_STRINGS = {
 } as const;
 
 /**
+ * 編集モードの 8 つの道具の文言（オプションバーの道具名 112px と 対象欄 240px）。
+ *
+ * **書き方は追加の道具に揃えた**（`ui/add/strings.ts` の `toolNameFace: '▱ 面を描く'`）:
+ * 記号 1 文字 ＋ 半角空白 ＋ 短い動詞句。12px の文字なので全角 4 文字＋記号でも
+ * 112px（＝全角 9 文字ぶん）に収まる。語そのものは設計書 §C.4 の表の呼び名を使う
+ * （「選ぶ」「頂点」「分ける」「所属」「結ぶ」「輪郭」「穴あけ」）。表に載っていない
+ * 「地物移動」だけは、同じ調子で「動かす」と名付けた。
+ *
+ * **文言はここに置き、ToolId との対応表は `tools.ts` に置く**。`tools.ts` は道具の
+ * 語彙（`TOOL_ID`）とモードごとの顔ぶれを持つ単一の場所なので、道具を足したときに
+ * 名前の付け忘れがコンパイルエラーになる（`ui/property/messages.ts` が
+ * `PROPERTY_STRINGS` と `FEATURE_KIND_JA` を分けているのと同じ形）。
+ */
+export const EDIT_TOOL_STRINGS = {
+  /**
+   * 「選ぶ」は帯の既定の道具名と同じ語である（道具を持っていないときの帯は
+   * 「選ぶ」を出す）。**同じ文言を 2 か所に書かない**ため定数を参照する（教訓 5.29）。
+   */
+  select: OPTION_BAR_STRINGS.defaultToolName,
+  vertex: '◇ 頂点',
+  move: '✥ 動かす',
+  knife: '✂ 分ける',
+  reparent: '⇄ 所属',
+  merge: '∪ 結ぶ',
+  ring: '◎ 輪郭',
+  drill: '⊙ 穴あけ',
+
+  /**
+   * 対象欄（240px）。設計書 §C.4 の例「アアウェン州（面・州）」の書式 ―― 名前のうしろに
+   * 丸括弧で種類を添える。種類の日本語は素性欄と同じ `featureKindJaLabel` から取る
+   * （面＝末端地物／線＝線情報／点＝点情報／集約＝集約地物。写像表を新しく作ると
+   * 同じ値の呼び名が画面の 2 か所で割れる＝教訓 5.29）。
+   */
+  target: (name: string, kind: string): string => `${name}（${kind}）`,
+  /**
+   * 種別ラベル（FR-40。「州」「島国」など利用者が付ける自由な語）が付いているときは
+   * 設計書の例どおり「・」で足す。付いていない地物のほうが多いので、上の 2 項目版と
+   * 分けてある（空の「・」が残らない）。
+   */
+  targetWithKindLabel: (name: string, kind: string, kindLabel: string): string =>
+    `${name}（${kind}・${kindLabel}）`,
+} as const;
+
+/**
  * Sidebar list content strings (HB-3): empty-state guidance for the 地物一覧 /
  * イベント一覧 sections when the project has no features / anchors yet. Centralised
  * here (FR-115); no inline literals (教訓 5.19).

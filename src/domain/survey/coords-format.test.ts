@@ -95,6 +95,43 @@ describe('formatLatDms / formatLonDms (FR-16 度分秒 + 方位)', () => {
   });
 });
 
+describe('日付変更線ちょうど（経度 ±180°）には東西を付けない', () => {
+  // 実機の状態行に **「北緯 70.131028° 西経 180.000000°」** と出ていたのが出発点。
+  // 経度 180 度は東半球と西半球の境そのもので、東西どちらの語を当てても嘘になる。
+  // 折りたたみ（representativeLon）が +180 を -180 へ寄せるので、符号だけを見る書き方
+  // では必ず「西」に倒れていた。
+  it('180 / -180 は方位語なしの数値だけになる（十進）', () => {
+    expect(formatLonDecimal(180)).toBe('180.000000°');
+    expect(formatLonDecimal(-180)).toBe('180.000000°');
+    // 無限スクロールで回り込んで届いた連続値（+360k）も、折りたたんだ先が境なら同じ。
+    expect(formatLonDecimal(540)).toBe('180.000000°');
+  });
+
+  it('境のすぐ手前は、これまでどおり東西が付く（外すのは境だけ）', () => {
+    expect(formatLonDecimal(179.999999)).toBe(`${COMPASS.east} 179.999999°`);
+    expect(formatLonDecimal(-179.999999)).toBe(`${COMPASS.west} 179.999999°`);
+  });
+
+  it('0 度（本初子午線）は従来どおり東経のまま（既存の取り決めを変えない）', () => {
+    expect(formatLonDecimal(0)).toBe(`${COMPASS.east} 0.000000°`);
+    expect(formatLonDms(0)).toBe(`${COMPASS.east} 0°0′0.00″`);
+  });
+
+  it('度分秒の側も、画面に出る数字が 180° になるときは方位語を付けない', () => {
+    expect(formatLonDms(180)).toBe('180°0′0.00″');
+    expect(formatLonDms(-180)).toBe('180°0′0.00″');
+    // **判定は「表示する桁へ丸めたあとの値」で行う。** 度分秒は秒を 2 桁で丸めるので、
+    // 179.999999° は繰り上がって 180°0′0.00″ と表示される ―― 見えている数字が 180 なのに
+    // 「東経」と書いてある状態を作らないため、ここも方位語なしになる。十進のほうは
+    // 179.999999° と表示されるので東経が付く（**それぞれが自分の出す数字に対して正しい**）。
+    expect(formatLonDms(179.999999)).toBe('180°0′0.00″');
+    expect(formatLonDms(-179.999999)).toBe('180°0′0.00″');
+    // 丸めても 180 に届かない値は、当然これまでどおり東西が付く。
+    expect(formatLonDms(179.9999)).toBe(`${COMPASS.east} 179°59′59.64″`);
+    expect(formatLonDms(-179.9999)).toBe(`${COMPASS.west} 179°59′59.64″`);
+  });
+});
+
 describe('formatCoordinate (FR-16 度分秒 AND 十進 both)', () => {
   it('produces all four strings', () => {
     const d = formatCoordinate({ lon: 139.75, lat: 35.6894 });

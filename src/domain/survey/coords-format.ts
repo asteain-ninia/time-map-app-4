@@ -36,6 +36,27 @@ export const COMPASS = {
   west: '西経',
 } as const;
 
+/**
+ * 日付変更線の経度（絶対値）。**ここは東経でも西経でもない。**
+ *
+ * 経度 180 度は東半球と西半球の境そのもので、東西どちらの語を付けても嘘になる。
+ * 実機の状態行に「西経 180.000000°」と出ていたのがこの取りこぼしで、折りたたみ
+ * （`representativeLon`）が +180 を -180 に寄せるため、符号だけを見ると必ず「西」に
+ * 倒れていた。ここちょうどのときは **方位語を付けず数値だけ**を出す。
+ *
+ * **0 度（本初子午線）は従来どおり `東経 0.000000°` のまま**である。0 も厳密には
+ * どちらでもないが、「正の側の語を当てる」という既存の取り決め（下の各整形の説明）が
+ * すでにあり、それを変えるのはこの手直しの範囲外。ここで直すのは「見えている数字が
+ * 180 なのに東西が付く」ほうだけである。
+ */
+export const DATE_LINE_DEG = 180;
+
+/**
+ * 日付変更線かどうかは **画面に出す桁へ丸めたあとの値**で判定する。179.9999999° の
+ * ように、丸めると 180.000000 と表示されるのに符号は東、という食い違いを作らないため。
+ */
+const DATE_LINE_DECIMAL_TEXT = DATE_LINE_DEG.toFixed(DECIMAL_PLACES);
+
 // --- Representative normalization (single source: U04 wrapLonDeg) ------------
 
 /**
@@ -66,16 +87,21 @@ export function formatLatDecimal(lat: number): string {
 
 /**
  * The decimal (十進) longitude string, e.g. `東経 139.750000°`. The scalar is
- * folded to [-180, 180) first (representativeLon). Exactly 0 / the folded -180
- * edge use the eastern/positive label for the same stable-convention reason.
+ * folded to [-180, 180) first (representativeLon). Exactly 0 uses the eastern/
+ * positive label for the same stable-convention reason; the date line (±180°,
+ * see {@link DATE_LINE_DEG}) gets NO compass word at all — `180.000000°`.
  */
 export function formatLonDecimal(lon: number): string {
   if (!Number.isFinite(lon)) {
     return INVALID_VALUE_TEXT;
   }
   const norm = representativeLon(lon);
+  const magnitude = Math.abs(norm).toFixed(DECIMAL_PLACES);
+  if (magnitude === DATE_LINE_DECIMAL_TEXT) {
+    return `${magnitude}°`;
+  }
   const word = norm < 0 ? COMPASS.west : COMPASS.east;
-  return `${word} ${Math.abs(norm).toFixed(DECIMAL_PLACES)}°`;
+  return `${word} ${magnitude}°`;
 }
 
 // --- Degrees/minutes/seconds form (度分秒) -----------------------------------
@@ -139,15 +165,24 @@ export function formatLatDms(lat: number): string {
 
 /**
  * The 度分秒 longitude string, e.g. `東経 139°45′00.00″`. The scalar is folded
- * to [-180, 180) first; the hemisphere word is chosen by the folded sign.
+ * to [-180, 180) first; the hemisphere word is chosen by the folded sign. The
+ * date line (±180°) gets NO compass word — same rule as the decimal form, kept
+ * in step so the two lines of the readout never disagree.
  */
 export function formatLonDms(lon: number): string {
   if (!Number.isFinite(lon)) {
     return INVALID_VALUE_TEXT;
   }
   const norm = representativeLon(lon);
+  const parts = toDmsParts(Math.abs(norm));
+  const body = formatDmsBody(parts);
+  // |norm| は 180 を超えないので、degrees が 180 になるのは「表示上ちょうど 180°0′0.00″」
+  // のときだけ（丸めの繰り上がりで到達した場合も含む）。
+  if (parts.degrees === DATE_LINE_DEG) {
+    return body;
+  }
   const word = norm < 0 ? COMPASS.west : COMPASS.east;
-  return `${word} ${formatDmsBody(toDmsParts(Math.abs(norm)))}`;
+  return `${word} ${body}`;
 }
 
 // --- Combined coordinate display --------------------------------------------
