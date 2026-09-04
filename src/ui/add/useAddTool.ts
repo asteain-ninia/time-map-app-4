@@ -106,7 +106,16 @@ export interface UseAddToolOptions<S> {
    * the store directly — it reports the result so the single store-write path
    * stays in the host.
    */
-  readonly onCommitted: (result: ProcessResult<S>, newFeatureId: FeatureId) => void;
+  readonly onCommitted: (
+    result: ProcessResult<S>,
+    newFeatureId: FeatureId,
+    /**
+     * 確定したものの素性（増分 3）。いまは **既存の頂点をいくつ共有したか**だけで、
+     * 状態行の「直前の結果」に「既存の頂点 2 個を共有しました」と添えるために使う。
+     * 任意なので、受け取らない呼び出し側は今までどおり動く。
+     */
+    committed?: { readonly sharedVertexCount: number },
+  ) => void;
   /** Called when U13 returns conflicts: the host opens the conflict-resolution flow. */
   readonly onConflicts?: ((result: ProcessResult<S>, proposal: AddProposal) => void) | undefined;
   /**
@@ -442,7 +451,9 @@ export function useAddTool<S>(options: UseAddToolOptions<S>): UseAddTool {
         case PROCESS_STATUS.Committed:
           // 教訓 5.11: hand the result + new feature id to the host to swap state
           // and re-resolve selection. Then discard ALL transient state (教訓 5.2).
-          onCommitted(result, proposal.featureId);
+          onCommitted(result, proposal.featureId, {
+            sharedVertexCount: proposal.snapshot.sharedCandidateIds.size,
+          });
           discard();
           break;
         case PROCESS_STATUS.ConflictsPending:

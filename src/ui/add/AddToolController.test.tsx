@@ -96,6 +96,8 @@ interface Harness {
   readonly drawSink: AddDrawSink;
   readonly drawCalls: { primitives: readonly unknown[] }[];
   readonly proposals: AddProposal[];
+  /** 増分 3: 確定のたびにホストへ渡る「確定したものの素性」（共有した頂点の数）。 */
+  readonly committedInfo: ({ readonly sharedVertexCount: number } | undefined)[];
 }
 
 function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness {
@@ -113,6 +115,7 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
     return resultFor();
   });
 
+  const committedInfo: ({ readonly sharedVertexCount: number } | undefined)[] = [];
   const drawCalls: { primitives: readonly unknown[] }[] = [];
   const drawSink: AddDrawSink = {
     drawAdd: (primitives) => {
@@ -147,13 +150,16 @@ function mountApp(resultFor: () => ProcessResult<S> = () => committed): Harness 
           drawSink={drawSink}
           optionBar={optionBar}
           addDraft={addDraft}
-          onCommitted={hostCommit(store)}
+          onCommitted={(result, id, info) => {
+            committedInfo.push(info);
+            hostCommit(store)(result, id);
+          }}
         />
       }
     />,
   );
 
-  return { store, startProcess, drawSink, drawCalls, proposals };
+  return { store, startProcess, drawSink, drawCalls, proposals, committedInfo };
 }
 
 function selectTool(testId: string): void {
@@ -572,5 +578,16 @@ describe('U23 integration: 道具の帯（設計書 §C.4 / 増分 3）', () => 
     act(() => fireEvent.click(screen.getByTestId('add-complete')));
     act(() => fireEvent.click(screen.getByTestId('add-save')));
     expect(h.proposals[0]?.snapshot.feature.attributes.startYear).toBe(1500);
+  });
+});
+
+describe('U23 integration: 確定したことを状態行へ伝える（増分 3 / 設計書 §H.5）', () => {
+  it('吸着していないときは共有 0 件として伝える', () => {
+    const h = mountApp();
+    selectTool('tool-add.point');
+    clickMap(1, 1);
+    act(() => fireEvent.click(screen.getByTestId('add-complete')));
+    act(() => fireEvent.click(screen.getByTestId('add-save')));
+    expect(h.committedInfo).toEqual([{ sharedVertexCount: 0 }]);
   });
 });

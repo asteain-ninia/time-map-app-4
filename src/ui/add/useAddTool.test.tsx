@@ -121,8 +121,11 @@ describe('useAddTool flow (FR-76, 教訓 5.7 完了トリガー)', () => {
     const proposal = rec.last;
     expect(proposal).not.toBeNull();
     expect(proposal?.anchorTime).toEqual(currentTime);
-    // committed → onCommitted called with the new feature id (教訓 5.11)
-    expect(onCommitted).toHaveBeenCalledWith(committed, proposal?.featureId);
+    // committed → onCommitted called with the new feature id (教訓 5.11)。
+    // 増分 3 で 3 つ目に「確定したものの素性」（いまは共有した頂点の数）が付いた。
+    expect(onCommitted).toHaveBeenCalledWith(committed, proposal?.featureId, {
+      sharedVertexCount: 0,
+    });
     // session fully discarded after commit (教訓 5.2)
     expect(result.current.session).toBeNull();
     expect(result.current.phase).toBe(ADD_PHASE.Idle);

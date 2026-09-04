@@ -22,6 +22,12 @@ export const APP_STRINGS = {
    * 起きない**を無くすためのもので、「何が起きたか → なぜか → 次に何をするか」の順
    * （設計書 §H.5）。
    */
+  /**
+   * 増分 3: 吸着して既存の頂点を共有したときの「直前の結果」（設計書 §H.5）。
+   * 「地物を追加した」だけでは、**境界がつながったのかどうか**が読み取れない。
+   */
+  addedWithSharedVertices: (count: number): string =>
+    `地物を追加しました（既存の頂点 ${String(count)} 個を共有し、境界がつながりました）`,
   shortcutBusy: (label: string): string =>
     `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',

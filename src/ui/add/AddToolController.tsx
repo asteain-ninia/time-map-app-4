@@ -102,7 +102,11 @@ export interface AddToolControllerProps<S> {
    * prop would have skipped history recording without any signal. Making the prop
    * required moves that mistake to compile time.
    */
-  readonly onCommitted: (result: ProcessResult<S>, newFeatureId: FeatureId) => void;
+  readonly onCommitted: (
+    result: ProcessResult<S>,
+    newFeatureId: FeatureId,
+    committed?: { readonly sharedVertexCount: number },
+  ) => void;
   /** Host conflict handler (FR-62): open the conflict-resolution flow. */
   readonly onConflicts?: ((result: ProcessResult<S>, proposal: AddProposal) => void) | undefined;
   /**

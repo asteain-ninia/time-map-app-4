@@ -1794,10 +1794,21 @@ export function App(): JSX.Element {
   // (全コミット経路の確認). The property / interval / edit-drag paths, whose commit
   // time CAN differ from the view time, thread their own explicit times instead.
   const onAddCommitted = useCallback(
-    (result: ProcessResult<DomainRoot>, newFeatureId: FeatureId) => {
+    (
+      result: ProcessResult<DomainRoot>,
+      newFeatureId: FeatureId,
+      committed?: { readonly sharedVertexCount: number },
+    ) => {
       recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
+      // 増分 3: **吸着して境界を共有したことを、状態行の「直前の結果」に日本語で出す**
+      // （設計書 §H.5。成功を一度も知らせない＝ C6 への手当ての 1 件）。`recordCommit` が
+      // 出す「地物の追加を行いました」を、共有したときだけ上書きする。
+      const shared = committed?.sharedVertexCount ?? 0;
+      if (result.status === PROCESS_STATUS.Committed && shared > 0) {
+        announceResult(APP_STRINGS.addedWithSharedVertices(shared));
+      }
     },
-    [recordCommit, store],
+    [recordCommit, store, announceResult],
   );
 
   // KNIFE COMMIT (C3 — 教訓 5.11 / U12): record as one history unit and promote the
