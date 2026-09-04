@@ -552,13 +552,39 @@ describe('錨表の操作性（C1）', () => {
     expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k99')]);
   });
 
-  it('Home / End は母数の端へ跳ぶ（窓の外でも届く）', () => {
+  it('Home / End は「全件の端」へ跳ぶ（既定の窓の端で止まらない。増分 3）', () => {
+    // 既定の母数は現在時刻の前後 12 本＝88..112 に切られている。そのまま窓の端で
+    // 止まると「いちばん古い錨へ行った」という読みと食い違うので、全件の端へ行く。
     const picked: AnchorEntry[] = [];
     renderBig(asAnchorId('k100'), (e) => picked.push(e));
     const list = screen.getByTestId('anchor-list');
     fireEvent.keyDown(list, { key: 'Home' });
     fireEvent.keyDown(list, { key: 'End' });
-    expect(picked.map((e) => e.anchor.id)).toEqual([asAnchorId('k88'), asAnchorId('k112')]);
+    expect(picked.map((e) => e.anchor.id)).toEqual([
+      asAnchorId('k0'),
+      asAnchorId(`k${String(BIG - 1)}`),
+    ]);
+  });
+
+  it('Home を押すと母数が全件へ広がる（跳んだ先が見える状態になる）', () => {
+    renderBig(asAnchorId('k100'));
+    const list = screen.getByTestId('anchor-list');
+    // 広がる前は「近くだけ」なので［全部見る］が出ている。
+    expect(screen.getByTestId('anchor-list-expand')).toBeInTheDocument();
+    fireEvent.keyDown(list, { key: 'Home' });
+    // 広がったので［近くだけ見る］へ入れ替わる（＝母数が全件になった印。この部品は
+    // 選択を親から受け取る「制御される部品」なので、跳んだ先が DOM に載るかは
+    // 親が選択を書き換えたあとの話であり、ここでは母数が広がったことだけを見る）。
+    expect(screen.getByTestId('anchor-list-collapse')).toBeInTheDocument();
+    expect(screen.queryByTestId('anchor-list-expand')).toBeNull();
+  });
+
+  it('焦点は枠が持ち、いまの行は aria-activedescendant で示す（窓の外へ出ても焦点が落ちない）', () => {
+    renderBig(asAnchorId('k100'));
+    const list = screen.getByTestId('anchor-list');
+    expect(list).toHaveAttribute('aria-activedescendant', 'anchor-row-k100');
+    // 行のボタンは Tab の順路から外れている（焦点を持たない）。
+    expect(screen.getByTestId('anchor-row-k100')).toHaveAttribute('tabindex', '-1');
   });
 
   it('端では行き止まりになる（範囲の外へ出ない）', () => {

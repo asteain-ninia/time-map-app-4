@@ -213,6 +213,28 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
     [dataset, onSelectAnchor],
   );
 
+  /**
+   * Home / End は **全件の端**へ行く（増分 3。増分 2 の手直しの残り）。
+   *
+   * 既定の母数は「現在時刻の前後 12 本」に切ってあるので、そのまま Home を押すと
+   * 「その窓の先頭」＝ 全体の先頭ではない場所へ飛ぶ。**押した人は「いちばん古い錨へ
+   * 行った」と読む**ので、切り取られた窓の端で止まるのは黙って嘘をつくのと同じである。
+   * そこで、まだ窓が切れているときは **［全部見る］と同じ状態へ広げてから**端へ飛ぶ。
+   * 画面の上の件数表示と［近くだけ見る］ボタンが、広がったことをそのまま示す。
+   */
+  const moveToEnd = useCallback(
+    (which: 'first' | 'last'): void => {
+      const row = which === 'first' ? all[0] : all[all.length - 1];
+      if (row === undefined) return;
+      if (all.length > dataset.length) {
+        setExpanded(true);
+        setScrollTop(0);
+      }
+      onSelectAnchor(row.entry);
+    },
+    [all, dataset.length, onSelectAnchor],
+  );
+
   const onKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLUListElement>): void => {
       const from = selectedIndex < 0 ? 0 : selectedIndex;
@@ -224,17 +246,17 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           moveSelection(selectedIndex < 0 ? dataset.length - 1 : from - 1);
           break;
         case 'Home':
-          moveSelection(0);
+          moveToEnd('first');
           break;
         case 'End':
-          moveSelection(dataset.length - 1);
+          moveToEnd('last');
           break;
         default:
           return;
       }
       e.preventDefault();
     },
-    [selectedIndex, dataset.length, moveSelection],
+    [selectedIndex, dataset.length, moveSelection, moveToEnd],
   );
 
   if (all.length === 0) {
@@ -293,9 +315,17 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         role="listbox"
         aria-label={PROPERTY_STRINGS.anchorSectionTitle}
         ref={listRef}
-        // 矢印キー・Home・End で選び替える（C1 / 反証 F8）。行のボタンから上がってくる
-        // ので、枠そのものにも tabIndex を置いて「まだ何も押していない」状態でも効かせる。
+        // 矢印キー・Home・End で選び替える（C1 / 反証 F8）。
+        //
+        // **焦点は常にこの枠が持つ**（増分 3。増分 2 の手直しの残り）。行のボタンに焦点を
+        // 置くと、矢印で選択が動いてその行が仮想スクロールの窓から出た瞬間に **DOM ごと
+        // 消えて焦点が body へ落ち**、以後の矢印が効かなくなる。listbox の作法どおり
+        // 枠が焦点を持ち、いまどの行かは `aria-activedescendant` で伝える。行のボタンは
+        // `tabIndex={-1}` にして Tab の順路から外し、押されたときは焦点を枠へ戻す。
         tabIndex={0}
+        aria-activedescendant={
+          selectedAnchorId === null ? undefined : anchorRowDomId(selectedAnchorId)
+        }
         onKeyDown={onKeyDown}
         // 高さは「見せる行数」と「実際の件数」の小さいほう。錨が 1 本しか無い地物で
         // 336px の空箱を出さない（素性欄はそもそも縦に狭い）。
@@ -325,13 +355,21 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
               <button
                 type="button"
                 role="option"
+                id={anchorRowDomId(entry.anchor.id)}
                 aria-selected={selected}
+                // Tab の順路から外す（焦点は枠が持つ ―― 上の `aria-activedescendant` の注記）。
+                tabIndex={-1}
                 data-testid={`anchor-row-${entry.anchor.id}`}
                 className={
                   selected ? 'anchor-list__row anchor-list__row--selected' : 'anchor-list__row'
                 }
                 title={sentenceFor(indexInDataset)}
-                onClick={() => onSelectAnchor(entry)}
+                onClick={() => {
+                  onSelectAnchor(entry);
+                  // マウスで押すとその行に焦点が移るので、枠へ戻す。戻さないと、
+                  // 押したあとの矢印で行が窓の外へ出た瞬間に焦点が body へ落ちる。
+                  listRef.current?.focus();
+                }}
               >
                 <span className="anchor-list__time">{formatTimePoint(entry.start)}</span>
                 <span className="anchor-list__diff" data-testid={`anchor-diff-${entry.anchor.id}`}>
@@ -375,6 +413,14 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
       )}
     </div>
   );
+}
+
+/**
+ * 行の DOM id。`aria-activedescendant` が指す先で、**画面には出ない**（内部 id を
+ * 出さない U-1 に触れない）。錨 ID をそのまま使うと数字始まりになりうるので接頭辞を付ける。
+ */
+export function anchorRowDomId(anchorId: AnchorId): string {
+  return `anchor-row-${anchorId}`;
 }
 
 /** 親の表示名をそのスナップショットから引く。引けなければ内部 id は出さない（U-1）。 */
