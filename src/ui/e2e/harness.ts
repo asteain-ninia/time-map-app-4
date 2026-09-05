@@ -45,6 +45,15 @@ export interface E2eHarnessActions {
    * ここで数える（T-2: 隠し観測は足す一方にする）。
    */
   readonly getProjectStats: () => ProjectStats;
+  /**
+   * `count` 件の合成地物を載せる（増分 4）。受け入れ条件の「**5,000 行の合成データで
+   * 台帳の DOM ノードが 20 個以下**」を実アプリで測るための投入口で、`loadProject` と
+   * 同じ「開いたときと同じ流れ」（reflect まで）を通る。所有者: ui/App。
+   *
+   * 5,000 件入りの `.gimoza` をリポジトリへ置く代わりに、その場で組む
+   * （実データ 775 件で 2MB あるので、5,000 件は置きたくない）。
+   */
+  readonly loadSyntheticProject: (count: number) => void;
 }
 
 type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;

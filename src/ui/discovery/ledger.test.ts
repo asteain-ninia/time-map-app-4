@@ -110,6 +110,19 @@ describe('台帳の行 — 階層のたたみ込み', () => {
     expect(result.autoExpanded.has(id('p'))).toBe(true);
   });
 
+  it('**自分で開いた親は、絞り込みに当たらない子も出す**（押しても何も起きない三角を作らない）', () => {
+    // 絞り込み中に親の三角を押しても何も起きない、では「押しても何も起きないボタン」に
+    // なる（C9 の②）。自動で開いた親（探した結果を見せるための開き）とは分ける。
+    const features = [lf('p', '親国', null), lf('c', '子州', 'p'), lf('x', '別国', null)];
+    const auto = build(features, { query: '親国' });
+    // 自動で開いた親: 当たった行（親）だけが出る。
+    expect(auto.rows.map((r) => r.name)).toEqual(['親国']);
+
+    const manual = build(features, { query: '親国', expanded: new Set([id('p')]) });
+    // 自分で開いた親: 当たらない子も出る。
+    expect(manual.rows.map((r) => r.name)).toEqual(['親国', '子州']);
+  });
+
   it('種別でも絞り込める（V5: 種別で絞れること）', () => {
     const features = [
       lf('a', 'アアウェン州', null, { kindLabel: '州' }),

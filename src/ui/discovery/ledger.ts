@@ -296,19 +296,30 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
   // 木: 根から深さ優先で下る。**循環しても止まる**ように、通った id を覚える
   // （教訓 5.28。`buildForest` の `walkToRoot` と同じ規律）。
   const visited = new Set<FeatureId>();
-  const walkDown = (id: FeatureId, indent: number): void => {
+  /**
+   * `allowed` は「この行は親が出すと決めたか」。根は自分で絞り込みを通る必要があるが、
+   * 子は親が既に判断している（自分で開いた親は、当たらない子も出す）。
+   */
+  const walkDown = (id: FeatureId, indent: number, allowed: boolean): void => {
     if (visited.has(id)) return;
     visited.add(id);
     const f = byId.get(id);
     if (f === undefined) return;
-    if (!keep.has(id)) return;
-    const children = (forest.childrenOf.get(id) ?? []).filter((c) => keep.has(c));
+    if (!allowed && !keep.has(id)) return;
+    // **利用者が自分で開いた親は、絞り込みに当たらない子も出す。**
+    // 絞り込み中に親の三角を押しても何も起きない、という「押しても何も起きないボタン」
+    // （C9 の②）を作らないため。絞り込みのために自動で開いた親（`autoExpanded`）は
+    // 当たった子だけを出す ―― そちらは「探した結果を見せる」ための開きだからである。
+    const openedByUser = expanded.has(id);
+    const children = (forest.childrenOf.get(id) ?? []).filter(
+      (c) => (openedByUser && byId.has(c)) || keep.has(c),
+    );
     const open = children.length > 0 && isExpanded(id);
     rows.push(toRow(f, indent, forest, qualifiers, bundleIndex, doneIds, open));
     if (!open) return;
-    for (const child of children) walkDown(child, indent + 1);
+    for (const child of children) walkDown(child, indent + 1, true);
   };
-  for (const rootId of forest.rootIds) walkDown(rootId, 0);
+  for (const rootId of forest.rootIds) walkDown(rootId, 0, false);
 
   return { rows, totalCount: features.length, matchCount: matched.size, autoExpanded };
 }

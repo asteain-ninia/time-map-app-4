@@ -532,3 +532,29 @@ export async function listedFeatureCount(page: Page): Promise<number> {
   if (m === null) throw new Error(`一覧の件数表示が読めない: ${JSON.stringify(text)}`);
   return Number(m[1] ?? m[2]);
 }
+
+/**
+ * `count` 件の合成地物を載せる（増分 4）。受け入れ条件の「**5,000 行の合成データで
+ * 台帳の DOM ノードが 20 個以下**」を実アプリで測るための投入口で、読み込みと同じ
+ * 1 本（reflect）を通る。`E2E_TEST=1` のときだけ生える（本番では何も無い）。
+ */
+export async function loadSyntheticProject(page: Page, count: number): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { loadSyntheticProject?: unknown } })
+        .__E2E_HARNESS__?.loadSyntheticProject === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate((n) => {
+    const harness = (
+      globalThis as {
+        __E2E_HARNESS__?: { loadSyntheticProject?: (count: number) => void };
+      }
+    ).__E2E_HARNESS__;
+    if (harness?.loadSyntheticProject === undefined) {
+      throw new Error('window.__E2E_HARNESS__.loadSyntheticProject が無い (E2E_TEST=1 で起動したか)');
+    }
+    harness.loadSyntheticProject(n);
+  }, count);
+}

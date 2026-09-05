@@ -597,15 +597,43 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     onRefusal,
   ]);
 
-  // Ctrl+Z（改名の取り消し）で戻った地物へカーソルを移す（設計書 §C.5）。
-  // **束のカーソルは取り消しの単位に含めない** ―― 取り消しはドメインのコマンドで、
-  // カーソルは画面の状態である。だから「取り消しの結果を追いかける」形にする。
+  // 一覧の行を選んだら、その地物が束に居ればカーソルもそこへ合わせる。
   useEffect(() => {
     if (bundle === null || activeFeature === null) return;
     const at = indexOfMember(bundle, activeFeature);
     if (at === null || at === bundle.cursor) return;
     store.getState().setBundleCursor(at);
   }, [bundle, activeFeature, store]);
+
+  /**
+   * **Ctrl+Z で戻った地物へカーソルを移す**（設計書 §C.5）。
+   *
+   * **束のカーソルは取り消しの単位に含めない** ―― 取り消しはドメインのコマンドで、
+   * カーソルは画面の状態である。だから「取り消しの結果を **追いかける**」形にする。
+   *
+   * 追いかけ方は **「済」が外れた地物を見る**。済は「作った時点の名前・種別と、いまの
+   * 名前・種別が違うか」で導出しているので、改名を取り消すと自動的に未処理へ戻る。
+   * つまり **どのコマンドが取り消されたかを聞かなくても、結果状態から分かる**
+   * （教訓 5.6: 状態変化の検出は結果状態で判定する）。「送りで次へ進んだあと、
+   * Ctrl+Z を押したら 1 つ前へ戻る」がこれで成り立つ。
+   */
+  const prevDoneRef = useRef<ReadonlySet<FeatureId> | null>(null);
+  useEffect(() => {
+    const prev = prevDoneRef.current;
+    prevDoneRef.current = doneIds;
+    if (bundle === null || prev === null) return;
+    // 済 → 未処理 へ戻ったものを、束の並びの順に探す。
+    for (let i = 0; i < bundle.members.length; i += 1) {
+      const member = bundle.members[i];
+      if (member === undefined) continue;
+      if (!prev.has(member.featureId) || doneIds.has(member.featureId)) continue;
+      const s = store.getState();
+      s.setBundleCursor(i);
+      if (s.activeFeature !== member.featureId) s.setActiveFeature(member.featureId);
+      onFocusNameField?.();
+      return;
+    }
+  }, [doneIds, bundle, store, onFocusNameField]);
 
   // --- その場編集 -------------------------------------------------------------
   const commitEdit = useCallback(

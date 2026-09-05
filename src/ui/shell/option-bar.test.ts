@@ -326,3 +326,54 @@ describe('OptionBarStore.registerOptionSlot — 並び順（増分 3 で見つ�
     expect(store.get().slots.map((s) => s.id)).toEqual(['add-undo', 'snap']);
   });
 });
+
+// --- 増分 4: 道具に属さない常設の部品（表示 ▾）--------------------------------
+//
+// 表示の設定は道具の状態ではない。読むだけのときも、道具を持っていないときも、面を
+// 描いている最中も同じように使える必要がある。道具の枠（`registerOptionSlot`）へ入れると
+// **道具が帯を持ち直した瞬間に落ちて画面から消える**（`claim` は持った瞬間に中身を空へ戻す）。
+describe('OptionBarStore — 常設スロット（増分 4）', () => {
+  it('道具が帯を持ち直しても落ちない', () => {
+    const store = new OptionBarStore();
+    store.registerPersistentSlot('display', 'D');
+    store.registerOptionSlot('snap', 'S');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'display']);
+
+    // 別の道具が帯を持つ → 道具の部品は落ち、常設は残る。
+    store.claim({});
+    expect(store.get().slots.map((s) => s.id)).toEqual(['display']);
+  });
+
+  it('道具を降りても（reset）落ちない', () => {
+    const store = new OptionBarStore();
+    store.registerPersistentSlot('display', 'D');
+    store.registerOptionSlot('snap', 'S');
+    store.reset();
+    expect(store.get().slots.map((s) => s.id)).toEqual(['display']);
+  });
+
+  it('道具の部品より **うしろ** に並ぶ（道具ごとに変わるものが左）', () => {
+    const store = new OptionBarStore();
+    store.registerPersistentSlot('display', 'D');
+    store.registerOptionSlot('snap', 'S');
+    store.registerOptionSlot('add-undo', 'U');
+    expect(store.get().slots.map((s) => s.id)).toEqual(['snap', 'add-undo', 'display']);
+  });
+
+  it('取り外しは自分の登録が載っているときだけ効く（遅れて走った後片付けは空振り）', () => {
+    const store = new OptionBarStore();
+    const off1 = store.registerPersistentSlot('display', 'D1');
+    store.registerPersistentSlot('display', 'D2');
+    off1();
+    expect(store.get().slots.map((s) => s.id)).toEqual(['display']);
+    expect(store.get().slots[0]?.node).toBe('D2');
+  });
+
+  it('同じ id に同じ node なら何もしない（描画中に呼んでも無限ループにならない）', () => {
+    const store = new OptionBarStore();
+    store.registerPersistentSlot('display', 'D');
+    const before = store.get();
+    store.registerPersistentSlot('display', 'D');
+    expect(store.get()).toBe(before);
+  });
+});

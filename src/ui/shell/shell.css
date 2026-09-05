@@ -414,7 +414,13 @@ body {
  * 節の見出しを覆って「押せるはずのものが押せない」状態になる（実際に E2E が
  * 「スタイルの節が保存列に隠れて押せない」で捕まえた＝教訓 5.14 の型）。 */
 .sidebar__panel[data-testid='sidebar-panel-properties'] {
-  flex: 1 1 auto;
+  /* **`1 1 0`（中身に依らない基準）にしてある。** `1 1 auto` だと基準が中身の高さに
+   * なるので、地物を選んだ瞬間（案内文 1 行 → 素性欄の全部）に下段が伸びて **上段の
+   * 一覧が縮み、行が上へずれる**。実測では、行をダブルクリックしたときの 2 回目の
+   * クリックが仕切りに当たって、その場編集が開かなかった（K-3「選択状態で寸法が
+   * 動かない」の右パネル版）。基準を 0 にすると、区画の高さは **窓と仕切りだけ**で
+   * 決まり、中身では動かない。 */
+  flex: 1 1 0;
   min-height: 240px;
 }
 
@@ -606,7 +612,7 @@ body {
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  gap: 6px;
+  gap: 4px;
 }
 
 .ledger__filter {
@@ -644,8 +650,8 @@ body {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding-bottom: 4px;
+  gap: 3px;
+  padding-bottom: 3px;
   border-bottom: 1px solid var(--c-border);
 }
 
@@ -747,10 +753,20 @@ body {
   border-color: var(--c-accent);
 }
 
-/* 仮想スクロールの容器。**ここだけがスクロールする**（区画の本体は高さを閉じる）。 */
+/* 仮想スクロールの容器。**ここだけがスクロールする**（区画の本体は高さを閉じる）。
+ *
+ * **行が 3 つは必ず見える高さを下限に持つ**（`28 × 3 = 84px`）。下限が無いと、区画が
+ * 低いときに見出し（絞り込み・作業のまとまり・母集団の切替）だけで高さを使い切り、
+ * **スクロール容器の高さが 0 になって行が 1 つも押せなくなる**（実測: 一覧の区画が
+ * 137px しかないとき、容器は高さ 0 で、行は区画の外へはみ出していた ―― E2E が
+ * 「👁 を押せない（`sidebar__panel-body` がポインタを横取りする）」で捕まえた）。
+ * 下限を割ったぶんは区画そのものが縦にスクロールする。
+ *
+ * **なぜ今そんなに低いのか**: 時刻レールがまだ 112px に縮んでいないため（増分 6）。
+ * 1280×800 で右パネルの列は実測 397px しかなく、設計書 §B.2 の 350/232 は取れない。 */
 .ledger__scroller {
   flex: 1 1 auto;
-  min-height: 0;
+  min-height: 84px;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -920,7 +936,7 @@ body {
 .ledger__footer {
   flex: 0 0 auto;
   margin: 0;
-  padding-top: 4px;
+  padding-top: 2px;
   border-top: 1px solid var(--c-border);
   color: var(--c-text-muted);
   font-size: 11px;

@@ -243,15 +243,22 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   /** 名前の入力欄。作業のまとまりの送りがここへ焦点を入れる（設計書 §C.5）。 */
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  /**
+   * 焦点の要求の通し番号。**要求が来た瞬間に `focus()` を呼んではいけない。**
+   *
+   * 束を作る／送るときは「地物を選ぶ」と「名前欄へ焦点」が同じ 1 回の押下で起きる。
+   * 選んだ瞬間はまだ素性欄が描き直されていないので、そのとき入力欄はまだ **存在しない**
+   * （何も選んでいなければ案内文が出ているだけ）。要求は番号として受け取り、**描き直した
+   * あとの effect で** 焦点を入れる（教訓 5.7 の裏面: 呼ぶ場所ではなく、効く順番の話）。
+   */
+  const [nameFocusRequest, setNameFocusRequest] = useState(0);
   useEffect(() => {
     if (nameFieldFocus === undefined) return;
     return nameFieldFocus.subscribe(() => {
-      const el = nameInputRef.current;
-      if (el === null) return;
-      el.focus();
-      el.select();
+      setNameFocusRequest((n) => n + 1);
     });
   }, [nameFieldFocus]);
+
 
   // FR-98: preview asset resolution — default to "nothing resolves" (safe broken
   // image, never a raw external fetch) when the host wired none.
@@ -283,6 +290,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   );
 
   const targetFeatureId = targetFeatureIdOf(decision);
+
+  // 焦点は **描き直したあと** に入れる（上の `nameFocusRequest` の注記）。対象が
+  // 変わるたびに入れ直すので、送り（選ぶ → 焦点）が 1 回の押下で成り立つ。
+  useEffect(() => {
+    if (nameFocusRequest === 0) return;
+    const el = nameInputRef.current;
+    if (el === null) return;
+    el.focus();
+    el.select();
+  }, [nameFocusRequest, targetFeatureId]);
   // Memoize the resolved feature by the target feature ID (教訓 5.2 / 5.12), with
   // `currentTime` AND `domain` as deps: the production FeatureLookup resolves
   // `featuresAt(getRoot(), getTime())` but its object identity is stable across both

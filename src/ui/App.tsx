@@ -157,6 +157,7 @@ import { createLiveGrabbabilityResolver } from './live-grabbability';
 import type { ZoomDirection } from './map/keyboard-zoom';
 import { CursorPositionStore } from './shell/cursor-position';
 import { registerE2eHarnessAction } from './e2e/harness';
+import { buildSyntheticProject } from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
 import { StatusMessageStore } from './shell/status-message';
@@ -407,6 +408,19 @@ export function App(): JSX.Element {
     [store],
   );
 
+  // 増分 4: **5,000 行の合成データ**の投入口（T-2）。受け入れ条件が「5,000 行で台帳の
+  // DOM ノードが 20 個以下」なので、その規模を実アプリで作れないと測れない。読み込みと
+  // 同じ 1 本（`reflectLoadedProject`）を通すので、載ったあとの画面は「開いたとき」と
+  // まったく同じ状態になる（一覧の絞り込み・束・選択も捨てられる）。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'loadSyntheticProject', (count) => {
+        const s = store.getState();
+        s.reflectLoadedProject(buildSyntheticProject(s.domain, count), {});
+      }),
+    [store],
+  );
+
   // Window-close interception (FR-107 終了確認ガード): the controller registers the
   // quit guard; the host stores it so the shell-side close event can await it.
   const quitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -574,6 +588,15 @@ export function App(): JSX.Element {
 
   /** 「どこへでも移動」（Ctrl+P）が開いているか（設計書 §C.2 の 26）。 */
   const [jumpOpen, setJumpOpen] = useState(false);
+
+  /**
+   * いまの根と年を読む口。**参照を固定する**（`useCallback`）のが要点で、描画のたびに
+   * 新しい関数を作ると、これを依存に持つ部品（表示 ▾ の常設スロット・どこへでも移動）が
+   * 毎回作り直されて **開いていたポップオーバーが閉じる**（教訓 5.2 の裏面: 捨ててよい
+   * 一時状態と、捨ててはいけない一時状態を取り違える）。
+   */
+  const getDomainRoot = useCallback((): DomainProject => store.getState().domain, [store]);
+  const getCurrentTime = useCallback((): TimePoint => store.getState().currentTime, [store]);
 
   // 追加を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
   // 道具は地図セルの覆いの中、素性欄はサイドバーの中に居て React の木の上では兄弟ですら
@@ -2790,8 +2813,8 @@ export function App(): JSX.Element {
             <DisplayOptionsSlot<DomainRoot>
               store={store}
               optionBar={optionBarStore}
-              getRoot={() => store.getState().domain}
-              getTime={() => store.getState().currentTime}
+              getRoot={getDomainRoot}
+              getTime={getCurrentTime}
             />
             <AddToolControllerWithParents
               store={store}
@@ -2977,8 +3000,8 @@ export function App(): JSX.Element {
             <JumpPalette<DomainRoot>
               store={store}
               registry={registry}
-              getRoot={() => store.getState().domain}
-              getTime={() => store.getState().currentTime}
+              getRoot={getDomainRoot}
+              getTime={getCurrentTime}
               open={jumpOpen}
               onClose={() => setJumpOpen(false)}
               onFocusFeatureCamera={focusCameraOnFeature}
