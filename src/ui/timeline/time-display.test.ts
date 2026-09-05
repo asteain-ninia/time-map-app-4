@@ -17,6 +17,7 @@ import {
   chooseYearTickInterval,
   clampToRange,
   formatTimePoint,
+  isWithinRange,
   formatYear,
   fractionToTime,
   fromYearLabel,
@@ -128,5 +129,36 @@ describe('clampToRange (U02 比較のみ)', () => {
     const max = timePointYearMonthDay(100, 5, 6);
     expect(clampToRange(timePointYear(-50), min, max, cal)).toEqual(min);
     expect(clampToRange(timePointYear(200), min, max, cal)).toEqual(max);
+  });
+});
+
+describe('isWithinRange（2026-09-06、2 回目の手直し）', () => {
+  // 「範囲外なら黙って端へ丸める」をやめて「範囲外だと先に言う」ための述語。
+  // 丸めそのものは `clampToRange` が担い、比較は同じ 1 本を使う（教訓 5.13）。
+  const min = timePointYear(0);
+  const max = timePointYear(1000);
+
+  it('範囲の中は真、外は偽', () => {
+    expect(isWithinRange(timePointYear(500), min, max, cal)).toBe(true);
+    expect(isWithinRange(timePointYear(-1), min, max, cal)).toBe(false);
+    expect(isWithinRange(timePointYear(1001), min, max, cal)).toBe(false);
+  });
+
+  it('境界そのものは範囲の中（両端を含む）', () => {
+    expect(isWithinRange(min, min, max, cal)).toBe(true);
+    expect(isWithinRange(max, min, max, cal)).toBe(true);
+  });
+
+  it('`clampToRange` と食い違わない（同じ比較を使っている）', () => {
+    for (const y of [-100, 0, 1, 999, 1000, 1001]) {
+      const p = timePointYear(y);
+      const clamped = clampToRange(p, min, max, cal);
+      expect(isWithinRange(p, min, max, cal)).toBe(clamped === p);
+    }
+  });
+
+  it('月日の粒度でも端の内側・外側を正しく見る', () => {
+    expect(isWithinRange(timePointYearMonthDay(0, 1, 1), min, max, cal)).toBe(true);
+    expect(isWithinRange(timePointYearMonthDay(-1, 12, 31), min, max, cal)).toBe(false);
   });
 });

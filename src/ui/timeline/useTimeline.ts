@@ -22,7 +22,9 @@ import {
 
 import {
   clampToRange,
+  formatYear,
   fractionToTime,
+  isWithinRange,
   timeToFraction,
   toNormalizedRange,
 } from './time-display';
@@ -42,6 +44,14 @@ export interface TimelineBinding {
   readonly jumpToTime: (point: TimePoint, source?: TimeChangeSource) => void;
   /** Advance by one step unit in a direction, clamped to the range. */
   readonly step: (unit: StepUnit, direction: StepDirection) => void;
+  /**
+   * 時間軸の範囲の外なら断りの文、内なら null（2026-09-06、2 回目の手直し）。
+   *
+   * 直接ジャンプ欄は範囲外の年を受け取ると **黙って端へ丸めて**いた ―― 打った年と
+   * 行き先が違うのに、画面には何も出ない（`setCurrentTime` も `jumpToTime` も端へ
+   * 寄せる）。押す前に断る道を作るために、欄がこの述語を通す。
+   */
+  readonly outOfRangeMessage: (point: TimePoint) => string | null;
 }
 
 /**
@@ -91,12 +101,23 @@ export function useTimeline<S>(store: StoreApi<SessionStore<S>>): TimelineBindin
     [store, currentTime, timelineMin, timelineMax, calendar],
   );
 
+  const outOfRangeMessage = useCallback(
+    (point: TimePoint): string | null =>
+      isWithinRange(point, timelineMin, timelineMax, calendar)
+        ? null
+        : `${formatYear(point.year)}は時間軸の範囲（${formatYear(timelineMin.year)}〜${formatYear(
+            timelineMax.year,
+          )}）の外です。範囲を広げるか、範囲の中の年を入れてください。`,
+    [timelineMin, timelineMax, calendar],
+  );
+
   return {
     currentTime,
     timelineMin,
     timelineMax,
     calendar,
     fraction,
+    outOfRangeMessage,
     jumpToFraction,
     jumpToTime,
     step,

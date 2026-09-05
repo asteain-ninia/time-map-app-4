@@ -72,6 +72,9 @@ export function JumpPalette<S>(props: JumpPaletteProps<S>): JSX.Element | null {
   const displayControl = useStore(store, (s) => s.displayControl);
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
+  // 時間軸の範囲（2026-09-06、2 回目の手直し）。範囲外の年は押せない候補にする。
+  const timelineMin = useStore(store, (s) => s.timelineMin);
+  const timelineMax = useStore(store, (s) => s.timelineMax);
 
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
@@ -193,9 +196,12 @@ export function JumpPalette<S>(props: JumpPaletteProps<S>): JSX.Element | null {
         features,
         commands,
         yearLabel: (year) => JUMP_STRINGS.yearCandidate(formatYear(year)),
+        timelineYears: { min: timelineMin.year, max: timelineMax.year },
+        outOfTimelineLabel: (year, min, max) =>
+          JUMP_STRINGS.yearOutOfTimeline(formatYear(year), formatYear(min), formatYear(max)),
         moreLabel: (count) => JUMP_STRINGS.more(count),
       }),
-    [query, features, commands],
+    [query, features, commands, timelineMin, timelineMax],
   );
 
   const run = useCallback(
@@ -204,6 +210,8 @@ export function JumpPalette<S>(props: JumpPaletteProps<S>): JSX.Element | null {
       const s = store.getState();
       switch (candidate.kind) {
         case JUMP_CANDIDATE_KIND.Year:
+          // 範囲外の年は押せない候補なので、鍵盤の Enter でも動かさない（2026-09-06）。
+          if (candidate.outOfTimeline) break;
           s.setCurrentTime(timePointYear(candidate.year), TIME_CHANGE_SOURCE.NumericJump);
           break;
         case JUMP_CANDIDATE_KIND.Feature:
@@ -288,6 +296,7 @@ export function JumpPalette<S>(props: JumpPaletteProps<S>): JSX.Element | null {
                 data-testid={`jump-palette-item-${candidateKey(c)}`}
                 data-kind={c.kind}
                 aria-pressed={i === active}
+                disabled={c.kind === JUMP_CANDIDATE_KIND.Year && c.outOfTimeline}
                 onClick={() => run(c)}
               >
                 <span className="jump-palette__item-label">{c.label}</span>

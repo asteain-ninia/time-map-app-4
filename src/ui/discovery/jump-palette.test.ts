@@ -33,14 +33,28 @@ const commands = [
   { id: 'view.fitAll', label: '全体表示' },
 ];
 
-function run(query: string) {
+/**
+ * 既定の時間軸は **保存できる年の範囲いっぱい**にしておく（2026-09-06）。
+ * こうすると「保存できる年か」を見ている既存の検査は、時間軸の狭さに引っかからない。
+ * 時間軸の狭さそのものは {@link runWithTimeline} を使う専用の検査で見る。
+ */
+const WIDE_TIMELINE = { min: -1_000_000, max: 1_000_000 };
+
+function runWithTimeline(query: string, timelineYears: { min: number; max: number }) {
   return jumpCandidates({
     query,
     features,
     commands,
     yearLabel: (year) => `${String(year)}年 へ移動`,
+    timelineYears,
+    outOfTimelineLabel: (year, min, max) =>
+      `${String(year)}年（時間軸の範囲外。いまの時間軸は ${String(min)}年〜${String(max)}年）`,
     moreLabel: (n) => `ほかに ${String(n)} 件（Enter で一覧に出す）`,
   });
+}
+
+function run(query: string) {
+  return runWithTimeline(query, WIDE_TIMELINE);
 }
 
 describe('どこへでも移動 — 規則 1（数字だけなら年）', () => {
@@ -61,6 +75,7 @@ describe('どこへでも移動 — 規則 1（数字だけなら年）', () => 
       kind: JUMP_CANDIDATE_KIND.Year,
       year: -500,
       label: '-500年 へ移動',
+      outOfTimeline: false,
     });
   });
 
@@ -136,6 +151,8 @@ describe('どこへでも移動 — 規則 5（12 件で打ち切る）', () => 
       features: many,
       commands: [],
       yearLabel: (y) => String(y),
+      timelineYears: WIDE_TIMELINE,
+      outOfTimelineLabel: (y) => String(y),
       moreLabel: (n) => `ほかに ${String(n)} 件（Enter で一覧に出す）`,
     });
     // **「ほかに n 件」は本物の候補である**（手直し C3）。12 件＋最終行の 13 件で、
@@ -153,6 +170,44 @@ describe('どこへでも移動 — 規則 5（12 件で打ち切る）', () => 
     expect(run('99999999999999999999').candidates).toHaveLength(0);
     expect(run('1000001').candidates).toHaveLength(0);
     expect(run('1000000').candidates).toHaveLength(1);
+  });
+});
+
+describe('どこへでも移動 — 時間軸の範囲外の年（2026-09-06、2 回目の手直し）', () => {
+  // 旧版は「保存できる年」でありさえすれば普通の候補にしていたので、いまの企画の
+  // 時間軸が 0〜1000 年でも「1500年 へ移動」を出し、押すと `setCurrentTime` が
+  // **黙って 1000 年へ丸めて**いた（表示と行き先が違う）。
+  it('範囲内の年はそのまま押せる', () => {
+    const result = runWithTimeline('500', { min: 0, max: 1000 });
+    expect(result.candidates[0]).toEqual({
+      kind: JUMP_CANDIDATE_KIND.Year,
+      year: 500,
+      label: '500年 へ移動',
+      outOfTimeline: false,
+    });
+  });
+
+  it('範囲の外の年は候補に残るが **押せない**、文言が範囲を告げる', () => {
+    const result = runWithTimeline('1500', { min: 0, max: 1000 });
+    expect(result.candidates[0]).toEqual({
+      kind: JUMP_CANDIDATE_KIND.Year,
+      year: 1500,
+      label: '1500年（時間軸の範囲外。いまの時間軸は 0年〜1000年）',
+      outOfTimeline: true,
+    });
+  });
+
+  it('範囲の下より前の年も同じ（紀元前）', () => {
+    const result = runWithTimeline('-1', { min: 0, max: 1000 });
+    const first = result.candidates[0];
+    expect(first?.kind === JUMP_CANDIDATE_KIND.Year ? first.outOfTimeline : null).toBe(true);
+  });
+
+  it('境界の年ちょうどは範囲内（押せる）', () => {
+    for (const q of ['0', '1000']) {
+      const first = runWithTimeline(q, { min: 0, max: 1000 }).candidates[0];
+      expect(first?.kind === JUMP_CANDIDATE_KIND.Year ? first.outOfTimeline : null).toBe(false);
+    }
   });
 });
 

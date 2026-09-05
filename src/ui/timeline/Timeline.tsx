@@ -101,7 +101,12 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           other path (slider scrub, play, step, anchor jump) we key it on the
           serialized currentTime so React REMOUNTS the input — the documented
           "syncs to this when it changes via key/remount" contract. Granularity is
-          included so a year-only vs y/m/d change also re-seeds. */}
+          included so a year-only vs y/m/d change also re-seeds.
+
+          **範囲外は丸めずに断る**（2026-09-06、2 回目の手直し）。旧版は時間軸の範囲の
+          外の年を打つと黙って端へ寄せていたので、**打った年と行き先が違っていた**のに
+          画面には何も出なかった。`validate` が理由を返すと欄がそれをその場に出し、
+          `onConfirm`（＝ジャンプ）は呼ばれない。 */}
       <YearMonthDayInput
         key={`${t.currentTime.year}-${t.currentTime.granularity}-${
           'month' in t.currentTime ? t.currentTime.month : ''
@@ -110,6 +115,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         calendar={t.calendar}
         initialValue={t.currentTime}
         confirmLabel="ジャンプ"
+        validate={(point) => t.outOfRangeMessage(point)}
         onConfirm={(point) => t.jumpToTime(point)}
       />
     </div>

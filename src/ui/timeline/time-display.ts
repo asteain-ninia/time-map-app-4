@@ -238,6 +238,26 @@ export function generateTicks(
 // --- Range端 clamping for the current time ----------------------------------
 
 /**
+ * 候補が範囲 [min, max] の内側か（2026-09-06、2 回目の手直し）。
+ *
+ * {@link clampToRange} と **同じ比較** を使う（規則の写しを増やさない、教訓 5.13）。
+ * 「範囲外なら黙って端へ丸める」をやめて「範囲外だと先に言う」ためだけに要る述語で、
+ * 丸めそのものは今も `clampToRange` が担う。
+ */
+export function isWithinRange(
+  candidate: TimePoint,
+  min: TimePoint,
+  max: TimePoint,
+  calendar: Calendar,
+): boolean {
+  const c = normalize(candidate, calendar);
+  return (
+    compareNormalized(c, normalize(min, calendar)) >= 0 &&
+    compareNormalized(c, normalize(max, calendar)) <= 0
+  );
+}
+
+/**
  * Clamps a candidate TimePoint into [min, max] using U02 comparison only
  * (no UI day math). Returns the candidate, or the nearer bound if it falls
  * outside. Used so step/jump cannot leave the configured range.

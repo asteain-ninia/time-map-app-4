@@ -36,6 +36,16 @@ export type JumpCandidate =
       readonly kind: typeof JUMP_CANDIDATE_KIND.Year;
       readonly year: number;
       readonly label: string;
+      /**
+       * **時間軸の範囲の外なので押せない**（2026-09-06、2 回目の手直し）。
+       *
+       * 保存形式が受け付ける年（`isPersistedYear`）でも、いま開いている企画の時間軸が
+       * その年を含んでいないことがある。旧版はそれを普通の候補として出し、押すと
+       * `setCurrentTime` が **黙って端へ丸めて**いた ―― 「1500年 へ移動」と書いてある
+       * ものを押すと 1000 年に居る。候補には残して（打った年が届いていることは見せる）
+       * 押せなくし、文言で範囲を告げる。
+       */
+      readonly outOfTimeline: boolean;
     }
   | {
       /**
@@ -80,6 +90,16 @@ export interface JumpInput {
   readonly commands: readonly { readonly id: string; readonly label: string }[];
   /** 年の候補の文言（`formatYear` を通した文字列を作る関数）。 */
   readonly yearLabel: (year: number) => string;
+  /**
+   * いま開いている企画の時間軸の範囲（年。2026-09-06、2 回目の手直し）。
+   *
+   * この外の年は **押せない候補**にする。**省略できない**のは、渡し忘れると
+   * 「押すと黙って丸まる」旧来の壊れ方に静かに戻るからである（教訓 5.29 の趣旨で、
+   * 判定に要るものは呼び出し側に必ず出させる）。
+   */
+  readonly timelineYears: { readonly min: number; readonly max: number };
+  /** 範囲外の年の文言（押せないことと範囲を告げる）。 */
+  readonly outOfTimelineLabel: (year: number, min: number, max: number) => string;
   /** 「ほかに n 件」の文言。 */
   readonly moreLabel: (count: number) => string;
 }
@@ -127,9 +147,21 @@ export function jumpCandidates(input: JumpInput): JumpResult {
     // （表示された値と実際の行き先が違う ＝ 嘘の候補）。範囲は **保存形式の読み書きが
     // 受け付ける範囲**（`isPersistedYear`）と同じ 1 本を使う（教訓 5.29）。
     if (isPersistedYear(year)) {
+      // **時間軸の範囲の外なら、押せない候補にする**（2026-09-06、2 回目の手直し）。
+      // 保存できる年であることと、いまの企画がその年を含んでいることは別である。
+      // 押せなくしたうえで文言に範囲を書き、「打っても届かない年」を先に見せる。
+      const { min, max } = input.timelineYears;
+      const outOfTimeline = year < min || year > max;
       return {
         candidates: [
-          { kind: JUMP_CANDIDATE_KIND.Year, year, label: input.yearLabel(year) },
+          {
+            kind: JUMP_CANDIDATE_KIND.Year,
+            year,
+            label: outOfTimeline
+              ? input.outOfTimelineLabel(year, min, max)
+              : input.yearLabel(year),
+            outOfTimeline,
+          },
         ],
         truncated: 0,
       };

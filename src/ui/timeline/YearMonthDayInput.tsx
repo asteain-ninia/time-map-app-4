@@ -64,6 +64,16 @@ export interface YearMonthDayInputProps {
   /** FR-70 (F2): text shown while the field is open-ended (default 「継続中」). */
   readonly openStateLabel?: string;
   /**
+   * 確定の直前に呼ぶ「受け取り側の断り」（2026-09-06、2 回目の手直し）。
+   *
+   * 文字として正しい日付でも、**受け取る側の都合で受け付けられない**ことがある
+   * （直接ジャンプなら「時間軸の範囲の外」）。旧版はそれを受け取り側が黙って丸めて
+   * いたので、打った年と行き先が違った。ここで断りの文を返せば、欄が既存の
+   * エラー行にそのまま出し、`onConfirm` は呼ばれない（HB-3 の正直な失敗）。
+   * 返り値が `null` なら受け付ける。渡さなければ従来どおり素通し。
+   */
+  readonly validate?: (point: TimePoint) => string | null;
+  /**
    * Optional test id root. When set, the wrapper uses it (instead of the default
    * 'ymd-input') and each control gets a derived `${testId}-year|month|day|...`
    * id — needed when several inputs coexist (the per-anchor存続期間 list, FR-70).
@@ -90,6 +100,7 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
     specifyLabel,
     openStateLabel,
     testId,
+    validate,
   } = props;
 
   // Derive a per-control test id when a root is provided (list context), else omit
@@ -128,9 +139,16 @@ export function YearMonthDayInput(props: YearMonthDayInputProps): JSX.Element {
       setError(ymdErrorMessage(parsed.error));
       return;
     }
+    // 受け取り側の断り（2026-09-06）。日付としては正しくても受け付けられない値は、
+    // **丸めずにここで止めて理由を出す**。
+    const refusal = validate?.(parsed.point) ?? null;
+    if (refusal !== null) {
+      setError(refusal);
+      return;
+    }
     setError(null);
     onConfirm(parsed.point);
-  }, [specifying, draft, calendar, onConfirm]);
+  }, [specifying, draft, calendar, onConfirm, validate]);
 
   const handleClear = useCallback(() => {
     if (onClear === undefined) return;

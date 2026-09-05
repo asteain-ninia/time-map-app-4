@@ -8,7 +8,7 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
@@ -58,5 +58,41 @@ describe('Timeline — direct-jump field re-seeds from currentTime (bughunt3)', 
       s.getState().setCurrentTime(timePointYear(7777), TIME_CHANGE_SOURCE.Playback);
     });
     expect(directJumpYearInput().value).toBe('7777');
+  });
+});
+
+describe('直接ジャンプは時間軸の範囲外を丸めずに断る（2026-09-06、2 回目の手直し）', () => {
+  // 旧版は範囲外の年を打つと `jumpToTime` → `setCurrentTime` が **黙って端へ寄せて**
+  // いたので、打った年と行き先が違うのに画面には何も出なかった。
+  // 既定の時間軸は 0 年〜10000 年（FR-66）。
+  function jump(year: string): void {
+    fireEvent.change(directJumpYearInput(), { target: { value: year } });
+    fireEvent.click(screen.getByRole('button', { name: 'ジャンプ' }));
+  }
+
+  it('範囲の中の年はそのまま飛ぶ', () => {
+    const s = store();
+    render(<Timeline store={s} />);
+    jump('2000');
+    expect(s.getState().currentTime.year).toBe(2000);
+  });
+
+  it('範囲の外の年は飛ばず、理由がその場に出る', () => {
+    const s = store();
+    render(<Timeline store={s} />);
+    jump('20000');
+    // 現在時刻は動かない（端へ丸めない）。
+    expect(s.getState().currentTime.year).toBe(1000);
+    const error = screen.getByRole('alert');
+    expect(error.textContent).toContain('時間軸の範囲');
+    expect(error.textContent).toContain('20000年');
+  });
+
+  it('紀元前側の範囲外も同じ', () => {
+    const s = store();
+    render(<Timeline store={s} />);
+    jump('-1');
+    expect(s.getState().currentTime.year).toBe(1000);
+    expect(screen.getByRole('alert').textContent).toContain('時間軸の範囲');
   });
 });
