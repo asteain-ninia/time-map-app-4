@@ -125,14 +125,16 @@ function dispatch(registry: CommandRegistry, id: CommandId): void {
 }
 
 describe('HB-8 / HB-9 — the ツール / ヘルプ commands are registered (no longer 未登録==無効)', () => {
-  it('registers a runnable handler for every one of the five ids', () => {
+  // **増分 4 で 4 つになった。** 「地物を検索」（ToolsSearch）は独立したモーダルを
+  // やめて **地物一覧の絞り込み欄へ焦点を入れるだけ** になったので、登録するのは
+  // 合成ルート（App.tsx）である（E-6。母集団が一覧と 2 つある状態 N-41 の解消）。
+  it('registers a runnable handler for every one of the four ids', () => {
     const store = makeStore();
     const registry = new CommandRegistry();
     render(<HelpToolsController store={store} registry={registry} />);
 
     for (const id of [
       COMMAND_ID.ToolsSettings,
-      COMMAND_ID.ToolsSearch,
       COMMAND_ID.HelpAbout,
       COMMAND_ID.HelpShortcuts,
       COMMAND_ID.HelpDiagnostics,
@@ -143,7 +145,7 @@ describe('HB-8 / HB-9 — the ツール / ヘルプ commands are registered (no 
     }
   });
 
-  it('unregisters all five on unmount (cleanup contract, no stale handlers)', () => {
+  it('unregisters all four on unmount (cleanup contract, no stale handlers)', () => {
     const store = makeStore();
     const registry = new CommandRegistry();
     const { unmount } = render(<HelpToolsController store={store} registry={registry} />);
@@ -151,7 +153,6 @@ describe('HB-8 / HB-9 — the ツール / ヘルプ commands are registered (no 
     unmount();
     for (const id of [
       COMMAND_ID.ToolsSettings,
-      COMMAND_ID.ToolsSearch,
       COMMAND_ID.HelpAbout,
       COMMAND_ID.HelpShortcuts,
       COMMAND_ID.HelpDiagnostics,
@@ -209,31 +210,14 @@ describe('dispatching each command opens its view (the 結線)', () => {
     expect(screen.getByTestId('settings-basemap-replace')).toBeDisabled();
   });
 
-  it('ToolsSearch opens the search panel and runs a search over the visible母集合', () => {
-    const store = makeStore();
-    const registry = new CommandRegistry();
-    render(<HelpToolsController store={store} registry={registry} />);
-    dispatch(registry, COMMAND_ID.ToolsSearch);
-    const input = screen.getByTestId('search-panel-input');
-    expect(input).toBeInTheDocument();
-    // Empty project ⇒ no hits; a real run still shows the result section.
-    fireEvent.change(input, { target: { value: 'ローマ' } });
-    fireEvent.click(screen.getByTestId('search-panel-run'));
-    expect(screen.getByTestId('search-panel-results')).toBeInTheDocument();
-    expect(screen.getByTestId('search-panel-no-results')).toBeInTheDocument();
-  });
-
-  it('search routes through the validation入口: an empty query is rejected, not run', () => {
-    const store = makeStore();
-    const registry = new CommandRegistry();
-    render(<HelpToolsController store={store} registry={registry} />);
-    dispatch(registry, COMMAND_ID.ToolsSearch);
-    // Whitespace-only ⇒ validateSearchQuery rejects (EmptyQuery); no results section.
-    fireEvent.change(screen.getByTestId('search-panel-input'), { target: { value: '   ' } });
-    fireEvent.click(screen.getByTestId('search-panel-run'));
-    expect(screen.getByTestId('search-panel-error')).toBeInTheDocument();
-    expect(screen.queryByTestId('search-panel-results')).not.toBeInTheDocument();
-  });
+  // **検索モーダルの 2 件はここから消えた**（増分 4 / E-6）。「地物を検索」は
+  // 一覧の絞り込み欄へ統合したので、行き先の主張は一覧側が持つ:
+  //   - 行が **表示条件を通った母集団だけ** から作られる … `SidebarContent.test.tsx`
+  //     「FR-113 個別非表示で行が消え、全て再表示で戻る」
+  //   - 行を押すと **単一の選択経路** を通る … 同「行クリックで activeFeature が昇格する」
+  //   - 絞り込みは打つたびに効く … 同「A1 一覧フィルタ」の 4 件
+  // **入力の検証（空白だけを断る）はもう当たらない** ―― 絞り込みは打鍵ごとに効く
+  // 逐次のもので、空は「絞らない」であって誤りではないからである。
 
   it('HelpAbout opens the version view showing the injected version', () => {
     const store = makeStore();
@@ -425,38 +409,9 @@ describe('bughunt3 (H1): Ctrl+Z does NOT pass through an open modal to EditUndo'
   });
 });
 
-// BUG #3 — a search hit click was DEAD-ENDED: the hit <li> had no handler, so a
-// click did nothing (no selection, no emphasis, no navigation). The fix wires the
-// click to the SAME single-source store actions the map / sidebar use
-// (setActiveFeature + setDisplayFocus emphasis, 教訓 5.29 / FR-82).
-describe('BUG #3 — clicking a search hit selects + emphasizes the feature (was dead-ended)', () => {
-  it('promotes the clicked hit into the LIVE selection and emphasizes it via display focus', () => {
-    const store = storeWithLeaf('rome', 'ローマ', 1000, 2000, 1500);
-    const registry = new CommandRegistry();
-    render(<HelpToolsController store={store} registry={registry} />);
-    dispatch(registry, COMMAND_ID.ToolsSearch);
-
-    // Run a search that matches the one visible feature.
-    fireEvent.change(screen.getByTestId('search-panel-input'), { target: { value: 'ローマ' } });
-    fireEvent.click(screen.getByTestId('search-panel-run'));
-    const hit = screen.getByTestId('search-panel-hit');
-    expect(hit).toBeInTheDocument();
-
-    // Before the click: nothing selected, no focus emphasis.
-    expect(store.getState().activeFeature).toBeNull();
-    expect(store.getState().displayControl.focus.originId).toBeNull();
-
-    // Click the hit → it flows through the store's single-source actions.
-    act(() => {
-      fireEvent.click(hit);
-    });
-
-    const after = store.getState();
-    expect(after.activeFeature).toBe(asFeatureId('rome'));
-    expect(after.displayControl.focus.originId).toBe(asFeatureId('rome'));
-    expect(after.displayControl.focus.emphasize).toBe(true);
-  });
-});
+// **BUG #3（検索結果のクリックが行き止まり）はここから消えた**（増分 4 / E-6）。
+// 検索モーダルそのものをやめ、一覧の行が「単一の選択経路を通る」ことを
+// `SidebarContent.test.tsx` が固定している。**同じことを 2 か所で見ない。**
 
 // BUG #8 — the diagnostics feature count was FROZEN at mount (a bare getState()
 // snapshot). Scrubbing the timeline or editing never updated it. The fix subscribes
@@ -561,29 +516,6 @@ describe('D3 — 診断情報のログ欄はロガーを購読する / 時刻は
   });
 });
 
-// BUG #9 — a shown search result was computed once on submit and never refreshed, so
-// a deleted/hidden feature lingered as a stale hit. The fix re-evaluates the result
-// against the live corpus on every store change while a result is shown
-// (reevaluateResult, 教訓 5.5/5.6).
-describe('BUG #9 — a shown search result re-evaluates when the corpus changes', () => {
-  it('a hit drops out when its feature is scrubbed out of the visible母集合', () => {
-    // The feature's add-anchor starts at year 1000; search while present (at 1100).
-    const store = storeWithLeaf('sparta', 'スパルタ', 1000, 1200, 1100);
-    const registry = new CommandRegistry();
-    render(<HelpToolsController store={store} registry={registry} />);
-    dispatch(registry, COMMAND_ID.ToolsSearch);
-
-    fireEvent.change(screen.getByTestId('search-panel-input'), { target: { value: 'スパルタ' } });
-    fireEvent.click(screen.getByTestId('search-panel-run'));
-    expect(screen.getAllByTestId('search-panel-hit')).toHaveLength(1);
-
-    // Scrub BEFORE the feature's anchor (year 500 < 1000) → the corpus no longer
-    // contains it, so the shown result must re-evaluate and drop the now-stale hit
-    // (no manual re-search).
-    act(() => {
-      store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.Slider);
-    });
-    expect(screen.queryByTestId('search-panel-hit')).not.toBeInTheDocument();
-    expect(screen.getByTestId('search-panel-no-results')).toBeInTheDocument();
-  });
-});
+// **BUG #9（古い検索結果が残る）はここから消えた**（増分 4 / E-6）。一覧の行は
+// 打鍵のたびに **いまの母集団** から組み直されるので、「一度作った結果が古びる」
+// という状態そのものが存在しない（`SidebarContent.test.tsx` の一覧フィルタが固定）。

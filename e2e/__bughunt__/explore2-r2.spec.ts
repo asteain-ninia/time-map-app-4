@@ -497,45 +497,37 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
       // C. SEARCH PANEL — open ツール→検索, run queries, gate hits/no-results.
       // =====================================================================
       if (await clickMenuCommand(page, 'tools', 'tools.search')) {
-        const input = page.getByTestId('search-panel-input');
+        // 増分 4 / E-6: 「地物を検索」は **一覧の絞り込み欄** へ統合した。
+        const input = page.getByTestId('unified-list-filter');
         await expect(input).toBeVisible();
         await shot(page, 'search-open');
-        // Run a query likely to match one of the named faces.
         await input.fill('face');
-        await page.getByTestId('search-panel-run').click();
         await page.waitForTimeout(150);
-        const results = page.getByTestId('search-panel-results');
-        const noResults = page.getByTestId('search-panel-no-results');
-        if ((await results.count()) > 0) {
-          const hits = page.getByTestId('search-panel-hit');
-          const nHits = await hits.count();
-          for (let i = 0; i < nHits; i += 1) {
-            const t = ((await hits.nth(i).textContent()) ?? '').trim();
-            if (/NaN|Infinity|undefined|null/.test(t)) {
-              record('search-hit-malformed', `hit ${i} text="${t}"`);
-            }
+        const rows = page.locator('[data-testid^="feature-list-item-"]');
+        const nRows = await rows.count();
+        for (let i = 0; i < nRows; i += 1) {
+          const t = ((await rows.nth(i).textContent()) ?? '').trim();
+          if (/NaN|Infinity|undefined|null/.test(t)) {
+            record('search-hit-malformed', `row ${i} text="${t}"`);
           }
-          if (nHits > 0) {
-            await hits.first().click().catch(() => undefined);
-            await page.waitForTimeout(120);
-            await activeFeature(page);
-          }
-        } else if ((await noResults.count()) === 0) {
-          record('search-no-result-state', 'search ran but neither results nor no-results shown');
+        }
+        if (nRows > 0) {
+          await rows.first().click().catch(() => undefined);
+          await page.waitForTimeout(120);
+          await activeFeature(page);
+        } else if ((await page.getByTestId('unified-list-no-match').count()) === 0) {
+          record('search-no-result-state', 'filter ran but neither rows nor no-match shown');
         }
         await shot(page, 'search-results');
-        // Whitespace-only query: gate the error path.
+        // 空白だけの語は「絞らない」であって誤りではない（検証の入口はもう当たらない）。
         await input.fill('   ');
-        await page.getByTestId('search-panel-run').click();
         await page.waitForTimeout(120);
-        if ((await page.getByTestId('search-panel-error').count()) === 0 &&
-            (await page.getByTestId('search-panel-results').count()) > 0) {
-          record('search-blank-no-error', 'blank query produced results instead of an error');
+        const countText = (await page.getByTestId('unified-list-count').textContent()) ?? '';
+        if (/NaN|undefined|Infinity/.test(countText)) {
+          record('search-blank-no-error', `blank query count text="${countText}"`);
         }
         await shot(page, 'search-blank');
-        // Close the search panel.
-        await page.getByTestId('search-panel-close').click().catch(() => undefined);
-        await page.keyboard.press('Escape').catch(() => undefined);
+        await input.fill('');
       }
 
       // =====================================================================

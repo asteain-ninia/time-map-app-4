@@ -91,6 +91,7 @@ export const MENU_ITEM_LABELS = {
   'tools.addFace': '面を描く',
   'tools.settings': '設定',
   'tools.search': '地物を検索',
+  'tools.jump': 'どこへでも移動',
   'help.about': 'バージョン情報',
   'help.shortcuts': 'ショートカット一覧',
   'help.diagnostics': '診断情報',

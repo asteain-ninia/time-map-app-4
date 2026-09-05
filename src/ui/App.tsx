@@ -57,6 +57,8 @@ import {
   wireGlobalErrorHandlers,
 } from './discovery/index';
 import { DisplayOptionsSlot } from './discovery/DisplayOptions';
+import { JumpPalette } from './discovery/JumpPalette';
+import { LedgerFilterFocusStore } from './discovery/ledger-focus';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
 import {
@@ -564,6 +566,14 @@ export function App(): JSX.Element {
   const sidebarFocusStoreRef = useRef<SidebarFocusStore | null>(null);
   sidebarFocusStoreRef.current ??= new SidebarFocusStore();
   const sidebarFocusStore = sidebarFocusStoreRef.current;
+
+  // 一覧の絞り込み欄へ焦点を入れる口（Ctrl+F ＝「地物を検索」の行き先。E-6）。
+  const ledgerFilterFocusStoreRef = useRef<LedgerFilterFocusStore | null>(null);
+  ledgerFilterFocusStoreRef.current ??= new LedgerFilterFocusStore();
+  const ledgerFilterFocusStore = ledgerFilterFocusStoreRef.current;
+
+  /** 「どこへでも移動」（Ctrl+P）が開いているか（設計書 §C.2 の 26）。 */
+  const [jumpOpen, setJumpOpen] = useState(false);
 
   // 追加を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
   // 道具は地図セルの覆いの中、素性欄はサイドバーの中に居て React の木の上では兄弟ですら
@@ -2012,6 +2022,9 @@ export function App(): JSX.Element {
     fileModalOpen ||
     contextMenuOpen ||
     draftConfirmOpen ||
+    // 増分 4: 「どこへでも移動」（Ctrl+P）が開いている間は、打鍵はその入力欄のもの。
+    // 開いたまま Ctrl+Z が背後へ抜けると、打っている最中に世界が巻き戻る（教訓 5.14）。
+    jumpOpen ||
     // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
     pendingDelete !== null;
   const toolOwnsKeyboard =
@@ -2489,6 +2502,26 @@ export function App(): JSX.Element {
     };
   }, [registry, store, createAnchorHere, createAnchorRefusalFor, reportCreateAnchorRefusal]);
 
+  // --- 増分 4: 探す口を 1 本にする（E-6）と「どこへでも移動」（設計書 §C.2 の 26）---
+  //
+  // **「地物を検索」（Ctrl+F）の行き先を変えた。** 旧: 独立した検索モーダル。母集団が
+  // 一覧と別に組まれ（N-41）、年を属性の検索対象に入れていたので数字 1 文字でほぼ全件が
+  // 一致した（C10）。新: **一覧の区画へ寄せて、絞り込み欄に焦点を入れる**だけ。
+  // 探す・見る・直すが 1 本の母集団で閉じる。
+  useEffect(() => {
+    registry.register(COMMAND_ID.ToolsSearch, {
+      run: () => {
+        sidebarFocusStore.focus(SIDEBAR_SECTION.List);
+        ledgerFilterFocusStore.focus();
+      },
+    });
+    registry.register(COMMAND_ID.ToolsJump, { run: () => setJumpOpen(true) });
+    return () => {
+      registry.unregister(COMMAND_ID.ToolsSearch);
+      registry.unregister(COMMAND_ID.ToolsJump);
+    };
+  }, [registry, sidebarFocusStore, ledgerFilterFocusStore]);
+
   const propertyDeleteFeature = commitFeatureDelete;
 
   // HB3-12 — 地物の存続期間編集. The U09 ops (changeStart / setEnd / deleteAnchor) that
@@ -2613,6 +2646,8 @@ export function App(): JSX.Element {
         focusStore: sidebarFocusStore,
         // 増分 4 / G-20・G-23: 一覧のその場編集が断られたときの理由の出口。
         onRefusal: announceRefusal,
+        // 増分 4 / E-6: Ctrl+F（「地物を検索」）の行き先。
+        filterFocus: ledgerFilterFocusStore,
       }),
     [
       store,
@@ -2626,6 +2661,7 @@ export function App(): JSX.Element {
       addDraftStore,
       sidebarFocusStore,
       announceRefusal,
+      ledgerFilterFocusStore,
     ],
   );
 
@@ -2935,6 +2971,18 @@ export function App(): JSX.Element {
                 inheritor stays selected after a split (教訓 5.11). Hidden; it holds
                 NO truth — it只 reflects the store (技術方針 2.5). */}
             <ActiveFeatureMarker store={store} />
+            {/* 増分 4 / 設計書 §C.2 の 26: どこへでも移動（Ctrl+P）。母集団は一覧と
+                同じ 1 本で、**数字だけなら年の候補しか出さない**（C10 の罠を作り直さない）。
+                地図に重なる層ではなくシェルの前面層なので、K-2 の事故は起きない。 */}
+            <JumpPalette<DomainRoot>
+              store={store}
+              registry={registry}
+              getRoot={() => store.getState().domain}
+              getTime={() => store.getState().currentTime}
+              open={jumpOpen}
+              onClose={() => setJumpOpen(false)}
+              onFocusFeatureCamera={focusCameraOnFeature}
+            />
             {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
                 per feature, showing all attributes (dl) + an empty document-body stub.
                 Selecting from a panel promotes through the SAME store.setActiveFeature

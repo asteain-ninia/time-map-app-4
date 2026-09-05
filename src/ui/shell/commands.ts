@@ -51,8 +51,20 @@ export const COMMAND_ID = {
    */
   ToolsAddFace: 'tools.addFace',
   ToolsSettings: 'tools.settings',
-  /** Open the feature search UI (U41 / FR-113). Registered by the discovery unit. */
+  /**
+   * 地物を探す（U41 / FR-113）。**増分 4 で行き先が変わった。**
+   *
+   * 旧: 独立した検索モーダルを開く。母集団が一覧と別に組まれていて（N-41）、
+   * しかも **年を属性の検索対象に入れていた**ので、数字 1 文字でほぼ全件が一致した
+   * （C10）。新: **地物一覧の絞り込み欄へ焦点を入れる**（E-6。探す・見る・直すが
+   * 1 本の母集団で閉じる）。
+   */
   ToolsSearch: 'tools.search',
+  /**
+   * どこへでも移動（Ctrl+P。設計書 §C.2 の 26 / §I.2）。地物名・年・コマンドを
+   * 1 本の入力で探して飛ぶ、全機能への保険の経路。
+   */
+  ToolsJump: 'tools.jump',
   HelpAbout: 'help.about',
   HelpShortcuts: 'help.shortcuts',
   /** Show the diagnostics info view (U41 / FR-117). Registered by discovery. */

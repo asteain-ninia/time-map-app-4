@@ -1023,6 +1023,96 @@ body {
   border-color: var(--c-accent);
 }
 
+
+/* --- どこへでも移動（Ctrl+P。増分 4 / 設計書 §C.2 の 26）---------------------
+ *
+ * シェルの **前面層**（`.app-shell__overlay`）に置く。地図に重なる層ではないので、
+ * K-2 の事故（地図のクリックを奪う）は構造的に起きない。窓の上部中央に出す。 */
+.jump-palette {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: min(560px, 90vw);
+  max-height: 60vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--c-panel);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.jump-palette__input {
+  font: inherit;
+  font-size: 14px;
+  padding: 6px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+}
+
+.jump-palette__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.jump-palette__item {
+  width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font: inherit;
+  text-align: left;
+  padding: 4px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.jump-palette__item[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+.jump-palette__item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jump-palette__item-note {
+  font-size: 11px;
+  color: var(--c-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jump-palette__item[aria-pressed='true'] .jump-palette__item-note {
+  color: #e6f0ff;
+}
+
+.jump-palette__empty,
+.jump-palette__more {
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 12px;
+}
+
 /* --- 状態行 28px の 5 枠 (設計書 §C.8 / §H.6) -------------------------------
  *
  * ┌ 座標 240 ┬ 縮尺 160 ┬ 直前の結果 1fr ┬ 取り消し 160 ┬ 最終保存 160 ┐

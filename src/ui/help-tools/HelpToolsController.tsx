@@ -45,15 +45,7 @@ import {
 import { SettingsDialog } from '../settings/index';
 import type { SettingsStorePort } from '../settings/index';
 import {
-  searchFeatures,
-  reevaluateResult,
-  validateSearchQuery,
-  kindAxisOf,
-  SEARCH_STRINGS,
   DIAGNOSTICS_STRINGS,
-  type SearchableFeature,
-  type SearchResult,
-  MATCH_FIELD,
   LOG_LEVEL,
   DiagnosticLogger,
   type LogEntry,
@@ -75,16 +67,17 @@ const LOG_LEVEL_LABELS: Readonly<Record<LogLevel, string>> = {
 // 写しを残さない）。React 部品を引かずに済むよう、barrel ではなく純関数の実体を指す。
 import { formatTimePoint } from '../timeline/time-display';
 import { featuresAt } from '../live-lookup';
-import { buildCommittedFeatures } from '../map/committed-features';
-import type { Feature } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 
 /** Which help/tools view is currently open (only one at a time). */
+// **`Search` は増分 4 で消えた。** 「地物を検索」は独立したモーダルをやめ、
+// **地物一覧の絞り込み欄へ焦点を入れるだけ**になった（E-6）。理由は 2 つ:
+//   1. 母集団が一覧とは別に組まれていた（N-41。同じ世界に「探す集合」が 2 つあった）
+//   2. **年を属性の検索対象に入れていた**ので、数字 1 文字でほぼ全件が一致した（C10）
+// 行き先の結線は合成ルート（`App.tsx`）が持つ。
 const HELP_VIEW = {
   None: 'none',
   Settings: 'settings',
-  Search: 'search',
   About: 'about',
   Shortcuts: 'shortcuts',
   Diagnostics: 'diagnostics',
@@ -161,13 +154,11 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
   // not editing commands — permissions.ts keeps them enabled in every mode).
   useEffect(() => {
     registry.register(COMMAND_ID.ToolsSettings, { run: () => setView(HELP_VIEW.Settings) });
-    registry.register(COMMAND_ID.ToolsSearch, { run: () => setView(HELP_VIEW.Search) });
     registry.register(COMMAND_ID.HelpAbout, { run: () => setView(HELP_VIEW.About) });
     registry.register(COMMAND_ID.HelpShortcuts, { run: () => setView(HELP_VIEW.Shortcuts) });
     registry.register(COMMAND_ID.HelpDiagnostics, { run: () => setView(HELP_VIEW.Diagnostics) });
     return () => {
       registry.unregister(COMMAND_ID.ToolsSettings);
-      registry.unregister(COMMAND_ID.ToolsSearch);
       registry.unregister(COMMAND_ID.HelpAbout);
       registry.unregister(COMMAND_ID.HelpShortcuts);
       registry.unregister(COMMAND_ID.HelpDiagnostics);
@@ -225,8 +216,6 @@ export function HelpToolsController(props: HelpToolsControllerProps): JSX.Elemen
         />
       );
     }
-    case HELP_VIEW.Search:
-      return <SearchView store={store} onClose={close} />;
     case HELP_VIEW.About:
       return <AboutView onClose={close} />;
     case HELP_VIEW.Shortcuts:
@@ -306,210 +295,6 @@ function HelpModal(props: {
         </footer>
       </div>
     </div>
-  );
-}
-
-// --- 検索 (HB-8 / FR-113) ----------------------------------------------------
-
-/**
- * Build the search corpus from the ACTUAL drawn母集合 (教訓 5.3 / 教訓 5.29 二重真実源
- * を作らない): we take the SAME `buildCommittedFeatures` set the map renders — which
- * has the store's display-control (global depth N + individual focus, FR-42/FR-43)
- * already applied through U34 — so the search sees EXACTLY what is visible, never a
- * feature the depth rollup hid (a leaf folded into an aggregate) nor one the focus
- * removed. Each drawn entry is enriched with its source feature's searchable
- * attributes (種別ラベル / 年代) by id so name AND attribute matching both work
- * (FR-113). Read fresh per search so a time / display-control change re-derives it
- * (教訓 5.5/5.6).
- */
-function buildSearchCorpus(store: StoreApi<SessionStore<DomainProject>>): SearchableFeature[] {
-  const s = store.getState();
-  // The drawn set (display-control AND FR-113 display-filter honoured — the corpus IS
-  // the visible母集合). Passing `s.filter` means a feature hidden by the filter (種別
-  // オフ / 深度 / 個別非表示) is culled from the drawn batch and so never enters the
-  // search corpus — search results = what is drawn (教訓 5.3 / 5.29, no second母集合).
-  // Its `id` is the feature id; `label` is the name; `kind` the coarse render kind.
-  const drawn = buildCommittedFeatures(
-    s.domain,
-    s.currentTime,
-    s.activeFeature,
-    s.displayControl,
-    s.filter,
-  );
-  // Source features at the current time, indexed for attribute enrichment.
-  const byId = new Map<string, Feature>(
-    featuresAt(s.domain, s.currentTime).map((f) => [f.id as unknown as string, f]),
-  );
-
-  const corpus: SearchableFeature[] = [];
-  for (const d of drawn) {
-    const source = byId.get(d.id);
-    const attributes =
-      source !== undefined
-        ? [
-            ...(source.kindLabel !== undefined ? [source.kindLabel] : []),
-            String(source.attributes.startYear),
-            String(source.attributes.endYear),
-          ]
-        : [];
-    corpus.push({
-      id: d.id as unknown as FeatureId,
-      // The render kind axis already aligns with FeatureKindAxis ('point'|'line'|
-      // 'area'); map through the single helper for安全 (aggregates surface as area).
-      kind: d.kind === 'point' ? kindAxisOf('point') : d.kind === 'line' ? kindAxisOf('line') : kindAxisOf('leaf'),
-      name: d.label,
-      // Description is not carried on the drawn record; name + attribute matching
-      // cover FR-113 for this view. Pure corpus.
-      description: '',
-      attributes,
-    });
-  }
-  return corpus;
-}
-
-function SearchView(props: {
-  readonly store: StoreApi<SessionStore<DomainProject>>;
-  readonly onClose: () => void;
-}): JSX.Element {
-  const { store } = props;
-  const [query, setQuery] = useState('');
-  const [result, setResult] = useState<SearchResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const runSearch = (): void => {
-    // Route through the SAME validation入口 every search path uses (validation入口
-    // 契約 / FR-116): empty / >256 chars are rejected with a日本語 message rather
-    // than silently running. Only a valid (trimmed, length-bounded) query searches.
-    const validated = validateSearchQuery(query);
-    if (!validated.ok) {
-      setError(validated.message);
-      setResult(null);
-      return;
-    }
-    setError(null);
-    // Pure search over the ACTUAL drawn母集合 (教訓 5.3 / 5.5). Re-derives the corpus
-    // each click so it reflects the current time + display-control.
-    setResult(searchFeatures(buildSearchCorpus(store), validated.value));
-  };
-
-  // BUG #9 — a shown result is re-evaluated whenever the corpus (domain / time /
-  // display-control) changes, so a deleted/hidden hit drops out and the list never
-  // shows a feature that no longer resolves (教訓 5.5/5.6: re-derive from the母集合,
-  // never gate on which input path changed). We only subscribe WHILE a result is
-  // shown (result !== null) and re-run the SAME single-source predicate
-  // (reevaluateResult, discovery/search) over the freshly-built corpus — no parallel
-  // search logic here. The subscription is set up ONCE per "result became shown"
-  // (the effect depends on `store` and whether a result exists, NOT on `result`'s
-  // value), so it never resubscribes per render and cannot loop: the functional
-  // setResult only writes a NEW value when a hit actually dropped, and a value-equal
-  // pass leaves the same reference (no further render).
-  const hasResult = result !== null;
-  useEffect(() => {
-    if (!hasResult) return;
-    const reevaluate = (): void => {
-      setResult((prev) =>
-        prev === null ? prev : reevaluateResult(prev, buildSearchCorpus(store)),
-      );
-    };
-    // Re-evaluate immediately against the current母集合 (the corpus may already have
-    // changed between submit and this effect running) and on every store change.
-    reevaluate();
-    return store.subscribe(reevaluate);
-  }, [store, hasResult]);
-
-  // BUG #3 — a hit click promotes the feature into the LIVE selection (the SAME
-  // store.setActiveFeature path the map / sidebar use, no second selection source —
-  // 教訓 5.29) AND drives the display-control individual focus onto it with emphasis
-  // (FR-43 / FR-82 — the existing emphasis machinery, setDisplayFocus). The depth M
-  // is kept from the current focus so a click does not silently change the deep-dive
-  // level. This is the existing single-source highlight/selection path, not a parallel
-  // one (教訓 5.6 / 5.29). The panel stays open so the user can pick another hit.
-  const onHitClick = (featureId: FeatureId): void => {
-    const s = store.getState();
-    s.setActiveFeature(featureId);
-    s.setDisplayFocus({
-      originId: featureId,
-      depth: s.displayControl.focus.depth,
-      emphasize: true,
-    });
-  };
-
-  return (
-    <HelpModal
-      testid="search-panel"
-      title={SEARCH_STRINGS.panelTitle}
-      closeLabel={ABOUT_STRINGS.close}
-      onClose={props.onClose}
-    >
-      <p className="help-dialog__hint">{SEARCH_STRINGS.help}</p>
-      <div className="search-panel__input-row">
-        <label htmlFor="search-panel-input">{SEARCH_STRINGS.inputLabel}</label>
-        <input
-          id="search-panel-input"
-          type="text"
-          data-testid="search-panel-input"
-          aria-label={SEARCH_STRINGS.inputLabel}
-          placeholder={SEARCH_STRINGS.inputPlaceholder}
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') runSearch();
-          }}
-        />
-        <button
-          type="button"
-          data-testid="search-panel-run"
-          onClick={runSearch}
-        >
-          {SEARCH_STRINGS.searchButtonLabel}
-        </button>
-      </div>
-
-      {error !== null && (
-        <p className="search-panel__error" role="alert" data-testid="search-panel-error">
-          {error}
-        </p>
-      )}
-
-      {result !== null && (
-        <section className="search-panel__results" data-testid="search-panel-results">
-          <h3>{SEARCH_STRINGS.resultsTitle}</h3>
-          {result.hits.length === 0 ? (
-            <p data-testid="search-panel-no-results">{SEARCH_STRINGS.noResults}</p>
-          ) : (
-            <ul>
-              {result.hits.map((hit) => (
-                <li key={hit.featureId}>
-                  {/* BUG #3 — the hit is a real button so a click (and keyboard
-                      activation) selects + emphasizes the feature on the map through
-                      the LIVE store actions (onHitClick). Before this it was an inert
-                      <li> with no handler — a dead-ended result. */}
-                  <button
-                    type="button"
-                    className="search-panel__hit"
-                    data-testid="search-panel-hit"
-                    onClick={() => onHitClick(hit.featureId)}
-                  >
-                    <span className="search-panel__hit-name">{hit.name}</span>
-                    <span className="search-panel__hit-fields">
-                      {hit.matchedFields
-                        .map((f) =>
-                          f === MATCH_FIELD.Name
-                            ? SEARCH_STRINGS.matchedInName
-                            : f === MATCH_FIELD.Description
-                              ? SEARCH_STRINGS.matchedInDescription
-                              : SEARCH_STRINGS.matchedInAttribute,
-                        )
-                        .join(' / ')}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      )}
-    </HelpModal>
   );
 }
 

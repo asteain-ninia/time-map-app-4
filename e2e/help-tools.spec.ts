@@ -44,17 +44,46 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
     }
   });
 
-  test('ツール → 地物を検索 opens the search panel and a real search runs', async () => {
+  // **増分 4 で行き先が変わった**（E-6）。「地物を検索」は独立したモーダルをやめ、
+  // **地物一覧の絞り込み欄へ焦点を入れるだけ**になった。母集団が一覧と 2 つある状態
+  // （N-41）と、年を属性の検索対象に入れていた罠（C10）がこれで構造的に消える。
+  test('ツール → 地物を検索 は地物一覧の絞り込み欄へ焦点を入れる（E-6）', async () => {
     const { app, page } = await launchApp();
     try {
+      // 独立した検索モーダルはもう無い。
       await clickMenuCommand(page, 'tools', 'tools.search');
-      await expect(page.getByTestId('search-panel')).toBeVisible();
-      // Real input: type a query and click 検索; the result section appears.
-      await page.getByTestId('search-panel-input').fill('ローマ');
-      await page.getByTestId('search-panel-run').click();
-      await expect(page.getByTestId('search-panel-results')).toBeVisible();
-      await page.getByTestId('search-panel-close').click();
       await expect(page.getByTestId('search-panel')).toHaveCount(0);
+
+      // 一覧の区画へ寄り、絞り込み欄に焦点が入っている（打てばそのまま絞り込める）。
+      await expect(page.getByTestId('sidebar-tab-list')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+      const filter = page.getByTestId('unified-list-filter');
+      await expect(filter).toBeFocused();
+      await page.keyboard.type('ローマ');
+      await expect(filter).toHaveValue('ローマ');
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 4 / 設計書 §C.2 の 26: どこへでも移動（Ctrl+P）。**数字だけなら年の候補だけ**
+  // を出す ―― 現状の検索は年を属性の検索対象に入れていたので数字 1 文字でほぼ全件が
+  // 一致した（C10）。同じ罠を作り直していないことを実アプリで見る。
+  test('ツール → どこへでも移動 に「1」と打つと年の候補だけが出る（C10 の罠を作らない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await clickMenuCommand(page, 'tools', 'tools.jump');
+      const palette = page.getByTestId('jump-palette');
+      await expect(palette).toBeVisible();
+      await page.getByTestId('jump-palette-input').fill('1');
+      const items = palette.locator('[data-kind]');
+      await expect(items).toHaveCount(1);
+      await expect(items.first()).toHaveAttribute('data-kind', 'year');
+      // Escape で閉じる（Esc の階段）。
+      await page.keyboard.press('Escape');
+      await expect(palette).toHaveCount(0);
     } finally {
       await app.close();
     }

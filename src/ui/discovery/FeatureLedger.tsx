@@ -63,6 +63,7 @@ import {
   duplicateNamedIds,
   representativePoints,
 } from './ledger-source';
+import type { LedgerFilterFocusStore } from './ledger-focus';
 import { LEDGER_MODE } from './ledger-state';
 import { BUNDLE_STRINGS, LEDGER_STRINGS } from './strings';
 
@@ -87,6 +88,11 @@ export interface FeatureLedgerProps<S> {
    * 器（素性欄）が持っている焦点を一覧が直接触らないための口。
    */
   readonly onFocusNameField?: () => void;
+  /**
+   * 絞り込み欄へ焦点を入れてほしい、という要求の口（Ctrl+F ＝「地物を検索」の行き先。
+   * E-6）。**DOM を名前で探さない**ための細い口である（結合点 #3 の反省）。
+   */
+  readonly filterFocus?: LedgerFilterFocusStore;
 }
 
 /** 一覧の行 1 つぶんの見た目。**28px 固定**なので中身は 1 行に収める。 */
@@ -280,8 +286,16 @@ function InlineInput(props: {
 }
 
 export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
-  const { store, getRoot, getTime, onFocusFeatureCamera, onQuickEdit, onRefusal, onFocusNameField } =
-    props;
+  const {
+    store,
+    getRoot,
+    getTime,
+    onFocusFeatureCamera,
+    onQuickEdit,
+    onRefusal,
+    onFocusNameField,
+    filterFocus,
+  } = props;
 
   // 購読するのは、行の中身が変わりうる入力だけ（教訓 5.6: 根と年は fresh に読む）。
   const domain = useStore(store, (s) => s.domain);
@@ -307,6 +321,18 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
   const [presetId, setPresetId] = useState<string>(BUNDLE_PRESETS[0]?.id ?? '');
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const filterInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Ctrl+F（メニューの「地物を検索」）の行き先（E-6）。
+  useEffect(() => {
+    if (filterFocus === undefined) return;
+    return filterFocus.subscribe(() => {
+      const el = filterInputRef.current;
+      if (el === null) return;
+      el.focus();
+      el.select();
+    });
+  }, [filterFocus]);
 
   // --- 母集団（現在時刻） -----------------------------------------------------
   //
@@ -623,6 +649,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     <div className="ledger" data-testid="unified-list" onKeyDown={onListKeyDown}>
       <div className="ledger__filter">
         <input
+          ref={filterInputRef}
           type="search"
           className="ledger__filter-input"
           data-testid="unified-list-filter"

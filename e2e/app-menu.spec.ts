@@ -218,10 +218,9 @@ test.describe('Electron 既定アプリケーションメニューの無効化',
   test('入力欄で Ctrl+C / Ctrl+V / Ctrl+X が生きている（クリップボード退行なし）', async () => {
     const { app, page } = await launchApp();
     try {
-      // A real text input reachable at boot: ツール → 地物を検索 の検索欄.
-      await page.getByTestId('menu-tools').click();
-      await page.locator('button[data-command="tools.search"]').click();
-      const input = page.getByTestId('search-panel-input');
+      // 起動直後から触れる本物のテキスト入力欄: **地物一覧の絞り込み欄**。
+      // 増分 4 で「地物を検索」の独立モーダルをやめたので、代表をここへ替えた（E-6）。
+      const input = page.getByTestId('unified-list-filter');
       await expect(input).toBeVisible();
 
       await input.fill('コピー元テキスト');

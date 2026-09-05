@@ -298,29 +298,26 @@ test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', 
         await page.keyboard.press('Escape').catch(() => undefined);
       }
 
-      // --- Search reachability + result plausibility (FR-113) ------------------
+      // --- 探す口の到達性と結果のもっともらしさ（FR-113 / 増分 4 で E-6 へ移した）----
+      // 独立した検索モーダルはやめ、**地物一覧の絞り込み欄** 1 本に統合した。
       if (await clickMenuCommand(page, 'tools', 'tools.search')) {
-        await expect(page.getByTestId('search-panel')).toBeVisible();
-        // A query that should match nothing in the committed features.
-        await page.getByTestId('search-panel-input').fill('ZZZ_NOMATCH_QUERY_QQ');
-        await page.getByTestId('search-panel-run').click();
-        await expect(page.getByTestId('search-panel-results')).toBeVisible();
-        const noRes = await page.getByTestId('search-panel-no-results').count();
-        const hitsForNonsense = await page.getByTestId('search-panel-hit').count();
-        if (noRes === 0 && hitsForNonsense > 0) {
-          record('search-false-hit', `nonsense query returned ${hitsForNonsense} hits`);
+        const filter = page.getByTestId('unified-list-filter');
+        await expect(filter).toBeVisible();
+        // どれにも当たらない語 → 一覧は「一致なし」を出し、行は 0 になる。
+        await filter.fill('ZZZ_NOMATCH_QUERY_QQ');
+        const noMatch = await page.getByTestId('unified-list-no-match').count();
+        const rowsForNonsense = await listedFeatureCount(page);
+        if (noMatch === 0 && rowsForNonsense > 0) {
+          record('search-false-hit', `nonsense query returned ${rowsForNonsense} rows`);
         }
         await shot(page, 'search-no-results');
-        // An empty query is a degenerate input — should not crash / show NaN.
-        await page.getByTestId('search-panel-input').fill('');
-        await page.getByTestId('search-panel-run').click();
-        const errTxt = await page.getByTestId('search-panel-error').textContent().catch(() => null);
-        if (errTxt !== null && /NaN|undefined|Infinity/.test(errTxt)) {
-          record('search-error-malformed', `search error text="${errTxt}"`);
+        // 空は「絞らない」であって誤りではない（検証の入口はもう当たらない）。
+        await filter.fill('');
+        const countText = (await page.getByTestId('unified-list-count').textContent()) ?? '';
+        if (/NaN|undefined|Infinity/.test(countText)) {
+          record('search-error-malformed', `count text="${countText}"`);
         }
         await shot(page, 'search-empty');
-        await page.getByTestId('search-panel-close').click().catch(() => undefined);
-        await page.keyboard.press('Escape').catch(() => undefined);
       }
 
       // --- Settings zoom-clamp round-trip (FR-10 / FR-109) ---------------------

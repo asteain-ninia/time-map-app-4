@@ -55,6 +55,7 @@ import { AddDraftForm } from '../add/AddPropertyForm';
 import type { AddDraftStore } from '../add/add-draft-store';
 import { FeatureLedger, type LedgerQuickEdit } from '../discovery/FeatureLedger';
 import { doneIdsOf, stepIndex } from '../discovery/bundle';
+import type { LedgerFilterFocusStore } from '../discovery/ledger-focus';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
 import type { SessionStore } from '../state/store';
 import {
@@ -216,6 +217,11 @@ export interface SidebarContentDeps<S> {
    * 一覧のその場編集がドメインに断られたとき、**理由を画面に出す**ためだけに使う。
    */
   readonly onRefusal?: (message: string) => void;
+  /**
+   * 一覧の絞り込み欄へ焦点を入れる口（Ctrl+F ＝「地物を検索」の行き先。E-6）。
+   * 合成ルートがコマンドから呼ぶ。
+   */
+  readonly filterFocus?: LedgerFilterFocusStore;
 }
 
 /**
@@ -240,6 +246,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     addDraft,
     focusStore,
     onRefusal,
+    filterFocus,
   } = deps;
 
   // 素性欄の名前欄へ焦点を入れる口（束の第 1 手。設計書 §C.5）。器が 1 本だけ持ち、
@@ -339,6 +346,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
         {...(quickEdit !== undefined ? { onQuickEdit: quickEdit } : {})}
         {...(onRefusal ? { onRefusal } : {})}
+        {...(filterFocus ? { filterFocus } : {})}
         onFocusNameField={() => {
           nameFieldFocus.focus();
         }}

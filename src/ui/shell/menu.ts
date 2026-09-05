@@ -146,6 +146,9 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
       item(COMMAND_ID.ToolsSettings),
       // U41 (FR-113): feature search, registered through the same基盤 (教訓 5.30).
       item(COMMAND_ID.ToolsSearch, { key: 'f', ctrlOrMeta: true }),
+      // 増分 4 / 設計書 §C.2 の 26: どこへでも移動（地物名・年・コマンドを 1 本で）。
+      // メニューと keymap の両方へ届くよう、ここ 1 か所で宣言する（結合点 #10）。
+      item(COMMAND_ID.ToolsJump, { key: 'p', ctrlOrMeta: true }),
     ],
   },
   {
