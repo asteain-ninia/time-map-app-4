@@ -421,7 +421,7 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
             <p className="display-filter__emphasize-hint">{FILTER_STRINGS.emphasizeHint}</p>
           </fieldset>
 
-          {/* 深さの強調（G-6 / R8）。**ドメインに在るのに呼び出し元が 1 つも無かった。** */}
+          {/* 深さの強調（G-6 / R8）。**`filter-state.ts` に在るのに呼び出し元が 1 つも無かった。** */}
           <div className="display-filter__depth">
             <label className="display-filter__depth-toggle">
               <input

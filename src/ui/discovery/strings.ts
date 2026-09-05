@@ -68,7 +68,7 @@ export const FILTER_STRINGS = {
   /** 強調軸の 1 行（「点情報を目立たせる」）。 */
   kindEmphasizeRowLabel: (kind: string): string => `${kind}を目立たせる`,
   emphasizeKindGroupHint:
-    '選んだ種別を強調し、それ以外の地物を淡く表示します。表示/非表示とは別の軸です。',
+    '選んだ種別を目立たせ、それ以外の地物を薄くします。隠すのとは別の軸です。',
   // --- 増分 4: オプションバーの「表示 ▾」（C7 で一覧の下からここへ移した）---------
   /** 設定欄のボタンの文字（「表示 ▾」）。 */
   displayMenuLabel: '表示',
@@ -81,7 +81,7 @@ export const FILTER_STRINGS = {
   kindLabelEmphasize: '目立たせる',
   kindLabelCount: (n: number): string => `${String(n)}件`,
   kindLabelEmpty: 'まだ種別が 1 つも付いていません。',
-  /** 深さの強調（G-6 / R8。ドメインに在るのに呼び出し元が無かった軸）。 */
+  /** 深さの強調（G-6 / R8。`filter-state.ts` に在るのに呼び出し元が無かった軸）。 */
   emphasizeDepthLabel: '深さで目立たせる',
   emphasizeDepthHint:
     '指定した深さ以上の面情報を目立たせ、それ以外を薄くします（最上位=0、子は親+1）。',
@@ -124,7 +124,7 @@ export const VALIDATION_STRINGS = {
   opacityOutOfRange:
     '不透明度は0以上1以下の数値で指定してください。',
   depthInvalid:
-    '階層深度は0以上の整数で指定してください。',
+    '深さは 0 以上の整数で指定してください。',
 } as const;
 
 /** Error-handling / report-hint messages (FR-115 / FR-117). */

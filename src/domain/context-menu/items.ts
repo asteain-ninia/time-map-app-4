@@ -121,7 +121,7 @@ export const DISABLE_REASON_MESSAGE: Readonly<Record<DisableReason, string>> = {
   [DISABLE_REASON.MergeNeedsMoreTargets]:
     '結合には2つ以上の対象が必要です。結合する相手を追加してください。',
   [DISABLE_REASON.EmphasisFromOtherAxis]:
-    'この地物は種別または階層深度の強調で既に強調されているため、個別の強調/解除では見た目が変わりません。表示制御フィルタの「強調をすべて解除」で解除してください。',
+    'この地物は種別または深さの強調で既に目立たせているため、個別の強調/解除では見た目が変わりません。表示 ▾ の「強調をすべて解除」で解除してください。',
   [DISABLE_REASON.AnchorAlreadyAtThisYear]:
     'すでにこの年に錨があります。いまの年の姿はその錨が記録しているので、新しく作る必要はありません。',
 };
