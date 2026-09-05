@@ -80,7 +80,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect
         .poll(async () => anchorRowCount(page), { timeout: 10_000 })
         .toBe(2);
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+      await expect(page.getByTestId('statusbar-result')).toContainText('その年に錨を作る記録');
 
       // **0 年へ戻すと元の名前が出る**（＝0 年の錨は書き換わっていない）。
       await jumpToYear(page, 0);
@@ -113,7 +113,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('save-button')).toHaveText('1200年の錨を上書き保存');
       await nameInput.fill('二回目');
       await page.getByTestId('save-button').click();
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨の上書き');
+      await expect(page.getByTestId('statusbar-result')).toContainText('その年の錨の書き換え');
       expect(await anchorRowCount(page)).toBe(2);
       await expect(nameInput).toHaveValue('二回目');
     } finally {
@@ -230,7 +230,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
       await expect(page.getByTestId('app-active-feature')).toHaveText(activeBefore ?? '');
       await page.keyboard.press('Control+k');
       await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(2);
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨づくり');
+      await expect(page.getByTestId('statusbar-result')).toContainText('この年に錨を作る記録');
 
       // 錨ができたので入口は消える（同じ年に 2 本は作れない）。
       await showProperties(page);
@@ -332,7 +332,7 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
         await jumpToYear(page, year);
         await showProperties(page);
         await page.getByTestId('create-anchor-here').click();
-        await expect(page.getByTestId('statusbar-result')).toContainText('錨づくり');
+        await expect(page.getByTestId('statusbar-result')).toContainText('この年に錨を作る記録');
       }
       await expect.poll(async () => anchorRowCount(page), { timeout: 10_000 }).toBe(3);
 

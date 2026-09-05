@@ -36,7 +36,7 @@ function renderControl(overrides: Partial<GlobalDepthControlProps> = {}) {
 describe('GlobalDepthControl — グローバル階層深度スライダー (FR-42)', () => {
   it('shows the current depth N and the derived max in the readout', () => {
     renderControl({ globalDepth: 1, maxDepth: 4 });
-    expect(screen.getByTestId('global-depth-readout')).toHaveTextContent('階層深度: 1');
+    expect(screen.getByTestId('global-depth-readout')).toHaveTextContent('深さ: 1');
     expect(screen.getByTestId('global-depth-readout')).toHaveTextContent('/ 4');
   });
 
@@ -77,7 +77,7 @@ describe('GlobalDepthControl — 個別フォーカス (FR-43, 常設・disabled
     expect(screen.getByTestId('depth-focus')).toBeInTheDocument();
     const apply = screen.getByTestId('depth-focus-apply');
     expect(apply).toBeDisabled();
-    expect(apply).toHaveTextContent('深掘り対象なし');
+    expect(apply).toHaveTextContent('地物を選ぶと使えます');
     expect(screen.getByTestId('depth-focus-depth')).toBeDisabled();
     expect(screen.getByTestId('depth-focus-emphasize')).toBeDisabled();
     expect(screen.getByTestId('depth-focus-clear')).toBeDisabled();

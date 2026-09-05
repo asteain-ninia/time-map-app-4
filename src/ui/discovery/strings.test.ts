@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { MENU_ITEM_KIND, MENU_ITEM_LABEL } from '../../domain/context-menu/index';
 
 import {
+  BUNDLE_STRINGS,
   DIAGNOSTICS_STRINGS,
   ERROR_HANDLING_STRINGS,
   FILTER_STRINGS,
-  SEARCH_STRINGS,
+  JUMP_STRINGS,
+  LEDGER_STRINGS,
   VALIDATION_STRINGS,
 } from './strings';
 
@@ -41,10 +43,17 @@ describe('discovery strings are Japanese (FR-115)', () => {
     expect(FILTER_STRINGS.emphasizeClearAllLabel).toMatch(JP);
   });
 
-  it('search help + query-format example are present (FR-118)', () => {
-    expect(SEARCH_STRINGS.help).toMatch(JP);
-    expect(SEARCH_STRINGS.example).toContain('例:');
-    expect(SEARCH_STRINGS.jumpNotPresent).toMatch(JP);
+  // 2026-09-05（増分 4 の手直し F3）: 検索モーダルの文言（`SEARCH_STRINGS`）は消した。
+  // モーダルは増分 4 で一覧の絞り込みへ統合され、画面から到達できなくなっている。
+  // 代わりに、いま画面に出ている一覧・まとまり・どこへでも移動の文言を見る。
+  it('一覧・作業のまとまり・どこへでも移動の文言が日本語で揃っている', () => {
+    expect(LEDGER_STRINGS.filterPlaceholder).toMatch(JP);
+    expect(LEDGER_STRINGS.hiddenTitleIndividual).toMatch(JP);
+    expect(BUNDLE_STRINGS.expressionPlaceholder).toContain('例:');
+    expect(BUNDLE_STRINGS.invalidExpression).toMatch(JP);
+    // **エンジン由来の英語を混ぜない**（手直し B11）。
+    expect(/[A-Za-z]/.test(BUNDLE_STRINGS.invalidExpression)).toBe(false);
+    expect(JUMP_STRINGS.placeholder).toMatch(JP);
   });
 
   it('validation messages are Japanese (FR-115 / 教訓 5.26)', () => {

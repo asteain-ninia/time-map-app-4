@@ -81,9 +81,12 @@ const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
   [UI_COMMAND_LABEL.Interval]: '存続期間の変更',
   [UI_COMMAND_LABEL.Palette]: '配色の変更',
   [UI_COMMAND_LABEL.Unshare]: '頂点の共有解除',
-  [UI_COMMAND_LABEL.EditOverwrite]: 'その年の錨の上書き',
-  [UI_COMMAND_LABEL.EditNewAnchor]: 'その年への錨の新設',
-  [UI_COMMAND_LABEL.CreateAnchor]: 'この年の錨づくり',
+  // 「◯◯を行いました」に繋いだときに日本語として読める名詞句にする
+  // （2026-09-05、増分 4 の手直し F3。旧: 「その年への錨の新設を行いました」
+  // 「この年の錨づくりを行いました」＝ §H.5 の「過去形で言い切る」から外れていた）。
+  [UI_COMMAND_LABEL.EditOverwrite]: 'その年の錨の書き換え',
+  [UI_COMMAND_LABEL.EditNewAnchor]: 'その年に錨を作る記録',
+  [UI_COMMAND_LABEL.CreateAnchor]: 'この年に錨を作る記録',
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
   所属変更: '所属変更',
   地物の削除: '地物の削除',

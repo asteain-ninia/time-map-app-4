@@ -105,6 +105,10 @@ test.describe('増分 4 の探索 — 実データで仮名を 30 件連続で�
       const name = page.getByLabel('名前', { exact: true });
       const renamed: string[] = [];
       let cameraJumps = 0;
+      // **カメラが実際に動いた回数**（手直し F4 の下限）。「暴れていない」だけを見ると
+      // カメラが 1 度も動かなくても緑になる ―― 送りの目的は「その地物を見せる」ことで、
+      // 動かないのは動きすぎと同じくらいの不具合である。
+      let cameraMoves = 0;
       let previous = await camera(page);
 
       for (let i = 0; i < RENAME_COUNT; i += 1) {
@@ -141,20 +145,50 @@ test.describe('増分 4 の探索 — 実データで仮名を 30 件連続で�
         if (!Number.isFinite(zoomNow) || zoomNow <= 0) {
           record('camera-broken', `${String(i)} 件目でカメラの倍率が ${now.zoom}`);
         }
+        if (
+          now.zoom !== previous.zoom ||
+          now.panX !== previous.panX ||
+          now.panY !== previous.panY
+        ) {
+          cameraMoves += 1;
+        }
         previous = now;
       }
       if (cameraJumps > 0) {
         record('camera-jump', `倍率が 100 倍以上動いた送りが ${String(cameraJumps)} 回`);
       }
+      // --- 下限（手直し F4）: 掃いた回数とカメラを「1 回も起きなかった」で通さない。
+      //     異常だけを数える形だと、**何も起きなくても緑**になってしまう。
+      if (renamed.length < RENAME_COUNT) {
+        record(
+          'too-few-renamed',
+          `${String(RENAME_COUNT)} 件直すつもりが ${String(renamed.length)} 件で終わった`,
+        );
+      }
+      if (cameraMoves === 0) {
+        record('camera-never-moved', '30 件送ってもカメラが 1 度も動かなかった');
+      }
 
       // ② 直したものが全部「済」になっているか。
+      //
+      // **「済」を 1 件も確かめられなかったら、それ自体が異常**（手直し F4 の下限）。
+      // 仮想スクロールなので窓に入っている行しか見られず、「行が 1 つも無い」＝
+      // 「見なかった」で静かに通る形だった（教訓 5.59 と同じ型）。
+      let doneChecked = 0;
       for (const id of renamed) {
-        // 仮想スクロールなので、束の送りで画面に入っているものだけを見る（全件は次で見る）。
         const done = await page.getByTestId(`ledger-done-${id}`).count();
         const row = await page.getByTestId(`feature-list-item-${id}`).count();
-        if (row > 0 && done === 0) {
+        if (row === 0) continue;
+        doneChecked += 1;
+        if (done === 0) {
           record('done-missing', `${id} は直したのに「済」の印が無い`);
         }
+      }
+      if (renamed.length > 0 && doneChecked === 0) {
+        record(
+          'done-unchecked',
+          '直した地物の行が 1 つも窓に入らず、「済」を 1 件も確かめられなかった',
+        );
       }
 
       // ① 束の並びは動いていない（総数が変わらない）。

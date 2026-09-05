@@ -18,6 +18,7 @@ import { walkToRoot, type Forest } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 
 import type { DomainFeatureKind } from './axes';
+import type { DoneChange } from './bundle';
 import { LEDGER_STRINGS } from './strings';
 import type { HiddenReason } from './visibility';
 
@@ -80,6 +81,8 @@ export interface LedgerRow {
   readonly bundleIndex: number | null;
   /** 束の「済」（作った時点の名前・種別と、いまの名前・種別が違う）。 */
   readonly done: boolean;
+  /** 何を直したか（済でなければ null）。行の説明に出す（設計書 §H.1）。 */
+  readonly doneChange: DoneChange | null;
 }
 
 /** 行の高さは 28px 固定・折り返しなし（設計書 §C.5 / §F.3）。 */
@@ -222,6 +225,8 @@ export interface LedgerBuildInput {
   readonly bundleIndex?: ReadonlyMap<FeatureId, number>;
   /** 束の「済」。 */
   readonly done?: ReadonlySet<FeatureId>;
+  /** 何を直したか（済の行の説明に使う）。 */
+  readonly doneChanges?: ReadonlyMap<FeatureId, DoneChange>;
   /** 束の未処理だけに絞るか。 */
   readonly onlyUnfinished?: boolean;
 }
@@ -255,6 +260,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
     tree,
     bundleIndex,
     done,
+    doneChanges,
     onlyUnfinished = false,
   } = input;
 
@@ -307,7 +313,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
     for (const f of features) {
       if (!matched.has(f.id)) continue;
       rows.push(
-        toRow(f, 0, forest, qualifiers, bundleIndex, doneIds, false),
+        toRow(f, 0, forest, qualifiers, bundleIndex, doneIds, doneChanges, false),
       );
     }
     return {
@@ -340,7 +346,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
       (c) => (openedByUser && byId.has(c)) || keep.has(c),
     );
     const open = children.length > 0 && isExpanded(id);
-    rows.push(toRow(f, indent, forest, qualifiers, bundleIndex, doneIds, open));
+    rows.push(toRow(f, indent, forest, qualifiers, bundleIndex, doneIds, doneChanges, open));
     if (!open) return;
     for (const child of children) walkDown(child, indent + 1, true);
   };
@@ -356,6 +362,7 @@ function toRow(
   qualifiers: ReadonlyMap<FeatureId, string>,
   bundleIndex: ReadonlyMap<FeatureId, number> | undefined,
   doneIds: ReadonlySet<FeatureId>,
+  doneChanges: ReadonlyMap<FeatureId, DoneChange> | undefined,
   expanded: boolean,
 ): LedgerRow {
   const children = forest.childrenOf.get(f.id) ?? [];
@@ -374,6 +381,7 @@ function toRow(
     expanded,
     bundleIndex: bundleIndex?.get(f.id) ?? null,
     done: doneIds.has(f.id),
+    doneChange: doneChanges?.get(f.id) ?? null,
   };
 }
 

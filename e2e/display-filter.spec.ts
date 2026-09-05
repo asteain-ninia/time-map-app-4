@@ -166,6 +166,73 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
     }
   });
 
+  // K-2（増分 4 の手直し F4）: **開いた状態と閉じた状態の両方**を格子で走査する。
+  // 閉じたパネルが画面左上に居座ってクリックを奪う事故（教訓 5.56）は閉じた状態でしか
+  // 捕まらないが、**開いた状態で地図のどこが覆われているか**は開いた状態でしか分からない。
+  test('K-2: 表示 ▾ は開いていても閉じていても、地図の当たりを黙って奪わない', async () => {
+    test.setTimeout(180_000);
+    const { app, page } = await launchApp();
+    try {
+      const scan = async (): Promise<string[]> => {
+        const b = (await page.getByTestId('map-input-layer').boundingBox())!;
+        const out: string[] = [];
+        for (let i = 0; i < 5; i += 1) {
+          for (let j = 0; j < 5; j += 1) {
+            const x = b.x + (b.width * (i + 0.5)) / 5;
+            const y = b.y + (b.height * (j + 0.5)) / 5;
+            out.push(
+              await page.evaluate(
+                ({ px, py }) => {
+                  const el = document.elementFromPoint(px, py);
+                  if (el === null) return 'null';
+                  // その点が「表示 ▾ のパネルの中」かどうかも見分けたい。
+                  const panel = document.querySelector('[data-testid="option-display-panel"]');
+                  if (panel !== null && panel.contains(el)) return 'display-panel';
+                  return el.getAttribute('data-testid') ?? el.className.toString();
+                },
+                { px: x, py: y },
+              ),
+            );
+          }
+        }
+        return out;
+      };
+
+      // ①開く前: 25 点すべてが地図の入力層に届く。
+      expect(new Set(await scan())).toEqual(new Set(['map-input-layer']));
+
+      // ②開いた状態: 覆っているのは **パネルそのもの**だけ（見えない層が奪っていない）。
+      await page.getByTestId('option-display-button').click();
+      await expect(page.getByTestId('display-filter')).toBeVisible();
+      const opened = await scan();
+      for (const hit of opened) {
+        expect(['map-input-layer', 'display-panel']).toContain(hit);
+      }
+
+      // ③閉じたあと: また 25 点すべてが地図に届く（[hidden] の打ち消しが効いている）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-display-panel')).toBeHidden();
+      expect(new Set(await scan())).toEqual(new Set(['map-input-layer']));
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 4 の手直し G6 / K-5: 状態が移ったら閉じる。開いたまま残ると、そこに並んでいる
+  // 種別の一覧と件数が古いまま置き去りになる。
+  test('表示 ▾ は年・鍵・道具が変わったら閉じる（K-5）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await page.getByTestId('option-display-button').click();
+      await expect(page.getByTestId('display-filter')).toBeVisible();
+      await enterEditMode(page);
+      await expect(page.getByTestId('option-display-panel')).toBeHidden();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('FR-42 N=1 展開 → FR-113 深度フィルタ M=1 で子が隠れる (順次合成)', async () => {
     test.setTimeout(120_000);
     const { app, page } = await launchApp();

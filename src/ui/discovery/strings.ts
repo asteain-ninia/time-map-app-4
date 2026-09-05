@@ -20,7 +20,7 @@ export const FILTER_STRINGS = {
   /** Section heading for the feature display-control panel (地物一覧区画内)。 */
   sectionTitle: '地物の表示制御',
   sectionHelp:
-    '種別・階層深度・個別地物ごとに表示/非表示を切り替え、不透明度や強調を調整できます。これらは見え方だけを変え、地物データそのものは変更しません。',
+    '種別・深さ・地物ごとに表示/非表示を切り替え、不透明度や強調を調整できます。これらは見え方だけを変え、地物データそのものは変更しません。',
   // 種別軸 (FR-113)
   kindGroupLabel: '種別で表示',
   kindPointLabel: '点情報',
@@ -28,10 +28,10 @@ export const FILTER_STRINGS = {
   kindAreaLabel: '面情報',
   kindGroupHint: '点・線・面のうち地図に表示する種別を選びます。',
   // 階層深度軸 (FR-38)
-  depthLabel: '階層深度で表示',
+  depthLabel: '深さで表示',
   depthHint:
-    '指定した階層深度までの面情報のみ表示します（最上位=0、子は親+1）。空欄ですべての深度を表示します。',
-  depthExample: '例: 「2」を指定すると深度0〜2の面情報だけが表示されます。',
+    '指定した深さまでの面情報のみ表示します（最上位=0、子は親+1）。空欄ですべての深さを表示します。',
+  depthExample: '例: 「2」を指定すると深さ 0〜2 の面情報だけが表示されます。',
   // 個別地物軸 (FR-113)
   individualLabel: '個別地物の表示',
   individualHideLabel: 'この地物を非表示',
@@ -48,7 +48,7 @@ export const FILTER_STRINGS = {
   // 強調 (FR-113)
   emphasizeLabel: '強調表示',
   emphasizeHint:
-    '指定した種別・階層・地物集合を強調し、それ以外を減衰（淡く）表示します。強調は一時的な見え方で、保存対象のスタイルは変更しません。',
+    '指定した種別・深さ・地物を目立たせ、それ以外を薄くします。目立たせるのは一時的な見え方で、保存する見た目は変えません。',
   /** 右クリック「強調を解除」/ 個別地物の強調解除 (対象1件). */
   emphasizeClearLabel: '強調を解除',
   /** 右クリック「この地物を強調」(individualHideLabel と対称の個別地物操作). */
@@ -70,9 +70,9 @@ export const FILTER_STRINGS = {
   kindLabelCount: (n: number): string => `${String(n)}件`,
   kindLabelEmpty: 'まだ種別が 1 つも付いていません。',
   /** 深さの強調（G-6 / R8。ドメインに在るのに呼び出し元が無かった軸）。 */
-  emphasizeDepthLabel: '深さで強調',
+  emphasizeDepthLabel: '深さで目立たせる',
   emphasizeDepthHint:
-    '指定した深さ以上の面情報を強調し、それ以外を淡く表示します（最上位=0、子は親+1）。',
+    '指定した深さ以上の面情報を目立たせ、それ以外を薄くします（最上位=0、子は親+1）。',
   /** 強調の脱出口 — 種別・地物のどの強調も一括で解除する (強調中のみ活性). */
   emphasizeClearAllLabel: '強調をすべて解除',
   // --- 増分 4 の手直し E1: 表示 ▾ の先頭に出す「外れている」の知らせ（設計書 §D.6）--
@@ -93,31 +93,16 @@ export const FILTER_STRINGS = {
   relaxDepthLabel: (depth: number): string => `深さ ${String(depth)} まで表示する`,
 } as const;
 
-/** Search UI labels, help and query-format examples (FR-113 / FR-118). */
-export const SEARCH_STRINGS = {
-  /** Menu/command label for opening search (FR-111 ツール/表示メニュー). */
-  commandLabel: '地物を検索',
-  panelTitle: '地物検索',
-  inputLabel: '検索キーワード',
-  inputPlaceholder: '名前・説明・属性で検索',
-  searchButtonLabel: '検索',
-  help:
-    '現在の地図に表示されている地物（現在時刻に存在し、表示制御で表示状態のもの）を、名前・説明・属性値で検索します。表示されていない地物は結果に含まれません。',
-  example:
-    '例: 「ローマ」で名前/説明に「ローマ」を含む地物を、「都市」で種別ラベルが「都市」の地物を検索します。',
-  resultsTitle: '検索結果',
-  noResults: '該当する地物は表示中の範囲に見つかりませんでした。',
-  /** Result row hint listing where the match was found. */
-  matchedInName: '名前に一致',
-  matchedInDescription: '説明に一致',
-  matchedInAttribute: '属性に一致',
-  /** 案内 shown when a jumped-to feature is not selectable at the current time. */
-  jumpNotPresent:
-    'この地物は現在時刻に存在しないため選択できません。位置のみ表示しました。時刻を変更すると選択できる場合があります。',
-  /** 案内 shown when a result is no longer in the visible母集合. */
-  jumpGone:
-    'この地物は現在表示されていないため移動できません。表示制御や時刻を確認してください。',
-} as const;
+// 検索モーダルの文言（`SEARCH_STRINGS`）は **2026-09-05 の増分 4 の手直しで消した**。
+//
+// 増分 4 で「地物を検索」は一覧の絞り込み欄へ統合され（E-6）、モーダルは画面から
+// 無くなった。文言だけが残っていて、しかも中身は古い例（種別ラベルが「都市」＝
+// `docs/現状.md` B45）だったので、**画面に出ないのに用語の食い違いとして数えられる**
+// 状態になっていた。到達できない文言は消す（開発ガイド §2.11 の裏面）。
+//
+// 探す規則そのもの（`search.ts` / `adapters.ts`）は残してある ―― 説明・属性値で
+// 絞り込む話（B53 / 増分 8E）でそのまま使う材料だからで、消すと作り直しになる。
+// いまは画面から呼ばれていないことをここに明記しておく。
 
 /** Validation messages — one per machine reason (FR-115 / FR-116, 教訓 5.26). */
 export const VALIDATION_STRINGS = {
@@ -217,9 +202,17 @@ export const LEDGER_STRINGS = {
     '深さの条件で隠れています。オプションバーの「表示 ▾」で戻してください。',
   anchorCount: (n: number): string => `${String(n)}本`,
   anchorCountTitle: (n: number): string => `歴史の錨 ${String(n)} 本`,
-  /** 行の「済」の印（何を直したかは束の側が知っている）。 */
+  /**
+   * 行の「済」の印と、その説明。
+   *
+   * 設計書 §H.1 は済の第一表記を **「名前を直しました／種別を直しました」**（何を
+   * 直したかを書く）と決めている。28px の行に入るのは 1 文字なので、**印は「済」の
+   * まま、説明に何を直したかを書く**（2026-09-05、増分 4 の手直し F3）。
+   */
   doneMark: '済',
-  doneTitle: '作ったときの名前・種別と違うので、直したものとして印を付けています。',
+  doneTitleName: '名前を直しました（作ったときの名前と違います）。',
+  doneTitleKindLabel: '種別を直しました（作ったときの種別と違います）。',
+  doneTitleBoth: '名前と種別を直しました（作ったときと違います）。',
   /** 重複名の見分け（3 段）。 */
   qualifierParent: (parentName: string): string => `〈${parentName}〉`,
   /** 上の書式の開き括弧。段の判定にも使うので 1 か所に置く。 */
@@ -284,9 +277,8 @@ export const LEDGER_STRINGS = {
 export const BUNDLE_STRINGS = {
   label: '作業',
   selectAria: '作業のまとまりを選ぶ',
-  none: '（まとまりなし）',
   expressionAria: '作業のまとまりの絞り込み式',
-  expressionPlaceholder: '正規表現（例: 付近の領域[0-9]+$）',
+  expressionPlaceholder: '絞り込みの式（例: 付近の領域[0-9]+$）',
   makeLabel: 'この結果をまとめる',
   makeTitle: 'いまの絞り込みの結果を、並びと当時の名前ごと固定します。',
   clearLabel: 'やめる',

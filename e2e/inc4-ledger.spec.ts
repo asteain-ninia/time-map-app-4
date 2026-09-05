@@ -155,6 +155,77 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
     }
   });
 
+  // K-3（増分 4 の手直し F4）: **選んでも区画の寸法が動かない。** 下段の基準を
+  // 中身に依らない `1 1 0` にしてあるのはこのためで、動くとダブルクリックの 2 回目が
+  // 仕切りに当たってその場編集が開かない（実測で踏んだ）。窓の下限も一緒に見る。
+  test('K-3: 地物を選んでも、右パネルの 2 区画の矩形が動かない', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      const rects = async (): Promise<unknown> =>
+        page.evaluate(() =>
+          ['sidebar-panel-list', 'sidebar-panel-properties'].map((id) => {
+            const el = document.querySelector(`[data-testid="${id}"]`);
+            if (el === null) return null;
+            const r = el.getBoundingClientRect();
+            return {
+              y: Math.round(r.y),
+              h: Math.round(r.height),
+              w: Math.round(r.width),
+            };
+          }),
+        );
+      const before = await rects();
+      await page.getByTestId('feature-list-item-syn-0000').click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+      await page.waitForTimeout(200);
+      expect(await rects(), '地物を選んだら区画の矩形が動いた（K-3）').toEqual(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 旧 BUG#3（検索ヒットを地図で強調する）の後継（手直し F4）。検索モーダルは無くなり、
+  // 強調も消えたが、**選んだものが地図に出る**という目的は「必ず描く」が引き受けた。
+  // 隠した地物を一覧から選んでも地図に出ることを、実アプリで固定する。
+  test('隠した地物を一覧から選んでも、地図には出る（「必ず描く」が引き受けた）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 10);
+      const drawn = async (): Promise<number> =>
+        page.evaluate(() => {
+          const e2e = (window as unknown as { __E2E__?: { getDrawnFeatureCount: () => number } })
+            .__E2E__;
+          if (e2e === undefined) throw new Error('__E2E__ not ready');
+          return e2e.getDrawnFeatureCount();
+        });
+      const all = await drawn();
+      // 👁 で 1 件隠す → 描かれる数が減る（行は残る＝手直し B1）。
+      await page.getByTestId('ledger-eye-syn-0000').click();
+      await expect.poll(async () => drawn()).toBe(all - 1);
+      await expect(page.getByTestId('ledger-row-syn-0000')).toHaveAttribute(
+        'data-hidden',
+        'true',
+      );
+      // その行を選ぶと **また描かれる**（選んでいるあいだだけ）。
+      await page.getByTestId('feature-list-item-syn-0000').click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+      await expect.poll(async () => drawn()).toBe(all);
+      // 表示 ▾ に「表示条件から外れています」と緩める導線が出る（手直し E1 / §D.6）。
+      await page.getByTestId('option-display-button').click();
+      await expect(page.getByTestId('display-hidden-notice')).toBeVisible();
+      await page.getByTestId('display-relax-individual').click();
+      await expect(page.getByTestId('ledger-row-syn-0000')).toHaveAttribute(
+        'data-hidden',
+        'false',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
   test('5,000 行の合成データでも、台帳の DOM の行は 20 個以下（仮想スクロール）', async () => {
     test.setTimeout(180_000);
     const { app, page } = await launchApp();

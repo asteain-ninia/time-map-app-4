@@ -203,6 +203,25 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(screen.getByTestId('ledger-row-f-a')).toHaveAttribute('data-hidden', 'false');
   });
 
+  // 旧 BUG#9（検索の結果が時刻の変更で古びない）の後継（増分 4 の手直し F4）。
+  // 検索モーダルは無くなったが、「**年を動かしたら一覧の母集団も動く**」ことは
+  // 一覧側で固定しておく必要がある ―― 一覧は毎回組み直すので古びない、という説明は
+  // 検査が 1 本も無ければただの主張である。
+  it('年を動かすと、その年に居ない地物の行は一覧から消える（母集団は毎回組み直す）', () => {
+    const a = squareLeaf('f-a', '織田領', 0, 0);
+    const root = withLeaf(emptyProject(), a, 1000);
+    const { store } = renderWith(root);
+    expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
+
+    // 錨より前の年には居ない。
+    act(() => store.getState().setCurrentTime(timePointYear(500), TIME_CHANGE_SOURCE.NumericJump));
+    expect(screen.queryByTestId('feature-list-item-f-a')).not.toBeInTheDocument();
+
+    // 戻すとまた出る（検査が空振りしていない証）。
+    act(() => store.getState().setCurrentTime(timePointYear(1000), TIME_CHANGE_SOURCE.NumericJump));
+    expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
+  });
+
   it('selecting a feature row promotes it through the store and the panel shows its fields', () => {
     const a = squareLeaf('f-a', '織田領');
     const root = withLeaf(emptyProject(), a, 1000);

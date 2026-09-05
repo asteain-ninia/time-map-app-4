@@ -204,7 +204,9 @@ export const PROPERTY_STRINGS = {
   inheritedAnchorNotice: (ownerName: string): string =>
     `この地物の歴史は親の「${ownerName}」が持っています。下の錨は、その系列のうちこの地物に関わるものだけです。`,
   /** 親を選び直すボタン。 */
-  inheritedAnchorGoToOwner: '親を見る',
+  // 「親」は階層の内部語寄り。画面では上位領域（設計書 §H.1 / 増分 3 で素性欄の欄名を
+  // 「上位領域」に統一した）に揃える（2026-09-05、増分 4 の手直し F3）。
+  inheritedAnchorGoToOwner: '上位領域を見る',
 } as const;
 
 /**

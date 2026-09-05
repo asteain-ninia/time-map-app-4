@@ -371,6 +371,49 @@ export function isMemberDone(
   );
 }
 
+/**
+ * **何を直したか**（増分 4 の手直し F3 / 設計書 §H.1）。
+ *
+ * §H.1 は「済」の画面の第一表記を **「名前を直しました／種別を直しました」**（何を
+ * 直したかを書く）と決めている。28px の行に入るのは 1 文字の印だけなので、**印は
+ * 「済」のまま、説明（tooltip）に何を直したかを書く**。そのためには「違うかどうか」
+ * では足りず、「どちらが違うか」まで要る。
+ */
+export const DONE_CHANGE = {
+  Name: 'name',
+  KindLabel: 'kindLabel',
+  Both: 'both',
+} as const;
+
+export type DoneChange = (typeof DONE_CHANGE)[keyof typeof DONE_CHANGE];
+
+/** その 1 件が「済」なら何を直したか。済でなければ null。 */
+export function doneChangeOf(
+  member: BundleMember,
+  current: BundleCurrent | undefined,
+): DoneChange | null {
+  if (current === undefined) return null;
+  const nameChanged = current.name !== member.baselineName;
+  const kindChanged = current.kindLabel !== member.baselineKindLabel;
+  if (nameChanged && kindChanged) return DONE_CHANGE.Both;
+  if (nameChanged) return DONE_CHANGE.Name;
+  if (kindChanged) return DONE_CHANGE.KindLabel;
+  return null;
+}
+
+/** 束の「済」を、何を直したかごと導く。 */
+export function doneChangesOf(
+  bundle: Bundle,
+  currentOf: (featureId: FeatureId) => BundleCurrent | undefined,
+): Map<FeatureId, DoneChange> {
+  const out = new Map<FeatureId, DoneChange>();
+  for (const m of bundle.members) {
+    const change = doneChangeOf(m, currentOf(m.featureId));
+    if (change !== null) out.set(m.featureId, change);
+  }
+  return out;
+}
+
 /** 束の「済」の集合を導く。 */
 export function doneIdsOf(
   bundle: Bundle,

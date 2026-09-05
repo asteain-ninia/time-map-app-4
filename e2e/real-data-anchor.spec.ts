@@ -89,7 +89,7 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
       await nameInput.fill('北アアウェン州');
       await page.getByTestId('save-button').click();
       await expect(page.getByTestId('save-message')).toHaveCount(0);
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+      await expect(page.getByTestId('statusbar-result')).toContainText('その年に錨を作る記録');
 
       // 錨が **1 本増えた**（親の系列に 1200 年の錨が立った）。
       const after = await projectStats(page);
@@ -138,7 +138,7 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
       const nameInput = page.getByTestId('basic-info').getByLabel('名前');
       await nameInput.fill('南ケナ公国');
       await page.getByTestId('save-button').click();
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+      await expect(page.getByTestId('statusbar-result')).toContainText('その年に錨を作る記録');
       await expect.poll(async () => anchorRowCount(page), { timeout: 15_000 }).toBe(
         siblingRows + 1,
       );
@@ -178,7 +178,7 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
         await page.getByTestId('sidebar-tab-properties').click();
         await nameInput.fill(newName);
         await page.getByTestId('save-button').click();
-        await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+        await expect(page.getByTestId('statusbar-result')).toContainText('その年に錨を作る記録');
       }
 
       // ② そのあと 1000 年で アアウェン州 を改名する。押す前に、後ろの 2 本にも同じ値が
@@ -192,7 +192,7 @@ test.describe('増分 2 — 実データのコピーで押す', () => {
       await expect(save).toContainText('2000年');
       await expect(save).toContainText('3000年');
       await save.click();
-      await expect(page.getByTestId('statusbar-result')).toContainText('錨の新設');
+      await expect(page.getByTestId('statusbar-result')).toContainText('その年に錨を作る記録');
 
       // ③ **2000 年でも 3000 年でも新しい名前**（旧版はここで旧名に戻っていた）。
       for (const year of [2000, 3000]) {

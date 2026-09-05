@@ -49,8 +49,10 @@ import { formatTimePoint } from '../timeline/time-display';
 import {
   BUNDLE_KIND,
   BUNDLE_PRESETS,
+  DONE_CHANGE,
   buildBundle,
   bundleIndexOf,
+  doneChangesOf,
   doneIdsOf,
   firstUnfinishedIndex,
   indexOfMember,
@@ -60,6 +62,7 @@ import {
   type Bundle,
   type BundleCurrent,
   type BundleSource,
+  type DoneChange,
 } from './bundle';
 import { KIND_LABEL_TOGGLE } from './filter-state';
 import {
@@ -127,6 +130,18 @@ type EyeAction =
   | { readonly kind: 'showIndividual' }
   | { readonly kind: 'showKindLabel'; readonly label: string }
   | { readonly kind: 'refuse'; readonly reason: string };
+
+/** 「済」の説明（何を直したか。設計書 §H.1 の第一表記をここに置く）。 */
+function doneTitleOf(change: DoneChange | null): string {
+  switch (change) {
+    case DONE_CHANGE.KindLabel:
+      return LEDGER_STRINGS.doneTitleKindLabel;
+    case DONE_CHANGE.Both:
+      return LEDGER_STRINGS.doneTitleBoth;
+    default:
+      return LEDGER_STRINGS.doneTitleName;
+  }
+}
 
 /** その行の 🚫 の説明（何で隠れていて、押すと何が起きるか）。 */
 function hiddenTitleOf(reason: HiddenReason, kindLabel: string): string {
@@ -262,7 +277,7 @@ function LedgerRowView(props: {
             <span
               className="ledger__done"
               data-testid={`ledger-done-${id}`}
-              title={LEDGER_STRINGS.doneTitle}
+              title={doneTitleOf(row.doneChange)}
             >
               {LEDGER_STRINGS.doneMark}
             </span>
@@ -477,10 +492,14 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     (featureId: FeatureId) => currentById.get(featureId),
     [currentById],
   );
-  const doneIds = useMemo(
-    () => (bundle === null ? new Set<FeatureId>() : doneIdsOf(bundle, currentOf)),
+  const doneChanges = useMemo(
+    () =>
+      bundle === null
+        ? new Map<FeatureId, DoneChange>()
+        : doneChangesOf(bundle, currentOf),
     [bundle, currentOf],
   );
+  const doneIds = useMemo(() => new Set(doneChanges.keys()), [doneChanges]);
   /**
    * そのメンバーがいま選べるか（手直し G2）。**削除された地物・その年に居ない地物**は
    * 並びには残すが送りでは飛ばす ―― 飛ばさないと「次へ」で素性欄が空・カメラも動かない
@@ -511,6 +530,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         tree: ledger.tree,
         ...(bundleIndex !== undefined ? { bundleIndex } : {}),
         done: doneIds,
+        doneChanges,
         onlyUnfinished: ledger.onlyUnfinished && bundle !== null,
       }),
     [
@@ -523,6 +543,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
       ledger.onlyUnfinished,
       bundleIndex,
       doneIds,
+      doneChanges,
       bundle,
     ],
   );

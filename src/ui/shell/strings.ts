@@ -193,7 +193,8 @@ export const OPTION_BAR_STRINGS = {
   ariaLabel: 'オプションバー',
   defaultToolName: '✦ 選ぶ',
   noTarget: '（選んでいません）',
-  defaultNextStep: '地図か台帳から地物を選ぶ',
+  // 「台帳」は内部語。画面の第一表記は「地物一覧」（設計書 §H.1）。
+  defaultNextStep: '地図か地物一覧から選ぶ',
   noSettings: '（設定なし）',
 } as const;
 
@@ -274,28 +275,31 @@ export const SIDEBAR_CONTENT_STRINGS = {
  */
 export const DISPLAY_CONTROL_STRINGS = {
   /** Section title for the depth-focus controls in the sidebar/view menu. */
-  sectionTitle: '階層深度表示',
+  // 用語は設計書 §H.1 に合わせる（2026-09-05、増分 4 の手直し F3）:
+  // 階層深度 → 深さ／個別フォーカス・深掘り → この地物の上下だけ見る／
+  // 縦方向領域 → 出さない。**内部語をそのまま画面へ出さない**（U-1 / N-30）。
+  sectionTitle: '深さの表示',
   /** Global depth slider label (FR-42). */
-  globalDepthLabel: '階層深度',
+  globalDepthLabel: '深さ',
   /** Hint shown beside the global depth slider. */
-  globalDepthHint: '指定した階層深度までを実形状で表示し、それより下位は集約形状に丸めます',
+  globalDepthHint: '指定した深さまでを実際の形で表示し、それより下は親にまとめて表示します',
   /** Individual focus toggle / section label (FR-43). */
-  focusLabel: '個別フォーカス',
+  focusLabel: 'この地物の上下だけ見る',
   /** Per-focus depth slider label (FR-43). */
-  focusDepthLabel: 'フォーカス深度',
+  focusDepthLabel: 'この地物の深さ',
   /** Emphasis toggle label (FR-43 / FR-82). */
-  emphasizeLabel: '縦方向領域を強調',
+  emphasizeLabel: '目立たせる',
   /** Clear-focus action label (教訓 5.2). */
-  clearFocusLabel: 'フォーカス解除',
+  clearFocusLabel: 'やめる',
   /**
    * 深掘り button placeholder while NOTHING is selected (第6工程 B2). The focus group
    * is ALWAYS rendered at a constant width — controls disable, never disappear — so
    * the 上部バー's occupied width cannot depend on the selection (a selection-driven
    * re-wrap of the menu-bar row used to shift the whole map cell 28px).
    */
-  focusNoTargetLabel: '深掘り対象なし',
+  focusNoTargetLabel: '地物を選ぶと使えます',
   /** Title/hint for the disabled 深掘り button (why it is disabled). */
-  focusNoTargetHint: '地物を選択すると深掘りできます',
+  focusNoTargetHint: '地物を選ぶと、その地物の上下だけを別の深さで見られます',
 } as const;
 
 /** Tooltip text (操作ガイド, FR-112 / FR-115), keyed by command/tool id. */
