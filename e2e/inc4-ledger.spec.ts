@@ -53,6 +53,24 @@ async function readCamera(page: Page): Promise<string> {
   });
 }
 
+/**
+ * 視点が落ち着くまで待って、その値を返す（2026-09-06）。
+ *
+ * 固定の待ち時間で測ると、**6 本並列で回したときだけ間に合わずに揺らぐ**（1 本で走らせると
+ * 通るのに全件ゲートで落ちる、という一番たちの悪い形になった）。同じ値が 2 回続いたら
+ * 止まったとみなす。
+ */
+async function settledCamera(page: Page): Promise<string> {
+  let prev = await readCamera(page);
+  for (let i = 0; i < 40; i += 1) {
+    await page.waitForTimeout(100);
+    const now = await readCamera(page);
+    if (now === prev) return now;
+    prev = now;
+  }
+  return prev;
+}
+
 /** 台帳に **DOM として載っている** 行の数（仮想スクロールなので件数とは別物）。 */
 async function ledgerDomRows(page: Page): Promise<number> {
   return page.locator('[data-testid^="ledger-row-"]').count();
@@ -744,8 +762,10 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       // **一覧は仮想スクロールなので、DOM に載っているのは窓に入る行だけ**である。
       // 遠い通し番号の行を名前で掴もうとすると、行そのものが存在しない（実測で踏んだ）。
       await page.getByTestId('feature-list-item-syn-0003').click();
-      await page.waitForTimeout(200);
-      const before = await readCamera(page);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0003');
+      // **視点が落ち着くまで待つ**（固定の待ち時間では、6 本並列で回したときに間に合わずに
+      // 揺らぐ ―― 実測で全件ゲートだけが落ちた）。同じ値が 2 回続いたら止まったとみなす。
+      const before = await settledCamera(page);
 
       // syn-0000 を個別に隠す（合成データは 3.5 度ごとに並ぶので、0003 とは離れている）。
       await page.getByTestId('ledger-eye-syn-0000').click();
@@ -763,8 +783,9 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       await page.keyboard.press('Enter');
       await expect(page.getByTestId('jump-palette')).toHaveCount(0);
       await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
-      await page.waitForTimeout(300);
-      expect(await readCamera(page), '隠れた行を選んでも視点が動かない').not.toBe(before);
+      await expect
+        .poll(async () => readCamera(page), { message: '隠れた行を選んでも視点が動かない' })
+        .not.toBe(before);
       await expect(page.getByTestId('statusbar-result')).toContainText('表示条件で隠れています');
       await expect(page.getByTestId('statusbar-result')).toContainText(
         '選んでいるあいだだけ地図に描いています',

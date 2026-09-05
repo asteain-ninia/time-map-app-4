@@ -1383,6 +1383,13 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await shot(page, 'a-28-contextmenu-hide');
       await hideItem.click();
       await expect(menu).toHaveCount(0);
+      // **B55（2026-09-06、2 回目の手直し）: 隠しても選択は外れない**（設計書 §D.6 の
+      // 規則 1「選んでいる地物は表示条件に関わらず必ず描く」）。だから隠した直後は
+      // 選ばれたままで、地図にも残る。ここで見たいのは「隠れた地物はナイフの的に
+      // ならない」なので、**選択を外してから**構える。
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect.poll(async () => drawnFeatureIds(page)).toContain(faceId);
+      await page.mouse.click(box.x + box.width - 30, cy); // 空き地を押す → 選択が外れる
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
       await expect.poll(async () => drawnFeatureIds(page)).not.toContain(faceId);
 
