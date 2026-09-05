@@ -109,7 +109,7 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
       <div className="global-depth__buttons">
         <button
           type="button"
-          aria-label="階層深度を下げる"
+          aria-label={DISPLAY_CONTROL_STRINGS.globalDepthDownLabel}
           disabled={globalDepth <= 0}
           onClick={() => setN(globalDepth - 1)}
         >
@@ -117,7 +117,7 @@ export function GlobalDepthControl(props: GlobalDepthControlProps): JSX.Element 
         </button>
         <button
           type="button"
-          aria-label="階層深度を上げる"
+          aria-label={DISPLAY_CONTROL_STRINGS.globalDepthUpLabel}
           disabled={globalDepth >= sliderMax}
           onClick={() => setN(globalDepth + 1)}
         >

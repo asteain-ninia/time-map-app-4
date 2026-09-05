@@ -261,8 +261,8 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
 
       // FR-42 N=1: expand the 集約 into its children (直轄領 + child) — MORE drawn.
       const n0 = await readDrawnCount(page);
-      await page.getByRole('button', { name: '階層深度を上げる' }).click();
-      await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 1');
+      await page.getByRole('button', { name: '深さを上げる' }).click();
+      await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 1');
       const n1 = await readDrawnCount(page);
       expect(n1).toBeGreaterThan(n0);
 

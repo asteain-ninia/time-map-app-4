@@ -100,19 +100,22 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
         )
         .toBe(faceId);
 
-      // 3) Switch to View mode → no edit handles draw. (Leaving 編集モード both clears the
-      //    selection AND the handle layer is gated to 編集モード, so the user sees none.)
-      //    This pins the appearance to the EDITING state, not just "something selected".
+      // 3) Switch to View mode → no edit handles draw.
+      //
+      // **2026-09-05（増分 4 の手直し B12）で「選択は残る」に変わった。** 所有者の裁定
+      // 「読むだけでも選べる・読める・直せない」に合わせて、鍵を掛けても選択は捨てない
+      // （`store.setMode`）。**だからこの検査はいっそう強くなる** ―― 「選択が消えたから
+      // ハンドルも消えた」ではなく、**選んだままでもハンドルは 1 本も描かれない**ことを
+      // 見るので、ハンドルの層が本当に編集モードで閉じているかを固定できる。
       await page.getByTestId('mode-view').click();
-      await expect(activeFeature).toHaveText('');
+      await expect(activeFeature).toHaveText(faceId);
       await expect.poll(async () => (await primitiveCounts(page)).handle, {
         message: 'handles must NOT draw in View mode (HB3-9 編集モード gate)',
       }).toBe(0);
 
-      // 4) Re-enter 編集モード and re-select the face body → handles return. This proves
-      //    the layer is driven LIVE by the active feature, not a one-shot draw.
+      // 4) Re-enter 編集モード → handles return（選択は保たれているので選び直さなくてよい）。
+      //    これも層が **選択ではなくモード**で駆動されている証である。
       await enterEditMode(page);
-      await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
       await expect.poll(async () => (await primitiveCounts(page)).handle, {
         message: 'handles must reappear when the face is re-selected in 編集モード',

@@ -122,7 +122,7 @@ describe('Sidebar（増分 4: 上下 2 区画の同時表示）', () => {
     const splitter = screen.getByTestId('sidebar-splitter');
     expect(splitter).toHaveAttribute('tabindex', '0');
     expect(splitter).toHaveAttribute('aria-valuenow');
-    expect(splitter).toHaveAttribute('aria-valuemin', '196');
+    expect(splitter).toHaveAttribute('aria-valuemin', '172');
     expect(splitter).toHaveAttribute('aria-valuemax');
 
     const list = screen.getByTestId('sidebar-panel-list');
@@ -133,7 +133,7 @@ describe('Sidebar（増分 4: 上下 2 区画の同時表示）', () => {
     expect(list.getAttribute('style') ?? '').toContain('flex');
     const afterDown = list.getAttribute('style') ?? '';
     fireEvent.keyDown(splitter, { key: 'Home' });
-    expect(list.getAttribute('style') ?? '').toContain('196px');
+    expect(list.getAttribute('style') ?? '').toContain('172px');
     expect(list.getAttribute('style') ?? '').not.toBe(afterDown);
   });
 });

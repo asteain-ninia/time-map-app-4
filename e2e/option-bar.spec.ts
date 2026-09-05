@@ -59,7 +59,7 @@ test.describe('オプションバーの枠（設計書 §C.4）', () => {
     try {
       await expect(page.getByTestId('option-bar-tool')).toHaveText('✦ 選ぶ');
       await expect(page.getByTestId('option-bar-target')).toHaveText('（選んでいません）');
-      await expect(page.getByTestId('option-bar-next-step')).toHaveText('地図か台帳から地物を選ぶ');
+      await expect(page.getByTestId('option-bar-next-step')).toHaveText('地図か地物一覧から選ぶ');
       // 増分 4: 設定欄には **「表示 ▾」が常設** で載る（道具に属さない部品なので、
       // 道具を持っていなくても・読むだけでも使える）。だから「（設定なし）」はもう出ない。
       const settings = page.getByTestId('option-bar-settings');

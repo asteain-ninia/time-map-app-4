@@ -1097,13 +1097,13 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
-      await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 0');
+      await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 0');
       const drawnAtZero = await drawnFeatureIds(page);
-      await page.getByRole('button', { name: '階層深度を上げる' }).click();
-      await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 1');
+      await page.getByRole('button', { name: '深さを上げる' }).click();
+      await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 1');
       const drawnAtOne = await drawnFeatureIds(page);
-      await page.getByRole('button', { name: '階層深度を下げる' }).click();
-      await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 0');
+      await page.getByRole('button', { name: '深さを下げる' }).click();
+      await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 0');
       record(
         'a7-aggregation',
         `N=0 drawn=${JSON.stringify(drawnAtZero)} / N=1 drawn=${JSON.stringify(drawnAtOne)}`,

@@ -979,7 +979,11 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             )}
 
             {editPlan.reason !== null && (
-              <p className="property-panel__save-reason" data-testid="save-disabled-reason">
+              <p
+                className="property-panel__save-reason"
+                data-testid="save-disabled-reason"
+                title={editPlan.reason}
+              >
                 {editPlan.reason}
               </p>
             )}
@@ -997,7 +1001,15 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                 押せて、押しても黙って何も起きなかった。押せなくしたうえで、代わりの
                 一手（この年に錨だけ作る）を文字で出す。 */}
             {editable && editPlan.savable && noOpDraft && (
-              <p className="property-panel__save-reason" data-testid="save-no-change-note">
+              <p
+                className="property-panel__save-reason"
+                data-testid="save-no-change-note"
+                title={
+                  editPlan.kind === EDIT_PLAN_KIND.NewAnchor
+                    ? EDIT_PLAN_STRINGS.noChangeNoteWithCreateAnchor(formatYear(currentTime.year))
+                    : EDIT_PLAN_STRINGS.noChangeNote
+                }
+              >
                 {editPlan.kind === EDIT_PLAN_KIND.NewAnchor
                   ? EDIT_PLAN_STRINGS.noChangeNoteWithCreateAnchor(formatYear(currentTime.year))
                   : EDIT_PLAN_STRINGS.noChangeNote}

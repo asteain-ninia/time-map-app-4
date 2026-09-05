@@ -45,9 +45,9 @@ async function raiseDepthToOne(page: Page): Promise<void> {
   const slider = page.getByTestId('global-depth-slider');
   await expect(slider).toBeVisible();
   await expect(slider).toHaveAttribute('min', '0');
-  await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 0');
-  await page.getByRole('button', { name: '階層深度を上げる' }).click();
-  await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 1');
+  await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 0');
+  await page.getByRole('button', { name: '深さを上げる' }).click();
+  await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 1');
 }
 
 test.describe('FR-42 — 階層深度スライダーで描画地物数が変化する', () => {

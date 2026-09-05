@@ -8,6 +8,24 @@
  * spacing tokens defined in shell.css so the chrome stays consistent (寸法ロジック
  * を一箇所に集約). */
 
+/* **中身の下に余白を足す**（2026-09-05、増分 4 の手直し。教訓 5.61）。
+ *
+ * 保存列は器の下端に `position: sticky; bottom: 0` で貼り付き、そのあとに節が続く。
+ * 余白が無いと、**下のほうの部品はどこまでスクロールしても保存列の下から出てこない**
+ * ―― 「見えているのに押せない」が器の高さに関わらず起きる（実データの探索でも、
+ * E2E でも踏んだ）。
+ *
+ * **余白は器（`.sidebar__panel-body`）ではなく中身に付ける。** 器に付けると
+ * `position: sticky; bottom: 0` は余白の内側の端に貼り付くので、保存列が上へ動いて
+ * 空いている帯がかえって狭くなる（実測で確かめた）。中身に付けるとスクロールできる
+ * 長さだけが伸びるので、どの部品も保存列の上まで持ち上げられる。 */
+.property-panel::after {
+  content: '';
+  display: block;
+  flex: 0 0 auto;
+  height: 96px;
+}
+
 .property-panel {
   display: flex;
   flex-direction: column;
@@ -168,6 +186,14 @@
   font-size: 11px;
   line-height: 1.5;
   color: var(--c-danger, #c0392b);
+  /* **1 行に収める**（2026-09-05、増分 4 の手直し）。この段落は保存列の中に居て、
+   * 保存列は器の下端に `position: sticky` で貼り付く。2 行になると保存列が 100px 近く
+   * になり、上端の見出し（2 行で 76px）と合わせて器の高さをほとんど食う ―― 実測で
+   * 「節の見出しがどのスクロール位置でも固定部品の下から出てこない」状態になった
+   * （教訓 5.61）。全文は `title` で読める。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* N-04: 打ちかけの内容を捨てる前の確認。 */

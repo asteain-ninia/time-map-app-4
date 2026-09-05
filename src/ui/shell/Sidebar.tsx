@@ -45,11 +45,11 @@ export type SidebarSection = (typeof SIDEBAR_SECTION)[keyof typeof SIDEBAR_SECTI
 /**
  * 上段（地物一覧）がこれ以上小さくならない高さ（px）。
  *
- * **「行が 1 行は見える高さ」** ＝ 見出し 31 ＋ 余白 20 ＋ 一覧の見出し群 90 ＋ 行 28
- * ＋ 状態行 24。ここが 60px だったので、既定の 1280×800 では上段が 108px しか取れず、
- * **一覧の行が 1 行も区画の中に入っていなかった**。CSS 側の `min-height` と同じ値で、
- * 片方だけ動かすと仕切りの可動域と実際の見た目が食い違う。 */
-export const SIDEBAR_LIST_MIN_HEIGHT = 196;
+ * **「行が 1 行は見える高さ」** ＝ 見出し 31 ＋ 余白 20 ＋ 一覧の見出し群 90 ＋ 行 28。
+ * ここが 60px だったので、既定の 1280×800 では上段が 108px しか取れず、**一覧の行が
+ * 1 行も区画の中に入っていなかった**。CSS 側の `min-height` と同じ値で、片方だけ
+ * 動かすと仕切りの可動域と実際の見た目が食い違う。 */
+export const SIDEBAR_LIST_MIN_HEIGHT = 172;
 
 /**
  * 下段（選んだ地物）の下限の**上限**（px）。実際の下限は窓に追随する
@@ -60,8 +60,8 @@ export const SIDEBAR_LIST_MIN_HEIGHT = 196;
  * 固定値で先に取ると上段が潰れる** ので、列が低いときは割合のほうが効く。 */
 export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 300;
 
-/** 下段の下限が窓に追随するときの割合（列の高さの 50%）。CSS の `min(300px, 50%)` と同値。 */
-export const SIDEBAR_PROPERTIES_MIN_RATIO = 0.5;
+/** 下段の下限が窓に追随するときの割合（列の高さの 55%）。CSS の `min(300px, 55%)` と同値。 */
+export const SIDEBAR_PROPERTIES_MIN_RATIO = 0.55;
 
 /** 仕切りの高さ（px）。CSS の `.sidebar__splitter` と同値。 */
 export const SIDEBAR_SPLITTER_HEIGHT = 6;
@@ -70,7 +70,7 @@ export const SIDEBAR_SPLITTER_HEIGHT = 6;
 const SPLITTER_KEY_STEP = 16;
 
 /**
- * その列の高さでの、下段の実際の下限（px）。CSS の `min(300px, 50%)` と同じ規則を
+ * その列の高さでの、下段の実際の下限（px）。CSS の `min(300px, 55%)` と同じ規則を
  * ここでも使う ―― 仕切りの可動域と CSS がずれると、引き切った位置で見た目が跳ねる。
  */
 export function propertiesMinHeight(total: number): number {

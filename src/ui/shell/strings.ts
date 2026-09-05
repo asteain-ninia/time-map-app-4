@@ -300,6 +300,9 @@ export const DISPLAY_CONTROL_STRINGS = {
   focusNoTargetLabel: '地物を選ぶと使えます',
   /** Title/hint for the disabled 深掘り button (why it is disabled). */
   focusNoTargetHint: '地物を選ぶと、その地物の上下だけを別の深さで見られます',
+  /** 深さの ＋ / − ボタンの読み上げ名（画面には記号しか出ない）。 */
+  globalDepthDownLabel: '深さを下げる',
+  globalDepthUpLabel: '深さを上げる',
 } as const;
 
 /** Tooltip text (操作ガイド, FR-112 / FR-115), keyed by command/tool id. */

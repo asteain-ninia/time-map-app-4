@@ -15,7 +15,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright';
+import {
+  _electron as electron,
+  type ElectronApplication,
+  type Locator,
+  type Page,
+} from 'playwright';
 import { expect } from '@playwright/test';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -392,24 +397,165 @@ export async function commitOneFace(page: Page): Promise<CommittedFace> {
  * 節（見た目・歴史の錨・詳細文書・詳しい属性）は **初期は折りたたみ** なので、中の
  * 部品を押す検査は先にここを通す。既に開いていれば何もしない（何度呼んでも同じ）。
  */
+/**
+ * 素性欄の中の部品を、**上下に固定した部品（見出し・保存列）をよけてから**押す。
+ *
+ * 素性欄は上端の見出しと下端の保存列が `position: sticky` で貼り付く器である。中身が
+ * その帯に重なっていると押せない（教訓 5.61）。人は少しスクロールしてから押すが、
+ * Playwright の「見えるところまで動かす」は **器の中に入ってさえいれば動かさない**ので、
+ * 固定部品に覆われたまま押しにいって失敗する。ここで「前面に出るまで動かす」を先に済ませる。
+ *
+ * **`force` では押さない。** 覆われたまま押す形にすると、本当に届かない不具合
+ * （＝教訓 5.61 そのもの）を検査が通してしまう。どのスクロール位置でも前面に出ない
+ * ときは、その事実を理由にして落とす。
+ */
+export async function clickClearOfStickyBars(target: Locator): Promise<void> {
+  const bringToFront = async (): Promise<void> => {
+    await target.evaluate((el) => {
+      let container: HTMLElement | null = el.parentElement;
+      while (container !== null && container.scrollHeight <= container.clientHeight) {
+        container = container.parentElement;
+      }
+      if (container === null) return;
+      const good = (): boolean => {
+        const box = container!.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < box.top || r.bottom > box.bottom) return false;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return hit !== null && (hit === el || el.contains(hit));
+      };
+      const before = container.scrollTop;
+      const max = container.scrollHeight - container.clientHeight;
+      for (let t = 0; t <= max; t += 4) {
+        container.scrollTop = t;
+        if (good()) return;
+      }
+      container.scrollTop = before;
+    });
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    await bringToFront();
+    try {
+      await target.click({ timeout: 3_000 });
+      return;
+    } catch {
+      // 次の回で位置合わせからやり直す。
+    }
+  }
+  await bringToFront();
+  await target.click();
+}
+
 export async function openPropertySection(page: Page, testId: string): Promise<void> {
   const section = page.getByTestId(testId);
   const open = await section.evaluate((el) => (el as HTMLDetailsElement).open);
   if (open) return;
   // 素性欄は **上端に見出しが、下端に保存列が固定** されている（`position: sticky`）。
-  // Playwright の「見えるところまでスクロール」は必要最小限しか動かさないので、節の
-  // 見出しが固定部品の **下** で止まり、クリックを横取りされる（教訓 5.61）。人は
-  // 続けてスクロールできるので操作は成り立つ ―― ここは **寄せ方だけ** を人に合わせ、
-  // 「固定した見出しのすぐ下」へ来るように器を動かしてから押す。
+  // 節の見出しは、そのあいだの「空いている帯」に来たときだけ押せる（教訓 5.61）。
+  //
+  // **位置を計算して 1 回寄せる形では足りない。** 理由が 3 つある:
+  //   1. `position: sticky` の部品は「はみ出しそうになったときだけ」貼り付くので、
+  //      **動かす前に測った位置は動かしたあとの位置ではない**（実測: スクロール 0 では
+  //      保存列が見出しのすぐ下に居て、空き帯が 5px しか無いように見えた）。
+  //   2. 固定部品の高さは中身で変わる（予告・断りの行が 1 行にも 2 行にもなる）。
+  //   3. 素性欄は対象が変わるとスクロールを先頭へ戻すので、寄せた直後に打ち消されうる。
+  //
+  // だから **「前面に出るまで動かして、押してみる」を数回くり返す**（人がやることと
+  // 同じ）。それでも押せないなら、その節は本当に届かない ―― そのときは Playwright の
+  // 断りをそのまま出す（黙って `force` で押さない。押せないこと自体が不具合だからである）。
   const summary = section.locator('summary').first();
-  // **真ん中へ寄せる。** 「固定した見出しのすぐ下（76px）」へ寄せる形にしていたが、
-  // それだと **下端の保存列** のぶんを見ていないので、器が低いときに見出しが保存列の
-  // 下へ入る（増分 4 の手直しで下段の下限を窓に追随させたら、既定の窓でこれを踏んだ）。
-  // 真ん中なら、上下どちらの固定部品からも離れる（器の高さに依らない）。
-  await summary.evaluate((el) => {
-    el.scrollIntoView({ block: 'center' });
-  });
-  await summary.click();
+  const bringToFront = async (): Promise<void> => {
+    await summary.evaluate((el) => {
+      let container: HTMLElement | null = el.parentElement;
+      while (container !== null && container.scrollHeight <= container.clientHeight) {
+        container = container.parentElement;
+      }
+      if (container === null) {
+        el.scrollIntoView({ block: 'center' });
+        return;
+      }
+      // **器の中に丸ごと入っていて、かつ前面に出ている**位置を探す。
+      // 「前面に出ている」だけでは足りない ―― 端に半分かかっていると、Playwright が
+      // 押す直前に自分で「見えるところまで」動かし直し、こちらの位置決めが消える。
+      const good = (): boolean => {
+        const box2 = container!.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < box2.top || r.bottom > box2.bottom) return false;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return hit !== null && (hit === el || el.contains(hit));
+      };
+      const before = container.scrollTop;
+      const max = container.scrollHeight - container.clientHeight;
+      for (let t = 0; t <= max; t += 4) {
+        container.scrollTop = t;
+        if (good()) return;
+      }
+      container.scrollTop = before;
+    });
+  };
+  let clicked = false;
+  for (let attempt = 0; attempt < 3 && !clicked; attempt += 1) {
+    await bringToFront();
+    try {
+      await summary.click({ timeout: 3_000 });
+      clicked = true;
+    } catch {
+      // 次の回で位置合わせからやり直す。
+    }
+  }
+  if (!clicked) {
+    // **押せる位置が本当に 1 つも無いのかを、先に確かめる。**
+    //
+    // Playwright は押す直前に自分でも「見えるところまで」動かすので、こちらの位置合わせと
+    // 押し合いになることがある（`position: sticky` の部品と、素性欄が対象の変化で
+    // スクロールを先頭へ戻す動きが重なる）。それは **検査の都合**であって不具合ではない。
+    // 一方「どのスクロール位置でも固定部品の下から出てこない」は **本物の不具合**
+    // （教訓 5.61）なので、その 2 つをここで分ける。
+    const probe = await summary.evaluate((el) => {
+      let container: HTMLElement | null = el.parentElement;
+      while (container !== null && container.scrollHeight <= container.clientHeight) {
+        container = container.parentElement;
+      }
+      if (container === null) return { reachable: true, detail: '(器が無い)' };
+      const before = container.scrollTop;
+      const max = container.scrollHeight - container.clientHeight;
+      let found = false;
+      const blockers = new Set<string>();
+      for (let t = 0; t <= max && !found; t += 4) {
+        container.scrollTop = t;
+        const box = container.getBoundingClientRect();
+        const r = el.getBoundingClientRect();
+        if (r.top < box.top || r.bottom > box.bottom) continue;
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        found = hit !== null && (hit === el || el.contains(hit));
+        if (!found && hit !== null) {
+          blockers.add(hit.getAttribute('data-testid') ?? String(hit.className));
+        }
+      }
+      const head = document.querySelector('[data-testid="property-panel-head"]');
+      const bar = document.querySelector('[data-testid="property-save-bar"]');
+      container.scrollTop = Math.floor(max / 2);
+      const h = head?.getBoundingClientRect();
+      const b = bar?.getBoundingClientRect();
+      const detail = `器 ${String(Math.round(container.clientHeight))}px / 見出し ${String(
+        h === undefined ? -1 : Math.round(h.height),
+      )}px / 保存列 ${String(b === undefined ? -1 : Math.round(b.height))}px / 空き帯 ${String(
+        h === undefined || b === undefined ? -1 : Math.round(b.top - h.bottom),
+      )}px / 見出しの高さ ${String(Math.round(el.getBoundingClientRect().height))}px / 覆っていたもの ${[
+        ...blockers,
+      ].join(', ')}`;
+      container.scrollTop = before;
+      return { reachable: found, detail };
+    });
+    expect(
+      probe.reachable,
+      `節「${testId}」の見出しが、どのスクロール位置でも固定部品の下から出てこない（教訓 5.61）: ${probe.detail}`,
+    ).toBe(true);
+    // 届くことは確かめたので、開く操作そのものは DOM の click で通す。
+    await summary.evaluate((el) => {
+      (el as HTMLElement).click();
+    });
+  }
   await expect(section).toHaveJSProperty('open', true);
 }
 

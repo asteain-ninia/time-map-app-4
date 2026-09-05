@@ -25,7 +25,14 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp, openPropertySection, listedFeatureCount } from './helpers';
+import {
+  clickClearOfStickyBars,
+  commitOneFace,
+  enterEditMode,
+  launchApp,
+  openPropertySection,
+  listedFeatureCount,
+} from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
@@ -238,10 +245,10 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       await expect(endField(panel, 'specify')).toBeVisible();
 
       // Give it a concrete end = 3000 ONLY after the explicit「終了を指定」step.
-      await endField(panel, 'specify').click();
+      await clickClearOfStickyBars(endField(panel, 'specify'));
       await expect(endField(panel, 'year')).toBeEnabled();
       await endField(panel, 'year').fill('3000');
-      await endField(panel, 'confirm').click();
+      await clickClearOfStickyBars(endField(panel, 'confirm'));
 
       // AFTER 3000 the feature is gone (the explicit end applied); at 1000 it still exists.
       await jumpToYear(page, 4000);
@@ -252,7 +259,7 @@ test.describe('HB3-12 — 地物の存続期間編集: 開始年を未来へ動�
       // Round-trip: reselect, the end is now concrete (3000);「継続中にする」reopens it, so
       // AFTER 3000 the feature exists again (open-ended round-trip, no data loss).
       await reselectAndOpenEditor(page, panel);
-      await endField(panel, 'clear').click();
+      await clickClearOfStickyBars(endField(panel, 'clear'));
       await jumpToYear(page, 4000);
       await expect.poll(async () => featureListCount(page), { timeout: 15_000 }).toBe(1);
     } finally {
