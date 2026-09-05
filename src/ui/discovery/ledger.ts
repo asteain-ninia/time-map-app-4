@@ -290,6 +290,12 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
     if (hay.includes(needle)) matched.add(f.id);
   }
 
+  // **「未処理だけ」を掛けているときの母集団は束**（2026-09-06、2 回目の手直し）。
+  // 旧版は分母を常に `features.length`（775）にしていたので、220 件の作業に絞っても
+  // 「775 件中 138 件を表示」と出て、**まとまりの大きさが画面のどこにも出なかった**。
+  const totalCount =
+    onlyUnfinished && bundleIndex !== undefined ? bundleIndex.size : features.length;
+
   const autoExpanded = new Set<FeatureId>();
   // 一致した地物の先祖を残す（木のときだけ。平は一致したものだけを並べる）。
   const keep = new Set<FeatureId>(matched);
@@ -316,12 +322,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
         toRow(f, 0, forest, qualifiers, bundleIndex, doneIds, doneChanges, false),
       );
     }
-    return {
-      rows,
-      totalCount: features.length,
-      matchCount: matched.size,
-      autoExpanded,
-    };
+    return { rows, totalCount, matchCount: matched.size, autoExpanded };
   }
 
   // 木: 根から深さ優先で下る。**循環しても止まる**ように、通った id を覚える
@@ -352,7 +353,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
   };
   for (const rootId of forest.rootIds) walkDown(rootId, 0, false);
 
-  return { rows, totalCount: features.length, matchCount: matched.size, autoExpanded };
+  return { rows, totalCount, matchCount: matched.size, autoExpanded };
 }
 
 function toRow(

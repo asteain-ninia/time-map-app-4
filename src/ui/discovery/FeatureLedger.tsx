@@ -40,6 +40,7 @@ import type { TimePoint } from '../../domain/time/time-point';
 import { featuresAt, verticesAt } from '../live-lookup';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
 import { hiddenReasonsUnderFilter } from '../map/filtered-display';
+import { isTextEntryElement } from '../shell/focus-guard';
 import type { OptionBarAction } from '../shell/option-bar';
 import { canEdit } from '../shell/permissions';
 import { EDIT_MODE } from '../state/session';
@@ -107,6 +108,14 @@ export interface FeatureLedgerProps<S> {
     message: string | null,
     actions?: readonly OptionBarAction[],
   ) => void;
+  /**
+   * **通ったことを状態行へ出す口**（2026-09-06、2 回目の手直し）。
+   *
+   * 断りは状態行に残る規約（K-7）なので、断られた操作をやり直して通っても古い断りが
+   * 居座って「直っていない」ように読める。`onRefusal(null)` は「次の一手」を下ろすだけ
+   * で状態行には手を出さないので、**通った事実を書いて上書きする**口が別に要る。
+   */
+  readonly onResult?: (message: string) => void;
   /**
    * 束の送りで次の地物を選んだあと、**素性欄の名前欄へ焦点を入れる**要求（設計書 §C.5）。
    * 器（素性欄）が持っている焦点を一覧が直接触らないための口。
@@ -189,7 +198,10 @@ function LedgerRowView(props: {
   readonly onEye: () => void;
   readonly onStartEdit: (field: 'name' | 'kindLabel') => void;
   readonly onCommitEdit: (field: 'name' | 'kindLabel', value: string) => void;
+  /** Escape でやめた（利用者が自分でやめたので黙ってよい）。 */
   readonly onCancelEdit: () => void;
+  /** 焦点が外れて消えた（利用者から見て理由が無いので、理由を出す）。 */
+  readonly onBlurAwayEdit: () => void;
 }): JSX.Element {
   const {
     row,
@@ -201,6 +213,7 @@ function LedgerRowView(props: {
     onStartEdit,
     onCommitEdit,
     onCancelEdit,
+    onBlurAwayEdit,
   } = props;
   const id = row.featureId as unknown as string;
   const hiddenTitle =
@@ -253,6 +266,7 @@ function LedgerRowView(props: {
           initial={row.name}
           onCommit={(v) => onCommitEdit('name', v)}
           onCancel={onCancelEdit}
+          onBlurAway={onBlurAwayEdit}
         />
       ) : (
         <button
@@ -292,6 +306,7 @@ function LedgerRowView(props: {
           initial={row.kindLabel}
           onCommit={(v) => onCommitEdit('kindLabel', v)}
           onCancel={onCancelEdit}
+          onBlurAway={onBlurAwayEdit}
         />
       ) : (
         <button
@@ -330,15 +345,23 @@ function LedgerRowView(props: {
   );
 }
 
-/** その場編集の入力欄。Enter で確定、Escape でやめる（値は親が確定させる）。 */
+/**
+ * その場編集の入力欄。Enter で確定、Escape でやめる（値は親が確定させる）。
+ *
+ * **やめ方は 2 通りで、意味が違う**（2026-09-06、2 回目の手直し）。Escape は利用者が
+ * 自分でやめたのだから黙ってよい（`onCancel`）。焦点が外れたのは **状態行やモードの
+ * ボタンを押しただけ**のことがあり、利用者から見れば打ちかけが理由なく消えるので、
+ * 理由を出す側へ流す（`onBlurAway`）。旧版は両方を `onCancel` 1 本に流していた。
+ */
 function InlineInput(props: {
   readonly testid: string;
   readonly ariaLabel: string;
   readonly initial: string;
   readonly onCommit: (value: string) => void;
   readonly onCancel: () => void;
+  readonly onBlurAway: () => void;
 }): JSX.Element {
-  const { testid, ariaLabel, initial, onCommit, onCancel } = props;
+  const { testid, ariaLabel, initial, onCommit, onCancel, onBlurAway } = props;
   const [value, setValue] = useState(initial);
   const ref = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
@@ -366,7 +389,7 @@ function InlineInput(props: {
           onCancel();
         }
       }}
-      onBlur={() => onCancel()}
+      onBlur={() => onBlurAway()}
     />
   );
 }
@@ -379,6 +402,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     onFocusFeatureCamera,
     onQuickEdit,
     onRefusal,
+    onResult,
     onFocusNameField,
     filterFocus,
     commands,
@@ -786,6 +810,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     // 直したのに直っていないように読める（教訓 5.12 の裏面: 消す契機は意味を持つ
     // イベントに限る ―― 「同じ操作をやり直して通った」はまさにその契機である）。
     onRefusal?.(null);
+    onResult?.(BUNDLE_STRINGS.made(built2.bundle.members.length));
     setNotice(null);
     // **束を作った瞬間に、先頭の未処理を選び、カメラを合わせ、名前欄に焦点を入れる**
     // （設計書 §C.5。旧版はここが未定義で V4 の第 1 手が止まっていた）。
@@ -810,6 +835,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     selectFeature,
     onFocusNameField,
     onRefusal,
+    onResult,
   ]);
 
   // 一覧の行を選んだら、その地物が束に居ればカーソルもそこへ合わせる。
@@ -933,7 +959,11 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
   useEffect(() => {
     if (editing === null) return;
     const changed =
-      editing.startedAt !== currentTime ||
+      // **年は値で比べる**（2026-09-06、2 回目の手直し）。`TimePoint` は object なので
+      // `!==` は参照の比較になり、**同じ年のままスライダを 1px 動かしただけ**でも真に
+      // なって打ちかけが捨てられていた（`jumpToFraction` が毎回新しい object を作る）。
+      // しかも出る理由は「年が変わったので」なので、嘘まで付いていた。
+      formatTimePoint(editing.startedAt) !== formatTimePoint(currentTime) ||
       editing.startedMode !== mode ||
       editing.startedTool !== (activeTool === null ? null : (activeTool as unknown as string)) ||
       !currentById.has(editing.featureId);
@@ -985,6 +1015,20 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
 
   const onListKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLDivElement>): void => {
+      // **入力欄の中では、器の鍵盤を働かせない**（2026-09-06、2 回目の手直し D-2）。
+      //
+      // この handler は一覧の器（`.ledger`）に付いていて、中の絞り込み欄・式欄・
+      // 既定の式の select・その場編集の入力欄で押した鍵も **浮き上がってここへ届く**。
+      // 旧版はそれを見ずに Home/End/↑↓ を横取りしていたので、**文字を打っている最中に
+      // Home を押すと行頭へ戻らずに焦点ごと一覧へ飛び、打ちかけが理由もなく消えた**
+      // （実測: 絞り込み欄で Home → 焦点が `ledger-scroller`、その場編集では入力欄が
+      // 閉じた）。入力欄が焦点を持っているあいだは、その欄のものである。
+      const target = e.target as HTMLElement | null;
+      if (target !== null && isTextEntryElement(target)) return;
+      // **修飾キー付きは大域のショートカットのもの**（D-3）。Alt+↑ / Alt+↓ は束の
+      // 送りとしてメニューに登録してあるので、ここで矢印としても処理すると **1 回押して
+      // 2 つ進む**（実測: 1/10 → 3/10）。Ctrl・Meta も同じ理由で触らない。
+      if (e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.key === 'F2') {
         const active = store.getState().activeFeature;
         if (active === null) return;
@@ -1084,29 +1128,40 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         case 'showIndividual':
           s.setFeatureHidden(row.featureId, false);
           onRefusal?.(null);
+          // 通ったことを状態行へ書いて、古い断りを上書きする（2026-09-06）。
+          onResult?.(LEDGER_STRINGS.shownAgain(row.name));
           return;
         case 'showKindLabel':
           s.setKindLabelToggle(action.label, KIND_LABEL_TOGGLE.Hide, false);
           onRefusal?.(null);
+          onResult?.(LEDGER_STRINGS.kindLabelShownAgain(action.label));
           return;
         case 'refuse':
           onRefusal?.(action.reason);
           return;
       }
     },
-    [store, onRefusal],
+    [store, onRefusal, onResult],
   );
 
   const total = isHistory ? historyRows.total : built.totalCount;
   const shown = isHistory ? historyRows.rows.length : built.matchCount;
-  const filtering = ledger.query.trim() !== '';
-  const footerText =
-    notice ??
-    (unavailableCount > 0
-      ? BUNDLE_STRINGS.unavailableMembers(unavailableCount)
-      : `${LEDGER_STRINGS.footer(shown, total, bundle === null ? null : doneIds.size)}${
-          hiddenCount === 0 ? '' : LEDGER_STRINGS.hiddenCount(hiddenCount)
-        }`);
+  // **「未処理だけ」も絞り込みである**（2026-09-06、2 回目の手直し）。旧版は語だけを
+  // 見ていたので、チェックだけ入れた状態では `countAll(total)` に落ちて「220件」と
+  // 出ていた ―― 何件に絞れたのかが画面のどこにも出ない。
+  const filtering = ledger.query.trim() !== '' || (ledger.onlyUnfinished && bundle !== null);
+  // **件数は必ず出し、知らせはそこへ足す**（2026-09-06、2 回目の手直し）。旧版は
+  // 「今の年に居ない束のメンバー（幽霊）が 1 件でもあれば、件数の行ごと差し替える」
+  // 三項だったので、**幽霊が居るあいだ「済 N 件」が消えた** ―― 220 件を順に片付ける
+  // 作業で、いちばん見たい数字が理由も分からず消える。
+  const countsText = `${LEDGER_STRINGS.footer(
+    shown,
+    total,
+    bundle === null ? null : doneIds.size,
+  )}${hiddenCount === 0 ? '' : LEDGER_STRINGS.hiddenCount(hiddenCount)}${
+    unavailableCount === 0 ? '' : ` ${BUNDLE_STRINGS.unavailableMembers(unavailableCount)}`
+  }`;
+  const footerText = notice ?? countsText;
   // **状態行は「言うことがあるときだけ」出す**（手直し A1）。件数は絞り込み欄の右に
   // もう出ているので、束も知らせも隠れた行も無いときは同じ数を 2 か所に置くだけの
   // 行になる。区画が低い窓では、この 1 行が行 1 つぶんの高さに相当する。
@@ -1277,6 +1332,13 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
                     onStartEdit={(field) => startEdit(row.featureId, field)}
                     onCommitEdit={(field, value) => commitEdit(row.featureId, field, value)}
                     onCancelEdit={() => setEditing(null)}
+                    onBlurAwayEdit={() => {
+                      // **理由を出してから捨てる**（2026-09-06、2 回目の手直し）。
+                      // 状態行やモードのボタンを押しただけで焦点が外れる ―― 打ちかけが
+                      // 理由もなく消えるのは、年が動いたときと同じ「黙って捨てた」である。
+                      setEditing(null);
+                      onRefusal?.(LEDGER_STRINGS.editDiscardedBlur);
+                    }}
                   />
                 ))}
           </div>

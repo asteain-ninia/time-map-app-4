@@ -286,6 +286,36 @@ describe('台帳 — 束の「済」と未処理の絞り込み', () => {
     });
     expect(onlyOpen.rows.map((r) => r.name)).toEqual(['B']);
   });
+
+  it('「未処理だけ」のときの分母は **束の大きさ**（総数ではない）', () => {
+    // 2026-09-06、2 回目の手直し。旧版は分母を常に母集団の総数にしていたので、
+    // 220 件の作業に絞っても「775 件中 …」と出て、**まとまりの大きさが画面のどこにも
+    // 出なかった**。
+    const features = [lf('a', 'A', null), lf('b', 'B', null), lf('c', 'C', null)];
+    const forest = forestOf(features);
+    const bundleIndex = new Map([
+      [id('a'), 1],
+      [id('b'), 2],
+    ]);
+    const done = new Set([id('a')]);
+
+    const all = buildLedgerRows({ features, forest, expanded: new Set(), query: '', tree: false });
+    expect(all.totalCount).toBe(3);
+
+    const onlyOpen = buildLedgerRows({
+      features,
+      forest,
+      expanded: new Set(),
+      query: '',
+      tree: false,
+      done,
+      bundleIndex,
+      onlyUnfinished: true,
+    });
+    // 分母は束の 2 件、分子は未処理の 1 件。
+    expect(onlyOpen.totalCount).toBe(2);
+    expect(onlyOpen.matchCount).toBe(1);
+  });
 });
 
 describe('台帳 — まとめ役も行になる', () => {

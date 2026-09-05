@@ -224,6 +224,12 @@ export interface SidebarContentDeps<S> {
     actions?: readonly OptionBarAction[],
   ) => void;
   /**
+   * **通ったことを状態行へ出す口**（2026-09-06、2 回目の手直し）。断りは状態行に残る
+   * 規約（K-7）なので、やり直して通ったときは通った事実で上書きしないと、直っていない
+   * ように読める。
+   */
+  readonly onResult?: (message: string) => void;
+  /**
    * 一覧の絞り込み欄へ焦点を入れる口（Ctrl+F ＝「地物を検索」の行き先。E-6）。
    * 合成ルートがコマンドから呼ぶ。
    */
@@ -257,6 +263,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     addDraft,
     focusStore,
     onRefusal,
+    onResult,
     filterFocus,
     ledgerCommands,
   } = deps;
@@ -370,6 +377,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
         {...(quickEdit !== undefined ? { onQuickEdit: quickEdit } : {})}
         {...(onRefusal ? { onRefusal } : {})}
+        {...(onResult ? { onResult } : {})}
         {...(filterFocus ? { filterFocus } : {})}
         {...(ledgerCommands ? { commands: ledgerCommands } : {})}
         onFocusNameField={() => {

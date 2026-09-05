@@ -55,6 +55,12 @@ const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   // 読むだけでは押せない（K-6。増分 1 で塞いだ 10 経路と同じ関門を、増分 3 で
   // 増えた鍵盤の経路にも必ず通す）。
   COMMAND_ID.ToolsAddFace,
+  // 「一覧で名前を直す」（F2）は名前を書き換える編集経路（2026-09-06、2 回目の手直し）。
+  // ここに無かったので **読むだけでもメニューにも Ctrl+P の候補にも出て**、押して
+  // 初めて一覧の側（`FeatureLedger` の `editable` 判定）が断っていた ―― 「出るなら
+  // 起きる」の違反である。ここへ入れると メニュー・F2・Ctrl+P の 3 経路が同時に閉じる。
+  // **送り（Alt+↑ / Alt+↓）は入れない** ―― 読むだけでも順に見ていく操作だからである。
+  COMMAND_ID.ListRename,
 ]);
 
 /** True if the command is an editing command gated by the permission axis. */

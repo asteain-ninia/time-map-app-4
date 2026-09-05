@@ -55,3 +55,22 @@ describe('resolveCommandEnabled (single shared judgement)', () => {
     ).toBe(true);
   });
 });
+
+describe('その場改名は編集経路（2026-09-06、2 回目の手直し）', () => {
+  // ここに無かったので **読むだけでもメニューにも Ctrl+P の候補にも出て**、押して初めて
+  // 一覧の側が断っていた（「出るなら起きる」の違反）。
+  it('list.rename は読むだけでは押せない', () => {
+    expect(isEditingCommand(COMMAND_ID.ListRename)).toBe(true);
+    expect(
+      resolveCommandEnabled(COMMAND_ID.ListRename, { runnable: true, mode: EDIT_MODE.View }),
+    ).toBe(false);
+    expect(
+      resolveCommandEnabled(COMMAND_ID.ListRename, { runnable: true, mode: EDIT_MODE.Edit }),
+    ).toBe(true);
+  });
+
+  it('束の送り（Alt+↑ / Alt+↓）は読むだけでも使える（順に見ていく操作）', () => {
+    expect(isEditingCommand(COMMAND_ID.ListBundlePrev)).toBe(false);
+    expect(isEditingCommand(COMMAND_ID.ListBundleNext)).toBe(false);
+  });
+});
