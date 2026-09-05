@@ -37,26 +37,45 @@ export const SIDEBAR_SECTION = {
 
 export type SidebarSection = (typeof SIDEBAR_SECTION)[keyof typeof SIDEBAR_SECTION];
 
-/**
- * 上の区画（地物一覧）の既定の割合。**上 60% / 下 40%**。
- *
- * 設計書 §B.1 は 1600×1000 で「台帳 470 / 素性 312」、§B.2 は 1280×800 で「350 / 232」と
- * 書いている。どちらも 60:40 なので、px ではなく割合で持つ（窓の高さが変わっても
- * 設計書の数字どおりになる）。
- */
-export const LEDGER_DEFAULT_RATIO = 0.6;
-
-/** 上段（地物一覧）がこれ以上小さくならない高さ（px）。 */
-export const SIDEBAR_LIST_MIN_HEIGHT = 60;
+// 上の区画（地物一覧）の既定の割合（上 60% / 下 40%）は **CSS が持つ**
+// （`.sidebar__panel[data-testid='sidebar-panel-list'] { flex: 0 1 60% }`）。
+// ここに同じ数を持つ定数を置いていたが、呼び出し元が 1 つも無く、CSS を直しても
+// こちらは古いまま残る形だったので消した（同じ寸法の真実源を 2 つ持たない）。
 
 /**
- * 下段（選んだ地物）がこれ以上小さくならない高さ（px）。
+ * 上段（地物一覧）がこれ以上小さくならない高さ（px）。
  *
- * **上段より大きい**のは、下端に固定した保存列（36px）とその上の予告・断りの行が
- * 同時に見えていないと、保存列が節の見出しを覆って「押せるはずのものが押せない」に
- * なるからである（教訓 5.14）。CSS 側の `min-height` と同じ値で、片方だけ動かすと
- * 仕切りを引き切ったときに右パネルへ縦スクロールが出る。 */
+ * **「行が 1 行は見える高さ」** ＝ 見出し 31 ＋ 余白 20 ＋ 一覧の見出し群 90 ＋ 行 28
+ * ＋ 状態行 24。ここが 60px だったので、既定の 1280×800 では上段が 108px しか取れず、
+ * **一覧の行が 1 行も区画の中に入っていなかった**。CSS 側の `min-height` と同じ値で、
+ * 片方だけ動かすと仕切りの可動域と実際の見た目が食い違う。 */
+export const SIDEBAR_LIST_MIN_HEIGHT = 196;
+
+/**
+ * 下段（選んだ地物）の下限の**上限**（px）。実際の下限は窓に追随する
+ * （{@link propertiesMinHeight}）。
+ *
+ * 下端に固定した保存列（36px）とその上の予告・断りの行が同時に見えていないと、保存列が
+ * 節の見出しを覆って「押せるはずのものが押せない」になる（教訓 5.14）。ただし **300px を
+ * 固定値で先に取ると上段が潰れる** ので、列が低いときは割合のほうが効く。 */
 export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 300;
+
+/** 下段の下限が窓に追随するときの割合（列の高さの 45%）。CSS の `min(300px, 45%)` と同値。 */
+export const SIDEBAR_PROPERTIES_MIN_RATIO = 0.45;
+
+/** 仕切りの高さ（px）。CSS の `.sidebar__splitter` と同値。 */
+export const SIDEBAR_SPLITTER_HEIGHT = 6;
+
+/** 鍵盤で仕切りを動かす 1 回ぶん（px）。 */
+const SPLITTER_KEY_STEP = 16;
+
+/**
+ * その列の高さでの、下段の実際の下限（px）。CSS の `min(300px, 45%)` と同じ規則を
+ * ここでも使う ―― 仕切りの可動域と CSS がずれると、引き切った位置で見た目が跳ねる。
+ */
+export function propertiesMinHeight(total: number): number {
+  return Math.min(SIDEBAR_PROPERTIES_MIN_HEIGHT, total * SIDEBAR_PROPERTIES_MIN_RATIO);
+}
 
 export interface SidebarProps {
   /** 上段（地物一覧＝台帳）の中身。`SidebarContent` が組み立てて渡す。 */
@@ -124,10 +143,17 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     if (total <= 0) return next;
     const max = Math.max(
       SIDEBAR_LIST_MIN_HEIGHT,
-      total - SIDEBAR_PROPERTIES_MIN_HEIGHT,
+      total - propertiesMinHeight(total) - SIDEBAR_SPLITTER_HEIGHT,
     );
     return Math.min(Math.max(next, SIDEBAR_LIST_MIN_HEIGHT), max);
   }, []);
+
+  /** いまの上段の高さ（px）。鍵盤の操作と ARIA の現在値がここを読む。 */
+  const currentTopHeight = useCallback((): number => {
+    if (topHeight !== null) return topHeight;
+    const list = bodyRefs.current[SIDEBAR_SECTION.List]?.parentElement;
+    return list?.getBoundingClientRect().height ?? 0;
+  }, [topHeight]);
 
   const onSplitterPointerDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -166,6 +192,55 @@ export function Sidebar(props: SidebarProps): JSX.Element {
     if (clamped !== topHeight) setTopHeight(clamped);
   }, [topHeight, clampTop]);
 
+  // --- 仕切りの鍵盤操作と ARIA の現在値 ---------------------------------------
+  //
+  // `role="separator"` は「動かせる仕切り」を名乗るので、**動かす手段と現在値を
+  // 両方持たなければ嘘になる**（矢印で動かせない・支援技術に値が伝わらない）。
+  // 値は実測なので、列の高さと上段の高さを測って持つ。
+  const [measured, setMeasured] = useState<{ total: number; top: number }>({
+    total: 0,
+    top: 0,
+  });
+  useLayoutEffect(() => {
+    const sections = sectionsRef.current;
+    const list = bodyRefs.current[SIDEBAR_SECTION.List]?.parentElement ?? null;
+    if (sections === null || list === null) return;
+    const measure = (): void => {
+      const total = sections.getBoundingClientRect().height;
+      const top = list.getBoundingClientRect().height;
+      setMeasured((prev) => (prev.total === total && prev.top === top ? prev : { total, top }));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(sections);
+    ro.observe(list);
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
+
+  const splitterMax = Math.max(
+    SIDEBAR_LIST_MIN_HEIGHT,
+    measured.total - propertiesMinHeight(measured.total) - SIDEBAR_SPLITTER_HEIGHT,
+  );
+
+  const onSplitterKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLDivElement>): void => {
+      const total = sectionsRef.current?.getBoundingClientRect().height ?? 0;
+      let next: number | null = null;
+      if (e.key === 'ArrowUp') next = currentTopHeight() - SPLITTER_KEY_STEP;
+      else if (e.key === 'ArrowDown') next = currentTopHeight() + SPLITTER_KEY_STEP;
+      else if (e.key === 'Home') next = SIDEBAR_LIST_MIN_HEIGHT;
+      else if (e.key === 'End') next = total;
+      if (next === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setTopHeight(clampTop(next));
+    },
+    [clampTop, currentTopHeight],
+  );
+
   const content: Record<SidebarSection, ReactNode> = {
     [SIDEBAR_SECTION.List]: listContent,
     [SIDEBAR_SECTION.Properties]: propertiesContent,
@@ -191,10 +266,15 @@ export function Sidebar(props: SidebarProps): JSX.Element {
           aria-orientation="horizontal"
           aria-label={APP_STRINGS.sidebarSplitterAriaLabel}
           data-testid="sidebar-splitter"
+          tabIndex={0}
+          aria-valuenow={Math.round(measured.top)}
+          aria-valuemin={SIDEBAR_LIST_MIN_HEIGHT}
+          aria-valuemax={Math.round(splitterMax)}
           onPointerDown={onSplitterPointerDown}
           onPointerMove={onSplitterPointerMove}
           onPointerUp={onSplitterPointerUp}
           onPointerCancel={onSplitterPointerUp}
+          onKeyDown={onSplitterKeyDown}
         />
         <ContiguousSection
           section={SIDEBAR_SECTION.Properties}

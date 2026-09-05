@@ -32,6 +32,30 @@ async function ledgerDomRows(page: Page): Promise<number> {
   return page.locator('[data-testid^="ledger-row-"]').count();
 }
 
+/**
+ * 一覧の行が **区画の矩形の中に交差して見えている** 数。
+ *
+ * **`toBeVisible()` では測れない**（教訓 5.62）。Playwright の `toBeVisible` は
+ * 「表示ボックスがあり、`visibility` が見えている」だけを見るので、**先祖のスクロール
+ * 範囲の外にある要素も「見えている」と判定する**。増分 4 の実装では行が区画の
+ * 23px 下から始まっていたのに、行の locator は全部 visible だった。
+ */
+async function rowsInsidePanel(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const panel = document.querySelector('[data-testid="sidebar-panel-list"]');
+    if (panel === null) return -1;
+    const p = panel.getBoundingClientRect();
+    let n = 0;
+    for (const el of document.querySelectorAll('[data-testid^="ledger-row-"]')) {
+      const r = el.getBoundingClientRect();
+      const top = Math.max(r.top, p.top);
+      const bottom = Math.min(r.bottom, p.bottom);
+      if (bottom - top > 0 && r.width > 0) n += 1;
+    }
+    return n;
+  });
+}
+
 test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまとまり', () => {
   test('2 区画が同時に見える（タブを押さずに一覧と素性欄が両方読める）', async () => {
     const { app, page } = await launchApp();
@@ -52,6 +76,80 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
 
       // 仕切りが在って掴める。
       await expect(page.getByTestId('sidebar-splitter')).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('どの窓の大きさでも、一覧の行が区画の中に見えている（起動直後 / 1280×800 / 800×600 / 1366×768）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      // ①起動直後（窓は既定のまま）。
+      await expect(page.getByTestId('unified-list-count')).toHaveText('30件');
+      expect(await rowsInsidePanel(page), '起動直後の窓で行が 1 行も区画に入っていない').toBeGreaterThan(0);
+
+      // ②③④ 既定の窓・最小の窓・広く使われている窓。
+      for (const size of [
+        { width: 1280, height: 800 },
+        { width: 800, height: 600 },
+        { width: 1366, height: 768 },
+      ]) {
+        await page.setViewportSize(size);
+        await page.waitForTimeout(300);
+        expect(
+          await rowsInsidePanel(page),
+          `${String(size.width)}×${String(size.height)} で行が 1 行も区画に入っていない`,
+        ).toBeGreaterThan(0);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('器をいちばん低くしても、名前欄が保存列の下に潜らない', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      await enterEditMode(page);
+      // 仕切りを下いっぱいまで引く（＝素性欄をいちばん低くする）。
+      const splitter = page.getByTestId('sidebar-splitter');
+      await splitter.focus();
+      for (let i = 0; i < 40; i += 1) await splitter.press('ArrowDown');
+      await page.waitForTimeout(200);
+
+      // 束を作る＝名前欄へ焦点が入る第 1 手（設計書 §C.5）。
+      await page.getByTestId('bundle-expression').fill('^合成地物00[0-2][0-9]$');
+      await page.getByTestId('bundle-make').click();
+      const name = page.getByLabel('名前', { exact: true });
+      await expect(name).toBeFocused();
+
+      // **保存列に隠れていない**（重なりが 0 で、素性欄の器の中に完全に入っている）。
+      const overlap = await page.evaluate(() => {
+        const input = document.querySelector('input[aria-label="名前"]');
+        const bar = document.querySelector('[data-testid="property-save-bar"]');
+        const body = document.querySelector(
+          '[data-testid="sidebar-panel-properties"] .sidebar__panel-body',
+        );
+        if (input === null || bar === null || body === null) return null;
+        const i = input.getBoundingClientRect();
+        const b = bar.getBoundingClientRect();
+        const v = body.getBoundingClientRect();
+        return {
+          covered: Math.max(0, Math.min(i.bottom, b.bottom) - Math.max(i.top, b.top)),
+          // 器の中に入っている高さと、入りうる高さ（器が入力欄より低いこともある）。
+          insideBody: Math.max(0, Math.min(i.bottom, v.bottom) - Math.max(i.top, v.top)),
+          couldBeInside: Math.min(i.height, v.height),
+        };
+      });
+      expect(overlap, '名前欄・保存列・器のどれかが見つからない').not.toBeNull();
+      expect(overlap?.covered, '名前欄が保存列に覆われている').toBe(0);
+      expect(
+        overlap === null ? -1 : overlap.insideBody,
+        '名前欄が素性欄の器の外にある',
+      ).toBeGreaterThanOrEqual((overlap?.couldBeInside ?? 0) - 1);
     } finally {
       await app.close();
     }
@@ -79,6 +177,20 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       expect(await ledgerDomRows(page)).toBeLessThanOrEqual(20);
       // スクロールした先の行が出ている（空の窓ではない）。
       expect(await ledgerDomRows(page)).toBeGreaterThan(0);
+
+      // **いちばん下まで送れる。** 行の実高が 28px からずれていると（`content-box` の
+      // まま境界線を外へ足すと 28.8px になる）、5,000 行で 4,000px ぶん積み上がって
+      // **最後の行に届かない**。行の器の高さと仮想スクロールの前提を突き合わせる検査。
+      await page.getByTestId('ledger-scroller').evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await page.waitForTimeout(200);
+      await expect(page.getByTestId('feature-list-item-syn-4999')).toBeVisible();
+      const rowHeight = await page
+        .locator('[data-testid^="ledger-row-"]')
+        .first()
+        .evaluate((el) => el.getBoundingClientRect().height);
+      expect(rowHeight).toBeCloseTo(28, 0);
     } finally {
       await app.close();
     }
