@@ -89,6 +89,14 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await waitForE2E(page);
 
       const { faceId, cx, cy } = await commitOneFace(page);
+
+      // **B55（2026-09-06、2 回目の手直し）: 選んでいるあいだは、隠しても地図に残る**
+      // （設計書 §D.6 規則①の「必ず描く」）。描いた直後の面は選ばれたままなので、
+      // 種別の軸そのものを測るにはまず選択を外す。旧版は「隠したら選択も外れる」に
+      // 頼っていたので、この一手が要らなかった。
+      await enterEditMode(page);
+      await page.mouse.click(cx + 300, cy); // 空き地を押す → 選択が外れる
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
       await revealFilterPanel(page);
 
       const withArea = await readDrawnCount(page);
@@ -125,12 +133,32 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await hideItem.click();
       await expect(menu).toHaveCount(0);
 
-      // Codex F2: hiding the ACTIVE feature deselects it IMMEDIATELY (the store heal) — not
-      // "after the next click" — AND its edit handles vanish (0), even before any further click.
-      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      // **B55（2026-09-06、2 回目の手直し）: 隠しても選択は外さない。**
+      //
+      // 旧版は「隠した地物が選ばれていたら、同じ遷移で選択を外す」を不変条件にしていた
+      // （Codex F2）。だが設計書 §D.6 規則①は「選んでいる地物と親までの道筋は表示条件に
+      // 関わらず必ず描く」である。必ず描くものを選択から外すのは自己矛盾で、実際には
+      // 「隠す」を押した瞬間に **素性欄が空になり、直前まで見ていた地物の情報を失う**。
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      // 素性欄も空にならない（隠してから名前を直す、という流れが成り立つ）。
+      await expect(page.getByTestId('property-panel')).toBeVisible();
+      await expect(page.getByLabel('名前', { exact: true })).toHaveCount(1);
+      // 行には 🚫 が付く（隠れていること自体は黙っていない）。
+      await expect(page.getByTestId(`ledger-row-${faceId}`)).toHaveAttribute(
+        'data-hidden',
+        'true',
+      );
+
+      // **選んでいるあいだは地図にも残る**（§D.6 規則①の「必ず描く」）。
+      await expect.poll(async () => Object.keys(await readDrawnFills(page))).toContain(faceId);
+      // ただし **掴めるハンドルは出ない** ―― 隠れているものは道具の取得から外れる
+      // （`isToolTargetVisible`）。「見えているのに掴めない」の裏返しで、隠れているものは
+      // 見るために描いているだけで、触るために描いているのではない。
       await expect.poll(async () => readVertexHandleCount(page)).toBe(0);
 
-      // The feature is now culled from the drawn set.
+      // 選択を外すと、そこで初めて描画から落ちる。
+      await page.mouse.click(cx + 300, cy); // 空き地を押す → 選択が外れる
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
       await expect.poll(async () => readDrawnCount(page)).toBeLessThan(withArea);
       // ...and a click on where it was selects NOTHING (hidden = click-through).
       await page.mouse.click(cx, cy);
@@ -413,7 +441,11 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(menu).toBeVisible();
       await menu.locator('[data-item-kind="hideFeature"]').click();
       await expect(menu).toHaveCount(0);
-      await expect(page.getByTestId('app-active-feature')).toHaveText(''); // F2 heal
+      // **B55（2026-09-06）: 隠しても選択は外れない**（設計書 §D.6 規則①）。ここで見たい
+      // のは F1（隠れた地物は道具の取得の対象にならない）なので、選択を外してから構える。
+      await expect(page.getByTestId('app-active-feature')).not.toHaveText('');
+      await page.mouse.click(cx, cy - 200); // 空き地を押す → 選択が外れる
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
       // Arm 結合(merge). Clicking the HIDDEN left face adds NO target (F1: leafAtPoint result
       // rejected by the FR-113 gate); the VISIBLE right face does — count 0 → 0 → 1.

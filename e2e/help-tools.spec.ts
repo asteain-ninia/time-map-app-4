@@ -202,4 +202,48 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
       await app.close();
     }
   });
+
+  // 2026-09-06、2 回目の手直し（6）。**時間軸の範囲外の年は押せない。**
+  //
+  // 旧版は「保存できる年」でありさえすれば普通の候補として出していた。既定の時間軸は
+  // 0〜10000 年（FR-66）なので、20000 と打つと「20000年 へ移動」が出て、押すと
+  // `setCurrentTime` が **黙って 10000 年へ丸めて**いた ―― 表示された行き先と実際の
+  // 行き先が違う。候補には残す（打った年が届いていることは見せる）が、押せなくして
+  // 文言で範囲を告げる。
+  test('どこへでも移動: 時間軸の範囲外の年は「範囲外」と出て押せない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await page.keyboard.press('Control+p');
+      const palette = page.getByTestId('jump-palette');
+      await expect(palette).toBeVisible();
+
+      // ①範囲の中（2000 年）はそのまま押せて、飛ぶ。
+      await page.getByTestId('jump-palette-input').fill('2000');
+      const inRange = palette.locator('[data-kind="year"]');
+      await expect(inRange).toHaveCount(1);
+      await expect(inRange).toBeEnabled();
+
+      // ②範囲の外（20000 年）は候補に残るが押せず、文言が範囲を告げる。
+      await page.getByTestId('jump-palette-input').fill('20000');
+      const outOfRange = palette.locator('[data-kind="year"]');
+      await expect(outOfRange).toHaveCount(1);
+      await expect(outOfRange).toBeDisabled();
+      await expect(outOfRange).toContainText('時間軸の範囲外');
+
+      // ③鍵盤の Enter でも動かない（押せない候補が黙って効く、を作らない）。
+      await page.keyboard.press('Enter');
+      await expect(page.getByTestId('timeline-current')).toHaveText('0年');
+
+      await page.keyboard.press('Escape');
+      await expect(palette).toHaveCount(0);
+
+      // ④直接ジャンプ欄も同じ ―― 丸めずに断り、理由をその場に出す。
+      await page.getByLabel('直接ジャンプ 年', { exact: true }).fill('20000');
+      await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
+      await expect(page.getByTestId('timeline-current')).toHaveText('0年');
+      await expect(page.getByRole('alert')).toContainText('時間軸の範囲');
+    } finally {
+      await app.close();
+    }
+  });
 });
