@@ -82,6 +82,20 @@ export interface BasicInfoFormProps {
    * `advance` は「保存して**次へ**」か「保存だけ」か（Ctrl+Enter は次へ進まない）。
    */
   readonly onSubmit?: (advance: boolean) => void;
+  /**
+   * この欄がいま **打ちかけを抱えていない**か（2026-09-06、2 回目の手直し）。
+   *
+   * 真のとき、名前欄・種別欄は `data-pristine="true"` と名乗る。大域の鍵盤の門番
+   * （`focus-guard`）はこの名乗りを見て、**取り消し（Ctrl+Z / Ctrl+Y）と束の送り
+   * （Alt+↑ / Alt+↓）だけ**を通す。素性欄の Enter は「保存して次へ」で焦点が次の
+   * 地物の名前欄に残るので、これが無いと **送った直後に取り消せない**。
+   */
+  readonly pristine?: boolean;
+  /**
+   * 名前欄・種別欄で Escape を押したとき（2026-09-06）。焦点を一覧へ返す口。
+   * 旧版は Escape で何も起きず、**焦点を外す手が鍵盤に無かった**。
+   */
+  readonly onEscape?: () => void;
 }
 
 /**
@@ -113,6 +127,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
     parentName,
     lengthKm,
     onSubmit,
+    onEscape,
   } = props;
 
   /**
@@ -120,6 +135,15 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
    * `onSubmit` が渡っていないとき（テスト・組み込み前）は既定のまま素通しする。
    */
   const onFieldKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key === 'Escape') {
+      // **焦点を一覧へ返す**（2026-09-06）。旧版は Escape で何も起きず、鍵盤だけでは
+      // 欄から出られなかった（実測）。打ちかけは捨てない ―― 捨てるかどうかは
+      // §D.4 の Esc の階段が決めることで、ここは「どこへ戻すか」だけを担う。
+      if (onEscape === undefined) return;
+      e.preventDefault();
+      onEscape();
+      return;
+    }
     if (e.key !== 'Enter' || onSubmit === undefined) return;
     e.preventDefault();
     onSubmit(!e.ctrlKey);
@@ -149,6 +173,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           value={draft.name}
           disabled={!editable}
           {...(props.nameInputRef !== undefined ? { ref: props.nameInputRef } : {})}
+          data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ name: e.target.value })}
           onKeyDown={onFieldKeyDown}
         />
@@ -167,6 +192,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           placeholder={PROPERTY_STRINGS.kindLabelPlaceholder}
           value={draft.kindLabel}
           disabled={!editable}
+          data-pristine={props.pristine === true ? 'true' : 'false'}
           onChange={(e) => onChange({ kindLabel: e.target.value })}
           onKeyDown={onFieldKeyDown}
         />

@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { isEditableTarget, type EditableTargetDescriptor } from './focus-guard';
 
 function target(over: Partial<EditableTargetDescriptor>): EditableTargetDescriptor {
-  return { tagName: 'DIV', inputType: null, isContentEditable: false, ...over };
+  return { tagName: 'DIV', inputType: null, isContentEditable: false, pristine: false, ...over };
 }
 
 describe('isEditableTarget (focus guard for global shortcuts)', () => {

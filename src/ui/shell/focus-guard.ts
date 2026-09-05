@@ -26,6 +26,20 @@ export interface EditableTargetDescriptor {
   readonly inputType: string | null;
   /** Whether the element (or an ancestor) is contenteditable. */
   readonly isContentEditable: boolean;
+  /**
+   * 「この欄はまだ何も打ちかけていない」と欄が自分で名乗っているか
+   * （`data-pristine="true"`。2026-09-06、2 回目の手直し）。
+   *
+   * **なぜ要るか**: 素性欄の Enter は「保存して次へ」なので、送ったあとは **次の地物の
+   * 名前欄に焦点が入ったまま**になる。ここで Ctrl+Z を押しても、焦点が入力欄にある
+   * というだけで大域の取り消しが止まり、**押しても何も起きない**（実測。Alt+↑/↓ の
+   * 送りも同じ）。焦点を外してから押す、では作業の流れが切れる。
+   *
+   * ただし「打ちかけがあるのに大域へ通す」のは駄目である（打った文字の取り消しが
+   * 地物の取り消しに化ける ＝ この guard を作った理由そのもの）。そこで **欄の側が
+   * 「いま打ちかけは無い」と名乗っているときだけ**、決めた少数の打鍵を通す。
+   */
+  readonly pristine: boolean;
 }
 
 /**
@@ -89,7 +103,25 @@ export function editableTargetFromEvent(e: KeyboardEvent): EditableTargetDescrip
     tagName: raw.tagName,
     inputType,
     isContentEditable: readContentEditable(raw),
+    pristine: raw.getAttribute('data-pristine') === 'true',
   };
+}
+
+/**
+ * DOM の要素そのものが「文字を打つ欄」かどうか（上の述語の DOM 側の入口）。
+ *
+ * 一覧の器のように **中の入力欄から浮き上がってくる鍵盤**を自分で処理する場所が、
+ * 「いま打っているのか」を同じ 1 本の規則で判定するために使う（教訓 5.13: 同じ判断は
+ * 1 か所に置き、`tagName === 'INPUT'` のような写しを増やさない）。
+ */
+export function isTextEntryElement(el: Element): boolean {
+  const inputType = el instanceof HTMLInputElement ? el.getAttribute('type') : null;
+  return isEditableTarget({
+    tagName: el.tagName,
+    inputType,
+    isContentEditable: readContentEditable(el),
+    pristine: false,
+  });
 }
 
 /**

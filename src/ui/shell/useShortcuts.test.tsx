@@ -178,6 +178,43 @@ describe('useShortcuts focus guard (バグハント第10波 #1 Delete / #4 Ctrl+
     expect(del).not.toHaveBeenCalled();
   });
 
+  // --- 打ちかけの無い欄では、決めた少数の打鍵だけ通す（2026-09-06、2 回目の手直し）---
+  //
+  // 素性欄の Enter は「保存して次へ」なので、送ったあとの焦点は **次の地物の名前欄**に
+  // 入ったままである。そこで Ctrl+Z を押しても「焦点が入力欄にある」というだけで止まり、
+  // **押しても何も起きなかった**（実測）。220 件を順に片付ける流れの中で「取り消したければ
+  // 焦点を外してから」と言うのは、作業の背骨（設計書 §E.1 の V5）を折る。
+  it('打ちかけの無い欄（data-pristine="true"）では Ctrl+Z が大域へ通る', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('data-pristine', 'true');
+    const { undo, redo } = mountFocused(input);
+    fireEvent.keyDown(input, { key: 'z', ctrlKey: true });
+    fireEvent.keyDown(input, { key: 'y', ctrlKey: true });
+    expect(undo).toHaveBeenCalledTimes(1);
+    expect(redo).toHaveBeenCalledTimes(1);
+  });
+
+  it('打ちかけがある欄（data-pristine="false"）では、いまも止める', () => {
+    // 打った文字の取り消しが地物の取り消しに化けるのが、この guard を作った理由
+    // （バグハント第 10 波 #4）である。名乗りが偽なら従来どおり止める。
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('data-pristine', 'false');
+    const { undo } = mountFocused(input);
+    fireEvent.keyDown(input, { key: 'z', ctrlKey: true });
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('打ちかけの無い欄でも、削除（Delete）は通さない（取り返しがつかない側）', () => {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.setAttribute('data-pristine', 'true');
+    const { del } = mountFocused(input);
+    fireEvent.keyDown(input, { key: 'Delete' });
+    expect(del).not.toHaveBeenCalled();
+  });
+
   it('STILL dispatches from a non-editable focused element (button — no regression)', () => {
     const button = document.createElement('button');
     const { del } = mountFocused(button);

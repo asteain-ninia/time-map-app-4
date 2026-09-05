@@ -804,6 +804,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // 選択が動いた拍子に名前欄へ焦点が入り、**続けて押した Ctrl+Z が入力欄に食われて
   // 2 回目以降の取り消しが効かなかった**（`focus-guard` は編集要素の上では大域
   // ショートカットを立ち止まらせる）。
+  /**
+   * 焦点を一覧へ返す（2026-09-06、2 回目の手直し。名前欄の Escape）。
+   *
+   * **一覧は別の部品**なので ref は渡ってこない。役割で探す（`role="tree"` を持つ
+   * 一覧の器）1 か所だけに閉じ込め、見つからなければ何もしない（一覧を出していない
+   * 画面でも壊れない）。焦点が入るのは器なので、`aria-activedescendant` で示している
+   * 行がそのまま「いま居る行」になる。
+   */
+  const focusLedger = useCallback((): void => {
+    if (typeof document === 'undefined') return;
+    const list = document.querySelector('[data-testid="ledger-scroller"]');
+    if (list instanceof HTMLElement) list.focus();
+  }, []);
+
   const appliedNameFocusRef = useRef(0);
   useEffect(() => {
     if (nameFocusRequest === 0 || appliedNameFocusRef.current === nameFocusRequest) return;
@@ -882,84 +896,95 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             </div>
           </div>
 
-          <div className="property-panel__actions">
-            <button
-              type="button"
-              data-testid="open-detail-button"
-              onClick={() => onOpenDetail?.(feature.id)}
-            >
-              {PROPERTY_STRINGS.openDetailButton}
-            </button>
-          </div>
-
-          <BasicInfoForm
-            feature={feature}
-            editable={editable}
-            values={draft}
-            onChange={patchDraft}
-            nameInputRef={nameInputRef}
-            onSubmit={handleSubmitField}
-            {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
-            {...(areaKm2 !== undefined ? { areaKm2 } : {})}
-            {...(lengthKm !== undefined ? { lengthKm } : {})}
-            {...(parentName !== undefined ? { parentName } : {})}
-            {...(existenceLabel !== undefined ? { existenceLabel } : {})}
-          />
-
-          {/* まとめ役の子（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
-              をやめ、誰が持っているかを書いて、その子に関わる錨だけを出す（§C.6 / §N-15）。 */}
-          {inherited && governing !== null && (
-            <p className="property-panel__inherited" data-testid="inherited-anchor-notice">
-              <span>{PROPERTY_STRINGS.inheritedAnchorNotice(governing.ownerName ?? '')}</span>
+          {/* **スクロールするのはここだけ**（2026-09-06、2 回目の手直し）。
+              見出しと保存列は重ねずに上下へ並べ、この本文が残りの高さを受け取る。
+              以前は見出しを `sticky; top`、保存列を `sticky; bottom` で **中身の上に
+              重ねて**いたので、保存列が育つ年（錨のない年は説明文＋ボタン 2 つで
+              103px）には、あいだの帯が 20px しか残らず **名前欄がどのスクロール位置
+              でもマウスで押せなかった**（教訓 5.61 の再々発）。重ねない作りなら、
+              保存列がいくら育っても本文がその上に残る。 */}
+          <div className="property-panel__body" data-testid="property-panel-body">
+            <div className="property-panel__actions">
               <button
                 type="button"
-                data-testid="inherited-anchor-owner"
-                onClick={() => store.getState().setActiveFeature(governing.ownerFeatureId)}
+                data-testid="open-detail-button"
+                onClick={() => onOpenDetail?.(feature.id)}
               >
-                {PROPERTY_STRINGS.inheritedAnchorGoToOwner}
+                {PROPERTY_STRINGS.openDetailButton}
               </button>
-            </p>
-          )}
+            </div>
 
-          {displaySeries !== null && (
-            <AnchorSection
-              // Feature-scoped key so React REMOUNTS the section on a target change,
-              // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
-              key={targetFeatureId ?? 'none'}
-              rows={anchorRows}
-              featureIdForDiff={feature.id}
-              currentTime={currentTime}
-              calendar={calendar}
-              selectedAnchorId={effectiveAnchorId}
-              onSelectAnchor={handleSelectAnchor}
-              {...(intervalEditable
-                ? { featureId: feature.id, onEditInterval: handleEditInterval }
-                : {})}
+            <BasicInfoForm
+              feature={feature}
+              editable={editable}
+              values={draft}
+              onChange={patchDraft}
+              nameInputRef={nameInputRef}
+              onSubmit={handleSubmitField}
+              pristine={!dirty}
+              onEscape={focusLedger}
+              {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
+              {...(areaKm2 !== undefined ? { areaKm2 } : {})}
+              {...(lengthKm !== undefined ? { lengthKm } : {})}
+              {...(parentName !== undefined ? { parentName } : {})}
+              {...(existenceLabel !== undefined ? { existenceLabel } : {})}
             />
-          )}
 
-          <DetailDocumentSection
-            // 下書きの作り直しは編集対象（地物×錨×年）が変わったときだけ。パネルが
-            // 下書きを持つので、ここは key で閲覧/編集の一時状態だけ捨てる（教訓 5.2）。
-            key={`${String(targetFeatureId ?? 'none')}-${String(effectiveAnchorId ?? '')}`}
-            feature={feature}
-            editable={editable}
-            draft={draft.detailDocument}
-            onDraftChange={patchDetailDocument}
-            assetResolver={assetResolver}
-            onSelectFeature={handleSelectFromDocument}
-          />
+            {/* まとめ役の子（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
+                をやめ、誰が持っているかを書いて、その子に関わる錨だけを出す（§C.6 / §N-15）。 */}
+            {inherited && governing !== null && (
+              <p className="property-panel__inherited" data-testid="inherited-anchor-notice">
+                <span>{PROPERTY_STRINGS.inheritedAnchorNotice(governing.ownerName ?? '')}</span>
+                <button
+                  type="button"
+                  data-testid="inherited-anchor-owner"
+                  onClick={() => store.getState().setActiveFeature(governing.ownerFeatureId)}
+                >
+                  {PROPERTY_STRINGS.inheritedAnchorGoToOwner}
+                </button>
+              </p>
+            )}
 
-          {/* FR-85: the always-present「地物を削除」button for the shown feature.
-              N-03 / K-6: このボタンだけが権限の関門を素通りしていて表示専用でも押せた。 */}
-          {onDeleteFeature !== undefined && (
-            <DeleteFeatureButton
-              target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
-              onConfirm={onDeleteFeature}
-              editable={editable && pendingDiscard === null}
-              featureName={feature.attributes.name}
+            {displaySeries !== null && (
+              <AnchorSection
+                // Feature-scoped key so React REMOUNTS the section on a target change,
+                // resetting its transient view-mode (List/TimeBar) state (教訓 5.2).
+                key={targetFeatureId ?? 'none'}
+                rows={anchorRows}
+                featureIdForDiff={feature.id}
+                currentTime={currentTime}
+                calendar={calendar}
+                selectedAnchorId={effectiveAnchorId}
+                onSelectAnchor={handleSelectAnchor}
+                {...(intervalEditable
+                  ? { featureId: feature.id, onEditInterval: handleEditInterval }
+                  : {})}
+              />
+            )}
+
+            <DetailDocumentSection
+              // 下書きの作り直しは編集対象（地物×錨×年）が変わったときだけ。パネルが
+              // 下書きを持つので、ここは key で閲覧/編集の一時状態だけ捨てる（教訓 5.2）。
+              key={`${String(targetFeatureId ?? 'none')}-${String(effectiveAnchorId ?? '')}`}
+              feature={feature}
+              editable={editable}
+              draft={draft.detailDocument}
+              onDraftChange={patchDetailDocument}
+              assetResolver={assetResolver}
+              onSelectFeature={handleSelectFromDocument}
             />
-          )}
+
+            {/* FR-85: the always-present「地物を削除」button for the shown feature.
+                N-03 / K-6: このボタンだけが権限の関門を素通りしていて表示専用でも押せた。 */}
+            {onDeleteFeature !== undefined && (
+              <DeleteFeatureButton
+                target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
+                onConfirm={onDeleteFeature}
+                editable={editable && pendingDiscard === null}
+                featureName={feature.attributes.name}
+              />
+            )}
+          </div>
 
           {/* 保存列。**素性欄の下端に固定**する（設計書 §C.6 / C7）。現物は保存ボタンの
               offsetTop が 755.8px で初期表示（高さ 362px）の外にあり、誰も見なかった

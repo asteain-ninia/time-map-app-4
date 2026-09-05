@@ -75,6 +75,26 @@ const EDITABLE_PASSTHROUGH: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.FileSaveAs,
 ]);
 
+/**
+ * **打ちかけが無い欄でだけ**通す打鍵（2026-09-06、2 回目の手直し）。
+ *
+ * 素性欄の Enter は「保存して次へ」なので、送ったあとの焦点は **次の地物の名前欄**に
+ * 入ったままである。そこで Ctrl+Z を押しても「焦点が入力欄にある」というだけで
+ * 取り消しが止まり、**押しても何も起きない**（実測）。束の送り（Alt+↑ / Alt+↓）も同じ。
+ * 220 件を順に片付ける流れの中で「取り消したければ焦点を外してから」と言うのは、
+ * 作業の背骨（設計書 §E.1 の V5）を折る。
+ *
+ * **通すのは欄が `data-pristine="true"` と名乗っているときだけ。** 打ちかけがあれば
+ * 従来どおり止める ―― 打った文字の取り消しが地物の取り消しに化けるのが、この guard を
+ * 作った理由（バグハント第 10 波 #4）だからである。
+ */
+const PRISTINE_EDITABLE_PASSTHROUGH: ReadonlySet<CommandId> = new Set<CommandId>([
+  COMMAND_ID.EditUndo,
+  COMMAND_ID.EditRedo,
+  COMMAND_ID.ListBundlePrev,
+  COMMAND_ID.ListBundleNext,
+]);
+
 export function useShortcuts(options: UseShortcutsOptions): void {
   const { keymap, registry, mode, suspended = false } = options;
   const alwaysAllowed = options.alwaysAllowed;
@@ -102,9 +122,14 @@ export function useShortcuts(options: UseShortcutsOptions): void {
       // Ctrl+A・矢印…）とは衝突しないので、通しても native の編集を邪魔しない。
       // 集合はこの module が持つ ―― 「止めている間に通す集合」（`alwaysAllowed`）とは
       // **止める理由が違う**ので分ける（教訓 5.30: 制約が違うなら安易に共有しない）。
-      if (isEditableTarget(editableTargetFromEvent(e))) {
+      const editableTarget = editableTargetFromEvent(e);
+      if (isEditableTarget(editableTarget)) {
         const id = keymap.resolve(chord);
-        if (id === undefined || !EDITABLE_PASSTHROUGH.has(id)) return;
+        const allowed =
+          id !== undefined &&
+          (EDITABLE_PASSTHROUGH.has(id) ||
+            (editableTarget?.pristine === true && PRISTINE_EDITABLE_PASSTHROUGH.has(id)));
+        if (!allowed) return;
         if (suspended && alwaysAllowed?.has(id) !== true) return;
         const passResult = dispatchChord(chord, keymap, registry, mode);
         if (passResult !== DISPATCH_RESULT.Unbound) e.preventDefault();
