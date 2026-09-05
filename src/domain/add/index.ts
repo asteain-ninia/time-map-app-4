@@ -10,6 +10,7 @@ export {
   ADD_TOOL_KIND,
   type AddToolKind,
   minVerticesFor,
+  parentSelectableFor,
   PARENT_SELECTION_KIND,
   type ParentSelectionKind,
   type ParentSelection,

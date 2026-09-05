@@ -57,6 +57,22 @@ export function minVerticesFor(kind: AddToolKind): number {
 // --- Parent selection (face only; FR-77 / FR-39, 教訓 5.18) ------------------
 
 /**
+ * **その道具は上位領域を選ぶのか**（2026-09-06、2 回目の手直し）。
+ *
+ * 上位領域を聞くのは面だけである（FR-77 / FR-39）。ところが同じ規則が画面の 2 か所に
+ * 別々に書かれていて、**片方だけが落ちていた** ―― 素性欄は面のときだけ上位領域の欄を
+ * 出すのに（`AddPropertyForm` の `showParent`）、**既定の上位領域を決める側は道具を
+ * 見ずに全部の道具で走って**いた。その結果、点を陸地の上に 1 つ打つだけで
+ * 「その点が落ちた面」が黙って親になり、保存して開き直すと親の面が
+ * **「末端なのに子を持つ」（形状保持規則の違反 `leaf-with-children`）** で修復ダイアログを
+ * 出した（実データで再現。増分 4 の 2 回目の手直しの調査 8）。規則は 1 か所に置く
+ * （教訓 5.13）。
+ */
+export function parentSelectableFor(kind: AddToolKind): boolean {
+  return kind === ADD_TOOL_KIND.Face;
+}
+
+/**
  * The parent-selection draft for a face add (FR-77). Modeled as a discriminated
  * value so "no parent yet decided", "explicitly top-level (親なし)" and "a
  * chosen parent face" are three DISTINCT states (教訓 5.18): an unset selection

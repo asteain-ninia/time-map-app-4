@@ -29,6 +29,7 @@ import {
   draftCoordinates,
   minVerticesFor,
   PARENT_TOP_LEVEL,
+  parentSelectableFor,
   parentSelection,
   type AddProperties,
   type AddProposal,
@@ -746,13 +747,22 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
   // ない ―― 2 人目の子は「1 人目の子＋親」、修復で集約化したあとは「親 直轄領＋親」の
   // ように必ず 2 つ以上になる。一意を求めると **最初の子のときしか既定が入らず**、
   // 2 人目以降は黙って「上位領域なし」で保存されていた（実測）。
+  //
+  // **道具で門を閉じる**（2026-09-06、2 回目の手直し。調査 8）。ここは道具を見ずに
+  // 走っていたので、**点を陸地の上に 1 つ打つだけで「その点が落ちた面」が黙って親に
+  // なって**いた（点は座標が 1 つなので、含む面は必ず「いちばん内側の末端の面」になる）。
+  // 保存して開き直すと、その面が「末端なのに子を持つ」で修復ダイアログを出す。素性欄は
+  // 面のときしか上位領域の欄を出さないので、**利用者は選んでも見てもいない親を付けられて
+  // いた**。判定は `parentSelectableFor` 1 本に寄せる（同じ規則が 2 か所にあって片方だけ
+  // 落ちていたのが、この事故そのもの）。
   const defaultParentId = useMemo<FeatureId | null>(() => {
+    if (sessionTool === undefined || !parentSelectableFor(sessionTool)) return null;
     if (facesContaining === undefined || draft === null) return null;
     const known = new Set<FeatureId>((parentCandidates ?? []).map((c) => c.featureId));
     // `facesContaining` は内側から外側の順。候補一覧に居る（＝その年に選べる）
     // いちばん内側のものを採る。
     return facesContaining(draftCoordinates(draft)).find((id) => known.has(id)) ?? null;
-  }, [parentCandidates, facesContaining, draft]);
+  }, [parentCandidates, facesContaining, draft, sessionTool]);
 
   useEffect(() => {
     if (phase !== ADD_PHASE.PropertyForm) return;

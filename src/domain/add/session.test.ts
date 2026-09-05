@@ -4,6 +4,7 @@ import { asFeatureId } from '../ids';
 
 import {
   ADD_TOOL_KIND,
+  parentSelectableFor,
   PARENT_SELECTION_KIND,
   PARENT_TOP_LEVEL,
   PARENT_UNSET,
@@ -246,5 +247,17 @@ describe('isNestingInside（入れ子の見分け。FR-29 の但し書き）', (
     s = inside(s, 1, 1);
     s = outside(s, 3, 3); // 親の穴の中を押した
     expect(isNestingInside(s, PARENT)).toBe(false);
+  });
+});
+
+describe('parentSelectableFor（2026-09-06、2 回目の手直しの調査 8）', () => {
+  // 上位領域を聞くのは面だけ。この述語が無かったころ、素性欄は面のときしか上位領域の
+  // 欄を出さないのに **既定の上位領域を決める側は全部の道具で走って**いて、点を 1 つ
+  // 打つだけで「その点が落ちた面」が黙って親になり、開き直すと親の面が
+  // 「末端なのに子を持つ」で修復ダイアログを出した。
+  it('面だけが上位領域を選ぶ（点・線は選ばない）', () => {
+    expect(parentSelectableFor(ADD_TOOL_KIND.Face)).toBe(true);
+    expect(parentSelectableFor(ADD_TOOL_KIND.Point)).toBe(false);
+    expect(parentSelectableFor(ADD_TOOL_KIND.Line)).toBe(false);
   });
 });

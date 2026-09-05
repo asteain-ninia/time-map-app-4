@@ -25,7 +25,11 @@ import {
   type BasicAttributes,
   type ColorInfo,
 } from '../../domain/attributes';
-import { ADD_TOOL_KIND, type AddProperties, type ParentCandidate } from '../../domain/add/index';
+import {
+  parentSelectableFor,
+  type AddProperties,
+  type ParentCandidate,
+} from '../../domain/add/index';
 import type { FeatureId } from '../../domain/ids';
 
 import type { AddDraftPrompt, AddDraftStore } from './add-draft-store';
@@ -200,7 +204,9 @@ export function AddDraftForm(props: {
  */
 export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormProps {
   return {
-    showParent: prompt.tool === ADD_TOOL_KIND.Face,
+    // 上位領域を聞くのは面だけ。**既定の上位領域を決める側と同じ述語**を見る
+    // （2026-09-06、2 回目の手直し。片方だけ落ちていたのが調査 8 の事故）。
+    showParent: parentSelectableFor(prompt.tool),
     parentCandidates: prompt.parentCandidates,
     defaultParentId: prompt.defaultParentId,
     currentYear: prompt.currentYear,
