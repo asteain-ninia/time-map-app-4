@@ -1451,6 +1451,48 @@ describe('liveHitTestAt — FR-113 display filter (hidden features are click-thr
     if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
   });
 
+  // **手直し B7（旧 `docs/現状.md` B47）/ 設計書 §D.6 の規則 1・3。**
+  //
+  // 「選択中の地物と親までの道筋は、表示条件・深さ・個別非表示のいずれに関わらず必ず描く」
+  // を入れたとき、**入れたのは描画列だけ**だった。当たり判定は表示条件の判定をそのまま
+  // 読んでいたので、**画面に見えているのに押しても掴めない**（親が代わりに選ばれる）。
+  // 見えているものは掴める、を当たり判定の側でも固定する。
+  it('必ず描く: 隠れていても「選んでいる」地物は本体を掴める（手直し B7 / §D.6）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0); // [0,4]×[0,4]
+    const root = commit(emptyProject(), a, 1000);
+    const centre = { lon: 2, lat: 2 };
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, a.feature.id, true);
+
+    // 選んでいないときは掴めない（隠れているとはそういうこと）。
+    expect(
+      liveHitTestAt({ root, time, toScreen, filter, point: toScreen(centre) }, centre).kind,
+    ).toBe(HIT_KIND.Empty);
+
+    // **選んでいるあいだは描かれる**（規則 1）ので、**掴める**（B7）。
+    const hit = liveHitTestAt(
+      { root, time, toScreen, filter, activeFeature: a.feature.id, point: toScreen(centre) },
+      centre,
+    );
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+  });
+
+  it('必ず描く: 選んでいるのが別の地物なら、隠れているものは掴めないまま', () => {
+    // 「選んでいるあいだだけ」であることの裏取り。必ず描く集合は選択から導くので、
+    // 別のものを選んでいるあいだは隠れたままである（過剰に掴めるようになっていない）。
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const b = squareLeaf('f-b', 'vb', 20, 20);
+    let root = commit(emptyProject(), a, 1000);
+    root = commit(root, b, 1000);
+    const centre = { lon: 2, lat: 2 };
+    const filter = setIndividualHidden(DEFAULT_FILTER_STATE, a.feature.id, true);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, filter, activeFeature: b.feature.id, point: toScreen(centre) },
+      centre,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Empty);
+  });
+
   it('F2: a hidden ACTIVE feature exposes NO grabbable handles (activeHandles gated)', () => {
     // The active feature's OWN handles are normally probed even for aggregation-omitted
     // leaves (FR-87); but an FR-113-HIDDEN active feature must expose none — so clicking
