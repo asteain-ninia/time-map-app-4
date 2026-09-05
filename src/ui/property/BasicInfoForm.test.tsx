@@ -51,6 +51,9 @@ interface RenderOptions {
   readonly editable?: boolean;
   readonly onChange?: (next: Partial<PropertyEditValues>) => void;
   readonly existenceLabel?: string;
+  readonly parentName?: string | null;
+  readonly lengthKm?: number;
+  readonly onSubmit?: (advance: boolean) => void;
 }
 
 function renderForm(options: RenderOptions = {}): {
@@ -66,6 +69,9 @@ function renderForm(options: RenderOptions = {}): {
       {...(options.existenceLabel !== undefined
         ? { existenceLabel: options.existenceLabel }
         : {})}
+      {...(options.parentName !== undefined ? { parentName: options.parentName } : {})}
+      {...(options.lengthKm !== undefined ? { lengthKm: options.lengthKm } : {})}
+      {...(options.onSubmit !== undefined ? { onSubmit: options.onSubmit } : {})}
     />,
   );
   return { onChange };
@@ -175,5 +181,86 @@ describe('初期表示に何を出すか（裁定 §N-5 の (A)）', () => {
     renderForm();
     expect(screen.queryByTestId('existence-row')).toBeNull();
     expect(screen.queryByTestId('existence-value')).toBeNull();
+  });
+});
+
+// --- 増分 4: 上位領域（親）の欄・線の長さ・Enter で保存して次へ ----------------
+
+describe('上位領域（親）の欄（現状.md B27 / 設計書 §C.6）', () => {
+  it('親を渡さなければ行そのものを出さない（値を捏造しない）', () => {
+    renderForm();
+    expect(screen.queryByTestId('parent-row')).not.toBeInTheDocument();
+  });
+
+  it('親の名前が出る。親が無いときは「上位領域なし」', () => {
+    renderForm({ parentName: 'デーレ共和国' });
+    expect(screen.getByTestId('parent-value').textContent).toBe('デーレ共和国');
+    cleanup();
+    renderForm({ parentName: null });
+    expect(screen.getByTestId('parent-value').textContent).toBe(
+      PROPERTY_STRINGS.parentNone,
+    );
+  });
+
+  it('**2 行**になっている（値の行とボタンの行）', () => {
+    renderForm({ parentName: 'デーレ共和国' });
+    // 内容幅 264px に「ラベル 64 ＋ 入力 200」と 3 つのボタンは同居できない（§C.6）。
+    expect(screen.getByTestId('parent-row')).toContainElement(
+      screen.getByTestId('parent-buttons'),
+    );
+  });
+
+  it('3 ボタンは押せず、**理由が画面に出ている**（§H.5 の作法）', () => {
+    renderForm({ parentName: 'デーレ共和国', editable: true });
+    for (const id of ['parent-pick', 'parent-create', 'parent-clear']) {
+      const button = screen.getByTestId(id);
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute('title', PROPERTY_STRINGS.parentDisabledReason);
+    }
+    // ツールチップだけにしない（マウスを乗せないと読めない理由は、無いのと同じ）。
+    expect(screen.getByTestId('parent-disabled-reason').textContent).toBe(
+      PROPERTY_STRINGS.parentDisabledReason,
+    );
+  });
+});
+
+describe('線の長さ（G-1 / FR-19 must / 現状.md R1）', () => {
+  it('渡されなければ行を出さない', () => {
+    renderForm();
+    expect(screen.queryByTestId('length-row')).not.toBeInTheDocument();
+  });
+
+  it('渡されたら面積と同じ形の読み取り専用行として出る', () => {
+    renderForm({ lengthKm: 1234.5 });
+    expect(screen.getByTestId('length-value').textContent).toBe('1,234.50 km');
+  });
+});
+
+describe('Enter は「保存して次へ」（設計書 §I.2）', () => {
+  it('名前欄の Enter は「次へ進む」つきで親へ返す', () => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.keyDown(nameInput(), { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledWith(true);
+  });
+
+  it('Ctrl+Enter は保存だけ（次へ進まない）', () => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.keyDown(nameInput(), { key: 'Enter', ctrlKey: true });
+    expect(onSubmit).toHaveBeenCalledWith(false);
+  });
+
+  it('種別欄の Enter も同じ（V5 の「候補から 2 文字＋Enter」）', () => {
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit });
+    fireEvent.keyDown(kindInput(), { key: 'Enter' });
+    expect(onSubmit).toHaveBeenCalledWith(true);
+  });
+
+  it('口が配線されていなければ既定のまま素通しする（honest stub）', () => {
+    renderForm();
+    // 例外を投げない＝素通し。
+    expect(() => fireEvent.keyDown(nameInput(), { key: 'Enter' })).not.toThrow();
   });
 });

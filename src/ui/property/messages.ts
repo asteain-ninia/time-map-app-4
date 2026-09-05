@@ -10,6 +10,24 @@ import { FEATURE_KIND, type FeatureKind } from '../../domain/feature';
 import { MAX_DETAIL_DOCUMENT_LENGTH } from '../../domain/index';
 
 export const PROPERTY_STRINGS = {
+  // --- 増分 4: 親（上位領域）欄と、線の長さ（現状.md B27 / G-1 / G-3）---------
+  /** 親（所属）の欄名。用語は設計書 §H.1 の「上位領域」に合わせる。 */
+  parentLabel: '上位領域',
+  /** 上位領域が無い（最上位）ときの表示。追加フォームの言い方に揃える（B44）。 */
+  parentNone: '上位領域なし',
+  /** 親欄の 3 ボタン（設計書 §C.6 の 3 択 ＝ FR-46 must の入口）。 */
+  parentPickLabel: '別の上位領域を選ぶ',
+  parentCreateLabel: '新しく作る',
+  parentClearLabel: '最上位へ',
+  /**
+   * 3 ボタンをまだ押せない理由（§H.5 の作法: 押せない部品には理由を添える）。
+   * **押せるのに動かない部品を作らない** ―― 所属変更は「押した瞬間に手順へ入る」
+   * 操作なので、手順そのものを作る増分 7 までは押せなくしておく。
+   */
+  parentDisabledReason: 'まだ使えません（所属を変えるのは次の段階です）',
+  /** 線情報の長さ（G-1 / FR-19 must。面積と対になる読み取り専用の行）。 */
+  lengthLabel: '長さ',
+  lengthUnit: 'km',
   // -- selection-display cases (FR-83) ---------------------------------------
   /** 空選択: nothing is selected. */
   emptySelection: '地物が選択されていません。',
@@ -220,6 +238,21 @@ export function detailDocumentTooLongMessage(length: number): string {
   const max = MAX_DETAIL_DOCUMENT_LENGTH.toLocaleString('ja-JP');
   const actual = length.toLocaleString('ja-JP');
   return `詳細文書が長すぎるため保存できません（${actual} 文字 / 上限 ${max} 文字）。`;
+}
+
+/**
+ * 長さ（km）を画面に出す（G-1 / FR-19 must）。面積と **同じ丸め方**にしてある ――
+ * 片方だけ桁が違うと、同じ素性欄の中で数字の読み方が 2 通りになる。
+ */
+export function formatLengthKm(km: number): string {
+  if (!Number.isFinite(km)) {
+    return `— ${PROPERTY_STRINGS.lengthUnit}`;
+  }
+  const rounded = km.toLocaleString('ja-JP', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${rounded} ${PROPERTY_STRINGS.lengthUnit}`;
 }
 
 export function formatAreaKm2(km2: number): string {

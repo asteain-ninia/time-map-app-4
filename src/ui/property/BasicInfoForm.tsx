@@ -26,7 +26,7 @@ import type { Feature } from '../../domain/feature';
 import type { PaletteThemeId } from '../../domain/coloring';
 
 import type { PropertyEditValues } from './contracts';
-import { PROPERTY_STRINGS, formatAreaKm2 } from './messages';
+import { PROPERTY_STRINGS, formatAreaKm2, formatLengthKm } from './messages';
 import { StyleSection } from './StyleSection';
 import { type StyleValues } from './style-section';
 
@@ -61,6 +61,17 @@ export interface BasicInfoFormProps {
    */
   readonly existenceLabel?: string;
   /**
+   * 上位領域（親）の表示名。無ければ `null`、引けなければ `undefined`（行を出さない）。
+   * **値は表示だけで、変えるのは下の 3 ボタンである**（設計書 §C.6 の「保存の対象」:
+   * 保存ボタンが受け持つのは名前・種別・見た目・詳細文書の 4 つだけで、親は別経路）。
+   */
+  readonly parentName?: string | null;
+  /**
+   * FR-19 must（G-1 / 現状.md R1）: 線情報の長さ（km）。面積と同じ形の読み取り専用行で、
+   * 親が測地の 1 本（`lineLengthKm`）から出す。線でなければ `undefined`（行を出さない）。
+   */
+  readonly lengthKm?: number;
+  /**
    * 名前の入力欄への参照（増分 4）。作業のまとまりの送りが「次の未処理を選び、
    * **名前欄に焦点を入れる**」を成り立たせるために、親が焦点を入れられるようにする。
    * **DOM を名前で探さない**（結合点 #3 の反省。`property/name-focus.ts` の注記）。
@@ -92,7 +103,17 @@ function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
 }
 
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
-  const { feature, editable, values: draft, onChange, areaKm2, existenceLabel, onSubmit } = props;
+  const {
+    feature,
+    editable,
+    values: draft,
+    onChange,
+    areaKm2,
+    existenceLabel,
+    parentName,
+    lengthKm,
+    onSubmit,
+  } = props;
 
   /**
    * 名前欄・種別欄の Enter（設計書 §I.2）。**Ctrl+Enter は保存だけして次へ進まない。**
@@ -150,6 +171,70 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           onKeyDown={onFieldKeyDown}
         />
       </label>
+
+      {/*
+        **上位領域（親）の行**（現状.md B27 / 設計書 §C.6）。増分 2 までは行そのものが
+        無く、「いま何の下に居るのか」が素性欄から読めなかった。
+
+        **2 行にする**（値の行とボタンの行）。設計書 §C.6 の「横の収まり」が求めている
+        形で、内容幅 264px に「ラベル 64 ＋ 入力 200」と 3 つのボタンを同居させると
+        物理的に入らない。ボタン行は 88＋88＋80 ＝ 256px で収まる。
+
+        **3 ボタンは増分 7 まで無効**（§H.5 の作法）。所属変更は「押した瞬間に手順へ
+        入る」操作で、手順そのもの（確認ダイアログ・進行表示・直轄領の名前入力）は
+        増分 7 で作る。**押せるのに動かない部品を作らない**ので、いまは押せなくして
+        理由を添える。
+      */}
+      {parentName !== undefined && (
+        <div className="basic-info__parent" data-testid="parent-row">
+          <div className="basic-info__field basic-info__field--readonly">
+            <span>{PROPERTY_STRINGS.parentLabel}</span>
+            <output data-testid="parent-value">
+              {parentName ?? PROPERTY_STRINGS.parentNone}
+            </output>
+          </div>
+          <div className="basic-info__parent-buttons" data-testid="parent-buttons">
+            <button
+              type="button"
+              data-testid="parent-pick"
+              disabled
+              title={PROPERTY_STRINGS.parentDisabledReason}
+            >
+              {PROPERTY_STRINGS.parentPickLabel}
+            </button>
+            <button
+              type="button"
+              data-testid="parent-create"
+              disabled
+              title={PROPERTY_STRINGS.parentDisabledReason}
+            >
+              {PROPERTY_STRINGS.parentCreateLabel}
+            </button>
+            <button
+              type="button"
+              data-testid="parent-clear"
+              disabled
+              title={PROPERTY_STRINGS.parentDisabledReason}
+            >
+              {PROPERTY_STRINGS.parentClearLabel}
+            </button>
+          </div>
+          <p className="basic-info__parent-reason" data-testid="parent-disabled-reason">
+            {PROPERTY_STRINGS.parentDisabledReason}
+          </p>
+        </div>
+      )}
+
+      {/*
+        FR-19 must（G-1 / 現状.md R1）: 線情報の **長さ**。面積（下）と対になる行で、
+        計算関数 `lineLengthKm` はテスト以外から呼ばれていなかった。
+      */}
+      {lengthKm !== undefined && (
+        <div className="basic-info__field basic-info__field--readonly" data-testid="length-row">
+          <span>{PROPERTY_STRINGS.lengthLabel}</span>
+          <output data-testid="length-value">{formatLengthKm(lengthKm)}</output>
+        </div>
+      )}
 
       {/*
         FR-20: the 面積（km²）of a 面 (leaf) feature. A READ-ONLY derived row — no

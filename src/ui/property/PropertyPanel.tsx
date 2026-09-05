@@ -55,7 +55,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import { resolveAt, type AnchorEntry, type AnchorSeries } from '../../domain/anchor-series';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { PaletteThemeId } from '../../domain/coloring';
-import { featureDisplayName, type Feature } from '../../domain/feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/feature';
 import type { AnchorId, FeatureId } from '../../domain/ids';
 import { ownerLookupFromMap, type VertexOwnerLookup } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
@@ -157,6 +157,11 @@ export interface PropertyPanelProps<S> {
    */
   readonly resolveAreaKm2?: (featureId: FeatureId) => number | undefined;
   /**
+   * FR-19 must（G-1 / 現状.md R1）: 線情報の長さ（km）。面積とまったく同じ形の口で、
+   * ホストが測地の 1 本（`lineLengthKm`）から出す。線でなければ `undefined`。
+   */
+  readonly resolveLengthKm?: (featureId: FeatureId) => number | undefined;
+  /**
    * 打ちかけを捨てるかどうかの確認（N-04）が開いた／閉じたことをホストへ伝える
    * （増分 2 の手直し A4 (c)）。ホストはこれを `shortcutsSuspended` に OR して、
    * 確認が出ているあいだ Ctrl+K・Delete・Ctrl+Z などの大域ショートカットを止める。
@@ -232,6 +237,9 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     nameFieldFocus,
     onAdvanceBundle,
   } = props;
+
+  /** 素性欄の根。**地物を替えたらスクロール位置を先頭へ戻す**ために持つ（C5 の④）。 */
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   /** 名前の入力欄。作業のまとまりの送りがここへ焦点を入れる（設計書 §C.5）。 */
   const nameInputRef = useRef<HTMLInputElement | null>(null);
@@ -335,6 +343,34 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     if (targetFeatureId === null || resolveAreaKm2 === undefined) return undefined;
     return resolveAreaKm2(targetFeatureId);
   }, [targetFeatureId, resolveAreaKm2]);
+
+  // FR-19 must（G-1 / R1）: 線の長さ。面積とまったく同じ鍵（対象 id ＋ ホストの
+  // 解決関数の参照）で memo する。
+  //
+  // **線のときだけ呼ぶ。** 面や点でも呼ぶと、長さの解決が毎回もう 1 回
+  // `featuresAt`（O(履歴 × 錨)）を走らせる ―― 面積の側が「1 回だけ」を守っている
+  // 意味が無くなる（`SidebarContent.test.tsx` の「featuresAt を 1 回だけ」が
+  // これを固定している）。線かどうかは既に解決済みの `feature` から分かる。
+  const { resolveLengthKm } = props;
+  const isLine = feature !== null && feature.kind === FEATURE_KIND.Line;
+  const lengthKm = useMemo<number | undefined>(() => {
+    if (targetFeatureId === null || resolveLengthKm === undefined || !isLine) {
+      return undefined;
+    }
+    return resolveLengthKm(targetFeatureId);
+  }, [targetFeatureId, resolveLengthKm, isLine]);
+
+  /**
+   * 上位領域（親）の表示名（現状.md B27 / 設計書 §C.6）。**引けないときは `undefined`**
+   * にして行ごと出さない ―― 値を捏造しない（honest absence）。
+   */
+  const parentName = useMemo<string | null | undefined>(() => {
+    if (feature === null) return undefined;
+    const parentId = feature.parentId;
+    if (parentId === undefined) return null;
+    const parent = featureLookup.featureAt(parentId);
+    return parent === null ? null : shownName(parent);
+  }, [feature, featureLookup, currentTime, domain]);
 
   // The edit-target anchor is local UI文脈 (教訓 5.4). Keyed by feature so it is
   // discarded when the target feature changes (教訓 5.2).
@@ -698,8 +734,27 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       .join(PROPERTY_STRINGS.existenceRunSeparator);
   }, [displaySeries, targetFeatureId, calendar]);
 
+  // **地物を替えたらスクロール位置を先頭へ戻す**（現状分析 C5 の④ / 設計書 §C.6）。
+  // 旧: 前の地物で下のほうを見ていると、次の地物でも同じ位置から始まるので、名前欄が
+  // 画面の外にある状態で開く。220 件を送る作業では毎回それが起きる。
+  //
+  // **DOM を名前で探さない**（結合点 #3 の反省）。自分の根から**祖先をたどって最初に
+  // 実際にスクロールしている器**を見つけて戻す ―― 器が誰かは素性欄の関心事ではないので、
+  // 器の testid やクラスに依存しない形にしてある。
+  useEffect(() => {
+    if (targetFeatureId === null) return;
+    let el: HTMLElement | null = rootRef.current;
+    while (el !== null) {
+      if (el.scrollTop > 0 && el.scrollHeight > el.clientHeight) {
+        el.scrollTop = 0;
+        return;
+      }
+      el = el.parentElement;
+    }
+  }, [targetFeatureId]);
+
   return (
-    <div className="property-panel" data-testid="property-panel">
+    <div className="property-panel" data-testid="property-panel" ref={rootRef}>
       {/* N-04 の確認は **素性欄の枝の外**に描く。選択が外れた／その年に地物が居なく
           なった経路でも打ちかけは失われうるのに、旧版は feature !== null の枝の中に
           あったので確認そのものが出なかった（反証 F3）。 */}
@@ -778,6 +833,8 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             onSubmit={handleSubmitField}
             {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
             {...(areaKm2 !== undefined ? { areaKm2 } : {})}
+            {...(lengthKm !== undefined ? { lengthKm } : {})}
+            {...(parentName !== undefined ? { parentName } : {})}
             {...(existenceLabel !== undefined ? { existenceLabel } : {})}
           />
 

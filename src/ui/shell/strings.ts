@@ -47,6 +47,15 @@ export const APP_STRINGS = {
   shortcutBusy: (label: string): string =>
     `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',
+  /**
+   * 「必ず描く」が働いたときの知らせ（増分 4 / 設計書 §D.6 の規則 2・§H.5）。
+   * **黙って特別扱いしない** ―― 旧版は「一覧から選ぶとカメラは飛ぶのに地図には
+   * 何も描かれない」が何も言わずに起きていた（C10）。
+   */
+  forcedDraw: (name: string, depth: number | null): string =>
+    depth === null
+      ? `${name}はいまの表示条件では描かれないので、選んでいるあいだだけ地図に描いています。`
+      : `${name}は深さ ${String(depth)} にあります。深さを変えずに見えるよう、選んでいるあいだだけ地図に描いています。`,
   sidebarAriaLabel: 'サイドバー',
   /** 右パネルの 2 区画の仕切り（増分 4。掴んで上下に動かせる）。 */
   sidebarSplitterAriaLabel: '地物一覧と選んだ地物の仕切り',

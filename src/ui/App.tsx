@@ -202,6 +202,8 @@ import {
 import { launchMenuItem } from './context-menu-launch';
 import { sharedVertexIdsFor } from './map/shared-vertex-derivation';
 import { resolveDisplayFor } from './map/display-resolution-cache';
+import { describeForcedDraw } from './map/always-drawn';
+import { derivedDepths, isDepthUndefined } from '../domain/hierarchy';
 import {
   isEmphasizedByOtherAxisUnderFilter,
   isFeatureVisibleUnderFilter,
@@ -2552,8 +2554,25 @@ export function App(): JSX.Element {
       // 一覧で選ぶこと自体は妨げない ―― 素性を見たいだけのことがあるので。
       if (addDrawing) return;
       fitCameraToFeatureRef.current?.(featureId);
+      // **選んだものが地図に見えているか**を確かめ、見えていなければ理由を状態行へ出す
+      // （増分 4 の中身 9 / 設計書 §D.6 の規則 2）。描くこと自体は描画側
+      // （`committed-features` の「必ず描く」）が構造的に受け持つので、ここは
+      // **黙って特別扱いしない**ための知らせだけを担う。
+      const s = store.getState();
+      const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
+      const drawnIds = new Set(resolution.resolved.shapes.map((sh) => sh.featureId));
+      const feature = featureByIdAt(s.domain, s.currentTime, featureId);
+      if (feature === undefined) return;
+      const depth = derivedDepths(resolution.forest).get(featureId);
+      const note = describeForcedDraw(
+        drawnIds,
+        featureId,
+        depth === undefined || isDepthUndefined(depth) ? null : depth,
+        (d) => APP_STRINGS.forcedDraw(featureDisplayName(feature), d),
+      );
+      if (note !== null) announceResult(note);
     },
-    [isToolTargetVisible, addDrawing],
+    [isToolTargetVisible, addDrawing, store, announceResult],
   );
 
   // HB-3 ROOT FIX — mount the three sidebar sections (プロパティ / 地物一覧 / イベント

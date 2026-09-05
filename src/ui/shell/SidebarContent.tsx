@@ -28,9 +28,14 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import { resolveAt, type AnchorSeries } from '../../domain/anchor-series';
 import { findHistoryContaining } from '../../domain/editing/apply-proposal';
-import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/feature';
+import {
+  FEATURE_KIND,
+  featureDisplayName,
+  isDrawableLineVertexCount,
+  type Feature,
+} from '../../domain/feature';
 import { createGeoParams, type GeoParams } from '../../domain/geo/geo-params';
-import { multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
+import { lineLengthKm, multiPolygonAreaKm2 } from '../../domain/geo/geodesy';
 import { isMultiPolygonEmpty } from '../../domain/geometry/types';
 import { buildForest } from '../../domain/hierarchy/forest';
 import { resolveFeatureArea } from '../../domain/hierarchy/resolve-shape';
@@ -42,6 +47,8 @@ import {
 } from '../../domain/selection';
 import type { Calendar } from '../../domain/time/calendar';
 import type { TimePoint } from '../../domain/time/time-point';
+import type { WorldCoordinate } from '../../domain/coordinate';
+import { getVertex } from '../../domain/vertex';
 
 import { featuresAt, verticesAt } from '../live-lookup';
 import { AddDraftForm } from '../add/AddPropertyForm';
@@ -533,6 +540,33 @@ function PropertyPanelHost<S>(props: {
     // (built once in the composition root), listed for completeness.
   }, [getRoot, getTime, equatorLengthKm, flattening, domain, currentTime]);
 
+  /**
+   * FR-19 must（G-1 / 現状.md R1）: **線情報の長さ（km）**。面積とまったく同じ形の口で、
+   * 測地の 1 本（`lineLengthKm`）から出す ―― ここで距離の式を書き直さない（教訓 5.29）。
+   * 面・点・解けない線は `undefined` を返し、素性欄は行そのものを出さない。
+   *
+   * 依存は面積とまったく同じ（FR-109 の設定 ＋ 確定ドメイン ＋ 現在時刻）。
+   */
+  const resolveLengthKm = useCallback(
+    (featureId: FeatureId): number | undefined => {
+      const geoParams: GeoParams = createGeoParams(equatorLengthKm, flattening);
+      const time = getTime();
+      const root = getRoot();
+      const feature = featuresAt(root, time).find((f) => f.id === featureId);
+      if (feature === undefined || feature.kind !== FEATURE_KIND.Line) return undefined;
+      const store = verticesAt(root, time);
+      const points: WorldCoordinate[] = [];
+      for (const id of feature.vertexIds) {
+        const v = getVertex(store, id);
+        if (v === undefined) return undefined;
+        points.push(v.coordinate);
+      }
+      if (!isDrawableLineVertexCount(points.length)) return undefined;
+      return lineLengthKm(points, geoParams);
+    },
+    [getRoot, getTime, equatorLengthKm, flattening, domain, currentTime],
+  );
+
   return (
     <PropertyPanel<S>
       store={props.store}
@@ -542,6 +576,7 @@ function PropertyPanelHost<S>(props: {
       calendar={props.calendar}
       ownerLookup={ownerLookup}
       resolveAreaKm2={resolveAreaKm2}
+      resolveLengthKm={resolveLengthKm}
       {...(props.anchorIntervalDispatch ? { anchorIntervalDispatch: props.anchorIntervalDispatch } : {})}
       {...(props.assetResolver ? { assetResolver: props.assetResolver } : {})}
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}

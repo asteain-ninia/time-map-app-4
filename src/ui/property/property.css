@@ -679,3 +679,38 @@
   cursor: pointer;
 }
 
+/* --- 上位領域（親）の欄（増分 4 / 現状.md B27 / 設計書 §C.6）------------------
+ *
+ * **2 行にする**（値の行とボタンの行）。内容幅 264px に「ラベル 64 ＋ 入力 200」と
+ * 3 つのボタンを同居させると物理的に入らない。ボタン行は 88＋88＋80 ＝ 256px で収まる。 */
+.basic-info__parent {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.basic-info__parent-buttons {
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+  min-width: 0;
+}
+
+.basic-info__parent-buttons button {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 押せない理由（§H.5 の作法: 押せない部品には理由を添える）。 */
+.basic-info__parent-reason {
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}

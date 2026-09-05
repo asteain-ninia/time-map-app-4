@@ -61,6 +61,13 @@ import type {
 } from '../../render/feature-layer';
 import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
 
+import {
+  DISPLAY_VERDICT,
+  resolveDisplayShapes,
+  type DisplayDecision,
+} from '../../domain/display';
+
+import { alwaysDrawnIds, raiseAlwaysDrawn } from './always-drawn';
 import { resolveDisplayFor } from './display-resolution-cache';
 import { resolveFilteredDisplay, type FilteredDisplay } from './filtered-display';
 
@@ -126,6 +133,7 @@ function buildAreas(
   areaFeaturesById: ReadonlyMap<FeatureId, Feature>,
   selectedId: FeatureId | null,
   filtered: FilteredDisplay | null,
+  alwaysDrawn: ReadonlySet<FeatureId>,
 ): EvaluatedFeature[] {
   const presentationFor: PresentationFor = (shape) => {
     const feature = areaFeaturesById.get(shape.featureId);
@@ -159,7 +167,11 @@ function buildAreas(
   // one the hit-test reads off `resolveFilteredDisplay`.
   const out: EvaluatedFeature[] = [];
   for (const shape of resolved.shapes) {
-    if (!filtered.visibleIds.has(shape.featureId)) continue;
+    // 設計書 §D.6 の規則 1: **選択中の地物と親までの道筋は、表示条件に関わらず必ず描く。**
+    // 「選んだのに地図に何も出ない」を構造的に消す（C10 / 報告 11 §4）。
+    if (!filtered.visibleIds.has(shape.featureId) && !alwaysDrawn.has(shape.featureId)) {
+      continue;
+    }
     out.push(toEvaluatedArea(shape, presentationFor(shape)));
   }
   return out;
@@ -298,7 +310,12 @@ export function computeCommittedFeatures(
   // generation (bughunt3 — the cache and this draw path no longer each run the identical
   // O(n) leaf/aggregate scan, and a selection toggle no longer rebuilds the lookup Map).
   const resolution = resolveDisplayFor(root, time, displayControl);
-  const { features, areaFeaturesById, vertices, resolved } = resolution;
+  const { features, areaFeaturesById, vertices, resolved, forest } = resolution;
+
+  // **選択したものは必ず地図に見える**（設計書 §D.6 / C10）。選択中の地物と親までの
+  // 道筋を集め、①表示条件で culls されても描き ②FR-42 が畳んで `resolved.shapes` に
+  // 入っていなければ自分の形を別に解いて足し ③重ね順を保ったまま描画列の上へ重ねる。
+  const alwaysDrawn = alwaysDrawnIds(forest, selectedId);
 
   // FR-113 verdicts for THIS (resolution, filter) — the SAME single computation the
   // live hit-test reads (教訓 5.29 単一解決): `null` when the filter is inert (default),
@@ -311,7 +328,37 @@ export function computeCommittedFeatures(
   // lookup is the cache's SELECTION-INDEPENDENT `areaFeaturesById`, built once per
   // generation, so a selection toggle re-runs only the cheap per-shape mapping, not the
   // O(n) Map construction over all area features (bughunt3).
-  const out: EvaluatedFeature[] = buildAreas(resolved, areaFeaturesById, selectedId, filtered);
+  const out: EvaluatedFeature[] = buildAreas(
+    resolved,
+    areaFeaturesById,
+    selectedId,
+    filtered,
+    alwaysDrawn,
+  );
+
+  // ②FR-42 が畳んだせいで `resolved.shapes` に 1 本も入っていない地物（深さ 0 の表示に
+  // おける深さ 1 の州）は、**自分の形をここで解いて足す**。解き方はドメインの 1 本
+  // （`resolveDisplayShapes`）をそのまま使い、幾何の作り方をここで書き直さない
+  // （教訓 5.29。経度の継ぎ目の展開もそこが面倒を見る）。
+  const missing: [FeatureId, DisplayDecision][] = [];
+  for (const id of alwaysDrawn) {
+    if (out.some((f) => f.id === (id as unknown as string))) continue;
+    if (!areaFeaturesById.has(id)) continue;
+    missing.push([id, { featureId: id, verdict: DISPLAY_VERDICT.Real, emphasized: false }]);
+  }
+  if (missing.length > 0) {
+    const extra = resolveDisplayShapes(forest, vertices, new Map(missing));
+    for (const shape of extra.shapes) {
+      const feature = areaFeaturesById.get(shape.featureId);
+      out.push(
+        toEvaluatedArea(shape, {
+          style: feature ? styleOf(feature.color) : FALLBACK_STYLE,
+          label: feature ? labelOf(feature) : '',
+          selected: shape.featureId === selectedId,
+        }),
+      );
+    }
+  }
 
   // Points / lines directly: they have no hierarchy rollup (no own area), so the
   // area pipeline would resolve them to an empty shape and never draw them.
@@ -321,8 +368,11 @@ export function computeCommittedFeatures(
     let filterOpacity = 1;
     if (filtered !== null) {
       const verdict = filtered.displayById.get(feature.id);
-      if (verdict === undefined || !verdict.visible) continue;
-      filterOpacity = verdict.opacity;
+      // 設計書 §D.6 の規則 1: 選択中のもの（と道筋）は表示条件に関わらず必ず描く。
+      if ((verdict === undefined || !verdict.visible) && !alwaysDrawn.has(feature.id)) {
+        continue;
+      }
+      filterOpacity = verdict?.opacity ?? 1;
     }
     // FR-82 selection ALONE paints the highlight colour. FR-113 強調 is expressed by dimming
     // the OTHERS (the verdict's opacity, folded into `style` below) — never by repainting the
@@ -393,5 +443,10 @@ export function computeCommittedFeatures(
     }
   }
 
-  return out;
+  // ③**重ね順**: 必ず描くものを、順序を保ったまま描画列の最後（＝いちばん上）へ
+  // まとめて重ねる。道筋の中どうしの前後関係は導出どおりのままなので、FR-113 の
+  // 導出規則そのものは変えていない（設計書 §D.6 の「重ね順の 1 行決め」）。
+  return [
+    ...raiseAlwaysDrawn(out, alwaysDrawn, (f) => f.id as unknown as FeatureId),
+  ];
 }
