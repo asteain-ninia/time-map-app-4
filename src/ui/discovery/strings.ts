@@ -22,7 +22,19 @@ export const FILTER_STRINGS = {
   sectionHelp:
     '種別・深さ・地物ごとに表示/非表示を切り替え、不透明度や強調を調整できます。これらは見え方だけを変え、地物データそのものは変更しません。',
   // 種別軸 (FR-113)
-  kindGroupLabel: '種別で表示',
+  /**
+   * 点 / 線 / 面 の可視軸の枠見出し。
+   *
+   * **2026-09-05 の手直し（F3。設計書 §H.1 の N-50）**: 前は「種別で表示」「種別を強調」で、
+   * **枠の中の 3 行はどちらも「点情報 / 線情報 / 面情報」と同じ**だった。区別が 11px の
+   * 灰色の枠見出しだけに載っていたので、行だけを見ると自分がどちらの軸を押しているのか
+   * 分からない。**行の文言そのものに区別を入れる**（下の `kindVisibleRowLabel` /
+   * `kindEmphasizeRowLabel`）。
+   *
+   * §H.1 の第一表記は「点を隠す」だが、**この升目は「入れると出る」向き**なので、
+   * そのまま「隠す」にすると意味が裏返る。向きに合わせて「出す」にしてある。
+   */
+  kindGroupLabel: '地図に出す種類',
   kindPointLabel: '点情報',
   kindLineLabel: '線情報',
   kindAreaLabel: '面情報',
@@ -50,7 +62,11 @@ export const FILTER_STRINGS = {
   /** 右クリック「この地物を強調」(individualHideLabel と対称の個別地物操作). */
   emphasizeFeatureLabel: 'この地物を強調',
   /** パネルの種別強調トグル群 (kindGroupLabel と対称). */
-  emphasizeKindGroupLabel: '種別を強調',
+  emphasizeKindGroupLabel: '目立たせる種類',
+  /** 可視軸の 1 行（「点情報を出す」）。 */
+  kindVisibleRowLabel: (kind: string): string => `${kind}を出す`,
+  /** 強調軸の 1 行（「点情報を目立たせる」）。 */
+  kindEmphasizeRowLabel: (kind: string): string => `${kind}を目立たせる`,
   emphasizeKindGroupHint:
     '選んだ種別を強調し、それ以外の地物を淡く表示します。表示/非表示とは別の軸です。',
   // --- 増分 4: オプションバーの「表示 ▾」（C7 で一覧の下からここへ移した）---------

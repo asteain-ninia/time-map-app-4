@@ -393,7 +393,7 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
                     store.getState().setFilterKindVisible(row.axis, e.target.checked)
                   }
                 />
-                <span>{row.label}</span>
+                <span>{FILTER_STRINGS.kindVisibleRowLabel(row.label)}</span>
               </label>
             ))}
           </fieldset>
@@ -415,7 +415,7 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
                     store.getState().setFilterKindEmphasized(row.axis, e.target.checked)
                   }
                 />
-                <span>{row.label}</span>
+                <span>{FILTER_STRINGS.kindEmphasizeRowLabel(row.label)}</span>
               </label>
             ))}
             <p className="display-filter__emphasize-hint">{FILTER_STRINGS.emphasizeHint}</p>
