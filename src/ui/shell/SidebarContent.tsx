@@ -67,6 +67,7 @@ import {
   isNoOpEdit,
   valuesFromFeature,
   NameFieldFocusStore,
+  PropertyDraftStatusStore,
   type AnchorSeriesLookup,
   type AssetResolver,
   type EditDispatch,
@@ -263,6 +264,8 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
   // 素性欄の名前欄へ焦点を入れる口（束の第 1 手。設計書 §C.5）。器が 1 本だけ持ち、
   // 一覧が要求し、素性欄が受け取る。**DOM を名前で探さない**（結合点 #3 の反省）。
   const nameFieldFocus = new NameFieldFocusStore();
+  // 「素性欄がいま打ちかけを抱えている地物」を一覧へ知らせる口（手直し B11 / N-04）。
+  const draftStatus = new PropertyDraftStatusStore();
 
   const dispatch: EditDispatch = editDispatch ?? {
     // 教訓 5.7: the SAVE trigger is fully wired + observable; the live edit-apply
@@ -288,6 +291,15 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
    * どれも素性欄が使っているものである。断られたら**理由を文字で返す**（G-23）。
    */
   const quickEdit: LedgerQuickEdit = (featureId, patch) => {
+    // **素性欄の打ちかけを黙って上書きしない**（増分 4 の手直し B11 / N-04 の趣旨）。
+    // 一覧のその場編集は素性欄とまったく同じ保存の 1 本を通るので、同じ地物を
+    // 素性欄が打ちかけていると、その打ちかけが跡形もなく消える（対象が変わって
+    // いないので素性欄の確認も出ない）。**確認の板は打ちかけを持っている素性欄の
+    // ものなので、ここでは書き込まずに理由を返す**（下段で保存するかやめるかを
+    // 決めてもらう）。
+    if (draftStatus.get() === featureId) {
+      return PROPERTY_STRINGS.quickEditDraftPending;
+    }
     const root = getRoot();
     const time = getTime();
     const feature = featuresAt(root, time).find((f) => f.id === featureId);
@@ -330,6 +342,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
       {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
       nameFieldFocus={nameFieldFocus}
+      draftStatus={draftStatus}
       onAdvanceBundle={() => {
         advanceBundleCursor({
           store,
@@ -459,6 +472,7 @@ function PropertyPanelHost<S>(props: {
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
   readonly onDraftConfirmChange?: (open: boolean) => void;
   readonly nameFieldFocus?: NameFieldFocusStore;
+  readonly draftStatus?: PropertyDraftStatusStore;
   readonly onAdvanceBundle?: () => void;
 }): JSX.Element {
   const { store, getRoot, getTime } = props;
@@ -608,6 +622,7 @@ function PropertyPanelHost<S>(props: {
         ? { onDraftConfirmChange: props.onDraftConfirmChange }
         : {})}
       {...(props.nameFieldFocus ? { nameFieldFocus: props.nameFieldFocus } : {})}
+      {...(props.draftStatus ? { draftStatus: props.draftStatus } : {})}
       {...(props.onAdvanceBundle ? { onAdvanceBundle: props.onAdvanceBundle } : {})}
     />
   );

@@ -377,6 +377,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
   const displayControl = useStore(store, (s) => s.displayControl);
   const ledger = useStore(store, (s) => s.ledger);
   const mode = useStore(store, (s) => s.mode);
+  const activeTool = useStore(store, (s) => s.activeTool);
   const undoRedoNonce = useStore(store, (s) => s.undoRedoNonce);
   const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
 
@@ -384,9 +385,20 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
 
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+  /**
+   * その場編集の下書き（増分 4 の手直し G1）。
+   *
+   * **始めたときの文脈（年・鍵・道具）を一緒に持つ。** 旧版は「どの地物のどの欄か」
+   * しか持っていなかったので、**年 A で打ち始めて年 B へ移ってから Enter を押すと、
+   * 年 A のつもりで打った名前が年 B へ保存された**（保存は「いま見ている年」に効く）。
+   * 文脈が変わったら下書きは捨てる（K-5「一時的 UI 状態は全経路で破棄する」）。
+   */
   const [editing, setEditing] = useState<{
     readonly featureId: FeatureId;
     readonly field: 'name' | 'kindLabel';
+    readonly startedAt: TimePoint;
+    readonly startedMode: string;
+    readonly startedTool: string | null;
   } | null>(null);
   /** 束を作る前の式の下書き（画面に出して編集できる＝設計書 §C.5）。 */
   const [expressionDraft, setExpressionDraft] = useState<string>(
@@ -876,10 +888,38 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         onRefusal?.(LEDGER_STRINGS.editRefusedViewOnly, unlockAction());
         return;
       }
-      setEditing({ featureId, field });
+      const s = store.getState();
+      setEditing({
+        featureId,
+        field,
+        startedAt: s.currentTime,
+        startedMode: s.mode,
+        startedTool: s.activeTool === null ? null : (s.activeTool as unknown as string),
+      });
     },
-    [editable, onRefusal, unlockAction],
+    [editable, onRefusal, unlockAction, store],
   );
+
+  /**
+   * **文脈が変わったら下書きを捨てて、捨てたことを言う**（手直し G1 / K-5）。
+   *
+   * 捨てる契機は「年が動いた」「鍵が変わった」「道具が変わった」「対象が母集団から
+   * 消えた」の 4 つ。**確認の板は出さない** ―― 素性欄の N-04 は 4 欄ぶんの打ちかけを
+   * 守る仕掛けで、28px の 1 行の入力にモーダルを重ねるのは釣り合わない。失うのは
+   * 打ちかけの数文字だけで、**間違った年へ保存される**という取り返しのつかない側は
+   * これで完全に消える。捨てたことは断りの枠に出すので黙って消えることもない。
+   */
+  useEffect(() => {
+    if (editing === null) return;
+    const changed =
+      editing.startedAt !== currentTime ||
+      editing.startedMode !== mode ||
+      editing.startedTool !== (activeTool === null ? null : (activeTool as unknown as string)) ||
+      !currentById.has(editing.featureId);
+    if (!changed) return;
+    setEditing(null);
+    onRefusal?.(LEDGER_STRINGS.editDiscardedContextChanged);
+  }, [editing, currentTime, mode, activeTool, currentById, onRefusal]);
 
   const commitEdit = useCallback(
     (featureId: FeatureId, field: 'name' | 'kindLabel', value: string): void => {

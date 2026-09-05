@@ -19,6 +19,7 @@ export {
 export { PropertyPanel, type PropertyPanelProps } from './PropertyPanel';
 // 増分 4: 素性欄の名前欄へ焦点を入れる要求の口（束の第 1 手。設計書 §C.5）。
 export { NameFieldFocusStore, type NameFieldFocusListener } from './name-focus';
+export { PropertyDraftStatusStore, type DraftStatusListener } from './draft-status';
 export { BasicInfoForm, type BasicInfoFormProps } from './BasicInfoForm';
 export {
   AnchorSection,

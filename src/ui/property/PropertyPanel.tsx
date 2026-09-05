@@ -93,6 +93,7 @@ import {
   type EditPlan,
 } from './edit-plan';
 import { PROPERTY_STRINGS, detailDocumentTooLongMessage, featureKindJaLabel } from './messages';
+import type { PropertyDraftStatusStore } from './draft-status';
 import type { NameFieldFocusStore } from './name-focus';
 import {
   DISPLAY_KIND,
@@ -176,6 +177,11 @@ export interface PropertyPanelProps<S> {
    */
   readonly nameFieldFocus?: NameFieldFocusStore;
   /**
+   * 「いま打ちかけを抱えている地物」を外へ知らせる口（増分 4 の手直し B11）。
+   * 一覧のその場編集がこれを見て、打ちかけを黙って上書きしないようにする。
+   */
+  readonly draftStatus?: PropertyDraftStatusStore;
+  /**
    * 素性欄の Enter =「保存して**次へ**」の「次へ」の側（設計書 §I.2）。保存が通った
    * ときだけ呼ぶ。**作業のまとまりが無ければホストが何もしない**（ここは可否を知らない）。
    */
@@ -235,6 +241,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     onDeleteFeature,
     onCreateAnchorHere,
     nameFieldFocus,
+    draftStatus,
     onAdvanceBundle,
   } = props;
 
@@ -479,6 +486,22 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     !propertyValuesEqual(draft, seed.baseline) &&
     !(savedValues !== null && propertyValuesEqual(draft, savedValues));
 
+  // **打ちかけの相手を外へ知らせる**（増分 4 の手直し B11）。一覧のその場編集は
+  // 素性欄とまったく同じ保存の 1 本を通るので、素性欄が同じ地物を打ちかけていると
+  // **黙って上書きされる**（対象が変わっていないので N-04 の確認も出ない）。
+  // 打ちかけを持っているのはこの欄なので、持っている事実だけを渡し、書き込みを
+  // 断るかどうかは呼び出し側に決めてもらう（K-5 の趣旨: 一時状態を黙って失わせない）。
+  useEffect(() => {
+    if (draftStatus === undefined) return;
+    draftStatus.set(dirty ? targetFeatureId : null);
+  }, [draftStatus, dirty, targetFeatureId]);
+  useEffect(() => {
+    if (draftStatus === undefined) return;
+    return () => {
+      draftStatus.set(null);
+    };
+  }, [draftStatus]);
+
   // 鍵を「読むだけ」にしたら下書きは **黙って捨てる**（K-5 / GPT#2）。編集経路そのものが
   // 閉じるので、開け直したときに古い打ちかけが復活してはいけない。確認を出さないのは、
   // 利用者自身が閉じた操作だからである。
@@ -665,12 +688,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
    */
   const handleSubmitField = useCallback(
     (advance: boolean): void => {
-      if (!editPlan.savable || pendingDiscard !== null) return;
+      if (pendingDiscard !== null) return;
+      // **保存できないときは理由を出す**（増分 4 の手直し B11）。旧版は黙って return
+      // していたので、Enter を押しても何も起きず、なぜ保存できないのか（その年に錨が
+      // 無い・読むだけ・値が同じ）が画面のどこにも出なかった。理由は保存ボタンの
+      // 可否を決めている `decideEditPlan` が既に持っている（同じ 1 本、教訓 5.30）。
+      if (!editPlan.savable) {
+        setMessage(editPlan.reason ?? PROPERTY_STRINGS.saveUnavailable);
+        return;
+      }
       const saved = handleSave();
       if (!saved || !advance) return;
       onAdvanceBundle?.();
     },
-    [handleSave, editPlan.savable, pendingDiscard, onAdvanceBundle],
+    [handleSave, editPlan.savable, editPlan.reason, pendingDiscard, onAdvanceBundle],
   );
 
   /** 年ちょうどでないときに、その年へ丸める（設計書 §D.3 の表の 4 行目）。 */

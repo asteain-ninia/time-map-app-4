@@ -305,6 +305,88 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
     }
   });
 
+  // 増分 4 の手直し B2。V3 の 3 手（Ctrl+P → 打つ → Enter）で「一覧の行・地図・素性欄」の
+  // 3 つが揃うことを通しで見る。旧版は `expandLedgerPath` に呼び出し元が無かったので、
+  // **選ばれてはいるのに一覧に行が出ない**（畳んだ親の下にある子は見えないまま）だった。
+  test('V3 の 3 手: Ctrl+P で選ぶと、一覧に行が出て素性欄にも出る', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      await page.keyboard.press('Control+p');
+      await page.getByTestId('jump-palette-input').fill('合成地物0011');
+      await page.keyboard.press('Enter');
+
+      // ①選ばれている ②一覧に行が出ている ③素性欄に出ている
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0011');
+      await expect(page.getByTestId('feature-list-item-syn-0011')).toHaveCount(1);
+      expect(await rowsInsidePanel(page)).toBeGreaterThan(0);
+      await expect(
+        page.getByTestId('sidebar-panel-properties').getByTestId('basic-info'),
+      ).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 4 の手直し B8 / 設計書 §I.2。増分 2 の錨表と同じ作法で鍵盤から操れる。
+  test('一覧を鍵盤で操れる（矢印・Home/End・Enter・F2）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      await enterEditMode(page);
+      // 行を 1 つ押してから鍵盤に移る（焦点は一覧の器が持つ）。
+      await page.getByTestId('feature-list-item-syn-0000').click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+
+      await page.keyboard.press('ArrowDown');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0001');
+      await page.keyboard.press('ArrowDown');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0002');
+      await page.keyboard.press('ArrowUp');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0001');
+
+      // **窓の外の行にも届く**（仮想スクロールなので End の行き先は DOM に無い）。
+      await page.keyboard.press('End');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0029');
+      await page.keyboard.press('Home');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0000');
+
+      // F2 でその場改名が開く。
+      await page.keyboard.press('F2');
+      await expect(page.getByTestId('ledger-name-input-syn-0000')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('ledger-name-input-syn-0000')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 4 の手直し B11 / K-6。読むだけでも **理由が出る**（黙って何も起きない、が
+  // いちばん読めない）。理由には「次の一手」のボタンが添う（設計書 §H.5 / 手直し E1）。
+  test('読むだけでその場編集を試すと、理由と「鍵を直せるにする」ボタンが出る', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 10);
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await page.getByTestId('feature-list-item-syn-0000').dblclick();
+      // 入力欄は開かない。理由が状態行と次の一手に出る。
+      await expect(page.getByTestId('ledger-name-input-syn-0000')).toHaveCount(0);
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('読むだけ');
+      const unlock = page.getByTestId('option-bar-next-action-ledger-unlock');
+      await expect(unlock).toBeVisible();
+      await unlock.click();
+      await expect(page.getByTestId('app-mode')).toHaveText('edit');
+      // 鍵が開いたので、今度は入力欄が開く（検査が空振りしていない証）。
+      await page.getByTestId('feature-list-item-syn-0000').dblclick();
+      await expect(page.getByTestId('ledger-name-input-syn-0000')).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
   test('親欄の 3 ボタンが無効で、理由の文が出ている（増分 7 まで）', async () => {
     const { app, page } = await launchApp();
     try {

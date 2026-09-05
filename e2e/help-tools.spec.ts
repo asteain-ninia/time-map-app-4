@@ -10,7 +10,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { launchApp, loadSyntheticProject } from './helpers';
 
 /** Open a top menu, assert the given command item is enabled, and click it. */
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<void> {
@@ -90,6 +90,50 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
       await expect(items.first()).toHaveAttribute('data-kind', 'year');
       // Escape で閉じる（Esc の階段）。
       await page.keyboard.press('Escape');
+      await expect(palette).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  // 増分 4 の手直し C1〜C3。**地物がある状態で**中身まで見る ―― 空のプロジェクトでは
+  // 「候補が 0 件」と「候補が出ない不具合」の区別が付かない（`>` の候補が常に 0 件
+  // だった粗は、まさにそれで見逃されていた）。
+  test('どこへでも移動: 地物名で飛べる / > でコマンドが出る / 外を押すと閉じる', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticProject(page, 30);
+      await page.keyboard.press('Control+p');
+      const palette = page.getByTestId('jump-palette');
+      await expect(palette).toBeVisible();
+
+      // ①地物名で飛ぶ（＝一覧と同じ母集団から選べている）。
+      await page.getByTestId('jump-palette-input').fill('合成地物0007');
+      await expect(palette.locator('[data-kind="feature"]').first()).toBeVisible();
+      await page.keyboard.press('Enter');
+      await expect(palette).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText('syn-0007');
+
+      // ②`>` でコマンドが出る（旧: 初回描画の空の登録簿が凍って **常に 0 件**）。
+      await page.keyboard.press('Control+p');
+      await page.getByTestId('jump-palette-input').fill('>');
+      await expect(palette.locator('[data-kind="command"]').first()).toBeVisible();
+      // 読むだけでは編集のコマンドが候補に出ない（K-6 の関門を通っている）。
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await expect(
+        palette.locator('[data-testid="jump-palette-item-edit.delete"]'),
+      ).toHaveCount(0);
+
+      // ③**外を押すと閉じる**（旧: 焦点が body へ行って Escape も効かず、開いている
+      // あいだは大域の鍵盤も止まるので、閉じる手段が 1 つも無くなった）。
+      await page.getByTestId('statusbar').click();
+      await expect(palette).toHaveCount(0);
+
+      // ④閉じるボタンでも閉じる（閉じ方が画面から分かる）。
+      await page.keyboard.press('Control+p');
+      await expect(palette).toBeVisible();
+      await page.getByTestId('jump-palette-close').click();
       await expect(palette).toHaveCount(0);
     } finally {
       await app.close();

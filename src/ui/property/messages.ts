@@ -175,6 +175,11 @@ export const PROPERTY_STRINGS = {
    * the user is never told an edit landed when it did not (HB-3 Codex P1).
    */
   editNotWired: '属性編集の保存はこのビルドでは未対応です。',
+  /** Enter を押したのに保存できないときの、理由が引けなかった場合の言い方（手直し B11）。 */
+  saveUnavailable: 'いまは保存できません。上の編集時刻と鍵の状態を確かめてください。',
+  /** 一覧のその場編集が、素性欄の打ちかけを守るために断る理由（手直し B11 / N-04）。 */
+  quickEditDraftPending:
+    'この地物は下段の「選んだ地物」で書きかけです。下段で保存するかやめるかしてから直してください。',
 
   // -- 打ちかけの下書きの扱い (N-04) -----------------------------------------
   /**
