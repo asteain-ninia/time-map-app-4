@@ -1090,6 +1090,13 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       expect(childId).not.toBe(parentId);
 
       // --- The scene really IS 集約表示 at the default depth ---------------------
+      // **選択を外してから測る**（増分 4）。選んでいる地物と親までの道筋は表示条件に
+      // 関わらず必ず描かれるので（設計書 §D.6）、確定直後の子を選んだままだと N=0 でも
+      // 子が描かれ、FR-42 の畳み込みそのものを測れない。
+      await page.getByTestId('statusbar').click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+
       await expect(page.getByTestId('global-depth-readout')).toContainText('階層深度: 0');
       const drawnAtZero = await drawnFeatureIds(page);
       await page.getByRole('button', { name: '階層深度を上げる' }).click();
@@ -1432,6 +1439,9 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       // --- (3) 取得後に FR-113 で対象が消える → 対象選択へ戻る ---------------------
       // 個別非表示と同じ単一の可視判定 (isFeatureVisibleUnderFilter) を、ドラフト中でも
       // 到達できる 種別オフ 経路で駆動する (右クリックは上記のとおり抑止されている)。
+      // 増分 4: 表示制御は **ポップオーバー** になったので、外を押すと閉じる（K-2 の
+      // 作法）。上の右クリックで閉じているから、開き直してから触る。
+      await revealFilterPanel(page);
       const areaToggle = page.getByTestId('display-filter-kind-area');
       await expect(areaToggle).toBeChecked();
       await areaToggle.uncheck();

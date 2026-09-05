@@ -179,7 +179,7 @@ test.describe('増分 3 の探索 — 東西の地図端で分断された大陸
       // 実データの地物を 1 つ選び、その頂点の画面座標を読む。
       await page.getByTestId('sidebar-tab-list').click();
       await page.getByTestId('list-mode-current').click();
-      await page.getByLabel('地物一覧を名前で絞り込み').fill('バアカ');
+      await page.getByTestId('unified-list-filter').fill('バアカ');
       const row = page.locator('[data-testid^="feature-list-item-"]').first();
       const found = (await row.count()) > 0;
       if (!found) {

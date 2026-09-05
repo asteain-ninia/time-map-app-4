@@ -175,6 +175,13 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       const ccx = cx + 100;
       await commitSquareFace(page, ccx, cy, 60, { parentIndex: 1 });
 
+      // **選択を外してから測る**（増分 4）。選んでいる地物と親までの道筋は表示条件に
+      // 関わらず必ず描かれるので（設計書 §D.6）、確定直後の子を選んだまま測ると N=0 でも
+      // 子が 1 つ余分に描かれ、FR-42 の畳み込みそのものを測れない。
+      await page.getByTestId('statusbar').click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+
       // FR-42 N=1: expand the 集約 into its children (直轄領 + child) — MORE drawn.
       const n0 = await readDrawnCount(page);
       await page.getByRole('button', { name: '階層深度を上げる' }).click();

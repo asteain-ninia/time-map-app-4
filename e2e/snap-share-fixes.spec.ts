@@ -141,12 +141,19 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
         .toBeGreaterThanOrEqual(4);
       const before = await vertexHandlePositions(page);
 
-      // 起動直後の全体表示では、地図セルの幅（約 940px）がほぼ 360 度である。
-      // 500px 引きずると経度で 180 度を超えるので、保存形式が表現できない辺ができる。
+      // 起動直後の全体表示では、**地図セルの幅がほぼ 360 度**である。だから
+      // 「セルの幅の半分より少し多く」引きずれば経度で 180 度を超え、保存形式が
+      // 表現できない辺ができる。
+      //
+      // **px の直書きをやめた**（増分 4）。右パネルが 220 → 280px になって地図セルが
+      // 60px 狭くなったので、以前の 500px は ①度に直すと 180 度を超えるが ②終点が
+      // 右パネルの上に出てしまい、掴んだままの移動が地図セルの外で終わっていた。
+      // セルの実寸から出せば、以後どんな幅でも「半周より少し多い」を保てる。
+      const dragPx = Math.round(b.width * 0.53); // 360 度 × 0.53 ≒ 191 度
       const corner = corners[0]!;
       await page.mouse.move(corner[0], corner[1]);
       await page.mouse.down();
-      await page.mouse.move(corner[0] + 500, corner[1], { steps: 12 });
+      await page.mouse.move(corner[0] + dragPx, corner[1], { steps: 12 });
       await page.mouse.up();
 
       // **理由が出る**（無反応にしない）。まずここを見る ―― ハンドルの位置は

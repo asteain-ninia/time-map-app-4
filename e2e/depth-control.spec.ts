@@ -93,6 +93,13 @@ test.describe('FR-42 — 階層深度スライダーで描画地物数が変化�
       // 上位領域は唯一の実 option (index 0 = 親なし)。
       await commitFace(page, childCorners, { parentIndex: 1 });
 
+      // **選択を外してから測る**（増分 4）。選んでいる地物とその親までの道筋は
+      // 表示条件に関わらず必ず描かれるので（設計書 §D.6）、確定直後の子を選んだまま
+      // 測ると N=0 でも子が 1 つ余分に描かれ、FR-42 の畳み込みそのものを測れない。
+      await page.getByTestId('statusbar').click();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+
       // N=0 (default): the top-level 集約 is rolled up; its children are omitted.
       const beforeCount = await readDrawnCount(page);
 

@@ -248,42 +248,14 @@ export const EDIT_TOOL_STRINGS = {
 } as const;
 
 /**
- * Sidebar list content strings (HB-3): empty-state guidance for the 地物一覧 /
- * イベント一覧 sections when the project has no features / anchors yet. Centralised
- * here (FR-115); no inline literals (教訓 5.19).
+ * 右パネルの中身が使う文言。
+ *
+ * **増分 4 で大半がここから消えた。** 一覧の文言（空状態・見出し・絞り込み・件数・
+ * モードの名前・通史の行）は、一覧そのものが `ui/discovery` へ移ったので
+ * `LEDGER_STRINGS` が持つ（画面に出ない文言を定数表へ残さない＝`docs/現状.md` B38）。
+ * ここに残るのは、素性欄まわりで **shell 側が出す** 3 つだけである。
  */
 export const SIDEBAR_CONTENT_STRINGS = {
-  featuresEmpty: '地物がありません。地図に地物を追加すると一覧に表示されます。',
-  eventsEmpty: '歴史の錨がありません。地物の履歴がここに表示されます。',
-  // HB3-28: captions explaining what each list shows + how the two differ (the
-  // user asked「イベント一覧と地物一覧の違いは？」). 地物一覧 = features effective at the
-  // current year (現在時刻モード); 錨一覧 = every feature's history anchors across time
-  // (通史モード). Both captions now note that選ぶと視点も合う (A1: 地物一覧 にも視点移動).
-  featuresCaption: '現在の年に存在する地物の一覧です。行を選ぶとその地物を選択し、地図の視点を合わせます。',
-  eventsCaption:
-    '全時刻の歴史の錨（時間軸の節目）の一覧です。行を選ぶとその年へ移動し、地物を選択して視点を合わせます。',
-  // A1 一覧フィルタ (ユーザー要望「一覧に検索が欲しい」). 地物一覧・錨一覧共通の名前部分一致
-  // フィルタ。件数表示は絞り込み前=全件、絞り込み中=一致/全件。
-  filterPlaceholder: '名前で絞り込み',
-  featuresFilterAria: '地物一覧を名前で絞り込み',
-  eventsFilterAria: '錨一覧を名前で絞り込み',
-  noMatch: '絞り込み条件に一致する項目がありません。',
-  /** 件数表示（絞り込みなし）: 総件数のみ。 */
-  countAll: (total: number): string => `${total}件`,
-  /** 件数表示（絞り込み中）: 一致件数 / 総件数。 */
-  countFiltered: (shown: number, total: number): string => `${shown} / ${total}件`,
-  // HB6 一覧タブ統合: モードトグル「現在時刻 / 通史」。現在時刻=現在の年に存在する地物
-  // (旧地物一覧), 通史=全時刻の錨 (旧錨一覧)。フィルタ・件数・視点フィット・選択挙動は
-  // モードごとに現行を踏襲。
-  listModeAria: '一覧の表示モード',
-  listModeCurrentLabel: '現在時刻',
-  listModeHistoryLabel: '通史',
-  /**
-   * 通史の行に **年を付ける**（増分 2 の中身 5 / 現状分析 N-45）。行はこれまで
-   * 「その錨のスナップショットにおける地物名」しか運んでおらず、**どの年の記録なのかが
-   * 読めなかった**（同じ名前の行が錨の数だけ並ぶ）。
-   */
-  historyRowLabel: (year: string, name: string): string => `${year} — ${name}`,
   /** 系列の持ち主の名前が引けなかったときの言い方（内部 id は画面に出さない、U-1）。 */
   unknownOwnerName: '別の地物',
   /** 一覧のその場編集が対象を解決できないとき（G-23 の共通枠へ出す）。 */

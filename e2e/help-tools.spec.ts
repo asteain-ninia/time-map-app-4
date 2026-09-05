@@ -74,8 +74,15 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
   test('ツール → どこへでも移動 に「1」と打つと年の候補だけが出る（C10 の罠を作らない）', async () => {
     const { app, page } = await launchApp();
     try {
-      await clickMenuCommand(page, 'tools', 'tools.jump');
+      // **打鍵からも開く**（設計書 §I.2 の Ctrl+P）。メニューからしか開かないと、
+      // 「全機能への保険の経路」という役目を果たさない。
+      await page.keyboard.press('Control+p');
       const palette = page.getByTestId('jump-palette');
+      await expect(palette).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(palette).toHaveCount(0);
+
+      await clickMenuCommand(page, 'tools', 'tools.jump');
       await expect(palette).toBeVisible();
       await page.getByTestId('jump-palette-input').fill('1');
       const items = palette.locator('[data-kind]');

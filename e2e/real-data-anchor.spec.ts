@@ -35,7 +35,11 @@ const OWNER_NAME = 'デーレ共和国';
 async function selectFeatureByName(page: Page, name: string): Promise<void> {
   await page.getByTestId('sidebar-tab-list').click();
   await page.getByTestId('list-mode-current').click();
-  await page.getByLabel('地物一覧を名前で絞り込み').fill(name);
+  // **平（絞り込み結果を平らに見る）にしてから絞る**（増分 4）。木のままだと、
+  // 一致した子へ辿り着く道を残すために **先祖の行も出る** ので、先頭の行が
+  // 「デーレ共和国」（親）になり、子を選んだつもりで親を選んでしまう。
+  await page.getByTestId('list-shape-flat').click();
+  await page.getByTestId('unified-list-filter').fill(name);
   const row = page.locator('[data-testid^="feature-list-item-"]').first();
   await expect(row).toBeVisible();
   await row.click();

@@ -396,7 +396,27 @@ export async function openPropertySection(page: Page, testId: string): Promise<v
   const section = page.getByTestId(testId);
   const open = await section.evaluate((el) => (el as HTMLDetailsElement).open);
   if (open) return;
-  await section.locator('summary').first().click();
+  // 素性欄は **上端に見出しが、下端に保存列が固定** されている（`position: sticky`）。
+  // Playwright の「見えるところまでスクロール」は必要最小限しか動かさないので、節の
+  // 見出しが固定部品の **下** で止まり、クリックを横取りされる（教訓 5.61）。人は
+  // 続けてスクロールできるので操作は成り立つ ―― ここは **寄せ方だけ** を人に合わせ、
+  // 「固定した見出しのすぐ下」へ来るように器を動かしてから押す。
+  const summary = section.locator('summary').first();
+  await summary.evaluate((el) => {
+    // いちばん近い「実際にスクロールしている器」を探す。
+    let container: HTMLElement | null = el.parentElement;
+    while (container !== null && container.scrollHeight <= container.clientHeight) {
+      container = container.parentElement;
+    }
+    if (container === null) return;
+    const STICKY_HEAD_PX = 76;
+    const delta =
+      el.getBoundingClientRect().top -
+      container.getBoundingClientRect().top -
+      STICKY_HEAD_PX;
+    container.scrollTop += delta;
+  });
+  await summary.click();
   await expect(section).toHaveJSProperty('open', true);
 }
 

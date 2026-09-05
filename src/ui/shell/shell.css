@@ -406,7 +406,7 @@ body {
  * どちらも 60:40 で、列が十分に高ければその比のままになる。 */
 .sidebar__panel[data-testid='sidebar-panel-list'] {
   flex: 0 1 60%;
-  min-height: 96px;
+  min-height: 60px;
 }
 
 /* 下段（選んだ地物）は残り全部。**下端に固定した保存列（36px）と、その上の
@@ -421,7 +421,7 @@ body {
    * 動かない」の右パネル版）。基準を 0 にすると、区画の高さは **窓と仕切りだけ**で
    * 決まり、中身では動かない。 */
   flex: 1 1 0;
-  min-height: 200px;
+  min-height: 300px;
 }
 
 .sidebar__panel-head {
@@ -462,6 +462,11 @@ body {
   padding: 10px;
   overflow-x: hidden;
   overflow-y: auto;
+  /* **下端に固定した部品のぶんだけ、スクロールの寄せ先を上げる**（教訓 5.61）。
+   * 素性欄の保存列は `position: sticky; bottom: 0` なので、中身を「見えるところまで
+   * スクロール」すると保存列の**下**に潜り込んで押せなくなる。`scroll-padding-bottom`
+   * を保存列ぶん取っておくと、寄せ先が保存列の上で止まる。 */
+  scroll-padding-bottom: 96px;
 }
 
 /* 仕切り 6px（設計書 §B.1 の「≡ 仕切り 6px」）。掴んで上下に動かす。 */

@@ -72,7 +72,10 @@ async function blurInputs(page: Page): Promise<void> {
 async function selectByName(page: Page, name: string): Promise<void> {
   await page.getByTestId('sidebar-tab-list').click();
   await page.getByTestId('list-mode-current').click();
-  await page.getByLabel('地物一覧を名前で絞り込み').fill(name);
+  // **平にしてから絞る**（増分 4）。木のままだと一致した子の先祖も出るので、先頭の行が
+  // 親になり、子を選んだつもりで親を選んでしまう。
+  await page.getByTestId('list-shape-flat').click();
+  await page.getByTestId('unified-list-filter').fill(name);
   const row = page.locator('[data-testid^="feature-list-item-"]').first();
   await expect(row).toBeVisible();
   await row.click();
@@ -82,7 +85,8 @@ async function selectByName(page: Page, name: string): Promise<void> {
 /** 一覧に出ているその地物の行の文字（現在時刻の一覧＝地図と同じ母集合）。 */
 async function listLabelOf(page: Page, name: string): Promise<string> {
   await page.getByTestId('sidebar-tab-list').click();
-  await page.getByLabel('地物一覧を名前で絞り込み').fill(name);
+  await page.getByTestId('list-shape-flat').click();
+  await page.getByTestId('unified-list-filter').fill(name);
   const row = page.locator('[data-testid^="feature-list-item-"]').first();
   const text = (await row.textContent()) ?? '';
   await page.getByTestId('sidebar-tab-properties').click();

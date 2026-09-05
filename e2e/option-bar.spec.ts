@@ -60,7 +60,11 @@ test.describe('オプションバーの枠（設計書 §C.4）', () => {
       await expect(page.getByTestId('option-bar-tool')).toHaveText('✦ 選ぶ');
       await expect(page.getByTestId('option-bar-target')).toHaveText('（選んでいません）');
       await expect(page.getByTestId('option-bar-next-step')).toHaveText('地図か台帳から地物を選ぶ');
-      await expect(page.getByTestId('option-bar-settings')).toHaveText('（設定なし）');
+      // 増分 4: 設定欄には **「表示 ▾」が常設** で載る（道具に属さない部品なので、
+      // 道具を持っていなくても・読むだけでも使える）。だから「（設定なし）」はもう出ない。
+      const settings = page.getByTestId('option-bar-settings');
+      await expect(settings).not.toHaveText('（設定なし）');
+      await expect(settings.getByTestId('option-display-button')).toHaveText('表示 ▾');
       // 確定欄は「確定の要らない道具」のとき空。枠だけが残る（設計書 §B.4）。
       const commit = page.getByTestId('option-bar-commit');
       await expect(commit).toBeAttached();

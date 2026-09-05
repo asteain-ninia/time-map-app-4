@@ -446,7 +446,8 @@ export function computeCommittedFeatures(
   // ③**重ね順**: 必ず描くものを、順序を保ったまま描画列の最後（＝いちばん上）へ
   // まとめて重ねる。道筋の中どうしの前後関係は導出どおりのままなので、FR-113 の
   // 導出規則そのものは変えていない（設計書 §D.6 の「重ね順の 1 行決め」）。
-  return [
-    ...raiseAlwaysDrawn(out, alwaysDrawn, (f) => f.id as unknown as FeatureId),
-  ];
+  // 必ず描くものが 1 つも無ければ、`raiseAlwaysDrawn` は **同じ配列をそのまま返す**
+  // （並べ替えの費用も、新しい配列の割り当ても発生しない）。
+  return raiseAlwaysDrawn(out, alwaysDrawn, (f) => f.id as unknown as FeatureId) as
+    EvaluatedFeature[];
 }

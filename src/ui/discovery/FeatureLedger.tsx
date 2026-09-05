@@ -26,7 +26,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import { featureDisplayName } from '../../domain/feature';
-import { buildForest } from '../../domain/hierarchy/forest';
+import { buildForest, descendantIds } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
@@ -514,12 +514,16 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
   const bundleSource = useCallback((): BundleSource => {
     const root = getRoot();
     const time = getTime();
+    // 「手で印を付けたもの」の集合（`markedFeatures`）は **増分 7 で作る**（使い先の
+    // 結合・連邦化・一括の種別付与がそこで揃うため）。いまは常に空で、この既定の式は
+    // 0 件になる（`docs/ui-redesign/進捗/増分4.md` の申し送り）。
     const marked = new Set<FeatureId>();
+    // 「この地物の家族」＝ 親・自分・**子孫**（設計書 §C.5）。子だけでは家族にならない。
     const family = new Set<FeatureId>();
     const active = store.getState().activeFeature;
     if (active !== null) {
       family.add(active);
-      for (const id of forest.childrenOf.get(active) ?? []) family.add(id);
+      for (const id of descendantIds(forest, active)) family.add(id);
       const parent = ledgerFeatures.find((f) => f.id === active)?.parentId;
       if (parent != null) family.add(parent);
     }
@@ -916,41 +920,40 @@ function BundleBar(props: {
           {BUNDLE_STRINGS.makeLabel}
         </button>
       </div>
-      <div className="ledger__bundle-row">
-        <button
-          type="button"
-          className="ledger__bundle-step"
-          data-testid="bundle-prev"
-          disabled={bundle === null}
-          onClick={() => onStep(-1)}
-        >
-          {BUNDLE_STRINGS.prevLabel}
-        </button>
-        <span className="ledger__bundle-position" data-testid="bundle-position">
-          {bundle === null
-            ? BUNDLE_STRINGS.none
-            : BUNDLE_STRINGS.position(bundle.cursor + 1, bundle.members.length)}
-        </span>
-        <button
-          type="button"
-          className="ledger__bundle-step"
-          data-testid="bundle-next"
-          disabled={bundle === null}
-          onClick={() => onStep(1)}
-        >
-          {BUNDLE_STRINGS.nextLabel}
-        </button>
-        <label className="ledger__bundle-only">
-          <input
-            type="checkbox"
-            data-testid="bundle-only-unfinished"
-            checked={onlyUnfinished}
-            disabled={bundle === null}
-            onChange={(e) => onOnlyUnfinished(e.target.checked)}
-          />
-          <span>{BUNDLE_STRINGS.onlyUnfinishedLabel}</span>
-        </label>
-        {bundle !== null && (
+      {/* **送りの行は、まとまりがあるときだけ出す。** 束が無ければ「◀前へ 0/0 次へ▶」は
+          意味が無く、常に無効なボタンを並べることになる（C9 の②「押しても何も起きない
+          ボタンを置かない」）。右パネルの列が低いあいだ（増分 6 まで）は、1 行減ることが
+          そのまま見える行数になる。 */}
+      {bundle !== null && (
+        <div className="ledger__bundle-row">
+          <button
+            type="button"
+            className="ledger__bundle-step"
+            data-testid="bundle-prev"
+            onClick={() => onStep(-1)}
+          >
+            {BUNDLE_STRINGS.prevLabel}
+          </button>
+          <span className="ledger__bundle-position" data-testid="bundle-position">
+            {BUNDLE_STRINGS.position(bundle.cursor + 1, bundle.members.length)}
+          </span>
+          <button
+            type="button"
+            className="ledger__bundle-step"
+            data-testid="bundle-next"
+            onClick={() => onStep(1)}
+          >
+            {BUNDLE_STRINGS.nextLabel}
+          </button>
+          <label className="ledger__bundle-only">
+            <input
+              type="checkbox"
+              data-testid="bundle-only-unfinished"
+              checked={onlyUnfinished}
+              onChange={(e) => onOnlyUnfinished(e.target.checked)}
+            />
+            <span>{BUNDLE_STRINGS.onlyUnfinishedLabel}</span>
+          </label>
           <button
             type="button"
             className="ledger__bundle-step"
@@ -959,8 +962,8 @@ function BundleBar(props: {
           >
             {BUNDLE_STRINGS.clearLabel}
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
