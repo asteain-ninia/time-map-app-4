@@ -2792,7 +2792,7 @@ export function App(): JSX.Element {
         onSuspendedShortcut={modalOwnsKeyboard ? onSuspendedShortcut : undefined}
         onMapMount={onMapMount}
         /* 設計書 §C.4 のオプションバー。この増分では器と API だけで、中身は各道具が
-           後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か台帳から地物を
+           後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か地物一覧から
            選ぶ／（設定なし）／空の確定欄」）。 */
         optionBar={<OptionBar store={optionBarStore} />}
         timeline={<Timeline store={store} />}

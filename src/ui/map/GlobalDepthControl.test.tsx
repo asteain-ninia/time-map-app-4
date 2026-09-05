@@ -12,6 +12,8 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { DISPLAY_CONTROL_STRINGS } from '../shell/strings';
+
 import { GlobalDepthControl, type GlobalDepthControlProps } from './GlobalDepthControl';
 
 function renderControl(overrides: Partial<GlobalDepthControlProps> = {}) {
@@ -56,15 +58,21 @@ describe('GlobalDepthControl — グローバル階層深度スライダー (FR-
 
   it('the − / ＋ buttons step the depth and clamp at the bounds', () => {
     const inc = renderControl({ globalDepth: 0, maxDepth: 3 });
-    fireEvent.click(screen.getByRole('button', { name: '階層深度を上げる' }));
+    fireEvent.click(
+      screen.getByRole('button', { name: DISPLAY_CONTROL_STRINGS.globalDepthUpLabel }),
+    );
     expect(inc.onGlobalDepth).toHaveBeenCalledWith(1);
     // At the floor, − is disabled (no negative depth).
-    expect(screen.getByRole('button', { name: '階層深度を下げる' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: DISPLAY_CONTROL_STRINGS.globalDepthDownLabel }),
+    ).toBeDisabled();
   });
 
   it('disables ＋ at the ceiling', () => {
     renderControl({ globalDepth: 3, maxDepth: 3 });
-    expect(screen.getByRole('button', { name: '階層深度を上げる' })).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: DISPLAY_CONTROL_STRINGS.globalDepthUpLabel }),
+    ).toBeDisabled();
   });
 });
 
