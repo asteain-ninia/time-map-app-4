@@ -23,14 +23,15 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import {
-  addInputLayerBox,
-  armAddAreaTool,
-  drawFace,
-  enterEditMode,
-  launchApp,
-  returnToViewMode,
+import {
+  addInputLayerBox,
+  armAddAreaTool,
+  drawFace,
+  enterEditMode,
+  launchApp,
+  returnToViewMode,
   squareCorners,
+  listedFeatureCount,
 } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,8 +52,9 @@ async function showFeaturesTab(page: Page): Promise<void> {
 
 async function featureListCount(page: Page): Promise<number> {
   await showFeaturesTab(page);
-  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 
 test.describe('HB3-5/19 — ナイフの n-way 片チューザ: コーム切断で k+1 片が実機で生成される', () => {

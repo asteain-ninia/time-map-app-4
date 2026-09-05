@@ -145,12 +145,18 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
       await expect(menu).toBeVisible();
 
       // そのまま EditProperties を発火（positive path: live 存在検証を通過し、
-      // プロパティタブへフォーカス+対象選択）。
+      // 「選んだ地物」の区画へ寄せ + 対象選択）。
+      //
+      // **増分 4 で排他タブをやめた**ので、印は `aria-selected`（選ばれているタブ）では
+      // なく `aria-pressed`（押されているトグル）で表す。2 つの区画は同時に見えている
+      // ので「選ばれているタブ」を名乗るのは嘘になる。旧実装が
+      // `getElementById('sidebar-tab-properties').click()` に文字列で依存していた
+      // 経路（結合点 #3）は、`SidebarFocusStore` の口へ置き換えた。
       await menu.locator('[data-item-kind="editProperties"]').click();
       await expect(menu).toHaveCount(0);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
       await expect(page.getByTestId('sidebar-tab-properties')).toHaveAttribute(
-        'aria-selected',
+        'aria-pressed',
         'true',
       );
       // 基本情報フォームが対象を表示（存在する地物が選択された証左）。

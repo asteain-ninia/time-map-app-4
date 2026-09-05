@@ -48,7 +48,7 @@
 //
 // The panel holds NO map-draw state in React (技術方針 2.3); it reads the store.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -93,6 +93,7 @@ import {
   type EditPlan,
 } from './edit-plan';
 import { PROPERTY_STRINGS, detailDocumentTooLongMessage, featureKindJaLabel } from './messages';
+import type { NameFieldFocusStore } from './name-focus';
 import {
   DISPLAY_KIND,
   decideDisplay,
@@ -163,6 +164,17 @@ export interface PropertyPanelProps<S> {
    * 受ける層も同時に設計する）。未配線でも確認そのものは動く（honest stub）。
    */
   readonly onDraftConfirmChange?: (open: boolean) => void;
+  /**
+   * 名前欄へ焦点を入れてほしい、という要求の口（増分 4 / 設計書 §C.5）。作業のまとまりを
+   * 作った瞬間と、送りで次の地物へ移ったときに一覧が呼ぶ。**DOM を名前で探さない**
+   * （結合点 #3 の反省。`property/name-focus.ts` の注記）。
+   */
+  readonly nameFieldFocus?: NameFieldFocusStore;
+  /**
+   * 素性欄の Enter =「保存して**次へ**」の「次へ」の側（設計書 §I.2）。保存が通った
+   * ときだけ呼ぶ。**作業のまとまりが無ければホストが何もしない**（ここは可否を知らない）。
+   */
+  readonly onAdvanceBundle?: () => void;
 }
 
 /**
@@ -217,7 +229,21 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     onOpenDetail,
     onDeleteFeature,
     onCreateAnchorHere,
+    nameFieldFocus,
+    onAdvanceBundle,
   } = props;
+
+  /** 名前の入力欄。作業のまとまりの送りがここへ焦点を入れる（設計書 §C.5）。 */
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (nameFieldFocus === undefined) return;
+    return nameFieldFocus.subscribe(() => {
+      const el = nameInputRef.current;
+      if (el === null) return;
+      el.focus();
+      el.select();
+    });
+  }, [nameFieldFocus]);
 
   // FR-98: preview asset resolution — default to "nothing resolves" (safe broken
   // image, never a raw external fetch) when the host wired none.
@@ -545,16 +571,16 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   }, [pendingDiscard, store, targetFeatureId]);
 
   // --- 保存 ------------------------------------------------------------------
-  const handleSave = useCallback(() => {
+  const handleSave = useCallback((): boolean => {
     if (feature === null) {
       setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}編集対象が解決できません。`);
-      return;
+      return false;
     }
     if (editPlan.editTime === null) {
       setMessage(
         `${PROPERTY_STRINGS.saveFailedPrefix}${editPlan.reason ?? 'この年には保存できません。'}`,
       );
-      return;
+      return false;
     }
     // 旧: 基本情報の開始年/終了年に対する WRITE 側の年境界ガード (bughunt 第12波 #2)。
     // **入力欄そのものを無くしたので不要になった**（A7 / GPT#8）。飾りの年は読み取り
@@ -565,13 +591,15 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     const docPlan = planDetailDocumentEdit(feature, draft.detailDocument);
     if (docPlan.kind === DETAIL_DOCUMENT_PLAN.TooLong) {
       setMessage(detailDocumentTooLongMessage(docPlan.length));
-      return;
+      return false;
     }
     // 教訓 5.24: no-op guard. 値が同じ保存は dispatch しない（幽霊の取り消しを作らない）。
     // **Ctrl+K（この年に錨を作る）はこの関門に飲まれない別のコマンド**である（設計書 §D.3）。
     if (isNoOpEdit(feature, draft)) {
       setMessage(null);
-      return;
+      // **値が同じでも「次へ」は進める**（設計書 §E.1 の V4）。220 件を送っている途中で
+      // 「この 1 件は直さなくてよい」と判断したとき、Enter で次へ行けないと詰まる。
+      return true;
     }
     try {
       editDispatch.dispatchEdit(buildEditIntent(feature, editPlan.editTime, draft));
@@ -579,10 +607,27 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       // 教訓 5.53: 保存が成功すると編集対象（地物×錨×年）が変わる。**いま保存した値**
       // だけを例外として覚えておき、次に対象が変わったときに黙って追従させる。
       setSavedValues(draft);
+      return true;
     } catch (err) {
       setMessage(`${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`);
+      return false;
     }
   }, [feature, editPlan, draft, editDispatch]);
+
+  /**
+   * 名前欄・種別欄の Enter =「**保存して次へ**」（設計書 §I.2 / §C.5）。
+   * `Ctrl+Enter` は保存だけして次へ進まない。**保存が通ったときだけ送る** ――
+   * 断られたのに次の地物へ飛ぶと、理由を読む前に画面が変わってしまう（教訓 5.12）。
+   */
+  const handleSubmitField = useCallback(
+    (advance: boolean): void => {
+      if (!editPlan.savable || pendingDiscard !== null) return;
+      const saved = handleSave();
+      if (!saved || !advance) return;
+      onAdvanceBundle?.();
+    },
+    [handleSave, editPlan.savable, pendingDiscard, onAdvanceBundle],
+  );
 
   /** 年ちょうどでないときに、その年へ丸める（設計書 §D.3 の表の 4 行目）。 */
   const handleRoundToYear = useCallback(() => {
@@ -729,6 +774,8 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
             editable={editable}
             values={draft}
             onChange={patchDraft}
+            nameInputRef={nameInputRef}
+            onSubmit={handleSubmitField}
             {...(props.paletteThemes ? { paletteThemes: props.paletteThemes } : {})}
             {...(areaKm2 !== undefined ? { areaKm2 } : {})}
             {...(existenceLabel !== undefined ? { existenceLabel } : {})}

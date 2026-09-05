@@ -19,7 +19,7 @@
 //
 // 「打ちかけの下書きをいつ捨てるか」（教訓 5.2 / 5.12 / N-04）もパネル側の責任になった。
 
-import { useMemo } from 'react';
+import { useMemo, type Ref } from 'react';
 
 import type { Feature } from '../../domain/feature';
 
@@ -60,6 +60,17 @@ export interface BasicInfoFormProps {
    * （裁定 §N-5 の (A)）。解決できないときは省く（値を捏造しない）。
    */
   readonly existenceLabel?: string;
+  /**
+   * 名前の入力欄への参照（増分 4）。作業のまとまりの送りが「次の未処理を選び、
+   * **名前欄に焦点を入れる**」を成り立たせるために、親が焦点を入れられるようにする。
+   * **DOM を名前で探さない**（結合点 #3 の反省。`property/name-focus.ts` の注記）。
+   */
+  readonly nameInputRef?: Ref<HTMLInputElement>;
+  /**
+   * 名前欄・種別欄で Enter を押したとき（増分 4 / 設計書 §I.2）。
+   * `advance` は「保存して**次へ**」か「保存だけ」か（Ctrl+Enter は次へ進まない）。
+   */
+  readonly onSubmit?: (advance: boolean) => void;
 }
 
 /**
@@ -81,7 +92,17 @@ function styleValuesFromDraft(draft: PropertyEditValues): StyleValues {
 }
 
 export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
-  const { feature, editable, values: draft, onChange, areaKm2, existenceLabel } = props;
+  const { feature, editable, values: draft, onChange, areaKm2, existenceLabel, onSubmit } = props;
+
+  /**
+   * 名前欄・種別欄の Enter（設計書 §I.2）。**Ctrl+Enter は保存だけして次へ進まない。**
+   * `onSubmit` が渡っていないとき（テスト・組み込み前）は既定のまま素通しする。
+   */
+  const onFieldKeyDown = (e: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (e.key !== 'Enter' || onSubmit === undefined) return;
+    e.preventDefault();
+    onSubmit(!e.ctrlKey);
+  };
   // Default the palette dropdown to the feature's current theme alone so the
   // section mounts even when the host has not wired the settings-provided list.
   const paletteThemes = useMemo(
@@ -106,7 +127,9 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           aria-label={PROPERTY_STRINGS.nameLabel}
           value={draft.name}
           disabled={!editable}
+          {...(props.nameInputRef !== undefined ? { ref: props.nameInputRef } : {})}
           onChange={(e) => onChange({ name: e.target.value })}
+          onKeyDown={onFieldKeyDown}
         />
       </label>
 
@@ -124,6 +147,7 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           value={draft.kindLabel}
           disabled={!editable}
           onChange={(e) => onChange({ kindLabel: e.target.value })}
+          onKeyDown={onFieldKeyDown}
         />
       </label>
 

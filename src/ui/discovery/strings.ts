@@ -134,3 +134,130 @@ export const DIAGNOSTICS_STRINGS = {
   privacyNote:
     '診断情報には個人情報やプロジェクトの内容は含めていません。外部送信も行いません。',
 } as const;
+
+/**
+ * 地物一覧（台帳）の文言（増分 4 / 設計書 §C.5 / §H.1）。
+ *
+ * **画面の第一表記は設計書 §H.1 に従う**: 台帳 → 「地物一覧」、素性欄 → 「選んだ地物」、
+ * 束 → 「作業のまとまり」、種別ラベル → 「種別」、階層深度 → 「深さ」。内部語をそのまま
+ * 画面へ出さない（U-1 / N-30）。
+ */
+export const LEDGER_STRINGS = {
+  /** 絞り込み欄（Ctrl+F の行き先）。**「地物を検索」はこの欄に統合した**（E-6）。 */
+  filterPlaceholder: '名前・種別で絞り込み',
+  filterAria: '地物一覧を名前・種別で絞り込み',
+  /** 件数（絞り込みなし）。 */
+  countAll: (total: number): string => `${String(total)}件`,
+  /** 件数（絞り込み中）。 */
+  countFiltered: (shown: number, total: number): string =>
+    `${String(shown)} / ${String(total)}件`,
+  emptyFeatures: '地物がありません。地図に地物を追加すると一覧に表示されます。',
+  emptyAnchors: '歴史の錨がありません。地物の履歴がここに表示されます。',
+  noMatch: '絞り込み条件に一致する項目がありません。',
+  /** 母集団の切替（U-18 の裁定どおり 2 つのまま。§N-14 の (A)）。 */
+  modeAria: '一覧の見方',
+  modeCurrentLabel: '現在時刻',
+  modeHistoryLabel: '通史',
+  /** 木 / 平 の切替（G-7 / FR-111）。 */
+  shapeAria: '一覧の並べ方',
+  treeLabel: '木',
+  flatLabel: '平',
+  treeTitle: '階層をたどって並べます。',
+  flatTitle: '絞り込んだ結果を平らに並べます。',
+  /** 行の部品。 */
+  expandLabel: (name: string): string => `${name} の下位領域を開く`,
+  collapseLabel: (name: string): string => `${name} の下位領域を閉じる`,
+  hideLabel: (name: string): string => `${name} を隠す`,
+  showLabel: (name: string): string => `${name} を表示する`,
+  anchorCount: (n: number): string => `${String(n)}本`,
+  anchorCountTitle: (n: number): string => `歴史の錨 ${String(n)} 本`,
+  /** 行の「済」の印（何を直したかは束の側が知っている）。 */
+  doneMark: '済',
+  doneTitle: '作ったときの名前・種別と違うので、直したものとして印を付けています。',
+  /** 重複名の見分け（3 段）。 */
+  qualifierParent: (parentName: string): string => `〈${parentName}〉`,
+  /** 上の書式の開き括弧。段の判定にも使うので 1 か所に置く。 */
+  qualifierParentOpen: '〈',
+  pathSeparator: ' › ',
+  noParent: '上位領域なし',
+  /** 3 段目: 束の通し番号（あれば）と代表点の座標。 */
+  qualifierPosition: (index: number | null, coordinate: string | null): string => {
+    const parts: string[] = [];
+    if (index !== null) parts.push(`#${String(index)}`);
+    if (coordinate !== null) parts.push(coordinate);
+    return parts.length === 0 ? '' : parts.join(' ／ ');
+  },
+  /** 短い座標（行が 28px なので 6 桁は入らない）。 */
+  coordinate: (lat: string, lon: string): string => `${lat} ${lon}`,
+  north: '北',
+  south: '南',
+  east: '東',
+  west: '西',
+  unknownCoordinate: '—',
+  /** 通史の行（年 — 名前）。 */
+  historyRowLabel: (year: string, name: string): string => `${year} — ${name}`,
+  /** 一覧の脚（母集団と対象と済）。 */
+  footer: (shown: number, total: number, done: number | null): string =>
+    done === null
+      ? `${String(total)} 件中 ${String(shown)} 件を表示`
+      : `${String(total)} 件中 ${String(shown)} 件を表示 ／ 済 ${String(done)} 件`,
+  /** その場編集（F2 / ダブルクリック）。 */
+  renameAria: (name: string): string => `${name} の名前`,
+  kindLabelAria: (name: string): string => `${name} の種別`,
+  renameHint: 'Enter で確定、Escape でやめる',
+  /** 読むだけのときに、その場編集を断る理由（K-6 / G-23 の共通枠へ出す）。 */
+  editRefusedViewOnly: '「読むだけ」の状態なので直せません。上の鍵を「直せる」にしてください。',
+} as const;
+
+/**
+ * 作業のまとまり（内部語では「束」。設計書 §C.5 / §H.1）の文言。
+ *
+ * **束 ＝「絞り込み式を 1 回だけ走らせた結果を、そのときの並びと名前ごと固定したもの」。**
+ */
+export const BUNDLE_STRINGS = {
+  label: '作業',
+  selectAria: '作業のまとまりを選ぶ',
+  none: '（まとまりなし）',
+  expressionAria: '作業のまとまりの絞り込み式',
+  expressionPlaceholder: '正規表現（例: 付近の領域[0-9]+$）',
+  makeLabel: 'この結果をまとめる',
+  makeTitle: 'いまの絞り込みの結果を、並びと当時の名前ごと固定します。',
+  clearLabel: 'やめる',
+  prevLabel: '◀ 前へ',
+  nextLabel: '次へ ▶',
+  /** 「3 / 220」。 */
+  position: (index: number, total: number): string =>
+    `${String(index)} / ${String(total)}`,
+  onlyUnfinishedLabel: '未処理だけ',
+  emptyResult: 'この式に当てはまる地物がありません。式を書き換えてください。',
+  invalidExpression: (reason: string): string => `式が読めません（${reason}）。`,
+  allDone: 'このまとまりは全部済んでいます。',
+  /** 束の既定の式 10 種（設計書 §C.5 の表）。実データの命名規約はアプリが知らないので、
+   *  式そのものを画面に出して編集できるようにする。 */
+  presetKana1: '仮名: ○○付近の領域NN',
+  presetKana2: '仮名: ○○の島NN',
+  presetKana3: '仮名: （○○不明国X）',
+  presetKana4: '仮名: ○○の海域NN',
+  presetKana5: '仮名: ??? を含む',
+  presetDuplicateName: '名前が重複しているもの',
+  presetNoKindLabel: '種別が付いていないもの',
+  presetChangedThisYear: 'この年に変わったもの',
+  presetFamily: 'この地物の家族（親・自分・子孫）',
+  presetMarked: '手で印を付けたもの',
+} as const;
+
+/**
+ * 「どこへでも移動」（Ctrl+P。設計書 §C.2 の 26）の文言。
+ *
+ * **年を属性の検索対象に入れない**（C10 の罠を作り直さない）。数字だけなら年、文字を
+ * 含むなら地物名だけを探す。
+ */
+export const JUMP_STRINGS = {
+  title: 'どこへでも移動',
+  inputAria: '地物名・年・コマンドを打つ',
+  placeholder: '地物名／年／> でコマンド',
+  yearCandidate: (year: string): string => `${year} へ移動`,
+  commandPrefixHint: '> を先頭に付けるとコマンドを探します。',
+  more: (n: number): string => `ほかに ${String(n)} 件（Enter で一覧に出す）`,
+  noCandidate: '当てはまるものがありません。',
+} as const;

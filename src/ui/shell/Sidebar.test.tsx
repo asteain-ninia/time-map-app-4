@@ -1,16 +1,25 @@
-// U20 React component tests: sidebar sections + tab switching (FR-111,
-// 受け入れ基準 1). HB6: the sidebar is now 一覧 + プロパティ の2タブ構成 (地物一覧 /
-// 錨一覧 は 一覧タブ内の 現在時刻 / 通史 モードトグルへ統合).
+// U20 の部品テスト: 右パネルの **上下 2 区画の同時表示**（増分 4 / FR-111 / 設計書 §E-1）。
+//
+// **増分 4 で排他タブをやめた。** それまでは「片方が `hidden`、押すと入れ替わる」を
+// 固定していたが、上下 2 区画では **両方いつも見えている**のが正しい。ここで固定するのは
+// 3 つ:
+//   1. 2 つの区画が同時に居て、どちらにも `hidden` が付いていない
+//   2. 見出しのボタンは「その区画へ寄せる」印を移す（`aria-pressed`）
+//   3. 外から寄せる口（`SidebarFocusStore`）が効く ＝ 結合点 #3 の置き換え
+//
+// **`role="tab"` / `aria-selected` は使わない。** 2 つとも見えている状態で「選ばれている
+// タブ」を名乗るのは嘘になるので、押されている状態はトグルボタンの `aria-pressed` で表す。
 
 /// <reference types="@testing-library/jest-dom" />
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { Sidebar, SIDEBAR_SECTION } from './Sidebar';
+import { SidebarFocusStore } from './sidebar-focus';
 
-describe('Sidebar (FR-111, HB6 2タブ構成)', () => {
-  it('renders the 一覧 / プロパティ panels and shows the initial one', () => {
+describe('Sidebar（増分 4: 上下 2 区画の同時表示）', () => {
+  it('地物一覧と選んだ地物の 2 区画が同時に出ていて、どちらも隠れていない', () => {
     render(
       <Sidebar
         initialSection={SIDEBAR_SECTION.List}
@@ -18,54 +27,90 @@ describe('Sidebar (FR-111, HB6 2タブ構成)', () => {
         propertiesContent={<div data-testid="pr" />}
       />,
     );
+    // FR-111 の「2 区画」という数は守る。変わったのは **同時に見えるか** だけである。
     expect(screen.getByTestId('sidebar-panel-list')).not.toHaveAttribute('hidden');
-    expect(screen.getByTestId('sidebar-panel-properties')).toHaveAttribute('hidden');
-    // The unified list content is injected into the 一覧 panel.
+    expect(screen.getByTestId('sidebar-panel-properties')).not.toHaveAttribute('hidden');
+    // 両方の中身が同時に載っている（＝タブを押さなくても素性欄が読める）。
+    expect(screen.getByTestId('ls')).toBeInTheDocument();
+    expect(screen.getByTestId('pr')).toBeInTheDocument();
+  });
+
+  it('見出しのボタンを押すと「いまどちらを見るか」の印が移る（区画は消えない）', () => {
+    render(
+      <Sidebar
+        initialSection={SIDEBAR_SECTION.List}
+        listContent={<div data-testid="ls" />}
+        propertiesContent={<div data-testid="pr" />}
+      />,
+    );
+    expect(screen.getByTestId('sidebar-tab-list')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('sidebar-tab-properties')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    fireEvent.click(screen.getByTestId('sidebar-tab-properties'));
+
+    expect(screen.getByTestId('sidebar-tab-properties')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByTestId('sidebar-tab-list')).toHaveAttribute('aria-pressed', 'false');
+    // **押しても区画は消えない**（ここが排他タブとの違い）。
+    expect(screen.getByTestId('sidebar-panel-list')).not.toHaveAttribute('hidden');
     expect(screen.getByTestId('ls')).toBeInTheDocument();
   });
 
-  it('switches the active section on tab click', () => {
+  it('見出しと区画が id + aria-controls / aria-labelledby で結ばれている', () => {
     render(<Sidebar initialSection={SIDEBAR_SECTION.List} />);
-    fireEvent.click(screen.getByTestId('sidebar-tab-properties'));
-    expect(screen.getByTestId('sidebar-panel-properties')).not.toHaveAttribute('hidden');
-    expect(screen.getByTestId('sidebar-panel-list')).toHaveAttribute('hidden');
-  });
-
-  it('wires each tab to its panel via id + aria-controls (WAI-ARIA tablist)', () => {
-    render(<Sidebar initialSection={SIDEBAR_SECTION.List} />);
-    const tab = screen.getByTestId('sidebar-tab-list');
+    const head = screen.getByTestId('sidebar-tab-list');
     const panel = screen.getByTestId('sidebar-panel-list');
-    expect(tab).toHaveAttribute('id', 'sidebar-tab-list');
-    expect(tab).toHaveAttribute('aria-controls', 'sidebar-panel-list');
+    expect(head).toHaveAttribute('id', 'sidebar-tab-list');
+    expect(head).toHaveAttribute('aria-controls', 'sidebar-panel-list');
     expect(panel).toHaveAttribute('id', 'sidebar-panel-list');
     expect(panel).toHaveAttribute('aria-labelledby', 'sidebar-tab-list');
   });
 
-  // review #2: focus must FOLLOW the arrow (WAI-ARIA tablist). Fire each keyDown on the
-  // element that currently HAS focus (document.activeElement) — not on a hand-picked
-  // button — so the test fails if the component only setActive()s without moving focus.
-  it('ArrowRight moves the active section AND DOM focus to the next tab; wraps at the end', () => {
-    render(<Sidebar initialSection={SIDEBAR_SECTION.List} />);
-    // order = list, properties.
-    const listTab = screen.getByTestId('sidebar-tab-list');
-    listTab.focus();
-    expect(document.activeElement).toBe(listTab);
+  // 結合点 #3 の置き換え。旧実装は `document.getElementById('sidebar-tab-properties')
+  // ?.click()` で、**DOM に在ることと押すと切り替わることの両方**に依存していた。
+  it('外からの「この区画へ寄せて」の口が効く（結合点 #3 の置き換え）', () => {
+    const focusStore = new SidebarFocusStore();
+    render(
+      <Sidebar
+        initialSection={SIDEBAR_SECTION.List}
+        focusStore={focusStore}
+        listContent={<div data-testid="ls" />}
+        propertiesContent={<div data-testid="pr" />}
+      />,
+    );
+    expect(screen.getByTestId('sidebar-tab-properties')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
 
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' });
-    expect(screen.getByTestId('sidebar-panel-properties')).not.toHaveAttribute('hidden');
-    expect(document.activeElement).toBe(screen.getByTestId('sidebar-tab-properties'));
+    act(() => {
+      focusStore.focus(SIDEBAR_SECTION.Properties);
+    });
 
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowRight' }); // wrap
-    expect(screen.getByTestId('sidebar-panel-list')).not.toHaveAttribute('hidden');
-    expect(document.activeElement).toBe(screen.getByTestId('sidebar-tab-list'));
+    expect(screen.getByTestId('sidebar-tab-properties')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
   });
 
-  it('ArrowLeft moves the active section AND DOM focus to the previous tab; wraps at the start', () => {
-    render(<Sidebar initialSection={SIDEBAR_SECTION.List} />);
-    const listTab = screen.getByTestId('sidebar-tab-list');
-    listTab.focus();
-    fireEvent.keyDown(document.activeElement!, { key: 'ArrowLeft' }); // wrap to last
-    expect(screen.getByTestId('sidebar-panel-properties')).not.toHaveAttribute('hidden');
-    expect(document.activeElement).toBe(screen.getByTestId('sidebar-tab-properties'));
+  it('同じ区画へ続けて 2 回寄せても、2 回とも届く（要求ごとに別物として扱う）', () => {
+    const focusStore = new SidebarFocusStore();
+    const seen: string[] = [];
+    focusStore.subscribe((r) => seen.push(`${r.section}:${String(r.nonce)}`));
+    focusStore.focus(SIDEBAR_SECTION.Properties);
+    focusStore.focus(SIDEBAR_SECTION.Properties);
+    expect(seen).toEqual(['properties:1', 'properties:2']);
+  });
+
+  it('仕切りが居る（掴んで上下に動かせる）', () => {
+    render(<Sidebar />);
+    const splitter = screen.getByTestId('sidebar-splitter');
+    expect(splitter).toHaveAttribute('role', 'separator');
+    expect(splitter).toHaveAttribute('aria-orientation', 'horizontal');
   });
 });

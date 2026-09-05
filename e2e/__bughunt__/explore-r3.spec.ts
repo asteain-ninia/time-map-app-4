@@ -25,7 +25,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
+import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices, listedFeatureCount } from '../helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const shotDir = resolve(projectRoot, 'screenshots', '__bughunt__');
@@ -210,9 +210,9 @@ async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properti
 // Count the rows in the 地物一覧 (feature-list). Empty list => 0. Assumes the
 // features tab is already active (call showSidebarTab(page,'features') first).
 async function featureListCount(page: Page): Promise<number> {
-  const empty = page.getByTestId('unified-list-empty');
-  if ((await empty.count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 
 test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', () => {

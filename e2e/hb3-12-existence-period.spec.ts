@@ -25,7 +25,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Locator, type Page } from '@playwright/test';
 
-import { commitOneFace, enterEditMode, launchApp, openPropertySection } from './helpers';
+import { commitOneFace, enterEditMode, launchApp, openPropertySection, listedFeatureCount } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
@@ -53,8 +53,9 @@ async function showPropertiesTab(page: Page): Promise<void> {
 
 async function featureListCount(page: Page): Promise<number> {
   await showFeaturesTab(page);
-  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 
 /**

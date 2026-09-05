@@ -29,6 +29,7 @@ import {
   armAddAreaTool,
   placeVertices,
   commitFace,
+  listedFeatureCount,
 } from '../helpers';
 import { placeSquareScene, assertClickable, type SceneBox, fitHalf } from '../__bughunt__/scene-layout';
 
@@ -107,8 +108,9 @@ async function showListTab(page: Page): Promise<void> {
 }
 async function featureListCount(page: Page): Promise<number> {
   await showListTab(page);
-  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 async function textOf(page: Page, testid: string): Promise<string> {
   const loc = page.getByTestId(testid);

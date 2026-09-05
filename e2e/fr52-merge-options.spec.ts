@@ -19,7 +19,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { commitSquareFace, enterEditMode, launchApp, returnToViewMode } from './helpers';
+import { commitSquareFace, enterEditMode, launchApp, returnToViewMode, listedFeatureCount } from './helpers';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = resolve(projectRoot, 'screenshots');
@@ -39,8 +39,9 @@ async function showFeaturesTab(page: Page): Promise<void> {
 
 async function featureListCount(page: Page): Promise<number> {
   await showFeaturesTab(page);
-  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 
 test.describe('FR-52 — 結合の上位領域・属性継承元を選ぶダイアログが実機で機能する', () => {

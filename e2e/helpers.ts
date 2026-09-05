@@ -512,3 +512,23 @@ export async function launchAppWithProject(projectPath: string): Promise<Launche
   expect(outcome, `実データの読み込み結果 (${projectPath})`).toBe('loaded');
   return launched;
 }
+
+// ---------------------------------------------------------------------------
+// 地物一覧の件数 (増分 4: 仮想スクロールで「行の DOM 数 ≠ 件数」になった)
+// ---------------------------------------------------------------------------
+
+/**
+ * 地物一覧に **何件載っているか**。
+ *
+ * ⚠️ **行の DOM を数えてはいけない**（増分 4）。台帳は仮想スクロールになったので、
+ * 5,000 件でも DOM に載るのは窓に入るぶん＋前後 2 行だけである。件数の真実源は
+ * `unified-list-count` の表示（`${総数}件` / 絞り込み中は `${一致}/${総数}件`）で、
+ * ここが唯一の読み口である。返すのは **いま一覧に出ている件数**（絞り込み中なら一致数）。
+ */
+export async function listedFeatureCount(page: Page): Promise<number> {
+  if ((await page.getByTestId('unified-list-empty').count()) > 0) return 0;
+  const text = (await page.getByTestId('unified-list-count').textContent()) ?? '';
+  const m = /^(?:(\d+)\s*\/\s*)?(\d+)件$/.exec(text.trim());
+  if (m === null) throw new Error(`一覧の件数表示が読めない: ${JSON.stringify(text)}`);
+  return Number(m[1] ?? m[2]);
+}

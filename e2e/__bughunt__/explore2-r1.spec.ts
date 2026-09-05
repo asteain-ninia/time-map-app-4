@@ -40,7 +40,7 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices } from '../helpers';
+import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices, listedFeatureCount } from '../helpers';
 import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -163,9 +163,9 @@ async function showSidebarTab(page: Page, key: 'events' | 'features' | 'properti
 }
 
 async function featureListCount(page: Page): Promise<number> {
-  const empty = page.getByTestId('unified-list-empty');
-  if ((await empty.count()) > 0) return 0;
-  return page.locator('[data-testid^="feature-list-item-"]').count();
+  // 増分 4: 台帳は仮想スクロールなので **行の DOM 数 != 件数**。件数の真実源は
+  // `unified-list-count` の表示で、共通ヘルパ 1 本に寄せてある（helpers.listedFeatureCount）。
+  return listedFeatureCount(page);
 }
 
 async function clickMenuCommand(page: Page, menu: string, commandId: string): Promise<boolean> {

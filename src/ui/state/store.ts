@@ -65,6 +65,15 @@ import {
   type FeatureKindAxis,
   type FilterState,
 } from '../discovery/index';
+import {
+  DEFAULT_LEDGER_STATE,
+  reconcileLedgerToLive,
+  toggleExpanded as toggleLedgerExpandedRule,
+  withExpanded as withLedgerExpanded,
+  type LedgerMode,
+  type LedgerState,
+} from '../discovery/ledger-state';
+import { withCursor as withBundleCursor, type Bundle } from '../discovery/bundle';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
@@ -254,6 +263,18 @@ export interface SessionStoreState<S> {
    */
   readonly filter: FilterState;
 
+  // -- 地物一覧（台帳）のセッション状態 (増分 4 / 設計書 §C.5) ----------------
+  /**
+   * 一覧の母集団・並べ方・絞り込み・展開・**作業のまとまり（束）**。
+   *
+   * ここに置く理由は「3 つの部品が同じ 1 つの状態を読み書きする」ことである
+   * （一覧・素性欄の Enter「保存して次へ」・Ctrl+Z の「戻った地物へカーソルを移す」）。
+   * 一覧の React state に閉じ込めると真実源が割れる（教訓 5.29）。`filter` / `survey`
+   * と同じセッション限りの表示状態で、**保存形式には何も足さない**（K-9）。
+   * 読み込み・新規では捨てる（教訓 5.2）。
+   */
+  readonly ledger: LedgerState;
+
   // -- settings (FR-109 / FR-110) --------------------------------------------
   readonly projectSettings: ProjectSettings;
   readonly appSettings: AppSettings;
@@ -441,6 +462,24 @@ export interface SessionStoreActions<S> {
   setFeatureEmphasized(featureId: FeatureId, emphasized: boolean): void;
   /** FR-113 Phase 2: clear EVERY emphasis axis (「強調をすべて解除」— the escape hatch). */
   clearAllEmphasis(): void;
+
+  // -- 地物一覧（台帳, 増分 4） ----------------------------------------------
+  /** 母集団の切替（現在時刻 / 通史）。 */
+  setLedgerMode(mode: LedgerMode): void;
+  /** 木 / 平 の切替。 */
+  setLedgerTree(tree: boolean): void;
+  /** 絞り込み語（「地物を検索」もここへ来る＝E-6）。 */
+  setLedgerQuery(query: string): void;
+  /** 展開を 1 件切り替える。 */
+  toggleLedgerExpanded(featureId: FeatureId): void;
+  /** 指定の地物を展開状態にする（Ctrl+P / 右クリックから 1 件を見せるとき）。 */
+  expandLedgerPath(featureIds: Iterable<FeatureId>): void;
+  /** 作業のまとまりを差し替える（null で解除）。 */
+  setBundle(bundle: Bundle | null): void;
+  /** 作業のまとまりのカーソルを動かす。束が無ければ何もしない。 */
+  setBundleCursor(cursor: number): void;
+  /** 未処理だけに絞るかを切り替える。 */
+  setBundleOnlyUnfinished(only: boolean): void;
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
@@ -1067,9 +1106,18 @@ export function createSessionStore<S>(
     // redraw / memo bust). Skipped entirely when no resolver is injected (honest absence).
     const reconcileFilterToLive = (): void => {
       if (liveFeatureIds === undefined) return;
+      const live = liveFeatureIds();
       const cur = get().filter;
-      const next = reconcileToLiveFeatures(cur, liveFeatureIds());
+      const next = reconcileToLiveFeatures(cur, live);
       if (next !== cur) commitFilter(next);
+      // 増分 4: 一覧の展開集合も id で鍵を持つので、同じ掃除を通す（教訓 5.5 / 5.11）。
+      // 掃除しないと、取り消しで同じ id が戻ったときに古い展開状態が別の地物へ付く。
+      // **束のメンバーは掃除しない** ―― 束は「作った時点の並び」を保つ器なので、消えた
+      // 地物が抜けると通し番号が動き、重複名の 3 段目（#3 ／ 座標）が意味を失う。
+      // 消えた地物の行は組み立ての時点で母集団に居ないので、一覧には出ない。
+      const curLedger = get().ledger;
+      const nextLedger = reconcileLedgerToLive(curLedger, live);
+      if (nextLedger !== curLedger) set({ ledger: nextLedger });
     };
 
     // The FR-113 filter-change funnel (Codex F2, mirror of commitDisplayControl): commit a
@@ -1129,6 +1177,7 @@ export function createSessionStore<S>(
     displayControl: init.displayControl ?? DEFAULT_DISPLAY_CONTROL,
     survey: initialSurveyState(),
     filter: init.filter ?? DEFAULT_FILTER_STATE,
+    ledger: DEFAULT_LEDGER_STATE,
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
@@ -1389,6 +1438,9 @@ export function createSessionStore<S>(
         // DEFAULT_FILTER_STATE is a module const, so an already-default filter keeps its
         // reference (no memo churn on a fresh load).
         filter: DEFAULT_FILTER_STATE,
+        // 増分 4: 一覧のセッション状態（絞り込み・展開・作業のまとまり）も古い
+        // プロジェクトのものなので、読み込み・新規で丸ごと捨てる（教訓 5.2）。
+        ledger: DEFAULT_LEDGER_STATE,
         ...selectionPatch(EMPTY_SELECTION),
       });
     },
@@ -1728,6 +1780,62 @@ export function createSessionStore<S>(
       if (next !== cur) commitFilter(next);
     },
 
+    // -- 地物一覧（台帳, 増分 4）------------------------------------------------
+    //
+    // どれも `ledger` **だけ**を書く（ドメイン・選択・projectDirty・displayControl・
+    // filter には触れない）。表示状態なので保存もしないし、プロジェクトを汚さない。
+    // **変化が無ければ set() しない** ―― 一覧の memo と再描画の購読は参照の同一性で
+    // 判定するので、値の等しい新しい参照を作ると無駄な組み立てが走る（教訓 5.29、
+    // filter の各セッターと同じ規律）。
+    setLedgerMode(mode) {
+      const cur = get().ledger;
+      if (cur.mode === mode) return;
+      set({ ledger: { ...cur, mode } });
+    },
+
+    setLedgerTree(tree) {
+      const cur = get().ledger;
+      if (cur.tree === tree) return;
+      set({ ledger: { ...cur, tree } });
+    },
+
+    setLedgerQuery(query) {
+      const cur = get().ledger;
+      if (cur.query === query) return;
+      set({ ledger: { ...cur, query } });
+    },
+
+    toggleLedgerExpanded(featureId) {
+      const cur = get().ledger;
+      set({ ledger: toggleLedgerExpandedRule(cur, featureId) });
+    },
+
+    expandLedgerPath(featureIds) {
+      const cur = get().ledger;
+      const next = withLedgerExpanded(cur, featureIds);
+      if (next !== cur) set({ ledger: next });
+    },
+
+    setBundle(bundle) {
+      const cur = get().ledger;
+      if (cur.bundle === bundle) return;
+      set({ ledger: { ...cur, bundle } });
+    },
+
+    setBundleCursor(cursor) {
+      const cur = get().ledger;
+      if (cur.bundle === null) return;
+      const next = withBundleCursor(cur.bundle, cursor);
+      if (next === cur.bundle) return;
+      set({ ledger: { ...cur, bundle: next } });
+    },
+
+    setBundleOnlyUnfinished(only) {
+      const cur = get().ledger;
+      if (cur.onlyUnfinished === only) return;
+      set({ ledger: { ...cur, onlyUnfinished: only } });
+    },
+
     /**
      * グリッドの見え方をこのセッションだけ上書きする（FR-13 / K-6）。
      * **`projectDirty` を立てない・保存ファイルに書かない。** `null` で上書きを外し、
@@ -1991,6 +2099,8 @@ export function createSessionStore<S>(
         // FR-113: reset the display filter to the inert DEFAULT (same as resetToDomain —
         // OLD-project session state, 受け入れ基準1, 教訓 5.2).
         filter: DEFAULT_FILTER_STATE,
+        // 増分 4: 一覧のセッション状態も同じ扱い（教訓 5.2）。
+        ledger: DEFAULT_LEDGER_STATE,
         // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }

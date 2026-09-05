@@ -22,7 +22,7 @@
 // SAME store.setActiveFeature path every selection uses (no second selection
 // source); the property panel then re-resolves to it automatically.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -46,15 +46,18 @@ import type { TimePoint } from '../../domain/time/time-point';
 import { featuresAt, verticesAt } from '../live-lookup';
 import { AddDraftForm } from '../add/AddPropertyForm';
 import type { AddDraftStore } from '../add/add-draft-store';
-import { formatTimePoint } from '../timeline/time-display';
-import { DisplayFilterPanel } from '../discovery/DisplayFilterPanel';
-import { FILTER_STRINGS } from '../discovery/index';
+import { FeatureLedger, type LedgerQuickEdit } from '../discovery/FeatureLedger';
+import { doneIdsOf, stepIndex } from '../discovery/bundle';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
-import { isFeatureVisibleUnderFilter } from '../map/filtered-display';
-import { type SessionStore, TIME_CHANGE_SOURCE } from '../state/store';
+import type { SessionStore } from '../state/store';
 import {
   PropertyPanel,
   PROPERTY_STRINGS,
+  buildEditIntent,
+  decideEditPlan,
+  isNoOpEdit,
+  valuesFromFeature,
+  NameFieldFocusStore,
   type AnchorSeriesLookup,
   type AssetResolver,
   type EditDispatch,
@@ -65,6 +68,7 @@ import {
 
 import { SIDEBAR_CONTENT_STRINGS } from './strings';
 import type { SidebarProps } from './Sidebar';
+import type { SidebarFocusStore } from './sidebar-focus';
 
 /**
  * Build the LIVE FeatureLookup over the domain root. Resolves a feature by id at
@@ -194,6 +198,17 @@ export interface SidebarContentDeps<S> {
    * これが無い（テストなど）ときは従来どおり素性欄だけを出す。
    */
   readonly addDraft?: AddDraftStore;
+  /**
+   * 右パネルの「どの区画に注目させるか」の口（増分 4 / 結合点 #3）。そのまま
+   * {@link SidebarProps} へ渡す（この module は寄せる要求を出さない ―― 出すのは
+   * 右クリックと追加の確定で、どちらも合成ルートが持っている）。
+   */
+  readonly focusStore?: SidebarFocusStore;
+  /**
+   * 拒否理由の共通枠（オプションバーの「次の一手」＋状態行）へ出す口（G-20 / G-23）。
+   * 一覧のその場編集がドメインに断られたとき、**理由を画面に出す**ためだけに使う。
+   */
+  readonly onRefusal?: (message: string) => void;
 }
 
 /**
@@ -216,7 +231,13 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     onDraftConfirmChange,
     onFocusFeatureCamera,
     addDraft,
+    focusStore,
+    onRefusal,
   } = deps;
+
+  // 素性欄の名前欄へ焦点を入れる口（束の第 1 手。設計書 §C.5）。器が 1 本だけ持ち、
+  // 一覧が要求し、素性欄が受け取る。**DOM を名前で探さない**（結合点 #3 の反省）。
+  const nameFieldFocus = new NameFieldFocusStore();
 
   const dispatch: EditDispatch = editDispatch ?? {
     // 教訓 5.7: the SAVE trigger is fully wired + observable; the live edit-apply
@@ -235,6 +256,39 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
 
   // 素性欄（選んでいる地物の姿）。**組み立てるのは 1 回だけ**にする ―― 2 か所へ書き写すと、
   // あとで受け渡すものを増やしたときに片方だけ直し忘れる（教訓 5.44 の型）。
+  /**
+   * 一覧のその場編集（名前・種別）。**素性欄の保存とまったく同じ 1 本**を通す
+   * （教訓 5.29 / 5.30: 保存の行き先を決める規則を 2 つ持たない）。行き先は
+   * `decideEditPlan`、書き込みは `editDispatch`、値の組み立ては `buildEditIntent` で、
+   * どれも素性欄が使っているものである。断られたら**理由を文字で返す**（G-23）。
+   */
+  const quickEdit: LedgerQuickEdit = (featureId, patch) => {
+    const root = getRoot();
+    const time = getTime();
+    const feature = featuresAt(root, time).find((f) => f.id === featureId);
+    if (feature === undefined) return SIDEBAR_CONTENT_STRINGS.quickEditNoTarget;
+    const governing = anchorLookup.governingSeriesOf?.(featureId, time) ?? null;
+    const plan = decideEditPlan({
+      currentTime: time,
+      series: governing?.series ?? null,
+      featurePresent: true,
+      calendar,
+      snapshotSize: governing?.effectiveSize ?? null,
+    });
+    if (plan.editTime === null) {
+      return plan.reason ?? SIDEBAR_CONTENT_STRINGS.quickEditNotSavable;
+    }
+    const values = { ...valuesFromFeature(feature), ...patch };
+    // 教訓 5.24: 値が同じなら dispatch しない（幽霊の取り消しを作らない）。
+    if (isNoOpEdit(feature, values)) return null;
+    try {
+      dispatch.dispatchEdit(buildEditIntent(feature, plan.editTime, values));
+      return null;
+    } catch (err) {
+      return `${PROPERTY_STRINGS.saveFailedPrefix}${String(err)}`;
+    }
+  };
+
   const propertyPanel = (
     <PropertyPanelHost<S>
       store={store}
@@ -250,25 +304,38 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       {...(onDeleteFeature ? { onDeleteFeature } : {})}
       {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
       {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
+      nameFieldFocus={nameFieldFocus}
+      onAdvanceBundle={() => {
+        advanceBundleCursor({
+          store,
+          getRoot,
+          getTime,
+          nameFieldFocus,
+          ...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {}),
+        });
+      }}
     />
   );
 
   return {
-    // HB6: 地物一覧 + 錨一覧 を 1タブ「一覧」+ モードトグル(現在時刻/通史)へ統合
-    // (ユーザー GO 済). 現在時刻=旧地物一覧, 通史=旧錨一覧. 共通コア SidebarRowList を
-    // 両モードで共有し、モードごとにフィルタ・件数・選択挙動・視点フィットを現行踏襲。
+    // 増分 4: 上段は **地物一覧（台帳）**。階層ツリー＋仮想スクロールで、行が
+    // [色][展開][名前][種別][錨の本数][👁] を運ぶ（設計書 §C.5 / C4 / FR-111）。
+    //
+    // **表示制御パネルはここから外した**（C7）。可変長の一覧の**後ろ**に固定パネルを
+    // 置いていたので `offsetTop` が 28,546px（63 画面ぶん下）になっていた。いまは
+    // オプションバーの「表示 ▾」ポップオーバーに載っている（`DisplayOptions`）。
     listContent: (
-      <>
-        <UnifiedListSection
-          store={store}
-          getRoot={getRoot}
-          getTime={getTime}
-          {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
-        />
-        {/* FR-113 表示制御フィルタ (U41): mounted in the 一覧 slot (a display control over
-            which features the list / map show). NOT in the topBar (占有不変量 a4f6be9). */}
-        <DisplayFilterPanel<S> store={store} />
-      </>
+      <FeatureLedger<S>
+        store={store}
+        getRoot={getRoot}
+        getTime={getTime}
+        {...(onFocusFeatureCamera ? { onFocusFeatureCamera } : {})}
+        {...(quickEdit !== undefined ? { onQuickEdit: quickEdit } : {})}
+        {...(onRefusal ? { onRefusal } : {})}
+        onFocusNameField={() => {
+          nameFieldFocus.focus();
+        }}
+      />
     ),
     // 素性欄の位置は 2 つの姿を持つ（設計書 §C.2 の 27）。
     //  - ふだん … 選んでいる地物の素性欄
@@ -280,7 +347,43 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       ) : (
         <AddDraftForm store={addDraft}>{propertyPanel}</AddDraftForm>
       ),
+    ...(focusStore !== undefined ? { focusStore } : {}),
   };
+}
+
+/**
+ * 素性欄の Enter（＝保存して次へ）で作業のまとまりを 1 つ進める（設計書 §C.5 / §I.2）。
+ *
+ * **一覧の［次へ ▶］とまったく同じ規則を通す**（`stepIndex`）。ここで別の進み方を
+ * 書くと、同じ「次へ」が 2 通りになって食い違う（教訓 5.29）。「済」の判定に要る
+ * 「いまの名前・種別」は、いまのドメインから引き直す（教訓 5.6）。
+ */
+function advanceBundleCursor<S>(deps: {
+  readonly store: StoreApi<SessionStore<S>>;
+  readonly getRoot: () => DomainProject;
+  readonly getTime: () => TimePoint;
+  readonly nameFieldFocus: NameFieldFocusStore;
+  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
+}): void {
+  const { store, getRoot, getTime, nameFieldFocus, onFocusFeatureCamera } = deps;
+  const state = store.getState();
+  const bundle = state.ledger.bundle;
+  if (bundle === null) return;
+  const effective = featuresAt(getRoot(), getTime());
+  const done = doneIdsOf(bundle, (featureId) => {
+    const f = effective.find((x) => x.id === featureId);
+    return f === undefined
+      ? undefined
+      : { name: featureDisplayName(f), kindLabel: f.kindLabel ?? '' };
+  });
+  const at = stepIndex(bundle, done, 1);
+  if (at === null) return;
+  const member = bundle.members[at];
+  if (member === undefined) return;
+  state.setBundleCursor(at);
+  state.setActiveFeature(member.featureId);
+  onFocusFeatureCamera?.(member.featureId);
+  nameFieldFocus.focus();
 }
 
 /**
@@ -326,6 +429,8 @@ function PropertyPanelHost<S>(props: {
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
   readonly onDraftConfirmChange?: (open: boolean) => void;
+  readonly nameFieldFocus?: NameFieldFocusStore;
+  readonly onAdvanceBundle?: () => void;
 }): JSX.Element {
   const { store, getRoot, getTime } = props;
   // Subscribe to the pieces that must re-derive the shown area: the FR-109 geodesic
@@ -445,302 +550,9 @@ function PropertyPanelHost<S>(props: {
       {...(props.onDraftConfirmChange
         ? { onDraftConfirmChange: props.onDraftConfirmChange }
         : {})}
+      {...(props.nameFieldFocus ? { nameFieldFocus: props.nameFieldFocus } : {})}
+      {...(props.onAdvanceBundle ? { onAdvanceBundle: props.onAdvanceBundle } : {})}
     />
   );
 }
 
-/** A short human label for a feature row (name falls back to its id). Defers to
- * the domain's single fallback rule so this list and the selection pickers share
- * one source of truth (教訓 5.30). */
-const featureLabel = featureDisplayName;
-
-/**
- * Fold rule for the一覧フィルタ, IDENTICAL to the FR-99 feature search normalize
- * (discovery/search.ts `fold`): NFKC + lowercase, so絞り込み matches the SAME way検索
- * does — a全角／半角・大文字小文字 difference never hides a row (整合, 教訓 5.19 表示
- * 文字列で判定しない). Kept a primitive one-liner rather than crossing the shell→
- * discovery layer boundary; if the search fold rule changes, this must track it.
- */
-function foldName(s: string): string {
-  return s.normalize('NFKC').toLowerCase();
-}
-
-/**
- * One selectable row in a sidebar一覧 (地物一覧 / 錨一覧 共通コア). The caller builds
- * the row + its select side-effect; the shared list owns the chrome / filter / count.
- */
-interface SidebarListRow {
-  /** React key (+ filter iteration identity). */
-  readonly key: string;
-  /** The row button's data-testid — 既存 e2e 契約を温存 (feature-list-item-* / event-list-item-*). */
-  readonly testid: string;
-  /** The visible AND filterable label (feature display name, 名前部分一致 の対象). */
-  readonly label: string;
-  /** aria-pressed 状態 (地物一覧 は現在選択中の地物を強調; 錨一覧 は常に false). */
-  readonly pressed: boolean;
-  /**
-   * FR-113 (Codex F3): the row is 選択/フィット不可 (a 通史 row whose feature is hidden at
-   * the current time — the current-time 一覧 removes such rows outright instead). Renders a
-   * disabled button with {@link disabledTitle}; `onSelect` also no-ops defensively.
-   */
-  readonly disabled?: boolean;
-  /** Tooltip explaining why the row is disabled (FR-113). */
-  readonly disabledTitle?: string;
-  /** 行選択時の副作用 (選択 [+ 時刻同期] + 視点フィット) を呼び出し側が組み立てる。 */
-  readonly onSelect: () => void;
-}
-
-/**
- * 地物一覧 と 錨一覧 の共通コア (ユーザー要望「地物一覧と錨一覧ってほぼ同一の機能として
- * 実装できるのでは」). 両者はともに「絞り込み可能な選択行リスト」で、違いは (a) 行の生成
- * 規則 = 現在時刻に存在する地物か 通史の全錨か、(b) 選択時副作用 = 時刻同期の有無、の2点
- * だけ。ここに共通の見た目・名前フィルタ・件数表示・空状態を1箇所へ集約する (単一の真実源、
- * 教訓 5.30 過少共有の戒め)。
- *
- * 表示モード「現在時刻 / 通史」は既存のタブ2枚で表現する (地物一覧 = 現在時刻に存在する地物、
- * 錨一覧 = 全時刻の錨 = 通史)。タブを1枚へ統合してモードトグルにする案も可能だが、
- * feature-list / event-list / sidebar-tab-* 等の既存 testid を多数の e2e が参照しており、
- * 統合は testid 契約を壊すため、暫定決定として「2タブ維持 + 内部コア共通化」を採る (完了報告)。
- *
- * フィルタ: 名前部分一致 (foldName 正規化)。IME 対応 — 制御 input の value をそのまま述語に
- * 使うだけで、変換確定後の onChange で自然に反映される (キー単位の割り込み処理をしないので、
- * 変換中の未確定文字列を壊さない)。件数: 絞り込みなし=全件、絞り込み中=一致/全件。
- */
-function SidebarRowList(props: {
-  readonly listTestid: string;
-  readonly caption: string;
-  readonly emptyText: string;
-  readonly filterPlaceholder: string;
-  readonly filterAria: string;
-  readonly rows: readonly SidebarListRow[];
-}): JSX.Element {
-  const { listTestid, caption, emptyText, filterPlaceholder, filterAria, rows } = props;
-  const [query, setQuery] = useState('');
-
-  const trimmed = query.trim();
-  const filtered =
-    trimmed === ''
-      ? rows
-      : rows.filter((r) => foldName(r.label).includes(foldName(trimmed)));
-
-  return (
-    <div className="sidebar-list" data-testid={listTestid}>
-      <p className="sidebar-list__caption" data-testid={`${listTestid}-caption`}>
-        {caption}
-      </p>
-      {rows.length === 0 ? (
-        <p className="sidebar-list__empty" data-testid={`${listTestid}-empty`}>
-          {emptyText}
-        </p>
-      ) : (
-        <>
-          <div className="sidebar-list__filter">
-            <input
-              type="search"
-              className="sidebar-list__filter-input"
-              data-testid={`${listTestid}-filter`}
-              aria-label={filterAria}
-              placeholder={filterPlaceholder}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-            />
-            <span
-              className="sidebar-list__count"
-              data-testid={`${listTestid}-count`}
-            >
-              {trimmed === ''
-                ? SIDEBAR_CONTENT_STRINGS.countAll(rows.length)
-                : SIDEBAR_CONTENT_STRINGS.countFiltered(filtered.length, rows.length)}
-            </span>
-          </div>
-          {filtered.length === 0 ? (
-            <p className="sidebar-list__empty" data-testid={`${listTestid}-no-match`}>
-              {SIDEBAR_CONTENT_STRINGS.noMatch}
-            </p>
-          ) : (
-            <ul className="sidebar-list__items">
-              {filtered.map((row) => (
-                <li key={row.key}>
-                  <button
-                    type="button"
-                    className="sidebar-list__item"
-                    aria-pressed={row.pressed}
-                    data-testid={row.testid}
-                    disabled={row.disabled === true}
-                    {...(row.disabledTitle !== undefined ? { title: row.disabledTitle } : {})}
-                    onClick={row.onSelect}
-                  >
-                    {row.label}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-    </div>
-  );
-}
-
-/** The 一覧 tab's two display modes (HB6): 現在時刻(旧地物一覧) / 通史(旧錨一覧). */
-const LIST_MODE = {
-  /** 現在時刻: the features effective at the current year (旧地物一覧). */
-  Current: 'current',
-  /** 通史: every feature's history anchors across all time (旧錨一覧). */
-  History: 'history',
-} as const;
-
-type ListMode = (typeof LIST_MODE)[keyof typeof LIST_MODE];
-
-/**
- * 一覧 — the unified feature/anchor list (HB6, ユーザー GO 済). ONE panel with a
- * 現在時刻 / 通史 mode toggle REPLACES the former 地物一覧 / 錨一覧 tabs (ユーザー:
- * 「地物一覧と錨一覧ってほぼ同一の機能として実装できるのでは」). Both modes are the
- * SAME「絞り込み可能な選択行リスト」(the SidebarRowList 共通コア); the mode only changes
- * (a) the row-generation rule (現在時刻に存在する地物 か 通史の全錨) and (b) the select
- * side-effect (通史 のみ時刻同期). フィルタ・件数・視点フィット・選択挙動はモードごとに
- * 現行を踏襲 (単一真実源, 教訓 5.30).
- *
- * 現在時刻 (旧地物一覧): rows = the features effective now; selecting promotes through
- * the SAME store.setActiveFeature path (no second selection source) AND fits the camera
- * at 現在時刻 with NO time sync (A1「地物一覧にも視点移動が欲しい」). The active row is
- * highlighted from the live selection mirror (技術方針 2.5).
- *
- * 通史 (旧錨一覧): rows = every feature's history anchors, each label resolved from ITS
- * OWN anchor snapshot (教訓 5.29 — a rename at a non-first anchor stays visible). Selecting
- * syncs the session time to the anchor start (教訓 5.6 / 5.15), promotes the owner, THEN
- * fits the camera at that time (HB5-3). No independent time/selection source lives here.
- */
-function UnifiedListSection<S>(props: {
-  readonly store: StoreApi<SessionStore<S>>;
-  readonly getRoot: () => DomainProject;
-  readonly getTime: () => TimePoint;
-  readonly onFocusFeatureCamera?: (featureId: FeatureId) => void;
-}): JSX.Element {
-  const { store, getRoot, getTime, onFocusFeatureCamera } = props;
-  const [mode, setMode] = useState<ListMode>(LIST_MODE.Current);
-
-  // Subscribe to committed-domain / time / selection so the rows re-derive from the live
-  // root whenever they change (技術方針 2.5; single truth source 教訓 5.29). The row
-  // builder reads the root/time FRESH through getRoot/getTime (never a stale capture,
-  // 教訓 5.6); these selectors gate the recompute.
-  const domain = useStore(store, (s) => s.domain);
-  const currentTime = useStore(store, (s) => s.currentTime);
-  const activeFeature = useStore(store, (s) => s.activeFeature);
-  // FR-113 (Codex F3): the 一覧 母集合 must agree with draw / hit — a hidden feature drops
-  // its row. Subscribe to the filter + displayControl so a filter change re-derives the list.
-  const filter = useStore(store, (s) => s.filter);
-  const displayControl = useStore(store, (s) => s.displayControl);
-
-  const isCurrent = mode === LIST_MODE.Current;
-
-  const rows: SidebarListRow[] = useMemo(() => {
-    // The SAME single FR-113 verdict the draw / hit / tool-target paths use (単一解決,
-    // 教訓 5.29). Reuses the resolveDisplayFor memo (a HIT off the live frame). Raw-feature
-    // visibility (not the drawn-set visibleIds), so an FR-42 aggregation-omitted child stays
-    // listed while a 個別非表示 / 種別 / 深度 feature is removed — the invariant without an
-    // FR-42 list-behaviour change.
-    const resolution = resolveDisplayFor(getRoot(), getTime(), displayControl);
-    const visible = (featureId: FeatureId): boolean =>
-      isFeatureVisibleUnderFilter(resolution, filter, featureId);
-
-    if (isCurrent) {
-      // 現在時刻 (旧地物一覧): FR-113-visible features effective now; a hidden feature's row
-      // is removed outright (行ごと非表示 — 一貫 with draw / search, not a disabled row).
-      return featuresAt(getRoot(), getTime())
-        .filter((feature) => visible(feature.id))
-        .map((feature) => ({
-          key: feature.id as unknown as string,
-          testid: `feature-list-item-${feature.id as unknown as string}`,
-          label: featureLabel(feature),
-          pressed: activeFeature === feature.id,
-          onSelect: () => {
-            store.getState().setActiveFeature(feature.id);
-            onFocusFeatureCamera?.(feature.id);
-          },
-        }));
-    }
-    // 通史 (旧錨一覧): every feature's history anchors, each labelled from ITS OWN snapshot.
-    // A row whose feature is hidden at the CURRENT time is DISABLED (選択/フィット不可) — the
-    // minimal, honest handling of the cross-time case (applying anchor-time visibility per row
-    // is out of scope; 個別非表示 / 種別 off are time-independent so this covers the common case).
-    return getRoot().histories.flatMap((history) => {
-      const hidden = !visible(history.featureId);
-      return history.series.entries.map((entry) => {
-        const owner = entry.anchor.snapshot.features.find(
-          (f) => f.id === history.featureId,
-        );
-        const label = SIDEBAR_CONTENT_STRINGS.historyRowLabel(
-          formatTimePoint(entry.start),
-          owner ? featureDisplayName(owner) : (history.featureId as unknown as string),
-        );
-        const anchorId = entry.anchor.id as unknown as string;
-        return {
-          key: `${history.featureId as unknown as string}:${anchorId}`,
-          testid: `event-list-item-${anchorId}`,
-          label,
-          pressed: false,
-          ...(hidden ? { disabled: true, disabledTitle: FILTER_STRINGS.hiddenListRowTitle } : {}),
-          onSelect: () => {
-            // FR-113 (F3): a hidden feature's row never selects / syncs / fits (defensive —
-            // the button is disabled too).
-            if (hidden) return;
-            // Promote + sync the time FIRST (single selection / time path), THEN fit the
-            // camera at that time (HB5-3). Only this 錨導線 (+ the 地物導線) writes the
-            // camera, so a map-click selection never fits.
-            store.getState().setActiveFeature(history.featureId);
-            store.getState().setCurrentTime(entry.start, TIME_CHANGE_SOURCE.AnchorSync);
-            onFocusFeatureCamera?.(history.featureId);
-          },
-        };
-      });
-    });
-    // domain / currentTime are subscribe-gates (read fresh via getRoot/getTime, 教訓 5.6).
-  }, [isCurrent, getRoot, getTime, activeFeature, store, onFocusFeatureCamera, domain, currentTime, filter, displayControl]);
-
-  return (
-    <div className="sidebar-list-panel" data-testid="sidebar-list-panel">
-      <div
-        className="sidebar-list__modes"
-        role="group"
-        aria-label={SIDEBAR_CONTENT_STRINGS.listModeAria}
-      >
-        <button
-          type="button"
-          className="sidebar-list__mode"
-          data-testid="list-mode-current"
-          aria-pressed={isCurrent}
-          onClick={() => setMode(LIST_MODE.Current)}
-        >
-          {SIDEBAR_CONTENT_STRINGS.listModeCurrentLabel}
-        </button>
-        <button
-          type="button"
-          className="sidebar-list__mode"
-          data-testid="list-mode-history"
-          aria-pressed={!isCurrent}
-          onClick={() => setMode(LIST_MODE.History)}
-        >
-          {SIDEBAR_CONTENT_STRINGS.listModeHistoryLabel}
-        </button>
-      </div>
-      {/* Keyed by mode so the name filter resets on a mode switch — each mode keeps its
-          own filter/count (モードごとに現行を踏襲, 教訓 5.2). listTestid「unified-list」is
-          the single container; the row testids stay mode-semantic (feature-list-item-* /
-          event-list-item-*) so aggregate-select / hb3-12 等の消費側の検証意図を温存する。 */}
-      <SidebarRowList
-        key={mode}
-        listTestid="unified-list"
-        caption={isCurrent ? SIDEBAR_CONTENT_STRINGS.featuresCaption : SIDEBAR_CONTENT_STRINGS.eventsCaption}
-        emptyText={isCurrent ? SIDEBAR_CONTENT_STRINGS.featuresEmpty : SIDEBAR_CONTENT_STRINGS.eventsEmpty}
-        filterPlaceholder={SIDEBAR_CONTENT_STRINGS.filterPlaceholder}
-        filterAria={
-          isCurrent
-            ? SIDEBAR_CONTENT_STRINGS.featuresFilterAria
-            : SIDEBAR_CONTENT_STRINGS.eventsFilterAria
-        }
-        rows={rows}
-      />
-    </div>
-  );
-}

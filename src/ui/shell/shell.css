@@ -59,7 +59,11 @@ body {
    * (寸法ロジックを一箇所に集約し、ドリフトを生まない). z-order is left untouched so
    * blocking modals inside the overlay still cover everything (教訓 5.14). */
   --shell-toolbar-w: 120px;
-  --shell-sidebar-w: 220px;
+  /* 右パネルの幅（設計書 §B.2）。**増分 4 で 220 → 280px にした。**
+   * 220px では素性欄の内容幅 243px が収まらず常時横スクロールが出ていた（現状分析 §0-2）。
+   * 台帳の行も [色][展開][名前][種別][錨][👁] の 6 つを 28px 1 行に並べるので 220px では
+   * 名前が数文字しか読めない。設計書 §B.2 は 1280×800 で 280px と定めている。 */
+  --shell-sidebar-w: 280px;
   /* アプリバーの素性表示の **固定** 占有幅（B1）。世界名・ファイル名・未保存の印の
    * 長さで幅が変わると、上部バーの折り返し段数が中身で変わって地図の上端が動く。
    * K-3 は「帯の中身が変わっても地図がずれない」なので、幅を中身から切り離す。 */
@@ -362,42 +366,101 @@ body {
   cursor: default;
 }
 
-/* Sidebar: tab strip + the active panel body. */
+/* --- 右パネル: 上下 2 区画の同時表示（増分 4 / 設計書 §B.1・§E-1）----------
+ *
+ * 排他タブをやめたので、区画は **両方いつも見えている**。上が地物一覧、下が選んだ地物で、
+ * 既定は 60:40（1600×1000 で 470/312、1280×800 で 350/232 ＝ 設計書の数字）。
+ * 仕切り（`.sidebar__splitter`）を掴むと上段の高さが px で固定される。
+ *
+ * **スクロールは区画ごとに 1 つ**（`.sidebar__panel-body`）。外側の
+ * `.app-shell__sidebar` にも `overflow-y: auto` があるが、こちらの区画が
+ * `min-height: 0` ＋ `overflow: hidden` で高さを閉じるので二重スクロールにはならない。 */
 .sidebar {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
 }
 
-.sidebar__tabs {
+.sidebar__sections {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100%;
+}
+
+.sidebar__panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 上段（地物一覧）の既定の高さ。仕切りを動かすと inline style の `flex` が勝つ。 */
+.sidebar__panel[data-testid='sidebar-panel-list'] {
+  flex: 0 0 60%;
+}
+
+/* 下段（選んだ地物）は残り全部。 */
+.sidebar__panel[data-testid='sidebar-panel-properties'] {
+  flex: 1 1 auto;
+}
+
+.sidebar__panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
   background: var(--c-panel);
   border-bottom: 1px solid var(--c-border);
 }
 
-.sidebar__tabs button {
-  flex: 1;
+.sidebar__panel-title {
+  flex: 1 1 auto;
+  min-width: 0;
   font: inherit;
-  padding: 7px 4px;
+  text-align: left;
+  padding: 5px 10px;
   background: transparent;
   border: 0;
-  border-bottom: 2px solid transparent;
+  border-left: 3px solid transparent;
   color: var(--c-text-muted);
   cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.sidebar__tabs button[aria-selected='true'] {
+/* いまどちらを見ればよいかの印（排他タブの「選ばれている」ではない）。 */
+.sidebar__panel-title[aria-pressed='true'] {
   color: var(--c-accent);
-  border-bottom-color: var(--c-accent);
+  border-left-color: var(--c-accent);
   background: var(--c-surface);
 }
 
-.sidebar__panel {
-  padding: 10px;
-  overflow: auto;
+.sidebar__panel-body {
   flex: 1 1 auto;
   min-height: 0;
+  min-width: 0;
+  padding: 10px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* 仕切り 6px（設計書 §B.1 の「≡ 仕切り 6px」）。掴んで上下に動かす。 */
+.sidebar__splitter {
+  flex: 0 0 6px;
+  height: 6px;
+  background: var(--c-panel);
+  border-top: 1px solid var(--c-border);
+  border-bottom: 1px solid var(--c-border);
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.sidebar__splitter:hover {
+  background: var(--c-accent);
 }
 
 /* Sidebar list sections (HB-3): 地物一覧 / イベント一覧 rows. A flat, scrollable
@@ -519,6 +582,341 @@ body {
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+
+/* --- 地物一覧（台帳。増分 4 / 設計書 §C.5）---------------------------------
+ *
+ * **行の高さは 28px 固定・折り返しなし。** 現状は 31.6／49.2／51.6px の 3 種類で
+ * 113 行（14.6%）が 2 行になっていた（現状分析 §0-1）。高さが揃っていないと
+ * 仮想スクロールの計算（`ledgerWindow`）が成り立たないので、ここは寸法の単一真実源で
+ * ある。行の中身は `overflow: hidden` + `white-space: nowrap` で 1 行に収める。 */
+.ledger {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  gap: 6px;
+}
+
+.ledger__filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.ledger__filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  padding: 4px 6px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+}
+
+.ledger__filter-input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+
+.ledger__count {
+  flex: 0 0 auto;
+  color: var(--c-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ledger__bundle {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.ledger__bundle-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ledger__bundle-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--c-text-muted);
+}
+
+.ledger__bundle-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 11px;
+}
+
+.ledger__bundle-expression {
+  font: inherit;
+  font-size: 11px;
+  min-width: 0;
+  padding: 2px 4px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+
+.ledger__bundle-make,
+.ledger__bundle-step {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ledger__bundle-position {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.ledger__bundle-only {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--c-text-muted);
+  white-space: nowrap;
+}
+
+.ledger__modes {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: row;
+  gap: 4px;
+}
+
+.ledger__modes-gap {
+  flex: 1 1 auto;
+}
+
+.ledger__mode {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ledger__mode[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
+}
+
+/* 仮想スクロールの容器。**ここだけがスクロールする**（区画の本体は高さを閉じる）。 */
+.ledger__scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* 全行ぶんの高さを持つ器。中の窓を translateY でずらす。 */
+.ledger__spacer {
+  position: relative;
+}
+
+.ledger__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.ledger__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--c-border);
+}
+
+.ledger__color {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid var(--c-border-strong);
+}
+
+.ledger__indent {
+  flex: 0 0 auto;
+}
+
+.ledger__expander {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 20px;
+  padding: 0;
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  color: var(--c-text-muted);
+  cursor: pointer;
+}
+
+.ledger__expander--leaf {
+  cursor: default;
+}
+
+.ledger__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  font: inherit;
+  text-align: left;
+  padding: 0 4px;
+  background: transparent;
+  color: var(--c-text);
+  border: 0;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.ledger__name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger__name[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-radius: var(--radius);
+}
+
+.ledger__qualifier {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 10px;
+  color: var(--c-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger__name[aria-pressed='true'] .ledger__qualifier {
+  color: #e6f0ff;
+}
+
+.ledger__done {
+  flex: 0 0 auto;
+  font-size: 10px;
+  color: var(--c-accent);
+}
+
+.ledger__name[aria-pressed='true'] .ledger__done {
+  color: #fff;
+}
+
+.ledger__kind {
+  flex: 0 0 56px;
+  width: 56px;
+  font: inherit;
+  font-size: 10px;
+  text-align: right;
+  padding: 0 2px;
+  background: transparent;
+  border: 0;
+  color: var(--c-text-muted);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ledger__anchors {
+  flex: 0 0 30px;
+  width: 30px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--c-text-muted);
+}
+
+.ledger__eye {
+  flex: 0 0 20px;
+  width: 20px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.ledger__inline-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 4px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+}
+
+.ledger__empty {
+  flex: 0 0 auto;
+  margin: 0;
+  color: var(--c-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ledger__footer {
+  flex: 0 0 auto;
+  margin: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--c-border);
+  color: var(--c-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* --- 状態行 28px の 5 枠 (設計書 §C.8 / §H.6) -------------------------------

@@ -418,16 +418,20 @@ describe('SidebarContent — A1 一覧フィルタ (検索)', () => {
     expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
   });
 
-  it('resets the name filter when switching mode (モードごとに現行を踏襲)', () => {
+  // **増分 4 で挙動を変えた（意図的）。** 旧版はモードを切り替えると絞り込みが消えた
+  // （モードごとに別の React state を持ち、key で作り直していた）。増分 4 は
+  // 「地物を検索」を絞り込み欄へ統合した（E-6）ので、**絞り込みは 1 本**になり、
+  // セッションの状態（`store.ledger.query`）が持つ。母集団を切り替えても打った語は
+  // 残る ―― 同じ語で「いまの年」と「通史」を見比べるのが自然な使い方だからである。
+  it('母集団を切り替えても絞り込みの語は残る（絞り込みは 1 本＝E-6）', () => {
     let root = withLeaf(emptyProject(), squareLeaf('f-oda', '織田領'), 1000);
     root = withLeaf(root, squareLeaf('f-toku', '徳川領'), 1000);
     renderWith(root);
-    // Filter in 現在時刻, then switch to 通史: the filter is empty again (keyed remount).
     fireEvent.change(screen.getByTestId('unified-list-filter'), { target: { value: '織田' } });
     expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
     fireEvent.click(screen.getByTestId('list-mode-history'));
-    expect(screen.getByTestId('unified-list-count').textContent).toBe('2件');
-    expect((screen.getByTestId('unified-list-filter') as HTMLInputElement).value).toBe('');
+    expect(screen.getByTestId('unified-list-count').textContent).toBe('1 / 2件');
+    expect((screen.getByTestId('unified-list-filter') as HTMLInputElement).value).toBe('織田');
   });
 
   it('folds full-width / case so the 一覧フィルタ matches like the FR-99 検索 (整合)', () => {

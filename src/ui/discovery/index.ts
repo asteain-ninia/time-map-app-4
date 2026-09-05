@@ -161,6 +161,71 @@ export {
   toSearchableFeature,
 } from './adapters';
 
+// 地物一覧（台帳）— 行の組み立てと仮想スクロール（増分 4 / 設計書 §C.5）
+export {
+  type LedgerFeature,
+  type LedgerRow,
+  type LedgerWindow,
+  type LedgerBuildInput,
+  type LedgerBuildResult,
+  LEDGER_ROW_HEIGHT,
+  LEDGER_OVERSCAN,
+  QUALIFIER_STAGE,
+  type QualifierStage,
+  ledgerWindow,
+  scrollTopForRow,
+  foldForFilter,
+  compactCoordinate,
+  buildLedgerRows,
+  buildQualifiers,
+  qualifierStageOf,
+} from './ledger';
+
+// 一覧のセッション状態（母集団・並べ方・絞り込み・展開・作業のまとまり）
+export {
+  LEDGER_MODE,
+  type LedgerMode,
+  type LedgerState,
+  DEFAULT_LEDGER_STATE,
+  toggleExpanded,
+  withExpanded,
+  reconcileLedgerToLive,
+} from './ledger-state';
+
+// 作業のまとまり（束。設計書 §C.5）
+export {
+  BUNDLE_KIND,
+  type BundleKind,
+  type BundlePreset,
+  BUNDLE_PRESETS,
+  type BundleMember,
+  type Bundle,
+  type BundleSource,
+  type BundleBuild,
+  type BundleCurrent,
+  buildBundle,
+  isMemberDone,
+  doneIdsOf,
+  bundleIndexOf,
+  nextUnfinishedIndex,
+  firstUnfinishedIndex,
+  withCursor,
+  indexOfMember,
+  stepIndex,
+} from './bundle';
+
+// どこへでも移動（Ctrl+P。設計書 §C.2 の 26）
+export {
+  JUMP_CANDIDATE_KIND,
+  type JumpCandidateKind,
+  type JumpCandidate,
+  JUMP_MAX_CANDIDATES,
+  type JumpInput,
+  type JumpResult,
+  isYearQuery,
+  jumpCandidates,
+} from './jump-palette';
+
 // strings (FR-115 / FR-118)
 export {
   FILTER_STRINGS,
@@ -168,4 +233,7 @@ export {
   VALIDATION_STRINGS,
   ERROR_HANDLING_STRINGS,
   DIAGNOSTICS_STRINGS,
+  LEDGER_STRINGS,
+  BUNDLE_STRINGS,
+  JUMP_STRINGS,
 } from './strings';

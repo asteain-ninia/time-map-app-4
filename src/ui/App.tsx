@@ -164,6 +164,7 @@ import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore } from './shell/option-bar';
+import { SidebarFocusStore } from './shell/sidebar-focus';
 import {
   LongitudeShiftControl,
   GlobalDepthControl,
@@ -554,6 +555,13 @@ export function App(): JSX.Element {
   optionBarStoreRef.current ??= new OptionBarStore();
   const optionBarStore = optionBarStoreRef.current;
 
+  // 右パネルの「どの区画に注目させるか」の口（増分 4 / 結合点 #3）。右クリックの
+  // 「プロパティを編集」と追加の確定がここを呼ぶ。React の外に置くのは `OptionBarStore`
+  // と同じ理由で、押し込む側が描画の外から呼ぶためである。
+  const sidebarFocusStoreRef = useRef<SidebarFocusStore | null>(null);
+  sidebarFocusStoreRef.current ??= new SidebarFocusStore();
+  const sidebarFocusStore = sidebarFocusStoreRef.current;
+
   // 追加を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
   // 道具は地図セルの覆いの中、素性欄はサイドバーの中に居て React の木の上では兄弟ですら
   // ないので、細い pub/sub を 1 本渡す。ref に置く理由は上の 2 つと同じ。
@@ -578,6 +586,24 @@ export function App(): JSX.Element {
       statusMessageStore.success(text);
     },
     [statusMessageStore],
+  );
+
+  /**
+   * **拒否理由の共通枠**（増分 4 の中身 10 / G-20・G-23 の 87 件の出口。設計書 §H.5）。
+   *
+   * 断りは 2 か所に出す。**状態行の「直前の結果」**（消えない。K-7）と、
+   * **オプションバーの「次の一手」**（長い理由もここなら 1 行で読める）である。
+   * 枠は増分 1 で作ったものをそのまま使い、新しい置き場を作らない（教訓 5.29）。
+   *
+   * 押し込みは帯の持ち主を見ない規約なので（`option-bar.ts` の `claim` 注記 3）、
+   * 道具を構えていないときでも「次の一手」に理由が出る。
+   */
+  const announceRefusal = useCallback(
+    (text: string): void => {
+      statusMessageStore.failure(text);
+      optionBarStore.setNextStep(text);
+    },
+    [statusMessageStore, optionBarStore],
   );
 
   // 保存の素性（いまの保存先と最後に保存できた時刻）。FileOpsController だけが知っている
@@ -1499,24 +1525,19 @@ export function App(): JSX.Element {
     [store],
   );
 
-  // fr96 EditProperties — focus the sidebar プロパティ tab through the tab's OWN
-  // switch path (the Sidebar owns its active-section state privately; driving its
-  // rendered tab button is the additive way to activate it without a shell edit —
-  // the same single path a user click takes, 教訓 5.29). The target feature was
-  // already promoted via setActiveFeature, so the panel resolves it on switch.
-  // Codex F3: an absent tab is surfaced LOUDLY (honest failure, 教訓 5.12) — a shell
-  // testid rename must not silently degrade this導線. An explicit tab-state API is a
-  // shell change and stays backlog.
+  // fr96 EditProperties — 右パネルの「選んだ地物」の区画へ寄せる（増分 4 / 結合点 #3）。
+  //
+  // **旧: `document.getElementById('sidebar-tab-properties')?.click()`。** タブの DOM が
+  // 在ることと、押すと切り替わることの両方に依存していて、**排他タブをやめて上下 2 区画に
+  // した瞬間に成り立たなくなる**（同じ箇所のコメント自身が「明示的なタブ状態 API は
+  // shell の改修になるので後回し」と認めていた）。増分 4 でその API を作ったので、
+  // ここは口を 1 回呼ぶだけになった（教訓 5.33: 層をまたぐ契約は型で固定する）。
+  //
+  // 2 区画なので「切り替える」ではなく「その区画を先頭まで戻して印を移す」である
+  // （設計書 §I.3）。対象の地物は呼び出し側が既に `setActiveFeature` で選んでいる。
   const focusPropertyTab = useCallback((): void => {
-    const tab = document.getElementById(`sidebar-tab-${SIDEBAR_SECTION.Properties}`);
-    if (tab instanceof HTMLElement) {
-      tab.click();
-      return;
-    }
-    console.warn(
-      'fr96: プロパティタブ (sidebar-tab-properties) が見つからないため、タブ切替をスキップしました。',
-    );
-  }, []);
+    sidebarFocusStore.focus(SIDEBAR_SECTION.Properties);
+  }, [sidebarFocusStore]);
 
   /**
    * その時刻ちょうどに錨があるか（＝この保存は上書きか、新設か）。**編集が実際に
@@ -2568,6 +2589,10 @@ export function App(): JSX.Element {
         onFocusFeatureCamera: focusCameraOnFeature,
         // 増分 3 / N-15: 追加を確定したあとの素性入力を **素性欄の位置**に出す。
         addDraft: addDraftStore,
+        // 増分 4 / 結合点 #3: 右クリックと追加の確定が「選んだ地物」の区画へ寄せる口。
+        focusStore: sidebarFocusStore,
+        // 増分 4 / G-20・G-23: 一覧のその場編集が断られたときの理由の出口。
+        onRefusal: announceRefusal,
       }),
     [
       store,
@@ -2579,6 +2604,8 @@ export function App(): JSX.Element {
       propertyDeleteFeature,
       focusCameraOnFeature,
       addDraftStore,
+      sidebarFocusStore,
+      announceRefusal,
     ],
   );
 

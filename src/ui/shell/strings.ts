@@ -48,6 +48,8 @@ export const APP_STRINGS = {
     `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',
   sidebarAriaLabel: 'サイドバー',
+  /** 右パネルの 2 区画の仕切り（増分 4。掴んで上下に動かせる）。 */
+  sidebarSplitterAriaLabel: '地物一覧と選んだ地物の仕切り',
   toolbarAriaLabel: 'ツールバー',
   menubarAriaLabel: 'メニューバー',
   statusbarAriaLabel: 'ステータスバー',
@@ -114,8 +116,10 @@ export const TOOL_LABELS = {
  * is now「一覧」+「プロパティ」の2タブ構成. The two list modes (現在時刻=現在の年に存在
  * する地物 = 旧地物一覧, 通史=全時刻の錨 = 旧錨一覧) live inside the one list panel. */
 export const SIDEBAR_SECTION_TITLES = {
-  list: '一覧',
-  properties: 'プロパティ',
+  // 増分 4: 画面の第一表記を設計書 §H.1 に合わせた（台帳 → 地物一覧、素性欄 → 選んだ地物）。
+  // 排他タブをやめて上下 2 区画を同時に出すので、見出しは「いま何の区画か」を言い切る。
+  list: '地物一覧',
+  properties: '選んだ地物',
 } as const;
 
 /**
@@ -272,6 +276,10 @@ export const SIDEBAR_CONTENT_STRINGS = {
   historyRowLabel: (year: string, name: string): string => `${year} — ${name}`,
   /** 系列の持ち主の名前が引けなかったときの言い方（内部 id は画面に出さない、U-1）。 */
   unknownOwnerName: '別の地物',
+  /** 一覧のその場編集が対象を解決できないとき（G-23 の共通枠へ出す）。 */
+  quickEditNoTarget: 'この年にはその地物が居ないので直せません。',
+  /** 一覧のその場編集が、その年には保存できないとき。 */
+  quickEditNotSavable: 'この年には保存できません。',
 } as const;
 
 /**
