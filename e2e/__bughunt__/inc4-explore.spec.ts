@@ -54,9 +54,12 @@ function makeRecorder(): {
   };
 }
 
-/** いまのカメラ（`data-zoom` / `data-pan-x` / `data-pan-y`）。 */
+/**
+ * いまのカメラ（`data-zoom` / `data-pan-x` / `data-pan-y`）。
+ * **付いているのは地図の入力層**（`map-input-layer`）で、地図セルではない。
+ */
 async function camera(page: Page): Promise<{ zoom: string; panX: string; panY: string }> {
-  const el = page.getByTestId('map-area');
+  const el = page.getByTestId('map-input-layer');
   return {
     zoom: (await el.getAttribute('data-zoom')) ?? '',
     panX: (await el.getAttribute('data-pan-x')) ?? '',

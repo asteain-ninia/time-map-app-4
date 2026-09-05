@@ -291,12 +291,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   const targetFeatureId = targetFeatureIdOf(decision);
 
-  // 焦点は **描き直したあと** に入れる（上の `nameFocusRequest` の注記）。対象が
-  // 変わるたびに入れ直すので、送り（選ぶ → 焦点）が 1 回の押下で成り立つ。
+  // 焦点は **描き直したあと** に入れる（上の `nameFocusRequest` の注記）。
+  //
+  // **1 つの要求につき 1 回だけ**入れる。`targetFeatureId` を依存に入れているのは
+  // 「要求が来たときにまだ入力欄が無い」場合に次の描画で拾うためだが、番号で締めないと
+  // **選択が変わるたびに焦点が入り続ける**。実データの探索でそれを踏んだ ―― 取り消しで
+  // 選択が動いた拍子に名前欄へ焦点が入り、**続けて押した Ctrl+Z が入力欄に食われて
+  // 2 回目以降の取り消しが効かなかった**（`focus-guard` は編集要素の上では大域
+  // ショートカットを立ち止まらせる）。
+  const appliedNameFocusRef = useRef(0);
   useEffect(() => {
-    if (nameFocusRequest === 0) return;
+    if (nameFocusRequest === 0 || appliedNameFocusRef.current === nameFocusRequest) return;
     const el = nameInputRef.current;
     if (el === null) return;
+    appliedNameFocusRef.current = nameFocusRequest;
     el.focus();
     el.select();
   }, [nameFocusRequest, targetFeatureId]);

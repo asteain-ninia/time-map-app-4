@@ -630,10 +630,14 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
       const s = store.getState();
       s.setBundleCursor(i);
       if (s.activeFeature !== member.featureId) s.setActiveFeature(member.featureId);
-      onFocusNameField?.();
+      // **ここで名前欄へ焦点を入れてはいけない。** 入れると、続けて Ctrl+Z を押しても
+      // 打鍵が入力欄に食われて 2 回目以降の取り消しが効かなくなる（`focus-guard` は
+      // 編集要素の上では大域ショートカットを立ち止まらせる）。実データの探索で
+      // 「1 回目は戻るが 2 回目から戻らない」として捕まえた。設計書 §C.5 が求めている
+      // のも「カーソルが戻った地物へ移る」ことだけである。
       return;
     }
-  }, [doneIds, bundle, store, onFocusNameField]);
+  }, [doneIds, bundle, store]);
 
   // --- その場編集 -------------------------------------------------------------
   const commitEdit = useCallback(
@@ -875,23 +879,33 @@ function BundleBar(props: {
   const isExpression = (preset?.kind ?? BUNDLE_KIND.Expression) === BUNDLE_KIND.Expression;
   return (
     <div className="ledger__bundle" data-testid="ledger-bundle">
+      {/* **1 行に詰める。** 右パネルの列は時刻レールがまだ 112px に縮んでいないぶん
+          低いので（増分 6）、見出しを 1 行減らすと行がそのぶん見える。 */}
       <div className="ledger__bundle-row">
-        <label className="ledger__bundle-label">
-          <span>{BUNDLE_STRINGS.label}</span>
-          <select
-            className="ledger__bundle-select"
-            data-testid="bundle-preset"
-            aria-label={BUNDLE_STRINGS.selectAria}
-            value={presetId}
-            onChange={(e) => onPreset(e.target.value)}
-          >
-            {BUNDLE_PRESETS.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <select
+          className="ledger__bundle-select"
+          data-testid="bundle-preset"
+          aria-label={BUNDLE_STRINGS.selectAria}
+          value={presetId}
+          onChange={(e) => onPreset(e.target.value)}
+        >
+          {BUNDLE_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        {isExpression && (
+          <input
+            type="text"
+            className="ledger__bundle-expression"
+            data-testid="bundle-expression"
+            aria-label={BUNDLE_STRINGS.expressionAria}
+            placeholder={BUNDLE_STRINGS.expressionPlaceholder}
+            value={expression}
+            onChange={(e) => onExpression(e.target.value)}
+          />
+        )}
         <button
           type="button"
           className="ledger__bundle-make"
@@ -902,17 +916,6 @@ function BundleBar(props: {
           {BUNDLE_STRINGS.makeLabel}
         </button>
       </div>
-      {isExpression && (
-        <input
-          type="text"
-          className="ledger__bundle-expression"
-          data-testid="bundle-expression"
-          aria-label={BUNDLE_STRINGS.expressionAria}
-          placeholder={BUNDLE_STRINGS.expressionPlaceholder}
-          value={expression}
-          onChange={(e) => onExpression(e.target.value)}
-        />
-      )}
       <div className="ledger__bundle-row">
         <button
           type="button"

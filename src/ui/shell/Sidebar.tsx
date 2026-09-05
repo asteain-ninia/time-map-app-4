@@ -56,7 +56,7 @@ export const SIDEBAR_LIST_MIN_HEIGHT = 96;
  * 同時に見えていないと、保存列が節の見出しを覆って「押せるはずのものが押せない」に
  * なるからである（教訓 5.14）。CSS 側の `min-height` と同じ値で、片方だけ動かすと
  * 仕切りを引き切ったときに右パネルへ縦スクロールが出る。 */
-export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 240;
+export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 200;
 
 export interface SidebarProps {
   /** 上段（地物一覧＝台帳）の中身。`SidebarContent` が組み立てて渡す。 */

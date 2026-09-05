@@ -421,7 +421,7 @@ body {
    * 動かない」の右パネル版）。基準を 0 にすると、区画の高さは **窓と仕切りだけ**で
    * 決まり、中身では動かない。 */
   flex: 1 1 0;
-  min-height: 240px;
+  min-height: 200px;
 }
 
 .sidebar__panel-head {
@@ -673,13 +673,14 @@ body {
 }
 
 .ledger__bundle-select {
-  flex: 1 1 auto;
+  flex: 1 1 40%;
   min-width: 0;
   font: inherit;
   font-size: 11px;
 }
 
 .ledger__bundle-expression {
+  flex: 1 1 40%;
   font: inherit;
   font-size: 11px;
   min-width: 0;
