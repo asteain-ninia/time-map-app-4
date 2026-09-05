@@ -220,23 +220,12 @@ describe('アプリバーの素性表示と主行の列（K-3 / B1 / B2）', () 
   });
 });
 
-describe('右パネルの 2 区画は、中の器がスクロールする（教訓 5.61 / 5.62）', () => {
+describe('右パネルの上段は、中の器がスクロールする（教訓 5.61 / 5.62）', () => {
   it('上段（地物一覧）の器はスクロールしない', () => {
     // 一覧は自分の中に `.ledger__scroller` を持つ。外にもう 1 つスクロールを作ると
     // 「行は在るのに区画の外」になる（既定の窓で 1 行も見えなかった原因）。
     expect(
       decl(ruleBody(".sidebar__panel[data-testid='sidebar-panel-list'] > .sidebar__panel-body"), 'overflow-y'),
-    ).toBe('hidden');
-  });
-
-  it('下段（選んだ地物）の器もスクロールしない', () => {
-    // 素性欄は自分の中に「見出し／本文／保存列」の 3 段を持ち、本文だけが動く。
-    // ここが `auto` のままだと 3 段ごと器が動き、**保存列が下へ流れて見えなくなる**。
-    expect(
-      decl(
-        ruleBody(".sidebar__panel[data-testid='sidebar-panel-properties'] > .sidebar__panel-body"),
-        'overflow-y',
-      ),
     ).toBe('hidden');
   });
 });

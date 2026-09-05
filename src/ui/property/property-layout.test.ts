@@ -60,9 +60,9 @@ describe('素性欄は「見出し／本文／保存列」の 3 段で、重な�
   it('入れ物は縦の flex で、区画の高さいっぱいに広がる', () => {
     expect(decl(panel, 'display')).toBe('flex');
     expect(decl(panel, 'flex-direction')).toBe('column');
+    // 器の高さに合わせる（本文が「残り」を受け取り、保存列が下端に居続ける）。
+    // **入り切らないぶんは本文の下限があふれさせて、外の器のスクロールで届く。**
     expect(decl(panel, 'height')).toBe('100%');
-    // flex の子として縮めるようにしておく（教訓 5.50）。
-    expect(decl(panel, 'min-height')).toBe('0');
   });
 
   it('見出しと保存列は場所を取る側（伸び縮みしない）で、重ねない', () => {
@@ -75,7 +75,9 @@ describe('素性欄は「見出し／本文／保存列」の 3 段で、重な�
 
   it('スクロールするのは本文だけ（残りの高さを受け取る）', () => {
     expect(decl(body, 'flex')).toBe('1 1 auto');
-    expect(decl(body, 'min-height')).toBe('0');
+    // **0 にしない。** 0 だと保存列が育つ年に本文が 1px も出なくなる（実測）。
+    // 1 行ぶん（28px）を下限にして、入り切らないぶんは外の器へ渡す。
+    expect(decl(body, 'min-height')).toBe('28px');
     expect(decl(body, 'overflow-y')).toBe('auto');
     // 横には伸びない（長い文で枠が広がると地図まで動く、教訓 5.50）。
     expect(decl(body, 'overflow-x')).toBe('hidden');
