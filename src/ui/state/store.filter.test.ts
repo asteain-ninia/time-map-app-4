@@ -11,25 +11,15 @@ import { describe, expect, it } from 'vitest';
 
 import { createCommandResult } from '../../domain/command/result';
 import { asFeatureId, asVertexId, type FeatureId, type VertexId } from '../../domain/ids';
-import { DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS, type FilterState } from '../discovery/index';
+import { DEFAULT_FILTER_STATE, FEATURE_KIND_AXIS } from '../discovery/index';
 
-import { createSessionStore, type FilterVisibilityResolver } from './store';
+import { createSessionStore } from './store';
 
 interface TestDomain {
   readonly tag: string;
 }
 const f = (s: string): FeatureId => asFeatureId(s);
 const v = (s: string): VertexId => asVertexId(s);
-
-/**
- * A fake FR-113 visibility resolver (Codex F2): a feature is invisible iff the candidate
- * filter FORCE-HIDES it (individual override). Stands in for isFeatureVisibleUnderFilter —
- * enough to exercise the store's commitFilter heal funnel over an opaque domain.
- */
-const HIDE_BY_INDIVIDUAL: FilterVisibilityResolver = {
-  isVisible: (featureId: FeatureId, filter: FilterState): boolean =>
-    !(filter.individual.get(featureId)?.hidden ?? false),
-};
 
 /** A store with a MUTABLE injected live-feature-id set (drives the reconcile funnel). */
 function storeWithLive(initialLive: FeatureId[]) {
@@ -159,10 +149,9 @@ describe('FR-113 Phase 2 filter slice — emphasis actions', () => {
     expect(store.getState().filter.emphasizedDepth).toBeNull();
   });
 
-  it('emphasis never hides a feature → the active selection is NOT healed away', () => {
+  it('emphasis never hides a feature → the active selection is untouched', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
       initial: { activeFeature: f('A') },
     });
     const selBefore = store.getState().selection;
@@ -247,68 +236,54 @@ describe('FR-113 filter slice — reconcile funnel (削除 id 剪定, 教訓 5.5
   });
 });
 
-describe('FR-113 filter slice — selection heal on filter change (Codex F2)', () => {
-  it('hiding the ACTIVE feature deselects it IMMEDIATELY (not after the next click)', () => {
+describe('表示条件を変えても選択は外さない（B55 の裁定 / 設計書 §D.6 規則①）', () => {
+  // 2026-09-06。旧版（Codex F2）は「隠した地物が選ばれていたら、同じ遷移で選択を外す」
+  // を `commitFilter` で行っていた。§D.6 規則①は「選んでいる地物と親までの道筋は
+  // **表示条件に関わらず必ず描く**」なので、必ず描くものを選択から外すのは自己矛盾で、
+  // 実際には「隠す」を押した瞬間に素性欄が空になり、直前まで見ていた地物の情報が消えた。
+  it('隠しても、選んでいる地物は選ばれたまま（素性欄が空にならない）', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
       initial: { activeFeature: f('A') },
     });
-    expect(store.getState().activeFeature).toBe(f('A'));
     store.getState().setFeatureHidden(f('A'), true);
-    // The active feature disappears from the selection in the SAME transition.
-    expect(store.getState().activeFeature).toBeNull();
-    // ...and the filter still records the hide (session state intact).
+    expect(store.getState().activeFeature).toBe(f('A'));
+    // 隠したこと自体は表示条件に残る（session state は正しく書かれている）。
     expect(store.getState().filter.individual.get(f('A'))?.hidden).toBe(true);
   });
 
-  it('hiding a DIFFERENT feature leaves the active selection untouched', () => {
+  it('隠しても、その地物の頂点の選択は残る', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
-      initial: { activeFeature: f('A') },
-    });
-    store.getState().setFeatureHidden(f('B'), true);
-    expect(store.getState().activeFeature).toBe(f('A'));
-  });
-
-  it('a vertex-only selection whose OWNER is hidden drops the vertices', () => {
-    const store = createSessionStore<TestDomain>({
-      initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
       initial: { vertexSelection: { ownerFeatureId: f('B'), vertexIds: new Set([v('v1')]) } },
     });
-    expect(store.getState().vertexSelection).not.toBeNull();
     store.getState().setFeatureHidden(f('B'), true);
-    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().vertexSelection).not.toBeNull();
   });
 
-  it('WITHOUT a filterVisibility resolver the heal is skipped (honest absence)', () => {
+  it('種別を丸ごと消しても、選んでいる地物は選ばれたまま', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
       initial: { activeFeature: f('A') },
     });
-    store.getState().setFeatureHidden(f('A'), true);
-    // No resolver → no heal → the (now hidden) feature stays selected.
+    store.getState().setFilterKindVisible(FEATURE_KIND_AXIS.Area, false);
     expect(store.getState().activeFeature).toBe(f('A'));
   });
 
-  it('opacity change never deselects a visible active feature (identity preserved)', () => {
+  it('薄くする（不透明度）は選択に何も起こさない（選択の参照まで同じ）', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
       initial: { activeFeature: f('A') },
     });
     const selBefore = store.getState().selection;
     store.getState().setFilterOpacity(0.5);
     expect(store.getState().activeFeature).toBe(f('A'));
-    expect(store.getState().selection).toBe(selBefore); // no selection churn
+    expect(store.getState().selection).toBe(selBefore);
   });
 
-  it('the heal never marks the project dirty (session-only)', () => {
+  it('表示条件の書き換えは、いまも一切 dirty にしない（session-only）', () => {
     const store = createSessionStore<TestDomain>({
       initialDomain: { tag: 'd0' },
-      filterVisibility: HIDE_BY_INDIVIDUAL,
       initial: { activeFeature: f('A') },
     });
     store.getState().setFeatureHidden(f('A'), true);

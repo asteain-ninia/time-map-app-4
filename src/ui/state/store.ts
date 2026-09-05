@@ -803,22 +803,6 @@ function deriveTimelineState(
 
 // --- Store factory ----------------------------------------------------------
 
-/**
- * The injected FR-113 visibility port (Codex F2 — the selection-heal sibling of
- * {@link DisplayGrabbabilityResolver}). Answers "is this feature VISIBLE under the given
- * display filter at (time, control)?" so the store can deselect an active feature the
- * filter just hid WITHOUT re-implementing any visibility rule (単一解決, 教訓 5.29). The
- * composition root binds it to `isFeatureVisibleUnderFilter` over the live root.
- */
-export interface FilterVisibilityResolver {
-  isVisible(
-    featureId: FeatureId,
-    filter: FilterState,
-    time: TimePoint,
-    control: DisplayControl,
-  ): boolean;
-}
-
 export interface CreateSessionStoreOptions<S> {
   /** The initial immutable domain state (the truth root). */
   readonly initialDomain: S;
@@ -883,17 +867,6 @@ export interface CreateSessionStoreOptions<S> {
    */
   readonly readDomainPalette?: (domain: S) => PaletteSelection | undefined;
   /**
-   * FR-113 (Codex F2) — is `featureId` VISIBLE under a candidate display `filter` at
-   * `(time, control)`? Injected so a filter change that hides the ACTIVE feature (or a
-   * vertex-selection owner) can IMMEDIATELY deselect it (不変条件: 非表示地物は選択からも
-   * 消える — the selection-heal sibling of grabbability, but keyed on FR-113 visibility not
-   * grabbability). The store never inspects the opaque domain `S` — the composition root
-   * wires this to the SAME resolveFilteredDisplay verdict the draw / hit / tool-target paths
-   * read (単一解決, 教訓 5.29). When OMITTED the filter-visibility heal is SKIPPED (honest
-   * absence — framework-free tests that never hide the active feature are unaffected).
-   */
-  readonly filterVisibility?: FilterVisibilityResolver;
-  /**
    * Calendar used ONLY to clamp `currentTime` into the timeline range on a
    * LOAD / NEW hydrate (the store does not resolve time itself). Defaults to the
    * gregorian calendar (FR-67 initial 暦設定), matching the timeline hook.
@@ -936,9 +909,6 @@ export function createSessionStore<S>(
   // May be undefined: the palette mirror is then SKIPPED (honest absence — the store
   // never reaches into the opaque domain to read a palette itself; FR-109 follow-up).
   const readDomainPalette = options.readDomainPalette;
-  // May be undefined: the FR-113 filter-visibility selection heal is then SKIPPED (honest
-  // absence — the store never resolves visibility itself; Codex F2).
-  const filterVisibility = options.filterVisibility;
   const calendar = options.calendar ?? getCalendar('gregorian');
   const domainEquals = options.domainEquals ?? Object.is;
   const init = options.initial ?? {};
@@ -1159,41 +1129,23 @@ export function createSessionStore<S>(
       if (nextLedger !== curLedger) set({ ledger: nextLedger });
     };
 
-    // The FR-113 filter-change funnel (Codex F2, mirror of commitDisplayControl): commit a
-    // CHANGED filter AND, in the SAME set(), heal the selection if the new filter HIDES the
-    // active feature (or a vertex-selection owner). This makes「非表示にした地物は即座に選択
-    // からも消える」— not "after the next click" — enforcing the unifying invariant in ONE
-    // place so every filter mutation (the 5 setters + the reconcile shim) shares the rule
-    // (教訓 5.6 / 5.29, no scattered per-action checks). The visibility judgment is the
-    // injected {@link FilterVisibilityResolver} (the SAME resolveFilteredDisplay verdict the
-    // draw / hit / tool-target paths read); with no resolver injected the heal is skipped
-    // (honest absence). Selection is re-derived ONLY when it actually changed (identity
-    // stability — an opacity/種別-on write with a visible active feature is a pure filter set).
+    // 表示条件を書き換える唯一の漏斗（すべての setter と reconcile がここを通る、教訓 5.6）。
+    //
+    // **表示条件を変えても選択は外さない**（2026-09-06、B55 の裁定。設計書 §D.6 規則①）。
+    //
+    // 旧版は「新しい表示条件で選択中の地物が隠れるなら、同じ遷移で選択を外す」をここで
+    // 行っていた（Codex F2）。だが §D.6 規則①は「**選んでいる地物と親までの道筋は、
+    // 表示条件に関わらず必ず描く**」である。必ず描くものを選択から外すのは自己矛盾で、
+    // 実際には「隠す」を押した瞬間に **素性欄が空になり、直前まで見ていた地物の情報を
+    // 失う**（隠してから名前を直す、という流れが成り立たない）。だから措置ごと撤去した。
+    // 隠れていること自体は、一覧の 🚫 印と、地図への「必ず描く」と、状態行の知らせが
+    // 伝える（黙って特別扱いしない）。
+    //
+    // **戻し方**（README B-2）: ここで `filterVisibility.isVisible` を見て、隠れたときに
+    // `withoutVertexSet(withActiveFeature(sel, null))` へ戻す。判定の口（`FilterVisibilityResolver`）
+    // も一緒に落としたので、戻すなら App.tsx の結線ごと復活させる。
     const commitFilter = (nextFilter: FilterState): void => {
-      const s = get();
-      let sel = s.selection;
-      if (filterVisibility !== undefined) {
-        const { currentTime, displayControl } = s;
-        if (
-          sel.activeFeature !== null &&
-          !filterVisibility.isVisible(sel.activeFeature, nextFilter, currentTime, displayControl)
-        ) {
-          // The active feature is now hidden → drop it AND its vertices (the whole primary
-          // selection disappears with the feature).
-          sel = withoutVertexSet(withActiveFeature(sel, null));
-        }
-        if (
-          sel.vertexOwner !== null &&
-          !filterVisibility.isVisible(sel.vertexOwner, nextFilter, currentTime, displayControl)
-        ) {
-          // A vertex-only selection whose owner is now hidden → drop the vertices.
-          sel = withoutVertexSet(sel);
-        }
-      }
-      set({
-        filter: nextFilter,
-        ...(sel !== s.selection ? selectionPatch(sel) : {}),
-      });
+      set({ filter: nextFilter });
     };
 
     return {
@@ -1858,8 +1810,10 @@ export function createSessionStore<S>(
 
     // -- 地物一覧（台帳, 増分 4）------------------------------------------------
     //
-    // どれも `ledger` **だけ**を書く（ドメイン・選択・projectDirty・displayControl・
-    // filter には触れない）。表示状態なので保存もしないし、プロジェクトを汚さない。
+    // どれも `ledger` **だけ**を書く（ドメイン・選択・displayControl・filter には
+    // 触れない）。**例外は束（作業のまとまり）の 2 つ**で、束は手直し D で保存ファイル
+    // （manifest の `bundles`）に載るようになったので、書き換えたら未保存の印を立てる
+    // （2026-09-06、2 回目の手直し）。ほかは表示状態なので保存もしないし、汚さない。
     // **変化が無ければ set() しない** ―― 一覧の memo と再描画の購読は参照の同一性で
     // 判定するので、値の等しい新しい参照を作ると無駄な組み立てが走る（教訓 5.29、
     // filter の各セッターと同じ規律）。
@@ -1892,20 +1846,35 @@ export function createSessionStore<S>(
       if (next !== cur) set({ ledger: next });
     },
 
+    /**
+     * 束を作る／捨てる（`null`）。**未保存の印を立てる**（2026-09-06、2 回目の手直し）。
+     *
+     * 手直し D で束は保存ファイルの中身になった（`FileOpsController` が保存の直前に
+     * manifest の `bundles` へ畳み込む）。それなのにここが `projectDirty` に触らないので、
+     * **220 件の作業のまとまりを作ってそのまま閉じると、警告も出ずに消えていた**。
+     */
     setBundle(bundle) {
       const cur = get().ledger;
       if (cur.bundle === bundle) return;
-      set({ ledger: { ...cur, bundle } });
+      set({ ledger: { ...cur, bundle }, projectDirty: true });
     },
 
+    /**
+     * 束の送り（カーソル）。**これも未保存の印を立てる** ―― `toSavedBundle` は
+     * `cursor` も書くので、送っただけでディスクに書かれる中身が変わる。
+     */
     setBundleCursor(cursor) {
       const cur = get().ledger;
       if (cur.bundle === null) return;
       const next = withBundleCursor(cur.bundle, cursor);
       if (next === cur.bundle) return;
-      set({ ledger: { ...cur, bundle: next } });
+      set({ ledger: { ...cur, bundle: next }, projectDirty: true });
     },
 
+    /**
+     * 「未処理だけ」の絞り込み。**これは保存ファイルに載らない**（`toSavedBundle` が
+     * 書かない）ので、未保存の印は立てない ―― 見え方だけの状態である。
+     */
     setBundleOnlyUnfinished(only) {
       const cur = get().ledger;
       if (cur.onlyUnfinished === only) return;

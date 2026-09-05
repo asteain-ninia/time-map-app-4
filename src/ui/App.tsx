@@ -321,21 +321,6 @@ export function App(): JSX.Element {
                 defaultPaletteTheme: domain.uiSettings.project.defaultPaletteTheme,
                 customPalette: domain.uiSettings.project.customPalette,
               },
-        // FR-113 (Codex F2): the selection-heal visibility port. Binds the store's filter
-        // heal to the SAME single FR-113 verdict (isFeatureVisibleUnderFilter) the draw /
-        // hit / tool-target paths read, over the live root (via the getRoot ref) at the
-        // (time, control) the store passes. So hiding the ACTIVE feature deselects it at once.
-        filterVisibility: {
-          isVisible: (featureId, filter, time, control) => {
-            const getRoot = liveRootRef.current;
-            const root = getRoot !== null ? getRoot() : buildEmptyProject();
-            return isFeatureVisibleUnderFilter(
-              resolveDisplayFor(root, time, control),
-              filter,
-              featureId,
-            );
-          },
-        },
       }),
     [],
   );
@@ -2642,20 +2627,43 @@ export function App(): JSX.Element {
 
   const focusCameraOnFeature = useCallback(
     (featureId: FeatureId): void => {
-      // FR-113 (Codex F3, defensive): never fit the camera to an FR-113-hidden feature —
-      // the list rows are already gated, this guards any direct caller (単一解決 reuse).
-      if (!isToolTargetVisible(featureId)) return;
       // **作図中は視点を飛ばさない**（増分 3 の手直し D2。バグ狩り #7）。打ちかけの下書きを
       // 抱えたまま一覧の行を押すと、地図だけが世界の反対側へ飛び、そのあと打った点が
       // **世界をまたぐ形**になった（下書きは残るので、利用者は何が起きたか分からない）。
       // 一覧で選ぶこと自体は妨げない ―― 素性を見たいだけのことがあるので。
       if (addDrawing) return;
+
+      const s = store.getState();
+      // **隠れている地物でも、選んでいるなら視点を合わせる**（2026-09-06、2 回目の手直し）。
+      //
+      // 旧版はここで「表示条件を通っていなければ何もしない」と門を閉じていた。すると
+      // 隠れた行を一覧で選んでも **視点は動かず、状態行も黙ったまま**で、しかも地図には
+      // §D.6 規則①の「必ず描く」で当人だけが描かれている ―― 描いてあるのに、どこに
+      // 描いたかを教えない、という一番たちの悪い形だった（R1d の D-6）。
+      //
+      // 選んでいる 1 件は必ず描かれるので、視点を合わせる資格がある。**選んでいない**
+      // 地物に対する直接の呼び出しだけは、従来どおり表示条件の門で止める（FR-113 の
+      // 保険。道具の取得と同じ判定を使う）。
+      const forcedDrawn = s.activeFeature === featureId;
+      const visibleUnderFilter = isToolTargetVisible(featureId);
+      if (!visibleUnderFilter && !forcedDrawn) return;
+
       fitCameraToFeatureRef.current?.(featureId);
+      const feature = featureByIdAt(s.domain, s.currentTime, featureId);
+      if (feature === undefined) return;
+
+      // **表示条件で隠されている**ときは、畳み込みの話ではなく「隠している」ことを言う。
+      // 深さで畳まれた（＝隠していないが自分の形は描かれない）ときとは理由が違うので、
+      // 同じ文でごまかさない（R1d の D-6。設計書 §D.6 の規則 2 / §H.5）。
+      if (!visibleUnderFilter) {
+        announceResult(APP_STRINGS.hiddenButDrawn(featureDisplayName(feature)));
+        return;
+      }
+
       // **選んだものが地図に見えているか**を確かめ、見えていなければ理由を状態行へ出す
       // （増分 4 の中身 9 / 設計書 §D.6 の規則 2）。描くこと自体は描画側
       // （`committed-features` の「必ず描く」）が構造的に受け持つので、ここは
       // **黙って特別扱いしない**ための知らせだけを担う。
-      const s = store.getState();
       const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
       const drawnIds = new Set(resolution.resolved.shapes.map((sh) => sh.featureId));
       // **点・線は描画済みとみなす**（増分 4 の手直し B6）。`resolved.shapes` は面の
@@ -2668,8 +2676,6 @@ export function App(): JSX.Element {
           drawnIds.add(f.id);
         }
       }
-      const feature = featureByIdAt(s.domain, s.currentTime, featureId);
-      if (feature === undefined) return;
       const depth = derivedDepths(resolution.forest).get(featureId);
       const note = describeForcedDraw(
         drawnIds,
@@ -2720,6 +2726,8 @@ export function App(): JSX.Element {
         focusStore: sidebarFocusStore,
         // 増分 4 / G-20・G-23: 一覧のその場編集が断られたときの理由の出口。
         onRefusal: announceRefusal,
+        // 増分 4 の 2 回目の手直し: やり直して通ったことを状態行へ出す口（古い断りの上書き）。
+        onResult: announceResult,
         // 増分 4 / E-6: Ctrl+F（「地物を検索」）の行き先。
         filterFocus: ledgerFilterFocusStore,
         // 増分 4 の手直し B8: Alt+↑ / Alt+↓ / F2 の行き先。
@@ -2737,6 +2745,7 @@ export function App(): JSX.Element {
       addDraftStore,
       sidebarFocusStore,
       announceRefusal,
+      announceResult,
       ledgerFilterFocusStore,
       ledgerCommandStore,
     ],

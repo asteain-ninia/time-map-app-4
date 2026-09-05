@@ -1,7 +1,9 @@
 // U16 — 地物一覧（台帳）のセッション状態のスライス（増分 4 / 設計書 §C.5）。
 //
 // ここで固定するのは 4 つ:
-//   1. **`ledger` だけを書く**（ドメイン・選択・projectDirty には触れない＝表示状態の軸）
+//   1. **`ledger` だけを書く**（ドメイン・選択・displayControl には触れない＝表示状態の軸）。
+//      **例外は束の作成・送り・削除**で、束は保存ファイル（manifest の `bundles`）に載る
+//      ようになったので未保存の印を立てる（2026-09-06、2 回目の手直し）。
 //   2. **変化が無ければ参照を保つ**（一覧の memo と再描画の購読が同一性で判定するため）
 //   3. **読み込み・新規で丸ごと捨てる**（古いプロジェクトのものだから＝教訓 5.2）
 //   4. **展開集合は生きている地物だけに掃除する**（教訓 5.5 / 5.11。id で鍵を持つため）
@@ -124,5 +126,43 @@ describe('store.ledger — 一覧のセッション状態', () => {
     // 消えた地物が抜けると通し番号が動き、重複名の 3 段目（#3 ／ 座標）が意味を失う。
     // 消えた地物の行は組み立ての時点で母集団に居ないので、一覧には出ない。
     expect(store.getState().ledger.bundle?.members).toHaveLength(2);
+  });
+});
+
+describe('束は保存ファイルの中身なので、未保存の印を立てる（2026-09-06、2 回目の手直し）', () => {
+  // 手直し D で束は manifest の `bundles` に載るようになった。それなのに store が
+  // `projectDirty` に触らなかったので、**220 件の作業のまとまりを作ってそのまま閉じると、
+  // 警告も出ずに消えていた**。
+  it('束を作ると未保存になる', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    expect(store.getState().projectDirty).toBe(false);
+    store.getState().setBundle(bundleOf(['a', 'b']));
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
+  it('束を送る（カーソルを動かす）と未保存になる（`cursor` も保存される）', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setBundle(bundleOf(['a', 'b']));
+    store.getState().markProjectSaved();
+    expect(store.getState().projectDirty).toBe(false);
+    store.getState().setBundleCursor(1);
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
+  it('束を捨てる（null）と未保存になる', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setBundle(bundleOf(['a']));
+    store.getState().markProjectSaved();
+    store.getState().setBundle(null);
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
+  it('「未処理だけ」は保存ファイルに載らないので、未保存にはしない', () => {
+    const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
+    store.getState().setBundle(bundleOf(['a']));
+    store.getState().markProjectSaved();
+    store.getState().setBundleOnlyUnfinished(true);
+    expect(store.getState().ledger.onlyUnfinished).toBe(true);
+    expect(store.getState().projectDirty).toBe(false);
   });
 });
