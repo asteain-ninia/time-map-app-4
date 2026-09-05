@@ -320,7 +320,7 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'view.zoomOut': '地図を縮小します',
   'view.fitAll': '現在の年に存在する全地物が収まる視点に戻します',
   'tools.settings': 'プロジェクト設定を開きます',
-  'tools.search': '名前・説明・属性で表示中の地物を検索します',
+  'tools.search': '地物一覧の絞り込み欄へ移動します（名前・種別で絞り込めます）',
   'help.about': 'アプリの情報を表示します',
   'help.shortcuts': 'キーボードショートカットの一覧を表示します',
   'help.diagnostics': 'エラーログとアプリ概況の診断情報を表示します',

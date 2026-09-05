@@ -47,9 +47,16 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
   // **増分 4 で行き先が変わった**（E-6）。「地物を検索」は独立したモーダルをやめ、
   // **地物一覧の絞り込み欄へ焦点を入れるだけ**になった。母集団が一覧と 2 つある状態
   // （N-41）と、年を属性の検索対象に入れていた罠（C10）がこれで構造的に消える。
-  test('ツール → 地物を検索 は地物一覧の絞り込み欄へ焦点を入れる（E-6）', async () => {
+  //
+  // **焦点が入るところで終わらせない**（2026-09-05 の手直し F4。審査 Grok 3.3）。旧版は
+  // 打った文字が欄に入ることまでしか見ていなかったので、「メニューは正しい欄へ連れて行くが、
+  // その欄が一覧を絞っていない」状態を素通りさせる。地物を載せてから **行が本当に減る**
+  // ところまで見る（この経路が果たす仕事は「絞り込める場所へ連れて行く」ことだからである）。
+  test('ツール → 地物を検索 は地物一覧の絞り込み欄へ焦点を入れ、そこで絞り込める（E-6）', async () => {
     const { app, page } = await launchApp();
     try {
+      await loadSyntheticProject(page, 12);
+
       // 独立した検索モーダルはもう無い。
       await clickMenuCommand(page, 'tools', 'tools.search');
       await expect(page.getByTestId('search-panel')).toHaveCount(0);
@@ -61,8 +68,19 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
       );
       const filter = page.getByTestId('unified-list-filter');
       await expect(filter).toBeFocused();
-      await page.keyboard.type('ローマ');
-      await expect(filter).toHaveValue('ローマ');
+
+      // **件数の表示で見る**（DOM の行数では見ない ―― 一覧は仮想スクロールなので、
+      // 窓に入っている行しか DOM に無い）。
+      const count = page.getByTestId('unified-list-count');
+      await expect(count).toHaveText('12件');
+
+      // 焦点はもう欄にあるので、そのまま打てば絞り込まれる。
+      await page.keyboard.type('0003');
+      await expect(filter).toHaveValue('0003');
+      await expect(count).toHaveText('1 / 12件');
+      await expect(page.getByTestId('feature-list-item-syn-0003')).toContainText(
+        '合成地物0003',
+      );
     } finally {
       await app.close();
     }
