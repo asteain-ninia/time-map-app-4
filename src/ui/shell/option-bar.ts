@@ -85,6 +85,17 @@ const EMPTY_STATE: OptionBarState = {
 
 export type OptionBarListener = (state: OptionBarState) => void;
 
+function slotsEqual(
+  a: readonly OptionBarSlot[],
+  b: readonly OptionBarSlot[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.id !== b[i]?.id || a[i]?.node !== b[i]?.node) return false;
+  }
+  return true;
+}
+
 function commitEqual(
   a: readonly OptionBarCommitButton[],
   b: readonly OptionBarCommitButton[],
@@ -168,6 +179,28 @@ export class OptionBarStore {
 
   /** 次に配る並び順キー。単調増加させ、{@link reset} で 0 へ戻す。 */
   private nextSlotOrder = 0;
+
+  /**
+   * **道具に属さない** 設定欄の部品（増分 4 の「表示 ▾」）。
+   *
+   * `registerOptionSlot` の部品は道具のものなので、次の道具が {@link claim} した
+   * 瞬間に全部落ちる。ところが **表示の設定は道具に属さない** ―― 読むだけのときも、
+   * 道具を持っていないときも、面を描いている最中も同じように使える必要がある
+   * （設計書 §B.1 のワイヤーフレームも「吸着▾ 深さ▾」を同時に出している）。
+   * そこで道具の部品とは別の器に持ち、{@link claim} / {@link reset} で落ちないようにする。
+   *
+   * 並びは **道具の部品のうしろ**。道具ごとに変わるものが左、いつも同じものが右に
+   * 来るほうが、道具を持ち替えたときに目が迷わない。
+   */
+  private readonly persistentSlots = new Map<string, ReactNode>();
+
+  /** 常設スロットの並び順（登録した順）。`reset` でも捨てない。 */
+  private readonly persistentOrder = new Map<string, number>();
+
+  private nextPersistentOrder = 0;
+
+  /** 常設スロットの登録の印（`slotTokens` と同じ理由で node 同一性では見ない）。 */
+  private readonly persistentTokens = new Map<string, symbol>();
 
   get(): OptionBarState {
     return this.state;
@@ -280,6 +313,54 @@ export class OptionBarStore {
   }
 
   /**
+   * **道具に属さない** 部品を設定欄へ差し込む（増分 4 の「表示 ▾」）。
+   *
+   * {@link registerOptionSlot} との違いは 1 つだけで、**道具が帯を持ち直しても
+   * （{@link claim} / {@link reset}）落ちない**ことである。表示の設定は道具の状態では
+   * ないので、道具を持ち替えたら消える、では使えない。
+   *
+   * 取り外しは自分の登録が載っているときだけ効く（印の同一性で見る）。位置の作法
+   * （`position: fixed` / `[hidden]` の打ち消し / バックドロップを置かない）は
+   * {@link registerOptionSlot} と同じである。
+   */
+  registerPersistentSlot(id: string, node: ReactNode): () => void {
+    const token = Symbol(id);
+    this.persistentTokens.set(id, token);
+    if (!this.persistentOrder.has(id)) {
+      this.persistentOrder.set(id, this.nextPersistentOrder);
+      this.nextPersistentOrder += 1;
+    }
+    const unregister = (): void => {
+      if (this.persistentTokens.get(id) !== token) return;
+      this.persistentTokens.delete(id);
+      if (!this.persistentSlots.has(id)) return;
+      this.persistentSlots.delete(id);
+      this.republishSlots();
+    };
+    if (this.persistentSlots.get(id) === node) return unregister;
+    this.persistentSlots.set(id, node);
+    this.republishSlots();
+    return unregister;
+  }
+
+  /**
+   * 公開する `slots` を組み直す（道具の部品 → 常設の部品の順）。**道具の部品の並びは
+   * `state.slots` が正**なので、そこから常設ぶんを取り除いてから足し直す。
+   */
+  private republishSlots(): void {
+    const persistentIds = new Set(this.persistentSlots.keys());
+    const toolSlots = this.state.slots.filter((s) => !persistentIds.has(s.id));
+    const persistent = [...this.persistentSlots.entries()]
+      .map(([id, node]) => ({ id, node }))
+      .sort((a, b) => this.persistentOrderOf(a.id) - this.persistentOrderOf(b.id));
+    this.replace({ slots: [...toolSlots, ...persistent] });
+  }
+
+  private persistentOrderOf(id: string): number {
+    return this.persistentOrder.get(id) ?? Number.MAX_SAFE_INTEGER;
+  }
+
+  /**
    * 帯を「持つ」。道具が構えられたときに 1 回呼ぶ。**持った瞬間に中身は空へ戻る**ので、
    * 前の道具が残した道具名・対象・次の一手が持ち越されることはない（教訓 5.2）。
    *
@@ -312,8 +393,22 @@ export class OptionBarStore {
     // 番号を引きずると、次の道具の部品が「前の道具での順番」で並んでしまう。
     this.slotOrder.clear();
     this.nextSlotOrder = 0;
-    if (this.state === EMPTY_STATE) return;
-    this.state = EMPTY_STATE;
+    // **常設の部品（表示 ▾）は落とさない。** 道具に属さないものを道具の都合で消すと、
+    // 道具を持ち替えるたびに表示の設定が画面から消える。
+    const persistent = [...this.persistentSlots.entries()]
+      .map(([id, node]) => ({ id, node }))
+      .sort((a, b) => this.persistentOrderOf(a.id) - this.persistentOrderOf(b.id));
+    const next: OptionBarState = { ...EMPTY_STATE, slots: persistent };
+    if (
+      this.state.toolName === next.toolName &&
+      this.state.target === EMPTY_STATE.target &&
+      this.state.nextStep === next.nextStep &&
+      this.state.commit.length === 0 &&
+      slotsEqual(this.state.slots, next.slots)
+    ) {
+      return;
+    }
+    this.state = next;
     this.emit();
   }
 

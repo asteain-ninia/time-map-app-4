@@ -360,9 +360,16 @@ async function knifeFlow(page: Page): Promise<string> {
   return (await tool.getAttribute('data-flow')) ?? '';
 }
 
-/** Reveal the 一覧 tab (the FR-113 表示制御フィルタ panel lives there). */
+/**
+ * 表示制御を開く（増分 4 / C7）。**一覧の下から オプションバーの「表示 ▾」へ移した。**
+ * 旧: 一覧タブを押すと下のほうに固定パネルが在った（`offsetTop` 28,546px ＝ 63 画面ぶん
+ * 下で、実装済みなのに誰も辿り着けなかった）。いまは 1 クリックで開く。
+ */
 async function revealFilterPanel(page: Page): Promise<void> {
-  await page.getByTestId('sidebar-tab-list').click();
+  const button = page.getByTestId('option-display-button');
+  if ((await page.getByTestId('option-display-panel').getAttribute('hidden')) !== null) {
+    await button.click();
+  }
   await expect(page.getByTestId('display-filter')).toBeVisible();
 }
 

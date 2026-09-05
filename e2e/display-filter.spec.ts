@@ -67,9 +67,16 @@ async function waitForE2E(page: Page): Promise<void> {
     .toBe('object');
 }
 
-/** Reveal the 一覧 tab (where the 表示制御フィルタ panel lives). */
+/**
+ * 表示制御を開く（増分 4 / C7）。**一覧の下から オプションバーの「表示 ▾」へ移した。**
+ * 旧: 一覧タブを押すと下のほうに固定パネルが在った（`offsetTop` 28,546px ＝ 63 画面ぶん
+ * 下で、実装済みなのに誰も辿り着けなかった）。いまは 1 クリックで開く。
+ */
 async function revealFilterPanel(page: Page): Promise<void> {
-  await page.getByTestId('sidebar-tab-list').click();
+  const button = page.getByTestId('option-display-button');
+  if ((await page.getByTestId('option-display-panel').getAttribute('hidden')) !== null) {
+    await button.click();
+  }
   await expect(page.getByTestId('display-filter')).toBeVisible();
 }
 
@@ -282,6 +289,10 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(menu).toHaveCount(0);
 
       // --- 4. 「強調をすべて解除」→ 元の見え方へ戻り、トグルも解除される. ---
+      // 増分 4: 表示制御は **ポップオーバー** になったので、外を押すと閉じる（K-2 の
+      // 作法。背面を覆う板を置かない代わりに、外側の pointerdown で閉じる）。3b で
+      // 地図を右クリックしたぶん閉じているので、開き直してから押す。
+      await revealFilterPanel(page);
       await clearEmphasis.click();
       await expect(emphasizeArea).not.toBeChecked();
       await expect(clearEmphasis).toBeDisabled();

@@ -46,8 +46,17 @@ export type SidebarSection = (typeof SIDEBAR_SECTION)[keyof typeof SIDEBAR_SECTI
  */
 export const LEDGER_DEFAULT_RATIO = 0.6;
 
-/** 区画がこれ以上小さくならない高さ（px）。仕切りを端まで引いても中身が消えない。 */
-export const SIDEBAR_SECTION_MIN_HEIGHT = 96;
+/** 上段（地物一覧）がこれ以上小さくならない高さ（px）。 */
+export const SIDEBAR_LIST_MIN_HEIGHT = 96;
+
+/**
+ * 下段（選んだ地物）がこれ以上小さくならない高さ（px）。
+ *
+ * **上段より大きい**のは、下端に固定した保存列（36px）とその上の予告・断りの行が
+ * 同時に見えていないと、保存列が節の見出しを覆って「押せるはずのものが押せない」に
+ * なるからである（教訓 5.14）。CSS 側の `min-height` と同じ値で、片方だけ動かすと
+ * 仕切りを引き切ったときに右パネルへ縦スクロールが出る。 */
+export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 240;
 
 export interface SidebarProps {
   /** 上段（地物一覧＝台帳）の中身。`SidebarContent` が組み立てて渡す。 */
@@ -113,8 +122,11 @@ export function Sidebar(props: SidebarProps): JSX.Element {
   const clampTop = useCallback((next: number): number => {
     const total = sectionsRef.current?.getBoundingClientRect().height ?? 0;
     if (total <= 0) return next;
-    const max = Math.max(SIDEBAR_SECTION_MIN_HEIGHT, total - SIDEBAR_SECTION_MIN_HEIGHT);
-    return Math.min(Math.max(next, SIDEBAR_SECTION_MIN_HEIGHT), max);
+    const max = Math.max(
+      SIDEBAR_LIST_MIN_HEIGHT,
+      total - SIDEBAR_PROPERTIES_MIN_HEIGHT,
+    );
+    return Math.min(Math.max(next, SIDEBAR_LIST_MIN_HEIGHT), max);
   }, []);
 
   const onSplitterPointerDown = useCallback(

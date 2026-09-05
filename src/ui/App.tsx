@@ -56,6 +56,7 @@ import {
   resolveDiagnosticLogSink,
   wireGlobalErrorHandlers,
 } from './discovery/index';
+import { DisplayOptionsSlot } from './discovery/DisplayOptions';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
 import {
@@ -2727,6 +2728,15 @@ export function App(): JSX.Element {
               store={store}
               optionBar={optionBarStore}
               resolveFeature={featureByIdAt}
+            />
+            {/* 増分 4 / C7: 表示の設定を「一覧の 28,546px 下」からオプションバーの
+                設定欄へ移す。**道具に属さない常設の部品**なので、道具が帯を持ち直しても
+                落ちない口（`registerPersistentSlot`）へ差し込む。 */}
+            <DisplayOptionsSlot<DomainRoot>
+              store={store}
+              optionBar={optionBarStore}
+              getRoot={() => store.getState().domain}
+              getTime={() => store.getState().currentTime}
             />
             <AddToolControllerWithParents
               store={store}

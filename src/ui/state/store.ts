@@ -60,10 +60,13 @@ import {
   setFeatureEmphasized,
   setIndividualHidden,
   setKindEmphasized,
+  setEmphasizedDepth,
+  setKindLabelToggle,
   setKindVisible,
   setOpacity,
   type FeatureKindAxis,
   type FilterState,
+  type KindLabelToggle,
 } from '../discovery/index';
 import {
   DEFAULT_LEDGER_STATE,
@@ -462,6 +465,14 @@ export interface SessionStoreActions<S> {
   setFeatureEmphasized(featureId: FeatureId, emphasized: boolean): void;
   /** FR-113 Phase 2: clear EVERY emphasis axis (「強調をすべて解除」— the escape hatch). */
   clearAllEmphasis(): void;
+  /**
+   * 種別（FR-40 の札。「島国」「州」など）ごとの 3 トグル（増分 4 / 設計書 §E.1 の
+   * V5(b)）。**確定は要らない**（押した瞬間に効く）し、**取り消しの対象にもしない**
+   * （データを変えない表示状態だから＝§D.7 の「捨てない」側）。
+   */
+  setKindLabelToggle(kindLabel: string, toggle: KindLabelToggle, on: boolean): void;
+  /** FR-113 の深度強調（G-6 の `setEmphasizedDepth` の結線）。`null` で解除。 */
+  setFilterEmphasizedDepth(depth: number | null): void;
 
   // -- 地物一覧（台帳, 増分 4） ----------------------------------------------
   /** 母集団の切替（現在時刻 / 通史）。 */
@@ -1778,6 +1789,20 @@ export function createSessionStore<S>(
       const cur = get().filter;
       const next = clearEmphasis(cur);
       if (next !== cur) commitFilter(next);
+    },
+
+    setKindLabelToggle(kindLabel, toggle, on) {
+      const cur = get().filter;
+      const next = setKindLabelToggle(cur, kindLabel, toggle, on);
+      // 「隠す」は可視性を変えるので、同じ set() で選択の癒やしまで走らせる
+      // （commitFilter の漏斗。ほかの 2 つでは癒やしは空振りする）。
+      if (next !== cur) commitFilter(next);
+    },
+
+    setFilterEmphasizedDepth(depth) {
+      const cur = get().filter;
+      if (cur.emphasizedDepth === depth) return;
+      commitFilter(setEmphasizedDepth(cur, depth));
     },
 
     // -- 地物一覧（台帳, 増分 4）------------------------------------------------

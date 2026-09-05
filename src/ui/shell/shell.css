@@ -398,14 +398,24 @@ body {
   overflow: hidden;
 }
 
-/* 上段（地物一覧）の既定の高さ。仕切りを動かすと inline style の `flex` が勝つ。 */
+/* 上段（地物一覧）の既定の高さ。仕切りを動かすと inline style の `flex` が勝つ。
+ *
+ * **縮められる形（`0 1 60%`）にしてある。** 下段には `min-height` があるので、
+ * 右パネルの列が短いとき（時刻レールがまだ 112px に縮んでいない今の姿では実測
+ * 397px）に上段が譲る。設計書の 470/312（1600×1000）・350/232（1280×800）は
+ * どちらも 60:40 で、列が十分に高ければその比のままになる。 */
 .sidebar__panel[data-testid='sidebar-panel-list'] {
-  flex: 0 0 60%;
+  flex: 0 1 60%;
+  min-height: 96px;
 }
 
-/* 下段（選んだ地物）は残り全部。 */
+/* 下段（選んだ地物）は残り全部。**下端に固定した保存列（36px）と、その上の
+ * 予告・断りの行が同時に見える高さを下限として持つ。** ここを割ると、保存列が
+ * 節の見出しを覆って「押せるはずのものが押せない」状態になる（実際に E2E が
+ * 「スタイルの節が保存列に隠れて押せない」で捕まえた＝教訓 5.14 の型）。 */
 .sidebar__panel[data-testid='sidebar-panel-properties'] {
   flex: 1 1 auto;
+  min-height: 240px;
 }
 
 .sidebar__panel-head {
@@ -917,6 +927,100 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+
+/* --- 表示 ▾ ポップオーバー（増分 4 / C7）------------------------------------
+ *
+ * 置き方は「吸着 ▾」とまったく同じ（`position: fixed` ＋ アンカーの矩形から座標、
+ * バックドロップ無し、`[hidden]` の打ち消しを併記）。**中身は既存の表示制御パネル
+ * （`.display-filter`）をそのまま入れる**ので、その規則は下（1579 行付近）のものを
+ * 共有する ―― 置き場所が一覧の下からここへ移っただけである。 */
+.display-options__button {
+  min-height: 26px;
+  padding: 3px 8px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* **`hidden` は `display: flex` に負ける**（教訓 5.56）。打ち消しを必ず併記する ――
+   書かないと、閉じているはずのパネルが画面の左上に居座って下のボタンのクリックを奪う。 */
+.display-options__panel[hidden] {
+  display: none;
+}
+
+.display-options__panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 320px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 10px 12px;
+  background: var(--c-panel);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+/* 種別（札）ごとの 1 行 × 3 トグル（設計書 §E.1 の V5(b)）。 */
+.display-filter__labels {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+}
+
+.display-filter__label-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.display-filter__label-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.display-filter__label-count {
+  flex: 0 0 auto;
+  color: var(--c-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.display-filter__label-toggle {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 5px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.display-filter__label-toggle[aria-pressed='true'] {
+  background: var(--c-accent);
+  color: #fff;
+  border-color: var(--c-accent);
 }
 
 /* --- 状態行 28px の 5 枠 (設計書 §C.8 / §H.6) -------------------------------

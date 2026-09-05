@@ -165,6 +165,8 @@ export function computeFilteredDisplay(
       id: shape.featureId,
       kind,
       depth: areaDepth(shape.featureId),
+      // 増分 4: 種別（FR-40 の札）ごとの 3 トグルが見る軸。付いていなければ空文字。
+      kindLabel: source?.kindLabel ?? '',
     };
     const verdict = resolveFeatureDisplay(filter, meta, true);
     displayById.set(shape.featureId, verdict);
@@ -180,6 +182,7 @@ export function computeFilteredDisplay(
       id: feature.id,
       kind: feature.kind,
       depth: null,
+      kindLabel: feature.kindLabel ?? '',
     };
     const verdict = resolveFeatureDisplay(filter, meta, true);
     displayById.set(feature.id, verdict);
@@ -229,7 +232,7 @@ export function isFeatureVisibleUnderFilter(
   const depth = needDepth ? depthOf(resolution.forest, featureId) : null;
   return resolveFeatureDisplay(
     filter,
-    { id: featureId, kind: feature.kind, depth },
+    { id: featureId, kind: feature.kind, depth, kindLabel: feature.kindLabel ?? '' },
     true,
   ).visible;
 }
@@ -265,6 +268,7 @@ export function isEmphasizedByOtherAxisUnderFilter(
     id: featureId,
     kind: feature.kind,
     depth,
+    kindLabel: feature.kindLabel ?? '',
   });
 }
 

@@ -33,6 +33,13 @@ export interface FeatureDisplayMeta {
   readonly kind: DomainFeatureKind;
   /** U08 derived hierarchy depth (最上位=0). `null` when undefined/not an area. */
   readonly depth: number | null;
+  /**
+   * 種別（FR-40 の種別ラベル。「島国」「州」など利用者が付ける札）。増分 4 の
+   * 「表示 ▾」の 3 トグルが見る軸で、**点/線/面 の `kind` とは別物**である
+   * （設計書 §H.1 の用語表がそう書き分けている）。付いていなければ空文字、
+   * 呼び出し側が渡さなければ「札なし」と同じ扱いにする。
+   */
+  readonly kindLabel?: string;
 }
 
 /** The dim factor applied to non-emphasized features while emphasis is active. */
@@ -59,6 +66,23 @@ function passesKind(state: FilterState, meta: FeatureDisplayMeta): boolean {
   return state.kindVisible[kindAxisOf(meta.kind)];
 }
 
+/**
+ * 種別（札）の「隠す」トグルを通るか（増分 4）。札が空の地物はどのトグルにも
+ * 当たらない（教訓 5.18: 空かどうかは長さで決める）。
+ */
+function passesKindLabel(state: FilterState, meta: FeatureDisplayMeta): boolean {
+  const label = meta.kindLabel ?? '';
+  if (label.length === 0) return true;
+  return !state.hiddenKindLabels.has(label);
+}
+
+/** 種別（札）の「薄くする」トグルが入っているか（不透明度 0.25 固定）。 */
+function dimmedByKindLabel(state: FilterState, meta: FeatureDisplayMeta): boolean {
+  const label = meta.kindLabel ?? '';
+  if (label.length === 0) return false;
+  return state.dimmedKindLabels.has(label);
+}
+
 /** Does the feature pass the depth axis? (null threshold ⇒ always passes.) */
 function passesDepth(state: FilterState, meta: FeatureDisplayMeta): boolean {
   if (state.depthThreshold === null) return true;
@@ -82,6 +106,8 @@ export function isEmphasizedByOtherAxis(
   meta: FeatureDisplayMeta,
 ): boolean {
   if (state.emphasizedKinds.has(kindAxisOf(meta.kind))) return true;
+  const label = meta.kindLabel ?? '';
+  if (label.length > 0 && state.emphasizedKindLabels.has(label)) return true;
   if (
     state.emphasizedDepth !== null &&
     meta.depth !== null &&
@@ -117,6 +143,7 @@ export function resolveFeatureDisplay(
     presentAtTime &&
     !forcedHidden &&
     passesKind(state, meta) &&
+    passesKindLabel(state, meta) &&
     passesDepth(state, meta);
 
   if (!visible) {
@@ -136,10 +163,19 @@ export function resolveFeatureDisplay(
   const anyEmphasis = emphasisActive(state);
 
   // Dim non-emphasized features only while emphasis is active (受け入れ基準1).
+  //
+  // 増分 4: 種別（札）の「薄くする」は **強調とは別の軸** である。強調は「目立たせた
+  // ものが残り、ほかが淡くなる」だが、こちらは「その札のものだけを淡くする」で、
+  // 目立たせているものが 1 つも無くても効く（設計書 §E.1 の V5(b)）。同じ 0.25 を
+  // 掛けるので、両方が当たった地物は二重には掛けない（`Math.min` で下限を取る）。
+  const emphasisDim = anyEmphasis && !emphasized ? state.opacity * DIM_OPACITY_FACTOR : null;
+  const labelDim = dimmedByKindLabel(state, meta)
+    ? state.opacity * DIM_OPACITY_FACTOR
+    : null;
   const opacity =
-    anyEmphasis && !emphasized
-      ? state.opacity * DIM_OPACITY_FACTOR
-      : state.opacity;
+    emphasisDim === null && labelDim === null
+      ? state.opacity
+      : Math.min(emphasisDim ?? state.opacity, labelDim ?? state.opacity);
 
   return { featureId: meta.id, visible: true, opacity, emphasized };
 }

@@ -57,6 +57,22 @@ export const FILTER_STRINGS = {
   emphasizeKindGroupLabel: '種別を強調',
   emphasizeKindGroupHint:
     '選んだ種別を強調し、それ以外の地物を淡く表示します。表示/非表示とは別の軸です。',
+  // --- 増分 4: オプションバーの「表示 ▾」（C7 で一覧の下からここへ移した）---------
+  /** 設定欄のボタンの文字（「表示 ▾」）。 */
+  displayMenuLabel: '表示',
+  /** 種別（FR-40 の札）ごとの 3 トグルの群。 */
+  kindLabelGroupLabel: '種別ごとの見え方',
+  kindLabelGroupHint:
+    '「島国」「州」のように付けた種別ごとに、隠す・薄くする・目立たせるを切り替えます。押した瞬間に効き、もう一度押すと解除します（取り消しの対象ではありません）。',
+  kindLabelHide: '隠す',
+  kindLabelDim: '薄くする',
+  kindLabelEmphasize: '目立たせる',
+  kindLabelCount: (n: number): string => `${String(n)}件`,
+  kindLabelEmpty: 'まだ種別が 1 つも付いていません。',
+  /** 深さの強調（G-6 / R8。ドメインに在るのに呼び出し元が無かった軸）。 */
+  emphasizeDepthLabel: '深さで強調',
+  emphasizeDepthHint:
+    '指定した深さ以上の面情報を強調し、それ以外を淡く表示します（最上位=0、子は親+1）。',
   /** 強調の脱出口 — 種別・地物のどの強調も一括で解除する (強調中のみ活性). */
   emphasizeClearAllLabel: '強調をすべて解除',
 } as const;

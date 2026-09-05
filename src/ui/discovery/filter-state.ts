@@ -59,6 +59,22 @@ export interface FilterState {
   readonly emphasizedKinds: ReadonlySet<FeatureKindAxis>;
   readonly emphasizedDepth: number | null;
   readonly emphasizedIds: ReadonlySet<FeatureId>;
+  // --- 種別（FR-40 の種別ラベル）ごとの 3 トグル（増分 4 / 設計書 §E.1 の V5(b)）---
+  //
+  // **点/線/面 の軸（上の `kindVisible` / `emphasizedKinds`）とは別物である。**
+  // あちらは「地物が点なのか線なのか面なのか」で、こちらは「島国・内陸国・州」の
+  // ような **利用者が付ける札**（§H.1 の用語表が「別物で、利用者が付け替えられない」
+  // と書き分けている）。実データ 775 件は全件に札が入っているので、V5 の「島国 335 件を
+  // 薄くする」はこちらの軸でしか成り立たない。
+  /** その札を持つ地物を隠す。 */
+  readonly hiddenKindLabels: ReadonlySet<string>;
+  /**
+   * その札を持つ地物を薄くする。**不透明度は 0.25 固定**（設計書 §E.1 の V5(b)）で、
+   * 強調の減衰と同じ値を使う（`DIM_OPACITY_FACTOR`）。数値入力は出さない。
+   */
+  readonly dimmedKindLabels: ReadonlySet<string>;
+  /** その札を持つ地物を目立たせる（ほかが淡くなる）。 */
+  readonly emphasizedKindLabels: ReadonlySet<string>;
 }
 
 function allKindsVisible(): Record<FeatureKindAxis, boolean> {
@@ -76,7 +92,60 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   emphasizedKinds: new Set(),
   emphasizedDepth: null,
   emphasizedIds: new Set(),
+  hiddenKindLabels: new Set(),
+  dimmedKindLabels: new Set(),
+  emphasizedKindLabels: new Set(),
 };
+
+/** 種別（札）ごとの 3 つのトグル（設計書 §E.1 の V5(b)）。 */
+export const KIND_LABEL_TOGGLE = {
+  /** 隠す。 */
+  Hide: 'hide',
+  /** 薄くする（不透明度 0.25 固定・確定不要・もう一度押すと解除）。 */
+  Dim: 'dim',
+  /** 目立たせる。 */
+  Emphasize: 'emphasize',
+} as const;
+
+export type KindLabelToggle =
+  (typeof KIND_LABEL_TOGGLE)[keyof typeof KIND_LABEL_TOGGLE];
+
+/** その種別（札）の 3 トグルのどれかを切り替える。変化が無ければ同じ参照を返す。 */
+export function setKindLabelToggle(
+  state: FilterState,
+  kindLabel: string,
+  toggle: KindLabelToggle,
+  on: boolean,
+): FilterState {
+  const key =
+    toggle === KIND_LABEL_TOGGLE.Hide
+      ? 'hiddenKindLabels'
+      : toggle === KIND_LABEL_TOGGLE.Dim
+        ? 'dimmedKindLabels'
+        : 'emphasizedKindLabels';
+  const current = state[key];
+  if (current.has(kindLabel) === on) return state;
+  const next = new Set(current);
+  if (on) next.add(kindLabel);
+  else next.delete(kindLabel);
+  return { ...state, [key]: next };
+}
+
+/** その種別（札）のトグルがいま入っているか。 */
+export function kindLabelToggleOn(
+  state: FilterState,
+  kindLabel: string,
+  toggle: KindLabelToggle,
+): boolean {
+  switch (toggle) {
+    case KIND_LABEL_TOGGLE.Hide:
+      return state.hiddenKindLabels.has(kindLabel);
+    case KIND_LABEL_TOGGLE.Dim:
+      return state.dimmedKindLabels.has(kindLabel);
+    case KIND_LABEL_TOGGLE.Emphasize:
+      return state.emphasizedKindLabels.has(kindLabel);
+  }
+}
 
 // --- pure immutable updates (副作用なし, 教訓 5.41) --------------------------
 
@@ -205,6 +274,7 @@ export function clearEmphasis(state: FilterState): FilterState {
   return {
     ...state,
     emphasizedKinds: new Set(),
+    emphasizedKindLabels: new Set(),
     emphasizedDepth: null,
     emphasizedIds: new Set(),
     individual,
@@ -264,6 +334,7 @@ export function reconcileToLiveFeatures(
 export function emphasisActive(state: FilterState): boolean {
   if (state.emphasizedIds.size > 0) return true;
   if (state.emphasizedKinds.size > 0) return true;
+  if (state.emphasizedKindLabels.size > 0) return true;
   if (state.emphasizedDepth !== null) return true;
   // The per-feature override flag is a FOURTH emphasis channel (a legacy resolution input
   // with no writer today). It MUST be counted here: `resolveFeatureDisplay` dims others
@@ -306,6 +377,9 @@ export function clearIndividualOverrides(state: FilterState): FilterState {
 export function isFilterInert(state: FilterState): boolean {
   if (state.opacity !== OPACITY_MAX) return false;
   if (state.depthThreshold !== null) return false;
+  // 増分 4: 種別（札）ごとの 3 トグル。どれか 1 つでも入っていれば効いている。
+  if (state.hiddenKindLabels.size > 0) return false;
+  if (state.dimmedKindLabels.size > 0) return false;
   for (const axis of ALL_FEATURE_KIND_AXES) {
     if (!state.kindVisible[axis]) return false;
   }
