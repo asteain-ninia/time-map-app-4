@@ -33,14 +33,10 @@ export const FILTER_STRINGS = {
     '指定した深さまでの面情報のみ表示します（最上位=0、子は親+1）。空欄ですべての深さを表示します。',
   depthExample: '例: 「2」を指定すると深さ 0〜2 の面情報だけが表示されます。',
   // 個別地物軸 (FR-113)
-  individualLabel: '個別地物の表示',
   individualHideLabel: 'この地物を非表示',
   individualHint: '選んだ地物だけを個別に非表示にできます。',
   /** 「個別非表示 n 件を全て再表示」button label (n = 現在の個別非表示件数). */
   showAllHiddenLabel: (count: number): string => `個別非表示 ${count} 件を全て再表示`,
-  /** Tooltip on a 通史(錨)一覧 row whose feature is hidden at the current time (FR-113). */
-  hiddenListRowTitle:
-    '現在の表示制御で非表示のため選択できません。表示フィルタを解除すると選択できます。',
   // 不透明度 (FR-113)
   opacityLabel: '不透明度',
   opacityHint:
@@ -176,7 +172,6 @@ export const LEDGER_STRINGS = {
   modeCurrentLabel: '現在時刻',
   modeHistoryLabel: '通史',
   /** 木 / 平 の切替（G-7 / FR-111）。 */
-  shapeAria: '一覧の並べ方',
   treeLabel: '木',
   flatLabel: '平',
   treeTitle: '階層をたどって並べます。',
