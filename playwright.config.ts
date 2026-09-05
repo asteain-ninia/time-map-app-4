@@ -20,6 +20,23 @@
 //     typed IPC bridge instead, leaving dialog-driven round-trips to U42 + manual
 //     verification (D23).
 //   - Hard per-test timeout keeps a stuck launch from hanging the runner.
+//
+// 2 系統 + 並列 (2026-09-06 所有者の裁定):
+//   - `main`    — 毎回の検査。__bughunt__ / __visual__ 以外の全部。
+//   - `explore` — 探索的なバグ狩り・見た目の記録 (`e2e/__bughunt__` と `e2e/__visual__`)。
+//     消さずに残すが毎回は走らせない。増分の受け入れ時と手直しの後に必ず走らせる。
+//   どちらもワーカーを複数使う。テストごとに Electron を 1 つ起動する重い作りなので、
+//   直列だと全件で 19 分かかっていた。
+//
+// 並列でも壊れない根拠 (実際に確かめた点):
+//   - userData は e2e/helpers.ts が **ワーカープロセスごと**に mkdtemp で作る。ワーカー間で
+//     別ディレクトリなので、設定・ログ・GPU キャッシュを奪い合わない。
+//   - 実データを使う spec は 1 本ずつ mkdtemp した作業用の写しを読む。原本も写しも共有しない。
+//   - `E2E_SAVE_AS_PATH` のような E2E 専用の環境変数は launchApp の子プロセスにだけ渡る
+//     (`process.env` を書き換えない) ので、他のワーカーへ漏れない。
+//   - 記録用のスクショの行き先 (screenshots/) は spec ごとに名前が違う。
+//   - fullyParallel は false のまま = **ファイル単位**で分配する。1 つのファイルの中の順序
+//     (前のテストが作った状態を次が使う書き方) は今までどおり保たれる。
 
 import { defineConfig } from '@playwright/test';
 
@@ -29,9 +46,15 @@ export default defineConfig({
   // fast rather than hanging the unattended runner.
   timeout: 60_000,
   expect: { timeout: 15_000 },
-  // Electron app launches are stateful (one app instance per worker); run serially
-  // to keep the harness simple and deterministic on a headless CI box.
-  workers: 1,
+  // Electron app launches are stateful (one app instance per worker). ワーカー間は
+  // userData も作業用の写しも別なので衝突しないが、**1 テスト = Electron 1 起動**は重い
+  // (CPU も RAM も食う) ので、24 コアでも全部は使わない。6 は実測で選んだ値 (技術方針 2.14)。
+  //
+  // これ以上増やしても縮まない。fullyParallel が false = ファイル単位の分配なので、
+  // **一番長い 1 ファイル**が下限になる。実測では explore2-r4.spec.ts の 1 本だけで 3.3 分
+  // かかっており、e2e:all の 5.2 分はその上に他が乗っているだけである。
+  workers: 6,
+  // ファイル単位の分配にとどめる (ファイル内の順序依存を壊さない)。
   fullyParallel: false,
   forbidOnly: true,
   // The batch's FIRST Electron cold launch is the only non-deterministic step (V8
@@ -42,8 +65,34 @@ export default defineConfig({
   // budget sized to the 60s per-test cap (paired fix).
   retries: 1,
   reporter: [['list']],
+  // 見た目のベースライン (e2e/*-snapshots/) の名前に project 名を混ぜない。既定は
+  //   {snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}{-projectName}{-snapshotSuffix}{ext}
+  // なので、projects を足した途端に `sidebar-empty-win32.png` が
+  // `sidebar-empty-main-win32.png` を探しに行き、既存のベースラインが全部行方不明になる
+  // (見つからないと Playwright は「実物を書いて落ちる」ので赤くはなるが、書く先が新しい
+  // 名前なので、そのまま追認すると古いベースラインが死んだままになる)。
+  // 既定から `{-projectName}` **だけ**を抜く。
+  //
+  // 先頭の `{snapshotDir}/` を落としてはいけない。`{testFileDir}` は testDir からの
+  // **相対**パス (testDir 直下の spec では空文字) なので、`{snapshotDir}` が無いと解決先が
+  // リポジトリの外へ飛ぶ。2026-09-06 に実際にやって、ドライブ直下に
+  // `sidebar-property.spec.ts-snapshots/` が生えた (開発ガイド §5.65)。
+  snapshotPathTemplate:
+    '{snapshotDir}/{testFileDir}/{testFileName}-snapshots/{arg}{-snapshotSuffix}{ext}',
   use: {
     // Capture a trace on failure so a CI failure is diagnosable without a GUI.
     trace: 'retain-on-failure',
   },
+  projects: [
+    {
+      // 毎回の検査。探索用を除いた全部。
+      name: 'main',
+      testIgnore: ['**/__bughunt__/**', '**/__visual__/**'],
+    },
+    {
+      // 探索的なバグ狩り・見た目の記録。別コマンド (npm run e2e:explore) で回す。
+      name: 'explore',
+      testMatch: ['**/__bughunt__/**/*.spec.ts', '**/__visual__/**/*.spec.ts'],
+    },
+  ],
 });

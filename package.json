@@ -14,8 +14,11 @@
     "lint": "eslint .",
     "test": "vitest run",
     "smoke": "node scripts/smoke-launch.mjs",
-    "e2e": "playwright test",
-    "test:e2e": "electron-vite build && playwright test"
+    "e2e": "playwright test --project=main",
+    "e2e:explore": "playwright test --project=explore",
+    "e2e:all": "playwright test",
+    "test:e2e": "electron-vite build && playwright test --project=main",
+    "test:e2e:all": "electron-vite build && playwright test"
   },
   "dependencies": {
     "dompurify": "^3.1.7",
