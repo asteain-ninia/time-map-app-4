@@ -58,6 +58,7 @@ import {
 } from './discovery/index';
 import { DisplayOptionsSlot } from './discovery/DisplayOptions';
 import { JumpPalette } from './discovery/JumpPalette';
+import { LEDGER_COMMAND, LedgerCommandStore } from './discovery/ledger-commands';
 import { LedgerFilterFocusStore } from './discovery/ledger-focus';
 import type { DomainProject } from '../domain/persistence/index';
 import { projectsEqual } from '../domain/persistence/index';
@@ -167,7 +168,7 @@ import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
-import { OptionBarStore } from './shell/option-bar';
+import { OptionBarStore, type OptionBarAction } from './shell/option-bar';
 import { SidebarFocusStore } from './shell/sidebar-focus';
 import {
   LongitudeShiftControl,
@@ -586,6 +587,12 @@ export function App(): JSX.Element {
   ledgerFilterFocusStoreRef.current ??= new LedgerFilterFocusStore();
   const ledgerFilterFocusStore = ledgerFilterFocusStoreRef.current;
 
+  // 一覧への指図（Alt+↑ / Alt+↓ / F2）の口（増分 4 の手直し B8）。メニューと
+  // ショートカット一覧に載る 1 本を、一覧の中身へ届ける細い口である。
+  const ledgerCommandStoreRef = useRef<LedgerCommandStore | null>(null);
+  ledgerCommandStoreRef.current ??= new LedgerCommandStore();
+  const ledgerCommandStore = ledgerCommandStoreRef.current;
+
   /** 「どこへでも移動」（Ctrl+P）が開いているか（設計書 §C.2 の 26）。 */
   const [jumpOpen, setJumpOpen] = useState(false);
 
@@ -635,9 +642,19 @@ export function App(): JSX.Element {
    * 道具を構えていないときでも「次の一手」に理由が出る。
    */
   const announceRefusal = useCallback(
-    (text: string): void => {
+    (text: string | null, actions: readonly OptionBarAction[] = []): void => {
+      // **`null` は「さっきの断りを取り下げる」**（増分 4 の手直し B11）。同じ操作を
+      // やり直して通ったのに理由が残っていると、直っていないように読める（教訓 5.12 の
+      // 裏面: 消す契機を「意味を持つイベント」に限る ―― やり直して通ったのは、まさに
+      // その契機である）。**状態行の「直前の結果」は消さない**（K-7: 起きた事実は残す）。
+      if (text === null) {
+        optionBarStore.setNextStep(null);
+        return;
+      }
       statusMessageStore.failure(text);
-      optionBarStore.setNextStep(text);
+      // **次の一手をボタンで置く**（増分 4 の手直し E1 / 設計書 §H.5）。文だけでは
+      // 「では何をすればよいか」が残るので、断った側が 1 手を渡せる口を通す。
+      optionBarStore.setNextStep(text, actions);
     },
     [statusMessageStore, optionBarStore],
   );
@@ -2539,11 +2556,35 @@ export function App(): JSX.Element {
       },
     });
     registry.register(COMMAND_ID.ToolsJump, { run: () => setJumpOpen(true) });
+    // 増分 4 の手直し B8: 一覧の送りと改名を鍵盤・メニューから届かせる。**画面の
+    // ボタンとまったく同じ 1 本**（`LedgerCommandStore` → 一覧の `stepBundle` /
+    // `startEdit`）を通すので、押し方が 2 通りに分かれない（教訓 5.30）。
+    registry.register(COMMAND_ID.ListBundlePrev, {
+      run: () => {
+        ledgerCommandStore.send(LEDGER_COMMAND.BundlePrev);
+      },
+      canRun: () => store.getState().ledger.bundle !== null,
+    });
+    registry.register(COMMAND_ID.ListBundleNext, {
+      run: () => {
+        ledgerCommandStore.send(LEDGER_COMMAND.BundleNext);
+      },
+      canRun: () => store.getState().ledger.bundle !== null,
+    });
+    registry.register(COMMAND_ID.ListRename, {
+      run: () => {
+        ledgerCommandStore.send(LEDGER_COMMAND.Rename);
+      },
+      canRun: () => store.getState().activeFeature !== null,
+    });
     return () => {
       registry.unregister(COMMAND_ID.ToolsSearch);
       registry.unregister(COMMAND_ID.ToolsJump);
+      registry.unregister(COMMAND_ID.ListBundlePrev);
+      registry.unregister(COMMAND_ID.ListBundleNext);
+      registry.unregister(COMMAND_ID.ListRename);
     };
-  }, [registry, sidebarFocusStore, ledgerFilterFocusStore]);
+  }, [registry, store, sidebarFocusStore, ledgerFilterFocusStore, ledgerCommandStore]);
 
   const propertyDeleteFeature = commitFeatureDelete;
 
@@ -2617,6 +2658,16 @@ export function App(): JSX.Element {
       const s = store.getState();
       const resolution = resolveDisplayFor(s.domain, s.currentTime, s.displayControl);
       const drawnIds = new Set(resolution.resolved.shapes.map((sh) => sh.featureId));
+      // **点・線は描画済みとみなす**（増分 4 の手直し B6）。`resolved.shapes` は面の
+      // 列（FR-42 の畳み込みの結果）なので、点情報・線情報は最初から入っていない。
+      // それを「描かれていない」と読んでいたせいで、点や線を一覧で選ぶと **必ず**
+      // 「描かれないので選んでいるあいだだけ描いています」と嘘の知らせが出ていた。
+      // 点と線は畳み込みを受けないので、この知らせの対象そのものではない。
+      for (const f of resolution.features) {
+        if (f.kind === FEATURE_KIND.Point || f.kind === FEATURE_KIND.Line) {
+          drawnIds.add(f.id);
+        }
+      }
       const feature = featureByIdAt(s.domain, s.currentTime, featureId);
       if (feature === undefined) return;
       const depth = derivedDepths(resolution.forest).get(featureId);
@@ -2671,6 +2722,8 @@ export function App(): JSX.Element {
         onRefusal: announceRefusal,
         // 増分 4 / E-6: Ctrl+F（「地物を検索」）の行き先。
         filterFocus: ledgerFilterFocusStore,
+        // 増分 4 の手直し B8: Alt+↑ / Alt+↓ / F2 の行き先。
+        ledgerCommands: ledgerCommandStore,
       }),
     [
       store,
@@ -2685,6 +2738,7 @@ export function App(): JSX.Element {
       sidebarFocusStore,
       announceRefusal,
       ledgerFilterFocusStore,
+      ledgerCommandStore,
     ],
   );
 
@@ -3005,6 +3059,12 @@ export function App(): JSX.Element {
               open={jumpOpen}
               onClose={() => setJumpOpen(false)}
               onFocusFeatureCamera={focusCameraOnFeature}
+              // 手直し C3:「ほかに n 件」＝ 打った語で一覧を絞り込み、一覧へ寄せる。
+              onShowInList={(q) => {
+                store.getState().setLedgerQuery(q);
+                sidebarFocusStore.focus(SIDEBAR_SECTION.List);
+                ledgerFilterFocusStore.focus();
+              }}
             />
             {/* HB3-11: the feature detail panels (FR-99後段) — draggable/closable, one
                 per feature, showing all attributes (dl) + an empty document-body stub.

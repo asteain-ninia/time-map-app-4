@@ -15,6 +15,7 @@
 //   5. 候補は最大 12 件。それ以上あるときは「ほかに n 件（Enter で台帳に出す）」を最終行に置く。
 
 import type { FeatureId } from '../../domain/ids';
+import { isPersistedYear } from '../../domain/time/validate';
 
 import { foldForFilter } from './ledger';
 
@@ -23,6 +24,8 @@ export const JUMP_CANDIDATE_KIND = {
   Year: 'year',
   Feature: 'feature',
   Command: 'command',
+  /** 「ほかに n 件（Enter で一覧に出す）」の行（手直し C3）。 */
+  More: 'more',
 } as const;
 
 export type JumpCandidateKind =
@@ -32,6 +35,19 @@ export type JumpCandidate =
   | {
       readonly kind: typeof JUMP_CANDIDATE_KIND.Year;
       readonly year: number;
+      readonly label: string;
+    }
+  | {
+      /**
+       * 「ほかに n 件」（規則 5）。**本物の候補である**（手直し C3）。
+       * 旧版はただの `<p>` で、Enter を押しても選ばれている候補が動くだけだった
+       * ―― 「Enter で一覧に出す」と書いてあるのに何も起きない（C9 の②）。
+       */
+      readonly kind: typeof JUMP_CANDIDATE_KIND.More;
+      /** あふれた件数。 */
+      readonly count: number;
+      /** 一覧の絞り込み欄へ入れる語（打った文字そのまま）。 */
+      readonly query: string;
       readonly label: string;
     }
   | {
@@ -64,6 +80,8 @@ export interface JumpInput {
   readonly commands: readonly { readonly id: string; readonly label: string }[];
   /** 年の候補の文言（`formatYear` を通した文字列を作る関数）。 */
   readonly yearLabel: (year: number) => string;
+  /** 「ほかに n 件」の文言。 */
+  readonly moreLabel: (count: number) => string;
 }
 
 export interface JumpResult {
@@ -95,7 +113,7 @@ export function jumpCandidates(input: JumpInput): JumpResult {
         commandId: c.id,
         label: c.label,
       }));
-    return cap(hits);
+    return cap(hits, raw, input.moreLabel);
   }
 
   const folded = foldForFilter(raw);
@@ -103,7 +121,12 @@ export function jumpCandidates(input: JumpInput): JumpResult {
   // 規則 1: 数字だけなら年。**地物は出さない。**
   if (isYearQuery(folded)) {
     const year = Number.parseInt(folded, 10);
-    if (Number.isFinite(year)) {
+    // **保存できる年の範囲に収まっているものだけを候補にする**（手直し C4）。
+    // 旧版は有限でありさえすれば候補にしていたので、`99999999999999999999` のような
+    // 打ち間違いに「その年へ移動」を出し、押すと黙って端へ丸められていた
+    // （表示された値と実際の行き先が違う ＝ 嘘の候補）。範囲は **保存形式の読み書きが
+    // 受け付ける範囲**（`isPersistedYear`）と同じ 1 本を使う（教訓 5.29）。
+    if (isPersistedYear(year)) {
       return {
         candidates: [
           { kind: JUMP_CANDIDATE_KIND.Year, year, label: input.yearLabel(year) },
@@ -111,6 +134,7 @@ export function jumpCandidates(input: JumpInput): JumpResult {
         truncated: 0,
       };
     }
+    return { candidates: [], truncated: 0 };
   }
 
   // 規則 2: 文字を含むなら地物名だけ。前方一致 → 部分一致の順。
@@ -134,16 +158,34 @@ export function jumpCandidates(input: JumpInput): JumpResult {
       });
     }
   }
-  return cap([...prefix, ...infix]);
+  return cap([...prefix, ...infix], raw, input.moreLabel);
 }
 
-/** 規則 5: 12 件で打ち切り、あふれた件数を返す。 */
-function cap(all: readonly JumpCandidate[]): JumpResult {
+/**
+ * 規則 5: 12 件で打ち切り、あふれたぶんは **最終行の候補**にする（手直し C3）。
+ *
+ * 「ほかに n 件」を候補の 1 つにしておけば、↓ で選んで Enter を押すのも、そのまま
+ * Enter を押すのも同じ経路になる（押せない案内文を置かない ＝ C9 の②）。
+ */
+function cap(
+  all: readonly JumpCandidate[],
+  query: string,
+  moreLabel: (count: number) => string,
+): JumpResult {
   if (all.length <= JUMP_MAX_CANDIDATES) {
     return { candidates: all, truncated: 0 };
   }
+  const truncated = all.length - JUMP_MAX_CANDIDATES;
   return {
-    candidates: all.slice(0, JUMP_MAX_CANDIDATES),
-    truncated: all.length - JUMP_MAX_CANDIDATES,
+    candidates: [
+      ...all.slice(0, JUMP_MAX_CANDIDATES),
+      {
+        kind: JUMP_CANDIDATE_KIND.More,
+        count: truncated,
+        query,
+        label: moreLabel(truncated),
+      },
+    ],
+    truncated,
   };
 }

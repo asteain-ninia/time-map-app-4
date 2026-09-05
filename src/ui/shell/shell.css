@@ -438,9 +438,10 @@ body {
   /* **下限は窓に追随する。** 300px の固定値だと、右パネルの列が 416px しかない
    * 1280×800 で下段が 300px を先に取り、上段には 108px しか残らなかった（＝上の
    * 「行が 1 行も見えない」の直接の原因）。`min(300px, 45%)` にすると、列が高い
-   * ときだけ 300px まで伸び、低いときは上段へ譲る。**1600×1000 でも 300px へは
-   * 切り替えない**（列 650px の 45% ＝ 292px）。 */
-  min-height: min(300px, 45%);
+   * ときだけ 300px まで伸び、低いときは上段へ譲る。割合は **50%**（1280×800 で
+   * 208px、1366×768 で 192px、1600×1000 で 300px ＝ 上限に当たる）。45% まで
+   * 下げると既定の窓で素性欄の節が保存列に潜って押せなくなった（教訓 5.61）。 */
+  min-height: min(300px, 50%);
 }
 
 .sidebar__panel-head {
@@ -1177,6 +1178,25 @@ body {
   font-size: 12px;
 }
 
+/* 閉じるボタン（手直し C2）。外を押しても Escape でも閉じるが、**閉じ方が分かる形**が
+ * 画面に 1 つも無いのは「出口の無い状態」である（C9 の①）。 */
+.jump-palette__close {
+  align-self: flex-end;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--c-surface);
+  color: var(--c-text-muted);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.jump-palette__close:hover {
+  border-color: var(--c-accent);
+  color: var(--c-text);
+}
+
 /* --- 状態行 28px の 5 枠 (設計書 §C.8 / §H.6) -------------------------------
  *
  * ┌ 座標 240 ┬ 縮尺 160 ┬ 直前の結果 1fr ┬ 取り消し 160 ┬ 最終保存 160 ┐
@@ -1412,8 +1432,33 @@ body {
   flex: 0 0 240px;
 }
 
+/* 次の一手の枠は「文 ＋ 押せるボタン」（手直し E1 / 設計書 §H.5）。ボタンは 0 個でよい。 */
+.option-bar__next-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.option-bar__next-action {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--c-accent);
+  color: #fff;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .option-bar__next {
   flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 .option-bar__settings {
@@ -2191,6 +2236,37 @@ body {
   color: var(--c-text-muted);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* 「この地物は表示条件から外れています」の知らせと、緩めるボタン（手直し E1 /
+ * 設計書 §D.6・§H.5「次の一手をボタンにする」）。 */
+.display-filter__hidden-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--c-panel);
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+}
+
+.display-filter__hidden-title {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text);
+}
+
+.display-filter__relax {
+  align-self: flex-start;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--c-accent);
+  color: #fff;
+  border: 1px solid var(--c-accent);
+  border-radius: var(--radius);
+  cursor: pointer;
 }
 
 /* 可視軸と強調軸 (FR-113 Phase 2) は同じ UI 言語 — 同じ枠・同じ行レイアウト。強調枠だけは

@@ -181,6 +181,46 @@ export function resolveFeatureDisplay(
 }
 
 /**
+ * 「なぜ隠れているか」の軸（増分 4 の手直し B1 / E1）。
+ *
+ * **一覧は行を消さずに 🚫 を出す**ので、どの軸で隠れているかを言えなければならない
+ * （設計書 §C.5「設定も解除もこの 1 か所」）。表示 ▾ の「緩める」ボタンも同じ軸を読む
+ * （設計書 §D.6 の知らせ）。判定の式は {@link resolveFeatureDisplay} と **同じ述語**を
+ * 呼ぶので、「隠れているのに理由が無い」「見えているのに理由が付く」は起きない。
+ */
+export const HIDDEN_REASON = {
+  /** 👁 で個別に隠した。 */
+  Individual: 'individual',
+  /** 種別（FR-40 の札）の［隠す］。 */
+  KindLabel: 'kindLabel',
+  /** 点 / 線 / 面 の軸。 */
+  Kind: 'kind',
+  /** 階層の深さ。 */
+  Depth: 'depth',
+} as const;
+
+export type HiddenReason = (typeof HIDDEN_REASON)[keyof typeof HIDDEN_REASON];
+
+/**
+ * その地物が隠れている理由（見えているなら null）。**順番は「解除しやすい順」**で、
+ * 個別 → 種別の札 → 点線面 → 深さ。複数当たっているときは先に出たものを返す
+ * （利用者はまずそれを外す）。
+ *
+ * `presentAtTime` はここでは見ない ―― その年に居ない地物はそもそも一覧の母集団に
+ * 入らないので、「隠れている理由」ではない。
+ */
+export function hiddenReasonOf(
+  state: FilterState,
+  meta: FeatureDisplayMeta,
+): HiddenReason | null {
+  if (state.individual.get(meta.id)?.hidden === true) return HIDDEN_REASON.Individual;
+  if (!passesKindLabel(state, meta)) return HIDDEN_REASON.KindLabel;
+  if (!passesKind(state, meta)) return HIDDEN_REASON.Kind;
+  if (!passesDepth(state, meta)) return HIDDEN_REASON.Depth;
+  return null;
+}
+
+/**
  * Resolve a whole batch and return only the VISIBLE features' resolutions, in
  * input order. This is the search母集合 / draw母集合 source (single judgement):
  * search.ts filters its candidates to ids appearing here.

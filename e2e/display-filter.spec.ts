@@ -136,9 +136,16 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
-      // Codex F3: the hidden feature's 一覧 row is gone (list母集合 == draw / search 母集合).
+      // **一覧の行は残る**（増分 4 の手直し B1 / 決定 (2)）。旧版はここで行が消える
+      // ことを不変条件にしていたが、一覧は「探す」ための場所なので、消えると
+      // **隠したこと自体を取り消せなくなる**（設計書 §C.5「設定も解除もこの 1 か所」）。
+      // 描画と当たり判定の母集合は変わっていない（上の 2 つがそれを見ている）。
       await revealFilterPanel(page);
-      await expect(page.getByTestId(`feature-list-item-${faceId}`)).toHaveCount(0);
+      await expect(page.getByTestId(`feature-list-item-${faceId}`)).toHaveCount(1);
+      await expect(page.getByTestId(`ledger-row-${faceId}`)).toHaveAttribute(
+        'data-hidden',
+        'true',
+      );
 
       // 「個別非表示 1 件を全て再表示」→ the area is drawn (and selectable) again.
       const showAll = page.getByTestId('display-filter-show-all');
@@ -146,8 +153,11 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(showAll).toContainText('1 件');
       await showAll.click();
       await expect.poll(async () => readDrawnCount(page)).toBe(withArea);
-      // F3: the row is back too.
-      await expect(page.getByTestId(`feature-list-item-${faceId}`)).toHaveCount(1);
+      // 行の印も戻る（🚫 → 👁）。
+      await expect(page.getByTestId(`ledger-row-${faceId}`)).toHaveAttribute(
+        'data-hidden',
+        'false',
+      );
       await enterEditMode(page);
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);

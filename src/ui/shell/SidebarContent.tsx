@@ -55,6 +55,7 @@ import { AddDraftForm } from '../add/AddPropertyForm';
 import type { AddDraftStore } from '../add/add-draft-store';
 import { FeatureLedger, type LedgerQuickEdit } from '../discovery/FeatureLedger';
 import { doneIdsOf, stepIndex } from '../discovery/bundle';
+import type { LedgerCommandStore } from '../discovery/ledger-commands';
 import type { LedgerFilterFocusStore } from '../discovery/ledger-focus';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
 import type { SessionStore } from '../state/store';
@@ -74,6 +75,7 @@ import {
   type GoverningAnchorSeries,
 } from '../property/index';
 
+import type { OptionBarAction } from './option-bar';
 import { SIDEBAR_CONTENT_STRINGS } from './strings';
 import type { SidebarProps } from './Sidebar';
 import type { SidebarFocusStore } from './sidebar-focus';
@@ -216,12 +218,20 @@ export interface SidebarContentDeps<S> {
    * 拒否理由の共通枠（オプションバーの「次の一手」＋状態行）へ出す口（G-20 / G-23）。
    * 一覧のその場編集がドメインに断られたとき、**理由を画面に出す**ためだけに使う。
    */
-  readonly onRefusal?: (message: string) => void;
+  readonly onRefusal?: (
+    message: string | null,
+    actions?: readonly OptionBarAction[],
+  ) => void;
   /**
    * 一覧の絞り込み欄へ焦点を入れる口（Ctrl+F ＝「地物を検索」の行き先。E-6）。
    * 合成ルートがコマンドから呼ぶ。
    */
   readonly filterFocus?: LedgerFilterFocusStore;
+  /**
+   * 一覧への指図（Alt+↑ / Alt+↓ / F2）の口（増分 4 の手直し B8）。
+   * 合成ルートが `CommandRegistry` に繋ぐ。
+   */
+  readonly ledgerCommands?: LedgerCommandStore;
 }
 
 /**
@@ -247,6 +257,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     focusStore,
     onRefusal,
     filterFocus,
+    ledgerCommands,
   } = deps;
 
   // 素性欄の名前欄へ焦点を入れる口（束の第 1 手。設計書 §C.5）。器が 1 本だけ持ち、
@@ -347,6 +358,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(quickEdit !== undefined ? { onQuickEdit: quickEdit } : {})}
         {...(onRefusal ? { onRefusal } : {})}
         {...(filterFocus ? { filterFocus } : {})}
+        {...(ledgerCommands ? { commands: ledgerCommands } : {})}
         onFocusNameField={() => {
           nameFieldFocus.focus();
         }}
@@ -384,14 +396,16 @@ function advanceBundleCursor<S>(deps: {
   const state = store.getState();
   const bundle = state.ledger.bundle;
   if (bundle === null) return;
-  const effective = featuresAt(getRoot(), getTime());
-  const done = doneIdsOf(bundle, (featureId) => {
-    const f = effective.find((x) => x.id === featureId);
-    return f === undefined
-      ? undefined
-      : { name: featureDisplayName(f), kindLabel: f.kindLabel ?? '' };
-  });
-  const at = stepIndex(bundle, done, 1);
+  // **表を 1 回だけ作る**（手直し G8）。`find` を全メンバーぶん回すと 5,000 件の束で
+  // 2,500 万回の比較になり、Enter を 1 回押すたびに右パネルが詰まる。
+  const currentById = new Map<FeatureId, { name: string; kindLabel: string }>();
+  for (const f of featuresAt(getRoot(), getTime())) {
+    currentById.set(f.id, { name: featureDisplayName(f), kindLabel: f.kindLabel ?? '' });
+  }
+  const done = doneIdsOf(bundle, (featureId) => currentById.get(featureId));
+  // **いまの年に居ないメンバーは飛ばす**（手直し G2）。飛ばさないと「保存して次へ」で
+  // 素性欄が空・カメラも動かない幽霊が選ばれる。
+  const at = stepIndex(bundle, done, 1, (featureId) => currentById.has(featureId));
   if (at === null) return;
   const member = bundle.members[at];
   if (member === undefined) return;

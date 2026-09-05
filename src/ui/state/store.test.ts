@@ -1400,8 +1400,9 @@ describe('bughunt2: updateCamera mirrors centerLon in a single set()', () => {
 // --- mode/tool reset契約 (教訓 5.2) ----------------------------------------
 
 describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
-  it('setMode clears selection and active tool on every path', () => {
+  it('setMode は道具を必ず外し、「直せる ⇄ 直せる」では選択も捨てる', () => {
     const store = makeStore(undefined, {
+      mode: EDIT_MODE.Add,
       activeFeature: f('A'),
       vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
       activeTool: asToolId('pen'),
@@ -1412,6 +1413,22 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     expect(s.activeFeature).toBeNull();
     expect(s.vertexSelection).toBeNull();
     expect(s.activeTool).toBeNull();
+  });
+
+  // 増分 4 の手直し B12 / 所有者の裁定「読むだけでも選べる・読める・直せない」。
+  // 鍵を掛けて掛け直すと選択が消えていたので、束のカーソルだけが残って食い違った。
+  it('setMode は「読むだけ ⇄ 直せる」では選択を捨てない（道具だけ外す）', () => {
+    const store = makeStore(undefined, {
+      mode: EDIT_MODE.Edit,
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+      activeTool: asToolId('pen'),
+    });
+    store.getState().setMode(EDIT_MODE.View);
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().activeTool).toBeNull();
+    store.getState().setMode(EDIT_MODE.Edit);
+    expect(store.getState().activeFeature).toBe(f('A'));
   });
 
   it('setActiveTool clears selection (select -> cancel -> recreate has no residue)', () => {

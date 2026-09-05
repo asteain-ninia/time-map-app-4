@@ -174,7 +174,13 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(within(list).getByText('織田領')).toBeInTheDocument();
   });
 
-  it('FR-113 (Codex F3): 個別非表示 removes the feature row from the 現在時刻 一覧; 全て再表示 restores it', () => {
+  // 増分 4 の手直し B1 / 司令塔の決定 (2)。**隠しても行は消さない。**
+  //
+  // 旧版は「非表示は一覧からも消える」を不変条件にしていたが、一覧は「探す」ための
+  // 場所なので、消えると **隠したこと自体を取り消せなくなる**（設計書 §C.5「設定も
+  // 解除もこの 1 か所」／ N-40 の再発）。いまは行に 🚫 が付き、同じボタンで戻せる。
+  // 描画・当たり判定の母集合は変わっていない（隠したものは地図には出ない）。
+  it('個別非表示にしても行は残り、🚫 が付いて同じボタンで戻せる（決定 (2)）', () => {
     const a = squareLeaf('f-a', '織田領', 0, 0);
     const b = squareLeaf('f-b', '徳川領', 10, 0);
     let root = withLeaf(emptyProject(), a, 1000);
@@ -183,15 +189,18 @@ describe('SidebarContent — HB-3 wiring', () => {
     expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
     expect(screen.getByTestId('feature-list-item-f-b')).toBeInTheDocument();
 
-    // Hide f-a via the display filter → its LIST row disappears (不変条件: 非表示は一覧からも
-    // 消える), while f-b stays. The list母集合 now agrees with draw / hit / search.
     act(() => store.getState().setFeatureHidden(a.feature.id, true));
-    expect(screen.queryByTestId('feature-list-item-f-a')).not.toBeInTheDocument();
-    expect(screen.getByTestId('feature-list-item-f-b')).toBeInTheDocument();
-
-    // 全て再表示 → the row returns.
-    act(() => store.getState().showAllHiddenFeatures());
+    // 行は残る。印が 🚫 に変わり、押されている状態になる。
     expect(screen.getByTestId('feature-list-item-f-a')).toBeInTheDocument();
+    expect(screen.getByTestId('ledger-row-f-a')).toHaveAttribute('data-hidden', 'true');
+    expect(screen.getByTestId('ledger-eye-f-a')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('ledger-eye-f-a')).toHaveTextContent('🚫');
+    expect(screen.getByTestId('ledger-row-f-b')).toHaveAttribute('data-hidden', 'false');
+
+    // **同じボタンで戻せる。**（表示制御の一括解除へ行かなくてよい）
+    fireEvent.click(screen.getByTestId('ledger-eye-f-a'));
+    expect(store.getState().filter.individual.get(a.feature.id)?.hidden ?? false).toBe(false);
+    expect(screen.getByTestId('ledger-row-f-a')).toHaveAttribute('data-hidden', 'false');
   });
 
   it('selecting a feature row promotes it through the store and the panel shows its fields', () => {

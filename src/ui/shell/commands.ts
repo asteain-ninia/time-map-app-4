@@ -65,6 +65,17 @@ export const COMMAND_ID = {
    * 1 本の入力で探して飛ぶ、全機能への保険の経路。
    */
   ToolsJump: 'tools.jump',
+  /**
+   * 一覧の「◀ 前へ」（作業のまとまりの前の地物へ）。増分 4 の手直し B8 / 設計書 §I.2。
+   *
+   * **メニューとショートカット一覧に載せる**ために、画面のボタンと同じ 1 本を
+   * コマンドとして宣言する（結合点 #10:「画面にはあるのに鍵盤から届かない」を作らない）。
+   */
+  ListBundlePrev: 'list.bundlePrev',
+  /** 一覧の「次へ ▶」（次の未処理へ）。 */
+  ListBundleNext: 'list.bundleNext',
+  /** 一覧の行でその場改名する（F2）。 */
+  ListRename: 'list.rename',
   HelpAbout: 'help.about',
   HelpShortcuts: 'help.shortcuts',
   /** Show the diagnostics info view (U41 / FR-117). Registered by discovery. */

@@ -60,8 +60,8 @@ export const SIDEBAR_LIST_MIN_HEIGHT = 196;
  * 固定値で先に取ると上段が潰れる** ので、列が低いときは割合のほうが効く。 */
 export const SIDEBAR_PROPERTIES_MIN_HEIGHT = 300;
 
-/** 下段の下限が窓に追随するときの割合（列の高さの 45%）。CSS の `min(300px, 45%)` と同値。 */
-export const SIDEBAR_PROPERTIES_MIN_RATIO = 0.45;
+/** 下段の下限が窓に追随するときの割合（列の高さの 50%）。CSS の `min(300px, 50%)` と同値。 */
+export const SIDEBAR_PROPERTIES_MIN_RATIO = 0.5;
 
 /** 仕切りの高さ（px）。CSS の `.sidebar__splitter` と同値。 */
 export const SIDEBAR_SPLITTER_HEIGHT = 6;
@@ -70,7 +70,7 @@ export const SIDEBAR_SPLITTER_HEIGHT = 6;
 const SPLITTER_KEY_STEP = 16;
 
 /**
- * その列の高さでの、下段の実際の下限（px）。CSS の `min(300px, 45%)` と同じ規則を
+ * その列の高さでの、下段の実際の下限（px）。CSS の `min(300px, 50%)` と同じ規則を
  * ここでも使う ―― 仕切りの可動域と CSS がずれると、引き切った位置で見た目が跳ねる。
  */
 export function propertiesMinHeight(total: number): number {

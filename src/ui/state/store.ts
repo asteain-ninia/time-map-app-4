@@ -277,6 +277,24 @@ export interface SessionStoreState<S> {
    * 読み込み・新規では捨てる（教訓 5.2）。
    */
   readonly ledger: LedgerState;
+  /**
+   * 取り消し／やり直しが起きた回数（増分 4 の手直し B5）。
+   *
+   * **一覧の「済が外れた地物へカーソルを移す」追従は、これが動いたときだけ働く。**
+   * 旧版は「済の集合が減ったこと」だけを見ていたので、👁 や種別で行が消えただけでも
+   * 発動し、**取り消していないのに選択が飛んだ**。取り消しはドメインのコマンドで、
+   * 表示条件の変更はそうではない ―― 2 つを区別する印がここに要る（教訓 5.6: 結果
+   * 状態で判定するが、**どの結果状態か**は取り違えない）。
+   */
+  readonly undoRedoNonce: number;
+  /**
+   * プロジェクトを読み込んだ／新規にした回数（増分 4 の手直し B10）。
+   *
+   * 一覧のセッション状態（絞り込み・展開・束）は読み込みで捨てるが、**スクロール位置は
+   * 画面側の状態**なので捨たない。前のプロジェクトの 3,000 行目を見ていたまま別の
+   * ファイルを開くと、行の途中から始まる。ここが動いたら一覧が先頭へ戻る。
+   */
+  readonly projectLoadNonce: number;
 
   // -- settings (FR-109 / FR-110) --------------------------------------------
   readonly projectSettings: ProjectSettings;
@@ -481,8 +499,12 @@ export interface SessionStoreActions<S> {
   setLedgerTree(tree: boolean): void;
   /** 絞り込み語（「地物を検索」もここへ来る＝E-6）。 */
   setLedgerQuery(query: string): void;
-  /** 展開を 1 件切り替える。 */
-  toggleLedgerExpanded(featureId: FeatureId): void;
+  /**
+   * 展開を 1 件切り替える。**いま開いているか**は呼び出し側（画面の三角）が渡す。
+   * 絞り込み中は「一致した子の先祖を自動で開く」が効いているので、`expanded` の
+   * 有無だけでは開閉が決まらない（手直し B3）。
+   */
+  toggleLedgerExpanded(featureId: FeatureId, expandedNow: boolean): void;
   /** 指定の地物を展開状態にする（Ctrl+P / 右クリックから 1 件を見せるとき）。 */
   expandLedgerPath(featureIds: Iterable<FeatureId>): void;
   /** 作業のまとまりを差し替える（null で解除）。 */
@@ -1189,6 +1211,8 @@ export function createSessionStore<S>(
     survey: initialSurveyState(),
     filter: init.filter ?? DEFAULT_FILTER_STATE,
     ledger: DEFAULT_LEDGER_STATE,
+    undoRedoNonce: 0,
+    projectLoadNonce: 0,
     projectSettings: init.projectSettings ?? DEFAULT_PROJECT_SETTINGS,
     appSettings: init.appSettings ?? DEFAULT_APP_SETTINGS,
     projectDirty: false,
@@ -1340,6 +1364,8 @@ export function createSessionStore<S>(
         domain: nextDomain,
         projectDirty: !clean,
         displayControl: nextDisplayControl,
+        // 手直し B5: 「いま取り消し／やり直しが起きた」の印。一覧の追従だけが読む。
+        undoRedoNonce: get().undoRedoNonce + 1,
         ...(nextProjectSettings !== curProjectSettings
           ? { projectSettings: nextProjectSettings }
           : {}),
@@ -1452,6 +1478,9 @@ export function createSessionStore<S>(
         // 増分 4: 一覧のセッション状態（絞り込み・展開・作業のまとまり）も古い
         // プロジェクトのものなので、読み込み・新規で丸ごと捨てる（教訓 5.2）。
         ledger: DEFAULT_LEDGER_STATE,
+        // 手直し B10: 一覧のスクロール位置は画面側の状態なので、読み込みでは
+        // 捨てられない。印を動かして「先頭へ戻れ」と一覧へ伝える。
+        projectLoadNonce: get().projectLoadNonce + 1,
         ...selectionPatch(EMPTY_SELECTION),
       });
     },
@@ -1513,8 +1542,24 @@ export function createSessionStore<S>(
 
     // -- mode / tool (reset契約 on every path, 教訓 5.2) --------------------
     setMode(mode) {
-      // Mode switch discards transient selection (教訓 5.2 全経路で破棄).
-      set({ mode, activeTool: null, ...selectionPatch(EMPTY_SELECTION) });
+      // 道具は必ず外す（教訓 5.2 全経路で破棄）。
+      //
+      // **選択は「読むだけ ⇄ 直せる」では捨てない**（増分 4 の手直し B12）。
+      // 所有者の裁定は「読むだけでも選べる・読める・直せない」で、鍵を掛けても
+      // 選んでいるものは選んだままでなければならない。旧版はどの経路でも
+      // 一律に捨てていたので、**鍵を掛けて掛け直すと選択が消え、作業のまとまりの
+      // カーソルだけが残って食い違った**（束は「3/220」を指しているのに素性欄は空）。
+      // K-6 の関門は「編集経路を止める」ことで、選択を奪うことではない。
+      //
+      // 「直せる ⇄ 直せる」（追加 ⇄ 編集）では従来どおり捨てる ―― こちらは道具を
+      // 持ち替える操作で、道具の対象が持ち越されると打ちかけの文脈が混ざる。
+      const cur = get().mode;
+      const acrossViewOnly = cur === EDIT_MODE.View || mode === EDIT_MODE.View;
+      set({
+        mode,
+        activeTool: null,
+        ...(acrossViewOnly ? {} : selectionPatch(EMPTY_SELECTION)),
+      });
     },
 
     setActiveTool(tool, preserveSelection) {
@@ -1830,9 +1875,9 @@ export function createSessionStore<S>(
       set({ ledger: { ...cur, query } });
     },
 
-    toggleLedgerExpanded(featureId) {
+    toggleLedgerExpanded(featureId, expandedNow) {
       const cur = get().ledger;
-      set({ ledger: toggleLedgerExpandedRule(cur, featureId) });
+      set({ ledger: toggleLedgerExpandedRule(cur, featureId, expandedNow) });
     },
 
     expandLedgerPath(featureIds) {
@@ -2126,6 +2171,9 @@ export function createSessionStore<S>(
         filter: DEFAULT_FILTER_STATE,
         // 増分 4: 一覧のセッション状態も同じ扱い（教訓 5.2）。
         ledger: DEFAULT_LEDGER_STATE,
+        // 手直し B10: 一覧のスクロール位置は画面側の状態なので、読み込みでは
+        // 捨てられない。印を動かして「先頭へ戻れ」と一覧へ伝える。
+        projectLoadNonce: get().projectLoadNonce + 1,
         // -- hydrateSettings half: whole-slice settings swap (教訓 5.36) --
         ...(settings.projectSettings !== undefined
           ? { projectSettings: settings.projectSettings }

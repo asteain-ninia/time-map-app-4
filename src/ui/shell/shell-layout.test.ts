@@ -99,7 +99,10 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     // 下限は **いま実際に載っている 2 部品**（吸着 ▾ と［1 つ戻す］）が並ぶ幅で決める
     // （増分 3 の手直し C1）。1 部品ぶん（72px）だと［1 つ戻す］が切り落とされた。
     expect(decl(ruleBody('.option-bar__settings'), 'min-width')).toBe('136px');
-    expect(decl(ruleBody('.option-bar__next'), 'min-width')).toBeUndefined();
+    // 縮む役は「次の一手」が持つ。**0 でなければならない**（共有規則の `min-width: 0`
+    // をそのまま、または明示的に 0 で書く）。増分 4 の手直し E1 で、この枠は
+    // 「文 ＋ ボタン」の flex になったので、下限 0 をこの規則にも明示している。
+    expect(decl(ruleBody('.option-bar__next'), 'min-width') ?? '0').toBe('0');
   });
 
   it('5 区画すべてが min-width:0 + overflow:hidden（中身が枠を押し広げられない）', () => {

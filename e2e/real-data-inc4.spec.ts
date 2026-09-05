@@ -120,6 +120,17 @@ test.describe('増分 4 — 実データ（デーレ界）', () => {
           .allTextContents()
           .then((xs) => xs.map((x) => x.trim()));
       expect((await names()).every((n) => n.includes('デーレ共和国'))).toBe(true);
+
+      // **絞り込み中でも親の三角で畳める**（増分 4 の手直し B3）。旧版は絞り込みが
+      // 自動で開いた親が常に勝っていたので、三角を押しても何も起きなかった
+      // （押しても何も起きないボタン ＝ C9 の②）。1 回目で畳み、
+      const expander = page.locator('[data-testid^="ledger-expand-"]').first();
+      const shownBefore = (await names()).length;
+      await expander.click();
+      await expect.poll(async () => (await names()).length).toBeLessThan(shownBefore);
+
+      // 2 回目で **自分で開いた親**になり、絞り込みに当たらない子まで出る
+      // （＝畳み込みが効いている ／ 自分で開いた親は当たらない子も見せる）。
       await page.locator('[data-testid^="ledger-expand-"]').first().click();
       await expect
         .poll(async () => (await names()).some((n) => !n.includes('デーレ共和国')))

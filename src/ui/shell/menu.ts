@@ -149,6 +149,12 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
       // 増分 4 / 設計書 §C.2 の 26: どこへでも移動（地物名・年・コマンドを 1 本で）。
       // メニューと keymap の両方へ届くよう、ここ 1 か所で宣言する（結合点 #10）。
       item(COMMAND_ID.ToolsJump, { key: 'p', ctrlOrMeta: true }),
+      // 増分 4 の手直し B8: 一覧の送りと改名を鍵盤から届かせる（設計書 §I.2）。
+      // **Alt+↑ / Alt+↓** は矢印そのもの（一覧の行移動）と衝突しない。**F2** は
+      // 一覧に焦点があるときの改名と同じ働きで、焦点がどこにあっても効く。
+      item(COMMAND_ID.ListBundlePrev, { key: 'ArrowUp', alt: true }),
+      item(COMMAND_ID.ListBundleNext, { key: 'ArrowDown', alt: true }),
+      item(COMMAND_ID.ListRename, { key: 'F2' }),
     ],
   },
   {

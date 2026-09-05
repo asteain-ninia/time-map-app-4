@@ -34,6 +34,11 @@ export interface LedgerState {
   readonly query: string;
   /** 展開している地物（木のとき）。 */
   readonly expanded: ReadonlySet<FeatureId>;
+  /**
+   * **利用者が自分で畳んだ地物**（手直し B3）。絞り込みが自動で開く先祖より強い。
+   * これが無いと「絞り込み中は親の三角を押しても畳めない」になる。
+   */
+  readonly collapsed: ReadonlySet<FeatureId>;
   /** いまの作業のまとまり（無ければ null）。 */
   readonly bundle: Bundle | null;
   /** 束の未処理だけに絞るか。 */
@@ -46,16 +51,36 @@ export const DEFAULT_LEDGER_STATE: LedgerState = {
   tree: true,
   query: '',
   expanded: new Set(),
+  collapsed: new Set(),
   bundle: null,
   onlyUnfinished: false,
 };
 
-/** 展開を 1 件切り替える。変化が無ければ同じ参照を返す（描画の世代を進めない）。 */
-export function toggleExpanded(state: LedgerState, featureId: FeatureId): LedgerState {
-  const next = new Set(state.expanded);
-  if (next.has(featureId)) next.delete(featureId);
-  else next.add(featureId);
-  return { ...state, expanded: next };
+/**
+ * 展開を 1 件切り替える。
+ *
+ * **いま開いているかは呼び出し側が渡す**（手直し B3）。絞り込み中は「一致した子の
+ * 先祖を自動で開く」が効いていて、開いているかどうかは `expanded` だけでは決まらない。
+ * 画面が見ている状態（行の三角の向き）をそのまま渡してもらい、
+ *   - 開いている → `collapsed` へ入れて `expanded` から外す（自動の開きより強い）
+ *   - 閉じている → `expanded` へ入れて `collapsed` から外す
+ * とする。変化が無ければ同じ参照を返す（描画の世代を進めない）。
+ */
+export function toggleExpanded(
+  state: LedgerState,
+  featureId: FeatureId,
+  expandedNow: boolean,
+): LedgerState {
+  const expanded = new Set(state.expanded);
+  const collapsed = new Set(state.collapsed);
+  if (expandedNow) {
+    expanded.delete(featureId);
+    collapsed.add(featureId);
+  } else {
+    expanded.add(featureId);
+    collapsed.delete(featureId);
+  }
+  return { ...state, expanded, collapsed };
 }
 
 /** 展開を明示的に設定する（Ctrl+P や右クリックから 1 件を見せるときに使う）。 */
@@ -64,14 +89,18 @@ export function withExpanded(
   featureIds: Iterable<FeatureId>,
 ): LedgerState {
   const next = new Set(state.expanded);
+  const collapsed = new Set(state.collapsed);
   let changed = false;
   for (const id of featureIds) {
     if (!next.has(id)) {
       next.add(id);
       changed = true;
     }
+    // **自分で畳んだ印も外す**。外さないと「Ctrl+P で子を選んだのに親が畳まれたまま」
+    // になり、選んだ行が一覧に出てこない（手直し B2 が直そうとしていることそのもの）。
+    if (collapsed.delete(id)) changed = true;
   }
-  return changed ? { ...state, expanded: next } : state;
+  return changed ? { ...state, expanded: next, collapsed } : state;
 }
 
 /**
@@ -89,5 +118,10 @@ export function reconcileLedgerToLive(
     if (liveFeatureIds.has(id)) expanded.add(id);
     else changed = true;
   }
-  return changed ? { ...state, expanded } : state;
+  const collapsed = new Set<FeatureId>();
+  for (const id of state.collapsed) {
+    if (liveFeatureIds.has(id)) collapsed.add(id);
+    else changed = true;
+  }
+  return changed ? { ...state, expanded, collapsed } : state;
 }

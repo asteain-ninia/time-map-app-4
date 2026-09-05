@@ -39,6 +39,7 @@ function run(query: string) {
     features,
     commands,
     yearLabel: (year) => `${String(year)}年 へ移動`,
+    moreLabel: (n) => `ほかに ${String(n)} 件（Enter で一覧に出す）`,
   });
 }
 
@@ -135,9 +136,23 @@ describe('どこへでも移動 — 規則 5（12 件で打ち切る）', () => 
       features: many,
       commands: [],
       yearLabel: (y) => String(y),
+      moreLabel: (n) => `ほかに ${String(n)} 件（Enter で一覧に出す）`,
     });
-    expect(result.candidates).toHaveLength(JUMP_MAX_CANDIDATES);
+    // **「ほかに n 件」は本物の候補である**（手直し C3）。12 件＋最終行の 13 件で、
+    // 最終行は打った語を持っている（Enter で一覧の絞り込みへ渡すため）。
+    expect(result.candidates).toHaveLength(JUMP_MAX_CANDIDATES + 1);
     expect(result.truncated).toBe(30 - JUMP_MAX_CANDIDATES);
+    const last = result.candidates[result.candidates.length - 1];
+    expect(last?.kind).toBe(JUMP_CANDIDATE_KIND.More);
+    expect(last?.kind === JUMP_CANDIDATE_KIND.More ? last.query : null).toBe('テスト');
+  });
+
+  it('保存できない大きさの年は候補にしない（打ち間違いを行き先にしない）', () => {
+    // 旧版は「有限でありさえすれば」候補にしていたので、`99999999999999999999` に
+    // 「その年へ移動」を出し、押すと黙って端へ丸められていた（表示と行き先が違う）。
+    expect(run('99999999999999999999').candidates).toHaveLength(0);
+    expect(run('1000001').candidates).toHaveLength(0);
+    expect(run('1000000').candidates).toHaveLength(1);
   });
 });
 

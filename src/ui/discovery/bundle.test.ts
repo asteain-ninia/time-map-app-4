@@ -22,9 +22,11 @@ import {
   isMemberDone,
   nextUnfinishedIndex,
   stepIndex,
+  unavailableMemberCount,
   withCursor,
   type BundleSource,
 } from './bundle';
+import { BUNDLE_STRINGS } from './strings';
 
 function id(s: string): FeatureId {
   return asFeatureId(s);
@@ -73,7 +75,27 @@ describe('束 — 既定の式', () => {
     );
     expect(built.ok).toBe(false);
     if (built.ok) return;
-    expect(built.message.startsWith('式が読めません')).toBe(true);
+    // **エンジン由来の英語を 1 文字も混ぜない**（手直し B11）。日本語で始まることだけ
+    // 見ていた旧版は、`Invalid regular expression: ...` を丸ごと連結していても通った。
+    expect(built.message).toBe(BUNDLE_STRINGS.invalidExpression);
+    expect(/[A-Za-z]/.test(built.message)).toBe(false);
+  });
+
+  it('全角で打った式も、絞り込み欄と同じように当たる（NFKC で畳む）', () => {
+    const built = buildBundle(
+      { presetId: null, label: 'x', kind: BUNDLE_KIND.Expression, expression: '領域［０－９］＋$' },
+      source([{ id: 'a', name: '付近の領域12' }, { id: 'b', name: '別国' }]),
+    );
+    expect(built.ok).toBe(true);
+    if (!built.ok) return;
+    expect(built.bundle.members.map((m) => m.featureId)).toEqual([id('a')]);
+  });
+
+  it('「手で印を付けたもの」はまだ選べない（増分 7 まで）', () => {
+    const marked = BUNDLE_PRESETS.find((p) => p.id === 'marked');
+    expect(marked?.available).toBe(false);
+    // ほかの既定は選べる（既定で `available` を書かないものは選べる扱い）。
+    expect(BUNDLE_PRESETS.filter((p) => p.available === false)).toHaveLength(1);
   });
 });
 
@@ -245,5 +267,21 @@ describe('束 — 送り', () => {
   it('取り消しで戻った地物の位置を引ける（Ctrl+Z でカーソルが追いかける）', () => {
     expect(indexOfMember(bundle, id('c'))).toBe(2);
     expect(indexOfMember(bundle, id('zzz'))).toBeNull();
+  });
+
+  // 手直し G2: 消した地物・その年に居ない地物は **並びには残すが送りでは飛ばす**。
+  // 飛ばさないと「次へ」で素性欄が空・カメラも動かない幽霊が選ばれ、しかも永久に
+  // 済にならないので束が終わらない。
+  it('いま居ないメンバーは送りで飛ばす（並びと通し番号は動かさない）', () => {
+    const available = (featureId: FeatureId): boolean => featureId !== id('b');
+    expect(unavailableMemberCount(bundle, available)).toBe(1);
+    // 0 → （b を飛ばして）2
+    expect(stepIndex(bundle, new Set(), 1, available)).toBe(2);
+    // 2 → （b を飛ばして）0 へ回り込む
+    expect(stepIndex(withCursor(bundle, 2), new Set(), 1, available)).toBe(0);
+    // 戻るときも飛ばす
+    expect(stepIndex(withCursor(bundle, 2), new Set(), -1, available)).toBe(0);
+    // 先頭の未処理も居るものから選ぶ
+    expect(firstUnfinishedIndex(bundle, new Set([id('a')]), available)).toBe(2);
   });
 });

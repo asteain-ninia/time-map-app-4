@@ -159,13 +159,13 @@ test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03
   // まさにそれ（鍵を閉めても選択を保つ）を予定しているので、いま塞いでおく。部品の契約は
   // src/ui/shell/view-only-gate.test.tsx の表と DeleteFeatureButton.test.tsx が固定する。
   //
-  // 増分 5 で「鍵を閉めても選択を保つ」が入ったら、この test は「無効なボタンが出る」側へ
-  // 書き換えること（toHaveCount(0) → toBeDisabled()）。
-  test('表示専用では素性欄に地物が出ず、削除ボタンに手が届かない', async () => {
+  // **2026-09-05（増分 4 の手直し B12）でここが「無効なボタンが出る」側になった。**
+  // 所有者の裁定「読むだけでも選べる・読める・直せない」に合わせて、鍵を閉めても
+  // 選択を保つようにしたので（`store.setMode`）、素性欄は地物を出したまま、値を変える
+  // 入力と削除ボタンだけが無効になる。上の注記が予告していた書き換えである。
+  test('表示専用でも選択と素性欄は残り、削除ボタンは出るが押せない', async () => {
     const { app, page } = await launchApp();
     try {
-      // 削除の対象を 1 つ作って選ぶ。**モードを切り替えると選択は捨てられる**ので、
-      // 編集モードへ入ってから本体をクリックし直す。
       const { faceId, cx, cy } = await commitOneFace(page);
       await enterEditMode(page);
       await page.mouse.click(cx, cy);
@@ -174,16 +174,17 @@ test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03
       const deleteButton = page.getByRole('button', { name: '地物を削除' });
       await expect(deleteButton).toBeEnabled();
 
-      // 「読むだけ」へ。選択が捨てられ、素性欄は案内文になり、削除ボタンは消える。
+      // 「読むだけ」へ。**選択は残る**（読める）が、削除は押せない（直せない）。
       await returnToViewMode(page);
       await expect(page.getByTestId('app-mode')).toHaveText('view');
-      await expect(page.getByTestId('app-active-feature')).toHaveText('');
-      await expect(deleteButton).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(deleteButton).toBeDisabled();
+      // 押しても確認ダイアログは開かない（disabled 属性だけに頼らない＝K-6）。
+      await deleteButton.click({ force: true });
       await expect(page.getByRole('button', { name: '削除を確定' })).toHaveCount(0);
 
-      // 「直せる」へ戻して選び直すと、また押せる（検査が空振りしていない証）。
+      // 「直せる」へ戻すと、選び直さなくても押せる（選択が保たれている証）。
       await enterEditMode(page);
-      await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
       await expect(deleteButton).toBeEnabled();
     } finally {

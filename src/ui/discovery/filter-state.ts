@@ -110,7 +110,15 @@ export const KIND_LABEL_TOGGLE = {
 export type KindLabelToggle =
   (typeof KIND_LABEL_TOGGLE)[keyof typeof KIND_LABEL_TOGGLE];
 
-/** その種別（札）の 3 トグルのどれかを切り替える。変化が無ければ同じ参照を返す。 */
+/**
+ * その種別（札）の 3 トグルのどれかを切り替える。変化が無ければ同じ参照を返す。
+ *
+ * **［隠す］と［目立たせる］は同時に入らない**（増分 4 の手直し B11）。両方入れると
+ * 「隠しているのに目立たせている」という読めない状態になり、画面ではどちらも押された
+ * 見た目のまま **隠すほうだけが効く**（`resolveFeatureDisplay` は可視性を先に見る）。
+ * 押した側を採り、反対側を外す（教訓 5.5: 依存する状態は変化時に再検証する）。
+ * ［薄くする］は可視性を変えないので、どちらとも同居できる。
+ */
 export function setKindLabelToggle(
   state: FilterState,
   kindLabel: string,
@@ -123,12 +131,23 @@ export function setKindLabelToggle(
       : toggle === KIND_LABEL_TOGGLE.Dim
         ? 'dimmedKindLabels'
         : 'emphasizedKindLabels';
+  const opposite =
+    toggle === KIND_LABEL_TOGGLE.Hide
+      ? 'emphasizedKindLabels'
+      : toggle === KIND_LABEL_TOGGLE.Emphasize
+        ? 'hiddenKindLabels'
+        : null;
   const current = state[key];
-  if (current.has(kindLabel) === on) return state;
+  const clearOpposite =
+    on && opposite !== null && state[opposite].has(kindLabel) ? opposite : null;
+  if (current.has(kindLabel) === on && clearOpposite === null) return state;
   const next = new Set(current);
   if (on) next.add(kindLabel);
   else next.delete(kindLabel);
-  return { ...state, [key]: next };
+  if (clearOpposite === null) return { ...state, [key]: next };
+  const cleared = new Set(state[clearOpposite]);
+  cleared.delete(kindLabel);
+  return { ...state, [key]: next, [clearOpposite]: cleared };
 }
 
 /** その種別（札）のトグルがいま入っているか。 */

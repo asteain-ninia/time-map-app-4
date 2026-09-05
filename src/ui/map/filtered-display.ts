@@ -32,16 +32,18 @@
 // A tiny bounded process-local LRU memo (same (resolution, filter) identity ⇒ same
 // value) keeps the draw + hit paths of one frame from evaluating the verdict twice.
 
-import { FEATURE_KIND } from '../../domain/feature';
+import { FEATURE_KIND, type Feature } from '../../domain/feature';
 import { derivedDepths, isDepthUndefined } from '../../domain/hierarchy';
 import type { Forest } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 import {
+  hiddenReasonOf,
   isEmphasizedByOtherAxis,
   isFilterInert,
   resolveFeatureDisplay,
   type FeatureDisplayMeta,
   type FilterState,
+  type HiddenReason,
   type ResolvedFeatureDisplay,
 } from '../discovery/index';
 
@@ -235,6 +237,64 @@ export function isFeatureVisibleUnderFilter(
     { id: featureId, kind: feature.kind, depth, kindLabel: feature.kindLabel ?? '' },
     true,
   ).visible;
+}
+
+/**
+ * その地物が「なぜ隠れているか」（見えているなら null）。増分 4 の手直し B1 / E1。
+ *
+ * **一覧は行を消さずに 🚫 を出す**ので、どの軸で隠れているかを言えなければならない。
+ * 判定は {@link isFeatureVisibleUnderFilter} とまったく同じ材料
+ * （生の地物の種別・札・導出した深さ）を使うので、「隠れているのに理由が無い」は
+ * 起きない（教訓 5.29 単一解決）。
+ */
+export function hiddenReasonUnderFilter(
+  resolution: DisplayResolution,
+  filter: FilterState,
+  featureId: FeatureId,
+): HiddenReason | null {
+  if (isFilterInert(filter)) return null;
+  const feature =
+    resolution.areaFeaturesById.get(featureId) ??
+    resolution.features.find((f) => f.id === featureId);
+  if (feature === undefined) return null;
+  return reasonForFeature(resolution.forest, filter, feature);
+}
+
+/**
+ * まとめて同じ判定を掛ける（一覧が 5,000 行を組むときの形）。
+ *
+ * **1 件ずつ {@link hiddenReasonUnderFilter} を呼んではいけない** ―― あちらは
+ * 「描かれていない地物」を探すのに `features.find` を回すので、全件に掛けると
+ * 件数の二乗の仕事になる（5,000 件で 2,500 万回の比較）。ここは呼び出し側が既に
+ * 持っている地物の配列をそのまま受け取り、1 周で終える。
+ */
+export function hiddenReasonsUnderFilter(
+  resolution: DisplayResolution,
+  filter: FilterState,
+  features: readonly Feature[],
+): Map<FeatureId, HiddenReason> {
+  const out = new Map<FeatureId, HiddenReason>();
+  if (isFilterInert(filter)) return out;
+  for (const feature of features) {
+    const reason = reasonForFeature(resolution.forest, filter, feature);
+    if (reason !== null) out.set(feature.id, reason);
+  }
+  return out;
+}
+
+function reasonForFeature(
+  forest: Forest,
+  filter: FilterState,
+  feature: Feature,
+): HiddenReason | null {
+  const needDepth = filter.depthThreshold !== null || filter.emphasizedDepth !== null;
+  const depth = needDepth ? depthOf(forest, feature.id) : null;
+  return hiddenReasonOf(filter, {
+    id: feature.id,
+    kind: feature.kind,
+    depth,
+    kindLabel: feature.kindLabel ?? '',
+  });
 }
 
 /**

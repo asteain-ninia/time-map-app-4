@@ -19,6 +19,7 @@ import type { FeatureId } from '../../domain/ids';
 
 import type { DomainFeatureKind } from './axes';
 import { LEDGER_STRINGS } from './strings';
+import type { HiddenReason } from './visibility';
 
 /** 台帳の 1 行が要る、地物 1 件ぶんの材料。呼び出し側（ホスト）が組み立てる。 */
 export interface LedgerFeature {
@@ -34,8 +35,16 @@ export interface LedgerFeature {
   readonly color: string;
   /** 錨の本数（自分の系列を持たない地物は 0）。 */
   readonly anchorCount: number;
-  /** 個別非表示（👁 トグルの状態）。 */
+  /**
+   * いま地図に描かれていない（表示条件のどれかで隠れている）か。
+   *
+   * **一覧はこれが真でも行を消さない**（増分 4 の手直し B1 / 決定 (2)）。一覧は
+   * 「探す」ための場所なので、隠したものが消えると **隠したこと自体を取り消せなくなる**
+   * （設計書 §C.5「設定も解除もこの 1 か所」）。行には 🚫 が付き、同じボタンで戻せる。
+   */
   readonly hidden: boolean;
+  /** 隠れている理由（見えていれば null）。🚫 の説明と「戻す」ボタンの行き先を決める。 */
+  readonly hiddenReason: HiddenReason | null;
   /**
    * 代表点（重複名の 3 段目でだけ使う）。引けないときは null。
    * **全件ぶん先に計算しない**のが呼び出し側の約束で、ここは受け取るだけである。
@@ -59,7 +68,10 @@ export interface LedgerRow {
   readonly kind: DomainFeatureKind;
   readonly color: string;
   readonly anchorCount: number;
+  /** いま地図に描かれていないか（行は消さず 🚫 を出す。手直し B1）。 */
   readonly hidden: boolean;
+  /** 隠れている理由（見えていれば null）。 */
+  readonly hiddenReason: HiddenReason | null;
   /** 子を持つか（展開の三角を出すか）。 */
   readonly hasChildren: boolean;
   /** いま展開しているか（子を持たない行は常に false）。 */
@@ -194,6 +206,14 @@ export interface LedgerBuildInput {
   readonly forest: Forest;
   /** 展開している地物（木のとき）。 */
   readonly expanded: ReadonlySet<FeatureId>;
+  /**
+   * **利用者が自分で畳んだ地物**（手直し B3）。
+   *
+   * 絞り込み中は一致した子の先祖を自動で開く（`autoExpanded`）。旧版はそれが常に
+   * 勝っていたので、**絞り込み中は親の三角を押しても畳めなかった**（押しても何も
+   * 起きないボタン ＝ C9 の②）。ここに入っている地物は、自動で開く対象でも畳む。
+   */
+  readonly collapsed?: ReadonlySet<FeatureId>;
   /** 絞り込み語（名前・種別ラベルの部分一致）。空なら絞らない。 */
   readonly query: string;
   /** true = 木、false = 平（絞り込み結果を平らに見る）。 */
@@ -230,6 +250,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
     features,
     forest,
     expanded,
+    collapsed = EMPTY_IDS,
     query,
     tree,
     bundleIndex,
@@ -248,8 +269,12 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
 
   const matched = new Set<FeatureId>();
   for (const f of features) {
-    if (onlyUnfinished && bundleIndex !== undefined && bundleIndex.has(f.id) && doneIds.has(f.id)) {
-      continue;
+    // 「未処理だけ」は **束の中の未処理だけ**（手直し B4）。旧版は「束に居て済のもの」を
+    // 除くだけだったので、束に入っていない 555 件がそのまま残り、220 件の作業を
+    // 絞り込む役に立っていなかった。
+    if (onlyUnfinished && bundleIndex !== undefined) {
+      if (!bundleIndex.has(f.id)) continue;
+      if (doneIds.has(f.id)) continue;
     }
     if (needle === null) {
       matched.add(f.id);
@@ -276,7 +301,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
 
   const rows: LedgerRow[] = [];
   const isExpanded = (id: FeatureId): boolean =>
-    expanded.has(id) || autoExpanded.has(id);
+    !collapsed.has(id) && (expanded.has(id) || autoExpanded.has(id));
 
   if (!tree) {
     for (const f of features) {
@@ -310,7 +335,7 @@ export function buildLedgerRows(input: LedgerBuildInput): LedgerBuildResult {
     // 絞り込み中に親の三角を押しても何も起きない、という「押しても何も起きないボタン」
     // （C9 の②）を作らないため。絞り込みのために自動で開いた親（`autoExpanded`）は
     // 当たった子だけを出す ―― そちらは「探した結果を見せる」ための開きだからである。
-    const openedByUser = expanded.has(id);
+    const openedByUser = expanded.has(id) && !collapsed.has(id);
     const children = (forest.childrenOf.get(id) ?? []).filter(
       (c) => (openedByUser && byId.has(c)) || keep.has(c),
     );
@@ -344,6 +369,7 @@ function toRow(
     color: f.color,
     anchorCount: f.anchorCount,
     hidden: f.hidden,
+    hiddenReason: f.hiddenReason,
     hasChildren: children.length > 0,
     expanded,
     bundleIndex: bundleIndex?.get(f.id) ?? null,
@@ -400,6 +426,8 @@ export function buildQualifiers(
   }
   return out;
 }
+
+const EMPTY_IDS: ReadonlySet<FeatureId> = new Set();
 
 /** そのかたまりの中で、その段の文字列が全部違うか。 */
 function allDistinct(values: readonly string[]): boolean {

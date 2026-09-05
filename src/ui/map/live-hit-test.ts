@@ -82,7 +82,12 @@ import {
 } from '../../domain/editing/handles';
 import type { ScreenPoint } from '../../render';
 import type { WorldCoordinate } from '../../domain/coordinate';
-import type { ResolvedDisplayShape } from '../../domain/display';
+import {
+  DISPLAY_VERDICT,
+  resolveDisplayShapes,
+  type DisplayDecision,
+  type ResolvedDisplayShape,
+} from '../../domain/display';
 import { pointInPolygon, POINT_LOCATION } from '../../domain/geometry/predicates';
 import type { DisplayControlInput } from '../../render/display-pipeline';
 import { DEFAULT_FILTER_STATE, type FilterState } from '../discovery/index';
@@ -92,6 +97,7 @@ import {
   vertexOwners,
   type DisplayResolution,
 } from './display-resolution-cache';
+import { alwaysDrawnIds } from './always-drawn';
 import { isFeatureVisibleUnderFilter, resolveFilteredDisplay } from './filtered-display';
 import { wrapTurnsForLonSpan, type Camera, type Viewport } from '../../render';
 import { LONGITUDE_PERIOD } from '../../domain/geo/seam';
@@ -1273,6 +1279,36 @@ export function liveHitTestAt(
   //    Probed AFTER point / line bodies because areas are painted UNDERNEATH them
   //    (reverse draw order — see step 2). For an aggregate this is the AGGREGATE's
   //    集約形状 → the aggregate is selected, never a hidden child leaf.
+  //
+  // **「必ず描く」ものは面の列のいちばん上にある**（設計書 §D.6 の規則 1・3。
+  // 増分 4 の手直し B7 / 現状.md B47）。選択中の地物と親までの道筋は、表示条件で
+  // 隠れていても・FR-42 に畳まれていても描かれる ―― ところが当たり判定は
+  // `resolved.shapes` と `visibleIds` しか見ていなかったので、**描かれている州の
+  // 真上を押すと親のまとめ役が選ばれ、州が選択から外れて消えた**（編集モードの
+  // 選択は増分 4 で表に出たので、これは日常的に起きる）。描いたものは掴める、を
+  // ここで閉じる（描画 ⊇ ヒット）。
+  const alwaysDrawn = alwaysDrawnIds(resolution.forest, activeFeature ?? null);
+  if (alwaysDrawn.size > 0) {
+    const raised: ResolvedDisplayShape[] = areas.filter((a) => alwaysDrawn.has(a.featureId));
+    // FR-42 に畳まれて `resolved.shapes` に 1 本も入っていない地物は、描画側と
+    // **同じ 1 本**（`resolveDisplayShapes`）で解き直す（教訓 5.29 単一真実源）。
+    const drawnShapeIds = new Set(areas.map((a) => a.featureId));
+    const missing: [FeatureId, DisplayDecision][] = [];
+    for (const id of alwaysDrawn) {
+      if (drawnShapeIds.has(id)) continue;
+      if (!areaFeaturesById.has(id)) continue;
+      missing.push([id, { featureId: id, verdict: DISPLAY_VERDICT.Real, emphasized: false }]);
+    }
+    if (missing.length > 0) {
+      const extra = resolveDisplayShapes(resolution.forest, vertices, new Map(missing));
+      raised.push(...extra.shapes);
+    }
+    // 描画列の最後（＝いちばん上）から見る。
+    for (let i = raised.length - 1; i >= 0; i -= 1) {
+      const shape = raised[i]!;
+      if (areaContainsPoint(shape, worldPoint, wrap)) return featureBodyHit(shape.featureId);
+    }
+  }
   const area = drawnAreaAtPointIndexed(areas, hitIndex, worldPoint, wrap, visibleIds);
   if (area !== null) return featureBodyHit(area);
 

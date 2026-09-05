@@ -1,9 +1,12 @@
 // 地物一覧（台帳）の材料を、いまのドメインから組み立てる（増分 4）。
 //
-// **ここが「一覧の母集団」の唯一の作り手**である。描画・当たり判定・検索と同じ判定
-// （`isFeatureVisibleUnderFilter`）を通した集合だけを一覧に出す（教訓 5.3 / 5.29）。
-// 「地物を検索」を一覧の絞り込みへ統合した（E-6）ので、**母集団が 2 つある状態
-// （N-41）が構造的に消える** ―― 探すのも見るのも直すのも、この 1 本の結果を使う。
+// **ここが「一覧の母集団」の唯一の作り手**である。母集団は **その年に居る地物ぜんぶ**で、
+// 表示条件で隠れているものは **行を残して 🚫 を付ける**（増分 4 の手直し B1 / 決定 (2)）。
+// 一覧は「探す」ための場所なので、隠したものが消えると **隠したこと自体を取り消せなくなる**
+// （設計書 §C.5「設定も解除もこの 1 か所」／ N-40 の再発）。隠れているかどうかの判定は
+// 描画・当たり判定と同じ 1 本（`hiddenReasonsUnderFilter`）で、ここに別の規則を書かない
+// （教訓 5.3 / 5.29）。「地物を検索」を一覧の絞り込みへ統合した（E-6）ので、母集団が
+// 2 つある状態（N-41）は構造的に消えたままである。
 //
 // **代表点は重複名のものだけ計算する。** 775 件ぶんの頂点を毎回平均すると、行を
 // 組み立てるたびに全頂点を走ることになる（実データで 5 万頂点級）。重複名は 12 件しか
@@ -16,6 +19,7 @@ import { getVertex, type VertexStore } from '../../domain/vertex';
 
 import type { DomainFeatureKind } from './axes';
 import type { LedgerFeature } from './ledger';
+import type { HiddenReason } from './visibility';
 
 /** 錨の本数を地物ごとに数える（自分の系列を持たない地物は 0）。 */
 export function anchorCountsOf(root: DomainProject): Map<FeatureId, number> {
@@ -27,20 +31,21 @@ export function anchorCountsOf(root: DomainProject): Map<FeatureId, number> {
 }
 
 /**
- * 台帳の材料を組み立てる。`visible` は呼び出し側が渡す **単一の表示判定**
- * （`isFeatureVisibleUnderFilter`）で、ここで別の判定を書かない。
+ * 台帳の材料を組み立てる。**行は 1 つも落とさない**（渡された地物がそのまま行になる）。
+ *
+ * `hiddenReasons` は呼び出し側が渡す **単一の表示判定**（`hiddenReasonsUnderFilter`）の
+ * 結果で、ここで別の判定を書かない。入っていれば「隠れている」、無ければ「見えている」。
  */
 export function buildLedgerFeatures(input: {
   readonly features: readonly Feature[];
   readonly anchorCounts: ReadonlyMap<FeatureId, number>;
-  readonly hidden: (featureId: FeatureId) => boolean;
-  readonly visible: (featureId: FeatureId) => boolean;
+  readonly hiddenReasons: ReadonlyMap<FeatureId, HiddenReason>;
   readonly points: ReadonlyMap<FeatureId, { readonly lon: number; readonly lat: number }>;
 }): LedgerFeature[] {
-  const { features, anchorCounts, hidden, visible, points } = input;
+  const { features, anchorCounts, hiddenReasons, points } = input;
   const out: LedgerFeature[] = [];
   for (const f of features) {
-    if (!visible(f.id)) continue;
+    const reason = hiddenReasons.get(f.id) ?? null;
     out.push({
       id: f.id,
       name: featureDisplayName(f),
@@ -49,7 +54,8 @@ export function buildLedgerFeatures(input: {
       parentId: f.parentId ?? null,
       color: f.color.fillColor,
       anchorCount: anchorCounts.get(f.id) ?? 0,
-      hidden: hidden(f.id),
+      hidden: reason !== null,
+      hiddenReason: reason,
       point: points.get(f.id) ?? null,
     });
   }

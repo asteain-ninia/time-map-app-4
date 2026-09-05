@@ -50,6 +50,13 @@ export interface BundlePreset {
   readonly kind: BundleKind;
   /** 式（`kind` が Expression のときだけ意味がある）。 */
   readonly expression: string;
+  /**
+   * いま選べるか（既定は true）。**false のものは画面で選べない**（手直し G5）。
+   *
+   * 「手で印を付けたもの」は印を付ける手段そのものが増分 7 なので、選べると必ず
+   * 0 件で断られる ―― 押しても何も起きないボタンを置かない（C9 の②）。
+   */
+  readonly available?: boolean;
 }
 
 /**
@@ -117,6 +124,8 @@ export const BUNDLE_PRESETS: readonly BundlePreset[] = [
     label: BUNDLE_STRINGS.presetMarked,
     kind: BUNDLE_KIND.Marked,
     expression: '',
+    // 印を付ける手段が増分 7 なので、いまは必ず 0 件になる。選べないようにしておく。
+    available: false,
   },
 ];
 
@@ -191,20 +200,23 @@ export function buildBundle(
   if (spec.kind === BUNDLE_KIND.Expression) {
     let re: RegExp;
     try {
-      re = new RegExp(spec.expression);
-    } catch (err) {
-      return {
-        ok: false,
-        message: BUNDLE_STRINGS.invalidExpression(
-          err instanceof Error ? err.message : String(err),
-        ),
-      };
+      // **絞り込み欄と同じ畳み方にそろえる**（手直し B11）。絞り込み欄は NFKC で
+      // 畳んで小文字にしてから比べるので、式のほうだけ生のままだと「全角で打った
+      // 式は当たらないのに、同じ字を絞り込み欄に打つと当たる」という食い違いになる。
+      // 式は正規表現なので小文字化はできない（文字クラスが壊れる）から、**NFKC で
+      // 畳み、大文字小文字を無視する印（i）**を付ける形でそろえる。
+      re = new RegExp(spec.expression.normalize('NFKC'), 'i');
+    } catch {
+      // **エンジンの英語の文言を画面へ出さない**（手直し B11）。読めない式は
+      // 「読めない」で足り、内部の表現を見せても直し方は分からない。
+      return { ok: false, message: BUNDLE_STRINGS.invalidExpression };
     }
+    const matches = (name: string): boolean => re.test(name.normalize('NFKC'));
     for (const f of source.features) {
       // **通史で当てはめる**。当てはまったいちばん古い姿を基準にするので、改名して
       // 式から外れた地物も束に残り、済として出る（開き直しても続けられる）。
       const past = source.historyOf(f.id);
-      const oldest = past.find((snap) => re.test(snap.name));
+      const oldest = past.find((snap) => matches(snap.name));
       if (oldest !== undefined) {
         members.push({
           featureId: f.id,
@@ -213,7 +225,7 @@ export function buildBundle(
         });
         continue;
       }
-      if (re.test(f.name)) {
+      if (matches(f.name)) {
         members.push({
           featureId: f.id,
           baselineName: f.name,
@@ -323,25 +335,50 @@ export function nextUnfinishedIndex(
   bundle: Bundle,
   done: ReadonlySet<FeatureId>,
   from: number,
+  available: MemberAvailability = ALWAYS_AVAILABLE,
 ): number | null {
   const n = bundle.members.length;
   if (n === 0) return null;
   for (let step = 1; step <= n; step += 1) {
     const at = (from + step) % n;
     const m = bundle.members[at];
-    if (m !== undefined && !done.has(m.featureId)) return at;
+    if (m === undefined) continue;
+    if (!available(m.featureId)) continue;
+    if (!done.has(m.featureId)) return at;
   }
   return null;
+}
+
+/**
+ * その 1 件がいま選べるか（手直し G2）。**削除された地物・その年に居ない地物**は
+ * 束の並びには残す（通し番号が動くと重複名の 3 段目が意味を失う）が、送りでは飛ばす。
+ * 飛ばさないと「次へ」で **素性欄が空・カメラも動かない幽霊**が選ばれる。
+ */
+export type MemberAvailability = (featureId: FeatureId) => boolean;
+
+const ALWAYS_AVAILABLE: MemberAvailability = () => true;
+
+/** 束のうち、いまは選べない（居ない）メンバーの件数。 */
+export function unavailableMemberCount(
+  bundle: Bundle,
+  available: MemberAvailability,
+): number {
+  let n = 0;
+  for (const m of bundle.members) if (!available(m.featureId)) n += 1;
+  return n;
 }
 
 /** 先頭の未処理（束を作った瞬間に選ぶもの）。全部済んでいれば null。 */
 export function firstUnfinishedIndex(
   bundle: Bundle,
   done: ReadonlySet<FeatureId>,
+  available: MemberAvailability = ALWAYS_AVAILABLE,
 ): number | null {
   for (let i = 0; i < bundle.members.length; i += 1) {
     const m = bundle.members[i];
-    if (m !== undefined && !done.has(m.featureId)) return i;
+    if (m === undefined) continue;
+    if (!available(m.featureId)) continue;
+    if (!done.has(m.featureId)) return i;
   }
   return null;
 }
@@ -377,10 +414,23 @@ export function stepIndex(
   bundle: Bundle,
   done: ReadonlySet<FeatureId>,
   delta: number,
+  available: MemberAvailability = ALWAYS_AVAILABLE,
 ): number | null {
-  if (bundle.members.length === 0) return null;
-  if (delta < 0) return Math.max(bundle.cursor - 1, 0);
-  const next = nextUnfinishedIndex(bundle, done, bundle.cursor);
+  const n = bundle.members.length;
+  if (n === 0) return null;
+  if (delta < 0) {
+    // **居ないものは飛ばして戻る**（手直し G2）。全部居なければその場に留まる。
+    for (let at = bundle.cursor - 1; at >= 0; at -= 1) {
+      const m = bundle.members[at];
+      if (m !== undefined && available(m.featureId)) return at;
+    }
+    return bundle.cursor;
+  }
+  const next = nextUnfinishedIndex(bundle, done, bundle.cursor, available);
   if (next !== null) return next;
-  return Math.min(bundle.cursor + 1, bundle.members.length - 1);
+  for (let at = bundle.cursor + 1; at < n; at += 1) {
+    const m = bundle.members[at];
+    if (m !== undefined && available(m.featureId)) return at;
+  }
+  return bundle.cursor;
 }

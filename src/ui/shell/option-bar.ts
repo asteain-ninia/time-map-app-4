@@ -62,6 +62,19 @@ export interface OptionBarSlot {
   readonly node: ReactNode;
 }
 
+/**
+ * 次の一手の枠に載せるボタン（増分 4 の手直し E1 / 設計書 §H.5「次の一手をボタンにする」）。
+ *
+ * **文だけでは次の一手にならないことがある。** 「読むだけなので直せません」は
+ * 「では鍵を開ければよい」まで言えて初めて次の一手で、その 1 手を **押せる形**で
+ * 置く場所がここまで無かった。確定欄（176px）は道具のものなので、断りの相手には使えない。
+ */
+export interface OptionBarAction {
+  readonly id: string;
+  readonly label: string;
+  readonly onClick: () => void;
+}
+
 /** オプションバーの表示状態のすべて。 */
 export interface OptionBarState {
   /** 道具名（112px）。null なら既定の「選ぶ」。 */
@@ -69,6 +82,8 @@ export interface OptionBarState {
   readonly target: OptionBarTarget;
   /** 次の一手（1fr）。null なら既定の案内文。 */
   readonly nextStep: string | null;
+  /** 次の一手の枠に載せるボタン（0 個でよい）。 */
+  readonly nextStepActions: readonly OptionBarAction[];
   readonly commit: readonly OptionBarCommitButton[];
   readonly slots: readonly OptionBarSlot[];
 }
@@ -79,6 +94,7 @@ const EMPTY_STATE: OptionBarState = {
   toolName: null,
   target: NO_TARGET,
   nextStep: null,
+  nextStepActions: [],
   commit: [],
   slots: [],
 };
@@ -92,6 +108,19 @@ function slotsEqual(
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i]?.id !== b[i]?.id || a[i]?.node !== b[i]?.node) return false;
+  }
+  return true;
+}
+
+function actionsEqual(
+  a: readonly OptionBarAction[],
+  b: readonly OptionBarAction[],
+): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i]?.id !== b[i]?.id || a[i]?.label !== b[i]?.label || a[i]?.onClick !== b[i]?.onClick) {
+      return false;
+    }
   }
   return true;
 }
@@ -230,10 +259,19 @@ export class OptionBarStore {
     this.replace({ target: { stage, name } });
   }
 
-  /** 次の一手（1fr の区画）。拒否理由もここへ出す（設計書 §H.5）。 */
-  setNextStep(nextStep: string | null): void {
-    if (this.state.nextStep === nextStep) return;
-    this.replace({ nextStep });
+  /**
+   * 次の一手（1fr の区画）。拒否理由もここへ出す（設計書 §H.5）。
+   *
+   * `actions` を渡すと、文の右に **押せるボタン**が並ぶ（増分 4 の手直し E1）。
+   * 省略すると空になる ―― 前の断りのボタンが次の断りに残らないようにするためで、
+   * 「消す契機を意味のあるイベントに限る」（教訓 5.12）と矛盾しない（文が変われば
+   * ボタンも変わるのが正しい）。
+   */
+  setNextStep(nextStep: string | null, actions: readonly OptionBarAction[] = []): void {
+    if (this.state.nextStep === nextStep && actionsEqual(this.state.nextStepActions, actions)) {
+      return;
+    }
+    this.replace({ nextStep, nextStepActions: [...actions] });
   }
 
   /** 確定欄（176px）のボタン列。空配列で「確定の要らない道具」になる。 */

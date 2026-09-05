@@ -207,9 +207,14 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       await expect(page.getByTestId(`ledger-anchors-${id}`)).toHaveText('1本');
       await expect(page.getByTestId(`ledger-eye-${id}`)).toBeVisible();
 
-      // 👁 を押すと個別非表示になり、行が一覧から消える（表示条件と一覧が 1 本）。
+      // **👁 を押しても行は消えない**（手直し B1 / 決定 (2)）。印が 🚫 に変わり、
+      // 同じボタンで戻せる ―― 消えると「隠したこと自体を取り消せない」ので、
+      // 一覧（＝探す場所）から隠す設定へ戻る道が無くなる。
       await page.getByTestId(`ledger-eye-${id}`).click();
-      await expect(page.getByTestId(`feature-list-item-${id}`)).toHaveCount(0);
+      await expect(page.getByTestId(`ledger-row-${id}`)).toHaveAttribute('data-hidden', 'true');
+      await expect(page.getByTestId(`ledger-eye-${id}`)).toHaveText('🚫');
+      await page.getByTestId(`ledger-eye-${id}`).click();
+      await expect(page.getByTestId(`ledger-row-${id}`)).toHaveAttribute('data-hidden', 'false');
     } finally {
       await app.close();
     }
@@ -328,8 +333,26 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       // 種別（札）ごとの 3 トグルが出る（V5(b)）。
       await expect(page.getByTestId('display-filter-label-row-合成の州')).toBeVisible();
       await page.getByTestId('display-filter-label-hide-合成の州').click();
-      // 「隠す」を押すと、その札の地物が一覧から消える（描画・一覧が 1 本の判定）。
-      await expect(page.getByTestId('unified-list-count')).toHaveText('5件');
+      // **「隠す」でも一覧の行は消えない**（手直し B1 / 決定 (2)）。件数は 10 件のまま
+      // で、その札の 5 件に 🚫 が付く。行の 🚫 を押すとその札の［隠す］が外れる
+      // （設計書 §C.5「設定も解除もこの 1 か所」）。
+      await expect(page.getByTestId('unified-list-count')).toHaveText('10件');
+      await expect(page.getByTestId('ledger-row-syn-0000')).toHaveAttribute(
+        'data-hidden',
+        'true',
+      );
+      await expect(page.getByTestId('ledger-row-syn-0001')).toHaveAttribute(
+        'data-hidden',
+        'false',
+      );
+      // ポップオーバーを閉じてから行を押す（開いたままだと帯が行を覆う）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-display-panel')).toBeHidden();
+      await page.getByTestId('ledger-eye-syn-0000').click();
+      await expect(page.getByTestId('ledger-row-syn-0000')).toHaveAttribute(
+        'data-hidden',
+        'false',
+      );
     } finally {
       await app.close();
     }

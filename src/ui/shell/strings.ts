@@ -90,8 +90,12 @@ export const MENU_ITEM_LABELS = {
   'view.fitAll': '全体表示',
   'tools.addFace': '面を描く',
   'tools.settings': '設定',
-  'tools.search': '地物を検索',
+  // 増分 4 の手直し F3: 行き先が「一覧の絞り込み欄」になったので、名前も実態に合わせる。
+  'tools.search': '一覧で絞り込む',
   'tools.jump': 'どこへでも移動',
+  'list.bundlePrev': '前のまとまりの地物へ',
+  'list.bundleNext': '次のまとまりの地物へ',
+  'list.rename': '一覧で名前を直す',
   'help.about': 'バージョン情報',
   'help.shortcuts': 'ショートカット一覧',
   'help.diagnostics': '診断情報',

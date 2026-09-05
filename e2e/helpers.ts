@@ -402,19 +402,12 @@ export async function openPropertySection(page: Page, testId: string): Promise<v
   // 続けてスクロールできるので操作は成り立つ ―― ここは **寄せ方だけ** を人に合わせ、
   // 「固定した見出しのすぐ下」へ来るように器を動かしてから押す。
   const summary = section.locator('summary').first();
+  // **真ん中へ寄せる。** 「固定した見出しのすぐ下（76px）」へ寄せる形にしていたが、
+  // それだと **下端の保存列** のぶんを見ていないので、器が低いときに見出しが保存列の
+  // 下へ入る（増分 4 の手直しで下段の下限を窓に追随させたら、既定の窓でこれを踏んだ）。
+  // 真ん中なら、上下どちらの固定部品からも離れる（器の高さに依らない）。
   await summary.evaluate((el) => {
-    // いちばん近い「実際にスクロールしている器」を探す。
-    let container: HTMLElement | null = el.parentElement;
-    while (container !== null && container.scrollHeight <= container.clientHeight) {
-      container = container.parentElement;
-    }
-    if (container === null) return;
-    const STICKY_HEAD_PX = 76;
-    const delta =
-      el.getBoundingClientRect().top -
-      container.getBoundingClientRect().top -
-      STICKY_HEAD_PX;
-    container.scrollTop += delta;
+    el.scrollIntoView({ block: 'center' });
   });
   await summary.click();
   await expect(section).toHaveJSProperty('open', true);

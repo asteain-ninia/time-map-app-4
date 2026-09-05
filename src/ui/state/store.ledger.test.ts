@@ -64,12 +64,15 @@ describe('store.ledger — 一覧のセッション状態', () => {
     expect(store.getState().ledger).toBe(before);
   });
 
-  it('展開はトグルできる', () => {
+  it('展開はトグルできる（開いているかは画面が渡す）', () => {
     const store = createSessionStore<TestDomain>({ initialDomain: { tag: 'd0' } });
-    store.getState().toggleLedgerExpanded(f('a'));
+    store.getState().toggleLedgerExpanded(f('a'), false);
     expect(store.getState().ledger.expanded.has(f('a'))).toBe(true);
-    store.getState().toggleLedgerExpanded(f('a'));
+    expect(store.getState().ledger.collapsed.has(f('a'))).toBe(false);
+    store.getState().toggleLedgerExpanded(f('a'), true);
     expect(store.getState().ledger.expanded.has(f('a'))).toBe(false);
+    // **自分で畳んだ印が残る**（手直し B3）。絞り込みが自動で開く先祖より強い。
+    expect(store.getState().ledger.collapsed.has(f('a'))).toBe(true);
   });
 
   it('カーソルは束が無ければ動かず、あれば端で止まる', () => {
@@ -100,8 +103,8 @@ describe('store.ledger — 一覧のセッション状態', () => {
       initialDomain: { tag: 'd0' },
       liveFeatureIds: () => live,
     });
-    store.getState().toggleLedgerExpanded(f('a'));
-    store.getState().toggleLedgerExpanded(f('b'));
+    store.getState().toggleLedgerExpanded(f('a'), false);
+    store.getState().toggleLedgerExpanded(f('b'), false);
     live = new Set<FeatureId>([f('b')]);
     store.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({ deleted: [f('a')] }));
     expect(store.getState().ledger.expanded.has(f('a'))).toBe(false);

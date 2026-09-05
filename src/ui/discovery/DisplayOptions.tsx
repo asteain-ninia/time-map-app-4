@@ -25,14 +25,18 @@ import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useSta
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
+import { featureDisplayName } from '../../domain/feature';
+import { derivedDepths, isDepthUndefined } from '../../domain/hierarchy';
 import type { DomainProject } from '../../domain/persistence/index';
 import type { TimePoint } from '../../domain/time/time-point';
 
 import { featuresAt } from '../live-lookup';
+import { resolveDisplayFor } from '../map/display-resolution-cache';
+import { hiddenReasonUnderFilter } from '../map/filtered-display';
 import type { OptionBarStore } from '../shell/option-bar';
 import type { SessionStore } from '../state/store';
 
-import { FEATURE_KIND_AXIS, type FeatureKindAxis } from './axes';
+import { FEATURE_KIND_AXIS, kindAxisOf, type FeatureKindAxis } from './axes';
 import {
   KIND_LABEL_TOGGLE,
   emphasisActive,
@@ -43,6 +47,7 @@ import {
 } from './filter-state';
 import { FILTER_STRINGS } from './strings';
 import { validateDepthThreshold, validateOpacity } from './validation';
+import { HIDDEN_REASON } from './visibility';
 
 /** 帯からはみ出さないための余白（`SnapOptions` と同じ値）。 */
 const VIEWPORT_MARGIN = 8;
@@ -88,6 +93,11 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
   const filter = useStore(store, (s) => s.filter);
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
+  const displayControl = useStore(store, (s) => s.displayControl);
+  const activeFeature = useStore(store, (s) => s.activeFeature);
+  const mode = useStore(store, (s) => s.mode);
+  const activeTool = useStore(store, (s) => s.activeTool);
+  const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
 
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
@@ -163,6 +173,57 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
     };
   }, [open, close]);
 
+  // **状態が移ったら閉じる**（増分 4 の手直し G6 / K-5「一時的 UI 状態は全経路で
+  // 破棄する」）。旧版は外を押すか Escape でしか閉じなかったので、鍵盤でモードを
+  // 変えたり年を動かしたりしても **開いたまま残り**、そこに並んでいる種別の一覧や
+  // 件数が古いまま置き去りになった（中身は `open` を依存にして数え直すので、
+  // 「開いているのに中身だけ入れ替わる」形になっていた）。
+  const contextRef = useRef({ mode, activeTool, currentTime, projectLoadNonce });
+  useEffect(() => {
+    const prev = contextRef.current;
+    contextRef.current = { mode, activeTool, currentTime, projectLoadNonce };
+    if (!open) return;
+    if (
+      prev.mode === mode &&
+      prev.activeTool === activeTool &&
+      prev.currentTime === currentTime &&
+      prev.projectLoadNonce === projectLoadNonce
+    ) {
+      return;
+    }
+    close();
+  }, [open, mode, activeTool, currentTime, projectLoadNonce, close]);
+
+  /**
+   * 選んでいる地物が表示条件から外れているか（増分 4 の手直し E1 / 設計書 §D.6）。
+   *
+   * 外れていても「必ず描く」で地図には出る（規則 1）。**それを黙ってやらない**ための
+   * 知らせと、緩めるボタンの材料をここで作る。判定は一覧・描画・当たり判定と同じ
+   * 1 本（`hiddenReasonUnderFilter`）を通す（教訓 5.29）。
+   */
+  const hiddenSelection = useMemo(() => {
+    if (!open || activeFeature === null) return null;
+    const root = getRoot();
+    const time = getTime();
+    const resolution = resolveDisplayFor(root, time, displayControl);
+    const reason = hiddenReasonUnderFilter(resolution, filter, activeFeature);
+    if (reason === null) return null;
+    const feature =
+      resolution.areaFeaturesById.get(activeFeature) ??
+      resolution.features.find((f) => f.id === activeFeature);
+    if (feature === undefined) return null;
+    const rawDepth = derivedDepths(resolution.forest).get(activeFeature);
+    const depth =
+      rawDepth === undefined || isDepthUndefined(rawDepth) ? null : rawDepth;
+    return {
+      reason,
+      name: featureDisplayName(feature),
+      kindLabel: feature.kindLabel ?? '',
+      axis: kindAxisOf(feature.kind),
+      depth,
+    };
+  }, [open, activeFeature, getRoot, getTime, domain, currentTime, filter, displayControl]);
+
   const hiddenCount = useMemo(() => {
     let n = 0;
     for (const override of filter.individual.values()) if (override.hidden) n += 1;
@@ -202,6 +263,72 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
         <section className="display-filter" data-testid="display-filter">
           <h3 className="display-filter__title">{FILTER_STRINGS.sectionTitle}</h3>
           <p className="display-filter__help">{FILTER_STRINGS.sectionHelp}</p>
+
+          {/* 選んでいる地物が表示条件から外れているときの知らせ＋緩める導線（E1）。
+              **先頭に置く** ―― 開いた理由がまさにこれであることが多いからである。 */}
+          {hiddenSelection !== null && (
+            <div className="display-filter__hidden-notice" data-testid="display-hidden-notice">
+              <p className="display-filter__hidden-title">
+                {FILTER_STRINGS.hiddenSelectionTitle}
+              </p>
+              <p className="display-filter__help">{FILTER_STRINGS.hiddenSelectionBody}</p>
+              {hiddenSelection.reason === HIDDEN_REASON.Individual && (
+                <button
+                  type="button"
+                  className="display-filter__relax"
+                  data-testid="display-relax-individual"
+                  onClick={() => {
+                    store.getState().setFeatureHidden(activeFeature!, false);
+                  }}
+                >
+                  {FILTER_STRINGS.relaxIndividualLabel}
+                </button>
+              )}
+              {hiddenSelection.reason === HIDDEN_REASON.KindLabel && (
+                <button
+                  type="button"
+                  className="display-filter__relax"
+                  data-testid="display-relax-kind-label"
+                  onClick={() => {
+                    store
+                      .getState()
+                      .setKindLabelToggle(
+                        hiddenSelection.kindLabel,
+                        KIND_LABEL_TOGGLE.Hide,
+                        false,
+                      );
+                  }}
+                >
+                  {FILTER_STRINGS.relaxKindLabelLabel(hiddenSelection.kindLabel)}
+                </button>
+              )}
+              {hiddenSelection.reason === HIDDEN_REASON.Kind && (
+                <button
+                  type="button"
+                  className="display-filter__relax"
+                  data-testid="display-relax-kind"
+                  onClick={() => {
+                    store.getState().setFilterKindVisible(hiddenSelection.axis, true);
+                  }}
+                >
+                  {FILTER_STRINGS.relaxKindLabel(kindAxisJaLabel(hiddenSelection.axis))}
+                </button>
+              )}
+              {hiddenSelection.reason === HIDDEN_REASON.Depth &&
+                hiddenSelection.depth !== null && (
+                  <button
+                    type="button"
+                    className="display-filter__relax"
+                    data-testid="display-relax-depth"
+                    onClick={() => {
+                      store.getState().setFilterDepthThreshold(hiddenSelection.depth);
+                    }}
+                  >
+                    {FILTER_STRINGS.relaxDepthLabel(hiddenSelection.depth)}
+                  </button>
+                )}
+            </div>
+          )}
 
           {/* 種別（FR-40 の札）ごとに 1 行 × 3 トグル（V5(b)）。 */}
           <fieldset className="display-filter__labels" data-testid="display-filter-kind-labels">
@@ -411,6 +538,18 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
       </div>
     </>
   );
+}
+
+/** 点 / 線 / 面 の軸の日本語（緩めるボタンの文言に使う）。 */
+function kindAxisJaLabel(axis: FeatureKindAxis): string {
+  switch (axis) {
+    case FEATURE_KIND_AXIS.Point:
+      return FILTER_STRINGS.kindPointLabel;
+    case FEATURE_KIND_AXIS.Line:
+      return FILTER_STRINGS.kindLineLabel;
+    case FEATURE_KIND_AXIS.Area:
+      return FILTER_STRINGS.kindAreaLabel;
+  }
 }
 
 /**

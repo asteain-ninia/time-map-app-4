@@ -82,7 +82,7 @@ import { createSessionStore, type SessionStore } from '../state/store';
 
 import { AppShell } from './AppShell';
 import { CommandRegistry, COMMAND_ID } from './commands';
-import { canEdit } from './permissions';
+import { canEdit, resolveCommandEnabled } from './permissions';
 
 // --- 素性欄の道具立て（最小の 1 地物 + 錨 1 本） ----------------------------
 
@@ -406,6 +406,20 @@ const CHANGE_PATHS: readonly ChangePath[] = [
       fireEvent.click(screen.getByTestId('settings-save'));
       return store.getState().projectSettings.timelineMaxYear === 4000;
     },
+  },
+  {
+    // 増分 4 の手直し C1。「どこへでも移動」（Ctrl+P）の `>` はコマンドを直に
+    // `registry.dispatch` へ渡していたので、**権限の軸を素通り**していた
+    // （読むだけでも `>削除` `>面を描く` が走る）。可否も実行も
+    // `resolveCommandEnabled` の 1 本を通す形にしたので、ここで経路として固定する。
+    name: '⑭ どこへでも移動（Ctrl+P）の「> 削除」',
+    canChange: (mode) =>
+      resolveCommandEnabled(COMMAND_ID.EditDelete, { runnable: true, mode }),
+  },
+  {
+    name: '⑮ どこへでも移動（Ctrl+P）の「> 面を描く」',
+    canChange: (mode) =>
+      resolveCommandEnabled(COMMAND_ID.ToolsAddFace, { runnable: true, mode }),
   },
 ];
 

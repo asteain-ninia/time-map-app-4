@@ -56,7 +56,21 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
       </div>
 
       <div className="option-bar__next" data-testid="option-bar-next-step">
-        {state.nextStep ?? OPTION_BAR_STRINGS.defaultNextStep}
+        <span className="option-bar__next-text">
+          {state.nextStep ?? OPTION_BAR_STRINGS.defaultNextStep}
+        </span>
+        {/* 次の一手を **押せる形**で置く口（手直し E1 / 設計書 §H.5）。 */}
+        {state.nextStepActions.map((action) => (
+          <button
+            key={action.id}
+            type="button"
+            className="option-bar__next-action"
+            data-testid={`option-bar-next-action-${action.id}`}
+            onClick={action.onClick}
+          >
+            {action.label}
+          </button>
+        ))}
       </div>
 
       <div className="option-bar__settings" data-testid="option-bar-settings">

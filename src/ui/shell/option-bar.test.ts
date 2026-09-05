@@ -25,6 +25,8 @@ describe('OptionBarStore — 4 本の API（設計書 §C.4）', () => {
       toolName: null,
       target: { stage: null, name: null },
       nextStep: null,
+      // 増分 4 の手直し E1: 次の一手の枠に載せるボタン（既定は 0 個）。
+      nextStepActions: [],
       commit: [],
       slots: [],
     });

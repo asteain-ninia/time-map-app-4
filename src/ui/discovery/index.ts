@@ -53,6 +53,9 @@ export {
   isEmphasizedByOtherAxis,
   resolveVisible,
   visibleIdSet,
+  HIDDEN_REASON,
+  type HiddenReason,
+  hiddenReasonOf,
 } from './visibility';
 
 // search (FR-113, 教訓 5.3 / 5.5)

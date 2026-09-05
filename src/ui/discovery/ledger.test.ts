@@ -48,6 +48,7 @@ function lf(
     parentId: parent === null ? null : id(parent),
     color: '#123456',
     anchorCount: 1,
+    hiddenReason: null,
     hidden: false,
     point: null,
     ...extra,
