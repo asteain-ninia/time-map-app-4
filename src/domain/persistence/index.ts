@@ -59,6 +59,8 @@ export {
   type PersistedUiProjectSettings,
   type PersistedUiAppSettings,
   type PersistedUiSettings,
+  type PersistedBundle,
+  savedBundleSchema,
   type PersistedEquirectangularMeta,
   type PersistedBaseMapReference,
   type ManifestV1,

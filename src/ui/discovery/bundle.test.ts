@@ -22,11 +22,16 @@ import {
   isMemberDone,
   nextUnfinishedIndex,
   stepIndex,
+  fromSavedBundle,
+  toSavedBundle,
   unavailableMemberCount,
   withCursor,
   type BundleSource,
 } from './bundle';
 import { BUNDLE_STRINGS } from './strings';
+
+/** 作成日時は判定に使わないので、テストでは固定値を 1 つ使う。 */
+const FIXED_AT = '2026-09-05T00:00:00.000Z';
 
 function id(s: string): FeatureId {
   return asFeatureId(s);
@@ -60,7 +65,7 @@ describe('束 — 既定の式', () => {
 
   it('式は画面から書き換えられる（既定を使わずに作れる）', () => {
     const built = buildBundle(
-      { presetId: null, label: '自作', kind: BUNDLE_KIND.Expression, expression: '^テスト' },
+      { presetId: null, label: '自作', kind: BUNDLE_KIND.Expression, expression: '^テスト', createdAt: FIXED_AT },
       source([{ id: 'a', name: 'テスト国' }, { id: 'b', name: '別国' }]),
     );
     expect(built.ok).toBe(true);
@@ -70,7 +75,7 @@ describe('束 — 既定の式', () => {
 
   it('読めない式は理由を返す（例外を投げない・内部の英語をそのまま出さない）', () => {
     const built = buildBundle(
-      { presetId: null, label: 'x', kind: BUNDLE_KIND.Expression, expression: '[' },
+      { presetId: null, label: 'x', kind: BUNDLE_KIND.Expression, expression: '[', createdAt: FIXED_AT },
       source([{ id: 'a', name: 'A' }]),
     );
     expect(built.ok).toBe(false);
@@ -83,7 +88,7 @@ describe('束 — 既定の式', () => {
 
   it('全角で打った式も、絞り込み欄と同じように当たる（NFKC で畳む）', () => {
     const built = buildBundle(
-      { presetId: null, label: 'x', kind: BUNDLE_KIND.Expression, expression: '領域［０－９］＋$' },
+      { presetId: null, label: 'x', kind: BUNDLE_KIND.Expression, expression: '領域［０－９］＋$', createdAt: FIXED_AT },
       source([{ id: 'a', name: '付近の領域12' }, { id: 'b', name: '別国' }]),
     );
     expect(built.ok).toBe(true);
@@ -107,6 +112,7 @@ describe('束 — 並びと「済」', () => {
         label: '仮名',
         kind: BUNDLE_KIND.Expression,
         expression: '付近の領域[0-9]+$',
+        createdAt: FIXED_AT,
       },
       source([
         { id: 'a', name: 'ヴィオニア大陸付近の領域01' },
@@ -139,6 +145,7 @@ describe('束 — 並びと「済」', () => {
         label: '仮名',
         kind: BUNDLE_KIND.Expression,
         expression: '付近の領域[0-9]+$',
+        createdAt: FIXED_AT,
       },
       source(
         [
@@ -176,7 +183,7 @@ describe('束 — 並びと「済」', () => {
 describe('束 — 組み込みの判定', () => {
   it('名前が重複しているもの', () => {
     const built = buildBundle(
-      { presetId: 'duplicate-name', label: 'x', kind: BUNDLE_KIND.DuplicateName, expression: '' },
+      { presetId: 'duplicate-name', label: 'x', kind: BUNDLE_KIND.DuplicateName, expression: '', createdAt: FIXED_AT },
       source([
         { id: 'a', name: '???州' },
         { id: 'b', name: '???州' },
@@ -190,7 +197,7 @@ describe('束 — 組み込みの判定', () => {
 
   it('種別が付いていないもの（空文字は「付いていない」）', () => {
     const built = buildBundle(
-      { presetId: 'no-kind-label', label: 'x', kind: BUNDLE_KIND.NoKindLabel, expression: '' },
+      { presetId: 'no-kind-label', label: 'x', kind: BUNDLE_KIND.NoKindLabel, expression: '', createdAt: FIXED_AT },
       source([
         { id: 'a', name: 'A', kindLabel: '' },
         { id: 'b', name: 'B', kindLabel: '州' },
@@ -208,6 +215,7 @@ describe('束 — 組み込みの判定', () => {
         label: 'x',
         kind: BUNDLE_KIND.ChangedThisYear,
         expression: '',
+        createdAt: FIXED_AT,
       },
       source([{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], {
         changedThisYear: (featureId) => featureId === id('b'),
@@ -231,6 +239,7 @@ describe('束 — 送り', () => {
       { featureId: id('c'), baselineName: 'C', baselineKindLabel: '' },
     ],
     cursor: 0,
+    createdAt: FIXED_AT,
   } as const;
 
   it('先頭の未処理から始まる（束を作った瞬間に選ぶもの）', () => {
@@ -272,6 +281,27 @@ describe('束 — 送り', () => {
   // 手直し G2: 消した地物・その年に居ない地物は **並びには残すが送りでは飛ばす**。
   // 飛ばさないと「次へ」で素性欄が空・カメラも動かない幽霊が選ばれ、しかも永久に
   // 済にならないので束が終わらない。
+  // 手直し D / 司令塔の決定 (1): 束を保存ファイルの節へ書いて、開き直しても続けられる。
+  it('保存の形と行き来しても、並び・基準・カーソル・作成日時が変わらない', () => {
+    const at = withCursor(bundle, 2);
+    const saved = toSavedBundle(at);
+    expect(saved.members.map((m) => m.featureId)).toEqual(['a', 'b', 'c']);
+    expect(saved.createdAt).toBe(FIXED_AT);
+    const back = fromSavedBundle(saved);
+    expect(back).toEqual(at);
+  });
+
+  it('知らない種類は式として読む（束を丸ごと失わない）', () => {
+    const saved = { ...toSavedBundle(bundle), kind: 'まだ無い種類' };
+    expect(fromSavedBundle(saved).kind).toBe(BUNDLE_KIND.Expression);
+  });
+
+  it('範囲の外のカーソルは並びの中へ収める', () => {
+    const saved = { ...toSavedBundle(bundle), cursor: 99 };
+    expect(fromSavedBundle(saved).cursor).toBe(2);
+    expect(fromSavedBundle({ ...toSavedBundle(bundle), cursor: 0, members: [] }).cursor).toBe(0);
+  });
+
   it('いま居ないメンバーは送りで飛ばす（並びと通し番号は動かさない）', () => {
     const available = (featureId: FeatureId): boolean => featureId !== id('b');
     expect(unavailableMemberCount(bundle, available)).toBe(1);

@@ -684,6 +684,49 @@ export const baseMapReferenceSchema = z
   })
   .strict();
 
+// --- 作業のまとまり（束）の節（増分 4 の手直し D / 司令塔の決定 (1)）-----------
+//
+// **なぜ保存するか**: 束は「絞り込み式を 1 回だけ走らせた結果を、そのときの並びと
+// 名前ごと固定したもの」で、220 件の仮名を順に片付けるための器である。「済」は
+// 「作った時点の名前・種別」と「いまの名前・種別」の違いから導く。
+//
+// 旧版はこれをセッション限りにして、開き直したら **同じ式を選び直せば同じ 220 件が
+// 出る**（通史で当てはめる）ことを頼りにしていた。ところが実データは 0 年始まりで、
+// **0 年を見ながら直すとその錨そのものが書き換わる**ので、過去の名前がどこにも残らず
+// 束から落ちる。つまり既定の経路では成り立たない仕掛けだった（現状 B51）。
+//
+// ここに置くのは「作った時点の写し」だけで、いまの姿は毎回ドメインから引き直す
+// （済を保存しない規則は変えていない）。節そのものは任意 ―― 無ければ束が無いだけで、
+// 古いファイルもそのまま読める（保存形式の後方互換は不要という裁定とは別に、
+// **読み側は寛容に**しておく）。
+const savedBundleMemberSchema = z
+  .object({
+    featureId: idSchema,
+    baselineName: z.string(),
+    baselineKindLabel: z.string(),
+  })
+  .strict();
+
+export const savedBundleSchema = z
+  .object({
+    /** どの既定から作ったか（自分で式を書いたときは null）。 */
+    presetId: idSchema.nullable(),
+    label: z.string(),
+    /**
+     * 作り方の種類。**文字列で持つ**（ドメインは UI の定数表を知らない）。読み側が
+     * 知らない種類だったときは式として扱う ―― 落として束を丸ごと失うよりよい。
+     */
+    kind: z.string(),
+    /** 式（組み込みの判定では空文字）。 */
+    expression: z.string(),
+    /** いま何番目か（0 始まり）。 */
+    cursor: z.number().int().nonnegative(),
+    /** 作った日時（ISO 8601）。どのまとまりが新しいかを人が読むためだけに持つ。 */
+    createdAt: z.string(),
+    members: z.array(savedBundleMemberSchema),
+  })
+  .strict();
+
 // --- top-level manifest (discriminated union on `version`, FR-104) ----------
 
 /** The body of a v1 manifest (everything except the version discriminant). */
@@ -694,6 +737,8 @@ const manifestV1Body = {
   // The FULL UI session-settings surface (FR-109 / FR-110). Optional for
   // back-compat: a pre-`ui` manifest omits it and the store keeps its defaults.
   ui: uiSettingsSchema.optional(),
+  // 作業のまとまり（増分 4 の手直し D / 決定 (1)）。任意の節で、無ければ束が無いだけ。
+  bundles: z.array(savedBundleSchema).optional(),
 };
 
 export const manifestV1Schema = z
@@ -735,5 +780,6 @@ export type PersistedUiAppSettings = z.infer<typeof uiAppSettingsSchema>;
 export type PersistedUiSettings = z.infer<typeof uiSettingsSchema>;
 export type PersistedEquirectangularMeta = z.infer<typeof equirectangularMetaSchema>;
 export type PersistedBaseMapReference = z.infer<typeof baseMapReferenceSchema>;
+export type PersistedBundle = z.infer<typeof savedBundleSchema>;
 export type ManifestV1 = z.infer<typeof manifestV1Schema>;
 export type Manifest = z.infer<typeof manifestSchema>;

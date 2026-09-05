@@ -15,7 +15,13 @@ import { fileURLToPath } from 'node:url';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchAppWithProject, listedFeatureCount } from './helpers';
+import {
+  enterEditMode,
+  launchApp,
+  launchAppWithProject,
+  listedFeatureCount,
+  loadProject,
+} from './helpers';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -90,6 +96,75 @@ test.describe('増分 4 — 実データ（デーレ界）', () => {
     } finally {
       await app.close();
       rmSync(workDir, { recursive: true, force: true });
+    }
+  });
+
+  // 増分 4 の手直し D / 司令塔の決定 (1)。
+  //
+  // 実データは **0 年始まり**なので、既定の経路（0 年を見ながら直す）だとその錨そのものが
+  // 書き換わり、過去の名前がどこにも残らない ―― 旧版の「同じ式を選び直せば通史から
+  // 同じ束が出る」仕掛けはここで崩れていた（現状 B51）。束を保存ファイルの節に持たせて、
+  // **アプリを終了して開き直しても** 並び・基準・カーソル・済が戻ることを固定する。
+  test('0 年で直したまとまりが、保存して開き直しても済ごと戻る', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-inc4-bundle-'));
+    const workingCopy = join(workDir, REAL_DATA_FILE);
+    copyFileSync(canonicalPath, workingCopy);
+
+    let doneBefore = '';
+    let positionBefore = '';
+    {
+      const { app, page } = await launchApp();
+      try {
+        expect(await loadProject(page, workingCopy)).toBe('loaded');
+        await enterEditMode(page);
+        // 0 年のまま（＝錨の開始年そのもの）まとまりを作って 3 件直す。
+        await page.getByTestId('bundle-preset').selectOption('kana-area');
+        await page.getByTestId('bundle-make').click();
+        await expect(page.getByTestId('bundle-position')).toHaveText('1 / 220');
+
+        const name = page.getByLabel('名前', { exact: true });
+        for (let i = 0; i < 3; i += 1) {
+          await expect(name).toBeFocused();
+          await name.fill(`直した領域${String(i)}`);
+          await name.press('Enter');
+          await page.waitForTimeout(200);
+        }
+        doneBefore = (await page.getByTestId('ledger-footer').textContent())?.trim() ?? '';
+        expect(doneBefore).toContain('済 3 件');
+        // カーソルも保存の対象（どこまで進んだかが残る）。
+        positionBefore = (await page.getByTestId('bundle-position').textContent())?.trim() ?? '';
+        expect(positionBefore).toBe('4 / 220');
+
+        // 開いたファイルへ上書き保存する。名前欄に焦点があると大域の鍵盤が止まるので、
+        // 入力欄の外へ焦点を移してから押す（教訓 5.54）。読み込んだ先への初回の上書きは
+        // 必ず確認される（V12 の①②）。
+        await page.getByTestId('statusbar').click();
+        await page.keyboard.press('Control+s');
+        await expect(page.getByTestId('overwrite-dialog')).toBeVisible();
+        await page.getByTestId('overwrite-confirm').click();
+        await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+        expect(existsSync(workingCopy)).toBe(true);
+      } finally {
+        await app.close();
+      }
+    }
+
+    // **アプリを終了して立ち上げ直す。** 同じセッションで開き直すのでは、束が
+    // セッション状態として生き残っただけかもしれない（この検査の意味が無くなる）。
+    {
+      const { app, page } = await launchApp();
+      try {
+        expect(await loadProject(page, workingCopy)).toBe('loaded');
+        // 帯（送り）が出ている ＝ まとまりが復元されている。
+        await expect(page.getByTestId('bundle-position')).toHaveText(positionBefore);
+        // 済 3 件も戻る（済は保存していない ―― 作った時点の名前といまの名前の違いから
+        // 毎回導いている。だから「基準の写し」が保存されていることの証拠になる）。
+        await expect(page.getByTestId('ledger-footer')).toContainText('済 3 件');
+      } finally {
+        await app.close();
+        rmSync(workDir, { recursive: true, force: true });
+      }
     }
   });
 

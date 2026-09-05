@@ -39,6 +39,43 @@ describe('round-trip serialize→deserialize (受け入れ基準7)', () => {
     expect(projectsEqual(project, restored)).toBe(true);
   });
 
+  // 増分 4 の手直し D / 司令塔の決定 (1): 作業のまとまりを保存ファイルの任意の節に持つ。
+  // **節が無い形（いままでのファイル）もそのまま読める**（書き側は無ければ書かない）。
+  it('作業のまとまりの節が JSON の境界を往復する（無ければ書かない）', () => {
+    const base = richValidProject();
+    const withBundles: DomainProject = {
+      ...base,
+      bundles: [
+        {
+          presetId: 'kana-area',
+          label: '仮名',
+          kind: 'expression',
+          expression: '付近の領域[0-9]+$',
+          cursor: 2,
+          createdAt: '2026-09-05T00:00:00.000Z',
+          members: [
+            { featureId: 'f-1', baselineName: '付近の領域01', baselineKindLabel: '' },
+            { featureId: 'f-2', baselineName: '付近の領域02', baselineKindLabel: '州' },
+          ],
+        },
+      ],
+    };
+    const json: unknown = JSON.parse(JSON.stringify(serialize(withBundles)));
+    const parsed = parseManifest(json);
+    expect(parsed.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsed.outcome !== PARSE_OUTCOME.Ok) return;
+    const restored = deserialize(parsed.manifest);
+    expect(restored.bundles).toEqual(withBundles.bundles);
+
+    // 節を持たないプロジェクトは節を書かない（既存のファイルと同じ形になる）。
+    const plain: unknown = JSON.parse(JSON.stringify(serialize(base)));
+    expect(Object.prototype.hasOwnProperty.call(plain, 'bundles')).toBe(false);
+    const parsedPlain = parseManifest(plain);
+    expect(parsedPlain.outcome).toBe(PARSE_OUTCOME.Ok);
+    if (parsedPlain.outcome !== PARSE_OUTCOME.Ok) return;
+    expect(deserialize(parsedPlain.manifest).bundles).toBeUndefined();
+  });
+
   it('preserves stored ids — never re-mints them (教訓5.20)', () => {
     const project = richValidProject();
     const manifest = serialize(project);

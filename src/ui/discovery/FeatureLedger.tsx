@@ -734,6 +734,8 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         label: preset?.label ?? BUNDLE_STRINGS.label,
         kind,
         expression: kind === BUNDLE_KIND.Expression ? expressionDraft : '',
+        // 作った日時（保存ファイルへ書く。判定には使わない＝手直し D）。
+        createdAt: new Date().toISOString(),
       },
       bundleSource(),
     );

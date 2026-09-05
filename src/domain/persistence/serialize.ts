@@ -72,6 +72,7 @@ import {
   type PersistedAnchorSnapshot,
   type PersistedBaseMapReference,
   type PersistedBasicAttributes,
+  type PersistedBundle,
   type PersistedColorInfo,
   type PersistedCoordinate,
   type PersistedFeature,
@@ -142,6 +143,12 @@ export interface DomainProject {
    * project. Carried as PLAIN data so the domain layer never imports UI types.
    */
   readonly uiSettings?: UiSettings;
+  /**
+   * 作業のまとまり（増分 4 の手直し D / 司令塔の決定 (1)）。`uiSettings` とまったく
+   * 同じ扱いで、**保存の直前に画面側が畳み込む**（セッション中はストアが真実源で、
+   * ここは読まない）。無ければ節そのものを書かない。
+   */
+  readonly bundles?: readonly PersistedBundle[];
 }
 
 // ============================================================================
@@ -355,9 +362,31 @@ export function serialize(project: DomainProject): Manifest {
   // exactOptionalPropertyTypes: only attach `ui` when the project carries the
   // full UI settings, so a project without them serializes to a pre-`ui` manifest
   // (round-trips back to no uiSettings) rather than writing `ui: undefined`.
-  return project.uiSettings === undefined
-    ? base
-    : { ...base, ui: serializeUiSettings(project.uiSettings) };
+  const withUi =
+    project.uiSettings === undefined
+      ? base
+      : { ...base, ui: serializeUiSettings(project.uiSettings) };
+  // 束の節も同じ規律（無ければ書かない ＝ 既存のファイルと同じ形になる）。値は
+  // 平坦なデータなので、写しを作って manifest がストアの値を指さないようにする。
+  return project.bundles === undefined || project.bundles.length === 0
+    ? withUi
+    : { ...withUi, bundles: project.bundles.map(serializeBundle) };
+}
+
+function serializeBundle(b: PersistedBundle): PersistedBundle {
+  return {
+    presetId: b.presetId,
+    label: b.label,
+    kind: b.kind,
+    expression: b.expression,
+    cursor: b.cursor,
+    createdAt: b.createdAt,
+    members: b.members.map((m) => ({
+      featureId: m.featureId,
+      baselineName: m.baselineName,
+      baselineKindLabel: m.baselineKindLabel,
+    })),
+  };
 }
 
 // ============================================================================
@@ -538,9 +567,13 @@ export function deserialize(manifest: Manifest): DomainProject {
   // exactOptionalPropertyTypes: only attach uiSettings when the manifest carried
   // a `ui` block, so a pre-`ui` manifest restores to a project WITHOUT uiSettings
   // (the load path then leaves the store at its defaults).
-  return manifest.ui === undefined
-    ? base
-    : { ...base, uiSettings: deserializeUiSettings(manifest.ui) };
+  const withUi =
+    manifest.ui === undefined
+      ? base
+      : { ...base, uiSettings: deserializeUiSettings(manifest.ui) };
+  return manifest.bundles === undefined
+    ? withUi
+    : { ...withUi, bundles: manifest.bundles.map(serializeBundle) };
 }
 
 /**

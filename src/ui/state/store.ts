@@ -583,6 +583,12 @@ export interface SessionStoreActions<S> {
     settings: {
       readonly projectSettings?: ProjectSettings;
       readonly appSettings?: AppSettings;
+      /**
+       * 保存ファイルに入っていた作業のまとまり（増分 4 の手直し D / 決定 (1)）。
+       * 一覧のセッション状態は丸ごと捨てるが、**束だけはファイルの中身**なので、
+       * 捨てたあとに戻す。渡さない（＝新規・古いファイル）なら束は無い。
+       */
+      readonly ledgerBundle?: Bundle | null;
     },
   ): void;
   /** Clear the project-dirty flag (called after a save by the persistence unit). */
@@ -2169,8 +2175,12 @@ export function createSessionStore<S>(
         // FR-113: reset the display filter to the inert DEFAULT (same as resetToDomain —
         // OLD-project session state, 受け入れ基準1, 教訓 5.2).
         filter: DEFAULT_FILTER_STATE,
-        // 増分 4: 一覧のセッション状態も同じ扱い（教訓 5.2）。
-        ledger: DEFAULT_LEDGER_STATE,
+        // 増分 4: 一覧のセッション状態も同じ扱い（教訓 5.2）。**ただし束だけは
+        // 保存ファイルの中身**なので、捨てたあとに載せ直す（手直し D / 決定 (1)）。
+        ledger:
+          settings.ledgerBundle == null
+            ? DEFAULT_LEDGER_STATE
+            : { ...DEFAULT_LEDGER_STATE, bundle: settings.ledgerBundle },
         // 手直し B10: 一覧のスクロール位置は画面側の状態なので、読み込みでは
         // 捨てられない。印を動かして「先頭へ戻れ」と一覧へ伝える。
         projectLoadNonce: get().projectLoadNonce + 1,

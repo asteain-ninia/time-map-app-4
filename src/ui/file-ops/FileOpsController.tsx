@@ -33,6 +33,7 @@ import { fileNameOf } from '../shell/status-format';
 import type { StatusMessageStore } from '../shell/status-message';
 import { registerE2eHarnessAction } from '../e2e/harness';
 
+import { fromSavedBundle, toSavedBundle } from '../discovery/bundle';
 import { buildFileCommandPorts, cameraZoomRange, type FileOpsHost } from './bridge';
 import {
   fromPersistedUiSettings,
@@ -568,12 +569,17 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       // settings into the domain as `uiSettings` for THIS save so they persist; the
       // merge is a fresh object (the store domain reference is untouched, so the
       // lost-edit guard's identity comparison still holds).
+      // 作業のまとまりも同じ形で畳み込む（増分 4 の手直し D / 司令塔の決定 (1)）。
+      // セッション中はストアが真実源で、**保存の直前だけ**ファイルの形へ写す。
+      // 束が無ければ節そのものを書かない（既存のファイルと同じ形になる）。
+      const bundle = state.ledger.bundle;
       const domainToSave: DomainProject = {
         ...domain,
         uiSettings: toPersistedUiSettings({
           projectSettings: state.projectSettings,
           appSettings: state.appSettings,
         }),
+        ...(bundle === null ? {} : { bundles: [toSavedBundle(bundle)] }),
       };
       // BUG #6 fix: ship the RETAINED asset bytes (the base-map image + attachments
       // captured on the last successful load), NOT zero bytes. Without this the first
@@ -695,15 +701,19 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // domain alongside the OLD settings/range; the fused action derives the
         // timeline before mutating, so an invalid project rolls back fully and the
         // store stays on the previous project.
-        store.getState().reflectLoadedProject(
-          project,
-          project.uiSettings === undefined
+        // 作業のまとまりはファイルの中身なので、セッション状態を捨てたあとに戻す
+        // （増分 4 の手直し D / 決定 (1)）。節が無い（古いファイル・新規）なら束は無い。
+        const savedBundle = project.bundles?.[0];
+        const ledgerBundle = savedBundle === undefined ? null : fromSavedBundle(savedBundle);
+        store.getState().reflectLoadedProject(project, {
+          ...(project.uiSettings === undefined
             ? {
                 projectSettings: DEFAULT_PROJECT_SETTINGS,
                 appSettings: DEFAULT_APP_SETTINGS,
               }
-            : fromPersistedUiSettings(project.uiSettings),
-        );
+            : fromPersistedUiSettings(project.uiSettings)),
+          ledgerBundle,
+        });
         // 開き直したら「このセッションではまだ保存していない」へ戻す（状態行は「未保存」）。
         savedAtMsRef.current = null;
         // 直前の結果もここで消える（設計書 §H.5 の消える条件③「プロジェクトを開き直したとき」）。

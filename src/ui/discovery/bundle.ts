@@ -20,8 +20,18 @@
 // **組み込みの判定**（重複名・種別なし・この年に変わったもの・家族・手で印）は通史では
 // 決まらないので、**基準は作った時点の値**にする（＝そのセッションの中だけ済が続く）。
 // 上の仕掛けが効くのは式（正規表現）の束だけである、と割り切って明示しておく。
+//
+// **2026-09-05（増分 4 の手直し D / 司令塔の決定 (1)）: 束を保存ファイルへ持たせた。**
+// 上の「通史で当てはめる」仕掛けは、**錨の開始年そのものを見ながら直すと成り立たない**
+// ―― 実データは 0 年始まりで、0 年で直すとその錨が書き換わり、過去の名前がどこにも
+// 残らないからである（現状 B51）。つまり既定の経路で崩れる仕掛けだった。いまは
+// 保存ファイルの任意の節（`bundles`）に **式・作った時点の名前と種別・カーソル・
+// 作成日時**を書く。**「済」は相変わらず保存しない**（作った時点の値といまの値の
+// 違いから毎回導く）ので、済の規則そのものは変えていない。
 
-import type { FeatureId } from '../../domain/ids';
+import type { FeatureId, } from '../../domain/ids';
+import { asFeatureId } from '../../domain/ids';
+import type { PersistedBundle } from '../../domain/persistence/index';
 
 import { BUNDLE_STRINGS } from './strings';
 
@@ -148,6 +158,11 @@ export interface Bundle {
   readonly members: readonly BundleMember[];
   /** いま何番目か（0 始まり）。空の束では 0。 */
   readonly cursor: number;
+  /**
+   * 作った日時（ISO 8601）。**保存ファイルに書く**（手直し D）。どのまとまりが新しいかを
+   * 人が読むためだけに持ち、判定には一切使わない。
+   */
+  readonly createdAt: string;
 }
 
 /** 束を作るための材料（呼び出し側が現在のドメインから組み立てる）。 */
@@ -192,6 +207,8 @@ export function buildBundle(
     readonly label: string;
     readonly kind: BundleKind;
     readonly expression: string;
+    /** 作った日時（ISO 8601）。呼び出し側が渡す（ここで時計を読まない、教訓 5.15）。 */
+    readonly createdAt: string;
   },
   source: BundleSource,
 ): BundleBuild {
@@ -254,7 +271,56 @@ export function buildBundle(
       expression: spec.expression,
       members,
       cursor: 0,
+      createdAt: spec.createdAt,
     },
+  };
+}
+
+// --- 保存ファイルの節との行き来（手直し D / 決定 (1)）------------------------
+
+/** 束を保存の形へ（平坦なデータ。id は文字列にする）。 */
+export function toSavedBundle(bundle: Bundle): PersistedBundle {
+  return {
+    presetId: bundle.presetId,
+    label: bundle.label,
+    kind: bundle.kind,
+    expression: bundle.expression,
+    cursor: bundle.cursor,
+    createdAt: bundle.createdAt,
+    members: bundle.members.map((m) => ({
+      featureId: m.featureId as unknown as string,
+      baselineName: m.baselineName,
+      baselineKindLabel: m.baselineKindLabel,
+    })),
+  };
+}
+
+/**
+ * 保存の形から束へ。
+ *
+ * **知らない種類は式として読む**（落として束ごと失うより、開いて見せるほうがよい）。
+ * カーソルは並びの中へ収める ―― 保存後に別のところでファイルが編集されていても、
+ * 範囲の外を指したまま画面へ出さない（教訓 5.5）。
+ */
+export function fromSavedBundle(saved: PersistedBundle): Bundle {
+  const kind = (Object.values(BUNDLE_KIND) as string[]).includes(saved.kind)
+    ? (saved.kind as BundleKind)
+    : BUNDLE_KIND.Expression;
+  const members: BundleMember[] = saved.members.map((m) => ({
+    featureId: asFeatureId(m.featureId),
+    baselineName: m.baselineName,
+    baselineKindLabel: m.baselineKindLabel,
+  }));
+  const cursor =
+    members.length === 0 ? 0 : Math.min(Math.max(saved.cursor, 0), members.length - 1);
+  return {
+    presetId: saved.presetId,
+    label: saved.label,
+    kind,
+    expression: saved.expression,
+    members,
+    cursor,
+    createdAt: saved.createdAt,
   };
 }
 
