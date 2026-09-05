@@ -567,15 +567,18 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
       readonly hidden: boolean;
       readonly start: TimePoint;
     }[] = [];
-    // 同じ年の錨がいくつも並ぶので、(年) ごとに解決を使い回す。
-    const resolutionCache = new Map<string, ReturnType<typeof resolveDisplayFor>>();
-    const resolutionAt = (at: TimePoint): ReturnType<typeof resolveDisplayFor> => {
+    // 同じ年の錨がいくつも並ぶので、**年ごとに 1 回だけ**解いて使い回す（教訓 5.30）。
+    // 錨 1 本ごとに解き直すと、実データ（履歴 689 本 × 地物 775 件）で 50 万回級の
+    // 判定になる ―― 通史の一覧を開いただけで固まる。
+    const hiddenCache = new Map<string, ReadonlyMap<FeatureId, unknown>>();
+    const hiddenAt = (at: TimePoint): ReadonlyMap<FeatureId, unknown> => {
       const key = formatTimePoint(at);
-      const cached = resolutionCache.get(key);
+      const cached = hiddenCache.get(key);
       if (cached !== undefined) return cached;
       const resolved = resolveDisplayFor(root, at, displayControl);
-      resolutionCache.set(key, resolved);
-      return resolved;
+      const map = hiddenReasonsUnderFilter(resolved, filter, resolved.features);
+      hiddenCache.set(key, map);
+      return map;
     };
     for (const history of root.histories) {
       for (const entry of history.series.entries) {
@@ -587,10 +590,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         const label = LEDGER_STRINGS.historyRowLabel(formatTimePoint(entry.start), name);
         total += 1;
         if (query !== '' && !foldForFilter(label).includes(query)) continue;
-        const atStart = resolutionAt(entry.start);
-        const hidden =
-          hiddenReasonsUnderFilter(atStart, filter, atStart.features).get(history.featureId) !==
-          undefined;
+        const hidden = hiddenAt(entry.start).get(history.featureId) !== undefined;
         out.push({
           key: `${history.featureId as unknown as string}:${entry.anchor.id as unknown as string}`,
           anchorId: entry.anchor.id as unknown as string,

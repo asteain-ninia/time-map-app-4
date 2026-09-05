@@ -745,6 +745,61 @@ function collectCandidateRefs<Ref>(
 }
 
 /**
+ * 「必ず描く」ぶんの面の形（設計書 §D.6 の規則 1・3）。**描画列のいちばん上**にある順に返す。
+ *
+ * FR-42 に畳まれて `resolved.shapes` に 1 本も入っていない地物は、描画側と **同じ 1 本**
+ * （`resolveDisplayShapes`）で解き直す（教訓 5.29 単一真実源）。
+ *
+ * **(解決, 選択) で 1 つだけ覚える。** 当たり判定はポインタが動くたびに走るので、毎回
+ * 解き直すと畳まれた地物を選んでいるあいだじゅう幾何の解決が回る（教訓 5.30 過剰計算）。
+ * 鍵は 2 つとも画面側が丸ごと差し替える参照なので、同じなら値も同じである。
+ */
+let raisedCache: {
+  resolution: DisplayResolution;
+  selected: FeatureId | null;
+  value: readonly ResolvedDisplayShape[];
+} | null = null;
+
+function raisedAlwaysDrawnShapes(
+  resolution: DisplayResolution,
+  areas: readonly ResolvedDisplayShape[],
+  selected: FeatureId | null,
+): readonly ResolvedDisplayShape[] {
+  if (
+    raisedCache !== null &&
+    raisedCache.resolution === resolution &&
+    raisedCache.selected === selected
+  ) {
+    return raisedCache.value;
+  }
+  const alwaysDrawn = alwaysDrawnIds(resolution.forest, selected);
+  let value: readonly ResolvedDisplayShape[] = EMPTY_RAISED;
+  if (alwaysDrawn.size > 0) {
+    const raised: ResolvedDisplayShape[] = areas.filter((a) => alwaysDrawn.has(a.featureId));
+    const drawnShapeIds = new Set(areas.map((a) => a.featureId));
+    const missing: [FeatureId, DisplayDecision][] = [];
+    for (const id of alwaysDrawn) {
+      if (drawnShapeIds.has(id)) continue;
+      if (!resolution.areaFeaturesById.has(id)) continue;
+      missing.push([id, { featureId: id, verdict: DISPLAY_VERDICT.Real, emphasized: false }]);
+    }
+    if (missing.length > 0) {
+      const extra = resolveDisplayShapes(
+        resolution.forest,
+        resolution.vertices,
+        new Map(missing),
+      );
+      raised.push(...extra.shapes);
+    }
+    value = raised;
+  }
+  raisedCache = { resolution, selected, value };
+  return value;
+}
+
+const EMPTY_RAISED: readonly ResolvedDisplayShape[] = [];
+
+/**
  * The topmost DRAWN AREA under `worldPoint`, narrowed by the broad-phase area index — a
  * candidate SET (bbox-near the cursor) whose members run the EXACT {@link areaContainsPoint}
  * in `resolved.shapes` array order, so the result equals {@link drawnAreaAtPoint} exactly.
@@ -1287,27 +1342,11 @@ export function liveHitTestAt(
   // 真上を押すと親のまとめ役が選ばれ、州が選択から外れて消えた**（編集モードの
   // 選択は増分 4 で表に出たので、これは日常的に起きる）。描いたものは掴める、を
   // ここで閉じる（描画 ⊇ ヒット）。
-  const alwaysDrawn = alwaysDrawnIds(resolution.forest, activeFeature ?? null);
-  if (alwaysDrawn.size > 0) {
-    const raised: ResolvedDisplayShape[] = areas.filter((a) => alwaysDrawn.has(a.featureId));
-    // FR-42 に畳まれて `resolved.shapes` に 1 本も入っていない地物は、描画側と
-    // **同じ 1 本**（`resolveDisplayShapes`）で解き直す（教訓 5.29 単一真実源）。
-    const drawnShapeIds = new Set(areas.map((a) => a.featureId));
-    const missing: [FeatureId, DisplayDecision][] = [];
-    for (const id of alwaysDrawn) {
-      if (drawnShapeIds.has(id)) continue;
-      if (!areaFeaturesById.has(id)) continue;
-      missing.push([id, { featureId: id, verdict: DISPLAY_VERDICT.Real, emphasized: false }]);
-    }
-    if (missing.length > 0) {
-      const extra = resolveDisplayShapes(resolution.forest, vertices, new Map(missing));
-      raised.push(...extra.shapes);
-    }
-    // 描画列の最後（＝いちばん上）から見る。
-    for (let i = raised.length - 1; i >= 0; i -= 1) {
-      const shape = raised[i]!;
-      if (areaContainsPoint(shape, worldPoint, wrap)) return featureBodyHit(shape.featureId);
-    }
+  const raisedShapes = raisedAlwaysDrawnShapes(resolution, areas, activeFeature ?? null);
+  // 描画列の最後（＝いちばん上）から見る。
+  for (let i = raisedShapes.length - 1; i >= 0; i -= 1) {
+    const shape = raisedShapes[i]!;
+    if (areaContainsPoint(shape, worldPoint, wrap)) return featureBodyHit(shape.featureId);
   }
   const area = drawnAreaAtPointIndexed(areas, hitIndex, worldPoint, wrap, visibleIds);
   if (area !== null) return featureBodyHit(area);
