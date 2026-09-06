@@ -51,6 +51,7 @@ function Harness(): JSX.Element {
       }
       gridSnap={undefined}
       onGridSnapChange={() => {}}
+      closeKey="add.area"
     />
   );
 }

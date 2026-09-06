@@ -17,7 +17,7 @@
 
 /// <reference types="@testing-library/jest-dom" />
 
-import { act, render } from '@testing-library/react';
+import { act, cleanup, render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { ToolOptionBar, describeOptionBarTarget } from './ToolOptionBar';
@@ -127,15 +127,19 @@ describe('ToolOptionBar — 道具名（112px）', () => {
   });
 
   it('道具を持ち替えると前の道具の中身は持ち越されない（claim が空へ戻す）', () => {
+    // **増分 5 の手直し C2 でナイフは「自前の対象を持つ道具」になった**ので、
+    // ここは押し込む側の道具（頂点）で組み直す。
     const store = makeStore({
       mode: EDIT_MODE.Edit,
-      activeTool: TOOL_ID.EditKnife,
+      activeTool: TOOL_ID.EditVertex,
       activeFeature: AAWEN.id,
     });
     const optionBar = mount(store);
     expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
 
-    // 道具の持ち替えは選択も畳む（`setActiveTool` の reset 契約）ので、対象は空へ戻る。
+    // **増分 5c で既定が反転した**（道具を持ち替えても地物の選択は残る）。だから
+    // 対象欄は空へ戻らない ―― 戻るのは「自前の対象を持つ道具」へ移ったときだけで、
+    // そのときは道具の側が押し込む責任を持つ。
     act(() => {
       store.getState().setActiveTool(TOOL_ID.EditMerge);
     });
@@ -292,15 +296,34 @@ describe('ToolOptionBar — 自前の選択を持つ道具の対象は押し込�
     });
   }
 
-  it('他の 6 つの道具は今までどおり押し込む（別扱いはこの 2 つだけ）', () => {
-    const store = makeStore({
-      mode: EDIT_MODE.Edit,
-      activeTool: TOOL_ID.EditKnife,
-      activeFeature: AAWEN.id,
-    });
-    const optionBar = mount(store);
+  it('自前の対象を持たない道具は今までどおり押し込む（選ぶ・頂点・動かす）', () => {
+    for (const tool of [TOOL_ID.EditSelect, TOOL_ID.EditVertex, TOOL_ID.EditMove]) {
+      const store = makeStore({
+        mode: EDIT_MODE.Edit,
+        activeTool: tool,
+        activeFeature: AAWEN.id,
+      });
+      const optionBar = mount(store);
+      expect(optionBar.get().target.name, tool).toBe('アアウェン州（末端地物・州）');
+      cleanup();
+    }
+  });
 
-    expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
+  it('**ナイフ・輪郭・穴あけも自前の対象を持つ**（増分 5 の手直し C2 / バグ狩り #6）', () => {
+    // この 3 つは対象を選択へ昇格させる（`setActiveFeature`）ので、ここが
+    // `activeFeature` から名前を作ると **まだ 1 度も対象を押していないのに**
+    // 一覧で選んだ地物の名前が対象欄に出る（次の一手の「切る面を押してください」と
+    // 正面から食い違う）。押し込みは道具側の責任にする。
+    for (const tool of [TOOL_ID.EditKnife, TOOL_ID.EditRing, TOOL_ID.EditDrill]) {
+      const store = makeStore({
+        mode: EDIT_MODE.Edit,
+        activeTool: tool,
+        activeFeature: AAWEN.id,
+      });
+      const optionBar = mount(store);
+      expect(optionBar.get().target, tool).toEqual({ stage: null, name: null });
+      cleanup();
+    }
   });
 });
 
@@ -328,12 +351,18 @@ describe('ToolOptionBar — 追加の道具と喧嘩しない', () => {
     expect(optionBar.get().target.name).toBe('頂点 4 個（未確定）');
   });
 
-  it('表示専用モードでは何も押し込まない', () => {
-    const store = makeStore({ mode: EDIT_MODE.View });
+  it('**読むだけでも選んでいる地物の名前を対象欄に出す**（増分 5 の手直し C2 / バグ狩り #5）', () => {
+    // 所有者の裁定は「読むだけでも **選べる・読める**・直せない」。旧版は帯を持つ
+    // 条件が「編集モードであること」だったので、鍵を閉じたまま地図や一覧で選んでも
+    // **対象欄は「（選んでいません）」のまま**だった ―― 選んだものの名前がどこにも
+    // 出ないのは裁定の前半に反する。
+    const store = makeStore({ mode: EDIT_MODE.View, activeFeature: AAWEN.id });
     const optionBar = mount(store);
 
+    // 道具は構えられない（鍵が閉じている）ので、道具名は器の既定（「✦ 選ぶ」）のまま。
     expect(optionBar.get().toolName).toBeNull();
-    expect(optionBar.hasOwner()).toBe(false);
+    expect(optionBar.get().target.name).toBe('アアウェン州（末端地物・州）');
+    expect(optionBar.hasOwner()).toBe(true);
   });
 });
 
@@ -403,7 +432,20 @@ describe('ToolOptionBar — 降りたら空へ戻る（教訓 5.2）', () => {
     expect(optionBar.hasOwner()).toBe(true);
   });
 
-  it('編集モードを離れると帯が空へ戻る', () => {
+  it('追加モードへ移ると帯を手放す（追加の道具が持つ）', () => {
+    const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditVertex });
+    const optionBar = mount(store);
+    expect(optionBar.get().toolName).toBe(EDIT_TOOL_STRINGS.vertex);
+
+    act(() => {
+      store.getState().setActiveTool(TOOL_ID.AddArea);
+    });
+
+    expect(optionBar.get().toolName).toBeNull();
+    expect(optionBar.hasOwner()).toBe(false);
+  });
+
+  it('**鍵を閉じても帯は手放さない**（読むだけでも対象欄は要る。増分 5 の手直し C2）', () => {
     const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditVertex });
     const optionBar = mount(store);
     expect(optionBar.get().toolName).toBe(EDIT_TOOL_STRINGS.vertex);
@@ -412,7 +454,8 @@ describe('ToolOptionBar — 降りたら空へ戻る（教訓 5.2）', () => {
       store.getState().setMode(EDIT_MODE.View);
     });
 
+    // 道具は外れる（鍵が閉じた）が、帯は持ったままで対象欄は生きている。
     expect(optionBar.get().toolName).toBeNull();
-    expect(optionBar.hasOwner()).toBe(false);
+    expect(optionBar.hasOwner()).toBe(true);
   });
 });

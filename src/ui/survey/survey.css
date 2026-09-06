@@ -38,13 +38,11 @@
   overflow: hidden;
 }
 
-.survey-controls--bar .survey-controls__guide {
-  flex: 1 1 0;
-  min-width: 0;
-  max-width: 22em;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* **案内の文は帯の「次の一手」が出す**ので、ここは観測のミラー（`hidden`）である。
+   クラスで `display` を書くと `[hidden]` に勝ってしまい、隠したはずの長い文が設定欄の
+   幅を食う（開発ガイド §5.56）。だから `display` は書かず、打ち消しだけを明記する。 */
+.survey-controls--bar .survey-controls__guide[hidden] {
+  display: none;
 }
 
 .survey-controls--bar .survey-controls__readout {

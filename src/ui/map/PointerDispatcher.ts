@@ -371,6 +371,22 @@ export class PointerDispatcher {
     releasePointerCapture(rec, p.pointerId);
 
     const point: ScreenPoint = { x: p.x, y: p.y };
+    // **離した位置でもう一度しきい値を測り直す**（増分 5 の手直し A8 / GPT #12）。
+    //
+    // それまでは `pointerMove` が来たときにしか判定していなかったので、**移動の
+    // 見本が 1 つも届かない（あるいは間引かれて最後の 1 つが落ちた）まま、押した所と
+    // 離れた所が離れている**押下が「クリック」として扱われた。読むだけのときは
+    // これがそのまま「離した場所の地物を選ぶ」になり、`dispatch.ts` が書いている
+    // 契約（押下から解放までの総移動量で決める）とも食い違う。
+    //
+    // 判定は 1 方向にしか倒れない（クリック → ドラッグ）ので、ここで測り直しても
+    // 「ドラッグだったものがクリックに戻る」ことは無い。
+    if (!rec.dragged && exceedsDragThreshold(rec.originX, rec.originY, p.x, p.y)) {
+      rec.dragged = true;
+      // Pan は「しきい値を越えるまでカメラを動かさない」ので、越えたことがここで
+      // 初めて分かった押下は、まだ 1 度もカメラを書いていない。下の確定の枝が
+      // 最後の位置を書くので、そこで初めて視点が動く。
+    }
     if (rec.kind === DISPATCH_TARGET.Pan) {
       // Finalize: if it was a real drag, write the final position once more so the
       // last sample is never lost; a pure click moves nothing.

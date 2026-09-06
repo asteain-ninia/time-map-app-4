@@ -297,12 +297,20 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
 
       // 4. The split committed WITHOUT pausing on a seam-sliver conflict, and the
       //    selection re-resolved from the result (教訓 5.11 / FR-94): the active
-      //    feature marker is non-empty and the knife session was discarded.
+      //    feature marker is non-empty and the knife session went back to 対象選択.
       await expect(page.getByTestId('knife-conflict-paused')).toHaveCount(0);
       await expect(async () => {
         expect(((await active.textContent()) ?? '').trim()).not.toBe('');
       }).toPass();
-      await expect(page.getByTestId('knife-tool')).toHaveCount(0);
+      // **確定しても道具は降りない**（増分 5 の手直し B2 / 設計書 §D.2）。旧版はここで
+      // `knife-tool` が DOM から消えることを見ていた ―― 5 道具のうちナイフだけが確定後に
+      // 道具を降りていたためで、続けて分けたい人は毎回選び直すことになっていた。いまは
+      // **道具を構えたまま次の対象待ちへ戻る**ので、見るのは「分断線のセッションが
+      // 畳まれて対象選択へ戻ったか」である。
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
     } finally {
       await app.close();
     }

@@ -10,6 +10,9 @@
 
 import { test, expect } from '@playwright/test';
 
+import { TOOLTIPS } from '../src/ui/shell/strings';
+import { TOOL_ID } from '../src/ui/shell/tools';
+
 import { enterEditMode, launchApp } from './helpers';
 
 test.describe('ツールチップの吹き出し（設計書 §H.2）', () => {
@@ -24,7 +27,11 @@ test.describe('ツールチップの吹き出し（設計書 §H.2）', () => {
       await expect(merge).toBeVisible();
       await merge.hover();
 
-      const bubble = page.getByTestId('tooltip-bubble').filter({ hasText: '結合' });
+      // **画面の言葉を直書きしない**（教訓 5.64。増分 5 の手直しで吹き出しの動詞を
+      // レールの語幹へ揃えたとき、「結合」で絞っていたこの検査が置き去りになった）。
+      const mergeTip = TOOLTIPS[TOOL_ID.EditMerge];
+      expect(mergeTip, '結ぶ道具の吹き出しの文が写像表に無い').toBeTruthy();
+      const bubble = page.getByTestId('tooltip-bubble').filter({ hasText: mergeTip ?? '' });
       await expect(bubble).toBeVisible();
       const box = (await bubble.boundingBox())!;
       const target = (await reparent.boundingBox())!;

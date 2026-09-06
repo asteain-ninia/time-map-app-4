@@ -63,13 +63,21 @@ export const ADD_STRINGS = {
    * 「捨てますか？」だけでは、利用者は自分が何をしたせいか分からない。
    */
   discardConfirmTitle: '描きかけを捨てますか',
-  discardConfirm: (n: number, reason: 'escape' | 'time' | 'select'): string => {
+  discardConfirm: (
+    n: number,
+    reason: 'escape' | 'time' | 'select' | 'tool' | 'lock',
+  ): string => {
     const head = `描きかけの頂点が ${String(n)} 個あります。`;
     switch (reason) {
       case 'time':
         return `${head}年を動かすと捨てることになります（打った頂点はいまの年のものです）。捨てますか？`;
       case 'select':
         return `${head}一覧で別の地物を選ぶと捨てることになります。捨てますか？`;
+      // 増分 5 の手直し A3: 道具を持ち替えた・鍵を閉じた、も「外で起きたこと」である。
+      case 'tool':
+        return `${head}別の道具に持ち替えると捨てることになります。捨てますか？`;
+      case 'lock':
+        return `${head}鍵を「読むだけ」にすると捨てることになります。捨てますか？`;
       case 'escape':
         return `${head}捨てますか？`;
     }

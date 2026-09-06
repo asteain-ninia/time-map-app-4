@@ -222,12 +222,26 @@ describe('useShortcuts focus guard (バグハント第10波 #1 Delete / #4 Ctrl+
     expect(del).toHaveBeenCalledTimes(1);
   });
 
-  it('STILL dispatches when a non-text input (range) is focused (range is not text-editing)', () => {
+  it('つまみ（range）に焦点があるあいだは大域の打鍵を通さない（増分 5 の手直し A4）', () => {
+    // 設計書 §D.4 が明示していたのに実装から落ちていた（GPT #6）。つまみは矢印・
+    // Home / End を自分で使う control で、深さ・不透明度・経度シフトを触っている
+    // つもりで背後の地物が消えるのは事故である。**「文字を編集できるか」とは別の問い**
+    // なので、述語も別にしてある（`blocksGlobalShortcuts`）。
     const slider = document.createElement('input');
     slider.type = 'range';
     const { del } = mountFocused(slider);
     fireEvent.keyDown(slider, { key: 'Delete' });
-    expect(del).toHaveBeenCalledTimes(1);
+    expect(del).not.toHaveBeenCalled();
+  });
+
+  it('つまみからは Escape で抜けられる（出口を必ず 1 つ残す）', () => {
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    mountFocused(slider);
+    slider.focus();
+    expect(document.activeElement).toBe(slider);
+    fireEvent.keyDown(slider, { key: 'Escape' });
+    expect(document.activeElement).not.toBe(slider);
   });
 });
 

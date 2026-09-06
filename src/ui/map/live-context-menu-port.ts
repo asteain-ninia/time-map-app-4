@@ -78,6 +78,16 @@ export interface LiveContextMenuPortDeps {
    * App binds it to `shortcutsSuspended` (modal || *Drawing).
    */
   readonly suspended?: () => boolean;
+  /**
+   * **選択の昇格をしてよいか**（増分 5 の手直し A1）。省略 ⇒ 常に昇格する（従来どおり）。
+   *
+   * `false` を返すあいだ、右クリックは **メニューを開くだけ**で選択を書き換えない。
+   * 作図中（道具が下書きを持っている）に右クリックすると、昇格が背後の地物を選択へ
+   * 引き上げ、それを見張っていた追加の道具が **下書きを黙って捨てて視点まで飛ばす**
+   * ―― 実データで再現した重症度 4 の事故である。メニュー自体は開けなければならない
+   * （設計書 §I.3 の原則①）ので、止めるのは昇格だけにする。
+   */
+  readonly promotes?: () => boolean;
 }
 
 /**
@@ -138,7 +148,10 @@ export function createLiveContextMenuPort(
       // Promote the hit feature FIRST so the menu's command target is the
       // right-clicked feature (削除 etc.), exactly as a left click would select it
       // (単一の選択書き込み経路, 教訓 5.11). Empty space keeps the current selection.
-      if (hit.kind !== HIT_KIND.Empty) {
+      //
+      // **下書きを持っているあいだは昇格しない**（増分 5 の手直し A1）。メニューは
+      // 開くが選択は動かさないので、作図中の右クリックが下書きを壊さない。
+      if (hit.kind !== HIT_KIND.Empty && deps.promotes?.() !== false) {
         deps.promoteHit(hit);
       }
       const { x, y } = deps.surfaceToClient(point);

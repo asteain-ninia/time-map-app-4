@@ -1509,6 +1509,163 @@ describe('liveHitTestAt — FR-113 display filter (hidden features are click-thr
   });
 });
 
+// --- A6: ハンドルが描かれていない局面では、頂点も辺中点も掴ませない ---------------
+//
+// 増分 5 の手直し A6 / GPT #2 / バグ狩り #15。ハンドルを描く条件は「鍵が開いていて、
+// 掴める道具（選ぶ・頂点・動かす）を構えている」ときだけ（`mount/render.ts` の
+// `editHandles`）。ところが当たり判定は同じ条件を見ておらず、**読むだけのときも頂点を
+// 最優先で返していた** ―― 見えていない頂点の近くを押すと地物ではなく頂点が選ばれ、
+// 辺中点では選択が変わらないことすらあった。しかも `app-active-vertex` が立つので
+// Escape の階段が「見えない頂点を外す」ぶんだけ 1 段増えていた。
+//
+// `handlesDrawn: false` は「描かれていない」＝「掴めない」を 1 つの入力で言う。返るのは
+// **地物の本体だけ**である（何も返らない、ではない ―― 読むだけでも地物は選べる＝裁定 N-4）。
+
+describe('liveHitTestAt — handlesDrawn（A6: 描かれていないハンドルは掴めない）', () => {
+  const time = timePointYear(1000);
+  afterEachClearCaches();
+
+  /** 角の頂点 va-0(0,0) のすぐ内側。掴み半径(8px)の内で、かつ本体の内部。 */
+  const nearCorner = { lon: 0.2, lat: 0.2 };
+  /** 下辺 va-0(0,0)→va-1(4,0) の中点(2,0)のすぐ内側。 */
+  const nearEdgeMid = { lon: 2, lat: 0.2 };
+
+  it('省略すれば従来どおり頂点が返る（既定は true。既存の契約が生きている）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, point: toScreen(nearCorner) },
+      nearCorner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Vertex);
+    if (hit.kind === HIT_KIND.Vertex) expect(hit.vertexId).toBe(asVertexId('va-0'));
+  });
+
+  it('handlesDrawn:false ⇒ 頂点の真上でも、その頂点を持つ地物の本体が返る', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, handlesDrawn: false, point: toScreen(nearCorner) },
+      nearCorner,
+    );
+    // 「何も返さない」ではない ―― 読むだけでも見えている地物は選べる（裁定 N-4）。
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+  });
+
+  it('handlesDrawn:true を明示しても従来どおり頂点（true/false が対称に効く）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, handlesDrawn: true, point: toScreen(nearCorner) },
+      nearCorner,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Vertex);
+  });
+
+  it('省略すれば辺中点は従来どおり Edge が返る（FR-87 の既存の契約）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = liveHitTestAt(
+      { root, time, toScreen, activeFeature: a.feature.id, point: toScreen(nearEdgeMid) },
+      nearEdgeMid,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Edge);
+  });
+
+  it('handlesDrawn:false ⇒ 辺中点の真上でも本体が返る（辺の掴みも消える）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const hit = liveHitTestAt(
+      {
+        root,
+        time,
+        toScreen,
+        activeFeature: a.feature.id,
+        handlesDrawn: false,
+        point: toScreen(nearEdgeMid),
+      },
+      nearEdgeMid,
+    );
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(a.feature.id);
+  });
+
+  it('handlesDrawn:false でも線の本体は掴める（消えるのはハンドルだけ）', () => {
+    // 線の中ほど（端点から遠い所）は本体の当たりなので、ハンドルの可否とは無関係に
+    // 返り続けなければならない ―― ここまで消すと「読むだけでは線が選べない」になる。
+    const ln = lineFeature('f-l', 'vl', [
+      [0, 0],
+      [10, 0],
+    ]);
+    const root = commit(emptyProject(), ln, 1000);
+    const mid = { lon: 5, lat: 0 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, handlesDrawn: false, point: toScreen(mid) },
+      mid,
+    );
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(ln.feature.id);
+  });
+
+  it('handlesDrawn:false でも点の地物は掴める（頂点ではなく本体として返る）', () => {
+    // 点は「頂点しか持たない地物」なので、頂点を返さなくする直しが行き過ぎると
+    // **点が丸ごと選べなくなる**。本体として返ることを固定する。
+    const p = pointFeature('f-p', 'vp', 3, 3);
+    const root = commit(emptyProject(), p, 1000);
+    const at = { lon: 3, lat: 3 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, handlesDrawn: false, point: toScreen(at) },
+      at,
+    );
+    expect(hit.kind).toBe(HIT_KIND.FeatureBody);
+    if (hit.kind === HIT_KIND.FeatureBody) expect(hit.featureId).toBe(p.feature.id);
+  });
+
+  it('handlesDrawn:false でも何も無い所は空のまま（本体を作り出さない）', () => {
+    const a = squareLeaf('f-a', 'va', 0, 0);
+    const root = commit(emptyProject(), a, 1000);
+    const far = { lon: 50, lat: 50 };
+    const hit = liveHitTestAt(
+      { root, time, toScreen, handlesDrawn: false, point: toScreen(far) },
+      far,
+    );
+    expect(hit.kind).toBe(HIT_KIND.Empty);
+  });
+
+  it('handlesDrawn:false は「頂点／辺は一切返さない」（4 隅と 4 辺の中点を全部見る）', () => {
+    // 1 点だけ見て通ると「たまたまその角だけ落ちた」を見逃す。角 4 つと辺の中点 4 つを
+    // 全部通し、返るのが本体だけであることを固定する。
+    const a = squareLeaf('f-a', 'va', 0, 0); // 角 (0,0)(4,0)(4,4)(0,4)
+    const root = commit(emptyProject(), a, 1000);
+    const probes = [
+      { lon: 0.2, lat: 0.2 },
+      { lon: 3.8, lat: 0.2 },
+      { lon: 3.8, lat: 3.8 },
+      { lon: 0.2, lat: 3.8 },
+      { lon: 2, lat: 0.2 },
+      { lon: 3.8, lat: 2 },
+      { lon: 2, lat: 3.8 },
+      { lon: 0.2, lat: 2 },
+    ];
+    const kinds = probes.map(
+      (w) =>
+        liveHitTestAt(
+          {
+            root,
+            time,
+            toScreen,
+            activeFeature: a.feature.id,
+            handlesDrawn: false,
+            point: toScreen(w),
+          },
+          w,
+        ).kind,
+    );
+    expect(kinds).toEqual(probes.map(() => HIT_KIND.FeatureBody));
+  });
+});
+
 /** Clear the shared display / filter memos between cases (fresh roots make this defensive). */
 function afterEachClearCaches(): void {
   afterEach(() => {

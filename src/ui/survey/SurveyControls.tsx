@@ -137,8 +137,13 @@ export function SurveyMeasurementPanel<S>(
         {SURVEY_STRINGS.clearLabel}（{survey.lines.length}）
       </button>
 
+      {/* **案内の文はオプションバーの「次の一手」が出す**（増分 5 の手直し C3 /
+          司令塔の決定 (4)）。ここは観測のミラーとして `hidden` で残す（T-2: 隠し観測は
+          足す一方）。**見える形で残すと二重になる**うえ、案内の文は長いので設定欄の幅を
+          丸ごと食い、「≫」の畳みが読み取りごと畳んでしまう（実測: 測っているのに距離が
+          読めなくなった）。 */}
       {survey.active && (
-        <span className="survey-controls__guide" data-testid="survey-guide" role="status">
+        <span className="survey-controls__guide" data-testid="survey-guide" role="status" hidden>
           {survey.draft === null
             ? SURVEY_STRINGS.guideIdle
             : SURVEY_STRINGS.guideAwaitingEnd}

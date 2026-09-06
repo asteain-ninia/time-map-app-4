@@ -42,7 +42,7 @@ import { type ProcessResult } from '../../domain/consistency/index';
 import type { FeatureId, RingId } from '../../domain/ids';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { SessionStore } from '../state/store';
-import { EDIT_MODE, type SnapSettings } from '../state/session';
+import { EDIT_MODE, type SnapSettings, type ToolId } from '../state/session';
 import { TIME_CHANGE_SOURCE } from '../state/store';
 
 import { coerceGridSpacing } from '../../domain/basemap/grid';
@@ -65,7 +65,7 @@ import { ADD_PHASE, useAddTool, type StartAddProcess } from './useAddTool';
  * `keep` は「このままにする」を選んだときに**元へ戻す**動き（年を戻す・選択を戻す）。
  */
 interface PendingDiscard {
-  readonly reason: 'escape' | 'time' | 'select';
+  readonly reason: 'escape' | 'time' | 'select' | 'tool' | 'lock';
   readonly keep?: () => void;
 }
 
@@ -135,6 +135,15 @@ export interface AddToolControllerProps<S> {
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
   /**
+   * **捨てる前の確認板が開いた／閉じた**ことを報せる口（増分 5 の手直し A4 / バグ狩り #18）。
+   *
+   * `add-draft-discard-confirm` は `role="alertdialog"` の本物のモーダルである。旧版は
+   * どこにも報せていなかったので、**「捨てますか」を出しているあいだに Ctrl+S / Ctrl+N /
+   * Ctrl+O が背後で走った**（下書きを持っている＝保存は通す、の規則がそのまま効いていた）。
+   * 確認の背後で世界が動かないようにする。
+   */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
    * **打ちかけの下書きを捨てたことを伝える口**（増分 3 の手直し D1。バグ狩り #6 /
    * 反証 #7 / GPT #8・#10）。
    *
@@ -176,6 +185,13 @@ export interface AddToolControllerProps<S> {
    * 「全ツールで同じ場所」は帯の確定欄 176px が引き受ける）。
    */
   readonly optionBar?: OptionBarStore | undefined;
+  /**
+   * 「吸着 ▾」の開閉を報せる口（増分 5 の手直し A4 / GPT #4）。**開いているあいだは
+   * 鍵盤の持ち主が `popover` になる**ので、板の背後で Ctrl+Z・Delete・道具の単キー・
+   * 保存が走らない。渡さないと従来どおり報せない（＝背後へ抜ける）ので、合成ルートは
+   * 必ず渡すこと。
+   */
+  readonly onSnapPopoverOpenChange?: ((open: boolean) => void) | undefined;
   /**
    * 形を確定したあとの素性入力を **右パネルの素性欄**へ渡す口（N-15 / 設計書 §C.2 の 27）。
    * 地図の真ん中に浮くフォームをやめるための細い橋である。
@@ -264,10 +280,50 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       ? (add.draft?.vertices.length ?? 0)
       : (add.session?.vertices.length ?? 0);
 
+  // 道具を持ち替える前の道具（「このままにする」で戻す先）。`activeKind` は面／線／点の
+  // 3 値しか持たないので、戻すには `ToolId` そのものが要る。
+  const prevToolRef = useRef<ToolId | null>(activeTool);
   useEffect(() => {
     const prev = prevKindRef.current;
     if (activeKind === prev) return;
+    // **道具の持ち替え・鍵の開け閉めでも、確定できる打ちかけは黙って捨てない**
+    // （増分 5 の手直し A3 / 設計書 §D.7。Fable・反証 Opus・GPT の 3 者が一致した指摘）。
+    //
+    // 年や一覧の選択と同じ扱いにする ―― どれも **作図の外側で起きた遷移**で、打ちかけは
+    // その道具・その鍵のもとで打たれている。「このままにする」を選べば道具（鍵）を元へ
+    // 戻す。ここでは `prevKindRef` を進めないので、戻した瞬間に素通りする。
+    //
+    // **聞くのは「点を打っている最中」だけ**（`Drawing`）。素性を入力している局面や
+    // 重なり競合で止まっている局面でも下書きは残っているが、そこで道具が入れ替わるのは
+    // **利用者の操作ではなくアプリ自身の再武装**である（競合の板を閉じたあと、ホストは
+    // `setActiveTool(null)` → 元の道具、と往復して一時状態を捨て直す）。そこで確認を
+    // 出すと、**再武装が確認待ちで止まり、競合の板が地図の真ん中に居座ったまま二度と
+    // 消えない**（実データの探索で踏んだ）。聞く相手は「いま自分で点を打っている人」だけに
+    // 絞る。
+    if (prev !== null && add.phase === ADD_PHASE.Drawing && hasDraftNow && canCompleteNow) {
+      // **板が出ている間は基準を進めない**（年・選択の見張りと同じ理由。3 回目の手直し）。
+      // 進めてしまうと、「続ける」で戻した動き自体が新しい変化に見えて板が閉じない。
+      //
+      // **この関門は「聞くと決めたあと」に置く。** 手前に置くと、**別の理由で板が出て
+      // いるあいだ、道具が入れ替わっても後始末が走らない** ―― 重なり競合で止まった
+      // セッションが片付かないまま残り、入力層がどこにも無い状態で固まる（実データの
+      // 探索で踏んだ）。聞かないと決めたのなら、板が出ていても後始末は必ず走らせる。
+      if (pendingRef.current !== null) return;
+      const restore = prevToolRef.current;
+      const locked = store.getState().mode === EDIT_MODE.View;
+      setPendingDiscard({
+        reason: locked ? 'lock' : 'tool',
+        keep: () => {
+          const st = store.getState();
+          // 鍵を閉じたのなら、まず開ける（`setMode` は道具を外すので順序が要る）。
+          if (st.mode === EDIT_MODE.View) st.setMode(EDIT_MODE.Edit);
+          st.setActiveTool(restore);
+        },
+      });
+      return;
+    }
     prevKindRef.current = activeKind;
+    prevToolRef.current = activeTool;
     // **黙って捨てない**（増分 3 の手直し D1）。ここへ届くころには道具もモードも既に
     // 切り替わっているので遷移は止められないが、捨てた事実は報せられる。
     const lost = draftSizeRef.current;
@@ -389,25 +445,63 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     drawSink.drawAdd(buildAddPrimitives(add.session, style));
   }, [add.session, drawSink, style]);
 
-  // --- Keyboard: Escape→cancel, Ctrl+Z→undo (FR-78). Active only while drawing.
+  // --- Keyboard: Escape→cancel, Ctrl+Z→undo (FR-78).
+  //
+  // **増分 5 の手直し A2: 素性を入力している局面でも Escape を受ける。** 旧版は
+  // `phase !== Drawing` で降りていたので、形を確定して名前を打つ局面には **このリスナーが
+  // 居なかった**。大域の側も焦点が入力欄にあると `focus-guard` が落とすので、**Escape を
+  // 誰も受けない**（押しても何も起きない）状態ができていた ―― §D.4 の「連打すれば必ず
+  // 素の状態に戻る」が、いちばん抜けにくい局面で破れていた（バグ狩り #3）。
   useEffect(() => {
-    if (add.phase !== ADD_PHASE.Drawing) return;
+    if (add.phase !== ADD_PHASE.Drawing && add.phase !== ADD_PHASE.PropertyForm) return;
     const onKey = (e: KeyboardEvent) => {
       // Focus guard (バグハント第11波 #3/#6): a text-editing element owns the
       // keyboard (timeline year field / sidebar input) — let native Escape /
       // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
       // never cancels or undoes a vertex over native character editing (教訓 5.13:
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
-      if (isEditableTarget(editableTargetFromEvent(e))) return;
+      //
+      // **Escape だけは別**（A2）。文字の欄の中でも「やめる」は道具のものである ――
+      // ただし **打ちかけがある欄では確認してから**捨てる（打った文字を黙って失わない）。
+      // 欄が自分で名乗る `data-pristine` を読む（教訓 5.13 の 1 本の述語）。
+      const target = editableTargetFromEvent(e);
+      const inEditable = isEditableTarget(target);
+      if (inEditable && e.key !== 'Escape') return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        // **確認の板が開いていたら、まずそれを閉じる**（設計書 §D.4「Esc の階段」）。
-        // 階段は「いちばん手前のものから 1 つずつ閉じる」なので、板が出ている間の
-        // Escape は「このままにする」と同じ意味になる（元へ戻す動きも走る）。
+        // **確認の板が開いていたら、まずそれに答える**（設計書 §D.4「Esc の階段」）。
+        //
+        // 答え方は **なぜ聞いているか**で変わる。年や選択が動いたから聞いている板は、
+        // Escape ＝「このままにする」（元へ戻す動きも走る）―― 外で起きたことを取り消す
+        // のが Escape の意味だからである。逆に **利用者自身が Escape で「やめる」と
+        // 言ったために出ている板**（`reason === 'escape'`）は、Escape ＝「はい、捨てる」
+        // にする。ここを「このままにする」にすると、Escape を押すたびに板が開いては
+        // 閉じるだけで **いつまでも素の状態に戻れない**（§D.4 の保証が破れる）。
         const pending = pendingRef.current;
         if (pending !== null) {
+          if (pending.reason === 'escape') {
+            setPendingDiscard(null);
+            const lost = draftSizeRef.current;
+            add.cancel();
+            if (lost > 0) onDraftDiscarded?.(lost);
+            return;
+          }
           pending.keep?.();
           setPendingDiscard(null);
+          return;
+        }
+        // **打ちかけのある欄から出るときは 1 度聞く**（A2）。名前を打っている途中で
+        // Escape を押したときに、打った文字ごと黙って消えないようにする。
+        if (inEditable && target?.pristine === false) {
+          setPendingDiscard({ reason: 'escape' });
+          return;
+        }
+        // **素性を入力している局面**（形は確定済み・欄は空）は、Escape ＝「やめる」。
+        // ここで形の確認をもう一度出すと、欄を空にしただけの利用者が抜けられなくなる。
+        if (add.phase === ADD_PHASE.PropertyForm) {
+          const lost = draftSizeRef.current;
+          add.cancel();
+          if (lost > 0) onDraftDiscarded?.(lost);
           return;
         }
         // **確定できる点数以上の打ちかけは確認してから捨てる**（設計書 §D.2 / D1）。
@@ -420,6 +514,9 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         add.cancel();
         return;
       }
+      // ここから下は **作図中だけ**の打鍵である（素性入力の局面では Enter は素性欄の
+      // 「保存して次へ」、Ctrl+Z は大域の取り消しであって、道具のものではない）。
+      if (add.phase !== ADD_PHASE.Drawing) return;
       // **Enter で確定**（設計書 §I.2 の「作図中」の表 / 「次の一手」欄の案内文）。
       // 案内している打鍵が実際に効かないのは、現状分析 C1 と同じ「文言だけがあって実体が
       // 無い」型の欠陥である（教訓 5.7）。確定できない状態では押しても何も起きない
@@ -436,7 +533,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [add.phase, add.cancel, add.undo, add.completeShape]);
+  }, [add.phase, add.cancel, add.undo, add.completeShape, add.canComplete, onDraftDiscarded]);
 
   // --- bughunt3 (H2): report the in-progress add to the host so it suspends the
   // GLOBAL shortcut dispatcher while this controller owns Ctrl+Z. The global
@@ -585,6 +682,14 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     if (add.phase === ADD_PHASE.Idle) setPendingDiscard(null);
   }, [add.phase]);
 
+  // **確認板は本物のモーダルとして報せる**（増分 5 の手直し A4 / バグ狩り #18）。
+  const onModalChange = props.onModalChange;
+  useEffect(() => {
+    if (onModalChange === undefined) return;
+    onModalChange(pendingDiscard !== null);
+    return () => onModalChange(false);
+  }, [pendingDiscard, onModalChange]);
+
   const optionOwnerRef = useRef<object | null>(null);
   useEffect(() => {
     if (optionBar === undefined) return;
@@ -614,6 +719,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
   // 設定欄（吸着 ▾）。差し込みは登録ごとの印で所有権を見るので、道具が入れ替わっても
   // 生きている登録を巻き添えで消さない。
+  const onSnapPopoverOpenChange = props.onSnapPopoverOpenChange;
   useEffect(() => {
     if (optionBar === undefined || activeKind === null) return;
     return optionBar.registerOptionSlot(
@@ -623,9 +729,20 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         onChange={setSnapSettings}
         gridSnap={gridSnap}
         onGridSnapChange={toggleGridSnap}
+        // 道具を持ち替えたら板は閉じる（K-5。`OptionPopover` の作法 4）。
+        closeKey={activeKind}
+        {...(onSnapPopoverOpenChange ? { onOpenChange: onSnapPopoverOpenChange } : {})}
       />,
     );
-  }, [optionBar, activeKind, snapSettings, setSnapSettings, gridSnap, toggleGridSnap]);
+  }, [
+    optionBar,
+    activeKind,
+    snapSettings,
+    setSnapSettings,
+    gridSnap,
+    toggleGridSnap,
+    onSnapPopoverOpenChange,
+  ]);
 
   // 道具名 / 対象 / 次の一手 / 確定。**押し込む側が持ち主である**のが規約なので、
   // 持っていないときは押し込まない。
@@ -780,10 +897,13 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
 
   useEffect(() => {
     if (addDraft === undefined) return;
-    if (phase !== ADD_PHASE.PropertyForm || sessionTool === undefined) {
-      addDraft.set(null);
-      return;
-    }
+    // **自分の局面でなければ何もしない**（増分 5 の手直し / 決定 (5)）。
+    //
+    // 「新規の姿」の口は **分ける・穴あけと共有**するようになった。ここで無条件に
+    // `set(null)` を書くと、**ほかの道具が入れた入力待ちを踏み消す** ―― 同時に載って
+    // いる兄弟が「自分の担当でないもの」を空へ戻すと、あとに置かれたものほど強くなる
+    // という教訓 5.68 と同じ形である。**自分が入れたぶんだけ、後片付けで戻す。**
+    if (phase !== ADD_PHASE.PropertyForm || sessionTool === undefined) return;
     addDraft.set({
       tool: sessionTool,
       parentCandidates: parentCandidates ?? [],
@@ -819,6 +939,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     <AddToolChrome
       add={add}
       armed={armed}
+      inputActive={mode !== EDIT_MODE.View}
       pendingDiscard={pendingDiscard}
       onKeepDraft={() => {
         pendingDiscard?.keep?.();
@@ -830,6 +951,18 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         setPendingDiscard(null);
         add.cancel();
         if (lost > 0) onDraftDiscarded?.(lost);
+        // **見張りの基準を、捨てたあとの今へ合わせ直す**（増分 5 の手直し A3）。
+        //
+        // 板を開いているあいだ、見張りは基準（`prevKindRef` ほか）を **わざと進めて
+        // いない** ―― 「このままにする」で戻したときに素通りさせるためである。捨てた
+        // のならもう戻らないので、ここで進める。進め忘れると、道具を持ち替えた場合に
+        // **新しい道具のセッションが始まらない**（`activeKind` が変わっていないと
+        // 見張りは二度と走らないため）。
+        prevKindRef.current = activeKind;
+        prevToolRef.current = activeTool;
+        prevTimeRef.current = { key: currentTimeKey, value: currentTime };
+        prevActiveRef.current = activeFeature;
+        if (activeKind !== null) add.start(activeKind);
         // 一覧で選んだのなら、片付けたあとで視点を合わせる（設計書 §D.2）。
         if (reason === 'select') onFocusSelection?.();
       }}
@@ -855,6 +988,17 @@ interface AddToolChromeProps {
   readonly armed: boolean;
   /** 捨ててよいかを聞いている最中の理由（聞いていなければ null。D1）。 */
   readonly pendingDiscard: PendingDiscard | null;
+  /**
+   * **鍵が開いているか**（増分 5 の手直し A3）。捨てる前の確認が出ているあいだ、下書きは
+   * まだ生きているので入力層も出したままでよいが、**鍵を閉じた**ときだけは外す ――
+   * 出したままだと「読むだけ」なのに地図クリックで頂点が置ける（K-6 の抜け道）。
+   *
+   * **「道具を構えているか」で判断してはいけない。** 道具を持ち替えたときの確認が
+   * 出ているあいだ `activeKind` は一時的に null になるが、そこで入力層を外すと
+   * **確認に答えるまで地図が死ぬ**（実データの探索で、面の道具が押されているのに
+   * 入力層がどこにも無い状態を踏んだ）。
+   */
+  readonly inputActive: boolean;
   readonly onKeepDraft: () => void;
   readonly onDiscardDraft: () => void;
   readonly onMapPointerDown: (e: {
@@ -1005,7 +1149,7 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
           この下の**競合停止の板**と**拒否の板**、それにナイフ・穴あけの新地物フォーム
           （`ui/knife` / `ui/drill`、まだ地図の上に浮いている）と吸着 ▾ のポップオーバーが
           ある。台帳は設計書 §B.5 に置いてあるので、部品を足したらそちらも直すこと。 */}
-      {(add.phase === ADD_PHASE.Drawing || armed) && (
+      {(add.phase === ADD_PHASE.Drawing || armed) && props.inputActive && (
         <AddInputBridge
           onMapPointerDown={props.onMapPointerDown}
           onMapPointerMove={props.onMapPointerMove}

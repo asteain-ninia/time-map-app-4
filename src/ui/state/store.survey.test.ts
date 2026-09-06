@@ -5,10 +5,16 @@
 // logic here). These tests pin the reset契約 matrix rows the STORE owns
 // (仕様書 §7): confirm keeps `active`, disable keeps `lines` (FR-15 — the named
 // pitfall: 解除=ドラフトのみ破棄), clear empties both, and a LOAD / NEW discards
-// the whole slice. They also pin the two integration invariants: surveyEnable
-// null-ifies the active tool WITHOUT changing the mode (survey is a separate
-// 補助モード axis, specs/U37 §2.1), and NO survey action ever touches
+// the whole slice. They also pin that NO survey action ever touches
 // `projectDirty` or the domain reference (survey is non-persisted UI display).
+//
+// **増分 5 の手直し A5 で `surveyEnable` の契約が変わった。** 以前ここは「道具は外すが
+// `mode` は変えない」を固定していたが、それが欠陥そのものだった ―― 道具を外したのに
+// `mode` を追加のまま残すと、**画面は「選ぶ」なのに内部は「追加」**になり、左クリックは
+// 追加の経路へ送られるのに追加のコントローラは居らず、選ぶことも追加することも
+// できなくなる。いまの契約は「**測量を入れたら道具は外れ、`mode` も道具から導き直す**」
+// （`mode = 鍵が閉 ? 読むだけ : 面/線/点 ? 追加 : 編集`）。測量が第 4 のモードになった
+// わけではない ―― `mode` は相変わらず道具から導かれるだけである。
 
 import { describe, expect, it } from 'vitest';
 
@@ -46,7 +52,7 @@ describe('survey slice — initial state', () => {
 });
 
 describe('surveyEnable — the 補助モード toggle (別軸, specs/U37 §2.1)', () => {
-  it('activates survey AND clears the active tool in ONE transition, keeping the mode', () => {
+  it('測量を入れると、道具を外すのと mode の導き直しが 1 回の遷移で一緒に起きる', () => {
     const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: asToolId('edit.knife') });
     let transitions = 0;
     store.subscribe(() => {
@@ -59,9 +65,34 @@ describe('surveyEnable — the 補助モード toggle (別軸, specs/U37 §2.1)'
     expect(s.survey.active).toBe(true);
     // The edit-tool bridge unmounts in the SAME set() (入力軸の相互排他).
     expect(s.activeTool).toBeNull();
-    // The View/Add/Edit mode is NOT an axis survey writes (第4 EDIT_MODE にしない).
+    // 道具が外れたので、導出式のとおり編集になる（ナイフは編集の道具なので値は同じ）。
     expect(s.mode).toBe(EDIT_MODE.Edit);
     expect(transitions).toBe(1);
+  });
+
+  it('面を描いている最中に測量を入れると、mode も編集へ導き直される（A5 の穴）', () => {
+    // **旧い契約はここを「追加のまま」に固定していた**。それだと左クリックは追加の
+    // 経路へ送られるのに、道具を外したせいで追加のコントローラは居ない ―― 選ぶことも
+    // 追加することもできない状態が残る。道具と mode は必ず一緒に動かす。
+    const store = makeStore({ mode: EDIT_MODE.Add, activeTool: asToolId('add.area') });
+
+    store.getState().surveyEnable();
+
+    const s = store.getState();
+    expect(s.activeTool).toBeNull();
+    expect(s.mode).toBe(EDIT_MODE.Edit);
+  });
+
+  it('鍵が閉じているあいだは読むだけのまま（測量が編集の入口にならない）', () => {
+    // 導出式は「鍵が閉じていれば読むだけ」を先に返す。測量は表示の補助なので、
+    // これを入れたからといって編集の関門（K-6）が開いてはいけない。
+    const store = makeStore({ mode: EDIT_MODE.View });
+
+    store.getState().surveyEnable();
+
+    expect(store.getState().survey.active).toBe(true);
+    expect(store.getState().mode).toBe(EDIT_MODE.View);
+    expect(store.getState().activeTool).toBeNull();
   });
 
   it('does not clear the selection (survey is a viewing aid, not a tool switch)', () => {
@@ -69,6 +100,14 @@ describe('surveyEnable — the 補助モード toggle (別軸, specs/U37 §2.1)'
     store.getState().setActiveFeature(asFeatureId('f1'));
     store.getState().surveyEnable();
     expect(store.getState().activeFeature).toBe(asFeatureId('f1'));
+  });
+
+  it('測量を切っても道具は戻らない（入れたときに外したものを勝手に復活させない）', () => {
+    const store = makeStore({ mode: EDIT_MODE.Edit, activeTool: asToolId('add.area') });
+    store.getState().surveyEnable();
+    store.getState().surveyDisable();
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().mode).toBe(EDIT_MODE.Edit);
   });
 });
 

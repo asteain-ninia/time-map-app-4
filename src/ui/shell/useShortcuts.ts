@@ -19,7 +19,11 @@ import { useEffect } from 'react';
 
 import { COMMAND_ID, type CommandId, type CommandRegistry } from './commands';
 import type { EditMode } from '../state/session';
-import { editableTargetFromEvent, isEditableTarget } from './focus-guard';
+import {
+  blocksGlobalShortcuts,
+  editableTargetFromEvent,
+  isEditableTarget,
+} from './focus-guard';
 import {
   DISPATCH_RESULT,
   dispatchChord,
@@ -123,7 +127,18 @@ export function useShortcuts(options: UseShortcutsOptions): void {
       // 集合はこの module が持つ ―― 「止めている間に通す集合」（`alwaysAllowed`）とは
       // **止める理由が違う**ので分ける（教訓 5.30: 制約が違うなら安易に共有しない）。
       const editableTarget = editableTargetFromEvent(e);
-      if (isEditableTarget(editableTarget)) {
+      // **文字を打つ欄だけでなく、鍵盤を使う control も遮る**（増分 5 の手直し A4）。
+      // つまみ（`input[type=range]`）は矢印・Home / End を自分で使うので、焦点がそこに
+      // あるあいだ Delete や Ctrl+Z が背後の地物へ抜けてはならない。
+      if (blocksGlobalShortcuts(editableTarget)) {
+        // **つまみからは Escape で抜けられる**（設計書 §D.4 の階段「欄から抜ける」）。
+        // 文字の欄は native の Escape（入力の取り消し）があるのでそちらに任せるが、
+        // つまみには出口が無く、焦点が残ったままだと打鍵が全部そこへ吸われる。
+        if (e.key === 'Escape' && !isEditableTarget(editableTarget)) {
+          if (e.target instanceof HTMLElement) e.target.blur();
+          e.preventDefault();
+          return;
+        }
         const id = keymap.resolve(chord);
         const allowed =
           id !== undefined &&

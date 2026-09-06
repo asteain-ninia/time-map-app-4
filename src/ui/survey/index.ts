@@ -34,3 +34,5 @@ export {
   type SurveyControlsProps,
   type SurveyMeasurementPanelProps,
 } from './SurveyControls';
+
+export { SurveyOptionBar, type SurveyOptionBarProps } from './SurveyOptionBar';

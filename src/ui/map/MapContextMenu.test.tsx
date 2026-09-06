@@ -170,13 +170,30 @@ describe('MapContextMenu — DYNAMIC path (composeFor)', () => {
     }
   });
 
-  it('a NO_MENU model still opens a menu with ONLY the view command (item 5)', () => {
+  it('a NO_MENU model still opens a menu with ONLY the view commands (item 5)', () => {
     renderAndOpen({ composeFor: () => NO_MENU, onSelectItem: vi.fn() });
     const menu = screen.getByTestId('context-menu');
     // No domain edit items, but the view-axis command stays available (a view-only
     // right-click can return to editing — matches the legacy always-a-menu behaviour).
     expect(menu.querySelector('[data-item-kind]')).toBeNull();
     expect(menu.querySelector(`[data-command="${COMMAND_ID.ViewToggleViewMode}"]`)).not.toBeNull();
+  });
+
+  it('**選んでいなくても「見る」側の項目が並ぶ**（増分 5 の手直し E3 / バグ狩り #20）', () => {
+    // 設計書 §I.3 の原則①「右クリックはいつでも開ける ―― 中身が変わるだけ」。旧版は
+    // 何も選んでいない・作図中の右クリックで **項目が 1 個しかない板**が出ていた。
+    // 地物に依らない見る操作（全体表示・拡大・縮小）はどの局面でも意味があるので、
+    // 常に並べる。可否はメニューバーと同じ 1 本（`resolveCommandEnabled`）を通す。
+    renderAndOpen({ composeFor: () => NO_MENU, onSelectItem: vi.fn() });
+    const menu = screen.getByTestId('context-menu');
+    for (const id of [
+      COMMAND_ID.ViewFitAll,
+      COMMAND_ID.ViewZoomIn,
+      COMMAND_ID.ViewZoomOut,
+      COMMAND_ID.ViewToggleViewMode,
+    ]) {
+      expect(menu.querySelector(`[data-command="${id}"]`), id).not.toBeNull();
+    }
   });
 });
 

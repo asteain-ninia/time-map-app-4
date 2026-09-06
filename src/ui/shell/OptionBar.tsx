@@ -59,6 +59,46 @@ const VIEWPORT_MARGIN = 8;
 /** アンカーとパネルのすき間（`OptionPopover` と同じ値）。 */
 const ANCHOR_GAP = 4;
 
+/**
+ * **設定欄に配れる幅**（増分 5 の手直し D3 の直し）。
+ *
+ * **設定欄自身の `clientWidth` を測ってはいけない。** 設定欄は `flex: 0 1 auto` なので
+ * 幅が中身の量で決まる ―― 部品を「≫」へ送ると器も縮み、縮んだ器で測り直すともっと
+ * 送ることになり、**入るはずのものまで全部が「≫」の中へ落ちる**（実測: 測量を ON に
+ * すると読み取りが丸ごと畳まれ、測っているのに距離が読めなくなった）。
+ *
+ * だから **中身に依らない予算**を計算する: 帯の内寸から、幅の決まっている 3 区画
+ * （道具名・対象・確定）と部品どうしのすき間、そして「次の一手」に必ず残す幅を引く。
+ * 引き算の材料はどれも中身で動かないので、送る数が増えても予算は変わらない（収束する）。
+ */
+function settingsBudget(settings: HTMLElement): number {
+  const bar = settings.parentElement;
+  if (bar === null) return 0;
+  // 値が読めない環境（レイアウトを計算しない）は 0 として扱う ―― 下の「0 なら
+  // 全部そのまま出す」に落ちる。
+  const px = (value: string): number => {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const barStyle = getComputedStyle(bar);
+  const inner = bar.clientWidth - px(barStyle.paddingLeft) - px(barStyle.paddingRight);
+  if (inner <= 0) return 0;
+  const gap = px(barStyle.columnGap === '' ? barStyle.gap : barStyle.columnGap);
+  let fixed = 0;
+  for (const key of ['tool', 'target', 'commit'] as const) {
+    const el = bar.querySelector<HTMLElement>(`.option-bar__${key}`);
+    if (el !== null) fixed += el.getBoundingClientRect().width;
+  }
+  // 帯の 5 区画のあいだのすき間は 4 つ。
+  return inner - fixed - gap * 4 - NEXT_STEP_RESERVE;
+}
+
+/**
+ * 「次の一手」に必ず残す幅。**案内の文は設定欄より優先する** ―― 次に何をすればよいか
+ * 分からない画面より、設定が「≫」の中にある画面のほうがまだましだからである。
+ */
+const NEXT_STEP_RESERVE = 160;
+
 export interface OptionBarProps {
   readonly store: OptionBarStore;
   /**
@@ -109,14 +149,20 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
     if (box === null) return;
 
     // 出ている部品の実測幅を控える（次に隠したあとも、この値で判断できる）。
+    //
+    // **幅 0 も控える。** `data-slot-id` を持つのは **帯に出ている**部品だけで、「≫」へ
+    // 送ったぶんはこの走査に現れない（あちらの span には `data-slot-id` を付けていない）。
+    // だから「幅 0 は測れなかった値」ではなく、**中身が空の部品**である ―― 測量の
+    // 読み取りは測っていないあいだ何も描かないので、まさにこれに当たる。0 を控えないと
+    // 下の「まだ測れていない部品があるうちは判断しない」で永久に止まり、**畳みが
+    // 1 度も働かなくなる**（実際にこれで測量 OFF のとき「≫」が出なかった）。
     for (const el of Array.from(box.querySelectorAll<HTMLElement>('[data-slot-id]'))) {
       const id = el.dataset['slotId'];
-      const width = el.getBoundingClientRect().width;
-      if (id !== undefined && width > 0) widthsRef.current.set(id, width);
+      if (id !== undefined) widthsRef.current.set(id, el.getBoundingClientRect().width);
     }
 
     const ids = slotsRef.current.map((s) => s.id);
-    const avail = box.clientWidth;
+    const avail = settingsBudget(box);
     // **測れない（幅 0）ときは全部そのまま出す**（jsdom / まだ描かれていない）。
     if (avail <= 0 || ids.length === 0) {
       setVisibleCount(null);
@@ -164,14 +210,19 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
   // （同じ値なら React が再レンダーしないので、そこで止まる）。
   useLayoutEffect(measure);
 
-  // 窓幅が変わったときの測り直し。`ResizeObserver` が無い環境（jsdom の素の状態）でも
-  // 落ちないように、存在を確かめてから使う。
+  // 窓幅が変わったときの測り直し。`ResizeObserver` が無い環境（レイアウトを計算しない
+  // テスト環境）でも落ちないように、存在を確かめてから使う。
+  //
+  // **見張るのは帯そのもの**であって設定欄ではない。設定欄には下限（`min-width`）が
+  // あるので、**畳んだあとは窓幅を変えても設定欄の幅が動かない** ―― そこを見張ると
+  // 通知が二度と来ず、**一度畳んだら二度と戻らない**（実測: 1920px まで広げても
+  // 「表示 ▾」が「≫」の中に居座った）。帯の幅は窓幅にそのまま追随する。
   useEffect(() => {
-    const box = settingsRef.current;
-    if (box === null) return;
+    const bar = settingsRef.current?.parentElement ?? null;
+    if (bar === null) return;
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(() => measure());
-    ro.observe(box);
+    ro.observe(bar);
     return () => {
       ro.disconnect();
     };

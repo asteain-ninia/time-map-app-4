@@ -82,7 +82,7 @@ import { withCursor as withBundleCursor, type Bundle } from '../discovery/bundle
 // （道具を足すときに必ず触るファイルなので、式の更新を忘れにくい）。barrel
 // (`../shell/index`) ではなく module を直に読むのは、barrel が store を読む部品まで
 // 連れてきて輪になるためである。
-import { TOOL_ID, modeForTool } from '../shell/tools';
+import { modeForTool, toolShowsVertexHandles } from '../shell/tools';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
@@ -629,9 +629,17 @@ interface SelectionPatch {
 /**
  * 道具を持ち替えたあとに残す選択（増分 5c / 設計書 §D.2 の遷移表）。
  *
- * **地物の選択とマークは保つ。頂点の選択は「頂点の道具から出るとき」だけ捨てる。**
+ * **地物の選択とマークは保つ。頂点の選択は「頂点ハンドルが見えなくなるとき」だけ捨てる。**
  * 頂点は「その道具で掴んでいるもの」なので、別の道具へ移っても掴んだままにすると、
  * 次の操作の対象が画面と食い違う（ナイフを構えているのに頂点が選ばれている、など）。
+ *
+ * **判定は「直前が『頂点』の道具だったか」ではなく、掴める道具かどうかの変化で行う**
+ * （増分 5 の手直し A7 / GPT #9）。頂点と辺のハンドルを掴めるのは「選ぶ」「頂点」
+ * 「動かす」の 3 つで（`toolShowsVertexHandles`）、旧版は `edit.vertex` から出るときしか
+ * 捨てていなかった。だから **「選ぶ」や「動かす」で掴んだ頂点が、ナイフや追加の道具へ
+ * 移っても見えないまま残り**、下書きを持たないうちに Delete を押すとその頂点が消えた。
+ * ハンドルを出す条件（`toolShowsVertexHandles`）と、頂点の選択を残す条件を **同じ 1 本の
+ * 述語**にすれば、「見えていないのに選ばれている」が構造的に起きない（教訓 5.30）。
  *
  * 掴んでいる最中の一時状態（`transient`）は必ず捨てる ―― これは教訓 5.2 が言う
  * 「一時的な UI 状態」そのもので、持ち越すと次の押下が前の掴みの続きになる。
@@ -640,10 +648,37 @@ function selectionAcrossToolSwitch(
   state: { readonly selection: SelectionState; readonly activeTool: ToolId | null },
   nextTool: ToolId | null,
 ): SelectionState {
-  const leavingVertexTool =
-    state.activeTool === TOOL_ID.EditVertex && nextTool !== TOOL_ID.EditVertex;
-  const kept = leavingVertexTool ? withoutVertexSet(state.selection) : state.selection;
+  const losingVertexHandles =
+    toolShowsVertexHandles(state.activeTool) && !toolShowsVertexHandles(nextTool);
+  const kept = losingVertexHandles ? withoutVertexSet(state.selection) : state.selection;
   return kept.transient === IDLE_TRANSIENT ? kept : { ...kept, transient: IDLE_TRANSIENT };
+}
+
+/**
+ * **`activeTool` を書くときの唯一の作り方**（増分 5 の手直し A5 / GPT #1・反証 ①）。
+ *
+ * 道具の欄と `mode` は **必ず一緒に**動く（`mode = 鍵が閉 ? 読むだけ : 面/線/点 ? 追加 :
+ * 編集`）。ところが `activeTool` を書く場所は `setActiveTool` だけではなく、測量を
+ * 始めるときにも「地図を覆う入力層を 1 枚に保つ」ために `activeTool: null` を書いていた。
+ * そこだけ `mode` を書き忘れていたので、**面を描いている最中に測量を入り切りすると、
+ * 画面は「選ぶ」なのに内部は「追加」のまま**になった ―― 左クリックは追加の経路へ送られる
+ * のに追加のコントローラは居らず、選ぶことも追加することもできなくなる。
+ *
+ * 導出を関数 1 本に閉じ込め、**`activeTool` を書く set() は必ずこの関数の戻り値を
+ * 展開する**という規約にする（教訓 5.6: 経路ではなく結果状態で決める）。不変条件
+ * 「`mode === modeForTool(mode === 読むだけ, activeTool)`」は `store.test.ts` が
+ * 全部の操作のあとで確かめる。
+ */
+function toolPatch(
+  state: { readonly mode: EditMode },
+  tool: ToolId | null,
+): { readonly activeTool: ToolId | null; readonly mode: EditMode } {
+  // **鍵が閉じているあいだは道具を構えさせない。** 導出式が「読むだけ」を返すのは
+  // 「mode が開かない」ことしか保証しないので、`activeTool` だけが入ると道具の
+  // コントローラが立ち上がって編集の入口が開く（K-6 の抜け道）。
+  const locked = state.mode === EDIT_MODE.View;
+  const next = locked ? null : tool;
+  return { activeTool: next, mode: modeForTool(locked, next) };
 }
 
 function selectionPatch(selection: SelectionState): SelectionPatch {
@@ -1544,11 +1579,19 @@ export function createSessionStore<S>(
       //
       // 「直せる ⇄ 直せる」（追加 ⇄ 編集）では従来どおり捨てる ―― こちらは道具を
       // 持ち替える操作で、道具の対象が持ち越されると打ちかけの文脈が混ざる。
+      //
+      // **`mode` も導出し直す**（増分 5 の手直し A5 の続き）。素直に受け取った値を
+      // そのまま書くと、`setMode('add')` で **「内部は追加なのに道具は無し」**という、
+      // A5 が他の全経路で潰したのと同じ形が残る（左クリックは追加の経路へ送られるのに
+      // 追加のコントローラは居ない）。いま `add` を渡す呼び出しは 1 つも無いが、
+      // **経路が無いことに頼らない** ―― 道具の欄を書く場所は 1 本の関数を通す。
+      // 追加は「面／線／点の道具を構えている」ことでしか成り立たないので、道具を外す
+      // この入口では必ず「読むだけ」か「編集」に落ちる。
       const cur = get().mode;
-      const acrossViewOnly = cur === EDIT_MODE.View || mode === EDIT_MODE.View;
+      const patch = toolPatch({ mode }, null);
+      const acrossViewOnly = cur === EDIT_MODE.View || patch.mode === EDIT_MODE.View;
       set({
-        mode,
-        activeTool: null,
+        ...patch,
         ...(acrossViewOnly ? {} : selectionPatch(EMPTY_SELECTION)),
       });
     },
@@ -1588,16 +1631,13 @@ export function createSessionStore<S>(
       //
       // **鍵が閉じているあいだは mode を動かさない。** 読むだけの関門（K-6）は
       // `canEdit(mode)` 1 本なので、ここで view から出してしまうと関門が開く。
-      // **鍵が閉じているあいだは道具を構えさせない。** 導出式が `view` を返すのは
-      // 「mode が開かない」ことしか保証しないので、`activeTool` だけが入ると
-      // 道具のコントローラが立ち上がって編集の入口が開く（K-6 の抜け道）。
-      // 構えられないことを 1 か所で言い切る。
-      const locked = get().mode === EDIT_MODE.View;
-      const next = locked ? null : tool;
+      // 導出と鍵の関門は {@link toolPatch} が 1 か所で持つ（測量の入口も同じ関数を通す）。
+      const patch = toolPatch(get(), tool);
       set({
-        activeTool: next,
-        mode: modeForTool(locked, next),
-        ...selectionPatch(preserveSelection ?? selectionAcrossToolSwitch(get(), next)),
+        ...patch,
+        ...selectionPatch(
+          preserveSelection ?? selectionAcrossToolSwitch(get(), patch.activeTool),
+        ),
       });
     },
 
@@ -1758,7 +1798,11 @@ export function createSessionStore<S>(
       // atomically with the survey bridge mounting (入力軸の相互排他 — at most one
       // map-covering input layer). Unlike setActiveTool this does NOT clear the
       // selection: survey is a viewing aid, not a tool switch (U37 §2.1).
-      set({ survey: enableSurveyMode(get().survey), activeTool: null });
+      //
+      // **`mode` も一緒に書く**（増分 5 の手直し A5）。道具の欄を書くのに `mode` の
+      // 導出を書き忘れると、面を描いている最中に測量を入り切りしたとき「画面は選ぶ、
+      // 内部は追加」という食い違いが残る。{@link toolPatch} が 1 か所で両方を作る。
+      set({ survey: enableSurveyMode(get().survey), ...toolPatch(get(), null) });
     },
 
     surveyDisable() {

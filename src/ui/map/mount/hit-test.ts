@@ -8,7 +8,13 @@ import type { MutableRefObject } from 'react';
 
 import type { AddHostPorts } from '../../add/host-ports';
 import { createLiveEditBinding } from '../../consistency-binding';
-import { TOOL_ID } from '../../shell/tools';
+import {
+  promotesOnContextMenu,
+  suspendsContextMenu,
+  type FocusOwner,
+} from '../../shell/focus-owner';
+import { TOOL_ID, toolShowsVertexHandles } from '../../shell/tools';
+import { EDIT_MODE } from '../../state/session';
 import { createEditSessionPort } from '../edit-session-adapter';
 import {
   buildEditSnapshot,
@@ -91,8 +97,22 @@ export interface MountHitTestOptions {
   >;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
-  /** fr96 段階7 — 入力が別の持ち主にあるあいだ右クリック要求を捨てるための現在値。 */
-  readonly shortcutsSuspendedRef: MutableRefObject<boolean>;
+  /**
+   * **いま鍵盤を持っているのは誰か**（設計書 §D.1。増分 5 の手直し A1）。
+   *
+   * 右クリックの扱いは 2 つに分かれる ―― **要求ごと捨てる**（ダイアログが持っている）
+   * のと、**メニューは開くが選択は変えない**（道具が下書きを持っている）である。
+   * 旧版は真偽値 1 個（`shortcutsSuspended`）しか渡していなかったので、後者を
+   * 表現できず、**作図中の右クリックが下書きを壊していた**。判定そのものは
+   * `shell/focus-owner.ts` の 1 本に置き、ここは現在値を読むだけにする（教訓 5.6）。
+   */
+  readonly focusOwnerRef: MutableRefObject<FocusOwner>;
+  /**
+   * **道具が下書きを持っているか**（増分 5 の手直し A1）。畳んだ持ち主の値では
+   * 素性入力中に `text` が下書きを隠すので、生の値を別に渡す（`focus-owner.ts` の
+   * `promotesOnContextMenu` の注記）。
+   */
+  readonly toolDraftRef: MutableRefObject<boolean>;
 }
 
 /** {@link createMountHitTest} の産物（U40 ディスパッチャへ渡す 4 つの口）。 */
@@ -117,7 +137,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     nextRingIdRef,
     recordCommitRef,
     contextMenuOpenerRef,
-    shortcutsSuspendedRef,
+    focusOwnerRef,
+    toolDraftRef,
   } = options;
 
   // HB-15 ROOT FIX — wire the LIVE map click hit-test + selection so an edit-mode
@@ -171,6 +192,15 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
           // the body underneath. Only the selected feature draws edge handles, so we
           // pass the SAME active-feature truth the handle draw path uses (単一真実源).
           activeFeature: s.selection.activeFeature,
+          // **描く条件と掴める条件を同じ入力で決める**（増分 5 の手直し A6）。
+          // ハンドルを描くのは `mount/render.ts` の `editHandles` で、条件は
+          // 「鍵が開いている」かつ「掴める道具（選ぶ・頂点・動かす）」である。
+          // 同じ 2 つをここへ渡す ―― 渡さないと、読むだけのときに **見えていない
+          // 頂点が最優先で掴まれ**、`app-active-vertex` が立って Escape の階段が
+          // 1 段増える（GPT #2 / バグ狩り #15）。判定を 2 通りに書かないよう、
+          // 述語そのものは `shell/tools.ts` の 1 本を読む（教訓 5.30）。
+          handlesDrawn:
+            s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
           point,
         },
         // World coordinate of the click (renderer inverse) for the world-space leaf
@@ -420,11 +450,13 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       s.restoreSelection(promoteHitToSelection(s.selection, hit));
     },
     open: (request) => contextMenuOpenerRef.current?.open(request),
-    // fr96 段階7 優先規則: while a modal / tool draft owns the input, the right-click
-    // request is dropped WHOLE (neither promote nor open — live-context-menu-port).
-    // Read live through the ref so the port built once at mount always sees the
-    // current OR-chain value (教訓 5.6, never a stale capture).
-    suspended: () => shortcutsSuspendedRef.current,
+    // fr96 段階7 優先規則: ダイアログが鍵盤を持っているあいだは、右クリックの要求ごと
+    // 捨てる（昇格もメニューも走らせない）。**道具が下書きを持っているだけのときは
+    // 捨てない** ―― メニューは開いてよく、止めるのは昇格だけである（下の `promotes`。
+    // 設計書 §I.3 の原則①）。どちらの判定も `shell/focus-owner.ts` の 1 本を通し、
+    // 現在値は ref から読む（教訓 5.6: 古い写しを掴まない）。
+    suspended: () => suspendsContextMenu(focusOwnerRef.current),
+    promotes: () => promotesOnContextMenu({ toolDrawing: toolDraftRef.current }),
   });
 
   return { hitTester, selectionPort, editSession, contextMenu };

@@ -115,12 +115,19 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
     >
       <h2 className="add-property-form__title">{ADD_STRINGS.formTitle}</h2>
 
+      {/* **欄が「まだ何も打っていない」と自分で名乗る**（`data-pristine`。増分 5 の手直し
+          A2）。焦点がこの欄にあるあいだ、Escape は道具が受けて「やめる」になるが、
+          **打ちかけがあるときだけ 1 度確認を出す** ―― 打った文字を黙って失わないためで、
+          その判定はこの属性 1 本を読む（素性欄の名前欄と同じ作法＝教訓 5.13）。
+          名乗りが無いと欄が空でも「打ちかけあり」に倒れ、空欄で Escape を押しても
+          板が出る（実装したときに見つかった取りこぼし）。 */}
       <label className="add-property-form__field">
         {ADD_STRINGS.fieldName}
         <input
           type="text"
           data-testid="add-name"
           value={name}
+          data-pristine={name.length === 0 ? 'true' : 'false'}
           onChange={(e) => setName(e.target.value)}
           autoFocus
         />
@@ -133,6 +140,7 @@ export function AddPropertyForm(props: AddPropertyFormProps): JSX.Element {
           type="text"
           data-testid="add-kind-label"
           value={kindLabel}
+          data-pristine={kindLabel.length === 0 ? 'true' : 'false'}
           onChange={(e) => setKindLabel(e.target.value)}
           placeholder={ADD_STRINGS.fieldKindLabelHint}
         />
@@ -206,7 +214,10 @@ export function addPromptToFormProps(prompt: AddDraftPrompt): AddPropertyFormPro
   return {
     // 上位領域を聞くのは面だけ。**既定の上位領域を決める側と同じ述語**を見る
     // （2026-09-06、2 回目の手直し。片方だけ落ちていたのが調査 8 の事故）。
-    showParent: parentSelectableFor(prompt.tool),
+    //
+    // **押し込む側が明示したときはそれに従う**（司令塔の決定 (5)）。ナイフの非継承側と
+    // 穴あけの新地物は面だが、上位領域はドメインが元の地物から引き継ぐので聞かない。
+    showParent: prompt.showParent ?? parentSelectableFor(prompt.tool),
     parentCandidates: prompt.parentCandidates,
     defaultParentId: prompt.defaultParentId,
     currentYear: prompt.currentYear,

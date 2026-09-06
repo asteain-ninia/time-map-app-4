@@ -436,6 +436,35 @@ const CHANGE_PATHS: readonly ChangePath[] = [
     canChange: (mode) =>
       resolveCommandEnabled(COMMAND_ID.ToolsAddFace, { runnable: true, mode }),
   },
+  {
+    // 増分 5 の手直し F3。**2 回目の手直しで「打ちかけの無い欄では大域の打鍵を通す」
+    // 緩和（`data-pristine`）を入れた**ので、緩和が権限の関門まで開けていないことを
+    // ここで固定する。F2（その場で名前を変える）は保存ファイルへ書く操作なので、
+    // 読むだけでは走ってはいけない。
+    name: '⑯ 一覧の F2（その場で名前を変える）',
+    canChange: (mode) => {
+      const registry = new CommandRegistry();
+      const run = vi.fn();
+      registry.register(COMMAND_ID.ListRename, { run });
+      render(<AppShell store={sessionStore(mode)} registry={registry} />);
+      fireEvent.keyDown(window, { key: 'F2' });
+      return run.mock.calls.length > 0;
+    },
+  },
+  {
+    // 増分 5 の手直し F3。素性欄の Enter は「保存して次へ」なので、読むだけでは
+    // **欄そのものが押せない**（`disabled`）ことと、打鍵が保存へ届かないことの両方を見る。
+    name: '⑰ 素性欄の Enter（保存して次へ）',
+    canChange: (mode) => {
+      const dispatchEdit = vi.fn();
+      renderPanel(mode, { editDispatch: { dispatchEdit } });
+      const name = screen.getByLabelText(PROPERTY_STRINGS.nameLabel) as HTMLInputElement;
+      if (name.disabled) return false;
+      fireEvent.change(name, { target: { value: '新しい名前' } });
+      fireEvent.keyDown(name, { key: 'Enter' });
+      return dispatchEdit.mock.calls.length > 0;
+    },
+  },
 ];
 
 // --- 許可側の表（読むだけでも使えるべき部品） --------------------------------
@@ -521,6 +550,20 @@ const ALLOWED_PATHS: readonly AllowedPath[] = [
       if (row.getAttribute('aria-selected') === 'true') return false;
       fireEvent.click(row);
       return screen.getByTestId('anchor-row-a2').getAttribute('aria-selected') === 'true';
+    },
+  },
+  {
+    // 増分 5 の手直し F3。**送り（Alt+↑ / Alt+↓）は読むだけでも通る**（`permissions.ts` の
+    // `EDITING_COMMANDS` に入れていない）。220 件の作業のまとまりを順に「見て回る」のは
+    // 読む操作だからで、禁止側だけを増やしていくとここが巻き添えで塞がる。
+    name: '作業のまとまりの送り（Alt+↓ で次へ）',
+    canUse: (mode) => {
+      const registry = new CommandRegistry();
+      const run = vi.fn();
+      registry.register(COMMAND_ID.ListBundleNext, { run });
+      render(<AppShell store={sessionStore(mode)} registry={registry} />);
+      fireEvent.keyDown(window, { key: 'ArrowDown', altKey: true });
+      return run.mock.calls.length > 0;
     },
   },
   {

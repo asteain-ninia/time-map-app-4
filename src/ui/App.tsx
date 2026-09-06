@@ -108,6 +108,7 @@ import {
   SurveyToolController,
   SurveyMapBridge,
   SurveyMeasurementPanel,
+  SurveyOptionBar,
   type SurveyDrawSink,
 } from './survey/index';
 import './survey/survey.css';
@@ -174,8 +175,8 @@ import {
   FOCUS_OWNER,
   deriveFocusOwner,
   explainsRefusal,
-  suspendsContextMenu,
   suspendsShortcuts,
+  type FocusOwner,
 } from './shell/focus-owner';
 import { ESCAPE_STEP, escapeHasWork, nextEscapeStep } from './shell/escape-ladder';
 import { useTextFocused } from './shell/useTextFocused';
@@ -524,7 +525,19 @@ export function App(): JSX.Element {
   // right-click without re-mounting the map (the cameraInputRef late-binding pattern).
   // While suspended the port drops the request whole — no menu opens AND the live
   // selection is untouched (a knife/merge/survey draft's own Esc keeps ownership).
-  const shortcutsSuspendedRef = useRef(false);
+  //
+  // **増分 5 の手直し A1: 渡すのは真偽値ではなく「鍵盤の持ち主」そのもの。** 右クリックの
+  // 扱いは 2 通りに分かれる ―― ダイアログが持っているときは **要求ごと捨てる**、道具が
+  // 下書きを持っているときは **メニューは開くが選択を変えない**。真偽値 1 個では後者を
+  // 表現できず、作図中の右クリックが下書きを壊していた（バグ狩り #1。重症度 4）。
+  const focusOwnerRef = useRef<FocusOwner>(FOCUS_OWNER.None);
+  /**
+   * **道具が下書きを持っているか**（増分 5 の手直し A1）。右クリックの昇格を止める
+   * 判定に使う。持ち主の値（`focusOwner`）は文字入力が前に立つと `text` になるので、
+   * 「下書きを持っている」がその陰に隠れる ―― 素性を打っている最中の右クリックが
+   * 下書きを壊さないよう、畳む前の値を別に写す。
+   */
+  const toolDraftRef = useRef(false);
 
   // HB5-3 錨起点の視点合わせ — the「錨一覧」/ timeline-origin selection snaps the camera
   // onto the selected feature's world extent. Built in onMapMount (where `ports` — the
@@ -742,6 +755,31 @@ export function App(): JSX.Element {
   // base-map image is loaded; empty ⇒ the host shows the bundled preset (FR-03).
   const baseMapImageRef = useRef<Uint8Array>(new Uint8Array());
 
+  /**
+   * **地図が載ったか**（増分 5 の手直し A4）。鍵盤の持ち主の 6 値のうち `none`
+   * （まだ誰も持っていない）は、この値が偽のあいだだけ出る。渡さないと `none` は
+   * 永久に出ず、語彙が 1 つ死ぬ ―― 「地図が鍵盤を持っている（＝打鍵が全部通る）」と
+   * 「まだ載っていないので行き先が無い」は違う状態なので、区別そのものは要る。
+   *
+   * 書き手は下の `onMapMount` の 1 か所だけで、`setMapReady` は同一性が変わらないので
+   * `onMapMount` の同一性も変わらない（＝地図は再マウントされない）。
+   */
+  const [mapReady, setMapReady] = useState(false);
+  /**
+   * **この地図が何回目のマウントかの印**（増分 5 の手直し F2 / GPT #15）。
+   *
+   * 「地図を再マウントしていない」という受け入れ条件を、いままで **カメラの値が
+   * 保たれること**で見ていた。カメラは外の店（`store.camera`）に居るので、
+   * **地図セルが作り直されても同じ値を復元できてしまう** ―― 検査は緑のまま、
+   * Canvas も入力の途中も一時的な予告も失われる、という抜け方がある。
+   *
+   * そこで **要素そのものに印を書く**。マウントのたびに番号が 1 つ増え、DOM 属性
+   * （`data-mount-id`）として読めるので、E2E は「帯の中身・右パネルの幅・窓の大きさを
+   * 変えても印が変わらない」を直接見られる。印は観測だけで、真実は 1 つも持たない
+   * （技術方針 2.5）。
+   */
+  const mapMountCountRef = useRef(0);
+
   const onMapMount = useCallback((el: HTMLDivElement): (() => void) => {
     // 部品どうしをまたぐ「先に宣言して後から差し替える」参照は、この 1 個の箱にまとめる。
     //
@@ -798,7 +836,8 @@ export function App(): JSX.Element {
       announceEditRefusalRef,
       announceCarryForwardRef,
       contextMenuOpenerRef,
-      shortcutsSuspendedRef,
+      focusOwnerRef,
+      toolDraftRef,
     });
     // 入力: U40 ディスパッチャ + DOM リスナー + ツールのオーバーレイへ渡すカメラ入口。
     const input = createMountInput({
@@ -818,12 +857,19 @@ export function App(): JSX.Element {
     // より後）。購読の登録順と、ホスト自身の再描画が throttle に載る時点を分割前と揃える。
     render.startRedrawScheduling();
 
+    // 地図が載った（鍵盤の持ち主が `none` から `map` へ移る）。
+    setMapReady(true);
+    // 何回目のマウントかを要素へ書く（F2 の観測。数えるのは 1 か所だけ）。
+    mapMountCountRef.current += 1;
+    el.dataset['mountId'] = String(mapMountCountRef.current);
+
     // 後始末は「入力 → 描画 → 観測」の順で呼ぶ。分割前は 1 本の cleanup が
     // 購読解除 → リスナー剥がし → カーソル読み取り停止 → ホスト破棄 → 遅延結線の解除
     // と並んでいた。部品ごとの cleanup ではその並びを 1 行ずつ再現できないので、
     // **同じ効き目になる並び**を選んである: 「カーソル読み取りの停止（入力側）が
     // `ports.dispose()`（描画側）より前」という唯一の順序の制約は保たれている。
     return () => {
+      setMapReady(false);
       input.dispose();
       render.dispose();
       observation.dispose();
@@ -1964,15 +2010,16 @@ export function App(): JSX.Element {
       if (result.status !== PROCESS_STATUS.Committed) return;
       const inheritorId = snapshot.touchedFeatureIds[0] ?? snapshot.inheritorFeatureId;
       recordCommit(result, { featureId: inheritorId }, store.getState().currentTime);
-      // HB3-17: the split is done — the knife is no longer in knife state, so
-      // deactivate the tool (the toolbar button must not stay pressed/"active";
-      // ツール状態とUI表示のデシンク). Preserve the just-promoted inheritor selection
-      // (教訓 5.11): recordCommit re-resolved selection onto the inheritor, so read it
-      // back and pin it across the tool clear — only activeTool changes, not selection.
-      const s = store.getState();
-      s.setActiveTool(null, s.selection);
+      // **確定しても道具は降りない**（増分 5 の手直し B2 / GPT #10。設計書 §D.2）。
+      //
+      // 旧版はここで `setActiveTool(null)` を呼んでいた ―― HB3-17（分割が済んだのに
+      // ツールバーのボタンが押されたまま残る）への手当てだったが、**5 道具のうち
+      // ナイフだけが降りる**という不統一になっていた。続けて分けたい人は毎回ナイフを
+      // 選び直すことになる。いまは道具の側（`useKnifeTool` の確定）が「対象選択へ戻す」
+      // 再武装をするので、ボタンの押された状態とセッションの状態は食い違わない
+      // （HB3-17 が言っていたデシンクは起きない）。
     },
-    [recordCommit, store],
+    [recordCommit],
   );
 
   // MERGE COMMIT (教訓 5.11 / U12): record as one history unit and promote the result
@@ -2101,19 +2148,96 @@ export function App(): JSX.Element {
   const [openPopovers, setOpenPopovers] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  const popoverOpenChange = useCallback(
-    (id: string) =>
-      (open: boolean): void => {
-        setOpenPopovers((prev) => {
-          if (prev.has(id) === open) return prev;
-          const next = new Set(prev);
-          if (open) next.add(id);
-          else next.delete(id);
-          return next;
-        });
-      },
-    [],
+  /**
+   * **報せ口は id ごとに 1 個だけ作って使い回す**（増分 5 の手直し C4 / Opus 反証 ⑮）。
+   *
+   * 素直に「毎回新しい関数を返す」形にすると、それを props に持つ部品（深さ ▾・座標 ▾・
+   * 表示 ▾）の要素の同一性が毎レンダー変わり、**設定欄の常設スロットが毎レンダー
+   * 登録し直される** ―― 帯が毎回組み直され、地図の入力とは関係のない再レンダーが
+   * オプションバー全体へ広がる（技術方針 2.3 の部分後退）。
+   */
+  const popoverChangeCache = useRef(new Map<string, (open: boolean) => void>());
+  const popoverOpenChange = useCallback((id: string): ((open: boolean) => void) => {
+    const cache = popoverChangeCache.current;
+    const cached = cache.get(id);
+    if (cached !== undefined) return cached;
+    const fn = (open: boolean): void => {
+      setOpenPopovers((prev) => {
+        if (prev.has(id) === open) return prev;
+        const next = new Set(prev);
+        if (open) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    };
+    cache.set(id, fn);
+    return fn;
+  }, []);
+  /**
+   * **いま開いている「本物のモーダル」の名前**（増分 5 の手直し A4 / GPT #5）。
+   *
+   * ポップオーバーと同じく **名前の集合**で持つ。真偽値を道具の数だけ並べると、足すたびに
+   * `modalOwnsKeyboard` の OR 鎖へ 1 項目ずつ書き足す作業が要り、実際に
+   * `MergeOptionsDialog` と `InheritorModal` が **抜けたまま**だった ―― どちらも本物の
+   * モーダルなのに「対象を持っている」という理由だけで下書き扱いになっていたので、
+   * 素性の入力や継承先の選択の途中で Ctrl+S / Ctrl+N / Ctrl+O が背後で走った。
+   *
+   * 名前で持てば、道具が増えても直すのは「その道具が `onModalChange` を配線する」の
+   * 1 か所だけになる（教訓 5.6: 順序に依らない結果状態で持つ）。
+   */
+  const [openToolModals, setOpenToolModals] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
   );
+  // 報せ口は id ごとに 1 個だけ作って使い回す（`popoverOpenChange` と同じ理由）。
+  const toolModalChangeCache = useRef(new Map<string, (open: boolean) => void>());
+  const toolModalChange = useCallback((id: string): ((open: boolean) => void) => {
+    const cache = toolModalChangeCache.current;
+    const cached = cache.get(id);
+    if (cached !== undefined) return cached;
+    const fn = (open: boolean): void => {
+      setOpenToolModals((prev) => {
+        if (prev.has(id) === open) return prev;
+        const next = new Set(prev);
+        if (open) next.add(id);
+        else next.delete(id);
+        return next;
+      });
+    };
+    cache.set(id, fn);
+    return fn;
+  }, []);
+  /**
+   * **常設スロットの中身は同一性を保つ**（増分 5 の手直し C4）。`PersistentOptionSlot` の
+   * 登録は node の同一性で依存を張るので、ここで毎レンダー新しい要素を作ると帯が毎回
+   * 組み直される。報せ口（`popoverOpenChange`）は id ごとに使い回すので、この memo は
+   * 実際に永久に効く。
+   */
+  const depthSlotNode = useMemo(
+    () => (
+      <DepthOptions<DomainRoot> store={store} onOpenChange={popoverOpenChange('depth')}>
+        <GlobalDepthPanel store={store} />
+      </DepthOptions>
+    ),
+    [store, popoverOpenChange],
+  );
+  const gridSlotNode = useMemo(() => <GridToggleControl store={store} />, [store]);
+  const surveySlotNode = useMemo(
+    () => (
+      <SurveyMeasurementPanel
+        store={store}
+        onCoordsOpenChange={popoverOpenChange('survey-coords')}
+      />
+    ),
+    [store, popoverOpenChange],
+  );
+
+  /**
+   * **メニューバーが開いているか**（増分 5 の手直し A4 / GPT #3）。標準メニューは
+   * `openKey` を自分の中に閉じていて、開いていることを誰にも報せていなかった。
+   * だから **メニューを開いたまま Ctrl+Z / Delete を押すと背後の地図が編集され**、
+   * Escape は大域の側が先に動いて「選択解除とメニュー閉鎖」が同時に起きた。
+   */
+  const [menuBarOpen, setMenuBarOpen] = useState(false);
   // 鍵盤を持っているのが「ダイアログ」なのか「道具」なのかを分けて数える（増分 3）。
   // 止める理由が違えば、止めている間に通してよいものも違う。
   const modalOwnsKeyboard =
@@ -2121,6 +2245,10 @@ export function App(): JSX.Element {
     helpModalOpen ||
     fileModalOpen ||
     contextMenuOpen ||
+    menuBarOpen ||
+    // 道具が出した本物のモーダル（結合の選択板・継承先の板・新地物の素性入力・
+    // 追加の「捨てますか」）。増分 5 の手直し A4。
+    openToolModals.size > 0 ||
     draftConfirmOpen ||
     // 増分 4: 「どこへでも移動」（Ctrl+P）が開いている間は、打鍵はその入力欄のもの。
     // 開いたまま Ctrl+Z が背後へ抜けると、打っている最中に世界が巻き戻る（教訓 5.14）。
@@ -2152,6 +2280,10 @@ export function App(): JSX.Element {
     popoverOpen: openPopovers.size > 0,
     textFocused,
     toolDrawing: toolOwnsKeyboard,
+    // `none`（まだ誰も持っていない）は **地図が載る前**のためにある値である。
+    // 渡さないと `none` が永久に出ず、6 値のうち 1 つが死んだ語彙になる
+    // （増分 5 の手直し A4 / GPT の「`none` は mapReady を渡すか消す」）。
+    mapReady,
   });
   const shortcutsSuspended = suspendsShortcuts(focusOwner);
   /**
@@ -2175,18 +2307,30 @@ export function App(): JSX.Element {
   const onSuspendedShortcut = useCallback(
     (id: CommandId): void => {
       if (id === COMMAND_ID.EditDeselect) return; // Escape はダイアログを閉じる打鍵。
-      statusMessageStore.failure(APP_STRINGS.shortcutBusy(MENU_ITEM_LABELS[id]));
+      // **止めている理由が違えば、次の一手も違う**（増分 5 の手直し A4）。確認は
+      // 「答える」、板は「閉じる（Esc）」である。同じ文を使い回すと、板を開いている
+      // 利用者に「答えるべき確認」を探させることになる。
+      const label = MENU_ITEM_LABELS[id];
+      statusMessageStore.failure(
+        focusOwnerRef.current === FOCUS_OWNER.Popover
+          ? APP_STRINGS.shortcutBusyPopover(label)
+          : APP_STRINGS.shortcutBusy(label),
+      );
     },
     [statusMessageStore],
   );
-  // fr96: mirror the judgement into the ref the live right-click port reads (assigned
-  // every render, so the imperative port always sees the current value — 教訓 5.6).
+  // fr96: 右クリックの口が読む ref へ、鍵盤の持ち主を毎レンダー写す（命令的に作られた
+  // 口が常に現在値を見るようにするため。教訓 5.6: 古い写しを掴まない）。
   //
   // **増分 5c: 右クリックは「ダイアログが持っているとき」だけ止める**（設計書 §D.4 の
   // 表 / §I.3 の原則①「いつでも開ける ―― 道具を持っている間も」）。旧版は打鍵の門と
   // 同じ 1 本の真偽値を使い回していたので、**道具を構えているあいだ右クリックが
   // 死んでいた**。止める理由が違うものを同じ値で決めない（教訓 5.30）。
-  shortcutsSuspendedRef.current = suspendsContextMenu(focusOwner);
+  //
+  // **増分 5 の手直し A1: 判定を口の側へ移した。** 「捨てる」と「昇格させない」は別の
+  // ふるまいなので、ここで真偽値へ潰さず、持ち主そのものを渡す。
+  focusOwnerRef.current = focusOwner;
+  toolDraftRef.current = toolOwnsKeyboard;
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -2897,11 +3041,20 @@ export function App(): JSX.Element {
         suspended={shortcutsSuspended}
         alwaysAllowedShortcuts={alwaysAllowedShortcuts}
         onSuspendedShortcut={explainsRefusal(focusOwner) ? onSuspendedShortcut : undefined}
+        // 標準メニューを開いているあいだは鍵盤がメニューのもの（増分 5 の手直し A4 /
+        // GPT #3）。開いたまま Ctrl+Z / Delete が背後の地図へ抜けないようにする。
+        onMenuOpenChange={setMenuBarOpen}
         onMapMount={onMapMount}
         /* 設計書 §C.4 のオプションバー。この増分では器と API だけで、中身は各道具が
            後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か地物一覧から
            選ぶ／（設定なし）／空の確定欄」）。 */
-        optionBar={<OptionBar store={optionBarStore} />}
+        optionBar={
+          <OptionBar
+            store={optionBarStore}
+            // 「≫」を開いているあいだも鍵盤は板のもの（増分 5 の手直し D2 / A4）。
+            onOverflowOpenChange={popoverOpenChange('overflow')}
+          />
+        }
         timeline={<Timeline store={store} />}
 /* 状態行 5 枠（設計書 §C.8）。60Hz で動く値（カーソル座標・縮尺）は
            **それぞれの葉ノードだけ** が購読するので、パンでは再レンダーが起きない
@@ -2972,26 +3125,17 @@ export function App(): JSX.Element {
                 オプションバーの設定欄へ降ろした（設計書 §B.4「個別フォーカスの 4 部品は
                 アプリバーから降ろす」）。**どれも道具に属さない常設の部品**なので、道具が
                 帯を持ち直しても落ちない口（`registerPersistentSlot`）へ差し込む。
-                並びは登録した順（深さ → 格子 → 測量 → 表示）。 */}
-            <PersistentOptionSlot optionBar={optionBarStore} id="depth">
-              <DepthOptions<DomainRoot> store={store} onOpenChange={popoverOpenChange('depth')}>
-                <GlobalDepthPanel store={store} />
-              </DepthOptions>
-            </PersistentOptionSlot>
-            {/* FR-13 グリッド ON/OFF 結線 (教訓 5.7 結線漏れ)。**畳まずにそのまま置く**
-                ―― 1 クリックで効く固定幅のボタンなので、ポップオーバーの中へ入れると
-                手数が増えるだけである。 */}
-            <PersistentOptionSlot optionBar={optionBarStore} id="grid">
-              <GridToggleControl store={store} />
-            </PersistentOptionSlot>
+
+                **並びは登録した順で、狭い窓では「≫」へ後ろから送られる**（増分 5 の手直し
+                D2）。道具の設定（吸着 ▾ ほか）は常設より **前**に並ぶので（`option-bar.ts` の
+                `republishSlots`）、いちばん先に「≫」へ送られるのはここの最後である。
+                だから **落としたくないものほど先に登録する**:
+                測量の読み取り（測っている最中だけ出る＝いま見ている値そのもの）→
+                表示 ▾（作業中いちばん触る）→ 深さ ▾ → 格子（1 押しのトグルなので
+                「≫」の中でも手数が変わらない）。 */}
             <PersistentOptionSlot optionBar={optionBarStore} id="survey">
-              <SurveyMeasurementPanel
-                store={store}
-                onCoordsOpenChange={popoverOpenChange('survey-coords')}
-              />
+              {surveySlotNode}
             </PersistentOptionSlot>
-            {/* 増分 4 / C7: 表示の設定を「一覧の 28,546px 下」からオプションバーの
-                設定欄へ移す。 */}
             <DisplayOptionsSlot<DomainRoot>
               store={store}
               optionBar={optionBarStore}
@@ -2999,6 +3143,18 @@ export function App(): JSX.Element {
               getTime={getCurrentTime}
               onOpenChange={popoverOpenChange('display')}
             />
+            <PersistentOptionSlot optionBar={optionBarStore} id="depth">
+              {depthSlotNode}
+            </PersistentOptionSlot>
+            {/* FR-13 グリッド ON/OFF 結線 (教訓 5.7 結線漏れ)。**畳まずにそのまま置く**
+                ―― 1 クリックで効く固定幅のボタンなので、ポップオーバーの中へ入れると
+                手数が増えるだけである。 */}
+            <PersistentOptionSlot optionBar={optionBarStore} id="grid">
+              {gridSlotNode}
+            </PersistentOptionSlot>
+            {/* 司令塔の決定 (4): 測るは別の軸のまま残すが、オプションバーの 5 区画を使う。
+                DOM は作らない（道具名・対象・次の一手・確定を押し込むだけ）。 */}
+            <SurveyOptionBar<DomainRoot> store={store} optionBar={optionBarStore} />
             <AddToolControllerWithParents
               store={store}
               startProcess={hostBootstrap.startProcess}
@@ -3013,6 +3169,8 @@ export function App(): JSX.Element {
               onCommitted={onAddCommitted}
               onConflicts={onAddConflicts}
               onDrawingChange={setAddDrawing}
+              onModalChange={toolModalChange('add-discard-confirm')}
+              onSnapPopoverOpenChange={popoverOpenChange('snap')}
               onDraftDiscarded={(count) => {
                 // D1: 打ちかけを黙って消さない（設計書 §H.5 の「直前の結果」へ報せる）。
                 statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
@@ -3032,10 +3190,12 @@ export function App(): JSX.Element {
               resolveLeafShape={knifeBootstrap.resolveLeafShape}
               drawSink={knifeDrawSink}
               mapCameraInput={mapCameraInput}
+              addDraft={addDraftStore}
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onKnifeCommitted}
               onConflicts={onKnifeConflicts}
               onDrawingChange={setKnifeDrawing}
+              onModalChange={toolModalChange('knife')}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
                 SAME store. Selecting 編集モード→結合 starts a session; map-input clicks
@@ -3058,6 +3218,7 @@ export function App(): JSX.Element {
               onCommitted={onMergeCommitted}
               onConflicts={onMergeConflicts}
               onDrawingChange={setMergeDrawing}
+              onModalChange={toolModalChange('merge')}
             />
             {/* U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool controller, bound to the
                 SAME store. Selecting 編集モード→所属変更 starts a session; the first map
@@ -3080,6 +3241,7 @@ export function App(): JSX.Element {
               onCommitted={onReparentCommitted}
               onConflicts={onReparentConflicts}
               onDrawingChange={setReparentDrawing}
+              onModalChange={toolModalChange('reparent')}
             />
             {/* U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) controller,
                 bound to the SAME store. Selecting 編集モード→穴・飛び地 arms a session; the
@@ -3126,10 +3288,12 @@ export function App(): JSX.Element {
               featureAtPoint={drillBootstrap.featureAtPoint}
               drawSink={drillDrawSink}
               mapCameraInput={mapCameraInput}
+              addDraft={addDraftStore}
               defaultColor={KNIFE_DEFAULT_COLOR}
               onCommitted={onDrillCommitted}
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
+              onModalChange={toolModalChange('drill')}
             />
           </>
         }
@@ -4096,23 +4260,49 @@ function createRingEditBootstrap(
   // FeatureSnapshot> = the SAME live `createLiveEditBinding` the edit-session drag
   // confirm uses (applyProposal = applyEditProposal). So an add-hole / delete-ring
   // actually reaches Committed, exactly like an edit-mode vertex drag.
-  const live = createLiveEditBinding({
+  const access = {
     getRoot: () => getRoot(),
     // U4 study fix — the ring-edit confirm CAN surface a spatial conflict (a new
     // enclave/hole ring against a neighbour); the U06 resolution write-back needs the
     // SAME shared minters the bootstrap's RingIdPorts use (one series, 教訓 5.37).
     nextVertexId: ids.nextVertexId,
     nextRingId: ids.nextRingId,
-  });
-  const ports = live.ports;
+  };
+  // **確定の報せを「穴・飛び地の追加／削除」にする**（増分 5 の手直し E2 / バグ狩り #8）。
+  //
+  // 旧版は label を渡さずに 1 本だけ作っていたので、`createLiveEditBinding` の既定
+  // （`UI_COMMAND_LABEL.Edit`）へ落ち、**輪郭を確定しても状態行に「素性の変更を行いました」
+  // としか出なかった** ―― 何が起きたのか読み取れない（教訓 5.12）。
+  //
+  // 追加か削除かは **確定した形そのもの**から決める（環の数が増えたか減ったか）。
+  // 道具の局面（`subMode`）を確定の入口まで運ぶ道を新設するより、結果から見るほうが
+  // 経路が 1 本で済む（教訓 5.6: 経路ではなく結果状態で判定する）。
+  const liveAdd = createLiveEditBinding(access, UI_COMMAND_LABEL.RingAdd);
+  const liveDelete = createLiveEditBinding(access, UI_COMMAND_LABEL.RingDelete);
+  /** その地物がいま持っている環の数（引けなければ 0）。 */
+  const ringCountOf = (root: DomainRoot, featureId: FeatureId): number => {
+    const f = featuresAt(root, getTime()).find((x) => x.id === featureId);
+    return f !== undefined && f.kind === FEATURE_KIND.Leaf ? f.shape.rings.length : 0;
+  };
+  const bindingFor = (snapshot: RingFeatureSnapshot): ReturnType<typeof createLiveEditBinding> => {
+    const after = snapshot.feature;
+    if (after === undefined || after.kind !== FEATURE_KIND.Leaf) return liveAdd;
+    return after.shape.rings.length >= ringCountOf(getRoot(), after.id) ? liveAdd : liveDelete;
+  };
   // The hook's StartRingEditProcess is the confirm entry: assemble the ONE complete-
   // state proposal (snapshot) and drive U24→U13. add / delete are always a real change
   // (changed: true), so the no-op guard never suppresses them (教訓 5.24).
   const startProcess: StartRingEditProcess<DomainRoot> = (snapshot, anchorTime, current) =>
-    confirmRingEdit<DomainRoot>({ snapshot, anchorTime, current, ports, changed: true });
+    confirmRingEdit<DomainRoot>({
+      snapshot,
+      anchorTime,
+      current,
+      ports: bindingFor(snapshot).ports,
+      changed: true,
+    });
   const applyResolutionsFor = (
     proposal: EditProposal<RingFeatureSnapshot>,
-  ): ApplyResolutions<DomainRoot> => live.applyResolutionsFor(proposal);
+  ): ApplyResolutions<DomainRoot> => bindingFor(proposal.snapshot).applyResolutionsFor(proposal);
 
   return {
     ids,

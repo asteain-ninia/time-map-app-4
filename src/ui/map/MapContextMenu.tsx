@@ -235,10 +235,22 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
     };
   }, [onClose]);
 
-  const viewCommandEnabled = resolveCommandEnabled(COMMAND_ID.ViewToggleViewMode, {
-    runnable: registry.isRunnable(COMMAND_ID.ViewToggleViewMode),
-    mode,
-  });
+  /**
+   * **いつ右クリックしても押せる「見る」側の項目**（増分 5 の手直し E3 / バグ狩り #20。
+   * 設計書 §I.3 の原則①「いつでも開ける ―― 中身が変わるだけ」）。
+   *
+   * 旧版はここに鍵のトグル 1 個しか置いていなかったので、**選んでいない場所や、道具で
+   * 作図している最中に右クリックすると、項目が 1 個しかない板が出た** ―― 開くのに
+   * 中身が無いのは「開ける」と言えない。地物に依らない見る操作（全体表示・拡大・縮小）は
+   * どの局面でも意味があるので、常に並べる。可否は **メニューバーと同じ 1 本**
+   * （`resolveCommandEnabled`）を通す（教訓 5.13）。
+   */
+  const viewAxisCommands = [
+    COMMAND_ID.ViewFitAll,
+    COMMAND_ID.ViewZoomIn,
+    COMMAND_ID.ViewZoomOut,
+    COMMAND_ID.ViewToggleViewMode,
+  ] as const;
 
   return (
     <ul
@@ -272,25 +284,33 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
           </li>
         );
       })}
-      {/* The view-axis command stays available while viewing (教訓 5.13 permission gate). */}
-      <li role="none">
-        <button
-          type="button"
-          role="menuitem"
-          className="context-menu__item"
-          data-testid="context-menu-item"
-          data-command={COMMAND_ID.ViewToggleViewMode}
-          disabled={!viewCommandEnabled}
-          aria-disabled={!viewCommandEnabled}
-          onClick={() => {
-            if (!viewCommandEnabled) return;
-            registry.dispatch(COMMAND_ID.ViewToggleViewMode);
-            onClose();
-          }}
-        >
-          {MENU_ITEM_LABELS[COMMAND_ID.ViewToggleViewMode]}
-        </button>
-      </li>
+      {/* 「見る」側の項目は局面に依らず並べる（教訓 5.13 の権限の関門は通す）。 */}
+      {viewAxisCommands.map((commandId) => {
+        const enabled = resolveCommandEnabled(commandId, {
+          runnable: registry.isRunnable(commandId),
+          mode,
+        });
+        return (
+          <li key={commandId} role="none">
+            <button
+              type="button"
+              role="menuitem"
+              className="context-menu__item"
+              data-testid="context-menu-item"
+              data-command={commandId}
+              disabled={!enabled}
+              aria-disabled={!enabled}
+              onClick={() => {
+                if (!enabled) return;
+                registry.dispatch(commandId);
+                onClose();
+              }}
+            >
+              {MENU_ITEM_LABELS[commandId]}
+            </button>
+          </li>
+        );
+      })}
     </ul>
   );
 }

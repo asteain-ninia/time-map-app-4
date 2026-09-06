@@ -618,3 +618,109 @@ describe('PointerDispatcher.normalize', () => {
     expect(n.button).toBe(POINTER_BUTTON.Left);
   });
 });
+
+// --- A8: クリックかドラッグかを、離した位置でもう一度測り直す --------------------
+//
+// 増分 5 の手直し A8 / GPT #12。それまで「動いたか」の判定は `pointerMove` が来たとき
+// にしか走っていなかったので、**移動の見本が 1 つも届かない（あるいは間引かれて最後の
+// 1 つが落ちた）まま、押した所と離れた所が離れている**押下が「クリック」になった。
+// 読むだけのときは、これがそのまま「離した場所の地物を選ぶ」になる ―― 地図を掴んで
+// 動かしたのに、指を離した先の地物が勝手に選ばれる。`dispatch.ts` が書いている契約
+// （押下から解放までの総移動量で決める）とも食い違っていた。
+//
+// 判定は 1 方向にしか倒れない（クリック → ドラッグ）ので、近くで離したときは従来どおり
+// クリックのままである（下の回帰）。
+
+describe('A8: pointerMove が 1 度も来ない押下でも、離した位置で測り直す', () => {
+  /** しきい値（4px）より十分遠い。 */
+  const FAR = { dx: 40, dy: 0 };
+  /** しきい値より近い（クリックのまま）。 */
+  const NEAR = { dx: 2, dy: 1 };
+
+  it('読むだけ: 移動なしで遠くで離しても選択が走らない（旧版は離した場所の地物を選んだ）', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    // **pointerMove は 1 度も送らない**（間引かれて最後の 1 つが落ちた状況そのもの）。
+    dispatcher.pointerUp(ptr(1, 200 + FAR.dx, 150 + FAR.dy, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([]);
+    // ドラッグと判った押下なので、最後の位置で視点は 1 度書かれる（見本が落ちても
+    // 動いたぶんは反映される ―― 「何も起きない」にはしない）。
+    expect(camera.writes.length).toBe(1);
+    expect(dispatcher.activeCount).toBe(0);
+  });
+
+  it('読むだけ: 移動なしで近くで離せば従来どおりクリック＝選択（回帰）', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 200 + NEAR.dx, 150 + NEAR.dy, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual(['start:featureBody', 'end:click@202,151']);
+    expect(camera.writes.length).toBe(0); // 教訓 5.8: クリックは何も動かさない
+  });
+
+  it('編集: 移動なしで遠くで離すと selection.end の第 2 引数が true（ドラッグ）になる', () => {
+    const hit = vertexHit(asFeatureId('f1'), asVertexId('v1'));
+    const { selection, dispatcher } = setup(EDIT_MODE.Edit, hit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100 + FAR.dx, 100 + FAR.dy, POINTER_BUTTON.Left));
+    // 旧版は 'end:click@140,100' ―― ドラッグを「クリック」と報せると、U22 の
+    // 「ドラッグなら選択しない」規則をすり抜けて、離した先の頂点が選ばれる。
+    expect(selection.events).toEqual(['start:vertex', 'end:drag@140,100']);
+  });
+
+  it('編集: 移動なしで近くで離せば従来どおりクリック（回帰）', () => {
+    const hit = vertexHit(asFeatureId('f1'), asVertexId('v1'));
+    const { selection, dispatcher } = setup(EDIT_MODE.Edit, hit);
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 100 + NEAR.dx, 100 + NEAR.dy, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual(['start:vertex', 'end:click@102,101']);
+  });
+
+  it('編集セッションの release にも、測り直した「ドラッグだったか」が渡る', () => {
+    // 掴んだ頂点を離す確定（U24 confirmRelease）は wasDrag で 0 移動の空振りを落とす
+    // （教訓 5.24）。ここが click のままだと、実際に動かした編集が「動いていない」と
+    // 判定されて確定が落ちる。
+    const releases: { wasDrag: boolean }[] = [];
+    const camera = new FakeCamera();
+    const selection = new FakeSelection();
+    const dispatcher = new PointerDispatcher({
+      getMode: () => EDIT_MODE.Edit,
+      camera,
+      hitTester: { hitTest: () => vertexHit(asFeatureId('f1'), asVertexId('v1')) },
+      selection,
+      add: new FakeAdd(),
+      contextMenu: new FakeContextMenu(),
+      editSession: {
+        begin: () => true,
+        update: () => undefined,
+        release: (_point, wasDrag) => releases.push({ wasDrag }),
+        cancel: () => undefined,
+      },
+    });
+    dispatcher.pointerDown(ptr(1, 100, 100, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 140, 100, POINTER_BUTTON.Left));
+    expect(releases).toEqual([{ wasDrag: true }]);
+  });
+
+  it('一度ドラッグと判った押下は、押した位置へ戻して離してもクリックへ戻らない（1 方向）', () => {
+    // 測り直しは「クリック → ドラッグ」の 1 方向にしか倒れない。往復して元の位置で
+    // 離したときに「クリック」に戻ると、地図を掴んで動かして戻した拍子に地物が選ばれる。
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerMove(ptr(1, 280, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 200, 150, POINTER_BUTTON.Left)); // 元の位置へ戻して離す
+    expect(selection.events).toEqual([]);
+  });
+
+  it('斜めのわずかな移動でもしきい値を越えればドラッグ（軸ごとの比較になっていない）', () => {
+    // dx=3,dy=3 は各軸では 4px 未満だが距離は約 4.24px でしきい値を越える。軸ごとに
+    // 比べる実装へ書き換わると、ここだけが落ちる。
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 203, 153, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual([]);
+  });
+});

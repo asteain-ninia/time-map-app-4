@@ -9,7 +9,7 @@
 // is greyed but the key still fires.
 
 import { COMMAND_REFUSAL, CommandRegistry, type CommandId } from './commands';
-import { resolveCommandEnabled } from './permissions';
+import { isViewOnlyRefusal, resolveCommandEnabled } from './permissions';
 import type { EditMode } from '../state/session';
 
 /**
@@ -203,9 +203,15 @@ export function dispatchChord(
     // 鍵盤には「灰色の項目」が無いので、断ったこと自体が見えない。コマンドの
     // 持ち主が理由の口を出していれば、そこへ伝える（増分 2 の手直し A5 /
     // バグ狩り #2。可否の判定は増やさない — ここは結果を伝えるだけ）。
+    //
+    // **理由の優先順位は「読むだけ」が先**（増分 5 の手直し E3 / バグ狩り #14）。
+    // 旧版は `runnable`（＝コマンド自身の `canRun`）を先に見ていたので、鍵を閉じた
+    // ままの Ctrl+K が **「0 年にはすでに錨があります」**と答えた ―― 本当の理由は
+    // 「読むだけだから」で、鍵を開ければ話が変わる。**利用者が次に打てる手が変わる
+    // ほうの理由**を先に言う（設計書 §H.5「次の一手を見せる」）。
     registry.reportRefusal(
       commandId,
-      runnable ? COMMAND_REFUSAL.ViewOnly : COMMAND_REFUSAL.NotRunnable,
+      isViewOnlyRefusal(commandId, mode) ? COMMAND_REFUSAL.ViewOnly : COMMAND_REFUSAL.NotRunnable,
     );
     return DISPATCH_RESULT.Disabled;
   }

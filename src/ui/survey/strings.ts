@@ -6,8 +6,29 @@
 
 /** Survey mode + control labels. */
 export const SURVEY_STRINGS = {
-  /** The survey-mode toggle button label (補助モード, FR-14). */
-  modeLabel: '測量モード',
+  /**
+   * 左レールに並ぶ「測る」ボタンの文字（設計書 §C.3。増分 5 の手直し C3 / E1）。
+   *
+   * **「測量モード」ではない。** 画面からモードの語は無くなった（鍵と道具の 1 段に
+   * なった）ので、モードを名乗るのはもう嘘である。ほかの 11 個の道具と同じ「絵文字 ＋
+   * 動詞」の形に揃える。
+   */
+  modeLabel: '📏 測る',
+  /**
+   * オプションバーの道具名の区画（112px）に出す名前。レールと同じ語にする ――
+   * 押したボタンと帯の名前が違うと、いま何を持っているのかが分からない（§C.4）。
+   */
+  toolName: '📏 測る',
+  /** 確定欄（176px）の［測量を終える］（設計書 §C.4 の「確定」の列）。 */
+  finishLabel: '測量を終える',
+  /** 対象欄に出す「まだ 1 点も押していない」。 */
+  targetNone: '（まだ測っていません）',
+  /** 対象欄に出す「始点だけ押した」。 */
+  targetStartOnly: '始点だけ指定',
+  /** 対象欄に出す確定した線の本数。 */
+  targetLines: (n: number): string => `測った線 ${String(n)} 本`,
+  /** 次の一手（測量を始めた直後）。 */
+  nextStepIdle: '地図で 2 点を押すと距離が出ます。',
   /** The clear-all button label (FR-15). */
   clearLabel: '測量結果をクリア',
   /** Panel heading for the measurement readout. */

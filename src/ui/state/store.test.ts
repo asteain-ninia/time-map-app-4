@@ -21,9 +21,17 @@ import {
   DEFAULT_APP_SETTINGS,
   DEFAULT_PROJECT_SETTINGS,
 } from './settings';
-import { EDIT_MODE, asToolId } from './session';
-import { TOOL_ID } from '../shell/tools';
-import { IDLE_TRANSIENT } from '../../domain/selection';
+import { EDIT_MODE, asToolId, type EditMode, type ToolId } from './session';
+import { ALL_TOOLS, TOOL_ID, modeForTool, toolShowsVertexHandles } from '../shell/tools';
+import {
+  FEATURE_KIND_AXIS,
+  KIND_LABEL_TOGGLE,
+  LEDGER_MODE,
+} from '../discovery/index';
+import { EMPTY_HIT, IDLE_TRANSIENT } from '../../domain/selection';
+// A5 の結合検査で「その mode だと地図の左クリックがどこへ行くか」まで見るため、
+// U40 の行き先の決定（同じ 1 本）を引く。行き先を自前で書き写すと二重の真実源になる。
+import { DISPATCH_TARGET, POINTER_BUTTON, decideDispatch } from '../map/dispatch';
 import {
   TIME_CHANGE_SOURCE,
   type TimeChangeSource,
@@ -2129,5 +2137,648 @@ describe('display control — independent axis (FR-42 非干渉, U34)', () => {
     expect(dc.focus.originId).toBe(f('X'));
     expect(dc.focus.depth).toBe(4);
     expect(dc.focus.emphasize).toBe(true);
+  });
+});
+
+// ============================================================================
+// A5: `activeTool` と `mode` は必ず一緒に動く ―― 不変条件の全操作走査
+// ============================================================================
+//
+// 増分 5 の手直し A5 / GPT #1・反証 ①。`activeTool` を書く場所は `setActiveTool` だけ
+// ではなかった ―― 測量を始めるときにも「地図を覆う入力層を 1 枚に保つ」ために
+// `activeTool: null` を書いており、**そこだけ `mode` を書き忘れていた**。結果、面を
+// 描いている最中に測量を入り切りすると「画面は選ぶ・内部は追加」になり、左クリックは
+// 追加の経路へ送られるのに追加のコントローラは居らず、**選ぶことも追加することも
+// できなくなった**。
+//
+// 個別の操作を 1 つずつ検査しても、この型の欠陥は **次に足された操作**で必ず再発する。
+// だから検査を「操作ごと」ではなく **不変条件**にする ―― 「どの操作のあとでも、
+// `mode` と `activeTool` は導出式のとおりである」。
+//
+// そのうえで **新しい操作を足したのに検査へ足し忘れたら落ちる**ようにする:
+// 下の TOOL_MODE_OPERATIONS は `SessionStoreActions` のキーを 1 つ残らず並べた表で、
+// `Object.keys(store.getState())` の関数値と **集合として一致すること**を検査する。
+// ストアに操作を足すとキーが増え、表に無ければその場で落ちる。
+
+/**
+ * 不変条件そのもの（設計書 §D.1 の導出式）。
+ *
+ * 「`mode === modeForTool(mode === 読むだけ, activeTool)`」は **そのままでは読むだけの
+ * 側が素通りする**（`locked` が真なら導出式は道具を見ずに `view` を返すので、道具が
+ * 何であれ等式が成り立つ）。ここが A5 の穴の隣にある落とし穴なので、2 つの節に
+ * 展開して書く:
+ *
+ *   1. 読むだけなら、道具は必ず外れている（K-6 の関門の裏側 ―― 道具だけ入ると
+ *      道具のコントローラが立ち上がって編集の入口が開く）。
+ *   2. 読むだけでないなら、`mode` は道具から導いた値と一致する
+ *      （面／線／点なら追加、それ以外なら編集）。
+ */
+function expectToolModeInvariant(
+  state: { readonly mode: EditMode; readonly activeTool: ToolId | null },
+  label: string,
+): void {
+  if (state.mode === EDIT_MODE.View) {
+    // (1) 読むだけ ⇒ 道具は null。
+    expect({ where: label, mode: state.mode, toolIsNull: state.activeTool === null }).toEqual({
+      where: label,
+      mode: EDIT_MODE.View,
+      toolIsNull: true,
+    });
+    return;
+  }
+  // (2) 読むだけでない ⇒ 道具から導いた mode と一致する。
+  expect({ where: label, mode: state.mode }).toEqual({
+    where: label,
+    mode: modeForTool(false, state.activeTool),
+  });
+}
+
+/** 表の 1 行の分け方。**なぜその分類か**は各行の `why` に書く。 */
+type OperationGroup =
+  /**
+   * 不変条件をその場で確かめる操作。引数に文脈が要らない（または固定の値で足りる）
+   * ので、**すべての開始状態から一括で呼んで**不変条件を見る。
+   */
+  | 'invariant'
+  /**
+   * 引数の選び方そのものが不変条件の要になる操作（道具・鍵・測量・読み込み）。
+   * 一括でも回すが、**専用の it で組み合わせを作って**確かめる。
+   */
+  | 'scenario'
+  /**
+   * 道具にも鍵にも触らない別の軸の操作で、かつ **呼ぶと走査そのものの前提を
+   * 作り替えてしまう**もの。表には理由付きで載せるが、一括ループでは回さない。
+   * （いまは該当なし。将来そういう操作が足されたときの置き場として型に残す。）
+   */
+  | 'unrelated';
+
+interface OperationEntry {
+  readonly group: OperationGroup;
+  /** なぜこの分類なのか（表を読む人への説明。分類の根拠を必ず書く）。 */
+  readonly why: string;
+  /** 一括ループで呼ぶ形。`unrelated` は持たない。 */
+  readonly run?: (store: ReturnType<typeof makeStore>) => void;
+}
+
+const A_FEATURE = f('A');
+const A_VERTEX = v('v1');
+
+/**
+ * `SessionStoreActions` の **全キー**の表。ここに無いキーがストアにあれば
+ * 「表に載っていないキーがある」で落ちる（＝操作を足したら必ずここへ来る）。
+ */
+const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
+  // -- ドメインの橋渡し ------------------------------------------------------
+  applyCommandResult: {
+    group: 'invariant',
+    why: '確定はモードを動かさない約束。動かす形へ書き換わったら落ちてほしい。',
+    run: (s) =>
+      s.getState().applyCommandResult({ tag: 'd1' }, createCommandResult({ survived: [A_FEATURE] })),
+  },
+  applyUndoRedoResult: {
+    group: 'invariant',
+    why: '取り消し・やり直しも確定と同じ経路。モードは動かさない。',
+    run: (s) =>
+      s.getState().applyUndoRedoResult({ tag: 'd1' }, createCommandResult({ survived: [A_FEATURE] })),
+  },
+  setDomainState: {
+    group: 'invariant',
+    why: '参照の差し替えだけ。道具にも鍵にも触れない。',
+    run: (s) => s.getState().setDomainState({ tag: 'd1' }),
+  },
+  replaceBaseMap: {
+    group: 'invariant',
+    why: '下地の差し替えは「道具・鍵を保つ」と明示された経路なので、保った結果が式に合うかを見る。',
+    run: (s) => s.getState().replaceBaseMap({ tag: 'd1' }),
+  },
+  resetToDomain: {
+    group: 'scenario',
+    why: '読み込み・新規は鍵を読むだけへ戻し道具を外す ―― まさに 2 つを一緒に書く操作。',
+    run: (s) => s.getState().resetToDomain({ tag: 'd1' }),
+  },
+  // -- 選択 -----------------------------------------------------------------
+  setActiveFeature: {
+    group: 'invariant',
+    why: '選択は道具と別の軸。触らないことを式で押さえる。',
+    run: (s) => s.getState().setActiveFeature(A_FEATURE),
+  },
+  replaceVertexSelection: {
+    group: 'invariant',
+    why: '同上（頂点の選択）。',
+    run: (s) => s.getState().replaceVertexSelection(A_FEATURE, [A_VERTEX]),
+  },
+  toggleVertexSelection: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().toggleVertexSelection(A_FEATURE, A_VERTEX),
+  },
+  addVerticesToSelection: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().addVerticesToSelection(A_FEATURE, [A_VERTEX]),
+  },
+  clearSelection: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().clearSelection(),
+  },
+  restoreSelection: {
+    group: 'invariant',
+    why: '捕まえた選択を戻す口。道具の軸へ漏れないことを見る。',
+    run: (s) => s.getState().restoreSelection(s.getState().selection),
+  },
+  // -- 鍵と道具（A5 の本体）--------------------------------------------------
+  setMode: {
+    group: 'scenario',
+    why: '鍵そのもの。3 値すべてを専用の it で回す。',
+    run: (s) => s.getState().setMode(EDIT_MODE.Edit),
+  },
+  setActiveTool: {
+    group: 'scenario',
+    why: '道具そのもの。全道具 × 全開始状態を専用の it で回す。',
+    run: (s) => s.getState().setActiveTool(TOOL_ID.AddArea),
+  },
+  // -- 時刻 -----------------------------------------------------------------
+  setCurrentTime: {
+    group: 'invariant',
+    why: '年は別の軸。動かしても道具・鍵は変わらない。',
+    run: (s) => s.getState().setCurrentTime(timePointYear(5), TIME_CHANGE_SOURCE.NumericJump),
+  },
+  setTimelineRange: {
+    group: 'invariant',
+    why: '同上（帯の範囲）。',
+    run: (s) => s.getState().setTimelineRange(timePointYear(0), timePointYear(9000)),
+  },
+  // -- 視点 -----------------------------------------------------------------
+  setCamera: {
+    group: 'invariant',
+    why: '視点は別の軸。',
+    run: (s) => s.getState().setCamera({ centerLon: 1, centerLat: 2, zoom: 3, panX: 0, panY: 0 }),
+  },
+  updateCamera: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().updateCamera({ zoom: 2 }),
+  },
+  setCenterLon: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setCenterLon(10),
+  },
+  // -- 表示の深さ・焦点 ------------------------------------------------------
+  setGlobalDepth: {
+    group: 'invariant',
+    why: '見せ方の軸。道具と無関係。',
+    run: (s) => s.getState().setGlobalDepth(2),
+  },
+  setFocusOrigin: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFocusOrigin(A_FEATURE),
+  },
+  setFocusDepth: { group: 'invariant', why: '同上。', run: (s) => s.getState().setFocusDepth(1) },
+  setFocusEmphasize: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFocusEmphasize(true),
+  },
+  setDisplayFocus: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setDisplayFocus({ originId: A_FEATURE, depth: 1, emphasize: true }),
+  },
+  clearDisplayFocus: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().clearDisplayFocus(),
+  },
+  // -- 測量（A5 の穴が空いていた場所）---------------------------------------
+  surveyEnable: {
+    group: 'scenario',
+    why: '**穴そのもの**。道具を外す副作用があるので mode も一緒に導き直さなければならない。',
+    run: (s) => s.getState().surveyEnable(),
+  },
+  surveyDisable: {
+    group: 'invariant',
+    why: '入れる側が道具を外すので、切る側が勝手に戻さないことも押さえる。',
+    run: (s) => s.getState().surveyDisable(),
+  },
+  surveyClickPoint: {
+    group: 'invariant',
+    why: '測量の作図。道具の軸に触れない。',
+    run: (s) => s.getState().surveyClickPoint({ lon: 1, lat: 2 }),
+  },
+  surveyUpdateHover: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().surveyUpdateHover({ lon: 1, lat: 2 }),
+  },
+  surveyCancelDraft: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().surveyCancelDraft(),
+  },
+  surveyClear: { group: 'invariant', why: '同上。', run: (s) => s.getState().surveyClear() },
+  // -- 絞り込み・強調（FR-113）----------------------------------------------
+  setFilterKindVisible: {
+    group: 'invariant',
+    why: '見せ方の軸。道具と無関係。',
+    run: (s) => s.getState().setFilterKindVisible(FEATURE_KIND_AXIS.Area, false),
+  },
+  setFilterDepthThreshold: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFilterDepthThreshold(2),
+  },
+  setFilterOpacity: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFilterOpacity(0.5),
+  },
+  setFeatureHidden: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFeatureHidden(A_FEATURE, true),
+  },
+  showAllHiddenFeatures: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().showAllHiddenFeatures(),
+  },
+  setFilterKindEmphasized: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFilterKindEmphasized(FEATURE_KIND_AXIS.Line, true),
+  },
+  setFeatureEmphasized: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFeatureEmphasized(A_FEATURE, true),
+  },
+  clearAllEmphasis: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().clearAllEmphasis(),
+  },
+  setKindLabelToggle: {
+    group: 'invariant',
+    why: '同上（種別の札のトグル）。',
+    run: (s) => s.getState().setKindLabelToggle('島国', KIND_LABEL_TOGGLE.Dim, true),
+  },
+  setFilterEmphasizedDepth: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setFilterEmphasizedDepth(1),
+  },
+  // -- 地物一覧・束 ---------------------------------------------------------
+  setLedgerMode: {
+    group: 'invariant',
+    why: '一覧は別の軸。',
+    run: (s) => s.getState().setLedgerMode(LEDGER_MODE.History),
+  },
+  setLedgerTree: { group: 'invariant', why: '同上。', run: (s) => s.getState().setLedgerTree(true) },
+  setLedgerQuery: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setLedgerQuery('あ'),
+  },
+  toggleLedgerExpanded: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().toggleLedgerExpanded(A_FEATURE, false),
+  },
+  expandLedgerPath: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().expandLedgerPath([A_FEATURE]),
+  },
+  setBundle: {
+    group: 'invariant',
+    why: '束は別の軸。null で解除しても道具は動かない。',
+    run: (s) => s.getState().setBundle(null),
+  },
+  setBundleCursor: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setBundleCursor(0),
+  },
+  setBundleOnlyUnfinished: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().setBundleOnlyUnfinished(true),
+  },
+  // -- 設定 -----------------------------------------------------------------
+  setGridVisibleOverride: {
+    group: 'invariant',
+    why: '設定は別の軸。',
+    run: (s) => s.getState().setGridVisibleOverride(false),
+  },
+  setSnapSettings: {
+    group: 'invariant',
+    why: '同上（作図中の吸着）。',
+    run: (s) => s.getState().setSnapSettings({ enabled: false }),
+  },
+  updateProjectSetting: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().updateProjectSetting('gridSpacingDeg', 5),
+  },
+  setProjectTimelineRangeYears: {
+    group: 'invariant',
+    why: '同上（帯の両端を一度に）。',
+    run: (s) => s.getState().setProjectTimelineRangeYears(0, 9000),
+  },
+  updateAppSetting: {
+    group: 'invariant',
+    why: '同上。',
+    run: (s) => s.getState().updateAppSetting('renderFps', 30),
+  },
+  hydrateSettings: {
+    group: 'invariant',
+    why: '読み込みの設定流し込み。道具・鍵は resetToDomain 側の仕事なので、ここでは動かない。',
+    run: (s) => s.getState().hydrateSettings({}),
+  },
+  reflectLoadedProject: {
+    group: 'scenario',
+    why: '読み込みの原子版。resetToDomain と同じ意味を持つので鍵と道具を一緒に書く。',
+    run: (s) => s.getState().reflectLoadedProject({ tag: 'd1' }, {}),
+  },
+  markProjectSaved: { group: 'invariant', why: '未保存の印だけ。', run: (s) => s.getState().markProjectSaved() },
+};
+
+/** 不変条件の走査に使う開始状態（鍵の開閉 × 道具の群を代表で覆う）。 */
+const START_STATES: readonly {
+  readonly label: string;
+  readonly initial: Parameters<typeof makeStore>[1];
+}[] = [
+  { label: '読むだけ（既定）', initial: undefined },
+  { label: '編集・道具なし', initial: { mode: EDIT_MODE.Edit } },
+  { label: '編集・選ぶ', initial: { mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditSelect } },
+  { label: '編集・頂点', initial: { mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditVertex } },
+  { label: '編集・ナイフ', initial: { mode: EDIT_MODE.Edit, activeTool: TOOL_ID.EditKnife } },
+  { label: '追加・面', initial: { mode: EDIT_MODE.Add, activeTool: TOOL_ID.AddArea } },
+  { label: '追加・点', initial: { mode: EDIT_MODE.Add, activeTool: TOOL_ID.AddPoint } },
+];
+
+describe('A5: 表の網羅（新しい操作を足したら必ずここへ来る）', () => {
+  it('ストアの操作は 1 つ残らず表に載っている（載っていなければ落ちる）', () => {
+    const state = makeStore().getState() as unknown as Record<string, unknown>;
+    const actual = Object.keys(state)
+      .filter((k) => typeof state[k] === 'function')
+      .sort();
+    const listed = Object.keys(TOOL_MODE_OPERATIONS).sort();
+    // 集合として一致すること ―― 足りなければ「表に無い操作」、余れば「消えた操作」。
+    expect(actual).toEqual(listed);
+  });
+
+  it('表の行はすべて分類と理由を持つ（分類だけ書いて理由を書かない行を許さない）', () => {
+    for (const [key, entry] of Object.entries(TOOL_MODE_OPERATIONS)) {
+      expect({ key, hasWhy: entry.why.length > 0 }).toEqual({ key, hasWhy: true });
+      // `unrelated` 以外は必ず呼べる形を持つ（呼ばずに分類だけ書いた行を許さない）。
+      if (entry.group !== 'unrelated') {
+        expect({ key, hasRun: entry.run !== undefined }).toEqual({ key, hasRun: true });
+      }
+    }
+  });
+
+  it('初期状態そのものが不変条件を満たしている', () => {
+    for (const start of START_STATES) {
+      expectToolModeInvariant(
+        makeStore(undefined, start.initial).getState(),
+        `初期:${start.label}`,
+      );
+    }
+  });
+});
+
+describe('A5: どの操作のあとでも mode と activeTool は導出式のとおり', () => {
+  for (const [key, entry] of Object.entries(TOOL_MODE_OPERATIONS)) {
+    const run = entry.run;
+    if (run === undefined) continue;
+    it(`${key} のあと（${String(START_STATES.length)} 通りの開始状態）`, () => {
+      for (const start of START_STATES) {
+        const store = makeStore(undefined, start.initial);
+        run(store);
+        expectToolModeInvariant(store.getState(), `${start.label} → ${key}`);
+      }
+    });
+  }
+});
+
+describe('A5 scenario: 鍵と道具の組み合わせ（引数に意味がある操作）', () => {
+  it('setActiveTool: すべての道具 × すべての開始状態で式が成り立つ', () => {
+    for (const start of START_STATES) {
+      for (const tool of [...ALL_TOOLS, null]) {
+        const store = makeStore(undefined, start.initial);
+        store.getState().setActiveTool(tool);
+        expectToolModeInvariant(
+          store.getState(),
+          `${start.label} → setActiveTool(${String(tool)})`,
+        );
+      }
+    }
+  });
+
+  it('setActiveTool: 鍵が閉じている間は道具を構えさせない（K-6 の関門）', () => {
+    const store = makeStore(); // 既定は読むだけ
+    store.getState().setActiveTool(TOOL_ID.AddArea);
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().mode).toBe(EDIT_MODE.View);
+  });
+
+  it('setMode: 鍵の開け閉め（読むだけ ⇄ 編集）では式が成り立つ', () => {
+    // **画面から `setMode` を呼ぶのは鍵 1 個だけ**である（裁定 1 でモードの 3 ボタンを
+    // 廃止した）。実装の呼び出し側も `useShell` の鍵・一覧の「直せるようにする」・
+    // 追加の道具の「このままにする」の 3 か所で、渡す値は読むだけ／編集の 2 値しかない。
+    // だから走査もその 2 値でする ―― 追加を渡す経路は下の it が別に面倒を見る。
+    for (const start of START_STATES) {
+      for (const mode of [EDIT_MODE.View, EDIT_MODE.Edit] as const) {
+        const store = makeStore(undefined, start.initial);
+        store.getState().setMode(mode);
+        expectToolModeInvariant(store.getState(), `${start.label} → setMode(${mode})`);
+      }
+    }
+  });
+
+  // **未修正の穴（この検査を書いて見つけた。司令塔へ報告済み）**。
+  //
+  // A5 の約束は「`activeTool` を書く set() は必ず `toolPatch()` の戻り値を展開する」である。
+  // **`setMode` だけがこの約束の外にいた** ―― `mode` を受け取った値のまま書き、
+  // `activeTool` を `null` にしていた。読むだけ／編集の 2 値ならたまたま式に合う
+  // （View→道具なし、Edit＋道具なし→Edit）が、**追加を渡すと「mode は追加・道具は無し」**
+  // という、A5 が他の全経路で潰したのとまったく同じ形が残った。画面からその値を渡す経路は
+  // 無かったが、**経路が無いことに頼らない**（経路はあとから増える）ので、`setMode` も
+  // 同じ 1 本の関数を通す形に直した。
+  it('setMode(追加) も不変条件を保つ ―― 道具の欄を書く場所は 1 本の関数を通す', () => {
+    // **経路が無いことに頼らない。** いま `add` を渡す呼び出しは 1 つも無いが、
+    // `setMode` だけ導出を通していなかったので「内部は追加・道具は無し」という
+    // A5 が潰したのと同じ形が作れた。追加は「面／線／点の道具を構えている」ことで
+    // しか成り立たないので、道具を外すこの入口では必ず「編集」へ落ちる。
+    const store = makeStore(undefined, { mode: EDIT_MODE.Edit });
+    store.getState().setMode(EDIT_MODE.Add);
+    expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+    expect(store.getState().activeTool).toBeNull();
+    expectToolModeInvariant(store.getState(), 'setMode(add)');
+  });
+
+  it('surveyEnable: 面を描いている最中でも「画面は選ぶ・内部は追加」にならない', () => {
+    // **A5 の穴そのもの**。旧版は activeTool だけ null にして mode を追加のまま
+    // 残したので、左クリックは追加の経路へ送られるのに追加のコントローラは居らず、
+    // 選ぶことも追加することもできなくなった。
+    const store = makeStore(undefined, { mode: EDIT_MODE.Add, activeTool: TOOL_ID.AddArea });
+    store.getState().surveyEnable();
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+    expectToolModeInvariant(store.getState(), 'surveyEnable from 追加・面');
+  });
+
+  it('surveyEnable: 鍵が閉じているときは読むだけのまま（測量が編集の入口にならない）', () => {
+    const store = makeStore(); // 読むだけ
+    store.getState().surveyEnable();
+    expect(store.getState().mode).toBe(EDIT_MODE.View);
+    expect(store.getState().activeTool).toBeNull();
+  });
+});
+
+describe('A5 結合: 面の道具 → 測量 ON → 測量 OFF で、地図クリックが選択に戻る', () => {
+  it('測量を入り切りしたあと mode は編集で、地図クリックの行き先は選ぶになる', () => {
+    // 具体例（司令塔の指定そのもの）。ストアの値だけでなく **その値で地図の押下が
+    // どこへ行くか**まで見る ―― A5 の被害は「行き先が追加のままで受け手が居ない」
+    // という形で出るので、行き先の解決まで通さないと再発を捕まえられない。
+    const store = makeStore(undefined, { mode: EDIT_MODE.Edit });
+    store.getState().setActiveTool(TOOL_ID.AddArea);
+    expect(store.getState().mode).toBe(EDIT_MODE.Add);
+    expect(
+      decideDispatch({ mode: store.getState().mode, button: POINTER_BUTTON.Left, hit: EMPTY_HIT }),
+    ).toBe(DISPATCH_TARGET.Add);
+
+    store.getState().surveyEnable();
+    store.getState().surveyDisable();
+
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+    // 旧版はここが Add のままで、左クリックが追加へ送られ続けた（受け手は居ない）。
+    expect(
+      decideDispatch({ mode: store.getState().mode, button: POINTER_BUTTON.Left, hit: EMPTY_HIT }),
+    ).toBe(DISPATCH_TARGET.SelectEdit);
+    expectToolModeInvariant(store.getState(), '面 → 測量 ON → 測量 OFF');
+  });
+});
+
+// ============================================================================
+// A7: 頂点の選択は「掴める道具から出るとき」に落ちる
+// ============================================================================
+//
+// 増分 5 の手直し A7 / GPT #9。旧版は「直前が `edit.vertex` だったか」で捨てていたので、
+// **「選ぶ」や「動かす」で掴んだ頂点が、ナイフや追加の道具へ移っても見えないまま残り**、
+// 下書きを持たないうちに Delete を押すとその頂点が消えた。ハンドルを出す条件
+// （`toolShowsVertexHandles`）と、頂点の選択を残す条件を同じ 1 本の述語にする。
+
+describe('A7: 頂点の選択が落ちるのは「掴める道具から出るとき」だけ', () => {
+  /** 頂点を 1 つ掴んだ状態のストア（開始の道具を指定できる）。 */
+  function withGrabbedVertex(tool: ToolId | null) {
+    return makeStore(undefined, {
+      mode: EDIT_MODE.Edit,
+      activeTool: tool,
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+    });
+  }
+
+  /** 掴める道具（設計書 §C.3 の「選ぶ・頂点・動かす」）。判定は実装と同じ 1 本を引く。 */
+  const GRABBING = ALL_TOOLS.filter((t) => toolShowsVertexHandles(t));
+  /** 掴めない道具（残り全部）。 */
+  const NOT_GRABBING = ALL_TOOLS.filter((t) => !toolShowsVertexHandles(t));
+
+  it('掴める道具は「選ぶ・頂点・動かす」の 3 つである（表の前提を固定する）', () => {
+    expect(GRABBING).toEqual([TOOL_ID.EditSelect, TOOL_ID.EditVertex, TOOL_ID.EditMove]);
+    expect(NOT_GRABBING.length).toBe(ALL_TOOLS.length - 3);
+  });
+
+  it('「選ぶ」で掴んだ頂点は、ナイフへ持ち替えると落ちる（旧版は残っていた）', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditSelect);
+    store.getState().setActiveTool(TOOL_ID.EditKnife);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A')); // 地物の選択は残る
+  });
+
+  it('「動かす」から追加の道具へでも落ちる', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditMove);
+    store.getState().setActiveTool(TOOL_ID.AddArea);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('「選ぶ」→「頂点」→「動かす」の間では落ちない（掴める道具どうしの往来）', () => {
+    const store = withGrabbedVertex(TOOL_ID.EditSelect);
+    store.getState().setActiveTool(TOOL_ID.EditVertex);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    store.getState().setActiveTool(TOOL_ID.EditMove);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    store.getState().setActiveTool(TOOL_ID.EditSelect);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+  });
+
+  it('掴める道具 → 掴めない道具は、どの組み合わせでも落ちる（全数）', () => {
+    for (const from of GRABBING) {
+      for (const to of NOT_GRABBING) {
+        const store = withGrabbedVertex(from);
+        store.getState().setActiveTool(to);
+        expect({ from, to, vertices: store.getState().vertexSelection }).toEqual({
+          from,
+          to,
+          vertices: null,
+        });
+      }
+    }
+  });
+
+  it('掴める道具どうしは、どの組み合わせでも落ちない（全数）', () => {
+    for (const from of GRABBING) {
+      for (const to of GRABBING) {
+        const store = withGrabbedVertex(from);
+        store.getState().setActiveTool(to);
+        expect({ from, to, size: store.getState().vertexSelection?.vertexIds.size }).toEqual({
+          from,
+          to,
+          size: 1,
+        });
+      }
+    }
+  });
+
+  it('掴めない道具から出るときは落ちない（見えていなかったものは、もう落ちている）', () => {
+    // 掴めない道具の間では頂点の選択はそもそも起きないが、外から書き戻された場合に
+    // 二重に捨てないことを固定する（判定が「次の道具だけ」を見る形へ崩れたら落ちる）。
+    for (const to of ALL_TOOLS) {
+      const store = withGrabbedVertex(TOOL_ID.EditKnife);
+      store.getState().setActiveTool(to);
+      expect({ to, size: store.getState().vertexSelection?.vertexIds.size }).toEqual({
+        to,
+        size: 1,
+      });
+    }
+  });
+
+  it('地物の選択は、どの持ち替えでも残る（落ちるのは頂点だけ）', () => {
+    for (const from of ALL_TOOLS) {
+      for (const to of ALL_TOOLS) {
+        const store = withGrabbedVertex(from);
+        store.getState().setActiveTool(to);
+        expect({ from, to, active: store.getState().activeFeature }).toEqual({
+          from,
+          to,
+          active: f('A'),
+        });
+      }
+    }
+  });
+
+  it('道具を外す（null）のは「選ぶ」と同じ扱いなので、頂点は落ちない', () => {
+    // `isSelectTool(null)` が真なので、取り消しで道具が外れただけでは掴んだ頂点は
+    // 残る（利用者から見て「何も構えていない」と「選ぶ」は同じ状態＝設計書 §D.4）。
+    const store = withGrabbedVertex(TOOL_ID.EditVertex);
+    store.getState().setActiveTool(null);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
   });
 });

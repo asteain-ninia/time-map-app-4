@@ -163,6 +163,24 @@ export interface LiveHitTestInput {
    * feature body underneath it.
    */
   readonly activeFeature?: FeatureId | null;
+  /**
+   * **頂点・辺中点のハンドルが、いま実際に描かれているか**（増分 5 の手直し A6 /
+   * GPT #2 / バグ狩り #15）。既定は `true`（従来どおり）。
+   *
+   * `false` を渡すと、当たり判定は **頂点も辺中点も返さず、地物の本体だけ**を返す。
+   *
+   * **なぜ要るか**: ハンドルを描く条件は「鍵が開いていて、掴める道具（選ぶ・頂点・
+   * 動かす）を構えている」ときだけ（`mount/render.ts` の `editHandles`）。ところが
+   * 当たり判定は同じ条件を見ておらず、**読むだけのときも頂点を最優先で返していた**。
+   * 結果、見えていない頂点の近くを押すと地物ではなく頂点が選ばれ、辺中点では選択が
+   * 変わらないことすらあった ―― 「見えているものを選ぶ」という読むだけの操作と
+   * 正面から食い違う。しかも `app-active-vertex` が立つので、Escape の階段が
+   * 「見えない頂点を外す」ぶんだけ 1 段増えていた。
+   *
+   * 描く条件と掴める条件を **同じ入力** で決めることで、「描かれている == 掴める」
+   * （教訓 5.29）が読むだけでも成り立つ。
+   */
+  readonly handlesDrawn?: boolean;
 }
 
 /** Default screen-px grab radius for a vertex / point / line hit. */
@@ -1128,9 +1146,17 @@ export function liveHitTestAt(
   // there. Gated on the RAW-feature FR-113 verdict (not the drawn-set visibleIds), so an
   // aggregation-omitted active leaf's handles stay grabbable while a 個別非表示 / 種別 / 深度
   // hidden one does not (単一解決, 教訓 5.29).
+  // **ハンドルが描かれていない局面では、頂点も辺中点も掴ませない**（増分 5 の手直し A6）。
+  // 読むだけのとき・掴めない道具を構えているときは、当たり判定は地物の本体だけを返す。
+  const probeHandles = input.handlesDrawn ?? true;
   const activeForHandles =
-    activeFeature != null &&
-    !isFeatureVisibleUnderFilter(resolution, input.filter ?? DEFAULT_FILTER_STATE, activeFeature)
+    !probeHandles ||
+    (activeFeature != null &&
+      !isFeatureVisibleUnderFilter(
+        resolution,
+        input.filter ?? DEFAULT_FILTER_STATE,
+        activeFeature,
+      ))
       ? null
       : activeFeature;
   const activeHandles = resolveActiveHandles(
@@ -1152,7 +1178,10 @@ export function liveHitTestAt(
   // = the index does not apply this frame → the full scan below, unchanged. Every skipped
   // vertex is provably out of reach (its every drawn replica is > radius away), so the
   // best-vertex pick is identical to iterating all of `owners` (索引ありなしで結果不変).
-  const vertexCands = vertexCandidates(hitIndex, worldPoint, wrap);
+  // `probeHandles` が偽なら候補を **空の配列**にする（`null` は「索引が効かないので全走査」
+  // の意味なので、そちらを渡してはいけない）。空配列なら下の走査は 1 件も回らず、
+  // `bestVertex` は null のまま本体の判定へ落ちる。
+  const vertexCands = probeHandles ? vertexCandidates(hitIndex, worldPoint, wrap) : [];
   if (vertexCands === null) {
     for (const [vertexId, featureId] of owners) {
       // FR-113: an owner hidden by the filter exposes no grabbable vertex (its shape is

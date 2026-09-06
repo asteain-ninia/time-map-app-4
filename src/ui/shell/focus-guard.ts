@@ -83,6 +83,37 @@ export function isEditableTarget(target: EditableTargetDescriptor | null): boole
 }
 
 /**
+ * **文字は打たないが、大域の割り振りを止めなければならない control**（増分 5 の手直し
+ * A4 / GPT #6。設計書 §D.4 が明示していたのに実装から落ちていた）。
+ *
+ * つまみ（`input[type=range]`）は矢印・Home / End・PageUp / PageDown を **自分で使う**。
+ * 文字は打たないので {@link isEditableTarget} には入らないが、焦点がそこにある間に
+ * Delete や Ctrl+Z が大域へ抜けると、**深さ・不透明度・経度シフトのつまみを触っている
+ * つもりで背後の地物が消える**。
+ *
+ * **「文字を編集できるか」と「大域の打鍵を遮るか」は別の問い**である（教訓 5.30: 制約が
+ * 違うものを同じ述語で決めない）。前者は native の文字編集を邪魔しないための問いで、
+ * 後者は「この control が鍵盤を使っているか」の問いである。
+ */
+const SHORTCUT_BLOCKING_INPUT_TYPES: ReadonlySet<string> = new Set(['range']);
+
+/**
+ * True iff the focused target must own the keyboard for the GLOBAL shortcut
+ * dispatcher's purposes: every text-editing surface ({@link isEditableTarget}) plus the
+ * non-text controls that consume the same keys ({@link SHORTCUT_BLOCKING_INPUT_TYPES}).
+ * Pure — unit-tested against a descriptor.
+ */
+export function blocksGlobalShortcuts(target: EditableTargetDescriptor | null): boolean {
+  if (target === null) return false;
+  if (isEditableTarget(target)) return true;
+  if (target.tagName !== 'INPUT') return false;
+  return (
+    target.inputType !== null &&
+    SHORTCUT_BLOCKING_INPUT_TYPES.has(target.inputType.toLowerCase())
+  );
+}
+
+/**
  * Read the focused editable descriptor from a key event. Prefers `e.target`
  * (the element that received the keydown); falls back to `document.activeElement`
  * when the event target is not an element (e.g. the event fired on window/document).

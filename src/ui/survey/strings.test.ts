@@ -4,7 +4,9 @@ import { SURVEY_STRINGS, formatDistanceKm } from './strings';
 
 describe('SURVEY_STRINGS (FR-115 日本語)', () => {
   it('provides Japanese labels for mode, clear and distances', () => {
-    expect(SURVEY_STRINGS.modeLabel).toBe('測量モード');
+    // 増分 5 の手直し C3 / E1: 画面から「モード」の語を外し、道具の 1 段の語に揃えた。
+    expect(SURVEY_STRINGS.modeLabel).toBe('📏 測る');
+    expect(SURVEY_STRINGS.toolName).toBe(SURVEY_STRINGS.modeLabel);
     expect(SURVEY_STRINGS.clearLabel).toContain('クリア');
     expect(SURVEY_STRINGS.equirectangularLabel).toBe('正距円筒距離');
     expect(SURVEY_STRINGS.greatCircleLabel).toBe('大円距離');

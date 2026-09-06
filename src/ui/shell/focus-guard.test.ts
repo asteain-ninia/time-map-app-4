@@ -8,7 +8,11 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { isEditableTarget, type EditableTargetDescriptor } from './focus-guard';
+import {
+  blocksGlobalShortcuts,
+  isEditableTarget,
+  type EditableTargetDescriptor,
+} from './focus-guard';
 
 function target(over: Partial<EditableTargetDescriptor>): EditableTargetDescriptor {
   return { tagName: 'DIV', inputType: null, isContentEditable: false, pristine: false, ...over };
@@ -54,5 +58,75 @@ describe('isEditableTarget (focus guard for global shortcuts)', () => {
 
   it('treats a null / missing descriptor as NOT editable (no focus context)', () => {
     expect(isEditableTarget(null)).toBe(false);
+  });
+});
+
+// --- A4: 「文字を編集できるか」と「大域の打鍵を遮るか」は **別の問い** -----------
+//
+// 増分 5 の手直し A4 / 設計書 §D.4。つまみ（`input[type=range]`）は矢印・Home / End・
+// PageUp / PageDown を **自分で使う**が、文字は打たない。だから
+// {@link isEditableTarget}（native の文字編集を邪魔しないための問い）では偽のまま、
+// {@link blocksGlobalShortcuts}（この control が鍵盤を使っているかの問い）では真に
+// ならなければならない ―― 偽のままだと、深さ・不透明度・経度シフトのつまみを触って
+// いるつもりで Delete が背後の地物を消す。
+//
+// 2 つの述語が別物であることが読める形にするため、**同じ表の同じ行で両方の答えを
+// 並べて**確かめる（片方だけの表を 2 つ作ると、ずれても気づけない）。
+
+/** 表の 1 行: 焦点の当たっている要素と、2 つの述語それぞれの期待。 */
+interface GuardRow {
+  /** 何に焦点があるか（読んで分かる名前。画面の文言ではない）。 */
+  readonly name: string;
+  readonly target: EditableTargetDescriptor | null;
+  /** 文字を編集できるか（native の編集を邪魔しないための問い）。 */
+  readonly editable: boolean;
+  /** 大域の割り振りを遮るか（この control が鍵盤を使っているかの問い）。 */
+  readonly blocks: boolean;
+}
+
+const GUARD_TABLE: readonly GuardRow[] = [
+  { name: 'input[type=text]', target: target({ tagName: 'INPUT', inputType: 'text' }), editable: true, blocks: true },
+  { name: 'input[type=number]', target: target({ tagName: 'INPUT', inputType: 'number' }), editable: true, blocks: true },
+  { name: 'textarea', target: target({ tagName: 'TEXTAREA' }), editable: true, blocks: true },
+  { name: 'select', target: target({ tagName: 'SELECT' }), editable: true, blocks: true },
+  {
+    name: 'contenteditable な div',
+    target: target({ tagName: 'DIV', isContentEditable: true }),
+    editable: true,
+    blocks: true,
+  },
+  // **ここが A4 の穴そのもの**: 文字は打たないが鍵盤は使う。2 つの答えが割れる唯一の行。
+  { name: 'input[type=range]（つまみ）', target: target({ tagName: 'INPUT', inputType: 'range' }), editable: false, blocks: true },
+  { name: 'input[type=checkbox]', target: target({ tagName: 'INPUT', inputType: 'checkbox' }), editable: false, blocks: false },
+  { name: 'button', target: target({ tagName: 'BUTTON' }), editable: false, blocks: false },
+  { name: 'div', target: target({ tagName: 'DIV' }), editable: false, blocks: false },
+  { name: '焦点なし (null)', target: null, editable: false, blocks: false },
+];
+
+describe('blocksGlobalShortcuts vs isEditableTarget（A4: 2 つの別々の問い）', () => {
+  for (const row of GUARD_TABLE) {
+    it(`${row.name}: 文字編集=${String(row.editable)} / 大域を遮る=${String(row.blocks)}`, () => {
+      expect({
+        editable: isEditableTarget(row.target),
+        blocks: blocksGlobalShortcuts(row.target),
+      }).toEqual({ editable: row.editable, blocks: row.blocks });
+    });
+  }
+
+  it('つまみだけが 2 つの答えを違えている（表の中で「別物」が 1 行だけ立つ）', () => {
+    // 表を作り直したときに「両方とも真」へ寄せてしまうと（＝つまみを文字の欄扱いに
+    // すると）ここが落ちる。A4 の要点は「同じにしない」ことなので、**違いが残って
+    // いること自体**を 1 つの検査にしておく。
+    const split = GUARD_TABLE.filter((r) => isEditableTarget(r.target) !== blocksGlobalShortcuts(r.target));
+    expect(split.map((r) => r.name)).toEqual(['input[type=range]（つまみ）']);
+  });
+
+  it('大文字の type でも遮る（type は大小を区別しない）', () => {
+    expect(blocksGlobalShortcuts(target({ tagName: 'INPUT', inputType: 'RANGE' }))).toBe(true);
+  });
+
+  it('INPUT 以外のタグは、type の見かけがどうであれ遮らない', () => {
+    // `inputType` は INPUT のときしか意味を持たない。DIV に range を持たせても遮らない。
+    expect(blocksGlobalShortcuts(target({ tagName: 'DIV', inputType: 'range' }))).toBe(false);
   });
 });

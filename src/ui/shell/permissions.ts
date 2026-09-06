@@ -37,9 +37,15 @@ export function canEdit(mode: EditMode): boolean {
  * プロジェクト設定（＝保存ファイルの中身, FR-109）の部品と確定処理を塞ぐ。つまり
  * 「コマンド 1 個丸ごと殺す」で足りる経路だけがここに載り、「入口は開けたまま中身の一部
  * だけ塞ぐ」経路は同じ `canEdit` を引数で受け取る形で塞ぐ。**判定は 2 つに分かれていない**
- * — どちらも下の {@link canEdit} 1 本を読む。設定ダイアログ以外の同類は上部バーの
- * グリッド表示トグル (`ui/map/GridToggleControl.tsx`: 実体は projectSettings.gridVisible の
- * 書き換え) で、これも同じ `canEdit` を引いて無効化している。
+ * — どちらも下の {@link canEdit} 1 本を読む。
+ *
+ * **上部バーのグリッド表示トグル (`ui/map/GridToggleControl.tsx`) は、この形の仲間では
+ * ない**（2026-09-06、増分 5 の手直し E4 でコメントを実物に合わせた。旧版は「これも同じ
+ * `canEdit` を引いて無効化している」と書いていたが、現物はそうなっていない）。あのボタンは
+ * 2026-09-04 の再修正で **セッション限りの上書き** (`SessionState.gridVisibleOverride`) だけを
+ * 書くようになった ―― 保存ファイルには入らないので、「読むだけ」でも押せてよく、実際に
+ * `canEdit` を一度も読まない。保存される既定値を変えられるのは設定ダイアログのグリッド項目
+ * だけで、そちらが `canEdit` を受け取る側である。
  */
 const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.EditUndo,
@@ -91,4 +97,18 @@ export function resolveCommandEnabled(id: CommandId, input: EnabledInput): boole
   if (!input.runnable) return false;
   if (isEditingCommand(id) && !canEdit(input.mode)) return false;
   return true;
+}
+
+/**
+ * **断った理由が「読むだけだから」か**（増分 5 の手直し E3 / バグ狩り #14）。
+ *
+ * 押せない理由は 2 つ重なりうる ―― 「読むだけだから」と「いまの状況では意味が無いから」
+ * である。旧版は後者を先に答えていたので、**鍵を閉じたままの Ctrl+K が「0 年にはすでに
+ * 錨があります」と答えた**。本当の理由は「読むだけだから」で、鍵を開ければ話が変わる。
+ *
+ * **利用者が次に打てる手が変わるほうの理由を先に言う**（設計書 §H.5）。「読むだけ」は
+ * 鍵 1 つで解ける ―― そちらを先に見せないと、鍵に気づかないまま年を動かして回ることになる。
+ */
+export function isViewOnlyRefusal(id: CommandId, mode: EditMode): boolean {
+  return isEditingCommand(id) && !canEdit(mode);
 }

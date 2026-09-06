@@ -26,12 +26,14 @@ import { OPTION_BAR_STRINGS } from './strings';
  * 差し替えて数字を与える。**「入るかどうか」を jsdom の実測で見ているわけではない**
  * （それは E2E の担当で、`e2e/inc5-shell.spec.ts` が 5 段の窓幅で見る）。
  */
-function stubWidths(opts: { settings: number; slot: number; button: number }): () => void {
+function stubWidths(opts: { bar: number; slot: number; button: number }): () => void {
   const clientWidth = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth');
   const rect = Element.prototype.getBoundingClientRect;
 
+  // **測るのは帯そのものの内寸**である（設定欄の幅は中身で動くので、そこを測ると
+  // 「送る → 器が縮む → もっと送る」の輪になる＝`settingsBudget` の注記）。
   const widthOf = (el: Element): number => {
-    if (el.classList.contains('option-bar__settings')) return opts.settings;
+    if (el.classList.contains('option-bar')) return opts.bar;
     if (el.hasAttribute('data-slot-id')) return opts.slot;
     if (el.classList.contains('option-bar__overflow-button')) return opts.button;
     return 0;
@@ -196,9 +198,10 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
   });
 
   it('入り切らないぶんが「≫」へ送られ、開くと同じ testid のまま押せる', () => {
-    // 設定欄 100px ／ 部品 60px ×4 ／「≫」30px。前から詰めると 30 ＋ 6 ＋ 60 = 96 で
-    // 1 個しか入らない（2 個目は 162px で入らない）。
-    restoreWidths = stubWidths({ settings: 100, slot: 60, button: 30 });
+    // 帯の内寸 260px から「次の一手」に残す 160px を引いて、設定欄の予算は 100px。
+    // 部品は 60px ずつ、「≫」は 30px。前から詰めると 30 ＋ 6 ＋ 60 = 96 で 1 個しか
+    // 入らない（2 個目は 162px で入らない）。
+    restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30 });
     const store = new OptionBarStore();
     render(<OptionBar store={store} />);
     withSlots(store, ['snap', 'depth', 'display']);
@@ -227,7 +230,7 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
   });
 
   it('Escape で閉じ、そこで止める（大域の Escape と同時に走らない）', () => {
-    restoreWidths = stubWidths({ settings: 100, slot: 60, button: 30 });
+    restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30 });
     const global = vi.fn();
     window.addEventListener('keydown', global);
     try {
@@ -246,7 +249,7 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
   });
 
   it('開閉が onOverflowOpenChange で外へ伝わる', () => {
-    restoreWidths = stubWidths({ settings: 100, slot: 60, button: 30 });
+    restoreWidths = stubWidths({ bar: 260, slot: 60, button: 30 });
     const onOverflowOpenChange = vi.fn();
     const store = new OptionBarStore();
     render(<OptionBar store={store} onOverflowOpenChange={onOverflowOpenChange} />);
@@ -261,7 +264,9 @@ describe('OptionBar — 設定欄の畳み「≫」', () => {
   });
 
   it('全部入る幅なら「≫」は出ない', () => {
-    restoreWidths = stubWidths({ settings: 400, slot: 60, button: 30 });
+    // 帯の内寸 560px − 「次の一手」に残す 160px ＝ 予算 400px。部品 3 個（60px ずつ）は
+    // すき間を入れても 192px なので全部入る。
+    restoreWidths = stubWidths({ bar: 560, slot: 60, button: 30 });
     const store = new OptionBarStore();
     render(<OptionBar store={store} />);
     withSlots(store, ['snap', 'depth', 'display']);

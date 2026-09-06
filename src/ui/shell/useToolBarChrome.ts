@@ -18,8 +18,12 @@
 // `ToolOptionBar` のままで、この hook は道具名と対象以外の 3 区画だけを埋める。
 // `ToolOptionBar` の `claim` は道具が替わった瞬間に走って帯を空へ戻すので、
 // **前の道具の確定ボタンが次の道具に残らない**（教訓 5.2）。
+//
+// **増分 5 の手直し C1: 追加の道具（面・線・点）もこの hook を通す。** 通していなかった
+// ので、手順のある道具から面／線／点へ持ち替えると前の道具の確定欄が残った。器を 1 つに
+// すると、押し込みと後片付けの順序も 1 か所で決まる。
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
 import type { OptionBarCommitButton, OptionBarStore } from './option-bar';
 
@@ -43,28 +47,31 @@ export interface ToolBarChromeOptions {
 export function useToolBarChrome(options: ToolBarChromeOptions): void {
   const { optionBar, active, slotId, nextStep, commit, extras } = options;
 
-  // **自分が入れたときだけ空へ戻す。**
+  // **空へ戻すのは「後片付け」でやる。**
   //
   // 5 つの道具のコントローラは **全部が同時にマウントされている**（構えていないものは
-  // 何も描かないだけ）。「降りているなら空へ戻す」を素直に書くと、**構えていない 4 つが
-  // 構えている 1 つの押し込みを踏み消す** ―― 実際にこれで確定ボタンが画面から消えた
-  // （effect は木の順に走るので、あとに置かれた道具ほど強い、という不条理な依存が生まれる）。
-  // 押し込みは持ち主を見ない規約（`option-bar.ts` の `claim` 注記 3）なので、
-  // **入れた側が自分の印を持って、自分のぶんだけ戻す**（merge / reparent の対象欄が
-  // `pushedTargetRef` でやっているのと同じ形）。
-  const pushedRef = useRef(false);
+  // 何も描かないだけ）。だから「降りているなら空へ戻す」を effect の本体に書くと、
+  // **構えていない 4 つが、構えている 1 つの押し込みを踏み消す** ―― effect は木の順に
+  // 走るので、あとに置かれた道具ほど強い、という不条理な依存が生まれる（教訓 5.68）。
+  //
+  // 前の版は「入れた側が印（`pushedRef`）を持ち、自分のぶんだけ戻す」形にした。これは
+  // **踏み消しの半分しか塞げていなかった** ―― 印は自分のローカルなので、いま帯を
+  // 持っているのが誰かを知らない。木の中で **後ろに居る道具から前に居る道具へ**
+  // 持ち替えると、「（後ろの道具の）自分が入れたぶんを戻す」が **前の道具が既に
+  // 押し込んだあと**に走り、次の一手と確定欄が空になる（Opus 反証 ② / GPT #7 /
+  // Fable E。手順のある道具どうしの 20 通りのうち、後ろ→前の 10 通りで再現した）。
+  //
+  // **後片付け関数へ移すと順序の問題そのものが消える。** React は 1 つのコミットの中で
+  // **全部の後片付け → 全部の再実行** の順に走らせるので、木の位置に関わらず
+  // 「前の道具が空へ戻す → 次の道具が押し込む」になる。印はもう要らない。
   useEffect(() => {
-    if (optionBar === undefined) return;
-    if (!active) {
-      if (!pushedRef.current) return;
-      pushedRef.current = false;
-      optionBar.setCommit([]);
-      optionBar.setNextStep(null);
-      return;
-    }
-    pushedRef.current = true;
+    if (optionBar === undefined || !active) return;
     optionBar.setNextStep(nextStep);
     optionBar.setCommit(commit);
+    return () => {
+      optionBar.setNextStep(null);
+      optionBar.setCommit([]);
+    };
   }, [optionBar, active, nextStep, commit]);
 
   useEffect(() => {

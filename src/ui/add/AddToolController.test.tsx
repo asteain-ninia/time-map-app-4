@@ -42,6 +42,7 @@ import { useState } from 'react';
 
 import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import { TOOL_ID } from '../shell/tools';
 import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 
@@ -51,6 +52,7 @@ import { OptionBarStore } from '../shell/option-bar';
 import { AddDraftForm } from './AddPropertyForm';
 import { AddDraftStore } from './add-draft-store';
 import { AddToolController, type AddDrawSink, type ScreenToWorld } from './AddToolController';
+import { ADD_PHASE } from './useAddTool';
 
 type S = { tag: string };
 const STATE: S = { tag: 'committed-state' };
@@ -105,6 +107,8 @@ function mountApp(
   extra: {
     readonly onDraftDiscarded?: (count: number) => void;
     readonly onFocusSelection?: () => void;
+    /** 確認の板の開閉を受ける口（増分 5 の手直し A3 / A4）。 */
+    readonly onModalChange?: (open: boolean) => void;
   } = {},
 ): Harness {
   const store = createSessionStore<S>({
@@ -162,6 +166,7 @@ function mountApp(
           }}
           {...(extra.onDraftDiscarded ? { onDraftDiscarded: extra.onDraftDiscarded } : {})}
           {...(extra.onFocusSelection ? { onFocusSelection: extra.onFocusSelection } : {})}
+          {...(extra.onModalChange ? { onModalChange: extra.onModalChange } : {})}
         />
       }
     />,
@@ -203,6 +208,36 @@ function clickMap(lon: number, lat: number): void {
   act(() => {
     fireEvent.pointerDown(screen.getByTestId('add-input-layer'), { clientX: lon, clientY: lat, button: 0 });
   });
+}
+
+/** window への Escape 1 回（道具のリスナーが受ける経路）。 */
+function pressEscape(): void {
+  act(() => {
+    fireEvent.keyDown(window, { key: 'Escape' });
+  });
+}
+
+/**
+ * いま道具が居る局面（`data-phase`）。道具の器が消えていれば「素の状態」なので
+ * {@link ADD_PHASE.Idle} を返す ―― どちらの形でも「作図は終わっている」である。
+ */
+function currentPhase(): string {
+  return screen.queryByTestId('add-tool')?.getAttribute('data-phase') ?? ADD_PHASE.Idle;
+}
+
+/** 確認の板が出ているか。 */
+function confirmShown(): boolean {
+  return screen.queryByTestId('add-draft-discard-confirm') !== null;
+}
+
+/** 焦点を持った入力欄を作る（`data-pristine` を名乗らせられる）。 */
+function focusedInputWith(attrs: { type?: string; pristine?: boolean } = {}): HTMLInputElement {
+  const input = document.createElement('input');
+  input.type = attrs.type ?? 'text';
+  if (attrs.pristine !== undefined) input.setAttribute('data-pristine', String(attrs.pristine));
+  document.body.appendChild(input);
+  input.focus();
+  return input;
 }
 
 describe('U23 integration: toolbar → add flow → save (受け入れ基準 1 / 7, 教訓 5.7)', () => {
@@ -287,16 +322,37 @@ describe('U23 integration: 全経路で破棄 (受け入れ基準 6, 教訓 5.2)
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
   });
 
-  it('tool switch (面 → 線) discards the in-progress vertices', () => {
+  it('tool switch (面 → 線): 確定できない量の打ちかけは、聞かずに捨てる', () => {
+    // **増分 5 の手直し A3 で契約が変わった**。確定できる点数まで打っていたら
+    // 「黙って捨てない」（＝1 度聞く）ようになったので、聞かずに捨てるのは
+    // **確定に届いていない量**のときだけになった（面は 3 点で確定できる）。
+    mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(4, 0);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
+    selectTool('tool-add.line');
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    expect(screen.getByTestId('add-is-line')).toBeInTheDocument();
+  });
+
+  it('tool switch (面 → 線): 確定できる打ちかけは、捨てる前に 1 度聞く（A3）', () => {
     mountApp();
     selectTool('tool-add.area');
     clickMap(0, 0);
     clickMap(4, 0);
     clickMap(2, 3);
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
-    // Switch to the line tool: the session resets (教訓 5.2 (d)).
     selectTool('tool-add.line');
+    // まだ捨てていない ―― 板が出て、打った 3 点はそのまま。
+    expect(confirmShown()).toBe(true);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    // ［捨てる］で初めて消える。捨てたあとは **待機**（道具は線を構えたまま、
+    // 頂点 0 個）なので、次の 1 点で線の作図が始まる（D3 と同じ形）。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    clickMap(9, 9);
     expect(screen.getByTestId('add-is-line')).toBeInTheDocument();
   });
 
@@ -492,21 +548,41 @@ describe('U23 バグハント第11波 (#3/#6): focus guard on the drawing keydow
     input.remove();
   });
 
-  it('Escape with a text input focused does NOT cancel the add and does NOT preventDefault (#6)', () => {
+  it('Escape は文字の欄の中でも道具が受ける（A2 で #6 の契約が変わった）', () => {
+    // **旧い契約はここを「道具は受けない」に固定していた**。だが形を確定して名前を
+    // 打つ局面では、大域の側も `focus-guard` で降りるので **Escape を誰も受けない**
+    // （押しても何も起きない）状態ができていた ―― §D.4 の「連打すれば必ず素の状態に
+    // 戻る」が、いちばん抜けにくい局面で破れていた。
+    //
+    // いまは道具が受ける。ただし **打ちかけのある欄では 1 度聞いてから**捨てる
+    // （打った文字を黙って失わない）。欄が `data-pristine` を名乗らないときは
+    // 「打ちかけがある」側に倒す。
     mountApp();
     drawTwoVertices();
-    const input = focusedInput('text');
-    const ev = new KeyboardEvent('keydown', {
-      key: 'Escape',
-      cancelable: true,
-      bubbles: true,
-    });
+    const input = focusedInputWith({ type: 'text' });
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
     act(() => {
       input.dispatchEvent(ev);
     });
-    // The session is still drawing with its 2 vertices (not cancelled / re-armed to 0).
+    // 打った点はまだ残っている（黙って消さない）。
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('2');
-    expect(ev.defaultPrevented).toBe(false);
+    expect(confirmShown()).toBe(true);
+    // 道具が受けたので、欄の native な Escape は走らせない。
+    expect(ev.defaultPrevented).toBe(true);
+    input.remove();
+  });
+
+  it('打ちかけの無い欄（data-pristine="true"）からの Escape は、聞かずにやめる（A2）', () => {
+    // 素性欄の Enter は「保存して次へ」なので、送ったあとは次の名前欄に焦点が入った
+    // ままになる。そこで押した Escape に確認が出ると、**打っていないのに聞かれる**。
+    mountApp();
+    drawTwoVertices();
+    const input = focusedInputWith({ type: 'text', pristine: true });
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true }));
+    });
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
     input.remove();
   });
 
@@ -811,22 +887,21 @@ describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', (
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
   });
 
-  it('確認の板が出ている間の Escape は、まずその板を閉じる（設計書 §D.4 Esc の階段）', () => {
+  it('自分の Escape で出した板は、もう一度の Escape で「捨てる」（A2）', () => {
+    // **旧い契約はここを「このままにする」に固定していた**。それだと Escape を押す
+    // たびに板が開いては閉じるだけで、**いつまでも素の状態に戻れない**（§D.4 の
+    // 「連打すれば必ず素へ戻る」が破れる）。利用者自身が「やめる」と言ったために
+    // 出ている板なので、2 回目の Escape は「はい、捨てる」である。
     mountApp();
     selectTool('tool-add.area');
     clickMap(0, 0);
     clickMap(5, 0);
     clickMap(5, 5);
-    act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
-    });
-    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
-    // 2 回目の Escape は **板を閉じるだけ**（下書きは残る）。階段は 1 段ずつ降りる。
-    act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
-    });
-    expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
-    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    pressEscape();
+    expect(confirmShown()).toBe(true);
+    pressEscape();
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
   });
 
   it('1〜2 点の打ちかけは聞かずに捨てる（押し直せば済む量）', () => {
@@ -880,9 +955,11 @@ describe('U23 手直し D1: 打ちかけの下書きを黙って消さない', (
     selectTool('tool-add.area');
     clickMap(0, 0);
     clickMap(5, 0);
-    clickMap(5, 5);
+    // **A3 で契約が変わった**: 確定できる点数（面は 3 点）まで打っていたら、道具を
+    // 持ち替えても黙って捨てず 1 度聞く。だから「聞かずに捨てて報せる」のは
+    // **確定に届いていない量**のときである。
     selectTool('tool-add.point'); // 別の道具へ切り替える
-    expect(discarded).toEqual([3]);
+    expect(discarded).toEqual([2]);
   });
 });
 
@@ -1058,5 +1135,261 @@ describe('U23 手直し 2 回目 D1: 一覧で別の地物を選んだときの�
     expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
     expect(discarded).toEqual([1]);
     expect(focused).toHaveLength(1);
+  });
+});
+
+// ============================================================================
+// A2 / A3: 素性入力の局面でも Escape が効く／道具の持ち替えと鍵で黙って捨てない
+// ============================================================================
+//
+// 増分 5 の手直し A2・A3（バグ狩り #3 / 設計書 §D.4・§D.7）。
+//
+// **A2**: Escape のリスナーは `Drawing` の局面にしか居なかった。形を確定して名前を
+// 打つ局面（`PropertyForm`）では **道具も大域も Escape を受けない** ―― 大域の側は
+// 焦点が入力欄にあると `focus-guard` が降りるからである。押しても何も起きないので、
+// §D.4 の「連打すれば必ず素の状態に戻る」が、いちばん抜けにくい局面で破れていた。
+//
+// **A3**: 道具を持ち替える・鍵を閉じる、のどちらでも、確定できる点数まで打った下書きが
+// **黙って消えていた**。年や一覧の選択と同じ扱い（＝作図の外側で起きた遷移なので 1 度
+// 聞く）にする。「このままにする」を選べば道具（と鍵）を元へ戻す。
+
+/** 面を 3 点まで打つ（＝確定できる量の打ちかけ）。 */
+function drawCompletableFace(): void {
+  selectTool('tool-add.area');
+  clickMap(0, 0);
+  clickMap(5, 0);
+  clickMap(5, 5);
+  expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+}
+
+/** 形を確定して素性入力の局面へ進む。 */
+function completeIntoPropertyForm(): void {
+  act(() => fireEvent.click(screen.getByTestId('add-complete')));
+  expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+}
+
+/** いま焦点のある要素から焦点を外す（欄の外で打鍵したい局面を作る）。 */
+function blurActive(): void {
+  const el = document.activeElement;
+  if (el instanceof HTMLElement) el.blur();
+}
+
+describe('U23 手直し A2: 素性を入力している局面でも Escape が効く', () => {
+  it('欄の外から押した Escape は、その場で「やめる」（板は出ない）', () => {
+    // 形は確定済み・欄には何も打っていない局面。ここで形の確認をもう一度出すと、
+    // 欄を空にしただけの利用者が抜けられなくなる（設計書 §D.4 の階段は 1 段ずつ）。
+    mountApp();
+    drawCompletableFace();
+    completeIntoPropertyForm();
+    blurActive(); // 名前欄の autoFocus を外す
+    pressEscape();
+    expect(confirmShown()).toBe(false);
+    expect(currentPhase()).toBe(ADD_PHASE.Idle);
+  });
+
+  it('名前欄に焦点があっても道具が Escape を受ける（旧版は誰も受けなかった）', () => {
+    mountApp();
+    drawCompletableFace();
+    completeIntoPropertyForm();
+    // **何も起きない、にはならない**のがここの要点である。名前欄は空のまま
+    // （`data-pristine="true"` を名乗る）なので、聞かずにそのまま「やめる」。
+    pressEscape();
+    expect(confirmShown()).toBe(false);
+    expect(currentPhase()).toBe(ADD_PHASE.Idle);
+  });
+
+  it('名前を打ちかけたまま Escape を押すと 1 度聞く（打った文字を黙って失わない）', () => {
+    // `data-pristine` が `"false"` になる ―― 欄が自分で「打ちかけがある」と名乗る。
+    // 判定は素性欄と同じ 1 本の述語を読む（教訓 5.13）。
+    mountApp();
+    drawCompletableFace();
+    completeIntoPropertyForm();
+    const name = document.querySelector('[data-testid="add-name"]');
+    if (!(name instanceof HTMLInputElement)) throw new Error('名前欄が無い');
+    act(() => {
+      fireEvent.change(name, { target: { value: 'アアウ' } });
+    });
+    name.focus();
+    pressEscape();
+    expect(confirmShown()).toBe(true);
+  });
+
+  it('Escape を連打すれば必ず素の状態へ戻る ―― 素性入力の局面（上限 5 回）', () => {
+    mountApp();
+    drawCompletableFace();
+    completeIntoPropertyForm();
+    let presses = 0;
+    while (currentPhase() !== ADD_PHASE.Idle && presses < 5) {
+      pressEscape();
+      presses += 1;
+    }
+    expect({ phase: currentPhase(), confirm: confirmShown() }).toEqual({
+      phase: ADD_PHASE.Idle,
+      confirm: false,
+    });
+    expect(presses).toBeLessThanOrEqual(5);
+  });
+
+  it('Escape を連打すれば必ず素の状態へ戻る ―― 作図中（確定できる点数あり、上限 5 回）', () => {
+    mountApp();
+    drawCompletableFace();
+    let presses = 0;
+    while (screen.getByTestId('add-vertex-count').textContent !== '0' && presses < 5) {
+      pressEscape();
+      presses += 1;
+    }
+    expect({
+      vertices: screen.getByTestId('add-vertex-count').textContent,
+      confirm: confirmShown(),
+    }).toEqual({ vertices: '0', confirm: false });
+    expect(presses).toBeLessThanOrEqual(5);
+  });
+
+  it('自分の Escape で出した板は、Escape で捨てる（reason=escape だけの扱い）', () => {
+    mountApp();
+    drawCompletableFace();
+    pressEscape();
+    expect(confirmShown()).toBe(true);
+    pressEscape();
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+  });
+
+  it('年が動いて出た板は、従来どおり Escape ＝「このままにする」（年も戻る）', () => {
+    // 外で起きたことを取り消すのが Escape の意味なので、こちらは「捨てる」にしない。
+    // 自分の Escape で出した板（上の it）とは扱いが違う ―― 同じにすると、どちらかが
+    // 必ず壊れる（片方は永久に戻れない／片方は打ちかけが消える）。
+    const h = mountApp();
+    drawCompletableFace();
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1800, 1, 1), 'numericJump');
+    });
+    expect(confirmShown()).toBe(true);
+    pressEscape();
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3'); // 残る
+    expect(h.store.getState().currentTime.year).toBe(1500); // 年も戻る
+  });
+});
+
+describe('U23 手直し A3: 道具の持ち替えと鍵でも、黙って捨てない', () => {
+  it('道具を持ち替えたら聞く。［このままにする］で道具が元へ戻る', () => {
+    const h = mountApp();
+    drawCompletableFace();
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
+    expect(confirmShown()).toBe(true);
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(confirmShown()).toBe(false);
+    // 打ちかけは残り、道具も元（面）へ戻っている ―― 戻さないと「続ける」を選んだのに
+    // 描き続けられない。
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.AddArea);
+  });
+
+  it('道具の板は Escape でも「このままにする」（外で起きた遷移だから）', () => {
+    const h = mountApp();
+    drawCompletableFace();
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
+    expect(confirmShown()).toBe(true);
+    pressEscape();
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.AddArea);
+  });
+
+  it('道具の板で［捨てる］を選べば、捨てた数を報せる', () => {
+    const discarded: number[] = [];
+    mountApp(undefined, { onDraftDiscarded: (n) => discarded.push(n) });
+    drawCompletableFace();
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
+    expect(discarded).toEqual([]); // まだ捨てていないので何も言わない
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(discarded).toEqual([3]);
+  });
+
+  it('鍵を閉じたら聞く。［このままにする］で鍵が開き直り、道具も戻る', () => {
+    const h = mountApp();
+    drawCompletableFace();
+    act(() => {
+      h.store.getState().setMode(EDIT_MODE.View); // 鍵を閉じる（シェルの鍵と同じ口）
+    });
+    expect(confirmShown()).toBe(true);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(h.store.getState().mode).toBe(EDIT_MODE.Add); // 面の道具が戻る＝導出は追加
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.AddArea);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+  });
+
+  it('鍵を閉じている間、板の裏で地図クリックが効かない（K-6 の抜け道を塞ぐ）', () => {
+    // 道具が外れているあいだ、地図を覆う入力層は出さない。出したままだと
+    // **鍵を閉じたのに地図クリックで頂点が置ける**。
+    const h = mountApp();
+    drawCompletableFace();
+    act(() => {
+      h.store.getState().setMode(EDIT_MODE.View);
+    });
+    expect(confirmShown()).toBe(true);
+    expect(screen.queryByTestId('add-input-layer')).toBeNull();
+  });
+
+  it('編集の道具へ移った板の裏でも、下書きは生きていて入力層も残る', () => {
+    // **入力層を外すのは鍵を閉じたときだけ**である（実装したときに決めた。2026-09-06）。
+    // 「道具を構えているか」で外すと、板が出ているあいだ `activeKind` が一時的に null に
+    // なるので **確認に答えるまで地図が死ぬ** ―― 実データの探索で、面の道具が押されて
+    // いるのに入力層がどこにも無い状態を踏んだ。板は `role="alertdialog"` の本物の
+    // モーダルとして数えているので、打鍵は板のものである。
+    mountApp();
+    drawCompletableFace();
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
+    expect(confirmShown()).toBe(true);
+    expect(screen.queryByTestId('add-input-layer')).not.toBeNull();
+  });
+
+  it('確定に届かない量なら、道具の持ち替えでも鍵でも聞かずに捨てる（押し直せば済む）', () => {
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    act(() => {
+      h.store.getState().setMode(EDIT_MODE.View);
+    });
+    // 聞かずに捨てる＝板は出ず、打ちかけも残っていない（道具ごと降りている）。
+    expect(confirmShown()).toBe(false);
+    expect(screen.queryByTestId('add-tool')).toBeNull();
+    expect(h.store.getState().mode).toBe(EDIT_MODE.View);
+  });
+});
+
+describe('U23 手直し A4: 確認の板が出ているあいだは「ダイアログが出ている」と報せる', () => {
+  it('板が開いたら true、閉じたら false を報せる（背後で保存や新規が走らない）', () => {
+    const modal: boolean[] = [];
+    mountApp(undefined, { onModalChange: (open) => modal.push(open) });
+    drawCompletableFace();
+    // 開くまでは false 以外を報せていない（初回の false は購読の初期通知）。
+    expect(modal.includes(true)).toBe(false);
+    pressEscape();
+    expect(modal.at(-1)).toBe(true);
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(modal.at(-1)).toBe(false);
+  });
+
+  it('［捨てる］で閉じたときも false を報せる（閉じ方で報せ漏れが出ない）', () => {
+    const modal: boolean[] = [];
+    mountApp(undefined, { onModalChange: (open) => modal.push(open) });
+    drawCompletableFace();
+    pressEscape();
+    expect(modal.at(-1)).toBe(true);
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(modal.at(-1)).toBe(false);
+  });
+
+  it('Escape で捨てて閉じたときも false を報せる', () => {
+    const modal: boolean[] = [];
+    mountApp(undefined, { onModalChange: (open) => modal.push(open) });
+    drawCompletableFace();
+    pressEscape();
+    expect(modal.at(-1)).toBe(true);
+    pressEscape(); // reason=escape なので 2 回目は「捨てる」
+    expect(modal.at(-1)).toBe(false);
   });
 });

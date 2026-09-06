@@ -12,6 +12,7 @@ import {
   FOCUS_OWNER,
   deriveFocusOwner,
   explainsRefusal,
+  promotesOnContextMenu,
   suspendsContextMenu,
   suspendsShortcuts,
   type FocusOwner,
@@ -87,10 +88,40 @@ describe('持ち主ごとに何が通るか（設計書 §D.4 の表）', () => 
     }
   });
 
-  it('断り文を出すのはダイアログのときだけ（道具のときは本当に効いている）', () => {
+  it('断り文を出すのはダイアログと板のとき（道具のときは本当に効いている）', () => {
+    // 増分 5 の手直し A4: ポップオーバーを足した。板を開いたまま Delete / Ctrl+S を
+    // 押すと止まるだけで理由が出ず、「押しても何も起きない」に見えていた。
     for (const owner of ALL_OWNERS) {
-      expect(explainsRefusal(owner), owner).toBe(owner === FOCUS_OWNER.Modal);
+      expect(explainsRefusal(owner), owner).toBe(
+        owner === FOCUS_OWNER.Modal || owner === FOCUS_OWNER.Popover,
+      );
     }
+  });
+
+  it('**下書きを持っているあいだは右クリックが選択を昇格させない**（増分 5 の手直し A1）', () => {
+    // メニューは開く（`suspendsContextMenu` は modal のときだけ真）が、昇格はしない。
+    // 昇格すると、それを見張っている追加の道具が下書きを捨てて視点まで飛ばす。
+    expect(promotesOnContextMenu({ toolDrawing: true })).toBe(false);
+    expect(promotesOnContextMenu({ toolDrawing: false })).toBe(true);
+  });
+
+  it('素性を打っている最中でも「下書きを持っている」は隠れない（畳む前の値で判定する）', () => {
+    // 畳んだ持ち主は `text`（文字入力がいちばん前）になるので、持ち主の値で判定すると
+    // 昇格が通ってしまう。生の入力を見れば局面に依らない。
+    const enteringProperties = { ...NOTHING, textFocused: true, toolDrawing: true };
+    expect(deriveFocusOwner(enteringProperties)).toBe(FOCUS_OWNER.Text);
+    expect(promotesOnContextMenu(enteringProperties)).toBe(false);
+  });
+
+  it('地図が載る前は `none`（載ったら `map`）', () => {
+    // 6 値のうち `none` は「まだ誰も持っていない」。渡さなければ既定は `map` のまま。
+    expect(deriveFocusOwner({ ...NOTHING, mapReady: false })).toBe(FOCUS_OWNER.None);
+    expect(deriveFocusOwner({ ...NOTHING, mapReady: true })).toBe(FOCUS_OWNER.Map);
+    expect(deriveFocusOwner(NOTHING)).toBe(FOCUS_OWNER.Map);
+    // 前に居るものがあれば、地図が載っていなくてもそちらが持つ。
+    expect(deriveFocusOwner({ ...NOTHING, mapReady: false, modalOpen: true })).toBe(
+      FOCUS_OWNER.Modal,
+    );
   });
 
   it('確定した直後は地図が持つ ＝ Ctrl+Z が必ず効く（設計書 §D.4）', () => {

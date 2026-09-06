@@ -41,6 +41,17 @@ export interface AddDraftPrompt {
    * 発生していた。
    */
   readonly currentYear: number;
+  /**
+   * **上位領域の欄を出すか**（増分 5 の手直し / 司令塔の決定 (5)）。省略すると
+   * 道具の種類から決める（面のときだけ出す＝`parentSelectableFor`）。
+   *
+   * **なぜ口が要るか**: ナイフで切った非継承側と、穴あけで生まれる新しい地物も
+   * この「新規の姿」で素性を受けるようになった。どちらも面だが、**上位領域は
+   * ドメインが元の地物から引き継ぐ**（FR-44 / FR-45）ので、ここで選ばせると
+   * 「選んだのに反映されない欄」になる。道具の種類だけでは決められないので、
+   * 押し込む側が明示できるようにしてある。
+   */
+  readonly showParent?: boolean;
   /** 親領域を選ぶ（null ＝ 親なし／最上位、FR-39）。 */
   readonly onChooseParent: (featureId: FeatureId | null) => void;
   /** 保存（＝素性欄の保存ボタン。`data-testid="add-save"` の付け替え先）。 */

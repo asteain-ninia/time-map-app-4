@@ -70,6 +70,16 @@ import { TOOL_ID, editToolName } from './tools';
 const TOOLS_WITH_OWN_TARGET: ReadonlySet<ToolId> = new Set<ToolId>([
   TOOL_ID.EditReparent,
   TOOL_ID.EditMerge,
+  // 増分 5 の手直し C2（バグ狩り #5 / #6 / Fable J）: ナイフ・輪郭・穴あけも **自前の
+  // 対象**（`knife.targetId` / `ringEdit.targetId` / `drill.targetId`）を持つ。
+  // ところがこの 3 つは対象を選択へ昇格させる（`setActiveFeature`）ので、ここが
+  // `activeFeature` から作った名前を押し込むと **まだ掴んでいない地物の名前が対象欄に
+  // 出る** ―― 一覧で選んでからナイフを構えると、対象を 1 度も押していないのに
+  // 「アアウェン州（面・州）」と出て、次の一手の「切る面を押してください」と矛盾した。
+  // 所属・結ぶと同じく、押し込みは道具側に任せる。
+  TOOL_ID.EditKnife,
+  TOOL_ID.EditRing,
+  TOOL_ID.EditDrill,
 ]);
 
 export interface ToolOptionBarProps<S> {
@@ -121,11 +131,21 @@ export function ToolOptionBar<S>(props: ToolOptionBarProps<S>): null {
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
 
-  // 帯を持つ条件: **編集モードであること**（穴 A）。道具を構えていなくても持つ ――
-  // 編集モードに入った直後に地図や一覧から地物を選んだときも、対象欄にその名前を出す
-  // ためである。追加モードと表示専用モードでは持たない（追加は `AddToolController` の
-  // 持ち場、表示専用はそもそも道具が無い）。
-  const holdsBar = mode === EDIT_MODE.Edit;
+  // 帯を持つ条件: **追加モードでも測量中でもないこと**（穴 A ＋ 増分 5 の手直し C2）。
+  //
+  // 道具を構えていなくても持つ ―― 編集モードに入った直後に地図や一覧から地物を選んだ
+  // ときも、対象欄にその名前を出すためである。
+  //
+  // **読むだけ（鍵が閉じている）ときも持つ。** 旧版は `mode === Edit` だったので、
+  // 鍵を閉じたまま地図や一覧で地物を選んでも **対象欄が「（選んでいません）」のまま**
+  // だった ―― 所有者の裁定は「読むだけでも選べる・読める」なので、選んだものの名前が
+  // どこにも出ないのは裁定に反する（バグ狩り #5）。読むだけでは道具名が既定の「✦ 選ぶ」
+  // に留まるだけで、対象欄の役割は変わらない。
+  //
+  // 追加モードでは持たない（`AddToolController` の持ち場）。測量中も持たない
+  // （`SurveyOptionBar` の持ち場＝司令塔の決定 (4)）。
+  const surveyActive = useStore(store, (s) => s.survey.active);
+  const holdsBar = mode !== EDIT_MODE.Add && !surveyActive;
 
   // 道具名。道具を構えていなければ null。`editToolName` は編集道具にしか名前を持たない
   // ので、万一 追加の道具 id が残っていても null になる。

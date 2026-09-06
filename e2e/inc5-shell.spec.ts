@@ -20,6 +20,7 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  ALL_TOOL_TESTIDS,
   addInputLayerBox,
   armAddAreaTool,
   commitOneFace,
@@ -28,6 +29,7 @@ import {
   leaveViewMode,
   openDepthOptions,
   openSurveyCoords,
+  placeVertices,
   returnToViewMode,
   squareCorners,
 } from './helpers';
@@ -51,6 +53,20 @@ interface Camera {
   readonly zoom: number;
   readonly panX: number;
   readonly panY: number;
+}
+
+/**
+ * **この地図が何回目のマウントかの印**（増分 5 の手直し F2 / GPT #15）。
+ *
+ * 「地図を再マウントしていない」を **カメラの値**で見るのは弱い ―― カメラは外の店に
+ * 居るので、**地図セルが作り直されても同じ値を復元できてしまう**（検査は緑のまま、
+ * Canvas も入力の途中も一時的な予告も失われる）。`onMapMount` が走るたびに 1 つ増える
+ * 印を要素そのものへ書いてあるので、こちらは**作り直しを直接**見る。
+ */
+async function readMountId(page: Page): Promise<string> {
+  const cell = page.getByTestId('map-canvas-mount');
+  await expect(cell).toHaveAttribute('data-mount-id', /.+/);
+  return (await cell.getAttribute('data-mount-id')) ?? '';
 }
 
 async function readCamera(page: Page): Promise<Camera> {
@@ -200,6 +216,10 @@ test.describe('増分 5a — 固定行のシェル（地図セルは窓の大き
     try {
       await expect(page.getByTestId('map-area')).toBeVisible();
       const initial = await readCamera(page);
+      // **印を先に控える。** カメラの値だけでは「作り直して同じ値を復元した」を
+      // 見分けられないので、要素の同一性そのものを見る（手直し F2）。
+      const mountId = await readMountId(page);
+      expect(mountId, '地図のマウントの印が空').not.toBe('');
 
       // ---- ① 既定ではないズームと位置へ動かす。
       const map = await rectOf(page, 'map-area');
@@ -228,14 +248,17 @@ test.describe('増分 5a — 固定行のシェル（地図セルは窓の大き
       await page.getByTestId('survey-toggle').click();
       await expect(page.getByTestId('survey-readout')).toBeVisible();
       expect(await readCamera(page), '測量の帯で地図が作り直された').toEqual(moved);
+      expect(await readMountId(page), '測量の帯で地図が作り直された（印）').toBe(mountId);
       await page.getByTestId('survey-toggle').click();
       await openDepthOptions(page);
       expect(await readCamera(page), '深さ ▾ で地図が作り直された').toEqual(moved);
+      expect(await readMountId(page), '深さ ▾ で地図が作り直された（印）').toBe(mountId);
       await page.keyboard.press('Escape');
 
       // ---- ③ 右パネルの中身（タブの切替）を変える。
       await page.getByTestId('sidebar-tab-properties').click();
       expect(await readCamera(page), '右パネルの切替で地図が作り直された').toEqual(moved);
+      expect(await readMountId(page), '右パネルの切替で地図が作り直された（印）').toBe(mountId);
 
       // ---- ④ 窓の大きさを変える。**カメラは保つ**（大きさが変わってもマウントは同じ）。
       await page.setViewportSize({ width: 1024, height: 700 });
@@ -244,6 +267,7 @@ test.describe('増分 5a — 固定行のシェル（地図セルは窓の大き
       expect(afterResize.zoom, '窓を変えたらズームが既定へ戻った').toBe(moved.zoom);
       expect(afterResize.panX, '窓を変えたら位置が既定へ戻った').toBe(moved.panX);
       expect(afterResize.panY, '窓を変えたら位置が既定へ戻った').toBe(moved.panY);
+      expect(await readMountId(page), '窓を変えたら地図が作り直された（印）').toBe(mountId);
     } finally {
       await app.close();
     }
@@ -360,16 +384,13 @@ test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc �
 
       // **1 つずつ全部の道具を持ち替える。** 旧版はどの持ち替えでも選択が消えていた
       // （実測 2.65 秒／回の手戻り）。1 つでも消えればここで落ちる。
-      for (const tool of [
-        'tool-edit.vertex',
-        'tool-edit.move',
-        'tool-edit.ring',
-        'tool-edit.knife',
-        'tool-edit.drill',
-        'tool-edit.reparent',
-        'tool-edit.merge',
-        'tool-edit.select',
-      ]) {
+      //
+      // **顔ぶれは実装（`ALL_TOOLS`）から引く**（増分 5 の手直し F3）。手で並べていた
+      // ころは編集の 7 個しか回しておらず、**面／線／点へ持ち替える経路（＝内部の
+      // `mode` が追加へ移る経路）が 1 つも入っていなかった**。裁定は「道具を持ち替えて
+      // も選択を捨てない」であって、編集の道具どうしに限った話ではない。
+      // 最後にもう一度「選ぶ」へ戻して、素の状態でも残っていることを見る。
+      for (const tool of [...ALL_TOOL_TESTIDS, 'tool-edit.select']) {
         await page.getByTestId(tool).click();
         await expect(active, `${tool} を構えたら選択が消えた`).toHaveText(faceId);
         // **ここで Escape を挟んではいけない。** 道具のボタンはレール（地図の外）に
@@ -492,7 +513,11 @@ async function scanMapGrid(page: Page): Promise<string[]> {
           ({ px, py }) => {
             const el = document.elementFromPoint(px, py);
             if (el === null) return 'null';
-            const panel = el.closest('[role="dialog"]');
+            // **`alertdialog` も板として数える**（増分 5 の手直し。所属変更の最上位化の
+            // 確認・追加の「捨てますか」がこれ）。`dialog` だけを見ていたころは、
+            // 板の中を指した点が中の要素の testid として返り、走査の期待値が
+            // 「板が出ているのに地図に届いた」と読めてしまった。
+            const panel = el.closest('[role="dialog"], [role="alertdialog"]');
             if (panel !== null) return `popover:${panel.getAttribute('data-testid') ?? '?'}`;
             return el.getAttribute('data-testid') ?? el.className.toString();
           },
@@ -543,28 +568,55 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     }
   });
 
-  test('K-2: 道具を構えても、地図の 25 点は入力層（か道具の入力層）に届く', async () => {
-    // 設計書 §B.5 の台帳の検査。**確定の列を帯へ移したので、地図の上に押せる部品は
-    // 道具の入力ブリッジ 1 枚だけ**になった ―― それがこの増分の中身である。
+  // -------------------------------------------------------------------------
+  // K-2 の走査は **設計書 §B.5 の台帳を上から回す**（増分 5 の手直し F1）。
+  //
+  // **なぜ表にするか**: 旧版は道具 4 つとポップオーバー 2 枚を **手で並べて**いた。
+  // 台帳へ部品を足しても検査に入らないまま増えるので、**K-2 の 3 回目の事故がまさに
+  // その形**だった（設計書 §B.5 の「テストの形」）。台帳と同じ並びの表にしておけば、
+  // 部品を足したときにここへ 1 行足すのが手続きになる。
+  // -------------------------------------------------------------------------
+
+  /** 台帳 #1 の入力ブリッジ 7 枚（道具ごと）。`arm` はその道具を構える手順。 */
+  const INPUT_BRIDGES: readonly {
+    readonly ledger: string;
+    readonly layer: string;
+    readonly arm: (page: Page) => Promise<void>;
+  }[] = [
+    { ledger: '#1 面', layer: 'add-input-layer', arm: (p) => p.getByTestId('tool-add.area').click() },
+    { ledger: '#1 線', layer: 'add-input-layer', arm: (p) => p.getByTestId('tool-add.line').click() },
+    { ledger: '#1 点', layer: 'add-input-layer', arm: (p) => p.getByTestId('tool-add.point').click() },
+    { ledger: '#1 分ける', layer: 'knife-input-layer', arm: (p) => p.getByTestId('tool-edit.knife').click() },
+    { ledger: '#1 結ぶ', layer: 'merge-input-layer', arm: (p) => p.getByTestId('tool-edit.merge').click() },
+    { ledger: '#1 所属', layer: 'reparent-input-layer', arm: (p) => p.getByTestId('tool-edit.reparent').click() },
+    { ledger: '#1 輪郭', layer: 'ring-edit-input-layer', arm: (p) => p.getByTestId('tool-edit.ring').click() },
+    { ledger: '#1 穴あけ', layer: 'drill-input-layer', arm: (p) => p.getByTestId('tool-edit.drill').click() },
+    { ledger: '#1 測る', layer: 'survey-input-layer', arm: (p) => p.getByTestId('survey-toggle').click() },
+  ];
+
+  test('K-2: 台帳 #1 の入力ブリッジは、どれを構えても地図の 25 点をそのブリッジ 1 枚が受ける', async () => {
+    // **確定の列を帯へ移したので、地図の上に押せる部品は道具の入力ブリッジ 1 枚だけ**に
+    // なった ―― それがこの増分の中身である。台帳の 9 通り（道具 8 ＋ 測る）を全部回す。
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('map-area')).toBeVisible();
       // ①道具なし: 25 点すべてが地図の入力層。
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
 
-      // ②道具を構えた状態: 受けるのはその道具の入力ブリッジだけ（板や列は出てこない）。
       await leaveViewMode(page);
-      for (const [tool, layer] of [
-        ['tool-edit.knife', 'knife-input-layer'],
-        ['tool-edit.reparent', 'reparent-input-layer'],
-        ['tool-edit.merge', 'merge-input-layer'],
-        ['tool-add.area', 'add-input-layer'],
-      ] as const) {
-        await page.getByTestId(tool).click();
-        await expect(page.getByTestId(layer)).toBeVisible();
+      for (const bridge of INPUT_BRIDGES) {
+        await bridge.arm(page);
+        await expect(page.getByTestId(bridge.layer)).toBeVisible();
         const hits = new Set(await scanMapGrid(page));
-        expect(hits, `${tool} を構えたら地図の当たりが奪われた`).toEqual(new Set([layer]));
-        await page.keyboard.press('Escape');
+        expect(hits, `${bridge.ledger} を構えたら地図の当たりが奪われた`).toEqual(
+          new Set([bridge.layer]),
+        );
+        // 測るは Escape では降りないので、入口をもう一度押して戻す。
+        if (bridge.layer === 'survey-input-layer') {
+          await page.getByTestId('survey-toggle').click();
+        } else {
+          await page.keyboard.press('Escape');
+        }
       }
 
       // ③「選ぶ」へ戻したら、また 25 点すべてが地図の入力層へ戻る（一時部品が居座らない）。
@@ -575,14 +627,15 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     }
   });
 
-  test('K-2: 深さ ▾ と 座標 ▾ は、開いていても閉じていても地図の当たりを奪わない', async () => {
-    // 教訓 5.56（`[hidden]` はクラスの `display` に負ける）を、**新しく足した 2 枚**にも
-    // 掛ける。閉じた状態でしか捕まらない事故なので、開閉の両方を走査する。
+  test('K-2: 台帳のポップオーバー 4 枚は、開いていても閉じていても地図の当たりを奪わない', async () => {
+    // 教訓 5.56（`[hidden]` はクラスの `display` に負ける）を **台帳の 4 枚全部**に掛ける。
+    // 閉じた状態でしか捕まらない事故なので、開閉の両方を走査する。旧版は 2 枚だけだった。
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('map-area')).toBeVisible();
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
 
+      // 台帳 #14 深さ ▾（読むだけでも出ている常設の設定）。
       await openDepthOptions(page);
       for (const hit of await scanMapGrid(page)) {
         expect(['map-input-layer', 'popover:option-depth-panel']).toContain(hit);
@@ -591,7 +644,30 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       await expect(page.getByTestId('option-depth-panel')).toBeHidden();
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
 
-      // 座標 ▾ は測量を始めてから出る。
+      // 台帳 #15 表示 ▾。
+      await page.getByTestId('option-display-button').click();
+      await expect(page.getByTestId('option-display-panel')).toBeVisible();
+      for (const hit of await scanMapGrid(page)) {
+        expect(['map-input-layer', 'popover:option-display-panel']).toContain(hit);
+      }
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-display-panel')).toBeHidden();
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+
+      // 台帳 #5 吸着 ▾（追加の道具を構えてから出る。地図は追加の入力ブリッジが受ける）。
+      await leaveViewMode(page);
+      await page.getByTestId('tool-add.area').click();
+      await page.getByTestId('option-snap-button').click();
+      await expect(page.getByTestId('option-snap-panel')).toBeVisible();
+      for (const hit of await scanMapGrid(page)) {
+        expect(['add-input-layer', 'popover:option-snap-panel']).toContain(hit);
+      }
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-snap-panel')).toBeHidden();
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['add-input-layer']));
+      await page.keyboard.press('Escape');
+
+      // 台帳 #16 座標 ▾（測量を始めてから出る）。
       await page.getByTestId('survey-toggle').click();
       await openSurveyCoords(page);
       for (const hit of await scanMapGrid(page)) {
@@ -600,6 +676,37 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('survey-coords-panel')).toBeHidden();
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['survey-input-layer']));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('K-2: 台帳 #8 の「捨てますか」の板が出ていても、板の外は地図に届く', async () => {
+    // 一時の板（地図の中央に出るもの）は **出している状態でも走査する**（設計書 §B.5 の
+    // 「テストの形」）。板の矩形だけが `auto` で、それ以外は下へ抜けることを見る。
+    const { app, page } = await launchApp();
+    try {
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
+      // 確定できる点数（面は 3 点）まで **打つだけ**（確定はしない）。そのうえで道具を
+      // 持ち替えると、増分 5 の手直し A3 の確認の板が出る。
+      await placeVertices(
+        page,
+        squareCorners(box.x + box.width / 2, box.y + box.height / 2, 60),
+      );
+      await page.getByTestId('tool-edit.select').click();
+      await expect(page.getByTestId('add-draft-discard-confirm')).toBeVisible();
+
+      for (const hit of await scanMapGrid(page)) {
+        expect(
+          ['map-input-layer', 'add-input-layer', 'popover:add-draft-discard-confirm'],
+          `板の外なのに ${hit} が受けた`,
+        ).toContain(hit);
+      }
+      // 板を閉じれば 25 点すべてが地図へ戻る（居座らない）。
+      await page.getByTestId('add-draft-discard-yes').click();
+      await expect(page.getByTestId('add-draft-discard-confirm')).toHaveCount(0);
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
     } finally {
       await app.close();
     }
@@ -889,6 +996,347 @@ test.describe('手直し D3 — 設定欄の畳み「≫」', () => {
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5 の手直し B — Esc の階段と確定（設計書 §D.4 / §D.4.1 / §C.4）
+// ---------------------------------------------------------------------------
+//
+// **なぜ E2E なのか**: 階段が本当に「1 回で 1 段」なのかは、**道具のリスナーと大域の
+// リスナーが同じ 1 つの打鍵をどう分け合うか**の話である。単体では道具のリスナーしか
+// 載らないので、「道具が止めなかったときに大域が続きを引き受ける」ところが検査できない
+// （道具側の単体テストは `preventDefault` されないことまでしか見られない）。
+//
+// **わざと壊すなら**（この節の全体）:
+//   - 5 つのコントローラの Escape で `cancel()` を呼ぶ旧実装へ戻すと、1 回目の Escape で
+//     道具まで落ちるので「点列だけ消える」の行が赤くなる。
+//   - 段 3 で `e.preventDefault()` を足すと、大域の階段へ届かなくなり「3 回目で『選ぶ』へ
+//     戻る」の行が赤くなる。
+//   - `releaseToolOnCancel` に `clearSelection()` を戻すと、「元からの選択が残る」の行が
+//     赤くなる。
+
+test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だけ下りる', () => {
+  test('分ける: 点列 → 対象 → 道具、の順に 1 段ずつ戻る', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+
+      await page.getByTestId('tool-edit.knife').click();
+      await expect(page.getByTestId('knife-input-layer')).toBeVisible();
+      await page.mouse.click(cx, cy); // 対象を掴む
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute('data-flow', 'drawing-cut');
+      // 分断線を 2 点引く（面を貫く向き）。
+      await page.mouse.click(cx - 200, cy);
+      await page.mouse.click(cx + 200, cy);
+      await expect(page.getByTestId('knife-cut-count')).toHaveText('2');
+
+      // ---- 1 段目: 点列だけがまとめて消える。対象も道具も残る。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('knife-cut-count')).toHaveText('0');
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute('data-flow', 'drawing-cut');
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+
+      // ---- 2 段目: 対象だけが外れる。道具は持ったまま。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+
+      // ---- 3 段目: 道具は何もせず大域の階段へ譲る → 「選ぶ」へ戻る。
+      // ここが「道具側で preventDefault しない」の実物の効き目である。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-tool')).toHaveText('');
+      await expect(page.getByTestId('knife-tool')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('結ぶ: 元からの選択は、対象を外す Escape で巻き添えにならない', async () => {
+    // GPT #8 の核心。結ぶ道具は `activeFeature` を 1 度も書かないのに、旧実装は
+    // 取りやめのたびに `clearSelection()` を呼んで **道具が掴んだのではない選択**を
+    // 消していた。
+    const { app, page } = await launchApp();
+    try {
+      // 重ならない位置に 2 つ描く（FR-29: 他の面の内側には頂点を置けない）。座標は
+      // 入力層の実寸から解く ―― 固定 px で書くと窓の大きさで外れる（増分 1 の教訓）。
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
+      const half = Math.round(Math.min(box.width, box.height) * 0.14);
+      const leftX = box.x + box.width * 0.28;
+      const rightX = box.x + box.width * 0.72;
+      const midY = box.y + box.height * 0.5;
+      const firstId = await drawFace(page, squareCorners(leftX, midY, half), { name: 'A' });
+      await armAddAreaTool(page);
+      await drawFace(page, squareCorners(rightX, midY, half), { name: 'B' });
+
+      // 「選ぶ」で 1 つ目の面を選んでおく（＝道具の外で選んだもの）。
+      await page.getByTestId('tool-edit.select').click();
+      await page.mouse.click(leftX, midY);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);
+
+      // 結ぶを構えて、2 つ目の面を対象に押す（選択は書き換わらない）。
+      await page.getByTestId('tool-edit.merge').click();
+      await expect(page.getByTestId('merge-input-layer')).toBeVisible();
+      await page.mouse.click(rightX, midY);
+      await expect(page.getByTestId('merge-target-count')).toHaveText('1');
+      await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);
+
+      // Escape 1 回目 ＝ 対象を全部外す。**元からの選択も道具も残る。**
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('merge-target-count')).toHaveText('0');
+      await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.merge');
+
+      // Escape 2 回目 ＝ 道具は何もせず大域へ譲る → 地物の選択が外れる（U-5）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.merge');
+
+      // Escape 3 回目 ＝ 道具が「選ぶ」へ戻る（階段のいちばん下）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-tool')).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('増分 5 の手直し B3 — 案内・断り・対象欄はオプションバーが出す', () => {
+  test('所属変更: 案内の文は地図に描かれず、帯の「次の一手」に出る', async () => {
+    // バグ狩り #4 / 設計書 §B.5 の台帳 #2。旧版はこの 2 つだけが `hidden` になって
+    // おらず、地図の上端に黒帯として出たまま、同じ文言が帯にも出る二重表示だった。
+    //
+    // **わざと壊すなら**: `ReparentToolController` の `reparent-guide` から `hidden` を
+    // 外すと、地図の上に文が出てここが赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.reparent').click();
+      await expect(page.getByTestId('reparent-input-layer')).toBeVisible();
+
+      // 地図側は観測のミラーだけ（読めるが、描かれていない）。
+      await expect(page.getByTestId('reparent-guide')).toBeHidden();
+      // 本文は帯の「次の一手」に出ている。
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('所属を変更する地物');
+
+      // 対象を掴むと、対象欄に「手順 2/3」と名前が出る（バグ狩り #9 / 設計書 §C.4）。
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('option-bar-stage')).toHaveText('手順 2/3');
+      await expect(page.getByTestId('option-bar-target')).toContainText('→ 親: ?');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('分ける: 対象を 1 度も押していなければ、対象欄に地物の名前は出ない', async () => {
+    // バグ狩り #6。旧版は対象欄を `activeFeature` から作っていたので、**一覧で選んで
+    // からナイフを構えると、押していない地物の名前が出て**「切る面を押してください」と
+    // 矛盾していた。
+    //
+    // **わざと壊すなら**: `shell/ToolOptionBar` の `TOOLS_WITH_OWN_TARGET` から
+    // `EditKnife` を抜くと、構えた瞬間に選んでいる面の名前が出てここが赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.select').click();
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+      await page.getByTestId('tool-edit.knife').click();
+      // 選択は残る（増分 5c の裁定）が、**道具の対象ではない**ので対象欄は空である。
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await expect(page.getByTestId('option-bar-stage')).toHaveText('手順 1/4');
+      await expect(page.getByTestId('option-bar-target')).toContainText('選んでいません');
+
+      // 押したら初めて名前が出る。
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('option-bar-stage')).toHaveText('手順 2/4');
+      await expect(page.getByTestId('option-bar-target')).not.toContainText('選んでいません');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('増分 5 の手直し B4 — 最上位へは、何が起きるかを見せてから確定する', () => {
+  test('［最上位へ（所属を外す）］は押した瞬間には確定せず、確認の板を出す', async () => {
+    // バグ狩り B-1 / E4。削除と同じ作法で、押した結果を見せてから確定する。
+    //
+    // **わざと壊すなら**: `reparent-confirm-none` の `onClick` を `reparent.confirmNone()`
+    // に戻すと、板が出ないままその場で確定してここが赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.reparent').click();
+      await page.mouse.click(cx, cy); // 対象を掴む
+      await expect(page.getByTestId('reparent-target')).not.toHaveText('');
+
+      const detach = page.getByTestId('reparent-confirm-none');
+      await expect(detach).toBeEnabled();
+      await detach.click();
+
+      // 確認の板が出る。答えるまでは何も起きない。
+      const dialog = page.getByTestId('reparent-detach-confirm');
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveAttribute('role', 'alertdialog');
+      await expect(dialog).toContainText('どこにも所属しなくなります');
+      // 板が出ているあいだは鍵盤の持ち主が「板」（＝背後で保存や削除が走らない）。
+      await expect(page.getByTestId('app-focus-owner')).toHaveText('modal');
+
+      // Escape は階段の最上段 ―― 板を閉じるだけで、掴んだ対象は残る。
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(page.getByTestId('reparent-target')).not.toHaveText('');
+      await expect(page.getByTestId('app-focus-owner')).not.toHaveText('modal');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// **5 道具で確定後のふるまいを揃えた**（増分 5 の手直し B2 / 設計書 §D.2）。ナイフだけが
+// 確定後に道具を降りていた ―― 合成ルートの `onKnifeCommitted` が
+// `setActiveTool(null, s.selection)` を呼んでいたためで、続けて分けたい人は毎回ナイフを
+// 選び直すことになっていた。道具側（`useKnifeTool` の確定）が対象選択へ戻す再武装を
+// するようにし、合成ルートの 1 行を外した。
+test(
+  '増分 5 の手直し B2 — 分けるを確定しても道具は残る',
+  async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.knife').click();
+      await page.mouse.click(cx, cy);
+      await page.mouse.click(cx - 200, cy);
+      await page.mouse.click(cx + 200, cy);
+      await page.getByTestId('knife-confirm-cut').click();
+      await page.getByTestId('knife-confirm-inheritor').click();
+      await page.getByTestId('add-save').click();
+
+      // 確定しても道具は残り、次の対象待ちへ戻る（設計書 §D.2 の「道具の確定」の行）。
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+      // 確定直後は鍵盤が地図に戻っているので、Ctrl+Z が大域の履歴へ届く（§D.4）。
+      await expect(page.getByTestId('app-focus-owner')).toHaveText('map');
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('1');
+    } finally {
+      await app.close();
+    }
+  },
+);
+
+// --- 司令塔の決定 (5): 切った非継承側・穴あけの新地物の素性も「右パネルの新規の姿」で受ける
+//
+// 設計書 §B.5 の台帳 #9 / §C.2 の 27。**同じ「新しい地物の素性を入れる」作業なのに置き場が
+// 2 通りある**と、名前欄の焦点も保存ボタンの名前も 2 通りになる。加えて地図の中央の板は
+// **いま切った／くり抜いた形の真上に出る**ので、形を見ながら名前を入れられなかった
+// （追加の道具が N-15 で直したのと同じ害）。右パネルなら覆わない。
+//
+// **なぜ E2E なのか**: 「板が地図に出ていない」は木の位置だけでは半分しか言えない。jsdom は
+// レイアウトを計算しないので、地図セルの中の要素が実際に見えているかを測れない（開発ガイド
+// §5.49）。ここでは **地図セルの中を探して見える `*-props` が無い**ことと、**右パネルに
+// 素性欄が出て［保存］で確定できる**ことを、実物の画面で見る。
+test.describe('司令塔の決定 (5) — 切った側・穴あけの新地物の素性は右パネルで入れる', () => {
+  test('分ける: 継承先を決めたあと、新しい地物の素性は右パネルで入れる', async () => {
+    // **どこを壊すと赤くなるか**:
+    //   - `KnifeToolController` の `addDraft` の押し込み（`addDraft.set({...})`）を外すと、
+    //     右パネルに `add-property-form` が出ず「素性欄が見える」で赤くなる。
+    //   - 消した `NonInheritedForm`（地図の中央の板）を戻すと、地図セルの中に**見える**
+    //     `knife-props` が現れて「板が出ていない」で赤くなる。
+    //   - `App.tsx` の `<KnifeToolController addDraft={addDraftStore}>` の 1 行を外しても、
+    //     入力の口がどこにも無くなって同じところで赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.knife').click();
+      await page.mouse.click(cx, cy); // 切る面を掴む
+      await page.mouse.click(cx - 200, cy); // 分断線 1 点目（面の外）
+      await page.mouse.click(cx + 200, cy); // 分断線 2 点目（面の外・貫く）
+      await page.getByTestId('knife-confirm-cut').click();
+      await page.getByTestId('knife-confirm-inheritor').click();
+
+      // (1) 地図セルの中に **見える** 板は無い。残っているのは `hidden` の観測ミラーだけ
+      //     である（T-1 役割のまま／T-2 隠し観測は足す一方）。
+      const mapProps = page.getByTestId('map-area').getByTestId('knife-props');
+      await expect(mapProps).toHaveCount(1);
+      await expect(mapProps).toBeHidden();
+
+      // (2) 素性は **右パネル**の「新規の姿」で受ける。
+      const form = page.getByTestId('sidebar').getByTestId('add-property-form');
+      await expect(form).toBeVisible();
+      // 上位領域はドメインが元の面から継ぐ（FR-44）ので、その欄は出さない
+      // ―― 出すと「選んだのに反映されない欄」になる。
+      await expect(page.getByTestId('add-parent')).toHaveCount(0);
+      // 帯の確定欄は［やめる］だけ（保存は右パネルの［保存］が持つ）。
+      await expect(page.getByTestId('knife-cancel')).toBeVisible();
+
+      // (3) ［保存］で確定できる ―― 確定すると入力待ちは閉じ、道具は次の対象待ちへ戻る。
+      await page.getByTestId('add-name').fill('切り分けた側');
+      await page.getByTestId('add-save').click();
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('穴あけ: くり抜く形を確定したあと、新しい地物の素性は右パネルで入れる', async () => {
+    // **どこを壊すと赤くなるか**:
+    //   - `DrillToolController` の `addDraft` の押し込みを外すと、右パネルに
+    //     `add-property-form` が出ず「素性欄が見える」で赤くなる。
+    //   - 消した `NewFeatureForm`（地図の中央の板）を戻すと、地図セルの中に**見える**
+    //     `drill-props` が現れて「板が出ていない」で赤くなる。
+    //   - `drillCommit` の `drillRejected || drillEntering` から `drillEntering` を抜くと、
+    //     素性入力中も［確定］が帯に残って「［やめる］だけ」で赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.drill').click();
+      await page.mouse.click(cx, cy); // 穴をあける末端地物を掴む（頂点は置かれない）
+      // くり抜く形（面は半径 120px なので、±40px の三角形は完全に内側）。
+      await page.mouse.click(cx - 40, cy - 40);
+      await page.mouse.click(cx + 40, cy - 40);
+      await page.mouse.click(cx, cy + 40);
+      await page.getByTestId('drill-confirm').click();
+
+      // (1) 地図セルの中に **見える** 板は無い（`hidden` の観測ミラーだけ）。
+      const mapProps = page.getByTestId('map-area').getByTestId('drill-props');
+      await expect(mapProps).toHaveCount(1);
+      await expect(mapProps).toBeHidden();
+
+      // (2) 素性は **右パネル**の「新規の姿」で受ける。
+      const form = page.getByTestId('sidebar').getByTestId('add-property-form');
+      await expect(form).toBeVisible();
+      // 上位領域はドメインが元の末端地物から継ぐ（FR-45）ので、その欄は出さない。
+      await expect(page.getByTestId('add-parent')).toHaveCount(0);
+      // 帯の確定欄は［やめる］だけ。［1 つ戻す］も引っ込む（押せると確定済みの形から
+      // 頂点が黙って 1 つ減る）。
+      await expect(page.getByTestId('drill-cancel')).toBeVisible();
+      await expect(page.getByTestId('drill-confirm')).toHaveCount(0);
+      await expect(page.getByTestId('drill-undo')).toHaveCount(0);
+
+      // (3) ［保存］で確定できる ―― 確定すると入力待ちは閉じ、道具は次の対象待ちへ戻る。
+      await page.getByTestId('add-name').fill('くり抜いた中身');
+      await page.getByTestId('add-save').click();
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expect(page.getByTestId('drill-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
     } finally {
       await app.close();
     }
