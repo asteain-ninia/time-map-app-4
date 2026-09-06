@@ -137,7 +137,13 @@ interface Harness {
  * 引数は全部任意。`onModalChange` を渡すと、最上位化の確認の板が開いた閉じたを
  * 控えられる（増分 5 の手直し B4 / A4）。
  */
-function mountReparent(options: { onModalChange?: (open: boolean) => void } = {}): Harness {
+function mountReparent(
+  options: {
+    onModalChange?: (open: boolean) => void;
+    /** 一覧の印を対象として引き継ぐ経路（増分 7 の中身 2b / V8）。 */
+    markedFeatureIds?: readonly FeatureId[];
+  } = {},
+): Harness {
   const onModalChange = options.onModalChange;
   const store = createSessionStore<DomainRoot>({
     initialDomain: twoTopLevelLeaves(),
@@ -215,6 +221,11 @@ function mountReparent(options: { onModalChange?: (open: boolean) => void } = {}
         drawSink={drawSink}
         optionBar={optionBar}
         onCommitted={onCommitted}
+        // **確定を同期で走らせる**（増分 7 の中身 9）。本番は 1 コマ遅らせて進行表示を
+        // 出すが、検査は「何が起きるか」を見たいので待たせない（`useDeferredCommit` の
+        // `schedule` を差し替える口はそのためにある）。
+        commitScheduler={(run) => run()}
+        {...(options.markedFeatureIds ? { markedFeatureIds: options.markedFeatureIds } : {})}
         {...(onModalChange ? { onModalChange } : {})}
       />
     </>,
@@ -268,28 +279,34 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     clickInput(1, 1);
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
     expect(screen.getByTestId('reparent-guide').textContent).toContain('新しい上位領域');
-    // Confirm still disabled (no parent yet).
-    expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
-
-    // Second click = new parent (leaf-b); confirm enables (legal new parent).
-    clickInput(5, 1);
-    expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
+    // **増分 7**: ［所属を変える］は対象さえ掴んでいれば押せる（押すと 3 択の板が開く）。
+    // 旧版は「新しい上位領域を地図でクリック済み」までを条件にしていたので、地図に
+    // 描かれていないまとめ役を親にしたい人はここへ辿り着けなかった。
     expect(screen.getByTestId('reparent-confirm')).not.toBeDisabled();
 
-    // CONFIRM (the COMPLETE trigger; 教訓 5.7) → leaf-a is reparented under leaf-b.
+    // Second click = new parent (leaf-b) — 板の「既存から選ぶ」枝の初期値になる。
+    clickInput(5, 1);
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
+
+    // CONFIRM (the COMPLETE trigger; 教訓 5.7) → 3 択の板 → 所属を変える。
     fireEvent.click(screen.getByTestId('reparent-confirm'));
+    expect(screen.getByTestId('reparent-options-dialog')).toBeInTheDocument();
+    expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined(); // 確定までは非破壊
+    fireEvent.click(screen.getByTestId('reparent-options-confirm'));
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
     h.unmount();
   });
 
-  it('picking the target twice clears it (no reparent possible with no target)', () => {
+  it('N-12: 同じ地物をもう一度押しても対象は外れず、そう言う（増分 7 の中身 10）', () => {
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1); // pick leaf-a
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
-    clickInput(1, 1); // click leaf-a again → cleared, back to pick-target
-    expect(screen.getByTestId('reparent-target').textContent).toBe('');
-    expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
+    clickInput(1, 1); // 同じ地物をもう一度
+    // **黙って外さない**。旧版はここで対象が消え、次のクリックが「新しい対象」として
+    // 読まれていた（N-05 と並ぶ「黙って消える」経路）。
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    expect(screen.getByTestId('reparent-message').textContent).toContain('同じ地物です');
     h.unmount();
   });
 
@@ -341,10 +358,10 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1); // target = leaf-a
-    // Clicking leaf-a again toggles it OFF (same-id rule), so it never becomes its own
-    // parent — confirm stays disabled. The legality predicate also rejects self-parent.
+    // 同じ地物をもう一度押しても **自分の親にはならない**（対象のままで、上位領域は
+    // 選ばれない）。合法性の述語も自分自身を親にすることを拒む。
     clickInput(1, 1);
-    expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('');
     h.unmount();
   });
 
@@ -356,23 +373,22 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     clickInput(1, 1); // target = leaf-a
     clickInput(5, 1); // new parent = leaf-b
     fireEvent.click(screen.getByTestId('reparent-confirm'));
+    fireEvent.click(screen.getByTestId('reparent-options-confirm'));
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
 
     // Re-arm (the confirm re-armed at pick-target) and pick the nested leaf-a as the target.
     clickInput(1, 1);
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
-    // The detach button is enabled with ONLY a target (no new parent needed), unlike confirm.
-    expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
     expect(screen.getByTestId('reparent-confirm-none')).not.toBeDisabled();
 
-    // Click 最上位へ → **まず確認の板が出る**（増分 5 の手直し B4 / バグ狩り B-1）。
+    // Click 最上位へ → **独立の枝で 3 択の板が開く**（増分 7 の中身 1。器は 1 つ）。
     // 旧版は押した瞬間に確定していた。確定そのもの（parentNone）はこの経路でしか
     // 到達できないので、ここで UI から最後まで通す。
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
     expect(screen.getByTestId('reparent-detach-confirm')).toBeInTheDocument();
     // 確認に答えるまでは何も起きていない（教訓 5.22 確定までの非破壊）。
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
-    fireEvent.click(screen.getByTestId('reparent-detach-confirm-yes'));
+    fireEvent.click(screen.getByTestId('reparent-options-confirm'));
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined();
     h.unmount();
   });
@@ -386,11 +402,16 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
-    const dialog = screen.getByTestId('reparent-detach-confirm');
-    // 答えるまで先へ進めない種類の板であることを読み上げへ伝える。
-    expect(dialog).toHaveAttribute('role', 'alertdialog');
+    // 器は 3 択の作業ダイアログ 1 つ（増分 7 の中身 1 / 設計書 §B.5）。
+    const dialog = screen.getByTestId('reparent-options-dialog');
+    expect(dialog).toHaveAttribute('role', 'dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
     // **何が起きるか**を言う（「よろしいですか」だけにしない）。
-    expect(dialog.textContent).toContain('どこにも所属しなくなります');
+    expect(screen.getByTestId('reparent-detach-confirm').textContent).toContain(
+      'どこにも所属しなくなります',
+    );
+    // 独立の枝が選ばれた状態で開く（押した部品と枝が 1 本の線でつながる）。
+    expect(screen.getByTestId('reparent-parent-none')).toBeChecked();
     h.unmount();
   });
 
@@ -399,8 +420,8 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     activateReparent(h.store);
     clickInput(1, 1);
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
-    fireEvent.click(screen.getByTestId('reparent-detach-confirm-no'));
-    expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('reparent-options-cancel'));
+    expect(screen.queryByTestId('reparent-options-dialog')).not.toBeInTheDocument();
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
     h.unmount();
   });
@@ -413,7 +434,7 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     expect(modal[modal.length - 1]).toBe(false);
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
     expect(modal[modal.length - 1]).toBe(true);
-    fireEvent.click(screen.getByTestId('reparent-detach-confirm-no'));
+    fireEvent.click(screen.getByTestId('reparent-options-cancel'));
     expect(modal[modal.length - 1]).toBe(false);
     h.unmount();
   });
@@ -424,7 +445,7 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     clickInput(1, 1);
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
     act(() => fireEvent.keyDown(window, { key: 'Escape' }));
-    expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('reparent-options-dialog')).not.toBeInTheDocument();
     // 選んだものはそのまま残る（板を閉じただけ）。
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
     h.unmount();

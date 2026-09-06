@@ -23,6 +23,7 @@ import {
   drawFace,
   enterEditMode,
   launchApp,
+  openPropertySection,
   returnToViewMode,
   squareCorners,
 } from './helpers';
@@ -183,17 +184,23 @@ test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03
       await page.mouse.click(cx, cy);
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
 
-      const deleteButton = page.getByRole('button', { name: '地物を削除' });
+      // **増分 7 の中身 5**: 削除の入口は 2 本になり、「全部の年から消す」ほうは
+      // 畳んだ節「取り返しのつかないこと」の中にある（目立つ位置に立つのは
+      // 「この年に終わったことにする」）。節を開いてからボタンを見る。
+      await page.getByTestId('sidebar-tab-properties').click();
+      await openPropertySection(page, 'danger-zone');
+      const deleteButton = page.getByTestId('delete-feature').getByRole('button');
       await expect(deleteButton).toBeEnabled();
 
       // 「読むだけ」へ。**選択は残る**（読める）が、削除は押せない（直せない）。
       await returnToViewMode(page);
       await expect(page.getByTestId('app-mode')).toHaveText('view');
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+      await openPropertySection(page, 'danger-zone');
       await expect(deleteButton).toBeDisabled();
       // 押しても確認ダイアログは開かない（disabled 属性だけに頼らない＝K-6）。
       await deleteButton.click({ force: true });
-      await expect(page.getByRole('button', { name: '削除を確定' })).toHaveCount(0);
+      await expect(page.getByTestId('delete-impact')).toHaveCount(0);
 
       // 「直せる」へ戻すと、選び直さなくても押せる（選択が保たれている証）。
       await enterEditMode(page);

@@ -66,6 +66,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  confirmReparentDialogIfOpen,
   launchApp,
   leaveViewMode,
   returnToViewMode,
@@ -364,6 +365,9 @@ async function confirmMergeOptions(page: Page): Promise<boolean> {
   if (!(await dialog.isVisible().catch(() => false))) return false;
   const confirm = page.getByTestId('merge-options-confirm');
   await confirm.click().catch(() => undefined);
+  // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った上位領域は
+  // 「既存から選ぶ」枝の初期値なので、そのまま確定すれば従来と同じ結果になる。
+  await confirmReparentDialogIfOpen(page);
   await dialog.waitFor({ state: 'detached', timeout: 6000 }).catch(() => undefined);
   return true;
 }
@@ -526,6 +530,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
         record('reparent-confirm-state', `enabled=${enabled} target="${tgt}" parent="${par}"`);
         if (enabled) {
           await confirm.click().catch(() => undefined);
+          // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った上位領域は
+          // 「既存から選ぶ」枝の初期値なので、そのまま確定すれば従来と同じ結果になる。
+          await confirmReparentDialogIfOpen(page);
           await page.waitForTimeout(160);
           await clearStuckModals(page, 'after-reparent');
           const afterReparent = await checkParity(page, 'after-reparent');
@@ -577,6 +584,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
         // gate parity (a cycle would typically desync list vs diag or throw).
         if (enabled && tgt !== '' && par !== '' && tgt !== par) {
           await confirm.click().catch(() => undefined);
+          // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った上位領域は
+          // 「既存から選ぶ」枝の初期値なので、そのまま確定すれば従来と同じ結果になる。
+          await confirmReparentDialogIfOpen(page);
           await page.waitForTimeout(160);
           const after = await checkParity(page, 'after-cycle-attempt');
           if (after !== beforeCycle) {
@@ -948,6 +958,9 @@ test.describe('BUGHUNT T2-R1 — nested-child knife + undo/redo / reparent op∘
           rec('iso-reparent-state', `target="${tgt}" newParent="${np}" enabled=${enabled}`);
           if (enabled) {
             await confirm.click().catch(() => undefined);
+            // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った上位領域は
+            // 「既存から選ぶ」枝の初期値なので、そのまま確定すれば従来と同じ結果になる。
+            await confirmReparentDialogIfOpen(page);
             await page.waitForTimeout(200);
             const sawConflict = (await page.getByTestId('conflict-modal-root').count()) > 0;
             if (sawConflict) {

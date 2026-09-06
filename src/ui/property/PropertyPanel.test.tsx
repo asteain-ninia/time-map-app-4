@@ -248,8 +248,11 @@ describe('PropertyPanel — view-only mode (FR-99前段, 教訓 5.13)', () => {
         onDeleteFeature={onDeleteFeature}
       />,
     );
+    // **増分 7 の中身 5**: 削除の入口が 2 本になり、この節は「全部の年から消す」側になった
+    // （目立つ位置には「この年に終わったことにする」が立つ）。ラベルは画面と同じ 1 本
+    // （`PROPERTY_STRINGS.deleteAllYearsLabel`）から取る（開発ガイド §5.64）。
     const button = within(screen.getByTestId('delete-feature')).getByRole('button', {
-      name: '地物を削除',
+      name: PROPERTY_STRINGS.deleteAllYearsLabel,
     });
     expect(button).toBeDisabled();
     fireEvent.click(button);
@@ -271,8 +274,12 @@ describe('PropertyPanel — view-only mode (FR-99前段, 教訓 5.13)', () => {
       />,
     );
     expect(
-      within(screen.getByTestId('delete-feature')).getByRole('button', { name: '地物を削除' }),
+      within(screen.getByTestId('delete-feature')).getByRole('button', {
+        name: PROPERTY_STRINGS.deleteAllYearsLabel,
+      }),
     ).toBeEnabled();
+    // 取り返しのつかない側は **畳んだ節の中**に置く（設計書 §A.3 / §C.6）。
+    expect(screen.getByTestId('danger-zone')).toBeInTheDocument();
   });
 });
 
@@ -630,6 +637,12 @@ describe('PropertyPanel — 存続期間編集 wiring (HB3-12 / FR-70, 教訓 5.
     const del = screen.getByTestId('anchor-interval-delete-a2');
     expect(del).toBeEnabled(); // 2-anchor series: not the sole anchor.
     fireEvent.click(del);
+
+    // **増分 7 の中身 7**: 押した瞬間には消さず、影響の一覧を出してから確定する
+    // （N-05 / 設計書 §A.3。器は地物・輪郭・頂点の削除と同じ 1 つ）。
+    expect(intents).toHaveLength(0);
+    expect(screen.getByTestId('anchor-delete-impact')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('anchor-delete-impact-confirm'));
 
     expect(intents).toHaveLength(1);
     expect(intents[0]!.op).toBe(ANCHOR_INTERVAL_OP.Delete);

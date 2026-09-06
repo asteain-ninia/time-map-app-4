@@ -186,9 +186,12 @@ test.describe('メタモルフィック — 地物の削除∘取消は恒等（
       await page.mouse.click(ccx, ccy);
       await expect(activeFeature).toHaveText(faceId);
 
-      // Delete it: button → confirm dialog → 確定 (FR-85).
-      await page.getByRole('button', { name: '地物を削除' }).click();
-      await page.getByRole('button', { name: '削除を確定' }).click();
+      // Delete it: 畳んだ節「取り返しのつかないこと」→ ボタン → 影響の一覧 → 確定
+      // （FR-85 / 増分 7 の中身 5・6。目立つ位置に立つのは「この年に終わったことにする」）。
+      await page.getByTestId('sidebar-tab-properties').click();
+      await openPropertySection(page, 'danger-zone');
+      await page.getByTestId('delete-feature').getByRole('button').click();
+      await page.getByTestId('delete-impact-confirm').click();
       await expect(activeFeature).toHaveText('');
       // It is GONE: clicking where it was selects nothing.
       await page.mouse.click(ccx, ccy);

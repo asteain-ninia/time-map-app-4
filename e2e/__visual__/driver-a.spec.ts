@@ -26,6 +26,7 @@ import { test, expect, type Locator, type Page } from '@playwright/test';
 import {
   armAddAreaTool,
   commitFace,
+  confirmRingDeleteIfAsked,
   enterEditMode,
   launchApp,
   listedFeatureCount,
@@ -676,6 +677,8 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await clickAt(solid);
       expect(await flowOf()).toBe('deleting');
       await clickAt(holeIn);
+      // **増分 7 の中身 7（N-05）**: 押した瞬間には消さず、影響の一覧を出してから確定する。
+      await confirmRingDeleteIfAsked(page);
       await page.waitForTimeout(400);
       await dismissConflict('hole delete');
       record(
@@ -698,6 +701,7 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
 
       // 飛び地削除 — the face is already the delete target; click inside the 飛び地.
       await clickAt(enclaveIn);
+      await confirmRingDeleteIfAsked(page);
       await page.waitForTimeout(400);
       await dismissConflict('enclave delete');
       const listAfterDelete = await featureListCount(page);

@@ -323,6 +323,9 @@ describe('ring-edit reachability — FR-24 リング削除 (生クリックの�
     expect(h.startProcess).not.toHaveBeenCalled(); // selection alone deletes nothing
 
     clickInput(10, 10); // inside the hole void → the hole ring
+    // **増分 7 の中身 7**: 押した瞬間には消さず、まず影響の一覧を出す（N-05 / 設計書 §A.3）。
+    expect(h.startProcess).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ring-delete-impact-confirm'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
     const rings = ringsOf(confirmedSnapshot(h));
     expect(rings.map((r) => r.id)).toEqual([OUTER_RING_ID]);
@@ -336,6 +339,9 @@ describe('ring-edit reachability — FR-24 リング削除 (生クリックの�
 
     clickInput(2, 2); // target face
     clickInput(35, 35); // inside the detached 飛び地
+    // 増分 7 の中身 7: 消す前に確認（同じ器）。
+    expect(h.startProcess).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId('ring-delete-impact-confirm'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
     const rings = ringsOf(confirmedSnapshot(h));
     expect(rings.map((r) => r.id).sort()).toEqual([HOLE_RING_ID, OUTER_RING_ID].sort());

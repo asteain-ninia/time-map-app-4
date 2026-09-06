@@ -66,6 +66,7 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  confirmReparentDialogIfOpen,
   launchApp,
   leaveViewMode,
   returnToViewMode,
@@ -600,6 +601,9 @@ test.describe('BUGHUNT R3-4 — depth-8 nest / exclave-hole reparent-out then kn
         record('reparent-confirm-state', `confirm visible=${confirmVisible} enabled=${confirmEnabled} target="${tgtMarker}" parent="${parMarker}"`);
         if (confirmEnabled) {
           await confirm.click().catch(() => undefined);
+          // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った上位領域は
+          // 「既存から選ぶ」枝の初期値なので、そのまま確定すれば従来と同じ結果になる。
+          await confirmReparentDialogIfOpen(page);
           await page.waitForTimeout(160);
         } else if (parMarker === '') {
           record('reparent-no-parent', 'new-parent click resolved no feature; confirm not enabled (hole reparent-out)');

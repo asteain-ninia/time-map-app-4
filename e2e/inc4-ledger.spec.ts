@@ -514,17 +514,21 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
     }
   });
 
-  test('親欄の 3 ボタンが無効で、理由の文が出ている（増分 7 まで）', async () => {
+  test('親欄の 3 ボタンは押せ、押すと所属変更の板が開く（増分 7 で有効化した）', async () => {
     const { app, page } = await launchApp();
     try {
       await commitOneFace(page);
       await expect(page.getByTestId('parent-row')).toBeVisible();
+      // **増分 7 の中身 3b**: 3 つとも押せる。増分 4 のときは無効＋理由の文だった。
       for (const id of ['parent-pick', 'parent-create', 'parent-clear']) {
-        await expect(page.getByTestId(id)).toBeDisabled();
+        await expect(page.getByTestId(id)).toBeEnabled();
       }
-      // ツールチップだけにしない（マウスを乗せないと読めない理由は無いのと同じ）。
-      await expect(page.getByTestId('parent-disabled-reason')).toBeVisible();
-      await expect(page.getByTestId('parent-disabled-reason')).toContainText('まだ使えません');
+      // 押せるようになったので、理由の文はもう出ない（出すと嘘になる）。
+      await expect(page.getByTestId('parent-disabled-reason')).toHaveCount(0);
+      // 押した瞬間に所属変更の手順へ入る（保存ボタンでは上位領域を変えない）。
+      await page.getByTestId('parent-create').click();
+      await expect(page.getByTestId('reparent-options-dialog')).toBeVisible();
+      await expect(page.getByTestId('reparent-parent-create')).toBeChecked();
     } finally {
       await app.close();
     }

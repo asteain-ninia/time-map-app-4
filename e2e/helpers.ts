@@ -182,6 +182,14 @@ export async function dismissFirstRunGuide(page: Page): Promise<void> {
  * ——だからこの関数は「出ていたら押す」形にしてあり、頂点削除の後に呼んでも何もしない。
  */
 export async function confirmDeleteIfAsked(page: Page): Promise<void> {
+  // **増分 7**: 削除の確認は「影響の一覧」の板になった（設計書 §A.3 / 中身 6）。
+  // 器は地物・錨・輪郭・頂点の削除で 1 つなので、ここも 1 か所で受ける。
+  const impact = page.getByTestId('delete-impact-confirm');
+  if ((await impact.count()) > 0) {
+    await impact.first().click();
+    await expect(page.getByTestId('delete-impact')).toHaveCount(0);
+    return;
+  }
   const confirm = page.getByRole('button', { name: '削除を確定' });
   if ((await confirm.count()) === 0) return;
   await confirm.first().click();
@@ -819,6 +827,44 @@ export async function listedFeatureCount(page: Page): Promise<number> {
   const m = /^(?:(\d+)\s*\/\s*)?(\d+)件$/.exec(text.trim());
   if (m === null) throw new Error(`一覧の件数表示が読めない: ${JSON.stringify(text)}`);
   return Number(m[1] ?? m[2]);
+}
+
+/**
+ * **輪郭（穴・飛び地）を消す確認が出ていたら、そのまま確定する**（増分 7 の中身 7）。
+ *
+ * リングの削除は押した瞬間に消していたが、N-05 の手当てで **影響の一覧を出してから**
+ * 確定する形になった（とくに「最後の外周を消すと面ごと消える」を事前に文で出す）。
+ * 出ていなければ何もしない。
+ */
+export async function confirmRingDeleteIfAsked(page: Page): Promise<void> {
+  const confirm = page.getByTestId('ring-delete-impact-confirm');
+  if ((await confirm.count()) === 0) return;
+  await confirm.first().click();
+  await expect(page.getByTestId('ring-delete-impact')).toHaveCount(0);
+}
+
+/**
+ * **所属変更の 3 択の板が出ていたら、そのまま確定する**（増分 7）。
+ *
+ * ［所属を変える］は増分 7 から **押した瞬間には確定せず、3 択の板を開く**（中身 1）。
+ * 地図で拾った新しい上位領域は「既存から選ぶ」枝の初期値になっているので、板を
+ * そのまま確定すれば従来と同じ結果になる。板が出ていなければ何もしない ―― 探索の
+ * spec は「押せたら押す」形で書かれているので、出る・出ないの両方を通す。
+ *
+ * 戻り値は **板が出ていたか**。
+ */
+export async function confirmReparentDialogIfOpen(page: Page): Promise<boolean> {
+  const dialog = page.getByTestId('reparent-options-dialog');
+  if ((await dialog.count()) === 0) return false;
+  const confirm = page.getByTestId('reparent-options-confirm');
+  if (await confirm.isEnabled().catch(() => false)) {
+    await confirm.click().catch(() => undefined);
+  } else {
+    // 確定できない枝（相手が選ばれていない等）は、板を閉じて元の局面へ戻す。
+    await page.getByTestId('reparent-options-cancel').click().catch(() => undefined);
+  }
+  await expect(dialog).toHaveCount(0, { timeout: 30_000 });
+  return true;
 }
 
 /**

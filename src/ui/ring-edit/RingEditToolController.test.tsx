@@ -418,7 +418,24 @@ describe('RingEditToolController — ring delete (FR-24)', () => {
     selectTargetFace(); // phase 1: the face whose ring is deleted
     // Click inside the hole void ([5,15]²) → the deepest containing ring is the hole.
     clickInput(10, 10);
+    // **増分 7 の中身 7**: 押した瞬間には消さず、影響の一覧を出してから確定する
+    // （N-05 / 設計書 §A.3。器は地物・錨・頂点の削除と同じ 1 つ）。
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.getByTestId('ring-delete-impact')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('ring-delete-impact-confirm'));
     expect(h.startProcess).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
+  it('輪郭の削除は［やめる］で何も起きない（確定までドメインを壊さない＝教訓 5.22）', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    fireEvent.click(screen.getByTestId('ring-edit-submode'));
+    selectTargetFace();
+    clickInput(10, 10);
+    fireEvent.click(screen.getByTestId('ring-delete-impact-cancel'));
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('ring-delete-impact')).not.toBeInTheDocument();
     h.unmount();
   });
 

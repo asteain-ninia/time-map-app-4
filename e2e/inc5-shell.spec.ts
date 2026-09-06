@@ -482,6 +482,11 @@ test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc �
       const confirm = page.getByTestId('reparent-confirm');
       await expect(confirm).toBeEnabled();
       await confirm.click();
+      // **増分 7**: ［所属を変える］は 3 択の板を開く。地図で拾った親（B）が
+      // 「既存から選ぶ」枝の初期値になっているので、そのまま確定できる。
+      await expect(page.getByTestId('reparent-options-dialog')).toBeVisible();
+      await page.getByTestId('reparent-options-confirm').click();
+      await expect(page.getByTestId('reparent-options-dialog')).toHaveCount(0);
 
       // **道具は外さない。** ここで Ctrl+Z を押す。
       // 確定したら鍵盤の持ち主は地図へ戻っていること（原因を直接指す観測）。
@@ -1269,6 +1274,10 @@ test.describe('増分 5 の手直し B4 — 最上位へは、何が起きるか
   test('［最上位へ（所属を外す）］は押した瞬間には確定せず、確認の板を出す', async () => {
     // バグ狩り B-1 / E4。削除と同じ作法で、押した結果を見せてから確定する。
     //
+    // **増分 7 で器が 3 択の作業ダイアログ 1 つに変わった**（設計書 §B.5）。押した部品が
+    // 「最初に開く枝」を決めるので、［最上位へ］は **独立の枝が選ばれた状態**で開く。
+    // 何が起きるかを言う文（`reparent-detach-confirm`）はその枝の中に残っている。
+    //
     // **わざと壊すなら**: `reparent-confirm-none` の `onClick` を `reparent.confirmNone()`
     // に戻すと、板が出ないままその場で確定してここが赤くなる。
     const { app, page } = await launchApp();
@@ -1283,10 +1292,14 @@ test.describe('増分 5 の手直し B4 — 最上位へは、何が起きるか
       await detach.click();
 
       // 確認の板が出る。答えるまでは何も起きない。
-      const dialog = page.getByTestId('reparent-detach-confirm');
+      const dialog = page.getByTestId('reparent-options-dialog');
       await expect(dialog).toBeVisible();
-      await expect(dialog).toHaveAttribute('role', 'alertdialog');
-      await expect(dialog).toContainText('どこにも所属しなくなります');
+      await expect(dialog).toHaveAttribute('role', 'dialog');
+      await expect(dialog).toHaveAttribute('aria-modal', 'true');
+      await expect(page.getByTestId('reparent-parent-none')).toBeChecked();
+      await expect(page.getByTestId('reparent-detach-confirm')).toContainText(
+        'どこにも所属しなくなります',
+      );
       // 板が出ているあいだは鍵盤の持ち主が「板」（＝背後で保存や削除が走らない）。
       await expect(page.getByTestId('app-focus-owner')).toHaveText('modal');
 

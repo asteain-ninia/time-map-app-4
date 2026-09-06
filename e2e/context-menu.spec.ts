@@ -60,6 +60,11 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
       // 発火 → runEditDelete の頂点削除ファネル（survive: 地物は残り頂点だけ消える）。
       await deleteVertex.click();
       await expect(menu).toHaveCount(0);
+      // **増分 7 の中身 7（N-05）**: 頂点も **消す前に確認を通る**。地物・錨・輪郭の
+      // 削除と同じ器で、「残る頂点が足りなくなると地物ごと消える」を事前に文で出す。
+      await expect(page.getByTestId('vertex-delete-impact')).toBeVisible();
+      await page.getByTestId('vertex-delete-impact-confirm').click();
+      await expect(page.getByTestId('vertex-delete-impact')).toHaveCount(0);
       // 地物はアクティブのまま（preference 昇格）、頂点選択はクリア（HOLE-1 の掃除）。
       await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');

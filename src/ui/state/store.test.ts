@@ -2467,6 +2467,23 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     why: '同上。',
     run: (s) => s.getState().setBundleOnlyUnfinished(true),
   },
+  // -- 対象の印（`markedFeatures`。増分 7 / 設計書 §D.5）-----------------------
+  // 表示状態と同じ扱い（保存ファイルに載らない）ので、不変条件の走査に入れる。
+  toggleFeatureMark: {
+    group: 'invariant',
+    why: '対象の印はセッション限りの集合で、選択も時刻も動かさない。',
+    run: (s) => s.getState().toggleFeatureMark(asFeatureId('f-1')),
+  },
+  setFeatureMarks: {
+    group: 'invariant',
+    why: '同上（まとめて置き換える）。',
+    run: (s) => s.getState().setFeatureMarks([asFeatureId('f-1')]),
+  },
+  clearFeatureMarks: {
+    group: 'invariant',
+    why: '同上（全部外す）。',
+    run: (s) => s.getState().clearFeatureMarks(),
+  },
   // -- 設定 -----------------------------------------------------------------
   setGridVisibleOverride: {
     group: 'invariant',

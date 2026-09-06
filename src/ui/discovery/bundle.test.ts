@@ -96,11 +96,12 @@ describe('束 — 既定の式', () => {
     expect(built.bundle.members.map((m) => m.featureId)).toEqual([id('a')]);
   });
 
-  it('「手で印を付けたもの」はまだ選べない（増分 7 まで）', () => {
+  it('「手で印を付けたもの」も選べる（増分 7 で印を付ける手段ができた）', () => {
     const marked = BUNDLE_PRESETS.find((p) => p.id === 'marked');
-    expect(marked?.available).toBe(false);
-    // ほかの既定は選べる（既定で `available` を書かないものは選べる扱い）。
-    expect(BUNDLE_PRESETS.filter((p) => p.available === false)).toHaveLength(1);
+    expect(marked?.available).toBeUndefined();
+    // **選べない既定はもう 1 つも無い。** 一覧の升目・Ctrl+クリック・右クリックの
+    // 「対象に加える」が `markedFeatures` を書くようになったので、印の束は成立する。
+    expect(BUNDLE_PRESETS.filter((p) => p.available === false)).toHaveLength(0);
   });
 });
 
