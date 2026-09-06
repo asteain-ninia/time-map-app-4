@@ -855,12 +855,24 @@ test.describe('増分 6 の手直し — 地図の 3 部品・目盛り・読み
         return `${s.appearance}/${s.getPropertyValue('-webkit-appearance')}`;
       });
       expect(appearance).toContain('none');
-      // 目盛りのラベルは 2 本以上出ていて、軸の中に収まっている。
+      // 目盛りのラベルは 2 本以上出ていて、**両端とも 1 文字も切れていない**
+      // （2026-09-07 の最終手直し。行は `overflow: hidden` なので、左端のラベルが
+      // 中央揃えのままだと「0年」の左 7.7px が切れて「年」しか読めなかった）。
       const labels = page.getByTestId('timeline-tick-label');
       expect(await labels.count()).toBeGreaterThanOrEqual(2);
-      const axis = (await page.getByTestId('rail-axis').boundingBox())!;
-      const first = (await labels.first().boundingBox())!;
-      expect(first.x).toBeGreaterThanOrEqual(axis.x - 20);
+      const row = (await page.getByTestId('timeline-ticks').boundingBox())!;
+      for (const which of ['first', 'last'] as const) {
+        const label = which === 'first' ? labels.first() : labels.last();
+        const b = (await label.boundingBox())!;
+        const text = (await label.textContent()) ?? '';
+        expect(b.x, `${which} ラベル「${text}」の左が行からはみ出した`).toBeGreaterThanOrEqual(
+          row.x - 0.5,
+        );
+        expect(
+          b.x + b.width,
+          `${which} ラベル「${text}」の右が行からはみ出した`,
+        ).toBeLessThanOrEqual(row.x + row.width + 0.5);
+      }
     } finally {
       await app.close();
     }
@@ -932,6 +944,12 @@ test.describe('増分 6 の手直し — 地図の 3 部品・目盛り・読み
         'none',
       );
       expect(await page.getByTestId('rail-edit-time-note').count()).toBe(0);
+      // **観測も画面と同じ値を出す**（2026-09-07 の最終手直し）。旧版は隠し観測だけが
+      // 「0年｜この年にはまだありません」を返していて、検査は通るのに画面は違う、が
+      // 起こりうる形だった。
+      const badge = (await page.getByTestId('timeline-current').textContent()) ?? '';
+      expect(await page.getByTestId('app-edit-time').textContent()).toBe(badge);
+      expect((await railView(page)).editTime).toBe(badge);
     } finally {
       await app.close();
     }

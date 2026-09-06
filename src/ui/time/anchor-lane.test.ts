@@ -225,6 +225,19 @@ describe('当たり判定 — 押した画素列と、視野の外の錨', () =>
     expect(hit.firstIndex).toBe(0);
   });
 
+  it('時間軸の上限ちょうどに始まる錨は、集計にも当たり判定にも入らない', () => {
+    // 集計は画素の列を **半開区間**で割り当てるので、上限ちょうどの錨は数えない。
+    // 当たり判定だけが `upperBound` で右端を含めていたので、**印が 1 つも描かれて
+    // いない列で「1 本ある」**と言っていた（2026-09-07 の最終手直し）。
+    const src = sourceOfYears([0, 10000]);
+    const v = view(0, 10000, 100);
+    const agg = aggregateAnchorLane(src, v);
+    expect(agg.inView, '集計は上限の錨を数えない').toBe(1);
+    // いちばん右の画素列を押しても、上限の錨には当たらない。
+    expect(laneHitTest(src, v, 99.9).kind).toBe(LANE_HIT.None);
+    expect(laneHitTest(src, v, 100).kind).toBe(LANE_HIT.None);
+  });
+
   it('視野の外の錨は数えない（右端で「向こう側」を掴まない）', () => {
     // 集計は半開区間（右端の錨は数えない）なのに、当たり判定だけが視野の外の錨に
     // 当たっていた ―― 印が 1 つも描かれていない列を押すと「2 本以上」と言われた。

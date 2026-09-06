@@ -277,6 +277,12 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       await expect(confirm).toContainText('年を動かす');
       // **板が出ているあいだ、年は 0 のまま。**
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
+      // **状態行も「移動しました」と言わない**（2026-09-07 の最終手直し）。旧版は
+      // ストアへ書いた直後に言い切っていたので、年が戻されても状態行だけが
+      // 「1500年へ移動しました」と言い続けていた（画面が嘘をつく）。
+      expect(await page.getByTestId('statusbar-result').textContent()).not.toContain(
+        '移動しました',
+      );
 
       // 「続ける」＝下書きを残す（年はもう戻っているので何も起きない）。**板は閉じた
       // ままでなければならない** ―― 年を戻したこと自体を見張りが新しい変化と読むと、

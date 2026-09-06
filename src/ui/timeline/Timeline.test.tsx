@@ -17,6 +17,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { timePointYear } from '../../domain/time/time-point';
+import { COMMAND_ID, CommandRegistry } from '../shell/commands';
 import type { StatusMessageStore } from '../shell/status-message';
 import { createSessionStore, TIME_CHANGE_SOURCE } from '../state/store';
 
@@ -217,6 +218,55 @@ describe('年の欄の断りと粒度（2026-09-07 の手直し）', () => {
     render(<Timeline store={s} />);
     jump('1600');
     expect(s.getState().currentTime).toEqual(timePointYear(1600));
+  });
+
+  it('すでに端に居るときは「移動しました」と言わない（2026-09-07 の最終手直し）', () => {
+    const s = store();
+    const messages: string[] = [];
+    const messageStore = {
+      failure: (text: string) => messages.push(text),
+      notice: (text: string) => messages.push(text),
+    } as unknown as StatusMessageStore;
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(0), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    render(<Timeline store={s} statusMessages={messageStore} />);
+    const back = screen.getByRole('button', { name: '10年前へ戻る' });
+    fireEvent.pointerDown(back);
+    fireEvent.pointerUp(back);
+    expect(s.getState().currentTime.year).toBe(0);
+    // 1 年も動いていないので「移動しました」ではない。
+    expect(messages.at(-1)).toBe(RAIL_STRINGS.alreadyAtEdge('0年'));
+  });
+
+  it('再生を始めた年へ Alt+← で戻れる（再生の 1 コマは積まない）', () => {
+    // 旧版は「再生で動いた年は積まない」だけだったので、3000 年から再生して止めると
+    // **3000 年を飛ばして**その前に居た年へ戻っていた（実測）。
+    const s = store();
+    // Alt+← は大域のコマンド（`time.back`）なので、登録簿を通して押す。
+    const registry = new CommandRegistry();
+    render(<Timeline store={s} registry={registry} />);
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(2000), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(3000), TIME_CHANGE_SOURCE.NumericJump);
+    });
+    // 再生を始める → 3000 年が 1 回だけ積まれる。
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: '再生' }));
+    });
+    // 再生で年が進む（1 コマぶんを手で作る）。
+    act(() => {
+      s.getState().setCurrentTime(timePointYear(3015), TIME_CHANGE_SOURCE.Playback);
+    });
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: '一時停止' }));
+    });
+    act(() => {
+      registry.dispatch(COMMAND_ID.TimeBack);
+    });
+    expect(s.getState().currentTime.year).toBe(3000);
   });
 
   it('送りが端を越えたら端で止まり、そう言う（決定 (4)）', () => {
