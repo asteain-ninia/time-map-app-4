@@ -22,6 +22,7 @@ import {
   isDevToolsChord,
   type ApplicationMenuApi,
 } from './app-menu';
+import { isHeadlessRun, windowRevealAction, type HeadlessFlags } from './headless-window';
 import { isAllowedNavigation, isTrustedDevServerUrl } from './renderer-entry';
 import { CLOSE_DECISION, createCloseGuardHub } from './close-guard';
 import {
@@ -65,6 +66,15 @@ const E2E_TEST = process.env['E2E_TEST'] === '1';
 // 条件のままヘッドレスで走る。**この旗は additionalArguments に何も積まない**ので、
 // preload も renderer も何も公開しない（検査したい性質そのものは変わらない）。
 const E2E_OFFSCREEN = process.env['E2E_OFFSCREEN'] === '1';
+
+// 3 つの旗をひとまとめにした「起動モード」。**オフスクリーンで描くか**（webPreferences）と
+// **ウィンドウを出すか**（ready-to-show）は同じ条件で決まるので、判定は Electron-free な
+// ./headless-window に置き（単体テスト済み）、ここは読むだけにする（開発ガイド §5.41）。
+const HEADLESS_FLAGS: HeadlessFlags = {
+  e2eTest: E2E_TEST,
+  smokeTest: SMOKE_TEST,
+  e2eOffscreen: E2E_OFFSCREEN,
+};
 
 // E2E 専用の脱出口（F2）: 「名前を付けて保存」の行き先を、ネイティブの保存ダイアログを
 // 出さずに環境変数で決める。Playwright は OS のダイアログを操作できないので、これが
@@ -242,7 +252,7 @@ function createWindow(): void {
       // In smoke / E2E mode render offscreen so the launch + interaction path can
       // be verified without a display/compositor. This does not relax any security
       // flag (sandbox / contextIsolation / nodeIntegration stay as above).
-      ...(SMOKE_TEST || E2E_TEST || E2E_OFFSCREEN ? { offscreen: true } : {}),
+      ...(isHeadlessRun(HEADLESS_FLAGS) ? { offscreen: true } : {}),
       // E2E 専用の投入口の旗（src/shell/ipc/e2e-harness.ts）: E2E_TEST=1 のときだけ preload の
       // process.argv に旗を積み、preload はそれを見て E2E ブリッジ（timeMapE2E）を公開する。
       // 本番では空配列 = 何も足さない = 何も露出しない。旗の中身は両側テストで固定済み。
@@ -326,9 +336,15 @@ function createWindow(): void {
     closeGuard.dispose();
   });
 
-  window.on('ready-to-show', () => {
-    window.show();
-  });
+  // ウィンドウを画面に出すのは **本番だけ**（headless-window.ts）。E2E / スモークは
+  // オフスクリーン描画なので出す必要が無く、出すと **OS のフォーカスを奪う** ―― 6 ワーカー
+  // で Electron が次々起動する E2E の 2 分間、利用者は PC で他の作業ができなくなる
+  // （実測と再現条件は開発ガイド §5.66）。`show: false` のまま放っておけば前面には出ない。
+  if (windowRevealAction(HEADLESS_FLAGS) === 'show') {
+    window.on('ready-to-show', () => {
+      window.show();
+    });
+  }
 
   // Offline-only: load the dev server in development, bundled HTML otherwise.
   // No external URLs are ever loaded. Codex MED「dev URL」: the env-supplied dev
