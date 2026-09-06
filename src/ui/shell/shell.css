@@ -2191,6 +2191,13 @@ body {
   pointer-events: none;
 }
 
+/* いちばん左の目盛りだけ、ラベルを線から右へ書き始める（行の左端で切れないように）。
+ * **線の位置は動かさない** ―― 揃え方を変えるだけで、写像は 1 つのままである。 */
+.rail__tick[data-align='left'] {
+  transform: none;
+  align-items: flex-start;
+}
+
 .rail__tick-mark {
   width: 1px;
   height: 5px;

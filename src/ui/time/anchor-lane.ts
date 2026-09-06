@@ -286,8 +286,13 @@ export function laneHitTest(
     const colLo = Math.max(min, pixelToDay(column, view));
     const colHi = Math.min(max, pixelToDay(column + 1, view));
     if (colHi > colLo) {
+      // **列も半開区間 [colLo, colHi) で数える**（2026-09-07 の最終手直し）。
+      // 集計（`aggregateAnchorLane`）は画素の列を半開区間で割り当てるので、`upperBound`
+      // で右端を含めると **時間軸の上限ちょうどに始まる錨**（集計は数えない）に
+      // 当たり判定だけが当たっていた ―― 印が 1 つも描かれていない列で「1 本ある」と
+      // 言うことになる。
       const cFirst = lowerBound(source.starts, colLo);
-      const cLast = upperBound(source.starts, colHi) - 1;
+      const cLast = lowerBound(source.starts, colHi) - 1;
       if (cLast === cFirst && cFirst >= 0 && cFirst < source.starts.length) {
         return { kind: LANE_HIT.Single, count: 1, firstIndex: cFirst, lastIndex: cFirst };
       }

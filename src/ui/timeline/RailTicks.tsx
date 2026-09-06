@@ -67,6 +67,13 @@ export function RailTicks(props: RailTicksProps): JSX.Element {
             className="rail__tick"
             style={{ left: `${String(tick.px)}px` } satisfies CSSProperties}
             data-tick-year={tick.year}
+            /* **左端のラベルは軸の外へ出さない**（2026-09-07 の最終手直し）。
+               ラベルは目盛りの上に中央揃えで置くので、いちばん左の目盛り（px≒0）の
+               ラベルは軸の左へ半分はみ出す ―― 行は `overflow: hidden` なので、実測で
+               「0年」の左 7.7px が切れて「年」しか読めなかった。右端は「単位: 年」の
+               余白が受けているが、左には受け皿が無いので **その目盛りだけ左揃え**に
+               する（目盛りの線そのものの位置は動かさない）。 */
+            data-align={tick.px - tickLabelWidthPx(tick.label) / 2 < 0 ? 'left' : 'center'}
             aria-hidden="true"
           >
             <span className="rail__tick-mark" />

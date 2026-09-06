@@ -16,7 +16,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { DomainProject } from '../../domain/persistence/index';
-import { normalize } from '../../domain/time/normalized';
+import { compare, normalize } from '../../domain/time/normalized';
 import type { TimePoint } from '../../domain/time/time-point';
 import { publishRailObservation } from '../e2e/rail-observation';
 import { decideEditPlan, EDIT_PLAN_STRINGS } from '../property/edit-plan';
@@ -163,6 +163,49 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     [statusMessages],
   );
 
+  /**
+   * **「移動しました」は、実際に動いたと確かめてから言う**（2026-09-07 の最終手直し）。
+   *
+   * 時刻の変更は **止められることがある** ―― 作図の下書きを持ったままレールで年を
+   * 動かすと、`AddToolController` が「捨てますか」の板を出して **年を元へ戻す**
+   * （教訓 5.71）。旧版はストアへ書いた直後に言い切っていたので、板が出ているあいだ
+   * 状態行だけが「5000年へ移動しました」と言い、画面の年は 1500 のままだった。
+   *
+   * 確かめる相手は **ストアの現物**である（`t.currentTime` は今のレンダーの値なので、
+   * 同じコミットの中で誰かが戻しても古いままになる）。頼んだ時刻がストアに残って
+   * いれば動いた、戻されていれば黙る。
+   */
+  const pendingMoveRef = useRef<TimePoint | null>(null);
+  const announceMove = useCallback(
+    (point: TimePoint): void => {
+      // すでにその時刻に居るなら、これ以上何も動かない ―― その場で言ってよい。
+      if (compare(t.currentTime, point, t.calendar) === 0) {
+        succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
+        return;
+      }
+      // 動くはずのときは **印だけ置く**。実際に動いたかは下の見張りが確かめる。
+      pendingMoveRef.current = point;
+    },
+    [t.currentTime, t.calendar, succeeded],
+  );
+
+  /**
+   * 頼んだ移動が **本当に効いたか**を見てから言う。
+   *
+   * 見るのは **ストアの現物**である（`t.currentTime` はこのレンダーの値なので、同じ
+   * コミットの中で誰かが戻しても古いままになる）。`AddToolController` の見張りは
+   * 地図セルの中に居るので、時刻レールより **先**に走って年を戻す ―― そのときは
+   * ストアがもう戻っているので、ここは黙る。
+   */
+  useEffect(() => {
+    const point = pendingMoveRef.current;
+    if (point === null) return;
+    pendingMoveRef.current = null;
+    const live = store.getState().currentTime;
+    if (compare(live, point, t.calendar) !== 0) return;
+    succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
+  }, [t.currentTime, t.calendar, store, succeeded]);
+
   // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
   const jumpTo = useCallback(
     (point: TimePoint) => {
@@ -172,9 +215,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         return;
       }
       t.jumpToTime(point);
-      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
+      announceMove(point);
     },
-    [t, refuse, succeeded],
+    [t, refuse, announceMove],
   );
 
   /**
@@ -195,34 +238,37 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
       }
       if (t.outOfRangeMessage(next) !== null) {
         const edge = direction < 0 ? t.timelineMin : t.timelineMax;
-        // すでに端に居るなら動かない（同じ年へ飛ばし直さない）。
-        if (t.outOfRangeMessage(t.currentTime) === null) t.jumpToTime(edge);
+        // **すでに端に居るなら動かないし、動いたとも言わない**（2026-09-07 の最終
+        // 手直し）。旧版は端で押すたびに「端の 0 年へ移動しました」と言っていたが、
+        // 1 年も動いていないので画面が嘘をつく。
+        if (compare(t.currentTime, edge, t.calendar) === 0) {
+          refuse(RAIL_STRINGS.alreadyAtEdge(formatYear(edge.year)));
+          return;
+        }
+        t.jumpToTime(edge);
         refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)));
         return;
       }
       t.jumpToTime(next);
-      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(next)));
+      announceMove(next);
     },
-    [t, refuse, succeeded],
+    [t, refuse, announceMove],
   );
 
   const jumpYear = useCallback(
     (point: TimePoint): string | null => {
+      // 断りの文は `useTimeline` の 1 本（`RAIL_STRINGS.outOfRange`）から来る ――
+      // ここで組み立て直すと写しが 2 枚になる（教訓 5.44）。
       const message = t.outOfRangeMessage(point);
       if (message !== null) {
-        const refusalText = RAIL_STRINGS.outOfRange(
-          formatYear(point.year),
-          formatYear(t.timelineMin.year),
-          formatYear(t.timelineMax.year),
-        );
-        refuse(refusalText);
-        return refusalText;
+        refuse(message);
+        return message;
       }
       t.jumpToTime(point);
-      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
+      announceMove(point);
       return null;
     },
-    [t, refuse, succeeded],
+    [t, refuse, announceMove],
   );
 
   // --- 前後の錨へ（二分探索。対数時間） --------------------------------------
@@ -255,6 +301,12 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   const lastTimeRef = useRef<TimePoint | null>(null);
   const playingRef = useRef(playback.isPlaying);
   playingRef.current = playback.isPlaying;
+
+  const pushHistory = useCallback((point: TimePoint): void => {
+    historyRef.current.push(point);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+  }, []);
+
   useEffect(() => {
     const previous = lastTimeRef.current;
     lastTimeRef.current = t.currentTime;
@@ -270,9 +322,25 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     // 積んでいたので、2 秒再生しただけで 50 件の履歴が「1 年ずつの年」で埋まり、
     // Alt+← が「1 年ずつ戻る」ボタンに化けていた（実測: 60 回押して 3 つの年しか出ない）。
     if (playingRef.current) return;
-    historyRef.current.push(previous);
-    if (historyRef.current.length > 50) historyRef.current.shift();
-  }, [t.currentTime]);
+    pushHistory(previous);
+  }, [t.currentTime, pushHistory]);
+
+  /**
+   * **再生を始めた年は 1 回だけ積む**（2026-09-07 の最終手直し）。
+   *
+   * 再生で動いた年は積まない（上）ので、旧版は 3000 年から再生して止めたあと Alt+← を
+   * 押すと **3000 年を飛ばして 2000 年**（その前に居た年）へ戻っていた。「再生を始めた
+   * ところへ戻る」は再生の直後にいちばん欲しい 1 手なので、開始の年だけを積む。
+   * 積むのは開始の瞬間の 1 回だけで、コマごとには積まない。
+   */
+  useEffect(() => {
+    if (!playback.isPlaying) return;
+    const at = lastTimeRef.current;
+    if (at === null) return;
+    pushHistory(at);
+    // 積んだ年をもう一度積まないよう、次の「時刻が動いた」は素通りさせる。
+    suppressPushRef.current = true;
+  }, [playback.isPlaying, pushHistory]);
 
   const goBack = useCallback(() => {
     const previous = historyRef.current.pop();
@@ -283,8 +351,8 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     suppressPushRef.current = true;
     rail.revealTime(previous);
     t.jumpToTime(previous);
-    succeeded(RAIL_STRINGS.movedTo(formatTimePoint(previous)));
-  }, [t, rail, refuse, succeeded]);
+    announceMove(previous);
+  }, [t, rail, refuse, announceMove]);
 
   // --- 鍵盤のコマンド（`commands.ts` と `menu.ts` の両方に足してある＝結合点 #10） ---
   //
@@ -372,7 +440,15 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   );
 
   // --- 観測口（中身 8） -------------------------------------------------------
-  const editTimeText = `${editPlan.badgeTime}${EDIT_PLAN_STRINGS.badgeSeparator}${editPlan.badgeNote}`;
+  //
+  // **観測は画面と同じ値を出す**（2026-09-07 の最終手直し）。地物を選んでいないときの
+  // バッジは年だけを出す（行き先を指す相手が画面に無いため）のに、観測だけが
+  // 「0年｜この年にはまだありません」を返していた ―― 観測が画面と違うものを言うと、
+  // 検査は通るのに画面は違う、が起こる（教訓 5.18 の趣旨）。
+  const editTimeText =
+    lane.featureId === null
+      ? editPlan.badgeTime
+      : `${editPlan.badgeTime}${EDIT_PLAN_STRINGS.badgeSeparator}${editPlan.badgeNote}`;
   // **観測は 1 回だけ登録する**（毎レンダーで登録し直さない）。中身は ref 越しに読むので、
   // 再生で時刻が動いてもここは走らない。
   const observedRef = useRef({

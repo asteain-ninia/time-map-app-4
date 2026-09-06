@@ -20,6 +20,7 @@ import {
   type TimeChangeSource,
 } from '../state/store';
 
+import { RAIL_STRINGS } from './rail-strings';
 import {
   clampToRange,
   formatYear,
@@ -101,13 +102,21 @@ export function useTimeline<S>(store: StoreApi<SessionStore<S>>): TimelineBindin
     [store, currentTime, timelineMin, timelineMax, calendar],
   );
 
+  /**
+   * 範囲外の断り。**文言は `rail-strings.ts` の 1 か所から引く**（2026-09-07 の最終
+   * 手直し）―― 旧版はここが「◯年は時間軸の範囲（…）の外です」という **もう 1 系統の
+   * 文**を持っていて、年入力（`RAIL_STRINGS.outOfRange`）とスライダー・錨ジャンプで
+   * 断りの語が違っていた（用語集の第一表記は「時刻レール」）。
+   */
   const outOfRangeMessage = useCallback(
     (point: TimePoint): string | null =>
       isWithinRange(point, timelineMin, timelineMax, calendar)
         ? null
-        : `${formatYear(point.year)}は時間軸の範囲（${formatYear(timelineMin.year)}〜${formatYear(
-            timelineMax.year,
-          )}）の外です。範囲を広げるか、範囲の中の年を入れてください。`,
+        : RAIL_STRINGS.outOfRange(
+            formatYear(point.year),
+            formatYear(timelineMin.year),
+            formatYear(timelineMax.year),
+          ),
     [timelineMin, timelineMax, calendar],
   );
 
