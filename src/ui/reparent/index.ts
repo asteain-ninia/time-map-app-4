@@ -9,6 +9,8 @@
 
 export {
   REPARENT_FLOW,
+  REPARENT_TARGET_SOURCE,
+  type ReparentTargetSource,
   type ReparentFlow,
   type UseReparentTool,
   type UseReparentToolState,
@@ -21,7 +23,21 @@ export {
   useReparentTool,
 } from './useReparentTool';
 
-export { REPARENT_STRINGS } from './strings';
+export { REPARENT_STRINGS, REPARENT_STEP_COUNT } from './strings';
+
+export {
+  REPARENT_CHOICE,
+  ReparentOptionsDialog,
+  type ReparentChoice,
+  type ReparentOptionsDialogProps,
+} from './ReparentOptionsDialog';
+
+export {
+  ParentTreePicker,
+  PARENT_TREE_VISIBLE_ROWS,
+  PARENT_TREE_VIEWPORT_HEIGHT,
+  type ParentTreePickerProps,
+} from './ParentTreePicker';
 
 export {
   ReparentToolController,

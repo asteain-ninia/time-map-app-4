@@ -23,13 +23,14 @@
 // DYNAMIC path renders its own list here with a mirrored dismiss effect (Escape /
 // outside-pointerdown), clearly the transitional shape.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useStore } from 'zustand';
 
 import { ContextMenu, type ContextMenuItem } from '../shell/ContextMenu';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
 import { resolveCommandEnabled } from '../shell/permissions';
 import { MENU_ITEM_LABELS } from '../shell/strings';
+import type { OptionBarCommitButton, OptionBarStore } from '../shell/option-bar';
 import {
   disableReasonMessage,
   type ContextMenuModel,
@@ -83,6 +84,21 @@ export interface MapContextMenuProps<S> {
    * は保たれる.
    */
   readonly onOpenChange?: ((open: boolean) => void) | undefined;
+  /**
+   * **道具の局面の項目**（設計書 §I.3 の「（下書き中なら）ここで確定・取り消し」。
+   * 増分 5 からの送り）。
+   *
+   * 中身は **オプションバーの確定欄そのもの**を読む ―― 手順のある 5 道具と追加の
+   * 3 道具は、自分の［○○を確定］［やめる］をそこへ押し込んでいる。写しを作らず
+   * その 1 本を出すので、道具を足しても右クリックの側を直す必要が無い（教訓 5.29 /
+   * 5.44）。下書きが無い局面では確定欄が空なので、項目も出ない。
+   *
+   * **「この点を消す」は出さない**（実装者の判断。配下 README の B-3 に載せた）――
+   * ［1 つ戻す］は確定欄ではなく設定欄の差し込みで、`ReactNode` なので写せない。
+   * その操作は下書きを持っているあいだ `Ctrl+Z` が受け持っており（設計書 §D.4.1 の
+   * `tool-drawing` の行）、打鍵の無い確定・取りやめとは事情が違う。
+   */
+  readonly optionBar?: OptionBarStore | undefined;
 }
 
 /**
@@ -97,6 +113,13 @@ const MAP_MENU_ITEMS: readonly ContextMenuItem[] = [
     label: MENU_ITEM_LABELS[COMMAND_ID.ViewToggleViewMode],
   },
 ];
+
+/** 帯が渡されていないときの購読解除（`useSyncExternalStore` は関数を要求する）。 */
+const NO_OPTION_BAR_UNSUBSCRIBE = (): void => {
+  /* 帯が無い ⇒ 道具の局面の項目も無い */
+};
+/** 帯が無いときの確定欄（同一性を保つ）。 */
+const NO_COMMIT_BUTTONS: readonly OptionBarCommitButton[] = [];
 
 /** One open-menu entry: the request plus the (frozen-at-open) composed model, if any. */
 interface MenuEntry {
@@ -113,6 +136,7 @@ interface MenuEntry {
 
 export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | null {
   const { store, registry, bindOpener, composeFor, onSelectItem, onOpenChange } = props;
+  const optionBar = props.optionBar;
   const mode = useStore(store, (s) => s.mode);
   const [entry, setEntry] = useState<MenuEntry | null>(null);
 
@@ -184,6 +208,7 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
       mode={mode}
       onClose={onClose}
       onSelectItem={onSelectItem}
+      optionBar={optionBar}
     />
   );
 }
@@ -196,6 +221,8 @@ interface DynamicContextMenuProps {
   readonly mode: EditMode;
   readonly onClose: () => void;
   readonly onSelectItem: OnSelectMenuItem | undefined;
+  /** 道具の局面の項目の出どころ（オプションバーの確定欄）。 */
+  readonly optionBar: OptionBarStore | undefined;
 }
 
 /**
@@ -208,6 +235,14 @@ interface DynamicContextMenuProps {
  */
 function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
   const { request, model, registry, mode, onClose, onSelectItem } = props;
+  // **道具の局面の項目**（増分 5 からの送り / 設計書 §I.3）。オプションバーの確定欄を
+  // そのまま項目にする ―― 「開くのに中身が無い」を減らし、写しも作らない。
+  const optionBar = props.optionBar;
+  const toolCommit = useSyncExternalStore(
+    (onChange) => (optionBar === undefined ? NO_OPTION_BAR_UNSUBSCRIBE : optionBar.subscribe(onChange)),
+    () => optionBar?.get().commit ?? NO_COMMIT_BUTTONS,
+    () => optionBar?.get().commit ?? NO_COMMIT_BUTTONS,
+  );
 
   // Close契機 mirrors ContextMenu.tsx (Escape + deferred outside pointerdown).
   //
@@ -260,6 +295,28 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
       style={{ position: 'fixed', left: request.clientX, top: request.clientY }}
       onPointerDown={(e) => e.stopPropagation()}
     >
+      {/* 道具が下書きを持っている局面の項目（確定・やめる）。**先頭に置く** ――
+          その局面でいちばん近い次の一手だからである。 */}
+      {toolCommit.map((button) => (
+        <li key={`tool-${button.id}`} role="none">
+          <button
+            type="button"
+            role="menuitem"
+            className="context-menu__item"
+            data-testid="context-menu-item"
+            data-tool-commit={button.id}
+            disabled={button.disabled === true}
+            aria-disabled={button.disabled === true}
+            onClick={() => {
+              if (button.disabled === true) return;
+              button.onClick();
+              onClose();
+            }}
+          >
+            {button.label}
+          </button>
+        </li>
+      ))}
       {(model?.items ?? []).map((item) => {
         const disabledTitle = item.enabled ? undefined : disableReasonMessage(item.disableReason);
         return (

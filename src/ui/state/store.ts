@@ -74,6 +74,9 @@ import {
   reconcileLedgerToLive,
   toggleExpanded as toggleLedgerExpandedRule,
   withExpanded as withLedgerExpanded,
+  toggleMarked as toggleLedgerMarkedRule,
+  withMarked as withLedgerMarked,
+  clearMarked as clearLedgerMarked,
   type LedgerMode,
   type LedgerState,
 } from '../discovery/ledger-state';
@@ -526,6 +529,17 @@ export interface SessionStoreActions<S> {
   setBundleCursor(cursor: number): void;
   /** 未処理だけに絞るかを切り替える。 */
   setBundleOnlyUnfinished(only: boolean): void;
+
+  // -- 対象の印（`markedFeatures`, 増分 7 / 設計書 §D.5） ---------------------
+  /**
+   * 印を 1 件切り替える（一覧の升目・Ctrl+クリック・右クリック）。
+   * **選択（`activeFeature`）は動かさない** ―― 印は別概念である。
+   */
+  toggleFeatureMark(featureId: FeatureId): void;
+  /** 印を置き換える（「その全下位領域を対象にする」など、まとめて立てるとき）。 */
+  setFeatureMarks(featureIds: Iterable<FeatureId>): void;
+  /** 印を全部外す。 */
+  clearFeatureMarks(): void;
 
   // settings
   updateProjectSetting<K extends ProjectSettingKey>(key: K, value: ProjectSettings[K]): void;
@@ -1992,6 +2006,27 @@ export function createSessionStore<S>(
       const cur = get().ledger;
       if (cur.onlyUnfinished === only) return;
       set({ ledger: { ...cur, onlyUnfinished: only } });
+    },
+
+    /**
+     * 対象の印（増分 7 / 設計書 §D.5）。**保存ファイルには載らない**ので未保存の印は
+     * 立てない ―― 展開状態と同じ「セッション限りの表示状態」である（K-9）。
+     */
+    toggleFeatureMark(featureId) {
+      const cur = get().ledger;
+      set({ ledger: toggleLedgerMarkedRule(cur, featureId) });
+    },
+
+    setFeatureMarks(featureIds) {
+      const cur = get().ledger;
+      const next = withLedgerMarked(cur, featureIds);
+      if (next !== cur) set({ ledger: next });
+    },
+
+    clearFeatureMarks() {
+      const cur = get().ledger;
+      const next = clearLedgerMarked(cur);
+      if (next !== cur) set({ ledger: next });
     },
 
     /**

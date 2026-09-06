@@ -765,3 +765,26 @@
   font-size: 11px;
   line-height: 1.4;
 }
+
+/* 削除の入口 B を畳んでおく節（設計書 §A.3 / §C.6 の「取り返しのつかないこと」）。 */
+.property-panel__danger {
+  margin: 8px 0 0;
+  padding: 4px 6px;
+  border: 1px solid #e0c0c0;
+  border-radius: 6px;
+}
+.property-panel__danger > summary {
+  color: #a33;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* 削除の入口 A（存続期間の行の隣・目立つ位置）。 */
+.basic-info__end-here {
+  margin: 4px 0 8px;
+}
+.basic-info__end-here-reason {
+  margin: 2px 0 0;
+  color: #666;
+  font-size: 11px;
+}

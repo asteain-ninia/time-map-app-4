@@ -80,6 +80,21 @@ export interface MenuLaunchPorts {
    * session override that reconcileToLiveFeatures prunes on the next structure change).
    */
   readonly setFeatureEmphasized: (featureId: FeatureId, emphasized: boolean) => void;
+  /**
+   * 対象の印（`markedFeatures`, 増分 7 / 設計書 §D.5）を 1 件つけ外しする
+   * （store.toggleFeatureMark）。表示状態と同じくドメインを触らないので生存の関門は
+   * 要らない（消えた id はストアの掃除が外す）。省略可 ―― 繋いでいない呼び出し側では
+   * 何もしない正直な空実装になる。
+   */
+  readonly setFeatureMarked?: ((featureId: FeatureId, marked: boolean) => void) | undefined;
+  /** まとめ役の全下位領域に印をつける（FR-48 後半 / 増分 7 の中身 3）。 */
+  readonly markSubtree?: ((featureId: FeatureId) => void) | undefined;
+  /** 印を付けた地物の所属をまとめて変える（増分 7 の中身 2b / V8）。 */
+  readonly reparentMarked?: ((featureIds: ReadonlySet<FeatureId>) => void) | undefined;
+  /** 印を付けた地物へまとめて種別を付ける（増分 7 の中身 8）。 */
+  readonly bulkKindLabel?: ((featureIds: ReadonlySet<FeatureId>) => void) | undefined;
+  /** 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A / 増分 7 の中身 5）。 */
+  readonly endHere?: ((featureId: FeatureId) => void) | undefined;
 }
 
 /**
@@ -144,6 +159,25 @@ export function launchMenuItem(
       // FR-113 Phase 2 強調/強調解除 — one arm for both items; the intent's `emphasized`
       // carries the direction the composer showed (see MenuLaunchPorts.setFeatureEmphasized).
       ports.setFeatureEmphasized(intent.featureId, intent.emphasized);
+      return;
+    case FLOW_KIND.SetFeatureMark:
+      // 増分 7 / 設計書 §D.5 — 印はセッション限りの集合。強調と同じ形で、出した項目が
+      // 向きを決める。
+      ports.setFeatureMarked?.(intent.featureId, intent.marked);
+      return;
+    case FLOW_KIND.MarkSubtree:
+      ports.markSubtree?.(intent.featureId);
+      return;
+    case FLOW_KIND.ReparentMarked:
+      ports.reparentMarked?.(intent.featureIds);
+      return;
+    case FLOW_KIND.BulkKindLabel:
+      ports.bulkKindLabel?.(intent.featureIds);
+      return;
+    case FLOW_KIND.EndHere:
+      // 設計書 §A.3 の入口 A。消えた対象は App 側の存続期間コマンドが「錨が見つかりません」で
+      // 断るので、ここに 2 つ目の関門は書かない（教訓 5.13）。
+      ports.endHere?.(intent.featureId);
       return;
     default:
       return assertNever(intent);

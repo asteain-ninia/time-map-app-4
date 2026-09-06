@@ -333,6 +333,11 @@ export interface AddHostPorts {
    */
   drawSurvey(primitives: readonly DrawPrimitive[]): void;
   /**
+   * **対象色の層**を差し替える（増分 7 / 設計書 §D.5）。道具のオーバーレイとは別の
+   * スロットなので、道具を降りても印は残る。空配列で消える。
+   */
+  drawMarked(primitives: readonly DrawPrimitive[]): void;
+  /**
    * Re-composite the whole frame (base + grid + COMMITTED features + the last tool
    * overlay) from the CURRENT inputs. Called by the composition root whenever the
    * committed domain / current time / selection changes so an added / edited /
@@ -435,6 +440,16 @@ export interface FrameInputs {
    */
   readonly survey?: readonly DrawPrimitive[];
   /**
+   * **対象色の層**（`markedFeatures` の複数対象。増分 7 / 設計書 §D.5）。確定地物の
+   * **上**、測量・ハンドル・道具のオーバーレイの **下**に置く ―― 印は「まとめて直す
+   * 相手」の目印なので地物より前に出す必要があるが、いま手を動かしている道具の仮表示を
+   * 隠してはいけない。
+   *
+   * **道具のオーバーレイとは別のスロットである。** 印は道具を持っていなくても立って
+   * いるので、道具が排他で使う 1 枚に相乗りさせると、道具を降りた瞬間に消えてしまう。
+   */
+  readonly marked?: readonly DrawPrimitive[];
+  /**
    * The edit-handle primitives for the active feature (HB3-9 / FR-87), composited
    * ABOVE the committed features and UNDER the {@link overlay}. Empty when not editing
    * / no active feature. Defaults to none.
@@ -521,6 +536,8 @@ export function composeFrameWithCount(inputs: FrameInputs): ComposedFrame {
   // U37 survey layer (FR-15): confirmed survey lines draw ABOVE the committed
   // features (they are a measurement over the map content) but UNDER the edit
   // handles and the tool overlay, so they never cover an in-progress edit/draft.
+  // 対象色（増分 7 / 設計書 §D.5）: 確定地物の上、測量の下。
+  if (inputs.marked !== undefined) primitives.push(...inputs.marked);
   if (inputs.survey !== undefined) primitives.push(...inputs.survey);
   // HB3-9: the active feature's edit handles draw ABOVE the committed features (so a
   // handle sits on top of the shape it edits) but UNDER the tool overlay (FR-78 仮表示
@@ -635,6 +652,8 @@ export function createAddHostPorts(
   // beside the tool overlay, so a knife/merge/… overlay push (or its `[]` reset)
   // can never wipe the confirmed survey lines. Cleared only by drawSurvey([]).
   let lastSurvey: readonly DrawPrimitive[] = [];
+  // 対象色（増分 7）。道具のオーバーレイとは別に持つので、道具を降りても消えない。
+  let lastMarked: readonly DrawPrimitive[] = [];
 
   const paintWith = (overlay: readonly DrawPrimitive[]): void => {
     lastOverlay = overlay;
@@ -660,6 +679,7 @@ export function createAddHostPorts(
       // U37: the persistent survey layer rides EVERY composite (FR-15) — it is
       // stashed by drawSurvey and survives overlay/committed/camera repaints.
       survey: lastSurvey,
+      marked: lastMarked,
       // HB3-9: the active feature's edit handles, recomputed fresh per frame so they
       // re-project against the live camera and stay screen-fixed (FR-17). Empty when
       // not editing / no active feature (the getter returns []). FR-110 視野内カウント:
@@ -1088,6 +1108,10 @@ export function createAddHostPorts(
     },
     drawKnife(primitives): void {
       lastOverlay = primitives;
+      requestPaint();
+    },
+    drawMarked(primitives): void {
+      lastMarked = primitives;
       requestPaint();
     },
     drawSurvey(primitives): void {

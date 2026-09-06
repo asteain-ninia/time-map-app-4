@@ -3388,3 +3388,100 @@ body {
   min-height: 26px;
   font: inherit;
 }
+
+/* --- 影響ダイアログ（設計書 §A.3 / 増分 7 の中身 6・7）------------------------
+   「消す前に何が起きるかを見せる」ための **方針中立の器**。地物の全錨削除・錨の削除・
+   輪郭の削除・複数頂点の削除が同じ見た目で出る。板の作りはほかのモーダルと揃える。 */
+.impact-confirm-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+.impact-confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.impact-confirm-dialog {
+  position: relative;
+  z-index: 1;
+  width: 420px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 16px 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.impact-confirm-dialog__title {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+.impact-confirm-dialog__group {
+  margin: 0 0 8px;
+}
+.impact-confirm-dialog__heading {
+  margin: 0 0 2px;
+  color: #444;
+  font-size: 12px;
+  font-weight: 600;
+}
+.impact-confirm-dialog__lines {
+  margin: 0;
+  padding-left: 18px;
+  color: #333;
+  font-size: 12px;
+}
+.impact-confirm-dialog__blocked {
+  margin: 8px 0 0;
+  color: #a33;
+  font-size: 12px;
+}
+.impact-confirm-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+.impact-confirm-dialog__confirm {
+  color: #fff;
+  background: #b3261e;
+  border: 1px solid #8c1d18;
+  border-radius: 6px;
+}
+.impact-confirm-dialog__confirm:disabled {
+  color: #666;
+  background: #ddd;
+  border-color: #ccc;
+}
+.impact-confirm-dialog__note {
+  margin: 6px 0 0;
+  color: #555;
+  font-size: 11px;
+  text-align: right;
+}
+
+/* 対象の印（`markedFeatures`。増分 7 / 設計書 §D.5・§C.5）。行の升目と、件数の帯。 */
+.ledger__mark {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  margin: 0 2px 0 0;
+}
+.ledger__row[data-marked='true'] {
+  background: rgba(255, 214, 0, 0.18);
+}
+.ledger__marks {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 4px;
+  color: #664d00;
+  font-size: 11px;
+  background: rgba(255, 214, 0, 0.16);
+}

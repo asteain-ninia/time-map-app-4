@@ -134,8 +134,9 @@ export const BUNDLE_PRESETS: readonly BundlePreset[] = [
     label: BUNDLE_STRINGS.presetMarked,
     kind: BUNDLE_KIND.Marked,
     expression: '',
-    // 印を付ける手段が増分 7 なので、いまは必ず 0 件になる。選べないようにしておく。
-    available: false,
+    // **増分 7 で印を付ける手段ができた**（一覧の升目・右クリックの「対象に加える」）ので
+    // 選べるようにした。印が 0 件のときは束も 0 件になるが、それは「印を付けていない」
+    // という正しい姿である（押せない理由を書くより、押した結果で分かるほうが素直）。
   },
 ];
 

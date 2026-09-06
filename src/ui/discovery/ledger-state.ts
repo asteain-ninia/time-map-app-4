@@ -43,6 +43,18 @@ export interface LedgerState {
   readonly bundle: Bundle | null;
   /** 束の未処理だけに絞るか。 */
   readonly onlyUnfinished: boolean;
+  /**
+   * **手で印を付けた地物**（`markedFeatures`。増分 7 / 設計書 §D.5）。
+   *
+   * **選択（`activeFeature`）とは別の概念**である。選択は 0 か 1 件（FR-79）で「いま
+   * 素性欄が映しているもの」だが、印は「まとめて片付ける相手」の集合で、2 件以上に
+   * なりうる ―― 結ぶ・連邦化・一括の種別付与がこれを読む。設計書 §D.5 が
+   * 「`activeFeature` と別概念に立てる」と定めているのはこの理由による。
+   *
+   * **保存形式には入れない**（K-9）。展開状態と同じセッション限りの表示状態で、
+   * 生きていない地物は {@link reconcileLedgerToLive} が掃除する。
+   */
+  readonly marked: ReadonlySet<FeatureId>;
 }
 
 /** 既定。束は無く、木で、絞り込みなし。 */
@@ -54,6 +66,7 @@ export const DEFAULT_LEDGER_STATE: LedgerState = {
   collapsed: new Set(),
   bundle: null,
   onlyUnfinished: false,
+  marked: new Set(),
 };
 
 /**
@@ -104,9 +117,36 @@ export function withExpanded(
 }
 
 /**
- * 生きている地物だけを展開集合に残す（教訓 5.5 / 5.11）。id で鍵を持つ集合なので、
- * 削除・取り消しで消えた id を掃除しないと、取り消しで同じ id が戻ったときに
- * 古い展開状態が別の地物へ付く。変化が無ければ同じ参照を返す。
+ * 印を 1 件切り替える（増分 7 / 設計書 §D.5）。変化が無ければ同じ参照を返す。
+ */
+export function toggleMarked(state: LedgerState, featureId: FeatureId): LedgerState {
+  const marked = new Set(state.marked);
+  if (!marked.delete(featureId)) marked.add(featureId);
+  return { ...state, marked };
+}
+
+/** 印を明示的に置き換える（右クリックの「その全下位領域を対象にする」など）。 */
+export function withMarked(
+  state: LedgerState,
+  featureIds: Iterable<FeatureId>,
+): LedgerState {
+  const marked = new Set(featureIds);
+  if (marked.size === state.marked.size && [...marked].every((id) => state.marked.has(id))) {
+    return state;
+  }
+  return { ...state, marked };
+}
+
+/** 印を全部外す。 */
+export function clearMarked(state: LedgerState): LedgerState {
+  if (state.marked.size === 0) return state;
+  return { ...state, marked: new Set() };
+}
+
+/**
+ * 生きている地物だけを展開集合・印の集合に残す（教訓 5.5 / 5.11）。id で鍵を持つ集合
+ * なので、削除・取り消しで消えた id を掃除しないと、取り消しで同じ id が戻ったときに
+ * 古い状態が別の地物へ付く。変化が無ければ同じ参照を返す。
  */
 export function reconcileLedgerToLive(
   state: LedgerState,
@@ -123,5 +163,12 @@ export function reconcileLedgerToLive(
     if (liveFeatureIds.has(id)) collapsed.add(id);
     else changed = true;
   }
-  return changed ? { ...state, expanded, collapsed } : state;
+  // **印も同じ理由で掃除する**（増分 7）。所属変更・削除で消えた id を残すと、
+  // 「3 件をまとめて」の件数が実物と食い違う。
+  const marked = new Set<FeatureId>();
+  for (const id of state.marked) {
+    if (liveFeatureIds.has(id)) marked.add(id);
+    else changed = true;
+  }
+  return changed ? { ...state, expanded, collapsed, marked } : state;
 }

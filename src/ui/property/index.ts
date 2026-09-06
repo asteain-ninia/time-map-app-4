@@ -179,3 +179,10 @@ export {
   featureKindJaLabel,
   detailDocumentTooLongMessage,
 } from './messages';
+
+// 増分 7: 削除の影響を文にする純関数（設計書 §A.3 / 中身 6）。
+export {
+  type DeleteImpactView,
+  buildDeleteImpactView,
+  summarizeNames,
+} from './delete-impact';

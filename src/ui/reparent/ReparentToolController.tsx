@@ -35,6 +35,13 @@ import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { FeatureId } from '../../domain/ids';
 import type { AffiliationSnapshot } from '../../domain/editing/apply-proposal';
 
+import { buildForest } from '../../domain/hierarchy/forest';
+import {
+  affiliationRejectMessage,
+  isLegalNewParent,
+  type ParentDecision,
+} from '../../domain/affiliation/index';
+
 import { buildReparentHighlight } from '../../render/reaffiliation-batch';
 import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
@@ -45,10 +52,15 @@ import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import { useDeferredCommit, type CommitScheduler } from '../shell/useDeferredCommit';
+import { formatYear } from '../timeline/time-display';
+
+import { REPARENT_CHOICE, ReparentOptionsDialog, type ReparentChoice } from './ReparentOptionsDialog';
 
 import { REPARENT_STRINGS } from './strings';
 import {
   REPARENT_FLOW,
+  REPARENT_TARGET_SOURCE,
   useReparentTool,
   type ResolveAnchorTime,
   type ResolveFeatures,
@@ -155,6 +167,27 @@ export interface ReparentToolControllerProps<S> {
    * ほかの 3 道具（分ける・結ぶ・穴あけ）と同じ形（`KnifeToolController` が手本）。
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
+   * 一覧で印を付けた地物（`markedFeatures`。増分 7 の中身 2b）。**2 件以上あるときは
+   * それが対象になる** ―― V8「3 件をまとめて連邦にする」の入口である。渡さない
+   * ホスト（単体の検査台）では従来どおり地図クリックだけで対象を掴む。
+   */
+  readonly markedFeatureIds?: readonly FeatureId[] | undefined;
+  /**
+   * 確定を遅らせる口（進行表示のため）。検査は同期の実装を差し込む
+   * （`useDeferredCommit` の注記）。
+   */
+  readonly commitScheduler?: CommitScheduler | undefined;
+  /**
+   * **外から 3 択の板を開かせる要求**（素性欄の親欄の 3 ボタン。増分 7 の中身 3b）。
+   *
+   * `nonce` が変わるたびに、`choice` の枝で板を開く ―― 同じ枝を続けて押しても開き直せる
+   * ように、値ではなく回数で駆動する。null なら何もしない。
+   */
+  readonly openOptionsRequest?:
+    | { readonly nonce: number; readonly choice: ReparentChoice }
+    | null
+    | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -262,23 +295,89 @@ export function ReparentToolController<S>(
   // **結果が別物**である。1 つのボタンの意味が隠れた状態で切り替わるほうが危ない ――
   // 押した部品と、出る確認と、起きることが 1 本の線でつながっているほうが読める）。
   // ボタンの置き場と `data-testid` は変えていない（T-1）。
-  const [detachConfirmOpen, setDetachConfirmOpen] = useState(false);
+  //
+  // **増分 7 で 3 択の板に育てた**（中身 1）。器は 1 つ（`ReparentOptionsDialog`）で、
+  // どのボタンから入ったかを「最初に開く枝」として渡す ―― ［所属を変える］は
+  // 既存から選ぶ枝、［新しく作る］は作る枝、［最上位へ］は独立の枝。**押した部品と、
+  // 出る板の枝と、起きることが 1 本の線でつながる**（増分 5 の手直し B4 の理由をそのまま
+  // 3 択へ広げた）。`data-testid="reparent-detach-confirm"` は独立の枝の警告文として
+  // 役割ごと残してある（T-1: 役割で維持する）。
+  const [optionsChoice, setOptionsChoice] = useState<ReparentChoice | null>(null);
+  const optionsOpen = optionsChoice !== null;
 
-  // 対象が消えたら確認も畳む（教訓 5.2: 一時的な UI は全経路で捨てる）。対象を離す
-  // Escape・［選択を外す］・道具を降りる・確定 ―― どれも `targetId` が null になる。
-  const reparentTargetId = reparent.targetId;
+  // 対象が消えたら板も畳む（教訓 5.2: 一時的な UI は全経路で捨てる）。対象を離す
+  // Escape・［選択を外す］・道具を降りる・確定 ―― どれも対象が空になる。
+  const reparentTargetCount = reparent.targetIds.length;
   useEffect(() => {
-    if (reparentTargetId === null) setDetachConfirmOpen(false);
-  }, [reparentTargetId]);
+    if (reparentTargetCount === 0) setOptionsChoice(null);
+  }, [reparentTargetCount]);
+
+  // --- 一覧の印を対象として引き継ぐ（増分 7 の中身 2b）------------------------
+  //
+  // **印は道具のものではない**ので、道具は「いま印が付いているもの」を読むだけで、
+  // 印そのものは触らない（消すのは一覧の側）。印が 0 件になったら地図で掴む従来の
+  // 手順へ戻る。
+  const markedIds = props.markedFeatureIds;
+  const markedKey = markedIds === undefined ? '' : markedIds.join(',');
+  const setTargets = reparent.setTargets;
+  useEffect(() => {
+    if (!isReparentActive) return;
+    if (markedIds === undefined || markedIds.length === 0) return;
+    setTargets(markedIds, REPARENT_TARGET_SOURCE.Marked);
+    // markedKey は配列の同一性ではなく中身で見る（一覧は毎回新しい配列を作る）。
+  }, [isReparentActive, markedKey]);
+
+  // 素性欄の親欄からの「この枝で板を開いて」（増分 7 の中身 3b）。**対象が入った
+  // あとで開く** ―― 印を立てるのと道具を構えるのは合成ルートが先に済ませている。
+  const openOptionsRequest = props.openOptionsRequest ?? null;
+  const lastOpenNonceRef = useRef<number>(-1);
+  useEffect(() => {
+    if (openOptionsRequest === null) return;
+    if (openOptionsRequest.nonce === lastOpenNonceRef.current) return;
+    lastOpenNonceRef.current = openOptionsRequest.nonce;
+    if (!isReparentActive) return;
+    setOptionsChoice(openOptionsRequest.choice);
+  }, [openOptionsRequest, isReparentActive]);
+
+  // --- 確定の進行表示と二重クリックの関門（増分 7 の中身 9）--------------------
+  const deferred = useDeferredCommit(
+    props.commitScheduler === undefined ? undefined : { schedule: props.commitScheduler },
+  );
+
+  /**
+   * 候補として選べるか（板のツリーが使う）。**確定と同じ述語**（`isLegalNewParent`）を
+   * 洗い直した対象それぞれに掛ける（教訓 5.26）。null なら選べる。
+   */
+  const eligibility = useCallback(
+    (candidateId: FeatureId): string | null => {
+      const forest = buildForest(resolveFeatures());
+      for (const leafId of reparent.plan.leafIds) {
+        const verdict = isLegalNewParent(forest, leafId, candidateId);
+        if (!verdict.ok) return affiliationRejectMessage(verdict.reason);
+      }
+      return null;
+    },
+    [resolveFeatures, reparent.plan],
+  );
+
+  const confirmFromDialog = useCallback(
+    (decision: ParentDecision, options: { readonly directDomainNameOverride?: string }): void => {
+      deferred.run(() => {
+        reparent.confirmWith(decision, options);
+        setOptionsChoice(null);
+      });
+    },
+    [deferred, reparent],
+  );
 
   // 板が開いているあいだは鍵盤の持ち主が `modal` になる（＝背後で Ctrl+S / Delete が
   // 走らない）。ほかの 3 道具と同じ形（`KnifeToolController` が手本＝増分 5 の手直し A4）。
   const onModalChange = props.onModalChange;
   useEffect(() => {
     if (onModalChange === undefined) return;
-    onModalChange(detachConfirmOpen);
+    onModalChange(optionsOpen);
     return () => onModalChange(false);
-  }, [detachConfirmOpen, onModalChange]);
+  }, [optionsOpen, onModalChange]);
 
   // --- Keyboard: Escape (FR-78 / 設計書 §D.4). Active while a session runs.
   //
@@ -315,9 +414,9 @@ export function ReparentToolController<S>(
         // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。3 の局面では
         // `onDrawingChange` も false を報せている（対象が null なら名乗らない）ので、
         // 名乗りと段が食い違わない。
-        if (detachConfirmOpen) {
+        if (optionsOpen) {
           e.preventDefault();
-          setDetachConfirmOpen(false);
+          setOptionsChoice(null);
           return;
         }
         if (reparent.newParentId !== null) {
@@ -341,7 +440,7 @@ export function ReparentToolController<S>(
     reparent.newParentId,
     reparent.clearNewParent,
     reparent.clearSelection,
-    detachConfirmOpen,
+    optionsOpen,
   ]);
 
   // --- HB3-15(c): feed the target + new-parent highlight to the render sink on every
@@ -400,7 +499,7 @@ export function ReparentToolController<S>(
   // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
   // 言っているあいだだけにする。
   const reparentArmedHoldsBar = reparentArmed && isReparentActive;
-  const reparentStage = detachConfirmOpen
+  const reparentStage = optionsOpen
     ? REPARENT_STRINGS.stage(3)
     : reparent.targetId === null
       ? REPARENT_STRINGS.stage(1)
@@ -412,7 +511,7 @@ export function ReparentToolController<S>(
     const features = resolveFeatures();
     const target = describeFeatureById(features, reparent.targetId);
     if (target === null) return null;
-    if (detachConfirmOpen) {
+    if (optionsOpen) {
       return REPARENT_STRINGS.targetWithParent(target, REPARENT_STRINGS.parentDetached);
     }
     const parent =
@@ -420,7 +519,7 @@ export function ReparentToolController<S>(
         ? REPARENT_STRINGS.parentUnset
         : (describeFeatureById(features, reparent.newParentId) ?? REPARENT_STRINGS.parentUnset);
     return REPARENT_STRINGS.targetWithParent(target, parent);
-  }, [reparent.targetId, reparent.newParentId, detachConfirmOpen, resolveFeatures]);
+  }, [reparent.targetId, reparent.newParentId, optionsOpen, resolveFeatures]);
   // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
   const optionBarEpoch = useOptionBarEpoch(optionBar);
   // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
@@ -455,8 +554,12 @@ export function ReparentToolController<S>(
         id: 'confirm',
         testId: 'reparent-confirm',
         label: REPARENT_STRINGS.confirm,
-        disabled: !reparent.canConfirm,
-        onClick: () => reparent.confirm(),
+        // **対象さえ掴んでいれば押せる**（増分 7 の中身 1）。旧版は「新しい上位領域を
+        // 地図でクリック済み」までを条件にしていたので、**地図に描かれていない集約を
+        // 親にしたい人はここへ辿り着けなかった** ―― いまは押すと 3 択の板が開き、親は
+        // 台帳と同じツリーから選べる。
+        disabled: reparent.targetIds.length === 0,
+        onClick: () => setOptionsChoice(REPARENT_CHOICE.Existing),
       },
       {
         id: 'cancel',
@@ -468,7 +571,7 @@ export function ReparentToolController<S>(
     // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
     // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
     // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
-    [reparent.canConfirm, reparent.confirm, reparent.cancel],
+    [reparent.targetIds.length, reparent.cancel],
   );
   const reparentExtras = useMemo(
     () => (
@@ -481,21 +584,32 @@ export function ReparentToolController<S>(
           type="button"
           data-testid="reparent-confirm-none"
           disabled={!reparent.canConfirmNone}
-          onClick={() => setDetachConfirmOpen(true)}
+          onClick={() => setOptionsChoice(REPARENT_CHOICE.None)}
         >
           {REPARENT_STRINGS.confirmNone}
+        </button>
+        {/* **新しい上位領域を作る**（`parentCreate` / `parentCreateWithTerminal` の
+            入口。G-3 / FR-46 must / FR-47）。増分 6 までは呼び出し側が 1 つも無く、
+            連邦化・自治化が画面から到達不能だった。 */}
+        <button
+          type="button"
+          data-testid="reparent-create-parent"
+          disabled={!reparent.canConfirmNone}
+          onClick={() => setOptionsChoice(REPARENT_CHOICE.Create)}
+        >
+          {REPARENT_STRINGS.parentCreate}
         </button>
         <button
           type="button"
           data-testid="reparent-clear"
-          disabled={reparent.targetId === null}
+          disabled={reparent.targetIds.length === 0}
           onClick={() => reparent.clearSelection()}
         >
           {REPARENT_STRINGS.clear}
         </button>
       </>
     ),
-    [reparent.canConfirmNone, reparent.targetId, reparent.clearSelection],
+    [reparent.canConfirmNone, reparent.targetIds.length, reparent.clearSelection],
   );
   useToolBarChrome({
     optionBar,
@@ -553,7 +667,7 @@ export function ReparentToolController<S>(
           (pan / zoom keep working). **確認の板が出ているあいだは降ろす**（増分 5 の
           手直し B4）―― 板の背面で地物を選び替えられると、「何に対して答えたのか」が
           分からなくなる。 */}
-      {!detachConfirmOpen && (
+      {!optionsOpen && (
         <ReparentInputBridge
           onMapPointerDown={onMapPointerDown}
           onMapWheel={onMapWheel}
@@ -579,44 +693,23 @@ export function ReparentToolController<S>(
         </span>
       )}
 
-      {/* 最上位化の確認（増分 5 の手直し B4 / バグ狩り B-1）。削除と同じく **何が起きるかを
-          見せてから**確定する。`role="alertdialog"` は「答えるまで先へ進めない」種類の
-          板であることを読み上げへ伝える。 */}
-      {detachConfirmOpen && (
-        <div className="reparent-modal-root" data-testid="reparent-detach-confirm-root">
-          <div className="reparent-backdrop" />
-          <div
-            className="reparent-dialog"
-            role="alertdialog"
-            aria-modal="true"
-            aria-labelledby="reparent-detach-confirm-title"
-            data-testid="reparent-detach-confirm"
-          >
-            <h3 className="reparent-dialog__title" id="reparent-detach-confirm-title">
-              {REPARENT_STRINGS.detachConfirmTitle}
-            </h3>
-            <p className="reparent-dialog__body">{REPARENT_STRINGS.detachConfirmBody}</p>
-            <div className="reparent-dialog__footer">
-              <button
-                type="button"
-                data-testid="reparent-detach-confirm-no"
-                onClick={() => setDetachConfirmOpen(false)}
-              >
-                {REPARENT_STRINGS.detachConfirmNo}
-              </button>
-              <button
-                type="button"
-                data-testid="reparent-detach-confirm-yes"
-                onClick={() => {
-                  setDetachConfirmOpen(false);
-                  reparent.confirmNone();
-                }}
-              >
-                {REPARENT_STRINGS.detachConfirmYes}
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* **3 択の作業ダイアログ**（増分 7 の中身 1・2・4・9・11）。押した部品が
+          「最初に開く枝」を決める ―― ［所属を変える］は既存から選ぶ枝、［新しく作る］は
+          作る枝、［最上位へ］は独立の枝。器は 1 つで、確認・予告・分け残しの名前・
+          進行表示もここが持つ（設計書 §B.5「作業ダイアログは器 1 種類」）。 */}
+      {optionsChoice !== null && (
+        <ReparentOptionsDialog
+          features={resolveFeatures()}
+          plan={reparent.plan}
+          initialChoice={optionsChoice}
+          initialParentId={reparent.newParentId}
+          eligibility={eligibility}
+          yearLabel={formatYear(anchorTime().year)}
+          message={reparent.message}
+          committing={deferred.busy}
+          onConfirm={confirmFromDialog}
+          onCancel={() => setOptionsChoice(null)}
+        />
       )}
 
       {/* **確定の列はここには無い**（増分 5d）。オプションバーの確定欄 176px へ移した

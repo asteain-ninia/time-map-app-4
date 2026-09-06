@@ -278,6 +278,15 @@ export const LEDGER_STRINGS = {
     'この錨の年では、この地物は表示条件から外れています。表示 ▾ で戻すと選べます。',
   /** その場編集（F2 / ダブルクリック）。 */
   renameAria: (name: string): string => `${name} の名前`,
+  /**
+   * 対象の印の升目（`markedFeatures`。増分 7 / 設計書 §D.5・§C.5）。**選択とは別概念**
+   * なので「選ぶ」ではなく「対象にする」と言う ―― 選択は 0 か 1 件、印は集合である。
+   */
+  markAria: (name: string): string => `${name} を対象にする`,
+  /** 印の件数（一覧の見出しに出す）。 */
+  markedCount: (count: number): string => `対象 ${String(count)} 件`,
+  /** 印を全部外す。 */
+  clearMarks: '対象を全部外す',
   kindLabelAria: (name: string): string => `${name} の種別`,
   renameHint: 'Enter で確定、Escape でやめる',
   /** 読むだけのときに、その場編集を断る理由（K-6 / G-23 の共通枠へ出す）。 */

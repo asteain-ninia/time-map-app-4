@@ -71,6 +71,25 @@ export const DEFAULT_REPARENT_PARENT_STYLE: TargetHighlightStyle = {
   strokeWidthPx: 2.5,
 };
 
+/**
+ * **対象色**（`markedFeatures` の複数対象。増分 7 / 設計書 §D.5・§O の GPT）。
+ *
+ * **選択色とは別の色である。** 選択（`activeFeature`）は 0 か 1 件（FR-79）で、地物の
+ * 塗りを `selectedColor` へ差し替えることで表す。印は 2 件以上になりうる集合で、
+ * 「まとめて直す相手」を意味するので、**外周を太らせる 1 種類の描画命令**で重ねる。
+ * 現状の選択描画は 0〜1 件しか表せず、V8 の「3 件が同時に対象色」はこれが無いと
+ * 成立しない（結合点 #4）。
+ *
+ * 色は結合の青緑・所属の紫・新しい上位のオレンジ・ナイフの琥珀のどれとも重ならない
+ * **黄（琥珀より緑寄り）**にしてある ―― 道具の対象と、道具に依らない印を、同じ画面で
+ * 見分けられるようにするためである。
+ */
+export const DEFAULT_MARKED_TARGET_STYLE: TargetHighlightStyle = {
+  fill: 'rgba(255, 214, 0, 0.22)',
+  stroke: '#ffd600',
+  strokeWidthPx: 3,
+};
+
 function toWorldPoint(c: { readonly lon: number; readonly lat: number }): WorldPoint {
   return { lon: c.lon, lat: c.lat };
 }
@@ -144,6 +163,32 @@ export interface ReparentHighlightInput {
  * that picks the same body for both still shows the destination colour. An empty selection
  * yields `[]` (教訓 5.18 / 5.2).
  */
+// --- MARKED batch（対象色。増分 7 / 設計書 §D.5）------------------------------
+
+/** 印を付けた地物の形（ホストが `leafShapeAt` で解いて渡す）。 */
+export interface MarkedHighlightInput {
+  readonly markedShapes: readonly (GeoMultiPolygon | undefined)[];
+}
+
+/**
+ * 印を付けた地物の強調を組み立てる（**1 種類の描画命令だけ**。設計書 §D.5 / §J.4 の #4）。
+ *
+ * 全部を同じ「対象色」で描く ―― 印は役割の区別を持たない集合なので、色を分ける理由が
+ * 無い（所属変更の「移す側」と「行き先」のような役割の別は道具の側が持つ）。
+ * 空集合は `[]` を返し、印を全部外した瞬間に消える（教訓 5.18 / 5.2）。
+ */
+export function buildMarkedHighlight(
+  input: MarkedHighlightInput,
+  style: TargetHighlightStyle = DEFAULT_MARKED_TARGET_STYLE,
+): DrawPrimitive[] {
+  const out: DrawPrimitive[] = [];
+  for (const shape of input.markedShapes) {
+    const prim = shapePrimitive(shape, style);
+    if (prim !== undefined) out.push(prim);
+  }
+  return out;
+}
+
 export function buildReparentHighlight(
   input: ReparentHighlightInput,
   targetStyle: TargetHighlightStyle = DEFAULT_REPARENT_TARGET_STYLE,

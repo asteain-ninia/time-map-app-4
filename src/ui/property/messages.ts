@@ -219,6 +219,83 @@ export const PROPERTY_STRINGS = {
   // 「親」は階層の内部語寄り。画面では上位領域（設計書 §H.1 / 増分 3 で素性欄の欄名を
   // 「上位領域」に統一した）に揃える（2026-09-05、増分 4 の手直し F3）。
   inheritedAnchorGoToOwner: '上位領域を見る',
+
+  // --- 増分 7: 削除の 2 経路（設計書 §A.3）------------------------------------
+  /**
+   * **入口 A**（既定・目立つ位置）。「消す」と言われる操作の実体はたいてい消滅ではなく
+   * 終了なので、こちらを存続期間の行の隣に置く（T25 の 30 秒への答え）。
+   */
+  endHereLabel: (year: string): string => `${year}に終わったことにする`,
+  /** 入口 A の説明（押す前に何が起きるかを読めるように）。 */
+  endHereHint: 'この年でこの地物が終わったことにします（削除ではありません。Ctrl+Z 1 回で戻せます）。',
+  /** 入口 A が押せないとき（自分の歴史を持たない地物）。 */
+  endHereNoOwnSeries: (ownerName: string): string =>
+    `この地物の歴史は親の「${ownerName}」が持っているので、ここからは終わりを打てません。上位領域の側で記録してください。`,
+  /** 入口 A が通ったときの結果の文。 */
+  endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
+  /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
+  dangerZoneTitle: '取り返しのつかないこと',
+  /** 入口 B のボタン。 */
+  deleteAllYearsLabel: 'この地物を全部の年から消す',
+
+  // --- 増分 7: 影響ダイアログ（設計書 §A.3 / 中身 6）---------------------------
+  impactTitle: (name: string): string => `「${name}」を全部の年から消します`,
+  impactHeadingGone: '一緒に消えるもの',
+  impactHeadingReferenced: '他から参照されているところ',
+  impactHeadingAuto: '自動で消える地物',
+  impactYear: (year: number): string => `${String(year)}年`,
+  impactAnchors: (count: number, years: string): string =>
+    `この地物の歴史の記録（錨）${String(count)} 件（${years}）`,
+  impactNoOwnAnchors:
+    'この地物は自分の歴史を持たず、上位領域の記録の中に居ます（錨は 0 件）',
+  impactVertices: (count: number): string => `頂点 ${String(count)} 個`,
+  impactVerticesAggregate:
+    '頂点 0 個（この地物は下位をまとめる側なので自分の形を持ちません）',
+  impactPromoted: (count: number, names: string): string =>
+    `下位領域 ${String(count)} 件（${names}）が、すべての年で最上位へ移ります`,
+  impactAutoRemoved: (count: number, names: string): string =>
+    `${String(count)} 件（${names}）が、下位領域を全て失うため一緒に消えます`,
+  impactAutoRemovedNone: 'なし（下位領域を全て失った集約は自動で消えます）',
+  impactNamesWithRest: (names: string, rest: number): string =>
+    `${names} ほか ${String(rest)} 件`,
+  impactConfirm: '影響を整理して削除',
+  impactCancel: 'やめる',
+  impactUndoNote: '※ Ctrl+Z 1 回で戻せます',
+
+  // --- 増分 7: 一括の種別付け（中身 8）----------------------------------------
+  bulkKindTitle: (count: number): string => `${String(count)} 件へまとめて種別を付ける`,
+  bulkKindHint:
+    '印を付けた地物すべてに、いま見ている年で同じ種別を付けます。取り消しは Ctrl+Z 1 回です。',
+  bulkKindInputLabel: '付ける種別',
+  bulkKindEmptyNote: '空欄のまま確定すると、種別を外します。',
+  bulkKindConfirm: '種別を付ける',
+  bulkKindCancel: 'やめる',
+  bulkKindCommitting: '種別を付けています…',
+  bulkKindDone: (count: number, kindLabel: string): string =>
+    kindLabel === ''
+      ? `${String(count)} 件の種別を外しました。`
+      : `${String(count)} 件へ種別「${kindLabel}」を付けました。`,
+  bulkKindNoChange: '種別が変わる地物がありませんでした。',
+
+  // --- 増分 7: N-05（錨・輪郭・頂点の削除に確認が無い）を同じ器に載せる（中身 7）----
+  anchorDeleteTitle: (start: string): string => `${start}の記録（錨）を消します`,
+  anchorDeleteLineRecord: (start: string): string =>
+    `${start}から始まる、この地物の姿の記録が 1 件消えます`,
+  anchorDeleteLineFallback:
+    'この年からは、1 つ前の記録の姿がそのまま続くようになります（形・名前・種別・上位領域）',
+  anchorDeleteConfirm: 'この記録を消す',
+  ringDeleteTitle: (kind: string): string => `${kind}を消します`,
+  ringDeleteLineShape: (kind: string): string => `この面から${kind}が 1 つ消えます`,
+  /** **最後の外周を消すと面ごと消える**（設計書 §A.3 が名指しした事前の文）。 */
+  ringDeleteLineLastTerritory:
+    'これはこの面の最後の外周です。消すと、この年からこの地物そのものが消えます',
+  ringDeleteConfirm: 'この輪郭を消す',
+  vertexDeleteTitle: (count: number): string => `頂点 ${String(count)} 個を消します`,
+  vertexDeleteLineCount: (count: number): string => `選んでいる頂点 ${String(count)} 個が消えます`,
+  /** 頂点が減りすぎると面・線として成り立たなくなる（事前の文）。 */
+  vertexDeleteLineBelowThreshold:
+    '残る頂点が形として成り立たない数になるため、この年からこの地物そのものが消えます',
+  vertexDeleteConfirm: 'この頂点を消す',
 } as const;
 
 /**

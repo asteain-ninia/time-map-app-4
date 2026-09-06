@@ -102,7 +102,12 @@ import { RingEditToolController, type RingEditDrawSink } from './ring-edit/index
 import './ring-edit/ring-edit.css';
 import { DrillToolController, type DrillDrawSink } from './drill/index';
 import './drill/drill.css';
-import { ReparentToolController, type ReparentDrawSink } from './reparent/index';
+import {
+  REPARENT_CHOICE,
+  ReparentToolController,
+  type ReparentChoice,
+  type ReparentDrawSink,
+} from './reparent/index';
 import './reparent/reparent.css';
 import {
   SurveyToolController,
@@ -114,6 +119,7 @@ import {
 import './survey/survey.css';
 import { HelpToolsController } from './help-tools/index';
 import type { DrawPrimitive } from '../render/map-renderer';
+import { buildMarkedHighlight } from '../render/reaffiliation-batch';
 import {
   createBasicAttributes,
   createColorInfo,
@@ -142,7 +148,7 @@ import {
   type History,
   type HistoryStep,
 } from '../domain/command/history';
-import type { Command } from '../domain/command/index';
+import { createCompositeCommand, type Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
 import {
@@ -167,7 +173,8 @@ import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
 import { StatusMessageStore } from './shell/status-message';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
-import { DeleteConfirmDialog } from './property/DeleteConfirmDialog';
+import { BulkKindLabelDialog } from './property/BulkKindLabelDialog';
+import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
 import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
@@ -197,12 +204,28 @@ import { VertexCandidateList } from './map/VertexCandidateList';
 import { VertexCandidateStore } from './map/vertex-candidates';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
+// 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
+import {
+  AFFILIATION_STATUS,
+  buildAffiliationProposalForTargets,
+  parentExisting,
+  resolveTargetLeaves,
+} from '../domain/affiliation/index';
+import { toAffiliationEditProposal } from '../domain/editing/apply-proposal';
+import { createDeletionState, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
 import { findHistoryContaining } from '../domain/editing/apply-proposal';
 import { compare as compareTimePoints } from '../domain/time/normalized';
 import { toYearPoint } from '../domain/time/time-point';
-import { EDIT_PLAN_STRINGS, isYearAligned } from './property/index';
+import {
+  EDIT_PLAN_STRINGS,
+  PROPERTY_STRINGS,
+  buildDeleteImpactView,
+  buildSetEndIntent,
+  isYearAligned,
+  type DeleteImpactView,
+} from './property/index';
 import { formatYear } from './timeline/time-display';
 import type { ContextMenuRequest } from './map/live-context-menu-port';
 import {
@@ -239,6 +262,7 @@ import { createPaletteChangeCommand } from './coloring/palette-command';
 import { toPersistedUiSettings } from './file-ops/ui-settings-bridge';
 import type { PaletteSelection } from './state/settings';
 import {
+  HIT_KIND,
   ownerLookupFromMap,
   withoutVertexSet,
   type NextTargetPreference,
@@ -717,6 +741,27 @@ export function App(): JSX.Element {
   // 診断ダイアログの中だけだった。
   const projectDirty = useStore(store, (s) => s.projectDirty);
   const worldName = useStore(store, (s) => s.projectSettings.projectName);
+  /**
+   * 対象の印（`markedFeatures`。増分 7 / 設計書 §D.5）。**選択とは別概念**で、2 件以上に
+   * なりうる集合である。地図の対象色・所属変更の対象・右クリックの「まとめて…」の 3 つが
+   * この 1 つを読む。
+   */
+  const markedFeatures = useStore(store, (s) => s.ledger.marked);
+  /**
+   * 存続期間コマンドの遅延束縛（増分 7）。「この年に終わったことにする」は右クリックからも
+   * 素性欄からも来るが、その口（`anchorIntervalDispatch`）は下のほうで組み立てられる。
+   * **写しを作らずに 1 本を共有する**ため、`recordCommitRef` と同じ形で ref に late-bind する
+   * （教訓 5.44: 共通ロジックの写しを残さない）。
+   */
+  const anchorIntervalDispatchRef = useRef<AnchorIntervalEditDispatch | null>(null);
+  /**
+   * 印を配列で渡す口（所属変更の道具は配列を受ける）。集合の同一性で memo するので、
+   * 印が動いたときだけ新しい配列になる。
+   */
+  const markedFeatureIdList = useMemo(() => [...markedFeatures], [markedFeatures]);
+  /** 対象色を引き直す契機（形は時刻とドメインで変わる）。細いセレクタで購読する。 */
+  const domainNonce = useStore(store, (s) => s.domain);
+  const currentTimeForMarks = useStore(store, (s) => s.currentTime);
   const openFileName = fileNameOf(saveStatus.savePath);
 
   // ウィンドウタイトル（設計書 §H.6）。**書き換えるコードはこれまでリポジトリに 0 件**で、
@@ -935,6 +980,27 @@ export function App(): JSX.Element {
     [],
   );
 
+  /**
+   * **一覧の行の右クリック**（設計書 §I.3 の「台帳の行」。増分 5 からの送り）。
+   *
+   * **地図と同じ 1 本を通す** ―― 組み立て（`composeContextMenuFor`）も発火
+   * （`onSelectMenuItem`）も既にあるので、ここがやるのは「その行の地物を選択へ引き上げ、
+   * 地物の当たりとして開く」だけである（教訓 5.29: 右クリックの体系を 2 つ作らない）。
+   * 選択へ引き上げるのは地図の右クリックと同じ規約で、押した相手がコマンドの相手になる
+   * （教訓 5.11）。
+   */
+  const openLedgerRowMenu = useCallback(
+    (featureId: FeatureId, clientX: number, clientY: number): void => {
+      store.getState().setActiveFeature(featureId);
+      contextMenuOpenerRef.current?.open({
+        clientX,
+        clientY,
+        hit: { kind: HIT_KIND.FeatureBody, featureId },
+      });
+    },
+    [store],
+  );
+
   // Supply the camera clamp range to U17 (FR-10 / FR-109 即時反映). Caches the
   // value and forwards it to the live renderer when one is mounted.
   const supplyZoomRange: SupplyZoomRange = useCallback((range) => {
@@ -1047,6 +1113,23 @@ export function App(): JSX.Element {
     }),
     [],
   );
+
+  /**
+   * **対象色**（`markedFeatures` を地図へ描く。増分 7 / 設計書 §D.5・結合点 #4）。
+   *
+   * **道具のオーバーレイとは別のスロット**（`drawMarked`）へ押し込む ―― 印は道具を
+   * 持っていなくても立っているので、道具が排他で使う 1 枚に相乗りさせると道具を降りた
+   * 瞬間に消える（測量の層を別にしてあるのと同じ理由）。
+   *
+   * 形は確定と同じ live-lookup（`leafShapeAt`）で解く ―― 描いたものと、まとめて直す
+   * 相手が食い違わない（教訓 5.29）。印が空なら `[]` を押し込んで消える（教訓 5.18）。
+   */
+  useEffect(() => {
+    const s = store.getState();
+    const shapes = [...markedFeatures].map((id) => leafShapeAt(s.domain, s.currentTime, id));
+    rendererRef.current?.drawMarked(buildMarkedHighlight({ markedShapes: shapes }));
+    // 印・ドメイン・時刻のどれが動いても引き直す（形は時刻で変わる）。
+  }, [store, markedFeatures, domainNonce, currentTimeForMarks]);
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1527,6 +1610,17 @@ export function App(): JSX.Element {
     [store, recordCommand, featureNameOf, statusMessageStore],
   );
 
+  /**
+   * **頂点を消す前の確認**（N-05 / 設計書 §A.3。増分 7 の中身 7）。
+   *
+   * 頂点の削除だけは確認が無く、しかも **残る頂点が形として成り立たない数になると
+   * 地物ごと消える**。取り消せるとはいえ、何が起きるかを言わずに消すのは削除の作法から
+   * 外れているので、地物の削除・錨の削除・輪郭の削除と **同じ器**を通す。
+   */
+  const [pendingVertexDelete, setPendingVertexDelete] = useState<EditDeleteSelection | null>(
+    null,
+  );
+
   const runDeleteFunnel = useCallback(
     (selection: EditDeleteSelection): void => {
       runEditDelete<DomainRoot>(selection, {
@@ -1568,10 +1662,26 @@ export function App(): JSX.Element {
     [store, recordCommit, vertexDeleteBinding, featureNameOf],
   );
 
+  /**
+   * 削除の入口（Delete キー / 編集メニュー / 右クリック）。**頂点を選んでいるときは
+   * 確認を挟む**（増分 7 の中身 7）。地物を選んでいるだけのときは、漏斗の中の
+   * `deleteFeatureAllAnchors` が影響の一覧を出すので、ここでは素通しする。
+   */
+  const requestDelete = useCallback(
+    (selection: EditDeleteSelection): void => {
+      if (selection.vertexIds.size > 0 && selection.vertexOwner !== null) {
+        setPendingVertexDelete(selection);
+        return;
+      }
+      runDeleteFunnel(selection);
+    },
+    [runDeleteFunnel],
+  );
+
   useEffect(() => {
     const deleteSelected = (): void => {
       // The live selection is the target (Delete キー / 編集メニュー path).
-      runDeleteFunnel(store.getState().selection);
+      requestDelete(store.getState().selection);
     };
     registry.register(COMMAND_ID.EditDelete, {
       run: deleteSelected,
@@ -1584,7 +1694,7 @@ export function App(): JSX.Element {
     return () => {
       registry.unregister(COMMAND_ID.EditDelete);
     };
-  }, [registry, store, runDeleteFunnel]);
+  }, [registry, store, requestDelete]);
 
   // --- fr96 右クリックメニューの本結線 (FR-96 / FR-33) -------------------------
   //
@@ -1743,6 +1853,9 @@ export function App(): JSX.Element {
         // ドメインを引く。既に錨がある年では出したまま灰色にして理由を見せる
         // （「押せる項目を押したら拒否される」をなくす、出す=起きる, 教訓 5.6）。
         hasAnchorAt: (fid) => anchorExistsAt(fid, toYearPoint(s.currentTime)),
+        // 対象の印（増分 7 / 設計書 §D.5・§I.3）。**右クリックした瞬間の集合**を模型が
+        // 運ぶので、「選んだ n 件をまとめて…」は出したときと同じ相手に発火する。
+        markedFeatureIds: s.ledger.marked,
       });
     },
     [store, anchorExistsAt],
@@ -1760,6 +1873,172 @@ export function App(): JSX.Element {
   //                      collects its targets from there);
   //   Unshare          → the FR-33 live unshare launcher (ONE composite undo unit +
   //                      owner-selection remap onto the minted ids).
+  /**
+   * まとめ役の **全下位領域**へ印をつける（FR-48 後半 / 増分 7 の中身 3）。展開は
+   * ドメインの `resolveTargetLeaves` に任せる ―― 「対象は末端に限る」という制約は
+   * その関数が守っているので、ここで 2 つ目の展開規則を書かない（教訓 5.29）。
+   */
+  const markSubtreeOf = useCallback(
+    (featureId: FeatureId): void => {
+      const s = store.getState();
+      const leaves = resolveTargetLeaves(featuresAt(s.domain, s.currentTime), featureId);
+      if (leaves === undefined || leaves.length === 0) {
+        statusMessageStore.failure(APP_STRINGS.markSubtreeEmpty);
+        return;
+      }
+      s.setFeatureMarks(leaves);
+      statusMessageStore.success(APP_STRINGS.markSubtreeDone(leaves.length));
+    },
+    [store, statusMessageStore],
+  );
+
+  /**
+   * 印を付けた地物の所属をまとめて変える（増分 7 の中身 2b / V8）。印はそのままにして
+   * **所属変更の道具を構えるだけ** ―― 道具が印を対象として引き継ぐ（`markedFeatureIds`）。
+   */
+  const reparentMarked = useCallback(
+    (featureIds: ReadonlySet<FeatureId>): void => {
+      store.getState().setFeatureMarks(featureIds);
+      armEditTool(TOOL_ID.EditReparent);
+    },
+    [store, armEditTool],
+  );
+
+  /**
+   * まとめて種別を付ける板を開く（増分 7 の中身 8）。確定は 1 つの複合コマンドになるので、
+   * 335 件でも Ctrl+Z 1 回で戻る。
+   */
+  const [bulkKindTargets, setBulkKindTargets] = useState<readonly FeatureId[] | null>(null);
+  const openBulkKindLabel = useCallback((featureIds: ReadonlySet<FeatureId>): void => {
+    if (featureIds.size === 0) return;
+    setBulkKindTargets([...featureIds]);
+  }, []);
+
+  const commitBulkKindLabel = useCallback(
+    (kindLabel: string): void => {
+      const targets = bulkKindTargets;
+      if (targets === null) return;
+      const s = store.getState();
+      const at = toYearPoint(s.currentTime);
+      const built = createBulkKindLabelCommandForRoot(s.domain, targets, kindLabel, at);
+      setBulkKindTargets(null);
+      if (built === null) {
+        statusMessageStore.failure(PROPERTY_STRINGS.bulkKindNoChange);
+        return;
+      }
+      recordCommand(built.command, undefined, at);
+      statusMessageStore.success(
+        PROPERTY_STRINGS.bulkKindDone(built.changedIds.length, kindLabel),
+      );
+    },
+    [bulkKindTargets, store, recordCommand, statusMessageStore],
+  );
+
+  /**
+   * 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A / 増分 7 の中身 5）。
+   *
+   * **削除ではない。** いま見ている年に効いている錨の存続期間へ終了を打つ（U09 の
+   * `setEnd`）。取り消しは Ctrl+Z 1 手で、既存の存続期間コマンド 1 本を通す
+   * （2 つ目の経路を作らない＝教訓 5.30）。
+   */
+  const endHereRefusalFor = useCallback(
+    (featureId: FeatureId): string | null => {
+      const s = store.getState();
+      const own = s.domain.histories.find((h) => h.featureId === featureId);
+      if (own !== undefined) return null;
+      // まとめ役の子（実データで 86 件）は自分の系列を持たない。親の錨に終了を打つと
+      // **親が終わって**しまうので、ここからは断って上位領域へ案内する（設計書 §C.6）。
+      const found = findHistoryContaining(s.domain, featureId, s.currentTime, calendar);
+      const ownerName =
+        found === undefined
+          ? ''
+          : (featureByIdAt(s.domain, s.currentTime, found.history.featureId)?.attributes.name ??
+            '');
+      return PROPERTY_STRINGS.endHereNoOwnSeries(ownerName);
+    },
+    [store, calendar],
+  );
+
+  const endFeatureHere = useCallback(
+    (featureId: FeatureId): void => {
+      const refusal = endHereRefusalFor(featureId);
+      if (refusal !== null) {
+        statusMessageStore.failure(refusal);
+        return;
+      }
+      const s = store.getState();
+      const at = toYearPoint(s.currentTime);
+      const history = s.domain.histories.find((h) => h.featureId === featureId);
+      if (history === undefined) return;
+      // いまの年に効いている錨（開始が現在時刻以下のうち最後のもの）。
+      const entry = [...history.series.entries]
+        .reverse()
+        .find((e) => compareTimePoints(e.start, at, calendar) <= 0);
+      if (entry === undefined) {
+        statusMessageStore.failure(PROPERTY_STRINGS.endHereNoOwnSeries(''));
+        return;
+      }
+      try {
+        anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
+          buildSetEndIntent(featureId, entry.anchor.id, at),
+        );
+        statusMessageStore.success(
+          PROPERTY_STRINGS.endHereDone(
+            featureNameOf(featureId) ?? '',
+            formatYear(at.year),
+          ),
+        );
+      } catch (e) {
+        statusMessageStore.failure(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [store, calendar, endHereRefusalFor, statusMessageStore, featureNameOf],
+  );
+
+  /**
+   * **素性欄の親欄の 3 ボタンから所属変更へ入る**（G-3 / FR-46 must / 設計書 §C.6 の
+   * 「保存の対象」。増分 7 の中身 3b）。
+   *
+   * **素性欄は所属変更の別の入口であって、別の実装ではない** ―― 押すと、道具と同じ
+   * 手順・同じ確認・同じ進行表示・同じ分け残しの名前欄に合流する。ここがやるのは
+   * 「その地物を対象にして道具を構え、板をどの枝で開くかを言う」だけである。
+   */
+  const [reparentOpenRequest, setReparentOpenRequest] = useState<{
+    readonly nonce: number;
+    readonly choice: ReparentChoice;
+  } | null>(null);
+  const reparentOpenNonceRef = useRef(0);
+  const enterReparentFor = useCallback(
+    (featureId: FeatureId, choice: ReparentChoice): void => {
+      store.getState().setFeatureMarks([featureId]);
+      armEditTool(TOOL_ID.EditReparent);
+      reparentOpenNonceRef.current += 1;
+      setReparentOpenRequest({ nonce: reparentOpenNonceRef.current, choice });
+    },
+    [store, armEditTool],
+  );
+
+  /**
+   * 「全部の年から消す」の前に見せる影響の一覧（設計書 §A.3 / 増分 7 の中身 6）。
+   * 全錨を平らにしてドメインの説明器へ渡し、返ってきた件数と ID を文にする。
+   * **押した瞬間に 1 度だけ**呼ばれる（全錨の走査なので、画面に居るあいだ回さない）。
+   */
+  const resolveDeleteImpactFor = useCallback(
+    (featureId: FeatureId): DeleteImpactView => {
+      const s = store.getState();
+      const anchors = s.domain.histories.flatMap((h) => h.series.entries.map((e) => e.anchor));
+      const ownYears = (s.domain.histories.find((h) => h.featureId === featureId)?.series.entries ??
+        []).map((e) => e.start.year);
+      const impact = describeDeletionImpact(createDeletionState(anchors), featureId, ownYears);
+      return buildDeleteImpactView({
+        impact,
+        targetName: featureNameOf(featureId) ?? '',
+        nameOf: (id) => featureByIdAt(s.domain, s.currentTime, id)?.attributes.name ?? null,
+      });
+    },
+    [store, featureNameOf],
+  );
+
   const onSelectMenuItem = useCallback(
     (itemKind: MenuItemKind, model: ContextMenuModel): void => {
       launchMenuItem(itemKind, model, {
@@ -1767,7 +2046,7 @@ export function App(): JSX.Element {
         getTime: () => store.getState().currentTime,
         dispatchEditDelete: () => registry.dispatch(COMMAND_ID.EditDelete),
         deleteVertices: (ownerFeatureId, vertexIds) =>
-          runDeleteFunnel({ activeFeature: null, vertexOwner: ownerFeatureId, vertexIds }),
+          requestDelete({ activeFeature: null, vertexOwner: ownerFeatureId, vertexIds }),
         openProperties: (featureId) => {
           store.getState().setActiveFeature(featureId);
           focusPropertyTab();
@@ -1790,9 +2069,26 @@ export function App(): JSX.Element {
         // history / dirty). Works in View mode too, symmetric with 個別非表示.
         setFeatureEmphasized: (featureId, emphasized) =>
           store.getState().setFeatureEmphasized(featureId, emphasized),
+        // --- 増分 7: 対象の印とまとめての編集（設計書 §D.5 / §I.3）-----------------
+        setFeatureMarked: (featureId) => store.getState().toggleFeatureMark(featureId),
+        markSubtree: markSubtreeOf,
+        reparentMarked,
+        bulkKindLabel: openBulkKindLabel,
+        endHere: endFeatureHere,
       });
     },
-    [store, registry, runDeleteFunnel, focusPropertyTab, armEditTool, runUnshareIntent],
+    [
+      store,
+      registry,
+      requestDelete,
+      focusPropertyTab,
+      armEditTool,
+      runUnshareIntent,
+      markSubtreeOf,
+      reparentMarked,
+      openBulkKindLabel,
+      endFeatureHere,
+    ],
   );
 
   // HB5-4 選択解除 — Escape / 編集メニュー「選択解除」clears the active-feature + vertex
@@ -2029,13 +2325,72 @@ export function App(): JSX.Element {
   // same confirm call — so currentTime read here equals the proposal's anchorTime
   // (全コミット経路の確認). The property / interval / edit-drag paths, whose commit
   // time CAN differ from the view time, thread their own explicit times instead.
+  /**
+   * **B39 の根治**（`docs/現状.md` の B39 / FR-35 / FR-37。増分 7 の中身 12）。
+   *
+   * **何が起きていたか**: 面（自分の形を持つ末端）を上位領域に選んで子を保存すると、
+   * その面は「形を持ったまま子を持つ」状態（`leaf-with-children`）になる。保存形式の
+   * 形状保持規則はこれを不整合とみなすので、**入れ子を作るたびに、次に開いたときに
+   * 修復ダイアログが出て**いた。
+   *
+   * **筋の通った直し方は「子を確定した時点で親を集約化する」**（FR-35 の末端→集約の
+   * 遷移を確定に含める）である。その変換はドメインに既にある ―― 所属変更が
+   * 「形を持つ末端が子を得た」ときに走らせている **同じ経路**（`generateDirectDomains`
+   * → 直轄領の生成 → `syncAggregateChildIds`）で、追加のあとに 1 度だけ通す。
+   *
+   * **1 つの取り消し単位にする**（FR-73 / FR-94）。追加と遷移を別々の取り消しにすると、
+   * 1 回目の Ctrl+Z で「親だけが末端に戻り、子は残る」という **保存できない中間状態**が
+   * 画面に出てしまう。複合コマンドに畳んで 1 手で戻す。
+   *
+   * 断られたときは **追加だけを通す**（元の挙動のまま）―― 追加そのものを巻き添えで
+   * 失わせない。修復ダイアログは従来どおり受け皿として残っている。
+   */
+  const composeAddWithParentPromotion = useCallback(
+    (addCommand: Command<DomainRoot>, newFeatureId: FeatureId, at: TimePoint): Command<DomainRoot> => {
+      const afterAdd = addCommand.execute(store.getState().domain).state;
+      const features = featuresAt(afterAdd, at);
+      const added = features.find((f) => f.id === newFeatureId);
+      const parentId = added?.parentId;
+      if (parentId === undefined) return addCommand;
+      const parent = features.find((f) => f.id === parentId);
+      // 集約なら遷移は要らない（形を持たないので分け残しも無い）。点・線は親になれない。
+      if (parent === undefined || parent.kind !== FEATURE_KIND.Leaf) return addCommand;
+      const built = buildAffiliationProposalForTargets(
+        features,
+        [newFeatureId],
+        parentExisting(parentId),
+        {
+          idState: createIdGeneratorState(),
+          now: () => Date.now(),
+          vertexStore: verticesAt(afterAdd, at),
+        },
+      );
+      if (built.status === AFFILIATION_STATUS.Rejected) return addCommand;
+      const binding = createLiveAffiliationBinding({ getRoot: () => afterAdd });
+      const processed = binding.startProcess(toAffiliationEditProposal(built.proposal, at));
+      if (processed.status !== PROCESS_STATUS.Committed) return addCommand;
+      return createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, processed.command]);
+    },
+    [store],
+  );
+
   const onAddCommitted = useCallback(
     (
       result: ProcessResult<DomainRoot>,
       newFeatureId: FeatureId,
       committed?: { readonly sharedVertexCount: number },
     ) => {
-      recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
+      if (result.status === PROCESS_STATUS.Committed) {
+        // B39: 親が形を持つ末端なら、末端→集約の遷移を **同じ取り消し単位**に畳む。
+        const at = store.getState().currentTime;
+        recordCommand(
+          composeAddWithParentPromotion(result.command, newFeatureId, at),
+          { featureId: newFeatureId },
+          at,
+        );
+      } else {
+        recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
+      }
       // 増分 3: **吸着して境界を共有したことを、状態行の「直前の結果」に日本語で出す**
       // （設計書 §H.5。成功を一度も知らせない＝ C6 への手当ての 1 件）。`recordCommit` が
       // 出す「地物の追加を行いました」を、共有したときだけ上書きする。
@@ -2044,7 +2399,7 @@ export function App(): JSX.Element {
         announceResult(APP_STRINGS.addedWithSharedVertices(shared));
       }
     },
-    [recordCommit, store, announceResult],
+    [recordCommit, recordCommand, store, announceResult, composeAddWithParentPromotion],
   );
 
   // KNIFE COMMIT (C3 — 教訓 5.11 / U12): record as one history unit and promote the
@@ -2893,6 +3248,8 @@ export function App(): JSX.Element {
     }),
     [store, recordCommand],
   );
+  // 「この年に終わったことにする」が使う口を late-bind する（写しを作らない＝教訓 5.44）。
+  anchorIntervalDispatchRef.current = anchorIntervalDispatch;
 
   // HB5-3 — the anchor-origin camera focus handed to the「錨一覧」rows. Stable
   // (reads the late-bound fit ref), so it never re-builds the sidebar memo. The
@@ -3019,6 +3376,19 @@ export function App(): JSX.Element {
         filterFocus: ledgerFilterFocusStore,
         // 増分 4 の手直し B8: Alt+↑ / Alt+↓ / F2 の行き先。
         ledgerCommands: ledgerCommandStore,
+        // 増分 7（設計書 §I.3 / 増分 5 からの送り）: 一覧の行の右クリック。
+        onRowContextMenu: openLedgerRowMenu,
+        // --- 増分 7 -------------------------------------------------------------
+        // 親欄の 3 ボタン（G-3 / FR-46 must）。**押した瞬間に所属変更の手順へ入る**
+        // ―― 素性欄の保存ボタンでは親を変えない（設計書 §C.6 の「保存の対象」）。
+        onParentPick: (featureId) => enterReparentFor(featureId, REPARENT_CHOICE.Existing),
+        onParentCreate: (featureId) => enterReparentFor(featureId, REPARENT_CHOICE.Create),
+        onParentClear: (featureId) => enterReparentFor(featureId, REPARENT_CHOICE.None),
+        // 削除の入口 A（設計書 §A.3）。
+        onEndHere: endFeatureHere,
+        endHereDisabledReason: endHereRefusalFor,
+        // 削除の入口 B の前に見せる影響の一覧（設計書 §A.3 / 中身 6）。
+        resolveDeleteImpact: resolveDeleteImpactFor,
       }),
     [
       store,
@@ -3035,6 +3405,11 @@ export function App(): JSX.Element {
       announceResult,
       ledgerFilterFocusStore,
       ledgerCommandStore,
+      openLedgerRowMenu,
+      enterReparentFor,
+      endFeatureHere,
+      endHereRefusalFor,
+      resolveDeleteImpactFor,
     ],
   );
 
@@ -3316,6 +3691,8 @@ export function App(): JSX.Element {
               onConflicts={onReparentConflicts}
               onDrawingChange={setReparentDrawing}
               onModalChange={toolModalChange('reparent')}
+              markedFeatureIds={markedFeatureIdList}
+              openOptionsRequest={reparentOpenRequest}
             />
             {/* U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) controller,
                 bound to the SAME store. Selecting 編集モード→穴・飛び地 arms a session; the
@@ -3502,6 +3879,9 @@ export function App(): JSX.Element {
               // open menu ORs into shortcutsSuspended so Ctrl+Z 等 cannot mutate the
               // domain out from under the frozen menu model.
               onOpenChange={setContextMenuOpen}
+              // 増分 7（増分 5 からの送り / 設計書 §I.3）: 道具が下書きを持っている
+              // 局面の項目（確定・やめる）。中身はオプションバーの確定欄そのもの。
+              optionBar={optionBarStore}
             />
             {/* U39 INTEGRATION (受け入れ基準 1-6): the file-ops controller registers
                 the ファイル menu / shortcut commands on the SAME registry the shell
@@ -3513,15 +3893,69 @@ export function App(): JSX.Element {
             {/* A8: Delete キー / 編集メニュー / 右クリックの「削除」が出す確認。素性欄の
                 ボタンが出すものと **同じ部品・同じ文言** である（3 経路で 1 つ）。
                 「キャンセル」と Esc は何もしない（教訓 5.22 確定までドメインを壊さない）。 */}
-            {pendingDelete !== null && (
-              <DeleteConfirmDialog
-                featureName={pendingDelete.name}
+            {/* **増分 7 でこの 3 経路も影響の一覧を通る**（設計書 §A.3 / 中身 6）。
+                素性欄のボタンと同じ器（`ImpactConfirmDialog`）で、消える錨・頂点、
+                最上位へ移る下位領域、自動で消える集約まで **消す前に**出す。 */}
+            {pendingDelete !== null &&
+              (() => {
+                const view = resolveDeleteImpactFor(pendingDelete.featureId);
+                return (
+                  <ImpactConfirmDialog
+                    testIdPrefix="delete-impact"
+                    title={view.title}
+                    groups={view.groups}
+                    blockedReason={view.blockedReason}
+                    confirmLabel={view.confirmLabel}
+                    cancelLabel={view.cancelLabel}
+                    note={view.note}
+                    onConfirm={() => {
+                      const target = pendingDelete.featureId;
+                      setPendingDelete(null);
+                      commitFeatureDelete(target);
+                    }}
+                    onCancel={() => setPendingDelete(null)}
+                  />
+                );
+              })()}
+
+            {/* **頂点を消す前の確認**（N-05 / 設計書 §A.3。増分 7 の中身 7）。地物・錨・
+                輪郭の削除と同じ器で、**残る頂点が足りなくなると地物ごと消える**ことを
+                事前に文で出す。 */}
+            {pendingVertexDelete !== null && (
+              <ImpactConfirmDialog
+                testIdPrefix="vertex-delete-impact"
+                title={PROPERTY_STRINGS.vertexDeleteTitle(pendingVertexDelete.vertexIds.size)}
+                groups={[
+                  {
+                    testId: 'gone',
+                    heading: PROPERTY_STRINGS.impactHeadingGone,
+                    lines: [
+                      PROPERTY_STRINGS.vertexDeleteLineCount(
+                        pendingVertexDelete.vertexIds.size,
+                      ),
+                      PROPERTY_STRINGS.vertexDeleteLineBelowThreshold,
+                    ],
+                  },
+                ]}
+                confirmLabel={PROPERTY_STRINGS.vertexDeleteConfirm}
+                cancelLabel={PROPERTY_STRINGS.impactCancel}
+                note={PROPERTY_STRINGS.impactUndoNote}
                 onConfirm={() => {
-                  const target = pendingDelete.featureId;
-                  setPendingDelete(null);
-                  commitFeatureDelete(target);
+                  const target = pendingVertexDelete;
+                  setPendingVertexDelete(null);
+                  runDeleteFunnel(target);
                 }}
-                onCancel={() => setPendingDelete(null)}
+                onCancel={() => setPendingVertexDelete(null)}
+              />
+            )}
+
+            {/* まとめて種別を付ける板（増分 7 の中身 8）。確定は 1 つの複合コマンドに
+                畳まれるので、335 件でも Ctrl+Z 1 回で戻る。 */}
+            {bulkKindTargets !== null && (
+              <BulkKindLabelDialog
+                count={bulkKindTargets.length}
+                onConfirm={commitBulkKindLabel}
+                onCancel={() => setBulkKindTargets(null)}
               />
             )}
             <FileOpsController
@@ -4110,6 +4544,7 @@ import {
   createDeleteFeatureCommandForRoot,
   createAnchorIntervalCommandForRoot,
   anchorIntervalRecolorTime,
+  createBulkKindLabelCommandForRoot,
 } from './consistency-binding';
 import type { AddIdPorts } from '../domain/add/index';
 import type { StartAddProcess } from './add/useAddTool';

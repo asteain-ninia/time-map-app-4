@@ -72,6 +72,7 @@ import { anchorRowsOf, existenceRunsOf, type AnchorRow } from './anchor-diff';
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
+import type { DeleteImpactView } from './delete-impact';
 import { DetailDocumentSection } from './DetailDocumentSection';
 import type {
   AnchorIntervalEditDispatch,
@@ -129,6 +130,27 @@ export interface PropertyPanelProps<S> {
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   /** FR-85: delete the feature shown in the panel (the「地物を削除」button's confirm). */
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
+  /**
+   * **消す前に見せる影響の一覧**（設計書 §A.3 / 増分 7 の中身 6）。押した瞬間に
+   * ホストが `describeDeletionImpact` → `buildDeleteImpactView` で組み立てて返す。
+   * 未配線なら名前だけを出す従来の確認へ落ちる。
+   */
+  readonly resolveDeleteImpact?: (featureId: FeatureId) => DeleteImpactView;
+  /**
+   * 親欄の 3 ボタン（G-3 / FR-46 must。増分 7 の中身 3b）。**押した瞬間に所属変更の
+   * 手順へ入る** ―― 素性欄の保存ボタンでは親を変えない（設計書 §C.6 の「保存の対象」）。
+   * 3 つとも配線されているときだけ押せる。
+   */
+  readonly onParentPick?: (featureId: FeatureId) => void;
+  readonly onParentCreate?: (featureId: FeatureId) => void;
+  readonly onParentClear?: (featureId: FeatureId) => void;
+  /**
+   * **この年に終わったことにする**（設計書 §A.3 の削除の入口 A。増分 7 の中身 5）。
+   * ホストは存続期間のコマンド（`setEnd`）1 本へ繋ぐ。未配線ならボタンを出さない。
+   */
+  readonly onEndHere?: (featureId: FeatureId) => void;
+  /** 入口 A を押せない理由（自分の歴史を持たない地物など）。押せるなら `null` を返す。 */
+  readonly endHereDisabledReason?: (featureId: FeatureId) => string | null;
   /**
    * 「この年に錨を作る」（Ctrl+K, 実装計画 増分 2 の中身 3 / 設計書 §D.3）の
    * 素性欄側の入口。**保存ボタンとは別のコマンド**で、値を変えていなくても錨を
@@ -776,6 +798,59 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
       .join(PROPERTY_STRINGS.existenceRunSeparator);
   }, [displaySeries, targetFeatureId, calendar]);
 
+  /**
+   * 親欄の 3 ボタンの配線（増分 7 の中身 3b）。**3 つとも渡されているときだけ**繋ぐ ――
+   * 1 つでも欠けたまま押せるようにすると「押せるのに動かない部品」ができる。
+   */
+  const onParentPick = props.onParentPick;
+  const onParentCreate = props.onParentCreate;
+  const onParentClear = props.onParentClear;
+  const parentActions = useMemo(() => {
+    if (
+      targetFeatureId === null ||
+      onParentPick === undefined ||
+      onParentCreate === undefined ||
+      onParentClear === undefined
+    ) {
+      return null;
+    }
+    const id = targetFeatureId;
+    return {
+      onParentPick: () => onParentPick(id),
+      onParentCreate: () => onParentCreate(id),
+      onParentClear: () => onParentClear(id),
+    };
+  }, [targetFeatureId, onParentPick, onParentCreate, onParentClear]);
+
+  /**
+   * 「この年に終わったことにする」（設計書 §A.3 の入口 A。増分 7 の中身 5）。文言には
+   * **いま見ている年**を入れる ―― どの年で終わることになるのかが押す前に読めないと、
+   * T25 の事故（見えている終了年が飾りだった）が形を変えて戻る。
+   */
+  const onEndHere = props.onEndHere;
+  const endHereDisabledReason = props.endHereDisabledReason;
+  const endHereAction = useMemo(() => {
+    if (targetFeatureId === null || onEndHere === undefined) return null;
+    const id = targetFeatureId;
+    return {
+      onEndHere: () => onEndHere(id),
+      endHereLabel: PROPERTY_STRINGS.endHereLabel(formatYear(currentTime.year)),
+      endHereDisabledReason: endHereDisabledReason?.(id) ?? null,
+    };
+  }, [targetFeatureId, onEndHere, endHereDisabledReason, currentTime]);
+
+  /** 影響の一覧を押した瞬間に解く（全錨の走査なので、開いている間は再計算しない）。 */
+  const resolveDeleteImpactPort = props.resolveDeleteImpact;
+  const resolveDeleteImpactRef = useCallback(
+    (featureId: FeatureId): DeleteImpactView => {
+      if (resolveDeleteImpactPort === undefined) {
+        throw new Error('影響の一覧を組み立てる口が繋がっていません。');
+      }
+      return resolveDeleteImpactPort(featureId);
+    },
+    [resolveDeleteImpactPort],
+  );
+
   // **地物を替えたらスクロール位置を先頭へ戻す**（現状分析 C5 の④ / 設計書 §C.6）。
   // 旧: 前の地物で下のほうを見ていると、次の地物でも同じ位置から始まるので、名前欄が
   // 画面の外にある状態で開く。220 件を送る作業では毎回それが起きる。
@@ -931,6 +1006,8 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               {...(lengthKm !== undefined ? { lengthKm } : {})}
               {...(parentName !== undefined ? { parentName } : {})}
               {...(existenceLabel !== undefined ? { existenceLabel } : {})}
+              {...(parentActions === null ? {} : parentActions)}
+              {...(endHereAction === null ? {} : endHereAction)}
             />
 
             {/* まとめ役の子（実データで 86 件）は自分の歴史を持たない。**錨の欄ごと消す**の
@@ -977,15 +1054,25 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
               onSelectFeature={handleSelectFromDocument}
             />
 
-            {/* FR-85: the always-present「地物を削除」button for the shown feature.
+            {/* **削除の入口 B**（設計書 §A.3 / 増分 7 の中身 5）。「全部の年から消す」は
+                取り返しがつかないので **畳んだ節の中**へ下ろす ―― 目立つ位置に置くのは
+                「この年に終わったことにする」（入口 A、上の存続期間の行の隣）のほうである。
                 N-03 / K-6: このボタンだけが権限の関門を素通りしていて表示専用でも押せた。 */}
             {onDeleteFeature !== undefined && (
-              <DeleteFeatureButton
-                target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
-                onConfirm={onDeleteFeature}
-                editable={editable && pendingDiscard === null}
-                featureName={feature.attributes.name}
-              />
+              <details className="property-panel__danger" data-testid="danger-zone">
+                <summary data-testid="danger-zone-summary">
+                  {PROPERTY_STRINGS.dangerZoneTitle}
+                </summary>
+                <DeleteFeatureButton
+                  target={{ kind: DELETE_TARGET_KIND.ActiveFeature, featureId: feature.id }}
+                  onConfirm={onDeleteFeature}
+                  editable={editable && pendingDiscard === null}
+                  featureName={feature.attributes.name}
+                  {...(props.resolveDeleteImpact === undefined
+                    ? {}
+                    : { resolveImpact: () => resolveDeleteImpactRef(feature.id) })}
+                />
+              </details>
             )}
           </div>
 

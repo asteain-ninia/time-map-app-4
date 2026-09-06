@@ -73,6 +73,7 @@ import {
   type AnchorIntervalEditDispatch,
   type FeatureLookup,
   type GoverningAnchorSeries,
+  type DeleteImpactView,
 } from '../property/index';
 
 import { resolveGoverningSeries } from '../time/governing-series';
@@ -167,6 +168,17 @@ export interface SidebarContentDeps<S> {
    */
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
   /**
+   * 増分 7（設計書 §A.3 / §C.6 / G-3）。素性欄から所属変更へ入る 3 つの口、
+   * 「この年に終わったことにする」（削除の入口 A）、その断りの理由、
+   * そして「全部の年から消す」の前に見せる影響の一覧。合成ルートが繋ぐ。
+   */
+  readonly onParentPick?: (featureId: FeatureId) => void;
+  readonly onParentCreate?: (featureId: FeatureId) => void;
+  readonly onParentClear?: (featureId: FeatureId) => void;
+  readonly onEndHere?: (featureId: FeatureId) => void;
+  readonly endHereDisabledReason?: (featureId: FeatureId) => string | null;
+  readonly resolveDeleteImpact?: (featureId: FeatureId) => DeleteImpactView;
+  /**
    * 素性欄の「打ちかけを捨てますか」の確認（N-04）が開閉したことを合成ルートへ伝える。
    * 合成ルートはこれを `shortcutsSuspended` に OR して、確認が出ているあいだ
    * Ctrl+K・Delete などの大域ショートカットを止める（増分 2 の手直し A4 (c)）。
@@ -220,6 +232,15 @@ export interface SidebarContentDeps<S> {
    * 合成ルートが `CommandRegistry` に繋ぐ。
    */
   readonly ledgerCommands?: LedgerCommandStore;
+  /**
+   * 一覧の行の右クリック（設計書 §I.3 の「台帳の行」。増分 5 からの送り）。
+   * 合成ルートが地図と同じ右クリックの器へ流す。
+   */
+  readonly onRowContextMenu?: (
+    featureId: FeatureId,
+    clientX: number,
+    clientY: number,
+  ) => void;
 }
 
 /**
@@ -239,6 +260,12 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     onOpenDetail,
     onDeleteFeature,
     onCreateAnchorHere,
+    onParentPick,
+    onParentCreate,
+    onParentClear,
+    onEndHere,
+    endHereDisabledReason,
+    resolveDeleteImpact,
     onDraftConfirmChange,
     onFocusFeatureCamera,
     addDraft,
@@ -247,6 +274,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     onResult,
     filterFocus,
     ledgerCommands,
+    onRowContextMenu,
   } = deps;
 
   // 素性欄の名前欄へ焦点を入れる口（束の第 1 手。設計書 §C.5）。器が 1 本だけ持ち、
@@ -328,6 +356,12 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       {...(onOpenDetail ? { onOpenDetail } : {})}
       {...(onDeleteFeature ? { onDeleteFeature } : {})}
       {...(onCreateAnchorHere ? { onCreateAnchorHere } : {})}
+      {...(onParentPick ? { onParentPick } : {})}
+      {...(onParentCreate ? { onParentCreate } : {})}
+      {...(onParentClear ? { onParentClear } : {})}
+      {...(onEndHere ? { onEndHere } : {})}
+      {...(endHereDisabledReason ? { endHereDisabledReason } : {})}
+      {...(resolveDeleteImpact ? { resolveDeleteImpact } : {})}
       {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
       nameFieldFocus={nameFieldFocus}
       draftStatus={draftStatus}
@@ -361,6 +395,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
         {...(onResult ? { onResult } : {})}
         {...(filterFocus ? { filterFocus } : {})}
         {...(ledgerCommands ? { commands: ledgerCommands } : {})}
+        {...(onRowContextMenu ? { onRowContextMenu } : {})}
         onFocusNameField={() => {
           nameFieldFocus.focus();
         }}
@@ -459,6 +494,17 @@ function PropertyPanelHost<S>(props: {
   readonly onOpenDetail?: (featureId: FeatureId) => void;
   readonly onDeleteFeature?: (featureId: FeatureId) => void;
   readonly onCreateAnchorHere?: (featureId: FeatureId) => void;
+  /**
+   * 増分 7（設計書 §A.3 / §C.6 / G-3）。素性欄から所属変更へ入る 3 つの口、
+   * 「この年に終わったことにする」（削除の入口 A）、その断りの理由、
+   * そして「全部の年から消す」の前に見せる影響の一覧。合成ルートが繋ぐ。
+   */
+  readonly onParentPick?: (featureId: FeatureId) => void;
+  readonly onParentCreate?: (featureId: FeatureId) => void;
+  readonly onParentClear?: (featureId: FeatureId) => void;
+  readonly onEndHere?: (featureId: FeatureId) => void;
+  readonly endHereDisabledReason?: (featureId: FeatureId) => string | null;
+  readonly resolveDeleteImpact?: (featureId: FeatureId) => DeleteImpactView;
   readonly onDraftConfirmChange?: (open: boolean) => void;
   readonly nameFieldFocus?: NameFieldFocusStore;
   readonly draftStatus?: PropertyDraftStatusStore;
@@ -607,6 +653,14 @@ function PropertyPanelHost<S>(props: {
       {...(props.onOpenDetail ? { onOpenDetail: props.onOpenDetail } : {})}
       {...(props.onDeleteFeature ? { onDeleteFeature: props.onDeleteFeature } : {})}
       {...(props.onCreateAnchorHere ? { onCreateAnchorHere: props.onCreateAnchorHere } : {})}
+      {...(props.onParentPick ? { onParentPick: props.onParentPick } : {})}
+      {...(props.onParentCreate ? { onParentCreate: props.onParentCreate } : {})}
+      {...(props.onParentClear ? { onParentClear: props.onParentClear } : {})}
+      {...(props.onEndHere ? { onEndHere: props.onEndHere } : {})}
+      {...(props.endHereDisabledReason
+        ? { endHereDisabledReason: props.endHereDisabledReason }
+        : {})}
+      {...(props.resolveDeleteImpact ? { resolveDeleteImpact: props.resolveDeleteImpact } : {})}
       {...(props.onDraftConfirmChange
         ? { onDraftConfirmChange: props.onDraftConfirmChange }
         : {})}

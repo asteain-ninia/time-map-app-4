@@ -131,6 +131,13 @@ export interface FeatureLedgerProps<S> {
    * 合成ルートが `CommandRegistry` に繋ぐ。
    */
   readonly commands?: LedgerCommandStore;
+  /**
+   * 一覧の行を右クリックした（設計書 §I.3 の「台帳の行」。増分 5 からの送り）。
+   * 合成ルートが **地図と同じ右クリックの器**（`ContextMenuRequest`）へ流す ――
+   * 組み立ても発火も 1 本のままにするため、ここは座標と相手を渡すだけである。
+   * 未配線ならブラウザの既定のメニューが出る（従来どおり）。
+   */
+  readonly onRowContextMenu?: (featureId: FeatureId, clientX: number, clientY: number) => void;
 }
 
 /** 行の 👁 が押されたときに何をするか（手直し B1）。 */
@@ -192,8 +199,18 @@ function eyeActionOf(reason: HiddenReason | null, kindLabel: string): EyeAction 
 function LedgerRowView(props: {
   readonly row: LedgerRow;
   readonly active: boolean;
+  /** 対象の印が付いているか（`markedFeatures`。増分 7 / 設計書 §D.5）。 */
+  readonly marked: boolean;
+  /** 印をつけ外しする。 */
+  readonly onToggleMark: () => void;
+  /** 行を右クリックした（設計書 §I.3 の「台帳の行」。増分 5 からの送り）。 */
+  readonly onContextMenu?: ((clientX: number, clientY: number) => void) | undefined;
   readonly editing: 'name' | 'kindLabel' | null;
-  readonly onSelect: () => void;
+  /**
+   * 行を押した。`markToggle` が真なら **選ぶのではなく印をつけ外しする**
+   * （Ctrl/⌘ ＋クリック。設計書 §C.5 の「☐ 対象チェック（Ctrl+クリック）」/ V8）。
+   */
+  readonly onSelect: (markToggle: boolean) => void;
   readonly onToggleExpand: () => void;
   readonly onEye: () => void;
   readonly onStartEdit: (field: 'name' | 'kindLabel') => void;
@@ -206,6 +223,8 @@ function LedgerRowView(props: {
   const {
     row,
     active,
+    marked,
+    onToggleMark,
     editing,
     onSelect,
     onToggleExpand,
@@ -228,8 +247,33 @@ function LedgerRowView(props: {
       data-testid={`ledger-row-${id}`}
       data-done={row.done ? 'true' : 'false'}
       data-hidden={row.hidden ? 'true' : 'false'}
+      data-marked={marked ? 'true' : 'false'}
       style={{ height: `${String(LEDGER_ROW_HEIGHT)}px` }}
+      onContextMenu={
+        props.onContextMenu === undefined
+          ? undefined
+          : (e) => {
+              // 台帳の行の右クリック（設計書 §I.3。増分 5 からの送り）。ブラウザの
+              // 既定のメニューは出さず、地図と **同じ 1 本**の組み立て・発火を通す。
+              e.preventDefault();
+              props.onContextMenu?.(e.clientX, e.clientY);
+            }
+      }
     >
+      {/*
+        **対象の印**（`markedFeatures`。増分 7 / 設計書 §D.5・§C.5 の「☐ 対象チェック」）。
+        選択（0 か 1 件）とは別概念で、まとめて片付ける相手の集合である。升目は
+        「入れると入る」向きなので、ラベルは「対象」で通す。
+      */}
+      <input
+        type="checkbox"
+        className="ledger__mark"
+        data-testid={`ledger-mark-${id}`}
+        aria-label={LEDGER_STRINGS.markAria(row.name)}
+        checked={marked}
+        onChange={onToggleMark}
+        onClick={(e) => e.stopPropagation()}
+      />
       <span
         className="ledger__color"
         data-testid={`ledger-color-${id}`}
@@ -276,7 +320,7 @@ function LedgerRowView(props: {
           data-testid={`feature-list-item-${id}`}
           aria-pressed={active}
           title={row.qualifier === null ? row.name : `${row.name} ${row.qualifier}`}
-          onClick={onSelect}
+          onClick={(e) => onSelect(e.ctrlKey || e.metaKey)}
           // **読むだけでも同じ理由を出す**（手直し B11）。旧版は編集できないとき
           // ダブルクリックが黙って何もしなかったので、「壊れている」と読めた。
           onDoubleClick={() => onStartEdit('name')}
@@ -406,6 +450,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     onFocusNameField,
     filterFocus,
     commands,
+    onRowContextMenu,
   } = props;
 
   // 購読するのは、行の中身が変わりうる入力だけ（教訓 5.6: 根と年は fresh に読む）。
@@ -745,10 +790,9 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
   const bundleSource = useCallback((): BundleSource => {
     const root = getRoot();
     const time = getTime();
-    // 「手で印を付けたもの」の集合（`markedFeatures`）は **増分 7 で作る**。それまで
-    // この既定は選べないようにしてある（`BUNDLE_PRESETS` の `available: false`）ので、
-    // ここへは来ない。空集合を渡すのは、規則の網羅を崩さないためである。
-    const marked = new Set<FeatureId>();
+    // 「手で印を付けたもの」の集合（`markedFeatures`）は **増分 7 で作った**。
+    // 一覧の升目・Ctrl+クリック・右クリックの「対象に加える」が同じ 1 つを書く。
+    const marked = ledger.marked;
     // 「この地物の家族」＝ 親・自分・**子孫**（設計書 §C.5）。子だけでは家族にならない。
     const family = new Set<FeatureId>();
     const active = store.getState().activeFeature;
@@ -786,7 +830,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
       family,
       marked,
     };
-  }, [getRoot, getTime, ledgerFeatures, currentById, forest, store]);
+  }, [getRoot, getTime, ledgerFeatures, currentById, forest, store, ledger.marked]);
 
   const makeBundle = useCallback((): void => {
     const preset = BUNDLE_PRESETS.find((p) => p.id === presetId);
@@ -1266,6 +1310,27 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         </button>
       </div>
 
+      {/*
+        **対象の印の件数と、外す 1 手**（`markedFeatures`。増分 7 / 設計書 §D.5・§C.5）。
+        印は 2 件以上になりうる集合なので、**いま何件を相手にしているか**が常に読めないと
+        「押したのに 3 件のはずが 2 件だった」が起きる。0 件のときは行そのものを出さない
+        （何も相手にしていない状態に説明は要らない）。
+      */}
+      {ledger.marked.size > 0 && (
+        <div className="ledger__marks" data-testid="ledger-marks">
+          <span data-testid="ledger-marked-count">
+            {LEDGER_STRINGS.markedCount(ledger.marked.size)}
+          </span>
+          <button
+            type="button"
+            data-testid="ledger-marks-clear"
+            onClick={() => store.getState().clearFeatureMarks()}
+          >
+            {LEDGER_STRINGS.clearMarks}
+          </button>
+        </div>
+      )}
+
       {rowCount === 0 && !filtering && (
         <p className="ledger__empty" data-testid="unified-list-empty">
           {isHistory ? LEDGER_STRINGS.emptyAnchors : LEDGER_STRINGS.emptyFeatures}
@@ -1331,12 +1396,28 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
                     key={row.featureId as unknown as string}
                     row={row}
                     active={activeFeature === row.featureId}
+                    marked={ledger.marked.has(row.featureId)}
+                    onToggleMark={() => store.getState().toggleFeatureMark(row.featureId)}
+                    {...(onRowContextMenu === undefined
+                      ? {}
+                      : {
+                          onContextMenu: (x: number, y: number) =>
+                            onRowContextMenu(row.featureId, x, y),
+                        })}
                     editing={
                       editing !== null && editing.featureId === row.featureId
                         ? editing.field
                         : null
                     }
-                    onSelect={() => selectFeature(row.featureId)}
+                    onSelect={(markToggle) => {
+                      // Ctrl/⌘ ＋クリックは **印のつけ外し**（設計書 §C.5 / V8 の
+                      // 「3 件を Ctrl+クリック」）。選択（0 か 1 件）は動かさない。
+                      if (markToggle) {
+                        store.getState().toggleFeatureMark(row.featureId);
+                        return;
+                      }
+                      selectFeature(row.featureId);
+                    }}
                     onToggleExpand={() =>
                       store.getState().toggleLedgerExpanded(row.featureId, row.expanded)
                     }

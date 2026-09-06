@@ -32,6 +32,7 @@ import type { Calendar } from '../../domain/time/calendar';
 import { compare } from '../../domain/time/normalized';
 import type { TimePoint } from '../../domain/time/time-point';
 
+import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
 import { formatTimePoint } from '../timeline/time-display';
 import { YearMonthDayInput } from '../timeline/YearMonthDayInput';
 
@@ -475,6 +476,13 @@ function AnchorIntervalEditor(props: {
   const anchorId = entry.anchor.id;
 
   const [message, setMessage] = useState<string | null>(null);
+  /**
+   * **錨を消す前に確認する**（N-05 / 設計書 §A.3 の「同じ器を錨の削除にも使う」。
+   * 増分 7 の中身 7）。旧版は押した瞬間に消えていた ―― 錨は「その年からの姿」の
+   * 記録なので、消すと **その年から次の錨まで、前の錨の姿へ戻る**。取り消せるとはいえ、
+   * 何が起きるかを言わずに消すのは削除の作法から外れている。
+   */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const run = (intent: AnchorIntervalEditIntent): void => {
     setMessage(onEditInterval(intent));
@@ -521,10 +529,35 @@ function AnchorIntervalEditor(props: {
         className="anchor-interval__delete"
         data-testid={`anchor-interval-delete-${anchorId}`}
         disabled={soleAnchor}
-        onClick={() => run(buildDeleteAnchorIntent(featureId, anchorId))}
+        onClick={() => setConfirmingDelete(true)}
       >
         {PROPERTY_STRINGS.intervalDeleteLabel}
       </button>
+
+      {confirmingDelete && (
+        <ImpactConfirmDialog
+          testIdPrefix="anchor-delete-impact"
+          title={PROPERTY_STRINGS.anchorDeleteTitle(formatTimePoint(entry.start))}
+          groups={[
+            {
+              testId: 'gone',
+              heading: PROPERTY_STRINGS.impactHeadingGone,
+              lines: [
+                PROPERTY_STRINGS.anchorDeleteLineRecord(formatTimePoint(entry.start)),
+                PROPERTY_STRINGS.anchorDeleteLineFallback,
+              ],
+            },
+          ]}
+          confirmLabel={PROPERTY_STRINGS.anchorDeleteConfirm}
+          cancelLabel={PROPERTY_STRINGS.impactCancel}
+          note={PROPERTY_STRINGS.impactUndoNote}
+          onConfirm={() => {
+            setConfirmingDelete(false);
+            run(buildDeleteAnchorIntent(featureId, anchorId));
+          }}
+          onCancel={() => setConfirmingDelete(false)}
+        />
+      )}
 
       {message !== null && (
         <p

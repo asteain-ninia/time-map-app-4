@@ -73,6 +73,11 @@ export const UI_COMMAND_LABEL = {
   RingAdd: 'ringAdd',
   /** 輪郭の道具で **穴・飛び地を消した**とき（増分 5 の手直し E3。上と同じ申し送り）。 */
   RingDelete: 'ringDelete',
+  /**
+   * 印を付けた地物へ **まとめて種別を付けた**とき（増分 7 の中身 8。FR-73 / FR-94）。
+   * 335 件でも **1 回の取り消し単位**なので、状態行にも 1 行しか出ない。
+   */
+  BulkKindLabel: 'bulkKindLabel',
 } as const;
 
 export type UiCommandLabel = (typeof UI_COMMAND_LABEL)[keyof typeof UI_COMMAND_LABEL];
@@ -106,6 +111,7 @@ const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
   // あって「どの道具を使ったか」を言う場所ではないからである。
   [UI_COMMAND_LABEL.RingAdd]: '穴・飛び地の追加',
   [UI_COMMAND_LABEL.RingDelete]: '穴・飛び地の削除',
+  [UI_COMMAND_LABEL.BulkKindLabel]: 'まとめての種別付け',
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
   所属変更: '所属変更',
   地物の削除: '地物の削除',

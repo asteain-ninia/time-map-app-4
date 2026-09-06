@@ -21,9 +21,18 @@ import { useCallback, useState } from 'react';
 import { DELETE_TARGET_KIND, type DeleteTarget } from '../../domain/deletion/index';
 import type { FeatureId } from '../../domain/ids';
 
-import { DeleteConfirmDialog } from './DeleteConfirmDialog';
+import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
 
-export const DELETE_BUTTON_LABEL = '地物を削除';
+import { DeleteConfirmDialog } from './DeleteConfirmDialog';
+import type { DeleteImpactView } from './delete-impact';
+import { PROPERTY_STRINGS } from './messages';
+
+/**
+ * ボタンの文言（増分 7 の中身 5）。**「地物を削除」から言い換えた** ―― 素性欄には
+ * 「この年に終わったことにする」（入口 A）が別に立ったので、こちらが何をする側なのかを
+ * 名乗らないと 2 つが見分けられない（設計書 §A.3 の 2 経路）。
+ */
+export const DELETE_BUTTON_LABEL = PROPERTY_STRINGS.deleteAllYearsLabel;
 
 export interface DeleteFeatureButtonProps {
   /**
@@ -52,6 +61,16 @@ export interface DeleteFeatureButtonProps {
    * 名前を出さない確認は「何を消すのか」が分からないので確認の体をなさない。
    */
   readonly featureName?: string | null;
+  /**
+   * **消す前に見せる影響の一覧**（設計書 §A.3 / 増分 7 の中身 6）。呼び出し側が
+   * `describeDeletionImpact` → `buildDeleteImpactView` で組み立てて渡す。
+   *
+   * **押した瞬間に解く**（`() => view` の形にしてある）―― 影響は全錨を走査するので、
+   * ボタンが画面に居るあいだ毎回計算すると 775 地物で無駄が大きい。
+   *
+   * 省略した呼び出し側（薄い検査台）では、名前だけを出す従来の確認へ落ちる。
+   */
+  readonly resolveImpact?: (() => DeleteImpactView) | undefined;
 }
 
 /** Read the feature id out of a feature-bearing target, else null (None → null). */
@@ -76,12 +95,17 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
   const enabled = featureId !== null && editable;
 
   const [confirming, setConfirming] = useState(false);
+  // **影響は押した瞬間に 1 度だけ解く**（全錨の走査なので、開いているあいだ再計算しない）。
+  const [impact, setImpact] = useState<DeleteImpactView | null>(null);
 
+  const resolveImpact = props.resolveImpact;
   const openConfirm = useCallback(() => {
     // 権限が無いときは確認ダイアログすら開かない（disabled 属性だけに頼ると、
     // 属性を外せる経路が 1 つでもあれば削除が通ってしまう）。
-    if (featureId !== null && editable) setConfirming(true);
-  }, [featureId, editable]);
+    if (featureId === null || !editable) return;
+    setImpact(resolveImpact === undefined ? null : resolveImpact());
+    setConfirming(true);
+  }, [featureId, editable, resolveImpact]);
 
   const cancel = useCallback(() => {
     // 教訓 5.22 / FR-85: cancel does nothing — no command, no history.
@@ -111,7 +135,20 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
         {DELETE_BUTTON_LABEL}
       </button>
 
-      {confirming ? (
+      {confirming && impact !== null ? (
+        <ImpactConfirmDialog
+          testIdPrefix="delete-impact"
+          title={impact.title}
+          groups={impact.groups}
+          blockedReason={impact.blockedReason}
+          confirmLabel={impact.confirmLabel}
+          cancelLabel={impact.cancelLabel}
+          note={impact.note}
+          onConfirm={confirm}
+          onCancel={cancel}
+        />
+      ) : null}
+      {confirming && impact === null ? (
         <DeleteConfirmDialog featureName={featureName} onConfirm={confirm} onCancel={cancel} />
       ) : null}
     </div>

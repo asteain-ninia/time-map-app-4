@@ -79,6 +79,13 @@ export const APP_STRINGS = {
   toolbarAriaLabel: 'ツールバー',
   menubarAriaLabel: 'メニューバー',
   statusbarAriaLabel: 'ステータスバー',
+  /** まとめ役の下に下位領域が 1 つも無かった（増分 7 の中身 3）。 */
+  markSubtreeEmpty: 'この地物には、いまの年に下位領域がありません。',
+  /** まとめ役の全下位領域へ印を付けた（増分 7 の中身 3）。 */
+  markSubtreeDone: (count: number): string => `下位領域 ${String(count)} 件を対象にしました。`,
+  /** 印を付けた／外した（増分 7 / 設計書 §D.5）。 */
+  markCount: (count: number): string =>
+    count === 0 ? '対象の印を全部外しました。' : `対象 ${String(count)} 件`,
 } as const;
 
 /** Top-level menu titles (ファイル・編集・表示・ツール・ヘルプ, FR-111). */

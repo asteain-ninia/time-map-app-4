@@ -109,6 +109,11 @@ export interface ComposeInputArgs {
    * これは 2 つ目の関門ではなく「出し分けの材料」である（教訓 5.13 / 5.30）。
    */
   readonly hasAnchorAt?: ((featureId: FeatureId) => boolean) | undefined;
+  /**
+   * いま印を付けてある地物（`markedFeatures`, 増分 7 / 設計書 §D.5）。渡さなければ
+   * 印の項目そのものが出ない（空集合）。
+   */
+  readonly markedFeatureIds?: ReadonlySet<FeatureId> | undefined;
 }
 
 /**
@@ -128,6 +133,7 @@ export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
     emphasizedFeatureIds,
     axisEmphasisLookup,
   } = args;
+  const markedFeatureIds = args.markedFeatureIds;
   const vertexContext =
     selection.vertexIds.size === 0
       ? EMPTY_CONTEXT
@@ -145,6 +151,7 @@ export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
     sharedLookup: lookups.sharedLookup,
     emphasizedFeatureIds,
     axisEmphasisLookup,
+    ...(markedFeatureIds === undefined ? {} : { markedFeatureIds }),
   };
 }
 

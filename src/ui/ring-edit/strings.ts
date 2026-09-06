@@ -54,6 +54,12 @@ export const RING_EDIT_STRINGS = {
    * 消す輪郭を押す）。設計書 §C.4 の「手順 1/2 対象の面: バアカ」と同じ数である。
    */
   stage: (step: number): string => `手順 ${String(step)}/${String(RING_EDIT_STEP_COUNT)}`,
+  /**
+   * リングの種類の画面表記（設計書 §H.1: 外周／穴／飛び地）。**「領土リング」は内部語**
+   * なので出さない。消す前の確認（増分 7 の中身 7）で使う。
+   */
+  ringKindHole: '穴',
+  ringKindTerritory: '外周・飛び地',
 } as const;
 
 /** 輪郭の道具の段数（設計書 §C.4 の「手順 n/m」の m）。1 = 面を選ぶ / 2 = 輪郭を描く。 */

@@ -96,6 +96,25 @@ export interface BasicInfoFormProps {
    * 旧版は Escape で何も起きず、**焦点を外す手が鍵盤に無かった**。
    */
   readonly onEscape?: () => void;
+  /**
+   * 親欄の 3 ボタン（設計書 §C.6 / G-3 / FR-46 must。増分 7 の中身 3b）。
+   *
+   * **押した瞬間に所属変更の手順へ入る**（保存ボタンの対象ではない）。渡さない
+   * 呼び出し側では従来どおり押せないまま理由を添えて出す ―― **押せるのに動かない
+   * 部品を作らない**（§H.5 の作法）。
+   */
+  readonly onParentPick?: () => void;
+  readonly onParentCreate?: () => void;
+  readonly onParentClear?: () => void;
+  /**
+   * **この年に終わったことにする**（設計書 §A.3 の削除の入口 A。増分 7 の中身 5）。
+   * 存続期間の行の隣・目立つ位置に置く。渡さない呼び出し側ではボタンを出さない。
+   */
+  readonly onEndHere?: () => void;
+  /** 入口 A のボタンの文言（「1500年に終わったことにする」）。 */
+  readonly endHereLabel?: string;
+  /** 入口 A を押せない理由（自分の歴史を持たない地物など）。押せるなら `null`。 */
+  readonly endHereDisabledReason?: string | null;
 }
 
 /**
@@ -148,6 +167,21 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
     e.preventDefault();
     onSubmit(!e.ctrlKey);
   };
+  /**
+   * 親欄の 3 ボタンを押せるか（増分 7 の中身 3b）。**3 つとも配線されているときだけ**
+   * 押せる ―― 1 つでも欠けていると「押せるのに動かない部品」ができる（§H.5 の作法）。
+   * 読むだけのときも押せない（教訓 5.13: 権限の関門は 1 か所で、ここは `editable` を見る）。
+   */
+  const parentActionsReady =
+    editable &&
+    props.onParentPick !== undefined &&
+    props.onParentCreate !== undefined &&
+    props.onParentClear !== undefined;
+  const parentDisabledReason = editable
+    ? PROPERTY_STRINGS.parentDisabledReason
+    : PROPERTY_STRINGS.viewOnlyNotice;
+  const endHereReason = props.endHereDisabledReason ?? null;
+
   // Default the palette dropdown to the feature's current theme alone so the
   // section mounts even when the host has not wired the settings-provided list.
   const paletteThemes = useMemo(
@@ -223,31 +257,36 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
             <button
               type="button"
               data-testid="parent-pick"
-              disabled
-              title={PROPERTY_STRINGS.parentDisabledReason}
+              disabled={!parentActionsReady}
+              title={parentActionsReady ? undefined : parentDisabledReason}
+              onClick={props.onParentPick}
             >
               {PROPERTY_STRINGS.parentPickLabel}
             </button>
             <button
               type="button"
               data-testid="parent-create"
-              disabled
-              title={PROPERTY_STRINGS.parentDisabledReason}
+              disabled={!parentActionsReady}
+              title={parentActionsReady ? undefined : parentDisabledReason}
+              onClick={props.onParentCreate}
             >
               {PROPERTY_STRINGS.parentCreateLabel}
             </button>
             <button
               type="button"
               data-testid="parent-clear"
-              disabled
-              title={PROPERTY_STRINGS.parentDisabledReason}
+              disabled={!parentActionsReady}
+              title={parentActionsReady ? undefined : parentDisabledReason}
+              onClick={props.onParentClear}
             >
               {PROPERTY_STRINGS.parentClearLabel}
             </button>
           </div>
-          <p className="basic-info__parent-reason" data-testid="parent-disabled-reason">
-            {PROPERTY_STRINGS.parentDisabledReason}
-          </p>
+          {!parentActionsReady && (
+            <p className="basic-info__parent-reason" data-testid="parent-disabled-reason">
+              {parentDisabledReason}
+            </p>
+          )}
         </div>
       )}
 
@@ -287,6 +326,32 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         >
           <span>{PROPERTY_STRINGS.existenceLabel}</span>
           <output data-testid="existence-value">{existenceLabel}</output>
+        </div>
+      )}
+
+      {/*
+        **削除の入口 A**（設計書 §A.3 / 増分 7 の中身 5）。「消す」と言われる操作の実体は
+        たいてい **消滅ではなく終了**なので、目立つ位置に置くのはこちらである。全部の年から
+        消すほうは畳んだ「取り返しのつかないこと」の中にある。
+        T25「1500 年に滅ぶを記録する」が 30 秒かかっていたのは、この分岐が言葉として
+        立っていなかったからである。
+      */}
+      {props.onEndHere !== undefined && props.endHereLabel !== undefined && (
+        <div className="basic-info__end-here" data-testid="end-here-row">
+          <button
+            type="button"
+            data-testid="end-here"
+            disabled={!editable || endHereReason !== null}
+            title={endHereReason ?? PROPERTY_STRINGS.endHereHint}
+            onClick={props.onEndHere}
+          >
+            {props.endHereLabel}
+          </button>
+          {endHereReason !== null && (
+            <p className="basic-info__end-here-reason" data-testid="end-here-reason">
+              {endHereReason}
+            </p>
+          )}
         </div>
       )}
 

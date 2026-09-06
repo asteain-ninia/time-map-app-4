@@ -32,7 +32,7 @@ import {
 import type { Feature, LeafFeature } from '../../domain/feature';
 import { FEATURE_KIND } from '../../domain/feature';
 import type { FeatureId, RingId } from '../../domain/ids';
-import { RING_KIND, type Ring, type Shape } from '../../domain/ring';
+import { RING_KIND, type Ring, type RingKind, type Shape } from '../../domain/ring';
 import type { TimePoint } from '../../domain/time/time-point';
 import type { VertexStore } from '../../domain/vertex';
 import { getVertex } from '../../domain/vertex';
@@ -96,6 +96,18 @@ export type StartRingEditProcess<S> = (
   anchorTime: TimePoint,
   current: S,
 ) => ReleaseOutcome<S>;
+
+/**
+ * 確認待ちのリング削除（N-05 / 増分 7 の中身 7）。**確定に必要なものだけ**を持つ ――
+ * 何を消すか（穴か外周か）、面ごと消えるか、そして確定へ渡す写しである。
+ */
+export interface PendingRingDelete {
+  readonly ringKind: RingKind;
+  /** 最後の外周か（真なら、この年からこの地物そのものが消える）。 */
+  readonly lastTerritory: boolean;
+  /** 「はい」と答えたときに確定へ流す写し。 */
+  readonly snapshot: FeatureSnapshot;
+}
 
 /** The add/delete sub-mode (対概念: リング追加 ↔ リング削除, 教訓 2.10 / 5.19). */
 export const RING_EDIT_SUBMODE = {
@@ -176,9 +188,18 @@ export interface UseRingEditToolState {
   readonly message: string | null;
   /** Whether the add draft can confirm (≥3 vertices). */
   readonly canConfirm: boolean;
+  /**
+   * 確認待ちのリング削除（N-05 / 増分 7 の中身 7）。null なら確認は出ていない。
+   * コントローラがこれを見て影響ダイアログを出す。
+   */
+  readonly pendingDelete: PendingRingDelete | null;
 }
 
 export interface UseRingEditToolActions {
+  /** 確認に「はい」と答えた（リングを実際に消す）。 */
+  readonly confirmPendingDelete: () => void;
+  /** 確認をやめた（何も起きない）。 */
+  readonly cancelPendingDelete: () => void;
   /** 起動: overlay on, awaiting a target-face click (教訓 5.7 start trigger). */
   start(): void;
   /** Run the reset契約 on an external tool / mode switch (教訓 5.2 (d)/(e)). */
@@ -309,6 +330,12 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
   const [deleteTargetId, setDeleteTargetId] = useState<FeatureId | null>(null);
   const [armed, setArmed] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  /**
+   * **消す前に見せる確認**（N-05 / 設計書 §A.3。増分 7 の中身 7）。押した瞬間に消す
+   * のをやめ、何が消えるか（とくに「最後の外周を消すと面ごと消える」）を出してから
+   * 確定する。確定までドメインは 1 バイトも動かない（教訓 5.22）。
+   */
+  const [pendingDelete, setPendingDelete] = useState<PendingRingDelete | null>(null);
   // Carries the grid-snap toggle across draft starts (mirrors startDraft's gridSnap arg).
   const [gridSnap, setGridSnapState] = useState(false);
 
@@ -476,18 +503,43 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
           : deleteTerritoryRing(leaf, ring.id, store);
       switch (outcome.kind) {
         case RING_DELETE_OUTCOME.FeatureSurvives:
-          runConfirm(snapshotForLeaf(outcome.feature, []));
+          // **消す前に確認する**（N-05 / 設計書 §A.3。増分 7 の中身 7）。旧版は押した
+          // 瞬間に消えていた ―― 輪郭は形そのものなので、取り消せるとはいえ何が消えるかを
+          // 言わずに消すのは削除の作法から外れている。
+          setPendingDelete({
+            ringKind: ring.kind === RING_KIND.Hole ? RING_KIND.Hole : RING_KIND.Territory,
+            lastTerritory: false,
+            snapshot: snapshotForLeaf(outcome.feature, []),
+          });
           return;
         case RING_DELETE_OUTCOME.FeatureDeleted:
-          runConfirm(snapshotForDeletedFeature(leaf.id));
+          // **最後の外周を消すと面ごと消える**（設計書 §A.3 が名指しした事前の文）。
+          setPendingDelete({
+            ringKind: RING_KIND.Territory,
+            lastTerritory: true,
+            snapshot: snapshotForDeletedFeature(leaf.id),
+          });
           return;
         case RING_DELETE_OUTCOME.Rejected:
           setMessage(rejectMessage(outcome.reason));
           return;
       }
     },
-    [resolveStore, runConfirm],
+    [resolveStore],
   );
+
+  /** 確認に「はい」と答えた ―― ここで初めて確定へ流す。 */
+  const confirmPendingDelete = useCallback((): void => {
+    const pending = pendingDelete;
+    if (pending === null) return;
+    setPendingDelete(null);
+    runConfirm(pending.snapshot);
+  }, [pendingDelete, runConfirm]);
+
+  /** 確認をやめた ―― 何も起きない（教訓 5.22 確定までドメインを壊さない）。 */
+  const cancelPendingDelete = useCallback((): void => {
+    setPendingDelete(null);
+  }, []);
 
   // Pick the target face from a click (the ONE target-acquisition path both sub-modes
   // share). Returns the resolved leaf, or undefined after surfacing WHY it failed —
@@ -668,5 +720,8 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     discardDraftVertices,
     releaseTarget,
     cancel,
+    pendingDelete,
+    confirmPendingDelete,
+    cancelPendingDelete,
   };
 }

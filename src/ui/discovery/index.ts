@@ -198,6 +198,9 @@ export {
   DEFAULT_LEDGER_STATE,
   toggleExpanded,
   withExpanded,
+  toggleMarked,
+  withMarked,
+  clearMarked,
   reconcileLedgerToLive,
 } from './ledger-state';
 

@@ -49,6 +49,9 @@ import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwi
 import type { OptionBarStore } from '../shell/option-bar';
 import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
+import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
+import { PROPERTY_STRINGS } from '../property/messages';
+import { RING_KIND, type RingKind } from '../../domain/ring';
 
 import { RING_EDIT_STRINGS } from './strings';
 import {
@@ -142,6 +145,13 @@ export interface RingEditToolControllerProps<S> {
 const NOOP_COMMITTED = (): void => {
   /* host did not bind a commit handler; nothing to swap */
 };
+
+/** リングの種類を画面の言葉にする（設計書 §H.1 の「外周／穴／飛び地」）。 */
+function ringKindLabel(kind: RingKind): string {
+  return kind === RING_KIND.Hole
+    ? RING_EDIT_STRINGS.ringKindHole
+    : RING_EDIT_STRINGS.ringKindTerritory;
+}
 
 export function RingEditToolController<S>(
   props: RingEditToolControllerProps<S>,
@@ -591,6 +601,40 @@ export function RingEditToolController<S>(
       <span data-testid="ring-edit-vertex-count" hidden>
         {ring.draft?.vertices.length ?? 0}
       </span>
+
+      {/* **輪郭を消す前の確認**（N-05 / 設計書 §A.3。増分 7 の中身 7）。器は削除・錨と
+          同じ 1 つで、**「最後の外周を消すと面ごと消える」を事前に文で**出す。 */}
+      {ring.pendingDelete !== null && (
+        <ImpactConfirmDialog
+          testIdPrefix="ring-delete-impact"
+          title={PROPERTY_STRINGS.ringDeleteTitle(
+            ringKindLabel(ring.pendingDelete.ringKind),
+          )}
+          groups={[
+            {
+              testId: 'gone',
+              heading: PROPERTY_STRINGS.impactHeadingGone,
+              lines: ring.pendingDelete.lastTerritory
+                ? [
+                    PROPERTY_STRINGS.ringDeleteLineShape(
+                      ringKindLabel(ring.pendingDelete.ringKind),
+                    ),
+                    PROPERTY_STRINGS.ringDeleteLineLastTerritory,
+                  ]
+                : [
+                    PROPERTY_STRINGS.ringDeleteLineShape(
+                      ringKindLabel(ring.pendingDelete.ringKind),
+                    ),
+                  ],
+            },
+          ]}
+          confirmLabel={PROPERTY_STRINGS.ringDeleteConfirm}
+          cancelLabel={PROPERTY_STRINGS.impactCancel}
+          note={PROPERTY_STRINGS.impactUndoNote}
+          onConfirm={() => ring.confirmPendingDelete()}
+          onCancel={() => ring.cancelPendingDelete()}
+        />
+      )}
 
       {/* 確定できる輪郭を捨てる前の確認（設計書 §D.4.1 の 3）。**器は追加の道具・
           分ける・穴あけと共有の本物のモーダル**なので、この板が出ているあいだ地図の

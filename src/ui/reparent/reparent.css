@@ -75,3 +75,182 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* --- 3 択の作業ダイアログ（増分 7 の中身 1・2・4・9・11）---------------------
+   器の作りは結合の板（merge.css）に合わせてある ―― 同じ種類の作業（何を選んで
+   確定するか）に別の見た目を作らない（設計書 §B.5「作業ダイアログは器 1 種類」）。 */
+.reparent-options-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+.reparent-options-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.reparent-options-dialog {
+  position: relative;
+  z-index: 1;
+  width: 440px;
+  max-width: 92vw;
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 16px 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+.reparent-options-dialog__title {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+.reparent-options-dialog__hint {
+  margin: 0 0 12px;
+  color: #555;
+  font-size: 12px;
+}
+.reparent-options-dialog__section {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+}
+.reparent-options-dialog__section > legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.reparent-options-dialog__choice {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+  font-size: 13px;
+}
+.reparent-options-dialog__branch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 8px 20px;
+}
+.reparent-options-dialog__terminal {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px solid #e3e3e3;
+  border-radius: 6px;
+}
+.reparent-options-dialog__text {
+  width: 100%;
+  min-height: 26px;
+  box-sizing: border-box;
+}
+.reparent-options-dialog__note,
+.reparent-options-dialog__warning {
+  margin: 4px 0 0 20px;
+  color: #555;
+  font-size: 12px;
+}
+.reparent-options-dialog__warning {
+  color: #a33;
+}
+.reparent-options-dialog__preview {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  color: #333;
+  font-size: 12px;
+}
+.reparent-options-dialog__message {
+  margin: 0 0 8px;
+  color: #a33;
+  font-size: 12px;
+}
+.reparent-options-dialog__progress {
+  margin: 0 0 8px;
+  color: #225;
+  font-size: 12px;
+}
+.reparent-options-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* --- 親候補のツリー（台帳と同じ形）------------------------------------------
+   窓の高さは `PARENT_TREE_VIEWPORT_HEIGHT`（8 行 × 28px）と同じ数を入れる。
+   **実測しない**（教訓 5.49）ので、両方が同じ数であることが唯一の契約である。 */
+.parent-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 8px 20px;
+}
+.parent-tree__filter {
+  width: 100%;
+  min-height: 26px;
+  box-sizing: border-box;
+}
+.parent-tree__scroller {
+  overflow-y: auto;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+}
+.parent-tree__empty {
+  margin: 0;
+  color: #555;
+  font-size: 12px;
+}
+.parent-tree__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.parent-tree__expand {
+  flex: 0 0 auto;
+  width: 18px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.parent-tree__expand--none {
+  cursor: default;
+}
+.parent-tree__pick {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.parent-tree__pick[aria-selected='true'] {
+  background: #dceeff;
+}
+.parent-tree__pick:disabled {
+  color: #999;
+  cursor: not-allowed;
+}
+.parent-tree__indent {
+  flex: 0 0 auto;
+}
+.parent-tree__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.parent-tree__qualifier,
+.parent-tree__kind {
+  flex: 0 0 auto;
+  color: #666;
+  font-size: 11px;
+}

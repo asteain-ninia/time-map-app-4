@@ -30,6 +30,7 @@ import {
   type TimeCheckResult,
   type SpatialCheckResult,
   conflictsFromOverlapPairs,
+  createEditProposal,
 } from '../domain/consistency/index';
 import {
   createCompositeCommand,
@@ -91,6 +92,7 @@ import {
   featureDisplayName,
   pruneVertexStore,
   referencedVertexIds,
+  withKindLabel,
   withLeafShape,
   type Feature,
   type LeafFeature,
@@ -215,6 +217,8 @@ function runGuarded<S, Snapshot>(
 const LIVE_COMMIT_KIND = defineCommandKind('u44-live-commit');
 const DELETE_COMMIT_KIND = defineCommandKind('u44-delete-commit');
 const INTERVAL_COMMIT_KIND = defineCommandKind('u44-interval-commit');
+/** 一括編集（まとめての種別付け）の識別子（増分 7 の中身 8）。 */
+const BULK_EDIT_COMMIT_KIND = defineCommandKind('u44-bulk-edit-commit');
 
 /**
  * U09 — temporal-consistency check. For an add the feature is new (no existing
@@ -1252,4 +1256,77 @@ export function anchorIntervalRecolorTime(
     .find((h) => h.featureId === intent.featureId)
     ?.series.entries.find((e) => e.anchor.id === intent.anchorId);
   return entry?.start ?? fallback;
+}
+
+// --- 増分 7 の中身 8: 一括編集を 1 回の取り消し単位にする（FR-73 / FR-94）-----------
+//
+// **これが直すもの**: 「335 件へまとめて種別を付ける」を 1 件ずつの保存で回すと、
+// 取り消しが 335 手になる（実データで実際にそうなる）。所有者の要件は **1 回の
+// Ctrl+Z で戻る**ことなので、まとめて 1 つのコマンドにする。
+//
+// **写した先**は `src/domain/coloring/recolor-command.ts` の `composeWithRecolor` と、
+// `createDeleteFeatureCommandForRoot` の whole-state-swap である。前者は「構造の変更＋
+// 自動配色」を 1 単位にする形、後者は「baseline → finalState を 1 回で入れ替える」形で、
+// ここは **N 件の素性編集を順に畳んでから 1 回で入れ替える**。
+//
+// **順に畳む理由**: `applyEditProposal` は「その時刻の錨を書き換える」純関数で、対象が
+// まとめ役の子なら **親の系列**へ書く。335 件のうち何件が同じ親の系列に載るかは中身
+// 次第なので、1 件ずつ根へ畳み込んでいかないと **後の 1 件が前の 1 件を踏み消す**
+// （同じ錨の写しを別々の baseline から作ることになる）。
+
+/**
+ * 印を付けた地物へ、いま見ている年に **同じ種別ラベル**を付ける 1 つのコマンドを作る
+ * （増分 7 の中身 8）。1 件も変わらなければ `null`（幽霊の取り消しを作らない＝教訓 5.24）。
+ *
+ * - 対象がその年に居なければ黙って飛ばす（消えた印は結果に響かない）。
+ * - 既に同じ種別ラベルなら飛ばす（値が同じ編集を積まない）。
+ * - 空文字は「種別を外す」を意味する（ドメインの `withKindLabel(undefined)` へ落とす）。
+ */
+export function createBulkKindLabelCommandForRoot(
+  root: DomainRoot,
+  featureIds: readonly FeatureId[],
+  kindLabel: string,
+  at: TimePoint,
+): { readonly command: Command<DomainRoot>; readonly changedIds: readonly FeatureId[] } | null {
+  const next = kindLabel === '' ? undefined : kindLabel;
+  let current = root;
+  const changed: FeatureId[] = [];
+  for (const featureId of featureIds) {
+    const feature = featuresAt(current, at).find((f) => f.id === featureId);
+    if (feature === undefined) continue; // その年に居ない（印の掃除が追いつく前）。
+    if ((feature.kindLabel ?? undefined) === next) continue; // 値が同じ（教訓 5.24）。
+    const snapshot: FeatureSnapshot = { feature: withKindLabel(feature, next), vertices: [] };
+    const proposal = createEditProposal(featureId, at, snapshot);
+    const applied = applyEditProposal(current, proposal, calendar);
+    if (applied === current) continue; // 書ける系列が無かった（壊れたデータへの防御）。
+    current = applied;
+    changed.push(featureId);
+  }
+  if (changed.length === 0) return null;
+
+  const finalState = current;
+  const touched: ReadonlySet<DomainId> = new Set<DomainId>(changed);
+  const forward: CommandResult = createCommandResult({ survived: touched, touched });
+  const backward: CommandResult = createCommandResult({ survived: touched, touched });
+  const swap: Command<DomainRoot> = {
+    kind: BULK_EDIT_COMMIT_KIND,
+    label: UI_COMMAND_LABEL.BulkKindLabel,
+    execute(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+    undo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: root, result: backward };
+    },
+    redo(state: DomainRoot): CommandOutcome<DomainRoot> {
+      void state;
+      return { state: finalState, result: forward };
+    },
+  };
+  // ほかの確定と同じく複合で包む（1 つの不可分な取り消し単位＝ FR-73 / FR-94）。
+  return {
+    command: createCompositeCommand(UI_COMMAND_LABEL.BulkKindLabel, [swap]),
+    changedIds: changed,
+  };
 }
