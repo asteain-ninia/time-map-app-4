@@ -127,6 +127,16 @@ export interface ComposeInput {
    *   出したまま無効にする（「押しても無反応」を避ける、出す=起きる, 教訓 5.6）。
    */
   readonly hasAnchorAtCurrentTime?: boolean | undefined;
+  /**
+   * いま印を付けてある地物（`markedFeatures`, 増分 7 / 設計書 §D.5）。任意 ―― 渡さない
+   * 呼び出し側では印の項目そのものを出さない（既定は空集合）。
+   *
+   * これが決めるのは 3 つ。①「対象に加える」と「対象から外す」のどちらを出すか
+   * （強調のペアと同じ形で、**ラベルが必ず起きることを言う**）。②「選んだものの所属を
+   * まとめて変える」を出すか（1 件以上のときだけ。0 件で出すと押しても何も起きない）。
+   * ③「まとめて種別を付ける」を出すか（同上）。
+   */
+  readonly markedFeatureIds?: ReadonlySet<FeatureId> | undefined;
 }
 
 // --- Resolved menu target (UI 文脈優先, 教訓 5.3 / 5.4) ----------------------
@@ -261,6 +271,9 @@ export function resolveMenuTarget(input: ComposeInput): MenuTarget {
 // --- The composed model ------------------------------------------------------
 
 export const NO_MENU = { kind: 'noMenu' } as const;
+
+/** 印が渡されなかったときの空集合（同一性を保つ）。 */
+const EMPTY_MARKED: ReadonlySet<FeatureId> = new Set();
 export type NoMenu = typeof NO_MENU;
 
 /**
@@ -275,6 +288,17 @@ export interface ContextMenuModel {
   readonly target: MenuTarget;
   readonly items: readonly ContextMenuItem[];
   readonly position: MenuPosition;
+  /**
+   * 組み立てた時点で印が付いていた地物（増分 7）。**模型が自分で運ぶ**ので、
+   * 「選んだ n 件をまとめて…」の項目は、出したときと同じ集合に対して発火する
+   * （メニューを開いてから印が変わっても、押した項目が約束した相手からずれない
+   * ＝教訓 5.6「出したものが起きる」）。
+   *
+   * **任意**にしてある ―― 印を持たない呼び出し側（薄い検査台や、印の項目を出さない
+   * 組み立て）が模型を手で組めるようにするためで、{@link composeContextMenu} は必ず
+   * 埋める。読む側は空集合に倒す。
+   */
+  readonly markedFeatureIds?: ReadonlySet<FeatureId> | undefined;
 }
 
 // --- Shared-vertex detection over the RAW set (FR-33, 教訓 5.10 / 5.29) ------
@@ -451,6 +475,36 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
   // an axis-emphasized target would not change appearance either way, so the item is shown
   // DISABLED with the reason instead of firing a no-op (出す=起きる, 教訓 5.6).
   const displayTargetId = displayControlFeatureId(target);
+
+  // 対象の印（増分 7 / 設計書 §D.5・§I.3）。**読むだけでは出さない** ―― 印は「まとめて
+  // 直す相手」を集める操作なので、直せない局面で集めても行き先が無い（表示制御の
+  // 個別非表示・強調とはここが違う）。
+  const marked = input.markedFeatureIds ?? EMPTY_MARKED;
+  if (input.canEdit && displayTargetId !== null) {
+    items.push(
+      enabledItem(
+        marked.has(displayTargetId) ? MENU_ITEM_KIND.UnmarkTarget : MENU_ITEM_KIND.MarkTarget,
+      ),
+    );
+    // まとめ役だけに出す（FR-48 後半の入口）。末端には下位領域が無いので意味が無い。
+    if (
+      target.kind === MENU_TARGET_KIND.Feature &&
+      target.featureKind === FEATURE_KIND.Aggregate
+    ) {
+      items.push(enabledItem(MENU_ITEM_KIND.MarkSubtree));
+    }
+    // 印が 1 件以上あるときだけ、まとめて直す項目を出す（0 件で出すと押しても何も
+    // 起きない＝出す=起きる, 教訓 5.6）。
+    if (marked.size > 0) {
+      items.push(enabledItem(MENU_ITEM_KIND.ReparentMarked));
+      items.push(enabledItem(MENU_ITEM_KIND.BulkKindLabel));
+    }
+    // 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A）。削除の隣に置く
+    // のではなく、**削除より上**に置く ―― 「消す」と言われる操作の実体はたいてい
+    // 終了であり、既定の入口はこちらである。
+    items.push(enabledItem(MENU_ITEM_KIND.EndHere));
+  }
+
   if (displayTargetId !== null) {
     items.push(enabledItem(MENU_ITEM_KIND.HideFeature));
     const emphasisItemKind = input.emphasizedFeatureIds.has(displayTargetId)
@@ -475,6 +529,7 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
     target,
     items,
     position: input.position,
+    markedFeatureIds: marked,
   };
 }
 

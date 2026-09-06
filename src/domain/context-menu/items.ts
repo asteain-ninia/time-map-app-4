@@ -50,6 +50,21 @@ export const MENU_ITEM_KIND = {
   EmphasizeFeature: 'emphasizeFeature',
   /** 表示制御: 強調を解除 → U41 (FR-113 Phase 2). The 強調中 counterpart of the above. */
   UnemphasizeFeature: 'unemphasizeFeature',
+  /**
+   * 対象に加える（`markedFeatures`, 増分 7 / 設計書 §D.5・§I.3）。
+   * {@link MENU_ITEM_KIND.UnmarkTarget} と排他で、いまの印の有無で出す側が決まる。
+   */
+  MarkTarget: 'markTarget',
+  /** 対象から外す。上の印つきの相方。 */
+  UnmarkTarget: 'unmarkTarget',
+  /** まとめ役: その全下位領域を対象にする（FR-48 後半 / 増分 7 の中身 3）。 */
+  MarkSubtree: 'markSubtree',
+  /** 印が 1 件以上あるとき: 選んだ n 件の所属をまとめて変える（増分 7 の中身 2b）。 */
+  ReparentMarked: 'reparentMarked',
+  /** 印が 1 件以上あるとき: 選んだ n 件へまとめて種別を付ける（増分 7 の中身 8）。 */
+  BulkKindLabel: 'bulkKindLabel',
+  /** この年に終わったことにする（設計書 §A.3 の削除の入口 A / 増分 7 の中身 5）。 */
+  EndHere: 'endHere',
 } as const;
 
 export type MenuItemKind = (typeof MENU_ITEM_KIND)[keyof typeof MENU_ITEM_KIND];
@@ -72,6 +87,12 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
   [MENU_ITEM_KIND.HideFeature]: FLOW_KIND.HideFeature,
   [MENU_ITEM_KIND.EmphasizeFeature]: FLOW_KIND.SetFeatureEmphasis,
   [MENU_ITEM_KIND.UnemphasizeFeature]: FLOW_KIND.SetFeatureEmphasis,
+  [MENU_ITEM_KIND.MarkTarget]: FLOW_KIND.SetFeatureMark,
+  [MENU_ITEM_KIND.UnmarkTarget]: FLOW_KIND.SetFeatureMark,
+  [MENU_ITEM_KIND.MarkSubtree]: FLOW_KIND.MarkSubtree,
+  [MENU_ITEM_KIND.ReparentMarked]: FLOW_KIND.ReparentMarked,
+  [MENU_ITEM_KIND.BulkKindLabel]: FLOW_KIND.BulkKindLabel,
+  [MENU_ITEM_KIND.EndHere]: FLOW_KIND.EndHere,
 };
 
 /** Japanese user-facing label per item kind (FR-115). */
@@ -87,6 +108,12 @@ export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
   [MENU_ITEM_KIND.HideFeature]: 'この地物を非表示',
   [MENU_ITEM_KIND.EmphasizeFeature]: 'この地物を強調',
   [MENU_ITEM_KIND.UnemphasizeFeature]: '強調を解除',
+  [MENU_ITEM_KIND.MarkTarget]: '対象に加える',
+  [MENU_ITEM_KIND.UnmarkTarget]: '対象から外す',
+  [MENU_ITEM_KIND.MarkSubtree]: 'その全下位領域を対象にする',
+  [MENU_ITEM_KIND.ReparentMarked]: '選んだものの所属をまとめて変える',
+  [MENU_ITEM_KIND.BulkKindLabel]: 'まとめて種別を付ける',
+  [MENU_ITEM_KIND.EndHere]: 'この年に終わったことにする',
 };
 
 // --- Disabled reasons (出るが無効=グレーアウト, spec §2.1 / §4.4) ------------

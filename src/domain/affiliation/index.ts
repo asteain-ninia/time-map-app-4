@@ -36,7 +36,19 @@ export {
   type BuildProposalOptions,
   resolveTargetLeaves,
   buildAffiliationProposal,
+  buildAffiliationProposalForTargets,
 } from './proposal';
+
+export {
+  AFFILIATION_TARGET_DROP,
+  type AffiliationTargetDropKind,
+  type AffiliationTargetExpansion,
+  type AffiliationTargetPlan,
+  planAffiliationTargets,
+  gainingParentId,
+  type DirectDomainPreview,
+  previewDirectDomain,
+} from './preview';
 
 export {
   type AffiliationState,

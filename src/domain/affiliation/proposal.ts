@@ -302,6 +302,19 @@ export interface BuildProposalOptions {
    * 省略時は位相検査 (最上位同値・循環・dangling・空集約) のみ (形状検査スキップ)。
    */
   readonly vertexStore?: VertexStore;
+  /**
+   * 直轄領 (FR-37 の「分け残し」) の名前を、確定前に利用者が上書きした値 (G-4 / FR-37 must)。
+   *
+   * 省略・空文字なら既定名称「<元名> 直轄領」を使う。合成規則そのものは
+   * {@link directDomainName} が単一の真実源で、ここは **その override 引数を UI から
+   * ドメインの奥まで通すための口**である (U29 promote は `directDomainNameOverride` で
+   * 既に受け取っていたが、U28 所属変更の経路にだけ口が無く、画面から名前を変えられ
+   * なかった＝増分 7 の中身 4)。
+   *
+   * 1 回の所属変更で直轄領が生まれる形状持ち末端は高々 1 件 (全対象に同一の新親を
+   * 与えるため) なので、名前は 1 つで足りる。
+   */
+  readonly directDomainNameOverride?: string;
 }
 
 /**
@@ -577,7 +590,17 @@ function generateDirectDomains(
         }),
       };
     }
-    const result = buildDirectDomainForLeaf(f, forest, childIds, store, ports);
+    // 名前の上書き (G-4 / FR-37 must)。空文字は「指定なし」として既定名称へ倒す
+    // (合成規則は `directDomainName` の 1 か所, 教訓 5.29)。
+    const override = options.directDomainNameOverride;
+    const result = buildDirectDomainForLeaf(
+      f,
+      forest,
+      childIds,
+      store,
+      ports,
+      override !== undefined && override !== '' ? override : undefined,
+    );
     if (result.kind === 'unresolved') {
       // 元形状/子の和/差分が U06 で解決できなかった。直轄領なしでは元形状が沈黙裡に
       // 失われるため、データ損失を防いで拒否する (教訓 5.26)。

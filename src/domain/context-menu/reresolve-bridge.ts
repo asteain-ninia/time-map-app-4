@@ -73,6 +73,20 @@ export function nextTargetPreferenceFor(intent: DispatchIntent): NextTargetPrefe
       // FR-57「この年に錨を作る」— 地物の id も形も変わらず、錨（歴史の記録点）が 1 本増える
       // だけなので、構造変更ではない。選び直す相手は無い（対象はそのまま選ばれ続ける）。
       return {};
+    case FLOW_KIND.SetFeatureMark:
+    case FLOW_KIND.MarkSubtree:
+      // 印（増分 7 / 設計書 §D.5）は表示状態と同じくドメインを触らないので、構造変更の
+      // 再解決には乗らない。選び直す相手は無い（選択も動かさない）。
+      return {};
+    case FLOW_KIND.ReparentMarked:
+    case FLOW_KIND.BulkKindLabel:
+      // どちらも「道具を構える／板を開く」だけで、その場では構造を変えない。実際の
+      // 確定はそれぞれの道具・板が自分の経路で行い、そこで再解決も済ませる。
+      return {};
+    case FLOW_KIND.EndHere:
+      // 存続期間に終了を打つだけで地物の id は変わらない（設計書 §A.3 の入口 A）。
+      // 対象はそのまま選ばれ続ける。
+      return { featureId: intent.featureId };
     case FLOW_KIND.SetFeatureEmphasis:
     case FLOW_KIND.HideFeature:
       // FR-113 個別非表示 / 強調 are DISPLAY-only ops: they produce no CommandResult and

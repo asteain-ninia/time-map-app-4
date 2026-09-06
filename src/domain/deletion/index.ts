@@ -32,6 +32,12 @@ export {
 } from './eligibility';
 
 export {
+  type DeletionImpact,
+  describeDeletionImpact,
+  directChildCountAt,
+} from './impact';
+
+export {
   DELETE_FEATURE_COMMAND_KIND,
   DELETE_FEATURE_COMMAND_LABEL,
   createDeleteFeatureCommand,

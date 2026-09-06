@@ -177,6 +177,9 @@ function findItem(
  * for multi/unknown owners too because U11 derives each shared vertex's shape
  * reference itself (受け入れ基準 3).
  */
+/** 模型が印を持っていないときの空集合（同一性を保つ）。 */
+const EMPTY_MARKED: ReadonlySet<FeatureId> = new Set();
+
 export function dispatchMenuItem(
   itemKind: MenuItemKind,
   model: ContextMenuModel,
@@ -265,6 +268,41 @@ export function dispatchMenuItem(
         featureId: ft.featureId,
         emphasized: itemKind === MENU_ITEM_KIND.EmphasizeFeature,
       };
+    }
+    case MENU_ITEM_KIND.MarkTarget:
+    case MENU_ITEM_KIND.UnmarkTarget: {
+      // 対象の印（増分 7 / 設計書 §D.5）。強調のペアと同じ形で、**出した項目が向きを
+      // 決める** ―― ラベルが約束したことがそのまま起きる（教訓 5.6）。
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return {
+        kind: FLOW_KIND.SetFeatureMark,
+        featureId: ft.featureId,
+        marked: itemKind === MENU_ITEM_KIND.MarkTarget,
+      };
+    }
+    case MENU_ITEM_KIND.MarkSubtree: {
+      // まとめ役の全下位領域へ印をつける（FR-48 後半）。展開そのものはドメインの
+      // `resolveTargetLeaves` が行うので、意図が運ぶのは相手の id だけである。
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.MarkSubtree, featureId: ft.featureId };
+    }
+    case MENU_ITEM_KIND.ReparentMarked: {
+      // **模型が運んでいる印**を使う（開いたときの集合＝出したものが起きる）。
+      const marked = model.markedFeatureIds ?? EMPTY_MARKED;
+      if (marked.size === 0) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.ReparentMarked, featureIds: marked };
+    }
+    case MENU_ITEM_KIND.BulkKindLabel: {
+      const marked = model.markedFeatureIds ?? EMPTY_MARKED;
+      if (marked.size === 0) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.BulkKindLabel, featureIds: marked };
+    }
+    case MENU_ITEM_KIND.EndHere: {
+      // 「この年に終わったことにする」（設計書 §A.3 の入口 A）。削除ではなく錨の
+      // 存続期間に終了を打つので、意図が運ぶのは相手の id だけ（年は shell が生きた
+      // 値から決める＝純粋な dispatch は時刻を知らない）。
+      if (ft === null) return blocked(DISPATCH_BLOCKED_KIND.NoFeatureTarget);
+      return { kind: FLOW_KIND.EndHere, featureId: ft.featureId };
     }
     default:
       return assertNever(itemKind);

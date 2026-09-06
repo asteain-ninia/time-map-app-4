@@ -97,6 +97,35 @@ export const FLOW_KIND = {
    * two items can never route to different effects than their labels promise.
    */
   SetFeatureEmphasis: 'setFeatureEmphasis',
+  /**
+   * 対象の印（`markedFeatures`, 増分 7 / 設計書 §D.5）を 1 件つけ外しする。表示制御と
+   * 同じく **ドメインを触らない**（セッション限りの集合）が、**読むだけでは出さない**
+   * ―― 印は「まとめて直す相手」を選ぶ操作で、直せない局面で集めても行き先が無い。
+   * 1 つのフローで「対象に加える」「対象から外す」の 2 項目を担い、`marked` の値が
+   * どちらかを言う（強調のペアと同じ形）。
+   */
+  SetFeatureMark: 'setFeatureMark',
+  /**
+   * まとめ役の **全下位領域**に印をつける（FR-48 後半 / 増分 7 の中身 3）。
+   * 「対象は末端に限る」という制約は壊さない ―― 展開はドメインの
+   * `resolveTargetLeaves` が行い、ここは相手の id だけを運ぶ。
+   */
+  MarkSubtree: 'markSubtree',
+  /**
+   * 印を付けた地物の所属をまとめて変える（増分 7 の中身 2b / V8）。所属変更の道具を
+   * 構え、印をそのまま対象として引き継ぐ。
+   */
+  ReparentMarked: 'reparentMarked',
+  /**
+   * 印を付けた地物へ **まとめて種別を付ける**（FR-73 / FR-94 / 増分 7 の中身 8）。
+   * 335 件でも **1 回の取り消し単位**になる。
+   */
+  BulkKindLabel: 'bulkKindLabel',
+  /**
+   * 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A / 増分 7 の中身 5）。
+   * 削除ではなく **錨の存続期間に終了を打つ**。取り消しは Ctrl+Z 1 手。
+   */
+  EndHere: 'endHere',
 } as const;
 
 export type FlowKind = (typeof FLOW_KIND)[keyof typeof FLOW_KIND];
@@ -162,6 +191,33 @@ export type DispatchIntent =
       readonly featureId: FeatureId;
       /** true = 「この地物を強調」, false = 「強調を解除」 (the item that was shown). */
       readonly emphasized: boolean;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.SetFeatureMark;
+      /** 印をつけ外しする地物（増分 7 / 設計書 §D.5）。 */
+      readonly featureId: FeatureId;
+      /** true = 「対象に加える」, false = 「対象から外す」（出した項目のとおり）。 */
+      readonly marked: boolean;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.MarkSubtree;
+      /** 全下位領域に印をつける、まとめ役の地物（FR-48 後半）。 */
+      readonly featureId: FeatureId;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.ReparentMarked;
+      /** 印を付けてある地物（所属変更の道具へそのまま渡す）。 */
+      readonly featureIds: ReadonlySet<FeatureId>;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.BulkKindLabel;
+      /** 種別をまとめて付ける相手（印を付けてある地物）。 */
+      readonly featureIds: ReadonlySet<FeatureId>;
+    }
+  | {
+      readonly kind: typeof FLOW_KIND.EndHere;
+      /** いま見ている年で「終わったことにする」相手。 */
+      readonly featureId: FeatureId;
     };
 
 // --- Shared-vertex判定 lookup (FR-33, single source — 教訓 5.10 / 5.29) ------
