@@ -8,6 +8,8 @@
 // using real input (click). It locks the regression: if any of the five handlers
 // stops being registered, its menu item grays out and this reddens.
 
+import { RAIL_STRINGS } from '../src/ui/timeline/rail-strings';
+
 import { test, expect, type Page } from '@playwright/test';
 
 import { launchApp, loadSyntheticProject } from './helpers';
@@ -241,7 +243,9 @@ test.describe('HB-8 / HB-9 — ツール / ヘルプ コマンドが活性で実
       await page.getByLabel('直接ジャンプ 年', { exact: true }).fill('20000');
       await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
-      await expect(page.getByRole('alert')).toContainText('時間軸の範囲');
+      await expect(page.getByRole('alert')).toContainText(
+        RAIL_STRINGS.outOfRange('20000年', '0年', '10000年'),
+      );
     } finally {
       await app.close();
     }

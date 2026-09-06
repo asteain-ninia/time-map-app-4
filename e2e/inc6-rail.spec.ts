@@ -718,17 +718,19 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
        * 「押してから画面（`timeline-current` の文字）が変わるまで」を 20 回測って平均を返す。
        *
        * **設計書 §F.2 は「16ms 以内。超えるなら実測値を上限として明記する」**としている。
-       * 実測（1 台で静かに動かして）は **選んでいないとき 3.6ms / 5 万錨 36.6ms** で、
-       * 16ms を超える。**残りの費用は増分 6 の外にある** ―― `resolveAt`（U09）は
+       * 実測（1 台で静かに動かして）は **選んでいないとき 4.0ms / 5 万錨 34.8ms** で、
+       * 16ms を超える。**この値が唯一の記録である**（`docs/現状.md` の B59 と
+       * 進捗 §11.4 は同じ数を引く。旧版は 2 か所に別の数が書かれていた）。**残りの費用は増分 6 の外にある** ―― `resolveAt`（U09）は
        * 「読み込み直後の未検証な系列でも正しく解ける」ことを理由に **意図的に線形走査**で
        * あり（同関数のコメント）、`featuresAt` / `verticesAt` / 表示解決が時刻ごとに
        * それを呼ぶ。5 万錨では 1 回の呼び出しが 5 万回の比較になる。**錨の意味論と
        * 保存の経路に触る変更**なので、読む側だけの増分 6 では手を付けない
        * （`docs/現状.md` の B59）。
        *
-       * ここは **catastrophic な後退の見張り**として置く。6 つの Electron が同時に走る
-       * ゲートの中では同じコードでも 36ms が 60ms 台になるので、絶対値の線は
-       * 「人が明らかに待つ域」に置く。実測値は毎回 `console.log` に出す。
+       * ここは **catastrophic な後退の見張り**として置く（**目標値ではない**）。6 つの
+       * Electron が同時に走るゲートの中では同じコードでも 34.8ms が 46ms 前後に伸びるので、
+       * 絶対値の線は「人が明らかに待つ域」に置く。実測値は毎回 `console.log` に出すので、
+       * **記録する数はその印字から引く**（司令塔の決定 (6)、2026-09-07）。
        */
       const measure = async (): Promise<number> =>
         page.evaluate(async () => {
@@ -781,7 +783,7 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
       console.log(
         `[増分6] 1 コマ: 選んでいない ${idle.toFixed(2)}ms / 5 万錨 ${loaded.toFixed(2)}ms`,
       );
-      // 実測の上限（36.6ms）に、混んだゲートでの揺れぶんの余裕を足した線。
+      // 実測の上限（34.8ms）に、混んだゲートでの揺れぶん（46ms 前後）の余裕を足した線。
       // ここを割るのは「1 コマが人の待ち時間になった」ときだけである。
       expect(
         loaded,
@@ -905,6 +907,18 @@ test.describe('増分 6 の手直し — 地図の 3 部品・目盛り・読み
       for (let i = 0; i < 5; i += 1) await page.mouse.wheel(0, -120);
       await page.waitForTimeout(200);
       expect(errors.filter((e) => e.includes('passive'))).toEqual([]);
+
+      // **横送りしても端が半端な日にならない**（バグ狩り #5）。旧版は割り算の誤差が
+      // そのまま画面の文字になり、読み取りが「1200年5月10.499999999941792日」になった。
+      await page.keyboard.down('Shift');
+      for (let i = 0; i < 3; i += 1) await page.mouse.wheel(0, 120);
+      await page.keyboard.up('Shift');
+      await page.waitForTimeout(150);
+      const view = await railView(page);
+      expect(Number.isInteger(view.spanDays), `表示範囲の幅が ${String(view.spanDays)} 日`).toBe(
+        true,
+      );
+      expect(await page.getByTestId('rail-view-min').textContent()).not.toMatch(/\.\d{3}/);
     } finally {
       await app.close();
     }

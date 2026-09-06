@@ -554,8 +554,12 @@ function expectMapReachable(
     readonly primary?: string;
     readonly extra?: readonly string[];
     /**
-     * その場面で **実際に点を覆ってよい**部品の顔ぶれ。省略すると `extra`（開いている
-     * 板）と同じ ―― つまり **何も開いていなければ 1 点も覆われてはいけない**。
+     * **常設の部品**（台帳 #10・#11）のうち、その場面で実際に点を覆うものの顔ぶれ。
+     * 省略＝**1 点も覆われない**。
+     *
+     * `extra` に挙げた板は「いま開いている」ものなので、何点覆っても構わない（覆うのが
+     * 仕事である）。数えるのは **常設の部品**のほうで、こちらに数の余裕を置くと、
+     * 地図の隅を覆う部品が黙って増えても緑のままになる（教訓 5.83）。
      */
     readonly covered?: readonly string[];
   } = {},
@@ -571,14 +575,16 @@ function expectMapReachable(
   // 部品が 4 つまで黙って増えても緑のままだった（実際には 1 点も覆っていない）。
   // 板が出ている場面でも数えるのをやめない ―― 覆ってよいのは **その板だけ** である。
   const covered = hits.filter((h) => h !== primary);
-  const declared = options.covered ?? extra;
+  // **開いている板は何点覆ってもよい。常設の部品は名指しで数える。**
+  const permanent = covered.filter((h) => !extra.includes(h));
   expect(
-    [...new Set(covered)].sort(),
-    `覆った先: ${covered.join(' / ') || '（なし）'}`,
-  ).toEqual([...new Set(declared)].sort());
-  if (declared.length === 0) return;
-  // 板が出ていても **地図はどこかしら生きている**（画面を丸ごと飲み込まない）。
-  expect(hits.filter((h) => h === primary).length).toBeGreaterThan(0);
+    [...new Set(permanent)].sort(),
+    `常設の部品が覆った先: ${permanent.join(' / ') || '（なし）'}`,
+  ).toEqual([...new Set(options.covered ?? [])].sort());
+  // 何かが覆っていても **地図はどこかしら生きている**（画面を丸ごと飲み込まない）。
+  if (covered.length > 0 && extra.length > 0) {
+    expect(hits.filter((h) => h === primary).length).toBeGreaterThan(0);
+  }
 }
 
 test.describe('増分 5d — 確定の列はオプションバーへ（地図に押せる部品を置かない）', () => {
@@ -1057,18 +1063,21 @@ test.describe('手直し D3 — 設定欄の畳み「≫」', () => {
         return;
       }
 
-      // 閉じているあいだ: 25 点すべてが地図の入力層。
-      expectMapReachable(await scanMapGrid(page));
+      // 800×600 では地図セルが小さいので、走査の点が **右下のズームと全体表示に当たる**
+      // （台帳 #10 の部品なので覆ってよい ―― ただし名指しで数える＝教訓 5.83）。
+      const zoomParts = ['map-zoom-in', 'map-fit-all'];
+      expectMapReachable(await scanMapGrid(page), { covered: zoomParts });
 
       await overflow.click();
       await expect(page.getByTestId('option-bar-overflow-panel')).toBeVisible();
       expectMapReachable(await scanMapGrid(page), {
         extra: ['popover:option-bar-overflow-panel'],
+        covered: zoomParts,
       });
 
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
-      expectMapReachable(await scanMapGrid(page));
+      expectMapReachable(await scanMapGrid(page), { covered: zoomParts });
     } finally {
       await app.close();
     }

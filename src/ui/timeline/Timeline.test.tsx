@@ -268,6 +268,18 @@ describe('U-8 / HB-13 — ±1 の送りと再生の文字と読み上げ名は�
     expect(screen.getByRole('combobox', { name: 'ステップ単位' })).toBeInTheDocument();
   });
 
+  it('10・100 の送りの読み上げ名は、ステップ単位に追従する', () => {
+    // 単位を「月」にしたのに読み上げ名が「10年次へ進む」のままだと、**画面が嘘をつく**。
+    const s = store();
+    render(<Timeline store={s} />);
+    expect(screen.getByRole('button', { name: '10年次へ進む' })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'ステップ単位' }), {
+      target: { value: 'month' },
+    });
+    expect(screen.getByRole('button', { name: '10月次へ進む' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1月前へ戻る' })).toBeInTheDocument();
+  });
+
   it('「単位: 年」は消さない（U-27）。目盛りの器の中にある', () => {
     render(<Timeline store={store()} />);
     const ticks = screen.getByTestId('timeline-ticks');

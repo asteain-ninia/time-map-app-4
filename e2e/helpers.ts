@@ -678,12 +678,23 @@ export async function openPropertySection(page: Page, testId: string): Promise<v
 }
 
 export async function jumpToYear(page: Page, year: number): Promise<void> {
-  await page.getByLabel('直接ジャンプ 年', { exact: true }).fill(String(year));
-  // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。
-  await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
+  await requestYear(page, year);
   await expect(page.getByTestId('timeline-current')).toHaveText(
     year < 0 ? `紀元前${String(-year)}年` : `${String(year)}年`,
   );
+}
+
+/**
+ * 年を **頼むだけ**（動いたことを確かめない）。
+ *
+ * 打ちかけの下書きがあると「捨てますか」の板が出て、**答えるまで年は動かない**
+ * （2026-09-07 の手直し。教訓 5.71: 確認は行動の前）。そういう場面を書く spec は
+ * こちらを使う ―― `jumpToYear` は「動いたこと」まで確かめるので必ず失敗する。
+ */
+export async function requestYear(page: Page, year: number): Promise<void> {
+  await page.getByLabel('直接ジャンプ 年', { exact: true }).fill(String(year));
+  // 完全一致で拾うのは、未指定のトグル（「直接ジャンプ 月 未指定」等）を拾わないため。
+  await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import {
   drawFace,
   enterEditMode,
   jumpToYear,
+  requestYear,
   launchApp,
   placeVertices,
   returnToViewMode,
@@ -255,7 +256,7 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
     // `docs/現状.md` に記録した。ここでは書き出しの側（上の manifest）までを固定する。
   });
 
-  test('D1: 作図中に年を動かすと確認が出て、「続ける」で板が閉じ年も元へ戻る', async () => {
+  test('D1: 作図中に年を動かすと確認が出て、答えるまで年は動かない', async () => {
     test.setTimeout(180_000);
     const { app, page } = await launchApp();
     try {
@@ -267,14 +268,19 @@ test.describe('増分 3 の手直し — 実アプリで固定する', () => {
       await placeVertices(page, squareCorners(cx, cy, 60));
       await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
 
-      await jumpToYear(page, 1500);
+      // **頼むだけ**（動いたことは確かめない）。2026-09-07 の手直しで、板を出す瞬間に
+      // 年を元へ戻すようにした（教訓 5.71: 確認は行動の前。旧版は先に動かしてから
+      // 聞いていたので、板の後ろでは **もう 1500 年の地図**が見えていた）。
+      await requestYear(page, 1500);
       const confirm = page.getByTestId('add-draft-discard-confirm');
       await expect(confirm).toBeVisible();
       await expect(confirm).toContainText('年を動かす');
+      // **板が出ているあいだ、年は 0 のまま。**
+      await expect(page.getByTestId('timeline-current')).toHaveText('0年');
 
-      // 「続ける」＝下書きを残し、年も元へ戻す。**板は閉じたままでなければならない**
-      // ―― 年を戻したこと自体を見張りが新しい変化と読むと、板が開き直って年が
-      // 0 ⇄ 1500 を往復し、「捨てる」以外に抜け道が無くなる（実測 r2d）。
+      // 「続ける」＝下書きを残す（年はもう戻っているので何も起きない）。**板は閉じた
+      // ままでなければならない** ―― 年を戻したこと自体を見張りが新しい変化と読むと、
+      // 板が開き直って年が 0 ⇄ 1500 を往復し、「捨てる」以外に抜け道が無くなる（実測 r2d）。
       await page.getByTestId('add-draft-discard-no').click();
       await expect(confirm).toBeHidden();
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
