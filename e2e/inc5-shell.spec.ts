@@ -19,7 +19,13 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, openDepthOptions } from './helpers';
+import {
+  commitOneFace,
+  launchApp,
+  leaveViewMode,
+  openDepthOptions,
+  returnToViewMode,
+} from './helpers';
 
 interface Rect {
   readonly x: number;
@@ -227,6 +233,100 @@ test.describe('増分 5a — 固定行のシェル（地図セルは窓の大き
       expect(afterResize.zoom, '窓を変えたらズームが既定へ戻った').toBe(moved.zoom);
       expect(afterResize.panX, '窓を変えたら位置が既定へ戻った').toBe(moved.panX);
       expect(afterResize.panY, '窓を変えたら位置が既定へ戻った').toBe(moved.panY);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5b — 鍵と道具の 1 段（裁定 1 / 裁定 N-4）
+// ---------------------------------------------------------------------------
+
+test.describe('増分 5b — 鍵と道具の 1 段', () => {
+  test('道具を押すだけで面が描ける（「追加モードに入る」の 1 手が要らない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // 起動直後は「読むだけ」。鍵を 1 回開けたら、あとは道具を押すだけで描ける。
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      await page.getByTestId('mode-view').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('edit');
+
+      await page.getByTestId('tool-add.area').click();
+      // 内部の mode は道具から導出される（設計書 §D.1）。
+      await expect(page.getByTestId('app-mode')).toHaveText('add');
+      await expect(page.getByTestId('add-input-layer')).toBeVisible();
+
+      // 直す道具へ持ち替えると edit へ戻る（画面にモードの段は無いまま）。
+      await page.getByTestId('tool-edit.knife').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('edit');
+
+      // 「選ぶ」へ戻すと道具は外れる（＝素の状態）。
+      await page.getByTestId('tool-edit.select').click();
+      await expect(page.getByTestId('app-active-tool')).toHaveText('');
+      await expect(page.getByTestId('tool-edit.select')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('鍵を閉じると app-mode が view になり、道具が 1 つ残らず押せなくなる（K-6）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await leaveViewMode(page);
+      const tools = page.locator('[data-testid="toolbar-tools"] button[data-tool]');
+      const count = await tools.count();
+      // 1 段に並んでいる道具の数（群の合計）。0 だと以下の検査が空回りする。
+      expect(count).toBeGreaterThanOrEqual(11);
+      for (let i = 0; i < count; i += 1) await expect(tools.nth(i)).toBeEnabled();
+
+      await page.getByTestId('mode-view').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+      for (let i = 0; i < count; i += 1) await expect(tools.nth(i)).toBeDisabled();
+      // 測る（測量）は編集ではないので、読むだけでも押せる（U37 §2.1）。
+      await expect(page.getByTestId('survey-toggle')).toBeEnabled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('読むだけでも地図クリックで選べて、Escape で外せる（裁定 N-4(A)）', async () => {
+    // **HB5-4 を覆した裁定である。** 読むだけでも「選べる・読める・直せない」。
+    // 選ぶ手だけあって外す手が無いと行き止まりになるので、Escape も一緒に通す。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy, faceId } = await commitOneFace(page);
+      expect(faceId).not.toBe('');
+
+      // 鍵を閉じる。**選択は保つ**（増分 4 の手直し B12）。
+      await returnToViewMode(page);
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+
+      // 読むだけで Escape → 選択が外れる（旧版はここで止まっていた）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+
+      // 読むだけで地図をクリック → また選べる。
+      await page.mouse.click(cx, cy);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+      // **直せはしない**: 削除の打鍵は通らない（K-6 は選択解除だけを覆した）。
+      await page.keyboard.press('Delete');
+      await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+      // 左ドラッグはパンのまま（読むだけの主要な操作を奪っていない）。
+      const layer = page.getByTestId('map-input-layer');
+      const beforeX = Number(await layer.getAttribute('data-pan-x'));
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx - 120, cy, { steps: 6 });
+      await page.mouse.up();
+      await expect
+        .poll(async () => Number(await layer.getAttribute('data-pan-x')))
+        .not.toBe(beforeX);
     } finally {
       await app.close();
     }

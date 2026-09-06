@@ -324,12 +324,9 @@ async function commitFace(
 
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
   await leaveViewMode(page);
-  const edit = page.getByTestId('mode-edit');
-  await expect(edit).toBeEnabled();
-  if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
   const btn = page.getByTestId(`tool-edit.${tool}`);
   if (!(await btn.isVisible().catch(() => false))) {
-    record('edit-tool-missing', `tool-edit.${tool} not visible in edit mode`);
+    record('edit-tool-missing', `tool-edit.${tool} not visible in the tool rail`);
     return false;
   }
   if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();

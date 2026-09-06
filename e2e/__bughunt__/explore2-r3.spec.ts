@@ -218,12 +218,9 @@ async function checkAnchorOrdering(page: Page, where: string): Promise<void> {
 // was missing.
 async function armAddTool(page: Page, tool: 'point' | 'line' | 'area'): Promise<boolean> {
   await leaveViewMode(page);
-  const add = page.getByTestId('mode-add');
-  await expect(add).toBeEnabled();
-  if ((await add.getAttribute('aria-pressed')) !== 'true') await add.click();
   const btn = page.getByTestId(`tool-add.${tool}`);
   if (!(await btn.isVisible().catch(() => false))) {
-    record('add-tool-missing', `tool-add.${tool} not visible in add mode`);
+    record('add-tool-missing', `tool-add.${tool} not visible in the tool rail`);
     return false;
   }
   if ((await btn.getAttribute('aria-pressed')) === 'true') await btn.click();
@@ -235,12 +232,9 @@ async function armAddTool(page: Page, tool: 'point' | 'line' | 'area'): Promise<
 // Arm an edit-mode tool (select/vertex/move/...). Returns false if missing.
 async function armEditTool(page: Page, tool: string): Promise<boolean> {
   await leaveViewMode(page);
-  const edit = page.getByTestId('mode-edit');
-  await expect(edit).toBeEnabled();
-  if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
   const btn = page.getByTestId(`tool-edit.${tool}`);
   if (!(await btn.isVisible().catch(() => false))) {
-    record('edit-tool-missing', `tool-edit.${tool} not visible in edit mode`);
+    record('edit-tool-missing', `tool-edit.${tool} not visible in the tool rail`);
     return false;
   }
   if ((await btn.getAttribute('aria-pressed')) !== 'true') await btn.click();
@@ -522,8 +516,6 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
 
       // op∘逆op: undo the move, gate feature count unchanged & coords finite.
       await leaveViewMode(page);
-      const em = page.getByTestId('mode-edit');
-      if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
       await page.keyboard.press('Control+z');
       await page.waitForTimeout(150);
       if ((await page.getByTestId('conflict-modal-root').count()) > 0) {
@@ -635,8 +627,6 @@ test.describe('BUGHUNT R2 — line/point add / vertex edit-move / longitude shif
 
       // Edit-mode right-click on a feature.
       await leaveViewMode(page);
-      const em2 = page.getByTestId('mode-edit');
-      if ((await em2.getAttribute('aria-pressed')) !== 'true') await em2.click();
       await armEditTool(page, 'select');
       await page.mouse.click(cx, cy, { button: 'right' });
       await page.waitForTimeout(120);

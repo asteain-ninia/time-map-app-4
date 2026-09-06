@@ -7,9 +7,19 @@
 // spec 28 本 → このファイル 1 箇所になる。spec 側は「どこに・どんな形を描くか」
 // (座標・頂点数・上位領域・名前) だけを渡す。
 //
-// モード切替の前提 (src/ui/shell/useShell.ts): mode-view は View↔Edit を切り替え、
-// mode-add / mode-edit は **同じモードを再選択すると View へ戻る** (toggleMode)。
-// したがってここの関数はすべて冪等 (既に押されていれば押さない) に書いてある。
+// 2026-09-06 (増分 5b): **モードの 3 ボタンが鍵 1 個＋道具の 1 段になった**（裁定 1）。
+// 画面から「追加モード」「編集モード」のボタンは消え、内部の `mode` は道具から
+// 導出される（設計書 §D.1）:
+//
+//     mode = 鍵が閉じている ? 'view' : （面／線／点の道具）? 'add' : 'edit'
+//
+// したがって下の 4 つのヘルパの中身はこうなった。**spec 側の呼び出しは変えていない**
+// ―― これが P-1（導線を作り直したとき、直す場所を 1 か所にする）の効き目である。
+//   - `leaveViewMode`  … 鍵を開ける（`mode-view` は据え置き。T-1）
+//   - `enterAddMode`   … 鍵を開けて **面の道具を構える**（＝ mode が add になる）
+//   - `enterEditMode`  … 鍵を開けて、追加の道具を構えていれば「選ぶ」へ戻す
+//   - `returnToViewMode` … 鍵を閉める
+// どれも冪等（すでにその状態なら何もしない）。
 
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
@@ -173,58 +183,72 @@ export async function openSurveyCoords(page: Page): Promise<void> {
   await expect(button).toHaveAttribute('aria-expanded', 'true');
 }
 
+/** 追加の 3 道具（画面の並び順）。「追加モードに居るか」はこの 3 つの押下で決まる。 */
+const ADD_TOOL_TESTIDS = ['tool-add.area', 'tool-add.line', 'tool-add.point'] as const;
+
+/** 鍵が閉じている（＝読むだけ）か。 */
+async function isLocked(page: Page): Promise<boolean> {
+  const lock = page.getByTestId('mode-view');
+  await expect(lock).toBeVisible();
+  return (await lock.getAttribute('aria-pressed')) === 'true';
+}
+
 /**
- * 表示専用 (View) を抜ける。View なら mode-view を押す (useShell.setViewOnly(false) は
- * 編集モードに着地する)。View でなければ何もしない。
+ * 鍵を開ける（読むだけ → 直せる）。既に開いていれば何もしない。
+ *
+ * `mode-view` の testid は据え置き（T-1: 役割＝編集を止めるトグルは変わっていない）。
  */
 export async function leaveViewMode(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  await expect(viewToggle).toBeVisible();
-  if ((await viewToggle.getAttribute('aria-pressed')) === 'true') {
-    await viewToggle.click();
-  }
+  if (!(await isLocked(page))) return;
+  await page.getByTestId('mode-view').click();
+  await expect(page.getByTestId('mode-view')).toHaveAttribute('aria-pressed', 'false');
 }
 
 /**
- * 追加モードに入る。View を抜けてから mode-add を押す。既に追加モードなら押さない
- * (再選択は View へ戻ってしまう)。This is the SAME live導線 the regression suite drives
- * (no overlay bypass).
+ * 追加モードに入る ＝ **鍵を開けて面の道具を構える**（増分 5b）。
+ *
+ * 内部の `mode` は道具から導出されるので、「モードに入ってから道具を選ぶ」の 2 手は
+ * 「道具を押す」の 1 手になった。既にいずれかの追加道具を構えていれば何もしない
+ * （押し直すと下書きが捨てられる）。This is the SAME live導線 the regression suite
+ * drives (no overlay bypass).
  */
 export async function enterAddMode(page: Page): Promise<void> {
-  const addMode = page.getByTestId('mode-add');
-  if ((await addMode.getAttribute('aria-pressed')) === 'true') return;
   await leaveViewMode(page);
-  if ((await addMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(addMode).toBeEnabled();
-    await addMode.click();
+  for (const id of ADD_TOOL_TESTIDS) {
+    if ((await page.getByTestId(id).getAttribute('aria-pressed')) === 'true') return;
   }
-  await expect(addMode).toHaveAttribute('aria-pressed', 'true');
+  const area = page.getByTestId('tool-add.area');
+  await expect(area).toBeEnabled();
+  await area.click();
+  await expect(area).toHaveAttribute('aria-pressed', 'true');
 }
 
 /**
- * 編集モードに入る。View を抜けると既定で編集モードに着地するので、着地していなければ
- * mode-edit を押す。既に編集モードなら押さない (再選択は View へ戻ってしまう)。
+ * 編集モードに入る ＝ **鍵を開けて、追加の道具を構えていれば「選ぶ」へ戻す**（増分 5b）。
+ *
+ * 鍵を開けただけで `mode` は `edit` になる（追加の道具を構えていない限り）ので、
+ * ふつうは 1 手で終わる。
  */
 export async function enterEditMode(page: Page): Promise<void> {
-  const editMode = page.getByTestId('mode-edit');
-  if ((await editMode.getAttribute('aria-pressed')) === 'true') return;
   await leaveViewMode(page);
-  if ((await editMode.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editMode).toBeEnabled();
-    await editMode.click();
+  for (const id of ADD_TOOL_TESTIDS) {
+    if ((await page.getByTestId(id).getAttribute('aria-pressed')) === 'true') {
+      await page.getByTestId('tool-edit.select').click();
+      break;
+    }
   }
-  await expect(editMode).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByTestId('app-mode')).toHaveText('edit');
 }
 
 /**
- * 表示専用 (View) へ戻る。追加/ナイフの入力層 (地図セル全面の透明な層) が外れるのを
- * best-effort で待つ — 残っていると以後のタイムライン・ツールバーのクリックを奪う。
- * 待ちきれなくても失敗にはしない (探索用の spec は独自に記録する)。
+ * 鍵を閉める（＝読むだけへ戻る）。追加/ナイフの入力層 (地図セル全面の透明な層) が
+ * 外れるのを best-effort で待つ — 残っていると以後のタイムライン・ツールバーの
+ * クリックを奪う。待ちきれなくても失敗にはしない (探索用の spec は独自に記録する)。
  */
 export async function returnToViewMode(page: Page): Promise<void> {
-  const viewToggle = page.getByTestId('mode-view');
-  if ((await viewToggle.getAttribute('aria-pressed')) !== 'true') {
-    await viewToggle.click().catch(() => undefined);
+  const lock = page.getByTestId('mode-view');
+  if ((await lock.getAttribute('aria-pressed')) !== 'true') {
+    await lock.click().catch(() => undefined);
   }
   await page
     .getByTestId('add-input-layer')

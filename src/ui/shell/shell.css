@@ -58,7 +58,10 @@ body {
    * toolbar / sidebar, or the bridge spills over the toolbar and steals its clicks
    * (寸法ロジックを一箇所に集約し、ドリフトを生まない). z-order is left untouched so
    * blocking modals inside the overlay still cover everything (教訓 5.14). */
-  --shell-toolbar-w: 120px;
+  /* 道具のレールの幅（設計書 §C.3 は 88px）。**増分 5b で 120 → 88px にした** ――
+   * 道具名を「▱ 面」「✂ 分ける」のような短い形にしたので、120px は余っていた。
+   * 縮んだぶんは地図が受け取る。 */
+  --shell-toolbar-w: 88px;
   /* 右パネルの幅（設計書 §B.2）。**増分 4 で 220 → 280px にした。**
    * 220px では素性欄の内容幅 243px が収まらず常時横スクロールが出ていた（現状分析 §0-2）。
    * 台帳の行も [色][展開][名前][種別][錨][👁] の 6 つを 28px 1 行に並べるので 220px では
@@ -357,29 +360,51 @@ body {
   font-size: 11px;
 }
 
-/* Toolbar: a vertical stack of mode toggles + tool buttons (left rail). */
+/* 左のレール（増分 5b / 設計書 §C.3）: 鍵 1 個 ＋ 道具の 1 段。
+ *
+ * 群の区切りは **8px のすき間**（近接によるまとまり）で作る。枠線は入れない ――
+ * 88px のレールに枠を足すと、道具の名前に使える幅がさらに減る。 */
 .toolbar {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 8px 6px;
+  gap: 8px;
+  padding: 8px 4px;
+  min-width: 0;
 }
 
-.toolbar__modes,
+.toolbar__lock,
 .toolbar__tools {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  min-width: 0;
 }
 
+/* 鍵と道具のあいだだけは線で区切る（役割が違うので、すき間だけでは弱い）。 */
 .toolbar__tools {
   border-top: 1px solid var(--c-border);
   padding-top: 8px;
+  gap: 8px;
+}
+
+/* 群の中のボタンは詰めて並べ、群と群のあいだが 8px 空く（上の gap）。 */
+.toolbar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
 .toolbar button {
   font: inherit;
-  padding: 6px 8px;
+  /* 88px の中に収める。中身で幅が変わらないよう、はみ出しは切って `title` へ逃がす。 */
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: left;
+  /* U-8 の下限（高さ 30px 以上）。 */
+  min-height: 30px;
+  padding: 6px 6px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);

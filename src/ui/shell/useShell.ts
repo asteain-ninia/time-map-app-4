@@ -1,12 +1,21 @@
 // UI layer (U20 / shell): the store-binding hook for the shell chrome.
 //
-// Reads mode / active tool from the single-truth-source session store (U16) and
-// exposes the mode-toggle / tool-select / view-toggle actions. EVERY mode and
-// tool change funnels through the store's setMode / setActiveTool, which run the
-// reset契約 (clear transient selection on every path, 教訓 5.2). The shell holds
-// NO map-draw state in React (技術方針 2.3). The mode toggle is EXCLUSIVE: the
-// store represents one mode value, so two modes can never be active at once
-// (FR-75, 受け入れ基準 2).
+// **増分 5b でモードの 3 ボタンが鍵 1 個＋道具 1 段になった**（裁定 1）。この hook が
+// 見せる軸は 2 本だけである:
+//
+//   - **鍵**（`locked`）: 読むだけ ⇄ 直せる。K-6 の唯一の判定点で、実体は
+//     `store.mode === View` かどうかである（`mode` という値そのものは残す ――
+//     `canEdit` / `resolveCommandEnabled` / `app-mode` の観測が全部そこを読む）。
+//   - **道具**（`activeTool`）: 常に 1 つ。既定は「選ぶ」＝ 何も構えていない状態。
+//
+// **内部の `mode` は導出値である**（設計書 §D.1 / `tools.ts` の `modeForTool`）:
+//
+//     mode = 鍵が閉じている ? 'view' : （面／線／点の道具）? 'add' : 'edit'
+//
+// 導出そのものはストア（`setActiveTool`）が持つ。道具を構える経路はツールバーだけでは
+// ないので、UI 側で `setMode` を並べて呼ぶ形にすると必ずどこかで忘れる（教訓 5.6）。
+//
+// The shell holds NO map-draw state in React (技術方針 2.3).
 
 import { useCallback } from 'react';
 import { useStore } from 'zustand';
@@ -15,56 +24,54 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE, type EditMode, type ToolId } from '../state/session';
 import { canEdit } from './permissions';
+import { isSelectTool, TOOL_ID } from './tools';
 
 export interface ShellBinding {
+  /** 導出された内部モード（`view` / `add` / `edit`）。観測と権限判定はここを読む。 */
   readonly mode: EditMode;
   readonly activeTool: ToolId | null;
+  /** 鍵が閉じているか（＝読むだけ）。`mode === View` と同値。 */
+  readonly locked: boolean;
   /** True iff editing is permitted in the current mode (教訓 5.13). */
   readonly editable: boolean;
   /**
-   * Toggle an editing mode (FR-75). Selecting the active mode again returns to
-   * View; selecting the other mode switches exclusively (the store models one
-   * mode value, so both-active is unrepresentable, 受け入れ基準 2).
+   * 鍵の開け閉め（設計書 §C.1 の 4）。閉めると `mode` は `view` になり、10 の変更経路が
+   * 同時に止まる（K-6）。**選択は捨てない**（裁定 N-4: 読むだけでも選べる・読める・
+   * 直せない）。開けたときは「選ぶ」道具に戻す（設計書 §D.2）。
    */
-  readonly toggleMode: (mode: Extract<EditMode, 'add' | 'edit'>) => void;
-  /** Enter / leave display-only mode (separate permission axis, FR-42). */
-  readonly setViewOnly: (viewOnly: boolean) => void;
-  /** Select / deselect a tool; runs the reset契約 (教訓 5.2). */
+  readonly setLocked: (locked: boolean) => void;
+  /** Select / deselect a tool; the store derives `mode` from it (設計書 §D.1). */
   readonly selectTool: (tool: ToolId | null) => void;
+  /** 「選ぶ」道具を構えているか（道具を外した状態も「選ぶ」とみなす）。 */
+  readonly isSelectToolActive: boolean;
 }
 
 export function useShell<S>(store: StoreApi<SessionStore<S>>): ShellBinding {
   const mode = useStore(store, (s) => s.mode);
   const activeTool = useStore(store, (s) => s.activeTool);
 
-  const toggleMode = useCallback(
-    (target: Extract<EditMode, 'add' | 'edit'>) => {
-      const current = store.getState().mode;
-      // Re-selecting the active mode toggles back to View; otherwise switch
-      // exclusively. setMode discards transient tool/selection (教訓 5.2).
-      store.getState().setMode(current === target ? EDIT_MODE.View : target);
-    },
-    [store],
-  );
-
-  const setViewOnly = useCallback(
-    (viewOnly: boolean) => {
-      if (viewOnly) {
-        store.getState().setMode(EDIT_MODE.View);
-      } else {
-        // Leaving view-only lands in Edit mode (a sensible editable default);
-        // the mode toggle can move to Add. This never co-activates two modes.
-        if (store.getState().mode === EDIT_MODE.View) {
-          store.getState().setMode(EDIT_MODE.Edit);
-        }
+  const setLocked = useCallback(
+    (locked: boolean) => {
+      const s = store.getState();
+      if (locked) {
+        // 閉める。`setMode` は道具を外し、下書きと一時状態を捨てる（K-5）。
+        // 選択は保つ（鍵をまたぐ経路では捨てない＝増分 4 の手直し B12）。
+        s.setMode(EDIT_MODE.View);
+        return;
       }
+      if (s.mode !== EDIT_MODE.View) return;
+      // 開ける。道具は「選ぶ」＝ 何も構えていない状態から始める（設計書 §D.2）。
+      s.setMode(EDIT_MODE.Edit);
     },
     [store],
   );
 
   const selectTool = useCallback(
     (tool: ToolId | null) => {
-      store.getState().setActiveTool(tool);
+      // 「選ぶ」を押したときは **道具を外す**（`null`）。「選ぶ」は道具というより
+      // 「何も構えていない状態」で、道具の取り消し（Escape）が戻ってくる先と同じ値に
+      // しておかないと、同じ画面の状態が 2 通りの値で表せてしまう（教訓 5.29）。
+      store.getState().setActiveTool(tool === TOOL_ID.EditSelect ? null : tool);
     },
     [store],
   );
@@ -72,9 +79,10 @@ export function useShell<S>(store: StoreApi<SessionStore<S>>): ShellBinding {
   return {
     mode,
     activeTool,
+    locked: mode === EDIT_MODE.View,
     editable: canEdit(mode),
-    toggleMode,
-    setViewOnly,
+    setLocked,
     selectTool,
+    isSelectToolActive: isSelectTool(activeTool),
   };
 }

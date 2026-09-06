@@ -25,22 +25,21 @@ import { commitOneFace, launchApp } from './helpers';
  *
  * FIX: switch to 編集モード. That drives the add controller's activeKind to null
  * (mode !== Add) → resetForSwitch → Idle → onDrawingChange(false), clearing the
- * suspension. We deliberately DO NOT go to 表示 (View) mode: EditUndo/EditRedo are
- * editing commands gated OFF in view-only (permissions.canEdit === false), so the very
- * Ctrl+Z/Ctrl+Y we are exercising would be disabled there. 編集モード keeps them
- * enabled (canEdit true) while still collapsing the add session, and it does NOT touch
- * the undo/redo stacks (history is mode-independent) — so the test's real assertion,
- * that Ctrl+Y / Ctrl+Shift+Z drive redo, stays intact. This is the SAME live 導線
- * (mode toggle) the knife/explore specs use to leave an add session.
+ * suspension. **鍵は閉じない**: EditUndo/EditRedo are editing commands gated OFF in
+ * view-only (permissions.canEdit === false), so the very Ctrl+Z/Ctrl+Y we are
+ * exercising would be disabled there. 「選ぶ」道具へ持ち替えれば、直せるまま（canEdit
+ * true）作図の下書きだけが片付き、取り消しの履歴には触らない（履歴はモードに依らない）
+ * ので、この検査の本題（Ctrl+Y / Ctrl+Shift+Z が redo を動かす）はそのまま残る。
+ *
+ * **増分 5b**: 旧版は「編集モードのボタンを押す」だった。モードのボタンは廃止され、
+ * 内部の mode は道具から導出されるので、**「選ぶ」を押す**のが同じ導線である。
  */
 async function leaveAddSession(page: Page): Promise<void> {
-  const editToggle = page.getByTestId('mode-edit');
-  await expect(editToggle).toBeVisible();
-  if ((await editToggle.getAttribute('aria-pressed')) !== 'true') {
-    await expect(editToggle).toBeEnabled();
-    await editToggle.click();
-  }
-  await expect(editToggle).toHaveAttribute('aria-pressed', 'true');
+  const selectTool = page.getByTestId('tool-edit.select');
+  await expect(selectTool).toBeVisible();
+  await expect(selectTool).toBeEnabled();
+  await selectTool.click();
+  await expect(page.getByTestId('app-mode')).toHaveText('edit');
   // The add chrome (rendered only while a session is past Idle) is gone → the
   // controller reported onDrawingChange(false) → shortcuts are no longer suspended.
   await expect(page.getByTestId('add-tool')).toHaveCount(0);

@@ -112,12 +112,9 @@ async function goView(page: Page): Promise<void> {
 
 async function armEditTool(page: Page, toolId: string): Promise<boolean> {
   await leaveViewMode(page);
-  const edit = page.getByTestId('mode-edit');
-  await expect(edit).toBeEnabled();
-  if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
   const tool = page.getByTestId(`tool-${toolId}`);
   if (!(await tool.isVisible().catch(() => false))) {
-    record('edit-tool-missing', `tool-${toolId} not visible in edit mode`);
+    record('edit-tool-missing', `tool-${toolId} not visible in the tool rail`);
     return false;
   }
   if (!(await tool.isEnabled().catch(() => false))) {
@@ -520,8 +517,6 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
         }
         // Metamorphic undo of the split: count should return toward the pre-split.
         await leaveViewMode(page);
-        const em = page.getByTestId('mode-edit');
-        if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         const canUndo = page.getByTestId('app-can-undo');
         if ((await canUndo.textContent())?.trim() === '1') {
           await page.keyboard.press('Control+z');
@@ -598,8 +593,6 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
         // feature edited at different times grows its anchor series; the rows must
         // stay ascending + non-overlapping (錨列の昇順・非重複).
         await leaveViewMode(page);
-        const em2 = page.getByTestId('mode-edit');
-        if ((await em2.getAttribute('aria-pressed')) !== 'true') await em2.click();
         const fwd = page.getByRole('button', { name: '1年次へ進む' });
         for (let i = 0; i < 4; i += 1) {
           await fwd.click().catch(() => undefined);
@@ -633,8 +626,6 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
 
       // Undo everything we can, then redo, and gate count + selection identity.
       await leaveViewMode(page);
-      const em3 = page.getByTestId('mode-edit');
-      if ((await em3.getAttribute('aria-pressed')) !== 'true') await em3.click();
       const canUndo3 = page.getByTestId('app-can-undo');
       const canRedo3 = page.getByTestId('app-can-redo');
 
@@ -642,7 +633,6 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
       await showSidebarTab(page, 'features');
       const countBeforeUndo = await featureListCount(page);
       await leaveViewMode(page);
-      if ((await em3.getAttribute('aria-pressed')) !== 'true') await em3.click();
 
       let undos = 0;
       for (let i = 0; i < 8; i += 1) {

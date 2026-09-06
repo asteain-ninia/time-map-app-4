@@ -66,14 +66,18 @@ test.describe('ファイル操作 reachability + 入力層実発火', () => {
     }
   });
 
-  test('mode toggles reflect the single-source session store (FR-75 排他)', async () => {
+  test('鍵が閉じているあいだ、道具は 1 つ残らず押せない（教訓 5.13 の一括無効化）', async () => {
     const { app, page } = await launchApp();
     try {
-      // The composite boots in View mode, where editing-mode entry is disabled
-      // together with its shortcut (教訓 5.13). Assert that single permission gate
-      // is honoured in the live shell (the toggles disable as one).
-      await expect(page.getByTestId('mode-add')).toBeDisabled();
-      await expect(page.getByTestId('mode-edit')).toBeDisabled();
+      // 起動時は「読むだけ」。**増分 5b でモードの 2 ボタンが鍵 1 個になった**ので、
+      // 「編集への入口が閉じている」は **道具が全部灰色である**ことで見る。
+      await expect(page.getByTestId('mode-view')).toHaveAttribute('aria-pressed', 'true');
+      const tools = page.locator('[data-testid="toolbar-tools"] button[data-tool]');
+      const count = await tools.count();
+      expect(count).toBeGreaterThan(0);
+      for (let i = 0; i < count; i += 1) {
+        await expect(tools.nth(i)).toBeDisabled();
+      }
     } finally {
       await app.close();
     }

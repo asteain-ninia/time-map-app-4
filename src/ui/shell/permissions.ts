@@ -45,9 +45,12 @@ const EDITING_COMMANDS: ReadonlySet<CommandId> = new Set<CommandId>([
   COMMAND_ID.EditUndo,
   COMMAND_ID.EditRedo,
   COMMAND_ID.EditDelete,
-  // HB5-4: 選択解除 is an edit-context action — disabled in 表示専用 mode together
-  // with its Escape shortcut (教訓 5.13), so it fires only in 追加/編集 mode.
-  COMMAND_ID.EditDeselect,
+  // **HB5-4 は覆した**（裁定 N-4(A)、2026-09-03。増分 5b で実装）。旧版は「選択解除は
+  // 編集の文脈の操作だから、表示専用では Escape ごと止める」としてこの集合に入れて
+  // いた。所有者の裁定は「**読むだけでも選べる・読める・直せない**」なので、選んだ
+  // ものを **外す手** も要る ―― 入れる手だけあって出す手が無いのは行き止まりである。
+  // 覆す範囲は「選択解除だけ」で、それ以外の編集は止まったままである
+  // （`COMMAND_ID.EditDeselect` はここに **入れない**）。
   // 「この年に錨を作る」は保存形式を書き換えるので、読むだけでは押せない
   // （増分 1 の関門を、増分 2 で増えた編集経路にも必ず通す）。
   COMMAND_ID.EditCreateAnchorHere,

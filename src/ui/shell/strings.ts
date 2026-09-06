@@ -119,21 +119,44 @@ export const MODE_LABELS = {
   view: '表示専用',
 } as const;
 
-/** Tool labels, keyed by tool id (see tools.ts). */
+/**
+ * 鍵（読むだけ ⇄ 直せる）の文言（増分 5b / 設計書 §C.1 の 4 / §H.1）。
+ *
+ * **2 状態とも同じ字数**にしてある ―― 押すたびに幅が変われば、その隣の道具の位置が
+ * ずれる（K-3 が守りたいのと同じ話が、レールの中でも起きる）。
+ * 「表示専用」という内部寄りの言い方はやめ、**利用者が読む言葉**にした（§H.1）。
+ */
+export const LOCK_LABELS = {
+  /** 鍵が閉じている（＝読むだけ）ときにボタンへ出る文字。押すと開く。 */
+  locked: '🔒 読むだけ',
+  /** 鍵が開いている（＝直せる）ときにボタンへ出る文字。押すと閉じる。 */
+  unlocked: '🔓 直せる',
+  lockedHint: 'いまは読むだけです。押すと直せるようになります。',
+  unlockedHint: 'いまは直せます。押すと読むだけになります。',
+} as const;
+
+/**
+ * 道具の名前（レールの 88px に収める短い形。設計書 §C.3 の図と同じ）。
+ *
+ * **オプションバーの「道具名 112px」の欄はもう少し長い形を使う**（`EDIT_TOOL_STRINGS` と
+ * `ADD_STRINGS.toolName*`）。設計書も §C.3（レール）は「▱ 面」、§C.4（帯）は
+ * 「▱ 面を描く」と書き分けている ―― 幅が違うので同じ文字列は使えない。**語幹は必ず
+ * 揃える**こと（「面」「線」「点」「輪郭」「分ける」「穴あけ」「所属」「結ぶ」）。
+ */
 export const TOOL_LABELS = {
-  // add-mode tools
-  'add.point': '点を追加',
-  'add.line': '線を追加',
-  'add.area': '面を追加',
-  // edit-mode tools
-  'edit.select': '選択',
-  'edit.vertex': '頂点編集',
-  'edit.move': '地物移動',
-  'edit.knife': 'ナイフ（分割）',
-  'edit.reparent': '所属変更',
-  'edit.merge': '結合',
-  'edit.ring': '穴・飛び地',
-  'edit.drill': '穴あけ',
+  // 描く（内部の mode がここで add になる）
+  'add.point': '· 点',
+  'add.line': '╱ 線',
+  'add.area': '▱ 面',
+  // 選ぶ・形を変える・関係を変える
+  'edit.select': '✦ 選ぶ',
+  'edit.vertex': '◇ 頂点',
+  'edit.move': '✥ 動かす',
+  'edit.knife': '✂ 分ける',
+  'edit.reparent': '⇄ 所属',
+  'edit.merge': '∪ 結ぶ',
+  'edit.ring': '◎ 輪郭',
+  'edit.drill': '⊙ 穴あけ',
 } as const;
 
 /** Sidebar section titles (FR-111). HB6: the former 地物一覧 / 錨一覧 tabs are unified

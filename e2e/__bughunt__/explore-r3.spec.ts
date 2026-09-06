@@ -438,8 +438,6 @@ test.describe('BUGHUNT R3 — cross-view invariants + settings clamp + search', 
 
       // --- Undo/redo metamorphic (edit mode) -----------------------------------
       await leaveViewMode(page);
-      const em = page.getByTestId('mode-edit');
-      if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
       const canUndo = page.getByTestId('app-can-undo');
       const canRedo = page.getByTestId('app-can-redo');
       const featBefore = await activeFeature(page);

@@ -170,10 +170,11 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
 
-      // --- Mode / tool switching round-trip --------------------------------------
+      // --- Lock / tool switching round-trip ---------------------------------------
+      // 増分 5b: 「追加モード」「編集モード」のボタンは無くなり、鍵 1 個＋道具の 1 段に
+      // なった。往復するのは **鍵**（閉じる ⇄ 開ける）と **道具**（描く ⇄ 直す）である。
       await leaveViewMode(page);
-      await page.getByTestId('mode-add').click();
-      await shot(page, 'mode-add');
+      await shot(page, 'tools-unlocked');
       for (const t of ['tool-add.point', 'tool-add.line', 'tool-add.area']) {
         const btn = page.getByTestId(t);
         if (await btn.isVisible()) {
@@ -181,8 +182,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
           await expect(page.getByTestId('app-active-tool')).toHaveText(/\S/);
         }
       }
-      await page.getByTestId('mode-edit').click();
-      await shot(page, 'mode-edit');
+      await shot(page, 'tools-add');
       for (const t of [
         'tool-edit.select',
         'tool-edit.vertex',
@@ -193,6 +193,17 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       ]) {
         const btn = page.getByTestId(t);
         if (await btn.isVisible()) await btn.click();
+      }
+      await shot(page, 'tools-edit');
+      // 鍵の往復: 閉めると道具は並んだまま押せなくなり、開ければまた押せる。
+      const areaTool = page.getByTestId('tool-add.area');
+      await goView(page);
+      if (await areaTool.isEnabled()) {
+        record('tool-enabled-while-locked', 'tool-add.area is still enabled while the map is locked');
+      }
+      await leaveViewMode(page);
+      if (!(await areaTool.isEnabled())) {
+        record('tool-disabled-after-unlock', 'tool-add.area is still disabled after unlocking');
       }
       await checkCamera(page, 'after-tool-switch');
 
@@ -267,8 +278,6 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       // 教訓 5.13: EditUndo/EditRedo are EDITING commands, disabled in View mode.
       // We must be in an editing mode for the keyboard shortcut to actually run.
       await leaveViewMode(page);
-      const em0 = page.getByTestId('mode-edit');
-      if ((await em0.getAttribute('aria-pressed')) !== 'true') await em0.click();
       const canUndo = page.getByTestId('app-can-undo');
       const canRedo = page.getByTestId('app-can-redo');
       const undoBefore = (await canUndo.textContent())?.trim();
@@ -311,9 +320,7 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       // Re-add a fresh face to split (state may have been mutated by undo/redo).
       await commitFace(page, cx, cy - 30, 90);
       await shot(page, 'split-target-added');
-      const editMode = page.getByTestId('mode-edit');
       await leaveViewMode(page);
-      if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
       const knifeBtn = page.getByTestId('tool-edit.knife');
       if (await knifeBtn.isVisible()) {
         await knifeBtn.click();
@@ -361,10 +368,9 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
       await activeFeature(page);
 
       // --- Merge tool reachability ----------------------------------------------
-      // Idempotent edit-mode entry (toggling would flip us back to View and hide
-      // all tools — the merge tool then "disappears" as a spec artifact, not a bug).
+      // 鍵を開けるだけでよい（冪等）。増分 5b で道具は 1 段に並んだままになったので、
+      // 押し直して表示専用へ戻り、道具が消えたように見える事故はもう起きない。
       await leaveViewMode(page);
-      if ((await editMode.getAttribute('aria-pressed')) !== 'true') await editMode.click();
       const mergeBtn = page.getByTestId('tool-edit.merge');
       if (await mergeBtn.isVisible()) {
         await mergeBtn.click();

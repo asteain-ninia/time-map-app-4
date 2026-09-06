@@ -12,13 +12,20 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import { AppShell } from './AppShell';
 import { CommandRegistry, COMMAND_ID } from './commands';
-import { TOOL_ID } from './tools';
-import { MODE_LABELS } from './strings';
+import { ALL_TOOLS, TOOL_ID } from './tools';
+import { LOCK_LABELS } from './strings';
 
 type S = Record<string, never>;
 
 function makeStore(mode: EditMode = EDIT_MODE.Edit): StoreApi<SessionStore<S>> {
   return createSessionStore<S>({ initialDomain: {}, initial: { mode } });
+}
+
+/** いま「押されている」道具の id（`aria-pressed="true"` のもの）。 */
+function pressedTools(): string[] {
+  return [...screen.getByTestId('toolbar-tools').querySelectorAll('button[data-tool]')]
+    .filter((b) => b.getAttribute('aria-pressed') === 'true')
+    .map((b) => b.getAttribute('data-tool') ?? '');
 }
 
 describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
@@ -113,54 +120,94 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
   });
 });
 
-describe('mode exclusivity (FR-75, 受け入れ基準 2/3)', () => {
-  it('enabling add disables edit and vice versa (never both)', () => {
-    const store = makeStore(EDIT_MODE.View);
-    // start editable so the mode buttons are enabled
-    store.getState().setMode(EDIT_MODE.Edit);
+// **増分 5b でモードの 3 ボタンが鍵 1 個＋道具の 1 段になった**（裁定 1）。
+// FR-75 の「追加と編集は排他」は消えていない ―― 画面から段が消えただけで、内部の
+// `mode` は道具から導出される（設計書 §D.1）:
+//
+//     mode = 鍵が閉じている ? 'view' : （面／線／点）? 'add' : 'edit'
+//
+// したがって旧テストの「追加を押すと編集が外れる」は「面の道具を持つと mode が add に
+// なり、選ぶ道具へ戻すと edit になる」に置き換わる。
+describe('道具から mode を導出する（FR-75 の排他は導出で保つ / 設計書 §D.1）', () => {
+  it('面の道具を持つと mode が add になり、選ぶ道具へ戻すと edit になる', () => {
+    const store = makeStore(EDIT_MODE.Edit);
     render(<AppShell store={store} />);
 
-    fireEvent.click(screen.getByTestId('mode-add'));
+    fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.AddArea}`));
     expect(store.getState().mode).toBe(EDIT_MODE.Add);
+    expect(store.getState().activeTool).toBe(TOOL_ID.AddArea);
 
-    fireEvent.click(screen.getByTestId('mode-edit'));
+    fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditSelect}`));
     expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+    // 「選ぶ」は道具を外した状態そのもの（設計書 §D.4 の階段の最後と同じ値）。
+    expect(store.getState().activeTool).toBeNull();
   });
 
-  it('add mode shows the add tools; edit mode shows the editing tools', () => {
-    const store = makeStore(EDIT_MODE.Add);
+  it('道具は 1 段で、追加の道具と編集の道具が同時に並ぶ（入れ替わらない）', () => {
+    const store = makeStore(EDIT_MODE.Edit);
     render(<AppShell store={store} />);
-    expect(screen.getByTestId(`tool-${TOOL_ID.AddPoint}`)).toBeInTheDocument();
-    expect(screen.queryByTestId(`tool-${TOOL_ID.EditKnife}`)).not.toBeInTheDocument();
-
-    act(() => store.getState().setMode(EDIT_MODE.Edit));
-    expect(screen.getByTestId(`tool-${TOOL_ID.EditKnife}`)).toBeInTheDocument();
-    expect(screen.queryByTestId(`tool-${TOOL_ID.AddPoint}`)).not.toBeInTheDocument();
+    // 旧版は「追加モードでは編集の道具が消える」ことを固定していた。1 段になった
+    // いまは **どちらも常に並ぶ** ―― これが「モードに入ってから道具を選ぶ」2 手を
+    // 1 手にした本体である。
+    for (const tool of ALL_TOOLS) {
+      expect(screen.getByTestId(`tool-${tool}`)).toBeInTheDocument();
+    }
+    act(() => store.getState().setActiveTool(TOOL_ID.AddPoint));
+    for (const tool of ALL_TOOLS) {
+      expect(screen.getByTestId(`tool-${tool}`)).toBeInTheDocument();
+    }
   });
 
-  it('switching mode discards the previously selected tool (教訓 5.2)', () => {
-    const store = makeStore(EDIT_MODE.Add);
+  it('道具を持ち替えても、押されている道具はちょうど 1 つ', () => {
+    const store = makeStore(EDIT_MODE.Edit);
     render(<AppShell store={store} />);
+
     fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.AddPoint}`));
     expect(store.getState().activeTool).toBe(TOOL_ID.AddPoint);
+    expect(pressedTools()).toEqual([TOOL_ID.AddPoint]);
 
-    fireEvent.click(screen.getByTestId('mode-edit'));
+    fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditKnife}`));
+    expect(store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(pressedTools()).toEqual([TOOL_ID.EditKnife]);
+
+    // もう一度押すと外れ、「選ぶ」が押された状態へ戻る（＝素の状態）。
+    fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditKnife}`));
     expect(store.getState().activeTool).toBeNull();
+    expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
   });
 });
 
 describe('view-only bulk disabling (教訓 5.13, 受け入れ基準 9)', () => {
-  it('view-only disables the mode toggles and tools, and re-enables on return', () => {
+  it('鍵を閉じると道具が全部押せなくなり、開けると全部押せる（教訓 5.13）', () => {
+    // **増分 5b**: 道具は 1 段になり、鍵が閉じていても **並んだまま灰色になる**
+    // （どこへ行ったか分からなくなるより、押せない理由が見えるほうがよい）。だから
+    // 「出ているか」ではなく「押せるか」を見る。
     const store = makeStore(EDIT_MODE.View);
     render(<AppShell store={store} />);
-    const addBtn = screen.getByTestId('mode-add') as HTMLButtonElement;
-    expect(addBtn.disabled).toBe(true);
-    // no editing tools shown in view mode
-    expect(screen.getByTestId('toolbar-tools').children.length).toBe(0);
+    for (const tool of ALL_TOOLS) {
+      expect(
+        (screen.getByTestId(`tool-${tool}`) as HTMLButtonElement).disabled,
+        `${tool} が読むだけで押せる`,
+      ).toBe(true);
+    }
 
     act(() => store.getState().setMode(EDIT_MODE.Edit));
-    expect((screen.getByTestId('mode-add') as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.getByTestId('toolbar-tools').children.length).toBeGreaterThan(0);
+    for (const tool of ALL_TOOLS) {
+      expect(
+        (screen.getByTestId(`tool-${tool}`) as HTMLButtonElement).disabled,
+        `${tool} が直せる状態でも押せない`,
+      ).toBe(false);
+    }
+  });
+
+  it('鍵が閉じているあいだは、道具を構えようとしても構わない（K-6 の抜け道を塞ぐ）', () => {
+    // 画面のボタンは灰色だが、**ストアの口を直に叩いても**構えられないこと。
+    // ここが通ると、右クリックや打鍵の経路から編集の入口が開く。
+    const store = makeStore(EDIT_MODE.View);
+    render(<AppShell store={store} />);
+    act(() => store.getState().setActiveTool(TOOL_ID.EditKnife));
+    expect(store.getState().activeTool).toBeNull();
+    expect(store.getState().mode).toBe(EDIT_MODE.View);
   });
 
   it('an editing menu item is disabled in view-only and enabled when editable', () => {
@@ -208,38 +255,38 @@ describe('tooltips (FR-112, 受け入れ基準 6)', () => {
     expect(tip).not.toHaveAttribute('hidden');
   });
 
-  it('mode buttons carry their Japanese labels', () => {
-    render(<AppShell store={makeStore(EDIT_MODE.Edit)} />);
-    expect(screen.getByTestId('mode-add')).toHaveTextContent(MODE_LABELS.add);
-    expect(screen.getByTestId('mode-edit')).toHaveTextContent(MODE_LABELS.edit);
+  it('鍵に日本語のラベルが付き、状態で言葉が入れ替わる', () => {
+    const store = makeStore(EDIT_MODE.Edit);
+    render(<AppShell store={store} />);
+    expect(screen.getByTestId('mode-view')).toHaveTextContent(LOCK_LABELS.unlocked);
+    act(() => store.getState().setMode(EDIT_MODE.View));
+    expect(screen.getByTestId('mode-view')).toHaveTextContent(LOCK_LABELS.locked);
   });
 
   // HB-16: the left toolbar's mode-toggle buttons must NOT be wrapped in a
   // Tooltip (the hover bubble obstructed the click). The tool buttons keep theirs.
-  it('mode-toggle buttons render with no tooltip wrapper', () => {
+  it('鍵には吹き出しの包みが無い（HB-16）', () => {
     render(<AppShell store={makeStore(EDIT_MODE.Edit)} />);
-    for (const id of ['mode-view', 'mode-add', 'mode-edit']) {
-      const btn = screen.getByTestId(id);
-      // No surrounding .tooltip container, and no sibling role="tooltip" bubble.
-      expect(btn.closest('.tooltip')).toBeNull();
-      const group = btn.closest('.toolbar__modes') as HTMLElement;
-      expect(group.querySelector('[role="tooltip"]')).toBeNull();
-      expect(group.querySelector('.tooltip')).toBeNull();
-    }
+    const btn = screen.getByTestId('mode-view');
+    expect(btn.closest('.tooltip')).toBeNull();
+    // 群そのものにも泡は無い（testid は据え置き＝T-1。class は鍵 1 個になったので
+    // `toolbar__lock` へ変わった）。
+    const group = screen.getByTestId('toolbar-modes');
+    expect(group.querySelector('[role="tooltip"]')).toBeNull();
+    expect(group.querySelector('.tooltip')).toBeNull();
   });
 
-  it('mode-toggle buttons still function on a real click (HB-16)', () => {
+  it('鍵は実クリックで view ⇄ edit を往復する（HB-16 / 設計書 §D.1 の導出式）', () => {
     const store = makeStore(EDIT_MODE.View);
     render(<AppShell store={store} />);
-    // View → leave view-only into an editing mode, which enables add/edit.
+
     fireEvent.click(screen.getByTestId('mode-view'));
-    expect(store.getState().mode).not.toBe(EDIT_MODE.View);
-
-    fireEvent.click(screen.getByTestId('mode-add'));
-    expect(store.getState().mode).toBe(EDIT_MODE.Add);
-
-    fireEvent.click(screen.getByTestId('mode-edit'));
     expect(store.getState().mode).toBe(EDIT_MODE.Edit);
+
+    fireEvent.click(screen.getByTestId('mode-view'));
+    expect(store.getState().mode).toBe(EDIT_MODE.View);
+    // 閉めると道具は外れる（設計書 §D.2）。
+    expect(store.getState().activeTool).toBeNull();
   });
 
   it('tool buttons still carry a tooltip after HB-16 (regression guard)', () => {

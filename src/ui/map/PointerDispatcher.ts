@@ -27,6 +27,7 @@ import {
   exceedsDragThreshold,
   pointerButtonFromCode,
   DISPATCH_TARGET,
+  POINTER_BUTTON,
   type DispatchTarget,
   type PointerButton,
 } from './dispatch';
@@ -42,7 +43,7 @@ import type {
   SelectionPort,
 } from './ports';
 import { zoomStepAtCursor, type ScreenPoint, type ZoomRange } from '../../render';
-import type { EditMode } from '../state/session';
+import { EDIT_MODE, type EditMode } from '../state/session';
 
 /**
  * A DOM-independent normalized pointer sample. The controller accepts these so
@@ -155,6 +156,11 @@ interface ActivePointer {
    * unmounts on a tool/mode switch (BUGHUNT2, 教訓 5.2 全経路破棄).
    */
   readonly captureTarget: PointerCaptureTarget | null;
+  /**
+   * 押した瞬間の修飾キー（裁定 N-4 の「読むだけの左クリックで選ぶ」で使う）。
+   * 解放時に読み直さないのは、押している最中の変化で画面と食い違わせないためである。
+   */
+  readonly modifiers: PointerModifiers;
   /** Whether movement has crossed the drag threshold yet (click vs drag). */
   dragged: boolean;
   /**
@@ -246,6 +252,10 @@ export class PointerDispatcher {
           captureTarget: captured,
           dragged: false,
           editing: false,
+          // 裁定 N-4: 読むだけの左クリック（動かさなかったとき）は選択になる。
+          // 押した瞬間の修飾キーをそのまま解放時へ運ぶ ―― 解放時に読み直すと、
+          // 押している最中に Shift を離した／足したときに画面と食い違う。
+          modifiers: p.modifiers,
         });
         break;
       }
@@ -281,6 +291,7 @@ export class PointerDispatcher {
           captureTarget: null,
           dragged: false,
           editing,
+          modifiers: p.modifiers,
         });
         break;
       }
@@ -293,6 +304,7 @@ export class PointerDispatcher {
           button: p.button,
           originX: p.x,
           originY: p.y,
+          modifiers: p.modifiers,
           panRef: null,
           captureTarget: null,
           dragged: false,
@@ -364,6 +376,24 @@ export class PointerDispatcher {
       // last sample is never lost; a pure click moves nothing.
       if (rec.dragged && rec.panRef !== null) {
         this.opts.camera.write(panCameraTo(rec.panRef, point));
+      } else if (
+        !rec.dragged &&
+        rec.button === POINTER_BUTTON.Left &&
+        this.opts.getMode() === EDIT_MODE.View
+      ) {
+        // **裁定 N-4（2026-09-03）: 読むだけでも地図をクリックして地物を選べる。**
+        //
+        // 読むだけのときは左ボタンがパンに割り当てられている（`PAN_BUTTONS`）ので、
+        // 押した時点では行き先が Pan に決まる。**動かさずに離したとき**だけ、ここで
+        // 選択として解決し直す ―― こうすると「左ドラッグで見て回る」を 1 つも損なわずに
+        // 「左クリックで選ぶ」を足せる。押下時に行き先を Select へ変えてしまうと、
+        // 読むだけの主要な操作であるパンが左ボタンから消える。
+        //
+        // **選ぶだけで、掴まない。** `editSession.begin` は呼ばない（頂点ハンドルは
+        // 読むだけでは描かれないので掴む対象も無い）。素性欄は読めて、直せない。
+        const hit = this.opts.hitTester.hitTest(point);
+        this.opts.selection.start(hit, point, rec.modifiers);
+        this.opts.selection.end(point, false);
       }
     } else if (rec.kind === DISPATCH_TARGET.SelectEdit) {
       this.opts.selection.end(point, rec.dragged);

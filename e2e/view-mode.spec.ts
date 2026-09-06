@@ -23,6 +23,25 @@ import {
   squareCorners,
 } from './helpers';
 
+/**
+ * 1 段に並ぶ道具の testid（増分 5b）。**読むだけの関門は「全部灰色」で見る** ――
+ * 旧版は「そのモードの道具が出ているか」で見ていたが、道具はモードで入れ替わらなく
+ * なったので、出ているかどうかでは何も分からない。
+ */
+const ALL_TOOL_TESTIDS = [
+  'tool-edit.select',
+  'tool-edit.vertex',
+  'tool-edit.move',
+  'tool-add.area',
+  'tool-add.line',
+  'tool-add.point',
+  'tool-edit.ring',
+  'tool-edit.knife',
+  'tool-edit.drill',
+  'tool-edit.reparent',
+  'tool-edit.merge',
+] as const;
+
 test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (live UI)', () => {
   test('boot in View: edit tools disabled, then the toolbar 表示専用 toggle enables 追加モード and a face is added via the real UI', async () => {
     const { app, page } = await launchApp();
@@ -30,12 +49,15 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       // 1. BOOT STATE — the composite starts in 表示専用 (View). The named導線
       //    (the 表示専用 toolbar button) is enabled and pressed; the add/edit mode
       //    toggles AND every add tool are disabled together (教訓 5.13 single gate).
+      // **増分 5b**: モードの 2 ボタンは廃止され、鍵 1 個＋道具の 1 段になった。
+      // 「読むだけで編集の入口が閉じている」は **道具が全部灰色である**ことで見る。
       await expect(page.getByTestId('app-mode')).toHaveText('view');
       const viewToggle = page.getByTestId('mode-view');
       await expect(viewToggle).toBeEnabled();
       await expect(viewToggle).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.getByTestId('mode-add')).toBeDisabled();
-      await expect(page.getByTestId('mode-edit')).toBeDisabled();
+      for (const tool of ALL_TOOL_TESTIDS) {
+        await expect(page.getByTestId(tool), `${tool} が読むだけで押せる`).toBeDisabled();
+      }
 
       // 2. LEAVE View through the live导线 (a real click on the toolbar button).
       //    The mode flips to 編集モード (the sensible editable default the導线
@@ -44,24 +66,22 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       await viewToggle.click();
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
       await expect(viewToggle).toHaveAttribute('aria-pressed', 'false');
-      await expect(page.getByTestId('mode-add')).toBeEnabled();
-      await expect(page.getByTestId('mode-edit')).toBeEnabled();
-
-      // 3. ENTER 追加モード and confirm its tools are now ACTIVE (no longer grayed):
-      //    every add-mode tool button is enabled.
-      const addMode = page.getByTestId('mode-add');
-      await addMode.click();
-      await expect(addMode).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.getByTestId('app-mode')).toHaveText('add');
-      for (const tool of ['add.point', 'add.line', 'add.area']) {
-        await expect(page.getByTestId(`tool-${tool}`)).toBeEnabled();
+      for (const tool of ALL_TOOL_TESTIDS) {
+        await expect(page.getByTestId(tool), `${tool} が直せる状態でも押せない`).toBeEnabled();
       }
+
+      // 3. 面の道具を構えると、内部の mode が add になる（設計書 §D.1 の導出式）。
+      //    **「追加モードに入ってから道具を選ぶ」の 2 手が 1 手になった**のがここ。
+      const areaTool = page.getByTestId('tool-add.area');
+      await areaTool.click();
+      await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
+      await expect(page.getByTestId('app-mode')).toHaveText('add');
 
       // 4. ADD A FACE through the REAL UI path: 面ツール → 四隅クリック → 完了 → 保存.
       //    This proves editing is genuinely reachable end-to-end (D23 evidence: a
       //    committed feature, not a controller 直叩き). The active tool hook shows
       //    the selection; the committed-feature marker confirms the save landed.
-      await page.getByTestId('tool-add.area').click();
+      //    **道具はもう構えてある**（手順 3 が構えた）。もう一度押すと外れるので押さない。
       await expect(page.getByTestId('app-active-tool')).toHaveText('add.area');
 
       const b = await addInputLayerBox(page);
@@ -97,8 +117,8 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       // the toolbar edit toggles activated together — the menu导线 reaches the SAME
       // gate/store the toolbar does (教訓 5.13 単一真実源).
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
-      await expect(page.getByTestId('mode-add')).toBeEnabled();
-      await expect(page.getByTestId('mode-edit')).toBeEnabled();
+      await expect(page.getByTestId('tool-add.area')).toBeEnabled();
+      await expect(page.getByTestId('tool-edit.knife')).toBeEnabled();
 
       // Re-dispatch the SAME menu命令: it toggles back to View (the reversal
       // contract), proving it is a real toggle, not a one-way switch.
@@ -107,8 +127,8 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       await expect(toggleItem).toBeEnabled();
       await toggleItem.click();
       await expect(page.getByTestId('app-mode')).toHaveText('view');
-      await expect(page.getByTestId('mode-add')).toBeDisabled();
-      await expect(page.getByTestId('mode-edit')).toBeDisabled();
+      await expect(page.getByTestId('tool-add.area')).toBeDisabled();
+      await expect(page.getByTestId('tool-edit.knife')).toBeDisabled();
     } finally {
       await app.close();
     }
@@ -122,21 +142,20 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
     const { app, page } = await launchApp();
     try {
       // No tooltip wrapper (data-testid="tooltip") or role="tooltip" bubble inside the mode group.
+      // **増分 5b**: この群に居るのは鍵 1 個だけになった（testid は据え置き＝T-1）。
       const modeGroup = page.getByTestId('toolbar-modes');
       await expect(modeGroup).toBeVisible();
       await expect(modeGroup.getByTestId('tooltip')).toHaveCount(0);
       await expect(modeGroup.locator('[role="tooltip"]')).toHaveCount(0);
-      // The mode buttons themselves are not wrapped by a tooltip container.
-      for (const id of ['mode-view', 'mode-add', 'mode-edit']) {
-        // 「このボタンを内側に持つツールチップの包み」が 0 個 (祖先に tooltip が無い)。
-        await expect(page.getByTestId('tooltip').filter({ has: page.getByTestId(id) })).toHaveCount(0);
-      }
+      await expect(
+        page.getByTestId('tooltip').filter({ has: page.getByTestId('mode-view') }),
+      ).toHaveCount(0);
 
-      // They still function: leave View via mode-view, then enter 追加モード.
+      // They still function: 鍵を開けて、面の道具を構える。
       await expect(page.getByTestId('app-mode')).toHaveText('view');
       await page.getByTestId('mode-view').click();
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
-      await page.getByTestId('mode-add').click();
+      await page.getByTestId('tool-add.area').click();
       await expect(page.getByTestId('app-mode')).toHaveText('add');
 
       // Tool buttons still carry their tooltip (regression: not all removed).

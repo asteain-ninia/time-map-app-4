@@ -77,6 +77,11 @@ import {
   type LedgerState,
 } from '../discovery/ledger-state';
 import { withCursor as withBundleCursor, type Bundle } from '../discovery/bundle';
+// 内部の `mode` の導出式（設計書 §D.1）。**道具の語彙と同じ場所**に置いてある
+// （道具を足すときに必ず触るファイルなので、式の更新を忘れにくい）。barrel
+// (`../shell/index`) ではなく module を直に読むのは、barrel が store を読む部品まで
+// 連れてきて輪になるためである。
+import { modeForTool } from '../shell/tools';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
@@ -398,6 +403,13 @@ export interface SessionStoreActions<S> {
   restoreSelection(selection: SelectionState): void;
 
   // mode / tool
+  /**
+   * 鍵（読むだけ ⇄ 直せる）の開け閉め、および内部の `mode` の直接設定。
+   *
+   * **増分 5b 以降、画面からこれを呼ぶのは鍵 1 個だけである**（モードの 3 ボタンは
+   * 廃止した＝裁定 1）。道具を構えたときの `mode` は {@link setActiveTool} が
+   * 導出するので、呼び出し側が `setMode` を並べて呼ぶ必要はない。
+   */
   setMode(mode: EditMode): void;
   /**
    * Arm / clear the toolbar tool. By default it runs the reset契約 and CLEARS the
@@ -1526,8 +1538,30 @@ export function createSessionStore<S>(
       // the committed selection so the null→prev toggle never paints an empty frame
       // (教訓 5.11). When preserved, only `activeTool` actually changes; the
       // selection mirrors are re-applied to the SAME value atomically.
+      //
+      // **増分 5b: `mode` は道具から導出する**（設計書 §D.1 / 裁定 1）。画面から
+      // モードの 3 ボタンが消えたので、「いま追加モードか編集モードか」を決めるのは
+      // **どの道具を構えているか**だけになった。
+      //
+      //   mode = 鍵が閉じている ? view : （面／線／点）? add : edit
+      //
+      // 導出を **ストアの中** に置くのは、道具を構える経路が 1 つではないためである
+      // （ツールバー・右クリックからの起動・競合解決後の再武装・道具コントローラの
+      // 取り消し）。呼び出し側で `setMode` を並べて呼ぶ形にすると、どれか 1 つが
+      // 忘れられた瞬間に「面の道具を構えているのに mode が edit」という食い違いが
+      // 黙って生まれる（教訓 5.6: 起動条件は経路ではなく結果状態で判定する）。
+      //
+      // **鍵が閉じているあいだは mode を動かさない。** 読むだけの関門（K-6）は
+      // `canEdit(mode)` 1 本なので、ここで view から出してしまうと関門が開く。
+      // **鍵が閉じているあいだは道具を構えさせない。** 導出式が `view` を返すのは
+      // 「mode が開かない」ことしか保証しないので、`activeTool` だけが入ると
+      // 道具のコントローラが立ち上がって編集の入口が開く（K-6 の抜け道）。
+      // 構えられないことを 1 か所で言い切る。
+      const locked = get().mode === EDIT_MODE.View;
+      const next = locked ? null : tool;
       set({
-        activeTool: tool,
+        activeTool: next,
+        mode: modeForTool(locked, next),
         ...selectionPatch(preserveSelection ?? EMPTY_SELECTION),
       });
     },

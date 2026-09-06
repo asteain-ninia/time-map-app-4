@@ -56,11 +56,12 @@ test.describe('fr98 — 詳細文書の編集（サイドバー編集面 + フ�
       const panelDoc = panel.getByTestId('markdown-view');
       await expect(panelDoc.locator('strong')).toHaveText('重要');
 
-      // Leave 追加モード: the armed add tool keeps an (empty) session past Idle, which
-      // SUSPENDS the global shortcuts (bughunt3 H2) — Ctrl+Z would be swallowed. 編集
-      // モード with no tool lets the global EditUndo dispatch; the floating panel is
-      // selection-independent, so it survives the setMode reset契約.
-      await page.getByTestId('mode-edit').click();
+      // 追加の道具を外す: the armed add tool keeps an (empty) session past Idle, which
+      // SUSPENDS the global shortcuts (bughunt3 H2) — Ctrl+Z would be swallowed.
+      // **増分 5b**: モードのボタンは無くなったので、**「選ぶ」道具へ戻す**。
+      // 内部の mode は add → edit になり（設計書 §D.1）、大域の EditUndo が通る。
+      // 浮いているパネルは選択に依らないので、この持ち替えでも残る。
+      await page.getByTestId('tool-edit.select').click();
 
       // --- Ctrl+Z: ONE undo unit — the committed document reverts to absent. ---
       await page.keyboard.press('Control+z');

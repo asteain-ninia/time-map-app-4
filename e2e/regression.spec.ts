@@ -190,11 +190,14 @@ test.describe('回帰観点 — 一時状態の破棄 (教訓 5.2 / FR-78)', () 
       // The fresh 面 session has zero vertices — no preview leaked across the switch.
       await expect(page.getByTestId('add-vertex-count')).toHaveText('0');
 
-      // Now place a vertex again, then leave 追加モード entirely (back to View):
-      // the session is discarded, so the add chrome disappears (no 残存 preview).
+      // Now place a vertex again, then 鍵を閉める（読むだけへ戻す）: the session is
+      // discarded, so the add chrome disappears (no 残存 preview).
+      // **増分 5b**: 「追加モードのボタンをもう一度押して View へ戻る」経路は無くなった。
+      // 鍵を閉じるのが「編集をやめる」唯一の入口である。
       await placeOneVertex(page);
       await expect(page.getByTestId('add-vertex-count')).toHaveText('1');
-      await page.getByTestId('mode-add').click(); // toggle 追加モード off → View
+      await page.getByTestId('mode-view').click();
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
       await expect(page.getByTestId('add-tool')).toHaveCount(0);
     } finally {
       await app.close();
@@ -265,9 +268,7 @@ test.describe('回帰観点 — 構造変更後の選択維持 (教訓 5.11 / FR
       // 2. Enter 編集モード → ナイフ. Select the face by clicking its centre (live
       //    featureAtPoint), then draw a piercing cut from OUTSIDE the face (above)
       //    to OUTSIDE (below) through its middle — a SCREEN-pixel vertical cut.
-      const editMode = page.getByTestId('mode-edit');
-      await expect(editMode).toBeEnabled();
-      await editMode.click();
+      // **増分 5b**: 「編集モードに入ってからナイフを選ぶ」の 2 手が 1 手になった。
       await page.getByTestId('tool-edit.knife').click();
 
       const knifeLayer = page.getByTestId('knife-input-layer');

@@ -1433,6 +1433,10 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
 
   it('setActiveTool clears selection (select -> cancel -> recreate has no residue)', () => {
     const store = makeStore(undefined, {
+      // **鍵は開けておく**（増分 5b）。ストアの既定は「読むだけ」で、そのあいだは
+      // 道具を構えられない（K-6 の関門）。この節が見たいのは道具と選択の契約なので、
+      // 前提として直せる状態にしておく。
+      mode: EDIT_MODE.Edit,
       activeFeature: f('A'),
     });
     store.getState().setActiveTool(asToolId('rect'));
@@ -1445,7 +1449,7 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     // armed, then the re-arm toggle null→prev clears the selection;
     // restoreSelection brings it back so only the tool DRAFT is discarded while the
     // committed selection survives (the 軽微UX fix in App.reArmActiveTool).
-    const store = makeStore(undefined, { activeFeature: f('A') });
+    const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeFeature: f('A') });
     store.getState().setActiveTool(asToolId('rect'));
     store.getState().setActiveFeature(f('A'));
     const retained = store.getState().selection; // captured before the re-arm
@@ -1468,7 +1472,7 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     // empty-selection render that self-corrected one tick later. The fix pins the
     // committed selection to BOTH toggle steps via preserveSelection so no frame is
     // ever empty.
-    const store = makeStore(undefined, { activeFeature: f('A') });
+    const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeFeature: f('A') });
     store.getState().setActiveTool(asToolId('rect'));
     store.getState().setActiveFeature(f('A'));
     const retained = store.getState().selection;
@@ -1501,7 +1505,7 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
   });
 
   it('setActiveTool(tool) without preserveSelection still clears (reset契約 default unchanged)', () => {
-    const store = makeStore(undefined, { activeFeature: f('A') });
+    const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeFeature: f('A') });
     store.getState().setActiveTool(asToolId('rect'));
     store.getState().setActiveFeature(f('A'));
     expect(store.getState().activeFeature).toBe(f('A'));

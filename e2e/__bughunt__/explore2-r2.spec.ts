@@ -258,12 +258,9 @@ async function commitFace(
 
 async function armKnife(page: Page): Promise<boolean> {
   await leaveViewMode(page);
-  const edit = page.getByTestId('mode-edit');
-  await expect(edit).toBeEnabled();
-  if ((await edit.getAttribute('aria-pressed')) !== 'true') await edit.click();
   const knife = page.getByTestId('tool-edit.knife');
   if (!(await knife.isVisible().catch(() => false))) {
-    record('knife-tool-missing', 'tool-edit.knife not visible in edit mode');
+    record('knife-tool-missing', 'tool-edit.knife not visible in the tool rail');
     return false;
   }
   if ((await knife.getAttribute('aria-pressed')) !== 'true') await knife.click();
@@ -589,8 +586,6 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         await page.waitForTimeout(100);
         const selBefore = await activeFeature(page);
         await leaveViewMode(page);
-        const em = page.getByTestId('mode-edit');
-        if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         // Delete via keyboard (the live Delete accelerator).
         await page.keyboard.press('Delete');
         // A8: 地物の削除は確認を通る（3 経路で 1 つの確認）。
@@ -605,7 +600,6 @@ test.describe('BUGHUNT R2 — knife split / forest parent / search / time extrem
         await shot(page, 'after-delete');
         // Undo the delete.
         await leaveViewMode(page);
-        if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
         await page.keyboard.press('Control+z');
         await page.waitForTimeout(180);
         if ((await page.getByTestId('conflict-modal-root').count()) > 0) {

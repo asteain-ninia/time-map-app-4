@@ -548,8 +548,6 @@ test.describe('BUGHUNT R2 — conflict flow / zoom-limit / save-load / undo連�
       await showSidebarTab(page, 'features');
       const countBeforeUndo = await featureListCount(page);
       await leaveViewMode(page);
-      const em = page.getByTestId('mode-edit');
-      if ((await em.getAttribute('aria-pressed')) !== 'true') await em.click();
       const canUndo = page.getByTestId('app-can-undo');
       const canRedo = page.getByTestId('app-can-redo');
 

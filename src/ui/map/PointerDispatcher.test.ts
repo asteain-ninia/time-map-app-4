@@ -17,6 +17,7 @@ import {
 } from './ports';
 import {
   EMPTY_HIT,
+  featureBodyHit,
   vertexHit,
   type HitResult,
 } from '../../domain/selection';
@@ -144,6 +145,38 @@ describe('pan sequence (受け入れ基準 4)', () => {
     dispatcher.pointerMove(ptr(1, 402, 301, POINTER_BUTTON.Left)); // ~2.2px < 4
     dispatcher.pointerUp(ptr(1, 402, 301, POINTER_BUTTON.Left));
     expect(camera.writes.length).toBe(0);
+  });
+
+  it('読むだけの左クリック（動かさない）は選択になる（裁定 N-4(A)）', () => {
+    // **左ドラッグはパンのまま**（読むだけの主要な操作を奪わない）。動かさずに離した
+    // ときだけ選択として解決し直す。押した瞬間の行き先は Pan のままなので、
+    // `decideDispatch` の表（`PAN_BUTTONS`）は 1 文字も変えていない。
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    expect(dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left))).toBe(
+      DISPATCH_TARGET.Pan,
+    );
+    dispatcher.pointerUp(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    expect(selection.events).toEqual(['start:featureBody', 'end:click@200,150']);
+    expect(camera.writes.length).toBe(0);
+  });
+
+  it('読むだけの左ドラッグはパンのまま（選択にはならない）', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { camera, selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerMove(ptr(1, 280, 150, POINTER_BUTTON.Left));
+    dispatcher.pointerUp(ptr(1, 280, 150, POINTER_BUTTON.Left));
+    expect(camera.writes.length).toBeGreaterThan(0);
+    expect(selection.events).toEqual([]);
+  });
+
+  it('読むだけの中ボタンのクリックでは選択しない（左ボタンだけの約束）', () => {
+    const hit = featureBodyHit(asFeatureId('f1'));
+    const { selection, dispatcher } = setup(EDIT_MODE.View, hit);
+    dispatcher.pointerDown(ptr(1, 200, 150, POINTER_BUTTON.Middle));
+    dispatcher.pointerUp(ptr(1, 200, 150, POINTER_BUTTON.Middle));
+    expect(selection.events).toEqual([]);
   });
 
   it('middle-button pans in EVERY mode', () => {

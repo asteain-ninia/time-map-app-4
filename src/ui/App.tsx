@@ -107,7 +107,6 @@ import './reparent/reparent.css';
 import {
   SurveyToolController,
   SurveyMapBridge,
-  SurveyControls,
   SurveyMeasurementPanel,
   type SurveyDrawSink,
 } from './survey/index';
@@ -1552,16 +1551,19 @@ export function App(): JSX.Element {
   );
 
   // fr96 — arm an edit tool from a menu intent (分割→ナイフ / 所属変更 / 結合). The
-  // SAME store transitions the toolbar buttons drive (単一真実源, 教訓 5.29): ensure
-  // 編集モード (the menu also opens in 追加モード — canEdit covers Add), then arm the
+  // SAME store transitions the toolbar buttons drive (単一真実源, 教訓 5.29): arm the
   // tool WITH the current selection pinned so the just-right-clicked target stays
   // selected across the reset契約 (教訓 5.11; setActiveTool clears by default).
+  //
+  // **増分 5b: `setMode(Edit)` を先に立てるのをやめた。** モードは道具から導出される
+  // ようになったので（設計書 §D.1）、ここで立てるのは二重であり、しかも **鍵が
+  // 閉じているときに黙って開けてしまう**（K-6 の抜け道）。鍵が閉じていれば
+  // `setActiveTool` 自身が構えを断る。
   const armEditTool = useCallback(
     (tool: ToolId): void => {
       const s = store.getState();
       const retained = s.selection;
-      if (s.mode !== EDIT_MODE.Edit) s.setMode(EDIT_MODE.Edit);
-      store.getState().setActiveTool(tool, retained);
+      s.setActiveTool(tool, retained);
     },
     [store],
   );
@@ -2772,8 +2774,8 @@ export function App(): JSX.Element {
   useEffect(() => {
     registry.register(COMMAND_ID.ToolsAddFace, {
       run: () => {
-        const s = store.getState();
-        if (s.mode !== EDIT_MODE.Add) s.setMode(EDIT_MODE.Add);
+        // 増分 5b: 面の道具を構えれば `mode` は `add` になる（設計書 §D.1）。
+        // 先に `setMode(Add)` を立てる必要はない ―― 立てると道具が外れる。
         store.getState().setActiveTool(TOOL_ID.AddArea);
       },
     });
@@ -3056,12 +3058,8 @@ export function App(): JSX.Element {
              map input layer (教訓 5.14). */
           <>
             <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
-            {/* U37 測量モード (FR-14/15/16 結線): **アプリバーに残すのは入口 1 個だけ**
-                （増分 5a）。読み取り欄・案内・クリアはオプションバーの設定欄へ降ろした
-                ―― 上部バーに読み取りが生えると段が増えて地図が 87〜95px 縮んでいた
-                （設計書 §B.4「測量の道具を持っても地図は縮まない」）。編集できるか
-                どうかで無効化しないのは従来どおり（View でも測れる, U37 §2.1）。 */}
-            <SurveyControls store={store} />
+            {/* 増分 5b: 測量の入口は **道具の 1 段の中**（`Toolbar`）へ移った。
+                読み取り・案内・クリアはオプションバーの設定欄にある（増分 5a）。 */}
           </>
         }
         overlay={

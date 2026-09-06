@@ -9,7 +9,7 @@ import type { MutableRefObject } from 'react';
 
 import { createAddHostPorts, type AddHostPorts } from '../../add/host-ports';
 import { isFilterInert } from '../../discovery/index';
-import { TOOL_ID } from '../../shell/tools';
+import { toolShowsVertexHandles } from '../../shell/tools';
 import { EDIT_MODE } from '../../state/session';
 import { buildActiveFeatureHandlePrimitives } from '../active-feature-handles';
 import { buildCommittedFeatures } from '../committed-features';
@@ -179,20 +179,21 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     // ズームインすれば cap を下回り編集できる)。
     editHandles: (view) => {
       const s = store.getState();
-      if (s.mode !== EDIT_MODE.Edit) return [];
-      // HB3-6/18 review fix: tools with their OWN overlay (ナイフ / 結合 / 所属変更) promote a
-      // target into activeFeature for highlighting; the edit-handles layer must NOT also
+      // **増分 5b: 条件を「編集モードのとき」から「掴める道具のとき」へ変えた**
+      // （設計書 §C.3 / 実装計画 §5 の 5b）。モードの 3 ボタンが消えて `mode` が
+      // 道具からの導出値になったので、`mode === Edit` は「面・線・点 以外の道具を
+      // 構えている」とほぼ同義になり、条件として何も言わなくなる。**掴めるのは
+      // 「選ぶ」「頂点」「動かす」の 3 つだけ**である。
+      //
+      // 読むだけ（鍵が閉じている）ときはハンドルを出さない ―― 選べる・読めるが
+      // 直せない（裁定 N-4）ので、掴める印を出すのは嘘になる。
+      if (s.mode === EDIT_MODE.View) return [];
+      // HB3-6/18 review fix: tools with their OWN overlay (ナイフ / 結合 / 所属変更) promote
+      // a target into activeFeature for highlighting; the edit-handles layer must NOT also
       // draw vertex/edge handles on that target during those tools (cosmetic bleed under
-      // the tool overlay). Handles belong to 選択 / 頂点編集 / 地物移動 only.
-      if (
-        s.activeTool === TOOL_ID.EditKnife ||
-        s.activeTool === TOOL_ID.EditMerge ||
-        s.activeTool === TOOL_ID.EditReparent ||
-        s.activeTool === TOOL_ID.EditRing ||
-        s.activeTool === TOOL_ID.EditDrill
-      ) {
-        return [];
-      }
+      // the tool overlay). **その除外はいま `toolShowsVertexHandles` の中にある** ――
+      // 同じ判断を 2 か所に書くと、道具が増えたときに片方だけ直して食い違う（教訓 5.44）。
+      if (!toolShowsVertexHandles(s.activeTool)) return [];
       // HB3-4: pass the LIVE drag session so the active feature's handles + a preview
       // outline are drawn at the PREVIEW position (follows the cursor) during a drag,
       // and at the committed position otherwise. The builder ignores a session for a
@@ -258,7 +259,8 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     editPreviewActive: () => {
       const s = store.getState();
       return (
-        s.mode === EDIT_MODE.Edit &&
+        s.mode !== EDIT_MODE.View &&
+        toolShowsVertexHandles(s.activeTool) &&
         transients.liveEditSession !== null &&
         transients.liveEditSession.target.featureId === s.activeFeature
       );

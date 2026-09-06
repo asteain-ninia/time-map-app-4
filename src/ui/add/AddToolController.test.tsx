@@ -300,14 +300,16 @@ describe('U23 integration: 全経路で破棄 (受け入れ基準 6, 教訓 5.2)
     expect(screen.getByTestId('add-is-line')).toBeInTheDocument();
   });
 
-  it('mode switch (追加 → 編集) discards the add session entirely', () => {
+  it('道具を持ち替える（面 → 分ける）と作図の下書きは丸ごと捨てられる', () => {
+    // **増分 5b**: モードの 3 ボタンが消えたので、「追加モード → 編集モード」ではなく
+    // **道具の持ち替え**で同じことを見る（内部の mode は道具から導出されるので、
+    // 面 → 分ける は add → edit そのものである＝設計書 §D.1）。
     mountApp();
     selectTool('tool-add.area');
     clickMap(0, 0);
     clickMap(4, 0);
     expect(screen.getByTestId('add-tool')).toBeInTheDocument();
-    // Switch to 編集 mode in the real toolbar: the add session is discarded.
-    act(() => fireEvent.click(screen.getByTestId('mode-edit')));
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
     expect(screen.queryByTestId('add-tool')).not.toBeInTheDocument();
   });
 

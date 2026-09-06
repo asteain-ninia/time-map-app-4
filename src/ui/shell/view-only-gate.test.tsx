@@ -83,6 +83,7 @@ import { createSessionStore, type SessionStore } from '../state/store';
 import { AppShell } from './AppShell';
 import { CommandRegistry, COMMAND_ID } from './commands';
 import { canEdit, resolveCommandEnabled } from './permissions';
+import { TOOL_ID } from './tools';
 
 // --- 素性欄の道具立て（最小の 1 地物 + 錨 1 本） ----------------------------
 
@@ -226,8 +227,16 @@ const CHANGE_PATHS: readonly ChangePath[] = [
   {
     name: '② ツールバー（編集の道具を持つ）',
     canChange: (mode) => {
-      render(<AppShell store={sessionStore(mode)} />);
-      return screen.getByTestId('toolbar-tools').children.length > 0;
+      // **増分 5b で見方を変えた。** 旧版は「道具のボタンが 1 つでも出ているか」を
+      // 数えていたが、道具は 1 段になって **鍵が閉じていても並ぶ**（灰色で）。
+      // 出ているかどうかではなく **押して構えられるか** を見る ―― 「出るなら起きる」
+      // の逆で、「出ていても起きない」ことをここで固定する。
+      const store = sessionStore(mode);
+      render(<AppShell store={store} />);
+      const knife = screen.getByTestId(`tool-${TOOL_ID.EditKnife}`) as HTMLButtonElement;
+      if (knife.disabled) return false;
+      fireEvent.click(knife);
+      return store.getState().activeTool === TOOL_ID.EditKnife;
     },
   },
   {
@@ -280,9 +289,15 @@ const CHANGE_PATHS: readonly ChangePath[] = [
     name: '⑥ 道具の確定（面の道具を構える）',
     editableMode: EDIT_MODE.Add,
     canChange: (mode) => {
-      render(<AppShell store={sessionStore(mode)} />);
-      // 道具そのものが出ない ⇒ 構えられない ⇒ 確定ボタンも存在し得ない。
-      return screen.queryByTestId('tool-add.area') !== null;
+      // **増分 5b で見方を変えた**（②と同じ理由）。面の道具は鍵が閉じていても
+      // レールに並ぶので、「在るか」ではなく「構えられるか」を見る。構えられれば
+      // 内部の mode は add になる（設計書 §D.1 の導出式）。
+      const store = sessionStore(mode);
+      render(<AppShell store={store} />);
+      const area = screen.getByTestId(`tool-${TOOL_ID.AddArea}`) as HTMLButtonElement;
+      if (area.disabled) return false;
+      fireEvent.click(area);
+      return store.getState().activeTool === TOOL_ID.AddArea;
     },
   },
   {

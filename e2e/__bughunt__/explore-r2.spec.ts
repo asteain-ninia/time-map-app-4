@@ -220,17 +220,17 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
       const cx = b.x + b.width / 2;
       const cy = b.y + b.height / 2;
 
-      // --- Aggressive mode/tool cycling (no crashes, mode marker tracks) ---------
+      // --- Aggressive lock/tool cycling (no crashes, mode marker tracks) --------
+      // 増分 5b: `mode` は道具から導かれる。鍵を開けただけなら edit、面／線／点の道具を
+      // 構えれば add、直す道具へ戻せばまた edit。往復するのは鍵と道具である。
       for (let i = 0; i < 2; i += 1) {
         await leaveViewMode(page);
-        await page.getByTestId('mode-add').click();
-        if ((await modeOf(page)) !== 'add') record('mode-marker-mismatch', `expected add, got ${await modeOf(page)}`);
+        if ((await modeOf(page)) !== 'edit') record('mode-marker-mismatch', `expected edit after unlocking, got ${await modeOf(page)}`);
         for (const t of ['tool-add.point', 'tool-add.line', 'tool-add.area']) {
           const btn = page.getByTestId(t);
           if (await btn.isVisible()) await btn.click();
         }
-        await page.getByTestId('mode-edit').click();
-        if ((await modeOf(page)) !== 'edit') record('mode-marker-mismatch', `expected edit, got ${await modeOf(page)}`);
+        if ((await modeOf(page)) !== 'add') record('mode-marker-mismatch', `expected add, got ${await modeOf(page)}`);
         for (const t of [
           'tool-edit.select',
           'tool-edit.vertex',
@@ -242,6 +242,7 @@ test.describe('BUGHUNT R2 — deeper user-like exploration of the live composite
           const btn = page.getByTestId(t);
           if (await btn.isVisible()) await btn.click();
         }
+        if ((await modeOf(page)) !== 'edit') record('mode-marker-mismatch', `expected edit, got ${await modeOf(page)}`);
       }
       await goView(page);
       await shot(page, 'mode-cycle');

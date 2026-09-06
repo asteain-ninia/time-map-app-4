@@ -8,7 +8,7 @@
 //   1. the keymap binds Escape → edit.deselect (single source: STANDARD_MENUS);
 //   2. Escape clears the selection in 編集 mode with a live selection;
 //   3. Escape does NOTHING while suspended (draft / modal wins) — priority;
-//   4. Escape does NOTHING in 表示専用 mode (EDITING_COMMAND gate);
+//   4. **読むだけでも Escape で選択が外れる**（裁定 N-4(A) で HB5-4 を覆した）;
 //   5. a no-selection Escape is a safe no-op (canRun false).
 
 /// <reference types="@testing-library/jest-dom" />
@@ -91,7 +91,11 @@ describe('HB5-4 選択解除 — Escape binding + priority', () => {
     expect(store.getState().activeFeature).toBe(asFeatureId('f-1'));
   });
 
-  it('Escape does NOTHING in 表示専用 mode (edit.deselect is gated off)', () => {
+  it('読むだけでも Escape で選択が外れる（裁定 N-4(A) が HB5-4 を覆した）', () => {
+    // **旧版は逆を固定していた**（「表示専用では Escape ごと止める」＝HB5-4）。
+    // 所有者の裁定は「読むだけでも選べる・読める・直せない」なので、**選んだものを
+    // 外す手** が無いと行き止まりになる。覆すのは選択解除だけで、それ以外の編集は
+    // 止まったまま（`permissions.ts` の `EDITING_COMMANDS` を参照）。
     const store = makeStore(true);
     const registry = new CommandRegistry();
     registerDeselect(registry, store);
@@ -101,6 +105,22 @@ describe('HB5-4 選択解除 — Escape binding + priority', () => {
 
     fireEvent.keyDown(window, { key: 'Escape' });
 
+    expect(store.getState().activeFeature).toBeNull();
+  });
+
+  it('読むだけでも、選択解除**以外**の編集の打鍵は止まったまま（K-6）', () => {
+    // 覆した範囲が「選択解除だけ」であることを、同じ入口（大域の割り振り）で見る。
+    const store = makeStore(true);
+    const registry = new CommandRegistry();
+    let deleted = 0;
+    registry.register(COMMAND_ID.EditDelete, { run: () => { deleted += 1; } });
+    renderHook(() =>
+      useShortcuts({ keymap: buildDefaultKeymap(), registry, mode: EDIT_MODE.View }),
+    );
+
+    fireEvent.keyDown(window, { key: 'Delete' });
+
+    expect(deleted).toBe(0);
     expect(store.getState().activeFeature).toBe(asFeatureId('f-1'));
   });
 
