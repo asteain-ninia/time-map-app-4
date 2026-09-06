@@ -199,6 +199,17 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // 契約, which subsumes the HB3-6/18 target un-promotion (a cancelled knife target must
   // not stay highlighted / Delete-able). Same規約 as ring-edit (8950639).
   const releaseToolOnCancel = useCallback(() => {
+    // **増分 5c: 選択の後始末を明示に書く。** 旧版は `setActiveTool(null)` の
+    // **副作用**（道具を替えたら選択を全消しする）に寄りかかっていたが、増分 5c で
+    // その既定を反転した（`docs/現状.md` B28: 道具を持ち替えても選択は消さない）ので、
+    // 寄りかかっていた側がここで黙って壊れる（教訓 5.44「共通ロジックを差し替えたら
+    // 呼び出し側に残る写しを全部潰す」の、副作用版）。
+    //
+    // この道具は **自分で対象を選択へ昇格させている**（`onTargetSelected` →
+    // `setActiveFeature`）ので、取りやめたら自分で戻す。掴んでいない選択まで
+    // 巻き添えにする点は設計書 §D.4 の階段（対象を離す → 道具は持ったまま）とまだ
+    // 食い違っており、そこは増分 7 で階段を各道具へ通すときに揃える。
+    store.getState().clearSelection();
     store.getState().setActiveTool(null);
   }, [store]);
 
@@ -357,12 +368,22 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const onDrawingChange = props.onDrawingChange;
   useEffect(() => {
     if (onDrawingChange === undefined) return;
-    const active = knife.flow !== KNIFE_FLOW.Idle;
+    // **増分 5c: 「構えている」ではなく「下書きを持っている」を報せる**（設計書 §D.4 /
+    // 実装計画 §5 の 5c「確定後のふるまいを全道具で揃える」）。
+    //
+    // 旧版は `flow !== Idle` ―― **道具を構えた瞬間から**真になっていた。ホストはこれを
+    // 「鍵盤は道具のもの」と読んで大域の割り振りを降ろすので、**道具を選んだだけで
+    // Ctrl+Z・Delete が効かなくなり**、確定した直後（対象を離したあと）も道具を外すまで
+    // 戻らなかった（報告 04 §3.5 の「所属変更の確定直後の Ctrl+Z が無反応」）。
+    //
+    // 追加の道具は増分 3 の手直し D3 で既に「待機中は止めない」へ直っている。ここは
+    // 手順のある道具に同じ形を入れる ―― **対象を掴んでいるあいだだけ**道具のもの。
+    const active = knife.flow !== KNIFE_FLOW.Idle && knife.targetId !== null;
     onDrawingChange(active);
     // On unmount clear the flag so a torn-down controller never leaves the global
     // dispatcher suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
-  }, [knife.flow, onDrawingChange]);
+  }, [knife.flow, knife.targetId, onDrawingChange]);
 
   // --- Map-input handler with the固定円ヒット優先 (教訓 5.14). A click while:
   //   - SelectingTarget → resolve the feature under it and select (LEAF gate in hook);

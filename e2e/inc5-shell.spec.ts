@@ -20,11 +20,15 @@
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  addInputLayerBox,
+  armAddAreaTool,
   commitOneFace,
+  drawFace,
   launchApp,
   leaveViewMode,
   openDepthOptions,
   returnToViewMode,
+  squareCorners,
 } from './helpers';
 
 interface Rect {
@@ -327,6 +331,129 @@ test.describe('増分 5b — 鍵と道具の 1 段', () => {
       await expect
         .poll(async () => Number(await layer.getAttribute('data-pan-x')))
         .not.toBe(beforeX);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5c — 選択を捨てない・鍵盤の持ち主・Esc の階段
+// ---------------------------------------------------------------------------
+
+test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc の階段', () => {
+  test('道具を持ち替えても選択が空にならない（docs/現状.md B28 の解消）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId } = await commitOneFace(page);
+      expect(faceId).not.toBe('');
+      const active = page.getByTestId('app-active-feature');
+      await expect(active).toHaveText(faceId);
+
+      // **1 つずつ全部の道具を持ち替える。** 旧版はどの持ち替えでも選択が消えていた
+      // （実測 2.65 秒／回の手戻り）。1 つでも消えればここで落ちる。
+      for (const tool of [
+        'tool-edit.vertex',
+        'tool-edit.move',
+        'tool-edit.ring',
+        'tool-edit.knife',
+        'tool-edit.drill',
+        'tool-edit.reparent',
+        'tool-edit.merge',
+        'tool-edit.select',
+      ]) {
+        await page.getByTestId(tool).click();
+        await expect(active, `${tool} を構えたら選択が消えた`).toHaveText(faceId);
+        // **ここで Escape を挟んではいけない。** 道具のボタンはレール（地図の外）に
+        // あるので板に邪魔されないし、Escape は階段の 1 段目として **選択を外す**
+        // （設計書 §D.4）―― 挟むと「持ち替えで消えた」と「Esc で外れた」の区別が
+        // つかなくなる。
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('Esc は 1 段ずつ戻り、連打すれば必ず素の状態になる（設計書 §D.4）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, cx, cy } = await commitOneFace(page);
+      const active = page.getByTestId('app-active-feature');
+      const activeTool = page.getByTestId('app-active-tool');
+
+      // 頂点の道具で、地物を選んだうえで頂点を 1 つ掴む。
+      await page.getByTestId('tool-edit.vertex').click();
+      await expect(activeTool).toHaveText('edit.vertex');
+      await page.mouse.click(cx, cy); // 地物を選び直す（すでに選ばれている）
+      await expect(active).toHaveText(faceId);
+
+      // 1 段目: 地物の選択が外れる（頂点を掴んでいなければここが先頭の段）。
+      await page.keyboard.press('Escape');
+      await expect(active).toHaveText('');
+      // 2 段目: 道具が「選ぶ」へ戻る。
+      await page.keyboard.press('Escape');
+      await expect(activeTool).toHaveText('');
+      await expect(page.getByTestId('tool-edit.select')).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      );
+      // 3 回目以降は何も起きない（素の状態で止まる）。
+      await page.keyboard.press('Escape');
+      await page.keyboard.press('Escape');
+      await expect(active).toHaveText('');
+      await expect(activeTool).toHaveText('');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('所属変更を確定した直後の Ctrl+Z が効く（道具を外さずに）', async () => {
+    // **報告 04 §3.5 の再現**: 所属変更を確定した直後（775→776 件）の Ctrl+Z が
+    // 無反応だった。原因は「道具を構えている」だけで大域の打鍵が全部降りていたこと
+    // （11 項目の手書き OR）。増分 5c で鍵盤の持ち主を 1 値に畳み、**下書きが空なら
+    // 持ち主は地図に戻る**ようにしたので、確定直後の Ctrl+Z は必ず効く（設計書 §D.4）。
+    //
+    // わざと壊すなら: `shortcutsSuspended` を `toolOwnsKeyboard` を含む OR へ戻すと、
+    // ここが「やり直せる印が立たない」で赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const box = await (async () => {
+        await armAddAreaTool(page);
+        return addInputLayerBox(page);
+      })();
+      const half = Math.round(Math.min(box.width, box.height) * 0.12);
+      // **3 つとも重ならない場所に置く。** 重ねると所属変更の確定が重なり競合の板を
+      // 開き、そこで鍵盤の持ち主が「板」になる ―― この検査が見たいのは
+      // 「確定して板も出ていないのに Ctrl+Z が効かない」ことなので、板を出さない
+      // 場面で測る（板が出ているあいだ止まるのは設計どおりで、別の検査の担当）。
+      const left = { x: box.x + box.width * 0.22, y: box.y + box.height * 0.62 };
+      const right = { x: box.x + box.width * 0.78, y: box.y + box.height * 0.62 };
+      const top = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.22 };
+
+      await drawFace(page, squareCorners(left.x, left.y, half), { name: 'A' });
+      await armAddAreaTool(page);
+      await drawFace(page, squareCorners(right.x, right.y, half), { name: 'B' });
+      await armAddAreaTool(page);
+      await drawFace(page, squareCorners(top.x, top.y, half), { name: 'C' });
+
+      // 所属変更: C を掴んで、新しい親に B を指す。
+      await page.getByTestId('tool-edit.reparent').click();
+      await expect(page.getByTestId('reparent-input-layer')).toBeVisible();
+      await page.mouse.click(top.x, top.y); // 対象 = C
+      await expect(page.getByTestId('reparent-target')).not.toHaveText('');
+      await page.mouse.click(right.x, right.y); // 新しい親 = B
+      const confirm = page.getByTestId('reparent-confirm');
+      await expect(confirm).toBeEnabled();
+      await confirm.click();
+
+      // **道具は外さない。** ここで Ctrl+Z を押す。
+      // 確定したら鍵盤の持ち主は地図へ戻っていること（原因を直接指す観測）。
+      await expect(page.getByTestId('app-focus-owner')).toHaveText('map');
+      await expect(page.getByTestId('app-can-undo')).toHaveText('1');
+      await expect(page.getByTestId('app-can-redo')).toHaveText('0');
+      await page.keyboard.press('Control+z');
+      // 取り消しが本当に走ったことは「やり直せる」が立つことで見る（件数より確か）。
+      await expect(page.getByTestId('app-can-redo')).toHaveText('1');
     } finally {
       await app.close();
     }

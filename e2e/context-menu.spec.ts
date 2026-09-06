@@ -106,13 +106,27 @@ test.describe('fr96 — 右クリックメニューの本結線（動的項目 +
         .getByTestId('app-active-feature')
         .textContent()) ?? '').trim();
 
-      // --- 3. ドラフト中の右クリック: メニューは開かず、選択も不変（段階7 優先規則:
-      // promoteHit も open も走らない — suspended ゲート検出器）。 ---
+      // --- 3. ドラフト中の右クリック: **メニューは開く**（増分 5c で向きが変わった）。
+      //
+      // 旧版は「道具がドラフトを持っているあいだ右クリックは丸ごと落とす」を固定して
+      // いた。増分 5c で鍵盤の持ち主（`focusOwner`）を 1 値に畳んだとき、**右クリックを
+      // 止めるのはダイアログが持っているときだけ**に改めた（設計書 §D.4 の表 /
+      // §I.3 の原則①「いつでも開ける ―― 道具を持っている間も。中身が変わるだけ」）。
+      // 旧版は打鍵の門と同じ真偽値を使い回していたので、道具を構えているあいだ
+      // 右クリックが死んでいた。
+      //
+      // **ただしメニューが開いたら、こんどはメニューが鍵盤を持つ**ので、そこから先の
+      // 打鍵は止まる（下の「メニュー表示中の Ctrl+Z は不発」がそれを固定している）。
       await page.mouse.click(cx + 40, cy + 40, { button: 'right' });
-      await page.waitForTimeout(500);
-      await expect(page.getByTestId('context-menu')).toHaveCount(0);
+      const draftMenu = page.getByTestId('context-menu');
+      await expect(draftMenu).toBeVisible();
+      // 空白での右クリックなので、選択は昇格されない（不変）。
       await expect(page.getByTestId('app-active-feature')).toHaveText(selectedBefore);
       await expect(page.getByTestId('app-active-vertex')).toHaveText('');
+      // Escape で閉じる（メニュー自身の捕捉段。選択は消さない）。
+      await page.keyboard.press('Escape');
+      await expect(draftMenu).toHaveCount(0);
+      await expect(page.getByTestId('app-active-feature')).toHaveText(selectedBefore);
     } finally {
       await app.close();
     }

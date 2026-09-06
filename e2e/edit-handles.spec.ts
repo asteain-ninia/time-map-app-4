@@ -84,6 +84,10 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
       //    active feature, so its edit handles must now be composited. A square face has
       //    4 vertices + 4 edges (closed ring) → at least 4 vertex + 4 edge handles = 8.
       await enterEditMode(page);
+      // **増分 5c: 道具を持ち替えても選択は消えない**（`docs/現状.md` B28 の解消）。
+      // 旧版はここで「編集モードに入ると選択が破棄される」ことに寄りかかって
+      // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
+      await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
@@ -161,6 +165,10 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
 
       // 編集モードに入ると選択は破棄され (教訓 5.2)、ハンドルは 0。
       await enterEditMode(page);
+      // **増分 5c: 道具を持ち替えても選択は消えない**（`docs/現状.md` B28 の解消）。
+      // 旧版はここで「編集モードに入ると選択が破棄される」ことに寄りかかって
+      // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
+      await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await expect.poll(async () => (await primitiveCounts(page)).handle).toBe(0);
 
@@ -222,6 +230,10 @@ test.describe('HB3-9 — 編集モードで選択地物に編集ハンドルが�
 
       // 編集モードに入ると選択は破棄され (教訓 5.2)、点線は 0 本。
       await enterEditMode(page);
+      // **増分 5c: 道具を持ち替えても選択は消えない**（`docs/現状.md` B28 の解消）。
+      // 旧版はここで「編集モードに入ると選択が破棄される」ことに寄りかかって
+      // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
+      await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await expect.poll(async () => (await primitiveCounts(page)).dashedLine).toBe(0);
 

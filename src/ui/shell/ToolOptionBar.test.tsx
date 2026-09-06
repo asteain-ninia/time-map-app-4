@@ -20,7 +20,7 @@
 import { act, render } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { ToolOptionBar } from './ToolOptionBar';
+import { ToolOptionBar, describeOptionBarTarget } from './ToolOptionBar';
 import { OptionBarStore } from './option-bar';
 import { EDIT_TOOL_STRINGS, OPTION_BAR_STRINGS } from './strings';
 import { TOOL_ID } from './tools';
@@ -389,9 +389,15 @@ describe('ToolOptionBar — 降りたら空へ戻る（教訓 5.2）', () => {
       store.getState().setActiveTool(null);
     });
 
-    // 道具名は既定へ、対象も空へ（道具の持ち替えは選択も畳む＝`setActiveTool` の契約）。
+    // 道具名は既定へ戻る。
     expect(optionBar.get().toolName).toBeNull();
-    expect(optionBar.get().target).toEqual({ stage: null, name: null });
+    // **対象は残る**（増分 5c で `setActiveTool` の既定が反転した＝`docs/現状.md` B28）。
+    // 道具を外しても「いま選んでいる地物」は変わらないので、対象欄も変わらないのが
+    // 画面と状態の一致である。旧版はここで選択ごと消えていた。
+    expect(optionBar.get().target).toEqual({
+      stage: null,
+      name: describeOptionBarTarget(AAWEN),
+    });
     // **帯は持ったまま**。道具を構えていなくても地物を選べば対象欄に出す必要があるので、
     // 帯を持つ条件は「編集モードであること」に広げてある（穴 A）。
     expect(optionBar.hasOwner()).toBe(true);

@@ -24,6 +24,7 @@ import type { CommandResult } from '../../domain/command/result';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import {
   EMPTY_SELECTION,
+  IDLE_TRANSIENT,
   type ExistenceAtTime,
   type NextTargetPreference,
   type SelectionState,
@@ -81,7 +82,7 @@ import { withCursor as withBundleCursor, type Bundle } from '../discovery/bundle
 // （道具を足すときに必ず触るファイルなので、式の更新を忘れにくい）。barrel
 // (`../shell/index`) ではなく module を直に読むのは、barrel が store を読む部品まで
 // 連れてきて輪になるためである。
-import { modeForTool } from '../shell/tools';
+import { TOOL_ID, modeForTool } from '../shell/tools';
 
 import type { ExistenceResolver } from './existence';
 import { ALWAYS_PRESENT_RESOLVER } from './existence';
@@ -625,6 +626,26 @@ interface SelectionPatch {
 }
 
 /** Build the atomic store patch (truth + derived mirrors) from a SelectionState. */
+/**
+ * 道具を持ち替えたあとに残す選択（増分 5c / 設計書 §D.2 の遷移表）。
+ *
+ * **地物の選択とマークは保つ。頂点の選択は「頂点の道具から出るとき」だけ捨てる。**
+ * 頂点は「その道具で掴んでいるもの」なので、別の道具へ移っても掴んだままにすると、
+ * 次の操作の対象が画面と食い違う（ナイフを構えているのに頂点が選ばれている、など）。
+ *
+ * 掴んでいる最中の一時状態（`transient`）は必ず捨てる ―― これは教訓 5.2 が言う
+ * 「一時的な UI 状態」そのもので、持ち越すと次の押下が前の掴みの続きになる。
+ */
+function selectionAcrossToolSwitch(
+  state: { readonly selection: SelectionState; readonly activeTool: ToolId | null },
+  nextTool: ToolId | null,
+): SelectionState {
+  const leavingVertexTool =
+    state.activeTool === TOOL_ID.EditVertex && nextTool !== TOOL_ID.EditVertex;
+  const kept = leavingVertexTool ? withoutVertexSet(state.selection) : state.selection;
+  return kept.transient === IDLE_TRANSIENT ? kept : { ...kept, transient: IDLE_TRANSIENT };
+}
+
 function selectionPatch(selection: SelectionState): SelectionPatch {
   return {
     selection,
@@ -1533,11 +1554,25 @@ export function createSessionStore<S>(
     },
 
     setActiveTool(tool, preserveSelection) {
-      // Tool switch also runs the reset契約 (clear selection) UNLESS the caller
-      // explicitly pins a selection to preserve — the post-conflict re-arm carries
-      // the committed selection so the null→prev toggle never paints an empty frame
-      // (教訓 5.11). When preserved, only `activeTool` actually changes; the
-      // selection mirrors are re-applied to the SAME value atomically.
+      // **増分 5c: 既定を反転した ―― 道具を持ち替えても選択は捨てない。**
+      //
+      // 旧版は「道具を替えたら選択を全消しする（教訓 5.2 全経路で破棄）」が既定で、
+      // 選択を持ち越すのは競合解決後の再武装だけの例外だった。これが `docs/現状.md`
+      // B28（道具を構えると選択が外れる）の正体で、実測では 1 回あたり 2.65 秒の
+      // 手戻りになっていた（現状分析 C5-3 / C9）―― 一覧で目的の地物を選んでから
+      // ナイフを構えると、構えた瞬間に対象が消えて選び直しになる。
+      //
+      // **読み替えの根拠**（設計書 §D.7 / 開発ガイド §5.2 への追記）: 教訓 5.2 が
+      // 捨てろと言っているのは **一時的な UI 状態**（描きかけの点列・確定待ちの案・
+      // プレビュー・ポップオーバー）である。**選択は一時的な UI 状態ではなく、
+      // 利用者の作業文脈そのもの**で、`activeFeature` は FR-79 が定義するアプリの
+      // 正式な状態でもある。捨てる契約そのものは変えていない ―― 捨てる対象の
+      // 線引きを直した。道具の下書きは従来どおり全経路で捨てる（各コントローラの
+      // `resetForSwitch`）。
+      //
+      // **頂点の選択だけは別**（設計書 §D.2 の表）。頂点の道具から出るときに限って
+      // 捨てる ―― 頂点は「その道具で掴んでいるもの」なので、別の道具へ移っても
+      // 掴んだままにすると、次の操作の対象が画面と食い違う。
       //
       // **増分 5b: `mode` は道具から導出する**（設計書 §D.1 / 裁定 1）。画面から
       // モードの 3 ボタンが消えたので、「いま追加モードか編集モードか」を決めるのは
@@ -1562,7 +1597,7 @@ export function createSessionStore<S>(
       set({
         activeTool: next,
         mode: modeForTool(locked, next),
-        ...selectionPatch(preserveSelection ?? EMPTY_SELECTION),
+        ...selectionPatch(preserveSelection ?? selectionAcrossToolSwitch(get(), next)),
       });
     },
 

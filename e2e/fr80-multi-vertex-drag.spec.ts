@@ -89,6 +89,10 @@ test.describe('FR-80 — 矩形選択した複数頂点を掴むと選択セッ�
 
       // 2) 編集モードで面を実クリック選択 → ハンドルが描かれる。
       await enterEditMode(page);
+      // **増分 5c: 道具を持ち替えても選択は消えない**（`docs/現状.md` B28 の解消）。
+      // 旧版はここで「編集モードに入ると選択が破棄される」ことに寄りかかって
+      // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
+      await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);

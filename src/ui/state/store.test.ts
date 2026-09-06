@@ -22,6 +22,8 @@ import {
   DEFAULT_PROJECT_SETTINGS,
 } from './settings';
 import { EDIT_MODE, asToolId } from './session';
+import { TOOL_ID } from '../shell/tools';
+import { IDLE_TRANSIENT } from '../../domain/selection';
 import {
   TIME_CHANGE_SOURCE,
   type TimeChangeSource,
@@ -1431,35 +1433,56 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     expect(store.getState().activeFeature).toBe(f('A'));
   });
 
-  it('setActiveTool clears selection (select -> cancel -> recreate has no residue)', () => {
+  // **増分 5c で既定が反転した**（`docs/現状.md` B28）。旧版は「道具を替えたら選択を
+  // 全消しする」が既定で、一覧で目的の地物を選んでからナイフを構えると **構えた瞬間に
+  // 対象が消えて**選び直しになっていた（実測 2.65 秒／回）。教訓 5.2 が捨てろと言って
+  // いるのは一時的な UI 状態であって、選択は利用者の作業文脈そのものである
+  // （設計書 §D.7 / 開発ガイド §5.2 の読み替え）。
+  it('道具を持ち替えても地物の選択は残る（B28 の解消）', () => {
     const store = makeStore(undefined, {
       // **鍵は開けておく**（増分 5b）。ストアの既定は「読むだけ」で、そのあいだは
-      // 道具を構えられない（K-6 の関門）。この節が見たいのは道具と選択の契約なので、
-      // 前提として直せる状態にしておく。
+      // 道具を構えられない（K-6 の関門）。
       mode: EDIT_MODE.Edit,
       activeFeature: f('A'),
     });
     store.getState().setActiveTool(asToolId('rect'));
-    expect(store.getState().activeFeature).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
     expect(store.getState().activeTool).toBe(asToolId('rect'));
+    // 別の道具へ持ち替えても残る（「1 回目だけ残る」ではない）。
+    store.getState().setActiveTool(asToolId('edit.knife'));
+    expect(store.getState().activeFeature).toBe(f('A'));
   });
 
-  it('restoreSelection re-applies a captured selection across a tool re-arm (教訓 5.11 retain)', () => {
-    // Simulate the post-conflict-commit re-arm: a feature is selected with a tool
-    // armed, then the re-arm toggle null→prev clears the selection;
-    // restoreSelection brings it back so only the tool DRAFT is discarded while the
-    // committed selection survives (the 軽微UX fix in App.reArmActiveTool).
+  it('頂点の選択は「頂点の道具から出るとき」だけ捨てる（設計書 §D.2）', () => {
+    const store = makeStore(undefined, {
+      mode: EDIT_MODE.Edit,
+      activeTool: TOOL_ID.EditVertex,
+      activeFeature: f('A'),
+      vertexSelection: { ownerFeatureId: f('A'), vertexIds: new Set([v('v1')]) },
+    });
+    // 頂点の道具の中で持ち替えない限り、頂点は掴んだまま。
+    store.getState().setActiveTool(TOOL_ID.EditVertex);
+    expect(store.getState().vertexSelection?.vertexIds.size).toBe(1);
+    // 出ると捨てる（地物の選択は残る）。
+    store.getState().setActiveTool(TOOL_ID.EditKnife);
+    expect(store.getState().vertexSelection).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+  });
+
+  it('restoreSelection は捕まえた選択をそのまま戻せる（教訓 5.11 の口は残す）', () => {
+    // **増分 5c で前提が変わった**: 再武装の null→prev で選択が消えなくなったので、
+    // この口は「消えたものを戻す」ためではなく「捕まえた値をそのまま適用し直す」
+    // ためのものになった（競合解決の確定が昇格させた地物を明示的に指す経路）。
     const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeFeature: f('A') });
     store.getState().setActiveTool(asToolId('rect'));
     store.getState().setActiveFeature(f('A'));
-    const retained = store.getState().selection; // captured before the re-arm
+    const retained = store.getState().selection;
 
-    store.getState().setActiveTool(null); // re-arm step 1: clears selection
-    expect(store.getState().activeFeature).toBeNull();
-    store.getState().setActiveTool(asToolId('rect')); // re-arm step 2: still cleared
-    expect(store.getState().activeFeature).toBeNull();
+    store.getState().setActiveTool(null); // 再武装 1 段目
+    expect(store.getState().activeFeature).toBe(f('A')); // もう消えない
+    store.getState().setActiveTool(asToolId('rect')); // 再武装 2 段目
 
-    store.getState().restoreSelection(retained); // retain the committed selection
+    store.getState().restoreSelection(retained);
     expect(store.getState().activeFeature).toBe(f('A'));
     expect(store.getState().activeTool).toBe(asToolId('rect'));
   });
@@ -1504,14 +1527,16 @@ describe('mode/tool switch discards transient selection (教訓 5.2)', () => {
     expect(store.getState().activeTool).toBe(asToolId('rect'));
   });
 
-  it('setActiveTool(tool) without preserveSelection still clears (reset契約 default unchanged)', () => {
+  it('掴んでいる最中の一時状態は、道具を持ち替えたら必ず捨てる（教訓 5.2 の本体）', () => {
     const store = makeStore(undefined, { mode: EDIT_MODE.Edit, activeFeature: f('A') });
     store.getState().setActiveTool(asToolId('rect'));
     store.getState().setActiveFeature(f('A'));
     expect(store.getState().activeFeature).toBe(f('A'));
-    // Default path (no second arg) keeps wiping the selection (教訓 5.2).
+    // 選択は残るが、`transient`（掴みかけ）は残さない ―― 残すと次の押下が
+    // 前の掴みの続きになる。捨てる契約そのものは変えていない。
     store.getState().setActiveTool(asToolId('edit.knife'));
-    expect(store.getState().activeFeature).toBeNull();
+    expect(store.getState().activeFeature).toBe(f('A'));
+    expect(store.getState().selection.transient).toBe(IDLE_TRANSIENT);
   });
 });
 

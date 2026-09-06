@@ -20,7 +20,7 @@ import { useStore } from 'zustand';
 
 import { createSessionStore } from './state/store';
 import { EDIT_MODE, type ToolId } from './state/session';
-import { TOOL_ID } from './shell/tools';
+import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
@@ -170,6 +170,15 @@ import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore, type OptionBarAction } from './shell/option-bar';
 import { PersistentOptionSlot } from './shell/PersistentOptionSlot';
+import {
+  FOCUS_OWNER,
+  deriveFocusOwner,
+  explainsRefusal,
+  suspendsContextMenu,
+  suspendsShortcuts,
+} from './shell/focus-owner';
+import { ESCAPE_STEP, escapeHasWork, nextEscapeStep } from './shell/escape-ladder';
+import { useTextFocused } from './shell/useTextFocused';
 import { SidebarFocusStore } from './shell/sidebar-focus';
 import {
   LongitudeShiftControl,
@@ -223,6 +232,7 @@ import { toPersistedUiSettings } from './file-ops/ui-settings-bridge';
 import type { PaletteSelection } from './state/settings';
 import {
   ownerLookupFromMap,
+  withoutVertexSet,
   type NextTargetPreference,
 } from '../domain/selection';
 import type { FeatureSnapshot } from '../domain/editing/index';
@@ -1704,12 +1714,48 @@ export function App(): JSX.Element {
   // are a no-op (and the menu item disables) when nothing is selected; permissions.ts
   // already 表示専用モードでは一括無効化 (EditDeselect ∈ EDITING_COMMANDS).
   useEffect(() => {
+    /**
+     * **Escape の階段の下 3 段**（設計書 §D.4 / `shell/escape-ladder.ts`。増分 5c）。
+     *
+     * 旧版は 1 回で `clearSelection()`（頂点と地物を同時に空）だった。頂点を 3 つ
+     * 選んだあと「地物だけ選んだ状態へ戻したい」ときに戻り道が無く、選び直しに
+     * なっていた。**1 段ずつ戻す**ことで「連打すれば必ず素の状態」と「1 つ前へ戻る」
+     * の両方が成り立つ。
+     *
+     * 上の段（板・ポップオーバー・入力欄・道具の下書き）は、それぞれの部品が捕捉段の
+     * Escape を持っていて下へ流さないので、ここへは来ない。
+     */
+    const ladderInput = (): {
+      hasVertexSelection: boolean;
+      hasActiveFeature: boolean;
+      hasNonSelectTool: boolean;
+    } => {
+      const s = store.getState();
+      return {
+        hasVertexSelection: s.selection.vertexIds.size > 0 && s.selection.vertexOwner !== null,
+        hasActiveFeature: s.selection.activeFeature !== null,
+        hasNonSelectTool: !isSelectTool(s.activeTool),
+      };
+    };
     registry.register(COMMAND_ID.EditDeselect, {
-      run: () => store.getState().clearSelection(),
-      canRun: () => {
-        const sel = store.getState().selection;
-        return sel.activeFeature !== null || (sel.vertexIds.size > 0 && sel.vertexOwner !== null);
+      run: () => {
+        const s = store.getState();
+        switch (nextEscapeStep(ladderInput())) {
+          case ESCAPE_STEP.ClearVertices:
+            s.restoreSelection(withoutVertexSet(s.selection));
+            return;
+          case ESCAPE_STEP.ClearFeature:
+            s.clearSelection();
+            return;
+          case ESCAPE_STEP.ResetTool:
+            // 「選ぶ」＝ 道具を外した状態。選択はもう空なので、ここで消えるものは無い。
+            s.setActiveTool(null);
+            return;
+          case ESCAPE_STEP.None:
+            return;
+        }
       },
+      canRun: () => escapeHasWork(ladderInput()),
     });
     return () => {
       registry.unregister(COMMAND_ID.EditDeselect);
@@ -2044,6 +2090,30 @@ export function App(): JSX.Element {
   // である。Ctrl+K で背後に錨が増えたり、Delete で対象そのものが消えたりしないようにする
   // （教訓 5.14: 重なる UI は入力を受ける層も同時に設計する）。
   const [draftConfirmOpen, setDraftConfirmOpen] = useState(false);
+  /**
+   * **いま開いている「◯◯ ▾」の名前**（増分 5c / 設計書 §D.1 の `popover`）。
+   *
+   * 真偽値 1 個ではなく **名前の集合**にしてある。板が 2 枚以上あるとき（1 枚を開いた
+   * まま別の 1 枚を開くと、閉じる報せと開く報せの順序は保証されない）、数える形だと
+   * 「閉じたのに開いていることになる」「開いているのに閉じたことになる」がどちらも
+   * 起きる。名前で持てば順序に依らない（教訓 5.6: 結果状態で判定する）。
+   */
+  const [openPopovers, setOpenPopovers] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const popoverOpenChange = useCallback(
+    (id: string) =>
+      (open: boolean): void => {
+        setOpenPopovers((prev) => {
+          if (prev.has(id) === open) return prev;
+          const next = new Set(prev);
+          if (open) next.add(id);
+          else next.delete(id);
+          return next;
+        });
+      },
+    [],
+  );
   // 鍵盤を持っているのが「ダイアログ」なのか「道具」なのかを分けて数える（増分 3）。
   // 止める理由が違えば、止めている間に通してよいものも違う。
   const modalOwnsKeyboard =
@@ -2065,7 +2135,25 @@ export function App(): JSX.Element {
     ringEditDrawing ||
     drillDrawing ||
     surveyDrafting;
-  const shortcutsSuspended = modalOwnsKeyboard || toolOwnsKeyboard;
+  /**
+   * **鍵盤の持ち主**（設計書 §D.1 / §D.4、結合点 #5。増分 5c）。
+   *
+   * 旧版はここが **11 項目を手で OR した 1 つの真偽値**で、足すたびに「止める条件・
+   * 通す集合・断りを出す条件」の 3 か所を同時に直す必要があった。実際に穴が空いて
+   * いて、**所属変更の確定直後の Ctrl+Z が無反応**（報告 04 §3.5）だったのはこれが
+   * 原因である ―― 道具を構えているだけで全部止まっていた。
+   *
+   * いまは「いちばん前に居るのは誰か」を 1 つの値に畳み、そこから可否を表で決める
+   * （`shell/focus-owner.ts`）。**新しい板を足すときに直すのはこの入力 1 か所だけ。**
+   */
+  const textFocused = useTextFocused();
+  const focusOwner = deriveFocusOwner({
+    modalOpen: modalOwnsKeyboard,
+    popoverOpen: openPopovers.size > 0,
+    textFocused,
+    toolDrawing: toolOwnsKeyboard,
+  });
+  const shortcutsSuspended = suspendsShortcuts(focusOwner);
   /**
    * **道具が鍵盤を持っている間でも保存だけは通す**（増分 3。増分 1 の申し送り
    * 「追加モードで入力層が出ているあいだは Ctrl+S が届かない」）。
@@ -2075,7 +2163,7 @@ export function App(): JSX.Element {
    * 「何に対して答えたのか」が分からなくなる。
    */
   const alwaysAllowedShortcuts =
-    toolOwnsKeyboard && !modalOwnsKeyboard ? SAVE_WHILE_TOOL_OWNS_KEYBOARD : undefined;
+    focusOwner === FOCUS_OWNER.ToolDrawing ? SAVE_WHILE_TOOL_OWNS_KEYBOARD : undefined;
   /**
    * **止めている間に押された打鍵の理由を出す**（増分 3。現状.md B28 の第 2 の理由 /
    * 「打ちかけの確認中に Ctrl+K を押したとき、止まるだけでなく理由を出す」）。
@@ -2091,9 +2179,14 @@ export function App(): JSX.Element {
     },
     [statusMessageStore],
   );
-  // fr96: mirror the OR-chain into the ref the live right-click port reads (assigned
+  // fr96: mirror the judgement into the ref the live right-click port reads (assigned
   // every render, so the imperative port always sees the current value — 教訓 5.6).
-  shortcutsSuspendedRef.current = shortcutsSuspended;
+  //
+  // **増分 5c: 右クリックは「ダイアログが持っているとき」だけ止める**（設計書 §D.4 の
+  // 表 / §I.3 の原則①「いつでも開ける ―― 道具を持っている間も」）。旧版は打鍵の門と
+  // 同じ 1 本の真偽値を使い回していたので、**道具を構えているあいだ右クリックが
+  // 死んでいた**。止める理由が違うものを同じ値で決めない（教訓 5.30）。
+  shortcutsSuspendedRef.current = suspendsContextMenu(focusOwner);
 
   // Re-arm the active tool after a paused-conflict modal closes, discarding any
   // transient tool draft (教訓 5.2 全経路で破棄) WHILE retaining the committed
@@ -2803,7 +2896,7 @@ export function App(): JSX.Element {
         sidebar={sidebar}
         suspended={shortcutsSuspended}
         alwaysAllowedShortcuts={alwaysAllowedShortcuts}
-        onSuspendedShortcut={modalOwnsKeyboard ? onSuspendedShortcut : undefined}
+        onSuspendedShortcut={explainsRefusal(focusOwner) ? onSuspendedShortcut : undefined}
         onMapMount={onMapMount}
         /* 設計書 §C.4 のオプションバー。この増分では器と API だけで、中身は各道具が
            後の増分で押し込む（既定は「選ぶ／（選んでいません）／地図か地物一覧から
@@ -2881,7 +2974,7 @@ export function App(): JSX.Element {
                 帯を持ち直しても落ちない口（`registerPersistentSlot`）へ差し込む。
                 並びは登録した順（深さ → 格子 → 測量 → 表示）。 */}
             <PersistentOptionSlot optionBar={optionBarStore} id="depth">
-              <DepthOptions<DomainRoot> store={store}>
+              <DepthOptions<DomainRoot> store={store} onOpenChange={popoverOpenChange('depth')}>
                 <GlobalDepthPanel store={store} />
               </DepthOptions>
             </PersistentOptionSlot>
@@ -2892,7 +2985,10 @@ export function App(): JSX.Element {
               <GridToggleControl store={store} />
             </PersistentOptionSlot>
             <PersistentOptionSlot optionBar={optionBarStore} id="survey">
-              <SurveyMeasurementPanel store={store} />
+              <SurveyMeasurementPanel
+                store={store}
+                onCoordsOpenChange={popoverOpenChange('survey-coords')}
+              />
             </PersistentOptionSlot>
             {/* 増分 4 / C7: 表示の設定を「一覧の 28,546px 下」からオプションバーの
                 設定欄へ移す。 */}
@@ -2901,6 +2997,7 @@ export function App(): JSX.Element {
               optionBar={optionBarStore}
               getRoot={getDomainRoot}
               getTime={getCurrentTime}
+              onOpenChange={popoverOpenChange('display')}
             />
             <AddToolControllerWithParents
               store={store}
@@ -3127,6 +3224,13 @@ export function App(): JSX.Element {
                 app-active-feature マーカーと同方式). They hold NO truth — pure mirrors
                 of the store (技術方針 2.5). */}
             <SessionModeMarker store={store} />
+            {/* **鍵盤の持ち主の隠し観測**（増分 5c / T-2「隠し観測は足す一方にする」）。
+                「打鍵が効かない」の原因が **誰が持っているか**にあることを、検査から
+                直接指せるようにする ―― 旧版は 11 項目の OR が真偽値 1 個に潰れていて、
+                赤くなっても「どれが真だったのか」が分からなかった。 */}
+            <span data-testid="app-focus-owner" hidden>
+              {focusOwner}
+            </span>
             {/* BUGHUNT2 ROOT FIX — the FR-96 right-click context menu mount. Bridges
                 the live context-menu port (createLiveContextMenuPort in onMapMount) to
                 the U20 ContextMenu component, bound to the LIVE registry + session

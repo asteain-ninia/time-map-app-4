@@ -83,10 +83,12 @@ export interface DisplayOptionsProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
   readonly getRoot: () => DomainProject;
   readonly getTime: () => TimePoint;
+  /** 開閉の報せ（`focusOwner` の導出。設計書 §D.1）。増分 5c で足した。 */
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
-  const { store, getRoot, getTime } = props;
+  const { store, getRoot, getTime, onOpenChange } = props;
   const filter = useStore(store, (s) => s.filter);
   const domain = useStore(store, (s) => s.domain);
   const currentTime = useStore(store, (s) => s.currentTime);
@@ -171,7 +173,10 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
       closeKey={`${mode}|${activeTool ?? ''}|${String(currentTime)}|${projectLoadNonce}`}
       /* 中身の行数（種別の一覧）が変わると高さが変わるので、置き場所を測り直す。 */
       measureKey={kindLabels}
-      onOpenChange={setOpen}
+      onOpenChange={(open) => {
+        setOpen(open);
+        onOpenChange?.(open);
+      }}
     >
       {/* 既存の表示制御パネルと **同じ testid** を持ち越す（T-1: 役割で維持する）。
           置き場所が一覧の下からここへ移っただけで、役割は同じである。 */}
@@ -481,15 +486,21 @@ export function DisplayOptionsSlot<S>(props: {
   readonly optionBar: OptionBarStore;
   readonly getRoot: () => DomainProject;
   readonly getTime: () => TimePoint;
+  readonly onOpenChange?: (open: boolean) => void;
 }): null {
-  const { store, optionBar, getRoot, getTime } = props;
+  const { store, optionBar, getRoot, getTime, onOpenChange } = props;
   useEffect(
     () =>
       optionBar.registerPersistentSlot(
         'display',
-        <DisplayOptions<S> store={store} getRoot={getRoot} getTime={getTime} />,
+        <DisplayOptions<S>
+          store={store}
+          getRoot={getRoot}
+          getTime={getTime}
+          {...(onOpenChange ? { onOpenChange } : {})}
+        />,
       ),
-    [optionBar, store, getRoot, getTime],
+    [optionBar, store, getRoot, getTime, onOpenChange],
   );
   return null;
 }

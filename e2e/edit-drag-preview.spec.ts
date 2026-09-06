@@ -79,6 +79,10 @@ test.describe('HB3-4 — 編集モードでドラッグ中に頂点がカーソ�
 
       // 2) Enter 編集モード and REAL-click the body to select the face → handles draw.
       await enterEditMode(page);
+      // **増分 5c: 道具を持ち替えても選択は消えない**（`docs/現状.md` B28 の解消）。
+      // 旧版はここで「編集モードに入ると選択が破棄される」ことに寄りかかって
+      // 空を期待していた。選択を空にしたいなら **そう書く**（Escape）。
+      await page.keyboard.press('Escape');
       await expect(activeFeature).toHaveText('');
       await page.mouse.click(cx, cy);
       await expect(activeFeature).toHaveText(faceId);
