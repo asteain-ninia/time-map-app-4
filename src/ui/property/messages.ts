@@ -243,6 +243,11 @@ export const PROPERTY_STRINGS = {
   impactHeadingGone: '一緒に消えるもの',
   impactHeadingReferenced: '他から参照されているところ',
   impactHeadingAuto: '自動で消える地物',
+  /**
+   * **消したあとの階層に無理が出る**という警告（設計書 §A.3）。裁定 (あ)（掃除して
+   * 消す）では **止めない** ―― 起きることを言うだけで、実行できる。
+   */
+  impactHeadingCaution: '気をつけること',
   impactYear: (year: number): string => `${String(year)}年`,
   impactAnchors: (count: number, years: string): string =>
     `この地物の歴史の記録（錨）${String(count)} 件（${years}）`,

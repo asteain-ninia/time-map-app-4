@@ -7,6 +7,9 @@
 // **数え上げと文を分ける理由**: 方針が「参照があれば断る」へ転んでも、変わるのは
 // {@link DeleteImpactView.blockedReason} と実行ボタンの文言だけで、影響の一覧そのものは
 // 同じである（設計書 §A.3 の「方針中立の UI 契約」）。
+//
+// **いまの裁定は (あ)（掃除して消す）** なので、`judgeDeletion` の判定は **実行を止めず**
+// 「気をつけること」の行として出す（下の注記を読むこと）。
 
 import type { DeletionImpact } from '../../domain/deletion/index';
 import { DELETE_VERDICT, deleteRejectMessage } from '../../domain/deletion/index';
@@ -15,7 +18,12 @@ import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
 import { PROPERTY_STRINGS } from './messages';
 
-/** 影響ダイアログへ渡す一式（見出し・群・断りの理由・ボタンの文言）。 */
+/**
+ * 影響ダイアログへ渡す一式（見出し・群・断りの理由・ボタンの文言）。
+ *
+ * **群は 4 つ**: 一緒に消えるもの／他から参照されているところ／自動で消える地物／
+ * 気をつけること。行が 0 本の群は器が出さないので、当てはまらない見出しは画面に出ない。
+ */
 export interface DeleteImpactView {
   readonly title: string;
   readonly groups: readonly ImpactGroup[];
@@ -42,10 +50,11 @@ export function summarizeNames(
 /**
  * 「この地物を全部の年から消します」の影響ダイアログの中身を組み立てる。
  *
- * 群は設計書 §A.3 の文面どおり 3 つ:
+ * 群は設計書 §A.3 の文面どおり 3 つ ＋ 判定の 1 つ:
  *   1. 一緒に消えるもの（この地物の錨・頂点）
  *   2. 他から参照されているところ（下位領域が全部の年で最上位へ移る）
  *   3. 自動で消える地物（下位領域を全部失った集約。FR-41）
+ *   4. 気をつけること（`judgeDeletion` が「再編不能」と言ったとき。**止めはしない**）
  */
 export function buildDeleteImpactView(input: {
   readonly impact: DeletionImpact;
@@ -92,6 +101,19 @@ export function buildDeleteImpactView(input: {
           ),
         ];
 
+  // **判定は「注意」として出す。実行は止めない**（裁定一覧 A の 2026-09-03 ＝ 方針 (あ)。
+  // 設計書 §A.3）。`judgeDeletion` が言う「再編不能」は、掃除したあとの階層が U08 の
+  // 不変条件に触れる、という **警告**である ―― (あ) は「掃除して消す」と決めており、
+  // 消せなくする側は方針 (い) の振る舞いである。
+  //
+  // **器は止められる形のまま残してある**（`blockedReason`）。裁定が (い) へ転んだら、
+  // ここで `deleteRejectMessage(...)` を返すだけで実行ボタンが灰色になって理由が
+  // 脇に出る ―― 画面は作り直さない（§A.3 の「方針中立の UI 契約」）。
+  const caution: readonly string[] =
+    impact.verdict.kind === DELETE_VERDICT.Rejected
+      ? [deleteRejectMessage(impact.verdict.reason)]
+      : [];
+
   const groups: readonly ImpactGroup[] = [
     {
       testId: 'gone',
@@ -108,15 +130,17 @@ export function buildDeleteImpactView(input: {
       heading: PROPERTY_STRINGS.impactHeadingAuto,
       lines: auto,
     },
+    {
+      testId: 'caution',
+      heading: PROPERTY_STRINGS.impactHeadingCaution,
+      lines: caution,
+    },
   ];
 
   return {
     title: PROPERTY_STRINGS.impactTitle(targetName),
     groups,
-    blockedReason:
-      impact.verdict.kind === DELETE_VERDICT.Rejected
-        ? deleteRejectMessage(impact.verdict.reason)
-        : null,
+    blockedReason: null,
     confirmLabel: PROPERTY_STRINGS.impactConfirm,
     cancelLabel: PROPERTY_STRINGS.impactCancel,
     note: PROPERTY_STRINGS.impactUndoNote,
