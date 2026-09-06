@@ -54,8 +54,16 @@ export const SURVEY_STRINGS = {
   endPointLabel: '終点',
   /** Guidance shown when idle (no start point yet). */
   guideIdle: '地図上をクリックして測量の始点を指定してください。',
-  /** Guidance shown after the first click (awaiting the end point). */
-  guideAwaitingEnd: 'もう一度クリックして終点を指定してください（Escでキャンセル）。',
+  /**
+   * 始点だけ押したあとの「次の一手」。
+   *
+   * **「キャンセル」とは言わない**（増分 5 の手直し 2 回目 / Grok N6）。確定欄と 5 道具の
+   * 案内は全部「やめる」に揃えたのに、ここだけ「（Escでキャンセル）」が残っていた ――
+   * 同じ働きに 2 つの名前があると、どちらが何なのかを利用者が覚え直すことになる
+   * （§H.1 の用語集に「キャンセル」は無い）。打鍵の案内も設計書 §C.4 の測るの行に
+   * 揃えた言い方にする。
+   */
+  guideAwaitingEnd: 'もう一度クリックして終点を指定してください（Esc で測るのをやめます）。',
   /** Shown for an internal inconsistency (FR-117). */
   internalError: '内部エラーが発生しました。開発者へ報告してください。',
   /** Coordinate display-format group label (FR-16 切替, U37). */
