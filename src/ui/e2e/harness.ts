@@ -54,6 +54,17 @@ export interface E2eHarnessActions {
    * （実データ 775 件で 2MB あるので、5,000 件は置きたくない）。
    */
   readonly loadSyntheticProject: (count: number) => void;
+  /**
+   * **1 地物が `count` 本の錨を持つ**合成データを載せる（増分 6）。設計書 §F.2 の
+   * 受け入れ条件が「選択中の 1 地物が 5 万錨」で書かれているので、その規模を実アプリで
+   * 作れないと測れない。`asAggregateChild` を立てると **まとめ役の子**の形（自分の履歴を
+   * 持たず親の系列に入っている）になる ―― 系列を引く経路が違うので別に測る、という
+   * 受け入れ条件のための形である。所有者: ui/App。
+   */
+  readonly loadSyntheticAnchors: (
+    count: number,
+    options?: { readonly asAggregateChild?: boolean },
+  ) => void;
 }
 
 type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;

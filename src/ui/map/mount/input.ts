@@ -12,7 +12,7 @@ import {
   CursorPositionStore,
 } from '../../shell/cursor-position';
 import { BROWSER_CLOCK, throttleTrailing } from '../../shell/map-resize';
-import { POINTER_BUTTON } from '../dispatch';
+import { POINTER_BUTTON, pointerButtonFromCode } from '../dispatch';
 import { PointerDispatcher } from '../PointerDispatcher';
 import {
   NOOP_ADD_PORT,
@@ -23,6 +23,9 @@ import {
   type MapCameraInput,
   type SelectionPort,
 } from '../ports';
+import type { NearVertexCandidate } from '../live-hit-test';
+import { VERTEX_CANDIDATE_MIN, type VertexCandidateStore } from '../vertex-candidates';
+import type { FeatureId } from '../../../domain/ids';
 import type { MountStore, MountTransients } from './shared';
 
 /** {@link createMountInput} の入力。 */
@@ -49,6 +52,16 @@ export interface MountInputOptions {
   readonly editSession: EditSessionPort;
   /** 右クリックメニューの口。 */
   readonly contextMenu: ContextMenuPort;
+  /**
+   * 頂点の候補一覧（設計書 §B.5 の台帳 #12 / V9）。押した位置の掴める距離に頂点が
+   * **2 つ以上**あるときだけ一覧を出し、そうでなければ畳む。渡さなければ何もしない
+   * （honest stub ―― 無い機能を有るように見せない）。
+   */
+  readonly vertexCandidates?: {
+    readonly store: VertexCandidateStore;
+    readonly probe: (point: { readonly x: number; readonly y: number }) => readonly NearVertexCandidate[];
+    readonly nameOf: (featureId: FeatureId) => string;
+  };
 }
 
 /** {@link createMountInput} の産物。 */
@@ -73,6 +86,7 @@ export function createMountInput(options: MountInputOptions): MountInput {
     selectionPort,
     editSession,
     contextMenu,
+    vertexCandidates,
   } = options;
 
   // HB-1 ROOT FIX — wire the U40 PointerDispatcher to the LIVE camera (U17). The
@@ -162,6 +176,27 @@ export function createMountInput(options: MountInputOptions): MountInput {
     // frame is pending, so it costs nothing on the common path.
     transients.flushRedraw();
     const { x, y } = toSurface(e.clientX, e.clientY);
+    // 頂点の候補一覧（#12 / V9）。**押すたびに畳んでから、要るときだけ出し直す** ――
+    // 「地図の他所のクリックで必ず消える」を分岐ではなくこの順序で保証する
+    // （閉じ方が経路ごとに割れると、閉じたつもりで居座る＝教訓 5.56）。
+    if (vertexCandidates !== undefined) {
+      vertexCandidates.store.clear();
+      if (pointerButtonFromCode(e.button) === POINTER_BUTTON.Left) {
+        const found = vertexCandidates.probe({ x, y });
+        if (found.length >= VERTEX_CANDIDATE_MIN) {
+          vertexCandidates.store.set({
+            x,
+            y,
+            rows: found.map((c) => ({
+              featureId: c.featureId,
+              vertexId: c.vertexId,
+              featureName: vertexCandidates.nameOf(c.featureId),
+              distancePx: c.distancePx,
+            })),
+          });
+        }
+      }
+    }
     // Hand the capture target to the dispatcher so IT owns the pan's pointer
     // capture lifecycle end to end: capture on pan-start, release on EVERY
     // teardown path (release / cancel / mode-change abort). hookTarget is a

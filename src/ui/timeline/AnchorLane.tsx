@@ -1,0 +1,296 @@
+// UI layer (U21 / 時刻レール): 錨レーン（設計書 §C.7 の (b) / §F.2）。
+//
+// **canvas 1 枚で描き、錨 1 本につき DOM ノードを 1 個も作らない**（規則 5）。理由は
+// 4 つ ―― (a) 5 万個の `<span>` は DOM として成立しない (b) DOM を作らなければ
+// 「吹き出しが下のボタンの押下を飲み込む」「`overflow` で切れる」型の事故がレーンに
+// 入り込まない (c) 描画エンジンは既に Canvas 2D で、E2E は `window.__E2E__` の隠し観測で
+// 検証する形が確立している (d) **`timeline-markers` / `timeline-markers-hint` の testid、
+// `.timeline-markers` クラス、「この時刻をブックマーク」ボタンの 4 つの名前を使わない**ので、
+// 撤去済みの栞の E2E（`ux-cluster.spec.ts` の HB-12）が無改修で通る。
+//
+// 密度が高すぎるときの逃げ道は 3 つ（規則 6）。①同じ画素列を押すと 1 段拡大
+// ②それ以上ほどけないときは束の吹き出し ③`[` `]` と操作列の錨ジャンプ（この部品の外）。
+
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+
+import type { AnchorEntry } from '../../domain/anchor-series';
+import type { Calendar } from '../../domain/time/calendar';
+import type { TimePoint } from '../../domain/time/time-point';
+import {
+  LANE_DENSE_ACTION,
+  LANE_HIT,
+  densityRatio,
+  laneDenseAction,
+  laneHitTest,
+  runSegments,
+  yearAtPixel,
+  zoomLaneStep,
+  type AnchorLaneAggregate,
+  type AnchorLaneSource,
+} from '../time/anchor-lane';
+import type { TimeBarView } from '../time/timebar';
+
+import { RAIL_STRINGS } from './rail-strings';
+import { formatTimePoint } from './time-display';
+
+/** 束の吹き出しに並べる行の上限（素性欄の錨表と同じ「前後 12 本」の考え方）。 */
+export const BUNDLE_MAX_ROWS = 12;
+
+/** 束の吹き出しの中身。 */
+export interface LaneBundle {
+  /** 吹き出しを出す画素位置。 */
+  readonly px: number;
+  /** その範囲の錨（先頭 {@link BUNDLE_MAX_ROWS} 本）。 */
+  readonly rows: readonly AnchorEntry[];
+  /** その範囲の総数（行数より多いことがある）。 */
+  readonly count: number;
+  /** 見出しに出す年。 */
+  readonly nearLabel: string;
+}
+
+export interface AnchorLaneProps {
+  readonly source: AnchorLaneSource;
+  readonly aggregate: AnchorLaneAggregate;
+  readonly entries: readonly AnchorEntry[];
+  readonly view: TimeBarView;
+  readonly calendar: Calendar;
+  /** 選んでいる地物があるか（無いときは淡い 1 行を出す）。 */
+  readonly hasSelection: boolean;
+  /** まとめ役の子で、親の系列を借りているときの持ち主の名前。 */
+  readonly ownerName: string | null;
+  /** 歴史の節目が時間軸の左端にしかないか（設計書 §H.4 の空状態）。 */
+  readonly onlyOrigin: boolean;
+  /** その年へ移動する。 */
+  readonly onJumpTo: (time: TimePoint) => void;
+  /** 表示範囲を差し替える（1 段拡大）。 */
+  readonly onView: (next: TimeBarView) => void;
+  /** 当たり判定にかかった時間を控える（観測）。 */
+  readonly onHitTestMs: (ms: number) => void;
+  /** レーンの高さ（px）を控える（観測）。 */
+  readonly onLaneHeight: (px: number) => void;
+}
+
+/** 描く色。CSS のカスタムプロパティから読む（配色の真実源を CSS 側に置く）。 */
+interface LaneColors {
+  readonly bar: string;
+  readonly mark: string;
+  readonly dense: string;
+}
+
+function readColors(el: HTMLElement): LaneColors {
+  const style = getComputedStyle(el);
+  const pick = (name: string, fallback: string): string => {
+    const v = style.getPropertyValue(name).trim();
+    return v === '' ? fallback : v;
+  };
+  return {
+    bar: pick('--rail-lane-bar', '#c7ccd4'),
+    mark: pick('--rail-lane-mark', '#2f6fb5'),
+    dense: pick('--rail-lane-dense', '#1f4d80'),
+  };
+}
+
+export function AnchorLane(props: AnchorLaneProps): JSX.Element {
+  const {
+    source,
+    aggregate,
+    entries,
+    view,
+    calendar,
+    hasSelection,
+    ownerName,
+    onlyOrigin,
+    onJumpTo,
+    onView,
+    onHitTestMs,
+    onLaneHeight,
+  } = props;
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [bundle, setBundle] = useState<LaneBundle | null>(null);
+
+  // 表示範囲・選択・幅が変わったら束の吹き出しは畳む（K-5: 一時的な UI 状態は捨てる）。
+  useEffect(() => {
+    setBundle(null);
+  }, [view, source]);
+
+  const empty = !hasSelection || source.starts.length === 0;
+  const emptyText = !hasSelection
+    ? RAIL_STRINGS.laneEmptyNoSelection
+    : onlyOrigin
+      ? RAIL_STRINGS.laneEmptyOnlyOrigin
+      : RAIL_STRINGS.laneEmptyNoSelection;
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const parent = canvas.parentElement;
+    if (parent === null) return;
+    const rect = parent.getBoundingClientRect();
+    const width = Math.max(0, Math.round(rect.width));
+    const height = Math.max(0, Math.round(rect.height));
+    onLaneHeight(height);
+    if (width === 0 || height === 0) return;
+    const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+    }
+    canvas.style.width = `${String(width)}px`;
+    canvas.style.height = `${String(height)}px`;
+    const ctx = canvas.getContext('2d');
+    if (ctx === null) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+
+    const colors = readColors(canvas);
+
+    // ①存続している期間の細い帯。空白の期間は塗らない（FR-60 の条文どおり）。
+    const midY = Math.round(height / 2);
+    ctx.fillStyle = colors.bar;
+    for (const seg of runSegments(source, view)) {
+      ctx.fillRect(seg.startPx, midY - 1, Math.max(1, seg.endPx - seg.startPx), 2);
+    }
+
+    // ②画素の列ごとの印と密度帯。**図形の数は軸の画素数で頭打ちになる**（規則 2）。
+    const counts = aggregate.counts;
+    const maxCount = aggregate.maxCount;
+    const markHalf = Math.min(5, Math.floor(height / 2) - 1);
+    for (let x = 0; x < aggregate.width; x += 1) {
+      const c = counts[x] as number;
+      if (c === 0) continue;
+      if (c === 1) {
+        // 菱形の印。
+        ctx.fillStyle = colors.mark;
+        ctx.beginPath();
+        ctx.moveTo(x + 0.5, midY - markHalf);
+        ctx.lineTo(x + 0.5 + markHalf, midY);
+        ctx.lineTo(x + 0.5, midY + markHalf);
+        ctx.lineTo(x + 0.5 - markHalf, midY);
+        ctx.closePath();
+        ctx.fill();
+        continue;
+      }
+      // 2 本以上は高さと濃さで件数を出す縦棒（個別の印は描かない）。
+      const ratio = densityRatio(c, maxCount);
+      const barHeight = Math.max(4, Math.round(ratio * (height - 4)));
+      ctx.globalAlpha = 0.45 + 0.55 * ratio;
+      ctx.fillStyle = colors.dense;
+      ctx.fillRect(x, midY - barHeight / 2, 1, barHeight);
+      ctx.globalAlpha = 1;
+    }
+  }, [source, aggregate, view, onLaneHeight]);
+
+  const handlePointerDown = useCallback(
+    (e: ReactPointerEvent<HTMLCanvasElement>) => {
+      const canvas = e.currentTarget;
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const started = performance.now();
+      const hit = laneHitTest(source, view, px);
+      onHitTestMs(performance.now() - started);
+
+      if (hit.kind === LANE_HIT.None) {
+        // 何も無いところを押したら「その年へ移動」（中身 4: レールのクリック）。
+        onJumpTo(yearAtPixel(px, view, calendar));
+        return;
+      }
+      if (hit.kind === LANE_HIT.Single) {
+        const entry = entries[hit.firstIndex];
+        if (entry !== undefined) onJumpTo(entry.start);
+        return;
+      }
+      // 2 本以上 ―― まだほどけるなら 1 段拡大、ほどけないなら束の吹き出し（規則 6）。
+      if (laneDenseAction(source, view, hit) === LANE_DENSE_ACTION.Zoom) {
+        onView(zoomLaneStep(view, px, calendar));
+        return;
+      }
+      const rows = entries.slice(hit.firstIndex, hit.firstIndex + BUNDLE_MAX_ROWS);
+      const near = entries[hit.firstIndex];
+      setBundle({
+        px,
+        rows,
+        count: hit.count,
+        nearLabel: near === undefined ? '' : formatTimePoint(near.start),
+      });
+    },
+    [source, view, entries, calendar, onJumpTo, onView, onHitTestMs],
+  );
+
+  const laneTitle = useMemo(() => {
+    if (!hasSelection) return RAIL_STRINGS.laneEmptyNoSelection;
+    if (ownerName !== null) {
+      return `${RAIL_STRINGS.laneInheritedPrefix}${ownerName}${RAIL_STRINGS.laneInheritedSuffix}`;
+    }
+    return RAIL_STRINGS.laneLabel;
+  }, [hasSelection, ownerName]);
+
+  return (
+    <div className="rail__lane" data-testid="rail-lane">
+      <canvas
+        ref={canvasRef}
+        className="rail__lane-canvas"
+        data-testid="anchor-lane"
+        role="img"
+        aria-label={laneTitle}
+        title={laneTitle}
+        onPointerDown={handlePointerDown}
+      />
+      {empty && (
+        <p className="rail__lane-empty" data-testid="anchor-lane-empty">
+          {emptyText}
+        </p>
+      )}
+      {ownerName !== null && (
+        <p className="rail__lane-owner" data-testid="anchor-lane-owner">
+          {`${RAIL_STRINGS.laneInheritedPrefix}${ownerName}${RAIL_STRINGS.laneInheritedSuffix}`}
+        </p>
+      )}
+      {bundle !== null && (
+        <div
+          className="rail__bundle"
+          data-testid="anchor-bundle"
+          style={{ left: `${String(bundle.px)}px` }}
+          role="group"
+          aria-label={RAIL_STRINGS.bundleTitle(bundle.nearLabel, bundle.count)}
+        >
+          <div className="rail__bundle-head" data-testid="anchor-bundle-title">
+            {RAIL_STRINGS.bundleTitle(bundle.nearLabel, bundle.count)}
+          </div>
+          <ul className="rail__bundle-list">
+            {bundle.rows.map((entry) => (
+              <li key={entry.anchor.id}>
+                <button
+                  type="button"
+                  data-testid={`anchor-bundle-row-${entry.anchor.id}`}
+                  onClick={() => {
+                    onJumpTo(entry.start);
+                    setBundle(null);
+                  }}
+                >
+                  {formatTimePoint(entry.start)}
+                </button>
+              </li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            className="rail__bundle-close"
+            data-testid="anchor-bundle-close"
+            onClick={() => setBundle(null)}
+          >
+            {RAIL_STRINGS.bundleClose}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

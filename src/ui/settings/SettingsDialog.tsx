@@ -602,6 +602,18 @@ function AppTab(props: {
         />
         {APP_FIELD_STRINGS.showConflictGuide}
       </label>
+
+      {/* 初回起動のガイド（増分 6 / 設計書 §H.3）。**恒久 OFF にした人が戻せる場所**が
+          ここである ―― ガイドの「今後表示しない」を押したきり二度と出せない、を作らない。 */}
+      <label>
+        <input
+          type="checkbox"
+          aria-label={APP_FIELD_STRINGS.showFirstRunGuide}
+          checked={d.showFirstRunGuide}
+          onChange={(e) => set('showFirstRunGuide', e.target.checked)}
+        />
+        {APP_FIELD_STRINGS.showFirstRunGuide}
+      </label>
     </section>
   );
 }

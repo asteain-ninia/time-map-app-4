@@ -159,7 +159,10 @@ import { createLiveGrabbabilityResolver } from './live-grabbability';
 import type { ZoomDirection } from './map/keyboard-zoom';
 import { CursorPositionStore } from './shell/cursor-position';
 import { registerE2eHarnessAction } from './e2e/harness';
-import { buildSyntheticProject } from './e2e/synthetic-project';
+import {
+  buildSyntheticAnchorProject,
+  buildSyntheticProject,
+} from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
 import { StatusMessageStore } from './shell/status-message';
@@ -187,7 +190,11 @@ import {
   GridToggleControl,
   type MapCameraInput,
 } from './map/index';
+import { FirstRunGuide } from './shell/FirstRunGuide';
 import { DepthOptions } from './map/DepthOptions';
+import { MapViewControls } from './map/MapViewControls';
+import { VertexCandidateList } from './map/VertexCandidateList';
+import { VertexCandidateStore } from './map/vertex-candidates';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
@@ -420,6 +427,20 @@ export function App(): JSX.Element {
     [store],
   );
 
+  // 増分 6: **1 地物が 5 万錨**の投入口（T-2）。設計書 §F.2 の受け入れ条件がその規模で
+  // 書かれている。まとめ役の子の形も作れる ―― 系列を引く経路が違うので別に測る。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'loadSyntheticAnchors', (count, options) => {
+        const s = store.getState();
+        s.reflectLoadedProject(
+          buildSyntheticAnchorProject(s.domain, count, options),
+          {},
+        );
+      }),
+    [store],
+  );
+
   // Window-close interception (FR-107 終了確認ガード): the controller registers the
   // quit guard; the host stores it so the shell-side close event can await it.
   const quitGuardRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -577,6 +598,16 @@ export function App(): JSX.Element {
   const cursorPositionStoreRef = useRef<CursorPositionStore | null>(null);
   cursorPositionStoreRef.current ??= new CursorPositionStore();
   const cursorPositionStore = cursorPositionStoreRef.current;
+
+  // 頂点の候補一覧（設計書 §B.5 の台帳 #12 / V9。増分 6）。押した位置の掴める距離に
+  // 頂点が 2 つ以上あるときだけ出す。cursorPositionStore と同じ理由で ref に置く。
+  const vertexCandidateStoreRef = useRef<VertexCandidateStore | null>(null);
+  vertexCandidateStoreRef.current ??= new VertexCandidateStore();
+  const vertexCandidateStore = vertexCandidateStoreRef.current;
+  /** 候補一覧から選んだ頂点を選択にする（マウント後に結線される late-bound）。 */
+  const selectVertexRef = useRef<((featureId: FeatureId, vertexId: VertexId) => void) | null>(
+    null,
+  );
 
   // オプションバー（設計書 §C.4）の内容置き場。道具の実装が押し込み、OptionBar の 1 ノード
   // だけが購読する。cursorPositionStore と同じ理由で ref に置く: useMemo は React が捨てうる
@@ -852,7 +883,16 @@ export function App(): JSX.Element {
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,
       contextMenu: hitTest.contextMenu,
+      // 頂点の候補一覧（#12）。押した位置の候補は当たり判定と **同じ 1 本** から出る。
+      vertexCandidates: {
+        store: vertexCandidateStore,
+        probe: hitTest.probeVertexCandidates,
+        nameOf: (id) =>
+          featureByIdAt(store.getState().domain, store.getState().currentTime, id)?.attributes
+            .name ?? '',
+      },
     });
+    selectVertexRef.current = hitTest.selectVertex;
     // ストア購読による再描画は最後に起こす（分割前と同じ位置 = 入力側のモード中断の購読
     // より後）。購読の登録順と、ホスト自身の再描画が throttle に載る時点を分割前と揃える。
     render.startRedrawScheduling();
@@ -3055,7 +3095,19 @@ export function App(): JSX.Element {
             onOverflowOpenChange={popoverOpenChange('overflow')}
           />
         }
-        timeline={<Timeline store={store} />}
+        /* 時刻レール（増分 6 / 設計書 §C.7）。時間の 11 コマンドは **レールが登録簿へ
+           足す**（結合点 #10: メニューに載っているのに実体が無い項目を作らない）。
+           断りの文（範囲外・端・錨が無い）は状態行の「直前の結果」枠へ出す ――
+           レールは 112px 固定なので、断りで帯が伸びる経路を作らない。 */
+        timeline={
+          <Timeline
+            store={store}
+            registry={registry}
+            statusMessages={statusMessageStore}
+            onPopoverOpenChange={popoverOpenChange('rail')}
+            getRoot={getDomainRoot}
+          />
+        }
 /* 状態行 5 枠（設計書 §C.8）。60Hz で動く値（カーソル座標・縮尺）は
            **それぞれの葉ノードだけ** が購読するので、パンでは再レンダーが起きない
            （技術方針 2.3）。座標は React の外の CursorPositionStore から来る。
@@ -3108,6 +3160,14 @@ export function App(): JSX.Element {
              timeline band. Anchoring them here removes that class of drift outright
              (the survey bridge already used this design). */
           <>
+            {/* 設計書 §B.5 の台帳 #10・#11（増分 6。増分 5 から送られた 3 部品のうち 2 つ）。
+                層は `pointer-events: none` で、ボタンの矩形だけが押下を受ける（K-2）。 */}
+            <MapViewControls<DomainRoot> store={store} registry={registry} />
+            {/* 同 #12。押した位置の掴める距離に頂点が 2 つ以上あるときだけ出る一時部品。 */}
+            <VertexCandidateList
+              store={vertexCandidateStore}
+              onPick={(featureId, vertexId) => selectVertexRef.current?.(featureId, vertexId)}
+            />
             <SurveyMapBridge
               store={store}
               screenToWorld={screenToWorld}
@@ -3339,6 +3399,8 @@ export function App(): JSX.Element {
         }
         overlay={
           <>
+            {/* 初回起動のガイド 4 枚（FR-118 / 設計書 §H.3。増分 6）。地図には重ねない。 */}
+            <FirstRunGuide<DomainRoot> store={store} />
             {/* Observability marker (回帰観点 E2E): mirrors the live selection truth
                 (store.selection.activeFeature) so a regression test can assert the
                 inheritor stays selected after a split (教訓 5.11). Hidden; it holds

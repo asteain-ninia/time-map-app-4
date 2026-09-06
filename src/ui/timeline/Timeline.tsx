@@ -1,122 +1,456 @@
-// UI layer (U21 / timeline): the bottom timeline panel (FR-64〜FR-69).
+// UI layer (U21 / 時刻レール): 112px の 4 段（設計書 §C.7）。
 //
-// Composes the slider, numeric range/current display, direct-jump field, ticks,
-// step controls, and playback controls. EVERY time-change path funnels through
-// the timeline binding -> store.setCurrentTime (single truth source); the map
-// (U16) follows by subscription. This component holds no map-draw state in React
-// (技術方針 2.3, 受け入れ基準 6).
+// (a) 読み取り 24 ／ (b) 錨レーン 28 ／ (c) 目盛り＋再生ヘッド 22 ／ (d) 操作列 32。
+// 上下の余白 2+2 と枠線 1×2 を足して **112px 固定**。旧実装は 201.2px（窓の 25.1%）を
+// 占めていて、しかも情報（錨）の描画面積が 0px だった ―― 帯の 35% が「直接ジャンプ」の
+// 塊で、入力エラーが出ると帯が 200 → 220px に伸びて地図が動いた（現状分析 §1.3）。
+//
+// **すべての時刻の変更は `useTimeline` の 1 本（＝ store.setCurrentTime）を通る**
+// （技術方針 2.5 の単一真実源）。この部品は地図の描画状態を React に一切持たない。
+//
+// **編集の意味論には触れない**（増分 6 は読む側だけ）。編集時刻バッジは素性欄と
+// **同じ純粋関数**（`decideEditPlan`）から出しており、保存の経路には手を出していない。
 
-import { useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
+import type { DomainProject } from '../../domain/persistence/index';
+import { normalize } from '../../domain/time/normalized';
+import { timePointYear, type TimePoint } from '../../domain/time/time-point';
+import { publishRailObservation } from '../e2e/rail-observation';
+import { decideEditPlan, EDIT_PLAN_STRINGS } from '../property/edit-plan';
+import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
+import type { StatusMessageStore } from '../shell/status-message';
 import type { SessionStore } from '../state/store';
+import { nextAnchorIndex, previousAnchorIndex } from '../time/anchor-lane';
+import { railFoldOf, type RailFoldLevel } from '../time/rail-fold';
+import { viewSpanYears } from '../time/rail-ticks';
+import { viewMaxTime, viewMinTime, viewSpanDays } from '../time/timebar';
 
-import { PlaybackControls } from './PlaybackControls';
-import { StepControls } from './StepControls';
-import { YearMonthDayInput } from './YearMonthDayInput';
-import { formatTimePoint, formatYear, generateTicks, granularityNote } from './time-display';
+import { AnchorLane } from './AnchorLane';
+import { RailControls } from './RailControls';
+import { RailTicks } from './RailTicks';
+import { RAIL_STRINGS, railSpanNote } from './rail-strings';
+import { formatTimePoint, formatYear, granularityNote } from './time-display';
+import { STEP_UNIT, stepTimePoint, type StepDirection, type StepUnit } from './step';
+import { useAnchorLane } from './useAnchorLane';
+import { useRailView } from './useRailView';
 import { useTimeline } from './useTimeline';
 import { usePlayback } from './usePlayback';
 
+/** ホイール 1 段のズームの刻み（`timebar.ZOOM_STEP` の指数）。 */
+const WHEEL_NOTCHES = 1;
+/** 拡大ボタン 1 押しぶんの刻み（ホイールより大きく動かす）。 */
+const BUTTON_NOTCHES = 4;
+/** Shift＋ホイールの横スクロール量（軸の幅に対する割合）。 */
+const SCROLL_FRACTION = 0.15;
+
 export interface TimelineProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
-  /** Target number of slider tick labels (readable粒度). Default 10. */
+  /** 目盛りラベルの目標本数。 */
   readonly targetTicks?: number;
+  /**
+   * コマンドの登録簿（時間のコマンドをここへ足す）。**メニューと鍵盤は同じ id を通る**
+   * ので、登録しなければメニューは灰色のまま（結合点 #10）。省略時は何も登録しない。
+   */
+  readonly registry?: CommandRegistry;
+  /** 断りの文の行き先（状態行の「直前の結果」枠）。 */
+  readonly statusMessages?: StatusMessageStore;
+  /** ポップオーバーの開閉を合成ルートへ報せる（鍵盤の持ち主の導出）。 */
+  readonly onPopoverOpenChange?: (open: boolean) => void;
+  /**
+   * ドメインの根を引く口（錨レーンが系列を引くのに要る）。**合成ルートだけが型を
+   * 知っている**ので受け取る形にする。渡さなければレーンは空のまま。
+   */
+  readonly getRoot?: () => DomainProject;
 }
 
 export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
-  const { store, targetTicks = 10 } = props;
+  const {
+    store,
+    targetTicks = 10,
+    registry,
+    statusMessages,
+    onPopoverOpenChange,
+    getRoot,
+  } = props;
   const t = useTimeline(store);
   const playback = usePlayback(store, t.calendar);
+  const rail = useRailView(store, t.calendar, t.currentTime);
+  const lane = useAnchorLane(store, rail.view, t.calendar, t.timelineMin, getRoot);
+  const activeTool = useStore(store, (s) => s.activeTool);
+  const mode = useStore(store, (s) => s.mode);
 
-  const ticks = useMemo(
-    () => generateTicks(t.timelineMin.year, t.timelineMax.year, t.calendar, targetTicks),
-    [t.timelineMin.year, t.timelineMax.year, t.calendar, targetTicks],
+  const [fold, setFold] = useState<RailFoldLevel>(() =>
+    railFoldOf(typeof window === 'undefined' ? 1280 : window.innerWidth),
+  );
+  const [focusYearSignal, setFocusYearSignal] = useState(0);
+
+  // **畳みは窓幅だけで決まる**（設計書 §B.4）。見張るのは窓そのもの ―― 下限のある器を
+  // 見張ると、一度畳んだあと幅が動かなくなって二度と戻らない（教訓 5.69）。
+  useEffect(() => {
+    const onResize = (): void => {
+      setFold(railFoldOf(window.innerWidth));
+    };
+    onResize();
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+    };
+  }, []);
+
+  // 軸の画素数。レーンの器を測る（同じ内寸を目盛りの軸も使う ―― CSS の
+  // `--rail-unit-gutter` を両方の行が読むので、構造上ずれない）。
+  const laneBoxRef = useRef<HTMLDivElement | null>(null);
+  const { setPixelLength } = rail;
+  useEffect(() => {
+    const el = laneBoxRef.current;
+    if (el === null) return;
+    const measure = (): void => {
+      setPixelLength(Math.max(0, Math.round(el.getBoundingClientRect().width)));
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, [setPixelLength]);
+
+  // --- 断りの文（状態行へ） --------------------------------------------------
+  const refuse = useCallback(
+    (message: string): void => {
+      statusMessages?.failure(message);
+    },
+    [statusMessages],
   );
 
+  // --- 時刻を動かす（すべて `useTimeline` の 1 本を通る） ---------------------
+  const jumpTo = useCallback(
+    (point: TimePoint) => {
+      const message = t.outOfRangeMessage(point);
+      if (message !== null) {
+        refuse(message);
+        return;
+      }
+      t.jumpToTime(point);
+    },
+    [t, refuse],
+  );
+
+  /**
+   * 送り。**端に当たったら黙って丸めず、状態行に理由を出す**（中身 7）。
+   * `amount` ぶんの送りは `stepTimePoint` を `amount` 回ではなく、年なら 1 回で済ませる
+   * （月・日は暦の繰り上がりがあるので回数で送る ―― 計算は U02 の 1 本に任せる）。
+   */
+  const step = useCallback(
+    (unit: StepUnit, direction: StepDirection, amount: number) => {
+      let next = t.currentTime;
+      for (let i = 0; i < amount; i += 1) {
+        next = stepTimePoint(next, unit, direction, t.calendar);
+      }
+      if (t.outOfRangeMessage(next) !== null) {
+        refuse(
+          RAIL_STRINGS.stepClamped(
+            formatYear(direction < 0 ? t.timelineMin.year : t.timelineMax.year),
+          ),
+        );
+        return;
+      }
+      t.jumpToTime(next);
+    },
+    [t, refuse],
+  );
+
+  const jumpYear = useCallback(
+    (year: number): string | null => {
+      const point = timePointYear(year);
+      const message = t.outOfRangeMessage(point);
+      if (message !== null) {
+        const refusalText = RAIL_STRINGS.outOfRange(
+          formatYear(year),
+          formatYear(t.timelineMin.year),
+          formatYear(t.timelineMax.year),
+        );
+        refuse(refusalText);
+        return refusalText;
+      }
+      t.jumpToTime(point);
+      return null;
+    },
+    [t, refuse],
+  );
+
+  // --- 前後の錨へ（二分探索。対数時間） --------------------------------------
+  const jumpAnchor = useCallback(
+    (direction: -1 | 1) => {
+      if (lane.featureId === null) {
+        refuse(RAIL_STRINGS.noSelectionForAnchorJump);
+        return;
+      }
+      const day = normalize(t.currentTime, t.calendar) as number;
+      const index =
+        direction < 0
+          ? previousAnchorIndex(lane.source.starts, day)
+          : nextAnchorIndex(lane.source.starts, day);
+      if (index < 0 || index >= lane.entries.length) {
+        refuse(direction < 0 ? RAIL_STRINGS.noPreviousAnchor : RAIL_STRINGS.noNextAnchor);
+        return;
+      }
+      const entry = lane.entries[index];
+      if (entry === undefined) return;
+      rail.revealTime(entry.start);
+      jumpTo(entry.start);
+    },
+    [lane, t, rail, jumpTo, refuse],
+  );
+
+  // --- 直前にいた年へ戻る（Alt+←） -------------------------------------------
+  const historyRef = useRef<TimePoint[]>([]);
+  const suppressPushRef = useRef(false);
+  const lastTimeRef = useRef<TimePoint | null>(null);
+  useEffect(() => {
+    const previous = lastTimeRef.current;
+    lastTimeRef.current = t.currentTime;
+    if (previous === null) return;
+    if (suppressPushRef.current) {
+      suppressPushRef.current = false;
+      return;
+    }
+    historyRef.current.push(previous);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+  }, [t.currentTime]);
+
+  const goBack = useCallback(() => {
+    const previous = historyRef.current.pop();
+    if (previous === undefined) {
+      refuse('戻れる年がありません。');
+      return;
+    }
+    suppressPushRef.current = true;
+    rail.revealTime(previous);
+    t.jumpToTime(previous);
+  }, [t, rail, refuse]);
+
+  // --- 鍵盤のコマンド（`commands.ts` と `menu.ts` の両方に足してある＝結合点 #10） ---
+  //
+  // **登録は 1 回だけにする。** 送りもジャンプも現在時刻に依存するので、素直に依存へ
+  // 入れると再生の 1 コマごとに 11 個のコマンドを登録し直すことになる。実体は ref 越しに
+  // 読み、登録する関数の同一性を保つ（教訓 5.5 の逆側 ―― 変化する値を掴んだまま
+  // 登録しっぱなしにしないための ref）。
+  const actionsRef = useRef({ step, jumpAnchor, goBack, toggle: playback.toggle });
+  actionsRef.current = { step, jumpAnchor, goBack, toggle: playback.toggle };
+
+  useEffect(() => {
+    if (registry === undefined) return;
+    const a = actionsRef;
+    registry.register(COMMAND_ID.TimeStepBack1, {
+      run: () => a.current.step(STEP_UNIT.Year, -1, 1),
+    });
+    registry.register(COMMAND_ID.TimeStepForward1, {
+      run: () => a.current.step(STEP_UNIT.Year, 1, 1),
+    });
+    registry.register(COMMAND_ID.TimeStepBack10, {
+      run: () => a.current.step(STEP_UNIT.Year, -1, 10),
+    });
+    registry.register(COMMAND_ID.TimeStepForward10, {
+      run: () => a.current.step(STEP_UNIT.Year, 1, 10),
+    });
+    registry.register(COMMAND_ID.TimeStepBack100, {
+      run: () => a.current.step(STEP_UNIT.Year, -1, 100),
+    });
+    registry.register(COMMAND_ID.TimeStepForward100, {
+      run: () => a.current.step(STEP_UNIT.Year, 1, 100),
+    });
+    registry.register(COMMAND_ID.TimePrevAnchor, { run: () => a.current.jumpAnchor(-1) });
+    registry.register(COMMAND_ID.TimeNextAnchor, { run: () => a.current.jumpAnchor(1) });
+    registry.register(COMMAND_ID.TimeFocusYear, {
+      run: () => setFocusYearSignal((n) => n + 1),
+    });
+    registry.register(COMMAND_ID.TimeTogglePlay, { run: () => a.current.toggle() });
+    registry.register(COMMAND_ID.TimeBack, { run: () => a.current.goBack() });
+    return () => {
+      registry.unregister(COMMAND_ID.TimeStepBack1);
+      registry.unregister(COMMAND_ID.TimeStepForward1);
+      registry.unregister(COMMAND_ID.TimeStepBack10);
+      registry.unregister(COMMAND_ID.TimeStepForward10);
+      registry.unregister(COMMAND_ID.TimeStepBack100);
+      registry.unregister(COMMAND_ID.TimeStepForward100);
+      registry.unregister(COMMAND_ID.TimePrevAnchor);
+      registry.unregister(COMMAND_ID.TimeNextAnchor);
+      registry.unregister(COMMAND_ID.TimeFocusYear);
+      registry.unregister(COMMAND_ID.TimeTogglePlay);
+      registry.unregister(COMMAND_ID.TimeBack);
+    };
+  }, [registry]);
+
+  // --- 編集時刻バッジ（中身 9。素性欄と同じ純粋関数から出す） ------------------
+  const currentDay = useMemo(
+    () => normalize(t.currentTime, t.calendar) as number,
+    [t.currentTime, t.calendar],
+  );
+  const featurePresent = useMemo(
+    () =>
+      lane.source.runs.some(
+        (r) => currentDay >= r.startDay && (r.endDay === null || currentDay < r.endDay),
+      ),
+    [lane.source, currentDay],
+  );
+  const editPlan = useMemo(
+    () =>
+      decideEditPlan({
+        currentTime: t.currentTime,
+        series: lane.governingSeries,
+        featurePresent: lane.featureId !== null && featurePresent,
+        calendar: t.calendar,
+      }),
+    [t.currentTime, t.calendar, lane.featureId, lane.governingSeries, featurePresent],
+  );
+
+  // --- 観測口（中身 8） -------------------------------------------------------
+  const editTimeText = `${editPlan.badgeTime}${EDIT_PLAN_STRINGS.badgeSeparator}${editPlan.badgeNote}`;
+  // **観測は 1 回だけ登録する**（毎レンダーで登録し直さない）。中身は ref 越しに読むので、
+  // 再生で時刻が動いてもここは走らない。
+  const observedRef = useRef({
+    stats: lane.stats,
+    marks: lane.markPositions,
+    view: rail.view,
+    calendar: t.calendar,
+    currentYear: t.currentTime.year,
+    fold,
+    editTime: editTimeText,
+  });
+  observedRef.current = {
+    stats: lane.stats,
+    marks: lane.markPositions,
+    view: rail.view,
+    calendar: t.calendar,
+    currentYear: t.currentTime.year,
+    fold,
+    editTime: editTimeText,
+  };
+  useEffect(() => {
+    publishRailObservation({
+      getAnchorLaneStats: () => observedRef.current.stats(),
+      getAnchorMarkPositions: () => observedRef.current.marks(),
+      getRailView: () => {
+        const o = observedRef.current;
+        return {
+          minYear: viewMinTime(o.view, o.calendar).year,
+          maxYear: viewMaxTime(o.view, o.calendar).year,
+          spanDays: viewSpanDays(o.view),
+          pixelLength: o.view.pixelLength,
+          fold: o.fold,
+          currentYear: o.currentYear,
+          editTime: o.editTime,
+        };
+      },
+    });
+    return () => {
+      publishRailObservation(null);
+    };
+  }, []);
+
+  // --- ホイール（ズーム／Shift で横スクロール） -------------------------------
+  const onWheel = useCallback(
+    (e: React.WheelEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const focusPx = e.clientX - rect.left;
+      if (e.shiftKey) {
+        rail.scrollByPixels(
+          (e.deltaY > 0 ? 1 : -1) * rail.view.pixelLength * SCROLL_FRACTION,
+        );
+        return;
+      }
+      rail.zoomAt(e.deltaY > 0 ? WHEEL_NOTCHES : -WHEEL_NOTCHES, focusPx);
+    },
+    [rail],
+  );
+
+  const spanYears = viewSpanYears(rail.view);
+  const perPixel = rail.view.pixelLength > 0 ? spanYears / rail.view.pixelLength : 0;
+
   return (
-    <div className="timeline" data-testid="timeline">
-      <div className="timeline__readout">
-        <span className="timeline__range-min">{formatTimePoint(t.timelineMin)}</span>
+    <div className="rail timeline" data-testid="timeline" aria-label={RAIL_STRINGS.railLabel}>
+      {/* (a) 読み取り 24px */}
+      <div className="rail__readout" data-testid="rail-readout">
+        <span className="rail__view-min" data-testid="rail-view-min">
+          {formatTimePoint(viewMinTime(rail.view, t.calendar))}
+        </span>
         <span
-          className="timeline__current"
-          data-testid="timeline-current"
+          className="rail__badge"
+          data-testid="rail-edit-time-badge"
+          data-plan={editPlan.kind}
           title={granularityNote(t.currentTime)}
         >
-          {formatTimePoint(t.currentTime)}
+          <span className="rail__badge-time" data-testid="timeline-current">
+            {formatTimePoint(t.currentTime)}
+          </span>
+          <span className="rail__badge-sep" aria-hidden="true">
+            {EDIT_PLAN_STRINGS.badgeSeparator}
+          </span>
+          <span className="rail__badge-note" data-testid="rail-edit-time-note">
+            {editPlan.badgeNote}
+          </span>
         </span>
-        <span className="timeline__range-max">{formatTimePoint(t.timelineMax)}</span>
+        <span className="rail__span-note" data-testid="rail-span-note">
+          {railSpanNote(spanYears, perPixel)}
+        </span>
+        {/* 隠し観測（既存の `app-active-feature` と同じ方式）。 */}
+        <span data-testid="app-edit-time" hidden>
+          {editTimeText}
+        </span>
       </div>
 
-      <input
-        className="timeline__slider"
-        type="range"
-        aria-label="時間軸スライダー"
-        min={0}
-        max={1}
-        step={0.0001}
-        value={t.fraction}
-        onChange={(e) => t.jumpToFraction(Number(e.target.value))}
+      {/* (b) 錨レーン 28px（窓が低いと 20px）。器はここで測る。
+          **ホイールはレーンの上でも効く**（§I.2 は「レールの上」と書いている）。
+          目盛りの行だけに付けると、印を見ながら拡大しようとして何も起きない。 */}
+      <div className="rail__lane-box" ref={laneBoxRef} onWheel={onWheel}>
+        <AnchorLane
+          source={lane.source}
+          aggregate={lane.aggregate}
+          entries={lane.entries}
+          view={rail.view}
+          calendar={t.calendar}
+          hasSelection={lane.featureId !== null}
+          ownerName={lane.ownerName}
+          onlyOrigin={lane.onlyOrigin}
+          onJumpTo={jumpTo}
+          onView={rail.setView}
+          onHitTestMs={lane.recordHitTestMs}
+          onLaneHeight={lane.recordLaneHeight}
+        />
+      </div>
+
+      {/* (c) 目盛り＋再生ヘッド 22px */}
+      <RailTicks
+        view={rail.view}
+        calendar={t.calendar}
+        targetTicks={targetTicks}
+        fraction={rail.fraction}
+        playheadOutside={rail.playheadOutside}
+        onFraction={(f) => jumpTo(rail.timeAtFraction(f))}
+        onWheel={onWheel}
       />
 
-      {/* HB-11: 時間バー下の年目盛。単位(年)を明示し、各目盛は刻み線+ラベルで
-          構成。ラベルは中央寄せ(translateX -50%)し、両端は枠外にはみ出さないよう
-          CSS で寄せる。間引きは generateTicks(目標本数)が担当する。 */}
-      <div className="timeline__ticks" data-testid="timeline-ticks">
-        <span className="timeline__ticks-unit" data-testid="timeline-ticks-unit" aria-hidden="true">
-          単位: 年
-        </span>
-        {ticks.map((tick) => {
-          // Edge ticks (≈0% / ≈100%) align their label inward instead of centring
-          // it, so a year/BCE label at the very ends is not clipped by the track's
-          // overflow:hidden (Codex HB-11 観点 / 枠外はみ出し回避).
-          const edge =
-            tick.fraction <= 0.02 ? ' timeline__tick--start'
-            : tick.fraction >= 0.98 ? ' timeline__tick--end'
-            : '';
-          return (
-            <span
-              key={tick.year}
-              className={`timeline__tick${edge}`}
-              style={{ left: `${tick.fraction * 100}%` }}
-              data-tick-year={tick.year}
-            >
-              <span className="timeline__tick-mark" aria-hidden="true" />
-              <span className="timeline__tick-label" data-testid="timeline-tick-label">
-                {formatYear(tick.year)}
-              </span>
-            </span>
-          );
-        })}
-      </div>
-
-      <div className="timeline__controls">
-        <StepControls onStep={(unit, direction) => t.step(unit, direction)} />
-        <PlaybackControls controller={playback} />
-      </div>
-
-      {/* The direct-jump field MIRRORS the current time: it seeds its draft from
-          `initialValue` at mount only (教訓 5.2 — its transient draft is otherwise
-          owned by the user's typing). To re-seed it after the time changes by ANY
-          other path (slider scrub, play, step, anchor jump) we key it on the
-          serialized currentTime so React REMOUNTS the input — the documented
-          "syncs to this when it changes via key/remount" contract. Granularity is
-          included so a year-only vs y/m/d change also re-seeds.
-
-          **範囲外は丸めずに断る**（2026-09-06、2 回目の手直し）。旧版は時間軸の範囲の
-          外の年を打つと黙って端へ寄せていたので、**打った年と行き先が違っていた**のに
-          画面には何も出なかった。`validate` が理由を返すと欄がそれをその場に出し、
-          `onConfirm`（＝ジャンプ）は呼ばれない。 */}
-      <YearMonthDayInput
-        key={`${t.currentTime.year}-${t.currentTime.granularity}-${
-          'month' in t.currentTime ? t.currentTime.month : ''
-        }-${'day' in t.currentTime ? t.currentTime.day : ''}`}
-        title="直接ジャンプ"
-        calendar={t.calendar}
-        initialValue={t.currentTime}
-        confirmLabel="ジャンプ"
-        validate={(point) => t.outOfRangeMessage(point)}
-        onConfirm={(point) => t.jumpToTime(point)}
+      {/* (d) 操作列 32px */}
+      <RailControls
+        fold={fold}
+        onStep={step}
+        playback={playback}
+        currentYear={t.currentTime.year}
+        onJumpYear={jumpYear}
+        onZoomIn={() => rail.zoomAt(-BUTTON_NOTCHES, rail.view.pixelLength / 2)}
+        onZoomOut={() => rail.zoomAt(BUTTON_NOTCHES, rail.view.pixelLength / 2)}
+        onZoomFit={rail.fitAll}
+        onPrevAnchor={() => jumpAnchor(-1)}
+        onNextAnchor={() => jumpAnchor(1)}
+        focusYearSignal={focusYearSignal}
+        closeKey={`${mode}|${String(activeTool)}|${fold}`}
+        {...(onPopoverOpenChange ? { onPopoverOpenChange } : {})}
       />
     </div>
   );

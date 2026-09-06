@@ -1382,3 +1382,58 @@ export function liveHitTestAt(
 
   return EMPTY_HIT;
 }
+
+// ---------------------------------------------------------------------------
+// 頂点の候補一覧（V9 / 設計書 §B.5 の台帳 #12）
+// ---------------------------------------------------------------------------
+
+/** 掴める距離に居る頂点 1 つ（画面上の距離つき）。 */
+export interface NearVertexCandidate {
+  readonly featureId: FeatureId;
+  readonly vertexId: VertexId;
+  /** クリック位置からの画面上の距離（px）。 */
+  readonly distancePx: number;
+}
+
+/**
+ * 掴める距離に居る頂点を **全部** 返す（近い順）。`liveHitTestAt` は「いちばん近い 1 つ」
+ * しか返さないので、**候補が複数あることを利用者に見せる**ための別の口である
+ * （§F.3: 実データでは隣の頂点までの距離の中央値が 世界全体表示で 0.40〜0.44px しかなく、
+ * 拡大しない限り必ず隣が入る ―― どれを掴んだのか分からないまま形が動く）。
+ *
+ * 母集合・可視判定・ラップの数え方は `liveHitTestAt` の頂点の段と **同じ**である
+ * （教訓 5.29 単一の解決 ―― 描かれている == 掴める == 候補に出る）。
+ */
+export function verticesNearPoint(
+  input: LiveHitTestInput,
+  worldPoint: WorldCoordinate,
+): readonly NearVertexCandidate[] {
+  const { root, time, toScreen, point } = input;
+  const control = input.displayControl ?? DEFAULT_DISPLAY_CONTROL;
+  const radius = input.radiusPx ?? DEFAULT_HIT_RADIUS_PX;
+  const radiusSq = radius * radius;
+  if (input.handlesDrawn === false) return [];
+  const wrap = buildWrapFrame(input.wrap, worldPoint.lon, radius);
+  const resolution = resolveDisplayFor(root, time, control);
+  const { vertices, owners } = resolution;
+  const filtered = resolveFilteredDisplay(resolution, input.filter ?? DEFAULT_FILTER_STATE);
+  const visibleIds = filtered === null ? null : filtered.visibleIds;
+  const hitIndex = getHitIndex(resolution);
+  const cands = vertexCandidates(hitIndex, worldPoint, wrap);
+  const out: NearVertexCandidate[] = [];
+  const push = (featureId: FeatureId, vertexId: VertexId): void => {
+    if (visibleIds !== null && !visibleIds.has(featureId)) return;
+    const v = getVertex(vertices, vertexId);
+    if (v === undefined) return;
+    const d = nearestDrawnDistSq(v.coordinate, point, toScreen, wrap);
+    if (d > radiusSq) return;
+    out.push({ featureId, vertexId, distancePx: Math.sqrt(d) });
+  };
+  if (cands === null) {
+    for (const [vertexId, featureId] of owners) push(featureId, vertexId);
+  } else {
+    for (const ref of cands) push(ref.featureId, ref.vertexId);
+  }
+  out.sort((a, b) => a.distancePx - b.distancePx);
+  return out;
+}

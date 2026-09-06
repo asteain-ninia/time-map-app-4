@@ -132,6 +132,32 @@ export const STANDARD_MENUS: readonly MenuDef[] = [
       // focus guard only stands down for TEXT inputs (focus-guard.ts). Declared HERE so
       // it reaches the keymap AND the ショートカット一覧 from one source (教訓 5.33).
       item(COMMAND_ID.ViewFitAll, { key: 'Home', ctrlOrMeta: true }),
+      // 時間の 11 コマンド（増分 6 / 設計書 §I.2 の「時間」の群）。**現状は時間を
+      // 動かす打鍵が 1 つも無い**（C8）。メニューは 5 つのままで（FR-111）、
+      // 「見ている年を動かす」操作なので 表示 に置く。
+      //
+      // `,` / `.` に修飾を付けた 10・100 の送りは、**配列によって `key` が変わる**ので
+      // 別名を登録する（拡大の Ctrl+= と同じ機構）。US 配列では Shift+`,` が `<`、
+      // Shift+`.` が `>` として届くので、それが無いと 10 年送りが打てない。
+      item(COMMAND_ID.TimeStepBack1, { key: ',' }),
+      item(COMMAND_ID.TimeStepForward1, { key: '.' }),
+      item(
+        COMMAND_ID.TimeStepBack10,
+        { key: ',', shift: true },
+        [{ key: '<', shift: true }],
+      ),
+      item(
+        COMMAND_ID.TimeStepForward10,
+        { key: '.', shift: true },
+        [{ key: '>', shift: true }],
+      ),
+      item(COMMAND_ID.TimeStepBack100, { key: ',', ctrlOrMeta: true }),
+      item(COMMAND_ID.TimeStepForward100, { key: '.', ctrlOrMeta: true }),
+      item(COMMAND_ID.TimePrevAnchor, { key: '[' }),
+      item(COMMAND_ID.TimeNextAnchor, { key: ']' }),
+      item(COMMAND_ID.TimeFocusYear, { key: 'g', ctrlOrMeta: true }),
+      item(COMMAND_ID.TimeTogglePlay, { key: ' ' }),
+      item(COMMAND_ID.TimeBack, { key: 'ArrowLeft', alt: true }),
     ],
   },
   {

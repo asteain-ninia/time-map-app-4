@@ -619,6 +619,10 @@ export const uiAppSettingsSchema = z
     renderFps: finiteNumber,
     vertexMarkerCap: finiteNumber,
     showConflictGuide: z.boolean(),
+    // 増分 6 で足した。**任意** にしてあるのは、この鍵を持たない既存の `.gimoza` を
+    // そのまま読めるようにするため（`gridVisible` と同じ後方互換の作法）。既定の
+    // 補完は読み込み側の 1 か所（`fromPersistedUiSettings`）で行う。
+    showFirstRunGuide: z.boolean().optional(),
     undoStackSize: finiteNumber,
   })
   .strict()

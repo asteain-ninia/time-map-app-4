@@ -87,4 +87,5 @@ export const APP_FIELD_STRINGS = {
   vertexMarkerCap: '全頂点マーカー表示上限',
   undoStackSize: 'アンドゥ履歴の上限',
   showConflictGuide: '重なり解決画面の使い方を表示する',
+  showFirstRunGuide: '起動時にこの画面の使い方を表示する',
 } as const;

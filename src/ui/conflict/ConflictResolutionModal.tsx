@@ -37,6 +37,7 @@ import {
   useConflictResolution,
 } from './useConflictResolution';
 import { type ConflictShapes } from './preview';
+import { GuidePanel } from '../shell/GuidePanel';
 import { MinimapPreview } from './MinimapPreview';
 import { ROW_STATE } from './model';
 import {
@@ -162,34 +163,15 @@ export function ConflictResolutionModal<S>(
           {CONFLICT_STRINGS.pausedBanner}
         </p>
 
-        {/* First-time guide (FR-118). */}
+        {/* First-time guide (FR-118)。器は共有の `GuidePanel`（増分 6）。 */}
         {guideOpen && (
-          <section
+          <GuidePanel
+            content={GUIDE_STRINGS}
             className="conflict-guide"
-            data-testid="conflict-guide"
-            aria-label={GUIDE_STRINGS.heading}
-          >
-            <h3>{GUIDE_STRINGS.heading}</h3>
-            <ol>
-              {GUIDE_STRINGS.steps.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ol>
-            <div className="conflict-guide__actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setGuideOpen(false);
-                  onSuppressGuide?.();
-                }}
-              >
-                {GUIDE_STRINGS.dismiss}
-              </button>
-              <button type="button" onClick={() => setGuideOpen(false)}>
-                {GUIDE_STRINGS.close}
-              </button>
-            </div>
-          </section>
+            testId="conflict-guide"
+            onClose={() => setGuideOpen(false)}
+            onSuppress={onSuppressGuide}
+          />
         )}
         {!guideOpen && (
           <button

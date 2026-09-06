@@ -60,6 +60,7 @@ export function toPersistedUiSettings(live: LiveSettings): UiSettings {
       renderFps: a.renderFps,
       vertexMarkerCap: a.vertexMarkerCap,
       showConflictGuide: a.showConflictGuide,
+      showFirstRunGuide: a.showFirstRunGuide,
       undoStackSize: a.undoStackSize,
     },
   };
@@ -101,6 +102,9 @@ export function fromPersistedUiSettings(ui: UiSettings): LiveSettings {
       renderFps: a.renderFps,
       vertexMarkerCap: a.vertexMarkerCap,
       showConflictGuide: a.showConflictGuide,
+      // 増分 6 の後方互換: この鍵を持たない古い manifest は「出す」に倒す
+      // （`gridVisible` と同じ、**唯一の**既定補完点）。
+      showFirstRunGuide: a.showFirstRunGuide ?? true,
       undoStackSize: a.undoStackSize,
     },
   };

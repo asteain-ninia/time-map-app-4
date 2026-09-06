@@ -11,8 +11,15 @@ export {
   YearMonthDayInput,
   type YearMonthDayInputProps,
 } from './YearMonthDayInput';
-export { StepControls, type StepControlsProps } from './StepControls';
-export { PlaybackControls, type PlaybackControlsProps } from './PlaybackControls';
+// **`StepControls` / `PlaybackControls` は増分 6 で消した。** 送りと再生のボタンは
+// 時刻レールの操作列（`RailControls`）の中へ移り、**可視テキストと読み上げ名は
+// そのまま持ち越してある**（設計書 §O の B-7 / `e2e/ux-cluster.spec.ts` の HB-13）。
+export { RailControls, type RailControlsProps } from './RailControls';
+export { AnchorLane, type AnchorLaneProps, BUNDLE_MAX_ROWS } from './AnchorLane';
+export { RailTicks, type RailTicksProps } from './RailTicks';
+export { useRailView, type RailViewBinding } from './useRailView';
+export { useAnchorLane, type AnchorLaneBinding } from './useAnchorLane';
+export { RAIL_STRINGS, railSpanNote } from './rail-strings';
 
 // Hooks
 export { useTimeline, type TimelineBinding } from './useTimeline';

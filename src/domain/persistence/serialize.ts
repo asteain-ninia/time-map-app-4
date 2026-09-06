@@ -754,6 +754,7 @@ function uiSettingsEqual(a: UiSettings | undefined, b: UiSettings | undefined): 
     aa.renderFps === ab.renderFps &&
     aa.vertexMarkerCap === ab.vertexMarkerCap &&
     aa.showConflictGuide === ab.showConflictGuide &&
+    aa.showFirstRunGuide === ab.showFirstRunGuide &&
     aa.undoStackSize === ab.undoStackSize
   );
 }

@@ -114,6 +114,44 @@ export function blocksGlobalShortcuts(target: EditableTargetDescriptor | null): 
 }
 
 /**
+ * **空白キーを native に食う control**（増分 6。設計書 §I.2 の `Space` ＝ 再生／一時停止）。
+ *
+ * ボタンやリンク・チェックボックスは、焦点があるあいだ空白キーで **自分が押される**。
+ * そこへ大域の「再生／一時停止」を重ねると、**1 回の空白で 2 つ起きる**（ボタンが押され、
+ * ついでに再生が始まる）。文字を打つわけではないので {@link blocksGlobalShortcuts} には
+ * 入らず、かといって全部の打鍵を止めるのも行き過ぎである ―― **空白のときだけ**見る。
+ *
+ * 判定は打鍵の入口 1 か所（`useShortcuts`）から呼ぶ（教訓 5.75: 打鍵ごとの分岐の中に
+ * 書かない）。
+ */
+const SPACE_ACTIVATED_INPUT_TYPES: ReadonlySet<string> = new Set([
+  'button',
+  'submit',
+  'reset',
+  'checkbox',
+  'radio',
+  'file',
+  'color',
+]);
+
+export function consumesSpaceNatively(target: EditableTargetDescriptor | null): boolean {
+  if (target === null) return false;
+  switch (target.tagName) {
+    case 'BUTTON':
+    case 'A':
+    case 'SUMMARY':
+      return true;
+    case 'INPUT':
+      return (
+        target.inputType !== null &&
+        SPACE_ACTIVATED_INPUT_TYPES.has(target.inputType.toLowerCase())
+      );
+    default:
+      return false;
+  }
+}
+
+/**
  * Read the focused editable descriptor from a key event. Prefers `e.target`
  * (the element that received the keydown); falls back to `document.activeElement`
  * when the event target is not an element (e.g. the event fired on window/document).

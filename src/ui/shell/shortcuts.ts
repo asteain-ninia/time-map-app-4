@@ -72,6 +72,8 @@ export function detectPlatform(): Platform {
  */
 const KEY_DISPLAY: Readonly<Record<string, string>> = {
   '=': '+',
+  // 空白は文字として見せると「何も書いていない」ようにしか読めない（増分 6）。
+  ' ': 'Space',
   arrowleft: '←',
   arrowright: '→',
   arrowup: '↑',

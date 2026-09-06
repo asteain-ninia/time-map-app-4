@@ -21,6 +21,7 @@ import { COMMAND_ID, type CommandId, type CommandRegistry } from './commands';
 import type { EditMode } from '../state/session';
 import {
   blocksGlobalShortcuts,
+  consumesSpaceNatively,
   editableTargetFromEvent,
   isEditableTarget,
 } from './focus-guard';
@@ -97,6 +98,12 @@ const PRISTINE_EDITABLE_PASSTHROUGH: ReadonlySet<CommandId> = new Set<CommandId>
   COMMAND_ID.EditRedo,
   COMMAND_ID.ListBundlePrev,
   COMMAND_ID.ListBundleNext,
+  // **時刻レールの年の欄で Enter を押した直後**（増分 6 の探索で見つけた）。年を決める
+  // のは「この年に記録を作る」ための下ごしらえなので、確定したそのままの焦点で
+  // `Ctrl+K` を押すのが自然な流れである。ところが焦点は年の欄に残るので、
+  // **押しても何も起きず理由も出なかった**。欄が「打ちかけは無い」と名乗っている
+  // ときだけ通す（打ちかけがあれば従来どおり止める）。
+  COMMAND_ID.EditCreateAnchorHere,
 ]);
 
 export function useShortcuts(options: UseShortcutsOptions): void {
@@ -127,6 +134,11 @@ export function useShortcuts(options: UseShortcutsOptions): void {
       // 集合はこの module が持つ ―― 「止めている間に通す集合」（`alwaysAllowed`）とは
       // **止める理由が違う**ので分ける（教訓 5.30: 制約が違うなら安易に共有しない）。
       const editableTarget = editableTargetFromEvent(e);
+      // **空白キーだけは、押されるボタンに譲る**（増分 6）。設計書 §I.2 は `Space` を
+      // 再生／一時停止に割り当てるが、焦点のあるボタンは空白で **自分が押される** ので、
+      // 重ねると 1 回の空白で 2 つ起きる。止める理由は「その control が空白を使う」
+      // ことなので、**打鍵の入口 1 か所**で見る（教訓 5.75）。
+      if (e.key === ' ' && consumesSpaceNatively(editableTarget)) return;
       // **文字を打つ欄だけでなく、鍵盤を使う control も遮る**（増分 5 の手直し A4）。
       // つまみ（`input[type=range]`）は矢印・Home / End を自分で使うので、焦点がそこに
       // あるあいだ Delete や Ctrl+Z が背後の地物へ抜けてはならない。

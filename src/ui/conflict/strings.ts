@@ -81,7 +81,14 @@ export const ACTION_STRINGS = {
   retry: '選択し直す',
 } as const;
 
-/** First-time guide (FR-118). Japanese only (FR-115). */
+/**
+ * First-time guide (FR-118). Japanese only (FR-115).
+ *
+ * **形は共有の器（`shell/GuidePanel`）が持つ**（増分 6）。ここは「重なり解決の使い方」
+ * という中身だけを持ち、初回起動のガイド（`shell/strings.ts` の `FIRST_RUN_GUIDE`）と
+ * 同じ器を通る ―― 器を写して 2 枚にすると、閉じ方だけが 1 枚で違う、が必ず起きる
+ * （教訓 5.44）。
+ */
 export const GUIDE_STRINGS = {
   /** Guide heading. */
   heading: 'この画面の使い方',

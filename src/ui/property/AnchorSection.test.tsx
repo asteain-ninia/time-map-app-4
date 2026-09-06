@@ -18,7 +18,7 @@ import { createVertexStore } from '../../domain/vertex';
 
 import { anchorRowsOf } from './anchor-diff';
 import { AnchorSection } from './AnchorSection';
-import { AnchorTimeBar } from './AnchorTimeBar';
+import { AnchorTimeBar } from '../time/AnchorTimeBar';
 
 const cal = getCalendar('gregorian');
 // 増分 2 で錨の一覧に足した 2 つ。行に添える「その年に何が変わったか」を作る相手と、

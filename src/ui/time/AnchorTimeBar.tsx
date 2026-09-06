@@ -21,7 +21,7 @@ import { timePointYearMonthDay, type TimePoint } from '../../domain/time/time-po
 
 import { formatTimePoint } from '../timeline/time-display';
 
-import { PROPERTY_STRINGS } from './messages';
+import { PROPERTY_STRINGS } from '../property/messages';
 import {
   type TimeBarView,
   barSegment,

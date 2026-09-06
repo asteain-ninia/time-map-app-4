@@ -26,8 +26,7 @@ import { useCallback, useMemo } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
-import { resolveAt, type AnchorSeries } from '../../domain/anchor-series';
-import { findHistoryContaining } from '../../domain/editing/apply-proposal';
+import type { AnchorSeries } from '../../domain/anchor-series';
 import {
   FEATURE_KIND,
   featureDisplayName,
@@ -76,6 +75,8 @@ import {
   type GoverningAnchorSeries,
 } from '../property/index';
 
+import { resolveGoverningSeries } from '../time/governing-series';
+
 import type { OptionBarAction } from './option-bar';
 import { SIDEBAR_CONTENT_STRINGS } from './strings';
 import type { SidebarProps } from './Sidebar';
@@ -118,39 +119,19 @@ function anchorLookupOf(getRoot: () => DomainProject, calendar: Calendar): Ancho
      * ＝親の系列へ書くので、画面もそこを見なければ「上書きなのか新設なのか」を正しく
      * 言えない（教訓 5.46: 結果を実際に決めている経路を確かめる）。判定は**ドメインと
      * 同じ関数**を呼ぶ（単一の真実源, 教訓 5.30）。
+     *
+     * **解き方そのものは `ui/time/governing-series.ts` に出した**（増分 6）。同じ問いを
+     * 時刻レールの錨レーンも持つので、写しを 2 枚にすると、まとめ役の子の扱いが
+     * 錨表とレーンで割れる（教訓 5.44）。
      */
     governingSeriesOf(featureId: FeatureId, at: TimePoint): GoverningAnchorSeries | null {
-      const root = getRoot();
-      const found = findHistoryContaining(root, featureId, at, calendar);
-      if (found === undefined) return null;
-      const owner = found.history;
-      const resolved = resolveAt(owner.series, at, calendar);
-      const effectiveSize =
-        resolved.kind === 'present'
-          ? {
-              featureCount: resolved.entry.anchor.snapshot.features.length,
-              vertexCount: resolved.entry.anchor.snapshot.vertices.byId.size,
-            }
-          : null;
-      if (owner.featureId === featureId) {
-        return {
-          series: owner.series,
-          ownerFeatureId: featureId,
-          ownerName: null,
-          effectiveSize,
-        };
-      }
-      // 借り物（親の系列）。持ち主の名前はその時刻の実効スナップショットから引く。
-      const ownerFeature =
-        resolved.kind === 'present'
-          ? resolved.entry.anchor.snapshot.features.find((f) => f.id === owner.featureId)
-          : undefined;
-      return {
-        series: owner.series,
-        ownerFeatureId: owner.featureId,
-        ownerName: ownerFeature === undefined ? SIDEBAR_CONTENT_STRINGS.unknownOwnerName : featureDisplayName(ownerFeature),
-        effectiveSize,
-      };
+      return resolveGoverningSeries(
+        getRoot(),
+        featureId,
+        at,
+        calendar,
+        SIDEBAR_CONTENT_STRINGS.unknownOwnerName,
+      );
     },
   };
 }

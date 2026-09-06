@@ -39,6 +39,32 @@ export const COMMAND_ID = {
    */
   ViewFitAll: 'view.fitAll',
   /**
+   * 時間の 11 コマンド（増分 6 / 設計書 §I.2 の「時間」の群）。**現状は時間を動かす
+   * 打鍵が 1 つも無い**（C8）ので、ここでまとめて足す。
+   *
+   * **どれも編集ではない**ので `EDITING_COMMANDS` には入れない ―― 読むだけでも年は
+   * 動かせる（裁定 §N-4「読むだけでも選べる・読める」の趣旨と同じ）。
+   *
+   * 送りは 1 / 10 / 100 の 3 段。**FR-68 の「ステップ値は常に 1 単位」は
+   * 「前へ／次へ」ボタンの仕様**なので、ボタンは 1 単位のまま残し、10・100 は別の
+   * コマンドとして足す（条文に触れない切り分け）。
+   */
+  TimeStepBack1: 'time.stepBack1',
+  TimeStepForward1: 'time.stepForward1',
+  TimeStepBack10: 'time.stepBack10',
+  TimeStepForward10: 'time.stepForward10',
+  TimeStepBack100: 'time.stepBack100',
+  TimeStepForward100: 'time.stepForward100',
+  /** 選択中の地物の前／次の錨へ（二分探索。裁定 2(b) の逃げ道 3）。 */
+  TimePrevAnchor: 'time.prevAnchor',
+  TimeNextAnchor: 'time.nextAnchor',
+  /** レールの年入力欄へ焦点を入れる（V11 の「狙った年へ 1 手」）。 */
+  TimeFocusYear: 'time.focusYear',
+  /** 再生／一時停止。 */
+  TimeTogglePlay: 'time.togglePlay',
+  /** 直前にいた年へ戻る（走査で迷子にならない）。 */
+  TimeBack: 'time.back',
+  /**
    * 「面を描く」道具を構える（増分 3 の中身 9 / 設計書 §I.2）。
    *
    * **`F` ではなく `Shift+F`** である。`F` は「選んでいるものに視点を合わせる」

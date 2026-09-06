@@ -7,6 +7,13 @@
 import type { MutableRefObject } from 'react';
 
 import type { AddHostPorts } from '../../add/host-ports';
+import {
+  ABSENT_LANE_STATS,
+  ABSENT_RAIL_VIEW,
+  readRailObservation,
+  type AnchorLaneStats,
+  type RailViewSnapshot,
+} from '../../e2e/rail-observation';
 import { buildCommittedFeatures, drawnFeatureFills } from '../committed-features';
 import type { Camera as RenderCamera } from '../../../render/camera';
 import type { MountStore } from './shared';
@@ -236,6 +243,19 @@ export function createMountObservation(
         clientY: number,
       ): { readonly lon: number; readonly lat: number } | null =>
         rendererRef.current?.screenToWorld(clientX, clientY) ?? null,
+      /**
+       * 増分 6 の中身 8: **時刻レールの観測 3 口**。実体はレールが
+       * `ui/e2e/rail-observation.ts` の登録簿へ置き、ここは読むだけである
+       * （`__E2E__` を生やす書き手を 1 つに保つため。同 module の見出しを参照）。
+       * レールがまだ載っていない瞬間でも **口そのものは生やす** ―― 口の有無で
+       * 検査が分岐すると「観測できないのか、値が 0 なのか」が区別できなくなる。
+       */
+      getAnchorLaneStats: (): AnchorLaneStats =>
+        readRailObservation()?.getAnchorLaneStats() ?? ABSENT_LANE_STATS,
+      getAnchorMarkPositions: (): readonly number[] =>
+        readRailObservation()?.getAnchorMarkPositions() ?? [],
+      getRailView: (): RailViewSnapshot =>
+        readRailObservation()?.getRailView() ?? ABSENT_RAIL_VIEW,
     };
   }
 

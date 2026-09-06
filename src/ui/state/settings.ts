@@ -128,6 +128,12 @@ export interface AppSettings {
    * (set to `false`) and re-enable it later (set back to `true`).
    */
   readonly showConflictGuide: boolean;
+  /**
+   * 初回起動のガイド 4 枚を出すか（FR-118 / 設計書 §H.3 の 1〜4。増分 6）。
+   * `showConflictGuide` と **まったく同じ性格** の設定である ―― 初回の手引きの
+   * 出し入れであって、保存ファイルの中身を変えない（{@link COSMETIC_APP_KEY_SET}）。
+   */
+  readonly showFirstRunGuide: boolean;
 }
 
 // --- Keys + per-key classification (single source of truth) -----------------
@@ -186,6 +192,7 @@ export const APP_SETTING_KEYS = [
   'renderFps',
   'vertexMarkerCap',
   'showConflictGuide',
+  'showFirstRunGuide',
   'undoStackSize',
 ] as const satisfies readonly AppSettingKey[];
 
@@ -231,6 +238,7 @@ export function isAppSettingKey(key: SettingKey): key is AppSettingKey {
  */
 const COSMETIC_APP_KEY_SET: ReadonlySet<string> = new Set<AppSettingKey>([
   'showConflictGuide',
+  'showFirstRunGuide',
 ]);
 
 /**
@@ -258,6 +266,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   vertexMarkerCap: 2000,
   // FR-118: the conflict-resolution guide is shown by default on first use.
   showConflictGuide: true,
+  // FR-118 / 設計書 §H.3: 初回起動のガイドも既定は出す。
+  showFirstRunGuide: true,
   // FR-74: the undo history retains 100 units by default (== DEFAULT_HISTORY_LIMIT).
   undoStackSize: DEFAULT_UNDO_STACK_SIZE,
 };

@@ -15,7 +15,7 @@
 import { createBasicAttributes, createColorInfo } from '../../domain/attributes';
 import { createAnchor } from '../../domain/anchor';
 import { createAnchorEntry } from '../../domain/anchor-series';
-import { createLeafFeature } from '../../domain/feature';
+import { createAggregateFeature, createLeafFeature } from '../../domain/feature';
 import { asAnchorId, asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import type { DomainProject, FeatureHistory } from '../../domain/persistence/index';
 import { createShape, createTerritoryRing } from '../../domain/ring';
@@ -70,3 +70,82 @@ export function buildSyntheticProject(base: DomainProject, count: number): Domai
   }
   return { ...base, histories };
 }
+
+/**
+ * **1 地物が `count` 本の錨を持つ**プロジェクトを組む（増分 6）。受け入れ条件
+ * （設計書 §F.2）が「選択中の 1 地物が 5 万錨を持つ合成データ」で書かれているので、
+ * その形をその場で作る口を開ける。5 万錨入りの `.gimoza` はリポジトリへ置けない
+ * （錨 1 本＝スナップショット 1 部なので、実データ換算で数百 MB になる）。
+ *
+ * `asAggregateChild` を立てると **まとめ役の子**の形にする ―― 自分の履歴を持たず、
+ * 親（まとめ役）の系列に自分が入っている。§F.2 の「まとめ役の子でも同じ条件を満たす」
+ * を測るための形で、実データの 86 件と同じ構造である。
+ */
+export function buildSyntheticAnchorProject(
+  base: DomainProject,
+  count: number,
+  options?: { readonly asAggregateChild?: boolean },
+): DomainProject {
+  const asChild = options?.asAggregateChild ?? true;
+  const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
+  const childId = asFeatureId('syn-anchor-child');
+  const parentId = asFeatureId('syn-anchor-parent');
+  const entries = [];
+  for (let i = 0; i < count; i += 1) {
+    // 形をわずかに動かして「その錨で何かが変わった」ようにする ―― まとめ役の子の
+    // 選り分け（`isRelevantAnchor`）が全部を「関わる」と判定する形にしておかないと、
+    // 母数が 0 になって測りたいものが測れない。
+    const lon = -10 + (i % 1000) * 0.001;
+    const lat = 10 + Math.floor(i / 1000) * 0.001;
+    const vertices = [
+      [lon, lat],
+      [lon + SIDE_DEG, lat],
+      [lon + SIDE_DEG, lat + SIDE_DEG],
+      [lon, lat + SIDE_DEG],
+    ].map((c, j) =>
+      createVertex(asVertexId(`syn-anchor-v${String(i)}-${String(j)}`), {
+        lon: c[0] as number,
+        lat: c[1] as number,
+      }),
+    );
+    const child = createLeafFeature(
+      childId,
+      createBasicAttributes('合成の錨だらけ', 0, 9999),
+      color,
+      createShape([
+        createTerritoryRing(asRingId(`syn-anchor-r${String(i)}`), vertices.map((v) => v.id)),
+      ]),
+      {
+        kindLabel: '合成の州',
+        ...(asChild ? { parentId } : {}),
+      },
+    );
+    const features = asChild
+      ? [
+          createAggregateFeature(
+            parentId,
+            createBasicAttributes('合成のまとめ役', 0, 9999),
+            color,
+            [childId],
+            { kindLabel: '合成の国' },
+          ),
+          child,
+        ]
+      : [child];
+    const anchor = createAnchor(asAnchorId(`syn-anchor-a${String(i)}`), {
+      features,
+      vertices: createVertexStore(vertices),
+    });
+    entries.push(createAnchorEntry(anchor, timePointYear(i)));
+  }
+  // 系列の持ち主は、まとめ役の子のときは **親**（実データと同じ形）。
+  return {
+    ...base,
+    histories: [{ featureId: asChild ? parentId : childId, series: { entries } }],
+  };
+}
+
+/** 合成した錨だらけの地物の id（E2E がそのまま選べるように公開する）。 */
+export const SYNTHETIC_ANCHOR_FEATURE_ID = 'syn-anchor-child';
+/** 同じくまとめ役（親）の id。 */
+export const SYNTHETIC_ANCHOR_PARENT_ID = 'syn-anchor-parent';

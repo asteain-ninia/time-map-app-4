@@ -30,7 +30,7 @@ export {
   AnchorTimeBar,
   type AnchorTimeBarProps,
   DEFAULT_TIMEBAR_PIXELS,
-} from './AnchorTimeBar';
+} from '../time/AnchorTimeBar';
 export { DetailPanel, type DetailPanelProps } from './DetailPanel';
 export {
   DetailDocumentSection,
@@ -111,7 +111,7 @@ export {
   barSegment,
   shouldShowLabel,
   zoomView,
-} from './timebar';
+} from '../time/timebar';
 
 // Pure logic: open-detail-panels model (FR-99後段)
 export {

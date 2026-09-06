@@ -21,7 +21,12 @@ import {
   buildMovingRings,
   ringIdForLeafVertex,
 } from '../edit-session-snapshot';
-import { liveHitTestAt, verticesInRectangle } from '../live-hit-test';
+import {
+  liveHitTestAt,
+  verticesInRectangle,
+  verticesNearPoint,
+  type NearVertexCandidate,
+} from '../live-hit-test';
 import {
   createLiveContextMenuPort,
   promoteHitToSelection,
@@ -45,8 +50,13 @@ import type { WorldCoordinate } from '../../../domain/coordinate';
 import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
 import { getCalendar } from '../../../domain/time/calendar';
-import type { RingId, VertexId } from '../../../domain/ids';
-import type { NextTargetPreference, RectangleResolver } from '../../../domain/selection';
+import type { FeatureId, RingId, VertexId } from '../../../domain/ids';
+import {
+  replaceVertices,
+  withActiveFeature,
+  type NextTargetPreference,
+  type RectangleResolver,
+} from '../../../domain/selection';
 import type { TimePoint } from '../../../domain/time/time-point';
 import type { MountDomainRoot, MountStore, MountTransients } from './shared';
 
@@ -121,6 +131,13 @@ export interface MountHitTest {
   readonly selectionPort: SelectionPort;
   readonly editSession: EditSessionPort;
   readonly contextMenu: ContextMenuPort;
+  /**
+   * **掴める距離に居る頂点を全部返す**（設計書 §B.5 の台帳 #12 / V9）。母集合・可視判定・
+   * ラップの数え方は `hitTester` と同じ 1 本（`verticesNearPoint`）を通る（教訓 5.29）。
+   */
+  readonly probeVertexCandidates: (point: ScreenPoint) => readonly NearVertexCandidate[];
+  /** 候補一覧から 1 つ選んだときの選択の書き込み（U22 の並びをそのまま作る）。 */
+  readonly selectVertex: (featureId: FeatureId, vertexId: VertexId) => void;
 }
 
 /**
@@ -459,5 +476,42 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     promotes: () => promotesOnContextMenu({ toolDrawing: toolDraftRef.current }),
   });
 
-  return { hitTester, selectionPort, editSession, contextMenu };
+  // 頂点の候補一覧（#12）。`hitTester` と **同じ入力** を渡すので、一覧に出る顔ぶれは
+  // 「いま掴める頂点」とちょうど一致する（描画 ⊇ ヒット ＝ 候補）。
+  const probeVertexCandidates = (point: ScreenPoint): readonly NearVertexCandidate[] => {
+    const s = store.getState();
+    const { camera, viewport } = ports.readCamera();
+    return verticesNearPoint(
+      {
+        root: s.domain,
+        time: s.currentTime,
+        displayControl: s.displayControl,
+        filter: s.filter,
+        toScreen: (w) => projectWorldToScreen(w, camera, viewport),
+        wrap: { camera, viewport },
+        activeFeature: s.selection.activeFeature,
+        handlesDrawn:
+          s.mode !== EDIT_MODE.View && toolShowsVertexHandles(s.activeTool),
+        point,
+      },
+      surfaceToWorld(point),
+    );
+  };
+
+  const selectVertex = (featureId: FeatureId, vertexId: VertexId): void => {
+    const s = store.getState();
+    // U22 の並びをそのまま作る（地物を選び直し、その頂点 1 つを選ぶ）。
+    s.restoreSelection(
+      replaceVertices(withActiveFeature(s.selection, featureId), featureId, new Set([vertexId])),
+    );
+  };
+
+  return {
+    hitTester,
+    selectionPort,
+    editSession,
+    contextMenu,
+    probeVertexCandidates,
+    selectVertex,
+  };
 }

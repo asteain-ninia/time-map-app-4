@@ -108,6 +108,18 @@ export const MENU_ITEM_LABELS = {
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
   'view.fitAll': '全体表示',
+  // 時間の 11 コマンド（増分 6 / 設計書 §I.2 の「時間」の群）。
+  'time.stepBack1': '1年前へ',
+  'time.stepForward1': '1年次へ',
+  'time.stepBack10': '10年前へ',
+  'time.stepForward10': '10年次へ',
+  'time.stepBack100': '100年前へ',
+  'time.stepForward100': '100年次へ',
+  'time.prevAnchor': '前の錨へ',
+  'time.nextAnchor': '次の錨へ',
+  'time.focusYear': '年を入力して移動',
+  'time.togglePlay': '再生／一時停止',
+  'time.back': '直前にいた年へ戻る',
   'tools.addFace': '面を描く',
   'tools.settings': '設定',
   // 増分 4 の手直し F3: 行き先が「一覧の絞り込み欄」になったので、名前も実態に合わせる。
@@ -427,6 +439,18 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'view.zoomIn': '地図を拡大します',
   'view.zoomOut': '地図を縮小します',
   'view.fitAll': '現在の年に存在する全地物が収まる視点に戻します',
+  // 時間の 11 コマンド（増分 6）。**ラベルの写しにしない** ―― 何が起きるかを言う。
+  'time.stepBack1': '見ている年を 1 年ぶん前へ動かします',
+  'time.stepForward1': '見ている年を 1 年ぶん先へ動かします',
+  'time.stepBack10': '見ている年を 10 年ぶん前へ動かします',
+  'time.stepForward10': '見ている年を 10 年ぶん先へ動かします',
+  'time.stepBack100': '見ている年を 100 年ぶん前へ動かします',
+  'time.stepForward100': '見ている年を 100 年ぶん先へ動かします',
+  'time.prevAnchor': '選んでいる地物の、いまより前の記録がある年へ移ります',
+  'time.nextAnchor': '選んでいる地物の、いまより後の記録がある年へ移ります',
+  'time.focusYear': '時刻レールの年の欄に焦点を入れます（数字を打って Enter で移動）',
+  'time.togglePlay': '時間の自動進行を始めます／止めます',
+  'time.back': 'ひとつ前に見ていた年へ戻します',
   'tools.settings': 'プロジェクト設定を開きます',
   'tools.search': '地物一覧の絞り込み欄へ移動します（名前・種別で絞り込めます）',
   // **説明文の無かった項目**（2026-09-06、2 回目の手直し）。`MenuBar` は
@@ -495,4 +519,26 @@ export const ERROR_STRINGS = {
   /** Generic UI error wrapper; appends the report hint (FR-117). */
   unexpected: (detail: string): string =>
     `予期しないエラーが発生しました: ${detail}\n問題が続く場合は開発者へ報告してください。`,
+} as const;
+
+/**
+ * 初回起動のガイド 4 枚（FR-118 / 設計書 §H.3 の 1〜4。増分 6）。
+ *
+ * **器は共有の `GuidePanel`**（重なり解決の使い方と同じ形）。中身の 4 行はどれも
+ * **画面上の実物を名指しする** ―― 「時間の軸」「鍵」「右の上／右の下」「歴史の錨」。
+ * 名指しのない手引きは、読んでも次の一手にならない。
+ *
+ * 4 枚目が **裁定 2(b) の逃げ道の説明**である（§O の B-22:「逃げ道は、説明されなければ
+ * 使われない」）。
+ */
+export const FIRST_RUN_GUIDE = {
+  heading: 'この画面の使い方',
+  steps: [
+    'これは、年を動かして国境の歴史を書く道具です。下の時間の軸で年を動かします。',
+    '「読むだけ」では読めます。「直せる」にすると国境を動かせます（右上の鍵）。間違えたら Ctrl+Z です。',
+    '右の上で探し、右の下で直します。保存は右の下のいちばん下です。',
+    '「歴史の錨」は、名前や形が変わった年の記録です。時間の軸の印を押すとその年へ行きます。自分で印を置くしおりではありません。印が濃く高いところは、そのあたりの年に記録がたくさんあります。押すとそこを広げて見られます。[ と ] で前後の記録へ飛べます。',
+  ] as readonly string[],
+  dismiss: '今後表示しない',
+  close: '閉じる',
 } as const;
