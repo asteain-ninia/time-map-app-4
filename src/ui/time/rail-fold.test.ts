@@ -49,11 +49,12 @@ describe('段ごとの中身（±1 の送り・年入力・再生は最後まで
     expect(folded).toContain('overflow');
   });
 
-  it('960px 未満で拡大の 3 ボタンが「拡大 ▾」1 個になり、ステップ単位が落ちる', () => {
+  it('960px 未満で拡大の 3 ボタンが「拡大 ▾」1 個になり、ステップ単位と月日 ▾ が落ちる', () => {
     const ids = railGroupsAt(RAIL_FOLD.ZoomMenu).map((g) => g.id);
     expect(ids).toContain('zoomMenu');
     expect(ids).not.toContain('zoomFull');
     expect(ids).not.toContain('unit');
+    expect(ids).not.toContain('ymd');
   });
 
   it('800px 台で錨ジャンプが落ち、再生が「▶」だけになる', () => {

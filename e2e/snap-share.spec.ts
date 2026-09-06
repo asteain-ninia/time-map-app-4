@@ -23,6 +23,7 @@ import {
   placeVertices,
   returnToViewMode,
   squareCorners,
+  worldBandIn,
 } from './helpers';
 
 interface HandlePos {
@@ -187,12 +188,14 @@ test.describe('増分 3 — 隣り合う国が境界を共有して描ける（C
     try {
       await armAddAreaTool(page);
       const b = await addInputLayerBox(page);
-      // 地図セルの幅いっぱいに広げた三角形。既定ズームでは幅 940px ≒ 360 度なので、
-      // 左端から右端までの 1 辺は 180 度を超える。
-      const left = b.x + 10;
-      const right = b.x + b.width - 10;
-      const top = b.y + 40;
-      const bottom = b.y + b.height - 40;
+      // **世界の帯から解く**（増分 6 で地図が縦に 89.2px 伸び、セルの上下に「世界の外」が
+      // できた ―― 固定 px の `b.y + 40` は北緯 90 度より上になって置けなくなった）。
+      // 世界の幅いっぱいに広げた三角形にすれば、1 辺は 180 度を超える。
+      const band = worldBandIn(b);
+      const left = band.left + 10;
+      const right = band.right - 10;
+      const top = band.top + 40;
+      const bottom = band.bottom - 40;
       await placeVertices(page, [
         [left, top],
         [right, top],

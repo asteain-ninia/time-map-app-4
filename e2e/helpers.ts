@@ -835,7 +835,11 @@ export const ALL_TOOL_TESTIDS: readonly string[] = ALL_TOOLS.map((t) => `tool-${
 export async function loadSyntheticAnchors(
   page: Page,
   count: number,
-  options?: { readonly asAggregateChild?: boolean },
+  options?: {
+    readonly asAggregateChild?: boolean;
+    /** 先頭の何本を **同じ年の別の月**へ置くか（束の吹き出しの相手）。 */
+    readonly withinOneYear?: number;
+  },
 ): Promise<void> {
   await page.waitForFunction(
     () =>
@@ -851,7 +855,10 @@ export async function loadSyntheticAnchors(
           __E2E_HARNESS__?: {
             loadSyntheticAnchors?: (
               count: number,
-              options?: { readonly asAggregateChild?: boolean },
+              options?: {
+                readonly asAggregateChild?: boolean;
+                readonly withinOneYear?: number;
+              },
             ) => void;
           };
         }
@@ -924,3 +931,44 @@ export async function railMarkPositions(page: Page): Promise<readonly number[]> 
     return e2e.getAnchorMarkPositions();
   });
 }
+
+/**
+ * 起動直後のカメラで、地図セルの中の **世界（経度 ±180 / 緯度 ±90）が占める帯**。
+ *
+ * **なぜ要るか**（増分 1 の教訓を増分 6 で踏み直した）: 地図セルの縦横の比によって、
+ * 世界は幅いっぱいにも高さいっぱいにもならない。**増分 6 で時刻レールが 89.2px 縮んだ
+ * ぶん地図が縦に伸び、上下に「世界の外」の帯ができた** ―― セルの上端から 40px の点は
+ * 北緯 90 度より上になり、そこへ頂点を置こうとした spec が「そこは世界の外です」で
+ * 落ちた。**固定 px で置かず、この帯から解くこと。**
+ *
+ * ⚠️ **前提: カメラが起動直後のまま**（世界全体が収まる視点）。パン・ズーム・全体表示の
+ * あとは別の帯になるので、そのときは `map-input-layer` の `data-zoom` / `data-pan-*` から
+ * 実際の変換を読むこと。
+ */
+export function worldBandIn(box: {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+}): { readonly left: number; readonly right: number; readonly top: number; readonly bottom: number } {
+  const perDeg = Math.min(box.width / 360, box.height / 180);
+  const halfW = (perDeg * 360) / 2;
+  const halfH = (perDeg * 180) / 2;
+  const xc = box.x + box.width / 2;
+  const yc = box.y + box.height / 2;
+  return { left: xc - halfW, right: xc + halfW, top: yc - halfH, bottom: yc + halfH };
+}
+
+/**
+ * 地図セルの中に **常設で置いてある部品**（設計書 §B.5 の台帳 #10・#11。増分 6）。
+ *
+ * K-2 の 5×5 の走査は「地図の点が入力層に届く」ことを見るが、**台帳に載っている常設の
+ * 部品は押せてよい**（それが #10 の存在理由である）。走査の期待値へこの顔ぶれを足す
+ * ―― 決め打ちで書くと、台帳に部品を足したとき検査だけが古いまま緑で通る。
+ */
+export const MAP_CELL_PARTS: readonly string[] = [
+  'map-zoom-in',
+  'map-zoom-out',
+  'map-fit-all',
+  'map-scale-bar',
+];

@@ -88,12 +88,19 @@ describe('規則 3 — 1 パス集計（Uint32Array 1 本）', () => {
 
 describe('規則 2 — 件数 1 は印、2 以上は密度帯', () => {
   it('件数 1 の列の位置を返す（観測口が読む）', () => {
-    const src = sourceOfYears([0, 5000, 10000]);
+    // **表示範囲は右端を含まない**（U09 の区間と同じ半開区間）ので、ちょうど右端の年は
+    // 視野の外である。9900 年は最後の列（99）に入る。
+    const src = sourceOfYears([0, 5000, 9900]);
     const agg = aggregateAnchorLane(src, view(0, 10000, 100));
     const marks = markColumnsOf(agg);
     expect(marks.length).toBe(3);
     expect(marks[0]).toBe(0);
     expect(marks[2]).toBe(99);
+  });
+
+  it('表示範囲の右端ちょうどの年は視野の外（半開区間）', () => {
+    const src = sourceOfYears([10000]);
+    expect(aggregateAnchorLane(src, view(0, 10000, 100)).inView).toBe(0);
   });
 
   it('密度の割合は対数で伸ばす（2 件と 20 件が見分けられる）', () => {
@@ -163,14 +170,20 @@ describe('規則 6 — 逃げ道（1 段拡大と束の吹き出し）', () => {
     expect(Math.abs(after - before)).toBeLessThanOrEqual(10);
   });
 
-  it('まだほどけるうちは「1 段拡大」、同じ日に重なっていれば「束の吹き出し」', () => {
+  it('別の年にまたがるうちは「1 段拡大」、同じ年に重なっていれば「束の吹き出し」', () => {
     const spread = sourceOfYears([1200, 1300, 1400]);
     const v = view(0, 10000, 100);
-    expect(laneDenseAction(spread, v, laneHitTest(spread, v, 13))).toBe(
+    expect(laneDenseAction(spread, v, laneHitTest(spread, v, 13), calendar)).toBe(
       LANE_DENSE_ACTION.Zoom,
     );
-    const sameYear = sourceOfYears([1200, 1200, 1200]);
-    expect(laneDenseAction(sameYear, v, laneHitTest(sameYear, v, 12))).toBe(
+    // **同じ年**（開始は厳密に増加するので月日で分かれている）。ここが「日で見る」形だと
+    // 束は永久に出ない ―― 同じ日の錨は 2 本と存在し得ないからである。
+    const sameYear = laneSourceOf(
+      [1, 2, 3].map((m) => ({ granularity: 'yearMonth' as const, year: 1200, month: m })),
+      [{ start: timePointYear(1200), end: null }],
+      calendar,
+    );
+    expect(laneDenseAction(sameYear, v, laneHitTest(sameYear, v, 12), calendar)).toBe(
       LANE_DENSE_ACTION.Bundle,
     );
   });

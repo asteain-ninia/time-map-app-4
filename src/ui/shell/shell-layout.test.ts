@@ -514,6 +514,7 @@ describe('時刻レールの寸法契約（設計書 §C.7。増分 6）', () =>
     expect(basis('.rail__group--step10', '10 年')).toBe(RAIL_GROUP_WIDTH.step10);
     expect(basis('.rail__group--step100', '100 年')).toBe(RAIL_GROUP_WIDTH.step100);
     expect(basis('.rail__year', '年入力')).toBe(RAIL_GROUP_WIDTH.year);
+    expect(basis('.rail__ymd', '月日 ▾')).toBe(RAIL_GROUP_WIDTH.ymd);
     expect(basis('.rail__unit', 'ステップ単位')).toBe(RAIL_GROUP_WIDTH.unit);
     expect(basis('.rail__overflow', '≫')).toBe(RAIL_GROUP_WIDTH.overflow);
   });
@@ -527,6 +528,15 @@ describe('時刻レールの寸法契約（設計書 §C.7。増分 6）', () =>
   it('レールのポップオーバーは `[hidden]` の打ち消しを併記している（教訓 5.56 / K-2）', () => {
     expect(decl(ruleBody('.rail__popover[hidden]'), 'display')).toBe('none');
     expect(decl(ruleBody('.rail__popover'), 'position')).toBe('fixed');
+  });
+
+  it('束の吹き出しも画面座標で置く（帯の `overflow: hidden` で切れない）', () => {
+    // `absolute` に戻すと、帯の子として上へ伸びたぶんが切り落とされ、**中の行が
+    // 押せなくなる**（実際に一度そうなった）。押せるのは中のボタンだけ（N-01）。
+    const bundle = ruleBody('.rail__bundle');
+    expect(decl(bundle, 'position')).toBe('fixed');
+    expect(decl(bundle, 'pointer-events')).toBe('none');
+    expect(decl(ruleBody('.rail__bundle button'), 'pointer-events')).toBe('auto');
   });
 
   it('断りの読み上げは寸法を持たない（断りで帯が伸びない）', () => {

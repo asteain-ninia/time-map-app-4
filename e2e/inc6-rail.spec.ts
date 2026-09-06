@@ -15,8 +15,10 @@
 import { expect, test, type Page } from '@playwright/test';
 
 import {
+  jumpToYear,
   launchApp,
   loadSyntheticAnchors,
+  openPropertySection,
   railLaneStats,
   railMarkPositions,
   railView,
@@ -477,6 +479,70 @@ test.describe('増分 6 — 初回起動のガイド（FR-118 / 設計書 §H.3�
         .click();
       await expect(page.getByTestId('settings-dialog')).toBeVisible();
       await expect(page.getByLabel('起動時にこの画面の使い方を表示する')).toBeChecked();
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('増分 6 — 逃げ道 2（束の吹き出し）と錨表の規模', () => {
+  test('同じ年に重なる錨は、押すと束の吹き出しが 100ms 以内に開く', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await resizeWindow(page, 1280, 800);
+      // 1200 年の中に 12 本（月ごと）。**同じ日には置けない**（系列は開始が厳密に増加する）
+      // ので、月で分けたものが「1 年に複数の錨がある」形になる。
+      await loadSyntheticAnchors(page, 12, { asAggregateChild: false, withinOneYear: 12 });
+      // **1200 年へ移ってから選ぶ。** 錨は 1200 年から始まるので、0 年の一覧
+      // （現在時刻に存在する地物）にはまだ 1 件も出ない。
+      await jumpToYear(page, 1200);
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+
+      const lane = (await page.getByTestId('anchor-lane').boundingBox())!;
+      const stats = await railLaneStats(page);
+      expect(stats.anchorCount).toBe(12);
+      // 12 本は 1 万年の軸では 1 列に重なる（＝密度帯 1 本）。
+      expect(stats.denseCount).toBeGreaterThan(0);
+
+      const view = await railView(page);
+      const px = ((1200 - view.minYear) / (view.maxYear - view.minYear)) * view.pixelLength;
+      const started = Date.now();
+      await page.mouse.click(lane.x + px, lane.y + lane.height / 2);
+      await expect(page.getByTestId('anchor-bundle')).toBeVisible();
+      const elapsed = Date.now() - started;
+      expect(elapsed, `束が開くまで ${String(elapsed)}ms`).toBeLessThanOrEqual(100);
+
+      // 件数が合っている（見出しの数と、並んだ行の数）。
+      await expect(page.getByTestId('anchor-bundle-title')).toContainText('12 件');
+      expect(await page.locator('[data-testid^="anchor-bundle-row-"]').count()).toBe(12);
+
+      // 行を押すとその年へ飛び、吹き出しは畳まれる。
+      await page.locator('[data-testid^="anchor-bundle-row-"]').first().click();
+      await expect(page.getByTestId('anchor-bundle')).toHaveCount(0);
+      await expect(page.getByTestId('timeline-current')).toContainText('1200年');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('5 万錨の錨表を開いても DOM の行は 25 行以下（増分 2 の仮想スクロールが効く）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticAnchors(page, 50_000, { asAggregateChild: false });
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await page.getByTestId('sidebar-tab-properties').click();
+      await openPropertySection(page, 'anchor-section');
+
+      const rows = await page.locator('[data-testid^="anchor-row-"]').count();
+      expect(rows, `錨表の DOM 行が ${String(rows)} 行`).toBeLessThanOrEqual(25);
+      expect(rows).toBeGreaterThan(0);
+      // 差分の文も **DOM に載っている行のぶんだけ**（行ごとに 1 つ）。
+      const diffs = await page.locator('[data-testid^="anchor-diff-"]').count();
+      expect(diffs).toBeLessThanOrEqual(rows);
     } finally {
       await app.close();
     }

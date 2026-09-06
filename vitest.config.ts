@@ -54,6 +54,11 @@ export default defineConfig({
       // arithmetic, speed->days conversion, marker model. These import only pure
       // `.ts` (never React/.tsx), so they run in node without a DOM.
       'src/ui/timeline/**/*.test.ts',
+      // 時刻の共有ロジック（増分 6 で `src/ui/time/` へ出した）: 時間バーの
+      // time↔pixel 写像・錨レーンの 1 パス集計と当たり判定・レールの畳みの規則・
+      // 目盛りの位置。**ここを足し忘れると、移した瞬間にその検査が走らなくなる**
+      // （`timebar.test.ts` は増分 6 まで `src/ui/property/` に居たので拾われていた）。
+      'src/ui/time/**/*.test.ts',
       // U20 shell pure-logic tests: mode/tool mapping, edit-permission gate,
       // command registry, shortcut keymap/resolve/dispatch, drag reducer,
       // z-order, resize throttle, menu↔keymap agreement, window-size contract.

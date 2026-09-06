@@ -255,6 +255,10 @@ test.describe('増分 2 — 編集時刻は「いま見ている年」に効く'
 
       // 直接ジャンプで月日まで指定する（レール由来ではないので月日が残る経路）。
       await page.getByLabel('直接ジャンプ 年', { exact: true }).fill('1200');
+      // **月日は「月日 ▾」の中にある**（増分 6。時刻レールは 112px 固定なので、
+      // 月日の 4 部品は行に並べず畳んである）。
+      await page.getByTestId('rail-ymd-button').click();
+      await expect(page.getByTestId('rail-ymd-panel')).toBeVisible();
       // 月を「未指定」から「指定」へ切り替えてから入れる（月日を勝手に補わない形なので
       // 、入力欄は既定では使えない）。
       await page.getByLabel('直接ジャンプ 月 未指定', { exact: true }).click();

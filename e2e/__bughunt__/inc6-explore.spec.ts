@@ -309,7 +309,6 @@ test.describe('増分 6 の探索 — 実データのコピーでレールから
       rmSync(workDir, { recursive: true, force: true });
     }
 
-    // eslint-disable-next-line no-console
     console.log(
       `[増分6探索] 観察 ${String(findings.length)} 件:\n` +
         findings.map((f) => `  - ${f.tag}: ${f.detail}`).join('\n'),

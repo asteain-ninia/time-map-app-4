@@ -21,6 +21,8 @@ import { test, expect, type Page } from '@playwright/test';
 
 import {
   ALL_TOOL_TESTIDS,
+  MAP_CELL_PARTS,
+  worldBandIn,
   addInputLayerBox,
   answerDraftDiscardIfAsked,
   armAddAreaTool,
@@ -451,14 +453,19 @@ test.describe('増分 5c — 選択を捨てない・鍵盤の持ち主・Esc �
         await armAddAreaTool(page);
         return addInputLayerBox(page);
       })();
-      const half = Math.round(Math.min(box.width, box.height) * 0.12);
+      // **世界の帯から解く**（増分 6 で地図が縦に 89.2px 伸び、セルの上下に「世界の外」が
+      // できた ―― 固定の割合でセルを割ると、上の四角が北緯 90 度より上へ出て置けない）。
+      const band = worldBandIn(box);
+      const bandW = band.right - band.left;
+      const bandH = band.bottom - band.top;
+      const half = Math.round(Math.min(bandW, bandH) * 0.12);
       // **3 つとも重ならない場所に置く。** 重ねると所属変更の確定が重なり競合の板を
       // 開き、そこで鍵盤の持ち主が「板」になる ―― この検査が見たいのは
       // 「確定して板も出ていないのに Ctrl+Z が効かない」ことなので、板を出さない
       // 場面で測る（板が出ているあいだ止まるのは設計どおりで、別の検査の担当）。
-      const left = { x: box.x + box.width * 0.22, y: box.y + box.height * 0.62 };
-      const right = { x: box.x + box.width * 0.78, y: box.y + box.height * 0.62 };
-      const top = { x: box.x + box.width * 0.5, y: box.y + box.height * 0.22 };
+      const left = { x: band.left + bandW * 0.22, y: band.top + bandH * 0.62 };
+      const right = { x: band.left + bandW * 0.78, y: band.top + bandH * 0.62 };
+      const top = { x: band.left + bandW * 0.5, y: band.top + bandH * 0.22 };
 
       await drawFace(page, squareCorners(left.x, left.y, half), { name: 'A' });
       await armAddAreaTool(page);
@@ -528,6 +535,39 @@ async function scanMapGrid(page: Page): Promise<string[]> {
     }
   }
   return out;
+}
+
+/**
+ * 走査の結果が「地図へ届いている」と言えるか（増分 6 で足した）。
+ *
+ * **台帳（設計書 §B.5）に載っている常設の部品は押せてよい** ―― 増分 6 で置いた
+ * ズーム・全体表示・縮尺バーがそれで、地図の隅を 1〜2 点だけ覆う。K-2 が禁じているのは
+ * 「地図の押下を奪う覆い」なので、①どの点も **入力層か台帳の部品**のどちらかへ届く
+ * ②入力層へ届く点が 25 点のうち大半（23 点以上）である、の 2 つで見る。
+ *
+ * **顔ぶれは `MAP_CELL_PARTS`（helpers）から引く** ―― 決め打ちで書くと、台帳に足した
+ * 部品が検査に入らないまま増える（K-2 の 3 回目がその形だった）。
+ */
+function expectMapReachable(
+  hits: readonly string[],
+  options: { readonly primary?: string; readonly extra?: readonly string[] } = {},
+): void {
+  const primary = options.primary ?? 'map-input-layer';
+  const extra = options.extra ?? [];
+  const allowed = new Set([primary, ...MAP_CELL_PARTS, ...extra]);
+  for (const hit of hits) {
+    expect(allowed.has(hit), `地図の点が ${hit} に奪われた`).toBe(true);
+  }
+  // **板やパネルが出ている場面では、覆う点数そのものは数えない**（覆うのが仕事なので）。
+  // 何も開いていない場面だけ「ほとんどの点が地図へ届く」を見る ―― 台帳の常設部品
+  // （ズーム 3 つ・縮尺バー）が隅を数点覆うことは許すが、**大半を覆ったら赤くする**。
+  if (extra.length > 0) return;
+  const reached = hits.filter((h) => h === primary).length;
+  expect(
+    reached,
+    `${primary} へ届いた点が ${String(reached)} / ${String(hits.length)}（覆った先: ` +
+      `${hits.filter((h) => h !== primary).join(' / ')}）`,
+  ).toBeGreaterThanOrEqual(hits.length - 4);
 }
 
 test.describe('増分 5d — 確定の列はオプションバーへ（地図に押せる部品を置かない）', () => {
@@ -602,7 +642,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     try {
       await expect(page.getByTestId('map-area')).toBeVisible();
       // ①道具なし: 25 点すべてが地図の入力層。
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
 
       await leaveViewMode(page);
       for (const bridge of INPUT_BRIDGES) {
@@ -622,7 +662,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
 
       // ③「選ぶ」へ戻したら、また 25 点すべてが地図の入力層へ戻る（一時部品が居座らない）。
       await page.getByTestId('tool-edit.select').click();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
     } finally {
       await app.close();
     }
@@ -634,49 +674,51 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('map-area')).toBeVisible();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
 
       // 台帳 #14 深さ ▾（読むだけでも出ている常設の設定）。
       await openDepthOptions(page);
-      for (const hit of await scanMapGrid(page)) {
-        expect(['map-input-layer', 'popover:option-depth-panel']).toContain(hit);
-      }
+      expectMapReachable(await scanMapGrid(page), {
+        extra: ['popover:option-depth-panel'],
+      });
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-depth-panel')).toBeHidden();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
 
       // 台帳 #15 表示 ▾。
       await page.getByTestId('option-display-button').click();
       await expect(page.getByTestId('option-display-panel')).toBeVisible();
-      for (const hit of await scanMapGrid(page)) {
-        expect(['map-input-layer', 'popover:option-display-panel']).toContain(hit);
-      }
+      expectMapReachable(await scanMapGrid(page), {
+        extra: ['popover:option-display-panel'],
+      });
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-display-panel')).toBeHidden();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
 
       // 台帳 #5 吸着 ▾（追加の道具を構えてから出る。地図は追加の入力ブリッジが受ける）。
       await leaveViewMode(page);
       await page.getByTestId('tool-add.area').click();
       await page.getByTestId('option-snap-button').click();
       await expect(page.getByTestId('option-snap-panel')).toBeVisible();
-      for (const hit of await scanMapGrid(page)) {
-        expect(['add-input-layer', 'popover:option-snap-panel']).toContain(hit);
-      }
+      expectMapReachable(await scanMapGrid(page), {
+        primary: 'add-input-layer',
+        extra: ['popover:option-snap-panel'],
+      });
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-snap-panel')).toBeHidden();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['add-input-layer']));
+      expectMapReachable(await scanMapGrid(page), { primary: 'add-input-layer' });
       await page.keyboard.press('Escape');
 
       // 台帳 #16 座標 ▾（測量を始めてから出る）。
       await page.getByTestId('survey-toggle').click();
       await openSurveyCoords(page);
-      for (const hit of await scanMapGrid(page)) {
-        expect(['survey-input-layer', 'popover:survey-coords-panel']).toContain(hit);
-      }
+      expectMapReachable(await scanMapGrid(page), {
+        primary: 'survey-input-layer',
+        extra: ['popover:survey-coords-panel'],
+      });
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('survey-coords-panel')).toBeHidden();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['survey-input-layer']));
+      expectMapReachable(await scanMapGrid(page), { primary: 'survey-input-layer' });
     } finally {
       await app.close();
     }
@@ -712,7 +754,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       // 板を閉じれば 25 点すべてが地図へ戻る（居座らない）。
       await page.getByTestId('add-draft-discard-yes').click();
       await expect(page.getByTestId('add-draft-discard-confirm')).toHaveCount(0);
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
     } finally {
       await app.close();
     }
@@ -991,17 +1033,17 @@ test.describe('手直し D3 — 設定欄の畳み「≫」', () => {
       }
 
       // 閉じているあいだ: 25 点すべてが地図の入力層。
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
 
       await overflow.click();
       await expect(page.getByTestId('option-bar-overflow-panel')).toBeVisible();
-      for (const hit of await scanMapGrid(page)) {
-        expect(['map-input-layer', 'popover:option-bar-overflow-panel']).toContain(hit);
-      }
+      expectMapReachable(await scanMapGrid(page), {
+        extra: ['popover:option-bar-overflow-panel'],
+      });
 
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+      expectMapReachable(await scanMapGrid(page));
     } finally {
       await app.close();
     }
@@ -1452,7 +1494,7 @@ test.describe('手直し 2 回目 (1) — 捨てる前の確認は本物のモ�
       await expect(confirm).toHaveCount(0);
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
       await expect(page.getByTestId('knife-input-layer')).toBeVisible();
-      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['knife-input-layer']));
+      expectMapReachable(await scanMapGrid(page), { primary: 'knife-input-layer' });
     } finally {
       await app.close();
     }
