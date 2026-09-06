@@ -9,8 +9,10 @@ import { richValidProject } from '../../domain/persistence/fixtures';
 import { MAX_BASE_MAP_IMAGE_BYTES } from '../../domain/basemap/index';
 import { buildTmap } from '../io/tmap';
 import {
+  DEFAULT_APP_PREFS,
   IPC_CHANNEL,
   MAIN_TO_RENDERER_CHANNELS,
+  type AppPrefs,
   type AutoSaveConfig,
   type DiagnosticLogRecord,
   type IpcChannel,
@@ -133,6 +135,12 @@ function makeDeps(overrides: Partial<IpcDeps> = {}): {
     },
     applyAutoSaveConfig: vi.fn(),
     appendDiagnosticLog: vi.fn(async () => {}),
+    // 決定 (2): アプリ側の設定（userData の JSON 1 枚）。既定はガイドを出す。
+    readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
+    writeAppPrefs: vi.fn(async (patch: Partial<AppPrefs>) => ({
+      ...DEFAULT_APP_PREFS,
+      ...patch,
+    })),
     // FR-107 close ブリッジ: レンダラの終了確認判定 / 受領 ACK の受け口（既定は捨てる spy）.
     acceptCloseVerdict: vi.fn(),
     acceptCloseAck: vi.fn(),

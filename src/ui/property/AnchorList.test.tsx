@@ -44,6 +44,7 @@ import {
   ANCHOR_VISIBLE_ROWS,
   AnchorList,
   neighbourWindow,
+  ANCHOR_NEIGHBOUR_COUNT,
   visibleRange,
 } from './AnchorList';
 import { ANCHOR_INTERVAL_OP, type AnchorIntervalEditIntent } from './contracts';
@@ -494,6 +495,32 @@ describe('neighbourWindow — 現在時刻の前後を切り出す（C2）', () 
     const w = neighbourWindow(rows, timePointYear(10), cal);
     expect(w.rows).toHaveLength(3);
     expect(w.offset).toBe(0);
+  });
+
+  // **二分探索に置き換えたので、線形の参照実装と突き合わせる**（2026-09-07 の手直し）。
+  // 速くするための書き換えは「速くなったか」ではなく **答えが変わっていないか**で
+  // 守る。ここが赤くなるのは、境界（現在時刻ちょうど・全部が未来・全部が過去）の
+  // 扱いが線形版とずれたときである。
+  it('線形に探した中心と、二分探索の切り出しが一致する（境界も含めて）', () => {
+    const years = Array.from({ length: 120 }, (_, i) => i * 3); // 0,3,6,…,357
+    const rows = rowsOfYears(years);
+    /** 線形の参照実装（旧版そのもの）。 */
+    const linearOffset = (at: number): number => {
+      let center = 0;
+      for (let i = 0; i < rows.length; i += 1) {
+        const r = rows[i];
+        if (r === undefined) break;
+        if (r.entry.start.year <= at) center = i;
+      }
+      const n = ANCHOR_NEIGHBOUR_COUNT;
+      return Math.max(0, Math.min(center - n, rows.length - (n * 2 + 1)));
+    };
+    for (let at = -5; at <= 360; at += 1) {
+      const got = neighbourWindow(rows, timePointYear(at), cal);
+      expect(got.offset, `${String(at)} 年での切り出しが線形版とずれた`).toBe(
+        linearOffset(at),
+      );
+    }
   });
 });
 

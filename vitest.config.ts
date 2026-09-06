@@ -47,6 +47,8 @@ export default defineConfig({
     // renderer, so they too run in the same Node environment without jsdom
     // (技術方針 2.5; VTransform is renderer-independent, 技術方針 2.4 / NFR 5.8).
     include: [
+      // テスト基盤そのものの検査（「検査が走っているか」を見る 1 本がここに居る）。
+      'src/test-support/**/*.test.ts',
       'src/domain/**/*.test.ts',
       'src/ui/state/**/*.test.ts',
       'src/render/**/*.test.ts',

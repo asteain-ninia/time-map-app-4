@@ -1044,6 +1044,26 @@ describe('U23 手直し 2 回目 D1: 年が動いたときの下書き', () => {
     expect(screen.queryByTestId('add-draft-discard-confirm')).toBeNull();
   });
 
+  it('**板に答えるまで年は動かない**（2026-09-07 の手直し。教訓 5.71）', () => {
+    // 旧版は年が動いたあとに聞いていたので、板の後ろでは **もう新しい年の地図**が
+    // 見えていた（「続ける」で戻るので、画面が一度嘘をついてから訂正する形）。
+    const h = mountApp();
+    selectTool('tool-add.area');
+    clickMap(0, 0);
+    clickMap(5, 0);
+    clickMap(5, 5);
+    act(() => {
+      h.store.getState().setCurrentTime(timePointYearMonthDay(1800, 1, 1), 'numericJump');
+    });
+    expect(screen.getByTestId('add-draft-discard-confirm')).toBeInTheDocument();
+    // **板が出ているあいだの年は 1500 のまま。**
+    expect(h.store.getState().currentTime.year).toBe(1500);
+    // 「捨てる」と答えて初めて、頼まれた年へ動く。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('0');
+    expect(h.store.getState().currentTime.year).toBe(1800);
+  });
+
   it('「続ける」を何度繰り返しても板は開き直らない（年が往復しない）', () => {
     const h = mountApp();
     selectTool('tool-add.area');

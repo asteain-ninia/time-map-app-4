@@ -90,6 +90,28 @@ describe('hasAnchorStartingAt は U02 の比較を通す（粒度の違いで取
   it('年の途中に始まる錨は、その年の頭とは「別」（新しい錨を作る側になる）', () => {
     expect(hasAnchorStartingAt(seriesAt([1200, 6, 1]), timePointYear(1200), cal)).toBe(false);
   });
+
+  // **二分探索に置き換えたので、線形の参照実装と突き合わせる**（2026-09-07 の手直し）。
+  // 速くするための書き換えは「答えが変わっていないか」で守る。系列の開始が厳密に
+  // 増加する（U09 の INV-1）という前提が崩れた列は渡さない ―― 崩れた列での挙動を
+  // 固定すると、不変条件のほうが後から嘘になる。
+  it('線形に舐めた結果と、二分探索の結果が全部の年で一致する', () => {
+    const years = Array.from({ length: 60 }, (_, i) => i * 7); // 0,7,14,…,413
+    const series = seriesAt(...years);
+    const linear = (at: number): boolean => years.includes(at);
+    for (let at = -3; at <= 420; at += 1) {
+      expect(hasAnchorStartingAt(series, timePointYear(at), cal), `${String(at)} 年`).toBe(
+        linear(at),
+      );
+    }
+  });
+
+  it('空の系列・1 本だけの系列でも線形版と一致する（端の扱い）', () => {
+    expect(hasAnchorStartingAt(seriesAt(), timePointYear(0), cal)).toBe(false);
+    expect(hasAnchorStartingAt(seriesAt(1200), timePointYear(1199), cal)).toBe(false);
+    expect(hasAnchorStartingAt(seriesAt(1200), timePointYear(1200), cal)).toBe(true);
+    expect(hasAnchorStartingAt(seriesAt(1200), timePointYear(1201), cal)).toBe(false);
+  });
 });
 
 describe('保存の行き先 — 設計書 §D.3 の 4 状態', () => {

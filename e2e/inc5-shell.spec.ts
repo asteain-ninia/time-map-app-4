@@ -550,7 +550,15 @@ async function scanMapGrid(page: Page): Promise<string[]> {
  */
 function expectMapReachable(
   hits: readonly string[],
-  options: { readonly primary?: string; readonly extra?: readonly string[] } = {},
+  options: {
+    readonly primary?: string;
+    readonly extra?: readonly string[];
+    /**
+     * その場面で **実際に点を覆ってよい**部品の顔ぶれ。省略すると `extra`（開いている
+     * 板）と同じ ―― つまり **何も開いていなければ 1 点も覆われてはいけない**。
+     */
+    readonly covered?: readonly string[];
+  } = {},
 ): void {
   const primary = options.primary ?? 'map-input-layer';
   const extra = options.extra ?? [];
@@ -558,16 +566,19 @@ function expectMapReachable(
   for (const hit of hits) {
     expect(allowed.has(hit), `地図の点が ${hit} に奪われた`).toBe(true);
   }
-  // **板やパネルが出ている場面では、覆う点数そのものは数えない**（覆うのが仕事なので）。
-  // 何も開いていない場面だけ「ほとんどの点が地図へ届く」を見る ―― 台帳の常設部品
-  // （ズーム 3 つ・縮尺バー）が隅を数点覆うことは許すが、**大半を覆ったら赤くする**。
-  if (extra.length > 0) return;
-  const reached = hits.filter((h) => h === primary).length;
+  // **覆っている顔ぶれを言い当てる**（2026-09-07 の手直し）。旧版は「25 点のうち
+  // 21 点が届けばよい」という **4 点ぶんの余裕**を持たせていたので、地図の隅を覆う
+  // 部品が 4 つまで黙って増えても緑のままだった（実際には 1 点も覆っていない）。
+  // 板が出ている場面でも数えるのをやめない ―― 覆ってよいのは **その板だけ** である。
+  const covered = hits.filter((h) => h !== primary);
+  const declared = options.covered ?? extra;
   expect(
-    reached,
-    `${primary} へ届いた点が ${String(reached)} / ${String(hits.length)}（覆った先: ` +
-      `${hits.filter((h) => h !== primary).join(' / ')}）`,
-  ).toBeGreaterThanOrEqual(hits.length - 4);
+    [...new Set(covered)].sort(),
+    `覆った先: ${covered.join(' / ') || '（なし）'}`,
+  ).toEqual([...new Set(declared)].sort());
+  if (declared.length === 0) return;
+  // 板が出ていても **地図はどこかしら生きている**（画面を丸ごと飲み込まない）。
+  expect(hits.filter((h) => h === primary).length).toBeGreaterThan(0);
 }
 
 test.describe('増分 5d — 確定の列はオプションバーへ（地図に押せる部品を置かない）', () => {
@@ -754,6 +765,20 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       // 板を閉じれば 25 点すべてが地図へ戻る（居座らない）。
       await page.getByTestId('add-draft-discard-yes').click();
       await expect(page.getByTestId('add-draft-discard-confirm')).toHaveCount(0);
+      expectMapReachable(await scanMapGrid(page));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('K-2: 初回起動のガイドが出ていても、地図の 25 点はすべて地図へ届く', async () => {
+    // **ガイドを畳まずに走査する**（2026-09-07 の手直し）。旧版のガイドは右パネルから
+    // 地図セルへ 52px はみ出していて、**5 つの窓の大きさすべてで**地図の中のズーム
+    // 3 ボタンを覆っていた。ガイドは地図の外に置くものなので、出ていても走査は
+    // 「1 点も覆われない」で通らなければならない。
+    const { app, page } = await launchApp({ keepFirstRunGuide: true });
+    try {
+      await expect(page.getByTestId('first-run-guide')).toBeVisible();
       expectMapReachable(await scanMapGrid(page));
     } finally {
       await app.close();

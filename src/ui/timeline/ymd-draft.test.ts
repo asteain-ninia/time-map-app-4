@@ -137,3 +137,30 @@ describe('error messages are Japanese (FR-115)', () => {
     }
   });
 });
+
+// --- 打った文字の読み方（2026-09-07 の手直し）--------------------------------
+//
+// 時刻レールの年の欄を `type="number"` から `type="text"` へ変えたので、**読むのは
+// ここ 1 か所**になった。全角で打つ利用者と、桁区切りを打つ利用者を落とさない。
+
+describe('全角の数字・桁区切り・空白を読む（欄が値ごと捨てない）', () => {
+  it('全角の数字は半角として読む', () => {
+    const r = parseYmdDraft(draft({ yearText: '１２３４', monthSpecified: false }), cal);
+    expect(r.ok && r.point.year).toBe(1234);
+  });
+
+  it('桁区切りと空白は無視する', () => {
+    const r = parseYmdDraft(draft({ yearText: ' 1,234 ', monthSpecified: false }), cal);
+    expect(r.ok && r.point.year).toBe(1234);
+  });
+
+  it('全角のマイナスも符号として読む（紀元前）', () => {
+    const r = parseYmdDraft(draft({ yearText: '−1200', monthSpecified: false }), cal);
+    expect(r.ok && r.point.year).toBe(-1200);
+  });
+
+  it('数字でない文字は「読めない」（勝手に 0 にしない）', () => {
+    const r = parseYmdDraft(draft({ yearText: 'あ', monthSpecified: false }), cal);
+    expect(r.ok).toBe(false);
+  });
+});

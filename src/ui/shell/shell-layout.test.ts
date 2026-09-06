@@ -496,7 +496,13 @@ describe('時刻レールの寸法契約（設計書 §C.7。増分 6）', () =>
     // 同じ軸の上で 2 つの写像が並ぶ。
     expect(decl(ruleBody('.rail__lane-box'), 'margin-right')).toBe('var(--rail-unit-gutter)');
     expect(decl(ruleBody('.rail__ticks-unit'), 'flex')).toBe('0 0 var(--rail-unit-gutter)');
-    expect(decl(ruleBody('.app-shell'), '--rail-unit-gutter')).toBe('64px');
+    // **余白はいちばん右のラベルのはみ出しを含む**（2026-09-07 の手直し）。固定の
+    // 64px では実測の隙間が 1.5px しかなく、紀元前でラベルが伸びると「単位: 年」に
+    // 重なった。はみ出しぶんは `RailTicks` が実際のラベルから見積もって載せる。
+    expect(decl(ruleBody('.app-shell'), '--rail-unit-gutter')).toBe(
+      'calc(var(--rail-unit-text) + var(--rail-tick-overhang) + 6px)',
+    );
+    expect(decl(ruleBody('.app-shell'), '--rail-tick-overhang')).toBe('18px');
   });
 
   it('操作列は折り返さない（段が増えると地図の上端が動く）', () => {
@@ -517,6 +523,28 @@ describe('時刻レールの寸法契約（設計書 §C.7。増分 6）', () =>
     expect(basis('.rail__ymd', '月日 ▾')).toBe(RAIL_GROUP_WIDTH.ymd);
     expect(basis('.rail__unit', 'ステップ単位')).toBe(RAIL_GROUP_WIDTH.unit);
     expect(basis('.rail__overflow', '≫')).toBe(RAIL_GROUP_WIDTH.overflow);
+    // **12 個ぜんぶ**（2026-09-07 の手直し）。旧版は 7 個しか見ておらず、幅を嵌め
+    // 忘れていた 再生・拡大・錨ジャンプ が予算とずれたまま通っていた。
+    expect(basis('.rail__playback', '再生')).toBe(RAIL_GROUP_WIDTH.playFull);
+    expect(
+      basis(".rail__controls[data-fold='keysOnly'] .rail__playback", '再生（▶ だけ）'),
+    ).toBe(RAIL_GROUP_WIDTH.playMin);
+    expect(basis('.rail__zoom', '拡大 3 ボタン')).toBe(RAIL_GROUP_WIDTH.zoomFull);
+    expect(basis('.rail__zoom--menu', '拡大 ▾')).toBe(RAIL_GROUP_WIDTH.zoomMenu);
+    expect(basis('.rail__anchor-jump', '錨ジャンプ')).toBe(RAIL_GROUP_WIDTH.anchorJump);
+  });
+
+  it('まとまりは中身の最小幅で押し広がらない（`min-width: 0`）', () => {
+    // 既定の `min-width: auto` は「中身の最小幅」を下限にするので、`flex-basis` を
+    // 書いても中身が広ければそちらが勝つ。実際にステップ単位が 76px の予算に対して
+    // 100.8px を占めていた（教訓 5.74 の「嵌めたつもり」）。
+    expect(decl(ruleBody('.rail__group'), 'min-width')).toBe('0');
+  });
+
+  it('再生ボタンは「再生」⇄「一時停止」で幅が変わらない', () => {
+    // 字数が違うので、幅を固定しないと押すだけで操作列の幅が 23.5px 動く（実測）。
+    const button = ruleBody('.timeline-playback__button');
+    expect(px(decl(button, 'width'), '再生ボタンの width')).toBeGreaterThan(0);
   });
 
   it('±1 の送りと再生は U-8 の下限（64×32）を守る', () => {

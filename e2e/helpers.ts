@@ -91,6 +91,11 @@ export interface LaunchOptions {
    * 効かない条件**を渡すために開けてある。既定は何も足さない。
    */
   readonly extraEnv?: Readonly<Record<string, string>>;
+  /**
+   * 初回起動のガイドを **畳まない**。ガイドそのものを見る検査（本番の初回起動で
+   * 本当に出るか・地図に重なっていないか）のために開けてある。既定は畳む。
+   */
+  readonly keepFirstRunGuide?: boolean;
 }
 
 export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
@@ -140,14 +145,26 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   // 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
   // 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
   // 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
-  await dismissFirstRunGuide(page);
+  if (options.keepFirstRunGuide !== true) await dismissFirstRunGuide(page);
   return { app, page };
 }
 
-/** 初回起動のガイドが出ていたら閉じる（冪等）。ガイド自身を見る spec は先に読むこと。 */
+/**
+ * 初回起動のガイドが出ていたら閉じる（冪等）。ガイド自身を見る spec は先に読むこと。
+ *
+ * **出るのを待ってから閉じる**（2026-09-07 の手直し）。ガイドを出すかどうかは
+ * アプリ側の設定（userData の JSON）を **読んでから**決まるようになったので、
+ * 「いま DOM に無ければ何もしない」形だと **読み終わる前に素通りして**、あとから
+ * 出たガイドが次の操作を覆う。待つのは板が本当に出るまでで、時間切れなら
+ * 「もう出ない設定になっている」と読んで何もしない（冪等さは保つ）。
+ */
 export async function dismissFirstRunGuide(page: Page): Promise<void> {
   const close = page.getByTestId('first-run-guide-close');
-  if ((await close.count()) === 0) return;
+  try {
+    await close.waitFor({ state: 'visible', timeout: 5_000 });
+  } catch {
+    return;
+  }
   await close.click();
   await expect(page.getByTestId('first-run-guide')).toHaveCount(0);
 }

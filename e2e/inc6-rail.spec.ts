@@ -14,9 +14,12 @@
 
 import { expect, test, type Page } from '@playwright/test';
 
+import { RAIL_STRINGS } from '../src/ui/timeline/rail-strings';
+
 import {
   jumpToYear,
   launchApp,
+  leaveViewMode,
   loadSyntheticAnchors,
   openPropertySection,
   railLaneStats,
@@ -120,6 +123,65 @@ test.describe('増分 6 — 時刻レールの寸法（設計書 §C.7 / §B.4�
       await resizeWindow(page, 1600, 800);
       await expect(page.getByTestId('rail-controls')).toHaveAttribute('data-fold', 'full');
       await expect(page.getByTestId('rail-step-100')).toBeVisible();
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('落としたものは必ず「≫」から開ける（行＋≫＝全部。800〜1120px）', async () => {
+    // 実測で **800〜959px では 10 年送りと再生速度が行にも「≫」にも無かった**
+    // （届く手が 1 つも無い＝進捗 §2 の約束に反する）。段ごとに「行に出ていないものが
+    // ≫ の中にある」ことを見る。
+    const { app, page } = await launchApp();
+    try {
+      for (const width of [1120, 1000, 900, 800]) {
+        await resizeWindow(page, width, 800);
+        const inRow = async (id: string): Promise<boolean> =>
+          (await page.getByTestId('rail-controls').locator(`[data-testid="${id}"]`).count()) > 0;
+        const rowHas = {
+          step100: await inRow('rail-step-100'),
+          step10: await inRow('rail-step-10'),
+          unit: await inRow('rail-unit'),
+          ymd: await inRow('rail-ymd'),
+          anchor: await inRow('rail-anchor-jump'),
+          speed: await inRow('rail-speed'),
+        };
+        await page.getByTestId('rail-overflow-button').click();
+        const panel = page.getByTestId('rail-overflow-panel');
+        await expect(panel).toBeVisible();
+        for (const [id, testId] of [
+          ['step100', 'rail-step-100'],
+          ['step10', 'rail-step-10'],
+          ['unit', 'rail-unit'],
+          ['ymd', 'rail-ymd'],
+          ['anchor', 'rail-anchor-jump'],
+          ['speed', 'rail-speed'],
+        ] as const) {
+          if (rowHas[id]) continue;
+          expect(
+            await panel.locator(`[data-testid="${testId}"]`).count(),
+            `窓幅 ${String(width)}px で ${testId} が行にも ≫ にも無い`,
+          ).toBe(1);
+        }
+        await page.keyboard.press('Escape');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('再生を押しても操作列の幅が動かない（畳みの予算が押すたびに崩れない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await resizeWindow(page, 1120, 800);
+      const width = async (): Promise<number> =>
+        Math.round((await page.getByTestId('timeline-playback').boundingBox())!.width);
+      const stopped = await width();
+      await page.getByRole('button', { name: '再生' }).click();
+      await expect(page.getByRole('button', { name: '一時停止' })).toBeVisible();
+      expect(await width(), '再生を押すと再生の区画の幅が変わった').toBe(stopped);
+      expect(await overflowingChildren(page, 'rail-controls')).toEqual([]);
+      await page.getByRole('button', { name: '一時停止' }).click();
     } finally {
       await app.close();
     }
@@ -313,14 +375,18 @@ test.describe('増分 6 — 規模（設計書 §F.2 の受け入れ条件）', 
       await loadSyntheticAnchors(page, 2000, { asAggregateChild: false });
       await page.getByTestId('sidebar-tab-list').click();
       await page.locator('[data-testid^="feature-list-item-"]').first().click();
-      const before = (await railLaneStats(page)).aggregateCount;
+      const before = await railLaneStats(page);
 
       await page.getByRole('button', { name: '再生' }).click();
       await page.waitForTimeout(1200);
       await page.getByRole('button', { name: '一時停止' }).click();
 
       const after = await railLaneStats(page);
-      expect(after.aggregateCount, '再生で再集計が走った').toBe(before);
+      expect(after.aggregateCount, '再生で再集計が走った').toBe(before.aggregateCount);
+      // **素材づくりも走らない**（2026-09-07 の手直し。GPT の指摘）。再集計だけを見ていると、
+      // 「集計はしていないが親の系列を毎コマ引き直している」経路を見逃す ―― 費用が
+      // 大きいのは素材づくりのほうである（教訓 5.78 の 2 つの契機）。
+      expect(after.sourceCount, '再生で素材づくりが走った').toBe(before.sourceCount);
       // 時刻は実際に動いている（＝再生そのものは効いている）。
       expect((await railView(page)).currentYear).toBeGreaterThan(0);
     } finally {
@@ -349,7 +415,9 @@ test.describe('増分 6 — 鍵盤と断り（中身 3・4・7）', () => {
       // 端では **止まって理由を出す**（黙って何も起きない、を作らない）。
       await page.keyboard.press('[');
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
-      await expect(page.getByTestId('statusbar-result')).toContainText('これより前に錨はありません');
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        RAIL_STRINGS.noPreviousAnchor,
+      );
     } finally {
       await app.close();
     }
@@ -416,8 +484,9 @@ test.describe('増分 6 — 鍵盤と断り（中身 3・4・7）', () => {
       await field.fill('20000');
       await page.getByRole('button', { name: 'ジャンプ', exact: true }).click();
       await expect(page.getByTestId('timeline-current')).toHaveText('0年');
-      await expect(page.getByTestId('statusbar-result')).toContainText('時間軸の範囲');
-      await expect(page.getByTestId('statusbar-result')).toContainText('移動していません');
+      await expect(page.getByTestId('statusbar-result')).toContainText(
+        RAIL_STRINGS.outOfRange('20000年', '0年', '10000年'),
+      );
     } finally {
       await app.close();
     }
@@ -483,6 +552,77 @@ test.describe('増分 6 — 初回起動のガイド（FR-118 / 設計書 §H.3�
       await app.close();
     }
   });
+
+  test('本番の初回起動で本当に出て、地図とズームの 3 ボタンに重ならない', async () => {
+    // **`launchApp` の畳みを外して**、出るところから見る（2026-09-07 の手直し）。
+    // 旧版の検査は「畳んだあと」しか見ていなかったので、**出るかどうか**は誰も
+    // 見張っていなかった。置き場も実測で見る（矩形の交差＝教訓 5.62）―― 旧版は
+    // 右パネルから地図セルへ 52px はみ出し、地図の中のズーム 3 ボタンを覆っていた。
+    const { app, page } = await launchApp({ keepFirstRunGuide: true });
+    try {
+      await expect(page.getByTestId('first-run-guide')).toBeVisible();
+      const guide = (await page.getByTestId('first-run-guide-root').boundingBox())!;
+      const map = (await page.getByTestId('map-area').boundingBox())!;
+      expect(
+        guide.x,
+        `ガイドの左端 ${String(Math.round(guide.x))} が地図セル（右端 ${String(
+          Math.round(map.x + map.width),
+        )}）に食い込んでいる`,
+      ).toBeGreaterThanOrEqual(map.x + map.width - 1);
+      // ズームの 3 ボタンとも交差しない（覆っていたのはここ）。
+      for (const id of ['map-zoom-in', 'map-zoom-out', 'map-fit-all']) {
+        const b = (await page.getByTestId(id).boundingBox())!;
+        const overlaps =
+          guide.x < b.x + b.width &&
+          b.x < guide.x + guide.width &&
+          guide.y < b.y + b.height &&
+          b.y < guide.y + guide.height;
+        expect(overlaps, `ガイドが ${id} を覆っている`).toBe(false);
+        // 覆っていないので押せる（板が出ていても地図の部品は生きている）。
+        await expect(page.getByTestId(id)).toBeEnabled();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('「今後表示しない」は次の起動でも効く（アプリ側に覚える＝決定 (2)）', async () => {
+    // 旧版はプロジェクトの設定にしか書いていなかったので、**押しても次の起動でまた出た**
+    // （起動直後は新規プロジェクトなので、押した印の行き先が無い）。
+    const first = await launchApp({ keepFirstRunGuide: true });
+    try {
+      await expect(first.page.getByTestId('first-run-guide')).toBeVisible();
+      await first.page.getByTestId('first-run-guide-dismiss').click();
+      await expect(first.page.getByTestId('first-run-guide')).toHaveCount(0);
+    } finally {
+      await first.app.close();
+    }
+
+    const second = await launchApp({ keepFirstRunGuide: true });
+    try {
+      // 起動しても出ない（新規プロジェクトの既定は「出す」のままなのに、である）。
+      await second.page.waitForTimeout(500);
+      await expect(second.page.getByTestId('first-run-guide')).toHaveCount(0);
+
+      // **設定欄は嘘をつかない**: 覚え書きが「出さない」なら、印も外れている。
+      await second.page.getByTestId('menu-tools').click();
+      await second.page
+        .getByTestId('menu-items-tools')
+        .locator('[data-command="tools.settings"]')
+        .click();
+      await expect(second.page.getByTestId('settings-dialog')).toBeVisible();
+      await second.page.getByTestId('settings-tab-app').click();
+      const box = second.page.getByLabel('起動時にこの画面の使い方を表示する');
+      await expect(box).not.toBeChecked();
+      // **入口として生きている**: 入れ直すと、また出るようになる。
+      // （ここで戻しておかないと、同じワーカーの後続のテストにも出なくなる。）
+      await box.check();
+      await second.page.getByTestId('settings-save').click();
+      await expect(second.page.getByTestId('first-run-guide')).toBeVisible();
+    } finally {
+      await second.app.close();
+    }
+  });
 });
 
 test.describe('増分 6 — 逃げ道 2（束の吹き出し）と錨表の規模', () => {
@@ -516,7 +656,24 @@ test.describe('増分 6 — 逃げ道 2（束の吹き出し）と錨表の規�
 
       // 件数が合っている（見出しの数と、並んだ行の数）。
       await expect(page.getByTestId('anchor-bundle-title')).toContainText('12 件');
-      expect(await page.locator('[data-testid^="anchor-bundle-row-"]').count()).toBe(12);
+      const rows = page.locator('[data-testid^="anchor-bundle-row-"]');
+      expect(await rows.count()).toBe(12);
+      // **12 行目まで本当に届く**（2026-09-07 の手直し）。旧版は一覧の高さが 168px で
+      // 12 行（264px）が入らず、しかも器が押下を通す設定だったので **スクロールも
+      // できず下 4 行に手が届かなかった**。可視は `toBeVisible()` ではなく
+      // **矩形が一覧の矩形に入るか**で見る（教訓 5.62）。
+      const list = (await page.getByTestId('anchor-bundle').locator('ul').boundingBox())!;
+      const last = (await rows.last().boundingBox())!;
+      expect(last.y, '12 行目が一覧の上へはみ出した').toBeGreaterThanOrEqual(list.y - 1);
+      expect(
+        last.y + last.height,
+        '12 行目が一覧の下へはみ出した（届かない）',
+      ).toBeLessThanOrEqual(list.y + list.height + 1);
+      // 閉じる道が複数ある（Escape でも閉じる＝共有の器の作法 3）。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('anchor-bundle')).toHaveCount(0);
+      await page.mouse.click(lane.x + px, lane.y + lane.height / 2);
+      await expect(page.getByTestId('anchor-bundle')).toBeVisible();
 
       // 行を押すとその年へ飛び、吹き出しは畳まれる。
       await page.locator('[data-testid^="anchor-bundle-row-"]').first().click();
@@ -636,6 +793,131 @@ test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の
       // レーンの再集計は 1 度も走っていない（時刻が動いただけでは数え直さない）。
       const stats = await railLaneStats(page);
       expect(stats.aggregateCount).toBeLessThanOrEqual(3);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// 2026-09-07 の手直し — 実機でしか捕まらないもの
+// ---------------------------------------------------------------------------
+
+test.describe('増分 6 の手直し — 地図の 3 部品・目盛り・読み取り', () => {
+  test('道具を構えていても地図のズーム 3 ボタンは押せる（決定 (3)）', async () => {
+    // 旧版は道具の入力ブリッジが **後から並ぶ兄弟**として上に乗り、3 部品を飲み込んで
+    // いた（しかも理由が出ない）。層を上げ、器は押下を通してボタンの矩形だけが受ける。
+    const { app, page } = await launchApp();
+    try {
+      await leaveViewMode(page);
+      await page.getByTestId('tool-add.area').click();
+      await expect(page.getByTestId('add-input-layer')).toBeVisible();
+
+      const layer = page.getByTestId('map-input-layer');
+      const before = Number(await layer.getAttribute('data-zoom'));
+      const button = (await page.getByTestId('map-zoom-in').boundingBox())!;
+      // ボタンの真ん中で押下を受けるのは **ボタン**（入力ブリッジではない）。
+      const onButton = await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.getAttribute('data-testid') ?? '?',
+        { x: button.x + button.width / 2, y: button.y + button.height / 2 },
+      );
+      expect(onButton).toBe('map-zoom-in');
+      await page.getByTestId('map-zoom-in').click();
+      await page.waitForTimeout(120);
+      expect(Number(await layer.getAttribute('data-zoom'))).toBeGreaterThan(before);
+
+      // **ボタンの間の隙間は地図へ抜ける**（覆いを作らないという K-2 の約束）。
+      const box = (await page.getByTestId('map-view-controls').boundingBox())!;
+      const zoomIn = (await page.getByTestId('map-zoom-in').boundingBox())!;
+      const gapY = zoomIn.y + zoomIn.height + 2;
+      const inGap = await page.evaluate(
+        ({ x, y }) => document.elementFromPoint(x, y)?.getAttribute('data-testid') ?? '?',
+        { x: box.x + box.width / 2, y: gapY },
+      );
+      expect(inGap).toBe('add-input-layer');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('目盛りの行は既定のスライダーの絵で覆われない（左端の年が読める）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      // `appearance: none` を実機の計算済みスタイルで見る（実測の画面では既定の
+      // 太い青帯と大きなつまみが 0 年のラベルを完全に隠していた）。
+      const appearance = await page.evaluate(() => {
+        const el = document.querySelector('.rail__slider');
+        if (el === null) return '(無い)';
+        const s = getComputedStyle(el);
+        return `${s.appearance}/${s.getPropertyValue('-webkit-appearance')}`;
+      });
+      expect(appearance).toContain('none');
+      // 目盛りのラベルは 2 本以上出ていて、軸の中に収まっている。
+      const labels = page.getByTestId('timeline-tick-label');
+      expect(await labels.count()).toBeGreaterThanOrEqual(2);
+      const axis = (await page.getByTestId('rail-axis').boundingBox())!;
+      const first = (await labels.first().boundingBox())!;
+      expect(first.x).toBeGreaterThanOrEqual(axis.x - 20);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('目盛りに焦点を入れて → を押すと 1 単位進む', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await jumpToYear(page, 1200);
+      await page.getByLabel('時間軸スライダー').focus();
+      await page.keyboard.press('ArrowRight');
+      await expect(page.getByTestId('timeline-current')).toContainText('1201年');
+      await page.keyboard.press('ArrowLeft');
+      await expect(page.getByTestId('timeline-current')).toContainText('1200年');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('深く拡大しても読み取りが読める（「1px ≒ 0.00年」にならない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await jumpToYear(page, 1200);
+      for (let i = 0; i < 6; i += 1) await page.getByTestId('rail-zoom-in').click();
+      await page.waitForTimeout(120);
+      const note = (await page.getByTestId('rail-span-note').textContent()) ?? '';
+      expect(note).not.toContain('0年ぶん');
+      expect(note).not.toContain('≒ 0.00年');
+      expect(await page.getByTestId('timeline-tick-label').count()).toBeGreaterThanOrEqual(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('レールのホイールで passive のエラーが出ない（1 走行 96 件だった）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const errors: string[] = [];
+      page.on('console', (m) => {
+        if (m.type() === 'error') errors.push(m.text());
+      });
+      const lane = (await page.getByTestId('anchor-lane').boundingBox())!;
+      await page.mouse.move(lane.x + lane.width / 2, lane.y + lane.height / 2);
+      for (let i = 0; i < 5; i += 1) await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(200);
+      expect(errors.filter((e) => e.includes('passive'))).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('選んでいないときのバッジは行き先を言わない（指す相手が画面に無い）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('rail-edit-time-badge')).toHaveAttribute(
+        'data-plan',
+        'none',
+      );
+      expect(await page.getByTestId('rail-edit-time-note').count()).toBe(0);
     } finally {
       await app.close();
     }

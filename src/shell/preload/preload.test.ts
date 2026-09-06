@@ -59,8 +59,10 @@ describe('preload exposes the typed TimeMapApi (受け入れ基準4)', () => {
       'onAutoSaveTick',
       'onCloseRequest',
       'openImage',
+      'readAppPrefs',
       'save',
       'saveAs',
+      'writeAppPrefs',
     ]);
     for (const key of keys) {
       expect(typeof (api as unknown as Record<string, unknown>)[key]).toBe('function');

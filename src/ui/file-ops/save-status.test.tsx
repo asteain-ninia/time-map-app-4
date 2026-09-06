@@ -42,6 +42,9 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     loadDropped: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
+    // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
+    readAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
+    writeAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
     onCloseRequest: vi.fn(() => () => {}),
     appendLog: vi.fn(async () => {}),
     openImage: vi.fn(async (): Promise<Uint8Array | null> => null),

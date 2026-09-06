@@ -8,7 +8,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { getCalendar } from '../../domain/time/calendar';
-import { timePointYear, type TimePoint } from '../../domain/time/time-point';
+import {
+  timePointYear,
+  timePointYearMonthDay,
+  type TimePoint,
+} from '../../domain/time/time-point';
 
 import {
   LANE_DENSE_ACTION,
@@ -26,6 +30,7 @@ import {
   zoomLaneStep,
 } from './anchor-lane';
 import { viewFromTimePoints, viewSpanDays } from './timebar';
+
 
 const calendar = getCalendar('gregorian');
 
@@ -156,6 +161,77 @@ describe('ヒットテストと前後ジャンプ（二分探索）', () => {
     const src = sourceOfYears([100, 200]);
     expect(previousAnchorIndex(src.starts, src.starts[0] as number)).toBe(-1);
     expect(nextAnchorIndex(src.starts, src.starts[1] as number)).toBe(-1);
+  });
+
+  // --- `[` `]` の端と隙間（2026-09-07 の手直し。GPT の指摘）--------------------
+
+  it('錨が 1 本も無ければ、前へも次へも -1（断りを出す側へ渡る）', () => {
+    const src = sourceOfYears([]);
+    expect(previousAnchorIndex(src.starts, 0)).toBe(-1);
+    expect(nextAnchorIndex(src.starts, 0)).toBe(-1);
+  });
+
+  it('錨と錨のあいだに居るときは、その両隣を指す', () => {
+    const src = sourceOfYears([100, 200, 300]);
+    const between = ((src.starts[0] as number) + (src.starts[1] as number)) / 2;
+    expect(previousAnchorIndex(src.starts, between)).toBe(0);
+    expect(nextAnchorIndex(src.starts, between)).toBe(1);
+  });
+
+  it('同じ年に複数の錨があっても 1 本ずつ進む（年で丸めない）', () => {
+    // 年の途中に始まる錨（1200 年 1 月 1 日 / 6 月 1 日 / 1201 年）。`]` は
+    // **次の年**ではなく **次の錨**へ行く ―― 年で丸めると同じ年の 2 本目に永久に
+    // 届かない（レールの逃げ道 3 が行き止まりになる）。
+    const starts: TimePoint[] = [
+      timePointYearMonthDay(1200, 1, 1),
+      timePointYearMonthDay(1200, 6, 1),
+      timePointYear(1201),
+    ];
+    const src = laneSourceOf(starts, [{ start: starts[0] as TimePoint, end: null }], calendar);
+    const first = src.starts[0] as number;
+    expect(nextAnchorIndex(src.starts, first)).toBe(1);
+    expect(previousAnchorIndex(src.starts, src.starts[1] as number)).toBe(0);
+    expect(nextAnchorIndex(src.starts, src.starts[1] as number)).toBe(2);
+  });
+
+  it('前後の添字は、日をずらしながら全域で線形走査と一致する', () => {
+    const src = sourceOfYears([0, 3, 7, 8, 100, 1000]);
+    const starts = src.starts;
+    const lo = (starts[0] as number) - 5;
+    const hi = (starts[starts.length - 1] as number) + 5;
+    for (let day = lo; day <= hi; day += 37) {
+      let prev = -1;
+      for (let i = 0; i < starts.length; i += 1) if ((starts[i] as number) < day) prev = i;
+      let next = -1;
+      for (let i = starts.length - 1; i >= 0; i -= 1) if ((starts[i] as number) > day) next = i;
+      expect(previousAnchorIndex(starts, day), `${String(day)} 日の前`).toBe(prev);
+      expect(nextAnchorIndex(starts, day), `${String(day)} 日の次`).toBe(next);
+    }
+  });
+});
+
+// --- 当たり判定の手直し（2026-09-07）----------------------------------------
+
+describe('当たり判定 — 押した画素列と、視野の外の錨', () => {
+  it('押した列に錨が 1 本だけなら、隣の錨が ±4px に居ても「1 本」を返す', () => {
+    // 実測: 1 万年の軸を 100px で見ると 1px ≒ 100 年。1200 年と 1210 年は
+    // 別の画素列だが ±4px には両方入るので、旧版は「2 本以上」を返し、
+    // **印を押しても飛べず 1 段拡大しか起きなかった**（何度押しても同じ）。
+    const src = sourceOfYears([1200, 1500]);
+    const v = view(0, 10000, 1000); // 1px = 10 年
+    const px = ((1200 * 365.2425) / (10000 * 365.2425)) * 1000; // 1200 年の画素
+    const hit = laneHitTest(src, v, px);
+    expect(hit.kind).toBe(LANE_HIT.Single);
+    expect(hit.firstIndex).toBe(0);
+  });
+
+  it('視野の外の錨は数えない（右端で「向こう側」を掴まない）', () => {
+    // 集計は半開区間（右端の錨は数えない）なのに、当たり判定だけが視野の外の錨に
+    // 当たっていた ―― 印が 1 つも描かれていない列を押すと「2 本以上」と言われた。
+    const src = sourceOfYears([0, 5000, 10000]);
+    const v = viewFromTimePoints(timePointYear(0), timePointYear(2000), 100, calendar);
+    // 右端（2000 年）の 1px 手前。5000 年の錨は視野の外なので数えない。
+    expect(laneHitTest(src, v, 99).kind).toBe(LANE_HIT.None);
   });
 });
 

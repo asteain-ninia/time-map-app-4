@@ -21,8 +21,11 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, type Page } from '@playwright/test';
 
 import {
+  jumpToYear,
+  launchApp,
   launchAppWithProject,
   leaveViewMode,
+  loadSyntheticAnchors,
   openPropertySection,
   railLaneStats,
   railMarkPositions,
@@ -313,11 +316,82 @@ test.describe('増分 6 の探索 — 実データのコピーでレールから
       `[増分6探索] 観察 ${String(findings.length)} 件:\n` +
         findings.map((f) => `  - ${f.tag}: ${f.detail}`).join('\n'),
     );
-    // **想定内の観察は落とす。** 束は「ほどけてしまえば出ない」ので、到達しないことは
-    // 不具合ではない（逃げ道 1 が効いた結果である）。
+    // **想定内の観察は落とす。** 束は「ほどけてしまえば出ない」ので、**実データでは**
+    // 到達しないことは不具合ではない（逃げ道 1 が効いた結果である）―― 実データの錨は
+    // 必ず年ちょうどに始まるので、同じ年に 2 本を作れず、拡大すれば必ずほどける。
+    // **束そのものは下の合成データの節で必ず通す。**
     const abnormal = findings.filter(
       (f) => f.tag !== 'bundle-not-reached' && f.tag !== 'target',
     );
     expect(abnormal.map((f) => `[異常] ${f.tag}: ${f.detail}`)).toEqual([]);
+  });
+
+  test('束の吹き出しに必ず到達する（同じ年に 12 本の合成データ）', async () => {
+    // 実データでは束に届かない（上の注記）ので、**届く形を作って掃く**
+    // （2026-09-07 の手直し。GPT の指摘: 到達しないことを異常から外したままだと、
+    // 束の経路は 1 度も踏まれていないのに緑になる）。
+    const findings: Finding[] = [];
+    const record = (tag: string, detail: string): void => {
+      findings.push({ tag, detail });
+    };
+    const { app, page } = await launchApp();
+    try {
+      await loadSyntheticAnchors(page, 12, { asAggregateChild: false, withinOneYear: 12 });
+      await jumpToYear(page, 1200);
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+
+      const laneBox = (await page.getByTestId('anchor-lane').boundingBox())!;
+      let reached = false;
+      for (let i = 0; i < 14; i += 1) {
+        const v = await railView(page);
+        const want = ((1200 - v.minYear) / (v.maxYear - v.minYear)) * v.pixelLength;
+        if (want < 0 || want > v.pixelLength) break;
+        await page.mouse.click(laneBox.x + want, laneBox.y + laneBox.height / 2);
+        await page.waitForTimeout(90);
+        if ((await page.getByTestId('anchor-bundle').count()) === 0) continue;
+        reached = true;
+        const rows = page.locator('[data-testid^="anchor-bundle-row-"]');
+        const rowCount = await rows.count();
+        if (rowCount !== 12) record('bundle-rows', `束の行が ${String(rowCount)} 本（12 のはず）`);
+        // 最後の行まで **一覧の矩形に入っている**（届く）ことを見る（教訓 5.62）。
+        const list = (await page.getByTestId('anchor-bundle').locator('ul').boundingBox())!;
+        const last = (await rows.last().boundingBox())!;
+        if (last.y + last.height > list.y + list.height + 1 || last.y < list.y - 1) {
+          record('bundle-last-row', '最後の行が一覧の矩形からはみ出していて押せない');
+        }
+        // 行を押すとその錨へ飛び、束は畳まれる。
+        await rows.last().click();
+        if ((await page.getByTestId('anchor-bundle').count()) !== 0) {
+          record('bundle-stays', '行を押しても束が閉じない');
+        }
+        break;
+      }
+      if (!reached) record('bundle-not-reached', '同じ年に 12 本あるのに束へ到達しなかった');
+
+      // 閉じる道（Escape・外の押下）も掃く。
+      for (const close of ['escape', 'outside'] as const) {
+        const v = await railView(page);
+        const want = ((1200 - v.minYear) / (v.maxYear - v.minYear)) * v.pixelLength;
+        await page.mouse.click(laneBox.x + want, laneBox.y + laneBox.height / 2);
+        await page.waitForTimeout(90);
+        if ((await page.getByTestId('anchor-bundle').count()) === 0) continue;
+        if (close === 'escape') await page.keyboard.press('Escape');
+        else await page.getByTestId('map-input-layer').click({ position: { x: 40, y: 40 } });
+        await page.waitForTimeout(90);
+        if ((await page.getByTestId('anchor-bundle').count()) !== 0) {
+          record('bundle-close', `${close} で束が閉じない`);
+        }
+      }
+    } finally {
+      await app.close();
+    }
+
+    console.log(
+      `[増分6探索・束] 観察 ${String(findings.length)} 件:\n` +
+        findings.map((f) => `  - ${f.tag}: ${f.detail}`).join('\n'),
+    );
+    expect(findings.map((f) => `[異常] ${f.tag}: ${f.detail}`)).toEqual([]);
   });
 });

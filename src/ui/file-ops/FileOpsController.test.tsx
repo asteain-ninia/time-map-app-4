@@ -70,6 +70,9 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     loadDropped: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
     configureAutoSave: vi.fn(async () => ({ ok: true as const })),
     onAutoSaveTick: vi.fn(() => () => {}),
+    // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
+    readAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
+    writeAppPrefs: vi.fn(async () => ({ showFirstRunGuide: true })),
     // FR-107 close ブリッジ購読（このコントローラは購読しない — App.tsx が host 側で
     // 繋ぐ）。契約の全面を満たすためのスタブ。
     onCloseRequest: vi.fn(() => () => {}),
