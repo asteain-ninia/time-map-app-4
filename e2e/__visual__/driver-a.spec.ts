@@ -21,7 +21,7 @@ import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 
 import {
   armAddAreaTool,
@@ -434,14 +434,16 @@ async function assertCancelReArms(
     await expect(button).toHaveAttribute('aria-pressed', 'true');
   }
 
-  // Escape path — the SAME 契約 (the tool controllers funnel Escape into cancel()).
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(250);
-  const goneByEsc = (await chrome.count()) === 0;
-  const pressedByEsc = (await button.getAttribute('aria-pressed')) === 'true';
-  record(`${tool}-cancel-escape`, `chrome gone=${goneByEsc} toolbar aria-pressed=${pressedByEsc}`);
-  expect(goneByEsc, `Escape must drop the ${tool} chrome`).toBe(true);
-  expect(pressedByEsc, `Escape must release tool-edit.${tool}`).toBe(false);
+  // Escape path — **階段になった**（増分 5 の手直し B1 / 設計書 §D.4.1）。
+  //
+  // 旧版は「Escape 1 回で道具ごと降りる」を固定していた。いまは 1 回で 1 段だけ下りる
+  // （下書き → 対象を離す → 頂点の選択 → 地物の選択 → 道具を降りる）ので、**何回で
+  // 降りるかは、そのときに何を選んでいるかで変わる**。ここで守りたいのは「Escape を
+  // 連打すれば必ず降りられる」ことなので、**上限を決めて連打し、その中で降りること**を
+  // 見る（上限を決めないと、輪になっていても「いつかは終わる」と読めてしまう）。
+  const escapesUsed = await pressEscapeUntilDisarmed(page, button);
+  record(`${tool}-cancel-escape`, `Escape ${escapesUsed} 回で降りた`);
+  expect(await chrome.count(), `Escape で ${tool} の器が残った`).toBe(0);
 
   await dismissTooltips(page);
   await button.click();
@@ -450,10 +452,26 @@ async function assertCancelReArms(
   record(`${tool}-rearm-escape`, `same-button re-press after Escape revived=${revivedByEsc}`);
   expect(revivedByEsc, `pressing tool-edit.${tool} again after Escape must RE-ARM it`).toBe(true);
 
-  // Leave the tool disarmed for the next case (Escape, then confirm it is off).
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(200);
+  // Leave the tool disarmed for the next case.
+  await pressEscapeUntilDisarmed(page, button);
   await expect(button).toHaveAttribute('aria-pressed', 'false');
+}
+
+/**
+ * Escape を **上限つきで連打**して、その道具を降りるまで押す（増分 5 の手直し B1）。
+ * 返り値は実際に押した回数。上限に達しても降りなければ落とす。
+ */
+async function pressEscapeUntilDisarmed(
+  page: Page,
+  button: Locator,
+  limit = 6,
+): Promise<number> {
+  for (let i = 1; i <= limit; i += 1) {
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
+    if ((await button.getAttribute('aria-pressed')) !== 'true') return i;
+  }
+  throw new Error(`Escape を ${limit} 回押しても道具が降りない（§D.4.1 の階段が輪になっている）`);
 }
 
 // =============================================================================
@@ -903,7 +921,9 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       if (await modal.isVisible().catch(() => false)) {
         await page.getByTestId('knife-choose-0').click();
         await page.getByTestId('knife-confirm-inheritor').click();
-        await expect(page.getByTestId('knife-props')).toBeVisible();
+        // **入力は右パネルの「新規の姿」で受ける**（司令塔の決定 (5)）。地図の中央の板は
+        // 消え、`hidden` の観測ミラーだけが残っている。
+        await expect(page.getByTestId('add-property-form')).toBeVisible();
         await page.getByTestId('add-save').click();
         await page.waitForTimeout(700);
       } else {

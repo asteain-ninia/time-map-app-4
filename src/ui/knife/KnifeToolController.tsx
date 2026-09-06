@@ -18,7 +18,9 @@
 //   - wires Escape→cancel and Ctrl+Z→undo (FR-78);
 //   - feeds `buildKnifePrimitives(state)` to the injected render sink on every state
 //     change so the overlay / target emphasis / cut preview / 固定円 are drawn (FR-90
-//     / FR-92), and re-uses U23's property form for非継承側プロパティ入力 (FR-93). The
+//     / FR-92), and hands 非継承側プロパティ入力 to the RIGHT PANEL's「新規の姿」through
+//     the shared {@link AddDraftStore} (FR-93 / 司令塔の決定 (5)): the same U23 form the
+//     add tool uses, at the same place, so the map is never covered by the form. The
 //     対象面強調 geometry is resolved from THIS session's own `targetId` through the
 //     injected `resolveLeafShape` — the same live-lookup the host's `featureAtPoint`
 //     picks from — so 強調 == クリックで取得した対象 (W3-A 単一真実源, 教訓 5.29).
@@ -52,9 +54,10 @@ import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 
-import { AddPropertyForm } from '../add/AddPropertyForm';
-import type { AddProperties } from '../../domain/add/index';
+import type { AddDraftPrompt, AddDraftStore } from '../add/add-draft-store';
+import { ADD_TOOL_KIND, type ParentCandidate } from '../../domain/add/index';
 
 import { InheritorModal } from './InheritorModal';
 import { KNIFE_STRINGS } from './strings';
@@ -144,11 +147,55 @@ export interface KnifeToolControllerProps<S> {
    * up. Fires `true` whenever the flow is past Idle, `false` on return to Idle.
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
-  /** A sensible color for the非継承側 new feature when the form omits it (FR-97). */
+  /**
+   * **本物のモーダルが開いた／閉じた**ことを報せる口（増分 5 の手直し A4 / GPT #5）。
+   *
+   * `onDrawingChange`（＝下書きを持っている）と **分けて**報せる。両者は鍵盤の持ち主として
+   * 意味が違う ―― 下書きを持っているだけなら保存（Ctrl+S）は通してよいが、**モーダルが
+   * 開いているあいだは通してはいけない**（確認の背後で保存が走ると、何に対して答えたのか
+   * 分からなくなる）。旧版は「対象を持っている」という理由だけで下書き扱いにしていたので、
+   * 継承先の選択や素性の入力の途中で Ctrl+S / Ctrl+Shift+S / Ctrl+N / Ctrl+O が
+   * **背後で走った**。
+   */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
+   * 非継承側の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
+   * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具（`AddToolController`）と同じ橋で、
+   * 地図の真ん中に板を出さないために要る。
+   *
+   * **省略できるのは型の上だけ**である。渡さないと「素性を入れる局面なのに入力の口が
+   * どこにも無い」＝手順が進まない状態になるので、合成ルートは必ず渡すこと（単体テストも
+   * `AddDraftForm` を一緒に載せる形にしてある）。
+   */
+  readonly addDraft?: AddDraftStore | undefined;
+  /**
+   * A sensible color for the非継承側 new feature when the form omits it (FR-97).
+   *
+   * **いまは誰も読んでいない**（司令塔の決定 (5)）。地図の板だったころから
+   * `NonInheritedForm` はこの値を受け取るだけで使っておらず、色は右パネルの
+   * `AddPropertyForm` が自分の既定（`DEFAULT_NEW_FEATURE_FILL_OPACITY` を掛けた
+   * 1 本）を入れている。合成ルートと単体テストが渡している口なので**型としては残す**が、
+   * 外すなら合成ルート側の 2 行と一緒に消す仕事である（司令塔へ申し送り）。
+   */
   readonly defaultColor: ColorInfo;
   /** Provisional draw style override. */
   readonly style?: KnifeStyle | undefined;
 }
+
+/**
+ * 上位領域の候補は **常に空**である（`showParent: false` なので欄そのものが出ない）。
+ * 毎レンダー新しい配列を作らないよう 1 本に固定する（`AddDraftStore` は中身を同一性で
+ * 見るので、作り直すと押し込むたびに購読者へ通知が飛ぶ）。
+ */
+const NO_PARENT_CANDIDATES: readonly ParentCandidate[] = [];
+
+/**
+ * 上位領域は **ドメインが元の面から引き継ぐ**（FR-44）ので、選ばせない＝選ばれても何も
+ * しない。`showParent: false` と対で置く（欄が出ないので呼ばれることは無いが、口は塞ぐ）。
+ */
+const NOOP_CHOOSE_PARENT = (): void => {
+  /* 非継承側の上位領域は assembleSplitProposal が元の面から継ぐ (FR-44) */
+};
 
 const NOOP_COMMITTED = (): void => {
   /* host did not bind a commit handler; nothing to swap */
@@ -167,7 +214,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     resolveLeafShape,
     drawSink,
     onConflicts,
-    defaultColor,
     style,
   } = props;
   const optionBar = props.optionBar;
@@ -194,33 +240,54 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // selection source, 教訓 5.29), so the target is also drawn in the selection color and
   // is the Delete / property-panel subject. The対象面強調 geometry does NOT come from this
   // selection — it is resolved from the tool's own target below (W3-A 単一真実源).
+  //
+  // **昇格させた対象を覚えておく**（増分 5 の手直し B1）。戻すときに「自分が昇格させた
+  // ものかどうか」を見分けるために要る ―― 覚えていないと、道具が触っていない選択まで
+  // 巻き添えに消してしまう（下の {@link unpromoteOwnTarget} の注記）。
+  const promotedTargetRef = useRef<FeatureId | null>(null);
   const promoteTargetSelection = useCallback(
-    (fid: FeatureId) => store.getState().setActiveFeature(fid),
+    (fid: FeatureId) => {
+      promotedTargetRef.current = fid;
+      store.getState().setActiveFeature(fid);
+    },
     [store],
   );
-  // W3-B — CANCEL = leave the tool (Escape / キャンセル / モーダルの取消 / 拒否の dismiss).
+
+  // **自分が昇格させた対象だけを選択から戻す**（増分 5 の手直し B1 / GPT #8）。
+  //
+  // 旧版はここで `clearSelection()` を呼んでいた ―― 頂点の選択も、道具が触っていない
+  // 地物の選択も、まとめて空にする。設計書 §D.4 の階段は「対象を離す」であって
+  // 「選択を全部捨てる」ではないので、**自分が `setActiveFeature` で押し込んだ id が
+  // まだ選ばれているときに限って** null へ戻す。別のものが選ばれていれば、それは
+  // 利用者が道具の外で選び直したということなので触らない。
+  const unpromoteOwnTarget = useCallback(() => {
+    const promoted = promotedTargetRef.current;
+    promotedTargetRef.current = null;
+    if (promoted === null) return;
+    const s = store.getState();
+    if (s.activeFeature !== promoted) return;
+    s.setActiveFeature(null);
+  }, [store]);
+
+  // W3-B — CANCEL = leave the tool. **これは「やめる」と言われたときの経路だけである**
+  // （［やめる］ボタン・拒否の dismiss・継承先の板や素性入力の板の取消）。ボタンとして
+  // ［やめる］を押したのは「この作業をやめる」という意思表示だから、道具ごと降りてよい。
+  //
+  // **Escape はここを通らない**（増分 5 の手直し B1 / 設計書 §D.4）。Escape は 1 回で
+  // 1 段だけ戻る階段で、道具を降りるのは階段のいちばん下 ―― そこは大域の
+  // `shell/escape-ladder.ts` の持ち場なので、道具側からは `setActiveTool(null)` を
+  // 呼ばない。下の keydown の注記を参照。
+  //
   // Un-promoting the target alone left the toolbar button `aria-pressed=true` while the
   // session was disarmed, so pressing the SAME button again ran the store's press-toggle
   // (tool → null) instead of re-arming — the knife could only be revived by detouring
   // through another tool. Releasing `activeTool` here keeps the toolbar's pressed state
   // and the session's armed state ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源), so the
-  // next press always re-arms. `setActiveTool(null)` runs the store's own selection reset
-  // 契約, which subsumes the HB3-6/18 target un-promotion (a cancelled knife target must
-  // not stay highlighted / Delete-able). Same規約 as ring-edit (8950639).
+  // next press always re-arms. Same規約 as ring-edit (8950639).
   const releaseToolOnCancel = useCallback(() => {
-    // **増分 5c: 選択の後始末を明示に書く。** 旧版は `setActiveTool(null)` の
-    // **副作用**（道具を替えたら選択を全消しする）に寄りかかっていたが、増分 5c で
-    // その既定を反転した（`docs/現状.md` B28: 道具を持ち替えても選択は消さない）ので、
-    // 寄りかかっていた側がここで黙って壊れる（教訓 5.44「共通ロジックを差し替えたら
-    // 呼び出し側に残る写しを全部潰す」の、副作用版）。
-    //
-    // この道具は **自分で対象を選択へ昇格させている**（`onTargetSelected` →
-    // `setActiveFeature`）ので、取りやめたら自分で戻す。掴んでいない選択まで
-    // 巻き添えにする点は設計書 §D.4 の階段（対象を離す → 道具は持ったまま）とまだ
-    // 食い違っており、そこは増分 7 で階段を各道具へ通すときに揃える。
-    store.getState().clearSelection();
+    unpromoteOwnTarget();
     store.getState().setActiveTool(null);
-  }, [store]);
+  }, [unpromoteOwnTarget, store]);
 
   const knife = useKnifeTool<S>({
     resolveFeature,
@@ -349,8 +416,46 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
-        e.preventDefault();
-        knife.cancel();
+        // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
+        //
+        // **1 回の Escape で 1 段だけ**戻る。旧版は 1 回で「手順の対象」「元からの選択」
+        // 「道具」の三段をまとめて捨てていた（GPT #8）。
+        //
+        //   0. 板が出ている（継承先の選択・新しい地物の素性入力）→ 板を閉じる
+        //      ＝ この作業をやめる（階段の最上段は `modal`。`cancel` の意味と一致する）
+        //   1. 分断線の点列がある → **点列だけをまとめて捨てる**（対象も道具も保つ）
+        //   2. 対象を掴んでいる   → 対象だけ離す（道具は持ったまま）
+        //   3. どちらも無い       → **何もせず大域の階段へ譲る**
+        //
+        // 3 で `preventDefault` も `stopPropagation` もしないのが肝である ―― 大域の
+        // `shell/escape-ladder.ts` が「頂点を外す → 地物の選択を外す → 道具を『選ぶ』へ
+        // 戻す」を順にやる。ここで止めると、道具を構えているあいだ **素の状態へ戻る道が
+        // 無くなる**（§D.4 の「連打すれば必ず戻る」が破れる）。
+        //
+        // 3 の局面では `onDrawingChange` も false を報せている（対象が null なら名乗らない）
+        // ので、大域の割り振りは生きている ―― 名乗りと階段の段が食い違わない。
+        if (
+          knife.flow === KNIFE_FLOW.ChoosingInheritor ||
+          knife.flow === KNIFE_FLOW.EnteringProperties
+        ) {
+          e.preventDefault();
+          knife.cancel();
+          return;
+        }
+        if (
+          knife.state.phase === KNIFE_PHASE.DrawingCut &&
+          knife.state.line.points.length > 0
+        ) {
+          e.preventDefault();
+          knife.discardCutLine();
+          return;
+        }
+        if (knife.targetId !== null) {
+          e.preventDefault();
+          knife.releaseTarget();
+          unpromoteOwnTarget();
+          return;
+        }
         return;
       }
       if (
@@ -364,7 +469,19 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [knife.flow, knife.state.phase, knife.cancel, knife.undoCutPoint]);
+    // `knife.state` を丸ごと依存に入れる（旧版は `state.phase` だけ）―― 階段の 1 段目は
+    // **点列が何点あるか**を見るので、点を打つたびに閉包を張り替えないと「1 点打ったのに
+    // まだ 0 点だと思っているリスナー」が残る。
+  }, [
+    knife.flow,
+    knife.state,
+    knife.targetId,
+    knife.cancel,
+    knife.discardCutLine,
+    knife.releaseTarget,
+    knife.undoCutPoint,
+    unpromoteOwnTarget,
+  ]);
 
   // --- bughunt3 (H2 / H1): report the in-progress knife to the host so it suspends
   // the GLOBAL shortcut dispatcher. The global useShortcuts listener registers BEFORE
@@ -393,6 +510,66 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     // dispatcher suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
   }, [knife.flow, knife.targetId, onDrawingChange]);
+
+  // --- 非継承側の素性入力は **右パネルの「新規の姿」**で受ける（司令塔の決定 (5) /
+  // 設計書 §B.5 の台帳 #9 / §C.2 の 27）------------------------------------------------
+  //
+  // **なぜ移すのか**: 同じ「新しい地物の素性を入れる」作業なのに置き場が 2 通りあると、
+  // 名前欄の焦点も保存ボタンの名前も 2 通りになる。加えて地図の中央の板は **いま切った
+  // 形の真上に出る**ので、切り口を見ながら名前を入れられなかった（追加の道具が N-15 で
+  // 直したのと同じ害）。右パネルなら覆わない。
+  //
+  // **上位領域は聞かない**（`showParent: false`）。非継承側の上位領域は
+  // `assembleSplitProposal` が元の面から引き継ぐ（FR-44）ので、ここで選ばせると
+  // 「選んだのに反映されない欄」になる。
+  //
+  // **自分の局面でないときは何もしない**（`!enteringProperties` で早々に抜ける）。
+  // 追加・分ける・穴あけの 3 つが同じ 1 本の口を共有していて、3 つとも同時にマウント
+  // されている ―― 「自分の番でなければ `null` を押し込む」と書くと、**別の道具が開いて
+  // いる入力待ちを踏み消す**（教訓 5.68 と同じ形の事故）。後片付けも「自分が押し込んだ
+  // ものがまだ載っているときだけ」戻す。
+  const addDraft = props.addDraft;
+  // **素性入力の局面**（＝非継承側の素性を右パネルで受けている最中）。下の帯の押し込みも
+  // 同じ 1 本を見る（同じ判定を 2 か所に書かない＝教訓 5.29）。
+  const enteringProperties = knife.flow === KNIFE_FLOW.EnteringProperties;
+  const enteringYear = anchorTime().year;
+  const knifeSave = knife.save;
+  const knifeCancel = knife.cancel;
+  useEffect(() => {
+    if (addDraft === undefined || !enteringProperties) return;
+    const mine: AddDraftPrompt = {
+      // 切り分けた非継承側は面である（`showParent` を明示しているので、この値から
+      // 上位領域の欄の有無は決まらない）。
+      tool: ADD_TOOL_KIND.Face,
+      parentCandidates: NO_PARENT_CANDIDATES,
+      defaultParentId: null,
+      currentYear: enteringYear,
+      showParent: false,
+      onChooseParent: NOOP_CHOOSE_PARENT,
+      // **戻り値は丸ごと渡す**（種別ラベルを黙って落とさない ―― 過去に同じ取りこぼしが
+      // あった）。`AddProperties` は `knife.save` が受ける形と同じ 3 つ組である。
+      onSave: knifeSave,
+      onCancel: knifeCancel,
+    };
+    addDraft.set(mine);
+    // 局面を離れる・道具を降りる・アンマウントの全経路で必ず閉じる（教訓 5.2）。
+    return () => {
+      if (addDraft.get() === mine) addDraft.set(null);
+    };
+  }, [addDraft, enteringProperties, enteringYear, knifeSave, knifeCancel]);
+
+  // **モーダルは別に報せる**（増分 5 の手直し A4）。継承先の選択板（`InheritorModal`）と
+  // 非継承側の素性入力は、Escape / Tab しか自分では受けない本物のモーダルである。
+  const onModalChange = props.onModalChange;
+  useEffect(() => {
+    if (onModalChange === undefined) return;
+    // **素性入力はもうモーダルではない**（決定 (5)）。右パネルの「新規の姿」で受けるので、
+    // 鍵盤の持ち主は入力欄（`text`）である ―― ここで `modal` と名乗ると、名前を打って
+    // いる最中に Ctrl+S が止まる（追加の道具では止まらないのに、分けるでだけ止まる）。
+    // 残るモーダルは **継承先を選ぶ板**（画面全体に重なる作業ダイアログ）だけ。
+    onModalChange(knife.flow === KNIFE_FLOW.ChoosingInheritor);
+    return () => onModalChange(false);
+  }, [knife.flow, onModalChange]);
 
   // --- Map-input handler with the固定円ヒット優先 (教訓 5.14). A click while:
   //   - SelectingTarget → resolve the feature under it and select (LEAF gate in hook);
@@ -471,6 +648,11 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // 差し込む（増分 3 の `add-undo` と同じ形）。testid は 1 つも変えていない（T-1）――
   // 役割は「分断線を確定する」「1 点戻す」「やめる」のままで、置き場だけが移った。
   const drawingCut = knife.state.phase === KNIFE_PHASE.DrawingCut;
+  // **断られた局面でも［やめる］を確定欄に出す**（増分 5 の手直し B3 / GPT #11）。
+  // 旧版は断り文と［やめる］を **地図の中央の板**に出していて、その板が
+  // `pointer-events: auto` で地図のクリックを奪っていた（K-2 の当事者）。板は消し、
+  // 断り文は「次の一手」へ、［やめる］はここへ移す。
+  const rejected = knife.flow === KNIFE_FLOW.Rejected;
   const knifeCommit = useMemo(
     () =>
       drawingCut
@@ -488,8 +670,25 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
               onClick: () => knife.cancel(),
             },
           ]
-        : [],
-    [drawingCut, knife],
+        : // **素性入力中も確定欄を空にしない**（追加の道具と同じ形＝`ADD_STRINGS` の側の
+          // 注記）。空にすると「やめる」経路が画面から消え、名前を打っている途中で
+          // 取りやめる手が Escape だけになる ―― その Escape も右パネルの名前欄に焦点が
+          // あるあいだは焦点の守り（`isEditableTarget`）に阻まれて道具へ届かない。
+          // **保存は右パネルの［保存］が持つ**ので、帯には［やめる］だけを出す。
+          rejected || enteringProperties
+          ? [
+              {
+                id: 'cancel',
+                testId: 'knife-cancel',
+                label: KNIFE_STRINGS.cancel,
+                onClick: () => knife.cancel(),
+              },
+            ]
+          : [],
+    // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
+    // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
+    // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
+    [drawingCut, rejected, enteringProperties, knife.confirmCut, knife.cancel],
   );
   const knifeExtras = useMemo(
     () =>
@@ -506,22 +705,68 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
           {KNIFE_STRINGS.undoVertex}
         </button>
       ) : null,
-    [drawingCut, knife],
+    [drawingCut, knife.state, knife.undoCutPoint],
   );
   useToolBarChrome({
     optionBar,
     active: knife.flow !== KNIFE_FLOW.Idle,
     slotId: 'knife',
-    nextStep: knife.message ?? knife.guide,
+    // **素性入力の局面では行き先まで言う**（司令塔の決定 (5)）。ドメインの案内文は
+    // 「新規地物のプロパティを入力してください。」までしか言わない ―― 板が目の前に
+    // 出ていたころはそれで足りたが、いま欄は右パネルにある。断り（`message`）が
+    // 出ているときは今までどおりそちらが最優先である。
+    nextStep:
+      knife.message ??
+      (enteringProperties ? KNIFE_STRINGS.nextStepEnterProperties : knife.guide),
     commit: knifeCommit,
     extras: knifeExtras,
   });
 
+  // --- 対象欄（240px）は **この道具が自分で押し込む**（増分 5 の手直し B3 / バグ狩り #6）--
+  //
+  // `shell/ToolOptionBar` の `TOOLS_WITH_OWN_TARGET` にナイフが入ったので、あちらは
+  // `activeFeature` から対象欄を作らない。それまでは **1 度も対象を押していないのに
+  // 一覧で選んだ地物の名前が出て**、次の一手の「切る面を押してください」と矛盾していた。
+  //
+  // 名前の作り方は `describeOptionBarTarget` をそのまま使う（写像表を増やさない＝教訓 5.29）。
+  // 掴んでいなければ null を押し込む ―― 器が「（選んでいません）」を出す。
+  //
+  // 段階表示は「手順 n/4」（設計書 §C.4 / バグ狩り #9）。「4 件中 2 件」と誤読されないよう
+  // 「手順」の 2 文字を含む形は `KNIFE_STRINGS.stage` が持つ。
+  const knifeStage = useMemo(() => {
+    switch (knife.state.phase) {
+      case KNIFE_PHASE.Inactive:
+        return null;
+      case KNIFE_PHASE.SelectingTarget:
+        return KNIFE_STRINGS.stage(1);
+      case KNIFE_PHASE.DrawingCut:
+        return KNIFE_STRINGS.stage(2);
+      case KNIFE_PHASE.ChoosingInheritor:
+        return KNIFE_STRINGS.stage(3);
+      case KNIFE_PHASE.EnteringProperties:
+        return KNIFE_STRINGS.stage(4);
+    }
+  }, [knife.state.phase]);
+  const knifeTargetName = useMemo(() => {
+    if (knife.targetId === null) return null;
+    const feature = resolveFeature(knife.targetId);
+    return feature === undefined ? null : describeOptionBarTarget(feature);
+  }, [knife.targetId, resolveFeature]);
+  // **空へ戻すのは後片付けでやる**（`useToolBarChrome` と同じ理由＝教訓 5.68）。5 つの
+  // コントローラは全部が同時にマウントされているので、effect の本体で「降りているなら
+  // 空へ」と書くと、構えていない道具が構えている道具の押し込みを踏み消す。React は
+  // 「全部の後片付け → 全部の再実行」の順に走らせるので、後片付けへ置けば木の位置に
+  // 関わらず「前の道具が空へ戻す → 次の道具が押し込む」になる。
+  const knifeArmed = knife.flow !== KNIFE_FLOW.Idle;
+  useEffect(() => {
+    if (optionBar === undefined || !knifeArmed) return;
+    optionBar.setTarget(knifeStage, knifeTargetName);
+    return () => optionBar.setTarget(null, null);
+  }, [optionBar, knifeArmed, knifeStage, knifeTargetName]);
+
   return (
     <KnifeToolChrome
       knife={knife}
-      defaultColor={defaultColor}
-      currentYear={anchorTime().year}
       onMapPointerDown={onMapPointerDown}
       onMapWheel={onMapWheel}
       onMapCameraPointerDown={onMapCameraPointerDown}
@@ -536,9 +781,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
 interface KnifeToolChromeProps<S> {
   readonly knife: ReturnType<typeof useKnifeTool<S>>;
-  readonly defaultColor: ColorInfo;
-  /** 新しい地物の年代の既定に使う「いま見ている年」（G-8。0 年固定をやめた）。 */
-  readonly currentYear: number;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
   readonly onMapWheel: (e: {
@@ -633,7 +875,7 @@ function KnifeInputBridge(props: {
 }
 
 function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null {
-  const { knife, defaultColor, currentYear } = props;
+  const { knife } = props;
 
   if (knife.flow === KNIFE_FLOW.Idle) return null;
 
@@ -698,15 +940,17 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
         />
       )}
 
-      {/* 非継承側プロパティ入力 — re-uses U23's add form (FR-93 / 教訓 5.30). */}
-      {entering && (
-        <NonInheritedForm
-          defaultColor={defaultColor}
-          currentYear={currentYear}
-          onSave={(properties) => knife.save(properties)}
-          onCancel={() => knife.cancel()}
-        />
-      )}
+      {/* **非継承側の素性入力の板は地図から消した**（司令塔の決定 (5) / 設計書 §B.5 の
+          台帳 #9 / §C.2 の 27）。素性は **右パネルの「新規の姿」**（`add-property-form`）で
+          受ける ―― 板は切ったばかりの形の真上に出るので、切り口を見ながら名前を入れられ
+          なかった。押し込みは上の `addDraft` の effect が行う。
+
+          `knife-props` は **「素性入力の局面に居る」ことの観測ミラー**として `hidden` で
+          残す（T-1 役割はそのまま／T-2 隠し観測は足す一方）。既に `knife-guide` /
+          `knife-message` / `knife-rejected` が同じ形で残っており、探索の spec
+          （`e2e/__bughunt__/explore-r4.spec.ts` / `e2e/__visual__/driver-a.spec.ts`）が
+          「いまどの段に居るか」をこの名前で見ている。 */}
+      {entering && <span data-testid="knife-props" hidden />}
 
       {knife.flow === KNIFE_FLOW.ConflictPaused && (
         <p data-testid="knife-conflict-paused" role="status">
@@ -714,53 +958,16 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
         </p>
       )}
 
+      {/* **断りの板は地図から消した**（増分 5 の手直し B3 / GPT #11 / バグ狩り #4）。
+          旧版はここに `pointer-events: auto` の板を出しており、**断りが出ているあいだ
+          地図のクリックが奪われて**いた（設計書 §B.5 の K-2 と正面から衝突する）。
+          断り文は帯の「次の一手」が、［やめる］は帯の確定欄が出す。ここに残るのは
+          観測のミラーだけである（testid は役割のまま＝T-1）。 */}
       {knife.flow === KNIFE_FLOW.Rejected && knife.message !== null && (
-        <div data-testid="knife-rejected">
-          <p role="alert">{knife.message}</p>
-          <button type="button" data-testid="knife-rejected-dismiss" onClick={() => knife.cancel()}>
-            {KNIFE_STRINGS.cancel}
-          </button>
-        </div>
+        <span data-testid="knife-rejected" hidden>
+          {knife.message}
+        </span>
       )}
-    </div>
-  );
-}
-
-// --- 非継承側プロパティ入力 (re-uses U23's AddPropertyForm shape; FR-93) --------
-//
-// The spec mandates RE-USING U23's面情報追加入力フロー (FR-93 / 教訓 5.30 過少共有).
-// U23's AddPropertyForm is a face-add form that emits `AddProperties` (基本属性 +
-// 色 + 任意の種別ラベル). For the非継承側 we drive the SAME form (no parent selector —
-// the parent is initially inherited from the original by the domain assembler) and
-// forward its result as {@link NonInheritedProperties}. Importing the U23 component
-// keeps the single form implementation shared rather than duplicated (過少共有の戒め).
-//
-// **フォームの戻り値は丸ごと渡す**。ここで `attributes` と `color` の 2 つだけを取り出す
-// 形にしていたため、利用者がフォームへ入れた**種別ラベルが黙って捨てられていた** (受け側の
-// `knife.save` も `newFeatureOptional` も最初から種別ラベルを受け取れる)。追加の道具
-// (AddToolController) と同じく `AddProperties` をそのまま流す形へ揃える。
-
-function NonInheritedForm(props: {
-  readonly defaultColor: ColorInfo;
-  readonly currentYear: number;
-  readonly onSave: (properties: AddProperties) => void;
-  readonly onCancel: () => void;
-}): JSX.Element {
-  const { onSave, onCancel, currentYear } = props;
-  return (
-    <div className="knife-tool__props" data-testid="knife-props">
-      <h3>{KNIFE_STRINGS.newFeatureProps}</h3>
-      <AddPropertyForm
-        showParent={false}
-        parentCandidates={[]}
-      defaultParentId={null}
-        currentYear={currentYear}
-        onChooseParent={() => {
-          /* parent is inherited from the original by the domain assembler (FR-44) */
-        }}
-        onSave={(p: AddProperties) => onSave(p)}
-        onCancel={onCancel}
-      />
     </div>
   );
 }

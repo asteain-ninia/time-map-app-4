@@ -24,7 +24,7 @@
 // The component holds NO domain truth and writes the store ONLY through the host-supplied
 // `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -144,6 +144,17 @@ export interface ReparentToolControllerProps<S> {
    * Idle, `false` on return to Idle (cancel / commit / mode-switch).
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
+  /**
+   * **本物のモーダルが開いた／閉じた**ことを報せる口（増分 5 の手直し A4 / B4）。
+   *
+   * `onDrawingChange`（＝下書きを持っている）と **分けて**報せる。両者は鍵盤の持ち主として
+   * 意味が違う ―― 下書きを持っているだけなら保存（Ctrl+S）は通してよいが、**モーダルが
+   * 開いているあいだは通してはいけない**（確認の背後で保存が走ると、何に対して答えたのか
+   * 分からなくなる）。この道具では **最上位化の確認の板**（B4）が本物のモーダルである。
+   *
+   * ほかの 3 道具（分ける・結ぶ・穴あけ）と同じ形（`KnifeToolController` が手本）。
+   */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -172,18 +183,17 @@ export function ReparentToolController<S>(
   // Releasing `activeTool` here keeps the toolbar's pressed state and the session's armed
   // state ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源). Same規約 as knife / drill /
   // ring-edit / merge.
+  //
+  // **これは［やめる］を押されたときの経路だけである**（増分 5 の手直し B1）――
+  // ボタンとして「やめる」を押したのは「この作業をやめる」という意思表示だから道具ごと
+  // 降りてよい。**Escape はここを通らない**: Escape は 1 回で 1 段だけ戻る階段で、道具を
+  // 降りるのは大域の `shell/escape-ladder.ts` の持ち場である（設計書 §D.4）。
+  //
+  // **`clearSelection()` はもう呼ばない**（GPT #8）。所属変更は自前の `targetId` /
+  // `newParentId` だけを持ち、セッションの `activeFeature` は **1 度も書いていない** ――
+  // それなのに取りやめのたびに選択を空にしていたので、**道具が掴んだのではない元からの
+  // 選択まで巻き添えで消えて**いた。道具が触っていないものは道具が片付けない。
   const releaseToolOnCancel = useCallback(() => {
-    // **増分 5c: 選択の後始末を明示に書く。** 旧版は `setActiveTool(null)` の
-    // **副作用**（道具を替えたら選択を全消しする）に寄りかかっていたが、増分 5c で
-    // その既定を反転した（`docs/現状.md` B28: 道具を持ち替えても選択は消さない）ので、
-    // 寄りかかっていた側がここで黙って壊れる（教訓 5.44「共通ロジックを差し替えたら
-    // 呼び出し側に残る写しを全部潰す」の、副作用版）。
-    //
-    // この道具は **自分で対象を選択へ昇格させている**（`onTargetSelected` →
-    // `setActiveFeature`）ので、取りやめたら自分で戻す。掴んでいない選択まで
-    // 巻き添えにする点は設計書 §D.4 の階段（対象を離す → 道具は持ったまま）とまだ
-    // 食い違っており、そこは増分 7 で階段を各道具へ通すときに揃える。
-    store.getState().clearSelection();
     store.getState().setActiveTool(null);
   }, [store]);
 
@@ -242,9 +252,46 @@ export function ReparentToolController<S>(
     return () => onDrawingChange(false);
   }, [reparent.flow, reparent.targetId, onDrawingChange]);
 
-  // --- Keyboard: Escape→cancel (FR-78). Active while a session runs.
+  // --- 最上位化の確認（増分 5 の手直し B4 / バグ狩り B-1 / E4）------------------
+  //
+  // ［最上位へ（所属を外す）］は **押した瞬間に確定していた**。削除と同じで結果が大きい
+  // （その地物はどこにも所属しなくなる）のに、何が起きるかを見せる場が無かった。
+  //
+  // **確定欄の［確定］には畳まず、この操作専用の確認を出す形にした**（司令塔に任された
+  // 判断。理由: ［確定］は「選んだ上位領域へ移す」、最上位化は「上位領域を無くす」で
+  // **結果が別物**である。1 つのボタンの意味が隠れた状態で切り替わるほうが危ない ――
+  // 押した部品と、出る確認と、起きることが 1 本の線でつながっているほうが読める）。
+  // ボタンの置き場と `data-testid` は変えていない（T-1）。
+  const [detachConfirmOpen, setDetachConfirmOpen] = useState(false);
+
+  // 対象が消えたら確認も畳む（教訓 5.2: 一時的な UI は全経路で捨てる）。対象を離す
+  // Escape・［選択を外す］・道具を降りる・確定 ―― どれも `targetId` が null になる。
+  const reparentTargetId = reparent.targetId;
   useEffect(() => {
-    if (reparent.flow === REPARENT_FLOW.Idle) return;
+    if (reparentTargetId === null) setDetachConfirmOpen(false);
+  }, [reparentTargetId]);
+
+  // 板が開いているあいだは鍵盤の持ち主が `modal` になる（＝背後で Ctrl+S / Delete が
+  // 走らない）。ほかの 3 道具と同じ形（`KnifeToolController` が手本＝増分 5 の手直し A4）。
+  const onModalChange = props.onModalChange;
+  useEffect(() => {
+    if (onModalChange === undefined) return;
+    onModalChange(detachConfirmOpen);
+    return () => onModalChange(false);
+  }, [detachConfirmOpen, onModalChange]);
+
+  // --- Keyboard: Escape (FR-78 / 設計書 §D.4). Active while a session runs.
+  //
+  // **ConflictPaused では降りる**（増分 5 の手直し B1 で分ける・結ぶ・穴あけへ揃えた）。
+  // そこでは競合解決の板が Escape の持ち主で、道具側が対象を離すと、板が閉じたあとの
+  // ホストの再武装が拾うものを失う。
+  useEffect(() => {
+    if (
+      reparent.flow === REPARENT_FLOW.Idle ||
+      reparent.flow === REPARENT_FLOW.ConflictPaused
+    ) {
+      return;
+    }
     const onKey = (e: KeyboardEvent): void => {
       // Focus guard (バグハント第11波 #6): a text-editing element owns the keyboard
       // (timeline year field / sidebar input) — let native Escape through,
@@ -253,13 +300,49 @@ export function ReparentToolController<S>(
       // no per-controller re-implementation).
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
-        e.preventDefault();
-        reparent.cancel();
+        // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
+        //
+        // **1 回の Escape で 1 段だけ**戻る。旧版は 1 回で「手順の対象」「元からの選択」
+        // 「道具」の三段をまとめて捨てていた（GPT #8）―― この道具は選択を昇格させて
+        // いないので、消えていたのは **利用者が道具の外で選んだもの**である。
+        //
+        //   0. 最上位化の確認が出ている → 板を閉じる（選んだものはそのまま残す）
+        //   1. 新しい上位領域を選びかけ → **その選びかけだけ外す**（対象も道具も保つ）
+        //   2. 対象を掴んでいる → 対象だけ離す（道具は持ったまま）
+        //   3. どちらも無い → **何もせず大域の階段へ譲る**（preventDefault もしない）
+        //
+        // 3 で止めないのが肝である ―― 大域の `shell/escape-ladder.ts` が「頂点を外す →
+        // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。3 の局面では
+        // `onDrawingChange` も false を報せている（対象が null なら名乗らない）ので、
+        // 名乗りと段が食い違わない。
+        if (detachConfirmOpen) {
+          e.preventDefault();
+          setDetachConfirmOpen(false);
+          return;
+        }
+        if (reparent.newParentId !== null) {
+          e.preventDefault();
+          reparent.clearNewParent();
+          return;
+        }
+        if (reparent.targetId !== null) {
+          e.preventDefault();
+          reparent.clearSelection();
+          return;
+        }
+        return;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [reparent.flow, reparent.cancel]);
+  }, [
+    reparent.flow,
+    reparent.targetId,
+    reparent.newParentId,
+    reparent.clearNewParent,
+    reparent.clearSelection,
+    detachConfirmOpen,
+  ]);
 
   // --- HB3-15(c): feed the target + new-parent highlight to the render sink on every
   // selection change. Each id's leaf shape is resolved through the SAME live-lookup the
@@ -296,34 +379,46 @@ export function ReparentToolController<S>(
   // 押し込める（`option-bar.ts` の `claim` 注記 3）。ここで `claim` すると帯が空へ戻り、
   // 道具名まで消えてしまう。
   //
-  // **消す経路**（対象を外す・道具を降りる・モードを離れる・確定して選び直しへ戻る）では
-  // null を押し込んで対象欄を空へ戻す（教訓 5.2 全経路で破棄）。どれも `targetId` が
-  // null へ戻る経路なので、この 1 本の effect が全部を賄う。ただし **自分が押し込んだ
-  // 覚えがあるときだけ**消す ―― 何も押していないのに null を押すと、別の道具が入れた
-  // 名前を巻き添えで消しうる。
+  // **消す経路**（対象を外す・道具を降りる・モードを離れる・確定して選び直しへ戻る）は
+  // **後片付け関数 1 本**に寄せる（増分 5 の手直し B3。`useToolBarChrome` が同じ理由で
+  // そうしている＝教訓 5.68）。5 つの道具のコントローラは全部が同時にマウントされている
+  // ので、effect の本体に「構えていないなら空へ」と書くと **構えていない道具が構えている
+  // 道具の押し込みを踏み消す**。React は 1 つのコミットの中で「全部の後片付け → 全部の
+  // 再実行」の順に走らせるので、後片付けへ置けば木の位置に関わらず「前の道具が空へ戻す →
+  // 次の道具が押し込む」になる。旧版の「自分が押し込んだ印」方式は、いま帯を持っている
+  // のが誰かを知らないので踏み消しの半分しか塞げていなかった。
+  //
+  // **段階表示**（「手順 n/3」）と **移し先**も一緒に出す（設計書 §C.4 の
+  // 「**手順 2/3** 対象: 南ケナ州 → 親: ?」/ バグ狩り #9）。旧版は対象の名前しか出して
+  // いなかったので、**どこへ移そうとしているのかが画面のどこにも出ていなかった**。
   const optionBar = props.optionBar;
-  const pushedTargetRef = useRef<string | null>(null);
+  const reparentArmed = reparent.flow !== REPARENT_FLOW.Idle;
+  const reparentStage = detachConfirmOpen
+    ? REPARENT_STRINGS.stage(3)
+    : reparent.targetId === null
+      ? REPARENT_STRINGS.stage(1)
+      : reparent.newParentId === null
+        ? REPARENT_STRINGS.stage(2)
+        : REPARENT_STRINGS.stage(3);
+  const reparentTargetName = useMemo(() => {
+    if (reparent.targetId === null) return null;
+    const features = resolveFeatures();
+    const target = describeFeatureById(features, reparent.targetId);
+    if (target === null) return null;
+    if (detachConfirmOpen) {
+      return REPARENT_STRINGS.targetWithParent(target, REPARENT_STRINGS.parentDetached);
+    }
+    const parent =
+      reparent.newParentId === null
+        ? REPARENT_STRINGS.parentUnset
+        : (describeFeatureById(features, reparent.newParentId) ?? REPARENT_STRINGS.parentUnset);
+    return REPARENT_STRINGS.targetWithParent(target, parent);
+  }, [reparent.targetId, reparent.newParentId, detachConfirmOpen, resolveFeatures]);
   useEffect(() => {
-    if (optionBar === undefined) return;
-    // 相手にしているもの ＝ 所属を変える地物（`targetId`）。まだ選んでいなければ移し先を
-    // 出す（普通は移し先だけが選ばれることは無いが、片方しか無い状態を黙って空にしない）。
-    const shownId = reparent.targetId ?? reparent.newParentId;
-    const name = shownId === null ? null : describeFeatureById(resolveFeatures(), shownId);
-    if (name === null && pushedTargetRef.current === null) return;
-    pushedTargetRef.current = name;
-    optionBar.setTarget(null, name);
-  }, [optionBar, reparent.targetId, reparent.newParentId, resolveFeatures]);
-
-  // 部品ごと外れるときも消す（教訓 5.2: 一時的な表示は全経路で畳む）。上の effect の
-  // 後片付けに書くと、選び直しのたびに「消す → 入れ直す」で帯が 1 度空になるので分ける。
-  useEffect(
-    () => () => {
-      if (optionBar === undefined || pushedTargetRef.current === null) return;
-      pushedTargetRef.current = null;
-      optionBar.setTarget(null, null);
-    },
-    [optionBar],
-  );
+    if (optionBar === undefined || !reparentArmed) return;
+    optionBar.setTarget(reparentStage, reparentTargetName);
+    return () => optionBar.setTarget(null, null);
+  }, [optionBar, reparentArmed, reparentStage, reparentTargetName]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and feeds it to
   // the hook (first = target, second = new parent). The overlay never steals other
@@ -350,18 +445,23 @@ export function ReparentToolController<S>(
         onClick: () => reparent.cancel(),
       },
     ],
-    [reparent],
+    // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
+    // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
+    // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
+    [reparent.canConfirm, reparent.confirm, reparent.cancel],
   );
   const reparentExtras = useMemo(
     () => (
       <>
         {/* 最上位化（parentNone）: 対象を掴んだ時点で押せる（FR-46 独立 / 解体の
-            構成要素）。確定欄は 2 つで満杯なので設定欄に置く。 */}
+            構成要素）。確定欄は 2 つで満杯なので設定欄に置く。
+            **押した瞬間には確定しない**（増分 5 の手直し B4）―― 何が起きるかを見せる
+            確認を 1 度挟む。 */}
         <button
           type="button"
           data-testid="reparent-confirm-none"
           disabled={!reparent.canConfirmNone}
-          onClick={() => reparent.confirmNone()}
+          onClick={() => setDetachConfirmOpen(true)}
         >
           {REPARENT_STRINGS.confirmNone}
         </button>
@@ -375,7 +475,7 @@ export function ReparentToolController<S>(
         </button>
       </>
     ),
-    [reparent],
+    [reparent.canConfirmNone, reparent.targetId, reparent.clearSelection],
   );
   useToolBarChrome({
     optionBar,
@@ -430,24 +530,73 @@ export function ReparentToolController<S>(
     <div className="reparent-tool" data-testid="reparent-tool" data-flow={reparent.flow}>
       {/* The transparent map-input bridge mounted while selecting (教訓 5.14): forwards
           LEFT clicks to the hook (pick) AND camera-only events to the live dispatcher
-          (pan / zoom keep working). */}
-      <ReparentInputBridge
-        onMapPointerDown={onMapPointerDown}
-        onMapWheel={onMapWheel}
-        onMapCameraPointerDown={onMapCameraPointerDown}
-        onMapCameraPointerMove={onMapCameraPointerMove}
-        onMapCameraPointerUp={onMapCameraPointerUp}
-        onMapCameraPointerCancel={onMapCameraPointerCancel}
-      />
+          (pan / zoom keep working). **確認の板が出ているあいだは降ろす**（増分 5 の
+          手直し B4）―― 板の背面で地物を選び替えられると、「何に対して答えたのか」が
+          分からなくなる。 */}
+      {!detachConfirmOpen && (
+        <ReparentInputBridge
+          onMapPointerDown={onMapPointerDown}
+          onMapWheel={onMapWheel}
+          onMapCameraPointerDown={onMapCameraPointerDown}
+          onMapCameraPointerMove={onMapCameraPointerMove}
+          onMapCameraPointerUp={onMapCameraPointerUp}
+          onMapCameraPointerCancel={onMapCameraPointerCancel}
+        />
+      )}
 
-      <p className="reparent-tool__guide" data-testid="reparent-guide" role="status">
+      {/* 案内と断りは **オプションバーの「次の一手」** が本文を出す（増分 5 の手直し B3 /
+          設計書 §C.4・§B.5 の台帳 #2〜#3）。**ここに残すのは観測のミラーだけ**で、地図の
+          上には描かない ―― 旧版はこの 2 つだけが `hidden` になっておらず、地図の上端に
+          黒帯として出たまま、同じ文言が帯の「次の一手」にも出る **二重表示**だった
+          （増分 5 の審査で指摘された残り 1 件）。ほかの 4 道具と同じ形に揃える。 */}
+      <span className="reparent-tool__guide" data-testid="reparent-guide" hidden>
         {reparent.guide}
-      </p>
+      </span>
 
       {reparent.message !== null && (
-        <p className="reparent-tool__message" data-testid="reparent-message" role="alert">
+        <span className="reparent-tool__message" data-testid="reparent-message" hidden>
           {reparent.message}
-        </p>
+        </span>
+      )}
+
+      {/* 最上位化の確認（増分 5 の手直し B4 / バグ狩り B-1）。削除と同じく **何が起きるかを
+          見せてから**確定する。`role="alertdialog"` は「答えるまで先へ進めない」種類の
+          板であることを読み上げへ伝える。 */}
+      {detachConfirmOpen && (
+        <div className="reparent-modal-root" data-testid="reparent-detach-confirm-root">
+          <div className="reparent-backdrop" />
+          <div
+            className="reparent-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="reparent-detach-confirm-title"
+            data-testid="reparent-detach-confirm"
+          >
+            <h3 className="reparent-dialog__title" id="reparent-detach-confirm-title">
+              {REPARENT_STRINGS.detachConfirmTitle}
+            </h3>
+            <p className="reparent-dialog__body">{REPARENT_STRINGS.detachConfirmBody}</p>
+            <div className="reparent-dialog__footer">
+              <button
+                type="button"
+                data-testid="reparent-detach-confirm-no"
+                onClick={() => setDetachConfirmOpen(false)}
+              >
+                {REPARENT_STRINGS.detachConfirmNo}
+              </button>
+              <button
+                type="button"
+                data-testid="reparent-detach-confirm-yes"
+                onClick={() => {
+                  setDetachConfirmOpen(false);
+                  reparent.confirmNone();
+                }}
+              >
+                {REPARENT_STRINGS.detachConfirmYes}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* **確定の列はここには無い**（増分 5d）。オプションバーの確定欄 176px へ移した

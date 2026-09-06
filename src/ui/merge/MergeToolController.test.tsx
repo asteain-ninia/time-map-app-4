@@ -58,6 +58,7 @@ import {
   type MergeDrawSink,
   type ResolveLeafShape,
 } from './MergeToolController';
+import { MERGE_STRINGS } from './strings';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 const ANCHOR = timePointYear(1000);
@@ -390,14 +391,17 @@ describe('MergeToolController — 結合 actually merges (bughunt3 merge-no-redu
 // 完全に同一の dead-button バグが 2 ツールに残っていた (規約が 5 ツール中 3 でしか成立して
 // いなかった)。
 describe('MergeToolController — キャンセルはツール選択も解除して再アームできる (W3-AB)', () => {
-  it('Escape で activeTool が null になり、同じツールの再選択で復活する', () => {
+  // **増分 5 の手直し B1: 道具を降りるのは［やめる］ボタンだけになった。** Escape は
+  // 1 回で 1 段戻る階段で、道具を降りるのは大域の階段のいちばん下（設計書 §D.4）。
+  // ここが固定したいのは「取りやめたあと同じボタンをもう一度押せば構え直せる」ことである。
+  it('キャンセル（［やめる］）で activeTool が null になり、同じツールの再選択で復活する', () => {
     const h = mountMerge();
     activateMerge(h.store);
     clickInput(1, 1);
     expect(screen.getByTestId('merge-target-count').textContent).toBe('1');
 
     act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
+      fireEvent.click(screen.getByTestId('merge-cancel'));
     });
     expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
     // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
@@ -582,7 +586,9 @@ describe('MergeToolController — バグハント第11波 (#6): focus guard on t
     h.unmount();
   });
 
-  it('Escape from a NON-editable focus still cancels the merge (no regression)', () => {
+  // 増分 5 の手直し B1: Escape は道具を降りず、**対象を全部外す** ―― 結ぶ道具は
+  // 対象の集合そのものが下書きなので、階段は 1 段しか無い（設計書 §D.4）。
+  it('Escape from a NON-editable focus still clears the merge targets (no regression)', () => {
     const h = mountMerge();
     activateMerge(h.store);
     clickInput(1, 1);
@@ -591,8 +597,23 @@ describe('MergeToolController — バグハント第11波 (#6): focus guard on t
     document.body.appendChild(button);
     button.focus();
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
-    expect(screen.queryByTestId('merge-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('merge-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('merge-target-count').textContent).toBe('0');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditMerge);
     button.remove();
+    h.unmount();
+  });
+
+  // 1 段目を降りたあとの Escape は、**道具が何もせず大域の階段へ譲る**。
+  it('対象が 0 件の Escape は preventDefault せず、大域の階段へ譲る', () => {
+    const h = mountMerge();
+    activateMerge(h.store);
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    act(() => {
+      window.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditMerge);
     h.unmount();
   });
 });
@@ -663,7 +684,12 @@ describe('MergeToolController — オプションバーの対象欄（設計書 
     expect(h.optionBar.get().target.name).toBeNull();
 
     clickInput(1, 1); // leaf-a
-    expect(h.optionBar.get().target).toEqual({ stage: null, name: 'leaf-a（末端地物）' });
+    // 段階表示は「手順 1/2」（増分 5 の手直し B3 / 設計書 §C.4）。「2 件中 1 件」と
+    // 誤読されないよう「手順」の 2 文字を含む。
+    expect(h.optionBar.get().target).toEqual({
+      stage: MERGE_STRINGS.stage(1),
+      name: 'leaf-a（末端地物）',
+    });
     h.unmount();
   });
 
@@ -684,7 +710,7 @@ describe('MergeToolController — オプションバーの対象欄（設計書 
     h.unmount();
   });
 
-  it('「選択をクリア」で対象欄が空へ戻る', () => {
+  it('「選択を外す」で対象欄が空へ戻る', () => {
     const h = mountMerge();
     activateMerge(h.store);
     clickInput(1, 1);
@@ -709,7 +735,7 @@ describe('MergeToolController — オプションバーの対象欄（設計書 
     h.unmount();
   });
 
-  it('キャンセル（Escape）でも対象欄が空へ戻る', () => {
+  it('Escape で対象を外しても対象欄が空へ戻る（道具は持ったまま）', () => {
     const h = mountMerge();
     activateMerge(h.store);
     clickInput(1, 1);
@@ -717,6 +743,8 @@ describe('MergeToolController — オプションバーの対象欄（設計書 
 
     act(() => fireEvent.keyDown(window, { key: 'Escape' }));
     expect(h.optionBar.get().target.name).toBeNull();
+    // 帯はまだこの道具のものなので、段階表示は残る（「手順 1/2」へ戻る）。
+    expect(h.optionBar.get().target.stage).toBe(MERGE_STRINGS.stage(1));
     h.unmount();
   });
 

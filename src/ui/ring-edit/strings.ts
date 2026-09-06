@@ -11,10 +11,12 @@ export const RING_EDIT_STRINGS = {
   /** Guide while placing the new ring's vertices (add sub-mode, face chosen). */
   guideDrawRing:
     '穴 / 飛び地の頂点をクリックで追加してください（面の内側なら穴、外側なら飛び地。3 点以上で確定できます）。',
+  // 「領土リング」は内部語である。画面の第一表記は §H.1 のとおり「外周／穴／飛び地」で、
+  // 消せるのは穴と飛び地だけなので、その 2 つを名指しする（増分 5 の手直し E2）。
   /** Guide: pick the face whose ring to delete (delete sub-mode, no face chosen yet). */
-  guideSelectDeleteTarget: '穴 / 領土リングを削除する面をクリックで選択してください。',
+  guideSelectDeleteTarget: '穴・飛び地を消す面をクリックで選択してください。',
   /** Guide in the delete sub-mode: click inside a ring to remove it. */
-  guideDeleteRing: '削除する穴 / 領土リングの内側をクリックしてください。',
+  guideDeleteRing: '消したい穴・飛び地の内側をクリックしてください。',
   /**
    * The target-selection click missed every face (教訓 5.12: 無反応にしない). The
    * production hit-test is 穴透過, so the 面 must be picked on its SOLID fill — a
@@ -23,20 +25,39 @@ export const RING_EDIT_STRINGS = {
   faceNotFound: '面が見つかりませんでした。編集する面の塗りつぶし部分をクリックしてください。',
   /** The clicked feature was not an individual leaf face (aggregate / point / line). */
   selectLeafTarget: '末端地物を選択してください。',
-  /** Confirm the drafted ring (穴 / 飛び地). */
-  confirmRing: 'リングを確定',
-  /** 最後の頂点を取り消す (FR-78). */
-  undoVertex: '最後の頂点を取り消す',
-  /** Grid snap toggle (FR-78). */
-  gridSnap: 'グリッドにスナップ',
-  /** Cancel the whole ring-edit operation. */
-  cancel: 'キャンセル',
-  /** Toggle between add (穴 / 飛び地追加) and delete (リング削除) sub-modes. */
-  switchToDelete: 'リング削除モードへ',
-  switchToAdd: 'リング追加モードへ',
-  /** Dismiss a rejection notice. */
-  dismiss: '閉じる',
+  /** Confirm the drafted ring (穴 / 飛び地)。語は設計書 §C.4 の［輪郭を確定］に揃える。 */
+  confirmRing: '輪郭を確定',
+  /** 頂点取り消し (FR-78)。語は設計書 §C.4 の［1 つ戻す］に揃える（増分 5 の手直し E2）。 */
+  undoVertex: '1 つ戻す',
+  /**
+   * Grid snap toggle (FR-78)。画面の第一表記は §H.1 のとおり「グリッド」
+   * （追加の道具の `ADD_STRINGS.gridSnapLabel` が同じ 2 文字を出している）。
+   */
+  gridSnap: 'グリッド',
+  /**
+   * Cancel the whole ring-edit operation。確定欄（176px）の語は **5 道具とも「やめる」**に
+   * 揃える（増分 5 の手直し E2。`ui/add/strings.ts` の `ADD_STRINGS.cancel` が先例）。
+   */
+  cancel: 'やめる',
+  /**
+   * Toggle between add (穴 / 飛び地追加) and delete (穴 / 飛び地削除) sub-modes.
+   * 「リング」「モード」はどちらも §H.1 に無い内部語なので、**何が起きるか**をそのまま言う
+   * （増分 5 の手直し E2）。
+   */
+  switchToDelete: '穴・飛び地を消す',
+  switchToAdd: '穴・飛び地を足す',
+  /**
+   * 対象欄（240px）の頭に出す段階表示（設計書 §C.4 / バグ狩り #9）。**「手順」の 2 文字を
+   * 必ず前に付ける** ―― 「1/2」だけだと「2 件中 1 件」と読み違えられる（§O の B-23）。
+   *
+   * 輪郭の道具の段は {@link RING_EDIT_STEP_COUNT} 個（1 = 面を選ぶ / 2 = 輪郭を描く・
+   * 消す輪郭を押す）。設計書 §C.4 の「手順 1/2 対象の面: バアカ」と同じ数である。
+   */
+  stage: (step: number): string => `手順 ${String(step)}/${String(RING_EDIT_STEP_COUNT)}`,
 } as const;
+
+/** 輪郭の道具の段数（設計書 §C.4 の「手順 n/m」の m）。1 = 面を選ぶ / 2 = 輪郭を描く。 */
+export const RING_EDIT_STEP_COUNT = 2;
 
 export type RingEditStringKey = keyof typeof RING_EDIT_STRINGS;
 

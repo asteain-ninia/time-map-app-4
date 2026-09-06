@@ -55,6 +55,7 @@ import {
   type ScreenToWorld,
   type FeatureAtPoint,
 } from './RingEditToolController';
+import { RING_EDIT_STRINGS } from './strings';
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -120,6 +121,8 @@ interface Harness {
   readonly store: StoreApi<SessionStore<S>>;
   readonly startProcess: ReturnType<typeof vi.fn>;
   readonly drawSink: RingEditDrawSink & { batches: number[] };
+  /** 帯（オプションバー）―― 確定欄・次の一手・対象欄はここに出る（設計書 §C.4）。 */
+  readonly optionBar: OptionBarStore;
   readonly unmount: () => void;
 }
 
@@ -187,7 +190,7 @@ function mountRing(outcome: ReleaseOutcome<S> = committedOutcome): Harness {
     </>,
   );
 
-  return { store, startProcess, drawSink, unmount: utils.unmount };
+  return { store, startProcess, drawSink, optionBar, unmount: utils.unmount };
 }
 
 function activateRing(store: StoreApi<SessionStore<S>>): void {
@@ -212,6 +215,59 @@ function clickInput(lon: number, lat: number): void {
 function selectTargetFace(): void {
   clickInput(2, 2);
 }
+
+// --- 増分 5 の手直し B3: 対象欄と段階表示は道具が自分で押し込む -----------------
+//
+// `shell/ToolOptionBar` の `TOOLS_WITH_OWN_TARGET` に輪郭が入った（バグ狩り #6）。
+// それまでは対象欄を `activeFeature` から作っていたので、**1 度も面を押していないのに
+// 一覧で選んだ地物の名前が出て**、次の一手の「編集する面を選んでください」と矛盾していた。
+
+describe('RingEditToolController — 対象欄は道具が押し込む (増分 5 の手直し B3)', () => {
+  it('掴む前は空、掴んだら名前と「手順 n/2」が出る', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    expect(h.optionBar.get().target).toEqual({
+      stage: RING_EDIT_STRINGS.stage(1),
+      name: null,
+    });
+
+    selectTargetFace();
+    expect(h.optionBar.get().target).toEqual({
+      stage: RING_EDIT_STRINGS.stage(2),
+      name: 'target（末端地物）',
+    });
+    h.unmount();
+  });
+
+  it('一覧で地物を選んでから構えても、押していない対象の名前は出ない（バグ狩り #6）', () => {
+    const h = mountRing();
+    // 「編集モードで一覧の行を押してから、輪郭の道具を構える」の再現。`setMode` を
+    // 挟まないのは、同じモードへの `setMode` が選択を捨てる契約だからである（store.ts）。
+    act(() => h.store.getState().setActiveFeature(TARGET_ID));
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditRing));
+    // 選択は残る（増分 5c の裁定）が、**道具の対象ではない**ので対象欄は空である。
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('対象を離すと対象欄も空へ戻り、道具を降りると帯から消える', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    expect(h.optionBar.get().target.name).toBe('target（末端地物）');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象の面を離す
+    expect(h.optionBar.get().target).toEqual({
+      stage: RING_EDIT_STRINGS.stage(1),
+      name: null,
+    });
+
+    act(() => h.store.getState().setActiveTool(null));
+    expect(h.optionBar.get().target).toEqual({ stage: null, name: null });
+    h.unmount();
+  });
+});
 
 // --- FR-22: add a HOLE (first click in solid) → confirm drives U13 ------------
 
@@ -352,7 +408,13 @@ describe('RingEditToolController — ring delete (FR-24)', () => {
     activateRing(h.store);
     // Switch to delete sub-mode.
     fireEvent.click(screen.getByTestId('ring-edit-submode'));
-    expect(screen.getByTestId('ring-edit-guide').textContent).toContain('削除');
+    // **画面の言葉を直書きしない**（開発ガイド §5.64。旧版は '削除' の 2 文字を直に
+    // 見ていたので、増分 5 の手直し E2 で案内文を「穴・飛び地を消す…」へ言い換えたときに
+    // ここだけ置き去りになって落ちた）。見たいのは「消す側の案内に切り替わったか」なので、
+    // 画面と同じ定数と突き合わせる。
+    expect(screen.getByTestId('ring-edit-guide').textContent).toBe(
+      RING_EDIT_STRINGS.guideSelectDeleteTarget,
+    );
     selectTargetFace(); // phase 1: the face whose ring is deleted
     // Click inside the hole void ([5,15]²) → the deepest containing ring is the hole.
     clickInput(10, 10);
@@ -431,16 +493,52 @@ describe('RingEditToolController — 世界の外と、確定の関門の断り�
 // --- 一時状態全経路破棄 (教訓 5.2) --------------------------------------------
 
 describe('RingEditToolController — transient state discarded on every exit path', () => {
-  it('Escape cancels the in-progress draft', () => {
+  // **増分 5 の手直し B1 で契約が変わった**（設計書 §D.4）。旧版は「Escape 1 回で道具ごと
+  // 消える」を固定していたが、それが GPT #8 の欠陥そのものだった ―― 1 回の Escape で
+  // 「手順の対象」「元からの選択」「道具」の三段がまとめて落ちていた。いまは 1 回で 1 段。
+  it('Escape は頂点列だけをまとめて捨て、対象の面も道具も保つ（階段 1 段目）', () => {
     const h = mountRing();
     activateRing(h.store);
     selectTargetFace();
     clickInput(1, 1);
-    expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
+    clickInput(3, 1);
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('2');
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
-    expect(screen.queryByTestId('ring-edit-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
+    // 下書きは残る（面を掛んだまま）ので、次に打つ点は同じ面の輪郭になる。
+    expect(screen.getByTestId('ring-edit-tool').dataset['flow']).toBe('drafting');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditRing);
+    h.unmount();
+  });
+
+  it('Escape 2 回目で対象の面だけを離し、道具は持ったまま（階段 2 段目）', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    clickInput(1, 1);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 1 段目: 頂点列
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 2 段目: 対象の面
+    expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-edit-tool').dataset['flow']).toBe('selecting-target');
+    expect(h.store.getState().activeFeature).toBeNull();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditRing);
+    h.unmount();
+  });
+
+  it('Escape 3 回目は道具が何もせず、大域の階段へ譲る（preventDefault しない）', () => {
+    const h = mountRing();
+    activateRing(h.store);
+    selectTargetFace();
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象を離す
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    act(() => {
+      window.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditRing);
     h.unmount();
   });
 
@@ -571,8 +669,11 @@ describe('RingEditToolController — バグハント第11波 (#3/#6): focus guar
     button.focus();
     act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
     expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('1');
+    // Escape は階段の 1 段目 ―― 残りの頂点列をまとめて捨てる（道具は降りない。
+    // 増分 5 の手直し B1 / 設計書 §D.4.1）。
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
-    expect(screen.queryByTestId('ring-edit-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('ring-edit-vertex-count').textContent).toBe('0');
     button.remove();
     h.unmount();
   });

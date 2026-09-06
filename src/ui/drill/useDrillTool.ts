@@ -149,6 +149,17 @@ export interface UseDrillToolActions {
   confirmRegion(): void;
   /** SAVE新地物 props → drillRegion → toEditProposal → U13 (教訓 5.7 完了トリガー). */
   save(props: { attributes: BasicAttributes; color: ColorInfo; kindLabel?: string }): void;
+  /**
+   * **Esc の階段 1 段目**（設計書 §D.4 / §D.4.1）: くり抜く形の頂点列だけを **まとめて**
+   * 捨て、**対象は掴んだまま**引き直しへ戻る。1 つずつ戻すのは `Ctrl+Z` と
+   * オプションバーの［1 つ戻す］（{@link UseDrillToolActions.undoLastVertex}）の役目。
+   */
+  discardRegion(): void;
+  /**
+   * **Esc の階段 2 段目**（設計書 §D.4）: 掴んでいる対象だけを離して対象選びへ戻す。
+   * **道具は持ったまま**。選択への昇格を戻すのはコントローラの持ち場である。
+   */
+  releaseTarget(): void;
   /** Cancel the whole operation; discard ALL transient state (Escape; 教訓 5.2). */
   cancel(): void;
 }
@@ -208,6 +219,24 @@ export function useDrillTool<S>(options: UseDrillToolOptions<S>): UseDrillTool {
     discard();
     onCancelled?.();
   }, [discard, onCancelled]);
+
+  // --- Esc の階段（設計書 §D.4 / §D.4.1。増分 5 の手直し B1）--------------------
+  //
+  // **`cancel` との違い**: `cancel` は［やめる］ボタン・拒否の dismiss・素性入力の板の
+  // 取消 ―― 利用者が「この作業をやめる」と言った経路なので道具ごと降りてよい。下の 2 つは
+  // **Escape の経路**で、1 回押すごとに 1 段だけ戻る。
+
+  /** 1 段目: くり抜く形の頂点列だけをまとめて捨て、対象は掴んだままにする。 */
+  const discardRegion = useCallback(() => {
+    setRegion([]);
+    setPreview(null);
+    setMessage(null);
+  }, []);
+
+  /** 2 段目: 対象だけを離して対象選びへ戻す（`armed` は保つので道具は持ったまま）。 */
+  const releaseTarget = useCallback(() => {
+    discard();
+  }, [discard]);
 
   // Resolve + LEAF-gate a clicked feature id (educated by the SAME resolve ports the
   // confirm uses so the hit and the edit agree, 教訓 5.29). checkDrillable also gates
@@ -380,6 +409,8 @@ export function useDrillTool<S>(options: UseDrillToolOptions<S>): UseDrillTool {
     undoLastVertex,
     confirmRegion,
     save,
+    discardRegion,
+    releaseTarget,
     cancel,
   };
 }

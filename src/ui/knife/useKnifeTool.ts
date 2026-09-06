@@ -172,6 +172,25 @@ export interface UseKnifeToolActions {
    * deselect). NOT a cancel: the user did not ask to leave the knife (W3-AB).
    */
   dropTarget(): void;
+  /**
+   * **Esc の階段 1 段目**（設計書 §D.4 / §D.4.1）: 引いた分断線の点列だけを **まとめて**
+   * 捨て、**対象は掴んだまま**分断線の引き直しへ戻る。1 点ずつ戻すのは `Ctrl+Z` と
+   * オプションバーの［1 つ戻す］（{@link UseKnifeToolActions.undoCutPoint}）の役目である
+   * ―― 200 点打っていたら 200 回押すことになる形を、いちばん押しやすい打鍵に持たせない。
+   *
+   * DrawingCut 以外では何もしない（冪等）。
+   */
+  discardCutLine(): void;
+  /**
+   * **Esc の階段 2 段目**（設計書 §D.4）: 掴んでいる対象だけを離して対象選択へ戻る。
+   * **道具は持ったまま**で、下書きも選択も道具側では触らない ―― 対象を選択へ昇格させた
+   * 後始末はコントローラの持ち場である（自分が昇格させたものだけを戻す）。
+   *
+   * {@link dropTarget} と状態遷移は同じだが、**理由が違うので分けてある**: あちらは
+   * 「対象が見えなくなった」ので日本語の断りを出す、こちらは利用者自身が Escape で
+   * 離したので断りは出さない（何も起きていないのに理由が出るのは嘘である）。
+   */
+  releaseTarget(): void;
   /** Cancel the whole operation; discard ALL transient state (Escape; 教訓 5.2). */
   cancel(): void;
   /** Run the reset契約 on an external tool/mode switch (教訓 5.2 (d)/(e)). */
@@ -204,6 +223,21 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
   // session, the message and any U13 outcome flag together.
   const discard = useCallback(() => {
     setState(cancelKnife()); // = idle()
+    setMessage(null);
+    setConflictPaused(false);
+    setRejected(false);
+  }, []);
+
+  // **確定したあとは道具を持ったまま次の対象を待つ**（設計書 §D.2 の「道具の確定」の行 /
+  // §D.4「確定したあとも同じ」/ 増分 5 の手直し B2）。
+  //
+  // 旧版は確定でも {@link discard} を走らせて Idle（＝構えていない）へ落としていた。
+  // これが成り立っていたのは、**合成ルートが確定直後に `setActiveTool(null)` を呼んで
+  // いた**からで、5 道具のうちナイフだけが確定で道具を降りていた（GPT #10）。道具を
+  // 保持する形へ揃えると、Idle へ落とす旧版は「構えているのに何も受け付けない」死んだ
+  // 状態になる ―― だから確定は「捨てる」ではなく「**構え直す**」である。
+  const rearm = useCallback(() => {
+    setState(startKnife());
     setMessage(null);
     setConflictPaused(false);
     setRejected(false);
@@ -319,7 +353,8 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
             // transient state (教訓 5.2). Defer side effects out of the updater.
             queueMicrotask(() => {
               onCommitted(outcome, snapshot);
-              discard();
+              // **道具は降りない**（B2）。次の対象を待つ構えへ戻す。
+              rearm();
             });
             return s;
           case PROCESS_STATUS.ConflictsPending:
@@ -343,7 +378,7 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
         }
       });
     },
-    [resolveFeature, resolveStore, ids, anchorTime, startProcess, onCommitted, onConflicts, discard],
+    [resolveFeature, resolveStore, ids, anchorTime, startProcess, onCommitted, onConflicts, rearm],
   );
 
   // HB3-6/18 review fix: an explicit cancel (Escape / cancel button / rejection
@@ -376,6 +411,39 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     setConflictPaused(false);
     setRejected(false);
     setMessage(KNIFE_TARGET_GONE_MESSAGE);
+  }, [state.phase]);
+
+  // --- Esc の階段（設計書 §D.4 / §D.4.1。増分 5 の手直し B1）--------------------
+  //
+  // **`cancel` との違い**: `cancel` は［やめる］ボタン・拒否の dismiss・板の取消 ―― つまり
+  // 利用者が「この作業をやめる」と**言った**ときの経路で、道具ごと降りてよい。下の 2 つは
+  // **Escape の経路**で、1 回押すごとに 1 段だけ戻る（下書き → 対象 → …）。同じ「やめる」
+  // でも、ボタンは意思表示、Escape は 1 段戻すという別の意味を持たせてある。
+
+  /** 1 段目: 分断線の点列だけをまとめて捨て、対象は掴んだままにする。 */
+  const discardCutLine = useCallback(() => {
+    setState((s) => {
+      if (s.phase !== KNIFE_PHASE.DrawingCut) return s;
+      if (s.line.points.length === 0) return s;
+      // 対象を選び直したのと同じ状態（＝空の分断線を持つ DrawingCut）へ戻す。
+      // 点列の作り方をここで書き起こさず、ドメインの遷移を 2 つ重ねる（教訓 5.29）。
+      return selectTargetTx(startKnife(), s.targetId);
+    });
+    setMessage(null);
+  }, []);
+
+  /** 2 段目: 対象だけを離して対象選択へ戻す（道具は持ったまま・断りは出さない）。 */
+  const releaseTarget = useCallback(() => {
+    if (
+      state.phase === KNIFE_PHASE.Inactive ||
+      state.phase === KNIFE_PHASE.SelectingTarget
+    ) {
+      return;
+    }
+    setState(startKnife());
+    setConflictPaused(false);
+    setRejected(false);
+    setMessage(null);
   }, [state.phase]);
 
   // --- Derived view -------------------------------------------------------
@@ -421,6 +489,8 @@ export function useKnifeTool<S>(options: UseKnifeToolOptions<S>): UseKnifeTool {
     confirmInheritor,
     save,
     dropTarget,
+    discardCutLine,
+    releaseTarget,
     cancel,
     resetForSwitch,
   };

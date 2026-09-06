@@ -52,25 +52,11 @@
   color: #fff;
 }
 
-.knife-tool__controls {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 40;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  /* .knife-tool is pointer-events:none (a transparent grid scaffold over the map);
-     the floating controls MUST re-enable input or the 確定 / 取消 buttons are
-     unclickable (教訓 5.14: only the interactive children take input). Mirrors the
-     add-tool controls in shell.css. */
-  pointer-events: auto;
-}
-
+/* **確定の列は地図から降ろした**（増分 5d でオプションバーの確定欄 176px へ移した／
+   設計書 §B.5 の台帳 #4）。この道具の `__controls` クラスは **どの JSX からも参照
+   されなくなった**ので規則ごと消した ―― 使われない `pointer-events: auto` の規則を
+   残すと、次に誰かが「まだ地図に確定ボタンがある」と読む（教訓 5.7 の逆＝実体の無い
+   記述を残さない）。 */
 /* 継承先選択モーダル — centered over a full-surface backdrop (FR-93 / 教訓 5.14). */
 .knife-modal-root {
   position: fixed;
@@ -154,27 +140,23 @@
   cursor: pointer;
 }
 
-.knife-tool__props {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 1000;
-  padding: 20px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
-  /* 非継承側プロパティ入力フォーム — re-enable input over the pointer-events:none
-     scaffold so 保存 / 取消 are clickable (教訓 5.14). */
-  pointer-events: auto;
-}
+/* **非継承側の素性入力の板は地図から降ろした**（司令塔の決定 (5) / 設計書 §B.5 の
+   台帳 #9）。素性は右パネルの「新規の姿」（`add-property-form`）で受けるので、地図の
+   中央に `pointer-events: auto` の板を出す規則そのものが要らなくなった。`knife-props`
+   は `hidden` の観測ミラーだけになったので規則の対象から外す ―― `hidden` の要素に位置と
+   影を与えても意味が無いし、規則が残っていると次に読む人が「まだ地図に板がある」と
+   読む（教訓 5.7 の逆＝実体の無い記述を残さない。`knife-rejected` と同じ扱い）。 */
 
-/* The conflict-paused notice + the rejected panel (with its 取消 dismiss button)
-   are direct children of the pointer-events:none scaffold; re-enable input so the
-   dismiss button is clickable, mirroring the add-tool's rejected panel in
-   shell.css (教訓 5.14). */
-.knife-tool > [data-testid='knife-conflict-paused'],
-.knife-tool > [data-testid='knife-rejected'] {
+/* The conflict-paused notice is a direct child of the pointer-events:none scaffold;
+   re-enable input so it behaves like the other centred notices (教訓 5.14). It has no
+   button of its own — the U35 conflict flow owns the next step.
+
+   **拒否の板は地図から降ろした**（増分 5 の手直し B3 / 設計書 §B.5 の台帳 #7）。
+   `pointer-events: auto` の板が地図に重なっていたので、**断りが出ているあいだ地図の
+   クリックが奪われて**いた（K-2）。断り文はオプションバーの「次の一手」、［やめる］は
+   確定欄が出す。`knife-rejected` は `hidden` の観測ミラーだけになったので、この規則の
+   対象から外した ―― `hidden` の要素に位置と影を与えても意味が無い。 */
+.knife-tool > [data-testid='knife-conflict-paused'] {
   position: absolute;
   top: 50%;
   left: 50%;

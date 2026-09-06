@@ -387,15 +387,21 @@ describe('ring-edit reachability — キャンセルはツール選択も解除�
     h.unmount();
   });
 
-  it('Escape も同じくツール選択を解除する（単一の解除経路）', () => {
+  // **増分 5 の手直し B1 で契約が変わった**（設計書 §D.4）。道具を降りるのは
+  // ［やめる］の押下だけで、Escape は 1 回で 1 段だけ戻る階段になった ―― 道具を降りるのは
+  // 階段のいちばん下で、そこは大域の `shell/escape-ladder.ts` の持ち場である。
+  it('Escape は対象を離すだけで、道具は保つ（道具を降りるのは大域の階段）', () => {
     const h = mountRing();
     activateRing(h.store);
     clickInput(2, 2);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
-    expect(h.store.getState().activeTool).toBeNull();
-    expect(screen.queryByTestId('ring-edit-tool')).not.toBeInTheDocument();
+    // 対象は離れるが、道具は構えたまま（次の面をすぐに選べる）。
+    expect(h.store.getState().activeFeature).toBeNull();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditRing);
+    expect(screen.getByTestId('ring-edit-tool')).toBeInTheDocument();
     h.unmount();
   });
 });

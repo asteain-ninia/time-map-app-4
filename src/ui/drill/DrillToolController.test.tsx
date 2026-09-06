@@ -40,6 +40,8 @@ import { createVertex, createVertexStore, type VertexStore } from '../../domain/
 import { timePointYear } from '../../domain/time/time-point';
 import type { DrillSnapshot } from '../../domain/drill/index';
 
+import { AddDraftForm } from '../add/AddPropertyForm';
+import { AddDraftStore } from '../add/add-draft-store';
 import { OptionBar } from '../shell/OptionBar';
 import { OptionBarStore } from '../shell/option-bar';
 import { createSessionStore, type SessionStore } from '../state/store';
@@ -52,6 +54,7 @@ import {
   type ScreenToWorld,
   type FeatureAtPoint,
 } from './DrillToolController';
+import { DRILL_STRINGS } from './strings';
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -70,6 +73,13 @@ const committed: ProcessResult<S> = {
   status: PROCESS_STATUS.Committed,
   state: NEXT_STATE,
   command: noopCommand,
+};
+
+/** A U13 outcome that REJECTS the drill (増分 5 の手直し B3 の断りの経路)。 */
+const rejectedResult: ProcessResult<S> = {
+  status: PROCESS_STATUS.Rejected,
+  kind: 'time-violation',
+  message: 'この穴あけは受け付けられません。',
 };
 
 /** A U13 outcome that pauses the session for the U35 conflict flow (FR-62). */
@@ -141,6 +151,10 @@ interface Harness {
   readonly store: StoreApi<SessionStore<S>>;
   readonly startProcess: ReturnType<typeof vi.fn>;
   readonly drawSink: DrillDrawSink & { batches: number[] };
+  /** 帯（オプションバー）―― 確定欄・次の一手・対象欄はここに出る（設計書 §C.4）。 */
+  readonly optionBar: OptionBarStore;
+  /** 右パネルへの橋 ―― 新地物の素性入力はここを通って「新規の姿」になる。 */
+  readonly addDraft: AddDraftStore;
   readonly unmount: () => void;
 }
 
@@ -174,12 +188,22 @@ function mountDrill(
   // **増分 5d: 確定の列はオプションバーの確定欄に出る**ので、帯も一緒に載せる
   // （検査の都合ではなく、実物がそうなっている）。
   const optionBar = new OptionBarStore();
+  // **司令塔の決定 (5): 新地物の素性入力は右パネルの「新規の姿」で受ける**（設計書
+  // §B.5 の台帳 #9 / §C.2 の 27）。地図の中央の板（`drill-props` の中身）は消したので、
+  // **`AddDraftForm` を一緒に載せないと `add-property-form` が DOM に現れない** ――
+  // これは検査の都合ではなく、**実物がそうなっている**（合成ルート `App.tsx` は
+  // `addDraftStore` を 1 つ持ち、道具と右パネルの両方へ渡している）。渡さない形で
+  // 検査すると「素性を入れる局面なのに入力の口が無い」という、実機には存在しない
+  // 状態を固定してしまう。
+  const addDraft = new AddDraftStore();
   const utils = render(
     <>
       <OptionBar store={optionBar} />
+      <AddDraftForm store={addDraft} />
       <DrillToolController<S>
         optionBar={optionBar}
         store={store}
+        addDraft={addDraft}
         startProcess={startProcess}
         ids={ids()}
         resolveFeature={resolveFeature}
@@ -193,7 +217,7 @@ function mountDrill(
     </>,
   );
 
-  return { store, startProcess, drawSink, unmount: utils.unmount };
+  return { store, startProcess, drawSink, optionBar, addDraft, unmount: utils.unmount };
 }
 
 function activateDrill(store: StoreApi<SessionStore<S>>): void {
@@ -290,6 +314,164 @@ describe('DrillToolController — 穴あけによる新地物生成 (FR-45)', ()
   });
 });
 
+// --- 司令塔の決定 (5): 新地物の素性は **右パネルの「新規の姿」**で受ける -------------
+//
+// 設計書 §B.5 の台帳 #9 / §C.2 の 27。旧版は地図の真ん中に板（`drill-props` の中身）を
+// 出していた。同じ「新しい地物の素性を入れる」作業なのに置き場が追加の道具と 2 通り
+// あり、板は **いまくり抜いた形の真上に出る**ので穴を見ながら名前を入れられなかった。
+//
+// jsdom はレイアウトを計算しない（`getBoundingClientRect()` が常に 0）ので「覆っているか」
+// は測れない（開発ガイド §5.49）。**代わりに木の位置を見る** ―― 素性欄が道具の覆い
+// （`drill-tool`。地図セルの中に inset:0 で敷かれている）の**外**に居ることは、「地図の
+// 上に出ていない」の必要条件であり、jsdom で嘘をつかずに測れる形である。覆っていない
+// ことそのものは E2E（`e2e/inc5-shell.spec.ts`）が実寸で見る。
+describe('DrillToolController — 新地物の素性は右パネルで受ける (司令塔の決定 (5))', () => {
+  /** 対象を掴む → くり抜く形を描く → 確定、で素性入力の局面まで進める。 */
+  function enterProperties(): void {
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+  }
+
+  it('素性欄は道具の覆いの外に出る（地図の中央に押せる板を作らない）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+
+    const form = screen.getByTestId('add-property-form');
+    // **わざと壊すなら**: `DrillToolController` の返り値に `<AddPropertyForm>` を戻すと、
+    // 素性欄が覆いの中に入ってここが赤くなる。
+    expect(screen.getByTestId('drill-tool')).not.toContainElement(form);
+    // 上位領域の欄は出さない ―― 新地物の上位領域はドメインが元の末端地物から継ぐ
+    //（FR-45）ので、選ばせると「選んだのに反映されない欄」になる。
+    // **わざと壊すなら**: 押し込みの `showParent: false` を外すと選択欄が出て赤くなる。
+    expect(screen.queryByTestId('add-parent')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('覆いに残る `drill-props` は hidden の観測ミラーだけ（T-1 / T-2）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+
+    const mirror = screen.getByTestId('drill-props');
+    // 役割（「素性入力の局面に居る」の観測）は持ち越すが、**見えてはいけない**。
+    expect(mirror).not.toBeVisible();
+    expect(screen.getByTestId('drill-tool')).toContainElement(mirror);
+    h.unmount();
+  });
+
+  it('素性入力中の確定欄は［やめる］だけ、［1 つ戻す］も引っ込む', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+
+    // 保存は右パネルの［保存］が持つので、帯に［確定］は出さない。
+    expect(screen.queryByTestId('drill-confirm')).not.toBeInTheDocument();
+    expect(screen.getByTestId('drill-cancel')).toBeInTheDocument();
+    // **わざと壊すなら**: `drillExtras` の `drillEntering ? null : …` を外すと
+    // ［1 つ戻す］が出て赤くなる ―― 押せると **確定済みのくり抜く形から頂点が黙って
+    // 1 つ減り**、戻したはずの頂点を含まない形が保存される。
+    expect(screen.queryByTestId('drill-undo')).not.toBeInTheDocument();
+    // **わざと壊すなら**: `nextStep` の局面分岐を外すと、どこで入れるのかを言っていない
+    // 案内文に戻ってここが赤くなる。
+    expect(h.optionBar.get().nextStep).toBe(DRILL_STRINGS.nextStepEnterProperties);
+    h.unmount();
+  });
+
+  it('［やめる］で入力待ちは片付く（次に素性欄を開いた人が前の道具のフォームを見ない）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+    expect(h.addDraft.get()).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('drill-cancel'));
+    // **わざと壊すなら**: `addDraft` の effect の後片付け（`set(null)`）を外すと、
+    // 道具を降りたあとも「新規の姿」が右パネルに居座ってここが赤くなる。
+    expect(h.addDraft.get()).toBeNull();
+    expect(screen.queryByTestId('add-property-form')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('アンマウントでも入力待ちは片付く（教訓 5.2 全経路で破棄）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    enterProperties();
+    expect(h.addDraft.get()).not.toBeNull();
+    h.unmount();
+    expect(h.addDraft.get()).toBeNull();
+  });
+});
+
+// --- 増分 5 の手直し B3: 断り・対象欄・段階表示はオプションバーへ ---------------
+
+describe('DrillToolController — 断りと対象欄はオプションバーが出す (増分 5 の手直し B3)', () => {
+  it('断られたら、地図に押せないボタンを出さず、帯の「次の一手」に理由と［やめる］が出る', () => {
+    // **旧版は「出ているのに押せないボタン」だった**（バグ狩り #13）―― 断りの板は
+    // `.drill-tool`（`pointer-events: none`）の子で、drill.css には板を押せるようにする
+    // 規則が無かった。板ごと消し、［やめる］は帯の確定欄へ移した。
+    const h = mountDrill(rejectedResult);
+    activateDrill(h.store);
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+
+    const mirror = screen.getByTestId('drill-rejected');
+    expect(mirror).not.toBeVisible();
+    expect(screen.queryByTestId('drill-rejected-dismiss')).not.toBeInTheDocument();
+    // 断られた局面では［確定］を出さず、［やめる］だけを確定欄に置く。
+    expect(screen.queryByTestId('drill-confirm')).not.toBeInTheDocument();
+    expect(screen.getByTestId('drill-cancel')).toBeInTheDocument();
+    expect(h.optionBar.get().nextStep).toContain('受け付けられません');
+    h.unmount();
+  });
+
+  it('対象欄は道具が自分で押し込む ―― 掴む前は空、掴んだら名前と「手順 n/3」が出る', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    expect(h.optionBar.get().target).toEqual({ stage: DRILL_STRINGS.stage(1), name: null });
+
+    clickInput(5, 5);
+    expect(h.optionBar.get().target).toEqual({
+      stage: DRILL_STRINGS.stage(2),
+      name: 'target（末端地物）',
+    });
+    h.unmount();
+  });
+
+  it('一覧で地物を選んでから構えても、押していない対象の名前は出ない（バグ狩り #6）', () => {
+    const h = mountDrill();
+    // `setMode` を挟まないのは、同じモードへの `setMode` が選択を捨てる契約だから。
+    act(() => h.store.getState().setActiveFeature(TARGET_ID));
+    act(() => h.store.getState().setActiveTool(TOOL_ID.EditDrill));
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    expect(h.optionBar.get().target.name).toBeNull();
+    h.unmount();
+  });
+
+  it('素性を入力している局面は「手順 3/3」になる', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    selectAndDrawRegion();
+    fireEvent.click(screen.getByTestId('drill-confirm'));
+    expect(h.optionBar.get().target.stage).toBe(DRILL_STRINGS.stage(3));
+    h.unmount();
+  });
+
+  it('対象を離すと対象欄も空へ戻り、道具を降りると帯から消える', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    clickInput(5, 5);
+    expect(h.optionBar.get().target.name).toBe('target（末端地物）');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象を離す
+    expect(h.optionBar.get().target).toEqual({ stage: DRILL_STRINGS.stage(1), name: null });
+
+    act(() => h.store.getState().setActiveTool(null));
+    expect(h.optionBar.get().target).toEqual({ stage: null, name: null });
+    h.unmount();
+  });
+});
+
 // --- 妥当性検証拒否: a bad region surfaces the domain message and does NOT confirm ----
 
 describe('DrillToolController — rejection surfaces the domain message (教訓 5.22 / 5.26)', () => {
@@ -352,15 +534,50 @@ describe('DrillToolController — フォームの入力を落とさない', () =
 // --- 一時状態全経路破棄 (教訓 5.2) --------------------------------------------
 
 describe('DrillToolController — transient state discarded on every exit path', () => {
-  it('Escape cancels the in-progress region draft', () => {
+  // **増分 5 の手直し B1 で契約が変わった**（設計書 §D.4）。旧版は「Escape 1 回で道具ごと
+  // 消える」を固定していたが、それが GPT #8 の欠陥そのものだった。いまは 1 回で 1 段。
+  it('Escape はくり抜く形の頂点列だけを捨て、対象も道具も保つ（階段 1 段目）', () => {
     const h = mountDrill();
     activateDrill(h.store);
+    clickInput(5, 5); // 対象を掛む
     clickInput(2, 2);
-    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    clickInput(10, 2);
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('2');
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
-    expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('0');
+    expect(screen.getByTestId('drill-tool').dataset['flow']).toBe('drawing-region');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditDrill);
+    h.unmount();
+  });
+
+  it('Escape 2 回目で対象だけを離し、道具は持ったまま（階段 2 段目）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    clickInput(5, 5);
+    clickInput(2, 2);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 1 段目: 頂点列
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 2 段目: 対象
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('drill-tool').dataset['flow']).toBe('selecting-target');
+    expect(h.store.getState().activeFeature).toBeNull();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditDrill);
+    h.unmount();
+  });
+
+  it('Escape 3 回目は道具が何もせず、大域の階段へ譲る（preventDefault しない）', () => {
+    const h = mountDrill();
+    activateDrill(h.store);
+    clickInput(5, 5);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象を離す
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    act(() => {
+      window.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditDrill);
     h.unmount();
   });
 
@@ -395,14 +612,18 @@ describe('DrillToolController — transient state discarded on every exit path',
 // する (教訓 5.2 全経路で破棄 + 単一の真実源)。
 
 describe('DrillToolController — キャンセルはツール選択も解除して再アームできる (W3-B)', () => {
-  it('キャンセル(Escape)で activeTool が null になり、同じツールの再選択で復活する', () => {
+  // **増分 5 の手直し B1: 道具を降りるのは［やめる］ボタンだけになった。** Escape は
+  // 1 段ずつ戻る階段で、道具を降りるのは大域の階段のいちばん下（設計書 §D.4）。ここが
+  // 固定したいのは「取りやめたあと同じボタンをもう一度押せば構え直せる」ことなので、
+  // 打鍵を［やめる］の押下に置き換えて残す。
+  it('キャンセル（［やめる］）で activeTool が null になり、同じツールの再選択で復活する', () => {
     const h = mountDrill();
     activateDrill(h.store);
     clickInput(2, 2);
     expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
 
     act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
+      fireEvent.click(screen.getByTestId('drill-cancel'));
     });
     expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
     // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
@@ -525,8 +746,11 @@ describe('DrillToolController — バグハント第11波 (#3/#6): focus guard o
     button.focus();
     act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
     expect(screen.getByTestId('drill-vertex-count').textContent).toBe('1');
+    // Escape は階段の 1 段目 ―― 残りの頂点列をまとめて捨てる（道具は降りない。
+    // 増分 5 の手直し B1 / 設計書 §D.4.1）。
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
-    expect(screen.queryByTestId('drill-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('drill-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('drill-vertex-count').textContent).toBe('0');
     button.remove();
     h.unmount();
   });

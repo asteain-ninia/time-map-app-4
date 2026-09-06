@@ -59,6 +59,7 @@ import {
   type ReparentDrawSink,
   type ResolveLeafShape,
 } from './ReparentToolController';
+import { REPARENT_STRINGS } from './strings';
 
 const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
 const ANCHOR = timePointYear(1000);
@@ -132,7 +133,12 @@ interface Harness {
   readonly unmount: () => void;
 }
 
-function mountReparent(): Harness {
+/**
+ * 引数は全部任意。`onModalChange` を渡すと、最上位化の確認の板が開いた閉じたを
+ * 控えられる（増分 5 の手直し B4 / A4）。
+ */
+function mountReparent(options: { onModalChange?: (open: boolean) => void } = {}): Harness {
+  const onModalChange = options.onModalChange;
   const store = createSessionStore<DomainRoot>({
     initialDomain: twoTopLevelLeaves(),
     initial: { mode: EDIT_MODE.Edit, activeTool: null },
@@ -209,6 +215,7 @@ function mountReparent(): Harness {
         drawSink={drawSink}
         optionBar={optionBar}
         onCommitted={onCommitted}
+        {...(onModalChange ? { onModalChange } : {})}
       />
     </>,
   );
@@ -358,10 +365,68 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     expect(screen.getByTestId('reparent-confirm')).toBeDisabled();
     expect(screen.getByTestId('reparent-confirm-none')).not.toBeDisabled();
 
-    // Click 最上位へ → leaf-a returns to top level (parentId cleared). This whole path
-    // (parentNone) was previously UNREACHABLE from the UI.
+    // Click 最上位へ → **まず確認の板が出る**（増分 5 の手直し B4 / バグ狩り B-1）。
+    // 旧版は押した瞬間に確定していた。確定そのもの（parentNone）はこの経路でしか
+    // 到達できないので、ここで UI から最後まで通す。
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    expect(screen.getByTestId('reparent-detach-confirm')).toBeInTheDocument();
+    // 確認に答えるまでは何も起きていない（教訓 5.22 確定までの非破壊）。
+    expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
+    fireEvent.click(screen.getByTestId('reparent-detach-confirm-yes'));
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined();
+    h.unmount();
+  });
+
+  // --- 最上位化の確認（増分 5 の手直し B4 / バグ狩り B-1 / E4）-----------------
+
+  it('最上位へは押した瞬間には確定せず、何が起きるかを見せる板を出す', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1); // target = leaf-a
+    expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    const dialog = screen.getByTestId('reparent-detach-confirm');
+    // 答えるまで先へ進めない種類の板であることを読み上げへ伝える。
+    expect(dialog).toHaveAttribute('role', 'alertdialog');
+    // **何が起きるか**を言う（「よろしいですか」だけにしない）。
+    expect(dialog.textContent).toContain('どこにも所属しなくなります');
+    h.unmount();
+  });
+
+  it('確認の［やめる］を押すと何も起きず、対象は掛んだまま', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    fireEvent.click(screen.getByTestId('reparent-detach-confirm-no'));
+    expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+    h.unmount();
+  });
+
+  it('板が開いているあいだは onModalChange(true) を報せる（鍵盤の持ち主が modal）', () => {
+    const modal: boolean[] = [];
+    const h = mountReparent({ onModalChange: (open) => modal.push(open) });
+    activateReparent(h.store);
+    clickInput(1, 1);
+    expect(modal[modal.length - 1]).toBe(false);
+    fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    expect(modal[modal.length - 1]).toBe(true);
+    fireEvent.click(screen.getByTestId('reparent-detach-confirm-no'));
+    expect(modal[modal.length - 1]).toBe(false);
+    h.unmount();
+  });
+
+  it('板が開いているあいだの Escape は板を閉じるだけ（階段の最上段）', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1);
+    fireEvent.click(screen.getByTestId('reparent-confirm-none'));
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(screen.queryByTestId('reparent-detach-confirm')).not.toBeInTheDocument();
+    // 選んだものはそのまま残る（板を閉じただけ）。
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
     h.unmount();
   });
 
@@ -401,14 +466,16 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
 // aria-pressed=true)でセッションだけ消え、同じボタンをもう一度押すとストアの press-toggle が
 // tool→null を走らせて「何も起きない」。knife/drill で潰したのと同一の dead-button バグ。
 describe('ReparentToolController — キャンセルはツール選択も解除して再アームできる (W3-AB)', () => {
-  it('Escape で activeTool が null になり、同じツールの再選択で復活する', () => {
+  // **増分 5 の手直し B1: 道具を降りるのは［やめる］ボタンだけになった。** Escape は
+  // 1 回で 1 段戻る階段で、道具を降りるのは大域の階段のいちばん下（設計書 §D.4）。
+  it('キャンセル（［やめる］）で activeTool が null になり、同じツールの再選択で復活する', () => {
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
     expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
 
     act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
+      fireEvent.click(screen.getByTestId('reparent-cancel'));
     });
     expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
     expect(h.store.getState().activeTool).toBeNull();
@@ -563,7 +630,10 @@ describe('ReparentToolController — バグハント第11波 (#6): focus guard o
     h.unmount();
   });
 
-  it('Escape from a NON-editable focus still cancels the reparent (no regression)', () => {
+  // 増分 5 の手直し B1: Escape は道具を降りず、1 回で 1 段だけ戻る（設計書 §D.4）。
+  // ここが見ているのは「文字の欄に焦点が無ければ道具の Escape が効く」ことなので、
+  // 期待値を「対象が離れる」へ差し替える。
+  it('Escape from a NON-editable focus still steps the reparent ladder (no regression)', () => {
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
@@ -572,8 +642,58 @@ describe('ReparentToolController — バグハント第11波 (#6): focus guard o
     document.body.appendChild(button);
     button.focus();
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
-    expect(screen.queryByTestId('reparent-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('reparent-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('reparent-target').textContent).toBe('');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditReparent);
     button.remove();
+    h.unmount();
+  });
+
+  // 対象も選びかけも無い局面の Escape は、**道具が何もせず大域の階段へ譲る**。
+  it('何も掛んでいない Escape は preventDefault せず、大域の階段へ譲る', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
+    act(() => {
+      window.dispatchEvent(ev);
+    });
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditReparent);
+    h.unmount();
+  });
+
+  // 選びかけの上位領域だけを外す 1 段目（対象は掛んだまま）。
+  it('Escape はまず「新しい上位領域の選びかけ」だけを外す（階段 1 段目）', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    clickInput(1, 1); // leaf-a = 対象
+    clickInput(5, 1); // leaf-b = 移し先
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(screen.getByTestId('reparent-parent').textContent).toBe('');
+    expect(screen.getByTestId('reparent-target').textContent).toBe('leaf-a');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(screen.getByTestId('reparent-target').textContent).toBe('');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditReparent);
+    h.unmount();
+  });
+
+  // **元からの選択を巻き添えにしない**（GPT #8）。この道具は選択を昇格させていないので、
+  // 道具の外で選んだ地物は階段のどの段でも消えてはいけない（旧版は clearSelection していた）。
+  it('道具の外で選んだ地物は、Escape でも［やめる］でも消えない', () => {
+    const h = mountReparent();
+    activateReparent(h.store);
+    act(() => h.store.getState().setActiveFeature(asFeatureId('leaf-b')));
+    clickInput(1, 1); // 道具の対象は leaf-a（選択は書き換えない）
+    expect(h.store.getState().activeFeature).toBe(asFeatureId('leaf-b'));
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' }));
+    expect(h.store.getState().activeFeature).toBe(asFeatureId('leaf-b'));
+
+    act(() => fireEvent.click(screen.getByTestId('reparent-cancel')));
+    expect(h.store.getState().activeFeature).toBe(asFeatureId('leaf-b'));
     h.unmount();
   });
 });
@@ -583,7 +703,7 @@ describe('ReparentToolController — バグハント第11波 (#6): focus guard o
 // `activeFeature` を書かないので、帯を持っている `ToolOptionBar` からは見えない。だから
 // **この道具が自分で対象欄へ押し込む**。ここで釘を打つのは 3 つ:
 //   1. 対象を選ぶと、その地物の名前と種類が対象欄に出る（`describeOptionBarTarget` の書式）;
-//   2. 選択をクリアすると空へ戻る;
+//   2. 選択を外すと空へ戻る;
 //   3. 道具を降りる・部品が外れる、どの経路でも空へ戻る（教訓 5.2 全経路で破棄）。
 describe('ReparentToolController — オプションバーの対象欄（設計書 §C.4）', () => {
   it('対象を選ぶと帯の対象欄にその名前が出る', () => {
@@ -593,30 +713,45 @@ describe('ReparentToolController — オプションバーの対象欄（設計�
     expect(h.optionBar.get().target.name).toBeNull();
 
     clickInput(1, 1); // leaf-a を対象に選ぶ
-    expect(h.optionBar.get().target).toEqual({ stage: null, name: 'leaf-a（末端地物）' });
+    // 増分 5 の手直し B3 / 設計書 §C.4: 段階表示「手順 2/3」と、移し先の果て
+    // 「→ 親: ?」まで出す。旧版は対象の名前しか出しておらず、**どこへ移そうとして
+    // いるのかが画面のどこにも出ていなかった**。
+    expect(h.optionBar.get().target).toEqual({
+      stage: REPARENT_STRINGS.stage(2),
+      name: REPARENT_STRINGS.targetWithParent(
+        'leaf-a（末端地物）',
+        REPARENT_STRINGS.parentUnset,
+      ),
+    });
     h.unmount();
   });
 
-  it('移し先を選んでも、対象欄は「所属を変える地物」のまま', () => {
-    // 対象欄は「いま何を相手にしているか」を出す枠なので、変える側（leaf-a）を出し続ける。
-    // 移し先は地図の色分け（HB3-15(c)）と案内文が受け持つ。
+  it('移し先を選ぶと、対象欄に「対象 → 親: 移し先」が出る', () => {
+    // 設計書 §C.4 の「対象: 南ケナ州 → 親: ?」の形。**移し先まで見せる**のが目的で、
+    // 地図の色分け（HB3-15(c)）だけに任せない（増分 5 の手直し B3）。
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1); // leaf-a = 対象
     clickInput(5, 1); // leaf-b = 移し先
     expect(screen.getByTestId('reparent-parent').textContent).toBe('leaf-b');
-    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    expect(h.optionBar.get().target.name).toBe(
+      REPARENT_STRINGS.targetWithParent('leaf-a（末端地物）', 'leaf-b（末端地物）'),
+    );
+    // 両方揃ったので次は確定（手順 3/3）。
+    expect(h.optionBar.get().target.stage).toBe(REPARENT_STRINGS.stage(3));
     h.unmount();
   });
 
-  it('「選択をクリア」で対象欄が空へ戻る', () => {
+  it('「選択を外す」で対象欄が空へ戻る', () => {
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
-    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    expect(h.optionBar.get().target.name).not.toBeNull();
 
     fireEvent.click(screen.getByTestId('reparent-clear'));
     expect(h.optionBar.get().target.name).toBeNull();
+    // 帯はまだこの道具のものなので、段階表示は「手順 1/3」へ戻る。
+    expect(h.optionBar.get().target.stage).toBe(REPARENT_STRINGS.stage(1));
     h.unmount();
   });
 
@@ -624,7 +759,7 @@ describe('ReparentToolController — オプションバーの対象欄（設計�
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
-    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    expect(h.optionBar.get().target.name).not.toBeNull();
 
     act(() => {
       h.store.getState().setActiveTool(null);
@@ -633,14 +768,15 @@ describe('ReparentToolController — オプションバーの対象欄（設計�
     h.unmount();
   });
 
-  it('キャンセル（Escape）でも対象欄が空へ戻る', () => {
+  it('Escape で対象を離しても対象欄が空へ戻る（道具は持ったまま）', () => {
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
-    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    expect(h.optionBar.get().target.name).not.toBeNull();
 
     act(() => fireEvent.keyDown(window, { key: 'Escape' }));
     expect(h.optionBar.get().target.name).toBeNull();
+    expect(h.optionBar.get().target.stage).toBe(REPARENT_STRINGS.stage(1));
     h.unmount();
   });
 
@@ -648,7 +784,7 @@ describe('ReparentToolController — オプションバーの対象欄（設計�
     const h = mountReparent();
     activateReparent(h.store);
     clickInput(1, 1);
-    expect(h.optionBar.get().target.name).toBe('leaf-a（末端地物）');
+    expect(h.optionBar.get().target.name).not.toBeNull();
 
     h.unmount();
     expect(h.optionBar.get().target.name).toBeNull();

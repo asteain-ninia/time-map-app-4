@@ -10,11 +10,26 @@ export const MERGE_STRINGS = {
   guideReady: '「結合を確定」で選択した地物を 1 つに結合します。',
   /** Confirm button label (opens the options dialog, FR-52). */
   confirm: '結合を確定',
-  /** Clear-selection button label. */
-  clear: '選択をクリア',
-  /** Cancel button label. */
-  cancel: 'キャンセル',
+  /** Clear-selection button label。「クリア」は §H.1 に無い語（増分 5 の手直し E2）。 */
+  clear: '選択を外す',
+  /**
+   * Cancel button label。確定欄（176px）の語は **5 道具とも「やめる」**に揃える
+   * （増分 5 の手直し E2。`ui/add/strings.ts` の `ADD_STRINGS.cancel` が先例）。
+   */
+  cancel: 'やめる',
+  /**
+   * 対象欄（240px）の頭に出す段階表示（設計書 §C.4 / バグ狩り #9）。**「手順」の 2 文字を
+   * 必ず前に付ける** ―― 「1/2」だけだと「2 件中 1 件」と読み違えられる（§O の B-23）。
+   * 結ぶ道具は対象が **複数**なので、この誤読はとくに起こりやすい（対象欄の名前のほうも
+   * 「ほか n 件」と件数を出している）。
+   *
+   * 段は {@link MERGE_STEP_COUNT} 個（1 = 結ぶ地物を 2 つ以上選ぶ / 2 = まとめ方を選ぶ）。
+   */
+  stage: (step: number): string => `手順 ${String(step)}/${String(MERGE_STEP_COUNT)}`,
 } as const;
+
+/** 結ぶ道具の段数（設計書 §C.4 の「手順 n/m」の m）。1 = 地物を選ぶ / 2 = まとめ方を選ぶ。 */
+export const MERGE_STEP_COUNT = 2;
 
 export type MergeStringKey = keyof typeof MERGE_STRINGS;
 
@@ -57,7 +72,13 @@ export const MERGE_OPTIONS_STRINGS = {
   /** Confirm (apply the chosen decisions + run the merge) button label. */
   confirm: '結合を実行',
   /** Cancel (back to selecting) button label. */
-  cancel: 'キャンセル',
+  /**
+   * まとめ方の板の取消（増分 5 の手直し E1）。**「やめる」ではない** ―― この板の取消は
+   * 「結ぶのをやめる」ではなく **選んだ地物を保ったまま選び直しへ戻る**ことなので、
+   * 確定欄の［やめる］（作業ごとやめる）と同じ語にすると意味が食い違う。
+   * §H.1 に無い「キャンセル」というカタカナは使わない。
+   */
+  cancel: '選び直す',
 } as const;
 
 export type MergeOptionsStringKey = keyof typeof MERGE_OPTIONS_STRINGS;

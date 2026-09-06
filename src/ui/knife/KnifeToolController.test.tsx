@@ -47,6 +47,8 @@ import { createVertex, createVertexStore, type VertexStore } from '../../domain/
 import { timePointYearMonthDay } from '../../domain/time/time-point';
 
 import { createSessionStore, type SessionStore } from '../state/store';
+import { AddDraftForm } from '../add/AddPropertyForm';
+import { AddDraftStore } from '../add/add-draft-store';
 import { OptionBar } from '../shell/OptionBar';
 import { OptionBarStore } from '../shell/option-bar';
 import { EDIT_MODE } from '../state/session';
@@ -58,6 +60,7 @@ import {
   type ScreenToWorld,
   type FeatureAtPoint,
 } from './KnifeToolController';
+import { KNIFE_STRINGS } from './strings';
 
 // --- Fixtures ---------------------------------------------------------------
 
@@ -76,6 +79,13 @@ const committed: ProcessResult<S> = {
   status: PROCESS_STATUS.Committed,
   state: NEXT_STATE,
   command: noopCommand,
+};
+
+/** A U13 outcome that REJECTS the split (増分 5 の手直し B3 の断りの経路)。 */
+const rejectedResult: ProcessResult<S> = {
+  status: PROCESS_STATUS.Rejected,
+  kind: 'time-violation',
+  message: 'この分割は受け付けられません。',
 };
 
 /** A U13 outcome that pauses the session for the U35 conflict flow (FR-62). */
@@ -149,12 +159,17 @@ interface Harness {
   readonly store: StoreApi<SessionStore<S>>;
   readonly startProcess: ReturnType<typeof vi.fn>;
   readonly drawSink: KnifeDrawSink & { batches: number[] };
+  /** 帯（オプションバー）―― 確定欄・次の一手・対象欄はここに出る（設計書 §C.4）。 */
+  readonly optionBar: OptionBarStore;
+  /** 右パネルへの橋 ―― 非継承側の素性入力はここを通って「新規の姿」になる。 */
+  readonly addDraft: AddDraftStore;
   readonly unmount: () => void;
 }
 
 function mountKnife(
   startResult: ProcessResult<S> = committed,
   fixture: { feature: Feature; store: VertexStore } = targetLeaf(),
+  onDrawingChange?: (drawing: boolean) => void,
 ): Harness {
   const { feature, store: vstore } = fixture;
   const store = createSessionStore<S>({
@@ -183,12 +198,22 @@ function mountKnife(
   // だから帯そのものを一緒に載せないと、［分断線を確定］が DOM に現れない ――
   // これは検査の都合ではなく、**実物がそうなっている**ということである。
   const optionBar = new OptionBarStore();
+  // **司令塔の決定 (5): 非継承側の素性入力は右パネルの「新規の姿」で受ける**（設計書
+  // §B.5 の台帳 #9 / §C.2 の 27）。地図の中央の板（`knife-props` の中身）は消したので、
+  // **`AddDraftForm` を一緒に載せないと `add-property-form` が DOM に現れない** ――
+  // これは検査の都合ではなく、**実物がそうなっている**（合成ルート `App.tsx` は
+  // `addDraftStore` を 1 つ持ち、道具と右パネルの両方へ渡している）。渡さない形で
+  // 検査すると「素性を入れる局面なのに入力の口が無い」という、実機には存在しない
+  // 状態を固定してしまう。
+  const addDraft = new AddDraftStore();
   const utils = render(
     <>
       <OptionBar store={optionBar} />
+      <AddDraftForm store={addDraft} />
       <KnifeToolController<S>
         store={store}
         optionBar={optionBar}
+        addDraft={addDraft}
         startProcess={startProcess}
         ids={ids()}
         resolveFeature={resolveFeature}
@@ -198,11 +223,12 @@ function mountKnife(
         featureAtPoint={featureAtPoint}
         drawSink={drawSink}
         defaultColor={DEFAULT_COLOR}
+        {...(onDrawingChange ? { onDrawingChange } : {})}
       />
     </>,
   );
 
-  return { store, startProcess, drawSink, unmount: utils.unmount };
+  return { store, startProcess, drawSink, optionBar, addDraft, unmount: utils.unmount };
 }
 
 function activateKnife(store: StoreApi<SessionStore<S>>): void {
@@ -342,6 +368,218 @@ describe('KnifeToolController — inheritor modal + save → U13 (受け入れ�
   });
 });
 
+// --- 司令塔の決定 (5): 非継承側の素性は **右パネルの「新規の姿」**で受ける -----------
+//
+// 設計書 §B.5 の台帳 #9 / §C.2 の 27。旧版は地図の真ん中に板（`knife-props` の中身）を
+// 出していた。同じ「新しい地物の素性を入れる」作業なのに置き場が追加の道具と 2 通り
+// あり、板は **いま切った形の真上に出る**ので切り口を見ながら名前を入れられなかった。
+//
+// jsdom はレイアウトを計算しない（`getBoundingClientRect()` が常に 0）ので「覆っている
+// か」は測れない（開発ガイド §5.49）。**代わりに木の位置を見る** ―― 素性欄が道具の覆い
+// （`knife-tool`。地図セルの中に inset:0 で敷かれている）の**外**に居ることは、
+// 「地図の上に出ていない」の必要条件であり、jsdom で嘘をつかずに測れる形である。
+// 覆っていないことそのものは E2E（`e2e/inc5-shell.spec.ts`）が実寸で見る。
+describe('KnifeToolController — 非継承側の素性は右パネルで受ける (司令塔の決定 (5))', () => {
+  /** 対象を掴む → 分断線を引く → 確定 → 継承先を確定、で素性入力の局面まで進める。 */
+  function enterProperties(h: Harness): void {
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+  }
+
+  it('素性欄は道具の覆いの外に出る（地図の中央に押せる板を作らない）', () => {
+    const h = mountKnife();
+    enterProperties(h);
+
+    const form = screen.getByTestId('add-property-form');
+    const overlay = screen.getByTestId('knife-tool');
+    // **わざと壊すなら**: `KnifeToolChrome` に `<AddPropertyForm>` を戻すと、素性欄が
+    // 覆いの中に入ってここが赤くなる。
+    expect(overlay).not.toContainElement(form);
+    // 上位領域の欄は出さない ―― 非継承側の上位領域はドメインが元の面から継ぐ（FR-44）
+    // ので、選ばせると「選んだのに反映されない欄」になる。
+    // **わざと壊すなら**: 押し込みの `showParent: false` を外すと選択欄が出て赤くなる。
+    expect(screen.queryByTestId('add-parent')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('覆いに残る `knife-props` は hidden の観測ミラーだけ（T-1 / T-2）', () => {
+    const h = mountKnife();
+    enterProperties(h);
+
+    const mirror = screen.getByTestId('knife-props');
+    // 役割（「素性入力の局面に居る」の観測）は持ち越すが、**見えてはいけない**。
+    expect(mirror).not.toBeVisible();
+    expect(screen.getByTestId('knife-tool')).toContainElement(mirror);
+    h.unmount();
+  });
+
+  it('素性入力中の確定欄は［やめる］だけ、次の一手は右パネルへ誘導する', () => {
+    const h = mountKnife();
+    enterProperties(h);
+
+    // 保存は右パネルの［保存］が持つので、帯に［確定］は出さない（同じ働きのボタンを
+    // 2 か所に置かない）。［やめる］は残す ―― 空にすると名前を打っている途中で取りやめる
+    // 手が Escape だけになり、その Escape も名前欄に焦点があるあいだは届かない。
+    expect(screen.getByTestId('knife-cancel')).toBeInTheDocument();
+    expect(screen.queryByTestId('knife-confirm-cut')).not.toBeInTheDocument();
+    // **わざと壊すなら**: `nextStep` の局面分岐を外すと、ドメインの案内文
+    //（どこで入れるのかを言っていない）に戻ってここが赤くなる。
+    expect(screen.getByTestId('option-bar-next-step').textContent).toBe(
+      KNIFE_STRINGS.nextStepEnterProperties,
+    );
+    h.unmount();
+  });
+
+  it('［やめる］で入力待ちは片付く（次に素性欄を開いた人が前の道具のフォームを見ない）', () => {
+    const h = mountKnife();
+    enterProperties(h);
+    expect(h.addDraft.get()).not.toBeNull();
+
+    fireEvent.click(screen.getByTestId('knife-cancel'));
+    // **わざと壊すなら**: `addDraft` の effect の後片付け（`set(null)`）を外すと、
+    // 道具を降りたあとも「新規の姿」が右パネルに居座ってここが赤くなる。
+    expect(h.addDraft.get()).toBeNull();
+    expect(screen.queryByTestId('add-property-form')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('アンマウントでも入力待ちは片付く（教訓 5.2 全経路で破棄）', () => {
+    const h = mountKnife();
+    enterProperties(h);
+    expect(h.addDraft.get()).not.toBeNull();
+    h.unmount();
+    expect(h.addDraft.get()).toBeNull();
+  });
+});
+
+// --- 増分 5 の手直し B2: 確定したあとも道具を持ったまま ----------------------
+//
+// **5 道具のうちナイフだけが確定で道具を降りていた**（GPT #10）。設計書 §D.2 の
+// 「道具の確定」の行は「道具は保つ（次の対象待ち）」で、§D.4 も「確定したあとも同じ」と
+// 書いている ―― 続けて分けたいときに、道具を選び直さなくてよいようにするためである。
+//
+// **ここが固定するのは道具側の契約だけ**である。合成ルート（App.tsx）の
+// `onKnifeCommitted` が確定直後に `setActiveTool(null)` を呼んでいるので、実機でも
+// 道具が残るようにするにはその 1 行を外す必要がある（司令塔へ申し送り）。
+
+describe('KnifeToolController — 確定したあとも道具を持ったまま (増分 5 の手直し B2)', () => {
+  function splitAndSave(h: Harness): void {
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+  }
+
+  it('確定すると、道具は構えたまま次の対象待ちへ戻る（下書きは残らない）', async () => {
+    const h = mountKnife();
+    splitAndSave(h);
+    expect(h.startProcess).toHaveBeenCalledTimes(1);
+    // 確定の後始末は queueMicrotask 越しに走る（更新関数の外へ逃がしてある）。
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // 道具は残り、セッションは「対象を選んでください」へ戻っている。
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-tool').dataset['flow']).toBe('selecting-target');
+    // 分断線の下書きは残っていない（教訓 5.2 全経路で破棄）。
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('0');
+    h.unmount();
+  });
+
+  it('確定直後は道具が鍵盤を持っていない（＝ Ctrl+Z が大域の履歴へ届く）', async () => {
+    // 設計書 §D.4 の表: 確定した直後は `focusOwner` が `map` に戻っていること。道具が
+    // 「下書きを持っている」と名乗り続けると、ホストが大域の割り振りを降ろしたままに
+    // するので、間違えた直後の Ctrl+Z が無反応になる（報告 04 §3.5 と同じ形）。
+    const drawing: boolean[] = [];
+    const h = mountKnife(committed, targetLeaf(), (v) => drawing.push(v));
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    // 対象を掴んでいるあいだは名乗っている。
+    expect(drawing[drawing.length - 1]).toBe(true);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(drawing[drawing.length - 1]).toBe(false);
+    h.unmount();
+  });
+
+  it('対象も下書きも無い待機中は、鍵盤を取らない（構えただけでは名乗らない）', () => {
+    const drawing: boolean[] = [];
+    const h = mountKnife(committed, targetLeaf(), (v) => drawing.push(v));
+    activateKnife(h.store);
+    expect(drawing[drawing.length - 1]).toBe(false);
+    h.unmount();
+  });
+});
+
+// --- 増分 5 の手直し B3: 断り・対象欄・段階表示はオプションバーへ ---------------
+
+describe('KnifeToolController — 断りと対象欄はオプションバーが出す (増分 5 の手直し B3)', () => {
+  it('断られたら、地図には押せる板を出さず、帯の「次の一手」に理由と［やめる］が出る', () => {
+    const h = mountKnife(rejectedResult);
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+
+    // 地図側は **hidden の観測ミラー**だけ（旧版はここに pointer-events: auto の板が
+    // あって、断りが出ているあいだ地図のクリックを奪っていた＝K-2）。
+    const mirror = screen.getByTestId('knife-rejected');
+    expect(mirror).not.toBeVisible();
+    // 押せる［やめる］は帯の確定欄にある（地図の上には無い）。
+    expect(screen.queryByTestId('knife-rejected-dismiss')).not.toBeInTheDocument();
+    expect(screen.getByTestId('knife-cancel')).toBeInTheDocument();
+    // 断りの本文は帯の「次の一手」に出る。
+    expect(h.optionBar.get().nextStep).toContain('受け付けられません');
+    h.unmount();
+  });
+
+  it('対象欄は道具が自分で押し込む ―― 掴む前は空、掴んだら名前と「手順 n/4」が出る', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    // **まだ 1 度も対象を押していないので空**（バグ狩り #6: 旧版は一覧で選んだ地物の
+    // 名前が出ていた）。段階表示は「手順 1/4」＝これから対象を選ぶ。
+    expect(h.optionBar.get().target).toEqual({ stage: KNIFE_STRINGS.stage(1), name: null });
+
+    clickInput(5, 5);
+    expect(h.optionBar.get().target).toEqual({
+      stage: KNIFE_STRINGS.stage(2),
+      name: 'target（末端地物）',
+    });
+    h.unmount();
+  });
+
+  it('対象を離すと対象欄も空へ戻り、道具を降りると帯から消える', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    expect(h.optionBar.get().target.name).toBe('target（末端地物）');
+
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象を離す
+    expect(h.optionBar.get().target).toEqual({ stage: KNIFE_STRINGS.stage(1), name: null });
+
+    act(() => h.store.getState().setActiveTool(null));
+    expect(h.optionBar.get().target).toEqual({ stage: null, name: null });
+    h.unmount();
+  });
+});
+
 // --- 1 辺で経度 180 度以上を渡る切り口 (N-51 / 技術方針 §6.8) -----------------
 
 describe('KnifeToolController — 保存できない長さの辺は画面で断る (N-51)', () => {
@@ -400,16 +638,72 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
     h.unmount();
   });
 
-  it('Escape cancels the in-progress cut (全経路破棄)', () => {
+  // **増分 5 の手直し B1 で契約が変わった**（設計書 §D.4）。旧版はここで「Escape 1 回で
+  // 道具ごと消える」を固定していたが、それが GPT #8 の欠陥そのもの ―― 1 回の Escape で
+  // 「手順の対象」「元からの選択」「道具」の三段がまとめて落ちていた。いまは 1 回で 1 段。
+  it('Escape は分断線の点列だけをまとめて捨て、対象も道具も保つ（階段 1 段目）', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5); // 対象を掴む
+    clickInput(5, -5); // 分断線 1 点目
+    clickInput(5, 15); // 分断線 2 点目
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
+    // 点列だけが空になり、対象（DrawingCut）も道具も残っている。
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('0');
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    h.unmount();
+  });
+
+  it('Escape 2 回目で対象だけを離し、道具は持ったまま（階段 2 段目）', () => {
     const h = mountKnife();
     activateKnife(h.store);
     clickInput(5, 5);
     clickInput(5, -5);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 1 段目: 点列
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 2 段目: 対象
     expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-tool').dataset['flow']).toBe('selecting-target');
+    // 道具が昇格させた対象だけが選択から外れる。道具は持ったまま。
+    expect(h.store.getState().activeFeature).toBeNull();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    h.unmount();
+  });
+
+  it('Escape 3 回目は道具が何もせず、大域の階段へ譲る（preventDefault しない）', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 対象を離す
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
     act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
+      window.dispatchEvent(ev);
     });
-    expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    // 道具は何もしない ―― 止めないので、大域の `escape-ladder` が続きを引き受けられる。
+    expect(ev.defaultPrevented).toBe(false);
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    h.unmount();
+  });
+
+  // **元からの選択を巻き添えにしない**（GPT #8 の核心）。道具の外で選んだ地物は、階段の
+  // 1 段目・2 段目では消えない ―― 消してよいのは道具が自分で昇格させた対象だけである。
+  it('道具が掴んでいない選択は、階段の 1 段目・2 段目で消えない', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5); // 対象を掴む（＝道具が昇格させる）
+    clickInput(5, -5); // 分断線 1 点
+    // 利用者が道具の外で別の地物を選び直した（一覧の行を押した、など）。
+    const OTHER = asFeatureId('other-leaf');
+    act(() => h.store.getState().setActiveFeature(OTHER));
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 1 段目
+    expect(h.store.getState().activeFeature).toBe(OTHER);
+    act(() => fireEvent.keyDown(window, { key: 'Escape' })); // 2 段目
+    // 昇格させた id と一致しないので触らない（旧版は clearSelection でここが null になった）。
+    expect(h.store.getState().activeFeature).toBe(OTHER);
     h.unmount();
   });
 });
@@ -423,14 +717,19 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
 // する (教訓 5.2 全経路で破棄 + 単一の真実源)。ring-edit と同じ規約。
 
 describe('KnifeToolController — キャンセルはツール選択も解除して再アームできる (W3-B)', () => {
-  it('キャンセル(Escape)で activeTool が null になり、同じツールの再選択で復活する', () => {
+  // **増分 5 の手直し B1: 道具を降りるのは［やめる］ボタンだけになった。** Escape は
+  // 1 段ずつ戻る階段で、道具を降りるのは大域の階段のいちばん下（設計書 §D.4）。ここが
+  // 固定したいのは「取りやめたあと同じボタンをもう一度押せば構え直せる」ことなので、
+  // 打鍵を［やめる］の押下に置き換えて残す。
+  it('キャンセル（［やめる］）で activeTool が null になり、同じツールの再選択で復活する', () => {
     const h = mountKnife();
     activateKnife(h.store);
     clickInput(5, 5);
     expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
 
     act(() => {
-      fireEvent.keyDown(window, { key: 'Escape' });
+      clickInput(5, -5); // 分断線を 1 点打つ（確定欄に［やめる］が出る局面）
+      fireEvent.click(screen.getByTestId('knife-cancel'));
     });
     expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
     // The toolbar's aria-pressed mirrors `activeTool`; it must NOT stay pressed.
@@ -577,9 +876,11 @@ describe('KnifeToolController — バグハント第11波 (#3/#6): focus guard o
     // Ctrl+Z undoes one cut point (2 → 1).
     act(() => fireEvent.keyDown(button, { key: 'z', ctrlKey: true }));
     expect(screen.getByTestId('knife-cut-count').textContent).toBe('1');
-    // Escape cancels the whole knife.
+    // Escape は階段の 1 段目 ―― 残りの点列をまとめて捨てる（道具は降りない。増分 5 の
+    // 手直し B1 / 設計書 §D.4.1「1 つずつ戻すのは Ctrl+Z、まとめて捨てるのは Escape」）。
     act(() => fireEvent.keyDown(button, { key: 'Escape' }));
-    expect(screen.queryByTestId('knife-tool')).not.toBeInTheDocument();
+    expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('0');
     button.remove();
     h.unmount();
   });
@@ -640,21 +941,31 @@ describe('KnifeToolController — 固定円閉線判定 tracks the LIVE store ca
     const featureAtPoint: FeatureAtPoint = (p) =>
       p.lon >= 0 && p.lon <= 10 && p.lat >= 0 && p.lat <= 10 ? TARGET_ID : null;
 
+    const optionBar = new OptionBarStore();
+    // 素性入力は右パネルの「新規の姿」で受ける（司令塔の決定 (5)）。この describe は
+    // 固定円の判定しか見ないが、**実物と同じ形で組む**ために橋も一緒に載せる。
+    const addDraft = new AddDraftStore();
     const utils = render(
-      <KnifeToolController<S>
-        store={store}
-        startProcess={startProcess}
-        ids={ids()}
-        resolveFeature={resolveFeature}
-        resolveStore={resolveStore}
-        anchorTime={() => ANCHOR}
-        screenToWorld={screenToWorld}
-        featureAtPoint={featureAtPoint}
+      <>
+        <OptionBar store={optionBar} />
+        <AddDraftForm store={addDraft} />
+        <KnifeToolController<S>
+          store={store}
+          optionBar={optionBar}
+          addDraft={addDraft}
+          startProcess={startProcess}
+          ids={ids()}
+          resolveFeature={resolveFeature}
+          resolveStore={resolveStore}
+          anchorTime={() => ANCHOR}
+          screenToWorld={screenToWorld}
+          featureAtPoint={featureAtPoint}
           drawSink={drawSink}
-        defaultColor={DEFAULT_COLOR}
-      />,
+          defaultColor={DEFAULT_COLOR}
+        />
+      </>,
     );
-    return { store, startProcess, drawSink, unmount: utils.unmount };
+    return { store, startProcess, drawSink, optionBar, addDraft, unmount: utils.unmount };
   }
 
   // The固定円 world radius is DEFAULT_KNIFE_STYLE.circleRadiusPx / zoom. We click a

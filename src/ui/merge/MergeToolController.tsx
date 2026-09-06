@@ -142,6 +142,17 @@ export interface MergeToolControllerProps<S> {
    * `false` on return to Idle (cancel / commit / mode-switch).
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
+  /**
+   * **本物のモーダルが開いた／閉じた**ことを報せる口（増分 5 の手直し A4 / GPT #5）。
+   *
+   * `onDrawingChange`（＝下書きを持っている）と **分けて**報せる。両者は鍵盤の持ち主として
+   * 意味が違う ―― 下書きを持っているだけなら保存（Ctrl+S）は通してよいが、**モーダルが
+   * 開いているあいだは通してはいけない**（確認の背後で保存が走ると、何に対して答えたのか
+   * 分からなくなる）。旧版は「対象を持っている」という理由だけで下書き扱いにしていたので、
+   * 継承先の選択や素性の入力の途中で Ctrl+S / Ctrl+Shift+S / Ctrl+N / Ctrl+O が
+   * **背後で走った**。
+   */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -175,18 +186,17 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   // happened — a dead button until the user detoured through another tool. Releasing
   // `activeTool` here keeps the toolbar's pressed state and the session's armed state ONE
   // truth (教訓 5.2 全経路で破棄 + 単一の真実源). Same規約 as knife / drill / ring-edit.
+  //
+  // **これは［やめる］を押されたときの経路だけである**（増分 5 の手直し B1）――
+  // ボタンとして「やめる」を押したのは「この作業をやめる」という意思表示だから道具ごと
+  // 降りてよい。**Escape はここを通らない**: Escape は 1 回で 1 段だけ戻る階段で、道具を
+  // 降りるのは大域の `shell/escape-ladder.ts` の持ち場である（設計書 §D.4）。
+  //
+  // **`clearSelection()` はもう呼ばない**（GPT #8）。結ぶ道具は自前の `targetIds` だけを
+  // 持ち、セッションの `activeFeature` は **1 度も書いていない** ―― それなのに取りやめの
+  // たびに選択を空にしていたので、**道具が掴んだのではない元からの選択まで巻き添えで
+  // 消えて**いた。道具が触っていないものは道具が片付けない。
   const releaseToolOnCancel = useCallback(() => {
-    // **増分 5c: 選択の後始末を明示に書く。** 旧版は `setActiveTool(null)` の
-    // **副作用**（道具を替えたら選択を全消しする）に寄りかかっていたが、増分 5c で
-    // その既定を反転した（`docs/現状.md` B28: 道具を持ち替えても選択は消さない）ので、
-    // 寄りかかっていた側がここで黙って壊れる（教訓 5.44「共通ロジックを差し替えたら
-    // 呼び出し側に残る写しを全部潰す」の、副作用版）。
-    //
-    // この道具は **自分で対象を選択へ昇格させている**（`onTargetSelected` →
-    // `setActiveFeature`）ので、取りやめたら自分で戻す。掴んでいない選択まで
-    // 巻き添えにする点は設計書 §D.4 の階段（対象を離す → 道具は持ったまま）とまだ
-    // 食い違っており、そこは増分 7 で階段を各道具へ通すときに揃える。
-    store.getState().clearSelection();
     store.getState().setActiveTool(null);
   }, [store]);
 
@@ -246,6 +256,15 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     return () => onDrawingChange(false);
   }, [merge.flow, merge.targetIds, onDrawingChange]);
 
+  // **モーダルは別に報せる**（増分 5 の手直し A4）。FR-52 の選択板（`MergeOptionsDialog`）は
+  // Escape / Tab しか自分では受けない本物のモーダルである。
+  const onModalChange = props.onModalChange;
+  useEffect(() => {
+    if (onModalChange === undefined) return;
+    onModalChange(merge.flow === MERGE_FLOW.Choosing);
+    return () => onModalChange(false);
+  }, [merge.flow, onModalChange]);
+
   // --- Keyboard: Escape→cancel (FR-78). Active while a session runs, EXCEPT while the
   // FR-52 options dialog is open (Choosing): there the modal owns Esc (Esc→cancelChoose
   // keeps the targets and returns to selecting, not abandoning the whole session).
@@ -259,13 +278,29 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
       // no per-controller re-implementation).
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
-        e.preventDefault();
-        merge.cancel();
+        // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
+        //
+        // **結ぶ道具の段は 1 つだけである。** ほかの 4 つは「下書き」と「対象」が別物
+        // （分断線と切る面、輪郭と面…）だが、結ぶ道具は **対象の集合そのものが下書き**
+        // でもある ―― 押していった地物の並びが、そのまま確定する中身になる。だから
+        // 「点列を捨てる」と「対象を離す」を分けようがなく、1 段で全部外す。
+        //
+        //   1. 対象を 1 件以上掴んでいる → **全部外す**（道具は持ったまま選び直しへ）
+        //   2. 1 件も無い → **何もせず大域の階段へ譲る**（preventDefault もしない）
+        //
+        // 2 で止めないのが肝である ―― 大域の `shell/escape-ladder.ts` が「頂点を外す →
+        // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。2 の局面では
+        // `onDrawingChange` も false を報せているので、名乗りと段が食い違わない。
+        if (merge.targetIds.length > 0) {
+          e.preventDefault();
+          merge.clearTargets();
+        }
+        return;
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [merge.flow, merge.cancel]);
+  }, [merge.flow, merge.targetIds, merge.clearTargets]);
 
   // --- HB3-15(c): feed the target highlight to the render sink on every selection change.
   // Each toggled target's leaf shape is resolved through the SAME live-lookup the commit
@@ -299,31 +334,30 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   // **何件選んだかを出す**のがこの道具の肝である（1 件なら名前だけ、2 件以上なら
   // 「◯◯ ほか 2 件」）。件数が読めないと、結合してから「1 つ入れ忘れていた」に気づく。
   //
-  // **消す経路**（選択をクリア・道具を降りる・モードを離れる・確定して選び直しへ戻る）
-  // では null を押し込んで空へ戻す（教訓 5.2 全経路で破棄）。どれも `targetIds` が空へ
-  // 戻る経路なので、この 1 本の effect が全部を賄う。ただし **自分が押し込んだ覚えが
-  // あるときだけ**消す ―― 何も押していないのに null を押すと、別の道具が入れた名前を
-  // 巻き添えで消しうる。
+  // **消す経路**（選択を外す・道具を降りる・モードを離れる・確定して選び直しへ戻る）は
+  // **後片付け関数 1 本**に寄せる（増分 5 の手直し B3。`useToolBarChrome` が同じ理由で
+  // そうしている＝教訓 5.68）。5 つの道具のコントローラは全部が同時にマウントされている
+  // ので、effect の本体に「構えていないなら空へ」と書くと **構えていない道具が構えている
+  // 道具の押し込みを踏み消す**（木の順に走るので、あとに置かれた道具ほど強い、という
+  // 不条理な依存が生まれる）。React は 1 つのコミットの中で「全部の後片付け → 全部の
+  // 再実行」の順に走らせるので、後片付けへ置けば木の位置に関わらず「前の道具が空へ戻す →
+  // 次の道具が押し込む」になる。旧版の「自分が押し込んだ印」方式は、いま帯を持っている
+  // のが誰かを知らないので踏み消しの半分しか塞げていなかった。
+  //
+  // **段階表示**（「手順 n/2」）も一緒に押し込む（設計書 §C.4 / バグ狩り #9）。
   const optionBar = props.optionBar;
-  const pushedTargetRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (optionBar === undefined) return;
-    const name = describeMergeTargets(resolveFeatures(), merge.targetIds);
-    if (name === null && pushedTargetRef.current === null) return;
-    pushedTargetRef.current = name;
-    optionBar.setTarget(null, name);
-  }, [optionBar, merge.targetIds, resolveFeatures]);
-
-  // 部品ごと外れるときも消す（教訓 5.2: 一時的な表示は全経路で畳む）。上の effect の
-  // 後片付けに書くと、選ぶたびに「消す → 入れ直す」で帯が 1 度空になるので分ける。
-  useEffect(
-    () => () => {
-      if (optionBar === undefined || pushedTargetRef.current === null) return;
-      pushedTargetRef.current = null;
-      optionBar.setTarget(null, null);
-    },
-    [optionBar],
+  const mergeArmed = merge.flow !== MERGE_FLOW.Idle;
+  const mergeStage =
+    merge.flow === MERGE_FLOW.Choosing ? MERGE_STRINGS.stage(2) : MERGE_STRINGS.stage(1);
+  const mergeTargetName = useMemo(
+    () => describeMergeTargets(resolveFeatures(), merge.targetIds),
+    [resolveFeatures, merge.targetIds],
   );
+  useEffect(() => {
+    if (optionBar === undefined || !mergeArmed) return;
+    optionBar.setTarget(mergeStage, mergeTargetName);
+    return () => optionBar.setTarget(null, null);
+  }, [optionBar, mergeArmed, mergeStage, mergeTargetName]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and toggles it
   // into / out of the target set. The overlay never steals other input — the input
@@ -349,7 +383,10 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
         onClick: () => merge.cancel(),
       },
     ],
-    [merge],
+    // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
+    // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
+    // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
+    [merge.canConfirm, merge.confirm, merge.cancel],
   );
   const mergeExtras = useMemo(
     () => (
@@ -362,7 +399,7 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
         {MERGE_STRINGS.clear}
       </button>
     ),
-    [merge],
+    [merge.targetIds, merge.clearTargets],
   );
   useToolBarChrome({
     optionBar,

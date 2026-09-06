@@ -18,24 +18,58 @@ export const KNIFE_STRINGS = {
   smallerHint: '小さい方を囲って表示しています。',
   /** Confirm the chosen継承先 (advance to非継承側プロパティ入力). */
   confirmInheritor: '継承先を確定',
-  /** Cancel the whole knife operation. */
-  cancel: 'キャンセル',
-  /** 頂点取り消し (FR-78). */
-  undoVertex: '最後の頂点を取り消す',
+  /**
+   * Cancel the whole knife operation.
+   * 確定欄（176px）の語は **5 道具とも「やめる」**に揃える（増分 5 の手直し E2。
+   * `ui/add/strings.ts` の `ADD_STRINGS.cancel` が先例で、同じ枠の中で語が割れていた）。
+   */
+  cancel: 'やめる',
+  /** 頂点取り消し (FR-78)。語は設計書 §C.4 の［1 つ戻す］に揃える（増分 5 の手直し E2）。 */
+  undoVertex: '1 つ戻す',
   /**
    * 分断線の確定（増分 5d でオプションバーの確定欄へ移したときに、直書きだった文言を
    * ここへ引き上げた ―― 画面に出る言葉は 1 か所に集める＝技術方針 5.5 / 教訓 5.19）。
    */
   confirmCut: '分断線を確定',
-  /** Grid snap toggle (FR-78). */
-  gridSnap: 'グリッドにスナップ',
-  /** 非継承側プロパティ入力 heading (re-uses U23 form; FR-93). */
-  newFeatureProps: '新規地物のプロパティ',
+  /**
+   * Grid snap toggle (FR-78)。「スナップ」は要件定義書の条文の語で、画面の第一表記は
+   * §H.1 のとおり「吸着」、格子のほうは「グリッド」である（追加の道具の
+   * `ADD_STRINGS.gridSnapLabel` が同じ 2 文字を出している）。増分 5 の手直し E2。
+   */
+  gridSnap: 'グリッド',
+  /**
+   * 素性入力の局面の「次の一手」（司令塔の決定 (5) / 設計書 §C.4）。
+   *
+   * **なぜ道具側で言い換えるか**: ドメインの案内文（`KNIFE_GUIDE.EnterProperties` ＝
+   * 「新規地物のプロパティを入力してください。」）は **どこで入れるのか**を言っていない。
+   * 地図の真ん中に板が出ていたころは目の前にあったので要らなかったが、素性は右パネルの
+   * 「新規の姿」で受けるようになったので、**どこを見ればよいか**まで言わないと迷子になる。
+   * 追加の道具の `ADD_STRINGS.nextStepPropertyForm`（「名前を入れて［保存］を押してください」）
+   * と同じ調子で、行き先の 1 語だけを足した短い形にしてある。
+   */
+  nextStepEnterProperties: '右のパネルで名前を入れて［保存］を押してください',
   /** Step-back from継承先選択 to分断線入力 (re-draw). */
   backToDrawing: '分断線を引き直す',
   /** ConflictPaused status (FR-62). */
   conflictPaused: '空間競合の解決待ちです。',
+  /**
+   * 対象欄（240px）の頭に出す段階表示（設計書 §C.4 / バグ狩り #9）。**「手順」の 2 文字を
+   * 必ず前に付ける** ―― 「2/4」だけだと「4 件中 2 件」と読み違えられる（§O の B-23）。
+   *
+   * 分ける道具の段は {@link KNIFE_STEP_COUNT} 個ある。§C.4 の表は「手順 1/3」と例示して
+   * いるが、あれは継承先の選択と新しい地物の素性入力を 1 段に数えた見積りで、**実物は
+   * 別々の板**である（`KNIFE_PHASE.ChoosingInheritor` と `EnteringProperties`）。画面に
+   * 出す数は実物に合わせる ―― 段数が実物と違うと「あと何段あるか」が読めない。
+   */
+  stage: (step: number): string => `手順 ${String(step)}/${String(KNIFE_STEP_COUNT)}`,
 } as const;
+
+/**
+ * 分ける道具の段数（設計書 §C.4 の「手順 n/m」の m）。
+ *
+ * 1 = 切る面を選ぶ / 2 = 分断線を引く / 3 = 継承先を選ぶ / 4 = 新しい地物の素性を入れる。
+ */
+export const KNIFE_STEP_COUNT = 4;
 
 /**
  * The 判断用メッセージ shown when the acquired target stops being a valid split target

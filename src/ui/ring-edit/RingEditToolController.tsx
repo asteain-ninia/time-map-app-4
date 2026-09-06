@@ -43,6 +43,7 @@ import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 
 import { RING_EDIT_STRINGS } from './strings';
 import {
@@ -153,32 +154,43 @@ export function RingEditToolController<S>(
   const gridSpacingRaw = useStore(store, (s) => s.projectSettings.gridSpacingDeg);
   const gridSpacing = coerceGridSpacing(gridSpacingRaw);
 
+  // **昇格させた対象を覚えておく**（増分 5 の手直し B1）。戻すときに「自分が昇格させた
+  // ものかどうか」を見分けるために要る（下の {@link unpromoteOwnTarget} の注記）。
+  const promotedTargetRef = useRef<FeatureId | null>(null);
   const promoteTargetSelection = useCallback(
-    (fid: FeatureId) => store.getState().setActiveFeature(fid),
+    (fid: FeatureId) => {
+      promotedTargetRef.current = fid;
+      store.getState().setActiveFeature(fid);
+    },
     [store],
   );
-  // CANCEL = leave the tool (Escape / キャンセル). Un-promoting the target alone left the
-  // toolbar button `aria-pressed=true` while the session was disarmed, so pressing the
-  // SAME button again ran the store's press-toggle (tool → null) instead of re-arming —
-  // the tool could only be revived by detouring through another tool. Releasing
-  // `activeTool` here keeps the toolbar's pressed state and the session's armed state
-  // ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源), so the next press always re-arms.
-  // `setActiveTool(null)` runs the store's own selection reset契約, which subsumes the
-  // target un-promotion.
-  const releaseToolOnCancel = useCallback(() => {
-    // **増分 5c: 選択の後始末を明示に書く。** 旧版は `setActiveTool(null)` の
-    // **副作用**（道具を替えたら選択を全消しする）に寄りかかっていたが、増分 5c で
-    // その既定を反転した（`docs/現状.md` B28: 道具を持ち替えても選択は消さない）ので、
-    // 寄りかかっていた側がここで黙って壊れる（教訓 5.44「共通ロジックを差し替えたら
-    // 呼び出し側に残る写しを全部潰す」の、副作用版）。
-    //
-    // この道具は **自分で対象を選択へ昇格させている**（`onTargetSelected` →
-    // `setActiveFeature`）ので、取りやめたら自分で戻す。掴んでいない選択まで
-    // 巻き添えにする点は設計書 §D.4 の階段（対象を離す → 道具は持ったまま）とまだ
-    // 食い違っており、そこは増分 7 で階段を各道具へ通すときに揃える。
-    store.getState().clearSelection();
-    store.getState().setActiveTool(null);
+
+  // **自分が昇格させた対象だけを選択から戻す**（増分 5 の手直し B1 / GPT #8）。
+  // 旧版は `clearSelection()` ―― 頂点の選択も、道具が触っていない地物の選択も、まとめて
+  // 空にしていた。設計書 §D.4 の階段は「対象を離す」であって「選択を全部捨てる」ではない。
+  const unpromoteOwnTarget = useCallback(() => {
+    const promoted = promotedTargetRef.current;
+    promotedTargetRef.current = null;
+    if (promoted === null) return;
+    const s = store.getState();
+    if (s.activeFeature !== promoted) return;
+    s.setActiveFeature(null);
   }, [store]);
+
+  // CANCEL = leave the tool. **これは［やめる］を押されたときの経路だけである** ――
+  // ボタンとして「やめる」を押したのは「この作業をやめる」という意思表示だから、道具ごと
+  // 降りてよい。**Escape はここを通らない**（増分 5 の手直し B1 / 設計書 §D.4）: Escape は
+  // 1 回で 1 段だけ戻る階段で、道具を降りるのは大域の `shell/escape-ladder.ts` の持ち場。
+  //
+  // Un-promoting the target alone left the toolbar button `aria-pressed=true` while the
+  // session was disarmed, so pressing the SAME button again ran the store's press-toggle
+  // (tool → null) instead of re-arming — the tool could only be revived by detouring
+  // through another tool. Releasing `activeTool` here keeps the toolbar's pressed state
+  // and the session's armed state ONE truth (教訓 5.2 全経路で破棄 + 単一の真実源).
+  const releaseToolOnCancel = useCallback(() => {
+    unpromoteOwnTarget();
+    store.getState().setActiveTool(null);
+  }, [unpromoteOwnTarget, store]);
 
   const ring = useRingEditTool<S>({
     resolveFeature,
@@ -229,8 +241,30 @@ export function RingEditToolController<S>(
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
-        e.preventDefault();
-        ring.cancel();
+        // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
+        //
+        // **1 回の Escape で 1 段だけ**戻る。旧版は 1 回で「手順の対象」「元からの選択」
+        // 「道具」の三段をまとめて捨てていた（GPT #8）。
+        //
+        //   1. 打った頂点列がある → **頂点列だけをまとめて捨てる**（面も道具も保つ）
+        //   2. 対象の面を掴んでいる → 面だけ離す（道具は持ったまま）
+        //   3. どちらも無い → **何もせず大域の階段へ譲る**（preventDefault もしない）
+        //
+        // 3 で止めないのが肝である ―― 大域の `shell/escape-ladder.ts` が「頂点を外す →
+        // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。ここで止めると、道具を
+        // 構えているあいだ素の状態へ戻る道が無くなる。3 の局面では `onDrawingChange` も
+        // false を報せている（対象が null なら名乗らない）ので、名乗りと段が食い違わない。
+        if (ring.draft !== null && ring.draft.vertices.length > 0) {
+          e.preventDefault();
+          ring.discardDraftVertices();
+          return;
+        }
+        if (ring.targetId !== null) {
+          e.preventDefault();
+          ring.releaseTarget();
+          unpromoteOwnTarget();
+          return;
+        }
         return;
       }
       if (
@@ -244,7 +278,15 @@ export function RingEditToolController<S>(
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [ring.flow, ring.draft, ring.cancel, ring.undoLastVertex]);
+  }, [
+    ring.flow,
+    ring.draft,
+    ring.targetId,
+    ring.discardDraftVertices,
+    ring.releaseTarget,
+    ring.undoLastVertex,
+    unpromoteOwnTarget,
+  ]);
 
   // --- Report the in-progress ring-edit to the host so it suspends the GLOBAL shortcut
   // dispatcher (教訓 c1e5534): the controller's OWN Ctrl+Z (undo vertex) is the only
@@ -298,7 +340,10 @@ export function RingEditToolController<S>(
         onClick: () => ring.cancel(),
       },
     ],
-    [ringAdding, ring],
+    // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
+    // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
+    // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
+    [ringAdding, ring.canConfirm, ring.confirm, ring.cancel],
   );
   const ringExtras = useMemo(
     () => (
@@ -335,7 +380,15 @@ export function RingEditToolController<S>(
         )}
       </>
     ),
-    [ringAdding, ring],
+    [
+      ringAdding,
+      ring.subMode,
+      ring.draft,
+      ring.gridSnap,
+      ring.toggleSubMode,
+      ring.undoLastVertex,
+      ring.setGridSnap,
+    ],
   );
   useToolBarChrome({
     optionBar,
@@ -345,6 +398,30 @@ export function RingEditToolController<S>(
     commit: ringCommit,
     extras: ringExtras,
   });
+
+  // --- 対象欄（240px）は **この道具が自分で押し込む**（増分 5 の手直し B3 / バグ狩り #6）--
+  //
+  // `shell/ToolOptionBar` の `TOOLS_WITH_OWN_TARGET` に輪郭が入ったので、あちらは
+  // `activeFeature` から対象欄を作らない。それまでは **1 度も面を押していないのに一覧で
+  // 選んだ地物の名前が出て**、次の一手の「編集する面を選んでください」と矛盾していた。
+  // 名前の作り方は `describeOptionBarTarget` をそのまま使う（写像表を増やさない＝教訓 5.29）。
+  //
+  // **空へ戻すのは後片付けでやる**（`useToolBarChrome` と同じ理由＝教訓 5.68）。5 つの
+  // コントローラは全部が同時にマウントされているので、effect の本体で「降りているなら
+  // 空へ」と書くと、構えていない道具が構えている道具の押し込みを踏み消す。
+  const ringArmed = ring.flow !== RING_EDIT_FLOW.Idle;
+  const ringStage =
+    ring.targetId === null ? RING_EDIT_STRINGS.stage(1) : RING_EDIT_STRINGS.stage(2);
+  const ringTargetName = useMemo(() => {
+    if (ring.targetId === null) return null;
+    const feature = resolveFeature(ring.targetId);
+    return feature === undefined ? null : describeOptionBarTarget(feature);
+  }, [ring.targetId, resolveFeature]);
+  useEffect(() => {
+    if (optionBar === undefined || !ringArmed) return;
+    optionBar.setTarget(ringStage, ringTargetName);
+    return () => optionBar.setTarget(null, null);
+  }, [optionBar, ringArmed, ringStage, ringTargetName]);
 
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {

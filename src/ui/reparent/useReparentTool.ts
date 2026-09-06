@@ -144,6 +144,14 @@ export interface UseReparentToolActions {
   readonly pick: (featureId: FeatureId) => void;
   /** Drop the current target + parent (stay armed at PickTarget). */
   readonly clearSelection: () => void;
+  /**
+   * **Esc の階段 1 段目**（設計書 §D.4 / 増分 5 の手直し B1）: 選びかけの「新しい上位
+   * 領域」だけを外し、**所属を変える地物（対象）は掴んだまま**手順 2 の頭へ戻る。
+   *
+   * 所属変更には打った点の列が無いので、「下書き」に当たるのがこの選びかけである
+   * ―― 相手を選び間違えたときに、対象ごと選び直しにならない。
+   */
+  readonly clearNewParent: () => void;
   /** Cancel the session (Escape / cancel button) → idle transient cleared. */
   readonly cancel: () => void;
   /** Build the affiliation proposal and drive U13 (the COMPLETE trigger, 教訓 5.7). */
@@ -205,6 +213,15 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     setNewParentId(null);
     setMessage(null);
     setFlow((f) => (f === REPARENT_FLOW.Idle ? f : REPARENT_FLOW.PickTarget));
+  }, []);
+
+  // **Esc の階段 1 段目**（増分 5 の手直し B1）。選びかけの上位領域だけを外す。断りや
+  // 競合の途中でも意味があるので flow は PickParent へ戻す（対象は掴んだままなので、
+  // 次にやることは「新しい上位領域を選ぶ」である）。
+  const clearNewParent = useCallback((): void => {
+    setNewParentId(null);
+    setMessage(null);
+    setFlow((f) => (f === REPARENT_FLOW.Idle ? f : REPARENT_FLOW.PickParent));
   }, []);
 
   // A map click. While idle, ignore. The FIRST pick chooses the target; the SECOND
@@ -339,6 +356,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     resetForSwitch,
     pick,
     clearSelection,
+    clearNewParent,
     cancel,
     confirm,
     confirmNone,

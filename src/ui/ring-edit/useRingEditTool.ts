@@ -206,6 +206,20 @@ export interface UseRingEditToolActions {
   setGridSnap(gridSnap: boolean): void;
   /** CONFIRM the drafted ring (add): addRing → snapshot → confirmRingEdit → switch. */
   confirm(): void;
+  /**
+   * **Esc の階段 1 段目**（設計書 §D.4 / §D.4.1）: 打った頂点列だけを **まとめて**捨て、
+   * **対象の面は掴んだまま**輪郭の引き直しへ戻る。1 つずつ戻すのは `Ctrl+Z` と
+   * オプションバーの［1 つ戻す］（{@link UseRingEditToolActions.undoLastVertex}）の役目。
+   *
+   * 下書きが無い局面（面を選ぶ前・穴を消す側）では何もしない（冪等）。
+   */
+  discardDraftVertices(): void;
+  /**
+   * **Esc の階段 2 段目**（設計書 §D.4）: 掴んでいる対象の面だけを離して面選びへ戻る。
+   * **道具は持ったまま**。選択への昇格を戻すのはコントローラの持ち場である
+   * （自分が昇格させたものだけを戻す）。
+   */
+  releaseTarget(): void;
   /** Cancel the whole operation; discard ALL transient state (Escape; 教訓 5.2). */
   cancel(): void;
 }
@@ -325,6 +339,25 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     discard();
     onCancelled?.();
   }, [discard, onCancelled]);
+
+  // --- Esc の階段（設計書 §D.4 / §D.4.1。増分 5 の手直し B1）--------------------
+  //
+  // **`cancel` との違い**: `cancel` は［やめる］ボタンを押されたときの経路で「この作業を
+  // やめる」という意思表示だから道具ごと降りてよい。下の 2 つは **Escape の経路**で、
+  // 1 回押すごとに 1 段だけ戻る（頂点列 → 対象の面 → あとは大域の階段へ譲る）。
+
+  /** 1 段目: 打った頂点列だけをまとめて捨て、対象の面は掴んだままにする。 */
+  const discardDraftVertices = useCallback(() => {
+    setDraft((d) => (d === null || d.vertices.length === 0 ? d : startDraft(d.targetFeatureId, d.gridSnap)));
+    setMessage(null);
+  }, []);
+
+  /** 2 段目: 対象の面だけを離して面選びへ戻す（道具は持ったまま）。 */
+  const releaseTarget = useCallback(() => {
+    setDraft(resetDraft());
+    setDeleteTargetId(null);
+    setMessage(null);
+  }, []);
 
   const toggleSubMode = useCallback(() => {
     setSubMode((m) => (m === RING_EDIT_SUBMODE.Add ? RING_EDIT_SUBMODE.Delete : RING_EDIT_SUBMODE.Add));
@@ -632,6 +665,8 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     undoLastVertex,
     setGridSnap: setGridSnapAction,
     confirm,
+    discardDraftVertices,
+    releaseTarget,
     cancel,
   };
 }

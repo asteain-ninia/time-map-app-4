@@ -23,13 +23,20 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import {
-  addInputLayerBox,
-  armAddAreaTool,
-  drawFace,
-  enterEditMode,
-  launchApp,
-  returnToViewMode,
+import {
+
+  addInputLayerBox,
+
+  armAddAreaTool,
+
+  drawFace,
+
+  enterEditMode,
+
+  launchApp,
+
+  returnToViewMode,
+
   squareCorners,
   listedFeatureCount,
 } from './helpers';
@@ -161,7 +168,10 @@ test.describe('HB3-5/19 — ナイフの n-way 片チューザ: コーム切断�
       await page.getByTestId('knife-confirm-inheritor').click();
 
       // The non-inherited pieces share ONE U23 property default (re-uses AddPropertyForm).
-      await expect(page.getByTestId('knife-props')).toBeVisible();
+      // **入力は右パネルの「新規の姿」で受ける**（増分 5 の手直し / 司令塔の決定 (5)）。
+      // 地図の中央の板（`knife-props`）は消え、`hidden` の観測ミラーだけが残っている
+      // ので、待つのは **右パネルに出るフォーム**である。
+      await expect(page.getByTestId('add-property-form')).toBeVisible();
       await page.getByTestId('add-save').click();
 
       // --- 7. ASSERT the feature count grew by 2 (k+1 = 3 features from 1). ---

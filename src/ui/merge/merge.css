@@ -43,23 +43,11 @@
   color: #fff;
 }
 
-.merge-tool__controls {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 40;
-  display: flex;
-  gap: 8px;
-  padding: 8px;
-  background: rgba(255, 255, 255, 0.95);
-  border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-  /* .merge-tool is pointer-events:none; the floating controls MUST re-enable input
-     or the 結合を確定 / 取消 buttons are unclickable (教訓 5.14). */
-  pointer-events: auto;
-}
-
+/* **確定の列は地図から降ろした**（増分 5d でオプションバーの確定欄 176px へ移した／
+   設計書 §B.5 の台帳 #4）。この道具の `__controls` クラスは **どの JSX からも参照
+   されなくなった**ので規則ごと消した ―― 使われない `pointer-events: auto` の規則を
+   残すと、次に誰かが「まだ地図に確定ボタンがある」と読む（教訓 5.7 の逆＝実体の無い
+   記述を残さない）。 */
 /* FR-52 結合オプションダイアログ — centered over a full-surface backdrop (教訓 5.14).
    Mirrors the knife inheritor modal layering. */
 .merge-options-root {

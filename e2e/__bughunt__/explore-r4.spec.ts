@@ -450,7 +450,10 @@ test.describe('BUGHUNT R4 — knife split / merge / anchor ordering / save-load 
               if ((await page.getByTestId('knife-rejected').count()) > 0) {
                 const m = ((await page.getByTestId('knife-rejected').textContent()) ?? '').trim();
                 record('knife-rejected', `split rejected: ${m}`);
-                await page.getByTestId('knife-rejected-dismiss').click().catch(() => undefined);
+                // **［やめる］はオプションバーの確定欄へ移った**（増分 5 の手直し B3）。
+                // 地図側に残っているのは `hidden` の観測ミラーだけなので、旧い
+                // `knife-rejected-dismiss` を押しても永久に空振りする。
+                await page.getByTestId('knife-cancel').click().catch(() => undefined);
               }
 
               // Phase 3: inheritor modal (FR-93). Choose piece 0 + confirm. The n-way
