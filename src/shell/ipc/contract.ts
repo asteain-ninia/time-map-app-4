@@ -90,6 +90,17 @@ export const IPC_CHANNEL = {
    * A の内容で丸ごと上書き破壊する経路を断つ（読み取り成功=即昇格を廃止）。
    */
   CommitLoadedPath: 'tmap:commit-loaded-path',
+  /**
+   * **アプリ側の設定を読む**（増分 6 の手直し。司令塔の決定 (2)、2026-09-07）。
+   *
+   * 初回起動のガイドの「今後表示しない」は **プロジェクトファイルにしか載っていなかった**
+   * ので、押しても次の起動でまた出た（保存していないプロジェクトなら行き先が無い）。
+   * この 2 本は userData の小さな JSON 1 枚を読み書きするだけの口で、
+   * **プロジェクトの中身とは無関係**（FR-02 のとおり書き先はローカルの userData だけ）。
+   */
+  ReadAppPrefs: 'tmap:read-app-prefs',
+  /** アプリ側の設定を書く（部分更新。書いたあとの全体を返す）。 */
+  WriteAppPrefs: 'tmap:write-app-prefs',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
@@ -257,6 +268,18 @@ export type Unsubscribe = () => void;
  * a handler for every channel. Save-As takes no path argument: main owns the
  * dialog (spec §やること: ダイアログ起動はメイン側).
  */
+/**
+ * **アプリ側の設定**（プロジェクトではなく、この PC のこのアプリに属する覚え書き）。
+ * userData の `app-prefs.json` 1 枚に入る。増やすときはここに項目を足す。
+ */
+export interface AppPrefs {
+  /** 初回起動のガイドを出すか（「今後表示しない」で false になる）。 */
+  readonly showFirstRunGuide: boolean;
+}
+
+/** 読めなかったとき・まだ無いときの既定（＝ガイドは出る）。 */
+export const DEFAULT_APP_PREFS: AppPrefs = { showFirstRunGuide: true };
+
 export interface TimeMapApi {
   readonly save: (req: SaveRequest) => Promise<SaveResponse>;
   readonly saveAs: (req: SaveRequest) => Promise<SaveResponse>;
@@ -307,4 +330,11 @@ export interface TimeMapApi {
    * guarantees main sees this commit first.
    */
   readonly commitLoadedPath: (token: string) => Promise<void>;
+  /**
+   * アプリ側の設定を読む（決定 (2)）。読めなければ {@link DEFAULT_APP_PREFS} を返す
+   * ―― 「読めなかった」を例外にしない（初回は当然まだファイルが無い）。
+   */
+  readonly readAppPrefs: () => Promise<AppPrefs>;
+  /** アプリ側の設定を部分更新する。書けなくても例外にせず、結果の全体を返す。 */
+  readonly writeAppPrefs: (patch: Partial<AppPrefs>) => Promise<AppPrefs>;
 }

@@ -11,8 +11,12 @@ import {
   DEFAULT_AUTO_SAVE_INTERVAL_MS,
   DEFAULT_DIAGNOSTIC_LOG_GENERATIONS,
   DEFAULT_MAX_GENERATIONS,
+  nodeAppPrefsFs,
   nodeDiagnosticLogFs,
   nodeFsOps,
+  readAppPrefs,
+  writeAppPrefs,
+  type AppPrefsEnv,
   pruneDiagnosticLogs,
 } from '../io';
 import type { DiagnosticLogEnv, SaveEnv } from '../io';
@@ -504,6 +508,8 @@ function wireIpc(): void {
   // are pruned once at startup (best-effort — never blocks launch).
   // Set the module-level single source (the close-guard logger reads the SAME env).
   diagnosticLogEnv = buildDiagnosticLogEnv();
+  // 決定 (2): アプリ側の設定の置き場（userData 直下の 1 枚）。
+  const appPrefsEnv: AppPrefsEnv = { fs: nodeAppPrefsFs, userDataDir: app.getPath('userData') };
   const logEnv = diagnosticLogEnv;
   void pruneDiagnosticLogs(logEnv);
 
@@ -574,6 +580,10 @@ function wireIpc(): void {
       return maxGenerations;
     },
     appendDiagnosticLog: (record) => appendDiagnosticLog(logEnv, record),
+    // 決定 (2): アプリ側の設定（userData の JSON 1 枚）。プロジェクトとは別の置き場で、
+    // 「初回ガイドを今後出さない」のような **この PC の覚え書き**だけを持つ。
+    readAppPrefs: () => readAppPrefs(appPrefsEnv),
+    writeAppPrefs: (patch) => writeAppPrefs(appPrefsEnv, patch),
     // FR-107 close ブリッジ: レンダラの終了確認判定をガードのハブへ渡す（受け口は
     // ここ 1 箇所 = ipcMain.handle の多重登録なし）。payload の検証はハブ側。
     acceptCloseVerdict: (payload, senderId) => {

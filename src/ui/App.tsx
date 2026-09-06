@@ -3111,6 +3111,11 @@ export function App(): JSX.Element {
             statusMessages={statusMessageStore}
             onPopoverOpenChange={popoverOpenChange('rail')}
             getRoot={getDomainRoot}
+            /* 決定 (8)（2026-09-07）: **板が開いたら再生を止める。** 板の後ろで年が
+               進み続けると、確認に答えるあいだに現在時刻が動き、答えた内容が
+               「どの年に対する答えだったのか」が変わってしまう（板は鍵盤を持つので
+               Space でも止められない）。閉じても自動では再開しない。 */
+            modalOpen={modalOwnsKeyboard}
           />
         }
 /* 状態行 5 枠（設計書 §C.8）。60Hz で動く値（カーソル座標・縮尺）は

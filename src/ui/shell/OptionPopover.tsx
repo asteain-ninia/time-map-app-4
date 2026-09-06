@@ -23,15 +23,9 @@
 //   5. **開閉を呼び出し側へ報せる**（`onOpenChange`）。鍵盤の持ち主（`focusOwner` の
 //      `popover`）を App が 1 か所で導出できるようにするため（設計書 §D.1 / 結合点 #5）。
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from 'react';
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+
+import { useDismissable } from './use-dismissable';
 
 /** 画面の端からの余白（増分 3 の `SnapOptions` と同じ値）。 */
 const VIEWPORT_MARGIN = 8;
@@ -99,23 +93,15 @@ export function OptionPopover(props: OptionPopoverProps): JSX.Element {
     setOpen(false);
   }, []);
 
-  // 開閉を呼び出し側へ報せる。**部品ごと消えるときも閉じたことにする** ―― 開いたまま
-  // 消えると、`focusOwner` が `popover` のまま固まって鍵盤が戻らない（K-5）。
-  //
-  // 報せ口は ref 越しに読む。**後片付けの登録し直しを避けるため**である ―― 依存に
-  // 関数そのものを入れると、呼び出し側が毎レンダー新しい関数を渡した瞬間に
-  // 「後片付け（false を送る）→ 登録」が毎回走り、開いているのに false が流れる。
-  const openChangeRef = useRef(onOpenChange);
-  openChangeRef.current = onOpenChange;
-  useEffect(() => {
-    openChangeRef.current?.(open);
-  }, [open]);
-  useEffect(
-    () => () => {
-      openChangeRef.current?.(false);
-    },
-    [],
-  );
+  // 作法 3・4・5 は共通の hook が持つ（束の吹き出しと同じ規則で閉じる）。
+  useDismissable({
+    open,
+    close,
+    closeKey,
+    insideRefs: [panelRef, anchorRef],
+    onOpenChange,
+    onEscape: () => anchorRef.current?.focus(),
+  });
 
   // 開いた直後に、アンカーの矩形と実寸から置き場所を決める（作法 1）。
   useLayoutEffect(() => {
@@ -136,43 +122,6 @@ export function OptionPopover(props: OptionPopoverProps): JSX.Element {
       prev !== null && prev.left === left && prev.top === top ? prev : { left, top },
     );
   }, [open, measureKey]);
-
-  // 閉じる契機（作法 3）: 外を押す／Escape。**バックドロップは置かない**（K-2）。
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent): void => {
-      const panel = panelRef.current;
-      const anchor = anchorRef.current;
-      const target = e.target;
-      if (!(target instanceof Node)) return;
-      if (panel?.contains(target) === true) return;
-      if (anchor?.contains(target) === true) return;
-      close();
-    };
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      e.preventDefault();
-      close();
-      anchorRef.current?.focus();
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [open, close]);
-
-  // 状態が移ったら閉じる（作法 4 / K-5）。
-  const closeKeyRef = useRef(closeKey);
-  useEffect(() => {
-    const prev = closeKeyRef.current;
-    closeKeyRef.current = closeKey;
-    if (!open) return;
-    if (prev === closeKey) return;
-    close();
-  }, [open, closeKey, close]);
 
   return (
     <>

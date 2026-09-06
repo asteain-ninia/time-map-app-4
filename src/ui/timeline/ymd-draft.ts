@@ -85,8 +85,23 @@ export type YmdParseResult =
   | { readonly ok: true; readonly point: TimePoint; readonly granularity: TimeGranularity }
   | { readonly ok: false; readonly error: YmdDraftError };
 
+/**
+ * 打った文字を数として読む。**全角の数字と桁区切りをここで吸収する**
+ * （2026-09-07 の手直し）。
+ *
+ * 旧版は欄が `type="number"` だったので、`１２００`（全角）も `1,200` も
+ * **ブラウザが値ごと捨てて空欄になっていた** ―― レールは単一キーに `,` `.` `[` `]`
+ * `Space` を割り当てているので、打ちかけの年が **押し間違いで消える**。欄を
+ * `type="text"` にして、読むのはここ 1 か所で行う（素性欄の存続期間と同じ規則）。
+ */
 function parseIntStrict(text: string): number | null {
-  const trimmed = text.trim();
+  const normalized = text
+    // 全角の数字と符号を半角へ。
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[＋−ー－]/g, (c) => (c === '＋' ? '+' : '-'))
+    // 桁区切り（半角・全角のカンマ）と空白は無視する。
+    .replace(/[,，\s]/g, '');
+  const trimmed = normalized.trim();
   if (trimmed === '' || trimmed === '-' || trimmed === '+') return null;
   if (!/^[+-]?\d+$/.test(trimmed)) return Number.NaN;
   return Number.parseInt(trimmed, 10);

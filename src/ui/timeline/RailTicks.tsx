@@ -13,11 +13,10 @@ import type { CSSProperties } from 'react';
 
 import type { Calendar } from '../../domain/time/calendar';
 import type { RailTick } from '../time/rail-ticks';
-import { railTicks } from '../time/rail-ticks';
+import { railTicks, tickLabelWidthPx } from '../time/rail-ticks';
 import type { TimeBarView } from '../time/timebar';
 
 import { RAIL_STRINGS } from './rail-strings';
-import { formatYear } from './time-display';
 
 export interface RailTicksProps {
   readonly view: TimeBarView;
@@ -30,8 +29,12 @@ export interface RailTicksProps {
   readonly playheadOutside: boolean;
   /** つまみを動かした（割合を確定する）。 */
   readonly onFraction: (fraction: number) => void;
-  /** ホイール（ズーム／横スクロール）。 */
-  readonly onWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
+  /**
+   * 矢印キーで 1 目盛りぶん動かす（2026-09-07 の手直し）。`input[type=range]` の
+   * 既定の 1 歩（`step`）は割合なので、**年の切り下げで消えて何も起きなかった** ――
+   * 送りのボタンと同じ「単位 1 つ」を動かす。
+   */
+  readonly onArrowStep: (direction: -1 | 1) => void;
 }
 
 export function RailTicks(props: RailTicksProps): JSX.Element {
@@ -42,22 +45,25 @@ export function RailTicks(props: RailTicksProps): JSX.Element {
     fraction,
     playheadOutside,
     onFraction,
-    onWheel,
+    onArrowStep,
   } = props;
 
   const ticks: readonly RailTick[] = railTicks(view, calendar, targetTicks);
+  // 右端のラベルは中央揃えで余白へ半分はみ出す。余白はその「はみ出し」を含めて取る。
+  const overhang = ticks.reduce((w, tick) => Math.max(w, tickLabelWidthPx(tick.label)), 0) / 2;
 
   return (
     <div
       className="rail__ticks"
       data-testid="timeline-ticks"
-      onWheel={onWheel}
+      data-rail-wheel="true"
+      style={{ '--rail-tick-overhang': `${String(Math.ceil(overhang))}px` } as CSSProperties}
       data-playhead-outside={playheadOutside ? 'true' : 'false'}
     >
       <div className="rail__axis" data-testid="rail-axis">
         {ticks.map((tick) => (
           <span
-            key={tick.year}
+            key={tick.key}
             className="rail__tick"
             style={{ left: `${String(tick.px)}px` } satisfies CSSProperties}
             data-tick-year={tick.year}
@@ -65,7 +71,7 @@ export function RailTicks(props: RailTicksProps): JSX.Element {
           >
             <span className="rail__tick-mark" />
             <span className="rail__tick-label" data-testid="timeline-tick-label">
-              {formatYear(tick.year)}
+              {tick.label}
             </span>
           </span>
         ))}
@@ -79,6 +85,17 @@ export function RailTicks(props: RailTicksProps): JSX.Element {
           step={0.0001}
           value={fraction}
           onChange={(e) => onFraction(Number(e.target.value))}
+          onKeyDown={(e) => {
+            // 矢印は「単位 1 つ」。既定の 1 歩（割合 0.0001）は年に届かず、
+            // value が現在時刻から作り直されて元に戻っていた。
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+              e.preventDefault();
+              onArrowStep(-1);
+            } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+              e.preventDefault();
+              onArrowStep(1);
+            }
+          }}
         />
       </div>
       {/* U-27: 消さない。軸の外の余白に置くので、目盛りラベルと重ならない。 */}

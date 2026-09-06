@@ -25,7 +25,6 @@ import type { StatusMessageStore } from '../shell/status-message';
 import type { SessionStore } from '../state/store';
 import { nextAnchorIndex, previousAnchorIndex } from '../time/anchor-lane';
 import { railFoldOf, type RailFoldLevel } from '../time/rail-fold';
-import { viewSpanYears } from '../time/rail-ticks';
 import { viewMaxTime, viewMinTime, viewSpanDays } from '../time/timebar';
 
 import { AnchorLane } from './AnchorLane';
@@ -64,6 +63,12 @@ export interface TimelineProps<S> {
    * 知っている**ので受け取る形にする。渡さなければレーンは空のまま。
    */
   readonly getRoot?: () => DomainProject;
+  /**
+   * 板（確認・作業ダイアログ・右クリックメニュー）が開いているか。**開いたら再生を
+   * 止める**（決定 (8)、2026-09-07）。板は鍵盤を持つので Space が届かず、板の後ろで
+   * 年が進み続けると「何年に対して答えたのか」が変わる。閉じても自動では再開しない。
+   */
+  readonly modalOpen?: boolean;
 }
 
 export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
@@ -74,6 +79,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     statusMessages,
     onPopoverOpenChange,
     getRoot,
+    modalOpen = false,
   } = props;
   const t = useTimeline(store);
   const playback = usePlayback(store, t.calendar);
@@ -81,6 +87,18 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   const lane = useAnchorLane(store, rail.view, t.calendar, t.timelineMin, getRoot);
   const activeTool = useStore(store, (s) => s.activeTool);
   const mode = useStore(store, (s) => s.mode);
+  // プロジェクトを開き直した回数。**ポップオーバーの指紋と表示範囲の作り直しに使う**。
+  const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
+
+  // 決定 (8): 板が開いたら再生を止める（閉じても自動では再開しない）。
+  const pausePlayback = playback.pause;
+  const wasPlayingRef = useRef(false);
+  wasPlayingRef.current = playback.isPlaying;
+  useEffect(() => {
+    if (!modalOpen) return;
+    if (!wasPlayingRef.current) return;
+    pausePlayback();
+  }, [modalOpen, pausePlayback]);
 
   const [fold, setFold] = useState<RailFoldLevel>(() =>
     railFoldOf(typeof window === 'undefined' ? 1280 : window.innerWidth),
@@ -119,10 +137,28 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
     };
   }, [setPixelLength]);
 
+  // 送りの単位（年・月・日）。**操作列と目盛りの矢印キーが同じ 1 つを読む**。
+  const [stepUnit, setStepUnit] = useState<StepUnit>(STEP_UNIT.Year);
+
   // --- 断りの文（状態行へ） --------------------------------------------------
   const refuse = useCallback(
     (message: string): void => {
       statusMessages?.failure(message);
+    },
+    [statusMessages],
+  );
+
+  /**
+   * **断りを引っ込める**（2026-09-07 の手直し）。
+   *
+   * 状態行は時間では消えない（教訓 5.12）ので、範囲外の断りを出したあとに **成功した
+   * 移動をしても断りが残り続け**、成功と失敗が見分けられなかった。教訓 5.12 が消してよいと
+   * 定める契機のうち **「成功した置換操作」**にあたるので、時刻が動いたら中立の結果へ
+   * 置き換える。
+   */
+  const succeeded = useCallback(
+    (message: string): void => {
+      statusMessages?.notice(message);
     },
     [statusMessages],
   );
@@ -136,14 +172,20 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         return;
       }
       t.jumpToTime(point);
+      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
     },
-    [t, refuse],
+    [t, refuse, succeeded],
   );
 
   /**
-   * 送り。**端に当たったら黙って丸めず、状態行に理由を出す**（中身 7）。
-   * `amount` ぶんの送りは `stepTimePoint` を `amount` 回ではなく、年なら 1 回で済ませる
-   * （月・日は暦の繰り上がりがあるので回数で送る ―― 計算は U02 の 1 本に任せる）。
+   * 送り。**端を越えるときは端まで動かして、そう言う**（決定 (4)、2026-09-07 の手直し）。
+   *
+   * 直接打った年は「その年へ行きたい」という明確な意図なので動かさずに断るが、送りは
+   * 「その向きへ進みたい」なので **端で止めるほうが素直**である。旧版は端を越えると
+   * 何も起きず、100 年送りが 9950 年で無反応になった（そこから 10000 年へ行く手が無い）。
+   *
+   * `amount` ぶんの送りは `stepTimePoint` を `amount` 回まわす（月・日は暦の繰り上がりが
+   * あるので回数で送る ―― 計算は U02 の 1 本に任せる）。
    */
   const step = useCallback(
     (unit: StepUnit, direction: StepDirection, amount: number) => {
@@ -152,16 +194,16 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         next = stepTimePoint(next, unit, direction, t.calendar);
       }
       if (t.outOfRangeMessage(next) !== null) {
-        refuse(
-          RAIL_STRINGS.stepClamped(
-            formatYear(direction < 0 ? t.timelineMin.year : t.timelineMax.year),
-          ),
-        );
+        const edge = direction < 0 ? t.timelineMin : t.timelineMax;
+        // すでに端に居るなら動かない（同じ年へ飛ばし直さない）。
+        if (t.outOfRangeMessage(t.currentTime) === null) t.jumpToTime(edge);
+        refuse(RAIL_STRINGS.stepClampedTo(formatYear(edge.year)));
         return;
       }
       t.jumpToTime(next);
+      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(next)));
     },
-    [t, refuse],
+    [t, refuse, succeeded],
   );
 
   const jumpYear = useCallback(
@@ -177,9 +219,10 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         return refusalText;
       }
       t.jumpToTime(point);
+      succeeded(RAIL_STRINGS.movedTo(formatTimePoint(point)));
       return null;
     },
-    [t, refuse],
+    [t, refuse, succeeded],
   );
 
   // --- 前後の錨へ（二分探索。対数時間） --------------------------------------
@@ -210,14 +253,23 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   const historyRef = useRef<TimePoint[]>([]);
   const suppressPushRef = useRef(false);
   const lastTimeRef = useRef<TimePoint | null>(null);
+  const playingRef = useRef(playback.isPlaying);
+  playingRef.current = playback.isPlaying;
   useEffect(() => {
     const previous = lastTimeRef.current;
     lastTimeRef.current = t.currentTime;
     if (previous === null) return;
     if (suppressPushRef.current) {
+      // **時刻が実際に変わったときだけ**印を降ろす（2026-09-07 の手直し）。
+      // 旧版は「戻る」が同じ年へ戻った場合（＝何も変わらない）にも印が残り、
+      // 次の本物の移動が 1 つ積まれなかった。
       suppressPushRef.current = false;
       return;
     }
+    // **再生で動いた年は積まない**（2026-09-07 の手直し）。旧版は再生の 1 コマごとに
+    // 積んでいたので、2 秒再生しただけで 50 件の履歴が「1 年ずつの年」で埋まり、
+    // Alt+← が「1 年ずつ戻る」ボタンに化けていた（実測: 60 回押して 3 つの年しか出ない）。
+    if (playingRef.current) return;
     historyRef.current.push(previous);
     if (historyRef.current.length > 50) historyRef.current.shift();
   }, [t.currentTime]);
@@ -225,13 +277,14 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   const goBack = useCallback(() => {
     const previous = historyRef.current.pop();
     if (previous === undefined) {
-      refuse('戻れる年がありません。');
+      refuse(RAIL_STRINGS.noBackHistory);
       return;
     }
     suppressPushRef.current = true;
     rail.revealTime(previous);
     t.jumpToTime(previous);
-  }, [t, rail, refuse]);
+    succeeded(RAIL_STRINGS.movedTo(formatTimePoint(previous)));
+  }, [t, rail, refuse, succeeded]);
 
   // --- 鍵盤のコマンド（`commands.ts` と `menu.ts` の両方に足してある＝結合点 #10） ---
   //
@@ -304,8 +357,18 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         series: lane.governingSeries,
         featurePresent: lane.featureId !== null && featurePresent,
         calendar: t.calendar,
+        // **素性欄と同じ材料を渡す**（2026-09-07 の手直し）。渡さないと同じ純粋関数から
+        // 出た文が画面の 2 か所で食い違う（片方だけ「約 306 KB 増えます」になる）。
+        snapshotSize: lane.snapshotSize,
       }),
-    [t.currentTime, t.calendar, lane.featureId, lane.governingSeries, featurePresent],
+    [
+      t.currentTime,
+      t.calendar,
+      lane.featureId,
+      lane.governingSeries,
+      lane.snapshotSize,
+      featurePresent,
+    ],
   );
 
   // --- 観測口（中身 8） -------------------------------------------------------
@@ -353,50 +416,94 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   }, []);
 
   // --- ホイール（ズーム／Shift で横スクロール） -------------------------------
-  const onWheel = useCallback(
-    (e: React.WheelEvent<HTMLDivElement>) => {
+  //
+  // **React の `onWheel` では `preventDefault()` が効かない**（2026-09-07 の手直し）。
+  // React 17 以降は wheel を root へ **passive で**張るので、`e.preventDefault()` は
+  // 無視され、コンソールに「Unable to preventDefault inside passive event listener」が
+  // 1 走行で 96 件出ていた（ページ全体のスクロールも止まらない）。地図側と同じく
+  // **自分で `{ passive: false }` で張る**。
+  const railWheelRef = useRef<HTMLDivElement | null>(null);
+  const wheelStateRef = useRef({ scrollByPixels: rail.scrollByPixels, zoomAt: rail.zoomAt, pixelLength: rail.view.pixelLength });
+  wheelStateRef.current = {
+    scrollByPixels: rail.scrollByPixels,
+    zoomAt: rail.zoomAt,
+    pixelLength: rail.view.pixelLength,
+  };
+  useEffect(() => {
+    const el = railWheelRef.current;
+    if (el === null) return;
+    const onWheelNative = (e: WheelEvent): void => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      // レーンと目盛りの上だけ（操作列の `select` のホイールは奪わない）。
+      const zone = (target as Element).closest?.('[data-rail-wheel="true"]');
+      if (zone === null || zone === undefined) return;
       e.preventDefault();
-      const rect = e.currentTarget.getBoundingClientRect();
+      const rect = zone.getBoundingClientRect();
       const focusPx = e.clientX - rect.left;
+      const w = wheelStateRef.current;
       if (e.shiftKey) {
-        rail.scrollByPixels(
-          (e.deltaY > 0 ? 1 : -1) * rail.view.pixelLength * SCROLL_FRACTION,
-        );
+        w.scrollByPixels((e.deltaY > 0 ? 1 : -1) * w.pixelLength * SCROLL_FRACTION);
         return;
       }
-      rail.zoomAt(e.deltaY > 0 ? WHEEL_NOTCHES : -WHEEL_NOTCHES, focusPx);
-    },
-    [rail],
-  );
+      w.zoomAt(e.deltaY > 0 ? WHEEL_NOTCHES : -WHEEL_NOTCHES, focusPx);
+    };
+    el.addEventListener('wheel', onWheelNative, { passive: false });
+    return () => {
+      el.removeEventListener('wheel', onWheelNative);
+    };
+  }, []);
 
-  const spanYears = viewSpanYears(rail.view);
-  const perPixel = rail.view.pixelLength > 0 ? spanYears / rail.view.pixelLength : 0;
+  const spanDays = viewSpanDays(rail.view);
+  /**
+   * 開いている板を閉じる契機の指紋（共有の器の作法 4）。**プロジェクトを入れる**
+   * （2026-09-07 の手直し）―― 旧版は道具・モード・畳みだけだったので、別のファイルを
+   * 開いても「年月日 ▾」が開いたままで、**前のプロジェクトの年が入った欄**が残った。
+   * 時刻は入れない（再生の 1 コマごとに閉じてしまう ―― 追認した判断）。
+   */
+  const popoverCloseKey = `${mode}|${String(activeTool)}|${fold}|${String(projectLoadNonce)}|${String(lane.featureId)}`;
+  const zoomFocusPx = rail.playheadOutside ? rail.view.pixelLength / 2 : rail.playheadPx;
 
   return (
-    <div className="rail timeline" data-testid="timeline" aria-label={RAIL_STRINGS.railLabel}>
+    <div
+      className="rail timeline"
+      data-testid="timeline"
+      aria-label={RAIL_STRINGS.railLabel}
+      ref={railWheelRef}
+    >
       {/* (a) 読み取り 24px */}
       <div className="rail__readout" data-testid="rail-readout">
+        {/* 表示範囲の左端。**年だけ**を出す（司令塔の追認、2026-09-07）―― 拡大すると
+            左端は年の途中になるが、全日付を出すと 88px の枠に収まらず読みにくい。 */}
         <span className="rail__view-min" data-testid="rail-view-min">
-          {formatTimePoint(viewMinTime(rail.view, t.calendar))}
+          {formatYear(viewMinTime(rail.view, t.calendar).year)}
         </span>
+        {/* 編集時刻バッジ。**地物を選んでいないときは行き先を言わない**
+            （2026-09-07 の手直し）―― 旧版は誰も選んでいないのに
+            「この年にはまだありません」と出ており、**何が「まだ無い」のか指す相手が
+            画面に無かった**。選んでいないときは年だけを出す。 */}
         <span
           className="rail__badge"
           data-testid="rail-edit-time-badge"
-          data-plan={editPlan.kind}
+          data-plan={lane.featureId === null ? 'none' : editPlan.kind}
           title={granularityNote(t.currentTime)}
         >
           <span className="rail__badge-time" data-testid="timeline-current">
             {formatTimePoint(t.currentTime)}
           </span>
-          <span className="rail__badge-sep" aria-hidden="true">
-            {EDIT_PLAN_STRINGS.badgeSeparator}
-          </span>
-          <span className="rail__badge-note" data-testid="rail-edit-time-note">
-            {editPlan.badgeNote}
-          </span>
+          {lane.featureId !== null && (
+            <>
+              <span className="rail__badge-sep" aria-hidden="true">
+                {EDIT_PLAN_STRINGS.badgeSeparator}
+              </span>
+              <span className="rail__badge-note" data-testid="rail-edit-time-note">
+                {editPlan.badgeNote}
+              </span>
+            </>
+          )}
         </span>
         <span className="rail__span-note" data-testid="rail-span-note">
-          {railSpanNote(spanYears, perPixel)}
+          {railSpanNote(spanDays, rail.view.pixelLength)}
         </span>
         {/* 隠し観測（既存の `app-active-feature` と同じ方式）。 */}
         <span data-testid="app-edit-time" hidden>
@@ -407,7 +514,7 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
       {/* (b) 錨レーン 28px（窓が低いと 20px）。器はここで測る。
           **ホイールはレーンの上でも効く**（§I.2 は「レールの上」と書いている）。
           目盛りの行だけに付けると、印を見ながら拡大しようとして何も起きない。 */}
-      <div className="rail__lane-box" ref={laneBoxRef} onWheel={onWheel}>
+      <div className="rail__lane-box" ref={laneBoxRef} data-rail-wheel="true">
         <AnchorLane
           source={lane.source}
           aggregate={lane.aggregate}
@@ -421,6 +528,8 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
           onView={rail.setView}
           onHitTestMs={lane.recordHitTestMs}
           onLaneHeight={lane.recordLaneHeight}
+          closeKey={popoverCloseKey}
+          {...(onPopoverOpenChange ? { onPopoverOpenChange } : {})}
         />
       </div>
 
@@ -431,25 +540,31 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         targetTicks={targetTicks}
         fraction={rail.fraction}
         playheadOutside={rail.playheadOutside}
-        onFraction={(f) => jumpTo(rail.timeAtFraction(f))}
-        onWheel={onWheel}
+        onFraction={(f) => { jumpTo(rail.timeAtFraction(f)); }}
+        onArrowStep={(direction) => { step(stepUnit, direction, 1); }}
       />
 
       {/* (d) 操作列 32px */}
       <RailControls
         fold={fold}
         onStep={step}
+        unit={stepUnit}
+        onUnitChange={setStepUnit}
+        onRefuse={refuse}
         playback={playback}
         currentTime={t.currentTime}
         calendar={t.calendar}
         onJumpTime={jumpYear}
-        onZoomIn={() => rail.zoomAt(-BUTTON_NOTCHES, rail.view.pixelLength / 2)}
-        onZoomOut={() => rail.zoomAt(BUTTON_NOTCHES, rail.view.pixelLength / 2)}
+        /* **拡大の焦点は再生ヘッド**（2026-09-07 の手直し）。軸の中央を焦点にすると、
+           1200 年を見ているのに 1 押しで 2588〜7411 年になり、**現在年も印も視野の外**へ
+           出ていた（実測）。現在時刻が視野の外にいるときだけ中央を使う。 */
+        onZoomIn={() => rail.zoomAt(-BUTTON_NOTCHES, zoomFocusPx)}
+        onZoomOut={() => rail.zoomAt(BUTTON_NOTCHES, zoomFocusPx)}
         onZoomFit={rail.fitAll}
         onPrevAnchor={() => jumpAnchor(-1)}
         onNextAnchor={() => jumpAnchor(1)}
         focusYearSignal={focusYearSignal}
-        closeKey={`${mode}|${String(activeTool)}|${fold}`}
+        closeKey={popoverCloseKey}
         {...(onPopoverOpenChange ? { onPopoverOpenChange } : {})}
       />
     </div>

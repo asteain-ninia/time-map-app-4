@@ -413,14 +413,25 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     // **板を開く前の年**に留め、閉じる／捨てるまで動かさない。
     if (pendingRef.current !== null) return;
     if (hasDraftNow && canCompleteNow) {
+      // **板に答えてから年を動かす**（2026-09-07 の手直し。教訓 5.71「確認は行動の前」）。
+      //
+      // 旧版は年が動いたあとに聞いていたので、板が出ているあいだ読み取りも地図も
+      // **もう新しい年**になっていた（実測: 1500 年で 3 点打って 5000 年の目盛りを押すと、
+      // 板の後ろで 5000 年の地図が見えている）。「続ける」を押すと年が戻るので、
+      // **画面が一度嘘をついてから訂正する**形になっていた。ここで先に戻し、
+      // 「捨てる」と答えられて初めて頼まれた年へ動かす。
+      const requested = currentTime;
+      // 元の年へ戻す。**数値ジャンプと同じ入口**を通すので、選択の再検証も
+      // 今までどおり走る（教訓 5.29: 時刻を動かす経路を増やさない）。
+      store.getState().setCurrentTime(before, TIME_CHANGE_SOURCE.NumericJump);
       setPendingDiscard({
         reason: DISCARD_REASON.Time,
-        // 「このままにする」＝年を戻す。下書きは打った年のものなので、年だけ進めて
-        // 残すと「別の年の頂点で作った形」を保存することになる（GPT #8）。
-        keep: () => {
-          // 元の年へ戻す。**数値ジャンプと同じ入口**を通すので、選択の再検証も
-          // 今までどおり走る（教訓 5.29: 時刻を動かす経路を増やさない）。
-          store.getState().setCurrentTime(before, TIME_CHANGE_SOURCE.NumericJump);
+        // 「このままにする」＝もう戻してあるので何もしない。下書きは打った年のもの
+        // なので、年だけ進めて残すと「別の年の頂点で作った形」を保存することになる
+        // （GPT #8）。
+        proceed: () => {
+          store.getState().setCurrentTime(requested, TIME_CHANGE_SOURCE.NumericJump);
+          if (activeKind !== null) add.start(activeKind);
         },
       });
       return; // ここでは `prevTimeRef` を進めない（戻したときに素通りさせるため）。

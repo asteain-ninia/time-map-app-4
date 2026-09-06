@@ -271,10 +271,38 @@ export function laneHitTest(
   tolerancePx: number = LANE_HIT_TOLERANCE_PX,
 ): LaneHit {
   if (source.starts.length === 0) return NO_HIT;
-  const lo = pixelToDay(px - tolerancePx, view);
-  const hi = pixelToDay(px + tolerancePx, view);
+  const min = view.min as number;
+  const max = view.max as number;
+
+  // ①**押した画素列そのものに 1 本だけなら、その錨を返す**（2026-09-07 の手直し）。
+  //
+  // 旧版はいきなり ±4px で数えていたので、**隣の印が 4px 未満のところにあると
+  // 「2 本以上」になり、印を狙って押しても飛ばずに 1 段拡大した**（実機で再現）。
+  // 描いてあるのは画素の列なので、**列の中に 1 本しか無いなら、それが押されたもの**
+  // である（描画と当たり判定を同じ単位で見る＝教訓 5.29）。
+  const columnDays = view.pixelLength > 0 ? viewSpanDays(view) / view.pixelLength : 0;
+  if (columnDays > 0) {
+    const column = Math.floor(px);
+    const colLo = Math.max(min, pixelToDay(column, view));
+    const colHi = Math.min(max, pixelToDay(column + 1, view));
+    if (colHi > colLo) {
+      const cFirst = lowerBound(source.starts, colLo);
+      const cLast = upperBound(source.starts, colHi) - 1;
+      if (cLast === cFirst && cFirst >= 0 && cFirst < source.starts.length) {
+        return { kind: LANE_HIT.Single, count: 1, firstIndex: cFirst, lastIndex: cFirst };
+      }
+    }
+  }
+
+  // ②それ以外は ±`tolerancePx` で数える。**視野の外の錨は数えない** ―― 集計（描画）は
+  // 半開区間 [min, max) で右端を捨てるのに、当たり判定だけが視野の外の錨に当たると、
+  // **見えていない錨へ飛ぶ**（描画 ⊇ ヒットが破れる）。
+  const lo = Math.max(min, pixelToDay(px - tolerancePx, view));
+  const hi = Math.min(max, pixelToDay(px + tolerancePx, view));
+  if (hi <= lo) return NO_HIT;
   const first = lowerBound(source.starts, lo);
-  const last = upperBound(source.starts, hi) - 1;
+  // 右端は集計と同じ半開（`max` ちょうどの錨は視野の外）。
+  const last = lowerBound(source.starts, hi) - 1;
   if (last < first) return NO_HIT;
   const count = last - first + 1;
   return {

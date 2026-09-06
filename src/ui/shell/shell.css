@@ -94,8 +94,22 @@ body {
    * 縮む条件は **窓の大きさだけ**で、選択状態には依存しない（K-3 / §F.2 の受け入れ条件）。 */
   --rail-lane-h: 28px;
   /* 「単位: 年」を置く軸の右の余白（U-27）。目盛りラベルと重なる余地を構造的に無くす。
-   * **錨レーンの行と目盛りの行が同じ値を読む**ので、印と目盛りの写像がずれない。 */
-  --rail-unit-gutter: 64px;
+   * **錨レーンの行と目盛りの行が同じ値を読む**ので、印と目盛りの写像がずれない。
+   *
+   * **いちばん右の目盛りラベルのはみ出しぶんを足す**（2026-09-07 の手直し）。ラベルは
+   * 目盛りの上に中央揃えで置くので、右端のラベルは軸の外へ「幅の半分」出る。旧版は
+   * 余白を 64px に固定していたので、実測で「単位: 年」との隙間が 1.5px しか無く、
+   * 紀元前（例「紀元前1200年」）でラベルが伸びると重なった。はみ出しぶんは
+   * `RailTicks` が実際のラベルから見積もって `--rail-tick-overhang` に載せる。 */
+  --rail-unit-text: 46px;
+  --rail-tick-overhang: 18px;
+  --rail-unit-gutter: calc(var(--rail-unit-text) + var(--rail-tick-overhang) + 6px);
+  /* 錨レーンの配色（`AnchorLane.tsx` が canvas へ描くときに読む）。**色の真実源は
+   * ここ**にあり、TSX は名前で引くだけ ―― 所有者が配色を調整するときに触る場所を
+   * 1 か所にする。 */
+  --rail-lane-bar: #c7ccd4;
+  --rail-lane-mark: #2f6fb5;
+  --rail-lane-dense: #1f4d80;
   /* 時刻レールの高さ（設計書 §C.7）。上下余白 2+2 ＋ 読み取り 24 ＋ レーン ＋ 目盛り 22
    * ＋ 操作列 32 ＋ 枠線 1×2 ＝ 112px（レーンが 28px のとき）。
    *
@@ -2080,6 +2094,13 @@ body {
   opacity: 0.8;
 }
 
+/* 空状態その 2（0 年にしか節目が無い）は **印そのものは描かれている**ので、左端の
+ * 印を文で隠さないよう少し右から書き始める。 */
+.rail__lane-empty[data-kind='only-origin'] {
+  padding-left: 14px;
+  text-overflow: ellipsis;
+}
+
 /* 束の吹き出し（設計書 §B.5 の台帳 #13 / §F.2 規則 6-2）。**レールの上にだけ出す**
  * （地図セルには出さない）。器そのものは押下を通し、押せるのは中のボタンだけ ――
  * N-01（吹き出しが下のボタンの押下を飲み込む）を構造で避ける。 */
@@ -2109,12 +2130,23 @@ body {
   margin-bottom: 2px;
 }
 
+/* **12 行が全部届く高さを取る**（2026-09-07 の手直し）。旧版は `max-height: 168px` で、
+ * 行の実寸（22px）× 12 行＝264px が入らないうえ、器が `pointer-events: none` で
+ * 一覧そのものは受け取らないので **スクロールもできず、下 4 行に手が届かなかった**。
+ * レールからはみ出して上へ伸びてよい（司令塔の決定 (1)、2026-09-07）―― 112px の帯に
+ * 12 行を収める余地は構造的に無い。 */
 .rail__bundle-list {
   list-style: none;
   margin: 0;
   padding: 0;
-  max-height: 168px;
+  max-height: 264px;
   overflow-y: auto;
+  /* 器は押下を通すが、一覧は自分で受け取る（スクロールのため）。 */
+  pointer-events: auto;
+}
+
+.rail__bundle-list li {
+  min-height: 22px;
 }
 
 .rail__bundle-list button,
@@ -2173,15 +2205,72 @@ body {
 }
 
 /* 押せる軸そのもの。目盛りの上に敷いて、**どこを押してもその年へ飛ぶ**
- * （現状の目盛りは押せない飾りだった）。つまみが再生ヘッドである。 */
+ * （現状の目盛りは押せない飾りだった）。つまみが再生ヘッドである。
+ *
+ * **既定の見た目を全部消す**（2026-09-07 の手直し）。旧版は `appearance` を指定して
+ * いなかったので、Chromium の既定の「太い青い帯＋大きな丸いつまみ」が目盛りの行を
+ * 覆い、**左端の年（0 年）のラベルが完全に隠れて**いた（実測の画面）。トラックは
+ * 透明にして下の目盛りを見せ、つまみは設計書 §C.7 の「細い再生ヘッド」―― 幅 2px の
+ * 縦線にする。 */
 .rail__slider {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   margin: 0;
+  padding: 0;
+  border: none;
+  appearance: none;
+  -webkit-appearance: none;
   background: transparent;
   cursor: pointer;
+}
+
+.rail__slider::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+  border: none;
+}
+
+.rail__slider::-moz-range-track {
+  height: 100%;
+  background: transparent;
+  border: none;
+}
+
+/* 再生ヘッド（つまみ）。細い縦線 1 本。**表示範囲の外に居るときは淡くする**
+ * （`data-playhead-outside` は値を偽らないための印）。 */
+.rail__slider::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 2px;
+  height: 18px;
+  border: none;
+  border-radius: 1px;
+  background: var(--c-accent);
+}
+
+.rail__slider::-moz-range-thumb {
+  width: 2px;
+  height: 18px;
+  border: none;
+  border-radius: 1px;
+  background: var(--c-accent);
+}
+
+.rail__ticks[data-playhead-outside='true'] .rail__slider::-webkit-slider-thumb {
+  background: var(--c-text-muted);
+  opacity: 0.5;
+}
+
+.rail__ticks[data-playhead-outside='true'] .rail__slider::-moz-range-thumb {
+  background: var(--c-text-muted);
+  opacity: 0.5;
+}
+
+.rail__slider:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--c-accent);
+  outline-offset: 1px;
 }
 
 /* 「単位: 年」は消さない（U-27）。軸の外の余白に置くので目盛りラベルと重ならない。 */
@@ -2206,11 +2295,16 @@ body {
   overflow: hidden;
 }
 
+/* **`rail-fold.ts` の `RAIL_GROUP_WIDTH` と同じ数を嵌める**（教訓 5.74）。
+ * `min-width: 0` を書くのが要点 ―― 既定の `min-width: auto` は「中身の最小幅」を
+ * 下限にするので、**`flex-basis` を書いても中身が広ければそちらが勝つ**。実際に
+ * ステップ単位（見積り 76px・実寸 100.8px）がそうなっていて、予算と実寸がずれた。 */
 .rail__group {
   display: flex;
   align-items: center;
   gap: 0;
   flex: 0 0 auto;
+  min-width: 0;
 }
 
 .rail__group--step100 {
@@ -2265,16 +2359,37 @@ body {
   flex: 0 0 56px;
 }
 
+/* 再生（ボタン＋速度）。**押しても幅が変わらない**ように固定する ―― 「再生」と
+ * 「一時停止」で字数が違うので、旧版は押すだけで 165.6 → 189.1px に広がっていた。 */
 .rail__playback {
+  flex: 0 0 192px;
   gap: 4px;
 }
 
+.rail__controls[data-fold='keysOnly'] .rail__playback {
+  flex: 0 0 64px;
+}
+
+/* いちばん狭い段はラベルを出さないので、ボタンは記号ぶんだけ。 */
+.rail__controls[data-fold='keysOnly'] .timeline-playback__button {
+  width: 64px;
+}
+
 .rail__zoom {
+  flex: 0 0 120px;
   gap: 2px;
 }
 
+.rail__zoom--menu {
+  flex: 0 0 56px;
+}
+
+.rail__anchor-jump {
+  flex: 0 0 104px;
+}
+
 .rail__unit {
-  flex: 0 0 76px;
+  flex: 0 0 104px;
   gap: 4px;
   white-space: nowrap;
 }
@@ -2373,7 +2488,9 @@ body {
   justify-content: center;
   gap: 4px;
   min-height: 32px;
+  /* 「再生」⇄「一時停止」で幅が動かないよう固定する（畳みの予算と同じ数）。 */
   min-width: 64px;
+  width: 88px;
   padding: 2px 6px;
   font: inherit;
   background: var(--c-surface);
@@ -2489,14 +2606,16 @@ body {
 
 /* --- 初回起動のガイド 4 枚（FR-118 / 設計書 §H.3。増分 6）--------------------
  *
- * **地図には重ねない**（右パネルの下・状態行の上）。K-2 が禁じているのは地図の押下を
- * 奪う覆いなので、地図セルの外に置けばその型の事故は起こらない。器そのものは押下を
- * 通し、押せるのは中のボタンだけ。 */
+ * 初回起動のガイド（FR-118 / 設計書 §H.3）。**地図セルには重ねない**
+ * （2026-09-07 の手直し）。幅を右パネルの列の内側に収めるので、右端から置いても
+ * 地図には届かない ―― 旧版は幅 320px を右 12px に置いていたので、280px の右パネルから
+ * **地図セルへ 52px はみ出し**、地図の中のズーム 3 ボタンを 5 つの窓の大きさすべてで
+ * 覆っていた（実測）。地図に重なる DOM を作らなければ、K-2 の型の事故は起こり得ない。 */
 .first-run-guide {
   position: absolute;
   right: 12px;
   bottom: calc(var(--shell-status-h) + var(--shell-timeline-h) + 12px);
-  width: 320px;
+  width: calc(var(--shell-sidebar-w) - 24px);
   z-index: 30;
   pointer-events: none;
 }
@@ -2536,6 +2655,14 @@ body {
  * K-2 の 3 回の事故はすべて **DOM の覆い** が原因だった。だからここでは覆いを作らず、
  * **部品そのものだけ**を右下・下端に置く（`.map-area__overlay > *` が押下を有効にする
  * 既定に素直に乗る）。縮尺バーだけは押せない（表示のみ）。 */
+/* **道具を構えている間も押せる**（司令塔の決定 (3)、2026-09-07）。地図の覆いの中では
+ * 道具の入力ブリッジ（`.add-tool__input` ほか）が後から並ぶので、層を指定しないと
+ * **後ろの兄弟が上に乗って**この 3 ボタンを飲み込む ―― 実測で、道具を構えると 3 部品
+ * すべてが押せず、作図中は押下が「頂点を打つ」に化けていた。
+ *
+ * 層を上げるかわりに **器は押下を通す**（`pointer-events: none`）。押せるのはボタンの
+ * 矩形だけで、ボタンの間の 4px の隙間は地図に抜ける ―― 覆いを作らないという K-2 の
+ * 約束を、層を上げても守り続けるための対である。 */
 .map-view-controls {
   position: absolute;
   right: 16px;
@@ -2544,11 +2671,14 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  z-index: 3;
+  pointer-events: none;
 }
 
 .map-view-controls__button {
   width: 40px;
   height: 40px;
+  pointer-events: auto;
   font: inherit;
   font-size: 12px;
   background: var(--c-surface);

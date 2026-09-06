@@ -62,6 +62,8 @@ export function useRailView<S>(
 ): RailViewBinding {
   const timelineMin = useStore(store, (s) => s.timelineMin);
   const timelineMax = useStore(store, (s) => s.timelineMax);
+  // **プロジェクトを読み込んだ印**（増分 4 で一覧が使っている印を共有する）。
+  const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
 
   const [pixelLength, setPixelLengthState] = useState(0);
   const [window_, setWindow] = useState<RailWindow | null>(null);
@@ -76,9 +78,14 @@ export function useRailView<S>(
   );
 
   // 時間軸そのものが変わったら全体表示へ戻す（前のプロジェクトの窓を持ち越さない）。
+  //
+  // **読み込みの印も見る**（2026-09-07 の手直し）。時間軸の範囲は既定値（0〜10000 年）の
+  // ままであることが多いので、`fullMin`／`fullMax` だけを見ていると **別のファイルを
+  // 開いても拡大と横位置が持ち越された** ―― 前のプロジェクトの 1200 年付近を拡大した
+  // ままの窓に、まったく別の地物の錨が出ていた（実測）。
   useEffect(() => {
     setWindow(null);
-  }, [fullMin, fullMax]);
+  }, [fullMin, fullMax, projectLoadNonce]);
 
   const view = useMemo<TimeBarView>(() => {
     const w = window_ ?? { min: fullMin, max: fullMax };
@@ -105,7 +112,13 @@ export function useRailView<S>(
       let lo = min;
       if (lo < fullMin) lo = fullMin;
       if (lo + span > fullMax) lo = fullMax - span;
-      return { min: lo, max: lo + span };
+      // **窓の端は日で丸める**（2026-09-07 の手直し）。丸めないと、横送り 1 回で
+      // 端が 0.4999999 日ずれ、読み取りが「1200年5月10.499999999941792日」になった
+      // （割り算の誤差がそのまま画面の文字になっていた）。軸の 1 画素は最小でも
+      // 1 日より粗いので、日で丸めても見え方は変わらない。
+      const loDay = Math.round(lo);
+      const spanDays = Math.max(1, Math.round(span));
+      return { min: loDay, max: loDay + spanDays };
     },
     [fullMin, fullMax],
   );

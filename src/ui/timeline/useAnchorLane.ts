@@ -37,6 +37,7 @@ import {
   type AnchorLaneSource,
 } from '../time/anchor-lane';
 import { resolveGoverningSeries } from '../time/governing-series';
+import type { AnchorSnapshotSize } from '../property/edit-plan';
 import type { TimeBarView } from '../time/timebar';
 
 export interface AnchorLaneBinding {
@@ -52,6 +53,12 @@ export interface AnchorLaneBinding {
    * いけない** ―― まとめ役の子では「その子に関わらない錨」も上書きの相手になりうる。
    */
   readonly governingSeries: AnchorSeries | null;
+  /**
+   * 錨 1 本ぶんの概算の大きさ（保存ファイルが何 KB 増えるかの材料）。**素性欄と同じ値**
+   * （2026-09-07 の手直し）―― 旧版はレールだけこれを渡していなかったので、同じ純粋関数
+   * から出た文が画面の 2 か所で違っていた（素性欄「約 306 KB 増えます」／レール「増えます」）。
+   */
+  readonly snapshotSize: AnchorSnapshotSize | null;
   /** 選んでいる地物の id（無ければ null）。 */
   readonly featureId: FeatureId | null;
   /** まとめ役の子か（親の系列を借りているか）。 */
@@ -113,6 +120,7 @@ export function useAnchorLane<S>(
         source: EMPTY_LANE_SOURCE,
         entries: [] as readonly AnchorEntry[],
         governingSeries: null as AnchorSeries | null,
+        snapshotSize: null as AnchorSnapshotSize | null,
         inherited: false,
         ownerName: null as string | null,
       };
@@ -133,6 +141,7 @@ export function useAnchorLane<S>(
         source: EMPTY_LANE_SOURCE,
         entries: [] as readonly AnchorEntry[],
         governingSeries: null as AnchorSeries | null,
+        snapshotSize: null as AnchorSnapshotSize | null,
         inherited: false,
         ownerName: null as string | null,
       };
@@ -154,6 +163,7 @@ export function useAnchorLane<S>(
       source,
       entries,
       governingSeries: governing.series,
+      snapshotSize: governing.effectiveSize,
       inherited,
       ownerName: governing.ownerName,
     };
@@ -218,6 +228,7 @@ export function useAnchorLane<S>(
     aggregate,
     entries: resolved.entries,
     governingSeries: resolved.governingSeries,
+    snapshotSize: resolved.snapshotSize,
     featureId: activeFeature,
     inherited: resolved.inherited,
     ownerName: resolved.ownerName,

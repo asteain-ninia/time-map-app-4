@@ -73,3 +73,15 @@ export {
   type DiagnosticLogFs,
   type DiagnosticLogEnv,
 } from './diagnostic-log';
+
+export {
+  APP_PREFS_FILE,
+  nodeAppPrefsFs,
+  appPrefsPath,
+  parseAppPrefs,
+  mergeAppPrefs,
+  readAppPrefs,
+  writeAppPrefs,
+  type AppPrefsFs,
+  type AppPrefsEnv,
+} from './app-prefs';

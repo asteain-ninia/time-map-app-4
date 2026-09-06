@@ -29,7 +29,9 @@ import {
  */
 const MAX_ATTACHMENT_NAME_BYTES = 65535 - Buffer.byteLength(ATTACHMENTS_DIR, 'utf8');
 import {
+  DEFAULT_APP_PREFS,
   IPC_CHANNEL,
+  type AppPrefs,
   type AutoSaveConfig,
   type CloseResponseAck,
   type ConfigureAutoSaveResponse,
@@ -163,6 +165,12 @@ export interface IpcDeps {
    * implementation swallows write failures, so this must never reject.
    */
   readonly appendDiagnosticLog: (record: DiagnosticLogRecord) => Promise<void>;
+  /**
+   * アプリ側の設定（userData の JSON 1 枚）の読み書き（決定 (2)）。合成ルートで
+   * fs のアダプタに束縛する。**どちらも失敗を例外にしない**（初回はファイルが無い）。
+   */
+  readonly readAppPrefs: () => Promise<AppPrefs>;
+  readonly writeAppPrefs: (patch: Partial<AppPrefs>) => Promise<AppPrefs>;
   /**
    * FR-107 close ブリッジ: レンダラの終了確認判定（{@link CloseVerdict} 形の生
    * payload）の受け口。合成ルートで close ガードのハブ (close-guard.ts) に束縛する。
@@ -486,6 +494,30 @@ export async function handleAppendLog(
   }
 }
 
+/**
+ * アプリ側の設定を読む（決定 (2)）。**読めなければ既定を返す** ―― 初回起動には
+ * まだファイルが無いのがふつうで、それは異常ではない。
+ */
+export async function handleReadAppPrefs(deps: IpcDeps): Promise<AppPrefs> {
+  try {
+    return await deps.readAppPrefs();
+  } catch {
+    return DEFAULT_APP_PREFS;
+  }
+}
+
+/** アプリ側の設定を部分更新する。書けなくても例外にせず、いまの全体を返す。 */
+export async function handleWriteAppPrefs(
+  deps: IpcDeps,
+  patch: Partial<AppPrefs>,
+): Promise<AppPrefs> {
+  try {
+    return await deps.writeAppPrefs(patch);
+  } catch {
+    return handleReadAppPrefs(deps);
+  }
+}
+
 // --- registration: one handler per shared channel ---------------------------
 
 /**
@@ -527,6 +559,14 @@ export function registerIpcHandlers(deps: IpcDeps): void {
       : { ok: true }) as (...args: never[]) => unknown);
   deps.registrar(IPC_CHANNEL.AppendLog, ((event: IpcSenderEvent, record: DiagnosticLogRecord) =>
     trusted(event) ? handleAppendLog(deps, record) : undefined) as (...args: never[]) => unknown);
+  deps.registrar(IPC_CHANNEL.ReadAppPrefs, ((event: IpcSenderEvent) =>
+    trusted(event) ? handleReadAppPrefs(deps) : DEFAULT_APP_PREFS) as (
+    ...args: never[]
+  ) => unknown);
+  deps.registrar(IPC_CHANNEL.WriteAppPrefs, ((event: IpcSenderEvent, patch: Partial<AppPrefs>) =>
+    trusted(event) ? handleWriteAppPrefs(deps, patch) : DEFAULT_APP_PREFS) as (
+    ...args: never[]
+  ) => unknown);
   // 所見3: close ブリッジの受け口だけ event.sender.id を読む（要求元 webContents の検証用）。
   // The hub verifies the sender AGAIN against the window it queried (defense in depth).
   deps.registrar(IPC_CHANNEL.CloseAck, ((event: IpcSenderEvent, payload: unknown) =>

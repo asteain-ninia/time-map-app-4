@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 import {
   IPC_CHANNEL,
+  type AppPrefs,
   type AutoSaveConfig,
   type ConfigureAutoSaveResponse,
   type DiagnosticLogRecord,
@@ -125,6 +126,12 @@ export function buildApi(): TimeMapApi {
     // renderer sink swallows any rejection so an error-logging path never crashes.
     appendLog: (record: DiagnosticLogRecord): Promise<void> =>
       ipcRenderer.invoke(IPC_CHANNEL.AppendLog, record) as Promise<void>,
+    // アプリ側の設定（userData の JSON 1 枚）。プロジェクトの中身とは無関係で、
+    // 初回起動のガイドを二度と出さない、のような **この PC の覚え書き**だけを置く。
+    readAppPrefs: (): Promise<AppPrefs> =>
+      ipcRenderer.invoke(IPC_CHANNEL.ReadAppPrefs) as Promise<AppPrefs>,
+    writeAppPrefs: (patch: Partial<AppPrefs>): Promise<AppPrefs> =>
+      ipcRenderer.invoke(IPC_CHANNEL.WriteAppPrefs, patch) as Promise<AppPrefs>,
   };
 }
 

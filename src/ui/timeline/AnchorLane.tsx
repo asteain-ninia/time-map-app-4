@@ -13,7 +13,6 @@
 
 import {
   useCallback,
-  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -36,6 +35,7 @@ import {
   type AnchorLaneAggregate,
   type AnchorLaneSource,
 } from '../time/anchor-lane';
+import { useDismissable } from '../shell/use-dismissable';
 import type { TimeBarView } from '../time/timebar';
 
 import { RAIL_STRINGS } from './rail-strings';
@@ -78,6 +78,13 @@ export interface AnchorLaneProps {
   readonly onHitTestMs: (ms: number) => void;
   /** レーンの高さ（px）を控える（観測）。 */
   readonly onLaneHeight: (px: number) => void;
+  /**
+   * 束の吹き出しを閉じる契機の指紋（共有の器の作法 4）。モード・道具・プロジェクト・
+   * 選択を 1 本の文字列に畳んだもの。**時刻は入れない**（再生中に毎コマ閉じてしまう）。
+   */
+  readonly closeKey: string;
+  /** 束の吹き出しの開閉を報せる（`focusOwner` の `popover` の導出。作法 5）。 */
+  readonly onPopoverOpenChange?: ((open: boolean) => void) | undefined;
 }
 
 /** 描く色。CSS のカスタムプロパティから読む（配色の真実源を CSS 側に置く）。 */
@@ -114,34 +121,99 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
     onView,
     onHitTestMs,
     onLaneHeight,
+    closeKey,
+    onPopoverOpenChange,
   } = props;
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const bundleRef = useRef<HTMLDivElement | null>(null);
   const [bundle, setBundle] = useState<LaneBundle | null>(null);
-
-  // 表示範囲・選択・幅が変わったら束の吹き出しは畳む（K-5: 一時的な UI 状態は捨てる）。
-  useEffect(() => {
+  const closeBundle = useCallback(() => {
     setBundle(null);
-  }, [view, source]);
+  }, []);
 
-  const empty = !hasSelection || source.starts.length === 0;
-  const emptyText = !hasSelection
-    ? RAIL_STRINGS.laneEmptyNoSelection
-    : onlyOrigin
-      ? RAIL_STRINGS.laneEmptyOnlyOrigin
-      : RAIL_STRINGS.laneEmptyNoSelection;
+  // 閉じる契機（共有の器の作法 3・4・5 を hook 1 つで満たす）。
+  //   ・外の押下と Escape（`useDismissable`）
+  //   ・モード・道具・プロジェクト・選択が変わったとき（`closeKey`）
+  //   ・表示範囲と系列が変わったとき（下の指紋に畳んで渡す）
+  const viewKey = `${String(view.min as number)}|${String(view.max as number)}|${String(view.pixelLength)}`;
+  useDismissable({
+    open: bundle !== null,
+    close: closeBundle,
+    closeKey: `${closeKey}|${viewKey}|${String(source.starts.length)}`,
+    insideRefs: [bundleRef],
+    onOpenChange: onPopoverOpenChange,
+  });
 
+  // 空状態は 3 つ。**「選んでいるのに 0 年にしか節目が無い」を出せるようにする**
+  // （2026-09-07 の手直し）―― 旧版は「錨が 1 本も無い」ときにしか文を出さなかったので、
+  // 実データ 689 件がまさに該当する §H.4 の文が **構造上どこにも出なかった**。
+  const emptyText =
+    !hasSelection
+      ? RAIL_STRINGS.laneEmptyNoSelection
+      : source.starts.length === 0
+        ? RAIL_STRINGS.laneEmptyNoAnchors
+        : onlyOrigin
+          ? RAIL_STRINGS.laneEmptyOnlyOrigin
+          : null;
+  const emptyKind =
+    !hasSelection
+      ? 'no-selection'
+      : source.starts.length === 0
+        ? 'no-anchors'
+        : onlyOrigin
+          ? 'only-origin'
+          : 'none';
+
+  // 器の実寸。**高さだけが変わる場合も測り直す**（2026-09-07 の手直し）―― レーンは
+  // 窓が低いと 28px → 20px に縮むが、旧版は描き直しの契機が「系列・表示範囲」だけだったので
+  // canvas の内部解像度が 28px のまま残り、縦に潰れた絵が出ていた。
+  // `devicePixelRatio` の変化（別の画面へ窓を移す）でも測り直す。
+  const [metrics, setMetrics] = useState({ width: 0, height: 0, dpr: 1 });
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
     if (canvas === null) return;
     const parent = canvas.parentElement;
     if (parent === null) return;
-    const rect = parent.getBoundingClientRect();
-    const width = Math.max(0, Math.round(rect.width));
-    const height = Math.max(0, Math.round(rect.height));
-    onLaneHeight(height);
+    let mq: MediaQueryList | null = null;
+    const measure = (): void => {
+      const rect = parent.getBoundingClientRect();
+      const width = Math.max(0, Math.round(rect.width));
+      const height = Math.max(0, Math.round(rect.height));
+      const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+      onLaneHeight(height);
+      setMetrics((prev) =>
+        prev.width === width && prev.height === height && prev.dpr === dpr
+          ? prev
+          : { width, height, dpr },
+      );
+      armDpr(dpr);
+    };
+    const armDpr = (dpr: number): void => {
+      if (typeof window.matchMedia !== 'function') return;
+      const next = window.matchMedia(`(resolution: ${String(dpr)}dppx)`);
+      if (mq !== null) mq.removeEventListener('change', onDprChange);
+      mq = next;
+      mq.addEventListener('change', onDprChange);
+    };
+    const onDprChange = (): void => {
+      measure();
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(parent);
+    return () => {
+      ro.disconnect();
+      if (mq !== null) mq.removeEventListener('change', onDprChange);
+    };
+  }, [onLaneHeight]);
+
+  useLayoutEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const { width, height, dpr } = metrics;
     if (width === 0 || height === 0) return;
-    const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
     if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
@@ -189,7 +261,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
       ctx.fillRect(x, midY - barHeight / 2, 1, barHeight);
       ctx.globalAlpha = 1;
     }
-  }, [source, aggregate, view, onLaneHeight]);
+  }, [source, aggregate, view, metrics]);
 
   const handlePointerDown = useCallback(
     (e: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -247,8 +319,8 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
         title={laneTitle}
         onPointerDown={handlePointerDown}
       />
-      {empty && (
-        <p className="rail__lane-empty" data-testid="anchor-lane-empty">
+      {emptyText !== null && (
+        <p className="rail__lane-empty" data-testid="anchor-lane-empty" data-kind={emptyKind}>
           {emptyText}
         </p>
       )}
@@ -259,6 +331,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
       )}
       {bundle !== null && (
         <div
+          ref={bundleRef}
           className="rail__bundle"
           data-testid="anchor-bundle"
           /* **画面座標で置く**（`position: fixed`）。レールは `overflow: hidden` なので、
@@ -282,7 +355,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
                   data-testid={`anchor-bundle-row-${entry.anchor.id}`}
                   onClick={() => {
                     onJumpTo(entry.start);
-                    setBundle(null);
+                    closeBundle();
                   }}
                 >
                   {formatTimePoint(entry.start)}
@@ -294,7 +367,7 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
             type="button"
             className="rail__bundle-close"
             data-testid="anchor-bundle-close"
-            onClick={() => setBundle(null)}
+            onClick={closeBundle}
           >
             {RAIL_STRINGS.bundleClose}
           </button>
