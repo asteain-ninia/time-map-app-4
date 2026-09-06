@@ -97,10 +97,13 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     expect(decl(ruleBody('.option-bar__commit'), 'flex')).toBe('0 0 176px');
   });
 
-  it('伸縮するのは「次の一手」と「設定」だけ', () => {
+  it('伸縮するのは「次の一手」だけで、設定欄は縮まない（畳みの予算をそのまま嵌めるため）', () => {
     expect(decl(ruleBody('.option-bar__next'), 'flex')).toBe('1 1 auto');
-    // 設定欄は中身の量で決まるが、伸びて他を押し出すことはない（0 1 auto）。
-    expect(decl(ruleBody('.option-bar__settings'), 'flex')).toBe('0 1 auto');
+    // **設定欄は縮まない**（増分 5 の手直し 2 回目）。旧版の `0 1 auto` は「次の一手」と
+    // 基準幅に比例して縮み合うので、畳みの予算（「次の一手」に 160px を見込む）と実寸が
+    // ずれ、いちばん右の「≫」が欄の外へこぼれた。縮まない区画にしたうえで、予算を
+    // `max-width` として `OptionBar.tsx` が嵌める。ここが `0 1 auto` に戻ると再発する。
+    expect(decl(ruleBody('.option-bar__settings'), 'flex')).toBe('0 0 auto');
   });
 
   it('設定欄には下限がある（「次の一手」が長くても部品 2 個ぶんは読める）', () => {

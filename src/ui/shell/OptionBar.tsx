@@ -60,16 +60,25 @@ const VIEWPORT_MARGIN = 8;
 const ANCHOR_GAP = 4;
 
 /**
- * **設定欄に配れる幅**（増分 5 の手直し D3 の直し）。
+ * **設定欄に配れる幅**（増分 5 の手直し D3 の直し ＋ 2 回目の手直し）。
  *
- * **設定欄自身の `clientWidth` を測ってはいけない。** 設定欄は `flex: 0 1 auto` なので
- * 幅が中身の量で決まる ―― 部品を「≫」へ送ると器も縮み、縮んだ器で測り直すともっと
- * 送ることになり、**入るはずのものまで全部が「≫」の中へ落ちる**（実測: 測量を ON に
- * すると読み取りが丸ごと畳まれ、測っているのに距離が読めなくなった）。
+ * **設定欄自身の `clientWidth` を測ってはいけない。** 設定欄は幅が中身の量で決まるので、
+ * 部品を「≫」へ送ると器も縮み、縮んだ器で測り直すともっと送ることになり、**入るはずの
+ * ものまで全部が「≫」の中へ落ちる**（教訓 5.69。実測: 測量を ON にすると読み取りが
+ * 丸ごと畳まれ、測っているのに距離が読めなくなった）。
  *
  * だから **中身に依らない予算**を計算する: 帯の内寸から、幅の決まっている 3 区画
  * （道具名・対象・確定）と部品どうしのすき間、そして「次の一手」に必ず残す幅を引く。
  * 引き算の材料はどれも中身で動かないので、送る数が増えても予算は変わらない（収束する）。
+ *
+ * **予算は「見込み」ではなく「本当にその幅になる」ことまで面倒を見る**（2 回目の手直し）。
+ * 1 回目は予算を出すだけで、設定欄の実寸は flex の配分に任せていた ―― 「次の一手」は
+ * `flex: 1 1 auto` なので、あふれたときは **基準幅に比例して**縮む。実測 1120px では
+ * 「次の一手」が 160px の見込みに対して 189〜204px を取り、設定欄は予算より 36px 狭く
+ * なって、いちばん右の「≫」が欄の外へこぼれた（`overflow: hidden` なので見えない
+ * ＝ 格子・深さに手が届かない）。いまは **設定欄を縮まない区画にして
+ * （`shell.css` の `flex: 0 0 auto`）、この予算を `max-width` として実際に嵌める** ――
+ * 中身は必ず予算の内側に収まり、余りは「次の一手」が受け取る。
  */
 function settingsBudget(settings: HTMLElement): number {
   const bar = settings.parentElement;
@@ -98,6 +107,16 @@ function settingsBudget(settings: HTMLElement): number {
  * 分からない画面より、設定が「≫」の中にある画面のほうがまだましだからである。
  */
 const NEXT_STEP_RESERVE = 160;
+
+/**
+ * 設定欄の下限（`shell.css` の `.option-bar__settings` の `min-width` と同じ値）。
+ *
+ * 予算がこれを下回る窓幅では、CSS の下限が勝って設定欄はこの幅になる。畳む判断も
+ * その幅で行わないと **入るものまで畳んでしまう**ので、予算の下限として使う。
+ * **同じ値が 2 か所にあるのは承知のうえ**である ―― 片方は CSS の宣言、片方は測り方で、
+ * 値を変えるときは両方を直すこと（`shell.css` 側の注記にも同じ断りを書いた）。
+ */
+const SETTINGS_MIN_WIDTH = 136;
 
 export interface OptionBarProps {
   readonly store: OptionBarStore;
@@ -162,12 +181,20 @@ export function OptionBar(props: OptionBarProps): JSX.Element {
     }
 
     const ids = slotsRef.current.map((s) => s.id);
-    const avail = settingsBudget(box);
+    const raw = settingsBudget(box);
     // **測れない（幅 0）ときは全部そのまま出す**（jsdom / まだ描かれていない）。
-    if (avail <= 0 || ids.length === 0) {
+    // 嵌めた `max-width` も外す ―― 測れない環境で幅を縛ると、中身が理由なく切れる。
+    if (raw <= 0 || ids.length === 0) {
+      box.style.removeProperty('max-width');
       setVisibleCount(null);
       return;
     }
+    // 予算が CSS の下限を下回る窓幅では、下限のほうが勝って設定欄はその幅になる。
+    // 畳む判断も実際になる幅で行う（下回る予算で畳むと、入るものまで畳んでしまう）。
+    const avail = Math.max(raw, SETTINGS_MIN_WIDTH);
+    // **予算をそのまま嵌める。** 設定欄は縮まない区画（`flex: 0 0 auto`）なので、
+    // これで中身は必ず予算の内側に収まり、余りは「次の一手」が受け取る。
+    box.style.maxWidth = `${String(avail)}px`;
     // まだ 1 度も測れていない部品があるうちは判断しない（全部出したまま次の測りを待つ）。
     if (ids.some((id) => !widthsRef.current.has(id))) return;
 

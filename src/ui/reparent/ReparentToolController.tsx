@@ -416,8 +416,15 @@ export function ReparentToolController<S>(
   }, [reparent.targetId, reparent.newParentId, detachConfirmOpen, resolveFeatures]);
   useEffect(() => {
     if (optionBar === undefined || !reparentArmed) return;
+    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
+    // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
+    const epoch = optionBar.epoch();
     optionBar.setTarget(reparentStage, reparentTargetName);
-    return () => optionBar.setTarget(null, null);
+    return () => {
+      if (optionBar.epoch() !== epoch) return;
+      optionBar.setTarget(null, null);
+    };
   }, [optionBar, reparentArmed, reparentStage, reparentTargetName]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and feeds it to

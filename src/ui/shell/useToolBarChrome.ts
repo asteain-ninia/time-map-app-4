@@ -64,11 +64,23 @@ export function useToolBarChrome(options: ToolBarChromeOptions): void {
   // **後片付け関数へ移すと順序の問題そのものが消える。** React は 1 つのコミットの中で
   // **全部の後片付け → 全部の再実行** の順に走らせるので、木の位置に関わらず
   // 「前の道具が空へ戻す → 次の道具が押し込む」になる。印はもう要らない。
+  //
+  // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目）。
+  // 後片付けへ移しただけでは足りなかった ―― 手順のある 5 道具は `activeTool` が外れた
+  // あと **effect の中で**自分の状態を畳む（`resetForSwitch()` → `setState`）ので、
+  // `active` が偽になるのは **次のコミット**である。その 1 コミットのあいだに、同じ
+  // 持ち替えで次の持ち主（`ToolOptionBar` / `SurveyOptionBar`）が帯を持ち直して押し込みを
+  // 済ませているため、遅れて走った後片付けが **次の持ち主の押し込みを踏み消す**
+  // （実測: 5 道具 → 選ぶ／頂点／動かす／測る の 20 通りで、対象欄が「（選んでいません）」で
+  // 固まった）。器の側の「代」（`option-bar.ts` の `epoch()`）が変わっていたら、
+  // それは誰かが帯を持ち直した ＝ 中身はもう空にされている、ということなので何もしない。
   useEffect(() => {
     if (optionBar === undefined || !active) return;
+    const epoch = optionBar.epoch();
     optionBar.setNextStep(nextStep);
     optionBar.setCommit(commit);
     return () => {
+      if (optionBar.epoch() !== epoch) return;
       optionBar.setNextStep(null);
       optionBar.setCommit([]);
     };

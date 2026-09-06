@@ -379,3 +379,43 @@ describe('OptionBarStore — 常設スロット（増分 4）', () => {
     expect(store.get()).toBe(before);
   });
 });
+
+describe('OptionBarStore.epoch — 遅れて走った後片付けが次の持ち主を踏み消さない', () => {
+  // 増分 5 の手直し 2 回目。手順のある 5 道具は `activeTool` が外れたあと **effect の
+  // 中で** 自分の状態を畳むので、後片付けが 1 コミット遅れて走る。そのあいだに次の
+  // 持ち主が帯を持ち直して押し込みを済ませているため、遅れた後片付けが押し込みを
+  // 踏み消した（実測: 5 道具 → 選ぶ／頂点／動かす／測る の 20 通り）。
+  it('claim / 手放しのたびに代が進む', () => {
+    const store = new OptionBarStore();
+    const start = store.epoch();
+    const release = store.claim({});
+    expect(store.epoch()).toBeGreaterThan(start);
+    const mid = store.epoch();
+    release();
+    expect(store.epoch()).toBeGreaterThan(mid);
+  });
+
+  it('代が変わっていなければ、押し込んだ側の後片付けはそのまま効く', () => {
+    const store = new OptionBarStore();
+    store.claim({});
+    const epoch = store.epoch();
+    store.setTarget('手順 2/4', 'アアウェン州');
+    expect(store.epoch()).toBe(epoch); // 押し込みでは代は進まない
+    if (store.epoch() === epoch) store.setTarget(null, null);
+    expect(store.get().target).toEqual({ stage: null, name: null });
+  });
+
+  it('あいだに帯が持ち直されていたら、遅れて走った後片付けは空振りする', () => {
+    const store = new OptionBarStore();
+    // ① 手順のある道具が帯を持ち、対象を押し込む。
+    store.claim({});
+    const stale = store.epoch();
+    store.setTarget('手順 2/4', 'アアウェン州');
+    // ② 同じ持ち替えで次の持ち主が帯を持ち直し、自分の対象を押し込む。
+    store.claim({});
+    store.setTarget(null, 'ハルナ君主国（末端地物）');
+    // ③ 1 コミット遅れて、前の道具の後片付けが走る。**代が違うので何もしない。**
+    if (store.epoch() === stale) store.setTarget(null, null);
+    expect(store.get().target.name).toBe('ハルナ君主国（末端地物）');
+  });
+});

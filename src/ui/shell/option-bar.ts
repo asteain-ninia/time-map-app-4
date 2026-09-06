@@ -173,6 +173,27 @@ export class OptionBarStore {
   private owner: unknown = null;
 
   /**
+   * **帯の「代」**（増分 5 の手直し 2 回目）。{@link claim} と {@link reset} で 1 つ増える。
+   *
+   * **なぜ要るか**: 押し込む側は「自分が入れたものを、自分が降りるときに戻す」という
+   * 対称な書き方をしている（教訓 5.68）。ところが手順のある 5 道具は、`activeTool` が
+   * 外れたあと **effect の中で** 自分の状態を畳む（`resetForSwitch()` → `setState`）ので、
+   * 後片付けが **1 コミット遅れて**走る。その 1 コミットのあいだに、同じ持ち替えで
+   * 次の持ち主（`ToolOptionBar` / `SurveyOptionBar`）が帯を持ち直して押し込みを済ませて
+   * いるため、遅れて走った後片付けが **次の持ち主の押し込みを踏み消す**（実測: 5 道具 →
+   * 選ぶ／頂点／動かす／測る の 20 通りで、対象欄が「（選んでいません）」で固まった）。
+   *
+   * 教訓 5.68 の「印」はコントローラのローカルなので、**いま誰が帯を持っているか**を
+   * 知らない ―― だから印だけでは塞げない。印を **器の側**に置き、
+   * 「押し込んだときの代と、後片付けのときの代が同じなら効かせる」にすると、
+   * 持ち直しをまたいだ後片付けは必ず空振りする。
+   *
+   * 代が変わる契機は「誰かが帯を持ち直した／空へ戻した」ときだけなので、その場合は
+   * どのみち中身が空になっている ―― **効かせないことで消し残る中身は無い**。
+   */
+  private generation = 0;
+
+  /**
    * 設定欄の「いま載っている登録」の印。id ごとに **登録 1 回につき 1 個の Symbol** を
    * 発行して覚えておき、取り外しはこの印が一致するときだけ効かせる（{@link registerOptionSlot}）。
    *
@@ -233,6 +254,14 @@ export class OptionBarStore {
 
   get(): OptionBarState {
     return this.state;
+  }
+
+  /**
+   * いまの「代」を読む（{@link generation} の注記）。押し込む側は押し込む直前に読み、
+   * 後片付けでもう一度読んで **一致するときだけ**空へ戻すこと。
+   */
+  epoch(): number {
+    return this.generation;
   }
 
   /** 購読する。戻り値は解除。（現在値は `get` で取る＝スナップショットは 1 経路。） */
@@ -409,10 +438,12 @@ export class OptionBarStore {
    */
   claim(owner: object): () => void {
     this.owner = owner;
+    this.generation += 1;
     this.reset();
     return () => {
       if (this.owner !== owner) return; // 既に別の道具が持っている ⇒ 何もしない。
       this.owner = null;
+      this.generation += 1;
       this.reset();
     };
   }
