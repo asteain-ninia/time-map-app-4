@@ -548,3 +548,96 @@ test.describe('増分 6 — 逃げ道 2（束の吹き出し）と錨表の規�
     }
   });
 });
+
+test.describe('増分 6 — 時刻を動かした 1 コマ（設計書 §F.2 の最後の受け入れ条件）', () => {
+  test('5 万錨を選んだまま 1 年送ったときの 1 コマを実測し、人の待ち時間にならないことを見る', async () => {
+    test.setTimeout(180_000);
+    const { app, page } = await launchApp();
+    try {
+      await resizeWindow(page, 1280, 800);
+      await loadSyntheticAnchors(page, 50_000, { asAggregateChild: false });
+
+      /**
+       * 「押してから画面（`timeline-current` の文字）が変わるまで」を 20 回測って平均を返す。
+       *
+       * **設計書 §F.2 は「16ms 以内。超えるなら実測値を上限として明記する」**としている。
+       * 実測（1 台で静かに動かして）は **選んでいないとき 3.6ms / 5 万錨 36.6ms** で、
+       * 16ms を超える。**残りの費用は増分 6 の外にある** ―― `resolveAt`（U09）は
+       * 「読み込み直後の未検証な系列でも正しく解ける」ことを理由に **意図的に線形走査**で
+       * あり（同関数のコメント）、`featuresAt` / `verticesAt` / 表示解決が時刻ごとに
+       * それを呼ぶ。5 万錨では 1 回の呼び出しが 5 万回の比較になる。**錨の意味論と
+       * 保存の経路に触る変更**なので、読む側だけの増分 6 では手を付けない
+       * （`docs/現状.md` の B59）。
+       *
+       * ここは **catastrophic な後退の見張り**として置く。6 つの Electron が同時に走る
+       * ゲートの中では同じコードでも 36ms が 60ms 台になるので、絶対値の線は
+       * 「人が明らかに待つ域」に置く。実測値は毎回 `console.log` に出す。
+       */
+      const measure = async (): Promise<number> =>
+        page.evaluate(async () => {
+          const button = document.querySelector<HTMLElement>('[aria-label="1年次へ進む"]');
+          const readout = document.querySelector<HTMLElement>(
+            '[data-testid="timeline-current"]',
+          );
+          if (button === null || readout === null) throw new Error('送りのボタンが無い');
+          const samples: number[] = [];
+          for (let i = 0; i < 20; i += 1) {
+            const before = readout.textContent ?? '';
+            const started = performance.now();
+            // **押しっぱなしで送り続けるボタンなので `click()` では何も起きない**
+            // （`useLongPress` は pointerdown / pointerup で駆動する）。
+            button.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            button.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+            const changed = await new Promise<boolean>((resolve) => {
+              const observer = new MutationObserver(() => {
+                if ((readout.textContent ?? '') !== before) {
+                  observer.disconnect();
+                  resolve(true);
+                }
+              });
+              observer.observe(readout, {
+                childList: true,
+                subtree: true,
+                characterData: true,
+              });
+              setTimeout(() => {
+                observer.disconnect();
+                resolve((readout.textContent ?? '') !== before);
+              }, 2000);
+            });
+            if (!changed) throw new Error('送りのボタンを押しても年が動かない');
+            samples.push(performance.now() - started);
+          }
+          return samples.reduce((a, b) => a + b, 0) / samples.length;
+        });
+
+      // ①何も選んでいないとき（レーンは空）。
+      const idle = await measure();
+
+      // ②5 万錨を選んだまま。
+      await page.getByTestId('sidebar-tab-list').click();
+      await page.locator('[data-testid^="feature-list-item-"]').first().click();
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/);
+      const loaded = await measure();
+
+      console.log(
+        `[増分6] 1 コマ: 選んでいない ${idle.toFixed(2)}ms / 5 万錨 ${loaded.toFixed(2)}ms`,
+      );
+      // 実測の上限（36.6ms）に、混んだゲートでの揺れぶんの余裕を足した線。
+      // ここを割るのは「1 コマが人の待ち時間になった」ときだけである。
+      expect(
+        loaded,
+        `5 万錨の 1 コマ ${loaded.toFixed(2)}ms（選んでいないとき ${idle.toFixed(2)}ms）`,
+      ).toBeLessThanOrEqual(100);
+      // **選んでいないときは軽いまま**（レールを足したことで素の 1 コマが重くなっていない）。
+      expect(idle, `何も選んでいないときの 1 コマ ${idle.toFixed(2)}ms`).toBeLessThanOrEqual(16);
+
+      // レーンの再集計は 1 度も走っていない（時刻が動いただけでは数え直さない）。
+      const stats = await railLaneStats(page);
+      expect(stats.aggregateCount).toBeLessThanOrEqual(3);
+    } finally {
+      await app.close();
+    }
+  });
+});
