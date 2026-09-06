@@ -20,7 +20,12 @@ import { fileURLToPath } from 'node:url';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchAppWithProject, leaveViewMode, openDepthOptions } from '../helpers';
+import {
+  ALL_TOOL_TESTIDS,
+  launchAppWithProject,
+  leaveViewMode,
+  openDepthOptions,
+} from '../helpers';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -46,20 +51,13 @@ function makeRecorder(): {
   };
 }
 
-/** 1 段に並ぶ道具（レールの順）。「測る」は別の軸なので下で個別に掃く。 */
-const RAIL_TOOLS = [
-  'tool-edit.select',
-  'tool-edit.vertex',
-  'tool-edit.move',
-  'tool-add.area',
-  'tool-add.line',
-  'tool-add.point',
-  'tool-edit.ring',
-  'tool-edit.knife',
-  'tool-edit.drill',
-  'tool-edit.reparent',
-  'tool-edit.merge',
-] as const;
+/**
+ * 1 段に並ぶ道具（レールの順）。「測る」は別の軸なので下で個別に掃く。
+ *
+ * **顔ぶれは実装（`ALL_TOOLS`）から引く**（増分 5 の手直し F3）。手で並べていたので、
+ * 道具を足しても spec は古い顔ぶれのまま緑で通った。
+ */
+const RAIL_TOOLS = ALL_TOOL_TESTIDS;
 
 async function activeFeature(page: Page): Promise<string> {
   return ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();

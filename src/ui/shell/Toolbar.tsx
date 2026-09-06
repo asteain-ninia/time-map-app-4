@@ -1,9 +1,15 @@
-// UI layer (U20 / shell): 左のレール ―― 鍵 1 個と、道具の 1 段（設計書 §C.3 / 裁定 1）。
+// UI layer (U20 / shell): 左のレール ―― 道具の 1 段だけ（設計書 §C.3 / 裁定 1）。
 //
 // **増分 5b で何が変わったか**: 「表示専用／追加モード／編集モード」の 3 ボタンを廃し、
 // **鍵 1 個（読むだけ ⇄ 直せる）** ＋ **道具の 1 段** にした。起動して最初にやることが
 // 「表示専用を解除する」という否定形の操作でなくなり、面を描くまでの手数が
 // 「追加モードに入る → 面を選ぶ」の 2 手から「面を押す」の 1 手になる。
+//
+// **増分 5 の手直し D1 で、鍵はレールから出てアプリバーの右端へ戻った**（設計書 §C.1 の
+// 4「鍵／96 固定」）。レールに鍵を置くと、鍵のボタン 32px ＋ 区切り線 ＋ すき間 16px が
+// 道具から高さを奪い、既定の窓（1280×800）でも道具 12 個が縦に入りきらなかった。
+// 鍵の部品は {@link LockButton}、置き場は `AppShell` のアプリバーである。
+// **ここに残るのは道具 12 個（`ALL_TOOLS` の 11 個 ＋ 測る）だけ**になった。
 //
 // **内部の `mode` は消えていない。** 道具から導出する（`tools.ts` の `modeForTool`）:
 //
@@ -17,6 +23,11 @@
 // 群の区切りは 8px のすき間（近接によるまとまり）で作る。**枠は入れない** ―― 88px の
 // レールに枠を足すと、道具のラベルに使える幅がさらに減る。
 //
+// **縦に入りきる寸法の根拠は `shell.css` の `.toolbar` の注記にある**（12 個 × 32px ＋
+// 群の隙間 ＋ 余白 ＝ 442px で、1366×768 の 466.8px に収まる）。ボタンの数と群の数を
+// 変えると縦の予算も変わるので、変えるときは `shell-layout.test.ts` の予算の検査を
+// 一緒に読むこと（`ALL_TOOLS` と `TOOL_GROUPS` から数を引いて計算している）。
+//
 // 「測る」だけは `ToolId` の軸ではなく `store.survey` の軸に居る（U37 §2.1: 補助モードで、
 // **読むだけでも使える**）。設計書 §C.3 は「道具に移す」としているが、`ToolId` にすると
 // 鍵で無効化されて「読むだけでは測れない」になる ―― 測るのは編集ではないので、
@@ -29,7 +40,7 @@ import { SurveyControls } from '../survey/SurveyControls';
 import { Tooltip } from './Tooltip';
 import { TOOL_GROUPS, TOOL_ID } from './tools';
 import { useShell } from './useShell';
-import { LOCK_LABELS, TOOL_LABELS, TOOLTIPS } from './strings';
+import { TOOL_LABELS, TOOLTIPS } from './strings';
 
 export interface ToolbarProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
@@ -40,22 +51,6 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
 
   return (
     <nav className="toolbar" aria-label="ツールバー" data-testid="toolbar">
-      {/* 鍵（設計書 §C.1 の 4）。**K-6 の唯一の判定点**で、閉めると 10 の変更経路が
-          同時に止まる。2 状態とも同じ文字数の枠に収める。
-          HB-16: 吹き出しは付けない（ホバーの泡が押下を邪魔していた＝ユーザー決定
-          2026-06-21）。testid は `mode-view` のまま据え置く（T-1）。 */}
-      <div className="toolbar__lock" data-testid="toolbar-modes" role="group" aria-label="鍵">
-        <button
-          type="button"
-          data-testid="mode-view"
-          aria-pressed={shell.locked}
-          onClick={() => shell.setLocked(!shell.locked)}
-          title={shell.locked ? LOCK_LABELS.lockedHint : LOCK_LABELS.unlockedHint}
-        >
-          {shell.locked ? LOCK_LABELS.locked : LOCK_LABELS.unlocked}
-        </button>
-      </div>
-
       <div className="toolbar__tools" role="group" aria-label="ツール選択" data-testid="toolbar-tools">
         {TOOL_GROUPS.map((group) => (
           <div

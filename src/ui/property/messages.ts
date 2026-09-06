@@ -8,6 +8,10 @@
 
 import { FEATURE_KIND, type FeatureKind } from '../../domain/feature';
 import { MAX_DETAIL_DOCUMENT_LENGTH } from '../../domain/index';
+// 鍵のラベルは `shell/strings.ts` が唯一の置き場（`shell/strings.ts` は何も import
+// しないので循環しない）。下の {@link PROPERTY_STRINGS.viewOnlyNotice} が案内する
+// ボタンの文字と、実際にボタンへ出る文字を**同じ 1 本から取る**（教訓 5.29）。
+import { LOCK_LABELS } from '../shell/strings';
 
 export const PROPERTY_STRINGS = {
   // --- 増分 4: 親（上位領域）欄と、線の長さ（現状.md B27 / G-1 / G-3）---------
@@ -75,7 +79,15 @@ export const PROPERTY_STRINGS = {
   selectedColorLabel: '選択時色',
   borderColorLabel: '境界色',
   saveButton: '保存',
-  viewOnlyNotice: '表示モードです。編集するには編集モードに切り替えてください。',
+  /**
+   * 「読むだけ」のあいだ、保存の列の代わりに出す断り書き。
+   *
+   * **無くなったボタンを指す文にしない**（増分 5 の手直し E1。旧文は「表示モードです。
+   * 編集するには編集モードに切り替えてください。」で、モードの 3 ボタンが鍵 1 個に
+   * 置き換わった増分 5 のあとは、**画面に存在しないボタンへの案内**になっていた）。
+   * 行き先はアプリバーの鍵ひとつなので、その**ボタンに実際に出る文字**をそのまま埋める。
+   */
+  viewOnlyNotice: `いまは読むだけです。直すには上の鍵を「${LOCK_LABELS.unlocked}」にしてください。`,
 
   // -- anchor list / time bar (FR-84 / FR-60) --------------------------------
   anchorSectionTitle: '歴史の錨',

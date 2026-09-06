@@ -59,6 +59,20 @@ export const UI_COMMAND_LABEL = {
   EditNewAnchor: 'editNewAnchor',
   /** 値を変えずに「この年に錨を作る」（Ctrl+K, 増分 2 の中身 3）。 */
   CreateAnchor: 'createAnchor',
+  /**
+   * 輪郭の道具で **穴・飛び地を足した**とき（増分 5 の手直し E3）。
+   *
+   * **⚠️ まだ確定経路へ渡していない。** 輪郭の道具は `App.tsx` の
+   * `createRingEditBootstrap` の中で `createLiveEditBinding({ … })` を **label 無しで**
+   * 呼ぶので、いまは既定の {@link UI_COMMAND_LABEL.Edit} に落ち、穴を 1 つ足しただけで
+   * 状態行に「素性の変更を行いました」と出る（これが E3 の欠陥そのもの）。**残りの
+   * 一手は `App.tsx` 側**で、あの 1 か所に第 2 引数としてこの値を渡すことである
+   * （素性欄の保存が上書き / 新設で `EditOverwrite` / `EditNewAnchor` を渡し分けて
+   * いるのと同じ形。渡し分けるには add / delete で束ねを 2 本に分ける）。
+   */
+  RingAdd: 'ringAdd',
+  /** 輪郭の道具で **穴・飛び地を消した**とき（増分 5 の手直し E3。上と同じ申し送り）。 */
+  RingDelete: 'ringDelete',
 } as const;
 
 export type UiCommandLabel = (typeof UI_COMMAND_LABEL)[keyof typeof UI_COMMAND_LABEL];
@@ -87,6 +101,11 @@ const COMMAND_LABEL_JA: Readonly<Record<string, string>> = {
   [UI_COMMAND_LABEL.EditOverwrite]: 'その年の錨の書き換え',
   [UI_COMMAND_LABEL.EditNewAnchor]: 'その年に錨を作る記録',
   [UI_COMMAND_LABEL.CreateAnchor]: 'この年に錨を作る記録',
+  // 輪郭の道具（増分 5 の手直し E3）。**「リング」は内部語**なので、§H.1 の第一表記
+  // 「穴・飛び地」で言う。追加と削除を分けるのは、状態行が「何をしたか」を言う場所で
+  // あって「どの道具を使ったか」を言う場所ではないからである。
+  [UI_COMMAND_LABEL.RingAdd]: '穴・飛び地の追加',
+  [UI_COMMAND_LABEL.RingDelete]: '穴・飛び地の削除',
   // --- ドメイン側が日本語を入れている 4 か所（そのまま通すが、表に載せて所在を示す） ---
   所属変更: '所属変更',
   地物の削除: '地物の削除',

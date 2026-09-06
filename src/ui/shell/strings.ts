@@ -46,6 +46,12 @@ export const APP_STRINGS = {
     'そこは世界の外です（北緯 90 度より上・南緯 90 度より下には置けません）。地図の中へ動かしてください。',
   shortcutBusy: (label: string): string =>
     `「${label}」はいま使えません。確認に答えてから、もう一度押してください。`,
+  /**
+   * 「◯◯ ▾」の板が開いているあいだの断り（増分 5 の手直し A4）。
+   * **止めている理由が違えば、次の一手も違う** ―― 確認は「答える」、板は「閉じる」である。
+   */
+  shortcutBusyPopover: (label: string): string =>
+    `「${label}」はいま使えません。開いている板を閉じてから（Esc）、もう一度押してください。`,
   mapAriaLabel: 'メインマップ領域',
   /**
    * 「必ず描く」が働いたときの知らせ（増分 4 / 設計書 §D.6 の規則 2・§H.5）。
@@ -95,7 +101,10 @@ export const MENU_ITEM_LABELS = {
   'edit.delete': '削除',
   'edit.deselect': '選択解除',
   'edit.createAnchorHere': 'この年に錨を作る',
-  'view.toggleViewMode': '表示専用モード切替',
+  // 増分 5 の手直し E1: モードの 3 ボタンが鍵 1 個になったので、**同じ働きの 3 つの
+  // 名前を 1 つにする**（鍵のボタン・メニュー・右クリック）。右クリックの
+  // `map/MapContextMenu.tsx` は元からこの写像表を引いているので、置き場は 1 本のまま。
+  'view.toggleViewMode': '読むだけ ⇄ 直せる',
   'view.zoomIn': '拡大',
   'view.zoomOut': '縮小',
   'view.fitAll': '全体表示',
@@ -112,12 +121,10 @@ export const MENU_ITEM_LABELS = {
   'help.diagnostics': '診断情報',
 } as const;
 
-/** Mode toggle labels (FR-75). */
-export const MODE_LABELS = {
-  add: '追加モード',
-  edit: '編集モード',
-  view: '表示専用',
-} as const;
+// `MODE_LABELS`（追加モード／編集モード／表示専用）は増分 5 の手直し E1 で **消した**。
+// モードの 3 ボタンは鍵 1 個（下の {@link LOCK_LABELS}）に置き換わったので、この 3 語は
+// 画面のどこからも参照されていなかった ―― 画面に出ない文言を定数表へ残すと、次に読む
+// 人が「まだそういうボタンがある」と読んでしまう（`docs/現状.md` B38）。
 
 /**
  * 鍵（読むだけ ⇄ 直せる）の文言（増分 5b / 設計書 §C.1 の 4 / §H.1）。
@@ -131,6 +138,12 @@ export const LOCK_LABELS = {
   locked: '🔒 読むだけ',
   /** 鍵が開いている（＝直せる）ときにボタンへ出る文字。押すと閉じる。 */
   unlocked: '🔓 直せる',
+  /**
+   * **画面には出さない。** 鍵にはツールチップも `title` も付けない（設計書 §H.2 /
+   * HB-16: ホバーの泡が押下を邪魔していた＝ユーザー決定 2026-06-21）。この 2 つは
+   * **メニューの吹き出しの言い方を揃えるための元**として残してある（`TOOLTIPS` の
+   * 「読むだけ ⇄ 直せる」がここを引く）。使い先が無くなったら消すこと。
+   */
   lockedHint: 'いまは読むだけです。押すと直せるようになります。',
   unlockedHint: 'いまは直せます。押すと読むだけになります。',
 } as const;
@@ -230,6 +243,13 @@ export const OPTION_BAR_STRINGS = {
   // 「台帳」は内部語。画面の第一表記は「地物一覧」（設計書 §H.1）。
   defaultNextStep: '地図か地物一覧から選ぶ',
   noSettings: '（設定なし）',
+  /**
+   * 設定欄の「入り切らないぶん」の畳み（設計書 §B.4。増分 5 の手直し D2）。
+   * **記号は §B.4 の表記そのまま**で、記号だけでは読み上げられないので読み上げ名を別に持つ。
+   */
+  overflowLabel: '≫',
+  overflowAriaLabel: '入り切らない設定',
+  overflowPanelAriaLabel: '入り切らない設定',
 } as const;
 
 /**
@@ -354,7 +374,11 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'edit.redo': '取り消した操作をやり直します',
   'edit.delete': '選択中の地物を削除します',
   'edit.deselect': '地物と頂点の選択を解除します',
-  'view.toggleViewMode': '編集を無効にして閲覧専用にします',
+  // 増分 5 の手直し E1: 「閲覧専用」は鍵の語ではない。鍵の {@link LOCK_LABELS} の
+  // `lockedHint` / `unlockedHint` と同じ言い方に揃える（メニューは押す前の静的な説明なので、
+  // 2 状態のどちらか一方ではなく、鍵が何を分けているかを言う）。
+  'view.toggleViewMode':
+    '読むだけと直せるを切り替えます（読むだけでは国境を動かせません。読む・選ぶ・年を動かすことはできます）',
   'view.zoomIn': '地図を拡大します',
   'view.zoomOut': '地図を縮小します',
   'view.fitAll': '現在の年に存在する全地物が収まる視点に戻します',
@@ -375,17 +399,22 @@ export const TOOLTIPS: Readonly<Record<string, string>> = {
   'help.about': 'アプリの情報を表示します',
   'help.shortcuts': 'キーボードショートカットの一覧を表示します',
   'help.diagnostics': 'エラーログとアプリ概況の診断情報を表示します',
-  'add.point': '地図上に点地物を追加します',
-  'add.line': '地図上に線地物を追加します',
-  'add.area': '地図上に面地物を追加します',
-  'edit.select': '地物を選択します',
-  'edit.vertex': '頂点を編集します',
-  'edit.move': '地物を移動します',
-  'edit.knife': '地物を分割します',
-  'edit.reparent': '地物の所属を変更します',
-  'edit.merge': '複数の地物を結合します',
-  'edit.ring': '面に穴や飛び地を追加、または穴・領土リングを削除します',
-  'edit.drill': '末端地物をくり抜いて新しい地物を生成します',
+  // 道具の吹き出しは **レールのラベル（{@link TOOL_LABELS}）と語幹を揃える**
+  // （増分 5 の手直し E2）。旧版はレールが「分ける」「結ぶ」「穴あけ」なのに吹き出しが
+  // 「分割します」「結合します」「くり抜いて」で、同じ道具が 2 通りの名前で呼ばれていた。
+  // 「領土リング」は §H.1 の第一表記「穴・飛び地」へ。**「末端地物」は別件（`docs/現状.md`
+  // B54）で増分 8E 送りなので、ここでは触らない**。
+  'add.point': '地図を押して点を置きます',
+  'add.line': '地図を押して線を描きます',
+  'add.area': '地図を押して面を描きます',
+  'edit.select': '地物をまるごと選びます（塗りをドラッグすると動きます）',
+  'edit.vertex': '頂点と辺を選んで動かします（足す・消すもできます）',
+  'edit.move': '地物をまるごと動かします',
+  'edit.knife': '地物を分けます（分断線を引きます）',
+  'edit.reparent': '地物の所属（上位領域）を変えます',
+  'edit.merge': '複数の地物を 1 つに結びます',
+  'edit.ring': '面に穴・飛び地を足したり、消したりします',
+  'edit.drill': '末端地物に穴をあけて、そこを新しい地物にします',
   // HB-16: the mode-toggle tooltips (mode.add / mode.edit) were removed — the
   // left toolbar's mode buttons no longer render a Tooltip (ユーザー決定 2026-06-21).
 } as const;

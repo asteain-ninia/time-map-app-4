@@ -1449,6 +1449,14 @@ function BundleBar(props: {
           >
             {BUNDLE_STRINGS.prevLabel}
           </button>
+          {/* **どのまとまりを順に見ているのかを名前で出す**（増分 5 の手直し E3 /
+              バグ狩り #19）。旧版は「3 / 220」という数だけで、**名札がどこにも無かった**
+              ―― 220 件の作業を何日かに分けて片付けるとき、いま何のまとまりを開いて
+              いるのかが分からない（作った式も保存ファイルの中にしか無い）。まとまりを
+              作るときに必ず名前を決めている（既定は「作業」）のだから、それを出す。 */}
+          <span className="ledger__bundle-label" data-testid="bundle-label" title={bundle.label}>
+            {bundle.label}
+          </span>
           <span className="ledger__bundle-position" data-testid="bundle-position">
             {BUNDLE_STRINGS.position(bundle.cursor + 1, bundle.members.length)}
           </span>

@@ -26,10 +26,16 @@ export interface MenuBarProps {
    * platform; injectable so tests pin a platform without a DOM (HB-2 根本対応).
    */
   readonly platform?: Platform;
+  /**
+   * メニューが開いた／閉じたことの報せ（増分 5 の手直し D4 / 設計書 §D.1 の「鍵盤の
+   * 持ち主」）。**`openKey` が `null` かどうかが変わったときだけ**呼ぶ ―― メニューを
+   * 「ファイル」から「編集」へ渡り歩いても、開いていることに変わりはないので報せない。
+   */
+  readonly onOpenChange?: (open: boolean) => void;
 }
 
 export function MenuBar(props: MenuBarProps): JSX.Element {
-  const { registry, mode } = props;
+  const { registry, mode, onOpenChange } = props;
   // Resolve once per mount: "Ctrl" on Windows/Linux, "⌘" on macOS — never "Mod".
   const platform = useMemo(() => props.platform ?? detectPlatform(), [props.platform]);
   const [openKey, setOpenKey] = useState<string | null>(null);
@@ -42,7 +48,14 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
   useEffect(() => {
     if (openKey === null) return;
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') setOpenKey(null);
+      if (e.key !== 'Escape') return;
+      // **捕捉段で受けて、そこで止める**（増分 5 の手直し D4）。バブル段で聞いていた
+      // 頃は、大域の Escape（選択を外す・道具を戻す＝設計書 §D.4 の階段）と同時に走り、
+      // **メニューを閉じた 1 回の Escape で選択まで外れて**いた。捕捉段は大域の
+      // window リスナーより先に走るので、ここで `stopPropagation()` すれば
+      // 「開いているものを閉じる」だけで 1 段が終わる。
+      e.stopPropagation();
+      setOpenKey(null);
     };
     const onDown = (e: PointerEvent): void => {
       // A click inside the bar (re-open/switch/dispatch) is handled by the
@@ -53,15 +66,34 @@ export function MenuBar(props: MenuBarProps): JSX.Element {
       }
       setOpenKey(null);
     };
-    window.addEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
     // Defer the outside-click listener so the opening click does not self-close.
     const t = setTimeout(() => window.addEventListener('pointerdown', onDown), 0);
     return () => {
-      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onKey, true);
       window.removeEventListener('pointerdown', onDown);
       clearTimeout(t);
     };
   }, [openKey]);
+
+  // 開閉の報せ（増分 5 の手直し D4）。**開いているかどうかが変わったときだけ**呼ぶ。
+  //
+  // 報せ口は ref 越しに読む（`OptionPopover` と同じ作法）。依存に関数そのものを入れると、
+  // 呼び出し側が毎レンダー新しい関数を渡した瞬間に後片付けと登録が毎回走り、開いて
+  // いるのに `false` が流れる。**部品ごと消えるときも閉じたことにする** ―― 開いたまま
+  // 消えると、呼び出し側の「鍵盤の持ち主」がメニューのまま固まって戻らない（K-5）。
+  const open = openKey !== null;
+  const openChangeRef = useRef(onOpenChange);
+  openChangeRef.current = onOpenChange;
+  useEffect(() => {
+    openChangeRef.current?.(open);
+  }, [open]);
+  useEffect(
+    () => () => {
+      openChangeRef.current?.(false);
+    },
+    [],
+  );
 
   return (
     <div

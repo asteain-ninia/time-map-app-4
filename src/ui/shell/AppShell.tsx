@@ -20,6 +20,7 @@ import { buildDefaultKeymap } from './default-keymap';
 import { useShortcuts } from './useShortcuts';
 
 import { MenuBar } from './MenuBar';
+import { LockButton } from './LockButton';
 import { Toolbar } from './Toolbar';
 import { MapContainer } from './MapContainer';
 import { Sidebar, type SidebarProps } from './Sidebar';
@@ -90,6 +91,12 @@ export interface AppShellProps<S> {
    * 持っているときだけ**呼び出し側が渡す。
    */
   readonly onSuspendedShortcut?: ((id: CommandId) => void) | undefined;
+  /**
+   * メニューが開いた／閉じたことの報せ（増分 5 の手直し D4 / 設計書 §D.1 の「鍵盤の
+   * 持ち主」）。メニューを開いているあいだは鍵盤の持ち主がメニューになるので、呼び出し
+   * 側が `focusOwner` を 1 か所で導出できるように口だけ開けておく。
+   */
+  readonly onMenuOpenChange?: (open: boolean) => void;
 }
 
 export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
@@ -107,6 +114,7 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
     suspended = false,
     alwaysAllowedShortcuts,
     onSuspendedShortcut,
+    onMenuOpenChange,
   } = props;
 
   const registry = useMemo(() => props.registry ?? new CommandRegistry(), [props.registry]);
@@ -131,7 +139,11 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
   return (
     <div className="app-shell" data-testid="app-shell">
       <header className="app-shell__menubar">
-        <MenuBar registry={registry} mode={mode} />
+        <MenuBar
+          registry={registry}
+          mode={mode}
+          {...(onMenuOpenChange ? { onOpenChange: onMenuOpenChange } : {})}
+        />
         {/* 設計書 §H.6: どのファイルを開いていて未保存かどうかが常に見えるようにする。
             メニューバー行の通常フロー要素なので、地図には重ならない。 */}
         {appIdentity != null && (
@@ -151,6 +163,19 @@ export function AppShell<S>(props: AppShellProps<S>): JSX.Element {
             {topBar}
           </div>
         )}
+
+        {/* 鍵（設計書 §C.1 の 4）。**アプリバーのいちばん右の 96px の固定枠**に置く。
+            **K-6 の唯一の判定点**で、閉めると変更経路がまとめて止まる（顔ぶれの表は
+            `view-only-gate.test.tsx` の `CHANGE_PATHS`。**数はここに書かない** ――
+            経路は増えるものなので、書くと必ず古くなる）。
+            2 状態（読むだけ／直せる）とも同じ 96px の枠に文字が切れずに収まる
+            （寸法は `shell.css` の `.app-shell__lock` が持つ）。
+            増分 5 の手直し D1 まではここではなく左のレールの一番上に居て、それが
+            レールが縦にあふれる根だった（道具 12 個ぶんの高さを鍵が削っていた）。
+            `topBar` が `margin-left: auto` で右へ寄るので、鍵はそのさらに右になる。 */}
+        <div className="app-shell__lock" data-testid="app-shell-lock">
+          <LockButton store={store} />
+        </div>
       </header>
 
       {/* 設計書 §C.4 のオプションバー行。地図セルの外の通常フロー行なので、地図の入力層を

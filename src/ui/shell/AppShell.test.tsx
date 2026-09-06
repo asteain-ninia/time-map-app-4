@@ -13,7 +13,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import { AppShell } from './AppShell';
 import { CommandRegistry, COMMAND_ID } from './commands';
 import { ALL_TOOLS, TOOL_ID } from './tools';
-import { LOCK_LABELS } from './strings';
+import { LOCK_LABELS, TOOLTIPS } from './strings';
 
 type S = Record<string, never>;
 
@@ -117,6 +117,43 @@ describe('AppShell layout (FR-111, 受け入れ基準 1)', () => {
     for (const key of ['file', 'edit', 'view', 'tools', 'help']) {
       expect(screen.getByTestId(`menu-${key}`)).toBeInTheDocument();
     }
+  });
+
+  // 増分 5 の手直し D1（設計書 §C.1 の 4）。**鍵はアプリバーの右端の 96px 枠**に居る。
+  // レールに置いていたときは、鍵のぶんの高さが道具から奪われてレールが縦にあふれていた。
+  it('鍵はアプリバーの中にあり、左のレールには居ない（設計書 §C.1 の 4）', () => {
+    render(<AppShell store={makeStore()} />);
+    const lock = screen.getByTestId('mode-view');
+    const frame = screen.getByTestId('app-shell-lock');
+    // 器は鍵の **直接の親**（E2E もこの入れ子を読む）。
+    expect(lock.parentElement).toBe(frame);
+    // 器はアプリバーの中で、レールの中ではない。
+    expect(screen.getByTestId('menubar').closest('header')).toContainElement(frame);
+    expect(screen.getByTestId('toolbar')).not.toContainElement(lock);
+  });
+
+  // 手直し D1: レールに並ぶのは **道具 12 個（ALL_TOOLS の 11 個 ＋ 測る）だけ**。
+  it('レールに並ぶボタンは道具 12 個だけ（鍵は混ざらない）', () => {
+    render(<AppShell store={makeStore()} />);
+    const rail = screen.getByTestId('toolbar');
+    const buttons = rail.querySelectorAll('button');
+    expect(buttons).toHaveLength(ALL_TOOLS.length + 1);
+    expect(rail.querySelector('[data-testid="survey-toggle"]')).not.toBeNull();
+    expect(rail.querySelector('[data-testid="mode-view"]')).toBeNull();
+  });
+
+  // 手直し D4（設計書 §D.1 の「鍵盤の持ち主」）。メニューの開閉を呼び出し側へ通す口。
+  it('メニューの開閉が onMenuOpenChange で外へ伝わる', () => {
+    const onMenuOpenChange = vi.fn();
+    render(<AppShell store={makeStore()} onMenuOpenChange={onMenuOpenChange} />);
+    // 取り付け直後は「閉じている」が 1 回流れる。
+    expect(onMenuOpenChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByTestId('menu-file'));
+    expect(onMenuOpenChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByTestId('menu-file'));
+    expect(onMenuOpenChange).toHaveBeenLastCalledWith(false);
   });
 });
 
@@ -256,7 +293,13 @@ describe('tooltips (FR-112, 受け入れ基準 6)', () => {
     const wrapper = screen
       .getByTestId(`tool-${TOOL_ID.AddPoint}`)
       .closest('.tooltip') as HTMLElement;
-    const tip = screen.getByText('地図上に点地物を追加します');
+    // **文言そのものを直書きしない**（開発ガイド §5.64。増分 5 の手直し E2 で吹き出しを
+    // レールの語幹へ揃えたとき、直書きしていたこの 1 行だけが置き去りになって落ちた）。
+    // 見たいのは「日本語の説明が出るか」であって「その日本語が何か」ではないので、
+    // 画面と同じ定数から引く。
+    const expectedTip = TOOLTIPS[TOOL_ID.AddPoint];
+    expect(expectedTip, '点を置く道具に吹き出しの説明が無い').toBeDefined();
+    const tip = screen.getByText(expectedTip as string);
     expect(tip).toHaveAttribute('hidden');
     fireEvent.mouseEnter(wrapper);
     expect(tip).not.toHaveAttribute('hidden');
@@ -270,17 +313,20 @@ describe('tooltips (FR-112, 受け入れ基準 6)', () => {
     expect(screen.getByTestId('mode-view')).toHaveTextContent(LOCK_LABELS.locked);
   });
 
-  // HB-16: the left toolbar's mode-toggle buttons must NOT be wrapped in a
-  // Tooltip (the hover bubble obstructed the click). The tool buttons keep theirs.
-  it('鍵には吹き出しの包みが無い（HB-16）', () => {
+  // HB-16 / 設計書 §H.2: 鍵のボタンには吹き出しを付けない（ホバーの泡が押下を邪魔して
+  // いた）。道具のボタンには付ける。
+  it('鍵には吹き出しの包みが無く、ネイティブの吹き出し（title）も付いていない', () => {
     render(<AppShell store={makeStore(EDIT_MODE.Edit)} />);
     const btn = screen.getByTestId('mode-view');
     expect(btn.closest('.tooltip')).toBeNull();
-    // 群そのものにも泡は無い（testid は据え置き＝T-1。class は鍵 1 個になったので
-    // `toolbar__lock` へ変わった）。
-    const group = screen.getByTestId('toolbar-modes');
-    expect(group.querySelector('[role="tooltip"]')).toBeNull();
-    expect(group.querySelector('.tooltip')).toBeNull();
+    // **`title` も付けない**（増分 5 の手直し D1）。増分 5b の実装には `title` が残って
+    // いて、設計書 §H.2「鍵のボタンにはツールチップを付けない」と静かにすれ違っていた。
+    expect(btn).not.toHaveAttribute('title');
+    // 枠そのものにも泡は無い（鍵はレールからアプリバーの 96px 枠へ移った＝手直し D1。
+    // testid `mode-view` は役割が同じなので据え置き＝T-1）。
+    const frame = screen.getByTestId('app-shell-lock');
+    expect(frame.querySelector('[role="tooltip"]')).toBeNull();
+    expect(frame.querySelector('.tooltip')).toBeNull();
   });
 
   it('鍵は実クリックで view ⇄ edit を往復する（HB-16 / 設計書 §D.1 の導出式）', () => {

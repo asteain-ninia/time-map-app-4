@@ -71,6 +71,14 @@ body {
    * 長さで幅が変わると、上部バーの折り返し段数が中身で変わって地図の上端が動く。
    * K-3 は「帯の中身が変わっても地図がずれない」なので、幅を中身から切り離す。 */
   --shell-identity-w: 240px;
+  /* 鍵（読むだけ ⇄ 直せる）の **固定** 占有幅（設計書 §C.1 の 4「96 固定」）。
+   * 2 状態（`🔒 読むだけ` ／ `🔓 直せる`）で文字数が 1 つ違うが、**どちらも同じ 96px の
+   * 枠に収める** ―― 中身で幅が変わると、鍵を開け閉めするたびにアプリバーの右端が
+   * 動き、隣の 経度シフト の畳み段まで変わる（K-3）。
+   * 内訳（12px の文字で数えた）: 枠の左右余白 4×2 ＝ 8 ／ ボタンの左右 padding 4×2 ＝ 8
+   * ／ 枠線 1×2 ＝ 2 を引いて、文字に使えるのは 78px。いちばん長い「🔒 読むだけ」は
+   * 絵文字 1 ＋ 半角空白 ＋ 全角 4 文字 ≒ 15 ＋ 3 ＋ 48 ＝ 約 66px なので 12px 余る。 */
+  --shell-lock-w: 96px;
   /* 固定行の高さ（増分 5a / 設計書 §B.0 の行の表）。**高さの真実源はここ 1 か所**で、
    * 行そのもの（`grid-template-rows`）も中身（`.app-shell__menubar` ほか）も同じ変数を読む。
    *
@@ -178,7 +186,14 @@ body {
    * 列トラックが整数に解決されない環境（devicePixelRatio 1.25）では、各セルに
    * 書かれた `min-width` のほうが下限として効き、行の合計が窓幅を 0.8px 超える。
    * 根は `.app-shell__main` 側で断った（`minmax(0, 1fr)` ＋ 各セルの `min-width: 0`）ので、
-   * この `overflow-x: hidden` は「道具の帯そのものが横に溢れたとき」だけの守りになった。 */
+   * この `overflow-x: hidden` は「道具の帯そのものが横に溢れたとき」だけの守りになった。
+   *
+   * **`overflow-y: auto` は 800×600 のための明示である**（手直し D2）。1280×800 と
+   * 1366×768 では道具 12 個が縦に収まる（`.toolbar` の縦の予算を参照）ので、この宣言は
+   * 効かない ―― スクロールバーが出たらそれは予算が崩れた印で、E2E が
+   * 「レールに縦スクロールバーが出ない」で赤くする。**最小の窓（800×600）だけは
+   * どうやっても収まらない**ので、そこでは「隠す」（`hidden`）のではなく「送れる」
+   * （`auto`）状態にして、どの道具にも手が届くようにしてある。 */
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -286,6 +301,61 @@ body {
   color: var(--c-chrome-text);
 }
 
+/* --- 鍵の枠（設計書 §C.1 の 4。増分 5 の手直し D1）---------------------------
+ *
+ * アプリバーの **いちばん右**の 96px 固定枠。`.app-shell__topbar` が
+ * `margin-left: auto` で右へ寄るので、その更に右がここになる。
+ *
+ * **縮ませない**（`flex: 0 0 …`）。鍵は K-6 の唯一の判定点で、「いま直せるのかどうか」が
+ * 読めなくなると安全側の判断ができない。押し出されたぶんは topbar（経度シフト）が
+ * 自分の畳み段で引き受ける ―― 鍵が入ったぶん、畳みは 96px ぶん早く始まる。
+ *
+ * **2 状態とも同じ枠**（--shell-lock-w の注記に内訳）。中身で幅が変わらないので、
+ * 鍵を開け閉めしてもアプリバーの並びは 1px も動かない（K-3）。 */
+.app-shell__lock {
+  flex: 0 0 var(--shell-lock-w);
+  width: var(--shell-lock-w);
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  overflow: hidden;
+}
+
+.app-shell__lock-button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 24px;
+  padding: 3px 4px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  text-align: center;
+  /* 切れないことは E2E（`scrollWidth <= clientWidth`）が見る。ここで折り返さないのは、
+     折り返すとアプリバーの 32px を突き破るからである。 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--c-chrome-text);
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.app-shell__lock-button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+/* 閉じている（＝読むだけ）ほうを目立たせる。**押されている状態が「止まっている」側**
+   なので、色が付くのは鍵が閉じているときである。 */
+.app-shell__lock-button[aria-pressed='true'] {
+  background: #b26a00;
+  border-color: #d98c1f;
+  color: #fff;
+}
+
 /* Menu bar: a single horizontal dark band (FR-111). The five menus sit in a row
  * (the wireframe stacked them vertically because the items had no flex row). */
 .menubar {
@@ -360,29 +430,55 @@ body {
   font-size: 11px;
 }
 
-/* 左のレール（増分 5b / 設計書 §C.3）: 鍵 1 個 ＋ 道具の 1 段。
+/* 左のレール（増分 5b ＋ 手直し D2 / 設計書 §C.3）: **道具の 1 段だけ**。
  *
  * 群の区切りは **8px のすき間**（近接によるまとまり）で作る。枠線は入れない ――
- * 88px のレールに枠を足すと、道具の名前に使える幅がさらに減る。 */
+ * 88px のレールに枠を足すと、道具の名前に使える幅がさらに減る。
+ *
+ * --- 縦の予算（手直し D2）------------------------------------------------------
+ *
+ * レールに使える高さは「窓の高さ − アプリバー 32 − オプションバー 40 − 時刻レール −
+ * 状態行 28」である。時刻レールは **いま 201.2px**（112px に縮めるのは中身を作り直す
+ * 増分 6）なので:
+ *
+ *     1280×800 → 800 − 32 − 40 − 201.2 − 28 = 498.8px
+ *     1366×768 → 768 − 32 − 40 − 201.2 − 28 = 466.8px
+ *      800×600 → 600 − 32 − 40 − 201.2 − 28 = 298.8px
+ *
+ * 中身の高さは **442px**:
+ *
+ *     上下の余白 6×2 = 12
+ *     群と群のすき間 8×4 = 32（群は 選ぶ／描く／形を変える／関係を変える／調べる の 5 つ）
+ *     群の中のすき間 2×7 = 14
+ *     ボタン 32×12 = 384（道具 11 個 ＋ 測る）
+ *     ------------------------------------------------ 合計 442
+ *
+ * したがって 1280×800（56.8px 余る）でも 1366×768（24.8px 余る）でも **縦スクロールバーは
+ * 出ない**。ここが崩れる直し方は 3 つあって、どれも `shell-layout.test.ts` の
+ * 「レールの縦の予算」の検査が赤くする: ①ボタンの `min-height` を上げる ②
+ * `box-sizing: border-box` を外す（padding と枠線が高さの外へ出て 1 個 44px になる ――
+ * **手直し D2 の前はこれで、12 個で 590px あってどの窓でもあふれていた**）③群やボタンを
+ * 増やす。
+ *
+ * **800×600 だけは収まらない**（298.8px に 442px は入らない。12 個を入れるには 1 個
+ * 23px になり、U-8 の下限「高さ 30px 以上」を割る）。**そこは「隠す」のではなく
+ * 「送れる」ようにする** ―― `.app-shell__toolbar` の `overflow-y: auto` を残し、
+ * 最小の窓では縦に送って全部の道具へ手が届く形にした（設計書 §B.3 は 800×600 を
+ * could とし、実用下限を 1024×700 と明記している）。増分 6 で時刻レールが 112px に
+ * なると 388px になるので、それでもなお 442px は入らない ―― 800×600 でボタンを
+ * 縦に全部並べるのは、U-8 の下限を守るかぎり構造的に無理である。 */
 .toolbar {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 8px 4px;
+  padding: 6px 4px;
   min-width: 0;
 }
 
-.toolbar__lock,
 .toolbar__tools {
   display: flex;
   flex-direction: column;
   min-width: 0;
-}
-
-/* 鍵と道具のあいだだけは線で区切る（役割が違うので、すき間だけでは弱い）。 */
-.toolbar__tools {
-  border-top: 1px solid var(--c-border);
-  padding-top: 8px;
   gap: 8px;
 }
 
@@ -394,17 +490,40 @@ body {
   min-width: 0;
 }
 
+/* 道具のボタンは吹き出しの包み（`.tooltip`）越しに置かれ、「測る」は測量の器
+   （`.survey-controls`）越しに置かれる。**どちらも縦 1 列の器として振る舞わせる** ――
+   既定の `display: inline-block` / `display: flex`（横並び）のままだと、中のボタンが
+   内容幅にしか広がらず、行ごとに幅が違って読みにくいうえ、インライン整形文脈の
+   ベースラインのすき間が 1 行あたり数 px 積もって縦の予算を静かに食う。 */
+.toolbar .tooltip,
+.toolbar .survey-controls {
+  display: block;
+  min-width: 0;
+}
+
 .toolbar button {
   font: inherit;
-  /* 88px の中に収める。中身で幅が変わらないよう、はみ出しは切って `title` へ逃がす。 */
+  /* 設計書 §C.3 の「文字 12px」。13px のままだと「測量モード」（全角 5 文字 ＝ 65px）が
+     文字に使える 72px にほとんど余裕なく収まり、環境差で切れる。 */
+  font-size: 12px;
+  display: block;
+  width: 100%;
+  /* **padding と枠線を高さ・幅の内側に入れる。** これが無いと `min-height: 32px` は
+     「中身だけで 32px」になり、実際のボタンは 32 ＋ padding 8 ＋ 枠線 2 ＝ 42px になる
+     （上の縦の予算がそのぶん崩れる）。 */
+  box-sizing: border-box;
+  /* 88px の中に収める。中身で幅が変わらないよう、はみ出しは切る。
+     切れていないことは E2E が `scrollWidth <= clientWidth` で見る。
+     文字に使えるのは 88 − 枠線 1（レールの右） − レールの余白 4×2 − ボタンの
+     padding 4×2 − ボタンの枠線 1×2 ＝ 71px。いちばん長い「測量モード」で 60px。 */
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
   text-align: left;
-  /* U-8 の下限（高さ 30px 以上）。 */
-  min-height: 30px;
-  padding: 6px 6px;
+  /* U-8 の下限（高さ 30px 以上）を満たしつつ、12 個が 1366×768 に収まる高さ。 */
+  min-height: 32px;
+  padding: 4px 4px;
   background: var(--c-surface);
   color: var(--c-text);
   border: 1px solid var(--c-border-strong);
@@ -819,8 +938,21 @@ body {
   cursor: pointer;
 }
 
-.ledger__bundle-position {
+/* まとまりの名札（増分 5 の手直し E3 / バグ狩り #19）。名前は長くなりうるので、
+   縮む役はこちらが引き受け、位置（「3 / 220」）は縮ませない ―― 何件中の何件目かは
+   まとまりの名前より先に読めなければならない。 */
+.ledger__bundle-label {
   flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--c-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ledger__bundle-position {
+  flex: 0 0 auto;
   min-width: 0;
   text-align: center;
   font-size: 11px;
@@ -1676,6 +1808,78 @@ body {
 .option-bar__commit-button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 設定欄に差し込まれた部品 1 個の包み。
+ *
+ * **縮ませない**（`flex: 0 0 auto`）。縮む作りだと、幅が足りないときに部品が
+ * 「潰れて中の文字が切れる」形で辻褄を合わせてしまい、**入り切っていないことが
+ * 実測に現れなくなる** ―― 「≫」へ送る判断（`OptionBar.tsx` が各部品の実測幅を足して
+ * 決める）が、潰れたあとの幅を見て「全部入っている」と誤読する。入らないときは
+ * はみ出させ、はみ出したぶんを「≫」へ送るのが正しい形である。 */
+.option-bar__slot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* --- 設定欄の畳み「≫」（増分 5 の手直し D3 / 設計書 §B.4）--------------------
+ *
+ * 入り切らない部品を送る先。**どこへ送るかは実測で決まる**（`OptionBar.tsx`）ので、
+ * ここが持つのは見た目だけである。
+ *
+ * ボタンは狭い枠のためにいちばん小さく作るが、**押せる大きさは保つ**（幅 24px 以上）。
+ * U-8 の下限（幅 60px 以上）は「確定」など言葉を持つボタンの話で、記号 1 文字の
+ * 送り口をその幅にすると設定欄の半分を占めてしまう。 */
+.option-bar__overflow-button {
+  flex: 0 0 auto;
+  min-width: 24px;
+  min-height: 26px;
+  padding: 3px 5px;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.option-bar__overflow-button[aria-expanded='true'] {
+  background: var(--c-accent-weak);
+  border-color: var(--c-accent);
+}
+
+/* **`hidden` は `display: flex` に負ける**（開発ガイド §5.56）。クラスの `display` は
+   属性セレクタの `[hidden] { display: none }` より優先度が高いので、明示的に打ち消さないと
+   **閉じているはずのパネルが 0,0 に居座って地図とタブのクリックを奪う**（K-2）。
+   吸着 ▾ と同じ事故を、新しく足すこの 1 枚でも踏まないための併記である。 */
+.option-bar__overflow-panel[hidden] {
+  display: none;
+}
+
+/* 帯（`.option-bar`）は `overflow: hidden` なので、`position: absolute` で下へ伸ばすと
+   切れる。`position: fixed` にすると **祖先の overflow では切り取られない**（切り取るのは
+   transform / filter / contain を持つ祖先だけで、シェルにはそれが無い）。座標は開いた
+   瞬間にアンカーの矩形から出す（`OptionBar.tsx`）。**背面を覆う板は置かない**（K-2）。 */
+.option-bar__overflow-panel {
+  position: fixed;
+  z-index: 60;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px;
+  background: var(--c-panel);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
 }
 
 /* --- 吸着 ▾ ポップオーバー（設計書 §C.4 / 増分 3）--------------------------

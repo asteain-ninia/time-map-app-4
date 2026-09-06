@@ -89,6 +89,38 @@ test.describe('HB-5 — 不要なスクロールバーが出ない (live shell)'
       await page.waitForTimeout(1000);
       const shell = page.getByTestId('app-shell');
       await expect(shell).toBeVisible();
+
+      // **画素の比較と並べて、機械検査も置く**（増分 5 の手直し D5）。
+      //
+      // 画素の比較は `maxDiffPixelRatio: 0.02` を許すので、**幅 15px の縦スクロールバーが
+      // 1 本増えても差分の割合が閾値に届かず、緑のまま通りうる**。しかも基準画像そのものが
+      // 「スクロールバーが出ている姿」を正しい姿として焼き付けてしまうと、以後は永久に
+      // 気づけない（開発ガイド §5.63 と同じ型の落とし穴）。数で読める不変条件は数で読む。
+      const bars = await page.evaluate(() => {
+        const measure = (sel: string): { v: number; h: number } => {
+          const el = document.querySelector(sel);
+          if (el === null) throw new Error(`要素が無い: ${sel}`);
+          return {
+            v: el.scrollHeight - el.clientHeight,
+            h: el.scrollWidth - el.clientWidth,
+          };
+        };
+        return {
+          // 窓そのもの（HB-5 の本体。上の 2 本の検査と同じ不変条件を、画像の隣にも置く）。
+          document: measure('html'),
+          // 左のレール（増分 5 の手直し D2。道具 12 個が縦に収まっている ―― 手直しの前は
+          // ここが 91px あふれ、基準画像にも縦スクロールバーが写っていた）。
+          rail: measure('.app-shell__toolbar'),
+        };
+      });
+      expect(bars.document.v, '窓に縦スクロールバーが出ている').toBeLessThanOrEqual(1);
+      expect(bars.document.h, '窓に横スクロールバーが出ている').toBeLessThanOrEqual(1);
+      expect(
+        bars.rail.v,
+        `左のレールが縦に ${bars.rail.v}px あふれている（道具が窓の外に出ている）`,
+      ).toBeLessThanOrEqual(1);
+      expect(bars.rail.h, '左のレールが横にあふれている').toBeLessThanOrEqual(1);
+
       await expect(shell).toHaveScreenshot('shell-no-scrollbars.png', {
         maxDiffPixelRatio: 0.02,
       });

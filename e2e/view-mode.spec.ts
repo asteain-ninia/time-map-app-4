@@ -14,6 +14,7 @@
 import { test, expect } from '@playwright/test';
 
 import {
+  ALL_TOOL_TESTIDS,
   addInputLayerBox,
   commitOneFace,
   drawFace,
@@ -23,27 +24,9 @@ import {
   squareCorners,
 } from './helpers';
 
-/**
- * 1 段に並ぶ道具の testid（増分 5b）。**読むだけの関門は「全部灰色」で見る** ――
- * 旧版は「そのモードの道具が出ているか」で見ていたが、道具はモードで入れ替わらなく
- * なったので、出ているかどうかでは何も分からない。
- */
-const ALL_TOOL_TESTIDS = [
-  'tool-edit.select',
-  'tool-edit.vertex',
-  'tool-edit.move',
-  'tool-add.area',
-  'tool-add.line',
-  'tool-add.point',
-  'tool-edit.ring',
-  'tool-edit.knife',
-  'tool-edit.drill',
-  'tool-edit.reparent',
-  'tool-edit.merge',
-] as const;
 
-test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (live UI)', () => {
-  test('boot in View: edit tools disabled, then the toolbar 表示専用 toggle enables 追加モード and a face is added via the real UI', async () => {
+test.describe('HB-4 — 鍵を「直せる」にすると道具が使えるようになる (live UI)', () => {
+  test('起動直後は道具が全部灰色で、鍵を開けると押せるようになり、実 UI で面を 1 つ置ける', async () => {
     const { app, page } = await launchApp();
     try {
       // 1. BOOT STATE — the composite starts in 表示専用 (View). The named導線
@@ -56,7 +39,13 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
       await expect(viewToggle).toBeEnabled();
       await expect(viewToggle).toHaveAttribute('aria-pressed', 'true');
       for (const tool of ALL_TOOL_TESTIDS) {
-        await expect(page.getByTestId(tool), `${tool} が読むだけで押せる`).toBeDisabled();
+        // 断りの文は **落ちたときに読む**ものなので、「起きてはいけないことが起きた」
+        // と書く（増分 5 の手直し F3。「押せない」と書くと、落ちた画面で
+        // 「押せないのが正しいのに落ちた？」と読めてしまう）。
+        await expect(
+          page.getByTestId(tool),
+          `読むだけなのに ${tool} が押せてしまう`,
+        ).toBeDisabled();
       }
 
       // 2. LEAVE View through the live导线 (a real click on the toolbar button).
@@ -97,7 +86,7 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
     }
   });
 
-  test('the 表示 menu 表示専用モード切替 command is registered + enabled and flips the mode (named導線 ViewToggleViewMode)', async () => {
+  test('the 表示 menu「読むだけ ⇄ 直せる」command is registered + enabled and flips the mode (named導線 ViewToggleViewMode)', async () => {
     const { app, page } = await launchApp();
     try {
       await expect(page.getByTestId('app-mode')).toHaveText('view');
@@ -143,7 +132,10 @@ test.describe('HB-4 — 表示専用解除で編集ツールが活性化する (
     try {
       // No tooltip wrapper (data-testid="tooltip") or role="tooltip" bubble inside the mode group.
       // **増分 5b**: この群に居るのは鍵 1 個だけになった（testid は据え置き＝T-1）。
-      const modeGroup = page.getByTestId('toolbar-modes');
+      // **増分 5 の手直し D1**: その鍵はレールからアプリバー右端の 96px 枠へ移った
+      // （司令塔の決定 (1)。設計書 §C.1-4）。役割は同じなので `mode-view` は据え置き、
+      // 器の testid だけが `toolbar-modes` → `app-shell-lock` に変わる。
+      const modeGroup = page.getByTestId('app-shell-lock');
       await expect(modeGroup).toBeVisible();
       await expect(modeGroup.getByTestId('tooltip')).toHaveCount(0);
       await expect(modeGroup.locator('[role="tooltip"]')).toHaveCount(0);
@@ -182,7 +174,7 @@ test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03
   // 所有者の裁定「読むだけでも選べる・読める・直せない」に合わせて、鍵を閉めても
   // 選択を保つようにしたので（`store.setMode`）、素性欄は地物を出したまま、値を変える
   // 入力と削除ボタンだけが無効になる。上の注記が予告していた書き換えである。
-  test('表示専用でも選択と素性欄は残り、削除ボタンは出るが押せない', async () => {
+  test('読むだけでも選択と素性欄は残り、削除ボタンは出るが押せない', async () => {
     const { app, page } = await launchApp();
     try {
       const { faceId, cx, cy } = await commitOneFace(page);

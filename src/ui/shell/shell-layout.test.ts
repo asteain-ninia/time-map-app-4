@@ -17,6 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { readSourceText } from '../../test-support/read-source-text';
+import { ALL_TOOLS, TOOL_GROUPS } from './tools';
 
 // 改行は `readSourceText` が LF に揃える。この作業ツリーは CRLF と LF が混ざり、しかも
 // その違いは git の差分に現れないので、揃えないと複数行セレクタの照合が環境次第で外れる。
@@ -67,6 +68,13 @@ function decl(body: string, prop: string): string | undefined {
   const re = new RegExp(`(?:^|;)\\s*${prop}\\s*:\\s*([^;]+?)\\s*(?:;|$)`, 'm');
   const m = re.exec(body);
   return m ? m[1]?.replace(/\s+/g, ' ').trim() : undefined;
+}
+
+/** `12px` のような宣言値を数にする（単位が px でなければ落とす）。 */
+function px(value: string | undefined, what: string): number {
+  const m = /^(-?[\d.]+)px$/.exec(value ?? '');
+  if (m === null) throw new Error(`px で書かれていない: ${what} = ${String(value)}`);
+  return Number(m[1]);
 }
 
 describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）', () => {
@@ -297,5 +305,144 @@ describe('狭い窓での状態行（D2 — 最小窓で「直前の結果」が
     expect(widths).toHaveLength(4);
     const total = widths.reduce((a, b) => a + b, 0);
     expect(total + 200 + 32 + 20).toBeLessThanOrEqual(800);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5 の手直し D — シェルの寸法と畳み
+// ---------------------------------------------------------------------------
+
+describe('鍵はアプリバー右端の 96px 固定枠（手直し D1 / 設計書 §C.1 の 4）', () => {
+  it('枠は 96px 固定で、中身の長さで占有幅が変わらない', () => {
+    // **2 状態で文字数が違う**（`🔒 読むだけ` は 4 文字、`🔓 直せる` は 3 文字）。枠を
+    // 中身に合わせると、鍵を開け閉めするたびにアプリバーの右端が動き、隣の 経度シフト の
+    // 畳み段まで変わる（K-3）。だから枠は固定で、中身だけ差し替える。
+    const lock = ruleBody('.app-shell__lock');
+    expect(decl(lock, 'flex')).toBe('0 0 var(--shell-lock-w)');
+    expect(decl(lock, 'width')).toBe('var(--shell-lock-w)');
+    expect(decl(lock, 'box-sizing')).toBe('border-box');
+    expect(decl(lock, 'overflow')).toBe('hidden');
+    // 幅そのものはシェルの変数 1 か所で決める（素性表示・レールと同じ作法）。
+    expect(decl(ruleBody('.app-shell'), '--shell-lock-w')).toBe('96px');
+  });
+
+  it('鍵のボタンは枠いっぱいで、折り返さない（アプリバーの 32px を突き破らない）', () => {
+    const button = ruleBody('.app-shell__lock-button');
+    expect(decl(button, 'width')).toBe('100%');
+    expect(decl(button, 'box-sizing')).toBe('border-box');
+    expect(decl(button, 'white-space')).toBe('nowrap');
+    expect(decl(button, 'overflow')).toBe('hidden');
+  });
+
+  it('アプリバーの高さは 32px のまま（鍵が入っても行は伸びない）', () => {
+    expect(decl(ruleBody('.app-shell'), '--shell-appbar-h')).toBe('32px');
+    expect(decl(ruleBody('.app-shell__menubar'), 'height')).toBe('var(--shell-appbar-h)');
+  });
+
+  it('レールに鍵の規則がもう無い（引っ越しの取り残しが無い）', () => {
+    // 引っ越したのに古い規則が残ると、次に読む人がどちらが現物か分からなくなる。
+    expect(shellCss).not.toContain('.toolbar__lock');
+  });
+});
+
+describe('左のレールは道具 12 個が縦に収まる（手直し D2 / 設計書 §C.3）', () => {
+  /**
+   * 時刻レールの実測の高さ。**CSS には書かれていない**（行は `auto` で、高さは中身が
+   * 決める）ので、ここだけは実測値を置く。設計書 §B.4 は 112px 固定と定めているが、
+   * 中身を作り直すのは増分 6 なので、**いまは 201.2px がレールの予算を決めている**。
+   * 増分 6 で 112px になったら、この定数を下げるとレールの余裕が 89.2px 増える。
+   */
+  const TIMELINE_H = 201.2;
+
+  /** 群ごとのボタンの数（レールの並びの単一の真実源から引く）。 */
+  const groupSizes = [...TOOL_GROUPS.map((g) => g.tools.length), 1 /* 調べる（測る） */];
+
+  it('レールの幅は 88px（シェルの変数 1 か所）', () => {
+    expect(decl(ruleBody('.app-shell'), '--shell-toolbar-w')).toBe('88px');
+    expect(decl(ruleBody('.app-shell__main'), 'grid-template-columns')).toBe(
+      'var(--shell-toolbar-w) minmax(0, 1fr) var(--shell-sidebar-w)',
+    );
+  });
+
+  it('道具のボタンは padding と枠線を高さの内側に入れる（border-box）', () => {
+    // **これが手直し D2 の本体である。** `box-sizing` が既定（content-box）だと
+    // `min-height: 32px` は「中身だけで 32px」の意味になり、実物は 32 ＋ padding 8 ＋
+    // 枠線 2 ＝ 42px になる。12 個で 120px の差になり、既定の窓でもレールがあふれた。
+    const button = ruleBody('.toolbar button');
+    expect(decl(button, 'box-sizing')).toBe('border-box');
+    // U-8 の下限（高さ 30px 以上）は守る。
+    expect(px(decl(button, 'min-height'), '.toolbar button の min-height')).toBeGreaterThanOrEqual(
+      30,
+    );
+  });
+
+  it('12 個ぶんの高さが 1366×768 のレールに収まる（縦スクロールバーが出ない）', () => {
+    const shell = ruleBody('.app-shell');
+    const toolbar = ruleBody('.toolbar');
+    const tools = ruleBody('.toolbar__tools');
+    const group = ruleBody('.toolbar__group');
+    const button = ruleBody('.toolbar button');
+
+    const buttonCount = groupSizes.reduce((a, b) => a + b, 0);
+    // 道具 11 個（`ALL_TOOLS`）＋「測る」1 個。**数の真実源は tools.ts の側**なので、
+    // 道具を足したらこの検査が自動で広がる（＝足した瞬間に予算が赤くなる）。
+    expect(buttonCount).toBe(ALL_TOOLS.length + 1);
+
+    const padTop = px(
+      decl(toolbar, 'padding')?.split(' ')[0],
+      '.toolbar の padding（縦）',
+    );
+    const content =
+      padTop * 2 +
+      px(decl(tools, 'gap'), '.toolbar__tools の gap') * (groupSizes.length - 1) +
+      px(decl(group, 'gap'), '.toolbar__group の gap') *
+        groupSizes.reduce((a, n) => a + (n - 1), 0) +
+      px(decl(button, 'min-height'), '.toolbar button の min-height') * buttonCount;
+
+    const fixedRows =
+      px(decl(shell, '--shell-appbar-h'), '--shell-appbar-h') +
+      px(decl(shell, '--shell-optionbar-h'), '--shell-optionbar-h') +
+      px(decl(shell, '--shell-status-h'), '--shell-status-h') +
+      TIMELINE_H;
+
+    // 既定の窓（1280×800）と、いちばん縦の狭い実用窓（1366×768）の 2 つで見る。
+    for (const height of [800, 768]) {
+      const rail = height - fixedRows;
+      expect(
+        content,
+        `窓の高さ ${height}px でレールがあふれる（中身 ${content}px / 枠 ${rail}px）`,
+      ).toBeLessThanOrEqual(rail);
+    }
+  });
+
+  it('最小の窓（800×600）は収まらないので「送れる」ようにしてある', () => {
+    // 12 個を 298.8px に入れるとボタン 1 個 23px で、U-8 の下限（30px 以上）を割る。
+    // **隠すのではなく送れるようにする**のがここでの決めごと（`overflow-y: auto`）。
+    expect(decl(ruleBody('.app-shell__toolbar'), 'overflow-y')).toBe('auto');
+    expect(decl(ruleBody('.app-shell__toolbar'), 'overflow-x')).toBe('hidden');
+  });
+});
+
+describe('設定欄の畳み「≫」（手直し D3 / 設計書 §B.4）', () => {
+  it('部品は縮まない（潰れて「入っている」ように見えない）', () => {
+    // 縮む作りだと、幅が足りないときに部品が潰れて辻褄を合わせてしまい、
+    // **入り切っていないことが実測に現れない** ―― 「≫」へ送る判断が誤読する。
+    expect(decl(ruleBody('.option-bar__slot'), 'flex')).toBe('0 0 auto');
+  });
+
+  it('パネルは `[hidden]` の打ち消しを併記している（教訓 5.56 / K-2）', () => {
+    // クラスの `display: flex` は属性セレクタの `[hidden] { display: none }` に勝つ。
+    // 打ち消しを書き忘れると、閉じているのに画面左上に居座って下のクリックを奪う。
+    expect(decl(ruleBody('.option-bar__overflow-panel[hidden]'), 'display')).toBe('none');
+    const panel = ruleBody('.option-bar__overflow-panel');
+    // 帯は `overflow: hidden` なので、`fixed` でないと下へ伸ばした瞬間に切れる。
+    expect(decl(panel, 'position')).toBe('fixed');
+  });
+
+  it('「≫」ボタンは押せる大きさを持つ', () => {
+    const button = ruleBody('.option-bar__overflow-button');
+    expect(px(decl(button, 'min-height'), '≫ の min-height')).toBeGreaterThanOrEqual(24);
+    expect(px(decl(button, 'min-width'), '≫ の min-width')).toBeGreaterThanOrEqual(24);
+    expect(decl(button, 'flex')).toBe('0 0 auto');
   });
 });

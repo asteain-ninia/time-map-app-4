@@ -33,6 +33,13 @@ import {
 } from 'playwright';
 import { expect } from '@playwright/test';
 
+// **道具の一覧は実装から引く**（増分 5 の手直し F3 / 教訓 5.29 単一真実源）。
+// 3 つの spec がレールの 11 個をそれぞれ手で並べていたので、道具を足したり順を変えたり
+// したときに **spec だけが古いまま緑で通る**（走らせている顔ぶれが減ったことに誰も
+// 気づけない）。`ALL_TOOLS` は `src/ui/shell/tools.ts` の並び順の単一の真実源である。
+import { ALL_TOOLS } from '../src/ui/shell/tools';
+
+
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
@@ -774,3 +781,10 @@ export async function loadSyntheticProject(page: Page, count: number): Promise<v
     harness.loadSyntheticProject(n);
   }, count);
 }
+
+
+/**
+ * 1 段に並ぶ道具の `data-testid`（レールの順）。**「測る」は別の軸**（`survey-toggle`）
+ * なので入っていない ―― 入れると「鍵で灰色になるか」の検査が測るまで巻き込む。
+ */
+export const ALL_TOOL_TESTIDS: readonly string[] = ALL_TOOLS.map((t) => `tool-${t}`);

@@ -102,8 +102,14 @@ test.describe('増分 5a — 固定行のシェル（地図セルは窓の大き
           `窓幅 ${t.width} で地図の上端が動いた（${first.top} → ${t.top}）`,
         ).toBe(first.top);
       }
-      // 「上端 = アプリバー 32 ＋ オプションバー 40」であることも確かめる。数字を
-      // 直書きするのではなく、行そのものの実寸から組み立てる（数字の写しを作らない）。
+      // 「上端 = アプリバー 32 ＋ オプションバー 40」であることも確かめる。
+      // **ここは 32 と 40 を直書きしている**（増分 5 の手直し E4 でコメントを実物に
+      // 合わせた。旧版は「数字を直書きせず実寸から組み立てる」と書いていたが、下の 3 行は
+      // どれも数字そのものを期待値にしていて、書いてあることと逆だった）。直書きなのは
+      // わざとで、この 2 つの高さは `shell.css` の `--shell-appbar-h` /
+      // `--shell-optionbar-h` が決める **仕様の数字**だからである ―― 実寸から組み立てると
+      // 「両方いっしょにずれた」ときに緑のまま通る（開発ガイド §5.49）。
+      // 数字を変えるときは css と一緒にここも直す。
       const appBar = await rectOf(page, 'app-shell-identity');
       expect(appBar.height).toBeLessThanOrEqual(32);
       const optionBar = await rectOf(page, 'option-bar');
@@ -512,7 +518,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       await expect(page.getByTestId('knife-confirm-cut')).toBeVisible();
       // **地図の上ではなく帯の中に居る**（これが N-27 / E-2 の中身）。
       await expect(commitSlot).toContainText('分断線を確定');
-      await expect(optionBar).toContainText('最後の頂点を取り消す');
+      await expect(optionBar).toContainText('1 つ戻す');
       await expect(page.getByTestId('map-area')).not.toContainText('分断線を確定');
       await page.keyboard.press('Escape');
 
@@ -594,6 +600,295 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('survey-coords-panel')).toBeHidden();
       expect(new Set(await scanMapGrid(page))).toEqual(new Set(['survey-input-layer']));
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5 の手直し D — シェルの寸法と畳み（D1 鍵の引っ越し / D2 レール / D3 「≫」）
+// ---------------------------------------------------------------------------
+//
+// **どれも実寸を測る。** 「入り切っているか」「文字が切れていないか」は、レイアウトを
+// 計算する環境でしか分からない（開発ガイド §5.49）。CSS の宣言そのものを読む契約テストは
+// `src/ui/shell/shell-layout.test.ts` が持ち、こちらは実物を測る。
+
+/** 器が縦にあふれている量（`overflow-y: auto` の器なら、正なら縦スクロールバーが出る）。 */
+async function verticalOverflow(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (el === null) throw new Error(`要素が無い: ${sel}`);
+    return el.scrollHeight - el.clientHeight;
+  }, selector);
+}
+
+/** 実際に縦スクロールバーが出ている幅（器の外寸 − 内寸 − 枠線）。 */
+async function scrollbarWidth(page: Page, selector: string): Promise<number> {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!(el instanceof HTMLElement)) throw new Error(`要素が無い: ${sel}`);
+    const cs = getComputedStyle(el);
+    const border = parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth);
+    return el.offsetWidth - el.clientWidth - border;
+  }, selector);
+}
+
+/**
+ * 窓の大きさを変えたあと、対象の矩形が落ち着くまで待つ。**固定の待ち時間は環境で揺れる**
+ * （増分 4 の全件ゲートの教訓）ので「同じ値が 2 回続いたら止まった」で待つ。
+ */
+async function settleLayout(page: Page, testId: string): Promise<void> {
+  let last = '';
+  await expect
+    .poll(async () => {
+      const box = await page.getByTestId(testId).boundingBox();
+      const now = box === null ? '' : `${box.x},${box.y},${box.width},${box.height}`;
+      const stable = now !== '' && now === last;
+      last = now;
+      return stable;
+    })
+    .toBe(true);
+}
+
+test.describe('手直し D1 — 鍵はアプリバー右端の 96px 枠', () => {
+  test('鍵はアプリバーの中の 96px 枠に居て、2 状態とも文字が切れない', async () => {
+    // **わざと壊すなら**: `AppShell.tsx` の `<div className="app-shell__lock">` を
+    // `Toolbar.tsx` へ戻すと「親が app-shell-lock でない」で赤くなる。
+    // `shell.css` の `--shell-lock-w` を 72px へ下げると「文字が切れている」で赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect(page.getByTestId('mode-view')).toBeVisible();
+      await settleLayout(page, 'app-shell-lock');
+
+      // ① 鍵の **直接の親**が 96px の枠で、その枠はアプリバーの中に居る。
+      const placement = await page.getByTestId('mode-view').evaluate((el) => ({
+        parent: el.parentElement?.getAttribute('data-testid') ?? '',
+        inAppBar: el.closest('.app-shell__menubar') !== null,
+        inRail: el.closest('[data-testid="toolbar"]') !== null,
+      }));
+      expect(placement.parent).toBe('app-shell-lock');
+      expect(placement.inAppBar, '鍵がアプリバーの外に居る').toBe(true);
+      expect(placement.inRail, '鍵がまだ左のレールに居る').toBe(false);
+
+      // ② 枠はアプリバーの **いちばん右**。
+      const bar = await page.locator('.app-shell__menubar').boundingBox();
+      expect(bar).not.toBeNull();
+      const frameBefore = await rectOf(page, 'app-shell-lock');
+      expect(
+        Math.abs(frameBefore.x + frameBefore.width - (bar!.x + bar!.width)),
+        '鍵がアプリバーの右端に付いていない',
+      ).toBeLessThanOrEqual(1);
+
+      // ③ **2 状態とも同じ 96px の枠**で、どちらも文字が切れない。
+      for (const expectedMode of ['view', 'edit'] as const) {
+        await expect(page.getByTestId('app-mode')).toHaveText(expectedMode);
+        const frame = await rectOf(page, 'app-shell-lock');
+        expect(frame.width, `${expectedMode} で鍵の枠が 96px でない`).toBe(96);
+        const clip = await page
+          .getByTestId('mode-view')
+          .evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
+        expect(
+          clip.scroll,
+          `${expectedMode} で鍵の文字が切れている（${clip.scroll} > ${clip.client}）`,
+        ).toBeLessThanOrEqual(clip.client);
+        if (expectedMode === 'view') await page.getByTestId('mode-view').click();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し D2 — 左のレールは縦に収まり、文字も切れない', () => {
+  test('1280×800 でも 1366×768 でも、レールに縦スクロールバーが出ない', async () => {
+    // **わざと壊すなら**: `shell.css` の `.toolbar button` から `box-sizing: border-box`
+    // を外す（1 個 32 → 42px になる）か `min-height` を 36px 以上へ上げると、
+    // 1366×768 のほうから赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('toolbar')).toBeVisible();
+      for (const [width, height] of [
+        [1280, 800],
+        [1366, 768],
+      ] as const) {
+        await page.setViewportSize({ width, height });
+        await settleLayout(page, 'toolbar');
+
+        const over = await verticalOverflow(page, '.app-shell__toolbar');
+        expect(
+          over,
+          `${width}×${height} でレールが縦に ${over}px あふれている`,
+        ).toBeLessThanOrEqual(1);
+        // あふれの実害は「スクロールバーが出て道具の幅がさらに痩せる」ことなので、
+        // 出ていないことそのものも測る。
+        const bar = await scrollbarWidth(page, '.app-shell__toolbar');
+        expect(
+          bar,
+          `${width}×${height} でレールに縦スクロールバーが出ている（${bar}px）`,
+        ).toBeLessThanOrEqual(1);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('レールには道具 12 個だけが並び、どれも文字が切れない', async () => {
+    // **わざと壊すなら**: `strings.ts` の道具名を長くする（例「✥ 動かす」→
+    // 「✥ 地物を動かす」）か、`shell.css` の `.toolbar button` の `font-size: 12px` を
+    // 消す（13px に戻る）と「文字が切れている」で赤くなる。
+    // 鍵をレールへ戻すと「12 個でない」で赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      await page.setViewportSize({ width: 1280, height: 800 });
+      await expect(page.getByTestId('toolbar')).toBeVisible();
+      await settleLayout(page, 'toolbar');
+
+      const report = await page.evaluate(() => {
+        const rail = document.querySelector('[data-testid="toolbar"]');
+        if (rail === null) throw new Error('レールが無い');
+        const buttons = Array.from(rail.querySelectorAll('button'));
+        return {
+          ids: buttons.map((b) => b.getAttribute('data-testid') ?? '?'),
+          clipped: buttons
+            .filter((b) => b.scrollWidth > b.clientWidth)
+            .map((b) => ({
+              id: b.getAttribute('data-testid') ?? '?',
+              text: (b.textContent ?? '').trim(),
+              scroll: b.scrollWidth,
+              client: b.clientWidth,
+            })),
+        };
+      });
+
+      // 道具 11 個（ALL_TOOLS）＋「測る」1 個。鍵はアプリバーへ引っ越した（D1）。
+      expect(report.ids, `レールのボタン: ${report.ids.join(' / ')}`).toHaveLength(12);
+      expect(report.ids).not.toContain('mode-view');
+      expect(report.ids).toContain('survey-toggle');
+      expect(
+        report.clipped,
+        `文字が切れている道具: ${JSON.stringify(report.clipped)}`,
+      ).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し D3 — 設定欄の畳み「≫」', () => {
+  test('どの窓幅でも設定欄の部品は枠に収まり、「表示 ▾」に必ず手が届く', async () => {
+    // **親の `scrollWidth` では捕まらない**（設定欄は `overflow: hidden` なので、
+    // 中の部品が切り落とされていても親の内寸と一致してしまう ―― 開発ガイド §5.49 の型）。
+    // だから **部品ごとの矩形を枠の矩形と突き合わせる**。
+    //
+    // **わざと壊すなら**: `OptionBar.tsx` の畳みを外す（`visibleCount` を常に `null` に
+    // する）と、狭い窓で「設定欄からはみ出した部品」が出て赤くなる。
+    // `shell.css` の `.option-bar__slot` の `flex: 0 0 auto` を消すと、部品が潰れて
+    // はみ出しは消えるが、代わりに「表示 ▾ に手が届く」ほうが（潰れて押せず）赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      await expect(page.getByTestId('option-bar-settings')).toBeVisible();
+
+      for (const width of [800, 960, 1120, 1280, 1920]) {
+        await page.setViewportSize({ width, height: 800 });
+        await settleLayout(page, 'option-bar-settings');
+
+        // ---- ① 部品の矩形が設定欄の矩形の中にある。
+        const report = await page.evaluate(() => {
+          const box = document.querySelector('[data-testid="option-bar-settings"]');
+          if (box === null) throw new Error('設定欄が無い');
+          const frame = box.getBoundingClientRect();
+          const escapees: { id: string; left: number; right: number }[] = [];
+          for (const el of Array.from(box.querySelectorAll('[data-testid]'))) {
+            const r = el.getBoundingClientRect();
+            if (r.width === 0 && r.height === 0) continue; // 出ていない部品は数えない
+            if (r.left < frame.left - 1 || r.right > frame.right + 1) {
+              escapees.push({
+                id: el.getAttribute('data-testid') ?? '?',
+                left: Math.round(r.left),
+                right: Math.round(r.right),
+              });
+            }
+          }
+          return {
+            frame: { left: Math.round(frame.left), right: Math.round(frame.right) },
+            escapees,
+          };
+        });
+        expect(
+          report.escapees,
+          `窓幅 ${width} で設定欄（${report.frame.left}〜${report.frame.right}）から` +
+            `はみ出した部品: ${JSON.stringify(report.escapees)}`,
+        ).toEqual([]);
+
+        // ---- ② 「表示 ▾」には必ず手が届く（帯に出ているか、「≫」を開けば出る）。
+        //
+        // これが手直し D3 の目的そのものである。畳む前は、狭い窓で「表示 ▾」が
+        // **切り落とされて画面から消えて**いた（切れていることすら見えない）。
+        const display = page.getByTestId('option-display-button');
+        const overflow = page.getByTestId('option-bar-overflow');
+        let openedOverflow = false;
+        if (!(await display.isVisible())) {
+          await expect(
+            overflow,
+            `窓幅 ${width} で「表示 ▾」が帯から消えたのに「≫」が出ていない`,
+          ).toBeVisible();
+          await overflow.click();
+          await expect(page.getByTestId('option-bar-overflow-panel')).toBeVisible();
+          openedOverflow = true;
+        }
+        await expect(display, `窓幅 ${width} で「表示 ▾」に手が届かない`).toBeVisible();
+        await expect(display).toBeEnabled();
+
+        // 実際に押せる（重なって奪われていない）ことまで見る。
+        await display.click();
+        await expect(page.getByTestId('option-display-panel')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(page.getByTestId('option-display-panel')).toBeHidden();
+        if (openedOverflow) {
+          await page.keyboard.press('Escape');
+          await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('K-2: 「≫」は開いていても閉じていても地図の当たりを奪わない', async () => {
+    // 教訓 5.56（`[hidden]` はクラスの `display` に負ける）を、新しく足したこの 1 枚にも
+    // 掛ける。**閉じた状態でしか捕まらない事故**なので、開閉の両方を走査する。
+    //
+    // **わざと壊すなら**: `shell.css` の `.option-bar__overflow-panel[hidden]` の規則を
+    // 消すと、閉じているのにパネルが画面左上に居座り、ここが赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      // 「≫」が出るまで窓を狭める（畳みは窓幅だけで決まる＝設計書 §B.4）。
+      await page.setViewportSize({ width: 800, height: 600 });
+      await expect(page.getByTestId('map-area')).toBeVisible();
+      await settleLayout(page, 'option-bar-settings');
+
+      const overflow = page.getByTestId('option-bar-overflow');
+      if ((await overflow.count()) === 0) {
+        // 設定欄に載っている部品が少なくて畳む必要が無い窓では、この検査は空振りする。
+        // そのときは「パネルが存在しないこと」だけ確かめて終える（居座りようがない）。
+        await expect(page.getByTestId('option-bar-overflow-panel')).toHaveCount(0);
+        return;
+      }
+
+      // 閉じているあいだ: 25 点すべてが地図の入力層。
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
+
+      await overflow.click();
+      await expect(page.getByTestId('option-bar-overflow-panel')).toBeVisible();
+      for (const hit of await scanMapGrid(page)) {
+        expect(['map-input-layer', 'popover:option-bar-overflow-panel']).toContain(hit);
+      }
+
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['map-input-layer']));
     } finally {
       await app.close();
     }
