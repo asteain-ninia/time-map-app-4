@@ -181,6 +181,8 @@ export {
   type QualifierStage,
   ledgerWindow,
   scrollTopForRow,
+  type RevealDecision,
+  revealSelectedRow,
   foldForFilter,
   compactCoordinate,
   buildLedgerRows,

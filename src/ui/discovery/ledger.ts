@@ -153,6 +153,48 @@ export function scrollTopForRow(
   return scrollTop;
 }
 
+/** 「選んだ行を窓に入れたか」の印と、入れるなら新しいスクロール位置。 */
+export interface RevealDecision {
+  /** どの地物のために入れたかの印（次に渡し直す）。 */
+  readonly revealedFor: FeatureId | null;
+  /** 入れるなら新しいスクロール位置。**動かさないなら null**。 */
+  readonly scrollTop: number | null;
+}
+
+/**
+ * 選んだ行を窓に入れるか決める（2026-09-06、最終手直し）。
+ *
+ * **入れるのは「選んでいる地物が変わったとき」だけである。** 旧版は「行を組み直したら
+ * もう一度入れる」形だったので、離れた行の 👁 を押して 1 件隠す ―― つまり **選択は
+ * 何も変わっていない** ―― だけで、一覧が選択行の位置へ跳ね戻った（実測。状態行が
+ * 出て器が縮むぶん、跳ね幅も大きい）。押した行が目の前から消えるのは、押した人から
+ * 見れば「押したものと関係ない場所へ飛ばされた」であり、E2E も同じ理由で揺れた。
+ *
+ * `rowIndex` が負（行がまだ無い）のときは **印を進めない**。閉じた親の下に居る地物を
+ * Ctrl+P で選んだ直後がこれで、親が開いて行が現れた組み直しの回に、そこで初めて入れる。
+ */
+export function revealSelectedRow(input: {
+  /** いま選んでいる地物（無ければ null）。 */
+  readonly activeFeature: FeatureId | null;
+  /** 前回の印（`RevealDecision.revealedFor` をそのまま渡す）。 */
+  readonly revealedFor: FeatureId | null;
+  /** 行の位置。**まだ行が無いなら負**（`findIndex` の -1 をそのまま渡してよい）。 */
+  readonly rowIndex: number;
+  /** いまのスクロール位置。 */
+  readonly scrollTop: number;
+  /** 窓の高さ（レイアウトを持たない環境なら 0）。 */
+  readonly viewportHeight: number;
+}): RevealDecision {
+  const { activeFeature, revealedFor, rowIndex, scrollTop, viewportHeight } = input;
+  // 選択が外れたら印も落とす（選び直したときにまた入れられるように）。
+  if (activeFeature === null) return { revealedFor: null, scrollTop: null };
+  // 選択が変わっていない ＝ 行の組み直しなので、視点を動かさない。
+  if (revealedFor === activeFeature) return { revealedFor, scrollTop: null };
+  if (rowIndex < 0) return { revealedFor, scrollTop: null };
+  const next = scrollTopForRow(rowIndex, scrollTop, viewportHeight);
+  return { revealedFor: activeFeature, scrollTop: next === scrollTop ? null : next };
+}
+
 /** 絞り込みの正規化（検索と同じ折りたたみ規則: NFKC ＋ 小文字化）。 */
 export function foldForFilter(s: string): string {
   return s.normalize('NFKC').toLowerCase();

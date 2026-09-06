@@ -1,10 +1,11 @@
 // 地物一覧（台帳）の行の組み立て（増分 4 / 設計書 §C.5 / C4 / FR-111 = R9）。
 //
-// ここで固定するのは 4 つ:
+// ここで固定するのは 5 つ:
 //   1. **階層のたたみ込み**（木・平・展開・絞り込みで先祖を残す）
 //   2. **重複名の見分けが 3 段で足りるまで上がる**（〈親名〉→ 階層のみち → 通し番号と座標）
 //   3. **仮想スクロールの窓**（5,000 行でも描くのは窓に入るぶん＋前後 2 行だけ）
 //   4. **行の高さが 1 種類**（28px。揃っていないと窓の計算が成り立たない）
+//   5. **選んだ行を窓に入れるのは「選択が変わったとき」だけ**（行の組み直しでは動かさない）
 
 import { describe, expect, it } from 'vitest';
 
@@ -22,6 +23,7 @@ import {
   compactCoordinate,
   ledgerWindow,
   qualifierStageOf,
+  revealSelectedRow,
   scrollTopForRow,
   type LedgerFeature,
 } from './ledger';
@@ -259,6 +261,74 @@ describe('台帳 — 仮想スクロールの窓', () => {
     expect(scrollTopForRow(2, 500, 240)).toBe(2 * 28);
     // 既に入っている: 動かさない。
     expect(scrollTopForRow(3, 0, 240)).toBe(0);
+  });
+});
+
+describe('台帳 — 選んだ行を窓に入れるのは「選択が変わったとき」だけ', () => {
+  it('選択が変わったら窓に入れ、印を進める', () => {
+    const d = revealSelectedRow({
+      activeFeature: id('b'),
+      revealedFor: id('a'),
+      rowIndex: 20,
+      scrollTop: 0,
+      viewportHeight: 240,
+    });
+    expect(d).toEqual({ revealedFor: id('b'), scrollTop: 21 * 28 - 240 });
+  });
+
+  it('行を組み直しただけでは動かさない（👁 を押しても跳ね戻らない）', () => {
+    // 同じ地物を選んだままで、行の位置も窓の高さも変わった（状態行が出て器が縮んだ）。
+    // ここでスクロールし直すと、押した 👁 の行が目の前から消える。
+    const d = revealSelectedRow({
+      activeFeature: id('b'),
+      revealedFor: id('b'),
+      rowIndex: 3,
+      scrollTop: 73,
+      viewportHeight: 28,
+    });
+    expect(d).toEqual({ revealedFor: id('b'), scrollTop: null });
+  });
+
+  it('行がまだ無いときは印を進めない（親が開いた次の回で入れる）', () => {
+    const pending = revealSelectedRow({
+      activeFeature: id('b'),
+      revealedFor: id('a'),
+      rowIndex: -1,
+      scrollTop: 0,
+      viewportHeight: 240,
+    });
+    expect(pending).toEqual({ revealedFor: id('a'), scrollTop: null });
+    // 親が開いて行が現れた回に入れる。
+    const opened = revealSelectedRow({
+      activeFeature: id('b'),
+      revealedFor: pending.revealedFor,
+      rowIndex: 20,
+      scrollTop: 0,
+      viewportHeight: 240,
+    });
+    expect(opened).toEqual({ revealedFor: id('b'), scrollTop: 21 * 28 - 240 });
+  });
+
+  it('既に窓に入っている行なら動かさないが、印は進める', () => {
+    const d = revealSelectedRow({
+      activeFeature: id('b'),
+      revealedFor: null,
+      rowIndex: 3,
+      scrollTop: 0,
+      viewportHeight: 240,
+    });
+    expect(d).toEqual({ revealedFor: id('b'), scrollTop: null });
+  });
+
+  it('選択が外れたら印を落とす（選び直したらまた入れる）', () => {
+    const d = revealSelectedRow({
+      activeFeature: null,
+      revealedFor: id('b'),
+      rowIndex: -1,
+      scrollTop: 0,
+      viewportHeight: 240,
+    });
+    expect(d).toEqual({ revealedFor: null, scrollTop: null });
   });
 });
 

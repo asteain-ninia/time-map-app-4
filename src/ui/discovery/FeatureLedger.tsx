@@ -71,7 +71,7 @@ import {
   buildLedgerRows,
   foldForFilter,
   ledgerWindow,
-  scrollTopForRow,
+  revealSelectedRow,
   type LedgerRow,
 } from './ledger';
 import { LEDGER_COMMAND, type LedgerCommandStore } from './ledger-commands';
@@ -717,16 +717,28 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
     store.getState().expandLedgerPath(ancestors);
   }, [activeFeature, built.rows, currentById, forest, isHistory, store]);
 
-  // 行を画面に入れる（選択が変わったとき）。**束の送りで飛んだ先が窓の外だと、
-  // 「次へ」を押しても何も動いていないように見える。**
+  // 行を画面に入れる（**選んでいる地物が変わったときだけ**）。束の送りで飛んだ先が
+  // 窓の外だと、「次へ」を押しても何も動いていないように見えるので入れる。逆に
+  // **行を組み直しただけでは動かさない**（2026-09-06、最終手直し）。旧版は依存に
+  // `built.rows` を置いて毎回入れ直していたので、離れた行の 👁 を 1 つ押すだけで
+  // 一覧が選択行の位置へ跳ね戻った。判断そのものは `revealSelectedRow`（単体検査つき）。
+  const revealedForRef = useRef<FeatureId | null>(null);
   useEffect(() => {
-    if (activeFeature === null || isHistory) return;
-    const at = built.rows.findIndex((r) => r.featureId === activeFeature);
-    if (at < 0) return;
+    // 通史は別の行の集合なので、戻ってきたら入れ直す（印を落とす）。
+    if (isHistory) {
+      revealedForRef.current = null;
+      return;
+    }
     const el = scrollerRef.current;
-    if (el === null) return;
-    const next = scrollTopForRow(at, el.scrollTop, el.clientHeight);
-    if (next !== el.scrollTop) el.scrollTop = next;
+    const decision = revealSelectedRow({
+      activeFeature,
+      revealedFor: revealedForRef.current,
+      rowIndex: built.rows.findIndex((r) => r.featureId === activeFeature),
+      scrollTop: el === null ? 0 : el.scrollTop,
+      viewportHeight: el === null ? 0 : el.clientHeight,
+    });
+    revealedForRef.current = decision.revealedFor;
+    if (decision.scrollTop !== null && el !== null) el.scrollTop = decision.scrollTop;
   }, [activeFeature, built.rows, isHistory]);
 
   // --- 束を作る ---------------------------------------------------------------
