@@ -1320,15 +1320,24 @@ describe('U23 手直し A3: 道具の持ち替えと鍵でも、黙って捨て�
     expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
   });
 
-  it('鍵を閉じている間、板の裏で地図クリックが効かない（K-6 の抜け道を塞ぐ）', () => {
-    // 道具が外れているあいだ、地図を覆う入力層は出さない。出したままだと
-    // **鍵を閉じたのに地図クリックで頂点が置ける**。
+  it('鍵を閉じようとしても、答えるまで「読むだけ」にならない（K-6 の抜け道を塞ぐ）', () => {
+    // **塞ぎ方が変わった**（増分 5 の手直し 2 回目）。旧版は **先に鍵が閉じてから**聞き、
+    // 「道具が外れているあいだ入力層を出さない」で抜け道を塞いでいた ―― つまり
+    // **「読むだけなのに下書きが生きている」状態が一瞬存在**し、そこから確認なしで
+    // view へ抜ける道が残っていた。いまは **答えるまで鍵を閉じない**（板を出す瞬間に
+    // 鍵を開き直す）ので、その状態そのものが作れない。板は背面を覆う本物のモーダル
+    // なので、地図クリックは板の裏へ届かない（実寸は E2E が見る＝教訓 5.49）。
     const h = mountApp();
     drawCompletableFace();
     act(() => {
       h.store.getState().setMode(EDIT_MODE.View);
     });
     expect(confirmShown()).toBe(true);
+    expect(h.store.getState().mode).toBe(EDIT_MODE.Add); // まだ「読むだけ」ではない
+    expect(screen.getByTestId('add-draft-discard-confirm-backdrop')).toBeInTheDocument();
+    // ［捨てる］と答えて初めて鍵が閉じる。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-yes')));
+    expect(h.store.getState().mode).toBe(EDIT_MODE.View);
     expect(screen.queryByTestId('add-input-layer')).toBeNull();
   });
 

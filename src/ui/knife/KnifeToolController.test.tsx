@@ -651,11 +651,56 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
     act(() => {
       fireEvent.keyDown(window, { key: 'Escape' });
     });
+    // **分断線 2 点は「確定できる点数」なので 1 度だけ聞く**（設計書 §D.4.1 の 3。
+    // 増分 5 の手直し 2 回目で足した段）。板が出ているあいだ点列はまだ生きている。
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+    // 利用者自身の Escape で出た板なので、もう一度の Escape は「捨てる」＝先へ進む
+    // （「このままにする」にすると板が開いては閉じるだけの輪になる＝教訓 5.70）。
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Escape' });
+    });
     // 点列だけが空になり、対象（DrawingCut）も道具も残っている。
+    expect(screen.queryByTestId('knife-draft-discard-confirm')).toBeNull();
     expect(screen.getByTestId('knife-tool')).toBeInTheDocument();
     expect(screen.getByTestId('knife-cut-count').textContent).toBe('0');
     expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
     expect(h.store.getState().activeFeature).toBe(TARGET_ID);
+    h.unmount();
+  });
+
+  it('確定できる点数の分断線は、道具の持ち替えでも確認なしには捨てない（§D.4.1 の 3）', () => {
+    // **増分 5 の手直し 2 回目**。旧版は `activeTool` が外れた瞬間に `resetForSwitch()` を
+    // 呼んでいたので、分断線 2 点が黙って消えた。いまは **切替先を構えないまま**聞く。
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+
+    act(() => {
+      h.store.getState().setActiveTool(TOOL_ID.EditSelect);
+    });
+    // 板が出て、**切替先はまだ構えられていない**（道具はナイフのまま）。
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+
+    // ［続ける］＝ 何も起きない（もう戻してある）。
+    act(() => fireEvent.click(screen.getByTestId('knife-draft-discard-no')));
+    expect(screen.queryByTestId('knife-draft-discard-confirm')).toBeNull();
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditKnife);
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+
+    // ［捨てる］＝ 下書きを捨ててから、頼まれていた持ち替えをここで初めて実行する。
+    act(() => {
+      h.store.getState().setActiveTool(TOOL_ID.EditSelect);
+    });
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    act(() => fireEvent.click(screen.getByTestId('knife-draft-discard-yes')));
+    expect(h.store.getState().activeTool).toBe(TOOL_ID.EditSelect);
+    expect(screen.queryByTestId('knife-tool')).toBeNull();
     h.unmount();
   });
 

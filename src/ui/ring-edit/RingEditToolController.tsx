@@ -38,9 +38,10 @@ import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import type { SessionStore } from '../state/store';
-import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import { DISCARD_REASON, DraftDiscardConfirm } from '../shell/DraftDiscardConfirm';
+import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
@@ -118,6 +119,18 @@ export interface RingEditToolControllerProps<S> {
    * whenever the flow is past Idle, `false` on return to Idle.
    */
   readonly onDrawingChange?: ((drawing: boolean) => void) | undefined;
+  /**
+   * **本物のモーダルが開いた／閉じた**ことを報せる口（増分 5 の手直し 2 回目）。
+   * この道具の本物のモーダルは「描きかけを捨てますか」の板だけである ―― 背面を覆う
+   * 板を置いてあるので、答えるまで背後で Ctrl+S などが走ってはいけない。
+   * `onDrawingChange`（＝下書きを持っている）とは意味が違うので別の口にする。
+   */
+  readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
+   * **打ちかけの輪郭を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
+   * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
+   */
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
   /** Provisional draw style override. */
   readonly style?: RingEditStyle | undefined;
 }
@@ -146,8 +159,6 @@ export function RingEditToolController<S>(
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
   const drawSink = props.drawSink ?? NO_RING_EDIT_DRAW_SINK;
 
-  const mode = useStore(store, (s) => s.mode);
-  const activeTool = useStore(store, (s) => s.activeTool);
   // FR-78 グリッドスナップ: the project grid spacing, read + coerced from the SAME
   // project setting the add tool reads (単一の真実源), so an add-hole vertex snaps to
   // the identical graticule an add-tool vertex would (mirrors AddToolController).
@@ -157,10 +168,19 @@ export function RingEditToolController<S>(
   // **昇格させた対象を覚えておく**（増分 5 の手直し B1）。戻すときに「自分が昇格させた
   // ものかどうか」を見分けるために要る（下の {@link unpromoteOwnTarget} の注記）。
   const promotedTargetRef = useRef<FeatureId | null>(null);
+  /**
+   * **道具を構える前から選ばれていたもの**（増分 5 の手直し 2 回目）。設計書 §D.4.1 の
+   * 表は「対象を離す／元からの選択: **保つ**」と定めているのに、対象を離すと選択が
+   * `null` になっていた。昇格の直前の値を控え、離すときにそこへ戻す。
+   */
+  const previousSelectionRef = useRef<FeatureId | null>(null);
   const promoteTargetSelection = useCallback(
     (fid: FeatureId) => {
+      const s = store.getState();
+      // 控えるのは **最初の 1 回だけ**（選び直すたびに控えると「前の対象」に戻る）。
+      if (promotedTargetRef.current === null) previousSelectionRef.current = s.activeFeature;
       promotedTargetRef.current = fid;
-      store.getState().setActiveFeature(fid);
+      s.setActiveFeature(fid);
     },
     [store],
   );
@@ -170,11 +190,14 @@ export function RingEditToolController<S>(
   // 空にしていた。設計書 §D.4 の階段は「対象を離す」であって「選択を全部捨てる」ではない。
   const unpromoteOwnTarget = useCallback(() => {
     const promoted = promotedTargetRef.current;
+    const previous = previousSelectionRef.current;
     promotedTargetRef.current = null;
+    previousSelectionRef.current = null;
     if (promoted === null) return;
     const s = store.getState();
     if (s.activeFeature !== promoted) return;
-    s.setActiveFeature(null);
+    // **元からの選択へ戻す**（null へ落とさない＝設計書 §D.4.1 の表）。
+    s.setActiveFeature(previous);
   }, [store]);
 
   // CANCEL = leave the tool. **これは［やめる］を押されたときの経路だけである** ――
@@ -206,22 +229,35 @@ export function RingEditToolController<S>(
     ...(onConflicts ? { onConflicts } : {}),
   });
 
-  // --- 教訓 5.2 全経路で破棄: the ring-edit tool is "active" iff edit.ring is the tool
-  // in 編集モード. When that CHANGES, funnel through start / resetForSwitch so no
-  // transient draft leaks across the transition. One effect keyed on the boolean.
-  const isRingActive = mode === EDIT_MODE.Edit && activeTool === TOOL_ID.EditRing;
-  const prevActiveRef = useRef<boolean>(false);
-  useEffect(() => {
-    const prev = prevActiveRef.current;
-    if (isRingActive === prev) return;
-    prevActiveRef.current = isRingActive;
-    if (isRingActive) {
+  // --- 教訓 5.2 全経路で破棄 ＋ 設計書 §D.4.1 の 3「確定できる点数まで来ている下書きは
+  // 捨てる前に確認」。道具・鍵の出入りは共有の見張り（`shell/useDraftSwitchGuard`）が
+  // 1 本で受ける ―― **確定できる輪郭（3 点以上）を持っているあいだは、切替先を構えずに
+  // 聞く**。旧版はここで無条件に `resetForSwitch()` を呼んでいたので、**輪郭 4 点が
+  // 確認なしに消えていた**（増分 5 の手直し 2 回目）。
+  const ringVertexCount = ring.draft?.vertices.length ?? 0;
+  const ringGuard: DraftSwitchGuard = useDraftSwitchGuard({
+    store,
+    toolId: TOOL_ID.EditRing,
+    // 輪郭は **3 点で確定できる**（`useRingEditTool` の `canConfirm` と同じ一線）。
+    hasCommittableDraft: ring.canConfirm,
+    vertexCount: ringVertexCount,
+    onArm: () => {
       ring.start();
-    } else {
+    },
+    onDisarm: () => {
       ring.resetForSwitch();
-    }
-    // Key on the active boolean only (start/reset fire exactly on a transition).
-  }, [isRingActive]);
+    },
+    // 利用者自身の Escape で「捨てる」と答えられた **1 段ぶん**（設計書 §D.4.1 の表）。
+    onDiscardPoints: () => {
+      if (ring.draft !== null && ring.draft.vertices.length > 0) {
+        ring.discardDraftVertices();
+        return;
+      }
+      ring.releaseTarget();
+      unpromoteOwnTarget();
+    },
+    onDraftDiscarded: props.onDraftDiscarded,
+  });
 
   // --- Feed the provisional ring-edit primitives to the render sink on every draft
   // change (FR-22). An idle draft yields [] so the overlay vanishes on reset (教訓 5.2).
@@ -254,8 +290,23 @@ export function RingEditToolController<S>(
         // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。ここで止めると、道具を
         // 構えているあいだ素の状態へ戻る道が無くなる。3 の局面では `onDrawingChange` も
         // false を報せている（対象が null なら名乗らない）ので、名乗りと段が食い違わない。
+        //
+        // **0 段目がもう 1 つある**（増分 5 の手直し 2 回目）: 「捨てますか」の板が
+        // 出ていたら、まずそれに答える。答え方は **なぜ聞いているか**で変わる
+        // （設計書 §D.4.1 の 4 / 教訓 5.70）。
+        if (ringGuard.pending !== null) {
+          e.preventDefault();
+          if (ringGuard.pending === DISCARD_REASON.Escape) ringGuard.discard();
+          else ringGuard.keep();
+          return;
+        }
         if (ring.draft !== null && ring.draft.vertices.length > 0) {
           e.preventDefault();
+          // **確定できる点数（3 点以上）まで来ていたら 1 度聞く**（§D.4.1 の 3）。
+          if (ring.canConfirm) {
+            ringGuard.askOnEscape();
+            return;
+          }
           ring.discardDraftVertices();
           return;
         }
@@ -285,7 +336,9 @@ export function RingEditToolController<S>(
     ring.discardDraftVertices,
     ring.releaseTarget,
     ring.undoLastVertex,
+    ring.canConfirm,
     unpromoteOwnTarget,
+    ringGuard,
   ]);
 
   // --- Report the in-progress ring-edit to the host so it suspends the GLOBAL shortcut
@@ -310,6 +363,16 @@ export function RingEditToolController<S>(
     // suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
   }, [ring.flow, ring.targetId, onDrawingChange]);
+
+  // **モーダルは別に報せる**（増分 5 の手直し A4 と同じ規律）。この道具の本物のモーダルは
+  // 「描きかけを捨てますか」の板だけである ―― 下書きを持っているだけなら Ctrl+S は
+  // 通してよいが、確認の背後で保存が走ると何に答えたのか分からなくなる。
+  const onModalChange = props.onModalChange;
+  useEffect(() => {
+    if (onModalChange === undefined) return;
+    onModalChange(ringGuard.pending !== null);
+    return () => onModalChange(false);
+  }, [ringGuard.pending, onModalChange]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and routes to the
   // hook (target select / vertex place / ring delete). The controller owns the hit-test
@@ -419,8 +482,15 @@ export function RingEditToolController<S>(
   }, [ring.targetId, resolveFeature]);
   useEffect(() => {
     if (optionBar === undefined || !ringArmed) return;
+    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
+    // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
+    const epoch = optionBar.epoch();
     optionBar.setTarget(ringStage, ringTargetName);
-    return () => optionBar.setTarget(null, null);
+    return () => {
+      if (optionBar.epoch() !== epoch) return;
+      optionBar.setTarget(null, null);
+    };
   }, [optionBar, ringArmed, ringStage, ringTargetName]);
 
   const onMapPointerDown = useCallback(
@@ -500,6 +570,19 @@ export function RingEditToolController<S>(
       <span data-testid="ring-edit-vertex-count" hidden>
         {ring.draft?.vertices.length ?? 0}
       </span>
+
+      {/* 確定できる輪郭を捨てる前の確認（設計書 §D.4.1 の 3）。**器は追加の道具・
+          分ける・穴あけと共有の本物のモーダル**なので、この板が出ているあいだ地図の
+          入力ブリッジは背面の覆いに遮られる（K-2 / 教訓 5.14）。 */}
+      {ringGuard.pending !== null && (
+        <DraftDiscardConfirm
+          idPrefix="ring-edit-draft-discard"
+          reason={ringGuard.pending}
+          vertexCount={ringGuard.vertexCount}
+          onKeep={ringGuard.keep}
+          onDiscard={ringGuard.discard}
+        />
+      )}
     </div>
   );
 }

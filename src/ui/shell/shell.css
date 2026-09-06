@@ -1747,7 +1747,15 @@ body {
 }
 
 .option-bar__settings {
-  flex: 0 1 auto;
+  /* **縮まない区画にする**（増分 5 の手直し 2 回目）。旧版は `flex: 0 1 auto` で、
+     「次の一手」（`flex: 1 1 auto`）と **基準幅に比例して**縮み合っていた。畳みの予算は
+     「次の一手」に 160px を見込んで計算しているのに、実際には「次の一手」が 189〜204px を
+     取り、設定欄は予算より 36px 狭くなる ―― いちばん右の「≫」が欄の外へこぼれ、
+     `overflow: hidden` なので **見えないまま**格子・深さに手が届かなかった（実測 1024〜
+     1200px）。縮まない区画にして、予算を `max-width` として `OptionBar.tsx` が実際に
+     嵌めると、中身は必ず予算の内側に収まり、余りは「次の一手」が受け取る。
+     縮む役は `min-width: 0` を持つ `.option-bar__next` が引き受ける。 */
+  flex: 0 0 auto;
   /* **下限を切る**（共有規則の `min-width: 0` をここだけ上書きする）。設定欄は
      `flex: 0 1 auto` なので、「次の一手」に長い文（拒否理由など）が入ると縮む側に回る。
      設定欄は `overflow: hidden` なので、潰れたぶんは中の部品が右から順に切り落とされる
@@ -1763,6 +1771,8 @@ body {
          ＋ 左右 padding 20px（4px 10px）＋ 枠線 2px ＝ 約 70px。
        ・部品どうしの間隔 6px（共有規則の `gap`）。
      58 ＋ 6 ＋ 70 ＝ 134px。帯の刻みに合わせて 136px へ切り上げた。
+     **同じ値が `OptionBar.tsx` の `SETTINGS_MIN_WIDTH` にもある**（畳む判断も
+     「実際になる幅」で行う必要があるため）。変えるときは両方を直すこと。
      （ラベルを［直前の頂点を取り消す］から［1 つ戻す］へ縮めた分＝増分 3 の手直し C1 で、
      下限も 208px から 136px へ下げられた。設定欄が「次の一手」から奪う幅が 72px 減る。）
 
@@ -2472,9 +2482,9 @@ body {
  * .map-area__overlay is exactly this design).
  *
  * .add-tool itself carries no pointer-events of its own (it is a transparent
- * scaffold over the map); only its interactive children (.add-tool__input while
- * drawing, and .add-tool__controls / form) take input (教訓 5.14: 透明な層が背面の
- * 操作を奪わない). The pointer-events:none must WIN over the generic
+ * scaffold over the map); only its interactive children take input ―― いまは
+ * 入力ブリッジ（.add-tool__input）と、その外に出る一時的な板だけである
+ * （教訓 5.14: 透明な層が背面の操作を奪わない）. The pointer-events:none must WIN over the generic
  * `.map-area__overlay > *` opt-in — see the scaffold exception rule beside
  * .map-area__overlay. */
 .add-tool {
@@ -2497,39 +2507,13 @@ body {
   cursor: crosshair;
 }
 
-/* HB3-7/22: the add chrome (complete / undo / cancel / grid-snap) floats at the
- * BOTTOM-CENTER of the map cell while drawing — matching the edit tools (knife /
- * merge / reparent all sit bottom-center), so every tool's 確定 button is in the
- * same place. It must take input itself (sits over the bridge). */
-.add-tool__controls {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  max-width: calc(100% - 24px);
-  pointer-events: auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
-  background: #fff;
-  border: 1px solid #888;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-}
-
-.add-tool__grid {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  user-select: none;
-}
-
-.add-tool__message {
-  margin: 0;
-  flex-basis: 100%;
-  color: #b00;
-}
+/* **確定の列は地図から降ろした**（増分 5d でオプションバーの確定欄 176px へ移した／
+ * 設計書 §B.5 の台帳 #4）。`.add-tool__controls` は **どの JSX からも参照されなくなった**
+ * ので規則ごと消した ―― 使われない `pointer-events: auto` の規則を残すと、次に読む人が
+ * 「まだ地図に確定ボタンがある」と読む（教訓 5.7 の逆＝実体の無い記述を残さない。
+ * ナイフ・所属変更で同じ掃除を済ませたのに、ここだけ残っていた＝増分 5 の審査 B3）。
+ * **同じ列に載っていた `.add-tool__grid` と `.add-tool__message` も一緒に消した** ――
+ * どちらも列の中でしか使われていなかった規則で、列が無くなった時点で参照が絶えている。 */
 
 /* The property form / conflict / rejected chrome centres over the map cell and
  * takes input (it is the SAVE trigger surface — 教訓 5.7). */
@@ -2576,11 +2560,13 @@ body {
   gap: 8px;
 }
 
-/* 増分 3 の手直し D1: 打ちかけを捨てる前の確認も、競合停止・拒否の板と同じ見た目にする
-   （地図の真ん中に出る一時的な板。§B.5 の台帳に載せてある）。 */
+/* 競合停止・拒否の板は地図の真ん中に出る一時的な板である（§B.5 の台帳）。
+   **「捨てますか」の板はここから外した**（増分 5 の手直し 2 回目）―― 層を持たない
+   普通の子だったので、同じ覆いに居る 5 道具の入力ブリッジ（`z-index: 1`）に覆われ、
+   ボタンがマウスで押せなかった。いまは `.draft-discard-modal-root` の本物のモーダルで
+   ある（下の規則）。 */
 .add-tool > .add-property-form,
 .add-tool > [data-testid='add-conflict-paused'],
-.add-tool > [data-testid='add-draft-discard-confirm'],
 .add-tool > [data-testid='add-rejected'] {
   position: absolute;
   top: 50%;
@@ -2591,6 +2577,62 @@ body {
   border: 1px solid #888;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
   padding: 12px;
+}
+
+/* --- 「描きかけを捨てますか」の確認板（設計書 §D.4.1 の 3 / §B.5 の台帳 #8）--------
+ *
+ * **本物のモーダルにする**（増分 5 の手直し 2 回目）。旧版は地図セルの覆いの中に層を
+ * 持たない普通の子として出ていたので、同じ覆いに居る 5 道具の入力ブリッジ
+ * （`z-index: 1`）が板の上に乗り、**［続ける］がマウスで押せなかった**（実測:
+ * ボタンの座標で `elementFromPoint` が `knife-input-layer` を返した）。板の外を押せば
+ * その道具が対象を掴み、選択理由の板が二重に出た。
+ *
+ * 作りは継承先選択（`knife.css` の `.knife-modal-root`）・最上位化の確認
+ * （`reparent.css` の `.reparent-modal-root`）と **同じ作法**である ―― `position: fixed`
+ * の最前面の層に置き、**背面を覆う板で入力を遮る**。道具の足場は
+ * `pointer-events: none` なので、根で入力を戻さないとボタンが押せない（教訓 5.14）。 */
+.draft-discard-modal-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.draft-discard-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.draft-discard-dialog {
+  position: relative;
+  z-index: 1;
+  min-width: 320px;
+  max-width: 90vw;
+  padding: 20px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.draft-discard-dialog__title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.draft-discard-dialog__body {
+  margin: 0 0 16px;
+  color: #333;
+  font-size: 13px;
+}
+
+.draft-discard-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* FR-113 表示制御フィルタ (U41) — a display-control section in the 一覧 slot. Styled to

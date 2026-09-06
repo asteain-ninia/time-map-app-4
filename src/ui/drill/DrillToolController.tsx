@@ -28,7 +28,6 @@
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
 import { useCallback, useEffect, useMemo, useRef } from 'react';
-import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { ColorInfo } from '../../domain/attributes';
@@ -42,9 +41,10 @@ import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import type { SessionStore } from '../state/store';
-import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import { DISCARD_REASON, DraftDiscardConfirm } from '../shell/DraftDiscardConfirm';
+import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
@@ -133,6 +133,11 @@ export interface DrillToolControllerProps<S> {
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
   /**
+   * **打ちかけの形を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
+   * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
+   */
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /**
    * 新しい地物の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具・分ける道具と同じ 1 本の橋である。
    *
@@ -190,18 +195,24 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   const onCommitted = props.onCommitted ?? NOOP_COMMITTED;
   const drawSink = props.drawSink ?? NO_DRILL_DRAW_SINK;
 
-  const mode = useStore(store, (s) => s.mode);
-  const activeTool = useStore(store, (s) => s.activeTool);
-
   // Promote / un-promote the chosen target末端 through the SAME setActiveFeature path
   // every selection uses (no second selection source, 教訓 5.29), mirroring knife/ring.
   // **昇格させた対象を覚えておく**（増分 5 の手直し B1）。戻すときに「自分が昇格させた
   // ものかどうか」を見分けるために要る（下の {@link unpromoteOwnTarget} の注記）。
   const promotedTargetRef = useRef<FeatureId | null>(null);
+  /**
+   * **道具を構える前から選ばれていたもの**（増分 5 の手直し 2 回目）。設計書 §D.4.1 の
+   * 表は「対象を離す／元からの選択: **保つ**」と定めているのに、対象を離すと選択が
+   * `null` になっていた。昇格の直前の値を控え、離すときにそこへ戻す。
+   */
+  const previousSelectionRef = useRef<FeatureId | null>(null);
   const promoteTargetSelection = useCallback(
     (fid: FeatureId) => {
+      const s = store.getState();
+      // 控えるのは **最初の 1 回だけ**（選び直すたびに控えると「前の対象」に戻る）。
+      if (promotedTargetRef.current === null) previousSelectionRef.current = s.activeFeature;
       promotedTargetRef.current = fid;
-      store.getState().setActiveFeature(fid);
+      s.setActiveFeature(fid);
     },
     [store],
   );
@@ -211,11 +222,14 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   // 空にしていた。設計書 §D.4 の階段は「対象を離す」であって「選択を全部捨てる」ではない。
   const unpromoteOwnTarget = useCallback(() => {
     const promoted = promotedTargetRef.current;
+    const previous = previousSelectionRef.current;
     promotedTargetRef.current = null;
+    previousSelectionRef.current = null;
     if (promoted === null) return;
     const s = store.getState();
     if (s.activeFeature !== promoted) return;
-    s.setActiveFeature(null);
+    // **元からの選択へ戻す**（null へ落とさない＝設計書 §D.4.1 の表）。
+    s.setActiveFeature(previous);
   }, [store]);
   // W3-B — CANCEL = leave the tool (Escape / キャンセル / 拒否の dismiss). Un-promoting the
   // target alone left the toolbar button `aria-pressed=true` while the session was
@@ -247,22 +261,37 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     ...(onConflicts ? { onConflicts } : {}),
   });
 
-  // --- 教訓 5.2 全経路で破棄: the drill tool is "active" iff edit.drill is the tool in
-  // 編集モード. When that CHANGES, funnel through start / resetForSwitch so no transient
-  // draft leaks across the transition. One effect keyed on the boolean.
-  const isDrillActive = mode === EDIT_MODE.Edit && activeTool === TOOL_ID.EditDrill;
-  const prevActiveRef = useRef<boolean>(false);
-  useEffect(() => {
-    const prev = prevActiveRef.current;
-    if (isDrillActive === prev) return;
-    prevActiveRef.current = isDrillActive;
-    if (isDrillActive) {
+  // --- 教訓 5.2 全経路で破棄 ＋ 設計書 §D.4.1 の 3「確定できる点数まで来ている下書きは
+  // 捨てる前に確認」。道具・鍵の出入りは共有の見張り（`shell/useDraftSwitchGuard`）が
+  // 1 本で受ける ―― **確定できる形（3 点以上）を持っているあいだは、切替先を構えずに
+  // 聞く**。旧版はここで無条件に `resetForSwitch()` を呼んでいたので、**穴あけ 4 点が
+  // 確認なしに消えていた**（増分 5 の手直し 2 回目）。
+  const drillGuard: DraftSwitchGuard = useDraftSwitchGuard({
+    store,
+    toolId: TOOL_ID.EditDrill,
+    // 面をくり抜く形は **3 点で確定できる**（`useDrillTool` の `canConfirm` と同じ一線）。
+    hasCommittableDraft: drill.region.length >= 3,
+    vertexCount: drill.region.length,
+    onArm: () => {
       drill.start();
-    } else {
+    },
+    onDisarm: () => {
       drill.resetForSwitch();
-    }
-    // Key on the active boolean only (start/reset fire exactly on a transition).
-  }, [isDrillActive]);
+    },
+    // 利用者自身の Escape で「捨てる」と答えられた **1 段ぶん**（設計書 §D.4.1 の表）。
+    // **局面で分ける**（点の数だけで見てはいけない）―― 素性を入力している最中も
+    // `region` は確定済みの形として生きているので、点の数で判定すると「対象を離す」
+    // 段まで戻らず、右パネルの素性欄が閉じないまま残る。
+    onDiscardPoints: () => {
+      if (drill.flow === DRILL_FLOW.DrawingRegion && drill.region.length > 0) {
+        drill.discardRegion();
+        return;
+      }
+      drill.releaseTarget();
+      unpromoteOwnTarget();
+    },
+    onDraftDiscarded: props.onDraftDiscarded,
+  });
 
   // --- Feed the provisional drill primitives to the render sink on every draft change
   // (FR-45). An empty region yields [] so the overlay vanishes on reset (教訓 5.2).
@@ -286,30 +315,63 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
       // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
       // never cancels or undoes a vertex over native character editing (教訓 5.13:
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
-      if (isEditableTarget(editableTargetFromEvent(e))) return;
+      //
+      // **Escape だけは別**（増分 5 の手直し 2 回目）。素性入力を右パネルへ移した
+      // （決定 (5)）結果、名前欄に焦点があるあいだ **Escape を誰も受けなくなった**。
+      // 追加の道具と同じく、**文字の欄の中でも「やめる」は道具のもの**にする
+      // （打ちかけがあれば 1 度聞く）。
+      const target = editableTargetFromEvent(e);
+      const inEditable = isEditableTarget(target);
+      if (inEditable && e.key !== 'Escape') return;
       if (e.key === 'Escape') {
         // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
         //
         // **1 回の Escape で 1 段だけ**戻る。旧版は 1 回で「手順の対象」「元からの選択」
         // 「道具」の三段をまとめて捨てていた（GPT #8）。
         //
-        //   0. 素性入力の板が出ている → 板を閉じる ＝ この作業をやめる（階段の最上段は
-        //      `modal`。`cancel` の意味と一致する）
-        //   1. くり抜く形の頂点列がある → **頂点列だけをまとめて捨てる**（対象も道具も保つ）
-        //   2. 対象を掴んでいる → 対象だけ離す（道具は持ったまま）
-        //   3. どちらも無い → **何もせず大域の階段へ譲る**（preventDefault もしない）
+        //   0. 「捨てますか」の板が出ている → まずそれに答える（下の注記）
+        //   1. 素性を入力している → **対象を離す**段まで戻す（道具は持ったまま。欄に
+        //      打ちかけがあれば 1 度聞く＝増分 5 の手直し 2 回目）
+        //   2. くり抜く形の頂点列がある → **頂点列だけをまとめて捨てる**（対象も道具も
+        //      保つ。確定できる点数なら 1 度聞く）
+        //   3. 対象を掴んでいる → 対象だけ離す（道具は持ったまま。**元からの選択は保つ**）
+        //   4. どれも無い → **何もせず大域の階段へ譲る**（preventDefault もしない）
         //
-        // 3 で止めないのが肝である ―― 大域の `shell/escape-ladder.ts` が「頂点を外す →
-        // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。3 の局面では
+        // 4 で止めないのが肝である ―― 大域の `shell/escape-ladder.ts` が「頂点を外す →
+        // 地物の選択を外す → 道具を『選ぶ』へ戻す」を順にやる。4 の局面では
         // `onDrawingChange` も false を報せている（対象が null なら名乗らない）ので、
         // 名乗りと段が食い違わない。
-        if (drill.flow === DRILL_FLOW.EnteringProperties) {
+        //
+        // **0 の手前にもう 1 段ある**（増分 5 の手直し 2 回目）: 「捨てますか」の板が
+        // 出ていたら、まずそれに答える。答え方は **なぜ聞いているか**で変わる
+        // （設計書 §D.4.1 の 4 / 教訓 5.70）。
+        if (drillGuard.pending !== null) {
           e.preventDefault();
-          drill.cancel();
+          if (drillGuard.pending === DISCARD_REASON.Escape) drillGuard.discard();
+          else drillGuard.keep();
           return;
         }
+        // **素性を入力している局面**（決定 (5) で右パネルへ移った）。欄が「打ちかけ無し」を
+        // 名乗っていれば 1 回でやめ、打ちかけがあれば 1 度聞く。**やめた先は「対象を離す」段**
+        // （§D.4.1 の階段）で、道具は持ったままである（旧版は道具ごと降りていた）。
+        if (drill.flow === DRILL_FLOW.EnteringProperties) {
+          e.preventDefault();
+          if (inEditable && target?.pristine === false) {
+            drillGuard.askOnEscape();
+            return;
+          }
+          drill.releaseTarget();
+          unpromoteOwnTarget();
+          return;
+        }
+        if (inEditable) return; // ここから下は文字の欄の中では動かさない。
         if (drill.region.length > 0) {
           e.preventDefault();
+          // **確定できる点数（3 点以上）まで来ていたら 1 度聞く**（§D.4.1 の 3）。
+          if (drill.region.length >= 3) {
+            drillGuard.askOnEscape();
+            return;
+          }
           drill.discardRegion();
           return;
         }
@@ -321,6 +383,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
         }
         return;
       }
+      // ここから下は作図中の打鍵だけ。文字の欄の中は上の関門で既に降りている。
       if (
         drill.flow === DRILL_FLOW.DrawingRegion &&
         (e.ctrlKey || e.metaKey) &&
@@ -341,6 +404,7 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
     drill.releaseTarget,
     drill.undoLastVertex,
     unpromoteOwnTarget,
+    drillGuard,
   ]);
 
   // --- Report the in-progress drill to the host so it suspends the GLOBAL shortcut
@@ -417,11 +481,12 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   useEffect(() => {
     if (onModalChange === undefined) return;
     // **素性入力はもうモーダルではない**（決定 (5)）。右パネルの「新規の姿」で受けるので、
-    // 鍵盤の持ち主は入力欄（`text`）である。**いまこの道具に本物のモーダルは無い**が、
-    // 口は残しておく（板を足したときに配線を忘れないため）。
-    onModalChange(false);
+    // 鍵盤の持ち主は入力欄（`text`）である。**本物のモーダルは「捨てますか」の板だけ**で、
+    // これは背面を覆う板を置いた本物のモーダルなので、答えるまで背後で Ctrl+S などが
+    // 走ってはいけない（増分 5 の手直し 2 回目）。
+    onModalChange(drillGuard.pending !== null);
     return () => onModalChange(false);
-  }, [drill.flow, onModalChange]);
+  }, [drill.flow, drillGuard.pending, onModalChange]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and routes to the
   // hook (target末端 select / region vertex place). The controller owns the hit-test
@@ -527,8 +592,15 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   }, [drill.targetId, resolveFeature]);
   useEffect(() => {
     if (optionBar === undefined || !drillArmed) return;
+    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
+    // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
+    const epoch = optionBar.epoch();
     optionBar.setTarget(drillStage, drillTargetName);
-    return () => optionBar.setTarget(null, null);
+    return () => {
+      if (optionBar.epoch() !== epoch) return;
+      optionBar.setTarget(null, null);
+    };
   }, [optionBar, drillArmed, drillStage, drillTargetName]);
 
   const onMapPointerDown = useCallback(
@@ -624,6 +696,19 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
           探索の spec（`e2e/__visual__/driver-a.spec.ts`）が「いまどの段に居るか」を
           この名前の有無で見ている。 */}
       {drillEntering && <span data-testid="drill-props" hidden />}
+
+      {/* 確定できる形を捨てる前の確認（設計書 §D.4.1 の 3）。**器は追加の道具・分ける
+          道具と共有の本物のモーダル**なので、この板が出ているあいだ地図の入力ブリッジは
+          背面の覆いに遮られる（K-2 / 教訓 5.14）。 */}
+      {drillGuard.pending !== null && (
+        <DraftDiscardConfirm
+          idPrefix="drill-draft-discard"
+          reason={drillGuard.pending}
+          vertexCount={drillGuard.vertexCount}
+          onKeep={drillGuard.keep}
+          onDiscard={drillGuard.discard}
+        />
+      )}
 
       {drill.flow === DRILL_FLOW.ConflictPaused && (
         <p data-testid="drill-conflict-paused" role="status">

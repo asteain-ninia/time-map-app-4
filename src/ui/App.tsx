@@ -3196,6 +3196,10 @@ export function App(): JSX.Element {
               onConflicts={onKnifeConflicts}
               onDrawingChange={setKnifeDrawing}
               onModalChange={toolModalChange('knife')}
+              onDraftDiscarded={(count) => {
+                // 打ちかけを黙って消さない（設計書 §D.4.1 / §H.5 の「直前の結果」）。
+                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+              }}
             />
             {/* U30 INTEGRATION (教訓 5.7 / 5.2): the merge-tool controller, bound to the
                 SAME store. Selecting 編集モード→結合 starts a session; map-input clicks
@@ -3268,6 +3272,10 @@ export function App(): JSX.Element {
               onCommitted={onRingEditCommitted}
               onConflicts={onRingEditConflicts}
               onDrawingChange={setRingEditDrawing}
+              onModalChange={toolModalChange('ring-edit')}
+              onDraftDiscarded={(count) => {
+                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+              }}
             />
             {/* U27 INTEGRATION (教訓 5.7 / 5.2): the drill (穴あけによる新地物生成)
                 controller, bound to the SAME store. Selecting 編集モード→穴あけ arms a
@@ -3294,6 +3302,9 @@ export function App(): JSX.Element {
               onConflicts={onDrillConflicts}
               onDrawingChange={setDrillDrawing}
               onModalChange={toolModalChange('drill')}
+              onDraftDiscarded={(count) => {
+                statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
+              }}
             />
           </>
         }

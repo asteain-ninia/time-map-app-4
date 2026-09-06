@@ -52,6 +52,11 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
+import {
+  DISCARD_REASON,
+  DraftDiscardConfirm,
+  type DiscardReason,
+} from '../shell/DraftDiscardConfirm';
 
 import { AddDraftStore } from './add-draft-store';
 import { SnapOptions } from './SnapOptions';
@@ -63,10 +68,17 @@ import { ADD_PHASE, useAddTool, type StartAddProcess } from './useAddTool';
  * 打ちかけを捨ててよいかを聞いている最中の状態（増分 3 の手直し / D1）。
  * `reason` は**何が起きて聞いているか**（文言と、捨てたあとの一手が変わる）。
  * `keep` は「このままにする」を選んだときに**元へ戻す**動き（年を戻す・選択を戻す）。
+ *
+ * `proceed` は **「捨てる」と答えられて初めて**走る切替（道具の持ち替え・鍵を閉じる）。
+ * 板が出ているあいだ切替先を構えないための片割れである（増分 5 の手直し 2 回目 ――
+ * 旧版は先に切り替えてから聞いていたので、切替先の入力ブリッジが板を覆い、
+ * ［続ける］がマウスで押せなかった）。年と一覧の選択は `keep` 側で戻す
+ * （画面の外で起きた変化を差し止める手立てが無いため）。
  */
 interface PendingDiscard {
-  readonly reason: 'escape' | 'time' | 'select' | 'tool' | 'lock';
+  readonly reason: DiscardReason;
   readonly keep?: () => void;
+  readonly proceed?: () => void;
 }
 
 // --- Injected ports (the layer-crossing contracts; 教訓 5.33) ----------------
@@ -301,23 +313,38 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     // 消えない**（実データの探索で踏んだ）。聞く相手は「いま自分で点を打っている人」だけに
     // 絞る。
     if (prev !== null && add.phase === ADD_PHASE.Drawing && hasDraftNow && canCompleteNow) {
-      // **板が出ている間は基準を進めない**（年・選択の見張りと同じ理由。3 回目の手直し）。
-      // 進めてしまうと、「続ける」で戻した動き自体が新しい変化に見えて板が閉じない。
+      // **板が出ている間は基準（`prevKindRef` / `prevToolRef`）を進めない**（年・選択の
+      // 見張りと同じ理由。3 回目の手直し）。進めてしまうと、戻した動き自体が新しい変化に
+      // 見えて板が閉じない。
       //
-      // **この関門は「聞くと決めたあと」に置く。** 手前に置くと、**別の理由で板が出て
-      // いるあいだ、道具が入れ替わっても後始末が走らない** ―― 重なり競合で止まった
-      // セッションが片付かないまま残り、入力層がどこにも無い状態で固まる（実データの
-      // 探索で踏んだ）。聞かないと決めたのなら、板が出ていても後始末は必ず走らせる。
-      if (pendingRef.current !== null) return;
+      // **「聞かない」と決めた枝では、板が出ていても後始末は必ず走らせる**（上の `if` に
+      // 入らなかった場合）。手前で一律に降りると、重なり競合で止まったセッションが
+      // 片付かないまま残り、入力層がどこにも無い状態で固まる（実データの探索で踏んだ）。
       const restore = prevToolRef.current;
-      const locked = store.getState().mode === EDIT_MODE.View;
+      const before = store.getState();
+      const locked = before.mode === EDIT_MODE.View;
+      // **切替先はまだ構えない**（増分 5 の手直し 2 回目）。板が出ているあいだ切替先が
+      // 構えられていると、その道具の入力ブリッジ（`z-index: 1`）が板の上に乗って
+      // ［続ける］がマウスで押せず、板の外の地図クリックが切替先へ届いて対象を掴んだ。
+      // ここで元の道具（と鍵）へ戻し、切替先は「捨てる」と答えられて初めて構える。
+      const intended = before.activeTool;
+      // 鍵を閉じたのなら、まず開ける（`setMode` は道具を外すので順序が要る）。
+      if (locked) store.getState().setMode(EDIT_MODE.Edit);
+      store.getState().setActiveTool(restore);
+      // **既に別の理由で板が出ているなら、理由は書き換えない**（年や一覧の選択で出て
+      // いる板の途中で道具が動いた場合）。戻すところまでは同じようにやる ―― ここで
+      // 素通りさせて後片付けへ落とすと、答える前に下書きが黙って消える。
+      if (pendingRef.current !== null) return;
       setPendingDiscard({
-        reason: locked ? 'lock' : 'tool',
-        keep: () => {
+        reason: locked ? DISCARD_REASON.Lock : DISCARD_REASON.Tool,
+        // 「続ける」は文字どおり何もしない（もう戻してある）。
+        proceed: () => {
           const st = store.getState();
-          // 鍵を閉じたのなら、まず開ける（`setMode` は道具を外すので順序が要る）。
-          if (st.mode === EDIT_MODE.View) st.setMode(EDIT_MODE.Edit);
-          st.setActiveTool(restore);
+          if (locked) {
+            st.setMode(EDIT_MODE.View);
+            return;
+          }
+          st.setActiveTool(intended);
         },
       });
       return;
@@ -385,7 +412,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     if (pendingRef.current !== null) return;
     if (hasDraftNow && canCompleteNow) {
       setPendingDiscard({
-        reason: 'time',
+        reason: DISCARD_REASON.Time,
         // 「このままにする」＝年を戻す。下書きは打った年のものなので、年だけ進めて
         // 残すと「別の年の頂点で作った形」を保存することになる（GPT #8）。
         keep: () => {
@@ -412,7 +439,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     if (activeFeature !== null && hasDraftNow && canCompleteNow) {
       // 「このままにする」＝選択を戻す（視点も動かさない）。
       setPendingDiscard({
-        reason: 'select',
+        reason: DISCARD_REASON.Select,
         keep: () => {
           store.getState().setActiveFeature(prev);
         },
@@ -479,7 +506,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         // 閉じるだけで **いつまでも素の状態に戻れない**（§D.4 の保証が破れる）。
         const pending = pendingRef.current;
         if (pending !== null) {
-          if (pending.reason === 'escape') {
+          if (pending.reason === DISCARD_REASON.Escape) {
             setPendingDiscard(null);
             const lost = draftSizeRef.current;
             add.cancel();
@@ -493,7 +520,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         // **打ちかけのある欄から出るときは 1 度聞く**（A2）。名前を打っている途中で
         // Escape を押したときに、打った文字ごと黙って消えないようにする。
         if (inEditable && target?.pristine === false) {
-          setPendingDiscard({ reason: 'escape' });
+          setPendingDiscard({ reason: DISCARD_REASON.Escape });
           return;
         }
         // **素性を入力している局面**（形は確定済み・欄は空）は、Escape ＝「やめる」。
@@ -508,7 +535,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         // Escape はいちばん押しやすい打鍵なので、確定できる形（＝作り直すのに手間がかかる
         // 形）まで来ていたら 1 度聞く。それ未満は聞かない（押し直せば済む）。
         if (add.canComplete) {
-          setPendingDiscard({ reason: 'escape' });
+          setPendingDiscard({ reason: DISCARD_REASON.Escape });
           return;
         }
         add.cancel();
@@ -948,6 +975,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       onDiscardDraft={() => {
         const lost = draftSizeRef.current;
         const reason = pendingDiscard?.reason;
+        const proceed = pendingDiscard?.proceed;
         setPendingDiscard(null);
         add.cancel();
         if (lost > 0) onDraftDiscarded?.(lost);
@@ -962,9 +990,16 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         prevToolRef.current = activeTool;
         prevTimeRef.current = { key: currentTimeKey, value: currentTime };
         prevActiveRef.current = activeFeature;
+        // **切替先はここで初めて構える**（増分 5 の手直し 2 回目）。板が出ているあいだは
+        // 元の道具のままだったので、捨てると答えられた今、頼まれていた持ち替え（鍵）を
+        // 実行する。見張りは上で基準を今へ合わせてあるので、この遷移は素通りする。
+        if (proceed !== undefined) {
+          proceed();
+          return;
+        }
         if (activeKind !== null) add.start(activeKind);
         // 一覧で選んだのなら、片付けたあとで視点を合わせる（設計書 §D.2）。
-        if (reason === 'select') onFocusSelection?.();
+        if (reason === DISCARD_REASON.Select) onFocusSelection?.();
       }}
       onMapPointerDown={onMapPointerDown}
       onMapPointerMove={onMapPointerMove}
@@ -1169,31 +1204,18 @@ function AddToolChrome(props: AddToolChromeProps): JSX.Element | null {
         </span>
       )}
 
-      {/* D1: 打ちかけを捨てる前の確認。増分 2 の N-04（素性欄の下書き）と同じ器の形。 */}
+      {/* D1: 打ちかけを捨てる前の確認。**器は 5 道具と共有の本物のモーダル**
+          （`shell/DraftDiscardConfirm`。増分 5 の手直し 2 回目）―― 旧版はここに層を
+          持たない板を直接書いていたので、同じ覆いに居る道具の入力ブリッジに覆われて
+          ボタンが押せなかった。`data-testid` は 3 つとも据え置き（T-1）。 */}
       {pendingDiscard !== null && (
-        <div
-          className="add-tool__confirm"
-          data-testid="add-draft-discard-confirm"
-          role="alertdialog"
-          aria-label={ADD_STRINGS.discardConfirmTitle}
-        >
-          <p>
-            {ADD_STRINGS.discardConfirm(
-              add.session?.vertices.length ?? 0,
-              pendingDiscard.reason,
-            )}
-          </p>
-          <button
-            type="button"
-            data-testid="add-draft-discard-yes"
-            onClick={props.onDiscardDraft}
-          >
-            {ADD_STRINGS.discardConfirmYes}
-          </button>
-          <button type="button" data-testid="add-draft-discard-no" onClick={props.onKeepDraft}>
-            {ADD_STRINGS.discardConfirmNo}
-          </button>
-        </div>
+        <DraftDiscardConfirm
+          idPrefix="add-draft-discard"
+          reason={pendingDiscard.reason}
+          vertexCount={add.session?.vertices.length ?? 0}
+          onKeep={props.onKeepDraft}
+          onDiscard={props.onDiscardDraft}
+        />
       )}
 
       {add.phase === ADD_PHASE.ConflictPaused && (

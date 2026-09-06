@@ -49,12 +49,13 @@ import type { DrawPrimitive } from '../../render/map-renderer';
 import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import type { SessionStore } from '../state/store';
-import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
 import { useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
+import { DISCARD_REASON, DraftDiscardConfirm } from '../shell/DraftDiscardConfirm';
+import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
 
 import type { AddDraftPrompt, AddDraftStore } from '../add/add-draft-store';
 import { ADD_TOOL_KIND, type ParentCandidate } from '../../domain/add/index';
@@ -159,6 +160,12 @@ export interface KnifeToolControllerProps<S> {
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
   /**
+   * **打ちかけの分断線を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
+   * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る ――
+   * 黙って消さないのがこの増分の規律である（設計書 §D.4.1）。
+   */
+  readonly onDraftDiscarded?: ((count: number) => void) | undefined;
+  /**
    * 非継承側の素性入力を **右パネルの「新規の姿」**へ渡す口（司令塔の決定 (5) /
    * 設計書 §B.5 の台帳 #9 / §C.2 の 27）。追加の道具（`AddToolController`）と同じ橋で、
    * 地図の真ん中に板を出さないために要る。
@@ -219,8 +226,6 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const optionBar = props.optionBar;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
-  const mode = useStore(store, (s) => s.mode);
-  const activeTool = useStore(store, (s) => s.activeTool);
   // ROOT FIX (bughunt2: per-wheel-notch App re-render re-rendered ALL overlay
   // controllers). The固定円 world radius (circleRadiusPx / zoom) and the閉線スナップ
   // 判定 must track the LIVE camera zoom, but the zoom scalar used to be LIFTED into
@@ -245,10 +250,21 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // ものかどうか」を見分けるために要る ―― 覚えていないと、道具が触っていない選択まで
   // 巻き添えに消してしまう（下の {@link unpromoteOwnTarget} の注記）。
   const promotedTargetRef = useRef<FeatureId | null>(null);
+  /**
+   * **道具を構える前から選ばれていたもの**（増分 5 の手直し 2 回目）。設計書 §D.4.1 の
+   * 表は「対象を離す／元からの選択: **保つ**」と定めているのに、分ける・輪郭・穴あけの
+   * 3 つは対象を離すと選択が `null` になっていた（結ぶ・所属は自前の対象を持つので
+   * 元から保っていた）。昇格の直前の値を控え、離すときにそこへ戻す。
+   */
+  const previousSelectionRef = useRef<FeatureId | null>(null);
   const promoteTargetSelection = useCallback(
     (fid: FeatureId) => {
+      const s = store.getState();
+      // 1 度の手順のあいだに対象を選び直しても、控えるのは **最初の 1 回だけ**
+      // （2 回目に控えると「前の対象」に戻ってしまう）。
+      if (promotedTargetRef.current === null) previousSelectionRef.current = s.activeFeature;
       promotedTargetRef.current = fid;
-      store.getState().setActiveFeature(fid);
+      s.setActiveFeature(fid);
     },
     [store],
   );
@@ -262,11 +278,14 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // 利用者が道具の外で選び直したということなので触らない。
   const unpromoteOwnTarget = useCallback(() => {
     const promoted = promotedTargetRef.current;
+    const previous = previousSelectionRef.current;
     promotedTargetRef.current = null;
+    previousSelectionRef.current = null;
     if (promoted === null) return;
     const s = store.getState();
     if (s.activeFeature !== promoted) return;
-    s.setActiveFeature(null);
+    // **元からの選択へ戻す**（null へ落とさない＝設計書 §D.4.1 の表）。
+    s.setActiveFeature(previous);
   }, [store]);
 
   // W3-B — CANCEL = leave the tool. **これは「やめる」と言われたときの経路だけである**
@@ -372,22 +391,40 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     dropTarget();
   }, [knifeState, knifeFlow, targetShape, resolveLeafShape, dropTarget]);
 
-  // --- 教訓 5.2 全経路で破棄: the knife is "active" iff edit.knife is the tool in
-  // 編集モード. When that CHANGES, funnel through start / resetForSwitch so no
-  // transient state leaks across the transition. One effect keyed on the boolean.
-  const isKnifeActive = mode === EDIT_MODE.Edit && activeTool === TOOL_ID.EditKnife;
-  const prevActiveRef = useRef<boolean>(false);
-  useEffect(() => {
-    const prev = prevActiveRef.current;
-    if (isKnifeActive === prev) return;
-    prevActiveRef.current = isKnifeActive;
-    if (isKnifeActive) {
+  // --- 教訓 5.2 全経路で破棄 ＋ 設計書 §D.4.1 の 3「確定できる点数まで来ている下書きは
+  // 捨てる前に確認」。道具・鍵の出入りは共有の見張り（`shell/useDraftSwitchGuard`）が
+  // 1 本で受ける ―― **確定できる分断線（2 点以上）を持っているあいだは、切替先を構えずに
+  // 聞く**。旧版はここで無条件に `resetForSwitch()` を呼んでいたので、輪郭・穴あけと同じく
+  // **分断線 2 点が確認なしに消えていた**（増分 5 の手直し 2 回目）。
+  const cutPoints =
+    knife.state.phase === KNIFE_PHASE.DrawingCut ? knife.state.line.points.length : 0;
+  const knifeGuard: DraftSwitchGuard = useDraftSwitchGuard({
+    store,
+    toolId: TOOL_ID.EditKnife,
+    // 分断線は **2 点で確定できる**（1 本の線分になる）。それ未満は聞かずに捨てる。
+    hasCommittableDraft: cutPoints >= 2,
+    vertexCount: cutPoints,
+    onArm: () => {
       knife.start();
-    } else {
+    },
+    onDisarm: () => {
       knife.resetForSwitch();
-    }
-    // Key on the active boolean only (start/reset fire exactly on a transition).
-  }, [isKnifeActive]);
+    },
+    // 利用者自身の Escape で「捨てる」と答えられた **1 段ぶん**（設計書 §D.4.1 の表）。
+    // 点を打っている最中なら点列だけ、素性を入れている最中なら対象を離す段まで戻す。
+    onDiscardPoints: () => {
+      if (
+        knife.state.phase === KNIFE_PHASE.DrawingCut &&
+        knife.state.line.points.length > 0
+      ) {
+        knife.discardCutLine();
+        return;
+      }
+      knife.releaseTarget();
+      unpromoteOwnTarget();
+    },
+    onDraftDiscarded: props.onDraftDiscarded,
+  });
 
   // --- Feed the provisional knife primitives to the render sink on every state
   // change (FR-90 / FR-92). An idle state yields [] so the overlay / circle vanish
@@ -414,39 +451,79 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
       // never cancels or undoes a cut point over native character editing (教訓 5.13:
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
-      if (isEditableTarget(editableTargetFromEvent(e))) return;
+      //
+      // **Escape だけは別**（増分 5 の手直し 2 回目 / A2 と同じ規則）。素性入力を右パネルへ
+      // 移した（決定 (5)）結果、名前欄に焦点があるあいだ **Escape を誰も受けなくなった**
+      // ―― 道具はここで降り、大域は焦点の関門で落ちるので、10 回押しても
+      // `tool=edit.knife owner=text` のまま抜けられなかった。追加の道具と同じく、
+      // **文字の欄の中でも「やめる」は道具のもの**にする（打ちかけがあれば 1 度聞く）。
+      const target = editableTargetFromEvent(e);
+      const inEditable = isEditableTarget(target);
+      if (inEditable && e.key !== 'Escape') return;
       if (e.key === 'Escape') {
         // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
         //
         // **1 回の Escape で 1 段だけ**戻る。旧版は 1 回で「手順の対象」「元からの選択」
         // 「道具」の三段をまとめて捨てていた（GPT #8）。
         //
-        //   0. 板が出ている（継承先の選択・新しい地物の素性入力）→ 板を閉じる
-        //      ＝ この作業をやめる（階段の最上段は `modal`。`cancel` の意味と一致する）
-        //   1. 分断線の点列がある → **点列だけをまとめて捨てる**（対象も道具も保つ）
-        //   2. 対象を掴んでいる   → 対象だけ離す（道具は持ったまま）
-        //   3. どちらも無い       → **何もせず大域の階段へ譲る**
+        //   0. 「捨てますか」の板が出ている → まずそれに答える（下の注記）
+        //   1. 継承先を選ぶ板が出ている → 板を閉じる ＝ この作業をやめる
+        //      （階段の最上段は `modal`。`cancel` の意味と一致する）
+        //   2. 素性を入力している → **対象を離す**段まで戻す（道具は持ったまま。
+        //      欄に打ちかけがあれば 1 度聞く＝増分 5 の手直し 2 回目）
+        //   3. 分断線の点列がある → **点列だけをまとめて捨てる**（対象も道具も保つ。
+        //      確定できる点数なら 1 度聞く）
+        //   4. 対象を掴んでいる   → 対象だけ離す（道具は持ったまま。**元からの選択は保つ**）
+        //   5. どれも無い         → **何もせず大域の階段へ譲る**
         //
-        // 3 で `preventDefault` も `stopPropagation` もしないのが肝である ―― 大域の
+        // 5 で `preventDefault` も `stopPropagation` もしないのが肝である ―― 大域の
         // `shell/escape-ladder.ts` が「頂点を外す → 地物の選択を外す → 道具を『選ぶ』へ
         // 戻す」を順にやる。ここで止めると、道具を構えているあいだ **素の状態へ戻る道が
         // 無くなる**（§D.4 の「連打すれば必ず戻る」が破れる）。
         //
-        // 3 の局面では `onDrawingChange` も false を報せている（対象が null なら名乗らない）
+        // 5 の局面では `onDrawingChange` も false を報せている（対象が null なら名乗らない）
         // ので、大域の割り振りは生きている ―― 名乗りと階段の段が食い違わない。
-        if (
-          knife.flow === KNIFE_FLOW.ChoosingInheritor ||
-          knife.flow === KNIFE_FLOW.EnteringProperties
-        ) {
+        //
+        // **0 は増分 5 の手直し 2 回目で足した段である。** 答え方は **なぜ聞いているか**で変わる
+        // （設計書 §D.4.1 の 4）―― 道具・鍵で出ている板は「続ける」、利用者自身の
+        // Escape で出ている板は「捨てる」。後者を「続ける」にすると、押すたびに板が
+        // 開いては閉じるだけで素の状態へ戻れない（教訓 5.70）。
+        if (knifeGuard.pending !== null) {
+          e.preventDefault();
+          if (knifeGuard.pending === DISCARD_REASON.Escape) knifeGuard.discard();
+          else knifeGuard.keep();
+          return;
+        }
+        if (knife.flow === KNIFE_FLOW.ChoosingInheritor) {
           e.preventDefault();
           knife.cancel();
           return;
         }
+        // **素性を入力している局面**（決定 (5) で右パネルへ移った）。追加の道具と同じ
+        // 規則にする ―― 欄が「打ちかけ無し」を名乗っていれば 1 回でやめ、打ちかけが
+        // あれば 1 度聞く。**やめた先は「対象を離す」段**（§D.4.1 の階段）で、道具は
+        // 持ったままである（旧版の `knife.cancel()` は道具ごと降りていた）。
+        if (knife.flow === KNIFE_FLOW.EnteringProperties) {
+          e.preventDefault();
+          if (inEditable && target?.pristine === false) {
+            knifeGuard.askOnEscape();
+            return;
+          }
+          knife.releaseTarget();
+          unpromoteOwnTarget();
+          return;
+        }
+        if (inEditable) return; // ここから下は文字の欄の中では動かさない。
         if (
           knife.state.phase === KNIFE_PHASE.DrawingCut &&
           knife.state.line.points.length > 0
         ) {
           e.preventDefault();
+          // **確定できる点数（2 点以上）まで来ていたら 1 度聞く**（§D.4.1 の 3）。
+          if (knife.state.line.points.length >= 2) {
+            knifeGuard.askOnEscape();
+            return;
+          }
           knife.discardCutLine();
           return;
         }
@@ -458,6 +535,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
         }
         return;
       }
+      // ここから下は作図中の打鍵だけ。文字の欄の中は上の関門で既に降りている。
       if (
         knife.state.phase === KNIFE_PHASE.DrawingCut &&
         (e.ctrlKey || e.metaKey) &&
@@ -481,6 +559,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     knife.releaseTarget,
     knife.undoCutPoint,
     unpromoteOwnTarget,
+    knifeGuard,
   ]);
 
   // --- bughunt3 (H2 / H1): report the in-progress knife to the host so it suspends
@@ -567,9 +646,13 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     // 鍵盤の持ち主は入力欄（`text`）である ―― ここで `modal` と名乗ると、名前を打って
     // いる最中に Ctrl+S が止まる（追加の道具では止まらないのに、分けるでだけ止まる）。
     // 残るモーダルは **継承先を選ぶ板**（画面全体に重なる作業ダイアログ）だけ。
-    onModalChange(knife.flow === KNIFE_FLOW.ChoosingInheritor);
+    // **「捨てますか」の板もモーダルである**（増分 5 の手直し 2 回目）。背面を覆う板を
+    // 置いた本物のモーダルなので、答えるまで背後で Ctrl+S などが走ってはいけない。
+    onModalChange(
+      knife.flow === KNIFE_FLOW.ChoosingInheritor || knifeGuard.pending !== null,
+    );
     return () => onModalChange(false);
-  }, [knife.flow, onModalChange]);
+  }, [knife.flow, knifeGuard.pending, onModalChange]);
 
   // --- Map-input handler with the固定円ヒット優先 (教訓 5.14). A click while:
   //   - SelectingTarget → resolve the feature under it and select (LEAF gate in hook);
@@ -760,13 +843,21 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   const knifeArmed = knife.flow !== KNIFE_FLOW.Idle;
   useEffect(() => {
     if (optionBar === undefined || !knifeArmed) return;
+    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
+    // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
+    const epoch = optionBar.epoch();
     optionBar.setTarget(knifeStage, knifeTargetName);
-    return () => optionBar.setTarget(null, null);
+    return () => {
+      if (optionBar.epoch() !== epoch) return;
+      optionBar.setTarget(null, null);
+    };
   }, [optionBar, knifeArmed, knifeStage, knifeTargetName]);
 
   return (
     <KnifeToolChrome
       knife={knife}
+      guard={knifeGuard}
       onMapPointerDown={onMapPointerDown}
       onMapWheel={onMapWheel}
       onMapCameraPointerDown={onMapCameraPointerDown}
@@ -781,6 +872,8 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
 
 interface KnifeToolChromeProps<S> {
   readonly knife: ReturnType<typeof useKnifeTool<S>>;
+  /** 「捨てますか」の板（`shell/useDraftSwitchGuard`）。 */
+  readonly guard: DraftSwitchGuard;
   readonly onMapPointerDown: (e: { clientX: number; clientY: number; button?: number }) => void;
   /** Forward a wheel notch over the bridge to the camera (bughunt: 描画中のズーム). */
   readonly onMapWheel: (e: {
@@ -875,7 +968,7 @@ function KnifeInputBridge(props: {
 }
 
 function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null {
-  const { knife } = props;
+  const { knife, guard } = props;
 
   if (knife.flow === KNIFE_FLOW.Idle) return null;
 
@@ -951,6 +1044,19 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
           （`e2e/__bughunt__/explore-r4.spec.ts` / `e2e/__visual__/driver-a.spec.ts`）が
           「いまどの段に居るか」をこの名前で見ている。 */}
       {entering && <span data-testid="knife-props" hidden />}
+
+      {/* 確定できる分断線を捨てる前の確認（設計書 §D.4.1 の 3）。**器は追加の道具と
+          共有の本物のモーダル**なので、この板が出ているあいだ地図の入力ブリッジは
+          背面の覆いに遮られる（K-2 / 教訓 5.14）。 */}
+      {guard.pending !== null && (
+        <DraftDiscardConfirm
+          idPrefix="knife-draft-discard"
+          reason={guard.pending}
+          vertexCount={guard.vertexCount}
+          onKeep={guard.keep}
+          onDiscard={guard.discard}
+        />
+      )}
 
       {knife.flow === KNIFE_FLOW.ConflictPaused && (
         <p data-testid="knife-conflict-paused" role="status">

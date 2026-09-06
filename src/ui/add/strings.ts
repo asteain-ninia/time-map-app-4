@@ -9,6 +9,7 @@ import {
   SHAPE_REJECT,
   type ShapeRejection,
 } from '../../domain/add/index';
+import { DRAFT_DISCARD_STRINGS } from '../shell/strings';
 
 /** The「開発者へ報告」suffix for internal inconsistencies (FR-117). */
 export const REPORT_HINT = '（問題が続く場合は開発者へ報告してください）';
@@ -59,33 +60,20 @@ export const ADD_STRINGS = {
   /** 素性を入力している局面の「次の一手」（設計 S3-4）。 */
   nextStepPropertyForm: '名前を入れて［保存］を押してください',
   /**
-   * D1: 打ちかけを捨てる前の確認。**何が起きて聞いているか**で文を変える（設計書 §D.2）。
+   * D1: 打ちかけを捨てる前の確認。**何が起きて聞いているか**で文を変える（設計書 §D.4.1）。
    * 「捨てますか？」だけでは、利用者は自分が何をしたせいか分からない。
+   *
+   * **文言そのものは `shell/strings.ts` の {@link DRAFT_DISCARD_STRINGS} が持つ**
+   * （増分 5 の手直し 2 回目）。同じ確認を 分ける・輪郭・穴あけ も出すようになったので、
+   * 追加の道具だけが文を持っていると 4 通りに割れる。ここは役割の名前を保つための
+   * 別名で、追加の道具の呼び出し側と既存の検査はこの名前のまま動く（T-1）。
    */
-  discardConfirmTitle: '描きかけを捨てますか',
-  discardConfirm: (
-    n: number,
-    reason: 'escape' | 'time' | 'select' | 'tool' | 'lock',
-  ): string => {
-    const head = `描きかけの頂点が ${String(n)} 個あります。`;
-    switch (reason) {
-      case 'time':
-        return `${head}年を動かすと捨てることになります（打った頂点はいまの年のものです）。捨てますか？`;
-      case 'select':
-        return `${head}一覧で別の地物を選ぶと捨てることになります。捨てますか？`;
-      // 増分 5 の手直し A3: 道具を持ち替えた・鍵を閉じた、も「外で起きたこと」である。
-      case 'tool':
-        return `${head}別の道具に持ち替えると捨てることになります。捨てますか？`;
-      case 'lock':
-        return `${head}鍵を「読むだけ」にすると捨てることになります。捨てますか？`;
-      case 'escape':
-        return `${head}捨てますか？`;
-    }
-  },
-  discardConfirmYes: '捨てる',
-  discardConfirmNo: '続ける',
+  discardConfirmTitle: DRAFT_DISCARD_STRINGS.title,
+  discardConfirm: DRAFT_DISCARD_STRINGS.message,
+  discardConfirmYes: DRAFT_DISCARD_STRINGS.yes,
+  discardConfirmNo: DRAFT_DISCARD_STRINGS.no,
   /** D1: 打ちかけが捨てられたことの報せ（状態行の「直前の結果」）。 */
-  draftDiscarded: (n: number): string => `描きかけの頂点 ${String(n)} 個を捨てました`,
+  draftDiscarded: DRAFT_DISCARD_STRINGS.discarded,
 
   /** 設定欄に出す「何年の姿として記録されるか」（G-8 / W-2）。 */
   recordYear: (year: number): string => `記録する年: ${String(year)}年`,
