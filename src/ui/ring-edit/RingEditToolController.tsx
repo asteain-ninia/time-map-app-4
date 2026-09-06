@@ -40,10 +40,14 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
-import { DISCARD_REASON, DraftDiscardConfirm } from '../shell/DraftDiscardConfirm';
+import {
+  DISCARD_REASON,
+  DraftDiscardConfirm,
+  confirmBlocksToolKey,
+} from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
 import type { OptionBarStore } from '../shell/option-bar';
-import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 
 import { RING_EDIT_STRINGS } from './strings';
@@ -275,6 +279,11 @@ export function RingEditToolController<S>(
       // Ctrl+Z through, dispatching NOTHING and preventing NOTHING, so the tool
       // never cancels or undoes a vertex over native character editing (教訓 5.13:
       // reuse the SINGLE focus-guard predicate, no per-controller re-implementation).
+      // **板が開いているあいだ、道具の打鍵は Escape だけが通る**（手直し 3 回目。
+      // 述語は `shell/DraftDiscardConfirm` の {@link confirmBlocksToolKey} に 1 本ある）。
+      // 旧版は Escape のときだけ板を見ていたので、板の中の Ctrl+Z が頂点を 1 つ減らし、
+      // Enter が形を確定して素性入力へ進んだ ―― しかも状態行は「いま使えません」と言う。
+      if (confirmBlocksToolKey(ringGuard.pending !== null, e.key)) return;
       if (isEditableTarget(editableTargetFromEvent(e))) return;
       if (e.key === 'Escape') {
         // --- Esc の階段（設計書 §D.4 / 増分 5 の手直し B1）--------------------
@@ -453,9 +462,16 @@ export function RingEditToolController<S>(
       ring.setGridSnap,
     ],
   );
+  // **帯へ押し込む条件は「店の真実（いま構えている道具）」と AND する**（手直し 3 回目）。
+  // 道具の `flow` は自分の state なので、`activeTool` が外れてから畳まれるまで **1 コミット
+  // 遅れる**。その 1 コミットのあいだに押し直すと、**降りたばかりの道具が次の持ち主の
+  // 中身を自分のもので上書きする**（実測: 分ける → 選ぶ で対象欄が「手順 1/4（選んで
+  // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
+  // 言っているあいだだけにする。
+  const ringArmedHoldsBar = (ring.flow !== RING_EDIT_FLOW.Idle) && ringGuard.armed;
   useToolBarChrome({
     optionBar,
-    active: ring.flow !== RING_EDIT_FLOW.Idle,
+    active: ringArmedHoldsBar,
     slotId: 'ring-edit',
     nextStep: ring.message ?? ring.guide,
     commit: ringCommit,
@@ -472,7 +488,6 @@ export function RingEditToolController<S>(
   // **空へ戻すのは後片付けでやる**（`useToolBarChrome` と同じ理由＝教訓 5.68）。5 つの
   // コントローラは全部が同時にマウントされているので、effect の本体で「降りているなら
   // 空へ」と書くと、構えていない道具が構えている道具の押し込みを踏み消す。
-  const ringArmed = ring.flow !== RING_EDIT_FLOW.Idle;
   const ringStage =
     ring.targetId === null ? RING_EDIT_STRINGS.stage(1) : RING_EDIT_STRINGS.stage(2);
   const ringTargetName = useMemo(() => {
@@ -480,18 +495,24 @@ export function RingEditToolController<S>(
     const feature = resolveFeature(ring.targetId);
     return feature === undefined ? null : describeOptionBarTarget(feature);
   }, [ring.targetId, resolveFeature]);
+  // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
+  const targetWriterRef = useRef<object>({});
   useEffect(() => {
-    if (optionBar === undefined || !ringArmed) return;
-    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    if (optionBar === undefined || !ringArmedHoldsBar) return;
+    // **後片付けは「自分が最後に書いた」ときだけ効かせる**（増分 5 の手直し 2〜3 回目。
     // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
     // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
-    const epoch = optionBar.epoch();
-    optionBar.setTarget(ringStage, ringTargetName);
+    //
+    // **`optionBarEpoch` を依存に入れて押し直す**（手直し 3 回目）。器が持ち直されると
+    // 中身は空へ戻るので、押し込んだ側が黙っていると対象欄が空のまま固まる。
+    const targetWriter = targetWriterRef.current;
+    optionBar.setTarget(ringStage, ringTargetName, targetWriter);
     return () => {
-      if (optionBar.epoch() !== epoch) return;
-      optionBar.setTarget(null, null);
+      optionBar.clearTargetIfMine(targetWriter);
     };
-  }, [optionBar, ringArmed, ringStage, ringTargetName]);
+  }, [optionBar, ringArmedHoldsBar, ringStage, ringTargetName, optionBarEpoch]);
 
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {

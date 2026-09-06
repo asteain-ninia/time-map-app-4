@@ -52,9 +52,13 @@ import type { SessionStore } from '../state/store';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
-import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
-import { DISCARD_REASON, DraftDiscardConfirm } from '../shell/DraftDiscardConfirm';
+import {
+  DISCARD_REASON,
+  DraftDiscardConfirm,
+  confirmBlocksToolKey,
+} from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
 
 import type { AddDraftPrompt, AddDraftStore } from '../add/add-draft-store';
@@ -457,6 +461,11 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       // ―― 道具はここで降り、大域は焦点の関門で落ちるので、10 回押しても
       // `tool=edit.knife owner=text` のまま抜けられなかった。追加の道具と同じく、
       // **文字の欄の中でも「やめる」は道具のもの**にする（打ちかけがあれば 1 度聞く）。
+      // **板が開いているあいだ、道具の打鍵は Escape だけが通る**（手直し 3 回目。
+      // 述語は `shell/DraftDiscardConfirm` の {@link confirmBlocksToolKey} に 1 本ある）。
+      // 旧版は Escape のときだけ板を見ていたので、板の中の Ctrl+Z が頂点を 1 つ減らし、
+      // Enter が形を確定して素性入力へ進んだ ―― しかも状態行は「いま使えません」と言う。
+      if (confirmBlocksToolKey(knifeGuard.pending !== null, e.key)) return;
       const target = editableTargetFromEvent(e);
       const inEditable = isEditableTarget(target);
       if (inEditable && e.key !== 'Escape') return;
@@ -790,9 +799,16 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
       ) : null,
     [drawingCut, knife.state, knife.undoCutPoint],
   );
+  // **帯へ押し込む条件は「店の真実（いま構えている道具）」と AND する**（手直し 3 回目）。
+  // 道具の `flow` は自分の state なので、`activeTool` が外れてから畳まれるまで **1 コミット
+  // 遅れる**。その 1 コミットのあいだに押し直すと、**降りたばかりの道具が次の持ち主の
+  // 中身を自分のもので上書きする**（実測: 分ける → 選ぶ で対象欄が「手順 1/4（選んで
+  // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
+  // 言っているあいだだけにする。
+  const knifeArmedHoldsBar = (knife.flow !== KNIFE_FLOW.Idle) && knifeGuard.armed;
   useToolBarChrome({
     optionBar,
-    active: knife.flow !== KNIFE_FLOW.Idle,
+    active: knifeArmedHoldsBar,
     slotId: 'knife',
     // **素性入力の局面では行き先まで言う**（司令塔の決定 (5)）。ドメインの案内文は
     // 「新規地物のプロパティを入力してください。」までしか言わない ―― 板が目の前に
@@ -840,19 +856,24 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // 空へ」と書くと、構えていない道具が構えている道具の押し込みを踏み消す。React は
   // 「全部の後片付け → 全部の再実行」の順に走らせるので、後片付けへ置けば木の位置に
   // 関わらず「前の道具が空へ戻す → 次の道具が押し込む」になる。
-  const knifeArmed = knife.flow !== KNIFE_FLOW.Idle;
+  // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
+  const targetWriterRef = useRef<object>({});
   useEffect(() => {
-    if (optionBar === undefined || !knifeArmed) return;
-    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    if (optionBar === undefined || !knifeArmedHoldsBar) return;
+    // **後片付けは「自分が最後に書いた」ときだけ効かせる**（増分 5 の手直し 2〜3 回目。
     // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
     // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
-    const epoch = optionBar.epoch();
-    optionBar.setTarget(knifeStage, knifeTargetName);
+    //
+    // **`optionBarEpoch` を依存に入れて押し直す**（手直し 3 回目）。器が持ち直されると
+    // 中身は空へ戻るので、押し込んだ側が黙っていると対象欄が空のまま固まる。
+    const targetWriter = targetWriterRef.current;
+    optionBar.setTarget(knifeStage, knifeTargetName, targetWriter);
     return () => {
-      if (optionBar.epoch() !== epoch) return;
-      optionBar.setTarget(null, null);
+      optionBar.clearTargetIfMine(targetWriter);
     };
-  }, [optionBar, knifeArmed, knifeStage, knifeTargetName]);
+  }, [optionBar, knifeArmedHoldsBar, knifeStage, knifeTargetName, optionBarEpoch]);
 
   return (
     <KnifeToolChrome

@@ -41,7 +41,7 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import type { OptionBarStore } from '../shell/option-bar';
-import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { EDIT_TOOL_STRINGS } from '../shell/strings';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
@@ -347,24 +347,37 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   // **段階表示**（「手順 n/2」）も一緒に押し込む（設計書 §C.4 / バグ狩り #9）。
   const optionBar = props.optionBar;
   const mergeArmed = merge.flow !== MERGE_FLOW.Idle;
+  // **帯へ押し込む条件は「店の真実（いま構えている道具）」と AND する**（手直し 3 回目）。
+  // 道具の `flow` は自分の state なので、`activeTool` が外れてから畳まれるまで **1 コミット
+  // 遅れる**。その 1 コミットのあいだに押し直すと、**降りたばかりの道具が次の持ち主の
+  // 中身を自分のもので上書きする**（実測: 分ける → 選ぶ で対象欄が「手順 1/4（選んで
+  // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
+  // 言っているあいだだけにする。
+  const mergeArmedHoldsBar = mergeArmed && isMergeActive;
   const mergeStage =
     merge.flow === MERGE_FLOW.Choosing ? MERGE_STRINGS.stage(2) : MERGE_STRINGS.stage(1);
   const mergeTargetName = useMemo(
     () => describeMergeTargets(resolveFeatures(), merge.targetIds),
     [resolveFeatures, merge.targetIds],
   );
+  // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
+  const targetWriterRef = useRef<object>({});
   useEffect(() => {
-    if (optionBar === undefined || !mergeArmed) return;
-    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    if (optionBar === undefined || !mergeArmedHoldsBar) return;
+    // **後片付けは「自分が最後に書いた」ときだけ効かせる**（増分 5 の手直し 2〜3 回目。
     // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
     // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
-    const epoch = optionBar.epoch();
-    optionBar.setTarget(mergeStage, mergeTargetName);
+    //
+    // **`optionBarEpoch` を依存に入れて押し直す**（手直し 3 回目）。器が持ち直されると
+    // 中身は空へ戻るので、押し込んだ側が黙っていると対象欄が空のまま固まる。
+    const targetWriter = targetWriterRef.current;
+    optionBar.setTarget(mergeStage, mergeTargetName, targetWriter);
     return () => {
-      if (optionBar.epoch() !== epoch) return;
-      optionBar.setTarget(null, null);
+      optionBar.clearTargetIfMine(targetWriter);
     };
-  }, [optionBar, mergeArmed, mergeStage, mergeTargetName]);
+  }, [optionBar, mergeArmedHoldsBar, mergeStage, mergeTargetName, optionBarEpoch]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and toggles it
   // into / out of the target set. The overlay never steals other input — the input
@@ -410,7 +423,7 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   );
   useToolBarChrome({
     optionBar,
-    active: merge.flow !== MERGE_FLOW.Idle,
+    active: mergeArmedHoldsBar,
     slotId: 'merge',
     nextStep: merge.message ?? merge.guide,
     commit: mergeCommit,

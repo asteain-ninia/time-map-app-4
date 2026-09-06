@@ -52,9 +52,11 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
 import type { OptionBarStore } from '../shell/option-bar';
+import { useOptionBarEpoch } from '../shell/useToolBarChrome';
 import {
   DISCARD_REASON,
   DraftDiscardConfirm,
+  confirmBlocksToolKey,
   type DiscardReason,
 } from '../shell/DraftDiscardConfirm';
 
@@ -491,6 +493,11 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
       // **Escape だけは別**（A2）。文字の欄の中でも「やめる」は道具のものである ――
       // ただし **打ちかけがある欄では確認してから**捨てる（打った文字を黙って失わない）。
       // 欄が自分で名乗る `data-pristine` を読む（教訓 5.13 の 1 本の述語）。
+      // **板が開いているあいだ、道具の打鍵は Escape だけが通る**（手直し 3 回目。
+      // 述語は `shell/DraftDiscardConfirm` の {@link confirmBlocksToolKey} に 1 本ある）。
+      // 旧版は Escape のときだけ板を見ていたので、板の中の Ctrl+Z が頂点を 1 つ減らし、
+      // Enter が形を確定して素性入力へ進んだ ―― しかも状態行は「いま使えません」と言う。
+      if (confirmBlocksToolKey(pendingRef.current !== null, e.key)) return;
       const target = editableTargetFromEvent(e);
       const inEditable = isEditableTarget(target);
       if (inEditable && e.key !== 'Escape') return;
@@ -717,6 +724,10 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     return () => onModalChange(false);
   }, [pendingDiscard, onModalChange]);
 
+  // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
+  // 下の 4 つの押し込みの依存に入っている ―― `claim()` / `reset()` は中身を空へ戻すので、
+  // 押し込んだ側が黙っていると帯が空のまま固まる。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
   const optionOwnerRef = useRef<object | null>(null);
   useEffect(() => {
     if (optionBar === undefined) return;
@@ -763,6 +774,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     );
   }, [
     optionBar,
+    optionBarEpoch,
     activeKind,
     snapSettings,
     setSnapSettings,
@@ -831,6 +843,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     );
   }, [
     optionBar,
+    optionBarEpoch,
     activeKind,
     drawing,
     inPropertyForm,
@@ -855,7 +868,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         {ADD_STRINGS.recordYear(currentTime.year)}
       </span>,
     );
-  }, [optionBar, activeKind, currentTime.year]);
+  }, [optionBar, optionBarEpoch, activeKind, currentTime.year]);
 
   // ［1 つ戻す］は設定欄へ置く（設計書 §C.4 の確定欄は［確定］［やめる］の 2 つで
   // 176px に収まる形なので、3 つ目を押し込むと文字が切れる）。打鍵 Ctrl+Z と同じ動作。
@@ -873,7 +886,7 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
         {ADD_STRINGS.undoVertex}
       </button>,
     );
-  }, [optionBar, activeKind, drawing, vertexCount, undo]);
+  }, [optionBar, optionBarEpoch, activeKind, drawing, vertexCount, undo]);
 
   // --- 形の確定後の素性入力を右パネルへ渡す（N-15 / 設計書 §C.2 の 27）-----------
   //

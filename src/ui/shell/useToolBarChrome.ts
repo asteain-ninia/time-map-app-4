@@ -23,9 +23,28 @@
 // ので、手順のある道具から面／線／点へ持ち替えると前の道具の確定欄が残った。器を 1 つに
 // すると、押し込みと後片付けの順序も 1 か所で決まる。
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, useSyncExternalStore, type ReactNode } from 'react';
 
 import type { OptionBarCommitButton, OptionBarStore } from './option-bar';
+
+/** 何も購読しないときの解除（`useSyncExternalStore` は関数を要求する）。 */
+const NO_UNSUBSCRIBE = (): void => {
+  /* 帯が渡されていない ⇒ 代も無い */
+};
+
+/**
+ * 帯の「代」を購読する（手直し 3 回目）。**器が誰かに持ち直されたら押し直す**ために要る
+ * ―― 持ち直しは中身を空へ戻すので、押し込んだ側が黙っていると帯が空のまま固まる。
+ *
+ * 代を React の値として読むので、押し込みの effect の依存に入れられる。
+ */
+export function useOptionBarEpoch(optionBar: OptionBarStore | undefined): number {
+  return useSyncExternalStore(
+    (onChange) => (optionBar === undefined ? NO_UNSUBSCRIBE : optionBar.subscribeOwner(onChange)),
+    () => optionBar?.epoch() ?? 0,
+    () => optionBar?.epoch() ?? 0,
+  );
+}
 
 export interface ToolBarChromeOptions {
   readonly optionBar: OptionBarStore | undefined;
@@ -46,6 +65,10 @@ export interface ToolBarChromeOptions {
 
 export function useToolBarChrome(options: ToolBarChromeOptions): void {
   const { optionBar, active, slotId, nextStep, commit, extras } = options;
+  // **器が持ち直されたら押し直す**（手直し 3 回目）。下の押し込みの依存に入っている。
+  const epoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけにする。
+  const writerRef = useRef<object>({});
 
   // **空へ戻すのは「後片付け」でやる。**
   //
@@ -76,18 +99,24 @@ export function useToolBarChrome(options: ToolBarChromeOptions): void {
   // それは誰かが帯を持ち直した ＝ 中身はもう空にされている、ということなので何もしない。
   useEffect(() => {
     if (optionBar === undefined || !active) return;
-    const epoch = optionBar.epoch();
-    optionBar.setNextStep(nextStep);
-    optionBar.setCommit(commit);
+    const writer = writerRef.current;
+    optionBar.setNextStep(nextStep, [], writer);
+    optionBar.setCommit(commit, writer);
     return () => {
-      if (optionBar.epoch() !== epoch) return;
-      optionBar.setNextStep(null);
-      optionBar.setCommit([]);
+      optionBar.clearChromeIfMine(writer);
     };
-  }, [optionBar, active, nextStep, commit]);
+    // **`epoch` を依存に入れるのが押し直しの本体**（手直し 3 回目）。器が持ち直されると
+    // 代が進み、この effect が走り直して押し込みが戻る。
+    //
+    // **後片付けは「代」ではなく「書いた人」で守る**（手直し 3 回目）。押し直すように
+    // なった結果、押し直した側は新しい代を覚えるので、そのあと降りたときの後片付けが
+    // もう古くなく、次の持ち主の押し込みをまた踏み消した（手直し 2 回目の穴の再発）。
+  }, [optionBar, active, nextStep, commit, epoch]);
 
   useEffect(() => {
     if (optionBar === undefined || !active || extras === null) return;
     return optionBar.registerOptionSlot(slotId, extras);
-  }, [optionBar, active, slotId, extras]);
+    // 設定欄の差し込みも同じ理由で代を見る（`reset()` は印ごと捨てるので、押し直さないと
+    // ［1 つ戻す］が帯から消えたままになる）。
+  }, [optionBar, active, slotId, extras, epoch]);
 }

@@ -194,6 +194,30 @@ export class OptionBarStore {
   private generation = 0;
 
   /**
+   * 「代」が変わったことの報せ先（{@link subscribeOwner}）。**中身の購読とは別に持つ**
+   * ―― 中身の購読（{@link subscribe}）はスナップショットの同一性で再レンダーを決めるので、
+   * `reset()` が「既に空だった」と判断して同一性を保った場合に通知が飛ばない。押し込む側が
+   * 知りたいのは「**器が誰かに持ち直された**」ことそのものである。
+   */
+  private readonly ownerListeners = new Set<() => void>();
+
+  /**
+   * **対象欄を最後に書いた人の印**（手直し 3 回目）。空へ戻すのは
+   * 「**自分が最後に書いた人のときだけ**」にするために要る。
+   *
+   * **なぜ「代」では足りないか**: 代は「器が持ち直されたか」しか見ていない。押し込む側が
+   * 代の変化で **押し直す**ようになった（手直し 3 回目の 2）結果、押し直した側は新しい代を
+   * 覚えるので、そのあと降りたときの後片付けが **もう古くない** ―― 次の持ち主が入れた
+   * 中身をまた踏み消す（実測: 分ける → 選ぶ で対象欄が空になった）。**誰が書いたか**で
+   * 見れば、あいだに別の人が書いた時点で後片付けは空振りする。印の考え方は
+   * {@link registerOptionSlot} の `slotTokens` と同じである。
+   */
+  private targetWriter: unknown = null;
+
+  /** 次の一手と確定欄を最後に書いた人の印（この 2 つは同じ呼び出し側が対で書く）。 */
+  private chromeWriter: unknown = null;
+
+  /**
    * 設定欄の「いま載っている登録」の印。id ごとに **登録 1 回につき 1 個の Symbol** を
    * 発行して覚えておき、取り外しはこの印が一致するときだけ効かせる（{@link registerOptionSlot}）。
    *
@@ -264,6 +288,28 @@ export class OptionBarStore {
     return this.generation;
   }
 
+  /**
+   * 「代」の変化を購読する（戻り値は解除）。
+   *
+   * **押し込む側はこれを見て押し直す**（手直し 3 回目）。器は持ち直されると中身を空へ
+   * 戻すので、押し込んだ側が黙っていると **帯が空のまま固まる** ―― 実測で、下書きを
+   * 持ったまま「選ぶ」や鍵へ行って板の［続ける］を選ぶと、道具も点も残っているのに
+   * 対象欄が「（選んでいません）」のまま戻らなかった（1.5 秒待っても、1 点足しても）。
+   * 押し込みの effect が代を依存に持てば、持ち直しのたびに押し直しが走る。
+   */
+  subscribeOwner(listener: () => void): () => void {
+    this.ownerListeners.add(listener);
+    return () => {
+      this.ownerListeners.delete(listener);
+    };
+  }
+
+  /** 代を 1 つ進めて、押し込む側へ報せる。 */
+  private bumpGeneration(): void {
+    this.generation += 1;
+    for (const l of this.ownerListeners) l();
+  }
+
   /** 購読する。戻り値は解除。（現在値は `get` で取る＝スナップショットは 1 経路。） */
   subscribe(listener: OptionBarListener): () => void {
     this.listeners.add(listener);
@@ -282,10 +328,22 @@ export class OptionBarStore {
    * 対象欄（240px）。`stage` は「手順 1/3」のような段階表示、`name` は対象の名前。
    * どちらも null にできる（0 件でも枠は残る＝K-3）。
    */
-  setTarget(stage: string | null, name: string | null): void {
+  setTarget(stage: string | null, name: string | null, writer: unknown = null): void {
+    // **書いた人を必ず塗り替える**（値が同じでも）。別の人が同じ値を書いた瞬間に、
+    // 前の人の後片付けは空振りになるのが正しい。
+    this.targetWriter = writer;
     const current = this.state.target;
     if (current.stage === stage && current.name === name) return;
     this.replace({ target: { stage, name } });
+  }
+
+  /**
+   * **自分が最後に書いた対象欄だけ**を空へ戻す（{@link targetWriter}）。あいだに別の人が
+   * 書いていたら何もしない ―― 降りた道具の後片付けが次の持ち主を踏み消さないための関門。
+   */
+  clearTargetIfMine(writer: unknown): void {
+    if (this.targetWriter !== writer) return;
+    this.setTarget(null, null);
   }
 
   /**
@@ -296,7 +354,12 @@ export class OptionBarStore {
    * 「消す契機を意味のあるイベントに限る」（教訓 5.12）と矛盾しない（文が変われば
    * ボタンも変わるのが正しい）。
    */
-  setNextStep(nextStep: string | null, actions: readonly OptionBarAction[] = []): void {
+  setNextStep(
+    nextStep: string | null,
+    actions: readonly OptionBarAction[] = [],
+    writer: unknown = null,
+  ): void {
+    this.chromeWriter = writer;
     if (this.state.nextStep === nextStep && actionsEqual(this.state.nextStepActions, actions)) {
       return;
     }
@@ -304,9 +367,20 @@ export class OptionBarStore {
   }
 
   /** 確定欄（176px）のボタン列。空配列で「確定の要らない道具」になる。 */
-  setCommit(commit: readonly OptionBarCommitButton[]): void {
+  setCommit(commit: readonly OptionBarCommitButton[], writer: unknown = null): void {
+    this.chromeWriter = writer;
     if (commitEqual(this.state.commit, commit)) return;
     this.replace({ commit: [...commit] });
+  }
+
+  /**
+   * **自分が最後に書いた次の一手・確定欄だけ**を空へ戻す（{@link chromeWriter}）。
+   * 理由は {@link clearTargetIfMine} と同じ。
+   */
+  clearChromeIfMine(writer: unknown): void {
+    if (this.chromeWriter !== writer) return;
+    this.setNextStep(null);
+    this.setCommit([]);
   }
 
   /**
@@ -438,13 +512,13 @@ export class OptionBarStore {
    */
   claim(owner: object): () => void {
     this.owner = owner;
-    this.generation += 1;
     this.reset();
+    this.bumpGeneration();
     return () => {
       if (this.owner !== owner) return; // 既に別の道具が持っている ⇒ 何もしない。
       this.owner = null;
-      this.generation += 1;
       this.reset();
+      this.bumpGeneration();
     };
   }
 
@@ -457,6 +531,10 @@ export class OptionBarStore {
   reset(): void {
     // 印も一緒に捨てる。残すと、reset のあとに遅れて走った古い後片付けが
     // 「自分のものが載っている」と誤判定しうる。
+    // 書いた人の印も捨てる。残すと、reset のあとに遅れて走った後片付けが
+    // 「自分が最後に書いた」と誤判定しうる（`slotTokens` と同じ理由）。
+    this.targetWriter = null;
+    this.chromeWriter = null;
     this.slotTokens.clear();
     // 並び順キーも捨てる。道具が替われば設定欄の顔ぶれも替わるので、前の道具が使った
     // 番号を引きずると、次の道具の部品が「前の道具での順番」で並んでしまう。

@@ -20,6 +20,7 @@ import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
 import type { OptionBarStore } from '../shell/option-bar';
+import { useOptionBarEpoch } from '../shell/useToolBarChrome';
 import type { SessionStore } from '../state/store';
 
 import { SURVEY_STRINGS } from './strings';
@@ -44,6 +45,8 @@ export function SurveyOptionBar<S>(props: SurveyOptionBarProps<S>): null {
     return optionBar.claim(owner);
   }, [optionBar, active]);
 
+  // 器が持ち直されたら押し直す（手直し 3 回目。理由は `shell/useToolBarChrome` の注記）。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
   useEffect(() => {
     if (!active) return;
     optionBar.setToolName(SURVEY_STRINGS.toolName);
@@ -71,7 +74,7 @@ export function SurveyOptionBar<S>(props: SurveyOptionBarProps<S>): null {
       optionBar.setCommit([]);
       optionBar.setNextStep(null);
     };
-  }, [optionBar, store, active, hasDraft, lineCount]);
+  }, [optionBar, optionBarEpoch, store, active, hasDraft, lineCount]);
 
   return null;
 }

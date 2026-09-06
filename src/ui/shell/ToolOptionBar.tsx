@@ -48,6 +48,7 @@ import { EDIT_MODE, type ToolId } from '../state/session';
 import type { SessionStore } from '../state/store';
 
 import type { OptionBarStore } from './option-bar';
+import { useOptionBarEpoch } from './useToolBarChrome';
 import { EDIT_TOOL_STRINGS } from './strings';
 import { TOOL_ID, editToolName } from './tools';
 
@@ -189,6 +190,9 @@ export function ToolOptionBar<S>(props: ToolOptionBarProps<S>): null {
   // **押し込む側が持ち主である**のが規約なので、持っていないとき（編集モードでない）は
   // 押し込まない。対象は選んでいないときも null を押し込む ―― 選択を外した瞬間に
   // 前の名前が残らないようにするためで、`setTarget` は変化が無ければ何もしない。
+  // 器が持ち直されたら押し直す（手直し 3 回目）。**自分の `claim` でも代は進む**ので、
+  // 持った直後の空へ戻した中身がこの effect で埋め直される。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
   useEffect(() => {
     if (!holdsBar) return;
     optionBar.setToolName(toolName);
@@ -197,7 +201,7 @@ export function ToolOptionBar<S>(props: ToolOptionBarProps<S>): null {
     if (toolPushesOwnTarget) return;
     // 段階表示（「手順 1/3」）を持つのは複数段の道具だけなので、ここでは常に null。
     optionBar.setTarget(null, targetName);
-  }, [optionBar, holdsBar, toolName, toolPushesOwnTarget, targetName]);
+  }, [optionBar, optionBarEpoch, holdsBar, toolName, toolPushesOwnTarget, targetName]);
 
   return null;
 }

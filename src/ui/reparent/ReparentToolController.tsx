@@ -41,7 +41,7 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import type { OptionBarStore } from '../shell/option-bar';
-import { useToolBarChrome } from '../shell/useToolBarChrome';
+import { useOptionBarEpoch, useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
@@ -393,6 +393,13 @@ export function ReparentToolController<S>(
   // いなかったので、**どこへ移そうとしているのかが画面のどこにも出ていなかった**。
   const optionBar = props.optionBar;
   const reparentArmed = reparent.flow !== REPARENT_FLOW.Idle;
+  // **帯へ押し込む条件は「店の真実（いま構えている道具）」と AND する**（手直し 3 回目）。
+  // 道具の `flow` は自分の state なので、`activeTool` が外れてから畳まれるまで **1 コミット
+  // 遅れる**。その 1 コミットのあいだに押し直すと、**降りたばかりの道具が次の持ち主の
+  // 中身を自分のもので上書きする**（実測: 分ける → 選ぶ で対象欄が「手順 1/4（選んで
+  // いません）」になり、そのあと空で固まった）。押し込みは店が「いまこの道具」と
+  // 言っているあいだだけにする。
+  const reparentArmedHoldsBar = reparentArmed && isReparentActive;
   const reparentStage = detachConfirmOpen
     ? REPARENT_STRINGS.stage(3)
     : reparent.targetId === null
@@ -414,18 +421,24 @@ export function ReparentToolController<S>(
         : (describeFeatureById(features, reparent.newParentId) ?? REPARENT_STRINGS.parentUnset);
     return REPARENT_STRINGS.targetWithParent(target, parent);
   }, [reparent.targetId, reparent.newParentId, detachConfirmOpen, resolveFeatures]);
+  // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
+  const optionBarEpoch = useOptionBarEpoch(optionBar);
+  // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
+  const targetWriterRef = useRef<object>({});
   useEffect(() => {
-    if (optionBar === undefined || !reparentArmed) return;
-    // **後片付けは「自分が押し込んだ代」のあいだだけ効かせる**（増分 5 の手直し 2 回目。
+    if (optionBar === undefined || !reparentArmedHoldsBar) return;
+    // **後片付けは「自分が最後に書いた」ときだけ効かせる**（増分 5 の手直し 2〜3 回目。
     // 理由は `shell/useToolBarChrome` の注記と同じ ―― この道具の後片付けは 1 コミット
     // 遅れて走るので、同じ持ち替えで次の持ち主が入れた対象名を踏み消していた）。
-    const epoch = optionBar.epoch();
-    optionBar.setTarget(reparentStage, reparentTargetName);
+    //
+    // **`optionBarEpoch` を依存に入れて押し直す**（手直し 3 回目）。器が持ち直されると
+    // 中身は空へ戻るので、押し込んだ側が黙っていると対象欄が空のまま固まる。
+    const targetWriter = targetWriterRef.current;
+    optionBar.setTarget(reparentStage, reparentTargetName, targetWriter);
     return () => {
-      if (optionBar.epoch() !== epoch) return;
-      optionBar.setTarget(null, null);
+      optionBar.clearTargetIfMine(targetWriter);
     };
-  }, [optionBar, reparentArmed, reparentStage, reparentTargetName]);
+  }, [optionBar, reparentArmedHoldsBar, reparentStage, reparentTargetName, optionBarEpoch]);
 
   // --- Map-input handler: a LEFT click resolves the feature under it and feeds it to
   // the hook (first = target, second = new parent). The overlay never steals other
@@ -486,7 +499,7 @@ export function ReparentToolController<S>(
   );
   useToolBarChrome({
     optionBar,
-    active: reparent.flow !== REPARENT_FLOW.Idle,
+    active: reparentArmedHoldsBar,
     slotId: 'reparent',
     nextStep: reparent.message ?? reparent.guide,
     commit: reparentCommit,
