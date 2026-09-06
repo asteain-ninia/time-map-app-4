@@ -26,7 +26,15 @@ import { dirname, resolve } from 'node:path';
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, leaveViewMode, armAddAreaTool, squareCorners, placeVertices, listedFeatureCount } from '../helpers';
+import {
+  answerDraftDiscardIfAsked,
+  launchApp,
+  leaveViewMode,
+  armAddAreaTool,
+  squareCorners,
+  placeVertices,
+  listedFeatureCount,
+} from '../helpers';
 import { assertClickable, maxFeasibleHalf, placeSquareScene } from './scene-layout';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -103,6 +111,11 @@ async function goView(page: Page): Promise<void> {
   const v = page.getByTestId('mode-view');
   if ((await v.getAttribute('aria-pressed')) !== 'true') {
     await v.click().catch(() => undefined);
+    // **鍵を閉じようとしたら「捨てますか」を聞かれることがある**（増分 5 の手直し
+    // 2 回目 / 設計書 §D.4.1 の 3）。答えるまで鍵は閉じず、板は背面を覆うので
+    // メニューにも手が届かない。この関数の役目は「読むだけへ行くこと」なので、
+    // 聞かれたら「捨てる」と答えて先へ進む（判定は共有ヘルパ 1 本を通す）。
+    await answerDraftDiscardIfAsked(page, 'yes');
   }
   await page
     .getByTestId('add-input-layer')

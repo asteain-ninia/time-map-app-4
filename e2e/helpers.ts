@@ -256,11 +256,34 @@ export async function returnToViewMode(page: Page): Promise<void> {
   const lock = page.getByTestId('mode-view');
   if ((await lock.getAttribute('aria-pressed')) !== 'true') {
     await lock.click().catch(() => undefined);
+    // **鍵を閉じようとしたら「捨てますか」を聞かれることがある**（増分 5 の手直し
+    // 2 回目 / 設計書 §D.4.1 の 3）。確定できる点数まで打った下書きを持っていると、
+    // 答えるまで鍵は閉じない。このヘルパの役目は「読むだけへ行くこと」なので、
+    // 聞かれたら「捨てる」と答えて先へ進む。
+    await answerDraftDiscardIfAsked(page, 'yes');
   }
   await page
     .getByTestId('add-input-layer')
     .waitFor({ state: 'detached', timeout: 4000 })
     .catch(() => undefined);
+}
+
+/**
+ * 「描きかけを捨てますか」の板が出ていたら答える（冪等）。
+ *
+ * 板は 追加・分ける・輪郭・穴あけ の 4 道具が同じ器（`shell/DraftDiscardConfirm`）で
+ * 出すので、`data-testid` の末尾で拾う ―― 道具ごとに `if` を並べると、道具を足したときに
+ * ここへ足し忘れて「なぜかヘルパが固まる」になる（教訓 5.19: 分岐は 1 か所の表で持つ）。
+ */
+export async function answerDraftDiscardIfAsked(
+  page: Page,
+  answer: 'yes' | 'no',
+): Promise<boolean> {
+  const button = page.locator(`[data-testid$="-draft-discard-${answer}"]`);
+  if ((await button.count()) === 0) return false;
+  await button.first().click();
+  await expect(page.locator('[data-testid$="-draft-discard-confirm"]')).toHaveCount(0);
+  return true;
 }
 
 // ---------------------------------------------------------------------------

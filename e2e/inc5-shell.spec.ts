@@ -681,9 +681,14 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     }
   });
 
-  test('K-2: 台帳 #8 の「捨てますか」の板が出ていても、板の外は地図に届く', async () => {
-    // 一時の板（地図の中央に出るもの）は **出している状態でも走査する**（設計書 §B.5 の
-    // 「テストの形」）。板の矩形だけが `auto` で、それ以外は下へ抜けることを見る。
+  test('K-2: 台帳 #8 の「捨てますか」の板は本物のモーダルで、答えるまで背後へ抜けない', async () => {
+    // 一時の板は **出している状態でも走査する**（設計書 §B.5 の「テストの形」）。
+    //
+    // **2 回目の手直しで意味が変わった。** 旧版は板が層を持たない普通の子だったので、
+    // 板の外は地図へ抜けた ―― ところが同じ覆いに居る道具の入力ブリッジ（`z-index: 1`）が
+    // **板の上に乗って**、［続ける］がマウスで押せなかった。いまは背面を覆う板を持つ
+    // 本物のモーダルなので、**板が出ているあいだは地図の 25 点すべてがモーダルに当たる**
+    // のが正しい姿である。答えたら 25 点すべてが地図へ戻る（居座らない）ことを見る。
     const { app, page } = await launchApp();
     try {
       await armAddAreaTool(page);
@@ -699,8 +704,8 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
 
       for (const hit of await scanMapGrid(page)) {
         expect(
-          ['map-input-layer', 'add-input-layer', 'popover:add-draft-discard-confirm'],
-          `板の外なのに ${hit} が受けた`,
+          ['add-draft-discard-confirm-backdrop', 'popover:add-draft-discard-confirm'],
+          `板が出ているのに ${hit} へ抜けた`,
         ).toContain(hit);
       }
       // 板を閉じれば 25 点すべてが地図へ戻る（居座らない）。
@@ -1020,7 +1025,7 @@ test.describe('手直し D3 — 設定欄の畳み「≫」', () => {
 //     赤くなる。
 
 test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だけ下りる', () => {
-  test('分ける: 点列 → 対象 → 道具、の順に 1 段ずつ戻る', async () => {
+  test('分ける: 点列 → 対象 → 地物 → 道具、の順に 1 段ずつ戻る', async () => {
     const { app, page } = await launchApp();
     try {
       const { cx, cy } = await commitOneFace(page);
@@ -1035,21 +1040,36 @@ test.describe('増分 5 の手直し B1 — Esc の階段は 1 回で 1 段だ�
       await expect(page.getByTestId('knife-cut-count')).toHaveText('2');
 
       // ---- 1 段目: 点列だけがまとめて消える。対象も道具も残る。
+      // **分断線 2 点は「確定できる点数」なので 1 度聞く**（設計書 §D.4.1 の 3。
+      // 2 回目の手直しで足した段）。利用者自身の Escape で出た板なので、もう一度の
+      // Escape は「捨てる」＝ 先へ進む（教訓 5.70 の輪にしない）。
       await page.keyboard.press('Escape');
+      await expect(page.getByTestId('knife-draft-discard-confirm')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('knife-draft-discard-confirm')).toHaveCount(0);
       await expect(page.getByTestId('knife-cut-count')).toHaveText('0');
       await expect(page.getByTestId('knife-tool')).toHaveAttribute('data-flow', 'drawing-cut');
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
 
       // ---- 2 段目: 対象だけが外れる。道具は持ったまま。
+      // **元からの選択は保つ**（設計書 §D.4.1 の表。2 回目の手直しで直した ―― それまでは
+      // 対象を離すと選択が `null` になり、階段が 1 段飛んでいた）。ここでは面を確定した
+      // 直後にその面が選ばれているので、対象を離すと **その選択へ戻る**。
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('knife-tool')).toHaveAttribute(
         'data-flow',
         'selecting-target',
       );
       await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+      await expect(page.getByTestId('app-active-feature')).not.toHaveText('');
 
-      // ---- 3 段目: 道具は何もせず大域の階段へ譲る → 「選ぶ」へ戻る。
+      // ---- 3 段目: 道具は何もせず大域の階段へ譲る → 地物の選択が外れる（U-5）。
       // ここが「道具側で preventDefault しない」の実物の効き目である。
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('app-active-feature')).toHaveText('');
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+
+      // ---- 4 段目: 何も残っていないので、道具が「選ぶ」へ戻る（階段のいちばん下）。
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('app-active-tool')).toHaveText('');
       await expect(page.getByTestId('knife-tool')).toHaveCount(0);
@@ -1337,6 +1357,473 @@ test.describe('司令塔の決定 (5) — 切った側・穴あけの新地物�
         'data-flow',
         'selecting-target',
       );
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5 の手直し 2 回目（2026-09-06）
+// ---------------------------------------------------------------------------
+//
+// 実機の再検証で残った 5 件を固定する。**どれも E2E でしか捕まらない** ―― 重なりの層・
+// 実測の幅・道具どうしの押し合いは、レイアウトを計算しない環境では全部 0 になる
+// （開発ガイド §5.49）。
+
+/** その座標でいちばん手前に居る要素の `data-testid`（教訓 5.61 の測り方）。 */
+async function topmostTestIdAt(page: Page, x: number, y: number): Promise<string> {
+  return page.evaluate(
+    ({ px, py }) => {
+      const el = document.elementFromPoint(px, py);
+      if (el === null) return 'null';
+      const named = el.closest('[data-testid]');
+      return named?.getAttribute('data-testid') ?? el.className.toString();
+    },
+    { px: x, py: y },
+  );
+}
+
+/** その部品の中央でいちばん手前に居る要素の `data-testid`。 */
+async function topmostTestIdOver(page: Page, testId: string): Promise<string> {
+  const box = await page.getByTestId(testId).boundingBox();
+  expect(box, `${testId} の矩形が取れない`).not.toBeNull();
+  const b = box!;
+  return topmostTestIdAt(page, b.x + b.width / 2, b.y + b.height / 2);
+}
+
+test.describe('手直し 2 回目 (1) — 捨てる前の確認は本物のモーダル', () => {
+  test('確定できる下書き中にナイフへ持ち替えても、板をマウスで押せて、地図はナイフに届かない', async () => {
+    // **旧版の壊れ方**: 板は地図セルの覆いの中の普通の子で層を持たず、切替先の道具の
+    // 入力ブリッジ（`knife.css` の `z-index: 1`）が板の上に乗っていた。板のボタンの
+    // 座標で `elementFromPoint` が `knife-input-layer` を返し、マウスでは押せない。
+    // 板の外を押せばナイフが対象を掴み、選択理由の板が二重に出た。
+    //
+    // **わざと壊すなら**: `shell.css` の `.draft-discard-modal-root` の `z-index` を
+    // 落とすと (2) が赤くなる。`AddToolController` の「切替先を構えないまま聞く」
+    // （板を出す瞬間の `setActiveTool(restore)`）を外すと (1) が赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await placeVertices(page, squareCorners(cx, cy, 60));
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+
+      await page.getByTestId('tool-edit.knife').click();
+      const confirm = page.getByTestId('add-draft-discard-confirm');
+      await expect(confirm).toBeVisible();
+
+      // ---- (1) 板が出ているあいだ、**切替先は構えていない**。
+      await expect(
+        page.getByTestId('app-active-tool'),
+        '板が出ているのに切替先が構えられている',
+      ).toHaveText('add.area');
+      await expect(page.getByTestId('knife-input-layer')).toHaveCount(0);
+      await expect(page.getByTestId('tool-edit.knife')).toHaveAttribute('aria-pressed', 'false');
+
+      // ---- (2) 板のボタンの上でいちばん手前に居るのは、そのボタン自身である。
+      expect(
+        await topmostTestIdOver(page, 'add-draft-discard-no'),
+        '［続ける］の上に別の層が乗っている',
+      ).toBe('add-draft-discard-no');
+      expect(await topmostTestIdOver(page, 'add-draft-discard-yes')).toBe('add-draft-discard-yes');
+
+      // ---- (3) 板の外の地図は、背面を覆う板が受ける（切替先にも作図にも届かない）。
+      for (const hit of await scanMapGrid(page)) {
+        expect(
+          ['add-draft-discard-confirm-backdrop', 'popover:add-draft-discard-confirm'],
+          `板が出ているのに ${hit} へ抜けた`,
+        ).toContain(hit);
+      }
+
+      // ---- (4) 実際にマウスで［続ける］を押せる（`force` を使わない）。
+      await page.getByTestId('add-draft-discard-no').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('app-active-tool')).toHaveText('add.area');
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+
+      // ---- (5) ［捨てる］と答えて初めて切替先が構えられる。
+      await page.getByTestId('tool-edit.knife').click();
+      await expect(confirm).toBeVisible();
+      await page.getByTestId('add-draft-discard-yes').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+      await expect(page.getByTestId('knife-input-layer')).toBeVisible();
+      expect(new Set(await scanMapGrid(page))).toEqual(new Set(['knife-input-layer']));
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('鍵を閉じる経路でも、答えるまで「読むだけ」にならない', async () => {
+    // 旧版は **先に鍵が閉じてから**聞いていたので、板が出ているあいだ「読むだけなのに
+    // 下書きが生きている」状態が一瞬存在し、そこから確認なしで view へ抜ける道が残った。
+    const { app, page } = await launchApp();
+    try {
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
+      await placeVertices(
+        page,
+        squareCorners(box.x + box.width / 2, box.y + box.height / 2, 60),
+      );
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+
+      await page.getByTestId('mode-view').click();
+      const confirm = page.getByTestId('add-draft-discard-confirm');
+      await expect(confirm).toBeVisible();
+      // 鍵はまだ開いたまま（答えるまで閉じない）。
+      await expect(page.getByTestId('app-mode')).toHaveText('add');
+      await expect(page.getByTestId('mode-view')).toHaveAttribute('aria-pressed', 'false');
+
+      await page.getByTestId('add-draft-discard-no').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('app-mode')).toHaveText('add');
+      await expect(page.getByTestId('add-vertex-count')).toHaveText('4');
+
+      await page.getByTestId('mode-view').click();
+      await expect(confirm).toBeVisible();
+      await page.getByTestId('add-draft-discard-yes').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('app-mode')).toHaveText('view');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 2 回目 (2) — 右パネルの素性入力でも Escape が効く', () => {
+  test('分ける: 空欄なら 1 回で対象を離し、打ちかけがあれば 1 度聞く', async () => {
+    // **旧版の壊れ方**: 決定 (5) で素性入力を右パネルへ移した結果、名前欄に焦点が
+    // あるあいだ **Escape を誰も受けなかった**（道具は焦点の関門で降り、大域も同じ
+    // 関門で落ちる）。10 回押しても `tool=edit.knife owner=text` のままだった。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.knife').click();
+      await page.mouse.click(cx, cy);
+      await page.mouse.click(cx - 200, cy);
+      await page.mouse.click(cx + 200, cy);
+      await page.getByTestId('knife-confirm-cut').click();
+      await page.getByTestId('knife-confirm-inheritor').click();
+      await expect(page.getByTestId('add-name')).toBeVisible();
+
+      // ---- (1) 空欄（打ちかけ無し）なら 1 回でやめる。行き先は「対象を離す」段で、
+      //      **道具は持ったまま**である（設計書 §D.4.1 の階段）。
+      await page.getByTestId('add-name').focus();
+      await expect(page.getByTestId('app-focus-owner')).toHaveText('text');
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.knife');
+
+      // ---- (2) 打ちかけがあれば 1 度聞く。［続ける］で入力は残る。
+      await page.mouse.click(cx, cy);
+      await page.mouse.click(cx - 200, cy + 40);
+      await page.mouse.click(cx + 200, cy + 40);
+      await page.getByTestId('knife-confirm-cut').click();
+      await page.getByTestId('knife-confirm-inheritor').click();
+      await page.getByTestId('add-name').fill('打ちかけ');
+      await page.keyboard.press('Escape');
+      const confirm = page.getByTestId('knife-draft-discard-confirm');
+      await expect(confirm).toBeVisible();
+      await page.getByTestId('knife-draft-discard-no').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('add-name')).toHaveValue('打ちかけ');
+
+      // ---- (3) もう 1 回の Escape で板が出て、さらにもう 1 回で捨てる
+      //      （利用者自身の Escape で出た板は Escape ＝「捨てる」＝ 教訓 5.70）。
+      await page.getByTestId('add-name').focus();
+      await page.keyboard.press('Escape');
+      await expect(confirm).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expect(page.getByTestId('knife-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('穴あけ: 空欄なら 1 回で対象を離し、打ちかけがあれば 1 度聞く', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      await page.getByTestId('tool-edit.drill').click();
+      await page.mouse.click(cx, cy);
+      await page.mouse.click(cx - 40, cy - 40);
+      await page.mouse.click(cx + 40, cy - 40);
+      await page.mouse.click(cx, cy + 40);
+      await page.getByTestId('drill-confirm').click();
+      await expect(page.getByTestId('add-name')).toBeVisible();
+
+      await page.getByTestId('add-name').focus();
+      await page.keyboard.press('Escape');
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      await expect(page.getByTestId('drill-tool')).toHaveAttribute(
+        'data-flow',
+        'selecting-target',
+      );
+      await expect(page.getByTestId('app-active-tool')).toHaveText('edit.drill');
+
+      await page.mouse.click(cx, cy);
+      await page.mouse.click(cx - 40, cy - 40);
+      await page.mouse.click(cx + 40, cy - 40);
+      await page.mouse.click(cx, cy + 40);
+      await page.getByTestId('drill-confirm').click();
+      await page.getByTestId('add-name').fill('打ちかけ');
+      await page.keyboard.press('Escape');
+      const confirm = page.getByTestId('drill-draft-discard-confirm');
+      await expect(confirm).toBeVisible();
+      await page.getByTestId('drill-draft-discard-no').click();
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('add-name')).toHaveValue('打ちかけ');
+
+      await page.getByTestId('add-name').focus();
+      await page.keyboard.press('Escape');
+      await expect(confirm).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(confirm).toHaveCount(0);
+      await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 2 回目 (3) — 手順のある道具から降りても帯が踏み消されない', () => {
+  test('5 道具 × 選ぶ・頂点・動かす・測る の 20 通りで、対象欄と帯が残る', async () => {
+    // **旧版の壊れ方**: 5 道具は `activeTool` が外れたあと **effect の中で**自分の状態を
+    // 畳む（`resetForSwitch()` → `setState`）ので、`setTarget(null, null)` などの後片付けが
+    // **1 コミット遅れて**走り、同じ持ち替えで先に押し込んだ `ToolOptionBar` の対象名や
+    // `SurveyOptionBar` の帯を踏み消した。地物は選ばれたままなのに対象欄が
+    // 「（選んでいません）」で固まる。
+    //
+    // **わざと壊すなら**: `option-bar.ts` の `epoch()` を常に 0 を返す形にする（または
+    // 5 道具と `useToolBarChrome` の後片付けから代の照合を外す）と、20 通りのうち
+    // 手順のある道具から降りた直後が赤くなる。
+    const { app, page } = await launchApp();
+    try {
+      const { faceId, cx, cy } = await commitOneFace(page);
+      const stepTools = [
+        'edit.knife',
+        'edit.merge',
+        'edit.reparent',
+        'edit.ring',
+        'edit.drill',
+      ] as const;
+      const plainTools = ['edit.select', 'edit.vertex', 'edit.move'] as const;
+
+      for (const from of stepTools) {
+        for (const to of [...plainTools, 'survey'] as const) {
+          // 素の状態から始める（「選ぶ」に戻して、地物を 1 つ選んでおく）。
+          await page.getByTestId('tool-edit.select').click();
+          await page.mouse.click(cx, cy);
+          await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+
+          await page.getByTestId(`tool-${from}`).click();
+          await expect(page.getByTestId('app-active-tool')).toHaveText(from);
+
+          if (to === 'survey') {
+            await page.getByTestId('survey-toggle').click();
+            // 測るは自分で帯を持つ（司令塔の決定 (4)）。5 区画が全部 **測るのもの**である。
+            await expect(
+              page.getByTestId('option-bar-tool'),
+              `${from} → 測る で道具名が踏み消された`,
+            ).toHaveText('📏 測る');
+            await expect(
+              page.getByTestId('option-bar-target'),
+              `${from} → 測る で対象欄が踏み消された`,
+            ).not.toHaveText('（選んでいません）');
+            await expect(
+              page.getByTestId('option-bar-commit'),
+              `${from} → 測る で確定欄が踏み消された`,
+            ).toContainText('測量を終える');
+            await page.getByTestId('survey-toggle').click();
+          } else {
+            await page.getByTestId(`tool-${to}`).click();
+            await expect(page.getByTestId('app-active-tool')).toHaveText(to);
+            // 地物は選ばれたまま ―― その名前が対象欄に出ていなければならない。
+            await expect(page.getByTestId('app-active-feature')).toHaveText(faceId);
+            await expect(
+              page.getByTestId('option-bar-target'),
+              `${from} → ${to} で対象欄が「（選んでいません）」で固まった`,
+            ).not.toHaveText('（選んでいません）');
+          }
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 2 回目 (4) — 道具を構えても「≫」が設定欄からこぼれない', () => {
+  test('面・分ける・測る を構えた 1024〜1280px で「≫」が設定欄の中に完全に見える', async () => {
+    // **旧版の壊れ方**: 畳みの予算は「次の一手」に 160px を見込むのに、実際の
+    // 「次の一手」は `flex: 1 1 auto` で **基準幅に比例して**縮むので 189〜204px を取り、
+    // 設定欄は予算より狭くなった。いちばん右の「≫」が欄の外へこぼれ、`overflow: hidden`
+    // なので **見えないまま**格子・深さに手が届かなかった（1120px で「≫」が x 929〜953、
+    // 設定欄の右端が 926）。
+    //
+    // **わざと壊すなら**: `shell.css` の `.option-bar__settings` を `flex: 0 1 auto` へ
+    // 戻すか、`OptionBar.tsx` の `box.style.maxWidth` の代入を外す。
+    const { app, page } = await launchApp();
+    try {
+      await leaveViewMode(page);
+      for (const arm of ['add.area', 'edit.knife', 'survey'] as const) {
+        if (arm === 'survey') await page.getByTestId('survey-toggle').click();
+        else await page.getByTestId(`tool-${arm}`).click();
+
+        for (const width of [1024, 1060, 1120, 1200, 1280]) {
+          await page.setViewportSize({ width, height: 800 });
+          await settleLayout(page, 'option-bar-settings');
+
+          const report = await page.evaluate(() => {
+            const box = document.querySelector('[data-testid="option-bar-settings"]');
+            if (box === null) throw new Error('設定欄が無い');
+            const frame = box.getBoundingClientRect();
+            const escapees: { id: string; left: number; right: number }[] = [];
+            for (const el of Array.from(box.querySelectorAll('[data-testid]'))) {
+              const r = el.getBoundingClientRect();
+              if (r.width === 0 && r.height === 0) continue;
+              if (r.left < frame.left - 1 || r.right > frame.right + 1) {
+                escapees.push({
+                  id: el.getAttribute('data-testid') ?? '?',
+                  left: Math.round(r.left),
+                  right: Math.round(r.right),
+                });
+              }
+            }
+            return {
+              frame: { left: Math.round(frame.left), right: Math.round(frame.right) },
+              escapees,
+            };
+          });
+          expect(
+            report.escapees,
+            `${arm} を構えた窓幅 ${width} で設定欄（${report.frame.left}〜` +
+              `${report.frame.right}）からはみ出した部品: ${JSON.stringify(report.escapees)}`,
+          ).toEqual([]);
+
+          // 「≫」が出ているなら、**その上でいちばん手前に居るのは「≫」自身**で、
+          // 押せば畳んだ中身に手が届く。
+          const overflow = page.getByTestId('option-bar-overflow');
+          if ((await overflow.count()) === 0) continue;
+          expect(
+            await topmostTestIdOver(page, 'option-bar-overflow'),
+            `${arm} / ${width}px で「≫」が別の層に覆われている`,
+          ).toBe('option-bar-overflow');
+          await overflow.click();
+          await expect(page.getByTestId('option-bar-overflow-panel')).toBeVisible();
+          await page.keyboard.press('Escape');
+          await expect(page.getByTestId('option-bar-overflow-panel')).toBeHidden();
+        }
+
+        await page.setViewportSize({ width: 1280, height: 800 });
+        if (arm === 'survey') await page.getByTestId('survey-toggle').click();
+        else await page.getByTestId('tool-edit.select').click();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 2 回目 (5) — 対象を離しても元の選択は残り、確定できる点列は聞いてから捨てる', () => {
+  test('分ける・輪郭・穴あけ: 対象を離しても、道具の外で選んでいた地物は選ばれたまま', async () => {
+    // 設計書 §D.4.1 の表「対象を離す／元からの選択: **保つ**」。結ぶ・所属は元から
+    // 保っていたが、この 3 つは対象を離すと選択が `null` になっていた。
+    const { app, page } = await launchApp();
+    try {
+      // 重ならない位置に 2 つ描く（FR-29）。
+      await armAddAreaTool(page);
+      const box = await addInputLayerBox(page);
+      const half = Math.round(Math.min(box.width, box.height) * 0.14);
+      const leftX = box.x + box.width * 0.28;
+      const rightX = box.x + box.width * 0.72;
+      const midY = box.y + box.height * 0.5;
+      const firstId = await drawFace(page, squareCorners(leftX, midY, half), { name: 'X' });
+      await armAddAreaTool(page);
+      await drawFace(page, squareCorners(rightX, midY, half), { name: 'Y' });
+
+      for (const tool of ['edit.knife', 'edit.ring', 'edit.drill'] as const) {
+        // 「選ぶ」で X を選んでおく（＝道具の外で選んだもの）。
+        await page.getByTestId('tool-edit.select').click();
+        await page.mouse.click(leftX, midY);
+        await expect(page.getByTestId('app-active-feature')).toHaveText(firstId);
+
+        // 道具を構えて、別の面 Y を対象に押す（対象は選択へ昇格する）。
+        await page.getByTestId(`tool-${tool}`).click();
+        await page.mouse.click(rightX, midY);
+        await expect(page.getByTestId('app-active-feature')).not.toHaveText(firstId);
+
+        // Escape で対象を離すと、**元からの選択 X へ戻る**（`null` にはならない）。
+        await page.keyboard.press('Escape');
+        await expect(
+          page.getByTestId('app-active-feature'),
+          `${tool} が対象を離したときに元からの選択を捨てた`,
+        ).toHaveText(firstId);
+        await expect(page.getByTestId('app-active-tool')).toHaveText(tool);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('輪郭 4 点・穴あけ 4 点: 持ち替えでも鍵でも Escape でも、確認なしには捨てない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+
+      for (const tool of ['edit.ring', 'edit.drill'] as const) {
+        const prefix = tool === 'edit.ring' ? 'ring-edit-draft-discard' : 'drill-draft-discard';
+        const countId = tool === 'edit.ring' ? 'ring-edit-vertex-count' : 'drill-vertex-count';
+        await page.getByTestId(`tool-${tool}`).click();
+        await page.mouse.click(cx, cy); // 対象の面を掴む
+        // 面の内側に 4 点（確定できる点数を超える）。
+        await page.mouse.click(cx - 40, cy - 40);
+        await page.mouse.click(cx + 40, cy - 40);
+        await page.mouse.click(cx + 40, cy + 40);
+        await page.mouse.click(cx - 40, cy + 40);
+        await expect(page.getByTestId(countId)).toHaveText('4');
+
+        const confirm = page.getByTestId(`${prefix}-confirm`);
+
+        // ---- 持ち替え: 板が出て、答えるまで切替先を構えない。
+        await page.getByTestId('tool-edit.select').click();
+        await expect(confirm, `${tool} の 4 点が確認なしで捨てられた`).toBeVisible();
+        await expect(page.getByTestId('app-active-tool')).toHaveText(tool);
+        await page.getByTestId(`${prefix}-no`).click();
+        await expect(confirm).toHaveCount(0);
+        await expect(page.getByTestId(countId)).toHaveText('4');
+
+        // ---- 鍵: 同じ板が出て、答えるまで「読むだけ」にならない。
+        await page.getByTestId('mode-view').click();
+        await expect(confirm).toBeVisible();
+        await expect(page.getByTestId('app-mode')).toHaveText('edit');
+        await page.getByTestId(`${prefix}-no`).click();
+        await expect(confirm).toHaveCount(0);
+        await expect(page.getByTestId(countId)).toHaveText('4');
+
+        // ---- Escape: 板が出て、もう 1 回の Escape で捨てる（輪にならない＝教訓 5.70）。
+        await page.keyboard.press('Escape');
+        await expect(confirm).toBeVisible();
+        await page.keyboard.press('Escape');
+        await expect(confirm).toHaveCount(0);
+        await expect(page.getByTestId(countId)).toHaveText('0');
+
+        // Escape を連打すれば必ず素の状態へ戻る（設計書 §D.4 の保証）。
+        for (let i = 0; i < 6; i += 1) await page.keyboard.press('Escape');
+        await expect(page.getByTestId('app-active-tool')).toHaveText('');
+      }
     } finally {
       await app.close();
     }

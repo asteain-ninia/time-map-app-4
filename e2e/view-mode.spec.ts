@@ -1,15 +1,18 @@
-// HB-4 — behavioral regression: the 表示専用 (View-only) 導線 actually enables the
-// editing tools, and a 面 can be added through the REAL UI path (no controller
-// 直叩き). The human bug: on boot the toolbar was grayed out except for the save
-// commands and there was no working way into 編集 / 追加モード — the named導線
-// (ViewToggleViewMode) did nothing in the menu and the edit tools stayed disabled.
+// HB-4 の回帰: **鍵**（読むだけ ⇄ 直せる）が本当に道具を使えるようにし、実 UI の経路で
+// 面を 1 つ置けること（コントローラ直叩きではない）。元の不具合は「起動すると保存以外の
+// ボタンが全部灰色で、直せる状態へ入る道が無い」―― 鍵にあたる導線がメニューで何もせず、
+// 道具は灰色のままだった。
 //
-// This spec drives the live built composite through Playwright for Electron (the
-// same launch contract as the rest of e2e/, via launchApp) and asserts the STATE
-// CHANGE — disabled → enabled, mode flip, a committed face — using real input
-// (click / mouse) and the observation hooks (app-mode / per-tool disabled /
-// app-active-feature). It locks the regression: if the toolbar grays out again or
-// the導線 stops flipping the mode, this reddens.
+// **語は鍵と道具に揃えてある**（増分 5 の手直し 2 回目）。「表示専用」「追加モード」
+// 「編集モード」という言い方は画面から無くなった（鍵 1 個＋道具 1 段になった）ので、
+// 説明にも残さない ―― 検査の説明だけが古い語のまま残ると、次に読む人が画面にまだ
+// そのボタンがあると読む（教訓 5.64 と同じ型）。内部の値（`app-mode` の
+// `view` / `edit` / `add`）は道具から導かれる観測なので、そちらの名前はそのまま使う。
+//
+// この spec はビルド済みの実アプリを Playwright for Electron で動かし（ほかの e2e と
+// 同じ `launchApp`）、**状態の変化**を実際の入力（クリック・マウス）と観測口
+// （`app-mode` / 道具ごとの `disabled` / `app-active-feature`）で見る。道具がまた
+// 灰色に戻るか、鍵が効かなくなれば、ここが赤くなる。
 
 import { test, expect } from '@playwright/test';
 
@@ -29,11 +32,10 @@ test.describe('HB-4 — 鍵を「直せる」にすると道具が使えるよ�
   test('起動直後は道具が全部灰色で、鍵を開けると押せるようになり、実 UI で面を 1 つ置ける', async () => {
     const { app, page } = await launchApp();
     try {
-      // 1. BOOT STATE — the composite starts in 表示専用 (View). The named導線
-      //    (the 表示専用 toolbar button) is enabled and pressed; the add/edit mode
-      //    toggles AND every add tool are disabled together (教訓 5.13 single gate).
-      // **増分 5b**: モードの 2 ボタンは廃止され、鍵 1 個＋道具の 1 段になった。
-      // 「読むだけで編集の入口が閉じている」は **道具が全部灰色である**ことで見る。
+      // 1. 起動直後は **鍵が閉じている**（読むだけ）。鍵のボタンは押せて、押された姿で
+      //    出ている。**道具は 1 つ残らず灰色**である（教訓 5.13: 関門は 1 本）。
+      //    **増分 5b**: モードの 2 ボタンは廃止され、鍵 1 個＋道具の 1 段になった。
+      //    「読むだけで編集の入口が閉じている」は **道具が全部灰色である**ことで見る。
       await expect(page.getByTestId('app-mode')).toHaveText('view');
       const viewToggle = page.getByTestId('mode-view');
       await expect(viewToggle).toBeEnabled();
@@ -48,10 +50,9 @@ test.describe('HB-4 — 鍵を「直せる」にすると道具が使えるよ�
         ).toBeDisabled();
       }
 
-      // 2. LEAVE View through the live导线 (a real click on the toolbar button).
-      //    The mode flips to 編集モード (the sensible editable default the導线
-      //    contract lands in — SAME as useShell.setViewOnly) and the mode toggles
-      //    become enabled — the cause (mode) AND the effect (buttons) both observable.
+      // 2. **鍵を開ける**（実際にボタンを押す）。内部の値は `edit`（＝道具を構えて
+      //    いない直せる状態）へ移り、道具が全部押せるようになる ―― 原因（鍵）と
+      //    結果（道具）の両方を観測する。
       await viewToggle.click();
       await expect(page.getByTestId('app-mode')).toHaveText('edit');
       await expect(viewToggle).toHaveAttribute('aria-pressed', 'false');
@@ -60,7 +61,7 @@ test.describe('HB-4 — 鍵を「直せる」にすると道具が使えるよ�
       }
 
       // 3. 面の道具を構えると、内部の mode が add になる（設計書 §D.1 の導出式）。
-      //    **「追加モードに入ってから道具を選ぶ」の 2 手が 1 手になった**のがここ。
+      //    **「先に入る場所を選んでから道具を選ぶ」の 2 手が 1 手になった**のがここ。
       const areaTool = page.getByTestId('tool-add.area');
       await areaTool.click();
       await expect(areaTool).toHaveAttribute('aria-pressed', 'true');
@@ -160,8 +161,8 @@ test.describe('HB-4 — 鍵を「直せる」にすると道具が使えるよ�
 });
 
 test.describe('K-6 — 「読むだけ」では削除に手が届かない (N-03 の回帰)', () => {
-  // N-03 は「表示専用モードでも『地物を削除』だけが押せる」と報告されていたが、**実アプリ
-  // では今のところ届かない**。モードを切り替えると store.setMode が選択を捨てる（結合点 #6）
+  // N-03 は「読むだけでも『地物を削除』だけが押せる」と報告されていたが、**実アプリ
+  // では今のところ届かない**。鍵を切り替えると store.setMode が選択を捨てる（結合点 #6）
   // ので、素性欄に地物が出ず、削除ボタンがそもそも描かれないためである。
   //
   // 欠陥は部品の契約のほうに実在した: DeleteFeatureButton は権限の入力を持たず、
