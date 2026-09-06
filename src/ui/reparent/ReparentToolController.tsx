@@ -24,7 +24,7 @@
 // The component holds NO domain truth and writes the store ONLY through the host-supplied
 // `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -41,6 +41,7 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import type { OptionBarStore } from '../shell/option-bar';
+import { useToolBarChrome } from '../shell/useToolBarChrome';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
@@ -328,6 +329,63 @@ export function ReparentToolController<S>(
   // the hook (first = target, second = new parent). The overlay never steals other
   // input — the input layer sits above the map and forwards here only while a session
   // runs.
+  // --- 案内・断り・確定の列をオプションバーへ（増分 5d / 設計書 §C.4 / E-2 / N-27）---
+  //
+  // 確定欄は 176px ＝ U-8 の下限（幅 60px）で 2 つが限度なので、［確定］［やめる］だけを
+  // 置き、残りは設定欄へ差し込む（増分 3 の `add-undo` と同じ形）。**testid は 1 つも
+  // 変えていない**（T-1: 役割で維持する。置き場が移っただけ）。
+  const reparentCommit = useMemo(
+    () => [
+      {
+        id: 'confirm',
+        testId: 'reparent-confirm',
+        label: REPARENT_STRINGS.confirm,
+        disabled: !reparent.canConfirm,
+        onClick: () => reparent.confirm(),
+      },
+      {
+        id: 'cancel',
+        testId: 'reparent-cancel',
+        label: REPARENT_STRINGS.cancel,
+        onClick: () => reparent.cancel(),
+      },
+    ],
+    [reparent],
+  );
+  const reparentExtras = useMemo(
+    () => (
+      <>
+        {/* 最上位化（parentNone）: 対象を掴んだ時点で押せる（FR-46 独立 / 解体の
+            構成要素）。確定欄は 2 つで満杯なので設定欄に置く。 */}
+        <button
+          type="button"
+          data-testid="reparent-confirm-none"
+          disabled={!reparent.canConfirmNone}
+          onClick={() => reparent.confirmNone()}
+        >
+          {REPARENT_STRINGS.confirmNone}
+        </button>
+        <button
+          type="button"
+          data-testid="reparent-clear"
+          disabled={reparent.targetId === null}
+          onClick={() => reparent.clearSelection()}
+        >
+          {REPARENT_STRINGS.clear}
+        </button>
+      </>
+    ),
+    [reparent],
+  );
+  useToolBarChrome({
+    optionBar,
+    active: reparent.flow !== REPARENT_FLOW.Idle,
+    slotId: 'reparent',
+    nextStep: reparent.message ?? reparent.guide,
+    commit: reparentCommit,
+    extras: reparentExtras,
+  });
+
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
@@ -392,45 +450,15 @@ export function ReparentToolController<S>(
         </p>
       )}
 
-      <div className="reparent-tool__controls" data-testid="reparent-controls">
-        <button
-          type="button"
-          data-testid="reparent-confirm"
-          disabled={!reparent.canConfirm}
-          onClick={() => reparent.confirm()}
-        >
-          {REPARENT_STRINGS.confirm}
-        </button>
-        {/* 最上位化 (detach / make-top-level, parentNone): enabled once a target is picked,
-            independent of a new parent (FR-46 独立 / 解体の構成要素). Was unreachable — the
-            domain parentNone variant had no UI entry point (bughunt wiring gap). */}
-        <button
-          type="button"
-          data-testid="reparent-confirm-none"
-          disabled={!reparent.canConfirmNone}
-          onClick={() => reparent.confirmNone()}
-        >
-          {REPARENT_STRINGS.confirmNone}
-        </button>
-        <button
-          type="button"
-          data-testid="reparent-clear"
-          disabled={reparent.targetId === null}
-          onClick={() => reparent.clearSelection()}
-        >
-          {REPARENT_STRINGS.clear}
-        </button>
-        <button type="button" data-testid="reparent-cancel" onClick={() => reparent.cancel()}>
-          {REPARENT_STRINGS.cancel}
-        </button>
-        {/* Live selection markers for integration tests. */}
-        <span data-testid="reparent-target" hidden>
-          {reparent.targetId === null ? '' : String(reparent.targetId)}
-        </span>
-        <span data-testid="reparent-parent" hidden>
-          {reparent.newParentId === null ? '' : String(reparent.newParentId)}
-        </span>
-      </div>
+      {/* **確定の列はここには無い**（増分 5d）。オプションバーの確定欄 176px へ移した
+          （設計書 §C.4 / E-2 / N-27）。地図に重ならないので K-2 の事故が構造的に
+          起こり得ない。残っているのは観測だけである。 */}
+      <span data-testid="reparent-target" hidden>
+        {reparent.targetId === null ? '' : String(reparent.targetId)}
+      </span>
+      <span data-testid="reparent-parent" hidden>
+        {reparent.newParentId === null ? '' : String(reparent.newParentId)}
+      </span>
     </div>
   );
 }

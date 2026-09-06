@@ -35,6 +35,7 @@ import { applyAddProposal } from '../../domain/editing/apply-proposal';
 
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import { OptionBar } from '../shell/OptionBar';
 import { OptionBarStore } from '../shell/option-bar';
 import { TOOL_ID } from '../shell/tools';
 import { AppShell } from '../shell';
@@ -253,21 +254,27 @@ function mountMerge(
   // 同じ帯を渡す（この道具は持たずに対象欄だけを押し込む）。
   const optionBar = new OptionBarStore();
 
+  // **増分 5d: 確定の列はオプションバーの確定欄に出る**（地図の上には無い）。
+  // 帯そのものを一緒に載せないと確定ボタンが DOM に現れない ―― 検査の都合ではなく、
+  // **実物がそうなっている**ということである。
   const utils = render(
-    <MergeToolController<DomainRoot>
-      store={store}
-      startProcess={live.startProcess}
-      ids={ids}
-      resolveFeatures={resolveFeatures}
-      resolveStore={resolveStore}
-      anchorTime={() => store.getState().currentTime}
-      screenToWorld={screenToWorld}
-      featureAtPoint={featureAtPoint}
-      resolveLeafShape={resolveLeafShape}
-      drawSink={drawSink}
-      optionBar={optionBar}
-      onCommitted={onCommitted}
-    />,
+    <>
+      <OptionBar store={optionBar} />
+      <MergeToolController<DomainRoot>
+        store={store}
+        startProcess={live.startProcess}
+        ids={ids}
+        resolveFeatures={resolveFeatures}
+        resolveStore={resolveStore}
+        anchorTime={() => store.getState().currentTime}
+        screenToWorld={screenToWorld}
+        featureAtPoint={featureAtPoint}
+        resolveLeafShape={resolveLeafShape}
+        drawSink={drawSink}
+        optionBar={optionBar}
+        onCommitted={onCommitted}
+      />
+    </>,
   );
 
   return { store, lastHighlight: () => highlight, optionBar, unmount: utils.unmount };
@@ -478,6 +485,9 @@ describe('MergeToolController bughunt-review: Ctrl+Z does NOT leak through the m
 
     // Mirror the App.tsx host wiring: hold the merge-drawing flag, thread it as
     // `suspended` into AppShell, and feed the controller's onDrawingChange back into it.
+    // **増分 5d: 確定の列はオプションバーの確定欄に出る**ので、シェルの
+    // `optionBar` スロットへ帯を載せる（本番の合成ルートと同じ形）。
+    const optionBar = new OptionBarStore();
     function Host(): JSX.Element {
       const [mergeDrawing, setMergeDrawing] = useState(false);
       return (
@@ -485,9 +495,11 @@ describe('MergeToolController bughunt-review: Ctrl+Z does NOT leak through the m
           store={store}
           registry={registry}
           suspended={mergeDrawing}
+          optionBar={<OptionBar store={optionBar} />}
           overlay={
             <MergeToolController<DomainRoot>
               store={store}
+              optionBar={optionBar}
               startProcess={live.startProcess}
               ids={ids}
               resolveFeatures={resolveFeatures}

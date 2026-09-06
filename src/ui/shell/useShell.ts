@@ -24,7 +24,7 @@ import type { StoreApi } from 'zustand/vanilla';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE, type EditMode, type ToolId } from '../state/session';
 import { canEdit } from './permissions';
-import { isSelectTool, TOOL_ID } from './tools';
+import { isSelectTool } from './tools';
 
 export interface ShellBinding {
   /** 導出された内部モード（`view` / `add` / `edit`）。観測と権限判定はここを読む。 */
@@ -68,10 +68,15 @@ export function useShell<S>(store: StoreApi<SessionStore<S>>): ShellBinding {
 
   const selectTool = useCallback(
     (tool: ToolId | null) => {
-      // 「選ぶ」を押したときは **道具を外す**（`null`）。「選ぶ」は道具というより
-      // 「何も構えていない状態」で、道具の取り消し（Escape）が戻ってくる先と同じ値に
-      // しておかないと、同じ画面の状態が 2 通りの値で表せてしまう（教訓 5.29）。
-      store.getState().setActiveTool(tool === TOOL_ID.EditSelect ? null : tool);
+      // 「選ぶ」も **押したとおりの値**（`edit.select`）で入れる。
+      //
+      // 一度は「選ぶ ＝ 道具を外した状態（`null`）」へ寄せたが、それだと
+      // **`app-active-tool` の観測が空になる** ―― 利用者は道具を押したのに、
+      // 観測の上では「何も構えていない」ことになる。逆に道具の取り消し（Escape）が
+      // 戻ってくる先は `null` のままなので、**`null` と `edit.select` はどちらも
+      // 「選ぶ」を意味する**。押されて見えるかどうかは {@link isSelectTool} が
+      // 1 か所で判定するので、画面が 2 通りに割れることはない。
+      store.getState().setActiveTool(tool);
     },
     [store],
   );

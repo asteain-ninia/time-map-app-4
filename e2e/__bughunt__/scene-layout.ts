@@ -49,19 +49,25 @@ interface Band {
  * conservative SUPERSET of every tool's strip so one model serves all phases.
  */
 export function bottomChromeBand(b: SceneBox): Band {
+  // **増分 5d で空になった。** 確定・1 つ戻す・やめるの列は地図の下端中央から
+  // **オプションバーの確定欄**へ移した（設計書 §C.4 / E-2 / N-27）ので、地図の下端に
+  // 避けるべき帯はもう無い。**関数ごと消していない**のは、地図の中へ常設の部品
+  // （ズーム・縮尺）を置くときにここへ戻ってくるからである（設計書 §B.5 の台帳 #10 / #11）。
+  // 空の帯（幅 0・高さ 0）を返すので、どのレーンとも交差しない。
   const xc = b.x + b.width / 2;
-  return {
-    left: xc - 270,
-    right: xc + 270,
-    top: b.y + b.height - 100,
-    bottom: b.y + b.height,
-  };
+  return { left: xc, right: xc, top: b.y + b.height, bottom: b.y + b.height };
 }
 
-/** The top-centre tool guide/message strip (knife-tool__guide top:12 etc.). */
+/**
+ * かつて地図の上端中央に浮いていた案内・断りの帯（`knife-tool__guide` top:12 ほか）。
+ *
+ * **増分 5d で空になった。** 案内と断りは**オプションバーの「次の一手」**が出すように
+ * なり、地図の上には何も浮いていない。`avoidTopChrome: true` を渡している呼び出しは
+ * そのままでよい（空の帯とは交差しないので、実質は素通しになる）。
+ */
 export function topChromeBand(b: SceneBox): Band {
   const xc = b.x + b.width / 2;
-  return { left: xc - 250, right: xc + 250, top: b.y, bottom: b.y + 48 };
+  return { left: xc, right: xc, top: b.y, bottom: b.y };
 }
 
 /**
@@ -241,9 +247,22 @@ export function maxFeasibleHalf(
   const extra = opts.pierceExtra ?? 0;
   const bottomTop = bottomChromeBand(b).top;
   const topBottom = topChromeBand(b).bottom;
-  // 上端: 余白（top クロムを避けるならその下端）から。下端: bottom クロムの上。
-  const upper = opts.avoidTopChrome ? Math.max(b.y + m, topBottom + m) : b.y + m;
-  const lower = bottomTop - m;
+  // **世界の帯（縦）も上下の限界である**（2026-09-06、増分 5d）。
+  //
+  // 増分 5a で地図セルが縦に伸びた（アプリバーが 32px 固定になり、レールも 88px に
+  // なったため 912×498.8）ので、**1 度あたりの px を決めるのが高さ側から幅側へ
+  // 入れ替わった** ―― 世界は 912×456 で、セルの上下に **極の外側の余り**が
+  // 21.4px ずつできる。そこへ図形を置くと世界の外なので、`placeSquareScene` は
+  // 正しく infeasible で落ちる。ところがこの関数は**その帯を見ていなかった**ので、
+  // 「入る」と答えたあとに置く側が落ちる、という食い違いになっていた
+  // （実測: `t2-nest` が half=230 で通ってから `cy∈[333, 309]` で落ちた）。
+  // **成立判定と配置は同じ帯を見る**（教訓 5.29: 同じ判断は 1 か所）。
+  const world = worldBand(b);
+  const upper = Math.max(
+    opts.avoidTopChrome ? Math.max(b.y + m, topBottom + m) : b.y + m,
+    world.top + m,
+  );
+  const lower = Math.min(bottomTop - m, world.bottom - m);
   // reach = half + extra が上下に収まる最大の half。
   return Math.floor((lower - upper) / 2) - extra;
 }

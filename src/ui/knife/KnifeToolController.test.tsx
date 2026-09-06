@@ -47,6 +47,8 @@ import { createVertex, createVertexStore, type VertexStore } from '../../domain/
 import { timePointYearMonthDay } from '../../domain/time/time-point';
 
 import { createSessionStore, type SessionStore } from '../state/store';
+import { OptionBar } from '../shell/OptionBar';
+import { OptionBarStore } from '../shell/option-bar';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 
@@ -177,19 +179,27 @@ function mountKnife(
   const featureAtPoint: FeatureAtPoint = (p) =>
     p.lon >= 0 && p.lon <= 10 && p.lat >= 0 && p.lat <= 10 ? TARGET_ID : null;
 
+  // **増分 5d: 確定の列はオプションバーの確定欄に出る**（地図の上には無い）。
+  // だから帯そのものを一緒に載せないと、［分断線を確定］が DOM に現れない ――
+  // これは検査の都合ではなく、**実物がそうなっている**ということである。
+  const optionBar = new OptionBarStore();
   const utils = render(
-    <KnifeToolController<S>
-      store={store}
-      startProcess={startProcess}
-      ids={ids()}
-      resolveFeature={resolveFeature}
-      resolveStore={resolveStore}
-      anchorTime={() => ANCHOR}
-      screenToWorld={screenToWorld}
-      featureAtPoint={featureAtPoint}
-      drawSink={drawSink}
-      defaultColor={DEFAULT_COLOR}
-    />,
+    <>
+      <OptionBar store={optionBar} />
+      <KnifeToolController<S>
+        store={store}
+        optionBar={optionBar}
+        startProcess={startProcess}
+        ids={ids()}
+        resolveFeature={resolveFeature}
+        resolveStore={resolveStore}
+        anchorTime={() => ANCHOR}
+        screenToWorld={screenToWorld}
+        featureAtPoint={featureAtPoint}
+        drawSink={drawSink}
+        defaultColor={DEFAULT_COLOR}
+      />
+    </>,
   );
 
   return { store, startProcess, drawSink, unmount: utils.unmount };

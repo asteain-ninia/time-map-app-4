@@ -22,7 +22,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -41,6 +41,8 @@ import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import type { OptionBarStore } from '../shell/option-bar';
+import { useToolBarChrome } from '../shell/useToolBarChrome';
 
 import { RING_EDIT_STRINGS } from './strings';
 import {
@@ -77,6 +79,8 @@ export type FeatureAtPoint = (point: WorldCoordinate) => FeatureId | null;
 
 export interface RingEditToolControllerProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
+  /** オプションバー（設計書 §C.4）。確定の列はここへ出す（増分 5d / E-2）。 */
+  readonly optionBar?: OptionBarStore | undefined;
   /** U24→U13 confirm adapter (host-bound; createLiveEditBinding + confirmRingEdit). */
   readonly startProcess: StartRingEditProcess<S>;
   /** Injected id minting (NFR 5.8; shared minter so ids never collide). */
@@ -268,6 +272,80 @@ export function RingEditToolController<S>(
   // --- Map-input handler: a LEFT click resolves the feature under it and routes to the
   // hook (target select / vertex place / ring delete). The controller owns the hit-test
   // (教訓 5.14); the hook drives the state machine.
+  // --- 案内・断り・確定の列をオプションバーへ（増分 5d / 設計書 §C.4 / E-2 / N-27）---
+  //
+  // 確定欄は 176px ＝ U-8 の下限（幅 60px）で 2 つが限度なので、［確定］［やめる］だけを
+  // 置き、残りは設定欄へ差し込む。**testid は 1 つも変えていない**（T-1）。
+  const optionBar = props.optionBar;
+  const ringAdding = ring.subMode === RING_EDIT_SUBMODE.Add;
+  const ringCommit = useMemo(
+    () => [
+      ...(ringAdding
+        ? [
+            {
+              id: 'confirm',
+              testId: 'ring-edit-confirm',
+              label: RING_EDIT_STRINGS.confirmRing,
+              disabled: !ring.canConfirm,
+              onClick: () => ring.confirm(),
+            },
+          ]
+        : []),
+      {
+        id: 'cancel',
+        testId: 'ring-edit-cancel',
+        label: RING_EDIT_STRINGS.cancel,
+        onClick: () => ring.cancel(),
+      },
+    ],
+    [ringAdding, ring],
+  );
+  const ringExtras = useMemo(
+    () => (
+      <>
+        <button
+          type="button"
+          data-testid="ring-edit-submode"
+          onClick={() => ring.toggleSubMode()}
+        >
+          {ring.subMode === RING_EDIT_SUBMODE.Add
+            ? RING_EDIT_STRINGS.switchToDelete
+            : RING_EDIT_STRINGS.switchToAdd}
+        </button>
+        {ringAdding && (
+          <>
+            <button
+              type="button"
+              data-testid="ring-edit-undo"
+              disabled={ring.draft === null || ring.draft.vertices.length === 0}
+              onClick={() => ring.undoLastVertex()}
+            >
+              {RING_EDIT_STRINGS.undoVertex}
+            </button>
+            <label className="ring-edit-tool__grid">
+              <input
+                type="checkbox"
+                data-testid="ring-edit-gridsnap"
+                checked={ring.gridSnap}
+                onChange={(e) => ring.setGridSnap(e.target.checked)}
+              />
+              {RING_EDIT_STRINGS.gridSnap}
+            </label>
+          </>
+        )}
+      </>
+    ),
+    [ringAdding, ring],
+  );
+  useToolBarChrome({
+    optionBar,
+    active: ring.flow !== RING_EDIT_FLOW.Idle,
+    slotId: 'ring-edit',
+    nextStep: ring.message ?? ring.guide,
+    commit: ringCommit,
+    extras: ringExtras,
+  });
+
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
@@ -331,69 +409,20 @@ export function RingEditToolController<S>(
         onMapCameraPointerCancel={onMapCameraPointerCancel}
       />
 
-      {/* The per-state Japanese guide (FR-92). */}
-      <p className="ring-edit-tool__guide" data-testid="ring-edit-guide" role="status">
+      {/* 案内・断り・確定の列は **オプションバーへ移した**（増分 5d / 設計書 §C.4 /
+          E-2 / N-27）。地図の上に押せる部品を置かないので K-2 の事故が構造的に
+          起こり得ない。ここに残すのは観測のミラーだけである。 */}
+      <span className="ring-edit-tool__guide" data-testid="ring-edit-guide" hidden>
         {ring.guide}
-      </p>
-
-      {/* 判断用メッセージ (拒否理由) — kept until a meaningful event (教訓 5.12). */}
+      </span>
       {ring.message !== null && (
-        <p className="ring-edit-tool__message" data-testid="ring-edit-message" role="alert">
+        <span className="ring-edit-tool__message" data-testid="ring-edit-message" hidden>
           {ring.message}
-        </p>
-      )}
-
-      <div className="ring-edit-tool__controls" data-testid="ring-edit-controls">
-        <button
-          type="button"
-          data-testid="ring-edit-submode"
-          onClick={() => ring.toggleSubMode()}
-        >
-          {ring.subMode === RING_EDIT_SUBMODE.Add
-            ? RING_EDIT_STRINGS.switchToDelete
-            : RING_EDIT_STRINGS.switchToAdd}
-        </button>
-        {ring.subMode === RING_EDIT_SUBMODE.Add && (
-          <>
-            <button
-              type="button"
-              data-testid="ring-edit-confirm"
-              disabled={!ring.canConfirm}
-              onClick={() => ring.confirm()}
-            >
-              {RING_EDIT_STRINGS.confirmRing}
-            </button>
-            <button
-              type="button"
-              data-testid="ring-edit-undo"
-              disabled={ring.draft === null || ring.draft.vertices.length === 0}
-              onClick={() => ring.undoLastVertex()}
-            >
-              {RING_EDIT_STRINGS.undoVertex}
-            </button>
-            <label className="ring-edit-tool__grid">
-              <input
-                type="checkbox"
-                data-testid="ring-edit-gridsnap"
-                /* The hook's toggle — NOT the draft's copy — is the state source: the
-                   checkbox is live BEFORE a target face is picked (no draft yet) and
-                   must not silently snap back to unchecked. The hook keeps the running
-                   draft in sync with it (単一の真実源). */
-                checked={ring.gridSnap}
-                onChange={(e) => ring.setGridSnap(e.target.checked)}
-              />
-              {RING_EDIT_STRINGS.gridSnap}
-            </label>
-          </>
-        )}
-        <button type="button" data-testid="ring-edit-cancel" onClick={() => ring.cancel()}>
-          {RING_EDIT_STRINGS.cancel}
-        </button>
-        {/* Live vertex count for integration tests. */}
-        <span data-testid="ring-edit-vertex-count" hidden>
-          {ring.draft?.vertices.length ?? 0}
         </span>
-      </div>
+      )}
+      <span data-testid="ring-edit-vertex-count" hidden>
+        {ring.draft?.vertices.length ?? 0}
+      </span>
     </div>
   );
 }

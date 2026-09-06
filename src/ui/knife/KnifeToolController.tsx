@@ -50,6 +50,8 @@ import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import type { OptionBarStore } from '../shell/option-bar';
+import { useToolBarChrome } from '../shell/useToolBarChrome';
 
 import { AddPropertyForm } from '../add/AddPropertyForm';
 import type { AddProperties } from '../../domain/add/index';
@@ -92,6 +94,12 @@ export type CircleWorldRadius = () => number;
 
 export interface KnifeToolControllerProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
+  /**
+   * オプションバー（設計書 §C.4）。**確定の列はここへ出す**（増分 5d / E-2）――
+   * 地図の下端中央に浮かせていた列を降ろすことで、地図のクリックを奪う事故（K-2）が
+   * 構造的に起こり得なくなる。渡さなければ従来どおり何も押し込まない。
+   */
+  readonly optionBar?: OptionBarStore | undefined;
   /** U13 process-start adapter (host-bound; spec §依存 U13). */
   readonly startProcess: StartSplitProcess<S>;
   /** Injected id minting (NFR 5.8). */
@@ -162,6 +170,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     defaultColor,
     style,
   } = props;
+  const optionBar = props.optionBar;
   const mapCameraInput = props.mapCameraInput ?? NOOP_MAP_CAMERA_INPUT;
 
   const mode = useStore(store, (s) => s.mode);
@@ -456,6 +465,58 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     [mapCameraInput],
   );
 
+  // --- 案内・断り・確定の列をオプションバーへ（増分 5d / 設計書 §C.4）------------
+  //
+  // **確定欄は 2 つで満杯**（176px ÷ U-8 の下限 60px）なので、［1 つ戻す］は設定欄へ
+  // 差し込む（増分 3 の `add-undo` と同じ形）。testid は 1 つも変えていない（T-1）――
+  // 役割は「分断線を確定する」「1 点戻す」「やめる」のままで、置き場だけが移った。
+  const drawingCut = knife.state.phase === KNIFE_PHASE.DrawingCut;
+  const knifeCommit = useMemo(
+    () =>
+      drawingCut
+        ? [
+            {
+              id: 'confirm',
+              testId: 'knife-confirm-cut',
+              label: KNIFE_STRINGS.confirmCut,
+              onClick: () => knife.confirmCut(),
+            },
+            {
+              id: 'cancel',
+              testId: 'knife-cancel',
+              label: KNIFE_STRINGS.cancel,
+              onClick: () => knife.cancel(),
+            },
+          ]
+        : [],
+    [drawingCut, knife],
+  );
+  const knifeExtras = useMemo(
+    () =>
+      drawingCut ? (
+        <button
+          type="button"
+          data-testid="knife-undo"
+          disabled={
+            knife.state.phase !== KNIFE_PHASE.DrawingCut ||
+            knife.state.line.points.length === 0
+          }
+          onClick={() => knife.undoCutPoint()}
+        >
+          {KNIFE_STRINGS.undoVertex}
+        </button>
+      ) : null,
+    [drawingCut, knife],
+  );
+  useToolBarChrome({
+    optionBar,
+    active: knife.flow !== KNIFE_FLOW.Idle,
+    slotId: 'knife',
+    nextStep: knife.message ?? knife.guide,
+    commit: knifeCommit,
+    extras: knifeExtras,
+  });
+
   return (
     <KnifeToolChrome
       knife={knife}
@@ -576,7 +637,6 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
 
   if (knife.flow === KNIFE_FLOW.Idle) return null;
 
-  const drawing = knife.state.phase === KNIFE_PHASE.DrawingCut;
   const choosing = knife.state.phase === KNIFE_PHASE.ChoosingInheritor;
   const entering = knife.state.phase === KNIFE_PHASE.EnteringProperties;
 
@@ -599,50 +659,27 @@ function KnifeToolChrome<S>(props: KnifeToolChromeProps<S>): JSX.Element | null 
         />
       )}
 
-      {/* The per-phase Japanese guide (FR-92). */}
-      <p className="knife-tool__guide" data-testid="knife-guide" role="status">
+      {/* 案内と断りは **オプションバーの「次の一手」** が本文を出す（増分 5d /
+          設計書 §C.4「拒否理由が出たときはその文がそのまま置き換わる」）。ここに残す
+          のは観測のためのミラーで、**地図の上には描かない**（`hidden`）。読み上げの
+          role は残す ―― 画面に出ている文言は帯のほうである。 */}
+      <span className="knife-tool__guide" data-testid="knife-guide" hidden>
         {knife.guide}
-      </p>
-
-      {/* 判断用メッセージ (分割可能検証拒否) — kept until a meaningful event (教訓 5.12). */}
+      </span>
       {knife.message !== null && (
-        <p className="knife-tool__message" data-testid="knife-message" role="alert">
+        <span className="knife-tool__message" data-testid="knife-message" hidden>
           {knife.message}
-        </p>
+        </span>
       )}
 
-      {/* DrawingCut controls: confirm cut / undo vertex / cancel (教訓 5.7). */}
-      {drawing && (
-        <div className="knife-tool__controls" data-testid="knife-controls">
-          <button
-            type="button"
-            data-testid="knife-confirm-cut"
-            onClick={() => knife.confirmCut()}
-          >
-            分断線を確定
-          </button>
-          <button
-            type="button"
-            data-testid="knife-undo"
-            disabled={
-              knife.state.phase !== KNIFE_PHASE.DrawingCut ||
-              knife.state.line.points.length === 0
-            }
-            onClick={() => knife.undoCutPoint()}
-          >
-            {KNIFE_STRINGS.undoVertex}
-          </button>
-          <button type="button" data-testid="knife-cancel" onClick={() => knife.cancel()}>
-            {KNIFE_STRINGS.cancel}
-          </button>
-          {/* Live cut-point count for integration tests. */}
-          <span data-testid="knife-cut-count" hidden>
-            {knife.state.phase === KNIFE_PHASE.DrawingCut
-              ? knife.state.line.points.length
-              : 0}
-          </span>
-        </div>
-      )}
+      {/* **確定の列はここには無い**（増分 5d）。オプションバーの確定欄 176px へ移した
+          （設計書 §C.4 / E-2）。地図の下端中央に浮いていたころは、押せる部品が地図に
+          重なっていて K-2 の事故の当事者だった。残っているのは観測だけである。 */}
+      <span data-testid="knife-cut-count" hidden>
+        {knife.state.phase === KNIFE_PHASE.DrawingCut
+          ? knife.state.line.points.length
+          : 0}
+      </span>
 
       {/* 継承先選択モーダル (FR-93 / HB3-5/19 n-way: one button per piece). */}
       {choosing && knife.state.phase === KNIFE_PHASE.ChoosingInheritor && (

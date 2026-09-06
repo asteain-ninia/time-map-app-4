@@ -83,7 +83,14 @@ export function Toolbar<S>(props: ToolbarProps<S>): JSX.Element {
                     aria-pressed={pressed}
                     // 読むだけのときは道具を構えられない（K-6。`canEdit` 1 本で判定する）。
                     disabled={!shell.editable}
-                    onClick={() => shell.selectTool(pressed ? null : tool)}
+                    onClick={() =>
+                      // **「選ぶ」は外れない。** 素の状態が「選ぶ」なので、押して
+                      // 外れる先が無い（外したら「選ぶ」になる＝同じところへ戻る）。
+                      // ほかの道具はもう一度押すと外れ、「選ぶ」へ戻る。
+                      shell.selectTool(
+                        tool === TOOL_ID.EditSelect ? tool : pressed ? null : tool,
+                      )
+                    }
                   >
                     {label}
                   </button>

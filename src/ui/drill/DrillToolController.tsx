@@ -26,7 +26,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -44,6 +44,8 @@ import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
 import { editableTargetFromEvent, isEditableTarget } from '../shell/focus-guard';
+import type { OptionBarStore } from '../shell/option-bar';
+import { useToolBarChrome } from '../shell/useToolBarChrome';
 
 import { AddPropertyForm } from '../add/AddPropertyForm';
 import type { AddProperties } from '../../domain/add/index';
@@ -81,6 +83,8 @@ export type FeatureAtPoint = (point: WorldCoordinate) => FeatureId | null;
 
 export interface DrillToolControllerProps<S> {
   readonly store: StoreApi<SessionStore<S>>;
+  /** オプションバー（設計書 §C.4）。確定の列はここへ出す（増分 5d / E-2）。 */
+  readonly optionBar?: OptionBarStore | undefined;
   /** U27→U13 process-start adapter (host-bound; createLiveDrillBinding). */
   readonly startProcess: StartDrillProcess<S>;
   /** Injected id minting (NFR 5.8; shared minter so ids never collide). */
@@ -271,6 +275,51 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
   // --- Map-input handler: a LEFT click resolves the feature under it and routes to the
   // hook (target末端 select / region vertex place). The controller owns the hit-test
   // (教訓 5.14); the hook drives the state machine.
+  // --- 案内・断り・確定の列をオプションバーへ（増分 5d / 設計書 §C.4 / E-2 / N-27）---
+  //
+  // 確定欄は 176px ＝ U-8 の下限（幅 60px）で 2 つが限度なので、［確定］［やめる］だけを
+  // 置き、残りは設定欄へ差し込む。**testid は 1 つも変えていない**（T-1）。
+  const optionBar = props.optionBar;
+  const drillCommit = useMemo(
+    () => [
+      {
+        id: 'confirm',
+        testId: 'drill-confirm',
+        label: DRILL_STRINGS.confirmRegion,
+        disabled: !drill.canConfirm,
+        onClick: () => drill.confirmRegion(),
+      },
+      {
+        id: 'cancel',
+        testId: 'drill-cancel',
+        label: DRILL_STRINGS.cancel,
+        onClick: () => drill.cancel(),
+      },
+    ],
+    [drill],
+  );
+  const drillExtras = useMemo(
+    () => (
+      <button
+        type="button"
+        data-testid="drill-undo"
+        disabled={drill.region.length === 0}
+        onClick={() => drill.undoLastVertex()}
+      >
+        {DRILL_STRINGS.undoVertex}
+      </button>
+    ),
+    [drill],
+  );
+  useToolBarChrome({
+    optionBar,
+    active: drill.flow !== DRILL_FLOW.Idle,
+    slotId: 'drill',
+    nextStep: drill.message ?? drill.guide,
+    commit: drillCommit,
+    extras: drillExtras,
+  });
+
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
@@ -340,46 +389,19 @@ export function DrillToolController<S>(props: DrillToolControllerProps<S>): JSX.
         />
       )}
 
-      {/* The per-state Japanese guide (FR-92). */}
-      <p className="drill-tool__guide" data-testid="drill-guide" role="status">
+      {/* 案内・断り・確定の列は **オプションバーへ移した**（増分 5d / 設計書 §C.4 /
+          E-2 / N-27）。ここに残すのは観測のミラーだけである。 */}
+      <span className="drill-tool__guide" data-testid="drill-guide" hidden>
         {drill.guide}
-      </p>
-
-      {/* 判断用メッセージ (妥当性検証拒否 / U13 reject) — kept until a meaningful event (教訓 5.12). */}
+      </span>
       {drill.message !== null && (
-        <p className="drill-tool__message" data-testid="drill-message" role="alert">
+        <span className="drill-tool__message" data-testid="drill-message" hidden>
           {drill.message}
-        </p>
+        </span>
       )}
-
-      {/* Region-draft controls: confirm region / undo vertex / cancel (教訓 5.7). */}
-      {drawing && (
-        <div className="drill-tool__controls" data-testid="drill-controls">
-          <button
-            type="button"
-            data-testid="drill-confirm"
-            disabled={!drill.canConfirm}
-            onClick={() => drill.confirmRegion()}
-          >
-            {DRILL_STRINGS.confirmRegion}
-          </button>
-          <button
-            type="button"
-            data-testid="drill-undo"
-            disabled={drill.region.length === 0}
-            onClick={() => drill.undoLastVertex()}
-          >
-            {DRILL_STRINGS.undoVertex}
-          </button>
-          <button type="button" data-testid="drill-cancel" onClick={() => drill.cancel()}>
-            {DRILL_STRINGS.cancel}
-          </button>
-          {/* Live region vertex count for integration tests. */}
-          <span data-testid="drill-vertex-count" hidden>
-            {drill.region.length}
-          </span>
-        </div>
-      )}
+      <span data-testid="drill-vertex-count" hidden>
+        {drill.region.length}
+      </span>
 
       {/* 新地物プロパティ入力 — re-uses U23's add form (FR-97 / 教訓 5.30). The上位領域は
           元末端から初期継承 (proposal assembler), so the parent selector is hidden. */}

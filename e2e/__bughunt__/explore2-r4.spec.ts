@@ -253,7 +253,19 @@ async function commitFaceMaybeConflict(
   const vcText = ((await page.getByTestId('add-vertex-count').textContent()) ?? '').trim();
   if (vcText !== '4') record('add-vertex-drop', `expected 4 vertices, got ${vcText}`);
   const complete = page.getByTestId('add-complete');
-  await expect(complete).toBeEnabled();
+  // **点が落ちたときは確定できないのが正しい。**
+  //
+  // この fixture はわざと 3 枚の面を重ねるので、**FR-29（他の面の内側に頂点を置けない）**
+  // が角を 1 つ断ることがある ―― 断られたら 3 点しか無く、［完了］は押せない。
+  // 旧版はここを `expect(complete).toBeEnabled()` で **落として**いたが、それは
+  // 「アプリが正しく断った」ことを不具合として扱う形である（増分 5d で地図セルが縦に
+  // 83px 広がり、クラスタの相似縮小が要らなくなって重なりが濃くなったので表に出た）。
+  // 探索の作法どおり **観察として記録して先へ進む**（上の `add-vertex-drop`）。
+  if (!(await complete.isEnabled().catch(() => false))) {
+    record('add-complete-disabled', `vertices=${vcText} のため確定できない（FR-29 の断りか）`);
+    await page.keyboard.press('Escape').catch(() => undefined);
+    return 'rejected';
+  }
   await complete.click();
   if ((await page.getByTestId('add-rejected').count()) > 0) {
     const m = ((await page.getByTestId('add-rejected').textContent()) ?? '').trim();

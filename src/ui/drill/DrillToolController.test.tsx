@@ -40,6 +40,8 @@ import { createVertex, createVertexStore, type VertexStore } from '../../domain/
 import { timePointYear } from '../../domain/time/time-point';
 import type { DrillSnapshot } from '../../domain/drill/index';
 
+import { OptionBar } from '../shell/OptionBar';
+import { OptionBarStore } from '../shell/option-bar';
 import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
@@ -169,19 +171,26 @@ function mountDrill(
   const featureAtPoint: FeatureAtPoint = (p) =>
     p.lon >= 0 && p.lon <= 20 && p.lat >= 0 && p.lat <= 20 ? TARGET_ID : null;
 
+  // **増分 5d: 確定の列はオプションバーの確定欄に出る**ので、帯も一緒に載せる
+  // （検査の都合ではなく、実物がそうなっている）。
+  const optionBar = new OptionBarStore();
   const utils = render(
-    <DrillToolController<S>
-      store={store}
-      startProcess={startProcess}
-      ids={ids()}
-      resolveFeature={resolveFeature}
-      resolveStore={resolveStore}
-      anchorTime={() => timePointYear(1000)}
-      screenToWorld={screenToWorld}
-      featureAtPoint={featureAtPoint}
-      drawSink={drawSink}
-      defaultColor={DEFAULT_COLOR}
-    />,
+    <>
+      <OptionBar store={optionBar} />
+      <DrillToolController<S>
+        optionBar={optionBar}
+        store={store}
+        startProcess={startProcess}
+        ids={ids()}
+        resolveFeature={resolveFeature}
+        resolveStore={resolveStore}
+        anchorTime={() => timePointYear(1000)}
+        screenToWorld={screenToWorld}
+        featureAtPoint={featureAtPoint}
+        drawSink={drawSink}
+        defaultColor={DEFAULT_COLOR}
+      />
+    </>,
   );
 
   return { store, startProcess, drawSink, unmount: utils.unmount };

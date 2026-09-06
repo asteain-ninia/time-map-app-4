@@ -24,12 +24,13 @@ import { dirname, resolve } from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 
 import {
-  launchApp,
-  enterEditMode,
   armAddAreaTool,
-  placeVertices,
   commitFace,
+  enterEditMode,
+  launchApp,
   listedFeatureCount,
+  openDepthOptions,
+  placeVertices,
 } from '../helpers';
 import { placeSquareScene, assertClickable, type SceneBox, fitHalf } from '../__bughunt__/scene-layout';
 
@@ -1097,6 +1098,9 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       await page.keyboard.press('Escape');
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
+      // **増分 5a**: 深さの操作はアプリバーからオプションバーの「深さ ▾」へ降ろした
+      // （設計書 §B.4）。押せることは変わらないので、開く 1 手だけを足す。
+      await openDepthOptions(page);
       await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 0');
       const drawnAtZero = await drawnFeatureIds(page);
       await page.getByRole('button', { name: '深さを上げる' }).click();
@@ -1104,6 +1108,7 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       const drawnAtOne = await drawnFeatureIds(page);
       await page.getByRole('button', { name: '深さを下げる' }).click();
       await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 0');
+      await page.keyboard.press('Escape');
       record(
         'a7-aggregation',
         `N=0 drawn=${JSON.stringify(drawnAtZero)} / N=1 drawn=${JSON.stringify(drawnAtOne)}`,
@@ -1426,20 +1431,23 @@ test.describe('VISUAL-A — FR-22 / FR-24 リング編集', () => {
       );
       expect(bodyEmphasized - bodyBefore).toBeGreaterThan(20);
 
-      // --- (2) 段階7 優先規則: ドラフト中の右クリックはメニューを開かない ---------
+      // --- (2) **ドラフト中でも右クリックは開く**（増分 5c で向きが変わった）--------
+      //
+      // 旧版は「道具がドラフトを持っているあいだ右クリックは丸ごと落とす」（段階7 の
+      // 優先規則）を固定していた。増分 5c で鍵盤の持ち主を 1 値へ畳んだとき、
+      // **右クリックを止めるのはダイアログのときだけ**に改めた（設計書 §D.4 の表 /
+      // §I.3 の原則①「いつでも開ける ―― 道具を持っている間も」）。開けるようにしても
+      // **ドラフトは壊れない**ことを、ここで見る。
       await page.mouse.click(cx, cy, { button: 'right' });
-      await page.waitForTimeout(400);
-      const menuCount = await menu.count();
+      await expect(menu).toBeVisible();
       record(
-        'a9-contextmenu-suspended',
-        `right-click during the knife draft opened ${menuCount} menu(s); ` +
+        'a9-contextmenu-open-during-draft',
+        `right-click during the knife draft opened the menu; ` +
           `flow=${await knifeFlow(page)} active-feature="${await activeFeature(page)}"`,
       );
-      expect(
-        menuCount,
-        'ドラフト中の右クリックは競合する編集メニューを開かない (段階7 優先規則)',
-      ).toBe(0);
-      // ...and the drop was WHOLE: the session's own selection is untouched.
+      // メニューを閉じても、道具の下書きと選択はそのまま。
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
       expect(await knifeFlow(page)).toBe('drawing-cut');
       expect(await activeFeature(page)).toBe(faceId);
 

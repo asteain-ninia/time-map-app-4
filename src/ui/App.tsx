@@ -3021,6 +3021,7 @@ export function App(): JSX.Element {
             />
             <KnifeToolController<DomainRoot>
               store={store}
+              optionBar={optionBarStore}
               startProcess={knifeBootstrap.startProcess}
               ids={knifeBootstrap.ids}
               resolveFeature={knifeBootstrap.resolveFeature}
@@ -3091,6 +3092,7 @@ export function App(): JSX.Element {
                 consumed it (integration lens). */}
             <RingEditToolController<DomainRoot>
               store={store}
+              optionBar={optionBarStore}
               startProcess={ringEditBootstrap.startProcess}
               ids={ringEditBootstrap.ids}
               resolveFeature={ringEditBootstrap.resolveFeature}
@@ -3114,6 +3116,7 @@ export function App(): JSX.Element {
                 UI consumed it (integration lens, FR-45). */}
             <DrillToolController<DomainRoot>
               store={store}
+              optionBar={optionBarStore}
               startProcess={drillBootstrap.startProcess}
               ids={drillBootstrap.ids}
               resolveFeature={drillBootstrap.resolveFeature}

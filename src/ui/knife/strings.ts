@@ -22,6 +22,11 @@ export const KNIFE_STRINGS = {
   cancel: 'キャンセル',
   /** 頂点取り消し (FR-78). */
   undoVertex: '最後の頂点を取り消す',
+  /**
+   * 分断線の確定（増分 5d でオプションバーの確定欄へ移したときに、直書きだった文言を
+   * ここへ引き上げた ―― 画面に出る言葉は 1 か所に集める＝技術方針 5.5 / 教訓 5.19）。
+   */
+  confirmCut: '分断線を確定',
   /** Grid snap toggle (FR-78). */
   gridSnap: 'グリッドにスナップ',
   /** 非継承側プロパティ入力 heading (re-uses U23 form; FR-93). */

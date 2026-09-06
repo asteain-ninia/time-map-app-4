@@ -139,8 +139,12 @@ describe('道具から mode を導出する（FR-75 の排他は導出で保つ 
 
     fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditSelect}`));
     expect(store.getState().mode).toBe(EDIT_MODE.Edit);
-    // 「選ぶ」は道具を外した状態そのもの（設計書 §D.4 の階段の最後と同じ値）。
-    expect(store.getState().activeTool).toBeNull();
+    // 押したとおりの値が入る（観測 `app-active-tool` が空にならない）。
+    expect(store.getState().activeTool).toBe(TOOL_ID.EditSelect);
+    // **道具を外した状態（`null`）も「選ぶ」を意味する** ―― 道具の取り消し（Escape）が
+    // 戻ってくる先がそこなので、どちらでも「選ぶ」が押されて見える。
+    act(() => store.getState().setActiveTool(null));
+    expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
   });
 
   it('道具は 1 段で、追加の道具と編集の道具が同時に並ぶ（入れ替わらない）', () => {
@@ -173,6 +177,9 @@ describe('道具から mode を導出する（FR-75 の排他は導出で保つ 
     // もう一度押すと外れ、「選ぶ」が押された状態へ戻る（＝素の状態）。
     fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditKnife}`));
     expect(store.getState().activeTool).toBeNull();
+    expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
+    // 「選ぶ」を押しても押された状態のまま（外れない ―― 素の状態が「選ぶ」だから）。
+    fireEvent.click(screen.getByTestId(`tool-${TOOL_ID.EditSelect}`));
     expect(pressedTools()).toEqual([TOOL_ID.EditSelect]);
   });
 });

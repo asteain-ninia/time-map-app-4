@@ -24,7 +24,7 @@
 // The component holds NO domain truth and writes the store ONLY through the
 // host-supplied `onCommitted` (教訓 5.22 確定までの非破壊 / 単一の真実源).
 
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -41,6 +41,7 @@ import { type MapCameraInput, NOOP_MAP_CAMERA_INPUT } from '../map/index';
 import type { SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import type { OptionBarStore } from '../shell/option-bar';
+import { useToolBarChrome } from '../shell/useToolBarChrome';
 import { EDIT_TOOL_STRINGS } from '../shell/strings';
 import { describeOptionBarTarget } from '../shell/ToolOptionBar';
 import { TOOL_ID } from '../shell/tools';
@@ -327,6 +328,51 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   // --- Map-input handler: a LEFT click resolves the feature under it and toggles it
   // into / out of the target set. The overlay never steals other input — the input
   // layer sits above the map and forwards here only while a merge session runs.
+  // --- 案内・断り・確定の列をオプションバーへ（増分 5d / 設計書 §C.4 / E-2 / N-27）---
+  //
+  // 確定欄は 176px ＝ U-8 の下限（幅 60px）で 2 つが限度なので、［確定］［やめる］だけを
+  // 置き、残りは設定欄へ差し込む（増分 3 の `add-undo` と同じ形）。**testid は 1 つも
+  // 変えていない**（T-1: 役割で維持する。置き場が移っただけ）。
+  const mergeCommit = useMemo(
+    () => [
+      {
+        id: 'confirm',
+        testId: 'merge-confirm',
+        label: MERGE_STRINGS.confirm,
+        disabled: !merge.canConfirm,
+        onClick: () => merge.confirm(),
+      },
+      {
+        id: 'cancel',
+        testId: 'merge-cancel',
+        label: MERGE_STRINGS.cancel,
+        onClick: () => merge.cancel(),
+      },
+    ],
+    [merge],
+  );
+  const mergeExtras = useMemo(
+    () => (
+      <button
+        type="button"
+        data-testid="merge-clear"
+        disabled={merge.targetIds.length === 0}
+        onClick={() => merge.clearTargets()}
+      >
+        {MERGE_STRINGS.clear}
+      </button>
+    ),
+    [merge],
+  );
+  useToolBarChrome({
+    optionBar,
+    active: merge.flow !== MERGE_FLOW.Idle,
+    slotId: 'merge',
+    nextStep: merge.message ?? merge.guide,
+    commit: mergeCommit,
+    extras: mergeExtras,
+  });
+
   const onMapPointerDown = useCallback(
     (e: { clientX: number; clientY: number; button?: number }) => {
       if (e.button !== undefined && e.button !== 0) return;
@@ -397,41 +443,23 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
         />
       )}
 
-      <p className="merge-tool__guide" data-testid="merge-guide" role="status">
+      {/* 案内と断りは **オプションバーの「次の一手」** が本文を出す（増分 5d /
+          設計書 §C.4）。ここに残すのは観測のミラーで、地図の上には描かない。 */}
+      <span className="merge-tool__guide" data-testid="merge-guide" hidden>
         {merge.guide}
-      </p>
-
+      </span>
       {merge.message !== null && (
-        <p className="merge-tool__message" data-testid="merge-message" role="alert">
+        <span className="merge-tool__message" data-testid="merge-message" hidden>
           {merge.message}
-        </p>
+        </span>
       )}
 
-      <div className="merge-tool__controls" data-testid="merge-controls">
-        <button
-          type="button"
-          data-testid="merge-confirm"
-          disabled={!merge.canConfirm}
-          onClick={() => merge.confirm()}
-        >
-          {MERGE_STRINGS.confirm}
-        </button>
-        <button
-          type="button"
-          data-testid="merge-clear"
-          disabled={merge.targetIds.length === 0}
-          onClick={() => merge.clearTargets()}
-        >
-          {MERGE_STRINGS.clear}
-        </button>
-        <button type="button" data-testid="merge-cancel" onClick={() => merge.cancel()}>
-          {MERGE_STRINGS.cancel}
-        </button>
-        {/* Live target count for integration tests. */}
-        <span data-testid="merge-target-count" hidden>
-          {merge.targetIds.length}
-        </span>
-      </div>
+      {/* **確定の列はここには無い**（増分 5d）。オプションバーの確定欄 176px へ移した
+          （設計書 §C.4 / E-2 / N-27）。地図に重ならないので K-2 の事故が構造的に
+          起こり得ない。残っているのは観測だけである。 */}
+      <span data-testid="merge-target-count" hidden>
+        {merge.targetIds.length}
+      </span>
     </div>
   );
 }

@@ -43,6 +43,8 @@ import {
   type ReleaseOutcome,
 } from '../../domain/editing/index';
 
+import { OptionBar } from '../shell/OptionBar';
+import { OptionBarStore } from '../shell/option-bar';
 import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { TOOL_ID } from '../shell/tools';
@@ -163,19 +165,26 @@ function mountRing(outcome: ReleaseOutcome<S> = committedOutcome): Harness {
   const featureAtPoint: FeatureAtPoint = (p) =>
     p.lon >= 0 && p.lon <= 20 && p.lat >= 0 && p.lat <= 20 ? TARGET_ID : null;
 
+  // **増分 5d: 確定の列はオプションバーの確定欄に出る**ので、帯も一緒に載せる
+  // （検査の都合ではなく、実物がそうなっている）。
+  const optionBar = new OptionBarStore();
   const utils = render(
-    <RingEditToolController<S>
-      store={store}
-      startProcess={startProcess}
-      ids={ids()}
-      resolveFeature={resolveFeature}
-      resolveStore={resolveStore}
-      anchorTime={() => ANCHOR}
-      current={() => store.getState().domain}
-      screenToWorld={screenToWorld}
-      featureAtPoint={featureAtPoint}
-      drawSink={drawSink}
-    />,
+    <>
+      <OptionBar store={optionBar} />
+      <RingEditToolController<S>
+        optionBar={optionBar}
+        store={store}
+        startProcess={startProcess}
+        ids={ids()}
+        resolveFeature={resolveFeature}
+        resolveStore={resolveStore}
+        anchorTime={() => ANCHOR}
+        current={() => store.getState().domain}
+        screenToWorld={screenToWorld}
+        featureAtPoint={featureAtPoint}
+        drawSink={drawSink}
+      />
+    </>,
   );
 
   return { store, startProcess, drawSink, unmount: utils.unmount };

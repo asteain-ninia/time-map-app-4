@@ -39,6 +39,8 @@ import type { MergeSnapshot } from '../../domain/merge/index';
 
 import { createSessionStore, TIME_CHANGE_SOURCE, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
+import { OptionBar } from '../shell/OptionBar';
+import { OptionBarStore } from '../shell/option-bar';
 import { TOOL_ID } from '../shell/tools';
 import { type DomainRoot } from '../consistency-binding';
 import { featuresAt, verticesAt, leafShapeAt } from '../live-lookup';
@@ -173,18 +175,24 @@ function mountMerge(): Harness {
     return { status: PROCESS_STATUS.Committed } as unknown as ProcessResult<DomainRoot>;
   };
 
+  // **増分 5d: 確定の列はオプションバーの確定欄に出る**ので、帯も一緒に載せる。
+  const optionBar = new OptionBarStore();
   const utils = render(
-    <MergeToolController<DomainRoot>
-      store={store}
-      startProcess={startProcess}
-      ids={ids}
-      resolveFeatures={resolveFeatures}
-      resolveStore={resolveStore}
-      anchorTime={() => store.getState().currentTime}
-      screenToWorld={screenToWorld}
-      featureAtPoint={featureAtPoint}
-      resolveLeafShape={resolveLeafShape}
-    />,
+    <>
+      <OptionBar store={optionBar} />
+      <MergeToolController<DomainRoot>
+        store={store}
+        optionBar={optionBar}
+        startProcess={startProcess}
+        ids={ids}
+        resolveFeatures={resolveFeatures}
+        resolveStore={resolveStore}
+        anchorTime={() => store.getState().currentTime}
+        screenToWorld={screenToWorld}
+        featureAtPoint={featureAtPoint}
+        resolveLeafShape={resolveLeafShape}
+      />
+    </>,
   );
 
   return { store, lastProposal: () => captured, unmount: utils.unmount };

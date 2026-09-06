@@ -450,12 +450,20 @@ export function AddToolController<S>(props: AddToolControllerProps<S>): JSX.Elem
     if (onDrawingChange === undefined) return;
     // 待機中（構えているが 1 点も打っていない）は **大域の取り消しを止めない**（D3 / GPT #9）。
     // 止めると保存直後の Ctrl+Z が「いま保存した追加」に届かない。
-    const drawing = add.phase !== ADD_PHASE.Idle;
+    //
+    // **増分 5 の探索で穴が見つかった**（2026-09-06）。旧版は `phase !== Idle` だけを見て
+    // いたが、**重なり競合の板を閉じたあとの再武装は `Drawing` で 0 点**なので、
+    // 「構えているだけ」なのに鍵盤を取っていた ―― 実データで面を置いて競合が出て、
+    // 板を閉じた直後の Ctrl+Z が効かない、という形で出る。手順のある 5 道具に入れたのと
+    // 同じ規則（**下書きを持っているときだけ**）をここにも通す。
+    const drawing =
+      add.phase !== ADD_PHASE.Idle &&
+      (add.phase !== ADD_PHASE.Drawing || (add.session?.vertices.length ?? 0) > 0);
     onDrawingChange(drawing);
     // On unmount, clear the flag so a torn-down controller never leaves the global
     // dispatcher suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
-  }, [add.phase, onDrawingChange]);
+  }, [add.phase, add.session, onDrawingChange]);
 
   // --- Map-input handlers the host wires onto the input layer (教訓 5.14). A click
   // places a vertex (placeAt); pointer move updates the cursor-follow preview.
