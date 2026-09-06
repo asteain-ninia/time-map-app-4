@@ -12,6 +12,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import type { Calendar } from '../../domain/time/calendar';
+import type { TimePoint } from '../../domain/time/time-point';
 import { OptionPopover } from '../shell/OptionPopover';
 import { RAIL_FOLD, railGroupsAt, type RailFoldLevel } from '../time/rail-fold';
 
@@ -20,6 +22,12 @@ import { STEP_UNIT, type StepDirection, type StepUnit } from './step';
 import { useLongPress } from './useLongPress';
 import type { PlaybackController } from './usePlayback';
 import { PLAYBACK_SPEEDS, type PlaybackSpeed } from './playback';
+import {
+  draftFromTimePoint,
+  parseYmdDraft,
+  ymdErrorMessage,
+  type YmdDraft,
+} from './ymd-draft';
 
 const UNIT_LABELS: Readonly<Record<StepUnit, string>> = {
   [STEP_UNIT.Year]: '年',
@@ -32,10 +40,12 @@ export interface RailControlsProps {
   /** 送り。`amount` は 1 / 10 / 100。 */
   readonly onStep: (unit: StepUnit, direction: StepDirection, amount: number) => void;
   readonly playback: PlaybackController;
-  /** 年入力の初期値（現在の年）。**打ちかけがあるあいだは上書きしない**（中身 6）。 */
-  readonly currentYear: number;
-  /** 年を確定する。断られたら理由の文が返る（範囲外は丸めない＝中身 7）。 */
-  readonly onJumpYear: (year: number) => string | null;
+  /** 年月日の欄の初期値（現在時刻）。**打ちかけがあるあいだは上書きしない**（中身 6）。 */
+  readonly currentTime: TimePoint;
+  /** 月日の検証に使う暦（U02）。 */
+  readonly calendar: Calendar;
+  /** 時刻を確定する。断られたら理由の文が返る（範囲外は丸めない＝中身 7）。 */
+  readonly onJumpTime: (point: TimePoint) => string | null;
   readonly onZoomIn: () => void;
   readonly onZoomOut: () => void;
   readonly onZoomFit: () => void;
@@ -54,8 +64,9 @@ export function RailControls(props: RailControlsProps): JSX.Element {
     fold,
     onStep,
     playback,
-    currentYear,
-    onJumpYear,
+    currentTime,
+    calendar,
+    onJumpTime,
     onZoomIn,
     onZoomOut,
     onZoomFit,
@@ -78,15 +89,22 @@ export function RailControls(props: RailControlsProps): JSX.Element {
   // 一時状態の話で、**利用者が打っている最中の文字**はそれに当たらない ―― 設計書 §D.7 の
   // 「打ちかけの文字も確認してから捨てる」と同じ立場）。ここでは作り直さず、
   // **打ちかけが無いときだけ**現在の年に追従する。
-  const [yearDraft, setYearDraft] = useState<string>(() => String(currentYear));
+  const [draft, setDraft] = useState<YmdDraft>(() => draftFromTimePoint(currentTime));
   const [dirty, setDirty] = useState(false);
   const [refusal, setRefusal] = useState<string | null>(null);
   const yearRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (dirty) return;
-    setYearDraft(String(currentYear));
-  }, [currentYear, dirty]);
+    setDraft(draftFromTimePoint(currentTime));
+  }, [currentTime, dirty]);
+
+  /** 打ちかけを 1 つ書き換える（書いた瞬間から「打ちかけあり」になる）。 */
+  const patch = (next: Partial<YmdDraft>): void => {
+    setDraft((prev) => ({ ...prev, ...next }));
+    setDirty(true);
+    setRefusal(null);
+  };
 
   useEffect(() => {
     if (focusYearSignal <= 0) return;
@@ -95,12 +113,14 @@ export function RailControls(props: RailControlsProps): JSX.Element {
   }, [focusYearSignal]);
 
   const confirmYear = (): void => {
-    const parsed = Number.parseInt(yearDraft, 10);
-    if (Number.isNaN(parsed)) {
-      setRefusal('年を数字で入れてください。');
+    // 文字 → 完全な時刻の変換は **共有の 1 本**（`ymd-draft.ts`）を通す。素性欄の
+    // 存続期間の欄と同じ規則で読む（教訓 5.44: 写しを作らない）。
+    const parsed = parseYmdDraft(draft, calendar);
+    if (!parsed.ok) {
+      setRefusal(ymdErrorMessage(parsed.error));
       return;
     }
-    const message = onJumpYear(parsed);
+    const message = onJumpTime(parsed.point);
     setRefusal(message);
     if (message === null) setDirty(false);
   };
@@ -154,6 +174,76 @@ export function RailControls(props: RailControlsProps): JSX.Element {
     </label>
   );
 
+  /**
+   * 月日 ▾（直接ジャンプの月日）。**読み上げ名は現行のまま持ち越す**
+   * （「直接ジャンプ 月」「直接ジャンプ 月 未指定」「直接ジャンプ 日」「直接ジャンプ 日 未指定」）。
+   * 月日は **既定では使えない**（未指定）―― 月日を勝手に補わない（U-14）。
+   */
+  const ymdGroup = (
+    <div className="rail__group rail__ymd" data-testid="rail-ymd" key="ymd">
+      <OptionPopover
+        label="月日"
+        buttonTestId="rail-ymd-button"
+        panelTestId="rail-ymd-panel"
+        buttonClassName="rail__button rail__button--icon"
+        panelClassName="rail__popover"
+        ariaLabel="直接ジャンプの月日"
+        closeKey={closeKey}
+        {...(onPopoverOpenChange ? { onOpenChange: onPopoverOpenChange } : {})}
+      >
+        {() => (
+          <div className="rail__popover-row">
+            <label className="rail__ymd-field">
+              <span>月</span>
+              <input
+                type="number"
+                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 月`}
+                value={draft.monthText}
+                disabled={!draft.monthSpecified}
+                onChange={(e) => patch({ monthText: e.target.value })}
+              />
+              <button
+                type="button"
+                aria-pressed={!draft.monthSpecified}
+                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 月 未指定`}
+                onClick={() =>
+                  patch(
+                    draft.monthSpecified
+                      ? { monthSpecified: false, daySpecified: false }
+                      : { monthSpecified: true },
+                  )
+                }
+              >
+                {draft.monthSpecified ? '指定' : '未指定'}
+              </button>
+            </label>
+            <label className="rail__ymd-field">
+              <span>日</span>
+              <input
+                type="number"
+                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 日`}
+                value={draft.dayText}
+                disabled={!draft.monthSpecified || !draft.daySpecified}
+                onChange={(e) => patch({ dayText: e.target.value })}
+              />
+              <button
+                type="button"
+                aria-pressed={!draft.daySpecified}
+                aria-label={`${RAIL_STRINGS.jumpFieldTitle} 日 未指定`}
+                disabled={!draft.monthSpecified}
+                onClick={() =>
+                  patch(draft.daySpecified ? { daySpecified: false } : { daySpecified: true })
+                }
+              >
+                {draft.daySpecified ? '指定' : '未指定'}
+              </button>
+            </label>
+          </div>
+        )}
+      </OptionPopover>
+    </div>
+  );
+
   const anchorJump = (
     <div className="rail__group" data-testid="rail-anchor-jump" key="anchorJump">
       <button
@@ -181,6 +271,7 @@ export function RailControls(props: RailControlsProps): JSX.Element {
 
   const overflowItems = [
     ...(shown.has('step100') ? [] : [step100]),
+    ...(shown.has('ymd') ? [] : [ymdGroup]),
     ...(shown.has('unit') ? [] : [unitGroup]),
     ...(shown.has('anchorJump') ? [] : [anchorJump]),
   ];
@@ -221,12 +312,8 @@ export function RailControls(props: RailControlsProps): JSX.Element {
           aria-invalid={refusal !== null}
           title={refusal ?? RAIL_STRINGS.jumpFieldTitle}
           data-pristine={dirty ? 'false' : 'true'}
-          value={yearDraft}
-          onChange={(e) => {
-            setYearDraft(e.target.value);
-            setDirty(true);
-            setRefusal(null);
-          }}
+          value={draft.yearText}
+          onChange={(e) => patch({ yearText: e.target.value })}
           onKeyDown={(e) => {
             if (e.key !== 'Enter') return;
             e.preventDefault();
@@ -254,6 +341,8 @@ export function RailControls(props: RailControlsProps): JSX.Element {
           </span>
         )}
       </div>
+
+      {shown.has('ymd') && ymdGroup}
 
       {/* 再生。**可視テキスト「再生」と読み上げ名「再生」を残す**（HB-13）。 */}
       <div className="rail__group rail__playback" data-testid="timeline-playback" key="play">

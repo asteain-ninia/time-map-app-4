@@ -63,7 +63,11 @@ export interface E2eHarnessActions {
    */
   readonly loadSyntheticAnchors: (
     count: number,
-    options?: { readonly asAggregateChild?: boolean },
+    options?: {
+      readonly asAggregateChild?: boolean;
+      /** 先頭の何本を **同じ年の別の月**へ置くか（束の吹き出しの相手）。 */
+      readonly withinOneYear?: number;
+    },
   ) => void;
 }
 

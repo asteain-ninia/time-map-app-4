@@ -68,6 +68,8 @@ export const RAIL_GROUP_WIDTH = {
   step100: 112,
   /** 「[ 1200 ]年 ⏎ [ジャンプ]」。 */
   year: 152,
+  /** 「月日 ▾」（直接ジャンプの月日。設計書 §C.7 の (d)）。 */
+  ymd: 56,
   /** 「▶ 再生」＋速度。 */
   playFull: 110,
   /** 「▶」だけ。 */
@@ -97,6 +99,7 @@ export function railGroupsAt(level: RailFoldLevel): readonly RailGroup[] {
         g('step10'),
         g('step1'),
         g('year'),
+        g('ymd'),
         g('playFull'),
         g('zoomFull'),
         g('anchorJump'),
@@ -107,6 +110,7 @@ export function railGroupsAt(level: RailFoldLevel): readonly RailGroup[] {
         g('step10'),
         g('step1'),
         g('year'),
+        g('ymd'),
         g('playFull'),
         g('zoomFull'),
         g('anchorJump'),

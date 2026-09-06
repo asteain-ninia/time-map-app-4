@@ -340,22 +340,31 @@ export type LaneDenseAction =
   (typeof LANE_DENSE_ACTION)[keyof typeof LANE_DENSE_ACTION];
 
 /**
- * 密集した列を押したときに拡大でほどけるか。**同じ日に複数の錨がある**か、表示範囲が
- * すでに下限まで寄っているなら、いくら拡大しても分かれないので束の吹き出しを出す。
+ * 密集した列を押したときに拡大でほどけるか（§F.2 規則 6）。
+ *
+ * **「十分に拡大しても同じ画素に重なるとき（1 年に複数の錨があるとき）」が束の出番**である
+ * ―― 条文のこの括弧が判定そのものになる。錨の開始は年で記録する（U-14）ので、**届いた
+ * 錨がぜんぶ同じ年なら、それ以上拡大しても「年としては同じ」ものが並ぶだけ**で、
+ * ほどいた先に読み分ける手がかりが無い。そこで一覧（束の吹き出し）へ切り替える。
+ *
+ * **「同じ日か」で見てはいけない。** 系列の不変条件 INV-1 は開始時刻が厳密に増加すること
+ * を保証するので、同じ日の錨は 2 本と存在し得ない ―― 日で見ると束は**永久に出ない**
+ * （＝逃げ道 2 が死んだ枝になる）。表示範囲が下限まで寄っているときも束にする。
  */
 export function laneDenseAction(
   source: AnchorLaneSource,
   view: TimeBarView,
   hit: LaneHit,
+  calendar: Calendar,
 ): LaneDenseAction {
   if (hit.kind !== LANE_HIT.Dense) return LANE_DENSE_ACTION.Zoom;
   const first = source.starts[hit.firstIndex];
   const last = source.starts[hit.lastIndex];
   if (first === undefined || last === undefined) return LANE_DENSE_ACTION.Zoom;
-  if (last - first <= 0) return LANE_DENSE_ACTION.Bundle;
-  return viewSpanDays(view) <= MIN_VIEW_DAYS
-    ? LANE_DENSE_ACTION.Bundle
-    : LANE_DENSE_ACTION.Zoom;
+  if (viewSpanDays(view) <= MIN_VIEW_DAYS) return LANE_DENSE_ACTION.Bundle;
+  const firstYear = denormalize(Math.round(first) as Normalized, calendar).year;
+  const lastYear = denormalize(Math.round(last) as Normalized, calendar).year;
+  return firstYear === lastYear ? LANE_DENSE_ACTION.Bundle : LANE_DENSE_ACTION.Zoom;
 }
 
 // --- 存続している期間の帯 ---------------------------------------------------

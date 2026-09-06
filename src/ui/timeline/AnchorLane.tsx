@@ -46,8 +46,10 @@ export const BUNDLE_MAX_ROWS = 12;
 
 /** 束の吹き出しの中身。 */
 export interface LaneBundle {
-  /** 吹き出しを出す画素位置。 */
-  readonly px: number;
+  /** 吹き出しの横位置（画面座標）。 */
+  readonly clientX: number;
+  /** レーンの上端（画面座標）。吹き出しはこの上に出す。 */
+  readonly laneTop: number;
   /** その範囲の錨（先頭 {@link BUNDLE_MAX_ROWS} 本）。 */
   readonly rows: readonly AnchorEntry[];
   /** その範囲の総数（行数より多いことがある）。 */
@@ -209,14 +211,15 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
         return;
       }
       // 2 本以上 ―― まだほどけるなら 1 段拡大、ほどけないなら束の吹き出し（規則 6）。
-      if (laneDenseAction(source, view, hit) === LANE_DENSE_ACTION.Zoom) {
+      if (laneDenseAction(source, view, hit, calendar) === LANE_DENSE_ACTION.Zoom) {
         onView(zoomLaneStep(view, px, calendar));
         return;
       }
       const rows = entries.slice(hit.firstIndex, hit.firstIndex + BUNDLE_MAX_ROWS);
       const near = entries[hit.firstIndex];
       setBundle({
-        px,
+        clientX: e.clientX,
+        laneTop: rect.top,
         rows,
         count: hit.count,
         nearLabel: near === undefined ? '' : formatTimePoint(near.start),
@@ -258,7 +261,13 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
         <div
           className="rail__bundle"
           data-testid="anchor-bundle"
-          style={{ left: `${String(bundle.px)}px` }}
+          /* **画面座標で置く**（`position: fixed`）。レールは `overflow: hidden` なので、
+             帯の子として上へ伸ばすと切れて中の行が押せない ―― ポップオーバーの器
+             （`shell/OptionPopover` の作法 1）と同じ理由・同じ形にする。 */
+          style={{
+            left: `${String(Math.round(bundle.clientX))}px`,
+            bottom: `${String(Math.round(window.innerHeight - bundle.laneTop + 4))}px`,
+          }}
           role="group"
           aria-label={RAIL_STRINGS.bundleTitle(bundle.nearLabel, bundle.count)}
         >

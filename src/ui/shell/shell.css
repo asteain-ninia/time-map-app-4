@@ -2084,10 +2084,11 @@ body {
  * （地図セルには出さない）。器そのものは押下を通し、押せるのは中のボタンだけ ――
  * N-01（吹き出しが下のボタンの押下を飲み込む）を構造で避ける。 */
 .rail__bundle {
-  position: absolute;
-  bottom: calc(var(--rail-lane-h) + 2px);
+  /* **画面座標で置く。** 帯は `overflow: hidden` なので、帯の子として上へ伸ばすと
+   * 切れて中の行が押せない（ポップオーバーの器と同じ理由）。 */
+  position: fixed;
   transform: translateX(-50%);
-  z-index: 3;
+  z-index: 40;
   min-width: 120px;
   max-width: 220px;
   padding: 4px 6px;
@@ -2258,6 +2259,10 @@ body {
   clip-path: inset(50%);
   white-space: nowrap;
   border: 0;
+}
+
+.rail__ymd {
+  flex: 0 0 56px;
 }
 
 .rail__playback {
@@ -3230,4 +3235,19 @@ body {
 .display-filter__clear-emphasis:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* 「月日 ▾」の中身（直接ジャンプの月日）。行には並べず畳んである ―― レールは 112px 固定で、
+ * 月日の 4 部品を並べる幅が無い（設計書 §C.7 の (d)）。 */
+.rail__ymd-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.rail__ymd-field input {
+  width: 56px;
+  min-height: 26px;
+  font: inherit;
 }

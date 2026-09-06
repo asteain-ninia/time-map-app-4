@@ -17,7 +17,7 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { DomainProject } from '../../domain/persistence/index';
 import { normalize } from '../../domain/time/normalized';
-import { timePointYear, type TimePoint } from '../../domain/time/time-point';
+import type { TimePoint } from '../../domain/time/time-point';
 import { publishRailObservation } from '../e2e/rail-observation';
 import { decideEditPlan, EDIT_PLAN_STRINGS } from '../property/edit-plan';
 import { COMMAND_ID, type CommandRegistry } from '../shell/commands';
@@ -165,12 +165,11 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
   );
 
   const jumpYear = useCallback(
-    (year: number): string | null => {
-      const point = timePointYear(year);
+    (point: TimePoint): string | null => {
       const message = t.outOfRangeMessage(point);
       if (message !== null) {
         const refusalText = RAIL_STRINGS.outOfRange(
-          formatYear(year),
+          formatYear(point.year),
           formatYear(t.timelineMin.year),
           formatYear(t.timelineMax.year),
         );
@@ -441,8 +440,9 @@ export function Timeline<S>(props: TimelineProps<S>): JSX.Element {
         fold={fold}
         onStep={step}
         playback={playback}
-        currentYear={t.currentTime.year}
-        onJumpYear={jumpYear}
+        currentTime={t.currentTime}
+        calendar={t.calendar}
+        onJumpTime={jumpYear}
         onZoomIn={() => rail.zoomAt(-BUTTON_NOTCHES, rail.view.pixelLength / 2)}
         onZoomOut={() => rail.zoomAt(BUTTON_NOTCHES, rail.view.pixelLength / 2)}
         onZoomFit={rail.fitAll}

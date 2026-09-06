@@ -84,9 +84,19 @@ export function buildSyntheticProject(base: DomainProject, count: number): Domai
 export function buildSyntheticAnchorProject(
   base: DomainProject,
   count: number,
-  options?: { readonly asAggregateChild?: boolean },
+  options?: {
+    readonly asAggregateChild?: boolean;
+    /**
+     * **1 年の中に錨を並べる**（束の吹き出しの相手。設計書 §F.2 規則 6-2 の
+     * 「1 年に複数の錨があるとき」）。開始は月日で分ける ―― 系列の不変条件 INV-1 は
+     * 開始時刻が厳密に増加することを求めるので、同じ日には置けない。
+     * 12 本まで（月ごと）。
+     */
+    readonly withinOneYear?: number;
+  },
 ): DomainProject {
   const asChild = options?.asAggregateChild ?? true;
+  const withinOneYear = options?.withinOneYear ?? 0;
   const color = createColorInfo(true, '#90caf9', '#ffb300', '#0d47a1');
   const childId = asFeatureId('syn-anchor-child');
   const parentId = asFeatureId('syn-anchor-parent');
@@ -136,7 +146,13 @@ export function buildSyntheticAnchorProject(
       features,
       vertices: createVertexStore(vertices),
     });
-    entries.push(createAnchorEntry(anchor, timePointYear(i)));
+    // 既定は 1 年に 1 本（0 年・1 年・…）。`withinOneYear` を渡した先頭のぶんだけは
+    // **同じ年の別の月**に置き、束の吹き出しへ到達できる形にする。
+    const start =
+      i < withinOneYear
+        ? { granularity: 'yearMonth' as const, year: 1200, month: (i % 12) + 1 }
+        : timePointYear(withinOneYear > 0 ? 1201 + i : i);
+    entries.push(createAnchorEntry(anchor, start));
   }
   // 系列の持ち主は、まとめ役の子のときは **親**（実データと同じ形）。
   return {
