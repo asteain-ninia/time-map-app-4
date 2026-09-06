@@ -329,15 +329,16 @@ test.describe('K-3 の機械検査 — 窓幅ごとに、素性表示の中身�
     }
   });
 
-  test('測量の ON / OFF は上部バーの段数を変える（既知の残り。OFF で必ず元へ戻る）', async () => {
-    // **これは「動かない」ことの検査ではない。** 測量の可変表示（案内文・距離・座標の
-    // 読み取り）はいまアプリバーに置かれていて、ON にすると段が増えて地図の上端が
-    // 下がる（実測: 窓幅 1280 で 155.2 → 242）。設計書 §B.4 / §B.5 はこれを
-    // 「個別フォーカスの 4 部品をアプリバーから降ろす（増分 5）」「確定部品を
-    // オプションバーへ移す（増分 3-4）」で解くとしており、増分 1 の範囲ではない。
+  test('測量を ON にしても地図の矩形は 1px も動かない（増分 5a で解いた）', async () => {
+    // **この検査は増分 5a で向きが変わった。** 元は「測量 ON で上部バーの段が増える」
+    // ことを *既知の残り* として固定していた（実測: 窓幅 1280 で 地図の上端が
+    // 155.2 → 242 へ、87px 下がった）。増分 5a でアプリバーを 32px 固定にし、
+    // 測量の読み取り・案内・クリアを高さ 40px 固定のオプションバーへ降ろしたので、
+    // **測量は地図の大きさに一切触らなくなった**（設計書 §B.4 / 実装計画 §5 の
+    // 完了の定義「測量の道具を持っても地図の高さが変わらない」）。
     //
-    // ここで固定するのは **可逆であること**（OFF に戻したら矩形が寸分違わず戻る）である。
-    // 残っている段差そのものは docs/現状.md に番号付きで記録してある。
+    // わざと壊すなら: `.app-shell__menubar` の `height` を外して `flex-wrap: wrap` に
+    // 戻すと、ON の時点でここが赤くなる。
     const { app, page } = await launchApp();
     try {
       await page.setViewportSize({ width: 1280, height: 800 });
@@ -345,9 +346,11 @@ test.describe('K-3 の機械検査 — 窓幅ごとに、素性表示の中身�
       const off = await mapAreaRect(page);
 
       await page.getByTestId('survey-toggle').click();
+      // 読み取りがオプションバーへ載ったこと自体も確かめる（「出ていないから動かない」
+      // という抜け道を塞ぐ ―― 教訓 5.49「必ず一致する対象を測ってしまう」の型）。
+      await expect(page.getByTestId('survey-readout')).toBeVisible();
       await page.waitForTimeout(200);
-      const on = await mapAreaRect(page);
-      expect(on.y, '測量 ON で上部バーの段が増える（既知）').toBeGreaterThan(off.y);
+      expect(await mapAreaRect(page), '測量 ON で地図が動いた').toEqual(off);
 
       await page.getByTestId('survey-toggle').click();
       await page.waitForTimeout(200);

@@ -22,6 +22,9 @@ import { readSourceText } from '../../test-support/read-source-text';
 // その違いは git の差分に現れないので、揃えないと複数行セレクタの照合が環境次第で外れる。
 const here = dirname(fileURLToPath(import.meta.url));
 const shellCss = readSourceText(resolve(here, 'shell.css'));
+// 測量の帯は自分の CSS を持つ（`ui/survey/survey.css`）。**折り返さないこと**は
+// アプリバーの高さが動かないための条件なので、置き場が別でもここで一緒に固定する。
+const surveyCss = readSourceText(resolve(here, '../survey/survey.css'));
 
 /**
  * セレクタ（またはセレクタ列の先頭）が完全一致する最初の規則の本体 `{ ... }` を取り出す。
@@ -30,10 +33,10 @@ const shellCss = readSourceText(resolve(here, 'shell.css'));
  * 複数セレクタを並べた規則の **最後の行**（`… ,\n.option-bar__commit {`）にも当たってしまい、
  * 別の規則の本体を読んで「宣言が無い」と誤判定する（実際に一度これで落とした）。
  */
-function ruleBody(selector: string): string {
+function ruleBody(selector: string, css: string = shellCss): string {
   const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`(?:^|[}/])\\s*${esc}\\s*\\{([^}]*)\\}`);
-  const m = re.exec(shellCss);
+  const m = re.exec(css);
   if (m === null) throw new Error(`CSS rule not found: ${selector}`);
   return m[1] ?? '';
 }
@@ -71,7 +74,9 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
     const bar = ruleBody('.option-bar');
     expect(decl(bar, 'display')).toBe('flex');
     // 高さが固定でないと、中身が増えた瞬間に地図の上端が下がる（§1.3 の事故）。
-    expect(decl(bar, 'height')).toBe('40px');
+    // **増分 5a で真実源をシェルの変数 1 か所へ寄せた**（行そのものと帯の両方が読む）。
+    expect(decl(bar, 'height')).toBe('var(--shell-optionbar-h)');
+    expect(decl(ruleBody('.app-shell'), '--shell-optionbar-h')).toBe('40px');
     expect(decl(bar, 'box-sizing')).toBe('border-box');
     // 窓幅で折り返すと段数が変わり、やはり地図の上端が動く。
     expect(decl(bar, 'flex-wrap')).toBe('nowrap');
@@ -128,7 +133,8 @@ describe('オプションバーの寸法契約（K-3, 設計書 §C.4 / §B.4）
 describe('状態行の寸法契約（K-3 と同じ規則, 設計書 §C.8）', () => {
   it('行は 28px 固定・折り返さない・はみ出さない', () => {
     const bar = ruleBody('.statusbar');
-    expect(decl(bar, 'height')).toBe('28px');
+    expect(decl(bar, 'height')).toBe('var(--shell-status-h)');
+    expect(decl(ruleBody('.app-shell'), '--shell-status-h')).toBe('28px');
     expect(decl(bar, 'box-sizing')).toBe('border-box');
     expect(decl(bar, 'flex-wrap')).toBe('nowrap');
     expect(decl(bar, 'overflow')).toBe('hidden');
@@ -151,8 +157,47 @@ describe('状態行の寸法契約（K-3 と同じ規則, 設計書 §C.8）', (
 });
 
 describe('シェルの行割り（オプションバーは地図セルの外のシェル行, K-4 / 結合点 #1）', () => {
-  it('.app-shell は 5 行（メニュー / オプションバー / 主行 / 時刻レール / 状態行）', () => {
-    expect(decl(ruleBody('.app-shell'), 'grid-template-rows')).toBe('auto auto 1fr auto auto');
+  it('.app-shell は 5 行で、アプリバー・オプションバー・状態行の高さが固定（増分 5a）', () => {
+    // **窓幅を変えても地図セルの上端が動かない**ことの単一真実源。アプリバーが `auto`
+    // だった頃は、中身が増えるたびに 54 → 81.2 → 149.2px と段が増え、地図の上端が
+    // 最大 95px 飛んだ（現状分析 §1.3）。時刻レールだけは `auto` のまま据え置く
+    // （112px に縮めるのは中身を作り直す増分 6）。
+    expect(decl(ruleBody('.app-shell'), 'grid-template-rows')).toBe(
+      'var(--shell-appbar-h) auto minmax(0, 1fr) auto var(--shell-status-h)',
+    );
+    expect(decl(ruleBody('.app-shell'), '--shell-appbar-h')).toBe('32px');
+  });
+
+  it('アプリバーは高さ 32px 固定で折り返さない（測量や深さで段が増えない）', () => {
+    const bar = ruleBody('.app-shell__menubar');
+    expect(decl(bar, 'height')).toBe('var(--shell-appbar-h)');
+    expect(decl(bar, 'box-sizing')).toBe('border-box');
+    expect(decl(bar, 'flex-wrap')).toBe('nowrap');
+    expect(decl(bar, 'overflow')).toBe('hidden');
+    // 中の帯（メニューの右）も折り返さない。ここが `wrap` だと段が増える。
+    expect(decl(ruleBody('.app-shell__topbar'), 'flex-wrap')).toBe('nowrap');
+    expect(decl(ruleBody('.longitude-shift'), 'flex-wrap')).toBe('nowrap');
+    expect(decl(ruleBody('.survey-controls', surveyCss), 'flex-wrap')).toBe('nowrap');
+  });
+
+  it('オプションバー行の高さもシェルの変数 1 か所で決まる', () => {
+    const row = ruleBody('.app-shell__optionbar');
+    expect(decl(row, 'height')).toBe('var(--shell-optionbar-h)');
+    expect(decl(row, 'box-sizing')).toBe('border-box');
+  });
+
+  it('中心経度の畳みは窓幅だけで決まる（選択状態・道具・時刻に依存しない）', () => {
+    // 設計書 §B.4 の畳み表。**どの段でも「読めて ◀▶ で動かせる」ことは残す。**
+    const wide = mediaBlock('max-width: 1179px');
+    expect(wide).toContain(".longitude-shift input[type='range']");
+    expect(wide).toContain('.longitude-shift__presets');
+    const narrow = mediaBlock('max-width: 959px');
+    expect(narrow).toContain('.longitude-shift__absolute');
+    // 読み出しと ◀▶ はどの段でも落とさない。
+    expect(wide).not.toContain('.longitude-shift__readout');
+    expect(wide).not.toContain('.longitude-shift__buttons');
+    expect(narrow).not.toContain('.longitude-shift__readout');
+    expect(narrow).not.toContain('.longitude-shift__buttons');
   });
 
   it('列は minmax(0, 1fr) — 行の中身が列幅（＝地図セルの幅）に効かない', () => {

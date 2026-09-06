@@ -141,6 +141,39 @@ export async function confirmDeleteIfAsked(page: Page): Promise<void> {
 }
 
 /**
+ * オプションバーの「深さ ▾」を開く（増分 5a）。既に開いていれば何もしない。
+ *
+ * **なぜヘルパが要るか**: 深さの操作（スライダー・＋−・この地物の上下だけ見る）は
+ * アプリバーに出しっぱなしだったが、アプリバーを 32px 固定にするためオプションバーの
+ * ポップオーバーへ降ろした（設計書 §B.4）。押せることは変わらないので、spec 側は
+ * 「開く 1 手」だけを足せばよい ―― その 1 手をここに集める（P-1: 導線を作り直したとき
+ * に直す場所を 1 か所にする）。
+ */
+export async function openDepthOptions(page: Page): Promise<void> {
+  const button = page.getByTestId('option-depth-button');
+  await expect(button).toBeVisible();
+  if ((await button.getAttribute('aria-expanded')) !== 'true') {
+    await button.click();
+  }
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+}
+
+/**
+ * 測量の「座標 ▾」を開く（増分 5a）。既に開いていれば何もしない。
+ *
+ * 度分秒・十進の読み取りと表示形式の切替は、40px の帯に収まらないのでここへ畳んだ
+ * （設計書 §C.4 の「設定: 度分秒 ▾」）。距離はポップオーバーの外に出したままである。
+ */
+export async function openSurveyCoords(page: Page): Promise<void> {
+  const button = page.getByTestId('survey-coords-button');
+  await expect(button).toBeVisible();
+  if ((await button.getAttribute('aria-expanded')) !== 'true') {
+    await button.click();
+  }
+  await expect(button).toHaveAttribute('aria-expanded', 'true');
+}
+
+/**
  * 表示専用 (View) を抜ける。View なら mode-view を押す (useShell.setViewOnly(false) は
  * 編集モードに着地する)。View でなければ何もしない。
  */

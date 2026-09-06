@@ -314,6 +314,11 @@ export const DISPLAY_CONTROL_STRINGS = {
   /** 深さの ＋ / − ボタンの読み上げ名（画面には記号しか出ない）。 */
   globalDepthDownLabel: '深さを下げる',
   globalDepthUpLabel: '深さを上げる',
+  /**
+   * オプションバーの設定欄に出す「深さ ▾」ポップオーバーのアンカーの文字（増分 5a）。
+   * ▾ は器（`shell/OptionPopover`）が付けるので、ここには含めない。
+   */
+  depthMenuLabel: '深さ',
 } as const;
 
 /** Tooltip text (操作ガイド, FR-112 / FR-115), keyed by command/tool id. */

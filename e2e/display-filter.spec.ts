@@ -23,6 +23,7 @@ import {
   drawFace,
   enterEditMode,
   launchApp,
+  openDepthOptions,
   squareCorners,
 } from './helpers';
 
@@ -288,7 +289,9 @@ test.describe('FR-113 — 表示制御フィルタの全結線', () => {
       await expect(page.getByTestId('app-active-feature')).toHaveText('');
 
       // FR-42 N=1: expand the 集約 into its children (直轄領 + child) — MORE drawn.
+      // **増分 5a**: 深さの操作はオプションバーの「深さ ▾」の中へ移った（設計書 §B.4）。
       const n0 = await readDrawnCount(page);
+      await openDepthOptions(page);
       await page.getByRole('button', { name: '深さを上げる' }).click();
       await expect(page.getByTestId('global-depth-readout')).toContainText('深さ: 1');
       const n1 = await readDrawnCount(page);

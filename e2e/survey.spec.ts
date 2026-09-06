@@ -18,7 +18,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp } from './helpers';
+import { launchApp, openSurveyCoords } from './helpers';
 
 interface PrimitiveCounts {
   handle: number;
@@ -106,7 +106,10 @@ function parseDecimalCoord(text: string | null): { lat: number; lon: number } {
   return { lat, lon };
 }
 
-/** Enable 測量モード via the topBar toggle and wait for the input bridge. */
+/**
+ * 測量モードに入る（アプリバーに残した入口を押し、入力層が出るまで待つ）。
+ * **増分 5a**: 入口だけがアプリバーに残り、読み取り・案内・クリアはオプションバーへ移った。
+ */
 async function enableSurvey(page: Page): Promise<void> {
   const toggle = page.getByTestId('survey-toggle');
   await expect(toggle).toBeVisible();
@@ -143,6 +146,10 @@ test.describe('U37 — 測量モード結線 (FR-14 / FR-15 / FR-16)', () => {
       await expect(page.getByTestId('survey-line-count')).toHaveText('1');
 
       // BOTH coordinate forms for both endpoints (FR-16 度分秒+十進, default=両方).
+      // **増分 5a**: 座標と表示形式は「座標 ▾」ポップオーバーの中へ畳んだ（40px の帯に
+      // 度分秒と十進を 2 点ぶん並べると距離まで押し出されるため＝設計書 §C.4）。
+      // 距離はポップオーバーの外に残っているので、開くのは座標を読むときだけでよい。
+      await openSurveyCoords(page);
       await expect(page.getByTestId('survey-start-dms')).toContainText('″');
       await expect(page.getByTestId('survey-start-decimal')).toContainText('°');
       await expect(page.getByTestId('survey-end-dms')).toContainText('″');
@@ -152,9 +159,12 @@ test.describe('U37 — 測量モード結線 (FR-14 / FR-15 / FR-16)', () => {
       // with the DISPLAYED endpoints under the default geo params (equator 40075 km,
       // flattening 0 → 111.319 km/deg on both axes): the readout's coordinates and
       // its distance describe the SAME measurement (FR-14↔FR-16 の単一真実源).
-      // (Expected is not derived from re-projected screen positions: the topBar
-      // readout appearing can resize the map cell and re-clamp the camera, so the
-      // click-time transform is not re-observable afterwards.)
+      // (Expected is not derived from re-projected screen positions: the click-time
+      // transform is not re-observable afterwards. **増分 5a より前は「読み取りが
+      // 出るとアプリバーの段が増えて地図セルが縮み、カメラが再クランプされる」ことが
+      // 理由だった**が、いまは読み取りが高さ 40px 固定のオプションバーへ移ったので
+      // 地図は 1px も動かない ―― それでも画面座標から逆算しないのは、パン・ズームが
+      // 別経路で動きうるからである。)
       const start = parseDecimalCoord(
         await page.getByTestId('survey-start-decimal').textContent(),
       );
@@ -223,10 +233,13 @@ test.describe('U37 — 測量モード結線 (FR-14 / FR-15 / FR-16)', () => {
       // readout stays MOUNTED while survey is ON (第6工程 B2 fixed occupancy — it
       // mounts with the mode toggle, never mid-gesture) but honestly reads 未計測
       // (— placeholder): no fabricated value survives the clear.
+      // **増分 5a**: 読み取りの置き場はオプションバーの設定欄になった。
       await page.getByTestId('survey-clear').click();
       await expect(page.getByTestId('survey-line-count')).toHaveText('0');
       await expect.poll(async () => (await primitiveCounts(page)).line).toBe(0);
       await expect(page.getByTestId('survey-eq-distance')).toContainText('—');
+      // 地図を押した時点で「座標 ▾」は閉じている（K-5: 外を押したら閉じる）ので開き直す。
+      await openSurveyCoords(page);
       await expect(page.getByTestId('survey-start-dms')).toContainText('—');
     } finally {
       await app.close();

@@ -1,13 +1,20 @@
-// U37 — SurveyControls operation test (FR-14 / FR-15 / FR-16 / FR-05 / FR-109).
+// U37 — 測量の chrome の操作テスト (FR-14 / FR-15 / FR-16 / FR-05 / FR-109)。
 //
-// The topBar chrome for the survey mode: the 補助モード toggle (View でも使える —
-// editable でゲートしない), the clear button (件数併記・表示条件), the per-phase
-// guide, and the FR-14/16 readout — BOTH distances and BOTH coordinate forms
-// (度分秒 + 十進), derived LIVE from currentMeasurement over the project's
-// geoParams so an equator-length change re-computes at once (教訓 5.3 / 5.35).
-// The expected numbers/strings are computed through the SAME domain functions the
-// component consumes (measureSurveyPair / formatCoordinate / formatDistanceKm) —
-// the test pins the WIRING, not a re-derived formula (単一真実源).
+// **増分 5a で部品が 2 つに割れた**（アプリバーを 32px 固定にするため）。この検査は
+// 両方を一緒に載せて、割る前と同じ振る舞いが残っていることを見る:
+//   - `SurveyControls`（アプリバー）: 補助モードの入口（View でも使える ―― editable で
+//     ゲートしない）と、確定線の数の隠し観測。
+//   - `SurveyMeasurementPanel`（オプションバーの設定欄）: クリア（件数併記・表示条件）、
+//     段階ごとの案内、FR-14/16 の読み取り（2 つの距離と 2 つの座標形式）。
+//
+// 読み取りは `currentMeasurement` をプロジェクトの geoParams の上で LIVE に導出するので、
+// 赤道長を変えれば即座に計算し直す（教訓 5.3 / 5.35）。期待値は部品が使うのと **同じ**
+// ドメイン関数（measureSurveyPair / formatCoordinate / formatDistanceKm）で作る ――
+// 検査が固定するのは結線であって、式の写しではない（単一真実源）。
+//
+// **座標と表示形式は「座標 ▾」ポップオーバーの中にある**が、パネルは閉じていても DOM に
+// 残る作り（`hidden` 属性で隠すだけ）なので、ここでの取得と押下はそのまま通る。
+// 「閉じているときに下のクリックを奪わない」は DOM では測れないので E2E が見る（教訓 5.49）。
 
 /// <reference types="@testing-library/jest-dom" />
 
@@ -22,7 +29,7 @@ import { createSessionStore, type SessionStore } from '../state/store';
 import { EDIT_MODE } from '../state/session';
 import { DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 
-import { SurveyControls } from './SurveyControls';
+import { SurveyControls, SurveyMeasurementPanel } from './SurveyControls';
 import { SURVEY_STRINGS, formatDistanceKm } from './strings';
 
 interface S {
@@ -40,7 +47,12 @@ function mountControls(initialMode = EDIT_MODE.View): {
     initialDomain: { tag: 'd0' },
     initial: { mode: initialMode },
   });
-  const utils = render(<SurveyControls store={store} />);
+  const utils = render(
+    <>
+      <SurveyControls store={store} />
+      <SurveyMeasurementPanel store={store} />
+    </>,
+  );
   return { store, unmount: utils.unmount };
 }
 
@@ -208,9 +220,10 @@ describe('SurveyControls — 読取パネル (FR-14 距離 / FR-16 度分秒+十
   });
 
   it('第6工程 B2: 測量ONで読取パネルは即・常設マウント（未計測は — placeholder）', () => {
-    // Fixed occupancy: the readout mounts WITH survey mode, never mid-gesture (the
-    // old mount-on-measure re-wrapped the 上部バー between the two survey clicks and
-    // shifted the map cell — 世界端跨ぎ e2e). Nothing measured yet ⇒ honest dashes.
+    // 未計測でも測量 ON と同時に読み取りが載る（ジェスチャの途中で生えない）。
+    // **増分 5a 以降、これは「帯の段が増えない」ためではない** ―― 帯は高さ 40px 固定で、
+    // 何を入れても地図は動かない。いま残っている理由は「1 回目のクリックの直後に
+    // 部品が生えて、2 回目のクリックの狙いがずれる」を避けることである。
     const { store, unmount } = mountControls();
     act(() => store.getState().surveyEnable());
     expect(screen.getByTestId('survey-readout')).toBeInTheDocument();

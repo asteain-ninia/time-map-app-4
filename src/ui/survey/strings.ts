@@ -16,6 +16,15 @@ export const SURVEY_STRINGS = {
   equirectangularLabel: '正距円筒距離',
   /** Great-circle distance row label (FR-14). */
   greatCircleLabel: '大円距離',
+  /**
+   * オプションバーの 40px の帯に出す **短い**距離のラベル（増分 5a / 設計書 §C.4 の例
+   * 「正距円筒 1,234km ／ 大円 1,201km」）。長いほうは、帯ではなく文書・報告の中で
+   * 「どちらの距離か」を言うときのために残してある。
+   */
+  equirectangularShort: '正距円筒',
+  greatCircleShort: '大円',
+  /** 「座標 ▾」ポップオーバーのアンカーの文字（▾ は器が付ける）。 */
+  coordsMenuLabel: '座標',
   /** Distance unit suffix. */
   unitKm: 'km',
   /** Start-point lat/lon section label (FR-16). */

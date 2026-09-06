@@ -28,4 +28,9 @@ export {
   type SurveyMapBridgeProps,
 } from './SurveyToolController';
 
-export { SurveyControls, type SurveyControlsProps } from './SurveyControls';
+export {
+  SurveyControls,
+  SurveyMeasurementPanel,
+  type SurveyControlsProps,
+  type SurveyMeasurementPanelProps,
+} from './SurveyControls';

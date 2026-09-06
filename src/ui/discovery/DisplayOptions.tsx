@@ -21,7 +21,7 @@
 //     下のボタンのクリックを奪う）
 //   - **背面を覆う板を置かない**（K-2）。閉じるのは document の pointerdown を聞く形
 
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useStore } from 'zustand';
 import type { StoreApi } from 'zustand/vanilla';
 
@@ -34,6 +34,7 @@ import { featuresAt } from '../live-lookup';
 import { resolveDisplayFor } from '../map/display-resolution-cache';
 import { hiddenReasonUnderFilter } from '../map/filtered-display';
 import type { OptionBarStore } from '../shell/option-bar';
+import { OptionPopover } from '../shell/OptionPopover';
 import type { SessionStore } from '../state/store';
 
 import { FEATURE_KIND_AXIS, kindAxisOf, type FeatureKindAxis } from './axes';
@@ -48,10 +49,6 @@ import {
 import { FILTER_STRINGS } from './strings';
 import { validateDepthThreshold, validateOpacity } from './validation';
 import { HIDDEN_REASON } from './visibility';
-
-/** 帯からはみ出さないための余白（`SnapOptions` と同じ値）。 */
-const VIEWPORT_MARGIN = 8;
-const ANCHOR_GAP = 4;
 
 /** 不透明度のつまみの刻み（5%）。 */
 const OPACITY_STEP = 0.05;
@@ -99,15 +96,10 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
   const activeTool = useStore(store, (s) => s.activeTool);
   const projectLoadNonce = useStore(store, (s) => s.projectLoadNonce);
 
+  // 開閉そのものは共通の器（`shell/OptionPopover`）が持つ。ここが `open` を控えるのは
+  // **開いている間だけ数え直す**中身（種別の一覧・外れている知らせ）のためで、真実源は
+  // 器の側である（教訓 5.29: 二重の真実源を作らないので、書くのは器だけ・読むのはここだけ）。
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
-  const anchorRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const panelId = useId();
-
-  const close = useCallback(() => {
-    setOpen(false);
-  }, []);
 
   // いま世界に在る種別（札）を数える。**アプリは札の一覧を持っていない**（利用者が
   // 自由に書く文字列）ので、そのときのデータから数え直すしかない。開いている間だけ
@@ -125,74 +117,6 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [open, getRoot, getTime, domain, currentTime]);
-
-  // 開いた直後に、アンカーの矩形と実寸から置き場所を決める（`SnapOptions` と同じ作法）。
-  useLayoutEffect(() => {
-    if (!open) return;
-    const anchor = anchorRef.current;
-    const panel = panelRef.current;
-    if (anchor === null || panel === null) return;
-    const a = anchor.getBoundingClientRect();
-    const p = panel.getBoundingClientRect();
-    const maxLeft = Math.max(VIEWPORT_MARGIN, window.innerWidth - p.width - VIEWPORT_MARGIN);
-    const left = Math.min(Math.max(a.left, VIEWPORT_MARGIN), maxLeft);
-    const below = a.bottom + ANCHOR_GAP;
-    const top =
-      below + p.height + VIEWPORT_MARGIN <= window.innerHeight
-        ? below
-        : Math.max(VIEWPORT_MARGIN, a.top - p.height - ANCHOR_GAP);
-    setPosition((prev) =>
-      prev !== null && prev.left === left && prev.top === top ? prev : { left, top },
-    );
-  }, [open, kindLabels]);
-
-  // 閉じる契機（教訓 5.2）: 外を押す／Escape。**バックドロップは置かない**（K-2）。
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (e: PointerEvent): void => {
-      const panel = panelRef.current;
-      const anchor = anchorRef.current;
-      const target = e.target;
-      if (!(target instanceof Node)) return;
-      if (panel?.contains(target) === true) return;
-      if (anchor?.contains(target) === true) return;
-      close();
-    };
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      e.preventDefault();
-      close();
-      anchorRef.current?.focus();
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [open, close]);
-
-  // **状態が移ったら閉じる**（増分 4 の手直し G6 / K-5「一時的 UI 状態は全経路で
-  // 破棄する」）。旧版は外を押すか Escape でしか閉じなかったので、鍵盤でモードを
-  // 変えたり年を動かしたりしても **開いたまま残り**、そこに並んでいる種別の一覧や
-  // 件数が古いまま置き去りになった（中身は `open` を依存にして数え直すので、
-  // 「開いているのに中身だけ入れ替わる」形になっていた）。
-  const contextRef = useRef({ mode, activeTool, currentTime, projectLoadNonce });
-  useEffect(() => {
-    const prev = contextRef.current;
-    contextRef.current = { mode, activeTool, currentTime, projectLoadNonce };
-    if (!open) return;
-    if (
-      prev.mode === mode &&
-      prev.activeTool === activeTool &&
-      prev.currentTime === currentTime &&
-      prev.projectLoadNonce === projectLoadNonce
-    ) {
-      return;
-    }
-    close();
-  }, [open, mode, activeTool, currentTime, projectLoadNonce, close]);
 
   /**
    * 選んでいる地物が表示条件から外れているか（増分 4 の手直し E1 / 設計書 §D.6）。
@@ -235,31 +159,23 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
   const anyEmphasis = emphasisActive(filter);
 
   return (
-    <>
-      <button
-        type="button"
-        ref={anchorRef}
-        className="display-options__button"
-        data-testid="option-display-button"
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-controls={panelId}
-        onClick={() => setOpen((v) => !v)}
-      >
-        {FILTER_STRINGS.displayMenuLabel} ▾
-      </button>
-      <div
-        id={panelId}
-        ref={panelRef}
-        className="display-options__panel"
-        data-testid="option-display-panel"
-        role="dialog"
-        aria-label={FILTER_STRINGS.displayMenuLabel}
-        hidden={!open}
-        style={position === null ? undefined : { left: position.left, top: position.top }}
-      >
-        {/* 既存の表示制御パネルと **同じ testid** を持ち越す（T-1: 役割で維持する）。
-            置き場所が一覧の下からここへ移っただけで、役割は同じである。 */}
+    <OptionPopover
+      label={FILTER_STRINGS.displayMenuLabel}
+      buttonTestId="option-display-button"
+      panelTestId="option-display-panel"
+      buttonClassName="display-options__button"
+      panelClassName="display-options__panel"
+      ariaLabel={FILTER_STRINGS.displayMenuLabel}
+      /* K-5「状態が移ったら閉じる」。旧版はこの 4 つを ref に控えて自分で比べていたが、
+         同じ判断が増分 5 で 3 枚に増えるので、器へ渡す 1 本の指紋に畳んだ。 */
+      closeKey={`${mode}|${activeTool ?? ''}|${String(currentTime)}|${projectLoadNonce}`}
+      /* 中身の行数（種別の一覧）が変わると高さが変わるので、置き場所を測り直す。 */
+      measureKey={kindLabels}
+      onOpenChange={setOpen}
+    >
+      {/* 既存の表示制御パネルと **同じ testid** を持ち越す（T-1: 役割で維持する）。
+          置き場所が一覧の下からここへ移っただけで、役割は同じである。 */}
+      {() => (
         <section className="display-filter" data-testid="display-filter">
           <h3 className="display-filter__title">{FILTER_STRINGS.sectionTitle}</h3>
           <p className="display-filter__help">{FILTER_STRINGS.sectionHelp}</p>
@@ -535,8 +451,8 @@ export function DisplayOptions<S>(props: DisplayOptionsProps<S>): JSX.Element {
             {FILTER_STRINGS.showAllHiddenLabel(hiddenCount)}
           </button>
         </section>
-      </div>
-    </>
+      )}
+    </OptionPopover>
   );
 }
 

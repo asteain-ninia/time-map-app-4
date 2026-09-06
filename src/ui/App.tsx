@@ -108,6 +108,7 @@ import {
   SurveyToolController,
   SurveyMapBridge,
   SurveyControls,
+  SurveyMeasurementPanel,
   type SurveyDrawSink,
 } from './survey/index';
 import './survey/survey.css';
@@ -169,6 +170,7 @@ import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
 import { OptionBar } from './shell/OptionBar';
 import { OptionBarStore, type OptionBarAction } from './shell/option-bar';
+import { PersistentOptionSlot } from './shell/PersistentOptionSlot';
 import { SidebarFocusStore } from './shell/sidebar-focus';
 import {
   LongitudeShiftControl,
@@ -176,6 +178,7 @@ import {
   GridToggleControl,
   type MapCameraInput,
 } from './map/index';
+import { DepthOptions } from './map/DepthOptions';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
@@ -2870,9 +2873,27 @@ export function App(): JSX.Element {
               optionBar={optionBarStore}
               resolveFeature={featureByIdAt}
             />
+            {/* 増分 5a: アプリバーを 32px 固定にするために、深さ・格子・測量の読み取りを
+                オプションバーの設定欄へ降ろした（設計書 §B.4「個別フォーカスの 4 部品は
+                アプリバーから降ろす」）。**どれも道具に属さない常設の部品**なので、道具が
+                帯を持ち直しても落ちない口（`registerPersistentSlot`）へ差し込む。
+                並びは登録した順（深さ → 格子 → 測量 → 表示）。 */}
+            <PersistentOptionSlot optionBar={optionBarStore} id="depth">
+              <DepthOptions<DomainRoot> store={store}>
+                <GlobalDepthPanel store={store} />
+              </DepthOptions>
+            </PersistentOptionSlot>
+            {/* FR-13 グリッド ON/OFF 結線 (教訓 5.7 結線漏れ)。**畳まずにそのまま置く**
+                ―― 1 クリックで効く固定幅のボタンなので、ポップオーバーの中へ入れると
+                手数が増えるだけである。 */}
+            <PersistentOptionSlot optionBar={optionBarStore} id="grid">
+              <GridToggleControl store={store} />
+            </PersistentOptionSlot>
+            <PersistentOptionSlot optionBar={optionBarStore} id="survey">
+              <SurveyMeasurementPanel store={store} />
+            </PersistentOptionSlot>
             {/* 増分 4 / C7: 表示の設定を「一覧の 28,546px 下」からオプションバーの
-                設定欄へ移す。**道具に属さない常設の部品**なので、道具が帯を持ち直しても
-                落ちない口（`registerPersistentSlot`）へ差し込む。 */}
+                設定欄へ移す。 */}
             <DisplayOptionsSlot<DomainRoot>
               store={store}
               optionBar={optionBarStore}
@@ -3035,18 +3056,11 @@ export function App(): JSX.Element {
              map input layer (教訓 5.14). */
           <>
             <LongitudeShiftPanel store={store} rendererRef={rendererRef} />
-            <GlobalDepthPanel store={store} />
-            {/* FR-13 グリッド ON/OFF 結線 (教訓 5.7 結線漏れ): the グリッド表示 quick-toggle,
-                mounted in the SAME normal-flow 上部バー row beside the other view controls.
-                A FIXED, static button (constant-width label) so it does NOT make the row's
-                占有幅 depend on selection/measurement state — preserving the topBar 不変量
-                (a4f6be9). Bound to the LIVE store; a toggle re-reads the host's gridVisible
-                getter on the next redraw (即時反映). */}
-            <GridToggleControl store={store} />
-            {/* U37 測量モード (FR-14/15/16 結線): the 補助モード toggle + クリア +
-                読取パネル, mounted in the SAME normal-flow 上部バー row as the two
-                view controls above — it never overlaps the map input layer (教訓
-                5.14) and is NOT gated on editability (View でも使える, U37 §2.1). */}
+            {/* U37 測量モード (FR-14/15/16 結線): **アプリバーに残すのは入口 1 個だけ**
+                （増分 5a）。読み取り欄・案内・クリアはオプションバーの設定欄へ降ろした
+                ―― 上部バーに読み取りが生えると段が増えて地図が 87〜95px 縮んでいた
+                （設計書 §B.4「測量の道具を持っても地図は縮まない」）。編集できるか
+                どうかで無効化しないのは従来どおり（View でも測れる, U37 §2.1）。 */}
             <SurveyControls store={store} />
           </>
         }

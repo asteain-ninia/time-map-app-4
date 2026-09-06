@@ -17,14 +17,45 @@
   background: transparent;
 }
 
-/* The topBar controls (toggle / clear / guide / readout) sit in the normal-flow
-   上部バー row (never over the map — no pointer-events trap by construction). */
+/* 測量の入口（アプリバー）と読み取り（オプションバーの設定欄）。どちらも通常フローの
+   シェル行に居るので、地図の上に重ならない（教訓 5.14 の罠が構造的に起きない）。
+
+   **増分 5a: 折り返さない。** 折り返す作りだと、測量を ON にした瞬間にアプリバーの段が
+   増えて地図が 87〜95px 縮んだ。いまは入口だけがアプリバーに残り、読み取りは高さ 40px
+   固定の帯（`.option-bar`）の中なので、どちらも段が増えようがない。 */
 .survey-controls {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   font-size: 12px;
+}
+
+/* オプションバーの中の姿（増分 5a）。窓が狭いときに真っ先に削られるのは案内の文で、
+   距離と操作は残す ―― 案内だけが縮む役（`flex: 1 1 0`）を引き受ける。 */
+.survey-controls--bar {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.survey-controls--bar .survey-controls__guide {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 22em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.survey-controls--bar .survey-controls__readout {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+/* 帯の中では短いラベル（「正距円筒 1,234.56 km」）を出すので、確保する幅も詰める。
+   値が入っても幅が跳ねないことは変わらず必要（K-3）。 */
+.survey-controls--bar .survey-controls__distance {
+  min-width: 11em;
 }
 
 .survey-controls__toggle[aria-pressed='true'] {

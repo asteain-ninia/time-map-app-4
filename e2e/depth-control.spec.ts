@@ -21,6 +21,7 @@ import {
   commitFace,
   drawFace,
   launchApp,
+  openDepthOptions,
   type ScreenPoint,
 } from './helpers';
 
@@ -35,8 +36,15 @@ async function readDrawnCount(page: Page): Promise<number> {
   });
 }
 
-/** Raise the global depth from 0 to 1 by operating the 上部バー depth control. */
+/**
+ * 深さを 0 → 1 に上げる（オプションバーの「深さ ▾」を開いて操作する）。
+ *
+ * **増分 5a で置き場が変わった**: 深さの操作はアプリバーに出しっぱなしだったが、
+ * アプリバーを 32px 固定にするためオプションバーの「深さ ▾」ポップオーバーへ降ろした
+ * （設計書 §B.4）。**押せることは変わらない**ので、開く 1 手だけを足す。
+ */
 async function raiseDepthToOne(page: Page): Promise<void> {
+  await openDepthOptions(page);
   // The slider is the very UI the user reported missing — assert it exists with the
   // data-derived bounds (min 0 .. max = live forest max depth) so its absence would fail
   // here. Then raise N 0→1 DETERMINISTICALLY via the control's ＋ (the SAME
