@@ -768,8 +768,13 @@ test.describe('増分 4 — 右パネルの 2 区画・台帳・作業のまと�
       const before = await settledCamera(page);
 
       // syn-0000 を個別に隠す（合成データは 3.5 度ごとに並ぶので、0003 とは離れている）。
+      //
+      // **隠せたことは「行の DOM」で確かめない**（2026-09-06、最終手直し。教訓 5.59/5.62）。
+      // 一覧は仮想スクロールなので、窓の外へ出た行は DOM から消える ―― しかも 👁 を押すと
+      // 状態行が 1 行増えて器がそのぶん縮むので、既定の窓（1280×800）では窓に入る行が
+      // 1 行ぶん減る。**窓に依らない観測**＝状態行の件数（「うち 1 件は非表示」）で見る。
       await page.getByTestId('ledger-eye-syn-0000').click();
-      await expect(page.getByTestId('ledger-row-syn-0000')).toHaveAttribute('data-hidden', 'true');
+      await expect(page.getByTestId('ledger-footer')).toContainText('（うち 1 件は非表示）');
 
       // **選ぶのは「どこへでも移動」から**（2026-09-06）。一覧は仮想スクロールなので、
       // 隠した直後は行が組み直されて DOM から外れたり戻ったりする ―― 行を押しにいくと
