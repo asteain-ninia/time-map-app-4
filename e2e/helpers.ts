@@ -135,7 +135,21 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     state: 'attached',
     timeout: 45_000,
   });
+  // 初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）は **既定で出る**。既定の設定で
+  // 起動するたびに出るので、**launchApp の 1 か所で畳む** ―― spec ごとに畳む形にすると、
+  // 次に spec を足した人が忘れて「板の外を押したのに何も起きない」で悩む（増分 5 の
+  // 「板を先に閉じる」の申し送りと同じ型）。**「今後表示しない」ではなく「閉じる」**を
+  // 押す ―― 設定を書くと、設定そのものを見る検査が汚れる。
+  await dismissFirstRunGuide(page);
   return { app, page };
+}
+
+/** 初回起動のガイドが出ていたら閉じる（冪等）。ガイド自身を見る spec は先に読むこと。 */
+export async function dismissFirstRunGuide(page: Page): Promise<void> {
+  const close = page.getByTestId('first-run-guide-close');
+  if ((await close.count()) === 0) return;
+  await close.click();
+  await expect(page.getByTestId('first-run-guide')).toHaveCount(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -811,3 +825,102 @@ export async function loadSyntheticProject(page: Page, count: number): Promise<v
  * なので入っていない ―― 入れると「鍵で灰色になるか」の検査が測るまで巻き込む。
  */
 export const ALL_TOOL_TESTIDS: readonly string[] = ALL_TOOLS.map((t) => `tool-${t}`);
+
+/**
+ * **1 地物が `count` 本の錨を持つ**合成データを載せる（増分 6）。設計書 §F.2 の
+ * 受け入れ条件（5 万錨で再集計 16ms 以内・ヒットテスト 1ms 以内）を実アプリで測る
+ * ための投入口。`asAggregateChild` を立てると、実データの 86 件と同じ
+ * 「自分の履歴を持たず親の系列に入っている」形になる。
+ */
+export async function loadSyntheticAnchors(
+  page: Page,
+  count: number,
+  options?: { readonly asAggregateChild?: boolean },
+): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { loadSyntheticAnchors?: unknown } })
+        .__E2E_HARNESS__?.loadSyntheticAnchors === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(
+    ({ n, opts }) => {
+      const harness = (
+        globalThis as {
+          __E2E_HARNESS__?: {
+            loadSyntheticAnchors?: (
+              count: number,
+              options?: { readonly asAggregateChild?: boolean },
+            ) => void;
+          };
+        }
+      ).__E2E_HARNESS__;
+      if (harness?.loadSyntheticAnchors === undefined) {
+        throw new Error('window.__E2E_HARNESS__.loadSyntheticAnchors が無い');
+      }
+      harness.loadSyntheticAnchors(n, opts);
+    },
+    { n: count, opts: options },
+  );
+}
+
+/** 時刻レールの観測（`window.__E2E__.getAnchorLaneStats`）。 */
+export interface RailLaneStats {
+  readonly featureId: string;
+  readonly inherited: boolean;
+  readonly anchorCount: number;
+  readonly inView: number;
+  readonly width: number;
+  readonly markCount: number;
+  readonly denseCount: number;
+  readonly shapeCount: number;
+  readonly maxCount: number;
+  readonly lastAggregateMs: number;
+  readonly aggregateCount: number;
+  readonly sourceCount: number;
+  readonly lastSourceMs: number;
+  readonly lastHitTestMs: number;
+  readonly laneHeightPx: number;
+}
+
+/** 同じく表示範囲（`window.__E2E__.getRailView`）。 */
+export interface RailViewSnapshot {
+  readonly minYear: number;
+  readonly maxYear: number;
+  readonly spanDays: number;
+  readonly pixelLength: number;
+  readonly fold: string;
+  readonly currentYear: number;
+  readonly editTime: string;
+}
+
+export async function railLaneStats(page: Page): Promise<RailLaneStats> {
+  return page.evaluate(() => {
+    const e2e = (globalThis as { __E2E__?: { getAnchorLaneStats?: () => RailLaneStats } })
+      .__E2E__;
+    if (e2e?.getAnchorLaneStats === undefined) {
+      throw new Error('window.__E2E__.getAnchorLaneStats が無い');
+    }
+    return e2e.getAnchorLaneStats();
+  });
+}
+
+export async function railView(page: Page): Promise<RailViewSnapshot> {
+  return page.evaluate(() => {
+    const e2e = (globalThis as { __E2E__?: { getRailView?: () => RailViewSnapshot } }).__E2E__;
+    if (e2e?.getRailView === undefined) throw new Error('window.__E2E__.getRailView が無い');
+    return e2e.getRailView();
+  });
+}
+
+export async function railMarkPositions(page: Page): Promise<readonly number[]> {
+  return page.evaluate(() => {
+    const e2e = (globalThis as { __E2E__?: { getAnchorMarkPositions?: () => number[] } })
+      .__E2E__;
+    if (e2e?.getAnchorMarkPositions === undefined) {
+      throw new Error('window.__E2E__.getAnchorMarkPositions が無い');
+    }
+    return e2e.getAnchorMarkPositions();
+  });
+}

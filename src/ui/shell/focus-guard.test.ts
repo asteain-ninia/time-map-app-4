@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   blocksGlobalShortcuts,
+  consumesSpaceNatively,
   isEditableTarget,
   type EditableTargetDescriptor,
 } from './focus-guard';
@@ -128,5 +129,34 @@ describe('blocksGlobalShortcuts vs isEditableTarget（A4: 2 つの別々の問�
   it('INPUT 以外のタグは、type の見かけがどうであれ遮らない', () => {
     // `inputType` は INPUT のときしか意味を持たない。DIV に range を持たせても遮らない。
     expect(blocksGlobalShortcuts(target({ tagName: 'DIV', inputType: 'range' }))).toBe(false);
+  });
+});
+
+describe('consumesSpaceNatively（増分 6: Space ＝ 再生／一時停止）', () => {
+  // 焦点のあるボタンは空白で **自分が押される**。そこへ大域の再生を重ねると、
+  // 1 回の空白で 2 つ起きる。止める理由は「その control が空白を使う」ことなので、
+  // 打鍵の入口 1 か所で見る（教訓 5.75）。
+  it('ボタン・リンク・summary は空白を自分で使う', () => {
+    expect(consumesSpaceNatively(target({ tagName: 'BUTTON' }))).toBe(true);
+    expect(consumesSpaceNatively(target({ tagName: 'A' }))).toBe(true);
+    expect(consumesSpaceNatively(target({ tagName: 'SUMMARY' }))).toBe(true);
+  });
+
+  it('チェックボックス・ラジオ・ボタン型の input も同じ', () => {
+    for (const type of ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'color']) {
+      expect(
+        consumesSpaceNatively(target({ tagName: 'INPUT', inputType: type })),
+        type,
+      ).toBe(true);
+    }
+  });
+
+  it('地図・つまみ・文字の欄は「空白を使う control」ではない', () => {
+    // つまみと文字の欄は別の述語（blocksGlobalShortcuts）が先に止める。
+    expect(consumesSpaceNatively(target({ tagName: 'DIV' }))).toBe(false);
+    expect(consumesSpaceNatively(target({ tagName: 'CANVAS' }))).toBe(false);
+    expect(consumesSpaceNatively(target({ tagName: 'INPUT', inputType: 'range' }))).toBe(false);
+    expect(consumesSpaceNatively(target({ tagName: 'INPUT', inputType: 'text' }))).toBe(false);
+    expect(consumesSpaceNatively(null)).toBe(false);
   });
 });

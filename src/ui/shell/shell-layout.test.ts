@@ -17,6 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { readSourceText } from '../../test-support/read-source-text';
+import { RAIL_GROUP_WIDTH } from '../time/rail-fold';
 import { ALL_TOOLS, TOOL_GROUPS } from './tools';
 
 // 改行は `readSourceText` が LF に揃える。この作業ツリーは CRLF と LF が混ざり、しかも
@@ -171,10 +172,10 @@ describe('シェルの行割り（オプションバーは地図セルの外の�
   it('.app-shell は 5 行で、アプリバー・オプションバー・状態行の高さが固定（増分 5a）', () => {
     // **窓幅を変えても地図セルの上端が動かない**ことの単一真実源。アプリバーが `auto`
     // だった頃は、中身が増えるたびに 54 → 81.2 → 149.2px と段が増え、地図の上端が
-    // 最大 95px 飛んだ（現状分析 §1.3）。時刻レールだけは `auto` のまま据え置く
-    // （112px に縮めるのは中身を作り直す増分 6）。
+    // 最大 95px 飛んだ（現状分析 §1.3）。**増分 6 で時刻レールも固定（112px）にした** ――
+    // これで 5 行のうち可変なのはオプションバー行（渡さなければ潰れる）と主行だけになる。
     expect(decl(ruleBody('.app-shell'), 'grid-template-rows')).toBe(
-      'var(--shell-appbar-h) auto minmax(0, 1fr) auto var(--shell-status-h)',
+      'var(--shell-appbar-h) auto minmax(0, 1fr) var(--shell-timeline-h) var(--shell-status-h)',
     );
     expect(decl(ruleBody('.app-shell'), '--shell-appbar-h')).toBe('32px');
   });
@@ -350,12 +351,15 @@ describe('鍵はアプリバー右端の 96px 固定枠（手直し D1 / 設計�
 
 describe('左のレールは道具 12 個が縦に収まる（手直し D2 / 設計書 §C.3）', () => {
   /**
-   * 時刻レールの実測の高さ。**CSS には書かれていない**（行は `auto` で、高さは中身が
-   * 決める）ので、ここだけは実測値を置く。設計書 §B.4 は 112px 固定と定めているが、
-   * 中身を作り直すのは増分 6 なので、**いまは 201.2px がレールの予算を決めている**。
-   * 増分 6 で 112px になったら、この定数を下げるとレールの余裕が 89.2px 増える。
+   * 時刻レールの高さ。**増分 6 で 201.2px → 112px になった**（設計書 §C.7）。旧版は
+   * 行が `auto` で中身が高さを決めていたので実測値を置くしかなかったが、いまは
+   * `--shell-timeline-h` が真実源である（内訳は 上下余白 2+2 ＋ 読み取り 24 ＋
+   * 錨レーン 28 ＋ 目盛り 22 ＋ 操作列 32 ＋ 枠線 1×2）。
+   *
+   * **道具のレールの縦の余裕が 89.2px 増えた。** ボタンを 36px（設計書 §C.3 の既定）へ
+   * 戻せるかは `docs/現状.md` の B56 で追う。
    */
-  const TIMELINE_H = 201.2;
+  const TIMELINE_H = 112;
 
   /** 群ごとのボタンの数（レールの並びの単一の真実源から引く）。 */
   const groupSizes = [...TOOL_GROUPS.map((g) => g.tools.length), 1 /* 調べる（測る） */];
@@ -447,5 +451,128 @@ describe('設定欄の畳み「≫」（手直し D3 / 設計書 §B.4）', () =
     expect(px(decl(button, 'min-height'), '≫ の min-height')).toBeGreaterThanOrEqual(24);
     expect(px(decl(button, 'min-width'), '≫ の min-width')).toBeGreaterThanOrEqual(24);
     expect(decl(button, 'flex')).toBe('0 0 auto');
+  });
+});
+
+describe('時刻レールの寸法契約（設計書 §C.7。増分 6）', () => {
+  // **なぜ CSS を直接読むのか**は冒頭の見出しと同じ ―― jsdom はレイアウトを持たないので
+  // px を測ると常に 0 で一致し、テストが永久に緑になる（教訓 5.49）。実寸は E2E が見る。
+  it('帯は 112px 固定で、中身が増えても伸びない', () => {
+    const shell = ruleBody('.app-shell');
+    // 高さの真実源はシェルの変数 1 か所（行そのものも中の `.rail` も同じ値を読む）。
+    expect(decl(shell, '--rail-lane-h')).toBe('28px');
+    expect(decl(shell, '--shell-timeline-h')).toBe(
+      'calc(4px + 24px + var(--rail-lane-h) + 22px + 32px + 2px)',
+    );
+    // 4 + 24 + 28 + 22 + 32 + 2 = 112px（設計書 §C.7 の内訳）。
+    const row = ruleBody('.app-shell__timeline');
+    expect(decl(row, 'height')).toBe('var(--shell-timeline-h)');
+    expect(decl(row, 'box-sizing')).toBe('border-box');
+    // 旧版は `auto` ＋ `max-height: 40vh` で、入力エラーが出ると 200 → 220px に伸びた。
+    expect(decl(row, 'max-height')).toBeUndefined();
+    expect(decl(row, 'overflow')).toBe('hidden');
+    const rail = ruleBody('.rail');
+    expect(decl(rail, 'height')).toBe('var(--shell-timeline-h)');
+    expect(decl(rail, 'overflow')).toBe('hidden');
+  });
+
+  it('4 段の高さが設計書どおり（読み取り 24 / レーン 28 / 目盛り 22 / 操作列 32）', () => {
+    expect(px(decl(ruleBody('.rail__readout'), 'height'), '読み取り')).toBe(24);
+    expect(decl(ruleBody('.rail__lane-box'), 'height')).toBe('var(--rail-lane-h)');
+    expect(px(decl(ruleBody('.rail__ticks'), 'height'), '目盛り')).toBe(22);
+    expect(px(decl(ruleBody('.rail__controls'), 'height'), '操作列')).toBe(32);
+  });
+
+  it('窓が低いとレーンが 20px に縮む（**窓の大きさだけで決まる**＝ K-3）', () => {
+    const block = mediaBlock('max-height: 699px');
+    expect(block).toContain('--rail-lane-h: 20px');
+    // 選択状態や道具に依存する分岐がここに紛れ込んでいないこと。
+    expect(block).not.toContain('active');
+    expect(block).not.toContain('selected');
+  });
+
+  it('錨レーンと目盛りは同じ内寸を使う（印と目盛りがずれない）', () => {
+    // 「単位: 年」の余白を **両方の行が同じ変数で** 読む。別々の値になった瞬間に、
+    // 同じ軸の上で 2 つの写像が並ぶ。
+    expect(decl(ruleBody('.rail__lane-box'), 'margin-right')).toBe('var(--rail-unit-gutter)');
+    expect(decl(ruleBody('.rail__ticks-unit'), 'flex')).toBe('0 0 var(--rail-unit-gutter)');
+    expect(decl(ruleBody('.app-shell'), '--rail-unit-gutter')).toBe('64px');
+  });
+
+  it('操作列は折り返さない（段が増えると地図の上端が動く）', () => {
+    const controls = ruleBody('.rail__controls');
+    expect(decl(controls, 'flex-wrap')).toBe('nowrap');
+    expect(decl(controls, 'overflow')).toBe('hidden');
+    expect(px(decl(controls, 'gap'), '操作列の gap')).toBe(8);
+  });
+
+  it('まとまりの幅は `rail-fold.ts` の見積りと同じ数を嵌める（教訓 5.74）', () => {
+    /** `flex: 0 0 128px` の 3 つ目（基準幅）を読む。 */
+    const basis = (selector: string, what: string): number =>
+      px(decl(ruleBody(selector), 'flex')?.split(' ')[2], what);
+    expect(basis('.rail__group--step1', '±1')).toBe(RAIL_GROUP_WIDTH.step1);
+    expect(basis('.rail__group--step10', '10 年')).toBe(RAIL_GROUP_WIDTH.step10);
+    expect(basis('.rail__group--step100', '100 年')).toBe(RAIL_GROUP_WIDTH.step100);
+    expect(basis('.rail__year', '年入力')).toBe(RAIL_GROUP_WIDTH.year);
+    expect(basis('.rail__unit', 'ステップ単位')).toBe(RAIL_GROUP_WIDTH.unit);
+    expect(basis('.rail__overflow', '≫')).toBe(RAIL_GROUP_WIDTH.overflow);
+  });
+
+  it('±1 の送りと再生は U-8 の下限（64×32）を守る', () => {
+    const button = ruleBody('.timeline-step__button');
+    expect(px(decl(button, 'min-height'), '±1 の min-height')).toBe(32);
+    expect(px(decl(button, 'min-width'), '±1 の min-width')).toBe(64);
+  });
+
+  it('レールのポップオーバーは `[hidden]` の打ち消しを併記している（教訓 5.56 / K-2）', () => {
+    expect(decl(ruleBody('.rail__popover[hidden]'), 'display')).toBe('none');
+    expect(decl(ruleBody('.rail__popover'), 'position')).toBe('fixed');
+  });
+
+  it('断りの読み上げは寸法を持たない（断りで帯が伸びない）', () => {
+    const error = ruleBody('.rail__year-error');
+    expect(decl(error, 'position')).toBe('absolute');
+    expect(px(decl(error, 'width'), '断りの width')).toBe(1);
+    expect(px(decl(error, 'height'), '断りの height')).toBe(1);
+  });
+});
+
+describe('地図セルの中に置く部品（設計書 §B.5 の台帳 #10〜#12。増分 6）', () => {
+  it('ズームと全体表示は右下 16px 内側・40px 幅（台帳の寸法どおり）', () => {
+    const box = ruleBody('.map-view-controls');
+    expect(px(decl(box, 'right'), 'right')).toBe(16);
+    expect(px(decl(box, 'bottom'), 'bottom')).toBe(16);
+    expect(px(decl(box, 'width'), 'width')).toBe(40);
+    const button = ruleBody('.map-view-controls__button');
+    expect(px(decl(button, 'width'), 'ボタンの width')).toBe(40);
+    expect(px(decl(button, 'height'), 'ボタンの height')).toBe(40);
+  });
+
+  it('縮尺バーは **押せない**（表示だけ）', () => {
+    // `.map-area__overlay > *` が押下を有効にする既定を、この 1 行で打ち消す。
+    expect(decl(ruleBody('.map-area__overlay > .map-scale-bar'), 'pointer-events')).toBe(
+      'none',
+    );
+    expect(px(decl(ruleBody('.map-scale-bar'), 'bottom'), '縮尺バーの bottom')).toBe(16);
+    expect(px(decl(ruleBody('.map-scale-bar'), 'height'), '縮尺バーの height')).toBe(20);
+  });
+
+  it('頂点の候補一覧は一時部品で、幅は 216px（端で内側へ寄せる計算と同じ値）', () => {
+    const box = ruleBody('.vertex-candidates');
+    expect(decl(box, 'position')).toBe('absolute');
+    expect(px(decl(box, 'width'), '候補一覧の width')).toBe(216);
+    expect(px(decl(box, 'max-height'), '候補一覧の max-height')).toBe(180);
+  });
+});
+
+describe('初回起動のガイド（FR-118 / 設計書 §H.3。増分 6）', () => {
+  it('**地図には重ねない**（右パネルの下・時刻レールの上）', () => {
+    const box = ruleBody('.first-run-guide');
+    expect(decl(box, 'bottom')).toBe(
+      'calc(var(--shell-status-h) + var(--shell-timeline-h) + 12px)',
+    );
+    // 器そのものは押下を通し、押せるのは中の板だけ（K-2 の型の事故を作らない）。
+    expect(decl(box, 'pointer-events')).toBe('none');
+    expect(decl(ruleBody('.first-run-guide__panel'), 'pointer-events')).toBe('auto');
   });
 });
