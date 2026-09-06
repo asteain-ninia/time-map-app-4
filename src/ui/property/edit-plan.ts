@@ -158,7 +158,26 @@ export function hasAnchorStartingAt(
   calendar: Calendar,
 ): boolean {
   if (series === null) return false;
-  return series.entries.some((e) => compare(e.start, at, calendar) === 0);
+  // **二分探索で探す**（2026-09-07、増分 6 の実測）。系列の開始時刻は厳密に増加する
+  // （U09 の不変条件 INV-1）ので、端から舐める必要はない。
+  //
+  // ここは **時刻が動くたびに** 走る（編集時刻バッジの行き先を決める）。5 万錨の
+  // 地物を選んだまま 1 年送ると、`compare` が 5 万回 ―― しかも 1 回ごとに U02 の
+  // 正規化を 2 度通る ―― 走り、1 コマが 3ms → 30ms になっていた。増分 6 でレールの
+  // 読み取り行にも同じバッジを出したので、**同じ走査が 2 か所**になっている。
+  const entries = series.entries;
+  let lo = 0;
+  let hi = entries.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const entry = entries[mid];
+    if (entry === undefined) return false;
+    const order = compare(entry.start, at, calendar);
+    if (order === 0) return true;
+    if (order < 0) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
 }
 
 /** 画面に出す言葉（1 か所に集める、NFR 5.7 / 教訓 5.29）。 */

@@ -339,17 +339,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   // `anchorSeriesOf` / `governingSeriesOf` が根から引き直す）ので、その参照と地物 id を
   // 鍵にすれば「ドメインが変わったときだけ再計算」になる。
   const inherited = governing !== null && governing.ownerName !== null;
-  const anchorRows = useMemo<readonly AnchorRow[]>(() => {
-    const source = governing?.series ?? ownSeries;
-    if (source === null || targetFeatureId === null) return [];
-    return anchorRowsOf(source.entries, targetFeatureId, { onlyRelevant: inherited });
-  }, [governing, inherited, ownSeries, targetFeatureId]);
-
-  // 時間バー表示と存続期間の編集に渡す系列（表示専用の見かけの系列を作らない）。
+  // **鍵にするのは `governing` ではなく `governing.series`**（2026-09-07、増分 6 の実測で
+  // 判明）。`governingSeriesOf(featureId, currentTime)` は **時刻を引数に取る**ので
+  // 毎回新しい入れ物を返す ―― 入れ物を鍵にすると、上のコメントが「やってはいけない」と
+  // 書いているそのもの（時刻を動かすだけで選り分けが走る）になっていた。中の `series` は
+  // ドメインが差し替わったときだけ新しい参照になるので、そちらを鍵にする。
+  // 実測: 5 万錨を選んだまま 1 年送ると 1 コマが 3ms → 31ms になっていた。
   const displaySeries = useMemo<AnchorSeries | null>(
     () => governing?.series ?? ownSeries,
     [governing, ownSeries],
   );
+  const anchorRows = useMemo<readonly AnchorRow[]>(() => {
+    if (displaySeries === null || targetFeatureId === null) return [];
+    return anchorRowsOf(displaySeries.entries, targetFeatureId, { onlyRelevant: inherited });
+  }, [displaySeries, inherited, targetFeatureId]);
 
   // FR-20 / FR-35: the DERIVED area (km²). KEYED TO THE TARGET ID, NOT the resolved
   // `feature` OBJECT, so a structural edit that keeps the id still re-derives (教訓 5.3).

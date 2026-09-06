@@ -62,11 +62,23 @@ export function neighbourWindow(
 ): { readonly rows: readonly AnchorRow[]; readonly offset: number } {
   if (rows.length <= neighbours * 2 + 1) return { rows, offset: 0 };
   // 現在時刻に最も近い（開始が現在時刻以下で最後の）錨を中心にする。全部が未来なら先頭。
+  //
+  // **二分探索で探す**（2026-09-07、増分 6 の実測）。行は開始時刻の昇順（系列の不変条件
+  // INV-1）なので線形に走る必要はない。5 万錨で **時刻を動かすたびに** 5 万回の
+  // `compare`（U02 の正規化を 2 回ずつ通る）が走っていて、1 コマの重さに直に効いていた。
   let center = 0;
-  for (let i = 0; i < rows.length; i += 1) {
-    const r = rows[i];
-    if (r === undefined) continue;
-    if (compare(r.entry.start, currentTime, calendar) <= 0) center = i;
+  let lo = 0;
+  let hi = rows.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const r = rows[mid];
+    if (r === undefined) break;
+    if (compare(r.entry.start, currentTime, calendar) <= 0) {
+      center = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
   const start = Math.max(0, Math.min(center - neighbours, rows.length - (neighbours * 2 + 1)));
   const end = Math.min(rows.length, start + neighbours * 2 + 1);
