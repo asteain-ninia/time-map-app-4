@@ -1296,6 +1296,41 @@ describe('U23 手直し A3: 道具の持ち替えと鍵でも、黙って捨て�
     expect(h.store.getState().activeTool).toBe(TOOL_ID.AddArea);
   });
 
+  it('板が出ているあいだ、道具の打鍵は Escape 以外どれも下書きに届かない', () => {
+    // **手直し 3 回目。** 旧版は Escape のときだけ板を見ていたので、板の中の `Ctrl+Z` が
+    // 頂点を 1 つ減らし（3→2）、`Enter` が形を確定して素性入力へ進んだ ―― しかも状態行は
+    // 「『元に戻す』はいま使えません。確認に答えてから、もう一度押してください。」と言う。
+    // 画面が嘘をつくうえ、［続ける］を選んでも減った点は戻らなかった。
+    //
+    // **わざと壊すなら**: `confirmBlocksToolKey` の関門を keydown の入口から外す。
+    mountApp();
+    drawCompletableFace();
+    act(() => fireEvent.click(screen.getByTestId('tool-edit.knife')));
+    expect(confirmShown()).toBe(true);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+
+    for (const key of [
+      { key: 'z', ctrlKey: true },
+      { key: 'Z', ctrlKey: true },
+      { key: 'Enter' },
+      { key: 'Backspace' },
+      { key: 'Delete' },
+    ]) {
+      act(() => {
+        fireEvent.keyDown(window, key);
+      });
+      // 下書きは 1 点も減らず、形も確定しない（素性欄の「新規の姿」は開かない）。
+      expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+      expect(screen.queryByTestId('add-name')).toBeNull();
+      expect(confirmShown()).toBe(true);
+    }
+
+    // ［続ける］で戻ったら、打った 3 点がそのまま残っている。
+    act(() => fireEvent.click(screen.getByTestId('add-draft-discard-no')));
+    expect(confirmShown()).toBe(false);
+    expect(screen.getByTestId('add-vertex-count')).toHaveTextContent('3');
+  });
+
   it('道具の板で［捨てる］を選べば、捨てた数を報せる', () => {
     const discarded: number[] = [];
     mountApp(undefined, { onDraftDiscarded: (n) => discarded.push(n) });

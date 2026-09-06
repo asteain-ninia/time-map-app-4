@@ -22,6 +22,7 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   ALL_TOOL_TESTIDS,
   addInputLayerBox,
+  answerDraftDiscardIfAsked,
   armAddAreaTool,
   commitOneFace,
   drawFace,
@@ -1824,6 +1825,252 @@ test.describe('手直し 2 回目 (5) — 対象を離しても元の選択は�
         for (let i = 0; i < 6; i += 1) await page.keyboard.press('Escape');
         await expect(page.getByTestId('app-active-tool')).toHaveText('');
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 増分 5 の手直し 3 回目（2026-09-06）
+// ---------------------------------------------------------------------------
+
+/** 「捨てますか」の板を出している道具ごとの `data-testid` の頭。 */
+const DISCARD_PREFIX: Readonly<Record<string, string>> = {
+  'add.area': 'add-draft-discard',
+  'edit.knife': 'knife-draft-discard',
+  'edit.ring': 'ring-edit-draft-discard',
+  'edit.drill': 'drill-draft-discard',
+};
+
+/** その道具の下書きの点数を返す観測口。 */
+const DRAFT_COUNT_ID: Readonly<Record<string, string>> = {
+  'add.area': 'add-vertex-count',
+  'edit.knife': 'knife-cut-count',
+  'edit.ring': 'ring-edit-vertex-count',
+  'edit.drill': 'drill-vertex-count',
+};
+
+/**
+ * 確定できる点数まで打った下書きを、その道具で作る。戻り値は打てた点の数。
+ *
+ * 追加の道具は面の 4 隅、手順のある 3 道具は対象を掴んでから点を打つ。座標は
+ * `commitOneFace` が作った面の中心から解く（固定 px で書かない＝増分 1 の教訓）。
+ */
+async function armWithCommittableDraft(
+  page: Page,
+  tool: string,
+  cx: number,
+  cy: number,
+): Promise<string> {
+  if (tool === 'add.area') {
+    await armAddAreaTool(page);
+    const box = await addInputLayerBox(page);
+    await placeVertices(
+      page,
+      squareCorners(box.x + box.width * 0.78, box.y + box.height * 0.28, 40),
+    );
+  } else {
+    await page.getByTestId(`tool-${tool}`).click();
+    await page.mouse.click(cx, cy); // 対象を掴む
+    if (tool === 'edit.knife') {
+      await page.mouse.click(cx - 200, cy);
+      await page.mouse.click(cx + 200, cy);
+    } else {
+      await page.mouse.click(cx - 40, cy - 40);
+      await page.mouse.click(cx + 40, cy - 40);
+      await page.mouse.click(cx, cy + 40);
+    }
+  }
+  const count = page.getByTestId(DRAFT_COUNT_ID[tool]!);
+  await expect(count).not.toHaveText('0');
+  return (await count.textContent()) ?? '';
+}
+
+test.describe('手直し 3 回目 (1) — 板が出ているあいだ、道具の打鍵は Escape だけが通る', () => {
+  test('4 道具 × 持ち替え・鍵 で、板の中の Ctrl+Z / Enter / Delete が下書きに届かない', async () => {
+    // **旧版の壊れ方**: 各道具の keydown は **Escape のときだけ**板を見ていた。実測で
+    // 4 道具 × 3 理由の 12 通りすべて、板の中の `Ctrl+Z` が頂点を 1 つ減らし
+    // （面 3→2・分断線 2→1・輪郭 3→2・穴あけ 3→2）、面の道具は `Enter` で形が確定して
+    // 素性入力へ進んだ ―― しかも状態行は「『元に戻す』はいま使えません。確認に答えてから、
+    // もう一度押してください。」と言う。**画面が嘘をつき、［続ける］でも減った点は戻らない。**
+    //
+    // **わざと壊すなら**: `confirmBlocksToolKey` の関門を道具の keydown の入口から外す。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      for (const tool of ['add.area', 'edit.knife', 'edit.ring', 'edit.drill'] as const) {
+        for (const reason of ['tool', 'lock'] as const) {
+          await page.getByTestId('tool-edit.select').click();
+          await answerDraftDiscardIfAsked(page, 'yes');
+          const before = await armWithCommittableDraft(page, tool, cx, cy);
+
+          if (reason === 'tool') await page.getByTestId('tool-edit.move').click();
+          else await page.getByTestId('mode-view').click();
+
+          const prefix = DISCARD_PREFIX[tool]!;
+          const confirm = page.getByTestId(`${prefix}-confirm`);
+          await expect(confirm, `${tool} / ${reason} で板が出ない`).toBeVisible();
+
+          for (const key of ['Control+z', 'Enter', 'Delete', 'Backspace']) {
+            await page.keyboard.press(key);
+            await expect(
+              page.getByTestId(DRAFT_COUNT_ID[tool]!),
+              `${tool} / ${reason} で板の中の ${key} が下書きに届いた`,
+            ).toHaveText(before);
+            await expect(confirm, `${tool} / ${reason} の ${key} で板が閉じた`).toBeVisible();
+            // 面の道具は Enter で形が確定して素性入力へ進んでいた ―― 進んでいないこと。
+            await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+          }
+
+          // ［続ける］で戻ったら、打った点はそのまま残っている。
+          await page.getByTestId(`${prefix}-no`).click();
+          await expect(confirm).toHaveCount(0);
+          await expect(page.getByTestId(DRAFT_COUNT_ID[tool]!)).toHaveText(before);
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 3 回目 (2) — ［続ける］の後も板の中も、帯は元の道具のもの', () => {
+  test('分ける・輪郭・穴あけ × 選ぶ・鍵 で、対象欄・次の一手・確定欄が戻る', async () => {
+    // **旧版の壊れ方**: 板を出すときに元の道具へ戻しても、そのあいだに次の持ち主
+    // （`ToolOptionBar`）が帯を持ち直して中身を空へ戻していた。元の道具は自分の状態が
+    // 変わっていないので押し直さず、**道具も点も残っているのに対象欄が
+    // 「（選んでいません）」のまま固まった**（1.5 秒後も、1 点足しても戻らない）。
+    //
+    // **わざと壊すなら**: `option-bar.ts` の `subscribeOwner` の報せを止めるか、
+    // 押し込みの effect の依存から `optionBarEpoch` を外す。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      const target = page.getByTestId('option-bar-target');
+      const nextStep = page.getByTestId('option-bar-next-step');
+      const commit = page.getByTestId('option-bar-commit');
+
+      for (const tool of ['edit.knife', 'edit.ring', 'edit.drill'] as const) {
+        for (const reason of ['tool', 'lock'] as const) {
+          await page.getByTestId('tool-edit.select').click();
+          await answerDraftDiscardIfAsked(page, 'yes');
+          await armWithCommittableDraft(page, tool, cx, cy);
+
+          const beforeTarget = (await target.textContent()) ?? '';
+          const beforeNext = (await nextStep.textContent()) ?? '';
+          const beforeCommit = (await commit.textContent()) ?? '';
+          expect(beforeTarget, `${tool} の対象欄が最初から空`).not.toBe('（選んでいません）');
+
+          if (reason === 'tool') await page.getByTestId('tool-edit.select').click();
+          else await page.getByTestId('mode-view').click();
+
+          const prefix = DISCARD_PREFIX[tool]!;
+          await expect(page.getByTestId(`${prefix}-confirm`)).toBeVisible();
+
+          // ---- 板が出ているあいだも帯は **元の道具のもの**である。
+          await expect(target, `${tool} / ${reason}: 板中の対象欄が選ぶのもの`).toHaveText(
+            beforeTarget,
+          );
+          await expect(nextStep, `${tool} / ${reason}: 板中の次の一手が選ぶのもの`).toHaveText(
+            beforeNext,
+          );
+          await expect(commit, `${tool} / ${reason}: 板中の確定欄が選ぶのもの`).toHaveText(
+            beforeCommit,
+          );
+
+          // ---- ［続ける］の後も同じ。
+          await page.getByTestId(`${prefix}-no`).click();
+          await expect(page.getByTestId(`${prefix}-confirm`)).toHaveCount(0);
+          await expect(target, `${tool} / ${reason}: ［続ける］の後に対象欄が戻らない`).toHaveText(
+            beforeTarget,
+          );
+          await expect(nextStep).toHaveText(beforeNext);
+          await expect(commit).toHaveText(beforeCommit);
+          await expect(page.getByTestId('app-active-tool')).toHaveText(tool);
+        }
+      }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('手直し 3 回目 (3)(4) — 素性入力の局面は、聞き方も文も道具で揃う', () => {
+  test('穴あけも素性入力中の持ち替え・鍵では聞かない（ナイフと同じ）', async () => {
+    // **旧版の壊れ方**: 穴あけの `hasCommittableDraft` が `region.length >= 3` で、
+    // `region` は素性を入力している局面でも確定済みの形として生きている。だから
+    // **穴あけだけ**素性入力中の持ち替え・鍵で板が出た（ナイフは出ない）。設計書 §D.4.1 の
+    // 「聞くのは点を打っている最中だけ」と、配下 README の B-3 に合わせる。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      for (const tool of ['edit.knife', 'edit.drill'] as const) {
+        await page.getByTestId('tool-edit.select').click();
+        await answerDraftDiscardIfAsked(page, 'yes');
+        await page.getByTestId(`tool-${tool}`).click();
+        await page.mouse.click(cx, cy);
+        if (tool === 'edit.knife') {
+          await page.mouse.click(cx - 200, cy);
+          await page.mouse.click(cx + 200, cy);
+          await page.getByTestId('knife-confirm-cut').click();
+          await page.getByTestId('knife-confirm-inheritor').click();
+        } else {
+          await page.mouse.click(cx - 40, cy - 40);
+          await page.mouse.click(cx + 40, cy - 40);
+          await page.mouse.click(cx, cy + 40);
+          await page.getByTestId('drill-confirm').click();
+        }
+        await expect(page.getByTestId('add-name')).toBeVisible();
+
+        // 素性を入力している局面での持ち替え ―― **聞かずに畳む**（アプリ自身の再武装が
+        // 確認待ちで止まらないようにするための限定。両方の道具で同じ）。
+        await page.getByTestId('tool-edit.select').click();
+        await expect(
+          page.getByTestId(`${DISCARD_PREFIX[tool]!}-confirm`),
+          `${tool} が素性入力中の持ち替えで聞いた`,
+        ).toHaveCount(0);
+        await expect(page.getByTestId('add-property-form')).toHaveCount(0);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('素性入力中の Escape で出る板の文は、分けると穴あけで同じ', async () => {
+    // 局面が同じなら同じ文（設計書 §H の文言の作法）。旧版はナイフが「打ちかけの入力が
+    // あります。」、穴あけが「描きかけの頂点が 3 個あります。」で、穴あけだけ **失われる
+    // のが頂点だと読める**文になっていた（実際に失われるのは打ちかけの名前である）。
+    const { app, page } = await launchApp();
+    try {
+      const { cx, cy } = await commitOneFace(page);
+      const messages: string[] = [];
+      for (const tool of ['edit.knife', 'edit.drill'] as const) {
+        await page.getByTestId('tool-edit.select').click();
+        await answerDraftDiscardIfAsked(page, 'yes');
+        await page.getByTestId(`tool-${tool}`).click();
+        await page.mouse.click(cx, cy);
+        if (tool === 'edit.knife') {
+          await page.mouse.click(cx - 200, cy);
+          await page.mouse.click(cx + 200, cy);
+          await page.getByTestId('knife-confirm-cut').click();
+          await page.getByTestId('knife-confirm-inheritor').click();
+        } else {
+          await page.mouse.click(cx - 40, cy - 40);
+          await page.mouse.click(cx + 40, cy - 40);
+          await page.mouse.click(cx, cy + 40);
+          await page.getByTestId('drill-confirm').click();
+        }
+        await page.getByTestId('add-name').fill('打ちかけ');
+        await page.keyboard.press('Escape');
+        const confirm = page.getByTestId(`${DISCARD_PREFIX[tool]!}-confirm`);
+        await expect(confirm).toBeVisible();
+        messages.push(((await confirm.textContent()) ?? '').trim());
+        await page.getByTestId(`${DISCARD_PREFIX[tool]!}-yes`).click();
+        await expect(confirm).toHaveCount(0);
+      }
+      expect(messages[0], '素性入力の板の文が道具で違う').toBe(messages[1]);
+      expect(messages[0]).toContain('打ちかけの入力があります');
     } finally {
       await app.close();
     }

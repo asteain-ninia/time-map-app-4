@@ -669,6 +669,38 @@ describe('KnifeToolController — 一時状態全経路破棄 (受け入れ基�
     h.unmount();
   });
 
+  it('板が出ているあいだ、道具の打鍵は Escape 以外どれも分断線に届かない', () => {
+    // **手直し 3 回目。** 実測で 4 道具 × 3 理由の 12 通りすべて、板の中の `Ctrl+Z` が
+    // 点を 1 つ減らした（分断線 2→1）のに状態行は「いま使えません」と言っていた。
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    act(() => {
+      h.store.getState().setActiveTool(TOOL_ID.EditSelect);
+    });
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+
+    for (const key of [
+      { key: 'z', ctrlKey: true },
+      { key: 'Enter' },
+      { key: 'Backspace' },
+      { key: 'Delete' },
+    ]) {
+      act(() => {
+        fireEvent.keyDown(window, key);
+      });
+      expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+      expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    }
+
+    act(() => fireEvent.click(screen.getByTestId('knife-draft-discard-no')));
+    expect(screen.getByTestId('knife-cut-count').textContent).toBe('2');
+    h.unmount();
+  });
+
   it('確定できる点数の分断線は、道具の持ち替えでも確認なしには捨てない（§D.4.1 の 3）', () => {
     // **増分 5 の手直し 2 回目**。旧版は `activeTool` が外れた瞬間に `resetForSwitch()` を
     // 呼んでいたので、分断線 2 点が黙って消えた。いまは **切替先を構えないまま**聞く。

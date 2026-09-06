@@ -419,3 +419,47 @@ describe('OptionBarStore.epoch — 遅れて走った後片付けが次の持ち
     expect(store.get().target.name).toBe('ハルナ君主国（末端地物）');
   });
 });
+
+describe('OptionBarStore — 書いた人の印（手直し 3 回目）', () => {
+  // **代だけでは足りなかった。** 押し込む側が代の変化で押し直すようになった結果、
+  // 押し直した側は新しい代を覚えるので、そのあと降りたときの後片付けが **もう古くなく**、
+  // 次の持ち主が入れた中身をまた踏み消した（実測: 分ける → 選ぶ で対象欄が空になった）。
+  it('対象欄: あいだに別の人が書いていたら、後片付けは空振りする', () => {
+    const store = new OptionBarStore();
+    const tool = {};
+    store.setTarget('手順 2/4', 'アアウェン州', tool);
+    // 別の人（`ToolOptionBar`）が印なしで書く。
+    store.setTarget(null, 'ハルナ君主国（末端地物）');
+    store.clearTargetIfMine(tool);
+    expect(store.get().target.name).toBe('ハルナ君主国（末端地物）');
+  });
+
+  it('対象欄: 自分が最後に書いたままなら、後片付けは効く', () => {
+    const store = new OptionBarStore();
+    const tool = {};
+    store.setTarget('手順 2/4', 'アアウェン州', tool);
+    store.clearTargetIfMine(tool);
+    expect(store.get().target).toEqual({ stage: null, name: null });
+  });
+
+  it('次の一手と確定欄も同じ印で守る', () => {
+    const store = new OptionBarStore();
+    const tool = {};
+    store.setNextStep('分断線を引いてください', [], tool);
+    store.setCommit([{ id: 'c', label: '確定', onClick: () => undefined }], tool);
+    // 別の人が書いたら、前の人の後片付けは空振りする。
+    store.setNextStep('地図か地物一覧から選ぶ');
+    store.clearChromeIfMine(tool);
+    expect(store.get().nextStep).toBe('地図か地物一覧から選ぶ');
+  });
+
+  it('reset は印も捨てる（遅れて走った後片付けが「自分のもの」と誤判定しない）', () => {
+    const store = new OptionBarStore();
+    const tool = {};
+    store.setTarget('手順 2/4', 'アアウェン州', tool);
+    store.reset();
+    store.setTarget(null, '別の持ち主が入れた名前');
+    store.clearTargetIfMine(tool);
+    expect(store.get().target.name).toBe('別の持ち主が入れた名前');
+  });
+});
