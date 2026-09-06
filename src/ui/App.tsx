@@ -910,6 +910,10 @@ export function App(): JSX.Element {
     // `ports.dispose()`（描画側）より前」という唯一の順序の制約は保たれている。
     return () => {
       setMapReady(false);
+      // 頂点の候補一覧の口も一緒に外す（教訓 5.2: 一時状態は全経路で捨てる）。
+      // 残すと、地図が載っていないのに古いマウントの選択書き込みが生きてしまう。
+      selectVertexRef.current = null;
+      vertexCandidateStore.clear();
       input.dispose();
       render.dispose();
       observation.dispose();
@@ -918,7 +922,8 @@ export function App(): JSX.Element {
     // therefore never changes identity: had it stayed a useMemo, a discarded cache would
     // have re-created it WITHOUT re-mounting the map, leaving these listeners pushing into
     // the abandoned store while the readout subscribed to the new one.
-  }, [store, cursorPositionStore]);
+    // `vertexCandidateStore` も同じ理由で並べる（ref 由来なので同一性は動かない）。
+  }, [store, cursorPositionStore, vertexCandidateStore]);
 
   // Bridge the {@link MapContextMenu} mount's open-setter to the imperative live
   // context-menu port (assigned to the opener ref the port reads). Stable so the
