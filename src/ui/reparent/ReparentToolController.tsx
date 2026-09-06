@@ -348,16 +348,25 @@ export function ReparentToolController<S>(
    * 候補として選べるか（板のツリーが使う）。**確定と同じ述語**（`isLegalNewParent`）を
    * 洗い直した対象それぞれに掛ける（教訓 5.26）。null なら選べる。
    */
+  //
+  // **森は 1 度だけ組む**（`useMemo`）。板は候補の行ごとにこれを呼ぶので、行ごとに
+  // 組み直すと 775 地物 × 8 行ぶんの走査になる（実データでは体感できる遅さになる）。
+  // 板が開いているあいだ地物は変わらない（背面の覆いで触れない）ので、開いた時点の
+  // 森で足りる。
+  const optionsForest = useMemo(
+    () => (optionsChoice === null ? null : buildForest(resolveFeatures())),
+    [optionsChoice, resolveFeatures],
+  );
   const eligibility = useCallback(
     (candidateId: FeatureId): string | null => {
-      const forest = buildForest(resolveFeatures());
+      const forest = optionsForest ?? buildForest(resolveFeatures());
       for (const leafId of reparent.plan.leafIds) {
         const verdict = isLegalNewParent(forest, leafId, candidateId);
         if (!verdict.ok) return affiliationRejectMessage(verdict.reason);
       }
       return null;
     },
-    [resolveFeatures, reparent.plan],
+    [optionsForest, resolveFeatures, reparent.plan],
   );
 
   const confirmFromDialog = useCallback(

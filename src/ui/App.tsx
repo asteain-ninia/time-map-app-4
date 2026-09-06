@@ -148,7 +148,7 @@ import {
   type History,
   type HistoryStep,
 } from '../domain/command/history';
-import { createCompositeCommand, type Command } from '../domain/command/index';
+import type { Command } from '../domain/command/index';
 import { createRedoPreferenceRegistry } from './state/redo-preference';
 import { graftLiveBaseMap, reconcileHistoryOnExternalDomainSwap } from './state/history-reconcile';
 import {
@@ -205,13 +205,7 @@ import { VertexCandidateStore } from './map/vertex-candidates';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
-import {
-  AFFILIATION_STATUS,
-  buildAffiliationProposalForTargets,
-  parentExisting,
-  resolveTargetLeaves,
-} from '../domain/affiliation/index';
-import { toAffiliationEditProposal } from '../domain/editing/apply-proposal';
+import { resolveTargetLeaves } from '../domain/affiliation/index';
 import { createDeletionState, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -2326,71 +2320,36 @@ export function App(): JSX.Element {
   // (全コミット経路の確認). The property / interval / edit-drag paths, whose commit
   // time CAN differ from the view time, thread their own explicit times instead.
   /**
-   * **B39 の根治**（`docs/現状.md` の B39 / FR-35 / FR-37。増分 7 の中身 12）。
+   * **B39 は根治を試して、いったん戻した**（`docs/現状.md` の B39。増分 7）。
    *
-   * **何が起きていたか**: 面（自分の形を持つ末端）を上位領域に選んで子を保存すると、
-   * その面は「形を持ったまま子を持つ」状態（`leaf-with-children`）になる。保存形式の
-   * 形状保持規則はこれを不整合とみなすので、**入れ子を作るたびに、次に開いたときに
-   * 修復ダイアログが出て**いた。
+   * **試したこと**: 追加の確定のあとに、所属変更と同じ経路（直轄領の生成 → 末端→集約の
+   * 遷移）を 1 度だけ通し、追加と遷移を 1 つの取り消し単位に畳む ―― 実装計画が
+   * 「筋としては正しい」と書いていた形である。実装は動き、`leaf-with-children` は
+   * 消え、開き直しの修復も出なくなった。
    *
-   * **筋の通った直し方は「子を確定した時点で親を集約化する」**（FR-35 の末端→集約の
-   * 遷移を確定に含める）である。その変換はドメインに既にある ―― 所属変更が
-   * 「形を持つ末端が子を得た」ときに走らせている **同じ経路**（`generateDirectDomains`
-   * → 直轄領の生成 → `syncAggregateChildIds`）で、追加のあとに 1 度だけ通す。
+   * **それでも戻した理由**: **2 人目以降の入れ子が 1 段ずつ深くなる。** 1 人目を確定した
+   * 時点で親は集約になり、親の「分け残し（直轄領）」という **新しい面**が生まれる。その
+   * あと同じ親の中に 2 人目を描くと、いちばん内側にある面は **その分け残し**なので、
+   * B33 の入れ子の既定は分け残しを指す ―― 確定するとまた分け残しが生まれ、
+   * 「親 直轄領 直轄領」の鎖ができる。実アプリで確認した（`snap-share-fixes.spec.ts` の
+   * B2 が、2 人目の既定が親ではなく新しく生まれた面になることで落ちた）。
    *
-   * **1 つの取り消し単位にする**（FR-73 / FR-94）。追加と遷移を別々の取り消しにすると、
-   * 1 回目の Ctrl+Z で「親だけが末端に戻り、子は残る」という **保存できない中間状態**が
-   * 画面に出てしまう。複合コマンドに畳んで 1 手で戻す。
+   * **いまの挙動（修復で受ける）のほうが結果は正しい。** 読み込み時の修復は **子を全部
+   * 足し終えたあと 1 回だけ**遷移させるので、親 →［子1, 子2, 子3, 直轄領］という平らな
+   * 形になる。毎回の確定で遷移させると、その「1 回だけ」が「N 回」になる。
    *
-   * 断られたときは **追加だけを通す**（元の挙動のまま）―― 追加そのものを巻き添えで
-   * 失わせない。修復ダイアログは従来どおり受け皿として残っている。
+   * **残っている問いは「2 人目以降をどう扱うか」**である（分け残しの下に入れ子にするのか、
+   * 分け残しを分けるのか）。分け残しを分けるのは実質「分ける（ナイフ）」の操作なので、
+   * **分割の UI を作り直す増分 8B** で決めるのが筋である。`docs/現状.md` の B39 に
+   * この分析を書いた。
    */
-  const composeAddWithParentPromotion = useCallback(
-    (addCommand: Command<DomainRoot>, newFeatureId: FeatureId, at: TimePoint): Command<DomainRoot> => {
-      const afterAdd = addCommand.execute(store.getState().domain).state;
-      const features = featuresAt(afterAdd, at);
-      const added = features.find((f) => f.id === newFeatureId);
-      const parentId = added?.parentId;
-      if (parentId === undefined) return addCommand;
-      const parent = features.find((f) => f.id === parentId);
-      // 集約なら遷移は要らない（形を持たないので分け残しも無い）。点・線は親になれない。
-      if (parent === undefined || parent.kind !== FEATURE_KIND.Leaf) return addCommand;
-      const built = buildAffiliationProposalForTargets(
-        features,
-        [newFeatureId],
-        parentExisting(parentId),
-        {
-          idState: createIdGeneratorState(),
-          now: () => Date.now(),
-          vertexStore: verticesAt(afterAdd, at),
-        },
-      );
-      if (built.status === AFFILIATION_STATUS.Rejected) return addCommand;
-      const binding = createLiveAffiliationBinding({ getRoot: () => afterAdd });
-      const processed = binding.startProcess(toAffiliationEditProposal(built.proposal, at));
-      if (processed.status !== PROCESS_STATUS.Committed) return addCommand;
-      return createCompositeCommand(UI_COMMAND_LABEL.Add, [addCommand, processed.command]);
-    },
-    [store],
-  );
-
   const onAddCommitted = useCallback(
     (
       result: ProcessResult<DomainRoot>,
       newFeatureId: FeatureId,
       committed?: { readonly sharedVertexCount: number },
     ) => {
-      if (result.status === PROCESS_STATUS.Committed) {
-        // B39: 親が形を持つ末端なら、末端→集約の遷移を **同じ取り消し単位**に畳む。
-        const at = store.getState().currentTime;
-        recordCommand(
-          composeAddWithParentPromotion(result.command, newFeatureId, at),
-          { featureId: newFeatureId },
-          at,
-        );
-      } else {
-        recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
-      }
+      recordCommit(result, { featureId: newFeatureId }, store.getState().currentTime);
       // 増分 3: **吸着して境界を共有したことを、状態行の「直前の結果」に日本語で出す**
       // （設計書 §H.5。成功を一度も知らせない＝ C6 への手当ての 1 件）。`recordCommit` が
       // 出す「地物の追加を行いました」を、共有したときだけ上書きする。
@@ -2399,7 +2358,7 @@ export function App(): JSX.Element {
         announceResult(APP_STRINGS.addedWithSharedVertices(shared));
       }
     },
-    [recordCommit, recordCommand, store, announceResult, composeAddWithParentPromotion],
+    [recordCommit, store, announceResult],
   );
 
   // KNIFE COMMIT (C3 — 教訓 5.11 / U12): record as one history unit and promote the

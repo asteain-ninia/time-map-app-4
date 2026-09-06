@@ -41,6 +41,17 @@ export function useModalKeydown(
     (e: KeyboardEvent<HTMLElement>) => {
       if (e.key === 'Escape') {
         e.preventDefault();
+        // **Escape はこの板のものである**（2026-09-07、増分 7。教訓 5.70 / 5.75）。
+        //
+        // 外へ漏らすと、**同じ 1 回の打鍵で板が閉じ、そのうえ背後の階段も 1 段下りる**。
+        // 増分 7 の 3 択の板で実際に起きた ―― 板を閉じたのと同時に道具の Escape の
+        // 階段が走り、掴んでいた対象まで外れた（板を閉じただけのはずが 2 段動く）。
+        //
+        // React の合成イベントの `stopPropagation` は native の伝播も止めるので、
+        // 根の外（`window` / `document` に張った大域の関門）へは届かなくなる。
+        // 板が開いているあいだ打鍵を持つのは板だけ、という規約を **共有の 1 本**で
+        // 守る（板ごとに書くと、次に板を足した人が必ず 1 つ落とす）。
+        e.stopPropagation();
         onClose();
         return;
       }
