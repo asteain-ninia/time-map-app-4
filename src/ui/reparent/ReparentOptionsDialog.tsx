@@ -19,17 +19,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { useModalKeydown } from '../a11y/index';
+import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import {
   CREATE_TERMINAL,
   parentCreateWithTerminal,
   parentExisting,
   parentNone,
+  gainingParentId,
   previewDirectDomain,
   type AffiliationTargetPlan,
   type ParentDecision,
 } from '../../domain/affiliation/index';
-import { featureDisplayName, type Feature } from '../../domain/feature';
+import { FEATURE_KIND, featureDisplayName, type Feature } from '../../domain/feature';
+import { buildForest, directChildIds } from '../../domain/hierarchy/forest';
 import type { FeatureId } from '../../domain/ids';
 
 import { ParentTreePicker } from './ParentTreePicker';
@@ -71,6 +73,14 @@ export interface ReparentOptionsDialogProps {
   ) => void;
   /** 板を閉じる（選んだ地物は保つ）。 */
   readonly onCancel: () => void;
+  /**
+   * 対象のうち **自分の歴史をまだ持っていない**件数（司令塔の決定 (1)）。この操作で
+   * 自分の系列が起きるので、予告にそう書く。ホストが根を見て数えて渡す（板は根を
+   * 持たないので、ここで数え直さない＝教訓 5.29）。
+   */
+  readonly materializingCount?: number;
+  /** 「板が出ている」と名乗る口（司令塔の決定 (13)）。 */
+  readonly onModalChange?: (open: boolean) => void;
 }
 
 export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.Element {
@@ -85,8 +95,12 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     committing,
     onConfirm,
     onCancel,
+    onModalChange,
   } = props;
+  const materializingCount = props.materializingCount ?? 0;
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 出ている間は自分で名乗る（決定 (13)）。
+  useModalRegistration(onModalChange, true);
 
   const [choice, setChoice] = useState<ReparentChoice>(initialChoice);
   const [existingParentId, setExistingParentId] = useState<FeatureId | null>(initialParentId);
@@ -96,6 +110,13 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
   const [terminalParentId, setTerminalParentId] = useState<FeatureId | null>(null);
   /** 分け残しの名前の上書き（空＝既定名称を使う）。 */
   const [directDomainName, setDirectDomainName] = useState('');
+
+  // **外から来た枝の要求に追従する**（反証 1-6）。旧版は `initialChoice` を
+  // `useState` の初期値にしか使っていなかったので、板が開いたまま素性欄の別のボタンを
+  // 押しても枝が変わらず、「新しく作る」を押したのに「既存から選ぶ」のままだった。
+  useEffect(() => {
+    setChoice(initialChoice);
+  }, [initialChoice]);
 
   // Esc で閉じ、Tab は板の中を回る（背面へ抜けない）。ほかの 6 つの板と同じ共有の罠。
   const onKeyDown = useModalKeydown(dialogRef, onCancel);
@@ -146,7 +167,36 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     [features, decision],
   );
 
-  /** 予告文（設計書 §E.1 の V6・V7・V8）。 */
+  /**
+   * この操作で **子を全部失って自動で消えるまとめ役**（FR-35 の連鎖消滅。反証 2-4）。
+   * 解体（3 択の「最上位へ」）はこれが主経路なので、予告に出ないと「まとめ役が黙って
+   * 消えた」に見える。`features` と対象集合だけで決まるので板の中で数える。
+   */
+  const autoRemovedNames = useMemo<readonly string[]>(() => {
+    const forest = buildForest(features);
+    const targets = new Set(plan.leafIds);
+    const gaining = decision === null ? undefined : gainingParentId(decision);
+    const names: string[] = [];
+    for (const f of features) {
+      if (f.kind !== FEATURE_KIND.Aggregate) continue;
+      if (f.id === gaining) continue;
+      const children = directChildIds(forest, f.id);
+      if (children.length === 0) continue;
+      if (children.every((c) => targets.has(c))) names.push(featureDisplayName(f));
+    }
+    return names;
+  }, [features, plan.leafIds, decision]);
+
+  /** 選んでいる行き先が候補として使えない理由（Fable #6: 板の本文に出す）。 */
+  const ineligibleLine = useMemo<string | null>(() => {
+    const pick = choice === REPARENT_CHOICE.Existing ? existingParentId : terminalParentId;
+    if (pick === null) return null;
+    const reason = eligibility(pick);
+    if (reason === null) return null;
+    return REPARENT_STRINGS.previewIneligible(nameOf(pick) ?? '', reason);
+  }, [choice, existingParentId, terminalParentId, eligibility, nameOf]);
+
+  /** 予告文（設計書 §E.1 の V6・V7・V8。反証 2-3〜2-5 / Fable #2 で実際の増え方へ合わせた）。 */
   const previewLines = useMemo<readonly string[]>(() => {
     const lines: string[] = [];
     const count = plan.leafIds.length;
@@ -168,9 +218,44 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     if (missing > 0) lines.push(REPARENT_STRINGS.previewDroppedMissing(missing));
     const empty = plan.dropped.filter((d) => d.reason === 'empty-aggregate').length;
     if (empty > 0) lines.push(REPARENT_STRINGS.previewDroppedEmpty(empty));
-    lines.push(REPARENT_STRINGS.previewAnchors(yearLabel));
+    // 決定 (1): まとめ役の錨に居候している対象は、この操作で自分の系列を持つ。
+    if (materializingCount > 0) {
+      lines.push(REPARENT_STRINGS.previewMaterialize(materializingCount));
+    }
+    // 子を全部失って自動で消えるまとめ役（解体の主経路。反証 2-4）。
+    if (autoRemovedNames.length > 0) {
+      lines.push(REPARENT_STRINGS.previewAutoRemoved(autoRemovedNames.join('・')));
+    }
+    // 分け残し（直轄領）が生まれる枝（反証 2-5）。
+    if (directDomain !== null) {
+      lines.push(
+        REPARENT_STRINGS.previewDirectDomain(
+          directDomain.ownerName,
+          directDomainName.trim() === '' ? directDomain.defaultName : directDomainName.trim(),
+        ),
+      );
+    }
+    lines.push(
+      choice === REPARENT_CHOICE.None
+        ? REPARENT_STRINGS.previewAnchorsNone(yearLabel)
+        : choice === REPARENT_CHOICE.Create
+          ? REPARENT_STRINGS.previewAnchorsCreate(yearLabel)
+          : REPARENT_STRINGS.previewAnchorsInto(yearLabel),
+    );
+    lines.push(REPARENT_STRINGS.previewUndo);
     return lines;
-  }, [choice, plan, newName, existingParentId, nameOf, yearLabel]);
+  }, [
+    choice,
+    plan,
+    newName,
+    existingParentId,
+    nameOf,
+    yearLabel,
+    materializingCount,
+    autoRemovedNames,
+    directDomain,
+    directDomainName,
+  ]);
 
   const canConfirm = decision !== null && plan.leafIds.length > 0 && !committing;
 
@@ -197,13 +282,17 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
         data-testid="reparent-options-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label={REPARENT_STRINGS.optionsTitle}
+        aria-label={REPARENT_STRINGS.optionsTitleWithCount(plan.leafIds.length)}
         tabIndex={-1}
         ref={dialogRef}
         onKeyDown={onKeyDown}
       >
         <header className="reparent-options-dialog__header">
-          <h2 className="reparent-options-dialog__title">{REPARENT_STRINGS.optionsTitle}</h2>
+          {/* 件数は **どの枝でも**題に出す（Fable #16）。「既存から選ぶ」で開いたとき
+              だけ件数が読めない、という不揃いを無くす。 */}
+          <h2 className="reparent-options-dialog__title" data-testid="reparent-options-title">
+            {REPARENT_STRINGS.optionsTitleWithCount(plan.leafIds.length)}
+          </h2>
         </header>
         <p className="reparent-options-dialog__hint">{REPARENT_STRINGS.optionsHint}</p>
 
@@ -346,6 +435,18 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
             <li key={`${String(i)}-${line}`}>{line}</li>
           ))}
         </ul>
+
+        {/* 行き先が使えない理由を **板の本文に**出す（Fable #6）。ツリーの行の
+            `title` だけだと、マウスを載せないと読めない。 */}
+        {ineligibleLine !== null && (
+          <p
+            className="reparent-options-dialog__message"
+            role="alert"
+            data-testid="reparent-options-ineligible"
+          >
+            {ineligibleLine}
+          </p>
+        )}
 
         {message !== null && (
           <p className="reparent-options-dialog__message" role="alert" data-testid="reparent-options-message">

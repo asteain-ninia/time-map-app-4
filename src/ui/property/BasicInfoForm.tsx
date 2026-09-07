@@ -113,6 +113,12 @@ export interface BasicInfoFormProps {
   readonly onEndHere?: () => void;
   /** 入口 A のボタンの文言（「1500年に終わったことにする」）。 */
   readonly endHereLabel?: string;
+  /**
+   * 既に終わりが打たれている年（司令塔の決定 (12)）。渡されたときだけ
+   * 「○○年に終わっています」の状態行を出す。打たれていなければ渡さない
+   * （値を捏造しない＝honest absence）。
+   */
+  readonly endedYearLabel?: string;
   /** 入口 A を押せない理由（自分の歴史を持たない地物など）。押せるなら `null`。 */
   readonly endHereDisabledReason?: string | null;
 }
@@ -240,10 +246,10 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         形で、内容幅 264px に「ラベル 64 ＋ 入力 200」と 3 つのボタンを同居させると
         物理的に入らない。ボタン行は 88＋88＋80 ＝ 256px で収まる。
 
-        **3 ボタンは増分 7 まで無効**（§H.5 の作法）。所属変更は「押した瞬間に手順へ
-        入る」操作で、手順そのもの（確認ダイアログ・進行表示・直轄領の名前入力）は
-        増分 7 で作る。**押せるのに動かない部品を作らない**ので、いまは押せなくして
-        理由を添える。
+        **3 ボタンは手順の配線が揃っているときだけ有効**（§H.5 の作法）。所属を変えるのは
+        「押した瞬間に手順へ入る」操作で、手順そのもの（3 択の板・進行表示・分け残しの
+        名前入力）は合成ルートが繋ぐ。**押せるのに動かない部品を作らない**ので、繋がって
+        いないホストでは押せなくして理由を添える。
       */}
       {parentName !== undefined && (
         <div className="basic-info__parent" data-testid="parent-row">
@@ -350,6 +356,13 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           {endHereReason !== null && (
             <p className="basic-info__end-here-reason" data-testid="end-here-reason">
               {endHereReason}
+            </p>
+          )}
+          {/* **終わっている状態を読める形にする**（司令塔の決定 (12)）。押したあと
+              「終わったのかどうか」が素性欄のどこにも出ていなかった。 */}
+          {props.endedYearLabel !== undefined && (
+            <p className="basic-info__end-here-state" data-testid="end-here-state">
+              {PROPERTY_STRINGS.endHereState(props.endedYearLabel)}
             </p>
           )}
         </div>

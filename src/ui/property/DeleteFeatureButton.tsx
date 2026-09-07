@@ -71,6 +71,11 @@ export interface DeleteFeatureButtonProps {
    * 省略した呼び出し側（薄い検査台）では、名前だけを出す従来の確認へ落ちる。
    */
   readonly resolveImpact?: (() => DeleteImpactView) | undefined;
+  /**
+   * 「板が出ている」と名乗る口（司令塔の決定 (13)）。渡さないと、確認が出ている間に
+   * Ctrl+Z / Delete が背後へ抜ける（Fable #1）。
+   */
+  readonly onModalChange?: (open: boolean) => void;
 }
 
 /** Read the feature id out of a feature-bearing target, else null (None → null). */
@@ -146,10 +151,16 @@ export function DeleteFeatureButton(props: DeleteFeatureButtonProps): JSX.Elemen
           note={impact.note}
           onConfirm={confirm}
           onCancel={cancel}
+          {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
         />
       ) : null}
       {confirming && impact === null ? (
-        <DeleteConfirmDialog featureName={featureName} onConfirm={confirm} onCancel={cancel} />
+        <DeleteConfirmDialog
+          featureName={featureName}
+          onConfirm={confirm}
+          onCancel={cancel}
+          {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
+        />
       ) : null}
     </div>
   );

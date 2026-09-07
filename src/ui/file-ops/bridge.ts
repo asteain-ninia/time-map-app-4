@@ -42,6 +42,13 @@ export interface FileOpsHost {
   /** Whether the current project still needs 名前を付けて保存 (no save path yet). */
   readonly needsSaveAs: () => boolean;
   /**
+   * 保存の直前の整合検査（司令塔の決定 (3)）。書こうとしている中身に「開き直すと
+   * 地物が失われる形」（持ち主の居ない系列／消えた親を指す parentId）が混ざって
+   * いれば理由の文を返し、保存を止める。問題が無ければ `null`。
+   * 省略可（検査を持たない試験の宿主は素通りする）。
+   */
+  readonly preSaveBlock?: () => string | null;
+  /**
    * Adopt a successful save (update save path + clear dirty, spec §A 保存後).
    *
    * `origin` は「誰が起こした保存か」（`'manual'` = 利用者の 保存 / 名前を付けて保存、
@@ -141,6 +148,11 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     // save's actual start, not at dispatch time (otherwise a change made between dispatch and
     // turn would be missed).
     const useSaveAs = intent === 'saveAs' || host.needsSaveAs();
+    // 保存の直前の整合検査（司令塔の決定 (3)）: アプリ自身が「開き直すと地物が失われる
+    // ファイル」を書かないようにする。直列化された区間の中、書き出しの直前に見るので、
+    // 待ち行列に並んでいる間に入った編集も見たうえで止められる。
+    const blocked = host.preSaveBlock?.() ?? null;
+    if (blocked !== null) return { kind: SAVE_OUTCOME.WriteFailed, message: blocked };
     const req = host.buildSaveRequest();
     const res: SaveResponse = useSaveAs ? await host.api.saveAs(req) : await host.api.save(req);
     if (res.ok) {

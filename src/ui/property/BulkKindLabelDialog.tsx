@@ -11,7 +11,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { useModalKeydown } from '../a11y/index';
+import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import { useDeferredCommit, type CommitScheduler } from '../shell/useDeferredCommit';
 
 import { PROPERTY_STRINGS } from './messages';
@@ -24,11 +24,15 @@ export interface BulkKindLabelDialogProps {
   readonly onCancel: () => void;
   /** 確定を遅らせる口（検査は同期の実装を差し込む）。 */
   readonly commitScheduler?: CommitScheduler | undefined;
+  /** 「板が出ている」と名乗る口（司令塔の決定 (13)）。 */
+  readonly onModalChange?: (open: boolean) => void;
 }
 
 export function BulkKindLabelDialog(props: BulkKindLabelDialogProps): JSX.Element {
-  const { count, onConfirm, onCancel } = props;
+  const { count, onConfirm, onCancel, onModalChange } = props;
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 出ている間は自分で名乗る（決定 (13)）。
+  useModalRegistration(onModalChange, true);
   const [kindLabel, setKindLabel] = useState('');
   const deferred = useDeferredCommit(
     props.commitScheduler === undefined ? undefined : { schedule: props.commitScheduler },

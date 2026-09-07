@@ -214,10 +214,15 @@ export interface UseReparentToolActions {
    * `directDomainNameOverride` は分け残し（直轄領）の名前の上書き（G-4 / FR-37 must）。
    * 空文字・未指定なら既定名称「<元名> 直轄領」を使う。
    */
+  /**
+   * 確定できたら `true`、断られたら `false`（反証 2-12）。断られたときに板を閉じると
+   * **入力した名前も選んだ行き先も消える**ので、呼び出し側はこの値で「板を畳むか」を
+   * 決める。
+   */
   readonly confirmWith: (
     decision: ParentDecision,
     options?: { readonly directDomainNameOverride?: string },
-  ) => void;
+  ) => boolean;
 }
 
 export type UseReparentTool = UseReparentToolState & UseReparentToolActions;
@@ -405,7 +410,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
       targets: readonly FeatureId[],
       decision: ParentDecision,
       commitOptions?: { readonly directDomainNameOverride?: string },
-    ): void => {
+    ): boolean => {
       const features = resolveFeatures();
       const at = anchorTime();
       // **確定の直前にもう 1 度洗い直す**（増分 7 の中身 2b）。印を付けてから年を動かす・
@@ -414,7 +419,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
       if (fresh.leafIds.length === 0) {
         setMessage(REPARENT_STRINGS.noTargetsLeft);
         setFlow(REPARENT_FLOW.Rejected);
-        return;
+        return false;
       }
       const override = commitOptions?.directDomainNameOverride;
       const result = buildAffiliationProposalForTargets(features, fresh.leafIds, decision, {
@@ -426,7 +431,7 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
       if (result.status === AFFILIATION_STATUS.Rejected) {
         setMessage(rejectionMessage(result));
         setFlow(REPARENT_FLOW.Rejected);
-        return;
+        return false;
       }
 
       const proposal: AffiliationProposal = result.proposal;
@@ -436,15 +441,16 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
         case PROCESS_STATUS.Committed:
           onCommitted?.(processResult, editProposal.snapshot);
           reset(REPARENT_FLOW.PickTarget); // re-arm fresh for another reparent (教訓 5.2).
-          return;
+          return true;
         case PROCESS_STATUS.ConflictsPending:
           setFlow(REPARENT_FLOW.ConflictPaused);
           onConflicts?.(processResult, editProposal);
-          return;
+          // 競合の板が次の一手を持つので、3 択の板は畳んでよい。
+          return true;
         case PROCESS_STATUS.Rejected:
           setMessage(processResult.message);
           setFlow(REPARENT_FLOW.Rejected);
-          return;
+          return false;
       }
     },
     [resolveFeatures, anchorTime, resolveStore, startProcess, onCommitted, onConflicts, reset],
@@ -458,9 +464,9 @@ export function useReparentTool<S>(options: UseReparentToolOptions<S>): UseRepar
     (
       decision: ParentDecision,
       commitOptions?: { readonly directDomainNameOverride?: string },
-    ): void => {
-      if (targetIds.length === 0) return;
-      driveProposal(targetIds, decision, commitOptions);
+    ): boolean => {
+      if (targetIds.length === 0) return false;
+      return driveProposal(targetIds, decision, commitOptions);
     },
     [targetIds, driveProposal],
   );

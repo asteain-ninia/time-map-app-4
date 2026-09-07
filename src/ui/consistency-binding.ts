@@ -73,6 +73,11 @@ import {
   createDeleteFeatureCommand,
   isNoOpDeletion,
 } from '../domain/deletion/index';
+import {
+  materializeOwnSeries,
+  promoteToTopLevelFrom,
+  residentFeatureIds,
+} from '../domain/affiliation/materialize';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -1033,9 +1038,22 @@ export function createDeleteFeatureCommandForRoot(
     readonly historyIndex: number;
     readonly entryIndex: number;
   }
+  // 記録の置き場（司令塔の決定 (1)）: まとめ役を全部の年から消すとき、その錨の中に
+  // 居候している子（自分の系列を持たない下位領域・孫を含む）の記録も一緒に消えて
+  // しまう。実データでは「デーレ共和国を消す→保存→開き直し」で 60 州が丸ごと
+  // 失われた。だから掃除の前に、居候の記録を全部の年ぶん自分の系列へ起こしておく。
+  // 起こした後で掃除が走るので、親を失った子の parentId は掃除が最上位へ戻す
+  // （裁定「子は最上位へ昇格」の実体）。取り消しは構築時の root をそのまま戻すので
+  // 系列の起こしも同じ 1 段で対称に消える。
+  const prepared = materializeOwnSeries(
+    root.histories,
+    residentFeatureIds(root.histories, targetId),
+    calendar,
+  ).histories;
+
   const origins: Origin[] = [];
   const anchors: Anchor[] = [];
-  root.histories.forEach((history, historyIndex) => {
+  prepared.forEach((history, historyIndex) => {
     history.series.entries.forEach((entry, entryIndex) => {
       origins.push({ historyIndex, entryIndex });
       anchors.push(entry.anchor);
@@ -1054,7 +1072,7 @@ export function createDeleteFeatureCommandForRoot(
 
   // Fold the swept anchors back into their originating histories, preserving each
   // entry's start/end (U31 only rewrites the snapshot, never the interval).
-  const rebuiltEntries = root.histories.map((h) => h.series.entries.map((e) => e));
+  const rebuiltEntries = prepared.map((h) => h.series.entries.map((e) => e));
   afterAnchors.forEach((anchor, flatIndex) => {
     const origin = origins[flatIndex];
     if (origin === undefined) return;
@@ -1066,7 +1084,7 @@ export function createDeleteFeatureCommandForRoot(
   });
 
   const histories: FeatureHistory[] = [];
-  root.histories.forEach((history, historyIndex) => {
+  prepared.forEach((history, historyIndex) => {
     const entries = rebuiltEntries[historyIndex];
     if (entries === undefined) return;
     // Drop a history whose every anchor snapshot is now empty: its feature (and
@@ -1092,7 +1110,9 @@ export function createDeleteFeatureCommandForRoot(
   // where nothing disappears), so a deletion would silently report no `deleted`
   // ids and selection would keep the gone feature. We build the swap command with
   // the correct delete result directly (教訓 5.23 symmetric execute/undo).
-  const baselineIds = new Set<FeatureId>(root.histories.map((h) => h.featureId));
+  // 母集合は「起こした後」の histories。居候から独立した子は消えたのではなく生き残る
+  // ので、baseline に入れておかないと deleted と誤って報告され選択が外れる。
+  const baselineIds = new Set<FeatureId>(prepared.map((h) => h.featureId));
   const finalIds = new Set<FeatureId>(histories.map((h) => h.featureId));
   const deleted = new Set<DomainId>();
   const survived = new Set<DomainId>();
@@ -1188,8 +1208,22 @@ export function createAnchorIntervalCommandForRoot(
   root: DomainRoot,
   intent: AnchorIntervalEditIntent,
 ): AnchorIntervalCommandResult {
-  const index = root.histories.findIndex((h) => h.featureId === intent.featureId);
-  const history = index >= 0 ? root.histories[index] : undefined;
+  // 記録の置き場（司令塔の決定 (2)）: まとめ役を「この年に終わったことにする」と、
+  // その錨に居候している子は道連れに消える。子は道連れにせず、その年から最上位として
+  // 続くのが所有者の裁定（子は最上位へ昇格）。だから終わらせる前に、居候の記録を
+  // 全部の年ぶん自分の系列へ起こし、終わる年から parentId を外す。
+  const endTime =
+    intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null ? intent.newEnd : null;
+  const promoted: readonly FeatureId[] =
+    endTime === null ? [] : residentFeatureIds(root.histories, intent.featureId);
+  let base: readonly FeatureHistory[] = root.histories;
+  if (endTime !== null && promoted.length > 0) {
+    base = materializeOwnSeries(base, promoted, calendar).histories;
+    base = promoteToTopLevelFrom(base, promoted, endTime, calendar);
+  }
+
+  const index = base.findIndex((h) => h.featureId === intent.featureId);
+  const history = index >= 0 ? base[index] : undefined;
   if (history === undefined) {
     return { ok: false, reason: { code: 'anchorNotFound', id: intent.anchorId } };
   }
@@ -1198,7 +1232,7 @@ export function createAnchorIntervalCommandForRoot(
   if (!run.ok) return { ok: false, reason: run.reason };
 
   const updatedHistory: FeatureHistory = { featureId: history.featureId, series: run.series };
-  const histories = root.histories.map((h, i) => (i === index ? updatedHistory : h));
+  const histories = base.map((h, i) => (i === index ? updatedHistory : h));
   const finalState: DomainRoot = { ...root, histories };
 
   // The feature's identity is unchanged — only its existence interval moved — so it
@@ -1206,7 +1240,7 @@ export function createAnchorIntervalCommandForRoot(
   // feature whose start moved past the current time will be dropped by the existence
   // re-validation funnel, exactly as a time move would, 教訓 5.11). Symmetric execute /
   // undo (教訓 5.23): the root is immutable so the swap replays deterministically.
-  const survived: ReadonlySet<DomainId> = new Set<DomainId>([intent.featureId]);
+  const survived: ReadonlySet<DomainId> = new Set<DomainId>([intent.featureId, ...promoted]);
   const forward: CommandResult = createCommandResult({ survived });
   const backward: CommandResult = createCommandResult({ survived });
 

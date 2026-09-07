@@ -134,6 +134,12 @@ export interface RingEditToolControllerProps<S> {
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
   /**
+   * 輪郭を消す前の確認（`ring-delete-impact`）が出ていると名乗る口。**別の口にしてある**
+   * のは、上の `onModalChange` が「作図をやめますか」の確認のためのもので、2 つの板が
+   * 同じ口を取り合うと片方が閉じた瞬間にもう片方の名乗りまで消えるからである（決定 (13)）。
+   */
+  readonly onImpactModalChange?: ((open: boolean) => void) | undefined;
+  /**
    * **打ちかけの輪郭を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る。
    */
@@ -606,6 +612,7 @@ export function RingEditToolController<S>(
           同じ 1 つで、**「最後の外周を消すと面ごと消える」を事前に文で**出す。 */}
       {ring.pendingDelete !== null && (
         <ImpactConfirmDialog
+          {...(props.onImpactModalChange ? { onModalChange: props.onImpactModalChange } : {})}
           testIdPrefix="ring-delete-impact"
           title={PROPERTY_STRINGS.ringDeleteTitle(
             ringKindLabel(ring.pendingDelete.ringKind),

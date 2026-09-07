@@ -406,6 +406,12 @@ export function laneDenseAction(
 export interface LaneSegment {
   readonly startPx: number;
   readonly endPx: number;
+  /**
+   * その帯が **終わっているか**（終了が打たれていて、その位置が表示範囲の中にある）。
+   * 終端の印を立てるのに使う（司令塔の決定 (12)：「この年に終わったことにする」を
+   * 押したあと、終端がレーンで見える）。
+   */
+  readonly closed: boolean;
 }
 
 /**
@@ -425,7 +431,9 @@ export function runSegments(
     const startPx = Math.max(0, Math.min(view.pixelLength, rawStart));
     const endPx = Math.max(0, Math.min(view.pixelLength, rawEnd));
     if (endPx <= startPx) continue;
-    out.push({ startPx, endPx });
+    // 「終わっている」帯かどうかを持たせる（司令塔の決定 (12)）。終端の印を
+    // 錨の菱形と区別できる形で立てるために、描く側が必要とする。
+    out.push({ startPx, endPx, closed: run.endDay !== null && rawEnd <= view.pixelLength });
   }
   return out;
 }

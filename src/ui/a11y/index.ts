@@ -5,4 +5,6 @@
 // never a re-inlined copy.
 
 export { useModalKeydown } from './focus-trap';
+export { useModalRegistration } from './useModalRegistration';
+export { useModalChannels, type ModalChannels } from './useModalChannels';
 export { nextTabForArrow } from './tablist';

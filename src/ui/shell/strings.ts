@@ -86,6 +86,9 @@ export const APP_STRINGS = {
   /** 印を付けた／外した（増分 7 / 設計書 §D.5）。 */
   markCount: (count: number): string =>
     count === 0 ? '対象の印を全部外しました。' : `対象 ${String(count)} 件`,
+  /** 時刻を動かしてその年に居なくなった印を外した（Fable #5 / 決定 (10)）。 */
+  markDroppedByTime: (count: number): string =>
+    `この年に居ない ${String(count)} 件の印を外しました。`,
 } as const;
 
 /** Top-level menu titles (ファイル・編集・表示・ツール・ヘルプ, FR-111). */

@@ -110,6 +110,12 @@ export interface ComposeInputArgs {
    */
   readonly hasAnchorAt?: ((featureId: FeatureId) => boolean) | undefined;
   /**
+   * 「この年に終わったことにする」を打てないか（反証 2-9）。素性欄のボタンと同じ
+   * 関数を渡すこと ―― 判定を 2 つ持つと画面ごとに答えが違ってしまう（教訓 5.30）。
+   * 渡さなければ有効のまま出す。
+   */
+  readonly endHereBlocked?: ((featureId: FeatureId) => boolean) | undefined;
+  /**
    * いま印を付けてある地物（`markedFeatures`, 増分 7 / 設計書 §D.5）。渡さなければ
    * 印の項目そのものが出ない（空集合）。
    */
@@ -161,10 +167,20 @@ export function buildComposeInput(args: ComposeInputArgs): ComposeInput {
  */
 export function composeMenuFor(args: ComposeInputArgs): ContextMenuModel | NoMenu {
   const base = buildComposeInput(args);
-  if (args.hasAnchorAt === undefined) return composeContextMenu(base);
+  if (args.hasAnchorAt === undefined && args.endHereBlocked === undefined) {
+    return composeContextMenu(base);
+  }
   // 対象の地物を **組み立てと同じ判定**で解いてから、その年に錳があるかを聞く。
   // こうしないと「押せる項目を押したあとですでに錳がありますと拒否される」になる（GPT#9）。
   const featureId = menuTargetFeatureId(resolveMenuTarget(base));
   if (featureId === null) return composeContextMenu(base);
-  return composeContextMenu({ ...base, hasAnchorAtCurrentTime: args.hasAnchorAt(featureId) });
+  return composeContextMenu({
+    ...base,
+    ...(args.hasAnchorAt === undefined
+      ? {}
+      : { hasAnchorAtCurrentTime: args.hasAnchorAt(featureId) }),
+    ...(args.endHereBlocked === undefined
+      ? {}
+      : { endHereBlocked: args.endHereBlocked(featureId) }),
+  });
 }

@@ -153,6 +153,12 @@ export interface MergeToolControllerProps<S> {
    * **背後で走った**。
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
+   * 一覧で印を付けた地物（`markedFeatures`。増分 7 の手直し F）。**2 件以上あるときは
+   * それが対象になる** ―― 所属変更と同じ入口を結ぶ道具にも開ける。渡さないホストでは
+   * 従来どおり地図クリックだけで対象を拾う。
+   */
+  readonly markedFeatureIds?: readonly FeatureId[] | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -215,6 +221,15 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
   // 編集モード. When that CHANGES, funnel through start / resetForSwitch so no transient
   // target set leaks across the transition. One effect keyed on the boolean.
   const isMergeActive = mode === EDIT_MODE.Edit && activeTool === TOOL_ID.EditMerge;
+
+  // --- 一覧の印を対象として引き継ぐ（増分 7 の手直し F）------------------------
+  //
+  // 所属変更・まとめて種別と同じで、**印は「まとめて片付ける相手」の 1 つの集合**である。
+  // 結ぶ道具だけが読んでいなかったので、一覧で 2 件に印を付けてから結ぶ道具を構えても、
+  // もう 1 度地図で 2 件を拾い直す必要があった。印は道具のものではないので、道具は
+  // 読むだけで触らない（消すのは一覧の側と、確定したとき）。
+  const markedIds = props.markedFeatureIds;
+  const markedKey = markedIds === undefined ? '' : markedIds.join(',');
   const prevActiveRef = useRef<boolean>(false);
   useEffect(() => {
     const prev = prevActiveRef.current;
@@ -227,6 +242,17 @@ export function MergeToolController<S>(props: MergeToolControllerProps<S>): JSX.
     }
     // Key on the active boolean only (start/reset fire exactly on a transition).
   }, [isMergeActive]);
+
+  // 印が 2 件以上あるときだけ引き継ぐ（1 件では結べないので、地図で拾う従来の手順を
+  // 邪魔しない）。印を全部外したら対象も離す（司令塔の決定 (6) と同じ向き）。
+  const mergeSetTargets = merge.setTargets;
+  useEffect(() => {
+    if (!isMergeActive) return;
+    if (markedIds === undefined) return;
+    if (markedIds.length >= 2) mergeSetTargets(markedIds);
+    else if (markedIds.length === 0) mergeSetTargets([]);
+    // markedKey は配列の同一性ではなく中身で見る（一覧は毎回新しい配列を作る）。
+  }, [isMergeActive, markedKey]);
 
   // --- bughunt-review: report the in-progress merge to the host so it suspends the
   // GLOBAL shortcut dispatcher while this session owns the keyboard. The FR-52

@@ -9,10 +9,11 @@
 // 同じである（設計書 §A.3 の「方針中立の UI 契約」）。
 //
 // **いまの裁定は (あ)（掃除して消す）** なので、`judgeDeletion` の判定は **実行を止めず**
-// 「気をつけること」の行として出す（下の注記を読むこと）。
+// 「気をつけること」の行として出す。文も止めない側の言い方（`deleteCautionMessage`）を
+// 使う ―― 押せるボタンの隣に「削除できません」が並ぶのは読めない（司令塔の決定 (7)）。
 
 import type { DeletionImpact } from '../../domain/deletion/index';
-import { DELETE_VERDICT, deleteRejectMessage } from '../../domain/deletion/index';
+import { DELETE_VERDICT, deleteCautionMessage } from '../../domain/deletion/index';
 import type { FeatureId } from '../../domain/ids';
 import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
@@ -21,7 +22,7 @@ import { PROPERTY_STRINGS } from './messages';
 /**
  * 影響ダイアログへ渡す一式（見出し・群・断りの理由・ボタンの文言）。
  *
- * **群は 4 つ**: 一緒に消えるもの／他から参照されているところ／自動で消える地物／
+ * **群は 5 つ**: 一緒に消えるもの／他から参照されているところ／自動で消える地物／
  * 気をつけること。行が 0 本の群は器が出さないので、当てはまらない見出しは画面に出ない。
  */
 export interface DeleteImpactView {
@@ -71,9 +72,14 @@ export function buildDeleteImpactView(input: {
           impact.ownAnchorYears.map((y) => PROPERTY_STRINGS.impactYear(y)).join(' / '),
         );
 
-  const vertexLine = impact.ownsShape
-    ? PROPERTY_STRINGS.impactVertices(impact.vertexCount)
-    : PROPERTY_STRINGS.impactVerticesAggregate;
+  // 頂点は **消えない**（司令塔の決定 (5)）。頂点表には残り、消えるのは「この地物からの
+  // 参照」だけである。だから「一緒に消えるもの」から外して別の群にし、共有している頂点は
+  // 数えない（相手が参照し続けるので、参照が消えるわけではない）。
+  const vertexLines: readonly string[] = !impact.ownsShape
+    ? [PROPERTY_STRINGS.impactVerticesAggregate]
+    : impact.soleVertexCount === 0
+      ? [PROPERTY_STRINGS.impactVerticesAllShared]
+      : [PROPERTY_STRINGS.impactVerticesUnreferenced(impact.soleVertexCount)];
 
   const promotedNames = impact.promotedChildIds
     .map((id) => nameOf(id))
@@ -111,14 +117,19 @@ export function buildDeleteImpactView(input: {
   // 脇に出る ―― 画面は作り直さない（§A.3 の「方針中立の UI 契約」）。
   const caution: readonly string[] =
     impact.verdict.kind === DELETE_VERDICT.Rejected
-      ? [deleteRejectMessage(impact.verdict.reason)]
+      ? [deleteCautionMessage(impact.verdict.reason)]
       : [];
 
   const groups: readonly ImpactGroup[] = [
     {
       testId: 'gone',
       heading: PROPERTY_STRINGS.impactHeadingGone,
-      lines: [anchorLine, vertexLine],
+      lines: [anchorLine],
+    },
+    {
+      testId: 'vertices',
+      heading: PROPERTY_STRINGS.impactHeadingVertices,
+      lines: vertexLines,
     },
     {
       testId: 'referenced',

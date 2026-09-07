@@ -348,6 +348,10 @@ export function useRingEditTool<S>(options: UseRingEditToolOptions<S>): UseRingE
     setDraft(resetDraft());
     setDeleteTargetId(null);
     setMessage(null);
+    // 確認待ちの輪郭削除も捨てる（反証 3-1）。捨て忘れると、道具を持ち替えて戻った
+    // ときに **古い写しのまま**確認が残り、その写しで確定できてしまう（教訓 5.2:
+    // 出口はすべてこの 1 か所を通る、の対象に含める）。
+    setPendingDelete(null);
   }, []);
 
   const start = useCallback(() => {

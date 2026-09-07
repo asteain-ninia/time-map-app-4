@@ -69,6 +69,13 @@ export interface E2eHarnessActions {
       readonly withinOneYear?: number;
     },
   ) => void;
+  /**
+   * **まとめ役 1 件の錨に `childCount` 件の子が居候する**合成データを載せる
+   * （増分 7 の手直し A / 司令塔の決定 (1)(2)）。実データの「デーレ共和国 60 州」と
+   * 同じ形で、記録の置き場（親の錨から子の系列へ写す）が効いているかを画面から
+   * 数えるための投入口である。錨は `years` のぶんだけ並ぶ。所有者: ui/App。
+   */
+  readonly loadSyntheticNested: (childCount: number, years?: readonly number[]) => void;
 }
 
 type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;

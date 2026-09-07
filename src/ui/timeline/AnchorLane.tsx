@@ -230,8 +230,17 @@ export function AnchorLane(props: AnchorLaneProps): JSX.Element {
     // ①存続している期間の細い帯。空白の期間は塗らない（FR-60 の条文どおり）。
     const midY = Math.round(height / 2);
     ctx.fillStyle = colors.bar;
-    for (const seg of runSegments(source, view)) {
+    const segments = runSegments(source, view);
+    for (const seg of segments) {
       ctx.fillRect(seg.startPx, midY - 1, Math.max(1, seg.endPx - seg.startPx), 2);
+    }
+    // ①-b 終端の印（司令塔の決定 (12)）。「この年に終わったことにする」を押したあと、
+    // **どこで終わったのか**がレーンで読めるようにする。錨の菱形とは形を変えて
+    // （縦の太い棒）区別できるようにしてある。
+    for (const seg of segments) {
+      if (!seg.closed) continue;
+      const half = Math.min(6, Math.floor(height / 2) - 1);
+      ctx.fillRect(Math.max(0, seg.endPx - 1), midY - half, 2, half * 2);
     }
 
     // ②画素の列ごとの印と密度帯。**図形の数は軸の画素数で頭打ちになる**（規則 2）。

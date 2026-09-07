@@ -188,6 +188,12 @@ export interface ReparentToolControllerProps<S> {
     | { readonly nonce: number; readonly choice: ReparentChoice }
     | null
     | undefined;
+  /**
+   * 対象のうち **自分の歴史をまだ持っていない**件数を数える口（司令塔の決定 (1)）。
+   * 板の予告に「この操作で自分の歴史を持つようになります」を出すために使う。
+   * 道具は根を持たないので、ホストが数えて渡す（教訓 5.29 単一の真実源）。
+   */
+  readonly countWithoutOwnSeries?: ((featureIds: readonly FeatureId[]) => number) | undefined;
 }
 
 const NOOP_COMMITTED = (): void => {
@@ -320,12 +326,19 @@ export function ReparentToolController<S>(
   const markedIds = props.markedFeatureIds;
   const markedKey = markedIds === undefined ? '' : markedIds.join(',');
   const setTargets = reparent.setTargets;
+  const targetSourceNow = reparent.targetSource;
   useEffect(() => {
     if (!isReparentActive) return;
-    if (markedIds === undefined || markedIds.length === 0) return;
+    if (markedIds === undefined) return;
+    if (markedIds.length === 0) {
+      // **印を全部外したら道具も対象を離す**（司令塔の決定 (6)）。逆ではない ――
+      // 道具側の Escape では印を消さない（印は一覧のものだから）。
+      if (targetSourceNow === REPARENT_TARGET_SOURCE.Marked) setTargets([]);
+      return;
+    }
     setTargets(markedIds, REPARENT_TARGET_SOURCE.Marked);
     // markedKey は配列の同一性ではなく中身で見る（一覧は毎回新しい配列を作る）。
-  }, [isReparentActive, markedKey]);
+  }, [isReparentActive, markedKey, targetSourceNow]);
 
   // 素性欄の親欄からの「この枝で板を開いて」（増分 7 の中身 3b）。**対象が入った
   // あとで開く** ―― 印を立てるのと道具を構えるのは合成ルートが先に済ませている。
@@ -372,8 +385,9 @@ export function ReparentToolController<S>(
   const confirmFromDialog = useCallback(
     (decision: ParentDecision, options: { readonly directDomainNameOverride?: string }): void => {
       deferred.run(() => {
-        reparent.confirmWith(decision, options);
-        setOptionsChoice(null);
+        // **断られたら板を閉じない**（反証 2-12）。閉じると、入力した名前も選んだ
+        // 行き先も一緒に消えて、理由を読んだあと最初からやり直しになる。
+        if (reparent.confirmWith(decision, options)) setOptionsChoice(null);
       });
     },
     [deferred, reparent],
@@ -381,12 +395,10 @@ export function ReparentToolController<S>(
 
   // 板が開いているあいだは鍵盤の持ち主が `modal` になる（＝背後で Ctrl+S / Delete が
   // 走らない）。ほかの 3 道具と同じ形（`KnifeToolController` が手本＝増分 5 の手直し A4）。
+  // 板が出ていると名乗るのは **板の側の仕事**（司令塔の決定 (13)）。ここで
+  // `optionsOpen` を見て名乗ると、板を足すたびにこの effect を直す作業が要り、
+  // 増分 7 で実際に 5 枚ぶん漏れた。いまは `ReparentOptionsDialog` へ口を渡すだけ。
   const onModalChange = props.onModalChange;
-  useEffect(() => {
-    if (onModalChange === undefined) return;
-    onModalChange(optionsOpen);
-    return () => onModalChange(false);
-  }, [optionsOpen, onModalChange]);
 
   // --- Keyboard: Escape (FR-78 / 設計書 §D.4). Active while a session runs.
   //
@@ -425,7 +437,9 @@ export function ReparentToolController<S>(
         // 名乗りと段が食い違わない。
         if (optionsOpen) {
           e.preventDefault();
-          setOptionsChoice(null);
+          // **確定が始まっていれば閉じない**（司令塔の決定 (9) / 反証 2-11）。閉じても
+          // 確定は走り切るので、板だけ消えると「押していないのに変わった」に見える。
+          if (!deferred.busy) setOptionsChoice(null);
           return;
         }
         if (reparent.newParentId !== null) {
@@ -434,6 +448,11 @@ export function ReparentToolController<S>(
           return;
         }
         if (reparent.targetId !== null) {
+          // **印から来た対象は道具側で離さない**（バグ狩り #9 / 司令塔の決定 (6)）。
+          // 離すと帯は「選んでいません」になるのに一覧は「対象 3 件」のままで、
+          // どちらが本当かが読めなくなる。印がある限り対象は印から引く 1 つの源に
+          // する ―― 外すのは一覧の［対象を全部外す］である。
+          if (reparent.targetSource === REPARENT_TARGET_SOURCE.Marked) return;
           e.preventDefault();
           reparent.clearSelection();
           return;
@@ -449,7 +468,9 @@ export function ReparentToolController<S>(
     reparent.newParentId,
     reparent.clearNewParent,
     reparent.clearSelection,
+    reparent.targetSource,
     optionsOpen,
+    deferred.busy,
   ]);
 
   // --- HB3-15(c): feed the target + new-parent highlight to the render sink on every
@@ -463,16 +484,18 @@ export function ReparentToolController<S>(
   // every reset path (教訓 5.2 / 5.18). targetId/newParentId are the reactive drivers;
   // anchorTime/domain are read at call time inside resolveLeafShape (教訓 5.6).
   useEffect(() => {
-    const targetShape =
-      resolveLeafShape && reparent.targetId !== null
-        ? resolveLeafShape(reparent.targetId)
-        : undefined;
+    // **対象は全件を塗る**（反証 2-2）。旧版は先頭 1 件だけだったので、3 件をまとめて
+    // 動かしているのに地図では 1 件しか色が付かなかった。
+    const targetShapes =
+      resolveLeafShape === undefined
+        ? []
+        : reparent.targetIds.map((id) => resolveLeafShape(id));
     const newParentShape =
       resolveLeafShape && reparent.newParentId !== null
         ? resolveLeafShape(reparent.newParentId)
         : undefined;
-    drawSink.drawHighlight(buildReparentHighlight({ targetShape, newParentShape }));
-  }, [reparent.targetId, reparent.newParentId, resolveLeafShape, drawSink]);
+    drawSink.drawHighlight(buildReparentHighlight({ targetShapes, newParentShape }));
+  }, [reparent.targetIds, reparent.newParentId, resolveLeafShape, drawSink]);
 
   // --- オプションバーの対象欄（設計書 §C.4）------------------------------------
   //
@@ -518,8 +541,16 @@ export function ReparentToolController<S>(
   const reparentTargetName = useMemo(() => {
     if (reparent.targetId === null) return null;
     const features = resolveFeatures();
-    const target = describeFeatureById(features, reparent.targetId);
-    if (target === null) return null;
+    // **全件を名乗る**（反証 2-2）。旧版は先頭 1 件しか出していなかったので、3 件を
+    // まとめて動かしているのに帯には 1 件ぶんの名前しか出ず、何件を相手にしているのかが
+    // 画面のどこにも出ていなかった。
+    const names = reparent.targetIds
+      .map((id) => describeFeatureById(features, id))
+      .filter((n): n is string => n !== null);
+    const head = names[0];
+    if (head === undefined) return null;
+    const target =
+      names.length === 1 ? head : REPARENT_STRINGS.targetWithRest(head, names.length - 1);
     if (optionsOpen) {
       return REPARENT_STRINGS.targetWithParent(target, REPARENT_STRINGS.parentDetached);
     }
@@ -528,7 +559,7 @@ export function ReparentToolController<S>(
         ? REPARENT_STRINGS.parentUnset
         : (describeFeatureById(features, reparent.newParentId) ?? REPARENT_STRINGS.parentUnset);
     return REPARENT_STRINGS.targetWithParent(target, parent);
-  }, [reparent.targetId, reparent.newParentId, optionsOpen, resolveFeatures]);
+  }, [reparent.targetId, reparent.targetIds, reparent.newParentId, optionsOpen, resolveFeatures]);
   // 器が持ち直されたら押し直すために、代を React の値として読む（手直し 3 回目）。
   const optionBarEpoch = useOptionBarEpoch(optionBar);
   // **書いた人の印**（手直し 3 回目）。空へ戻すのは自分が最後に書いたときだけ。
@@ -708,6 +739,8 @@ export function ReparentToolController<S>(
           進行表示もここが持つ（設計書 §B.5「作業ダイアログは器 1 種類」）。 */}
       {optionsChoice !== null && (
         <ReparentOptionsDialog
+          {...(onModalChange ? { onModalChange } : {})}
+          materializingCount={props.countWithoutOwnSeries?.(reparent.plan.leafIds) ?? 0}
           features={resolveFeatures()}
           plan={reparent.plan}
           initialChoice={optionsChoice}

@@ -69,6 +69,8 @@ import { formatTimePoint, formatYear } from '../timeline/time-display';
 import { DELETE_TARGET_KIND } from '../../domain/deletion';
 
 import { anchorRowsOf, existenceRunsOf, type AnchorRow } from './anchor-diff';
+import { useModalChannels } from '../a11y/index';
+
 import { AnchorSection } from './AnchorSection';
 import { BasicInfoForm } from './BasicInfoForm';
 import { DeleteFeatureButton } from './DeleteFeatureButton';
@@ -192,6 +194,11 @@ export interface PropertyPanelProps<S> {
    * 受ける層も同時に設計する）。未配線でも確認そのものは動く（honest stub）。
    */
   readonly onDraftConfirmChange?: (open: boolean) => void;
+  /**
+   * 素性欄の中で「本物の板」が出ている間、そう名乗る口（司令塔の決定 (13)）。
+   * いまは錨の削除の確認が使う。名乗らないと背後で Ctrl+Z / Delete が走る。
+   */
+  readonly onModalChange?: (open: boolean) => void;
   /**
    * 名前欄へ焦点を入れてほしい、という要求の口（増分 4 / 設計書 §C.5）。作業のまとまりを
    * 作った瞬間と、送りで次の地物へ移ったときに一覧が呼ぶ。**DOM を名前で探さない**
@@ -412,6 +419,20 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
     return parent === null ? null : shownName(parent);
   }, [feature, featureLookup, currentTime, domain]);
 
+  /**
+   * 錨表の差分の文が「親が変わった」を出すときの落とし先（バグ狩り #5）。錨の
+   * スナップショットから引けなかったときだけ、**親欄と同じ源**（根の live-lookup）で
+   * 引き直す ―― 所属を変えた直後の新しい親は、移した地物の錨には居ないので
+   * 「別の地物」と出ていた。
+   */
+  const resolveParentName = useCallback(
+    (featureId: FeatureId): string | null => {
+      const f = featureLookup.featureAt(featureId);
+      return f === null ? null : shownName(f);
+    },
+    [featureLookup],
+  );
+
   // The edit-target anchor is local UI文脈 (教訓 5.4). Keyed by feature so it is
   // discarded when the target feature changes (教訓 5.2).
   const [selectedAnchorId, setSelectedAnchorId] = useState<AnchorId | null>(null);
@@ -619,6 +640,24 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
 
   // A4 (c): 確認が開いているあいだ、ホストは大域ショートカットを止める。開閉が変わった
   // ときだけ伝える（描画のたびに呼ぶと親が無駄に再描画する）。
+  /**
+   * 素性欄の中で開いている板を名前で数え、1 本の口へまとめて上へ報せる
+   * （司令塔の決定 (13)）。素性欄は「全部の年から消す」の確認と「錨を削除」の確認の
+   * 2 枚を持つので、真偽値を 2 つ OR する形にすると板が増えるたびに書き足しが要る。
+   */
+  const propertyModals = useModalChannels();
+  const { onModalChange } = props;
+  const propertyModalOpen = propertyModals.anyOpen;
+  useEffect(() => {
+    onModalChange?.(propertyModalOpen);
+  }, [onModalChange, propertyModalOpen]);
+  useEffect(
+    () => () => {
+      onModalChange?.(false);
+    },
+    [onModalChange],
+  );
+
   const { onDraftConfirmChange } = props;
   const draftConfirmOpen = pendingDiscard !== null;
   useEffect(() => {
@@ -832,12 +871,18 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
   const endHereAction = useMemo(() => {
     if (targetFeatureId === null || onEndHere === undefined) return null;
     const id = targetFeatureId;
+    // **終わりが打たれている年**（司令塔の決定 (12)）。自分の系列の錨のうち、終了が
+    // 入っているもののいちばん早い年を出す ―― 押したあと「終わったのかどうか」が
+    // 素性欄のどこにも出ていなかった。
+    const endedEntry = displaySeries?.entries.find((e) => e.end !== null);
+    const endedYear = endedEntry?.end?.year;
     return {
       onEndHere: () => onEndHere(id),
       endHereLabel: PROPERTY_STRINGS.endHereLabel(formatYear(currentTime.year)),
       endHereDisabledReason: endHereDisabledReason?.(id) ?? null,
+      ...(endedYear === undefined ? {} : { endedYearLabel: formatYear(endedYear) }),
     };
-  }, [targetFeatureId, onEndHere, endHereDisabledReason, currentTime]);
+  }, [targetFeatureId, onEndHere, endHereDisabledReason, currentTime, displaySeries]);
 
   /** 影響の一覧を押した瞬間に解く（全錨の走査なので、開いている間は再計算しない）。 */
   const resolveDeleteImpactPort = props.resolveDeleteImpact;
@@ -1039,6 +1084,8 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                 {...(intervalEditable
                   ? { featureId: feature.id, onEditInterval: handleEditInterval }
                   : {})}
+                onModalChange={propertyModals.channel('anchor-delete-impact')}
+                resolveParentName={resolveParentName}
               />
             )}
 
@@ -1071,6 +1118,7 @@ export function PropertyPanel<S>(props: PropertyPanelProps<S>): JSX.Element {
                   {...(props.resolveDeleteImpact === undefined
                     ? {}
                     : { resolveImpact: () => resolveDeleteImpactRef(feature.id) })}
+                  onModalChange={propertyModals.channel('delete-impact')}
                 />
               </details>
             )}

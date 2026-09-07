@@ -203,6 +203,12 @@ function LedgerRowView(props: {
   readonly marked: boolean;
   /** 印をつけ外しする。 */
   readonly onToggleMark: () => void;
+  /**
+   * 印を付けられない理由（`null` なら付けられる）。**読むだけのときは付けられない**
+   * （司令塔の決定 (11)）―― 印は「まとめて直す相手」なので、直せない状態で立てても
+   * 次にできることが無い。灰色にするだけでなく理由を出す（教訓 5.26）。
+   */
+  readonly markDisabledReason: string | null;
   /** 行を右クリックした（設計書 §I.3 の「台帳の行」。増分 5 からの送り）。 */
   readonly onContextMenu?: ((clientX: number, clientY: number) => void) | undefined;
   readonly editing: 'name' | 'kindLabel' | null;
@@ -225,6 +231,7 @@ function LedgerRowView(props: {
     active,
     marked,
     onToggleMark,
+    markDisabledReason,
     editing,
     onSelect,
     onToggleExpand,
@@ -271,6 +278,8 @@ function LedgerRowView(props: {
         data-testid={`ledger-mark-${id}`}
         aria-label={LEDGER_STRINGS.markAria(row.name)}
         checked={marked}
+        disabled={markDisabledReason !== null}
+        title={markDisabledReason ?? undefined}
         onChange={onToggleMark}
         onClick={(e) => e.stopPropagation()}
       />
@@ -675,6 +684,31 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
 
   const isHistory = ledger.mode === LEDGER_MODE.History;
   const rowCount = isHistory ? historyRows.rows.length : built.rows.length;
+
+  /**
+   * **表示中の全部に印を付ける／外す**（バグ狩り #14 の観察）。母集合は「いま一覧に
+   * 出ている行」＝絞り込みの結果である（窓の中だけではない ―― 仮想化は見えている
+   * 行だけを描くが、印は絞り込みの結果すべてに掛ける）。
+   */
+  const markAllVisible = useCallback(
+    (on: boolean): void => {
+      const ids = built.rows.map((r) => r.featureId);
+      if (ids.length === 0) return;
+      const state = store.getState();
+      const next = new Set(state.ledger.marked);
+      for (const id of ids) {
+        if (on) next.add(id);
+        else next.delete(id);
+      }
+      state.setFeatureMarks(next);
+      onResult?.(
+        on
+          ? LEDGER_STRINGS.markAllVisibleDone(ids.length)
+          : LEDGER_STRINGS.markAllVisibleCleared(ids.length),
+      );
+    },
+    [built.rows, store, onResult],
+  );
   const win = ledgerWindow(rowCount, scrollTop, viewportHeight);
 
   // 窓の高さを測る（レイアウトのある環境だけ本当の値が入る。jsdom では 0 のままなので
@@ -1316,11 +1350,37 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
         「押したのに 3 件のはずが 2 件だった」が起きる。0 件のときは行そのものを出さない
         （何も相手にしていない状態に説明は要らない）。
       */}
+      {/*
+        **表示中の全部に印を付ける／外す**（バグ狩り #14 の観察: 400 件へ 1 件ずつ印を
+        付けるのに 29 秒かかる）。母集合は「いま一覧に出ている行」＝絞り込みの結果なので、
+        「共和国」で絞ってから 1 手で全部に印が付く。読むだけのときは押せない（決定 (11)）。
+      */}
+      {/* **印が 1 件でもあるときだけ出す**（増分 4 の「どの窓の大きさでも行が見えている」
+          を壊さないため）。この帯を常設にすると 800×600 で一覧の行が 1 行も入らなくなる
+          ―― 実測で落ちた。「表示中の全部に印」は 1 件目を付けたあとに使う形にしてある。 */}
       {ledger.marked.size > 0 && (
         <div className="ledger__marks" data-testid="ledger-marks">
           <span data-testid="ledger-marked-count">
             {LEDGER_STRINGS.markedCount(ledger.marked.size)}
           </span>
+          <button
+            type="button"
+            data-testid="ledger-marks-all"
+            disabled={!editable || rowCount === 0}
+            title={editable ? undefined : LEDGER_STRINGS.markReadOnly}
+            onClick={() => markAllVisible(true)}
+          >
+            {LEDGER_STRINGS.markAllVisible}
+          </button>
+          <button
+            type="button"
+            data-testid="ledger-marks-none"
+            disabled={!editable || rowCount === 0}
+            title={editable ? undefined : LEDGER_STRINGS.markReadOnly}
+            onClick={() => markAllVisible(false)}
+          >
+            {LEDGER_STRINGS.unmarkAllVisible}
+          </button>
           <button
             type="button"
             data-testid="ledger-marks-clear"
@@ -1397,6 +1457,7 @@ export function FeatureLedger<S>(props: FeatureLedgerProps<S>): JSX.Element {
                     row={row}
                     active={activeFeature === row.featureId}
                     marked={ledger.marked.has(row.featureId)}
+                    markDisabledReason={editable ? null : LEDGER_STRINGS.markReadOnly}
                     onToggleMark={() => store.getState().toggleFeatureMark(row.featureId)}
                     {...(onRowContextMenu === undefined
                       ? {}

@@ -22,7 +22,9 @@ import type { StoreApi } from 'zustand/vanilla';
 
 import type { Calendar } from '../../domain/time/calendar';
 import type { ConsistencyReport, DomainProject } from '../../domain/persistence/index';
+import type { FeatureId } from '../../domain/ids';
 import { serialize } from '../../domain/persistence/index';
+import { checkBeforeSave, preSaveBlockMessage } from '../../domain/persistence/pre-save';
 import type { LoadResponse, NamedAsset, SaveRequest, TimeMapApi } from '../../shell/ipc/contract';
 import type { ZoomRange } from '../../render/camera';
 
@@ -200,6 +202,21 @@ interface PendingRepair {
 }
 
 /** Read the live U15 API, defaulting to the contextBridge-exposed global. */
+/**
+ * 保存前の検査の文言に使う名前を、企画の錨から引く（最初に見つかった名前）。
+ * 名前が引けないときは `undefined` を返し、文言側が id へ落とす。
+ */
+function nameOfFeatureIn(project: DomainProject, id: FeatureId): string | undefined {
+  for (const history of project.histories) {
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) {
+        if (f.id === id) return f.attributes.name;
+      }
+    }
+  }
+  return undefined;
+}
+
 function liveApi(injected?: TimeMapApi): TimeMapApi | null {
   if (injected !== undefined) return injected;
   const w = globalThis as { timeMapApi?: TimeMapApi };
@@ -599,6 +616,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       api: capturingApi,
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
+      // 保存の直前の整合検査（司令塔の決定 (3)）。ストアの生の企画を見て、「開き直すと
+      // 地物が失われる形」が混ざっていれば理由の文を返し、保存を止める。
+      preSaveBlock: () => {
+        const problems = checkBeforeSave(store.getState().domain);
+        if (problems.length === 0) return null;
+        return preSaveBlockMessage(problems, (id) => nameOfFeatureIn(store.getState().domain, id));
+      },
       onSaved: (path: string, info) => {
         // A6 世代ガード: この保存が始まったときの保存文脈と、いまの保存文脈が同じか。
         // 違えば「保存中に別のプロジェクトを開いた」ので、**この保存の結果を今の文書の

@@ -184,6 +184,8 @@ export interface SidebarContentDeps<S> {
    * Ctrl+K・Delete などの大域ショートカットを止める（増分 2 の手直し A4 (c)）。
    */
   readonly onDraftConfirmChange?: (open: boolean) => void;
+  /** 素性欄の中の板が出ていると名乗る口（司令塔の決定 (13)）。 */
+  readonly onPropertyModalChange?: (open: boolean) => void;
   /**
    * Focus the camera on the feature just selected from a一覧 row (錨一覧 HB5-3 AND
    * 地物一覧 A1 — both導線 share the SAME fit path, the user's「地物一覧にも視点移動が
@@ -267,6 +269,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
     endHereDisabledReason,
     resolveDeleteImpact,
     onDraftConfirmChange,
+    onPropertyModalChange,
     onFocusFeatureCamera,
     addDraft,
     focusStore,
@@ -363,6 +366,7 @@ export function buildSidebarContent<S>(deps: SidebarContentDeps<S>): SidebarProp
       {...(endHereDisabledReason ? { endHereDisabledReason } : {})}
       {...(resolveDeleteImpact ? { resolveDeleteImpact } : {})}
       {...(onDraftConfirmChange ? { onDraftConfirmChange } : {})}
+      {...(onPropertyModalChange ? { onPropertyModalChange } : {})}
       nameFieldFocus={nameFieldFocus}
       draftStatus={draftStatus}
       onAdvanceBundle={() => {
@@ -506,6 +510,8 @@ function PropertyPanelHost<S>(props: {
   readonly endHereDisabledReason?: (featureId: FeatureId) => string | null;
   readonly resolveDeleteImpact?: (featureId: FeatureId) => DeleteImpactView;
   readonly onDraftConfirmChange?: (open: boolean) => void;
+  /** 素性欄の中の板が出ていると名乗る口（司令塔の決定 (13)）。 */
+  readonly onPropertyModalChange?: (open: boolean) => void;
   readonly nameFieldFocus?: NameFieldFocusStore;
   readonly draftStatus?: PropertyDraftStatusStore;
   readonly onAdvanceBundle?: () => void;
@@ -663,6 +669,9 @@ function PropertyPanelHost<S>(props: {
       {...(props.resolveDeleteImpact ? { resolveDeleteImpact: props.resolveDeleteImpact } : {})}
       {...(props.onDraftConfirmChange
         ? { onDraftConfirmChange: props.onDraftConfirmChange }
+        : {})}
+      {...(props.onPropertyModalChange
+        ? { onModalChange: props.onPropertyModalChange }
         : {})}
       {...(props.nameFieldFocus ? { nameFieldFocus: props.nameFieldFocus } : {})}
       {...(props.draftStatus ? { draftStatus: props.draftStatus } : {})}

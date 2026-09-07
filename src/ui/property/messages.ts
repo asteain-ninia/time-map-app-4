@@ -24,11 +24,11 @@ export const PROPERTY_STRINGS = {
   parentCreateLabel: '新しく作る',
   parentClearLabel: '最上位へ',
   /**
-   * 3 ボタンをまだ押せない理由（§H.5 の作法: 押せない部品には理由を添える）。
-   * **押せるのに動かない部品を作らない** ―― 所属変更は「押した瞬間に手順へ入る」
-   * 操作なので、手順そのものを作る増分 7 までは押せなくしておく。
+   * 3 ボタンを押せない理由（§H.5 の作法: 押せない部品には理由を添える）。
+   * **押せるのに動かない部品を作らない** ―― 所属を変えるのは「押した瞬間に手順へ
+   * 入る」操作なので、手順の配線が揃っていないホストでは押せなくして理由を添える。
    */
-  parentDisabledReason: 'まだ使えません（所属を変えるのは次の段階です）',
+  parentDisabledReason: 'この画面からは所属を変えられません（配線が揃っていません）',
   /** 線情報の長さ（G-1 / FR-19 must。面積と対になる読み取り専用の行）。 */
   lengthLabel: '長さ',
   lengthUnit: 'km',
@@ -140,6 +140,9 @@ export const PROPERTY_STRINGS = {
   intervalSpecifyEndLabel: '終了を指定',
   /** Delete this anchor (U09 deleteAnchor). */
   intervalDeleteLabel: 'この錨を削除',
+  /** 最後の 1 本の錨は消せない（消すと地物がどの年にも居なくなる。INV-5）。 */
+  intervalDeleteSoleReason:
+    '最後の錨は消せません。これを消すと、この地物はどの年にも居なくなります。全部の年から消すときは素性欄の「全部の年から消す」を使ってください。',
   /** Title for the per-anchor存続期間 editor disclosure. */
   intervalEditTitle: '存続期間を編集',
   intervalEditFailedPrefix: '存続期間を変更できません: ',
@@ -230,7 +233,12 @@ export const PROPERTY_STRINGS = {
   endHereHint: 'この年でこの地物が終わったことにします（削除ではありません。Ctrl+Z 1 回で戻せます）。',
   /** 入口 A が押せないとき（自分の歴史を持たない地物）。 */
   endHereNoOwnSeries: (ownerName: string): string =>
-    `この地物の歴史は親の「${ownerName}」が持っているので、ここからは終わりを打てません。上位領域の側で記録してください。`,
+    `この地物の歴史は親の「${ownerName}」が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。`,
+  /** 親の名前が引けないとき（名前を出さずに、やることだけを言う）。 */
+  endHereNoOwnSeriesUnnamed:
+    'この地物の歴史は上位領域が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。',
+  /** 既に終わりが打たれている状態（司令塔の決定 (12)）。 */
+  endHereState: (year: string): string => `この地物は${year}で終わっています。`,
   /** 入口 A が通ったときの結果の文。 */
   endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
@@ -241,6 +249,8 @@ export const PROPERTY_STRINGS = {
   // --- 増分 7: 影響ダイアログ（設計書 §A.3 / 中身 6）---------------------------
   impactTitle: (name: string): string => `「${name}」を全部の年から消します`,
   impactHeadingGone: '一緒に消えるもの',
+  /** 頂点は消えず、参照だけが消える（司令塔の決定 (5)）。だから別の群にする。 */
+  impactHeadingVertices: '参照されなくなる頂点',
   impactHeadingReferenced: '他から参照されているところ',
   impactHeadingAuto: '自動で消える地物',
   /**
@@ -254,8 +264,12 @@ export const PROPERTY_STRINGS = {
   impactNoOwnAnchors:
     'この地物は自分の歴史を持たず、上位領域の記録の中に居ます（錨は 0 件）',
   impactVertices: (count: number): string => `頂点 ${String(count)} 個`,
+  impactVerticesUnreferenced: (count: number): string =>
+    `この地物だけが使っていた頂点 ${String(count)} 個が参照されなくなります（頂点そのものは頂点表に残ります）`,
+  impactVerticesAllShared:
+    'この地物が使っていた頂点はすべて隣の地物と共有しているので、参照は残ります',
   impactVerticesAggregate:
-    '頂点 0 個（この地物は下位をまとめる側なので自分の形を持ちません）',
+    'ありません（この地物は下位をまとめる側なので自分の形を持ちません）',
   impactPromoted: (count: number, names: string): string =>
     `下位領域 ${String(count)} 件（${names}）が、すべての年で最上位へ移ります`,
   impactAutoRemoved: (count: number, names: string): string =>
@@ -300,6 +314,8 @@ export const PROPERTY_STRINGS = {
   /** 頂点が減りすぎると面・線として成り立たなくなる（事前の文）。 */
   vertexDeleteLineBelowThreshold:
     '残る頂点が形として成り立たない数になるため、この年からこの地物そのものが消えます',
+  /** 閾値を割らないとき（地物は残る）。 */
+  vertexDeleteLineSurvives: 'この地物は残ります（形が少し変わります）',
   vertexDeleteConfirm: 'この頂点を消す',
 } as const;
 

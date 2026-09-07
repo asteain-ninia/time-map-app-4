@@ -43,6 +43,10 @@ export interface AnchorSectionProps {
   readonly featureId?: FeatureId;
   /** HB3-12: dispatch a存続期間 edit; returns an error message to show, or null. */
   readonly onEditInterval?: (intent: AnchorIntervalEditIntent) => string | null;
+  /** 「板が出ている」と名乗る口（司令塔の決定 (13)）。錨の削除の確認へ渡す。 */
+  readonly onModalChange?: (open: boolean) => void;
+  /** 上位領域の表示名を根から引く落とし先（バグ狩り #5）。 */
+  readonly resolveParentName?: (featureId: FeatureId) => string | null;
 }
 
 export function AnchorSection(props: AnchorSectionProps): JSX.Element {
@@ -75,6 +79,8 @@ export function AnchorSection(props: AnchorSectionProps): JSX.Element {
         {...(featureId !== undefined && onEditInterval !== undefined
           ? { featureId, onEditInterval }
           : {})}
+        {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
+        {...(props.resolveParentName ? { resolveParentName: props.resolveParentName } : {})}
       />
     </details>
   );

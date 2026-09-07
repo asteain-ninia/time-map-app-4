@@ -60,6 +60,7 @@ import {
   confirmBlocksToolKey,
 } from '../shell/DraftDiscardConfirm';
 import { useDraftSwitchGuard, type DraftSwitchGuard } from '../shell/useDraftSwitchGuard';
+import { useDeferredCommit, type CommitScheduler } from '../shell/useDeferredCommit';
 
 import type { AddDraftPrompt, AddDraftStore } from '../add/add-draft-store';
 import { ADD_TOOL_KIND, type ParentCandidate } from '../../domain/add/index';
@@ -163,6 +164,11 @@ export interface KnifeToolControllerProps<S> {
    * **背後で走った**。
    */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
+  /**
+   * 確定を遅らせる口（進行表示のため）。検査は同期の実装を差し込む
+   * （`useDeferredCommit` の注記）。
+   */
+  readonly commitScheduler?: CommitScheduler | undefined;
   /**
    * **打ちかけの分断線を捨てたことを伝える口**（増分 5 の手直し 2 回目。追加の道具の
    * `onDraftDiscarded` と同じ役割）。捨てた頂点の数を状態行へ出すために要る ――
@@ -745,6 +751,20 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
   // `pointer-events: auto` で地図のクリックを奪っていた（K-2 の当事者）。板は消し、
   // 断り文は「次の一手」へ、［やめる］はここへ移す。
   const rejected = knife.flow === KNIFE_FLOW.Rejected;
+  /**
+   * **分割の確定にも進行表示と二重クリックの関門を掛ける**（増分 7 の中身 9 の
+   * 未結線の解消）。分割の確定は実データで 2.5〜3.1 秒かかるのに、押しても画面が
+   * 動かないので「効かなかった」と読まれてもう 1 度押される。所属変更・まとめて種別と
+   * **同じ器**（`useDeferredCommit`）を通す ―― 押している間だけ確定ボタンの文言が
+   * 「分割しています…」に変わり、2 回目は走らない。
+   */
+  const knifeDeferred = useDeferredCommit(
+    props.commitScheduler === undefined ? undefined : { schedule: props.commitScheduler },
+  );
+  const confirmCut = knife.confirmCut;
+  const runConfirmCut = useCallback(() => {
+    knifeDeferred.run(() => confirmCut());
+  }, [knifeDeferred, confirmCut]);
   const knifeCommit = useMemo(
     () =>
       drawingCut
@@ -752,8 +772,9 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
             {
               id: 'confirm',
               testId: 'knife-confirm-cut',
-              label: KNIFE_STRINGS.confirmCut,
-              onClick: () => knife.confirmCut(),
+              label: knifeDeferred.busy ? KNIFE_STRINGS.committing : KNIFE_STRINGS.confirmCut,
+              disabled: knifeDeferred.busy,
+              onClick: runConfirmCut,
             },
             {
               id: 'cancel',
@@ -780,7 +801,7 @@ export function KnifeToolController<S>(props: KnifeToolControllerProps<S>): JSX.
     // **同一性を安定させる**（増分 5 の手直し B3 の注記 7）。依存に道具の戻り値を
     // 丸ごと入れると **毎レンダー新しい配列と新しい関数**になり、帯への押し込みが
     // 毎回走る（`setCommit` は `onClick` を同一性で見るので常に「違う」になる）。
-    [drawingCut, rejected, enteringProperties, knife.confirmCut, knife.cancel],
+    [drawingCut, rejected, enteringProperties, runConfirmCut, knifeDeferred.busy, knife.cancel],
   );
   const knifeExtras = useMemo(
     () =>

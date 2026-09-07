@@ -165,3 +165,122 @@ export function buildSyntheticAnchorProject(
 export const SYNTHETIC_ANCHOR_FEATURE_ID = 'syn-anchor-child';
 /** 同じくまとめ役（親）の id。 */
 export const SYNTHETIC_ANCHOR_PARENT_ID = 'syn-anchor-parent';
+
+/** 合成の入れ子（まとめ役 + その錨に居候する子）の id（E2E がそのまま選べるように公開）。 */
+export const SYNTHETIC_NEST_PARENT_ID = 'syn-nest-parent';
+export const SYNTHETIC_NEST_PARENT_NAME = '合成の連邦';
+export const SYNTHETIC_NEST_OUTSIDER_ID = 'syn-nest-outsider';
+export const SYNTHETIC_NEST_OUTSIDER_NAME = '合成の外の国';
+/** 子の表示名（`合成州 01` …）。E2E が名前で行を選ぶ。 */
+export function syntheticNestChildName(index: number): string {
+  return `合成州 ${String(index + 1).padStart(2, '0')}`;
+}
+
+/**
+ * **記録の置き場の検査のための合成データ**（司令塔の決定 (1)(2)。増分 7 の手直し A）。
+ *
+ * 実データの「デーレ共和国 60 州」と同じ形を作る ―― まとめ役 1 件が系列を持ち、
+ * その錨のスナップショットの中に `childCount` 件の子が居る（**子は自分の系列を
+ * 持たない**）。錨は `years` のぶんだけ並べるので、「全部の年の記録を写す」が
+ * 効いているかを画面から数えられる。
+ *
+ * 別の親へ移す先として、最上位の面「合成の外の国」を 1 件だけ自分の系列つきで置く。
+ * 子は横に並べた正方形で、まとめ役の形＝子の和になる（FR-35 を満たす）。
+ */
+export function buildSyntheticNestedProject(
+  base: DomainProject,
+  childCount: number,
+  years: readonly number[] = [1000, 1200],
+): DomainProject {
+  const color = createColorInfo(true, '#a5d6a7', '#ff7043', '#1b5e20');
+  const parentId = asFeatureId(SYNTHETIC_NEST_PARENT_ID);
+  const outsiderId = asFeatureId(SYNTHETIC_NEST_OUTSIDER_ID);
+  const childIds = Array.from({ length: childCount }, (_, i) =>
+    asFeatureId(`syn-nest-child-${String(i)}`),
+  );
+
+  const tile = (
+    idPart: string,
+    index: number,
+    row: number,
+  ): { vertices: ReturnType<typeof createVertex>[]; ringId: string } => {
+    const lon = -20 + index * SIDE_DEG;
+    const lat = 10 + row * SIDE_DEG;
+    const vertices = [
+      [lon, lat],
+      [lon + SIDE_DEG, lat],
+      [lon + SIDE_DEG, lat + SIDE_DEG],
+      [lon, lat + SIDE_DEG],
+    ].map((c, j) =>
+      createVertex(asVertexId(`v-${idPart}-${String(j)}`), {
+        lon: c[0] as number,
+        lat: c[1] as number,
+      }),
+    );
+    return { vertices, ringId: `r-${idPart}` };
+  };
+
+  const entries = years.map((year) => {
+    const vertices: ReturnType<typeof createVertex>[] = [];
+    const children = childIds.map((childId, i) => {
+      const t = tile(`${String(i)}-${String(year)}`, i, 0);
+      vertices.push(...t.vertices);
+      return createLeafFeature(
+        childId,
+        createBasicAttributes(syntheticNestChildName(i), 0, 9999),
+        color,
+        createShape([createTerritoryRing(asRingId(t.ringId), t.vertices.map((v) => v.id))]),
+        { kindLabel: '合成の州', parentId },
+      );
+    });
+    const parent = createAggregateFeature(
+      parentId,
+      createBasicAttributes(SYNTHETIC_NEST_PARENT_NAME, 0, 9999),
+      color,
+      childIds,
+      { kindLabel: '合成の国' },
+    );
+    return createAnchorEntry(
+      createAnchor(asAnchorId(`syn-nest-a-${String(year)}`), {
+        features: [parent, ...children],
+        vertices: createVertexStore(vertices),
+      }),
+      timePointYear(year),
+    );
+  });
+
+  const outsiderTile = tile('outsider', 0, 4);
+  const outsider = createLeafFeature(
+    outsiderId,
+    createBasicAttributes(SYNTHETIC_NEST_OUTSIDER_NAME, 0, 9999),
+    color,
+    createShape([
+      createTerritoryRing(
+        asRingId(outsiderTile.ringId),
+        outsiderTile.vertices.map((v) => v.id),
+      ),
+    ]),
+    { kindLabel: '合成の国' },
+  );
+
+  return {
+    ...base,
+    histories: [
+      { featureId: parentId, series: { entries } },
+      {
+        featureId: outsiderId,
+        series: {
+          entries: [
+            createAnchorEntry(
+              createAnchor(asAnchorId('syn-nest-a-outsider'), {
+                features: [outsider],
+                vertices: createVertexStore(outsiderTile.vertices),
+              }),
+              timePointYear(years[0] ?? 1000),
+            ),
+          ],
+        },
+      },
+    ],
+  };
+}

@@ -287,6 +287,14 @@ export const LEDGER_STRINGS = {
   markedCount: (count: number): string => `対象 ${String(count)} 件`,
   /** 印を全部外す。 */
   clearMarks: '対象を全部外す',
+  /** 読むだけのときは印を付けられない（司令塔の決定 (11)）。 */
+  markReadOnly: '読むだけの状態では対象の印を付けられません。鍵を開けてから使ってください。',
+  /** 絞り込みの結果すべてに印を付ける／外す（バグ狩り #14 の観察）。 */
+  markAllVisible: '表示中の全部に印',
+  unmarkAllVisible: '表示中の印を外す',
+  markAllVisibleDone: (count: number): string => `表示中の ${String(count)} 件に印を付けました。`,
+  markAllVisibleCleared: (count: number): string =>
+    `表示中の ${String(count)} 件の印を外しました。`,
   kindLabelAria: (name: string): string => `${name} の種別`,
   renameHint: 'Enter で確定、Escape でやめる',
   /** 読むだけのときに、その場編集を断る理由（K-6 / G-23 の共通枠へ出す）。 */
@@ -345,7 +353,7 @@ export const BUNDLE_STRINGS = {
   emptyExpression:
     '式が空です。空の式はすべての地物に当たってしまうので、まとめる形を書いてください。',
   allDone: 'このまとまりは全部済んでいます。',
-  /** まだ選べない既定（増分 7 まで）。 */
+  /** まだ選べない既定（配線が揃っていない束の形）。 */
   presetUnavailable: (label: string): string => `${label}（まだ使えません）`,
   /** 束に残っているが、いまの年には居ないメンバー（手直し G2）。 */
   unavailableMembers: (n: number): string =>

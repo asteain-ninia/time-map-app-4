@@ -150,8 +150,13 @@ export function buildMergeHighlight(
 
 /** Inputs the reparent highlight builder needs (host-resolved shapes; render→domain). */
 export interface ReparentHighlightInput {
+  /**
+   * 動かす地物すべての形（反証 2-2: 旧版は 1 件しか塗っていなかった）。単数の
+   * `targetShape` も受け付ける（既存の呼び出しと検査のため）。
+   */
+  readonly targetShapes?: readonly (GeoMultiPolygon | undefined)[];
   /** The resolved geometry of the chosen TARGET leaf (the feature being moved). */
-  readonly targetShape: GeoMultiPolygon | undefined;
+  readonly targetShape?: GeoMultiPolygon | undefined;
   /** The resolved geometry of the chosen NEW-PARENT leaf (the destination region). */
   readonly newParentShape: GeoMultiPolygon | undefined;
 }
@@ -165,9 +170,18 @@ export interface ReparentHighlightInput {
  */
 // --- MARKED batch（対象色。増分 7 / 設計書 §D.5）------------------------------
 
-/** 印を付けた地物の形（ホストが `leafShapeAt` で解いて渡す）。 */
+/** 印を付けた地物の形（ホストが live-lookup で解いて渡す）。 */
 export interface MarkedHighlightInput {
+  /**
+   * 面の形。**まとめ役もここへ入る** ―― まとめ役は自分の形を持たないので、ホストは
+   * 下位領域の和（`resolveFeatureArea`）を解いて渡す（反証 1-2: まとめ役に印を付けても
+   * 地図に何も出なかった）。
+   */
   readonly markedShapes: readonly (GeoMultiPolygon | undefined)[];
+  /** 点情報の位置（反証 1-2: 点・線は自分の描画で出す）。 */
+  readonly markedPoints?: readonly (WorldPoint | undefined)[];
+  /** 線情報の折れ線（2 点以上）。 */
+  readonly markedLines?: readonly (readonly WorldPoint[] | undefined)[];
 }
 
 /**
@@ -186,8 +200,21 @@ export function buildMarkedHighlight(
     const prim = shapePrimitive(shape, style);
     if (prim !== undefined) out.push(prim);
   }
+  // 点・線は面と同じ塗りでは出せないので、自分の描画で出す（反証 1-2）。色は同じ
+  // 「対象色」1 種類のままである（役割の別を持たない集合なので色を分けない）。
+  for (const at of input.markedPoints ?? []) {
+    if (at === undefined) continue;
+    out.push({ kind: 'point', at, radiusPx: MARKED_POINT_RADIUS_PX, fill: style.stroke });
+  }
+  for (const points of input.markedLines ?? []) {
+    if (points === undefined || points.length < 2) continue;
+    out.push({ kind: 'line', points, widthPx: style.strokeWidthPx, stroke: style.stroke });
+  }
   return out;
 }
+
+/** 印を付けた点情報の丸の半径（画素）。錨の印より大きく、掴み手より小さい。 */
+const MARKED_POINT_RADIUS_PX = 7;
 
 export function buildReparentHighlight(
   input: ReparentHighlightInput,
@@ -195,8 +222,12 @@ export function buildReparentHighlight(
   parentStyle: TargetHighlightStyle = DEFAULT_REPARENT_PARENT_STYLE,
 ): DrawPrimitive[] {
   const out: DrawPrimitive[] = [];
-  const target = shapePrimitive(input.targetShape, targetStyle);
-  if (target !== undefined) out.push(target);
+  const targets: readonly (GeoMultiPolygon | undefined)[] =
+    input.targetShapes ?? (input.targetShape === undefined ? [] : [input.targetShape]);
+  for (const shape of targets) {
+    const target = shapePrimitive(shape, targetStyle);
+    if (target !== undefined) out.push(target);
+  }
   const parent = shapePrimitive(input.newParentShape, parentStyle);
   if (parent !== undefined) out.push(parent);
   return out;

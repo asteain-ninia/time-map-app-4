@@ -15,7 +15,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { useModalKeydown } from '../a11y/index';
+import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import { MSG_DELETE_CONFIRM_BODY, MSG_DELETE_CONFIRM_TITLE } from '../../domain/deletion/index';
 
 export interface DeleteConfirmDialogProps {
@@ -28,11 +28,15 @@ export interface DeleteConfirmDialogProps {
   readonly onConfirm: () => void;
   /** 「キャンセル」・Esc・背景の閉じる。**安全側**（何もしない）。 */
   readonly onCancel: () => void;
+  /** 「板が出ている」と名乗る口（司令塔の決定 (13)）。 */
+  readonly onModalChange?: (open: boolean) => void;
 }
 
 export function DeleteConfirmDialog(props: DeleteConfirmDialogProps): JSX.Element {
-  const { featureName = null, onConfirm, onCancel } = props;
+  const { featureName = null, onConfirm, onCancel, onModalChange } = props;
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 出ている間は自分で名乗る（決定 (13)）。
+  useModalRegistration(onModalChange, true);
 
   const cancel = useCallback(() => onCancel(), [onCancel]);
   // Esc cancels and Tab / Shift+Tab cycle inside the dialog (背面へ抜けない) — the

@@ -158,7 +158,11 @@ import {
   type CommandRefusal,
 } from './shell/commands';
 import { featureByIdAt, featuresAt, verticesAt, leafShapeAt, leafAtPoint } from './live-lookup';
-import { runEditDelete, type EditDeleteSelection } from './vertex-delete';
+import {
+  buildVertexDeletePlan,
+  runEditDelete,
+  type EditDeleteSelection,
+} from './vertex-delete';
 import { runUnshare } from './live-unshare';
 import { createLiveExistenceResolver } from './live-existence';
 import { createLiveGrabbabilityResolver } from './live-grabbability';
@@ -167,6 +171,7 @@ import { CursorPositionStore } from './shell/cursor-position';
 import { registerE2eHarnessAction } from './e2e/harness';
 import {
   buildSyntheticAnchorProject,
+  buildSyntheticNestedProject,
   buildSyntheticProject,
 } from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
@@ -175,6 +180,7 @@ import { StatusMessageStore } from './shell/status-message';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
 import { BulkKindLabelDialog } from './property/BulkKindLabelDialog';
 import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
+import { markedDrawInputs } from './discovery/marked-shapes';
 import { buildWindowTitle, fileNameOf } from './shell/status-format';
 import type { SaveStatus } from './file-ops/save-context';
 import { projectStats } from './e2e/project-stats';
@@ -205,7 +211,8 @@ import { VertexCandidateStore } from './map/vertex-candidates';
 import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
-import { resolveTargetLeaves } from '../domain/affiliation/index';
+import { planAffiliationTargets } from '../domain/affiliation/index';
+import { hasOwnSeries } from '../domain/affiliation/materialize';
 import { createDeletionState, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -344,7 +351,20 @@ export function App(): JSX.Element {
         liveFeatureIds: () => {
           const getRoot = liveRootRef.current;
           const root = getRoot !== null ? getRoot() : buildEmptyProject();
-          return new Set<FeatureId>(root.histories.map((h) => h.featureId));
+          // **母集合は「どこかの年に居る地物」**（司令塔の決定 (10)）。旧版は
+          // `histories.map(h => h.featureId)` ＝「自分の系列を持つ地物」だったので、
+          // **まとめ役の子（実データで 86 件）が最初から母集合に居ない**。だから
+          // その子に付けた印も、その子に掛けた個別の表示条件も、次の確定で黙って
+          // 消えていた（バグ狩り #8）。錨の中に居る地物まで数えれば、消された地物
+          // だけが母集合から落ちる ―― 取り消しで戻れば母集合にも戻る。
+          const ids = new Set<FeatureId>();
+          for (const history of root.histories) {
+            ids.add(history.featureId);
+            for (const entry of history.series.entries) {
+              for (const f of entry.anchor.snapshot.features) ids.add(f.id);
+            }
+          }
+          return ids;
         },
         // FR-109 follow-up: read the palette 2 fields out of the committed root's
         // uiSettings so the store can mirror a palette command's change back into the
@@ -453,6 +473,19 @@ export function App(): JSX.Element {
         const s = store.getState();
         s.reflectLoadedProject(
           buildSyntheticAnchorProject(s.domain, count, options),
+          {},
+        );
+      }),
+    [store],
+  );
+
+  // 記録の置き場の検査のための入れ子（増分 7 の手直し A）。
+  useEffect(
+    () =>
+      registerE2eHarnessAction(globalThis, 'loadSyntheticNested', (childCount, years) => {
+        const s = store.getState();
+        s.reflectLoadedProject(
+          buildSyntheticNestedProject(s.domain, childCount, years ?? [1000, 1200]),
           {},
         );
       }),
@@ -754,8 +787,6 @@ export function App(): JSX.Element {
    */
   const markedFeatureIdList = useMemo(() => [...markedFeatures], [markedFeatures]);
   /** 対象色を引き直す契機（形は時刻とドメインで変わる）。細いセレクタで購読する。 */
-  const domainNonce = useStore(store, (s) => s.domain);
-  const currentTimeForMarks = useStore(store, (s) => s.currentTime);
   const openFileName = fileNameOf(saveStatus.savePath);
 
   // ウィンドウタイトル（設計書 §H.6）。**書き換えるコードはこれまでリポジトリに 0 件**で、
@@ -1118,12 +1149,45 @@ export function App(): JSX.Element {
    * 形は確定と同じ live-lookup（`leafShapeAt`）で解く ―― 描いたものと、まとめて直す
    * 相手が食い違わない（教訓 5.29）。印が空なら `[]` を押し込んで消える（教訓 5.18）。
    */
+  //
+  // **App はドメインと時刻を丸ごと購読しない**（反証 2-8）。旧版は引き直しの契機として
+  // `useStore(s => s.domain)` と `useStore(s => s.currentTime)` を読んでいたので、
+  // **時刻を 1 年動かすたびに App 全体（数千行の木）が再レンダー**していた。引き直しの
+  // 契機は `store.subscribe` で拾い、React の再レンダーには乗せない（教訓 5.74 の
+  // 「描き直しは購読で、組み直しは state で」）。
+  const markedFeaturesRef = useRef<ReadonlySet<FeatureId>>(markedFeatures);
+  markedFeaturesRef.current = markedFeatures;
   useEffect(() => {
-    const s = store.getState();
-    const shapes = [...markedFeatures].map((id) => leafShapeAt(s.domain, s.currentTime, id));
-    rendererRef.current?.drawMarked(buildMarkedHighlight({ markedShapes: shapes }));
-    // 印・ドメイン・時刻のどれが動いても引き直す（形は時刻で変わる）。
-  }, [store, markedFeatures, domainNonce, currentTimeForMarks]);
+    const paint = (): void => {
+      const s = store.getState();
+      rendererRef.current?.drawMarked(
+        buildMarkedHighlight(markedDrawInputs(s.domain, s.currentTime, markedFeaturesRef.current)),
+      );
+    };
+    paint();
+    let lastDomain = store.getState().domain;
+    let lastTime = store.getState().currentTime;
+    return store.subscribe((s) => {
+      if (s.domain === lastDomain && s.currentTime === lastTime) return;
+      const timeMoved = s.currentTime !== lastTime;
+      lastDomain = s.domain;
+      lastTime = s.currentTime;
+      // **その年に居なくなった印は外す**（Fable #5）。印は「まとめて直す相手」なので、
+      // 居ない地物を数え続けると帯の件数と実際に直せる件数が食い違う。外した件数は
+      // 黙って減らさずに状態行へ出す（教訓 5.12）。
+      if (timeMoved && markedFeaturesRef.current.size > 0) {
+        const alive = new Set(featuresAt(s.domain, s.currentTime).map((f) => f.id));
+        const kept = [...markedFeaturesRef.current].filter((id) => alive.has(id));
+        const dropped = markedFeaturesRef.current.size - kept.length;
+        if (dropped > 0) {
+          s.setFeatureMarks(kept);
+          statusMessageStore.notice(APP_STRINGS.markDroppedByTime(dropped));
+        }
+      }
+      paint();
+    });
+    // 印が動いたときは React 側から、ドメイン・時刻が動いたときは購読から引き直す。
+  }, [store, markedFeatures, statusMessageStore]);
 
   // The stable camera-input port handed to BOTH tool controllers (bughunt: 追加/ナイフ
   // 描画中のパン/ズーム). Each method reads the live dispatcher-backed port through the
@@ -1570,10 +1634,29 @@ export function App(): JSX.Element {
   // 出なかった（消えたことに気づかないまま作業が進む）。所有者の裁定は「消す前に何が
   // 起きるかを必ず見せる」なので、どの経路も同じ `DeleteConfirmDialog` を通す。
   // 影響の一覧（道連れになる集約地物・昇格する子）の本格版は増分 7 に入る。
+  /**
+   * 「この年に終わったことにする」の断りを、右クリックの組み立てからも引けるようにする
+   * （反証 2-9）。判定は下の `endHereRefusalFor` 1 か所にあり、宣言の順が逆なので
+   * 参照だけを持ち回す（`resolveDeleteImpactRef` と同じ形）。
+   */
+  const endHereRefusalForRef = useRef<((featureId: FeatureId) => string | null) | null>(null);
+
   const [pendingDelete, setPendingDelete] = useState<{
     readonly featureId: FeatureId;
     readonly name: string | null;
+    /**
+     * **押した瞬間に 1 度だけ**数えた影響（反証 2-7）。render のたびに数え直すと、
+     * 全錨の走査（実データで 400 地物 × 全錨）が板を開いている間ずっと回る。
+     */
+    readonly view: DeleteImpactView;
   } | null>(null);
+  /**
+   * 影響の数え上げは下（`resolveDeleteImpactFor`）で作るが、削除の漏斗はそれより上に
+   * 居る。宣言の順を入れ替えると読み筋が壊れるので、参照だけを持ち回す。
+   */
+  const resolveDeleteImpactRef = useRef<((featureId: FeatureId) => DeleteImpactView) | null>(
+    null,
+  );
 
   /** いま有効な地物の表示名（分からなければ null）。確認と結果の文言に使う。 */
   const featureNameOf = useCallback(
@@ -1611,9 +1694,16 @@ export function App(): JSX.Element {
    * 地物ごと消える**。取り消せるとはいえ、何が起きるかを言わずに消すのは削除の作法から
    * 外れているので、地物の削除・錨の削除・輪郭の削除と **同じ器**を通す。
    */
-  const [pendingVertexDelete, setPendingVertexDelete] = useState<EditDeleteSelection | null>(
-    null,
-  );
+  const [pendingVertexDelete, setPendingVertexDelete] = useState<{
+    readonly selection: EditDeleteSelection;
+    /**
+     * この削除で **地物そのものが消えるか**（Fable #3 / バグ狩り #4）。以前は条件なしに
+     * 「この地物そのものが消えます」と出していたので、3 個ある頂点のうち 1 個を消す
+     * だけでも「消えます」と脅していた。押した瞬間にドメインの計画（`buildVertexDeletePlan`）
+     * を 1 度だけ引いて、実際に閾値を割るときだけ出す。
+     */
+    readonly wholeFeature: boolean;
+  } | null>(null);
 
   const runDeleteFunnel = useCallback(
     (selection: EditDeleteSelection): void => {
@@ -1649,7 +1739,9 @@ export function App(): JSX.Element {
           if (createDeleteFeatureCommandForRoot(store.getState().domain, featureId) === null) {
             return;
           }
-          setPendingDelete({ featureId, name: featureNameOf(featureId) });
+          const view = resolveDeleteImpactRef.current?.(featureId);
+          if (view === undefined) return;
+          setPendingDelete({ featureId, name: featureNameOf(featureId), view });
         },
       });
     },
@@ -1664,12 +1756,17 @@ export function App(): JSX.Element {
   const requestDelete = useCallback(
     (selection: EditDeleteSelection): void => {
       if (selection.vertexIds.size > 0 && selection.vertexOwner !== null) {
-        setPendingVertexDelete(selection);
+        const plan = buildVertexDeletePlan(
+          { getRoot: () => store.getState().domain, getTime: () => store.getState().currentTime },
+          { ownerFeatureId: selection.vertexOwner, vertexIds: selection.vertexIds },
+        );
+        if (plan === null) return; // 何も起きない（教訓 5.24 幽霊の取り消しを作らない）。
+        setPendingVertexDelete({ selection, wholeFeature: plan.kind === 'delete-feature' });
         return;
       }
       runDeleteFunnel(selection);
     },
-    [runDeleteFunnel],
+    [runDeleteFunnel, store],
   );
 
   useEffect(() => {
@@ -1847,6 +1944,10 @@ export function App(): JSX.Element {
         // ドメインを引く。既に錨がある年では出したまま灰色にして理由を見せる
         // （「押せる項目を押したら拒否される」をなくす、出す=起きる, 教訓 5.6）。
         hasAnchorAt: (fid) => anchorExistsAt(fid, toYearPoint(s.currentTime)),
+        // 「この年に終わったことにする」の出し分け（反証 2-9）。**素性欄のボタンと
+        // 同じ関数**で判定する ―― 素性欄では灰色なのに右クリックでは押せて、押すと
+        // 状態行に断りが出るだけ、という不揃いを無くす（出す=起きる, 教訓 5.6）。
+        endHereBlocked: (fid) => endHereRefusalForRef.current?.(fid) != null,
         // 対象の印（増分 7 / 設計書 §D.5・§I.3）。**右クリックした瞬間の集合**を模型が
         // 運ぶので、「選んだ n 件をまとめて…」は出したときと同じ相手に発火する。
         markedFeatureIds: s.ledger.marked,
@@ -1875,8 +1976,13 @@ export function App(): JSX.Element {
   const markSubtreeOf = useCallback(
     (featureId: FeatureId): void => {
       const s = store.getState();
-      const leaves = resolveTargetLeaves(featuresAt(s.domain, s.currentTime), featureId);
-      if (leaves === undefined || leaves.length === 0) {
+      // **孫まで**広げる（反証 2-10）。旧版は `resolveTargetLeaves` を 1 段しか通して
+      // いなかったので、まとめ役の下にまとめ役が居ると「全下位領域」と言いながら
+      // まとめ役だけに印が付いていた。確定と同じ洗い直し（`planAffiliationTargets`）を
+      // 通せば、末端まで畳んだ集合が返る（教訓 5.29: 予告と確定が同じ規則を見る）。
+      const leaves = planAffiliationTargets(featuresAt(s.domain, s.currentTime), [featureId])
+        .leafIds;
+      if (leaves.length === 0) {
         statusMessageStore.failure(APP_STRINGS.markSubtreeEmpty);
         return;
       }
@@ -1884,6 +1990,18 @@ export function App(): JSX.Element {
       statusMessageStore.success(APP_STRINGS.markSubtreeDone(leaves.length));
     },
     [store, statusMessageStore],
+  );
+
+  /**
+   * 対象のうち **自分の歴史をまだ持っていない**件数（司令塔の決定 (1) の予告に使う）。
+   * まとめ役の錨に居候している地物は、所属を変えた瞬間に自分の系列が起きる。
+   */
+  const countWithoutOwnSeries = useCallback(
+    (featureIds: readonly FeatureId[]): number => {
+      const histories = store.getState().domain.histories;
+      return featureIds.filter((id) => !hasOwnSeries(histories, id)).length;
+    },
+    [store],
   );
 
   /**
@@ -1942,16 +2060,29 @@ export function App(): JSX.Element {
       if (own !== undefined) return null;
       // まとめ役の子（実データで 86 件）は自分の系列を持たない。親の錨に終了を打つと
       // **親が終わって**しまうので、ここからは断って上位領域へ案内する（設計書 §C.6）。
+      // **親欄と同じ源から引く**（Fable #7）。旧版は「記録を持っている歴史の持ち主」
+      // だけを見ていたので、所属を変えた直後は **移す前の親の名前**が出ていた（古い名前）。
+      // まず地物自身の `parentId`（＝素性欄の親欄が出しているもの）を見て、それが
+      // 引けないときだけ記録の持ち主へ落ちる。どちらも引けなければ名前を出さない。
+      const feature = featureByIdAt(s.domain, s.currentTime, featureId);
+      const byParent =
+        feature?.parentId === undefined
+          ? undefined
+          : featureByIdAt(s.domain, s.currentTime, feature.parentId)?.attributes.name;
       const found = findHistoryContaining(s.domain, featureId, s.currentTime, calendar);
-      const ownerName =
+      const byHistory =
         found === undefined
-          ? ''
-          : (featureByIdAt(s.domain, s.currentTime, found.history.featureId)?.attributes.name ??
-            '');
-      return PROPERTY_STRINGS.endHereNoOwnSeries(ownerName);
+          ? undefined
+          : featureByIdAt(s.domain, s.currentTime, found.history.featureId)?.attributes.name;
+      const ownerName = byParent ?? byHistory;
+      return ownerName === undefined || ownerName === ''
+        ? PROPERTY_STRINGS.endHereNoOwnSeriesUnnamed
+        : PROPERTY_STRINGS.endHereNoOwnSeries(ownerName);
     },
     [store, calendar],
   );
+  // 右クリックの組み立てから同じ判定を引けるようにする（反証 2-9）。
+  endHereRefusalForRef.current = endHereRefusalFor;
 
   const endFeatureHere = useCallback(
     (featureId: FeatureId): void => {
@@ -1972,16 +2103,20 @@ export function App(): JSX.Element {
         statusMessageStore.failure(PROPERTY_STRINGS.endHereNoOwnSeries(''));
         return;
       }
+      // **名前は打つ前に取る**（Fable #6 / バグ狩り #6）。終了を打つとその年には
+      // 居なくなるので、あとから引くと必ず空になり、状態行が「を 1500 年に終わった
+      // ことにしました」と読めない文になっていた。
+      const name = featureNameOf(featureId) ?? '';
       try {
         anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
           buildSetEndIntent(featureId, entry.anchor.id, at),
         );
-        statusMessageStore.success(
-          PROPERTY_STRINGS.endHereDone(
-            featureNameOf(featureId) ?? '',
-            formatYear(at.year),
-          ),
-        );
+        // **終わらせても選択は保つ**（司令塔の決定 (12)）。確定後の選択の洗い直しは
+        // 「その年に居ない地物」を外すので、押した瞬間に素性欄もレーンも空になり、
+        // **終端が見えないまま**になっていた。ここで選び直せば、レーンに終端の印が
+        // 立っているのが読める（読むだけでも選べる＝増分 2 の裁定と同じ立場）。
+        store.getState().setActiveFeature(featureId);
+        statusMessageStore.success(PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)));
       } catch (e) {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
       }
@@ -2032,6 +2167,8 @@ export function App(): JSX.Element {
     },
     [store, featureNameOf],
   );
+  // 上の漏斗から呼べるようにする（宣言の順を入れ替えずに済ませる）。
+  resolveDeleteImpactRef.current = resolveDeleteImpactFor;
 
   const onSelectMenuItem = useCallback(
     (itemKind: MenuItemKind, model: ContextMenuModel): void => {
@@ -2388,6 +2525,8 @@ export function App(): JSX.Element {
     (result: ProcessResult<DomainRoot>, snapshot: MergeSnapshot) => {
       if (result.status !== PROCESS_STATUS.Committed) return;
       recordCommit(result, { featureId: snapshot.resultFeatureId }, store.getState().currentTime);
+      // 確定したら印を捨てる（設計書 §D.5「捨てる契機: 確定」。所属変更と揃える）。
+      store.getState().clearFeatureMarks();
     },
     [recordCommit, store],
   );
@@ -2405,6 +2544,11 @@ export function App(): JSX.Element {
         targetId !== undefined ? { featureId: targetId } : undefined,
         store.getState().currentTime,
       );
+      // **確定したら印を捨てる**（Fable #5 / 設計書 §D.5「捨てる契機: 確定」）。
+      // 残しておくと、道具を構え直した瞬間に同じ 3 件がまた対象になり、
+      // 「もう 1 度動かすつもりは無かったのに動かせてしまう」状態になる。
+      // まとめて種別を付ける側は既に捨てているので、不揃いも直る。
+      store.getState().clearFeatureMarks();
     },
     [recordCommit, store],
   );
@@ -2611,9 +2755,13 @@ export function App(): JSX.Element {
     draftConfirmOpen ||
     // 増分 4: 「どこへでも移動」（Ctrl+P）が開いている間は、打鍵はその入力欄のもの。
     // 開いたまま Ctrl+Z が背後へ抜けると、打っている最中に世界が巻き戻る（教訓 5.14）。
-    jumpOpen ||
-    // A8: 削除の確認が開いている間は、Ctrl+Z / Delete が背後へ抜けない（教訓 5.14）。
-    pendingDelete !== null;
+    jumpOpen;
+    // NOTE（司令塔の決定 (13)）: 板ごとの真偽値をここへ書き足すのはやめた。増分 7 で
+    // 足した板 5 枚（素性欄の削除・錨の削除・複数頂点の削除・輪郭の削除・まとめて種別）
+    // が **まるごと書き漏れて**いて、板の上で Delete を押すと板が 2 枚重なり、Ctrl+Z が
+    // 背後で走った。いまはどの板も `useModalRegistration` で自分から名乗り、
+    // `openToolModals` に載る。板を足す人が直すのは「その板へ `onModalChange` を配線する」
+    // 1 か所だけになる（`modal-registration.test.tsx` が名乗り漏れを総当たりで見る）。
   const toolOwnsKeyboard =
     addDrawing ||
     knifeDrawing ||
@@ -3322,6 +3470,8 @@ export function App(): JSX.Element {
         onCreateAnchorHere: requestCreateAnchorHere,
         // A4 (c): 打ちかけの確認が出ているあいだ、大域ショートカットを止める。
         onDraftConfirmChange: setDraftConfirmOpen,
+        // 素性欄の中の板（錨の削除の確認）も鍵盤の持ち主として名乗る（決定 (13)）。
+        onPropertyModalChange: toolModalChange('anchor-delete-impact'),
         onFocusFeatureCamera: focusCameraOnFeature,
         // 増分 3 / N-15: 追加を確定したあとの素性入力を **素性欄の位置**に出す。
         addDraft: addDraftStore,
@@ -3627,6 +3777,7 @@ export function App(): JSX.Element {
               onConflicts={onMergeConflicts}
               onDrawingChange={setMergeDrawing}
               onModalChange={toolModalChange('merge')}
+              markedFeatureIds={markedFeatureIdList}
             />
             {/* U28 INTEGRATION (教訓 5.7 / 5.2): the reparent-tool controller, bound to the
                 SAME store. Selecting 編集モード→所属変更 starts a session; the first map
@@ -3652,6 +3803,7 @@ export function App(): JSX.Element {
               onModalChange={toolModalChange('reparent')}
               markedFeatureIds={markedFeatureIdList}
               openOptionsRequest={reparentOpenRequest}
+              countWithoutOwnSeries={countWithoutOwnSeries}
             />
             {/* U25 INTEGRATION (教訓 5.7 / 5.2): the ring-edit (穴 / 飛び地) controller,
                 bound to the SAME store. Selecting 編集モード→穴・飛び地 arms a session; the
@@ -3679,6 +3831,7 @@ export function App(): JSX.Element {
               onConflicts={onRingEditConflicts}
               onDrawingChange={setRingEditDrawing}
               onModalChange={toolModalChange('ring-edit')}
+              onImpactModalChange={toolModalChange('ring-delete-impact')}
               onDraftDiscarded={(count) => {
                 statusMessageStore.notice(ADD_STRINGS.draftDiscarded(count));
               }}
@@ -3857,7 +4010,7 @@ export function App(): JSX.Element {
                 最上位へ移る下位領域、自動で消える集約まで **消す前に**出す。 */}
             {pendingDelete !== null &&
               (() => {
-                const view = resolveDeleteImpactFor(pendingDelete.featureId);
+                const view = pendingDelete.view;
                 return (
                   <ImpactConfirmDialog
                     testIdPrefix="delete-impact"
@@ -3873,6 +4026,7 @@ export function App(): JSX.Element {
                       commitFeatureDelete(target);
                     }}
                     onCancel={() => setPendingDelete(null)}
+                    onModalChange={toolModalChange('delete-impact')}
                   />
                 );
               })()}
@@ -3883,16 +4037,21 @@ export function App(): JSX.Element {
             {pendingVertexDelete !== null && (
               <ImpactConfirmDialog
                 testIdPrefix="vertex-delete-impact"
-                title={PROPERTY_STRINGS.vertexDeleteTitle(pendingVertexDelete.vertexIds.size)}
+                title={PROPERTY_STRINGS.vertexDeleteTitle(
+                  pendingVertexDelete.selection.vertexIds.size,
+                )}
                 groups={[
                   {
                     testId: 'gone',
                     heading: PROPERTY_STRINGS.impactHeadingGone,
                     lines: [
                       PROPERTY_STRINGS.vertexDeleteLineCount(
-                        pendingVertexDelete.vertexIds.size,
+                        pendingVertexDelete.selection.vertexIds.size,
                       ),
-                      PROPERTY_STRINGS.vertexDeleteLineBelowThreshold,
+                      // 閾値を割るときだけ「地物ごと消える」と言う（Fable #3）。
+                      ...(pendingVertexDelete.wholeFeature
+                        ? [PROPERTY_STRINGS.vertexDeleteLineBelowThreshold]
+                        : [PROPERTY_STRINGS.vertexDeleteLineSurvives]),
                     ],
                   },
                 ]}
@@ -3900,11 +4059,12 @@ export function App(): JSX.Element {
                 cancelLabel={PROPERTY_STRINGS.impactCancel}
                 note={PROPERTY_STRINGS.impactUndoNote}
                 onConfirm={() => {
-                  const target = pendingVertexDelete;
+                  const target = pendingVertexDelete.selection;
                   setPendingVertexDelete(null);
                   runDeleteFunnel(target);
                 }}
                 onCancel={() => setPendingVertexDelete(null)}
+                onModalChange={toolModalChange('vertex-delete-impact')}
               />
             )}
 
@@ -3915,6 +4075,7 @@ export function App(): JSX.Element {
                 count={bulkKindTargets.length}
                 onConfirm={commitBulkKindLabel}
                 onCancel={() => setBulkKindTargets(null)}
+                onModalChange={toolModalChange('bulk-kind')}
               />
             )}
             <FileOpsController

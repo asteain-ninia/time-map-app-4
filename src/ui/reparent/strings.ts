@@ -118,9 +118,35 @@ export const REPARENT_STRINGS = {
   /** 最上位へ（独立）の予告。 */
   previewNone: (count: number): string =>
     `${String(count)} 件をどこにも所属しない状態（最上位）にします。`,
-  /** どの年に記録が増えるか（V6 の確認の文）。 */
-  previewAnchors: (year: string): string =>
-    `${year}の記録が、元の上位領域と、移す地物の両方に増えます。取り消しは Ctrl+Z 1 回です。`,
+  /**
+   * どの年に記録が増えるか（V6 の確認の文）。**実際の増え方に合わせる**（反証 2-3 /
+   * Fable #2）。旧版は枝によらず「元の上位領域と、移す地物の両方に増えます」と
+   * 言い切っていたが、実際は
+   *   - 移す地物が自分の系列を持っていなければ、まず **自分の系列が起きる**（決定 (1)）、
+   *   - 元の上位領域にも記録が増える（子が減った姿）、
+   *   - 新しい上位領域を作る枝では **作った上位領域**にも 1 本目の記録が生まれる、
+   * で、枝と相手によって増える場所が違う。文を分けて、起きることだけを言う。
+   */
+  previewAnchorsInto: (year: string): string =>
+    `${year}の記録が、移す地物・元の上位領域・行き先の上位領域に増えます。`,
+  previewAnchorsCreate: (year: string): string =>
+    `${year}の記録が、移す地物・元の上位領域に増え、新しく作る上位領域には 1 本目の記録が生まれます。`,
+  previewAnchorsNone: (year: string): string =>
+    `${year}の記録が、移す地物・元の上位領域に増えます。`,
+  /** 決定 (1): まとめ役の錨に居候している地物は、ここで自分の系列を持つ。 */
+  previewMaterialize: (count: number): string =>
+    `${String(count)} 件は上位領域の記録の中に居るので、この操作で自分の歴史を持つようになります（全部の年の記録を写します）。`,
+  /** 取り消しの一言（どの枝でも最後に出す）。 */
+  previewUndo: '取り消しは Ctrl+Z 1 回です。',
+  /** 子を全部失って自動で消えるまとめ役（解体の主経路。反証 2-4）。 */
+  previewAutoRemoved: (names: string): string =>
+    `「${names}」は下位領域を全て失うので、この年から自動で消えます。`,
+  /** 分け残しが生まれる枝の予告（反証 2-5）。 */
+  previewDirectDomain: (ownerName: string, directDomainName: string): string =>
+    `「${ownerName}」は形を持たないまとめ役に変わり、いまの形は新しい末端「${directDomainName}」へ移ります。`,
+  /** 断られた理由を板の本文に出す（Fable #6）。 */
+  previewIneligible: (parentName: string, reason: string): string =>
+    `「${parentName}」は行き先にできません: ${reason}`,
   /** まとめ役を対象にしたとき、下位領域へ広げたことを言う（FR-48 後半）。 */
   previewExpanded: (aggregateName: string, count: number): string =>
     `「${aggregateName}」はまとめ役なので、その下位領域 ${String(count)} 件を対象にしました。`,
@@ -130,6 +156,10 @@ export const REPARENT_STRINGS = {
   /** 洗い直しで外したもの（空のまとめ役）。 */
   previewDroppedEmpty: (count: number): string =>
     `${String(count)} 件は、下位領域を 1 つも持たないまとめ役なので対象から外しました。`,
+  /** 板の見出しに件数を出す（Fable #16: 何件を相手にしているのかが題で読める）。 */
+  /** 帯の対象欄で複数を名乗る（反証 2-2）。 */
+  targetWithRest: (head: string, rest: number): string => `${head} ほか ${String(rest)} 件`,
+  optionsTitleWithCount: (count: number): string => `所属を変える（対象 ${String(count)} 件）`,
   /** 板の確定ボタン。確定欄の語と揃える。 */
   optionsConfirm: '所属を変える',
   /** 板の取りやめ。**「やめる」ではない** ―― 選んだ地物は保ったまま板だけ閉じる。 */

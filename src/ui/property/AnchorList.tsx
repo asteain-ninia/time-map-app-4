@@ -126,6 +126,20 @@ export interface AnchorListProps {
   readonly featureId?: FeatureId;
   /** HB3-12: dispatch a存続期間 edit; returns an error message to show, or null. */
   readonly onEditInterval?: (intent: AnchorIntervalEditIntent) => string | null;
+  /**
+   * 「板が出ている」と名乗る口（司令塔の決定 (13)）。錨の削除の確認が出ている間、
+   * 背後で Ctrl+Z / Delete が走らないようにする。
+   */
+  readonly onModalChange?: (open: boolean) => void;
+  /**
+   * 上位領域の表示名を **根から**引く落とし先（バグ狩り #5 / Fable #7）。
+   *
+   * 差分の文の親名はまず錨のスナップショットから引く（その年の姿を言うため）。だが
+   * 所属を変えた直後は、移した地物が **自分の系列**を持ち、そのスナップショットには
+   * 自分しか居ない ―― 新しい親はそこに居ないので「別の地物」と出ていた。引けなかった
+   * ときだけ根から引き直す。
+   */
+  readonly resolveParentName?: (featureId: FeatureId) => string | null;
 }
 
 export function AnchorList(props: AnchorListProps): JSX.Element {
@@ -138,6 +152,7 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
     onSelectAnchor,
     featureId,
     onEditInterval,
+    resolveParentName,
   } = props;
 
   const [expanded, setExpanded] = useState(false);
@@ -177,13 +192,13 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
         before: (id) =>
           row.previous === null
             ? PROPERTY_STRINGS.unknownParentName
-            : parentNameIn(row.previous.anchor.snapshot, id),
-        after: (id) => parentNameIn(row.entry.anchor.snapshot, id),
+            : parentNameIn(row.previous.anchor.snapshot, id, resolveParentName),
+        after: (id) => parentNameIn(row.entry.anchor.snapshot, id, resolveParentName),
       });
       diffCacheRef.current.cache.set(row.entry.anchor.id, sentence);
       return sentence;
     },
-    [dataset, featureIdForDiff],
+    [dataset, featureIdForDiff, resolveParentName],
   );
 
   // --- 選ばれている錨まで自動でスクロールする（C1 / バグ狩り #9 / GPT#10） -------
@@ -422,6 +437,7 @@ export function AnchorList(props: AnchorListProps): JSX.Element {
           featureId={featureId}
           soleAnchor={soleAnchor}
           onEditInterval={onEditInterval}
+          {...(props.onModalChange ? { onModalChange: props.onModalChange } : {})}
         />
       )}
     </div>
@@ -436,10 +452,22 @@ export function anchorRowDomId(anchorId: AnchorId): string {
   return `anchor-row-${anchorId}`;
 }
 
-/** 親の表示名をそのスナップショットから引く。引けなければ内部 id は出さない（U-1）。 */
-function parentNameIn(snapshot: AnchorSnapshot, parentId: FeatureId): string {
+/**
+ * 親の表示名をそのスナップショットから引く。**引けなければ根から引き直す**
+ * （バグ狩り #5: 所属を変えた直後は新しい親が自分の錨のスナップショットに居ない）。
+ * それでも引けなければ内部 id は出さない（U-1）。
+ */
+function parentNameIn(
+  snapshot: AnchorSnapshot,
+  parentId: FeatureId,
+  fallback?: (featureId: FeatureId) => string | null,
+): string {
   const parent = featureInSnapshot(snapshot, parentId);
-  return parent === null ? PROPERTY_STRINGS.unknownParentName : parent.attributes.name;
+  if (parent !== null) return parent.attributes.name;
+  const fromRoot = fallback?.(parentId);
+  return fromRoot === undefined || fromRoot === null || fromRoot === ''
+    ? PROPERTY_STRINGS.unknownParentName
+    : fromRoot;
 }
 
 /** A granularity-aware key fragment for a TimePoint (remount/re-seed after an edit). */
@@ -471,8 +499,9 @@ function AnchorIntervalEditor(props: {
   readonly featureId: FeatureId;
   readonly soleAnchor: boolean;
   readonly onEditInterval: (intent: AnchorIntervalEditIntent) => string | null;
+  readonly onModalChange?: (open: boolean) => void;
 }): JSX.Element {
-  const { entry, calendar, featureId, soleAnchor, onEditInterval } = props;
+  const { entry, calendar, featureId, soleAnchor, onEditInterval, onModalChange } = props;
   const anchorId = entry.anchor.id;
 
   const [message, setMessage] = useState<string | null>(null);
@@ -529,10 +558,18 @@ function AnchorIntervalEditor(props: {
         className="anchor-interval__delete"
         data-testid={`anchor-interval-delete-${anchorId}`}
         disabled={soleAnchor}
+        title={soleAnchor ? PROPERTY_STRINGS.intervalDeleteSoleReason : undefined}
         onClick={() => setConfirmingDelete(true)}
       >
         {PROPERTY_STRINGS.intervalDeleteLabel}
       </button>
+      {/* 最後の 1 本を消せない理由を **画面の文として**出す（Fable #14）。灰色の
+          ボタンだけでは「なぜ押せないのか」が読めない（教訓 5.26）。 */}
+      {soleAnchor && (
+        <p className="anchor-interval__note" data-testid={`anchor-interval-delete-reason-${anchorId}`}>
+          {PROPERTY_STRINGS.intervalDeleteSoleReason}
+        </p>
+      )}
 
       {confirmingDelete && (
         <ImpactConfirmDialog
@@ -556,6 +593,7 @@ function AnchorIntervalEditor(props: {
             run(buildDeleteAnchorIntent(featureId, anchorId));
           }}
           onCancel={() => setConfirmingDelete(false)}
+          {...(onModalChange ? { onModalChange } : {})}
         />
       )}
 

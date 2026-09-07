@@ -143,6 +143,11 @@ export interface UseMergeToolActions {
   readonly toggleTarget: (featureId: FeatureId) => void;
   /** Drop every chosen target (stay armed). */
   readonly clearTargets: () => void;
+  /**
+   * 対象の集合を外から入れ替える（一覧の印を引き継ぐ。増分 7 の手直し F）。
+   * 空配列なら「選び直し」の頭へ戻る。所属変更の `setTargets` と同じ形。
+   */
+  readonly setTargets: (featureIds: readonly FeatureId[]) => void;
   /** Cancel the session (Escape / cancel button) → idle transient cleared. */
   readonly cancel: () => void;
   /**
@@ -218,6 +223,12 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
   const clearTargets = useCallback((): void => {
     setTargetIds([]);
     setMessage(null);
+  }, []);
+
+  const setTargets = useCallback((featureIds: readonly FeatureId[]): void => {
+    setMessage(null);
+    setFlow((f) => (f === MERGE_FLOW.Idle ? f : MERGE_FLOW.Selecting));
+    setTargetIds([...new Set(featureIds)]);
   }, []);
 
   const toggleTarget = useCallback((featureId: FeatureId): void => {
@@ -391,6 +402,7 @@ export function useMergeTool<S>(options: UseMergeToolOptions<S>): UseMergeTool {
     resetForSwitch,
     toggleTarget,
     clearTargets,
+    setTargets,
     cancel,
     confirm,
     cancelChoose,

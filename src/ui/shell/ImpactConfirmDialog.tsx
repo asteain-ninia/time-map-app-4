@@ -16,7 +16,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 
-import { useModalKeydown } from '../a11y/index';
+import { useModalKeydown, useModalRegistration } from '../a11y/index';
 
 /** 影響の一覧の 1 群（見出しと、その中の行）。行が 0 本なら群ごと出さない。 */
 export interface ImpactGroup {
@@ -45,6 +45,11 @@ export interface ImpactConfirmDialogProps {
   readonly note?: string | null;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
+  /**
+   * 「板が出ている」と名乗る口（司令塔の決定 (13)）。宿主はこれを
+   * `toolModalChange('<名前>')` へ配線する。渡さないと **背後で Ctrl+Z / Delete が走る**。
+   */
+  readonly onModalChange?: (open: boolean) => void;
 }
 
 export function ImpactConfirmDialog(props: ImpactConfirmDialogProps): JSX.Element {
@@ -58,8 +63,11 @@ export function ImpactConfirmDialog(props: ImpactConfirmDialogProps): JSX.Elemen
     note = null,
     onConfirm,
     onCancel,
+    onModalChange,
   } = props;
   const dialogRef = useRef<HTMLDivElement | null>(null);
+  // 出ている間は自分で名乗る（決定 (13)。名乗り忘れを構造的に無くす）。
+  useModalRegistration(onModalChange, true);
 
   const cancel = useCallback(() => onCancel(), [onCancel]);
   // Esc で閉じ、Tab は板の中を回る（背面へ抜けない）。ほかの板と同じ共有の罠。

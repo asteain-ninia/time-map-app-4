@@ -55,29 +55,43 @@ export function useDeferredCommit(options?: {
   // ティックの中で 2 回押されたら state だけでは止められない（実測: マウスの
   // ダブルクリックは 1 コミットの中に 2 発入る）。
   const runningRef = useRef(false);
+  // **StrictMode で 2 度マウントされても真に戻す**（GPT の指摘）。React 18 の
+  // StrictMode は開発時に「マウント → 後片付け → もう 1 度マウント」を走らせるので、
+  // 初期値 `true` ＋ 後片付けで `false` だけだと **2 度目のマウントで false のまま**に
+  // なり、確定が終わっても進行表示が消えない（ボタンが永久に押せなくなる）。
+  // マウントのたびに真へ戻す。
   const mountedRef = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
       mountedRef.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const run = useCallback(
     (task: () => void): void => {
       if (runningRef.current) return;
       runningRef.current = true;
       setBusy(true);
-      schedule(() => {
-        try {
-          task();
-        } finally {
-          runningRef.current = false;
-          // 走り終えた時点で部品ごと消えていることがある（板が閉じる）。消えた木へ
-          // 書き戻さない（教訓 5.2 全経路で捨てる）。
-          if (mountedRef.current) setBusy(false);
-        }
-      });
+      // **`schedule()` 自身が投げても旗を戻す**（GPT の指摘）。差し込まれた口が
+      // 例外を投げると `task` は 1 度も走らないのに `runningRef` が真のまま残り、
+      // **以後どの確定も走らなくなる**（押しても無反応の道具ができあがる）。
+      try {
+        schedule(() => {
+          try {
+            task();
+          } finally {
+            runningRef.current = false;
+            // 走り終えた時点で部品ごと消えていることがある（板が閉じる）。消えた木へ
+            // 書き戻さない（教訓 5.2 全経路で捨てる）。
+            if (mountedRef.current) setBusy(false);
+          }
+        });
+      } catch (e) {
+        runningRef.current = false;
+        if (mountedRef.current) setBusy(false);
+        throw e;
+      }
     },
     [schedule],
   );
