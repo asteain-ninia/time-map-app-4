@@ -97,13 +97,17 @@ export const ITEM_FLOW: Readonly<Record<MenuItemKind, FlowKind>> = {
 
 /** Japanese user-facing label per item kind (FR-115). */
 export const MENU_ITEM_LABEL: Readonly<Record<MenuItemKind, string>> = {
-  [MENU_ITEM_KIND.Delete]: '削除',
+  // 素性欄のボタン（「この地物を全部の年から消す」）と **同じことを言う**（用語の統一）。
+  // 右クリックの「削除」だけが何をどこまで消すのか言っていなかった。
+  [MENU_ITEM_KIND.Delete]: '全部の年から消す',
   [MENU_ITEM_KIND.DeleteVertex]: '頂点を削除',
   [MENU_ITEM_KIND.EditProperties]: 'プロパティ編集',
   [MENU_ITEM_KIND.CreateAnchorHere]: 'この年に錨を作る',
   [MENU_ITEM_KIND.Unshare]: '共有解除',
   [MENU_ITEM_KIND.Split]: '分割',
-  [MENU_ITEM_KIND.ChangeAffiliation]: '所属変更',
+  // 用語集 §H.1 の第一表記は「所属を変える」。画面の文言はそちらへ揃える
+  // （「所属変更」は説明文の中の名詞としてだけ使う）。
+  [MENU_ITEM_KIND.ChangeAffiliation]: '所属を変える',
   [MENU_ITEM_KIND.Merge]: '結合',
   [MENU_ITEM_KIND.HideFeature]: 'この地物を非表示',
   [MENU_ITEM_KIND.EmphasizeFeature]: 'この地物を強調',
@@ -138,6 +142,13 @@ export const DISABLE_REASON = {
    * 分からず、有効のまま出すと「押しても何も起きない」になる — 出す=起きる, 教訓 5.6）。
    */
   AnchorAlreadyAtThisYear: 'anchorAlreadyAtThisYear',
+  /**
+   * その地物は **自分の歴史を持っていない**（まとめ役の錨の中に居る）ので、この年に
+   * 終わりを打てない（設計書 §C.6 / 反証 2-9）。素性欄のボタンは同じ条件で無効に
+   * なっていたのに、右クリックの項目だけが常に有効で、押すと状態行に断りが出るだけ
+   * だった ―― 出す=起きる（教訓 5.6）に反する。
+   */
+  EndHereNoOwnSeries: 'endHereNoOwnSeries',
 } as const;
 
 export type DisableReason =
@@ -151,6 +162,8 @@ export const DISABLE_REASON_MESSAGE: Readonly<Record<DisableReason, string>> = {
     'この地物は種別または深さの強調で既に目立たせているため、個別の強調/解除では見た目が変わりません。表示 ▾ の「強調をすべて解除」で解除してください。',
   [DISABLE_REASON.AnchorAlreadyAtThisYear]:
     'すでにこの年に錨があります。いまの年の姿はその錨が記録しているので、新しく作る必要はありません。',
+  [DISABLE_REASON.EndHereNoOwnSeries]:
+    'この地物の歴史は上位領域が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。',
 };
 
 /**

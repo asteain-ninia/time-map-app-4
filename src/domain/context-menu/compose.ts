@@ -128,6 +128,13 @@ export interface ComposeInput {
    */
   readonly hasAnchorAtCurrentTime?: boolean | undefined;
   /**
+   * 「この年に終わったことにする」を **打てないか**（反証 2-9）。素性欄のボタンと
+   * **同じ関数**（App の `endHereRefusalFor`）が出した結果を渡す ―― 判定を 2 つ持つと
+   * 「素性欄では灰色なのに右クリックでは押せる」が起きる（教訓 5.30）。
+   * 省略なら有効のまま出す。
+   */
+  readonly endHereBlocked?: boolean | undefined;
+  /**
    * いま印を付けてある地物（`markedFeatures`, 増分 7 / 設計書 §D.5）。任意 ―― 渡さない
    * 呼び出し側では印の項目そのものを出さない（既定は空集合）。
    *
@@ -359,6 +366,21 @@ function deleteItemFor(hasVertexSelection: boolean): ContextMenuItem {
  *
  * 読むだけ（canEdit=false）ではメニューごと出ないので、ここに権限の判定は書かない（教訓 5.13）。
  */
+/**
+ * 「この年に終わったことにする」の項目（設計書 §A.3 の入口 A / 反証 2-9）。
+ *
+ * **素性欄のボタンと同じ条件**で無効にする ―― 自分の歴史を持たない地物（まとめ役の
+ * 錨の中に居る子）は、ここから終わりを打つと **親が終わって**しまうので打てない。
+ * 判定そのものは根を引かないと出せないので、呼び出し側が結果を渡す（教訓 5.30 単一の
+ * 真実源: 素性欄の `endHereDisabledReason` と同じ関数から来る）。渡されなければ
+ * 有効のまま出し、押したときの可否は App 側の 1 か所が決める。
+ */
+function endHereItem(blocked: boolean | undefined): ContextMenuItem {
+  return blocked === true
+    ? disabledItem(MENU_ITEM_KIND.EndHere, DISABLE_REASON.EndHereNoOwnSeries)
+    : enabledItem(MENU_ITEM_KIND.EndHere);
+}
+
 function createAnchorHereItem(hasAnchorAtCurrentTime: boolean | undefined): ContextMenuItem {
   return hasAnchorAtCurrentTime === true
     ? disabledItem(MENU_ITEM_KIND.CreateAnchorHere, DISABLE_REASON.AnchorAlreadyAtThisYear)
@@ -418,6 +440,10 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
   if (input.canEdit) {
     switch (target.kind) {
       case MENU_TARGET_KIND.Feature: {
+        // 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A）。**削除より上**に
+        // 置く ―― 「消す」と言われる操作の実体はたいてい終了であり、既定の入口は
+        // こちらである（注記と実装が逆になっていた＝Fable #10）。
+        items.push(endHereItem(input.endHereBlocked));
         // 共通項目 (点/線/面いずれでも): 削除 vs 頂点を削除 by whether vertices are selected.
         items.push(deleteItemFor(target.vertexIds.size > 0));
         items.push(enabledItem(MENU_ITEM_KIND.EditProperties));
@@ -499,10 +525,6 @@ export function composeContextMenu(input: ComposeInput): ContextMenuModel | NoMe
       items.push(enabledItem(MENU_ITEM_KIND.ReparentMarked));
       items.push(enabledItem(MENU_ITEM_KIND.BulkKindLabel));
     }
-    // 「この年に終わったことにする」（設計書 §A.3 の削除の入口 A）。削除の隣に置く
-    // のではなく、**削除より上**に置く ―― 「消す」と言われる操作の実体はたいてい
-    // 終了であり、既定の入口はこちらである。
-    items.push(enabledItem(MENU_ITEM_KIND.EndHere));
   }
 
   if (displayTargetId !== null) {

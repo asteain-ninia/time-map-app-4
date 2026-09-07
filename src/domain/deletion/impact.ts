@@ -34,6 +34,13 @@ export interface DeletionImpact {
   readonly ownAnchorYears: readonly number[];
   /** 対象が自分の形として参照している頂点の数（全錨を通した相異なる頂点 ID の数）。 */
   readonly vertexCount: number;
+  /**
+   * そのうち **この地物だけが使っていた**頂点の数（司令塔の決定 (5)）。隣の地物と
+   * 共有している頂点は数えない ―― 共有頂点は削除後も相手が参照し続けるので、
+   * 「参照されなくなる」のは独り占めしていた分だけである。なお頂点そのものは
+   * 頂点表に残る（消えるのは参照）。
+   */
+  readonly soleVertexCount: number;
   /** 対象は自分の形を持つか（false＝まとめ役なので頂点 0 個が正しい姿）。 */
   readonly ownsShape: boolean;
   /**
@@ -81,6 +88,7 @@ export function describeDeletionImpact(
 ): DeletionImpact {
   const promoted = new Set<FeatureId>();
   const vertexIds = new Set<VertexId>();
+  const otherVertexIds = new Set<VertexId>();
   const autoRemoved = new Set<FeatureId>();
   let ownsShape = false;
 
@@ -91,6 +99,11 @@ export function describeDeletionImpact(
     if (target !== undefined) {
       if (target.kind !== FEATURE_KIND.Aggregate) ownsShape = true;
       for (const v of vertexIdsOf(target)) vertexIds.add(v);
+    }
+    // 共有の判定のため、対象以外が参照している頂点も同じ走査で集める（決定 (5)）。
+    for (const f of features) {
+      if (f.id === targetId) continue;
+      for (const v of vertexIdsOf(f)) otherVertexIds.add(v);
     }
     // 昇格する下位領域は「対象を親としている地物」＝ referencesInAnchor の childRefs。
     // 双方向の列挙を再実装せず、同じ関数を通す（教訓 5.21 / 単一の真実源）。
@@ -105,6 +118,7 @@ export function describeDeletionImpact(
     targetId,
     ownAnchorYears: [...ownAnchorYears].sort((a, b) => a - b),
     vertexCount: vertexIds.size,
+    soleVertexCount: [...vertexIds].filter((v) => !otherVertexIds.has(v)).length,
     ownsShape,
     promotedChildIds: [...promoted],
     autoRemovedIds: [...autoRemoved],

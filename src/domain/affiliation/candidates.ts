@@ -19,6 +19,7 @@
 import { FEATURE_KIND, featureDisplayName, type Feature } from '../feature';
 import { descendantIds, type Forest } from '../hierarchy/forest';
 import type { FeatureId } from '../ids';
+import { DIRECT_DOMAIN_NAME_SUFFIX } from '../promotion/direct-domain';
 
 /** 機械可読な拒否種別 (受け入れ基準 3: テスト可能なフィールド)。 */
 export const AFFILIATION_REJECT = {
@@ -38,6 +39,13 @@ export const AFFILIATION_REJECT = {
    * 子を持つと両方を原理的に満たせないため、親候補から種別で除外する。
    */
   ParentKind: 'parent-kind',
+  /**
+   * 候補が **分け残し（直轄領）**である（司令塔の決定 (8)）。直轄領は「元の形 − 子の和」
+   * として生まれた末端なので、そこへさらに子を入れると FR-37 がもう 1 枚の直轄領を
+   * 作り、「○○ 直轄領 直轄領」の鎖が伸びる（バグ狩り #11 で実測）。3 択の板から
+   * その鎖を作れないよう、候補の段で外す。
+   */
+  DirectDomainParent: 'direct-domain-parent',
 } as const;
 
 export type AffiliationRejectKind =
@@ -118,6 +126,20 @@ export function isLegalNewParent(
   // 存在期間整合 (親＝下位の和を将来満たせる位置にあること)。
   if (!existencePeriodsCompatible(target, candidate)) {
     return illegal(AFFILIATION_REJECT.ExistencePeriod);
+  }
+
+  // 分け残し（直轄領）は親にしない（司令塔の決定 (8)）。いまの実装では直轄領を
+  // 見分ける印は **既定名称の接尾辞**しかないので、それで判定する。名前で判定して
+  // いることは拒否の文言にも書いてあるので、利用者は名前を変えれば親にできる。
+  //
+  // **順番は最後**である ―― 循環や存在期間の違反は「構造として成り立たない」ので、
+  // 名前による除外より先に理由として出さないと、循環を試したのに「直轄領だから」と
+  // 断られる（性質検査 seed=35003 が実際にそれを捕まえた）。
+  if (
+    candidate.kind === FEATURE_KIND.Leaf &&
+    candidate.attributes.name.endsWith(DIRECT_DOMAIN_NAME_SUFFIX)
+  ) {
+    return illegal(AFFILIATION_REJECT.DirectDomainParent);
   }
 
   return LEGAL;

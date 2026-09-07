@@ -30,6 +30,10 @@ export const MSG_AFFILIATION_TARGET_KIND =
 export const MSG_AFFILIATION_PARENT_KIND =
   '点情報・線情報は新しい上位領域に指定できません。面情報を指定してください。';
 
+/** 候補が分け残し（直轄領）— さらに子を入れると直轄領の鎖が伸びる（決定 (8)）。 */
+export const MSG_AFFILIATION_DIRECT_DOMAIN =
+  '分け残し（直轄領）は新しい上位領域に指定できません。指定すると直轄領がもう 1 枚作られ、名前が連なっていきます。別の面情報を選ぶか、この地物の名前から「直轄領」を外してください。';
+
 /** 確定後の階層整合性検証に違反。 */
 export const MSG_AFFILIATION_HIERARCHY =
   '階層の整合性に違反するため、所属変更を確定できません。';
@@ -53,5 +57,7 @@ export function affiliationRejectMessage(kind: AffiliationRejectKind): string {
       return MSG_AFFILIATION_TARGET_KIND;
     case AFFILIATION_REJECT.ParentKind:
       return MSG_AFFILIATION_PARENT_KIND;
+    case AFFILIATION_REJECT.DirectDomainParent:
+      return MSG_AFFILIATION_DIRECT_DOMAIN;
   }
 }

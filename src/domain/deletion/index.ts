@@ -48,6 +48,7 @@ export {
   MSG_DELETE_CONFIRM_TITLE,
   MSG_DELETE_CONFIRM_BODY,
   deleteRejectMessage,
+  deleteCautionMessage,
 } from './messages';
 
 export {

@@ -31,6 +31,7 @@ import {
   withAggregateChildIds,
   withParentId,
 } from '../feature';
+import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
 import { buildForest, directChildIds } from '../hierarchy/forest';
 import { resolveFeatureArea } from '../hierarchy/resolve-shape';
 import { HIERARCHY_VIOLATION, areasEqualWithinTolerance } from '../hierarchy/validate';
@@ -86,6 +87,12 @@ export const REPAIR_OPTION = {
   NormalizeSeries: 'normalize-series',
   /** 孤立した歴史（所有地物が全スナップショットに不在）→ 当該歴史を除外する。 */
   DropOrphanHistory: 'drop-orphan-history',
+  /**
+   * 孤立した歴史 → **中に居る地物ごとに系列を起こす**（中身を捨てない救済。司令塔の決定 (3)）。
+   * 持ち主が居なくなった歴史でも、その錨には子や孫の記録がそのまま残っていることが多い。
+   * 中身を捨てると実データで数十件の地物が丸ごと消えるので、こちらを既定にする。
+   */
+  MaterializeOrphanHistory: 'materialize-orphan-history',
   /** 同一地物を所有する重複した歴史 → 先頭のみ残し、重複分を除外する。 */
   DropDuplicateOwnerHistories: 'drop-duplicate-owner-histories',
   /** 共有頂点の座標が歴史間で食い違う → 全スナップショットを最初の座標へ揃える。 */
@@ -119,6 +126,8 @@ const LABELS: Readonly<Record<RepairOptionId, string>> = {
   [REPAIR_OPTION.NormalizeSeries]: '錨を時間順に整列し、重複・矛盾を解消します。',
   [REPAIR_OPTION.DropOrphanHistory]:
     '所有する地物が存在しない歴史（空のタイムライン）を読み込みから除外します。',
+  [REPAIR_OPTION.MaterializeOrphanHistory]:
+    '持ち主の居ない歴史の中に残っている地物を、全部の年ぶん地物ごとの歴史へ移します（地物は削除しません）。',
   [REPAIR_OPTION.DropDuplicateOwnerHistories]:
     '同一地物を所有する歴史が複数あるとき、先頭の歴史のみを残して重複分を読み込みから除外します。',
   [REPAIR_OPTION.ReconcileVertexCoordinate]:
@@ -178,7 +187,19 @@ export function repairOptionsFor(inc: Inconsistency): RepairOption[] {
     case INCONSISTENCY.TimeConflict:
       return [opt(REPAIR_OPTION.NormalizeSeries)];
     case INCONSISTENCY.OrphanHistory:
-      return [opt(REPAIR_OPTION.DropOrphanHistory)];
+      // 中身を捨てない救済を **選べるようにした**（司令塔の決定 (3)）: 持ち主が居ない
+      // 歴史でも、その錨には子・孫の記録が残っている。
+      //
+      // **既定はまだ「捨てる」のまま**である。既定を入れ替えると、性質検査
+      // （save-load-roundtrip の多重破損）が **修復の不動点へ収束しない**
+      // ―― 起こした系列が次の走査で別の不整合（形状規則・重なり）を生み、
+      // 修復 → 再検査の輪が回り続ける。決定 (3) の「既定にする」を満たすには
+      // 起こしたあとの後始末をもう 1 段（形状規則と重なりの解消）足す必要があり、
+      // それは修復そのものの設計に触るので所有者の裁定を待つ（§11.4）。
+      return [
+        opt(REPAIR_OPTION.DropOrphanHistory),
+        opt(REPAIR_OPTION.MaterializeOrphanHistory),
+      ];
     case INCONSISTENCY.DuplicateOwnerHistory:
       return [opt(REPAIR_OPTION.DropDuplicateOwnerHistories)];
     case INCONSISTENCY.VertexCoordinateDivergence:
@@ -706,6 +727,58 @@ function materializeDirectDomain(
 }
 
 /**
+ * 孤立した歴史（持ち主が全スナップショットに不在）の中に残っている地物を、地物ごとの
+ * 歴史へ移す（司令塔の決定 (3)）。移し終えて空になった歴史は落とす。中身を捨てないので
+ * 古いファイルの救済になる。純粋。
+ */
+function materializeOrphanHistories(
+  project: DomainProject,
+  ownerIds: readonly FeatureId[],
+  calendar: Calendar,
+): DomainProject {
+  let histories: readonly FeatureHistory[] = project.histories;
+  for (const ownerId of ownerIds) {
+    histories = materializeOwnSeries(
+      histories,
+      residentFeatureIds(histories, ownerId),
+      calendar,
+    ).histories;
+  }
+  // 移し終えてもなお持ち主が居ない歴史は、もう中身が無い（あるいは中身が既に別の
+  // 歴史を持っている）ので落とす。
+  const orphan = new Set<FeatureId>(ownerIds);
+  const remaining = histories.filter(
+    (h) =>
+      !orphan.has(h.featureId) ||
+      h.series.entries.some((e) =>
+        e.anchor.snapshot.features.some((f) => f.id === h.featureId),
+      ),
+  );
+  // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
+  const moved: DomainProject = { ...project, histories: remaining };
+
+  // **消えた親を指す parentId を残さない**（裁定「子は最上位へ昇格」/ 決定 (1)）。
+  // 起こした地物の親は、その孤立した歴史の持ち主だったことが多く、その持ち主は
+  // いま落としたところである。指したままにすると読み込みの階層検査が別の不整合を
+  // 出し、修復が不動点へ収束しない（性質検査 seed=36004 が実際にそれを捕まえた）。
+  const alive = new Set<FeatureId>();
+  for (const history of moved.histories) {
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) alive.add(f.id);
+    }
+  }
+  const dangling: FeatureId[] = [];
+  for (const history of moved.histories) {
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) {
+        if (f.parentId !== undefined && !alive.has(f.parentId)) dangling.push(f.id);
+      }
+    }
+  }
+  return dangling.length === 0 ? moved : detachToTopLevel(moved, dangling);
+}
+
+/**
  * Apply the chosen repair option for one inconsistency, returning a NEW project
  * (教訓5.22: the input is never mutated). Unknown / mismatched option↔kind pairs
  * return the project unchanged so a caller cannot accidentally corrupt state.
@@ -750,6 +823,8 @@ export function applyRepair(
     }
     case REPAIR_OPTION.NormalizeSeries:
       return normalizeHistories(project, inc.featureIds, calendar);
+    case REPAIR_OPTION.MaterializeOrphanHistory:
+      return materializeOrphanHistories(project, inc.featureIds, calendar);
     case REPAIR_OPTION.DropOrphanHistory:
       return dropHistories(project, inc.featureIds);
     case REPAIR_OPTION.DropDuplicateOwnerHistories:

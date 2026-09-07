@@ -68,7 +68,35 @@ export function planAffiliationTargets(
   const leafOrder: FeatureId[] = [];
   const seen = new Set<FeatureId>();
   const expansions: AffiliationTargetExpansion[] = [];
+  const expanded = new Set<FeatureId>();
   const dropped: { featureId: FeatureId; reason: AffiliationTargetDropKind }[] = [];
+
+  /**
+   * まとめ役を **末端まで**展開する（反証 2-10）。`resolveTargetLeaves` は直接の子しか
+   * 返さないので、まとめ役の下にまとめ役が居ると「末端に限る」（FR-48 前半）を破った
+   * まま確定へ流れる。ここで葉に達するまで畳む ―― 予告と確定が同じ集合を見る
+   * （教訓 5.26 / 5.29）。
+   */
+  const toLeaves = (rootId: FeatureId): readonly FeatureId[] | undefined => {
+    const first = resolveTargetLeaves(features, rootId);
+    if (first === undefined) return undefined;
+    const out: FeatureId[] = [];
+    const visited = new Set<FeatureId>([rootId]);
+    const queue: FeatureId[] = [...first];
+    while (queue.length > 0) {
+      const id = queue.shift();
+      if (id === undefined) continue;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const next = resolveTargetLeaves(features, id);
+      if (next === undefined || (next.length === 1 && next[0] === id)) {
+        out.push(id);
+        continue;
+      }
+      queue.push(...next);
+    }
+    return out.length === 0 && first.length === 1 && first[0] === rootId ? [rootId] : out;
+  };
 
   for (const targetId of targetIds) {
     // **下位領域を 1 つも持たない「まとめ役」は外す**（増分 7）。`resolveTargetLeaves` は
@@ -83,7 +111,7 @@ export function planAffiliationTargets(
         continue;
       }
     }
-    const leaves = resolveTargetLeaves(features, targetId);
+    const leaves = toLeaves(targetId);
     if (leaves === undefined) {
       dropped.push({ featureId: targetId, reason: AFFILIATION_TARGET_DROP.Missing });
       continue;
@@ -93,7 +121,10 @@ export function planAffiliationTargets(
       continue;
     }
     // 展開が起きたのは「返ってきた集合が自分 1 件ではない」とき（結果状態で判定＝教訓 5.6）。
-    if (!(leaves.length === 1 && leaves[0] === targetId)) {
+    // **同じまとめ役を 2 回渡されても 1 本しか記録しない**（反証 1-1）。旧版は
+    // 「まとめ役 1 件を 60 件に広げました」が 2 行出ていた。
+    if (!(leaves.length === 1 && leaves[0] === targetId) && !expanded.has(targetId)) {
+      expanded.add(targetId);
       expansions.push({ aggregateId: targetId, leafIds: leaves });
     }
     for (const id of leaves) {

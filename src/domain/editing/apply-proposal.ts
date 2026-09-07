@@ -49,7 +49,7 @@ import {
   vertexCarryForwardTargets,
   type MovedVertexCarry,
 } from './vertex-carry-forward';
-import { asAnchorId, idToString, type AnchorId, type FeatureId, type VertexId } from '../ids';
+import { idToString, type FeatureId, type VertexId } from '../ids';
 import {
   FEATURE_KIND,
   pruneVertexStore,
@@ -75,6 +75,7 @@ import { createEditProposal, type EditProposal } from '../consistency/types';
 import type { AddSnapshot } from '../add/proposal';
 import type { MergeSnapshot } from '../merge/proposal';
 import type { AffiliationProposal } from '../affiliation/proposal';
+import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
 import type { SplitSharedEdgeCut, SplitSnapshot } from '../knife/proposal';
 import type { DrillSnapshot } from '../drill/proposal';
 import type { VertexRemap } from '../shared-vertex';
@@ -85,28 +86,9 @@ import type { DomainProject, FeatureHistory } from '../persistence/serialize';
 
 // --- deterministic anchor id (repeatable purity) ----------------------------
 
-/**
- * Derive a STABLE anchor id from the feature id and the anchor's start time, so
- * `applyAddProposal` / `applySplitProposal` are pure replays (same proposal →
- * same id, no minting inside the op — the U44 plan's "mint before U13" intent is
- * realised here deterministically so a redo replays the same anchor identity,
- * 教訓 5.20). The format is namespaced so it never collides with a `nextRawId`
- * 'a'-prefixed id (which is `a-<n>`), keeping persisted ids unambiguous.
- */
-export function deriveAnchorId(featureId: FeatureId, anchorTime: TimePoint): AnchorId {
-  return asAnchorId(`anchor:${idToString(featureId)}@${timePointKey(anchorTime)}`);
-}
+import { deriveAnchorId } from '../anchor-id';
 
-function timePointKey(tp: TimePoint): string {
-  switch (tp.granularity) {
-    case 'year':
-      return `${tp.year}`;
-    case 'yearMonth':
-      return `${tp.year}-${tp.month}`;
-    case 'yearMonthDay':
-      return `${tp.year}-${tp.month}-${tp.day}`;
-  }
-}
+export { deriveAnchorId };
 
 // --- snapshot → anchor helpers ----------------------------------------------
 
@@ -1428,6 +1410,18 @@ export function applyAffiliationProposal(
   for (const f of snapshot.nextFeatures) afterById.set(f.id, f);
 
   let histories: readonly FeatureHistory[] = root.histories;
+
+  // 0. 記録の置き場（司令塔の決定 (1)）: 移す地物が「自分の系列を持たないまとめ役の子」
+  // なら、その記録は今まさに離れようとしている親の錨の中にある。parentId だけを
+  // 書き替えると、記録は元の親の錨に残ったままになり、親を消す／終わらせると子の
+  // 記録ごと消える（実データで 60 州が丸ごと失われた）。だから所属を動かす前に、
+  // 全部の年の記録を選り分けて自分の系列を起こし、親の錨からは外す。
+  // 自動で空になって消えるまとめ役の中に居候が残っていた場合も同じ（防御的）。
+  histories = materializeOwnSeries(
+    histories,
+    [...snapshot.targetIds, ...snapshot.deletedIds.flatMap((id) => residentFeatureIds(histories, id))],
+    calendar,
+  ).histories;
 
   // 1. Auto-pruned aggregates: drop each from its containing snapshot at the time.
   for (const deletedId of snapshot.deletedIds) {

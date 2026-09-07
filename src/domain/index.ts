@@ -789,6 +789,7 @@ export {
   MSG_DELETE_CONFIRM_TITLE,
   MSG_DELETE_CONFIRM_BODY,
   deleteRejectMessage,
+  deleteCautionMessage,
   DELETE_TARGET_KIND,
   type DeleteTargetKind,
   type DeleteTarget,
