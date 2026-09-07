@@ -1046,3 +1046,39 @@ export const MAP_CELL_PARTS: readonly string[] = [
   'map-fit-all',
   'map-scale-bar',
 ];
+
+/**
+ * **まとめ役 1 件の錨に `childCount` 件の子が居候する**合成データを載せる
+ * （増分 7 の手直し A / 司令塔の決定 (1)(2)）。実データの「デーレ共和国 60 州」と
+ * 同じ形なので、記録の置き場（親の錨から子の系列へ写す）が効いているかを画面から
+ * 数えられる。
+ */
+export async function loadSyntheticNested(
+  page: Page,
+  childCount: number,
+  years?: readonly number[],
+): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { loadSyntheticNested?: unknown } })
+        .__E2E_HARNESS__?.loadSyntheticNested === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  await page.evaluate(
+    ({ n, ys }) => {
+      const harness = (
+        globalThis as {
+          __E2E_HARNESS__?: {
+            loadSyntheticNested?: (count: number, years?: readonly number[]) => void;
+          };
+        }
+      ).__E2E_HARNESS__;
+      if (harness?.loadSyntheticNested === undefined) {
+        throw new Error('window.__E2E_HARNESS__.loadSyntheticNested が無い (E2E_TEST=1 で起動したか)');
+      }
+      harness.loadSyntheticNested(n, ys);
+    },
+    { n: childCount, ys: years },
+  );
+}

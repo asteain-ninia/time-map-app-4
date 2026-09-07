@@ -69,7 +69,10 @@ test.describe('A8 — 地物の削除は 3 経路とも同じ確認を通る', (
       // 何を消すのかが分からない確認は確認の体をなさない。名前が見出しまで届く。
       await expect(page.getByTestId(`${IMPACT}-title`)).toContainText(FACE_NAME);
       // **増分 7**: 何が一緒に消えるかも出る（設計書 §A.3 の「一緒に消えるもの」）。
-      await expect(page.getByTestId(`${IMPACT}-gone`)).toContainText('頂点');
+      await expect(page.getByTestId(`${IMPACT}-gone`)).toContainText('記録（錨）');
+      // **頂点は消えない**（司令塔の決定 (5)）。頂点表には残り、消えるのは参照だけなので
+      // 「一緒に消えるもの」ではなく別の群に出る。
+      await expect(page.getByTestId(`${IMPACT}-vertices`)).toContainText('頂点');
 
       // やめたら 1 件も消えない（教訓 5.22 確定までドメインを壊さない）。
       await page.getByTestId(`${IMPACT}-cancel`).click();
@@ -101,7 +104,8 @@ test.describe('A8 — 地物の削除は 3 経路とも同じ確認を通る', (
       await page.mouse.click(cx, cy, { button: 'right' });
       const deleteItem = page
         .getByTestId('context-menu-item')
-        .filter({ hasText: /^削除$/ })
+        // 右クリックの文言は素性欄と揃えた（増分 7 の手直し G の用語の統一）。
+        .filter({ hasText: /^全部の年から消す$/ })
         .first();
       await expect(deleteItem).toBeVisible();
       await deleteItem.click();

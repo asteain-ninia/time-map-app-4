@@ -223,6 +223,11 @@ function mountKnife(
         featureAtPoint={featureAtPoint}
         drawSink={drawSink}
         defaultColor={DEFAULT_COLOR}
+        // 確定を 1 コマ遅らせる口は **同期の実装**を差し込む（増分 7 の中身 9 の作法）。
+        // 実機は rAF → setTimeout で遅らせるが、検査で押すのは「確定が通るか」なので同期で走らせる。
+        commitScheduler={(run) => {
+          run();
+        }}
         {...(onDrawingChange ? { onDrawingChange } : {})}
       />
     </>,

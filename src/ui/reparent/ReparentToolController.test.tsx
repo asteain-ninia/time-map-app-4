@@ -431,7 +431,8 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     const h = mountReparent({ onModalChange: (open) => modal.push(open) });
     activateReparent(h.store);
     clickInput(1, 1);
-    expect(modal[modal.length - 1]).toBe(false);
+    // 板が出るまでは 1 度も名乗らない（板の側が出ている間だけ名乗る＝決定 (13)）。
+    expect(modal[modal.length - 1] ?? false).toBe(false);
     fireEvent.click(screen.getByTestId('reparent-confirm-none'));
     expect(modal[modal.length - 1]).toBe(true);
     fireEvent.click(screen.getByTestId('reparent-options-cancel'));

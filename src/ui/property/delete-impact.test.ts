@@ -28,6 +28,7 @@ function impactOf(over: Partial<DeletionImpact>): DeletionImpact {
     targetId: asFeatureId('agg'),
     ownAnchorYears: [0, 1200],
     vertexCount: 0,
+    soleVertexCount: 0,
     ownsShape: false,
     promotedChildIds: [],
     autoRemovedIds: [],
@@ -67,18 +68,32 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
       targetName: 'デーレ共和国',
       nameOf,
     });
-    const gone = view.groups.find((g) => g.testId === 'gone');
-    expect(gone?.lines.some((l) => l.includes('自分の形を持ちません'))).toBe(true);
+    const vertices = view.groups.find((g) => g.testId === 'vertices');
+    expect(vertices?.lines.some((l) => l.includes('自分の形を持ちません'))).toBe(true);
   });
 
-  it('形を持つ地物では頂点の数を出す', () => {
+  it('形を持つ地物では「参照されなくなる頂点」を別の群に出す（決定 (5)）', () => {
     const view = buildDeleteImpactView({
-      impact: impactOf({ ownsShape: true, vertexCount: 601 }),
+      impact: impactOf({ ownsShape: true, vertexCount: 601, soleVertexCount: 601 }),
       targetName: 'バアカ',
       nameOf,
     });
+    // 頂点は消えない（頂点表に残る）ので「一緒に消えるもの」には入れない。
     const gone = view.groups.find((g) => g.testId === 'gone');
-    expect(gone?.lines.some((l) => l.includes('601'))).toBe(true);
+    expect(gone?.lines.some((l) => l.includes('601'))).toBe(false);
+    const vertices = view.groups.find((g) => g.testId === 'vertices');
+    expect(vertices?.lines.some((l) => l.includes('601'))).toBe(true);
+    expect(vertices?.lines.some((l) => l.includes('頂点表に残ります'))).toBe(true);
+  });
+
+  it('共有している頂点しか使っていなければ「参照は残ります」と言う（決定 (5)）', () => {
+    const view = buildDeleteImpactView({
+      impact: impactOf({ ownsShape: true, vertexCount: 12, soleVertexCount: 0 }),
+      targetName: 'バアカ',
+      nameOf,
+    });
+    const vertices = view.groups.find((g) => g.testId === 'vertices');
+    expect(vertices?.lines.some((l) => l.includes('参照は残ります'))).toBe(true);
   });
 
   it('錨の年を並べる（どの年の記録が消えるのかが読める）', () => {
@@ -160,7 +175,8 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
     // 裁定一覧 A の 2026-09-03 は「削除＝錨を全部消し、子は昇格」＝ **掃除して消す**。
     // 判定は警告として出すが、ボタンは押せる。
     expect(view.blockedReason).toBeNull();
-    expect(view.groups.find((g) => g.testId === 'caution')?.lines[0]).toContain('削除できません');
+    // 止めない判定は「消せますが、…」と言い切る（司令塔の決定 (7)）。
+    expect(view.groups.find((g) => g.testId === 'caution')?.lines[0]).toContain('消せますが');
   });
 
   it('消せるときは「気をつけること」の行が無い（空の見出しを出さない）', () => {

@@ -121,15 +121,16 @@ describe('composeContextMenu — 受け入れ基準 2: オブジェクト種類�
         build({ activeFeature: fid('p'), kinds: new Map([[fid('p'), FEATURE_KIND.Point]]) }),
       ),
     );
-    // 共通 (削除・プロパティ編集・この年に錨を作る) + 対象の印と削除の入口 A
-    // (増分 7: 対象に加える・この年に終わったことにする) + 表示制御 (個別非表示・強調,
-    // 常に末尾)。面情報項目 (分割等) は出ない。
+    // 削除の入口 A（この年に終わったことにする）+ 共通 (削除・プロパティ編集・
+    // この年に錨を作る) + 対象の印 + 表示制御 (個別非表示・強調, 常に末尾)。
+    // **入口 A は削除より上**（設計書 §A.3。注記と実装が逆だったのを直した＝Fable #10）。
+    // 面情報項目 (分割等) は出ない。
     expect(itemKinds(menu)).toEqual([
+      MENU_ITEM_KIND.EndHere,
       MENU_ITEM_KIND.Delete,
       MENU_ITEM_KIND.EditProperties,
       MENU_ITEM_KIND.CreateAnchorHere,
       MENU_ITEM_KIND.MarkTarget,
-      MENU_ITEM_KIND.EndHere,
       MENU_ITEM_KIND.HideFeature,
       MENU_ITEM_KIND.EmphasizeFeature,
     ]);
