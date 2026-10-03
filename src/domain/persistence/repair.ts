@@ -1185,8 +1185,8 @@ export interface RepairOptionsInContext {
   readonly note?: string;
 }
 
-/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由。 */
-export const KEEP_LEAF_WITH_CHILDREN_NOTE = 'この形は自動では整わないので、そのまま開きます。';
+/** 子を持つ末端の行で、既定を「そのまま残す」にしたときの 1 行の理由（文は表から引く）。 */
+export const KEEP_LEAF_WITH_CHILDREN_NOTE = PERSISTENCE_MESSAGES.repairKeepLeafWithChildrenNote;
 
 /**
  * 読み込んだプロジェクトを見て選択肢を並べる（2026-10-04、B39 の戻しの再検証のガード B）。
