@@ -111,3 +111,28 @@ describe('StatusMessageStore — 結果に添えるボタン（増分 8C の手�
     expect(store.get()).toBe(current);
   });
 });
+
+describe('StatusMessageStore — 止めた打鍵の理由はボタンを残す（統合 8A〜8D の継ぎ目の検証 1-1）', () => {
+  const action = { label: '戻す', run: () => undefined };
+
+  it('refusalKeepingAction は文と色味を断りに置き換え、直前の結果のボタンは残す', () => {
+    const store = new StatusMessageStore();
+    store.set('測量の線を消しました', STATUS_TONE.Success, action);
+    store.refusalKeepingAction('「元に戻す」はいま使えません。');
+    expect(store.get()).toEqual({
+      text: '「元に戻す」はいま使えません。',
+      tone: STATUS_TONE.Failure,
+      action,
+    });
+    // ボタンは同じオブジェクトなので、押し込んだ側が意味を失ったときに外せる。
+    store.dropAction(action);
+    expect(store.get()).toEqual({ text: '「元に戻す」はいま使えません。', tone: STATUS_TONE.Failure });
+  });
+
+  it('ボタンの無い結果のあとでは、ただの断りになる', () => {
+    const store = new StatusMessageStore();
+    store.success('保存しました');
+    store.refusalKeepingAction('「削除」はいま使えません。');
+    expect(store.get()).toEqual({ text: '「削除」はいま使えません。', tone: STATUS_TONE.Failure });
+  });
+});

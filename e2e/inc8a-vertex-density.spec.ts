@@ -631,4 +631,59 @@ test.describe('増分 8A — 実データ（デーレ界）の密度で頂点を
       await grabTargetedVertex(page, target, 'inward');
     });
   });
+
+  // 統合 8A〜8D の継ぎ目の検証 2-1（8A × 測る）。直す前は、中ボタンで地図を動かしていくと
+  // 7 回目で次の一手が「地図か地物一覧から選ぶ」（選ぶの既定の文）に化け、寄ると上限の知らせ
+  // ［拡大］に置き換わった。測っている間は上限の知らせを出さず、測るの帯は書いた人の印つきで書く。
+  test('領域01 を選んだまま測ると、地図を動かしても寄っても、次の一手は測るの案内のまま', async () => {
+    test.setTimeout(180_000);
+    await withRealData(async (page) => {
+      await enterEditMode(page);
+      await selectByName(page, 'ヴィオニア大陸付近の領域01');
+      await page.getByTestId('map-fit-all').click();
+      const next = page.getByTestId('option-bar-next-step');
+      const zoomAction = page.getByTestId('option-bar-next-action-handle-cap-zoom');
+      await expect(next).toContainText('上限 2,000');
+
+      await page.getByTestId('survey-toggle').click();
+      await expect(page.getByTestId('survey-input-layer')).toBeVisible();
+      const idle = '測っている間は地物を選べません';
+      await expect(next).toContainText(idle);
+      await expect(zoomAction).toHaveCount(0);
+
+      const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      // ホイールで 2 段寄る（視野内の頂点の数が変わる）。
+      for (let i = 0; i < 2; i += 1) {
+        const before = await liveCamera(page);
+        await page.mouse.move(cx, cy);
+        await page.mouse.wheel(0, -120);
+        await expect.poll(async () => (await liveCamera(page)).zoom).toBeGreaterThan(before.zoom);
+        await expect(next).toContainText(idle);
+        await expect(zoomAction).toHaveCount(0);
+      }
+      // 中ボタンで少しずつ動かし、領域01 の一部を画面の外へ出していく（直す前は 7 回目で化けた）。
+      for (let i = 0; i < 12; i += 1) {
+        const before = await liveCamera(page);
+        await page.mouse.move(cx, cy);
+        await page.mouse.down({ button: 'middle' });
+        await page.mouse.move(cx + 60, cy + 20, { steps: 4 });
+        await page.mouse.up({ button: 'middle' });
+        await expect
+          .poll(async () => (await liveCamera(page)).centerLon)
+          .not.toBe(before.centerLon);
+        await expect(next).toContainText(idle);
+        await expect(zoomAction).toHaveCount(0);
+      }
+      // 始点を置くと終点を待つ案内になり、引いて（頂点の数を変えて）も置き換わらない。
+      await page.mouse.click(cx, cy);
+      await expect(next).toContainText('終点を指定');
+      await page.mouse.move(cx, cy);
+      await page.mouse.wheel(0, 120);
+      await page.mouse.wheel(0, 120);
+      await expect(next).toContainText('終点を指定');
+      await expect(zoomAction).toHaveCount(0);
+    });
+  });
 });
