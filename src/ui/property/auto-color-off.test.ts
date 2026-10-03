@@ -53,6 +53,37 @@ describe('styleOnAutoColorToggle（G-15）', () => {
     expect(next.paletteTheme).toBe('pastel');
   });
 
+  // 増分 8E の手直し（GPT 重 3）: 往復で打ち込んだ手動色・透過を失わない。
+  it('保存済みが OFF の地物で、色を打ち → ON → OFF と往復しても、打ち込んだ色と透過が残る', () => {
+    const manualFeature = {
+      ...feature,
+      color: createColorInfo(false, '#112233', '#445566', '#000000', 'default', 0.5, 0.6),
+    };
+    const typed: StyleValues = {
+      autoColorEnabled: false,
+      paletteTheme: 'default',
+      fillColor: '#abcdef',
+      fillOpacity: 0.25,
+      selectedColor: '#fedcba',
+      selectedOpacity: 0.35,
+    };
+    const on = styleOnAutoColorToggle(manualFeature, typed, { ...typed, autoColorEnabled: true });
+    const off = styleOnAutoColorToggle(manualFeature, on, { ...on, autoColorEnabled: false });
+    expect(off).toEqual(typed);
+  });
+
+  it('保存済みが ON でも、この下書きですでに OFF にしていたなら、下書きの色を残す', () => {
+    const typed: StyleValues = { ...onValues, fillColor: '#abcdef', fillOpacity: 0.25 };
+    const next = styleOnAutoColorToggle(
+      feature,
+      typed,
+      { ...typed, autoColorEnabled: false },
+      true,
+    );
+    expect(next.fillColor).toBe('#abcdef');
+    expect(next.fillOpacity).toBe(0.25);
+  });
+
   it('OFF → ON や、色だけの変更には手を出さない', () => {
     const off: StyleValues = { ...onValues, autoColorEnabled: false };
     const turnedOn = { ...off, autoColorEnabled: true };
