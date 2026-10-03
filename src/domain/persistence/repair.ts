@@ -781,14 +781,30 @@ interface DirectDomainInterval {
   readonly vertices: readonly Vertex[];
 }
 
+/** 錨 i が実際に効く終わり（自分の書かれた終わりか、次の錨の始まりの早いほう）。 */
+function entryEffectiveEnd(
+  entries: readonly AnchorEntry[],
+  i: number,
+  calendar: Calendar,
+): TimePoint | null {
+  const entry = entries[i];
+  if (entry === undefined) return null;
+  const next = entries[i + 1];
+  if (entry.end === null) return next?.start ?? null;
+  if (next === undefined) return entry.end;
+  return compare(entry.end, next.start, calendar) <= 0 ? entry.end : next.start;
+}
+
 /**
- * `targetId` が **末端として** 載っている錨を、`targetId` を親にする地物が **現れる年** で割る
- * （割った後ろの片は前の片の写しで、前の片の終わりを引き継ぐ）。子が現れた年から後ろの片が
- * 「子を持つ末端」として修復の対象になる。帳簿の割り方で、どの年の姿も変えない。
+ * `targetId` が **末端として** 載っている錨を、`targetId` を親にする地物が **現れる年** と
+ * **居なくなる年** で割る（割った後ろの片は前の片の写しで、前の片の終わりを引き継ぐ）。子の居る
+ * 片だけが「子を持つ末端」として修復の対象になり、子の居なくなった年から後ろの片は元の末端の
+ * まま残る。帳簿の割り方で、どの年の姿も変えない。純粋。
  *
- * 子が **居なくなる年** では割らない: 割ると、その後ろの片だけ親が末端に戻り、分け残し
- * （終わりは錨の書かれた終わりを継ぐ）と重なる。割らなければ親はそのまままとめ役で続き、
- * 子が居なくなった年からは分け残しだけを子に持つ。純粋。
+ * 居なくなる年でも割る（2026-10-04、B39 の戻しの再検証 3-1・2-1）: 以前は割らずに、子の居なく
+ * なった年から先も親をまとめ役のまま続けていたので、分け残し（子のぶんの穴がある）だけが親の
+ * 後ろの記録の上に居残り、親の土地に穴があいた・親の境の直しが黙って戻った・隣が除外された。
+ * いまは分け残しの区間も親のその片の終わりで区切る（{@link materializeDirectDomain}）。
  */
 function splitLeafAtChildBoundaries(
   project: DomainProject,
@@ -797,12 +813,16 @@ function splitLeafAtChildBoundaries(
 ): DomainProject {
   const boundaries: TimePoint[] = [];
   for (const history of project.histories) {
-    for (const entry of history.series.entries) {
+    const entries = history.series.entries;
+    entries.forEach((entry, i) => {
       const hasChild = entry.anchor.snapshot.features.some(
         (f) => f.id !== targetId && f.parentId === targetId,
       );
-      if (hasChild) boundaries.push(entry.start);
-    }
+      if (!hasChild) return;
+      boundaries.push(entry.start);
+      const end = entryEffectiveEnd(entries, i, calendar);
+      if (end !== null) boundaries.push(end);
+    });
   }
   if (boundaries.length === 0) return project;
   let changed = false;
@@ -936,7 +956,11 @@ function materializeDirectDomain(
 
       promotions.push({ historyIndex: hi, entryIndex: ei, promoted });
       if (directDomain !== undefined) {
-        intervals.push({ start: entry.start, end: entry.end, directDomain, vertices: newVertices });
+        // 分け残しの区間は **親のこの片が実際に効いている区間**（書かれた終わりと、親の次の錨の
+        // 始まりの早いほう）で区切る（2026-10-04、B92）。書かれた終わりだけを写すと、終わりの無い
+        // 片の分け残しが親の後ろの記録の上に居残る。
+        const end = entryEffectiveEnd(history.series.entries, ei, calendar);
+        intervals.push({ start: entry.start, end, directDomain, vertices: newVertices });
       }
     }
   }
