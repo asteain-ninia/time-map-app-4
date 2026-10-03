@@ -115,11 +115,12 @@ export interface BasicInfoFormProps {
   /** 入口 A のボタンの文言（「1500年に終わったことにする」）。 */
   readonly endHereLabel?: string;
   /**
-   * 既に終わりが打たれている年（司令塔の決定 (12)）。渡されたときだけ
-   * 「○○年に終わっています」の状態行を出す。打たれていなければ渡さない
-   * （値を捏造しない＝honest absence）。
+   * いま居る区間に終わりが打たれているときの状態の文（司令塔の決定 (12) / GPT #5:
+   * 「この地物は○○年で終わります」）。打たれていなければ渡さない（値を捏造しない＝
+   * honest absence）。いま見ている年が終わった後の表示は素性欄が別に出す
+   * （`existence-status.ts`）。
    */
-  readonly endedYearLabel?: string;
+  readonly endStateText?: string;
   /** 入口 A を押せない理由（自分の歴史を持たない地物など）。押せるなら `null`。 */
   readonly endHereDisabledReason?: string | null;
   /**
@@ -369,9 +370,9 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
           )}
           {/* **終わっている状態を読める形にする**（司令塔の決定 (12)）。押したあと
               「終わったのかどうか」が素性欄のどこにも出ていなかった。 */}
-          {props.endedYearLabel !== undefined && (
+          {props.endStateText !== undefined && (
             <p className="basic-info__end-here-state" data-testid="end-here-state">
-              {PROPERTY_STRINGS.endHereState(props.endedYearLabel)}
+              {props.endStateText}
             </p>
           )}
         </div>

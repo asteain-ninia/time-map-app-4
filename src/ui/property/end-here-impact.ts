@@ -6,9 +6,11 @@
 // なる」と言っている。ドメインの確定（`createAnchorIntervalCommandForRoot`）は既に子を
 // 起こして最上位にしているので、ここは **押す前の文**だけを作る。
 //
-// 数え上げは呼び出し側が確定と同じ `residentFeatureIds` から引き、**その年に居る子**だけを
-// 渡す（それより前に終わっていた子は画面上の姿が変わらないので、「この年から最上位に
-// なります」と言うと嘘になる）。純粋なので単体で固定できる。
+// 数え上げは呼び出し側が確定と同じ `planEnding`（`domain/affiliation/interval-edit.ts`。
+// 確定の `editFeatureInterval` を空打ちする）から引き、**直接の子のうちその年に居るもの**だけを
+// 渡す（孫は数えない。その年より前に終わっていた子は画面上の姿が変わらないので、
+// 「この年から最上位になります」と言うと嘘になる）。終わらせる地物が後の年の錨で再び
+// 現れるなら、その年も渡す（子が最上位なのはその年まで）。純粋なので単体で固定できる。
 
 import type { ImpactGroup } from '../shell/ImpactConfirmDialog';
 
@@ -33,15 +35,35 @@ export function buildEndHereImpactView(input: {
   readonly promotedCount: number;
   /** その名前（引けたものだけ）。 */
   readonly promotedNames: readonly string[];
+  /** 途切れの後に再び現れるならその年の表示（「1700年」）。ずっと終わるなら省く。 */
+  readonly reappearsLabel?: string;
+  /** 一緒に終わる、その年より後の途切れずに続いていた記録の件数（手直し 3 回目）。 */
+  readonly trimmedCount?: number;
+  /**
+   * 下位領域を全て失って一緒に終わるまとめ役（名前と年。手直し 3 回目 1-1）。`whole` はどの年にも
+   * 下位領域が居なくなって記録ごと無くなるもの（4 回目 #1）。
+   */
+  readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string; readonly whole?: boolean }[];
+  /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（名前と年。4 回目 #2）。 */
+  readonly laterAffiliations?: readonly { readonly name: string; readonly yearLabel: string }[];
 }): EndHereImpactView {
-  const { targetName, yearLabel, promotedCount, promotedNames } = input;
+  const { targetName, yearLabel, promotedCount, promotedNames, reappearsLabel } = input;
+  const trimmed = input.trimmedCount ?? 0;
+  const cascaded = input.cascaded ?? [];
+  const laterAffiliations = input.laterAffiliations ?? [];
   return {
     title: PROPERTY_STRINGS.endHereImpactTitle(targetName, yearLabel),
     groups: [
       {
         testId: 'ends',
         heading: PROPERTY_STRINGS.endHereImpactHeadingEnds,
-        lines: [PROPERTY_STRINGS.endHereImpactLineEnds(yearLabel)],
+        lines: [
+          PROPERTY_STRINGS.endHereImpactLineEnds(yearLabel),
+          ...(trimmed > 0 ? [PROPERTY_STRINGS.endHereImpactTrimmed(yearLabel, trimmed)] : []),
+          ...laterAffiliations.map((a) =>
+            PROPERTY_STRINGS.endHereImpactLaterAffiliation(a.name, a.yearLabel),
+          ),
+        ],
       },
       {
         testId: 'promoted',
@@ -49,7 +71,21 @@ export function buildEndHereImpactView(input: {
         lines:
           promotedCount === 0
             ? []
-            : [PROPERTY_STRINGS.endHereImpactPromoted(promotedCount, summarizeNames(promotedNames))],
+            : [
+                PROPERTY_STRINGS.endHereImpactPromoted(promotedCount, summarizeNames(promotedNames)),
+                ...(reappearsLabel === undefined
+                  ? []
+                  : [PROPERTY_STRINGS.endHereImpactReappears(reappearsLabel)]),
+              ],
+      },
+      {
+        testId: 'cascaded',
+        heading: PROPERTY_STRINGS.endHereImpactHeadingCascaded,
+        lines: cascaded.map((c) =>
+          c.whole === true
+            ? PROPERTY_STRINGS.endHereImpactCascadedWhole(c.name)
+            : PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel),
+        ),
       },
     ],
     // 実行ボタンは **素性欄のボタンと同じ文**（「1500年に終わったことにする」）。押した

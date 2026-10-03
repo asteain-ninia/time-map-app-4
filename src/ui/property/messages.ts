@@ -237,8 +237,15 @@ export const PROPERTY_STRINGS = {
   /** 親の名前が引けないとき（名前を出さずに、やることだけを言う）。 */
   endHereNoOwnSeriesUnnamed:
     'この地物の歴史は上位領域が持っているので、ここからは終わりを打てません。先に所属を変えるか、上位領域の側で記録してください。',
-  /** 既に終わりが打たれている状態（司令塔の決定 (12)）。 */
+  /** 既に終わりが打たれている状態（司令塔の決定 (12)）。いま見ている年はもう終わった後。 */
   endHereState: (year: string): string => `この地物は${year}で終わっています。`,
+  /** 終わった後、後の年の錨で再び現れるとき（その年も言う）。 */
+  endHereStateReappears: (year: string, reappears: string): string =>
+    `この地物は${year}で終わっています（${reappears}の記録で再び現れます）。`,
+  /** いま見ている年は居る年で、いま居る区間に終わりが打たれている（GPT #5）。 */
+  endHereFuture: (year: string): string => `この地物は${year}で終わります。`,
+  /** いま見ている年はまだ始まる前（最初の錨より前）。 */
+  notYetState: (year: string): string => `この地物は${year}から始まります。`,
   /** 入口 A が通ったときの結果の文。 */
   endHereDone: (name: string, year: string): string => `「${name}」は${year}で終わったことにしました。`,
   /**
@@ -252,6 +259,48 @@ export const PROPERTY_STRINGS = {
     names === ''
       ? `下位領域 ${String(count)} 件は、この年から最上位になります`
       : `下位領域 ${String(count)} 件（${names}）は、この年から最上位になります`,
+  /**
+   * 終わらせる地物が後の年の錨で再び現れるとき（増分 7 の手直し 2 回目）。子が最上位に
+   * なるのはその年までで、再び現れた年からは元の所属に戻る（子の居ない殻を作らない）。
+   */
+  endHereImpactReappears: (year: string): string =>
+    `この地物は${year}の記録で再び現れます。下位領域はその年から元の所属に戻ります`,
+  /**
+   * 一緒に終わる、その年より後の記録（途切れずに続いていたもの。手直し 3 回目）。数えるのは中身の
+   * 変わる記録だけ（帳簿のために割られた錨は数えない。4 回目 #5）。
+   */
+  endHereImpactTrimmed: (year: string, count: number): string =>
+    `${year}より後の、途切れずに続いていた記録（中身の変わる記録 ${String(count)} 件）も一緒に終わります`,
+  /** 下位領域を全て失って一緒に終わるまとめ役（手直し 3 回目 1-1）。 */
+  endHereImpactCascaded: (name: string, year: string): string =>
+    `まとめ役「${name}」は下位領域を全て失うので、${year}から終わります`,
+  /**
+   * どの年にも下位領域が居なくなるまとめ役（4 回目 #1）。所属変更で下位領域を全て失ったまとめ役と
+   * 同じく、記録ごと無くなる。
+   */
+  endHereImpactCascadedWhole: (name: string): string =>
+    `まとめ役「${name}」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）`,
+  /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（4 回目 #2）。 */
+  endHereImpactLaterAffiliation: (name: string, year: string): string =>
+    `${year}からの「${name}」への所属も一緒に終わります（「${name}」の下位領域から外れます）`,
+  endHereImpactHeadingCascaded: '一緒に終わるもの',
+  /** 状態行: 一緒に終わった後ろの記録の件数。 */
+  endHereDoneTrimmed: (count: number): string =>
+    `その後の記録 ${String(count)} 件も一緒に終わりました。`,
+  /** 状態行: 存続期間の欄の編集で、下位領域を全て失ったまとめ役が一緒に終わった（手直し 3 回目）。 */
+  /** 状態行: 存続期間を変えた（続く文の頭）。 */
+  intervalChanged: '存続期間を変えました。',
+  intervalCascaded: (names: string): string =>
+    `存続期間を変えました。下位領域を全て失った「${names}」は、その年から終わりました。`,
+  /** 状態行: 一緒に終わったまとめ役。 */
+  endHereDoneCascaded: (names: string): string =>
+    `下位領域を全て失った「${names}」も、その年から終わりました。`,
+  /** 状態行: どの年にも下位領域が居なくなって記録ごと無くなったまとめ役（4 回目 #1）。 */
+  endHereDoneCascadedWhole: (names: string): string =>
+    `どの年にも下位領域が居なくなった「${names}」は、記録ごと無くなりました。`,
+  /** 状態行: 一緒に終わった別の上位領域への所属（4 回目 #2）。 */
+  endHereDoneLaterAffiliation: (names: string): string =>
+    `「${names}」への後の年の所属も一緒に終わりました。`,
   endHereImpactHeadingEnds: '終わるもの',
   endHereImpactHeadingPromoted: '最上位になるもの',
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
@@ -288,6 +337,9 @@ export const PROPERTY_STRINGS = {
   impactAutoRemoved: (count: number, names: string): string =>
     `${String(count)} 件（${names}）が、下位領域を全て失うため一緒に消えます`,
   impactAutoRemovedNone: 'なし（下位領域を全て失った集約は自動で消えます）',
+  /** 下位領域を失う年からだけ消え、ほかの年の記録は残るまとめ役（手直し 3 回目）。 */
+  impactPartlyRemoved: (count: number, names: string): string =>
+    `${String(count)} 件（${names}）は、下位領域を全て失う年から消えます（それより前の年の記録は残ります）`,
   impactNamesWithRest: (names: string, rest: number): string =>
     `${names} ほか ${String(rest)} 件`,
   impactConfirm: '影響を整理して削除',

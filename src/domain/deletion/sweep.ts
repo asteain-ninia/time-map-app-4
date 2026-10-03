@@ -116,7 +116,15 @@ function sweepPass(
 export function sweepAndPruneAnchor(
   features: readonly Feature[],
   targetIds: ReadonlySet<FeatureId>,
-  options: { readonly sweepAbsentTargets?: boolean } = {},
+  options: {
+    readonly sweepAbsentTargets?: boolean;
+    /**
+     * 下位領域が 0 個になっても連鎖剪定しないまとめ役（増分 7 の手直し 2 回目）。その錨の
+     * 区間の途中で子が居ると分かったまとめ役を、区間の始まりの時刻だけで消さないため。
+     * 対象への参照の掃除はほかと同じく行う。
+     */
+    readonly keep?: ReadonlySet<FeatureId>;
+  } = {},
 ): AnchorSweepResult {
   const present = new Set<FeatureId>(features.map((f) => f.id));
   const removed = new Set<FeatureId>();
@@ -141,6 +149,7 @@ export function sweepAndPruneAnchor(
     const nowEmpty = emptyAggregateIds(current);
     let grew = false;
     for (const id of nowEmpty) {
+      if (options.keep?.has(id) === true) continue;
       if (!removed.has(id)) {
         removed.add(id);
         grew = true;

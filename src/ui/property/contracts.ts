@@ -120,6 +120,12 @@ export const ANCHOR_INTERVAL_OP = {
   SetEnd: 'setEnd',
   /** Remove this anchor entirely (U09 deleteAnchor; refused for the sole anchor). */
   Delete: 'delete',
+  /**
+   * 「この年に終わったことにする」（増分 7 の手直し 3 回目）: その年から先の、**途切れずに
+   * 続いている記録をまとめて**終わらせる（`domain/affiliation/interval-edit.ts` の `endRunAt`）。
+   * 存続期間の欄の「終わり」（`SetEnd`）は錨 1 本の終わりを打つ操作のまま。
+   */
+  EndHere: 'endHere',
 } as const;
 
 export type AnchorIntervalOp =
@@ -150,6 +156,14 @@ export type AnchorIntervalEditIntent =
       readonly featureId: FeatureId;
       readonly anchorId: AnchorId;
       readonly op: typeof ANCHOR_INTERVAL_OP.Delete;
+    }
+  | {
+      readonly featureId: FeatureId;
+      /** その年に効いている錨。 */
+      readonly anchorId: AnchorId;
+      readonly op: typeof ANCHOR_INTERVAL_OP.EndHere;
+      /** 終わる年。 */
+      readonly at: TimePoint;
     };
 
 /*

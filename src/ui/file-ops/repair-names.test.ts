@@ -124,7 +124,7 @@ describe('buildRepairNamer', () => {
   });
 });
 
-// 取り込み（増分 8A〜8E）で、呼び名の規則を `conflict/participant-name.ts` の 1 か所にまとめた（B75）。
+// 取り込み（増分 8A〜8E）で、呼び名の規則を `conflict/participant-name.ts` の 1 か所にまとめた（B83）。
 // 修復ダイアログの側で変わったのは、見えない文字だけの名前を名前と見なさないことと、紀元前の年の書き方。
 describe('修復ダイアログの呼び名は重なり解決と同じ規則を通る', () => {
   const PROJECT = project([

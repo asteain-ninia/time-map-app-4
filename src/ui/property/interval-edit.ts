@@ -39,6 +39,18 @@ export function buildSetEndIntent(
   return { featureId, anchorId, op: ANCHOR_INTERVAL_OP.SetEnd, newEnd };
 }
 
+/**
+ * 「この年に終わったことにする」の intent（増分 7 の手直し 3 回目）。`anchorId` はその年に効いて
+ * いる錨。その年から先の途切れずに続いている記録をまとめて終わらせる。
+ */
+export function buildEndHereIntent(
+  featureId: FeatureId,
+  anchorId: AnchorId,
+  at: TimePoint,
+): AnchorIntervalEditIntent {
+  return { featureId, anchorId, op: ANCHOR_INTERVAL_OP.EndHere, at };
+}
+
 /** Assemble a deleteAnchor存続期間 intent (remove this anchor). */
 export function buildDeleteAnchorIntent(
   featureId: FeatureId,

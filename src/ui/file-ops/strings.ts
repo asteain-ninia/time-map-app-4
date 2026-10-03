@@ -68,6 +68,25 @@ export const OVERWRITE_STRINGS = {
   autoSaveHoldDetail: '自動保存は、上書きする先を一度確認してから始まります。',
 } as const;
 
+/**
+ * 保存の直前に、年をまたぐ所属の食い違いを見せて聞く板（増分 7 の手直し 2 回目 / B67）。
+ * **保存を止めて行き止まりにしない**ので、［このまま保存する］で書ける。書いたファイルは
+ * 次に開くときに読み込みの修復を聞かれる（それを先に言う）。
+ */
+export const PRE_SAVE_STRINGS = {
+  title: '保存の前の確認',
+  intro:
+    '次の地物は、年によって所属の記録が食い違っています。このまま保存すると、次に開くときに修復を聞かれます。',
+  /** 行が多いときの畳み（先頭の数行だけ見せる）。 */
+  more: (count: number): string => `ほか ${String(count)} 件`,
+  /**
+   * 次に開くと修復の板が出て、各行の先頭（既定）の方法は上の各行の「→」に書いたとおりに
+   * その区間だけを直す（増分 7 の手直し 3 回目 1-3。全部の年から消す方法は既定にしていない）。
+   */
+  confirm: 'このまま保存する（次に開くと、上の「→」のとおりに直せます）',
+  cancel: 'やめる',
+} as const;
+
 /** The load-time consistency auto-repair UI (FR-106). */
 export const REPAIR_STRINGS = {
   title: '読み込みデータの不整合',
@@ -96,6 +115,12 @@ export const REPAIR_STRINGS = {
    */
   abortedUnresolved:
     '不整合を解消できなかったため、読み込みを中止しました。データは変更されていません。',
+  /**
+   * 修復で捨てた記録の件数（「各地物に自分の年表を作って残す」で、同じ年に自分の年表の記録と
+   * 食い違っていた古い記録）。状態行に出す（黙って捨てない）。
+   */
+  discarded: (count: number): string =>
+    `修復して読み込みました。同じ年に別の記録があった古い記録 ${String(count)} 件は、地物自身の年表の記録を残して捨てました。`,
   /** Field labels for one inconsistency row. */
   fieldTime: '作中時刻',
   fieldRange: '時間範囲',

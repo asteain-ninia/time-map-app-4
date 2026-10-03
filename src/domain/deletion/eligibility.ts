@@ -148,10 +148,14 @@ export function judgeDeletion(
   // **束ごとに 1 回**、掃除後のその時刻の世界を検査する（所有者の裁定 2026-09-07: 錨 1 枚
   // だけ見ると、子が自分の系列を持つまとめ役が「子が居ない」違反に見える）。束に載らない
   // 錨は従来どおり錨 1 枚で検査する。
-  const { perAnchor, bundleSurvivors } = sweepDeletionState(state, targets);
+  const { perAnchor, bundleSurvivors, keptAggregateIds } = sweepDeletionState(state, targets);
   const collect = (validation: ReturnType<typeof validateHierarchy>): void => {
     if (validation.ok) return;
     for (const v of validation.violations) {
+      // 区間の途中で子が居るので剪定しなかったまとめ役の、始まりの時刻の「子が居ない」形は
+      // 削除の前からあるもので、削除が作った違反ではない（増分 7 の手直し 2 回目）。
+      const head = v.featureIds[0];
+      if (head !== undefined && keptAggregateIds.has(head)) continue;
       for (const id of v.featureIds) violating.push(id);
     }
   };

@@ -195,7 +195,9 @@ test.describe('B64 — 所属変更の道具が対象を掴んでいても Ctrl+
       await page.getByTestId('sidebar-tab-properties').click();
       await page.getByTestId('end-here').click();
       await expect(page.getByTestId('app-can-undo')).toHaveText('1');
-      await expect(page.getByTestId('app-focus-owner')).toHaveText('tool-drawing');
+      // 印から来た対象だけを持っているあいだ、道具は鍵盤を名乗らない（増分 7 の手直し 2 回目 /
+      // 設計適合 指摘 1。印は一覧のもので道具の下書きではない）。
+      await expect(page.getByTestId('app-focus-owner')).toHaveText('map');
 
       // 道具が対象を掴んだまま Ctrl+Z。**黙らずに大域の取り消しが効く**。
       await page.getByTestId('sidebar-tab-list').click();
@@ -302,7 +304,7 @@ const BOARD_CASES: readonly BoardCase[] = [
       await page.mouse.click(cx, cy - r / 2);
     },
   },
-  // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（台帳 #29）。設定の板の上に出る。
+  // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（台帳 #30）。設定の板の上に出る。
   {
     board: 'basemap-aspect-dialog',
     open: async (page, app) => {

@@ -8,7 +8,7 @@
 - 実データ: 前回の反証が本体の `derle-import\derle-world-full-2026-08-16.gimoza` から複写した `real.gimoza` を、自分の場所へもう一度複写して読んだ（元のファイルはアプリで開いていない）
 - 実行したもの:
     - 単体 8 ファイル（`ring-hierarchy-gate`・`vertex-delete`・`auto-color-off`・`auto-color-toggle`・`detail-panels`・`wheel-zoom-notice`・`zoom-limit-notice`・`basemap-aspect`）: **87 件すべて通過**
-    - E2E（`--workers=2`、`out/` は 20:35 の build で src の最後のコミット 20:34 より新しい）: `inc8e-ring-gate`・`inc8e-auto-color-off`・`inc8e-detail-panels`・`inc8e-zoom-limit`・`inc8e-basemap-aspect`・`inc8e-conflict` の **21 件すべて通過**。`inc5-shell` の台帳 #29 の行と `inc7-fix-ui` の `basemap-aspect-dialog` の行の **2 件も通過**
+    - E2E（`--workers=2`、`out/` は 20:35 の build で src の最後のコミット 20:34 より新しい）: `inc8e-ring-gate`・`inc8e-auto-color-off`・`inc8e-detail-panels`・`inc8e-zoom-limit`・`inc8e-basemap-aspect`・`inc8e-conflict` の **21 件すべて通過**。`inc5-shell` の台帳 #30 の行と `inc7-fix-ui` の `basemap-aspect-dialog` の行の **2 件も通過**
 
 ## 総合判定: **revise**
 

@@ -102,7 +102,7 @@ describe('participantDisplayName — 内部 ID を出さない（N-18）', () =>
       color,
       [],
     );
-    // まとめ役も「面」と呼ぶ（取り込みで 8D の修復ダイアログの呼び方とそろえた。B75）。
+    // まとめ役も「面」と呼ぶ（取り込みで 8D の修復ダイアログの呼び方とそろえた。B83）。
     expect(participantDisplayName(agg, timePointYear(10))).toBe('名前のない面（10年に作成）');
   });
 

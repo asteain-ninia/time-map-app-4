@@ -6,7 +6,9 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { STATUS_TONE, StatusMessageStore } from './status-message';
+import { timePointYear } from '../../domain/time/time-point';
+
+import { STATUS_TONE, StatusMessageStore, moveTrailerKey } from './status-message';
 
 describe('StatusMessageStore（設計書 §H.5）', () => {
   it('最初は何も無い', () => {
@@ -134,5 +136,28 @@ describe('StatusMessageStore — 止めた打鍵の理由はボタンを残す�
     store.success('保存しました');
     store.refusalKeepingAction('「削除」はいま使えません。');
     expect(store.get()).toEqual({ text: '「削除」はいま使えません。', tone: STATUS_TONE.Failure });
+  });
+});
+
+describe('時刻の移動の知らせに続ける文（増分 7 の手直し 2 回目 / 設計適合 指摘 3）', () => {
+  it('その時刻への知らせのときだけ取り出せて、取り出したら残らない', () => {
+    const store = new StatusMessageStore();
+    store.stageMoveTrailer(moveTrailerKey(timePointYear(1500)), 'この年に居ない 3 件の印を外しました。');
+    expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1600)))).toBe('');
+    // 別の時刻への取り出しでも控えは捨てる（古い控えを後の移動へ持ち越さない）。
+    expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1500)))).toBe('');
+    store.stageMoveTrailer(moveTrailerKey(timePointYear(1500)), 'この年に居ない 3 件の印を外しました。');
+    store.stageMoveTrailer(moveTrailerKey(timePointYear(1500)), '記録を作りました。');
+    expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1500)))).toBe(
+      'この年に居ない 3 件の印を外しました。記録を作りました。',
+    );
+    expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1500)))).toBe('');
+  });
+
+  it('時刻が動いたら控えを捨てられる', () => {
+    const store = new StatusMessageStore();
+    store.stageMoveTrailer(moveTrailerKey(timePointYear(1500)), 'x');
+    store.clearMoveTrailers();
+    expect(store.takeMoveTrailers(moveTrailerKey(timePointYear(1500)))).toBe('');
   });
 });

@@ -14,7 +14,7 @@
 // 純粋（React なし）。プロジェクトを 1 回なめて表を作るだけで、元の値は変えない。
 //
 // **呼び名の規則（名前の取り出し・種類の語・「名前のない面（…年に作成）」の文）は
-// `src/ui/conflict/participant-name.ts` の 1 か所から引く**（`docs/現状.md` B75。増分 8E の重なり解決と
+// `src/ui/conflict/participant-name.ts` の 1 か所から引く**（`docs/現状.md` B83。増分 8E の重なり解決と
 // 同じ呼び方を 2 か所で書かない）。ここに残るのは、プロジェクトから表を作る部分だけである。
 
 import type { FeatureId } from '../../domain/ids';

@@ -809,7 +809,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     readonly backdrop: string;
     /** 板の本体（`role="dialog"` / `"alertdialog"`）の testid。 */
     readonly dialog: string;
-    /** 板を開く。`app` は main 側の差し替えが要る板（#29 の画像選択）だけが使う。 */
+    /** 板を開く。`app` は main 側の差し替えが要る板（#30 の画像選択）だけが使う。 */
     readonly open: (page: Page, app: ElectronApplication) => Promise<void>;
     readonly close: (page: Page) => Promise<void>;
   }[] = [
@@ -920,10 +920,10 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       },
       close: (page) => page.getByTestId('end-here-impact-cancel').click(),
     },
-    // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（#29）。設定の板の上に出る板なので、
+    // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（#30）。設定の板の上に出る板なので、
     // 走査では背面の覆いが地図の 25 点すべてを受けることを見る。閉じるときは設定の板も閉じる。
     {
-      ledger: '#29 背景地図の縦横比',
+      ledger: '#30 背景地図の縦横比',
       backdrop: 'basemap-aspect-backdrop',
       dialog: 'basemap-aspect-dialog',
       open: async (page, app) => {

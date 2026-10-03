@@ -53,6 +53,11 @@ export interface DeletionImpact {
    * 連鎖剪定を実際に走らせた結果から採る（教訓 5.6: 呼び出し経路ではなく結果状態）。
    */
   readonly autoRemovedIds: readonly FeatureId[];
+  /**
+   * 下位領域を失う年からだけ消え、**ほかの年の記録は残る**集約地物（増分 7 の手直し 3 回目 /
+   * 再検証 #3）。旧版はこれも「自動で消える」に数えていた。
+   */
+  readonly partlyRemovedIds: readonly FeatureId[];
   /** 掃除して消せるか（{@link judgeDeletion} の判定をそのまま持つ）。 */
   readonly verdict: DeleteVerdict;
 }
@@ -89,7 +94,8 @@ export function describeDeletionImpact(
   const promoted = new Set<FeatureId>();
   const vertexIds = new Set<VertexId>();
   const otherVertexIds = new Set<VertexId>();
-  const autoRemoved = new Set<FeatureId>();
+  const removedSomewhere = new Set<FeatureId>();
+  const survivesSomewhere = new Set<FeatureId>();
   let ownsShape = false;
 
   const targets = new Set<FeatureId>([targetId]);
@@ -112,10 +118,16 @@ export function describeDeletionImpact(
     for (const id of referencesInAnchor(features, targetId).childRefs) promoted.add(id);
     // 自動消滅は **実際に掃除して剪定した結果**から採る（教訓 5.6）。対象自身は
     // 「消える」ではなく「消す」ものなので除く。
+    //
+    // **全部の錨で消えるものだけ**を「自動で消える」と言う（手直し 3 回目 / 再検証 #3）。
+    // 一部の年の錨でだけ消え、ほかの年の錨に残るまとめ役は「その年から消える」側に分ける。
     const swept = perAnchor[index];
     if (swept === undefined) continue;
-    for (const id of swept.removedIds) if (id !== targetId) autoRemoved.add(id);
+    for (const id of swept.removedIds) if (id !== targetId) removedSomewhere.add(id);
+    for (const f of swept.features) survivesSomewhere.add(f.id);
   }
+  const autoRemoved = [...removedSomewhere].filter((id) => !survivesSomewhere.has(id));
+  const partlyRemoved = [...removedSomewhere].filter((id) => survivesSomewhere.has(id));
 
   return {
     targetId,
@@ -124,7 +136,8 @@ export function describeDeletionImpact(
     soleVertexCount: [...vertexIds].filter((v) => !otherVertexIds.has(v)).length,
     ownsShape,
     promotedChildIds: [...promoted],
-    autoRemovedIds: [...autoRemoved],
+    autoRemovedIds: autoRemoved,
+    partlyRemovedIds: partlyRemoved,
     verdict: judgeDeletion(state, targetId),
   };
 }

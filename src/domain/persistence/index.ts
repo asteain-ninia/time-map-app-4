@@ -120,4 +120,5 @@ export {
   applyRepair,
   type RepairApplication,
   applyRepairChecked,
+  applyRepairWithReport,
 } from './repair';

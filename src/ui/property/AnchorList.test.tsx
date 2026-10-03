@@ -108,6 +108,8 @@ function Harness(props: { initial: AnchorSeries; selected: AnchorId }): JSX.Elem
             return withEntryEnd(e, intent.newEnd);
           case ANCHOR_INTERVAL_OP.Delete:
             return e;
+          case ANCHOR_INTERVAL_OP.EndHere:
+            return withEntryEnd(e, intent.at);
         }
       }),
     }));

@@ -235,18 +235,23 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
         ),
       );
     }
+    // 元の上位領域を持つ対象が 1 件も無ければ「元の上位領域」を言わない（バグ狩り 2-5）。
+    const withOrigin = plan.leafIds.some(
+      (id) => features.find((f) => f.id === id)?.parentId !== undefined,
+    );
     lines.push(
       choice === REPARENT_CHOICE.None
-        ? REPARENT_STRINGS.previewAnchorsNone(yearLabel)
+        ? REPARENT_STRINGS.previewAnchorsNone(yearLabel, withOrigin)
         : choice === REPARENT_CHOICE.Create
-          ? REPARENT_STRINGS.previewAnchorsCreate(yearLabel)
-          : REPARENT_STRINGS.previewAnchorsInto(yearLabel),
+          ? REPARENT_STRINGS.previewAnchorsCreate(yearLabel, withOrigin)
+          : REPARENT_STRINGS.previewAnchorsInto(yearLabel, withOrigin),
     );
     lines.push(REPARENT_STRINGS.previewUndo);
     return lines;
   }, [
     choice,
     plan,
+    features,
     newName,
     existingParentId,
     nameOf,

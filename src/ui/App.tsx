@@ -194,7 +194,12 @@ import {
 } from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
-import { STATUS_TONE, StatusMessageStore, type StatusAction } from './shell/status-message';
+import {
+  STATUS_TONE,
+  StatusMessageStore,
+  moveTrailerKey,
+  type StatusAction,
+} from './shell/status-message';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
 import { BulkKindLabelDialog } from './property/BulkKindLabelDialog';
 import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
@@ -232,7 +237,8 @@ import './map/grid-toggle.css';
 import { buildForest } from '../domain/hierarchy/forest';
 // 増分 7: 所属変更の対象展開（FR-48 後半）と、削除の影響の説明（設計書 §A.3）。
 import { planAffiliationTargets } from '../domain/affiliation/index';
-import { childrenPromotedByEnding, hasOwnSeries } from '../domain/affiliation/materialize';
+import { hasOwnSeries } from '../domain/affiliation/materialize';
+import { planEnding } from '../domain/affiliation/interval-edit';
 import { deletionStateFromHistories, describeDeletionImpact } from '../domain/deletion/index';
 import { maxDerivedDepth } from '../domain/hierarchy/depth';
 import { FEATURE_KIND, featureDisplayName } from '../domain/feature';
@@ -247,7 +253,8 @@ import {
   anchorDeleteImpactView,
   buildDeleteAnchorIntent,
   buildEndHereImpactView,
-  buildSetEndIntent,
+  buildEndHereIntent,
+  ANCHOR_INTERVAL_OP,
   isYearAligned,
   type DeleteImpactView,
   type EndHereImpactView,
@@ -1262,13 +1269,21 @@ export function App(): JSX.Element {
       // **その年に居なくなった印は外す**（Fable #5）。印は「まとめて直す相手」なので、
       // 居ない地物を数え続けると帯の件数と実際に直せる件数が食い違う。外した件数は
       // 黙って減らさずに状態行へ出す（教訓 5.12）。
+      //
+      // **移動の知らせと 1 つの文にまとめる**（設計適合 指摘 3）。時刻レールは「○○年へ
+      // 移動しました。」を描画のあとで出すので、ここで出した件数はすぐ上書きされていた。
+      // 件数は移動の知らせの後ろへ続ける文として控え、レールを通らない移動（再生など）
+      // でも読めるよう、ここでもいったん出しておく。
+      if (timeMoved) statusMessageStore.clearMoveTrailers();
       if (timeMoved && markedFeaturesRef.current.size > 0) {
         const alive = new Set(featuresAt(s.domain, s.currentTime).map((f) => f.id));
         const kept = [...markedFeaturesRef.current].filter((id) => alive.has(id));
         const dropped = markedFeaturesRef.current.size - kept.length;
         if (dropped > 0) {
           s.setFeatureMarks(kept);
-          statusMessageStore.notice(APP_STRINGS.markDroppedByTime(dropped));
+          const text = APP_STRINGS.markDroppedByTime(dropped);
+          statusMessageStore.notice(text);
+          statusMessageStore.stageMoveTrailer(moveTrailerKey(s.currentTime), text);
         }
       }
       paint();
@@ -2172,6 +2187,10 @@ export function App(): JSX.Element {
         return;
       }
       recordCommand(built.command, undefined, at);
+      // **確定したら印を捨てる**（設計書 §D.5「捨てる契機: 確定」/ 設計適合 指摘 4）。
+      // 残すと、続けて所属の道具を構えた瞬間に同じ地物がまた対象になる（所属変更・結合と
+      // 同じ寿命にそろえる）。
+      store.getState().clearFeatureMarks();
       statusMessageStore.success(
         PROPERTY_STRINGS.bulkKindDone(built.changedIds.length, kindLabel),
       );
@@ -2234,21 +2253,47 @@ export function App(): JSX.Element {
         statusMessageStore.failure(PROPERTY_STRINGS.endHereNoOwnSeries(''));
         return;
       }
+      // **黙らない**（手直し 3 回目 / 締め D）: 後ろの続いていた記録が一緒に終わる・下位領域を
+      // 全て失ったまとめ役が一緒に終わるときは、状態行でもそう言う。確定と同じ 1 本で数える。
+      const plan = planEnding(s.domain.histories, featureId, at, calendar);
+      const nameAnyYear = (id: FeatureId, when: TimePoint): string =>
+        featureByIdAt(s.domain, when, id)?.attributes.name ?? featureNameOf(id) ?? '';
+      const cascadedNames = [
+        ...new Set((plan?.cascaded ?? []).filter((c) => !c.whole).map((c) => c.featureId)),
+      ]
+        .map((id) => nameAnyYear(id, at))
+        .filter((n) => n !== '');
+      const wholeNames = [
+        ...new Set((plan?.cascaded ?? []).filter((c) => c.whole).map((c) => c.featureId)),
+      ]
+        .map((id) => nameAnyYear(id, (plan?.cascaded ?? []).find((c) => c.featureId === id)?.at ?? at))
+        .filter((n) => n !== '');
+      const laterNames = (plan?.laterAffiliations ?? [])
+        .map((a) => nameAnyYear(a.parentId, a.from))
+        .filter((n) => n !== '');
       try {
+        // その年から先の、途切れずに続いている記録をまとめて終わらせる（手直し 3 回目 2）。
         anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
-          buildSetEndIntent(featureId, entry.anchor.id, at),
+          buildEndHereIntent(featureId, entry.anchor.id, at),
         );
         // **終わらせても選択は保つ**（司令塔の決定 (12)）。確定後の選択の洗い直しは
         // 「その年に居ない地物」を外すので、押した瞬間に素性欄もレーンも空になり、
         // **終端が見えないまま**になっていた。ここで選び直せば、レーンに終端の印が
         // 立っているのが読める（読むだけでも選べる＝増分 2 の裁定と同じ立場）。
         store.getState().setActiveFeature(featureId);
-        statusMessageStore.success(PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)));
+        const trimmed = plan?.trimmedLaterRecords ?? 0;
+        statusMessageStore.success(
+          PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)) +
+            (trimmed > 0 ? PROPERTY_STRINGS.endHereDoneTrimmed(trimmed) : '') +
+            (laterNames.length > 0 ? PROPERTY_STRINGS.endHereDoneLaterAffiliation(laterNames.join('・')) : '') +
+            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join('・')) : '') +
+            (wholeNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・')) : ''),
+        );
       } catch (e) {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
       }
     },
-    [store, calendar, statusMessageStore],
+    [store, calendar, statusMessageStore, featureNameOf],
   );
 
   /**
@@ -2303,16 +2348,36 @@ export function App(): JSX.Element {
       // ことにしました」と読めない文になっていた。
       const name = featureNameOf(featureId) ?? '';
       // **子が居るときだけ板を出す**（決定 (2) / 実装係 2 の判断。進捗 増分7.md §12.6）。
-      // 数え上げは確定（`createAnchorIntervalCommandForRoot`）と同じ
-      // `childrenPromotedByEnding`（居候＋自分の系列を持つ子）を通し（教訓 5.26 / 5.29:
-      // 予告と確定で別の数え方を作らない）、そのうち **この年に居る**子だけを「この年から
-      // 最上位になります」と言う ―― それより前に終わっていた子は画面上の姿が変わらない。
-      // 子が 1 件も居なければ、起きることは「この地物が終わる」だけで、それはボタンの文が
-      // そのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
-      const promoted = childrenPromotedByEnding(s.domain.histories, featureId, at, calendar).filter(
-        (id) => featureByIdAt(s.domain, at, id) !== null,
+      // 数え上げは確定（`createAnchorIntervalCommandForRoot`）と同じ `editFeatureInterval`
+      // を空打ちする `planEnding`（直接の子だけ。居候は起こしてから数える）を通し
+      // （教訓 5.26 / 5.29: 予告と確定で別の数え方を作らない）、そのうち **この年に居る**子
+      // だけを「この年から最上位になります」と言う ―― それより前に終わっていた子は画面上の
+      // 姿が変わらない。子が 1 件も居なければ、起きることは「この地物が終わる」だけで、
+      // それはボタンの文がそのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
+      //
+      // **下位領域を全て失うまとめ役が一緒に終わるときも板を出す**（手直し 3 回目 / 締め D）。
+      // 末端を終わらせるだけでも、別の地物（親）が変わるなら押す前に見せる。
+      const plan = planEnding(s.domain.histories, featureId, at, calendar);
+      // その年に居る子だけを数える（`featureByIdAt` は居なければ undefined を返す）。
+      const promoted = (plan?.promoted ?? []).filter(
+        (id) => featureByIdAt(s.domain, at, id) !== undefined,
       );
-      if (promoted.length === 0) {
+      const cascaded = (plan?.cascaded ?? []).map((c) => ({
+        name: featureByIdAt(s.domain, c.at, c.featureId)?.attributes.name ??
+          featureNameOf(c.featureId) ??
+          '',
+        yearLabel: formatYear(c.at.year),
+        whole: c.whole,
+      }));
+      // 切り詰める後ろの記録の中の、別の上位領域への所属（4 回目 #2）。その上位領域の下位領域が
+      // 変わるので、押す前の板を出す（締め D）。
+      const laterAffiliations = (plan?.laterAffiliations ?? []).map((a) => ({
+        name: featureByIdAt(s.domain, a.from, a.parentId)?.attributes.name ??
+          featureNameOf(a.parentId) ??
+          '',
+        yearLabel: formatYear(a.from.year),
+      }));
+      if (promoted.length === 0 && cascaded.length === 0 && laterAffiliations.length === 0) {
         commitEndHere(featureId, at, name);
         return;
       }
@@ -2328,6 +2393,12 @@ export function App(): JSX.Element {
           yearLabel: formatYear(at.year),
           promotedCount: promoted.length,
           promotedNames,
+          ...(plan?.reappearsAt == null
+            ? {}
+            : { reappearsLabel: formatYear(plan.reappearsAt.year) }),
+          trimmedCount: plan?.trimmedLaterRecords ?? 0,
+          cascaded,
+          laterAffiliations,
         }),
       });
     },
@@ -2512,6 +2583,11 @@ export function App(): JSX.Element {
           case ESCAPE_STEP.ResetTool:
             // 「選ぶ」＝ 道具を外した状態。選択はもう空なので、ここで消えるものは無い。
             s.setActiveTool(null);
+            // **印は Escape では外さない**（司令塔の決定 (6)）。道具を降りても一覧に印が
+            // 残っていることと、外し方を言う（黙って残さない。設計適合 指摘 1）。
+            if (s.ledger.marked.size > 0) {
+              statusMessageStore.notice(APP_STRINGS.marksStayAfterEscape(s.ledger.marked.size));
+            }
             return;
           case ESCAPE_STEP.None:
             return;
@@ -2522,7 +2598,7 @@ export function App(): JSX.Element {
     return () => {
       registry.unregister(COMMAND_ID.EditDeselect);
     };
-  }, [registry, store]);
+  }, [registry, store, statusMessageStore]);
 
   // Reconcile the history on a store domain swap we did NOT author via a command. A
   // subscribe bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live
@@ -2791,7 +2867,7 @@ export function App(): JSX.Element {
       // **確定したら印を捨てる**（Fable #5 / 設計書 §D.5「捨てる契機: 確定」）。
       // 残しておくと、道具を構え直した瞬間に同じ 3 件がまた対象になり、
       // 「もう 1 度動かすつもりは無かったのに動かせてしまう」状態になる。
-      // まとめて種別を付ける側は既に捨てているので、不揃いも直る。
+      // 結合・まとめて種別を付ける も確定で捨てる（操作によって印の寿命を変えない）。
       store.getState().clearFeatureMarks();
     },
     [recordCommit, store],
@@ -3533,10 +3609,26 @@ export function App(): JSX.Element {
       const proposal = createEditProposal(featureId, at, snapshot);
       const result = propertyEditBindings.createAnchor.startProcess(proposal);
       if (result.status === PROCESS_STATUS.Committed) {
+        // 自分の年表を持たないまとめ役の子では、記録は **上位領域の年表**に増える。子の
+        // レーンには印が増えないので、どこに増えたかを名前で言う（バグ狩り 2-4: 押しても
+        // 何も起きなかったように見えていた）。
+        const before = store.getState().domain;
+        const owner = hasOwnSeries(before.histories, featureId)
+          ? undefined
+          : findHistoryContaining(before, featureId, at, calendar);
         recordCommit(result, { featureId }, at);
+        if (owner !== undefined) {
+          const ownerName =
+            featureByIdAt(store.getState().domain, at, owner.history.featureId)?.attributes.name ?? '';
+          if (ownerName !== '') {
+            statusMessageStore.success(
+              EDIT_PLAN_STRINGS.createAnchorHereInOwner(ownerName, formatYear(at.year)),
+            );
+          }
+        }
       }
     },
-    [store, propertyEditBindings, recordCommit],
+    [store, propertyEditBindings, recordCommit, calendar, statusMessageStore],
   );
 
   // FR-85 — the プロパティタブ「地物を削除」button. The {@link DeleteFeatureButton}
@@ -3651,9 +3743,31 @@ export function App(): JSX.Element {
           { featureId: intent.featureId },
           anchorIntervalRecolorTime(root, intent, store.getState().currentTime),
         );
+        // **黙らない**（手直し 3 回目 / 締め D）: 存続期間の欄の編集で、下位領域を全て失った
+        // まとめ役が一緒に終わったら、名前と年を状態行に出す。「この年に終わったことにする」は
+        // 呼び手（`commitEndHere`）が同じことを自分の文に含めるので、ここでは言わない。
+        if (intent.op !== ANCHOR_INTERVAL_OP.EndHere && result.cascaded.length > 0) {
+          const live = store.getState().domain;
+          const nameOf = (c: (typeof result.cascaded)[number]): string =>
+            featureByIdAt(root, toYearPoint(c.at), c.featureId)?.attributes.name ??
+            featureByIdAt(live, toYearPoint(c.at), c.featureId)?.attributes.name ??
+            '';
+          const names = result.cascaded.filter((c) => !c.whole).map(nameOf).filter((n) => n !== '');
+          const wholeNames = result.cascaded.filter((c) => c.whole).map(nameOf).filter((n) => n !== '');
+          if (names.length > 0 || wholeNames.length > 0) {
+            statusMessageStore.success(
+              (names.length > 0
+                ? PROPERTY_STRINGS.intervalCascaded(names.join('・'))
+                : PROPERTY_STRINGS.intervalChanged) +
+                (wholeNames.length > 0
+                  ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・'))
+                  : ''),
+            );
+          }
+        }
       },
     }),
-    [store, recordCommand],
+    [store, recordCommand, statusMessageStore],
   );
   // 「この年に終わったことにする」が使う口を late-bind する（写しを作らない＝教訓 5.44）。
   anchorIntervalDispatchRef.current = anchorIntervalDispatch;
@@ -3984,7 +4098,7 @@ export function App(): JSX.Element {
             {/* 設計書 §B.5 の台帳 #10・#11（増分 6。増分 5 から送られた 3 部品のうち 2 つ）。
                 層は `pointer-events: none` で、ボタンの矩形だけが押下を受ける（K-2）。 */}
             <MapViewControls<DomainRoot> store={store} registry={registry} />
-            {/* 増分 8E（G-21 / §B.5 の台帳 #28）: ズームの上下限で断った理由を脇に出す。押せない。 */}
+            {/* 増分 8E（G-21 / §B.5 の台帳 #29）: ズームの上下限で断った理由を脇に出す。押せない。 */}
             <ZoomLimitNoteView<DomainRoot> store={store} noteStore={zoomLimitNoteStore} />
             {/* 同 #12。押した位置の掴める距離に頂点が 2 つ以上あるときだけ出る一時部品。 */}
             <VertexCandidateList

@@ -1,10 +1,9 @@
 // 記録の置き場（司令塔の決定 (1)(2)）の検査。
 //
-// 固定するのは 4 つ。
+// 固定するのは 3 つ（終わる年から最上位にする検査は `interval-edit.test.ts` へ移した）。
 //   1. 居候（自分の系列を持たないまとめ役の子）の記録が、全部の年ぶん自分の系列へ移る。
 //   2. 親の錨からは外れ、頂点は「その地物が参照する分」だけ写る（共有は両方に残る）。
 //   3. 既に自分の系列を持つ地物は触らない（二重に起こさない）。
-//   4. 終わる年から先で最上位になる（前の年の「子だった」記録は残る）。
 
 import { describe, expect, it } from 'vitest';
 
@@ -13,13 +12,7 @@ import { timePointYear } from '../time/time-point';
 import { aggregate, anchorOf, fid, leafTile } from '../deletion/fixtures';
 import type { FeatureHistory } from '../persistence/serialize';
 
-import {
-  childrenPromotedByEnding,
-  hasOwnSeries,
-  materializeOwnSeries,
-  promoteToTopLevelFrom,
-  residentFeatureIds,
-} from './materialize';
+import { hasOwnSeries, materializeOwnSeries, residentFeatureIds } from './materialize';
 
 const calendar = getCalendar('gregorian');
 
@@ -153,57 +146,5 @@ describe('materializeOwnSeries — 記録を自分の系列へ起こす', () => 
     expect(before[0]?.series.entries[0]?.anchor.snapshot.features.map((f) => String(f.id))).toEqual(
       snapshotBefore,
     );
-  });
-});
-
-describe('promoteToTopLevelFrom — 終わる年から最上位にする（決定 (2)）', () => {
-  it('その年から親を外し、前の年の「子だった」記録は残す', () => {
-    const base = materializeOwnSeries(nestedProject([1000]), [fid('a')], calendar).histories;
-    const after = promoteToTopLevelFrom(base, [fid('a')], timePointYear(1500), calendar);
-    const own = after.find((h) => h.featureId === fid('a'));
-    expect(own?.series.entries.map((e) => e.start.year)).toEqual([1000, 1500]);
-    expect(own?.series.entries[0]?.anchor.snapshot.features[0]?.parentId).toBe(fid('agg'));
-    expect(own?.series.entries[1]?.anchor.snapshot.features[0]?.parentId).toBeUndefined();
-  });
-
-  it('終わる年より後の錨からも親を外す（carry-forward が親を連れ戻さない）', () => {
-    const base = materializeOwnSeries(nestedProject([1000, 1600]), [fid('a')], calendar).histories;
-    const after = promoteToTopLevelFrom(base, [fid('a')], timePointYear(1500), calendar);
-    const own = after.find((h) => h.featureId === fid('a'));
-    expect(own?.series.entries.map((e) => e.start.year)).toEqual([1000, 1500, 1600]);
-    expect(own?.series.entries[2]?.anchor.snapshot.features[0]?.parentId).toBeUndefined();
-  });
-
-  it('その年に錨があるならその錨を書き替える（本数は増えない）', () => {
-    const base = materializeOwnSeries(nestedProject([1000, 1500]), [fid('a')], calendar).histories;
-    const after = promoteToTopLevelFrom(base, [fid('a')], timePointYear(1500), calendar);
-    const own = after.find((h) => h.featureId === fid('a'));
-    expect(own?.series.entries).toHaveLength(2);
-    expect(own?.series.entries[1]?.anchor.snapshot.features[0]?.parentId).toBeUndefined();
-  });
-
-  it('自分の系列を持たない地物には何もしない（先に起こすのが前提）', () => {
-    const base = nestedProject();
-    expect(promoteToTopLevelFrom(base, [fid('a')], timePointYear(1500), calendar)).toBe(base);
-  });
-});
-
-describe('childrenPromotedByEnding — 終わらせたら最上位になる子（決定 (2)）', () => {
-  it('居候に加えて、自分の系列を持つ子（移された・束ねられた子）も数える', () => {
-    // a は自分の系列を持つ子（記録の置き場の直しで起こされた形）、b は居候のまま。
-    const base = materializeOwnSeries(nestedProject([1000]), [fid('a')], calendar).histories;
-    expect(childrenPromotedByEnding(base, fid('agg'), timePointYear(1500), calendar)).toEqual([
-      fid('b'),
-      fid('a'),
-    ]);
-  });
-
-  it('終わる年より前の錨でだけ子だった地物は数えない', () => {
-    const base = materializeOwnSeries(nestedProject([1000]), [fid('a')], calendar).histories;
-    // a を 1200 年から最上位にしておく（それ以後は agg の子ではない）。
-    const detached = promoteToTopLevelFrom(base, [fid('a')], timePointYear(1200), calendar);
-    expect(childrenPromotedByEnding(detached, fid('agg'), timePointYear(1500), calendar)).toEqual([
-      fid('b'),
-    ]);
   });
 });

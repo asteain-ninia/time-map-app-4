@@ -159,6 +159,8 @@ describe('年の欄の断りと粒度（2026-09-07 の手直し）', () => {
     const messageStore = {
       failure: (text: string) => messages.push({ kind: 'failure', text }),
       notice: (text: string) => messages.push({ kind: 'notice', text }),
+      // 移動の知らせに続ける文（手直し 2 回目）。この検査では控えは無い。
+      takeMoveTrailers: () => '',
     } as unknown as StatusMessageStore;
     render(<Timeline store={s} statusMessages={messageStore} />);
     return { s, messages };

@@ -65,15 +65,16 @@ import {
   deleteAnchor,
   type AnchorSeries,
   type RejectReason,
+  type SeriesResult,
 } from '../domain/anchor-series';
 import type { AnchorIntervalEditIntent } from './property/index';
 import { ANCHOR_INTERVAL_OP } from './property/index';
 import { deleteFeatureFromHistories } from '../domain/deletion/index';
 import {
-  materializeOwnSeries,
-  childrenPromotedByEnding,
-  promoteToTopLevelFrom,
-} from '../domain/affiliation/materialize';
+  editFeatureInterval,
+  endRunAt,
+  type CascadedEnd,
+} from '../domain/affiliation/interval-edit';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -356,14 +357,35 @@ function checkConstraints(resultState: DomainRoot): readonly unknown[] {
  * `shell/command-result.ts` の {@link UI_COMMAND_LABEL} が唯一の定義箇所で、同じ
  * module の写像表が画面へ出す日本語を決める（教訓 5.51 出口 1 か所で写像する）。
  */
+/**
+ * どこかの年の錨に居る地物の id（系列の持ち主と、錨の中の居候の両方）。
+ *
+ * **地物の増減は地物の id で数える**（増分 7 の手直し 2 回目 / 設計適合 指摘 2）。旧版は
+ * 系列の id（＝自分の系列を持つ地物）の差で数えていたので、所属変更でまとめ役の子の
+ * 記録を自分の系列へ起こす（決定 (1)）と系列が 1 本増え、それを「新しく作られた地物」と
+ * 読んでいた。取り消しではその裏返しで「消えた地物」になり、地物は親の錨に戻って居るのに
+ * 選択が外れていた。母集合は `App` の `liveFeatureIds`（決定 (10)）と同じ「どこかの年に
+ * 居る地物」。
+ */
+function featureIdsInHistories(root: DomainRoot): Set<FeatureId> {
+  const ids = new Set<FeatureId>();
+  for (const history of root.histories) {
+    ids.add(history.featureId);
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) ids.add(f.id);
+    }
+  }
+  return ids;
+}
+
 function makeCommand(
   baseline: DomainRoot,
   finalState: DomainRoot,
   touched: readonly FeatureId[],
   label: string,
 ): Command<DomainRoot> {
-  const baselineIds = new Set<FeatureId>(baseline.histories.map((h) => h.featureId));
-  const finalIds = new Set<FeatureId>(finalState.histories.map((h) => h.featureId));
+  const baselineIds = featureIdsInHistories(baseline);
+  const finalIds = featureIdsInHistories(finalState);
   const created = new Set<DomainId>();
   const survived = new Set<DomainId>();
   const deleted = new Set<DomainId>();
@@ -1120,7 +1142,15 @@ export function createDeleteFeatureCommandForRoot(
 
 /** The outcome of building an存続期間 command: a swap command, or a typed rejection. */
 export type AnchorIntervalCommandResult =
-  | { readonly ok: true; readonly command: Command<DomainRoot> }
+  | {
+      readonly ok: true;
+      readonly command: Command<DomainRoot>;
+      /**
+       * 下位領域を全て失ったので、その年から一緒に終わったまとめ役（手直し 3 回目 1-1）。
+       * 呼び手は黙らずに状態行へ出す（締め D）。
+       */
+      readonly cascaded: readonly CascadedEnd[];
+    }
   | { readonly ok: false; readonly reason: RejectReason };
 
 /**
@@ -1133,15 +1163,20 @@ function runIntervalOp(
   series: AnchorSeries,
   intent: AnchorIntervalEditIntent,
   anchorId: AnchorId,
-): { ok: true; series: AnchorSeries } | { ok: false; reason: RejectReason } {
-  const result =
-    intent.op === ANCHOR_INTERVAL_OP.ChangeStart
-      ? changeStart(series, anchorId, intent.newStart, calendar)
-      : intent.op === ANCHOR_INTERVAL_OP.SetEnd
-        ? setEnd(series, anchorId, intent.newEnd, calendar)
-        : deleteAnchor(series, anchorId, calendar);
-  if (!result.ok) return { ok: false, reason: result.reason };
-  return { ok: true, series: result.series };
+): SeriesResult {
+  switch (intent.op) {
+    case ANCHOR_INTERVAL_OP.ChangeStart:
+      return changeStart(series, anchorId, intent.newStart, calendar);
+    case ANCHOR_INTERVAL_OP.SetEnd:
+      return setEnd(series, anchorId, intent.newEnd, calendar);
+    case ANCHOR_INTERVAL_OP.EndHere:
+      // その年から先の、途切れずに続いている記録をまとめて終わらせる（手直し 3 回目）。
+      return endRunAt(series, intent.featureId, anchorId, intent.at, calendar);
+    case ANCHOR_INTERVAL_OP.Delete:
+    default:
+      // 以前の三項の連鎖と同じく、知らない操作は錨を消す側へ落とす（型の上では起きない）。
+      return deleteAnchor(series, anchorId, calendar);
+  }
 }
 
 /**
@@ -1162,37 +1197,28 @@ export function createAnchorIntervalCommandForRoot(
   root: DomainRoot,
   intent: AnchorIntervalEditIntent,
 ): AnchorIntervalCommandResult {
-  // 記録の置き場（司令塔の決定 (2)）: まとめ役を「この年に終わったことにする」と、
-  // その錨に居候している子は道連れに消える。子は道連れにせず、その年から最上位として
-  // 続くのが所有者の裁定（子は最上位へ昇格）。だから終わらせる前に、居候の記録を
-  // 全部の年ぶん自分の系列へ起こし、終わる年から parentId を外す。
-  const endTime =
-    intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null ? intent.newEnd : null;
-  // **自分の系列を持つ子も数える**（2026-10-03）。居候だけを見ていたので、別の親から
-  // 移された子・連邦化で束ねられた子は、親が終わったあとも消えた親を指し続けていた。
-  // 押す前の影響の板（`App.endFeatureHere`）も同じ 1 本で数える。
-  const promoted: readonly FeatureId[] =
-    endTime === null
-      ? []
-      : childrenPromotedByEnding(root.histories, intent.featureId, endTime, calendar);
-  let base: readonly FeatureHistory[] = root.histories;
-  if (endTime !== null && promoted.length > 0) {
-    // 起こすのは居候だけ（既に系列を持つ子は `materializeOwnSeries` が触らない）。
-    base = materializeOwnSeries(base, promoted, calendar).histories;
-    base = promoteToTopLevelFrom(base, promoted, endTime, calendar);
+  // 記録の置き場（司令塔の決定 (2)）と所属の記録（増分 7 の手直し 2 回目）:
+  // 存続期間を動かして地物が **居なくなる区間**では、
+  //   - その錨に居候している子・孫を先に自分の系列へ起こし（道連れに消さない）、
+  //   - その区間の中だけ、この地物を指している直接の子の親を外す（区間の外・別の親を指す
+  //     錨は触らない。孫は外さない）、
+  //   - この地物の親の子の並びを時刻ごとの実際の所属に揃える（揃えないと、アプリが
+  //     書いたファイルを開き直すと `child-parent-mismatch` で修復を聞かれていた）。
+  // 押す前の影響の板（`App.endFeatureHere`）も同じ `editFeatureInterval` で数える。
+  const edited = editFeatureInterval(
+    root.histories,
+    intent.featureId,
+    (series) => runIntervalOp(series, intent, intent.anchorId),
+    calendar,
+  );
+  if (!edited.ok) {
+    return {
+      ok: false,
+      reason: edited.reason ?? { code: 'anchorNotFound', id: intent.anchorId },
+    };
   }
-
-  const index = base.findIndex((h) => h.featureId === intent.featureId);
-  const history = index >= 0 ? base[index] : undefined;
-  if (history === undefined) {
-    return { ok: false, reason: { code: 'anchorNotFound', id: intent.anchorId } };
-  }
-
-  const run = runIntervalOp(history.series, intent, intent.anchorId);
-  if (!run.ok) return { ok: false, reason: run.reason };
-
-  const updatedHistory: FeatureHistory = { featureId: history.featureId, series: run.series };
-  const histories = base.map((h, i) => (i === index ? updatedHistory : h));
+  const histories = edited.histories;
+  const promoted = edited.promoted;
   const finalState: DomainRoot = { ...root, histories };
 
   // The feature's identity is unchanged — only its existence interval moved — so it
@@ -1221,7 +1247,11 @@ export function createAnchorIntervalCommandForRoot(
     },
   };
   // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
-  return { ok: true, command: createCompositeCommand(UI_COMMAND_LABEL.Interval, [swap]) };
+  return {
+    ok: true,
+    command: createCompositeCommand(UI_COMMAND_LABEL.Interval, [swap]),
+    cascaded: edited.cascaded,
+  };
 }
 
 /**
@@ -1246,6 +1276,7 @@ export function anchorIntervalRecolorTime(
 ): TimePoint {
   if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) return intent.newStart;
   if (intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null) return intent.newEnd;
+  if (intent.op === ANCHOR_INTERVAL_OP.EndHere) return intent.at;
   const entry = root.histories
     .find((h) => h.featureId === intent.featureId)
     ?.series.entries.find((e) => e.anchor.id === intent.anchorId);

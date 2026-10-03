@@ -27,6 +27,7 @@ import type { Feature } from '../feature';
 import type { DomainId, FeatureId } from '../ids';
 import type { FeatureHistory } from '../persistence/serialize';
 import type { Calendar } from '../time/calendar';
+import { compare } from '../time/normalized';
 import type { TimePoint } from '../time/time-point';
 import { createVertexStore, type Vertex } from '../vertex';
 
@@ -62,10 +63,13 @@ function timeKey(t: TimePoint): string {
  * 同じ時刻に始まる錨は同じ束を共有するので、掃除も判定も束ごとに 1 回で済む
  * （錨ごとに束を作ると、実データ 689 系列で数十秒かかった）。
  *
- * 錨は区間 [start, end) に効くが、束は **始まりの時刻**で組む。区間の途中で他の系列が
- * 変わる（子が途中で生まれる・終わる）ことは見ない ―― 錨 1 枚は丸ごと書き換えるか
- * 残すかしか選べないので、その錨が始まる時点の世界で判定する。自分の開始時刻に効いて
- * いない錨（同じ開始の錨が 2 つある壊れた系列など）は束に載せず、錨 1 枚で掃除する。
+ * 錨は区間 [start, end) に効くが、束は **始まりの時刻**で組む。錨 1 枚は丸ごと書き換えるか
+ * 残すかしか選べないので、書き戻しはその錨が始まる時点の世界の掃除の結果で行う。ただし
+ * **まとめ役の連鎖剪定だけは区間の途中も見る**（増分 7 の手直し 2 回目 / 反証 #3・GPT #3）:
+ * 区間の途中にある全系列の境目の時刻ごとの束を `interior` で引けるようにし、区間のどこかで
+ * 子が居るまとめ役は剪定しない（`sweep-state.ts`）。途中の束は必要になったときだけ組む。
+ * 自分の開始時刻に効いていない錨（同じ開始の錨が 2 つある壊れた系列など）は束に載せず、
+ * 錨 1 枚で掃除する。
  */
 export function deletionStateFromHistories(
   histories: readonly FeatureHistory[],
@@ -79,6 +83,26 @@ export function deletionStateFromHistories(
   }
   const bundleByTime = new Map<string, Bundle>();
   const bundles: AnchorSnapshot[] = [];
+  /** その時刻に効いている全系列の錨の地物を系列の順に連結した写し（区間の途中の束）。 */
+  const interiorByTime = new Map<string, AnchorSnapshot>();
+  const snapshotAt = (t: TimePoint): AnchorSnapshot => {
+    const key = timeKey(t);
+    const known = bundleByTime.get(key);
+    if (known !== undefined) return bundles[known.index]!;
+    const cached = interiorByTime.get(key);
+    if (cached !== undefined) return cached;
+    const features: Feature[] = [];
+    const vertices: Vertex[] = [];
+    for (const h of histories) {
+      const r = resolveAt(h.series, t, calendar);
+      if (r.kind !== 'present') continue;
+      features.push(...r.entry.anchor.snapshot.features);
+      for (const v of r.entry.anchor.snapshot.vertices.byId.values()) vertices.push(v);
+    }
+    const snapshot = createAnchorSnapshot(features, createVertexStore(vertices));
+    interiorByTime.set(key, snapshot);
+    return snapshot;
+  };
   const bundleAt = (t: TimePoint): Bundle => {
     const key = timeKey(t);
     const cached = bundleByTime.get(key);
@@ -105,17 +129,58 @@ export function deletionStateFromHistories(
   const anchors: Anchor[] = [];
   const slots: (DeletionBundleSlot | undefined)[] = [];
   const origins: HistoryAnchorOrigin[] = [];
+  /** 錨ごとの区間 [始まり, 実際の終わり)（`interior` が途中の境目を探すのに使う）。 */
+  const spans: { readonly start: TimePoint; readonly end: TimePoint | null }[] = [];
   histories.forEach((history, historyIndex) => {
-    history.series.entries.forEach((entry, entryIndex) => {
+    const entries = history.series.entries;
+    entries.forEach((entry, entryIndex) => {
       const bundle = bundleAt(entry.start);
       const range = bundle.ranges[historyIndex];
       const onBundle = bundle.row[historyIndex] === entry && range !== undefined;
       anchors.push(entry.anchor);
       slots.push(onBundle ? { bundle: bundle.index, from: range.from, to: range.to } : undefined);
       origins.push({ historyIndex, entryIndex });
+      const next = entries[entryIndex + 1];
+      const end =
+        entry.end === null
+          ? (next?.start ?? null)
+          : next !== undefined && compare(next.start, entry.end, calendar) < 0
+            ? next.start
+            : entry.end;
+      spans.push({ start: entry.start, end });
     });
   });
-  return { state: createDeletionState(anchors, { bundles, slots }), origins };
+
+  // 全系列の境目の時刻（始まりと終わり）を昇順に 1 度だけ並べる（必要になってから）。
+  let boundaries: readonly TimePoint[] | null = null;
+  const allBoundaries = (): readonly TimePoint[] => {
+    if (boundaries !== null) return boundaries;
+    const byKey = new Map<string, TimePoint>();
+    for (const h of histories) {
+      for (const e of h.series.entries) {
+        byKey.set(timeKey(e.start), e.start);
+        if (e.end !== null) byKey.set(timeKey(e.end), e.end);
+      }
+    }
+    boundaries = [...byKey.values()].sort((a, b) => compare(a, b, calendar));
+    return boundaries;
+  };
+  const interiorMemo = new Map<number, readonly AnchorSnapshot[]>();
+  const interior = (anchorIndex: number): readonly AnchorSnapshot[] => {
+    const hit = interiorMemo.get(anchorIndex);
+    if (hit !== undefined) return hit;
+    const span = spans[anchorIndex];
+    if (span === undefined) return [];
+    const out: AnchorSnapshot[] = [];
+    for (const t of allBoundaries()) {
+      if (compare(t, span.start, calendar) <= 0) continue;
+      if (span.end !== null && compare(t, span.end, calendar) >= 0) break;
+      out.push(snapshotAt(t));
+    }
+    interiorMemo.set(anchorIndex, out);
+    return out;
+  };
+  return { state: createDeletionState(anchors, { bundles, slots, interior }), origins };
 }
 
 /** {@link deleteFeatureFromHistories} の結果: 消した後の系列と、地物の生死。 */

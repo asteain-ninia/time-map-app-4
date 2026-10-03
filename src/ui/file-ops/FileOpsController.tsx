@@ -24,7 +24,15 @@ import type { Calendar } from '../../domain/time/calendar';
 import type { ConsistencyReport, DomainProject } from '../../domain/persistence/index';
 import type { FeatureId } from '../../domain/ids';
 import { serialize } from '../../domain/persistence/index';
-import { checkBeforeSave, preSaveBlockMessage } from '../../domain/persistence/pre-save';
+import {
+  checkBeforeSave,
+  isBlockingPreSaveProblem,
+  preSaveBlockMessage,
+  preSaveConfirmLines,
+} from '../../domain/persistence/pre-save';
+import { resolveAt } from '../../domain/anchor-series';
+import type { TimePoint } from '../../domain/time/time-point';
+import { formatYear } from '../timeline/time-display';
 import type {
   BackupListing,
   LoadResponse,
@@ -84,9 +92,10 @@ import {
 import { BasemapAspectDialog } from './BasemapAspectDialog';
 import { UnsavedWarningDialog } from './UnsavedWarningDialog';
 import { OverwriteConfirmDialog } from './OverwriteConfirmDialog';
+import { PreSaveConfirmDialog } from './PreSaveConfirmDialog';
 import { RepairDialog } from './RepairDialog';
 import { BackupListDialog } from './BackupListDialog';
-import { OVERWRITE_STRINGS } from './strings';
+import { OVERWRITE_STRINGS, REPAIR_STRINGS } from './strings';
 import type { RepairChoices } from './repair-flow';
 import { buildRepairNamer, type RepairNamer } from './repair-names';
 import type { UnsavedChoice } from './unsaved-guard';
@@ -231,6 +240,12 @@ interface PendingBackupList {
   readonly resolve: (id: string | null) => void;
 }
 
+/** 保存の前の確認（年をまたぐ所属の食い違い）の板。 */
+interface PendingPreSave {
+  readonly lines: readonly string[];
+  readonly resolve: (confirmed: boolean) => void;
+}
+
 /** The pending repair modal (the report to present + a resolver for the choices). */
 interface PendingRepair {
   readonly report: ConsistencyReport;
@@ -244,7 +259,21 @@ interface PendingRepair {
  * 保存前の検査の文言に使う名前を、企画の錨から引く（最初に見つかった名前）。
  * 名前が引けないときは `undefined` を返し、文言側が id へ落とす。
  */
-function nameOfFeatureIn(project: DomainProject, id: FeatureId): string | undefined {
+function nameOfFeatureIn(
+  project: DomainProject,
+  id: FeatureId,
+  at?: TimePoint,
+  calendar?: Calendar,
+): string | undefined {
+  // その年の名前を先に引く（年で名前が変わる地物は、食い違っている年の名前で言う）。
+  if (at !== undefined && calendar !== undefined) {
+    for (const history of project.histories) {
+      const r = resolveAt(history.series, at, calendar);
+      if (r.kind !== 'present') continue;
+      const f = r.entry.anchor.snapshot.features.find((x) => x.id === id);
+      if (f !== undefined) return f.attributes.name;
+    }
+  }
   for (const history of project.histories) {
     for (const entry of history.series.entries) {
       for (const f of entry.anchor.snapshot.features) {
@@ -569,6 +598,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const [pickingBackupSource, setPickingBackupSource] = useState(false);
   const backupListGenRef = useRef(0);
   const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
+  const [pendingPreSave, setPendingPreSave] = useState<PendingPreSave | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
 
   /**
@@ -674,12 +704,35 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       api: capturingApi,
       buildSaveRequest,
       needsSaveAs: () => needsSaveAs(contextRef.current),
-      // 保存の直前の整合検査（司令塔の決定 (3)）。ストアの生の企画を見て、「開き直すと
-      // 地物が失われる形」が混ざっていれば理由の文を返し、保存を止める。
-      preSaveBlock: () => {
-        const problems = checkBeforeSave(store.getState().domain);
-        if (problems.length === 0) return null;
-        return preSaveBlockMessage(problems, (id) => nameOfFeatureIn(store.getState().domain, id));
+      // 保存の直前の整合検査（司令塔の決定 (3)。増分 7 の手直し 2 回目で年を見るように
+      // 直した）。ストアの生の企画を見て、「開き直すと地物が失われる形」が混ざっていれば
+      // 理由の文を返して保存を止める。**年をまたぐ食い違いだけなら止めずに板で聞く**
+      // （利用者を行き止まりにしない）。自動保存は聞く相手が居ないので、年をまたぐ
+      // 食い違いはそのまま書く（この検査が入る前と同じ振る舞い。開くと修復を聞かれる）。
+      preSaveGate: async (origin) => {
+        const domain = store.getState().domain;
+        const problems = checkBeforeSave(domain, calendar);
+        if (problems.length === 0) return { kind: 'proceed' };
+        const blocked = preSaveBlockMessage(problems, (id) => nameOfFeatureIn(domain, id));
+        if (blocked !== null) return { kind: 'block', message: blocked };
+        if (origin === 'auto' || !problems.some((p) => !isBlockingPreSaveProblem(p))) {
+          return { kind: 'proceed' };
+        }
+        const lines = preSaveConfirmLines(
+          problems,
+          (id, at) => nameOfFeatureIn(domain, id, at, calendar),
+          (at) => formatYear(at.year),
+        );
+        const confirmed = await new Promise<boolean>((resolve) => {
+          setPendingPreSave({
+            lines,
+            resolve: (ok) => {
+              setPendingPreSave(null);
+              resolve(ok);
+            },
+          });
+        });
+        return confirmed ? { kind: 'proceed' } : { kind: 'cancel' };
       },
       onSaved: (path: string, info) => {
         // A6 世代ガード: この保存が始まったときの保存文脈と、いまの保存文脈が同じか。
@@ -877,6 +930,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // FR-115: a Japanese notice. Surfaced through the host's alert hook; the
         // shell's toast unit can replace this without touching the flow.
         if (typeof globalThis.alert === 'function') globalThis.alert(message);
+      },
+      // 修復で捨てた記録の件数は、反映（状態行を消す）のあとで状態行に出す。
+      reportRepairDiscards: (count: number) => {
+        statusMessagesRef.current?.notice(REPAIR_STRINGS.discarded(count));
       },
       // A3: 未保存警告の「保存して続行」も上書き確認を通す。実体は下の runGuardedSave
       // （ports から作るので参照の輪を ref で切る）。ここへ来る時点で既に破壊的置換の
@@ -1350,7 +1407,8 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     pendingUnsaved !== null ||
     pendingRepair !== null ||
     pendingOverwrite !== null ||
-    pendingBackupList !== null;
+    pendingBackupList !== null ||
+    pendingPreSave !== null;
   useEffect(() => {
     if (onModalOpenChange === undefined) return undefined;
     onModalOpenChange(modalOpen);
@@ -1404,6 +1462,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           picking={pickingBackupSource}
           onModalChange={props.onBackupListModalChange}
         />
+      )}
+      {pendingPreSave !== null && (
+        <PreSaveConfirmDialog lines={pendingPreSave.lines} onDecide={pendingPreSave.resolve} />
       )}
       {pendingRepair !== null && (
         <RepairDialog

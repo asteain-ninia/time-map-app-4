@@ -437,9 +437,18 @@ export function resolveAt(
  * the new anchor can inherit it (§5.7 step 3) — in a temporal enclave that is
  * `absent`, and the caller supplies a fresh full state.
  *
- * The new entry inherits NO end (open within its slot); overlap is resolved by
- * normalization. Because the only structural change is at `baseTime`, this never
- * alters any future entry's start or snapshot.
+ * The new entry **inherits the END of the entry effective at `baseTime`**
+ * (増分 7 の手直し 2 回目 / `docs/現状.md` B76). Before, it inherited NO end, which is
+ * only right when the effective entry is bounded by the next anchor's start: when the
+ * effective entry carries its OWN end (the feature stops existing at e.g. 1500), the
+ * inserted entry (e.g. at 1300) ran open-ended, so normalization cut the old entry at
+ * 1300 and the feature silently existed FOREVER after 1500 — a past rename or Ctrl+K
+ * resurrected an ended feature (所有者の原則: 削除以外でデータが勝手に変わらない).
+ * Copying the end keeps the existence interval exactly as it was; the older entry is
+ * shortened to `baseTime` by normalization as before. In a temporal enclave (`absent`)
+ * the caller supplies a fresh state and the entry stays open within its slot, as before.
+ * Because the only structural change is at `baseTime`, this never alters any future
+ * entry's start or snapshot.
  *
  * `baseTime` MUST be a TimePoint valid for the calendar. Unlike the guarded
  * `SeriesResult`-returning operations (changeStart / setEnd), this returns a
@@ -489,7 +498,10 @@ export function applyPastEdit(
   // **動かしたほうの錨を黙って消す**（反証 F4）。ここで決定的に採番し直せば、
   // 取り消し／やり直しの再生でも同じ id になる（教訓 5.20）。
   const anchorWithUniqueId = withUniqueAnchorId(series.entries, anchor);
-  const inserted = createAnchorEntry(anchorWithUniqueId, baseTime, null);
+  // 効いている錨の終わりを引き継ぐ（上の注記。B76）。終わりの無い錨なら null のまま
+  // （次の錨の始まりで自然に区切られる）。
+  const inheritedEnd = effective.kind === 'present' ? effective.entry.end : null;
+  const inserted = createAnchorEntry(anchorWithUniqueId, baseTime, inheritedEnd);
   return normalizeSeries([...series.entries, inserted], calendar);
 }
 
