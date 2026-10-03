@@ -568,8 +568,6 @@ export const FIRST_RUN_GUIDE = {
 export const SHELL_TEXT = {
   /** 動かせる板の［×］の読み上げ名（`DraggablePanel.tsx`）。 */
   panelCloseAriaLabel: '閉じる',
-  menubarAriaLabel: 'メニューバー',
-  toolbarAriaLabel: 'ツールバー',
   toolSelectAriaLabel: 'ツール選択',
   inspectGroupAriaLabel: '調べる',
   /** 道具のまとまりの名前（`tools.ts` の `TOOL_GROUPS`）。 */
