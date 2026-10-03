@@ -208,6 +208,14 @@ export interface SessionStoreState<S> {
    * 「セッション限りの見え方」）。
    */
   readonly gridVisibleOverride: boolean | null;
+  /**
+   * 緯経線グリッドの **赤道・0 度・180 度の強調** を見せるか（増分 8E / G-12。FR-13）。
+   *
+   * 既定は見せる（FR-13 の「強調表示する」）。表示の設定（「表示 ▾」）から外せる。
+   * `gridVisibleOverride` と同じ **セッション限りの見え方** で、保存ファイルに書かず、
+   * 未保存の印も立てない（読むだけでも切り替えられる。教訓 5.36 の第 3 の区分）。
+   */
+  readonly gridEmphasisVisible: boolean;
 
   /**
    * 作図中の吸着の設定（増分 3 / 設計書 §C.4 の「吸着 ▾」／§N-6）。
@@ -548,6 +556,11 @@ export interface SessionStoreActions<S> {
    * 保存ファイルには書かず、未保存の印も立てない（{@link SessionState.gridVisibleOverride}）。
    */
   setGridVisibleOverride(next: boolean | null): void;
+  /**
+   * 赤道・0 度・180 度の強調を見せるか（増分 8E / G-12）。**保存ファイルに書かない**
+   * （{@link SessionState.gridEmphasisVisible}）。
+   */
+  setGridEmphasisVisible(next: boolean): void;
   /**
    * 作図中の吸着の設定を部分更新する（増分 3 / 設計書 §C.4）。
    * **`projectDirty` を立てない・保存ファイルに書かない**（{@link SessionState.snapSettings}）。
@@ -1240,6 +1253,8 @@ export function createSessionStore<S>(
     activeTool: init.activeTool ?? null,
     // 起動直後は上書きなし（＝プロジェクト設定に従う）。
     gridVisibleOverride: null,
+    // 増分 8E（G-12）: 起動直後は FR-13 の既定どおり強調して描く。
+    gridEmphasisVisible: true,
     snapSettings: DEFAULT_SNAP_SETTINGS,
     currentTime: init.currentTime ?? DEFAULT_TIMELINE_MIN,
     lastTimeChangeSource: null,
@@ -2037,6 +2052,12 @@ export function createSessionStore<S>(
     setGridVisibleOverride(next) {
       if (get().gridVisibleOverride === next) return;
       set({ gridVisibleOverride: next });
+    },
+
+    /** 赤道・0 度・180 度の強調の見え方（増分 8E / G-12）。保存ファイルに書かない。 */
+    setGridEmphasisVisible(next) {
+      if (get().gridEmphasisVisible === next) return;
+      set({ gridEmphasisVisible: next });
     },
 
     /**

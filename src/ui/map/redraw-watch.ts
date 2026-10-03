@@ -61,6 +61,8 @@ export interface RedrawWatchInput {
   readonly displayControl: unknown;
   /** FR-13 / K-6: グリッドのセッション限りの上書き（上部バーのトグルが書く）。 */
   readonly gridVisibleOverride: unknown;
+  /** 増分 8E（G-12）: 赤道・0 度・180 度の強調（`gridStyle` が読む）。 */
+  readonly gridEmphasisVisible: unknown;
   /** FR-113 表示フィルタ (種別/深度/個別非表示/不透明度). */
   readonly filter: unknown;
   readonly projectSettings: {
@@ -94,6 +96,7 @@ export function redrawWatch(s: RedrawWatchInput): readonly unknown[] {
     s.activeTool,
     s.displayControl,
     s.gridVisibleOverride,
+    s.gridEmphasisVisible,
     s.filter,
     s.projectSettings.areaLabelOccupancyThreshold,
     s.projectSettings.gridSpacingDeg,

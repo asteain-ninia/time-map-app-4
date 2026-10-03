@@ -151,6 +151,8 @@ export function createMountRender(options: MountRenderOptions): MountRender {
         spacing: coerceGridSpacing(ps.gridSpacingDeg),
         color: ps.gridColor,
         opacity: ps.gridOpacity,
+        // 増分 8E（G-12）: 表示の設定で外せる、赤道・0 度・180 度の強調。
+        emphasizeSpecialLines: store.getState().gridEmphasisVisible,
       };
     },
     // FR-13 グリッド ON/OFF 即時反映: derive the LIVE graticule visibility from the

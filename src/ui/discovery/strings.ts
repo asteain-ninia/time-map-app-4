@@ -103,6 +103,13 @@ export const FILTER_STRINGS = {
   relaxKindLabelLabel: (label: string): string => `種別「${label}」を表示する`,
   relaxKindLabel: (kind: string): string => `${kind}を表示する`,
   relaxDepthLabel: (depth: number): string => `深さ ${String(depth)} まで表示する`,
+  // --- 増分 8E（G-12）: 緯経線グリッドの強調（FR-13）-----------------------------------
+  /** 表示の設定の中の小見出し。 */
+  gridGroupLabel: '緯経線グリッド',
+  /** 赤道・0 度・180 度の線を強調するか（既定は強調する）。 */
+  gridEmphasisLabel: '赤道・0度・180度の線を強調する',
+  gridEmphasisHint:
+    'この 3 本を太い赤線で描きます。外すと、ほかの緯線・経線と同じ線で描きます。保存ファイルには入りません。',
 } as const;
 
 // 検索モーダルの文言（`SEARCH_STRINGS`）は **2026-09-05 の増分 4 の手直しで消した**。
