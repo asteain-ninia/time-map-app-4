@@ -17,7 +17,16 @@
 
 import { test, expect, type Page } from '@playwright/test';
 
-import { launchApp, openSurveyCoords } from './helpers';
+import {
+  besideSquareX,
+  commitOneFace,
+  commitSquareFace,
+  enterEditMode,
+  launchApp,
+  listedFeatureCount,
+  openSurveyCoords,
+} from './helpers';
+import { greatCirclePath } from '../src/domain/survey/great-circle-path';
 
 interface FrameCounts {
   line: number;
@@ -255,6 +264,339 @@ test.describe('増分 8C — 測量の線を 1 本だけ消す（V15）', () => 
       await surveyItems(page).first().click();
       await expect(page.getByTestId('survey-line-count')).toHaveText('0');
       await expect.poll(async () => (await frameCounts(page)).line).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+// --- 増分 8C の手直し（反証 #1・#2・#4、設計適合 2-3、GPT #2・#4）-------------------------
+
+async function activeFeature(page: Page): Promise<string> {
+  return ((await page.getByTestId('app-active-feature').textContent()) ?? '').trim();
+}
+
+/** 面を 2 つ左右に並べて確定する。2 つ目（B）を確定した直後なので B が選ばれている。 */
+async function twoFaces(page: Page) {
+  const layer = page.getByTestId('map-input-layer');
+  const box = (await layer.boundingBox())!;
+  const cy = box.y + box.height / 2;
+  const half = 60;
+  const aX = box.x + box.width / 2 - 110;
+  const bX = besideSquareX(aX, half);
+  const aId = await commitSquareFace(page, aX, cy, half, { name: '面A' });
+  const bId = await commitSquareFace(page, bX, cy, half, { name: '面B' });
+  expect(aId).not.toBe(bId);
+  expect(await activeFeature(page)).toBe(bId);
+  return { cy, aX, bX, half, aId, bId };
+}
+
+/** 画面の x・y と経度・緯度の対応（正距円筒なので一次式）。 */
+async function screenMapping(page: Page) {
+  const box = (await page.getByTestId('map-input-layer').boundingBox())!;
+  const xLeft = box.x + 2;
+  const xRight = box.x + box.width - 2;
+  const yTop = box.y + 2;
+  const yBottom = box.y + box.height - 2;
+  const tl = await screenToWorld(page, xLeft, yTop);
+  const br = await screenToWorld(page, xRight, yBottom);
+  return {
+    box,
+    xForLon: (lon: number): number => xLeft + ((lon - tl.lon) / (br.lon - tl.lon)) * (xRight - xLeft),
+    yForLat: (lat: number): number => yTop + ((lat - tl.lat) / (br.lat - tl.lat)) * (yBottom - yTop),
+    pxPerDeg: (xRight - xLeft) / (br.lon - tl.lon),
+  };
+}
+
+test.describe('増分 8C の手直し — 線の上の右クリックの相手（反証 #1）', () => {
+  test('線から数 px の別の地物を右クリックしても、メニューに地物の項目は出ず、選択中の地物は消えない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const f = await twoFaces(page);
+      await enableSurvey(page);
+      // A の中を横切る線を 1 本測る。
+      const y = f.cy + 20;
+      await page.mouse.click(f.aX - 50, y);
+      await page.mouse.click(f.aX + 50, y);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+
+      // 線から 3px の A の上を右クリック（線の 8px の帯の中）。
+      await page.mouse.click(f.aX, y + 3, { button: 'right' });
+      const menu = page.getByTestId('context-menu');
+      await expect(menu).toBeVisible();
+      await expect(surveyItems(page)).toHaveCount(1);
+      // 地物を相手にする項目（終わり・削除・分割・所属変更…）は 1 つも出ない。見る側の項目は出る。
+      await expect(menu.locator('[data-item-kind]')).toHaveCount(0);
+      await expect(menu.locator('[data-command]').first()).toBeVisible();
+      // 選択は B のまま（A は引き上げられない）。
+      expect(await activeFeature(page)).toBe(f.bId);
+      await page.keyboard.press('Escape');
+      await expect(menu).toHaveCount(0);
+      expect(await listedFeatureCount(page)).toBe(2);
+      expect(await activeFeature(page)).toBe(f.bId);
+
+      // 対照: 線から離れた A の上を右クリックすると、従来どおり A が選ばれて地物の項目が出る。
+      await page.mouse.click(f.aX, f.cy - 40, { button: 'right' });
+      await expect(menu).toBeVisible();
+      await expect.poll(async () => activeFeature(page)).toBe(f.aId);
+      await expect(menu.locator('[data-item-kind]').first()).toBeVisible();
+      await expect(surveyItems(page)).toHaveCount(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('頂点の把手は線より優先する（線が通る頂点を右クリックすると「頂点を削除」が出る）', async () => {
+    test.setTimeout(120_000);
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const { faceId, corners } = await commitOneFace(page);
+      const [vx, vy] = corners[0]!;
+      // 頂点を通る線を 1 本測ってから、測るのを終える（線は残る）。
+      await enableSurvey(page);
+      await page.mouse.click(vx - 80, vy);
+      await page.mouse.click(vx + 80, vy);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await page.getByTestId('survey-toggle').click();
+      await expect(page.getByTestId('survey-input-layer')).toHaveCount(0);
+      await enterEditMode(page);
+
+      await page.mouse.click(vx, vy, { button: 'right' });
+      const menu = page.getByTestId('context-menu');
+      await expect(menu).toBeVisible();
+      await expect(surveyItems(page)).toHaveCount(0);
+      await expect(menu.locator('[data-item-kind="deleteVertex"]')).toBeVisible();
+      await expect(page.getByTestId('app-active-vertex')).toHaveText(/\S/);
+      await expect(page.getByTestId('app-active-vertex-owner')).toHaveText(faceId);
+      await page.keyboard.press('Escape');
+      // 線は消えていない（押した相手は頂点）。
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('増分 8C の手直し — 消した線を戻す（反証 #2）', () => {
+  test('線を消した直後の Ctrl+Z はその線を戻し、地物の編集は取り消さない。状態行の［戻す］でも戻せる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const f = await twoFaces(page);
+      await enableSurvey(page);
+      const y = f.cy + 20;
+      await page.mouse.click(f.aX - 50, y);
+      await page.mouse.click(f.aX + 50, y);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+
+      // 消す → 状態行に「測量の線を消しました［戻す］」。
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await expect(page.getByTestId('statusbar-result')).toContainText('測量の線を消しました');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveText('戻す');
+
+      // 反射の Ctrl+Z → 線が戻る。地物は 2 件のまま。
+      await page.keyboard.press('Control+z');
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      expect(await listedFeatureCount(page)).toBe(2);
+      await expect(page.getByTestId('statusbar-result')).toContainText('測量の線を戻しました');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(0);
+      await expect.poll(async () => (await frameCounts(page)).line).toBe(2);
+
+      // もう一度消して、今度は［戻す］ボタンで戻す。
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await page.getByTestId('statusbar-result-action').click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      expect(await listedFeatureCount(page)).toBe(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('消したあとに測量の操作をすると覚えは捨てられ、Ctrl+Z は従来どおり地物の取り消しへ戻る', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const f = await twoFaces(page);
+      await enableSurvey(page);
+      const y = f.cy + 20;
+      await page.mouse.click(f.aX - 50, y);
+      await page.mouse.click(f.aX + 50, y);
+      await page.mouse.click(f.aX, y, { button: 'right' });
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(1);
+
+      // 次の測量（点を置く）で覚えを捨てる ―― ［戻す］も消える（文は残る）。
+      await page.mouse.click(f.bX - 50, y);
+      await page.mouse.click(f.bX + 50, y);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await expect(page.getByTestId('statusbar-result-action')).toHaveCount(0);
+      await expect(page.getByTestId('statusbar-result')).toContainText('測量の線を消しました');
+
+      // Ctrl+Z は地物の取り消し（直前の面の追加）。消した線は戻らない。
+      await page.keyboard.press('Control+z');
+      await expect.poll(async () => listedFeatureCount(page)).toBe(1);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+test.describe('増分 8C の手直し — 細部（反証 #4、GPT #2・#4、設計適合 2-3）', () => {
+  test('大円の線がまっすぐな線から離れた場所（北緯 60° で 150°→−150° の曲線の左端の複製）を右クリックしても消せる', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+      const m = await screenMapping(page);
+      await page.mouse.click(m.xForLon(150), m.yForLat(60));
+      await page.mouse.click(m.xForLon(-150), m.yForLat(60));
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+
+      // 線は 150°〜210° に描かれ、地図の左端にはその複製（−210°〜−150°）が見えている。
+      // 曲線の上で、まっすぐな線（北緯 60°）から 8px より離れた点を左端の複製で選ぶ。
+      const path = greatCirclePath({ lon: 150, lat: 60 }, { lon: 210, lat: 60 });
+      const onLeftReplica = path
+        .map((p) => ({ lon: p.lon - 360, lat: p.lat }))
+        .filter((p) => p.lon > -178 && p.lon < -165)
+        .sort((a, b) => b.lat - a.lat)[0];
+      expect(onLeftReplica).toBeDefined();
+      const target = onLeftReplica!;
+      const gapPx = (target.lat - 60) * m.pxPerDeg;
+      expect(gapPx).toBeGreaterThan(8);
+      const x = m.xForLon(target.lon);
+      const yy = m.yForLat(target.lat);
+      expect(x).toBeGreaterThan(m.box.x);
+      await page.mouse.click(x, yy, { button: 'right' });
+      await expect(surveyItems(page)).toHaveCount(1);
+      await surveyItems(page).first().click();
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      await expect.poll(async () => (await frameCounts(page)).line).toBe(0);
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('「この線を消す」を二重クリックしても、2 回目は地図に落ちず測量の始点は置かれない', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+      const box = (await page.getByTestId('survey-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.click(cx - 100, cy - 60);
+      await page.mouse.click(cx + 100, cy + 60);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+      await page.mouse.click(cx, cy, { button: 'right' });
+      const ib = (await surveyItems(page).first().boundingBox())!;
+      await page.mouse.dblclick(ib.x + ib.width / 2, ib.y + ib.height / 2);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('0');
+      // 始点は置かれていない（次の一手は 2 点を押す前の文のまま）。`U` も効く。
+      await expect(page.getByTestId('option-bar-next-step')).toContainText('地図で 2 点を押すと');
+      await page.keyboard.press('u');
+      await expect(page.getByTestId('survey-toggle')).toHaveAttribute('aria-pressed', 'false');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('U は地図に焦点があるときだけ効く（時刻レールのボタンに焦点があると効かない）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      const toggle = page.getByTestId('survey-toggle');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      const focused = await page.getByTestId('timeline-playback').evaluate((el) => {
+        const b = el.querySelector('button');
+        b?.focus();
+        return b !== null && document.activeElement === b;
+      });
+      expect(focused).toBe(true);
+      await page.keyboard.press('u');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      // 焦点を外す（地図を押した直後と同じ）と効く。
+      await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+      await page.keyboard.press('u');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+      // レールの「📏 測る」を押した直後（焦点がレール）でも効く。
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      await page.keyboard.press('u');
+      await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    } finally {
+      await app.close();
+    }
+  });
+
+  test('凡例の見本が実際に描かれている（計算済みの背景・色・線種、凡例の背景を外すと見た目が変わる）', async () => {
+    const { app, page } = await launchApp();
+    try {
+      await waitForE2EHook(page);
+      await enableSurvey(page);
+      const box = (await page.getByTestId('survey-input-layer').boundingBox())!;
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.click(cx - 100, cy - 60);
+      await page.mouse.click(cx + 100, cy + 60);
+      await expect(page.getByTestId('survey-line-count')).toHaveText('1');
+
+      const read = (testId: string) =>
+        page.getByTestId(testId).evaluate((el) => {
+          const cs = getComputedStyle(el);
+          const style = (el as HTMLElement).style;
+          // 変数で渡した色を、ブラウザが解いた rgb の形に直して比べる。
+          const probe = document.createElement('span');
+          probe.style.color = style.getPropertyValue('--survey-legend-color');
+          document.body.appendChild(probe);
+          const rgb = getComputedStyle(probe).color;
+          probe.remove();
+          return {
+            image: cs.backgroundImage,
+            size: cs.backgroundSize,
+            repeat: cs.backgroundRepeat,
+            paddingBottom: cs.paddingBottom,
+            rgb,
+            width: style.getPropertyValue('--survey-legend-width').trim(),
+            period: style.getPropertyValue('--survey-legend-period').trim(),
+          };
+        });
+      const eq = await read('survey-legend-eq');
+      const gc = await read('survey-legend-gc');
+      for (const s of [eq, gc]) {
+        expect(s.image).toContain('linear-gradient');
+        expect(s.image).toContain(s.rgb);
+        expect(s.paddingBottom).toBe('3px');
+        expect(s.width).toMatch(/^\d+(\.\d+)?px$/);
+      }
+      // 正距円筒は横いっぱいの実線、大円は刻みを横に繰り返す破線。
+      expect(eq.size).toBe(`100% ${eq.width}`);
+      expect(eq.repeat).toBe('no-repeat');
+      expect(gc.size).toBe(`${gc.period} ${gc.width}`);
+      expect(gc.repeat).toMatch(/^(repeat-x|repeat no-repeat)$/);
+      // 刻みのすき間は透明（ブラウザは transparent を rgba(0, 0, 0, 0) と書き直す）。
+      expect(gc.image).toMatch(/transparent|rgba\(0, 0, 0, 0\)/);
+
+      // 見本の線が画面に描かれていること: 背景を外すと見た目が変わる。
+      for (const id of ['survey-legend-eq', 'survey-legend-gc']) {
+        const el = page.getByTestId(id);
+        const withLegend = await el.screenshot();
+        await el.evaluate((node) => {
+          (node as HTMLElement).style.backgroundImage = 'none';
+        });
+        const withoutLegend = await el.screenshot();
+        await el.evaluate((node) => {
+          (node as HTMLElement).style.backgroundImage = '';
+        });
+        expect(withLegend.equals(withoutLegend)).toBe(false);
+      }
     } finally {
       await app.close();
     }
