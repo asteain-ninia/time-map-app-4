@@ -127,12 +127,22 @@ export const REPARENT_STRINGS = {
    *   - 新しい上位領域を作る枝では **作った上位領域**にも 1 本目の記録が生まれる、
    * で、枝と相手によって増える場所が違う。文を分けて、起きることだけを言う。
    */
-  previewAnchorsInto: (year: string): string =>
-    `${year}の記録が、移す地物・元の上位領域・行き先の上位領域に増えます。`,
-  previewAnchorsCreate: (year: string): string =>
-    `${year}の記録が、移す地物・元の上位領域に増え、新しく作る上位領域には 1 本目の記録が生まれます。`,
-  previewAnchorsNone: (year: string): string =>
-    `${year}の記録が、移す地物・元の上位領域に増えます。`,
+  //
+  // **元の上位領域を持たない対象だけなら「元の上位領域」を言わない**（増分 7 の手直し 2 回目 /
+  // バグ狩り 2-5）。最上位の国を連邦化する（よくある操作）たびに、増えない場所を 1 句
+  // 言っていた。`withOrigin` は「対象のうち元の上位領域を持つものが 1 件以上あるか」。
+  previewAnchorsInto: (year: string, withOrigin: boolean): string =>
+    withOrigin
+      ? `${year}の記録が、移す地物・元の上位領域・行き先の上位領域に増えます。`
+      : `${year}の記録が、移す地物・行き先の上位領域に増えます。`,
+  previewAnchorsCreate: (year: string, withOrigin: boolean): string =>
+    withOrigin
+      ? `${year}の記録が、移す地物・元の上位領域に増え、新しく作る上位領域には 1 本目の記録が生まれます。`
+      : `${year}の記録が移す地物に増え、新しく作る上位領域には 1 本目の記録が生まれます。`,
+  previewAnchorsNone: (year: string, withOrigin: boolean): string =>
+    withOrigin
+      ? `${year}の記録が、移す地物・元の上位領域に増えます。`
+      : `${year}の記録が、移す地物に増えます。`,
   /** 決定 (1): まとめ役の錨に居候している地物は、ここで自分の系列を持つ。 */
   previewMaterialize: (count: number): string =>
     `${String(count)} 件は上位領域の記録の中に居るので、この操作で自分の歴史を持つようになります（全部の年の記録を写します）。`,
