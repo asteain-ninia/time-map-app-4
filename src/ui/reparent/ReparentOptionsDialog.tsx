@@ -257,15 +257,23 @@ export function ReparentOptionsDialog(props: ReparentOptionsDialogProps): JSX.El
     directDomainName,
   ]);
 
-  const canConfirm = decision !== null && plan.leafIds.length > 0 && !committing;
+  // **選んでいる行き先が候補として使えないなら確定させない**（増分 7 の手直し・探索
+  // `explore-t2-r1` の循環の探り）。ツリーの行は理由つきで灰色だが、地図で拾った
+  // 上位領域は「既存から選ぶ」枝の **初期値**として板へ入ってくるので、ツリーを通らずに
+  // 使えない相手が選ばれた状態で開きうる。そのとき理由の行（`ineligibleLine`）は出て
+  // いるのに［確定］が押せて、押すと断られて板が閉じない ―― 押せるのに断られるボタンを
+  // 出さない（教訓 5.26: 確定前にも同じ判定で検証する）。
+  const canConfirm =
+    decision !== null && plan.leafIds.length > 0 && !committing && ineligibleLine === null;
 
   const confirm = useCallback(() => {
     if (decision === null || plan.leafIds.length === 0 || committing) return;
+    if (ineligibleLine !== null) return;
     onConfirm(
       decision,
       directDomainName.trim() === '' ? {} : { directDomainNameOverride: directDomainName.trim() },
     );
-  }, [decision, plan.leafIds.length, committing, onConfirm, directDomainName]);
+  }, [decision, plan.leafIds.length, committing, onConfirm, directDomainName, ineligibleLine]);
 
   return (
     <div className="reparent-options-root" data-testid="reparent-options-modal-root">
