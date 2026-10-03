@@ -1285,23 +1285,25 @@ describe('増分 8B — 分断線を引いている間（N-10）', () => {
     h.unmount();
   });
 
-  it('穴のある面では「2 つにしか分かれない」を確定の前（引いている間）に言う（V10 ③）', () => {
+  it('穴のある面には「2 つにしか分かれない」を出さない（増分 8B の手直し: 穴のある面も n 分割になる）', () => {
+    // 以前（V10 ③）は穴のある面を延長で切る 2 分割の経路へ回し、その旨を予告していた。
+    // いまは外周を切片で分けて穴を差し引くので、穴だけを持つ面は 2 つにまとまらない（B65）。
     const fixture = holedLeaf();
     const h = mountKnife(committed, fixture, undefined, {
       resolveLeafShape: () => fixture.shape,
     });
     activateKnife(h.store);
     clickInput(1, 1);
-    const note = KNIFE_STRINGS.twoPiecesNote(KNIFE_STRINGS.twoPiecesReasonHole);
-    // 帯は 1 行で末尾が切れるので、短い形を案内文より前に出す。
-    expect(nextStepText()).toContain(
-      KNIFE_STRINGS.twoPiecesShort(KNIFE_STRINGS.twoPiecesReasonHole),
-    );
-    // 継承先の板にも同じ注記が出る。
+    expect(nextStepText()).not.toContain('2 つにしか分かれません');
     clickInput(5, -5);
     clickInput(5, 15);
     fireEvent.click(screen.getByTestId('knife-confirm-cut'));
-    expect(screen.getByTestId('knife-two-pieces-note').textContent).toBe(note);
+    expect(screen.getByTestId('knife-inheritor-dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('knife-two-pieces-note')).not.toBeInTheDocument();
+    // 穴を縦に貫く線は外周を 1 回だけ渡る切片なので、引いた所だけを切って 2 片。延長の注記も無い。
+    expect(screen.queryByTestId('knife-beyond-line-note')).not.toBeInTheDocument();
+    expect(screen.getByTestId('knife-choose-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('knife-choose-2')).not.toBeInTheDocument();
     h.unmount();
   });
 
@@ -1461,6 +1463,212 @@ describe('増分 8B — 飛び地のある面（V10 ④）', () => {
     clickInput(2, 15);
     fireEvent.click(screen.getByTestId('knife-confirm-cut'));
     expect(screen.getByTestId('knife-two-pieces-note').textContent).toBe(note);
+    h.unmount();
+  });
+});
+
+// --- 増分 8B の手直し ----------------------------------------------------------------
+
+/** 西 [0,4]×[0,10] と、飛び地の東 [6,10]×[0,10] を持つ面。 */
+function exclaveLeaf(): {
+  feature: Feature;
+  store: VertexStore;
+  shape: GeoMultiPolygon;
+} {
+  const west = [
+    createCoordinate(0, 0),
+    createCoordinate(4, 0),
+    createCoordinate(4, 10),
+    createCoordinate(0, 10),
+  ];
+  const east = [
+    createCoordinate(6, 0),
+    createCoordinate(10, 0),
+    createCoordinate(10, 10),
+    createCoordinate(6, 10),
+  ];
+  const wv = west.map((_, i) => asVertexId(`xw-${i}`));
+  const ev = east.map((_, i) => asVertexId(`xe-${i}`));
+  const feature = createLeafFeature(
+    TARGET_ID,
+    ATTRS,
+    COLOR,
+    createShape([
+      createTerritoryRing(asRingId('xr-0'), wv),
+      createTerritoryRing(asRingId('xr-1'), ev),
+    ]),
+  );
+  return {
+    feature,
+    store: createVertexStore([
+      ...west.map((c, i) => createVertex(wv[i]!, c)),
+      ...east.map((c, i) => createVertex(ev[i]!, c)),
+    ]),
+    shape: [[west], [east]],
+  };
+}
+
+/** U の字（[0,10]² から谷 [3,7]×[3,10] を除いた形）。水平線 y=5 で 3 片になる。 */
+function uLeaf(): { feature: Feature; store: VertexStore } {
+  return leafFrom([
+    createCoordinate(0, 0),
+    createCoordinate(10, 0),
+    createCoordinate(10, 10),
+    createCoordinate(7, 10),
+    createCoordinate(7, 3),
+    createCoordinate(3, 3),
+    createCoordinate(3, 10),
+    createCoordinate(0, 10),
+  ]);
+}
+
+describe('増分 8B の手直し — 延ばした先でも切れたら、保存の前に言う（B65 の残り）', () => {
+  it('飛び地の東を延長が割ると、継承先の板と素性欄の両方に注記が出る', () => {
+    const fixture = exclaveLeaf();
+    const h = mountKnife(committed, fixture, undefined, {
+      resolveLeafShape: () => fixture.shape,
+    });
+    activateKnife(h.store);
+    clickInput(1, 1);
+    // 西だけを横切り、谷 (5,5) で止まる線。延長は東の飛び地を割る。
+    clickInput(-1, 5);
+    clickInput(5, 5);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.getByTestId('knife-beyond-line-note').textContent).toBe(
+      KNIFE_STRINGS.beyondLineNote,
+    );
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    expect(screen.getByTestId('add-draft-note').textContent).toContain(
+      KNIFE_STRINGS.beyondLineNote,
+    );
+    h.unmount();
+  });
+
+  it('閉じた分断線では「2 つにしか分かれない」を板に出さない（設計適合 1-1）', () => {
+    const fixture = exclaveLeaf();
+    const h = mountKnife(committed, fixture, undefined, {
+      resolveLeafShape: () => fixture.shape,
+    });
+    activateKnife(h.store);
+    clickInput(1, 1);
+    clickInput(1, 2);
+    clickInput(3, 2);
+    clickInput(3, 8);
+    clickInput(1, 2); // 最初の点の円の中 → 閉じる
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.getByTestId('knife-inheritor-dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('knife-two-pieces-note')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('knife-beyond-line-note')).not.toBeInTheDocument();
+    h.unmount();
+  });
+});
+
+describe('増分 8B の手直し — 名前が何片に付くか（設計適合 2-1）と既定の継承先（設計適合 1-7）', () => {
+  it('3 片に分けると、素性欄に「この名前と種別は 2 片すべてに付きます」が出る', () => {
+    const h = mountKnife(committed, uLeaf());
+    activateKnife(h.store);
+    clickInput(1, 1);
+    clickInput(-1, 5);
+    clickInput(11, 5);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.getByTestId('knife-choose-2')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    expect(screen.getByTestId('add-draft-note').textContent).toBe(
+      KNIFE_STRINGS.sharedNameNote(2),
+    );
+    h.unmount();
+  });
+
+  it('2 片なら注記は出さない（名前は 1 片にしか付かない）', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+    expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+    expect(screen.queryByTestId('add-draft-note')).not.toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('既定の継承先はいちばん大きい片（赤い枠は今までどおり小さい方を囲む）', () => {
+    const h = mountKnife(committed, uLeaf());
+    activateKnife(h.store);
+    clickInput(1, 1);
+    clickInput(-1, 5);
+    clickInput(11, 5);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    // 片は 3 つ: 左腕の上（3×5=15）・右腕の上（15）・根元（42）。既定は根元。
+    const pressed = [0, 1, 2].filter(
+      (i) =>
+        screen.getByTestId(`knife-choose-${String(i)}`).getAttribute('aria-pressed') === 'true',
+    );
+    expect(pressed).toHaveLength(1);
+    const label = screen.getByTestId(`knife-choose-${String(pressed[0]!)}`).textContent ?? '';
+    // 札の方角: 根元は外接矩形の中心より南。
+    expect(label).toMatch(/（(南|中央)/);
+    expect(screen.getByTestId('knife-smaller-box')).toBeInTheDocument();
+    h.unmount();
+  });
+});
+
+describe('増分 8B の手直し — 素性入力の段の Escape は、打ちかけを中身で見る（反証 2-2）', () => {
+  /** 縦に 2 等分して、継承先の板を既定のまま確定し、素性入力の段まで進める。 */
+  function enterProperties(chooseIndex?: number): void {
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    if (chooseIndex !== undefined) {
+      fireEvent.click(screen.getByTestId(`knife-choose-${String(chooseIndex)}`));
+    }
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+  }
+
+  it('名前を打つ → 地図（幕）を押す（焦点が欄から外れる）→ Escape で、捨てる前に聞く', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    enterProperties();
+    const name = screen.getByTestId('add-name') as HTMLInputElement;
+    name.focus();
+    fireEvent.change(name, { target: { value: '北アルラーク' } });
+    // 幕を押す。実機ではここで焦点が名前欄から外れる（jsdom は外さないので blur で代える）。
+    fireEvent.pointerDown(screen.getByTestId('knife-input-layer'), {
+      clientX: 5,
+      clientY: 5,
+      button: 0,
+    });
+    name.blur();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    // **わざと壊すなら**: Escape の判定を「焦点のある欄の pristine」だけに戻すと、
+    // 板が出ずに素性欄ごと消えてここが赤くなる。
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+    // ［続ける］で入力は残る。
+    fireEvent.click(screen.getByTestId('knife-draft-discard-no'));
+    expect(screen.getByTestId('add-name')).toHaveValue('北アルラーク');
+    h.unmount();
+  });
+
+  it('継承先を既定から選び直していれば、名前が空でも聞く', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    // 2 等分なので既定は片 0（同じ面積なら番号の若いほう）。片 1 を選び直す。
+    enterProperties(1);
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.getByTestId('knife-draft-discard-confirm')).toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('名前も継承先も既定のままなら、聞かずに対象を離す段へ戻る（今までどおり）', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    enterProperties();
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.queryByTestId('knife-draft-discard-confirm')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('add-property-form')).not.toBeInTheDocument();
+    expect(screen.getByTestId('knife-tool')).toHaveAttribute('data-flow', 'selecting-target');
     h.unmount();
   });
 });
