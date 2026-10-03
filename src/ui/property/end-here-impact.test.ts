@@ -44,4 +44,21 @@ describe('buildEndHereImpactView — まとめ役を終わらせる前の影響�
     expect(view.groups.find((g) => g.testId === 'promoted')?.lines).toEqual([]);
     expect(view.groups.find((g) => g.testId === 'ends')?.lines[0]).toContain('削除ではありません');
   });
+
+  it('後ろの続いていた記録が一緒に終わる・まとめ役が一緒に終わるときは、その行を出す（手直し 3 回目 / 締め D）', () => {
+    const view = buildEndHereImpactView({
+      targetName: '合成州 02',
+      yearLabel: '1400年',
+      promotedCount: 0,
+      promotedNames: [],
+      trimmedCount: 2,
+      cascaded: [{ name: '第一連邦', yearLabel: '1400年' }],
+    });
+    expect(view.groups.find((g) => g.testId === 'ends')?.lines[1]).toBe(
+      '1400年より後の、途切れずに続いていた記録 2 件も一緒に終わります',
+    );
+    expect(view.groups.find((g) => g.testId === 'cascaded')?.lines).toEqual([
+      'まとめ役「第一連邦」は下位領域を全て失うので、1400年から終わります',
+    ]);
+  });
 });

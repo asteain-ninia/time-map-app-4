@@ -2,8 +2,10 @@
 // （増分 7 の手直し 2 回目。反証 #1 の実データの再現そのもの）。
 //
 // 正統ノル王国の州「正統ノル王国領海01」を 1700 年にハルナ君主国の下へ移し（所属変更の確定と
-// 同じ道）、王国を 1500 年で終わらせる（存続期間の確定と同じ道）。直す前は 1700 年の親が
-// 「なし」になり、王国が 1700 年の錨で子の居ない殻として現れ、整合検査が 3 件出ていた。
+// 同じ道）、王国を 1500 年で終わらせる（「この年に終わったことにする」と同じ道）。直す前は
+// 1700 年の親が「なし」になり、王国が 1700 年の錨で子の居ない殻として現れ、整合検査が 3 件
+// 出ていた。手直し 2 回目のあとは、王国が 1700 年に 13 州を連れて再び現れていた（1700 年の錨は
+// 領海01 の所属変更が作った帳簿の記録）。手直し 3 回目で、途切れずに続く記録はまとめて終わる。
 //
 // 実データは `derle-import/`（または `DERLE_TMAP_DIR`）にあるときだけ読む。**読むだけ**で
 // 保存はしない（正準のファイルを書き換える経路を通らない）。無ければ飛ばす。
@@ -33,7 +35,7 @@ import { createVertexStore, type Vertex } from '../domain/vertex';
 import { loadTmapBytes } from '../shell/io/load';
 
 import { createAnchorIntervalCommandForRoot } from './consistency-binding';
-import { buildSetEndIntent } from './property/index';
+import { buildEndHereIntent } from './property/index';
 
 const REAL_DATA_FILE = 'derle-world-full-2026-08-16.gimoza';
 const dataDir =
@@ -85,24 +87,27 @@ describe.skipIf(!existsSync(realPath))('実データ — 王国を終わらせ�
     const plan = planEnding(moved.histories, king!.id, timePointYear(1500), calendar);
     // 領海01 は 1500〜1700 年はまだ王国の子なので、その間は最上位になる（数える）。
     expect(plan?.promoted).toContain(sea!.id);
-    expect(plan?.reappearsAt?.year).toBe(1700);
+    // 1700 年の錨は途切れずに続いている（帳簿の記録）ので一緒に終わり、王国は再び現れない。
+    expect(plan?.reappearsAt).toBeNull();
+    expect(plan?.trimmedLaterRecords).toBeGreaterThanOrEqual(1);
     const kingHistory = moved.histories.find((h) => h.featureId === king!.id)!;
     const effective = resolveAt(kingHistory.series, timePointYear(1500), calendar);
     if (effective.kind !== 'present') throw new Error('王国が 1500 年に居ない');
     const built = createAnchorIntervalCommandForRoot(
       moved,
-      buildSetEndIntent(king!.id, effective.entry.anchor.id, timePointYear(1500)),
+      buildEndHereIntent(king!.id, effective.entry.anchor.id, timePointYear(1500)),
     );
     if (!built.ok) throw new Error(JSON.stringify(built.reason));
     const ended = built.command.execute(moved).state;
 
-    // 1700 年の親はハルナ君主国のまま。1600 年は最上位。王国は 1700 年に子とともに再び現れる。
+    // 1700 年の親はハルナ君主国のまま。1600 年は最上位。王国は 1700 年にも居ない（再び現れない）。
     expect(at(ended, 1700).features.find((f) => f.id === sea!.id)?.parentId).toBe(harna!.id);
     expect(at(ended, 1600).features.find((f) => f.id === sea!.id)?.parentId).toBeUndefined();
     expect(at(ended, 1600).features.some((f) => f.id === king!.id)).toBe(false);
-    const kingAt1700 = at(ended, 1700).features.find((f) => f.id === king!.id);
-    expect(kingAt1700?.kind).toBe('aggregate');
-    expect(at(ended, 1700).features.some((f) => f.parentId === king!.id)).toBe(true);
+    expect(at(ended, 1700).features.some((f) => f.id === king!.id)).toBe(false);
+    expect(at(ended, 3000).features.some((f) => f.parentId === king!.id)).toBe(false);
+    // 王国の子だった州は 1700 年にも最上位で居る（道連れにならない）。
+    expect(at(ended, 1700).features.filter((f) => at(moved, 1700).features.some((g) => g.id === f.id && g.parentId === king!.id)).length).toBeGreaterThanOrEqual(13);
     // 読み込みの検査も保存前の検査も何も言わない（開き直しで修復を聞かれない）。
     expect(checkConsistency(ended, calendar).inconsistencies).toEqual([]);
     expect(checkBeforeSave(ended, calendar)).toEqual([]);

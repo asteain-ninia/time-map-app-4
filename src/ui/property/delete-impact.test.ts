@@ -32,6 +32,7 @@ function impactOf(over: Partial<DeletionImpact>): DeletionImpact {
     ownsShape: false,
     promotedChildIds: [],
     autoRemovedIds: [],
+    partlyRemovedIds: [],
     verdict: { kind: DELETE_VERDICT.Allowed },
     ...over,
   };
@@ -158,6 +159,18 @@ describe('buildDeleteImpactView — 影響の一覧の文（設計書 §A.3 の�
     const auto = view.groups.find((g) => g.testId === 'auto');
     expect(auto?.lines[0]).toContain('1 件');
     expect(auto?.lines[0]).toContain('デーレ共和国');
+  });
+
+  it('一部の年からだけ消えるまとめ役は「自動で消える」と言わず、前の年の記録が残ると言う（手直し 3 回目 / 再検証 #3）', () => {
+    const view = buildDeleteImpactView({
+      impact: impactOf({ partlyRemovedIds: [asFeatureId('agg')] }),
+      targetName: 'アアウェン州',
+      nameOf,
+    });
+    const auto = view.groups.find((g) => g.testId === 'auto');
+    expect(auto?.lines).toHaveLength(1);
+    expect(auto?.lines[0]).toContain('デーレ共和国');
+    expect(auto?.lines[0]).toContain('記録は残ります');
   });
 
   it('再編できない見込みは「気をつけること」として出す。**実行は止めない**（裁定 (あ)）', () => {
