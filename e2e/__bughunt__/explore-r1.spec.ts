@@ -354,6 +354,12 @@ test.describe('BUGHUNT R1 — user-like exploration of the live composite', () =
             // then author the shared U23 default via add-save so the modal (and its
             // input-blocking backdrop) is guaranteed to close before the next step.
             const choose0 = page.getByTestId('knife-choose-0');
+            // **分割の確定は 1 コマ描いてから走る**（増分 7 の F: 進行表示のため
+            // `useDeferredCommit` を結線した）。押した直後はまだ継承先の板が出ていないので、
+            // ここで「今見えるか」だけを見ると板を素通りし、あとから出た板の背面の覆い
+            // （`knife-backdrop`）が次の道具のボタンを塞ぐ。出るまで待つ（断られた・競合で
+            // 止まった場合は出ないので、時間切れでそのまま先へ進む）。
+            await choose0.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => undefined);
             if (await choose0.isVisible().catch(() => false)) {
               await choose0.click();
               await page.getByTestId('knife-confirm-inheritor').click();
