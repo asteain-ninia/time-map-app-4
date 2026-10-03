@@ -62,3 +62,56 @@ describe('formatMenuKm', () => {
     expect(formatMenuKm(Number.NaN)).toBe(SURVEY_STRINGS.noValue);
   });
 });
+
+// 増分 8C の手直し（GPT #1）: 距離を整数 km に丸めるだけなので、形の違う線でも同じ文になり、
+// 交差点でどれを消すのか選べなかった。文が衝突した候補だけ端点を添える。
+describe('surveyLineMenuItems — 距離の文が同じになった候補', () => {
+  // 球（扁平率 0）で、赤道上の東西 20° と、赤道を横切る南北 20° は同じ大円距離。
+  const eastWest = line(1, [0, 0], [20, 0]);
+  const northSouth = line(2, [10, -10], [10, 10]);
+  const other = line(3, [0, 0], [0, 40]);
+
+  it('同じ距離の 2 本は端点の緯度経度で言い分ける（ほかの候補は距離だけのまま）', () => {
+    const items = surveyLineMenuItems([eastWest, northSouth, other], [1, 2, 3], GEO);
+    const km = formatMenuKm(measureSurveyPair(eastWest.start, eastWest.end, GEO).greatCircleKm);
+    expect(formatMenuKm(measureSurveyPair(northSouth.start, northSouth.end, GEO).greatCircleKm)).toBe(km);
+    expect(items[0]!.label).toBe(
+      SURVEY_STRINGS.removeLineOfKmWithEnds(km, '北緯 0.0° 東経 0.0° → 北緯 0.0° 東経 20.0°'),
+    );
+    expect(items[1]!.label).toBe(
+      SURVEY_STRINGS.removeLineOfKmWithEnds(km, '南緯 10.0° 東経 10.0° → 北緯 10.0° 東経 10.0°'),
+    );
+    expect(items[0]!.label).not.toBe(items[1]!.label);
+    // 衝突していない候補は従来どおり。
+    expect(items[2]!.label).toBe(
+      SURVEY_STRINGS.removeLineOfKm(
+        formatMenuKm(measureSurveyPair(other.start, other.end, GEO).greatCircleKm),
+      ),
+    );
+  });
+
+  it('小数 1 桁で同じなら桁を増やして言い分ける', () => {
+    const a = line(1, [0, 0], [20, 0]);
+    const b = line(2, [0.01, 0], [20.01, 0]);
+    const items = surveyLineMenuItems([a, b], [1, 2], GEO);
+    expect(items[0]!.label).toContain('東経 0.00° → 北緯 0.00° 東経 20.00°');
+    expect(items[1]!.label).toContain('東経 0.01° → 北緯 0.00° 東経 20.01°');
+  });
+
+  it('端点まで同じ（同じ 2 点を 2 回測った）なら測った順を添える', () => {
+    const a = line(5, [0, 0], [20, 0]);
+    const b = line(7, [0, 0], [20, 0]);
+    const items = surveyLineMenuItems([a, b], [7, 5], GEO);
+    expect(items.map((i) => i.lineId)).toEqual([7, 5]);
+    expect(items[0]!.label).toContain('測った順で 2 本目');
+    expect(items[1]!.label).toContain('測った順で 1 本目');
+    expect(items[0]!.label).not.toBe(items[1]!.label);
+  });
+
+  it('日付変更線ちょうどの端点には東西の語を付けない', () => {
+    const a = line(1, [170, 0], [180, 0]);
+    const b = line(2, [175, -5], [175, 5]);
+    const items = surveyLineMenuItems([a, b], [1, 2], GEO);
+    expect(items[0]!.label).toContain('→ 北緯 0.0° 180.0°');
+  });
+});
