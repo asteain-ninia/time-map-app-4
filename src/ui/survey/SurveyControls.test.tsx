@@ -31,6 +31,7 @@ import { DEFAULT_PROJECT_SETTINGS } from '../state/settings';
 
 import { SurveyControls, SurveyMeasurementPanel } from './SurveyControls';
 import { SURVEY_STRINGS, formatDistanceKm } from './strings';
+import { DEFAULT_SURVEY_STYLE } from './survey-batch';
 
 interface S {
   readonly tag: string;
@@ -158,6 +159,46 @@ describe('SurveyControls — 読取パネル (FR-14 距離 / FR-16 度分秒+十
     expect(screen.getByTestId('survey-gc-distance')).toHaveTextContent(
       formatDistanceKm(m.greatCircleKm),
     );
+    unmount();
+  });
+
+  it('増分 8C / N-52: 距離のラベルに地図の線と同じ色・線種の下線（凡例）が付く。距離の文字列は変わらない', () => {
+    const { store, unmount } = mountControls();
+    confirmOneLine(store);
+
+    const eq = screen.getByTestId('survey-legend-eq');
+    const gc = screen.getByTestId('survey-legend-gc');
+    // 凡例は自分の距離のラベルそのもの（どちらの距離の線かが並びで分かる）。
+    expect(screen.getByTestId('survey-eq-distance')).toContainElement(eq);
+    expect(screen.getByTestId('survey-gc-distance')).toContainElement(gc);
+    expect(eq.textContent).toBe(SURVEY_STRINGS.equirectangularShort);
+    expect(gc.textContent).toBe(SURVEY_STRINGS.greatCircleShort);
+    // 正距円筒＝実線、大円＝破線。色・太さ・刻みは描画の style と同じ値を変数で渡す。
+    expect(eq.dataset['dash']).toBe('solid');
+    expect(gc.dataset['dash']).toBe('dashed');
+    expect(eq.classList.contains('survey-controls__legend--dashed')).toBe(false);
+    expect(gc.classList.contains('survey-controls__legend--dashed')).toBe(true);
+    expect(eq.style.getPropertyValue('--survey-legend-color')).toBe(
+      DEFAULT_SURVEY_STYLE.equirectangularStroke,
+    );
+    expect(gc.style.getPropertyValue('--survey-legend-color')).toBe(
+      DEFAULT_SURVEY_STYLE.greatCircleStroke,
+    );
+    const [dash, gap] = DEFAULT_SURVEY_STYLE.greatCircleDashPx;
+    expect(gc.style.getPropertyValue('--survey-legend-dash')).toBe(`${String(dash)}px`);
+    expect(gc.style.getPropertyValue('--survey-legend-period')).toBe(
+      `${String(dash! + gap!)}px`,
+    );
+    expect(gc.style.getPropertyValue('--survey-legend-width')).toBe(
+      `${String(DEFAULT_SURVEY_STYLE.lineWidthPx)}px`,
+    );
+    // 指を載せるとどちらの線かが読める。
+    expect(eq.getAttribute('title')).toBe(SURVEY_STRINGS.legendEquirectangular);
+    expect(gc.getAttribute('title')).toBe(SURVEY_STRINGS.legendGreatCircle);
+    // 距離の文字列は凡例を足す前と同じ形（「正距円筒: 1,234.56 km」）。
+    const eqText = screen.getByTestId('survey-eq-distance').textContent ?? '';
+    expect(eqText.startsWith(`${SURVEY_STRINGS.equirectangularShort}: `)).toBe(true);
+    expect(eqText).toMatch(/: [0-9,]+[.][0-9]{2} km$/);
     unmount();
   });
 

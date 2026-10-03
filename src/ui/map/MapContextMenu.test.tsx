@@ -88,6 +88,8 @@ function renderAndOpen(
       {...(props.composeFor ? { composeFor: props.composeFor } : {})}
       {...(props.onSelectItem ? { onSelectItem: props.onSelectItem } : {})}
       {...(props.onOpenChange ? { onOpenChange: props.onOpenChange } : {})}
+      {...(props.surveyItemsFor ? { surveyItemsFor: props.surveyItemsFor } : {})}
+      {...(props.onRemoveSurveyLine ? { onRemoveSurveyLine: props.onRemoveSurveyLine } : {})}
     />,
   );
   act(() => {
@@ -194,6 +196,66 @@ describe('MapContextMenu — DYNAMIC path (composeFor)', () => {
     ]) {
       expect(menu.querySelector(`[data-command="${id}"]`), id).not.toBeNull();
     }
+  });
+});
+
+// --- 増分 8C: 測量の線の「この線を消す」（設計書 §E.1 V15）----------------------
+
+describe('MapContextMenu — 測量の線の項目（増分 8C）', () => {
+  const ITEMS = [
+    { lineId: 4, label: '1,234km の線を消す' },
+    { lineId: 2, label: '1,201km の線を消す' },
+  ];
+
+  it('要求が線の id を持てば、測量ごとに 1 項目ずつ先頭に並ぶ（どれか 1 つに決めない）', () => {
+    const surveyItemsFor = vi.fn(() => ITEMS);
+    renderAndOpen(
+      { composeFor: () => leafModel, onSelectItem: vi.fn(), surveyItemsFor },
+      { ...REQUEST, surveyLineIds: [4, 2] },
+    );
+    expect(surveyItemsFor).toHaveBeenCalledWith([4, 2]);
+    const menu = screen.getByTestId('context-menu');
+    const surveyButtons = [...menu.querySelectorAll('[data-survey-line-id]')];
+    expect(surveyButtons.map((b) => b.getAttribute('data-survey-line-id'))).toEqual(['4', '2']);
+    expect(surveyButtons.map((b) => b.textContent)).toEqual(ITEMS.map((i) => i.label));
+    // 先頭（地物の項目より前）。
+    expect(menu.querySelectorAll('[data-testid="context-menu-item"]')[0]).toBe(surveyButtons[0]);
+  });
+
+  it('押すと、その線の id で onRemoveSurveyLine を呼んで閉じる', () => {
+    const onRemoveSurveyLine = vi.fn();
+    renderAndOpen(
+      {
+        composeFor: () => leafModel,
+        onSelectItem: vi.fn(),
+        surveyItemsFor: () => ITEMS,
+        onRemoveSurveyLine,
+      },
+      { ...REQUEST, surveyLineIds: [4, 2] },
+    );
+    fireEvent.click(
+      screen.getByTestId('context-menu').querySelector('[data-survey-line-id="2"]') as HTMLButtonElement,
+    );
+    expect(onRemoveSurveyLine).toHaveBeenCalledWith(2);
+    expect(onRemoveSurveyLine).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('context-menu')).toBeNull();
+  });
+
+  it('地物の項目が無い（NO_MENU・読むだけ）ときも出る', () => {
+    renderAndOpen(
+      { composeFor: () => NO_MENU, onSelectItem: vi.fn(), surveyItemsFor: () => ITEMS.slice(0, 1) },
+      { ...REQUEST, surveyLineIds: [4] },
+    );
+    expect(
+      screen.getByTestId('context-menu').querySelectorAll('[data-survey-line-id]'),
+    ).toHaveLength(1);
+  });
+
+  it('線に当たっていない要求では呼ばず、項目も出ない', () => {
+    const surveyItemsFor = vi.fn(() => ITEMS);
+    renderAndOpen({ composeFor: () => leafModel, onSelectItem: vi.fn(), surveyItemsFor });
+    expect(surveyItemsFor).not.toHaveBeenCalled();
+    expect(screen.getByTestId('context-menu').querySelector('[data-survey-line-id]')).toBeNull();
   });
 });
 

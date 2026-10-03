@@ -136,6 +136,18 @@ describe('OptionBar — 道具が押し込んだ内容が出る', () => {
     expect(screen.getByTestId('option-bar-commit-cancel')).toHaveTextContent('やめる');
   });
 
+  it('次の一手の全文が title にもある（縮んで「…」で切れても指を載せれば読める。増分 8C）', () => {
+    const store = new OptionBarStore();
+    render(<OptionBar store={store} />);
+    const text = () =>
+      screen.getByTestId('option-bar-next-step').querySelector('.option-bar__next-text');
+    expect(text()?.getAttribute('title')).toBe(OPTION_BAR_STRINGS.defaultNextStep);
+    act(() => store.setNextStep('地図で 2 点を押すと距離が出ます。測っている間は地物を選べません。'));
+    expect(text()?.getAttribute('title')).toBe(
+      '地図で 2 点を押すと距離が出ます。測っている間は地物を選べません。',
+    );
+  });
+
   it('確定ボタンが押せる／無効にできる', () => {
     const store = new OptionBarStore();
     const onClick = vi.fn();

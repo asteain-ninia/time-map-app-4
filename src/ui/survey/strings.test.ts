@@ -13,6 +13,18 @@ describe('SURVEY_STRINGS (FR-115 日本語)', () => {
   });
 });
 
+describe('増分 8C の文言（設計書 §C.4 の測るの行 / §E.1 V15）', () => {
+  it('次の一手に「測っている間は地物を選べません」が入る（N-54）', () => {
+    expect(SURVEY_STRINGS.nextStepIdle).toContain('2 点を押すと距離が出ます');
+    expect(SURVEY_STRINGS.nextStepIdle).toContain('測っている間は地物を選べません');
+  });
+
+  it('右クリックの項目は「この線を消す」/「1,234km の線を消す」', () => {
+    expect(SURVEY_STRINGS.removeThisLine).toBe('この線を消す');
+    expect(SURVEY_STRINGS.removeLineOfKm('1,234km')).toBe('1,234km の線を消す');
+  });
+});
+
 describe('formatDistanceKm (FR-14 / FR-117)', () => {
   it('formats with 2 decimals and the km unit', () => {
     expect(formatDistanceKm(1234.5)).toBe('1,234.50 km');
