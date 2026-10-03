@@ -28,7 +28,7 @@ import type { PaletteThemeId } from '../../domain/coloring';
 import type { PropertyEditValues } from './contracts';
 import { PROPERTY_STRINGS, formatAreaKm2, formatLengthKm } from './messages';
 import { StyleSection } from './StyleSection';
-import { useAutoColorToggle } from './auto-color-off';
+import { styleOnAutoColorToggle } from './auto-color-off';
 import { type StyleValues } from './style-section';
 
 export interface BasicInfoFormProps {
@@ -122,6 +122,15 @@ export interface BasicInfoFormProps {
   readonly endedYearLabel?: string;
   /** 入口 A を押せない理由（自分の歴史を持たない地物など）。押せるなら `null`。 */
   readonly endHereDisabledReason?: string | null;
+  /**
+   * この下書きで、すでに 1 度自動配色を OFF にしたか（増分 8E の再手直し / G-15）。覚えは
+   * **下書きと同じ場所**（素性欄）が持ち、下書きを作り直すときに一緒に消す（このフォームは
+   * 選択を外す・居ない年へ動くと外れるので、ここで覚えると下書きより先に消える）。
+   * 渡されないときは false（いつも「初めての OFF」として扱う）。
+   */
+  readonly autoColorWentManual?: boolean;
+  /** 下書きの自動配色が OFF になったことを、覚えの持ち主へ知らせる口。 */
+  readonly onAutoColorWentManual?: () => void;
 }
 
 /**
@@ -195,10 +204,6 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
     () => props.paletteThemes ?? [feature.color.paletteTheme],
     [props.paletteThemes, feature.color.paletteTheme],
   );
-  // 増分 8E（G-15）: 自動配色の切り替え。往復しても打ち込んだ手動色を失わないよう、
-  // 「この下書きで 1 度 OFF にしたか」を覚えた口を使う（auto-color-off.ts）。
-  const onAutoColorToggle = useAutoColorToggle(feature);
-
   return (
     <section className="basic-info" data-testid="basic-info">
       <h3>{PROPERTY_STRINGS.basicInfoTitle}</h3>
@@ -386,7 +391,15 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         onChange={(raw) => {
           // 増分 8E（G-15 / FR-100）: 自動配色を OFF にした瞬間は、いま塗られている色を
           // 手動色として残す（規則は auto-color-off.ts の 1 か所）。
-          const next = onAutoColorToggle(styleValuesFromDraft(draft), raw);
+          // 往復しても打ち込んだ手動色を失わないよう、「この下書きで 1 度 OFF にしたか」は
+          // 素性欄が下書きと一緒に覚えている（増分 8E の再手直し）。
+          const next = styleOnAutoColorToggle(
+            feature,
+            styleValuesFromDraft(draft),
+            raw,
+            props.autoColorWentManual ?? false,
+          );
+          if (!next.autoColorEnabled) props.onAutoColorWentManual?.();
           onChange({
             autoColorEnabled: next.autoColorEnabled,
             paletteTheme: next.paletteTheme,

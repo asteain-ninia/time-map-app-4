@@ -21,19 +21,18 @@
 //   - 保存されている姿が OFF（手動色）: 下書きの色は保存済みの手動色か、利用者が打った色 → そのまま
 //   - 保存されている姿が ON で、この下書きで 1 度 OFF にした: 下書きの色は手動色 → そのまま
 //   - 保存されている姿が ON で、この下書きで初めて OFF にする: 地物にいま塗られている色を入れる
-// 「この下書きで 1 度 OFF にしたか」は、宿主の部品が覚えておく（{@link useAutoColorToggle}）。
-// 覚えは地物の色の記録（`feature.color` の参照）ごとで、保存や自動配色で地物の色が変われば
-// 自然に忘れる（そのときは下書きも作り直される）。
+// 「この下書きで 1 度 OFF にしたか」は **下書きと同じ場所**（素性欄 `PropertyPanel` の state）が
+// 覚え、下書きを作り直すとき（対象が変わった・捨てた・確定済みの姿が変わった・読むだけにした）に
+// 一緒に消す（増分 8E の再手直し。再検証 3-1）。最初の手直しでは覚えを「見た目」の欄の部品の
+// `useRef` に持たせていたが、選択を外す・居ない年へ動くと部品だけが外れて覚えが消え、下書きは
+// 確認の［残す］で生き残るので、戻ったあとの ON → OFF で打った色が上書きされていた。地物の色の
+// 記録の参照にも頼らない。
 //
-// `PropertyPanel.tsx` は触らない（本体で増分 7 の手直しが同じファイルを書き換えている）。
-// 呼ぶのは「見た目」の欄を持つ `BasicInfoForm.tsx` の 1 か所である。
-
-import { useCallback, useRef } from 'react';
+// `PropertyPanel.tsx` には覚えの state とその受け渡しの行を足しただけ（本体で増分 7 の手直しが
+// 同じファイルを書き換えている）。呼ぶのは「見た目」の欄を持つ `BasicInfoForm.tsx` の 1 か所である。
 
 import { manualColorsOnDisable } from '../../domain/coloring';
-import type { ColorInfo } from '../../domain/attributes';
 import type { Feature } from '../../domain/feature';
-import type { FeatureId } from '../../domain/ids';
 
 import type { StyleValues } from './style-section';
 
@@ -67,24 +66,4 @@ export function styleOnAutoColorToggle(
     selectedColor: kept.selectedColor,
     selectedOpacity: kept.selectedOpacity,
   };
-}
-
-/**
- * {@link styleOnAutoColorToggle} に「この下書きで 1 度 OFF にしたか」の覚えを添えて返す
- * 部品用の口。覚えは地物（id）とその色の記録（参照）の組ごとで、どちらかが変われば忘れる。
- */
-export function useAutoColorToggle(
-  feature: Feature,
-): (current: StyleValues, next: StyleValues) => StyleValues {
-  const wentManual = useRef<{ readonly id: FeatureId; readonly color: ColorInfo } | null>(null);
-  return useCallback(
-    (current: StyleValues, next: StyleValues): StyleValues => {
-      const memo = wentManual.current;
-      const already = memo !== null && memo.id === feature.id && memo.color === feature.color;
-      const out = styleOnAutoColorToggle(feature, current, next, already);
-      if (!out.autoColorEnabled) wentManual.current = { id: feature.id, color: feature.color };
-      return out;
-    },
-    [feature],
-  );
 }
