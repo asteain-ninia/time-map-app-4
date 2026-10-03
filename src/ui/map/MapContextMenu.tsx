@@ -32,6 +32,7 @@ import { resolveCommandEnabled } from '../shell/permissions';
 import { MENU_ITEM_LABELS } from '../shell/strings';
 import type { OptionBarCommitButton, OptionBarStore } from '../shell/option-bar';
 import {
+  NO_MENU,
   disableReasonMessage,
   type ContextMenuModel,
   type MenuItemKind,
@@ -116,6 +117,9 @@ export interface MapContextMenuProps<S> {
    *
    * 省略 ⇒ 測量の線の項目は出さない（従来どおり）。地物の項目と違って **読むだけでも出す**
    * （測るのは編集ではない＝設計書 §C.3）。
+   *
+   * 要求が線に当たっているときは、渡されていてもいなくても **地物の項目（`composeFor`）は
+   * 組まない**（増分 8C の手直し）。
    */
   readonly surveyItemsFor?: ((lineIds: readonly number[]) => readonly SurveyLineMenuEntry[]) | undefined;
   /** 「この線を消す」を押したとき（凍結した id を渡す。もう無い id なら呼ばれた側が何もしない）。 */
@@ -184,12 +188,16 @@ export function MapContextMenu<S>(props: MapContextMenuProps<S>): JSX.Element | 
         setEntry({ request: req, model: null, surveyItems: NO_SURVEY_ITEMS }); // legacy static render
         return;
       }
+      // 増分 8C: 測量の線に当たっていれば、その項目も同じ瞬間に凍結する。
+      const lineIds = req.surveyLineIds ?? [];
       // Freeze the model AT OPEN so a later store change cannot drift the menu (the
       // dispatch's findItem/enabled guard is the second防御, dispatch.ts). A NO_MENU
       // still opens (model: null) so the trailing view command is shown (item 5).
-      const composed = composeFor(req);
-      // 増分 8C: 測量の線に当たっていれば、その項目も同じ瞬間に凍結する。
-      const lineIds = req.surveyLineIds ?? [];
+      //
+      // **線に当たった右クリックでは地物の模型を組まない**（増分 8C の手直し / 反証 #1）。
+      // 線に当たると地物を昇格しない（押した相手は線）ので、組めば項目は **押していない、
+      // いま選んでいる別の地物** に向く。出すのは線の項目・道具の局面の項目・見る側の項目だけ。
+      const composed = lineIds.length === 0 ? composeFor(req) : NO_MENU;
       const surveyItems =
         lineIds.length === 0 || surveyItemsFor === undefined
           ? NO_SURVEY_ITEMS
@@ -341,7 +349,8 @@ function DynamicContextMenu(props: DynamicContextMenuProps): JSX.Element {
     >
       {/* 増分 8C（設計書 §E.1 V15）: 右クリックが測量の線に当たったときの「この線を消す」。
           **いちばん先頭に置く** ―― 押した相手そのもの（線は地物より上に描かれている）に
-          対する操作だからである。当たった線が 2 本以上なら測量ごとに 1 項目ずつ並ぶ。 */}
+          対する操作だからである。当たった線が 2 本以上なら測量ごとに 1 項目ずつ並ぶ。
+          線に当たったときは地物の項目は組まれない（`open` を見よ。model は null）。 */}
       {surveyItems.map((item) => (
         <li key={`survey-${String(item.lineId)}`} role="none">
           <button

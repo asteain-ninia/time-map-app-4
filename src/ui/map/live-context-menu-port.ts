@@ -103,8 +103,14 @@ export interface LiveContextMenuPortDeps {
    * 当たった線があれば要求に `surveyLineIds` として載せ、**地物の昇格はしない** ――
    * 測量の線は地物より上に描かれていて、押した相手は線だからである。昇格すると、
    * 線を消すつもりの右クリックが下の国を選択へ引き上げてしまう（「測っている間は
-   * 地物を選べません」とも食い違う）。メニューの地物の項目は、空の場所を右クリック
-   * したときと同じく、いまの選択に対して出る。
+   * 地物を選べません」とも食い違う）。
+   *
+   * **線に当たったメニューには地物の項目を出さない**（増分 8C の手直し / 反証 #1。
+   * `MapContextMenu` の `open` が地物の模型を組まない）。昇格しないまま地物の項目を
+   * 並べると、項目は **押していない、いま選んでいる別の地物** に向き、線から数 px の
+   * 国を押したつもりで別の国を消す・終わらせることになる。
+   *
+   * **頂点・辺の把手に当たったときは呼ばない**（把手は線より上に描かれている）。
    */
   readonly probeSurveyLines?: (point: ScreenPoint) => readonly number[];
 }
@@ -165,7 +171,13 @@ export function createLiveContextMenuPort(
       // desync the session's own selection assumptions, 教訓 5.2 / 5.6).
       if (deps.suspended?.() === true) return;
       // 測量の線に当たったか（増分 8C）。当たっていれば、その線が押した相手になる。
-      const surveyLineIds = deps.probeSurveyLines?.(point) ?? [];
+      //
+      // **頂点・辺の把手に当たったときは線を調べない**（増分 8C の手直し / 反証 #1）。
+      // 把手は測量の線より上に描かれている（`ui/add/host-ports.ts` の重ね順）ので、
+      // 押した相手は把手である。把手の当たりは把手が描かれているときにしか返らない
+      // （`mount/hit-test.ts` の `handlesDrawn`）ので、見えていない把手が線に勝つことは無い。
+      const handleHit = hit.kind === HIT_KIND.Vertex || hit.kind === HIT_KIND.Edge;
+      const surveyLineIds = handleHit ? [] : (deps.probeSurveyLines?.(point) ?? []);
       // Promote the hit feature FIRST so the menu's command target is the
       // right-clicked feature (削除 etc.), exactly as a left click would select it
       // (単一の選択書き込み経路, 教訓 5.11). Empty space keeps the current selection.
