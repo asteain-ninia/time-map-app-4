@@ -199,6 +199,23 @@ describe('reset契約 matrix — the draft-only vs full-clear distinction (仕�
     expect(s.active).toBe(true);
   });
 
+  it('surveyRemoveLine（増分 8C）: 1 本だけ消える / 途中の始点・active は保つ / 無い id は書かない', () => {
+    const store = armed();
+    store.getState().surveyClickPoint(P1); // armed() の途中の測量を確定 → 2 本
+    const [first, second] = store.getState().survey.lines;
+    expect(second).toBeDefined();
+    store.getState().surveyClickPoint(P2); // 始点だけ押した途中の測量
+    const draft = store.getState().survey.draft;
+    store.getState().surveyRemoveLine(first!.id);
+    const s = store.getState().survey;
+    expect(s.lines.map((l) => l.id)).toEqual([second!.id]);
+    expect(s.draft).toBe(draft);
+    expect(s.active).toBe(true);
+    // 無い id は同じ参照のまま（購読者に余計な世代を見せない）。
+    store.getState().surveyRemoveLine(first!.id);
+    expect(store.getState().survey).toBe(s);
+  });
+
   it('re-enable after disable KEEPS the confirmed lines (FR-15 across toggles)', () => {
     const store = armed();
     store.getState().surveyDisable();
@@ -235,6 +252,7 @@ describe('survey slice never touches the persisted truth (非保存 UI display)'
     store.getState().surveyUpdateHover(P3);
     store.getState().surveyClickPoint(P2);
     store.getState().surveyCancelDraft();
+    store.getState().surveyRemoveLine(store.getState().survey.lines[0]?.id ?? -1);
     store.getState().surveyClear();
     store.getState().surveyDisable();
 

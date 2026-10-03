@@ -47,4 +47,11 @@ export {
   cancelDraft,
   discardOnToolSwitch,
   clearSurvey,
+  removeSurveyLine,
 } from './survey-state';
+
+export {
+  type SurveyLineHit,
+  SURVEY_LINE_HIT_TOLERANCE_PX,
+  surveyLinesAt,
+} from './survey-hit-test';

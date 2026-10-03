@@ -44,6 +44,7 @@ import {
   disableSurveyMode,
   enableSurveyMode,
   initialSurveyState,
+  removeSurveyLine as surveyRemoveLineTransition,
   updateHover as surveyUpdateHoverTransition,
   type SurveyState,
 } from '../../domain/survey/index';
@@ -481,6 +482,11 @@ export interface SessionStoreActions<S> {
   surveyCancelDraft(): void;
   /** Clear ALL survey results (確定線 + draft) — the only line-emptying path. */
   surveyClear(): void;
+  /**
+   * 確定した線を 1 本だけ消す（増分 8C / 設計書 §E.1 V15。右クリック「この線を消す」）。
+   * 測っている途中の始点には触らない。無い id なら何もしない（同じ参照のまま）。
+   */
+  surveyRemoveLine(lineId: number): void;
 
   // display-control filter (FR-113, U41) — session-only, no projectDirty / domain touch
   /** FR-113 種別軸: toggle a kind (点/線/面) on the display filter. */
@@ -1846,6 +1852,12 @@ export function createSessionStore<S>(
     surveyClear() {
       const cur = get().survey;
       const next = surveyClearTransition(cur);
+      if (next !== cur) set({ survey: next });
+    },
+
+    surveyRemoveLine(lineId) {
+      const cur = get().survey;
+      const next = surveyRemoveLineTransition(cur, lineId);
       if (next !== cur) set({ survey: next });
     },
 

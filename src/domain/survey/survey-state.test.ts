@@ -9,6 +9,7 @@ import {
   discardOnToolSwitch,
   enableSurveyMode,
   initialSurveyState,
+  removeSurveyLine,
   updateHover,
 } from './survey-state';
 
@@ -182,5 +183,66 @@ describe('immutability (lesson 5.17)', () => {
     const s1 = clickPoint(s0, P(0, 0));
     expect(s1).not.toBe(s0);
     expect(s0.draft).toBeNull();
+  });
+});
+
+// --- 増分 8C: 線を 1 本だけ消す（設計書 §E.1 V15）-----------------------------
+
+describe('removeSurveyLine — 線を 1 本だけ消す（増分 8C の中身 1）', () => {
+  function threeLines() {
+    let s = active();
+    s = clickPoint(s, P(0, 0));
+    s = clickPoint(s, P(10, 10));
+    s = clickPoint(s, P(20, 0));
+    s = clickPoint(s, P(30, 10));
+    s = clickPoint(s, P(40, 0));
+    s = clickPoint(s, P(50, 10));
+    return s;
+  }
+
+  it('指定した id の 1 本だけが消え、ほかの線は順番どおり残る', () => {
+    const s = threeLines();
+    const [, second] = s.lines;
+    const next = removeSurveyLine(s, second!.id);
+    expect(next.lines.map((l) => l.id)).toEqual([s.lines[0]!.id, s.lines[2]!.id]);
+  });
+
+  it('測っている途中の始点（draft）には触らない', () => {
+    let s = threeLines();
+    s = clickPoint(s, P(60, 0)); // 始点だけ押した
+    const next = removeSurveyLine(s, s.lines[0]!.id);
+    expect(next.draft).toEqual(s.draft);
+    expect(next.phase).toBe(SURVEY_PHASE.AwaitingEnd);
+    expect(next.lines).toHaveLength(2);
+  });
+
+  it('id の発行は戻さない（消したあとに測った線は新しい id を持つ）', () => {
+    const s = threeLines();
+    const removed = removeSurveyLine(s, s.lines[2]!.id);
+    expect(removed.nextLineId).toBe(s.nextLineId);
+    let again = clickPoint(removed, P(0, 20));
+    again = clickPoint(again, P(10, 30));
+    expect(again.lines[again.lines.length - 1]!.id).toBe(s.nextLineId);
+  });
+
+  it('無い id（クリアのあとで押した古いメニューなど）は同じ参照をそのまま返す（教訓 5.24）', () => {
+    const s = threeLines();
+    expect(removeSurveyLine(s, 9999)).toBe(s);
+    const cleared = clearSurvey(s);
+    expect(removeSurveyLine(cleared, s.lines[0]!.id)).toBe(cleared);
+  });
+
+  it('入力の状態を書き換えない（lesson 5.17）', () => {
+    const s = threeLines();
+    const snapshot = JSON.stringify(s);
+    removeSurveyLine(s, s.lines[1]!.id);
+    expect(JSON.stringify(s)).toBe(snapshot);
+  });
+
+  it('測量が OFF でも消せる（線は OFF のあいだも描かれている＝FR-15）', () => {
+    const s = disableSurveyMode(threeLines());
+    const next = removeSurveyLine(s, s.lines[0]!.id);
+    expect(next.lines).toHaveLength(2);
+    expect(next.active).toBe(false);
   });
 });

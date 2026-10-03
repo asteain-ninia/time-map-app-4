@@ -222,3 +222,30 @@ export function clearSurvey(state: SurveyState): SurveyState {
     lines: [],
   };
 }
+
+// --- Remove ONE confirmed line (増分 8C / 設計書 §E.1 V15) ------------------
+
+/**
+ * 確定した線を **1 本だけ**消す（増分 8C の中身 1 / 設計書 §E.1 の V15）。
+ *
+ * 1 回の測量は正距円筒の線と大円の線の 2 本を描くが、どちらも同じ `SurveyLine`
+ * （同じ id）から描いているので、ここで 1 件消せば **2 本が一緒に**消える。
+ *
+ * - 消すのは `lines` の中の 1 件だけ。測っている途中の `draft` には触らない
+ *   （右クリックで線を消しても、始点を押した途中の測量は続けられる）。
+ * - `nextLineId` は戻さない（`clearSurvey` と同じ理由: 一度使った id を再び使うと、
+ *   開いたままのメニューが握っている古い id が別の線を指してしまう）。
+ * - **その id の線が無ければ同じ参照をそのまま返す**（教訓 5.24: 何も変わらない確定は
+ *   何もしない）。メニューを開いてから［測量結果をクリア］を押した、など、凍結した
+ *   id が押すときにはもう無い場合がこれに当たる。
+ */
+export function removeSurveyLine(state: SurveyState, id: number): SurveyState {
+  const index = state.lines.findIndex((line) => line.id === id);
+  if (index < 0) {
+    return state;
+  }
+  return {
+    ...state,
+    lines: [...state.lines.slice(0, index), ...state.lines.slice(index + 1)],
+  };
+}
