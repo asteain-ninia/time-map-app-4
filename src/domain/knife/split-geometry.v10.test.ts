@@ -178,12 +178,12 @@ describe('splitsIntoManyPieces — n 分割できる面か（V10 ③④ の予�
     expect(splitsIntoManyPieces([[ALRUK_RING_3000]])).toBe(true);
   });
 
-  it('穴のある面は偽', () => {
+  it('穴のある面も真（増分 8B の手直し: 外周を切片で分けて穴を差し引く。B65）', () => {
     const { feature } = squareWithHole();
     expect(feature.shape.rings.length).toBe(2);
     const outer = [c(0, 0), c(10, 0), c(10, 10), c(0, 10)];
     const hole = [c(3, 3), c(7, 3), c(7, 7), c(3, 7)];
-    expect(splitsIntoManyPieces([[outer, hole]])).toBe(false);
+    expect(splitsIntoManyPieces([[outer, hole]])).toBe(true);
   });
 
   it('飛び地のある面（多角形が 2 つ）は偽', () => {
