@@ -282,6 +282,70 @@ describe('MapContextMenu — 測量の線の項目（増分 8C）', () => {
   });
 });
 
+// 増分 8C の手直し（反証 #4）: 項目を二重クリックすると、2 回目が閉じたあとの地図に落ちて
+// 測量の始点が置かれた。1 回目と同じ場所・短い間隔の次の押下を、離し・クリックごと飲み込む。
+describe('MapContextMenu — 項目の二重クリックの 2 回目を地図へ落とさない（増分 8C の手直し）', () => {
+  const ITEMS = [{ lineId: 4, label: 'この線を消す' }];
+
+  function openAndClickItem(): HTMLDivElement {
+    const map = document.createElement('div');
+    document.body.appendChild(map);
+    renderAndOpen(
+      { composeFor: () => leafModel, onSelectItem: vi.fn(), surveyItemsFor: () => ITEMS, onRemoveSurveyLine: vi.fn() },
+      { ...REQUEST, surveyLineIds: [4] },
+    );
+    const item = screen.getByTestId('context-menu').querySelector('[data-survey-line-id="4"]') as HTMLButtonElement;
+    fireEvent.click(item, { detail: 1, clientX: 50, clientY: 60 });
+    expect(screen.queryByTestId('context-menu')).toBeNull();
+    return map;
+  }
+
+  it('同じ場所の次の押下と、それに続く離し・クリックは地図に届かない', () => {
+    const map = openAndClickItem();
+    const seen: string[] = [];
+    for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick']) {
+      map.addEventListener(type, () => seen.push(type));
+    }
+    fireEvent.pointerDown(map, { button: 0, clientX: 51, clientY: 61 });
+    fireEvent.pointerUp(map, { button: 0, clientX: 51, clientY: 61 });
+    fireEvent.click(map, { button: 0, clientX: 51, clientY: 61 });
+    fireEvent.dblClick(map, { button: 0, clientX: 51, clientY: 61 });
+    expect(seen).toEqual([]);
+    // 二重クリックの知らせで見張りは終わる（そのあとのクリックは届く）。
+    fireEvent.click(map, { button: 0, clientX: 51, clientY: 61 });
+    expect(seen).toEqual(['click']);
+    map.remove();
+  });
+
+  it('離れた場所の押下は飲まず、そのあとも見張らない', () => {
+    const map = openAndClickItem();
+    const seen: string[] = [];
+    map.addEventListener('pointerdown', () => seen.push('pointerdown'));
+    map.addEventListener('click', () => seen.push('click'));
+    fireEvent.pointerDown(map, { button: 0, clientX: 200, clientY: 200 });
+    fireEvent.click(map, { button: 0, clientX: 200, clientY: 200 });
+    fireEvent.pointerDown(map, { button: 0, clientX: 50, clientY: 60 });
+    expect(seen).toEqual(['pointerdown', 'click', 'pointerdown']);
+    map.remove();
+  });
+
+  it('鍵盤で押した（detail 0）ときは見張らない', () => {
+    const map = document.createElement('div');
+    document.body.appendChild(map);
+    renderAndOpen(
+      { composeFor: () => leafModel, onSelectItem: vi.fn(), surveyItemsFor: () => ITEMS, onRemoveSurveyLine: vi.fn() },
+      { ...REQUEST, surveyLineIds: [4] },
+    );
+    const item = screen.getByTestId('context-menu').querySelector('[data-survey-line-id="4"]') as HTMLButtonElement;
+    fireEvent.click(item, { detail: 0 });
+    const seen: string[] = [];
+    map.addEventListener('pointerdown', () => seen.push('pointerdown'));
+    fireEvent.pointerDown(map, { button: 0, clientX: 0, clientY: 0 });
+    expect(seen).toEqual(['pointerdown']);
+    map.remove();
+  });
+});
+
 describe('MapContextMenu — LEGACY path (no composeFor, App-compat)', () => {
   it('renders the static 削除 + 表示専用モード切替 via the shell ContextMenu', () => {
     renderAndOpen({});
