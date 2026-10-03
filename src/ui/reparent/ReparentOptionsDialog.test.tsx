@@ -109,6 +109,20 @@ describe('ReparentOptionsDialog — 台帳と同じツリーから親を選ぶ�
     expect(decision.kind).toBe(PARENT_DECISION.Existing);
   });
 
+  it('地図で拾った初期値が使えない相手なら、理由の行を出して確定させない（探索 explore-t2-r1）', () => {
+    // ツリーの行は灰色で押せないが、地図で拾った上位領域は初期値として板へ入ってくる。
+    // 以前は理由の行が出ているのに［確定］が押せ、押すと断られて板が閉じなかった。
+    const h = mount({
+      initialParentId: asFeatureId('agg'),
+      eligibility: (id: FeatureId) => (id === asFeatureId('agg') ? '循環します' : null),
+    });
+    expect(screen.getByTestId('reparent-options-ineligible')).toBeInTheDocument();
+    const confirm = screen.getByTestId('reparent-options-confirm');
+    expect(confirm).toBeDisabled();
+    fireEvent.click(confirm);
+    expect(h.onConfirm).not.toHaveBeenCalled();
+  });
+
   it('候補を選ぶまでは確定できない（押しても断られるボタンを出さない）', () => {
     mount();
     expect(screen.getByTestId('reparent-options-confirm')).toBeDisabled();

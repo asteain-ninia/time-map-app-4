@@ -146,6 +146,13 @@ test.describe('増分 7 の手直し A — 記録の置き場（決定 (1)(2)）
       const endHere = page.getByTestId('end-here');
       await expect(endHere).toBeEnabled();
       await endHere.click();
+      // **押す前に影響の板が出る**（決定 (2)）。子が居るまとめ役なので、下位領域が
+      // この年から最上位になることを見せてから確定する。
+      await expect(page.getByTestId('end-here-impact-promoted')).toContainText(
+        `${String(CHILD_COUNT)} 件`,
+      );
+      await page.getByTestId('end-here-impact-confirm').click();
+      await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
 
       // 1600 年へ動かしても子は 6 件そのまま居る（親だけが終わっている）。
       await jumpToYear(page, 1600);

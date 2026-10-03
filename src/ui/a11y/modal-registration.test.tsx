@@ -22,6 +22,8 @@ const MODAL_COMPONENTS = [
   'BulkKindLabelDialog',
   'ReparentOptionsDialog',
   'DeleteConfirmDialog',
+  // 項目 6: 時刻レールの右クリック（開いているあいだ鍵盤の持ち主は `modal`）。
+  'RailContextMenu',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {

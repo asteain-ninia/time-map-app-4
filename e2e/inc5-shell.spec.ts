@@ -21,7 +21,13 @@ import { test, expect, type Page } from '@playwright/test';
 
 import {
   ALL_TOOL_TESTIDS,
+  DEFAULT_FACE_HALF,
   MAP_CELL_PARTS,
+  clickClearOfStickyBars,
+  enterEditMode,
+  jumpToYear,
+  loadSyntheticNested,
+  openPropertySection,
   worldBandIn,
   addInputLayerBox,
   answerDraftDiscardIfAsked,
@@ -784,6 +790,155 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       await app.close();
     }
   });
+
+  // -------------------------------------------------------------------------
+  // 台帳 #20〜#26 の板（増分 7 で足した 6 枚＋増分 7 の手直しの 1 枚。Fable #9）。
+  // どれも **本物のモーダル**（背面を覆う板＋`role="alertdialog"` / `"dialog"`）なので、
+  // 出ているあいだは地図の 25 点すべてが板に当たり、閉じたら板の名前が 1 点も残らない
+  // （居座らない）ことを見る。表は設計書 §B.5 の台帳と同じ並び。
+  // -------------------------------------------------------------------------
+  const IMPACT_BOARDS: readonly {
+    readonly ledger: string;
+    /** 背面の覆いの testid。 */
+    readonly backdrop: string;
+    /** 板の本体（`role="dialog"` / `"alertdialog"`）の testid。 */
+    readonly dialog: string;
+    readonly open: (page: Page) => Promise<void>;
+    readonly close: (page: Page) => Promise<void>;
+  }[] = [
+    {
+      ledger: '#20 所属変更の 3 択',
+      backdrop: 'reparent-options-backdrop',
+      dialog: 'reparent-options-dialog',
+      open: async (page) => {
+        const { cx, cy } = await commitOneFace(page);
+        await enterEditMode(page);
+        await page.getByTestId('tool-edit.reparent').click();
+        await page.mouse.click(cx, cy);
+        await page.getByTestId('reparent-confirm-none').click();
+      },
+      close: (page) => page.getByTestId('reparent-options-cancel').click(),
+    },
+    {
+      ledger: '#21 地物の削除の影響',
+      backdrop: 'delete-impact-backdrop',
+      dialog: 'delete-impact',
+      open: async (page) => {
+        const { faceId } = await commitOneFace(page);
+        await enterEditMode(page);
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.getByTestId(`feature-list-item-${faceId}`).click({ button: 'right' });
+        await page.locator('[data-item-kind="delete"]').click();
+      },
+      close: (page) => page.getByTestId('delete-impact-cancel').click(),
+    },
+    {
+      ledger: '#22 錨の削除の影響',
+      backdrop: 'anchor-delete-impact-backdrop',
+      dialog: 'anchor-delete-impact',
+      open: async (page) => {
+        await loadSyntheticNested(page, 2, [1000, 1200]);
+        await enterEditMode(page);
+        await jumpToYear(page, 1200);
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.getByTestId('unified-list-filter').fill('合成の連邦');
+        await page.getByTestId('feature-list-item-syn-nest-parent').click();
+        await page.getByTestId('sidebar-tab-properties').click();
+        await openPropertySection(page, 'anchor-section');
+        await clickClearOfStickyBars(page.getByTestId('anchor-interval-summary-syn-nest-a-1200'));
+        await clickClearOfStickyBars(page.getByTestId('anchor-interval-delete-syn-nest-a-1200'));
+      },
+      close: (page) => page.getByTestId('anchor-delete-impact-cancel').click(),
+    },
+    {
+      ledger: '#23 輪郭の削除の影響',
+      backdrop: 'ring-delete-impact-backdrop',
+      dialog: 'ring-delete-impact',
+      open: async (page) => {
+        const { cx, cy } = await commitOneFace(page);
+        await enterEditMode(page);
+        await page.getByTestId('tool-edit.ring').click();
+        const r = DEFAULT_FACE_HALF / 3;
+        await page.mouse.click(cx, cy);
+        await page.mouse.click(cx - r, cy - r);
+        await page.mouse.click(cx + r, cy - r);
+        await page.mouse.click(cx, cy + r);
+        await page.getByTestId('ring-edit-confirm').click();
+        await page.getByTestId('ring-edit-submode').click();
+        await page.mouse.click(cx + DEFAULT_FACE_HALF * 0.7, cy);
+        await page.mouse.click(cx, cy - r / 2);
+      },
+      close: (page) => page.getByTestId('ring-delete-impact-cancel').click(),
+    },
+    {
+      ledger: '#24 頂点の削除の影響',
+      backdrop: 'vertex-delete-impact-backdrop',
+      dialog: 'vertex-delete-impact',
+      open: async (page) => {
+        const { corners } = await commitOneFace(page);
+        await enterEditMode(page);
+        const [vx, vy] = corners[0]!;
+        await page.mouse.click(vx, vy, { button: 'right' });
+        await page.locator('[data-item-kind="deleteVertex"]').click();
+      },
+      close: (page) => page.getByTestId('vertex-delete-impact-cancel').click(),
+    },
+    {
+      ledger: '#25 まとめて種別を付ける',
+      backdrop: 'bulk-kind-backdrop',
+      dialog: 'bulk-kind-dialog',
+      open: async (page) => {
+        const { faceId } = await commitOneFace(page);
+        await enterEditMode(page);
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.getByTestId(`ledger-mark-${faceId}`).check();
+        await page.getByTestId(`feature-list-item-${faceId}`).click({ button: 'right' });
+        await page.locator('[data-item-kind="bulkKindLabel"]').click();
+      },
+      close: (page) => page.getByTestId('bulk-kind-cancel').click(),
+    },
+    {
+      ledger: '#26 まとめ役を終わらせる前の影響',
+      backdrop: 'end-here-impact-backdrop',
+      dialog: 'end-here-impact',
+      open: async (page) => {
+        await loadSyntheticNested(page, 2, [1000]);
+        await enterEditMode(page);
+        await jumpToYear(page, 1500);
+        await page.getByTestId('sidebar-tab-list').click();
+        await page.getByTestId('unified-list-filter').fill('合成の連邦');
+        await page.getByTestId('feature-list-item-syn-nest-parent').click();
+        await page.getByTestId('sidebar-tab-properties').click();
+        await page.getByTestId('end-here').click();
+      },
+      close: (page) => page.getByTestId('end-here-impact-cancel').click(),
+    },
+  ];
+
+  for (const board of IMPACT_BOARDS) {
+    test(`K-2: 台帳 ${board.ledger} の板は本物のモーダルで、閉じたら居座らない`, async () => {
+      const { app, page } = await launchApp();
+      try {
+        await board.open(page);
+        await expect(page.getByTestId(board.dialog)).toBeVisible();
+        for (const hit of await scanMapGrid(page)) {
+          expect(
+            [board.backdrop, `popover:${board.dialog}`],
+            `板が出ているのに ${hit} へ抜けた`,
+          ).toContain(hit);
+        }
+        await board.close(page);
+        await expect(page.getByTestId(board.dialog)).toHaveCount(0);
+        for (const hit of await scanMapGrid(page)) {
+          expect([board.backdrop, `popover:${board.dialog}`], `閉じた板が ${hit} に居座った`).not.toContain(
+            hit,
+          );
+        }
+      } finally {
+        await app.close();
+      }
+    });
+  }
 
   test('K-2: 初回起動のガイドが出ていても、地図の 25 点はすべて地図へ届く', async () => {
     // **ガイドを畳まずに走査する**（2026-09-07 の手直し）。旧版のガイドは右パネルから
