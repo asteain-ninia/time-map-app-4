@@ -9,6 +9,7 @@ import {
   EMPTY_DETAIL_PANELS,
   closePanel,
   isPanelOpen,
+  keepPanelsPresent,
   openPanel,
   panelIdFor,
 } from './detail-panels';
@@ -51,5 +52,20 @@ describe('detail-panels model (FR-99: 複数同時・個別開閉)', () => {
   it('closing an absent panel is a no-op', () => {
     const s = openPanel(EMPTY_DETAIL_PANELS, fA, at0);
     expect(closePanel(s, 'detail-nope')).toBe(s);
+  });
+});
+
+// 増分 8E の手直し: その年に居ない地物のパネルは閉じる（隠さない）。
+describe('keepPanelsPresent', () => {
+  it('いまの年に居ない地物のパネルを閉じ、居る地物のパネルは残す', () => {
+    const s = openPanel(openPanel(EMPTY_DETAIL_PANELS, fA, at0), fB, at0);
+    const kept = keepPanelsPresent(s, new Set([fB]));
+    expect(kept.panels.map((p) => p.featureId)).toEqual([fB]);
+  });
+
+  it('閉じるものが無ければ同じ参照を返す（描き直しを増やさない）', () => {
+    const s = openPanel(EMPTY_DETAIL_PANELS, fA, at0);
+    expect(keepPanelsPresent(s, new Set([fA, fB]))).toBe(s);
+    expect(keepPanelsPresent(EMPTY_DETAIL_PANELS, new Set())).toBe(EMPTY_DETAIL_PANELS);
   });
 });

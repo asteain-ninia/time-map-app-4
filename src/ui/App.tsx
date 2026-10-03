@@ -24,6 +24,7 @@ import { TOOL_ID, isSelectTool } from './shell/tools';
 import { APP_STRINGS, MENU_ITEM_LABELS } from './shell/strings';
 import { AppShell, SIDEBAR_SECTION } from './shell';
 import { buildSidebarContent } from './shell/SidebarContent';
+import { keepPanelsPresent } from './property/detail-panels';
 import {
   DetailPanels,
   EMPTY_DETAIL_PANELS,
@@ -46,6 +47,8 @@ import { CommandRegistry } from './shell/commands';
 import './shell/shell.css';
 import './property/property.css';
 import './file-ops/file-ops.css';
+// 増分 8E（G-10）: 背景地図の縦横比を聞く板。
+import './file-ops/basemap-aspect.css';
 import './help-tools/help-tools.css';
 
 import { getCalendar } from '../domain/time/calendar';
@@ -134,6 +137,18 @@ import {
   type ApplyResolutions,
 } from './conflict/index';
 import './conflict/conflict.css';
+// 増分 8E（V13）: 重なり解決の色見本と、解消したあとの状態行の文。
+import { participantFillColor } from './conflict/participant-color';
+import { conflictResolvedMessage } from './conflict/resolved-message';
+import { RESOLVED_STRINGS } from './conflict/strings';
+// 増分 8E（G-14）: 穴・飛び地の形を壊す編集を断ったときの文。
+import { editRejectionMessage } from './ring-hierarchy-gate';
+import type { RejectedResult } from '../domain/consistency/index';
+// 増分 8E（G-21）: ズームの上下限を理由つきで断る。
+import { ZoomLimitNoteStore, zoomLimitRefusal } from './map/zoom-limit-notice';
+import { ZoomLimitNoteView } from './map/ZoomLimitNote';
+import { createWheelZoomNotice } from './map/wheel-zoom-notice';
+import './map/zoom-limit-note.css';
 import './knife/knife.css';
 import type {
   Conflict,
@@ -656,6 +671,18 @@ export function App(): JSX.Element {
   // 座標対応. With the default menu removed (shell/main/app-menu.ts) the chords reach the
   // renderer and land on the MAP zoom, through the same U17 step math the wheel uses.
   const zoomMapRef = useRef<((direction: ZoomDirection) => void) | null>(null);
+  // 増分 8E（G-21）: 拡大 / 縮小を押す前の知らせ口と、ズームボタンの脇の文の置き場。
+  // 上下限に着いていて何も変わらない 1 押しを、理由つきで断る（脇と状態行）。
+  const zoomCommandNoticeRef = useRef<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >(null);
+  const zoomLimitNoteStoreRef = useRef<ZoomLimitNoteStore | null>(null);
+  zoomLimitNoteStoreRef.current ??= new ZoomLimitNoteStore();
+  const zoomLimitNoteStore = zoomLimitNoteStoreRef.current;
+  // 増分 8E の手直し（G-21）: ホイールの 1 ノッチごとの知らせ口（上下限で理由を出す）。
+  const wheelZoomNoticeRef = useRef<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >(null);
 
   // The cursor's live world position behind the status-bar readout (FR-111). Held OUTSIDE
   // React (technical policy 2.3): the map pointermove path pushes into it at input rate
@@ -873,6 +900,9 @@ export function App(): JSX.Element {
   // `recordCommitRef` と同じく ref に置く ―― 編集セッションの口は地図マウント時に 1 度だけ
   // 組み立てられるので、毎レンダーの関数を直接渡すと地図を組み直すことになる（技術方針 2.3）。
   const announceEditRefusalRef = useRef<((reason: EditRefusalKind) => void) | null>(null);
+  // 増分 8E（G-14）: 確定の手続きが編集を断ったとき（穴・飛び地の形を壊す編集など）の理由を
+  // 状態行へ出す口。上と同じく ref に置く（地図マウント時に 1 度だけ組み立てるため）。
+  const announceEditRejectionRef = useRef<((rejected: RejectedResult) => void) | null>(null);
 
   // 共有頂点の移動を「その年より後ろの記録へも反映した」ことを報せる口
   // （増分 3 の手直し 2 回目 / A1）。引き継ぎ自体は 1 回目で入れたが、**画面へ出す配線が
@@ -975,6 +1005,7 @@ export function App(): JSX.Element {
       fitCameraToFeatureRef,
       fitCameraToAllRef,
       zoomMapRef,
+      zoomCommandNoticeRef,
       publishCameraHooks: observation.publishCameraHooks,
       publishVisibleCountHook: observation.publishVisibleCountHook,
       publishFrameHook: observation.publishFrameHook,
@@ -990,6 +1021,7 @@ export function App(): JSX.Element {
       recordCommitRef,
       announceEditRefusalRef,
       announceCarryForwardRef,
+      announceEditRejectionRef,
       contextMenuOpenerRef,
       focusOwnerRef,
       toolDraftRef,
@@ -1003,6 +1035,7 @@ export function App(): JSX.Element {
       transients,
       cursorPositionStore,
       cameraInputRef,
+      wheelZoomNoticeRef,
       hitTester: hitTest.hitTester,
       selectionPort: hitTest.selectionPort,
       editSession: hitTest.editSession,
@@ -1465,6 +1498,32 @@ export function App(): JSX.Element {
     announceResult(APP_STRINGS.vertexCarriedForward(fromYear, toYear, anchorCount));
   };
 
+  zoomCommandNoticeRef.current = (
+    direction: ZoomDirection,
+    zoomBefore: number,
+    range: ZoomRange,
+  ): void => {
+    const refusal = zoomLimitRefusal(direction, zoomBefore, range, store.getState().projectSettings);
+    if (refusal === null) {
+      zoomLimitNoteStore.clear();
+      return;
+    }
+    zoomLimitNoteStore.show(refusal.side, zoomBefore);
+    statusMessageStore.failure(refusal.status);
+  };
+
+  // 増分 8E の手直し（G-21）: ホイールでも上下限で理由を出す。脇の文は断るたび、状態行は
+  // 1 回の回転につき 1 度（数え役を持つので 1 度だけ作る）。
+  wheelZoomNoticeRef.current ??= createWheelZoomNotice({
+    settings: () => store.getState().projectSettings,
+    noteStore: zoomLimitNoteStore,
+    announce: (status) => statusMessageStoreRef.current?.failure(status),
+  });
+
+  announceEditRejectionRef.current = (rejected: RejectedResult): void => {
+    statusMessageStore.failure(editRejectionMessage(rejected));
+  };
+
   announceEditRefusalRef.current = (reason: EditRefusalKind): void => {
     statusMessageStore.failure(
       reason === EDIT_REFUSAL.LongDrag
@@ -1815,6 +1874,8 @@ export function App(): JSX.Element {
           if (view === undefined) return;
           setPendingDelete({ featureId, name: featureNameOf(featureId), view });
         },
+        // 増分 8E の手直し: 頂点の削除が穴・飛び地の関門で断られたら、理由を状態行へ出す。
+        onRejected: (rejected) => announceEditRejectionRef.current?.(rejected),
       });
     },
     [store, recordCommit, vertexDeleteBinding, featureNameOf],
@@ -3210,6 +3271,17 @@ export function App(): JSX.Element {
       if (clearOwner !== undefined && result.status === PROCESS_STATUS.Committed) {
         store.getState().replaceVertexSelection(clearOwner, []);
       }
+      // 増分 8E（設計書 §E.1 の V13 ⑦）: **どの重なりを片付けたのか**を状態行に残す。
+      // `recordCommit` が出した「◯◯を行いました」（止まっていた操作の名前）を、こちらの
+      // 文で上書きする ―― 利用者が最後に答えたのは重なりの解決だからである。年は止まって
+      // いた編集の錨の年（重なりを見つけた年）を言う。状態行は時間では消えない（K-7）。
+      if (result.status === PROCESS_STATUS.Committed && conflictState !== null) {
+        const resolvedText = conflictResolvedMessage(
+          conflictState.pending.conflicts,
+          conflictState.anchorTime ?? store.getState().currentTime,
+        );
+        if (resolvedText !== null) statusMessageStoreRef.current?.success(resolvedText);
+      }
       setConflictState(null);
       reArmActiveTool();
     },
@@ -3217,6 +3289,9 @@ export function App(): JSX.Element {
   );
 
   const onConflictCancel = useCallback(() => {
+    // 増分 8E: やめたことを状態行に言う（止まっていた頂点を追加の道具が「捨てました」と
+    // 言わなくなったので、その代わり。`AddToolController` の draftSizeRef の注記）。
+    statusMessageStoreRef.current?.notice(RESOLVED_STRINGS.cancelled);
     setConflictState(null);
     reArmActiveTool();
   }, [reArmActiveTool]);
@@ -3238,21 +3313,39 @@ export function App(): JSX.Element {
   // never lingers as an invisible, un-closable ghost (a missing feature renders null in
   // DetailPanels, so without this the entry could not be closed). Keyed on DOMAIN identity
   // (camera / time set()s are skipped) and returns the SAME state ref when nothing is
-  // pruned, so it adds no re-render churn. A time-hidden feature still EXISTS in the domain
-  // (a history carries it), so it is kept — only genuinely-removed features are pruned.
+  // pruned, so it adds no re-render churn.
+  // 増分 8E の手直し（設計適合 S2-3・反証 2-3）: 「在るか」は **いまの年に居るか**（地図と
+  // 同じ `featuresAt`）で見て、時刻の変化でも掃除する。系列の有無で見ていたころは、まとめ役の
+  // 子（自分の系列を持たない）のパネルが関係のない編集のたびに閉じ、年を動かして居なくなった
+  // 地物のパネルは閉じずに隠れていた（規則は `keepPanelsPresent` の 1 か所）。
   useEffect(() => {
     let prevDomain = store.getState().domain;
+    let prevTime = store.getState().currentTime;
     return store.subscribe(() => {
-      const domain = store.getState().domain;
-      if (domain === prevDomain) return;
+      const { domain, currentTime } = store.getState();
+      if (domain === prevDomain && currentTime === prevTime) return;
       prevDomain = domain;
-      setDetailPanels((s) => {
-        if (s.panels.length === 0) return s;
-        const live = s.panels.filter((p) =>
-          domain.histories.some((h) => h.featureId === p.featureId),
-        );
-        return live.length === s.panels.length ? s : { panels: live };
-      });
+      prevTime = currentTime;
+      setDetailPanels((s) =>
+        s.panels.length === 0
+          ? s
+          : keepPanelsPresent(s, new Set(featuresAt(domain, currentTime).map((f) => f.id))),
+      );
+    });
+  }, [store]);
+  // 増分 8E（設計書 §J.4 の結合点 #12）: **プロジェクトを開き直したら詳細パネルを全部閉じる。**
+  // 上の掃除は「その id の地物がドメインから消えたか」で見るので、**同じファイルを開き直す**と
+  // id が同じまま残り、前のプロジェクトのパネルが新しいプロジェクトの上に浮いたままになって
+  // いた（実機の探針で確認）。読み込み・新規で必ず動く印（`projectLoadNonce`。一覧が先頭へ
+  // 戻るのと同じ印）で閉じる。パネルは「前のプロジェクトの一時状態」であり、開き直しで
+  // 捨てる側に属する（教訓 5.2 全経路で破棄）。
+  useEffect(() => {
+    let prevNonce = store.getState().projectLoadNonce;
+    return store.subscribe(() => {
+      const nonce = store.getState().projectLoadNonce;
+      if (nonce === prevNonce) return;
+      prevNonce = nonce;
+      setDetailPanels((s) => (s.panels.length === 0 ? s : EMPTY_DETAIL_PANELS));
     });
   }, [store]);
   // LIVE feature lookup for the detail panels (resolves at the current time, fresh
@@ -3891,6 +3984,8 @@ export function App(): JSX.Element {
             {/* 設計書 §B.5 の台帳 #10・#11（増分 6。増分 5 から送られた 3 部品のうち 2 つ）。
                 層は `pointer-events: none` で、ボタンの矩形だけが押下を受ける（K-2）。 */}
             <MapViewControls<DomainRoot> store={store} registry={registry} />
+            {/* 増分 8E（G-21 / §B.5 の台帳 #28）: ズームの上下限で断った理由を脇に出す。押せない。 */}
+            <ZoomLimitNoteView<DomainRoot> store={store} noteStore={zoomLimitNoteStore} />
             {/* 同 #12。押した位置の掴める距離に頂点が 2 つ以上あるときだけ出る一時部品。 */}
             <VertexCandidateList
               store={vertexCandidateStore}
@@ -4168,6 +4263,8 @@ export function App(): JSX.Element {
             <DetailPanels
               state={detailPanels}
               featureLookup={detailFeatureLookup}
+              // 増分 8E（結合点 #12）: 年を動かしてその地物が無くなったら、その場で消す。
+              liveStore={store}
               assetResolver={NO_ASSET_RESOLVER}
               // FR-98: the LIVE detail document, resolved at the CURRENT time per call
               // (the SAME「現在時刻で都度解決」discipline detailFeatureLookup uses —
@@ -4375,6 +4472,8 @@ export function App(): JSX.Element {
               registerBasemapReplace={registerBasemapReplace}
               onModalOpenChange={setFileModalOpen}
               onBackupListModalChange={toolModalChange('backup-list')}
+              // 増分 8E（G-10）: 背景地図の縦横比を聞く板も鍵盤の持ち主へ名乗る。
+              onBasemapAspectModalChange={toolModalChange('basemap-aspect')}
               onSaveStatusChange={setSaveStatus}
               statusMessages={statusMessageStore}
             />
@@ -4427,6 +4526,7 @@ export function App(): JSX.Element {
                 pending={conflictState.pending}
                 applyResolutions={conflictState.applyResolutions}
                 shapesFor={shapesFor}
+                colorFor={participantFillColor}
                 showGuide={store.getState().appSettings.showConflictGuide}
                 onSuppressGuide={() =>
                   store.getState().updateAppSetting('showConflictGuide', false)

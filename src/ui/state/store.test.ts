@@ -2500,6 +2500,12 @@ const TOOL_MODE_OPERATIONS: Readonly<Record<string, OperationEntry>> = {
     why: '設定は別の軸。',
     run: (s) => s.getState().setGridVisibleOverride(false),
   },
+  // 増分 8E（G-12）: 赤道・0 度・180 度の強調の見え方。グリッドの上書きと同じ軸。
+  setGridEmphasisVisible: {
+    group: 'invariant',
+    why: '設定は別の軸。',
+    run: (s) => s.getState().setGridEmphasisVisible(false),
+  },
   setSnapSettings: {
     group: 'invariant',
     why: '同上（作図中の吸着）。',

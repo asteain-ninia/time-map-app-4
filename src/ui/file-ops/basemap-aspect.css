@@ -1,0 +1,50 @@
+/* 増分 8E（G-10）: 背景地図の縦横比を聞く板。設定の板（z-index 1000）の上に出すので、
+ * 背後を覆う層ごと 1100 番台に置く（`document.body` 直下へのポータルなので、祖先の
+ * 重ね順には左右されない）。 */
+.basemap-aspect-root {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.basemap-aspect-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.basemap-aspect-dialog {
+  position: relative;
+  max-width: 480px;
+  padding: 16px;
+  background: var(--c-surface, #fff);
+  color: var(--c-text, #222);
+  border: 1px solid var(--c-border-strong, #999);
+  border-radius: var(--radius, 4px);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.25);
+}
+
+.basemap-aspect-dialog__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.basemap-aspect-dialog__question {
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.basemap-aspect-dialog__explain {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--c-text-muted, #555);
+}
+
+.basemap-aspect-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

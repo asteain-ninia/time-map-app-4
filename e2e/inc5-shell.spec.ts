@@ -17,8 +17,13 @@
 //      違うことも同時に確かめる（設計書 §O の GPT 結合点#2）。
 //   4. **行の高さが固定**（アプリバー 32 / オプションバー 40 / 状態行 28）。
 
-import { test, expect, type Page } from '@playwright/test';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test';
+
+import { openSettingsAndReplace, stubImagePicker, writePng } from './basemap-image-helpers';
 import {
   ALL_TOOL_TESTIDS,
   DEFAULT_FACE_HALF,
@@ -804,7 +809,8 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     readonly backdrop: string;
     /** 板の本体（`role="dialog"` / `"alertdialog"`）の testid。 */
     readonly dialog: string;
-    readonly open: (page: Page) => Promise<void>;
+    /** 板を開く。`app` は main 側の差し替えが要る板（#29 の画像選択）だけが使う。 */
+    readonly open: (page: Page, app: ElectronApplication) => Promise<void>;
     readonly close: (page: Page) => Promise<void>;
   }[] = [
     {
@@ -914,13 +920,30 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       },
       close: (page) => page.getByTestId('end-here-impact-cancel').click(),
     },
+    // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（#29）。設定の板の上に出る板なので、
+    // 走査では背面の覆いが地図の 25 点すべてを受けることを見る。閉じるときは設定の板も閉じる。
+    {
+      ledger: '#29 背景地図の縦横比',
+      backdrop: 'basemap-aspect-backdrop',
+      dialog: 'basemap-aspect-dialog',
+      open: async (page, app) => {
+        const dir = mkdtempSync(join(tmpdir(), 'tmap-e2e-k2-aspect-'));
+        await stubImagePicker(app, await writePng(page, dir, 300, 200));
+        await openSettingsAndReplace(page);
+      },
+      close: async (page) => {
+        await page.getByTestId('basemap-aspect-cancel').click();
+        await page.getByTestId('settings-cancel').click();
+        await expect(page.getByTestId('settings-dialog')).toHaveCount(0);
+      },
+    },
   ];
 
   for (const board of IMPACT_BOARDS) {
     test(`K-2: 台帳 ${board.ledger} の板は本物のモーダルで、閉じたら居座らない`, async () => {
       const { app, page } = await launchApp();
       try {
-        await board.open(page);
+        await board.open(page, app);
         await expect(page.getByTestId(board.dialog)).toBeVisible();
         for (const hit of await scanMapGrid(page)) {
           expect(

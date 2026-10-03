@@ -282,6 +282,27 @@ export function createMountObservation(
         readRailObservation()?.getAnchorMarkPositions() ?? [],
       getRailView: (): RailViewSnapshot =>
         readRailObservation()?.getRailView() ?? ABSENT_RAIL_VIEW,
+      /**
+       * 増分 8E の手直し（GPT 重 2）: いま地図に描いている **面の形**（id → 片ごとの環の
+       * 経度・緯度）。描画と同じ `buildCommittedFeatures` を通る。重なり解決の E2E が
+       * 「適用で重なりが消え、残す側の形はそのまま、Ctrl+Z で編集の前の形へ戻る」を
+       * 形そのもので確かめるための読むだけの口。
+       */
+      getDrawnFeatureShapes: (): Record<string, number[][][][]> => {
+        const s = store.getState();
+        const out: Record<string, number[][][][]> = {};
+        for (const f of buildCommittedFeatures(
+          s.domain,
+          s.currentTime,
+          s.activeFeature,
+          s.displayControl,
+          s.filter,
+        )) {
+          if (f.kind !== 'area') continue;
+          out[f.id] = f.shape.map((piece) => piece.map((ring) => ring.map((c) => [c.lon, c.lat])));
+        }
+        return out;
+      },
     };
   }
 

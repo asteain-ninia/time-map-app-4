@@ -57,7 +57,11 @@ import {
   screenToWorld as unprojectScreenToWorld,
   type ScreenPoint,
 } from '../../../render';
-import { PROCESS_STATUS, type ProcessResult } from '../../../domain/consistency/index';
+import {
+  PROCESS_STATUS,
+  type ProcessResult,
+  type RejectedResult,
+} from '../../../domain/consistency/index';
 import type { WorldCoordinate } from '../../../domain/coordinate';
 import { RELEASE_OUTCOME, type EditRefusalKind } from '../../../domain/editing/index';
 import { reportVertexCarryForward } from '../../../domain/editing/apply-proposal';
@@ -118,6 +122,11 @@ export interface MountHitTestOptions {
   readonly announceCarryForwardRef?: MutableRefObject<
     ((fromYear: number, toYear: number, anchorCount: number) => void) | null
   >;
+  /**
+   * 確定の手続き（U13）が編集を **断った** ときに理由を画面へ出す口（増分 8E / G-14）。
+   * 穴・飛び地の形を壊す編集はここで断られる。App.tsx が入れる。
+   */
+  readonly announceEditRejectionRef?: MutableRefObject<((rejected: RejectedResult) => void) | null>;
   /** 右クリックメニューの React 側の開く口。 */
   readonly contextMenuOpenerRef: MutableRefObject<ContextMenuOpener | null>;
   /**
@@ -449,6 +458,12 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         return;
       }
       if (outcome.kind !== RELEASE_OUTCOME.Processed) return;
+      // 増分 8E（G-14）: 確定の手続きが断ったら（穴・飛び地の形を壊す編集など）、理由を出す。
+      // 以前はここで黙って戻っていたので、離したのに形が元へ戻るだけで原因が分からなかった。
+      if (outcome.result.status === PROCESS_STATUS.Rejected) {
+        options.announceEditRejectionRef?.current?.(outcome.result);
+        return;
+      }
       if (outcome.result.status !== PROCESS_STATUS.Committed) return;
       // A1 の報せ: **記録する前の**プロジェクトで、この移動が後ろの年の記録を何本
       // 書き換えるかを数える（判定は `applyEditProposal` と同じ 1 本を通る）。

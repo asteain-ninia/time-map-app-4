@@ -72,3 +72,25 @@ export function isPanelOpen(
 ): boolean {
   return state.panels.some((p) => p.id === panelIdFor(featureId));
 }
+
+/**
+ * **その年に居ない地物のパネルを閉じる**（増分 8E の手直し。設計適合 S2-3・反証 2-3）。
+ * `presentIds` は、いまの年に居る地物の id（地図に描くのと同じ `featuresAt` の解決）。
+ * 閉じるものが無ければ同じ参照を返す（宿主の描き直しを増やさない）。
+ *
+ * 以前の掃除は「その id の **系列** がドメインにあるか」で見ていたので、
+ *   - まとめ役の子（自分の系列を持たず、まとめ役の系列の中に居る）のパネルは、関係のない
+ *     編集でドメインが差し替わるたびに閉じていた
+ *   - 年を動かして居なくなった地物のパネルは、閉じずに隠れていた（戻ると開いた位置に
+ *     また出る。ドラッグした位置は失われ、隠れている間も重ねずらしの枚数に数えた）
+ * 一覧のチェックの裁定（2026-09-07「その年に居ない州のチェックは外し、戻しても付け直さない」）
+ * と揃えて、**居ない年へ動いたら閉じ、戻っても開き直さない**。
+ */
+export function keepPanelsPresent(
+  state: DetailPanelsState,
+  presentIds: ReadonlySet<FeatureId>,
+): DetailPanelsState {
+  if (state.panels.length === 0) return state;
+  const live = state.panels.filter((p) => presentIds.has(p.featureId));
+  return live.length === state.panels.length ? state : { panels: live };
+}

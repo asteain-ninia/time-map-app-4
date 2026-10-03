@@ -27,6 +27,8 @@ const MODAL_COMPONENTS = [
   'RailContextMenu',
   // 増分 8D: 以前の保存から開く（世代の一覧）。
   'BackupListDialog',
+  // 増分 8E（G-10）: 背景地図の縦横比を聞く板。
+  'BasemapAspectDialog',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {

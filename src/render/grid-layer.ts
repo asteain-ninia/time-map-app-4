@@ -66,6 +66,14 @@ export interface GridStyle {
   readonly emphasisLineWidthPx: number;
   /** Color for emphasized lines/labels (visually distinct, 受け入れ基準 8). */
   readonly emphasisColor: string;
+  /**
+   * 赤道・0 度・180 度の線を **強調して描くか**（増分 8E / G-12。表示の設定から切り替える）。
+   * 省略は「強調する」（FR-13 の既定どおり）。偽なら、その 3 本も普通の線・普通のラベルの
+   * 色と太さで描く。**どの線を強調対象とみなすかの判定（`latitudeEmphasis` /
+   * `longitudeEmphasis`）は変えない** ―― ラベルの間引きで 0°・180°・赤道のラベルを必ず
+   * 残す規則もそのまま効く（見た目の強調だけを外す）。
+   */
+  readonly emphasizeSpecialLines?: boolean;
   /** Constant on-screen label font px (FR-13 / FR-17 ズーム非依存). */
   readonly labelFontPx: number;
 }
@@ -370,7 +378,7 @@ function lineStyleFor(
   emphasis: GridEmphasis,
   style: GridStyle,
 ): { stroke: string; widthPx: number } {
-  if (emphasis === GRID_EMPHASIS.None) {
+  if (!drawsEmphasis(emphasis, style)) {
     return { stroke: withOpacity(style.color, style.opacity), widthPx: style.lineWidthPx };
   }
   // Emphasized lines are full-opacity + the distinct emphasis color/width.
@@ -379,7 +387,7 @@ function lineStyleFor(
 
 /** The label color for a given emphasis kind (SAME判定 as the line, 受け入れ基準 8). */
 function labelColorFor(emphasis: GridEmphasis, style: GridStyle): string {
-  return emphasis === GRID_EMPHASIS.None
+  return !drawsEmphasis(emphasis, style)
     ? withOpacity(style.color, style.opacity)
     : style.emphasisColor;
 }
@@ -390,7 +398,16 @@ function labelColorFor(emphasis: GridEmphasis, style: GridStyle): string {
  * visible the label is (FR-109 gridOpacity = 0 must erase BOTH).
  */
 function labelHaloFor(emphasis: GridEmphasis, style: GridStyle): string {
-  return emphasis === GRID_EMPHASIS.None ? gridLabelHalo(style.opacity) : GRID_LABEL_HALO;
+  return !drawsEmphasis(emphasis, style) ? gridLabelHalo(style.opacity) : GRID_LABEL_HALO;
+}
+
+/**
+ * その線を **強調の見た目で描くか**（増分 8E / G-12）。強調対象の線（赤道・0 度・180 度）で、
+ * かつ強調を外していないときだけ真。線・ラベル・縁取りの 3 つがこの 1 本を通る
+ * （教訓 5.29: 見た目の判定を 3 か所に写さない）。
+ */
+function drawsEmphasis(emphasis: GridEmphasis, style: GridStyle): boolean {
+  return emphasis !== GRID_EMPHASIS.None && style.emphasizeSpecialLines !== false;
 }
 
 /**
