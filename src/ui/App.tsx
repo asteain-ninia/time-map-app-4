@@ -115,6 +115,7 @@ import {
   SurveyMapBridge,
   SurveyMeasurementPanel,
   SurveyOptionBar,
+  SURVEY_STRINGS,
   surveyLineMenuItems,
   type SurveyDrawSink,
 } from './survey/index';
@@ -178,7 +179,7 @@ import {
 } from './e2e/synthetic-project';
 import { AppIdentity } from './shell/AppIdentity';
 import { StatusBarContent } from './shell/StatusBarContent';
-import { StatusMessageStore } from './shell/status-message';
+import { STATUS_TONE, StatusMessageStore, type StatusAction } from './shell/status-message';
 import { commandLabelJa, RESULT_STRINGS, UI_COMMAND_LABEL } from './shell/command-result';
 import { BulkKindLabelDialog } from './property/BulkKindLabelDialog';
 import { ImpactConfirmDialog } from './shell/ImpactConfirmDialog';
@@ -712,6 +713,31 @@ export function App(): JSX.Element {
   const statusMessageStoreRef = useRef<StatusMessageStore | null>(null);
   statusMessageStoreRef.current ??= new StatusMessageStore();
   const statusMessageStore = statusMessageStoreRef.current;
+
+  /**
+   * **直前に消した測量の線を戻す**（増分 8C の手直し / 反証 #2）。状態行の［戻す］と、
+   * 線を消した直後の Ctrl+Z（下の `runUndo`）の 2 つの入口が、この 1 本を通る。
+   * 覚えが無ければ何もしない（`false`）。
+   */
+  const restoreRemovedSurveyLine = useCallback((): boolean => {
+    if (!store.getState().surveyRestoreRemovedLine()) return false;
+    statusMessageStore.success(SURVEY_STRINGS.lineRestored);
+    return true;
+  }, [store, statusMessageStore]);
+  /**
+   * 状態行の［戻す］ボタン。**同じオブジェクトを使い回す** ―― 続けて 2 本消しても状態行の
+   * 文は同じで、ボタンは押した時点の覚え（最後に消した 1 本）を読む。覚えが捨てられたら
+   * 下の購読がボタンだけを外す（文は残す。教訓 5.12）。
+   */
+  const surveyRestoreActionRef = useRef<StatusAction | null>(null);
+  surveyRestoreActionRef.current ??= {
+    label: SURVEY_STRINGS.restoreLineAction,
+    run: () => {
+      restoreRemovedSurveyLineRef.current();
+    },
+  };
+  const restoreRemovedSurveyLineRef = useRef(restoreRemovedSurveyLine);
+  restoreRemovedSurveyLineRef.current = restoreRemovedSurveyLine;
 
   // 編集の結果を状態行へ渡す **唯一の口**（設計書 §H.5 / D1）。これまで「直前の結果」に
   // 届いていたのは保存の成否だけで、追加・編集・削除・所属変更・結合・分割・穴あけ・
@@ -1460,6 +1486,11 @@ export function App(): JSX.Element {
       refreshUndoRedoEnabled();
     };
     const runUndo = (): void => {
+      // **測量の線を消した直後の Ctrl+Z は、その線を戻す**（増分 8C の手直し / 反証 #2）。
+      // 地物の取り消しへは流さない ―― 反射で押した Ctrl+Z が、関係のない直前の編集
+      // （別の年・画面の外のことがある）を黙って取り消していた。覚えは次の編集・測量の操作・
+      // 道具の持ち替えで捨てられる（`survey-state.ts` の `removed`）ので、そのあとは従来どおり。
+      if (restoreRemovedSurveyLine()) return;
       // D1: これから取り消される操作の名前は、**取り消す前の** undo スタックの先頭にある。
       const undoneLabel = historyRef.current.undoStack.at(-1)?.label;
       const step = historyUndo(historyRef.current);
@@ -1489,7 +1520,8 @@ export function App(): JSX.Element {
     };
     registry.register(COMMAND_ID.EditUndo, {
       run: runUndo,
-      canRun: () => historyCanUndo(historyRef.current),
+      canRun: () =>
+        historyCanUndo(historyRef.current) || store.getState().survey.removed !== null,
     });
     registry.register(COMMAND_ID.EditRedo, {
       run: runRedo,
@@ -1499,7 +1531,19 @@ export function App(): JSX.Element {
       registry.unregister(COMMAND_ID.EditUndo);
       registry.unregister(COMMAND_ID.EditRedo);
     };
-  }, [registry, store, refreshUndoRedoEnabled, statusMessageStore]);
+  }, [registry, store, refreshUndoRedoEnabled, statusMessageStore, restoreRemovedSurveyLine]);
+
+  // 増分 8C の手直し（反証 #2）: 消した測量の線の覚えが変わったら、元に戻すの可否（メニュー・
+  // 状態行の取り消し枠）を描き直し、覚えが捨てられたら状態行の［戻す］ボタンだけを外す。
+  useEffect(() => {
+    return store.subscribe((s, prev) => {
+      if (s.survey.removed === prev.survey.removed) return;
+      if (s.survey.removed === null && surveyRestoreActionRef.current !== null) {
+        statusMessageStore.dropAction(surveyRestoreActionRef.current);
+      }
+      refreshUndoRedoEnabled();
+    });
+  }, [store, statusMessageStore, refreshUndoRedoEnabled]);
 
   // HB-4 ROOT FIX — register the 表示専用モード切替 (ViewToggleViewMode) command on the
   // SAME registry the 表示 menu + shortcuts dispatch (教訓 5.13 単一の権限/真実源).
@@ -2243,10 +2287,19 @@ export function App(): JSX.Element {
     },
     [store],
   );
-  /** 「この線を消す」。もう無い id（メニューを開いてからクリアした等）なら何もしない。 */
+  /**
+   * 「この線を消す」。もう無い id（メニューを開いてからクリアした等）なら何もしない。
+   * 消せたら状態行に「測量の線を消しました［戻す］」を出す（増分 8C の手直し / 反証 #2）。
+   */
   const removeSurveyLine = useCallback(
-    (lineId: number): void => store.getState().surveyRemoveLine(lineId),
-    [store],
+    (lineId: number): void => {
+      const before = store.getState().survey;
+      store.getState().surveyRemoveLine(lineId);
+      if (store.getState().survey === before) return;
+      const action = surveyRestoreActionRef.current;
+      statusMessageStore.set(SURVEY_STRINGS.lineRemoved, STATUS_TONE.Success, action ?? undefined);
+    },
+    [store, statusMessageStore],
   );
 
   // HB5-4 選択解除 — Escape / 編集メニュー「選択解除」clears the active-feature + vertex
@@ -3663,7 +3716,9 @@ export function App(): JSX.Element {
             cursorStore={cursorPositionStore}
             messageStore={statusMessageStore}
             undo={{
-              canUndo: historyCanUndo(historyRef.current),
+              // 測量の線を消した直後は Ctrl+Z がその線を戻すので「可」（増分 8C の手直し）。
+              canUndo:
+                historyCanUndo(historyRef.current) || store.getState().survey.removed !== null,
               // 設計書 §C.8 は「元に戻せます: 南ケナ州の改名（Ctrl+Z）」まで出すとしているが、
               // ここではまだ **可否だけ** を出す。`Command.label` の語彙の混在（ドメイン側の
               // 4 か所が日本語「所属変更」「地物の削除」「自動配色」「結合」、UI 側の 5 か所が

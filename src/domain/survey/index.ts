@@ -38,6 +38,7 @@ export {
   type SurveyLine,
   type SurveyDraft,
   type SurveyState,
+  type RemovedSurveyLine,
   SURVEY_PHASE,
   initialSurveyState,
   enableSurveyMode,
@@ -48,6 +49,8 @@ export {
   discardOnToolSwitch,
   clearSurvey,
   removeSurveyLine,
+  restoreRemovedSurveyLine,
+  forgetRemovedSurveyLine,
 } from './survey-state';
 
 export {

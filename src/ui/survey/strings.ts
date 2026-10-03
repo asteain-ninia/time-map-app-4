@@ -46,6 +46,17 @@ export const SURVEY_STRINGS = {
    */
   removeLineOfKm: (km: string): string => `${km} の線を消す`,
   /**
+   * 距離の文が **ほかの候補と同じになったとき** だけ添える端点（増分 8C の手直し / GPT #1）。
+   * 「1,234km の線を消す（北 10.0° 東 20.0° → 北 10.0° 東 40.0°）」。
+   */
+  removeLineOfKmWithEnds: (km: string, ends: string): string => `${km} の線を消す（${ends}）`,
+  /** 右クリックで線を消したあとの状態行（増分 8C の手直し / 反証 #2）。［戻す］を添える。 */
+  lineRemoved: '測量の線を消しました',
+  /** 状態行の［戻す］ボタンの文字。 */
+  restoreLineAction: '戻す',
+  /** ［戻す］・消した直後の Ctrl+Z で線を戻したあとの状態行。 */
+  lineRestored: '測量の線を戻しました',
+  /**
    * 読み取りの色見本に添える説明（増分 8C / N-52）。見本は地図の線と同じ色・同じ線種で、
    * 正距円筒は実線、大円は破線。画面に出すのは見本の `title`（指を載せると読める）。
    */

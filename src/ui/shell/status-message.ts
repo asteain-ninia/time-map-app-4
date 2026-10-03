@@ -38,6 +38,18 @@ export type StatusTone = (typeof STATUS_TONE)[keyof typeof STATUS_TONE];
 export interface StatusMessage {
   readonly text: string;
   readonly tone: StatusTone;
+  /**
+   * 文の後ろに並べるボタン 1 個（省略可。増分 8C の手直し: 「測量の線を消しました［戻す］」）。
+   * ボタンが意味を失ったら押し込んだ側が {@link StatusMessageStore.dropAction} で外す ――
+   * 文は残す（教訓 5.12: 結果の文は無関係な操作で消さない）。
+   */
+  readonly action?: StatusAction | undefined;
+}
+
+/** 状態行の結果の文に添えるボタン。同じ操作には同じオブジェクトを使い回す（同一性で見分ける）。 */
+export interface StatusAction {
+  readonly label: string;
+  readonly run: () => void;
 }
 
 export type StatusMessageListener = (message: StatusMessage | null) => void;
@@ -82,10 +94,28 @@ export class StatusMessageStore {
     this.set(text, STATUS_TONE.Neutral);
   }
 
-  set(text: string, tone: StatusTone): void {
+  set(text: string, tone: StatusTone, action?: StatusAction): void {
     const current = this.message;
-    if (current !== null && current.text === text && current.tone === tone) return;
-    this.message = { text, tone };
+    if (
+      current !== null &&
+      current.text === text &&
+      current.tone === tone &&
+      current.action === action
+    ) {
+      return;
+    }
+    this.message = action === undefined ? { text, tone } : { text, tone, action };
+    this.emit();
+  }
+
+  /**
+   * いまの結果が `action` のボタンを持っていれば、**ボタンだけ** を外す（文と色味は残す）。
+   * 別の結果に置き換わっていれば何もしない（新しい結果を消さない）。
+   */
+  dropAction(action: StatusAction): void {
+    const current = this.message;
+    if (current === null || current.action !== action) return;
+    this.message = { text: current.text, tone: current.tone };
     this.emit();
   }
 

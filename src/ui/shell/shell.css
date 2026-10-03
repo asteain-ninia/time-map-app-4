@@ -1634,6 +1634,21 @@ body {
   padding: 2px 4px;
 }
 
+/* 結果の文に添えたボタン（増分 8C の手直し:「測量の線を消しました［戻す］」）。28px の行に
+ * 収まる高さ（行の箱を変えない）で、文と同じ色の枠線を付けてボタンだと分かるようにする。 */
+.statusbar__action {
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
 /* Cursor 経緯度 readout (FR-111): tabular digits so the text does not jitter in width
    as the cursor moves, and nowrap so it never wraps the thin strip into two lines. */
 .statusbar__coords {

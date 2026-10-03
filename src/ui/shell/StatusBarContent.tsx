@@ -88,6 +88,17 @@ function LastResultStatus(props: { readonly store: StatusMessageStore }): JSX.El
       role="status"
     >
       <span className="statusbar__result-text">{message.text}</span>
+      {/* 結果に添えたボタン（増分 8C の手直し: 「測量の線を消しました［戻す］」）。 */}
+      {message.action !== undefined && (
+        <button
+          type="button"
+          className="statusbar__action"
+          data-testid="statusbar-result-action"
+          onClick={message.action.run}
+        >
+          {message.action.label}
+        </button>
+      )}
       <button
         type="button"
         className="statusbar__dismiss"

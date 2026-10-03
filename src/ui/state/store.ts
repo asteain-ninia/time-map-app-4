@@ -43,8 +43,10 @@ import {
   clickPoint as surveyClickPointTransition,
   disableSurveyMode,
   enableSurveyMode,
+  forgetRemovedSurveyLine,
   initialSurveyState,
   removeSurveyLine as surveyRemoveLineTransition,
+  restoreRemovedSurveyLine,
   updateHover as surveyUpdateHoverTransition,
   type SurveyState,
 } from '../../domain/survey/index';
@@ -480,13 +482,22 @@ export interface SessionStoreActions<S> {
   surveyUpdateHover(point: WorldCoordinate): void;
   /** Cancel the in-progress draft (Escape / mode switch); lines + active kept. */
   surveyCancelDraft(): void;
-  /** Clear ALL survey results (確定線 + draft) — the only line-emptying path. */
+  /**
+   * 測量の結果（確定線＋下書き）を **全部一度に** 消す唯一の経路（［測量結果をクリア］）。
+   * 1 本だけ消すのは {@link surveyRemoveLine}。
+   */
   surveyClear(): void;
   /**
    * 確定した線を 1 本だけ消す（増分 8C / 設計書 §E.1 V15。右クリック「この線を消す」）。
    * 測っている途中の始点には触らない。無い id なら何もしない（同じ参照のまま）。
+   * 消した線は `survey.removed` に覚え、{@link surveyRestoreRemovedLine} で戻せる。
    */
   surveyRemoveLine(lineId: number): void;
+  /**
+   * 直前に消した線を元の位置へ戻す（増分 8C の手直し。状態行の［戻す］と、消した直後の
+   * Ctrl+Z）。覚えが無ければ何もしない。戻したら `true`。
+   */
+  surveyRestoreRemovedLine(): boolean;
 
   // display-control filter (FR-113, U41) — session-only, no projectDirty / domain touch
   /** FR-113 種別軸: toggle a kind (点/線/面) on the display filter. */
@@ -699,6 +710,19 @@ function toolPatch(
   const locked = state.mode === EDIT_MODE.View;
   const next = locked ? null : tool;
   return { activeTool: next, mode: modeForTool(locked, next) };
+}
+
+/**
+ * **消した測量の線の覚えを捨てる差分**（増分 8C の手直し / 反証 #2）。地物の編集・取り消し／
+ * やり直し・道具の持ち替え・鍵の切り替えで、「直前に消した線を戻す」を終わらせる ――
+ * そのあとの Ctrl+Z は地物の取り消しに戻る。覚えが無ければ空の差分（`survey` の参照を変えず、
+ * 測量の層を描き直させない）。
+ */
+function forgetRemovedSurveyPatch(state: {
+  readonly survey: SurveyState;
+}): { readonly survey?: SurveyState } {
+  const next = forgetRemovedSurveyLine(state.survey);
+  return next === state.survey ? {} : { survey: next };
 }
 
 function selectionPatch(selection: SelectionState): SelectionPatch {
@@ -1306,6 +1330,8 @@ export function createSessionStore<S>(
         domain: nextDomain,
         projectDirty: true,
         displayControl: nextDisplayControl,
+        // 地物の編集をしたら、消した測量の線を戻す覚えは捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
         ...(nextProjectSettings !== curProjectSettings
           ? { projectSettings: nextProjectSettings }
           : {}),
@@ -1412,6 +1438,8 @@ export function createSessionStore<S>(
         displayControl: nextDisplayControl,
         // 手直し B5: 「いま取り消し／やり直しが起きた」の印。一覧の追従だけが読む。
         undoRedoNonce: get().undoRedoNonce + 1,
+        // 地物の取り消し／やり直しも、消した測量の線を戻す覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
         ...(nextProjectSettings !== curProjectSettings
           ? { projectSettings: nextProjectSettings }
           : {}),
@@ -1613,6 +1641,8 @@ export function createSessionStore<S>(
       set({
         ...patch,
         ...(acrossViewOnly ? {} : selectionPatch(EMPTY_SELECTION)),
+        // 鍵の切り替え・道具を外すのも持ち替えなので、消した線の覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
       });
     },
 
@@ -1658,6 +1688,8 @@ export function createSessionStore<S>(
         ...selectionPatch(
           preserveSelection ?? selectionAcrossToolSwitch(get(), patch.activeTool),
         ),
+        // 道具の持ち替えで、消した測量の線を戻す覚えを捨てる（増分 8C の手直し）。
+        ...forgetRemovedSurveyPatch(get()),
       });
     },
 
@@ -1859,6 +1891,14 @@ export function createSessionStore<S>(
       const cur = get().survey;
       const next = surveyRemoveLineTransition(cur, lineId);
       if (next !== cur) set({ survey: next });
+    },
+
+    surveyRestoreRemovedLine() {
+      const cur = get().survey;
+      const next = restoreRemovedSurveyLine(cur);
+      if (next === cur) return false;
+      set({ survey: next });
+      return true;
     },
 
     // -- display-control filter (FR-113, U41): INDEPENDENT session axis ------
