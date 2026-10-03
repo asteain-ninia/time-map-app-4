@@ -138,6 +138,10 @@ import { RESOLVED_STRINGS } from './conflict/strings';
 // 増分 8E（G-14）: 穴・飛び地の形を壊す編集を断ったときの文。
 import { editRejectionMessage } from './ring-hierarchy-gate';
 import type { RejectedResult } from '../domain/consistency/index';
+// 増分 8E（G-21）: ズームの上下限を理由つきで断る。
+import { ZoomLimitNoteStore, zoomLimitRefusal } from './map/zoom-limit-notice';
+import { ZoomLimitNoteView } from './map/ZoomLimitNote';
+import './map/zoom-limit-note.css';
 import './knife/knife.css';
 import type {
   Conflict,
@@ -647,6 +651,14 @@ export function App(): JSX.Element {
   // 座標対応. With the default menu removed (shell/main/app-menu.ts) the chords reach the
   // renderer and land on the MAP zoom, through the same U17 step math the wheel uses.
   const zoomMapRef = useRef<((direction: ZoomDirection) => void) | null>(null);
+  // 増分 8E（G-21）: 拡大 / 縮小を押す前の知らせ口と、ズームボタンの脇の文の置き場。
+  // 上下限に着いていて何も変わらない 1 押しを、理由つきで断る（脇と状態行）。
+  const zoomCommandNoticeRef = useRef<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >(null);
+  const zoomLimitNoteStoreRef = useRef<ZoomLimitNoteStore | null>(null);
+  zoomLimitNoteStoreRef.current ??= new ZoomLimitNoteStore();
+  const zoomLimitNoteStore = zoomLimitNoteStoreRef.current;
 
   // The cursor's live world position behind the status-bar readout (FR-111). Held OUTSIDE
   // React (technical policy 2.3): the map pointermove path pushes into it at input rate
@@ -936,6 +948,7 @@ export function App(): JSX.Element {
       fitCameraToFeatureRef,
       fitCameraToAllRef,
       zoomMapRef,
+      zoomCommandNoticeRef,
       publishCameraHooks: observation.publishCameraHooks,
       publishVisibleCountHook: observation.publishVisibleCountHook,
       publishFrameHook: observation.publishFrameHook,
@@ -1425,6 +1438,20 @@ export function App(): JSX.Element {
     anchorCount: number,
   ): void => {
     announceResult(APP_STRINGS.vertexCarriedForward(fromYear, toYear, anchorCount));
+  };
+
+  zoomCommandNoticeRef.current = (
+    direction: ZoomDirection,
+    zoomBefore: number,
+    range: ZoomRange,
+  ): void => {
+    const refusal = zoomLimitRefusal(direction, zoomBefore, range, store.getState().projectSettings);
+    if (refusal === null) {
+      zoomLimitNoteStore.clear();
+      return;
+    }
+    zoomLimitNoteStore.show(refusal.side, zoomBefore);
+    statusMessageStore.failure(refusal.status);
   };
 
   announceEditRejectionRef.current = (rejected: RejectedResult): void => {
@@ -3816,6 +3843,8 @@ export function App(): JSX.Element {
             {/* 設計書 §B.5 の台帳 #10・#11（増分 6。増分 5 から送られた 3 部品のうち 2 つ）。
                 層は `pointer-events: none` で、ボタンの矩形だけが押下を受ける（K-2）。 */}
             <MapViewControls<DomainRoot> store={store} registry={registry} />
+            {/* 増分 8E（G-21 / §B.5 の台帳 #13）: ズームの上下限で断った理由を脇に出す。押せない。 */}
+            <ZoomLimitNoteView<DomainRoot> store={store} noteStore={zoomLimitNoteStore} />
             {/* 同 #12。押した位置の掴める距離に頂点が 2 つ以上あるときだけ出る一時部品。 */}
             <VertexCandidateList
               store={vertexCandidateStore}

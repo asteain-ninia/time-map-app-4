@@ -52,6 +52,14 @@ export interface MountRenderOptions {
   readonly fitCameraToAllRef: MutableRefObject<(() => void) | null>;
   /** 拡大 / 縮小（ここで実体を入れる）。 */
   readonly zoomMapRef: MutableRefObject<((direction: ZoomDirection) => void) | null>;
+  /**
+   * 拡大 / 縮小を **押す前に** 知らせる口（増分 8E / G-21）。押す前の倍率と、いま効いている
+   * 上下限を渡すだけで、断るかどうかの判定は受け手（`map/zoom-limit-notice.ts`）が持つ。
+   * ズームの処理そのものは変えない（上限での振る舞いはこれまでどおりクランプ）。
+   */
+  readonly zoomCommandNoticeRef?: MutableRefObject<
+    ((direction: ZoomDirection, zoomBefore: number, range: ZoomRange) => void) | null
+  >;
   /** HB-1 観測フックへカメラを写す。 */
   readonly publishCameraHooks: (camera: RenderCamera) => void;
   /** HB-14 観測フックへ可視地物数を写す。 */
@@ -90,6 +98,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     fitCameraToFeatureRef,
     fitCameraToAllRef,
     zoomMapRef,
+    zoomCommandNoticeRef,
     publishCameraHooks,
     publishVisibleCountHook,
     publishFrameHook,
@@ -343,6 +352,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
   // into the U16 store camera via onCameraChange exactly like a wheel zoom.
   zoomMapRef.current = (direction: ZoomDirection): void => {
     const { camera, viewport } = ports.readCamera();
+    zoomCommandNoticeRef?.current?.(direction, camera.zoom, ports.effectiveZoomRange());
     ports.writeCamera(
       keyboardZoomCamera(camera, viewport, direction, ports.effectiveZoomRange()),
     );
