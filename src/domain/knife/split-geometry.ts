@@ -1334,35 +1334,56 @@ export interface SplitResult {
   /** {@link SplitCheckResult} と同じ印（延ばした先でも切れている）。省略＝偽。 */
   readonly cutsBeyondLine?: boolean;
   /**
-   * Every point where the OPEN cut line crosses an existing target edge partway
-   * along it (FR-95). Empty for a closed cut, or when the cut only meets existing
-   * vertices (no mid-edge crossing). 片落とし禁止: every crossed edge is recorded.
+   * Every point where the split cut an existing target edge partway along it (FR-95):
+   * the new piece vertices lying on an original edge (増分 8B の再手直し — read off the
+   * pieces, so the neighbour's node and the piece's vertex are one source). Empty when
+   * the cut only meets existing vertices. 片落とし禁止: every cut edge is recorded.
    */
   readonly edgeCuts: readonly EdgeCutPoint[];
 }
 
 /**
- * Compute every mid-edge crossing of the OPEN cut line against the target leaf's
- * existing edges (FR-95 / 教訓5.38: 線分交差で判定). A mid-edge cut is recorded when:
- *   - the cut line crosses the edge PROPERLY (interiors cross), OR
- *   - the cut line TOUCHES the edge at an Endpoint contact whose point lands PARTWAY
- *     along the edge — i.e. a cut-line vertex lands mid-edge (not on an existing
- *     target vertex). Codex M1: this Endpoint case is also a真の共有辺途中切断点 — the
- *     共有相手 edge still needs a same-coordinate node there (FR-95). Only an Endpoint
- *     contact that coincides with an existing edge ENDPOINT (an existing target
- *     vertex) needs no new node and is skipped.
- * For each recorded cut we store the ring id, the edge's start index, the two edge
- * vertex ids, and the quantize-aligned cut coordinate. The proposal layer maps
- * these to {@link SharedEdgeCutSpec}s when the crossed edge is a共有辺. Pure.
+ * Compute every 共有辺途中切断点 (FR-95) **from the vertices the pieces actually have**
+ * (増分 8B の再手直し / 再検証 3-1・2-1): every piece vertex that is NOT an original
+ * target vertex and lies on an original target edge (strictly between its ends, within
+ * {@link RING_SPOT_TOLERANCE}) is a point where the split cut that edge, and the
+ * neighbour sharing the edge needs the same node there.
+ *
+ * WHY not intersect the drawn line with the edges any more: the cut seam the pieces carry
+ * is computed by the split itself — by the ring walk on the QUANTIZED chord ends, by U06's
+ * `difference` against the holes along that quantized chord, or by the far-frame clip's
+ * continuations. Re-deriving the crossing from the drawn segment a→b put the neighbour's
+ * node on a DIFFERENT grid point whenever the chord P→Q was a hair off a→b (a slanted
+ * line over a hole: one grid step apart, in 265 of 1,278 real-data lines), the apply step
+ * then found no piece vertex there and dropped the cut, and the island kept a T-junction
+ * against the sea. The continuation of the far-frame path also cut shared edges the drawn
+ * line never crossed, and those were never transferred at all. Taking the cut points from
+ * the pieces makes the neighbour's node and the piece's vertex ONE source, whatever path
+ * produced it; it also works for a closed cut that crosses the boundary.
+ *
+ * Every candidate is assigned to its NEAREST original edge only (a point near a corner is
+ * not inserted into both edges). Coordinates are in the seam-anchored system the pieces
+ * use (R3): each original vertex is anchored to `refLon`, the edge end to its start, then
+ * both are quantized onto the U06 grid. For each recorded cut we store the ring id, the
+ * edge's start index, the two edge vertex ids and the piece vertex's coordinate. Pure.
  */
 function computeEdgeCuts(
   target: LeafFeature,
   store: VertexStore,
-  linePts: readonly WorldCoordinate[],
+  pieces: readonly GeoMultiPolygon[],
   refLon: number,
 ): EdgeCutPoint[] {
-  const cuts: EdgeCutPoint[] = [];
-  const seen = new Set<string>();
+  interface Edge {
+    readonly ringId: RingId;
+    readonly index: number;
+    readonly startId: VertexId;
+    readonly endId: VertexId;
+    readonly start: WorldCoordinate;
+    readonly end: WorldCoordinate;
+  }
+  const keyOf = (p: WorldCoordinate): string => `${p.lon},${p.lat}`;
+  const edges: Edge[] = [];
+  const original = new Set<string>();
   for (const ring of target.shape.rings) {
     const n = ring.vertexIds.length;
     for (let j = 0; j < n; j += 1) {
@@ -1372,50 +1393,54 @@ function computeEdgeCuts(
       const startV = getVertex(store, startId);
       const endV = getVertex(store, endId);
       if (startV === undefined || endV === undefined) continue;
-      // Quantize the target edge endpoints onto the SAME grid the split boolean op
-      // works on (U06 quantizes its inputs) before computing the crossing. WHY:
-      // the cut line is grid-snapped (snapCutLine) but the stored target coords
-      // can be sub-grid; intersecting the snapped line against RAW edge endpoints
-      // can quantize to a DIFFERENT grid node than the seam the split actually
-      // produced — FR-95 would then insert a mismatched node on the共有相手 edge.
-      // Quantizing both sides keeps the共有辺途中切断点 on the split's exact seam node.
-      // Anchor both endpoints onto the cut line's longitude branch (refLon) first
-      // so a seam-crossing edge (e.g. 170° → −170°) is compared against the line in
-      // ONE continuous system (R3), matching the checkSplittable boolean op.
       const startA = createCoordinate(anchorLon(startV.coordinate.lon, refLon), startV.coordinate.lat);
       const endA = createCoordinate(anchorLon(endV.coordinate.lon, startA.lon), endV.coordinate.lat);
-      const startC = quantizeCoordinate(startA);
-      const endC = quantizeCoordinate(endA);
-      for (let i = 0; i + 1 < linePts.length; i += 1) {
-        const a = linePts[i];
-        const b = linePts[i + 1];
-        if (a === undefined || b === undefined) continue;
-        const hit = segmentsIntersect(a, b, startC, endC);
-        if (hit.point === undefined) continue;
-        if (hit.relation !== SEGMENT_RELATION.Proper && hit.relation !== SEGMENT_RELATION.Endpoint) {
-          continue;
+      const start = quantizeCoordinate(startA);
+      const end = quantizeCoordinate(endA);
+      original.add(keyOf(start));
+      original.add(keyOf(end));
+      edges.push({ ringId: ring.id, index: j, startId, endId, start, end });
+    }
+  }
+
+  const cuts: EdgeCutPoint[] = [];
+  const seen = new Set<string>();
+  const tol2 = RING_SPOT_TOLERANCE * RING_SPOT_TOLERANCE;
+  for (const piece of pieces) {
+    for (const poly of piece) {
+      for (const ring of poly) {
+        for (const raw of ring) {
+          const p = quantizeCoordinate(raw);
+          const key = keyOf(p);
+          if (original.has(key) || seen.has(key)) continue;
+          let best: Edge | undefined;
+          let bestD2 = Number.POSITIVE_INFINITY;
+          for (const e of edges) {
+            if (
+              p.lon < Math.min(e.start.lon, e.end.lon) - RING_SPOT_TOLERANCE ||
+              p.lon > Math.max(e.start.lon, e.end.lon) + RING_SPOT_TOLERANCE ||
+              p.lat < Math.min(e.start.lat, e.end.lat) - RING_SPOT_TOLERANCE ||
+              p.lat > Math.max(e.start.lat, e.end.lat) + RING_SPOT_TOLERANCE
+            ) {
+              continue;
+            }
+            const { d2, t } = pointSegmentDistance2(p, e.start, e.end);
+            if (t <= 0 || t >= 1) continue; // at or beyond an end → not mid-edge
+            if (d2 < bestD2) {
+              bestD2 = d2;
+              best = e;
+            }
+          }
+          if (best === undefined || bestD2 > tol2) continue;
+          seen.add(key);
+          cuts.push({
+            ringId: best.ringId,
+            edgeStartIndex: best.index,
+            edgeStartVertexId: best.startId,
+            edgeEndVertexId: best.endId,
+            coordinate: p,
+          });
         }
-        const coordinate = quantizeCoordinate(hit.point);
-        // A mid-edge cut is recorded ONLY when the (quantized) intersection point
-        // falls strictly between the edge's (quantized) endpoints. This applies to
-        // BOTH a Proper crossing AND an Endpoint contact: an intersection that
-        // quantizes onto an existing edge vertex (startC/endC) needs no new node and
-        // would otherwise produce a zero-length edge / duplicate-coordinate node on
-        // the共有相手 edge (Codex M1; bug-hunt: a near-endpoint Proper crossing that
-        // quantizes onto startC/endC is degenerate and must be skipped too).
-        if (coordinatesEqual(coordinate, startC) || coordinatesEqual(coordinate, endC)) {
-          continue;
-        }
-        const key = `${ring.id}:${j}:${coordinate.lon},${coordinate.lat}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        cuts.push({
-          ringId: ring.id,
-          edgeStartIndex: j,
-          edgeStartVertexId: startId,
-          edgeEndVertexId: endId,
-          coordinate,
-        });
       }
     }
   }
@@ -1436,19 +1461,23 @@ export function executeSplit(
 ): SplitResult | undefined {
   const check = checkSplittable(target, store, line);
   if (check.status !== SPLIT_CHECK_STATUS.Splittable) return undefined;
-  // Mid-edge cut points only arise for an OPEN cut crossing existing edges. Compute
-  // them in the SAME seam-anchored system checkSplittable used (R3): the reference
-  // is the target's outer-ring branch, and the cut line + target edges are anchored
-  // to it before the line-segment crossing test.
+  // Mid-edge cut points are read off the pieces themselves (増分 8B の再手直し): every
+  // new piece vertex lying on an original edge. Same seam-anchored system as
+  // checkSplittable (R3): the reference is the target's outer-ring branch.
+  const pieces = check.pieces ?? [check.sideA, check.sideB];
   let edgeCuts: readonly EdgeCutPoint[] = [];
-  if (target.kind === FEATURE_KIND.Leaf && line.kind === KNIFE_LINE_KIND.Open) {
+  if (target.kind === FEATURE_KIND.Leaf) {
     const resolvedMp = resolveLeafShape(target.shape, store);
     const refLon = resolvedMp === undefined ? 0 : targetReferenceLon(resolvedMp);
-    const anchoredLine = snapCutLine(unwrapAnchoredRing([...line.points], refLon), false);
-    edgeCuts = computeEdgeCuts(target, store, anchoredLine, refLon);
+    edgeCuts = computeEdgeCuts(
+      target,
+      store,
+      pieces.map((piece) => piece.area),
+      refLon,
+    );
   }
   return {
-    pieces: check.pieces ?? [check.sideA, check.sideB],
+    pieces,
     sideA: check.sideA,
     sideB: check.sideB,
     ...(check.cutsBeyondLine === true ? { cutsBeyondLine: true } : {}),
