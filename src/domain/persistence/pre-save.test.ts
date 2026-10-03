@@ -197,3 +197,42 @@ describe('preSaveBlockMessage — 保存を止める理由', () => {
     expect(message).toContain('ほか');
   });
 });
+
+describe('preSaveConfirmLines — 次に開いたときの直し方を、実際に起きることと合わせる（手直し 4 回目 #1 (ii)）', () => {
+  it('どの年にも下位領域が無いまとめ役には「無くします」と約束せず、聞かれることを言う', () => {
+    const lonely = projectOf([
+      {
+        featureId: fid('L'),
+        series: { entries: [{ anchor: anchorOf('anchor-L', [aggregate('L', [])], []), start: timePointYear(1000), end: null }] },
+      },
+    ]);
+    const problems = checkBeforeSave(lonely, calendar);
+    expect(problems.map((p) => [p.kind, p.intervalRepairable])).toEqual([[PRE_SAVE_PROBLEM.EmptyAggregate, false]]);
+    const [line] = preSaveConfirmLines(problems, () => '孤立した連邦', (at) => `${String(at.year)}年`);
+    expect(line).toContain('どうするかを聞かれます');
+    expect(line).not.toContain('無くします');
+  });
+
+  it('子の居る年があるまとめ役には、子の居ない年の間だけ無くすと言う', () => {
+    const a = leafTile('a', 0, 0, 10, 10, 'F');
+    const project = projectOf([
+      {
+        featureId: fid('F'),
+        series: {
+          entries: [
+            { anchor: anchorOf('anchor-F-1000', [aggregate('F', ['a'])], []), start: timePointYear(1000), end: null },
+            { anchor: anchorOf('anchor-F-1300', [aggregate('F', [])], []), start: timePointYear(1300), end: null },
+          ],
+        },
+      },
+      {
+        featureId: fid('a'),
+        series: { entries: [{ anchor: anchorOf('anchor-a', [a.feature], a.vertices), start: timePointYear(1000), end: timePointYear(1300) }] },
+      },
+    ]);
+    const problems = checkBeforeSave(project, calendar).filter((p) => p.kind === PRE_SAVE_PROBLEM.EmptyAggregate);
+    expect(problems.map((p) => p.intervalRepairable)).toEqual([true]);
+    const [line] = preSaveConfirmLines(problems, () => '連邦', (at) => `${String(at.year)}年`);
+    expect(line).toContain('下位領域の居ない年の間だけ');
+  });
+});

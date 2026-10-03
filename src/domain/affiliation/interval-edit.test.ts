@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { resolveAt, changeStart, setEnd, type AnchorSeries } from '../anchor-series';
+import { resolveAt, changeStart, deleteAnchor, setEnd, type AnchorSeries } from '../anchor-series';
 import { aggregate, anchorOf, fid, leafTile } from '../deletion/fixtures';
 import { withParentId, type Feature } from '../feature';
 import type { FeatureId } from '../ids';
@@ -171,7 +171,8 @@ describe('editFeatureInterval — まとめ役を終わらせる（決定 (2) �
     const histories = nested([1000, 1600]);
     const plan = planEnding(histories, fid('agg'), y(1500), calendar);
     expect(plan?.reappearsAt).toBeNull();
-    expect(plan?.trimmedLaterRecords).toBe(1);
+    // 1600 年の錨は 1000 年と中身が同じ（帳簿の錨）なので、数える「中身の変わる記録」は 0 件（4 回目 #5）。
+    expect(plan?.trimmedLaterRecords).toBe(0);
     const result = endHereAt(histories, 'agg', 1500);
     if (!result.ok) throw new Error('rejected');
     expect(parentAt(result.histories, 'agg', 1600)).toBeUndefined();
@@ -391,7 +392,8 @@ describe('手直し 3 回目 — 途切れずに続く記録をまとめて終�
     const lonely: readonly FeatureHistory[] = [
       { featureId: fid('L'), series: { entries: [entryOf('L', 1000, [aggregate('L', [])], [])] } },
     ];
-    expect(tailEmptyCuts(lonely, fid('L'), calendar)).toEqual([]);
+    // 編集の前から子が居ない（関係の無い編集）なら触らない。
+    expect(tailEmptyCuts(lonely, fid('L'), calendar, lonely)).toEqual([]);
     expect(emptyAggregateIntervals(lonely, fid('L'), calendar)).toEqual([]);
     // 途中だけ空: a は [1200,1300)、b は 1400 から F の子。1300〜1400 年だけ子が居ない。
     const a = leafTile('a', 0, 0, 10, 10, 'F');
@@ -401,7 +403,7 @@ describe('手直し 3 回目 — 途切れずに続く記録をまとめて終�
       { featureId: fid('a'), series: { entries: [entryOf('a', 1200, [a.feature], a.vertices, 1300)] } },
       { featureId: fid('b'), series: { entries: [entryOf('b', 1400, [b.feature], b.vertices)] } },
     ];
-    expect(tailEmptyCuts(middle, fid('F'), calendar)).toEqual([]);
+    expect(tailEmptyCuts(middle, fid('F'), calendar, middle)).toEqual([]);
     expect(emptyAggregateIntervals(middle, fid('F'), calendar).map((iv) => [iv.start.year, iv.end?.year ?? null])).toEqual([
       [1300, 1400],
     ]);
@@ -422,5 +424,126 @@ describe('手直し 3 回目 — 途切れずに続く記録をまとめて終�
     const own = histories.find((h) => h.featureId === fid('a'))!;
     const anchorId = own.series.entries[0]!.anchor.id;
     expect(endRunAt(own.series, fid('a'), anchorId, y(1200), calendar).ok).toBe(false);
+  });
+});
+
+describe('手直し 4 回目 — どの年にも子が居なくなるまとめ役・後ろの別の所属・帳簿の錨・関係の無い空', () => {
+  /** 州 a・b（1000 年から最上位、1200 年から連邦 F の子）と連邦 F（1200 年から）。 */
+  function federatedAt1200(): readonly FeatureHistory[] {
+    const a = leafTile('a', 0, 0, 10, 10);
+    const b = leafTile('b', 10, 0, 10, 10);
+    return [
+      { featureId: fid('F'), series: { entries: [entryOf('F', 1200, [aggregate('F', ['a', 'b'])], [])] } },
+      {
+        featureId: fid('a'),
+        series: { entries: [entryOf('a', 1000, [a.feature], a.vertices), entryOf('a', 1200, [withParentId(a.feature, fid('F'))], a.vertices)] },
+      },
+      {
+        featureId: fid('b'),
+        series: { entries: [entryOf('b', 1000, [b.feature], b.vertices), entryOf('b', 1200, [withParentId(b.feature, fid('F'))], b.vertices)] },
+      },
+    ];
+  }
+  const noIssues = (hs: readonly FeatureHistory[]) =>
+    checkConsistency({ histories: hs } as unknown as DomainProject, calendar).inconsistencies;
+
+  it('#1 Q2a: 連邦を作った年のうちに州を全部終わらせると、連邦は記録ごと無くなる（所属変更で全部外したときと同じ）', () => {
+    const r1 = endHereAt(federatedAt1200(), 'a', 1200);
+    if (!r1.ok) throw new Error('rejected');
+    expect(r1.cascaded).toEqual([]);
+    const plan = planEnding(r1.histories, fid('b'), y(1200), calendar);
+    expect(plan?.cascaded.map((c) => [String(c.featureId), c.whole])).toEqual([['F', true]]);
+    const r2 = endHereAt(r1.histories, 'b', 1200);
+    if (!r2.ok) throw new Error('rejected');
+    expect(r2.histories.some((h) => h.featureId === fid('F'))).toBe(false);
+    expect(noIssues(r2.histories)).toEqual([]);
+  });
+
+  it('#1 Q2b: 州の連邦入りの錨を全部消すと、連邦は記録ごと無くなる', () => {
+    const base = federatedAt1200();
+    const aAnchor = base.find((h) => h.featureId === fid('a'))!.series.entries[1]!.anchor.id;
+    const r1 = editFeatureInterval(base, fid('a'), (s) => deleteAnchor(s, aAnchor, calendar), calendar);
+    if (!r1.ok) throw new Error('rejected');
+    const bAnchor = r1.histories.find((h) => h.featureId === fid('b'))!.series.entries[1]!.anchor.id;
+    const r2 = editFeatureInterval(r1.histories, fid('b'), (s) => deleteAnchor(s, bAnchor, calendar), calendar);
+    if (!r2.ok) throw new Error('rejected');
+    expect(r2.cascaded.map((c) => [String(c.featureId), c.whole])).toEqual([['F', true]]);
+    expect(r2.histories.some((h) => h.featureId === fid('F'))).toBe(false);
+    expect(noIssues(r2.histories)).toEqual([]);
+  });
+
+  /** 州 a（1000 年から最上位、1700 年から G の子）と G（1700 年から）。`withQ` なら G には q も居る。 */
+  function laterG(withQ: boolean): readonly FeatureHistory[] {
+    const a = leafTile('a', 0, 0, 10, 10);
+    const q = leafTile('q', 30, 0, 10, 10, 'G');
+    return [
+      { featureId: fid('G'), series: { entries: [entryOf('G', 1700, [aggregate('G', withQ ? ['a', 'q'] : ['a'])], [])] } },
+      {
+        featureId: fid('a'),
+        series: { entries: [entryOf('a', 1000, [a.feature], a.vertices), entryOf('a', 1700, [withParentId(a.feature, fid('G'))], a.vertices)] },
+      },
+      ...(withQ ? [{ featureId: fid('q'), series: { entries: [entryOf('q', 1700, [q.feature], q.vertices)] } }] : []),
+    ];
+  }
+
+  it('#2 Q2c: 州を終わらせて後ろの記録が切り詰められると、別の連邦 G への所属が一緒に終わることを数える', () => {
+    const histories = laterG(true);
+    const plan = planEnding(histories, fid('a'), y(1400), calendar);
+    expect(plan?.laterAffiliations.map((x) => [String(x.parentId), x.from.year])).toEqual([['G', 1700]]);
+    expect(plan?.cascaded).toEqual([]);
+    const r = endHereAt(histories, 'a', 1400);
+    if (!r.ok) throw new Error('rejected');
+    expect(childIdsAt(r.histories, 'G', 1800)).toEqual(['q']);
+    expect(noIssues(r.histories)).toEqual([]);
+  });
+
+  it('#1・#2 Q2d: 1 人だけの連邦 G の州を、連邦入りより前の年で終わらせると、G は記録ごと無くなり、そう数える', () => {
+    const histories = laterG(false);
+    const plan = planEnding(histories, fid('a'), y(1400), calendar);
+    expect(plan?.laterAffiliations.map((x) => String(x.parentId))).toEqual(['G']);
+    expect(plan?.cascaded.map((c) => [String(c.featureId), c.whole])).toEqual([['G', true]]);
+    const r = endHereAt(histories, 'a', 1400);
+    if (!r.ok) throw new Error('rejected');
+    expect(r.histories.some((h) => h.featureId === fid('G'))).toBe(false);
+    expect(noIssues(r.histories)).toEqual([]);
+  });
+
+  it('#4 Q7: 関係の無い編集では、前から空だったまとめ役に触らない', () => {
+    // G{F, Z}: F・Z は 1600 年に G から出ている（G は 1600 年から子の居ない古い形）。
+    const f = leafTile('Fx', 0, 0, 10, 10);
+    const z = leafTile('Z', 10, 0, 10, 10);
+    const histories: readonly FeatureHistory[] = [
+      { featureId: fid('G'), series: { entries: [entryOf('G', 1000, [aggregate('G', ['Fx', 'Z'])], [])] } },
+      {
+        featureId: fid('Fx'),
+        series: { entries: [entryOf('Fx', 1000, [withParentId(f.feature, fid('G'))], f.vertices), entryOf('Fx', 1600, [f.feature], f.vertices)] },
+      },
+      {
+        featureId: fid('Z'),
+        series: { entries: [entryOf('Z', 1000, [withParentId(z.feature, fid('G'))], z.vertices), entryOf('Z', 1600, [z.feature], z.vertices)] },
+      },
+    ];
+    const r = endHereAt(histories, 'Z', 1800);
+    if (!r.ok) throw new Error('rejected');
+    expect(r.cascaded).toEqual([]);
+    expect(parentAt(r.histories, 'G', 1700)).toBeNull();
+  });
+
+  it('#5: 一緒に終わる後ろの記録は、中身の変わる記録だけ数える（帳簿のために割られた錨は数えない）', () => {
+    const a = leafTile('a', 0, 0, 10, 10);
+    const renamed = { ...a.feature, attributes: { ...a.feature.attributes, name: '改名' } } as Feature;
+    const histories: readonly FeatureHistory[] = [
+      {
+        featureId: fid('a'),
+        series: {
+          entries: [
+            entryOf('a', 1000, [a.feature], a.vertices),
+            entryOf('a', 1500, [a.feature], a.vertices), // 帳簿の錨（中身が同じ）
+            entryOf('a', 1700, [renamed], a.vertices), // 利用者の記録（改名）
+          ],
+        },
+      },
+    ];
+    expect(planEnding(histories, fid('a'), y(1400), calendar)?.trimmedLaterRecords).toBe(1);
   });
 });
