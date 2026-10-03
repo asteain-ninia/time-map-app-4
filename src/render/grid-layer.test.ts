@@ -106,6 +106,20 @@ describe('buildGridPrimitives (FR-13)', () => {
     expect(primeLabel?.fill).toBe(DEFAULT_GRID_STYLE.emphasisColor);
   });
 
+  // 増分 8E（G-12）: 表示の設定で強調を外すと、3 本も普通の線・普通のラベルで描く。
+  it('強調を外すと、赤道・0 度・180 度も普通の太さ・色で描く（G-12）', () => {
+    const style = { ...DEFAULT_GRID_STYLE, emphasizeSpecialLines: false };
+    const prims = buildGridPrimitives(true, style, worldCamera, viewport);
+    const widths = new Set(gridlines(prims).map((l) => l.widthPx));
+    expect(widths).toEqual(new Set([DEFAULT_GRID_STYLE.lineWidthPx]));
+    const strokes = new Set(gridlines(prims).map((l) => l.stroke));
+    expect(strokes.has(DEFAULT_GRID_STYLE.emphasisColor)).toBe(false);
+    const primeLabel = labels(prims).find((l) => l.text === '0°' && l.at.lat === 0);
+    // ラベルは間引かれずに残る（強調対象の判定は変えない）が、色は普通のラベルと同じ。
+    expect(primeLabel).toBeDefined();
+    expect(primeLabel?.fill).not.toBe(DEFAULT_GRID_STYLE.emphasisColor);
+  });
+
   it('label font px is constant regardless of zoom (受け入れ基準 10 / FR-17)', () => {
     const zoomedIn: Camera = { ...worldCamera, zoom: worldCamera.zoom * 8 };
     const a = labels(buildGridPrimitives(true, DEFAULT_GRID_STYLE, worldCamera, viewport));
