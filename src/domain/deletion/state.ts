@@ -37,6 +37,13 @@ export interface DeletionBundling {
   readonly bundles: readonly AnchorSnapshot[];
   /** `anchors` と同じ並び。錨 i が載っている束と範囲。 */
   readonly slots: readonly (DeletionBundleSlot | undefined)[];
+  /**
+   * 錨 i の区間 [始まり, 実際の終わり) の **途中**にある全系列の境目の時刻ごとの束（増分 7 の
+   * 手直し 2 回目 / 反証 #3・GPT #3）。まとめ役の錨を連鎖剪定するのは、その錨の区間の
+   * **どの時点でも**子が 1 件も居ないときだけにするための材料。必要になったときだけ組む
+   * （その錨のまとめ役が始まりの時刻で子を失ったときだけ呼ばれる）ので関数で持つ。
+   */
+  readonly interior?: (anchorIndex: number) => readonly AnchorSnapshot[];
 }
 
 /**
