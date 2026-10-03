@@ -7,6 +7,11 @@
 // - **出す条件は印を描く条件と同じ**（教訓 5.30）: 鍵が開いていて、掴める道具（選ぶ・頂点・
 //   動かす）を構えていて、選んでいる地物の視野内の頂点が上限を超えているとき。読むだけの
 //   ときは印をもともと描かないので、「上限のため」と言うと嘘になる。
+// - **ただし測っている間は出さない**（統合 8A〜8D の継ぎ目の検証 2-1）。測っている間は
+//   `activeTool` が null で「選ぶ」と同じに見え、印もそのまま描かれるが、左クリックは測る点に
+//   なるので頂点は掴めない ―― 「印が出ない理由」を言う場面ではない。ここだけは印を描く条件と
+//   **わざと食い違えている**。出すと次の一手の測るの案内（終点を押す・Esc でやめる）を上書きし、
+//   数が上限を下回った瞬間の片付けで次の一手を空にして「選ぶ」の既定の文に化けさせていた。
 // - 帯への押し込みは **書いた人の印**つきで行い、引っ込めるときは自分が最後に書いたときだけ
 //   空へ戻す（`clearChromeIfMine`。教訓 5.68 / 5.77）。帯が持ち直されたら（道具の持ち替え）
 //   押し直す（`useOptionBarEpoch`）。
@@ -58,11 +63,14 @@ export function HandleCapNotice(props: HandleCapNoticeProps): null {
   const vertexOwner = useStore(store, (s) => s.selection.vertexOwner);
   // カメラは「数え直す契機」としてだけ購読する（数えるのは生きたレンダラのカメラ）。
   const camera = useStore(store, (s) => s.camera);
+  const surveying = useStore(store, (s) => s.survey.active);
 
-  const handlesDrawn = mode !== EDIT_MODE.View && toolShowsVertexHandles(activeTool);
+  // 測っている間は出さない（冒頭の注記。継ぎ目の検証 2-1）。
+  const noticeApplies =
+    mode !== EDIT_MODE.View && toolShowsVertexHandles(activeTool) && !surveying;
 
   const status = useMemo(() => {
-    if (!handlesDrawn || activeFeature === null) return null;
+    if (!noticeApplies || activeFeature === null) return null;
     const ports = cameraRef.current;
     if (ports === null) return null;
     const view = ports.readCamera();
@@ -85,7 +93,7 @@ export function HandleCapNotice(props: HandleCapNoticeProps): null {
     };
     // `camera` は数え直す契機（中で読むのは生きたレンダラのカメラ）。
   }, [
-    handlesDrawn,
+    noticeApplies,
     activeFeature,
     domain,
     currentTime,
