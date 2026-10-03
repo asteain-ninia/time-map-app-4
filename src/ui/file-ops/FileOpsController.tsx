@@ -946,6 +946,10 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       reportRepairDiscards: (count: number) => {
         statusMessagesRef.current?.notice(REPAIR_STRINGS.discarded(count));
       },
+      // 「そのまま残す」で読み込んだ地物の数も、反映のあとで状態行に出す（2026-10-04）。
+      reportRepairKept: (count: number) => {
+        statusMessagesRef.current?.notice(REPAIR_STRINGS.kept(count));
+      },
       // A3: 未保存警告の「保存して続行」も上書き確認を通す。実体は下の runGuardedSave
       // （ports から作るので参照の輪を ref で切る）。ここへ来る時点で既に破壊的置換の
       // ラッチを握っているので、確認はラッチを取り直さない。

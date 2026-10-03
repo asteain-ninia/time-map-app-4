@@ -18,6 +18,7 @@ import type { Calendar } from '../../domain/time/calendar';
 import type {
   ConsistencyReport,
   DomainProject,
+  Inconsistency,
 } from '../../domain/persistence/index';
 import type { BackupListing } from '../../shell/ipc/contract';
 
@@ -143,6 +144,11 @@ export interface FileCommandPorts {
    * 「中身のある記録を黙って捨てない」）。省略可（知らせる先を持たない試験の宿主）。
    */
   readonly reportRepairDiscards?: (count: number) => void;
+  /**
+   * 修復の板で「そのまま残す」を選んで、子を持つ末端のまま読み込んだ地物の数を知らせる
+   * （2026-10-04、B39 の再検証 3-1）。記録は変えていないので、利用者が後で整えられるよう言う。
+   */
+  readonly reportRepairKept?: (count: number) => void;
 }
 
 /** 反映のときに添える事情（増分 8D の手直し）。 */
@@ -211,6 +217,9 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   if (applied.outcome === REPAIR_OUTCOME.Applied) {
     ports.reflectProject(applied.project, transport.ok ? transport.path : '', { repaired: true });
     if (applied.discardedRecords > 0) ports.reportRepairDiscards?.(applied.discardedRecords);
+    if (applied.kept !== undefined && applied.kept.length > 0) {
+      ports.reportRepairKept?.(keptFeatureCount(applied.kept));
+    }
     return;
   }
   if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
@@ -226,11 +235,20 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
       return;
     }
     const retryRows = buildRepairRows(applied.remaining);
-    const retried = applyChosenRepairs(applied.project, retryRows, retry, ports.calendar);
+    const retried = applyChosenRepairs(
+      applied.project,
+      retryRows,
+      retry,
+      ports.calendar,
+      applied.kept ?? [],
+    );
     if (retried.outcome === REPAIR_OUTCOME.Applied) {
       ports.reflectProject(retried.project, transport.ok ? transport.path : '', { repaired: true });
       const discarded = applied.discardedRecords + retried.discardedRecords;
       if (discarded > 0) ports.reportRepairDiscards?.(discarded);
+      if (retried.kept !== undefined && retried.kept.length > 0) {
+        ports.reportRepairKept?.(keptFeatureCount(retried.kept));
+      }
       return;
     }
     // BUG #5: the SECOND attempt is ALSO Unresolved (or Incomplete, which cannot
@@ -320,4 +338,9 @@ export async function newProjectCommand(
  */
 export function quitGuard(ports: FileCommandPorts): Promise<boolean> {
   return runUnsavedGuard(ports.guard);
+}
+
+/** 「そのまま残す」を選んだ不整合の対象の地物の数（同じ地物が年ごとに何行あっても 1 つ）。 */
+function keptFeatureCount(kept: readonly Inconsistency[]): number {
+  return new Set(kept.map((k) => k.featureIds[0])).size;
 }

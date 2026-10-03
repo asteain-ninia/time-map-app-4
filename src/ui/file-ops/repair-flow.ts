@@ -307,6 +307,8 @@ export type RepairApplyResult =
        * 記録と食い違っていた孤立した歴史の記録）。0 なら何も捨てていない。
        */
       readonly discardedRecords: number;
+      /** 「そのまま残す」を選んで、残したまま読み込む不整合（前の回の分も含む）。無ければ省略可。 */
+      readonly kept?: readonly Inconsistency[];
     }
   | { readonly outcome: typeof REPAIR_OUTCOME.Incomplete }
   | {
@@ -317,7 +319,19 @@ export type RepairApplyResult =
       readonly remaining: ConsistencyReport;
       /** ここまでに捨てた記録の件数（やり直しが通ったときに合わせて知らせる）。 */
       readonly discardedRecords: number;
+      /** ここまでに「そのまま残す」を選んだ不整合（やり直しへ持ち越す）。無ければ省略可。 */
+      readonly kept?: readonly Inconsistency[];
     };
+
+/** 「そのまま残す」を選んだ不整合と同じもの（種類・内訳・対象の地物が同じ。年は問わない）か。 */
+function sameKeptIssue(kept: Inconsistency, inc: Inconsistency): boolean {
+  return (
+    kept.kind === inc.kind &&
+    kept.detail === inc.detail &&
+    kept.featureIds[0] !== undefined &&
+    kept.featureIds[0] === inc.featureIds[0]
+  );
+}
 
 /**
  * Apply the user's chosen repairs to a NEW project instance and re-validate via
@@ -336,12 +350,19 @@ export type RepairApplyResult =
  *
  * The caller reflects the returned project into the domain ONLY on `Applied`
  * (spec §C: 修復後データが妥当である結果を受けてからドメインへ反映する).
+ *
+ * **「そのまま残す」を選んだ行は、残ったままでよい**（2026-10-04、B39 の再検証 3-1）。
+ * 子を持つ末端の行で `KeepLeafWithChildren` を選ぶと、その地物の同じ種類の不整合は最後の
+ * 検査に残っていても受け入れる（ほかの行が全部解ければ `Applied`）。前の回で残すと決めた
+ * 行は `previouslyKept` で渡す（やり直しの板で聞き直さない）。残した行は `kept` で返し、
+ * 呼び手が読み込みのあとに件数を知らせる。
  */
 export function applyChosenRepairs(
   project: DomainProject,
   rows: readonly RepairRow[],
   choices: RepairChoices,
   calendar: Calendar,
+  previouslyKept: readonly Inconsistency[] = [],
 ): RepairApplyResult {
   if (!allChoicesMade(rows, choices)) {
     return { outcome: REPAIR_OUTCOME.Incomplete };
@@ -349,25 +370,34 @@ export function applyChosenRepairs(
 
   let current = project;
   let discardedRecords = 0;
+  const kept: Inconsistency[] = [...previouslyKept];
   for (const row of rows) {
     const optionId = choices.get(row.index);
     // allChoicesMade guarantees presence; the guard keeps the type total.
     if (optionId === undefined) return { outcome: REPAIR_OUTCOME.Incomplete };
+    if (optionId === REPAIR_OPTION.KeepLeafWithChildren) kept.push(row.inconsistency);
     const applied = applyRepairWithReport(current, row.inconsistency, optionId, calendar);
     current = applied.project;
     discardedRecords += applied.discardedRecords;
   }
-  const lastRemaining: ConsistencyReport = checkConsistency(current, calendar);
+  const checked: ConsistencyReport = checkConsistency(current, calendar);
+  const stillOpen = checked.inconsistencies.filter((inc) => !kept.some((k) => sameKeptIssue(k, inc)));
+  const lastRemaining: ConsistencyReport =
+    stillOpen.length === checked.inconsistencies.length
+      ? checked
+      : { ok: stillOpen.length === 0, inconsistencies: stillOpen };
 
   // The project is acceptable ONLY if the FINAL re-check is fully consistent
-  // (教訓 5.18: emptiness decided by the report's flag/length, not a short-circuit).
+  // (教訓 5.18: emptiness decided by the report's flag/length, not a short-circuit) —
+  // 「そのまま残す」を選んだ行の分は除いて数える。
   if (lastRemaining.ok && lastRemaining.inconsistencies.length === 0) {
-    return { outcome: REPAIR_OUTCOME.Applied, project: current, discardedRecords };
+    return { outcome: REPAIR_OUTCOME.Applied, project: current, discardedRecords, kept };
   }
   return {
     outcome: REPAIR_OUTCOME.Unresolved,
     project: current,
     remaining: lastRemaining,
     discardedRecords,
+    kept,
   };
 }
