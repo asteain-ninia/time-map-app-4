@@ -799,10 +799,16 @@ describe('保存とバックアップ（増分 8D）', () => {
     expect(screen.getByTestId('settings-backup-generation-count')).not.toHaveTextContent(
       BACKUP_SETTINGS_STRINGS.generationNone,
     );
-    // 下げても数は出せないが、消えることは先に言う（確認は挟まない）。
+    // 下げても数は出せないが、消えることは先に言う。再手直し（司令塔の決定 2-3）: 数が
+    // 分からなくても **必ず確認を挟む**（ほかのファイルの世代は次に保存したときに消える）。
     fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '3' } });
     expect(screen.getByTestId('settings-backup-shrink-generic')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-shrink-confirm')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(3),
+    );
+    expect(port.writes).toEqual([]);
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-yes'));
     await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 3 }]));
   });
 
@@ -855,7 +861,7 @@ describe('保存とバックアップ（増分 8D）', () => {
     expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 5 }]);
   });
 
-  it('下げても消える世代が無い（いまの数が少ない）なら確認を挟まない', async () => {
+  it('このファイルでは消える世代が無くても、下げたら確認を挟む（ほかのファイルの分。司令塔の決定 2-3）', async () => {
     const port = fakePort({}, { basis: 'file', sourceName: 'w.gimoza', count: 2 });
     await openBackupTab(port);
     await waitFor(() =>
@@ -863,8 +869,23 @@ describe('保存とバックアップ（増分 8D）', () => {
     );
     fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '5' } });
     expect(screen.queryByTestId('settings-backup-shrink-preview')).toBeNull();
+    expect(screen.getByTestId('settings-backup-shrink-generic')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    expect(await screen.findByTestId('settings-backup-shrink-confirm')).toHaveTextContent(
+      BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(5),
+    );
+    expect(port.writes).toEqual([]);
+    fireEvent.click(screen.getByTestId('settings-backup-shrink-yes'));
     await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 5 }]));
+  });
+
+  it('上げたときは確認を挟まない', async () => {
+    const port = fakePort({}, { basis: 'none' });
+    await openBackupTab(port);
+    fireEvent.change(screen.getByTestId('settings-backup-generations'), { target: { value: '30' } });
+    expect(screen.queryByTestId('settings-backup-shrink-generic')).toBeNull();
+    fireEvent.click(screen.getByTestId('settings-backup-apply'));
+    await waitFor(() => expect(port.writes).toEqual([{ autoSaveIntervalMinutes: 5, backupGenerations: 30 }]));
     expect(screen.queryByTestId('settings-backup-shrink-confirm')).toBeNull();
   });
 

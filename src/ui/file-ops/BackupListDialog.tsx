@@ -178,6 +178,19 @@ export function BackupListDialog(props: BackupListDialogProps): JSX.Element {
             </>
           )}
           <div className="backup-dialog__actions">
+            {/* 増分 8D の再手直し（司令塔の決定 2-4）: 元のファイルを選んだあとも選び直せる。
+                選び間違えると、新規にするか別のファイルを開き終えるまで抜けられなかった。 */}
+            {listing.basis === 'file' && onPickSource !== undefined && (
+              <button
+                type="button"
+                className="backup-dialog__pick-other"
+                data-testid="backup-pick-other"
+                disabled={picking === true}
+                onClick={onPickSource}
+              >
+                {BACKUP_LIST_STRINGS.pickOther}
+              </button>
+            )}
             <button
               type="button"
               className="backup-dialog__cancel"

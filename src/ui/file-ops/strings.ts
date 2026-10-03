@@ -121,6 +121,8 @@ export const BACKUP_LIST_STRINGS = {
   noBasis: '開いているファイルがありません。元のファイルを選ぶと、その世代を一覧します。',
   /** 元のファイルを主プロセスのダイアログで選ばせるボタン。 */
   pickSource: '元のファイルを選ぶ…',
+  /** 一覧が出ているときに、別のファイルの世代へ選び直す（増分 8D の再手直し）。 */
+  pickOther: '別のファイルを選ぶ…',
   columnSavedAt: '保存した日時',
   columnSize: '大きさ',
   columnFeatures: '地物数',

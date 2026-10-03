@@ -150,6 +150,8 @@
 .backup-dialog__actions {
   display: flex;
   justify-content: flex-end;
+  /* 増分 8D の再手直し: ［別のファイルを選ぶ…］を［やめる］の左に並べる。 */
+  gap: 8px;
   margin-top: 8px;
 }
 

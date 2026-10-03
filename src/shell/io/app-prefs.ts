@@ -12,8 +12,11 @@
 // 物理 fs は {@link AppPrefsFs} として注入分離し、併合と解釈は純粋関数として単体テスト
 // できるようにする（教訓 5.41）。
 
-import { mkdir as fsMkdir, readFile as fsReadFile, writeFile as fsWriteFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir as fsMkdir, readFile as fsReadFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+
+import { atomicWrite, nodeFsOps, type FsOps } from './atomic';
 
 import {
   AUTO_SAVE_INTERVAL_MINUTES_RANGE,
@@ -30,8 +33,16 @@ export const APP_PREFS_FILE = 'app-prefs.json';
 export interface AppPrefsFs {
   /** ファイルを読む。無ければ拒否してよい（呼ぶ側が既定へ倒す）。 */
   readFile: (path: string) => Promise<string>;
-  /** ファイルを書く（原子性までは要らない ―― 失っても既定に戻るだけ）。 */
-  writeFile: (path: string, text: string) => Promise<void>;
+  /**
+   * 書くときの口（一時ファイル → fsync → 名前の付け替え。プロジェクトの保存と同じ `atomicWrite`）。
+   * 増分 8D の再手直し: 以前は `fs.writeFile` で直接書いていた。`writeFile` は開いた時点で中身を
+   * 空にするので、途中で失敗する（容量切れ・電源断・強制終了）とファイルが壊れ、次の起動で
+   * 世代数が既定の 10 に戻り、次の保存で古い世代が確認なしにまとめて消えた。名前の付け替えなら、
+   * 途中で失敗しても前のファイルがそのまま残る。
+   */
+  atomic: FsOps;
+  /** 一時ファイルの名前を他と重ねないための印。 */
+  token: () => string;
   /** 置き場を作る。 */
   mkdir: (dir: string) => Promise<void>;
 }
@@ -39,7 +50,8 @@ export interface AppPrefsFs {
 /** 本番の束ね。 */
 export const nodeAppPrefsFs: AppPrefsFs = {
   readFile: (path) => fsReadFile(path, 'utf8'),
-  writeFile: (path, text) => fsWriteFile(path, text, 'utf8'),
+  atomic: nodeFsOps,
+  token: () => randomUUID(),
   mkdir: async (dir) => {
     await fsMkdir(dir, { recursive: true });
   },
@@ -165,7 +177,14 @@ export async function writeAppPrefs(
   const path = appPrefsPath(env.userDataDir);
   try {
     await env.fs.mkdir(dirname(path));
-    await env.fs.writeFile(path, `${JSON.stringify(next, null, 2)}\n`);
+    // 一時ファイルへ書いて fsync してから名前を付け替える（途中で失敗しても前のファイルが残る）。
+    const written = await atomicWrite(
+      env.fs.atomic,
+      path,
+      new TextEncoder().encode(`${JSON.stringify(next, null, 2)}\n`),
+      env.fs.token(),
+    );
+    if (!written.ok) throw new Error(written.message);
   } catch (error) {
     return {
       ok: false,

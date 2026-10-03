@@ -120,6 +120,23 @@ describe('BackupListDialog', () => {
     expect(onPickSource).toHaveBeenCalledTimes(1);
   });
 
+  it('一覧が出ていても［別のファイルを選ぶ…］で選び直せる（再手直し・司令塔の決定 2-4）', () => {
+    const onPickSource = vi.fn();
+    const view = render(
+      <BackupListDialog listing={listingOf([])} onChoose={() => undefined} onPickSource={onPickSource} />,
+    );
+    // 選び間違えて世代が 0 個のファイルを選んだときも、行き止まりにしない。
+    fireEvent.click(screen.getByTestId('backup-pick-other'));
+    expect(onPickSource).toHaveBeenCalledTimes(1);
+    view.rerender(
+      <BackupListDialog listing={listingOf(ENTRIES)} onChoose={() => undefined} onPickSource={onPickSource} picking />,
+    );
+    expect(screen.getByTestId('backup-pick-other')).toBeDisabled();
+    // 口を渡さない宿主では出さない。
+    view.rerender(<BackupListDialog listing={listingOf(ENTRIES)} onChoose={() => undefined} />);
+    expect(screen.queryByTestId('backup-pick-other')).toBeNull();
+  });
+
   it('元のファイルを選んでいる間はボタンを止める', () => {
     render(
       <BackupListDialog

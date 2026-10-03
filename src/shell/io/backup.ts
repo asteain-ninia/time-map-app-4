@@ -124,7 +124,12 @@ export function parseBackupFileName(
   return { baseName, savedAtMs };
 }
 
-const BACKUP_NAME_PATTERN = /^(.+)\.bak\.(\d+)-(\d+)$/;
+/**
+ * 世代の名前の形。時刻と連番は **アプリが書く桁数**（{@link backupName} の 16 桁以上・4 桁以上）の
+ * ときだけ世代と見なす（再検証 1-2: `計画.bak.2024-10` のような利用者の付けた名前まで世代と
+ * 見なし、「1970 年の世代から復旧」と出ていた）。
+ */
+const BACKUP_NAME_PATTERN = /^(.+)\.bak\.(\d{16,})-(\d{4,})$/;
 
 /**
  * Pick the next within-millisecond sequence for `timestampMs`, given the

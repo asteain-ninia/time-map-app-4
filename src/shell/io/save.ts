@@ -73,11 +73,11 @@ export async function saveTmap(
   }
 
   const { dir, name } = env.splitPath(targetPath);
+  // 守る世代は **名前だけ** で照合する（再検証 1-1）。フォルダの文字列で比べると、区切りの書き方
+  // （`E:/d` と `E:\d`）が違うだけで外れていた。間引くのはもともと `name` の世代だけなので、
+  // 同じ名前の別フォルダの世代を守りすぎても、上限を一時的に 1 つ超えるだけで済む。
   const keep = new Set<string>();
-  for (const path of protectedPaths) {
-    const split = env.splitPath(path);
-    if (split.dir === dir) keep.add(split.name);
-  }
+  for (const path of protectedPaths) keep.add(env.splitPath(path).name);
   const backup = await runBackup(
     env.backupFs,
     env.joinPath,

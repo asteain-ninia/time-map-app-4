@@ -311,7 +311,16 @@ describe('世代の名前の形（増分 8D の手直し）', () => {
   });
 
   it('世代の形でない名前は undefined', () => {
-    for (const name of [BASE, `${BASE}.bak.`, `${BASE}.bak.abc-0000`, `${BASE}.bak.12`, '.bak.1-0']) {
+    // アプリが書く桁数（時刻 16 桁・連番 4 桁）でないものも世代と見なさない（再検証 1-2）。
+    for (const name of [
+      BASE,
+      `${BASE}.bak.`,
+      `${BASE}.bak.abc-0000`,
+      `${BASE}.bak.12`,
+      '.bak.1-0',
+      '計画.bak.2024-10',
+      `${BASE}.bak.1-1`,
+    ]) {
       expect(parseBackupFileName(name)).toBeUndefined();
     }
   });

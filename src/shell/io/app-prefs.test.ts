@@ -25,11 +25,20 @@ import {
   type AppPrefsFs,
 } from './app-prefs';
 
-/** 記憶の中の fs（注入して物理ディスクに触らない）。 */
-function memoryFs(initial: Record<string, string> = {}): AppPrefsFs & {
+/**
+ * 記憶の中の fs（注入して物理ディスクに触らない）。書き込みは本物と同じ形（一時ファイルを
+ * 開く → 書く → fsync → 閉じる → 名前の付け替え）で、`failWriteAfter` を渡すと、一時ファイルへ
+ * その文字数だけ書いたところで失敗する（容量切れ・電源断の再現）。
+ */
+function memoryFs(
+  initial: Record<string, string> = {},
+  failWriteAfter?: number,
+): AppPrefsFs & {
   readonly files: Map<string, string>;
 } {
   const files = new Map(Object.entries(initial));
+  const decoder = new TextDecoder();
+  let seq = 0;
   return {
     files,
     readFile: async (path) => {
@@ -37,9 +46,32 @@ function memoryFs(initial: Record<string, string> = {}): AppPrefsFs & {
       if (text === undefined) throw new Error(`ENOENT: ${path}`);
       return text;
     },
-    writeFile: async (path, text) => {
-      files.set(path, text);
+    atomic: {
+      open: async (path) => {
+        files.set(path, ''); // 'w' で開く ＝ 中身を空にする（本物の writeFile と同じ）
+        return path;
+      },
+      write: async (handle, data) => {
+        const text = decoder.decode(data);
+        if (failWriteAfter !== undefined) {
+          files.set(handle as string, text.slice(0, failWriteAfter));
+          throw new Error('ENOSPC: no space left on device');
+        }
+        files.set(handle as string, text);
+      },
+      fsync: async () => {},
+      close: async () => {},
+      rename: async (from, to) => {
+        const text = files.get(from);
+        if (text === undefined) throw new Error(`ENOENT: ${from}`);
+        files.set(to, text);
+        files.delete(from);
+      },
+      unlink: async (path) => {
+        files.delete(path);
+      },
     },
+    token: () => `t${String(++seq)}`,
     mkdir: async () => {},
   };
 }
@@ -148,8 +180,11 @@ describe('読み書き（失敗を例外にしない）', () => {
     const env: AppPrefsEnv = {
       fs: {
         ...fs,
-        writeFile: async () => {
-          throw new Error('EACCES');
+        atomic: {
+          ...fs.atomic,
+          open: async () => {
+            throw new Error('EACCES');
+          },
         },
       },
       userDataDir: DIR,
@@ -161,6 +196,27 @@ describe('読み書き（失敗を例外にしない）', () => {
     if (!result.ok) expect(result.message).toContain('EACCES');
     // 覚え書きは残らない。
     await expect(readAppPrefs(env)).resolves.toEqual(DEFAULT_APP_PREFS);
+  });
+
+  it('書く途中で失敗しても前の設定ファイルは壊れない（一時ファイル → 名前の付け替え。増分 8D の再手直し）', async () => {
+    // 世代数 50 を書けている状態。
+    const ok = memoryFs();
+    const env: AppPrefsEnv = { fs: ok, userDataDir: DIR };
+    expect((await writeAppPrefs(env, { backupGenerations: 50 })).ok).toBe(true);
+    const before = ok.files.get(PATH);
+
+    // 次の書き込み（間隔だけ）が途中で失敗する（数文字だけ書いて ENOSPC）。
+    const failing: AppPrefsEnv = { fs: { ...memoryFs(Object.fromEntries(ok.files), 6) }, userDataDir: DIR };
+    const result = await writeAppPrefs(failing, { autoSaveIntervalMinutes: 30 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain('ENOSPC');
+    // 設定ファイルは書く前のまま（「値は変えていません」が事実）。読み直しても世代数は 50 で、
+    // 既定の 10 へは戻らない（戻ると次の保存で古い世代が確認なしに消える）。
+    const fsAfter = failing.fs as ReturnType<typeof memoryFs>;
+    expect(fsAfter.files.get(PATH)).toBe(before);
+    await expect(readAppPrefs(failing)).resolves.toMatchObject({ backupGenerations: 50 });
+    // 書きかけの一時ファイルも残さない。
+    expect([...fsAfter.files.keys()]).toEqual([PATH]);
   });
 
   it('読めない（権限が無い）ときも既定へ倒す', async () => {

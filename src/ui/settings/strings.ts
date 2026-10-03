@@ -115,12 +115,18 @@ export const BACKUP_SETTINGS_STRINGS = {
   /** 世代数を下げると次の保存で消える数（増分 8D の手直し。欄の下に先に出す）。 */
   shrinkPreview: (sourceName: string, deleteCount: number, keep: number): string =>
     `この数にすると、次に保存したときに ${sourceName} の古い世代が ${String(deleteCount)} 個消えます（残すのは新しい ${String(keep)} 個です）。`,
-  /** 基準が無いときに世代数を下げた（数は出せないが、消えることは言う）。 */
+  /** 世代数を下げた（いま開いているファイルで数が出せないとき）。 */
   shrinkGeneric:
     '残す数を減らすと、ファイルを次に保存したときに、その数を超える古い世代から消えます。',
-  /** ［適用］／［保存］で出す確認。 */
+  /** ［適用］／［保存］で出す確認（いま開いているファイルで消える数が分かるとき）。 */
   shrinkConfirm: (sourceName: string, deleteCount: number): string =>
-    `次の保存で ${sourceName} の古い世代が ${String(deleteCount)} 個消えます。この数にしますか？`,
+    `次の保存で ${sourceName} の古い世代が ${String(deleteCount)} 個消えます（ほかのファイルも、次に保存したときに新しい数を超える分が消えます）。この数にしますか？`,
+  /**
+   * ［適用］／［保存］で出す確認（数が分からないとき。増分 8D の再手直し・司令塔の決定 2-3:
+   * 開いているファイルが無くても、下げたら必ず確かめる）。
+   */
+  shrinkConfirmGeneric: (keep: number): string =>
+    `次に保存したファイルの古い世代が、新しい数（${String(keep)} 個）を超える分だけ消えます。この数にしますか？`,
   shrinkConfirmYes: 'この数にする',
   shrinkConfirmNo: 'やめる（数を戻す）',
   /** 設定を書けなかった（増分 8D の手直し。入力は残す）。 */

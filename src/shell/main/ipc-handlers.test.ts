@@ -1336,6 +1336,25 @@ describe('増分 8D: 世代の一覧と、一覧の id でしか開けない口'
     await expect(listed(deps, { pickSource: true })).resolves.toHaveLength(2);
   });
 
+  it('選び間違えても、もう一度選び直せばそのファイルの世代になる（再手直し・司令塔の決定 2-4）', async () => {
+    const { deps } = makeDiskDeps();
+    await saveTimes(deps, 2);
+    deps.currentPath.set(undefined);
+    const open = deps.dialog.showOpenDialog as ReturnType<typeof vi.fn>;
+    open.mockResolvedValueOnce('/d/other.gimoza');
+    await expect(handleListBackups(deps, { pickSource: true })).resolves.toEqual({
+      basis: 'file',
+      sourceName: 'other.gimoza',
+      entries: [],
+    });
+    // 板を閉じて開き直しても、選んだファイルが基準のまま（ここで選び直しの入口が要る）。
+    await expect(handleListBackups(deps)).resolves.toMatchObject({ sourceName: 'other.gimoza' });
+    open.mockResolvedValueOnce(SOURCE);
+    await expect(listed(deps, { pickSource: true })).resolves.toHaveLength(2);
+    await expect(handleListBackups(deps)).resolves.toMatchObject({ sourceName: 'w.gimoza' });
+    expect(deps.currentPath.get()).toBeUndefined();
+  });
+
   it('元のファイルを選ぶのをやめたら basis: none のまま。頼み方の形が違えば選ばせない', async () => {
     const { deps } = makeDiskDeps();
     (deps.dialog.showOpenDialog as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);

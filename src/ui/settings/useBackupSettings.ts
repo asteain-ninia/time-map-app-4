@@ -63,6 +63,19 @@ export interface GenerationShrink {
   readonly keep: number;
 }
 
+/**
+ * 世代数を下げたときの確認（増分 8D の再手直し・司令塔の決定 2-3）。**下げたら必ず出す** ――
+ * 開いているファイルが無くて数が分からなくても、ほかのファイルの世代は次に保存したときに
+ * 新しい数を超える分だけ消えるので、確認なしに消える経路を残さない。いま開いているファイルで
+ * 消える数が分かれば `known` に入れる（数を添えて言う）。
+ */
+export interface GenerationShrinkConfirm {
+  /** 残す世代の数（下書きの値）。 */
+  readonly keep: number;
+  /** いま開いているファイルで次の保存に消える数（分からない・0 なら null）。 */
+  readonly known: GenerationShrink | null;
+}
+
 /** ［適用］の結末。 */
 export type BackupApplyOutcome =
   /** 書けた。 */
@@ -102,8 +115,8 @@ export interface UseBackupSettings {
    * null）。欄の下に先に出す。
    */
   readonly shrinkPreview: GenerationShrink | null;
-  /** 確認を待っている「世代が消える」書き込み（［適用］／［保存］で出る）。 */
-  readonly pendingShrink: GenerationShrink | null;
+  /** 確認を待っている「世代が消える」書き込み（［適用］／［保存］で、下げたら必ず出る）。 */
+  readonly pendingShrink: GenerationShrinkConfirm | null;
   /**
    * 検証して書く。世代数を下げて世代が消えるなら、`confirmShrink` が無い限り書かずに確認を
    * 出す。変わっていなければ何もしない（教訓 5.24 の no-op ガード）。
@@ -161,7 +174,7 @@ export function useBackupSettings(port: BackupSettingsPort | undefined): UseBack
   const [appliedOnce, setAppliedOnce] = useState(false);
   const [writeError, setWriteError] = useState<string | null>(null);
   const [writing, setWriting] = useState(false);
-  const [pendingShrink, setPendingShrink] = useState<GenerationShrink | null>(null);
+  const [pendingShrink, setPendingShrink] = useState<GenerationShrinkConfirm | null>(null);
   const [generations, setGenerations] = useState<GenerationCount>({ kind: 'loading' });
   // 閉じたあとに届いた応答で state を書かない（警告と、閉じた板の再描画を避ける）。
   const aliveRef = useRef(true);
@@ -259,10 +272,11 @@ export function useBackupSettings(port: BackupSettingsPort | undefined): UseBack
         setPendingShrink(null);
         return 'unchanged';
       }
-      // 世代数を下げて、次の保存で世代が消えるなら、確かめてから書く（増分 8D の手直し）。
-      const shrink = shrinkFor(result.value.backupGenerations);
-      if (shrink !== null && options?.confirmShrink !== true) {
-        setPendingShrink(shrink);
+      // 世代数を下げたら、確かめてから書く（増分 8D の手直し）。再手直し（司令塔の決定 2-3）:
+      // 開いているファイルが無くて数が分からなくても **いつも** 確かめる。
+      const nextGenerations = result.value.backupGenerations;
+      if (nextGenerations < saved.backupGenerations && options?.confirmShrink !== true) {
+        setPendingShrink({ keep: nextGenerations, known: shrinkFor(nextGenerations) });
         setAppliedOnce(false);
         return 'needs-confirm';
       }

@@ -741,12 +741,13 @@ function BackupTab(props: {
   // 間に打った値を消さないように）。
   const loading = backup.saved === null;
   const locked = loading || backup.writing;
-  // 世代数を下げたのに、どのファイルの世代を数えればよいか分からない（数は出せないが、
-  // 消えることは先に言う）。
+  // 世代数を下げたのに、いま開いているファイルで消える数を出せない（どのファイルか分からない・
+  // このファイルでは消えない）。数は出せないが、ほかのファイルで消えることは先に言う。
   const draftGenerations = Number.parseInt(backup.generationsDraft.trim(), 10);
   const loweredWithoutCount =
     backup.saved !== null &&
-    backup.generations.kind !== 'ready' &&
+    backup.shrinkPreview === null &&
+    backup.pendingShrink === null &&
     Number.isInteger(draftGenerations) &&
     draftGenerations < backup.saved.backupGenerations;
   const errorFor = (field: 'autoSaveIntervalMinutes' | 'backupGenerations'): string | undefined =>
@@ -827,10 +828,12 @@ function BackupTab(props: {
       {backup.pendingShrink !== null && (
         <div className="settings-backup__confirm" role="alert" data-testid="settings-backup-shrink-confirm">
           <p>
-            {BACKUP_SETTINGS_STRINGS.shrinkConfirm(
-              backup.pendingShrink.sourceName,
-              backup.pendingShrink.deleteCount,
-            )}
+            {backup.pendingShrink.known === null
+              ? BACKUP_SETTINGS_STRINGS.shrinkConfirmGeneric(backup.pendingShrink.keep)
+              : BACKUP_SETTINGS_STRINGS.shrinkConfirm(
+                  backup.pendingShrink.known.sourceName,
+                  backup.pendingShrink.known.deleteCount,
+                )}
           </p>
           <button
             type="button"
