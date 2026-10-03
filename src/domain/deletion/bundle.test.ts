@@ -148,7 +148,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
 
     // 読み込みの整合検査も保存前検査も通る。
     expect(checkConsistency(after, calendar).inconsistencies).toEqual([]);
-    expect(checkBeforeSave(after)).toEqual([]);
+    expect(checkBeforeSave(after, calendar)).toEqual([]);
   });
 
   it('連邦化で作ったまとめ役でも同じ（元のまとめ役を消しても連邦は残る）', () => {
@@ -165,7 +165,7 @@ describe('削除は「その時刻の全系列の束」で掃除する', () => {
     expect(parentAt(after.histories, fid('a'), MOVE_YEAR)).toBe(federationId);
     expect(parentAt(after.histories, fid('b'), MOVE_YEAR)).toBe(federationId);
     expect(checkConsistency(after, calendar).inconsistencies).toEqual([]);
-    expect(checkBeforeSave(after)).toEqual([]);
+    expect(checkBeforeSave(after, calendar)).toEqual([]);
   });
 
   it('関係の無い地物を消しても、子が自分の系列を持つまとめ役は消えない', () => {
