@@ -28,7 +28,6 @@ import {
   createAnchorEntry,
   normalizeSeries,
   resolveAt,
-  setEnd,
   withUniqueAnchorId,
   type AnchorEntry,
   type AnchorSeries,
@@ -42,7 +41,7 @@ import {
   withParentId,
   type Feature,
 } from '../feature';
-import type { FeatureId } from '../ids';
+import type { AnchorId, FeatureId } from '../ids';
 import type { FeatureHistory } from '../persistence/serialize';
 import type { Calendar } from '../time/calendar';
 import { compare } from '../time/normalized';
@@ -390,6 +389,277 @@ export function syncAggregateChildIds(
   return current;
 }
 
+// --- 記録の続き（途切れ）と、区間を指定して居なくする --------------------------------
+//
+// **途切れの定義**（増分 7 の手直し 3 回目。相談役との合議の締め A）: 錨 i と i+1 の間に途切れがある
+// ⇔ 錨 i が明示の終わり E を持ち、かつ i+1 の始まりが E より後。終わりの無い錨のあとに別の錨が
+// 続くのは「途切れずに続いている」。帳簿のために割られた錨（B76 の終わりの引き継ぎ・子の並びを
+// 揃える直しで割られたもの）はこの定義で「続いている」側に入り、利用者がわざと作った「復活」は
+// 途切れの後にしか作れない。
+
+/** 錨 i と i+1 の間に途切れがあるか（締め A）。 */
+export function hasGapAfter(
+  entries: readonly AnchorEntry[],
+  i: number,
+  calendar: Calendar,
+): boolean {
+  const entry = entries[i];
+  const next = entries[i + 1];
+  if (entry === undefined || next === undefined) return false;
+  return entry.end !== null && compare(next.start, entry.end, calendar) > 0;
+}
+
+/** 錨 i を含む、途切れずに続いている記録の範囲 [first, last]（錨の番号）。 */
+export function continuousRunOf(
+  entries: readonly AnchorEntry[],
+  i: number,
+  calendar: Calendar,
+): { readonly first: number; readonly last: number } {
+  let first = i;
+  while (first > 0 && !hasGapAfter(entries, first - 1, calendar)) first -= 1;
+  let last = i;
+  while (last + 1 < entries.length && !hasGapAfter(entries, last, calendar)) last += 1;
+  return { first, last };
+}
+
+/**
+ * 系列の `cuts` の区間で、その地物を居なくする（錨を区間の境目で割り、区間の中の部分は落とす）。
+ * 残る部分の最初の片は元の錨の id を保ち、2 つ目からの片は写しに一意な id を振る。残る片の
+ * 終わりが元の効く終わりと違えば、明示の終わりを打つ（＝そこに途切れができる）。純粋。
+ */
+export function cutSeries(
+  series: AnchorSeries,
+  ownerId: FeatureId,
+  cuts: readonly TimeInterval[],
+  calendar: Calendar,
+): AnchorSeries {
+  if (cuts.length === 0) return series;
+  const out: AnchorEntry[] = [];
+  series.entries.forEach((entry, i) => {
+    const end = effectiveEnd(series.entries, i, calendar);
+    const pieces = subtractIntervals([{ start: entry.start, end }], cuts, calendar);
+    pieces.forEach((piece, k) => {
+      const sameEnd =
+        piece.end === null ? end === null : end !== null && compare(piece.end, end, calendar) === 0;
+      // 終わりの無い錨は次の錨の始まりで区切られている。次の錨が切り取られて居なくなるなら、
+      // その始まりを明示の終わりとして打つ（打たないと、残る錨が先まで続いてしまう）。
+      const next = series.entries[i + 1];
+      const nextSurvives = next !== undefined && !insideAny(next.start, cuts, calendar);
+      const keepOwnEnd = sameEnd && (entry.end !== null || next === undefined || nextSurvives);
+      const pieceEnd = keepOwnEnd ? entry.end : piece.end;
+      const anchor =
+        k === 0
+          ? entry.anchor
+          : withUniqueAnchorId(
+              [...series.entries, ...out],
+              createAnchor(deriveAnchorId(ownerId, piece.start), entry.anchor.snapshot),
+            );
+      out.push(createAnchorEntry(anchor, piece.start, pieceEnd));
+    });
+  });
+  return normalizeSeries(out, calendar);
+}
+
+/**
+ * **「この年に終わったことにする」**（増分 7 の手直し 3 回目 / 再検証 #2）: `at` に効いている錨から
+ * 先の、**途切れずに続いている記録をまとめて**終わらせる。再び現れるのは、途切れ（その地物が
+ * 居ない年）を挟んだ後に始まる記録だけ。`anchorId` はその年に効いている錨（呼び手の確認用）。
+ * 続きの始まりで終わらせる（何も残らない）のは断る（`endNotAfterStart`）。
+ */
+export function endRunAt(
+  series: AnchorSeries,
+  ownerId: FeatureId,
+  anchorId: AnchorId,
+  at: TimePoint,
+  calendar: Calendar,
+): SeriesResult {
+  const index = series.entries.findIndex((e) => e.anchor.id === anchorId);
+  if (index < 0) return { ok: false, reason: { code: 'anchorNotFound', id: anchorId } };
+  const { first, last } = continuousRunOf(series.entries, index, calendar);
+  const runStart = series.entries[first]?.start;
+  if (runStart === undefined || compare(at, runStart, calendar) <= 0) {
+    return { ok: false, reason: { code: 'endNotAfterStart' } };
+  }
+  const runEnd = effectiveEnd(series.entries, last, calendar);
+  if (runEnd !== null && compare(at, runEnd, calendar) >= 0) {
+    return { ok: false, reason: { code: 'endBeyondNextEnd' } };
+  }
+  return { ok: true, series: cutSeries(series, ownerId, [{ start: at, end: runEnd }], calendar) };
+}
+
+function mergeIntervals(intervals: readonly TimeInterval[], calendar: Calendar): readonly TimeInterval[] {
+  const sorted = [...intervals].sort((a, b) => compare(a.start, b.start, calendar));
+  const out: { start: TimePoint; end: TimePoint | null }[] = [];
+  for (const iv of sorted) {
+    const last = out[out.length - 1];
+    if (last !== undefined && !before(last.end, iv.start, calendar)) {
+      if (iv.end === null || before(last.end, iv.end, calendar)) last.end = iv.end;
+      continue;
+    }
+    out.push({ start: iv.start, end: iv.end });
+  }
+  return out;
+}
+
+/** 全部の系列のどこかで `featureId` が居る区間（自分の系列でも、居候先の錨でも）。 */
+export function featurePresence(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  calendar: Calendar,
+): readonly TimeInterval[] {
+  const intervals: TimeInterval[] = [];
+  for (const h of histories) {
+    h.series.entries.forEach((entry, i) => {
+      if (!entry.anchor.snapshot.features.some((f) => f.id === featureId)) return;
+      const end = effectiveEnd(h.series.entries, i, calendar);
+      if (end !== null && compare(entry.start, end, calendar) >= 0) return;
+      intervals.push({ start: entry.start, end });
+    });
+  }
+  return mergeIntervals(intervals, calendar);
+}
+
+/**
+ * 地物 `featureId`（自分の系列を持つ）が、**その年には居ない親**を指している区間を、親ごとに返す
+ * （増分 7 の手直し 3 回目 1-1: 子の開始年を親より前へ動かす、など）。
+ */
+export function absentParentIntervals(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  calendar: Calendar,
+): ReadonlyMap<FeatureId, readonly TimeInterval[]> {
+  const own = histories.find((h) => h.featureId === featureId);
+  const out = new Map<FeatureId, TimeInterval[]>();
+  if (own === undefined) return out;
+  const presenceCache = new Map<FeatureId, readonly TimeInterval[]>();
+  own.series.entries.forEach((entry, i) => {
+    const parentId = entry.anchor.snapshot.features.find((f) => f.id === featureId)?.parentId;
+    if (parentId === undefined) return;
+    const end = effectiveEnd(own.series.entries, i, calendar);
+    if (end !== null && compare(entry.start, end, calendar) >= 0) return;
+    let presence = presenceCache.get(parentId);
+    if (presence === undefined) {
+      presence = featurePresence(histories, parentId, calendar);
+      presenceCache.set(parentId, presence);
+    }
+    const missing = subtractIntervals([{ start: entry.start, end }], presence, calendar);
+    if (missing.length === 0) return;
+    const list = out.get(parentId) ?? [];
+    list.push(...missing);
+    out.set(parentId, list);
+  });
+  return out;
+}
+
+interface ChildRun {
+  readonly runEnd: TimePoint | null;
+  readonly segments: readonly { readonly start: TimePoint; readonly count: number }[];
+}
+
+/**
+ * まとめ役 `aggId`（自分の系列を持つ）の、途切れずに続く記録ごとの「子が居るか」の区切り。
+ * 子は、その時刻に居て親が `aggId` である地物（自分の系列でも、居候でも）。
+ */
+function childSegments(
+  histories: readonly FeatureHistory[],
+  aggId: FeatureId,
+  calendar: Calendar,
+): readonly ChildRun[] {
+  const own = histories.find((h) => h.featureId === aggId);
+  if (own === undefined) return [];
+  const isAggregate = own.series.entries.some((e) =>
+    e.anchor.snapshot.features.some((f) => f.id === aggId && f.kind === FEATURE_KIND.Aggregate),
+  );
+  if (!isAggregate) return [];
+  const boundaries: TimePoint[] = [];
+  for (const h of histories) {
+    h.series.entries.forEach((entry, i) => {
+      if (!entry.anchor.snapshot.features.some((f) => f.id !== aggId && f.parentId === aggId)) return;
+      boundaries.push(entry.start);
+      const end = effectiveEnd(h.series.entries, i, calendar);
+      if (end !== null) boundaries.push(end);
+    });
+  }
+  for (const e of own.series.entries) boundaries.push(e.start);
+  boundaries.sort((a, b) => compare(a, b, calendar));
+
+  const runs: ChildRun[] = [];
+  const entries = own.series.entries;
+  let i = 0;
+  while (i < entries.length) {
+    const { first, last } = continuousRunOf(entries, i, calendar);
+    const runStart = entries[first]!.start;
+    const runEnd = effectiveEnd(entries, last, calendar);
+    const times: TimePoint[] = [runStart];
+    for (const t of boundaries) {
+      if (compare(t, runStart, calendar) <= 0 || !before(t, runEnd, calendar)) continue;
+      const lastTime = times[times.length - 1]!;
+      if (compare(lastTime, t, calendar) === 0) continue;
+      times.push(t);
+    }
+    const segments: { start: TimePoint; count: number }[] = [];
+    for (const t of times) {
+      const count = childrenAt(histories, aggId, t, calendar).length;
+      const prev = segments[segments.length - 1];
+      if (prev !== undefined && (prev.count === 0) === (count === 0)) continue;
+      segments.push({ start: t, count });
+    }
+    runs.push({ runEnd, segments });
+    i = last + 1;
+  }
+  return runs;
+}
+
+/**
+ * **後ろ側が空になったまとめ役**（増分 7 の手直し 3 回目 1-1 / 締め C）: 途切れずに続く記録ごとに、
+ * 年 Y の直前に子が 1 件以上居て、Y からその続きの終わりまで子が 0 件なら、[Y, 続きの終わり) を返す。
+ * 最初から子が居ない続き・途中だけ空の続きは返さない（終わらせない）。
+ */
+export function tailEmptyCuts(
+  histories: readonly FeatureHistory[],
+  aggId: FeatureId,
+  calendar: Calendar,
+): readonly TimeInterval[] {
+  const out: TimeInterval[] = [];
+  for (const run of childSegments(histories, aggId, calendar)) {
+    const segs = run.segments;
+    const lastSeg = segs[segs.length - 1];
+    if (lastSeg === undefined || lastSeg.count > 0) continue;
+    if (!segs.some((s) => s.count > 0)) continue; // 最初から子が居ない続きは終わらせない
+    out.push({ start: lastSeg.start, end: run.runEnd });
+  }
+  return out;
+}
+
+/**
+ * まとめ役 `aggId` に子が 1 件も居ない区間（読み込みの修復 1-2 の材料）。**一度も子を持たない
+ * まとめ役**（どの続きにも子が居ない）は空を返す ―― その区間を無くすと地物ごと消えるので、
+ * 区間の修復の対象にしない（締め C）。
+ */
+export function emptyAggregateIntervals(
+  histories: readonly FeatureHistory[],
+  aggId: FeatureId,
+  calendar: Calendar,
+): readonly TimeInterval[] {
+  const runs = childSegments(histories, aggId, calendar);
+  if (!runs.some((r) => r.segments.some((s) => s.count > 0))) return [];
+  const out: TimeInterval[] = [];
+  for (const run of runs) {
+    run.segments.forEach((seg, k) => {
+      if (seg.count > 0) return;
+      const next = run.segments[k + 1];
+      out.push({ start: seg.start, end: next === undefined ? run.runEnd : next.start });
+    });
+  }
+  return out;
+}
+
+/** 終わらせる操作の連鎖で、別のまとめ役がその年から終わったもの（1-1）。 */
+export interface CascadedEnd {
+  readonly featureId: FeatureId;
+  readonly at: TimePoint;
+}
+
 /** {@link editFeatureInterval} の結果。 */
 export type FeatureIntervalEditResult =
   | {
@@ -399,20 +669,30 @@ export type FeatureIntervalEditResult =
       readonly promoted: readonly FeatureId[];
       /** 居なくなる区間（編集の前は居て後は居ない）。空なら何も失われない。 */
       readonly lost: readonly TimeInterval[];
+      /** 後ろ側の子が 0 件になったので、その年から終わったまとめ役（1-1）。 */
+      readonly cascaded: readonly CascadedEnd[];
     }
   /** `reason === null` は「自分の系列が無い」（呼び手が錨の id を添えて断る）。 */
   | { readonly ok: false; readonly reason: RejectReason | null };
 
-/**
- * 地物 `featureId` の存続期間を `op`（U09 の changeStart / setEnd / deleteAnchor のどれか）で
- * 編集し、所属の記録を一緒に動かす（先頭の注記）。自分の系列が無ければ `reason: null`。
- */
-export function editFeatureInterval(
+interface CoreEdit {
+  readonly histories: readonly FeatureHistory[];
+  readonly promoted: readonly FeatureId[];
+  readonly lost: readonly TimeInterval[];
+  /** 子の並びを揃えたまとめ役（後ろ側が空になったかを見る相手）。 */
+  readonly touchedParents: ReadonlySet<FeatureId>;
+}
+
+type CoreResult =
+  | { readonly ok: true; readonly value: CoreEdit }
+  | { readonly ok: false; readonly reason: RejectReason | null };
+
+function coreEdit(
   histories: readonly FeatureHistory[],
   featureId: FeatureId,
   op: (series: AnchorSeries) => SeriesResult,
   calendar: Calendar,
-): FeatureIntervalEditResult {
+): CoreResult {
   const own = histories.find((h) => h.featureId === featureId);
   if (own === undefined) return { ok: false, reason: null };
   const trial = op(own.series);
@@ -423,8 +703,9 @@ export function editFeatureInterval(
     calendar,
   );
 
-  // 居なくなる区間があるなら、F の錨に居候している子・孫を先に自分の系列へ起こす
-  // （錨の id は変わらないので、`op` は起こした後の系列にもそのまま当てられる）。
+  // 居なくなる区間があるなら、F の錨に居候している子・孫を先に自分の系列へ起こす。**全部の
+  // 錨**（終わらせる範囲の後ろの錨にだけ居る子も）の記録を起こしてから錨を切り詰める（締め B）。
+  // 錨の id は変わらないので、`op` は起こした後の系列にもそのまま当てられる。
   let base: readonly FeatureHistory[] = histories;
   if (lost.length > 0) {
     const residents = residentFeatureIds(base, featureId);
@@ -440,9 +721,16 @@ export function editFeatureInterval(
   const promoted = directChildrenWithin(base, featureId, lost, calendar);
   base = clearParentWithin(base, promoted, featureId, lost, calendar);
 
+  // **編集した地物自身が、その年には居ない親を指す形にしない**（1-1。子の開始年を親より前へ
+  // 動かす、など）。その区間だけ親を外す（区間の外の所属は触らない）。
+  const parents = new Set<FeatureId>();
+  for (const [parentId, intervals] of absentParentIntervals(base, featureId, calendar)) {
+    base = clearParentWithin(base, [featureId], parentId, intervals, calendar);
+    parents.add(parentId);
+  }
+
   // F の存在が変わったので、F の親（どの年でも）と、F を子の並びに載せているまとめ役の
   // 子の並びを、時刻ごとの実際の所属に揃える。
-  const parents = new Set<FeatureId>();
   for (const series of [own.series, run.series]) {
     for (const entry of series.entries) {
       const self = entry.anchor.snapshot.features.find((f) => f.id === featureId);
@@ -459,8 +747,58 @@ export function editFeatureInterval(
     }
   }
   if (parents.size > 0) base = syncAggregateChildIds(base, parents, calendar);
+  return { ok: true, value: { histories: base, promoted, lost, touchedParents: parents } };
+}
 
-  return { ok: true, histories: base, promoted, lost };
+/**
+ * 地物 `featureId` の存続期間を `op`（U09 の changeStart / setEnd / deleteAnchor、または
+ * {@link endRunAt}）で編集し、所属の記録を一緒に動かす（先頭の注記）。自分の系列が無ければ
+ * `reason: null`。
+ *
+ * そのあと、子の並びを揃えたまとめ役のうち **後ろ側の子が 0 件になったもの**を、その年から
+ * 終わらせる（1-1。削除・所属変更の「下位領域を全て失うので自動で消える」と同じ規則を、
+ * 存続期間の編集にも通す）。終わらせたまとめ役の親も同じ規則で見る（連鎖）。
+ */
+export function editFeatureInterval(
+  histories: readonly FeatureHistory[],
+  featureId: FeatureId,
+  op: (series: AnchorSeries) => SeriesResult,
+  calendar: Calendar,
+): FeatureIntervalEditResult {
+  const first = coreEdit(histories, featureId, op, calendar);
+  if (!first.ok) return first;
+  let base = first.value.histories;
+  const cascaded: CascadedEnd[] = [];
+  const queue: FeatureId[] = [...first.value.touchedParents];
+  const ownAfter = base.find((h) => h.featureId === featureId);
+  const isAggregate =
+    ownAfter?.series.entries.some((e) =>
+      e.anchor.snapshot.features.some((f) => f.id === featureId && f.kind === FEATURE_KIND.Aggregate),
+    ) === true;
+  if (isAggregate) queue.push(featureId);
+  const maxRounds = (histories.length + 8) * 4;
+  for (let round = 0; queue.length > 0 && round < maxRounds; round += 1) {
+    const aggId = queue.shift()!;
+    const cuts = tailEmptyCuts(base, aggId, calendar);
+    if (cuts.length === 0) continue;
+    const step = coreEdit(
+      base,
+      aggId,
+      (series) => ({ ok: true, series: cutSeries(series, aggId, cuts, calendar) }),
+      calendar,
+    );
+    if (!step.ok) continue;
+    base = step.value.histories;
+    for (const cut of cuts) cascaded.push({ featureId: aggId, at: cut.start });
+    for (const p of step.value.touchedParents) queue.push(p);
+  }
+  return {
+    ok: true,
+    histories: base,
+    promoted: first.value.promoted,
+    lost: first.value.lost,
+    cascaded,
+  };
 }
 
 /**
@@ -477,11 +815,15 @@ export function childrenPromotedByEnding(
   return planEnding(histories, featureId, at, calendar)?.promoted ?? [];
 }
 
-/** {@link childrenPromotedByEnding} の材料（板が「再び現れる年」を言うのにも使う）。 */
+/** {@link childrenPromotedByEnding} の材料（押す前の板・状態行が言うこと）。 */
 export interface EndingPlan {
   readonly promoted: readonly FeatureId[];
-  /** 居なくなる区間の終わり（その年に再び現れる）。ずっと居なくなるなら null。 */
+  /** 途切れの後に再び現れる年（その年から子は元の所属に戻る）。現れないなら null。 */
   readonly reappearsAt: TimePoint | null;
+  /** 一緒に終わる、その年より後の自分の記録（錨）の件数（途切れずに続いていたもの）。 */
+  readonly trimmedLaterRecords: number;
+  /** 後ろ側の子を全部失うので、その年から終わるまとめ役（1-1）。 */
+  readonly cascaded: readonly CascadedEnd[];
 }
 
 export function planEnding(
@@ -498,13 +840,23 @@ export function planEnding(
   const result = editFeatureInterval(
     histories,
     featureId,
-    (series) => setEnd(series, anchorId, at, calendar),
+    (series) => endRunAt(series, featureId, anchorId, at, calendar),
     calendar,
   );
   if (!result.ok) return null;
-  const first = result.lost[0];
+  const after = result.histories.find((h) => h.featureId === featureId);
+  const reappears =
+    after === undefined
+      ? undefined
+      : presenceOf(after.series, calendar).find((iv) => compare(iv.start, at, calendar) > 0);
+  const keptIds = new Set(after?.series.entries.map((e) => e.anchor.id) ?? []);
+  const trimmedLaterRecords = own.series.entries.filter(
+    (e) => compare(e.start, at, calendar) > 0 && !keptIds.has(e.anchor.id),
+  ).length;
   return {
     promoted: result.promoted,
-    reappearsAt: first === undefined ? null : first.end,
+    reappearsAt: reappears === undefined ? null : reappears.start,
+    trimmedLaterRecords,
+    cascaded: result.cascaded,
   };
 }
