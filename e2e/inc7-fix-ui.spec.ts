@@ -34,6 +34,7 @@ import {
   railMarkPositions,
   railView,
   clickClearOfStickyBars,
+  openPreSaveBoard,
   type LaunchedApp,
 } from './helpers';
 
@@ -229,6 +230,7 @@ const BOARD_IDS = [
   'delete-impact',
   'delete-confirm',
   'basemap-aspect-dialog',
+  'pre-save-dialog',
 ] as const;
 
 async function openBoards(page: Page): Promise<string[]> {
@@ -312,6 +314,11 @@ const BOARD_CASES: readonly BoardCase[] = [
       await stubImagePicker(app, await writePng(page, dir, 300, 200));
       await openSettingsAndReplace(page);
     },
+  },
+  // 本体の取り込みで足した: 保存の前の確認の板（台帳 #27）。
+  {
+    board: 'pre-save-dialog',
+    open: (page) => openPreSaveBoard(page),
   },
 ];
 

@@ -1246,3 +1246,47 @@ export async function openVertexCandidatesOnTinySquare(
   await expect(page.getByTestId('vertex-candidates')).toBeVisible();
   return at;
 }
+
+/**
+ * **保存の前の確認の板**（設計書 §B.5 の台帳 #27。増分 7 の手直し 2 回目）を開く。本体の取り込みで、
+ * 台帳の K-2 走査（`inc5-shell.spec.ts`）と「板 × 打鍵」（`inc7-fix-ui.spec.ts`）に載せるために足した。
+ * 手順は `inc7-fix2.spec.ts` の A-4 と同じ: 外の国を 1000 年に連邦の下へ入れ、連邦の開始年を
+ * 900 年へ動かす（900〜1000 年の下位領域の一覧に、まだ居ない外の国が載る＝年をまたぐ食い違い）。
+ * そのうえで Ctrl+S を押す。板は **行き先を決める前** に出るので、保存の行き先の差し替えは要らない。
+ */
+export async function openPreSaveBoard(page: Page): Promise<void> {
+  const parentId = 'syn-nest-parent';
+  const parentName = '合成の連邦';
+  const outsiderId = 'syn-nest-outsider';
+  const outsiderName = '合成の外の国';
+  const reveal = async (name: string, featureId: string): Promise<void> => {
+    await page.getByTestId('sidebar-tab-list').click();
+    await page.getByTestId('unified-list-filter').fill(name);
+    await expect(page.getByTestId(`feature-list-item-${featureId}`)).toBeVisible();
+  };
+  await loadSyntheticNested(page, 2, [1000]);
+  await enterEditMode(page);
+  await jumpToYear(page, 1000);
+  await reveal(outsiderName, outsiderId);
+  await page.getByTestId(`ledger-mark-${outsiderId}`).check();
+  await page.getByTestId('tool-edit.reparent').click();
+  await page.getByTestId('reparent-confirm').click();
+  await page.getByTestId(`reparent-parent-existing-pick-item-${parentId}`).click();
+  await page.getByTestId('reparent-options-confirm').click();
+  await expect(page.getByTestId('reparent-options-dialog')).toHaveCount(0);
+  await page.getByTestId('tool-edit.select').click();
+  await reveal(parentName, parentId);
+  await page.getByTestId(`feature-list-item-${parentId}`).click();
+  await expect(page.getByTestId('app-active-feature')).toHaveText(parentId);
+  await page.getByTestId('sidebar-tab-properties').click();
+  await openPropertySection(page, 'anchor-section');
+  await clickClearOfStickyBars(page.getByTestId('anchor-interval-summary-syn-nest-a-1000'));
+  await page.getByTestId('anchor-interval-start-syn-nest-a-1000-year').fill('900');
+  await clickClearOfStickyBars(page.getByTestId('anchor-interval-start-syn-nest-a-1000-confirm'));
+  await jumpToYear(page, 900);
+  await reveal(parentName, parentId);
+  await page.getByTestId('unified-list-filter').fill('');
+  await page.getByTestId('ledger-scroller').click({ position: { x: 5, y: 5 } });
+  await page.keyboard.press('Control+s');
+  await expect(page.getByTestId('pre-save-dialog')).toBeVisible();
+}

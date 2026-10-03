@@ -47,6 +47,7 @@ import {
   placeVertices,
   returnToViewMode,
   squareCorners,
+  openPreSaveBoard,
 } from './helpers';
 
 interface Rect {
@@ -798,7 +799,8 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
   });
 
   // -------------------------------------------------------------------------
-  // 台帳 #20〜#26 の板（増分 7 で足した 6 枚＋増分 7 の手直しの 1 枚。Fable #9）。
+  // 台帳 #20〜#27 と #30 の板（増分 7 で足した 6 枚＋増分 7 の手直しの 2 枚。Fable #9。#27 は本体の
+  // 取り込みで、#30 は増分 8E の手直しで足した）。
   // どれも **本物のモーダル**（背面を覆う板＋`role="alertdialog"` / `"dialog"`）なので、
   // 出ているあいだは地図の 25 点すべてが板に当たり、閉じたら板の名前が 1 点も残らない
   // （居座らない）ことを見る。表は設計書 §B.5 の台帳と同じ並び。
@@ -809,6 +811,11 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
     readonly backdrop: string;
     /** 板の本体（`role="dialog"` / `"alertdialog"`）の testid。 */
     readonly dialog: string;
+    /**
+     * 出たことを確かめる要素（省略時は `dialog`）。`role="dialog"` の根が大きさを持たない器
+     * （ファイル操作の板。中身は `DraggablePanel`）では、中身の testid で見る。
+     */
+    readonly shown?: string;
     /** 板を開く。`app` は main 側の差し替えが要る板（#30 の画像選択）だけが使う。 */
     readonly open: (page: Page, app: ElectronApplication) => Promise<void>;
     readonly close: (page: Page) => Promise<void>;
@@ -920,6 +927,16 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       },
       close: (page) => page.getByTestId('end-here-impact-cancel').click(),
     },
+    // 本体の取り込みで足した: 保存の前の確認の板（#27。増分 7 の手直し 2 回目）。ファイル操作の板
+    // なので背面の覆いは `file-ops-backdrop`、`role="dialog"` は根の `pre-save-modal-root` が持つ。
+    {
+      ledger: '#27 保存の前の確認',
+      backdrop: 'file-ops-backdrop',
+      dialog: 'pre-save-modal-root',
+      shown: 'pre-save-dialog',
+      open: (page) => openPreSaveBoard(page),
+      close: (page) => page.getByTestId('pre-save-cancel').click(),
+    },
     // 増分 8E の手直し（設計適合 S2-2）: 縦横比の板（#30）。設定の板の上に出る板なので、
     // 走査では背面の覆いが地図の 25 点すべてを受けることを見る。閉じるときは設定の板も閉じる。
     {
@@ -944,7 +961,7 @@ test.describe('増分 5d — 確定の列はオプションバーへ（地図に
       const { app, page } = await launchApp();
       try {
         await board.open(page, app);
-        await expect(page.getByTestId(board.dialog)).toBeVisible();
+        await expect(page.getByTestId(board.shown ?? board.dialog)).toBeVisible();
         for (const hit of await scanMapGrid(page)) {
           expect(
             [board.backdrop, `popover:${board.dialog}`],
