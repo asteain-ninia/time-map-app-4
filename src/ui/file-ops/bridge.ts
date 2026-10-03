@@ -98,6 +98,13 @@ export interface FileOpsHost {
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
   /**
+   * 修復で捨てた記録があれば、反映のあとで件数を知らせる（増分 7 の手直し 2 回目。「中身のある記録を
+   * 黙って捨てない」）。**ここで型に載せて `buildFileCommandPorts` で写す** ―― 本体（増分 7）では
+   * 宿主（`FileOpsController`）にだけあって、この型と写しに無かったので、知らせが一度も出ていなかった
+   * （統合ブランチの継ぎ目の検証 2-1）。省略可（知らせる先を持たない試験の宿主）。
+   */
+  readonly reportRepairDiscards?: (count: number) => void;
+  /**
    * 未保存警告の「保存して続行」から呼ばれる保存（A3）。**上書き確認を通す**ので
    * `save` とは別の口にしてある: これまでこの枝だけが確認を素通りして、読み込み元の
    * ファイルを黙って上書きしていた（開く / 新規 / D&D / × / Alt+F4 / OS シャットダウンの
@@ -239,6 +246,9 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     promptRepair: host.promptRepair,
     reflectProject: host.reflectProject,
     notify: host.notify,
+    ...(host.reportRepairDiscards === undefined
+      ? {}
+      : { reportRepairDiscards: host.reportRepairDiscards }),
   };
 }
 
