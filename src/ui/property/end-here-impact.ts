@@ -39,12 +39,18 @@ export function buildEndHereImpactView(input: {
   readonly reappearsLabel?: string;
   /** 一緒に終わる、その年より後の途切れずに続いていた記録の件数（手直し 3 回目）。 */
   readonly trimmedCount?: number;
-  /** 下位領域を全て失って一緒に終わるまとめ役（名前と年。手直し 3 回目 1-1）。 */
-  readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string }[];
+  /**
+   * 下位領域を全て失って一緒に終わるまとめ役（名前と年。手直し 3 回目 1-1）。`whole` はどの年にも
+   * 下位領域が居なくなって記録ごと無くなるもの（4 回目 #1）。
+   */
+  readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string; readonly whole?: boolean }[];
+  /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（名前と年。4 回目 #2）。 */
+  readonly laterAffiliations?: readonly { readonly name: string; readonly yearLabel: string }[];
 }): EndHereImpactView {
   const { targetName, yearLabel, promotedCount, promotedNames, reappearsLabel } = input;
   const trimmed = input.trimmedCount ?? 0;
   const cascaded = input.cascaded ?? [];
+  const laterAffiliations = input.laterAffiliations ?? [];
   return {
     title: PROPERTY_STRINGS.endHereImpactTitle(targetName, yearLabel),
     groups: [
@@ -54,6 +60,9 @@ export function buildEndHereImpactView(input: {
         lines: [
           PROPERTY_STRINGS.endHereImpactLineEnds(yearLabel),
           ...(trimmed > 0 ? [PROPERTY_STRINGS.endHereImpactTrimmed(yearLabel, trimmed)] : []),
+          ...laterAffiliations.map((a) =>
+            PROPERTY_STRINGS.endHereImpactLaterAffiliation(a.name, a.yearLabel),
+          ),
         ],
       },
       {
@@ -72,7 +81,11 @@ export function buildEndHereImpactView(input: {
       {
         testId: 'cascaded',
         heading: PROPERTY_STRINGS.endHereImpactHeadingCascaded,
-        lines: cascaded.map((c) => PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel)),
+        lines: cascaded.map((c) =>
+          c.whole === true
+            ? PROPERTY_STRINGS.endHereImpactCascadedWhole(c.name)
+            : PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel),
+        ),
       },
     ],
     // 実行ボタンは **素性欄のボタンと同じ文**（「1500年に終わったことにする」）。押した

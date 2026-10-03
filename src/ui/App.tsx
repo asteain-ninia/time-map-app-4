@@ -2123,8 +2123,20 @@ export function App(): JSX.Element {
       // **黙らない**（手直し 3 回目 / 締め D）: 後ろの続いていた記録が一緒に終わる・下位領域を
       // 全て失ったまとめ役が一緒に終わるときは、状態行でもそう言う。確定と同じ 1 本で数える。
       const plan = planEnding(s.domain.histories, featureId, at, calendar);
-      const cascadedNames = [...new Set((plan?.cascaded ?? []).map((c) => c.featureId))]
-        .map((id) => featureByIdAt(s.domain, at, id)?.attributes.name ?? featureNameOf(id) ?? '')
+      const nameAnyYear = (id: FeatureId, when: TimePoint): string =>
+        featureByIdAt(s.domain, when, id)?.attributes.name ?? featureNameOf(id) ?? '';
+      const cascadedNames = [
+        ...new Set((plan?.cascaded ?? []).filter((c) => !c.whole).map((c) => c.featureId)),
+      ]
+        .map((id) => nameAnyYear(id, at))
+        .filter((n) => n !== '');
+      const wholeNames = [
+        ...new Set((plan?.cascaded ?? []).filter((c) => c.whole).map((c) => c.featureId)),
+      ]
+        .map((id) => nameAnyYear(id, (plan?.cascaded ?? []).find((c) => c.featureId === id)?.at ?? at))
+        .filter((n) => n !== '');
+      const laterNames = (plan?.laterAffiliations ?? [])
+        .map((a) => nameAnyYear(a.parentId, a.from))
         .filter((n) => n !== '');
       try {
         // その年から先の、途切れずに続いている記録をまとめて終わらせる（手直し 3 回目 2）。
@@ -2140,7 +2152,9 @@ export function App(): JSX.Element {
         statusMessageStore.success(
           PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)) +
             (trimmed > 0 ? PROPERTY_STRINGS.endHereDoneTrimmed(trimmed) : '') +
-            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join('・')) : ''),
+            (laterNames.length > 0 ? PROPERTY_STRINGS.endHereDoneLaterAffiliation(laterNames.join('・')) : '') +
+            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join('・')) : '') +
+            (wholeNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・')) : ''),
         );
       } catch (e) {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
@@ -2220,8 +2234,17 @@ export function App(): JSX.Element {
           featureNameOf(c.featureId) ??
           '',
         yearLabel: formatYear(c.at.year),
+        whole: c.whole,
       }));
-      if (promoted.length === 0 && cascaded.length === 0) {
+      // 切り詰める後ろの記録の中の、別の上位領域への所属（4 回目 #2）。その上位領域の下位領域が
+      // 変わるので、押す前の板を出す（締め D）。
+      const laterAffiliations = (plan?.laterAffiliations ?? []).map((a) => ({
+        name: featureByIdAt(s.domain, a.from, a.parentId)?.attributes.name ??
+          featureNameOf(a.parentId) ??
+          '',
+        yearLabel: formatYear(a.from.year),
+      }));
+      if (promoted.length === 0 && cascaded.length === 0 && laterAffiliations.length === 0) {
         commitEndHere(featureId, at, name);
         return;
       }
@@ -2242,6 +2265,7 @@ export function App(): JSX.Element {
             : { reappearsLabel: formatYear(plan.reappearsAt.year) }),
           trimmedCount: plan?.trimmedLaterRecords ?? 0,
           cascaded,
+          laterAffiliations,
         }),
       });
     },
@@ -3526,13 +3550,21 @@ export function App(): JSX.Element {
         // 呼び手（`commitEndHere`）が同じことを自分の文に含めるので、ここでは言わない。
         if (intent.op !== ANCHOR_INTERVAL_OP.EndHere && result.cascaded.length > 0) {
           const live = store.getState().domain;
-          const names = result.cascaded
-            .map((c) => featureByIdAt(root, toYearPoint(c.at), c.featureId)?.attributes.name ??
-              featureByIdAt(live, toYearPoint(c.at), c.featureId)?.attributes.name ??
-              '')
-            .filter((n) => n !== '');
-          if (names.length > 0) {
-            statusMessageStore.success(PROPERTY_STRINGS.intervalCascaded(names.join('・')));
+          const nameOf = (c: (typeof result.cascaded)[number]): string =>
+            featureByIdAt(root, toYearPoint(c.at), c.featureId)?.attributes.name ??
+            featureByIdAt(live, toYearPoint(c.at), c.featureId)?.attributes.name ??
+            '';
+          const names = result.cascaded.filter((c) => !c.whole).map(nameOf).filter((n) => n !== '');
+          const wholeNames = result.cascaded.filter((c) => c.whole).map(nameOf).filter((n) => n !== '');
+          if (names.length > 0 || wholeNames.length > 0) {
+            statusMessageStore.success(
+              (names.length > 0
+                ? PROPERTY_STRINGS.intervalCascaded(names.join('・'))
+                : PROPERTY_STRINGS.intervalChanged) +
+                (wholeNames.length > 0
+                  ? PROPERTY_STRINGS.endHereDoneCascadedWhole(wholeNames.join('・'))
+                  : ''),
+            );
           }
         }
       },

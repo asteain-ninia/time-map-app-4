@@ -265,22 +265,42 @@ export const PROPERTY_STRINGS = {
    */
   endHereImpactReappears: (year: string): string =>
     `この地物は${year}の記録で再び現れます。下位領域はその年から元の所属に戻ります`,
-  /** 一緒に終わる、その年より後の記録（途切れずに続いていたもの。手直し 3 回目）。 */
+  /**
+   * 一緒に終わる、その年より後の記録（途切れずに続いていたもの。手直し 3 回目）。数えるのは中身の
+   * 変わる記録だけ（帳簿のために割られた錨は数えない。4 回目 #5）。
+   */
   endHereImpactTrimmed: (year: string, count: number): string =>
-    `${year}より後の、途切れずに続いていた記録 ${String(count)} 件も一緒に終わります`,
+    `${year}より後の、途切れずに続いていた記録（中身の変わる記録 ${String(count)} 件）も一緒に終わります`,
   /** 下位領域を全て失って一緒に終わるまとめ役（手直し 3 回目 1-1）。 */
   endHereImpactCascaded: (name: string, year: string): string =>
     `まとめ役「${name}」は下位領域を全て失うので、${year}から終わります`,
+  /**
+   * どの年にも下位領域が居なくなるまとめ役（4 回目 #1）。所属変更で下位領域を全て失ったまとめ役と
+   * 同じく、記録ごと無くなる。
+   */
+  endHereImpactCascadedWhole: (name: string): string =>
+    `まとめ役「${name}」はどの年にも下位領域が居なくなるので、記録ごと無くなります（所属を変えて下位領域を全て失ったときと同じ）`,
+  /** 一緒に終わる後ろの記録の中の、別の上位領域への所属（4 回目 #2）。 */
+  endHereImpactLaterAffiliation: (name: string, year: string): string =>
+    `${year}からの「${name}」への所属も一緒に終わります（「${name}」の下位領域から外れます）`,
   endHereImpactHeadingCascaded: '一緒に終わるもの',
   /** 状態行: 一緒に終わった後ろの記録の件数。 */
   endHereDoneTrimmed: (count: number): string =>
     `その後の記録 ${String(count)} 件も一緒に終わりました。`,
   /** 状態行: 存続期間の欄の編集で、下位領域を全て失ったまとめ役が一緒に終わった（手直し 3 回目）。 */
+  /** 状態行: 存続期間を変えた（続く文の頭）。 */
+  intervalChanged: '存続期間を変えました。',
   intervalCascaded: (names: string): string =>
     `存続期間を変えました。下位領域を全て失った「${names}」は、その年から終わりました。`,
   /** 状態行: 一緒に終わったまとめ役。 */
   endHereDoneCascaded: (names: string): string =>
     `下位領域を全て失った「${names}」も、その年から終わりました。`,
+  /** 状態行: どの年にも下位領域が居なくなって記録ごと無くなったまとめ役（4 回目 #1）。 */
+  endHereDoneCascadedWhole: (names: string): string =>
+    `どの年にも下位領域が居なくなった「${names}」は、記録ごと無くなりました。`,
+  /** 状態行: 一緒に終わった別の上位領域への所属（4 回目 #2）。 */
+  endHereDoneLaterAffiliation: (names: string): string =>
+    `「${names}」への後の年の所属も一緒に終わりました。`,
   endHereImpactHeadingEnds: '終わるもの',
   endHereImpactHeadingPromoted: '最上位になるもの',
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
