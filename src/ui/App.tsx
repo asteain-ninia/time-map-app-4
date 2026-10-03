@@ -2358,6 +2358,11 @@ export function App(): JSX.Element {
           case ESCAPE_STEP.ResetTool:
             // 「選ぶ」＝ 道具を外した状態。選択はもう空なので、ここで消えるものは無い。
             s.setActiveTool(null);
+            // **印は Escape では外さない**（司令塔の決定 (6)）。道具を降りても一覧に印が
+            // 残っていることと、外し方を言う（黙って残さない。設計適合 指摘 1）。
+            if (s.ledger.marked.size > 0) {
+              statusMessageStore.notice(APP_STRINGS.marksStayAfterEscape(s.ledger.marked.size));
+            }
             return;
           case ESCAPE_STEP.None:
             return;
@@ -2368,7 +2373,7 @@ export function App(): JSX.Element {
     return () => {
       registry.unregister(COMMAND_ID.EditDeselect);
     };
-  }, [registry, store]);
+  }, [registry, store, statusMessageStore]);
 
   // Reconcile the history on a store domain swap we did NOT author via a command. A
   // subscribe bridge (技術方針 2.5: React 外のストアを subscribe で監視) compares the live

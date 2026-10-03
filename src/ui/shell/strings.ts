@@ -89,6 +89,12 @@ export const APP_STRINGS = {
   /** 時刻を動かしてその年に居なくなった印を外した（Fable #5 / 決定 (10)）。 */
   markDroppedByTime: (count: number): string =>
     `この年に居ない ${String(count)} 件の印を外しました。`,
+  /**
+   * Escape で道具を降りても、一覧の印は残る（司令塔の決定 (6)。印は一覧のもの）。残って
+   * いることと外し方を言う（設計適合 指摘 1）。
+   */
+  marksStayAfterEscape: (count: number): string =>
+    `対象の印 ${String(count)} 件は一覧に残っています。外すときは一覧の［対象を全部外す］を押してください。`,
 } as const;
 
 /** Top-level menu titles (ファイル・編集・表示・ツール・ヘルプ, FR-111). */

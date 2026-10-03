@@ -284,12 +284,23 @@ export function ReparentToolController<S>(
     //
     // 追加の道具は増分 3 の手直し D3 で既に「待機中は止めない」へ直っている。ここは
     // 手順のある道具に同じ形を入れる ―― **対象を掴んでいるあいだだけ**道具のもの。
-    const active = reparent.flow !== REPARENT_FLOW.Idle && reparent.targetId !== null;
+    //
+    // **印から来た対象だけを持っているあいだは名乗らない**（増分 7 の手直し 2 回目 / 設計適合
+    // 指摘 1）。印は一覧のもので道具の下書きではない（司令塔の決定 (6): 道具の Escape で印を
+    // 消さない）。それなのに名乗っていたので、大域の Escape の階段は止められ、道具も Escape を
+    // 受けず（印から来た対象は離さない）、**2 回目からの Escape が誰にも受けられず黙って
+    // いた**（§D.4「連打すれば必ず素の状態へ戻る」に反する）。名乗らなければ大域の階段が
+    // 「選択を外す → 道具を降りる」を進める。新しい上位領域を地図で選びかけたら、それは
+    // 道具の下書きなので名乗る（Escape はその選びかけを外す）。
+    const holdsOwnDraft =
+      reparent.targetSource !== REPARENT_TARGET_SOURCE.Marked || reparent.newParentId !== null;
+    const active =
+      reparent.flow !== REPARENT_FLOW.Idle && reparent.targetId !== null && holdsOwnDraft;
     onDrawingChange(active);
     // On unmount clear the flag so a torn-down controller never leaves the global
     // dispatcher suspended (教訓 5.2 全経路で破棄).
     return () => onDrawingChange(false);
-  }, [reparent.flow, reparent.targetId, onDrawingChange]);
+  }, [reparent.flow, reparent.targetId, reparent.targetSource, reparent.newParentId, onDrawingChange]);
 
   // --- 最上位化の確認（増分 5 の手直し B4 / バグ狩り B-1 / E4）------------------
   //
@@ -451,7 +462,8 @@ export function ReparentToolController<S>(
           // **印から来た対象は道具側で離さない**（バグ狩り #9 / 司令塔の決定 (6)）。
           // 離すと帯は「選んでいません」になるのに一覧は「対象 3 件」のままで、
           // どちらが本当かが読めなくなる。印がある限り対象は印から引く 1 つの源に
-          // する ―― 外すのは一覧の［対象を全部外す］である。
+          // する ―― 外すのは一覧の［対象を全部外す］である。この局面では道具は鍵盤を
+          // 名乗っていないので（上の `onDrawingChange`）、Escape は大域の階段が受ける。
           if (reparent.targetSource === REPARENT_TARGET_SOURCE.Marked) return;
           e.preventDefault();
           reparent.clearSelection();
