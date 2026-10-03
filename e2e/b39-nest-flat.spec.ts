@@ -9,6 +9,9 @@
 //     平らな形で開く。何も消えない。
 //   - 親を描いた年と違う年に子を描いても、修復で解けて開ける（再検証 3-1。以前は修復が親の錨の
 //     始まりの年にしか子を探さず、解けずに読み込みが止まった）。
+//   - 子が途中で終わる形は、勧められる既定が「そのまま残す」（理由の 1 行つき）で、何も変えずに
+//     開く。「直轄領を生成」を選べば、子の居た年だけ平らになり、子の居なくなった年から親は元の形の
+//     まま（2026-10-04、B39 の戻しの再検証の守り B と幾何の直し）。
 //
 // 単体（`src/domain/persistence/repair-leaf-with-children-later.test.ts`）はドメインの修復を、
 // ここは実アプリの描く → 保存 → 開き直す → 修復の経路を見る。
@@ -123,7 +126,7 @@ function expectFlat(saved: Map<string, SavedFeature>, parentId: string, childNam
 }
 
 test.describe('B39 前の期待 — 面の中に子を描くと、開き直しの修復で平らな形になる（何も消えない）', () => {
-  test('同じ年に子 3 人 → 保存 → 開き直し → 勧められる修復 1 回で 親 →［子1, 子2, 子3, 直轄領］', async () => {
+  test('同じ年に子 3 人（居続ける） → 保存 → 開き直し → 勧められる修復 1 回で 親 →［子1, 子2, 子3, 直轄領］', async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39-'));
     const target = join(workDir, 'b39.gimoza');
@@ -161,7 +164,7 @@ test.describe('B39 前の期待 — 面の中に子を描くと、開き直し�
     }
   });
 
-  test('1000 年に親・1100 年に子 → 保存 → 開き直し → 修復で解けて開き、1100 年から 親 →［子, 直轄領］', async () => {
+  test('1000 年に親・1100 年に子（居続ける） → 保存 → 開き直し → 勧められる修復 1 回で解けて開き、1100 年から 親 →［子, 直轄領］', async () => {
     test.setTimeout(240_000);
     const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39y-'));
     const target = join(workDir, 'b39y.gimoza');
@@ -195,4 +198,70 @@ test.describe('B39 前の期待 — 面の中に子を描くと、開き直し�
       rmSync(workDir, { recursive: true, force: true });
     }
   });
+
+  // 2026-10-04（B39 の戻しの再検証）: 子が途中で終わる形は、勧められる修復 1 回で解けるとは限らない
+  // （守り B: 分け残しを作っても解けきらないかもしれない形は、既定を「そのまま残す」にして理由を出す）。
+  // ここでは ① 勧められるまま（そのまま残す）で何も変えずに開くこと、② 2 番目の「直轄領を生成」を
+  // 選べば幾何の直しで解けること（子の居なくなった年から親は元の形のまま）を見る。
+  test('子が途中で終わる形 → 開き直し: 既定は「そのまま残す」で何も変えずに開き、「直轄領を生成」を選べば解ける', async () => {
+    test.setTimeout(240_000);
+    const workDir = mkdtempSync(join(tmpdir(), 'tmap-e2e-b39e-'));
+    const target = join(workDir, 'b39e.gimoza');
+    const { app, page } = await launchApp({ extraEnv: { E2E_SAVE_AS_PATH: target } });
+    try {
+      await jumpToYear(page, 1000);
+      await armAddAreaTool(page);
+      const b = await addInputLayerBox(page);
+      const cx = b.x + b.width / 2;
+      const cy = b.y + b.height / 2;
+      const parentId = await drawFace(page, squareCorners(cx + 60, cy, 150), { name: '親' });
+      await jumpToYear(page, 1100);
+      expect(await drawChild(page, { x: cx + 10, y: cy - 70, half: 30 }, '子')).toBe(parentId);
+      // 子を 1200 年で終わらせる（素性欄の「この年に終わったことにする」）。
+      await jumpToYear(page, 1200);
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('end-here').click();
+      const impact = page.getByTestId('end-here-impact');
+      if ((await impact.count()) > 0) await page.getByTestId('end-here-impact-confirm').click();
+      await expect.poll(async () => (await leafReport(page, { names: ['子'] })).entries.length).toBe(0);
+      await page.keyboard.press('Control+s');
+      await expect(page.getByTestId('statusbar-result')).toContainText('保存しました');
+
+      // ① 勧められるまま: 既定は「そのまま残す」で、理由の 1 行が出る。何も変えずに開く。
+      const loading = loadProject(page, target);
+      const board = page.getByTestId('repair-dialog');
+      await expect(board).toBeVisible();
+      await expect(page.getByTestId('repair-note-0')).toContainText('自動では整わない');
+      await expect(page.getByTestId('repair-option-0-keep-leaf-with-children')).toBeChecked();
+      await page.getByTestId('repair-apply').click();
+      expect(await loading).toBe('loaded');
+      await expect(page.getByTestId('statusbar-result')).toContainText('そのまま残した');
+      await jumpToYear(page, 1100);
+      expect((await leafReport(page, { names: ['親', '子'] })).entries.map((e) => e.name).sort()).toEqual(
+        ['子', '親'].sort(),
+      );
+
+      // ② もう一度開き直して「直轄領を生成」を選ぶ → 1 回で解ける（やり直しの板が出ない）。
+      const loading2 = loadProject(page, target);
+      await expect(board).toBeVisible();
+      await page.getByTestId('repair-option-0-materialize-direct-domain').check();
+      await page.getByTestId('repair-apply').click();
+      await expect(board).toHaveCount(0);
+      expect(await loading2).toBe('loaded');
+      await jumpToYear(page, 1150);
+      const at1150 = await leafReport(page, { names: ['親', '子', '親 直轄領'] });
+      expect(at1150.entries.map((e) => e.name).sort()).toEqual(['子', '親 直轄領'].sort());
+      // 子の居なくなった年から、親は元の形（穴なし）のまま。
+      await jumpToYear(page, 1300);
+      const at1300 = await leafReport(page, { names: ['親', '子', '親 直轄領'] });
+      expect(at1300.entries.map((e) => e.name)).toEqual(['親']);
+      await jumpToYear(page, 1050);
+      const at1050 = await leafReport(page, { names: ['親'] });
+      expect(at1300.entries[0]!.areaKm2!).toBeCloseTo(at1050.entries[0]!.areaKm2!, 0);
+    } finally {
+      await app.close();
+      rmSync(workDir, { recursive: true, force: true });
+    }
+  });
 });
+

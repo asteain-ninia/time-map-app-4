@@ -55,4 +55,42 @@ describe('修復の選択肢の並び', () => {
     // 2 つ以上の行が 1 つも無いなら、この検査は何も見ていない。
     expect(multi).toBeGreaterThan(0);
   });
+
+  // **選択肢が 1 つだけの行も見る**（2026-10-04、B39 の戻しの再検証 / B91）。重なりの行は「一方を
+  // 除外」1 つだけで、上の検査（2 つ以上の行だけ）をすり抜け、何も触らずに押すと描いた地物が
+  // 消えていた。1 つだけの行は板がラジオを出さずにその方法を既定で選ぶので、先頭であることに
+  // 変わりはない。
+  //
+  // ただし **記録を残したまま開くと画面や計算が壊れる種類**は、捨てる方法しか置けない。その
+  // 種類だけをここに理由つきで名指しで外す（新しく足した種類が黙ってここに入らないように）。
+  const DROP_ONLY_BY_NATURE: ReadonlyMap<string, string> = new Map([
+    ['missing-vertex-reference', '引く頂点が無い地物は形が解けず、描けない'],
+    ['ring-hierarchy-invalid', '輪の入れ子が壊れた形は面積・包含の計算が成り立たない'],
+    ['aggregate-sum-mismatch', '捨てるのはまとめ役だけで下位領域は最上位として残る（既存の振る舞い）'],
+    ['duplicate-owner-history', '同じ地物の歴史が 2 本あると年ごとの姿が決まらない（先頭は残す）'],
+  ]);
+
+  it('選択肢が 1 つだけの行も、その方法は捨てる方法でない（形が壊れる種類だけを名指しで除く）', () => {
+    let single = 0;
+    for (const inc of everyCase()) {
+      const options = repairOptionsFor(inc);
+      if (options.length !== 1) continue;
+      single += 1;
+      const key = `${inc.kind}/${inc.detail ?? '(細目なし)'}`;
+      // 形状保持規則の違反のうち子を持つ末端以外（形の無い末端など）も形が解けないので捨てるだけ。
+      const byNature =
+        DROP_ONLY_BY_NATURE.has(inc.kind) ||
+        (inc.kind === INCONSISTENCY.ShapePreservation && inc.detail !== SHAPE_DETAIL_LEAF_WITH_CHILDREN);
+      if (byNature) continue;
+      expect(DROP_IDS.has(options[0]!.id), `${key} の唯一の方法が ${options[0]!.id}`).toBe(false);
+    }
+    expect(single).toBeGreaterThan(0);
+  });
+
+  it('重なりの行は「そのまま残す」が先頭（既定）で、除外は最後', () => {
+    for (const kind of [INCONSISTENCY.TerminalExclusion, INCONSISTENCY.AnchorSpatialOverlap]) {
+      const ids = repairOptionsFor({ kind, featureIds: [], featureNames: [] }).map((o) => o.id);
+      expect(ids).toEqual([REPAIR_OPTION.KeepOverlap, REPAIR_OPTION.DropOverlappingFeature]);
+    }
+  });
 });

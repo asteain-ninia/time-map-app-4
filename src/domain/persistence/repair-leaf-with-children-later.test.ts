@@ -193,4 +193,104 @@ describe('子を持つ末端の修復 — B39 前の期待と、年を変えて�
     ]);
     expect(applyRepair(root, inc, REPAIR_OPTION.KeepLeafWithChildren, CAL)).toBe(root);
   });
+
+  // --- 幾何の直し（2026-10-04、B39 の戻しの再検証 3-1・2-1 / B92）---------------------------
+
+  /** 錨の並びから系列を作る（各錨: 年・地物・頂点・書かれた終わり）。 */
+  function seriesOf(
+    ownerId: string,
+    anchors: readonly { year: number; s: { feature: LeafFeature; vertices: Vertex[] }; end?: number }[],
+  ): FeatureHistory {
+    return {
+      featureId: asFeatureId(ownerId),
+      series: {
+        entries: anchors.map((a) =>
+          createAnchorEntry(
+            createAnchor(
+              deriveAnchorId(asFeatureId(ownerId), Y(a.year)),
+              createAnchorSnapshot([a.s.feature], createVertexStore(a.s.vertices)),
+            ),
+            Y(a.year),
+            a.end === undefined ? null : Y(a.end),
+          ),
+        ),
+      },
+    };
+  }
+
+  it('重 3 の形（0 年に親・100 年に子・300 年に子を終わらせる・500 年に親の東の帯を隣へ）が、分け残しを作る修復 1 回で穴も重なりも無く解ける', () => {
+    const p0 = square('P', 0, 0, 100, 100, 0);
+    const e1 = createVertex(asVertexId('e1'), createCoordinate(80, 0));
+    const e2 = createVertex(asVertexId('e2'), createCoordinate(80, 100));
+    const p500 = {
+      feature: createLeafFeature(
+        P,
+        createBasicAttributes('P', 0, 0),
+        COLOR,
+        createShape([
+          createTerritoryRing(asRingId('P-r500'), [p0.vertices[0]!.id, e1.id, e2.id, p0.vertices[3]!.id]),
+        ]),
+      ),
+      vertices: [p0.vertices[0]!, e1, e2, p0.vertices[3]!],
+    };
+    const q1 = createVertex(asVertexId('q1'), createCoordinate(100, 0));
+    const q2 = createVertex(asVertexId('q2'), createCoordinate(100, 100));
+    const q = {
+      feature: createLeafFeature(
+        asFeatureId('Q'),
+        createBasicAttributes('Q', 500, 500),
+        COLOR,
+        createShape([createTerritoryRing(asRingId('Q-r'), [e1.id, q1.id, q2.id, e2.id])]),
+      ),
+      vertices: [e1, q1, q2, e2],
+    };
+    const root: DomainProject = {
+      ...emptyProject(),
+      histories: [
+        seriesOf('P', [
+          { year: 0, s: p0 },
+          { year: 500, s: p500 },
+        ]),
+        seriesOf('C', [{ year: 100, s: square('C', 10, 10, 30, 30, 100, P), end: 300 }]),
+        seriesOf('Q', [{ year: 500, s: q }]),
+      ],
+    };
+    const incs = checkConsistency(root, CAL).inconsistencies;
+    expect(incs.map((i) => i.detail)).toEqual([SHAPE_DETAIL_LEAF_WITH_CHILDREN]);
+    const repaired = applyRepair(root, incs[0]!, REPAIR_OPTION.MaterializeDirectDomain, CAL);
+    // 2 枚目の板が出ない（全部解ける）。
+    expect(checkConsistency(repaired, CAL).inconsistencies).toHaveLength(0);
+    // 100〜300 年だけ 親 →［子, 直轄領］。
+    const at200 = featuresAt(repaired, Y(200));
+    expect(at200.find((f) => f.id === P)?.kind).toBe(FEATURE_KIND.Aggregate);
+    expect(at200.filter(isDirectDomainLeaf)).toHaveLength(1);
+    // 300 年からは元の末端の親（同じもの）に戻り、分け残しは居ない（穴があかない）。
+    const at400 = featuresAt(repaired, Y(400));
+    expect(at400.find((f) => f.id === P)).toEqual(p0.feature);
+    expect(at400.some(isDirectDomainLeaf)).toBe(false);
+    // 500 年からの親の境の直し（8,000）も、隣 Q もそのまま。
+    const at600 = featuresAt(repaired, Y(600));
+    expect(at600.find((f) => f.id === P)).toEqual(p500.feature);
+    expect(at600.find((f) => f.id === asFeatureId('Q'))).toEqual(q.feature);
+    expect(at600.some(isDirectDomainLeaf)).toBe(false);
+  });
+
+  it('重 2 の形（1000 年に親・1100 年に子・子を 1200 年で終わらせる）は、1200 年から親が元の形（穴なし）のまま', () => {
+    const p = square('P', 0, 0, 100, 100, 1000);
+    const root: DomainProject = {
+      ...emptyProject(),
+      histories: [
+        seriesOf('P', [{ year: 1000, s: p }]),
+        seriesOf('C', [{ year: 1100, s: square('C', 10, 10, 30, 30, 1100, P), end: 1200 }]),
+      ],
+    };
+    const inc = checkConsistency(root, CAL).inconsistencies[0]!;
+    const repaired = applyRepair(root, inc, REPAIR_OPTION.MaterializeDirectDomain, CAL);
+    expect(checkConsistency(repaired, CAL).inconsistencies).toHaveLength(0);
+    expect(featuresAt(repaired, Y(1150)).find((f) => f.id === P)?.kind).toBe(FEATURE_KIND.Aggregate);
+    const at1300 = featuresAt(repaired, Y(1300));
+    expect(at1300.find((f) => f.id === P)).toEqual(p.feature);
+    expect(at1300.some(isDirectDomainLeaf)).toBe(false);
+  });
 });
+

@@ -282,7 +282,9 @@ describe('(d) terminal exclusion / (g) anchor spatial overlap', () => {
   it('repair (drop one) removes the overlap', () => {
     const project = projectWithOverlap();
     const inc = find(checkConsistency(project, CAL), INCONSISTENCY.TerminalExclusion)!;
-    const applied = applyRepairChecked(project, inc, repairOptionsFor(inc)[0]!.id, CAL);
+    // 既定（先頭）は「そのまま残す」になった（2026-10-04、B91）。ここは除外の方法そのものを見る。
+    expect(repairOptionsFor(inc).map((o) => o.id)).toContain(REPAIR_OPTION.DropOverlappingFeature);
+    const applied = applyRepairChecked(project, inc, REPAIR_OPTION.DropOverlappingFeature, CAL);
     expect(applied.resolved).toBe(true);
   });
 });
