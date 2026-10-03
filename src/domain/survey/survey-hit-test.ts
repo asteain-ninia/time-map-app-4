@@ -70,8 +70,8 @@ export function surveyLinesAt(
   const hits: SurveyLineHit[] = [];
   for (const line of lines) {
     const distDeg = Math.min(
-      distanceToPolylineDeg(point, equirectangularPath(line.start, line.end), toleranceDeg),
-      distanceToPolylineDeg(point, greatCirclePath(line.start, line.end), toleranceDeg),
+      distanceToPolylineDeg(point, equirectangularPath(line.start, line.end)),
+      distanceToPolylineDeg(point, greatCirclePath(line.start, line.end)),
     );
     if (distDeg <= toleranceDeg) {
       hits.push({ lineId: line.id, distancePx: distDeg * pxPerDegree });
@@ -82,15 +82,22 @@ export function surveyLinesAt(
 }
 
 /**
- * 押した点から折れ線までの最短距離（度）。押した点の経度を 360° ずつずらした複製のうち、
- * 折れ線の経度の範囲（許容値ぶん広げたもの）に入るものだけを測る。どの複製も範囲に
- * 入らなければ `Infinity`。
+ * 線の経度の幅で数えた複製の数の上限（病的入力の見張り）。ふつうの線は 1 周（360°）に
+ * 収まり、数えるのは 3〜4 個。地図を何周もパンして測った線でもこの数には届かない。
  */
-function distanceToPolylineDeg(
-  point: WorldCoordinate,
-  path: readonly WorldCoordinate[],
-  toleranceDeg: number,
-): number {
+const MAX_REPLICAS = 64;
+
+/**
+ * 押した点から折れ線までの最短距離（度）。押した点の経度を 360° ずつずらした複製のうち、
+ * **最短になりうるものだけ** を測る ―― 折れ線の経度の範囲に入る複製と、その両外側で
+ * いちばん近い 1 個ずつである（増分 8C の手直し / GPT #3）。
+ *
+ * 範囲の外の複製は、外へ離れるほど折れ線のどの点からも経度の差が大きくなる（緯度の差は
+ * 変わらない）ので、両外側のいちばん近い 1 個より近くなることは無い。旧版は許容値で範囲を
+ * 広げて複製を数えていたので、倍率がごく小さい（許容値が何千度にもなる）と数が上限を超え、
+ * **線の真上を押しても当たらなかった**。数えるのは線の経度の幅だけで決まり、許容値に依らない。
+ */
+function distanceToPolylineDeg(point: WorldCoordinate, path: readonly WorldCoordinate[]): number {
   if (path.length === 0) return Infinity;
   let minLon = Infinity;
   let maxLon = -Infinity;
@@ -99,12 +106,11 @@ function distanceToPolylineDeg(
     if (p.lon > maxLon) maxLon = p.lon;
   }
   if (!Number.isFinite(minLon) || !Number.isFinite(maxLon)) return Infinity;
-  // point.lon + 360k ∈ [minLon − tol, maxLon + tol] を満たす整数 k。
-  const kMin = Math.ceil((minLon - toleranceDeg - point.lon) / LONGITUDE_PERIOD_DEG);
-  const kMax = Math.floor((maxLon + toleranceDeg - point.lon) / LONGITUDE_PERIOD_DEG);
-  // 線の経度の幅は 1 周（360°）＋許容値を超えないので、k はたかだか 2〜3 個。巨大な経度で
-  // 整数の精度が尽きた（病的入力）ときは測らない。
-  if (!Number.isSafeInteger(kMin) || !Number.isSafeInteger(kMax) || kMax - kMin > 4) {
+  // point.lon + 360k ∈ [minLon, maxLon] を満たす整数 k の範囲を、両外側へ 1 個ずつ広げる。
+  const kMin = Math.ceil((minLon - point.lon) / LONGITUDE_PERIOD_DEG) - 1;
+  const kMax = Math.floor((maxLon - point.lon) / LONGITUDE_PERIOD_DEG) + 1;
+  // 巨大な経度で整数の精度が尽きた（病的入力）ときは測らない。
+  if (!Number.isSafeInteger(kMin) || !Number.isSafeInteger(kMax) || kMax - kMin > MAX_REPLICAS) {
     return Infinity;
   }
   let best = Infinity;
