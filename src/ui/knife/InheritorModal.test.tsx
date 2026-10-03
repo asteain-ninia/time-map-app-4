@@ -124,3 +124,66 @@ describe('InheritorModal keyboard a11y (第5次バグハント / a11y)', () => {
     }
   });
 });
+
+describe('InheritorModal — 増分 8B（V10 / N-09）', () => {
+  it('プレビューが穴を描く（全リングを偶奇規則で描き、穴のリングを落とさない）', () => {
+    const holed: GeoMultiPolygon = [
+      [
+        [
+          { lon: 0, lat: 30 },
+          { lon: 10, lat: 30 },
+          { lon: 10, lat: 40 },
+          { lon: 0, lat: 40 },
+        ],
+        [
+          { lon: 4, lat: 34 },
+          { lon: 6, lat: 34 },
+          { lon: 6, lat: 36 },
+          { lon: 4, lat: 36 },
+        ],
+      ],
+    ];
+    render(
+      <InheritorModal
+        pieces={[holed, PIECES[1]!]}
+        smallestIndex={1}
+        selectedIndex={0}
+        onSelect={() => {}}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+    const path = screen.getByTestId('knife-preview-0');
+    // 外周と穴の 2 本の部分路（M が 2 つ）。旧版は外周 1 本だけだった。
+    expect((path.getAttribute('d') ?? '').match(/M/g)).toHaveLength(2);
+    expect(path.getAttribute('fill-rule')).toBe('evenodd');
+  });
+
+  it('面積と元の名前を渡すと、呼び名に面積が入り、引き継ぐものを 1 文で言う', () => {
+    render(
+      <InheritorModal
+        pieces={PIECES}
+        smallestIndex={0}
+        selectedIndex={1}
+        onSelect={() => {}}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+        areas={['1.00 km²', '2.00 km²']}
+        targetName="アルラーク国"
+        note="注記"
+      />,
+    );
+    expect(screen.getByTestId('knife-choose-0').textContent).toBe(
+      '1（西・1.00 km²）',
+    );
+    expect(screen.getByTestId('knife-choose-1').textContent).toBe(
+      '2（東・2.00 km²）',
+    );
+    expect(screen.getByTestId('knife-inherit-sentence').textContent).toBe(
+      '2（東・2.00 km²） が「アルラーク国」として残り、名前・色・年表を引き継ぎます。ほかの 1 片は新しい地物になります。',
+    );
+    expect(screen.getByTestId('knife-two-pieces-note').textContent).toBe(
+      '注記',
+    );
+  });
+});

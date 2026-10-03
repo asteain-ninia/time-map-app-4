@@ -35,11 +35,13 @@ import {
   type ProcessResult,
 } from '../../domain/consistency/index';
 import type { SplitSnapshot } from '../../domain/knife/index';
+import type { GeoMultiPolygon } from '../../domain/geometry/types';
 import type { Command } from '../../domain/command/command';
 import { EMPTY_COMMAND_RESULT } from '../../domain/command/result';
 import { createLeafFeature, type Feature } from '../../domain/feature';
 import { asFeatureId, asRingId, asVertexId } from '../../domain/ids';
 import {
+  createHoleRing,
   createShape,
   createTerritoryRing,
 } from '../../domain/ring';
@@ -170,6 +172,14 @@ function mountKnife(
   startResult: ProcessResult<S> = committed,
   fixture: { feature: Feature; store: VertexStore } = targetLeaf(),
   onDrawingChange?: (drawing: boolean) => void,
+  extra: {
+    /** 確定を遅らせる口（既定は同期で即座に走らせる）。 */
+    readonly commitScheduler?: (run: () => void) => void;
+    /** 対象の形を解決する口（穴・飛び地の注記は形を見て出す）。 */
+    readonly resolveLeafShape?: (
+      fid: typeof TARGET_ID,
+    ) => GeoMultiPolygon | undefined;
+  } = {},
 ): Harness {
   const { feature, store: vstore } = fixture;
   const store = createSessionStore<S>({
@@ -225,9 +235,15 @@ function mountKnife(
         defaultColor={DEFAULT_COLOR}
         // 確定を 1 コマ遅らせる口は **同期の実装**を差し込む（増分 7 の中身 9 の作法）。
         // 実機は rAF → setTimeout で遅らせるが、検査で押すのは「確定が通るか」なので同期で走らせる。
-        commitScheduler={(run) => {
-          run();
-        }}
+        commitScheduler={
+          extra.commitScheduler ??
+          ((run) => {
+            run();
+          })
+        }
+        {...(extra.resolveLeafShape
+          ? { resolveLeafShape: extra.resolveLeafShape }
+          : {})}
         {...(onDrawingChange ? { onDrawingChange } : {})}
       />
     </>,
@@ -1188,5 +1204,263 @@ describe('KnifeToolController — a wheel-notch zoom change does NOT re-render o
     // climb by 5 because the shared App parent re-rendered each time).
     expect(siblingRenders).toBe(baseline);
     utils.unmount();
+  });
+});
+
+// --- 増分 8B（V10）: 片の呼び名・閉じたことの表示・押せない理由・幕・進行表示 --------------
+
+/** [0,10]² の中央に [4,6]² の穴がある面（内陸の湖を持つ国のかわり）。 */
+function holedLeaf(): {
+  feature: Feature;
+  store: VertexStore;
+  shape: GeoMultiPolygon;
+} {
+  const outer = [
+    createCoordinate(0, 0),
+    createCoordinate(10, 0),
+    createCoordinate(10, 10),
+    createCoordinate(0, 10),
+  ];
+  const hole = [
+    createCoordinate(4, 4),
+    createCoordinate(6, 4),
+    createCoordinate(6, 6),
+    createCoordinate(4, 6),
+  ];
+  const ovids = outer.map((_, i) => asVertexId(`ho-${i}`));
+  const hvids = hole.map((_, i) => asVertexId(`hh-${i}`));
+  const vertices = [
+    ...outer.map((c, i) => createVertex(ovids[i]!, c)),
+    ...hole.map((c, i) => createVertex(hvids[i]!, c)),
+  ];
+  const feature = createLeafFeature(
+    TARGET_ID,
+    ATTRS,
+    COLOR,
+    createShape([
+      createTerritoryRing(asRingId('hr-0'), ovids),
+      createHoleRing(asRingId('hr-1'), hvids, asRingId('hr-0')),
+    ]),
+  );
+  return {
+    feature,
+    store: createVertexStore(vertices),
+    shape: [[outer, hole]],
+  };
+}
+
+function nextStepText(): string {
+  return screen.getByTestId('option-bar-next-step').textContent ?? '';
+}
+
+describe('増分 8B — 分断線を引いている間（N-10）', () => {
+  it('0 点・1 点では［分断線を確定］を押せず、次の一手に理由が出る', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5); // 対象を掴む（0 点）
+    expect(screen.getByTestId('knife-confirm-cut')).toBeDisabled();
+    expect(nextStepText()).toContain(KNIFE_STRINGS.cutNeedsPoints(0));
+
+    clickInput(5, -5); // 1 点
+    expect(screen.getByTestId('knife-confirm-cut')).toBeDisabled();
+    expect(nextStepText()).toContain(KNIFE_STRINGS.cutNeedsPoints(1));
+
+    clickInput(5, 15); // 2 点 → 押せる
+    expect(screen.getByTestId('knife-confirm-cut')).toBeEnabled();
+    expect(nextStepText()).not.toContain(KNIFE_STRINGS.cutNeedsPoints(1));
+    h.unmount();
+  });
+
+  it('分断線を閉じると次の一手が「閉じました」に変わる', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(2, 2);
+    clickInput(8, 2);
+    clickInput(8, 8);
+    expect(nextStepText()).not.toBe(KNIFE_STRINGS.nextStepClosed);
+    clickInput(2, 2); // 最初の点の円の中 → 閉じる
+    expect(nextStepText()).toBe(KNIFE_STRINGS.nextStepClosed);
+    expect(screen.getByTestId('knife-confirm-cut')).toBeEnabled();
+    h.unmount();
+  });
+
+  it('穴のある面では「2 つにしか分かれない」を確定の前（引いている間）に言う（V10 ③）', () => {
+    const fixture = holedLeaf();
+    const h = mountKnife(committed, fixture, undefined, {
+      resolveLeafShape: () => fixture.shape,
+    });
+    activateKnife(h.store);
+    clickInput(1, 1);
+    const note = KNIFE_STRINGS.twoPiecesNote(KNIFE_STRINGS.twoPiecesReasonHole);
+    // 帯は 1 行で末尾が切れるので、短い形を案内文より前に出す。
+    expect(nextStepText()).toContain(
+      KNIFE_STRINGS.twoPiecesShort(KNIFE_STRINGS.twoPiecesReasonHole),
+    );
+    // 継承先の板にも同じ注記が出る。
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.getByTestId('knife-two-pieces-note').textContent).toBe(note);
+    h.unmount();
+  });
+
+  it('穴の無い面には注記を出さない', () => {
+    const h = mountKnife(committed, targetLeaf(), undefined, {
+      resolveLeafShape: () => [
+        [
+          [
+            createCoordinate(0, 0),
+            createCoordinate(10, 0),
+            createCoordinate(10, 10),
+            createCoordinate(0, 10),
+          ],
+        ],
+      ],
+    });
+    activateKnife(h.store);
+    clickInput(5, 5);
+    expect(nextStepText()).not.toContain('2 つにしか分かれません');
+    expect(nextStepText().startsWith(KNIFE_STRINGS.cutNeedsPoints(0))).toBe(
+      true,
+    );
+    h.unmount();
+  });
+});
+
+describe('増分 8B — 継承先の板（N-09: 番号札・方角・面積で呼ぶ）', () => {
+  it('片は「番号（方角・面積）」で呼ばれ、選んだ片が何を引き継ぐかを 1 文で言う', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+
+    const labels = [0, 1].map(
+      (i) => screen.getByTestId(`knife-choose-${String(i)}`).textContent ?? '',
+    );
+    // 縦に切ったので、片は東と西。番号は 1 と 2、面積の単位が付く。
+    expect(labels.some((l) => /^1（(東|西)・.+ km²）$/.test(l))).toBe(true);
+    expect(labels.some((l) => /^2（(東|西)・.+ km²）$/.test(l))).toBe(true);
+    expect(labels.join('')).not.toContain('面 1');
+
+    fireEvent.click(screen.getByTestId('knife-choose-1'));
+    const sentence =
+      screen.getByTestId('knife-inherit-sentence').textContent ?? '';
+    expect(sentence).toContain(labels[1]!);
+    expect(sentence).toContain('「target」として残り');
+    // 下見に番号札が立つ。
+    expect(screen.getByTestId('knife-preview-tag-0').textContent).toBe('1');
+    expect(screen.getByTestId('knife-preview-tag-1').textContent).toBe('2');
+    h.unmount();
+  });
+});
+
+describe('増分 8B — 素性を入れている最終段階（N-13）と確定の進行表示（中身 3）', () => {
+  it('地図の上に幕（入力の橋）が残り、押しても背後の地物は選ばれず理由が出る', () => {
+    const h = mountKnife();
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+
+    const layer = screen.getByTestId('knife-input-layer');
+    expect(layer).toHaveAttribute('data-locked', 'true');
+    const before = h.store.getState().activeFeature;
+    fireEvent.pointerDown(layer, { clientX: 50, clientY: 50, button: 0 });
+    expect(h.store.getState().activeFeature).toBe(before);
+    expect(nextStepText()).toBe(KNIFE_STRINGS.mapLockedWhileNaming);
+    // 素性欄はそのまま使える。
+    expect(screen.getByTestId('add-property-form')).toBeInTheDocument();
+    h.unmount();
+  });
+
+  it('［保存］を押すと 1 コマ描かれて「分割しています…」になり、2 回目は走らない', () => {
+    const queued: (() => void)[] = [];
+    const h = mountKnife(committed, targetLeaf(), undefined, {
+      // 実機の rAF → setTimeout のかわりに、手で 1 コマ進める。
+      commitScheduler: (run) => {
+        queued.push(run);
+      },
+    });
+    activateKnife(h.store);
+    clickInput(5, 5);
+    clickInput(5, -5);
+    clickInput(5, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    // 分断線の確定も同じ器を通る（増分 7 の結線）。ここで 1 コマ進める。
+    act(() => queued.shift()?.());
+    fireEvent.click(screen.getByTestId('knife-confirm-inheritor'));
+
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    // まだ走っていない（1 コマ描かせてから走る）。その間、進行表示が出ている。
+    expect(h.startProcess).not.toHaveBeenCalled();
+    expect(screen.getByTestId('add-save')).toHaveTextContent(
+      KNIFE_STRINGS.committing,
+    );
+    expect(screen.getByTestId('add-save')).toBeDisabled();
+    expect(screen.getByTestId('add-save-busy')).toHaveTextContent(
+      KNIFE_STRINGS.committing,
+    );
+    expect(nextStepText()).toBe(KNIFE_STRINGS.committing);
+    expect(screen.getByTestId('knife-cancel')).toBeDisabled();
+    // 2 回目（ダブルクリック・Enter の連打）は積まれない。
+    fireEvent.submit(screen.getByTestId('add-property-form'));
+    expect(queued).toHaveLength(1);
+
+    act(() => queued.shift()?.());
+    expect(h.startProcess).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+});
+
+describe('増分 8B — 飛び地のある面（V10 ④）', () => {
+  it('飛び地のある面でも「2 つにしか分かれない」を確定の前に言う（板にも出る）', () => {
+    const west = [
+      createCoordinate(0, 0),
+      createCoordinate(4, 0),
+      createCoordinate(4, 10),
+      createCoordinate(0, 10),
+    ];
+    const east = [
+      createCoordinate(6, 0),
+      createCoordinate(10, 0),
+      createCoordinate(10, 10),
+      createCoordinate(6, 10),
+    ];
+    const wv = west.map((_, i) => asVertexId(`ew-${i}`));
+    const ev = east.map((_, i) => asVertexId(`ee-${i}`));
+    const feature = createLeafFeature(
+      TARGET_ID,
+      ATTRS,
+      COLOR,
+      createShape([
+        createTerritoryRing(asRingId('er-0'), wv),
+        createTerritoryRing(asRingId('er-1'), ev),
+      ]),
+    );
+    const vstore = createVertexStore([
+      ...west.map((c, i) => createVertex(wv[i]!, c)),
+      ...east.map((c, i) => createVertex(ev[i]!, c)),
+    ]);
+    const h = mountKnife(committed, { feature, store: vstore }, undefined, {
+      resolveLeafShape: () => [[west], [east]],
+    });
+    activateKnife(h.store);
+    clickInput(1, 1);
+    const note = KNIFE_STRINGS.twoPiecesNote(
+      KNIFE_STRINGS.twoPiecesReasonExclave,
+    );
+    expect(nextStepText()).toContain(
+      KNIFE_STRINGS.twoPiecesShort(KNIFE_STRINGS.twoPiecesReasonExclave),
+    );
+    clickInput(2, -5);
+    clickInput(2, 15);
+    fireEvent.click(screen.getByTestId('knife-confirm-cut'));
+    expect(screen.getByTestId('knife-two-pieces-note').textContent).toBe(note);
+    h.unmount();
   });
 });

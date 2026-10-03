@@ -145,6 +145,151 @@ describe('buildKnifePrimitives — cut line + fixed circle (受け入れ基準3 
         l.points[1]!.lat === 2,
     );
     expect(closing).toBeDefined();
-    expect(closing!.stroke).toBe(DEFAULT_KNIFE_STYLE.closingStroke);
+    // N-10: 閉じたら閉じる辺も分断線と同じ実線になる（旧版は薄い細線で見落とされた）。
+    expect(closing!.stroke).toBe(DEFAULT_KNIFE_STYLE.cutStroke);
+    expect(closing!.widthPx).toBe(DEFAULT_KNIFE_STYLE.cutWidthPx);
+  });
+
+  it('N-10: 閉じると囲みが塗られ、固定円が消える（閉じたことが絵で分かる）', () => {
+    const ring = [
+      createCoordinate(2, 2),
+      createCoordinate(6, 2),
+      createCoordinate(6, 6),
+      createCoordinate(2, 6),
+    ];
+    const closed: KnifeState = {
+      phase: KNIFE_PHASE.DrawingCut,
+      targetId: asFeatureId('leaf'),
+      line: createClosedKnifeLine(ring),
+    };
+    const prims = buildKnifePrimitives({
+      state: closed,
+      targetShape: TARGET,
+      zoom: 10,
+    });
+    const fill = prims.find(
+      (p) => p.kind === 'polygon' && p.fill === DEFAULT_KNIFE_STYLE.closedFill,
+    );
+    expect(fill).toBeDefined();
+    // 固定円（多点の閉じた折れ線）はもう出ない。
+    expect(prims.some((p) => p.kind === 'line' && p.points.length > 8)).toBe(
+      false,
+    );
+
+    // 開いたままの同じ 4 点では塗りが無く、固定円が出ている（差分が絵になっている）。
+    let open = selectTarget(startKnife(), asFeatureId('leaf'));
+    for (const p of ring) open = placeCutPoint(open, p);
+    const openPrims = buildKnifePrimitives({
+      state: open,
+      targetShape: TARGET,
+      zoom: 10,
+    });
+    expect(
+      openPrims.some(
+        (p) =>
+          p.kind === 'polygon' && p.fill === DEFAULT_KNIFE_STYLE.closedFill,
+      ),
+    ).toBe(false);
+    expect(
+      openPrims.some((p) => p.kind === 'line' && p.points.length > 8),
+    ).toBe(true);
+  });
+});
+
+describe('buildKnifePrimitives — 分割の下見（V10 / N-09: 片ごとの色・穴・番号札）', () => {
+  const north: GeoMultiPolygon = [
+    [
+      [
+        createCoordinate(0, 5),
+        createCoordinate(10, 5),
+        createCoordinate(10, 10),
+        createCoordinate(0, 10),
+      ],
+      // 北の片には穴がある（内陸の湖のような穴）。
+      [
+        createCoordinate(4, 7),
+        createCoordinate(6, 7),
+        createCoordinate(6, 8),
+        createCoordinate(4, 8),
+      ],
+    ],
+  ];
+  const south: GeoMultiPolygon = [
+    [
+      [
+        createCoordinate(0, 0),
+        createCoordinate(10, 0),
+        createCoordinate(10, 5),
+        createCoordinate(0, 5),
+      ],
+    ],
+  ];
+  const result = {
+    pieces: [
+      { area: north, areaKm2: 2 },
+      { area: south, areaKm2: 1 },
+    ],
+    sideA: { area: north, areaKm2: 2 },
+    sideB: { area: south, areaKm2: 1 },
+    edgeCuts: [],
+  };
+
+  it('継承先を選んでいる間: 片ごとに別の塗り・穴はそのまま・番号札 1 と 2', () => {
+    const state: KnifeState = {
+      phase: KNIFE_PHASE.ChoosingInheritor,
+      targetId: asFeatureId('leaf'),
+      line: createClosedKnifeLine([]),
+      result,
+      selectedIndex: 1,
+    };
+    const prims = buildKnifePrimitives({
+      state,
+      targetShape: TARGET,
+      zoom: 10,
+    });
+    const shapes = prims.filter((p) => p.kind === 'shape') as Extract<
+      DrawPrimitive,
+      { kind: 'shape' }
+    >[];
+    expect(shapes).toHaveLength(2);
+    // 選んでいる片（南＝添字 1）が継承先の色、もう片方は別の色。
+    expect(shapes[1]!.fill).toBe(DEFAULT_KNIFE_STYLE.inheritFill);
+    expect(shapes[0]!.fill).not.toBe(DEFAULT_KNIFE_STYLE.inheritFill);
+    // 穴のリングが落ちていない（偶奇規則で穴として描かれる）。
+    expect(shapes[0]!.pieces[0]).toHaveLength(2);
+    const tags = prims.filter((p) => p.kind === 'label') as Extract<
+      DrawPrimitive,
+      { kind: 'label' }
+    >[];
+    expect(tags.map((t) => t.text)).toEqual(['1', '2']);
+    // 単色の対象強調は出さない（下見に置き換わる）。
+    expect(shapes.some((s) => s.fill === DEFAULT_KNIFE_STYLE.targetFill)).toBe(
+      false,
+    );
+  });
+
+  it('素性を入れている間（N-13）: 地図に薄い幕を掛け、下見はそのまま残す', () => {
+    const state: KnifeState = {
+      phase: KNIFE_PHASE.EnteringProperties,
+      targetId: asFeatureId('leaf'),
+      line: createClosedKnifeLine([]),
+      result,
+      inheritIndex: 0,
+    };
+    const prims = buildKnifePrimitives({
+      state,
+      targetShape: TARGET,
+      zoom: 10,
+    });
+    expect(prims[0]!.kind).toBe('polygon');
+    expect((prims[0] as Extract<DrawPrimitive, { kind: 'polygon' }>).fill).toBe(
+      DEFAULT_KNIFE_STYLE.overlayFill,
+    );
+    const shapes = prims.filter((p) => p.kind === 'shape') as Extract<
+      DrawPrimitive,
+      { kind: 'shape' }
+    >[];
+    expect(shapes[0]!.fill).toBe(DEFAULT_KNIFE_STYLE.inheritFill);
+    expect(prims.filter((p) => p.kind === 'label')).toHaveLength(2);
   });
 });
