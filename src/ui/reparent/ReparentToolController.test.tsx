@@ -44,7 +44,7 @@ import { AppShell } from '../shell';
 import { CommandRegistry, COMMAND_ID } from '../shell/commands';
 import { createLiveAffiliationBinding, type DomainRoot } from '../consistency-binding';
 import { featuresAt, leafShapeAt, verticesAt } from '../live-lookup';
-import { PROCESS_STATUS, type ProcessResult } from '../../domain/consistency/index';
+import { PROCESS_STATUS, REJECTION_KIND, type ProcessResult } from '../../domain/consistency/index';
 
 import type { DrawPrimitive } from '../../render/map-renderer';
 import {
@@ -142,6 +142,8 @@ function mountReparent(
     onModalChange?: (open: boolean) => void;
     /** 一覧の印を対象として引き継ぐ経路（増分 7 の中身 2b / V8）。 */
     markedFeatureIds?: readonly FeatureId[];
+    /** 確定の差し替え口（断られる局面を作る）。省略時は本物の束ね。 */
+    startProcess?: (proposal: never) => ProcessResult<DomainRoot>;
   } = {},
 ): Harness {
   const onModalChange = options.onModalChange;
@@ -211,7 +213,7 @@ function mountReparent(
       <OptionBar store={optionBar} />
       <ReparentToolController<DomainRoot>
         store={store}
-        startProcess={live.startProcess}
+        startProcess={(options.startProcess ?? live.startProcess) as typeof live.startProcess}
         resolveFeatures={resolveFeatures}
         resolveStore={resolveStore}
         anchorTime={() => store.getState().currentTime}
@@ -294,6 +296,35 @@ describe('ReparentToolController — 所属変更 actually reparents (bughunt3 r
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined(); // 確定までは非破壊
     fireEvent.click(screen.getByTestId('reparent-options-confirm'));
     expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBe(asFeatureId('leaf-b'));
+    h.unmount();
+  });
+
+  it('確定が断られたら 3 択の板は閉じず、理由を出し、入力（分け残しの名前）は残る（反証 2-12）', () => {
+    // ふつうの操作では断られる局面に届かない（使えない相手は灰色・初期値でも確定を止める）
+    // ので、E2E ではなくここで確定の口を差し替えて固定する（進捗 増分7.md §12.6 の項目 4）。
+    const h = mountReparent({
+      startProcess: () => ({
+        status: PROCESS_STATUS.Rejected,
+        kind: REJECTION_KIND.ConstraintViolation,
+        message: '試しの断り',
+      }),
+    });
+    activateReparent(h.store);
+    clickInput(1, 1); // 対象 leaf-a
+    clickInput(5, 1); // 新しい上位領域 leaf-b（板の初期値）
+    fireEvent.click(screen.getByTestId('reparent-confirm'));
+    expect(screen.getByTestId('reparent-options-dialog')).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId('reparent-direct-domain-name'), {
+      target: { value: '試しの本国' },
+    });
+    fireEvent.click(screen.getByTestId('reparent-options-confirm'));
+    // 板は閉じない。理由が板の中に出て、打った名前も選んだ行き先もそのまま。
+    expect(screen.getByTestId('reparent-options-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('reparent-options-message').textContent).toContain('試しの断り');
+    expect(
+      (screen.getByTestId('reparent-direct-domain-name') as HTMLInputElement).value,
+    ).toBe('試しの本国');
+    expect(parentIdOf(effectiveById(h.store, 'leaf-a'))).toBeUndefined();
     h.unmount();
   });
 
