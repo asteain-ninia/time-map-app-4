@@ -35,17 +35,26 @@ export function buildEndHereImpactView(input: {
   readonly promotedCount: number;
   /** その名前（引けたものだけ）。 */
   readonly promotedNames: readonly string[];
-  /** 後の年の錨で再び現れるならその年の表示（「1700年」）。ずっと終わるなら省く。 */
+  /** 途切れの後に再び現れるならその年の表示（「1700年」）。ずっと終わるなら省く。 */
   readonly reappearsLabel?: string;
+  /** 一緒に終わる、その年より後の途切れずに続いていた記録の件数（手直し 3 回目）。 */
+  readonly trimmedCount?: number;
+  /** 下位領域を全て失って一緒に終わるまとめ役（名前と年。手直し 3 回目 1-1）。 */
+  readonly cascaded?: readonly { readonly name: string; readonly yearLabel: string }[];
 }): EndHereImpactView {
   const { targetName, yearLabel, promotedCount, promotedNames, reappearsLabel } = input;
+  const trimmed = input.trimmedCount ?? 0;
+  const cascaded = input.cascaded ?? [];
   return {
     title: PROPERTY_STRINGS.endHereImpactTitle(targetName, yearLabel),
     groups: [
       {
         testId: 'ends',
         heading: PROPERTY_STRINGS.endHereImpactHeadingEnds,
-        lines: [PROPERTY_STRINGS.endHereImpactLineEnds(yearLabel)],
+        lines: [
+          PROPERTY_STRINGS.endHereImpactLineEnds(yearLabel),
+          ...(trimmed > 0 ? [PROPERTY_STRINGS.endHereImpactTrimmed(yearLabel, trimmed)] : []),
+        ],
       },
       {
         testId: 'promoted',
@@ -59,6 +68,11 @@ export function buildEndHereImpactView(input: {
                   ? []
                   : [PROPERTY_STRINGS.endHereImpactReappears(reappearsLabel)]),
               ],
+      },
+      {
+        testId: 'cascaded',
+        heading: PROPERTY_STRINGS.endHereImpactHeadingCascaded,
+        lines: cascaded.map((c) => PROPERTY_STRINGS.endHereImpactCascaded(c.name, c.yearLabel)),
       },
     ],
     // 実行ボタンは **素性欄のボタンと同じ文**（「1500年に終わったことにする」）。押した

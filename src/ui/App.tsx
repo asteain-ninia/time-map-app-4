@@ -228,7 +228,8 @@ import {
   anchorDeleteImpactView,
   buildDeleteAnchorIntent,
   buildEndHereImpactView,
-  buildSetEndIntent,
+  buildEndHereIntent,
+  ANCHOR_INTERVAL_OP,
   isYearAligned,
   type DeleteImpactView,
   type EndHereImpactView,
@@ -2119,21 +2120,33 @@ export function App(): JSX.Element {
         statusMessageStore.failure(PROPERTY_STRINGS.endHereNoOwnSeries(''));
         return;
       }
+      // **黙らない**（手直し 3 回目 / 締め D）: 後ろの続いていた記録が一緒に終わる・下位領域を
+      // 全て失ったまとめ役が一緒に終わるときは、状態行でもそう言う。確定と同じ 1 本で数える。
+      const plan = planEnding(s.domain.histories, featureId, at, calendar);
+      const cascadedNames = [...new Set((plan?.cascaded ?? []).map((c) => c.featureId))]
+        .map((id) => featureByIdAt(s.domain, at, id)?.attributes.name ?? featureNameOf(id) ?? '')
+        .filter((n) => n !== '');
       try {
+        // その年から先の、途切れずに続いている記録をまとめて終わらせる（手直し 3 回目 2）。
         anchorIntervalDispatchRef.current?.dispatchAnchorInterval(
-          buildSetEndIntent(featureId, entry.anchor.id, at),
+          buildEndHereIntent(featureId, entry.anchor.id, at),
         );
         // **終わらせても選択は保つ**（司令塔の決定 (12)）。確定後の選択の洗い直しは
         // 「その年に居ない地物」を外すので、押した瞬間に素性欄もレーンも空になり、
         // **終端が見えないまま**になっていた。ここで選び直せば、レーンに終端の印が
         // 立っているのが読める（読むだけでも選べる＝増分 2 の裁定と同じ立場）。
         store.getState().setActiveFeature(featureId);
-        statusMessageStore.success(PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)));
+        const trimmed = plan?.trimmedLaterRecords ?? 0;
+        statusMessageStore.success(
+          PROPERTY_STRINGS.endHereDone(name, formatYear(at.year)) +
+            (trimmed > 0 ? PROPERTY_STRINGS.endHereDoneTrimmed(trimmed) : '') +
+            (cascadedNames.length > 0 ? PROPERTY_STRINGS.endHereDoneCascaded(cascadedNames.join('・')) : ''),
+        );
       } catch (e) {
         statusMessageStore.failure(e instanceof Error ? e.message : String(e));
       }
     },
-    [store, calendar, statusMessageStore],
+    [store, calendar, statusMessageStore, featureNameOf],
   );
 
   /**
@@ -2194,11 +2207,21 @@ export function App(): JSX.Element {
       // だけを「この年から最上位になります」と言う ―― それより前に終わっていた子は画面上の
       // 姿が変わらない。子が 1 件も居なければ、起きることは「この地物が終わる」だけで、
       // それはボタンの文がそのまま言っている（Ctrl+Z 1 回で戻る）ので、板は出さない。
+      //
+      // **下位領域を全て失うまとめ役が一緒に終わるときも板を出す**（手直し 3 回目 / 締め D）。
+      // 末端を終わらせるだけでも、別の地物（親）が変わるなら押す前に見せる。
       const plan = planEnding(s.domain.histories, featureId, at, calendar);
+      // その年に居る子だけを数える（`featureByIdAt` は居なければ undefined を返す）。
       const promoted = (plan?.promoted ?? []).filter(
-        (id) => featureByIdAt(s.domain, at, id) !== null,
+        (id) => featureByIdAt(s.domain, at, id) !== undefined,
       );
-      if (promoted.length === 0) {
+      const cascaded = (plan?.cascaded ?? []).map((c) => ({
+        name: featureByIdAt(s.domain, c.at, c.featureId)?.attributes.name ??
+          featureNameOf(c.featureId) ??
+          '',
+        yearLabel: formatYear(c.at.year),
+      }));
+      if (promoted.length === 0 && cascaded.length === 0) {
         commitEndHere(featureId, at, name);
         return;
       }
@@ -2217,6 +2240,8 @@ export function App(): JSX.Element {
           ...(plan?.reappearsAt == null
             ? {}
             : { reappearsLabel: formatYear(plan.reappearsAt.year) }),
+          trimmedCount: plan?.trimmedLaterRecords ?? 0,
+          cascaded,
         }),
       });
     },
@@ -3496,9 +3521,23 @@ export function App(): JSX.Element {
           { featureId: intent.featureId },
           anchorIntervalRecolorTime(root, intent, store.getState().currentTime),
         );
+        // **黙らない**（手直し 3 回目 / 締め D）: 存続期間の欄の編集で、下位領域を全て失った
+        // まとめ役が一緒に終わったら、名前と年を状態行に出す。「この年に終わったことにする」は
+        // 呼び手（`commitEndHere`）が同じことを自分の文に含めるので、ここでは言わない。
+        if (intent.op !== ANCHOR_INTERVAL_OP.EndHere && result.cascaded.length > 0) {
+          const live = store.getState().domain;
+          const names = result.cascaded
+            .map((c) => featureByIdAt(root, toYearPoint(c.at), c.featureId)?.attributes.name ??
+              featureByIdAt(live, toYearPoint(c.at), c.featureId)?.attributes.name ??
+              '')
+            .filter((n) => n !== '');
+          if (names.length > 0) {
+            statusMessageStore.success(PROPERTY_STRINGS.intervalCascaded(names.join('・')));
+          }
+        }
       },
     }),
-    [store, recordCommand],
+    [store, recordCommand, statusMessageStore],
   );
   // 「この年に終わったことにする」が使う口を late-bind する（写しを作らない＝教訓 5.44）。
   anchorIntervalDispatchRef.current = anchorIntervalDispatch;

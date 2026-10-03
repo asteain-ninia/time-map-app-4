@@ -265,6 +265,22 @@ export const PROPERTY_STRINGS = {
    */
   endHereImpactReappears: (year: string): string =>
     `この地物は${year}の記録で再び現れます。下位領域はその年から元の所属に戻ります`,
+  /** 一緒に終わる、その年より後の記録（途切れずに続いていたもの。手直し 3 回目）。 */
+  endHereImpactTrimmed: (year: string, count: number): string =>
+    `${year}より後の、途切れずに続いていた記録 ${String(count)} 件も一緒に終わります`,
+  /** 下位領域を全て失って一緒に終わるまとめ役（手直し 3 回目 1-1）。 */
+  endHereImpactCascaded: (name: string, year: string): string =>
+    `まとめ役「${name}」は下位領域を全て失うので、${year}から終わります`,
+  endHereImpactHeadingCascaded: '一緒に終わるもの',
+  /** 状態行: 一緒に終わった後ろの記録の件数。 */
+  endHereDoneTrimmed: (count: number): string =>
+    `その後の記録 ${String(count)} 件も一緒に終わりました。`,
+  /** 状態行: 存続期間の欄の編集で、下位領域を全て失ったまとめ役が一緒に終わった（手直し 3 回目）。 */
+  intervalCascaded: (names: string): string =>
+    `存続期間を変えました。下位領域を全て失った「${names}」は、その年から終わりました。`,
+  /** 状態行: 一緒に終わったまとめ役。 */
+  endHereDoneCascaded: (names: string): string =>
+    `下位領域を全て失った「${names}」も、その年から終わりました。`,
   endHereImpactHeadingEnds: '終わるもの',
   endHereImpactHeadingPromoted: '最上位になるもの',
   /** **入口 B** を畳んでおく節の見出し（設計書 §C.6 の「取り返しのつかないこと」）。 */
@@ -301,6 +317,9 @@ export const PROPERTY_STRINGS = {
   impactAutoRemoved: (count: number, names: string): string =>
     `${String(count)} 件（${names}）が、下位領域を全て失うため一緒に消えます`,
   impactAutoRemovedNone: 'なし（下位領域を全て失った集約は自動で消えます）',
+  /** 下位領域を失う年からだけ消え、ほかの年の記録は残るまとめ役（手直し 3 回目）。 */
+  impactPartlyRemoved: (count: number, names: string): string =>
+    `${String(count)} 件（${names}）は、下位領域を全て失う年から消えます（それより前の年の記録は残ります）`,
   impactNamesWithRest: (names: string, rest: number): string =>
     `${names} ほか ${String(rest)} 件`,
   impactConfirm: '影響を整理して削除',

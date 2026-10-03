@@ -169,6 +169,7 @@ export {
 export {
   buildChangeStartIntent,
   buildSetEndIntent,
+  buildEndHereIntent,
   buildDeleteAnchorIntent,
   intervalRejectionMessage,
 } from './interval-edit';

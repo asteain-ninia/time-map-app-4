@@ -97,14 +97,29 @@ export function buildDeleteImpactView(input: {
   const autoNames = impact.autoRemovedIds
     .map((id) => nameOf(id))
     .filter((n): n is string => n !== null);
+  const partlyNames = impact.partlyRemovedIds
+    .map((id) => nameOf(id))
+    .filter((n): n is string => n !== null);
+  const partly: readonly string[] =
+    impact.partlyRemovedIds.length === 0
+      ? []
+      : [
+          PROPERTY_STRINGS.impactPartlyRemoved(
+            impact.partlyRemovedIds.length,
+            summarizeNames(partlyNames),
+          ),
+        ];
   const auto: readonly string[] =
     impact.autoRemovedIds.length === 0
-      ? [PROPERTY_STRINGS.impactAutoRemovedNone]
+      ? partly.length === 0
+        ? [PROPERTY_STRINGS.impactAutoRemovedNone]
+        : partly
       : [
           PROPERTY_STRINGS.impactAutoRemoved(
             impact.autoRemovedIds.length,
             summarizeNames(autoNames),
           ),
+          ...partly,
         ];
 
   // **判定は「注意」として出す。実行は止めない**（裁定一覧 A の 2026-09-03 ＝ 方針 (あ)。

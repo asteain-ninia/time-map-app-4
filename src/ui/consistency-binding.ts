@@ -70,7 +70,11 @@ import {
 import type { AnchorIntervalEditIntent } from './property/index';
 import { ANCHOR_INTERVAL_OP } from './property/index';
 import { deleteFeatureFromHistories } from '../domain/deletion/index';
-import { editFeatureInterval } from '../domain/affiliation/interval-edit';
+import {
+  editFeatureInterval,
+  endRunAt,
+  type CascadedEnd,
+} from '../domain/affiliation/interval-edit';
 import { getCalendar, type Calendar } from '../domain/time/calendar';
 import { validate as validateTimePoint } from '../domain/time/validate';
 import { featuresAt, verticesAt } from './live-lookup';
@@ -1125,7 +1129,15 @@ export function createDeleteFeatureCommandForRoot(
 
 /** The outcome of building an存続期間 command: a swap command, or a typed rejection. */
 export type AnchorIntervalCommandResult =
-  | { readonly ok: true; readonly command: Command<DomainRoot> }
+  | {
+      readonly ok: true;
+      readonly command: Command<DomainRoot>;
+      /**
+       * 下位領域を全て失ったので、その年から一緒に終わったまとめ役（手直し 3 回目 1-1）。
+       * 呼び手は黙らずに状態行へ出す（締め D）。
+       */
+      readonly cascaded: readonly CascadedEnd[];
+    }
   | { readonly ok: false; readonly reason: RejectReason };
 
 /**
@@ -1139,11 +1151,19 @@ function runIntervalOp(
   intent: AnchorIntervalEditIntent,
   anchorId: AnchorId,
 ): SeriesResult {
-  return intent.op === ANCHOR_INTERVAL_OP.ChangeStart
-    ? changeStart(series, anchorId, intent.newStart, calendar)
-    : intent.op === ANCHOR_INTERVAL_OP.SetEnd
-      ? setEnd(series, anchorId, intent.newEnd, calendar)
-      : deleteAnchor(series, anchorId, calendar);
+  switch (intent.op) {
+    case ANCHOR_INTERVAL_OP.ChangeStart:
+      return changeStart(series, anchorId, intent.newStart, calendar);
+    case ANCHOR_INTERVAL_OP.SetEnd:
+      return setEnd(series, anchorId, intent.newEnd, calendar);
+    case ANCHOR_INTERVAL_OP.EndHere:
+      // その年から先の、途切れずに続いている記録をまとめて終わらせる（手直し 3 回目）。
+      return endRunAt(series, intent.featureId, anchorId, intent.at, calendar);
+    case ANCHOR_INTERVAL_OP.Delete:
+    default:
+      // 以前の三項の連鎖と同じく、知らない操作は錨を消す側へ落とす（型の上では起きない）。
+      return deleteAnchor(series, anchorId, calendar);
+  }
 }
 
 /**
@@ -1214,7 +1234,11 @@ export function createAnchorIntervalCommandForRoot(
     },
   };
   // Wrap in a composite so it records as ONE indivisible undo unit (FR-73 / FR-94).
-  return { ok: true, command: createCompositeCommand(UI_COMMAND_LABEL.Interval, [swap]) };
+  return {
+    ok: true,
+    command: createCompositeCommand(UI_COMMAND_LABEL.Interval, [swap]),
+    cascaded: edited.cascaded,
+  };
 }
 
 /**
@@ -1239,6 +1263,7 @@ export function anchorIntervalRecolorTime(
 ): TimePoint {
   if (intent.op === ANCHOR_INTERVAL_OP.ChangeStart) return intent.newStart;
   if (intent.op === ANCHOR_INTERVAL_OP.SetEnd && intent.newEnd !== null) return intent.newEnd;
+  if (intent.op === ANCHOR_INTERVAL_OP.EndHere) return intent.at;
   const entry = root.histories
     .find((h) => h.featureId === intent.featureId)
     ?.series.entries.find((e) => e.anchor.id === intent.anchorId);
