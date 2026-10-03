@@ -18,6 +18,7 @@
 // 揃える（教訓 5.2 一時的 UI 状態は全経路で破棄する）。
 
 import { readE2eHarnessBridge } from '../../shell/ipc/e2e-harness';
+import type { LeafReport, LeafReportQuery } from './leaf-report';
 import type { ProjectStats } from './project-stats';
 
 /** renderer 側のグローバル名（`window.__E2E_HARNESS__`）。 */
@@ -76,6 +77,14 @@ export interface E2eHarnessActions {
    * 数えるための投入口である。錨は `years` のぶんだけ並ぶ。所有者: ui/App。
    */
   readonly loadSyntheticNested: (childCount: number, years?: readonly number[]) => void;
+  /**
+   * **いま見ている年**の末端地物を、id か名前で選んで中身を返す **読むだけ** の観測
+   * （増分 8B の手直し / GPT 審査の重 2）。id・名前・種別・色・錨列の開始年・面積、片どうしの
+   * 重なりの面積、指定した点の持ち主を返す。分割の E2E が「片が欠けていない」「元の地物の
+   * id・素性・年表が残った」「片が重ならない」「引いていない腕が切られていない」を表示と
+   * 独立に確かめるために使う。所有者: ui/App。
+   */
+  readonly getLeafReport: (query: LeafReportQuery) => LeafReport;
 }
 
 type HarnessHost = Partial<Record<typeof E2E_HARNESS_GLOBAL, Partial<E2eHarnessActions>>>;

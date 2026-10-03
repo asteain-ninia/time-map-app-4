@@ -797,6 +797,58 @@ export async function projectStats(page: Page): Promise<ProjectStats> {
   });
 }
 
+/** 末端地物の中身の問い合わせ (src/ui/e2e/leaf-report.ts の LeafReportQuery の写し)。 */
+export interface LeafReportQuery {
+  readonly ids?: readonly string[];
+  readonly names?: readonly string[];
+  readonly probes?: readonly { readonly lon: number; readonly lat: number }[];
+}
+
+/** 末端地物 1 件の中身 (src/ui/e2e/leaf-report.ts の LeafReportEntry の写し)。 */
+export interface LeafReportEntry {
+  readonly id: string;
+  readonly name: string;
+  readonly kindLabel: string | null;
+  readonly color: unknown;
+  readonly anchorStartYears: readonly number[] | null;
+  readonly areaKm2: number | null;
+  readonly polygonCount: number;
+  readonly ringCount: number;
+}
+
+/** src/ui/e2e/leaf-report.ts の LeafReport の写し。 */
+export interface LeafReport {
+  readonly entries: readonly LeafReportEntry[];
+  readonly totalAreaKm2: number;
+  readonly maxPairOverlapKm2: number;
+  readonly probeOwners: readonly (string | null)[];
+}
+
+/**
+ * **いま見ている年**の末端地物を id か名前で選んで、中身をドメインの値で読む (T-2 の隠し観測。
+ * 増分 8B の手直し)。分割の検査が一覧の件数や板の文といった表示だけに頼らないための口。
+ */
+export async function leafReport(page: Page, query: LeafReportQuery): Promise<LeafReport> {
+  await page.waitForFunction(
+    () =>
+      typeof (globalThis as { __E2E_HARNESS__?: { getLeafReport?: unknown } }).__E2E_HARNESS__
+        ?.getLeafReport === 'function',
+    undefined,
+    { timeout: 15_000 },
+  );
+  return page.evaluate((q) => {
+    const harness = (
+      globalThis as {
+        __E2E_HARNESS__?: { getLeafReport?: (query: LeafReportQuery) => LeafReport };
+      }
+    ).__E2E_HARNESS__;
+    if (harness?.getLeafReport === undefined) {
+      throw new Error('window.__E2E_HARNESS__.getLeafReport が無い (E2E_TEST=1 で起動したか)');
+    }
+    return harness.getLeafReport(q);
+  }, query);
+}
+
 /**
  * アプリを起動し、指定の .gimoza (絶対パス) を読み込んだ状態で返す。読み込めなければ
  * その場で失敗する ('loaded' 以外は許さない — 不整合ファイルで修復ダイアログが出た場合も
