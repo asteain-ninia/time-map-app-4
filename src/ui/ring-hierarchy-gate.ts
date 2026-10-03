@@ -16,32 +16,102 @@
 // 名前を直しただけで保存できなくなると困るので止めない ―― 「この編集で壊れたか」を
 // 編集の前の同じ地物と比べて決める（所有者の裁定「削除以外でデータが勝手に消えるのは
 // 良くない」の裏側: 直していないものを理由に、関係のない編集を断らない）。
+//
+// 比べるのは **違反の集合** である（増分 8E の手直し。GPT 重 3）。最初の版は「編集の前に
+// 何か 1 つでも違反があったか」で見ていたので、もとから壊れていた面では、別の穴を隣の穴へ
+// 入れるような **新しい破損も素通し** していた。いまは違反 1 件ずつ（種類・環・相手の環）を
+// 編集の前と後で比べ、**後にだけある違反** があれば、面がもとから壊れていても断る。
+// もとからある違反だけが残っている（または減った）なら止めない。
+//
+// 断ったときの文は、**どの面のどの年の形が壊れるか** を添える（増分 8E の手直し。反証 2-2）。
+// 壊れるのは引いた面とは別の面（頂点を共有している隣の面の穴）や、画面に見えていない後ろの
+// 年（座標の引き継ぎ先）のことがあるので、それを言わないと利用者は何を直せばよいか分からない。
+// 呼び名と年の書き方は、関門が違反を見つけた時点の姿から作って記録に入れておく（文を組む
+// 側が地物を引き直さなくて済み、App の結線を変えずに済む）。
 
 import type { RejectedResult } from '../domain/consistency/index';
 import { FEATURE_KIND, type LeafFeature } from '../domain/feature';
-import type { FeatureId } from '../domain/ids';
+import type { FeatureId, RingId } from '../domain/ids';
 import type { DomainProject, FeatureHistory } from '../domain/persistence/index';
+import { RING_KIND, type Shape } from '../domain/ring';
 import { validateCandidate } from '../domain/ring-edit/index';
-import type { RingViolation } from '../domain/ring-hierarchy';
+import { RING_VIOLATION, type RingViolation } from '../domain/ring-hierarchy';
+import { getCalendar } from '../domain/time/calendar';
 import type { TimePoint } from '../domain/time/time-point';
 
+import { createdAtOf, participantDisplayName } from './conflict/participant-name';
 import { featuresAt, verticesAt } from './live-lookup';
+import { formatTimePoint } from './timeline/time-display';
 
 /** 違反の印（確定の手続きの `detail` に入る。画面の文を選ぶのに使う）。 */
 export const RING_HIERARCHY_GATE_KIND = 'ring-hierarchy' as const;
+
+/**
+ * 壊れ方の大づかみな分類（文の言い方を選ぶのに使う）。U07 の違反の種類と、違反した環が
+ * 穴か飛び地かから決める。
+ */
+export const RING_BREAK = {
+  /** 穴と穴が交わる・重なる。 */
+  HolesCross: 'holes-cross',
+  /** 飛び地と飛び地が交わる・重なる（外周どうし・穴の中の飛び地どうし）。 */
+  EnclavesCross: 'enclaves-cross',
+  /** 穴が外周からはみ出す（外周と交わる・外周の外へ出る）。 */
+  HoleLeavesOuter: 'hole-leaves-outer',
+  /** 穴の中の飛び地が穴からはみ出す。 */
+  EnclaveLeavesHole: 'enclave-leaves-hole',
+  /** それ以外（環の親子の組み方が崩れる）。 */
+  Other: 'other',
+} as const;
+export type RingBreak = (typeof RING_BREAK)[keyof typeof RING_BREAK];
+
+/** 断った編集の種類（文の動詞を選ぶ）。既定は「動かした」。 */
+export const EDIT_OPERATION = {
+  Move: 'move',
+  DeleteVertex: 'delete-vertex',
+} as const;
+export type EditOperation = (typeof EDIT_OPERATION)[keyof typeof EDIT_OPERATION];
 
 /** この編集で新しく壊れた面 1 つぶんの違反。 */
 export interface RingHierarchyGateViolation {
   readonly kind: typeof RING_HIERARCHY_GATE_KIND;
   readonly featureId: FeatureId;
   readonly at: TimePoint;
+  /** **この編集で新しく生まれた** 違反だけ（もとからあったものは入れない）。 */
   readonly violations: readonly RingViolation[];
+  /** 1 件目の違反の壊れ方（文の言い方）。 */
+  readonly breaks: RingBreak;
+  /** 壊れる面の呼び名（名前が空なら「名前のない面（1200年に作成）」。内部 ID は出さない）。 */
+  readonly featureName: string;
+  /** 壊れる年の書き方（「1500年」）。 */
+  readonly atLabel: string;
+  /** 断った編集の種類（削除の経路が {@link tagRejectionOperation} で付ける）。 */
+  readonly operation?: EditOperation;
+  /** 削除の経路で、消そうとした頂点の数。 */
+  readonly vertexCount?: number;
 }
+
+/** 壊れ方ごとの言い方（「〜形になるためです」「〜ので」の〜の部分）。 */
+const BREAK_PHRASE: Readonly<Record<RingBreak, string>> = {
+  [RING_BREAK.HolesCross]: '穴と穴が交わる',
+  [RING_BREAK.EnclavesCross]: '飛び地と飛び地が交わる',
+  [RING_BREAK.HoleLeavesOuter]: '穴が外周からはみ出す',
+  [RING_BREAK.EnclaveLeavesHole]: '穴の中の飛び地が穴からはみ出す',
+  [RING_BREAK.Other]: '穴・飛び地が外周や別の穴・飛び地と交わる',
+};
 
 /** 画面に出す文（何が起きたか → なぜか → 次に何をするか。設計書 §H.5）。 */
 export const RING_HIERARCHY_GATE_STRINGS = {
+  /** 記録の中身が読めないとき（通常は起きない）の文。 */
   refused:
     '動かした形を確定しませんでした。穴・飛び地が外周や別の穴・飛び地と交わる形になるためです。交わらない位置まで動かしてください。',
+  /** どの面のどの年の形か（「（「アルラーク国」の1500年の形）」）。 */
+  where: (featureName: string, atLabel: string): string => `（「${featureName}」の${atLabel}の形）`,
+  refusedMove: (phrase: string, where: string): string =>
+    `動かした形を確定しませんでした。${phrase}形になるためです${where}。交わらない位置まで動かしてください。`,
+  refusedDeleteOne: (phrase: string, where: string): string =>
+    `この頂点を消すと${phrase}ので消せません${where}。頂点は消していません。`,
+  refusedDeleteMany: (phrase: string, where: string): string =>
+    `選んだ頂点を消すと${phrase}ので消せません${where}。頂点は消していません。`,
 } as const;
 
 function isLeaf(feature: { readonly kind: string }): feature is LeafFeature {
@@ -64,7 +134,8 @@ function hasRingRelations(feature: LeafFeature): boolean {
  * 見るのは「参照が変わった系列の、参照が変わった錨」だけである（ドメインは不変なので、
  * 触っていない系列・錨は同じ参照のまま残る）。その錨に載っている面のうち環を 2 つ以上
  * 持つものを、その錨の年の姿で U07 に掛ける。壊れていたら、編集の前の同じ年の同じ面も
- * 掛け、そちらも壊れていたら（古いデータ）止めない。
+ * 掛け、**編集の前には無かった違反**（種類・環・相手の環の組）が 1 つでもあれば断る。
+ * 編集の前からあった違反だけなら（古いデータ）止めない。
  */
 export function ringHierarchyViolationsIntroduced(
   before: DomainProject,
@@ -95,12 +166,20 @@ export function ringHierarchyViolationsIntroduced(
         const leaf = live !== undefined && isLeaf(live) ? live : candidate;
         const result = validateCandidate(leaf.shape, store);
         if (result.valid) continue;
-        if (wasAlreadyBroken(before, candidate.id, at)) continue;
+        const priorKeys = violationKeysBefore(before, candidate.id, at);
+        const fresh = result.violations.filter((v) => !priorKeys.has(violationKey(v)));
+        if (fresh.length === 0) continue;
         out.push({
           kind: RING_HIERARCHY_GATE_KIND,
           featureId: candidate.id,
           at,
-          violations: result.violations,
+          violations: fresh,
+          breaks: breakOf(fresh[0]!, leaf.shape),
+          featureName: participantDisplayName(
+            leaf,
+            createdAtOf(after.histories, candidate.id, getCalendar(after.settings.calendarId)),
+          ),
+          atLabel: formatTimePoint(at),
         });
       }
     }
@@ -108,31 +187,104 @@ export function ringHierarchyViolationsIntroduced(
   return out;
 }
 
-/** 編集の前の同じ年の同じ面が、もともと壊れていたか（無ければ「壊れていなかった」）。 */
-function wasAlreadyBroken(before: DomainProject, featureId: FeatureId, at: TimePoint): boolean {
+/** 相手の環との関係が対称な（どちらの環の名で記録されてもよい）違反。 */
+function isSymmetric(kind: RingViolation['kind']): boolean {
+  return kind === RING_VIOLATION.SiblingsOverlap || kind === RING_VIOLATION.EnclavesOverlap;
+}
+
+/**
+ * 違反 1 件の見分けの鍵（種類・環・相手の環）。対称な違反は 2 つの環を並べ替えて、
+ * 「A が B と重なる」と「B が A と重なる」を同じ違反と読む。
+ */
+export function violationKey(v: RingViolation): string {
+  const related = v.relatedRingId ?? '';
+  if (isSymmetric(v.kind) && related !== '') {
+    const [x, y] = [String(v.ringId), String(related)].sort();
+    return `${v.kind}|${x!}|${y!}`;
+  }
+  return `${v.kind}|${String(v.ringId)}|${String(related)}`;
+}
+
+/** 編集の前の同じ年の同じ面が持っていた違反の鍵（無ければ空＝壊れていなかった）。 */
+function violationKeysBefore(
+  before: DomainProject,
+  featureId: FeatureId,
+  at: TimePoint,
+): ReadonlySet<string> {
   const prior = featuresAt(before, at).find((f) => f.id === featureId);
-  if (prior === undefined || !isLeaf(prior)) return false;
-  return !validateCandidate(prior.shape, verticesAt(before, at)).valid;
+  if (prior === undefined || !isLeaf(prior)) return new Set();
+  const result = validateCandidate(prior.shape, verticesAt(before, at));
+  return new Set(result.violations.map(violationKey));
+}
+
+/** 違反 1 件の壊れ方（文の言い方）。違反した環が穴か飛び地かを形から引く。 */
+function breakOf(v: RingViolation, shape: Shape): RingBreak {
+  const kindOf = (id: RingId | undefined) =>
+    id === undefined ? undefined : shape.rings.find((r) => r.id === id)?.kind;
+  switch (v.kind) {
+    case RING_VIOLATION.SiblingsOverlap:
+      return kindOf(v.ringId) === RING_KIND.Hole ? RING_BREAK.HolesCross : RING_BREAK.EnclavesCross;
+    case RING_VIOLATION.EnclavesOverlap:
+      return RING_BREAK.EnclavesCross;
+    case RING_VIOLATION.HoleNotContained:
+    case RING_VIOLATION.HoleCrossesParent:
+      return RING_BREAK.HoleLeavesOuter;
+    case RING_VIOLATION.NestedTerritoryNotContained:
+    case RING_VIOLATION.NestedTerritoryCrossesParent:
+      return RING_BREAK.EnclaveLeavesHole;
+    default:
+      return RING_BREAK.Other;
+  }
+}
+
+function isGateViolation(v: unknown): v is RingHierarchyGateViolation {
+  return (
+    typeof v === 'object' && v !== null && (v as { kind?: unknown }).kind === RING_HIERARCHY_GATE_KIND
+  );
 }
 
 /** 確定の手続きが返した違反の中に、この関門のものがあるか。 */
 export function isRingHierarchyRejection(rejected: RejectedResult): boolean {
   const detail = rejected.detail;
-  return (
-    Array.isArray(detail) &&
-    detail.some(
-      (v: unknown) =>
-        typeof v === 'object' &&
-        v !== null &&
-        (v as { kind?: unknown }).kind === RING_HIERARCHY_GATE_KIND,
-    )
-  );
+  return Array.isArray(detail) && detail.some(isGateViolation);
 }
 
 /**
- * 編集が断られたときに状態行へ出す文。この関門で断ったなら具体的な理由を、そうでなければ
- * 確定の手続きの文をそのまま出す。
+ * 断られた結果に「どの編集だったか」を付けた写しを返す（削除の経路が使う。文の動詞を
+ * 「動かした」から「消すと」へ替えるため）。この関門の違反でなければ元のまま返す。
+ */
+export function tagRejectionOperation(
+  rejected: RejectedResult,
+  operation: EditOperation,
+  vertexCount: number,
+): RejectedResult {
+  const detail = rejected.detail;
+  if (!Array.isArray(detail) || !detail.some(isGateViolation)) return rejected;
+  return {
+    ...rejected,
+    detail: detail.map((v: unknown) => (isGateViolation(v) ? { ...v, operation, vertexCount } : v)),
+  };
+}
+
+/**
+ * 編集が断られたときに状態行へ出す文。この関門で断ったなら、壊れ方と **どの面のどの年の
+ * 形か** を添えた具体的な理由を、そうでなければ確定の手続きの文をそのまま出す。
  */
 export function editRejectionMessage(rejected: RejectedResult): string {
-  return isRingHierarchyRejection(rejected) ? RING_HIERARCHY_GATE_STRINGS.refused : rejected.message;
+  const detail = rejected.detail;
+  if (!Array.isArray(detail)) return rejected.message;
+  const first = detail.find(isGateViolation);
+  if (first === undefined) return rejected.message;
+  // 記録の中身が欠けている（古い形の記録）なら、言い方を選ばない一般の文にする。
+  if (typeof first.featureName !== 'string' || typeof first.atLabel !== 'string') {
+    return RING_HIERARCHY_GATE_STRINGS.refused;
+  }
+  const phrase = BREAK_PHRASE[first.breaks] ?? BREAK_PHRASE[RING_BREAK.Other];
+  const where = RING_HIERARCHY_GATE_STRINGS.where(first.featureName, first.atLabel);
+  if (first.operation === EDIT_OPERATION.DeleteVertex) {
+    return (first.vertexCount ?? 1) > 1
+      ? RING_HIERARCHY_GATE_STRINGS.refusedDeleteMany(phrase, where)
+      : RING_HIERARCHY_GATE_STRINGS.refusedDeleteOne(phrase, where);
+  }
+  return RING_HIERARCHY_GATE_STRINGS.refusedMove(phrase, where);
 }

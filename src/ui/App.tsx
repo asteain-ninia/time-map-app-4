@@ -1792,6 +1792,8 @@ export function App(): JSX.Element {
           if (view === undefined) return;
           setPendingDelete({ featureId, name: featureNameOf(featureId), view });
         },
+        // 増分 8E の手直し: 頂点の削除が穴・飛び地の関門で断られたら、理由を状態行へ出す。
+        onRejected: (rejected) => announceEditRejectionRef.current?.(rejected),
       });
     },
     [store, recordCommit, vertexDeleteBinding, featureNameOf],
