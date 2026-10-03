@@ -118,6 +118,42 @@ test.describe('決定 (2) — まとめ役を終わらせる前に、下位領�
     }
   });
 
+  test('別の親へ移した（自分の系列を持つ）子も数えて最上位にする — 連邦化した国を終わらせる形', async () => {
+    // 2026-10-03 に見つけた穴: 確定は居候しか数えていなかったので、移された子は親が
+    // 終わったあとも消えた親を指し続け、板も「子 0 件」で出なかった。
+    const { app, page } = await launchApp();
+    try {
+      await nested(page, 3, [1000], 1200);
+      // 子 2 件を外の国へ移す（移した子は自分の系列を持つ）。
+      await markRow(page, childName(0), childId(0));
+      await markRow(page, childName(1), childId(1));
+      await page.getByTestId('tool-edit.reparent').click();
+      await page.getByTestId('reparent-confirm').click();
+      await page.getByTestId('reparent-parent-existing-pick-item-syn-nest-outsider').click();
+      await page.getByTestId('reparent-options-confirm').click();
+      await expect(page.getByTestId('reparent-options-dialog')).toHaveCount(0);
+      await page.getByTestId('tool-edit.select').click();
+
+      // 外の国を 1500 年で終わらせる → 板が出て、移した 2 件を数えている。
+      await jumpToYear(page, 1500);
+      await selectRow(page, '合成の外の国', 'syn-nest-outsider');
+      await page.getByTestId('sidebar-tab-properties').click();
+      await page.getByTestId('end-here').click();
+      const promoted = page.getByTestId('end-here-impact-promoted');
+      await expect(promoted).toContainText(childName(0));
+      await page.getByTestId('end-here-impact-confirm').click();
+      await expect(page.getByTestId('end-here-impact')).toHaveCount(0);
+
+      // 1600 年: 移した子は消えた親を指さず、最上位で居る。
+      await jumpToYear(page, 1600);
+      await selectRow(page, childName(0), childId(0));
+      await page.getByTestId('sidebar-tab-properties').click();
+      await expect(page.getByTestId('parent-value')).toHaveText('上位領域なし');
+    } finally {
+      await app.close();
+    }
+  });
+
   test('右クリックの「この年に終わったことにする」も同じ板を通る', async () => {
     const { app, page } = await launchApp();
     try {

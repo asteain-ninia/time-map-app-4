@@ -14,6 +14,7 @@ import { aggregate, anchorOf, fid, leafTile } from '../deletion/fixtures';
 import type { FeatureHistory } from '../persistence/serialize';
 
 import {
+  childrenPromotedByEnding,
   hasOwnSeries,
   materializeOwnSeries,
   promoteToTopLevelFrom,
@@ -184,5 +185,25 @@ describe('promoteToTopLevelFrom — 終わる年から最上位にする（決�
   it('自分の系列を持たない地物には何もしない（先に起こすのが前提）', () => {
     const base = nestedProject();
     expect(promoteToTopLevelFrom(base, [fid('a')], timePointYear(1500), calendar)).toBe(base);
+  });
+});
+
+describe('childrenPromotedByEnding — 終わらせたら最上位になる子（決定 (2)）', () => {
+  it('居候に加えて、自分の系列を持つ子（移された・束ねられた子）も数える', () => {
+    // a は自分の系列を持つ子（記録の置き場の直しで起こされた形）、b は居候のまま。
+    const base = materializeOwnSeries(nestedProject([1000]), [fid('a')], calendar).histories;
+    expect(childrenPromotedByEnding(base, fid('agg'), timePointYear(1500), calendar)).toEqual([
+      fid('b'),
+      fid('a'),
+    ]);
+  });
+
+  it('終わる年より前の錨でだけ子だった地物は数えない', () => {
+    const base = materializeOwnSeries(nestedProject([1000]), [fid('a')], calendar).histories;
+    // a を 1200 年から最上位にしておく（それ以後は agg の子ではない）。
+    const detached = promoteToTopLevelFrom(base, [fid('a')], timePointYear(1200), calendar);
+    expect(childrenPromotedByEnding(detached, fid('agg'), timePointYear(1500), calendar)).toEqual([
+      fid('b'),
+    ]);
   });
 });
