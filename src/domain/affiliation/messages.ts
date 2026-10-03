@@ -6,6 +6,9 @@
 
 import { AFFILIATION_REJECT, type AffiliationRejectKind } from './candidates';
 
+/** 所属変更コマンドの名前（`Command.label`。「元に戻せます」などに出る）。 */
+export const MSG_AFFILIATION_COMMAND_LABEL = '所属変更';
+
 /** 候補が対象自身、または同一地物。 */
 export const MSG_AFFILIATION_SAME =
   '対象自身を新しい上位領域に指定することはできません。';

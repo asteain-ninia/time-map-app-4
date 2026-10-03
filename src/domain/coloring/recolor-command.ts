@@ -37,9 +37,10 @@ import { asFeatureId, idToString, type DomainId, type FeatureId } from '../ids';
 import { type AdjacencyGraph, neighborsOf } from './adjacency';
 import { computeColorPlan } from './auto-color';
 import type { Palette } from './palette';
+import { MSG_RECOLOR_COMMAND_LABEL } from './messages';
 
 export const RECOLOR_COMMAND_KIND = defineCommandKind('recolor');
-export const RECOLOR_COMMAND_LABEL = '自動配色';
+export const RECOLOR_COMMAND_LABEL = MSG_RECOLOR_COMMAND_LABEL;
 
 /**
  * The minimal state boundary the recolor adapter needs (教訓 5.33). The host

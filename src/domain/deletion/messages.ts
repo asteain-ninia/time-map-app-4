@@ -8,6 +8,9 @@
 
 import { DELETE_REJECT, type DeleteRejectKind } from './eligibility';
 
+/** 削除コマンドの名前（`Command.label`。「元に戻せます」などに出る）。 */
+export const MSG_DELETE_FEATURE_COMMAND_LABEL = '地物の削除';
+
 /** Confirmation-dialog title for the "地物を削除" action (FR-85). */
 export const MSG_DELETE_CONFIRM_TITLE = '地物の削除';
 

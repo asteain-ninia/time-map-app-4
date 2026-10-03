@@ -19,6 +19,7 @@
 
 import type { WorldCoordinate } from '../coordinate';
 import { wrapLonDeg } from '../geo/longitude';
+import { SURVEY_COMPASS_WORDS } from './messages';
 
 /** Decimal places used for the decimal (十進) form. 6 dp ≈ 0.1 m at the equator. */
 export const DECIMAL_PLACES = 6;
@@ -30,10 +31,10 @@ export const INVALID_VALUE_TEXT = '—';
 
 /** Japanese compass words for the four hemispheres. */
 export const COMPASS = {
-  north: '北緯',
-  south: '南緯',
-  east: '東経',
-  west: '西経',
+  north: SURVEY_COMPASS_WORDS.north,
+  south: SURVEY_COMPASS_WORDS.south,
+  east: SURVEY_COMPASS_WORDS.east,
+  west: SURVEY_COMPASS_WORDS.west,
 } as const;
 
 /**

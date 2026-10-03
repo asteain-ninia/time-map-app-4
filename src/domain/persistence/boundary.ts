@@ -25,6 +25,7 @@ import {
   manifestSchema,
   type Manifest,
 } from './schema';
+import { PERSISTENCE_MESSAGES } from './messages';
 
 /** Why a parse attempt did not yield a usable manifest. */
 export const PARSE_OUTCOME = {
@@ -72,13 +73,13 @@ export type ParseResult =
 // --- 日本語 user messages (FR-115; gathered as constants, 技術方針 5.5) ------
 
 export const MSG_VERSION_MISSING =
-  'ファイル形式のバージョン情報が見つかりません。対応していない、または壊れたファイルの可能性があります。';
+  PERSISTENCE_MESSAGES.versionMissing;
 
 export const MSG_VERSION_INCOMPATIBLE =
-  'このファイルは現在のバージョンでは対応していない形式です。読み込みを中止しました。';
+  PERSISTENCE_MESSAGES.versionIncompatible;
 
 export const MSG_INVALID =
-  'ファイルの内容が壊れているか、形式が正しくありません。読み込みできませんでした。';
+  PERSISTENCE_MESSAGES.invalid;
 
 // --- the boundary entry point -----------------------------------------------
 

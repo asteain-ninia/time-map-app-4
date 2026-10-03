@@ -56,6 +56,7 @@ import {
   isKnifeLineEmpty,
   type KnifeLine,
 } from './knife-line';
+import { SPLIT_REJECT_TEXT } from './messages';
 
 // ---------------------------------------------------------------------------
 // Discriminated 分割可能検証結果 (spec §成果物「判別共用体」)
@@ -111,21 +112,21 @@ export type SplitRejectKind = (typeof SPLIT_REJECT)[keyof typeof SPLIT_REJECT];
 
 /** Japanese rejection messages (FR-115). Single source for UI + tests (教訓5.26). */
 export const SPLIT_REJECT_MESSAGE: Readonly<Record<SplitRejectKind, string>> = {
-  [SPLIT_REJECT.NotTerminal]: '集約地物は分割できません。末端地物を選んでください。',
-  [SPLIT_REJECT.DoesNotPierce]: '分断線が対象面を 2 つに分けていません。面を貫くように引いてください。',
-  [SPLIT_REJECT.TooFewVertices]: '分割結果が 3 頂点未満になります。分断線を引き直してください。',
-  [SPLIT_REJECT.InvalidShape]: '分割結果が不正な形状になります。分断線を引き直してください。',
-  [SPLIT_REJECT.Unresolvable]: '対象面の形状を取得できませんでした。',
-  [SPLIT_REJECT.DegenerateLine]: '分断線の点が足りません。',
-  [SPLIT_REJECT.SelfIntersectingCut]: '分断線が自己交差しています。交差しないように引き直してください。',
+  [SPLIT_REJECT.NotTerminal]: SPLIT_REJECT_TEXT.notTerminal,
+  [SPLIT_REJECT.DoesNotPierce]: SPLIT_REJECT_TEXT.doesNotPierce,
+  [SPLIT_REJECT.TooFewVertices]: SPLIT_REJECT_TEXT.tooFewVertices,
+  [SPLIT_REJECT.InvalidShape]: SPLIT_REJECT_TEXT.invalidShape,
+  [SPLIT_REJECT.Unresolvable]: SPLIT_REJECT_TEXT.unresolvable,
+  [SPLIT_REJECT.DegenerateLine]: SPLIT_REJECT_TEXT.degenerateLine,
+  [SPLIT_REJECT.SelfIntersectingCut]: SPLIT_REJECT_TEXT.selfIntersectingCut,
   [SPLIT_REJECT.ChordOutsidePieces]:
-    '分断線の途中の区間が、切り分けた片のどれにも入りませんでした。分断線を引き直してください。',
+    SPLIT_REJECT_TEXT.chordOutsidePieces,
   [SPLIT_REJECT.ChordEmptiesSide]:
-    '分断線の途中の区間で片を切ると、片側が空になりました。分断線を引き直してください。',
+    SPLIT_REJECT_TEXT.chordEmptiesSide,
   // 利用者はナイフでは頂点を打たないので「途中に点を打つ」とは言えない。この道具で実際に
   // 取れる次の手は「別の場所で切る」なので、そう書く (追加の道具の文言と同じ趣旨)。
   [SPLIT_REJECT.LongEdge]:
-    '切り口が世界を半周以上します。別の場所で切ってください（1 辺で経度 180 度以上は保存できません）。',
+    SPLIT_REJECT_TEXT.longEdge,
 };
 
 /** The minimum vertex count for a valid terminal polygon outer ring (FR-44). */

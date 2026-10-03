@@ -36,13 +36,14 @@ import {
   type Shape,
 } from '../ring';
 import { createVertex, type Vertex } from '../vertex';
+import { MSG_DIRECT_DOMAIN_NAME_SUFFIX } from './messages';
 
 // ---------------------------------------------------------------------------
 // 既定名称 (基準 5 / FR-37) — single source of truth
 // ---------------------------------------------------------------------------
 
 /** The 直轄領 既定名称 suffix. Centralised so the rule lives in exactly one place. */
-export const DIRECT_DOMAIN_NAME_SUFFIX = ' 直轄領';
+export const DIRECT_DOMAIN_NAME_SUFFIX = MSG_DIRECT_DOMAIN_NAME_SUFFIX;
 
 /**
  * The 既定名称 of the 直轄領 末端地物 for an aggregate whose name is `originalName`:
