@@ -15,7 +15,7 @@ import { getCalendar } from '../domain/time/calendar';
 import { timePointYear } from '../domain/time/time-point';
 import { createVertex, createVertexStore, type Vertex } from '../domain/vertex';
 
-import { RING_VIOLATION } from '../domain/ring-hierarchy';
+import { RING_VIOLATION, type RingViolation } from '../domain/ring-hierarchy';
 
 import {
   EDIT_OPERATION,
@@ -23,6 +23,8 @@ import {
   RING_HIERARCHY_GATE_KIND,
   RING_HIERARCHY_GATE_STRINGS,
   editRejectionMessage,
+  isNewViolation,
+  looseViolationKey,
   ringHierarchyViolationsIntroduced,
   tagRejectionOperation,
   violationKey,
@@ -214,6 +216,122 @@ describe('ringHierarchyViolationsIntroduced — もとから壊れていた面�
     const before = project(brokenFace([3, 2]));
     const after = project(brokenFace([3, 2], [13, 9]), 'a-2');
     expect(ringHierarchyViolationsIntroduced(before, after)).toEqual([]);
+  });
+});
+
+// 増分 8E の再手直し（再検証 2-1）: 「親の外へ出る」違反の 2 種類（交わる・完全に外）は同じ組の
+// 違反と読む。外へ出ていた穴・飛び地を戻す途中（完全に外 → はみ出す）は止めず、悪化（はみ出す →
+// 完全に外）は引き続き断る。再検証の合成 synth2 の K1〜K4 をそのまま写した。
+describe('ringHierarchyViolationsIntroduced — 外へ出ていた穴・飛び地を戻す途中', () => {
+  type RingSpec = {
+    readonly kind: 't' | 'h' | 'n';
+    readonly prefix: string;
+    readonly pts: readonly Pt[];
+    readonly parent?: string;
+  };
+  function faceOf(rings: readonly RingSpec[]): { feature: LeafFeature; vertices: Vertex[] } {
+    const vertices: Vertex[] = [];
+    const built = rings.map((r) => {
+      const v = ringVertices(r.prefix, r.pts);
+      vertices.push(...v);
+      const id = asRingId(`r-${r.prefix}`);
+      const ids = v.map((x) => x.id);
+      if (r.kind === 't') return createTerritoryRing(id, ids);
+      if (r.kind === 'n') return createTerritoryRing(id, ids, asRingId(`r-${r.parent!}`));
+      return createHoleRing(id, ids, asRingId(`r-${r.parent!}`));
+    });
+    const feature = createLeafFeature(
+      asFeatureId('f-face'),
+      createBasicAttributes('古い面', 0, 0),
+      color,
+      createShape(built),
+    );
+    return { feature, vertices };
+  }
+  const OUTER: RingSpec = { kind: 't', prefix: 'o', pts: [[0, 0], [10, 0], [10, 10], [0, 10]] };
+  const outerWith = (p1: Pt): RingSpec => ({ ...OUTER, pts: [[0, 0], p1, [10, 10], [0, 10]] });
+  const hole = (p0: Pt): RingSpec => ({
+    kind: 'h',
+    prefix: 'h1',
+    pts: [p0, [14, 2], [14, 4], [12, 4]],
+    parent: 'o',
+  });
+
+  it('K1: 外周の完全に外にあった穴の頂点を 1 つ外周の中へ戻す（はみ出す形になる）のは止めない', () => {
+    const before = project(faceOf([OUTER, hole([12, 2])]));
+    const after = project(faceOf([OUTER, hole([8, 2])]), 'a-2');
+    expect(ringHierarchyViolationsIntroduced(before, after)).toEqual([]);
+  });
+
+  it('K2: 外周を広げて、外にあった穴を包みにいく途中（はみ出す形）は止めない', () => {
+    const before = project(faceOf([OUTER, hole([12, 2])]));
+    const after = project(faceOf([outerWith([16, 0]), hole([12, 2])]), 'a-2');
+    expect(ringHierarchyViolationsIntroduced(before, after)).toEqual([]);
+  });
+
+  it('K3: 穴の外にあった穴の中の飛び地の頂点を、穴の中へ戻す途中は止めない', () => {
+    const wide: RingSpec = { kind: 't', prefix: 'o', pts: [[0, 0], [20, 0], [20, 10], [0, 10]] };
+    const h1: RingSpec = { kind: 'h', prefix: 'h1', pts: [[2, 2], [8, 2], [8, 8], [2, 8]], parent: 'o' };
+    const enclave = (p0: Pt): RingSpec => ({
+      kind: 'n',
+      prefix: 'n1',
+      pts: [p0, [14, 4], [14, 6], [12, 6]],
+      parent: 'h1',
+    });
+    const before = project(faceOf([wide, h1, enclave([12, 4])]));
+    const after = project(faceOf([wide, h1, enclave([6, 4])]), 'a-2');
+    expect(ringHierarchyViolationsIntroduced(before, after)).toEqual([]);
+  });
+
+  it('K4（対照）: 重なっている 2 つの穴の一方を動かしても、重なりの組が同じなら止めない', () => {
+    const h1: RingSpec = { kind: 'h', prefix: 'h1', pts: [[2, 2], [5, 2], [5, 5], [2, 5]], parent: 'o' };
+    const h2 = (p2: Pt): RingSpec => ({
+      kind: 'h',
+      prefix: 'h2',
+      pts: [[4, 4], [7, 4], p2, [4, 7]],
+      parent: 'o',
+    });
+    const before = project(faceOf([OUTER, h1, h2([7, 7])]));
+    const after = project(faceOf([OUTER, h1, h2([8, 8])]), 'a-2');
+    expect(ringHierarchyViolationsIntroduced(before, after)).toEqual([]);
+  });
+
+  it('悪化の向き: はみ出していた穴を外周の完全に外へ出すのは、新しい破損として断る', () => {
+    const before = project(faceOf([OUTER, hole([8, 2])]));
+    const after = project(faceOf([OUTER, hole([12, 2])]), 'a-2');
+    const found = ringHierarchyViolationsIntroduced(before, after);
+    expect(found).toHaveLength(1);
+    expect(found[0]!.violations.map((v) => v.kind)).toEqual([RING_VIOLATION.HoleNotContained]);
+  });
+
+  it('壊れていなかった面で穴を外周からはみ出させるのは、これまでどおり断る', () => {
+    const inside: RingSpec = { kind: 'h', prefix: 'h1', pts: [[6, 2], [8, 2], [8, 4], [6, 4]], parent: 'o' };
+    const before = project(faceOf([OUTER, inside]));
+    const after = project(faceOf([OUTER, hole([8, 2])]), 'a-2');
+    expect(ringHierarchyViolationsIntroduced(before, after)).toHaveLength(1);
+  });
+});
+
+describe('isNewViolation', () => {
+  const crosses: RingViolation = {
+    kind: RING_VIOLATION.HoleCrossesParent,
+    ringId: asRingId('h'),
+    relatedRingId: asRingId('o'),
+  };
+  const outside: RingViolation = {
+    kind: RING_VIOLATION.HoleNotContained,
+    ringId: asRingId('h'),
+    relatedRingId: asRingId('o'),
+  };
+  const priorOf = (v: RingViolation) => ({
+    exact: new Set([violationKey(v)]),
+    loose: new Set([looseViolationKey(v)]),
+  });
+  it('完全に外 → はみ出す（良くなった）は新しくない。はみ出す → 完全に外（悪化）は新しい', () => {
+    expect(isNewViolation(crosses, priorOf(outside))).toBe(false);
+    expect(isNewViolation(outside, priorOf(crosses))).toBe(true);
+    expect(isNewViolation(outside, priorOf(outside))).toBe(false);
+    expect(isNewViolation(crosses, { exact: new Set(), loose: new Set() })).toBe(true);
   });
 });
 
