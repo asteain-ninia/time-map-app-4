@@ -216,3 +216,12 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+
+/* 番号札（増分 8E の手直し）。色見本で 2 件を見分けられないときだけ、名前の前に出る。
+   地図の下見にも同じ札が描かれる。 */
+.conflict-tag {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin: 0 4px 0 0;
+  font-weight: 700;
+}

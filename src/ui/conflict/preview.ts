@@ -27,6 +27,7 @@ import {
   type LabelThresholds,
   DEFAULT_SCREEN_SIZES,
   buildFeaturePrimitives,
+  ringCentroid,
   shapeRect,
   type WorldRect,
 } from '../../render/feature-layer';
@@ -166,7 +167,15 @@ export interface PreviewOptions {
   readonly priorityFeatureId: FeatureId | undefined;
   readonly sizes?: ScreenSizes;
   readonly colors?: typeof PREVIEW_COLORS;
+  /**
+   * 2 件に添える番号札（増分 8E の手直し。設計適合 S2-4）。渡されたときだけ、a・b それぞれの
+   * **重なっていない部分** の中ほどに札を描く（行・ラジオの札と突き合わせるため）。
+   */
+  readonly tags?: { readonly a: string; readonly b: string };
 }
+
+/** 番号札の字の大きさ（CSS px）と色。下見の小ささでも読め、どの塗りの上でも見える縁取り。 */
+export const PREVIEW_TAG_STYLE = { fontPx: 16, fill: '#000000', halo: '#ffffff' } as const;
 
 // Preview labels are off (a tiny minimap should not crowd with text); the build
 // still goes through U19 so the area FILL rules (穴透過・飛び地) are identical.
@@ -230,7 +239,50 @@ export function buildConflictPreview(
   }
 
   const primitives = buildFeaturePrimitives(areas, buildOpts);
-  return { camera, primitives };
+  if (options.tags === undefined) return { camera, primitives };
+  const tagLabels: DrawPrimitive[] = [
+    tagLabel(options.tags.a, remainingArea(shapes.aShape, shapes.bShape), shapes.aShape),
+    tagLabel(options.tags.b, remainingArea(shapes.bShape, shapes.aShape), shapes.bShape),
+  ].filter((p): p is DrawPrimitive => p !== undefined);
+  return { camera, primitives: [...primitives, ...tagLabels] };
+}
+
+/** いちばん大きい（外接矩形の広い）片の外周。片が無ければ undefined。 */
+function largestOuterRing(shape: GeoMultiPolygon): GeoMultiPolygon[number][number] | undefined {
+  let best: GeoMultiPolygon[number][number] | undefined;
+  let bestArea = -1;
+  for (const polygon of shape) {
+    const outer = polygon[0];
+    if (outer === undefined || outer.length === 0) continue;
+    const r = shapeRect([polygon]);
+    const area = r === undefined ? 0 : (r.maxLon - r.minLon) * (r.maxLat - r.minLat);
+    if (area > bestArea) {
+      bestArea = area;
+      best = outer;
+    }
+  }
+  return best;
+}
+
+/**
+ * 番号札 1 枚。置き場所は、その面の **重なっていない部分** のいちばん大きい片の中ほど
+ * （頂点の平均）。重なっていない部分が無ければ（相手にすっぽり入っている）面そのものの中ほど。
+ */
+function tagLabel(
+  text: string,
+  ownPart: GeoMultiPolygon,
+  whole: GeoMultiPolygon,
+): DrawPrimitive | undefined {
+  const ring = largestOuterRing(ownPart) ?? largestOuterRing(whole);
+  if (ring === undefined) return undefined;
+  return {
+    kind: 'label',
+    at: ringCentroid(ring),
+    text,
+    fontPx: PREVIEW_TAG_STYLE.fontPx,
+    fill: PREVIEW_TAG_STYLE.fill,
+    halo: PREVIEW_TAG_STYLE.halo,
+  };
 }
 
 /** Build one evaluated area draw-item (label off; selected styling unused). */

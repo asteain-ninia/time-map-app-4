@@ -32,10 +32,15 @@ export interface MinimapPreviewProps {
   readonly widthPx: number;
   readonly heightPx: number;
   readonly devicePixelRatio?: number | undefined;
+  /**
+   * 2 件に添える番号札（増分 8E の手直し）。色見本で見分けられないときだけ渡される。
+   * 各面の重なっていない部分に札を描く。
+   */
+  readonly tags?: { readonly a: string; readonly b: string } | undefined;
 }
 
 export function MinimapPreview(props: MinimapPreviewProps): JSX.Element {
-  const { conflict, shapes, priorityFeatureId, widthPx, heightPx } = props;
+  const { conflict, shapes, priorityFeatureId, widthPx, heightPx, tags } = props;
   const dpr = props.devicePixelRatio ?? 1;
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -50,6 +55,7 @@ export function MinimapPreview(props: MinimapPreviewProps): JSX.Element {
     const preview = buildConflictPreview(conflict, shapes, {
       viewport,
       priorityFeatureId,
+      ...(tags !== undefined ? { tags } : {}),
     });
     // The 2D context may be unavailable in some test/headless environments; the
     // preview is参考 only, so a missing context is a no-op, never a crash. Probe
@@ -65,7 +71,7 @@ export function MinimapPreview(props: MinimapPreviewProps): JSX.Element {
     const renderer = new Canvas2DMapRenderer(canvas, { camera: preview.camera, viewport });
     renderer.drawBatch({ primitives: preview.primitives });
     // Re-paint only when an input that changes the picture changes (教訓 5.5).
-  }, [conflict, shapes, priorityFeatureId, widthPx, heightPx, dpr]);
+  }, [conflict, shapes, priorityFeatureId, widthPx, heightPx, dpr, tags?.a, tags?.b]);
 
   return (
     <canvas
@@ -74,6 +80,7 @@ export function MinimapPreview(props: MinimapPreviewProps): JSX.Element {
       role="img"
       aria-label={PREVIEW_STRINGS.ariaLabel}
       data-testid={`conflict-preview-${conflict.id}`}
+      data-tags={tags === undefined ? '' : `${tags.a}${tags.b}`}
       style={{ width: widthPx, height: heightPx }}
     />
   );
