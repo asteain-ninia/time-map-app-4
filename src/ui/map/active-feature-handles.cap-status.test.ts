@@ -31,6 +31,7 @@ import {
 import { clearDisplayResolutionCache } from './display-resolution-cache';
 import { clearFilteredDisplayCache } from './filtered-display';
 import {
+  canZoomInFurther,
   featureAnchorNearCentre,
   handleCapText,
   zoomUntilHandlesShow,
@@ -125,6 +126,30 @@ describe('上限の理由は、描画の上限の判定と食い違わない', (
       '頂点が 2,230 あり、上限 2,000 のため印を出していません。拡大すると出ます',
     );
     expect(handleCapText(12, 0)).toBe('頂点が 12 あり、上限 0 のため印を出していません。');
+  });
+
+  it('ズームの上限まで寄っているときは「拡大すると出ます」を言わず、事実だけを言う（設計適合 2-4）', () => {
+    const text = handleCapText(2230, 2000, true);
+    expect(text).toBe(
+      '頂点が 2,230 あり、上限 2,000 のため印を出していません。これ以上は拡大できません。',
+    );
+    expect(text).not.toContain('拡大すると出ます');
+  });
+
+  it('まだ拡大できるかは［拡大］と同じ判定（次の段で倍率が上がるか）', () => {
+    const range = { minZoom: 0.1, maxZoom: FIT.zoom * 4 };
+    expect(canZoomInFurther(FIT, VIEWPORT, range)).toBe(true);
+    const atMax: Camera = { ...FIT, zoom: FIT.zoom * 4 };
+    expect(canZoomInFurther(atMax, VIEWPORT, range)).toBe(false);
+    // 上限ちょうどまで寄せた［拡大］の結果も「もう寄れない」と答える（2 つの判定が割れない）。
+    const stuck = zoomUntilHandlesShow({
+      camera: FIT,
+      viewport: VIEWPORT,
+      range,
+      anchor: { x: 450, y: 300 },
+      stillCapped: () => true,
+    });
+    expect(canZoomInFurther(stuck, VIEWPORT, range)).toBe(false);
   });
 });
 

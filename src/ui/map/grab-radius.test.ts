@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { Camera, Viewport } from '../../render';
+import { DEFAULT_ZOOM_RANGE, type Camera, type Viewport } from '../../render';
 
 import {
   GRAB_RADIUS_GROW_FROM_RATIO,
@@ -24,22 +24,32 @@ describe('掴める距離', () => {
     expect(worldFitZoom({ widthCss: 0, heightCss: 600, devicePixelRatio: 1 })).toBe(0);
   });
 
-  it('下限は旧来の 8px と同じ値で、全体表示から 16 倍までは下限のまま', () => {
+  it('下限は旧来の 8px と同じ値で、全体表示から 64 倍までは下限のまま', () => {
     expect(GRAB_RADIUS_MIN_PX).toBe(DEFAULT_HIT_RADIUS_PX);
+    expect(GRAB_RADIUS_GROW_FROM_RATIO).toBe(64);
     expect(grabRadiusPx(at(1), VIEW)).toBe(8);
-    expect(grabRadiusPx(at(4), VIEW)).toBe(8);
+    expect(grabRadiusPx(at(20), VIEW)).toBe(8);
     expect(grabRadiusPx(at(GRAB_RADIUS_GROW_FROM_RATIO), VIEW)).toBe(8);
   });
 
-  it('16 倍を超えると倍率に比例して広がり、32 倍で上限 16px に止まる', () => {
-    expect(grabRadiusPx(at(24), VIEW)).toBeCloseTo(12);
-    expect(grabRadiusPx(at(32), VIEW)).toBe(GRAB_RADIUS_MAX_PX);
+  it('既定のズーム範囲では、窓の最小幅に近い狭い地図でも 8px のまま（設計適合 2-1 の手直し）', () => {
+    // ズームの上限 50px/度。地図の幅 300px（窓の最小幅 800px からサイドバーを引いても余る）。
+    for (const widthCss of [300, 480, 900, 1280, 1920]) {
+      const view: Viewport = { widthCss, heightCss: 600, devicePixelRatio: 1 };
+      const max: Camera = { centerLon: 0, centerLat: 0, zoom: DEFAULT_ZOOM_RANGE.maxZoom };
+      expect(grabRadiusPx(max, view)).toBe(GRAB_RADIUS_MIN_PX);
+    }
+  });
+
+  it('64 倍を超えると倍率に比例して広がり、128 倍で上限 16px に止まる（ズームの上限を上げたときだけ）', () => {
+    expect(grabRadiusPx(at(96), VIEW)).toBeCloseTo(12);
+    expect(grabRadiusPx(at(128), VIEW)).toBe(GRAB_RADIUS_MAX_PX);
     expect(grabRadiusPx(at(1000), VIEW)).toBe(GRAB_RADIUS_MAX_PX);
   });
 
   it('倍率が大きいほど小さくはならない（単調）', () => {
     let prev = 0;
-    for (let r = 0.25; r <= 64; r *= 1.5) {
+    for (let r = 0.25; r <= 256; r *= 1.5) {
       const now = grabRadiusPx(at(r), VIEW);
       expect(now).toBeGreaterThanOrEqual(prev);
       expect(now).toBeGreaterThanOrEqual(GRAB_RADIUS_MIN_PX);

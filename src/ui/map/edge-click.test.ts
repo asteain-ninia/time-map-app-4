@@ -61,6 +61,18 @@ describe('辺の中点', () => {
     expect(Math.abs(Math.abs(mid.lon) - 180)).toBeLessThan(1e-9);
   });
 
+  it('押した所と同じ経度の巻きで返す（±360° の複製の上で押しても、確定が「半周以上」で断られない）', () => {
+    const r = resolveDisplayFor(project(0), timePointYear(5), DISPLAY);
+    // 東へ 1 周した複製の上（経度 363°）で押した。中点は 5° ではなく 365°。
+    const onReplica = beginDrag(edgeSession('A-0', 'A-1').target, { lon: 363, lat: 1 });
+    expect(edgeAddMidpoint(r, onReplica)).toEqual({ lon: 365, lat: 0 });
+    // 経度 180° をまたぐ辺を、東側（179.9°）で押した。中点は −180° ではなく 180°。
+    const seam = resolveDisplayFor(project(175), timePointYear(5), DISPLAY);
+    const nearSeam = beginDrag(edgeSession('A-0', 'A-1').target, { lon: 179.9, lat: 0.2 });
+    const mid = edgeAddMidpoint(seam, nearSeam)!;
+    expect(mid.lon).toBeCloseTo(180, 9);
+  });
+
   it('隣り合っていない 2 点・無い地物・辺を足す操作でないときは返さない', () => {
     const r = resolveDisplayFor(project(0), timePointYear(5), DISPLAY);
     expect(edgeAddMidpoint(r, edgeSession('A-0', 'A-2'))).toBeUndefined();

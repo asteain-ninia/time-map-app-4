@@ -3,19 +3,26 @@
 // 固定すること: 出たら `onOpenChange(true)`、閉じたら・部品ごと外れたら `false`
 // （名乗りっぱなしで鍵盤が戻らない、を作らない）／Escape と一覧の外の押下で必ず消える／
 // 一覧の中の押下では消えない／行を押すと選んで閉じる／行の本文は中身の書式どおり。
+// 増分 8A の手直し: 21 件目より先は「もっと見る」で出せる（GPT #1）／行に乗っている間、
+// その頂点の座標が置き場の「乗っている頂点」に入る（地図の輪。設計適合 2-3）。
 
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
+import { createCoordinate } from '../../domain/coordinate';
 import { asFeatureId, asVertexId } from '../../domain/ids';
 
 import { VertexCandidateList } from './VertexCandidateList';
-import { VertexCandidateStore, type VertexCandidateState } from './vertex-candidates';
+import {
+  VERTEX_CANDIDATE_MAX_ROWS,
+  VertexCandidateStore,
+  type VertexCandidateRow,
+  type VertexCandidateState,
+} from './vertex-candidates';
 
 const STATE: VertexCandidateState = {
   x: 10,
   y: 20,
-  more: 3,
   rows: [
     {
       featureId: asFeatureId('A'),
@@ -23,6 +30,7 @@ const STATE: VertexCandidateState = {
       featureName: 'A国',
       label: '頂点 #412（34.10°N 12.51°E・B国と共有）',
       distancePx: 0.4,
+      coordinate: createCoordinate(12.51, 34.1),
     },
     {
       featureId: asFeatureId('A'),
@@ -30,9 +38,23 @@ const STATE: VertexCandidateState = {
       featureName: 'A国',
       label: '頂点 #413（34.11°N 12.52°E）',
       distancePx: 1.2,
+      coordinate: createCoordinate(12.52, 34.11),
     },
   ],
 };
+
+/** 同じ座標に `n` 個並んだ候補（拡大しても絞れない形）。 */
+function coincident(n: number): VertexCandidateState {
+  const rows: VertexCandidateRow[] = Array.from({ length: n }, (_, i) => ({
+    featureId: asFeatureId('A'),
+    vertexId: asVertexId(`c${String(i)}`),
+    featureName: 'A国',
+    label: `頂点 #c${String(i)}（0.00°N 0.00°E）`,
+    distancePx: 0,
+    coordinate: createCoordinate(0, 0),
+  }));
+  return { x: 0, y: 0, rows };
+}
 
 function setup() {
   const store = new VertexCandidateStore();
@@ -87,14 +109,55 @@ describe('頂点の候補一覧', () => {
     expect(store.get()).toBeNull();
   });
 
-  it('行は中身の書式で出て、押すと選んで閉じる。畳んだ残りの件数も出る', () => {
+  it('行は中身の書式で出て、押すと選んで閉じる', () => {
     const { store, onPick } = setup();
     act(() => store.set(STATE));
     const row = screen.getByTestId('vertex-candidate-v412');
     expect(row.textContent).toContain('頂点 #412（34.10°N 12.51°E・B国と共有）');
-    expect(screen.getByTestId('vertex-candidates-more').textContent).toContain('ほか 3 件');
+    // 全部出ているときは「ほか N 件」も「もっと見る」も出さない。
+    expect(screen.queryByTestId('vertex-candidates-more')).toBeNull();
     fireEvent.click(row);
     expect(onPick).toHaveBeenCalledWith('A', 'v412');
     expect(store.get()).toBeNull();
+  });
+
+  it('21 件以上なら最初は 20 行と残りの件数。「もっと見る」で残りが出て、最後の 1 つも選べる', () => {
+    const { store, onPick } = setup();
+    const n = VERTEX_CANDIDATE_MAX_ROWS * 2 + 3; // 43 個が同じ座標に重なっている
+    act(() => store.set(coincident(n)));
+    expect(screen.getAllByTestId(/^vertex-candidate-c\d+$/)).toHaveLength(VERTEX_CANDIDATE_MAX_ROWS);
+    expect(screen.getByTestId('vertex-candidates-more').textContent).toContain(
+      `ほか ${String(n - VERTEX_CANDIDATE_MAX_ROWS)} 件`,
+    );
+    fireEvent.click(screen.getByTestId('vertex-candidates-show-more'));
+    expect(screen.getAllByTestId(/^vertex-candidate-c\d+$/)).toHaveLength(VERTEX_CANDIDATE_MAX_ROWS * 2);
+    fireEvent.click(screen.getByTestId('vertex-candidates-show-more'));
+    expect(screen.getAllByTestId(/^vertex-candidate-c\d+$/)).toHaveLength(n);
+    expect(screen.queryByTestId('vertex-candidates-more')).toBeNull();
+    fireEvent.click(screen.getByTestId(`vertex-candidate-c${String(n - 1)}`));
+    expect(onPick).toHaveBeenCalledWith('A', `c${String(n - 1)}`);
+  });
+
+  it('出し直した一覧は最初の 20 行に戻る', () => {
+    const { store } = setup();
+    act(() => store.set(coincident(30)));
+    fireEvent.click(screen.getByTestId('vertex-candidates-show-more'));
+    expect(screen.getAllByTestId(/^vertex-candidate-c\d+$/)).toHaveLength(30);
+    act(() => store.set(coincident(30)));
+    expect(screen.getAllByTestId(/^vertex-candidate-c\d+$/)).toHaveLength(VERTEX_CANDIDATE_MAX_ROWS);
+  });
+
+  it('行に乗っている・焦点がある間だけ、その頂点の座標が「乗っている頂点」に入り、畳むと消える', () => {
+    const { store } = setup();
+    act(() => store.set(STATE));
+    const row = screen.getByTestId('vertex-candidate-v413');
+    fireEvent.pointerEnter(row);
+    expect(store.getHover()).toEqual(createCoordinate(12.52, 34.11));
+    fireEvent.pointerLeave(row);
+    expect(store.getHover()).toBeNull();
+    fireEvent.focus(row);
+    expect(store.getHover()).toEqual(createCoordinate(12.52, 34.11));
+    act(() => store.clear());
+    expect(store.getHover()).toBeNull();
   });
 });

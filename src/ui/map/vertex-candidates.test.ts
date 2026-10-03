@@ -5,7 +5,10 @@
 //     （いま選んでいる地物が引いていればそれ。選んだ瞬間に選択が隣の国へ替わらない）。
 //   - 共有の相手は「最初の持ち主」だけでなく **引いている地物の全部**から出る（B42）。
 //   - 一覧は **動かさずに離したとき**だけ出て、ドラッグでは出ない。押すたびに畳む。
-//   - 一覧から選んだ頂点は、掴める距離の中なら最寄りより優先して掴まれる。
+//   - 一覧から選んだ頂点は、**直後の左ドラッグ 1 回だけ**最寄りより優先して掴まれる
+//     （手直し・反証 重 3: 右クリック・Shift つき・2 回目の押下・状態が替わったあとには効かない）。
+//   - 候補の全部を持つ（21 件目より先も「もっと見る」で選べる。GPT #1）。
+//   - 押下の指（ポインタ）を見分ける（GPT #2）。
 //   - 世界・年・道具・表示・カメラが替わったら畳む（選択の変化では畳まない）。
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -34,14 +37,18 @@ import {
   VertexCandidateStore,
   buildCandidateRow,
   buildCandidateState,
+  createListPickOnce,
   createVertexCandidateGesture,
   describeNearVertices,
   formatCandidateCoordinate,
-  preferSelectedVertex,
+  preferListPick,
+  sameCandidateContext,
   vertexCitersFor,
   vertexNumberOf,
   watchCandidateStaleness,
+  type CandidateRelevantState,
   type DescribedVertexCandidate,
+  type ListPick,
 } from './vertex-candidates';
 
 const DISPLAY: DisplayControlInput = {
@@ -183,53 +190,124 @@ describe('一覧の状態', () => {
     expect(buildCandidateState({ x: 0, y: 0 }, [cand(1)], null, nameOf)).toBeNull();
   });
 
-  it('多すぎる候補は近い順に上限で畳み、残りの件数を持つ', () => {
+  it('多すぎる候補も近い順に全部持つ（畳むのは描く側。21 件目より先も選べる＝GPT #1）', () => {
     const many = Array.from({ length: VERTEX_CANDIDATE_MAX_ROWS + 5 }, (_, i) => cand(i));
     const state = buildCandidateState({ x: 3, y: 4 }, many, null, nameOf)!;
-    expect(state.rows).toHaveLength(VERTEX_CANDIDATE_MAX_ROWS);
-    expect(state.more).toBe(5);
+    expect(state.rows).toHaveLength(VERTEX_CANDIDATE_MAX_ROWS + 5);
     expect(state.rows[0]!.vertexId).toBe('v0');
+    expect(state.rows.at(-1)!.vertexId).toBe(`v${String(VERTEX_CANDIDATE_MAX_ROWS + 4)}`);
+    // 行は頂点の座標を持つ（行に乗ったとき地図で囲むため）。
+    expect(state.rows[3]!.coordinate).toEqual(createCoordinate(3, 0));
     expect({ x: state.x, y: state.y }).toEqual({ x: 3, y: 4 });
+  });
+
+  it('名前は地物ごとに 1 回だけ引く', () => {
+    const many = Array.from({ length: 30 }, (_, i) => cand(i));
+    const spy = vi.fn(nameOf);
+    buildCandidateState({ x: 0, y: 0 }, many, null, spy);
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('選んだ頂点を優先して掴む', () => {
+describe('一覧から選んだ直後の左ドラッグ 1 回だけ優先して掴む（反証 重 3 の手直し）', () => {
   const near: NearVertexCandidate[] = [
     { featureId: asFeatureId('A'), vertexId: asVertexId('v1'), distancePx: 0.5 },
     { featureId: asFeatureId('A'), vertexId: asVertexId('v2'), distancePx: 1.5 },
   ];
+  const ctx = (): CandidateRelevantState => ({
+    domain: {},
+    currentTime: {},
+    mode: 'edit',
+    activeTool: 'edit.vertex',
+    displayControl: {},
+    filter: {},
+    camera: {},
+  });
+  const NONE = { shift: false, ctrl: false, alt: false, meta: false };
+  const v1Hit = vertexHit(asFeatureId('A'), asVertexId('v1'));
+  const v2Hit = vertexHit(asFeatureId('A'), asVertexId('v2'));
+  function picked(): { pick: ListPick; now: Parameters<typeof preferListPick>[3] } {
+    const context = ctx();
+    return {
+      pick: { featureId: asFeatureId('A'), vertexId: asVertexId('v2'), context },
+      now: {
+        context,
+        selection: { vertexIds: new Set([asVertexId('v2')]), vertexOwner: asFeatureId('A') },
+      },
+    };
+  }
 
-  it('掴める距離に選んでいる頂点が居れば、最寄りよりそちらを掴む', () => {
-    const hit = vertexHit(asFeatureId('A'), asVertexId('v1'));
-    const out = preferSelectedVertex(
-      hit,
-      { vertexIds: new Set([asVertexId('v2')]), vertexOwner: asFeatureId('A') },
-      () => near,
-    );
-    expect(out).toEqual(vertexHit(asFeatureId('A'), asVertexId('v2')));
+  it('印が立っていて修飾キーが無ければ、最寄りの v1 ではなく一覧で選んだ v2 を掴む', () => {
+    const { pick, now } = picked();
+    expect(preferListPick(v1Hit, pick, NONE, now, () => near)).toEqual(v2Hit);
   });
 
-  it('選んでいなければ・選んだ頂点が遠ければ素通し（近さを引き直さない）', () => {
-    const hit = vertexHit(asFeatureId('A'), asVertexId('v1'));
+  it('印が無ければ（一覧から選んでいない・2 回目の押下）素通しで、近さも引き直さない', () => {
+    const { now } = picked();
     const probe = vi.fn(() => near);
-    expect(
-      preferSelectedVertex(hit, { vertexIds: new Set(), vertexOwner: null }, probe),
-    ).toBe(hit);
+    expect(preferListPick(v1Hit, null, NONE, now, probe)).toBe(v1Hit);
     expect(probe).not.toHaveBeenCalled();
-    expect(
-      preferSelectedVertex(
-        hit,
-        { vertexIds: new Set([asVertexId('v9')]), vertexOwner: asFeatureId('A') },
-        probe,
-      ),
-    ).toBe(hit);
+  });
+
+  it('Shift・Ctrl・Alt・Meta のどれかつきなら素通し（足す・外すは押した頂点に効く）', () => {
+    const { pick, now } = picked();
+    for (const k of ['shift', 'ctrl', 'alt', 'meta'] as const) {
+      expect(preferListPick(v1Hit, pick, { ...NONE, [k]: true }, now, () => near)).toBe(v1Hit);
+    }
+  });
+
+  it('印を立ててから世界・年・道具・表示・カメラのどれかが替わっていたら素通し', () => {
+    const { pick, now } = picked();
+    const keys = [
+      'domain',
+      'currentTime',
+      'mode',
+      'activeTool',
+      'displayControl',
+      'filter',
+      'camera',
+    ] as const;
+    for (const key of keys) {
+      const changed = { ...now, context: { ...now.context, [key]: {} } };
+      expect(sameCandidateContext(pick.context, changed.context)).toBe(false);
+      expect(preferListPick(v1Hit, pick, NONE, changed, () => near)).toBe(v1Hit);
+    }
+  });
+
+  it('選んだ頂点がもう選択に居ない・持ち主が違う・掴める距離に居ないなら素通し', () => {
+    const { pick, now } = picked();
+    const dropped = {
+      ...now,
+      selection: { vertexIds: new Set([asVertexId('v1')]), vertexOwner: asFeatureId('A') },
+    };
+    expect(preferListPick(v1Hit, pick, NONE, dropped, () => near)).toBe(v1Hit);
+    const otherOwner = { ...now, selection: { ...now.selection, vertexOwner: asFeatureId('B') } };
+    expect(preferListPick(v1Hit, pick, NONE, otherOwner, () => near)).toBe(v1Hit);
+    const onlyNearest = near.slice(0, 1);
+    expect(preferListPick(v1Hit, pick, NONE, now, () => onlyNearest)).toBe(v1Hit);
   });
 
   it('頂点でない当たり（本体・辺・空）は変えない', () => {
-    const sel = { vertexIds: new Set([asVertexId('v2')]), vertexOwner: asFeatureId('A') };
-    expect(preferSelectedVertex(EMPTY_HIT, sel, () => near)).toBe(EMPTY_HIT);
+    const { pick, now } = picked();
+    expect(preferListPick(EMPTY_HIT, pick, NONE, now, () => near)).toBe(EMPTY_HIT);
     const edge = edgeHit(asFeatureId('A'), asVertexId('v1'), asVertexId('v2'));
-    expect(preferSelectedVertex(edge, sel, () => near)).toBe(edge);
+    expect(preferListPick(edge, pick, NONE, now, () => near)).toBe(edge);
+  });
+
+  it('印は次の押下で必ず消える（取り出したら空。立て直すと前の印は捨てる）', () => {
+    const once = createListPickOnce();
+    const { pick } = picked();
+    expect(once.take()).toBeNull();
+    once.arm(pick);
+    expect(once.take()).toBe(pick);
+    expect(once.take()).toBeNull();
+    const other = { ...pick, vertexId: asVertexId('v1') };
+    once.arm(pick);
+    once.arm(other);
+    expect(once.take()).toBe(other);
+    once.arm(pick);
+    once.clear();
+    expect(once.take()).toBeNull();
   });
 });
 
@@ -263,37 +341,86 @@ describe('クリックのときだけ出す', () => {
 
   it('押して動かさずに離したら出る（押した瞬間には出ない）', () => {
     const { store, gesture } = setup();
-    gesture.press({ x: 10, y: 10 }, true);
+    gesture.press({ x: 10, y: 10 }, true, 1);
     expect(store.get()).toBeNull();
-    gesture.release({ x: 11, y: 10 });
+    gesture.release({ x: 11, y: 10 }, 1);
     expect(store.get()?.rows.map((r) => r.vertexId)).toEqual(['v1', 'v2']);
   });
 
   it('ドラッグ（しきい値を越えて動かした）なら出ない', () => {
     const { store, gesture } = setup();
-    gesture.press({ x: 10, y: 10 }, true);
-    gesture.move({ x: 30, y: 10 });
-    gesture.release({ x: 10, y: 10 }); // 戻ってきて離しても、一度ドラッグになったら出さない
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.move({ x: 30, y: 10 }, 1);
+    gesture.release({ x: 10, y: 10 }, 1); // 戻ってきて離しても、一度ドラッグになったら出さない
     expect(store.get()).toBeNull();
   });
 
   it('押すたびに畳む（地図の他所のクリックで必ず消える）・右ボタンでは出さない', () => {
     const { store, gesture } = setup();
-    gesture.press({ x: 10, y: 10 }, true);
-    gesture.release({ x: 10, y: 10 });
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.release({ x: 10, y: 10 }, 1);
     expect(store.get()).not.toBeNull();
-    gesture.press({ x: 200, y: 200 }, false);
+    gesture.press({ x: 200, y: 200 }, false, 1);
     expect(store.get()).toBeNull();
-    gesture.release({ x: 200, y: 200 });
+    gesture.release({ x: 200, y: 200 }, 1);
     expect(store.get()).toBeNull();
   });
 
   it('取り消しは出ている一覧も保留中の候補も捨てる', () => {
     const { store, gesture } = setup();
-    gesture.press({ x: 10, y: 10 }, true);
+    gesture.press({ x: 10, y: 10 }, true, 1);
     gesture.cancel();
-    gesture.release({ x: 10, y: 10 });
+    gesture.release({ x: 10, y: 10 }, 1);
     expect(store.get()).toBeNull();
+  });
+
+  it('押したのと別のポインタの移動・解放は数えない（GPT #2）', () => {
+    const { store, gesture } = setup();
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.move({ x: 60, y: 10 }, 2); // 別の指が大きく動いても、1 本目のドラッグにはしない
+    gesture.release({ x: 60, y: 10 }, 2); // 別の指の解放では出さない（保留も消費しない）
+    expect(store.get()).toBeNull();
+    gesture.release({ x: 10, y: 10 }, 1); // 押した指の解放で出る
+    expect(store.get()).not.toBeNull();
+  });
+
+  it('保留中に別のポインタが押しても、先の保留を上書きしない（先に押したほうが勝つ）', () => {
+    const { store, gesture } = setup();
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.press({ x: 300, y: 300 }, true, 2);
+    gesture.release({ x: 300, y: 300 }, 2);
+    expect(store.get()).toBeNull();
+    gesture.release({ x: 10, y: 10 }, 1);
+    expect(store.get()?.x).toBe(10);
+  });
+
+  it('pointercancel は同じポインタの保留だけを捨てる', () => {
+    const { store, gesture } = setup();
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.cancel(2);
+    gesture.release({ x: 10, y: 10 }, 1);
+    expect(store.get()).not.toBeNull();
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.cancel(1);
+    gesture.release({ x: 10, y: 10 }, 1);
+    expect(store.get()).toBeNull();
+  });
+
+  it('地図の外へ出たら保留だけを捨て、出ている一覧は残す。次の押下は別の指でも受け付ける', () => {
+    const { store, gesture } = setup();
+    // 出ている一覧は、一覧へポインタを動かす（入力層から出る）だけでは畳まない。
+    gesture.press({ x: 10, y: 10 }, true, 1);
+    gesture.release({ x: 10, y: 10 }, 1);
+    gesture.leave();
+    expect(store.get()).not.toBeNull();
+    // 押したまま外へ出て離した押下は、保留として残らない。
+    gesture.press({ x: 10, y: 10 }, true, 3);
+    gesture.leave();
+    gesture.release({ x: 10, y: 10 }, 3);
+    expect(store.get()).toBeNull();
+    gesture.press({ x: 20, y: 20 }, true, 4);
+    gesture.release({ x: 20, y: 20 }, 4);
+    expect(store.get()?.x).toBe(20);
   });
 });
 
