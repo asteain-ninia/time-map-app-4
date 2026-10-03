@@ -54,6 +54,7 @@ import {
   type SaveRequest,
   type SaveResponse,
 } from '../ipc/contract';
+import { SHELL_MAIN_STRINGS } from './strings';
 
 /** A registrar: binds a channel to an async handler (Electron `ipcMain.handle`). */
 export type IpcRegistrar = (
@@ -276,21 +277,21 @@ export interface IpcDeps {
   readonly isTrustedSender?: (senderId: number) => boolean;
 }
 
-const READ_FAILED_MSG = 'ファイルの読み込みに失敗しました。';
+const READ_FAILED_MSG = SHELL_MAIN_STRINGS.readFailed;
 /**
  * 一覧に載っていない id で世代を開こうとした（増分 8D）。主プロセスは任意のパスを
  * 受け取らないので、ここへ来るのは古い一覧の id か、壊れた呼び出しだけである。
  */
 export const UNKNOWN_BACKUP_MSG =
-  'その世代は一覧に見つかりませんでした。もう一度「以前の保存から開く」から選んでください。';
+  SHELL_MAIN_STRINGS.unknownBackup;
 /**
  * 一覧で選んだ世代のファイルが、開く直前に見つからなかった（増分 8D の手直し）。一覧を出した
  * あとで、ほかのソフトや手で消された・名前が変わったときだけ起きる（アプリ自身の保存の
  * 間引きは、一覧に出している世代を消さない）。
  */
 export const BACKUP_GONE_MSG =
-  '選んだ世代のファイルが見つかりませんでした（一覧を出したあとで消されたか、名前が変わったようです）。いま開いている内容はそのままです。';
-const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.floor(MAX_TMAP_BYTES / (1024 * 1024))} MB）。`;
+  SHELL_MAIN_STRINGS.backupGone;
+const FILE_TOO_LARGE_MSG = SHELL_MAIN_STRINGS.fileTooLarge(Math.floor(MAX_TMAP_BYTES / (1024 * 1024)));
 
 /**
  * Codex 全体レビュー MED「main IPC 保存側 runtime validation 欠如」への対処: the
@@ -314,27 +315,27 @@ const FILE_TOO_LARGE_MSG = `ファイルが大きすぎます（上限 ${Math.fl
 export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): string | null {
   const maxEntry = caps.maxEntryBytes ?? MAX_TMAP_ENTRY_BYTES;
   const maxTotal = caps.maxTotalBytes ?? MAX_TMAP_TOTAL_BYTES;
-  if (typeof req !== 'object' || req === null) return '保存要求の形式が不正です。';
-  if (!(req.baseMapImage instanceof Uint8Array)) return '保存要求の形式が不正です。';
+  if (typeof req !== 'object' || req === null) return SHELL_MAIN_STRINGS.saveRequestInvalid;
+  if (!(req.baseMapImage instanceof Uint8Array)) return SHELL_MAIN_STRINGS.saveRequestInvalid;
   if (req.baseMapImage.length > maxEntry) {
-    return '背景地図画像が大きすぎるため保存できません。';
+    return SHELL_MAIN_STRINGS.baseMapTooLarge;
   }
-  if (!Array.isArray(req.attachments)) return '保存要求の形式が不正です。';
+  if (!Array.isArray(req.attachments)) return SHELL_MAIN_STRINGS.saveRequestInvalid;
   let totalBytes = req.baseMapImage.length;
   for (const asset of req.attachments) {
-    if (typeof asset !== 'object' || asset === null) return '保存要求の形式が不正です。';
+    if (typeof asset !== 'object' || asset === null) return SHELL_MAIN_STRINGS.saveRequestInvalid;
     const { name, bytes } = asset as { name: unknown; bytes: unknown };
-    if (typeof name !== 'string' || name.length === 0) return '保存要求の形式が不正です。';
+    if (typeof name !== 'string' || name.length === 0) return SHELL_MAIN_STRINGS.saveRequestInvalid;
     if (name.includes('/') || name.includes('\\') || name === '.' || name === '..') {
-      return `添付資産名が不正です: ${name}`;
+      return SHELL_MAIN_STRINGS.attachmentNameInvalid(name);
     }
     // ZIP 仕様のファイル名上限 (Sol 2周目 #3): 超過は zipSync throw → IPC 例外終了。
     if (Buffer.byteLength(name, 'utf8') > MAX_ATTACHMENT_NAME_BYTES) {
-      return `添付資産名が長すぎます: ${name.slice(0, 32)}…`;
+      return SHELL_MAIN_STRINGS.attachmentNameTooLong(name.slice(0, 32));
     }
-    if (!(bytes instanceof Uint8Array)) return '保存要求の形式が不正です。';
+    if (!(bytes instanceof Uint8Array)) return SHELL_MAIN_STRINGS.saveRequestInvalid;
     if (bytes.length > maxEntry) {
-      return `添付資産 ${name} が大きすぎるため保存できません。`;
+      return SHELL_MAIN_STRINGS.attachmentTooLarge(name);
     }
     totalBytes += bytes.length;
   }
@@ -346,10 +347,10 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
   try {
     manifestBytes = Buffer.byteLength(JSON.stringify(req.manifest), 'utf8');
   } catch {
-    return '保存データが検証に失敗しました。お手数ですが開発者へ報告してください。';
+    return SHELL_MAIN_STRINGS.saveDataInvalid;
   }
   if (manifestBytes > maxEntry) {
-    return 'プロジェクトデータが大きすぎるため保存できません。';
+    return SHELL_MAIN_STRINGS.manifestTooLarge;
   }
   // 展開後「合計」も読込側 (MAX_TMAP_TOTAL_BYTES) と対称に検査 (Sol 2周目 #2):
   // 各エントリは上限内でも合計が読込上限を超えるファイルは「保存できたのに
@@ -362,13 +363,13 @@ export function validateSaveRequest(req: SaveRequest, caps: ReadTmapCaps = {}): 
   // 到達せず、overhead 分を引いた別上限を設けるのは局所的すぎるため導入しない。
   totalBytes += manifestBytes;
   if (totalBytes > maxTotal) {
-    return 'プロジェクト全体のサイズが大きすぎるため保存できません。';
+    return SHELL_MAIN_STRINGS.projectTooLarge;
   }
   // WRITE⊆READ symmetry: the exact Zod boundary the loader runs. Rejecting here is
   // strictly better than writing a file the user can never re-open (第6波 HIGH の
   // 「自分の正当ファイルが二度と開けない」と同じ非対称クラスの封鎖).
   if (!isParsed(parseManifest(req.manifest))) {
-    return '保存データが検証に失敗しました。お手数ですが開発者へ報告してください。';
+    return SHELL_MAIN_STRINGS.saveDataInvalid;
   }
   return null;
 }
@@ -441,7 +442,7 @@ async function runSave(deps: IpcDeps, target: string, req: SaveRequest): Promise
     return {
       ok: false,
       reason: 'write-failed',
-      message: `保存に失敗しました: ${error instanceof Error ? error.message : String(error)}`,
+      message: SHELL_MAIN_STRINGS.saveFailed(error instanceof Error ? error.message : String(error)),
     };
   }
   if (result.ok && deps.loadCommitCounter.get() === commitGenAtStart) {
@@ -895,7 +896,7 @@ function touchesAutoSave(patch: unknown): boolean {
 const REFUSED_PREFS_WRITE: AppPrefsWriteResult = {
   ok: false,
   prefs: DEFAULT_APP_PREFS,
-  message: '設定を書き込めませんでした。',
+  message: SHELL_MAIN_STRINGS.prefsWriteRefused,
 };
 
 // --- registration: one handler per shared channel ---------------------------

@@ -20,6 +20,7 @@ import {
 } from '../../domain/persistence/boundary';
 import type { LoadResponse } from '../ipc/contract';
 import { readTmap } from './tmap';
+import { SHELL_IO_STRINGS } from './strings';
 
 /**
  * Decode + validate `.gimoza` bytes into a {@link LoadResponse}. Order:
@@ -44,7 +45,7 @@ export function loadTmapBytes(path: string, bytes: Uint8Array): LoadResponse {
       parsed.outcome === PARSE_OUTCOME.VersionIncompatible ||
       parsed.outcome === PARSE_OUTCOME.Invalid
         ? parsed.message
-        : 'ファイルの読み込みに失敗しました。';
+        : SHELL_IO_STRINGS.readFailed;
     return { ok: false, reason: 'invalid', message, parse: parsed };
   }
 
