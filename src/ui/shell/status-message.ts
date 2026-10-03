@@ -84,6 +84,20 @@ export class StatusMessageStore {
     this.set(text, STATUS_TONE.Failure);
   }
 
+  /**
+   * 失敗・拒否の理由を出すが、**いまの結果のボタンは残す**（統合 8A〜8D の継ぎ目の検証 1-1）。
+   *
+   * 使うのは「打鍵を止めた理由」だけ（板や一覧が出ている間の Ctrl+Z など）。止めた打鍵は何も
+   * 変えていないので、直前の結果に付いていたボタン（「測量の線を消しました［戻す］」の［戻す］）は
+   * まだ意味を持つ。文だけ置き換えてボタンまで消すと、Ctrl+Z を押しただけで［戻す］が見えなく
+   * なる（一覧を閉じれば Ctrl+Z で戻せるが、ボタンが消えたことは説明されない）。ボタンが意味を
+   * 失ったときは、従来どおり押し込んだ側が {@link dropAction} で外す（同じオブジェクトを運ぶので
+   * 外せる）。
+   */
+  refusalKeepingAction(text: string): void {
+    this.set(text, STATUS_TONE.Failure, this.message?.action);
+  }
+
   /** 進行中を出す。 */
   progress(text: string): void {
     this.set(text, STATUS_TONE.Progress);

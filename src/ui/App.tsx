@@ -3023,7 +3023,9 @@ export function App(): JSX.Element {
       // 「答える」、板は「閉じる（Esc）」である。同じ文を使い回すと、板を開いている
       // 利用者に「答えるべき確認」を探させることになる。
       const label = MENU_ITEM_LABELS[id];
-      statusMessageStore.failure(
+      // 止めた打鍵は何も変えていないので、直前の結果のボタン（「測量の線を消しました［戻す］」の
+      // ［戻す］）は残す（統合 8A〜8D の継ぎ目の検証 1-1）。
+      statusMessageStore.refusalKeepingAction(
         focusOwnerRef.current === FOCUS_OWNER.Popover
           ? APP_STRINGS.shortcutBusyPopover(label)
           : APP_STRINGS.shortcutBusy(label),
