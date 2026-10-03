@@ -154,3 +154,73 @@ describe('食い違う頂点を揃える修復 — 使われている版を正�
   });
 });
 
+
+/**
+ * 持ち主の居る歴史と、同じ持ち主 id の孤立した歴史が **同時に**ある古いファイルの形
+ * （実装係 1 が seed 36004 の解析で見つけた。増分 7 の手直し 項目 10）。
+ *
+ * 歴史は持ち主 id で引かれるので、「その id の歴史を落とす」「その id の歴史の居候を数える」
+ * をそのまま書くと、**持ち主がちゃんと居る方**まで巻き込む。所有者の原則「削除以外で
+ * データが勝手に消えるのは良くない」に反するので、どちらの修復も孤立した方だけを相手にする。
+ */
+function duplicateWithOrphanProject(): DomainProject {
+  const p = leafTile('P', 0, 0, 10, 10);
+  const c = leafTile('c', 20, 0, 10, 10);
+  const histories: FeatureHistory[] = [
+    // 持ち主 P が居る、まっとうな歴史（先に並ぶ）。
+    {
+      featureId: fid('P'),
+      series: {
+        entries: [
+          { anchor: anchorOf('anchor-P-live', [p.feature], p.vertices), start: timePointYear(1000), end: null },
+        ],
+      },
+    },
+    // 同じ持ち主 id なのに P が居ない、孤立した歴史（中に c が居候している）。
+    {
+      featureId: fid('P'),
+      series: {
+        entries: [
+          { anchor: anchorOf('anchor-P-orphan', [c.feature], c.vertices), start: timePointYear(1000), end: null },
+        ],
+      },
+    },
+  ];
+  return { histories, settings: DEFAULT_SETTINGS, baseMap: DEFAULT_BASEMAP };
+}
+
+/** その地物がどこかの歴史の錨に居るか。 */
+function presentAnywhere(project: DomainProject, id: string): boolean {
+  return project.histories.some((h) =>
+    h.series.entries.some((e) => e.anchor.snapshot.features.some((f) => f.id === fid(id))),
+  );
+}
+
+describe('孤立した歴史の修復 — 持ち主の居る同じ id の歴史を巻き込まない（項目 10）', () => {
+  it('「捨てる」は孤立した方だけを落とし、持ち主の居る P は残る', () => {
+    const project = duplicateWithOrphanProject();
+    const inc = orphanInc(project);
+    const applied = applyRepairChecked(project, inc, REPAIR_OPTION.DropOrphanHistory, CAL);
+    // P は地物として残る（以前は持ち主 id が一致する歴史を全部落としたので P ごと消えた）。
+    expect(presentAnywhere(applied.project, 'P')).toBe(true);
+    expect(applied.project.histories).toHaveLength(1);
+    expect(applied.project.histories[0]!.series.entries[0]!.anchor.id).toBe(
+      project.histories[0]!.series.entries[0]!.anchor.id,
+    );
+    // 「捨てる」を選んだのだから、孤立した方の中身（c）は落ちる ―― それがこの選択肢の意味。
+    expect(presentAnywhere(applied.project, 'c')).toBe(false);
+  });
+
+  it('既定の「起こして残す」は、孤立した方の居候（c）を起こし、P も残す', () => {
+    const project = duplicateWithOrphanProject();
+    const inc = orphanInc(project);
+    const defaultOption = repairOptionsFor(inc)[0]!;
+    expect(defaultOption.id).toBe(REPAIR_OPTION.MaterializeOrphanHistory);
+    const applied = applyRepairChecked(project, inc, defaultOption.id, CAL);
+    expect(presentAnywhere(applied.project, 'P')).toBe(true);
+    // c は失われず、自分の系列を持つ（以前は最初の同 id 歴史＝持ち主の居る方の居候を
+    // 数えていたので、c を起こさないまま孤立した歴史ごと落としていた）。
+    expect(presentAnywhere(applied.project, 'c')).toBe(true);
+    expect(applied.project.histories.some((h) => h.featureId === fid('c'))).toBe(true);
+  });
+});

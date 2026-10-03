@@ -32,7 +32,7 @@ import {
   withAggregateChildIds,
   withParentId,
 } from '../feature';
-import { materializeOwnSeries, residentFeatureIds } from '../affiliation/materialize';
+import { materializeOwnSeries } from '../affiliation/materialize';
 import { buildForest, directChildIds } from '../hierarchy/forest';
 import { resolveFeatureArea } from '../hierarchy/resolve-shape';
 import { HIERARCHY_VIOLATION, areasEqualWithinTolerance } from '../hierarchy/validate';
@@ -358,11 +358,53 @@ function normalizeHistories(
 /** Remove the FeatureHistory entries owned by the given ids (orphan-history repair). */
 function dropHistories(project: DomainProject, ids: readonly FeatureId[]): DomainProject {
   const drop = new Set<FeatureId>(ids);
+  // **落とすのは孤立した歴史だけ**（増分 7 の手直し 項目 10）。歴史は持ち主 id で引かれる
+  // ので、id が一致する歴史を全部落とすと、同じ id で **持ち主がちゃんと居る**重複した
+  // 歴史まで巻き込んで地物が丸ごと失われていた（所有者の原則「削除以外でデータが勝手に
+  // 消えるのは良くない」に反する）。判定は検出（`detectOrphanHistories`）と同じ述語。
   // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
   return {
     ...project,
-    histories: project.histories.filter((h) => !drop.has(h.featureId)),
+    histories: project.histories.filter((h) => !(drop.has(h.featureId) && isOrphanHistory(h))),
   };
+}
+
+/**
+ * 持ち主が自分の歴史のどの錨にも居ない（孤立した歴史）か。検出
+ * （`consistency.ts` の `detectOrphanHistories`）と同じ述語で、修復の側はこれ 1 本を見る。
+ */
+function isOrphanHistory(history: FeatureHistory): boolean {
+  return !history.series.entries.some((e) =>
+    e.anchor.snapshot.features.some((f) => f.id === history.featureId),
+  );
+}
+
+/**
+ * 孤立した歴史（持ち主 id が `ownerIds` に居て、かつ持ち主が居ない歴史）に居候している
+ * 地物の id。**同じ持ち主 id の歴史が複数あっても、孤立した方だけを数える** ――
+ * `residentFeatureIds` は最初に見つかった同 id の歴史を読むので、持ち主の居る重複が
+ * 先に並んでいると起こす相手を取り違え、孤立した方の子を起こさないまま落としていた
+ * （項目 10）。
+ */
+function orphanResidentIds(
+  histories: readonly FeatureHistory[],
+  ownerIds: readonly FeatureId[],
+): readonly FeatureId[] {
+  const owners = new Set<FeatureId>(ownerIds);
+  const seen = new Set<FeatureId>();
+  const out: FeatureId[] = [];
+  for (const history of histories) {
+    if (!owners.has(history.featureId) || !isOrphanHistory(history)) continue;
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) {
+        if (seen.has(f.id)) continue;
+        seen.add(f.id);
+        if (histories.some((h) => h.featureId === f.id)) continue; // 既に自分の系列がある
+        out.push(f.id);
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -759,24 +801,17 @@ function materializeOrphanHistories(
   ownerIds: readonly FeatureId[],
   calendar: Calendar,
 ): DomainProject {
-  let histories: readonly FeatureHistory[] = project.histories;
-  for (const ownerId of ownerIds) {
-    histories = materializeOwnSeries(
-      histories,
-      residentFeatureIds(histories, ownerId),
-      calendar,
-    ).histories;
-  }
+  // 起こす相手は **孤立した方の歴史の居候だけ**（項目 10。持ち主の居る同 id の歴史を
+  // 読まない）。
+  const histories: readonly FeatureHistory[] = materializeOwnSeries(
+    project.histories,
+    orphanResidentIds(project.histories, ownerIds),
+    calendar,
+  ).histories;
   // 移し終えてもなお持ち主が居ない歴史は、もう中身が無い（あるいは中身が既に別の
   // 歴史を持っている）ので落とす。
   const orphan = new Set<FeatureId>(ownerIds);
-  const remaining = histories.filter(
-    (h) =>
-      !orphan.has(h.featureId) ||
-      h.series.entries.some((e) =>
-        e.anchor.snapshot.features.some((f) => f.id === h.featureId),
-      ),
-  );
+  const remaining = histories.filter((h) => !orphan.has(h.featureId) || !isOrphanHistory(h));
   // Spread to preserve optional project fields (uiSettings); see mapSnapshotFeatures.
   const moved: DomainProject = { ...project, histories: remaining };
 
