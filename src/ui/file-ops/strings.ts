@@ -68,6 +68,21 @@ export const OVERWRITE_STRINGS = {
   autoSaveHoldDetail: '自動保存は、上書きする先を一度確認してから始まります。',
 } as const;
 
+/**
+ * 保存の直前に、年をまたぐ所属の食い違いを見せて聞く板（増分 7 の手直し 2 回目 / B67）。
+ * **保存を止めて行き止まりにしない**ので、［このまま保存する］で書ける。書いたファイルは
+ * 次に開くときに読み込みの修復を聞かれる（それを先に言う）。
+ */
+export const PRE_SAVE_STRINGS = {
+  title: '保存の前の確認',
+  intro:
+    '次の地物は、年によって所属の記録が食い違っています。このまま保存すると、次に開くときに修復を聞かれます。',
+  /** 行が多いときの畳み（先頭の数行だけ見せる）。 */
+  more: (count: number): string => `ほか ${String(count)} 件`,
+  confirm: 'このまま保存する（次に開くときに修復されます）',
+  cancel: 'やめる',
+} as const;
+
 /** The load-time consistency auto-repair UI (FR-106). */
 export const REPAIR_STRINGS = {
   title: '読み込みデータの不整合',

@@ -802,6 +802,32 @@ function checkTimeSlice(
   ];
 }
 
+/**
+ * 階層（ツリー）と形の役割（まとめ役に子が居るか）の検査だけを、読み込みの検査と
+ * **同じ時刻の切り方**（`distinctAnchorTimes`）・**同じ合わせ方**（各系列のその時刻に効いて
+ * いる錨の地物を並べる）・**同じ判定**（`detectTreeTopology`・`detectShapePreservation`）で
+ * 回す。保存の直前の検査（`pre-save.ts`）が「その錨の区間で親が居るか」「その年にまとめ役の
+ * 子が居るか」を読み込みと食い違わずに見るための口（増分 7 の手直し 2 回目 / GPT #4・B67）。
+ * 形の検査（重なり・隙間）は重いので回さない。純粋。
+ */
+export function checkHierarchyOverTime(
+  histories: readonly FeatureHistory[],
+  calendar: Calendar,
+): Inconsistency[] {
+  const out: Inconsistency[] = [];
+  for (const atTime of distinctAnchorTimes(histories, calendar)) {
+    const features: Feature[] = [];
+    for (const h of histories) {
+      const res = resolveAt(h.series, atTime, calendar);
+      if (res.kind !== 'present') continue;
+      for (const f of res.entry.anchor.snapshot.features) features.push(f);
+    }
+    out.push(...detectTreeTopology(features, atTime));
+    out.push(...detectShapePreservation(features, atTime));
+  }
+  return out;
+}
+
 // --- entry point ------------------------------------------------------------
 
 /**

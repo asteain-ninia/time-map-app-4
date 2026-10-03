@@ -42,12 +42,16 @@ export interface FileOpsHost {
   /** Whether the current project still needs 名前を付けて保存 (no save path yet). */
   readonly needsSaveAs: () => boolean;
   /**
-   * 保存の直前の整合検査（司令塔の決定 (3)）。書こうとしている中身に「開き直すと
-   * 地物が失われる形」（持ち主の居ない系列／消えた親を指す parentId）が混ざって
-   * いれば理由の文を返し、保存を止める。問題が無ければ `null`。
+   * 保存の直前の整合検査（司令塔の決定 (3)。増分 7 の手直し 2 回目で年を見るように直した）。
+   *   - `proceed`: 書いてよい。
+   *   - `block`: 「開き直すと地物が失われる形」（持ち主の居ない系列／どの年にも居ない親を
+   *     指す parentId）が混ざっているので止める。`message` が理由。
+   *   - `cancel`: 年をまたぐ食い違いを板で見せ、利用者が［やめる］を選んだ。
+   * 年をまたぐ食い違いだけなら、宿主は板で［このまま保存する］［やめる］を聞き、保存を
+   * 止めて利用者を行き止まりにしない。自動保存（`origin === 'auto'`）では聞かない。
    * 省略可（検査を持たない試験の宿主は素通りする）。
    */
-  readonly preSaveBlock?: () => string | null;
+  readonly preSaveGate?: (origin: SaveOrigin) => Promise<PreSaveGateResult>;
   /**
    * Adopt a successful save (update save path + clear dirty, spec §A 保存後).
    *
@@ -98,6 +102,12 @@ export interface FileOpsHost {
 /** 保存を起こしたのは誰か（自動保存は状態行の「直前の結果」を書き替えない）。 */
 export type SaveOrigin = 'manual' | 'auto';
 
+/** {@link FileOpsHost.preSaveGate} の答え。 */
+export type PreSaveGateResult =
+  | { readonly kind: 'proceed' }
+  | { readonly kind: 'block'; readonly message: string }
+  | { readonly kind: 'cancel' };
+
 /** Reconstruct a DomainProject from a validated parse (U14 boundary, R8-safe). */
 function toProject(parse: Extract<LoadStep, { kind: 'reflect-direct' }>['parse']): DomainProject {
   // `parse` is the Ok ParseResult carrying an already-Zod-validated Manifest, so
@@ -131,6 +141,14 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     intent: 'save' | 'saveAs',
     origin: SaveOrigin,
   ): Promise<SaveOutcome> => {
+    // 保存の直前の整合検査（司令塔の決定 (3)）: アプリ自身が「開き直すと地物が失われる
+    // ファイル」を書かないようにする。直列化された区間の中、書き出しの前に見るので、
+    // 待ち行列に並んでいる間に入った編集も見たうえで止められる。年をまたぐ食い違いは
+    // 板で聞く（待つ）ので、**行き先の決定と中身の写しより前**に置く（下の 2 つの間に
+    // 待ちを挟まない ―― HIGH-1 の「同じ瞬間の生の状態を読む」を崩さない）。
+    const gate = host.preSaveGate === undefined ? null : await host.preSaveGate(origin);
+    if (gate?.kind === 'block') return { kind: SAVE_OUTCOME.WriteFailed, message: gate.message };
+    if (gate?.kind === 'cancel') return { kind: SAVE_OUTCOME.Cancelled };
     // HIGH-1 根治 — re-evaluate the DESTINATION at the moment this (possibly queued) save
     // actually runs. A plain 保存 that was dispatched while an earlier save was in flight is
     // queued behind it; between its dispatch and its turn a破壊的 context swap (新規 / load,
@@ -148,11 +166,6 @@ export function buildFileCommandPorts(host: FileOpsHost): FileCommandPorts {
     // save's actual start, not at dispatch time (otherwise a change made between dispatch and
     // turn would be missed).
     const useSaveAs = intent === 'saveAs' || host.needsSaveAs();
-    // 保存の直前の整合検査（司令塔の決定 (3)）: アプリ自身が「開き直すと地物が失われる
-    // ファイル」を書かないようにする。直列化された区間の中、書き出しの直前に見るので、
-    // 待ち行列に並んでいる間に入った編集も見たうえで止められる。
-    const blocked = host.preSaveBlock?.() ?? null;
-    if (blocked !== null) return { kind: SAVE_OUTCOME.WriteFailed, message: blocked };
     const req = host.buildSaveRequest();
     const res: SaveResponse = useSaveAs ? await host.api.saveAs(req) : await host.api.save(req);
     if (res.ok) {
