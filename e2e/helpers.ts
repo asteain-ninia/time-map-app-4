@@ -1103,6 +1103,50 @@ export async function vertexHandlePositions(page: Page): Promise<WorldPos[]> {
   });
 }
 
+/**
+ * 増分 8A の手直し（GPT #3）: いま見ている年の **確定済みの** 地物 `featureId` が引いている頂点を
+ * id → 座標で読む（`__E2E__.getCommittedVertices`）。頂点の印には id が無いので、
+ * 「どの頂点が動いたか」を id で照合するときに使う。
+ */
+export async function committedVertices(
+  page: Page,
+  featureId: string,
+): Promise<Map<string, WorldPos>> {
+  const rows = await page.evaluate((id) => {
+    const e2e = (window as unknown as {
+      __E2E__?: {
+        getCommittedVertices: (f: string) => { id: string; lon: number; lat: number }[];
+      };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getCommittedVertices(id);
+  }, featureId);
+  return new Map(rows.map((r) => [r.id, { lon: r.lon, lat: r.lat }]));
+}
+
+/** いま選んでいる頂点の id の全部（`__E2E__.getSelectedVertexIds`。並びは問わないので整列して返す）。 */
+export async function selectedVertexIds(page: Page): Promise<string[]> {
+  const ids = await page.evaluate(() => {
+    const e2e = (window as unknown as {
+      __E2E__?: { getSelectedVertexIds: () => string[] };
+    }).__E2E__;
+    return e2e === undefined ? [] : e2e.getSelectedVertexIds();
+  });
+  return [...ids].sort();
+}
+
+/** `before` の頂点のうち、`after` で座標が変わった・引かれなくなったものの id（整列）。 */
+export function changedVertexIds(
+  before: ReadonlyMap<string, WorldPos>,
+  after: ReadonlyMap<string, WorldPos>,
+): string[] {
+  const out: string[] = [];
+  for (const [id, p] of before) {
+    const q = after.get(id);
+    if (q === undefined || q.lon !== p.lon || q.lat !== p.lat) out.push(id);
+  }
+  return out.sort();
+}
+
 /** いま描いているカメラ（地図の入力層の `data-zoom` / `data-pan-x` / `data-pan-y`）。 */
 export async function liveCamera(
   page: Page,
