@@ -2789,6 +2789,14 @@ body {
   font-size: 11px;
 }
 
+/* 増分 8A の手直し: 21 件目より先を出す「もっと見る」（GPT #1）。 */
+.vertex-candidates__more button {
+  margin-left: 6px;
+  font: inherit;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
 /* 第6工程: the TOOL SCAFFOLDS (add / knife / merge / reparent / ring-edit / drill)
  * are map-anchored overlay children, but each is a TRANSPARENT inset:0 scaffold
  * whose interactive children re-enable input individually (教訓 5.14). The generic

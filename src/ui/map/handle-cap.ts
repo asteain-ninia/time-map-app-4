@@ -40,18 +40,46 @@ export const HANDLE_CAP_STRINGS = {
   /** 上限が 0（印を出さない設定）のときは拡大しても出ないので、［拡大］を出さない。 */
   reasonCapZero: (counted: string): string =>
     `頂点が ${counted} あり、上限 0 のため印を出していません。`,
+  /**
+   * ズームの上限まで寄っていて、これ以上は拡大できないとき（増分 8A の手直し・設計適合 2-4）。
+   * 「拡大すると出ます」を言うと、押しても何も起きない［拡大］を勧めることになる（無言の失敗）。
+   */
+  reasonAtMaxZoom: (counted: string, cap: string): string =>
+    `頂点が ${counted} あり、上限 ${cap} のため印を出していません。これ以上は拡大できません。`,
   zoom: '拡大',
 } as const;
 
 /** 「2,230」の形（桁区切り）。 */
 const NUMBER_FORMAT = new Intl.NumberFormat('ja-JP');
 
-/** 次の一手の文（上限が 0 なら拡大を勧めない文）。 */
-export function handleCapText(counted: number, cap: number): string {
+/**
+ * 次の一手の文。上限が 0 のとき・ズームの上限まで寄っているときは拡大を勧めない
+ * （どちらも拡大しても印は出ない）。
+ */
+export function handleCapText(counted: number, cap: number, atMaxZoom = false): string {
   const c = NUMBER_FORMAT.format(counted);
-  return cap <= 0
-    ? HANDLE_CAP_STRINGS.reasonCapZero(c)
-    : HANDLE_CAP_STRINGS.reason(c, NUMBER_FORMAT.format(cap));
+  if (cap <= 0) return HANDLE_CAP_STRINGS.reasonCapZero(c);
+  const k = NUMBER_FORMAT.format(cap);
+  return atMaxZoom ? HANDLE_CAP_STRINGS.reasonAtMaxZoom(c, k) : HANDLE_CAP_STRINGS.reason(c, k);
+}
+
+/**
+ * まだ拡大できるか（増分 8A の手直し・設計適合 2-4）。判定は［拡大］が段を重ねるときと
+ * 同じ 1 本（{@link zoomUntilHandlesShow} の「次の段で倍率が上がるか」）を画面の真ん中で問う。
+ */
+export function canZoomInFurther(
+  camera: Camera,
+  viewport: Viewport,
+  range: ZoomRange | undefined,
+): boolean {
+  const next = zoomStepAtCursor(
+    camera,
+    viewport,
+    viewportCentre(viewport),
+    keyboardZoomFactor('in'),
+    range,
+  );
+  return next.zoom > camera.zoom;
 }
 
 /** ［拡大］で重ねる段の上限（1 段 ≒ 1.33 倍なので、30 段で 5,000 倍を超える）。 */

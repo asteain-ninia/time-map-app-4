@@ -45,9 +45,12 @@ import { edgeAddMidpoint } from '../edge-click';
 import { grabRadiusPx } from '../grab-radius';
 import { withRubberBand } from '../rubber-band';
 import {
+  createListPickOnce,
   describeNearVertices,
-  preferSelectedVertex,
+  preferListPick,
+  type CandidateRelevantState,
   type DescribedVertexCandidate,
+  type ListPick,
 } from '../vertex-candidates';
 import {
   worldToScreen as projectWorldToScreen,
@@ -188,13 +191,32 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
   // nearest committed vertex within a screen-px grab radius (頂点優先), else the leaf
   // body under the cursor (world containment, 穴透過), else a point/line near the
   // cursor, else empty.
+  // 増分 8A の手直し（反証 重 3）: 一覧から選んだときに立てる **使い捨ての印**。
+  // ディスパッチャは押下のたびに（左右・中ボタン、地図でも道具の橋渡しでも）まず
+  // `hitTest` を 1 回呼ぶので、ここで印を「この押下の分」へ移して消す ―― 次の押下では
+  // どのボタンであっても必ず消えている。効かせるのは下の `editSession.begin`（左ボタンの
+  // 編集ドラッグの入口）だけで、右クリックのメニューと選択の書き込みには当たり判定の
+  // 結果をそのまま渡す。
+  const listPick = createListPickOnce();
+  let pressPick: ListPick | null = null;
+  const candidateContextOf = (): CandidateRelevantState => {
+    const s = store.getState();
+    return {
+      domain: s.domain,
+      currentTime: s.currentTime,
+      mode: s.mode,
+      activeTool: s.activeTool,
+      displayControl: s.displayControl,
+      filter: s.filter,
+      camera: s.camera,
+    };
+  };
   const hitTester: HitTester = {
     hitTest: (point) => {
+      pressPick = listPick.take();
       const s = store.getState();
       const { camera, viewport } = ports.readCamera();
-      // 増分 8A: 候補一覧から選んだ頂点は、掴める距離の中なら最寄りより優先して掴む
-      // （`preferSelectedVertex`。選んでいなければ素通し）。
-      return preferSelectedVertex(liveHitTestAt(
+      return liveHitTestAt(
         {
           root: s.domain,
           time: s.currentTime,
@@ -237,7 +259,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
         // World coordinate of the click (renderer inverse) for the world-space leaf
         // containment.
         surfaceToWorld(point),
-      ), s.selection, () => probeNear(point));
+      );
     },
   };
   // The LIVE SelectionPort drives U22's OWN reducer over the store selection truth
@@ -353,7 +375,7 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       return queryPx / camera.zoom;
     },
   });
-  const editSession = createEditSessionPort<MountDomainRoot>({
+  const editSessionInner = createEditSessionPort<MountDomainRoot>({
     // The dragged handle world position uses the SAME renderer inverse the hit-test
     // and selection use, so the press / preview / release resolve against one camera.
     screenToWorld: surfaceToWorld,
@@ -471,6 +493,26 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
       );
     },
   });
+  // 増分 8A の手直し（反証 重 3）: 一覧から選んだ直後の左ドラッグ 1 回だけ、選んだ頂点を
+  // 最寄りより優先して掴む（`preferListPick`。条件はそちらの注記）。印はこの押下の
+  // `hitTest` で既に消えているので、2 回目の押下には効かない。
+  const editSession: EditSessionPort = {
+    begin: (hit, point, modifiers) => {
+      const pick = pressPick;
+      pressPick = null;
+      const preferred = preferListPick(
+        hit,
+        pick,
+        modifiers,
+        { context: candidateContextOf(), selection: store.getState().selection },
+        () => probeNear(point),
+      );
+      return editSessionInner.begin(preferred, point, modifiers);
+    },
+    update: (point) => editSessionInner.update(point),
+    release: (point, wasDrag) => editSessionInner.release(point, wasDrag),
+    cancel: () => editSessionInner.cancel(),
+  };
   // BUGHUNT2 ROOT FIX — the LIVE right-click context-menu port (FR-96). On a
   // right-button press the dispatcher calls this port (dispatch.ts:「Right button
   // is always a context-menu request」); it promotes the hit feature into the LIVE
@@ -544,6 +586,8 @@ export function createMountHitTest(options: MountHitTestOptions): MountHitTest {
     s.restoreSelection(
       replaceVertices(withActiveFeature(s.selection, featureId), featureId, new Set([vertexId])),
     );
+    // 直後の左ドラッグ 1 回だけ、この頂点を最寄りより優先して掴む（反証 重 3 の手直し）。
+    listPick.arm({ featureId, vertexId, context: candidateContextOf() });
   };
 
   return {

@@ -17,7 +17,7 @@ import { useRef, useSyncExternalStore, useState, useLayoutEffect } from 'react';
 import type { FeatureId, VertexId } from '../../domain/ids';
 import { useDismissable } from '../shell/use-dismissable';
 
-import type { VertexCandidateStore } from './vertex-candidates';
+import { VERTEX_CANDIDATE_MAX_ROWS, type VertexCandidateStore } from './vertex-candidates';
 
 /** 画面に出る言葉（教訓 5.64）。 */
 export const VERTEX_CANDIDATE_STRINGS = {
@@ -25,6 +25,8 @@ export const VERTEX_CANDIDATE_STRINGS = {
   hint: '掴める距離に複数あります。1 つ選んでください。',
   close: '閉じる',
   more: (count: number): string => `ほか ${String(count)} 件。拡大すると絞れます。`,
+  /** 残りを出すボタン（増分 8A の手直し・GPT #1。21 件目より先にも選ぶ道を残す）。 */
+  showMore: 'もっと見る',
 } as const;
 
 /** 一覧の大きさ（地図の端で内側へ寄せるときに使う）。CSS と同じ値。 */
@@ -56,6 +58,12 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
   );
   const boxRef = useRef<HTMLDivElement | null>(null);
   const [cellSize, setCellSize] = useState<{ w: number; h: number } | null>(null);
+  // 描いている行数（一覧が出し直されたら最初の 1 頁へ戻す）。
+  const [shownFor, setShownFor] = useState<{ state: unknown; count: number }>({
+    state: null,
+    count: VERTEX_CANDIDATE_MAX_ROWS,
+  });
+  const shownCount = shownFor.state === state ? shownFor.count : VERTEX_CANDIDATE_MAX_ROWS;
 
   // 地図セルの大きさは、出すたびに測る（窓の大きさが変わっても端で切れない）。
   useLayoutEffect(() => {
@@ -109,13 +117,18 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
       </div>
       <p className="vertex-candidates__hint">{VERTEX_CANDIDATE_STRINGS.hint}</p>
       <ul className="vertex-candidates__list">
-        {state.rows.map((row) => (
+        {state.rows.slice(0, shownCount).map((row) => (
           <li key={`${String(row.featureId)}:${String(row.vertexId)}`}>
             <button
               type="button"
               data-testid={`vertex-candidate-${String(row.vertexId)}`}
               // 観測用（選ぶと選択の持ち主になる地物）。真実は持たない。
               data-feature-id={String(row.featureId)}
+              // 行に乗っている・焦点がある間、地図の上でその頂点を輪で囲む（設計適合 2-3）。
+              onPointerEnter={() => store.setHover(row.coordinate)}
+              onPointerLeave={() => store.setHover(null)}
+              onFocus={() => store.setHover(row.coordinate)}
+              onBlur={() => store.setHover(null)}
               onClick={() => {
                 onPick(row.featureId, row.vertexId);
                 store.clear();
@@ -129,9 +142,18 @@ export function VertexCandidateList(props: VertexCandidateListProps): JSX.Elemen
           </li>
         ))}
       </ul>
-      {state.more > 0 ? (
+      {state.rows.length > shownCount ? (
         <p className="vertex-candidates__more" data-testid="vertex-candidates-more">
-          {VERTEX_CANDIDATE_STRINGS.more(state.more)}
+          {VERTEX_CANDIDATE_STRINGS.more(state.rows.length - shownCount)}
+          <button
+            type="button"
+            data-testid="vertex-candidates-show-more"
+            onClick={() =>
+              setShownFor({ state, count: shownCount + VERTEX_CANDIDATE_MAX_ROWS })
+            }
+          >
+            {VERTEX_CANDIDATE_STRINGS.showMore}
+          </button>
         </p>
       ) : null}
     </div>

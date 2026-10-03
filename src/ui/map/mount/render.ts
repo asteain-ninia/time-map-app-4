@@ -24,6 +24,7 @@ import { keyboardZoomCamera, type ZoomDirection } from '../keyboard-zoom';
 import { createRedrawScheduler } from '../redraw-scheduler';
 import { redrawWatch, redrawWatchChanged } from '../redraw-watch';
 import { withRubberBandLayer } from '../rubber-band';
+import { withCandidateHoverLayer } from '../candidate-hover';
 import { cameraForBounds, cameraForFit } from '../../../render';
 import type { Camera as RenderCamera, ZoomRange } from '../../../render/camera';
 import { DEFAULT_LABEL_THRESHOLDS } from '../../../render/feature-layer';
@@ -179,7 +180,8 @@ export function createMountRender(options: MountRenderOptions): MountRender {
     // ハンドルビルダーへ渡し、視野内の頂点だけを生成・カウントさせる (デカい地物も
     // ズームインすれば cap を下回り編集できる)。
     // 増分 8A（N-07）: 矩形選択の枠をこの層のいちばん上に足す（`withRubberBandLayer`）。
-    editHandles: withRubberBandLayer(() => transients.rubberBand, (view) => {
+    // 増分 8A の手直し: 候補一覧の行に乗っている頂点の輪も足す（`withCandidateHoverLayer`）。
+    editHandles: withCandidateHoverLayer(() => transients.candidateHover, withRubberBandLayer(() => transients.rubberBand, (view) => {
       const s = store.getState();
       // **増分 5b: 条件を「編集モードのとき」から「掴める道具のとき」へ変えた**
       // （設計書 §C.3 / 実装計画 §5 の 5b）。モードの 3 ボタンが消えて `mode` が
@@ -252,7 +254,7 @@ export function createMountRender(options: MountRenderOptions): MountRender {
         undefined,
         view,
       );
-    }),
+    })),
     // HB3-4 観測フック: a live edit-drag preview is present iff a session is in flight
     // for the active feature in 編集 mode. ORed into the frame's `hasLivePreview` so a
     // behavioural E2E (and the __E2E__ hook) can assert the drag preview is live — the

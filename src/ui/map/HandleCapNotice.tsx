@@ -23,6 +23,7 @@ import { EDIT_MODE } from '../state/session';
 import { activeFeatureHandleCapStatus } from './active-feature-handles';
 import {
   HANDLE_CAP_STRINGS,
+  canZoomInFurther,
   featureAnchorNearCentre,
   handleCapText,
   zoomUntilHandlesShow,
@@ -62,9 +63,10 @@ export function HandleCapNotice(props: HandleCapNoticeProps): null {
 
   const status = useMemo(() => {
     if (!handlesDrawn || activeFeature === null) return null;
-    const view = cameraRef.current?.readCamera();
-    if (view === undefined) return null;
-    return activeFeatureHandleCapStatus(
+    const ports = cameraRef.current;
+    if (ports === null) return null;
+    const view = ports.readCamera();
+    const counted = activeFeatureHandleCapStatus(
       domain,
       currentTime,
       activeFeature,
@@ -74,6 +76,13 @@ export function HandleCapNotice(props: HandleCapNoticeProps): null {
       { selectedVertexIds, ownerFeatureId: vertexOwner },
       view,
     );
+    if (counted === null) return null;
+    // ズームの上限まで寄っていたら、［拡大］を出さず「拡大すると出ます」も言わない
+    // （設計適合 2-4。押しても何も起きないボタンを出さない）。
+    return {
+      ...counted,
+      atMaxZoom: !canZoomInFurther(view.camera, view.viewport, ports.effectiveZoomRange()),
+    };
     // `camera` は数え直す契機（中で読むのは生きたレンダラのカメラ）。
   }, [
     handlesDrawn,
@@ -127,8 +136,9 @@ export function HandleCapNotice(props: HandleCapNoticeProps): null {
     if (next !== cam) ports.writeCamera(next);
   }, [store, cameraRef]);
 
-  const text = status === null ? null : handleCapText(status.counted, status.cap);
-  const canZoom = status !== null && status.cap > 0;
+  const text =
+    status === null ? null : handleCapText(status.counted, status.cap, status.atMaxZoom);
+  const canZoom = status !== null && status.cap > 0 && !status.atMaxZoom;
   const actions = useMemo<readonly OptionBarAction[]>(
     () =>
       canZoom
