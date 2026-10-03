@@ -208,6 +208,12 @@ test.describe('増分 5 の探索 — 実データで全部の道具を順に持
         const save = page.getByTestId('add-save');
         if (await save.isVisible().catch(() => false)) {
           await save.click();
+          // 追加の保存は 1 コマ遅れて走る（B39 の直しで進行表示を掛けた）。素性欄が閉じる
+          // （＝保存が走り終えて、確定したか重なりの板で止まった）のを待ってから測る。
+          await page
+            .getByTestId('add-property-form')
+            .waitFor({ state: 'detached', timeout: 8000 })
+            .catch(() => record('add-form-stuck', '保存を押しても素性欄が閉じない'));
           // 実データは陸が詰まっているので、置いた四角が既存の面と重なって
           // **重なり競合の板**が出ることがある。板が出ているあいだ鍵盤が板のものに
           // なるのは設計どおり（設計書 §D.4）なので、**板を閉じてから**測る。
