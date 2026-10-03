@@ -21,6 +21,7 @@ import { useModalKeydown, useModalRegistration } from '../a11y/index';
 import {
   BASEMAP_ASPECT_CHOICE,
   BASEMAP_ASPECT_STRINGS,
+  correctShiftAxis,
   type BasemapAspectPromptStore,
 } from './basemap-aspect';
 
@@ -53,7 +54,11 @@ function AspectPanel(props: { readonly store: BasemapAspectPromptStore }): JSX.E
   return (
     <div className="basemap-aspect-root" data-testid="basemap-aspect-root">
       {/* 背後（設定の板・地図）を押せなくする層。答えるまで先へ進めない。 */}
-      <div className="basemap-aspect-backdrop" aria-hidden="true" />
+      <div
+        className="basemap-aspect-backdrop"
+        data-testid="basemap-aspect-backdrop"
+        aria-hidden="true"
+      />
       <div
         className="basemap-aspect-dialog"
         data-testid="basemap-aspect-dialog"
@@ -75,6 +80,12 @@ function AspectPanel(props: { readonly store: BasemapAspectPromptStore }): JSX.E
             ? BASEMAP_ASPECT_STRINGS.explainCorrectable
             : BASEMAP_ASPECT_STRINGS.explainUncorrectable}
         </p>
+        {/* 補正で地図の上の絵がずれることを言う（増分 8E の手直し。反証 2-4）。 */}
+        {question.correctable && (
+          <p className="basemap-aspect-dialog__explain" data-testid="basemap-aspect-shift">
+            {BASEMAP_ASPECT_STRINGS.explainCorrectShift(correctShiftAxis(question))}
+          </p>
+        )}
         <div className="basemap-aspect-dialog__actions">
           {question.correctable && (
             <button

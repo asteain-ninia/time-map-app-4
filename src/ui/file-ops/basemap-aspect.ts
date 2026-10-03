@@ -97,6 +97,15 @@ export const BASEMAP_ASPECT_STRINGS = {
   questionUncorrectable: (ratio: string): string =>
     `この画像は ${ratio} です。2:1 から離れすぎているため補正できません。このまま使いますか。`,
   explainUncorrectable: '地図は横が縦の 2 倍（2:1）で描くので、このまま使うと大きく歪みます。',
+  /**
+   * 補正すると地図の上で何が起きるか（増分 8E の手直し。反証 2-4）。余白を足すので、絵は
+   * 地図の中で縮んで描かれ、絵に合わせて描いてあった地物とは端へ行くほど合わなくなる。
+   * 地物の座標そのものは動かない。`axis` は絵が縮んで見える向き（横に足りない画像なら横）。
+   */
+  explainCorrectShift: (axis: string): string =>
+    `余白を足すので、絵は${axis}方向に縮んで見え、地図の端の地物と合わなくなることがあります。`,
+  axisHorizontal: '横',
+  axisVertical: '縦',
   correct: '2:1 に補正する',
   keep: 'このまま使う',
   cancel: 'やめる',
@@ -108,6 +117,18 @@ export const BASEMAP_ASPECT_STRINGS = {
   cancelled: '背景地図の差し替えをやめました。地図は変わっていません。',
   correctFailed: '画像を 2:1 に補正できませんでした。差し替えを中止しました。地図は変わっていません。',
 } as const;
+
+/**
+ * 補正したとき、絵が地図の中で縮んで見える向き（増分 8E の手直し）。横が足りない画像
+ * （2:1 より縦長）は横に余白を足すので横方向に、縦が足りない画像は縦方向に縮んで見える。
+ */
+export function correctShiftAxis(question: BasemapAspectQuestion): string {
+  const corrected = question.corrected;
+  if (corrected === null) return BASEMAP_ASPECT_STRINGS.axisHorizontal;
+  return corrected.widthPx > question.widthPx
+    ? BASEMAP_ASPECT_STRINGS.axisHorizontal
+    : BASEMAP_ASPECT_STRINGS.axisVertical;
+}
 
 /**
  * 画像に余白を足して `target` の寸法（2:1）にし、PNG のバイト列で返す。画像は中央に置き、
