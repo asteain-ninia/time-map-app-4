@@ -28,6 +28,7 @@ import type { PaletteThemeId } from '../../domain/coloring';
 import type { PropertyEditValues } from './contracts';
 import { PROPERTY_STRINGS, formatAreaKm2, formatLengthKm } from './messages';
 import { StyleSection } from './StyleSection';
+import { styleOnAutoColorToggle } from './auto-color-off';
 import { type StyleValues } from './style-section';
 
 export interface BasicInfoFormProps {
@@ -379,7 +380,10 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
         values={styleValuesFromDraft(draft)}
         paletteThemes={paletteThemes}
         sectionEnabled={editable}
-        onChange={(next) =>
+        onChange={(raw) => {
+          // 増分 8E（G-15 / FR-100）: 自動配色を OFF にした瞬間は、いま塗られている色を
+          // 手動色として残す（規則は auto-color-off.ts の 1 か所）。
+          const next = styleOnAutoColorToggle(feature, styleValuesFromDraft(draft), raw);
           onChange({
             autoColorEnabled: next.autoColorEnabled,
             paletteTheme: next.paletteTheme,
@@ -387,8 +391,8 @@ export function BasicInfoForm(props: BasicInfoFormProps): JSX.Element {
             fillOpacity: next.fillOpacity,
             selectedColor: next.selectedColor,
             selectedOpacity: next.selectedOpacity,
-          })
-        }
+          });
+        }}
       />
 
       <fieldset className="basic-info__colors" disabled={!editable}>
