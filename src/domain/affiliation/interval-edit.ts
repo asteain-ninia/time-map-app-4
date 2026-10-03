@@ -37,6 +37,7 @@ import {
 import { deriveAnchorId } from '../anchor-id';
 import {
   FEATURE_KIND,
+  referencedVertexIds,
   withAggregateChildIds,
   withParentId,
   type Feature,
@@ -610,23 +611,61 @@ function childSegments(
   return runs;
 }
 
+/** 区間の列どうしの重なり（どちらも昇順で重ならない列）。 */
+function intersectIntervals(
+  a: readonly TimeInterval[],
+  b: readonly TimeInterval[],
+  calendar: Calendar,
+): readonly TimeInterval[] {
+  return subtractIntervals(a, subtractIntervals(a, b, calendar), calendar);
+}
+
+/** まとめ役が居て子が 0 件の区間・子が居る区間（どの続きも含めて）。 */
+function childPresenceSplit(
+  histories: readonly FeatureHistory[],
+  aggId: FeatureId,
+  calendar: Calendar,
+): { readonly empty: readonly TimeInterval[]; readonly withChildren: readonly TimeInterval[] } {
+  const empty: TimeInterval[] = [];
+  const withChildren: TimeInterval[] = [];
+  for (const run of childSegments(histories, aggId, calendar)) {
+    run.segments.forEach((seg, k) => {
+      const next = run.segments[k + 1];
+      const iv = { start: seg.start, end: next === undefined ? run.runEnd : next.start };
+      (seg.count > 0 ? withChildren : empty).push(iv);
+    });
+  }
+  return { empty, withChildren };
+}
+
 /**
- * **後ろ側が空になったまとめ役**（増分 7 の手直し 3 回目 1-1 / 締め C）: 途切れずに続く記録ごとに、
- * 年 Y の直前に子が 1 件以上居て、Y からその続きの終わりまで子が 0 件なら、[Y, 続きの終わり) を返す。
- * 最初から子が居ない続き・途中だけ空の続きは返さない（終わらせない）。
+ * **編集で後ろ側が空になったまとめ役**（増分 7 の手直し 3 回目 1-1・4 回目 #1 / 締め C）: 途切れずに続く
+ * 記録ごとに、その続きの終わりまで子が 0 件の後ろ側 [Y, 続きの終わり) を返す。ただし **編集の前
+ * （`before`）にはその区間のどこかに子が居た**ときだけ（＝この編集で空になったときだけ）。
+ *
+ * - 後ろ側の前に子が居る続き → Y から終わる（手直し 3 回目の形）。
+ * - 続き全体が空になった（作った年のうちに子を全部終わらせた・連邦入りの錨を全部消した・1 人だけの
+ *   連邦の子をその前の年で終わらせた）→ 続きごと無くなる。所属変更で下位領域を全て失ったまとめ役が
+ *   「この年から自動で消える」のと同じ扱い（4 回目 #1。手直し 3 回目は編集の **後** の状態で
+ *   「最初から子が居ない」と判定していたので、殻が残り、開き直すと除外しか選べなかった）。
+ * - 編集の前から空だった区間（関係の無い編集・最初から子が居ないまとめ役）には触らない（4 回目 #4）。
+ * - 途中だけ空の続きは返さない（後ろ側に子が居る）。
  */
 export function tailEmptyCuts(
   histories: readonly FeatureHistory[],
   aggId: FeatureId,
   calendar: Calendar,
+  before: readonly FeatureHistory[],
 ): readonly TimeInterval[] {
+  const hadChildren = childPresenceSplit(before, aggId, calendar).withChildren;
   const out: TimeInterval[] = [];
   for (const run of childSegments(histories, aggId, calendar)) {
     const segs = run.segments;
     const lastSeg = segs[segs.length - 1];
     if (lastSeg === undefined || lastSeg.count > 0) continue;
-    if (!segs.some((s) => s.count > 0)) continue; // 最初から子が居ない続きは終わらせない
-    out.push({ start: lastSeg.start, end: run.runEnd });
+    const tail: TimeInterval = { start: lastSeg.start, end: run.runEnd };
+    if (intersectIntervals([tail], hadChildren, calendar).length === 0) continue;
+    out.push(tail);
   }
   return out;
 }
@@ -658,6 +697,8 @@ export function emptyAggregateIntervals(
 export interface CascadedEnd {
   readonly featureId: FeatureId;
   readonly at: TimePoint;
+  /** その地物の記録が全部無くなった（どの年にも子が居なくなった）か。 */
+  readonly whole: boolean;
 }
 
 /** {@link editFeatureInterval} の結果。 */
@@ -716,7 +757,12 @@ function coreEdit(
   if (history === undefined) return { ok: false, reason: null };
   const run = op(history.series);
   if (!run.ok) return { ok: false, reason: run.reason };
-  base = base.map((h, i) => (i === index ? { featureId, series: run.series } : h));
+  // 記録が全部無くなった（連鎖でまとめ役の続きごと切った）系列は落とす（持ち主の居ない空の
+  // 系列を残さない）。利用者の操作の `op` は空の系列を返さない（U09 が断る）。
+  base =
+    run.series.entries.length === 0
+      ? base.filter((_, i) => i !== index)
+      : base.map((h, i) => (i === index ? { featureId, series: run.series } : h));
 
   const promoted = directChildrenWithin(base, featureId, lost, calendar);
   base = clearParentWithin(base, promoted, featureId, lost, calendar);
@@ -779,7 +825,8 @@ export function editFeatureInterval(
   const maxRounds = (histories.length + 8) * 4;
   for (let round = 0; queue.length > 0 && round < maxRounds; round += 1) {
     const aggId = queue.shift()!;
-    const cuts = tailEmptyCuts(base, aggId, calendar);
+    // 編集の **前**（`histories`）に子が居た区間が空になったときだけ（4 回目 #1・#4）。
+    const cuts = tailEmptyCuts(base, aggId, calendar, histories);
     if (cuts.length === 0) continue;
     const step = coreEdit(
       base,
@@ -789,7 +836,8 @@ export function editFeatureInterval(
     );
     if (!step.ok) continue;
     base = step.value.histories;
-    for (const cut of cuts) cascaded.push({ featureId: aggId, at: cut.start });
+    const whole = !base.some((h) => h.featureId === aggId);
+    for (const cut of cuts) cascaded.push({ featureId: aggId, at: cut.start, whole });
     for (const p of step.value.touchedParents) queue.push(p);
   }
   return {
@@ -820,10 +868,18 @@ export interface EndingPlan {
   readonly promoted: readonly FeatureId[];
   /** 途切れの後に再び現れる年（その年から子は元の所属に戻る）。現れないなら null。 */
   readonly reappearsAt: TimePoint | null;
-  /** 一緒に終わる、その年より後の自分の記録（錨）の件数（途切れずに続いていたもの）。 */
+  /**
+   * 一緒に終わる、その年より後の自分の記録のうち **中身の変わる記録**（前の記録と名前・種別・
+   * 親・形などが違う錨）の件数（4 回目 #5）。帳簿のために割られただけの錨は数えない。
+   */
   readonly trimmedLaterRecords: number;
   /** 後ろ側の子を全部失うので、その年から終わるまとめ役（1-1）。 */
   readonly cascaded: readonly CascadedEnd[];
+  /**
+   * 一緒に終わる後ろの記録の中にあった **別の上位領域への所属**（4 回目 #2。その上位領域は下位
+   * 領域を 1 件失う）。`from` はその所属が始まっていた年。
+   */
+  readonly laterAffiliations: readonly { readonly parentId: FeatureId; readonly from: TimePoint }[];
 }
 
 export function planEnding(
@@ -850,13 +906,33 @@ export function planEnding(
       ? undefined
       : presenceOf(after.series, calendar).find((iv) => compare(iv.start, at, calendar) > 0);
   const keptIds = new Set(after?.series.entries.map((e) => e.anchor.id) ?? []);
-  const trimmedLaterRecords = own.series.entries.filter(
-    (e) => compare(e.start, at, calendar) > 0 && !keptIds.has(e.anchor.id),
-  ).length;
+  const entries = own.series.entries;
+  const contentOf = (entry: AnchorEntry | undefined): string => {
+    const self = entry?.anchor.snapshot.features.find((f) => f.id === featureId);
+    if (self === undefined || entry === undefined) return '';
+    const coords = referencedVertexIds(self).map((v) => {
+      const c = entry.anchor.snapshot.vertices.byId.get(v)?.coordinate;
+      return c === undefined ? '' : `${String(c.lon)},${String(c.lat)}`;
+    });
+    return JSON.stringify(self) + coords.join(';');
+  };
+  let trimmedLaterRecords = 0;
+  const parentAtAt = r.entry.anchor.snapshot.features.find((f) => f.id === featureId)?.parentId;
+  const laterParents = new Map<FeatureId, TimePoint>();
+  entries.forEach((e, i) => {
+    if (compare(e.start, at, calendar) <= 0 || keptIds.has(e.anchor.id)) return;
+    // 帳簿のために割られた錨（前の記録と中身が同じ）は数えない（4 回目 #5）。
+    if (contentOf(e) !== contentOf(entries[i - 1])) trimmedLaterRecords += 1;
+    const parentId = e.anchor.snapshot.features.find((f) => f.id === featureId)?.parentId;
+    if (parentId !== undefined && parentId !== parentAtAt && !laterParents.has(parentId)) {
+      laterParents.set(parentId, e.start);
+    }
+  });
   return {
     promoted: result.promoted,
     reappearsAt: reappears === undefined ? null : reappears.start,
     trimmedLaterRecords,
     cascaded: result.cascaded,
+    laterAffiliations: [...laterParents].map(([parentId, from]) => ({ parentId, from })),
   };
 }
