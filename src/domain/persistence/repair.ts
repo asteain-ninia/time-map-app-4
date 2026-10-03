@@ -22,7 +22,14 @@
 // Pure & framework-free.
 
 import { createAnchor, createAnchorSnapshot } from '../anchor';
-import { createAnchorEntry, normalizeSeries, resolveAt } from '../anchor-series';
+import {
+  createAnchorEntry,
+  normalizeSeries,
+  resolveAt,
+  withUniqueAnchorId,
+  type AnchorEntry,
+} from '../anchor-series';
+import { deriveAnchorId } from '../anchor-id';
 import type { Feature, LeafFeature } from '../feature';
 import {
   FEATURE_KIND,
@@ -33,6 +40,12 @@ import {
   withParentId,
 } from '../feature';
 import { materializeOwnSeries } from '../affiliation/materialize';
+import {
+  presenceOf,
+  subtractIntervals,
+  syncAggregateChildIds,
+  type TimeInterval,
+} from '../affiliation/interval-edit';
 import { buildForest, directChildIds } from '../hierarchy/forest';
 import { resolveFeatureArea } from '../hierarchy/resolve-shape';
 import { HIERARCHY_VIOLATION, areasEqualWithinTolerance } from '../hierarchy/validate';
@@ -293,23 +306,40 @@ function scrubReferences(
 
 /**
  * Rebuild every aggregate's `childIds` from the authoritative parent relation so
- * the two encodings agree (FR-34 / U08 単一真実源). For each aggregate, childIds
- * becomes exactly the ids of the features whose parentId is that aggregate, in
- * forest (input) order. parentId is the source of truth the whole hierarchy /
- * shape path reads; childIds is the redundant view, so reconciling means
- * regenerating the view — never the other way (which could resurrect a child the
- * parent path already dropped). Pure: per-snapshot, returns new features.
+ * the two encodings agree (FR-34 / U08 単一真実源). parentId is the source of truth the
+ * whole hierarchy / shape path reads; childIds is the redundant view, so reconciling
+ * means regenerating the view — never the other way (which could resurrect a child the
+ * parent path already dropped). Pure.
+ *
+ * **時刻ごとに揃える**（増分 7 の手直し 2 回目 / バグ狩り §3）: 子が自分の系列を持つ
+ * まとめ役（連邦化で束ねた・外から移した子）の子は、まとめ役の錨の中には居ない。錨 1 枚
+ * だけで子を数え直すと子の並びが空になり、時刻ごとの検査では食い違いが残ったまま
+ * （修復しても「解消できなかった」）になっていた。自分の系列を持つまとめ役は、時刻ごとの
+ * 実際の所属で揃える（`syncAggregateChildIds`。区間の途中で子が出入りすれば錨を割る）。
+ * 錨に居候しているまとめ役（自分の系列を持たない）だけは、従来どおりその錨の中で揃える。
  */
-function reconcileChildIds(project: DomainProject): DomainProject {
-  return mapSnapshotFeatures(project, (features) => {
+function reconcileChildIds(project: DomainProject, calendar: Calendar): DomainProject {
+  const owners = new Set<FeatureId>(project.histories.map((h) => h.featureId));
+  const perSnapshot = mapSnapshotFeatures(project, (features) => {
     const forest = buildForest(features);
     return features.map((f) => {
-      if (f.kind !== FEATURE_KIND.Aggregate) return f;
+      if (f.kind !== FEATURE_KIND.Aggregate || owners.has(f.id)) return f;
       const derived = directChildIds(forest, f.id);
       if (idArraysEqual(f.childIds, derived)) return f;
       return withAggregateChildIds(f, [...derived]);
     });
   });
+  const aggregateOwners: FeatureId[] = [];
+  for (const h of perSnapshot.histories) {
+    const isAggregate = h.series.entries.some((e) =>
+      e.anchor.snapshot.features.some((f) => f.id === h.featureId && f.kind === FEATURE_KIND.Aggregate),
+    );
+    if (isAggregate) aggregateOwners.push(h.featureId);
+  }
+  return {
+    ...perSnapshot,
+    histories: syncAggregateChildIds(perSnapshot.histories, aggregateOwners, calendar),
+  };
 }
 
 /** Order-sensitive id-array equality (avoids rebuilding an unchanged aggregate). */
@@ -792,20 +822,110 @@ function materializeDirectDomain(
 }
 
 /**
+ * 孤立した歴史の居候のうち、**既に自分の系列を持っている**地物の記録を、その系列が
+ * 覆っていない年の分だけ自分の系列へ時刻順に足す（増分 7 の手直し 2 回目 / 反証 #2・GPT #1）。
+ *
+ * 以前は「既に自分の系列がある」居候を起こさずに孤立した歴史ごと落としていたので、一部の
+ * 年だけ自分の系列を持つ子の、その外の年の記録が黙って消えていた。同じ年に両方の記録が
+ * あるときは自分の系列の側を正とし、中身が食い違っていた孤立した歴史の側の記録は数える
+ * （`discarded`。修復の報告に件数を出す）。純粋。
+ */
+function mergeOrphanRecordsIntoOwnSeries(
+  histories: readonly FeatureHistory[],
+  ownerIds: readonly FeatureId[],
+  residentsWithOwn: ReadonlySet<FeatureId>,
+  calendar: Calendar,
+): { readonly histories: readonly FeatureHistory[]; readonly discarded: number } {
+  if (residentsWithOwn.size === 0) return { histories, discarded: 0 };
+  const owners = new Set<FeatureId>(ownerIds);
+  const additions = new Map<FeatureId, AnchorEntry[]>();
+  let discarded = 0;
+  for (const orphan of histories) {
+    if (!owners.has(orphan.featureId) || !isOrphanHistory(orphan)) continue;
+    const entries = orphan.series.entries;
+    entries.forEach((entry, i) => {
+      const next = entries[i + 1];
+      const end =
+        entry.end === null
+          ? (next?.start ?? null)
+          : next !== undefined && compare(next.start, entry.end, calendar) < 0
+            ? next.start
+            : entry.end;
+      if (end !== null && compare(entry.start, end, calendar) >= 0) return;
+      for (const f of entry.anchor.snapshot.features) {
+        if (!residentsWithOwn.has(f.id)) continue;
+        const own = histories.find((h) => h.featureId === f.id && !isOrphanHistory(h));
+        if (own === undefined) continue;
+        const covered = presenceOf(own.series, calendar);
+        const record: TimeInterval = { start: entry.start, end };
+        const uncovered = subtractIntervals([record], covered, calendar);
+        const store = pruneVertexStore(entry.anchor.snapshot.vertices, [f]);
+        const list = additions.get(f.id) ?? [];
+        for (const piece of uncovered) {
+          list.push(
+            createAnchorEntry(
+              createAnchor(deriveAnchorId(f.id, piece.start), createAnchorSnapshot([f], store)),
+              piece.start,
+              piece.end,
+            ),
+          );
+        }
+        additions.set(f.id, list);
+        // 覆われていた年に、自分の系列と違う中身があったか（あれば捨てた記録として数える）。
+        const overlap = subtractIntervals([record], uncovered, calendar)[0];
+        if (overlap !== undefined) {
+          const r = resolveAt(own.series, overlap.start, calendar);
+          const mine = r.kind === 'present' ? r.entry.anchor.snapshot.features.find((x) => x.id === f.id) : undefined;
+          // 居なくなった持ち主を指す親は修復で外れるので、中身の比較では見ない。
+          const comparable =
+            f.parentId !== undefined && owners.has(f.parentId) ? withParentId(f, undefined) : f;
+          const mineComparable =
+            mine?.parentId !== undefined && owners.has(mine.parentId) ? withParentId(mine, undefined) : mine;
+          if (mineComparable === undefined || JSON.stringify(mineComparable) !== JSON.stringify(comparable)) {
+            discarded += 1;
+          }
+        }
+      }
+    });
+  }
+  if (additions.size === 0) return { histories, discarded };
+  const out = histories.map((h) => {
+    const extra = additions.get(h.featureId);
+    if (extra === undefined || extra.length === 0 || isOrphanHistory(h)) return h;
+    const merged: AnchorEntry[] = [...h.series.entries];
+    for (const e of extra) merged.push(createAnchorEntry(withUniqueAnchorId(merged, e.anchor), e.start, e.end));
+    return { featureId: h.featureId, series: normalizeSeries(merged, calendar) };
+  });
+  return { histories: out, discarded };
+}
+
+/**
  * 孤立した歴史（持ち主が全スナップショットに不在）の中に残っている地物を、地物ごとの
  * 歴史へ移す（司令塔の決定 (3)）。移し終えて空になった歴史は落とす。中身を捨てないので
- * 古いファイルの救済になる。純粋。
+ * 古いファイルの救済になる。既に自分の系列を持つ居候は、その系列が覆っていない年の記録を
+ * 足す（{@link mergeOrphanRecordsIntoOwnSeries}）。純粋。
  */
 function materializeOrphanHistories(
   project: DomainProject,
   ownerIds: readonly FeatureId[],
   calendar: Calendar,
 ): DomainProject {
+  return materializeOrphanHistoriesWithReport(project, ownerIds, calendar).project;
+}
+
+function materializeOrphanHistoriesWithReport(
+  project: DomainProject,
+  ownerIds: readonly FeatureId[],
+  calendar: Calendar,
+): { readonly project: DomainProject; readonly discarded: number } {
   // 起こす相手は **孤立した方の歴史の居候だけ**（項目 10。持ち主の居る同 id の歴史を
   // 読まない）。
+  const residents = orphanResidentIds(project.histories, ownerIds);
+  const withOwn = orphanResidentsWithOwnSeries(project.histories, ownerIds);
+  const merged = mergeOrphanRecordsIntoOwnSeries(project.histories, ownerIds, withOwn, calendar);
   const histories: readonly FeatureHistory[] = materializeOwnSeries(
-    project.histories,
-    orphanResidentIds(project.histories, ownerIds),
+    merged.histories,
+    residents,
     calendar,
   ).histories;
   // 移し終えてもなお持ち主が居ない歴史は、もう中身が無い（あるいは中身が既に別の
@@ -833,7 +953,49 @@ function materializeOrphanHistories(
       }
     }
   }
-  return dangling.length === 0 ? moved : detachToTopLevel(moved, dangling);
+  return {
+    project: dangling.length === 0 ? moved : detachToTopLevel(moved, dangling),
+    discarded: merged.discarded,
+  };
+}
+
+/** 孤立した歴史の居候のうち、既に自分の系列を持つもの（{@link orphanResidentIds} の裏）。 */
+function orphanResidentsWithOwnSeries(
+  histories: readonly FeatureHistory[],
+  ownerIds: readonly FeatureId[],
+): ReadonlySet<FeatureId> {
+  const owners = new Set<FeatureId>(ownerIds);
+  const out = new Set<FeatureId>();
+  for (const history of histories) {
+    if (!owners.has(history.featureId) || !isOrphanHistory(history)) continue;
+    for (const entry of history.series.entries) {
+      for (const f of entry.anchor.snapshot.features) {
+        if (histories.some((h) => h.featureId === f.id && !isOrphanHistory(h))) out.add(f.id);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * {@link applyRepair} と同じ修復を当て、**捨てた記録の件数**も返す（修復の報告に出す）。
+ * 件数が出るのはいまのところ「各地物に自分の年表を作って残す」だけ（同じ年に自分の系列の
+ * 記録と食い違う孤立した歴史の記録は、自分の系列の側を正として捨てる）。
+ */
+export function applyRepairWithReport(
+  project: DomainProject,
+  inc: Inconsistency,
+  optionId: RepairOptionId,
+  calendar: Calendar,
+): { readonly project: DomainProject; readonly discardedRecords: number } {
+  if (
+    optionId === REPAIR_OPTION.MaterializeOrphanHistory &&
+    repairOptionsFor(inc).some((o) => o.id === optionId)
+  ) {
+    const done = materializeOrphanHistoriesWithReport(project, inc.featureIds, calendar);
+    return { project: done.project, discardedRecords: done.discarded };
+  }
+  return { project: applyRepair(project, inc, optionId, calendar), discardedRecords: 0 };
 }
 
 /**
@@ -868,7 +1030,7 @@ export function applyRepair(
     case REPAIR_OPTION.DetachToTopLevel:
       return detachToTopLevel(project, inc.featureIds);
     case REPAIR_OPTION.ReconcileChildIds:
-      return reconcileChildIds(project);
+      return reconcileChildIds(project, calendar);
     case REPAIR_OPTION.DropOverlappingFeature:
       return dropOneOfPair(project, inc.featureIds);
     case REPAIR_OPTION.DropAggregateFeature: {
