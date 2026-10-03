@@ -91,6 +91,11 @@ const E2E_SAVE_AS_PATH: string | null = E2E_TEST
   ? (process.env['E2E_SAVE_AS_PATH'] ?? null)
   : null;
 
+// E2E 専用の脱出口（増分 8D の手直し）: 「開く」ダイアログ（ファイル →「開く」と、世代の一覧の
+// 「元のファイルを選ぶ」）の答えを環境変数で決める。E2E_SAVE_AS_PATH と同じく **E2E_TEST=1 の
+// ときだけ** 読む（本番では旗ごと存在しない）。
+const E2E_OPEN_PATH: string | null = E2E_TEST ? (process.env['E2E_OPEN_PATH'] ?? null) : null;
+
 // --- 表示名を gimoza に固定する（現状.md B3 / FR-115）-----------------------------
 //
 // アプリの正式名称は **gimoza**。`time-map-app-4`（package.json の `name`）は開発時の
@@ -440,6 +445,12 @@ let loadCommitCount = 0;
  */
 let issuedBackups: ReadonlyMap<string, IssuedBackup> = new Map();
 let restoredSourcePath: string | undefined;
+/**
+ * 増分 8D の手直し: 世代の一覧の基準の候補（開こうとしてまだ確定していないファイル・一覧の板で
+ * 選んだ元のファイル）と、世代の地物数の覚え書き（パス・大きさ・更新時刻が鍵）。
+ */
+let backupSourceCandidate: string | undefined;
+const backupFeatureMemo = new Map<string, number | null>();
 
 /**
  * FR-117 診断ログの環境。`wireIpc` が起動時（app ready 後 — `app.getPath` を使うため）
@@ -562,6 +573,7 @@ function wireIpc(): void {
         return result.canceled ? undefined : result.filePath;
       },
       showOpenDialog: async () => {
+        if (E2E_OPEN_PATH !== null) return E2E_OPEN_PATH;
         const result = await dialog.showOpenDialog({
           properties: ['openFile'],
           filters: [{ name: 'gimoza', extensions: ['gimoza'] }],
@@ -583,6 +595,8 @@ function wireIpc(): void {
       // FR-04 pre-read size cap: the file's size without reading it (handleOpenImage
       // stats a picked base-map image and refuses past the 64 MB cap before the read).
       statSize: (path) => stat(path).then((s) => s.size),
+      // 増分 8D の手直し: 世代の地物数の覚え書きの鍵（パス・大きさ・更新時刻）。
+      statInfo: (path) => stat(path).then((s) => ({ size: s.size, mtimeMs: s.mtimeMs })),
     },
     saveEnv: buildSaveEnv(),
     currentPath,
@@ -601,6 +615,13 @@ function wireIpc(): void {
         restoredSourcePath = path;
       },
     },
+    sourceCandidate: {
+      get: () => backupSourceCandidate,
+      set: (path) => {
+        backupSourceCandidate = path;
+      },
+    },
+    backupFeatureMemo,
     applyAutoSaveConfig,
     get maxGenerations(): number {
       return maxGenerations;

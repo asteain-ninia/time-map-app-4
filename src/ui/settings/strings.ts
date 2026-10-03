@@ -8,6 +8,11 @@
 // return the SAME Japanese reason (教訓 5.26). A future localisation unit (FR-7.2)
 // forks this single module — there is no i18n abstraction layer.
 
+import {
+  AUTO_SAVE_INTERVAL_MINUTES_RANGE,
+  BACKUP_GENERATIONS_RANGE,
+} from '../../shell/ipc/contract';
+
 /** Dialog chrome: title, tab labels, action buttons. */
 export const SETTINGS_STRINGS = {
   /** Dialog title. */
@@ -92,14 +97,35 @@ export const BACKUP_SETTINGS_STRINGS = {
   generations: '残す世代の数',
   apply: '適用',
   applied: '適用しました。',
-  intervalInvalid: '自動保存の間隔は 1〜120 分の整数で入れてください。',
-  generationsInvalid: '残す世代の数は 1〜100 の整数で入れてください。',
+  intervalInvalid: `自動保存の間隔は ${String(AUTO_SAVE_INTERVAL_MINUTES_RANGE.min)}〜${String(AUTO_SAVE_INTERVAL_MINUTES_RANGE.max)} 分の整数で入れてください。`,
+  /**
+   * 下限は 2（増分 8D の手直し）。いちばん新しい世代はいまのファイルの写しなので、1 では
+   * 戻す先が無い。理由も一緒に言う。
+   */
+  generationsInvalid: `残す世代の数は ${String(BACKUP_GENERATIONS_RANGE.min)}〜${String(BACKUP_GENERATIONS_RANGE.max)} の整数で入れてください（いちばん新しい世代はいまのファイルと同じ中身なので、1 つでは戻せません）。`,
   /** いまの世代の数（V14 の入口）。 */
   generationCount: (sourceName: string, count: number): string =>
     `${sourceName} の世代はいま ${String(count)} 個あります（ファイル →「以前の保存から開く」で戻せます）。`,
   generationNone: '戻せる世代はまだありません。保存するたびに 1 世代ずつ残ります。',
+  /** どのファイルの世代を数えればよいか分からない（増分 8D の手直し。「無い」とは言わない）。 */
+  generationNoBasis:
+    '開いているファイルがありません。ファイルを開くか保存すると、その世代の数を出します。',
   generationLoading: '世代を数えています…',
   generationUnavailable: '世代の数を読めませんでした。',
+  /** 世代数を下げると次の保存で消える数（増分 8D の手直し。欄の下に先に出す）。 */
+  shrinkPreview: (sourceName: string, deleteCount: number, keep: number): string =>
+    `この数にすると、次に保存したときに ${sourceName} の古い世代が ${String(deleteCount)} 個消えます（残すのは新しい ${String(keep)} 個です）。`,
+  /** 基準が無いときに世代数を下げた（数は出せないが、消えることは言う）。 */
+  shrinkGeneric:
+    '残す数を減らすと、ファイルを次に保存したときに、その数を超える古い世代から消えます。',
+  /** ［適用］／［保存］で出す確認。 */
+  shrinkConfirm: (sourceName: string, deleteCount: number): string =>
+    `次の保存で ${sourceName} の古い世代が ${String(deleteCount)} 個消えます。この数にしますか？`,
+  shrinkConfirmYes: 'この数にする',
+  shrinkConfirmNo: 'やめる（数を戻す）',
+  /** 設定を書けなかった（増分 8D の手直し。入力は残す）。 */
+  writeFailed: (detail: string): string =>
+    `設定をファイルに書き込めませんでした${detail.length > 0 ? `（${detail}）` : ''}。値は変えていません。`,
   /** 自動保存がいつ動くか（静かに待機していることを先に言う。状態行の断り書きと同じ趣旨）。 */
   autoSaveNote:
     '自動保存は、保存先が決まっていて上書きを一度確かめたファイルにだけ、変更があるときに書きます。',

@@ -90,7 +90,7 @@ describe('併合', () => {
     for (const bad of [0, -1, 1.5, Number.NaN, AUTO_SAVE_INTERVAL_MINUTES_RANGE.max + 1]) {
       expect(mergeAppPrefs(current, { autoSaveIntervalMinutes: bad }).autoSaveIntervalMinutes).toBe(7);
     }
-    for (const bad of [0, 2.5, BACKUP_GENERATIONS_RANGE.max + 1]) {
+    for (const bad of [0, 1, 2.5, BACKUP_GENERATIONS_RANGE.max + 1]) {
       expect(mergeAppPrefs(current, { backupGenerations: bad }).backupGenerations).toBe(3);
     }
   });
@@ -115,6 +115,14 @@ describe('自動保存の間隔と世代数（増分 8D）', () => {
       DEFAULT_APP_PREFS,
     );
   });
+
+  it('世代数の下限は 2。下限を上げる前のファイルの 1 は 2 として読む（既定の 10 へ倒さない）', () => {
+    expect(BACKUP_GENERATIONS_RANGE.min).toBe(2);
+    expect(parseAppPrefs('{"backupGenerations":1}').backupGenerations).toBe(2);
+    expect(parseAppPrefs('{"backupGenerations":2}').backupGenerations).toBe(2);
+    // 0 以下は壊れた値なので、これまでどおり既定。
+    expect(parseAppPrefs('{"backupGenerations":0}').backupGenerations).toBe(DEFAULT_APP_PREFS.backupGenerations);
+  });
 });
 
 describe('読み書き（失敗を例外にしない）', () => {
@@ -126,8 +134,8 @@ describe('読み書き（失敗を例外にしない）', () => {
   it('書いたものを読み戻せる', async () => {
     const env: AppPrefsEnv = { fs: memoryFs(), userDataDir: DIR };
     await expect(writeAppPrefs(env, { showFirstRunGuide: false })).resolves.toEqual({
-      ...DEFAULT_APP_PREFS,
-      showFirstRunGuide: false,
+      ok: true,
+      prefs: { ...DEFAULT_APP_PREFS, showFirstRunGuide: false },
     });
     await expect(readAppPrefs(env)).resolves.toEqual({
       ...DEFAULT_APP_PREFS,
@@ -135,7 +143,7 @@ describe('読み書き（失敗を例外にしない）', () => {
     });
   });
 
-  it('書けなくても投げず、いまの値を返す', async () => {
+  it('書けなくても投げないが、失敗と理由と「いまディスクにある値」を返す（増分 8D の手直し）', async () => {
     const fs = memoryFs();
     const env: AppPrefsEnv = {
       fs: {
@@ -146,11 +154,12 @@ describe('読み書き（失敗を例外にしない）', () => {
       },
       userDataDir: DIR,
     };
-    await expect(writeAppPrefs(env, { showFirstRunGuide: false })).resolves.toEqual({
-      ...DEFAULT_APP_PREFS,
-      showFirstRunGuide: false,
-    });
-    // 覚え書きは残らない（次の起動でまたガイドが出る、が最悪の結果）。
+    const result = await writeAppPrefs(env, { showFirstRunGuide: false, backupGenerations: 50 });
+    expect(result.ok).toBe(false);
+    // 返す値は書こうとした値ではなく、いま効いている（ディスクの）値。
+    expect(result.prefs).toEqual(DEFAULT_APP_PREFS);
+    if (!result.ok) expect(result.message).toContain('EACCES');
+    // 覚え書きは残らない。
     await expect(readAppPrefs(env)).resolves.toEqual(DEFAULT_APP_PREFS);
   });
 

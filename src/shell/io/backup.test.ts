@@ -7,7 +7,11 @@ import {
   backupKeyOf,
   backupName,
   compareBackupNames,
+  countBackupFeatures,
+  countBackups,
   describeBackups,
+  memoizedFeatureCount,
+  parseBackupFileName,
   listBackupGenerations,
   DEFAULT_MAX_GENERATIONS,
   nextSequence,
@@ -15,6 +19,7 @@ import {
   selectBackupsToDelete,
   type BackupFsOps,
 } from './backup';
+import { buildTmap } from './tmap';
 
 const BASE = 'world.gimoza';
 
@@ -172,7 +177,7 @@ describe('listBackupGenerations / describeBackups（増分 8D）', () => {
     ]);
   });
 
-  it('大きさが測れない世代は行ごと落とし、中身が読めない世代は地物数だけ null', async () => {
+  it('大きさが測れない世代は行ごと落とす。中身は読まない（大きさと更新時刻だけ）', async () => {
     const files = new Map<string, Uint8Array>([
       [`/d/${backupName(BASE, 1000, 0)}`, new Uint8Array([9, 9])],
       [`/d/${backupName(BASE, 2000, 0)}`, new Uint8Array([1])],
@@ -183,20 +188,19 @@ describe('listBackupGenerations / describeBackups（増分 8D）', () => {
           ...[...files.keys()].map((p) => p.slice(3)),
           backupName(BASE, 3000, 0), // 一覧には出たが stat の前に消えた
         ],
-        statSize: async (p) => {
+        stat: async (p) => {
           const data = files.get(p);
           if (data === undefined) throw new Error('ENOENT');
-          return data.length;
+          return { size: data.length, mtimeMs: 7 };
         },
-        readFile: async (p) => files.get(p) ?? new Uint8Array(),
       },
       (dir, name) => `${dir}/${name}`,
       '/d',
       BASE,
     );
-    expect(rows.map((r) => [r.savedAtMs, r.byteSize, r.featureCount])).toEqual([
-      [2000, 1, null],
-      [1000, 2, null],
+    expect(rows.map((r) => [r.savedAtMs, r.byteSize, r.mtimeMs])).toEqual([
+      [2000, 1, 7],
+      [1000, 2, 7],
     ]);
   });
 
@@ -206,13 +210,109 @@ describe('listBackupGenerations / describeBackups（増分 8D）', () => {
         listDir: async () => {
           throw new Error('EACCES');
         },
-        statSize: async () => 0,
-        readFile: async () => new Uint8Array(),
+        stat: async () => ({ size: 0, mtimeMs: 0 }),
       },
       (dir, name) => `${dir}/${name}`,
       '/d',
       BASE,
     );
     expect(rows).toEqual([]);
+  });
+
+  it('countBackups は名前だけで数える（読めなければ 0）', async () => {
+    const names = [backupName(BASE, 1, 0), backupName(BASE, 2, 0), BASE, 'x.txt'];
+    await expect(countBackups(async () => names, '/d', BASE)).resolves.toBe(2);
+    await expect(
+      countBackups(
+        async () => {
+          throw new Error('EACCES');
+        },
+        '/d',
+        BASE,
+      ),
+    ).resolves.toBe(0);
+  });
+});
+
+describe('世代の地物数の覚え書き（増分 8D の手直し）', () => {
+  const good = buildTmap({
+    manifest: { histories: [{ entries: [{ anchor: { snapshot: { features: [{ id: 'a' }, { id: 'b' }] } } }] }] },
+    baseMapImage: new Uint8Array([1]),
+    attachments: [],
+  });
+
+  it('同じパス・大きさ・更新時刻なら覚えた数を使い、読まない。どれかが変われば数え直す', async () => {
+    const memo = new Map<string, number | null>();
+    let reads = 0;
+    let mtimeMs = 1;
+    const ports = {
+      stat: async () => ({ size: good.length, mtimeMs }),
+      readFile: async () => {
+        reads += 1;
+        return good;
+      },
+    };
+    await expect(countBackupFeatures(ports, '/d/a', memo)).resolves.toBe(2);
+    await expect(countBackupFeatures(ports, '/d/a', memo)).resolves.toBe(2);
+    expect(reads).toBe(1);
+    expect(memoizedFeatureCount(memo, { path: '/d/a', byteSize: good.length, mtimeMs: 1 })).toBe(2);
+    mtimeMs = 2;
+    await countBackupFeatures(ports, '/d/a', memo);
+    expect(reads).toBe(2);
+    expect(memoizedFeatureCount(memo, { path: '/d/b', byteSize: good.length, mtimeMs: 2 })).toBeUndefined();
+  });
+
+  it('読めない・測れない世代は null（読めない結果も覚える）', async () => {
+    const memo = new Map<string, number | null>();
+    const broken = {
+      stat: async () => ({ size: 3, mtimeMs: 1 }),
+      readFile: async () => new Uint8Array([1, 2, 3]),
+    };
+    await expect(countBackupFeatures(broken, '/d/x', memo)).resolves.toBeNull();
+    expect(memoizedFeatureCount(memo, { path: '/d/x', byteSize: 3, mtimeMs: 1 })).toBeNull();
+    const gone = {
+      stat: async () => {
+        throw new Error('ENOENT');
+      },
+      readFile: async () => good,
+    };
+    await expect(countBackupFeatures(gone, '/d/y', memo)).resolves.toBeNull();
+  });
+});
+
+describe('一覧に出している世代は間引かない（増分 8D の手直し・重 3）', () => {
+  it('keep に載った世代は消さずに飛ばし、代わりに新しい世代を消すこともしない', () => {
+    const existing = Array.from({ length: 10 }, (_, i) => backupName(BASE, 1000 + i, 0));
+    const oldest = backupName(BASE, 1000, 0);
+    expect(selectBackupsToDelete(BASE, existing, 10, new Set([oldest]))).toEqual([]);
+    // 上限を 2 に下げても、keep 以外の古いものだけを消す（keep の分は上限を超えて残る）。
+    const toDelete = selectBackupsToDelete(BASE, existing, 2, new Set([oldest]));
+    expect(toDelete).not.toContain(oldest);
+    expect(toDelete).toHaveLength(8);
+  });
+
+  it('runBackup も keep を守る', async () => {
+    const dir: FakeDir = { files: new Set([BASE]), ops: [] };
+    for (let i = 0; i < 3; i++) dir.files.add(backupName(BASE, 1000 + i, 0));
+    const keep = new Set([backupName(BASE, 1000, 0)]);
+    const result = await runBackup(makeBackupFs(dir), join, '/d', BASE, 2000, 3, keep);
+    expect(result.ok).toBe(true);
+    expect(dir.files.has(backupName(BASE, 1000, 0))).toBe(true);
+    expect(dir.ops.some((o) => o.startsWith('remove'))).toBe(false);
+  });
+});
+
+describe('世代の名前の形（増分 8D の手直し）', () => {
+  it('<元の名前>.bak.<時刻>-<連番> を読み、世代の世代は元まで剥がす', () => {
+    expect(parseBackupFileName(backupName(BASE, 1234, 2))).toEqual({ baseName: BASE, savedAtMs: 1234 });
+    expect(
+      parseBackupFileName(`${backupName(BASE, 1, 0)}.bak.0000000000000009-0000`),
+    ).toEqual({ baseName: BASE, savedAtMs: 9 });
+  });
+
+  it('世代の形でない名前は undefined', () => {
+    for (const name of [BASE, `${BASE}.bak.`, `${BASE}.bak.abc-0000`, `${BASE}.bak.12`, '.bak.1-0']) {
+      expect(parseBackupFileName(name)).toBeUndefined();
+    }
   });
 });

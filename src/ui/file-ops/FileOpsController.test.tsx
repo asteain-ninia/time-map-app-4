@@ -38,7 +38,9 @@ import {
 import type { DomainProject } from '../../domain/persistence/index';
 import {
   DEFAULT_APP_PREFS,
+  type BackupCount,
   type BackupEntry,
+  type BackupListing,
   type LoadResponse,
   type SaveRequest,
   type SaveResponse,
@@ -79,10 +81,15 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     onAutoSaveTick: vi.fn(() => () => {}),
     // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
     readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
-    writeAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
-    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は世代なし）。
-    listBackups: vi.fn(async (): Promise<readonly BackupEntry[]> => []),
+    writeAppPrefs: vi.fn(async () => ({ ok: true as const, prefs: DEFAULT_APP_PREFS })),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は基準なし）。
+    listBackups: vi.fn(async (): Promise<BackupListing> => ({ basis: 'none' })),
     openBackup: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
+    // 増分 8D の手直し: 地物数を後から埋める・1 回の終わり・数だけ・新規。
+    countBackupFeatures: vi.fn(async (): Promise<number | null> => null),
+    endBackupChoice: vi.fn(async () => {}),
+    countBackups: vi.fn(async (): Promise<BackupCount> => ({ basis: 'none' })),
+    forgetSaveTarget: vi.fn(async () => {}),
     // FR-107 close ブリッジ購読（このコントローラは購読しない — App.tsx が host 側で
     // 繋ぐ）。契約の全面を満たすためのスタブ。
     onCloseRequest: vi.fn(() => () => {}),
@@ -1894,6 +1901,7 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     featureCount: 3,
     sourceName: 'w.gimoza',
   };
+  const LISTING: BackupListing = { basis: 'file', sourceName: 'w.gimoza', entries: [ENTRY] };
 
   /** 世代から開いた読み込みの応答（path は世代そのもの）。 */
   function restoredLoad(): LoadResponse {
@@ -1922,7 +1930,7 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     const store = makeStore();
     const registry = new CommandRegistry();
     const api = makeApi({
-      listBackups: vi.fn(async () => [ENTRY]),
+      listBackups: vi.fn(async () => LISTING),
       openBackup: vi.fn(async () => restoredLoad()),
     });
     const before = store.getState().domain;
@@ -1943,7 +1951,7 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     const registry = new CommandRegistry();
     const onSaveStatusChange = vi.fn();
     const api = makeApi({
-      listBackups: vi.fn(async () => [ENTRY]),
+      listBackups: vi.fn(async () => LISTING),
       openBackup: vi.fn(async () => restoredLoad()),
     });
     render(
@@ -1983,7 +1991,7 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     const store = makeStore();
     const registry = new CommandRegistry();
     const api = makeApi({
-      listBackups: vi.fn(async () => [ENTRY]),
+      listBackups: vi.fn(async () => LISTING),
       openBackup: vi.fn(async () => restoredLoad()),
     });
     render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
@@ -2008,7 +2016,7 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     const registry = new CommandRegistry();
     const onSaveStatusChange = vi.fn();
     const api = makeApi({
-      listBackups: vi.fn(async () => [ENTRY]),
+      listBackups: vi.fn(async () => LISTING),
       openBackup: vi.fn(async () => restoredLoad()),
       load: vi.fn(async () => okLoad()),
     });
@@ -2037,7 +2045,13 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     const store = makeStore();
     const registry = new CommandRegistry();
     const onBackupListModalChange = vi.fn();
-    const api = makeApi();
+    const api = makeApi({
+      listBackups: vi.fn(async (): Promise<BackupListing> => ({
+        basis: 'file',
+        sourceName: 'w.gimoza',
+        entries: [],
+      })),
+    });
     render(
       <FileOpsController
         store={store}
@@ -2058,5 +2072,134 @@ describe('増分 8D: 以前の保存から開く — 世代は保存先になら
     expect(screen.queryByTestId('backup-dialog')).toBeNull();
     expect(onBackupListModalChange).toHaveBeenLastCalledWith(false);
     expect(api.openBackup).not.toHaveBeenCalled();
+  });
+
+  // --- 増分 8D の手直し ---------------------------------------------------------
+
+  it('やめても開いても、最後に「1 回の終わり」を主プロセスへ伝える（一覧の世代を間引きの対象に戻す）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({ listBackups: vi.fn(async () => LISTING) });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpenBackup);
+    });
+    await screen.findByTestId('backup-row');
+    expect(api.endBackupChoice).not.toHaveBeenCalled();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('backup-cancel'));
+    });
+    await waitFor(() => expect(api.endBackupChoice).toHaveBeenCalledTimes(1));
+  });
+
+  it('基準が無いときは「元のファイルを選ぶ…」を出し、選ぶと主プロセスに選ばせてその世代で板を差し替える', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const listBackups = vi.fn(async (request?: { pickSource?: boolean }): Promise<BackupListing> =>
+      request?.pickSource === true ? LISTING : { basis: 'none' },
+    );
+    const api = makeApi({ listBackups, openBackup: vi.fn(async () => restoredLoad()) });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpenBackup);
+    });
+    expect(await screen.findByTestId('backup-no-basis')).toBeTruthy();
+    expect(screen.queryByTestId('backup-empty')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('backup-pick-source'));
+    });
+    expect(listBackups).toHaveBeenLastCalledWith({ pickSource: true });
+    const row = await screen.findByTestId('backup-row');
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    await waitFor(() => expect(api.openBackup).toHaveBeenCalledWith('b-1'));
+  });
+
+  it('地物数は板を出したあとで 1 行ずつ埋まる（数えている間は「…」）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    let release: ((n: number) => void) | null = null;
+    const pending: BackupEntry = { id: 'b-2', savedAtMs: ENTRY.savedAtMs, byteSize: 10, sourceName: 'w.gimoza' };
+    const api = makeApi({
+      listBackups: vi.fn(async (): Promise<BackupListing> => ({
+        basis: 'file',
+        sourceName: 'w.gimoza',
+        entries: [pending],
+      })),
+      countBackupFeatures: vi.fn(
+        () =>
+          new Promise<number | null>((resolve) => {
+            release = resolve;
+          }),
+      ),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileOpenBackup);
+    });
+    // 一覧は数え終わるのを待たずに出る。
+    expect((await screen.findByTestId('backup-row-features')).textContent).toBe('…');
+    expect(api.countBackupFeatures).toHaveBeenCalledWith('b-2');
+    await act(async () => {
+      release?.(42);
+    });
+    await waitFor(() => expect(screen.getByTestId('backup-row-features').textContent).toBe('42 件'));
+  });
+
+  it('新規にすると主プロセスへ「保存先なし」を伝える（前のファイルの名前・一覧を持ち越さない）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({
+      listBackups: vi.fn(async () => LISTING),
+      openBackup: vi.fn(async () => restoredLoad()),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await openFirstBackup(registry);
+    await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalled());
+    expect(api.forgetSaveTarget).not.toHaveBeenCalled();
+    await act(async () => {
+      registry.dispatch(COMMAND_ID.FileNew);
+    });
+    await waitFor(() => expect(api.forgetSaveTarget).toHaveBeenCalledTimes(1));
+  });
+
+  it('世代から開いて **修復した** 中身は未保存として始まる（どのファイルにも無いので）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const repairedRestore = (): LoadResponse => ({
+      ...brokenLoad(),
+      path: '/d/w.gimoza.bak.0001790000000000-0000',
+      commitToken: 'tok-backup',
+      restoredFrom: { sourceName: 'w.gimoza', savedAtMs: ENTRY.savedAtMs },
+    } as LoadResponse);
+    const api = makeApi({
+      listBackups: vi.fn(async () => LISTING),
+      openBackup: vi.fn(async () => repairedRestore()),
+    });
+    applyOutcomeQueue.push({ outcome: REPAIR_OUTCOME.Applied, project: buildEmptyProject() });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await openFirstBackup(registry);
+    await waitFor(() => expect(screen.getByTestId('repair-modal-root')).toBeInTheDocument());
+    // 対象の地物は名前で呼ばれる（「名前のない地物」と言わない）。
+    expect(screen.getByTestId('repair-row-0')).toHaveTextContent('首都');
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('repair-apply'));
+    });
+    await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-backup'));
+    expect(store.getState().projectDirty).toBe(true);
+  });
+
+  it('修復せずに開いた世代は clean のまま（元のファイルも世代もディスクに残っている）', async () => {
+    const store = makeStore();
+    const registry = new CommandRegistry();
+    const api = makeApi({
+      listBackups: vi.fn(async () => LISTING),
+      openBackup: vi.fn(async () => restoredLoad()),
+    });
+    render(<FileOpsController store={store} registry={registry} api={api} calendar={CAL} />);
+    await openFirstBackup(registry);
+    await waitFor(() => expect(api.commitLoadedPath).toHaveBeenCalledWith('tok-backup'));
+    expect(store.getState().projectDirty).toBe(false);
   });
 });

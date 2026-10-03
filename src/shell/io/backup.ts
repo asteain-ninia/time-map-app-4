@@ -85,6 +85,7 @@ export function selectBackupsToDelete(
   baseName: string,
   existing: readonly string[],
   maxGenerations: number,
+  keep: ReadonlySet<string> = NO_NAMES,
 ): string[] {
   const backups = existing
     .filter((name) => backupKeyOf(baseName, name) !== undefined)
@@ -94,8 +95,36 @@ export function selectBackupsToDelete(
   const cap = Math.max(0, Math.trunc(maxGenerations));
   const keepExisting = Math.max(0, cap - 1); // room for the incoming new backup
   const deleteCount = Math.max(0, backups.length - keepExisting);
-  return backups.slice(0, deleteCount);
+  // 増分 8D の手直し: `keep` に載っている世代（「以前の保存から開く」の一覧で利用者に見せて
+  // いる世代）は **消さずに飛ばす**。代わりに新しい世代を消すことはしない ―― 上限を一時的に
+  // 超えるだけにする（利用者が選ぼうとしている世代を、その確認の保存が消さないように）。
+  return backups.slice(0, deleteCount).filter((name) => !keep.has(name));
 }
+
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/**
+ * ファイル名が世代の名前の形（`<元の名前>.bak.<数字>-<数字>`）なら、元の名前と保存時刻を返す
+ * （増分 8D の手直し）。世代の世代（`a.gimoza.bak.1-0000.bak.2-0000`）は元まで剥がす。
+ *
+ * 世代のファイルを D&D や「開く」で直接開いたときに、**世代そのものを保存先にしない**ための
+ * 判定に使う（設計書 §E.1 の V14 が名指しした危険）。
+ */
+export function parseBackupFileName(
+  fileName: string,
+): { readonly baseName: string; readonly savedAtMs: number } | undefined {
+  const match = BACKUP_NAME_PATTERN.exec(fileName);
+  if (match === null) return undefined;
+  const savedAtMs = Number.parseInt(match[2]!, 10);
+  if (!Number.isFinite(savedAtMs)) return undefined;
+  let baseName = match[1]!;
+  for (let inner = BACKUP_NAME_PATTERN.exec(baseName); inner !== null; inner = BACKUP_NAME_PATTERN.exec(baseName)) {
+    baseName = inner[1]!;
+  }
+  return { baseName, savedAtMs };
+}
+
+const BACKUP_NAME_PATTERN = /^(.+)\.bak\.(\d+)-(\d+)$/;
 
 /**
  * Pick the next within-millisecond sequence for `timestampMs`, given the
@@ -156,14 +185,19 @@ export function listBackupGenerations(
   return generations.sort((a, b) => compareBackupNames(baseName, b.fileName, a.fileName));
 }
 
+/** ファイルの大きさと更新時刻（地物数の覚え書きの鍵に使う）。 */
+export interface BackupFileStat {
+  readonly size: number;
+  /** 更新時刻（epoch ms）。測れない環境では -1（鍵は大きさとパスだけになる）。 */
+  readonly mtimeMs: number;
+}
+
 /** 一覧を作るときに読むもの（注入。Electron 抜きで単体テストできる）。 */
 export interface BackupInspectPorts {
   /** ディレクトリの中のファイル名。 */
   listDir: (dir: string) => Promise<readonly string[]>;
-  /** ファイルの大きさ（バイト）。 */
-  statSize: (path: string) => Promise<number>;
-  /** ファイルの中身。 */
-  readFile: (path: string) => Promise<Uint8Array>;
+  /** ファイルの大きさと更新時刻。**中身は読まない**。 */
+  stat: (path: string) => Promise<BackupFileStat>;
 }
 
 /** 一覧の 1 行ぶんの中身（主プロセスの内側の形。画面へ出す id はまだ振っていない）。 */
@@ -171,15 +205,18 @@ export interface DescribedBackup extends BackupGeneration {
   /** 世代の絶対パス（**主プロセスの外へは出さない**）。 */
   readonly path: string;
   readonly byteSize: number;
-  /** 地物の数。読めなかった世代は null。 */
-  readonly featureCount: number | null;
+  /** 更新時刻（地物数の覚え書きの鍵）。 */
+  readonly mtimeMs: number;
 }
 
 /**
- * `dir` にある `baseName` の世代を新しい順に並べ、大きさと地物数を添える。
+ * `dir` にある `baseName` の世代を新しい順に並べ、大きさを添える。
+ *
+ * **中身は読まない**（増分 8D の手直し。以前は一覧のたびに全部の世代を読んで地物を数えて
+ * いたので、100 世代で 4〜6 秒かかり、その間は板が出なかった）。地物数は板を出したあとで
+ * 1 行ずつ {@link countBackupFeatures} が埋める。
  *
  * - 大きさが測れない（一覧を作る間に消えた）世代は **行ごと出さない**（開けないので）。
- * - 中身が読めない世代は **地物数だけ null** にして行は出す（大きさと日時で選べる）。
  * - ディレクトリが読めなければ空の一覧（例外にしない）。
  */
 export async function describeBackups(
@@ -197,23 +234,80 @@ export async function describeBackups(
   const rows: DescribedBackup[] = [];
   for (const generation of listBackupGenerations(baseName, names)) {
     const path = joinPath(dir, generation.fileName);
-    let byteSize: number;
+    let info: BackupFileStat;
     try {
-      byteSize = await ports.statSize(path);
+      info = await ports.stat(path);
     } catch {
       continue;
     }
-    let featureCount: number | null = null;
-    if (byteSize <= MAX_TMAP_BYTES) {
-      try {
-        featureCount = countFeaturesInTmap(await ports.readFile(path));
-      } catch {
-        featureCount = null;
-      }
-    }
-    rows.push({ ...generation, path, byteSize, featureCount });
+    rows.push({ ...generation, path, byteSize: info.size, mtimeMs: info.mtimeMs });
   }
   return rows;
+}
+
+/**
+ * `dir` にある `baseName` の世代の **数だけ** を返す（増分 8D の手直し。設定の「いまの世代の
+ * 数」用）。ディレクトリの名前を見るだけで、1 つも開かない。読めなければ 0。
+ */
+export async function countBackups(
+  listDir: (dir: string) => Promise<readonly string[]>,
+  dir: string,
+  baseName: string,
+): Promise<number> {
+  try {
+    return listBackupGenerations(baseName, await listDir(dir)).length;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 世代 1 つの地物数を数える（増分 8D の手直し）。同じパス・大きさ・更新時刻の世代は
+ * `memo` に覚えた数を使い、2 回目からは読まない。読めない・大きすぎる世代は null。
+ */
+export async function countBackupFeatures(
+  ports: { readonly stat: BackupInspectPorts['stat']; readonly readFile: (path: string) => Promise<Uint8Array> },
+  path: string,
+  memo: Map<string, number | null> | undefined,
+): Promise<number | null> {
+  let info: BackupFileStat;
+  try {
+    info = await ports.stat(path);
+  } catch {
+    return null;
+  }
+  const key = `${path}\u0000${String(info.size)}\u0000${String(info.mtimeMs)}`;
+  if (memo?.has(key) === true) return memo.get(key) ?? null;
+  let count: number | null = null;
+  if (info.size <= MAX_TMAP_BYTES) {
+    try {
+      count = countFeaturesInTmap(await ports.readFile(path));
+    } catch {
+      count = null;
+    }
+  }
+  if (memo !== undefined) {
+    memo.set(key, count);
+    // 覚え書きは小さく保つ（古いものから捨てる。上限 100 世代 × 数ファイルぶん）。
+    while (memo.size > FEATURE_MEMO_LIMIT) {
+      const oldest = memo.keys().next().value;
+      if (oldest === undefined) break;
+      memo.delete(oldest);
+    }
+  }
+  return count;
+}
+
+const FEATURE_MEMO_LIMIT = 500;
+
+/** 覚え書きにすでに数がある世代なら、その数（読まない）。無ければ undefined。 */
+export function memoizedFeatureCount(
+  memo: ReadonlyMap<string, number | null> | undefined,
+  row: Pick<DescribedBackup, 'path' | 'byteSize' | 'mtimeMs'>,
+): number | null | undefined {
+  if (memo === undefined) return undefined;
+  const key = `${row.path}\u0000${String(row.byteSize)}\u0000${String(row.mtimeMs)}`;
+  return memo.has(key) ? (memo.get(key) ?? null) : undefined;
 }
 
 // --- thin fs-backed runner (injected port; Electron-free) -------------------
@@ -257,6 +351,7 @@ export async function runBackup(
   baseName: string,
   timestampMs: number,
   maxGenerations: number,
+  keep: ReadonlySet<string> = NO_NAMES,
 ): Promise<BackupResult> {
   try {
     const before = await fs.listDir(dir);
@@ -264,8 +359,8 @@ export async function runBackup(
     const newName = backupName(baseName, timestampMs, seq);
     // Decide deletions from the PRE-add list: selectBackupsToDelete reserves a
     // slot for the one incoming backup, so the post-add total lands at exactly
-    // maxGenerations.
-    const toDelete = selectBackupsToDelete(baseName, before, maxGenerations)
+    // maxGenerations. 増分 8D の手直し: `keep`（一覧で見せている世代の名前）は消さない。
+    const toDelete = selectBackupsToDelete(baseName, before, maxGenerations, keep)
       // never delete the one we just created (defensive: it is the newest).
       .filter((name) => name !== newName);
     // 1) Create the new backup FIRST (from the finalized canonical file).

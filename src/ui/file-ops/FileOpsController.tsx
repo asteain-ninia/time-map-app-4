@@ -26,7 +26,7 @@ import type { FeatureId } from '../../domain/ids';
 import { serialize } from '../../domain/persistence/index';
 import { checkBeforeSave, preSaveBlockMessage } from '../../domain/persistence/pre-save';
 import type {
-  BackupEntry,
+  BackupListing,
   LoadResponse,
   NamedAsset,
   RestoredFrom,
@@ -57,6 +57,7 @@ import {
   quitGuard,
   SAVE_OUTCOME,
   type FileCommandPorts,
+  type ReflectInfo,
   type SaveOutcome,
 } from './file-commands';
 import {
@@ -80,6 +81,7 @@ import { RepairDialog } from './RepairDialog';
 import { BackupListDialog } from './BackupListDialog';
 import { OVERWRITE_STRINGS } from './strings';
 import type { RepairChoices } from './repair-flow';
+import { buildRepairNamer, type RepairNamer } from './repair-names';
 import type { UnsavedChoice } from './unsaved-guard';
 
 /** Supply the camera clamp range to U17 (the renderer host). */
@@ -211,15 +213,17 @@ interface PendingOverwrite {
   readonly resolve: (confirmed: boolean) => void;
 }
 
-/** 世代の一覧の板（並べる世代 + 選んだ id か null を返す口）。増分 8D。 */
+/** 世代の一覧の板（並べる一覧 + 選んだ id か null を返す口）。増分 8D。 */
 interface PendingBackupList {
-  readonly entries: readonly BackupEntry[];
+  readonly listing: BackupListing;
   readonly resolve: (id: string | null) => void;
 }
 
 /** The pending repair modal (the report to present + a resolver for the choices). */
 interface PendingRepair {
   readonly report: ConsistencyReport;
+  /** 対象を名前で呼ぶための引き先（増分 8D の手直し。読み込んだプロジェクトから作る）。 */
+  readonly namer: RepairNamer;
   readonly resolve: (choices: RepairChoices | null) => void;
 }
 
@@ -545,6 +549,13 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
   const [pendingUnsaved, setPendingUnsaved] = useState<PendingUnsaved | null>(null);
   const [pendingRepair, setPendingRepair] = useState<PendingRepair | null>(null);
   const [pendingBackupList, setPendingBackupList] = useState<PendingBackupList | null>(null);
+  // 増分 8D の手直し: 一覧の地物数は板を出したあとで 1 行ずつ埋める（id → 数。読めなければ null）。
+  // `backupListGenRef` は板の世代番号で、閉じた・元のファイルを選び直した板へ古い数を書かない。
+  const [backupFeatureCounts, setBackupFeatureCounts] = useState<ReadonlyMap<string, number | null>>(
+    () => new Map(),
+  );
+  const [pickingBackupSource, setPickingBackupSource] = useState(false);
+  const backupListGenRef = useRef(0);
   const [pendingOverwrite, setPendingOverwrite] = useState<PendingOverwrite | null>(null);
   const [repairUnresolved, setRepairUnresolved] = useState(false);
 
@@ -719,7 +730,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      promptRepair: (report: ConsistencyReport, isRetry: boolean) =>
+      promptRepair: (report: ConsistencyReport, isRetry: boolean, project: DomainProject) =>
         new Promise<RepairChoices | null>((resolve) => {
           // BUG #2: a retry-open (the first chosen repairs left the project
           // inconsistent, REPAIR_OUTCOME.Unresolved) shows the『前回の修復では解消
@@ -729,6 +740,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
           setRepairUnresolved(isRetry);
           setPendingRepair({
             report,
+            namer: buildRepairNamer(project),
             resolve: (choices) => {
               setPendingRepair(null);
               setRepairUnresolved(false);
@@ -736,7 +748,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
             },
           });
         }),
-      reflectProject: (project: DomainProject, path: string) => {
+      reflectProject: (project: DomainProject, path: string, info?: ReflectInfo) => {
         // 確定後のみ反映 (教訓 5.22): swap the domain, DISCARD the old project's
         // selection / tool / mode / focus, and clear dirty — all in ONE store
         // transition via resetToDomain (受け入れ基準 4 同時初期化, 教訓 5.2 全経路で破棄).
@@ -764,6 +776,9 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         // （増分 4 の手直し D / 決定 (1)）。節が無い（古いファイル・新規）なら束は無い。
         const savedBundle = project.bundles?.[0];
         const ledgerBundle = savedBundle === undefined ? null : fromSavedBundle(savedBundle);
+        // 増分 8D の手直し: 世代から開いて **修復した** 中身は、元のファイルにも世代にも無い。
+        // clean にすると、閉じたときに何も聞かれずに修復が失われるので、未保存で始める。
+        const notOnDisk = pendingRestoredRef.current !== null && info?.repaired === true;
         store.getState().reflectLoadedProject(project, {
           ...(project.uiSettings === undefined
             ? {
@@ -772,6 +787,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
               }
             : fromPersistedUiSettings(project.uiSettings)),
           ledgerBundle,
+          ...(notOnDisk ? { notOnDisk: true } : {}),
         });
         // 開き直したら「このセッションではまだ保存していない」へ戻す（状態行は「未保存」）。
         savedAtMsRef.current = null;
@@ -896,20 +912,72 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     }
   }, []);
 
+  /**
+   * 一覧の地物数を 1 行ずつ数えて埋める（増分 8D の手直し）。一覧そのものは中身を読まずに
+   * 先に出ているので、ここで新しい順に 1 つずつ主プロセスへ頼む。板が閉じた・一覧が差し替わった
+   * （世代番号が進んだ）ら止める。
+   */
+  const fillBackupFeatureCounts = useCallback(
+    async (listing: BackupListing, gen: number): Promise<void> => {
+      if (api === null || listing.basis !== 'file') return;
+      for (const entry of listing.entries) {
+        if (entry.featureCount !== undefined) continue;
+        let count: number | null;
+        try {
+          count = await api.countBackupFeatures(entry.id);
+        } catch {
+          count = null;
+        }
+        if (backupListGenRef.current !== gen) return;
+        setBackupFeatureCounts((prev) => new Map(prev).set(entry.id, count));
+      }
+    },
+    [api],
+  );
+
   /** 世代の一覧の板を出し、選ばれた id（やめたら null）を待つ（増分 8D）。 */
   const promptBackupList = useCallback(
-    (entries: readonly BackupEntry[]) =>
+    (listing: BackupListing) =>
       new Promise<string | null>((resolve) => {
+        backupListGenRef.current += 1;
+        const gen = backupListGenRef.current;
+        setBackupFeatureCounts(new Map());
+        setPickingBackupSource(false);
         setPendingBackupList({
-          entries,
+          listing,
           resolve: (id) => {
+            backupListGenRef.current += 1;
             setPendingBackupList(null);
             resolve(id);
           },
         });
+        void fillBackupFeatureCounts(listing, gen);
       }),
-    [],
+    [fillBackupFeatureCounts],
   );
+
+  /**
+   * 基準が無いときの［元のファイルを選ぶ…］（増分 8D の手直し）。主プロセスの「開く」ダイアログで
+   * 元のファイルを選ばせ、その隣の世代で板を差し替える（保存先は変えない）。やめたらそのまま。
+   */
+  const pickBackupSource = useCallback(async (): Promise<void> => {
+    if (api === null) return;
+    const genAtStart = backupListGenRef.current;
+    setPickingBackupSource(true);
+    let listing: BackupListing;
+    try {
+      listing = await api.listBackups({ pickSource: true });
+    } catch {
+      listing = { basis: 'none' };
+    }
+    if (backupListGenRef.current !== genAtStart) return; // 選んでいる間に板が閉じた
+    backupListGenRef.current += 1;
+    const gen = backupListGenRef.current;
+    setPickingBackupSource(false);
+    setBackupFeatureCounts(new Map());
+    setPendingBackupList((prev) => (prev === null ? prev : { ...prev, listing }));
+    void fillBackupFeatureCounts(listing, gen);
+  }, [api, fillBackupFeatureCounts]);
 
   const promptOverwrite = useCallback(
     (savePath: string) =>
@@ -1010,6 +1078,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       savedAtMsRef.current = null;
       statusMessagesRef.current?.clear();
       applyContext(buildNewProjectContext());
+      // 増分 8D の手直し: 主プロセスにも「新規にした」と伝える（保存先・世代から戻した元の
+      // ファイル・一覧の基準を捨てる）。これが無いと、新規の名前を付けて保存の既定に前の
+      // ファイルの名前が出て、一覧と世代の数も前のファイルのものになっていた。待たない ――
+      // 次の保存はこのあとに送られるので、主プロセスは先にこれを受け取る（commitLoadedPath と同じ）。
+      if (api !== null) void api.forgetSaveTarget().catch(() => undefined);
       // BUG #6 fix: a new project has NO loaded assets — drop any retained base-map /
       // attachment bytes from a previously-loaded project so 新規 after a load does not
       // write the old project's map image into the new file (教訓 5.2 全経路で破棄).
@@ -1059,6 +1132,7 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
     runGuardedSave,
     reportSaveOutcome,
     promptBackupList,
+    api,
   ]);
 
   // dirty tracking lives in ONE place now (spec §B 単一基準): the U16 store's
@@ -1292,14 +1366,18 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
       )}
       {pendingBackupList !== null && (
         <BackupListDialog
-          entries={pendingBackupList.entries}
+          listing={pendingBackupList.listing}
+          featureCounts={backupFeatureCounts}
           onChoose={pendingBackupList.resolve}
+          onPickSource={() => void pickBackupSource()}
+          picking={pickingBackupSource}
           onModalChange={props.onBackupListModalChange}
         />
       )}
       {pendingRepair !== null && (
         <RepairDialog
           report={pendingRepair.report}
+          namer={pendingRepair.namer}
           onResolve={pendingRepair.resolve}
           unresolved={repairUnresolved}
         />

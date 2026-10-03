@@ -123,7 +123,11 @@ describe('板の登録 — 部品は出ている間だけ名乗る', () => {
   it('BackupListDialog は出たら名乗り、外れたら取り消す（増分 8D）', () => {
     const onModalChange = vi.fn();
     const view = render(
-      <BackupListDialog entries={[]} onChoose={() => undefined} onModalChange={onModalChange} />,
+      <BackupListDialog
+        listing={{ basis: 'none' }}
+        onChoose={() => undefined}
+        onModalChange={onModalChange}
+      />,
     );
     expect(onModalChange).toHaveBeenCalledWith(true);
     view.unmount();

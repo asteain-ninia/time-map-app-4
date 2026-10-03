@@ -32,6 +32,7 @@ import {
   buildRepairRows,
   describeInconsistency,
   describeInconsistencyDetail,
+  INCONSISTENCY_LABELS,
   repairOptionText,
 } from './repair-flow';
 import { REPAIR_STRINGS } from './strings';
@@ -252,6 +253,20 @@ describe('RepairDialog — 増分 8D（N-22）', () => {
       featureNames: ['f-9-1'],
     };
     expect(describeInconsistency(inc)).not.toContain('f-9-1');
-    expect(describeInconsistency(inc)).toContain('名前のない地物 1 件');
+    // 増分 8D の手直し: 報告しか無いときは「名前が無い」とは言わない（名前があっても欄に ID が
+    // 入ってくる種類なので、分からないだけ）。
+    expect(describeInconsistency(inc)).toContain('名前の分からない地物 1 件');
+    expect(describeInconsistency(inc)).not.toContain('名前のない地物');
+  });
+
+  it('同じ名前の地物 2 件を「名前のない地物」と数えない（GPT 指摘 7）', () => {
+    const inc: Inconsistency = {
+      kind: INCONSISTENCY.AnchorSpatialOverlap,
+      featureIds: [asFeatureId('f-1'), asFeatureId('f-2')],
+      featureNames: ['州', '州'],
+    };
+    expect(describeInconsistency(inc)).toBe(
+      `${INCONSISTENCY_LABELS[INCONSISTENCY.AnchorSpatialOverlap]}（対象: 州、州）`,
+    );
   });
 });

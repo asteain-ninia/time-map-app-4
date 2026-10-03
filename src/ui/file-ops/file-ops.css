@@ -152,3 +152,12 @@
   justify-content: flex-end;
   margin-top: 8px;
 }
+
+/* 増分 8D の手直し: どのファイルの世代を見ればよいか分からないとき（新規・開けなかった）。 */
+.backup-dialog__no-basis {
+  margin: 0 0 8px;
+}
+
+.backup-dialog__no-basis p {
+  margin: 0 0 6px;
+}

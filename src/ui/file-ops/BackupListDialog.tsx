@@ -10,6 +10,12 @@
 //
 // **板が出ている間は鍵盤の持ち主を名乗る**（`useModalRegistration`。司令塔の決定 (13)）。
 // 名乗らないと、板の上で Ctrl+Z が背後へ抜けて世界が巻き戻る。
+//
+// 増分 8D の手直し:
+//   - **どのファイルの世代を見ればよいか分からない**（新規・元のファイルが壊れて開けなかった）
+//     ときは「戻せる世代はまだありません」と言わない（事実に反する）。「開いているファイルが
+//     ありません。元のファイルを選ぶと、その世代を一覧します」と［元のファイルを選ぶ…］を出す。
+//   - 地物数は板を出したあとで 1 行ずつ埋まる（数えている間は「…」、読めなければ「—」）。
 
 import { useCallback, useEffect, useRef } from 'react';
 
@@ -17,14 +23,26 @@ import { DraggablePanel } from '../shell/DraggablePanel';
 import { formatTimestamp } from '../shell/status-format';
 import { useModalKeydown } from '../a11y/index';
 import { useModalRegistration } from '../a11y/useModalRegistration';
-import type { BackupEntry } from '../../shell/ipc/contract';
+import type { BackupEntry, BackupListing } from '../../shell/ipc/contract';
 import { BACKUP_LIST_STRINGS } from './strings';
 
 export interface BackupListDialogProps {
-  /** 主プロセスが返した世代（新しい順）。 */
-  readonly entries: readonly BackupEntry[];
+  /** 主プロセスが返した一覧（基準が無ければ `basis: 'none'`。行は新しい順）。 */
+  readonly listing: BackupListing;
+  /**
+   * 後から数えた地物数（id → 数。読めなければ null）。一覧に数が入っていない行だけを見る。
+   * 無い行は数えている途中なので「…」を出す。
+   */
+  readonly featureCounts?: ReadonlyMap<string, number | null> | undefined;
   /** 行を押したらその id、やめたら null。 */
   readonly onChoose: (id: string | null) => void;
+  /**
+   * 基準が無いときの［元のファイルを選ぶ…］（主プロセスの「開く」ダイアログで選ばせる）。
+   * 無ければボタンを出さない。
+   */
+  readonly onPickSource?: (() => void) | undefined;
+  /** 元のファイルを選んでいる最中（ボタンを止める）。 */
+  readonly picking?: boolean | undefined;
   /** 板が出ている間は鍵盤の持ち主を名乗る（App の `toolModalChange('backup-list')`）。 */
   readonly onModalChange?: ((open: boolean) => void) | undefined;
   /** Front-most z-index from U20's z-order model (FR-112 前面化). */
@@ -32,6 +50,7 @@ export interface BackupListDialogProps {
 }
 
 const INITIAL_POSITION = { x: 320, y: 140 } as const;
+const NO_ENTRIES: readonly BackupEntry[] = [];
 
 /**
  * ファイルの大きさを読める形にする（「820 KB」「1.3 MB」）。1,024 で割る（OS の表示と同じ）。
@@ -46,23 +65,36 @@ export function formatByteSize(bytes: number): string {
   return `${mb < 10 ? mb.toFixed(1) : String(Math.round(mb))} MB`;
 }
 
+/** 1 行の地物数の表示（数えている途中は「…」、読めなければ「—」）。 */
+function featureText(
+  entry: BackupEntry,
+  counts: ReadonlyMap<string, number | null> | undefined,
+): string {
+  const count = entry.featureCount !== undefined ? entry.featureCount : counts?.get(entry.id);
+  if (count === undefined) return BACKUP_LIST_STRINGS.countingFeatures;
+  if (count === null) return BACKUP_LIST_STRINGS.unknownFeatures;
+  return BACKUP_LIST_STRINGS.features(count);
+}
+
 export function BackupListDialog(props: BackupListDialogProps): JSX.Element {
-  const { entries, onChoose, onModalChange, zIndex } = props;
+  const { listing, featureCounts, onChoose, onPickSource, picking, onModalChange, zIndex } = props;
+  const entries = listing.basis === 'file' ? listing.entries : NO_ENTRIES;
   const rootRef = useRef<HTMLDivElement | null>(null);
   useModalRegistration(onModalChange, true);
 
   const cancel = useCallback(() => onChoose(null), [onChoose]);
   const onKeyDown = useModalKeydown(rootRef, cancel);
 
-  // 開いたら焦点は先頭の行（いちばん新しい世代）へ。世代が無ければ板そのものへ。
+  // 開いたら焦点は先頭の行（いちばん新しい世代）へ。基準が無ければ［元のファイルを選ぶ…］へ。
+  // どちらも無ければ板そのものへ。元のファイルを選んで一覧が差し替わったときも同じ。
   useEffect(() => {
-    const firstRow = rootRef.current?.querySelector<HTMLButtonElement>(
-      '[data-testid="backup-row"]',
+    const first = rootRef.current?.querySelector<HTMLButtonElement>(
+      '[data-testid="backup-row"], [data-testid="backup-pick-source"]',
     );
-    (firstRow ?? rootRef.current)?.focus();
-  }, []);
+    (first ?? rootRef.current)?.focus();
+  }, [listing]);
 
-  const sourceName = entries[0]?.sourceName ?? null;
+  const sourceName = listing.basis === 'file' ? listing.sourceName : null;
 
   return (
     <div
@@ -88,7 +120,22 @@ export function BackupListDialog(props: BackupListDialogProps): JSX.Element {
               {BACKUP_LIST_STRINGS.intro(sourceName)}
             </p>
           )}
-          {entries.length === 0 ? (
+          {listing.basis === 'none' ? (
+            <div className="backup-dialog__no-basis" data-testid="backup-no-basis">
+              <p>{BACKUP_LIST_STRINGS.noBasis}</p>
+              {onPickSource !== undefined && (
+                <button
+                  type="button"
+                  className="backup-dialog__pick"
+                  data-testid="backup-pick-source"
+                  disabled={picking === true}
+                  onClick={onPickSource}
+                >
+                  {BACKUP_LIST_STRINGS.pickSource}
+                </button>
+              )}
+            </div>
+          ) : entries.length === 0 ? (
             <p className="backup-dialog__empty" data-testid="backup-empty">
               {BACKUP_LIST_STRINGS.empty}
             </p>
@@ -118,9 +165,7 @@ export function BackupListDialog(props: BackupListDialogProps): JSX.Element {
                           {formatByteSize(entry.byteSize)}
                         </span>
                         <span className="backup-row__features" data-testid="backup-row-features">
-                          {entry.featureCount === null
-                            ? BACKUP_LIST_STRINGS.unknownFeatures
-                            : BACKUP_LIST_STRINGS.features(entry.featureCount)}
+                          {featureText(entry, featureCounts)}
                         </span>
                       </button>
                     </li>

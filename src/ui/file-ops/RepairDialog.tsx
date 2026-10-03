@@ -41,6 +41,7 @@ import {
   setRepairChoice,
   type RepairChoices,
 } from './repair-flow';
+import type { RepairNamer } from './repair-names';
 import { REPAIR_STRINGS } from './strings';
 
 export interface RepairDialogProps {
@@ -58,6 +59,11 @@ export interface RepairDialogProps {
   readonly unresolved?: boolean;
   /** Front-most z-index from U20's z-order model (FR-112 前面化). */
   readonly zIndex?: number;
+  /**
+   * 対象の地物を名前で呼ぶための引き先（増分 8D の手直し / 設計書 §H.1）。読み込んだ
+   * プロジェクトから作る（{@link buildRepairNamer}）。無ければ報告の名前の欄だけで呼ぶ。
+   */
+  readonly namer?: RepairNamer | undefined;
 }
 
 const INITIAL_POSITION = { x: 280, y: 120 } as const;
@@ -75,7 +81,7 @@ function timeScopeOf(inc: Inconsistency): string | null {
 }
 
 export function RepairDialog(props: RepairDialogProps): JSX.Element {
-  const { report, onResolve, unresolved, zIndex } = props;
+  const { report, onResolve, unresolved, zIndex, namer } = props;
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // The rows are derived ONCE from the report (the option lists come from U14 per
@@ -137,7 +143,9 @@ export function RepairDialog(props: RepairDialogProps): JSX.Element {
                   className="repair-row"
                   data-testid={`repair-row-${String(row.index)}`}
                 >
-                  <p className="repair-row__summary">{describeInconsistency(row.inconsistency)}</p>
+                  <p className="repair-row__summary">
+                    {describeInconsistency(row.inconsistency, namer)}
+                  </p>
                   {scope !== null && <p className="repair-row__time">{scope}</p>}
                   {detail !== null && <p className="repair-row__detail">{detail}</p>}
 

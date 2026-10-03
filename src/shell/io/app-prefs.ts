@@ -20,6 +20,7 @@ import {
   BACKUP_GENERATIONS_RANGE,
   DEFAULT_APP_PREFS,
   type AppPrefs,
+  type AppPrefsWriteResult,
 } from '../ipc/contract';
 
 /** ファイル名（userData 直下）。 */
@@ -80,11 +81,25 @@ export function parseAppPrefs(text: string): AppPrefs {
       DEFAULT_APP_PREFS.autoSaveIntervalMinutes,
     ),
     backupGenerations: integerInRange(
-      record['backupGenerations'],
+      raiseToGenerationsFloor(record['backupGenerations']),
       BACKUP_GENERATIONS_RANGE,
       DEFAULT_APP_PREFS.backupGenerations,
     ),
   };
+}
+
+/**
+ * 下限を 2 へ上げる前のファイルには 1 が入りうる（増分 8D の手直し）。**1 は 2 として読む** ――
+ * 既定の 10 へ倒すと、利用者が少なくしたかった数を黙って 5 倍にしてしまう。0 以下・小数・
+ * 文字列などの壊れた値はこれまでどおり既定へ倒す（ここでは触らない）。
+ */
+function raiseToGenerationsFloor(raw: unknown): unknown {
+  return typeof raw === 'number' &&
+    Number.isInteger(raw) &&
+    raw >= 1 &&
+    raw < BACKUP_GENERATIONS_RANGE.min
+    ? BACKUP_GENERATIONS_RANGE.min
+    : raw;
 }
 
 /**
@@ -134,20 +149,35 @@ export async function readAppPrefs(env: AppPrefsEnv): Promise<AppPrefs> {
 }
 
 /**
- * 部分更新して書く。**書けなくても例外にしない** ―― 覚え書きが残らないだけで、
- * アプリの動きは変わらない。戻り値は「いま設定はこうなっている」という値。
+ * 部分更新して書く。例外にはしないが、**書けたかどうかを返す**（増分 8D の手直し）。
+ *
+ * 以前は書けなくても併合した値を返していた（「最悪でもガイドがまた出るだけ」）。8D で
+ * 自動保存の間隔と世代数をここへ載せたので、その前提が崩れた ―― 画面は「適用しました」と
+ * 出し、その起動の間は新しい世代数が効き、再起動すると既定へ戻って次の保存で世代が
+ * まとめて消えた。書けなかったら `ok: false` と **いまディスクにある値** を返す。
  */
 export async function writeAppPrefs(
   env: AppPrefsEnv,
   patch: Partial<AppPrefs>,
-): Promise<AppPrefs> {
-  const next = mergeAppPrefs(await readAppPrefs(env), patch);
+): Promise<AppPrefsWriteResult> {
+  const current = await readAppPrefs(env);
+  const next = mergeAppPrefs(current, patch);
   const path = appPrefsPath(env.userDataDir);
   try {
     await env.fs.mkdir(dirname(path));
     await env.fs.writeFile(path, `${JSON.stringify(next, null, 2)}\n`);
-  } catch {
-    // 覚え書きが残らないだけ。次の起動でまたガイドが出る、が最悪の結果である。
+  } catch (error) {
+    return {
+      ok: false,
+      prefs: current,
+      message: appPrefsWriteFailedMessage(error),
+    };
   }
-  return next;
+  return { ok: true, prefs: next };
+}
+
+/** 設定を書けなかったときの理由（画面に出す）。 */
+export function appPrefsWriteFailedMessage(error: unknown): string {
+  const detail = error instanceof Error && error.message.length > 0 ? `（${error.message}）` : '';
+  return `設定をファイルに書き込めませんでした${detail}。値は変えていません。`;
 }

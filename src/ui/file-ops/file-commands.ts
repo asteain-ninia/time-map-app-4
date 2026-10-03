@@ -19,7 +19,7 @@ import type {
   ConsistencyReport,
   DomainProject,
 } from '../../domain/persistence/index';
-import type { BackupEntry } from '../../shell/ipc/contract';
+import type { BackupListing } from '../../shell/ipc/contract';
 
 import { classifyLoad, LOAD_STEP, type LoadStep, type LoadTransport } from './load-flow';
 import { runUnsavedGuard, type UnsavedGuardPorts } from './unsaved-guard';
@@ -93,12 +93,17 @@ export interface FileCommandPorts {
   /** D&D load: hand the dropped path to main. Resolves the transport result. */
   readonly loadDropped: (droppedPath: string) => Promise<LoadTransport>;
   /**
-   * いまの保存先の世代の一覧（増分 8D）。主プロセスがパスを伏せて id だけを返す。
-   * 読めなければ空（一覧の板は「戻せる世代はまだありません」を出す）。
+   * 世代の一覧（増分 8D）。主プロセスがパスを伏せて id だけを返す。どのファイルの世代を
+   * 見ればよいか決められなければ `basis: 'none'`（増分 8D の手直し。「無い」とは言わない）。
    */
-  readonly listBackups: () => Promise<readonly BackupEntry[]>;
+  readonly listBackups: () => Promise<BackupListing>;
   /** 一覧の id で世代を開く（増分 8D）。保存先は確定しない。 */
   readonly openBackup: (id: string) => Promise<LoadTransport>;
+  /**
+   * 「以前の保存から開く」の 1 回が終わった（増分 8D の手直し）。主プロセスは一覧に出していた
+   * 世代を保存の間引きから外すのをやめる。やめた・開き終えた・失敗した、のどれでも呼ぶ。
+   */
+  readonly endBackupChoice: () => void;
 
   // -- U14 consistency check (FR-106) ----------------------------------------
   /** Deserialize the parsed manifest to a domain project (persistence-internal seam). */
@@ -115,16 +120,30 @@ export interface FileCommandPorts {
   // completeLoad stays pure (it merely passes the flag), so the seam lives entirely
   // in the port contract (BUG #2: the retry banner was unreachable from the live
   // flow because the controller had no way to tell first-open from retry-open).
+  //
+  // `project` は修復前の読み込んだプロジェクト（増分 8D の手直し）。修復ダイアログが対象の
+  // 地物を **名前で** 呼ぶ（名前が無ければ「名前のない面（1500年に作成）」）ために渡す。
   readonly promptRepair: (
     report: ConsistencyReport,
     isRetry: boolean,
+    project: DomainProject,
   ) => Promise<RepairChoices | null>;
 
   // -- reflect + notify ------------------------------------------------------
-  /** Reflect a validated project into the domain (確定後のみ, 教訓 5.22). */
-  readonly reflectProject: (project: DomainProject, path: string) => void;
+  /**
+   * Reflect a validated project into the domain (確定後のみ, 教訓 5.22).
+   * `info.repaired` は「修復ダイアログで直してから反映した」か（増分 8D の手直し: 世代から
+   * 開いて修復した内容はどのファイルにも無いので、未保存として扱う）。
+   */
+  readonly reflectProject: (project: DomainProject, path: string, info?: ReflectInfo) => void;
   /** Show a Japanese rejection / failure notice (FR-115). */
   readonly notify: (message: string) => void;
+}
+
+/** 反映のときに添える事情（増分 8D の手直し）。 */
+export interface ReflectInfo {
+  /** 修復ダイアログで直してから反映したか。 */
+  readonly repaired: boolean;
 }
 
 /** The save (with 名前を付けて保存 委譲) outcome. */
@@ -179,19 +198,19 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
   // Inconsistencies: drive the auto-repair UI (first open, isRetry=false). A null
   // choice == 修復せず中止 — the user's explicit abort, which keeps the current state
   // and is NOT a failure to notify about (受け入れ基準 3: 中止は静かに現状維持).
-  const choices = await ports.promptRepair(step.report, false);
+  const choices = await ports.promptRepair(step.report, false, project);
   if (choices === null) return;
   const rows = buildRepairRows(step.report);
   const applied = applyChosenRepairs(project, rows, choices, ports.calendar);
   // 教訓 5.22: reflect ONLY when the repaired project is fully consistent.
   if (applied.outcome === REPAIR_OUTCOME.Applied) {
-    ports.reflectProject(applied.project, transport.ok ? transport.path : '');
+    ports.reflectProject(applied.project, transport.ok ? transport.path : '', { repaired: true });
     return;
   }
   if (applied.outcome === REPAIR_OUTCOME.Unresolved) {
     // The chosen repairs did not resolve everything; re-present ONCE (isRetry=true,
     // so the controller shows the『前回は解消できなかった』banner — BUG #2).
-    const retry = await ports.promptRepair(applied.remaining, true);
+    const retry = await ports.promptRepair(applied.remaining, true, applied.project);
     // BUG #5: a cancelled retry must NOT silently drop the load. Unlike the first
     // 中止 (which keeps the untouched current state with no surprise), reaching the
     // retry means we already told the user their first repair failed; cancelling now
@@ -203,7 +222,7 @@ async function completeLoad(ports: FileCommandPorts, transport: LoadTransport): 
     const retryRows = buildRepairRows(applied.remaining);
     const retried = applyChosenRepairs(applied.project, retryRows, retry, ports.calendar);
     if (retried.outcome === REPAIR_OUTCOME.Applied) {
-      ports.reflectProject(retried.project, transport.ok ? transport.path : '');
+      ports.reflectProject(retried.project, transport.ok ? transport.path : '', { repaired: true });
       return;
     }
     // BUG #5: the SECOND attempt is ALSO Unresolved (or Incomplete, which cannot
@@ -245,22 +264,30 @@ export async function dropLoadCommand(ports: FileCommandPorts, droppedPath: stri
  *
  * 一覧で「やめる」を選んだら何もしない。未保存の確認で「キャンセル」を選んでも何もしない
  * （一覧へは戻らない ―― もう一度メニューから選べば済む）。
+ *
+ * 増分 8D の手直し: 一覧に出している世代は、この 1 回が終わるまで主プロセスが **保存の間引き
+ * から外す**（未保存の確認で「保存」を選ぶと、その保存がいま選んだ世代を消していた）。
+ * どの出口でも最後に `endBackupChoice` を呼んで、間引きの対象に戻す。
  */
 export async function openBackupCommand(
   ports: FileCommandPorts,
-  choose: (entries: readonly BackupEntry[]) => Promise<string | null>,
+  choose: (listing: BackupListing) => Promise<string | null>,
 ): Promise<void> {
-  let entries: readonly BackupEntry[];
   try {
-    entries = await ports.listBackups();
-  } catch {
-    entries = [];
+    let listing: BackupListing;
+    try {
+      listing = await ports.listBackups();
+    } catch {
+      listing = { basis: 'none' };
+    }
+    const id = await choose(listing);
+    if (id === null) return;
+    if (!(await runUnsavedGuard(ports.guard))) return;
+    const transport = await ports.openBackup(id);
+    await completeLoad(ports, transport);
+  } finally {
+    ports.endBackupChoice();
   }
-  const id = await choose(entries);
-  if (id === null) return;
-  if (!(await runUnsavedGuard(ports.guard))) return;
-  const transport = await ports.openBackup(id);
-  await completeLoad(ports, transport);
 }
 
 /**

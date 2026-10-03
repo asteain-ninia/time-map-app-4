@@ -115,6 +115,29 @@ export const IPC_CHANNEL = {
    * 開いたファイルは **保存先にならない**（次の保存は必ず「名前を付けて保存」）。
    */
   OpenBackup: 'tmap:open-backup',
+  /**
+   * 一覧の 1 行の **地物数を数える**（増分 8D の手直し）。一覧そのものは中身を読まずに
+   * すぐ返し、地物数は板を出したあとで 1 行ずつ埋める（100 世代で 4〜6 秒、板が出なかった）。
+   * 引数は `ListBackups` が返した id だけ。
+   */
+  CountBackupFeatures: 'tmap:count-backup-features',
+  /**
+   * 「以前の保存から開く」の 1 回が **終わった**ことを主プロセスへ伝える（増分 8D の手直し）。
+   * 一覧に出している世代は、その間だけ保存の間引きから外している（確認の「保存」が、選んだ
+   * 世代を消さないように）。やめた・開き終えた、のどちらでも呼ぶ。
+   */
+  EndBackupChoice: 'tmap:end-backup-choice',
+  /**
+   * いまの保存先の世代の **数だけ** を返す（増分 8D の手直し。設定の「いまの世代の数」）。
+   * ファイルを 1 つも開かない。id も振らない。
+   */
+  CountBackups: 'tmap:count-backups',
+  /**
+   * **新規にした**ことを主プロセスへ伝える（増分 8D の手直し）。主プロセスは保存先・世代から
+   * 戻した元のファイル・一覧の基準の候補を捨てる。これが無いと、新規のあとの「名前を付けて
+   * 保存」の既定に前のファイルの名前が出て、一覧と世代の数も前のファイルのものになっていた。
+   */
+  ForgetSaveTarget: 'tmap:forget-save-target',
 } as const;
 
 export type IpcChannel = (typeof IPC_CHANNEL)[keyof typeof IPC_CHANNEL];
@@ -215,11 +238,46 @@ export interface BackupEntry {
   readonly savedAtMs: number;
   /** ファイルの大きさ（バイト）。 */
   readonly byteSize: number;
-  /** 地物の数。中身が読めなかった世代は null（画面は「—」）。 */
-  readonly featureCount: number | null;
+  /**
+   * 地物の数。中身が読めなかった世代は null（画面は「—」）。**まだ数えていない**世代では
+   * 鍵ごと無い（画面は「…」。`CountBackupFeatures` で後から埋める）。前に数えた世代は、
+   * パス・大きさ・更新時刻が同じなら覚えた数がはじめから入っている。
+   */
+  readonly featureCount?: number | null;
   /** 元の保存ファイルの名前（拡張子込み。例 `derle-world.gimoza`）。 */
   readonly sourceName: string;
 }
+
+/**
+ * `ListBackups` の頼み方（増分 8D の手直し）。**パスは載せない** ―― 選ぶのは主プロセスの
+ * ダイアログで、描画プロセスはどのファイルかを知らない。
+ */
+export interface BackupListRequest {
+  /**
+   * 主プロセスの「開く」ダイアログで **元のファイルを選ばせ**、その隣の世代を一覧する。
+   * 元のファイルが壊れて開けないときの入口（保存先は変えない）。
+   */
+  readonly pickSource?: boolean;
+}
+
+/**
+ * `ListBackups` の答え（増分 8D の手直し）。「世代が 0 個」と「どのファイルの世代を見ればよい
+ * か分からない」を分ける ―― 後者で「戻せる世代はまだありません」と言うのは事実に反する。
+ */
+export type BackupListing =
+  | { readonly basis: 'none' }
+  | {
+      readonly basis: 'file';
+      /** 元の保存ファイルの名前（拡張子込み）。 */
+      readonly sourceName: string;
+      /** 新しい順。 */
+      readonly entries: readonly BackupEntry[];
+    };
+
+/** `CountBackups` の答え（増分 8D の手直し）。 */
+export type BackupCount =
+  | { readonly basis: 'none' }
+  | { readonly basis: 'file'; readonly sourceName: string; readonly count: number };
 
 /** 世代から開いたときの「何の、いつの世代か」（{@link LoadResponse} の `restoredFrom`）。 */
 export interface RestoredFrom {
@@ -334,8 +392,27 @@ export interface AppPrefs {
 
 /** 自動保存の間隔（分）の範囲（両端を含む）。主プロセスの読み込みと設定画面が同じ値を引く。 */
 export const AUTO_SAVE_INTERVAL_MINUTES_RANGE = { min: 1, max: 120 } as const;
-/** 残す世代の数の範囲（両端を含む）。 */
-export const BACKUP_GENERATIONS_RANGE = { min: 1, max: 100 } as const;
+/**
+ * 残す世代の数の範囲（両端を含む）。**下限は 2**（増分 8D の手直し）: 世代は保存の **あと** に
+ * 本体を写すので、いちばん新しい世代はいつも「いまのファイルの写し」で、本当に前の状態は
+ * 世代数 − 1 個しか無い。1 にすると、アプリの保存で壊れたときに戻す先が 1 つも無い。
+ */
+export const BACKUP_GENERATIONS_RANGE = { min: 2, max: 100 } as const;
+
+/**
+ * アプリ側の設定を書いた結果（増分 8D の手直し）。**書けたかどうかを返す** ―― 以前は書けなくても
+ * 「いまの値」を返していたので、画面は「適用しました」と出し、再起動すると既定へ戻って
+ * 次の保存で世代がまとめて消えた。書けなかったときは主プロセスも値を効かせない。
+ */
+export type AppPrefsWriteResult =
+  | { readonly ok: true; readonly prefs: AppPrefs }
+  | {
+      readonly ok: false;
+      /** いまディスクにある（＝効いている）値。 */
+      readonly prefs: AppPrefs;
+      /** 画面に出す理由（日本語）。 */
+      readonly message: string;
+    };
 
 /**
  * 読めなかったとき・まだ無いときの既定（＝ガイドは出る・5 分ごと・10 世代）。
@@ -403,16 +480,29 @@ export interface TimeMapApi {
    * ―― 「読めなかった」を例外にしない（初回は当然まだファイルが無い）。
    */
   readonly readAppPrefs: () => Promise<AppPrefs>;
-  /** アプリ側の設定を部分更新する。書けなくても例外にせず、結果の全体を返す。 */
-  readonly writeAppPrefs: (patch: Partial<AppPrefs>) => Promise<AppPrefs>;
   /**
-   * いまの保存先の世代を新しい順に返す（増分 8D）。保存先がまだ無ければ空。
+   * アプリ側の設定を部分更新する。例外にはしないが、**書けたかどうかを返す**（増分 8D の
+   * 手直し）。書けなかったら値は効かせない。
+   */
+  readonly writeAppPrefs: (patch: Partial<AppPrefs>) => Promise<AppPrefsWriteResult>;
+  /**
+   * 世代を新しい順に返す（増分 8D）。どのファイルの世代かは主プロセスが決める（いまの保存先 →
+   * 世代から戻した元のファイル → 開こうとして開けなかったファイル）。決められなければ
+   * `basis: 'none'`。`pickSource` なら主プロセスのダイアログで元のファイルを選ばせる。
    * **前に受け取った id はこの呼び出しで無効になる**。
    */
-  readonly listBackups: () => Promise<readonly BackupEntry[]>;
+  readonly listBackups: (request?: BackupListRequest) => Promise<BackupListing>;
   /**
    * {@link listBackups} が直前に返した id の世代を開く（増分 8D）。**それ以外の id は
    * 断られる**（`ok: false` / `read-failed`）。開けた結果は保存先にならない。
    */
   readonly openBackup: (id: string) => Promise<LoadResponse>;
+  /** 一覧の 1 行の地物数（増分 8D の手直し）。読めなければ null。 */
+  readonly countBackupFeatures: (id: string) => Promise<number | null>;
+  /** 「以前の保存から開く」の 1 回が終わった（一覧の世代を間引きから外すのをやめる）。 */
+  readonly endBackupChoice: () => Promise<void>;
+  /** いまの保存先の世代の数だけ（中身を読まない。設定の「いまの世代の数」）。 */
+  readonly countBackups: () => Promise<BackupCount>;
+  /** 新規にした（主プロセスは保存先と、世代の一覧の基準を捨てる）。 */
+  readonly forgetSaveTarget: () => Promise<void>;
 }

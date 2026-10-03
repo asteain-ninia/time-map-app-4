@@ -20,7 +20,8 @@ import { serialize, type Manifest } from '../../domain/persistence/index';
 import type { DomainProject } from '../../domain/persistence/index';
 import {
   DEFAULT_APP_PREFS,
-  type BackupEntry,
+  type BackupCount,
+  type BackupListing,
   type LoadResponse,
   type SaveResponse,
   type TimeMapApi,
@@ -50,10 +51,14 @@ function makeApi(overrides: Partial<TimeMapApi> = {}): TimeMapApi {
     onAutoSaveTick: vi.fn(() => () => {}),
     // 決定 (2): アプリ側の設定（初回ガイドの覚え書き）。ここでは使わないスタブ。
     readAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
-    writeAppPrefs: vi.fn(async () => DEFAULT_APP_PREFS),
-    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は世代なし）。
-    listBackups: vi.fn(async (): Promise<readonly BackupEntry[]> => []),
+    writeAppPrefs: vi.fn(async () => ({ ok: true as const, prefs: DEFAULT_APP_PREFS })),
+    // 増分 8D: 世代の一覧と、一覧の id で開く口（既定は基準なし）。
+    listBackups: vi.fn(async (): Promise<BackupListing> => ({ basis: 'none' })),
     openBackup: vi.fn(async (): Promise<LoadResponse> => ({ ok: false, reason: 'cancelled' })),
+    countBackupFeatures: vi.fn(async (): Promise<number | null> => null),
+    endBackupChoice: vi.fn(async () => {}),
+    countBackups: vi.fn(async (): Promise<BackupCount> => ({ basis: 'none' })),
+    forgetSaveTarget: vi.fn(async () => {}),
     onCloseRequest: vi.fn(() => () => {}),
     appendLog: vi.fn(async () => {}),
     openImage: vi.fn(async (): Promise<Uint8Array | null> => null),
