@@ -150,3 +150,29 @@ describe('surveyLinesAt — 測れない局面', () => {
     expect(surveyLinesAt([dot], { lon: 5, lat: 7.5 }, ZOOM)).toHaveLength(0);
   });
 });
+
+// 増分 8C の手直し（GPT #3）: 旧版は許容値で広げた範囲の複製を数え、数が 4 を超えると
+// 「病的入力」として捨てていた。倍率がごく小さいと許容値が何千度にもなり、**線の真上を
+// 押しても当たらなかった**。数える複製は線の経度の幅だけで決める。
+describe('surveyLinesAt — ごく小さい倍率（許容値が何周ぶんにもなる）', () => {
+  const l = line(1, [0, 0], [20, 0]);
+
+  it('倍率 0.001（許容値 8000 度）でも、線の真上（距離 0）を押せば当たる', () => {
+    const hits = surveyLinesAt([l], { lon: 10, lat: 0 }, 0.001);
+    expect(hits.map((h) => h.lineId)).toEqual([1]);
+    expect(hits[0]!.distancePx).toBe(0);
+  });
+
+  it('何周ぶん離れた複製の上でも、距離は最も近い複製で測る', () => {
+    const hits = surveyLinesAt([l], { lon: 10 + 360 * 7, lat: 0 }, 0.001);
+    expect(hits[0]!.distancePx).toBe(0);
+  });
+
+  it('線の範囲の外の点は、両外側のいちばん近い複製までの距離で測る', () => {
+    // 経度 200 は、線（0〜20）の東端から 180 度、1 周先の複製（360〜380）の西端から 160 度。
+    // 近いのは 1 周先の複製のほう（押した点を −360 ずらした −160 から見て線の西端 0 まで 160）。
+    const hits = surveyLinesAt([l], { lon: 200, lat: 0 }, 1, 161);
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.distancePx).toBeCloseTo(160, 6);
+  });
+});
