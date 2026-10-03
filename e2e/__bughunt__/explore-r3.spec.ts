@@ -168,6 +168,12 @@ async function commitFace(
     record('add-rejected', `add rejected before save: ${m}`);
   }
   await page.getByTestId('add-save').click();
+  // 追加の保存は 1 コマ遅れて走る（B39 の直しで進行表示を掛けた）。素性欄が閉じる（＝保存が
+  // 走り終えて、確定したか重なりの板で止まった）のを待ってから板の有無を見る。
+  await page
+    .getByTestId('add-property-form')
+    .waitFor({ state: 'detached', timeout: 8000 })
+    .catch(() => record('add-form-stuck', 'property form still open after save'));
   await handleConflictModalIfPresent(page);
   try {
     await expect(page.getByTestId('app-active-feature')).toHaveText(/\S/, { timeout: 8000 });
