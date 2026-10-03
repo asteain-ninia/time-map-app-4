@@ -1464,11 +1464,17 @@ export function executeSplit(
   // Mid-edge cut points are read off the pieces themselves (増分 8B の再手直し): every
   // new piece vertex lying on an original edge. Same seam-anchored system as
   // checkSplittable (R3): the reference is the target's outer-ring branch.
-  const pieces = check.pieces ?? [check.sideA, check.sideB];
+  let pieces: readonly SplitSide[] = check.pieces ?? [check.sideA, check.sideB];
   let edgeCuts: readonly EdgeCutPoint[] = [];
   if (target.kind === FEATURE_KIND.Leaf) {
     const resolvedMp = resolveLeafShape(target.shape, store);
     const refLon = resolvedMp === undefined ? 0 : targetReferenceLon(resolvedMp);
+    // 集合演算が落とした一直線上の元の頂点を片へ戻す（継ぎ目の検証 2-2）。切り口の計算より
+    // 前に戻す ―― 戻した点は元の頂点なので切り口には数えない（`computeEdgeCuts` は元の頂点の
+    // 座標を除く）。
+    if (resolvedMp !== undefined) {
+      pieces = restoreDroppedBoundaryVertices(anchorMultiPolygon(resolvedMp, refLon), pieces);
+    }
     edgeCuts = computeEdgeCuts(
       target,
       store,
@@ -1478,11 +1484,118 @@ export function executeSplit(
   }
   return {
     pieces,
-    sideA: check.sideA,
-    sideB: check.sideB,
+    sideA: pieces[0] ?? check.sideA,
+    sideB: pieces[1] ?? check.sideB,
     ...(check.cutsBeyondLine === true ? { cutsBeyondLine: true } : {}),
     edgeCuts,
   };
+}
+
+/**
+ * **集合演算が落とした元の頂点を、片の辺の上へ戻す**（統合 8A〜8D の継ぎ目の検証 2-2 /
+ * 所有者の原則「削除以外でデータが勝手に消える・変わるのは良くない」）。
+ *
+ * 片の形は U06 の正規化（`union` など）を通るので、**一直線上に並ぶ途中の頂点が落ちる**。
+ * その頂点を隣も引いていると、隣にだけ残って片の辺の途中に乗る T 字になり、あとで隣の頂点を
+ * 動かすとそこで境界が裂ける。水平・垂直の共有辺の中点に頂点を足す（増分 8A）と普通の手順で
+ * 作れる。戻す点は元の頂点の座標そのものなので、提案の層の旧→新の対応（`buildRemap` は座標で
+ * 突き合わせる）が新しい id を配り、隣の参照もその id へ付け替わる ―― 片と隣が同じ id を引く。
+ *
+ * - 対象は **どの片にも無い元の頂点**だけ（先に集合で引くので、片ごとに全頂点を総当たりしない）。
+ *   ある片にある頂点が別の片の辺の途中に乗るには、切り口の途中に元の境界の点があることになるが、
+ *   切り口の端は境界との交点なのでそうはならない。
+ * - 片の辺から {@link RING_SPOT_TOLERANCE} 以内で、**両端からはその幅より離れている**ときだけ
+ *   戻す（正規化が 1 目盛りの近さで重ねた点を、短い辺として生き返らせない）。同じ辺に複数あれば
+ *   辺に沿った順に並べる。面積は変わらないので `areaKm2` はそのまま使う（ほぼ同じ面積の片で
+ *   継承先の既定が入れ替わらないように）。
+ * - 座標は片と同じ系（R3 で 1 本の経度の枝へ寄せた `targetAnchored` を格子へ丸めた値）で比べる。
+ *
+ * 純関数。戻す点が無ければ同じ片を返す。
+ */
+function restoreDroppedBoundaryVertices(
+  targetAnchored: GeoMultiPolygon,
+  pieces: readonly SplitSide[],
+): SplitSide[] {
+  const keyOf = (p: WorldCoordinate): string => `${String(p.lon)},${String(p.lat)}`;
+  const present = new Set<string>();
+  for (const side of pieces) {
+    for (const poly of side.area) {
+      for (const ring of poly) {
+        for (const c of ring) present.add(keyOf(quantizeCoordinate(c)));
+      }
+    }
+  }
+  const missing: WorldCoordinate[] = [];
+  for (const poly of targetAnchored) {
+    for (const ring of poly) {
+      for (const c of ring) {
+        const q = quantizeCoordinate(c);
+        const key = keyOf(q);
+        if (present.has(key)) continue;
+        present.add(key); // 同じ座標を 2 度数えない。
+        missing.push(q);
+      }
+    }
+  }
+  if (missing.length === 0) return [...pieces];
+  missing.sort((p, q) => p.lon - q.lon);
+
+  const tol = RING_SPOT_TOLERANCE;
+  const tol2 = tol * tol;
+  /** 経度が `lon` 以上の最初の位置（`missing` は経度の昇順）。 */
+  const firstAtOrAbove = (lon: number): number => {
+    let lo = 0;
+    let hi = missing.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (missing[mid]!.lon < lon) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  const dist2 = (p: WorldCoordinate, q: WorldCoordinate): number =>
+    (p.lon - q.lon) * (p.lon - q.lon) + (p.lat - q.lat) * (p.lat - q.lat);
+
+  const restoreOnRing = (ring: GeoRing): GeoRing => {
+    const n = ring.length;
+    const out: WorldCoordinate[] = [];
+    let changed = false;
+    for (let i = 0; i < n; i += 1) {
+      const a = ring[i]!;
+      const b = ring[(i + 1) % n]!;
+      out.push(a);
+      const maxLon = Math.max(a.lon, b.lon) + tol;
+      const minLat = Math.min(a.lat, b.lat) - tol;
+      const maxLat = Math.max(a.lat, b.lat) + tol;
+      const hits: { readonly t: number; readonly p: WorldCoordinate }[] = [];
+      for (let j = firstAtOrAbove(Math.min(a.lon, b.lon) - tol); j < missing.length; j += 1) {
+        const p = missing[j]!;
+        if (p.lon > maxLon) break;
+        if (p.lat < minLat || p.lat > maxLat) continue;
+        const { d2, t } = pointSegmentDistance2(p, a, b);
+        if (t <= 0 || t >= 1 || d2 > tol2) continue;
+        if (dist2(p, a) <= tol2 || dist2(p, b) <= tol2) continue;
+        hits.push({ t, p });
+      }
+      if (hits.length === 0) continue;
+      hits.sort((x, y) => x.t - y.t);
+      for (const h of hits) out.push(h.p);
+      changed = true;
+    }
+    return changed ? out : ring;
+  };
+
+  return pieces.map((side) => {
+    let changed = false;
+    const area: GeoMultiPolygon = side.area.map((poly) =>
+      poly.map((ring) => {
+        const next = restoreOnRing(ring);
+        if (next !== ring) changed = true;
+        return next;
+      }),
+    );
+    return changed ? { area, areaKm2: side.areaKm2 } : side;
+  });
 }
 
 /**
