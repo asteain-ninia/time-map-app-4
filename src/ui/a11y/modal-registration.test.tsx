@@ -15,6 +15,7 @@ import { render } from '@testing-library/react';
 
 import { BulkKindLabelDialog } from '../property/BulkKindLabelDialog';
 import { BackupListDialog } from '../file-ops/BackupListDialog';
+import { PreSaveConfirmDialog } from '../file-ops/PreSaveConfirmDialog';
 import { ImpactConfirmDialog } from '../shell/ImpactConfirmDialog';
 
 /** 名乗る口を持つ「本物の板」の部品名。足したらここへ書く（走査の母集合）。 */
@@ -29,6 +30,8 @@ const MODAL_COMPONENTS = [
   'BackupListDialog',
   // 増分 8E（G-10）: 背景地図の縦横比を聞く板。
   'BasemapAspectDialog',
+  // 本体の増分 7（手直し 2 回目）: 保存の前の確認の板（台帳 #27。本体の取り込みで足した）。
+  'PreSaveConfirmDialog',
 ] as const;
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -155,6 +158,20 @@ describe('板の登録 — 部品は出ている間だけ名乗る', () => {
       <BackupListDialog
         listing={{ basis: 'none' }}
         onChoose={() => undefined}
+        onModalChange={onModalChange}
+      />,
+    );
+    expect(onModalChange).toHaveBeenCalledWith(true);
+    view.unmount();
+    expect(onModalChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it('PreSaveConfirmDialog は出たら名乗り、外れたら取り消す（本体の取り込みで足した）', () => {
+    const onModalChange = vi.fn();
+    const view = render(
+      <PreSaveConfirmDialog
+        lines={['南ケナ州（1200年）']}
+        onDecide={() => undefined}
         onModalChange={onModalChange}
       />,
     );

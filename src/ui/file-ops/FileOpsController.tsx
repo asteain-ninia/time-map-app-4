@@ -188,6 +188,11 @@ export interface FileOpsControllerProps {
    */
   readonly onBasemapAspectModalChange?: (open: boolean) => void;
   /**
+   * 保存の前の確認の板（増分 7 の手直し 2 回目。台帳 #27）が出ている間「板が出ている」と名乗る口。
+   * 宿主（App）は鍵盤の持ち主の集合へ名前で足す（`toolModalChange('pre-save')`）。本体の取り込みで足した。
+   */
+  readonly onPreSaveModalChange?: (open: boolean) => void;
+  /**
    * S7 出界図 結線 — forward the DISPLAYED project's base-map image bytes to the renderer
    * host (App caches them and hands them to the map renderer's `baseMap` getter). Called
    * on every COMMITTED 破壊的置換: a load that actually reached the domain pushes the
@@ -1464,7 +1469,11 @@ export function FileOpsController(props: FileOpsControllerProps): JSX.Element | 
         />
       )}
       {pendingPreSave !== null && (
-        <PreSaveConfirmDialog lines={pendingPreSave.lines} onDecide={pendingPreSave.resolve} />
+        <PreSaveConfirmDialog
+          lines={pendingPreSave.lines}
+          onDecide={pendingPreSave.resolve}
+          onModalChange={props.onPreSaveModalChange}
+        />
       )}
       {pendingRepair !== null && (
         <RepairDialog

@@ -4588,6 +4588,8 @@ export function App(): JSX.Element {
               onBackupListModalChange={toolModalChange('backup-list')}
               // 増分 8E（G-10）: 背景地図の縦横比を聞く板も鍵盤の持ち主へ名乗る。
               onBasemapAspectModalChange={toolModalChange('basemap-aspect')}
+              // 本体の取り込み: 保存の前の確認の板（台帳 #27）も鍵盤の持ち主へ名乗る。
+              onPreSaveModalChange={toolModalChange('pre-save')}
               onSaveStatusChange={setSaveStatus}
               statusMessages={statusMessageStore}
             />
